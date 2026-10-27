@@ -80,3 +80,32 @@ E1 の後に `adjudication/<データ名>.jsonl` を書く。中身は、test �
 - `results/<日付>-<段>[-<タグ>].json`: 設定・費用・待ち時間・データごとの指標（反復ごと）・θ の案か合格基準・呼び出しごとの答え。
 - `results/summary.md`: results の全 JSON からランナーが書き出す（始めた時刻の順・手で直さない）。`DECISION_EVAL_STAGE=summary` で、実 LLM を呼ばずに書き直せる。
 - 使った額は台帳の §10 に記録する。
+
+## 受け入れシナリオ（FEAT-1 の T8）
+
+評価で凍結したプロンプトの版・質問・しきい値のまま、判定をワークフローに組み込んで流す。設計は台帳の付録 B §5。
+
+| ファイル | 中身 |
+| --- | --- |
+| `scenarios/inquiry_triage.json` | APP-02 問い合わせの一次仕分け。問い合わせの表（受付 → 仕分け済み／要確認 → 回答済み → 完了）・振り分けの規則の表と行・ワークフロー・同意 |
+| `scenarios/expense_policy.json` | APP-01 経費の申請の確認。経費の表（申請中 → 経理確認／上長承認待ち → 承認／却下）・ワークフロー・同意 |
+| `scenarios/results/<日付>-T8.json` | 実 LLM で流した結果（行・run・判定の答え・指標） |
+
+- テンプレートは、表のスキーマ・状態の遷移の規則・規則の行・ワークフローの IR・同意（grants）の組。`{{table.<ref>}}` は作った表の id、`{{model.decide}}` は判定用のモデル、`{{role.*}}` は部署に置き換える（説明は各ファイルの `placeholders`）。
+- APP-02: 行が追加されたら判定し（`category` を確からしさで振り分ける・θ は凍結の値）、確かなら振り分けの規則から種類と担当を書いて仕分け済み、しきい値に届かない・判定に失敗したら AI の推定を書いて要確認。返信の下書きと `rag.search` は入れていない。
+- APP-01: 規程（金額・人数・曜日・領収書・重複）は `script.run` が `rule_flags` に出す（`build_datasets.py` の `rule_flags` と同じ規程と文言）。判定の材料は評価データの `state` と同じ項目・書き方。規程のフラグが 1 つ以上・AI の `needs_review` が true（分岐の any）・確からしさ不足（uncertain）・判定の失敗（error）のどれかなら経理確認にして経理の部署の承認を待ち、どれでもなければ上長の承認を待つ。経理が承認すると上長の承認へ合流する。自動で却下する経路は無い（申請者は摘要に指示を書けるので、AI の判定だけで承認・却下を決めない）。申請中から先へ進める遷移は経理の部署だけに許すので、ワークフローは経理の担当者が有効化する。
+- 判定のノードの質問は `datasets/*.questions.json` と、しきい値は `frozen.json` と同じ。`crates/workflow-engine/tests/decision_scenarios.rs` が、これと、保存時検証を誤りも警告も無く通ることを確かめる（質問・しきい値を変えたら評価し直して凍結する）。
+
+流し方:
+
+```bash
+# stub の決定器（実 LLM を呼ばない・作ったものは消す）
+cd web && E2E_BASE_URL=http://localhost:3000 pnpm exec playwright test workflow-decide-scenarios --workers=1
+# 実 LLM（SHIKI_CONFIG=~/.config/shiki-dev/llm-haiku.toml のスタック・中継が動いていること）。
+# 各 40 件（注入の行は全部・残りは test から id の順）。10 件ずつ足し、中継の累計の差分が CAMPAIGN_BUDGET_USD（既定 0.5）を
+# 超えそうなら止める。判定用のモデル（DECIDE_MODEL・既定 decide-haiku）と元のモデルを組織で公開し、終わったら戻す。
+CAMPAIGN=1 CAMPAIGN_KEEP=1 E2E_SHOTS_DIR=<画面の置き場> E2E_BASE_URL=http://localhost:3000 \
+  pnpm exec playwright test campaign-decide-scenarios --workers=1
+# CAMPAIGN_KEEP=1 なら片付けは後で（SQL で裏取りしてから）
+CAMPAIGN_CLEANUP=1 E2E_BASE_URL=http://localhost:3000 pnpm exec playwright test campaign-decide-scenarios --workers=1
+```
