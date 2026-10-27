@@ -15,7 +15,6 @@
 from __future__ import annotations
 
 import argparse
-import fnmatch
 import json
 import os
 import re
@@ -40,8 +39,13 @@ FULL_TRIGGERS = (
     "deploy/compose/",
 )
 
-# CI の起動条件（ci.yml の paths-ignore）と同じ。選択の判断に使わない。
-IGNORED = ("docs/**", "**.md", "*.md", ".claude/**")
+# CI の起動条件（ci.yml の paths-ignore）と同じ。選択の判断に使わない。最上位の *.md だけを外し、
+# crates/ の下の .md はそのクレートの変更として扱う（include_str! でコンパイルに入るものがある・
+# 例 crates/chat/src/worker/yui_guide.md）。
+IGNORED_PREFIXES = ("docs/", ".claude/")
+
+# パッケージ名は nextest の式・cargo の引数・GITHUB_OUTPUT に流すので、想定外の文字は通さない。
+PACKAGE_NAME = re.compile(r"^[A-Za-z0-9_-]+$")
 
 # 選択に関係なく毎回回す脅威テスト（パッケージ, テストバイナリ）。認可バイパス・テナント越境を
 # 守る結合テストで、変更したクレートから依存を辿って届かない変更（設定・実行時の入力）でも落としたくない。
@@ -70,6 +74,8 @@ def workspace_packages(root: Path) -> dict[str, dict]:
         name = data.get("package", {}).get("name")
         if not name:
             continue
+        if not PACKAGE_NAME.match(name):
+            raise ValueError(f"想定外のパッケージ名: {name!r}（{manifest}）")
         raw[name] = data
         members[name] = {"dir": manifest.parent.relative_to(root).as_posix(), "deps": set()}
 
@@ -117,7 +123,9 @@ def owner(members: dict[str, dict], path: str) -> str | None:
 
 
 def is_ignored(path: str) -> bool:
-    return any(fnmatch.fnmatch(path, pat) for pat in IGNORED)
+    if path.startswith(IGNORED_PREFIXES):
+        return True
+    return "/" not in path and path.endswith(".md")
 
 
 def select(members: dict[str, dict], files: list[str], full_run: bool = False) -> dict:
@@ -125,7 +133,7 @@ def select(members: dict[str, dict], files: list[str], full_run: bool = False) -
     reasons: list[str] = []
     full = full_run
     if full_run:
-        reasons.append("全量（push / 手動実行）")
+        reasons.append("全量（main への push）")
     seeds: set[str] = set()
     web = python = False
     for f in files:
@@ -162,21 +170,28 @@ def select(members: dict[str, dict], files: list[str], full_run: bool = False) -
     }
     out["nextest_filter"] = nextest_filter(out)
     out["cargo_packages"] = " ".join(f"-p {p}" for p in packages)
-    out["always_run"] = " ".join(f"{p}:{t}" for p, t in ALWAYS_RUN)
+    # 脅威テストは 1 回の `cargo llvm-cov --workspace --test …` で回す（パッケージごとに起動すると
+    # 依存のフィーチャ集合が変わって計装ビルドがやり直しになる）。テスト名は workspace 内で一意。
+    out["always_run_tests"] = " ".join(f"--test {t}" for _, t in ALWAYS_RUN)
     return out
 
 
 def nextest_filter(sel: dict) -> str:
     if sel["full"]:
         return "all()"
-    terms = [f"package({p})" for p in sel["packages"]]
-    terms += [f"binary_id({p}::{t})" for p, t in ALWAYS_RUN]
+    # `=` は完全一致（式を組み立てるときは matcher の種類を明示する・nextest の filterset reference）。
+    terms = [f"package(={p})" for p in sel["packages"]]
+    terms += [f"binary_id(={p}::{t})" for p, t in ALWAYS_RUN]
     return " | ".join(terms)
+
+
+# 利用者の git 設定（diff.noprefix・quotePath・外部 diff）に左右されない出力にする。
+GIT_DIFF = ["git", "-c", "core.quotePath=false", "diff", "--no-ext-diff", "--no-textconv"]
 
 
 def changed_files(base: str, head: str) -> list[str]:
     out = subprocess.run(
-        ["git", "diff", "--name-only", "--no-renames", base, head],
+        [*GIT_DIFF, "--name-only", "--no-renames", base, head],
         check=True,
         capture_output=True,
         text=True,
@@ -185,9 +200,9 @@ def changed_files(base: str, head: str) -> list[str]:
 
 
 def changed_lines(base: str, head: str) -> dict[str, set[int]]:
-    """*.rs の追加・変更行（新しい側の行番号）。"""
+    """*.rs の追加・変更行（新しい側の行番号）。移動・改名は検出し、動かしただけの行は数えない。"""
     out = subprocess.run(
-        ["git", "diff", "--unified=0", "--no-renames", base, head, "--", "*.rs"],
+        [*GIT_DIFF, "--unified=0", "-M", "--src-prefix=a/", "--dst-prefix=b/", base, head, "--", "*.rs"],
         check=True,
         capture_output=True,
         text=True,
@@ -203,7 +218,8 @@ def parse_changed_lines(diff: str) -> dict[str, set[int]]:
     current: str | None = None
     for line in diff.splitlines():
         if line.startswith("+++ "):
-            target = line[4:]
+            # 空白を含むパスでは git が末尾にタブを付ける。
+            target = line[4:].rstrip("\t")
             current = target[2:] if target.startswith("b/") else None
             continue
         m = HUNK.match(line)
@@ -254,6 +270,29 @@ def diff_coverage(lines: dict[str, set[int]], lcov: dict[str, dict[int, int]], i
     return {"total": total, "covered": covered, "percent": percent, "files": files}
 
 
+def unmatched_sources(lines: dict[str, set[int]], lcov: dict[str, dict[int, int]], ignore: str | None,
+                      members: dict[str, dict]) -> list[str]:
+    """変更した workspace クレートの src/*.rs が lcov に 1 件も無いとき、その一覧（無ければ空）。
+
+    lcov と diff のパスが食い違うと、変更行が 1 行も数えられず「100% で合格」に倒れる。黙って
+    通さないよう、計測されているはずのファイルが 1 件も見つからない場合は検出して落とす。
+    """
+    pattern = re.compile(ignore) if ignore else None
+    expected = [
+        path for path in sorted(lines)
+        if any(path.startswith(info["dir"] + "/src/") for info in members.values())
+        and not (pattern and pattern.search(path))
+    ]
+    if expected and not any(path in lcov for path in expected):
+        return expected
+    return []
+
+
+def md_code(text: str) -> str:
+    """ファイル名を Markdown の表に安全に埋め込む（バッククォート・縦棒で表やコメントを崩さない）。"""
+    return "`" + text.replace("`", "'").replace("|", "\\|") + "`"
+
+
 def format_ranges(numbers: list[int]) -> str:
     ranges, start, prev = [], None, None
     for n in numbers:
@@ -292,7 +331,7 @@ def cmd_select(args: argparse.Namespace) -> int:
         print(f"# {reason}", file=sys.stderr)
     write_outputs(
         args.github_output,
-        {k: sel[k] for k in ("full", "rust", "web", "python", "compose", "nextest_filter", "cargo_packages", "always_run")},
+        {k: sel[k] for k in ("full", "rust", "web", "python", "compose", "nextest_filter", "cargo_packages", "always_run_tests")},
     )
     if args.summary:
         with open(args.summary, "a", encoding="utf-8") as fh:
@@ -310,6 +349,17 @@ def cmd_select(args: argparse.Namespace) -> int:
 def cmd_diff_coverage(args: argparse.Namespace) -> int:
     lines = changed_lines(args.base, args.head)
     lcov = parse_lcov(Path(args.lcov).read_text(), args.root)
+    missing = unmatched_sources(lines, lcov, args.ignore, workspace_packages(Path(args.root)))
+    if missing:
+        text = (
+            "変更行カバレッジを計測できません: 変更したクレートのソースが lcov に 1 件もありません"
+            "（lcov と diff のパスの食い違い、または計測漏れ）。\n\n"
+            + "\n".join(f"- {md_code(p)}" for p in missing[:20]) + "\n"
+        )
+        print(text)
+        if args.output:
+            Path(args.output).write_text(text, encoding="utf-8")
+        return 2
     result = diff_coverage(lines, lcov, args.ignore)
     report = [
         f"変更行カバレッジ: **{result['percent']:.1f}%**（実行可能な変更行 {result['total']} 行中 {result['covered']} 行・閾値 {args.min:g}%）",
@@ -320,7 +370,7 @@ def cmd_diff_coverage(args: argparse.Namespace) -> int:
         report.append("| ファイル | 実行されていない変更行 |")
         report.append("| --- | --- |")
         for f in uncovered:
-            report.append(f"| `{f['path']}` | {format_ranges(f['missed'])} |")
+            report.append(f"| {md_code(f['path'])} | {format_ranges(f['missed'])} |")
     text = "\n".join(report) + "\n"
     print(text)
     if args.output:
@@ -337,7 +387,7 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("select")
     p.add_argument("--base", default="HEAD^1")
     p.add_argument("--head", default="HEAD")
-    p.add_argument("--full", action="store_true", help="変更に関係なく全量（push / 手動実行）")
+    p.add_argument("--full", action="store_true", help="変更に関係なく全量（main への push）")
     p.add_argument("--root", default=".")
     p.add_argument("--github-output", default=os.environ.get("GITHUB_OUTPUT"))
     p.add_argument("--summary", default=os.environ.get("GITHUB_STEP_SUMMARY"))

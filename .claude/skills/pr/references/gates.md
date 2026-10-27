@@ -67,7 +67,7 @@ export RAG_TEST_QDRANT_API_KEY=shiki-qdrant-dev-key  # compose の Qdrant は AP
 
 CI は 2 段で判定する（#921）。
 
-- **PR**: changes ジョブ（`scripts/ci-select.py`）が選んだテスト（変更したクレート＋依存するクレート＋常に回す脅威テスト）だけを計測し、**変更した行**の 80% 以上で判定する（`scripts/ci-select.py diff-coverage`）。未達の行はカバレッジコメントと Job Summary に出る。ローカルでは `cargo llvm-cov report --lcov --output-path lcov.info` の後に `python3 scripts/ci-select.py diff-coverage --lcov lcov.info --base origin/main --head HEAD`。
+- **PR**: changes ジョブ（`scripts/ci-select.py`）が選んだテスト（変更したクレート＋依存するクレート＋常に回す脅威テスト）だけを計測し、**変更した行**の 80% 以上で判定する（`scripts/ci-select.py diff-coverage`）。未達の行はカバレッジコメントと Job Summary に出る。ローカルでは `cargo llvm-cov report --lcov --output-path lcov.info` の後に `python3 scripts/ci-select.py diff-coverage --lcov lcov.info --base "$(git merge-base origin/main HEAD)" --head HEAD`（base は merge-base。`origin/main` を直接渡すと main 側の変更が混ざる）。ファイルの移動・改名は検出して動かしただけの行は数えないが、1000 行ゲートのための**分割**は移した行が新規行として数えられる。元が 80% 未満なら分割と同じ PR でテストを足すか、分割だけの PR にして理由を書く。
 - **main**: 全テストを計測し、**workspace 総計の行カバレッジ**を `cargo llvm-cov --fail-under-lines 80` で判定する（per-crate ではない）。PR の変更行が通っても、テストの無い新規ファイルが総計を下げると main で落ちる。
 
 **最頻の落とし穴**: 新規 API ルートファイル（`crates/api/src/routes/*.rs`）はハンドラを叩く HTTP テストが無いと 0〜30% になり、**総計を 80% 未満へ引きずり落とす**。過去に複数 PR がこれで落ちている。

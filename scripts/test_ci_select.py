@@ -92,14 +92,31 @@ class SelectTest(unittest.TestCase):
                 self.assertTrue(ci.select(self.members, [f])["full"])
 
     def test_docs_are_ignored(self):
-        sel = ci.select(self.members, ["docs/design.md", "crates/data/README.md", ".claude/skills/pr/SKILL.md"])
+        sel = ci.select(self.members, ["docs/design.md", "README.md", ".claude/skills/pr/SKILL.md"])
         self.assertFalse(sel["full"] or sel["rust"] or sel["web"] or sel["python"] or sel["compose"])
+
+    def test_markdown_inside_a_crate_is_that_crates_change(self):
+        # include_str! でコンパイルに入る .md がある（crates/chat/src/worker/yui_guide.md）。
+        sel = ci.select(self.members, ["crates/data/src/guide.md"])
+        self.assertIn("shiki-data", sel["packages"])
+
+    def test_unexpected_package_name_is_rejected(self):
+        bad = Path(self._tmp.name) / "crates" / "bad"
+        bad.mkdir()
+        (bad / "Cargo.toml").write_text('[package]\nname = "x\\ny"\n')
+        with self.assertRaises(ValueError):
+            ci.workspace_packages(Path(self._tmp.name))
 
     def test_always_run_is_in_the_filter(self):
         f = ci.select(self.members, ["crates/yui/src/lib.rs"])["nextest_filter"]
-        self.assertIn("package(shiki-yui)", f)
-        self.assertIn("binary_id(shiki-data::policy_threat_it)", f)
-        self.assertIn("binary_id(shiki-authz::check)", f)
+        self.assertIn("package(=shiki-yui)", f)
+        self.assertIn("binary_id(=shiki-data::policy_threat_it)", f)
+        self.assertIn("binary_id(=shiki-authz::check)", f)
+
+    def test_always_run_tests_are_one_invocation(self):
+        tests = ci.select(self.members, ["crates/yui/src/lib.rs"])["always_run_tests"].split()
+        self.assertEqual(tests[0::2], ["--test"] * len(ci.ALWAYS_RUN))
+        self.assertEqual(len(set(tests[1::2])), len(ci.ALWAYS_RUN), "テスト名は workspace 内で一意であること")
 
     def test_full_run_flag(self):
         sel = ci.select(self.members, [], full_run=True)
@@ -146,6 +163,25 @@ class DiffCoverageTest(unittest.TestCase):
 
     def test_parse_changed_lines(self):
         self.assertEqual(ci.parse_changed_lines(self.DIFF), {"crates/a/src/lib.rs": {11, 12, 13, 23}})
+
+    def test_path_with_space_has_trailing_tab_removed(self):
+        diff = "+++ b/crates/a/src/my file.rs\t\n@@ -0,0 +1 @@\n+x\n"
+        self.assertEqual(ci.parse_changed_lines(diff), {"crates/a/src/my file.rs": {1}})
+
+    def test_unmatched_sources_detects_path_mismatch(self):
+        members = {"shiki-a": {"dir": "crates/a", "deps": set()}}
+        lines = {"crates/a/src/lib.rs": {1}, "crates/a/tests/it.rs": {1}}
+        # lcov のパスが別の root のまま（正規化に失敗）: 変更行が 1 行も数えられず 100% に倒れるのを検出する。
+        lcov = ci.parse_lcov("SF:/elsewhere/crates/a/src/lib.rs\nDA:1,0\nend_of_record\n", "/repo")
+        self.assertEqual(ci.unmatched_sources(lines, lcov, None, members), ["crates/a/src/lib.rs"])
+        ok = ci.parse_lcov("SF:/repo/crates/a/src/lib.rs\nDA:1,0\nend_of_record\n", "/repo")
+        self.assertEqual(ci.unmatched_sources(lines, ok, None, members), [])
+        # 除外パターンに当たるファイルだけの変更・src 以外だけの変更は対象外。
+        self.assertEqual(ci.unmatched_sources({"crates/a/src/main.rs": {1}}, {}, r"src/main\.rs", members), [])
+        self.assertEqual(ci.unmatched_sources({"crates/a/tests/it.rs": {1}}, {}, None, members), [])
+
+    def test_md_code_escapes_table_breakers(self):
+        self.assertEqual(ci.md_code("a|b`c.rs"), "`a\\|b'c.rs`")
 
     def test_diff_coverage_counts_only_executable_lines(self):
         lcov = ci.parse_lcov(

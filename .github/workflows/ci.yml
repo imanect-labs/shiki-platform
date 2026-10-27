@@ -4,16 +4,18 @@ on:
   pull_request:
     # docs のみの変更で重量 CI（Rust フルビルド×複数ジョブ・compose）を回さない。
     # file-size ゲートは *.rs のみ対象（scripts/check-file-size.sh）のため取りこぼしは無い。
+    # .md を外すのは最上位だけ。crates/ の下の .md は include_str! でコンパイルに入るものがある
+    # （crates/chat/src/worker/yui_guide.md）ので回す（どのテストを回すかは changes ジョブが選ぶ）。
     # ブランチ保護の required checks は未設定なので pending 固着も起きない。
     paths-ignore:
       - "docs/**"
-      - "**.md"
+      - "*.md"
       - ".claude/**"
   push:
     branches: [main]
     paths-ignore:
       - "docs/**"
-      - "**.md"
+      - "*.md"
       - ".claude/**"
 
 concurrency:
@@ -43,8 +45,8 @@ env:
 jobs:
   # PR の変更ファイルから、回すジョブと Rust テストの対象を選ぶ（#921・scripts/ci-select.py）。
   # 関係ない変更で全テストを回さない。判定できないパス・依存グラフや CI 自体の変更は全量に倒し、
-  # 認可・テナント越境の脅威テストは選択に関係なく毎回回す。main への push は常に全量（取りこぼしは
-  # main で検知して選択規則を直す）。
+  # 認可・テナント越境の脅威テストは Rust の変更があれば選択に関係なく coverage ジョブで回す（結合テストの
+  # 環境があるのは coverage ジョブだけ）。main への push は常に全量（取りこぼしは main で検知して選択規則を直す）。
   changes:
     name: 変更から回すジョブ・テストを選ぶ
     runs-on: ubuntu-latest
@@ -57,7 +59,7 @@ jobs:
       compose: ${{ steps.select.outputs.compose }}
       nextest_filter: ${{ steps.select.outputs.nextest_filter }}
       cargo_packages: ${{ steps.select.outputs.cargo_packages }}
-      always_run: ${{ steps.select.outputs.always_run }}
+      always_run_tests: ${{ steps.select.outputs.always_run_tests }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -419,7 +421,7 @@ jobs:
           RAG_TEST_QDRANT_API_KEY: shiki-qdrant-dev-key
           FULL: ${{ needs.changes.outputs.full }}
           CARGO_PACKAGES: ${{ needs.changes.outputs.cargo_packages }}
-          ALWAYS_RUN: ${{ needs.changes.outputs.always_run }}
+          ALWAYS_RUN_TESTS: ${{ needs.changes.outputs.always_run_tests }}
         # coverage は cargo test（バイナリ逐次＝in-process 共有 fixture が壊れない安全な実行
         # モデル）のまま。nextest はプロセス毎実行で in-process 共有状態に依存する IT を壊す
         # 実績があり不採用。速度は debuginfo 削減の計装ビルド短縮＋cache-on-failure で稼ぐ。
@@ -431,12 +433,10 @@ jobs:
           # 変更したクレート＋依存するクレートのテスト（-p は changes ジョブが組んだもの・語分割させる）。
           # shellcheck disable=SC2086
           cargo llvm-cov --no-report $CARGO_PACKAGES
-          # 常に回す脅威テスト（上で回したパッケージのものは回し直さない）。
-          for t in $ALWAYS_RUN; do
-            pkg=${t%%:*}
-            case " $CARGO_PACKAGES " in *" -p $pkg "*) continue ;; esac
-            cargo llvm-cov --no-report -p "$pkg" --test "${t##*:}"
-          done
+          # 常に回す脅威テストは 1 回の起動でまとめて回す。パッケージごとに `-p` で起動すると依存の
+          # フィーチャ集合が変わり、計装ビルドが何度もやり直しになる（--workspace なら main と同じ）。
+          # shellcheck disable=SC2086
+          cargo llvm-cov --no-report --workspace $ALWAYS_RUN_TESTS
       - name: coverage report (lcov + summary + job summary)
         run: |
           cargo llvm-cov report --lcov --output-path lcov.info --ignore-filename-regex "$COV_IGNORE"
