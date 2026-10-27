@@ -181,7 +181,8 @@ IR のトップレベルは以下の形を取る。
     "backoff": { "kind": "exponential", "base_sec": 5, "max_sec": 300, "jitter": true }
   },
   "timeout_sec": 30,                 // ノード種ごとに既定・上限あり（§7 の表）
-  "on_error": "fail_run"             // fail_run（既定）| continue（error ポートへ）
+  "on_error": "fail_run",            // fail_run（既定）| continue（error ポートへ）
+  "cache": { "ttl_sec": 86400 }      // 任意・結果の使い回し（いまは ai.decide だけ・§7.11）。既定は使わない
 }
 ```
 
@@ -189,6 +190,7 @@ IR のトップレベルは以下の形を取る。
 - **`retry`** の既定は `max_attempts: 1`（リトライなし）。**リトライは at-least-once を顕在化させる行為**なので、明示オプトインとする（PIT-31 の思想）。attempt を跨いで冪等キーは不変であり、その供給と dedupe の詳細は [engine.md](./engine.md) §7。
   - `backoff.kind`: `exponential`（`base_sec`・`max_sec`・`jitter`）。full jitter の実行は [engine.md](./engine.md) §7。
 - **`timeout_sec`**: ノード種ごとに既定値と上限がある（§7 の表）。上限超過値は保存拒否（§8 V7 の趣旨）。step timeout の実行時の扱い（retryable か等）は [engine.md](./engine.md) §9。
+- **`cache`**（step 属性・§7.8 で予約したもの）: 結果の使い回し。書けるのはノードカタログの `step_cache` がある種だけで、いまは `ai.decide` の決定キャッシュ（§7.11）。ほかの種に書くと保存時に `ir.cache_unsupported`。`ttl_sec` は 60〜2,592,000 秒（1 分〜30 日・省略は 86,400 秒＝1 日・範囲の外は `ir.schema_violation`）。キーは書けない（種が決める）。省略が既定で、使い回さない。
 - **`on_error`**:
   - `fail_run`（既定）: エラーで run 全体を failed にする。
   - `continue`: ノードは出力ポート `error` を持ち、エラーオブジェクトが `error` ポートの下流へ流れる。
@@ -590,6 +592,7 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 
 - **Retry / Timeout / Try-Catch / Fallback** — ノード**属性**（`retry` / `timeout_sec` / `on_error`＋error ポート）として §4 に存在済み。
 - **Cache / Rate Limit / Mutex（同時実行制御）** — 任意ノードに付く **step 属性**として予約（`cache`（LLM/API 結果のキャッシュ・キーと TTL）・`rate_limit`（API 呼び出し制限）・`mutex`（排他キー））。DAG を汚さず全ノードに合成可能で、追加は params/IR フィールド追加＝後方互換。
+  - **`cache` は `ai.decide` の決定キャッシュとして確定した**（§4・§7.11・D-52 の H6）。形は `{ "ttl_sec": <秒> }` だけで、キーは種が決める（作者は選べない）。既定は使わない。付けられる種はノードカタログの `step_cache`（期限の既定・下限・上限）が正で、それ以外の種は `ir.cache_unsupported`。生成（`llm.invoke`）には付けない（同じ入力でも別の文章を期待されることがあり、答えの形も決まらない）。
 - **Transaction** — **補償（compensation）エッジ**として予約。失敗時に補償ノードへ逆順で流す saga 型（分散トランザクションは提供しない）。
 - **Secrets（API キー管理）** — ノードではなく参照（`http.request` の secret 参照＋宛先束縛・§7.2）。OAuth/JWT/API Key 管理も同じ connection/secret 基盤で扱う。
 - **SQL 直接実行** — **作らない**。生 SQL は二段 authz・FSM 不変条件をバイパスし得るため、構造化データは宣言的な `data.query` に限定する。
@@ -694,13 +697,20 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
     "model": "decide-haiku",
     "resolved_model": "claude-haiku-5-5+llm_decider/v1/k1/low",
     "calibrated": false, "method": "verbalized", "samples": 1,
+    "cached": false,                                             // 決定キャッシュの答えなら true
     "routed": { "question": "category", "port": "out" } }       // route が無ければ null
   ```
 
   `label` は選択肢の説明（無ければキー）。score の `value` は確率で重み付けした位置（0〜段階の数-1）、`level_index` は選んだ段階。`resolved_model` は実際に答えた決定器の版で、版が変わったらしきい値を測り直す。`method` は `native`（決定器が出す確率）・`verbalized`（LLM の自己申告）・`vote`（多数決の得票率）。
 - **応答の突き合わせ**: エンジンはポートの応答を型付きで読み、質問と突き合わせる（答えの過不足・種類の取り違え・選択肢の外・確率や確からしさの範囲の外は `decision_invalid_response`・permanent）。チョークポイントも同じ突き合わせをする（多層防御）。
 - **失敗**: 判定用のモデルが未登録・判定用でない・組織で無効（元の chat モデルが無効なときも）は `model_unavailable`、判定の拒否は `llm_refused`、応答の途切れは `llm_output_truncated`、決められた形に合わない応答は `llm_output_invalid`（どれも permanent）。到達障害・利用上限は llm.invoke と同じ（再試行の分類・[engine.md](./engine.md) §7）。
-- **監査**: 出口と、振り分けに使った質問の確からしさだけを残す（要求したモデル・`resolved_model`・`method`・`samples`・`calibrated`・質問のキー）。**判定の材料と全部の答えは載せない**（D-52 の H5。run の step の出力には残る）。
+- **監査**: 出口と、振り分けに使った質問の確からしさだけを残す（要求したモデル・`resolved_model`・`method`・`samples`・`calibrated`・`cached`・質問のキー）。**判定の材料と全部の答えは載せない**（D-52 の H5。run の step の出力には残る）。
+- **決定キャッシュ**（step 属性 `cache`・§4・D-52 の H6）: 書いたノードだけ、同じ答えを使い回す（既定は使わない）。
+  - **キー**: `sha256(キーの版 ‖ 決定器の版 ‖ 正規化した質問 ‖ 正規化した判定材料)`。正規化はオブジェクトのキーを並べ替えた JSON（配列の順・質問と選択肢の並びは保つ。プロンプトの順になるため）。決定器の版は応答の `resolved_model` と同じもので、構築時にカタログから決まる（LLM に判定させる決定器は元の実 ID・プロンプトの版・回数・思考の深さ）。プロンプトの改訂・モデルの差し替え・回数の変更は別のキーになる。答えた版が構築時の版と違う応答（決定モデルの API が別の版で答えた等）は書かない。
+  - **範囲**: テナント＋組織＋ワークフロー。組織全体で共有すると、他人が同じ文面を判定させたかを当たり外れで推測できる。別のワークフロー（同じ IR を別に保存したものも）・別の組織では当たらない。
+  - **期限**: 書き込みから `ttl_sec`。読むときはノードの今の `ttl_sec` でも絞る（短くしたら古い答えは当たらない）。期限を過ぎた行は書き込みのたびにテナントの中で消す。DB（`llm_decision_cache`）に持つのは答え（使用量は 0 にしたもの）とキーで、判定の材料そのものは持たない。
+  - **当たっても組織の許可を確かめる**: 判定用のモデルと元の chat モデルの両方（チョークポイント `LlmGateway::decide_cached`・[design.md](../design.md) §4.5）。管理者が止めたら当たりでも `model_unavailable` で失敗する。**当たりは会計しない**（決定器を呼ばないので費用が出ない・利用上限も確かめない）。失敗した判定は使い回さない。
+  - 当たったかは出力と監査の `cached` に出る。キャッシュの読み書きの失敗は判定を止めない（外れとして決定器を呼ぶ・書けなければ使い回さないだけ）。
 - **会計**: チョークポイントが記録する。使えた判定は step の冪等キー、使えなかった判定（失敗・突き合わせで弾いたもの）で使用量のあるものは `{step のキー}#f{uuid}`（[engine.md](./engine.md) §7.2）。LLM に判定させる決定器は、元の chat モデルの名前・プロバイダの枠で数える。
 - **要求スコープ**: 無い（scope 天井の対象外。llm.invoke と同じ内部推論で、データへの到達は材料を読んだ前のノードの data / storage のスコープで縛られる・D-52 の H14）。
 - **保存を止めない警告**: しきい値が 0.6 未満（`ir.decide_low_confidence`）、値で振り分ける選択肢が 10 件以上（`ir.decide_many_ports`・確からしさで分けて後ろの振り分けで `/answers/<key>/value` を使う方が読みやすい）、モデルの名前が `-latest` / `-preview` を含む（`ir.decide_unpinned_model`）。
@@ -713,7 +723,7 @@ AI 編集も dnd 保存も**同一エンドポイント・同一パイプライ�
 
 | # | ステージ | 内容 | エラーコード例 |
 |---|---|---|---|
-| V1 | スキーマ | JSON Schema（deny-unknown・型・必須） | `ir.schema_violation` |
+| V1 | スキーマ | JSON Schema（deny-unknown・型・必須）・step 属性 `cache` を付けられる種と期限の範囲 | `ir.schema_violation`・`ir.cache_unsupported` |
 | V2 | グラフ | id 一意・エッジ参照存在・ポート存在・DAG・入エッジ制約・領域閉包・出口一意・到達可能性 | `ir.graph_cycle` 等 |
 | V3 | 語彙照合 | ノード type・declared_scopes・ツール名・モデル名を codegen 語彙と登録カタログ（モデルは組織が許可したもの・本人専用を除く）の閉じた集合へ照合。モデルの種類（文章を生成する chat・判定用の decision）。イベント source とトリガ・wait(event) の scope の形（§6.2・§7.5）。agent.invoke の道具と web.fetch の宛先（§7.4） | `ir.unknown_scope`・`ir.unknown_model`・`ir.model_choice_disabled`・`ir.model_modality_mismatch`・`ir.unknown_event_source`・`ir.bad_event_scope`・`ir.unknown_tool`・`ir.missing_egress`・`ir.bad_host`・`ir.host_outside_ceiling` |
 | V4 | 参照存在 | skill（レジストリ＋インストール済み）・secret（存在＋宛先束縛がノード URL ホストを許容）・テーブル/フォルダ id | `ir.unknown_skill` |
@@ -723,7 +733,7 @@ AI 編集も dnd 保存も**同一エンドポイント・同一パイプライ�
 
 各ステージの詳細:
 
-- **V1 スキーマ**: トップレベルからノード params まで、JSON Schema で型・必須・deny-unknown を検証する。未知フィールドは全階層で拒否する（§2）。`input_schema` の項目の並び（`x-order`）の形もここで確かめる（§2・D-60）。
+- **V1 スキーマ**: トップレベルからノード params まで、JSON Schema で型・必須・deny-unknown を検証する。未知フィールドは全階層で拒否する（§2）。`input_schema` の項目の並び（`x-order`）の形もここで確かめる（§2・D-60）。step 属性 `cache` は付けられる種（ノードカタログの `step_cache`・いまは `ai.decide`）だけで、ほかの種は `ir.cache_unsupported`（path は `/cache`）、`ttl_sec` が範囲の外なら `ir.schema_violation`（path は `/cache/ttl_sec`・§4）。
 - **V2 グラフ**: `id` 一意、エッジの `from` / `to` が実在ノード、`from_port` が §5.2 のポートカタログに存在（出口はカタログの `port_rule` から導く。検証 API はノードごとの出口を `node_ports` で返す）、DAG（閉路なし）、join 以外の入エッジ ≤ 1、map 領域の閉包（領域跨ぎエッジなし）・出口ちょうど 1、全ノードのエントリからの到達可能性を検証する。`workflow.reply` は map 領域に置けない（`ir.reply_in_map`・§7.10）。
 - **V3 語彙照合**: ノード `type`・`declared_scopes`・ツール名（`allowed_tools`）・モデル名を codegen が生成した閉じた語彙と、テナントの登録カタログ（モデルは組織が許可したモデル・本人専用を除く）へ照合する。**ハルシネーション境界**であり、実在しない語彙を参照する IR（特に AI 生成）を保存前に拒否する。`llm.invoke` の `model` は省略可で、省略（空文字を含む）は照合しない（実行時に組織の既定で解決する・§7.3）。組織がモデルの選択を禁じていれば、既定と異なるモデルを `ir.model_choice_disabled` で拒否する。
 - **V3 のモデルの種類**: カタログのモデルは文章を生成する chat と判定用の decision に分かれる（[design.md](../design.md) §4.5）。`llm.invoke`・`agent.invoke` の `model` は組織が許可した chat モデル、`ai.decide` の `model` は組織が許可した判定用のモデル（LLM に判定させるなら元にする chat モデルも許可されているもの）へ照合する。種類を取り違えたもの（`llm.invoke` に判定用のモデル・`ai.decide` に chat モデル）は `ir.model_modality_mismatch`（path は `/params/model`・使えるモデルを添える）、どちらにも無いものは `ir.unknown_model`。判定用のモデルが 0 件の組織では `ai.decide` をすべて拒否する。照合の材料（組織の許可リスト）は保存 API・検証 API・AI の `emit_workflow` が同じ関数（`build_catalog_from`）で組み、種類の振り分けもその中だけで行う（保存と AI 編集で結果を変えない）。
