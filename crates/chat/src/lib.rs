@@ -35,6 +35,7 @@ pub mod document_ref;
 pub mod document_tool;
 pub mod drive_tool;
 pub mod error;
+pub(crate) mod file_reader;
 pub mod gui_actions;
 pub mod model;
 pub mod office_create_tool;
