@@ -2,9 +2,10 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
+use super::ports::{output_ports, unknown_port_message};
 use super::ValidationError;
-use crate::ir::{Node, OnError, WorkflowIr};
-use crate::vocab::{static_output_ports, NodeType};
+use crate::ir::{Node, WorkflowIr};
+use crate::vocab::NodeType;
 
 /// V2 検証を実行しエラーを収集する。
 pub(super) fn check(ir: &WorkflowIr, errors: &mut Vec<ValidationError>) {
@@ -83,7 +84,7 @@ pub(super) fn check(ir: &WorkflowIr, errors: &mut Vec<ValidationError>) {
         // ポート存在（ir.md §5.2）: 無い出口のエッジは実行時に dead になり、下流が黙って skip される。
         if let Some(from) = nodes_by_id.get(e.from.as_str()) {
             if let Some(ports) = output_ports(from) {
-                if !ports.contains(e.from_port.as_str()) {
+                if !ports.contains(&e.from_port) {
                     errors.push(
                         ValidationError::new(
                             "ir.unknown_port",
@@ -139,70 +140,6 @@ pub(super) fn check(ir: &WorkflowIr, errors: &mut Vec<ValidationError>) {
             format!("グラフに循環があります（例: {cycle_node} を含む）"),
         ));
     }
-}
-
-/// ノードの出力ポート集合（ir.md §5.2）。未知の type は `None`（V3 が拒否する）。
-///
-/// カタログの静的ポート（通常 `out`・branch `true`/`false`）に、設定から決まる構造ポートを足す:
-/// switch の `cases[].port` と `default`、`on_error: continue` の `error`、wait の `on_timeout: continue`
-/// の `timeout`（V1 が wait(event) に限る）。実行時に発しないポート（switch の `out` など）は含めない。
-fn output_ports(node: &Node) -> Option<BTreeSet<&str>> {
-    let nt = NodeType::parse(&node.node_type)?;
-    let (statics, dynamic) = static_output_ports(nt);
-    let mut ports: BTreeSet<&str> = statics.iter().copied().collect();
-    if nt == NodeType::HumanApproval {
-        // 却下・差し戻し・時間切れは指定したときだけ（GAP-08）。
-        ports.extend(crate::vocab::approval_ports(&node.params));
-    }
-    if dynamic {
-        let cases = node
-            .params
-            .get("cases")
-            .and_then(serde_json::Value::as_array);
-        for c in cases.into_iter().flatten() {
-            if let Some(p) = c.get("port").and_then(serde_json::Value::as_str) {
-                ports.insert(p);
-            }
-        }
-        ports.insert("default");
-    }
-    if nt == NodeType::ControlWait
-        && node
-            .params
-            .get("on_timeout")
-            .and_then(serde_json::Value::as_str)
-            == Some("continue")
-    {
-        ports.insert("timeout");
-    }
-    if node.on_error == OnError::Continue {
-        ports.insert("error");
-    }
-    Some(ports)
-}
-
-/// 無い出口を指すエッジの文言（使える出口と、設定で出せる出口の手がかりを添える）。
-fn unknown_port_message(node: &Node, port: &str, ports: &BTreeSet<&str>) -> String {
-    let list = ports.iter().copied().collect::<Vec<_>>().join(", ");
-    let hint = match port {
-        "error" => "。error 出口は on_error を continue にしたときだけ使えます",
-        "timeout" if node.node_type == NodeType::HumanApproval.as_str() => {
-            "。timeout 出口は期限を決めて on_timeout を continue にしたときだけ使えます"
-        }
-        "timeout" => {
-            "。timeout 出口は wait(event) で on_timeout を continue にしたときだけ使えます"
-        }
-        "rejected" => "。rejected 出口は reject（却下）を指定したときだけ使えます",
-        "returned" => "。returned 出口は return（差し戻し）を指定したときだけ使えます",
-        "out" if node.node_type == "control.switch" => {
-            "。振り分けは cases の port か default から出ます"
-        }
-        _ => "",
-    };
-    format!(
-        "ノード {} に出口 '{port}' はありません（使える出口: {list}）{hint}",
-        node.id
-    )
 }
 
 /// map 領域の構造制約（ir.md §5.3）: 各領域は入口 ≥1・**出口ちょうど 1**・**ネスト最大深さ 2**。

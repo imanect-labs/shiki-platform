@@ -14,15 +14,16 @@ use workflow_engine::ir::edge::Edge;
 use workflow_engine::ir::expr::{CmpOp, Comparison, Condition, FromRef, TemplateExpr, ValueExpr};
 use workflow_engine::ir::node::{Backoff, Node, OnError, RetryPolicy};
 use workflow_engine::ir::params::{
-    params_type_name, AgentInvokeParams, ApprovalAssignee, ApprovalChoice, ApprovalComment,
-    ApprovalRecord, BranchParams, CsvPatchParams, CsvQueryParams, CsvWriteParams,
+    params_type_name, AgentInvokeParams, AiDecideParams, ApprovalAssignee, ApprovalChoice,
+    ApprovalComment, ApprovalRecord, BranchParams, CsvPatchParams, CsvQueryParams, CsvWriteParams,
     DataBulkUpsertParams, DataQueryParams, DataRecordCreateParams, DataRecordDeleteParams,
-    DataRecordUpdateParams, DataTransitionParams, HttpMethod, HttpRequestParams, HttpSecretRef,
-    HumanApprovalParams, JoinMode, JoinParams, LlmEffort, LlmInvokeParams, MapItemError, MapParams,
-    RagSearchParams, RedirectPolicy, ReplyColumn, ReplyFileSpec, ReplyFormat, ReplyTone,
-    ScriptRunParams, ScriptSourceSpec, SecretAttach, SecretAttachKind, SkillInvokeParams,
-    StorageListParams, StorageReadParams, StorageWriteParams, SwitchCase, SwitchParams, WaitKind,
-    WaitParams, WaitTimeout, WorkflowReplyParams, WorkflowStartParams,
+    DataRecordUpdateParams, DataTransitionParams, DecideOption, DecideQuestion, DecideQuestionType,
+    DecideRoute, DecideRouteBy, HttpMethod, HttpRequestParams, HttpSecretRef, HumanApprovalParams,
+    JoinMode, JoinParams, LlmEffort, LlmInvokeParams, MapItemError, MapParams, RagSearchParams,
+    RedirectPolicy, ReplyColumn, ReplyFileSpec, ReplyFormat, ReplyTone, ScriptRunParams,
+    ScriptSourceSpec, SecretAttach, SecretAttachKind, SkillInvokeParams, StorageListParams,
+    StorageReadParams, StorageWriteParams, SwitchCase, SwitchParams, WaitKind, WaitParams,
+    WaitTimeout, WorkflowReplyParams, WorkflowStartParams,
 };
 use workflow_engine::ir::trigger::{
     Catchup, EventTrigger, InteractiveTrigger, ScheduleTrigger, Trigger, TriggerKind,
@@ -32,7 +33,7 @@ use workflow_engine::ir::{Policies, TriggerOverflow, WorkflowIr};
 use workflow_engine::vocab::{
     agent_tool_catalog, event_catalog, node_catalog, AgentTool, AgentToolCatalogEntry,
     EventCatalogEntry, EventPayloadField, EventSource, IdempotencyClass, NodeCatalogEntry,
-    NodeCategory, NodeType, OutputField, RunEventKind, Scope,
+    NodeCategory, NodeType, OutputField, PortRule, RunEventKind, Scope,
 };
 
 /// 保存を止めない警告のコードの定数（定数の名前 → コード・Rust の表から引く・BUG-48）。
@@ -108,6 +109,12 @@ fn ir_decls() -> Vec<String> {
         LlmInvokeParams,
         AgentTool,
         AgentInvokeParams,
+        DecideQuestionType,
+        DecideOption,
+        DecideQuestion,
+        DecideRouteBy,
+        DecideRoute,
+        AiDecideParams,
         HttpMethod,
         SecretAttachKind,
         SecretAttach,
@@ -140,6 +147,7 @@ fn ir_decls() -> Vec<String> {
         // ---- カタログ ----
         NodeCategory,
         IdempotencyClass,
+        PortRule,
         OutputField,
         NodeCatalogEntry,
         // ---- イベントのペイロードの形（D-47）----

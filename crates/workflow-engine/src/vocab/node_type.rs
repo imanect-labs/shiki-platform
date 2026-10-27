@@ -23,6 +23,8 @@ vocab_enum! {
         RagSearch => "rag.search",
         LlmInvoke => "llm.invoke",
         AgentInvoke => "agent.invoke",
+        /// 質問に選択肢・段階・はい/いいえで答え、確からしさを付けて返す（決定モデル・FEAT-1・pure・課金あり）。
+        AiDecide => "ai.decide",
         HttpRequest => "http.request",
         ScriptRun => "script.run",
         WorkflowStart => "workflow.start",
@@ -129,6 +131,7 @@ impl NodeType {
                 | NodeType::RagSearch
                 | NodeType::LlmInvoke
                 | NodeType::AgentInvoke
+                | NodeType::AiDecide
                 | NodeType::HttpRequest
                 | NodeType::ScriptRun
                 | NodeType::SkillInvoke
@@ -173,6 +176,7 @@ mod tests {
                 "rag.search",
                 "llm.invoke",
                 "agent.invoke",
+                "ai.decide",
                 "http.request",
                 "script.run",
                 "workflow.start",

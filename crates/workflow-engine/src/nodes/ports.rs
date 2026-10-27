@@ -108,6 +108,23 @@ pub struct LlmInvokeReq {
     pub call_suffix: Option<String>,
 }
 
+/// ai.decide の要求（llm-gateway の判定のチョークポイント直行・FEAT-1）。
+///
+/// 質問は保存時に V1 を通したリテラル（params の型をそのまま渡す）。判定の材料は解決済みの値（文字列・
+/// オブジェクト・配列・上限はエンジンが確かめる）で、**信頼しないデータ**（決定器は中の指示に従わない）。
+#[derive(Debug, Clone)]
+pub struct LlmDecideReq {
+    /// 判定用のモデルの論理名（組織の許可・元の chat モデルの許可はチョークポイントが確かめる）。
+    pub model: String,
+    /// 判定の材料（解決済み）。
+    pub state: Value,
+    /// 質問（順序を保つ）。
+    pub questions: Vec<crate::ir::params::DecideQuestion>,
+    /// step の冪等キー（attempt を含まない）。使えた判定はこのキーで、使えなかった判定は `{key}#f{uuid}` で
+    /// チョークポイントが会計する（ポートでは記録しない）。
+    pub idempotency_key: String,
+}
+
 /// 構造化出力の修復の依頼（[`LlmInvokeReq::repair`]）。
 #[derive(Debug, Clone)]
 pub struct LlmRepair {
@@ -288,6 +305,19 @@ pub trait NodePorts: Send + Sync {
     ///   再試行・再開で後から成功した分が重複除去で消えるため。形に合うかは
     ///   [`crate::ir::output_schema::validate_output`]（エンジンと同じ検査）で見る。
     async fn llm_invoke(&self, ctx: &ExecCtx, req: LlmInvokeReq) -> Result<Value, PortError>;
+
+    /// ai.decide（`LlmGateway::decide`・組織の許可・利用上限・会計はチョークポイントの中・FEAT-1）。
+    ///
+    /// 返す Value は判定の結果 `{ resolved_model, answers: { <key>: { type, … } }, calibrated, method, samples }`
+    /// （llm-gateway の `DecideResponse` の形）。エンジンが型付きで読み、質問と突き合わせてから出力を組む。
+    /// 既定は「未構成」（判定のチョークポイントを結線しない実装・テスト用・H1）。
+    async fn llm_decide(&self, _ctx: &ExecCtx, _req: LlmDecideReq) -> Result<Value, PortError> {
+        Err(PortError::new(
+            "unsupported",
+            "AI の判定（ai.decide）はこの環境では使えません",
+            false,
+        ))
+    }
 
     /// agent.invoke（agent-core のツールループを 1 回走らせる・LLM は llm-gateway を通す・BUG-6）。
     ///

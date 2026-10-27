@@ -110,12 +110,15 @@ pub struct NodeCatalogEntry {
     pub label_ja: &'static str,
     /// 1 行説明（IT に詳しくない利用者向け）。
     pub description_ja: &'static str,
-    /// 静的な出力ポート（switch は cases から動的導出のため空＋`dynamic_ports`）。
+    /// 静的な出力ポート（switch・ai.decide は params から導出するため空＋`dynamic_ports`）。
     /// `on_error=continue` の `error`・wait(event, on_timeout=continue) の `timeout` は
     /// 設定から導出する構造ポート（ir.md §5.2）でありここに含まない。
     pub output_ports: &'static [&'static str],
-    /// 出力ポートが params から動的に決まるか（control.switch のみ）。
+    /// 出力ポートが params から動的に決まるか（control.switch・ai.decide。互換のため残す。どう決まるかは
+    /// [`Self::port_rule`]）。
     pub dynamic_ports: bool,
+    /// 出力ポートの決まり方（[`PortRule`]・保存時検証 V2 と検証 API の `node_ports` が同じ規則で導く）。
+    pub port_rule: PortRule,
     /// 入エッジを複数受けられるか（control.join のみ・V2 の入エッジ 1 本制約の例外）。
     pub multi_input: bool,
     /// 要求スコープ（declared_scopes への宣言が必要・None は scope 天井対象外）。
@@ -135,6 +138,27 @@ pub struct NodeCatalogEntry {
     /// 出力の最上位の項目（後続が `$from: nodes.<id>.output` の `/<name>` で読む・右パネルの参照の候補）。
     /// 項目の組でない出力（入力をそのまま通す・script の戻り値など）と予約語彙は空（D-42）。
     pub output_fields: &'static [OutputField],
+}
+
+/// 出力ポートの決まり方（ir.md §5.2・カタログの単一定義）。
+///
+/// 実際のポート集合は `ir::validate::node_ports` が params からこの規則で導く（V2 のポート存在検査と検証
+/// API の `node_ports` が同じ関数を使い、ai.decide の実行時の振り分けも同じ規則（`AiDecideParams::ports`）
+/// に従う。web に導出を書き写さない）。どの規則でも `on_error: continue` なら `error`、
+/// wait(event, on_timeout=continue) なら `timeout` が加わる。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum PortRule {
+    /// 静的なポート（[`NodeCatalogEntry::output_ports`]）だけ。
+    Static,
+    /// control.switch: `cases[].port` と `default`（`out` は発しない）。
+    SwitchCases,
+    /// human.approval: `approved`・`withdrawn` に、指定した判断（`rejected`・`returned`）と時間切れ（`timeout`）。
+    ApprovalChoices,
+    /// ai.decide: 振り分け（`route`）から決まる（無し＝`out`・確からしさで＝`out`/`uncertain`・
+    /// 値で＝選択肢のキーか `true`/`false` と `uncertain`）。
+    DecideRoute,
 }
 
 /// 出力の最上位の 1 項目（カタログの単一定義・D-42）。
@@ -199,6 +223,11 @@ fn labels(nt: NodeType) -> (NodeCategory, &'static str, &'static str) {
             C::Ai,
             "AI エージェント",
             "AI がツールを使って複数手順の作業をこなす",
+        ),
+        NodeType::AiDecide => (
+            C::Ai,
+            "AI で判定",
+            "質問に選択肢・段階・はい/いいえで答え、確からしさを付けて返す",
         ),
         NodeType::HttpRequest => (
             C::External,
@@ -362,16 +391,18 @@ fn labels(nt: NodeType) -> (NodeCategory, &'static str, &'static str) {
     }
 }
 
-/// 静的な出力ポートと、ポートが params から動的に決まるか（ir.md §5.2）。
+/// 静的な出力ポートと、ポートの決まり方（ir.md §5.2）。
 ///
-/// switch のみ動的・branch は true/false・approval は approved / withdrawn（rejected・returned・timeout は
-/// 設定から足す構造ポート・[`approval_ports`]）。カタログと保存時検証 V2（`from_port` の存在）が読む単一定義。
-pub(crate) fn static_output_ports(nt: NodeType) -> (&'static [&'static str], bool) {
+/// branch は true/false・switch は cases から・approval は approved / withdrawn に指定した判断を足す
+/// （[`approval_ports`]）・ai.decide は振り分けから（`AiDecideParams::ports`）。カタログと保存時検証 V2
+/// （`from_port` の存在）が読む単一定義。
+pub(crate) fn output_port_rule(nt: NodeType) -> (&'static [&'static str], PortRule) {
     match nt {
-        NodeType::ControlBranch => (&["true", "false"], false),
-        NodeType::ControlSwitch => (&[], true),
-        NodeType::HumanApproval => (&["approved", "withdrawn"], false),
-        _ => (&["out"], false),
+        NodeType::ControlBranch => (&["true", "false"], PortRule::Static),
+        NodeType::ControlSwitch => (&[], PortRule::SwitchCases),
+        NodeType::HumanApproval => (&["approved", "withdrawn"], PortRule::ApprovalChoices),
+        NodeType::AiDecide => (&[], PortRule::DecideRoute),
+        _ => (&["out"], PortRule::Static),
     }
 }
 
@@ -402,7 +433,9 @@ fn entry(nt: NodeType) -> NodeCatalogEntry {
 
     let (category, label_ja, description_ja) = labels(nt);
 
-    let (output_ports, dynamic_ports) = static_output_ports(nt);
+    let (output_ports, port_rule) = output_port_rule(nt);
+    // 互換の印: params から決まるのは switch と ai.decide（承認は静的な出口に足すだけなので従来どおり false）。
+    let dynamic_ports = matches!(port_rule, PortRule::SwitchCases | PortRule::DecideRoute);
 
     // 冪等性区分（ir.md §7 の表・予約語彙は設計上の区分）。
     let idempotency = match nt {
@@ -452,6 +485,8 @@ fn entry(nt: NodeType) -> NodeCatalogEntry {
         // 承認の step は行を読んで止まるまで（判断を待つ時間は timeout_sec・run_timeout_sec が決める）。
         | NodeType::HumanApproval => (Some(30), Some(120)),
         NodeType::RagSearch => (Some(60), Some(120)),
+        // 判定は 1 回の要求（多数決は並列）。生成より短いが、思考を伴う LLM の決定器もある（FEAT-1）。
+        NodeType::AiDecide => (Some(60), Some(300)),
         NodeType::NotifySend => (Some(30), Some(60)),
         NodeType::WorkflowStart => (Some(10), Some(30)),
         // 値を整形するだけ（能力を呼ばない）。
@@ -473,6 +508,7 @@ fn entry(nt: NodeType) -> NodeCatalogEntry {
         description_ja,
         output_ports,
         dynamic_ports,
+        port_rule,
         multi_input: nt == NodeType::ControlJoin,
         required_scope: required_scope(nt),
         available: nt.available_stage_a(),
@@ -662,6 +698,31 @@ fn output_shape(nt: NodeType) -> Shape {
             ],
             "",
         ),
+        N::AiDecide => Fields(
+            "",
+            &[
+                field!(
+                    "answers",
+                    "{ [質問のキー]: { type: \"choice\", value: string, label: string, confidence: number, probabilities: { [選択肢のキー]: number } } | { type: \"score\", value: number, level: string, level_index: number, confidence: number, probabilities: Array<number> } | { type: \"boolean\", value: boolean, probability: number, confidence: number } }",
+                    "確からしさ・確率は 0〜1"
+                ),
+                field!("model", "string", "指定した判定用のモデル"),
+                field!("resolved_model", "string", "実際に答えた決定器の版"),
+                field!(
+                    "calibrated",
+                    "boolean",
+                    "false は確からしさが較正されていない（AI の自己申告・得票率）"
+                ),
+                field!("method", "\"native\" | \"verbalized\" | \"vote\""),
+                field!("samples", "number", "1 回の判定で答えさせた回数"),
+                field!(
+                    "routed",
+                    "{ question: string, port: string } | null",
+                    "route を書いたとき・進んだ出口"
+                ),
+            ],
+            "",
+        ),
         N::HttpRequest => Fields(
             "",
             &[
@@ -833,148 +894,4 @@ fn output_shape(nt: NodeType) -> Shape {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn catalog_covers_all_vocab_in_order() {
-        let catalog = node_catalog();
-        assert_eq!(catalog.len(), NodeType::ALL.len());
-        for (entry, nt) in catalog.iter().zip(NodeType::ALL) {
-            assert_eq!(entry.node_type, *nt);
-        }
-    }
-
-    #[test]
-    fn stage_a_entries_have_timeout_or_are_control() {
-        for e in node_catalog().iter().filter(|e| e.available) {
-            assert!(
-                e.node_type.is_control() || e.timeout_default_sec.is_some(),
-                "{} は timeout 既定が必要",
-                e.node_type.as_str()
-            );
-        }
-    }
-
-    #[test]
-    fn structural_flags_match_vocab() {
-        let catalog = node_catalog();
-        let find = |nt: NodeType| catalog.iter().find(|e| e.node_type == nt).unwrap();
-        assert!(find(NodeType::ControlJoin).multi_input);
-        assert!(find(NodeType::ControlSwitch).dynamic_ports);
-        assert_eq!(
-            find(NodeType::ControlBranch).output_ports,
-            ["true", "false"]
-        );
-        assert_eq!(
-            find(NodeType::StorageWrite).required_scope,
-            Some(Scope::StorageWrite)
-        );
-        assert_eq!(
-            find(NodeType::StorageWrite).idempotency,
-            IdempotencyClass::EngineDedup
-        );
-    }
-
-    #[test]
-    fn labels_are_nonempty_and_unique_within_category() {
-        use std::collections::BTreeSet;
-        let mut seen: BTreeSet<(String, &str)> = BTreeSet::new();
-        for e in node_catalog() {
-            assert!(!e.label_ja.is_empty());
-            assert!(!e.description_ja.is_empty());
-            assert!(
-                seen.insert((format!("{:?}", e.category), e.label_ja)),
-                "カテゴリ内でラベル重複: {}",
-                e.label_ja
-            );
-        }
-    }
-
-    /// 使えるノードは出力の形を持ち（AI の説明文・右パネルが参照する）、予約語彙は持たない。
-    #[test]
-    fn output_shape_is_defined_exactly_for_stage_a_nodes() {
-        for e in node_catalog() {
-            assert_eq!(
-                !e.output_shape.is_empty(),
-                e.available,
-                "{} の出力の形",
-                e.node_type.as_str()
-            );
-        }
-        let find = |nt: NodeType| {
-            node_catalog()
-                .into_iter()
-                .find(|e| e.node_type == nt)
-                .unwrap()
-        };
-        // 出力の形（output_schema）を書いたときだけ、検証済みの data が付く（GAP-13）。
-        assert_eq!(
-            find(NodeType::LlmInvoke).output_shape,
-            "{ text: string, model: string, data?: unknown（output_schema を書いたとき・その形で検証済みの値） }"
-        );
-    }
-
-    /// D-42: 出力の形の文字列は構造化した項目から作る（項目の組なら必ず項目を持つ・名前は一意）。
-    #[test]
-    fn output_shape_text_is_built_from_fields() {
-        let catalog = node_catalog();
-        let find = |nt: NodeType| catalog.iter().find(|e| e.node_type == nt).unwrap();
-        let record = find(NodeType::DataRecordCreate);
-        assert_eq!(record.output_fields[0].name, "id");
-        assert!(record
-            .output_shape
-            .starts_with("レコード { id: string, table_id: string,"));
-        let map = find(NodeType::ControlMap);
-        assert_eq!(
-            map.output_shape,
-            "{ items: Array<unknown>（領域の出口ノードの出力・要素の順）, errors?: Array<{ index: number, error: { code: string, message: string } }>（on_item_error: collect のとき） }"
-        );
-        assert!(map.output_fields[1].optional);
-        assert_eq!(
-            find(NodeType::StorageList).output_shape,
-            "{ items: Array<{ id: string, name: string, kind: string, size: number }> }（最大 100 件）"
-        );
-        // 項目に分けられない形は項目を持たない（参照の候補は「結果（全体）」だけ）。
-        for nt in [
-            NodeType::ScriptRun,
-            NodeType::ControlWait,
-            NodeType::SkillInvoke,
-        ] {
-            assert!(find(nt).output_fields.is_empty(), "{}", nt.as_str());
-            assert!(!find(nt).output_shape.is_empty());
-        }
-        for e in &catalog {
-            let mut names: Vec<&str> = e.output_fields.iter().map(|f| f.name).collect();
-            for f in e.output_fields {
-                assert!(
-                    e.output_shape.contains(&format!(
-                        "{}{}: {}",
-                        f.name,
-                        if f.optional { "?" } else { "" },
-                        f.ty
-                    )),
-                    "{}: {}",
-                    e.node_type.as_str(),
-                    f.name
-                );
-            }
-            names.sort_unstable();
-            names.dedup();
-            assert_eq!(
-                names.len(),
-                e.output_fields.len(),
-                "{}",
-                e.node_type.as_str()
-            );
-        }
-    }
-
-    #[test]
-    fn catalog_serializes_to_json() {
-        let json = serde_json::to_value(node_catalog()).unwrap();
-        let arr = json.as_array().unwrap();
-        assert_eq!(arr[0]["type"], "control.branch");
-        assert_eq!(arr[0]["category_label_ja"], "流れの制御");
-    }
-}
+mod tests;

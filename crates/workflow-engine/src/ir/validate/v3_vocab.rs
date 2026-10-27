@@ -7,7 +7,7 @@ use crate::vocab::{EventSource, NodeType, Scope};
 /// llm.invoke のモデル欄の位置（右パネルのモデル欄に写す）。
 const MODEL_PATH: &str = "/params/model";
 /// エラーに添える使えるモデルの件数の上限（メッセージを膨らませない）。
-const MAX_MODEL_CANDIDATES: usize = 10;
+pub(super) const MAX_MODEL_CANDIDATES: usize = 10;
 
 /// 使えるモデルの一覧（上限まで・超えた分は件数だけ）。
 fn model_candidates(models: &[String]) -> String {
@@ -29,6 +29,8 @@ fn model_candidates(models: &[String]) -> String {
 /// - 組織が選択を禁じていれば、既定と違うモデルを拒否する（実行時の解決と同じ規則・D-30）。
 /// - 組織が許可したモデルに無ければ拒否し、使えるモデルを添える（利用者も AI も候補から選び直せる）。
 ///   許可が 0 件の組織では、明示したモデルはすべて拒否する（照合を飛ばさない・BUG-37）。
+/// - 判定用のモデル（[`Catalog::decision_models`]）は文章を生成できないので `ir.model_modality_mismatch`
+///   （判定は ai.decide に書く・FEAT-1）。
 pub(super) fn check_model(
     params: &serde_json::Value,
     catalog: &Catalog,
@@ -52,6 +54,19 @@ pub(super) fn check_model(
     let models = catalog.models.as_ref()?;
     if models.iter().any(|m| m == model) {
         return None;
+    }
+    if catalog
+        .decision_models
+        .as_ref()
+        .is_some_and(|d| d.iter().any(|m| m == model))
+    {
+        return Some(ValidationError::new(
+            "ir.model_modality_mismatch",
+            format!(
+                "{model} は判定用のモデルで、文章を生成できません。判定は「AI で判定」（ai.decide）に書くか、このノードには文章を生成するモデルを選んでください（{}）",
+                model_candidates(models)
+            ),
+        ));
     }
     let candidates = if models.is_empty() {
         "組織で使えるモデルがありません".to_string()

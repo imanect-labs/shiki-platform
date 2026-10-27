@@ -2,7 +2,8 @@
 //!
 //! [`workflow_engine::CapabilityNodeExecutor`] が能力ゲートウェイを通した後に呼ぶポートを、
 //! StorageService / SearchService / LlmGateway / Sandbox / SecretStore / RunLauncher へ結線する。
-//! agent.invoke のループは `agent_port.rs`、その道具の実装は `agent_tools.rs`（BUG-6）。
+//! agent.invoke のループは `agent_port.rs`、その道具の実装は `agent_tools.rs`（BUG-6）。判定（ai.decide）は
+//! `decide_port.rs`（FEAT-1）。
 //! `ExecCtx` から実行主体の `AuthContext`（interactive=user / schedule・event=workflow）を組み、
 //! 各チョークポイント内の OpenFGA 認可を通す（scope ceiling は executor 側＝二重ゲート）。
 
@@ -20,8 +21,8 @@ use super::auth::auth_ctx;
 use storage::StorageService;
 use uuid::Uuid;
 use workflow_engine::{
-    CsvPatchReq, CsvWriteReq, DataWriteReq, ExecCtx, HttpSendReq, HttpSendResp, LlmInvokeReq,
-    NodePorts, PortError, ResolvedSecretView, ResolvedSkillView, StorageWriteReq,
+    CsvPatchReq, CsvWriteReq, DataWriteReq, ExecCtx, HttpSendReq, HttpSendResp, LlmDecideReq,
+    LlmInvokeReq, NodePorts, PortError, ResolvedSecretView, ResolvedSkillView, StorageWriteReq,
     WorkflowRunLauncher,
 };
 
@@ -214,6 +215,10 @@ impl NodePorts for ProdNodePorts {
 
     async fn llm_invoke(&self, ec: &ExecCtx, req: LlmInvokeReq) -> Result<Value, PortError> {
         super::llm_port::invoke(self, ec, req).await
+    }
+
+    async fn llm_decide(&self, ec: &ExecCtx, req: LlmDecideReq) -> Result<Value, PortError> {
+        super::decide_port::decide(self, ec, req).await
     }
 
     async fn agent_invoke(

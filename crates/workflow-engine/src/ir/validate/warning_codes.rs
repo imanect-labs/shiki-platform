@@ -5,9 +5,10 @@
 //! [`super::save_warnings`] が出しうるコードは、すべてこの表に載せる（下のテストが確かめる）。
 
 use super::{
-    APPROVAL_TIMEOUTS_EXCEED_RUN, OUTPUT_SCHEMA_FEW_TOKENS, OVERLAPPING_DATA_TRIGGERS,
-    REPLY_WITHOUT_INTERACTIVE, REQUIRED_TEXT_EMPTY, SEMANTICS_CHANGED, TEMPLATE_ESCAPED_VAR,
-    TEMPLATE_UNCLOSED_BRACE, WAIT_FILTER_ALIAS,
+    APPROVAL_TIMEOUTS_EXCEED_RUN, DECIDE_LOW_CONFIDENCE, DECIDE_MANY_PORTS, DECIDE_UNPINNED_MODEL,
+    OUTPUT_SCHEMA_FEW_TOKENS, OVERLAPPING_DATA_TRIGGERS, REPLY_WITHOUT_INTERACTIVE,
+    REQUIRED_TEXT_EMPTY, SEMANTICS_CHANGED, TEMPLATE_ESCAPED_VAR, TEMPLATE_UNCLOSED_BRACE,
+    WAIT_FILTER_ALIAS,
 };
 
 /// 定数の名前と値の組の表を作る（名前は Rust の定数の名前をそのまま使い、別の綴りを持たない）。
@@ -28,6 +29,9 @@ pub const SAVE_WARNING_CODES: &[(&str, &str)] = named![
     APPROVAL_TIMEOUTS_EXCEED_RUN,
     REPLY_WITHOUT_INTERACTIVE,
     OUTPUT_SCHEMA_FEW_TOKENS,
+    DECIDE_LOW_CONFIDENCE,
+    DECIDE_MANY_PORTS,
+    DECIDE_UNPINNED_MODEL,
 ];
 
 #[cfg(test)]
@@ -68,6 +72,18 @@ mod tests {
             "approve": { "to": "approved" },
             "reject": { "to": "rejected" },
             "timeout_sec": 172_800, "on_timeout": "continue" } })
+    }
+
+    /// 値で振り分ける判定（しきい値・選択肢の数・モデルを変えて警告を起こす）。
+    fn decide(min_confidence: &str, options: usize, model: &str) -> Value {
+        let options: Vec<Value> = (0..options)
+            .map(|i| json!({ "key": format!("o{i}") }))
+            .collect();
+        json!({ "id": "d", "type": "ai.decide", "params": {
+            "model": model, "state": "本文",
+            "questions": [{ "key": "kind", "type": "choice", "instructions": "種類", "options": options }],
+            "route": { "question": "kind",
+                       "min_confidence": min_confidence.parse::<f64>().unwrap() } } })
     }
 
     /// 各警告を 1 つずつ起こす IR。
@@ -142,6 +158,30 @@ mod tests {
                     json!([{ "id": "ai", "type": "llm.invoke", "params": {
                         "prompt": "分類して", "max_tokens": 256,
                         "output_schema": { "type": "object" } } }]),
+                    json!([]),
+                ),
+            ),
+            (
+                DECIDE_LOW_CONFIDENCE,
+                ir(
+                    interactive(),
+                    json!([decide("0.55", 2, "decide-stub")]),
+                    json!([]),
+                ),
+            ),
+            (
+                DECIDE_MANY_PORTS,
+                ir(
+                    interactive(),
+                    json!([decide("0.8", 10, "decide-stub")]),
+                    json!([]),
+                ),
+            ),
+            (
+                DECIDE_UNPINNED_MODEL,
+                ir(
+                    interactive(),
+                    json!([decide("0.8", 2, "decide-latest")]),
                     json!([]),
                 ),
             ),

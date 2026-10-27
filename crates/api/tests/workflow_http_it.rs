@@ -896,3 +896,72 @@ async fn blank_required_text_and_missing_folder_save_but_block_enable_and_run() 
     assert_eq!(st, StatusCode::OK, "{body}");
     assert_eq!(body["blockers"], json!([]), "{body}");
 }
+
+/// 検証 API は各ノードの出口（`node_ports`）を、保存時検証 V2 と同じ関数で返す（エディタは導出を書き写さない・
+/// H15）。期待値は workflow-engine の V2 の試験と同じ fixture（port_cases.json）。保存できない IR でも返し、
+/// 出口を導けないノード（params の誤り）は載せない。値で振り分ける判定から out へ張ったエッジは
+/// ir.unknown_port になる（FEAT-1）。
+#[tokio::test]
+async fn validate_returns_node_ports_from_the_shared_fixture() {
+    let Some(env) = setup().await else { return };
+    let fixture: Value = serde_json::from_str(
+        &std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../workflow-engine/tests/fixtures/port_cases.json"
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    let cases = fixture["cases"].as_array().unwrap();
+    let nodes: Vec<Value> = cases.iter().map(|c| c["node"].clone()).collect();
+    let ir = json!({
+        "ir_version": 1, "name": "http-node-ports", "triggers": [{ "kind": "interactive" }],
+        "nodes": nodes, "edges": [{ "from": "decide_value", "from_port": "out", "to": "read" }]
+    });
+    let (st, body) = req(
+        &env,
+        "POST",
+        "/workflows/validate",
+        Some(json!({ "ir": ir })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let ports = body["node_ports"].as_object().unwrap();
+    for c in cases {
+        let id = c["node"]["id"].as_str().unwrap();
+        let want = &c["ports"];
+        if want.is_null() {
+            assert!(!ports.contains_key(id), "{}: {body}", c["name"]);
+        } else {
+            assert_eq!(&ports[id], want, "{}", c["name"]);
+        }
+    }
+    assert_eq!(
+        ports.len(),
+        cases.iter().filter(|c| !c["ports"].is_null()).count()
+    );
+    // 保存できない IR（承認のテーブルが無い・段階で振り分ける判定・発火しない出口）でも出口は返る。
+    let errors = body["errors"].as_array().unwrap();
+    assert!(
+        errors.iter().any(|e| e["code"] == "ir.unknown_port"
+            && e["node_id"] == "decide_value"
+            && e["path"] == "/edges/0/from_port"),
+        "{body}"
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|e| e["node_id"] == "decide_bad" && e["path"] == "/params/route/question"),
+        "{body}"
+    );
+    // 読めない IR では空。
+    let (st, body) = req(
+        &env,
+        "POST",
+        "/workflows/validate",
+        Some(json!({ "ir": { "nodes": "x" } })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(body["node_ports"], json!({}));
+}

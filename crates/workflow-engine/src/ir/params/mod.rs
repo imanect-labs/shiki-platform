@@ -16,6 +16,7 @@
 mod ai;
 mod control;
 mod data;
+mod decide;
 mod external;
 mod human;
 mod reply;
@@ -31,6 +32,13 @@ pub use control::{
 pub use data::{
     DataBulkUpsertParams, DataQueryParams, DataRecordCreateParams, DataRecordDeleteParams,
     DataRecordUpdateParams, DataTransitionParams, MAX_WORKFLOW_BULK_ROWS,
+};
+pub use decide::{
+    AiDecideParams, DecideOption, DecideQuestion, DecideQuestionType, DecideRoute, DecideRouteBy,
+    RoutedValue, MAX_DECIDE_CONFIDENCE, MAX_DECIDE_DESCRIPTION_CHARS,
+    MAX_DECIDE_INSTRUCTIONS_CHARS, MAX_DECIDE_KEY_CHARS, MAX_DECIDE_LEVELS, MAX_DECIDE_LEVEL_CHARS,
+    MAX_DECIDE_OPTIONS, MAX_DECIDE_QUESTIONS, MAX_DECIDE_STATE_BYTES, MIN_DECIDE_CONFIDENCE,
+    MIN_DECIDE_LEVELS, MIN_DECIDE_OPTIONS, RESERVED_DECIDE_KEYS, UNCERTAIN_PORT,
 };
 pub use external::{
     HttpMethod, HttpRequestParams, HttpSecretRef, RedirectPolicy, ScriptRunParams,
@@ -172,6 +180,14 @@ pub fn check_params(nt: NodeType, raw: &Value) -> Result<(), ParamsIssue> {
             parsed.check_cross_fields()
         }
         NodeType::AgentInvoke => check_as::<AgentInvokeParams>(raw),
+        NodeType::AiDecide => {
+            check_as::<AiDecideParams>(raw)?;
+            let parsed: AiDecideParams = parse(raw).map_err(|message| ParamsIssue {
+                path: "/params".to_string(),
+                message,
+            })?;
+            parsed.check_cross_fields()
+        }
         NodeType::HttpRequest => {
             check_as::<HttpRequestParams>(raw)?;
             let parsed: HttpRequestParams = parse(raw).map_err(|message| ParamsIssue {
@@ -299,6 +315,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)] // ノード種ごとの例の表。
     fn roundtrip_all_stage_a_examples() {
         // 全 Stage A ノード種の代表 params が typed 契約を通る（serialize→deserialize 同値）。
         let cases: Vec<(NodeType, serde_json::Value)> = vec![
@@ -361,6 +378,13 @@ mod tests {
                 NodeType::AgentInvoke,
                 json!({ "instruction": { "$from": "input" },
                         "egress_allowlist": ["api.example.com"], "max_duration_sec": 300 }),
+            ),
+            (
+                NodeType::AiDecide,
+                json!({ "model": "decide-haiku", "state": { "$from": "nodes.create.output", "path": "/data" },
+                        "questions": [ { "key": "category", "type": "choice", "instructions": "種類はどれか",
+                                         "options": [ { "key": "billing", "description": "請求" }, { "key": "bug" } ] } ],
+                        "route": { "question": "category", "by": "confidence", "min_confidence": 0.8 } }),
             ),
             (
                 NodeType::HttpRequest,

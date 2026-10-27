@@ -118,7 +118,8 @@ async fn setup() -> Option<Harness> {
                     session_header: None,
                     ..Default::default()
                 },
-                // stub-smart は組織の既定の切り替え（BUG-12）を見るための 2 つ目のモデル。
+                // stub-smart は組織の既定の切り替え（BUG-12）を見るための 2 つ目のモデル。判定用のモデルは
+                // stub の決定器（decide-stub）と、stub-smart を元に LLM に判定させる decide-via（FEAT-1）。
                 catalog: llm_gateway::ModelCatalog {
                     default_model: "stub".into(),
                     models: ["stub", "stub-smart"]
@@ -127,6 +128,19 @@ async fn setup() -> Option<Harness> {
                             id: id.into(),
                             ..Default::default()
                         })
+                        .chain([
+                            llm_gateway::ModelEntry {
+                                id: "decide-stub".into(),
+                                modality: llm_gateway::Modality::Decision,
+                                ..Default::default()
+                            },
+                            llm_gateway::ModelEntry {
+                                id: "decide-via".into(),
+                                modality: llm_gateway::Modality::Decision,
+                                decision_via: Some("stub-smart".into()),
+                                ..Default::default()
+                            },
+                        ])
                         .collect(),
                 },
                 langfuse: None,
@@ -1378,5 +1392,187 @@ async fn llm_failure_then_success_on_the_same_step_keeps_both_usage_rows() {
     assert_eq!(keys.len(), 2, "{keys:?}");
     assert!(keys[0].starts_with(&format!("{key}#f")), "{keys:?}");
     assert_eq!(keys[1], key);
+    h.cleanup_runs().await;
+}
+
+// ------- Test 12: ai.decide（FEAT-1）-------------------------------------------
+
+/// 問い合わせの種類で振り分ける判定（値で・しきい値 0.8）と、出口ごとの合流ノード。
+fn decide_ir(name: &str, model: &str) -> Value {
+    json!({
+        "ir_version": 1, "name": name, "declared_scopes": [],
+        "nodes": [
+            { "id": "ai", "type": "ai.decide", "params": {
+                "model": model,
+                "state": { "$from": "input", "path": "/body" },
+                "questions": [
+                    { "key": "category", "type": "choice", "instructions": "問い合わせの種類はどれか",
+                      "options": [ { "key": "billing", "description": "請求・返金" },
+                                   { "key": "bug", "description": "不具合" } ] },
+                    { "key": "angry", "type": "boolean", "instructions": "強い不満を示しているか" } ],
+                "route": { "question": "category", "min_confidence": 0.8 } } },
+            { "id": "on_billing", "type": "control.join", "params": {} },
+            { "id": "on_bug", "type": "control.join", "params": {} },
+            { "id": "on_uncertain", "type": "control.join", "params": {} }
+        ],
+        "edges": [
+            { "from": "ai", "from_port": "billing", "to": "on_billing" },
+            { "from": "ai", "from_port": "bug", "to": "on_bug" },
+            { "from": "ai", "from_port": "uncertain", "to": "on_uncertain" }
+        ]
+    })
+}
+
+/// 本番のポートと stub の決定器で、答えの出口へ進み、ほかの出口の先は skip される。会計はチョークポイントが
+/// step のキーで 1 行だけ記録する（使えなかった判定は #f）。
+#[tokio::test]
+async fn decide_routes_through_the_production_port() {
+    let Some(h) = setup().await else { return };
+    let executor = h.executor(None, vec![], None);
+    let step_key = |run_id: Uuid| format!("wf:{}:{run_id}:ai", h.tenant);
+    let wf_id = h.save(&decide_ir("decide-route", "decide-stub")).await;
+
+    // 材料に選択肢のキーがある → stub は確からしさ 0.9 で選ぶ → billing の出口。
+    let (run_id, status) = h
+        .run(
+            wf_id,
+            &json!({ "body": "billing の件で連絡しました" }),
+            Arc::clone(&executor),
+        )
+        .await;
+    assert_eq!(status, RunStatus::Succeeded);
+    let steps = h.step_map(run_id).await;
+    assert_eq!(steps["on_billing"], StepStatus::Succeeded, "{steps:?}");
+    assert_eq!(steps["on_bug"], StepStatus::Skipped);
+    assert_eq!(steps["on_uncertain"], StepStatus::Skipped);
+    let (output, _) = h.step_output(run_id).await;
+    assert_eq!(
+        output["answers"]["category"]["value"], "billing",
+        "{output}"
+    );
+    assert_eq!(output["answers"]["category"]["label"], "請求・返金");
+    assert_eq!(output["answers"]["category"]["confidence"], 0.9);
+    assert_eq!(output["answers"]["angry"]["type"], "boolean");
+    assert_eq!(
+        output["routed"],
+        json!({ "question": "category", "port": "billing" })
+    );
+    assert_eq!(output["model"], "decide-stub");
+    assert_eq!(output["calibrated"], false);
+    assert!(output["resolved_model"]
+        .as_str()
+        .is_some_and(|m| !m.is_empty()));
+    assert_eq!(h.usage_keys().await, [step_key(run_id)]);
+    assert_eq!(h.workflow_usage_models().await, ["decide-stub"]);
+    h.clear_usage().await;
+
+    // 手がかりが無い → 先頭を 0.4 で選ぶ → しきい値に届かず uncertain。
+    let (run_id, status) = h
+        .run(
+            wf_id,
+            &json!({ "body": "よく分からない" }),
+            Arc::clone(&executor),
+        )
+        .await;
+    assert_eq!(status, RunStatus::Succeeded);
+    let steps = h.step_map(run_id).await;
+    assert_eq!(steps["on_uncertain"], StepStatus::Succeeded, "{steps:?}");
+    assert_eq!(steps["on_billing"], StepStatus::Skipped);
+    assert_eq!(h.step_output(run_id).await.0["routed"]["port"], "uncertain");
+    h.clear_usage().await;
+
+    // 決定器の失敗（到達障害・再試行の分類）→ step は失敗し、使った分は #f で別に残る。
+    let (run_id, status) = h
+        .run(
+            wf_id,
+            &json!({ "body": "stub:fail" }),
+            Arc::clone(&executor),
+        )
+        .await;
+    assert_eq!(status, RunStatus::Failed);
+    let (_, err) = h.step_output(run_id).await;
+    assert_eq!(err["code"], "unavailable", "{err}");
+    assert_eq!(err["retryable"], true, "{err}");
+    assert!(!err["message"].as_str().unwrap().contains("stub"), "{err}");
+    let keys = h.usage_keys().await;
+    assert_eq!(keys.len(), 1, "{keys:?}");
+    assert!(
+        keys[0].starts_with(&format!("{}#f", step_key(run_id))),
+        "{keys:?}"
+    );
+    h.cleanup_runs().await;
+}
+
+/// 管理者が判定用のモデル（または元にする chat モデル）を止めると、実行時にも非再試行で失敗し、判定も会計も
+/// 起きない（保存時の照合の後に変わっても fail-closed）。元に戻すと LLM に判定させるモデルも動く。
+#[tokio::test]
+async fn decide_fails_closed_once_the_model_or_its_base_is_disabled() {
+    let Some(h) = setup().await else { return };
+    let executor = h.executor(None, vec![], None);
+    let input = json!({ "body": "billing の件" });
+
+    let wf_stub = h.save(&decide_ir("decide-off", "decide-stub")).await;
+    h.set_llm_settings(llm_gateway::SettingsPatch {
+        models: vec![("decide-stub".into(), false)],
+        ..Default::default()
+    })
+    .await;
+    let (run_id, status) = h.run(wf_stub, &input, Arc::clone(&executor)).await;
+    assert_eq!(status, RunStatus::Failed);
+    let (_, err) = h.step_output(run_id).await;
+    assert_eq!(err["code"], "model_unavailable", "{err}");
+    assert_eq!(err["retryable"], false);
+    assert!(
+        err["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("判定用のモデル「decide-stub」はこの組織では使えません"),
+        "{err}"
+    );
+
+    // 元にする chat モデル（stub-smart）を止めると、判定用のモデル（decide-via）は許可のままでも使えない。
+    let wf_via = h.save(&decide_ir("decide-via-off", "decide-via")).await;
+    h.set_llm_settings(llm_gateway::SettingsPatch {
+        models: vec![("stub-smart".into(), false)],
+        ..Default::default()
+    })
+    .await;
+    let (run_id, status) = h.run(wf_via, &input, Arc::clone(&executor)).await;
+    assert_eq!(status, RunStatus::Failed);
+    let (_, err) = h.step_output(run_id).await;
+    assert_eq!(err["code"], "model_unavailable", "{err}");
+    assert!(
+        err["message"]
+            .as_str()
+            .unwrap()
+            .contains("元になる AI モデル「stub-smart」"),
+        "{err}"
+    );
+    assert!(h.usage_keys().await.is_empty(), "判定も会計も起きない");
+
+    // 戻すと、stub-smart に判定させる決定器（llm_decider）で動き、会計は元のモデルの名前で付く。
+    h.set_llm_settings(llm_gateway::SettingsPatch {
+        models: vec![("stub-smart".into(), true)],
+        ..Default::default()
+    })
+    .await;
+    let (run_id, status) = h.run(wf_via, &input, Arc::clone(&executor)).await;
+    assert_eq!(
+        status,
+        RunStatus::Succeeded,
+        "{:?}",
+        h.step_output(run_id).await
+    );
+    let (output, _) = h.step_output(run_id).await;
+    assert_eq!(output["model"], "decide-via");
+    assert_eq!(output["method"], "verbalized", "{output}");
+    assert!(
+        output["resolved_model"]
+            .as_str()
+            .unwrap()
+            .contains("+llm_decider/"),
+        "{output}"
+    );
+    assert_eq!(h.workflow_usage_models().await, ["stub-smart"]);
     h.cleanup_runs().await;
 }

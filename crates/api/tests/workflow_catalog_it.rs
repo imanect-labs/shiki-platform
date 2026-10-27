@@ -14,7 +14,7 @@
 use api::workflow_catalog::{build_catalog_from, WorkflowModels};
 use authz::{AuthContext, Principal, PrincipalKind};
 use llm_gateway::{
-    ChatGptAccount, ChatGptSettings, GatewayConfig, LlmGateway, ModelCatalog, ModelEntry,
+    ChatGptAccount, ChatGptSettings, GatewayConfig, LlmGateway, Modality, ModelCatalog, ModelEntry,
     ProviderConfig, ProviderKind, SettingsPatch, CHATGPT_PROVIDER_ID,
 };
 use serde_json::json;
@@ -98,7 +98,10 @@ async fn models_follow_the_organization_allow_list() {
     let Some(pool) = pool().await else { return };
     let gw = gateway(pool);
     let ctx = user();
-    let models = WorkflowModels::new(Some(gw.clone()), vec!["from-config".into()]);
+    let models = WorkflowModels::new(
+        Some(gw.clone()),
+        vec![("from-config".into(), llm_gateway::Modality::Chat)],
+    );
 
     // 未保存: opt-in のモデルは使えない。デプロイ設定の id（from-config）は照合先にならない。
     assert_eq!(models.ids(&ctx).await.unwrap(), ["fast", "local"]);
@@ -146,15 +149,35 @@ async fn models_follow_the_organization_allow_list() {
 async fn without_a_gateway_the_configured_models_are_used() {
     let Some(_pool) = pool().await else { return };
     let ctx = user();
-    let models = WorkflowModels::new(None, vec!["m1".into(), "m2".into()]);
+    let models = WorkflowModels::new(
+        None,
+        vec![
+            ("m1".into(), Modality::Chat),
+            ("judge".into(), Modality::Decision),
+            ("m2".into(), Modality::Chat),
+        ],
+    );
     let catalog = build_catalog_from(None, None, &models, &ctx).await.unwrap();
+    // 種類で振り分ける（llm.invoke は chat だけ・ai.decide は判定用だけ・FEAT-1）。
     assert_eq!(
         catalog.models.as_deref(),
         Some(&["m1", "m2"].map(String::from)[..])
     );
+    assert_eq!(
+        catalog.decision_models.as_deref(),
+        Some(&["judge".to_string()][..])
+    );
+    workflow_engine::validate(&decide_ir("judge"), &catalog).unwrap();
+    let errs = workflow_engine::validate(&llm_ir("judge"), &catalog).unwrap_err();
+    assert!(
+        errs.iter().any(|e| e.code == "ir.model_modality_mismatch"),
+        "{errs:?}"
+    );
     let none = WorkflowModels::new(None, Vec::new());
     let catalog = build_catalog_from(None, None, &none, &ctx).await.unwrap();
     assert_eq!(catalog.models, None, "空なら照合しない（従来どおり）");
+    assert_eq!(catalog.decision_models, None);
+    workflow_engine::validate(&decide_ir("anything"), &catalog).unwrap();
     workflow_engine::validate(&llm_ir("anything"), &catalog).unwrap();
 }
 
@@ -283,4 +306,153 @@ fn gateway_with_plan(pool: PgPool, ctx: &AuthContext, dir: &std::path::Path) -> 
         },
     )
     .expect("gateway")
+}
+
+/// 判定のノード 1 つの IR（ai.decide の model の照合・FEAT-1）。
+fn decide_ir(model: &str) -> serde_json::Value {
+    json!({
+        "ir_version": 1, "name": "wf", "triggers": [{ "kind": "interactive" }],
+        "nodes": [{ "id": "judge", "type": "ai.decide", "params": {
+            "model": model, "state": { "$from": "input" },
+            "questions": [{ "key": "angry", "type": "boolean", "instructions": "強い不満があるか" }] } }],
+        "edges": []
+    })
+}
+
+/// stub の chat モデル fast・local と、local を元にする判定用のモデル judge（provider は local と同じ既定）。
+fn gateway_with_decision(pool: PgPool) -> LlmGateway {
+    let chat = |id: &str| ModelEntry {
+        id: id.into(),
+        ..Default::default()
+    };
+    LlmGateway::build(
+        pool,
+        reqwest::Client::new(),
+        GatewayConfig {
+            provider: ProviderConfig {
+                kind: ProviderKind::Stub,
+                ..Default::default()
+            },
+            catalog: ModelCatalog {
+                default_model: "fast".into(),
+                models: vec![
+                    chat("fast"),
+                    chat("local"),
+                    ModelEntry {
+                        id: "judge".into(),
+                        modality: Modality::Decision,
+                        decision_via: Some("local".into()),
+                        ..Default::default()
+                    },
+                ],
+            },
+            ..Default::default()
+        },
+    )
+    .expect("gateway")
+}
+
+/// 判定用のモデルは組織の設定で照合する。元にする chat モデルを止めると、判定用のモデルも書けなくなる
+/// （判定のチョークポイントは両方の許可を求めるので、保存でも同じ集合で弾く・fail-closed）。
+#[tokio::test]
+async fn decision_models_follow_the_organization_settings() {
+    let Some(pool) = pool().await else { return };
+    let gw = gateway_with_decision(pool);
+    let ctx = user();
+    let models = WorkflowModels::new(Some(gw.clone()), Vec::new());
+    let catalog = build_catalog_from(None, None, &models, &ctx).await.unwrap();
+    assert_eq!(
+        catalog.models.as_deref(),
+        Some(&["fast", "local"].map(String::from)[..])
+    );
+    assert_eq!(
+        catalog.decision_models.as_deref(),
+        Some(&["judge".to_string()][..])
+    );
+    workflow_engine::validate(&decide_ir("judge"), &catalog).unwrap();
+    // 文章を生成するモデルを判定に書くと種類の違い、判定用のモデルを llm.invoke に書いても種類の違い。
+    let errs = workflow_engine::validate(&decide_ir("fast"), &catalog).unwrap_err();
+    assert_eq!(errs[0].code, "ir.model_modality_mismatch", "{errs:?}");
+    assert_eq!(errs[0].path.as_deref(), Some("/params/model"));
+    let errs = workflow_engine::validate(&llm_ir("judge"), &catalog).unwrap_err();
+    assert_eq!(errs[0].code, "ir.model_modality_mismatch", "{errs:?}");
+
+    // 管理者が元の chat モデル local を止める（判定用のモデル judge 自体は許可のまま）。
+    let patch = SettingsPatch {
+        models: vec![("local".into(), false)],
+        ..Default::default()
+    };
+    gw.update_tenant_settings(&ctx, &patch)
+        .await
+        .unwrap()
+        .unwrap();
+    let catalog = build_catalog_from(None, None, &models, &ctx).await.unwrap();
+    assert_eq!(catalog.decision_models, Some(Vec::new()));
+    let errs = workflow_engine::validate(&decide_ir("judge"), &catalog).unwrap_err();
+    assert_eq!(errs[0].code, "ir.unknown_model", "{errs:?}");
+    assert!(
+        errs[0]
+            .message
+            .contains("組織で使える判定用のモデルがありません"),
+        "{}",
+        errs[0].message
+    );
+}
+
+/// 保存 API（`build_catalog_from`）と AI 編集（emit_workflow のカタログ源）は、判定用のモデルを同じ集合で
+/// 照合し、同じ IR に同じ結果を返す（「エディタでは通るが AI 経由では落ちる」を作らない・R6）。
+#[tokio::test]
+async fn the_save_api_and_emit_workflow_agree_on_decision_models() {
+    let Some(pool) = pool().await else { return };
+    let gw = gateway_with_decision(pool);
+    let ctx = user();
+    let source = api::workflow_catalog::ApiWorkflowCatalogSource::new(
+        None,
+        None,
+        WorkflowModels::new(Some(gw.clone()), Vec::new()),
+    );
+    for step in 0..2 {
+        if step == 1 {
+            // 判定用のモデルを止めた後でも、両者は同じ結果になる。
+            let patch = SettingsPatch {
+                models: vec![("judge".into(), false)],
+                ..Default::default()
+            };
+            gw.update_tenant_settings(&ctx, &patch)
+                .await
+                .unwrap()
+                .unwrap();
+        }
+        let saved = build_catalog_from(
+            None,
+            None,
+            &WorkflowModels::new(Some(gw.clone()), Vec::new()),
+            &ctx,
+        )
+        .await
+        .unwrap();
+        let emitted = chat::WorkflowCatalogSource::catalog_for(&source, &ctx, &decide_ir("judge"))
+            .await
+            .unwrap();
+        assert_eq!(saved.models, emitted.models, "step {step}");
+        assert_eq!(
+            saved.decision_models, emitted.decision_models,
+            "step {step}"
+        );
+        for ir in [decide_ir("judge"), decide_ir("fast"), llm_ir("judge")] {
+            let codes = |c: &workflow_engine::Catalog| -> Vec<String> {
+                workflow_engine::validate(&ir, c)
+                    .err()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|e| e.code)
+                    .collect()
+            };
+            assert_eq!(codes(&saved), codes(&emitted), "step {step}: {ir}");
+        }
+    }
+    let after = build_catalog_from(None, None, &WorkflowModels::new(Some(gw), Vec::new()), &ctx)
+        .await
+        .unwrap();
+    assert_eq!(after.decision_models, Some(Vec::new()));
 }

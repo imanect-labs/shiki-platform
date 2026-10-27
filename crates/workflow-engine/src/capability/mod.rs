@@ -71,6 +71,10 @@ const SCOPE_FREE_APIS: &[&str] = &[
     "control.wait",
     "llm.invoke",
     "agent.invoke",
+    // 判定（FEAT-1・H14）も llm.invoke と同じ内部推論。判定の材料は前のノードが読んだもので、データへの到達は
+    // その data / storage のスコープで縛られる。判定のチョークポイント（LlmGateway::decide）が組織の許可・
+    // 利用上限・会計を持つ。
+    "ai.decide",
     "script.run",
     // skill.invoke 自体は専用スコープを持たない（内部推論・vocab/scope.rs:41）。skill が
     // `.shiki` script で行う能力呼び出しは、その API のスコープが個別に効く
@@ -131,6 +135,26 @@ mod tests {
             ScopeCeiling::Allowed
         );
         assert_eq!(Scope::for_api("workflow.reply"), None);
+    }
+
+    /// 判定はスコープを要さない（llm.invoke と同じ内部推論・宣言が空の IR でも実行できる・H14）。
+    /// 外すと未マップの API として常に拒否される（fail-closed）。
+    #[test]
+    fn ai_decide_is_scope_free() {
+        assert_eq!(Scope::for_api("ai.decide"), None);
+        assert_eq!(
+            check_scope_ceiling("ai.decide", &BTreeSet::new()),
+            ScopeCeiling::Allowed
+        );
+        assert_eq!(
+            crate::vocab::required_scope(crate::vocab::NodeType::AiDecide),
+            None
+        );
+        // 似た名前の未知の API はすり抜けない。
+        assert_eq!(
+            check_scope_ceiling("ai.decide2", &BTreeSet::new()),
+            ScopeCeiling::Denied(DenyReason::OutOfScope)
+        );
     }
 
     #[test]

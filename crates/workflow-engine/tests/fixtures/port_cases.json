@@ -1,0 +1,60 @@
+{
+  "description": "ノードの出口（ir.md §5.2）の期待値。workflow-engine の V2（ir::validate::node_ports）と、api の検証 API の node_ports の試験が同じデータを読む。ports が null のノードは出口を導けない（params が契約に合わない・V1 が報告する）ので node_ports に載らない。id は 1 つの IR にまとめて検証 API に送れるよう重ねない。",
+  "cases": [
+    {
+      "name": "通常のノードは out だけ",
+      "node": { "id": "read", "type": "storage.read", "params": {} },
+      "ports": ["out"]
+    },
+    {
+      "name": "on_error: continue なら error が加わる",
+      "node": { "id": "read_cont", "type": "storage.read", "on_error": "continue", "params": {} },
+      "ports": ["out", "error"]
+    },
+    {
+      "name": "条件分岐は true / false",
+      "node": { "id": "branch", "type": "control.branch", "params": { "condition": { "cmp": { "left": 1, "op": "eq", "right": 1 } } } },
+      "ports": ["true", "false"]
+    },
+    {
+      "name": "振り分けは cases の port と default（out は出さない）",
+      "node": { "id": "switch", "type": "control.switch", "params": { "value": { "$from": "input", "path": "/kind" }, "cases": [ { "port": "pdf", "equals": "pdf" }, { "port": "img", "equals": "png" } ] } },
+      "ports": ["pdf", "img", "default"]
+    },
+    {
+      "name": "できごとを待って on_timeout: continue なら timeout が加わる",
+      "node": { "id": "wait", "type": "control.wait", "params": { "kind": "event", "source": "storage.write", "timeout_sec": 60, "on_timeout": "continue" } },
+      "ports": ["out", "timeout"]
+    },
+    {
+      "name": "承認は指定した判断と時間切れの出口を持つ",
+      "node": { "id": "approval", "type": "human.approval", "params": { "title": "承認", "record": { "table": "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1", "id": { "$from": "input", "path": "/id" } }, "assignees": [ { "field": "approver" } ], "approve": { "to": "approved" }, "reject": { "to": "rejected" }, "timeout_sec": 3600, "on_timeout": "continue" } },
+      "ports": ["approved", "rejected", "withdrawn", "timeout"]
+    },
+    {
+      "name": "判定に振り分けが無ければ out だけ",
+      "node": { "id": "decide_plain", "type": "ai.decide", "params": { "model": "decide-stub", "state": { "$from": "input" }, "questions": [ { "key": "angry", "type": "boolean", "instructions": "強い不満があるか" } ] } },
+      "ports": ["out"]
+    },
+    {
+      "name": "確からしさで振り分ける判定は out / uncertain",
+      "node": { "id": "decide_conf", "type": "ai.decide", "params": { "model": "decide-stub", "state": { "$from": "input" }, "questions": [ { "key": "category", "type": "choice", "instructions": "種類はどれか", "options": [ { "key": "billing" }, { "key": "bug" } ] } ], "route": { "question": "category", "by": "confidence", "min_confidence": 0.8 } } },
+      "ports": ["out", "uncertain"]
+    },
+    {
+      "name": "値で振り分ける判定は選択肢のキーと uncertain（out は出さない）",
+      "node": { "id": "decide_value", "type": "ai.decide", "params": { "model": "decide-stub", "state": { "$from": "input" }, "questions": [ { "key": "category", "type": "choice", "instructions": "種類はどれか", "options": [ { "key": "billing" }, { "key": "bug" }, { "key": "other" } ] } ], "route": { "question": "category", "min_confidence": 0.8 } } },
+      "ports": ["billing", "bug", "other", "uncertain"]
+    },
+    {
+      "name": "はい/いいえで振り分ける判定は true / false / uncertain（on_error: continue なら error）",
+      "node": { "id": "decide_bool", "type": "ai.decide", "on_error": "continue", "params": { "model": "decide-stub", "state": "本文", "questions": [ { "key": "angry", "type": "boolean", "instructions": "強い不満があるか" } ], "route": { "question": "angry", "by": "value", "min_confidence": 0.7 } } },
+      "ports": ["true", "false", "uncertain", "error"]
+    },
+    {
+      "name": "段階の質問では振り分けられない（params の誤り）ので導けない",
+      "node": { "id": "decide_bad", "type": "ai.decide", "params": { "model": "decide-stub", "state": { "$from": "input" }, "questions": [ { "key": "priority", "type": "score", "instructions": "緊急度", "levels": ["低", "高"] } ], "route": { "question": "priority", "min_confidence": 0.8 } } },
+      "ports": null
+    }
+  ]
+}

@@ -75,6 +75,11 @@ pub const KNOWN_CODES: &[(&str, FailureCategory)] = {
             Configuration,
         ),
         (crate::nodes::llm_structured::LLM_REFUSED, Configuration),
+        // 判定（ai.decide・FEAT-1）の材料が大きすぎる（作成者が渡す項目を絞る）。
+        (
+            crate::nodes::decide::DECISION_STATE_TOO_LARGE,
+            Configuration,
+        ),
         ("approval_not_decidable", Configuration),
         ("approval_no_assignee", Configuration),
         ("approval_assignee_unreadable", Configuration),
@@ -89,6 +94,8 @@ pub const KNOWN_CODES: &[(&str, FailureCategory)] = {
         ("item_skipped", Unknown),
         ("cancelled", Unknown),
         ("internal", Unknown),
+        // 判定の応答が質問と合わない（ポートの実装の誤り・FEAT-1）。
+        (crate::nodes::decide::DECISION_INVALID_RESPONSE, Unknown),
     ]
 };
 

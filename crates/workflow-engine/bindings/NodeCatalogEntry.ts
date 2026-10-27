@@ -2,6 +2,7 @@
 import type { IdempotencyClass } from "./IdempotencyClass";
 import type { NodeCategory } from "./NodeCategory";
 import type { OutputField } from "./OutputField";
+import type { PortRule } from "./PortRule";
 
 /**
  * カタログの 1 エントリ（1 ノード種）。
@@ -28,15 +29,20 @@ label_ja: string,
  */
 description_ja: string, 
 /**
- * 静的な出力ポート（switch は cases から動的導出のため空＋`dynamic_ports`）。
+ * 静的な出力ポート（switch・ai.decide は params から導出するため空＋`dynamic_ports`）。
  * `on_error=continue` の `error`・wait(event, on_timeout=continue) の `timeout` は
  * 設定から導出する構造ポート（ir.md §5.2）でありここに含まない。
  */
 output_ports: Array<string>, 
 /**
- * 出力ポートが params から動的に決まるか（control.switch のみ）。
+ * 出力ポートが params から動的に決まるか（control.switch・ai.decide。互換のため残す。どう決まるかは
+ * [`Self::port_rule`]）。
  */
 dynamic_ports: boolean, 
+/**
+ * 出力ポートの決まり方（[`PortRule`]・保存時検証 V2 と検証 API の `node_ports` が同じ規則で導く）。
+ */
+port_rule: PortRule, 
 /**
  * 入エッジを複数受けられるか（control.join のみ・V2 の入エッジ 1 本制約の例外）。
  */

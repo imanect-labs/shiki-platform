@@ -44,6 +44,11 @@ pub(super) fn llm_port_error(ec: &ExecCtx, e: &LlmError) -> PortError {
         error = %e,
         "llm.invoke の呼び出しに失敗"
     );
+    map_llm_error(e)
+}
+
+/// gateway の失敗を step の誤りへ写す（ログは呼び出し側が残す・判定のポートと共用）。
+pub(super) fn map_llm_error(e: &LlmError) -> PortError {
     match e {
         LlmError::Config(detail) => config_error(detail),
         LlmError::BadRequest(_) => PortError::invalid(message::REJECTED),

@@ -7,8 +7,12 @@ mod agent;
 pub use agent::{pattern_within, valid_host_pattern};
 mod approval;
 pub use approval::{CatalogTable, APPROVAL_STATUS_FIELD_SHOWN, APPROVAL_TIMEOUTS_EXCEED_RUN};
+mod decide;
+pub use decide::{DECIDE_LOW_CONFIDENCE, DECIDE_MANY_PORTS, DECIDE_UNPINNED_MODEL};
 mod llm;
 pub use llm::{MIN_STRUCTURED_MAX_TOKENS, OUTPUT_SCHEMA_FEW_TOKENS};
+mod ports;
+pub use ports::{node_ports, output_ports};
 mod readiness;
 pub use readiness::{
     enable_blockers, required_text_empty, run_blockers, REQUIRED_TEXT_EMPTY, WRITE_FOLDER_REQUIRED,
@@ -94,8 +98,15 @@ pub struct Catalog {
     /// 明示したモデルはすべて拒否する・BUG-37）。model の省略はどちらでも通る（組織の既定・BUG-12）。
     pub models: Option<Vec<String>>,
     /// 組織がモデルの選択を禁じているときの既定（`auto` かモデル ID）。`Some` なら、これと違う
-    /// model を拒否する（ワークフローでもモデルを選ばせない・D-30）。
+    /// model を拒否する（ワークフローでもモデルを選ばせない・D-30）。判定のモデルには掛けない（判定には
+    /// 組織の既定が無く、実行時の判定のチョークポイントも選択の禁止を見ない）。
     pub model_lock: Option<String>,
+    /// ai.decide に書ける判定用のモデル（組織が許可し、元にする chat モデルも許可されているもの・FEAT-1）。
+    ///
+    /// [`Self::models`] と同じく、`None` は照合しない（LLM が未構成）。`Some` は空でも照合する（判定用の
+    /// モデルが 0 件なら ai.decide はすべて拒否する）。llm.invoke・agent.invoke にここのモデルを書くと
+    /// `ir.model_modality_mismatch`。
+    pub decision_models: Option<Vec<String>>,
     /// 保存ユーザーのインストール済み skill（name → レジストリ version 集合・V4 skill 照合・
     /// #344 Task 10.1b）。インストールはユーザー単位のため保存者基準で照合し、実行時は
     /// 実行主体の ReBAC で再検証する（fail-closed が最終防衛線・ir.md §8）。
@@ -118,7 +129,9 @@ pub struct Catalog {
 /// データ変更トリガ（[`OVERLAPPING_DATA_TRIGGERS`]）と、wait(event) の filter の別名（[`WAIT_FILTER_ALIAS`]）と、
 /// 続けて待つ承認の期限の合計が実行の期限以上のもの（[`APPROVAL_TIMEOUTS_EXCEED_RUN`]）と、手動で動かす
 /// きっかけの無い IR の画面に返す結果（[`REPLY_WITHOUT_INTERACTIVE`]）と、出力の形を書いた llm.invoke の
-/// 小さすぎる上限トークン（[`OUTPUT_SCHEMA_FEW_TOKENS`]・GAP-13）と、必須の文字の欄が空のもの
+/// 小さすぎる上限トークン（[`OUTPUT_SCHEMA_FEW_TOKENS`]・GAP-13）と、判定のしきい値が低い・出口が多い・
+/// 版が固定されていないもの（[`DECIDE_LOW_CONFIDENCE`]・[`DECIDE_MANY_PORTS`]・[`DECIDE_UNPINNED_MODEL`]・
+/// FEAT-1）と、必須の文字の欄が空のもの
 /// （[`REQUIRED_TEXT_EMPTY`]・有効化と実行の前には止める・D-43）。出しうるコードは [`SAVE_WARNING_CODES`] に
 /// 載せる（web はその表から生成した定数で受ける・BUG-48）。
 #[must_use]
@@ -130,6 +143,7 @@ pub fn save_warnings(ir: &WorkflowIr) -> Vec<ValidationError> {
     out.extend(approval::warnings(ir));
     out.extend(reply::warnings(ir));
     out.extend(llm::warnings(ir));
+    out.extend(decide::warnings(ir));
     // 表に無い警告は web の定数に出ない（警告を足したら表にも足す・テストのどの経路で起きても止める）。
     debug_assert!(
         out.iter()
@@ -205,6 +219,7 @@ pub fn validate(
     reply::v2(&ir, &mut errors);
     // V3: 語彙照合（node type・scope・event source・model）。
     v3_vocab::v3_vocab(&ir, catalog, &mut errors);
+    decide::v3(&ir, catalog, &mut errors);
     agent::v3(
         &ir,
         catalog,

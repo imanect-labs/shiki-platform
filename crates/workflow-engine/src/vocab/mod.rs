@@ -22,9 +22,10 @@ pub use agent_tool::{
     MAX_INSTRUCTION_BYTES, MAX_QUERY_CHARS, MAX_READ_WINDOW_CHARS, MAX_SEARCH_SNIPPET_CHARS,
     MAX_SEARCH_TOP_K, MAX_TOOL_RESULT_CHARS, MAX_URL_CHARS, MAX_WEB_RESULTS,
 };
-pub(crate) use catalog::static_output_ports;
+pub(crate) use catalog::output_port_rule;
 pub use catalog::{
     approval_ports, node_catalog, IdempotencyClass, NodeCatalogEntry, NodeCategory, OutputField,
+    PortRule,
 };
 pub use event_catalog::{
     event_catalog, payload_fields, DataChangePayload, EventCatalogEntry, EventPayloadField,

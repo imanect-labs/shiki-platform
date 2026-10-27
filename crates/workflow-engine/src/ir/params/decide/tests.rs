@@ -1,0 +1,288 @@
+//! ai.decide の params 契約と出口の規則の試験。
+
+#![allow(clippy::panic)]
+
+use serde_json::{json, Value};
+
+use super::*;
+use crate::ir::params::check_params;
+use crate::vocab::NodeType;
+
+/// 問い合わせの種類（choice）・緊急度（score）・不満（boolean）の 3 問。
+fn base() -> Value {
+    json!({
+        "model": "decide-stub",
+        "state": { "$from": "input", "path": "/body" },
+        "questions": [
+            { "key": "category", "type": "choice", "instructions": "問い合わせの種類はどれか",
+              "options": [ { "key": "billing", "description": "請求・返金" },
+                           { "key": "bug", "description": "不具合" },
+                           { "key": "other" } ] },
+            { "key": "priority", "type": "score", "instructions": "対応の緊急度",
+              "levels": ["低", "中", "高"] },
+            { "key": "angry", "type": "boolean", "instructions": "顧客は強い不満を示しているか",
+              "yes": "苦情・強い不満", "no": "通常の問い合わせ" }
+        ]
+    })
+}
+
+/// `pointer` の位置に値を置く（無い項目は足す）。
+fn with(mut p: Value, pointer: &str, v: Value) -> Value {
+    let (parent, key) = pointer.rsplit_once('/').unwrap();
+    let parent = p.pointer_mut(parent).unwrap();
+    match parent {
+        Value::Array(a) => a[key.parse::<usize>().unwrap()] = v,
+        Value::Object(m) => {
+            m.insert(key.to_string(), v);
+        }
+        _ => panic!("{pointer}"),
+    }
+    p
+}
+
+fn with_route(route: Value) -> Value {
+    let mut p = base();
+    p["route"] = route;
+    p
+}
+
+fn err(p: &Value) -> ParamsIssue {
+    check_params(NodeType::AiDecide, p).unwrap_err()
+}
+
+fn parsed(p: &Value) -> AiDecideParams {
+    check_params(NodeType::AiDecide, p).unwrap();
+    serde_json::from_value(p.clone()).unwrap()
+}
+
+#[test]
+fn a_valid_node_passes_and_round_trips() {
+    let p =
+        with_route(json!({ "question": "category", "by": "confidence", "min_confidence": 0.8 }));
+    let got = parsed(&p);
+    assert_eq!(serde_json::to_value(&got).unwrap(), p);
+    assert_eq!(got.route.as_ref().unwrap().by(), DecideRouteBy::Confidence);
+    // by を省くと値で分ける。
+    let p = with_route(json!({ "question": "angry", "min_confidence": 0.7 }));
+    assert_eq!(parsed(&p).route.unwrap().by(), DecideRouteBy::Value);
+}
+
+#[test]
+fn questions_are_literals_and_keys_follow_the_shape() {
+    // 質問は値式にできない（作者のコード・出口が保存時に決まる）。
+    let e = err(&with(base(), "/questions", json!({ "$from": "input" })));
+    assert_eq!(e.path, "/params/questions");
+    let e = err(&with(
+        base(),
+        "/questions/0/instructions",
+        json!({ "$from": "input" }),
+    ));
+    assert_eq!(e.path, "/params/questions/0/instructions");
+    for bad in ["Category", "1st", "has-dash", "", &"a".repeat(65)] {
+        let e = err(&with(base(), "/questions/0/key", json!(bad)));
+        assert_eq!(e.path, "/params/questions/0/key", "{bad}");
+    }
+    let e = err(&with(base(), "/questions/1/key", json!("category")));
+    assert!(e.message.contains("重なって"), "{}", e.message);
+    let e = err(&with(base(), "/questions/0/instructions", json!("  ")));
+    assert_eq!(e.path, "/params/questions/0/instructions");
+    let e = err(&with(base(), "/questions", json!([])));
+    assert_eq!(e.path, "/params/questions");
+    let many: Vec<Value> = (0..=MAX_DECIDE_QUESTIONS)
+        .map(|i| json!({ "key": format!("q{i}"), "type": "boolean", "instructions": "x" }))
+        .collect();
+    assert_eq!(
+        err(&with(base(), "/questions", json!(many))).path,
+        "/params/questions"
+    );
+    // 型に無い項目・未知の項目。
+    let e = err(&with(base(), "/questions/0/type", json!("number")));
+    assert_eq!(e.path, "/params/questions/0/type");
+    let mut p = base();
+    p["questions"][0]["weight"] = json!(1);
+    assert_eq!(err(&p).path, "/params/questions/0/weight");
+}
+
+#[test]
+fn fields_must_match_the_question_type() {
+    let e = err(&with(base(), "/questions/0/levels", json!(["a", "b"])));
+    assert_eq!(e.path, "/params/questions/0/levels");
+    let e = err(&with(
+        base(),
+        "/questions/1/options",
+        json!([{ "key": "a" }, { "key": "b" }]),
+    ));
+    assert_eq!(e.path, "/params/questions/1/options");
+    let mut p = base();
+    p["questions"][1]["yes"] = json!("x");
+    assert_eq!(err(&p).path, "/params/questions/1/yes");
+    let e = err(&with(base(), "/questions/2/levels", json!(["a", "b"])));
+    assert_eq!(e.path, "/params/questions/2/levels");
+    let mut p = base();
+    p["questions"][0]["no"] = json!("x");
+    assert_eq!(err(&p).path, "/params/questions/0/no");
+}
+
+#[test]
+fn options_and_levels_have_bounds() {
+    let e = err(&with(
+        base(),
+        "/questions/0/options",
+        json!([{ "key": "a" }]),
+    ));
+    assert_eq!(e.path, "/params/questions/0/options");
+    let mut p = base();
+    p["questions"][0].as_object_mut().unwrap().remove("options");
+    assert_eq!(err(&p).path, "/params/questions/0/options");
+    let many: Vec<Value> = (0..=MAX_DECIDE_OPTIONS)
+        .map(|i| json!({ "key": format!("o{i}") }))
+        .collect();
+    assert_eq!(
+        err(&with(base(), "/questions/0/options", json!(many))).path,
+        "/params/questions/0/options"
+    );
+    for reserved in RESERVED_DECIDE_KEYS {
+        let e = err(&with(base(), "/questions/0/options/2/key", json!(reserved)));
+        assert_eq!(e.path, "/params/questions/0/options/2/key", "{reserved}");
+        assert!(e.message.contains("使えません"), "{}", e.message);
+    }
+    let e = err(&with(
+        base(),
+        "/questions/0/options/1/key",
+        json!("billing"),
+    ));
+    assert_eq!(e.path, "/params/questions/0/options/1/key");
+    let long = "あ".repeat(MAX_DECIDE_DESCRIPTION_CHARS + 1);
+    let e = err(&with(
+        base(),
+        "/questions/0/options/0/description",
+        json!(long),
+    ));
+    assert_eq!(e.path, "/params/questions/0/options/0/description");
+    let e = err(&with(base(), "/questions/1/levels", json!(["低"])));
+    assert_eq!(e.path, "/params/questions/1/levels");
+    let e = err(&with(base(), "/questions/1/levels", json!(["低", "低"])));
+    assert_eq!(e.path, "/params/questions/1/levels/1");
+    let e = err(&with(base(), "/questions/1/levels", json!(["低", " "])));
+    assert_eq!(e.path, "/params/questions/1/levels/1");
+    let e = err(&with(base(), "/questions/2/yes", json!(long)));
+    assert_eq!(e.path, "/params/questions/2/yes");
+}
+
+#[test]
+fn model_and_state_are_checked() {
+    assert_eq!(
+        err(&with(base(), "/model", json!(""))).path,
+        "/params/model"
+    );
+    // モデルはリテラルの文字列（値式にしない）。
+    assert_eq!(
+        err(&with(base(), "/model", json!({ "$from": "input" }))).path,
+        "/params/model"
+    );
+    for bad in [json!(1), json!(true), json!(null)] {
+        let e = err(&with(base(), "/state", bad.clone()));
+        assert_eq!(e.path, "/params/state", "{bad}");
+    }
+    for ok in [json!("本文"), json!({ "a": 1 }), json!([1, 2])] {
+        assert!(check_params(NodeType::AiDecide, &with(base(), "/state", ok)).is_ok());
+    }
+}
+
+#[test]
+fn the_route_must_point_at_a_choice_or_boolean_question() {
+    let e = err(&with_route(
+        json!({ "question": "nope", "min_confidence": 0.8 }),
+    ));
+    assert_eq!(e.path, "/params/route/question");
+    let e = err(&with_route(
+        json!({ "question": "priority", "min_confidence": 0.8 }),
+    ));
+    assert_eq!(e.path, "/params/route/question");
+    assert!(e.message.contains("level_index"), "{}", e.message);
+    for bad in [0.49, 1.01, -1.0] {
+        let e = err(&with_route(
+            json!({ "question": "category", "min_confidence": bad }),
+        ));
+        assert_eq!(e.path, "/params/route/min_confidence", "{bad}");
+    }
+    for ok in [0.5, 1.0] {
+        let p = with_route(json!({ "question": "category", "min_confidence": ok }));
+        assert!(check_params(NodeType::AiDecide, &p).is_ok(), "{ok}");
+    }
+    // しきい値は必須（版ごとに決めるもの・既定を置かない）。
+    let e = err(&with_route(json!({ "question": "category" })));
+    assert_eq!(e.path, "/params/route");
+    let e = err(&with_route(
+        json!({ "question": "category", "by": "best", "min_confidence": 0.8 }),
+    ));
+    assert_eq!(e.path, "/params/route/by");
+}
+
+#[test]
+fn ports_follow_the_route() {
+    assert_eq!(parsed(&base()).ports().unwrap(), ["out"]);
+    let by_conf = parsed(&with_route(
+        json!({ "question": "category", "by": "confidence", "min_confidence": 0.8 }),
+    ));
+    assert_eq!(by_conf.ports().unwrap(), ["out", "uncertain"]);
+    let by_choice = parsed(&with_route(
+        json!({ "question": "category", "min_confidence": 0.8 }),
+    ));
+    assert_eq!(
+        by_choice.ports().unwrap(),
+        ["billing", "bug", "other", "uncertain"]
+    );
+    let by_bool = parsed(&with_route(
+        json!({ "question": "angry", "min_confidence": 0.7 }),
+    ));
+    assert_eq!(by_bool.ports().unwrap(), ["true", "false", "uncertain"]);
+}
+
+/// 実行時の振り分けは、しきい値以上で答えに従い、届かなければ uncertain。選んだ出口は必ず ports にある。
+#[test]
+fn port_for_picks_one_of_the_ports() {
+    let cases = [
+        (base(), None, "out"),
+        (
+            with_route(
+                json!({ "question": "category", "by": "confidence", "min_confidence": 0.8 }),
+            ),
+            Some((RoutedValue::Choice("bug"), 0.8)),
+            "out",
+        ),
+        (
+            with_route(
+                json!({ "question": "category", "by": "confidence", "min_confidence": 0.8 }),
+            ),
+            Some((RoutedValue::Choice("bug"), 0.79)),
+            "uncertain",
+        ),
+        (
+            with_route(json!({ "question": "category", "min_confidence": 0.8 })),
+            Some((RoutedValue::Choice("billing"), 0.9)),
+            "billing",
+        ),
+        (
+            with_route(json!({ "question": "category", "min_confidence": 0.8 })),
+            Some((RoutedValue::Choice("billing"), 0.5)),
+            "uncertain",
+        ),
+        (
+            with_route(json!({ "question": "angry", "min_confidence": 0.7 })),
+            Some((RoutedValue::Boolean(false), 0.7)),
+            "false",
+        ),
+        (
+            with_route(json!({ "question": "angry", "min_confidence": 0.7 })),
+            Some((RoutedValue::Boolean(true), f64::NAN)),
+            "uncertain",
+        ),
+    ];
+    for (p, routed, want) in cases {
+        let p = parsed(&p);
+        let got = p.port_for(routed);
+        assert_eq!(got, want, "{routed:?}");
+        assert!(p.ports().unwrap().contains(&got), "{got} は出口に無い");
+    }
+}

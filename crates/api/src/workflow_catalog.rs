@@ -15,10 +15,14 @@ use workflow_engine::Catalog;
 /// 解決するので、保存時もそこへ揃える（管理者が無効にしたモデル・opt-in 前のモデルを保存で弾く）。
 /// ChatGPT プランのモデルは連携した本人の枠で、ワークフローは誰が起動しても使わないため、本人であっても除く。
 /// gateway が無い構成（LLM 未構成）では従来どおりデプロイ設定のモデル id を使う（空なら照合しない）。
+///
+/// ai.decide のモデルも同じ材料から、判定用のモデル（`modality = "decision"`）だけを照合する（FEAT-1）。種類の
+/// 振り分けはここ（[`WorkflowModels::check`]）だけで行い、保存 API と AI 編集（emit_workflow）が同じ結果になる。
 #[derive(Clone)]
 pub enum WorkflowModels {
     Gateway(llm_gateway::LlmGateway),
-    Configured(Vec<String>),
+    /// デプロイ設定のモデル（id と種類）。
+    Configured(Vec<(String, llm_gateway::Modality)>),
 }
 
 /// 保存時のモデル照合の材料（[`Catalog::models`] と [`Catalog::model_lock`] に入れる）。
@@ -29,12 +33,19 @@ pub struct WorkflowModelCheck {
     pub ids: Option<Vec<String>>,
     /// 組織がモデルの選択を禁じているときの既定（`auto` かモデル ID）。
     pub lock: Option<String>,
+    /// ai.decide に書ける判定用のモデル id（カタログ順・[`Catalog::decision_models`]）。`None` は照合しない
+    /// （LLM 未構成）。gateway があれば、組織が許可し、元にする chat モデルも許可されているものだけ
+    /// （`/llm/models?purpose=workflow&modality=decision` と同じ集合）。
+    pub decision_ids: Option<Vec<String>>,
 }
 
 impl WorkflowModels {
     /// gateway があればそれを、無ければデプロイ設定の id を材料にする。
     #[must_use]
-    pub fn new(gateway: Option<llm_gateway::LlmGateway>, configured: Vec<String>) -> Self {
+    pub fn new(
+        gateway: Option<llm_gateway::LlmGateway>,
+        configured: Vec<(String, llm_gateway::Modality)>,
+    ) -> Self {
         match gateway {
             Some(gw) => WorkflowModels::Gateway(gw),
             None => WorkflowModels::Configured(configured),
@@ -44,10 +55,22 @@ impl WorkflowModels {
     /// 保存時の照合の材料（呼び出し主体の組織の設定・本人専用を除く）。
     pub async fn check(&self, ctx: &authz::AuthContext) -> Result<WorkflowModelCheck, String> {
         match self {
-            WorkflowModels::Configured(ids) => Ok(WorkflowModelCheck {
-                ids: (!ids.is_empty()).then(|| ids.clone()),
-                lock: None,
-            }),
+            WorkflowModels::Configured(models) => {
+                let of = |kind: llm_gateway::Modality| -> Vec<String> {
+                    models
+                        .iter()
+                        .filter(|(_, m)| *m == kind)
+                        .map(|(id, _)| id.clone())
+                        .collect()
+                };
+                // 何も設定していなければ照合しない（従来どおり）。
+                let configured = !models.is_empty();
+                Ok(WorkflowModelCheck {
+                    ids: configured.then(|| of(llm_gateway::Modality::Chat)),
+                    lock: None,
+                    decision_ids: configured.then(|| of(llm_gateway::Modality::Decision)),
+                })
+            }
             WorkflowModels::Gateway(gw) => {
                 let settings = gw
                     .settings_without_personal(ctx)
@@ -62,7 +85,15 @@ impl WorkflowModels {
                             .map(|m| m.id.clone())
                             .collect(),
                     ),
-                    lock: (!settings.allow_user_choice).then_some(settings.default_model),
+                    lock: (!settings.allow_user_choice).then_some(settings.default_model.clone()),
+                    // ai.decide に書けるのは判定用のモデルだけ（元の chat モデルが無効なものは除く・FEAT-1）。
+                    decision_ids: Some(
+                        settings
+                            .enabled_decision_models(gw.catalog())
+                            .into_iter()
+                            .map(|m| m.id.clone())
+                            .collect(),
+                    ),
                 })
             }
         }
@@ -99,10 +130,11 @@ pub async fn build_catalog_from(
             .await
             .map_err(|e| format!("skill インストール一覧: {e}"))?;
     }
-    // llm.invoke の model 照合（組織が許可したモデルと、選択を禁じた組織の既定）。
+    // llm.invoke の model 照合（組織が許可したモデルと、選択を禁じた組織の既定）と、ai.decide の判定用のモデル。
     let check = models.check(ctx).await?;
     catalog.models = check.ids;
     catalog.model_lock = check.lock;
+    catalog.decision_models = check.decision_ids;
     Ok(catalog)
 }
 

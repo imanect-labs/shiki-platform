@@ -11,12 +11,12 @@
 use ts_rs::{TypeVisitor, TS};
 
 use super::{
-    AgentInvokeParams, BranchParams, CsvPatchParams, CsvQueryParams, CsvWriteParams,
-    DataBulkUpsertParams, DataQueryParams, DataRecordCreateParams, DataRecordDeleteParams,
-    DataRecordUpdateParams, DataTransitionParams, HttpRequestParams, HumanApprovalParams,
-    JoinParams, LlmInvokeParams, MapParams, RagSearchParams, ScriptRunParams, SkillInvokeParams,
-    StorageListParams, StorageReadParams, StorageWriteParams, SwitchParams, WaitParams,
-    WorkflowReplyParams, WorkflowStartParams,
+    AgentInvokeParams, AiDecideParams, BranchParams, CsvPatchParams, CsvQueryParams,
+    CsvWriteParams, DataBulkUpsertParams, DataQueryParams, DataRecordCreateParams,
+    DataRecordDeleteParams, DataRecordUpdateParams, DataTransitionParams, HttpRequestParams,
+    HumanApprovalParams, JoinParams, LlmInvokeParams, MapParams, RagSearchParams, ScriptRunParams,
+    SkillInvokeParams, StorageListParams, StorageReadParams, StorageWriteParams, SwitchParams,
+    WaitParams, WorkflowReplyParams, WorkflowStartParams,
 };
 use crate::vocab::NodeType;
 
@@ -113,6 +113,7 @@ fn visit_params_type<V: ParamsTypeVisitor>(nt: NodeType, v: V) -> Option<V::Out>
         N::RagSearch => v.visit::<RagSearchParams>(),
         N::LlmInvoke => v.visit::<LlmInvokeParams>(),
         N::AgentInvoke => v.visit::<AgentInvokeParams>(),
+        N::AiDecide => v.visit::<AiDecideParams>(),
         N::HttpRequest => v.visit::<HttpRequestParams>(),
         N::ScriptRun => v.visit::<ScriptRunParams>(),
         N::WorkflowStart => v.visit::<WorkflowStartParams>(),

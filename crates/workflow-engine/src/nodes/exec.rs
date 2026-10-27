@@ -467,6 +467,10 @@ impl NodeExecutor for CapabilityNodeExecutor {
         if nt == NodeType::WorkflowReply {
             return super::reply::execute(params, ctx);
         }
+        // 判定は答えで出口を選ぶ（NodeResult を直接返す・FEAT-1）。
+        if nt == NodeType::AiDecide {
+            return self.node_ai_decide(params, ctx).await;
+        }
 
         let ec = Self::exec_ctx(ctx);
         let r = ParamResolver::new(ctx);

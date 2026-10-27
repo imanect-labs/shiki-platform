@@ -11,6 +11,8 @@ pub mod capability;
 pub mod capability_agent;
 pub mod capability_ai;
 pub mod capability_data;
+pub mod decide;
+mod decide_reply;
 pub mod exec;
 pub mod http;
 pub mod llm_structured;
@@ -24,7 +26,7 @@ pub use capability_agent::AgentLimits;
 pub use exec::CapabilityNodeExecutor;
 pub use ports::{
     AgentInvokeReq, AgentToolGateway, ApprovalTarget, CodeRunReq, CsvPatchReq, CsvWriteReq,
-    DataWriteOp, DataWriteReq, DocReadReq, ExecCtx, HttpSendReq, HttpSendResp, LlmInvokeReq,
-    LlmRepair, NodePorts, PortError, ResolvedSecretView, ResolvedSkillView, StorageWriteReq,
-    WebFetchReq,
+    DataWriteOp, DataWriteReq, DocReadReq, ExecCtx, HttpSendReq, HttpSendResp, LlmDecideReq,
+    LlmInvokeReq, LlmRepair, NodePorts, PortError, ResolvedSecretView, ResolvedSkillView,
+    StorageWriteReq, WebFetchReq,
 };

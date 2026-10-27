@@ -102,7 +102,7 @@ async fn build_catalog_base(
             .llm
             .models
             .iter()
-            .map(|m| m.id.clone())
+            .map(|m| (m.id.clone(), m.modality))
             .collect(),
     );
     let mut catalog = crate::workflow_catalog::build_catalog_from(
@@ -134,6 +134,10 @@ pub struct ValidateWorkflowResponse {
     pub declared_scopes: Vec<String>,
     /// 保存は止めない警告（`ir.condition_semantics_changed` など・Task 15.7）。
     pub warnings: Vec<ValidationError>,
+    /// ノードの出口（ノード id → 出口の名前・表示の順）。保存時検証 V2 と同じ関数
+    /// （`workflow_engine::node_ports`）で導く。エディタはこれでハンドルを描く（出口の導出を web に書き写さない・
+    /// H15）。IR が読めなければ空、params が契約に合わず出口を導けないノードは載せない。
+    pub node_ports: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 /// IR を保存せず検証する（dnd エディタのライブ検証・Task 10.12）。
@@ -158,14 +162,23 @@ pub async fn validate_workflow(
     let catalog = build_catalog_for(&state, &ctx, &req.ir).await?;
     // 保存と同じく、ノードが要するスコープを補完してから検証する（検証 C-P1-2・結果を保存と揃える）。
     let (ir, _) = workflow_engine::complete_declared_scopes(&req.ir);
-    let (errors, warnings) = match workflow_engine::validate(&ir, &catalog) {
-        Ok(ir) => (Vec::new(), workflow_engine::save_warnings(&ir)),
-        // スキーマ（V1）を通る IR なら、他の誤りがあっても警告は出す（エディタが同時に表示する）。
+    let (errors, warnings, node_ports) = match workflow_engine::validate(&ir, &catalog) {
+        Ok(ir) => (
+            Vec::new(),
+            workflow_engine::save_warnings(&ir),
+            workflow_engine::node_ports(&ir),
+        ),
+        // スキーマ（V1）を通る IR なら、他の誤りがあっても警告と出口は出す（エディタが同時に表示する）。
         Err(errors) => {
-            let warnings = workflow_engine::WorkflowIr::from_json(&ir)
-                .map(|ir| workflow_engine::save_warnings(&ir))
+            let (warnings, ports) = workflow_engine::WorkflowIr::from_json(&ir)
+                .map(|ir| {
+                    (
+                        workflow_engine::save_warnings(&ir),
+                        workflow_engine::node_ports(&ir),
+                    )
+                })
                 .unwrap_or_default();
-            (errors, warnings)
+            (errors, warnings, ports)
         }
     };
     let declared_scopes = ir
@@ -181,6 +194,7 @@ pub async fn validate_workflow(
         errors,
         declared_scopes,
         warnings,
+        node_ports,
     }))
 }
 
