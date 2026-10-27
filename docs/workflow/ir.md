@@ -378,7 +378,7 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 | `storage.read` | 能力 | 文章のファイルを読む（≤ 10MB。PDF・Office・画像などの種類〔MIME か拡張子〕と、UTF-8 でない中身は `not_text_file` で失敗・BUG-101） | pure | 30s / 120s |
 | `storage.write` | 能力 | ファイル書き（新バージョン） | engine-dedup | 30s / 120s |
 | `storage.list` | 能力 | フォルダ一覧 | pure | 30s / 120s |
-| `data.query` | 能力 | 宣言的クエリ（**data の `DataQuery` をそのまま使う**・比較値に `$from` 可） | pure | 30s / 120s |
+| `data.query` | 能力 | 宣言的クエリ（**data の `DataQuery` をそのまま使う**・比較値に `$from` 可・`query.limit` は 1〜200 で範囲の外は保存時に `ir.schema_violation`・BUG-108） | pure | 30s / 120s |
 | `data.record.create` / `data.record.update` / `data.record.delete` | 能力 | レコード書込（rev 楽観ロック・rev 省略時は実行時点の rev） | engine-dedup | 30s / 120s |
 | `data.transition` | 能力 | **FSM 遷移 API を叩く**（直接 status 書込は構造的に不可能） | engine-dedup | 30s / 120s |
 | `data.bulk_upsert` | 能力 | 一括の作成・更新（data の一括書込パス・最大 5,000 行・誤りは行ごとに拒否） | engine-dedup | 120s / 600s |
