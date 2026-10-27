@@ -4,7 +4,7 @@
 ///
 /// 認証・LLM 不要（middleware は /reference を除外）。会話の回答と同じ列（max-w-3xl・左右 16px）と
 /// 同じ Markdown の描画で、全種類の図と狭い画面で崩れやすい形（長いラベル・多い行や列・
-/// deep research の質問と計画）を並べる。ボタンは押せる状態にし、押しても何も送らない。
+/// deep research の質問と計画）を並べる。ボタンは押せる状態にし、押すと「送信しません」と返す（何も送らない）。
 
 import * as React from "react";
 
@@ -14,7 +14,9 @@ import { YuiActionContext, type YuiActionHost } from "@/components/prompt-kit/yu
 import { BASIC, DEEP_RESEARCH, STRESS, type YuiSample } from "./fixtures";
 
 const HOST: YuiActionHost = {
-  invoke: async () => undefined,
+  invoke: async () => {
+    throw new Error("ギャラリーでは送信しません");
+  },
   isBound: () => true,
   invokedActions: [],
   uiRuns: [],
