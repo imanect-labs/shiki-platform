@@ -568,7 +568,8 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
       onReset: (reason) => {
         if (gen !== generation.current) return;
         // スキーマが変わった: 列（追加・削除・読めない列）も取り直してもらう（行だけ読み直すと古い列のまま）。
-        if (reason === "schema_changed") onSchemaChangedRef.current?.();
+        // 権限が変わった（共有の役割の変更など）: 閲覧者の文脈（編集・取込の可否）も取り直す。
+        if (reason === "schema_changed" || reason === "authz_changed") onSchemaChangedRef.current?.();
         // 権限が変わった・テーブルが消えた: 見えなくなったかもしれない行を一瞬でも残さない。
         reset({ dropStale: reason === "authz_changed" || reason === "table_deleted" });
       },
@@ -634,6 +635,8 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
         setInitial("error");
         report({ loaded: 0, done: false, count: null });
         bump();
+        // 画面側にも知らせる（/data はページごと「開けません」に切り替え、編集・取込の操作を残さない・#864）。
+        onErrorRef.current?.(e);
       } else if (e instanceof DataApiError && e.status === 401) {
         setLive({ kind: "signed_out" });
       } else {
@@ -1115,6 +1118,9 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
             // 入力を元に戻す。ただし保存待ちの間に SSE で新しい版（他の人の更新）が届いていれば、それがサーバの
             // 今の内容なので古い版で上書きしない。
             if (j !== undefined && rows.current[j].rev <= before.rev) rows.current[j] = before;
+            // 書けなくなった（共有が editor → viewer に変わった等・見える権限は残るので購読は閉じない）: テーブルと
+            // 閲覧者の文脈を取り直し、編集・取込の操作を消す（以後の入力が 403 を繰り返さない）。
+            if (e instanceof DataApiError && e.status === 403) onSchemaChangedRef.current?.();
             const recomputing = e instanceof DataApiError ? e.derivedRecomputing : null;
             const labelOf = (key: string) => columns.find((x) => x.key === key)?.label ?? key;
             // 重複した列はサーバが名指しする（読める列だけ・無ければ今書いた列）。

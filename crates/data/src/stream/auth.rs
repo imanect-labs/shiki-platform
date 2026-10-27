@@ -6,7 +6,7 @@
 //!   TTL を過ぎた購読は配信の**前に**引き直す＝剥奪の配信への反映は最大 TTL 遅れる（製品の約束）。
 //! - ロール変更・共有解除・テーブル権限の変更（世代 [`super::invalidate`]）・スキーマ改訂を検知した
 //!   購読は TTL を待たずに引き直す。
-//! - 引き直した結果が前回と違えば（viewer の喪失・ロール・共有・マスクの変化）、行ごとの差分では
+//! - 引き直した結果が前回と違えば（viewer の喪失・editor の得失・ロール・共有・マスクの変化）、行ごとの差分では
 //!   取りこぼしが出る（権限側の変化で見えなくなった行にはイベントが無い）ので、**購読ごと落とす**
 //!   （`stream.reset` を送って閉じる・クライアントは取り直す・PIT-73 ③）。
 //! - REST の読取経路はこれを使わない（毎回解決）。
@@ -62,6 +62,15 @@ impl DataStore {
         if !viewer {
             return Ok(Resolved::Revoked);
         }
+        // 見える範囲が同じでも viewer ⇄ editor の変化は画面の操作（編集・追加・取込）を変えるので、
+        // 指紋に含めて `authz_changed` で知らせる（テーブル共有の役割変更・#864）。
+        let editor = az
+            .check(
+                ctx,
+                Relation::Editor,
+                &ctx.ns().data_table(&table.id.to_string()),
+            )
+            .await?;
         let material = match &table.schema.row_policy {
             Some(p) => material::resolve(ctx, az, &[&p.read]).await?,
             None => Arc::new(PolicyMaterial::default()),
@@ -70,7 +79,7 @@ impl DataStore {
         // 個別共有集合は主体の全テーブル分なので、このテーブルの行だけに絞る（他テーブルの共有の
         // 変化でこの購読を落とさない・判定の集合も小さくなる）。
         let shared = self.shared_in_table(ctx, table, &material).await?;
-        let fingerprint = fingerprint(&material, &shared, &masked);
+        let fingerprint = fingerprint(editor, &material, &shared, &masked);
         Ok(Resolved::Ok(Box::new(SubAuth {
             carry: None,
             resolved_at: Instant::now(),
@@ -110,7 +119,12 @@ impl DataStore {
 }
 
 /// 材料の指紋（順序に依らない正規形の SHA-256）。
-fn fingerprint(m: &PolicyMaterial, shared: &HashSet<Uuid>, masked: &HashSet<String>) -> String {
+fn fingerprint(
+    editor: bool,
+    m: &PolicyMaterial,
+    shared: &HashSet<Uuid>,
+    masked: &HashSet<String>,
+) -> String {
     let mut roles_direct: Vec<&String> = m.roles(false).iter().collect();
     roles_direct.sort();
     let mut roles_eff: Vec<&String> = m.roles(true).iter().collect();
@@ -121,7 +135,7 @@ fn fingerprint(m: &PolicyMaterial, shared: &HashSet<Uuid>, masked: &HashSet<Stri
     let mut masked: Vec<&String> = masked.iter().collect();
     masked.sort();
     let canon = format!(
-        "{roles_direct:?}|{roles_eff:?}|{members:?}|{shared:?}|{}|{masked:?}",
+        "{editor}|{roles_direct:?}|{roles_eff:?}|{members:?}|{shared:?}|{}|{masked:?}",
         m.shares_truncated
     );
     let d = Sha256::digest(canon.as_bytes());
@@ -154,16 +168,19 @@ mod tests {
         let none = HashSet::new();
         let s12: HashSet<Uuid> = [Uuid::from_u128(1), Uuid::from_u128(2)].into();
         let s1: HashSet<Uuid> = [Uuid::from_u128(1)].into();
-        assert_eq!(fingerprint(&a, &s12, &none), fingerprint(&b, &s12, &none));
+        assert_eq!(
+            fingerprint(false, &a, &s12, &none),
+            fingerprint(false, &b, &s12, &none)
+        );
         assert_ne!(
-            fingerprint(&a, &s12, &none),
-            fingerprint(&a, &s1, &none),
+            fingerprint(false, &a, &s12, &none),
+            fingerprint(false, &a, &s1, &none),
             "共有解除で変わる"
         );
         let masked: HashSet<String> = ["salary".to_string()].into();
         assert_ne!(
-            fingerprint(&a, &s12, &none),
-            fingerprint(&a, &s12, &masked),
+            fingerprint(false, &a, &s12, &none),
+            fingerprint(false, &a, &s12, &masked),
             "マスクの変化で変わる"
         );
         let c = PolicyMaterial {
@@ -171,9 +188,14 @@ mod tests {
             ..PolicyMaterial::default()
         };
         assert_ne!(
-            fingerprint(&a, &s12, &none),
-            fingerprint(&c, &s12, &none),
+            fingerprint(false, &a, &s12, &none),
+            fingerprint(false, &c, &s12, &none),
             "ロールで変わる"
+        );
+        assert_ne!(
+            fingerprint(false, &a, &s12, &none),
+            fingerprint(true, &a, &s12, &none),
+            "viewer ⇄ editor で変わる"
         );
     }
 }
