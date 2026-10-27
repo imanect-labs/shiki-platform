@@ -413,7 +413,8 @@ flowchart LR
 - **ドライブの探索・移動（#942）**: `drive.find`（名前でファイル・フォルダを探す・read-only）と `drive.move`
   （種別を問わない移動・名前変更）を通常チャット・自律の両方に提示する。認可は StorageService
   （検索は viewer の post-filter、移動は対象と移動先の editor）で、発話ユーザーの権限のまま昇格しない。
-  `drive.move` は承認ゲート対象で、オートでは自動承認する（中身を変えず移し直しで戻せるため）。
+  `drive.move` は承認ゲート対象で、**オートでも承認を維持する**（共有フォルダへ移すと閲覧・RAG の可視範囲が
+  広がり移し戻しても開示は取り消せず、ルートへ移すと継承権限が外れて戻せないことがあるため）。
   作成系（`save_document` / `save_sheet` / `csv.write`）は `parent_id` で保存先を指定でき、下書き系
   （`save_note` / `save_slide` / `save_csv`）の `parent_id` は保存ダイアログの初期値にとどめる（確定は人）。
 - **ワークスペース封じ込め（#350 で明示化）**: 自律 fs ツールは thread の起動フォルダ（`root_folder_id`）配下限定。
