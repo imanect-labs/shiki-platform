@@ -539,6 +539,27 @@ flowchart LR
   組織のデータを個人のアカウントへ送るため `requires_opt_in`（管理者が公開するまで使えない）。
 - **思考強度の正規化**: `effort: low/medium/high` を内部正規形に持ち、各アダプタが reasoning budget /
   thinking tokens に翻訳。UI は3段階セレクタのみ（プロバイダ固有ノブは晒さない）。
+- **構造化出力と拒否（GAP-13）**: 中立形の生成リクエストに応答の形 `response_format`（`json_schema`＝名前と
+  JSON Schema・`json_object`＝スキーマなしの JSON オブジェクト）を持ち、停止理由に `refusal`（プロバイダの
+  安全分類器などによる拒否。Anthropic の `stop_reason: "refusal"`、OpenAI 互換の `refusal`・
+  `finish_reason: "content_filter"`）を持つ。効かせ方はモデルカタログの `structured_output`
+  （`json_schema` / `json_object` / `prompt`）で決め、gateway の `stream` がアダプタへ渡す前に整える。
+  - 既定は「プロンプトで指示し、結果を検証する」（`prompt`: system の末尾に指示とスキーマを足し、
+    プロバイダには形の指定を送らない）。Anthropic は対応モデルで `json_schema`（`output_config.format`）を既定にし、
+    対応表に無い旧モデル（Claude 3 系・Opus 4.1 以前など）は接頭辞で除いて `prompt` にする。OpenAI 互換
+    （vLLM・Gemini を含む）は版・実装で対応が違うので既定は `prompt` で、確かめたモデルだけカタログで
+    `json_schema`（`response_format: json_schema`）か `json_object` を有効にする。Responses API と ChatGPT プランは
+    `prompt` だけ。種別が写せないモード（Anthropic の `json_object` など）は `prompt` として扱う。
+  - プロバイダへ送るスキーマは、受けない制約（数値・文字列の範囲、正規表現、配列の件数、対応外の `format`）を
+    落として説明文に書き足し、全オブジェクトを閉じる（`additionalProperties: false`）。OpenAI 互換の `strict` は
+    全プロパティが必須のときだけ付ける。**正しさはどのモードでも呼び出し側の事後検証が正**で、制約付き
+    デコードは形の誘導にすぎない（ワークフローの `llm.invoke` の検証・修復は workflow-engine が持つ）。
+  - Anthropic アダプタは effort と format を同じ `output_config` に併合する（片方で上書きしない）。
+    `temperature`・`top_p`・`top_k` は Anthropic へ送らない（新しいモデルは既定以外を 400 で拒む）。決定性は
+    temperature に頼らず、構造化出力・版の固定・checkpoint で担保する。
+  - プロバイダがスキーマを拒んだ 4xx（Anthropic の上限は、1 回の要求の全スキーマの合計で任意項目 24・
+    union 型〔`anyOf`・型の配列〕16・strict ツール 20、文法のコンパイル 180 秒）は、プロバイダの本文を
+    利用者に出さない定型文の誤りにし（本文はログにだけ残す）、呼び出し側が出力の形の誤りとして扱えるようにする。
 - `LlmProvider` トレイト実装そのもの。別プロセス化しない（ホップ0、部品削減）。外部クライアント向け API も同一プロセスで公開し、別サービス化は §4.1.1 の条件（3 つ目の消費者）で再検討する。
 - **外部クライアント向け LLM API（全社共通ゲートウェイ・§4.1.1・2026-09-29 決定）**: skillex 等の社内他製品向けに、
   shiki-server が**同一バイナリで** LLM API を公開する（OpenAI 互換を想定。パス・形は実装タスク〔parallel-tracks SK.8〕で確定）。
