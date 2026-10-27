@@ -462,7 +462,7 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 - `model` を省略すると（空文字も同じ）、**実行のたびに**実行主体の組織（tenant_id ＋ org）の AI 設定で解決する。チャットと同じ規則（llm-gateway の `resolve_choice`）で、既定が Auto なら Auto の振り先と思考強度を使う。本人専用のモデル（ChatGPT プラン）は、実行主体によらず候補から外す（誰が起動しても同じモデルになる）。
 - `model` を指定すると、保存時に組織が許可したモデル（本人専用を除く）と照合する（§8 V3）。実行時にも同じ規則で照らし直し、使えなくなっていれば組織の既定へ戻さずに失敗する（[engine.md](./engine.md) §6 の fail-closed）。
 - 組織がモデルの選択を許していないときは、既定と異なる `model` を `ir.model_choice_disabled` で拒否する（実行時も同じ規則で失敗する）。
-- `effort` は思考の深さ（`low` / `medium` / `high`）。省略すると組織の既定（既定が Auto なら Auto の思考強度）。書くと組織の既定より優先する。ただし、組織がモデルの選択を禁じているときと、`model` を省略して組織の既定の Auto で動くときは使わず、組織の設定に従う（チャットと揃える・D-75。チャットも Auto では利用者の指定を使わない）。そのときは保存時に `ir.effort_ignored` で警告する（保存は止めない）。実行時の規則は llm-gateway の `resolve_workflow_choice` で、警告も同じ条件で出す。思考に対応しないモデルでは gateway が送らない（[design.md](../design.md) §4.5）。
+- `effort` は思考の深さ（`low` / `medium` / `high`）。省略すると組織の既定（既定が Auto なら Auto の思考強度）。書くと組織の既定より優先する。ただし、組織がモデルの選択を禁じているときと、`model` を省略して組織の既定の Auto で動くときは使わず、組織の設定に従う（チャットと揃える・D-75。チャットも Auto では利用者の指定を使わない）。選択を禁じた組織で、既定と同じ `model` を明示したノードは、省略と同じに解決する（使うモデルは同じで、思考強度は組織の既定。選ぶ画面の無いチャットと同じ）。そのときは保存時に `ir.effort_ignored` で警告する（保存は止めない）。実行時の規則は llm-gateway の `resolve_workflow_choice` で、警告も同じ条件で出す。思考に対応しないモデルでは gateway が送らない（[design.md](../design.md) §4.5）。
 - 出力は `{ "text", "model" }`。`model` は実際に使ったモデルの論理名で、会計・監査にも同じ名前を残す。
 - `output_schema` を書くと構造化出力になり、出力は `{ "text", "model", "data" }` になる。`data` は形で検証済みの値で、`text` はモデルが返した JSON の文字列。後続は `/data/<項目>` で読む（分類の値を script で解析しなくてよい）。
 - **`output_schema` の制約**（保存時に V1 が検査する。誤りは `ir.schema_violation`・path は `/params/output_schema/...`）:
