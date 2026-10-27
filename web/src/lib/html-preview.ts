@@ -24,6 +24,10 @@ export const HTML_PREVIEW_SANDBOX = "allow-popups allow-popups-to-escape-sandbox
 
 /// 新しいタブで開いてよいリンクの scheme。
 const LINK_SCHEMES = ["http:", "https:", "mailto:", "tel:"];
+/// 外す先読み系の link の rel。
+const PREFETCH_RELS = ["dns-prefetch", "preconnect", "prefetch", "prerender", "preload", "modulepreload"];
+const HTML_NS = "http://www.w3.org/1999/xhtml";
+const XLINK_NS = "http://www.w3.org/1999/xlink";
 
 function doctypeOf(doc: Document): string {
   const dt = doc.doctype;
@@ -48,10 +52,23 @@ export function buildHtmlPreviewDoc(html: string): string {
   // それ以外の相対 URL（画像・CSS を含む）は解決できずにどこへも取りに行かないようにする。
   doc.querySelectorAll("base").forEach((el) => el.remove());
 
-  for (const a of doc.querySelectorAll<HTMLAnchorElement | HTMLAreaElement>("a[href], area[href]")) {
-    const href = a.getAttribute("href")?.trim() ?? "";
+  // 先読み系の link は CSP の対象外のことがある（dns-prefetch など）。開いたことが外へ漏れないよう外す。
+  doc.querySelectorAll("link[rel]").forEach((el) => {
+    const rel = el.getAttribute("rel")?.toLowerCase().split(/\s+/) ?? [];
+    if (rel.some((r) => PREFETCH_RELS.includes(r))) el.remove();
+  });
+
+  for (const a of doc.querySelectorAll("a, area")) {
+    const href = (a.getAttribute("href") ?? a.getAttributeNS(XLINK_NS, "href"))?.trim();
+    if (href == null) continue;
     if (href.startsWith("#")) {
       a.removeAttribute("target");
+      continue;
+    }
+    // SVG のリンクは rel（noopener）を持てないので、ページ内以外は外す（`xlink:href` も見る）。
+    if (a.namespaceURI !== HTML_NS) {
+      a.removeAttribute("href");
+      a.removeAttributeNS(XLINK_NS, "href");
       continue;
     }
     let scheme: string | null = null;
@@ -73,7 +90,11 @@ export function buildHtmlPreviewDoc(html: string): string {
   meta.setAttribute("content", HTML_PREVIEW_CSP);
   const base = doc.createElement("base");
   base.setAttribute("href", "about:srcdoc");
-  doc.head.prepend(meta, base);
+  // dns-prefetch は CSP では止まらないので、文書側でも切る。
+  const noPrefetch = doc.createElement("meta");
+  noPrefetch.setAttribute("http-equiv", "x-dns-prefetch-control");
+  noPrefetch.setAttribute("content", "off");
+  doc.head.prepend(meta, noPrefetch, base);
 
   return doctypeOf(doc) + doc.documentElement.outerHTML;
 }
