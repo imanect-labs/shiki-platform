@@ -14,6 +14,7 @@ import {
 
 import type { Thread } from "@/lib/chat-api";
 import type { NodeResponse } from "@/lib/storage";
+import { cn } from "@/lib/utils";
 import { relativeTime } from "@/lib/format";
 import { resourcePath } from "@/lib/resource-link";
 import { seasonVar } from "@/lib/season";
@@ -23,6 +24,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 /// ホームの「続きから」（最近の会話）と「最近の共有」（自分に共有されたもの）を左右に並べる（#964）。
 /// 見出しと区切りはショートカットのカテゴリと同じ（小さな見出し・縦の破線）。幅が足りず縦に積むときは
 /// 区切りを出さない。片方が空なら残った方だけを出し、両方とも空（使い始め）なら何も出さない。
+/// スマホは「続きから」の 3 件だけにする（縦に積むと長くなりすぎる）。
 export function ContinueSection({
   threads,
   shares,
@@ -38,7 +40,10 @@ export function ContinueSection({
   if (!showThreads && !showShares) return null;
 
   return (
-    <div className="@container w-full max-w-[700px]">
+    // スマホは最近の共有を出さないので、会話が無ければ段ごと出さない。
+    <div
+      className={cn("@container w-full max-w-[700px]", threads?.length === 0 && "max-sm:hidden")}
+    >
       <div className="flex flex-col gap-6 @min-[600px]:flex-row @min-[600px]:gap-0">
         {showThreads ? (
           <Column title="続きから">
@@ -50,6 +55,7 @@ export function ContinueSection({
                 return (
                   <Row
                     key={t.id}
+                    className={i >= 3 ? "max-sm:hidden" : undefined}
                     href={threadHref(t)}
                     icon={d.kind === "note" ? NotebookPen : d.kind === "office" ? FileText : MessageSquareText}
                     seasonIndex={i}
@@ -65,7 +71,7 @@ export function ContinueSection({
           <span aria-hidden className="shiki-divide-l hidden w-[1.5px] shrink-0 @min-[600px]:block" />
         ) : null}
         {showShares ? (
-          <Column title="最近の共有">
+          <Column title="最近の共有" className="max-sm:hidden">
             {shares === null ? (
               <RowsSkeleton />
             ) : (
@@ -98,12 +104,20 @@ function nodeIcon(node: Pick<NodeResponse, "kind" | "name">): LucideIcon {
   return FileText;
 }
 
-function Column({ title, children }: { title: string; children: React.ReactNode }) {
+function Column({
+  title,
+  className,
+  children,
+}: {
+  title: string;
+  className?: string;
+  children: React.ReactNode;
+}) {
   const id = React.useId();
   return (
     <section
       aria-labelledby={id}
-      className="min-w-0 flex-1 px-5"
+      className={cn("min-w-0 flex-1 px-5", className)}
     >
       <h3
         id={id}
@@ -117,12 +131,14 @@ function Column({ title, children }: { title: string; children: React.ReactNode 
 }
 
 function Row({
+  className,
   href,
   icon: Icon,
   seasonIndex,
   title,
   meta,
 }: {
+  className?: string;
   href: string;
   icon: LucideIcon;
   seasonIndex: number;
@@ -133,7 +149,10 @@ function Row({
     <Link
       href={href}
       style={{ ["--season" as string]: seasonVar(seasonIndex) }}
-      className="group flex items-center gap-3 rounded-xl px-2.5 py-2 outline-none transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring"
+      className={cn(
+        "group flex items-center gap-3 rounded-xl px-2.5 py-2 outline-none transition-colors hover:bg-muted focus-visible:ring-2 focus-visible:ring-ring",
+        className,
+      )}
     >
       <span className="flex size-[34px] shrink-0 items-center justify-center rounded-xl border border-border bg-card text-foreground/70 transition-colors group-hover:border-[var(--season)]/45 group-hover:text-[var(--season)]">
         <Icon className="size-4" aria-hidden />

@@ -3,6 +3,7 @@
 import { FileText, ListChecks, Lightbulb, Sparkles } from "lucide-react";
 
 import type { Suggestion } from "@/lib/home-modes";
+import { cn } from "@/lib/utils";
 import { seasonVar } from "@/lib/season";
 
 /// アイコンは並び順に固定で、四季(shiki)に対応させる（春→夏→秋→冬）。
@@ -11,6 +12,7 @@ const ICONS = [FileText, ListChecks, Lightbulb, Sparkles] as const;
 /// ホームの候補プロンプト（prompt-kit の PromptSuggestion 相当）。押すと即チャット開始。
 /// 4 つの候補のアイコンに控えめな季節の差し色を添える。`meta`（出どころ）は本文の右に小さく出す。
 /// 長い候補は 1 行に詰めるので、全文は title で確かめられるようにする。
+/// スマホは先頭の 2 つだけを注記なしで出す（縦に 4 段積むと入力欄の周りが詰まって見える）。
 export function PromptSuggestions({
   items,
   onPick,
@@ -32,7 +34,10 @@ export function PromptSuggestions({
             title={label}
             onClick={() => onPick(s)}
             style={{ ["--season" as string]: season }}
-            className="group inline-flex max-w-full items-center gap-2 rounded-full border border-border bg-card px-3.5 py-2 text-[13px] text-foreground/80 transition-colors hover:border-[var(--season)]/40 hover:bg-[var(--season)]/[0.07] hover:text-foreground"
+            className={cn(
+              "group inline-flex max-w-full items-center gap-2 rounded-full border border-border bg-card px-3.5 py-2 text-[13px] text-foreground/80 transition-colors hover:border-[var(--season)]/40 hover:bg-[var(--season)]/[0.07] hover:text-foreground",
+              i >= 2 && "max-sm:hidden",
+            )}
           >
             <Icon
               className="size-4 shrink-0 transition-colors"
@@ -41,7 +46,9 @@ export function PromptSuggestions({
             />
             <span className="min-w-0 truncate">{label}</span>
             {s.meta ? (
-              <span className="shrink-0 text-[11.5px] text-muted-foreground">{s.meta}</span>
+              <span className="hidden shrink-0 text-[11.5px] text-muted-foreground sm:inline">
+                {s.meta}
+              </span>
             ) : null}
           </button>
         );

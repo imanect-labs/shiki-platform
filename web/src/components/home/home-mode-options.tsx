@@ -55,7 +55,11 @@ export function HomeModeOptions({
       id={HOME_MODE_PANEL_ID}
       role="tabpanel"
       aria-labelledby={homeModeTabId(mode)}
-      className="flex min-h-8 w-full justify-center"
+      // スマホでは、チャット・社内検索の段（スキル・説明）は出さない（スキルは「+」から選べる）。
+      className={cn(
+        "flex w-full justify-center sm:min-h-8",
+        (mode === "chat" || mode === "search") && "max-sm:hidden",
+      )}
       data-testid="home-mode-options"
     >
       <Row hidden={mode !== "chat"}>
@@ -79,7 +83,8 @@ export function HomeModeOptions({
       <div hidden={mode !== "agent"} className="flex flex-col items-center gap-1.5">
         <Row>
           <span className="inline-flex items-center gap-2">
-            <span className="text-xs text-muted-foreground">作業フォルダ</span>
+            {/* スマホは見出しの語を省いて 1 行に収める（読み上げには残す）。 */}
+            <span className="sr-only text-xs text-muted-foreground sm:not-sr-only">作業フォルダ</span>
             <button
               type="button"
               onClick={() => setWsPickerOpen(true)}
@@ -95,7 +100,10 @@ export function HomeModeOptions({
             </button>
           </span>
           <span className="inline-flex items-center gap-2 sm:ml-2">
-            <span id="home-approval-label" className="text-xs text-muted-foreground">
+            <span
+              id="home-approval-label"
+              className="sr-only text-xs text-muted-foreground sm:not-sr-only"
+            >
               承認
             </span>
             <div
@@ -146,7 +154,13 @@ export function HomeModeOptions({
         </p>
       </div>
 
-      <Row hidden={mode !== "create"} role="radiogroup" aria-label="作るもの">
+      <Row
+        hidden={mode !== "create"}
+        role="radiogroup"
+        aria-label="作るもの"
+        // スマホは折り返さずに横へ流す（2 段に積まない）。
+        className="max-sm:w-full max-sm:flex-nowrap max-sm:justify-start max-sm:overflow-x-auto max-sm:px-1 max-sm:[scrollbar-width:none] max-sm:[mask-image:linear-gradient(to_right,black_85%,transparent)]"
+      >
         {CREATE_KINDS.map((k, i) => {
           const active = k.key === createKind;
           const Icon = k.icon;
@@ -191,10 +205,12 @@ const OPTION =
 
 function Row({
   hidden = false,
+  className,
   children,
   ...aria
 }: {
   hidden?: boolean;
+  className?: string;
   children: React.ReactNode;
   role?: string;
   "aria-label"?: string;
@@ -203,7 +219,7 @@ function Row({
     <div
       hidden={hidden}
       {...aria}
-      className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1.5"
+      className={cn("flex flex-wrap items-center justify-center gap-x-2 gap-y-1.5", className)}
     >
       {children}
     </div>

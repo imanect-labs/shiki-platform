@@ -157,9 +157,11 @@ export default function HomePage() {
   const placeholder = desktop ? def.placeholder : def.short;
   const pick = (s: Suggestion) => startChat(s.text, s.attachment ? [s.attachment] : []);
 
+  // スマホは上寄せ（モードを切り替えて設定の段の高さが変わっても、あいさつ・切替が上下に動かない）。
   return (
-    <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col justify-center px-4 py-10">
-      <div className="flex flex-col items-center gap-8">
+    <div className="mx-auto flex min-h-full w-full max-w-3xl flex-col px-4 pb-10 pt-[12vh] sm:justify-center sm:py-10">
+      {/* スマホは要素を絞る（説明文・候補の注記・最近の共有・ショートカットは出さない。ナビはサイドバーにある）。 */}
+      <div className="flex flex-col items-center gap-6 sm:gap-8">
         <div className="text-center">
           {loading ? (
             <>
@@ -174,7 +176,7 @@ export default function HomePage() {
               </h1>
             </>
           )}
-          <p className="mt-2 text-sm text-muted-foreground">
+          <p className="mt-2 hidden text-sm text-muted-foreground sm:block">
             何でも尋ねてください。社内文書も自動で検索して答えます。
           </p>
         </div>
@@ -226,7 +228,9 @@ export default function HomePage() {
 
         <ContinueSection threads={feed.threads} shares={feed.shares} />
 
-        <ShortcutGrid />
+        <div className="hidden w-full sm:block">
+          <ShortcutGrid />
+        </div>
       </div>
     </div>
   );
@@ -258,7 +262,8 @@ function SeasonLine() {
       <span>
         {now.getMonth() + 1}月{now.getDate()}日（{WEEKDAYS[now.getDay()]}）・
         <span title={`二十四節気「${kou.term}」の候`}>
-          {kou.name}（{kou.reading}）
+          {kou.name}
+          <span className="hidden sm:inline">（{kou.reading}）</span>
         </span>
       </span>
     </p>
