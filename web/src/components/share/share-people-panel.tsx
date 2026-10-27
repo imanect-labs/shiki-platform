@@ -9,9 +9,11 @@
 /// - 検索は先頭ページのみ（全件取得しない）。別テナントの相手はサーバ側で出ない。
 ///
 /// 付与・解除の API は呼び出し側から受け取る（ドライブ=ノード、アーティファクト=artifact）。
+/// 共有中の相手の一覧が 403（共有を管理できるのは持ち主だけ）なら、空の一覧と付与の欄を出さず、そのことを知らせる
+/// （黙って空に見せると、付与して初めて 403 になる・BUG-78）。
 
 import * as React from "react";
-import { Loader2, Search, UserPlus, UserRound, Users, X } from "lucide-react";
+import { Loader2, Lock, Search, UserPlus, UserRound, Users, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -87,6 +89,8 @@ export function SharePeoplePanel({
   const [rowRole, setRowRole] = React.useState<Record<string, PeopleRole>>({});
   const [shares, setShares] = React.useState<PeopleEntry[]>([]);
   const [loadingShares, setLoadingShares] = React.useState(false);
+  // 共有を管理する権限が無い（一覧が 403）。
+  const [forbidden, setForbidden] = React.useState(false);
   const [pendingKey, setPendingKey] = React.useState<string | null>(null);
   const loadRef = React.useRef(load);
   loadRef.current = load;
@@ -99,11 +103,16 @@ export function SharePeoplePanel({
     setQuery("");
     setResults([]);
     setRowRole({});
+    setForbidden(false);
     setLoadingShares(true);
     loadRef
       .current()
       .then((s) => active && setShares(s))
-      .catch(() => active && setShares([]))
+      .catch((e: unknown) => {
+        if (!active) return;
+        setShares([]);
+        setForbidden((e as { status?: number } | null)?.status === 403);
+      })
       .finally(() => active && setLoadingShares(false));
     return () => {
       active = false;
@@ -119,7 +128,7 @@ export function SharePeoplePanel({
   // インクリメンタル検索（デバウンス。全件取得はせず先頭ページのみ）。active フラグで世代を守り、
   // 古いクエリ/種別の遅延レスポンスが新しい結果を上書きしないようにする。
   React.useEffect(() => {
-    if (!open) return;
+    if (!open || forbidden) return;
     let active = true;
     const handle = setTimeout(() => {
       setSearching(true);
@@ -140,7 +149,7 @@ export function SharePeoplePanel({
       active = false;
       clearTimeout(handle);
     };
-  }, [open, query, kind]);
+  }, [open, query, kind, forbidden]);
 
   // (type, id, role) で既存共有を判定する（同じ役割のみ「付与済み」。役割の昇格は許可）。
   const sharedKeys = React.useMemo(() => new Set(shares.map(entryKey)), [shares]);
@@ -212,6 +221,22 @@ export function SharePeoplePanel({
   };
 
   const kindDef = KINDS.find((k) => k.value === kind)!;
+
+  if (forbidden) {
+    return (
+      <div
+        role="status"
+        data-testid="share-owner-only"
+        className="flex min-w-0 items-start gap-2.5 rounded-lg border border-border bg-muted/40 px-3 py-3 text-sm"
+      >
+        <Lock className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />
+        <div className="min-w-0">
+          <p className="font-medium">共有を管理できるのは持ち主だけです</p>
+          <p className="mt-0.5 text-muted-foreground">共有する相手を変えたいときは、持ち主に頼んでください。</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     // min-w-0: grid（DialogContent）の子として、メール等の折り返さない文字幅まで広がらないように。

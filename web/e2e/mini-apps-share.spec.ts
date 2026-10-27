@@ -1,12 +1,14 @@
 import { test, expect, type Browser, type Page } from "@playwright/test";
 
-import { loginAs, loginViaKeycloak, uniqueName } from "./helpers";
+import { cleanupAll, loginAs, loginViaKeycloak, uniqueName } from "./helpers";
 
 /// ミニアプリの実行画面の共有ボタンと、共同編集者の保存の誤り（BUG-78・BUG-80）の E2E。
 /// - 共有（相手の一覧と付与・解除）は owner だけができるので、共有ボタンは owner にだけ出す（解決の応答の `can_share`）。
 ///   閲覧・編集の共有を受けた人には出さない。
 /// - 共同編集者が自分の読めない部品を束ねたアプリを保存すると止まる（部品の権限の扱いは D-16 で未決）。そのときの誤りは
 ///   部品を別名と版で言い、部品の id も本文の中の位置（`workflows[0]`）も出さない。
+/// - アプリの一覧（/apps）には共有されたアプリも並ぶ。カードのメニューの「共有」と「削除」は owner のアプリにだけ出す。
+///   共有の欄が共有中の相手を読めない（403）ときは、空の一覧に見せず「持ち主だけ」と知らせる。
 /// 作ったアプリ・ワークフローは最後に消す。`E2E_SHOTS_DIR` を渡すとスクリーンショットを撮る。
 
 const SHOTS = process.env.E2E_SHOTS_DIR;
@@ -205,3 +207,94 @@ test("共同編集者が読めないワークフローを束ねたアプリを�
     await phone?.context().close().catch(() => undefined);
   }
 });
+
+test("アプリの一覧のメニューの共有・削除は owner のアプリにだけ出し、共有の欄は 403 を空の一覧に見せない（BUG-78）", async ({
+  page,
+  browser,
+}) => {
+  test.setTimeout(180_000);
+  await loginViaKeycloak(page);
+  const appId = await createApp(page, {
+    description: "会議室の予約の案内",
+    screen: "会議室の予約の仕方の案内です。\n",
+    workflows: [],
+  });
+  const name = ((await (await page.request.get(`/api/artifacts/${appId}`)).json()) as { name: string }).name;
+  const bobCtx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const bob = await bobCtx.newPage();
+  let phone: Page | null = null;
+  try {
+    await loginAs(bob, "bob");
+    const bobId = ((await (await bob.request.get("/api/me")).json()) as { id: string }).id;
+    await share(page, appId, bobId, "editor");
+
+    // 持ち主（owner）のメニューには共有・バージョン履歴・削除が出る。
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto("/apps");
+    await page.getByRole("button", { name: `${name} のその他の操作` }).click();
+    const ownerMenu = page.getByRole("menu");
+    await expect(ownerMenu.getByRole("menuitem", { name: "共有" })).toBeVisible();
+    await expect(ownerMenu.getByRole("menuitem", { name: "バージョン履歴" })).toBeVisible();
+    await expect(ownerMenu.getByRole("menuitem", { name: "削除" })).toBeVisible();
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/bug78-list-owner-pc.png` });
+    await page.keyboard.press("Escape");
+
+    // 共有を受けた人（編集の共有でも）のメニューには、バージョン履歴だけが出る（共有・削除は owner が要る）。
+    await bob.goto("/apps");
+    await bob.getByRole("button", { name: `${name} のその他の操作` }).click();
+    const bobMenu = bob.getByRole("menu");
+    await expect(bobMenu.getByRole("menuitem", { name: "バージョン履歴" })).toBeVisible();
+    await expect(bobMenu.getByRole("menuitem", { name: "共有" })).toHaveCount(0);
+    await expect(bobMenu.getByRole("menuitem", { name: "削除" })).toHaveCount(0);
+    if (SHOTS) await bob.screenshot({ path: `${SHOTS}/bug78-list-editor-pc.png` });
+    await bob.keyboard.press("Escape");
+
+    // スマホでも同じ（横にはみ出さない）。
+    phone = await phoneOf(browser, bob);
+    await phone.goto("/apps");
+    await phone.getByRole("button", { name: `${name} のその他の操作` }).click();
+    const phoneMenu = phone.getByRole("menu");
+    await expect(phoneMenu.getByRole("menuitem", { name: "バージョン履歴" })).toBeVisible();
+    await expect(phoneMenu.getByRole("menuitem", { name: "共有" })).toHaveCount(0);
+    await expect(phoneMenu.getByRole("menuitem", { name: "削除" })).toHaveCount(0);
+    expect(await phone.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+    if (SHOTS) await phone.screenshot({ path: `${SHOTS}/bug78-list-editor-phone.png` });
+
+    // 共有の欄が共有中の相手を読めない（403）なら、空の一覧と付与の欄を出さずに知らせる（持ち主でも、権限を
+    // 外された直後などに起こる。ここでは一覧の応答だけを 403 にして確かめる）。
+    await page.route(`**/api/artifacts/${appId}/shares`, (route) =>
+      route.request().method() === "GET" ? route.fulfill({ status: 403, body: "" }) : route.continue(),
+    );
+    await page.getByRole("button", { name: `${name} のその他の操作` }).click();
+    await page.getByRole("menu").getByRole("menuitem", { name: "共有" }).click();
+    const dialog = page.getByRole("dialog");
+    const notice = dialog.getByTestId("share-owner-only");
+    await expect(notice).toContainText("共有を管理できるのは持ち主だけです");
+    await expect(dialog.getByText("まだ誰にも共有していません。")).toHaveCount(0);
+    await expect(dialog.getByRole("searchbox")).toHaveCount(0);
+    // 開くときの動き（フェード）が終わってから撮る。
+    await page.waitForTimeout(500);
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/bug78-share-forbidden-pc.png` });
+    await page.keyboard.press("Escape");
+    await expect(dialog).toHaveCount(0);
+    // スマホ幅（下からのシート）でも同じく知らせ、横にはみ出さない。
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.getByRole("button", { name: `${name} のその他の操作` }).click();
+    await page.getByRole("menu").getByRole("menuitem", { name: "共有" }).click();
+    await expect(page.getByRole("dialog").getByTestId("share-owner-only")).toBeVisible();
+    await page.waitForTimeout(500);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/bug78-share-forbidden-phone.png` });
+    await page.keyboard.press("Escape");
+    await page.unroute(`**/api/artifacts/${appId}/shares`);
+  } finally {
+    await cleanupAll(
+      () => cleanup(page, [appId]),
+      () => bobCtx.close(),
+      async () => {
+        await phone?.context().close();
+      },
+    );
+  }
+});
+

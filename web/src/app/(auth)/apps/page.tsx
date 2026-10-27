@@ -17,6 +17,7 @@ import { MiniAppEditorDialog } from "@/components/artifacts/miniapp-editor";
 import { VersionsDialog } from "@/components/artifacts/versions-dialog";
 import { deleteArtifact, listArtifacts, type ArtifactMeta } from "@/lib/artifact-api";
 import { InstalledAppsSection } from "@/components/miniapp/installed-apps";
+import { useMe } from "@/hooks/use-me";
 
 type DialogState =
   | { kind: "closed" }
@@ -29,6 +30,11 @@ export default function AppsPage() {
   const [items, setItems] = React.useState<ArtifactMeta[] | null>(null);
   const [dialog, setDialog] = React.useState<DialogState>({ kind: "closed" });
   const [pending, setPending] = React.useState<string | null>(null);
+  // 一覧には共有されたアプリも並ぶ。共有（相手の一覧と付与・解除）と削除は持ち主（owner）だけができるので、
+  // 自分のアプリにだけ出す（共有を受けた人には一覧が空に見え、付与・削除が 403 になる・BUG-78）。
+  // 自分が分かるまでは出さない（実行画面の共有ボタンはサーバの答え `can_share` で出し分ける）。
+  const me = useMe();
+  const myId = me.data?.id;
 
   const reload = React.useCallback(() => {
     listArtifacts("mini_app")
@@ -92,21 +98,27 @@ export default function AppsPage() {
                 </Button>
               }
               menu={[
-                { key: "share", label: "共有", icon: Share2, onSelect: () => setDialog({ kind: "share", meta }) },
+                ...(meta.owner === myId
+                  ? [{ key: "share", label: "共有", icon: Share2, onSelect: () => setDialog({ kind: "share", meta }) }]
+                  : []),
                 {
                   key: "versions",
                   label: "バージョン履歴",
                   icon: History,
                   onSelect: () => setDialog({ kind: "versions", meta }),
                 },
-                {
-                  key: "delete",
-                  label: "削除",
-                  icon: Trash2,
-                  destructive: true,
-                  separatorBefore: true,
-                  onSelect: () => setDialog({ kind: "delete", meta }),
-                },
+                ...(meta.owner === myId
+                  ? [
+                      {
+                        key: "delete",
+                        label: "削除",
+                        icon: Trash2,
+                        destructive: true,
+                        separatorBefore: true,
+                        onSelect: () => setDialog({ kind: "delete", meta }),
+                      },
+                    ]
+                  : []),
               ]}
             />
           ))}
