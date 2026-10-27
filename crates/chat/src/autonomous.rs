@@ -77,8 +77,9 @@ impl AutonomousMode {
         /// オートで自動承認する「版管理で復元可能な書込」。不可逆・高影響（fs_delete / shell /
         /// office.live_edit=開いているセッションへの即時注入）は含めない。
         /// 新規作成（csv.write / save_document / save_sheet・#381）は既存データを壊さず
-        /// 削除で戻せるため、csv.write と同じ扱いにする。
-        const VERSIONED_WRITES: [ToolName; 9] = [
+        /// 削除で戻せるため、csv.write と同じ扱いにする。移動・名前変更（drive.move・#942）も
+        /// 中身を変えず移し直しで戻せるため同じ扱いにする（human 決定）。
+        const VERSIONED_WRITES: [ToolName; 10] = [
             ToolName::FsWrite,
             ToolName::FsEdit,
             ToolName::DocumentEdit,
@@ -88,6 +89,7 @@ impl AutonomousMode {
             ToolName::OfficeEdit,
             ToolName::SaveDocument,
             ToolName::SaveSheet,
+            ToolName::DriveMove,
         ];
         match self {
             AutonomousMode::RequireApproval => {
@@ -246,6 +248,7 @@ mod tests {
             "office.live_edit",
             "save_document",
             "save_sheet",
+            "drive.move",
         ] {
             assert!(!p.is_pre_authorized(tool), "{tool} は承認必須で止まること");
         }
@@ -267,6 +270,7 @@ mod tests {
             "office.edit",
             "save_document",
             "save_sheet",
+            "drive.move",
         ] {
             assert!(p.is_pre_authorized(tool), "{tool} はオートで自動承認");
         }

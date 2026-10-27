@@ -410,6 +410,12 @@ flowchart LR
   doc_search/doc_read）はどのモードでも止まらない。**skill はモードを緩められない**（Task 6.9 不変条件維持）。
   実行中の緩和は **run の actor 本人による設定のみ有効**（共有スレッドの別編集者が他人の権限の run の承認を
   緩められない・confused-deputy 防御）。
+- **ドライブの探索・移動（#942）**: `drive.find`（名前でファイル・フォルダを探す・read-only）と `drive.move`
+  （種別を問わない移動・名前変更）を通常チャット・自律の両方に提示する。認可は StorageService
+  （検索は viewer の post-filter、移動は対象と移動先の editor）で、発話ユーザーの権限のまま昇格しない。
+  `drive.move` は承認ゲート対象で、オートでは自動承認する（中身を変えず移し直しで戻せるため）。
+  作成系（`save_document` / `save_sheet` / `csv.write`）は `parent_id` で保存先を指定でき、下書き系
+  （`save_note` / `save_slide` / `save_csv`）の `parent_id` は保存ダイアログの初期値にとどめる（確定は人）。
 - **ワークスペース封じ込め（#350 で明示化）**: 自律 fs ツールは thread の起動フォルダ（`root_folder_id`）配下限定。
   名前解決は root 直下の SQL 完全一致のみ（パス解釈なし）・全操作は発話ユーザーの AuthContext（昇格しない）。
   フォルダ未指定は `agent-workspace-<thread>` を自動生成（「未指定なら Drive 全体」は採らない）。
@@ -825,7 +831,8 @@ flowchart TB
   ノート共有とスレッド共有は**別 ReBAC**（暗黙共有しない・権限なしは fail-closed 表示）。#282。
 - **チャット→ドキュメントは下書き確定型**（#282）: `save_note` は保存せず**下書き**（note_draft）を返し、下書きノート
   画面（クライアント内・複数下書きは名前キーでタブ並存）で AI と詰めてから「ドライブに保存」で実体化する
-  （保存先ピッカー・既定ルート）。確定と同時にその会話を由来ノートへ紐付ける。既存ノートの編集はライブ
+  （保存先ピッカー。初期値は AI が `parent_id` で指定したフォルダ → 由来ノートと同じフォルダ → ルートの順・#942）。
+  確定と同時にその会話を由来ノートへ紐付ける。既存ノートの編集はライブ
   （`document.edit`）で、下書き→確定の状態機械は**新規作成パスのみ**（二重の状態を作らない）。
 - **Yjs ドキュメント種は閉集合 `DocKind`**（`crates/collab`・拡張子で判定: `.md`=Note / `.slide`=Slide）。
   `collab_doc`/`collab_update` の永続化・authz・snapshot 圧縮は種別非依存で共有し、

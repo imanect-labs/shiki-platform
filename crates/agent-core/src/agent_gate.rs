@@ -120,6 +120,17 @@ pub(crate) async fn execute_tool(
     }
 }
 
+/// 下書きペイロードへ AI 指定の保存先を足す（無ければそのまま・#942）。
+fn with_parent(mut draft: serde_json::Value, parent_id: Option<uuid::Uuid>) -> serde_json::Value {
+    if let (Some(id), Some(obj)) = (parent_id, draft.as_object_mut()) {
+        obj.insert(
+            "parent_id".into(),
+            serde_json::Value::String(id.to_string()),
+        );
+    }
+    draft
+}
+
 /// ツール結果イベント（結果・引用・成果物）を外部化する。
 pub(crate) async fn emit_tool_events(
     sink: &mut dyn EventSink,
@@ -160,13 +171,19 @@ pub(crate) async fn emit_tool_events(
     }
     for draft in &outcome.slide_drafts {
         sink.emit(AgentEvent::SlideDraft {
-            draft: serde_json::json!({ "name": draft.name, "content": draft.content }),
+            draft: with_parent(
+                serde_json::json!({ "name": draft.name, "content": draft.content }),
+                draft.parent_id,
+            ),
         })
         .await?;
     }
     for draft in &outcome.csv_drafts {
         sink.emit(AgentEvent::CsvDraft {
-            draft: serde_json::json!({ "name": draft.name, "csv": draft.csv }),
+            draft: with_parent(
+                serde_json::json!({ "name": draft.name, "csv": draft.csv }),
+                draft.parent_id,
+            ),
         })
         .await?;
     }
@@ -203,4 +220,20 @@ pub(crate) async fn emit_tool_events(
         sink.emit(AgentEvent::SubagentRun { subagent }).await?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::with_parent;
+
+    /// 保存先は指定があるときだけ下書きペイロードへ足す（無ければ形を変えない・#942）。
+    #[test]
+    fn with_parent_adds_only_when_present() {
+        let base = serde_json::json!({ "name": "売上", "csv": "a\n1\n" });
+        assert_eq!(with_parent(base.clone(), None), base);
+        let id = uuid::Uuid::new_v4();
+        let out = with_parent(base, Some(id));
+        assert_eq!(out["parent_id"], id.to_string());
+        assert_eq!(out["name"], "売上");
+    }
 }

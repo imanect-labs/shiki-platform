@@ -19,6 +19,8 @@ export function slideDraftHref(threadId: string, name: string): string {
 }
 
 /// slide_draft イベント/ブロックの payload を厳格に検証する（fail-closed）。
-export function parseSlideDraft(raw: unknown): { name: string; content: string } | null {
+export function parseSlideDraft(
+  raw: unknown,
+): { name: string; content: string; parentId?: string } | null {
   return parseDraftPayload(raw, "content");
 }

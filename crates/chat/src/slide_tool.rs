@@ -254,6 +254,9 @@ struct SaveSlideInput {
     /// テーマ（カタログの閉集合・省略可）。
     #[serde(default)]
     theme_id: Option<String>,
+    /// 保存先フォルダ（保存ダイアログの初期値にするだけ・確定は人・#942）。
+    #[serde(default)]
+    parent_id: Option<Uuid>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -277,7 +280,9 @@ impl Tool for SaveSlideTool {
                  「パワポを作って」「スライドにして」等と依頼したときに使う。呼ぶと下書きスライド\
                  画面が開き、ユーザーはそこで内容を確認・編集してから自分で「ドライブに保存」して\
                  確定する（このツールは保存しない）。内容を直す場合は**同じ name で呼び直す**と\
-                 同じ下書きが更新される。別のスライドを同時に作る場合は別の name で呼ぶ。{}",
+                 同じ下書きが更新される。別のスライドを同時に作る場合は別の name で呼ぶ。\
+                 保存先を指定されたら drive.find でフォルダ id を調べて parent_id に渡す\
+                 （保存画面の保存先の初期値になる）。{}",
                 design_guidance()
             )
         });
@@ -301,7 +306,8 @@ impl Tool for SaveSlideTool {
                         "required": ["html"]
                     }
                 },
-                "theme_id": { "type": "string", "enum": theme_ids, "description": "テーマ（省略可・カタログの閉集合）" }
+                "theme_id": { "type": "string", "enum": theme_ids, "description": "テーマ（省略可・カタログの閉集合）" },
+                "parent_id": { "type": "string", "format": "uuid", "description": "保存先フォルダの id（保存画面の初期値・省略でルート）" }
             },
             "required": ["name", "slides"]
         })
@@ -367,6 +373,7 @@ impl Tool for SaveSlideTool {
         outcome.slide_drafts.push(SlideDraft {
             name: display_name.to_string(),
             content,
+            parent_id: input.parent_id,
         });
         Ok(outcome)
     }

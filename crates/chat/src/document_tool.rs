@@ -126,6 +126,9 @@ struct SaveNoteInput {
     name: String,
     /// 本文 md。
     markdown: String,
+    /// 保存先フォルダ（保存ダイアログの初期値にするだけ・確定は人・#942）。
+    #[serde(default)]
+    parent_id: Option<Uuid>,
 }
 
 #[async_trait::async_trait]
@@ -138,14 +141,15 @@ impl Tool for SaveNoteTool {
          を作って」「ノートにして」等と依頼したときに使う。呼ぶと下書きノート画面が開き、ユーザー\
          はそこで内容を確認・編集してから自分で「ドライブに保存」して確定する（このツールは保存\
          しない）。内容を直す場合は**同じ name で呼び直す**と同じ下書きが更新される。別の文書を\
-         同時に作る場合は別の name で呼ぶ。"
+         同時に作る場合は別の name で呼ぶ。保存先を指定されたら drive.find でフォルダ id を調べて parent_id に渡す（保存画面の保存先の初期値になる）。"
     }
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {
                 "name": { "type": "string", "description": "ノート名（.md は自動付与）。同じ name で呼び直すと同じ下書きを更新する" },
-                "markdown": { "type": "string", "description": "ノート本文の Markdown" }
+                "markdown": { "type": "string", "description": "ノート本文の Markdown" },
+                "parent_id": { "type": "string", "format": "uuid", "description": "保存先フォルダの id（保存画面の初期値・省略でルート）" }
             },
             "required": ["name", "markdown"]
         })
@@ -175,10 +179,14 @@ impl Tool for SaveNoteTool {
             "下書きノート「{display_name}」を用意しました。画面で内容を確認・編集し、\
              「ドライブに保存」で確定してください。"
         ));
-        outcome.note_drafts.push(serde_json::json!({
+        let mut draft = serde_json::json!({
             "name": display_name,
             "markdown": markdown,
-        }));
+        });
+        if let Some(parent) = input.parent_id {
+            draft["parent_id"] = serde_json::Value::String(parent.to_string());
+        }
+        outcome.note_drafts.push(draft);
         Ok(outcome)
     }
 }

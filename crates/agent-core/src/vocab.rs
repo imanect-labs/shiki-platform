@@ -134,6 +134,11 @@ vocab_enum! {
         DataSchema => "data_schema",
         /// テーブルのレコードの作成・更新（editor ＋書込述語・承認必須・Task 15.7）。
         DataRecordWrite => "data_record_write",
+        /// ドライブのファイル・フォルダを名前で探す（本人に見える範囲・読み取りのみ・#942）。
+        /// 保存先・移動先のフォルダ id を解決する入口。
+        DriveFind => "drive.find",
+        /// ドライブのファイル・フォルダの移動・名前変更（種別を問わない・承認ゲート対象・#942）。
+        DriveMove => "drive.move",
     }
 }
 
@@ -229,7 +234,9 @@ impl ToolName {
             | Self::CsvQuery
             | Self::CsvPatch
             | Self::CsvWrite
-            | Self::DataRecordWrite => ToolLoading::Deferred,
+            | Self::DataRecordWrite
+            | Self::DriveFind
+            | Self::DriveMove => ToolLoading::Deferred,
         }
     }
 
@@ -285,6 +292,12 @@ impl ToolName {
             Self::CsvWrite => "csv table create write save 表 作成 保存",
             Self::DataRecordWrite => {
                 "data table record row create update write insert テーブル レコード 行 追加 登録 更新 書き込み"
+            }
+            Self::DriveFind => {
+                "drive folder file find search locate lookup path ドライブ フォルダ ファイル 探す 検索 場所 保存先"
+            }
+            Self::DriveMove => {
+                "drive file folder move rename organize relocate ドライブ ファイル フォルダ 移動 名前変更 整理 保存先"
             }
             Self::Skill
             | Self::SkillSearch

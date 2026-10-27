@@ -31,6 +31,7 @@ import { getThreadMessages } from "@/lib/chat-api";
 import { csvDraftStore, parseCsvDraft } from "@/lib/csv/draft";
 import { parseCsv, toCsv } from "@/lib/csv/parse";
 import { saveNewCsv } from "@/lib/tabular-api";
+import { useDefaultSaveFolder } from "@/lib/drafts/save-folder";
 import { useStorageScopeReady } from "@/lib/user-storage";
 
 /// useSearchParams を使うため Suspense 境界でラップする（静的生成の CSR bailout 要件・Next.js）。
@@ -50,6 +51,9 @@ function DraftCsvPageInner() {
 
   const drafts = csvDraftStore.useDrafts(threadId);
   const [activeName, setActiveName] = React.useState(nameParam);
+  // 保存先の初期値（AI の指定 → 由来ノートのフォルダ → ルート・#942）。
+  const aiParentId = drafts.find((d) => d.name === activeName)?.parentId;
+  const defaultFolder = useDefaultSaveFolder(threadId, aiParentId);
   const [chatOpen, setChatOpen] = React.useState(true);
   const [saveOpen, setSaveOpen] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
@@ -94,7 +98,7 @@ function DraftCsvPageInner() {
             if (b.type === "csv_draft") {
               const d = parseCsvDraft(b.draft);
               if (d && !csvDraftStore.get(threadId, d.name)) {
-                csvDraftStore.upsert(threadId, d.name, d.csv, "ai");
+                csvDraftStore.upsert(threadId, d.name, d.csv, "ai", d.parentId);
               }
             }
           }
@@ -235,6 +239,7 @@ function DraftCsvPageInner() {
         defaultName={activeName}
         saving={saving}
         onConfirm={doSave}
+        defaultFolder={defaultFolder}
         entityLabel="CSV"
         description="下書きを CSV として保存します。保存後はグリッド編集・SQL 分析・共有ができます。"
       />

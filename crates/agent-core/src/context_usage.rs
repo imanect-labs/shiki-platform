@@ -220,7 +220,8 @@ fn reads_material(name: &str) -> bool {
         | ToolName::SlideRead
         | ToolName::OfficeRead
         | ToolName::CsvQuery
-        | ToolName::DataQuery => true,
+        | ToolName::DataQuery
+        | ToolName::DriveFind => true,
         ToolName::Skill
         | ToolName::SkillSearch
         | ToolName::QuoteCheck
@@ -249,7 +250,8 @@ fn reads_material(name: &str) -> bool {
         | ToolName::CsvPatch
         | ToolName::CsvWrite
         | ToolName::DataSchema
-        | ToolName::DataRecordWrite => false,
+        | ToolName::DataRecordWrite
+        | ToolName::DriveMove => false,
     }
 }
 

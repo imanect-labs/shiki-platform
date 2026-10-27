@@ -22,6 +22,8 @@ import {
   FileSpreadsheet,
   FileText,
   Files,
+  FolderInput,
+  FolderSearch,
   Globe,
   LayoutTemplate,
   ListChecks,
@@ -473,6 +475,23 @@ const TOOL_DISPLAY: Record<ToolName, ToolDisplay> = {
     verb: (input) => (input.op === "update" ? "更新" : "追加"),
     suru: true,
     target: named("table"),
+  },
+  // ドライブのファイル・フォルダ（種別を問わない・#942）。
+  "drive.find": {
+    icon: FolderSearch,
+    category: "search",
+    lead: (t) => (t ? `ドライブで${t}を` : "ドライブを"),
+    verb: "検索",
+    suru: true,
+    target: quoted("query"),
+  },
+  "drive.move": {
+    icon: FolderInput,
+    category: "write",
+    lead: objectOf("ファイル"),
+    verb: (input) => (input.destination_folder_id ? "移動" : "名前変更"),
+    suru: true,
+    nodeIdKey: "node_id",
   },
 };
 

@@ -38,6 +38,7 @@ import {
   useDrafts,
 } from "@/lib/notes/draft-store";
 import { serializeFragment } from "@/lib/notes/markdown-serialize";
+import { useDefaultSaveFolder } from "@/lib/drafts/save-folder";
 import { useStorageScopeReady } from "@/lib/user-storage";
 
 /// useSearchParams を使うため Suspense 境界でラップする（静的生成の CSR bailout 要件・Next.js）。
@@ -57,6 +58,9 @@ function DraftNotePageInner() {
 
   const drafts = useDrafts(threadId);
   const [activeName, setActiveName] = React.useState(nameParam);
+  // 保存先の初期値（AI の指定 → 由来ノートのフォルダ → ルート・#942）。
+  const aiParentId = drafts.find((d) => d.name === activeName)?.parentId;
+  const defaultFolder = useDefaultSaveFolder(threadId, aiParentId);
   const [seed, setSeed] = React.useState<{ markdown: string; nonce: number }>({
     markdown: "",
     nonce: 0,
@@ -99,7 +103,7 @@ function DraftNotePageInner() {
             if (b.type === "note_draft") {
               const d = parseNoteDraft(b.draft);
               if (d && !getDraft(threadId, d.name)) {
-                upsertDraft(threadId, d.name, d.markdown, "ai");
+                upsertDraft(threadId, d.name, d.markdown, "ai", d.parentId);
               }
             }
           }
@@ -233,6 +237,7 @@ function DraftNotePageInner() {
         defaultName={activeName}
         saving={saving}
         onConfirm={doSave}
+        defaultFolder={defaultFolder}
       />
     </div>
   );

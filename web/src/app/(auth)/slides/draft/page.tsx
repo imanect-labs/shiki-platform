@@ -33,6 +33,7 @@ import { getThreadMessages } from "@/lib/chat-api";
 import { createSlide } from "@/lib/slides-api";
 import { parseSlideDraft, slideDraftStore } from "@/lib/slides/draft";
 import { parseSlideDocJson, readSlidesJson, seedSlides } from "@/lib/slides-doc";
+import { useDefaultSaveFolder } from "@/lib/drafts/save-folder";
 import { useStorageScopeReady } from "@/lib/user-storage";
 
 /// useSearchParams を使うため Suspense 境界でラップする（静的生成の CSR bailout 要件・Next.js）。
@@ -52,6 +53,9 @@ function DraftSlidePageInner() {
 
   const drafts = slideDraftStore.useDrafts(threadId);
   const [activeName, setActiveName] = React.useState(nameParam);
+  // 保存先の初期値（AI の指定 → 由来ノートのフォルダ → ルート・#942）。
+  const aiParentId = drafts.find((d) => d.name === activeName)?.parentId;
+  const defaultFolder = useDefaultSaveFolder(threadId, aiParentId);
   const [chatOpen, setChatOpen] = React.useState(true);
   const [saveOpen, setSaveOpen] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
@@ -126,7 +130,7 @@ function DraftSlidePageInner() {
             if (b.type === "slide_draft") {
               const d = parseSlideDraft(b.draft);
               if (d && !slideDraftStore.get(threadId, d.name)) {
-                slideDraftStore.upsert(threadId, d.name, d.content, "ai");
+                slideDraftStore.upsert(threadId, d.name, d.content, "ai", d.parentId);
               }
             }
           }
@@ -259,6 +263,7 @@ function DraftSlidePageInner() {
         defaultName={activeName}
         saving={saving}
         onConfirm={doSave}
+        defaultFolder={defaultFolder}
         entityLabel="スライド"
         description="下書きをスライドとして保存します。保存後はバージョン管理・共有・共同編集ができます。"
       />

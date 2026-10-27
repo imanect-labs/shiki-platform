@@ -297,6 +297,9 @@ struct SaveCsvInput {
     name: String,
     /// CSV 本文（ヘッダ行＋データ行）。
     csv: String,
+    /// 保存先フォルダ（保存ダイアログの初期値にするだけ・確定は人・#942）。
+    #[serde(default)]
+    parent_id: Option<Uuid>,
 }
 
 #[async_trait::async_trait]
@@ -309,14 +312,16 @@ impl Tool for SaveCsvTool {
          「一覧表にして」等と依頼したときに使う。呼ぶと下書き CSV 画面（グリッド）が開き、ユーザー\
          はそこで内容を確認・編集してから自分で「ドライブに保存」して確定する（このツールは保存\
          しない）。内容を直す場合は**同じ name で呼び直す**と同じ下書きが更新される。別の表を\
-         同時に作る場合は別の name で呼ぶ。既存 CSV の編集は csv.patch を使うこと。"
+         同時に作る場合は別の name で呼ぶ。既存 CSV の編集は csv.patch を使うこと。\
+         保存先を指定されたら drive.find でフォルダ id を調べて parent_id に渡す（保存画面の保存先の初期値になる）。"
     }
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {
                 "name": { "type": "string", "description": "CSV 名（.csv は自動付与）。同じ name で呼び直すと同じ下書きを更新する" },
-                "csv": { "type": "string", "description": "CSV 本文（1 行目がヘッダ・RFC4180 のクォート）" }
+                "csv": { "type": "string", "description": "CSV 本文（1 行目がヘッダ・RFC4180 のクォート）" },
+                "parent_id": { "type": "string", "format": "uuid", "description": "保存先フォルダの id（保存画面の初期値・省略でルート）" }
             },
             "required": ["name", "csv"]
         })
@@ -353,6 +358,7 @@ impl Tool for SaveCsvTool {
         outcome.csv_drafts.push(agent_core::CsvDraft {
             name: display_name.to_string(),
             csv: input.csv,
+            parent_id: input.parent_id,
         });
         Ok(outcome)
     }

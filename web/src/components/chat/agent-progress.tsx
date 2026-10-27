@@ -14,6 +14,7 @@ import { CheckCircle2, Circle, Loader2, PauseCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 import { DataWriteSummary } from "./data-approval-summary";
+import { DriveMoveSummary } from "./drive-move-approval-summary";
 import type { ApprovalRequest, PlanSubtask } from "@/lib/chat-api";
 
 /// 状態はドットではなくアイコンで示す（色だけに頼らず、形でも区別できるように）。
@@ -121,10 +122,15 @@ export function ApprovalCard({
         </span>
         <span className="text-[13px] font-semibold text-foreground">承認が必要です</span>
       </div>
-      {request.name === "data_record_write" ? (
+      {request.name === "data_record_write" || request.name === "drive.move" ? (
         <>
-          {/* 業務データの書込はテーブル名・対象・変える列を読める形で（生の id と JSON は畳んでおく）。 */}
-          <DataWriteSummary input={request.input} />
+          {/* 業務データの書込はテーブル名・対象・変える列を、ファイルの移動は何をどこへ移すかを
+              読める形で（生の id と JSON は畳んでおく）。 */}
+          {request.name === "drive.move" ? (
+            <DriveMoveSummary input={request.input} />
+          ) : (
+            <DataWriteSummary input={request.input} />
+          )}
           <details className="mb-2 text-[11px] text-muted-foreground">
             <summary className="cursor-pointer select-none">送る内容（JSON）</summary>
             <pre className="mt-1 max-h-24 overflow-auto overscroll-contain rounded-lg bg-secondary/60 p-2 text-foreground/70">
