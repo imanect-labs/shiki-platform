@@ -272,20 +272,23 @@ def diff_coverage(lines: dict[str, set[int]], lcov: dict[str, dict[int, int]], i
 
 def unmatched_sources(lines: dict[str, set[int]], lcov: dict[str, dict[int, int]], ignore: str | None,
                       members: dict[str, dict]) -> list[str]:
-    """変更した workspace クレートの src/*.rs が lcov に 1 件も無いとき、その一覧（無ければ空）。
+    """変更した src/*.rs のうち、属するクレートが lcov に 1 件も無いもの（無ければ空）。
 
-    lcov と diff のパスが食い違うと、変更行が 1 行も数えられず「100% で合格」に倒れる。黙って
-    通さないよう、計測されているはずのファイルが 1 件も見つからない場合は検出して落とす。
+    lcov と diff のパスが食い違う・選んだクレートが計測されていない、のどちらでも変更行が 1 行も数えられず
+    「100% で合格」に倒れる。黙って通さないよう検出して落とす。ファイル単位では判定しない: 文字列定数だけの
+    ファイルは実行可能な行が無く、正しく計測しても lcov に現れない（例 agent-core/src/tools/subagent_prompts.rs）。
     """
     pattern = re.compile(ignore) if ignore else None
-    expected = [
-        path for path in sorted(lines)
-        if any(path.startswith(info["dir"] + "/src/") for info in members.values())
-        and not (pattern and pattern.search(path))
-    ]
-    if expected and not any(path in lcov for path in expected):
-        return expected
-    return []
+    measured = {name for name, info in members.items()
+                if any(path.startswith(info["dir"] + "/src/") for path in lcov)}
+    missing = []
+    for path in sorted(lines):
+        if pattern and pattern.search(path):
+            continue
+        crate = next((name for name, info in members.items() if path.startswith(info["dir"] + "/src/")), None)
+        if crate is not None and crate not in measured:
+            missing.append(path)
+    return missing
 
 
 def md_code(text: str) -> str:
@@ -352,8 +355,8 @@ def cmd_diff_coverage(args: argparse.Namespace) -> int:
     missing = unmatched_sources(lines, lcov, args.ignore, workspace_packages(Path(args.root)))
     if missing:
         text = (
-            "変更行カバレッジを計測できません: 変更したクレートのソースが lcov に 1 件もありません"
-            "（lcov と diff のパスの食い違い、または計測漏れ）。\n\n"
+            "変更行カバレッジを計測できません: 変更したファイルのクレートが lcov に 1 件もありません"
+            "（lcov と diff のパスの食い違い、またはそのクレートのテストが回っていない）。\n\n"
             + "\n".join(f"- {md_code(p)}" for p in missing[:20]) + "\n"
         )
         print(text)

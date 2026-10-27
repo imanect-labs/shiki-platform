@@ -169,7 +169,7 @@ class DiffCoverageTest(unittest.TestCase):
         self.assertEqual(ci.parse_changed_lines(diff), {"crates/a/src/my file.rs": {1}})
 
     def test_unmatched_sources_detects_path_mismatch(self):
-        members = {"shiki-a": {"dir": "crates/a", "deps": set()}}
+        members = {"shiki-a": {"dir": "crates/a", "deps": set()}, "shiki-b": {"dir": "crates/b", "deps": set()}}
         lines = {"crates/a/src/lib.rs": {1}, "crates/a/tests/it.rs": {1}}
         # lcov のパスが別の root のまま（正規化に失敗）: 変更行が 1 行も数えられず 100% に倒れるのを検出する。
         lcov = ci.parse_lcov("SF:/elsewhere/crates/a/src/lib.rs\nDA:1,0\nend_of_record\n", "/repo")
@@ -179,6 +179,14 @@ class DiffCoverageTest(unittest.TestCase):
         # 除外パターンに当たるファイルだけの変更・src 以外だけの変更は対象外。
         self.assertEqual(ci.unmatched_sources({"crates/a/src/main.rs": {1}}, {}, r"src/main\.rs", members), [])
         self.assertEqual(ci.unmatched_sources({"crates/a/tests/it.rs": {1}}, {}, None, members), [])
+        # 計測されていないクレート（選択漏れ）のファイルは検出する。
+        self.assertEqual(ci.unmatched_sources({"crates/b/src/lib.rs": {1}}, ok, None, members), ["crates/b/src/lib.rs"])
+
+    def test_file_without_executable_lines_is_not_a_mismatch(self):
+        # 文字列定数だけのファイルは計測しても lcov に現れない。同じクレートの他のファイルがあれば正常。
+        members = {"shiki-a": {"dir": "crates/a", "deps": set()}}
+        lcov = ci.parse_lcov("SF:/repo/crates/a/src/lib.rs\nDA:1,1\nend_of_record\n", "/repo")
+        self.assertEqual(ci.unmatched_sources({"crates/a/src/prompts.rs": {3, 4}}, lcov, None, members), [])
 
     def test_md_code_escapes_table_breakers(self):
         self.assertEqual(ci.md_code("a|b`c.rs"), "`a\\|b'c.rs`")
