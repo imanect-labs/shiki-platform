@@ -673,6 +673,8 @@ test.describe("AI で判定（エディタ・編集の途中）", () => {
       await expect(flow.getByRole("button", { name: "「AI で判定」の「エラー時」にブロックを追加" })).toBeVisible();
       await page.screenshot({ path: "test-results/decide-pending-error-phone.png" });
     } finally {
+      // 検証の差し替えが応答を待っている間にテストが終わると、閉じたページへの応答で落ちる（後片付けの前に外す）。
+      await page.unrouteAll({ behavior: "ignoreErrors" });
       await cleanup(page, made);
     }
   });
