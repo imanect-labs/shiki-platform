@@ -143,7 +143,7 @@ test("ファイルを保存: 同じ名前があるときは番号を付け、欄
 
     // 差し込みの候補に、実行情報の 実行した日 が出る（日本時間の見出しの下）。
     await panel.getByTestId("insert-var").first().click();
-    await expect(page.getByText("実行情報（日本時間）")).toBeVisible();
+    await expect(page.getByText("実行情報（日時は日本時間）")).toBeVisible();
     await expect(page.getByRole("menuitem", { name: /実行した日（date）/ })).toBeVisible();
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/name-taken-run-info-pc.png` });
     await page.keyboard.press("Escape");

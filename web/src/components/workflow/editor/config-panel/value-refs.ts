@@ -45,8 +45,9 @@ export const SOURCE_LABELS: Record<string, string> = {
   run: "実行情報",
 };
 
-/// 実行情報の候補の見出し（日時は日本時間で入る・vocab の run_info）。
-const RUN_INFO_GROUP = `${SOURCE_LABELS.run}（日本時間）`;
+/// 実行情報の候補の見出し（日時は日本時間で入る・vocab の run_info。実行した人も並ぶので、日本時間が日時の
+/// ことだと分かるように言う・D-101）。
+const RUN_INFO_GROUP = `${SOURCE_LABELS.run}（日時は日本時間）`;
 
 export function refKey(ref: { $from: string; path?: string | null }): string {
   return `${ref.$from}|${ref.path ?? ""}`;
@@ -136,7 +137,7 @@ export function refOptions({ inputFields, ancestors, inMapRegion, triggerSources
   for (const f of triggerFields(triggerSources)) {
     add({ $from: "trigger", path: pathOf([f.name]) }, `${f.description}（${f.name}）`, SOURCE_LABELS.trigger);
   }
-  // 実行情報（実行した日など・カタログの単一定義・ID は候補に出さない・D-97）。日時は日本時間。
+  // 実行情報（実行した日・実行した人など・カタログの単一定義・ID は候補に出さない・D-97・D-101）。日時は日本時間。
   for (const f of RUN_INFO_CATALOG.filter((x) => x.suggested)) {
     add({ $from: "run", path: pathOf([f.name]) }, `${f.description_ja}（${f.name}）`, RUN_INFO_GROUP);
   }
