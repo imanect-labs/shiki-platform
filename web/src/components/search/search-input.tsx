@@ -15,8 +15,9 @@ const MODES: { value: SearchMode; label: string; hint: string }[] = [
   { value: "keyword", label: "キーワード", hint: "BM25 全文検索のみ" },
 ];
 
-/// 検索ボックス＋モード切替＋デバッグトグル。
+/// 検索ボックス＋モード切替＋内訳のトグル。
 /// モードの説明は title（ホバー）だけだとタッチで読めないため、選択中のものを下に文字で出す。
+/// 内訳（各段の件数・権限で除いた数）のトグルは組織の管理者にだけ出す（サーバーも管理者にだけ返す・D-80）。
 export function SearchInput({
   query,
   onQueryChange,
@@ -24,6 +25,7 @@ export function SearchInput({
   onModeChange,
   debug,
   onDebugChange,
+  showDebug,
   onSubmit,
   loading,
 }: {
@@ -33,6 +35,8 @@ export function SearchInput({
   onModeChange: (m: SearchMode) => void;
   debug: boolean;
   onDebugChange: (d: boolean) => void;
+  /// 内訳のトグルを出すか（組織の管理者だけ）。
+  showDebug: boolean;
   onSubmit: () => void;
   loading: boolean;
 }) {
@@ -111,13 +115,15 @@ export function SearchInput({
           ) : null}
         </div>
 
-        <label
-          htmlFor={debugId}
-          className="flex min-h-10 cursor-pointer select-none items-center gap-2.5 text-xs text-muted-foreground"
-        >
-          <Switch id={debugId} checked={debug} onCheckedChange={onDebugChange} />
-          デバッグ情報（各段の絞り込み件数）を表示
-        </label>
+        {showDebug ? (
+          <label
+            htmlFor={debugId}
+            className="flex min-h-10 cursor-pointer select-none items-center gap-2.5 text-xs text-muted-foreground"
+          >
+            <Switch id={debugId} checked={debug} onCheckedChange={onDebugChange} />
+            文書検索の内訳を表示
+          </label>
+        ) : null}
       </div>
     </form>
   );
