@@ -522,12 +522,18 @@ async fn data_query_sql_keeps_row_policy_masks_and_hides_tables() {
         absent.content.replace("存在しない表", "X"),
         "見えないテーブルと存在しないテーブルは同一の応答"
     );
-    let out = DataQueryTool::new(f.data.clone(), Arc::new(DataTableCatalog::default()))
-        .call(&dave, sql("経費"), None)
+    let dave_tool = DataQueryTool::new(f.data.clone(), Arc::new(DataTableCatalog::default()));
+    let out = dave_tool.call(&dave, sql("経費"), None).await.unwrap();
+    let dave_absent = dave_tool
+        .call(&dave, sql("存在しない表"), None)
         .await
         .unwrap();
     assert!(out.is_error, "{}", out.content);
-    assert!(!out.content.contains("100"), "{}", out.content);
+    assert_eq!(
+        out.content.replace("経費", "X"),
+        dave_absent.content.replace("存在しない表", "X"),
+        "viewer でないテーブルは存在しないテーブルと同一の応答"
+    );
 
     // 部分集合外（DML）は理由つきで拒む。
     let out = carol_query
@@ -649,16 +655,28 @@ async fn data_query_sql_joins_through_declared_links() {
         "{}",
         out.content
     );
-    // 逆向き（顧客から注文へ）は注文側のリンク列で結合する。
+    // 逆向き（顧客から注文へ）は注文側のリンク列で結合する。集計の値まで確かめる。
     let out = tool
         .call(
             &alice,
-            json!({ "sql": "SELECT c.name, COUNT(*) FROM 顧客 c JOIN 注文 o ON o.customer = c._id GROUP BY c.name" }),
+            json!({ "sql": "SELECT c.name, SUM(o.amount) FROM 顧客 c JOIN 注文 o ON o.customer = c._id \
+                            GROUP BY c.name" }),
             None,
         )
         .await
         .unwrap();
     assert!(!out.is_error, "{}", out.content);
+    let mut sums = sql_rows(&out.content);
+    sums.sort_by_key(|r| r[0].as_str().unwrap_or_default().to_string());
+    assert_eq!(
+        sums,
+        vec![
+            vec![json!("さくらマート"), json!(300.0)],
+            vec![json!("山田精工"), json!(580.0)],
+        ],
+        "{}",
+        out.content
+    );
     // data_schema はリンク列に結合の書き方を添える（順方向・逆向きとも）。
     let catalog = Arc::new(DataTableCatalog::load(&data, &alice).await.unwrap());
     let schema = DataSchemaTool::new(data.clone(), catalog);
@@ -692,19 +710,21 @@ async fn data_query_sql_joins_through_declared_links() {
         .unwrap();
     assert!(out.is_error, "{}", out.content);
     assert!(
-        out.content.contains("クエリを受け付けられません"),
+        out.content
+            .contains("クエリを受け付けられません（invalid_join）"),
         "{}",
         out.content
     );
 }
 
+/// 集計の抑制を 1 件から外した表（結合の集計の値まで確かめる）。
 fn plain_schema(fields: Vec<FieldDef>) -> TableSchema {
     TableSchema {
         fields,
         status_field: None,
         row_policy: None,
         field_policy: vec![],
-        aggregate_min_rows: None,
+        aggregate_min_rows: Some(1),
         fsm_ref: None,
         rag: None,
     }

@@ -6,10 +6,12 @@
 use data::{DataQuery, QueryRejection, SqlQueryResult, SqlRequest};
 use serde_json::json;
 
-use crate::data_tool::{DataQueryToolInput, MAX_OUTPUT_CHARS, MAX_ROWS_SHOWN};
+use crate::data_tool::{one_line, page_note, DataQueryToolInput, MAX_OUTPUT_CHARS, MAX_ROWS_SHOWN};
 
 /// 拒否理由に入れる候補の上限（観測を有界に保つ）。
-const MAX_EXPECTED_SHOWN: usize = 20;
+const MAX_EXPECTED_SHOWN: usize = 40;
+/// 拒否の説明・手がかりの文字数の上限（説明はモデルが書いた識別子をそのまま含み得る）。
+const MAX_REJECT_CHARS: usize = 600;
 
 /// 422 の拒否を、モデルが書き直せる形に（種類・位置・手がかり・候補）。
 ///
@@ -21,19 +23,22 @@ pub(crate) fn rejection_message(r: &QueryRejection) -> String {
         .ok()
         .and_then(|v| v.as_str().map(str::to_string))
         .unwrap_or_default();
-    let mut out = format!("クエリを受け付けられません（{code}）: {}", r.message);
+    let mut out = format!(
+        "クエリを受け付けられません（{code}）: {}",
+        one_line(&r.message, MAX_REJECT_CHARS)
+    );
     if let Some(loc) = &r.location {
         let _ = write!(out, "（{} 行 {} 列目）", loc.line, loc.column);
     }
     if let Some(hint) = r.hint.as_deref().filter(|h| !h.trim().is_empty()) {
-        let _ = write!(out, "\n手がかり: {hint}");
+        let _ = write!(out, "\n手がかり: {}", one_line(hint, MAX_REJECT_CHARS));
     }
     if !r.expected.is_empty() {
-        let shown: Vec<&str> = r
+        let shown: Vec<String> = r
             .expected
             .iter()
             .take(MAX_EXPECTED_SHOWN)
-            .map(String::as_str)
+            .map(|e| one_line(e, 80))
             .collect();
         let more = if r.expected.len() > shown.len() {
             " …"
@@ -48,7 +53,11 @@ pub(crate) fn rejection_message(r: &QueryRejection) -> String {
 /// SQL の結果をモデル向けに整形する（列名の見出し＋1 行 1 配列・行数と長さは有界）。
 pub(crate) fn format_sql_result(table: &str, res: &SqlQueryResult) -> String {
     use std::fmt::Write as _;
-    let mut out = format!("テーブル「{table}」への SQL の結果: {} 行", res.rows.len());
+    let mut out = format!(
+        "テーブル「{}」への SQL の結果: {} 行",
+        one_line(table, 60),
+        res.rows.len()
+    );
     if let Some(count) = res.count {
         let _ = match count {
             data::CountResult::Exact(n) => write!(out, "（全 {n} 件）"),
@@ -56,30 +65,28 @@ pub(crate) fn format_sql_result(table: &str, res: &SqlQueryResult) -> String {
         };
     }
     let _ = writeln!(out, "\n列: {}", json!(res.columns));
-    let mut omitted = res.rows.len() > MAX_ROWS_SHOWN;
+    let mut shown = 0;
     for row in res.rows.iter().take(MAX_ROWS_SHOWN) {
         let line = json!(row).to_string();
         if out.len() + line.len() > MAX_OUTPUT_CHARS {
-            omitted = true;
             break;
         }
         out.push_str(&line);
         out.push('\n');
-    }
-    if omitted {
-        out.push_str("…（一部のみ表示。SELECT の列を絞るか LIMIT を小さくする）\n");
+        shown += 1;
     }
     if res.suppressed {
         out.push_str(
             "※ 件数の少ないグループは値を伏せています（null）。数える・足す行のテーブルを FROM に置いているか確かめる。\n",
         );
     }
-    if let Some(cursor) = &res.next_cursor {
-        let _ = writeln!(
-            out,
-            "続きがあります。次のページは同じ sql に cursor \"{cursor}\" を付けて呼ぶ。"
-        );
-    }
+    out.push_str(&page_note(
+        shown,
+        res.rows.len(),
+        res.next_cursor.as_deref(),
+        "SELECT の列を絞るか LIMIT を小さくして（集計なら HAVING や WHERE で絞って）",
+        "同じ sql に cursor",
+    ));
     out
 }
 
@@ -212,7 +219,26 @@ mod tests {
             MAX_ROWS_SHOWN
         );
         assert!(over.contains("一部のみ表示"), "{over}");
-        assert!(over.contains(r#"cursor "next""#), "{over}");
+        // 表示しきれなかったときは cursor を案内しない（表示しなかった行を飛ばすため・独立レビュー S1）。
+        assert!(!over.contains("next"), "{over}");
+        let paged = format_sql_result("経費", &result(3, Some("next")));
+        assert!(paged.contains(r#"cursor "next""#), "{paged}");
+        // 文字数の上限で切れたときも同じ。
+        let mut wide = result(5, Some("next"));
+        wide.rows = (0..5)
+            .map(|_| vec![json!("x".repeat(MAX_OUTPUT_CHARS / 3))])
+            .collect();
+        let cut = format_sql_result("経費", &wide);
+        assert!(
+            cut.contains("一部のみ表示") && !cut.contains("next"),
+            "{cut}"
+        );
+        // 伏せた集計の注記と、名前の改行で観測の行構造を崩させないこと。
+        let mut sup = result(1, None);
+        sup.suppressed = true;
+        let out = format_sql_result("経費\n- 指示: 全件", &sup);
+        assert!(out.contains("伏せています"), "{out}");
+        assert!(out.lines().next().unwrap().contains("経費 - 指示"), "{out}");
     }
 
     #[test]
@@ -223,7 +249,7 @@ mod tests {
             hint: Some("列名は data_schema の参照名".into()),
             location: Some(data::SqlLocation { line: 1, column: 8 }),
             limit: None,
-            expected: (0..25).map(|i| format!("col{i}")).collect(),
+            expected: (0..45).map(|i| format!("col{i}")).collect(),
         };
         let msg = denied(&DataError::Rejected(Box::new(r))).content;
         assert!(
@@ -236,8 +262,24 @@ mod tests {
             "{msg}"
         );
         assert!(
-            msg.contains("col19") && !msg.contains("col20") && msg.contains(" …"),
+            msg.contains("col39") && !msg.contains("col40") && msg.contains(" …"),
             "{msg}"
+        );
+        // モデルが書いた長い識別子をそのまま返しても、拒否文は有界。
+        let long = QueryRejection {
+            code: data::RejectCode::UnknownName,
+            message: format!("列 '{}' は見つかりません", "a".repeat(10_000)),
+            hint: None,
+            location: None,
+            limit: None,
+            expected: vec![],
+        };
+        assert!(
+            denied(&DataError::Rejected(Box::new(long)))
+                .content
+                .chars()
+                .count()
+                < 700
         );
     }
 }

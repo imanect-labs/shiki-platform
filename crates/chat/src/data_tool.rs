@@ -34,6 +34,39 @@ pub(crate) const MAX_OUTPUT_CHARS: usize = 24_000;
 /// テーブル名の表示の上限（文字数）。
 const MAX_NAME_CHARS: usize = 60;
 
+/// 観測に載せる名前・文言を 1 行・上限文字数にする（作成者が付けた名前で観測の行構造を崩させない）。
+pub(crate) fn one_line(s: &str, max_chars: usize) -> String {
+    let mut out: String = s
+        .chars()
+        .take(max_chars)
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    if s.chars().count() > max_chars {
+        out.push('…');
+    }
+    out
+}
+
+/// 結果の末尾の案内（省略・次ページ）。**表示しきれなかったときは cursor を出さない**
+/// （cursor は返した行の続きを指すので、表示しなかった行を飛ばしてしまう・独立レビュー S1）。
+pub(crate) fn page_note(
+    shown: usize,
+    returned: usize,
+    cursor: Option<&str>,
+    narrow: &str,
+    next: &str,
+) -> String {
+    if shown < returned {
+        return format!(
+            "…（一部のみ表示: {returned} 件のうち {shown} 件。{narrow}読み直す。続きのページは表示しきれる量に絞ってから読む）\n"
+        );
+    }
+    match cursor {
+        Some(c) => format!("続きがあります。次のページは{next} \"{c}\" を付けて呼ぶ。\n"),
+        None => String::new(),
+    }
+}
+
 /// 発話ユーザーが viewer のテーブル（run 開始時に固定・有界）。
 #[derive(Debug, Clone, Default)]
 pub struct DataTableCatalog {
@@ -100,11 +133,7 @@ impl DataTableCatalog {
         let mut out = String::from("\n\n閲覧できるテーブル（名前 / id）:\n");
         for (id, name) in &self.entries {
             // 名前は作成者が付けた文字列なので、改行・制御文字で description の構造を崩させない。
-            let name: String = name
-                .chars()
-                .take(MAX_NAME_CHARS)
-                .map(|c| if c.is_control() { ' ' } else { c })
-                .collect();
+            let name = one_line(name, MAX_NAME_CHARS);
             let _ = writeln!(out, "- {name} / {id}");
         }
         if self.truncated {
@@ -180,6 +209,7 @@ fn record_line(r: &DataRecord) -> String {
 /// クエリ結果をモデル向けに整形する（行は上限まで・長さも有界）。
 fn format_result(table: &str, res: &QueryResult) -> String {
     use std::fmt::Write as _;
+    let table = one_line(table, MAX_NAME_CHARS);
     let mut out = String::new();
     let mut lines: Vec<String> = Vec::new();
     // 返った件数（行・グループ）。観測に載せるのは MAX_ROWS_SHOWN まで。
@@ -206,27 +236,25 @@ fn format_result(table: &str, res: &QueryResult) -> String {
         out.push('\n');
         lines.extend(items.iter().take(MAX_ROWS_SHOWN).map(record_line));
     }
-    let mut omitted = total > lines.len();
+    let mut shown = 0;
     for line in lines {
         if out.len() + line.len() > MAX_OUTPUT_CHARS {
-            omitted = true;
             break;
         }
         out.push_str(&line);
         out.push('\n');
-    }
-    if omitted {
-        out.push_str("…（一部のみ表示。select で列を絞るか limit を小さくする）\n");
+        shown += 1;
     }
     if res.suppressed {
         out.push_str("※ 件数の少ないグループは値を伏せています（null）。\n");
     }
-    if let Some(cursor) = &res.next_cursor {
-        let _ = writeln!(
-            out,
-            "続きがあります。次のページは query.cursor に \"{cursor}\" を指定する。"
-        );
-    }
+    out.push_str(&page_note(
+        shown,
+        total,
+        res.next_cursor.as_deref(),
+        "select で列を絞るか limit を小さくして",
+        "は query.cursor に",
+    ));
     out
 }
 
@@ -235,15 +263,16 @@ const QUERY_DESCRIPTION: &str = "社内の構造化データ（テーブル）�
      data_schema で確かめること。\n\
      通常は sql に SELECT 文を 1 つ渡す（閉じた部分集合）: SELECT 列, … FROM テーブル [別名]（SELECT * は不可）／\
      結合は JOIN テーブル 別名 ON 元.リンク列 = 先._id の形だけ（宣言済みリンク列の等値 1 個・最大 3 個。\
-     絞り込みは WHERE に書く）／WHERE は = <> < <= > >=・AND OR NOT・IN (…)・BETWEEN・LIKE '…%'・IS [NOT] NULL\
+     絞り込みは WHERE に書く）／WHERE は = <> < <= > >=・AND OR NOT・IN (…)・BETWEEN・LIKE（'…%'・'%…%' など）・IS [NOT] NULL\
      （比較は列とリテラルだけ・日付は 'YYYY-MM-DD'）／集計は COUNT(*)・SUM・AVG・MIN・MAX と GROUP BY・HAVING／\
-     ORDER BY 列 [DESC]（FROM のテーブルの列で並べる。集計するときはグループの列か集計関数）／LIMIT n（最大 200）。DISTINCT・副問い合わせ・WITH・UNION・OFFSET・関数は使えない。\
+     ORDER BY 列 [DESC]（FROM のテーブルの列で並べる。集計するときはグループの列か集計関数）／LIMIT n（行は最大 200・集計のグループは最大 1000）。DISTINCT・副問い合わせ・WITH・UNION・OFFSET・関数は使えない。\
      集計は数える・足す行のテーブルを FROM に置き、グループの列は JOIN 先から取る（例: 取引先ごとの案件の金額 → \
      SELECT c.name, SUM(d.amount) FROM 案件 d JOIN 取引先 c ON d.customer = c._id GROUP BY c.name。\
      件数の少ないグループは値が伏せられる）。\
-     テーブル名は下の一覧の名前（空白や記号を含むなら \"…\" で囲む）、列名は参照名。\
-     作成者・作成日時・更新日時・行の id は _owner / _created_at / _updated_at / _id。with_count で総数、\
-     続きのページは同じ sql に cursor を付ける。\n\
+     テーブル名は下の一覧の名前（一覧に無いテーブルも正確な名前なら書ける。空白や記号を含むなら \"…\" で囲む）、\
+     列名は参照名。作成者・作成日時・更新日時は _owner / _created_at / _updated_at（絞り込み・並べ替えにも使える）、\
+     行の id は _id（SELECT と JOIN の ON だけ）。with_count で総数、続きのページは同じ sql に cursor を付ける。\
+     SQL の結果には rev が無いので、更新する行は table ＋ query で読んで rev を得る。\n\
      例: 経費の承認待ちを金額の大きい順 → {\"sql\":\"SELECT title, amount FROM 経費 WHERE status = '承認待ち' \
      ORDER BY amount DESC\"}\n\
      受け付けられない SQL は理由・位置・手がかりを返すので、それに沿って書き直す。\
@@ -391,19 +420,69 @@ pub struct DataSchemaTool {
 }
 
 impl DataSchemaTool {
+    /// リンク先のテーブル名（一覧にあれば一覧から、無ければ発話ユーザーの権限で引く。見えなければ載せない）。
+    async fn ref_names(
+        &self,
+        ctx: &AuthContext,
+        table: &data::DataTable,
+        masked: &std::collections::HashSet<String>,
+        trace_id: Option<&str>,
+    ) -> std::collections::HashMap<Uuid, String> {
+        let mut out = std::collections::HashMap::new();
+        let targets: std::collections::BTreeSet<Uuid> = table
+            .schema
+            .fields
+            .iter()
+            .filter(|f| !masked.contains(&f.key))
+            .filter_map(|f| f.ref_table)
+            .collect();
+        for id in targets {
+            let name = match self.catalog.name_of(id) {
+                Some(n) => Some(n.to_string()),
+                None => self
+                    .data
+                    .get_table(ctx, id, trace_id)
+                    .await
+                    .ok()
+                    .map(|t| t.name),
+            };
+            if let Some(n) = name {
+                out.insert(id, n);
+            }
+        }
+        out
+    }
+
     pub fn new(data: DataStore, catalog: Arc<DataTableCatalog>) -> Self {
         DataSchemaTool { data, catalog }
     }
 }
 
-/// `ref_name` はリンク先のテーブル id → 名前（発話ユーザーの一覧にあるものだけ。無ければ id を出す）。
+/// `ref_names` はリンク先のテーブル id → 名前（発話ユーザーに見えるものだけ）。
+/// SQL に書けるテーブル名（識別子として書けない文字を含むなら二重引用符で囲む）。
+fn sql_table_name(name: &str) -> String {
+    let plain = !name.is_empty()
+        && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+        && !name.starts_with(|c: char| c.is_ascii_digit());
+    let name = one_line(name, MAX_NAME_CHARS);
+    if plain {
+        name
+    } else {
+        format!("\"{}\"", name.replace('"', "\"\""))
+    }
+}
+
 fn format_schema(
     table: &data::DataTable,
     masked: &std::collections::HashSet<String>,
-    ref_name: impl Fn(Uuid) -> Option<String>,
+    ref_names: &std::collections::HashMap<Uuid, String>,
 ) -> String {
     use std::fmt::Write as _;
-    let mut out = format!("テーブル「{}」（id: {}）\n", table.name, table.id);
+    let mut out = format!(
+        "テーブル「{}」（id: {}）\n",
+        one_line(&table.name, MAX_NAME_CHARS),
+        table.id
+    );
     if let Some(status) = table
         .schema
         .status_field
@@ -433,18 +512,24 @@ fn format_schema(
             out.push_str("（必須）");
         }
         if let Some(to) = f.ref_table {
-            let to_name = ref_name(to).unwrap_or_else(|| to.to_string());
-            if f.link.as_ref().is_some_and(|l| l.reverse) {
-                let _ = write!(
-                    out,
-                    " リンク先: {to_name}（逆向き。SQL は {to_name} 側のリンク列で JOIN {to_name} 別名 ON 別名.リンク列 = 元._id）"
-                );
-            } else {
-                let _ = write!(
-                    out,
-                    " リンク先: {to_name}（SQL は JOIN {to_name} 別名 ON 元.{} = 別名._id）",
-                    f.key
-                );
+            match ref_names.get(&to) {
+                // 見えないリンク先は名前も書き方も出さない（その JOIN は必ず拒否される）。
+                None => out.push_str(" リンク先: 参照できないテーブル"),
+                Some(name) => {
+                    let to_name = sql_table_name(name);
+                    if f.link.as_ref().is_some_and(|l| l.reverse) {
+                        let _ = write!(
+                            out,
+                            " リンク先: {to_name}（逆向き。SQL は {to_name} 側のリンク列で JOIN {to_name} 別名 ON 別名.リンク列 = 元._id）"
+                        );
+                    } else {
+                        let _ = write!(
+                            out,
+                            " リンク先: {to_name}（SQL は JOIN {to_name} 別名 ON 元.{} = 別名._id）",
+                            f.key
+                        );
+                    }
+                }
             }
         }
         if !f.options.is_empty() {
@@ -457,7 +542,7 @@ fn format_schema(
         out.push('\n');
     }
     out.push_str(
-        "システム列: _id（行の id・リンクの結合先）/ _created_at / _updated_at / _owner（絞り込み・並べ替えに使える）\n",
+        "システム列: _created_at / _updated_at / _owner（絞り込み・並べ替えに使える）、_id（行の id・SELECT と JOIN の ON だけ）\n",
     );
     // 読めない列の有無・件数は書かない（列の存在オラクルを作らない・検証 2-B-P2-1）。
     out
@@ -501,9 +586,10 @@ impl Tool for DataSchemaTool {
             Err(e) => return Ok(denied(&e)),
         };
         match self.data.masked_field_keys(ctx, &table).await {
-            Ok(masked) => Ok(ToolOutcome::ok(format_schema(&table, &masked, |id| {
-                self.catalog.name_of(id).map(str::to_string)
-            }))),
+            Ok(masked) => {
+                let ref_names = self.ref_names(ctx, &table, &masked, trace_id).await;
+                Ok(ToolOutcome::ok(format_schema(&table, &masked, &ref_names)))
+            }
             Err(e) => Ok(denied(&e)),
         }
     }
@@ -599,7 +685,7 @@ impl Tool for DataRecordWriteTool {
                 "op": { "type": "string", "enum": ["create", "update"] },
                 "record_id": { "type": "string", "format": "uuid", "description": "update の対象" },
                 "data": { "type": "object", "description": "列の参照名 → 値（update は変更する列だけ・null で値を消す）" },
-                "expected_rev": { "type": "integer", "description": "楽観ロック（data_query の rev）" }
+                "expected_rev": { "type": "integer", "description": "楽観ロック（data_query を table ＋ query で読んだ結果の rev。SQL の結果には rev が無い）" }
             },
             "required": ["table", "op", "data"]
         })
