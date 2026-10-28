@@ -3,22 +3,31 @@
 /// HTML ファイルの描画フレーム。
 ///
 /// srcdoc ＋ sandbox（`allow-scripts`・`allow-same-origin` なし）の opaque origin で描画し、文書には
-/// CSP も差し込む（`buildHtmlPreviewDoc`）。アプリのオリジンでファイルの HTML を動かさない。
-/// 外部の画像・CSS・フォントは既定で止め、閲覧者が選んだときだけ読み込む。
+/// CSP も差し込む（`prepareHtmlPreview`）。アプリのオリジンでファイルの HTML を動かさない。
+/// 外部の画像・CSS・フォントは既定で止め、閲覧者が選んだときだけ読み込む（選んだことは親が持つので、
+/// ソースや編集に切り替えて戻っても消えない）。
 /// アプリの画面の中に出るので、偽のログイン画面などに騙されないよう「ファイルの内容である」ことを
 /// フレームの上に常に出す。背景を指定しない HTML がダークテーマの上で読めなくならないよう、
 /// フレーム自体を白で塗る。
 import * as React from "react";
 import { ImageIcon, ShieldAlert } from "lucide-react";
 
-import { buildHtmlPreviewDoc, HTML_PREVIEW_SANDBOX } from "@/lib/html-preview";
+import { HTML_PREVIEW_SANDBOX, serializeHtmlPreview, type PreparedHtmlPreview } from "@/lib/html-preview";
 
-export function HtmlFrame({ html, title }: { html: string; title: string }) {
-  const [allowExternal, setAllowExternal] = React.useState(false);
-  const { srcDoc, hasExternal } = React.useMemo(
-    () => buildHtmlPreviewDoc(html, { allowExternal }),
-    [html, allowExternal],
-  );
+export function HtmlFrame({
+  prepared,
+  allowExternal,
+  onAllowExternal,
+  title,
+}: {
+  prepared: PreparedHtmlPreview;
+  allowExternal: boolean;
+  onAllowExternal: () => void;
+  title: string;
+}) {
+  // 解析と掃除は済んでいる（親が中身ごとに 1 回）。ここでは CSP を差し替えて文字列にするだけ。
+  const srcDoc = React.useMemo(() => serializeHtmlPreview(prepared, allowExternal), [prepared, allowExternal]);
+  const hasExternal = prepared.hasExternal;
   return (
     <>
       <div
@@ -36,7 +45,7 @@ export function HtmlFrame({ html, title }: { html: string; title: string }) {
         {hasExternal && !allowExternal ? (
           <button
             type="button"
-            onClick={() => setAllowExternal(true)}
+            onClick={onAllowExternal}
             title="このファイルが参照している外部の画像・CSS・フォントを読み込みます。読み込むと、開いたことが参照先に伝わります。"
             className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 font-medium text-foreground/80 outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:h-10 pointer-coarse:px-3 [&_svg]:size-3.5"
             data-testid="html-allow-external"

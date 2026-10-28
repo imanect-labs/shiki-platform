@@ -4,9 +4,9 @@
 ///
 /// 中身を取り、行番号付きで出す。コードは shiki で色を付ける（ライト/ダークの 2 テーマを一度に出し、
 /// `.dark` で切り替える）。大きいファイルは色を付けずに出し、上限を超えるものは開かない。
-/// 中身は必ず文字列として描く（HTML や SVG のソースを実行しない）。
-/// HTML だけは既定で描画した姿を見せ、「ソース」に切り替えられる。描画は sandbox の iframe の中で
-/// スクリプトを動かさずに行う（`HtmlFrame`）。
+/// ソースは必ず文字列として描く（HTML や SVG のソースをアプリの画面で実行しない）。
+/// HTML だけは例外として、既定で描画した姿を見せ、「ソース」に切り替えられる。描画はアプリの画面ではなく
+/// sandbox の iframe の中で、スクリプトを動かさずに行う（`HtmlFrame`・`lib/html-preview`）。
 ///
 /// 編集者には「編集」を出し、押すと同じ場所で CodeMirror に切り替える（エディタは押したときに読み込む）。
 /// 保存は明示保存（⌘S・保存ボタン）で新しい版を作る。開いた版を添えて保存し（サーバが版を比べる）、
@@ -30,6 +30,7 @@ import {
   looksBinary,
   textLanguage,
 } from "@/lib/file-preview";
+import { prepareHtmlPreview } from "@/lib/html-preview";
 import { getCollabAccess } from "@/lib/notes-api";
 import { downloadUrl, StorageApiError, uploadFile, type NodeResponse } from "@/lib/storage";
 import { cn } from "@/lib/utils";
@@ -172,6 +173,9 @@ export function TextPreview({
   // HTML は描画した姿を既定にする（ソースはトグルで見る）。
   const renderable = isRenderableHtml(node);
   const [showSource, setShowSource] = React.useState(false);
+  // 外部の画像を読み込むか（閲覧者が選んだもの。ソースや編集に切り替えて戻っても保つ）。
+  const [allowExternal, setAllowExternal] = React.useState(false);
+  const onAllowExternal = React.useCallback(() => setAllowExternal(true), []);
   const failRef = React.useRef(onUnsupported);
   failRef.current = onUnsupported;
 
@@ -230,9 +234,15 @@ export function TextPreview({
   }, [node.id]);
 
   // 閲覧の表示。まず色なしで出し、色付けが終わったら差し替える（大きめのファイルでも待たせない）。
+  // HTML を描画して見せている間はソースの表示を作らない（shiki の読み込み・色付けを走らせない）。
   const text = content?.text;
+  const sourceShown = !renderable || showSource;
   React.useEffect(() => {
     if (text == null) return;
+    if (!sourceShown) {
+      setRendered(null);
+      return;
+    }
     setRendered({ html: plainHtml(text), highlighted: false });
     if (lang === "text" || text.length > HIGHLIGHT_MAX_BYTES) return;
     let active = true;
@@ -243,7 +253,10 @@ export function TextPreview({
     return () => {
       active = false;
     };
-  }, [text, lang]);
+  }, [text, lang, sourceShown]);
+
+  // 描画用の文書は中身ごとに 1 回だけ解析・掃除する（ソースや編集から戻るたびにやり直さない）。
+  const prepared = React.useMemo(() => (renderable && text != null ? prepareHtmlPreview(text) : null), [renderable, text]);
 
   const copyAll = React.useCallback(async () => {
     if (!content) return;
@@ -441,7 +454,7 @@ export function TextPreview({
     [editing, dirty, saving, canEdit, content, opening, save, startEdit, stopEdit, guard],
   );
 
-  if (!content || !rendered) return <EditorLoading kind="doc" message="ファイルを開いています…" />;
+  if (!content) return <EditorLoading kind="doc" message="ファイルを開いています…" />;
   const gutter = String(content.lines).length;
   const meta = [
     `${content.lines.toLocaleString("ja-JP")} 行`,
@@ -551,13 +564,17 @@ export function TextPreview({
       <div className="flex h-full min-h-0 flex-col bg-muted/40 md:px-6 md:py-5" data-testid="text-preview" data-mode="rendered">
         <div className="mx-auto flex min-h-0 w-full max-w-6xl flex-1 flex-col bg-card md:overflow-hidden md:rounded-xl md:border md:border-border/70 md:shadow-sm">
           {header}
-          <HtmlFrame html={content.text} title={node.name} />
+          {prepared ? (
+            <HtmlFrame prepared={prepared} allowExternal={allowExternal} onAllowExternal={onAllowExternal} title={node.name} />
+          ) : null}
         </div>
         {dialogs}
       </div>
     );
   }
 
+  // 編集はエディタが、描画は iframe が出すので、ソースの表示（rendered）を待つのはここだけ。
+  if (!rendered) return <EditorLoading kind="doc" message="ファイルを開いています…" />;
   return (
     <div className="h-full min-h-0 overflow-auto bg-muted/40 md:px-6 md:py-5" data-testid="text-preview" data-mode="view" tabIndex={0}>
       <div className="mx-auto flex min-h-full w-full max-w-6xl flex-col bg-card md:min-h-0 md:overflow-hidden md:rounded-xl md:border md:border-border/70 md:shadow-sm">

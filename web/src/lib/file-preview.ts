@@ -132,8 +132,16 @@ export function previewKind(node: { name: string; content_type?: string | null }
 }
 
 /// 描画して見せられる HTML か（テキストとして開いたうえで、ソースと切り替えて見せる）。
+/// `previewKind` と同じく拡張子を優先し、拡張子で形式が決まらないときだけ content-type を見る
+/// （`memo.txt` を text/html で置いても描画しない）。
 export function isRenderableHtml(node: { name: string; content_type?: string | null }): boolean {
-  return textLanguage(node.name) === "html" || baseContentType(node.content_type) === "text/html";
+  const ext = extension(node.name);
+  const known =
+    Object.hasOwn(LANGUAGES, ext) ||
+    TEXT_EXTENSIONS.includes(ext) ||
+    Object.hasOwn(TEXT_FILENAMES, node.name.toLowerCase());
+  if (known) return textLanguage(node.name) === "html";
+  return baseContentType(node.content_type) === "text/html";
 }
 
 /// テキストの言語（shiki の言語名）。分からなければ "text"。

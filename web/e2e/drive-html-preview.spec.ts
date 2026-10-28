@@ -27,6 +27,8 @@ test("ドライブの HTML を描画して表示し、スクリプトは動か�
   <img id="remote" src="https://img.example/logo.svg" alt="外部画像">
   <p><a id="jump" href="#bottom">一番下へ</a> <a id="ext" href="https://example.com/">外部リンク</a> <a id="rel" href="other.html">相対リンク</a></p>
   <svg width="200" height="40"><a id="svglink" xlink:href="https://example.com/"><text x="4" y="28">SVG リンク</text></a></svg>
+  <div><template shadowrootmode="open"><a id="dsd" href="https://example.com/">影のリンク</a></template></div>
+  <iframe id="inner" srcdoc="<a href='https://example.com/'>入れ子</a>"></iframe>
   <div style="height: 2000px"></div>
   <p id="bottom">一番下</p>
   <script>document.getElementById("title").textContent = "スクリプトが動いた";</script>
@@ -56,6 +58,11 @@ test("ドライブの HTML を描画して表示し、スクリプトは動か�
   await expect(frame.locator("script")).toHaveCount(0);
   await expect(frame.locator("#ext")).toHaveAttribute("target", "_blank");
   await expect(frame.locator("#rel")).not.toHaveAttribute("href", /.*/);
+  // 宣言的 Shadow DOM の中のリンクも書き換える（DOMParser は展開しないが iframe 側は展開する）。
+  // 入れ子の srcdoc は中を掃除できないので、埋め込みごと外す。
+  await expect(frame.locator("#dsd")).toHaveAttribute("target", "_blank");
+  await expect(frame.locator("#dsd")).toHaveAttribute("rel", "noopener noreferrer");
+  await expect(frame.locator("#inner")).toHaveCount(0);
   // SVG のリンクは rel を持てず、押すと iframe の中が外部ページへ遷移するので外す。
   await frame.getByText("SVG リンク").click({ force: true });
   await expect(frame.locator("#title")).toHaveText("描画された見出し");
