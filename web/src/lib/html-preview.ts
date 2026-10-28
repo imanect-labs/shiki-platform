@@ -42,9 +42,10 @@ const XLINK_NS = "http://www.w3.org/1999/xlink";
 /// 外部の資源を指しうる属性（リンクの href は除く）。
 const RESOURCE_ATTRS = ["src", "srcset", "poster", "background", "data", "href", "xlink:href"];
 /// 「表示する」で読めるようになるのは https だけなので、目安も https だけを見る。
+/// CSS も同じ（`url()`・`@import`・`image-set("…")` のどれでも https の URL が書かれていれば外部参照とみなす）。
 const EXTERNAL_URL = /https:\/\//i;
-/// CSS の中の外部参照（`url(https://…)`・`@import "https://…"`）。
-const EXTERNAL_CSS = /(url\(\s*['"]?\s*|@import\s+['"]\s*)https:\/\//i;
+/// CSS の中のプロトコル相対の参照（`url(//…)`・`@import "//…"`）。https に直す。
+const PROTOCOL_RELATIVE_CSS = /(url\(\s*['"]?\s*|@import\s+['"]\s*)\/\//gi;
 
 export type PreparedHtmlPreview = {
   doc: Document;
@@ -55,10 +56,13 @@ export type PreparedHtmlPreview = {
 };
 
 /// 文書と、その中の `<template>` の中身（入れ子も）を全部並べる。
+/// SVG・MathML の中の `template` は HTML の template ではなく中身（content）を持たないので、ただの要素として扱う。
 function roots(doc: Document): ParentNode[] {
   const out: ParentNode[] = [doc];
   for (let i = 0; i < out.length; i++) {
-    for (const t of out[i].querySelectorAll("template")) out.push((t as HTMLTemplateElement).content);
+    for (const t of out[i].querySelectorAll("template")) {
+      if (t.namespaceURI === HTML_NS && "content" in t) out.push((t as HTMLTemplateElement).content);
+    }
   }
   return out;
 }
@@ -101,15 +105,31 @@ function cleanLinks(root: ParentNode): void {
 }
 
 /// 外部の資源の参照を https に揃え、参照しているかを返す（「表示する」を出す目安。止めるのは CSP 側）。
+function scanCss(css: string): { css: string; external: boolean } {
+  const fixed = css.replace(PROTOCOL_RELATIVE_CSS, "$1https://");
+  return { css: fixed, external: EXTERNAL_URL.test(fixed) };
+}
+
 function scanResources(root: ParentNode): boolean {
   let found = false;
   for (const el of root.querySelectorAll("*")) {
     const tag = el.localName;
-    if (tag === "style" && EXTERNAL_CSS.test(el.textContent ?? "")) found = true;
-    if (EXTERNAL_CSS.test(el.getAttribute("style") ?? "")) found = true;
+    if (tag === "style") {
+      const { css, external } = scanCss(el.textContent ?? "");
+      if (css !== el.textContent) el.textContent = css;
+      if (external) found = true;
+    }
+    const style = el.getAttribute("style");
+    if (style != null) {
+      const { css, external } = scanCss(style);
+      if (css !== style) el.setAttribute("style", css);
+      if (external) found = true;
+    }
     // リンク（a・area）の href は開く先であって、読み込む資源ではない。
     if (tag === "a" || tag === "area") continue;
     for (const name of RESOURCE_ATTRS) {
+      // link の href を読み込むのはスタイルシートだけ（canonical・alternate などは読み込まない）。
+      if (tag === "link" && name === "href" && !/(^|\s)stylesheet(\s|$)/i.test(el.getAttribute("rel") ?? "")) continue;
       const value = el.getAttribute(name);
       if (value == null) continue;
       const fixed = absolutize(value.trim());

@@ -30,7 +30,7 @@ import {
   looksBinary,
   textLanguage,
 } from "@/lib/file-preview";
-import { prepareHtmlPreview } from "@/lib/html-preview";
+import { prepareHtmlPreview, type PreparedHtmlPreview } from "@/lib/html-preview";
 import { getCollabAccess } from "@/lib/notes-api";
 import { downloadUrl, StorageApiError, uploadFile, type NodeResponse } from "@/lib/storage";
 import { cn } from "@/lib/utils";
@@ -173,9 +173,8 @@ export function TextPreview({
   // HTML は描画した姿を既定にする（ソースはトグルで見る）。
   const renderable = isRenderableHtml(node);
   const [showSource, setShowSource] = React.useState(false);
-  // 外部の画像を読み込むか（閲覧者が選んだもの。ソースや編集に切り替えて戻っても保つ）。
-  const [allowExternal, setAllowExternal] = React.useState(false);
-  const onAllowExternal = React.useCallback(() => setAllowExternal(true), []);
+  // 外部の画像を読み込むと閲覧者が選んだ文書（ソースや編集に切り替えて戻っても保つ）。
+  const [allowedDoc, setAllowedDoc] = React.useState<PreparedHtmlPreview | null>(null);
   const failRef = React.useRef(onUnsupported);
   failRef.current = onUnsupported;
 
@@ -233,10 +232,24 @@ export function TextPreview({
     };
   }, [node.id]);
 
+  // 描画用の文書は中身ごとに 1 回だけ解析・掃除する（ソースや編集から戻るたびにやり直さない）。
+  // 想定外の入力で解析に失敗したら、描画せずにソースで見せる（画面ごと落とさない）。
+  const text = content?.text;
+  const prepared = React.useMemo(() => {
+    if (!renderable || text == null) return null;
+    try {
+      return prepareHtmlPreview(text);
+    } catch {
+      return null;
+    }
+  }, [renderable, text]);
+  // 外部の画像を読み込む同意は、同意したときの中身にだけ効かせる（読み直した新しい版の参照には効かせない）。
+  const allowExternal = prepared != null && allowedDoc === prepared;
+  const onAllowExternal = React.useCallback(() => setAllowedDoc(prepared), [prepared]);
+
   // 閲覧の表示。まず色なしで出し、色付けが終わったら差し替える（大きめのファイルでも待たせない）。
   // HTML を描画して見せている間はソースの表示を作らない（shiki の読み込み・色付けを走らせない）。
-  const text = content?.text;
-  const sourceShown = !renderable || showSource;
+  const sourceShown = prepared == null || showSource;
   React.useEffect(() => {
     if (text == null) return;
     if (!sourceShown) {
@@ -254,9 +267,6 @@ export function TextPreview({
       active = false;
     };
   }, [text, lang, sourceShown]);
-
-  // 描画用の文書は中身ごとに 1 回だけ解析・掃除する（ソースや編集から戻るたびにやり直さない）。
-  const prepared = React.useMemo(() => (renderable && text != null ? prepareHtmlPreview(text) : null), [renderable, text]);
 
   const copyAll = React.useCallback(async () => {
     if (!content) return;
@@ -413,7 +423,7 @@ export function TextPreview({
 
   const editing = mode === "edit";
   // 編集はソースで行う。編集を終えると、切り替えておいた表示（描画かソース）に戻る。
-  const rendering = renderable && !showSource && !editing;
+  const rendering = prepared != null && !showSource && !editing;
   useFileChrome(
     node,
     onDownload,
@@ -481,7 +491,7 @@ export function TextPreview({
         </span>
       ) : null}
       <span className="ml-auto flex shrink-0 items-center gap-0.5">
-        {renderable && !editing ? (
+        {prepared != null && !editing ? (
           <SegmentedControl
             aria-label="表示の切り替え"
             size="sm"
