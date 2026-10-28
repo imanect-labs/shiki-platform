@@ -33,6 +33,10 @@ use workflow_engine::{
 struct CsvPorts {
     patch_calls: Mutex<u32>,
     write_calls: Mutex<u32>,
+    /// 保存先にすでにある名前（csv.write は `name_taken` で断る・BUG-97）。
+    taken_names: Mutex<Vec<String>>,
+    /// csv.write に渡った名前の並び。
+    write_names: Mutex<Vec<String>>,
 }
 
 #[async_trait]
@@ -104,6 +108,14 @@ impl NodePorts for CsvPorts {
         )
     }
     async fn csv_write(&self, _c: &ExecCtx, req: CsvWriteReq) -> Result<Value, PortError> {
+        self.write_names.lock().unwrap().push(req.name.clone());
+        if self.taken_names.lock().unwrap().contains(&req.name) {
+            return Err(PortError::new(
+                workflow_engine::nodes::ports::NAME_TAKEN,
+                "同じ名前のファイルがすでにあります",
+                false,
+            ));
+        }
         *self.write_calls.lock().unwrap() += 1;
         Ok(json!({ "node_id": Uuid::nil().to_string(), "name": req.name, "version": 0 }))
     }
@@ -127,6 +139,7 @@ fn ctx(scopes: Vec<String>) -> NodeContext {
         tenant_id: "t1".into(),
         org: "acme".into(),
         run_id: Uuid::nil(),
+        run_started_at: chrono::Utc::now(),
         step_path: "n1".into(),
         idempotency_key: "wf:t1:0:n1".into(),
         attempt: 1,
@@ -268,4 +281,72 @@ async fn csv_patch_is_idempotent_across_retry() {
         .bind(&key)
         .execute(&pool)
         .await;
+}
+
+/// DB 必須: csv.write は同じ名前があるとき、省略なら失敗にし、番号を付ける扱いなら `集計 (2).csv` で保存する。
+/// 番号を付けて試し直しても journal の書込は 1 つで、再試行は保存し直さない（BUG-97・PIT-31）。
+#[tokio::test]
+async fn csv_write_numbers_taken_names_once_across_retry() {
+    let Ok(db) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+        return;
+    };
+    let pool = PgPoolOptions::new()
+        .max_connections(4)
+        .connect(&db)
+        .await
+        .expect("test DB 接続");
+    let ports = Arc::new(CsvPorts::default());
+    *ports.taken_names.lock().unwrap() = vec!["集計.csv".into()];
+    let exec = CapabilityNodeExecutor::new(
+        ports.clone(),
+        EffectJournal::new(pool.clone()),
+        Arc::new(SilentAudit),
+    );
+    let keys = [
+        format!("wf:csvname:{}", Uuid::new_v4()),
+        format!("wf:csvname:{}", Uuid::new_v4()),
+    ];
+
+    // 省略（既存の定義）は失敗にする。.csv は付けてから照らす。
+    let mut c = ctx(vec!["csv.write".into()]);
+    c.idempotency_key = keys[0].clone();
+    let res = exec
+        .execute(
+            "csv.write",
+            &json!({ "name": "集計", "content": "a\n1" }),
+            &c,
+        )
+        .await;
+    assert!(!res.ok);
+    let err = res.error.unwrap();
+    assert_eq!(err.code, "name_taken");
+    assert!(err.message.contains("「集計.csv」"), "{}", err.message);
+
+    // 番号を付ける: 空いている名前で 1 回だけ保存し、同じキーの再試行は journal が畳む。
+    let mut c = ctx(vec!["csv.write".into()]);
+    c.idempotency_key = keys[1].clone();
+    let params = json!({ "name": "集計", "content": "a\n1", "on_name_taken": "add_number" });
+    let r1 = exec.execute("csv.write", &params, &c).await;
+    assert!(r1.ok, "{:?}", r1.error);
+    assert_eq!(r1.output["name"], "集計 (2).csv");
+    let r2 = exec.execute("csv.write", &params, &c).await;
+    assert!(r2.ok, "{:?}", r2.error);
+    assert_eq!(r2.output["name"], "集計 (2).csv");
+    assert_eq!(
+        *ports.write_calls.lock().unwrap(),
+        1,
+        "再試行で保存し直した"
+    );
+    assert_eq!(
+        *ports.write_names.lock().unwrap(),
+        ["集計.csv", "集計.csv", "集計 (2).csv"]
+    );
+
+    for key in &keys {
+        let _ = sqlx::query("DELETE FROM effect_journal WHERE idempotency_key = $1")
+            .bind(key)
+            .execute(&pool)
+            .await;
+    }
 }

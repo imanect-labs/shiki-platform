@@ -252,13 +252,13 @@ impl StorageService {
                 .fetch_one(&mut *tx)
                 .await?;
                 if existing_digest != digest {
-                    // 同一冪等キーで別操作（permanent）。
-                    return Err(StorageError::Conflict);
+                    // 同一冪等キーで別操作（permanent）。名前の衝突（Conflict）とは分ける（BUG-97）。
+                    return Err(StorageError::IdempotencyConflict);
                 }
                 return match summary {
                     Some(v) => Ok(WriteCoreOut::Deduped(v)),
                     // 孤児予約（cross-TX 経路の未完）: 上位で回収/リトライさせる。
-                    None => Err(StorageError::Conflict),
+                    None => Err(StorageError::IdempotencyConflict),
                 };
             }
         }

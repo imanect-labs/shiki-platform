@@ -29,6 +29,8 @@ pub const KNOWN_CODES: &[(&str, FailureCategory)] = {
         ("conflict", Conflict),
         ("effect_conflict", Conflict),
         ("unique_violation", Conflict),
+        // 保存先に同じ名前のファイルがある（storage.write・csv.write・BUG-97・`nodes::ports::NAME_TAKEN`）。
+        (crate::nodes::ports::NAME_TAKEN, Conflict),
         // 見つからない
         ("not_found", NotFound),
         ("gone", NotFound),
@@ -124,11 +126,15 @@ pub fn category_of(code: &str) -> FailureCategory {
         .map_or(FailureCategory::Unknown, |(_, cat)| *cat)
 }
 
-/// 分類の文言（`unique_violation` だけは同じ値があることを伝える）。
+/// 分類の文言（`unique_violation` は同じ値が、`name_taken` は同じ名前のファイルがあることを伝える）。
 fn message(category: FailureCategory, code: Option<&str>) -> String {
     use FailureCategory as F;
     if code == Some("unique_violation") {
         return "同じ値がすでに登録されているため、登録できませんでした。".to_string();
+    }
+    // 「ほかの操作と重なった…表を読み直して」は原因と合わない（BUG-97・付録 D の N3.5.2）。
+    if code == Some(crate::nodes::ports::NAME_TAKEN) {
+        return "同じ名前のファイルがすでにあるため、保存できませんでした。".to_string();
     }
     match category {
         F::Permission => {
@@ -186,6 +192,13 @@ mod tests {
         let f = run_failure(id, Some("unique_violation"), None);
         assert_eq!(f.category, FailureCategory::Conflict);
         assert!(f.message.contains("同じ値がすでに登録"), "{}", f.message);
+        // 同じ名前のファイルは、ほかの操作との重なりと言わない（BUG-97）。
+        let f = run_failure(id, Some("name_taken"), None);
+        assert_eq!(f.category, FailureCategory::Conflict);
+        assert_eq!(
+            f.message,
+            "同じ名前のファイルがすでにあるため、保存できませんでした。"
+        );
         assert_eq!(
             run_failure(id, Some("forbidden"), None).category,
             FailureCategory::Permission

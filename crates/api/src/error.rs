@@ -149,7 +149,7 @@ impl From<storage::StorageError> for ApiError {
         match err {
             SE::Forbidden => ApiError::Forbidden,
             SE::NotFound => ApiError::NotFound,
-            SE::Conflict => ApiError::Conflict,
+            SE::Conflict | SE::IdempotencyConflict => ApiError::Conflict,
             // 版の衝突は今の版を返す（クライアントが「最新を開く／上書き」を選べるように）。
             SE::VersionConflict { current } => ApiError::ConflictJson(json!({
                 "status": 409,

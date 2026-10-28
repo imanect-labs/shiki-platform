@@ -8,6 +8,7 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
+use super::NameTakenPolicy;
 use crate::ir::expr::ValueExpr;
 
 /// `csv.query` — CSV への読み取り専用 SQL（テーブル名 `data`・viewer・pure）。
@@ -47,4 +48,8 @@ pub struct CsvWriteParams {
     pub name: ValueExpr,
     /// CSV 本文（ヘッダ行＋データ行）。
     pub content: ValueExpr,
+    /// 同じ名前のファイルがあるとき（省略時は失敗にする・`storage.write` と同じ）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub on_name_taken: Option<NameTakenPolicy>,
 }

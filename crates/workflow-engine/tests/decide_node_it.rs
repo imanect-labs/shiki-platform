@@ -200,6 +200,7 @@ fn ctx() -> NodeContext {
         tenant_id: "t1".into(),
         org: "acme".into(),
         run_id: Uuid::nil(),
+        run_started_at: chrono::Utc::now(),
         step_path: "judge".into(),
         idempotency_key: "wf:t1:0:judge".into(),
         attempt: 1,

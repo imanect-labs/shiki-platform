@@ -309,6 +309,7 @@ mod tests {
             tenant_id: "t1".into(),
             org: "acme".into(),
             run_id: Uuid::nil(),
+            run_started_at: chrono::Utc::now(),
             step_path: "reply".into(),
             idempotency_key: "k".into(),
             attempt: 1,

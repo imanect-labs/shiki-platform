@@ -1878,3 +1878,117 @@ async fn decide_cache_reuses_answers_within_the_workflow_only() {
             .unwrap();
     }
 }
+
+// ------- ファイルの保存の名前と種類（BUG-97・D-97）-------------
+
+/// 本番のポートで、同じ名前のファイルがあるときの扱いを確かめる（BUG-97）。
+///
+/// - 省略（既存の定義）は今のまま失敗にし、失敗の理由は「同じ名前のファイル」と言う（ほかの操作との重なりと
+///   言わない）。
+/// - 番号を付ける扱いは、ドライブの新規作成と同じ規則（`名前 (2).txt`）で空いている名前に保存する。
+/// - ファイルの種類を決めなければ拡張子から決める（D-97）。
+#[tokio::test]
+async fn storage_write_names_and_types_through_the_production_port() {
+    let Some(h) = setup().await else { return };
+    let executor = h.executor(None, vec![], None);
+    let base = format!("dup-{}", Uuid::new_v4().simple());
+    let name = format!("{base}.md");
+    let ir = |policy: Option<&str>| {
+        let mut params = json!({ "name": name, "content": "# 週報" });
+        if let Some(p) = policy {
+            params["on_name_taken"] = json!(p);
+        }
+        json!({
+            "ir_version": 1,
+            "name": format!("save-{}", policy.unwrap_or("default").replace('_', "-")),
+            "declared_scopes": ["storage.write"],
+            "triggers": [{ "kind": "interactive" }],
+            "nodes": [{ "id": "save", "type": "storage.write", "params": params }],
+            "edges": []
+        })
+    };
+    let step = |run_id: Uuid| {
+        let pool = h.pool.clone();
+        let tenant = h.tenant.clone();
+        async move {
+            let row: (Option<String>, Option<String>, Option<Value>) = sqlx::query_as(
+                "SELECT error->>'code', error->>'message', output FROM step_execution \
+                 WHERE tenant_id = $1 AND run_id = $2 AND node_id = 'save'",
+            )
+            .bind(&tenant)
+            .bind(run_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            row
+        }
+    };
+    let fail_wf = h.save(&ir(None)).await;
+    let number_wf = h.save(&ir(Some("add_number"))).await;
+
+    // 1 回目は元の名前で保存し、種類は拡張子から決める。
+    let (first, status) = h.run(fail_wf, &json!({}), Arc::clone(&executor)).await;
+    assert_eq!(status, RunStatus::Succeeded);
+    let (_, _, out) = step(first).await;
+    let out = out.unwrap();
+    assert_eq!(out["name"], name.as_str());
+    let ct: Option<String> =
+        sqlx::query_scalar("SELECT content_type FROM node WHERE id = $1::uuid")
+            .bind(out["id"].as_str().unwrap())
+            .fetch_one(&h.pool)
+            .await
+            .unwrap();
+    assert_eq!(ct.as_deref(), Some("text/markdown"));
+
+    // 省略は失敗にする（既存の定義の挙動）。理由は同じ名前のファイル。
+    let (second, status) = h.run(fail_wf, &json!({}), Arc::clone(&executor)).await;
+    assert_eq!(status, RunStatus::Failed);
+    let (code, message, _) = step(second).await;
+    assert_eq!(
+        code.as_deref(),
+        Some(workflow_engine::nodes::ports::NAME_TAKEN)
+    );
+    assert!(message.unwrap().contains(&format!("「{name}」")));
+    let failure = workflow_engine::run::failure::run_failure(second, code.as_deref(), None);
+    assert_eq!(
+        failure.message,
+        "同じ名前のファイルがすでにあるため、保存できませんでした。"
+    );
+
+    // 番号を付ける扱いは空いている名前で保存する。番号の規則はドライブの新規作成と同じ。
+    let (third, status) = h.run(number_wf, &json!({}), Arc::clone(&executor)).await;
+    assert_eq!(status, RunStatus::Succeeded);
+    let (_, _, out) = step(third).await;
+    let numbered = workflow_engine::ir::params::numbered_name(&name, 2);
+    assert_eq!(out.unwrap()["name"], numbered.as_str());
+    let drive = h
+        .storage
+        .write_file_unique_internal(&h.alice, None, &name, b"x", "text/markdown", None)
+        .await
+        .unwrap();
+    assert_eq!(
+        drive.name,
+        workflow_engine::ir::params::numbered_name(&name, 3)
+    );
+
+    // 片付け（run の履歴・保存したファイル・ワークフロー）。
+    h.runs.purge_tenant_history(&h.tenant).await.unwrap();
+    let ids: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM node WHERE org = $1 AND name LIKE $2 AND deleted_at IS NULL",
+    )
+    .bind(&h.org)
+    .bind(format!("{base}%"))
+    .fetch_all(&h.pool)
+    .await
+    .unwrap();
+    assert_eq!(ids.len(), 3);
+    for id in ids {
+        h.storage
+            .soft_delete_file(&h.alice, id, None)
+            .await
+            .unwrap();
+    }
+    for wf in [fail_wf, number_wf] {
+        h.artifacts.delete(&h.alice, wf, None).await.unwrap();
+    }
+}

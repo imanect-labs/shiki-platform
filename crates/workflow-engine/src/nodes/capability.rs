@@ -8,13 +8,14 @@ use sha2::{Digest, Sha256};
 
 use crate::capability::{op_digest, JournalDecision};
 use crate::ir::params::{
-    CsvPatchParams, CsvQueryParams, CsvWriteParams, RagSearchParams, StorageListParams,
-    StorageReadParams, StorageWriteParams, WorkflowStartParams,
+    content_type_from_name, numbered_name, CsvPatchParams, CsvQueryParams, CsvWriteParams,
+    NameTakenPolicy, RagSearchParams, StorageListParams, StorageReadParams, StorageWriteParams,
+    WorkflowStartParams, MAX_NUMBERED_NAME,
 };
 use crate::run::NodeContext;
 
 use super::exec::CapabilityNodeExecutor;
-use super::ports::{CsvPatchReq, CsvWriteReq, ExecCtx, PortError, StorageWriteReq};
+use super::ports::{CsvPatchReq, CsvWriteReq, ExecCtx, PortError, StorageWriteReq, NAME_TAKEN};
 use super::resolver::{
     as_bytes, as_string, as_u32, as_uuid, opt_param, param, typed, ParamResolver,
 };
@@ -29,6 +30,60 @@ fn sha256_hex(bytes: &[u8]) -> String {
     let mut h = Sha256::new();
     h.update(bytes);
     format!("{:x}", h.finalize())
+}
+
+/// 保存先に同じ名前のファイルがあって保存できなかったときの誤り（BUG-97・permanent）。
+fn name_taken_error(name: &str, policy: NameTakenPolicy) -> PortError {
+    let message = match policy {
+        NameTakenPolicy::Fail => format!(
+            "保存先に同じ名前のファイル「{name}」がすでにあります。\
+             「同じ名前があるとき」を 番号を付けて保存 にするか、ファイル名に日付などを差し込んでください。"
+        ),
+        NameTakenPolicy::AddNumber => format!(
+            "保存先に「{name}」と、番号を付けた「{}」までのファイルがすでにあります。\
+             ファイル名に日付などを差し込んでください。",
+            numbered_name(name, MAX_NUMBERED_NAME)
+        ),
+    };
+    PortError::new(NAME_TAKEN, message, false)
+}
+
+/// 同じ名前のファイルがあれば、扱い（`on_name_taken`）に従って番号を付けた名前で試し直す（BUG-97）。
+///
+/// `save` は試す名前を受けて 1 回保存する。名前の衝突（[`NAME_TAKEN`]）で失敗した試しは何も書かないので、
+/// どの試しも同じ冪等キー・同じ op_digest で送ってよい（storage.write の in-TX journal は、前の試しで
+/// 保存済みなら最初の名前の試しで結果を返す）。名前の衝突のほかの失敗は、そのまま返す。
+async fn save_avoiding_taken_names<F, Fut>(
+    name: &str,
+    policy: NameTakenPolicy,
+    mut save: F,
+) -> Result<Value, PortError>
+where
+    F: FnMut(String) -> Fut,
+    Fut: std::future::Future<Output = Result<Value, PortError>>,
+{
+    let tries = match policy {
+        NameTakenPolicy::Fail => 1,
+        NameTakenPolicy::AddNumber => MAX_NUMBERED_NAME,
+    };
+    for attempt in 1..=tries {
+        match save(numbered_name(name, attempt)).await {
+            Err(e) if e.code == NAME_TAKEN => {}
+            other => return other,
+        }
+    }
+    Err(name_taken_error(name, policy))
+}
+
+/// csv.write が保存するファイル名（`.csv` で終わらなければ付ける・`TabularService::save_new` と同じ規則）。
+///
+/// 番号はこの名前の拡張子の前に付ける（`集計 (2).csv`）。
+fn csv_file_name(name: &str) -> String {
+    if name.to_lowercase().ends_with(".csv") {
+        name.to_string()
+    } else {
+        format!("{name}.csv")
+    }
 }
 
 /// 省略できるフォルダ指定。項目が無ければルート（`None`）、書いてあれば UUID に解決できること。
@@ -101,12 +156,18 @@ impl CapabilityNodeExecutor {
         let name = typed(&param(&p.name, r, what)?, what, "文字列", as_string)?;
         let bytes = as_bytes(&param(&p.content, r, "storage.write: content")?);
         let what = "storage.write: content_type";
+        // 種類を決めないときは、ファイル名の拡張子から決める（社内文書の検索に出るように・D-97）。
         let content_type = opt_param(p.content_type.as_ref(), r, what)?
             .map(|v| typed(&v, what, "文字列", as_string))
             .transpose()?
-            .unwrap_or_else(|| "application/octet-stream".to_string());
+            .unwrap_or_else(|| {
+                content_type_from_name(&name)
+                    .unwrap_or("application/octet-stream")
+                    .to_string()
+            });
 
-        // op_digest は書込の同一性（親/名前/内容ハッシュ）で安定。冪等キーはステップ固定。
+        // op_digest は書込の同一性（親/頼まれた名前/内容ハッシュ）で安定。冪等キーはステップ固定。番号を付けた
+        // 名前で試し直しても同じ digest で送る（頼まれた書込は 1 つ）。
         let digest = op_digest(
             "storage.write",
             &json!({
@@ -115,25 +176,28 @@ impl CapabilityNodeExecutor {
                 "content_sha256": sha256_hex(&bytes),
             }),
         );
-        let out = self
-            .ports
-            .storage_write(
+        let policy = p.on_name_taken.unwrap_or_default();
+        let out = save_avoiding_taken_names(&name, policy, |candidate| {
+            self.ports.storage_write(
                 ec,
                 StorageWriteReq {
                     parent_id,
-                    name: name.clone(),
-                    bytes,
-                    content_type,
+                    name: candidate,
+                    bytes: bytes.clone(),
+                    content_type: content_type.clone(),
                     idempotency_key: ctx.idempotency_key.clone(),
-                    op_digest: digest,
+                    op_digest: digest.clone(),
                 },
             )
-            .await?;
+        })
+        .await?;
+        // 監査には実際に保存した名前（番号を付けたなら付けた名前）を残す。
+        let saved = out.get("name").and_then(Value::as_str).unwrap_or(&name);
         self.audit(
             &ec.tenant_id,
             "storage.write",
             true,
-            &json!({ "name": name, "parent": parent_id.map(|p| p.to_string()) }),
+            &json!({ "name": saved, "parent": parent_id.map(|p| p.to_string()) }),
         );
         Ok(out)
     }
@@ -357,6 +421,7 @@ impl CapabilityNodeExecutor {
         let what = "csv.write: name";
         let name = typed(&param(&p.name, r, what)?, what, "文字列", as_string)?;
         let csv_bytes = as_bytes(&param(&p.content, r, "csv.write: content")?);
+        let policy = p.on_name_taken.unwrap_or_default();
 
         let digest = op_digest(
             "csv.write",
@@ -374,26 +439,32 @@ impl CapabilityNodeExecutor {
             .map_err(|e| PortError::unavailable(format!("journal: {e}")))?
         {
             JournalDecision::Proceed => {
-                let out = self
-                    .ports
-                    .csv_write(
+                // 番号を付けた名前で試し直しても、journal の予約は頼まれた書込 1 つ（digest は頼まれた名前）。
+                let file_name = csv_file_name(&name);
+                let out = save_avoiding_taken_names(&file_name, policy, |candidate| {
+                    self.ports.csv_write(
                         ec,
                         CsvWriteReq {
                             parent_id,
-                            name: name.clone(),
-                            csv_bytes,
+                            name: candidate,
+                            csv_bytes: csv_bytes.clone(),
                         },
                     )
-                    .await?;
+                })
+                .await?;
                 self.journal
                     .record(&ec.tenant_id, key, &digest, &out)
                     .await
                     .map_err(|e| PortError::unavailable(format!("journal record: {e}")))?;
+                let saved = out
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or(&file_name);
                 self.audit(
                     &ec.tenant_id,
                     "csv.write",
                     true,
-                    &json!({ "name": name, "parent": parent_id.map(|p| p.to_string()) }),
+                    &json!({ "name": saved, "parent": parent_id.map(|p| p.to_string()) }),
                 );
                 Ok(out)
             }

@@ -49,6 +49,8 @@ pub struct NodeContext {
     pub tenant_id: String,
     pub org: String,
     pub run_id: Uuid,
+    /// 実行を始めた時刻（`$from run` の日時の源・やり直しても同じ値・D-97）。
+    pub run_started_at: chrono::DateTime<chrono::Utc>,
     pub step_path: String,
     /// 冪等キー（attempt 非依存）。
     pub idempotency_key: String,

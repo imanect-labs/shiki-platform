@@ -362,6 +362,7 @@ async fn agent_does_not_offer_tools_outside_the_scope_ceiling() {
         tenant_id: h.tenant.clone(),
         org: h.tenant.clone(),
         run_id: Uuid::new_v4(),
+        run_started_at: chrono::Utc::now(),
         step_path: "ag".into(),
         idempotency_key: format!("wf:{}:ag", h.tenant),
         attempt: 1,

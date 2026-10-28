@@ -77,6 +77,8 @@ fn map_db(e: sqlx::Error) -> RunStoreError {
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct ClaimedStep {
     pub run_id: Uuid,
+    /// run を始めた時刻（`started_at`・まだ無ければ作った時刻。`$from run` の日時の源・D-97）。
+    pub run_started_at: chrono::DateTime<chrono::Utc>,
     pub workflow_id: Uuid,
     pub step_path: String,
     pub node_id: String,

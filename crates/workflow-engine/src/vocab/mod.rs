@@ -13,6 +13,7 @@ mod agent_tool;
 mod catalog;
 mod event_catalog;
 mod node_type;
+mod run_info;
 mod scope;
 
 pub use agent_tool::{
@@ -32,6 +33,7 @@ pub use event_catalog::{
     StorageWritePayload, MAX_DATA_PAYLOAD_BYTES,
 };
 pub use node_type::NodeType;
+pub use run_info::{run_info, RunInfoField, RUN_INFO_FIELDS, RUN_INFO_TIMEZONE};
 pub use scope::Scope;
 
 /// variant と serde/IR 名の対応を単一定義から生成する（as_str/parse の乖離を構造的に防ぐ）。

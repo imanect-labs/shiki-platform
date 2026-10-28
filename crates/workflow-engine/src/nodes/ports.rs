@@ -279,6 +279,12 @@ pub struct ResolvedSkillView {
 /// storage.read で、文章として読めないファイルを読もうとしたときの code（BUG-101・permanent・失敗の分類は設定の誤り）。
 pub const NOT_TEXT_FILE: &str = "not_text_file";
 
+/// storage.write・csv.write の保存先に同じ名前のファイルがあるときの code（BUG-97・permanent）。
+///
+/// ポート実装は名前の衝突をこの code で返す（ほかの競合と分ける）。エンジンはこれを見て、params の
+/// `on_name_taken` が番号を付ける扱いなら次の名前で試す。
+pub const NAME_TAKEN: &str = "name_taken";
+
 /// 能力ノードが叩く既存チョークポイントの単一ポート（server 側で具象注入）。
 ///
 /// 各メソッドは `ExecCtx` から `AuthContext` を組み、チョークポイント（OpenFGA 認可込み）を呼ぶ。

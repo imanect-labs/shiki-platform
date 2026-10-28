@@ -61,6 +61,10 @@ struct FakePorts {
     last_start: Mutex<Option<(String, Value)>>,
     /// 外部の応答に、送ったヘッダをそのまま反射する（Authorization を返す echo サーバー・GAP-09 の T0）。
     http_echo: Mutex<bool>,
+    /// 保存先にすでにある名前（storage.write は `name_taken` で断る・BUG-97）。
+    taken_names: Mutex<Vec<String>>,
+    /// storage.write に渡った（名前・冪等キー・op_digest）の並び（番号を付けて試し直した順）。
+    write_tries: Mutex<Vec<(String, String, String)>>,
 }
 impl FakePorts {
     fn with_http_status(status: u16) -> Self {
@@ -77,7 +81,22 @@ impl NodePorts for FakePorts {
         _ctx: &ExecCtx,
         req: StorageWriteReq,
     ) -> Result<Value, PortError> {
-        let out = json!({ "written": req.name, "bytes": req.bytes.len() });
+        self.write_tries.lock().unwrap().push((
+            req.name.clone(),
+            req.idempotency_key.clone(),
+            req.op_digest.clone(),
+        ));
+        if self.taken_names.lock().unwrap().contains(&req.name) {
+            return Err(PortError::new(
+                workflow_engine::nodes::ports::NAME_TAKEN,
+                "同じ名前のファイルがすでにあります",
+                false,
+            ));
+        }
+        let out = json!({
+            "id": Uuid::nil().to_string(), "name": req.name, "written": req.name,
+            "bytes": req.bytes.len()
+        });
         *self.last_write.lock().unwrap() = Some(req);
         Ok(out)
     }
@@ -205,6 +224,7 @@ fn ctx(input: Value, scopes: Vec<String>) -> NodeContext {
         tenant_id: "t1".into(),
         org: "acme".into(),
         run_id: Uuid::nil(),
+        run_started_at: chrono::Utc::now(),
         step_path: "n1".into(),
         idempotency_key: "wf:t1:0:n1".into(),
         attempt: 1,
@@ -1072,4 +1092,142 @@ async fn workflow_start_input_nested_refs_are_resolved() {
     let res = exec.execute("workflow.start", &missing, &c).await;
     assert_eq!(res.error.unwrap().code, "expr_resolve_error");
     assert!(ports.last_start.lock().unwrap().is_none(), "子は起動しない");
+}
+
+/// 同じ名前のファイルがあるとき: 省略（既存の定義）は今のまま失敗にし、原因どおりの code と文言を返す。
+/// 番号を付ける扱いなら、空いている名前（`週報 (3).md`）で保存し、どの試しも同じ冪等キーと op_digest で送る
+/// （BUG-97・D-97）。
+#[tokio::test]
+async fn storage_write_handles_taken_names_by_policy() {
+    let ports = Arc::new(FakePorts::default());
+    *ports.taken_names.lock().unwrap() = vec!["週報.md".into(), "週報 (2).md".into()];
+    let exec = executor(ports.clone(), Arc::new(CapturingAudit::default()));
+    let c = ctx(json!({}), vec!["storage.write".into()]);
+
+    // 省略は失敗にする（この項目が無かったころの定義の挙動）。1 回しか試さない。
+    let res = exec
+        .execute(
+            "storage.write",
+            &json!({ "name": "週報.md", "content": "x" }),
+            &c,
+        )
+        .await;
+    assert!(!res.ok);
+    let err = res.error.unwrap();
+    assert_eq!(err.code, "name_taken");
+    assert!(
+        err.message.contains("同じ名前のファイル「週報.md」"),
+        "{}",
+        err.message
+    );
+    assert!(!err.message.contains("重なった"), "{}", err.message);
+    assert!(!err.retryable);
+    assert_eq!(ports.write_tries.lock().unwrap().len(), 1);
+
+    // 番号を付ける: 1 回目は元の名前、2 回目から拡張子の前に番号を付ける。
+    ports.write_tries.lock().unwrap().clear();
+    let res = exec
+        .execute(
+            "storage.write",
+            &json!({ "name": "週報.md", "content": "x", "on_name_taken": "add_number" }),
+            &c,
+        )
+        .await;
+    assert!(res.ok, "{:?}", res.error);
+    assert_eq!(res.output["name"], "週報 (3).md");
+    let tries = ports.write_tries.lock().unwrap().clone();
+    let names: Vec<&str> = tries.iter().map(|(n, _, _)| n.as_str()).collect();
+    assert_eq!(names, ["週報.md", "週報 (2).md", "週報 (3).md"]);
+    assert!(
+        tries
+            .iter()
+            .all(|(_, k, d)| *k == tries[0].1 && *d == tries[0].2),
+        "試し直しで冪等キーか op_digest が変わった: {tries:?}"
+    );
+
+    // 番号を付けた名前が上限まで埋まっていれば、上限の名前を言って失敗にする。
+    *ports.taken_names.lock().unwrap() = (1..=50)
+        .map(|n| workflow_engine::ir::params::numbered_name("a.txt", n))
+        .collect();
+    let res = exec
+        .execute(
+            "storage.write",
+            &json!({ "name": "a.txt", "content": "x", "on_name_taken": "add_number" }),
+            &c,
+        )
+        .await;
+    assert!(!res.ok);
+    let err = res.error.unwrap();
+    assert_eq!(err.code, "name_taken");
+    assert!(
+        err.message.contains("「a (50).txt」まで"),
+        "{}",
+        err.message
+    );
+}
+
+/// ファイルの種類を決めないときは、ファイル名の拡張子から決める（社内文書の検索に出るように・D-97）。決めたときは
+/// それを使い、知らない拡張子は種類の分からないファイルにする。
+#[tokio::test]
+async fn storage_write_derives_the_content_type_from_the_name() {
+    let ports = Arc::new(FakePorts::default());
+    let exec = executor(ports.clone(), Arc::new(CapturingAudit::default()));
+    let c = ctx(json!({}), vec!["storage.write".into()]);
+    for (params, want) in [
+        (
+            json!({ "name": "議事録.md", "content": "x" }),
+            "text/markdown",
+        ),
+        (json!({ "name": "a.TXT", "content": "x" }), "text/plain"),
+        (json!({ "name": "a.csv", "content": "x" }), "text/csv"),
+        (
+            json!({ "name": "a.json", "content": "x" }),
+            "application/json",
+        ),
+        (json!({ "name": "a.html", "content": "x" }), "text/html"),
+        (
+            json!({ "name": "a.bin", "content": "x" }),
+            "application/octet-stream",
+        ),
+        (
+            json!({ "name": "noext", "content": "x" }),
+            "application/octet-stream",
+        ),
+        (
+            json!({ "name": "a.md", "content": "x", "content_type": "text/plain" }),
+            "text/plain",
+        ),
+    ] {
+        let res = exec.execute("storage.write", &params, &c).await;
+        assert!(res.ok, "{params}: {:?}", res.error);
+        let ct = ports
+            .last_write
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .content_type
+            .clone();
+        assert_eq!(ct, want, "{params}");
+    }
+}
+
+/// 実行情報（`$from run`）に、実行を始めた日と日時（日本時間）が入る。ファイル名に差し込める（D-97）。
+#[tokio::test]
+async fn run_info_dates_can_be_inserted_into_file_names() {
+    let ports = Arc::new(FakePorts::default());
+    let exec = executor(ports.clone(), Arc::new(CapturingAudit::default()));
+    let mut c = ctx(json!({}), vec!["storage.write".into()]);
+    c.run_started_at = chrono::DateTime::parse_from_rfc3339("2026-10-27T23:30:00Z")
+        .unwrap()
+        .with_timezone(&chrono::Utc);
+    let params = json!({
+        "name": { "$template": "日報-{d}.md", "vars": { "d": { "$from": "run", "path": "/date" } } },
+        "content": { "$from": "run", "path": "/started_at" }
+    });
+    let res = exec.execute("storage.write", &params, &c).await;
+    assert!(res.ok, "{:?}", res.error);
+    let w = ports.last_write.lock().unwrap().clone().unwrap();
+    assert_eq!(w.name, "日報-2026-10-28.md");
+    assert_eq!(w.bytes, b"2026-10-28T08:30:00+09:00");
 }

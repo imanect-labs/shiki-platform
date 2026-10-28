@@ -20,6 +20,7 @@ use storage::model::ChildSort;
 use super::auth::auth_ctx;
 use storage::StorageService;
 use uuid::Uuid;
+use workflow_engine::nodes::ports::NAME_TAKEN;
 use workflow_engine::{
     CsvPatchReq, CsvWriteReq, DataWriteReq, ExecCtx, HttpSendReq, HttpSendResp, LlmDecideReq,
     LlmInvokeReq, NodePorts, PortError, ResolvedSecretView, ResolvedSkillView, StorageWriteReq,
@@ -75,7 +76,13 @@ fn map_storage(e: storage::StorageError) -> PortError {
     match e {
         S::Forbidden => PortError::forbidden("storage 権限なし"),
         S::NotFound => PortError::new("not_found", "対象が見つかりません", false),
-        S::Conflict => PortError::new("conflict", "冪等衝突/競合", false),
+        // 保存先の同じフォルダに同じ名前のファイルがある（エンジンが on_name_taken に従って扱う・BUG-97）。
+        S::Conflict => PortError::new(NAME_TAKEN, "同じ名前のファイルがすでにあります", false),
+        S::IdempotencyConflict => PortError::new(
+            "effect_conflict",
+            "同じ冪等キーで別の書き込みがあります",
+            false,
+        ),
         S::Invalid(m) => PortError::invalid(m),
         other => PortError::unavailable(format!("storage: {other}")),
     }

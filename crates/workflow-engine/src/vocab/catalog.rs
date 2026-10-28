@@ -213,7 +213,8 @@ fn labels(nt: NodeType) -> (NodeCategory, &'static str, &'static str) {
         NodeType::StorageWrite => (
             C::Storage,
             "ファイルを保存",
-            "ドライブに新しいファイルを保存する",
+            // 上書きも新しいバージョンもしない（同じ名前の扱いは設定で決める・BUG-97・付録 D の N3.5.2）。
+            "ドライブに新しいファイルを作って保存します。すでにあるファイルは書き換えません。",
         ),
         NodeType::StorageList => (
             C::Storage,
@@ -265,7 +266,7 @@ fn labels(nt: NodeType) -> (NodeCategory, &'static str, &'static str) {
         NodeType::CsvWrite => (
             C::Storage,
             "CSV を保存",
-            "新しい CSV ファイルをドライブに保存する",
+            "ドライブに新しい CSV ファイルを作って保存します。すでにあるファイルは書き換えません。",
         ),
         NodeType::DataQuery => (
             C::Data,

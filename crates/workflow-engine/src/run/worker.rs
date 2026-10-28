@@ -192,6 +192,7 @@ impl WorkflowWorker {
             tenant_id: claimed.tenant_id.clone(),
             org: claimed.org.clone(),
             run_id: claimed.run_id,
+            run_started_at: claimed.run_started_at,
             step_path: claimed.step_path.clone(),
             idempotency_key: claimed.idempotency_key.clone(),
             attempt: claimed.attempt,

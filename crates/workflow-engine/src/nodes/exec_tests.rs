@@ -14,6 +14,7 @@ fn ctx(input: Value) -> NodeContext {
         tenant_id: "t1".into(),
         org: "acme".into(),
         run_id: Uuid::nil(),
+        run_started_at: chrono::Utc::now(),
         step_path: "s0".into(),
         idempotency_key: "k0".into(),
         attempt: 0,

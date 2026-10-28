@@ -55,7 +55,10 @@ pub use reply::{
     MAX_REPLY_LABEL_CHARS,
 };
 pub use shape::{compact_ts, params_shape, params_type_name, ParamsShape, COMMON_TYPES};
-pub use storage::{RagSearchParams, StorageListParams, StorageReadParams, StorageWriteParams};
+pub use storage::{
+    content_type_from_name, numbered_name, NameTakenPolicy, RagSearchParams, StorageListParams,
+    StorageReadParams, StorageWriteParams, MAX_NUMBERED_NAME,
+};
 pub use tabular::{CsvPatchParams, CsvQueryParams, CsvWriteParams};
 
 use serde::de::DeserializeOwned;

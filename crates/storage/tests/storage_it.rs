@@ -3011,6 +3011,38 @@ async fn write_file_internal_idempotent_dedups_by_key() {
     .unwrap();
     assert_eq!(count, 1, "冪等キー再送で 2 バージョン作らない");
 
+    // 同じキーで別の書込（op_digest が違う）は、名前の衝突（Conflict）と分けて返す（BUG-97）。
+    let other = service
+        .write_file_internal_idempotent(
+            &actx,
+            None,
+            "idem-other.txt",
+            b"payload",
+            "text/plain",
+            &key,
+            "other-digest",
+            None,
+        )
+        .await;
+    assert!(
+        matches!(other, Err(StorageError::IdempotencyConflict)),
+        "{other:?}"
+    );
+    // 名前の衝突は Conflict（ワークフローの storage.write はこれを見て番号を付けて試し直す）。
+    let taken = service
+        .write_file_internal_idempotent(
+            &actx,
+            None,
+            "idem.txt",
+            b"payload2",
+            "text/plain",
+            &format!("{key}:another"),
+            digest,
+            None,
+        )
+        .await;
+    assert!(matches!(taken, Err(StorageError::Conflict)), "{taken:?}");
+
     // 別の冪等キー → 別ノードが作られる。
     let key2 = format!("wf:{}:r:step2", Uuid::new_v4().simple());
     let s3 = service

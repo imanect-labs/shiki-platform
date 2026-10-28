@@ -30,10 +30,12 @@ impl<'a> ParamResolver<'a> {
         match name {
             "input" => Some(self.ctx.input.clone()),
             "trigger" => Some(self.ctx.trigger.clone()),
-            "run" => Some(serde_json::json!({
-                "run_id": self.ctx.run_id.to_string(),
-                "tenant_id": self.ctx.tenant_id,
-            })),
+            // 実行情報（項目は vocab の単一定義・実行した日時は日本時間・D-97）。
+            "run" => Some(crate::vocab::run_info(
+                self.ctx.run_id,
+                &self.ctx.tenant_id,
+                self.ctx.run_started_at,
+            )),
             // `nodes.<id>.output` → 先行成功 step の出力。
             _ if name.starts_with("nodes.") && name.ends_with(".output") => {
                 let id = &name["nodes.".len()..name.len() - ".output".len()];
@@ -160,6 +162,7 @@ mod tests {
             tenant_id: "t1".into(),
             org: "acme".into(),
             run_id: Uuid::nil(),
+            run_started_at: chrono::Utc::now(),
             step_path: "n1".into(),
             idempotency_key: "wf:t1:0:n1".into(),
             attempt: 1,

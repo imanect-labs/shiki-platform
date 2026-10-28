@@ -242,6 +242,24 @@ fn trigger_payloads() -> String {
     out
 }
 
+/// 実行情報（`$from run`）の項目の説明（vocab の単一定義から作る・D-97）。
+fn run_info_fields() -> String {
+    workflow_engine::vocab::RUN_INFO_FIELDS
+        .iter()
+        .map(|f| {
+            if f.example.is_empty() {
+                format!("{}: {}（{}）", f.name, f.ty, f.description_ja)
+            } else {
+                format!(
+                    "{}: {}（{}・例 {}）",
+                    f.name, f.ty, f.description_ja, f.example
+                )
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// emit_workflow の説明文（`models` は発話ユーザーの組織で使える llm.invoke のモデル・`decision_models` は ai.decide の
 /// 判定用のモデル。どちらも `None` は載せない）。
 pub(super) fn emit_description(
@@ -271,13 +289,15 @@ pub(super) fn emit_description(
         d,
         "【値の書き方】params の値（ValueExpr）は次の 3 つ。\n\
          - リテラル: 文字列・数値・真偽・null・object・array。object / array の中にも下の 2 つを置ける。\n\
-         - 参照 {{\"$from\":\"<source>\",\"path\":\"/キー/0\",\"default\":既定値}}（path・default は省略可）。source は input（実行の入力）・trigger（トリガの内容）・run（{{run_id, tenant_id}}）・nodes.<id>.output（エッジでたどれる前のノードの出力。形は【ノード】の出力）・each（map 領域の中だけ）のどれか。中身は path（JSON Pointer・/ で始める）で指し、source に input.title のような書き方はしない。解決できず default も無ければ step は失敗する。\n\
+         - 参照 {{\"$from\":\"<source>\",\"path\":\"/キー/0\",\"default\":既定値}}（path・default は省略可）。source は input（実行の入力）・trigger（トリガの内容）・run（実行情報 {{ {run} }}。日時は日本時間で、同じ実行の中ではやり直しても同じ値）・nodes.<id>.output（エッジでたどれる前のノードの出力。形は【ノード】の出力）・each（map 領域の中だけ）のどれか。中身は path（JSON Pointer・/ で始める）で指し、source に input.title のような書き方はしない。解決できず default も無ければ step は失敗する。\n\
          - 文章の組み立て {{\"$template\":\"件名: {{title}}（{{count}} 件）\",\"vars\":{{\"title\":{{\"$from\":\"input\",\"path\":\"/title\"}},\"count\":…}}}}。差し込みは {{名前}} で、名前は vars のキー（vars に無い名前はエラー）。{{{{ と }}}} は差し込みではなく波括弧そのものを出す書き方（{{{{title}}}} と書くと「{{title}}」という文字が出る）。\n\
          - url・secret・skill・model など型が string の項目はリテラルの文字列だけ（参照は書けない）。テーブル・フォルダ・ファイルの id は実在する uuid を書く（data_schema・doc_search などで調べる。推測しない）。\n\
-         - schedule・event で動かすワークフローの storage.write・csv.write には folder を必ず書く（省略はルートへの保存で、自動の実行はルートに書けないので有効化できない）。llm.invoke の prompt・agent.invoke の instruction・rag.search の query・csv.query の sql は空にしない（空のままでは有効化も実行もできない）。\n\
+         - schedule・event で動かすワークフローの storage.write・csv.write には folder を必ず書く（省略はルートへの保存で、自動の実行はルートに書けないので有効化できない）。storage.write・csv.write は既存のファイルを上書きしない。同じ名前のファイルがあると失敗するので、毎回動くワークフローは on_name_taken に \"add_number\" を書く（「名前 (2).md」のように番号を付けて保存する）か、名前に {{\"$from\":\"run\",\"path\":\"/date\"}} を差し込む。content_type を省くとファイル名の拡張子（.md・.txt・.csv・.json・.html）から決まる。\n\
+         - llm.invoke の prompt・agent.invoke の instruction・rag.search の query・csv.query の sql は空にしない（空のままでは有効化も実行もできない）。\n\
          - 条件（control.branch の condition・トリガと control.wait の filter）: {{\"cmp\":{{\"left\":値,\"op\":CmpOp,\"right\":値}}}}・{{\"all\":[条件…]}}・{{\"any\":[条件…]}}・{{\"not\":条件}}。CmpOp = {ops}（exists・is_null は right を書かない）。例: {cond}\n\
          - data.query の filter は形が違う: {{\"cmp\":{{\"field\":\"<列の参照名>\",\"op\":CmpOp,\"value\":値}}}}（all / any / not は同じ）。query.limit は 1〜{max_limit}（省略は 50。範囲の外は保存できない）。集計は query の group_by と aggregate（[{{\"metric\":\"count\"}}] や {{\"metric\":\"sum\",\"field\":\"<数値の列>\"}}）で書け、結果は groups に入る（エディタの画面では作れない）。\n",
         max_limit = data::MAX_QUERY_LIMIT,
+        run = run_info_fields(),
         ops = compact_ts::<CmpOp>(),
         cond = minify(EXAMPLE_CONDITION),
     );
@@ -590,6 +610,11 @@ mod tests {
                 "source {source} の説明が無い"
             );
         }
+        // 実行情報の項目は単一定義から作る（実行した日をファイル名に差し込める・D-97）。
+        for f in workflow_engine::vocab::RUN_INFO_FIELDS {
+            assert!(d.contains(&format!("{}: {}（", f.name, f.ty)), "{}", f.name);
+        }
+        assert!(d.contains("on_name_taken に \"add_number\""), "{d}");
         // 演算子の一覧とイベント source は型・語彙から生成する。
         assert!(d.contains("\"starts_with\""), "{d}");
         assert!(d.contains("EventSource = \"storage.write\""), "{d}");
