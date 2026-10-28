@@ -375,16 +375,16 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 
 | type | 区分 | 概要 | 冪等性 | timeout 既定/最大 |
 |---|---|---|---|---|
-| `storage.read` | 能力 | 文章のファイルを読む（≤ 10MB。PDF・Office・画像などの種類〔MIME か拡張子〕と、UTF-8 でない中身は `not_text_file` で失敗・BUG-101） | pure | 30s / 120s |
+| `storage.read` | 能力 | 文章のファイルを読む（≤ 10MB。PDF・Office・画像などの種類〔MIME か拡張子〕と、UTF-8 でない中身は `not_text_file` で失敗・BUG-101。結果に読んだ中身のバージョン `version` を載せる・D-96） | pure | 30s / 120s |
 | `storage.write` | 能力 | 新しいファイルの保存（既存のファイルは書き換えず、新しいバージョンも足さない。同じ名前があれば `on_name_taken` に従い、省略・`fail` は `name_taken` で失敗、`add_number` は「名前 (2).md」〜「名前 (50).md」の空いている名前で保存する。`content_type` を省くと拡張子〔.txt・.md・.csv・.json・.html〕から決め、決まらなければ `application/octet-stream`・BUG-97・D-97） | engine-dedup | 30s / 120s |
 | `storage.list` | 能力 | フォルダ一覧 | pure | 30s / 120s |
-| `csv.query` | 能力 | CSV に読み取り専用の SQL を実行して集計・抽出する（隔離ランナー） | pure | 30s / 120s |
+| `csv.query` | 能力 | CSV に読み取り専用の SQL を実行して集計・抽出する（隔離ランナー。結果に集計した中身のバージョン `version` を載せ、後ろの `csv.patch` の `base_rev` にできる・D-96） | pure | 30s / 120s |
 | `csv.patch` / `csv.write` | 能力 | CSV のセル・行・列を書き換えて新しいバージョンを保存する／新しい CSV を保存する（同じ名前があるときは `storage.write` と同じ `on_name_taken`） | engine-dedup | 30s / 120s |
 | `data.query` | 能力 | 宣言的クエリ（**data の `DataQuery` をそのまま使う**・比較値に `$from` 可・`query.limit` は 1〜200 で範囲の外は保存時に `ir.schema_violation`・BUG-108） | pure | 30s / 120s |
 | `data.record.create` / `data.record.update` / `data.record.delete` | 能力 | レコード書込（rev 楽観ロック・rev 省略時は実行時点の rev） | engine-dedup | 30s / 120s |
 | `data.transition` | 能力 | **FSM 遷移 API を叩く**（直接 status 書込は構造的に不可能） | engine-dedup | 30s / 120s |
 | `data.bulk_upsert` | 能力 | 一括の作成・更新（data の一括書込パス・最大 5,000 行・誤りは行ごとに拒否） | engine-dedup | 120s / 600s |
-| `rag.search` | 能力 | permission-aware 検索（必要スコープは既存語彙 `rag.query`） | pure | 60s / 120s |
+| `rag.search` | 能力 | permission-aware 検索（必要スコープは既存語彙 `rag.query`。結果の各件に関連の強さ `relevance`〔high・medium・low。reranker の値を設定のしきい値で段階に落としたもの〕を載せる。`score` は順位から決めた値〔1/(順位+1)〕で関連の強さではない・D-96） | pure | 60s / 120s |
 | `notify.send` | 能力 | アプリ内通知 | engine-dedup | 30s / 60s |
 | `workflow.start` | 能力 | 別ワークフロー起動（fire-and-forget・run_id 返し） | engine-dedup（起動 1 回保証） | 10s / 30s |
 | `control.branch` / `switch` / `join` / `map` / `wait` | 制御 | §5 | pure | ―（wait は別枠・§7.5） |
@@ -398,6 +398,8 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 | `workflow.reply` | フロー連携 | 結果を画面に返す（ボタン・会話から起動した本人の画面に出す・スコープ不要・§7.10） | pure | 5s / 10s |
 
 以下、設計上の要点を持つノード種を個別に規定する。params の網羅的スキーマは codegen 型が正であり、本節は制約と出力形を示す。
+
+- **ファイルの ID の項目名は `file_id` にそろえる**（D-96）: `storage.read`・`storage.write`・`csv.write`・`csv.patch` の結果は `file_id` を載せ、古い名前（`storage.*` の `id`・`csv.*` の `node_id`）も同じ値で残す（保存済みの定義の `$from` を壊さない）。`rag.search` の結果・ファイル保存のトリガのペイロードはもとから `file_id`。出力の形の正はカタログの `output_fields`。
 
 **出力の形の正はノードカタログ**（`crates/workflow-engine/src/vocab/catalog.rs`）の `output_fields`（最上位の項目の名前・型・省略されうるか・補足）である。AI の説明文に載せる TS 風の表記（`output_shape`）はそこから作り、エディタの参照の候補も `output_fields` を読む（表記を字句解析しない・D-42）。項目の組でない出力（入力をそのまま通す・script の戻り値など）は文で書き、項目は空にする。
 
@@ -643,7 +645,7 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
     "tone": "neutral",                    // neutral（既定）| success | warning | error
     "value": { "$from": "nodes.answer.output", "path": "/text" },
     "columns": [ { "label": "条項", "path": "/clause" } ],      // table のときだけ・20 列まで
-    "file": { "id_path": "/file_id", "name_path": "/file_name" } // file_link のときだけ・既定 /id・/name
+    "file": { "id_path": "/file_id", "name_path": "/file_name" } // file_link のときだけ・省略は /file_id（無ければ /id）・/name（無ければ /file_name）
   } }
 ```
 
