@@ -27,7 +27,7 @@ import { EVENT_CATALOG } from "@/generated/workflow-catalog";
 import type { Condition, Trigger } from "@/generated/workflow-ir";
 import { Field, FieldInput, FieldSelectTrigger } from "./common";
 import { previewSchedule } from "@/lib/workflow-api";
-import { DataTableSelect, useDataTables } from "./data-tables";
+import { DataTableSelect, isFsmTable, NoFsmTableNote, useDataTables } from "./data-tables";
 import { InputSchemaEditor, type InputRefUsage } from "./input-schema-editor";
 
 /// 曜日（cron に書く名前と画面の名前・月曜から）。cron には数でなく名前で書く（曜日の番号の読み方の違いで
@@ -437,7 +437,10 @@ function TableEventFields({ trigger, onChange }: { trigger: EventTrigger; onChan
   const statusField = table?.schema.status_field
     ? table.schema.fields.find((f) => f.key === table.schema.status_field)
     : undefined;
-  const states = statusField?.options ?? [];
+  // 状態の変化のきっかけは、状態の進め方（FSM）のあるテーブルでしか起きない（無いテーブルを選ぶと、保存はでき
+  // てもいつまでも実行しなかった・保存時の照合も止める・BUG-105）。
+  const byState = trigger.source === "data.transition";
+  const states = table && isFsmTable(table) ? (statusField?.options ?? []) : [];
   const target = transitionTarget(trigger.filter);
   return (
     <>
@@ -449,6 +452,12 @@ function TableEventFields({ trigger, onChange }: { trigger: EventTrigger; onChan
         <DataTableSelect
           value={tableId}
           source={source}
+          eligible={byState ? isFsmTable : undefined}
+          ineligibleNote={
+            byState
+              ? "このテーブルには状態の進め方がありません。状態の進め方（例: 申請中 → 承認済み）を決めたテーブルを選んでください。"
+              : undefined
+          }
           onChange={(id) => {
             // テーブルを変えたら状態の条件は外す（別のテーブルの状態名は当てはまらない）。
             const { filter: _filter, ...rest } = trigger;
@@ -456,9 +465,17 @@ function TableEventFields({ trigger, onChange }: { trigger: EventTrigger; onChan
             onChange({ ...rest, scope: { table: id } } as Trigger);
           }}
         />
+        {byState ? <NoFsmTableNote source={source} testId="trigger-no-fsm-table" /> : null}
       </Field>
-      {trigger.source === "data.transition" ? (
-        <Field label="この状態になったとき" hint={states.length === 0 ? "状態の列があるテーブルで選べます" : "選ばないとどの状態への変更でも動きます"}>
+      {byState ? (
+        <Field
+          label="この状態になったとき"
+          hint={
+            states.length === 0
+              ? "先に「対象のテーブル」で、状態の進め方のあるテーブルを選んでください。"
+              : "「どの状態でも」なら、どの状態に変わっても実行します。"
+          }
+        >
           <Select
             value={target ?? ANY_STATE}
             disabled={states.length === 0}

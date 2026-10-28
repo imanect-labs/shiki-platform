@@ -17,13 +17,30 @@ import type { DataQuery, DataTable } from "@/lib/data-api";
 import { buildFilter, resolveColumns, splitFilter } from "@/lib/data-view";
 import { cn } from "@/lib/utils";
 import { Field, NumberInput } from "./common";
-import { DataTableSelect, useDataTables, type DataTables } from "./data-tables";
+import { DataTableSelect, isFsmTable, NoFsmTableNote, useDataTables, type DataTables } from "./data-tables";
 import type { FormProps } from "./forms-basic";
 import { paramsOf, patchParams } from "./params";
 import { ValueExprInput } from "./value-expr-input";
 
-/// 対象テーブル（固定値の選択 ／ 前の結果から）。選んだテーブルを返す（列の候補に使う）。
-function TableField({ node, dispatch, refCandidates, inMapRegion, fieldErrors, source }: FormProps & { source: DataTables }) {
+/// 対象テーブル（固定値の選択 ／ 前の結果から）。選んだテーブルを返す（列の候補に使う）。`eligible` は選べる
+/// テーブル（状態を進めるは状態の進め方のあるテーブルだけ・BUG-105）。
+function TableField({
+  node,
+  dispatch,
+  refCandidates,
+  inMapRegion,
+  fieldErrors,
+  source,
+  eligible,
+  ineligibleNote,
+  children,
+}: FormProps & {
+  source: DataTables;
+  eligible?: (t: DataTable) => boolean;
+  ineligibleNote?: string;
+  /// 一覧から選ぶときに、欄の下に足す注記。
+  children?: React.ReactNode;
+}) {
   const p = paramsOf<{ table: ValueExpr }>(node);
   const literal = typeof p.table === "string" ? p.table : null;
   const dynamic = p.table !== undefined && literal === null;
@@ -32,7 +49,14 @@ function TableField({ node, dispatch, refCandidates, inMapRegion, fieldErrors, s
     <div className="space-y-1.5">
       {mode === "pick" ? (
         <Field label="対象のテーブル" error={fieldErrors.get("table")} hint="有効化のとき、このテーブルの権限を渡します">
-          <DataTableSelect value={literal} source={source} onChange={(id) => patchParams(dispatch, node, { table: id })} />
+          <DataTableSelect
+            value={literal}
+            source={source}
+            eligible={eligible}
+            ineligibleNote={ineligibleNote}
+            onChange={(id) => patchParams(dispatch, node, { table: id })}
+          />
+          {children}
         </Field>
       ) : (
         <ValueExprInput
@@ -264,10 +288,23 @@ export function DataTransitionForm(props: FormProps) {
   const literal = typeof p.to === "string" ? p.to : null;
   return (
     <div className="space-y-4">
-      <TableField {...props} source={source} />
+      {/* 状態の進め方の無いテーブルは選べない（承認を待つと同じ・選べても実行のたびに失敗する・BUG-105）。 */}
+      <TableField
+        {...props}
+        source={source}
+        eligible={isFsmTable}
+        ineligibleNote="このテーブルには状態の進め方がないため、状態を進められません。"
+      >
+        <NoFsmTableNote source={source} testId="transition-no-fsm-table" />
+      </TableField>
       <RecordAndRev {...props} />
       {options.length && (literal !== null || p.to === undefined) ? (
-        <Field label="次の状態" error={fieldErrors.get("to")} hint="状態の遷移の規則（FSM）で許される先だけが実行できます">
+        <Field
+          label="次の状態"
+          error={fieldErrors.get("to")}
+          // 進められるかは、状態の進め方の決まりに加えて、進める人の条件でも決まる（付録 D の N3.3.5）。
+          hint="レコードのいまの状態から、この状態へ進めます。進められるかは、テーブルの状態の進め方と、実行する人（自動実行ではオンにした人）で決まります。"
+        >
           <Select value={literal ?? ""} onValueChange={(to) => patchParams(dispatch, node, { to })}>
             <SelectTrigger aria-label="次の状態" className="h-8 text-[13px]">
               <SelectValue placeholder="状態を選ぶ" />

@@ -159,6 +159,33 @@ export function useDataTables({
 /// 束縛済みのテーブルを読めないときの注記。
 export const UNREADABLE_TABLE = "このテーブルを読めません（または削除されました）";
 
+/// 状態の進め方（FSM）で管理するテーブルか（承認を待つ・状態を進める・状態の変化のきっかけに使える）。
+export function isFsmTable(t: DataTable): boolean {
+  return Boolean(t.schema.fsm_ref);
+}
+
+/// 読み込んだ一覧に、状態の進め方のあるテーブルが無いとき、その理由（読み込み中・あるときは null）。一覧を先頭の
+/// 200 件で打ち切っている（続きがある）ときは、続きにあるかもしれないので `not_loaded`（名前で探すよう促す・
+/// 「無い」と断定しない・GAP-42）。
+export function missingFsmTables(source: DataTables): "none" | "not_loaded" | null {
+  if (source.tables === null || source.tables.some(isFsmTable)) return null;
+  return source.nextCursor === null ? "none" : "not_loaded";
+}
+
+/// 状態の進め方のあるテーブルを選ぶ欄の下の注記（読み込んだ一覧に 1 つも無いとき・状態を進める・状態の変化の
+/// きっかけ・BUG-105。文は付録 D の N3.4.1・N7 Q4）。
+export function NoFsmTableNote({ source, testId }: { source: DataTables; testId?: string }) {
+  const missing = missingFsmTables(source);
+  if (!missing) return null;
+  return (
+    <p className="text-[11px] leading-relaxed text-muted-foreground" data-testid={testId}>
+      {missing === "none"
+        ? "状態の進め方を決めてあるテーブルがありません。状態の進め方は、いまは画面では作れません。管理者に頼んでください。"
+        : "最近更新されたテーブルの中に、状態の進め方を決めてあるテーブルはありません。テーブル名で探すか、「さらに読み込む」で続きを読んでください。"}
+    </p>
+  );
+}
+
 /// 設定パネルがシートになる幅（config-panel/index.tsx・model-field.tsx と同じ）。
 const PANEL_QUERY = "(min-width: 768px)";
 

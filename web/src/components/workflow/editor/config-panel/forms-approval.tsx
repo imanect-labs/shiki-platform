@@ -23,7 +23,7 @@ import type {
 import { getViewerContext, type DataTable } from "@/lib/data-api";
 import { cn } from "@/lib/utils";
 import { Field, FieldInput, FieldTextarea, NumberInput } from "./common";
-import { DataTableSelect, useDataTables, type TableLookup } from "./data-tables";
+import { DataTableSelect, isFsmTable, missingFsmTables, useDataTables, type TableLookup } from "./data-tables";
 import { nodeErrorView } from "../validation";
 import type { FormProps, ServerCheck } from "./forms-basic";
 import { paramsOf, patchParams } from "./params";
@@ -40,11 +40,6 @@ const CHOICES: { key: ChoiceKey; title: string; defaultLabel: string; optional: 
 
 const MAX_ASSIGNEES = 20;
 const MAX_SHOW_FIELDS = 30;
-
-/// 承認に使えるテーブル（状態の遷移の規則・FSM で管理するもの）。
-function isFsmTable(t: DataTable): boolean {
-  return Boolean(t.schema.fsm_ref);
-}
 
 /// 承認するテーブルを束縛したのに、その定義を使えないときの、テーブルに依存する欄（進める状態・相手の列）の注記。
 /// 束縛していなければ null（それぞれの欄の「先にテーブルを選んでください」のまま）。
@@ -181,8 +176,7 @@ export function HumanApprovalForm(props: FormProps) {
   const tableNote = boundTableNote(found);
   // 読み込んだ分に状態の遷移の規則があるテーブルが無い。一覧を打ち切っている（続きがある）ときは、先頭のページの外に
   // あるかもしれないので「作ってください」と断定せず、名前で探すよう促す（GAP-42）。
-  const noFsmTable =
-    source.tables === null || source.tables.some(isFsmTable) ? null : source.nextCursor === null ? "none" : "not_loaded";
+  const noFsmTable = missingFsmTables(source);
   const seesWholeTable = useSeesWholeTable(table?.id ?? null);
   const states = statesOf(table);
   const unreadableStates = statusUnreadable(table);

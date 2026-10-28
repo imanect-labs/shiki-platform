@@ -274,13 +274,18 @@ export function TableSearchList({
         ) : null}
         {!loading && !error && items.length === 0 ? (
           <p className="px-2.5 py-6 text-center text-[13px] leading-relaxed text-muted-foreground">
+            {/* 当たったテーブルがあっても、ここで選べない（状態の進め方が無いなど）ものだけなら「無い」と言わない。 */}
             {searching
               ? next
                 ? `「${q}」に当たるテーブルのうち、ここで選べるものはまだありません。さらに読み込むか、名前を詳しく入れてください`
-                : `「${q}」に当たるテーブルはありません`
+                : base.length > 0
+                  ? `「${q}」に当たるテーブルのうち、ここで選べるものはありません`
+                  : `「${q}」に当たるテーブルはありません`
               : next
                 ? "ここで選べるテーブルはまだありません。名前で探すか、さらに読み込んでください"
-                : "使えるテーブルがありません"}
+                : base.length > 0
+                  ? "ここで選べるテーブルはありません"
+                  : "使えるテーブルがありません"}
           </p>
         ) : null}
       </div>
