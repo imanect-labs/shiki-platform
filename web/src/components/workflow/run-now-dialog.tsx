@@ -10,10 +10,12 @@
 /// - 説明は付録 C の §3.6 の決まった文（使ってよい操作でさらに絞ることを言う・BUG-109）。
 /// - 必須の欄が空なら送らずに欄の下で知らせる。サーバーの入力の誤りは、項目のキーを見出しに直して欄の下に出し、
 ///   ほかの理由（実行できない設定・見つからない・使えない）はダイアログの中の帯に出す（本文を捨てない・BUG-109）。
+/// - きっかけがファイルやテーブルの変更のワークフローは、「詳しい設定」できっかけの内容（JSON）を入れて試せる
+///   （D-93。空欄なら、きっかけの内容は入力と同じ）。
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, Loader2, Play } from "lucide-react";
+import { AlertTriangle, ChevronDown, Loader2, Play } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -37,6 +39,7 @@ import { cn } from "@/lib/utils";
 import { getWorkflow } from "@/lib/workflow-api";
 import { RunStartError, startRun } from "@/lib/workflow-run-api";
 import { inputFieldsOf, type InputFieldInfo } from "@/lib/workflow-input-schema";
+import { EVENT_CATALOG } from "@/generated/workflow-catalog";
 import type { WorkflowIr } from "@/generated/workflow-ir";
 
 /// 付録 C の §3.6 の決まった文（手動の実行のダイアログ）。
@@ -63,6 +66,63 @@ function coerceValue(raw: string, kind: InputFieldInfo["kind"] | undefined): unk
 function schemaFields(ir: WorkflowIr): InputFieldInfo[] | null {
   const fields = inputFieldsOf(ir.input_schema);
   return fields.length > 0 ? fields : null;
+}
+
+/// きっかけの呼び名（スケジュールか、ファイルやテーブルの変更の具体名・カタログの単一定義から）。
+function triggerLabel(t: WorkflowIr["triggers"][number]): string | null {
+  if (t.kind === "schedule") return "スケジュール";
+  if (t.kind === "event") {
+    return EVENT_CATALOG.find((e) => e.source === t.source)?.label_ja ?? "ファイルやテーブルの変更";
+  }
+  return null;
+}
+
+/// 手動でないきっかけ（説明の 2 文目）。手動のきっかけがあれば null。
+function nonManualTrigger(ir: WorkflowIr): string | null {
+  if (ir.triggers.some((t) => t.kind === "interactive")) return null;
+  const t = ir.triggers[0];
+  return t ? triggerLabel(t) : null;
+}
+
+/// ファイルやテーブルの変更のきっかけ（きっかけの内容の欄を出す・D-93）。スケジュールの内容は空なので出さない。
+function eventTrigger(ir: WorkflowIr): { label: string; source: string } | null {
+  const t = ir.triggers.find((x) => x.kind === "event");
+  return t && t.kind === "event" ? { label: triggerLabel(t) ?? "", source: String(t.source) } : null;
+}
+
+/// ファイルやテーブルの変更のきっかけの内容の項目（カタログの単一定義から・D-47）。
+function payloadSkeleton(source: string): string {
+  const entry = EVENT_CATALOG.find((e) => e.source === source);
+  const value = (type: string): unknown =>
+    type.startsWith("number")
+      ? 0
+      : type.startsWith("boolean")
+        ? false
+        : type.startsWith("Array")
+          ? []
+          : type.startsWith("{")
+            ? {}
+            : "";
+  return JSON.stringify(
+    Object.fromEntries((entry?.payload_fields ?? []).map((f) => [f.name, value(f.type)])),
+    null,
+    2,
+  );
+}
+
+/// JSON の欄の値を読む（空なら `undefined`・項目のまとまりでなければ誤り）。
+function parseJsonObject(text: string): { ok: true; value: Record<string, unknown> | undefined } | { ok: false; error: string } {
+  if (!text.trim()) return { ok: true, value: undefined };
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    return { ok: false, error: JSON_SYNTAX };
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return { ok: false, error: "項目のまとまり（{ } で囲んだ JSON）で書いてください。" };
+  }
+  return { ok: true, value: value as Record<string, unknown> };
 }
 
 /// 1 項目の入力欄（型ごと）。値は文字で持ち、送るときに型へ変換する。
@@ -143,11 +203,15 @@ export function RunNowDialog({
 }) {
   const router = useRouter();
   const props = schemaFields(ir);
+  const manualOnlyFor = nonManualTrigger(ir);
+  const trigger = eventTrigger(ir);
   const idBase = React.useId();
   const [fields, setFields] = React.useState<Record<string, string>>({});
   const [jsonText, setJsonText] = React.useState("{}");
+  const [triggerText, setTriggerText] = React.useState("");
+  const [advanced, setAdvanced] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
-  /// 欄の下の誤り（項目のキー → 文・`$input` は入力の JSON）。
+  /// 欄の下の誤り（項目のキー → 文・`$input` は入力の JSON・`$trigger` はきっかけの内容）。
   const [fieldErrors, setFieldErrors] = React.useState<Record<string, string>>({});
   /// 欄に写せない誤り（ダイアログの中の帯）。
   const [failure, setFailure] = React.useState<{ message: string; lines: string[] } | null>(null);
@@ -180,6 +244,15 @@ export function RunNowDialog({
         errors.$input = JSON_SYNTAX;
       }
     }
+    let triggerValue: Record<string, unknown> | undefined;
+    if (trigger) {
+      const parsed = parseJsonObject(triggerText);
+      if (parsed.ok) triggerValue = parsed.value;
+      else {
+        errors.$trigger = parsed.error;
+        setAdvanced(true);
+      }
+    }
     setFieldErrors(errors);
     setFailure(null);
     if (Object.keys(errors).length > 0) return;
@@ -197,7 +270,7 @@ export function RunNowDialog({
         });
         return;
       }
-      const runId = await startRun(workflowId, input);
+      const runId = await startRun(workflowId, input, triggerValue);
       if (runId) {
         onOpenChange(false);
         toast({ title: "実行を始めました", description: "実行履歴で進み具合を見られます。" });
@@ -228,12 +301,16 @@ export function RunNowDialog({
           rest.push(`${issue.key || "入力"}: ${issue.message}`);
         }
       }
+      if (e.field === "trigger") {
+        shown.$trigger = e.message;
+        setAdvanced(true);
+      }
       setFieldErrors(shown);
       const lines = [
         ...rest,
         ...e.reasons.map((r) => (r.nodeId ? `「${labels.get(r.nodeId) ?? r.nodeId}」: ${r.message}` : r.message)),
       ];
-      if (lines.length > 0 || e.issues.length === 0) {
+      if (lines.length > 0 || (e.issues.length === 0 && e.field !== "trigger")) {
         setFailure({ message: e.message, lines });
       }
     } finally {
@@ -253,6 +330,9 @@ export function RunNowDialog({
           </DialogTitle>
           <DialogDescription className="space-y-1">
             <span className="block">{RUN_NOTE}</span>
+            {manualOnlyFor ? (
+              <span className="block">{`このワークフローのきっかけは「${manualOnlyFor}」ですが、ここでは試しに 1 回だけ実行します。`}</span>
+            ) : null}
             <span className="block">{HISTORY_NOTE}</span>
           </DialogDescription>
         </DialogHeader>
@@ -336,6 +416,56 @@ export function RunNowDialog({
             ) : null}
           </div>
         )}
+        {trigger ? (
+          <div className="space-y-2">
+            <button
+              type="button"
+              aria-expanded={advanced}
+              aria-controls={`${idBase}-advanced`}
+              onClick={() => setAdvanced((v) => !v)}
+              className="flex items-center gap-1 rounded-sm text-xs font-medium text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <ChevronDown className={cn("size-3.5 transition-transform", advanced && "rotate-180")} aria-hidden />
+              詳しい設定
+            </button>
+            {advanced ? (
+              <div id={`${idBase}-advanced`} className="space-y-1" data-testid="run-now-trigger">
+                <div className="flex items-end justify-between gap-2">
+                  <label className="text-xs font-medium" htmlFor={`${idBase}-trigger`}>
+                    きっかけの内容（JSON・省略可）
+                  </label>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 text-xs"
+                    onClick={() => setTriggerText(payloadSkeleton(trigger.source))}
+                  >
+                    項目を並べる
+                  </Button>
+                </div>
+                <Textarea
+                  id={`${idBase}-trigger`}
+                  value={triggerText}
+                  rows={5}
+                  placeholder={'例: {"record_id": "…"}'}
+                  onChange={(e) => setTriggerText(e.target.value)}
+                  aria-invalid={fieldErrors.$trigger ? true : undefined}
+                  aria-describedby={`${fieldErrors.$trigger ? `${errorId("trigger")} ` : ""}${idBase}-trigger-note`}
+                  className={cn("font-mono text-xs", fieldErrors.$trigger && "border-destructive")}
+                />
+                {fieldErrors.$trigger ? (
+                  <p id={errorId("trigger")} className="text-[11px] text-destructive">
+                    {fieldErrors.$trigger}
+                  </p>
+                ) : null}
+                <p id={`${idBase}-trigger-note`} className="text-[11px] leading-relaxed text-muted-foreground">
+                  {`ここに書いた値を、「${trigger.label}」のきっかけの内容として使います。空欄なら、入力の値をきっかけの内容として使います。`}
+                </p>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
         <div className="flex justify-end">
           <Button onClick={run} disabled={busy}>
             {busy ? (

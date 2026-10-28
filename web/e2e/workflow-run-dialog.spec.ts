@@ -2,10 +2,12 @@ import { expect, test, type Page } from "@playwright/test";
 
 import { cleanupAll, loginViaKeycloak, uniqueName } from "./helpers";
 
-/// 手動の実行のダイアログの e2e（BUG-109）:
+/// 手動の実行のダイアログの e2e（BUG-109・D-93）:
 /// - 説明は決まった文（使ってよい操作でさらに絞る）で言う。
 /// - 必須の欄が空なら送らずに欄の下で知らせる。サーバーの入力の誤りは、本文を捨てず欄の下に出す（以前は
 ///   「API 400」とだけ出た）。どちらでも実行は作られない。
+/// - ファイルが保存されたときのきっかけのワークフローは、「詳しい設定」のきっかけの内容（JSON）で試せる。書いた値が
+///   `$from trigger` の源になり、空欄なら入力の値を使う。
 
 const SHOTS = process.env.E2E_SHOTS_DIR;
 
@@ -102,5 +104,92 @@ test("実行のダイアログ: 決まった文で説明し、入力の誤りを
       const del = await page.request.delete(`/api/artifacts/${id}`, { headers: await csrfHeaders(page) });
       expect(del.status(), await del.text()).toBeLessThan(300);
     });
+  }
+});
+
+type StepOutput = { output: unknown };
+type RunDetail = { status: string };
+
+test("実行のダイアログ: ファイルが保存されたときのワークフローを、きっかけの内容を入れて試せる（D-93）", async ({ page }) => {
+  test.setTimeout(150_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await loginViaKeycloak(page);
+  let folderId = "";
+  let id = "";
+  try {
+    const folder = await page.request.post("/api/folders", {
+      headers: await csrfHeaders(page),
+      data: { name: uniqueName("e2e-受付の箱"), parent_id: null },
+    });
+    expect(folder.ok(), await folder.text()).toBeTruthy();
+    folderId = ((await folder.json()) as { id: string }).id;
+    const name = uniqueName("run-dialog-trigger");
+    id = await createFlow(page, {
+      ir_version: 1,
+      name,
+      display_name: name,
+      declared_scopes: ["storage.read"],
+      triggers: [{ kind: "event", source: "storage.write", scope: { folder: folderId } }],
+      nodes: [
+        {
+          id: "echo",
+          type: "script.run",
+          label: "きっかけを返す",
+          params: { source: { inline: "function main(i){ return i; }" }, input: { $from: "trigger" } },
+        },
+      ],
+      edges: [],
+    });
+    await page.goto(`/workflows/${id}`);
+    await page.getByRole("button", { name: "実行", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "いま実行する" });
+    await expect(
+      dialog.getByText("このワークフローのきっかけは「ファイルが保存されたとき」ですが、ここでは試しに 1 回だけ実行します。"),
+    ).toBeVisible();
+    await expect(dialog.getByTestId("run-now-trigger")).toHaveCount(0);
+    await dialog.getByRole("button", { name: "詳しい設定" }).click();
+    const field = dialog.getByRole("textbox", { name: "きっかけの内容（JSON・省略可）" });
+    // 項目のひな形はカタログのきっかけの項目から並べる。
+    await dialog.getByRole("button", { name: "項目を並べる" }).click();
+    await expect(field).toHaveValue(/"file_id": ""/);
+    // 書き方の誤りは欄の下（送らない）。
+    await field.fill('{"file_id": ');
+    await dialog.getByRole("button", { name: "実行する" }).click();
+    await expect(dialog.getByText("JSON の書き方が正しくありません。引用符、カンマ、括弧の対応を確かめてください。")).toBeVisible();
+    await field.fill('["file"]');
+    await dialog.getByRole("button", { name: "実行する" }).click();
+    await expect(dialog.getByText("項目のまとまり（{ } で囲んだ JSON）で書いてください。")).toBeVisible();
+    expect(await runCount(page, id)).toBe(0);
+    if (SHOTS) await page.waitForTimeout(400).then(() => page.screenshot({ path: `${SHOTS}/run-dialog-trigger-pc.png` }));
+
+    // 書いたきっかけの内容が `$from trigger` の源になる。
+    const trial = { file_id: "e2e-file-1", version: 3, op: "update" };
+    await field.fill(JSON.stringify(trial));
+    await dialog.getByRole("button", { name: "実行する" }).click();
+    await page.waitForURL(/\/runs\?run=/, { timeout: 20_000 });
+    const runId = new URL(page.url()).searchParams.get("run")!;
+    await expect
+      .poll(
+        async () => ((await (await page.request.get(`/api/workflows/${id}/runs/${runId}`)).json()) as RunDetail).status,
+        { timeout: 60_000 },
+      )
+      .toBe("succeeded");
+    const step = (await (
+      await page.request.get(`/api/workflows/${id}/runs/${runId}/steps?path=echo`)
+    ).json()) as StepOutput;
+    expect(step.output).toEqual(trial);
+  } finally {
+    await cleanupAll(
+      async () => {
+        if (!id) return;
+        const del = await page.request.delete(`/api/artifacts/${id}`, { headers: await csrfHeaders(page) });
+        expect(del.status(), await del.text()).toBeLessThan(300);
+      },
+      async () => {
+        if (!folderId) return;
+        const del = await page.request.delete(`/api/folders/${folderId}`, { headers: await csrfHeaders(page) });
+        expect(del.status(), await del.text()).toBeLessThan(300);
+      },
+    );
   }
 });

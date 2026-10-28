@@ -38,7 +38,7 @@ export type RunInputIssue = Schemas["InputIssueBody"];
 /// 実行を始められなかった理由（実行のダイアログが、欄の下と誤りの帯に出し分ける・BUG-109）。
 ///
 /// - `issues`: 入力の誤り（`invalid_input`・項目のキーと理由）。
-/// - `field`: 誤りのある欄。
+/// - `field`: 誤りのある欄（`trigger` はきっかけの内容）。
 /// - `reasons`: 実行できない設定（`not_ready`・ブロックの id と理由）。
 /// `message` は状態コードの既定の文言か、サーバーの文言（付録 C の §3.4.3）。
 export class RunStartError extends Error {
@@ -66,12 +66,19 @@ function runStatusMessage(status: number): string {
   return "内容に誤りがあるため、受け付けられませんでした。入力した値を見直してください。";
 }
 
-/// 対話トリガで実行する（実行主体 = 自分）。始められなければ [`RunStartError`] を投げる（本文の理由を捨てない・
-/// BUG-109）。
-export async function startRun(workflowId: string, input: unknown): Promise<string | null> {
+/// 対話トリガで実行する（実行主体 = 自分）。`trigger` は試すきっかけの内容（省略すると入力と同じ・D-93）。
+/// 始められなければ [`RunStartError`] を投げる（本文の理由を捨てない・BUG-109）。
+export async function startRun(
+  workflowId: string,
+  input: unknown,
+  trigger?: Record<string, unknown>,
+): Promise<string | null> {
   let res: Response;
   try {
-    res = await apiFetch(`/workflows/${workflowId}/runs`, json("POST", { input }));
+    res = await apiFetch(
+      `/workflows/${workflowId}/runs`,
+      json("POST", trigger === undefined ? { input } : { input, trigger }),
+    );
   } catch {
     throw new RunStartError(
       0,
