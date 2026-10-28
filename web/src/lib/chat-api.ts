@@ -217,10 +217,11 @@ async function ok<T>(res: Response): Promise<T> {
 /// `pinned` はピン留めだけ（ピン留めの新しい順・1 ページで全件）。
 export async function listThreads(
   cursor?: string,
-  opts?: { originNoteId?: string; q?: string; pinned?: boolean },
+  opts?: { originNoteId?: string; q?: string; pinned?: boolean; limit?: number },
 ): Promise<{ threads: Thread[]; nextCursor: string | null }> {
   const params = new URLSearchParams();
   if (cursor) params.set("cursor", cursor);
+  if (opts?.limit) params.set("limit", String(opts.limit));
   if (opts?.originNoteId) params.set("origin_note_id", opts.originNoteId);
   if (opts?.q?.trim()) params.set("q", opts.q.trim());
   if (opts?.pinned) params.set("pinned", "true");

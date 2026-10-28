@@ -62,17 +62,9 @@ test.describe("スマホのチャット", () => {
 
     // 免責文は最新の回答の下に 1 回だけ。
     await expect(phone.getByTestId("chat-disclaimer")).toHaveCount(1, { timeout: 30_000 });
-    await phone.context().close();
-  });
 
-  test("実行モードのボタンからエージェントに切り替えると、プレースホルダで状態が分かる", async ({
-    browser,
-    page,
-  }) => {
-    const phone = await phonePage(browser, page);
-    await phone.goto("/");
-
-    // スマホではトグルを並べず、1 つのボタンにまとめる。
+    // 会話の入力欄では、トグルを並べず 1 つの「実行モード」ボタンにまとめる。
+    // エージェントに切り替えると、プレースホルダで状態が分かる。
     await expect(phone.getByRole("switch", { name: "エージェントモード" })).toHaveCount(0);
     await phone.getByTestId("composer-mode-button").click();
     const card = phone.getByTestId("composer-mode-card");
@@ -86,6 +78,28 @@ test.describe("スマホのチャット", () => {
     await phone.getByTestId("composer-mode-button").click();
     await expect(phone.getByLabel("メッセージを入力")).not.toBeFocused();
     await phone.keyboard.press("Escape");
+    await phone.context().close();
+  });
+
+  test("ホームではモードを入力欄の上で切り替え、エージェントの設定がその下に出る", async ({
+    browser,
+    page,
+  }) => {
+    const phone = await phonePage(browser, page);
+    await phone.goto("/");
+
+    // ホームの入力欄には実行モードのボタンを出さない（モードは入力欄の上で選ぶ・#964）。
+    await expect(phone.getByTestId("composer-mode-button")).toHaveCount(0);
+    await phone.getByTestId("home-mode-agent").click();
+    await expect(phone.getByTestId("home-mode-agent")).toHaveAttribute("aria-selected", "true");
+    await expect(phone.getByLabel("メッセージを入力")).toHaveAttribute("placeholder", "エージェントに依頼");
+    await expect(phone.getByRole("button", { name: /作業フォルダ/ })).toBeVisible();
+    await expect(phone.getByRole("radiogroup", { name: "承認", exact: true })).toBeVisible();
+    // 横にはみ出さない（モードの切替・設定の段がスマホ幅に収まる）。
+    const overflow = await phone.evaluate(
+      () => document.documentElement.scrollWidth - window.innerWidth,
+    );
+    expect(overflow).toBeLessThanOrEqual(0);
 
     // 「+」は下からのシート（添付 → 作成 → モデル → ツール → スキル）。
     await phone.getByRole("button", { name: "追加メニューを開く" }).click();

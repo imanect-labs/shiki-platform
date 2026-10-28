@@ -1,7 +1,7 @@
 "use client";
 
-/// ホームのコンポーザ直下に置く skill セレクタ（Task 6.11「チャット開始時に skill を選択」）。
-/// 選択すると次に開始するチャットへ version 込みでピンされる。
+/// ホームのチャットモードに置く skill セレクタ（Task 6.11「チャット開始時に skill を選択」）。
+/// 選択すると次に開始するチャットへ version 込みでピンされる。skill が 1 つも無いときは `empty` を出す。
 
 import * as React from "react";
 import { Sparkles, X } from "lucide-react";
@@ -12,11 +12,14 @@ import { cn } from "@/lib/utils";
 export function SkillPicker({
   selected,
   onSelect,
+  empty = null,
 }: {
   selected: ArtifactMeta | null;
   onSelect: (skill: ArtifactMeta | null) => void;
+  empty?: React.ReactNode;
 }) {
-  const [skills, setSkills] = React.useState<ArtifactMeta[]>([]);
+  // null は読み込み中（その間は説明も出さない。読み終えてから説明→チップへ入れ替わる揺れを避ける）。
+  const [skills, setSkills] = React.useState<ArtifactMeta[] | null>(null);
 
   React.useEffect(() => {
     let active = true;
@@ -28,7 +31,8 @@ export function SkillPicker({
     };
   }, []);
 
-  if (skills.length === 0) return null;
+  if (skills === null) return null;
+  if (skills.length === 0) return <>{empty}</>;
 
   return (
     <div className="flex flex-wrap items-center justify-center gap-1.5" aria-label="スキルを選択">
