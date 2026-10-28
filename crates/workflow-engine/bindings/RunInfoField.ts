@@ -23,4 +23,8 @@ example: string,
 /**
  * 値の候補に出すか（ID は画面の候補に出さない）。
  */
-suggested: boolean, };
+suggested: boolean, 
+/**
+ * 補足（値が入らない場合など・利用者と AI の説明に添える・無ければ空）。
+ */
+note_ja: string, };

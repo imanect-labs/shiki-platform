@@ -1253,6 +1253,32 @@ async fn run_info_dates_can_be_inserted_into_file_names() {
     assert_eq!(w.bytes, b"2026-10-28T08:30:00+09:00");
 }
 
+/// 実行情報の「実行した人」（`$from run /started_by`）は、人が手動で実行した run のユーザーの ID。人のいない
+/// run（スケジュール・きっかけのワークフロー主体）には入らず、参照したブロックは値がないとして失敗する
+/// （黙って空の値で書かない・GAP-17・D-101）。
+#[tokio::test]
+async fn run_info_started_by_is_the_person_who_ran_it() {
+    let params =
+        json!({ "name": "申請者.txt", "content": { "$from": "run", "path": "/started_by" } });
+    let ports = Arc::new(FakePorts::default());
+    let exec = executor(ports.clone(), Arc::new(CapturingAudit::default()));
+    let mut by_person = ctx(json!({}), vec!["storage.write".into()]);
+    by_person.principal = "alice".into();
+    by_person.principal_kind = "user".into();
+    let res = exec.execute("storage.write", &params, &by_person).await;
+    assert!(res.ok, "{:?}", res.error);
+    let w = ports.last_write.lock().unwrap().clone().unwrap();
+    assert_eq!(w.bytes, b"alice");
+
+    let ports = Arc::new(FakePorts::default());
+    let exec = executor(ports.clone(), Arc::new(CapturingAudit::default()));
+    let unattended = ctx(json!({}), vec!["storage.write".into()]);
+    let res = exec.execute("storage.write", &params, &unattended).await;
+    assert!(!res.ok);
+    assert_eq!(res.error.unwrap().code, "expr_resolve_error");
+    assert!(ports.last_write.lock().unwrap().is_none(), "書かない");
+}
+
 /// 相手が誤りを返したとき: 省略（既存の定義）は今のまま成功として次へ渡す。fail_on_error_status なら失敗にし、
 /// 4xx はやり直さない、5xx と 429 はやり直せる失敗にする（BUG-99・D-95）。送ったことは監査に残す。
 #[tokio::test]

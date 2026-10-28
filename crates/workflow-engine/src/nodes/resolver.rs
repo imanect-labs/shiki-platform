@@ -30,11 +30,13 @@ impl<'a> ParamResolver<'a> {
         match name {
             "input" => Some(self.ctx.input.clone()),
             "trigger" => Some(self.ctx.trigger.clone()),
-            // 実行情報（項目は vocab の単一定義・実行した日時は日本時間・D-97）。
+            // 実行情報（項目は vocab の単一定義・実行した日時は日本時間・D-97。実行した人は人が実行した run
+            // だけ・D-101）。
             "run" => Some(crate::vocab::run_info(
                 self.ctx.run_id,
                 &self.ctx.tenant_id,
                 self.ctx.run_started_at,
+                crate::vocab::started_by(&self.ctx.principal, &self.ctx.principal_kind),
             )),
             // `nodes.<id>.output` → 先行成功 step の出力。
             _ if name.starts_with("nodes.") && name.ends_with(".output") => {

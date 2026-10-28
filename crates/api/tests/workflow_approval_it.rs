@@ -2538,6 +2538,98 @@ impl Env {
     }
 }
 
+/// 手動の実行では、実行情報の「実行した人」（`$from run /started_by`）で、実行した本人の行を探せる（申請者の
+/// 上長を承認者の表から引く組み方・GAP-17・D-101）。入力項目で申請者を受け取る組み方と違い、入力に別の人の ID
+/// を入れても名乗れない。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn manual_runs_find_the_row_of_the_person_who_ran_them() {
+    let _serial = SERIAL.lock().await;
+    let Some(env) = setup().await else { return };
+    let mut member = FieldDef::new("member", FieldType::UserRef);
+    member.indexed = true;
+    let schema = TableSchema {
+        fields: vec![member, FieldDef::new("manager", FieldType::UserRef)],
+        status_field: None,
+        row_policy: None,
+        field_policy: vec![],
+        aggregate_min_rows: None,
+        fsm_ref: None,
+        rag: None,
+    };
+    let table = env
+        .data
+        .create_table(
+            &env.alice,
+            NewDataTable {
+                name: format!("approvers-{}", Uuid::new_v4().simple()),
+                schema,
+            },
+            None,
+        )
+        .await
+        .unwrap()
+        .id;
+    let id = |c: &AuthContext| c.principal.id.clone();
+    for (who, boss) in [(&env.alice, &env.bob), (&env.dave, &env.carol)] {
+        env.data
+            .create_record(
+                &env.alice,
+                table,
+                json!({ "member": id(who), "manager": id(boss) }),
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    let table_obj = env.alice.ns().data_table(&table.to_string());
+    env.fga
+        .write_tuple(&env.dave.subject(), Relation::Viewer, &table_obj)
+        .await
+        .unwrap();
+    let ir = json!({
+        "ir_version": 1, "name": format!("find-manager-{}", table.simple()),
+        "declared_scopes": ["data.read"],
+        "triggers": [{ "kind": "interactive" }],
+        "nodes": [{ "id": "boss", "type": "data.query", "params": {
+            "table": table.to_string(),
+            "query": { "filter": { "cmp": {
+                "field": "member", "op": "eq", "value": { "$from": "run", "path": "/started_by" } } } }
+        } }],
+        "edges": []
+    });
+    let (wf, _) = env
+        .workflows
+        .create(&env.alice, &ir, &Catalog::default(), None)
+        .await
+        .unwrap();
+    env.fga
+        .write_tuple(
+            &env.dave.subject(),
+            Relation::Viewer,
+            &env.alice.ns().artifact(&wf.to_string()),
+        )
+        .await
+        .unwrap();
+    // 実行した人ごとに、その人の行（上長）が見つかる。入力に別の人を書いても変わらない。
+    for (who, boss) in [(&env.alice, &env.bob), (&env.dave, &env.carol)] {
+        let run = env
+            .launcher
+            .start_interactive(who, wf, &json!({ "started_by": id(&env.bob) }))
+            .await
+            .unwrap()
+            .unwrap();
+        env.settle().await;
+        let (status, _, out) = env.step(run, "boss").await;
+        assert_eq!(status, "succeeded", "{out:?}");
+        let items = out.unwrap()["items"].clone();
+        assert_eq!(items.as_array().map(Vec::len), Some(1), "{items}");
+        assert_eq!(items[0]["data"]["member"], json!(id(who)));
+        assert_eq!(items[0]["data"]["manager"], json!(id(boss)));
+        env.forget_runs(wf).await;
+    }
+    env.cleanup().await;
+}
+
 /// 状態を進める（data.transition）と状態の変化のきっかけは、状態の進め方（FSM）のあるテーブルにしか使えない
 /// （無いテーブルでは、ブロックは実行のたびに失敗し、きっかけはいつまでも起きない）。保存時の照合（V4）で、
 /// FSM の無いテーブルと見えないテーブルを同じ誤り（code・path・message）で止める。テーブルを参照で決める

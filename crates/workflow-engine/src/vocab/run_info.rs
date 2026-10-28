@@ -6,6 +6,12 @@
 //!
 //! 日時は実行を始めた時刻で決める（同じ実行の中では、どのブロックが何度やり直しても同じ値）。
 //! ファイル名に差し込んでも、やり直しで別の名前にならない（冪等キーの照合が崩れない）。
+//!
+//! 実行した人（`started_by`）は、人が手動で実行した run の実行主体（ユーザーの ID）。申請者を承認者の表から
+//! 引くような組み方に使う（GAP-17・D-101）。入力項目で申請者を受け取ると、実行する人が別の人の ID を入れて
+//! 偽れるが、これは実行主体から決まるので偽れない。スケジュール・きっかけ（ワークフロー主体）やミニアプリの
+//! 自動化（サービスの主体）で動いた run には人がいないので、項目ごと入れない（参照すると、値がないときの
+//! 代わりの値が無ければブロックが失敗する。黙って別の人や空の値で探さない）。
 
 use chrono::{DateTime, Utc};
 use serde::Serialize;
@@ -35,6 +41,8 @@ pub struct RunInfoField {
     pub example: &'static str,
     /// 値の候補に出すか（ID は画面の候補に出さない）。
     pub suggested: bool,
+    /// 補足（値が入らない場合など・利用者と AI の説明に添える・無ければ空）。
+    pub note_ja: &'static str,
 }
 
 /// 実行情報の項目（表示の順）。
@@ -45,6 +53,7 @@ pub const RUN_INFO_FIELDS: &[RunInfoField] = &[
         description_ja: "実行した日",
         example: "2026-10-28",
         suggested: true,
+        note_ja: "",
     },
     RunInfoField {
         name: "started_at",
@@ -52,6 +61,15 @@ pub const RUN_INFO_FIELDS: &[RunInfoField] = &[
         description_ja: "実行した日時",
         example: "2026-10-28T09:00:00+09:00",
         suggested: true,
+        note_ja: "",
+    },
+    RunInfoField {
+        name: "started_by",
+        ty: "string",
+        description_ja: "実行した人",
+        example: "",
+        suggested: true,
+        note_ja: "手動で実行した人のユーザー ID（メンバーの列と比べられる）。スケジュールやきっかけで動いた実行には入らない",
     },
     RunInfoField {
         name: "run_id",
@@ -59,6 +77,7 @@ pub const RUN_INFO_FIELDS: &[RunInfoField] = &[
         description_ja: "実行の ID",
         example: "",
         suggested: false,
+        note_ja: "",
     },
     RunInfoField {
         name: "tenant_id",
@@ -66,19 +85,37 @@ pub const RUN_INFO_FIELDS: &[RunInfoField] = &[
         description_ja: "契約全体の ID",
         example: "",
         suggested: false,
+        note_ja: "",
     },
 ];
 
-/// 実行情報の値（`$from run` の源）。`started_at` は実行を始めた時刻（UTC）。
+/// 実行情報の値（`$from run` の源）。`started_at` は実行を始めた時刻（UTC）。`started_by` は人が手動で
+/// 実行した run のユーザーの ID（人のいない run は `None` で、項目ごと入れない）。
 #[must_use]
-pub fn run_info(run_id: Uuid, tenant_id: &str, started_at: DateTime<Utc>) -> Value {
+pub fn run_info(
+    run_id: Uuid,
+    tenant_id: &str,
+    started_at: DateTime<Utc>,
+    started_by: Option<&str>,
+) -> Value {
     let local = started_at.with_timezone(&RUN_INFO_TIMEZONE);
-    json!({
+    let mut v = json!({
         "date": local.format("%Y-%m-%d").to_string(),
         "started_at": local.to_rfc3339_opts(chrono::SecondsFormat::Secs, false),
         "run_id": run_id.to_string(),
         "tenant_id": tenant_id,
-    })
+    });
+    if let (Some(by), Some(o)) = (started_by, v.as_object_mut()) {
+        o.insert("started_by".into(), Value::String(by.to_string()));
+    }
+    v
+}
+
+/// 実行した人（[`run_info`] の `started_by`）: 実行主体がユーザーのとき（手動の実行・その中から始めた別の
+/// ワークフロー）だけ、そのユーザーの ID。ワークフロー主体（スケジュール・きっかけ）とサービスの主体は `None`。
+#[must_use]
+pub fn started_by<'a>(principal: &'a str, principal_kind: &str) -> Option<&'a str> {
+    (principal_kind == "user" && !principal.is_empty()).then_some(principal)
 }
 
 #[cfg(test)]
@@ -89,7 +126,7 @@ mod tests {
     /// 値の項目と表の項目は同じ（片方だけを変えると落ちる）。
     #[test]
     fn fields_match_the_values() {
-        let v = run_info(Uuid::nil(), "t", Utc::now());
+        let v = run_info(Uuid::nil(), "t", Utc::now(), Some("alice"));
         let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
         keys.sort_unstable();
         let mut names: Vec<&str> = RUN_INFO_FIELDS.iter().map(|f| f.name).collect();
@@ -103,8 +140,22 @@ mod tests {
         let at = DateTime::parse_from_rfc3339("2026-10-27T15:30:05Z")
             .unwrap()
             .with_timezone(&Utc);
-        let v = run_info(Uuid::nil(), "t", at);
+        let v = run_info(Uuid::nil(), "t", at, None);
         assert_eq!(v["date"], "2026-10-28");
         assert_eq!(v["started_at"], "2026-10-28T00:30:05+09:00");
+    }
+
+    /// 実行した人は、人が実行した run（ユーザーの主体）だけに入る。人のいない run には項目ごと入れない
+    /// （参照は値がないとして失敗し、黙って空の値で探さない・D-101）。
+    #[test]
+    fn started_by_is_only_for_runs_a_person_started() {
+        assert_eq!(started_by("alice", "user"), Some("alice"));
+        assert_eq!(started_by("wf-1", "workflow"), None);
+        assert_eq!(started_by("app-1", "miniapp"), None);
+        assert_eq!(started_by("", "user"), None);
+        let v = run_info(Uuid::nil(), "t", Utc::now(), started_by("alice", "user"));
+        assert_eq!(v["started_by"], "alice");
+        let v = run_info(Uuid::nil(), "t", Utc::now(), started_by("wf-1", "workflow"));
+        assert!(v.get("started_by").is_none(), "{v}");
     }
 }

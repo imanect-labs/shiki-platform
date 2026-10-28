@@ -242,19 +242,19 @@ fn trigger_payloads() -> String {
     out
 }
 
-/// 実行情報（`$from run`）の項目の説明（vocab の単一定義から作る・D-97）。
+/// 実行情報（`$from run`）の項目の説明（vocab の単一定義から作る・D-97・D-101）。
 fn run_info_fields() -> String {
     workflow_engine::vocab::RUN_INFO_FIELDS
         .iter()
         .map(|f| {
-            if f.example.is_empty() {
-                format!("{}: {}（{}）", f.name, f.ty, f.description_ja)
-            } else {
-                format!(
-                    "{}: {}（{}・例 {}）",
-                    f.name, f.ty, f.description_ja, f.example
-                )
+            let mut about = f.description_ja.to_string();
+            if !f.example.is_empty() {
+                let _ = write!(about, "・例 {}", f.example);
             }
+            if !f.note_ja.is_empty() {
+                let _ = write!(about, "・{}", f.note_ja);
+            }
+            format!("{}: {}（{about}）", f.name, f.ty)
         })
         .collect::<Vec<_>>()
         .join(", ")
@@ -616,6 +616,11 @@ mod tests {
         for f in workflow_engine::vocab::RUN_INFO_FIELDS {
             assert!(d.contains(&format!("{}: {}（", f.name, f.ty)), "{}", f.name);
         }
+        // 手動の実行で実行した人を値に使える（入力項目で受け取らない・人のいない実行には入らない・D-101）。
+        assert!(
+            d.contains("started_by: string（実行した人・手動で実行した人のユーザー ID"),
+            "{d}"
+        );
         assert!(d.contains("on_name_taken に \"add_number\""), "{d}");
         // 演算子の一覧とイベント source は型・語彙から生成する。
         assert!(d.contains("\"starts_with\""), "{d}");
