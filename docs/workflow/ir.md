@@ -760,7 +760,7 @@ AI 編集も dnd 保存も**同一エンドポイント・同一パイプライ�
 - **保存を止めない警告**（`workflow.reply`）: interactive のトリガが無い IR の reply は画面に出ない（`ir.reply_without_interactive`）。
 - **保存を止めない警告**（`ai.decide`）: しきい値が低い（`ir.decide_low_confidence`）・値で振り分ける出口が多い（`ir.decide_many_ports`）・版の固定されていないモデル名（`ir.decide_unpinned_model`）（§7.11）。
 - **保存を止めない警告**（テンプレート）: vars のキーを `{{key}}` と書いた（`ir.template_escaped_var`）・閉じの無い `{`（`ir.template_unclosed_brace`・§3.2・D-37）。
-- **保存を止めない警告**（必須の文字の欄）: `llm.invoke` の `prompt`・`agent.invoke` の `instruction`・`rag.search` の `query`・`csv.query` の `sql`・`workflow.start` の `name` が空（空白だけ・中身の無い `$template` を含む。参照は実行時まで分からないので対象外）なら `ir.required_text_empty`（path は `/params/<項目>`）。書きかけでも保存はできるが、有効化と実行の前に止める（§9・D-43）。
+- **保存を止めない警告**（必須の欄）: `llm.invoke` の `prompt`・`agent.invoke` の `instruction`・`rag.search` の `query`・`csv.query` の `sql`・`workflow.start` の `name`、置いたばかりのブロックの選ぶ欄と文字の欄（`control.branch` の条件の調べる値 `cmp.left`・`control.switch` の `value`・`control.map` の `items`・`ai.decide` の `model` と `state`・`storage.write` と `csv.write` の `name` と `content`・`http.request` の `url`・D-83）が空（空文字・空白だけ・null・中身の無い `$template` を含む。参照は実行時まで分からないので対象外）なら `ir.required_text_empty`（path は `/params/<項目>`、調べる値は条件の中の位置 `/params/condition/…/cmp/left`）。書きかけでも保存はできるが、有効化と実行の前に止める（§9・D-43）。エディタは置いたばかりのこれらの欄を `""` で置く（入力全体を黙って入れない）。`ai.decide` の `model` と `http.request` の `url` は、空なら V1 の照合（モデルの必須・URL の形）もしない（値を入れた後の保存で照合する）。文言は欄の見出しを名指しし、どの場面でも通る形（「{見出し}」が空です。入れるまで（選ぶ欄は選ぶまで）、実行も自動実行のオンもできません。）にする。
 
 **エラー形式**: 最初の 1 件で止めず、全件を配列で返す（dnd がノード上に表示するため）。
 
@@ -793,6 +793,7 @@ AI 編集も dnd 保存も**同一エンドポイント・同一パイプライ�
 - **有効化と実行の前の確認**（保存は止めない・D-40・D-43）: 次の版は有効化できない（enable は委譲を書く前に 409 `not_ready` で全件の理由を返し、同意計画も同じ理由を `blockers` で返す）。
   - 必須の文字の欄が空（§8 の `ir.required_text_empty`）。対話の起動（API・会話の図・ミニアプリ・`workflow.start`）も run を作らずに断る（400 `not_ready`）。
   - schedule / event のきっかけを持つ版で、`folder` を省略した（または null の）`storage.write`・`csv.write`（`ir.write_folder_required`）。省略はルートへの保存で、schedule / event の run はワークフロー主体で動くのでルートには書けず、フォルダの委譲でも救えない。対話だけの版は止めない（起動した本人のルートに書ける）。
+  - 同じく、`folder` を省略した（または null の）`storage.list`（`ir.list_folder_required`・D-83）。ワークフロー主体はルートを一覧できない。対話だけの版は止めない。
 
 ---
 
