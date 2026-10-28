@@ -115,15 +115,15 @@ export function WorkflowReplyForm({ node, dispatch, refCandidates, inMapRegion, 
       {format === "file_link" ? (
         <fieldset className="space-y-2 rounded-lg border p-2.5">
           <legend className="px-1 text-xs font-medium">ファイルの取り出し方</legend>
-          <Field label="ファイルの ID の位置" error={fieldErrors.get("file")} hint="既定は /id（社内検索の結果なら /file_id）">
+          <Field label="ファイルの ID の位置" error={fieldErrors.get("file")} hint="空欄なら /file_id を使い、無ければ /id を使います。">
             <FieldInput
               value={p.file?.id_path ?? ""}
-              placeholder="/id"
+              placeholder="/file_id"
               onChange={(e) => set({ file: { ...p.file, id_path: e.target.value || undefined } })}
               className="h-8 font-mono text-xs"
             />
           </Field>
-          <Field label="ファイル名の位置" hint="既定は /name（社内検索の結果なら /file_name）">
+          <Field label="ファイル名の位置" hint="空欄なら /name を使い、無ければ /file_name を使います。">
             <FieldInput
               value={p.file?.name_path ?? ""}
               placeholder="/name"
