@@ -159,12 +159,10 @@ function sanitize(root: ParentNode): boolean {
   return scanResources(root);
 }
 
+/// doctype は元の識別子を引き継がず、互換モード（標準か quirks か）だけを保つ。
+/// 識別子を引用符で包み直して書き出すと、識別子に含まれる引用符で doctype の外へ HTML を出せてしまう。
 function doctypeOf(doc: Document): string {
-  const dt = doc.doctype;
-  if (!dt) return "";
-  const pub = dt.publicId ? ` PUBLIC "${dt.publicId}"` : "";
-  const sys = dt.systemId ? `${dt.publicId ? "" : " SYSTEM"} "${dt.systemId}"` : "";
-  return `<!DOCTYPE ${dt.name}${pub}${sys}>`;
+  return doc.compatMode === "BackCompat" ? "" : "<!DOCTYPE html>";
 }
 
 /// ファイルの HTML を解析して掃除する（中身が変わったときに 1 回だけ行う）。
