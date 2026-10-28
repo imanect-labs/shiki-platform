@@ -440,7 +440,7 @@ test("CSV を集計: ドライブから CSV を選び、SQL を書いて保存�
   });
 });
 
-test("既定の値: 追加した条件は入力全体を path なしで指し、AI に聞くの指示は空で入力を促す（BUG-16・BUG-15）", async ({
+test("既定の値: 追加した条件の調べる値は選んでいない空で置き、AI に聞くの指示は空で入力を促す（BUG-16・BUG-15・D-83）", async ({
   page,
 }) => {
   test.setTimeout(120_000);
@@ -453,7 +453,8 @@ test("既定の値: 追加した条件は入力全体を path なしで指し、
   const canvas = page.locator(".react-flow");
   const panel = page.getByRole("complementary", { name: "ブロックの設定" });
 
-  // 条件分岐に条件を足すと、左辺は入力全体（path なし）になる（"/" は空文字キーを指す）。
+  // 条件分岐に条件を足すと、調べる値は選んでいない空（""）で置く（入力全体を黙って入れない・"/" は空文字キーを
+  // 指す・BUG-16）。空のままでも保存はできる（実行と自動実行のオンの前に止まる・D-83）。
   await page.getByRole("button", { name: "最初のブロック" }).click();
   await page.getByRole("button", { name: /^条件分岐/ }).click();
   await panel.getByRole("button", { name: "条件を追加" }).click();
@@ -466,7 +467,7 @@ test("既定の値: 追加した条件は入力全体を path なしで指し、
     all: { cmp: { left: unknown } }[];
   };
   expect(condition.all).toHaveLength(2);
-  expect(condition.all[1].cmp.left).toEqual({ $from: "input" });
+  expect(condition.all.map((c) => c.cmp.left)).toEqual(["", ""]);
 
   // 「AI に聞く」は指示が空のまま置かれ（入力全体のオブジェクトを指さない）、欄の下で入力を促す。
   // （モデルの照合は環境で変わるので、ここでは保存しない。）

@@ -133,7 +133,15 @@ type Props = {
   numeric?: NumericMode;
   /// 欄の下の注記（値の決め方によらず出す）。
   hint?: string;
+  /// 値が空のとき（置いたばかりのブロック）は「前の結果から」で開き、候補から選ばせる（調べる値・振り分ける値・
+  /// 繰り返すリストのように、固定値では意味のない欄・D-83）。空の値は IR に `""` のまま残す。
+  preferFrom?: boolean;
 };
+
+/// 選んでいない値（置いたばかりの欄の `""`・null・未設定）。
+function isBlankValue(value: ValueExpr | undefined): boolean {
+  return value === undefined || value === null || (typeof value === "string" && value.trim() === "");
+}
 
 export function ValueExprInput({
   label,
@@ -148,6 +156,7 @@ export function ValueExprInput({
   text,
   numeric,
   hint,
+  preferFrom,
 }: Props) {
   const inputFields = React.useContext(InputFieldsContext);
   const triggerSources = React.useContext(TriggerSourcesContext);
@@ -155,8 +164,9 @@ export function ValueExprInput({
     () => ({ inputFields, ancestors: refCandidates, inMapRegion: Boolean(inMapRegion), triggerSources }),
     [inputFields, refCandidates, inMapRegion, triggerSources],
   );
-  // 「前の結果から」を選んだが、まだ参照先を選んでいない間（IR は変えずに候補を見せる）。
-  const [pendingFrom, setPendingFrom] = React.useState(false);
+  // 「前の結果から」を選んだが、まだ参照先を選んでいない間（IR は変えずに候補を見せる）。選ぶ欄の空の値は
+  // はじめからこの状態で開く（`preferFrom`）。
+  const [pendingFrom, setPendingFrom] = React.useState(() => Boolean(preferFrom) && isBlankValue(value));
   const actual = modeOf(value);
   const mode: Mode = pendingFrom && actual !== "from" ? "from" : actual;
   const from = actual === "from" ? (value as RefValue) : null;

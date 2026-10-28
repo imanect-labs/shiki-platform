@@ -166,6 +166,7 @@ export function ConditionEditor({
         <div key={i} className="space-y-1.5 rounded-md border p-2">
           <ValueExprInput
             label="調べる値"
+            preferFrom
             value={cmp.left as ValueExpr | undefined}
             onChange={(v) => {
               const comparisons = [...flat.comparisons];
@@ -242,8 +243,9 @@ export function ConditionEditor({
             comparisons: [
               ...flat.comparisons,
               {
-                // 入力全体は path を書かない（"/" は空文字キーを指し、eq は常に偽・neq は常に真になる・BUG-16）。
-                left: { $from: "input" } as unknown as ValueExpr,
+                // 調べる値は選ばせる（入力全体を黙って入れない・空のまま保存はできるが、実行と自動実行のオンの
+                // 前に止まる・D-83）。
+                left: "" as unknown as ValueExpr,
                 op: "eq",
                 right: "" as unknown as ValueExpr,
               } as Comparison,
@@ -279,6 +281,7 @@ export function SwitchForm({ node, dispatch, refCandidates, inMapRegion, fieldEr
     <div className="space-y-3">
       <ValueExprInput
         label="振り分ける値"
+        preferFrom
         value={p.value as ValueExpr | undefined}
         onChange={(v) => patchParams(dispatch, node, { value: v })}
         refCandidates={refCandidates}
@@ -369,6 +372,7 @@ export function MapForm({ node, dispatch, refCandidates, inMapRegion, fieldError
     <div className="space-y-3">
       <ValueExprInput
         label="繰り返すリスト"
+        preferFrom
         value={p.items as ValueExpr | undefined}
         onChange={(v) => patchParams(dispatch, node, { items: v })}
         refCandidates={refCandidates}

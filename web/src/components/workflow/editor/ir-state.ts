@@ -131,7 +131,10 @@ export { defaultOutPort };
 /// カタログの既定 params（必須フィールドの雛形・右パネルで埋める前提の最小形）。
 /// **入力全体を指す `$from` は `path` を持たない**（JSON Pointer の `"/"` は
 /// 「空文字キーのプロパティ」であり全体ではない・実行時に解決不能になる）。
-/// 利用者が書くしかない必須の文字の欄は `""` で入れる（右パネルが空のままなら「入力してください」と出す）。
+/// 利用者が書くしかない必須の欄（文字の欄と、調べる値・振り分ける値・繰り返すリストのような選ぶ欄）は `""` で
+/// 入れる。保存はできるが、空のままでは実行と自動実行のオンの前に止まる（サーバの readiness・D-43・D-83）。
+/// 入力全体を入れておくと、条件はいつも「はい」、振り分けはいつも「その他」、繰り返しはリストでないので失敗、
+/// ファイルには入力の JSON が保存される（付録 D の N1.4）。
 /// 文字を求める欄に入力全体（オブジェクト）を入れると、置いたまま実行したとき必ず失敗する（BUG-15）。
 /// 一覧から選ばせる欄（storage.read・csv.* のファイル・data.* のテーブル）は入れない（保存時の検証の
 /// 「項目がありません」が欄の下に出る）。前の結果を指す既定を入れると、欄が「前の結果から」になり、
@@ -139,11 +142,11 @@ export { defaultOutPort };
 export function defaultParams(nodeType: string): unknown {
   switch (nodeType) {
     case "control.branch":
-      return { condition: { cmp: { left: { $from: "input" }, op: "exists" } } };
+      return { condition: { cmp: { left: "", op: "eq", right: "" } } };
     case "control.switch":
-      return { value: { $from: "input" }, cases: [] };
+      return { value: "", cases: [] };
     case "control.map":
-      return { items: { $from: "input" } };
+      return { items: "" };
     case "control.wait":
       return { kind: "duration", duration_sec: 60 };
     case "storage.read":
@@ -151,7 +154,8 @@ export function defaultParams(nodeType: string): unknown {
       return {};
     case "storage.write":
       // 同じ名前があれば番号を付けて保存する（省略は失敗にする＝既存の定義の挙動・2 回目から失敗しない・D-97）。
-      return { name: "output.txt", content: { $from: "input" }, on_name_taken: "add_number" };
+      // ファイル名と内容は書かせる（D-83）。
+      return { name: "", content: "", on_name_taken: "add_number" };
     case "rag.search":
       return { query: "" };
     case "llm.invoke":
@@ -161,7 +165,8 @@ export function defaultParams(nodeType: string): unknown {
       return { instruction: "", allowed_tools: ["rag.search", "doc.read", "storage.list"] };
     case "http.request":
       // 相手が誤り（400 以上）を返したら失敗にする（省略は成功として次へ渡す＝既存の定義の挙動・D-95）。
-      return { url: "https://", fail_on_error_status: true };
+      // URL は書かせる（「https://」を入れておくと、置いた直後から URL の誤りが出ていた・D-83）。
+      return { url: "", fail_on_error_status: true };
     case "script.run":
       return { source: { inline: "function main(input) {\n  return input;\n}" } };
     case "skill.invoke":
@@ -177,9 +182,11 @@ export function defaultParams(nodeType: string): unknown {
       return { ops: [] };
     case "csv.write":
       // 入力全体（オブジェクト）を入れると JSON の文字がそのまま .csv に保存される（失敗もしない）。
-      return { name: "output.csv", content: "", on_name_taken: "add_number" };
+      // ファイル名も書かせる（D-83）。
+      return { name: "", content: "", on_name_taken: "add_number" };
     case "ai.decide":
-      // モデル・判定の材料・問いは利用者が書く（空のままなら欄の下で入力を促す・V1 が保存を止める）。
+      // モデル・判定の材料・問いは利用者が書く（空のままなら欄の下で入力を促す。モデルと判定の材料が空でも保存は
+      // でき、実行と自動実行のオンの前に止まる・D-83。問いの空は保存を止める）。
       // 質問は選択肢 2 つの 1 件から始める。振り分けは置かない（出口は out だけ）。
       return {
         model: "",
