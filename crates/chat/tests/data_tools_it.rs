@@ -6,6 +6,8 @@
 //!   そのもの）を、行述語・フィールドマスクの違う 2 人で実行し、**見えない行・列が返らない**。
 //! - 同じ入力を stub LLM（`calltool:`）からチャットの run として流し、ツールの提示（見えるテーブルが
 //!   無い人には提示しない）→ 実行 → 観測までの実経路でも同じになる。
+//! - `sql`（SQL 前段面・#970）でも同じく見えない行・列・テーブルが返らず、結合・集計ができ、拒否の理由が
+//!   モデルへ返る。
 //! - description には発話ユーザーが viewer のテーブルだけが載る。`data_schema` は読めない列を載せない。
 //!   `data_record_write` は承認必須で、読めない行は更新できない。
 
@@ -27,8 +29,8 @@ use authz::{AuthContext, AuthzClient, Principal, Relation};
 use chat::data_tool::{DataQueryTool, DataRecordWriteTool, DataSchemaTool, DataTableCatalog};
 use chat::{ChatStore, ChatWorker, StreamEventKind, WorkerConfig};
 use data::{
-    CmpOp, DataStore, FieldDef, FieldPolicy, FieldType, NewDataTable, PolicyExpr, PolicyOperand,
-    RefResolver, RowPolicy, TableSchema,
+    CmpOp, DataStore, FieldDef, FieldPolicy, FieldType, LinkCardinality, LinkDef, NewDataTable,
+    PolicyExpr, PolicyOperand, RefResolver, RowPolicy, TableSchema,
 };
 use futures::stream::StreamExt;
 use llm_gateway::{
@@ -258,6 +260,22 @@ fn observed_rows(content: &str) -> Vec<(String, i64, bool)> {
         .collect()
 }
 
+/// SQL の観測の行（見出しの後の 1 行 1 配列）。
+fn sql_rows(content: &str) -> Vec<Vec<Value>> {
+    content
+        .lines()
+        .filter(|l| l.starts_with('['))
+        .filter_map(|l| serde_json::from_str::<Vec<Value>>(l).ok())
+        .collect()
+}
+
+/// 「経費テーブルの承認待ちを金額順に見せて」を SQL で（LLM が SQL 面で出す入力）。
+fn llm_sql_input(cols: &str) -> Value {
+    json!({ "sql": format!(
+        "SELECT {cols} FROM 経費 WHERE status = '承認待ち' ORDER BY amount DESC"
+    ) })
+}
+
 async fn tools_for(f: &Fixture, c: &AuthContext) -> Arc<DataTableCatalog> {
     Arc::new(DataTableCatalog::load(&f.data, c).await.expect("catalog"))
 }
@@ -412,6 +430,286 @@ async fn data_query_returns_only_rows_and_columns_the_speaker_can_read() {
     );
 }
 
+#[tokio::test]
+async fn data_query_sql_keeps_row_policy_masks_and_hides_tables() {
+    let Some((pool, fga)) = setup().await else {
+        return;
+    };
+    let f = fixture(pool, fga).await;
+    let bob = ctx(&f.tenant, "bob");
+    let carol = ctx(&f.tenant, "carol");
+    let dave = ctx(&f.tenant, "dave");
+    let bob_query = DataQueryTool::new(f.data.clone(), tools_for(&f, &bob).await);
+    let carol_query = DataQueryTool::new(f.data.clone(), tools_for(&f, &carol).await);
+    assert!(
+        bob_query.description().contains("SELECT 列"),
+        "説明は SQL を主にする"
+    );
+
+    // bob: 自分の承認待ちだけ。
+    let out = bob_query
+        .call(&bob, llm_sql_input("applicant, amount"), None)
+        .await
+        .expect("bob");
+    assert!(!out.is_error, "{}", out.content);
+    assert!(
+        out.content.contains(r#"列: ["applicant","amount"]"#),
+        "{}",
+        out.content
+    );
+    assert_eq!(
+        sql_rows(&out.content),
+        vec![vec![json!("bob"), json!(300)]],
+        "{}",
+        out.content
+    );
+
+    // carol（経理）: 全員の承認待ちを金額の大きい順・内部メモも読める。
+    let out = carol_query
+        .call(
+            &carol,
+            llm_sql_input("applicant, amount, internal_memo"),
+            None,
+        )
+        .await
+        .expect("carol");
+    assert_eq!(
+        sql_rows(&out.content),
+        vec![
+            vec![json!("bob"), json!(300), json!("社外秘")],
+            vec![json!("carol"), json!(200), json!("社外秘")],
+            vec![json!("alice"), json!(100), json!("社外秘")],
+        ],
+        "{}",
+        out.content
+    );
+
+    // bob が読めない列（internal_memo）は、存在しない列と同じ拒否。候補にも出ない。
+    let masked = bob_query
+        .call(&bob, llm_sql_input("applicant, internal_memo"), None)
+        .await
+        .expect("masked");
+    let missing = bob_query
+        .call(&bob, llm_sql_input("applicant, no_such_col"), None)
+        .await
+        .expect("missing");
+    for out in [&masked, &missing] {
+        assert!(out.is_error, "{}", out.content);
+        assert!(
+            out.content.contains("unknown_name") && out.content.contains("列 "),
+            "{}",
+            out.content
+        );
+    }
+    assert_eq!(
+        masked.content.replace("internal_memo", "X"),
+        missing.content.replace("no_such_col", "X"),
+        "読めない列と存在しない列は同一の応答"
+    );
+    assert!(masked.content.contains("使える候補:"), "{}", masked.content);
+    assert!(!masked.content.contains("社外秘"), "{}", masked.content);
+
+    // 見えないテーブル（bob に役員報酬）と存在しないテーブルも同一の拒否。dave には経費も見えない。
+    let sql = |t: &str| json!({ "sql": format!("SELECT amount FROM {t}") });
+    let hidden = bob_query.call(&bob, sql("役員報酬"), None).await.unwrap();
+    let absent = bob_query
+        .call(&bob, sql("存在しない表"), None)
+        .await
+        .unwrap();
+    assert!(hidden.is_error && absent.is_error);
+    assert_eq!(
+        hidden.content.replace("役員報酬", "X"),
+        absent.content.replace("存在しない表", "X"),
+        "見えないテーブルと存在しないテーブルは同一の応答"
+    );
+    let out = DataQueryTool::new(f.data.clone(), Arc::new(DataTableCatalog::default()))
+        .call(&dave, sql("経費"), None)
+        .await
+        .unwrap();
+    assert!(out.is_error, "{}", out.content);
+    assert!(!out.content.contains("100"), "{}", out.content);
+
+    // 部分集合外（DML）は理由つきで拒む。
+    let out = carol_query
+        .call(&carol, json!({ "sql": "DELETE FROM 経費" }), None)
+        .await
+        .unwrap();
+    assert!(
+        out.is_error && out.content.contains("unsupported"),
+        "{}",
+        out.content
+    );
+    assert!(out.content.contains("1 行 1 列目"), "{}", out.content);
+
+    // 集計: 件数の少ないグループは伏せる（集計抑制は SQL 面でも効く）。
+    let out = carol_query
+        .call(
+            &carol,
+            json!({ "sql": "SELECT status, COUNT(*) FROM 経費 GROUP BY status" }),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(!out.is_error, "{}", out.content);
+    assert!(out.content.contains("伏せています"), "{}", out.content);
+}
+
+/// 宣言済みリンク列経由の結合（IR では失敗の多かった形・sql-eval.md）を SQL で引ける。
+#[tokio::test]
+async fn data_query_sql_joins_through_declared_links() {
+    let Some((pool, fga)) = setup().await else {
+        return;
+    };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let alice = ctx(&tenant, "alice");
+    let data = DataStore::new(pool, Arc::clone(&fga), Arc::new(AllowRefs));
+    let mut name = FieldDef::new("name", FieldType::Text);
+    name.indexed = true;
+    let customers = data
+        .create_table(
+            &alice,
+            NewDataTable {
+                name: "顧客".into(),
+                schema: plain_schema(vec![name]),
+            },
+            None,
+        )
+        .await
+        .expect("customers");
+    let mut customer = FieldDef::new("customer", FieldType::RecordRef);
+    customer.ref_table = Some(customers.id);
+    customer.indexed = true;
+    customer.link = Some(LinkDef {
+        cardinality: LinkCardinality::ManyToOne,
+        symmetric_field: None,
+        symmetric_key: Some("orders".into()),
+        symmetric_display_name: None,
+        reverse: false,
+    });
+    let mut amount = FieldDef::new("amount", FieldType::Number);
+    amount.indexed = true;
+    let orders = data
+        .create_table(
+            &alice,
+            NewDataTable {
+                name: "注文".into(),
+                schema: plain_schema(vec![
+                    FieldDef::new("title", FieldType::Text),
+                    customer,
+                    amount,
+                ]),
+            },
+            None,
+        )
+        .await
+        .expect("orders");
+    let mut ids = Vec::new();
+    for n in ["山田精工", "さくらマート"] {
+        let r = data
+            .create_record(&alice, customers.id, json!({ "name": n }), None)
+            .await
+            .unwrap();
+        ids.push(r.id);
+    }
+    for (title, c, amount) in [("刷新", 0, 500), ("POS", 1, 300), ("保守", 0, 80)] {
+        data.create_record(
+            &alice,
+            orders.id,
+            json!({ "title": title, "customer": [ids[c]], "amount": amount }),
+            None,
+        )
+        .await
+        .unwrap();
+    }
+    let tool = DataQueryTool::new(
+        data.clone(),
+        Arc::new(DataTableCatalog::load(&data, &alice).await.unwrap()),
+    );
+    let out = tool
+        .call(
+            &alice,
+            json!({ "sql": "SELECT o.title, c.name, o.amount FROM 注文 o JOIN 顧客 c \
+                            ON o.customer = c._id WHERE o.amount >= 100 ORDER BY o.amount DESC" }),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(!out.is_error, "{}", out.content);
+    assert!(
+        out.content.starts_with("テーブル「注文」"),
+        "{}",
+        out.content
+    );
+    assert_eq!(
+        sql_rows(&out.content),
+        vec![
+            vec![json!("刷新"), json!("山田精工"), json!(500)],
+            vec![json!("POS"), json!("さくらマート"), json!(300)],
+        ],
+        "{}",
+        out.content
+    );
+    // 逆向き（顧客から注文へ）は注文側のリンク列で結合する。
+    let out = tool
+        .call(
+            &alice,
+            json!({ "sql": "SELECT c.name, COUNT(*) FROM 顧客 c JOIN 注文 o ON o.customer = c._id GROUP BY c.name" }),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(!out.is_error, "{}", out.content);
+    // data_schema はリンク列に結合の書き方を添える（順方向・逆向きとも）。
+    let catalog = Arc::new(DataTableCatalog::load(&data, &alice).await.unwrap());
+    let schema = DataSchemaTool::new(data.clone(), catalog);
+    let out = schema
+        .call(&alice, json!({ "table": "注文" }), None)
+        .await
+        .unwrap();
+    assert!(
+        out.content
+            .contains("リンク先: 顧客（SQL は JOIN 顧客 別名 ON 元.customer = 別名._id）"),
+        "{}",
+        out.content
+    );
+    let out = schema
+        .call(&alice, json!({ "table": "顧客" }), None)
+        .await
+        .unwrap();
+    assert!(
+        out.content.contains("- orders:") && out.content.contains("リンク先: 注文（逆向き"),
+        "{}",
+        out.content
+    );
+    // ON に条件を足した結合は、書き直しの手がかりつきで拒む。
+    let out = tool
+        .call(
+            &alice,
+            json!({ "sql": "SELECT o.title FROM 注文 o JOIN 顧客 c ON o.customer = c._id AND c.name = 'x'" }),
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(out.is_error, "{}", out.content);
+    assert!(
+        out.content.contains("クエリを受け付けられません"),
+        "{}",
+        out.content
+    );
+}
+
+fn plain_schema(fields: Vec<FieldDef>) -> TableSchema {
+    TableSchema {
+        fields,
+        status_field: None,
+        row_policy: None,
+        field_policy: vec![],
+        aggregate_min_rows: None,
+        fsm_ref: None,
+        rag: None,
+    }
+}
+
 fn stub_gateway(pool: PgPool) -> LlmGateway {
     let config = GatewayConfig {
         provider: ProviderConfig {
@@ -535,6 +833,13 @@ async fn chat_run_answers_pending_expenses_by_amount_within_speaker_permissions(
         observed_rows(&content),
         vec![("bob".to_string(), 300, false)]
     );
+
+    // 同じ問いを SQL で（stub LLM が LLM と同じ sql 入力で呼ぶ・SQL 面の実経路）。
+    let sql_text = format!("calltool:data_query {}", llm_sql_input("applicant, amount"));
+    let (ok, content) = data_query_result(&run_to_done(&store, &bob, &sql_text).await)
+        .expect("bob の SQL の data_query");
+    assert!(ok, "{content}");
+    assert_eq!(sql_rows(&content), vec![vec![json!("bob"), json!(300)]]);
 
     let carol = ctx(&f.tenant, "carol");
     let (ok, content) =
