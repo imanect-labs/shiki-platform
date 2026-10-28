@@ -193,9 +193,7 @@ impl ChatWorker {
 
         // 提示ツール一式（共通＋ドキュメント/Office/CSV）は worker/toolset.rs に集約する。
         let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
-        // 添付の読み方の案内（#962）は提示ツールが揃ってから作るので、先に控える。
-        let attachment_refs = attachments.clone();
-        self.push_core_tools(&mut tools, &skills, attachments, run);
+        self.push_core_tools(&mut tools, &skills, attachments.clone(), run);
         // skill ツール（カタログ引き・#344 Task 10.11）。
         self.push_skill_tool(&mut tools, ctx, run, &skills).await;
         // AI ドキュメント共同編集（ノート/スライド・Task 11P.4/11.3）＋下書き系＋
@@ -301,12 +299,7 @@ impl ChatWorker {
         // 開いているドキュメントは通常チャット・エージェントモードの両方で編集対象にする（自律側で
         // 欠けると新規下書きへ逃げ、保存のたびにルートへ別ファイルができていた）。
         self.system_with_origin_document(run, &mut opts).await;
-        // 添付を原本のまま読むツールの案内（索引の無い大きな CSV 等・#962）。照合先は提示の最終形。
-        let offered: Vec<&str> = tools.iter().map(|t| t.name()).collect();
-        super::opts::append_system_section(
-            &mut opts,
-            super::opts::attachment_readers_section(&attachment_refs, &offered),
-        );
+        super::opts::append_attachment_readers(&mut opts, &attachments, &tools);
         opts.session_id = Some(run.thread_id.to_string());
         // この会話で既に使っている（下書き・選択範囲の対象を含む）ツールは遅延にしない。
         opts.tool_search.always_load.extend(tools_in_use);

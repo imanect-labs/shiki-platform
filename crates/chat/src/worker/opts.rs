@@ -182,6 +182,17 @@ pub(super) fn attachment_readers_section(
     ))
 }
 
+/// 添付を原本のまま読むツールの案内（索引の無い大きな CSV 等・#962）を system へ足す。
+/// 照合先は提示の最終形（`tools`）。
+pub(super) fn append_attachment_readers(
+    opts: &mut AgentOptions,
+    attachments: &[agent_core::AttachmentRef],
+    tools: &[std::sync::Arc<dyn agent_core::Tool>],
+) {
+    let offered: Vec<&str> = tools.iter().map(|t| t.name()).collect();
+    append_system_section(opts, attachment_readers_section(attachments, &offered));
+}
+
 /// system プロンプトの末尾へ節を足す（`None` なら何もしない）。
 pub(super) fn append_system_section(opts: &mut AgentOptions, section: Option<String>) {
     let Some(section) = section else {
