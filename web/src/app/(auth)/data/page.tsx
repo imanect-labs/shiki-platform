@@ -154,7 +154,7 @@ export default function DataTablesPage() {
       });
   }, []);
 
-  const createButton = (
+  const headerActions = (
     <>
       {/* SQL の画面（#978）。テーブルが無いときは書く先が無いので出さない。 */}
       {items && items.length > 0 ? (
@@ -178,7 +178,7 @@ export default function DataTablesPage() {
       title="データ"
       description="業務データのテーブル。行と列は開いた人の権限で絞られます。"
       className="max-w-4xl"
-      actions={createButton}
+      actions={headerActions}
     >
       {items === null ? (
         <div className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground" role="status">

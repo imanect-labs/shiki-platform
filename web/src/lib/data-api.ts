@@ -176,6 +176,8 @@ function codeMessage(body: Record<string, unknown> | null): string | null {
       return "今のデータと合わないため、この列の設定に変えられません";
     case "upstream_unavailable":
       return "サーバーに接続できません。少し待ってから再試行してください";
+    case "query_too_expensive":
+      return "対象の行が多すぎて実行できません。WHERE で絞り込むか、LIMIT を付けてください";
     case "read_timeout":
       return "混み合っていて読み込みが時間内に終わりませんでした。少し待ってから再試行してください";
     case "cursor_invalid":
