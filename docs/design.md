@@ -313,7 +313,8 @@ flowchart LR
     （`HigherConsistency`・剥奪の即時反映＝PIT-11）で deny を落としてから rerank する
     （読めない chunk に rerank 計算を浪費しない）。
   - 検索デバッグ表示（`authz_denied_files` 等）は「読めない一致文書の存在」のオラクルになり得る
-    ため**社内基盤前提**。公開 API 化（Phase 9 gateway）時は管理者ロール限定にする。
+    ため、`POST /search` は**組織の管理者にだけ**内訳を返す（ほかの人の `debug` は 403 にせず黙って
+    無視する・画面のスイッチも管理者にだけ出す・D-80）。
 - `embedding_model_version` は**インデックス単位で固定**する（Qdrant collection 名にモデル版を
   織り込み、検索・書込は alias `rag_chunks_active` 経由。worker の応答版と設定版の突合ガードで
   混在を書込前に拒否）。モデル更新は **shadow collection を背面で再構築 → alias 切替**
