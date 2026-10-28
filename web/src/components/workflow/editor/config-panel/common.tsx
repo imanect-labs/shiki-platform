@@ -84,6 +84,30 @@ export function useFieldControl(named = false): { "aria-labelledby"?: string; "a
   };
 }
 
+/// 注記の続きの説明を畳む「詳しく」（付録 D の N1.3）。開くと説明の文が出るだけで、欄は出さない。
+export function MoreInfo({ children, testId }: { children: React.ReactNode; testId?: string }) {
+  const [open, setOpen] = React.useState(false);
+  const id = React.useId();
+  return (
+    <div className="text-[11px] leading-relaxed text-muted-foreground" data-testid={testId}>
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={id}
+        onClick={() => setOpen((v) => !v)}
+        className="rounded-sm text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        詳しく
+      </button>
+      {open ? (
+        <div id={id} className="mt-1 space-y-1">
+          {children}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 type Named = { "aria-label"?: string; "aria-labelledby"?: string };
 const isNamed = (p: Named) => p["aria-label"] !== undefined || p["aria-labelledby"] !== undefined;
 

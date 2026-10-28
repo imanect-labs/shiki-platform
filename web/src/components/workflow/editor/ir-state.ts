@@ -160,7 +160,8 @@ export function defaultParams(nodeType: string): unknown {
       // 道具は社内を読むものだけを選んだ状態で置く（省略は道具なし・社外へ出る道具は明示して選ぶ・BUG-6）。
       return { instruction: "", allowed_tools: ["rag.search", "doc.read", "storage.list"] };
     case "http.request":
-      return { url: "https://" };
+      // 相手が誤り（400 以上）を返したら失敗にする（省略は成功として次へ渡す＝既存の定義の挙動・D-95）。
+      return { url: "https://", fail_on_error_status: true };
     case "script.run":
       return { source: { inline: "function main(input) {\n  return input;\n}" } };
     case "skill.invoke":

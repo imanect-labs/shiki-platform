@@ -5,6 +5,7 @@
 import * as React from "react";
 
 import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -14,7 +15,7 @@ import {
 } from "@/components/ui/select";
 import type { NodeParamsByType } from "@/generated/workflow-catalog";
 import type { ValueExpr } from "@/generated/workflow-ir";
-import { Field, FieldInput, FieldSelectTrigger, FieldTextarea } from "./common";
+import { Field, FieldInput, FieldSelectTrigger, FieldTextarea, MoreInfo } from "./common";
 import { paramsOf, patchParams } from "./params";
 import { ValueExprInput } from "./value-expr-input";
 import type { FormProps } from "./forms-basic";
@@ -44,18 +45,25 @@ export function HttpRequestForm({ node, dispatch, refCandidates, inMapRegion, fi
             </SelectContent>
           </Select>
         </Field>
-        <Field
-          label="URL"
-          hint="ドメインは固定文字列で入力（安全のため差し込み不可）"
-          error={fieldErrors.get("url")}
-        >
-          <FieldInput
-            value={(p.url as string | undefined) ?? ""}
-            onChange={(e) => patchParams(dispatch, node, { url: e.target.value })}
-            placeholder="https://api.example.com/v1"
-            className="h-8 font-mono text-xs max-md:text-base"
-          />
-        </Field>
+        <div className="min-w-0 space-y-1">
+          <Field
+            label="URL"
+            hint="https:// から書きます。安全のため値は差し込めないので、変わる部分は「URL の続き」に書きます。送れる先は、管理者とシークレットの設定で決まります。"
+            error={fieldErrors.get("url")}
+          >
+            <FieldInput
+              value={(p.url as string | undefined) ?? ""}
+              onChange={(e) => patchParams(dispatch, node, { url: e.target.value })}
+              placeholder="https://api.example.com/v1"
+              className="h-8 font-mono text-xs max-md:text-base"
+            />
+          </Field>
+          <MoreInfo testId="http-destination-rule">
+            {/* 送れる先の照合は nodes/capability_ai.rs の check_http_destination（管理者の許可とシークレットの送り先の AND）。 */}
+            <p>シークレットを使わないときは、管理者が許可した送り先にだけ送れます。管理者が送り先を許可していなければ、シークレットを使わない送信はできません。</p>
+            <p>シークレットを使うときは、そのシークレットに決めた送り先にだけ送れます。管理者が送り先を決めているときは、その中に限ります。</p>
+          </MoreInfo>
+        </div>
       </div>
       <ValueExprInput
         label="URL の続き（省略可）"
@@ -136,8 +144,31 @@ export function HttpRequestForm({ node, dispatch, refCandidates, inMapRegion, fi
           ) : null}
         </div>
       </Field>
-      <p className="text-[11px] text-muted-foreground">
-        外部への送信はやり直しで二重になることがあります（Idempotency-Key を自動付与）
+      <label className="flex items-center justify-between gap-3 text-xs">
+        <span>
+          <span className="font-medium">相手が誤りを返したら失敗にする</span>
+          <span className="block text-[11px] leading-relaxed text-muted-foreground" data-testid="http-fail-on-error-note">
+            {p.fail_on_error_status
+              ? "相手が誤り（400 以上）を返すと、このブロックは失敗し、「失敗したとき」の設定に従います。"
+              : "相手が誤り（400 以上）を返しても、このブロックは失敗になりません。結果の応答のステータスコード（status）で分けてください。"}
+          </span>
+        </span>
+        <Switch
+          aria-label="相手が誤りを返したら失敗にする"
+          checked={Boolean(p.fail_on_error_status)}
+          onCheckedChange={(on) => patchParams(dispatch, node, { fail_on_error_status: on || undefined })}
+        />
+      </label>
+      {p.fail_on_error_status ? (
+        <MoreInfo>
+          <p>
+            400〜499（429 を除く）は、送る内容か設定を直すまで通らないので、やり直しません。500 以上と 429
+            は一時的な誤りとして、「試す回数」が 2 以上ならやり直します。
+          </p>
+        </MoreInfo>
+      ) : null}
+      <p className="text-[11px] leading-relaxed text-muted-foreground">
+        失敗してやり直すと、相手に同じ内容が 2 回届くことがあります。重複を見分ける印（Idempotency-Key）を付けて送ります。
       </p>
     </div>
   );
