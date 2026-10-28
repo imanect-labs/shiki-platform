@@ -117,7 +117,7 @@ IR のトップレベルは以下の形を取る。
   - `input` — run 入力（対話トリガの `input_schema` に沿う値）
   - `trigger` — トリガイベントのペイロード
   - `nodes.<node_id>.output` — 他ノードの出力
-  - `run` — run メタ（`run_id`・`workflow_id`・`attempt` 等の読み取り専用）
+  - `run` — 実行情報（読み取り専用・項目は vocab の `RUN_INFO_FIELDS` が正）: `date`（実行を始めた日・日本時間の `YYYY-MM-DD`）・`started_at`（実行を始めた日時・日本時間の RFC 3339）・`run_id`・`tenant_id`。日時は run を始めた時刻で決まり、同じ run の中ではやり直しても変わらない（ファイル名に差し込んでも冪等キーの照合が崩れない・D-97）。組織ごとのタイムゾーンの設定はまだ無いので日本時間で言う
   - `each` — **map 領域内のみ**。現在要素（`each.item` と `each.index`。§5.3）
 - **`path`**: RFC 6901 JSON Pointer。省略時は source 全体を指す。
 - **`default`**: 解決失敗（skipped ノードの出力・パス不在・null）時のフォールバック。**`default` がなく解決に失敗した場合、step は `expr_resolve_error` で失敗する**（黙って null を流さない）。実行時の解決アルゴリズムは [engine.md](./engine.md) §4。
@@ -376,10 +376,10 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 | type | 区分 | 概要 | 冪等性 | timeout 既定/最大 |
 |---|---|---|---|---|
 | `storage.read` | 能力 | 文章のファイルを読む（≤ 10MB。PDF・Office・画像などの種類〔MIME か拡張子〕と、UTF-8 でない中身は `not_text_file` で失敗・BUG-101） | pure | 30s / 120s |
-| `storage.write` | 能力 | ファイル書き（新バージョン） | engine-dedup | 30s / 120s |
+| `storage.write` | 能力 | 新しいファイルの保存（既存のファイルは書き換えず、新しいバージョンも足さない。同じ名前があれば `on_name_taken` に従い、省略・`fail` は `name_taken` で失敗、`add_number` は「名前 (2).md」〜「名前 (50).md」の空いている名前で保存する。`content_type` を省くと拡張子〔.txt・.md・.csv・.json・.html〕から決め、決まらなければ `application/octet-stream`・BUG-97・D-97） | engine-dedup | 30s / 120s |
 | `storage.list` | 能力 | フォルダ一覧 | pure | 30s / 120s |
 | `csv.query` | 能力 | CSV に読み取り専用の SQL を実行して集計・抽出する（隔離ランナー） | pure | 30s / 120s |
-| `csv.patch` / `csv.write` | 能力 | CSV のセル・行・列を書き換えて新しいバージョンを保存する／新しい CSV を保存する | engine-dedup | 30s / 120s |
+| `csv.patch` / `csv.write` | 能力 | CSV のセル・行・列を書き換えて新しいバージョンを保存する／新しい CSV を保存する（同じ名前があるときは `storage.write` と同じ `on_name_taken`） | engine-dedup | 30s / 120s |
 | `data.query` | 能力 | 宣言的クエリ（**data の `DataQuery` をそのまま使う**・比較値に `$from` 可・`query.limit` は 1〜200 で範囲の外は保存時に `ir.schema_violation`・BUG-108） | pure | 30s / 120s |
 | `data.record.create` / `data.record.update` / `data.record.delete` | 能力 | レコード書込（rev 楽観ロック・rev 省略時は実行時点の rev） | engine-dedup | 30s / 120s |
 | `data.transition` | 能力 | **FSM 遷移 API を叩く**（直接 status 書込は構造的に不可能） | engine-dedup | 30s / 120s |
