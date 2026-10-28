@@ -80,13 +80,9 @@ export default function HomePage() {
     setModeState(next);
   };
 
-  const sharedFiles = React.useMemo(
-    () => (feed.shares ?? []).filter((n) => n.kind !== "folder"),
-    [feed.shares],
-  );
   const suggestions = React.useMemo(
-    () => homeSuggestions(mode, sharedFiles),
-    [mode, sharedFiles],
+    () => homeSuggestions(mode, feed.sharedFiles ?? []),
+    [mode, feed.sharedFiles],
   );
 
   const startChat = async (
