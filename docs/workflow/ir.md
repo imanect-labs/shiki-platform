@@ -117,7 +117,8 @@ IR のトップレベルは以下の形を取る。
   - `input` — run 入力（対話トリガの `input_schema` に沿う値）
   - `trigger` — トリガイベントのペイロード
   - `nodes.<node_id>.output` — 他ノードの出力
-  - `run` — 実行情報（読み取り専用・項目は vocab の `RUN_INFO_FIELDS` が正）: `date`（実行を始めた日・日本時間の `YYYY-MM-DD`）・`started_at`（実行を始めた日時・日本時間の RFC 3339）・`run_id`・`tenant_id`。日時は run を始めた時刻で決まり、同じ run の中ではやり直しても変わらない（ファイル名に差し込んでも冪等キーの照合が崩れない・D-97）。組織ごとのタイムゾーンの設定はまだ無いので日本時間で言う
+  - `run` — 実行情報（読み取り専用・項目は vocab の `RUN_INFO_FIELDS` が正）: `date`（実行を始めた日・日本時間の `YYYY-MM-DD`）・`started_at`（実行を始めた日時・日本時間の RFC 3339）・`started_by`（実行した人）・`run_id`・`tenant_id`。日時は run を始めた時刻で決まり、同じ run の中ではやり直しても変わらない（ファイル名に差し込んでも冪等キーの照合が崩れない・D-97）。組織ごとのタイムゾーンの設定はまだ無いので日本時間で言う
+    - `started_by` は、人が手動で実行した run（実行主体がユーザー。その run から `workflow.start` で始めた子の run を含む）の実行主体のユーザー ID で、テーブルのユーザーの列（`user_ref`）と比べられる（申請者の上長を承認者の表から引くなど・GAP-17・D-101）。schedule / event の run（ワークフロー主体）とミニアプリの自動化（サービスの主体）には人がいないので項目ごと入らず、参照すると `default` が無ければ `expr_resolve_error` で失敗する（黙って空の値で探さない）。入力項目で申請者を受け取る組み方は、実行する人が別の人の ID を入れて名乗れるので勧めない
   - `each` — **map 領域内のみ**。現在要素（`each.item` と `each.index`。§5.3）
 - **`path`**: RFC 6901 JSON Pointer。省略時は source 全体を指す。
 - **`default`**: 解決失敗（skipped ノードの出力・パス不在・null）時のフォールバック。**`default` がなく解決に失敗した場合、step は `expr_resolve_error` で失敗する**（黙って null を流さない）。実行時の解決アルゴリズムは [engine.md](./engine.md) §4。
