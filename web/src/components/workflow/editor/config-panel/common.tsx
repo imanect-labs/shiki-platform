@@ -166,13 +166,17 @@ function timeoutHint(defaultSec: number, maxSec: number, agent: boolean): string
 export function CommonSection({
   node,
   dispatch,
+  attrErrors,
 }: {
   node: IrNode;
   dispatch: React.Dispatch<EditorAction>;
+  /// step 属性の欄の誤り（`timeout_sec` → 文言・保存時の照合・BUG-96）。
+  attrErrors?: Map<string, string>;
 }) {
   const entry = NODE_CATALOG.find((c) => c.type === node.type);
   const [idDraft, setIdDraft] = React.useState(node.id);
   React.useEffect(() => setIdDraft(node.id), [node.id]);
+  const timeoutError = attrErrors?.get("timeout_sec") ?? null;
 
   return (
     <div className="space-y-3">
@@ -234,11 +238,13 @@ export function CommonSection({
           <Field
             label="時間の上限（秒・省略可）"
             hint={timeoutHint(entry.timeout_default_sec, entry.timeout_max_sec, node.type === "agent.invoke")}
+            error={timeoutError}
           >
             <NumberInput
               value={node.timeout_sec ?? null}
               min={1}
               max={entry.timeout_max_sec}
+              error={Boolean(timeoutError)}
               onChange={(n) =>
                 dispatch({
                   type: "update_node",

@@ -340,7 +340,7 @@ function NodePanel({ ctx, node, sheet }: { ctx: EditorContext; node: IrNode; she
           <p className="text-xs text-muted-foreground">このブロックに設定はありません</p>
         )}
         <div className="border-t pt-4">
-          <CommonSection node={node} dispatch={ctx.dispatch} />
+          <CommonSection node={node} dispatch={ctx.dispatch} attrErrors={errorView.attrs} />
         </div>
         <Button
           variant="outline"

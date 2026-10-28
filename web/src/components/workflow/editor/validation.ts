@@ -56,7 +56,12 @@ export type NodeErrorView = {
   /// 帯から取り除ける（フォームはその項目の欄を描かないので、ほかに消す手段が無い）。`removableAttr` は
   /// params の外の step 属性（`cache`）の誤りで、帯から属性ごと外せる（付けられない種には欄が無い）。
   banner: { message: string; removable?: string; removableAttr?: "cache" }[];
+  /// params の外の step 属性の欄（共通の設定の「時間の上限」＝ `timeout_sec`）の下に出す誤り（BUG-96）。
+  attrs: Map<string, string>;
 };
+
+/// 共通の設定に欄がある step 属性（path が `/<属性>` の誤りはその欄の下へ）。
+const ATTR_FIELDS = ["timeout_sec"] as const;
 
 const PARAMS_PREFIX = "params が不正です: ";
 
@@ -68,7 +73,13 @@ const PARAMS_PREFIX = "params が不正です: ";
 export function nodeErrorView(errors: ValidationError[]): NodeErrorView {
   const fields = new Map<string, string>();
   const banner: NodeErrorView["banner"] = [];
+  const attrs = new Map<string, string>();
   for (const e of errors) {
+    const attr = ATTR_FIELDS.find((a) => e.path === `/${a}`);
+    if (attr) {
+      if (!attrs.has(attr)) attrs.set(attr, e.message);
+      continue;
+    }
     // step 属性 `cache`（決定キャッシュ・付けられるのは ai.decide だけ）の誤りは帯へ。外せばいつでも直る。
     if (e.path === "/cache" || e.path?.startsWith("/cache/")) {
       banner.push({ message: e.message, removableAttr: "cache" });
@@ -98,7 +109,7 @@ export function nodeErrorView(errors: ValidationError[]): NodeErrorView {
     if (sub && !fields.has(sub)) fields.set(sub, message);
     if (!fields.has(field)) fields.set(field, message);
   }
-  return { fields, banner };
+  return { fields, banner, attrs };
 }
 
 /// `/params/<field>/<sub>/...` の 2 段の名前（`<field>/<sub>`）。2 段に満たなければ null。
