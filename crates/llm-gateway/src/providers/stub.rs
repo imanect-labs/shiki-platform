@@ -285,15 +285,19 @@ fn yui_call(user_text: &str, prompt_tokens: u64) -> Option<DeltaStream> {
     ))
 }
 
+/// `long:` / `longthink:` の段落数の上限（本文を先に組み立てるので、大きな数でメモリを使い切らない）。
+const LONG_MAX_PARAGRAPHS: usize = 1000;
+
 /// 長文の回答 `long:<段落数>`: 番号付き段落を数文字ずつ流す（生成中に上へスクロールして
 /// 読み返しても追従で引き戻されないことを e2e で確かめる）。`longthink:<段落数>` は同じ数の
-/// 段落の思考を先に流す（思考パネルを開いたまま読み返す検証用）。段落数の省略・不正は 40。
+/// 段落の思考を先に流す（思考パネルを開いたまま読み返す検証用）。段落数の省略・不正は 40、上限は
+/// [`LONG_MAX_PARAGRAPHS`]。
 fn long_call(user_text: &str, prompt_tokens: u64) -> Option<DeltaStream> {
     let (rest, think) = match user_text.strip_prefix("longthink:") {
         Some(rest) => (rest, true),
         None => (user_text.strip_prefix("long:")?, false),
     };
-    let n = rest.trim().parse().unwrap_or(40);
+    let n = rest.trim().parse().unwrap_or(40).min(LONG_MAX_PARAGRAPHS);
     let thinking = if think {
         long_thinking(n)
     } else {

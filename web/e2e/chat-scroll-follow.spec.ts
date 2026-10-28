@@ -83,6 +83,13 @@ test.describe("生成中のスクロール追従", () => {
     await startLongAnswer(page, () => page.getByLabel("メッセージを入力").press("Enter"));
 
     const box = await page.getByTestId("conversation-scroller").boundingBox();
+    // 本文の左右の余白（スクロール領域そのもの）をクリックしても追従は止まらない。
+    await page.mouse.click(box!.x + 8, box!.y + box!.height / 2);
+    const clicked = await metrics(page);
+    await page.waitForTimeout(1_000);
+    await expect.poll(async () => (await metrics(page)).bottomGap, { timeout: 5_000 }).toBeLessThanOrEqual(8);
+    expect((await metrics(page)).top).toBeGreaterThan(clicked.top);
+
     await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 3);
     // トラックパッドのような 2px ずつの動きだけで上へ。
     for (let i = 0; i < 40; i += 1) {

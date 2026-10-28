@@ -6,6 +6,9 @@ import * as React from "react";
 const NEAR_BOTTOM_PX = 80;
 /// この距離以内なら下端そのもの（小数の scrollTop の端数を吸収する）。
 const AT_BOTTOM_PX = 1;
+/// 上へ動かす入力のあと、この時間たっても上へ動いていなければ追従へ戻す（横スワイプの指のぶれ・
+/// 中の要素だけがスクロールしたホイールなど、会話は動かなかった入力で止めたままにしない）。
+const RELEASE_SETTLE_MS = 250;
 
 /// 上へ動かすキー（押した時点で追従をやめる。スクロールが始まる前に止めないと、
 /// 次の追従がキーのスクロールを打ち消す）。
@@ -48,13 +51,24 @@ export function useStickToBottom() {
   React.useEffect(() => {
     if (!scroller) return;
     // 上へ動かす入力: 動き出す前に追従をやめる（上へ動ける余地があるときだけ）。
+    let settle: ReturnType<typeof setTimeout> | undefined;
     const release = () => {
-      if (scroller.scrollTop <= 0) return;
+      const from = scroller.scrollTop;
+      if (from <= 0) return;
       stick.current = false;
       leaving.current = true;
+      clearTimeout(settle);
+      settle = setTimeout(() => {
+        // 上へ動いていれば scroll で `leaving` が落ちている。動かなかった入力なら追従へ戻す。
+        if (!leaving.current || scroller.scrollTop < from - AT_BOTTOM_PX) return;
+        leaving.current = false;
+        stick.current = true;
+        if (touchY.current == null && !draggingBar.current) pin(scroller);
+      }, RELEASE_SETTLE_MS);
     };
     const onWheel = (e: WheelEvent) => {
-      if (e.deltaY < 0) release();
+      // ctrl ＋ホイールはトラックパッドのピンチ（拡大縮小）でスクロールではない。
+      if (e.deltaY < 0 && !e.ctrlKey) release();
     };
     // キーのスクロールは、フォーカスが本文（またはどこにも無い）ときにこの領域へ効く。入力欄の
     // 矢印キーはカーソル移動なので見ない。
@@ -78,14 +92,19 @@ export function useStickToBottom() {
       touchY.current = null;
       if (stick.current) pin(scroller);
     };
-    // スクロールバー（中身ではなくスクロール領域そのもの）を掴んだ。
+    // スクロールバーを掴んだ（左右の余白もスクロール領域そのものなので、位置で見分ける）。
+    // 掴んだだけでは追従をやめない。上へ動かせば scroll で止まる。
     const onPointerDown = (e: PointerEvent) => {
       if (e.pointerType !== "mouse" || e.target !== scroller) return;
-      draggingBar.current = true;
-      release();
+      if (e.offsetX >= scroller.clientWidth) draggingBar.current = true;
     };
-    const onPointerUp = () => {
+    // 指を離した。touchend は触れ始めた要素へ届くので、その要素が生成の確定で作り直されて
+    // 外れていると、スクロール領域まで上がってこない。pointerup は指の下の要素へ届く。
+    const onPointerUp = (e: PointerEvent) => {
       draggingBar.current = false;
+      if (e.pointerType !== "touch" || touchY.current == null) return;
+      touchY.current = null;
+      if (stick.current) pin(scroller);
     };
     const onScroll = () => {
       const top = scroller.scrollTop;
@@ -98,7 +117,8 @@ export function useStickToBottom() {
         leaving.current = false;
       } else if (d <= AT_BOTTOM_PX) {
         // 下端（中身が縮んで押し戻された場合も含む）。上へ動かす入力の直後は、まだ動き出して
-        // いないだけなので追従へ戻さない。
+        // いないだけなので追従へ戻さない（下へ動いて着いたのなら戻す）。
+        if (delta > 0) leaving.current = false;
         if (!leaving.current) stick.current = true;
       } else if (delta > 0 && d <= NEAR_BOTTOM_PX) {
         // 下へ戻ってきて下端付近に入った。
@@ -116,7 +136,9 @@ export function useStickToBottom() {
     scroller.addEventListener("touchcancel", onTouchEnd, { passive: true });
     scroller.addEventListener("pointerdown", onPointerDown);
     window.addEventListener("pointerup", onPointerUp);
+    window.addEventListener("pointercancel", onPointerUp);
     return () => {
+      clearTimeout(settle);
       scroller.removeEventListener("scroll", onScroll);
       scroller.removeEventListener("wheel", onWheel);
       document.removeEventListener("keydown", onKeyDown);
@@ -126,6 +148,7 @@ export function useStickToBottom() {
       scroller.removeEventListener("touchcancel", onTouchEnd);
       scroller.removeEventListener("pointerdown", onPointerDown);
       window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointercancel", onPointerUp);
     };
   }, [scroller, pin]);
 
