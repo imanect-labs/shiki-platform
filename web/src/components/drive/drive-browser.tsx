@@ -167,6 +167,9 @@ export function DriveBrowser() {
   const [activeNode, setActiveNode] = React.useState<NodeResponse | null>(null);
   const [dragging, setDragging] = React.useState(false);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+  /// ファイルを選んだら呼ぶ後始末（スマホの「＋ 新規」のシートを閉じる）。開閉 state は NewFab が持つ
+  /// （ここに持つと開閉のたびに一覧ごと描き直す）ので、閉じる関数だけを受け取っておく。
+  const afterPickRef = React.useRef<(() => void) | null>(null);
   // 「新しいバージョン」用の隠し入力と対象ノード。
   const versionInputRef = React.useRef<HTMLInputElement>(null);
   const versionTargetRef = React.useRef<NodeResponse | null>(null);
@@ -232,7 +235,14 @@ export function DriveBrowser() {
     void uploader.uploadFiles(Array.from(e.dataTransfer.files));
   };
 
-  const openUpload = () => fileInputRef.current?.click();
+  const openUpload = () => {
+    afterPickRef.current = null;
+    fileInputRef.current?.click();
+  };
+  const openUploadFromSheet = (closeSheet: () => void) => {
+    afterPickRef.current = closeSheet;
+    fileInputRef.current?.click();
+  };
   const openNewFolder = () => {
     setActiveNode(null);
     setDialog("newfolder");
@@ -386,8 +396,13 @@ export function DriveBrowser() {
         multiple
         hidden
         onChange={(e) => {
-          void uploader.uploadFiles(Array.from(e.target.files ?? []));
+          const files = Array.from(e.target.files ?? []);
           e.target.value = "";
+          if (files.length === 0) return;
+          // スマホの「＋ 新規」のシートはファイルを選ぶまで開いておき、選んだら閉じる。
+          afterPickRef.current?.();
+          afterPickRef.current = null;
+          void uploader.uploadFiles(files);
         }}
       />
       <input
@@ -536,7 +551,11 @@ export function DriveBrowser() {
       </div>
 
       {/* スマホの「＋ 新規」（アップロード／新規フォルダ／新規作成を 1 つに集約） */}
-      <NewFab create={create} onUpload={openUpload} onNewFolder={openNewFolder} />
+      <NewFab
+        create={create}
+        onUpload={openUploadFromSheet}
+        onNewFolder={openNewFolder}
+      />
 
       {/* ダイアログ群 */}
       <UploadConflictDialog
