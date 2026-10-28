@@ -98,6 +98,13 @@ test.describe("生成中のスクロール追従", () => {
     }
     await expectPositionHeld(page);
 
+    // 読み返し中に、会話は動かない上向きのホイール（中の小さなスクロール領域だけが動く）が
+    // 来ても、下端へ飛ばない。
+    await page.getByTestId("conversation-scroller").evaluate((el) => {
+      el.firstElementChild!.dispatchEvent(new WheelEvent("wheel", { deltaY: -100, bubbles: true }));
+    });
+    await expectPositionHeld(page);
+
     // 大きく上へ動かしてから下へ少し戻しても、下端から離れている間は追わない。
     await page.mouse.wheel(0, -600);
     await page.mouse.wheel(0, 100);

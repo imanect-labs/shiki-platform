@@ -50,11 +50,12 @@ export function useStickToBottom() {
 
   React.useEffect(() => {
     if (!scroller) return;
-    // 上へ動かす入力: 動き出す前に追従をやめる（上へ動ける余地があるときだけ）。
+    // 上へ動かす入力: 動き出す前に追従をやめる（追従していて、上へ動ける余地があるときだけ。
+    // 読み返し中に中の要素だけが動いた入力で、250ms 後に追従へ戻して下端へ飛ばさない）。
     let settle: ReturnType<typeof setTimeout> | undefined;
     const release = () => {
       const from = scroller.scrollTop;
-      if (from <= 0) return;
+      if (from <= 0 || !stick.current) return;
       stick.current = false;
       leaving.current = true;
       clearTimeout(settle);
