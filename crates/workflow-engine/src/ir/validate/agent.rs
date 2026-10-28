@@ -229,9 +229,14 @@ pub(super) fn v7(ir: &WorkflowIr, errors: &mut Vec<ValidationError>) {
                 .as_u64()
                 .is_some_and(|s| (u64::from(min_sec)..=u64::from(max_sec)).contains(&s));
             if !ok {
+                // 欄の見出しで言う（ブロックの「時間の上限」の誤りと注記が同じ名前で指す・付録 D の N3.2.3・BUG-96）。
                 push(
                     "/params/max_duration_sec",
-                    format!("実行時間の上限は {min_sec}〜{max_sec} 秒の整数で指定してください"),
+                    format!(
+                        "「AI の作業時間の上限」は {}〜{} 秒の整数にしてください。",
+                        super::timeout::grouped(min_sec),
+                        super::timeout::grouped(max_sec)
+                    ),
                 );
             }
         }
@@ -434,6 +439,12 @@ mod tests {
             &json!({ "instruction": "x", "max_steps": 25, "max_duration_sec": 5, "max_tokens": 0 }),
             &[],
             &Catalog::default(),
+        );
+        assert!(
+            errs.iter()
+                .any(|e| e.path.as_deref() == Some("/params/max_duration_sec")
+                    && e.message == "「AI の作業時間の上限」は 10〜3,600 秒の整数にしてください。"),
+            "{errs:#?}"
         );
         for path in [
             "/params/max_steps",

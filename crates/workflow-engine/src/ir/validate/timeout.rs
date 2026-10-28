@@ -13,7 +13,7 @@ use crate::vocab::{step_timeout_limits, NodeType};
 const LABEL: &str = "時間の上限";
 
 /// 4 桁以上を 3 桁ごとにカンマで区切る（付録 C の P11・3,600）。
-fn grouped(n: u32) -> String {
+pub(super) fn grouped(n: u32) -> String {
     let digits = n.to_string();
     let mut out = String::new();
     for (i, c) in digits.chars().enumerate() {
