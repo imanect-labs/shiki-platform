@@ -937,6 +937,22 @@ async fn approvals_are_decided_by_the_approver_in_the_inbox() {
     assert_eq!(count, json!({ "count": 1, "more": false }));
     assert_eq!(item["title"], "経費申請の承認");
     assert_eq!(item["from_state"], "reviewing");
+    // 承認の期限が空欄でも「期限なし」にしない: 実行の期限で取り消されるので、実行の期限を期限として返す
+    // （受信箱と 1 件の取得が同じ・D-92）。
+    let run_deadline: chrono::DateTime<chrono::Utc> = sqlx::query_scalar(
+        "SELECT timeout_at FROM workflow_run WHERE tenant_id = $1 AND run_id = $2",
+    )
+    .bind(&env.tenant)
+    .bind(run)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    let deadline_of = |v: &Value| {
+        chrono::DateTime::parse_from_rfc3339(v["deadline"].as_str().expect("期限がある"))
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+    };
+    assert_eq!(deadline_of(&item), run_deadline, "{item}");
     let keys: Vec<&str> = item["record"]["fields"]
         .as_array()
         .unwrap()
@@ -975,6 +991,7 @@ async fn approvals_are_decided_by_the_approver_in_the_inbox() {
     // 1 件の取得は、本人がいま判断できるかを添える（carol は担当だが状態の遷移の規則で承認できない）。
     let (_, detail) = env.get(&env.bob, &format!("/approvals/{id}")).await;
     assert_eq!(detail["decisions"][0]["allowed"], true);
+    assert_eq!(deadline_of(&detail), run_deadline, "{detail}");
     let (_, detail) = env.get(&env.carol, &format!("/approvals/{id}")).await;
     assert_eq!(detail["decisions"][0]["allowed"], false);
     let (st, body) = env

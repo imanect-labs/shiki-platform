@@ -274,7 +274,9 @@ export function HumanApprovalForm(props: FormProps) {
       <Field
         label="判断の期限（時間・省略可）"
         error={fieldErrors.get("timeout_sec")}
-        hint="空欄なら期限なし（実行の期限が来ると取り消されます）"
+        // 空欄は「期限なし」ではない: 実行の期限が来ると承認は取り消され、実行は失敗になる。承認者の画面にも、
+        // 実行の期限を期限として出す（D-92・付録 D の N3.4.1）。
+        hint="空欄なら、実行の期限まで待ちます。実行の期限が来ると、承認を待つのをやめて実行は失敗になります。"
       >
         <NumberInput
           value={typeof p.timeout_sec === "number" ? Math.round((p.timeout_sec / 3600) * 10) / 10 : null}

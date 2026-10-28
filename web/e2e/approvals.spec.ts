@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { grantTableEditor, loginAs, loginViaKeycloak, uniqueName } from "./helpers";
+import { cleanupAll, grantTableEditor, loginAs, loginViaKeycloak, uniqueName } from "./helpers";
 
 /// 承認待ち（human.approval・GAP-08）の e2e:
 /// - 申請（テーブルの行を申請へ進める）→ ワークフローが受け付けて承認を待つ → 承認者が /approvals の受信箱から
@@ -14,7 +14,7 @@ async function csrfHeaders(page: Page): Promise<Record<string, string>> {
   return { "x-csrf-token": csrf, "content-type": "application/json" };
 }
 
-type Setup = { tableId: string; tableName: string; workflowId: string; recordId: string; title: string };
+type Setup = { tableId: string; tableName: string; workflowId: string; recordId: string; title: string; fsmId: string };
 
 /// 申請の表（下書き → 申請中 → 受付 は誰でも、受付 → 承認・却下 は承認者の列の人）と、申請中になった行を受け付けて
 /// 承認を待つワークフローを作り、1 件申請する。
@@ -144,7 +144,7 @@ async function setup(page: Page, runTimeoutSec = 1209600): Promise<Setup> {
     data: { to: "申請中", expected_rev: record.rev },
   });
   expect(moved.status(), await moved.text()).toBe(200);
-  return { tableId: table.id, tableName, workflowId, recordId: record.id, title };
+  return { tableId: table.id, tableName, workflowId, recordId: record.id, title, fsmId: f.id };
 }
 
 /// ワークフローが受け付けて、承認を待つまで（relay の tick 5 秒）。
@@ -232,6 +232,52 @@ test("承認待ち: 申請 → 受信箱で承認 → ワークフローが「�
     data: { status: string };
   };
   expect(row.data.status).toBe("承認");
+});
+
+test("承認待ち: 承認の期限が空欄でも「期限なし」と出さず、実行の期限を期限として出す（D-92）", async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await loginViaKeycloak(page);
+  // 実行の期限は 14 日（承認を待つブロックには期限を書いていない）。
+  const s = await setup(page, 1_209_600);
+  try {
+    await waitForApproval(page, s);
+    const listed = (await (await page.request.get("/api/approvals")).json()) as {
+      items: { record: { id: string }; deadline: string | null }[];
+    };
+    const mine = listed.items.find((i) => i.record.id === s.recordId);
+    expect(mine?.deadline, "実行の期限を期限として返す").toBeTruthy();
+    const left = new Date(mine!.deadline!).getTime() - Date.now();
+    expect(left).toBeGreaterThan(13 * 86_400_000);
+    expect(left).toBeLessThanOrEqual(14 * 86_400_000);
+
+    await page.goto("/approvals");
+    const item = page.getByTestId("approval-item").filter({ hasText: s.tableName });
+    await expect(item).toBeVisible({ timeout: 15_000 });
+    await expect(item).toContainText("あと 13 日");
+    await expect(item).not.toContainText("期限なし");
+    await item.click();
+    const sheet = page.getByTestId("approval-sheet");
+    await expect(sheet).toContainText("あと 13 日");
+    await expect(sheet).not.toContainText("期限なし");
+    if (process.env.E2E_SHOTS_DIR) await page.screenshot({ path: `${process.env.E2E_SHOTS_DIR}/approval-deadline-pc.png` });
+  } finally {
+    const headers = await csrfHeaders(page);
+    await cleanupAll(
+      async () => {
+        const del = await page.request.delete(`/api/artifacts/${s.workflowId}`, { headers });
+        expect(del.status(), await del.text()).toBeLessThan(300);
+      },
+      async () => {
+        const del = await page.request.delete(`/api/data/tables/${s.tableId}`, { headers });
+        expect(del.status(), await del.text()).toBeLessThan(300);
+      },
+      async () => {
+        const del = await page.request.delete(`/api/artifacts/${s.fsmId}`, { headers });
+        expect(del.status(), await del.text()).toBeLessThan(300);
+      },
+    );
+  }
 });
 
 test("承認待ち: スマホ幅の受信箱は横にはみ出さず、全画面のシートで判断できる（GAP-08）", async ({ browser }) => {
