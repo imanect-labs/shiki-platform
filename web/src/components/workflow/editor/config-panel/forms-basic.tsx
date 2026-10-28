@@ -1,6 +1,6 @@
 "use client";
 
-/// 能力ノードのフォーム（社内検索・AI に聞く・別フロー起動・スキル）。
+/// 能力ノードのフォーム（社内検索・AI に聞く・別のワークフローを実行・スキル）。
 /// ファイル（storage.* / csv.*）のフォームは forms-files.tsx、AI エージェントは forms-agent.tsx にある。
 ///
 /// フィールドは codegen の typed 契約（NodeParamsByType）に対応する（効かない設定は出さない）。
@@ -9,8 +9,10 @@ import * as React from "react";
 
 import type { NodeParamsByType } from "@/generated/workflow-catalog";
 import type { LlmEffort, Node as IrNode, ValidationError, ValueExpr } from "@/generated/workflow-ir";
+import { Select, SelectContent, SelectItem, SelectValue } from "@/components/ui/select";
+import { listWorkflows, type WorkflowSummary } from "@/lib/workflow-api";
 import type { EditorAction } from "../ir-state";
-import { Field, FieldInput, FieldNativeSelect, NumberInput } from "./common";
+import { Field, FieldInput, FieldNativeSelect, FieldSelectTrigger, NumberInput } from "./common";
 import { EffortField } from "./effort-field";
 import { ModelField } from "./model-field";
 import { OutputSchemaEditor } from "./output-schema-editor";
@@ -148,30 +150,125 @@ export function LlmInvokeForm({
   );
 }
 
+/// 実行するワークフローの一覧の読み込み（見られるワークフローの最近の 100 件・GET /workflows）。
+type WorkflowList = { state: "loading" } | { state: "error" } | { state: "ready"; items: WorkflowSummary[] };
+
+function useWorkflowList(): [WorkflowList, () => void] {
+  const [list, setList] = React.useState<WorkflowList>({ state: "loading" });
+  const [attempt, setAttempt] = React.useState(0);
+  React.useEffect(() => {
+    let active = true;
+    listWorkflows({ limit: 100 })
+      .then((items) => active && setList({ state: "ready", items }))
+      .catch(() => active && setList({ state: "error" }));
+    return () => {
+      active = false;
+    };
+  }, [attempt]);
+  const reload = React.useCallback(() => {
+    setList({ state: "loading" });
+    setAttempt((n) => n + 1);
+  }, []);
+  return [list, reload];
+}
+
+/// 一覧の 1 行の名前（画面に出る名前。同じ表示名が 2 つあるときだけ内部の名前を添えて見分ける）。
+function workflowOptionLabel(w: WorkflowSummary, items: WorkflowSummary[]): string {
+  const shown = w.displayName?.trim() || w.name;
+  const twins = items.filter((x) => (x.displayName?.trim() || x.name) === shown).length;
+  return twins > 1 ? `${shown}（${w.name}）` : shown;
+}
+
+/// workflow.start — 別のワークフローを実行（BUG-107）。相手はワークフローの一覧から表示名で選び、保存するのは
+/// 今と同じ内部の名前（IR の `name`）。入力や結果から名前を渡す組み方も残す。相手が無い・見えないことは保存時に
+/// サーバーが確かめる（V4 の `ir.unknown_workflow`・欄の下に出る）。
 export function WorkflowStartForm({ node, dispatch, refCandidates, inMapRegion, fieldErrors }: FormProps) {
   const p = paramsOf<NodeParamsByType["workflow.start"]>(node);
+  const value = p.name as ValueExpr | undefined;
+  const literal = typeof value === "string" ? value : null;
+  const [mode, setMode] = React.useState<"pick" | "expr">(value !== undefined && literal === null ? "expr" : "pick");
+  const [list, reload] = useWorkflowList();
+  const error = fieldErrors.get("name");
+  const items = list.state === "ready" ? list.items : [];
+  const listed = literal !== null && items.some((w) => w.name === literal);
   return (
     <div className="space-y-3">
+      <div className="space-y-1.5">
+        {mode === "pick" ? (
+          <Field
+            label="実行するワークフロー"
+            hint="同じ組織のワークフローから選びます。選んだワークフローの、保存されている最新の内容を実行します。"
+            error={error}
+          >
+            <Select
+              value={literal ?? ""}
+              disabled={list.state === "loading"}
+              onValueChange={(v) => patchParams(dispatch, node, { name: v })}
+            >
+              <FieldSelectTrigger className="h-8 text-[13px]" data-testid="workflow-start-select">
+                <SelectValue placeholder={list.state === "loading" ? "読み込み中…" : "ワークフローを選んでください"} />
+              </FieldSelectTrigger>
+              <SelectContent>
+                {items.map((w) => (
+                  <SelectItem key={w.id} value={w.name}>
+                    {workflowOptionLabel(w, items)}
+                  </SelectItem>
+                ))}
+                {/* 一覧（最近の 100 件）に無い保存済みの名前も選んだまま見せる（見えるかは保存時にサーバーが確かめる）。 */}
+                {literal && !listed ? <SelectItem value={literal}>{literal}</SelectItem> : null}
+              </SelectContent>
+            </Select>
+          </Field>
+        ) : (
+          <ValueExprInput
+            label="実行するワークフロー"
+            text
+            value={value}
+            onChange={(v) => patchParams(dispatch, node, { name: v })}
+            refCandidates={refCandidates}
+            inMapRegion={inMapRegion}
+            error={error}
+          />
+        )}
+        {mode === "pick" && list.state === "error" ? (
+          <p role="alert" className="flex flex-wrap items-center gap-x-2 text-[11px] text-destructive">
+            ワークフローの一覧を読み込めませんでした。
+            <button type="button" className="text-primary underline-offset-2 hover:underline" onClick={reload}>
+              もう一度読み込む
+            </button>
+          </p>
+        ) : null}
+        {mode === "pick" && list.state === "ready" && items.length === 0 ? (
+          <p className="text-[11px] text-muted-foreground">
+            選べるワークフローがありません。先に実行するワークフローを作るか、作成した人に共有を頼んでください。
+          </p>
+        ) : null}
+        <button
+          type="button"
+          className="text-[11px] text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          onClick={() => setMode(mode === "pick" ? "expr" : "pick")}
+        >
+          {mode === "pick" ? "入力や結果から選ぶ" : "一覧から選ぶ"}
+        </button>
+      </div>
       <ValueExprInput
-        label="起動するワークフロー名"
-        text
-        value={p.name as ValueExpr | undefined}
-        onChange={(v) => patchParams(dispatch, node, { name: v })}
-        refCandidates={refCandidates}
-        inMapRegion={inMapRegion}
-        placeholder="例: expense-approval"
-        error={fieldErrors.get("name")}
-      />
-      <ValueExprInput
-        label="渡す入力（省略可）"
+        label="渡す入力項目（省略可）"
         value={p.input as ValueExpr | undefined}
         onChange={(v) => patchParams(dispatch, node, { input: v })}
         refCandidates={refCandidates}
         inMapRegion={inMapRegion}
+        hint="実行するワークフローの入力項目に合う値を渡します。合わないと、このブロックは失敗します。"
       />
-      <p className="text-[11px] text-muted-foreground">
-        起動した先の結果は待ちません（起動のみ・高々 1 回保証）
-      </p>
+      <div className="space-y-1 text-[11px] leading-relaxed text-muted-foreground" data-testid="workflow-start-notes">
+        {/* 権限と内容は run/launcher.rs の start_child（親の実行主体の権限で、相手の最新の保存を動かす・D-91）。 */}
+        <p>
+          実行したワークフローは、このワークフローと同じ権限で動きます（手動では実行した人、自動実行ではこのワークフローに使えるようにしたテーブルやフォルダー）。相手のワークフローを編集できる人が保存した最新の内容が、そのまま動きます。
+        </p>
+        <p>
+          別のワークフローを実行し、その結果は待たずに次へ進みます。このブロックの自動のやり直しでは、別のワークフローはふつう 1 回だけ実行されます。
+        </p>
+        <p>実行したワークフローの「結果を画面に返す」は、どの画面にも出ません。結果は、そのワークフローの実行履歴で確かめます。</p>
+      </div>
     </div>
   );
 }

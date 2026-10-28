@@ -636,13 +636,16 @@ test("差し込む: 文字を求める欄だけに出し、CSV を保存の内�
   const insertIn = (label: string) =>
     panel.locator(`[data-value-expr="${label}"]`).getByRole("button", { name: "差し込む" });
 
-  // 名前は文字の欄なので差し込める。渡す入力（オブジェクト）は差し込むと文字列に変わるので出さない
-  // （参照は「前の結果から」で $from のまま入れる）。
+  // 実行するワークフローは一覧から選ぶ（BUG-107）。「入力や結果から選ぶ」にすると、名前は文字の欄なので
+  // 差し込める。渡す入力項目（オブジェクト）は差し込むと文字列に変わるので出さない（参照は「前の結果から」で
+  // $from のまま入れる）。
   await page.getByRole("button", { name: "最初のブロック" }).click();
   await page.getByRole("button", { name: /^別のフローを開始/ }).click();
-  await expect(insertIn("起動するワークフロー名")).toHaveCount(1);
-  await expect(panel.locator('[data-value-expr="渡す入力（省略可）"]')).toBeVisible();
-  await expect(insertIn("渡す入力（省略可）")).toHaveCount(0);
+  await expect(panel.getByTestId("workflow-start-select")).toBeVisible();
+  await panel.getByRole("button", { name: "入力や結果から選ぶ" }).click();
+  await expect(insertIn("実行するワークフロー")).toHaveCount(1);
+  await expect(panel.locator('[data-value-expr="渡す入力項目（省略可）"]')).toBeVisible();
+  await expect(insertIn("渡す入力項目（省略可）")).toHaveCount(0);
 
   // 「CSV を保存」の内容は空の固定値で置かれ（入力全体を JSON のまま .csv にしない）、欄の下で入力を促す。
   await canvas.getByLabel("次のブロックを追加").first().click();
