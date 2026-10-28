@@ -898,7 +898,7 @@ async fn ui_reference_is_offered_only_when_yui_is_enabled() {
         let mut rx = store.event_stream(&c.tenant_id, res.run_id, 0);
         let (mut body, mut call_id, mut observed) = (String::new(), None, None);
         for _ in 0..500 {
-            let next = tokio::time::timeout(Duration::from_secs(60), rx.next())
+            let next = tokio::time::timeout(Duration::from_mins(1), rx.next())
                 .await
                 .expect("イベント待ちがタイムアウト（ワーカーが生成しない）");
             let Some(ev) = next else { break };
