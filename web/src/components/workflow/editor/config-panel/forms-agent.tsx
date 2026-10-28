@@ -20,7 +20,7 @@ import type { AgentTool, ValueExpr } from "@/generated/workflow-ir";
 import { getAgentSettings, type AgentSettings } from "@/lib/workflow-api";
 import { scopeLabel } from "@/lib/workflow-scopes";
 import { cn } from "@/lib/utils";
-import { Field, NumberInput } from "./common";
+import { Field, NumberInput, period } from "./common";
 import type { FormProps } from "./forms-basic";
 import { ModelField } from "./model-field";
 import { paramsOf, patchParams } from "./params";
@@ -46,6 +46,14 @@ function useAgentSettings(): SettingsState {
 }
 
 const TOOLS = AGENT_TOOL_CATALOG.filter((t) => t.available);
+
+/// AI の作業時間の上限の注記（数は agent の設定から・付録 D の N3.2.3）。
+function durationHint(s: AgentSettings): string {
+  const def = s.default_max_duration_sec;
+  const n = (v: number) => v.toLocaleString("ja-JP");
+  const defText = def >= 60 ? `${n(def)} 秒（${period(def)}）` : `${def} 秒`;
+  return `空欄なら ${defText}で、${n(s.min_duration_sec)}〜${n(s.max_duration_sec)} 秒にできます。過ぎると、そこまでの答えで終えます。`;
+}
 
 const CHECK_ROW =
   "flex min-h-9 cursor-pointer items-start gap-2 rounded-md px-1.5 py-1 text-sm pointer-coarse:min-h-11 has-[:disabled]:cursor-not-allowed has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring";
@@ -194,7 +202,8 @@ export function AgentInvokeForm({ node, dispatch, refCandidates, inMapRegion, fi
         onChange={(model) => patchParams(dispatch, node, { model })}
         error={fieldErrors.get("model")}
       />
-      <div className="grid grid-cols-2 gap-3">
+      {/* 見出しと注記が長いので、2 つの上限は縦に並べる（横に並べると見出しの折り返しで欄がずれる）。 */}
+      <div className="space-y-3">
         <Field label="手順の上限（回）" hint="空欄で標準" error={fieldErrors.get("max_steps")}>
           <NumberInput
             value={typeof p.max_steps === "number" ? p.max_steps : null}
@@ -207,12 +216,17 @@ export function AgentInvokeForm({ node, dispatch, refCandidates, inMapRegion, fi
             }
           />
         </Field>
-        <Field label="実行時間の上限（秒）" hint="空欄で標準" error={fieldErrors.get("max_duration_sec")}>
+        {/* 見出しはブロックの「時間の上限」の注記と誤りが指す名前（付録 D の N3.2.3・BUG-96）。 */}
+        <Field
+          label="AI の作業時間の上限（秒・省略可）"
+          hint={settings.status === "ready" ? durationHint(settings.data) : "空欄で標準"}
+          error={fieldErrors.get("max_duration_sec")}
+        >
           <NumberInput
             value={typeof p.max_duration_sec === "number" ? p.max_duration_sec : null}
             min={settings.status === "ready" ? settings.data.min_duration_sec : 10}
             max={settings.status === "ready" ? settings.data.max_duration_sec : 3600}
-            placeholder={settings.status === "ready" ? `標準 ${settings.data.default_max_duration_sec}` : undefined}
+            placeholder="例: 900"
             error={Boolean(fieldErrors.get("max_duration_sec"))}
             onChange={(n) =>
               patchParams(dispatch, node, { max_duration_sec: n === null ? undefined : Math.round(n) })

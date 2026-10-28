@@ -148,7 +148,7 @@ export function NumberInput({
 }
 
 /// 秒を「N 秒」か「N 分」で言う（1 分未満だけ秒・付録 C の P11）。
-function period(sec: number): string {
+export function period(sec: number): string {
   const m = Math.floor(sec / 60);
   const s = sec % 60;
   if (m === 0) return `${s} 秒`;
@@ -210,7 +210,8 @@ export function CommonSection({
           className="h-8 font-mono text-xs max-md:text-base"
         />
       </Field>
-      <div className="grid grid-cols-2 gap-3">
+      {/* 時間の上限は注記と誤りが長いので、試す回数と縦に並べる（半分の幅では誤りが何行にも折り返す）。 */}
+      <div className="space-y-3">
         <Field label="リトライ回数" hint="失敗時にやり直す回数">
           <NumberInput
             value={node.retry?.max_attempts ?? 1}

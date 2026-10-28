@@ -108,3 +108,64 @@ test("時間の上限: AI に聞くは既定 120 秒・最大 600 秒で、超�
     });
   }
 });
+
+test("時間の上限: AI エージェントは「AI の作業時間の上限」より短くできず、誤りは欄の下に出る（BUG-96）", async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await loginViaKeycloak(page);
+  const name = uniqueName("step-timeout-agent");
+  let id = "";
+  try {
+    const res = await page.request.post("/api/workflows", {
+      headers: { "x-csrf-token": await csrf(page), "content-type": "application/json" },
+      data: {
+        ir: {
+          ir_version: 1,
+          name,
+          display_name: name,
+          triggers: [{ kind: "interactive" }],
+          nodes: [
+            {
+              id: "research",
+              type: "agent.invoke",
+              label: "規程を調べる",
+              params: { instruction: "旅費規程の要点をまとめて", allowed_tools: ["rag.search"] },
+            },
+          ],
+          edges: [],
+        },
+      },
+    });
+    expect(res.ok(), await res.text()).toBeTruthy();
+    id = ((await res.json()) as { id: string }).id;
+    await page.goto(`/workflows/${id}`);
+    await page.getByTestId("rf__node-research").click();
+    const panel = page.getByRole("complementary", { name: "ブロックの設定" });
+
+    // 作業時間の欄は、時間の上限の注記と誤りが指す名前で出る（既定と範囲は agent の設定から）。
+    const duration = panel.getByRole("spinbutton", { name: "AI の作業時間の上限（秒・省略可）" });
+    await expect(duration).toHaveAccessibleDescription(/^空欄なら 600 秒（10 分）で、10〜3,600 秒にできます。/, {
+      timeout: 10_000,
+    });
+    const limit = panel.getByRole("spinbutton", { name: /時間の上限（秒/ }).last();
+    await expect(limit).toHaveAccessibleDescription(
+      "空欄なら 600 秒（10 分）で、最大 3,600 秒です。「AI の作業時間の上限」より短くはできません。過ぎると、このブロックは失敗します。",
+    );
+
+    // 作業時間（省略は 600 秒）より短い時間の上限は、保存時の誤りとして欄の下に出る。
+    await limit.fill("300");
+    const tooShort = "「時間の上限」は「AI の作業時間の上限」（600 秒）より短くできません。600 秒以上にするか、空欄にしてください。";
+    await expect(limit).toHaveAccessibleDescription(tooShort, { timeout: 10_000 });
+    await panel.getByText(tooShort).scrollIntoViewIfNeeded();
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/step-timeout-agent-pc.png` });
+    // 作業時間を短くすると通る。
+    await duration.fill("120");
+    await expect(panel.getByText(tooShort)).toHaveCount(0, { timeout: 10_000 });
+  } finally {
+    await cleanupAll(async () => {
+      if (!id) return;
+      const del = await page.request.delete(`/api/artifacts/${id}`, { headers: { "x-csrf-token": await csrf(page) } });
+      expect(del.status(), await del.text()).toBeLessThan(300);
+    });
+  }
+});
