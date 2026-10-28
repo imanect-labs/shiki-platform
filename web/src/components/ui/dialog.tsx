@@ -5,6 +5,7 @@ import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { X } from "lucide-react";
 
 import { guardLocalEscape } from "@/components/ui/local-escape";
+import { useKeyboardInset } from "@/hooks/use-keyboard-inset";
 import { useMergedRef, useSwipeToDismiss } from "@/hooks/use-swipe-to-dismiss";
 import { cn } from "@/lib/utils";
 
@@ -70,7 +71,8 @@ function DialogContent({
     enabled: () => window.matchMedia(SHEET_QUERY).matches,
     close: () => closeRef.current?.click(),
   });
-  const contentRef = useMergedRef(ref, swipeRef);
+  const keyboardRef = useKeyboardInset<HTMLDivElement>(() => window.matchMedia(SHEET_QUERY).matches);
+  const contentRef = useMergedRef(ref, useMergedRef(swipeRef, keyboardRef));
   return (
     <DialogPortal>
       <DialogOverlay />
@@ -87,9 +89,10 @@ function DialogContent({
           "sm:left-1/2 sm:top-1/2 sm:-translate-x-1/2 sm:-translate-y-1/2 sm:max-h-[calc(100dvh-2rem)] sm:rounded-xl",
           "data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=closed]:animate-out data-[state=closed]:fade-out-0",
           "sm:data-[state=open]:zoom-in-95 sm:data-[state=closed]:zoom-out-95",
-          // スマホ: 親指の届く下からのシート。キーボードが出ても dvh で縮み、ホームバーを避ける。
+          // スマホ: 親指の届く下からのシート。ホームバーを避ける。キーボードが出たらその上へ持ち上げ、
+          // 見えている高さに収める（iOS は dvh がキーボードで縮まない・useKeyboardInset）。
           // 呼び出し側の接頭辞なし max-w-* は max-sm バリアント（後段に出力される）で打ち消し、常に全幅にする。
-          "max-sm:inset-x-0 max-sm:bottom-0 max-sm:w-full max-sm:max-w-none max-sm:max-h-[92dvh] max-sm:rounded-t-2xl max-sm:border-x-0 max-sm:border-b-0 max-sm:px-5 max-sm:pt-3 max-sm:pb-[max(1.25rem,env(safe-area-inset-bottom))]",
+          "max-sm:inset-x-0 max-sm:bottom-[var(--keyboard-inset,0px)] max-sm:w-full max-sm:max-w-none max-sm:max-h-[calc(var(--visible-height,100dvh)*0.92)] max-sm:rounded-t-2xl max-sm:border-x-0 max-sm:border-b-0 max-sm:px-5 max-sm:pt-3 max-sm:pb-[max(1.25rem,env(safe-area-inset-bottom))]",
           "max-sm:data-[state=open]:slide-in-from-bottom max-sm:data-[state=closed]:slide-out-to-bottom",
           className,
         )}

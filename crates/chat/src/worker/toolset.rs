@@ -89,6 +89,13 @@ impl ChatWorker {
                 store.clone(),
             )));
         }
+        // 本人に見えるワークフローを探す（search_workflows・読み取りのみ）。図のボタンに実在する
+        // 名前を書かせる。認可は注入した実装が一覧 API と同じ所有∪共有の経路で行う。
+        if let Some(directory) = &self.workflow_directory {
+            tools.push(Arc::new(
+                crate::workflow_search_tool::SearchWorkflowsTool::new(directory.clone()),
+            ));
+        }
     }
 
     /// ドキュメント共同編集ツールの配線（ノート=Task 11P.4／スライド=Task 11.3）。

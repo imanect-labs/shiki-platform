@@ -56,4 +56,4 @@ pub use run::{
 };
 pub use scheduler::{LeaderLease, RunLauncher, SchedulerStore};
 pub use store::{WorkflowStore, WorkflowStoreError};
-pub use summary::{WorkflowSummary, WorkflowSummaryStore};
+pub use summary::{WorkflowSearchHit, WorkflowSummary, WorkflowSummaryStore};

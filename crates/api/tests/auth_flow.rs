@@ -333,6 +333,7 @@ fn config_with(idp_base: &str, cors: Vec<String>) -> AppConfig {
             s3: None,
             max_upload_size_bytes: 5 * 1024 * 1024 * 1024,
             upload_gc: api::config::UploadGcConfig::default(),
+            audit_retention: api::config::AuditRetentionConfig::default(),
         },
         vector: VectorConfig {
             backend: VectorStoreBackend::Qdrant,
@@ -1248,6 +1249,58 @@ async fn admin_tenant_lifecycle_end_to_end() {
             .await
             .unwrap();
     assert_eq!(days, 30, "拒否された値で上書きされない");
+
+    // --- 監査ログの保持期間（#831）: 既定 365・90〜3650 で設定でき、変更は監査に残る。 ---
+    let audit_days = |pool: sqlx::PgPool, t: String| async move {
+        sqlx::query_scalar::<_, i32>("SELECT audit_retention_days FROM tenant WHERE tenant_id = $1")
+            .bind(t)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+    };
+    assert_eq!(audit_days(pool.clone(), tenant_id.clone()).await, 365);
+    let put_audit = |body: String| {
+        Request::builder()
+            .method(Method::PUT)
+            .uri(format!("/admin/tenants/{tenant_id}/audit-retention"))
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap()
+    };
+    let resp = app
+        .clone()
+        .oneshot(put_audit(r#"{"retention_days": 730}"#.into()))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    assert_eq!(audit_days(pool.clone(), tenant_id.clone()).await, 730);
+    for bad in ["89", "3651", "0", "4000000000"] {
+        let resp = app
+            .clone()
+            .oneshot(put_audit(format!(r#"{{"retention_days": {bad}}}"#)))
+            .await
+            .unwrap();
+        assert_eq!(
+            resp.status(),
+            StatusCode::BAD_REQUEST,
+            "audit retention_days={bad}"
+        );
+    }
+    assert_eq!(audit_days(pool.clone(), tenant_id.clone()).await, 730);
+    let (actor, previous): (String, serde_json::Value) = sqlx::query_as(
+        "SELECT actor, metadata -> 'previous' FROM audit_log \
+         WHERE tenant_id = $1 AND action = 'tenant.audit_retention.set'",
+    )
+    .bind(&tenant_id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert!(
+        actor.starts_with("provisioner:"),
+        "運用者のクライアントが記録者"
+    );
+    assert_eq!(previous, serde_json::json!(365));
 
     // --- 削除: 204・tombstone 化。 ---
     let resp = app

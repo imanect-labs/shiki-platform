@@ -40,11 +40,12 @@
     （action は期間索引の上で前方一致）、引用chunkは `(file_id, chunk_id, thread_id, message_id)` で逆引き可能に
     （chunk_id は `metadata.cited_chunk_ids` の GIN 索引・#634。チャットの回答のための検索・本文の読み出しは
     `metadata.thread_id` / `message_id`（回答＝assistant のメッセージ）を持ち、部分索引で引く・#829）。
-    **append-only・改竄検知（ハッシュチェーン）**を最初から（実データを変える操作の行だけを連結済み。検証は #828）。
+    **append-only・改竄検知（ハッシュチェーン）**を最初から（実データを変える操作の行だけを連結し、
+    `GET /org-audit/verify` で先頭から検証できる・版 2 から作成時刻も含める・#828。検知できる範囲は PIT-12）。
 - **受け入れ条件**:
   - [x] 操作・権限判定・引用chunkが単一スキーマで横断検索できる（#634）
   - [ ] 各レコードから trace_id で Langfuse/OTel に辿れる
-  - [ ] append-only で後からの改竄が検知できる
+  - [ ] append-only で後からの改竄が検知できる（#828 で連結行の部分的な改ざんは検知できる。チェーンを丸ごと計算し直す改ざんへの外部アンカーは未決・PIT-12）
 
 ### Task 8.2: 監査ダッシュボード
 - **area**: frontend / **path**: `web/`, `crates/api`

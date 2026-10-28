@@ -326,6 +326,12 @@ pub(super) fn tools_in_use(blocks: &[ContentBlock], out: &mut Vec<String>) {
             ContentBlock::NoteDraft { .. } => push(T::SaveNote.as_str()),
             ContentBlock::SlideDraft { .. } => push(T::SaveSlide.as_str()),
             ContentBlock::CsvDraft { .. } => push(T::SaveCsv.as_str()),
+            // 添付の読み取りツール（system の添付の節が案内する・#962）を検索の 1 手なしで使わせる。
+            ContentBlock::FileRef { name, .. } => {
+                if let Some(t) = crate::file_reader::direct_reader(name) {
+                    push(t.as_str());
+                }
+            }
             ContentBlock::SkillDraft { .. } => push(T::SaveSkill.as_str()),
             ContentBlock::SelectionContext { context } => {
                 for t in selection_tools(context.kind) {
@@ -881,6 +887,24 @@ mod tests {
             out,
             ["csv.query", "save_slide", "document.read", "document.edit"]
         );
+    }
+
+    /// 索引の無い大きな CSV でも読めるよう、添付の読み取りツールを常時ロードする。
+    #[test]
+    fn file_ref_loads_the_direct_reader() {
+        let blocks = vec![
+            ContentBlock::FileRef {
+                node_id: "c1".into(),
+                name: "customers-100000.csv".into(),
+            },
+            ContentBlock::FileRef {
+                node_id: "p1".into(),
+                name: "報告.pdf".into(),
+            },
+        ];
+        let mut out = Vec::new();
+        tools_in_use(&blocks, &mut out);
+        assert_eq!(out, ["csv.query"]);
     }
 
     #[test]

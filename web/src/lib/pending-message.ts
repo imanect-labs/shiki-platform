@@ -2,6 +2,7 @@
 /// sessionStorage に置き、会話画面マウント時に 1 度だけ取り出して送信する。
 
 import type { Attachment } from "@/lib/chat-api";
+import type { SelectionContext } from "@/lib/selection-context";
 import { storageScopeGeneration } from "@/lib/user-storage";
 
 const KEY = "shiki:pending-message:";
@@ -13,6 +14,8 @@ export type PendingMessage = {
   autonomous?: boolean;
   /// **この発話にだけ**適用する skill（スラッシュコマンド起動・#387）。ピンではない。
   skills?: { artifactId: string; version?: number | null }[];
+  /// エディタの選択コンテキスト（CSV の「AI に依頼」はホームのチャットへ引き継ぐ・Task 11.10）。
+  context?: SelectionContext;
 };
 
 /// `startedAt` は送信を始めたときの [`storageScopeGeneration`]。スレッド作成を待つ間に

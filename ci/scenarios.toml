@@ -101,6 +101,7 @@ e2e = [
     "csv-editor.spec.ts",
     "drive-crud.spec.ts",
     "drive-html-preview.spec.ts",
+    "drive-mobile-new.spec.ts",
     "drive-mobile-tabs.spec.ts",
     "drive-share.spec.ts",
     "drive-versions.spec.ts",
@@ -186,6 +187,7 @@ e2e = [
     "composer-create.spec.ts",
     "csv-conversation-drafts.spec.ts",
     "csv-editor.spec.ts",
+    "selection-ai.spec.ts",
     "visual-editors.spec.ts",
 ]
 

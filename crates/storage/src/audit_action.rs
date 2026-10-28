@@ -161,6 +161,7 @@ audit_actions! {
     AppInstall = "app.install", "アプリをインストール", App;
     AppInstallSignature = "app.install.signature", "アプリの署名を検証", App;
     AppUninstall = "app.uninstall", "アプリをアンインストール", App;
+    AuditRetentionPurge = "audit.retention.purge", "保持期間を過ぎた監査ログを削除", Audit;
     ArtifactCreate = "artifact.create", "アーティファクトを作成", App;
     ArtifactDelete = "artifact.delete", "アーティファクトを削除", App;
     ArtifactGet = "artifact.get", "アーティファクトを参照", App;
@@ -262,6 +263,7 @@ audit_actions! {
     OrgAuditAccess = "org_audit.access", "監査ログへのアクセス", Audit;
     OrgAuditExport = "org_audit.export", "監査ログを書き出し", Audit;
     OrgAuditSearch = "org_audit.search", "監査ログを検索", Audit;
+    OrgAuditVerify = "org_audit.verify", "監査ログのチェーンを検証", Audit;
     OrgAuditViewerGrant = "org_audit.viewer.grant", "監査閲覧者を付与", Audit;
     OrgAuditViewerRevoke = "org_audit.viewer.revoke", "監査閲覧者を剥奪", Audit;
     RagDocRead = "rag.doc_read", "文書を読む（AI）", Search;
@@ -286,6 +288,7 @@ audit_actions! {
     StorageUploadGcExpire = "storage.upload_gc.expire", "未完了のアップロードを破棄", System;
     StorageUploadGcOrphanDelete = "storage.upload_gc.orphan_delete", "孤立したアップロードを削除", System;
     TenantProvision = "tenant.provision", "テナントを作成", Admin;
+    TenantAuditRetentionSet = "tenant.audit_retention.set", "監査ログの保持期間を変更", Admin;
     TenantPurge = "tenant.purge", "テナントを撤去", Admin;
     TenantRetenant = "tenant.retenant", "テナント ID を変更", Admin;
     ThreadCreate = "thread.create", "スレッドを作成", Chat;

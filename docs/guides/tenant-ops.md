@@ -76,6 +76,28 @@ curl -s -X PUT "$SHIKI/admin/tenants/acme/workflow-retention" \
 - **短くする方向は次回の日次 GC で効く。** 監査要件で履歴が要るなら縮める前に退避する。
 - GC の状態確認・詰まったときの調べ方は [db-maintenance.md](./db-maintenance.md) §3。
 
+## 監査ログの保持期間
+
+```bash
+curl -s -X PUT "$SHIKI/admin/tenants/acme/audit-retention" \
+  -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"retention_days": 730}'
+# → 204
+
+# 同じことを CLI で（--actor は自己申告として metadata に残る）
+shiki-admin audit-retention --tenant acme --days 730
+```
+
+- 既定 365 日・範囲 90〜3650 日（範囲外は 400）。active でないテナントは 404（#831）。
+- 期限を過ぎた行は日次で消す（不可逆・外部への退避はしない）。間隔は `storage.audit_retention.interval_secs`
+  （既定 1 日）、`storage.audit_retention.enabled=false` で止められる。
+- 実データを変える操作の行（ハッシュチェーン）は先頭から消し、消した最後の行を `audit_chain_anchor` に
+  境目として残す。チェーンの検証（`GET /org-audit/verify`）はこの境目から始まる。消したことは
+  `audit.retention.purge` として、設定の変更は `tenant.audit_retention.set` として監査に残る。
+- **テナント撤去の記録（`tenant.purge`）は消さない。** 撤去後は tombstone に残った保持期間で、ほかの行を
+  消し続ける。テナント台帳に無いテナント（オンプレなど）は既定の 365 日で消す。
+- **短くする方向は次回の日次処理で効く。** 監査や法令で長く要るなら縮める前に書き出しておく。
+
 ## テナント削除（破壊的・不可逆）
 
 ```bash
@@ -178,7 +200,9 @@ shiki-admin retenant --from default --to acme --execute
 - 他テナントの識別子には触れない（移行元名前空間に属さないタプルは skipped として報告）。
 - **監査チェーンの注意**: audit_log の `entry_hash` は tenant_id を含んで計算されるため、
   リネーム**以前**の chained エントリは**旧 tenant_id で検証**する必要がある。CLI は
-  `tenant.retenant` エントリ（from/to 込み）を新テナントの chain へアンカーとして記録する。
+  `tenant.retenant` エントリ（from/to 込み）を、新テナントで連結行を持つ**各 org** の chain へアンカーとして記録する。
+  チェーンの検証（`GET /org-audit/verify`・#828）はこの記録の `from` を読み、境目より前の行を
+  旧 tenant_id で自動的に検証する。
 - **IdP の tenant 属性と group**: リネーム後、Keycloak ユーザーの `attributes.tenant` と group
   `/tenants/<from>` → `/tenants/<to>` を CLI が自動追従する（provisioner 設定時）。未設定の場合は**手動で更新するまで新ログインが
   旧テナント名前空間に落ちる**（org/部署も解決されない）ため、必ず更新すること。`/tenants/<to>` が既にあると
