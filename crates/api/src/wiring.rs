@@ -447,7 +447,8 @@ pub(crate) async fn wire_chat(
         api::workflow_catalog::WorkflowModels::new(Some(gateway.clone()), Vec::new()),
     )
     .with_web_ceiling(config.workflow.agent_web_ceiling())
-    .with_data(Arc::clone(data));
+    .with_data(Arc::clone(data))
+    .with_artifacts(Arc::clone(skill_artifacts));
     let worker = chat::ChatWorker::new(
         db.clone(),
         store.clone(),

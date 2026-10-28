@@ -67,11 +67,17 @@ impl WorkflowRunLauncher {
         input: &Value,
         parent_run_id: Option<Uuid>,
     ) -> Result<Option<Uuid>, LauncherError> {
+        // 相手が無い・見えないときは、やり直さない失敗に分けられるよう NotVisible で返す（BUG-107）。
         let (version, ir) = self
             .workflows
             .get_latest(ctx, workflow_id, None)
             .await
-            .map_err(|e| LauncherError::Ir(format!("{e:?}")))?;
+            .map_err(|e| match e {
+                crate::store::WorkflowStoreError::Artifact(
+                    artifact::ArtifactError::NotFound | artifact::ArtifactError::Forbidden,
+                ) => LauncherError::NotVisible,
+                other => LauncherError::Ir(format!("{other:?}")),
+            })?;
         self.create_interactive_run(ctx, workflow_id, version, &ir, input, parent_run_id)
             .await
     }
@@ -316,6 +322,10 @@ pub enum LauncherError {
     /// （呼び出し側は 400 に写し、欄に写せるよう node_id・path を保つ）。
     #[error("実行できない設定があります: {}", LauncherError::messages(.0))]
     NotReady(Vec<crate::ValidationError>),
+    /// 子のワークフローが無いか、実行主体から見えない（[`WorkflowRunLauncher::start_child`] だけが返す・
+    /// 無いと見えないを言い分けない・BUG-107）。何度やっても通らないので、呼び出し側はやり直さない。
+    #[error("ワークフローが見つからないか、見る権限がありません")]
+    NotVisible,
 }
 
 impl LauncherError {

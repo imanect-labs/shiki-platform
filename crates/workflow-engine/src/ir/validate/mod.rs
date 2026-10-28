@@ -125,6 +125,11 @@ pub struct Catalog {
     /// BUG-6・D-29）。ノードの `egress_allowlist` はこの部分集合に限る。`None` は照合しない（設定を引けない
     /// 構成・AI 編集の説明文の検査など）。`Some(空)` は外部サイトを許可しない。
     pub web_ceiling: Option<Vec<String>>,
+    /// 別のワークフローを実行（workflow.start）が名前で指す相手のうち、保存者に見えるもの（V4・BUG-107）。
+    ///
+    /// API 層が IR の workflow.start の名前（リテラル）だけを保存者の権限で引いて詰める（見えない・無い名前は
+    /// 入れない＝どちらも同じ誤り）。`None` は照合しない（引けない構成・AI 編集の説明文の検査など）。
+    pub workflows: Option<std::collections::BTreeSet<String>>,
 }
 
 /// 保存を止めない警告をすべて返す（保存 API・検証 API・チャットの emit_workflow が利用者へ示す）。

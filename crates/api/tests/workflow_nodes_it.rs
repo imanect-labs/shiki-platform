@@ -2044,3 +2044,156 @@ async fn storage_read_returns_the_version_it_read() {
     assert_eq!(out["file_id"], node.id.to_string());
     assert_eq!(out["id"], node.id.to_string());
 }
+
+/// 別のワークフローを実行の相手が無いときと、見えないときを同じに扱う（BUG-107）。
+///
+/// - 保存時の材料（`workflow_start_targets`）は、無い名前も見えない相手も入れない（V4 が同じ誤りで止める）。
+/// - 実行時のポートは、どちらも同じ code・同じ文言の、やり直さない失敗にする（権限の誤りを一時障害として
+///   繰り返さない）。
+#[tokio::test]
+async fn workflow_start_treats_missing_and_unreadable_targets_alike() {
+    let Some(h) = setup().await else { return };
+    let executor = h.executor(None, vec![], None);
+    let suffix = Uuid::new_v4().simple().to_string();
+    let child_name = format!("child-{}", &suffix[..12]);
+    let missing_name = format!("missing-{}", &suffix[..12]);
+    // alice のワークフロー（bob には共有していない）。
+    let (child_ir, _) = workflow_engine::complete_declared_scopes(&json!({
+        "ir_version": 1, "name": child_name,
+        "triggers": [{ "kind": "interactive" }],
+        "nodes": [{ "id": "a", "type": "storage.list", "params": {} }],
+        "edges": []
+    }));
+    let child = h.save(&child_ir).await;
+    let bob = AuthContext::new(
+        Principal {
+            kind: PrincipalKind::User,
+            id: "bob".into(),
+            email: None,
+            groups: vec![],
+            roles: vec![],
+            tenant_id: Some(h.tenant.clone()),
+        },
+        h.org.clone(),
+        h.tenant.clone(),
+    );
+    let parent = |name: &str| {
+        json!({
+            "ir_version": 1, "name": format!("p-{}", &name[..name.len().min(40)]),
+            "declared_scopes": ["workflow.start"],
+            "triggers": [{ "kind": "interactive" }],
+            "nodes": [{ "id": "start", "type": "workflow.start", "params": { "name": name } }],
+            "edges": []
+        })
+    };
+
+    // 保存時の材料: alice には見え、bob には無い名前と同じく見えない。
+    let both = json!({ "nodes": [
+        { "id": "s1", "type": "workflow.start", "params": { "name": child_name } },
+        { "id": "s2", "type": "workflow.start", "params": { "name": missing_name } },
+        { "id": "s3", "type": "workflow.start", "params": { "name": "" } }
+    ] });
+    let for_alice = api::workflow_catalog::workflow_start_targets(&h.artifacts, &h.alice, &both)
+        .await
+        .unwrap();
+    let for_bob = api::workflow_catalog::workflow_start_targets(&h.artifacts, &bob, &both)
+        .await
+        .unwrap();
+    assert_eq!(for_alice, Some([child_name.clone()].into_iter().collect()));
+    assert_eq!(for_bob, Some(std::collections::BTreeSet::new()));
+    // workflow.start が無い IR は照合しない。
+    assert_eq!(
+        api::workflow_catalog::workflow_start_targets(&h.artifacts, &bob, &json!({ "nodes": [] }))
+            .await
+            .unwrap(),
+        None
+    );
+    // V4: 見えない相手は、無い名前と同じ誤り（欄の下に出す path つき）。
+    let catalog = Catalog {
+        workflows: for_bob,
+        ..Catalog::default()
+    };
+    let (ir, _) = workflow_engine::complete_declared_scopes(&parent(&child_name));
+    let errors = workflow_engine::validate(&ir, &catalog).unwrap_err();
+    let (ir2, _) = workflow_engine::complete_declared_scopes(&parent(&missing_name));
+    let errors2 = workflow_engine::validate(&ir2, &catalog).unwrap_err();
+    let shape = |e: &[workflow_engine::ValidationError]| {
+        e.iter()
+            .map(|e| (e.code.clone(), e.path.clone(), e.message.clone()))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(shape(&errors), shape(&errors2));
+    assert_eq!(errors[0].code, "ir.unknown_workflow");
+    assert_eq!(errors[0].path.as_deref(), Some("/params/name"));
+
+    // 実行時: bob の実行は、見えない相手も無い名前も、同じやり直さない失敗になる。
+    let mut outcomes = Vec::new();
+    let mut parents = Vec::new();
+    for name in [&child_name, &missing_name] {
+        let (wf, _) = h
+            .workflows
+            .create(&bob, &parent(name), &Catalog::default(), None)
+            .await
+            .expect("bob の親を保存");
+        parents.push(wf);
+        let run_id = h
+            .launcher
+            .start_interactive(&bob, wf, &json!({}))
+            .await
+            .unwrap()
+            .unwrap();
+        let worker = workflow_engine::WorkflowWorker::new(
+            h.runs.clone(),
+            Arc::clone(&executor),
+            WorkerConfig::default(),
+        )
+        .scoped_to_tenant(&h.tenant);
+        while worker.claim_and_run_once("w1").await.unwrap() {}
+        let row: (Option<String>, Option<String>, Option<bool>, i32) = sqlx::query_as(
+            "SELECT error->>'code', error->>'message', (error->>'retryable')::bool, attempt \
+             FROM step_execution WHERE tenant_id = $1 AND run_id = $2 AND node_id = 'start'",
+        )
+        .bind(&h.tenant)
+        .bind(run_id)
+        .fetch_one(&h.pool)
+        .await
+        .unwrap();
+        outcomes.push(row);
+    }
+    let child_runs: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM workflow_run WHERE tenant_id = $1 AND workflow_id = $2",
+    )
+    .bind(&h.tenant)
+    .bind(child)
+    .fetch_one(&h.pool)
+    .await
+    .unwrap();
+
+    // 片付け（run の履歴・ワークフロー）。
+    h.runs.purge_tenant_history(&h.tenant).await.unwrap();
+    h.artifacts.delete(&h.alice, child, None).await.unwrap();
+    for wf in parents {
+        h.artifacts.delete(&bob, wf, None).await.unwrap();
+    }
+
+    assert_eq!(child_runs, 0, "見えない相手を実行した");
+    assert_eq!(outcomes[0].0.as_deref(), Some("not_found"));
+    assert_eq!(
+        outcomes[0].2,
+        Some(false),
+        "権限の誤りをやり直せる失敗にした"
+    );
+    assert_eq!(outcomes[0].3, 1);
+    assert_eq!(
+        (&outcomes[0].0, &outcomes[0].1, outcomes[0].2),
+        (&outcomes[1].0, &outcomes[1].1, outcomes[1].2),
+        "見えない相手と無い名前で誤りが違う"
+    );
+    assert!(
+        outcomes[0].1.as_deref().unwrap().starts_with(
+            "実行するワークフローが見つかりません。削除されたか、見る権限がありません。"
+        ),
+        "{:?}",
+        outcomes[0].1
+    );
+}

@@ -279,6 +279,15 @@ pub struct ResolvedSkillView {
 /// storage.read で、文章として読めないファイルを読もうとしたときの code（BUG-101・permanent・失敗の分類は設定の誤り）。
 pub const NOT_TEXT_FILE: &str = "not_text_file";
 
+/// 存在を明かさない「見つからない」の文（付録 C の §3.6・付録 D の N1.11）。`target` は「実行するワークフロー」など。
+///
+/// 無いときと見る権限が無いときを言い分けない（名前の存在が分かってしまうため）。補いたい事実は呼び出し側が
+/// この後ろに 1 文足す。
+#[must_use]
+pub fn hidden_not_found(target: &str) -> String {
+    format!("{target}が見つかりません。削除されたか、見る権限がありません。")
+}
+
 /// storage.write・csv.write の保存先に同じ名前のファイルがあるときの code（BUG-97・permanent）。
 ///
 /// ポート実装は名前の衝突をこの code で返す（ほかの競合と分ける）。エンジンはこれを見て、params の

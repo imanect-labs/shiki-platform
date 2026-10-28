@@ -267,6 +267,50 @@ pub async fn approval_tables(
     Ok(Some(out))
 }
 
+/// 別のワークフローを実行（workflow.start）が名前で指す相手のうち、保存者に見えるものを引いて V4 の材料にする
+/// （BUG-107）。
+///
+/// IR に workflow.start が無ければ `None`（照合しない）。引くのは IR の名前（リテラル）だけで、ワークフローの
+/// 一覧を全部は引かない。無い名前と見えない相手はどちらも入れない（V4 が同じ文言で止める・存在を明かさない）。
+pub async fn workflow_start_targets(
+    artifacts: &artifact::ArtifactStore,
+    ctx: &authz::AuthContext,
+    ir: &serde_json::Value,
+) -> Result<Option<std::collections::BTreeSet<String>>, String> {
+    let starts: Vec<&serde_json::Value> = ir
+        .get("nodes")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|n| {
+            n.get("type").and_then(serde_json::Value::as_str)
+                == Some(workflow_engine::vocab::NodeType::WorkflowStart.as_str())
+        })
+        .collect();
+    if starts.is_empty() {
+        return Ok(None);
+    }
+    let names: std::collections::BTreeSet<&str> = starts
+        .iter()
+        .filter_map(|n| n.pointer("/params/name")?.as_str())
+        .filter(|name| !name.trim().is_empty())
+        .collect();
+    let mut visible = std::collections::BTreeSet::new();
+    for name in names {
+        match artifacts
+            .get_by_name(ctx, artifact::ArtifactKind::Workflow, name, None)
+            .await
+        {
+            Ok(_) => {
+                visible.insert(name.to_string());
+            }
+            Err(artifact::ArtifactError::NotFound | artifact::ArtifactError::Forbidden) => {}
+            Err(e) => return Err(format!("実行するワークフロー: {e}")),
+        }
+    }
+    Ok(Some(visible))
+}
+
 /// chat ワーカー（emit_workflow）へ注入するカタログ源。保存 API と同じ材料を持つ。
 pub struct ApiWorkflowCatalogSource {
     secrets: Option<Arc<secrets::SecretStore>>,
@@ -276,6 +320,8 @@ pub struct ApiWorkflowCatalogSource {
     web_ceiling: Option<Vec<String>>,
     /// 承認（human.approval）が束縛するテーブルを引く（保存 API の `build_catalog_for` と同じ・GAP-08）。
     data: Option<Arc<data::DataStore>>,
+    /// workflow.start の相手を引く（保存 API の `build_catalog_for` と同じ・BUG-107）。
+    artifacts: Option<Arc<artifact::ArtifactStore>>,
 }
 
 impl ApiWorkflowCatalogSource {
@@ -291,7 +337,15 @@ impl ApiWorkflowCatalogSource {
             models,
             web_ceiling: None,
             data: None,
+            artifacts: None,
         }
+    }
+
+    /// workflow.start の相手を照合する（保存 API と同じ ArtifactStore を渡す・V4・BUG-107）。
+    #[must_use]
+    pub fn with_artifacts(mut self, artifacts: Arc<artifact::ArtifactStore>) -> Self {
+        self.artifacts = Some(artifacts);
+        self
     }
 
     /// 承認のテーブルを照合する（保存 API と同じ DataStore を渡す・V4・GAP-08）。
@@ -337,7 +391,8 @@ impl chat::WorkflowCatalogSource for ApiWorkflowCatalogSource {
         self.models.decision_models(ctx).await
     }
 
-    /// 保存 API（`build_catalog_for`）と同じく、IR の承認が束縛するテーブルを保存者の権限で引いて足す。
+    /// 保存 API（`build_catalog_for`）と同じく、IR の承認が束縛するテーブルと workflow.start の相手を保存者の
+    /// 権限で引いて足す。
     async fn catalog_for(
         &self,
         ctx: &authz::AuthContext,
@@ -346,6 +401,9 @@ impl chat::WorkflowCatalogSource for ApiWorkflowCatalogSource {
         let mut catalog = chat::WorkflowCatalogSource::catalog(self, ctx).await?;
         if let Some(data) = &self.data {
             catalog.tables = approval_tables(data, ctx, ir).await?;
+        }
+        if let Some(artifacts) = &self.artifacts {
+            catalog.workflows = workflow_start_targets(artifacts, ctx, ir).await?;
         }
         Ok(catalog)
     }

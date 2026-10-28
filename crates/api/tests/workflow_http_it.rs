@@ -965,3 +965,89 @@ async fn validate_returns_node_ports_from_the_shared_fixture() {
     assert_eq!(st, StatusCode::OK, "{body}");
     assert_eq!(body["node_ports"], json!({}));
 }
+
+/// BUG-107: 別のワークフローを実行の相手が無い名前なら、保存と検証で欄の下の誤り（`ir.unknown_workflow`・
+/// `/params/name`）にする。在る名前は通り、空の名前は保存だけ通して実行の前に止める（D-83）。
+#[tokio::test]
+async fn workflow_start_target_is_checked_when_saving() {
+    let Some(env) = setup().await else { return };
+    let suffix = Uuid::new_v4().simple().to_string();
+    let child = format!("http-child-{}", &suffix[..12]);
+    let (st, body) = req(
+        &env,
+        "POST",
+        "/workflows",
+        Some(json!({ "ir": simple_ir(&child, "b") })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "{body}");
+    let child_id = body["id"].as_str().unwrap().to_string();
+    let parent = |target: &str| {
+        json!({
+            "ir_version": 1,
+            "name": format!("http-parent-{}", &suffix[..12]),
+            "triggers": [{ "kind": "interactive" }],
+            "nodes": [{ "id": "start", "type": "workflow.start", "params": { "name": target } }],
+            "edges": []
+        })
+    };
+    let missing = format!("http-missing-{}", &suffix[..12]);
+
+    let (st, body) = req(
+        &env,
+        "POST",
+        "/workflows/validate",
+        Some(json!({ "ir": parent(&missing) })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let errors = body["errors"].as_array().unwrap();
+    assert!(
+        errors.iter().any(|e| e["code"] == "ir.unknown_workflow"
+            && e["node_id"] == "start"
+            && e["path"] == "/params/name"
+            && e["message"]
+                == "実行するワークフローが見つかりません。削除されたか、見る権限がありません。"),
+        "{body}"
+    );
+    let (st, body) = req(
+        &env,
+        "POST",
+        "/workflows",
+        Some(json!({ "ir": parent(&missing) })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{body}");
+
+    let (st, body) = req(
+        &env,
+        "POST",
+        "/workflows/validate",
+        Some(json!({ "ir": parent(&child) })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(body["errors"], json!([]), "{body}");
+
+    let (st, body) = req(
+        &env,
+        "POST",
+        "/workflows/validate",
+        Some(json!({ "ir": parent("") })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(body["errors"], json!([]), "{body}");
+    assert!(
+        body["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|w| w["code"] == "ir.required_text_empty" && w["path"] == "/params/name"),
+        "{body}"
+    );
+
+    // 片付け（ワークフローは artifact として消す）。
+    let (st, _) = req(&env, "DELETE", &format!("/artifacts/{child_id}"), None).await;
+    assert!(st.is_success(), "{st}");
+}

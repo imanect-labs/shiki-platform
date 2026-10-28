@@ -382,10 +382,9 @@ impl NodePorts for ProdNodePorts {
         .fetch_optional(&self.db)
         .await
         .map_err(|e| PortError::unavailable(format!("workflow 名前解決: {e}")))?;
+        // 無い名前と見えない相手は同じ誤りにする（存在を明かさない・何度やっても通らないのでやり直さない・BUG-107）。
         let Some(workflow_id) = id else {
-            return Err(PortError::invalid(format!(
-                "workflow が存在しません: {name}"
-            )));
+            return Err(workflow_not_visible());
         };
         // 実行主体の権限で子 run を起動（fire-and-forget）。子は親の run の因果の鎖を引き継ぐ（子の書込が
         // 親のデータ変更トリガを起こす循環を抑止する・D-26）。
@@ -405,6 +404,8 @@ impl NodePorts for ProdNodePorts {
                         workflow_engine::run::LauncherError::messages(&errors)
                     ))
                 }
+                // 見えない相手（権限の誤り）は、やり直せる失敗として繰り返さない（BUG-107）。
+                workflow_engine::run::LauncherError::NotVisible => workflow_not_visible(),
                 other => PortError::unavailable(format!("workflow.start: {other}")),
             })?;
         Ok(json!({ "run_id": run_id.map(|r| r.to_string()) }))
@@ -522,6 +523,18 @@ impl NodePorts for ProdNodePorts {
             .approval_target(ec, table_id, record_id)
             .await
     }
+}
+
+/// workflow.start の相手が無いか見えないときの誤り（permanent・無いと見えないを言い分けない・BUG-107）。
+fn workflow_not_visible() -> PortError {
+    PortError::new(
+        "not_found",
+        format!(
+            "{}自動実行では、オンにするときに使えるようにしたワークフローだけを実行できます。",
+            workflow_engine::nodes::ports::hidden_not_found("実行するワークフロー")
+        ),
+        false,
+    )
 }
 
 /// 社内文書の検索の結果 1 件（ワークフローの rag.search の出力・カタログの output_fields と同じ形）。

@@ -34,9 +34,32 @@ pub(crate) fn parse_skill_ref(s: &str) -> Option<(&str, &str)> {
     Some((name, version))
 }
 
-/// V4: 参照存在（secret の宛先束縛事前チェック＋skill のインストール済み照合・#344）。
+/// workflow.start の相手が見つからない（無い・見えない・BUG-107）。
+pub(super) const UNKNOWN_WORKFLOW: &str = "ir.unknown_workflow";
+
+/// V4: 参照存在（secret の宛先束縛事前チェック＋skill のインストール済み照合・#344・workflow.start の相手）。
 pub(super) fn v4_refs(ir: &WorkflowIr, catalog: &Catalog, errors: &mut Vec<ValidationError>) {
     for node in &ir.nodes {
+        // workflow.start: 名前（リテラル）で指す相手が保存者に見えるか（無いと見えないは同じ誤り・BUG-107）。
+        // 空の名前は必須の欄の空として readiness が扱う（置いたばかりでも保存できる・D-83）。値式は実行時に決まる。
+        if node.node_type == NodeType::WorkflowStart.as_str() {
+            if let (Some(known), Some(name)) = (
+                catalog.workflows.as_ref(),
+                node.params.get("name").and_then(|v| v.as_str()),
+            ) {
+                if !name.trim().is_empty() && !known.contains(name) {
+                    errors.push(
+                        ValidationError::new(
+                            UNKNOWN_WORKFLOW,
+                            crate::nodes::ports::hidden_not_found("実行するワークフロー"),
+                        )
+                        .at_node(&node.id)
+                        .at_path("/params/name"),
+                    );
+                }
+            }
+            continue;
+        }
         // skill.invoke: `skill:<name>@<version>` を保存ユーザーのインストール集合へ照合する
         // （10.1b。未インストール/存在しない skill を参照する IR は保存時に拒否）。
         if node.node_type == NodeType::SkillInvoke.as_str() {

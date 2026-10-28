@@ -1,7 +1,7 @@
 //! 保存は止めず、有効化と実行の前に止める条件（D-40・D-43）。
 //!
 //! - **必須の文字の欄が空**（`llm.invoke` の prompt・`agent.invoke` の instruction・`rag.search` の query・
-//!   `csv.query` の sql）: 書きかけでも保存はできるように、保存時は path つきの警告（[`REQUIRED_TEXT_EMPTY`]）に
+//!   `csv.query` の sql・`workflow.start` の name）: 書きかけでも保存はできるように、保存時は path つきの警告（[`REQUIRED_TEXT_EMPTY`]）に
 //!   とどめる。空のまま動かすと、空の依頼で AI や検索を呼んでしまうので、有効化（[`enable_blockers`]）と
 //!   対話の実行（[`run_blockers`]）の前に止める。
 //! - **schedule / event で動く IR の、folder を省略した `storage.write`・`csv.write`**: 省略はルートへの保存で、
@@ -29,6 +29,8 @@ const REQUIRED_TEXTS: &[(NodeType, &str, &str)] = &[
     (NodeType::AgentInvoke, "instruction", "エージェントへの依頼"),
     (NodeType::RagSearch, "query", "検索する内容"),
     (NodeType::CsvQuery, "sql", "SQL"),
+    // 相手を選ぶまでは保存だけ通す（相手の照合は V4・BUG-107）。
+    (NodeType::WorkflowStart, "name", "実行するワークフロー"),
 ];
 
 /// 文字の欄が空か（リテラルの空文字・空白だけ、または中身の無い `$template`）。
