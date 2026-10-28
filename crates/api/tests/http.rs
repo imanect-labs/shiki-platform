@@ -1324,3 +1324,280 @@ async fn chatgpt_login_starts_and_rejects_wrong_callbacks_with_a_reason() {
     assert_eq!(body["state"], "not_connected");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// 検索の内訳（BUG-94）の試験用の認可: 組織の管理者かを切り替え、ファイルはどれも読めない（post-filter で
+/// 落ちる）。ほかの問い（メンバーなど）は通す。
+struct SearchGate {
+    admin: bool,
+}
+
+#[async_trait]
+impl AuthzClient for SearchGate {
+    async fn check(
+        &self,
+        _subject: &Subject,
+        relation: Relation,
+        object: &FgaObject,
+        _consistency: Consistency,
+    ) -> Result<bool, AuthzError> {
+        Ok(match relation {
+            Relation::Admin => self.admin,
+            Relation::Viewer if object.as_str().starts_with("file:") => false,
+            _ => true,
+        })
+    }
+
+    async fn write_tuple(
+        &self,
+        _subject: &Subject,
+        _relation: Relation,
+        _object: &FgaObject,
+    ) -> Result<bool, AuthzError> {
+        Ok(true)
+    }
+
+    async fn delete_tuple(
+        &self,
+        _subject: &Subject,
+        _relation: Relation,
+        _object: &FgaObject,
+    ) -> Result<bool, AuthzError> {
+        Ok(true)
+    }
+
+    async fn read_tuples(
+        &self,
+        _object: &FgaObject,
+        _relation: Option<Relation>,
+    ) -> Result<Vec<ReadTupleKey>, AuthzError> {
+        Ok(vec![])
+    }
+
+    async fn list_objects(
+        &self,
+        _subject: &Subject,
+        _relation: Relation,
+        _object_type: ObjectType,
+    ) -> Result<Vec<String>, AuthzError> {
+        Ok(vec![])
+    }
+
+    async fn delete_object_tuples(&self, _object: &FgaObject) -> Result<u32, AuthzError> {
+        Ok(0)
+    }
+
+    async fn read_subject_objects(
+        &self,
+        _subject: &Subject,
+        _object_type: ObjectType,
+    ) -> Result<Vec<String>, AuthzError> {
+        Ok(vec![])
+    }
+}
+
+/// 埋め込み・rerank は決まった値を返すだけ（検索の段の数を数える試験に中身は要らない）。
+struct FixedEmbedder;
+
+#[async_trait]
+impl rag::embedding::EmbeddingProvider for FixedEmbedder {
+    async fn embed(
+        &self,
+        _ctx: &authz::AuthContext,
+        _input: rag::embedding::EmbedInput,
+        texts: &[String],
+    ) -> Result<rag::embedding::EmbedResponse, rag::RagError> {
+        Ok(rag::embedding::EmbedResponse {
+            vectors: texts.iter().map(|_| vec![1.0, 0.0]).collect(),
+            model_version: "fixed".into(),
+            dimension: 2,
+        })
+    }
+
+    fn model_version(&self) -> &str {
+        "fixed"
+    }
+}
+
+struct ZeroReranker;
+
+#[async_trait]
+impl rag::rerank::Reranker for ZeroReranker {
+    async fn rerank(
+        &self,
+        _ctx: &authz::AuthContext,
+        _query: &str,
+        passages: &[rag::rerank::RerankPassage],
+    ) -> Result<Vec<rag::rerank::RerankScore>, rag::RagError> {
+        Ok(passages
+            .iter()
+            .map(|p| rag::rerank::RerankScore {
+                id: p.id.clone(),
+                score: 0.0,
+            })
+            .collect())
+    }
+}
+
+/// どの問いにも、同じ 1 件（読めないファイルの箇所）を返すベクトル索引。
+struct OneHitVectors {
+    hit: rag::vector_store::ScoredChunk,
+}
+
+#[async_trait]
+impl rag::vector_store::VectorStore for OneHitVectors {
+    async fn ensure_ready(&self, _dimension: usize) -> Result<(), rag::RagError> {
+        Ok(())
+    }
+    async fn upsert(
+        &self,
+        _ctx: &authz::AuthContext,
+        _points: &[rag::vector_store::ChunkPoint],
+    ) -> Result<(), rag::RagError> {
+        Ok(())
+    }
+    async fn delete_node(
+        &self,
+        _ctx: &authz::AuthContext,
+        _node_id: uuid::Uuid,
+    ) -> Result<(), rag::RagError> {
+        Ok(())
+    }
+    async fn delete_stale_versions(
+        &self,
+        _ctx: &authz::AuthContext,
+        _node_id: uuid::Uuid,
+        _keep_version: i64,
+    ) -> Result<(), rag::RagError> {
+        Ok(())
+    }
+    async fn set_authz_tags(
+        &self,
+        _ctx: &authz::AuthContext,
+        _node_id: uuid::Uuid,
+        _tags: &[String],
+    ) -> Result<(), rag::RagError> {
+        Ok(())
+    }
+    async fn search(
+        &self,
+        _ctx: &authz::AuthContext,
+        query: &rag::vector_store::VectorSearch<'_>,
+    ) -> Result<Vec<rag::vector_store::ScoredChunk>, rag::RagError> {
+        Ok(if query.exclude.contains(&self.hit.chunk_id) {
+            vec![]
+        } else {
+            vec![self.hit.clone()]
+        })
+    }
+    async fn purge_tenant(&self, _tenant_id: &str) -> Result<(), rag::RagError> {
+        Ok(())
+    }
+}
+
+/// 全文の索引は空。
+struct NoFulltext;
+
+impl rag::fulltext::FulltextIndex for NoFulltext {
+    fn replace_node(
+        &self,
+        _ctx: &authz::AuthContext,
+        _node_id: uuid::Uuid,
+        _docs: &[rag::fulltext::FulltextDoc<'_>],
+    ) -> Result<(), rag::RagError> {
+        Ok(())
+    }
+    fn delete_node(
+        &self,
+        _ctx: &authz::AuthContext,
+        _node_id: uuid::Uuid,
+    ) -> Result<(), rag::RagError> {
+        Ok(())
+    }
+    fn search(
+        &self,
+        _ctx: &authz::AuthContext,
+        _query_text: &str,
+        _limit: usize,
+        _prefilter: &rag::vector_store::PreFilter,
+        _scope_tags: &[String],
+        _exclude: &[uuid::Uuid],
+    ) -> Result<Vec<rag::vector_store::ScoredChunk>, rag::RagError> {
+        Ok(vec![])
+    }
+    fn purge_tenant(&self, _tenant_id: &str) -> Result<(), rag::RagError> {
+        Ok(())
+    }
+}
+
+/// BUG-94・D-80: 文書検索の内訳（`debug`）は組織の管理者にだけ返す。管理者でない人が `debug: true` を
+/// 付けても 200 で結果だけを返し、権限で除いた文書の数（`authz_denied_files`）を返さない（403 にしない）。
+/// 検索の監査を書くので実 DB が要る（`STORAGE_TEST_DATABASE_URL` が無ければスキップ）。
+#[tokio::test]
+async fn search_debug_is_returned_only_to_org_admins() {
+    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+        return;
+    };
+    let pool = PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&db_url)
+        .await
+        .unwrap();
+    sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
+    let hit = rag::vector_store::ScoredChunk {
+        chunk_id: uuid::Uuid::new_v4(),
+        node_id: uuid::Uuid::new_v4(),
+        score: 0.9,
+    };
+    for admin in [false, true] {
+        let authz: Arc<dyn AuthzClient> = Arc::new(SearchGate { admin });
+        let search = rag::SearchService::new(
+            pool.clone(),
+            rag::RagConfig::default(),
+            Arc::new(FixedEmbedder),
+            Arc::new(ZeroReranker),
+            Arc::new(OneHitVectors { hit: hit.clone() }),
+            Arc::new(NoFulltext),
+            Arc::clone(&authz),
+            storage::audit::AuditRecorder::new(pool.clone()),
+        );
+        let state = AppState {
+            search: Some(Arc::new(search)),
+            ..state_with_authz(store_with_valid_session().await, authz)
+        };
+        let (status, body) = send_with_session(
+            build_router(state),
+            "POST",
+            "/search",
+            Some(serde_json::json!({ "query": "経費", "debug": true })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "admin={admin}: {body}");
+        assert_eq!(
+            body["results"],
+            serde_json::json!([]),
+            "admin={admin}: {body}"
+        );
+        if admin {
+            assert_eq!(
+                body["debug"]["authz_denied_files"], 1,
+                "管理者には内訳を返す: {body}"
+            );
+        } else {
+            assert!(
+                body.get("debug").is_none(),
+                "管理者でない人には内訳を返さない: {body}"
+            );
+            assert!(!body.to_string().contains("authz_denied_files"), "{body}");
+        }
+    }
+    // 検索の監査（このテストの 2 回分）を片付ける。
+    sqlx::query(
+        "DELETE FROM audit_log WHERE tenant_id = 'default' AND action LIKE 'search%' \
+         AND metadata::text LIKE $1",
+    )
+    .bind(format!("%{}%", hit.node_id))
+    .execute(&pool)
+    .await
+    .ok();
+}
