@@ -17,7 +17,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import type { NodeParamsByType } from "@/generated/workflow-catalog";
 import type { NameTakenPolicy, ValueExpr } from "@/generated/workflow-ir";
-import { getNode, type NodeResponse } from "@/lib/storage";
+import { breadcrumb, getNode, type NodeResponse } from "@/lib/storage";
 import { getSchema, runQuery, type SchemaResponse, type TableResponse } from "@/lib/tabular-api";
 import { cn } from "@/lib/utils";
 import { Field, FieldSelectTrigger, NumberInput } from "./common";
@@ -27,7 +27,7 @@ import { ValueExprInput } from "./value-expr-input";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/// 名前の表示に要る分だけ（ピッカーの応答・`GET /files/{id}` のどちらからでも作れる）。
+/// 名前の表示に要る分だけ（ピッカーの応答・`GET /files/{id}`・フォルダーのパンくずのどれからでも作れる）。
 type DriveItem = Pick<NodeResponse, "id" | "name" | "kind"> & Partial<Pick<NodeResponse, "content_type">>;
 
 /// ID → ドライブの項目（名前の表示用・ページを開いている間だけ持つ）。選んだときの応答もここへ入れる。
@@ -40,7 +40,14 @@ export function useDriveItem(id: string | null): { item: DriveItem | null; missi
   React.useEffect(() => {
     if (!valid || !id || driveItems.has(id)) return;
     let active = true;
+    // `GET /files/{id}` はファイルだけを引く（フォルダーは見つからない扱いになる）。引けなければパンくず
+    // （読める祖先と自身・最後が自身）から名前を引く。保存した定義のフォルダーが「見つかりません」と出ていた。
     getNode(id)
+      .catch(async (): Promise<DriveItem> => {
+        const self = (await breadcrumb(id)).at(-1);
+        if (!self || self.id !== id) throw new Error("not found");
+        return { id: self.id, name: self.name, kind: self.kind };
+      })
       .then((n) => {
         driveItems.set(id, n);
         if (active) setLoaded({ id, item: n });
