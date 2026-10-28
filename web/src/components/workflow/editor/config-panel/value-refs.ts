@@ -10,7 +10,7 @@
 /// - 固定値に書かれた差し込みのつもりの文字（`{{x}}`・`{x}`・`${x}`）の検出と、テンプレートへの変換。
 /// - 入力項目への参照（`$from: "input"` の path の先頭の段）の収集と、キーの変更への追随（GAP-12）。
 
-import { EVENT_CATALOG, NODE_CATALOG } from "@/generated/workflow-catalog";
+import { EVENT_CATALOG, NODE_CATALOG, RUN_INFO_CATALOG } from "@/generated/workflow-catalog";
 import type { FromRef, TemplateExpr, ValueExpr } from "@/generated/workflow-ir";
 import type { InputFieldInfo } from "@/lib/workflow-input-schema";
 import { outputSchemaKeys } from "@/lib/workflow-output-schema";
@@ -44,6 +44,9 @@ export const SOURCE_LABELS: Record<string, string> = {
   each: "繰り返し中の要素",
   run: "実行情報",
 };
+
+/// 実行情報の候補の見出し（日時は日本時間で入る・vocab の run_info）。
+const RUN_INFO_GROUP = `${SOURCE_LABELS.run}（日本時間）`;
 
 export function refKey(ref: { $from: string; path?: string | null }): string {
   return `${ref.$from}|${ref.path ?? ""}`;
@@ -133,6 +136,10 @@ export function refOptions({ inputFields, ancestors, inMapRegion, triggerSources
   for (const f of triggerFields(triggerSources)) {
     add({ $from: "trigger", path: pathOf([f.name]) }, `${f.description}（${f.name}）`, SOURCE_LABELS.trigger);
   }
+  // 実行情報（実行した日など・カタログの単一定義・ID は候補に出さない・D-97）。日時は日本時間。
+  for (const f of RUN_INFO_CATALOG.filter((x) => x.suggested)) {
+    add({ $from: "run", path: pathOf([f.name]) }, `${f.description_ja}（${f.name}）`, RUN_INFO_GROUP);
+  }
   add({ $from: "input" }, `${SOURCE_LABELS.input}（全体）`, "そのほか");
   add({ $from: "trigger" }, `${SOURCE_LABELS.trigger}（全体）`, "そのほか");
   return out;
@@ -143,6 +150,7 @@ export function sourceOptions({ ancestors, inMapRegion }: RefContext): { value: 
   return [
     { value: "input", label: SOURCE_LABELS.input },
     { value: "trigger", label: SOURCE_LABELS.trigger },
+    { value: "run", label: SOURCE_LABELS.run },
     ...(inMapRegion ? [{ value: "each", label: SOURCE_LABELS.each }] : []),
     ...ancestors.map((a) => ({ value: `nodes.${a.id}.output`, label: `「${a.label}」の結果` })),
   ];
@@ -153,6 +161,7 @@ export function pathHints(from: string, ctx: RefContext): string[] {
   if (from === "input") return ctx.inputFields.map((f) => `/${pointerSegment(f.key)}`);
   if (from === "each") return ["/item", "/index"];
   if (from === "trigger") return triggerFields(ctx.triggerSources).map((f) => `/${pointerSegment(f.name)}`);
+  if (from === "run") return RUN_INFO_CATALOG.map((f) => `/${pointerSegment(f.name)}`);
   const m = /^nodes\.(.+)\.output$/.exec(from);
   if (m) {
     const a = ctx.ancestors.find((x) => x.id === m[1]);

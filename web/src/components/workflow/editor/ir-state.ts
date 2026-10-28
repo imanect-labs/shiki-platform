@@ -150,7 +150,8 @@ export function defaultParams(nodeType: string): unknown {
       // ファイルはドライブから選ばせる（前の結果から読むなら欄で切り替える）。
       return {};
     case "storage.write":
-      return { name: "output.txt", content: { $from: "input" } };
+      // 同じ名前があれば番号を付けて保存する（省略は失敗にする＝既存の定義の挙動・2 回目から失敗しない・D-97）。
+      return { name: "output.txt", content: { $from: "input" }, on_name_taken: "add_number" };
     case "rag.search":
       return { query: "" };
     case "llm.invoke":
@@ -175,7 +176,7 @@ export function defaultParams(nodeType: string): unknown {
       return { ops: [] };
     case "csv.write":
       // 入力全体（オブジェクト）を入れると JSON の文字がそのまま .csv に保存される（失敗もしない）。
-      return { name: "output.csv", content: "" };
+      return { name: "output.csv", content: "", on_name_taken: "add_number" };
     case "ai.decide":
       // モデル・判定の材料・問いは利用者が書く（空のままなら欄の下で入力を促す・V1 が保存を止める）。
       // 質問は選択肢 2 つの 1 件から始める。振り分けは置かない（出口は out だけ）。

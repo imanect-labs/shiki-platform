@@ -16,11 +16,11 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import type { NodeParamsByType } from "@/generated/workflow-catalog";
-import type { ValueExpr } from "@/generated/workflow-ir";
+import type { NameTakenPolicy, ValueExpr } from "@/generated/workflow-ir";
 import { getNode, type NodeResponse } from "@/lib/storage";
 import { getSchema, runQuery, type SchemaResponse, type TableResponse } from "@/lib/tabular-api";
 import { cn } from "@/lib/utils";
-import { Field, NumberInput } from "./common";
+import { Field, FieldSelectTrigger, NumberInput } from "./common";
 import type { FormProps } from "./forms-basic";
 import { paramsOf, patchParams } from "./params";
 import { ValueExprInput } from "./value-expr-input";
@@ -323,7 +323,38 @@ export function StorageReadForm(props: FormProps) {
   );
 }
 
-/// 保存するファイルの種類（Content-Type）。省略すると application/octet-stream で保存される。
+/// 同じ名前のファイルがあるときの扱い（BUG-97・D-97）。省略は「保存しない」（この欄が無かったころの定義の
+/// 挙動）。新しく置くブロックは「番号を付けて保存」で置く（ir-state の defaultParams）。
+function NameTakenField({ node, dispatch, fieldErrors, example }: FormProps & { example: string }) {
+  const p = paramsOf<{ on_name_taken?: NameTakenPolicy }>(node);
+  const current: NameTakenPolicy = p.on_name_taken ?? "fail";
+  const hint =
+    current === "add_number"
+      ? `「${example}」のように、番号を付けた空いている名前で保存します。番号は 50 まで付けます。`
+      : "保存せずに、このブロックを失敗にします。毎回同じ名前で保存するなら、番号を付けて保存 を選んでください。";
+  return (
+    <Field label="同じ名前があるとき" hint={hint} error={fieldErrors.get("on_name_taken")}>
+      <Select
+        value={current}
+        onValueChange={(v) => patchParams(dispatch, node, { on_name_taken: v as NameTakenPolicy })}
+      >
+        <FieldSelectTrigger className="h-8 text-[13px]" data-testid="name-taken-select">
+          <SelectValue />
+        </FieldSelectTrigger>
+        <SelectContent>
+          <SelectItem value="add_number">番号を付けて保存</SelectItem>
+          <SelectItem value="fail">保存しない</SelectItem>
+        </SelectContent>
+      </Select>
+    </Field>
+  );
+}
+
+/// ファイル名の注記（同じ名前を避ける差し込みの案内・D-97）。
+const DATE_NAME_HINT = "毎回実行するなら、「差し込む」で 実行した日 を入れると、日ごとに違う名前になります。";
+
+/// 保存するファイルの種類（Content-Type）。選ばなければファイル名の拡張子から決める（D-97・決まらなければ
+/// application/octet-stream で、社内文書の検索の対象にならない）。
 const CONTENT_TYPES: [string, string][] = [
   ["text/plain", "テキスト（.txt）"],
   ["text/markdown", "Markdown（.md）"],
@@ -355,7 +386,7 @@ function ContentTypeField({ node, dispatch, refCandidates, inMapRegion, fieldErr
   return (
     <Field
       label="ファイルの種類（省略可）"
-      hint="指定しないと種類の分からないファイル（application/octet-stream）として保存します"
+      hint="選ばなければ、ファイル名の拡張子（.md など）から決めます。決まらないと種類の分からないファイルになり、社内文書の検索で見つかりません。"
       error={fieldErrors.get("content_type")}
     >
       <Select
@@ -366,7 +397,7 @@ function ContentTypeField({ node, dispatch, refCandidates, inMapRegion, fieldErr
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
-          <SelectItem value={NO_TYPE}>指定しない</SelectItem>
+          <SelectItem value={NO_TYPE}>拡張子から決める</SelectItem>
           {CONTENT_TYPES.map(([t, label]) => (
             <SelectItem key={t} value={t}>
               {label}
@@ -392,8 +423,10 @@ export function StorageWriteForm(props: FormProps) {
         refCandidates={refCandidates}
         inMapRegion={inMapRegion}
         placeholder="例: report.md"
+        hint={DATE_NAME_HINT}
         error={fieldErrors.get("name")}
       />
+      <NameTakenField {...props} example="report (2).md" />
       <ValueExprInput
         label="内容"
         text
@@ -710,9 +743,11 @@ export function CsvWriteForm(props: FormProps) {
         onChange={(v) => patchParams(dispatch, node, { name: v })}
         refCandidates={refCandidates}
         inMapRegion={inMapRegion}
-        placeholder="例: summary.csv（.csv は自動で付きます）"
+        placeholder="例: summary.csv"
+        hint={`名前が .csv で終わらなければ、.csv を付けて保存します。${DATE_NAME_HINT}`}
         error={fieldErrors.get("name")}
       />
+      <NameTakenField {...props} example="summary (2).csv" />
       <ValueExprInput
         label="CSV の内容"
         text
