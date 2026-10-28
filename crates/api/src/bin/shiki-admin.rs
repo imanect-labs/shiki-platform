@@ -392,55 +392,61 @@ async fn retenant(args: &[String]) -> anyhow::Result<()> {
 
         if let FromNs::Tenant(f) = &from {
             // リネームの監査エントリを**新テナントの chain へ連結**して記録する（forensics の
-            // アンカー）。⚠️ リネーム以前の chained エントリの entry_hash は**旧 tenant_id で
-            // 計算**されているため、チェーン検証はリネーム境界より前を旧 tenant_id で検証する
-            // 必要がある（runbook 参照）。
-            let orgs_for_audit: Vec<String> =
-                sqlx::query_scalar("SELECT org FROM tenant WHERE tenant_id = $1")
-                    .bind(&to)
-                    .fetch_all(&db)
-                    .await?;
-            let audit_org = orgs_for_audit
-                .first()
-                .cloned()
-                .unwrap_or_else(|| to.clone());
-            let ctx = AuthContext::new(
-                Principal {
-                    kind: authz::PrincipalKind::User,
-                    id: "cli".into(),
-                    email: None,
-                    groups: vec![],
-                    roles: vec![],
-                    tenant_id: Some(to.clone()),
-                },
-                audit_org.clone(),
-                to.clone(),
-            );
-            let mut tx = db.begin().await?;
-            storage::audit::record_on(
-                &mut tx,
-                &ctx,
-                storage::audit::AuditEntry {
-                    action: AuditAction::TenantRetenant,
-                    object_type: "organization",
-                    object_id: &audit_org,
-                    decision: storage::audit::Decision::Allow,
-                    trace_id: None,
-                    metadata: serde_json::json!({
-                        "from": f, "to": to,
-                        "fga_tuples": fga_moved, "objects": objects_moved,
-                        // 移行範囲の証跡（#420）: 何テーブル・何行動かしたか。
-                        "tables": db_moved.len(), "rows": db_rows,
-                        // 実行者の**申告値**（認証されていない・出所つき）。
-                        "actor_claimed": actor_claimed, "actor_source": actor_source,
-                    }),
-                },
-                storage::audit::Chain::Yes,
+            // アンカー）。リネーム以前の chained エントリの entry_hash は**旧 tenant_id で計算**
+            // されているので、チェーン検証（#828）はこの記録の `from` を読み、境目より前を旧
+            // tenant_id で検証する。チェーンは tenant_id ＋ org ごとなので、連結行を持つ
+            // **すべての org**（と台帳の org）に記録する。記録の無い org は境目が分からない。
+            let mut orgs_for_audit: Vec<String> = sqlx::query_scalar(
+                "SELECT org FROM tenant WHERE tenant_id = $1 \
+                 UNION SELECT DISTINCT org FROM audit_log WHERE tenant_id = $1 AND chained \
+                 ORDER BY 1",
             )
+            .bind(&to)
+            .fetch_all(&db)
             .await?;
-            tx.commit().await?;
+            if orgs_for_audit.is_empty() {
+                orgs_for_audit.push(to.clone());
+            }
+            for audit_org in &orgs_for_audit {
+                let ctx = AuthContext::new(
+                    Principal {
+                        kind: authz::PrincipalKind::User,
+                        id: "cli".into(),
+                        email: None,
+                        groups: vec![],
+                        roles: vec![],
+                        tenant_id: Some(to.clone()),
+                    },
+                    audit_org.clone(),
+                    to.clone(),
+                );
+                let mut tx = db.begin().await?;
+                storage::audit::record_on(
+                    &mut tx,
+                    &ctx,
+                    storage::audit::AuditEntry {
+                        action: AuditAction::TenantRetenant,
+                        object_type: "organization",
+                        object_id: audit_org,
+                        decision: storage::audit::Decision::Allow,
+                        trace_id: None,
+                        metadata: serde_json::json!({
+                            "from": f, "to": to,
+                            "fga_tuples": fga_moved, "objects": objects_moved,
+                            // 移行範囲の証跡（#420）: 何テーブル・何行動かしたか。
+                            "tables": db_moved.len(), "rows": db_rows,
+                            // 実行者の**申告値**（認証されていない・出所つき）。
+                            "actor_claimed": actor_claimed, "actor_source": actor_source,
+                        }),
+                    },
+                    storage::audit::Chain::Yes,
+                )
+                .await?;
+                tx.commit().await?;
+            }
             println!(
-                "audit: tenant.retenant を記録（⚠️ リネーム以前の chain 検証は旧 tenant_id '{f}' で行うこと）"
+                "audit: tenant.retenant を {} 個の org のチェーンに記録（検証はこの記録から旧 tenant_id '{f}' の境目を読む）",
+                orgs_for_audit.len()
             );
 
             // IdP（Keycloak）の tenant 属性を追従更新する（残すと次ログインが旧 tenant claim で

@@ -262,6 +262,7 @@ audit_actions! {
     OrgAuditAccess = "org_audit.access", "監査ログへのアクセス", Audit;
     OrgAuditExport = "org_audit.export", "監査ログを書き出し", Audit;
     OrgAuditSearch = "org_audit.search", "監査ログを検索", Audit;
+    OrgAuditVerify = "org_audit.verify", "監査ログのチェーンを検証", Audit;
     OrgAuditViewerGrant = "org_audit.viewer.grant", "監査閲覧者を付与", Audit;
     OrgAuditViewerRevoke = "org_audit.viewer.revoke", "監査閲覧者を剥奪", Audit;
     RagDocRead = "rag.doc_read", "文書を読む（AI）", Search;
