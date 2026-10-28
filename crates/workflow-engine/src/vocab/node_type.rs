@@ -33,11 +33,16 @@ vocab_enum! {
         CsvPatch => "csv.patch",
         /// 新規 CSV の保存（作成権限・EngineDedup）。
         CsvWrite => "csv.write",
-        // ---- Stage B（ir.md §7 設計済み・未実装）----
+        // ---- 構造化データ（Task 15.7・data の DataQuery をそのまま使う）----
         DataQuery => "data.query",
         DataRecordCreate => "data.record.create",
         DataRecordUpdate => "data.record.update",
         DataTransition => "data.transition",
+        /// レコードの削除（rev 楽観ロック・EngineDedup）。
+        DataRecordDelete => "data.record.delete",
+        /// 一括 upsert（data の一括書込パス・更新行は 1 件の更新と同じ入口・EngineDedup）。
+        DataBulkUpsert => "data.bulk_upsert",
+        // ---- Stage B（ir.md §7 設計済み・未実装）----
         NotifySend => "notify.send",
         /// インストール済み skill の実行（`skill:<name>@<version>`・Stage A 昇格・#344）。
         SkillInvoke => "skill.invoke",
@@ -129,6 +134,12 @@ impl NodeType {
                 | NodeType::CsvQuery
                 | NodeType::CsvPatch
                 | NodeType::CsvWrite
+                | NodeType::DataQuery
+                | NodeType::DataRecordCreate
+                | NodeType::DataRecordUpdate
+                | NodeType::DataRecordDelete
+                | NodeType::DataTransition
+                | NodeType::DataBulkUpsert
         )
     }
 }
@@ -164,6 +175,12 @@ mod tests {
                 "csv.query",
                 "csv.patch",
                 "csv.write",
+                "data.query",
+                "data.record.create",
+                "data.record.update",
+                "data.transition",
+                "data.record.delete",
+                "data.bulk_upsert",
                 "skill.invoke",
             ]
         );
@@ -171,7 +188,7 @@ mod tests {
 
     #[test]
     fn reserved_vocab_is_parsed_but_gated() {
-        for name in ["data.query", "sheet.read", "ai.review", "human.approval"] {
+        for name in ["notify.send", "sheet.read", "ai.review", "human.approval"] {
             let nt = NodeType::parse(name).expect("予約語彙は閉集合に含まれる");
             assert!(!nt.available_stage_a(), "{name} は Stage A では無効のはず");
         }

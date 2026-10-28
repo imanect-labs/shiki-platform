@@ -128,3 +128,41 @@ export const ANSWER =
 /// 本文に引用マーカーが無い回答（古典 RAG 注入でモデルが番号を書かなかった場合）。
 export const ANSWER_NO_MARKERS =
   "育児休業は子が1歳に達するまで取得でき、申請は開始予定日の1か月前までに行います。詳しくは就業規則と手引きを確認してください。";
+
+/// 社内文書と Web の出典が混ざった回答（#891）。
+///
+/// 想定: doc_search（1, 2）→ web_search（3〜5）→ 3 を web_fetch した。取得したページは検索結果と
+/// 同じ番号（3）を使い回す。本文は 1, 3, 4 を引用し、2, 5 は使わなかった。
+const web = (cite_id: number, url: string, title: string, snippet: string): Citation => ({
+  type: "citation",
+  cite_id,
+  node_id: "",
+  chunk_id: `web:${url}`,
+  snippet,
+  heading_path: [],
+  score: 0,
+  web: { url, title },
+});
+
+export const MIXED_CITATIONS: Citation[] = [
+  { ...CITATIONS[0], cite_id: 1 },
+  { ...CITATIONS[4], cite_id: 2 },
+  web(
+    3,
+    "https://www.mhlw.go.jp/stf/seisakunitsuite/bunya/0000130583.html",
+    "育児・介護休業法について",
+    "育児・介護休業法の改正により、2025年4月1日から、子の看護休暇の対象が小学校3年生修了までに拡大されました。",
+  ),
+  web(
+    4,
+    "https://example.com/news/2025/childcare-leave",
+    "男性の育休取得率、過去最高の 40% に",
+    "厚生労働省の調査によると、2024 年度の男性の育児休業取得率は 40.5% となり、前年度から 10 ポイント上昇した。",
+  ),
+  web(5, "https://example.org/guide/ikukyu", "", "育休の申請に必要な書類と提出先をまとめました。"),
+];
+
+export const MIXED_ANSWER =
+  "社内の規程では、子が1歳に達するまで育児休業を取得できます[1]。\n\n" +
+  "法改正により、2025年4月から子の看護休暇の対象が小学校3年生修了までに広がりました[3]。" +
+  "男性の育休取得率は 2024 年度に 40.5% と過去最高になっています[4]。";

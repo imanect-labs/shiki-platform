@@ -6,13 +6,17 @@
 
 import * as React from "react";
 import { use } from "react";
-import { History, Loader2, Pencil, Share2 } from "lucide-react";
+import { AppWindow, History, Loader2, Pencil, Share2 } from "lucide-react";
+import Link from "next/link";
 
 import { ChromeIconButton, usePageChrome } from "@/components/shell/page-header-context";
+import { Button } from "@/components/ui/button";
+import { EmptyState } from "@/components/ui/empty-state";
 import { toast } from "@/components/ui/use-toast";
 import { ArtifactShareDialog } from "@/components/artifacts/share-dialog";
 import { MiniAppEditorDialog } from "@/components/artifacts/miniapp-editor";
 import { VersionsDialog } from "@/components/artifacts/versions-dialog";
+import { DataGridHostContext, miniAppDataGridHost } from "@/components/data/data-grid-host";
 import { Markdown } from "@/components/prompt-kit/markdown";
 import { hasOpenRuns, YuiActionContext, type YuiActionHost } from "@/components/prompt-kit/yui-actions";
 import { useMe } from "@/hooks/use-me";
@@ -32,6 +36,8 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
   const [app, setApp] = React.useState<ResolvedMiniApp | null>(null);
   const [meta, setMeta] = React.useState<ArtifactMeta | null>(null);
   const [error, setError] = React.useState<string | null>(null);
+  /// 見つからない・見る権限がない（他のテナントのアプリを含む・存在を区別しない）。
+  const [notFound, setNotFound] = React.useState(false);
   const [version, setVersion] = React.useState<number | undefined>(undefined);
   const [reloadKey, setReloadKey] = React.useState(0);
   const [runs, setRuns] = React.useState<MiniAppRun[]>([]);
@@ -70,13 +76,19 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
   React.useEffect(() => {
     let active = true;
     setError(null);
+    setNotFound(false);
     Promise.all([resolveMiniApp(id, version), getArtifact(id)])
       .then(([resolved, m]) => {
         if (!active) return;
         setApp(resolved);
         setMeta(m);
       })
-      .catch((e) => active && setError(e instanceof Error ? e.message : "読み込みに失敗しました"));
+      .catch((e) => {
+        if (!active) return;
+        const status = (e as { status?: number }).status;
+        if (status === 403 || status === 404) setNotFound(true);
+        else setError(e instanceof Error ? e.message : "読み込みに失敗しました");
+      });
     return () => {
       active = false;
     };
@@ -130,9 +142,26 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
     [app, runs, refreshRuns],
   );
 
+  // 画面の表（```data_grid）は束ねた保存ビューを閲覧者本人の権限でページごとに実行する（Task 15.5）。
+  const gridHost = React.useMemo(
+    () => (app ? miniAppDataGridHost(app.id, app.version) : null),
+    [app],
+  );
+
   return (
     <div className="mx-auto w-full max-w-3xl px-4 pb-6 pt-1 md:py-6">
-      {error ? (
+      {notFound ? (
+        <EmptyState
+          icon={AppWindow}
+          title="アプリが見つかりません"
+          description="削除されたか、このアプリを使う権限がありません。共有した人に確かめてください。"
+          action={
+            <Button variant="outline" asChild>
+              <Link href="/apps">アプリ一覧へ</Link>
+            </Button>
+          }
+        />
+      ) : error ? (
         <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-6 text-center text-sm text-destructive">
           {error}
         </div>
@@ -155,7 +184,9 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
           </div>
 
           <YuiActionContext.Provider value={host}>
-            <Markdown key={`${app.id}-v${app.version}`}>{app.body.screen}</Markdown>
+            <DataGridHostContext.Provider value={gridHost}>
+              <Markdown key={`${app.id}-v${app.version}`}>{app.body.screen}</Markdown>
+            </DataGridHostContext.Provider>
           </YuiActionContext.Provider>
 
           <ArtifactShareDialog

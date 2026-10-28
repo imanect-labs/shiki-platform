@@ -8,7 +8,9 @@ import * as React from "react";
 
 import { fetchLlmModels, type EffortLevel, type LlmModelsResponse } from "@/lib/admin-ai-api";
 
-export type ModelChoice = { model: string; effort: EffortLevel } | null;
+/// `model` が `null` の選択は「組織の既定のモデルのまま、思考の深さだけ変える」（既定が
+/// 特定のモデルのときだけ作る。Auto は思考の深さも振り先で決まり、指定は効かない）。
+export type ModelChoice = { model: string | null; effort: EffortLevel } | null;
 
 export const HOME_SCOPE = "home";
 const KEY = "shiki:model-choice:";

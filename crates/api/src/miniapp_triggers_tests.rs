@@ -92,6 +92,7 @@ fn deps(pool: PgPool) -> TriggerDeps {
         db: pool,
         runner,
         port,
+        claim_hints: storage::event::ClaimHints::default(),
     }
 }
 
@@ -228,17 +229,27 @@ async fn event_targets_app_scopes_to_owned_resources() {
     let tenant = format!("t-{}", Uuid::new_v4());
     let app_id = Uuid::new_v4();
     let other_app = Uuid::new_v4();
+    let mut conn = pool.acquire().await.unwrap();
+    // 内部整数キーはレジストリの採番サービスから取る（Task 15.1・列 default は持たない）。
+    let placement = storage::tenant::ensure_placement(&mut conn, &tenant)
+        .await
+        .unwrap();
+    let table_int = storage::tenant::allocate_table_int(&mut conn)
+        .await
+        .unwrap();
     let (table_id,): (Uuid,) = sqlx::query_as(
-        "INSERT INTO data_table (tenant_id, org, app_id, name, schema, created_by) \
-             VALUES ($1, 'acme', $2, $3, '{}'::jsonb, 'installer') RETURNING id",
+        "INSERT INTO data_table (tenant_id, org, app_id, name, schema, created_by, \
+               tenant_int, table_int) \
+             VALUES ($1, 'acme', $2, $3, '{\"fields\": []}'::jsonb, 'installer', $4, $5) RETURNING id",
     )
     .bind(&tenant)
     .bind(app_id)
     .bind(format!("tbl-{}", Uuid::new_v4()))
-    .fetch_one(&pool)
+    .bind(placement.tenant_int)
+    .bind(table_int)
+    .fetch_one(&mut *conn)
     .await
     .unwrap();
-    let mut conn = pool.acquire().await.unwrap();
 
     // 自アプリ所有テーブルは配送対象・他アプリからは同 table_id を配送しない。
     assert!(event_targets_app(

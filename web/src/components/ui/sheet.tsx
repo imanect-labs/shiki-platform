@@ -4,6 +4,7 @@ import * as React from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { X } from "lucide-react";
 
+import { guardLocalEscape } from "@/components/ui/local-escape";
 import { useMergedRef, useSwipeToDismiss } from "@/hooks/use-swipe-to-dismiss";
 import { cn } from "@/lib/utils";
 
@@ -50,6 +51,7 @@ function SheetContent({
   children,
   side = "right",
   ref,
+  onEscapeKeyDown,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   side?: keyof typeof SIDE_CLASSES;
@@ -78,6 +80,7 @@ function SheetContent({
           className,
         )}
         {...props}
+        onEscapeKeyDown={guardLocalEscape(onEscapeKeyDown)}
       >
         {side === "bottom" ? (
           // つかめることを示す取っ手。レイアウトに影響しないよう上端に重ねる。

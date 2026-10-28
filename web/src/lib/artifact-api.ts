@@ -45,7 +45,8 @@ async function ok<T>(res: Response): Promise<T> {
     } catch {
       // 本文なし
     }
-    throw new Error(detail || `API ${res.status}`);
+    // 状態コードを添える（見つからない・権限がない＝403/404 を画面が「見つかりません」として出し分ける）。
+    throw Object.assign(new Error(detail || `API ${res.status}`), { status: res.status });
   }
   return (await res.json()) as T;
 }

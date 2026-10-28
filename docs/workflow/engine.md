@@ -478,7 +478,12 @@ cron の評価区間は `workflow_trigger.last_planned_at`（watermark）→ 現
 スケジューラ停止中に生じた「穴」（misfire）は、この区間列挙の上で IR の `catchup` に従う（ir.md §6）。
 
 - `skip`（既定）: 区間内の未発火のうち **直近 1 occurrence のみ**発火する（残りは watermark 前進で消化）。
-- `none`: 未発火はすべて捨てる（watermark だけ前進させる）。
+- `none`: 区間内の最新 occurrence を、スケジューラが動き続けていた（前回の評価から `MAX_LIVE_TICK_GAP`＝5 分以内・
+  重い tick ループやリーダー交代の待ちを含む）か、評価時刻から猶予（`ON_TIME_GRACE`＝60 秒）以内に来たものなら
+  時刻どおりとして発火し、それ以外（停止中の穴）はすべて捨てる（watermark だけ前進させる）。区間をまるごと
+  捨てると稼働中の発火まで捨ててしまう（#904）。
+- DST の終わりで同じ壁時計の時刻が 2 回あるときは先の 1 回だけを occurrence とする（ir.md §6.1「二重時刻は先勝ち」・
+  全 catchup 共通）。
 - `all`（全部再生）は **v1 でやらない**（ir.md §6 で確定済み）。
 
 ### 5.3 占有 TX（冪等発火）
@@ -576,6 +581,32 @@ PK `(tenant_id, workflow_id, delegator, scope, object_ref)`）。実装の詳細
 ### 6.7 監査
 
 run 作成時に `run_id・trigger_kind・principal・delegator` を audit_log へ記録する（Task 10.4）。委譲の付与・失効も `workflow_delegation` の更新と同時に監査へ残す。
+
+### 6.8 構造化データ（data）の実行主体（Task 15.7）
+
+data の行述語（`row_policy`）・フィールドマスクは**ユーザーの属性**（本人 id・ロール・個別共有）で評価する。
+workflow プリンシパルで評価すると本人系の述語が成り立たず、行がほぼ見えない（fail-closed だが使えない）。
+そこで schedule / event run の data ノード・`Shiki.data.*` は次の 3 段で実行する（`crates/api/src/workflow_runtime/data_port.rs`）。
+
+1. **委譲の確認**: ワークフロー主体が対象テーブルの `data_table` に viewer（読取）/ editor（書込）のタプルを
+   持つこと（有効化時の委譲・既存の relation に workflow subject を足す方式のまま）。棚卸しでタプルを撤去すれば
+   ここで受動的に落ちる（§6.4 の三段目）。
+2. **委譲元ユーザーで実行**: `workflow_delegation` の有効な委譲元のうち、**その操作に足る relation を自ら委譲した**
+   ユーザー（読取は viewer 以上・書込は editor / owner。該当が複数なら最後に付与したユーザー）の `AuthContext` で
+   data を呼ぶ。該当が無ければ拒否する（他の委譲元のタプルで 1. を通っても、書込を委譲していないユーザーの権限では
+   書かない・confused-deputy 防御）。行は委譲元の行述語で絞られ、マスク列も委譲元のもの。委譲元が今もテーブルの権限を持つかは
+   data の入口が委譲元で問い直す（失権は即時に効く）。
+3. **辿ってよいテーブルの天井**: 入口のテーブルから結合・半結合・lookup / rollup・リンク値（表示名・対称列を含む）で
+   辿る参照先も「委譲したテーブル」に限る。天井は **2. で選んだ委譲元本人が viewer 以上で委譲したテーブル**
+   （`workflow_delegation` の有効な行・入口のテーブルを含む）で、併せてワークフロー主体のタプルも要求する（棚卸しの撤去を
+   即時に効かせる）。他の委譲元が委譲したテーブルは、この委譲元の権限では辿らない。data へは `data::TableReach` として渡し
+   （`DataStore::within_reach`）、天井の外は委譲元が読めないテーブルと同じ応答になる（結合・半結合は 403・lookup / rollup は null・
+   リンク値は落とす。存在オラクルを作らない）。材料化した派生列は天井の外を辿るならフィルタ/ソート/集計に使えない（未材料化と同じ 400）。
+   `data.bulk_upsert` は天井を取込（`data_bulk_import.reach`）に保存し、続きを進めるジョブのワーカーも同じ天井で検証する。
+
+実効権限 = scope 天井（§6.5）∩ 委譲したテーブル ∩ 委譲元の ReBAC・行述語。委譲していないテーブルは、
+委譲元が読めても読めない（委譲元の権限を丸ごと貸さない。入口だけでなく、リンクで辿る参照先も 3. で同じく絞る）。
+書込の監査・リビジョンの主体は委譲元になる。
 
 ---
 

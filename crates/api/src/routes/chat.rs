@@ -177,6 +177,7 @@ const MAX_THREAD_QUERY_CHARS: usize = 200;
         ("limit" = Option<i64>, Query, description = "件数（既定 30・上限 100）"),
         ("origin_note_id" = Option<Uuid>, Query, description = "由来ノートで絞り込む（ノート側の会話一覧・#282）"),
         ("q" = Option<String>, Query, description = "タイトルの部分一致（大小無視・200 文字まで・#591）"),
+        ("pinned" = Option<bool>, Query, description = "true ならピン留めだけ（新しい順・ページングなし）"),
     ),
     responses(
         (status = 200, description = "スレッド一覧", body = ThreadListResponse),
@@ -191,6 +192,13 @@ pub async fn list_threads(
     AuthContextExt(ctx): AuthContextExt,
     Query(q): Query<ListThreadsQuery>,
 ) -> Result<Json<ThreadListResponse>, ApiError> {
+    if q.pinned == Some(true) {
+        let threads = chat_store(&state)?.list_pinned_threads(&ctx).await?;
+        return Ok(Json(ThreadListResponse {
+            threads,
+            next_cursor: None,
+        }));
+    }
     let limit = q.limit.unwrap_or(30).clamp(1, 100);
     if q.q
         .as_deref()

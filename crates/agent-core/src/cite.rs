@@ -145,6 +145,7 @@ mod tests {
             anchor: None,
             quote: None,
             boxes: Vec::new(),
+            web: None,
         }
     }
 

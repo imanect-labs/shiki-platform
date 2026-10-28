@@ -34,7 +34,7 @@ pub struct MiniAppActionRequest {
     /// 実行対象のミニアプリ版（**必須**・解決済み画面の版と一致させる。current 暗黙参照だと
     /// 画面を開いたまま新版が保存されたとき、別の実行先へ同じ id で到達し得る）。
     pub version: i64,
-    /// ボタンの id（`{ブロックの識別子}:{a1}`）。
+    /// ボタンの id（`{ブロックの識別子}:{a1}`）か、画面の表の id（`data_grid:{別名}`・Task 15.7）。
     pub action_id: String,
     /// 部品の値（key は部品の `as` 名）。
     #[serde(default)]
@@ -115,7 +115,7 @@ struct RunKey<'a> {
     idempotency_key: &'a str,
 }
 
-fn map_gui_err(e: GuiError) -> ActionError {
+pub(crate) fn map_gui_err(e: GuiError) -> ActionError {
     match e {
         GuiError::Artifact(artifact::ArtifactError::NotFound) => ActionError::NotFound,
         GuiError::Artifact(artifact::ArtifactError::Forbidden) => ActionError::Forbidden,
@@ -144,6 +144,13 @@ impl MiniAppStore {
         req: MiniAppActionRequest,
         trace_id: Option<&str>,
     ) -> Result<Value, ActionError> {
+        // 画面の表（```data_grid）の描画は同じ入口で受ける（送れるのは id と params だけ・Task 15.7）。
+        if let Some(alias) = crate::data_grid::data_grid_alias(&req.action_id) {
+            let alias = alias.to_string();
+            return self
+                .invoke_data_grid(ctx, dispatcher, app_id, &req, &alias, trace_id)
+                .await;
+        }
         // 1. 本体の viewer（解決が認可する）。部品は読まない（ワークフローは起動時にバンドル権限で読む）。
         let resolved = self
             .resolve(ctx, app_id, Some(req.version), trace_id)

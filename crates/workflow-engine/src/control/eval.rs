@@ -83,28 +83,72 @@ pub fn eval_condition(cond: &Condition, r: &dyn ValueResolver) -> bool {
     }
 }
 
+/// 左辺を「値の集合」として見る（data の多値列と同じ模型・query-optimizer.md §3.1）。
+///
+/// 値なし（未解決・`null`）と空配列は空集合、配列は要素の集合（`null` の要素は値なし）、
+/// それ以外は要素 1 個の集合。
+fn value_set(v: Option<&Value>) -> Vec<&Value> {
+    match v {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(items)) => items.iter().filter(|x| !x.is_null()).collect(),
+        Some(other) => vec![other],
+    }
+}
+
+/// 等値（数値は数値として比較する: `1 = 1.0`。整数同士は精度を落とさない）。
+fn same(lhs: &Value, rhs: &Value) -> bool {
+    match (lhs, rhs) {
+        (Value::Number(l), Value::Number(r)) => {
+            if let (Some(li), Some(ri)) = (l.as_i64(), r.as_i64()) {
+                li == ri
+            } else if let (Some(lu), Some(ru)) = (l.as_u64(), r.as_u64()) {
+                lu == ru
+            } else {
+                // 浮動小数の等値は JSON の数値の値としての一致（誤差を許さない・data の 10 進比較と同じ結果）。
+                l.as_f64().zip(r.as_f64()).is_some_and(|(lf, rf)| {
+                    lf.partial_cmp(&rf).is_some_and(std::cmp::Ordering::is_eq)
+                })
+            }
+        }
+        _ => lhs == rhs,
+    }
+}
+
+/// 比較 1 つを評価する（2 値論理・data の評価規則と同じ表・query-optimizer.md §3.1）。
+///
+/// - `eq c`: 値のいずれかが c に等しい（単値は値 = c・多値は「c を含む」・値なしは偽）
+/// - `neq c`: `not(eq c)`（値なしは**真**・多値は「c を含まない」）
+/// - `in [..]`: 値のいずれかが候補のいずれかに等しい（値なしは偽）
+/// - `contains` / `starts_with` / `ends_with`: いずれかの要素（文字列）が満たす
+/// - `exists`: 値が 1 個以上（空配列は偽）・`is_null`: `not(exists)`
+/// - `lt` / `lte` / `gt` / `gte`: 単値だけ（多値は data では使えない・ここでは偽）
+///
+/// 2026-10 に data 側へ揃えた（それ以前は配列全体との一致・`in` は左辺が配列だと常に偽・
+/// 空配列の `exists` は真・`1 ≠ 1.0`）。保存済み定義の影響は `ir::validate::semantics` が検出する。
 fn eval_cmp(cmp: &Comparison, r: &dyn ValueResolver) -> bool {
     let left = resolve_value(&cmp.left, r);
     let right = cmp.right.as_ref().and_then(|e| resolve_value(e, r));
+    let vals = value_set(left.as_ref());
     match cmp.op {
-        CmpOp::Exists => left.as_ref().is_some_and(|v| !v.is_null()),
-        CmpOp::IsNull => left.as_ref().is_none_or(Value::is_null),
-        CmpOp::Eq => left == right,
-        CmpOp::Neq => left != right,
-        CmpOp::Lt | CmpOp::Lte | CmpOp::Gt | CmpOp::Gte => {
-            compare_ordered(left.as_ref(), right.as_ref(), cmp.op)
-        }
-        CmpOp::In => match (left, right) {
-            (Some(l), Some(Value::Array(items))) => items.contains(&l),
+        CmpOp::Exists => !vals.is_empty(),
+        CmpOp::IsNull => vals.is_empty(),
+        CmpOp::Eq => right
+            .as_ref()
+            .is_some_and(|c| vals.iter().any(|v| same(v, c))),
+        CmpOp::Neq => !right
+            .as_ref()
+            .is_some_and(|c| vals.iter().any(|v| same(v, c))),
+        CmpOp::Lt | CmpOp::Lte | CmpOp::Gt | CmpOp::Gte => match left.as_ref() {
+            Some(Value::Array(_)) => false,
+            l => compare_ordered(l, right.as_ref(), cmp.op),
+        },
+        CmpOp::In => match right {
+            Some(Value::Array(cands)) => vals.iter().any(|v| cands.iter().any(|c| same(v, c))),
             _ => false,
         },
-        CmpOp::Contains => match (left, right) {
-            (Some(Value::String(s)), Some(Value::String(sub))) => s.contains(&sub),
-            (Some(Value::Array(items)), Some(v)) => items.contains(&v),
-            _ => false,
-        },
-        CmpOp::StartsWith => str_pair(left, right, |s, p| s.starts_with(p)),
-        CmpOp::EndsWith => str_pair(left, right, |s, p| s.ends_with(p)),
+        CmpOp::Contains => any_str(&vals, right.as_ref(), |s, p| s.contains(p)),
+        CmpOp::StartsWith => any_str(&vals, right.as_ref(), |s, p| s.starts_with(p)),
+        CmpOp::EndsWith => any_str(&vals, right.as_ref(), |s, p| s.ends_with(p)),
         CmpOp::Matches => match (left, right) {
             (Some(Value::String(s)), Some(Value::String(pat))) => {
                 regex::Regex::new(&pat).is_ok_and(|re| re.is_match(&s))
@@ -112,6 +156,14 @@ fn eval_cmp(cmp: &Comparison, r: &dyn ValueResolver) -> bool {
             _ => false,
         },
     }
+}
+
+/// いずれかの要素（文字列）が右辺の文字列について `f` を満たすか。
+fn any_str(vals: &[&Value], right: Option<&Value>, f: impl Fn(&str, &str) -> bool) -> bool {
+    let Some(Value::String(p)) = right else {
+        return false;
+    };
+    vals.iter().any(|v| v.as_str().is_some_and(|s| f(s, p)))
 }
 
 /// 数値なら数値比較、そうでなければ文字列比較（型不一致は false）。
@@ -137,13 +189,6 @@ fn compare_ordered(left: Option<&Value>, right: Option<&Value>, op: CmpOp) -> bo
         (Some(o), CmpOp::Lte) => o.is_le(),
         (Some(o), CmpOp::Gt) => o.is_gt(),
         (Some(o), CmpOp::Gte) => o.is_ge(),
-        _ => false,
-    }
-}
-
-fn str_pair(left: Option<Value>, right: Option<Value>, f: impl Fn(&str, &str) -> bool) -> bool {
-    match (left, right) {
-        (Some(Value::String(s)), Some(Value::String(p))) => f(&s, &p),
         _ => false,
     }
 }

@@ -34,6 +34,14 @@ pub async fn relay_once(pool: &PgPool, config: &RagConfig) -> Result<usize, RagE
             skipped_system += 1;
             continue;
         }
+        // ドメインイベント（`payload.event_type` 付き: 構造化データのレコード変更・FSM 遷移・アプリの
+        // ライフサイクル）はストレージノードの書込ではない（`node_id` はノードを指さない）。索引する
+        // ものが無いので enqueue せず ack だけする（レコード変更ごとに空振りの取込ジョブを作らない・
+        // Phase 15 Task 15.6）。
+        if event.payload.get("event_type").is_some() {
+            ids.push(event.id);
+            continue;
+        }
         let message = IngestMessage {
             tenant_id: event.tenant_id.clone(),
             org: event.org.clone(),

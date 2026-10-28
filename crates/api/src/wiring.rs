@@ -375,6 +375,7 @@ pub(crate) async fn wire_chat(
     tabular: &Arc<tabular::TabularService>,
     office_runtime: Option<&api::state::OfficeRuntime>,
     skill_installs: &Arc<app_platform::SkillInstallService>,
+    data: &Arc<data::DataStore>,
 ) -> anyhow::Result<Option<Arc<chat::ChatStore>>> {
     if !config.chat.enabled {
         tracing::info!("chat.enabled=false: チャットは無効（/threads 系は 503）");
@@ -518,7 +519,10 @@ pub(crate) async fn wire_chat(
             office_engine: office_runtime.map(|o| Arc::clone(&o.engine)),
         },
         worker_config,
-    );
+    )
+    // 構造化データのツール（data_query / data_schema / data_record_write・Task 15.7）。
+    // API・ワークフローと同じ DataStore（クエリのチョークポイント）を共有する。
+    .with_data((**data).clone());
     // ワーカータスクは detach（プロセス生存中は走り続ける）。
     worker.spawn(config.chat.worker_concurrency);
     tracing::info!(
@@ -548,6 +552,7 @@ pub(crate) async fn wire_workflow(
     secrets: Option<&Arc<secrets::SecretStore>>,
     tabular: &Arc<tabular::TabularService>,
     artifacts: &Arc<artifact::ArtifactStore>,
+    data: (&Arc<data::DataStore>, &Arc<data::FsmStore>),
 ) -> anyhow::Result<(
     Option<Arc<workflow_engine::WorkflowRunLauncher>>,
     Option<Arc<workflow_engine::RunStore>>,
@@ -566,7 +571,8 @@ pub(crate) async fn wire_workflow(
     // resume の猶予をワーカーのリースから導出させる（固定値だと lease_secs を上げた構成で
     // 猶予がリースより短くなる・#446）。ワーカーと同じ値を 1 箇所で渡す。
     let runs = workflow_engine::RunStore::new(db.clone(), config.workflow.lease_secs);
-    let delegation = workflow_engine::DelegationStore::new(db.clone(), Arc::clone(authz));
+    let delegation = workflow_engine::DelegationStore::new(db.clone(), Arc::clone(authz))
+        .with_data((**data.0).clone());
     let launcher =
         workflow_engine::WorkflowRunLauncher::new(delegation, (**workflows).clone(), runs.clone());
     let gateway = Arc::new(build_gateway(config, http, db)?);
@@ -588,6 +594,9 @@ pub(crate) async fn wire_workflow(
         http: http.clone(),
         redis_url: Some(config.session.redis_url.clone()),
         config: config.workflow.clone(),
+        // data ノード・`Shiki.data.*`（Task 15.7）は API と同じ DataStore / FsmStore を共有する。
+        data: Arc::clone(data.0),
+        fsms: Arc::clone(data.1),
     })
     .await;
     Ok((Some(Arc::new(launcher)), Some(Arc::new(runs))))

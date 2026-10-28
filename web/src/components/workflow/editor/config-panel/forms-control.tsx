@@ -105,8 +105,7 @@ export function ConditionEditor({
   if (flat === null) {
     return (
       <p className="rounded-md border bg-muted/40 p-2 text-[11px] text-muted-foreground">
-        入れ子になった高度な条件が設定されています（AI 編集で変更できます）。
-        ここで編集すると単純な条件に置き換わります。
+        入れ子になった高度な条件が設定されています（AI 編集で変更できます）。ここで編集すると単純な条件に置き換わります。
         <Button
           variant="outline"
           size="sm"
@@ -356,8 +355,7 @@ export function MapForm({ node, dispatch, refCandidates, inMapRegion, fieldError
         </Select>
       </Field>
       <p className="rounded-md border bg-muted/40 p-2 text-[11px] text-muted-foreground">
-        繰り返しの中に入れるブロックは、追加後にこのブロックを「親」に指定します
-        （現在は AI 編集での作成が確実です）
+        繰り返しの中に入れるブロックは、追加後にこのブロックを「親」に指定します（現在は AI 編集での作成が確実です）
       </p>
     </div>
   );

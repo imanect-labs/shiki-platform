@@ -68,6 +68,11 @@ impl RequestClock {
         }
     }
 
+    /// 全体の締め切りまでの残り（429 の待ちが締め切りを越えないかの判定に使う）。
+    pub(crate) fn remaining(&self) -> Duration {
+        self.deadline.saturating_duration_since(Instant::now())
+    }
+
     /// 全体の締め切りを過ぎたか。
     fn expired(&self) -> bool {
         Instant::now() >= self.deadline

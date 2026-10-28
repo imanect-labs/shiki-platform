@@ -9,6 +9,7 @@
 /// slash コマンド（ブロック挿入）と併存し、書式への到達性を上げる。
 
 import * as React from "react";
+import { createPortal } from "react-dom";
 import type { Editor } from "@tiptap/react";
 import { BubbleMenu } from "@tiptap/react/menus";
 import {
@@ -85,18 +86,29 @@ function useTouchEditing(editor: Editor): boolean {
   return touchNarrow && focused && editor.isEditable;
 }
 
-/// ソフトウェアキーボードの高さ（visualViewport が layout viewport の下端から食い込む量）。
-/// iOS は layout viewport を縮めないため、fixed の下端をこの分だけ持ち上げる。
-function useKeyboardInset(active: boolean): number {
-  const [inset, setInset] = React.useState(0);
+/// 見えている領域（visualViewport）の下端。layout viewport の上端からの px で返す。
+///
+/// キーボード直上の補助バーはここへ下端を合わせる。「layout viewport の下端からキーボードが
+/// 食い込む量」（`innerHeight - vv.height - vv.offsetTop`）で持ち上げる方式は、iOS で
+/// `innerHeight` が見えている高さに追従する版・場面があると 0 になり、バーがキーボードの
+/// 裏へ隠れる（入力しようとするとツールバーが消える）。見えている領域の下端に直接合わせれば
+/// `innerHeight` の挙動に依存しない。visualViewport が無い環境では null（画面下端に置く）。
+function useVisualViewportBottom(active: boolean): { bottom: number; keyboard: boolean } | null {
+  const [state, setState] = React.useState<{ bottom: number; keyboard: boolean } | null>(null);
   React.useEffect(() => {
     const vv = typeof window !== "undefined" ? window.visualViewport : null;
     if (!active || !vv) {
-      setInset(0);
+      setState(null);
       return;
     }
-    const update = () =>
-      setInset(Math.max(0, Math.round(window.innerHeight - vv.height - vv.offsetTop)));
+    const update = () => {
+      const bottom = Math.round(vv.offsetTop + vv.height);
+      // layout viewport（iOS はキーボードで縮まない）の下端より上で切れていればキーボードが出ている。
+      const keyboard = bottom < document.documentElement.clientHeight - 1;
+      setState((prev) =>
+        prev && prev.bottom === bottom && prev.keyboard === keyboard ? prev : { bottom, keyboard },
+      );
+    };
     update();
     vv.addEventListener("resize", update);
     vv.addEventListener("scroll", update);
@@ -105,7 +117,7 @@ function useKeyboardInset(active: boolean): number {
       vv.removeEventListener("scroll", update);
     };
   }, [active]);
-  return inset;
+  return state;
 }
 
 /// ボタン押下でエディタのフォーカスを奪わない（キーボードを閉じない・選択を保つ）。
@@ -372,7 +384,15 @@ function InsertMenu({ editor }: { editor: Editor }) {
 }
 
 /// 本文上部の静的ツールバー（editable のときのみ表示）。
-export function NoteToolbar({ editor }: { editor: Editor }) {
+export function NoteToolbar({
+  editor,
+  extra,
+}: {
+  editor: Editor;
+  /// 画面固有の挿入ボタン（スキルエディタの「ドライブから参照」等）。上のバーと
+  /// キーボード直上の補助バーの先頭に出す（スマホの横スクロールでも最初から見える）。
+  extra?: React.ReactNode;
+}) {
   useEditorTick(editor);
   const touchEditing = useTouchEditing(editor);
   const canUndo = editor.can().undo?.() ?? false;
@@ -384,7 +404,7 @@ export function NoteToolbar({ editor }: { editor: Editor }) {
   return (
     <>
       {touchEditing ? (
-        <KeyboardAccessoryBar editor={editor} canUndo={canUndo} canRedo={canRedo} />
+        <KeyboardAccessoryBar editor={editor} canUndo={canUndo} canRedo={canRedo} extra={extra} />
       ) : null}
       <div
         // スクロール追従（スクロール域の上端に張り付く清潔なツールバー）。浮遊ピルではなく
@@ -400,6 +420,12 @@ export function NoteToolbar({ editor }: { editor: Editor }) {
         {/* PC は折り返し、スマホは 1 段の横スクロール（右端は「＋」の手前でフェード）。 */}
         <div className="relative min-w-0 flex-1">
           <div className="flex items-center gap-0.5 px-3 py-1.5 md:flex-wrap max-md:overflow-x-auto max-md:overscroll-x-contain max-md:pr-6 max-md:[scrollbar-width:none]">
+            {extra ? (
+              <>
+                {extra}
+                <ToolbarSeparator className="shrink-0" />
+              </>
+            ) : null}
             <ToolbarButton
               onClick={() => editor.chain().focus().undo().run()}
               disabled={!canUndo}
@@ -445,7 +471,9 @@ export function NoteToolbar({ editor }: { editor: Editor }) {
               active={editor.isActive("heading", { level: 3 })}
               onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}
               aria-label="見出し 3"
-              className="max-md:hidden"
+              // 画面固有のボタンがある分、狭い PC では見出し 3 を畳んで 1 行に収める
+              // （見出し 3 は「/」と「###」でも入れられる）。
+              className={extra ? "max-2xl:hidden" : "max-md:hidden"}
             >
               <Heading3 />
             </ToolbarButton>
@@ -530,26 +558,41 @@ function KeyboardAccessoryBar({
   editor,
   canUndo,
   canRedo,
+  extra,
 }: {
   editor: Editor;
   canUndo: boolean;
   canRedo: boolean;
+  extra?: React.ReactNode;
 }) {
-  const inset = useKeyboardInset(true);
-  return (
+  const viewport = useVisualViewportBottom(true);
+  // body 直下へ出す。本文側の祖先に transform / filter / backdrop-filter が付くと fixed の
+  // 基準がその祖先に変わり、画面下ではなく本文の下端に置かれて見えなくなる。
+  // （タッチで編集中にだけ描くので、サーバ描画では通らない＝document がある。）
+  return createPortal(
     <div
       role="toolbar"
       aria-label="書式"
       data-testid="note-keyboard-bar"
       onMouseDown={keepFocus}
-      style={{ bottom: inset }}
+      style={
+        viewport
+          ? { top: viewport.bottom, transform: "translateY(-100%)" }
+          : { bottom: 0 }
+      }
       className={cn(
         "fixed inset-x-0 z-40 flex items-center border-t bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/85",
-        inset === 0 && "pb-[env(safe-area-inset-bottom)]",
+        !viewport?.keyboard && "pb-[env(safe-area-inset-bottom)]",
       )}
     >
       <div className="relative min-w-0 flex-1">
         <div className="flex items-center gap-0.5 overflow-x-auto overscroll-x-contain px-2 py-1 pr-6 [scrollbar-width:none]">
+          {extra ? (
+            <>
+              {extra}
+              <ToolbarSeparator className="shrink-0" />
+            </>
+          ) : null}
           <ToolbarButton
             onClick={() => editor.chain().focus().undo().run()}
             disabled={!canUndo}
@@ -619,6 +662,7 @@ function KeyboardAccessoryBar({
         <Check className="size-4" aria-hidden />
         完了
       </button>
-    </div>
+    </div>,
+    document.body,
   );
 }

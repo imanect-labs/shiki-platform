@@ -14,6 +14,8 @@ import {
   citationRuns,
   claimsByNumber,
   groupCitations,
+  isWebCitation,
+  webHost,
   type CitationGroups,
   type CitationRun,
   type CitedPassage,
@@ -28,8 +30,9 @@ export type MessageCitations = {
   runs: CitationRun[];
   claims: Map<number, string>;
   metas: Record<string, NodeMeta>;
-  /// 表示名。解決できなければ「読み込み中…」、削除済み・権限なしと確定したら「開けないファイル」。
-  nameOf: (nodeId: string) => string;
+  /// 出所の表示名。Web の出典はページのタイトル（無ければホスト名）。文書は解決できなければ
+  /// 「読み込み中…」、削除済み・権限なしと確定したら「開けないファイル」。
+  nameOf: (c: Pick<Citation, "node_id" | "web">) => string;
 };
 
 const MessageCitationsContext = React.createContext<MessageCitations | null>(null);
@@ -61,7 +64,13 @@ function useCitationMetas(citations: readonly Citation[]): {
 } {
   const override = React.useContext(MetaOverrideContext);
   const ids = React.useMemo(
-    () => (override ? [] : Array.from(new Set(visibleCitations(citations).map((c) => c.node_id)))),
+    () =>
+      override
+        ? []
+        : Array.from(
+            // Web の出典はファイルを指さない（node_id は空）。
+            new Set(visibleCitations(citations).filter((c) => !isWebCitation(c)).map((c) => c.node_id)),
+          ),
     [citations, override],
   );
   const fetched = useNodeMetas(ids);
@@ -93,7 +102,11 @@ export function MessageCitationsProvider({
       runs,
       claims: claimsByNumber(runs),
       metas,
-      nameOf: (id) => metas[id]?.name ?? (missing(id) ? "開けないファイル" : "読み込み中…"),
+      nameOf: (c) => {
+        if (isWebCitation(c)) return c.web.title || webHost(c.web.url);
+        const id = c.node_id;
+        return metas[id]?.name ?? (missing(id) ? "開けないファイル" : "読み込み中…");
+      },
     };
   }, [messageKey, citations, text, metas, missing]);
 

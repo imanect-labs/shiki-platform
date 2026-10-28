@@ -75,6 +75,11 @@ pub(crate) const GATEWAY_ROUTES: &[GatewayRoute] = &[
         scope: RouteScope::Scoped(CapabilityScope::DataWrite),
     },
     GatewayRoute {
+        method: "GET",
+        path: "/gw/data/tables/{table_id}/stream",
+        scope: RouteScope::Scoped(CapabilityScope::DataRead),
+    },
+    GatewayRoute {
         method: "POST",
         path: "/gw/data/tables/{table_id}/query",
         scope: RouteScope::Scoped(CapabilityScope::DataRead),

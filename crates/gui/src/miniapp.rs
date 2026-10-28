@@ -3,7 +3,7 @@
 //! ミニアプリ = 画面（Yui の ```ui ブロックを含む Markdown）＋ skill ＋ ワークフローの
 //! **バージョン固定参照**を束ねたアーティファクト（kind=mini_app）。画面のボタンの実行先
 //! （`-> workflow 名前`）は、束ねたワークフローの別名からだけ選べる。テーブル（構造化データ）は
-//! Phase 9 合流後に追加。
+//! 保存ビューのピン（`data_views`）を画面の ```data_grid で参照して描く（Task 15.7・[`crate::data_grid`]）。
 //! 部品は常に明示ピン（再現性）で、共有はミニアプリ本体の ReBAC が正
 //! （部品の個別共有は不要 — 解決はバンドル権限チョークポイント
 //! [`ArtifactStore::get_version_via_bundle`] を通る）。
@@ -16,6 +16,9 @@ use crate::validate::GuiValidationError;
 
 /// ミニアプリが束ねられるワークフロー数の上限。
 pub const MAX_WORKFLOWS: usize = 20;
+
+/// ミニアプリが束ねられる保存ビュー数の上限。
+pub const MAX_DATA_VIEWS: usize = 20;
 
 /// 画面（Markdown）の大きさの上限（バイト）。
 pub const MAX_SCREEN_BYTES: usize = 64 * 1024;
@@ -59,6 +62,97 @@ pub struct MiniAppBody {
     /// 束ねるワークフロー（kind=workflow・画面のボタンの実行先はこの集合に限る）。
     #[serde(default)]
     pub workflows: Vec<NamedComponentPin>,
+    /// 束ねる保存ビュー（kind=data_view・画面の ```data_grid が参照できるのはこの集合に限る・Task 15.7）。
+    ///
+    /// 定義（クエリ）は保存した版に固定し、**データは閲覧者本人の権限で毎回評価する**
+    /// （[`ActionBinding::DataView`](crate::ActionBinding::DataView)）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[ts(optional, as = "Option<Vec<NamedComponentPin>>")]
+    pub data_views: Vec<NamedComponentPin>,
+}
+
+/// 名前付きピンの集合ごとの検証の語彙（ワークフロー・保存ビュー）。
+struct PinSet {
+    /// body のフィールド名（エラー位置の接頭辞）。
+    field: &'static str,
+    max: usize,
+    too_many: &'static str,
+    duplicate: &'static str,
+    /// 重複のメッセージの名詞（「同じ〇〇を複数回束ねています」）。
+    noun: &'static str,
+}
+
+impl PinSet {
+    const WORKFLOWS: PinSet = PinSet {
+        field: "workflows",
+        max: MAX_WORKFLOWS,
+        too_many: "miniapp.too_many_workflows",
+        duplicate: "miniapp.duplicate_workflow",
+        noun: "ワークフロー",
+    };
+    const DATA_VIEWS: PinSet = PinSet {
+        field: "data_views",
+        max: MAX_DATA_VIEWS,
+        too_many: "miniapp.too_many_data_views",
+        duplicate: "miniapp.duplicate_data_view",
+        noun: "保存ビュー",
+    };
+}
+
+/// 名前付きピン（別名・重複・版）の構造検証。
+fn check_named_pins(
+    pins: &[NamedComponentPin],
+    set: &PinSet,
+    errors: &mut Vec<GuiValidationError>,
+) {
+    if pins.len() > set.max {
+        errors.push(
+            GuiValidationError::new(set.too_many, format!("{} は最大 {} 件", set.field, set.max))
+                .at(set.field),
+        );
+    }
+    let mut aliases = std::collections::HashSet::new();
+    let mut ids = std::collections::HashSet::new();
+    for (i, pin) in pins.iter().enumerate() {
+        let path = format!("{}[{i}]", set.field);
+        // ボタンの `-> workflow 名前` と同じく途中の空白は許す（前後の空白・制御文字は不可）。
+        if pin.alias.trim().is_empty()
+            || pin.alias.trim() != pin.alias
+            || pin.alias.chars().count() > 64
+            || pin.alias.chars().any(char::is_control)
+        {
+            errors.push(
+                GuiValidationError::new(
+                    "miniapp.invalid_alias",
+                    "alias は前後に空白の無い 1〜64 文字（改行などの制御文字は不可）",
+                )
+                .at(&path),
+            );
+        }
+        if !aliases.insert(pin.alias.clone()) {
+            errors.push(
+                GuiValidationError::new(
+                    "miniapp.duplicate_alias",
+                    format!("alias '{}' が重複しています", pin.alias),
+                )
+                .at(&path),
+            );
+        }
+        if !ids.insert(pin.artifact_id) {
+            errors.push(
+                GuiValidationError::new(
+                    set.duplicate,
+                    format!("同じ{}を複数回束ねています", set.noun),
+                )
+                .at(&path),
+            );
+        }
+        if pin.version < 1 {
+            errors.push(
+                GuiValidationError::new("miniapp.invalid_version", "version は 1 以上").at(&path),
+            );
+        }
+    }
 }
 
 /// mini_app body の構造検証（同期・純粋）。参照の存在・kind・権限は
@@ -85,57 +179,8 @@ pub fn validate_miniapp_body(
             "description は必須です",
         ));
     }
-    if body.workflows.len() > MAX_WORKFLOWS {
-        errors.push(
-            GuiValidationError::new(
-                "miniapp.too_many_workflows",
-                format!("workflows は最大 {MAX_WORKFLOWS} 件"),
-            )
-            .at("workflows"),
-        );
-    }
-    let mut aliases = std::collections::HashSet::new();
-    let mut ids = std::collections::HashSet::new();
-    for (i, wf) in body.workflows.iter().enumerate() {
-        let path = format!("workflows[{i}]");
-        // ボタンの `-> workflow 名前` と同じく途中の空白は許す（前後の空白・制御文字は不可）。
-        if wf.alias.trim().is_empty()
-            || wf.alias.trim() != wf.alias
-            || wf.alias.chars().count() > 64
-            || wf.alias.chars().any(char::is_control)
-        {
-            errors.push(
-                GuiValidationError::new(
-                    "miniapp.invalid_alias",
-                    "alias は前後に空白の無い 1〜64 文字（改行などの制御文字は不可）",
-                )
-                .at(&path),
-            );
-        }
-        if !aliases.insert(wf.alias.clone()) {
-            errors.push(
-                GuiValidationError::new(
-                    "miniapp.duplicate_alias",
-                    format!("alias '{}' が重複しています", wf.alias),
-                )
-                .at(&path),
-            );
-        }
-        if !ids.insert(wf.artifact_id) {
-            errors.push(
-                GuiValidationError::new(
-                    "miniapp.duplicate_workflow",
-                    "同じワークフローを複数回束ねています",
-                )
-                .at(&path),
-            );
-        }
-        if wf.version < 1 {
-            errors.push(
-                GuiValidationError::new("miniapp.invalid_version", "version は 1 以上").at(&path),
-            );
-        }
-    }
+    check_named_pins(&body.workflows, &PinSet::WORKFLOWS, &mut errors);
+    check_named_pins(&body.data_views, &PinSet::DATA_VIEWS, &mut errors);
     check_screen(&body, &mut errors);
     if let Some(skill) = &body.skill {
         if skill.version < 1 {
@@ -170,6 +215,25 @@ fn check_screen(body: &MiniAppBody, errors: &mut Vec<GuiValidationError>) {
             .at("screen"),
         );
         return;
+    }
+    for grid in crate::data_grid::data_grid_blocks(&body.screen) {
+        match grid.alias.as_deref() {
+            Some(alias) if body.data_views.iter().any(|v| v.alias == alias) => {}
+            Some(alias) => errors.push(
+                GuiValidationError::new(
+                    "miniapp.data_view_not_bundled",
+                    format!("表「{alias}」が、束ねた保存ビューにありません"),
+                )
+                .at("screen"),
+            ),
+            None => errors.push(
+                GuiValidationError::new(
+                    "miniapp.data_grid_without_view",
+                    "```data_grid には束ねた保存ビューの別名を 1 行で書いてください",
+                )
+                .at("screen"),
+            ),
+        }
     }
     for block in yui::extract_action_blocks(&body.screen) {
         let title = match &block.figure {

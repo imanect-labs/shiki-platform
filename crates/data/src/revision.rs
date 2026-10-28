@@ -82,19 +82,24 @@ impl DataStore {
         .await?;
         // テーブルが生存していること（削除済みテーブルの履歴を残存タプルで読ませない）。
         let table = self.fetch_live(ctx, table_id).await?;
+        let az = self.authz_memo();
         // 行可視性ゲート: 現存かつ不可視なら 404。削除済み実在履歴は owner のみ。
         if self
-            .select_visible_by_id(ctx, &table, record_id)
+            .select_visible_by_id(ctx, &az, &table, record_id)
             .await?
             .is_none()
         {
             let exists: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM data_record WHERE tenant_id = $1 AND table_id = $2 AND id = $3)",
+                "SELECT EXISTS(SELECT 1 FROM data_record \
+                 WHERE tenant_int = $4 AND table_int = $5 AND tenant_id = $1 AND table_id = $2 \
+                   AND id = $3)",
             )
             .bind(&ctx.tenant_id)
             .bind(table_id)
             .bind(record_id)
-            .fetch_one(&self.db)
+            .bind(table.keys.tenant_int)
+            .bind(table.keys.table_int)
+            .fetch_one(self.pools.for_tenant(&ctx.tenant_id))
             .await
             .map_err(map_db)?;
             if exists {
@@ -111,37 +116,132 @@ impl DataStore {
             .map_err(|_| DataError::NotFound)?;
         }
         let limit = limit.clamp(1, 200);
-        let rows: Vec<RevisionRow> = sqlx::query_as(
-            "SELECT record_id, rev, changed_by, change_kind, patch, created_at \
-             FROM data_record_revision \
-             WHERE tenant_id = $1 AND table_id = $2 AND record_id = $3 \
-               AND ($4::bigint IS NULL OR rev < $4) \
-             ORDER BY rev DESC LIMIT $5",
-        )
-        .bind(&ctx.tenant_id)
-        .bind(table_id)
-        .bind(record_id)
-        .bind(before_rev)
-        .bind(limit)
-        .fetch_all(&self.db)
-        .await
-        .map_err(map_db)?;
-        let masked = self.masked_fields(ctx, &table).await?;
-        Ok(rows
-            .into_iter()
-            .map(|r| {
+        let masked = self.masked_fields(ctx, &az, &table).await?;
+        // 読めない列だけが変わった更新は、その版ごと閲覧者に返さない（変更の時刻も読めない列の情報・
+        // B-P3-1）。間引いた分はページを埋めるまで続きを引く（上限付き）。
+        let mut out: Vec<RecordRevision> = Vec::new();
+        let mut cursor = before_rev;
+        for _ in 0..MAX_REVISION_PAGES {
+            let rows: Vec<RevisionRow> = sqlx::query_as(
+                "SELECT record_id, rev, changed_by, change_kind, patch, created_at \
+                 FROM data_record_revision \
+                 WHERE tenant_id = $1 AND table_id = $2 AND record_id = $3 \
+                   AND ($4::bigint IS NULL OR rev < $4) \
+                 ORDER BY rev DESC LIMIT $5",
+            )
+            .bind(&ctx.tenant_id)
+            .bind(table_id)
+            .bind(record_id)
+            .bind(cursor)
+            .bind(limit)
+            .fetch_all(self.pools.for_tenant(&ctx.tenant_id))
+            .await
+            .map_err(map_db)?;
+            let exhausted = i64::try_from(rows.len()).unwrap_or(i64::MAX) < limit;
+            cursor = rows.last().map(|r| r.rev).or(cursor);
+            for r in rows {
                 let mut patch = r.patch.0;
+                upgrade_link_patches(&table.schema, &mut patch);
+                let had = !patch.is_empty();
                 Self::apply_mask_patches(&masked, &mut patch);
-                RecordRevision {
+                if had && patch.is_empty() && r.change_kind == "update" {
+                    continue;
+                }
+                out.push(RecordRevision {
                     record_id: r.record_id,
                     rev: r.rev,
                     changed_by: r.changed_by,
                     change_kind: r.change_kind,
                     patch,
                     created_at: r.created_at,
+                });
+                if i64::try_from(out.len()).unwrap_or(i64::MAX) >= limit {
+                    break;
                 }
-            })
-            .collect())
+            }
+            if exhausted || i64::try_from(out.len()).unwrap_or(i64::MAX) >= limit {
+                break;
+            }
+        }
+        // リンク列の差分も、閲覧者に見える参照先だけにする（レコードの読取と同じ存在秘匿・§7.2）。
+        self.filter_link_patches(ctx, &az, &table, &masked, &mut out)
+            .await?;
+        Ok(out)
+    }
+
+    /// 履歴の差分のリンク値を、閲覧者本人の権限で見える参照先だけに絞る（リンク列ごとに 1 回で引く）。
+    async fn filter_link_patches(
+        &self,
+        ctx: &AuthContext,
+        az: &crate::policy::memo::AuthzMemo<'_>,
+        table: &crate::model::DataTable,
+        masked: &std::collections::HashSet<String>,
+        revs: &mut [RecordRevision],
+    ) -> Result<(), DataError> {
+        for f in &table.schema.fields {
+            if f.field_type != crate::model::FieldType::RecordRef || masked.contains(&f.key) {
+                continue;
+            }
+            let Some(rt) = f.ref_table else { continue };
+            let ids: Vec<Uuid> = revs
+                .iter()
+                .flat_map(|r| r.patch.iter())
+                .filter(|p| p.field == f.key)
+                .flat_map(|p| link_ids(&p.old).into_iter().chain(link_ids(&p.new)))
+                .collect::<std::collections::BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            if ids.is_empty() {
+                continue;
+            }
+            let visible = self
+                .visible_ref_rows(ctx, az, rt, &ids, &std::collections::BTreeSet::new(), 0)
+                .await?
+                .rows;
+            for p in revs
+                .iter_mut()
+                .flat_map(|r| r.patch.iter_mut())
+                .filter(|p| p.field == f.key)
+            {
+                for v in [&mut p.old, &mut p.new] {
+                    if let Value::Array(a) = v {
+                        a.retain(|e| {
+                            e.as_str()
+                                .and_then(|s| Uuid::parse_str(s).ok())
+                                .is_some_and(|id| visible.contains_key(&id))
+                        });
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+/// 間引いた版の分を埋めるために続けて引くページ数の上限。
+const MAX_REVISION_PAGES: usize = 5;
+
+/// 差分のリンク値（配列へ寄せた後）の参照先 id。
+fn link_ids(v: &Value) -> Vec<Uuid> {
+    v.as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .filter_map(|s| Uuid::parse_str(s).ok())
+        .collect()
+}
+
+/// 履歴の差分に残る v1 の `record_ref` の値（単一 UUID 文字列）を、レコードの読取と同じ配列の形へ寄せる
+/// （値の移行前に記録された差分も、現行の外部形で返す）。
+fn upgrade_link_patches(schema: &crate::model::TableSchema, patch: &mut [FieldPatch]) {
+    for p in patch {
+        if schema
+            .field(&p.field)
+            .is_some_and(|f| f.field_type == crate::model::FieldType::RecordRef)
+        {
+            p.old = crate::field_key::upgrade_link_value(&p.old);
+            p.new = crate::field_key::upgrade_link_value(&p.new);
+        }
     }
 }
 
@@ -161,19 +261,39 @@ pub(crate) async fn insert_revision(
     ctx: &AuthContext,
     ins: RevisionInsert<'_>,
 ) -> Result<(), DataError> {
+    insert_revisions(conn, ctx, std::slice::from_ref(&ins)).await
+}
+
+/// リビジョン行をまとめて挿入する（1 文・一括書込パスと 1 件の書込で共通・同一 Tx）。
+pub(crate) async fn insert_revisions(
+    conn: &mut sqlx::PgConnection,
+    ctx: &AuthContext,
+    rows: &[RevisionInsert<'_>],
+) -> Result<(), DataError> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let record_ids: Vec<Uuid> = rows.iter().map(|r| r.record_id).collect();
+    let table_ids: Vec<Uuid> = rows.iter().map(|r| r.table_id).collect();
+    let revs: Vec<i64> = rows.iter().map(|r| r.rev).collect();
+    let kinds: Vec<&str> = rows.iter().map(|r| r.change_kind).collect();
+    let patches: Vec<Json<&[FieldPatch]>> = rows.iter().map(|r| Json(r.patch)).collect();
+    let traces: Vec<Option<&str>> = rows.iter().map(|r| r.trace_id).collect();
     sqlx::query(
         "INSERT INTO data_record_revision \
          (tenant_id, record_id, table_id, rev, changed_by, change_kind, patch, trace_id) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+         SELECT $1, u.record_id, u.table_id, u.rev, $2, u.kind, u.patch, u.trace_id \
+         FROM unnest($3::uuid[], $4::uuid[], $5::int8[], $6::text[], $7::jsonb[], $8::text[]) \
+           AS u(record_id, table_id, rev, kind, patch, trace_id)",
     )
     .bind(&ctx.tenant_id)
-    .bind(ins.record_id)
-    .bind(ins.table_id)
-    .bind(ins.rev)
     .bind(&ctx.principal.id)
-    .bind(ins.change_kind)
-    .bind(Json(ins.patch))
-    .bind(ins.trace_id)
+    .bind(&record_ids)
+    .bind(&table_ids)
+    .bind(&revs)
+    .bind(&kinds)
+    .bind(&patches)
+    .bind(&traces)
     .execute(conn)
     .await
     .map_err(map_db)?;

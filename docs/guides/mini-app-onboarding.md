@@ -225,7 +225,7 @@ B2 のコードはサンドボックス内で動かし、クライアント秘�
 | 能力 | 何ができる | スコープ例 |
 |------|-----------|-----------|
 | `storage` | ファイル・フォルダの読み書き | `storage.read` / `storage.write` |
-| `data` | 構造化データ（テーブル/レコード）のCRUD（§6） | `data.read` / `data.write` |
+| `data` | 構造化データ（テーブル/レコード）のCRUD（§6）・レコード変更のリアルタイム購読（`/gw/data/tables/{id}/stream`・見える行と列だけが届く） | `data.read` / `data.write` |
 | `rag` | 権限を守った文書検索（引用付き） | `rag.search` |
 | `ai` | LLM呼び出し・エージェント実行（§7） | `ai.invoke` |
 | `identity` | ユーザー/ロール情報の参照 | `identity.read` |

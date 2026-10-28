@@ -313,7 +313,7 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 - **DST**: 「存在しない時刻はスキップ・二重時刻は先勝ち」。
 - **`catchup`**:
   - `skip`（既定）: 停止中の未発火は直近 1 回だけ発火する。
-  - `none`: 未発火は捨てる。
+  - `none`: 停止中の未発火は捨てる（稼働中の時刻どおりの発火はする。判定は engine.md §5.2）。
   - **`all`（全部再生）は v1 でやらない**。
 - misfire（停止中の穴）の埋め方の実行時挙動は [engine.md](./engine.md) §5。
 
@@ -352,9 +352,10 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 | `storage.read` | 能力 | ファイル読み（≤ 10MB） | pure | 30s / 120s |
 | `storage.write` | 能力 | ファイル書き（新バージョン） | engine-dedup | 30s / 120s |
 | `storage.list` | 能力 | フォルダ一覧 | pure | 30s / 120s |
-| `data.query` | 能力 | 宣言的クエリ | pure | 30s / 120s |
-| `data.record.create` / `data.record.update` | 能力 | レコード書込（rev 楽観ロック） | engine-dedup | 30s / 120s |
+| `data.query` | 能力 | 宣言的クエリ（**data の `DataQuery` をそのまま使う**・比較値に `$from` 可） | pure | 30s / 120s |
+| `data.record.create` / `data.record.update` / `data.record.delete` | 能力 | レコード書込（rev 楽観ロック・rev 省略時は実行時点の rev） | engine-dedup | 30s / 120s |
 | `data.transition` | 能力 | **FSM 遷移 API を叩く**（直接 status 書込は構造的に不可能） | engine-dedup | 30s / 120s |
+| `data.bulk_upsert` | 能力 | 一括の作成・更新（data の一括書込パス・最大 5,000 行・誤りは行ごとに拒否） | engine-dedup | 120s / 600s |
 | `rag.search` | 能力 | permission-aware 検索（必要スコープは既存語彙 `rag.query`） | pure | 60s / 120s |
 | `notify.send` | 能力 | アプリ内通知 | engine-dedup | 30s / 60s |
 | `workflow.start` | 能力 | 別ワークフロー起動（fire-and-forget・run_id 返し） | engine-dedup（起動 1 回保証） | 10s / 30s |
@@ -374,14 +375,19 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 ```jsonc
 { "id": "approve", "type": "data.transition",
   "params": {
-    "table": "expense",
-    "record": { "$from": "trigger", "path": "/record/id" },
-    "transition": "approve",       // FSM で宣言済みの遷移名（codegen/レジストリ照合）
-    "input": { "$from": "input", "path": "/comment", "default": "" }
+    "table": "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1",   // テーブル id（UUID・$from 可）
+    "record": { "$from": "trigger", "path": "/record_id" },
+    "to": "approved",              // 遷移先の status（FSM は「現在の status → to」で遷移を定義する）
+    "expected_rev": { "$from": "trigger", "path": "/rev" }   // 省略時は実行時点の rev
   } }
 ```
 
-- 出力: 遷移後レコードの要約 `{ "record_id", "status", "rev" }`。
+- 出力: 遷移後のレコード（実行主体のフィールドマスク適用後）。
+- Task 15.7 で実装した際、遷移名（`transition`）と遷移入力（`input`）の指定は採らなかった。data の FSM
+  （`FsmBody`）は遷移に名前を持たず「from → to」で定義し、遷移に入力も取らないため。
+- **data ノード共通（Task 15.7）**: 認可は data 側（行述語・フィールドマスク・OpenFGA）。interactive run は
+  起動したユーザーの権限、schedule / event run は**ワークフロー主体に委譲されたテーブルだけを、委譲元
+  ユーザーの権限で**読み書きする（行は委譲元の行述語で絞られる・[engine.md](./engine.md) §6.8）。
 
 ### 7.2 `http.request`（外部 HTTP・PIT-36 の型防御）
 
@@ -602,10 +608,9 @@ AI 編集も dnd 保存も**同一エンドポイント・同一パイプライ�
     // 2b) 低額: FSM 遷移 API で自動承認
     { "id": "auto_approve", "type": "data.transition",
       "params": {
-        "table": "expense",
+        "table": "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1",   // 経費テーブルの id（§7.1・Phase 15.7 で名前ではなく UUID）
         "record": { "$from": "trigger", "path": "/record/id" },
-        "transition": "approve",
-        "input": { "$from": "run", "path": "/run_id" }
+        "to": "approved"                                   // 遷移名・遷移入力ではなく遷移先の status（§7.1）
       } },
 
     // 3) 両分岐の合流（どちらか一方だけ live・all で待って dead を吸収）

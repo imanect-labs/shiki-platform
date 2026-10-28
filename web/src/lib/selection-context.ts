@@ -13,7 +13,9 @@ export type SelectionKind =
   | "note_selection"
   | "csv_range"
   | "slide_selection"
-  | "office_selection";
+  | "office_selection"
+  /// スキルエディタで編集中のスキル全体（#919・excerpt は save_skill の入力と同じ JSON）。
+  | "skill_draft";
 
 /// 選択コンテキスト（サーバの chat::SelectionContext と対）。
 export interface SelectionContext {
@@ -31,9 +33,15 @@ function emit() {
   for (const l of listeners) l();
 }
 
+/// 抜粋の上限（サーバの `SelectionKind::excerpt_max_chars` と同じ値）。スキルは全体を渡す
+/// ため大きい（切れた内容を AI が丸ごと書き直すと、切れた後ろが消える）。
+function excerptMax(kind: SelectionKind): number {
+  return kind === "skill_draft" ? 48_000 : 8_000;
+}
+
 /// 選択を積む（既存があれば置き換え・excerpt はクライアント側でも軽く切り詰める）。
 export function setPendingSelection(ctx: SelectionContext) {
-  pending = { ...ctx, excerpt: ctx.excerpt.slice(0, 8_000) };
+  pending = { ...ctx, excerpt: ctx.excerpt.slice(0, excerptMax(ctx.kind)) };
   emit();
 }
 
@@ -72,6 +80,8 @@ export function selectionKindLabel(kind: SelectionKind): string {
       return "スライドの選択要素";
     case "office_selection":
       return "文書の選択範囲";
+    case "skill_draft":
+      return "編集中のスキル";
     default:
       return "選択範囲";
   }

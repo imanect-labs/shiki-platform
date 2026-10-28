@@ -68,6 +68,8 @@ test.describe("ミニアプリ（画面の作成・実行・バンドル権限�
     await dialog.getByLabel(/画面の見出し/).fill("経費の申請");
     await dialog.getByLabel("追加するワークフロー").selectOption({ label: `${flow}（v1）` });
     await dialog.getByRole("button", { name: "追加" }).click();
+    // 既定は「組み立てる」。記法は「書く」タブで見る。
+    await dialog.getByRole("tab", { name: "書く" }).click();
     await expect(dialog.getByRole("textbox", { name: /^画面\*?$/ })).toHaveValue(new RegExp(`-> workflow ${flow}`));
     // プレビューで図になる（ボタンは保存前なので押せない）。
     await dialog.getByRole("tab", { name: "プレビュー" }).click();
@@ -117,6 +119,65 @@ test.describe("ミニアプリ（画面の作成・実行・バンドル権限�
     } finally {
       await bobContext.close();
     }
+  });
+
+  test("「組み立てる」で部品を足して保存し、足した部品で起動できる", async ({ page }) => {
+    test.setTimeout(180_000);
+    await loginViaKeycloak(page);
+    const flow = uniqueName("build-flow");
+    await createFlow(page, flow);
+
+    await page.goto("/apps");
+    await page.getByRole("button", { name: "アプリを作成" }).first().click();
+    const dialog = page.getByRole("dialog");
+    const appName = uniqueName("e2e-build");
+    await dialog.getByLabel(/名前/).fill(appName);
+    await dialog.getByLabel(/画面の見出し/).fill("備品の申請");
+    await dialog.getByLabel("追加するワークフロー").selectOption({ label: `${flow}（v1）` });
+    await dialog.getByRole("button", { name: "追加" }).click();
+
+    // 雛形（金額・区分・申請する）が組み立てるに出る。パレットから「1 行の文字」を足し、ラベルを直す。
+    const builder = dialog.getByTestId("screen-builder");
+    const editor = builder.locator("[data-yui=app-editor]");
+    await expect(editor.getByRole("button", { name: /^金額/ })).toBeVisible();
+    await editor.getByRole("button", { name: "1 行の文字" }).first().click();
+    const label = editor.locator("[data-yui-inspector] input[data-prop=label]");
+    await label.fill("品名");
+    await editor.locator("[data-yui-inspector] input[type=checkbox][data-prop=required]").check();
+    await expect(editor.getByRole("button", { name: /^品名/ })).toBeVisible();
+
+    // 書けない設定（ラベルの =）はその場でエラーになり、保存できない。
+    await label.fill("品名=x");
+    await expect(editor.getByText("ラベルに「=」は使えません").first()).toBeVisible();
+    await expect(dialog.getByRole("button", { name: "作成" })).toBeDisabled();
+    // プレビューへ移っても保存できないまま。戻るとエラーの段がそのまま残っている。
+    await dialog.getByRole("tab", { name: "プレビュー" }).click();
+    await expect(dialog.getByRole("button", { name: "作成" })).toBeDisabled();
+    await dialog.getByRole("tab", { name: "組み立てる" }).click();
+    await expect(editor.getByText("ラベルに「=」は使えません").first()).toBeVisible();
+    await label.fill("品名");
+    await expect(dialog.getByRole("button", { name: "作成" })).toBeEnabled();
+
+    // 書くタブには正規形のソースが入っている。
+    await dialog.getByRole("tab", { name: "書く" }).click();
+    await expect(dialog.getByRole("textbox", { name: /^画面\*?$/ })).toHaveValue(/品名 = text 必須/);
+    await dialog.getByRole("button", { name: "作成" }).click();
+
+    const card = page.locator("li", { has: page.getByRole("heading", { name: appName }) });
+    await expect(card).toBeVisible({ timeout: 15_000 });
+    await card.getByRole("link", { name: "開く" }).click();
+    await page.waitForURL(/\/apps\/[0-9a-f-]+/i, { timeout: 15_000 });
+
+    // 足した部品が画面に出て、それを入れて起動できる。
+    const figure = page.getByTestId("ui-figure");
+    await expect(figure.getByRole("button", { name: "申請する" })).toBeEnabled({ timeout: 15_000 });
+    await figure.getByLabel("品名").fill("ノート PC");
+    await figure.getByLabel("金額").fill("1200");
+    await figure.getByRole("radio", { name: "交通費" }).click();
+    await figure.getByRole("button", { name: "申請する" }).click();
+    await figure.getByRole("group", { name: "実行の確認" }).getByRole("button", { name: "実行する" }).click();
+    await expect(figure.getByText(/を起動しました/)).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByTestId("yui-runs")).toContainText("品名: ノート PC");
   });
 
   test("会話の ```ui app を「アプリとして保存」して、そのまま使える", async ({ page }) => {

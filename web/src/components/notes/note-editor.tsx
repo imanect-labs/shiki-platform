@@ -24,7 +24,7 @@ import * as React from "react";
 import { Button } from "@/components/ui/button";
 import type { CollabProvider } from "@/lib/collab";
 import { cn } from "@/lib/utils";
-import { AiSuggestionMark } from "./ai-suggestion-mark";
+import { AiDeletionMark, AiSuggestionMark, countSuggestions } from "./ai-suggestion-mark";
 import { ShikiEmbed } from "./embed/shiki-embed-node";
 import { LivePreview } from "./live-preview";
 import { MarkdownClipboard } from "./markdown-clipboard";
@@ -102,8 +102,9 @@ export function NoteEditor({
       Placeholder.configure({
         placeholder: "入力するか、「/」でコマンドを呼び出す…",
       }),
-      // AI 提案マーク（document.edit suggest モード・Task 11P.4）。
+      // AI 提案マーク（document.edit suggest モード・Task 11P.4・消す側は #886）。
       AiSuggestionMark,
+      AiDeletionMark,
       // 埋め込みブロック（Task 11P.6・3 種のみ・生 HTML 不可）。
       ShikiEmbed,
       // Markdown ネイティブ化（issue #297）: コピー→md／素 md ペースト→ブロック変換。
@@ -183,16 +184,10 @@ function SuggestionReviewBar({ editor }: { editor: Editor }) {
 
   React.useEffect(() => {
     const update = () => {
-      const markType = editor.schema.marks.aiSuggestion;
-      if (!markType) {
-        setCount(0);
-        return;
-      }
-      let n = 0;
-      editor.state.doc.descendants((node) => {
-        if (node.isText && node.marks.some((m) => m.type === markType)) n += 1;
-      });
-      setCount(n);
+      const { aiSuggestion, aiDeletion } = editor.schema.marks;
+      // 入れる提案・消す提案のどちらかがあればバーを出す。
+      const types = [aiSuggestion, aiDeletion].filter((t) => t !== undefined);
+      setCount(types.length === 0 ? 0 : countSuggestions(editor.state.doc, types));
     };
     update();
     editor.on("transaction", update);

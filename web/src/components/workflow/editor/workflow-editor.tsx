@@ -5,7 +5,8 @@
 /// - 保存は**明示**（PUT + expected_version・409 は競合通知→再読込）。autosave しない
 ///   （版が無限に増える＋検証必須のため）。dirty は離脱ガード。
 /// - ライブ検証: IR 変更を 600ms debounce で `POST /workflows/validate` に流し、
-///   エラーを該当ノード上へ表示（保存前に気づける）。
+///   エラーを該当ノード上へ表示（保存前に気づける）。保存を止めない警告（`warnings`・条件の意味論の
+///   切替で分岐の結果が変わり得る条件など）も開いた時点・編集中・保存時に受け、注意の印と一覧で見せる。
 /// - レイアウト（座標）のみ 1s debounce で自動保存（安価・非バージョン）。
 /// - 上部の操作（実行・保存・⋯）はシェルのページクロームへ `renderChrome` 側で登録する。
 /// - スマホ（md 未満）はキャンバスの代わりに `MobileFlow`（縦のカード＋間の＋）を出し、
@@ -13,13 +14,16 @@
 
 import * as React from "react";
 import { ReactFlowProvider } from "@xyflow/react";
-import { ListTree, Workflow } from "lucide-react";
+import { ListTree, ShieldCheck, TriangleAlert, Workflow } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { toast } from "@/components/ui/use-toast";
 import { FadeSlide } from "@/components/ui/motion-primitives";
 import { useMediaQuery } from "@/hooks/use-media-query";
-import type { WorkflowIr } from "@/generated/workflow-ir";
+import { scopeLabel } from "@/lib/workflow-scopes";
+import { cn } from "@/lib/utils";
+import type { ValidationError, WorkflowIr } from "@/generated/workflow-ir";
 import {
   putLayout,
   updateWorkflow,
@@ -86,19 +90,45 @@ export function WorkflowEditor({
   const [mobileView, setMobileView] = React.useState<"list" | "canvas">("list");
   // ブロック選択シートの追加先（null で閉じる）。
   const [adding, setAdding] = React.useState<{ target: AddTarget; label: string } | null>(null);
+  // このワークフローが使う権限（ブロックが要するスコープをサーバが補完した宣言・検証と保存の応答で更新する・
+  // C-P1-2）。宣言はエディタで書かせず、ブロックから決まるものとして見せるだけ。
+  const [scopes, setScopes] = React.useState<string[]>(initialIr.declared_scopes ?? []);
 
   // ── ライブ検証（600ms debounce・保存しない）─────────────────────────────
   React.useEffect(() => {
     if (!state.dirty) return;
     const timer = setTimeout(() => {
       validateWorkflow(state.ir)
-        .then((errors) => dispatch({ type: "set_errors", errors }))
+        .then(({ errors, warnings, declaredScopes }) => {
+          dispatch({ type: "set_errors", errors });
+          dispatch({ type: "set_warnings", warnings });
+          if (declaredScopes) setScopes(declaredScopes);
+        })
         .catch(() => {
           // ライブ検証は best-effort（ネットワーク断で編集を妨げない）。保存時に必ず再検証される。
         });
     }, 600);
     return () => clearTimeout(timer);
   }, [state.ir, state.dirty, dispatch]);
+
+  // ── 開いた時点の警告（保存済みの定義が意味論の切替で振る舞いを変え得るか）──────────
+  React.useEffect(() => {
+    let active = true;
+    validateWorkflow(initialIr)
+      .then(({ warnings, declaredScopes }) => {
+        if (!active) return;
+        dispatch({ type: "set_warnings", warnings });
+        if (declaredScopes) setScopes(declaredScopes);
+      })
+      .catch(() => {
+        // 付加情報（開けないわけではない）。編集・保存のたびに改めて受ける。
+      });
+    return () => {
+      active = false;
+    };
+    // 開いたときの 1 回だけ（以後はライブ検証・保存の応答で更新する）。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // ── レイアウト自動保存（1s debounce・非バージョン）───────────────────────
   React.useEffect(() => {
@@ -135,9 +165,30 @@ export function WorkflowEditor({
     const irToSave = state.ir;
     try {
       const saved = await updateWorkflow(workflowId, irToSave, state.savedVersion);
-      dispatch({ type: "saved", version: saved.version, savedIr: irToSave });
+      // サーバが補完した宣言（保存した版の declared_scopes）を手元の IR にも入れる（保存中に続けた編集が
+      // 無いときだけ・reducer が判断する。あれば次の保存でまた補完される）。
+      dispatch({ type: "saved", version: saved.version, savedIr: irToSave, declaredScopes: saved.declared_scopes });
+      if (saved.declared_scopes) setScopes(saved.declared_scopes);
       dispatch({ type: "set_errors", errors: [] });
-      toast({ title: `保存しました（v${saved.version}）` });
+      dispatch({ type: "set_warnings", warnings: saved.warnings });
+      toast(
+        saved.warnings.length
+          ? {
+              title: `保存しました（v${saved.version}）・確認が必要な条件が ${saved.warnings.length} 件あります`,
+              description: "条件の比較のしかたが変わったため、分岐の結果が以前と変わる場合があります。注意の印のブロックを確認してください。",
+            }
+          : { title: `保存しました（v${saved.version}）` },
+      );
+      // スケジュールで動く定義に、テーブルを実行の入力から決めるブロックがある: 入力の無い自動実行では
+      // 対象が決まらず失敗する。有効化より前（保存の時点）に知らせる（C2 P3）。
+      const inputTables = scheduleInputTableBlocks(irToSave);
+      if (inputTables.length) {
+        toast({
+          title: "スケジュールの実行では動かないブロックがあります",
+          description: `「${inputTables.join("」「")}」は対象のテーブルを実行の入力から決めますが、スケジュールの実行には入力がありません。テーブルを固定するか、手動の実行だけで使ってください。`,
+          duration: 12_000,
+        });
+      }
       return true;
     } catch (e) {
       if (e instanceof WorkflowValidationError) {
@@ -220,9 +271,20 @@ export function WorkflowEditor({
                 layout={state.layout}
                 selection={state.selection}
                 serverErrors={state.serverErrors}
+                serverWarnings={state.serverWarnings}
                 dispatch={dispatch}
               />
             </ReactFlowProvider>
+            {desktop && state.serverWarnings.length > 0 ? (
+              <div className="absolute left-1/2 top-3 z-10 -translate-x-1/2">
+                <WarningsSummary
+                  warnings={state.serverWarnings}
+                  ir={state.ir}
+                  onSelect={(id) => dispatch({ type: "select", selection: { kind: "node", id } })}
+                />
+              </div>
+            ) : null}
+            {desktop ? <ScopesPill scopes={scopes} className="absolute bottom-3 left-1/2 z-10 -translate-x-1/2" /> : null}
             {paletteOpen && desktop ? (
               <FadeSlide from="left" className="absolute inset-y-3 left-3 z-10 w-64">
                 <Palette onPick={(nodeType) => pick(endTarget(state.ir), nodeType)} />
@@ -246,10 +308,24 @@ export function WorkflowEditor({
         </div>
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain">
+          {/* 次のカードに接しないよう下にも空ける（C2 P3）。 */}
+          <div className="px-4 pb-3 pt-3">
+            <ScopesPill scopes={scopes} />
+          </div>
+          {state.serverWarnings.length > 0 ? (
+            <div className="px-4 pt-3">
+              <WarningsSummary
+                warnings={state.serverWarnings}
+                ir={state.ir}
+                onSelect={(id) => dispatch({ type: "select", selection: { kind: "node", id } })}
+              />
+            </div>
+          ) : null}
           <MobileFlow
             ir={state.ir}
             selection={state.selection}
             serverErrors={state.serverErrors}
+            serverWarnings={state.serverWarnings}
             dispatch={dispatch}
             onAdd={(target, label) => setAdding({ target, label })}
           />
@@ -274,5 +350,105 @@ export function WorkflowEditor({
         }}
       />
     </div>
+  );
+}
+
+/// スケジュールのきっかけがあり、テーブルを実行の入力（`$from: "input…"`）から決めるブロックの名前。
+function scheduleInputTableBlocks(ir: EditorContext["state"]["ir"]): string[] {
+  if (!ir.triggers.some((t) => t.kind === "schedule")) return [];
+  return ir.nodes
+    .filter((n) => {
+      const table = (n.params as { table?: unknown } | undefined)?.table;
+      if (!table || typeof table !== "object" || !("$from" in table)) return false;
+      const from = String((table as { $from: unknown }).$from);
+      return from === "input" || from.startsWith("input.") || from.startsWith("input/");
+    })
+    .map((n) => n.label || n.id);
+}
+
+/// このワークフローが使う権限（ブロックから決まる宣言スコープ）。自動実行の同意で渡す権限の天井になる。
+function ScopesPill({ scopes, className }: { scopes: string[]; className?: string }) {
+  return (
+    <div
+      className={cn(
+        "inline-flex max-w-[min(36rem,calc(100%-1.5rem))] flex-wrap items-center gap-1.5 rounded-xl border bg-background/95 px-2.5 py-1.5 text-[11px] text-muted-foreground shadow-sm",
+        className,
+      )}
+      data-testid="workflow-scopes"
+    >
+      <ShieldCheck className="size-3.5 shrink-0" aria-hidden />
+      <span>使う権限:</span>
+      {scopes.length === 0 ? (
+        <span>なし</span>
+      ) : (
+        scopes.map((s) => (
+          <span key={s} className="rounded-full bg-secondary px-2 py-0.5 text-secondary-foreground">
+            {scopeLabel(s)}
+          </span>
+        ))
+      )}
+    </div>
+  );
+}
+
+/// 保存を止めない警告の一覧（ノードに紐付かない、きっかけの条件の警告もここで見せる）。
+function WarningsSummary({
+  warnings,
+  ir,
+  onSelect,
+}: {
+  warnings: ValidationError[];
+  ir: WorkflowIr;
+  onSelect: (nodeId: string) => void;
+}) {
+  const labelOf = (w: ValidationError) => {
+    if (w.node_id) {
+      const n = ir.nodes.find((x) => x.id === w.node_id);
+      return n?.label || n?.id || w.node_id;
+    }
+    return w.path?.startsWith("/triggers/") ? "きっかけの条件" : "ワークフロー";
+  };
+  const [open, setOpen] = React.useState(false);
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <button
+          type="button"
+          data-testid="workflow-warnings"
+          className="inline-flex items-center gap-1.5 rounded-full border bg-background/95 px-3 py-1.5 text-xs font-medium shadow-sm outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring"
+          style={{ borderColor: "color-mix(in oklab, var(--season-autumn) 50%, transparent)" }}
+        >
+          <TriangleAlert className="size-3.5 text-[var(--season-autumn)]" aria-hidden />
+          確認が必要な条件 {warnings.length} 件
+        </button>
+      </PopoverTrigger>
+      <PopoverContent align="center" className="w-[min(26rem,calc(100vw-2rem))] p-0">
+        <div className="border-b px-3 py-2.5">
+          <p className="text-sm font-medium">保存はできますが、結果が変わる場合があります</p>
+          <p className="mt-0.5 text-xs text-muted-foreground">
+            2026-10 から条件の比較のしかたが変わりました（配列は値の集合として比較・1 と 1.0 は等しい）。
+          </p>
+        </div>
+        <ul className="max-h-72 divide-y overflow-y-auto scrollbar-subtle">
+          {warnings.map((w, i) => (
+            <li key={i}>
+              <button
+                type="button"
+                disabled={!w.node_id}
+                onClick={() => {
+                  if (!w.node_id) return;
+                  onSelect(w.node_id);
+                  setOpen(false);
+                }}
+                className="w-full px-3 py-2 text-left text-xs outline-none transition-colors enabled:hover:bg-accent focus-visible:bg-accent"
+              >
+                <span className="block font-medium">{labelOf(w)}</span>
+                <span className="mt-0.5 block leading-relaxed text-muted-foreground">{w.message}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      </PopoverContent>
+    </Popover>
   );
 }

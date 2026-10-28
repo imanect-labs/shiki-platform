@@ -1,22 +1,21 @@
-//! レコード一覧（Task 9.2・宣言フィールドの等値フィルタ＋ソート）。
+//! レコード一覧（v1 の API 形・Task 15.3 でクエリコンパイラ v2 の上に載せ替え）。
 //!
-//! フィルタ/ソート対象は `indexed` / `unique` 宣言されたフィールドに限る（未索引フィールド
-//! への全走査クエリを API から作れないようにする）。フィールド名はスキーマ検証済みの
-//! 宣言名のみ SQL へ埋め込み、値は常にバインドする。宣言的クエリ API（filter/sort/page/
-//! aggregate の合成・行述語との無条件 AND 合成）は Task 9.3/9.4 でここに載る。
+//! 等値フィルタ 1 つ＋ソート 1 つの簡易形を [`crate::DataQuery`] へ写して同じチョークポイントで
+//! 実行する（行述語・マスク・索引到達可能性はそちらで強制）。OFFSET は廃止し、keyset カーソル
+//! （`next_cursor` → `cursor`）でページングする。
 
-use authz::{AuthContext, Relation};
+use authz::AuthContext;
 use serde_json::Value;
 use storage::audit::AuditAction;
 use uuid::Uuid;
 
-use crate::model::{DataRecord, FieldType, TableSchema};
-use crate::query::executor::{ListFilter, ListSort};
-use crate::record::RecordRow;
+use crate::index::SortPrecision;
+use crate::model::DataRecord;
+use crate::query::ir::{CondOp, Condition, CountResult, DataQuery, SortKey};
 use crate::store::DataStore;
 use crate::DataError;
 
-/// 一覧のフィルタ（PR1 は宣言フィールドへの等値/包含のみ。宣言的クエリ API は Task 9.4）。
+/// 一覧のフィルタ（型で決まる等値。multi_select は「含む」）。
 #[derive(Debug, Clone)]
 pub struct RecordFilter {
     pub field: String,
@@ -35,8 +34,10 @@ pub struct RecordSort {
 pub struct ListRecordsOptions {
     pub filter: Option<RecordFilter>,
     pub sort: Option<RecordSort>,
+    /// 1 ページの件数（0 以下は既定 50・最大 200）。
     pub limit: i64,
-    pub offset: i64,
+    /// 前ページの `next_cursor`。
+    pub cursor: Option<String>,
 }
 
 /// 一覧結果。
@@ -46,13 +47,23 @@ pub struct ListRecordsPage {
     /// 個別共有集合が上限（PIT-18）で切り詰められ、共有経由の一部行が
     /// 表示されていない可能性がある（fail-closed・可視減方向）。
     pub shares_truncated: bool,
+    /// 次ページのカーソル（無ければ終端）。
+    pub next_cursor: Option<String>,
+    /// ソートの精度（切り詰めが起こり得る列なら `prefix`）。
+    pub sort_precision: SortPrecision,
+    /// この複数ソートの組み合わせは複合索引の準備中で、深いページほど遅くなる（data-platform §5.3）。
+    pub sort_degraded: bool,
+}
+
+fn to_query(filter: Option<&RecordFilter>) -> DataQuery {
+    DataQuery {
+        filter: filter.map(|f| Condition::cmp(&f.field, CondOp::Eq, Some(f.value.clone()))),
+        ..DataQuery::default()
+    }
 }
 
 impl DataStore {
-    /// レコード一覧（viewer・宣言フィールドの等値フィルタ＋ソート・式インデックス前提）。
-    ///
-    /// フィルタ/ソート対象は `indexed` または `unique` 宣言されたフィールドに限る
-    /// （未索引フィールドへの全走査クエリを API から作れないようにする）。
+    /// レコード一覧（viewer・宣言フィールドの等値フィルタ＋ソート・keyset ページング）。
     pub async fn list_records(
         &self,
         ctx: &AuthContext,
@@ -60,107 +71,41 @@ impl DataStore {
         opts: &ListRecordsOptions,
         trace_id: Option<&str>,
     ) -> Result<ListRecordsPage, DataError> {
-        let (filter, sort) = (opts.filter.as_ref(), opts.sort.as_ref());
-        self.require(
-            ctx,
-            table_id,
-            Relation::Viewer,
-            AuditAction::DataRecordList,
-            trace_id,
-        )
-        .await?;
-        let table = self.fetch_live(ctx, table_id).await?;
-        let masked = self.masked_fields(ctx, &table).await?;
-        let limit = opts.limit.clamp(1, 200);
-        let offset = opts.offset.clamp(0, 10_000);
-
-        // フィルタ/ソートを検証し、閉じた形（executor の型）へ写す。SQL の組み立ては
-        // クエリ実行チョークポイント（query::executor）だけが行い、行述語が無条件に
-        // AND 合成される（Task 9.3・PIT-21）。
-        let exec_filter = match filter {
-            None => None,
-            Some(fl) => {
-                Self::ensure_queryable(&masked, &fl.field)?;
-                let f = indexed_field(&table.schema, &fl.field)?;
-                Some(match f.field_type {
-                    FieldType::Number => {
-                        let Some(n) = fl.value.as_f64() else {
-                            return Err(DataError::Invalid(format!(
-                                "フィルタ '{}' は数値で指定してください",
-                                fl.field
-                            )));
-                        };
-                        ListFilter::NumberEq {
-                            field: f.name.clone(),
-                            value: n,
-                        }
-                    }
-                    FieldType::MultiSelect => {
-                        let Some(v) = fl.value.as_str() else {
-                            return Err(DataError::Invalid(format!(
-                                "フィルタ '{}' は文字列で指定してください",
-                                fl.field
-                            )));
-                        };
-                        ListFilter::MultiContains {
-                            field: f.name.clone(),
-                            value: v.to_string(),
-                        }
-                    }
-                    _ => {
-                        let Some(v) = fl.value.as_str() else {
-                            return Err(DataError::Invalid(format!(
-                                "フィルタ '{}' は文字列で指定してください",
-                                fl.field
-                            )));
-                        };
-                        ListFilter::TextEq {
-                            field: f.name.clone(),
-                            value: v.to_string(),
-                        }
-                    }
-                })
-            }
-        };
-        let exec_sort = match sort {
-            None => None,
-            Some(st) => {
-                Self::ensure_queryable(&masked, &st.field)?;
-                let f = indexed_field(&table.schema, &st.field)?;
-                if f.field_type == FieldType::MultiSelect {
-                    return Err(DataError::Invalid(
-                        "multi_select はソートに使えません".into(),
-                    ));
-                }
-                Some(ListSort {
-                    field: f.name.clone(),
-                    numeric: f.field_type == FieldType::Number,
-                    descending: st.descending,
-                })
-            }
-        };
-        let (rows, shares_truncated) = self
-            .select_visible_rows(
+        let mut q = to_query(opts.filter.as_ref());
+        q.sort = opts
+            .sort
+            .iter()
+            .map(|s| SortKey {
+                field: s.field.clone(),
+                descending: s.descending,
+            })
+            .collect();
+        q.limit = u32::try_from(opts.limit.clamp(0, 200))
+            .ok()
+            .filter(|n| *n > 0);
+        q.cursor.clone_from(&opts.cursor);
+        let tuning = self.tuning.clone();
+        let (r, _) = self
+            .run_query_as(
                 ctx,
-                &table,
-                exec_filter.as_ref(),
-                exec_sort.as_ref(),
-                limit,
-                offset,
+                table_id,
+                &q,
+                trace_id,
+                AuditAction::DataRecordList,
+                &tuning,
+                false,
             )
             .await?;
-        let mut items: Vec<DataRecord> = rows.into_iter().map(RecordRow::into_record).collect();
-        self.resolve_derived_fields(ctx, &table, &mut items).await?;
-        Self::apply_mask_records(&masked, &mut items);
         Ok(ListRecordsPage {
-            items,
-            shares_truncated,
+            items: r.items.unwrap_or_default(),
+            shares_truncated: r.shares_truncated,
+            next_cursor: r.next_cursor,
+            sort_precision: r.sort_precision,
+            sort_degraded: r.sort_degraded,
         })
     }
-}
 
-impl DataStore {
-    /// 可視行の件数（Task 9.3: 集計にも行述語を適用する・不可視行は件数に混入しない）。
+    /// 可視行の件数（上限付き・行述語適用・不可視行は件数に混入しない）。上限に達したら上限値。
     pub async fn count_records(
         &self,
         ctx: &AuthContext,
@@ -168,78 +113,36 @@ impl DataStore {
         filter: Option<&RecordFilter>,
         trace_id: Option<&str>,
     ) -> Result<i64, DataError> {
-        self.require(
-            ctx,
-            table_id,
-            Relation::Viewer,
-            AuditAction::DataRecordCount,
-            trace_id,
-        )
-        .await?;
-        let table = self.fetch_live(ctx, table_id).await?;
-        let masked = self.masked_fields(ctx, &table).await?;
-        let exec_filter = match filter {
-            None => None,
-            Some(fl) => {
-                Self::ensure_queryable(&masked, &fl.field)?;
-                let f = indexed_field(&table.schema, &fl.field)?;
-                Some(match f.field_type {
-                    FieldType::Number => {
-                        let Some(n) = fl.value.as_f64() else {
-                            return Err(DataError::Invalid(format!(
-                                "フィルタ '{}' は数値で指定してください",
-                                fl.field
-                            )));
-                        };
-                        ListFilter::NumberEq {
-                            field: f.name.clone(),
-                            value: n,
-                        }
-                    }
-                    FieldType::MultiSelect => {
-                        let Some(v) = fl.value.as_str() else {
-                            return Err(DataError::Invalid(format!(
-                                "フィルタ '{}' は文字列で指定してください",
-                                fl.field
-                            )));
-                        };
-                        ListFilter::MultiContains {
-                            field: f.name.clone(),
-                            value: v.to_string(),
-                        }
-                    }
-                    _ => {
-                        let Some(v) = fl.value.as_str() else {
-                            return Err(DataError::Invalid(format!(
-                                "フィルタ '{}' は文字列で指定してください",
-                                fl.field
-                            )));
-                        };
-                        ListFilter::TextEq {
-                            field: f.name.clone(),
-                            value: v.to_string(),
-                        }
-                    }
-                })
-            }
-        };
-        self.count_visible_rows(ctx, &table, exec_filter.as_ref())
-            .await
+        Ok(self
+            .count_records_capped(ctx, table_id, filter, trace_id)
+            .await?
+            .value() as i64)
     }
-}
 
-/// フィルタ/ソート対象フィールドを解決する（宣言済み・索引付きのみ許可）。
-fn indexed_field<'s>(
-    schema: &'s TableSchema,
-    name: &str,
-) -> Result<&'s crate::model::FieldDef, DataError> {
-    let f = schema.field(name).ok_or_else(|| {
-        DataError::Invalid(format!("フィールド '{name}' はスキーマに存在しません"))
-    })?;
-    if !(f.indexed || f.unique) {
-        return Err(DataError::Invalid(format!(
-            "フィールド '{name}' はフィルタ/ソート対象として宣言されていません（indexed）"
-        )));
+    /// 可視行の上限付き件数（`Exact(n)` / `AtLeast(上限)`）。
+    pub async fn count_records_capped(
+        &self,
+        ctx: &AuthContext,
+        table_id: Uuid,
+        filter: Option<&RecordFilter>,
+        trace_id: Option<&str>,
+    ) -> Result<CountResult, DataError> {
+        let mut q = to_query(filter);
+        q.with_count = true;
+        // limit 0 + with_count = 件数だけ（ページは取らない）。
+        q.limit = Some(0);
+        let tuning = self.tuning.clone();
+        let (r, _) = self
+            .run_query_as(
+                ctx,
+                table_id,
+                &q,
+                trace_id,
+                AuditAction::DataRecordCount,
+                &tuning,
+                false,
+            )
+            .await?;
+        Ok(r.count.unwrap_or(CountResult::Exact(0)))
     }
-    Ok(f)
 }

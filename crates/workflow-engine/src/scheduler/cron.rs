@@ -3,7 +3,7 @@
 //! IR の cron は 5 フィールド（min hour dom month dow）。cron クレートは 7 フィールド
 //! （sec min hour dom month dow year）のため、秒を `0`・年を `*` で補って解釈する。
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, LocalResult, TimeZone, Utc};
 use chrono_tz::Tz;
 use std::str::FromStr;
 
@@ -34,6 +34,18 @@ fn parse_tz(tz: &str) -> Result<Tz, CronError> {
     Tz::from_str(tz).map_err(|_| CronError::BadTz(tz.to_string()))
 }
 
+/// DST の終わりで同じ壁時計の時刻が 2 回ある（`LocalResult::Ambiguous`）とき、**後の方**か。
+///
+/// ir.md §6.1「二重時刻は先勝ち」: cron クレートは重なった時刻を両方返すので、後の方を捨てる
+/// （捨てないと 02:30 のような毎日のジョブが DST 明けの日に 2 回走る・occurrence の UNIQUE は
+/// UTC の時刻が違うので止めない）。
+fn is_repeated_wall_time(dt: &DateTime<Tz>) -> bool {
+    match dt.timezone().from_local_datetime(&dt.naive_local()) {
+        LocalResult::Ambiguous(earliest, _) => *dt != earliest,
+        _ => false,
+    }
+}
+
 /// `(after, now]` 区間で発火すべき occurrence（UTC）を列挙する（watermark 前進用）。
 ///
 /// tz で cron を評価し UTC へ変換する。区間の上限は `now`（含む）、下限は `after`（含まない）。
@@ -48,7 +60,11 @@ pub fn occurrences_between(
     let zone = parse_tz(tz)?;
     let after_tz = after.with_timezone(&zone);
     let mut out = Vec::new();
-    for dt in schedule.after(&after_tz).take(limit.clamp(1, 10_000)) {
+    for dt in schedule
+        .after(&after_tz)
+        .filter(|d| !is_repeated_wall_time(d))
+        .take(limit.clamp(1, 10_000))
+    {
         let utc = dt.with_timezone(&Utc);
         if utc > now {
             break;
@@ -74,7 +90,11 @@ pub fn latest_occurrence_between(
     let zone = parse_tz(tz)?;
     let after_tz = after.with_timezone(&zone);
     let mut latest = None;
-    for dt in schedule.after(&after_tz).take(1_000_000) {
+    for dt in schedule
+        .after(&after_tz)
+        .filter(|d| !is_repeated_wall_time(d))
+        .take(1_000_000)
+    {
         let utc = dt.with_timezone(&Utc);
         if utc > now {
             break;
@@ -104,7 +124,7 @@ pub fn next_after(
     let after_tz = after.with_timezone(&zone);
     Ok(schedule
         .after(&after_tz)
-        .next()
+        .find(|d| !is_repeated_wall_time(d))
         .map(|d| d.with_timezone(&Utc)))
 }
 
@@ -118,6 +138,25 @@ pub(crate) fn utc(y: i32, mo: u32, d: u32, h: u32, mi: u32) -> DateTime<Utc> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// DST の終わり（Europe/Berlin 2026-10-25）の 02:30 は 2 回あるが、先の 1 回だけ（ir.md §6.1）。
+    #[test]
+    fn repeated_wall_time_fires_once_at_dst_end() {
+        let after = utc(2026, 10, 24, 22, 0); // 00:00 CEST
+        let now = utc(2026, 10, 25, 4, 0);
+        let occ = occurrences_between("30 2 * * *", "Europe/Berlin", after, now, 100).unwrap();
+        assert_eq!(occ, vec![utc(2026, 10, 25, 0, 30)], "02:30 CEST（先）だけ");
+        // 先の 02:30 の直後を watermark にした tick でも、後の 02:30 CET（01:30 UTC）は発火しない。
+        let late =
+            latest_occurrence_between("30 2 * * *", "Europe/Berlin", utc(2026, 10, 25, 0, 31), now)
+                .unwrap();
+        assert_eq!(late, None);
+        assert_eq!(
+            next_after("30 2 * * *", "Europe/Berlin", utc(2026, 10, 25, 0, 31)).unwrap(),
+            Some(utc(2026, 10, 26, 1, 30)),
+            "次は翌日の 02:30 CET"
+        );
+    }
 
     #[test]
     fn validate_accepts_5_fields() {

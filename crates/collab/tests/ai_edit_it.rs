@@ -528,3 +528,77 @@ fn ai_edit_produces_applicable_update() {
     );
     assert!(md.contains("人間の段落"), "人間の内容も保持される");
 }
+
+/// 以前の書き込みが見出しの段を BigInt で残したノートは、ロード時に Number へ直され、
+/// その修復が update log に残る（#886・エディタが全部 H1 で描く不具合の後始末）。
+#[tokio::test]
+async fn bigint_heading_levels_are_repaired_on_load() {
+    use yrs::{Any, Out, Xml, XmlFragment, XmlOut};
+    let Some(env) = setup().await else { return };
+    let alice = ctx_for("alice");
+    let node = create_note(&env, &alice, "# 表題\n\n## 節\n\n本文。\n").await;
+    // 1 度開いて Yjs へ取り込む（以後は Yjs が正本）。
+    env.hub
+        .read_note_markdown(&alice, &node)
+        .await
+        .expect("read");
+
+    let rebuild = |p: &PersistedDoc| {
+        let doc = Doc::new();
+        {
+            let mut txn = doc.transact_mut();
+            for bytes in p.snapshot.iter().chain(p.updates.iter()) {
+                txn.apply_update(Update::decode_v1(bytes).unwrap()).unwrap();
+            }
+        }
+        doc
+    };
+    let level_of = |doc: &Doc| {
+        let fragment = doc.get_or_insert_xml_fragment("default");
+        let txn = doc.transact();
+        let Some(XmlOut::Element(h)) = fragment.get(&txn, 1) else {
+            panic!("節の見出し");
+        };
+        h.get_attribute(&txn, "level")
+    };
+
+    // 以前の書き込みを再現する（段を BigInt で書いた update を log に足す）。
+    let persisted = env
+        .hub
+        .store()
+        .load(node.id, "default")
+        .await
+        .expect("load");
+    let doc = rebuild(&persisted);
+    let before = doc.transact().state_vector();
+    {
+        let fragment = doc.get_or_insert_xml_fragment("default");
+        let mut txn = doc.transact_mut();
+        let Some(XmlOut::Element(h)) = fragment.get(&txn, 1) else {
+            panic!("節の見出し");
+        };
+        h.insert_attribute(&mut txn, "level", Any::BigInt(2));
+    }
+    let update = doc.transact().encode_state_as_update_v1(&before);
+    env.hub
+        .store()
+        .append_update(node.id, "default", &update, "test:legacy")
+        .await
+        .expect("append");
+    assert_eq!(
+        level_of(&rebuild(
+            &env.hub.store().load(node.id, "default").await.unwrap()
+        )),
+        Some(Out::Any(Any::BigInt(2)))
+    );
+
+    // 開き直すと直り、直した結果が永続化されている。
+    let md = env
+        .hub
+        .read_note_markdown(&alice, &node)
+        .await
+        .expect("read");
+    assert!(md.contains("\n## 節\n"), "{md}");
+    let repaired = rebuild(&env.hub.store().load(node.id, "default").await.unwrap());
+    assert_eq!(level_of(&repaired), Some(Out::Any(Any::Number(2.0))));
+}

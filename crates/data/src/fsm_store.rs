@@ -5,6 +5,7 @@
 //! 遷移実行は [`DataStore::transition_record`] へ委譲する（本ストアは定義の解決のみ）。
 
 use std::sync::Arc;
+use storage::audit::AuditAction;
 
 use artifact::{ArtifactError, ArtifactKind, ArtifactStore, NewArtifact};
 use authz::AuthContext;
@@ -22,8 +23,51 @@ pub struct FsmStore {
 }
 
 impl FsmStore {
+    /// FSM のストアを組む。FSM の本文の読み口をデータのストア（とその全複製）に登録する
+    /// （作成時の状態を FSM の初期状態に固定する検査に使う・[`crate::fsm_rules`]）。
     pub fn new(artifacts: Arc<ArtifactStore>, data: DataStore) -> Self {
+        let _ = data.fsm_artifacts.set(Arc::clone(&artifacts));
         FsmStore { artifacts, data }
+    }
+
+    /// 到達してよいテーブルの天井を付けた複製（[`DataStore::within_reach`] と同じ・遷移の応答の
+    /// lookup / リンク値も天井の内だけで解決する）。
+    #[must_use]
+    pub fn within_reach(&self, reach: crate::TableReach) -> Self {
+        FsmStore {
+            artifacts: Arc::clone(&self.artifacts),
+            data: self.data.within_reach(reach),
+        }
+    }
+
+    /// レコードのいまの状態と、閲覧者がいま実行できる遷移先（editor・不可視行は 404・検証 2-C-P2-4）。
+    ///
+    /// グリッドの状態セルのメニュー用（表示の出し分けだけ。実行は [`Self::transition`] が改めて認可する）。
+    pub async fn allowed_transitions(
+        &self,
+        ctx: &AuthContext,
+        table_id: Uuid,
+        record_id: Uuid,
+        trace_id: Option<&str>,
+    ) -> Result<crate::fsm_rules::AllowedTransitions, DataError> {
+        let table = self
+            .data
+            .table_for_transition(ctx, table_id, trace_id)
+            .await?;
+        let (fsm, status_field) = self
+            .data
+            .pinned_fsm(ctx, &table, trace_id)
+            .await?
+            .ok_or_else(|| {
+                DataError::input_detail(
+                    crate::InvalidCode::FsmInvalid,
+                    None,
+                    "このテーブルは状態遷移（FSM）で管理されていません",
+                )
+            })?;
+        self.data
+            .allowed_transitions_with(ctx, &table, record_id, &fsm, &status_field)
+            .await
     }
 
     /// FSM を保存する（対象テーブルのスキーマと照合検証 → artifact version 1）。
@@ -105,6 +149,70 @@ impl FsmStore {
         Ok((v.version, body))
     }
 
+    /// テーブルのレコードを状態遷移する（HTTP・ワークフロー・スクリプト・ゲートウェイの**単一の入口**）。
+    ///
+    /// テーブルにピンされた FSM（`fsm_ref` の版）は**テーブル側の参照として**読む: 呼出主体に FSM の
+    /// アーティファクト自体の閲覧権限は要求せず、テーブルの editor であることを確かめてから読む
+    /// （FSM の作成者でないテーブル editor が遷移できなかった・検証 C-P1-1）。行の可視性・actor 述語・
+    /// ガードは [`DataStore::transition_record`] が当該行で評価する。
+    #[allow(clippy::too_many_arguments)] // 主体・テーブル・行・遷移先・rev・trace は全て別物。
+    pub async fn transition(
+        &self,
+        ctx: &AuthContext,
+        table_id: Uuid,
+        record_id: Uuid,
+        to: &str,
+        expected_rev: i64,
+        trace_id: Option<&str>,
+    ) -> Result<crate::model::DataRecord, DataError> {
+        let table = self.data.get_table(ctx, table_id, trace_id).await?;
+        let not_managed = || {
+            DataError::input_detail(
+                crate::InvalidCode::FsmInvalid,
+                None,
+                "このテーブルは状態遷移（FSM）で管理されていません",
+            )
+        };
+        let fsm_ref = table.schema.fsm_ref.clone().ok_or_else(not_managed)?;
+        let status_field = table.schema.status_field.clone().ok_or_else(not_managed)?;
+        // FSM の本文を読む前にテーブルの editor を確かめる（閲覧者に定義を読ませない）。
+        self.data
+            .authorize_table(
+                ctx,
+                table_id,
+                authz::Relation::Editor,
+                AuditAction::DataRecordTransition,
+                trace_id,
+            )
+            .await?;
+        let v = self
+            .artifacts
+            .get_version_pinned(
+                ctx,
+                fsm_ref.artifact_id,
+                fsm_ref.version,
+                ArtifactKind::Fsm,
+                &format!("data_table:{table_id}"),
+                trace_id,
+            )
+            .await
+            .map_err(map_artifact)?;
+        let fsm: FsmBody = serde_json::from_value(v.body)
+            .map_err(|e| DataError::Internal(format!("fsm body 破損: {e}")))?;
+        self.data
+            .transition_record(
+                ctx,
+                table_id,
+                record_id,
+                to,
+                expected_rev,
+                &fsm,
+                &status_field,
+                trace_id,
+            )
+            .await
+    }
+
     async fn validate_against_table(
         &self,
         ctx: &AuthContext,
@@ -138,7 +246,7 @@ impl FsmStore {
 }
 
 #[allow(clippy::needless_pass_by_value)]
-fn map_artifact(e: ArtifactError) -> DataError {
+pub(crate) fn map_artifact(e: ArtifactError) -> DataError {
     match e {
         ArtifactError::NotFound => DataError::NotFound,
         ArtifactError::Forbidden => DataError::Forbidden,

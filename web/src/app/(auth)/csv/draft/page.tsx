@@ -20,6 +20,7 @@ import {
   DraftNotFound,
   DraftTabs,
   SaveDraftDialog,
+  saveFailedMessage,
   draftChrome,
   type SaveTarget,
 } from "@/components/notes/save-draft-dialog";
@@ -31,6 +32,7 @@ import { getThreadMessages } from "@/lib/chat-api";
 import { csvDraftStore, parseCsvDraft } from "@/lib/csv/draft";
 import { parseCsv, toCsv } from "@/lib/csv/parse";
 import { saveNewCsv } from "@/lib/tabular-api";
+import { useDefaultSaveFolder } from "@/lib/drafts/save-folder";
 import { useStorageScopeReady } from "@/lib/user-storage";
 
 /// useSearchParams を使うため Suspense 境界でラップする（静的生成の CSR bailout 要件・Next.js）。
@@ -52,6 +54,9 @@ function DraftCsvPageInner() {
   const [activeName, setActiveName] = React.useState(nameParam);
   const [chatOpen, setChatOpen] = React.useState(true);
   const [saveOpen, setSaveOpen] = React.useState(false);
+  // 保存先の初期値（AI の指定 → 由来ノートのフォルダ → ルート・#942）。保存ダイアログを開いたときだけ引く。
+  const aiParentId = drafts.find((d) => d.name === activeName)?.parentId;
+  const defaultFolder = useDefaultSaveFolder(threadId, aiParentId, saveOpen);
   const [saving, setSaving] = React.useState(false);
   const [recovered, setRecovered] = React.useState(false);
   // グリッドのローカルデータ（[0]=ヘッダ行）。編集のたびに CSV へ直して下書きストアへ書き戻す。
@@ -89,12 +94,14 @@ function DraftCsvPageInner() {
     getThreadMessages(threadId)
       .then(({ messages }) => {
         if (cancelled) return;
+        // ローカルに無い名前だけ、履歴の下書きを順に流し直す（同名の呼び直しは最後の状態になる）。
+        const local = new Set(csvDraftStore.list(threadId).map((d) => d.name));
         for (const m of messages) {
           for (const b of m.content) {
             if (b.type === "csv_draft") {
               const d = parseCsvDraft(b.draft);
-              if (d && !csvDraftStore.get(threadId, d.name)) {
-                csvDraftStore.upsert(threadId, d.name, d.csv, "ai");
+              if (d && !local.has(d.name)) {
+                csvDraftStore.upsert(threadId, d.name, d.csv, "ai", d.parentId);
               }
             }
           }
@@ -165,8 +172,8 @@ function DraftCsvPageInner() {
           toast({ description: `「${saved.name.replace(/\.csv$/i, "")}」を保存しました。` });
           router.replace(`/csv/${saved.node_id}`);
         })
-        .catch(() => {
-          toast({ description: "保存に失敗しました。" });
+        .catch((e: unknown) => {
+          toast({ description: saveFailedMessage(e, target.parentId) });
           setSaving(false);
         });
     },
@@ -235,6 +242,7 @@ function DraftCsvPageInner() {
         defaultName={activeName}
         saving={saving}
         onConfirm={doSave}
+        defaultFolder={defaultFolder}
         entityLabel="CSV"
         description="下書きを CSV として保存します。保存後はグリッド編集・SQL 分析・共有ができます。"
       />

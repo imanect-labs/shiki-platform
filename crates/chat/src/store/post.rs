@@ -150,6 +150,7 @@ impl ChatStore {
         }
 
         let mut tx = self.db.begin().await.map_err(map_db)?;
+        touch_live_thread(&mut tx, thread_id, &ctx.tenant_id).await?;
         let user_id: Uuid = sqlx::query_scalar(
             "INSERT INTO message (thread_id, org, tenant_id, role, content, agent_mode) \
              VALUES ($1, $2, $3, 'user', $4, $5) RETURNING id",
@@ -204,13 +205,6 @@ impl ChatStore {
         .await
         .map_err(map_db)?;
 
-        sqlx::query("UPDATE thread SET updated_at = now() WHERE id = $1 AND tenant_id = $2")
-            .bind(thread_id)
-            .bind(&ctx.tenant_id)
-            .execute(&mut *tx)
-            .await
-            .map_err(map_db)?;
-
         // outbox: 同一 TX で jobq へ生成ジョブを enqueue（run_id を payload）。
         jobq::enqueue_on(
             &mut tx,
@@ -233,4 +227,28 @@ impl ChatStore {
             agent_mode,
         })
     }
+}
+
+/// スレッドの `updated_at` を更新して行ロックを取る（削除と直列化する・投稿の最初に呼ぶ）。
+///
+/// 削除が先に確定していれば 0 行で NotFound。こちらが先なら削除は commit を待ってから、
+/// ここで積む run も停止要求の対象にする（[`ChatStore::delete_thread`]）。
+async fn touch_live_thread(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    thread_id: Uuid,
+    tenant_id: &str,
+) -> Result<(), ChatError> {
+    let touched = sqlx::query(
+        "UPDATE thread SET updated_at = now() \
+         WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL",
+    )
+    .bind(thread_id)
+    .bind(tenant_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_db)?;
+    if touched.rows_affected() == 0 {
+        return Err(ChatError::NotFound);
+    }
+    Ok(())
 }

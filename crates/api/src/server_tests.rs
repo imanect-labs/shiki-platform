@@ -114,3 +114,37 @@ fn org_audit_routes_are_org_auditor_scoped() {
         );
     }
 }
+
+/// 列を名指しする操作は、存在しない列・読めない列の構造化 403（`ForbiddenBody`・`field_unavailable`）を
+/// 生成型に宣言する（3 回目の検証 3-B-2: 遷移だけが宣言していた）。共有の付与は 400 を宣言する。
+#[test]
+fn field_naming_operations_declare_the_structured_403() {
+    let spec: serde_json::Value =
+        serde_json::from_str(&openapi::openapi_json()).expect("OpenAPI JSON");
+    let schema_of = |path: &str, method: &str, status: &str| {
+        spec["paths"][path][method]["responses"][status]["content"]["application/json"]["schema"]
+            ["$ref"]
+            .as_str()
+            .map(str::to_string)
+    };
+    for (path, method) in [
+        ("/data/tables/{id}/query", "post"),
+        ("/data/tables/{id}/records", "post"),
+        ("/data/tables/{id}/records/{record_id}", "patch"),
+        ("/data/tables/{id}/awareness", "post"),
+        ("/data/tables/{id}/indexes", "post"),
+        ("/data/views", "post"),
+        ("/data/tables/{id}/records/{record_id}/transition", "post"),
+        ("/data/tables/{id}/records/{record_id}/transitions", "get"),
+    ] {
+        assert_eq!(
+            schema_of(path, method, "403").as_deref(),
+            Some("#/components/schemas/ForbiddenBody"),
+            "{method} {path}"
+        );
+    }
+    assert!(
+        schema_of("/data/tables/{id}/records/{record_id}/shares", "put", "400").is_some(),
+        "共有の付与の 400"
+    );
+}

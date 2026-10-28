@@ -244,6 +244,7 @@ fn base_config(db_url: &str) -> AppConfig {
         chat: api::config::ChatConfig::default(),
         websearch: api::config::WebSearchConfig::default(),
         secrets: api::config::SecretsConfig::default(),
+        data: api::config::DataConfig::default(),
         workflow: api::workflow_runtime::WorkflowConfig::default(),
         gateway: api::config::GatewayConfig::default(),
         tabular: api::config::TabularConfig::default(),
@@ -1057,4 +1058,219 @@ async fn chat_post_records_requested_tools() {
             .await
             .unwrap();
     assert_eq!(stored, serde_json::json!(["web_search", "doc_search"]));
+}
+
+/// サイドバー履歴の行操作: 改名・ピン留め（`?pinned=true` の一覧）・削除（以後 404）。
+#[tokio::test]
+async fn chat_thread_rename_pin_delete_over_http() {
+    let Some((state, sessions)) = build_state(true).await else {
+        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+        return;
+    };
+    let (cookie, csrf) = login(&sessions, "sid-chat-manage").await;
+    let app = build_router(state);
+    let send = |method: &str, uri: String, body: Option<&str>| {
+        let mut req = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(COOKIE, &cookie);
+        if method != "GET" {
+            req = req.header("x-csrf-token", csrf);
+        }
+        let req = match body {
+            Some(b) => req
+                .header("content-type", "application/json")
+                .body(Body::from(b.to_string())),
+            None => req.body(Body::empty()),
+        };
+        app.clone().oneshot(req.unwrap())
+    };
+
+    let resp = send("POST", "/threads".into(), Some(r#"{"title":"仮"}"#))
+        .await
+        .unwrap();
+    let tid = body_json(resp).await["id"].as_str().unwrap().to_string();
+
+    // 改名・ピン留め（204）→ 取得に反映。
+    let resp = send(
+        "PATCH",
+        format!("/threads/{tid}"),
+        Some(r#"{"title":"  新しい名前 ","pinned":true}"#),
+    )
+    .await
+    .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    let got = body_json(send("GET", format!("/threads/{tid}"), None).await.unwrap()).await;
+    assert_eq!(got["title"], "新しい名前");
+    assert!(got["pinned_at"].is_string(), "ピン留め時刻が付く: {got}");
+
+    let pinned = body_json(
+        send("GET", "/threads?pinned=true".into(), None)
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(pinned["threads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|t| t["id"] == tid.as_str()));
+    assert!(pinned["next_cursor"].is_null());
+
+    // 項目なし・空タイトルは 400。
+    for body in [r"{}", r#"{"title":"   "}"#] {
+        let resp = send("PATCH", format!("/threads/{tid}"), Some(body))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "{body}");
+    }
+
+    // 削除（204）→ 取得・メッセージ・再削除は 404。
+    let resp = send("DELETE", format!("/threads/{tid}"), None)
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NO_CONTENT);
+    for (method, uri) in [
+        ("GET", format!("/threads/{tid}")),
+        ("GET", format!("/threads/{tid}/messages")),
+        ("DELETE", format!("/threads/{tid}")),
+    ] {
+        let resp = send(method, uri.clone(), None).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND, "{method} {uri}");
+    }
+    let pinned = body_json(
+        send("GET", "/threads?pinned=true".into(), None)
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(!pinned["threads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|t| t["id"] == tid.as_str()));
+}
+
+/// カスタム指示（#900）: 本人の分の読み書き・上限超過の 400（画面へ出す `detail` 付き）・
+/// 未認証 401・CSRF 無しの書き込み拒否・chat 無効の 503。
+#[tokio::test]
+async fn custom_instructions_round_trip_over_http() {
+    let Some((state, sessions)) = build_state(true).await else {
+        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+        return;
+    };
+    let (cookie, csrf) = login(&sessions, "sid-custom-instr").await;
+    let app = build_router(state);
+    let put = |body: serde_json::Value, with_csrf: bool| {
+        let mut req = Request::builder()
+            .method("PUT")
+            .uri("/me/custom-instructions")
+            .header(COOKIE, &cookie)
+            .header("content-type", "application/json");
+        if with_csrf {
+            req = req.header("x-csrf-token", csrf);
+        }
+        req.body(Body::from(body.to_string())).unwrap()
+    };
+    let get = || {
+        Request::builder()
+            .uri("/me/custom-instructions")
+            .header(COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    // 未認証は 401。
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/me/custom-instructions")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // 保存（前後の空白を整えた値が返り、読み直しても同じ）。
+    let resp = app
+        .clone()
+        .oneshot(put(
+            serde_json::json!({ "about": "  法人営業  ", "style": "結論を先に", "tone": "formal" }),
+            true,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let saved = body_json(resp).await;
+    assert_eq!(
+        saved,
+        serde_json::json!({ "about": "法人営業", "style": "結論を先に", "tone": "formal" })
+    );
+    let resp = app.clone().oneshot(get()).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(body_json(resp).await, saved);
+
+    // CSRF 無しの書き込みは通らない（値も変わらない）。
+    let resp = app
+        .clone()
+        .oneshot(put(serde_json::json!({ "about": "上書き" }), false))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+
+    // 上限超過は 400 で、画面へ出す文言を `detail` に載せる（値は変わらない）。
+    let resp = app
+        .clone()
+        .oneshot(put(
+            serde_json::json!({ "about": "あ".repeat(1501), "tone": "default" }),
+            true,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let detail = body_json(resp).await["detail"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(detail.contains("1500 文字以内"), "{detail}");
+    // 未知の口調は受け付けない。
+    let resp = app
+        .clone()
+        .oneshot(put(serde_json::json!({ "tone": "loud" }), true))
+        .await
+        .unwrap();
+    assert!(resp.status().is_client_error(), "{}", resp.status());
+    let resp = app.clone().oneshot(get()).await.unwrap();
+    assert_eq!(body_json(resp).await, saved);
+
+    // 全部空にすると未設定に戻る（欠けたフィールドは空の既定値）。
+    let resp = app
+        .clone()
+        .oneshot(put(serde_json::json!({}), true))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let empty = serde_json::json!({ "about": "", "style": "", "tone": "default" });
+    assert_eq!(body_json(resp).await, empty);
+    let resp = app.oneshot(get()).await.unwrap();
+    assert_eq!(body_json(resp).await, empty);
+
+    // chat 無効なら 503。
+    let Some((state, sessions)) = build_state(false).await else {
+        return;
+    };
+    let (cookie, _) = login(&sessions, "sid-custom-instr-off").await;
+    let resp = build_router(state)
+        .oneshot(
+            Request::builder()
+                .uri("/me/custom-instructions")
+                .header(COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
 }

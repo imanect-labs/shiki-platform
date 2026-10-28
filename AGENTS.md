@@ -52,6 +52,7 @@ git switch -c <branch-name> origin/main   # 作業中のブランチは git reba
 - 1 ファイル 1000 行以内（`*.rs`・CI ゲート）。超えたら責務で分割する。
 - 全件取得 → フィルタではなく、最初から必要な行・フィールドのみ取得する。
 - 新規 migration は既存の最大番号 +1。番号重複は新規 DB でだけ壊れるため CI で弾いている。
+- E2E spec・ページ・クレートを足したら `ci/scenarios.toml`（PR の CI が回す E2E を選ぶ表）に載せる。載せ忘れは `python3 scripts/ci-select.py check` が落とす（直し方は `pr` スキルの `references/gates.md`）。
 - `vendor/` は所有フォーク。品質ゲート（1000 行 / カバレッジ / clippy / machete）の対象外で、`docs/sandbox/fork-policy.md`（secure-exec）／`docs/jtd/fork-policy.md`（openjtd）に従う。サンドボックス由来の入力・アップロードされた文書バイナリは敵対的として扱う。
 - workspace 外のクレート（`vendor/secure-exec`・`vendor/openjtd/rjtd`・`crates/script-runtime/{guest,fuzz}`・`crates/tabular/runner`）はワークスペースのコマンドでは検査されない。`--manifest-path` で個別に回す。
 
@@ -63,12 +64,13 @@ git switch -c <branch-name> origin/main   # 作業中のブランチは git reba
 | --- | --- |
 | Rust | `cargo fmt --all --check` ／ `cargo clippy --all-targets --all-features -- -D warnings` ／ `cargo nextest run --workspace --all-features`（絞るなら `-p <crate>`） |
 | 品質ゲート | `bash scripts/check-file-size.sh` ／ `bash scripts/check-migration-versions.sh` ／ `cargo machete crates` ／ `cargo deny --all-features check` |
-| カバレッジ | `cargo llvm-cov --all`（CI は行カバレッジ 80% 未満で fail。除外パターンは ci.yml 参照） |
+| カバレッジ | `cargo llvm-cov --all`（CI は PR で変更行の 80%・main で総計の 80% 未満なら fail。PR の変更行の判定手順は `pr` スキルの `references/gates.md`、除外パターンは ci.yml 参照） |
 | Web | `cd web && pnpm install --frozen-lockfile && pnpm gen:api && pnpm lint && pnpm build`（E2E は `pnpm e2e`） |
 | Python | `cd ingestion-worker && uv sync --frozen && uv run ruff check . && uv run pytest -m "not slow" -q` |
 | 統合 | `cd deploy/compose && cp .env.example .env && docker compose up -d --build shiki-server && bash smoke-bff.sh` |
 
 結合テストは環境変数が無いと**黙ってスキップ**される（`OPENFGA_TEST_URL`・`STORAGE_TEST_DATABASE_URL`・`RAG_TEST_QDRANT_URL` 等）。「緑だった」ではなく、意図したテストが実際に走ったかを確認する。
+`crates/data` の読取経路を変えたら `policy_threat_it` を ci.yml の `data-strategies` ジョブと同じ環境変数（`SHIKI_DATA_READ_PATH` / `SHIKI_DATA_FORCE_STRATEGY` ほか）で全経路回す。性能ベンチは `DATA_BENCH=1`（Web は `DATA_PERF=1`）のときだけ走る（手順は `docs/data/benchmarks.md`）。
 
 ## 正本ドキュメント
 

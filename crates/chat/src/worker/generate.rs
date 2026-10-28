@@ -12,7 +12,9 @@ use llm_gateway::{Message as LlmMessage, Role as LlmRole};
 use uuid::Uuid;
 
 use super::approval_policy::restore_checkpoint;
-use super::history::{message_preview, message_text};
+use super::history::{
+    fold_skill_snapshot, message_preview, message_text_with, skill_snapshot_name, SkillViews,
+};
 use super::opts::{autonomous_system_prompt, chat_opts, sanitize_for_prompt};
 use super::sink::WorkerSink;
 use super::ChatWorker;
@@ -41,10 +43,27 @@ impl ChatWorker {
         assistant_message_id: Uuid,
     ) -> Result<ThreadHistory, ChatError> {
         let msgs = self.store.get_messages(ctx, thread_id, None).await?;
+        // スキルごとに、最新の内容（編集中の内容・下書き）を持つメッセージの位置（#919）。
+        // それより前の内容は履歴では 1 行の印にする（往復のたびに全体を積み上げない）。
+        // 最新の位置では、それまでの内容を重ねた全体像を見せる（下書きは部分更新のことがある）。
+        let mut latest_skill: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        let mut skill_views = SkillViews::new();
+        for (i, m) in msgs.iter().enumerate() {
+            if m.id == assistant_message_id {
+                continue;
+            }
+            for block in &m.content {
+                if let Some(name) = skill_snapshot_name(block) {
+                    latest_skill.insert(name.to_string(), i);
+                    fold_skill_snapshot(&mut skill_views, block);
+                }
+            }
+        }
         let mut out = Vec::new();
         let mut attachments: Vec<agent_core::AttachmentRef> = Vec::new();
         let mut tools_in_use: Vec<String> = Vec::new();
-        for m in msgs {
+        for (i, m) in msgs.into_iter().enumerate() {
             if m.id == assistant_message_id {
                 continue; // 生成対象のプレースホルダは履歴に含めない
             }
@@ -67,7 +86,11 @@ impl ChatWorker {
                 Role::Assistant => LlmRole::Assistant,
                 _ => continue,
             };
-            let mut text = message_text(&m.content);
+            let mut text = message_text_with(
+                &m.content,
+                &|name| latest_skill.get(name) == Some(&i),
+                &skill_views,
+            );
             // 本文の図のボタンで起動したワークフローと、その結果（#604）。モデルが次の回答で
             // 「さっきの申請はどうなった」に答えられるように、回答の後ろに添える。
             if let Some(runs) = super::history::ui_runs_text(&m.ui_runs) {
@@ -152,6 +175,7 @@ impl ChatWorker {
         thread_history: ThreadHistory,
         cancel: Arc<AtomicBool>,
         sink: &mut WorkerSink,
+        slot: &Arc<super::slot::RunSlot>,
     ) -> Result<(), ChatError> {
         let ThreadHistory {
             messages: history,
@@ -176,6 +200,8 @@ impl ChatWorker {
         // Office 編集/CSV ツール（worker/toolset.rs に集約）。
         self.push_collab_tools(&mut tools);
         self.push_office_and_csv_tools(&mut tools);
+        // 構造化データ（発話ユーザーに見えるテーブルがあるときだけ・Task 15.7）。
+        self.push_data_tools(&mut tools, ctx).await;
 
         let input_preview = history.last().map(message_preview).unwrap_or_default();
         let run_ctx = RunContext {
@@ -195,12 +221,14 @@ impl ChatWorker {
         // 承認 UI/API/DbApprover は種別非依存で、承認が無ければ実行しない（fail-safe・破壊系を
         // 黙って走らせない）。これを配線しないと非自律チャットでは承認者不在により編集ツールが
         // 常に "requires explicit confirmation" で拒否され、共同編集が機能しない。
+        // 承認待ちの間は生成の枠を返して保留する（他の run を止めない・検証 C-P1-3）。
         let mut approver = crate::approver::DbApprover::new(
             self.store.clone(),
             run.run_id,
             run.fencing_token,
             cancel.clone(),
-        );
+        )
+        .with_slot(Arc::clone(slot), &ctx.tenant_id, &ctx.principal.id);
         // 実行前フェーズ（#400）。非自律は常に Execute（門は自律の調査フローだけの概念）。
         let mut gate_stage = super::gate::GateStage::Execute;
         // 門が承認まで取り上げたツール（発話ごとのツール指定の注記で「承認後に使える」と言う・#734）。
@@ -263,16 +291,21 @@ impl ChatWorker {
             }
         } else {
             // 通常チャット: deny_all（既定）のまま。破壊系は都度ユーザー承認が要る（要確認ツールの設計意図）。
-            let mut opts = chat_opts(self);
-            self.system_with_origin_document(run, &mut opts).await;
-            opts
+            chat_opts(self)
         };
         let approver = Some(approver);
 
         let (mut opts, mut history) = (opts, history);
+        // 開いているドキュメントは通常チャット・エージェントモードの両方で編集対象にする（自律側で
+        // 欠けると新規下書きへ逃げ、保存のたびにルートへ別ファイルができていた）。
+        self.system_with_origin_document(run, &mut opts).await;
         opts.session_id = Some(run.thread_id.to_string());
         // この会話で既に使っている（下書き・選択範囲の対象を含む）ツールは遅延にしない。
         opts.tool_search.always_load.extend(tools_in_use);
+        // 本人のカスタム指示（#900）はプロファイルの基本指示の後、skill の指示文より**前**に置く
+        // （手順書の記述・発話ごとのツール指定・門の注記が後ろから優先される）。誘導のみで、
+        // ツール・承認・認可には触れない。
+        super::opts::append_system_section(&mut opts, self.custom_instructions_section(ctx).await);
         self.apply_skills(ctx, run, &skills, &mut opts, &mut history)
             .await?;
         // 発話ごとのツール指定（#734）は skill の指示文より**後ろ**に置く（手順書の記述に

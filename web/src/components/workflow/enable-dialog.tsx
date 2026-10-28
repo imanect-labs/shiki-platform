@@ -19,24 +19,20 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { toast } from "@/components/ui/use-toast";
+import { cn } from "@/lib/utils";
+import { SCOPE_LABELS } from "@/lib/workflow-scopes";
 import { FolderPicker } from "@/components/artifacts/folder-picker";
+import { DataTableSelect, useDataTables } from "@/components/workflow/editor/config-panel/forms-data";
 import {
   disableWorkflow,
   enableWorkflow,
   getConsentPlan,
+  getWorkflowVersion,
   type GrantInput,
   type Registration,
   type SuggestedGrant,
 } from "@/lib/workflow-api";
 
-/// スコープの日本語説明（権限の天井として同意させる内容）。
-const SCOPE_LABELS: Record<string, string> = {
-  "storage.read": "ファイルを読む",
-  "storage.write": "ファイルを保存する",
-  "rag.query": "社内ドキュメントを検索する",
-  "http.egress": "外部サービスへ送信する",
-  "workflow.start": "別のワークフローを起動する",
-};
 
 const RELATION_LABELS: Record<string, string> = {
   viewer: "閲覧",
@@ -44,7 +40,12 @@ const RELATION_LABELS: Record<string, string> = {
   can_use: "使用",
 };
 
-type GrantRow = SuggestedGrant & { picked?: { id: string; name: string } };
+type GrantRow = SuggestedGrant & {
+  picked?: { id: string; name: string };
+  /// テーブルを実行の入力など前の結果から決めるブロック（`$from`）の権限。有効化の時点では対象が決まらない
+  /// ので選ばせない（選ぶと権限だけ渡り、実行の対象とは無関係になる・C-P2-2）。
+  dynamic?: { label: string; fromInput: boolean };
+};
 
 export function EnableDialog({
   open,
@@ -67,12 +68,38 @@ export function EnableDialog({
   } | null>(null);
   const [pickerFor, setPickerFor] = React.useState<number | null>(null);
   const [busy, setBusy] = React.useState(false);
+  /// スケジュールで動くか（入力の無い実行で「入力からテーブルを決める」ブロックは動かない）。
+  const [schedule, setSchedule] = React.useState(false);
+  // 業務データのテーブル（data_table の委譲先を選ぶ・名前の表示にも使う）。
+  const needsTables = (plan?.grants ?? []).some((g) => g.objectKind === "data_table");
+  const { tables } = useDataTables(open && needsTables);
+  const tableName = (id: string | null) => (id ? tables?.find((t) => t.id === id)?.name : undefined);
+  const pickTable = (i: number, id: string) => {
+    if (!plan) return;
+    const grants = [...plan.grants];
+    grants[i] = { ...grants[i], picked: { id, name: tableName(id) ?? id } };
+    setPlan({ ...plan, grants });
+  };
 
   React.useEffect(() => {
     if (!open) return;
     setPlan(null);
-    getConsentPlan(workflowId, version)
-      .then((p) => setPlan({ declaredScopes: p.declaredScopes, grants: p.grants }))
+    Promise.all([getConsentPlan(workflowId, version), getWorkflowVersion(workflowId, version).catch(() => null)])
+      .then(([p, wf]) => {
+        // 提案の出どころ（`node:<id>`）のブロックが、テーブルを前の結果から決めているか。
+        const nodes = new Map((wf?.ir.nodes ?? []).map((n) => [n.id, n]));
+        setSchedule(Boolean(wf?.ir.triggers.some((t) => t.kind === "schedule")));
+        const grants: GrantRow[] = p.grants.map((g) => {
+          const node = g.source.startsWith("node:") ? nodes.get(g.source.slice(5)) : undefined;
+          const table = (node?.params as { table?: unknown } | undefined)?.table;
+          if (g.objectKind === "data_table" && g.needsUserPick && table && typeof table === "object" && "$from" in table) {
+            const from = String((table as { $from: unknown }).$from);
+            return { ...g, dynamic: { label: node?.label || node?.id || "", fromInput: from === "input" } };
+          }
+          return g;
+        });
+        setPlan({ declaredScopes: p.declaredScopes, grants });
+      })
       .catch((e) =>
         toast({
           variant: "destructive",
@@ -84,7 +111,7 @@ export function EnableDialog({
 
   // 対象未確定の grant は種類を問わず有効化をブロックする（fail-closed）。
   // ピッカーを出せるのは folder のみ・それ以外（将来の種類）は保存側の見直しを促す。
-  const unresolved = (plan?.grants ?? []).filter((g) => g.needsUserPick && !g.picked);
+  const unresolved = (plan?.grants ?? []).filter((g) => g.needsUserPick && !g.picked && !g.dynamic);
 
   const enable = async () => {
     if (!plan) return;
@@ -146,8 +173,7 @@ export function EnableDialog({
             自動実行の設定
           </DialogTitle>
           <DialogDescription>
-            スケジュールやできごとで動かすには、あなたの権限の範囲でこのワークフローに
-            権限を渡します（v{version} を有効化）。
+            {`スケジュールやできごとで動かすには、あなたの権限の範囲でこのワークフローに権限を渡します（v${version} を有効化）。`}
           </DialogDescription>
         </DialogHeader>
 
@@ -202,8 +228,16 @@ export function EnableDialog({
                             （{RELATION_LABELS[g.relation] ?? g.relation}）
                           </span>
                         </span>
-                        <span className="block truncate text-muted-foreground">
-                          {g.picked
+                        <span className={cn("block text-muted-foreground", !g.dynamic && "truncate")}>
+                          {g.dynamic
+                            ? `「${g.dynamic.label}」のテーブルは${g.dynamic.fromInput ? "実行の入力" : "前のブロックの結果"}で決まるため、ここでは渡せません。${
+                                schedule && g.dynamic.fromInput
+                                  ? "スケジュールの実行には入力が無いので、このブロックは失敗します。自動で動かすならブロックでテーブルを一覧から選んでください。"
+                                  : "自動で動かすときは、そのテーブルを使える権限が要ります。"
+                              }`
+                            : g.objectKind === "data_table" && (g.picked || g.objectId)
+                            ? `テーブル「${g.picked?.name ?? tableName(g.objectId) ?? g.objectId}」`
+                            : g.picked
                             ? `フォルダ「${g.picked.name}」`
                             : g.objectName
                               ? `「${g.objectName}」`
@@ -212,6 +246,19 @@ export function EnableDialog({
                                 : "対象を選んでください"}
                         </span>
                       </span>
+                      {g.dynamic ? (
+                        <AlertTriangle className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+                      ) : null}
+                      {g.needsUserPick && g.objectKind === "data_table" && !g.dynamic ? (
+                        <div className="w-40 shrink-0">
+                          <DataTableSelect
+                            label="渡すテーブル"
+                            value={g.picked?.id ?? null}
+                            tables={tables}
+                            onChange={(id) => pickTable(i, id)}
+                          />
+                        </div>
+                      ) : null}
                       {g.needsUserPick && g.objectKind === "folder" ? (
                         <Button
                           variant="outline"

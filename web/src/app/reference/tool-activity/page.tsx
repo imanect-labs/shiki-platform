@@ -80,6 +80,9 @@ const RUNNING: ToolActivityItem[] = [
 ];
 
 /// 完了（成功・失敗混在・並行あり）。展開すると step 境界でグループ化される。
+/// ステップの合間: 呼び出しは全件返り、次の呼び出しがまだ来ていない（2 件＝窓は 2 行ぶん）。
+const BETWEEN: ToolActivityItem[] = RUNNING.slice(0, 2);
+
 const DONE: ToolActivityItem[] = [
   {
     key: "d1",
@@ -195,6 +198,7 @@ const ALL_VOCAB: ToolActivityItem[] = [
   { name: "save_note", input: { name: "調査メモ" } },
   { name: "save_slide", input: { name: "提案資料" } },
   { name: "save_csv", input: { name: "売上明細" } },
+  { name: "save_skill", input: { name: "expense-assistant" } },
   { name: "save_document", input: { name: "報告書" } },
   { name: "save_sheet", input: { name: "予算表" } },
   { name: "slide.read", input: {} },
@@ -207,6 +211,12 @@ const ALL_VOCAB: ToolActivityItem[] = [
   { name: "csv.query", input: { sql: "SELECT category, count(*) FROM data GROUP BY category" } },
   { name: "csv.patch", input: {} },
   { name: "csv.write", input: { name: "集計結果" } },
+  { name: "data_query", input: { table: "経費" } },
+  { name: "data_schema", input: { table: "経費" } },
+  { name: "data_record_write", input: { table: "経費", op: "update" } },
+  { name: "drive.find", input: { query: "経理", kind: "folder" } },
+  { name: "drive.move", input: { destination_folder_id: "root" } },
+  { name: "drive.move", input: { new_name: "2026年度" } },
   { name: "plan", input: {} },
   { name: "tool_search", input: { query: "CSV を集計する" } },
   { name: "skill_search", input: { query: "月次決算のチェック" } },
@@ -287,16 +297,16 @@ export default function ToolActivityGalleryPage() {
       <header>
         <h1 className="text-lg font-semibold tracking-tight">ツール実行表示</h1>
         <p className="mt-1 text-[13px] text-muted-foreground">
-          チャットのツール実行可視化（issue #386）。実行中はフェーズ行＋直近 3
-          件のローリング、完了後は 1 行要約に畳み、クリックで全件のタイムラインを開く。
+          チャットのツール実行可視化（issue #386）。操作のまとまりは常に 1 行: 実行中はいまの操作
+          （変わるたびに 1 行ぶん送る）、合間は待ちの文言、終わったら要約。クリックで全件のタイムラインを開く。
         </p>
       </header>
 
-      <Cell id="rolling-demo" title="ローリングの動き（再生で 1 件ずつ増える）">
+      <Cell id="rolling-demo" title="1 行の送り（再生で 1 件ずつ増える）">
         <RollingDemo />
       </Cell>
 
-      <Cell id="running" title="実行中（フェーズ行＋ローリング 3 行・5 件中の直近 3 件）">
+      <Cell id="running" title="実行中（3 件が並行。最新の 1 件と、ほかの件数）">
         <ToolActivity items={RUNNING} streaming />
       </Cell>
 
@@ -304,7 +314,11 @@ export default function ToolActivityGalleryPage() {
         <ToolActivity items={RUNNING} streaming phaseOverride="市場規模と成長率を調べています" />
       </Cell>
 
-      <Cell id="done" title="完了（折りたたみ 1 行要約。クリックで展開）">
+      <Cell id="between" title="ステップの合間（全件完了・生成中。待ちの文言）">
+        <ToolActivity items={BETWEEN} streaming waitingLabel="次の手順を考えています" />
+      </Cell>
+
+      <Cell id="done" title="完了（1 行要約。クリックで全件）">
         <ToolActivity items={DONE} />
       </Cell>
 

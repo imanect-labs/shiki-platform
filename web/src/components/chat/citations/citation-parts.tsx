@@ -3,11 +3,11 @@
 /// 引用 UI の小さな共通部品（文書アイコン・種別・ハイライト・番号チップ・原本リンク）。
 import * as React from "react";
 import Link from "next/link";
-import { ExternalLink } from "lucide-react";
+import { ExternalLink, Globe } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { seasonVar } from "@/lib/season";
-import { matchSpan } from "@/lib/citation";
+import { isWebCitation, matchSpan, safeWebUrl } from "@/lib/citation";
 import { citeLocatorQuery, stashCiteLocator } from "@/lib/citation-locate";
 import type { Citation } from "@/lib/chat-api";
 import { resourcePath } from "@/lib/resource-link";
@@ -28,6 +28,22 @@ export function DocIcon({ meta, className }: { meta: NodeMeta | undefined; class
       className={cn("size-4 shrink-0", className)}
     />
   );
+}
+
+/// 出所のアイコン（Web の出典は地球儀、文書はファイル種別のアイコン）。
+export function SourceIcon({
+  citation,
+  meta,
+  className,
+}: {
+  citation: Pick<Citation, "node_id" | "web">;
+  meta: NodeMeta | undefined;
+  className?: string;
+}) {
+  if (isWebCitation(citation)) {
+    return <Globe className={cn("size-4 shrink-0 text-muted-foreground", className)} aria-hidden />;
+  }
+  return <DocIcon meta={meta} className={className} />;
 }
 
 const KIND_LABELS: [RegExp, string][] = [
@@ -92,6 +108,17 @@ export function openTarget(
   return { href, label: "ファイルを開く" };
 }
 
+/// 原本・元ページへのリンクの見た目。
+const linkClass = (variant: "ghost" | "outline", className?: string) =>
+  cn(
+    "inline-flex shrink-0 items-center gap-1 rounded-lg px-2 py-1 text-[12px] transition-colors",
+    "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+    variant === "outline"
+      ? "border border-border bg-card text-foreground/80 hover:bg-muted"
+      : "text-muted-foreground hover:bg-muted hover:text-foreground",
+    className,
+  );
+
 export function OpenOriginalLink({
   nodeId,
   meta,
@@ -115,18 +142,59 @@ export function OpenOriginalLink({
       prefetch={false}
       onClick={citation ? () => stashCiteLocator(citation) : undefined}
       onAuxClick={citation ? () => stashCiteLocator(citation) : undefined}
-      className={cn(
-        "inline-flex shrink-0 items-center gap-1 rounded-lg px-2 py-1 text-[12px] transition-colors",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-        variant === "outline"
-          ? "border border-border bg-card text-foreground/80 hover:bg-muted"
-          : "text-muted-foreground hover:bg-muted hover:text-foreground",
-        className,
-      )}
+      className={linkClass(variant, className)}
     >
       {target.label}
       <ExternalLink className="size-3" aria-hidden />
     </Link>
+  );
+}
+
+/// Web の出典の元ページを新しいタブで開くリンク（http/https 以外は出さない）。
+export function OpenWebLink({
+  url,
+  variant = "ghost",
+  className,
+}: {
+  url: string;
+  variant?: "ghost" | "outline";
+  className?: string;
+}) {
+  const href = safeWebUrl(url);
+  if (!href) return null;
+  return (
+    // 遷移先へ会話の URL（リファラ）を渡さない。
+    <a href={href} target="_blank" rel="noopener noreferrer" className={linkClass(variant, className)}>
+      ページを開く
+      <ExternalLink className="size-3" aria-hidden />
+    </a>
+  );
+}
+
+/// 出所を開くリンク（Web の出典は元ページ、文書は原本の該当箇所）。
+export function OpenSourceLink({
+  citation,
+  meta,
+  locate = true,
+  variant = "ghost",
+  className,
+}: {
+  citation: Citation;
+  meta: NodeMeta | undefined;
+  /// false なら文書の該当箇所ではなく文書そのものを開く（一覧の文書カード用）。
+  locate?: boolean;
+  variant?: "ghost" | "outline";
+  className?: string;
+}) {
+  if (isWebCitation(citation)) return <OpenWebLink url={citation.web.url} variant={variant} className={className} />;
+  return (
+    <OpenOriginalLink
+      nodeId={citation.node_id}
+      meta={meta}
+      citation={locate ? citation : undefined}
+      variant={variant}
+      className={className}
+    />
   );
 }
 
