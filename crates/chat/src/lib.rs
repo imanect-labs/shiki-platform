@@ -42,6 +42,7 @@ pub mod office_create_tool;
 pub mod office_engine_tool;
 pub mod office_live_tool;
 pub mod office_tool;
+pub mod preferences;
 pub mod selection;
 pub(crate) mod skill;
 pub mod skill_catalog;
@@ -73,6 +74,7 @@ pub use model::{
     SelectionContext, SelectionKind, SkillPin, StreamEvent, StreamEventKind, Thread, ThreadRole,
     UiActionRun, UiActionRunStatus, UiActionValue, WebSource,
 };
+pub use preferences::UserPreferences;
 pub use skill_catalog::{
     merge_entries as merge_skill_catalog_entries, OwnedSkillCatalog, SkillCatalogEntry,
     SkillCatalogSource,

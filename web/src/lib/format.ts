@@ -27,15 +27,20 @@ export function formatDateTime(iso: string): string {
   return dateFormatter.format(d);
 }
 
-/// 「3 分前」「2 日前」のような相対時刻（1 週間以上前は日時）。
-export function relativeTime(iso: string | null | undefined, now: number): string {
+/// 「3 分前」「2 日前」のような相対時刻（1 週間以上前は `absolute` の日時）。
+export function relativeTime(
+  iso: string | null | undefined,
+  now: number,
+  absolute: (iso: string) => string = formatDateTime,
+): string {
   if (!iso) return "—";
   const t = new Date(iso).getTime();
   if (Number.isNaN(t)) return "—";
+  // 端末の時計のずれで先の時刻になったものは「たった今」に寄せる。
   const sec = Math.max(0, Math.round((now - t) / 1000));
   if (sec < 60) return "たった今";
   if (sec < 3600) return `${Math.floor(sec / 60)} 分前`;
   if (sec < 86400) return `${Math.floor(sec / 3600)} 時間前`;
   if (sec < 7 * 86400) return `${Math.floor(sec / 86400)} 日前`;
-  return formatDateTime(iso);
+  return absolute(iso);
 }

@@ -85,6 +85,7 @@ e2e = [
     "skills.spec.ts",
     "slash-command.spec.ts",
     "slide-conversation-drafts.spec.ts",
+    "user-preferences.spec.ts",
     "visual.spec.ts",
     "yui-actions.spec.ts",
     "yui.spec.ts",
@@ -241,7 +242,7 @@ e2e = ["admin-console.spec.ts", "admin-data.spec.ts", "ai-insights.spec.ts", "au
 [scenario.settings]
 pages = ["web/src/app/(settings)/**"]
 crates = []
-e2e = ["admin-data.spec.ts", "custom-instructions.spec.ts", "sidebar-mobile.spec.ts"]
+e2e = ["admin-data.spec.ts", "custom-instructions.spec.ts", "sidebar-mobile.spec.ts", "user-preferences.spec.ts"]
 
 [scenario.reference]
 pages = ["web/src/app/reference/**"]

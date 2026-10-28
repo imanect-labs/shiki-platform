@@ -1274,3 +1274,151 @@ async fn custom_instructions_round_trip_over_http() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
+
+/// ユーザー設定（#952）: 本人の分の読み書き・欠けた項目は既定値・不正なモデル ID の 400（画面へ出す
+/// `detail` 付き）・未知の値の拒否・未認証 401・CSRF 無しの書き込み拒否・chat 無効の 503。
+///
+/// このファイルのテストは同じ利用者（tenant `default`）を共有して並列に走るので、スレッド作成に効く
+/// 既定の承認モードと org の全自動キャップには触れない（そちらは `chat` の preferences_it が
+/// テナントを分けて確かめる）。最後に既定値へ戻す。
+#[tokio::test]
+async fn preferences_round_trip_over_http() {
+    let Some((state, sessions)) = build_state(true).await else {
+        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+        return;
+    };
+    let (cookie, csrf) = login(&sessions, "sid-preferences").await;
+    let app = build_router(state);
+    let put = |body: serde_json::Value, with_csrf: bool| {
+        let mut req = Request::builder()
+            .method("PUT")
+            .uri("/me/preferences")
+            .header(COOKIE, &cookie)
+            .header("content-type", "application/json");
+        if with_csrf {
+            req = req.header("x-csrf-token", csrf);
+        }
+        req.body(Body::from(body.to_string())).unwrap()
+    };
+    let get = || {
+        Request::builder()
+            .uri("/me/preferences")
+            .header(COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    // 未認証は 401。
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/me/preferences")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // 保存（欠けた項目は既定値で埋まり、モデル ID は前後の空白を落とす。読み直しても同じ）。
+    let resp = app
+        .clone()
+        .oneshot(put(
+            serde_json::json!({
+                "submit_key": "mod_enter",
+                "default_model": { "model": " claude-sonnet ", "effort": "high" },
+                "expand_reasoning": true,
+                "time_format": "relative",
+            }),
+            true,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let saved = body_json(resp).await;
+    assert_eq!(
+        saved["preferences"],
+        serde_json::json!({
+            "submit_key": "mod_enter",
+            "default_model": { "model": "claude-sonnet", "effort": "high" },
+            "web_search_by_default": false,
+            "default_autonomous_mode": "require_approval",
+            "expand_reasoning": true,
+            "time_format": "relative",
+        })
+    );
+    assert_eq!(saved["bypass_allowed"], true);
+    let resp = app.clone().oneshot(get()).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(body_json(resp).await, saved);
+
+    // CSRF 無しの書き込みは通らない。
+    let resp = app
+        .clone()
+        .oneshot(put(serde_json::json!({}), false))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    // 未知の値は受け付けない。
+    let resp = app
+        .clone()
+        .oneshot(put(serde_json::json!({ "submit_key": "space" }), true))
+        .await
+        .unwrap();
+    assert!(resp.status().is_client_error(), "{}", resp.status());
+    // 長すぎるモデル ID は 400 で、画面へ出す文言を `detail` に載せる。
+    let resp = app
+        .clone()
+        .oneshot(put(
+            serde_json::json!({ "default_model": { "model": "m".repeat(201), "effort": "low" } }),
+            true,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let detail = body_json(resp).await["detail"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(detail.contains("200 文字以内"), "{detail}");
+    // 拒否した書き込みで値は変わらない。
+    let resp = app.clone().oneshot(get()).await.unwrap();
+    assert_eq!(body_json(resp).await, saved);
+
+    // 既定値へ戻す（欠けた項目はすべて既定値）。
+    let resp = app
+        .clone()
+        .oneshot(put(serde_json::json!({}), true))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(resp).await["preferences"],
+        serde_json::json!({
+            "submit_key": "enter",
+            "default_model": null,
+            "web_search_by_default": false,
+            "default_autonomous_mode": "require_approval",
+            "expand_reasoning": false,
+            "time_format": "absolute",
+        })
+    );
+
+    // chat 無効なら 503。
+    let Some((state, sessions)) = build_state(false).await else {
+        return;
+    };
+    let (cookie, _) = login(&sessions, "sid-preferences-off").await;
+    let resp = build_router(state)
+        .oneshot(
+            Request::builder()
+                .uri("/me/preferences")
+                .header(COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+}

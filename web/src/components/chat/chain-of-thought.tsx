@@ -6,6 +6,7 @@
 import * as React from "react";
 import { Brain, ChevronDown, ChevronRight } from "lucide-react";
 
+import { usePreferences } from "@/lib/preferences";
 import { cn } from "@/lib/utils";
 import { seasonVar } from "@/lib/season";
 import type { Citation } from "@/lib/chat-api";
@@ -28,7 +29,9 @@ export function ChainOfThought({
   phase?: string | null;
   waitingLabel?: string | null;
 }) {
-  const [open, setOpen] = React.useState(false);
+  // 押して開閉するまでは設定の既定（思考過程を開いて表示・#952）に従う。
+  const [open, setOpen] = React.useState<boolean | null>(null);
+  const expandByDefault = usePreferences().prefs.expand_reasoning;
   const [showDetail, setShowDetail] = React.useState(false);
 
   const hasThinking = thinking.trim().length > 0;
@@ -37,9 +40,9 @@ export function ChainOfThought({
   const hasContent = hasThinking || hasTools || citations.length > 0;
   if (!hasContent && !streaming) return null;
 
-  // 思考テキストのパネルは押したときだけ開く。生成中に自動で開くと、まとまりが終わった瞬間に
-  // 閉じて行が縮む（パカパカする）。
-  const expanded = open;
+  // 思考テキストのパネルは押したとき（または設定で最初から）開く。生成中だけ自動で開くと、
+  // まとまりが終わった瞬間に閉じて行が縮む（パカパカする）ので、生成の状態では開閉しない。
+  const expanded = open ?? expandByDefault;
   // ツールがあるまとまりでは、生きている表示（回転・待ちの文言）はツールの見出しが受け持つ。
   // 思考の見出しにも同じ文言を出すと 2 行が同じことを言う。
   const live = streaming && !hasTools;
@@ -55,7 +58,7 @@ export function ChainOfThought({
         <div className={cn(hasTools && "mb-1")}>
           <button
             type="button"
-            onClick={() => setOpen((v) => !v)}
+            onClick={() => setOpen(!expanded)}
             className="flex flex-wrap items-center gap-1.5 rounded-md py-0.5 text-[13px] text-muted-foreground transition-colors hover:text-foreground"
             aria-expanded={expanded}
           >

@@ -5,6 +5,8 @@ import { useTheme } from "next-themes";
 import { Monitor, Moon, Sun } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { formatDateTime, relativeTime } from "@/lib/format";
+import { updatePreferences, usePreferences, type TimeFormat } from "@/lib/preferences";
 import {
   Select,
   SelectContent,
@@ -13,7 +15,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { SegmentedControl } from "@/components/ui/segmented-control";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Switch } from "@/components/ui/switch";
+import { toast } from "@/components/ui/use-toast";
 import { SettingsPage, SettingsRow, SettingsSection, SoonBadge } from "./settings-ui";
 
 const THEMES = [
@@ -64,7 +68,52 @@ function ThemePicker() {
   );
 }
 
-/// 設定 → 表示。テーマは実際に切り替わる（ブラウザに保存）。言語・密度などはモック。
+/// 日時の表示形式（アカウントに保存・#952）。見本は 2 時間前の時刻で見せる。
+function TimeFormatRow() {
+  const { prefs, loaded, error } = usePreferences();
+  const [sample] = React.useState(() => {
+    const now = Date.now();
+    return { now, iso: new Date(now - 2 * 3600_000).toISOString() };
+  });
+  const example = (f: TimeFormat) =>
+    f === "relative" ? relativeTime(sample.iso, sample.now) : formatDateTime(sample.iso);
+  return (
+    <SettingsRow
+      label="日時の表示"
+      description={
+        loaded
+          ? `ドライブやワークフローの一覧で「${example(prefs.time_format)}」のように表示します。`
+          : (error ?? "読み込み中…")
+      }
+    >
+      {loaded ? (
+        <SegmentedControl
+          aria-label="日時の表示"
+          size="sm"
+          value={prefs.time_format}
+          onValueChange={(v) =>
+            updatePreferences({ time_format: v as TimeFormat }).catch((e: unknown) =>
+              toast({
+                title: "保存できませんでした",
+                description: e instanceof Error ? e.message : String(e),
+                variant: "destructive",
+              }),
+            )
+          }
+          options={[
+            { value: "absolute", label: "日時" },
+            { value: "relative", label: "経過時間" },
+          ]}
+        />
+      ) : error ? null : (
+        <Skeleton className="h-8 w-40" />
+      )}
+    </SettingsRow>
+  );
+}
+
+/// 設定 → 表示。テーマは実際に切り替わる（ブラウザに保存）。日時の表示はアカウントに保存する。
+/// 言語・密度などはモック。
 export function AppearanceView() {
   const [density, setDensity] = React.useState("comfortable");
   const [lang, setLang] = React.useState("ja");
@@ -76,6 +125,10 @@ export function AppearanceView() {
         <div className="p-5">
           <ThemePicker />
         </div>
+      </SettingsSection>
+
+      <SettingsSection title="日時" description="アカウントに保存され、ほかの端末でも同じ表示になります。">
+        <TimeFormatRow />
       </SettingsSection>
 
       <SettingsSection

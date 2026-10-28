@@ -19,7 +19,8 @@ import type { ActiveCommand } from "@/lib/slash-command";
 import { stashPending } from "@/lib/pending-message";
 import { setPendingSelection, type SelectionContext } from "@/lib/selection-context";
 import { storageScopeGeneration } from "@/lib/user-storage";
-import { HOME_SCOPE, moveModelChoice } from "@/lib/model-choice";
+import { HOME_SCOPE, moveModelChoice, readModelChoice, writeModelChoice } from "@/lib/model-choice";
+import { usePreferences } from "@/lib/preferences";
 import { moveToolChoice, readToolChoice, writeToolChoice } from "@/lib/tool-choice";
 import { titleFrom } from "@/lib/chat-store";
 import { currentSeasonIndex, seasonVar } from "@/lib/season";
@@ -62,6 +63,27 @@ export default function HomePage() {
   const [workspace, setWorkspace] = React.useState<WorkspaceChoice | null>(null);
   const [approvalMode, setApprovalMode] = React.useState<AutonomousMode>("require_approval");
   const [createKind, setCreateKind] = React.useState<CreateKind>("note");
+  // 新しいチャットの既定（ユーザー設定・#952）。ホームを開いたときに 1 回だけ初期値にする:
+  // モデル（選んでいなければ）・Web 検索（選択に足す）・エージェントのモードの承認モード。
+  // 以後の付け外しは利用者に任せる。公開から外れたモデルは入力欄のモデル選択が Auto に戻す。
+  // 承認モードは選択欄の初期値にとどめ、緩めるのは従来どおりエージェントのモードで送るときだけ。
+  const { prefs, loaded: prefsLoaded, bypassAllowed } = usePreferences();
+  const seeded = React.useRef(false);
+  React.useEffect(() => {
+    if (!prefsLoaded || seeded.current) return;
+    seeded.current = true;
+    const dm = prefs.default_model;
+    if (dm && readModelChoice(HOME_SCOPE) === null) {
+      writeModelChoice(HOME_SCOPE, { model: dm.model ?? null, effort: dm.effort });
+    }
+    const tools = readToolChoice(HOME_SCOPE);
+    if (prefs.web_search_by_default && !tools.includes("web_search")) {
+      writeToolChoice(HOME_SCOPE, [...tools, "web_search"]);
+    }
+    // 組織が全自動を禁止していれば承認必須から始める（選べない値を初期値にしない）。
+    const mode = prefs.default_autonomous_mode;
+    setApprovalMode(mode === "bypass" && !bypassAllowed ? "require_approval" : mode);
+  }, [prefsLoaded, prefs, bypassAllowed]);
   // 表示名はメールのローカル部から導出する（表示名フィールドはサーバ側実装が入る後続 PR で対応）。
   const name = data?.email?.split("@")[0] ?? null;
   const desktop = useMediaQuery("(min-width: 768px)");
