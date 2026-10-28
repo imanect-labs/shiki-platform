@@ -426,3 +426,188 @@ async fn enable_rejects_out_of_scope_grants() {
     let view = service.view(&tenant, wf_id).await.unwrap();
     assert_eq!(view.status, "none");
 }
+
+/// テストで作った registration・委譲・トリガの行を消す（テナントごと・テストの最後に呼ぶ）。
+async fn cleanup(pool: &sqlx::PgPool, tenant: &str) {
+    for sql in [
+        "DELETE FROM workflow_delegation WHERE tenant_id = $1",
+        "DELETE FROM workflow_trigger WHERE tenant_id = $1",
+        "DELETE FROM workflow_registration WHERE tenant_id = $1",
+        "DELETE FROM node_closure WHERE tenant_id = $1",
+        "DELETE FROM node WHERE tenant_id = $1",
+    ] {
+        sqlx::query(sql).bind(tenant).execute(pool).await.unwrap();
+    }
+}
+
+/// 対象（テーブル・フォルダー）の無いワークフロー: 手動のきっかけとスクリプトだけ。
+fn ir_without_targets(scopes: &[&str]) -> WorkflowIr {
+    WorkflowIr::from_json(&json!({
+        "ir_version": 1,
+        "name": "no-targets",
+        "declared_scopes": scopes,
+        "triggers": [{ "kind": "schedule", "cron": "0 9 * * 1", "tz": "Asia/Tokyo" }],
+        "nodes": [
+            { "id": "calc", "type": "script.run",
+              "params": { "source": { "inline": "function main(i){ return {}; }" } } }
+        ],
+        "edges": []
+    }))
+    .unwrap()
+}
+
+/// BUG-102・D-90: 対象の無いワークフローは grants が空なので、使ってよい操作の増えた版を軽量切替では受けられない
+/// （409 のまま）。同意の画面からの有効化（consent）は、grants が空でも同意し直して切り替える。
+#[tokio::test]
+async fn consent_switches_a_workflow_without_targets_to_more_scopes() {
+    let Some(env) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let alice = user_ctx(&tenant, "alice");
+    let wf_id = Uuid::new_v4();
+    let service = RegistrationService::new(
+        env.pool.clone(),
+        DelegationStore::new(env.pool.clone(), Arc::clone(&env.fga)),
+    );
+    let v1 = ir_without_targets(&[]);
+    let v2 = ir_without_targets(&["http.egress"]);
+    service
+        .consent(&alice, wf_id, 1, &v1, &[])
+        .await
+        .expect("v1 の同意");
+
+    // 画面を通らない軽量切替は今までどおり拒む（増えた操作の同意を黙って済ませない）。
+    let err = service
+        .enable(&alice, wf_id, 2, &v2, &[])
+        .await
+        .expect_err("軽量切替は拒否");
+    assert!(
+        matches!(&err, EnableError::ScopeExpansion { missing } if missing == &["http.egress".to_string()]),
+        "{err:?}"
+    );
+    assert_eq!(
+        service.view(&tenant, wf_id).await.unwrap().enabled_version,
+        Some(1)
+    );
+
+    // 同意の画面からなら、対象が無くても増えた操作に同意して切り替わる。
+    service
+        .consent(&alice, wf_id, 2, &v2, &[])
+        .await
+        .expect("増えた操作への同意");
+    let view = service.view(&tenant, wf_id).await.unwrap();
+    assert_eq!(view.status, "enabled");
+    assert_eq!(view.enabled_version, Some(2));
+    assert_eq!(view.consented_scopes, vec!["http.egress".to_string()]);
+    assert_eq!(
+        service
+            .check_run_start(&tenant, wf_id, &v2.declared_scopes)
+            .await
+            .unwrap(),
+        RunAdmission::Ok,
+        "同意した版は動き出せる"
+    );
+    cleanup(&env.pool, &tenant).await;
+}
+
+/// D-90: 「権限も取り消す」は無効化と一緒に委譲をすべて取り消す（FGA のタプルも外す）。取り消しを選ばない
+/// 無効化は今までどおり委譲を残す。取り消した後は同意もやり直しになる（軽量切替で委譲の無いまま動かさない）。
+#[tokio::test]
+async fn disable_and_revoke_removes_delegations_and_consent() {
+    let Some(env) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let alice = user_ctx(&tenant, "alice");
+    let folder = Uuid::new_v4();
+    mk_folder(&env.pool, &tenant, folder).await;
+    let folder_obj = alice.ns().folder(&folder.to_string());
+    env.fga
+        .write_tuple(&alice.subject(), Relation::Viewer, &folder_obj)
+        .await
+        .unwrap();
+    let wf_id = Uuid::new_v4();
+    let wf_subject = alice.ns().workflow_principal(&wf_id.to_string());
+    let service = RegistrationService::new(
+        env.pool.clone(),
+        DelegationStore::new(env.pool.clone(), Arc::clone(&env.fga)),
+    );
+    let ir1 = WorkflowIr::from_json(&ir_v1(folder)).unwrap();
+    let grants = [GrantRequest {
+        scope: "storage.read".into(),
+        object: folder_obj.clone(),
+        relation: Relation::Viewer,
+    }];
+    let workflow_can_read = || async {
+        env.fga
+            .check(
+                &wf_subject,
+                Relation::Viewer,
+                &folder_obj,
+                authz::Consistency::HigherConsistency,
+            )
+            .await
+            .unwrap()
+    };
+    service
+        .consent(&alice, wf_id, 1, &ir1, &grants)
+        .await
+        .expect("有効化");
+    assert!(workflow_can_read().await);
+
+    // 取り消しを選ばない無効化: 委譲は残る（今の挙動のまま）。
+    service.disable(&tenant, wf_id).await.expect("disable");
+    let view = service.view(&tenant, wf_id).await.unwrap();
+    assert_eq!(view.status, "disabled");
+    assert_eq!(view.delegations.len(), 1, "オフにしても委譲は残る");
+    assert!(workflow_can_read().await);
+
+    // 権限も取り消す: 委譲の行とタプルが消え、同意（consented_scopes）も空になる。
+    let revoked = service
+        .disable_and_revoke(&tenant, wf_id)
+        .await
+        .expect("取り消し");
+    assert_eq!(revoked.len(), 1);
+    assert_eq!(revoked[0].object_ref, folder_obj.as_str());
+    assert_eq!(revoked[0].delegator, "alice");
+    let view = service.view(&tenant, wf_id).await.unwrap();
+    assert_eq!(view.status, "disabled");
+    assert!(view.delegations.is_empty(), "{:?}", view.delegations);
+    assert!(view.consented_scopes.is_empty());
+    assert!(!workflow_can_read().await, "タプルも外れる");
+    let n: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM workflow_delegation \
+         WHERE tenant_id = $1 AND workflow_id = $2 AND revoked_at IS NOT NULL",
+    )
+    .bind(&tenant)
+    .bind(wf_id)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(n, 1, "台帳の行は revoke として残す（消さない）");
+
+    // 取り消した後は、画面を通らない軽量切替では戻せない（同意が要る）。
+    let err = service
+        .enable(&alice, wf_id, 1, &ir1, &[])
+        .await
+        .expect_err("同意なしでは戻さない");
+    assert!(matches!(err, EnableError::ScopeExpansion { .. }), "{err:?}");
+    // 同意し直せば戻る。
+    service
+        .consent(&alice, wf_id, 1, &ir1, &grants)
+        .await
+        .expect("同意し直し");
+    assert!(workflow_can_read().await);
+    assert_eq!(
+        service
+            .check_run_start(&tenant, wf_id, &ir1.declared_scopes)
+            .await
+            .unwrap(),
+        RunAdmission::Ok
+    );
+    // 取り消すものが無いときは何もしない。
+    service.disable_and_revoke(&tenant, wf_id).await.unwrap();
+    assert!(service
+        .disable_and_revoke(&tenant, wf_id)
+        .await
+        .unwrap()
+        .is_empty());
+    cleanup(&env.pool, &tenant).await;
+}

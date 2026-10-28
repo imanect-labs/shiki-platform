@@ -444,6 +444,8 @@ use utoipa::{
         crate::routes::workflows::EnableRequest,
         crate::routes::workflows::GrantItem,
         crate::routes::workflows::EnableResponse,
+        crate::routes::workflows::DisableRequest,
+        crate::routes::workflows::DisableResponse,
         workflow_engine::ValidationError,
         // generative UI DTO（Phase 6）。スペック本文は Object（正本 JSON・型は ts-rs 生成）。
         crate::routes::gui_errors::GuiValidationErrorResponse,

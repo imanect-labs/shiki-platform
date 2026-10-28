@@ -234,23 +234,9 @@ impl DelegationStore {
         // ユーザーが同意から外したオブジェクトへワークフローが到達し続ける（P1）。
         let new_objs: std::collections::BTreeSet<&str> =
             grants.iter().map(|g| g.object.as_str()).collect();
-        let stale = self.active_delegations(tenant, workflow_id).await?;
-        for d in &stale {
-            if new_objs.contains(d.object_ref.as_str()) {
-                continue;
-            }
-            if let Some(relation) = Relation::parse(&d.relation) {
-                // 行は tenant_id = tenant で絞り込み済み。tenant 部の不一致（台帳破損・改竄）も None。
-                let Some(obj) = FgaObject::from_qualified(&d.object_ref, tenant) else {
-                    tracing::error!(object_ref = %d.object_ref, tenant = %tenant, "委譲台帳の object_ref が不正形式またはテナント不一致（撤去スキップ）");
-                    continue;
-                };
-                self.authz
-                    .delete_tuple(&wf_subject, relation, &obj)
-                    .await
-                    .map_err(|e| DelegationError::Authz(e.to_string()))?;
-            }
-        }
+        let keep: Vec<&str> = new_objs.iter().copied().collect();
+        self.revoke_except_within(tx, tenant, workflow_id, &keep)
+            .await?;
 
         sqlx::query(
             "INSERT INTO workflow_registration \
@@ -266,19 +252,6 @@ impl DelegationStore {
         .bind(version)
         .bind(declared_scopes)
         .bind(&enabler.principal.id)
-        .execute(&mut **tx)
-        .await
-        .map_err(map_db)?;
-
-        // 外れた委譲行を revoke。
-        sqlx::query(
-            "UPDATE workflow_delegation SET revoked_at = now() \
-             WHERE tenant_id = $1 AND workflow_id = $2 AND revoked_at IS NULL \
-               AND NOT (object_ref = ANY($3))",
-        )
-        .bind(tenant)
-        .bind(workflow_id)
-        .bind(new_objs.iter().copied().collect::<Vec<&str>>())
         .execute(&mut **tx)
         .await
         .map_err(map_db)?;
@@ -312,6 +285,84 @@ impl DelegationStore {
             .map_err(|e| DelegationError::Authz(e.to_string()))?;
 
         Ok(())
+    }
+
+    /// `keep` に無い対象への有効な委譲を取り消す（呼び出し側 TX）。FGA のタプルを先に撤去し、撤去できたら
+    /// 台帳の行を revoke する（撤去に失敗したら Err で戻り、TX はコミットされない＝台帳は有効のまま残り、
+    /// 次の取り消しでもう一度撤去する）。
+    ///
+    /// 再同意で外れた委譲の撤去（[`Self::enable_within`]）と「権限も取り消す」（[`Self::revoke_all_within`]・
+    /// BUG-102・D-90）が同じ経路を通る。台帳の行は `FOR UPDATE` で取り、同時の有効化と取り違えない。
+    /// 返すのは取り消した行。
+    async fn revoke_except_within(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tenant: &str,
+        workflow_id: Uuid,
+        keep: &[&str],
+    ) -> Result<Vec<DelegationRow>, DelegationError> {
+        let stale: Vec<DelegationRow> = sqlx::query_as(
+            "SELECT workflow_id, delegator, scope, object_ref, relation FROM workflow_delegation \
+             WHERE tenant_id = $1 AND workflow_id = $2 AND revoked_at IS NULL \
+               AND NOT (object_ref = ANY($3)) \
+             ORDER BY scope, object_ref, delegator FOR UPDATE",
+        )
+        .bind(tenant)
+        .bind(workflow_id)
+        .bind(keep)
+        .fetch_all(&mut **tx)
+        .await
+        .map_err(map_db)?;
+        let wf_subject = Namespace::for_tenant(tenant).workflow_principal(&workflow_id.to_string());
+        for d in &stale {
+            if let Some(relation) = Relation::parse(&d.relation) {
+                // 行は tenant_id = tenant で絞り込み済み。tenant 部の不一致（台帳破損・改竄）も None。
+                let Some(obj) = FgaObject::from_qualified(&d.object_ref, tenant) else {
+                    tracing::error!(object_ref = %d.object_ref, tenant = %tenant, "委譲台帳の object_ref が不正形式またはテナント不一致（撤去スキップ）");
+                    continue;
+                };
+                self.authz
+                    .delete_tuple(&wf_subject, relation, &obj)
+                    .await
+                    .map_err(|e| DelegationError::Authz(e.to_string()))?;
+            }
+        }
+        sqlx::query(
+            "UPDATE workflow_delegation SET revoked_at = now() \
+             WHERE tenant_id = $1 AND workflow_id = $2 AND revoked_at IS NULL \
+               AND NOT (object_ref = ANY($3))",
+        )
+        .bind(tenant)
+        .bind(workflow_id)
+        .bind(keep)
+        .execute(&mut **tx)
+        .await
+        .map_err(map_db)?;
+        Ok(stale)
+    }
+
+    /// ワークフローの有効な委譲をすべて取り消す（「権限も取り消す」・呼び出し側 TX・BUG-102・D-90）。
+    ///
+    /// 経路は再同意で外れた委譲の撤去と同じ（[`Self::revoke_except_within`]）。ワークフローが自身の定義を
+    /// 読むタプル（`artifact#viewer`）は委譲ではないので残す（有効化しない限り run は始まらない）。
+    pub(crate) async fn revoke_all_within(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        tenant: &str,
+        workflow_id: Uuid,
+    ) -> Result<Vec<RevokedDelegation>, DelegationError> {
+        let rows = self
+            .revoke_except_within(tx, tenant, workflow_id, &[])
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|d| RevokedDelegation {
+                delegator: d.delegator,
+                scope: d.scope,
+                object_ref: d.object_ref,
+                relation: d.relation,
+            })
+            .collect())
     }
 
     /// 有効化者が (relation, object) を現に持つかを検査する（イベントトリガ束縛の原資確認等）。
@@ -563,6 +614,17 @@ impl DelegationStore {
         .await
         .map_err(map_db)
     }
+}
+
+/// 取り消した委譲 1 件（「権限も取り消す」の結果・監査に残す）。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+pub struct RevokedDelegation {
+    /// 委譲元（オンにした人の subject local id）。
+    pub delegator: String,
+    pub scope: String,
+    /// FGA オブジェクト参照（例: `data_table:<tenant>|<id>`）。
+    pub object_ref: String,
+    pub relation: String,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]

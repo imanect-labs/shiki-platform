@@ -20,8 +20,8 @@ pub use list::{
 };
 pub use registration::{
     consent_plan, disable_workflow, enable_workflow, get_registration, ConsentPlanResponse,
-    DelegationItem, EnableRequest, EnableResponse, GrantItem, RegistrationResponse,
-    SuggestedGrantItem,
+    DelegationItem, DisableRequest, DisableResponse, EnableRequest, EnableResponse, GrantItem,
+    RegistrationResponse, SuggestedGrantItem,
 };
 pub use run_ops::{
     cancel_workflow_run, retry_workflow_run, stream_workflow_run_events, CancelResponse,

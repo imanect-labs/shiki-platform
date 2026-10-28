@@ -2,8 +2,9 @@
 //!
 //! - GET registration — 有効化状態＋委譲一覧（再同意バナー用）
 //! - GET consent-plan — 同意画面の提案 grants（IR 静的分析＋secret 名→id 解決）
-//! - POST enable — 明示委譲付き有効化（scope 拡大で grants 不足なら 409 missing_scopes）
-//! - POST disable — トリガ停止
+//! - POST enable — 明示委譲付き有効化（scope 拡大で grants 不足なら 409 missing_scopes。同意の画面は
+//!   `consent: true` で送り、grants が空でも同意し直す・BUG-102）
+//! - POST disable — トリガ停止（`revoke_delegations: true` なら委譲もすべて取り消す・D-90）
 //!
 //! authz: 参照系は artifact viewer（`WorkflowStore` 経由の取得が担保）、enable/disable は
 //! artifact **editor** を明示 check（閲覧者による有効化 = 権限行使の踏み台を防ぐ）。
@@ -34,6 +35,11 @@ pub struct DelegationItem {
     pub scope: String,
     /// FGA オブジェクト参照（例: `folder:<tenant>|<id>`）。
     pub object_ref: String,
+    /// 対象の種類（`GrantItem::object_type` と同じ語・folder / file / secret / workflow / data_table）。
+    /// 台帳の参照が読めないときは null（画面は「名前を読み込めない対象」と出す）。
+    pub object_kind: Option<String>,
+    /// 対象の id（テナントの前置きを外したもの・名前を引くのに使う）。
+    pub object_id: Option<String>,
     pub relation: String,
     pub granted_at: String,
 }
@@ -95,9 +101,13 @@ pub struct GrantItem {
 pub struct EnableRequest {
     /// 有効化する IR バージョン（enable は version 単位・ir.md §9）。
     pub version: i64,
-    /// 明示委譲（省略時は軽量切替 = scope 拡大が無い場合のみ可）。
+    /// 明示委譲（省略時は軽量切替 = scope 拡大が無い場合のみ可。`consent` なら空でも同意し直す）。
     #[serde(default)]
     pub grants: Vec<GrantItem>,
+    /// 同意の画面から送る（使ってよい操作と対象を見せたうえでの同意）。true なら grants が空でも軽量切替に
+    /// せず同意し直す（対象の無いワークフローも、使ってよい操作が増えた版へ切り替えられる・BUG-102・D-90）。
+    #[serde(default)]
+    pub consent: bool,
 }
 
 /// 有効化レスポンス。
@@ -105,6 +115,44 @@ pub struct EnableRequest {
 pub struct EnableResponse {
     pub status: String,
     pub enabled_version: i64,
+}
+
+/// 無効化リクエスト（本文は省略できる）。
+#[derive(Debug, Default, Deserialize, ToSchema)]
+pub struct DisableRequest {
+    /// 委譲もすべて取り消すか（「権限も取り消す」・D-90）。省略は false（委譲を残す＝今までどおり）。
+    #[serde(default)]
+    pub revoke_delegations: bool,
+}
+
+/// 無効化レスポンス。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct DisableResponse {
+    /// 常に `disabled`。
+    pub status: String,
+    /// 取り消した委譲の数（`revoke_delegations` のときだけ数える・ほかは 0）。
+    pub revoked_delegations: usize,
+}
+
+/// 委譲の対象の種類（API の `object_type`）と FGA の型の対応。付与（[`to_grant_request`]）と一覧の表示
+/// （[`object_kind_of`]）が同じ表を引く（向きごとに手で書き分けない）。
+const OBJECT_KINDS: &[(&str, &str)] = &[
+    ("folder", "folder"),
+    ("file", "file"),
+    ("secret", "secret"),
+    ("workflow", "artifact"),
+    ("data_table", "data_table"),
+];
+
+/// 台帳の参照（`<型>:<tenant>|<id>`）から対象の種類と id を取り出す。読めなければ `None`。
+fn object_kind_of(ns: &authz::Namespace<'_>, object_ref: &str) -> Option<(String, String)> {
+    let (fga_type, rest) = object_ref.split_once(':')?;
+    let kind = OBJECT_KINDS
+        .iter()
+        .find(|(_, t)| *t == fga_type)
+        .map(|(k, _)| *k)?;
+    let id = ns.strip_object_id(rest)?;
+    Some((kind.to_string(), id.to_string()))
 }
 
 /// enable/disable は artifact **editor** 必須。viewer 以下は存在秘匿の 404。
@@ -157,6 +205,7 @@ pub async fn get_registration(
         .view(&ctx.tenant_id, id)
         .await
         .map_err(map_enable_err)?;
+    let ns = ctx.ns();
     Ok(Json(RegistrationResponse {
         status: view.status,
         enabled_version: view.enabled_version,
@@ -165,12 +214,17 @@ pub async fn get_registration(
         delegations: view
             .delegations
             .into_iter()
-            .map(|d| DelegationItem {
-                delegator: d.delegator,
-                scope: d.scope,
-                object_ref: d.object_ref,
-                relation: d.relation,
-                granted_at: d.granted_at.to_rfc3339(),
+            .map(|d| {
+                let (object_kind, object_id) = object_kind_of(&ns, &d.object_ref).unzip();
+                DelegationItem {
+                    delegator: d.delegator,
+                    scope: d.scope,
+                    object_ref: d.object_ref,
+                    object_kind,
+                    object_id,
+                    relation: d.relation,
+                    granted_at: d.granted_at.to_rfc3339(),
+                }
             })
             .collect(),
     }))
@@ -287,11 +341,17 @@ pub async fn enable_workflow(
         .view(&ctx.tenant_id, id)
         .await
         .map_err(map_enable_err)?;
-    state
-        .workflow_registration
-        .enable(&ctx, id, req.version, &ir, &grants)
-        .await
-        .map_err(map_enable_err)?;
+    let registration = &state.workflow_registration;
+    if req.consent {
+        registration
+            .consent(&ctx, id, req.version, &ir, &grants)
+            .await
+    } else {
+        registration
+            .enable(&ctx, id, req.version, &ir, &grants)
+            .await
+    }
+    .map_err(map_enable_err)?;
     let mut tables: std::collections::BTreeSet<Uuid> = req
         .grants
         .iter()
@@ -310,28 +370,20 @@ pub async fn enable_workflow(
         // テーブルの ReBAC を data の外で変えた（配信の材料・材料化の前提を引き直させる・best-effort）。
         state.data.after_table_rebac_changed(&ctx, table_id).await;
     }
-    // 監査はコミット済み操作の記録（失敗しても操作結果は変えず、欠落をログで顕在化する）。
-    if let Err(e) = state
-        .audit
-        .record(
-            &ctx,
-            AuditEntry {
-                action: AuditAction::WorkflowEnable,
-                object_type: "workflow",
-                object_id: &id.to_string(),
-                decision: Decision::Allow,
-                trace_id: trace.as_deref(),
-                metadata: json!({
-                    "version": req.version,
-                    "grants": req.grants.len(),
-                    "light_switch": req.grants.is_empty(),
-                }),
-            },
-        )
-        .await
-    {
-        tracing::error!(error = %e, workflow = %id, "workflow.enable の監査記録に失敗");
-    }
+    record_audit(
+        &state,
+        &ctx,
+        AuditAction::WorkflowEnable,
+        id,
+        trace.as_deref(),
+        json!({
+            "version": req.version,
+            "grants": req.grants.len(),
+            "consent": req.consent,
+            "light_switch": req.grants.is_empty() && !req.consent,
+        }),
+    )
+    .await;
     Ok(Json(EnableResponse {
         status: "enabled".into(),
         enabled_version: req.version,
@@ -339,12 +391,16 @@ pub async fn enable_workflow(
 }
 
 /// 無効化（トリガ停止・委譲タプルは温存＝再有効化で再同意不要。run 開始は status で fail-closed）。
+///
+/// `revoke_delegations: true` なら委譲もすべて取り消す（「権限も取り消す」・D-90。取り消しは再同意で外れた
+/// 委譲の撤去と同じ経路）。取り消した委譲は監査に 1 行で残す。
 #[utoipa::path(
     post,
     path = "/workflows/{id}/disable",
     params(("id" = Uuid, Path, description = "ワークフロー id")),
+    request_body(content = DisableRequest, description = "省略できる（省略は委譲を残す）"),
     responses(
-        (status = 200, description = "無効化済み"),
+        (status = 200, description = "無効化済み", body = DisableResponse),
         (status = 404, description = "存在しない/editor でない"),
     ),
     tag = "workflows"
@@ -354,31 +410,87 @@ pub async fn disable_workflow(
     AuthContextExt(ctx): AuthContextExt,
     trace: TraceIdExt,
     Path(id): Path<Uuid>,
-) -> Result<Json<serde_json::Value>, ApiError> {
+    body: Option<Json<DisableRequest>>,
+) -> Result<Json<DisableResponse>, ApiError> {
     require_editor(&state, &ctx, id).await?;
-    state
-        .workflow_registration
-        .disable(&ctx.tenant_id, id)
-        .await
-        .map_err(map_enable_err)?;
+    let revoke = body.is_some_and(|Json(b)| b.revoke_delegations);
+    let revoked = if revoke {
+        state
+            .workflow_registration
+            .disable_and_revoke(&ctx.tenant_id, id)
+            .await
+            .map_err(map_enable_err)?
+    } else {
+        state
+            .workflow_registration
+            .disable(&ctx.tenant_id, id)
+            .await
+            .map_err(map_enable_err)?;
+        Vec::new()
+    };
+    record_audit(
+        &state,
+        &ctx,
+        AuditAction::WorkflowDisable,
+        id,
+        trace.as_deref(),
+        json!({ "revoke_delegations": revoke }),
+    )
+    .await;
+    if revoke {
+        // テーブルの ReBAC を data の外で変えた（配信の材料・材料化の前提を引き直させる・有効化と同じ）。
+        let ns = ctx.ns();
+        let tables: std::collections::BTreeSet<Uuid> = revoked
+            .iter()
+            .filter_map(|d| object_kind_of(&ns, &d.object_ref))
+            .filter(|(kind, _)| kind == "data_table")
+            .filter_map(|(_, local)| Uuid::parse_str(&local).ok())
+            .collect();
+        for table_id in tables {
+            state.data.after_table_rebac_changed(&ctx, table_id).await;
+        }
+        record_audit(
+            &state,
+            &ctx,
+            AuditAction::WorkflowDelegationRevoke,
+            id,
+            trace.as_deref(),
+            json!({ "revoked": revoked.len(), "delegations": revoked }),
+        )
+        .await;
+    }
+    Ok(Json(DisableResponse {
+        status: "disabled".into(),
+        revoked_delegations: revoked.len(),
+    }))
+}
+
+/// 監査はコミット済み操作の記録（失敗しても操作結果は変えず、欠落をログで顕在化する）。
+async fn record_audit(
+    state: &AppState,
+    ctx: &authz::AuthContext,
+    action: AuditAction,
+    id: Uuid,
+    trace: Option<&str>,
+    metadata: serde_json::Value,
+) {
     if let Err(e) = state
         .audit
         .record(
-            &ctx,
+            ctx,
             AuditEntry {
-                action: AuditAction::WorkflowDisable,
+                action,
                 object_type: "workflow",
                 object_id: &id.to_string(),
                 decision: Decision::Allow,
-                trace_id: trace.as_deref(),
-                metadata: json!({}),
+                trace_id: trace,
+                metadata,
             },
         )
         .await
     {
-        tracing::error!(error = %e, workflow = %id, "workflow.disable の監査記録に失敗");
+        tracing::error!(error = %e, workflow = %id, action = action.as_str(), "ワークフローの監査記録に失敗");
     }
-    Ok(Json(json!({ "status": "disabled" })))
 }
 
 /// 指定バージョンの IR を取得しパースする（artifact viewer ゲート込み・kind 不一致は 404 秘匿）。
@@ -402,6 +514,13 @@ async fn fetch_ir(
 /// API の grant 指定を FGA オブジェクトへ写像する（未知の種別/関係は 400）。
 fn to_grant_request(ctx: &authz::AuthContext, g: &GrantItem) -> Result<GrantRequest, ApiError> {
     let ns = ctx.ns();
+    // 種類の語は一覧の表示（object_kind_of）と同じ表にあるものだけを受ける。
+    if !OBJECT_KINDS.iter().any(|(k, _)| *k == g.object_type) {
+        return Err(ApiError::BadRequest(format!(
+            "未知の object_type: {}",
+            g.object_type
+        )));
+    }
     let object = match g.object_type.as_str() {
         "folder" => ns.folder(&g.object_id),
         "file" => ns.file(&g.object_id),
@@ -441,5 +560,59 @@ fn map_enable_err(e: EnableError) -> ApiError {
         })),
         EnableError::Delegation(err) => ApiError::Internal(format!("delegation: {err}")),
         EnableError::Internal(m) => ApiError::Internal(m),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn ctx() -> authz::AuthContext {
+        authz::AuthContext::new(
+            authz::Principal {
+                kind: authz::PrincipalKind::User,
+                id: "alice".into(),
+                email: None,
+                groups: vec![],
+                roles: vec![],
+                tenant_id: Some("t1".into()),
+            },
+            "acme".into(),
+            "t1".into(),
+        )
+    }
+
+    /// 付与で受ける種類はどれも、一覧の表示で同じ種類と id に戻る（向きごとの対応を書き分けない・BUG-102）。
+    #[test]
+    fn every_grant_kind_round_trips_to_the_listing() {
+        let ctx = ctx();
+        for (kind, _) in OBJECT_KINDS {
+            let g = GrantItem {
+                scope: "x.y".into(),
+                object_type: (*kind).into(),
+                object_id: "0f0e".into(),
+                relation: "viewer".into(),
+            };
+            let req = to_grant_request(&ctx, &g).expect(kind);
+            assert_eq!(
+                object_kind_of(&ctx.ns(), req.object.as_str()),
+                Some(((*kind).to_string(), "0f0e".to_string())),
+                "{kind}"
+            );
+        }
+        // 表に無い種類は受けない。読めない参照（型が無い・別のテナント）は種類を返さない。
+        let g = GrantItem {
+            scope: "x.y".into(),
+            object_type: "thread".into(),
+            object_id: "1".into(),
+            relation: "viewer".into(),
+        };
+        assert!(matches!(
+            to_grant_request(&ctx, &g),
+            Err(ApiError::BadRequest(_))
+        ));
+        assert_eq!(object_kind_of(&ctx.ns(), "thread:t1|1"), None);
+        assert_eq!(object_kind_of(&ctx.ns(), "folder:t2|1"), None);
+        assert_eq!(object_kind_of(&ctx.ns(), "folder"), None);
     }
 }

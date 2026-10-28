@@ -36,7 +36,7 @@ pub use concurrency::{ConcurrencyStore, ScopeKind, Slot};
 pub use control::{branch_port, switch_port};
 pub use delegation::{
     active_delegator, delegated_objects, DelegationError, DelegationStore, GrantRequest,
-    RunAdmission,
+    RevokedDelegation, RunAdmission,
 };
 pub use ir::scopes::complete_declared_scopes;
 pub use ir::validate::{

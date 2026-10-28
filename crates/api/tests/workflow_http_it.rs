@@ -1051,3 +1051,156 @@ async fn workflow_start_target_is_checked_when_saving() {
     let (st, _) = req(&env, "DELETE", &format!("/artifacts/{child_id}"), None).await;
     assert!(st.is_success(), "{st}");
 }
+
+/// BUG-102・D-90: 同意の画面（`consent: true`）は grants が空でも同意し直し、使ってよい操作が増えた版へ
+/// 切り替える。無効化の本文 `revoke_delegations: true` は委譲もすべて取り消し、監査に残す。本文の無い無効化は
+/// 今までどおり委譲を残す。一覧の委譲には対象の種類と id が付く（画面が名前を引く）。
+#[tokio::test]
+async fn consent_and_revoke_on_disable() {
+    let Some(env) = setup().await else { return };
+    let suffix = Uuid::new_v4().simple().to_string();
+    let file = "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1";
+
+    // --- 対象の無いワークフロー: 増えた操作を consent で受ける。
+    let mut ir = json!({
+        "ir_version": 1,
+        "name": format!("consent-{}", &suffix[..12]),
+        "declared_scopes": [],
+        "triggers": [{ "kind": "schedule", "cron": "0 9 * * 1", "tz": "Asia/Tokyo" }],
+        "nodes": [{ "id": "calc", "type": "script.run",
+                    "params": { "source": { "inline": "function main(i){ return {}; }" } } }],
+        "edges": []
+    });
+    let (st, body) = req(&env, "POST", "/workflows", Some(json!({ "ir": ir }))).await;
+    assert_eq!(st, StatusCode::CREATED, "{body}");
+    let bare = body["id"].as_str().unwrap().to_string();
+    let enable = |version: i64, consent: Option<bool>| {
+        let mut b = json!({ "version": version, "grants": [] });
+        if let Some(c) = consent {
+            b["consent"] = json!(c);
+        }
+        b
+    };
+    let (st, body) = req(
+        &env,
+        "POST",
+        &format!("/workflows/{bare}/enable"),
+        Some(enable(1, Some(true))),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    ir["declared_scopes"] = json!(["http.egress"]);
+    let (st, body) = req(
+        &env,
+        "PUT",
+        &format!("/workflows/{bare}"),
+        Some(json!({ "ir": ir, "expected_version": 1 })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    // consent を付けない（API を直接呼ぶ）なら今までどおり 409。
+    let (st, body) = req(
+        &env,
+        "POST",
+        &format!("/workflows/{bare}/enable"),
+        Some(enable(2, None)),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "scope_expansion", "{body}");
+    let (st, body) = req(
+        &env,
+        "POST",
+        &format!("/workflows/{bare}/enable"),
+        Some(enable(2, Some(true))),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let (_, reg) = req(
+        &env,
+        "GET",
+        &format!("/workflows/{bare}/registration"),
+        None,
+    )
+    .await;
+    assert_eq!(reg["enabled_version"], 2, "{reg}");
+    assert_eq!(reg["consented_scopes"], json!(["http.egress"]), "{reg}");
+
+    // --- 対象のあるワークフロー: 本文の無い無効化は委譲を残し、取り消しを付けると消える。
+    let (st, body) = req(
+        &env,
+        "POST",
+        "/workflows",
+        Some(json!({ "ir": simple_ir(&format!("revoke-{}", &suffix[..12]), "b") })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "{body}");
+    let id = body["id"].as_str().unwrap().to_string();
+    let (st, body) = req(
+        &env,
+        "POST",
+        &format!("/workflows/{id}/enable"),
+        Some(json!({ "version": 1, "consent": true, "grants": [
+            { "scope": "storage.read", "object_type": "file", "object_id": file, "relation": "viewer" }
+        ] })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let (_, reg) = req(&env, "GET", &format!("/workflows/{id}/registration"), None).await;
+    assert_eq!(reg["delegations"][0]["object_kind"], "file", "{reg}");
+    assert_eq!(reg["delegations"][0]["object_id"], file, "{reg}");
+    assert_eq!(
+        reg["delegations"][0]["delegator"], "00000000-0000-0000-0000-000000000001",
+        "{reg}"
+    );
+
+    let (st, body) = req(&env, "POST", &format!("/workflows/{id}/disable"), None).await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(body["revoked_delegations"], 0, "{body}");
+    let (_, reg) = req(&env, "GET", &format!("/workflows/{id}/registration"), None).await;
+    assert_eq!(reg["status"], "disabled", "{reg}");
+    assert_eq!(reg["delegations"].as_array().unwrap().len(), 1, "{reg}");
+
+    let (st, body) = req(
+        &env,
+        "POST",
+        &format!("/workflows/{id}/disable"),
+        Some(json!({ "revoke_delegations": true })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(body["revoked_delegations"], 1, "{body}");
+    let (_, reg) = req(&env, "GET", &format!("/workflows/{id}/registration"), None).await;
+    assert_eq!(reg["delegations"], json!([]), "{reg}");
+    assert_eq!(reg["consented_scopes"], json!([]), "{reg}");
+    let audit: Vec<Value> = sqlx::query_scalar(
+        "SELECT metadata FROM audit_log WHERE action = 'workflow.delegation.revoke' AND object_id = $1",
+    )
+    .bind(&id)
+    .fetch_all(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(audit.len(), 1, "{audit:?}");
+    assert_eq!(audit[0]["revoked"], 1, "{audit:?}");
+    assert_eq!(
+        audit[0]["delegations"][0]["object_ref"],
+        format!("file:default|{file}"),
+        "{audit:?}"
+    );
+
+    // 片付け。
+    for wf in [&bare, &id] {
+        sqlx::query("DELETE FROM workflow_delegation WHERE tenant_id = 'default' AND workflow_id = $1::uuid")
+            .bind(wf)
+            .execute(&env.pool)
+            .await
+            .unwrap();
+        sqlx::query("DELETE FROM workflow_registration WHERE tenant_id = 'default' AND workflow_id = $1::uuid")
+            .bind(wf)
+            .execute(&env.pool)
+            .await
+            .unwrap();
+        let (st, _) = req(&env, "DELETE", &format!("/artifacts/{wf}"), None).await;
+        assert!(st.is_success(), "{st}");
+    }
+}

@@ -313,6 +313,7 @@ audit_actions! {
     WorkflowApprovalResolve = "workflow.approval.resolve", "承認待ちが決着", Workflow;
     WorkflowCapabilityOutOfScope = "workflow.capability.out_of_scope", "宣言にない能力の呼び出しを拒否", Workflow;
     WorkflowDataDelegated = "workflow.data.delegated", "委譲されたテーブルかを確認", Workflow;
+    WorkflowDelegationRevoke = "workflow.delegation.revoke", "ワークフローの権限を取り消す", Workflow;
     WorkflowDisable = "workflow.disable", "ワークフローを無効化", Workflow;
     WorkflowEnable = "workflow.enable", "ワークフローを有効化", Workflow;
     WorkflowTriggerSuppressed = "workflow.trigger.suppressed", "イベントトリガの発火を抑止", Workflow;

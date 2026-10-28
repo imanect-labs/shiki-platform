@@ -9,13 +9,17 @@
 //! - **scope 拡大**（新版 declared ⊄ 現 consented）は grants 必須。無ければ
 //!   [`EnableError::ScopeExpansion`]（API 層が 409 ＋ missing_scopes で返す）。
 //! - **縮小/同一のみ**は grants 省略で軽量切替（既存委譲を維持し enabled_version とトリガのみ更新）。
+//! - 同意の画面からの有効化（[`RegistrationService::consent`]）は、grants が空でも同意し直しとして扱う
+//!   （対象の無いワークフローが、使ってよい操作の増えた版へ切り替えられない行き止まりを作らない・BUG-102・D-90）。
+//! - 無効化は委譲を残す（[`RegistrationService::disable`]）。「権限も取り消す」
+//!   （[`RegistrationService::disable_and_revoke`]）は無効化と同じ TX で委譲もすべて取り消す。
 
 use sqlx::PgPool;
 use uuid::Uuid;
 
 use authz::AuthContext;
 
-use crate::delegation::{DelegationError, DelegationStore, GrantRequest};
+use crate::delegation::{DelegationError, DelegationStore, GrantRequest, RevokedDelegation};
 use crate::ir::{Trigger, WorkflowIr};
 
 /// 有効化操作のエラー。
@@ -149,6 +153,38 @@ impl RegistrationService {
         ir: &WorkflowIr,
         grants: &[GrantRequest],
     ) -> Result<(), EnableError> {
+        self.enable_with(enabler, workflow_id, version, ir, grants, false)
+            .await
+    }
+
+    /// 同意の画面からの有効化（BUG-102・D-90）。grants が空でも全面の（再）同意として扱う。
+    ///
+    /// 同意の画面は使ってよい操作（declared_scopes）と選んだ対象を見せたうえで送るので、grants が空なのは
+    /// 「対象の無いワークフローの同意」であって軽量切替ではない。[`Self::enable`] の軽量切替に落とすと、
+    /// 使ってよい操作が増えた版を、対象の無いワークフローは `ScopeExpansion` のまま同意できなかった。
+    /// 委譲は grants の集合に置き換わる（外れた委譲は撤去する・[`Self::enable`] の全面再同意と同じ）。
+    pub async fn consent(
+        &self,
+        enabler: &AuthContext,
+        workflow_id: Uuid,
+        version: i64,
+        ir: &WorkflowIr,
+        grants: &[GrantRequest],
+    ) -> Result<(), EnableError> {
+        self.enable_with(enabler, workflow_id, version, ir, grants, true)
+            .await
+    }
+
+    /// [`Self::enable`] と [`Self::consent`] の本体。`reconsent` は grants が空でも同意し直すか。
+    async fn enable_with(
+        &self,
+        enabler: &AuthContext,
+        workflow_id: Uuid,
+        version: i64,
+        ir: &WorkflowIr,
+        grants: &[GrantRequest],
+        reconsent: bool,
+    ) -> Result<(), EnableError> {
         // 保存は通しても動かせない設定（必須の文字の欄が空・無人の run の保存先の省略）は、委譲より先に
         // 止める（タプルを書いてから断らない・D-40・D-43）。
         let blockers = crate::enable_blockers(ir);
@@ -184,7 +220,7 @@ impl RegistrationService {
             }
         }
 
-        if grants.is_empty() && registered {
+        if grants.is_empty() && registered && !reconsent {
             // 軽量切替: 拡大が無いことを検証（fail-closed・ir.md §9）。
             let missing: Vec<String> = ir
                 .declared_scopes
@@ -248,33 +284,76 @@ impl RegistrationService {
     /// 無効化（トリガ停止＋status=disabled・単一 TX）。
     ///
     /// 委譲タプルは撤去しない（再有効化で再同意なく戻せる。run 開始は status で fail-closed に
-    /// 止まるため権限は行使されない）。完全な委譲撤去は grants を空にした再有効化→無効化で行う。
+    /// 止まるため権限は行使されない）。委譲も取り消すなら [`Self::disable_and_revoke`]。
     pub async fn disable(&self, tenant_id: &str, workflow_id: Uuid) -> Result<(), EnableError> {
         let mut tx = self.db.begin().await.map_err(map_db)?;
-        sqlx::query(
-            "UPDATE workflow_registration SET status = 'disabled', updated_at = now() \
-             WHERE tenant_id = $1 AND workflow_id = $2",
-        )
-        .bind(tenant_id)
-        .bind(workflow_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(map_db)?;
-        sqlx::query(
-            "UPDATE workflow_trigger SET enabled = false \
-             WHERE tenant_id = $1 AND workflow_id = $2",
-        )
-        .bind(tenant_id)
-        .bind(workflow_id)
-        .execute(&mut *tx)
-        .await
-        .map_err(map_db)?;
+        stop_within(&mut tx, tenant_id, workflow_id, false).await?;
         tx.commit().await.map_err(map_db)?;
         Ok(())
+    }
+
+    /// 無効化し、委譲もすべて取り消す（「権限も取り消す」・単一 TX・BUG-102・D-90）。
+    ///
+    /// 取り消しは再同意で外れた委譲の撤去と同じ経路（FGA タプルを先に撤去 → 台帳の行を revoke・
+    /// [`DelegationStore`]）。同意も取り消したことにするため consented_scopes を空にする: 次に有効化するとき、
+    /// 使ってよい操作があれば軽量切替では通らず同意が要る（委譲の無いまま動かさない）。registration の行は
+    /// `FOR UPDATE` で取り、同時の有効化と取り違えない。返すのは取り消した委譲（監査に残す）。
+    pub async fn disable_and_revoke(
+        &self,
+        tenant_id: &str,
+        workflow_id: Uuid,
+    ) -> Result<Vec<RevokedDelegation>, EnableError> {
+        let mut tx = self.db.begin().await.map_err(map_db)?;
+        sqlx::query(
+            "SELECT 1 FROM workflow_registration WHERE tenant_id = $1 AND workflow_id = $2 FOR UPDATE",
+        )
+        .bind(tenant_id)
+        .bind(workflow_id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(map_db)?;
+        let revoked = self
+            .delegation
+            .revoke_all_within(&mut tx, tenant_id, workflow_id)
+            .await?;
+        stop_within(&mut tx, tenant_id, workflow_id, true).await?;
+        tx.commit().await.map_err(map_db)?;
+        Ok(revoked)
     }
 }
 
 mod consent;
+
+/// registration を disabled にしてトリガを止める（呼び出し側 TX）。`forget_consent` は同意（consented_scopes）も
+/// 空にするか（委譲を取り消したとき）。
+async fn stop_within(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant_id: &str,
+    workflow_id: Uuid,
+    forget_consent: bool,
+) -> Result<(), EnableError> {
+    sqlx::query(
+        "UPDATE workflow_registration SET status = 'disabled', updated_at = now(), \
+           consented_scopes = CASE WHEN $3 THEN '{}'::text[] ELSE consented_scopes END \
+         WHERE tenant_id = $1 AND workflow_id = $2",
+    )
+    .bind(tenant_id)
+    .bind(workflow_id)
+    .bind(forget_consent)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_db)?;
+    sqlx::query(
+        "UPDATE workflow_trigger SET enabled = false \
+         WHERE tenant_id = $1 AND workflow_id = $2",
+    )
+    .bind(tenant_id)
+    .bind(workflow_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_db)?;
+    Ok(())
+}
 
 /// IR の triggers[] を `workflow_trigger` 行へ実体化する（既存行は全削除→挿入・呼び出し側 TX）。
 ///
