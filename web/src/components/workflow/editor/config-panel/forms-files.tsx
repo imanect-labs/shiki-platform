@@ -158,7 +158,8 @@ type PickFieldProps = FormProps & {
   hint?: string;
 };
 
-/// 対象のファイル（ドライブから選ぶ ／ 前の結果から）。
+/// 対象のファイル（ドライブから選ぶ ／ 前の結果から）。`exprHint` は「入力や結果から選ぶ」ときの注記（ドライブで選んだ
+/// ファイルにだけ当てはまる注記〔有効化で渡す権限〕を出さずに、ブロックの性質だけを言う）。
 export function FileField({
   node,
   dispatch,
@@ -171,7 +172,9 @@ export function FileField({
   accept,
   pickerTitle = "ファイルを選ぶ",
   pickerDescription = "使うファイルを選んでください。",
+  exprHint,
 }: PickFieldProps & {
+  exprHint?: string;
   accept?: (n: NodeResponse) => boolean;
   pickerTitle?: string;
   pickerDescription?: string;
@@ -214,6 +217,7 @@ export function FileField({
           inMapRegion={inMapRegion}
           placeholder="ファイル ID"
           error={error}
+          hint={exprHint}
         />
       )}
       <ModeToggle expr={mode === "expr"} pickLabel="ドライブから選ぶ" onToggle={() => setMode(mode === "pick" ? "expr" : "pick")} />
@@ -305,13 +309,16 @@ export function FolderField({
 const UNATTENDED_FOLDER_HINT =
   "スケジュール・できごとで動かすなら指定してください（省略すると保存できず、有効化できません）。有効化のとき、このフォルダの編集権限を渡します";
 
+/// 「ファイルを読む」が読めるファイル（文章として読めない PDF・Word・画像などは実行で失敗する・BUG-101・付録 D の N3.5.1）。
+const TEXT_FILE_HINT = "テキストのファイル（.txt、.md、.csv、.json など）を読みます。PDF や Word の本文は読めません。";
+
 export function StorageReadForm(props: FormProps) {
-  // 文章として読めないファイル（PDF・Word・画像など）は実行で失敗する（BUG-101・付録 D の N3.5.1）。
   return (
     <FileField
       {...props}
       label="読むファイル"
-      hint="テキストのファイル（.txt、.md、.csv、.json など）を読みます。PDF や Word の本文は読めません。有効化のとき、このファイルの閲覧権限を渡します"
+      hint={`${TEXT_FILE_HINT}有効化のとき、このファイルの閲覧権限を渡します`}
+      exprHint={TEXT_FILE_HINT}
     />
   );
 }
