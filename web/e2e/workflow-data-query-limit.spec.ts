@@ -63,7 +63,7 @@ test("データを調べる: 読む件数の上限は 1〜200 件で、範囲の
         },
       },
     });
-    expect(bad.status()).toBe(422);
+    expect(bad.status()).toBe(400);
     const body = (await bad.json()) as { errors: { path?: string; message: string }[] };
     expect(body.errors).toEqual(
       expect.arrayContaining([
