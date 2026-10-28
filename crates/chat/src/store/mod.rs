@@ -9,6 +9,7 @@
 
 mod approval;
 mod autonomous;
+mod custom_instructions;
 mod feedback;
 mod message_view;
 mod post;
@@ -16,6 +17,7 @@ mod reaper;
 mod runs;
 mod sharing;
 mod stream;
+mod thread_manage;
 mod thread_pins;
 mod threads;
 mod ui_actions;
@@ -24,6 +26,7 @@ mod yui_actions;
 pub use feedback::{MessageFeedback, FEEDBACK_CATEGORIES};
 pub use post::PostResult;
 pub use runs::{ClaimedRun, CurrentRun, RunContext, CHAT_GENERATION_QUEUE};
+pub use thread_manage::{MAX_PINNED, MAX_THREAD_TITLE_CHARS};
 pub use threads::ThreadOrigin;
 pub use yui_actions::{YuiActionRequest, YuiAppDraft};
 

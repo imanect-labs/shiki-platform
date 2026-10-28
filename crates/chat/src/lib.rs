@@ -28,9 +28,12 @@ pub mod artifacts;
 pub mod attachments;
 pub mod autonomous;
 pub mod csv_tool;
+pub mod custom_instructions;
+pub mod data_tool;
 pub mod doc_read_tool;
 pub mod document_ref;
 pub mod document_tool;
+pub mod drive_tool;
 pub mod error;
 pub mod gui_actions;
 pub mod model;
@@ -41,6 +44,7 @@ pub mod office_tool;
 pub mod selection;
 pub(crate) mod skill;
 pub mod skill_catalog;
+pub mod skill_draft_tool;
 pub(crate) mod skill_search_tool;
 pub(crate) mod skill_tool;
 pub mod slide_templates;
@@ -58,18 +62,20 @@ pub use approver::DbApprover;
 pub use artifacts::StorageArtifactStore;
 pub use autonomous::{effective_mode, AutonomousMode, ModeClamp};
 pub use csv_tool::{CsvPatchTool, CsvQueryTool, CsvWriteTool, SaveCsvTool};
+pub use custom_instructions::CustomInstructions;
 pub use document_tool::{DocumentEditTool, DocumentEmbedTool, DocumentReadTool, SaveNoteTool};
 pub use error::ChatError;
 pub use gui_actions::{ChatActionLedger, ChatSubmitHandler};
 pub use model::{
     Attachment, Citation, ContentBlock, Message, PlanSubtask, Role, RunModel, RunStatus,
     SelectionContext, SelectionKind, SkillPin, StreamEvent, StreamEventKind, Thread, ThreadRole,
-    UiActionRun, UiActionRunStatus, UiActionValue,
+    UiActionRun, UiActionRunStatus, UiActionValue, WebSource,
 };
 pub use skill_catalog::{
     merge_entries as merge_skill_catalog_entries, OwnedSkillCatalog, SkillCatalogEntry,
     SkillCatalogSource,
 };
+pub use skill_draft_tool::SaveSkillTool;
 pub use slide_tool::{SaveSlideTool, SlideEditTool, SlideReadTool};
 pub use store::{
     ChatStore, ClaimedRun, CurrentRun, MessageFeedback, PostResult, RunContext, ThreadOrigin,

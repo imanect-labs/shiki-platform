@@ -7,21 +7,29 @@
 //! - `Append`: 末尾にブロックを追加（非破壊・最も安全）
 //! - `ReplaceSection`: 見出しテキスト一致の節（見出し〜次の同/上位見出しの手前）を置換
 //! - `InsertAfterHeading`: 見出し直後にブロックを挿入
+//! - `DeleteSection` / `MoveSection`: 節を見出しごと消す・別の見出しの前へ移す（#886）
 //! - `ReplaceAll`: 文書全体を置換（最終手段）
 //!
+//! 本文の語句で場所を決める細かい操作（`ReplaceText` 等）は [`super::ai_text`]。
+//!
 //! **既定は直接適用**（AI 名義・Yjs undo 可）。サジェストモードは挿入テキストに
-//! `aiSuggestion` マークを付け、エディタが承認/棄却 UI を出す（マークは md に落とさず
-//! Yjs snapshot 側の正本に保つ・PIT-37③）。
+//! `aiSuggestion`、消す側のテキストに `aiDeletion` の印を付け、エディタが承認/棄却 UI を
+//! 出す（印は md に落とさず Yjs snapshot 側の正本に保つ・PIT-37③）。消す側も印に留めるので、
+//! 棄却すれば元の本文が残る。
 
 use serde::Deserialize;
+use yrs::types::text::YChange;
 use yrs::{
-    GetString, MapRef, TransactionMut, Xml, XmlElementRef, XmlFragment, XmlFragmentRef, XmlOut,
+    MapRef, Out, Text, TransactionMut, Xml, XmlElementRef, XmlFragment, XmlFragmentRef, XmlOut,
 };
 
+use super::ai_text;
 use super::ast::Block;
 use super::md_parse::parse_markdown;
+use super::sections;
 use super::yjs_map;
 use super::yjs_meta::write_meta_pair;
+use super::yjs_write::mark_deleted;
 
 /// AI 編集の適用モード。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
@@ -44,6 +52,35 @@ pub enum EditOp {
     ReplaceSection { heading: String, markdown: String },
     /// `heading` に一致する見出しの直後に markdown を挿入する。
     InsertAfterHeading { heading: String, markdown: String },
+    /// `heading` の節（見出しを含む）を消す。
+    DeleteSection { heading: String },
+    /// `heading` の節（見出しを含む）を `before_heading` の見出しの前へ移す（無ければ末尾へ）。
+    MoveSection {
+        heading: String,
+        #[serde(default)]
+        before_heading: Option<String>,
+    },
+    /// 1 ブロック内の語句 `find` を `replace` に差し替える（`heading` で節を絞れる）。
+    ReplaceText {
+        find: String,
+        replace: String,
+        #[serde(default)]
+        heading: Option<String>,
+    },
+    /// 語句 `find` を含む最上位のブロックを markdown で置き換える。
+    ReplaceBlock {
+        find: String,
+        markdown: String,
+        #[serde(default)]
+        heading: Option<String>,
+    },
+    /// 語句 `find` を含むブロックの直後へ markdown を入れる。
+    InsertAfter {
+        find: String,
+        markdown: String,
+        #[serde(default)]
+        heading: Option<String>,
+    },
     /// 文書全体を markdown で置換する（最終手段）。
     ReplaceAll { markdown: String },
     /// メタデータ（frontmatter 型属性）を 1 件設定する（tags は `,` 区切り可）。
@@ -54,12 +91,15 @@ pub enum EditOp {
 #[derive(Debug, Default)]
 pub struct EditReport {
     pub applied: usize,
+    /// 適用できなかった操作（「何番目の操作・何を・なぜ」の説明）。
     pub skipped: Vec<String>,
 }
 
 /// 編集オペ列をトランザクションに適用する（`suggest` なら提案マーク付き）。
 ///
-/// 見つからない見出し等は skip として記録し、適用可能な操作は進める（部分適用）。
+/// 見つからない見出し・一意でない語句等は理由付きで skip として記録し、適用可能な操作は
+/// 進める。共有ドキュメントへは全部か無しかで適用する（[`crate::LiveDoc::apply_ai_edit`] が
+/// 先に写しで試す）。
 pub fn apply_ops(
     txn: &mut TransactionMut<'_>,
     fragment: &XmlFragmentRef,
@@ -68,15 +108,68 @@ pub fn apply_ops(
     mode: EditMode,
 ) -> EditReport {
     let mut report = EditReport::default();
-    for op in ops {
-        let ok = apply_one(txn, fragment, meta, op, mode);
-        if ok {
-            report.applied += 1;
-        } else {
-            report.skipped.push(describe(op));
+    for (i, op) in ops.iter().enumerate() {
+        match apply_one(txn, fragment, meta, op, mode) {
+            Ok(()) => report.applied += 1,
+            Err(why) => report
+                .skipped
+                .push(format!("{} 番目の {}: {why}", i + 1, op.name())),
         }
     }
     report
+}
+
+impl EditOp {
+    /// 操作名（ツールの入力の `op`）。
+    pub fn name(&self) -> &'static str {
+        match self {
+            EditOp::Append { .. } => "append",
+            EditOp::ReplaceSection { .. } => "replace_section",
+            EditOp::InsertAfterHeading { .. } => "insert_after_heading",
+            EditOp::DeleteSection { .. } => "delete_section",
+            EditOp::MoveSection { .. } => "move_section",
+            EditOp::ReplaceText { .. } => "replace_text",
+            EditOp::ReplaceBlock { .. } => "replace_block",
+            EditOp::InsertAfter { .. } => "insert_after",
+            EditOp::ReplaceAll { .. } => "replace_all",
+            EditOp::SetMeta { .. } => "set_meta",
+        }
+    }
+}
+
+/// 任意の見出し指定（厳格なスキーマのモデルは空文字で埋めてくる）。
+fn scope(heading: Option<&String>) -> Option<&str> {
+    heading.map(|h| h.trim()).filter(|h| !h.is_empty())
+}
+
+/// フラグメント直下の `start..end` を消す（提案モードは削除の提案の印を付けるだけ）。
+fn remove_blocks(
+    txn: &mut TransactionMut<'_>,
+    fragment: &XmlFragmentRef,
+    start: u32,
+    end: u32,
+    mode: EditMode,
+) {
+    if end <= start {
+        return;
+    }
+    if mode == EditMode::Suggest {
+        // 1 回の走査で集めてから印を付ける（`get(i)` を繰り返すと O(n²)）。
+        let targets: Vec<XmlElementRef> = fragment
+            .children(txn)
+            .skip(start as usize)
+            .take((end - start) as usize)
+            .filter_map(|c| match c {
+                XmlOut::Element(el) => Some(el),
+                _ => None,
+            })
+            .collect();
+        for el in &targets {
+            mark_deleted(txn, el);
+        }
+    } else {
+        fragment.remove_range(txn, start, end - start);
+    }
 }
 
 fn apply_one(
@@ -85,55 +178,108 @@ fn apply_one(
     meta: &MapRef,
     op: &EditOp,
     mode: EditMode,
-) -> bool {
+) -> Result<(), String> {
     match op {
         EditOp::Append { markdown } => {
             let blocks = parse_markdown(markdown);
             let at = fragment.len(txn);
             insert_blocks(txn, fragment, at, &blocks, mode);
-            true
         }
         EditOp::ReplaceAll { markdown } => {
             let blocks = parse_markdown(markdown);
             let len = fragment.len(txn);
-            if len > 0 {
-                fragment.remove_range(txn, 0, len);
-            }
-            insert_blocks(txn, fragment, 0, &blocks, mode);
-            true
+            remove_blocks(txn, fragment, 0, len, mode);
+            // 提案モードは元の本文を残すので、その後ろへ入れる。
+            let at = fragment.len(txn);
+            insert_blocks(txn, fragment, at, &blocks, mode);
         }
         EditOp::InsertAfterHeading { heading, markdown } => {
-            match find_heading(txn, fragment, heading) {
-                Some(idx) => {
-                    let blocks = parse_markdown(markdown);
-                    insert_blocks(txn, fragment, idx + 1, &blocks, mode);
-                    true
-                }
-                None => false,
-            }
+            let idx = sections::heading_at(txn, fragment, heading)?;
+            let blocks = parse_markdown(markdown);
+            insert_blocks(txn, fragment, idx + 1, &blocks, mode);
         }
         EditOp::ReplaceSection { heading, markdown } => {
-            match find_heading(txn, fragment, heading) {
-                Some(idx) => {
-                    let level = heading_level(txn, fragment, idx);
-                    let end = section_end(txn, fragment, idx, level);
-                    // 見出しの次〜節末を削除して置換内容を挿入する（見出し自体は残す）。
-                    let body_start = idx + 1;
-                    if end > body_start {
-                        fragment.remove_range(txn, body_start, end - body_start);
-                    }
-                    let blocks = parse_markdown(markdown);
-                    insert_blocks(txn, fragment, body_start, &blocks, mode);
-                    true
-                }
-                None => false,
-            }
+            let (idx, end) = sections::section(txn, fragment, heading)?;
+            // 見出しの次〜節末を消して置換内容を入れる（見出し自体は残す）。
+            remove_blocks(txn, fragment, idx + 1, end, mode);
+            let at = if mode == EditMode::Suggest {
+                end
+            } else {
+                idx + 1
+            };
+            let blocks = parse_markdown(markdown);
+            insert_blocks(txn, fragment, at, &blocks, mode);
         }
-        EditOp::SetMeta { key, value } => {
-            write_meta_pair(txn, meta, key, value);
-            true
+        EditOp::DeleteSection { heading } => {
+            let (idx, end) = sections::section(txn, fragment, heading)?;
+            remove_blocks(txn, fragment, idx, end, mode);
         }
+        EditOp::MoveSection {
+            heading,
+            before_heading,
+        } => move_section(txn, fragment, heading, scope(before_heading.as_ref()), mode)?,
+        EditOp::ReplaceText {
+            find,
+            replace,
+            heading,
+        } => ai_text::replace_text(txn, fragment, find, replace, scope(heading.as_ref()), mode)?,
+        EditOp::ReplaceBlock {
+            find,
+            markdown,
+            heading,
+        } => ai_text::replace_block(txn, fragment, find, markdown, scope(heading.as_ref()), mode)?,
+        EditOp::InsertAfter {
+            find,
+            markdown,
+            heading,
+        } => ai_text::insert_after(txn, fragment, find, markdown, scope(heading.as_ref()), mode)?,
+        EditOp::SetMeta { key, value } => write_meta_pair(txn, meta, key, value),
     }
+    Ok(())
+}
+
+/// 節（見出しを含む）を `before` の見出しの前へ移す（無ければ末尾へ）。
+///
+/// Yjs に移動は無いので、読んで消して入れ直す。提案モードは元の節に削除の提案の印を付け、
+/// 移動先へ写しを提案として入れる。
+fn move_section(
+    txn: &mut TransactionMut<'_>,
+    fragment: &XmlFragmentRef,
+    heading: &str,
+    before: Option<&str>,
+    mode: EditMode,
+) -> Result<(), String> {
+    let (idx, end) = sections::section(txn, fragment, heading)?;
+    let target = match before {
+        Some(b) => sections::heading_at(txn, fragment, b)?,
+        None => fragment.len(txn),
+    };
+    if target == idx || target == end {
+        return Ok(());
+    }
+    if idx < target && target < end {
+        return Err(format!("移動先の見出しが「{heading}」の節の中にある"));
+    }
+    // 読んで入れ直すと提案の印が落ち、未決の提案が黙って確定する。
+    if has_pending_suggestion(txn, fragment, idx, end) {
+        return Err(format!(
+            "「{heading}」の節に未決の提案がある（人が承認か棄却をしてから移す）"
+        ));
+    }
+    let blocks = yjs_map::read_block_range(txn, fragment, idx, end);
+    if mode == EditMode::Suggest {
+        remove_blocks(txn, fragment, idx, end, mode);
+        insert_blocks(txn, fragment, target, &blocks, mode);
+    } else {
+        fragment.remove_range(txn, idx, end - idx);
+        let at = if target > idx {
+            target - (end - idx)
+        } else {
+            target
+        };
+        insert_blocks(txn, fragment, at, &blocks, mode);
+    }
+    Ok(())
 }
 
 /// ブロック列を `at` に挿入する（direct: そのまま／suggest: 提案マーク付与）。
@@ -147,79 +293,35 @@ fn insert_blocks(
     yjs_map::insert_blocks_at(txn, fragment, at, blocks, mode == EditMode::Suggest);
 }
 
-/// テキスト一致（trim・大小無視）で最初の見出し要素の index を返す。
-fn find_heading(txn: &TransactionMut<'_>, fragment: &XmlFragmentRef, heading: &str) -> Option<u32> {
-    let target = heading.trim().to_lowercase();
-    for (idx, child) in fragment.children(txn).enumerate() {
-        if let XmlOut::Element(el) = child {
-            if &**el.tag() == "heading" && element_text(txn, &el).trim().to_lowercase() == target {
-                return Some(idx as u32);
-            }
+/// `start..end` のブロックに、提案の印（入れる・消す）が残っているか。
+fn has_pending_suggestion(
+    txn: &TransactionMut<'_>,
+    fragment: &XmlFragmentRef,
+    start: u32,
+    end: u32,
+) -> bool {
+    fn marked(txn: &TransactionMut<'_>, el: &XmlElementRef) -> bool {
+        let flagged = |k: &str| match el.get_attribute(txn, k) {
+            Some(Out::Any(v)) => yjs_map::is_on(Some(&v)),
+            _ => false,
+        };
+        if flagged(ai_text::SUGGESTION) || flagged(ai_text::DELETION) {
+            return true;
         }
-    }
-    None
-}
-
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // level は 1..=6 に有界。
-fn heading_level(txn: &TransactionMut<'_>, fragment: &XmlFragmentRef, idx: u32) -> u8 {
-    fragment
-        .get(txn, idx)
-        .and_then(|node| match node {
-            XmlOut::Element(el) => match el.get_attribute(txn, "level") {
-                Some(yrs::Out::Any(yrs::Any::BigInt(n))) => Some(n as u8),
-                Some(yrs::Out::Any(yrs::Any::Number(n))) => Some(n as u8),
-                _ => Some(1),
-            },
-            _ => None,
+        el.children(txn).any(|c| match c {
+            XmlOut::Text(t) => t.diff(txn, YChange::identity).iter().any(|d| {
+                d.attributes.as_ref().is_some_and(|a| {
+                    yjs_map::is_on(a.get(ai_text::SUGGESTION))
+                        || yjs_map::is_on(a.get(ai_text::DELETION))
+                })
+            }),
+            XmlOut::Element(e) => marked(txn, &e),
+            XmlOut::Fragment(_) => false,
         })
-        .unwrap_or(1)
-}
-
-/// 節の終端（次の同/上位レベル見出し、または文書末尾）を返す。
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // level は 1..=6 に有界。
-fn section_end(txn: &TransactionMut<'_>, fragment: &XmlFragmentRef, start: u32, level: u8) -> u32 {
-    let total = fragment.len(txn);
-    let mut i = start + 1;
-    while i < total {
-        if let Some(XmlOut::Element(el)) = fragment.get(txn, i) {
-            if &**el.tag() == "heading" {
-                let l = match el.get_attribute(txn, "level") {
-                    Some(yrs::Out::Any(yrs::Any::BigInt(n))) => n as u8,
-                    Some(yrs::Out::Any(yrs::Any::Number(n))) => n as u8,
-                    _ => 1,
-                };
-                if l <= level {
-                    return i;
-                }
-            }
-        }
-        i += 1;
     }
-    total
-}
-
-fn element_text(txn: &TransactionMut<'_>, el: &XmlElementRef) -> String {
-    let mut out = String::new();
-    for child in el.children(txn) {
-        match child {
-            XmlOut::Text(t) => out.push_str(&t.get_string(txn)),
-            XmlOut::Element(e) => out.push_str(&element_text(txn, &e)),
-            XmlOut::Fragment(_) => {}
-        }
-    }
-    out
-}
-
-fn describe(op: &EditOp) -> String {
-    match op {
-        EditOp::Append { .. } => "append".into(),
-        EditOp::ReplaceAll { .. } => "replace_all".into(),
-        EditOp::InsertAfterHeading { heading, .. } => {
-            format!("insert_after_heading（見出し「{heading}」が見つからない）")
-        }
-        EditOp::ReplaceSection { heading, .. } => {
-            format!("replace_section（見出し「{heading}」が見つからない）")
-        }
-        EditOp::SetMeta { key, .. } => format!("set_meta（{key}）"),
-    }
+    fragment
+        .children(txn)
+        .skip(start as usize)
+        .take(end.saturating_sub(start) as usize)
+        .any(|c| matches!(c, XmlOut::Element(el) if marked(txn, &el)))
 }

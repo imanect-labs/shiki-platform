@@ -15,12 +15,18 @@ mod config;
 mod gate;
 mod generate;
 mod history;
+/// 生成ジョブの可視期限のハートビート（接続を待ちの間に持たない）。
+mod job_lease;
 /// 実行オプション/system プロンプト（generate.rs から分割）。
 mod opts;
 mod run_model;
 pub use opts::parse_timezone;
 mod sink;
+/// 生成の枠と承認待ちの保留（検証 C-P1-3）。
+pub mod slot;
 mod stream_map;
+/// 会話の自動タイトル（本文と並行して最初の発話から付ける）。
+mod title;
 mod toolset;
 /// 記録済みスレッド → 剪定再生のステップ列（#532・`context-replay` CLI が使う）。
 pub mod trajectory;
@@ -87,6 +93,8 @@ pub struct ChatWorker {
     office_creator: Option<Arc<office::OfficeCreator>>,
     /// Excel・Word のレイアウト編集エンジン（office.read / office.excel_edit / office.word_edit・#725）。
     office_engine: Option<Arc<office::engine::OfficeEngine>>,
+    /// 構造化データ（data_query / data_schema / data_record_write・Task 15.7）。未配線なら提示しない。
+    data: Option<data::DataStore>,
     config: Arc<WorkerConfig>,
 }
 
@@ -133,16 +141,36 @@ impl ChatWorker {
             office_live,
             office_creator,
             office_engine,
+            data: None,
             config: Arc::new(config),
         }
     }
 
-    /// `concurrency` 本のワーカータスクと sweeper を起動する。
+    /// 構造化データのツール（data_query / data_schema / data_record_write）を配線する（Task 15.7）。
+    ///
+    /// `WorkerDeps` に足すと全呼び出し箇所が壊れるため、追加の依存は builder で受ける。
+    #[must_use]
+    pub fn with_data(mut self, data: data::DataStore) -> Self {
+        self.data = Some(data);
+        self
+    }
+
+    /// 同時に生成する run が `concurrency` 本のワーカーと sweeper を起動する。
+    ///
+    /// 枠（`concurrency`）はセマフォで持ち、承認待ちの run は枠を返して保留する（[`slot`]）。タスクは
+    /// 枠＋保留の上限＋1 ぶん起動し（[`slot::worker_tasks`]）、各タスクは枠を取ってからジョブを取る。
+    /// 保留の上限（プロセス全体・ユーザーごと）を超える承認要求は待たずに却下する。
     pub fn spawn(self, concurrency: usize) -> Vec<tokio::task::JoinHandle<()>> {
         let mut handles = Vec::new();
-        for i in 0..concurrency.max(1) {
+        let slots = Arc::new(tokio::sync::Semaphore::new(concurrency.max(1)));
+        let limits = slot::ParkLimits::standard();
+        for i in 0..slot::worker_tasks(concurrency) {
             let w = self.clone();
-            handles.push(tokio::spawn(async move { w.run_loop(i).await }));
+            let slots = Arc::clone(&slots);
+            let limits = Arc::clone(&limits);
+            handles.push(tokio::spawn(
+                async move { w.run_loop(i, slots, limits).await },
+            ));
         }
         // 孤児回収 sweeper（backstop）。
         let sweeper = self.clone();
@@ -150,11 +178,22 @@ impl ChatWorker {
         handles
     }
 
-    /// jobq 消費ループ。
-    async fn run_loop(self, worker_index: usize) {
+    /// jobq 消費ループ（枠を取ってからジョブを取る）。
+    async fn run_loop(
+        self,
+        worker_index: usize,
+        slots: Arc<tokio::sync::Semaphore>,
+        limits: Arc<slot::ParkLimits>,
+    ) {
         let worker_id = format!("chat-worker-{worker_index}");
         loop {
-            match self.claim_and_process(&worker_id).await {
+            let Ok(permit) = Arc::clone(&slots).acquire_owned().await else {
+                return; // セマフォが閉じた（終了）
+            };
+            let slot = slot::RunSlot::new(Arc::clone(&slots), Arc::clone(&limits), permit);
+            let r = self.claim_and_process(&worker_id, &slot).await;
+            drop(slot); // 処理を終えたら枠を返す（保留中に返していれば何もしない）
+            match r {
                 Ok(true) => {}                                                     // 1 件処理した
                 Ok(false) => tokio::time::sleep(Duration::from_millis(300)).await, // 空
                 Err(e) => {
@@ -165,17 +204,33 @@ impl ChatWorker {
         }
     }
 
-    /// jobq から 1 件 claim して処理する。処理したら true。
-    async fn claim_and_process(&self, worker_id: &str) -> Result<bool, ChatError> {
-        let mut conn = self
-            .db
+    /// jobq の 1 文ぶんだけ接続を借りる。
+    ///
+    /// **プール接続を長い待ち（承認待ち・LLM のストリーミング・ツールの実行）を跨いで持たない。**
+    /// 以前は claim に使った接続を ack まで握っていたため、承認待ちの run が `max_connections` 件
+    /// 溜まるとプールが尽き、他のユーザーのチャット・データの配信・承認の送信までが止まった。
+    async fn jobq_conn(&self) -> Result<sqlx::pool::PoolConnection<sqlx::Postgres>, ChatError> {
+        self.db
             .acquire()
             .await
-            .map_err(|e| ChatError::Internal(format!("acquire: {e}")))?;
-        // 可視性タイムアウトは生成時間より長めに（クラッシュ時の再配信 backstop）。
-        let jobs = jobq::claim(&mut conn, CHAT_GENERATION_QUEUE, Duration::from_mins(3), 1)
-            .await
-            .map_err(|e| ChatError::Internal(format!("jobq claim: {e}")))?;
+            .map_err(|e| ChatError::Internal(format!("acquire: {e}")))
+    }
+
+    /// jobq から 1 件 claim して処理する。処理したら true。
+    async fn claim_and_process(
+        &self,
+        worker_id: &str,
+        slot: &Arc<slot::RunSlot>,
+    ) -> Result<bool, ChatError> {
+        // 可視期限は短く取り、処理中は [`job_lease::JobLease`] が延ばし続ける（クラッシュ時は
+        // 期限のうちに再配信される）。
+        let vt = job_lease::job_visibility(self.config.lease_secs);
+        let jobs = {
+            let mut conn = self.jobq_conn().await?;
+            jobq::claim(&mut conn, CHAT_GENERATION_QUEUE, vt, 1)
+                .await
+                .map_err(|e| ChatError::Internal(format!("jobq claim: {e}")))?
+        };
         let Some(job) = jobs.into_iter().next() else {
             return Ok(false);
         };
@@ -186,6 +241,7 @@ impl ChatWorker {
             .and_then(|s| Uuid::parse_str(s).ok());
         let Some(run_id) = run_id else {
             // 壊れた payload は恒久エラー→DLQ。
+            let mut conn = self.jobq_conn().await?;
             let _ = jobq::kill(&mut conn, job.id, "invalid payload: missing run_id").await;
             return Ok(true);
         };
@@ -194,6 +250,7 @@ impl ChatWorker {
         // 順番待ち**として戻す（`defer` は attempts を消費しないので DLQ へ落ちない）。
         // 生成中でも発話を受け付けられるのはこの直列化が前提（キューはサーバが持つ）。
         if self.store.blocked_by_earlier_run(run_id).await? {
+            let mut conn = self.jobq_conn().await?;
             jobq::defer(&mut conn, job.id, QUEUE_WAIT_POLL)
                 .await
                 .map_err(|e| ChatError::Internal(format!("jobq defer: {e}")))?;
@@ -201,8 +258,13 @@ impl ChatWorker {
         }
 
         let last_attempt = job.attempts >= job.max_attempts;
-        match self.process_run(run_id, worker_id).await {
+        // 生成の間（承認待ちを含む）ジョブを再配信させない。接続は拍ごとに借りるだけ。
+        let lease = job_lease::JobLease::start(self.db.clone(), job.id, vt);
+        let result = self.process_run(run_id, worker_id, slot).await;
+        drop(lease);
+        match result {
             Ok(()) => {
+                let mut conn = self.jobq_conn().await?;
                 jobq::ack(&mut conn, job.id)
                     .await
                     .map_err(|e| ChatError::Internal(format!("jobq ack: {e}")))?;
@@ -220,6 +282,7 @@ impl ChatWorker {
                         .force_fail_run(run_id, &e.user_message(), &e.to_string())
                         .await;
                 }
+                let mut conn = self.jobq_conn().await?;
                 if e.is_retryable() {
                     let backoff = jobq::backoff_for(job.attempts);
                     let _ = jobq::fail(&mut conn, job.id, &e.to_string(), backoff).await;
@@ -232,7 +295,12 @@ impl ChatWorker {
     }
 
     /// 1 run を生成する（claim→モード分岐→確定）。
-    async fn process_run(&self, run_id: Uuid, worker_id: &str) -> Result<(), ChatError> {
+    async fn process_run(
+        &self,
+        run_id: Uuid,
+        worker_id: &str,
+        slot: &Arc<slot::RunSlot>,
+    ) -> Result<(), ChatError> {
         let Some(run) = self
             .store
             .claim_run(run_id, worker_id, self.config.lease_secs)
@@ -301,6 +369,9 @@ impl ChatWorker {
             )
             .await;
 
+        // 自動タイトルは本文と並行して付ける（タイトルが仮のスレッドだけ・失敗しても生成は続く）。
+        let title_task = self.spawn_title_task(&ctx, &run);
+
         let history = self
             .build_history(&ctx, run.thread_id, run.message_id)
             .await?;
@@ -325,13 +396,18 @@ impl ChatWorker {
             self.run_classic_mode(&ctx, &run, history.messages, &mut worker_sink)
                 .await
         } else {
-            self.run_agent_mode(&ctx, &run, history, cancel.clone(), &mut worker_sink)
+            self.run_agent_mode(&ctx, &run, history, cancel.clone(), &mut worker_sink, slot)
                 .await
         };
 
         // リースを失っていたら（別ワーカー takeover）確定しない。
         if worker_sink.lost_lease() {
             return Ok(());
+        }
+        // `done` を積むと購読が閉じるので、タイトルのイベントはその前に済ませる。
+        // 停止（ユーザーの停止・削除）の確定はタイトルを待たない。
+        if gen_result.is_ok() && !cancel.load(Ordering::Relaxed) {
+            title_task.finish().await;
         }
 
         let content: Vec<ContentBlock> = worker_sink.content().to_vec();

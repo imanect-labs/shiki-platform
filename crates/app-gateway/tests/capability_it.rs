@@ -18,7 +18,9 @@ use app_gateway::{
     build_gateway_router, fetch_usage, AiPin, AppInstallationStore, NewAppInstallation,
 };
 use axum::http::StatusCode;
-use common::{ctx, get, request_json, setup, state, state_with, token, token_as, StubAuthz};
+use common::{
+    ctx, ctx_as, get, request_json, setup, state, state_with, token, token_as, StubAuthz,
+};
 use data::{FieldDef, FieldType, NewDataTable, TableSchema};
 use serde_json::json;
 use sqlx::PgPool;
@@ -28,17 +30,7 @@ const ALL_SCOPES: &str = "data.read data.write data.schema storage.read storage.
                           rag.query identity.read events.subscribe notify.send";
 
 fn field(name: &str, ty: FieldType) -> FieldDef {
-    FieldDef {
-        name: name.into(),
-        field_type: ty,
-        required: false,
-        unique: false,
-        indexed: false,
-        options: vec![],
-        ref_table: None,
-        lookup: None,
-        computed: None,
-    }
+    FieldDef::new(name, ty)
 }
 
 fn simple_schema() -> TableSchema {
@@ -52,6 +44,7 @@ fn simple_schema() -> TableSchema {
         field_policy: vec![],
         aggregate_min_rows: None,
         fsm_ref: None,
+        rag: None,
     }
 }
 
@@ -275,6 +268,102 @@ async fn data_capability_matrix() {
     )
     .await;
     assert_eq!(s, StatusCode::OK);
+}
+
+/// C3: 所有テーブルのリンク列から**非所有テーブル**へ結合・半結合・lookup で辿れない（実効権限 =
+/// 所有テーブル ∩ ユーザー ReBAC）。ユーザーは非所有テーブルを読めるが、アプリ経由では読めないのと同じ応答。
+#[tokio::test]
+async fn data_links_do_not_reach_unowned_tables() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let (app_id, client, _owned, foreign) = fixture(&pool, &tenant).await;
+    let store = data::DataStore::new(
+        pool.clone(),
+        Arc::new(StubAuthz::allow_all()),
+        Arc::new(common::FixedResolver),
+    );
+    let mut customer = field("customer", FieldType::RecordRef);
+    customer.ref_table = Some(foreign);
+    customer.link = Some(data::LinkDef {
+        cardinality: data::LinkCardinality::ManyToOne,
+        symmetric_field: None,
+        symmetric_key: None,
+        symmetric_display_name: None,
+        reverse: false,
+    });
+    let mut customer_title = field("customer_title", FieldType::Lookup);
+    customer_title.lookup = Some(data::LookupDef {
+        via_field: "customer".into(),
+        target_field: "title".into(),
+    });
+    let mut schema = simple_schema();
+    schema.fields.extend([customer, customer_title]);
+    let linked = store
+        .create_table(
+            &ctx(&tenant),
+            NewDataTable {
+                name: "linked".into(),
+                schema,
+            },
+            None,
+        )
+        .await
+        .expect("linked table");
+    sqlx::query("UPDATE data_table SET app_id = $1 WHERE id = $2")
+        .bind(app_id)
+        .bind(linked.id)
+        .execute(&pool)
+        .await
+        .expect("bind app");
+    let acme = store
+        .create_record(&ctx(&tenant), foreign, json!({ "title": "Acme" }), None)
+        .await
+        .unwrap();
+    let rec = store
+        .create_record(
+            &ctx(&tenant),
+            linked.id,
+            json!({ "title": "o1", "customer": [acme.id.to_string()] }),
+            None,
+        )
+        .await
+        .unwrap();
+    // ユーザー本人（アプリを介さない読取）は lookup で非所有テーブルの値を読める。
+    let own = store
+        .get_record(&ctx_as(&tenant, "alice"), linked.id, rec.id, None)
+        .await
+        .unwrap();
+    assert_eq!(own.data["customer_title"], "Acme");
+
+    let app = build_gateway_router(state(pool.clone(), &tenant));
+    let tok = token(&client, ALL_SCOPES, &tenant);
+    // lookup は null・リンク値（非所有テーブルの id）は落ちる。
+    let (s, got) = get(
+        &app,
+        &format!("/gw/data/tables/{}/records/{}", linked.id, rec.id),
+        Some(&tok),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{got}");
+    assert!(got["data"]["customer_title"].is_null(), "{got}");
+    assert!(!got.to_string().contains("Acme"), "{got}");
+    // 結合・半結合は 403（ユーザーが参照先を読めないときと同じ）。
+    for q in [
+        json!({ "joins": [ { "alias": "c", "field": "customer" } ], "select": ["title", "c.title"] }),
+        json!({ "filter": { "link": { "field": "customer",
+            "filter": { "cmp": { "field": "title", "op": "eq", "value": "Acme" } } } } }),
+    ] {
+        let (s, body) = request_json(
+            &app,
+            "POST",
+            &format!("/gw/data/tables/{}/query", linked.id),
+            Some(&tok),
+            &q,
+        )
+        .await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{q} → {body}");
+        assert!(!body.to_string().contains("Acme"), "{body}");
+    }
 }
 
 #[tokio::test]
@@ -509,4 +598,175 @@ async fn events_subscribe_streams_owned_table_events() {
     // 最初に届いた遷移イベントが owned（先に発行した foreign/不可視が漏れていない）。
     assert!(frame.contains(&owned.to_string()), "{frame}");
     assert!(!frame.contains(&foreign.to_string()), "{frame}");
+}
+
+/// レコード変更の SSE（Task 15.7）: data.read ＋アプリ所有テーブルの束縛を通り、data の配信
+/// （購読者ごとの行述語・マスク評価）へ繋がる。`events.subscribe` のライブテールには流さない。
+#[tokio::test]
+async fn data_stream_is_bound_to_owned_tables() {
+    use tower::ServiceExt;
+
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let (_app_id, client, owned, foreign) = fixture(&pool, &tenant).await;
+    let app = build_gateway_router(state(pool.clone(), &tenant));
+    let open = |path: String, tok: String| {
+        let app = app.clone();
+        async move {
+            let req = axum::http::Request::builder()
+                .uri(path)
+                .header("authorization", format!("Bearer {tok}"))
+                .body(axum::body::Body::empty())
+                .unwrap();
+            app.oneshot(req).await.unwrap()
+        }
+    };
+    // data.read が無い（events.subscribe だけ）→ 403。
+    let resp = open(
+        format!("/gw/data/tables/{owned}/stream"),
+        token(&client, "events.subscribe", &tenant),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    // 非所有テーブル → 403（スコープがあってもアプリ所有束縛で拒否）。
+    let resp = open(
+        format!("/gw/data/tables/{foreign}/stream"),
+        token(&client, "data.read", &tenant),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    // 所有テーブル → SSE。最初のフレームは data の配信の再開位置（stream.ready）。
+    let resp = open(
+        format!("/gw/data/tables/{owned}/stream"),
+        token(&client, "data.read", &tenant),
+    )
+    .await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        resp.headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok()),
+        Some("text/event-stream")
+    );
+    let mut body = resp.into_body().into_data_stream();
+    let frame = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+        use futures::StreamExt;
+        loop {
+            match body.next().await {
+                Some(Ok(bytes)) => {
+                    let text = String::from_utf8_lossy(&bytes).to_string();
+                    if text.contains("event:") {
+                        return text;
+                    }
+                }
+                _ => panic!("SSE ストリームが終了した"),
+            }
+        }
+    })
+    .await
+    .expect("SSE の最初のイベントが届く");
+    assert!(frame.contains("stream.ready"), "{frame}");
+}
+
+/// R3-6: `Shiki.data.transition` の `expectedRev` 省略（本文に `expected_rev` が無い）は、ワークフローと
+/// 同じく**現在の rev**で遷移する（以前は B2 関数だけ 400）。rev を指定したら従来どおり楽観ロックを掛ける。
+#[tokio::test]
+async fn transition_without_expected_rev_uses_the_current_rev() {
+    use data::{FsmBody, FsmRef, FsmStore, FsmTransition, PolicyExpr};
+
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let (_app_id, client, owned, _foreign) = fixture(&pool, &tenant).await;
+    // 所有テーブルに状態列と FSM（draft → submitted → approved）をピンする。
+    let authz = Arc::new(StubAuthz::allow_all());
+    let store = data::DataStore::new(pool.clone(), authz.clone(), Arc::new(common::FixedResolver));
+    let fsms = FsmStore::new(
+        Arc::new(artifact::ArtifactStore::new(pool.clone(), authz.clone())),
+        store.clone(),
+    );
+    let mut status = field("status", FieldType::Select);
+    status.options = vec!["draft".into(), "submitted".into(), "approved".into()];
+    let mut schema = simple_schema();
+    schema.fields.push(status);
+    schema.status_field = Some("status".into());
+    let c = ctx(&tenant);
+    store
+        .update_table_schema(&c, owned, schema.clone(), Some(1), None)
+        .await
+        .expect("状態列");
+    let step = |from: &str, to: &str| FsmTransition {
+        from: from.into(),
+        to: to.into(),
+        actor: PolicyExpr::Public,
+    };
+    let fsm_id = fsms
+        .create(
+            &c,
+            "flow",
+            owned,
+            &FsmBody {
+                states: vec!["draft".into(), "submitted".into(), "approved".into()],
+                transitions: vec![step("draft", "submitted"), step("submitted", "approved")],
+            },
+            None,
+        )
+        .await
+        .expect("fsm");
+    schema.fsm_ref = Some(FsmRef {
+        artifact_id: fsm_id,
+        version: 1,
+    });
+    store
+        .update_table_schema(&c, owned, schema, Some(2), None)
+        .await
+        .expect("pin fsm");
+
+    let app = build_gateway_router(state(pool.clone(), &tenant));
+    let tok = token(&client, ALL_SCOPES, &tenant);
+    let (s, created) = request_json(
+        &app,
+        "POST",
+        &format!("/gw/data/tables/{owned}/records"),
+        Some(&tok),
+        &json!({ "data": { "title": "経費A", "status": "draft" } }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{created}");
+    let rec_id = created["id"].as_str().expect("id");
+    let path = format!("/gw/data/tables/{owned}/records/{rec_id}/transition");
+
+    // 古い rev を指定したら 409（楽観ロックは従来どおり）。
+    let (s, body) = request_json(
+        &app,
+        "POST",
+        &path,
+        Some(&tok),
+        &json!({ "to": "submitted", "expected_rev": 99 }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{body}");
+    // rev を省略 → 現在の rev で遷移する。
+    let (s, moved) = request_json(
+        &app,
+        "POST",
+        &path,
+        Some(&tok),
+        &json!({ "to": "submitted" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{moved}");
+    assert_eq!(moved["data"]["status"], "submitted");
+    assert_eq!(moved["rev"], 2);
+    // null も省略と同じ。
+    let (s, moved) = request_json(
+        &app,
+        "POST",
+        &path,
+        Some(&tok),
+        &json!({ "to": "approved", "expected_rev": null }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{moved}");
+    assert_eq!(moved["data"]["status"], "approved");
+    assert_eq!(moved["rev"], 3);
 }

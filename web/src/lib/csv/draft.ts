@@ -16,7 +16,9 @@ export function csvDraftHref(threadId: string, name: string): string {
 }
 
 /// csv_draft イベント/ブロックの payload（`{name, csv}`）を厳格に検証する（fail-closed）。
-export function parseCsvDraft(raw: unknown): { name: string; csv: string } | null {
+export function parseCsvDraft(
+  raw: unknown,
+): { name: string; csv: string; parentId?: string } | null {
   const d = parseDraftPayload(raw, "csv");
-  return d ? { name: d.name, csv: d.content } : null;
+  return d ? { name: d.name, csv: d.content, parentId: d.parentId } : null;
 }

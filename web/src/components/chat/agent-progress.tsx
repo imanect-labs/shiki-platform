@@ -12,6 +12,9 @@ import type * as React from "react";
 import { CheckCircle2, Circle, Loader2, PauseCircle } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+
+import { DataWriteSummary } from "./data-approval-summary";
+import { DriveMoveSummary } from "./drive-move-approval-summary";
 import type { ApprovalRequest, PlanSubtask } from "@/lib/chat-api";
 
 /// 状態はドットではなくアイコンで示す（色だけに頼らず、形でも区別できるように）。
@@ -71,10 +74,10 @@ export function PlanPanel({ subtasks }: { subtasks: PlanSubtask[] }) {
   if (subtasks.length === 0) return null;
   const done = subtasks.filter((s) => s.status === "done").length;
   return (
-    <div className="rounded-xl border border-border bg-card/60 p-3">
+    <div className="rounded-xl border border-border bg-card/60 p-3" data-testid="plan-panel">
       <div className="mb-2 flex items-center justify-between">
         <span className="text-[13px] font-semibold text-foreground/80">計画</span>
-        <span className="text-[12px] tabular-nums text-muted-foreground">
+        <span className="text-[12px] tabular-nums text-muted-foreground" data-testid="plan-progress">
           {done}/{subtasks.length}
         </span>
       </div>
@@ -119,13 +122,33 @@ export function ApprovalCard({
         </span>
         <span className="text-[13px] font-semibold text-foreground">承認が必要です</span>
       </div>
-      <p className="mb-1 text-[13px] text-foreground/80 [overflow-wrap:anywhere]">
-        ツール <code className="rounded bg-secondary px-1 py-0.5 text-[12px]">{request.name}</code> の実行に承認が必要です。
-      </p>
-      <p className="mb-2 text-[12px] text-muted-foreground">{request.reason}</p>
-      <pre className="mb-2 max-h-24 overflow-auto overscroll-contain rounded-lg bg-secondary/60 p-2 text-[11px] text-foreground/70">
-        {safeJson(request.input)}
-      </pre>
+      {request.name === "data_record_write" || request.name === "drive.move" ? (
+        <>
+          {/* 業務データの書込はテーブル名・対象・変える列を、ファイルの移動は何をどこへ移すかを
+              読める形で（生の id と JSON は畳んでおく）。 */}
+          {request.name === "drive.move" ? (
+            <DriveMoveSummary input={request.input} />
+          ) : (
+            <DataWriteSummary input={request.input} />
+          )}
+          <details className="mb-2 text-[11px] text-muted-foreground">
+            <summary className="cursor-pointer select-none">送る内容（JSON）</summary>
+            <pre className="mt-1 max-h-24 overflow-auto overscroll-contain rounded-lg bg-secondary/60 p-2 text-foreground/70">
+              {safeJson(request.input)}
+            </pre>
+          </details>
+        </>
+      ) : (
+        <>
+          <p className="mb-1 text-[13px] text-foreground/80 [overflow-wrap:anywhere]">
+            ツール <code className="rounded bg-secondary px-1 py-0.5 text-[12px]">{request.name}</code> の実行に承認が必要です。
+          </p>
+          <p className="mb-2 text-[12px] text-muted-foreground">{request.reason}</p>
+          <pre className="mb-2 max-h-24 overflow-auto overscroll-contain rounded-lg bg-secondary/60 p-2 text-[11px] text-foreground/70">
+            {safeJson(request.input)}
+          </pre>
+        </>
+      )}
       {/* スマホは親指で押しやすいよう幅いっぱいの 2 分割（誤タップしないよう間隔を空ける）。 */}
       <div className="flex items-center gap-2 max-md:gap-3">
         <button

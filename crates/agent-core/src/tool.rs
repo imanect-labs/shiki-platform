@@ -6,7 +6,7 @@
 use authz::AuthContext;
 use serde::{Deserialize, Serialize};
 
-/// ツール実行の引用チャンク（doc_search の戻り。UI の citation ブロックへ）。
+/// ツール実行の引用（doc_search のチャンク・web_search / web_fetch のページ。UI の citation ブロックへ）。
 /// フロント `chat-api.ts` / `chat::Citation` と同型のフィールドを持つ。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Citation {
@@ -34,6 +34,59 @@ pub struct Citation {
     /// PDF のページ上の枠（PDF 以外は空）。
     #[serde(default)]
     pub boxes: Vec<rag::PageBox>,
+    /// Web の出典（web_search / web_fetch）。社内文書の引用は None（`node_id` を持つ）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web: Option<WebSource>,
+}
+
+/// Web の出典（公開 web のページ）。社内文書と同じ台帳で番号を振る（#891）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WebSource {
+    /// ページの URL（http/https のみ・断片は落とす）。
+    pub url: String,
+    /// ページのタイトル（取得先が付けた値。無ければ空）。
+    pub title: String,
+}
+
+/// 抜粋の上限（文字）。取得したページは丸ごと持たない（UI のカードに出す分だけ）。
+const WEB_SNIPPET_MAX_CHARS: usize = 400;
+
+impl Citation {
+    /// Web のページを指す引用（番号は未採番。ループの台帳が振る）。
+    ///
+    /// http/https 以外の URL は引用にしない（`javascript:` 等を UI のリンクにさせない）。
+    /// 同じページは検索結果でも取得でも同じ引用（`chunk_id`）になり、同じ番号を使い回す。
+    #[must_use]
+    pub fn web(url: &str, title: &str, snippet: &str) -> Option<Self> {
+        let mut parsed = url::Url::parse(url.trim()).ok()?;
+        if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+            return None;
+        }
+        parsed.set_fragment(None);
+        let url = parsed.to_string();
+        let snippet = snippet.trim();
+        let snippet = match snippet.char_indices().nth(WEB_SNIPPET_MAX_CHARS) {
+            Some((at, _)) => format!("{}…", &snippet[..at]),
+            None => snippet.to_string(),
+        };
+        Some(Citation {
+            cite_id: 0,
+            node_id: String::new(),
+            chunk_id: format!("web:{url}"),
+            snippet,
+            page: None,
+            heading_path: Vec::new(),
+            score: 0.0,
+            version: None,
+            anchor: None,
+            quote: None,
+            boxes: Vec::new(),
+            web: Some(WebSource {
+                url,
+                title: title.trim().to_string(),
+            }),
+        })
+    }
 }
 
 /// ツール実行のエラー。
@@ -69,6 +122,10 @@ pub struct SlideDraft {
     pub name: String,
     /// 正規化スライド JSON 文字列（サニタイズ済みが正規形・PIT-40）。
     pub content: String,
+    /// AI が指定した保存先フォルダの id か `"root"`（保存ダイアログの初期値にするだけ・
+    /// 確定は人・#942）。`None` は指定なし（前回の指定を保つ）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
 }
 
 /// 未保存の下書き CSV（save_csv の下書き確定型・Task 11.11）。
@@ -80,6 +137,10 @@ pub struct CsvDraft {
     pub name: String,
     /// CSV 本文（ヘッダ行＋データ行）。
     pub csv: String,
+    /// AI が指定した保存先フォルダの id か `"root"`（保存ダイアログの初期値にするだけ・
+    /// 確定は人・#942）。`None` は指定なし（前回の指定を保つ）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
 }
 
 /// ツール実行結果。`content` はモデルへ返すテキスト、`citations` は UI 引用へ。
@@ -111,6 +172,11 @@ pub struct ToolOutcome {
     /// **まだ StorageService へ作成していない**下書き CSV を入れる（chat 側で csv_draft
     /// ブロックへ写り、フロントが下書き CSV 画面で詰めてから「ドライブに保存」で確定する）。
     pub csv_drafts: Vec<CsvDraft>,
+    /// 未保存の下書きスキル（save_skill の下書き確定型・#919）。
+    /// `{name, skill}` の JSON（skill = SkillBody 相当・保存時検証を通したもの）。**まだ artifact
+    /// として保存していない**下書きを入れる（chat 側で skill_draft ブロックへ写り、フロントが
+    /// スキルエディタで詰めてから人が保存する）。
+    pub skill_drafts: Vec<serde_json::Value>,
     /// AI が作成/編集した文書への参照（#381）。
     /// `{id, name, kind, version}` の JSON。**StorageService へ作成済み/編集済みのノードのみ**
     /// を入れる（chat 側で document_ref ブロックへ写り、成果物への導線カードになる）。
@@ -153,6 +219,7 @@ impl ToolOutcome {
             note_drafts: Vec::new(),
             slide_drafts: Vec::new(),
             csv_drafts: Vec::new(),
+            skill_drafts: Vec::new(),
             document_refs: Vec::new(),
             skill_invocations: Vec::new(),
             subagent_runs: Vec::new(),
@@ -172,6 +239,7 @@ impl ToolOutcome {
             note_drafts: Vec::new(),
             slide_drafts: Vec::new(),
             csv_drafts: Vec::new(),
+            skill_drafts: Vec::new(),
             document_refs: Vec::new(),
             skill_invocations: Vec::new(),
             subagent_runs: Vec::new(),

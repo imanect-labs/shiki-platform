@@ -14,6 +14,7 @@ import * as React from "react";
 import { Globe, Search, Terminal, type LucideIcon } from "lucide-react";
 
 import { USER_SELECTABLE_TOOLS, type UserSelectableTool } from "@/generated/gui-spec";
+import { storageScopeReady, subscribeStorageScope } from "@/lib/user-storage";
 
 export type SelectableTool = {
   name: UserSelectableTool;
@@ -50,6 +51,14 @@ const EMPTY: UserSelectableTool[] = [];
 function notify(scope: string) {
   listeners.get(scope)?.forEach((l) => l());
 }
+
+// ログアウト（他タブを含む）で選択を捨てる。次の人の最初の発話に前の人の選択を載せない（#817）。
+subscribeStorageScope(() => {
+  if (storageScopeReady()) return;
+  const scopes = [...store.keys()];
+  store.clear();
+  for (const scope of scopes) notify(scope);
+});
 
 export function readToolChoice(scope: string): UserSelectableTool[] {
   return store.get(scope) ?? EMPTY;

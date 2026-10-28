@@ -71,6 +71,8 @@ export type Thread = {
   /// 由来ノート（ノートの分割ビューから作られたスレッド・issue #282）。通常チャットは null。
   originNoteId?: string | null;
   originNoteName?: string | null;
+  /// ピン留めした時刻（null＝ピン留めなし）。サイドバー履歴の先頭に出す。
+  pinnedAt: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -183,19 +185,8 @@ export function subscribeThreadsChanged(listener: () => void): () => void {
 
 // ── REST ──────────────────────────────────────────────────────────────
 
-type ApiThread = {
-  id: string;
-  title: string;
-  agent_mode: boolean;
-  autonomous_mode?: AutonomousMode;
-  skill_pins?: { skill_id: string; skill_version: number }[];
-  mini_app_id?: string | null;
-  mini_app_version?: number | null;
-  origin_note_id?: string | null;
-  origin_note_name?: string | null;
-  created_at: string;
-  updated_at: string;
-};
+/// スレッドの API 表現（**`crates/chat` の `Thread` から生成**した型）。
+type ApiThread = components["schemas"]["Thread"];
 
 function toThread(t: ApiThread): Thread {
   return {
@@ -211,6 +202,7 @@ function toThread(t: ApiThread): Thread {
     miniAppVersion: t.mini_app_version ?? null,
     originNoteId: t.origin_note_id ?? null,
     originNoteName: t.origin_note_name ?? null,
+    pinnedAt: t.pinned_at ?? null,
     createdAt: t.created_at,
     updatedAt: t.updated_at,
   };
@@ -222,14 +214,16 @@ async function ok<T>(res: Response): Promise<T> {
 }
 
 /// スレッド一覧の 1 ページ。`q` はタイトルの部分一致（サーバ側で全件から探す・#591）。
+/// `pinned` はピン留めだけ（ピン留めの新しい順・1 ページで全件）。
 export async function listThreads(
   cursor?: string,
-  opts?: { originNoteId?: string; q?: string },
+  opts?: { originNoteId?: string; q?: string; pinned?: boolean },
 ): Promise<{ threads: Thread[]; nextCursor: string | null }> {
   const params = new URLSearchParams();
   if (cursor) params.set("cursor", cursor);
   if (opts?.originNoteId) params.set("origin_note_id", opts.originNoteId);
   if (opts?.q?.trim()) params.set("q", opts.q.trim());
+  if (opts?.pinned) params.set("pinned", "true");
   const qs = params.toString() ? `?${params.toString()}` : "";
   const data = await ok<{ threads: ApiThread[]; next_cursor: string | null }>(
     await apiFetch(`/threads${qs}`),
@@ -286,6 +280,54 @@ export async function setThreadSkills(threadId: string, skills: ArtifactPin[]): 
     }),
   });
   if (!res.ok) throw new Error(`API ${res.status}`);
+  notifyThreadsChanged();
+}
+
+/// スレッドの更新リクエスト（**`UpdateThreadRequest` から生成**した型）。
+type UpdateThreadRequest = components["schemas"]["UpdateThreadRequest"];
+
+/// スレッドを更新する（PATCH /threads/{id}）。失敗は利用者向けの文言で投げる。
+/// サーバは 400 の理由を本文に載せないので、操作ごとに 400 の意味を `invalid` で渡す。
+async function patchThread(
+  threadId: string,
+  body: UpdateThreadRequest,
+  failure: string,
+  invalid = failure,
+): Promise<void> {
+  const res = await apiFetch(`/threads/${threadId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(res.status === 400 ? invalid : failure);
+  notifyThreadsChanged();
+}
+
+/// スレッドの名前を変える（owner のみ）。以後は自動タイトルで上書きされない。
+export function renameThread(threadId: string, title: string): Promise<void> {
+  return patchThread(
+    threadId,
+    { title },
+    "名前を変更できませんでした。",
+    "名前は 1〜200 文字で入力してください。",
+  );
+}
+
+/// ピン留めを付け外しする（owner のみ）。
+export function setThreadPinned(threadId: string, pinned: boolean): Promise<void> {
+  return patchThread(
+    threadId,
+    { pinned },
+    pinned ? "ピン留めできませんでした。" : "ピン留めを外せませんでした。",
+    // 付けるときの 400 はピン留めの上限（MAX_PINNED・50 件）。
+    "ピン留めは 50 件までです。ほかのピン留めを外してください。",
+  );
+}
+
+/// スレッドを削除する（owner のみ）。共有相手も開けなくなり、生成中の応答は止まる。
+export async function deleteThread(threadId: string): Promise<void> {
+  const res = await apiFetch(`/threads/${threadId}`, { method: "DELETE" });
+  if (!res.ok) throw new Error("削除できませんでした。時間をおいてもう一度お試しください。");
   notifyThreadsChanged();
 }
 
@@ -470,6 +512,8 @@ export type StreamHandlers = {
   onSlideDraft?: (draft: unknown) => void;
   /// 未保存の下書き CSV（save_csv の下書き確定型・Task 11.11）。下書き画面を開く/流し込む。
   onCsvDraft?: (draft: unknown) => void;
+  /// 未保存の下書きスキル（save_skill の下書き確定型・#919）。スキルエディタを開く/流し込む。
+  onSkillDraft?: (draft: unknown) => void;
   /// AI が作成/編集した文書への参照（#381）。カード化し、新規作成ならエディタへ遷移する。
   onDocumentRef?: (document: unknown) => void;
   /// skill ツールの発動記録（#344）。会話中に読み込んだスキルのチップ表示に使う。
@@ -555,6 +599,8 @@ function subscribe(threadId: string, handlers: StreamHandlers): () => void {
           boxes: kind.boxes,
           // 閲覧者が読めない文書の引用は、サーバが番号だけの出典に置き換えて送る（#513）。
           withheld: kind.withheld,
+          // Web の出典（web_search / web_fetch・#891）。
+          web: kind.web,
         });
         break;
       case "file_ref":
@@ -574,6 +620,9 @@ function subscribe(threadId: string, handlers: StreamHandlers): () => void {
         break;
       case "csv_draft":
         handlers.onCsvDraft?.(kind.draft);
+        break;
+      case "skill_draft":
+        handlers.onSkillDraft?.(kind.draft);
         break;
       case "document_ref":
         handlers.onDocumentRef?.(kind.document);
@@ -615,6 +664,10 @@ function subscribe(threadId: string, handlers: StreamHandlers): () => void {
         break;
       case "context_usage":
         handlers.onContextUsage?.(kind.usage);
+        break;
+      case "thread_title":
+        // 自動タイトルが付いた。履歴と会話の見出しは一覧の変更通知で読み直す。
+        notifyThreadsChanged();
         break;
       case "status":
         handlers.onStatus?.(kind.status);
@@ -718,7 +771,7 @@ export async function postMessage(
         artifact_id: p.artifactId,
         version: p.version ?? undefined,
       })),
-      model: opts.model?.model,
+      model: opts.model?.model ?? undefined,
       effort: opts.model?.effort,
       tools: opts.tools && opts.tools.length > 0 ? opts.tools : undefined,
     }),

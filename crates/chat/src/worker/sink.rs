@@ -186,6 +186,11 @@ impl WorkerSink {
                     draft: draft.clone(),
                 });
             }
+            StreamEventKind::SkillDraft { draft } => {
+                self.content.push(ContentBlock::SkillDraft {
+                    draft: draft.clone(),
+                });
+            }
             // AI が作成/編集した文書への参照（#381）。成果物への導線として履歴に残す。
             StreamEventKind::DocumentRef { document } => {
                 self.content.push(ContentBlock::DocumentRef {
@@ -210,6 +215,7 @@ impl WorkerSink {
             | StreamEventKind::ApprovalResolved { .. }
             | StreamEventKind::FailureRecovery { .. }
             | StreamEventKind::ContextUsage { .. }
+            | StreamEventKind::ThreadTitle { .. }
             | StreamEventKind::Status { .. }
             | StreamEventKind::Error { .. }
             | StreamEventKind::Done { .. } => {}
@@ -220,6 +226,25 @@ impl WorkerSink {
 #[async_trait::async_trait]
 impl EventSink for WorkerSink {
     async fn emit(&mut self, event: AgentEvent) -> Result<(), AgentError> {
+        // 承認要求は、SSE で利用者に見せる前に承認待ちのツール呼び出しを run へ永続化する（承認 API が
+        // 照合する・画面の再読込後も引ける・検証 C-P1-3）。
+        if let AgentEvent::ApprovalRequested {
+            tool_call_id, name, ..
+        } = &event
+        {
+            match self
+                .store
+                .set_pending_approval(self.run_id, self.fencing_token, tool_call_id, name)
+                .await
+            {
+                Ok(true) => {}
+                Ok(false) => {
+                    self.lost_lease = true;
+                    return Err(AgentError::Sink("lease lost (fencing mismatch)".into()));
+                }
+                Err(e) => return Err(AgentError::Sink(e.to_string())),
+            }
+        }
         let kind = to_stream_kind(&event);
         match self
             .store
@@ -336,6 +361,21 @@ mod tests {
         };
         match to_stream_kind(&ev) {
             StreamEventKind::CsvDraft { draft: d } => assert_eq!(d, draft),
+            other => panic!("unexpected: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn skill_draft_event_maps_to_sse_and_projection() {
+        // AgentEvent::SkillDraft → SSE skill_draft（履歴 projection でも残る・#919）。
+        let draft = serde_json::json!({ "name": "expense", "skill": { "description": "d" } });
+        let ev = AgentEvent::SkillDraft {
+            draft: draft.clone(),
+        };
+        let kind = to_stream_kind(&ev);
+        assert_eq!(kind.tag(), "skill_draft");
+        match kind {
+            StreamEventKind::SkillDraft { draft: d } => assert_eq!(d, draft),
             other => panic!("unexpected: {other:?}"),
         }
     }

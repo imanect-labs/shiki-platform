@@ -1,24 +1,83 @@
-//! `DataStore` — 構造化データの単一チョークポイント（`&AuthContext` 経由・PgPool 内包）。
+//! `DataStore` — 構造化データの単一チョークポイント（`&AuthContext` 経由）。
 //!
 //! テーブルの作成・取得・一覧・スキーマ改訂・論理削除。レコード操作は
 //! [`crate::record`]、リビジョンは [`crate::revision`]（同じ struct の impl 分割）。
+//!
+//! # 接続プールは `PoolRouter` から引く（Task 15.1・data-platform §12 第 2 段）
+//!
+//! 本 crate は接続プールを直接保持しない。テナントの行は必ず
+//! `self.pools.for_tenant(&ctx.tenant_id)` から引いたプールで読み書きし、横断一意の採番
+//! （`tenant_int` / `table_int`）はレジストリのプールで行う。プール分割（第 2 段）はルータの
+//! 差し替えだけで済む。禁止事項は docs/data/shard-safety.md（CI: `tests/shard_safety_lint.rs`）。
 
 use std::sync::Arc;
 use storage::audit::AuditAction;
 
-use authz::{AuthContext, AuthzClient, Consistency, Relation};
+use authz::{AuthContext, AuthzClient, Relation};
 use chrono::{DateTime, Utc};
 use serde_json::json;
 use sqlx::types::Json;
-use sqlx::PgPool;
 use storage::audit::{AuditEntry, AuditRecorder, Decision};
+use storage::PoolRouter;
 use uuid::Uuid;
 
-use crate::index::ensure_indexes;
-use crate::model::{DataTable, TableSchema};
+use crate::cursor::{CursorCodec, CursorKey};
+use crate::derived::links::create_symmetric_fields;
+use crate::field_key::{assign_field_ids, upgrade_legacy_schema};
+use crate::index::backfill::{build_unique_now, start_backfill, table_has_rows};
+use crate::index::state::sync_ledger;
+use crate::index::{DEFAULT_MAX_MULTI_VALUES, MAX_MULTI_VALUES_CEILING};
+use crate::key_migration::KEY_FORMAT_LEGACY;
+use crate::model::{DataTable, TableKeys, TableSchema};
+use crate::policy::memo::AuthzMemo;
+use crate::query::admission::{ReadGate, DEFAULT_READ_BUDGET_MS, DEFAULT_TENANT_READ_TOKENS};
+use crate::query::planner::cost::CostModel;
+use crate::query::planner::feedback::Feedback;
+use crate::query::planner::{ProbeCache, StatsCache};
+use crate::query::run::{QueryTuning, DEFAULT_COUNT_CAP, DEFAULT_READ_TIMEOUT_MS};
 use crate::schema::{validate_schema_update, validate_table_name, validate_table_schema};
+use crate::schema_cache::SchemaCache;
 use crate::validate::RefResolver;
 use crate::{map_db, DataError};
+
+/// `tenant_int` で持つ構造化データの表（purge の対象・子 → 親の順）。
+const PURGE_TENANT_INT_TABLES: &[&str] = &[
+    "data_derived_pending",
+    "data_derived_dep",
+    "data_index_text",
+    "data_index_num",
+    "data_link",
+    "data_link_field",
+    "data_unique",
+    "data_index_search",
+    "data_index_composite",
+    "data_sort_set",
+    "data_index_state",
+    "data_index_backfill",
+    // 索引の降格の後片付け（Task 15.6）。
+    "data_index_purge",
+    // 一括取込（Task 15.11）。
+    "data_bulk_key",
+    "data_bulk_staging",
+    "data_bulk_import",
+    // 自前オプティマイザの統計 4 表（Task 15.12）。
+    "data_value_count",
+    "data_field_stats",
+    "data_link_stats",
+    "data_table_stats",
+    // リンク値の保存形の移行の進捗（Task 15.4）。
+    "data_link_value_migration",
+    // RAG 増分索引の確定した世代（Task 15.8 のスパイク）。
+    "data_rag_index_state",
+];
+
+/// テナント消去で `tenant_id` を条件に消す表（`data_table` / `data_tenant_settings` は個別に消す）。
+/// SSE 配信の短命な状態（Task 15.6）。表名は固定集合のみ。
+const PURGE_TENANT_ID_TABLES: &[&str] = &[
+    "data_stream_authz_epoch",
+    "data_stream_awareness",
+    "data_stream_fanout",
+];
 
 /// 新規テーブルの入力。
 #[derive(Debug, Clone)]
@@ -27,30 +86,61 @@ pub struct NewDataTable {
     pub schema: TableSchema,
 }
 
+/// data_table 行の SELECT 列（[`TableRow`] と同じ並び）。
+pub(crate) const TABLE_COLS: &str = "id, name, app_id, schema, schema_version, created_by, \
+     created_at, updated_at, tenant_int, table_int, key_format, next_field_id, has_record_shares, \
+     planner_fixed";
+
 /// data_table 行。
 #[derive(sqlx::FromRow)]
 pub(crate) struct TableRow {
-    id: Uuid,
+    pub(crate) id: Uuid,
     name: String,
-    app_id: Option<Uuid>,
-    schema: Json<TableSchema>,
+    pub(crate) app_id: Option<Uuid>,
+    pub(crate) schema: Json<TableSchema>,
     schema_version: i64,
     created_by: String,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+    pub(crate) tenant_int: i32,
+    pub(crate) table_int: i64,
+    pub(crate) key_format: i16,
+    pub(crate) next_field_id: i32,
+    /// レコード個別共有タプルが作られたか（§7.4 第 4 階層）。
+    pub(crate) has_record_shares: bool,
+    /// 固定戦略（Task 15.12・PIT-75）。
+    pub(crate) planner_fixed: bool,
 }
 
 impl TableRow {
+    /// テーブル名。
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// DTO へ変換する。v1 形式（未移行）のスキーマは**表示用に**決定的に 3 層へ引き上げる
+    /// （移行ジョブが同じ規則で採番するため、移行の前後で `id` は変わらない）。
     pub(crate) fn into_table(self) -> DataTable {
+        let schema = if self.key_format == KEY_FORMAT_LEGACY {
+            upgrade_legacy_schema(&self.schema.0).map_or(self.schema.0, |(s, _)| s)
+        } else {
+            self.schema.0
+        };
         DataTable {
             id: self.id,
             name: self.name,
             app_id: self.app_id,
-            schema: self.schema.0,
+            schema,
             schema_version: self.schema_version,
             created_by: self.created_by,
             created_at: self.created_at,
             updated_at: self.updated_at,
+            keys: TableKeys {
+                tenant_int: self.tenant_int,
+                table_int: self.table_int,
+            },
+            has_record_shares: self.has_record_shares,
+            planner_fixed: self.planner_fixed,
         }
     }
 }
@@ -58,24 +148,158 @@ impl TableRow {
 /// 構造化データのチョークポイント。
 #[derive(Clone)]
 pub struct DataStore {
-    pub(crate) db: PgPool,
+    /// `tenant → pool` の解決（接続プールを直接持たない・Task 15.1）。
+    pub(crate) pools: PoolRouter,
     pub(crate) authz: Arc<dyn AuthzClient>,
     pub(crate) audit: AuditRecorder,
     pub(crate) resolver: Arc<dyn RefResolver>,
+    /// keyset カーソルの AEAD コーデック（クエリコンパイラ v2 のページング）。
+    pub(crate) cursor: Arc<CursorCodec>,
+    /// 多値（multi_select / リンク）の 1 レコードあたり要素数の上限（PIT-72・超過は 422）。
+    pub(crate) max_multi_values: usize,
+    /// 読取の調整（機能フラグ・強制戦略。既定は環境変数から・[`crate::QueryTuning`]）。
+    pub(crate) tuning: QueryTuning,
+    /// 件数の上限（`AtLeast(上限)`）。
+    pub(crate) count_cap: u64,
+    /// data の読取の `statement_timeout`（ミリ秒）。
+    pub(crate) read_timeout_ms: u64,
+    /// 計画時の件数探索の短期キャッシュ（Q の述語だけ・材料は入れない）。
+    pub(crate) probe_cache: Arc<ProbeCache>,
+    /// 走査効率などの運用指標・補正係数・予測と実測の相関（Task 15.12）。
+    pub(crate) feedback: Arc<Feedback>,
+    /// 統計表のプロセス内キャッシュ（全員共通・材料は入れない・PIT-75 で planner の外へ出さない）。
+    pub(crate) stats_cache: Arc<StatsCache>,
+    /// コストモデルの単価（起動時の較正で置き換わる）。
+    pub(crate) costs: Arc<CostModel>,
+    /// テナントの読取の同時実行の枠（予測コストのトークン・data-platform §16.8）。
+    pub(crate) read_gate: Arc<ReadGate>,
+    /// 読取予算（受付制御の上限・ミリ秒）。
+    pub(crate) read_budget_ms: u64,
+    /// スキーマ本文のキャッシュ（`(tenant_id, table_id, schema_version)`・認可材料は載せない・Task 15.9）。
+    pub(crate) schema_cache: Arc<SchemaCache>,
+    /// SSE の購読の登録簿（プロセス内・Task 15.6）。
+    pub(crate) stream: Arc<crate::stream::hub::StreamRegistry>,
+    /// SSE 配信の設定（TTL・保持期間・バッチ窓）。
+    pub(crate) stream_config: crate::stream::StreamConfig,
+    /// プランキャッシュ（クエリ形状 → SQL テキスト・認可材料は載せない・data-platform §16.3）。
+    pub(crate) plan_cache: Arc<crate::query::planner::plan_cache::PlanCache>,
+    /// 入口の資源上限（SQL 前段面と IR 直投入の共通・data-platform §16.1.1）。
+    pub(crate) limits: crate::query::limits::QueryLimits,
+    /// FSM の本文の読み口（[`crate::FsmStore::new`] が登録・複製間で共有・作成時の初期状態の検査に使う）。
+    pub(crate) fsm_artifacts: Arc<std::sync::OnceLock<Arc<artifact::ArtifactStore>>>,
+    /// 到達してよいテーブルの天井（[`Self::within_reach`]・既定は無し＝本人の ReBAC だけ）。
+    pub(crate) reach: Option<Arc<crate::policy::reach::TableReach>>,
 }
 
 impl DataStore {
-    pub fn new(db: PgPool, authz: Arc<dyn AuthzClient>, resolver: Arc<dyn RefResolver>) -> Self {
-        let audit = AuditRecorder::new(db.clone());
+    /// ストアを組む。`pools` は `PoolRouter`（単一プールなら接続プールからの `From` で可）。
+    ///
+    /// カーソル鍵は起動ごとの乱数鍵になる（再起動・レプリカ間でカーソルが無効になる）。
+    /// 本番は [`DataStore::with_cursor_key`] で設定由来の鍵を注入すること。
+    pub fn new(
+        pools: impl Into<PoolRouter>,
+        authz: Arc<dyn AuthzClient>,
+        resolver: Arc<dyn RefResolver>,
+    ) -> Self {
+        let pools = pools.into();
+        // 監査ログは現状レジストリと同じプールに置く（分割時に監査の置き場を決め直す）。
+        let audit = AuditRecorder::new(pools.registry().clone());
         DataStore {
-            db,
+            pools,
             authz,
             audit,
             resolver,
+            cursor: Arc::new(CursorCodec::new(&CursorKey::ephemeral())),
+            max_multi_values: DEFAULT_MAX_MULTI_VALUES,
+            tuning: QueryTuning::from_env(),
+            count_cap: DEFAULT_COUNT_CAP,
+            read_timeout_ms: DEFAULT_READ_TIMEOUT_MS,
+            probe_cache: Arc::new(ProbeCache::default()),
+            feedback: Arc::new(Feedback::default()),
+            stats_cache: Arc::new(StatsCache::default()),
+            costs: Arc::new(CostModel::default()),
+            read_gate: Arc::new(ReadGate::new(DEFAULT_TENANT_READ_TOKENS)),
+            read_budget_ms: DEFAULT_READ_BUDGET_MS,
+            schema_cache: Arc::new(SchemaCache::default()),
+            stream: Arc::default(),
+            stream_config: crate::stream::StreamConfig::default(),
+            plan_cache: Arc::default(),
+            limits: crate::query::limits::QueryLimits::default(),
+            fsm_artifacts: Arc::default(),
+            reach: None,
         }
     }
 
-    /// テーブルを作成する（スキーマ検証＋式インデックス適用＋作成者 owner タプル）。
+    /// 到達してよいテーブルの天井を付けた複製（ワークフローの委譲・ミニアプリの所有テーブル束縛）。
+    ///
+    /// 複製の公開メソッドは、参照先テーブル（結合・半結合・lookup / rollup・リンク値・対称列）を
+    /// 本人の ReBAC と天井の積で開く（[`crate::TableReach`]）。天井の外は本人が読めないテーブルと
+    /// 同じ応答になる。1 回の操作の間だけ使い、使い回さない（天井は呼出側が毎回組む）。
+    #[must_use]
+    pub fn within_reach(&self, reach: crate::policy::reach::TableReach) -> Self {
+        let mut s = self.clone();
+        s.reach = Some(Arc::new(reach));
+        s
+    }
+
+    /// 読取の調整（機能フラグ `read_path`・強制戦略）を設定する。結果は変わらず速さだけが変わる。
+    #[must_use]
+    pub fn with_query_tuning(mut self, tuning: QueryTuning) -> Self {
+        self.tuning = tuning;
+        self
+    }
+
+    /// 入口の資源上限を設定する（SQL 前段面と IR 直投入の共通・既定は data-platform §16.1.1 の表）。
+    #[must_use]
+    pub fn with_query_limits(mut self, limits: crate::query::limits::QueryLimits) -> Self {
+        self.limits = limits;
+        self
+    }
+
+    /// 件数の上限を設定する（既定 10,000・テナントの規模に合わせて変更可）。
+    #[must_use]
+    pub fn with_count_cap(mut self, cap: u64) -> Self {
+        self.count_cap = cap.max(1);
+        self
+    }
+
+    /// 読取予算（受付制御: 予測コストがこれを超えるクエリは実行しない・ミリ秒・既定 2,000）。
+    #[must_use]
+    pub fn with_read_budget_ms(mut self, ms: u64) -> Self {
+        self.read_budget_ms = ms.max(1);
+        self
+    }
+
+    /// テナントあたりの読取の同時実行の枠（予測コストのミリ秒・既定 8,000・data-platform §16.8）。
+    #[must_use]
+    pub fn with_tenant_read_tokens(mut self, tokens: u32) -> Self {
+        self.read_gate = Arc::new(ReadGate::new(tokens));
+        self
+    }
+
+    /// data の読取の `statement_timeout`（ミリ秒・既定 10,000）。
+    #[must_use]
+    pub fn with_read_timeout_ms(mut self, ms: u64) -> Self {
+        self.read_timeout_ms = ms.max(1);
+        self
+    }
+
+    /// 多値（multi_select / リンク）の 1 レコードあたり要素数の上限を設定する（既定
+    /// [`DEFAULT_MAX_MULTI_VALUES`]・1〜32,767）。既存の値は検証しない（下げても過去の行は読める）。
+    #[must_use]
+    pub fn with_max_multi_values(mut self, n: usize) -> Self {
+        self.max_multi_values = n.clamp(1, MAX_MULTI_VALUES_CEILING);
+        self
+    }
+
+    /// keyset カーソルの暗号鍵を設定する（全レプリカで同じ鍵を使うこと）。
+    #[must_use]
+    pub fn with_cursor_key(mut self, key: &CursorKey) -> Self {
+        self.cursor = Arc::new(CursorCodec::new(key));
+        self
+    }
+
+    /// テーブルを作成する（スキーマ検証＋索引台帳＋作成者 owner タプル）。
     pub async fn create_table(
         &self,
         ctx: &AuthContext,
@@ -108,50 +332,79 @@ impl DataStore {
         trace_id: Option<&str>,
     ) -> Result<DataTable, DataError> {
         let name = validate_table_name(&input.name)?;
-        validate_table_schema(&input.schema)?;
+        let mut schema = input.schema;
+        let next_field_id = assign_field_ids(None, &mut schema)?;
+        // 派生フィールド: 循環検出・値の型・材料化可否（4 階層）をサーバが決める（Task 15.4）。
+        let prep = self
+            .prepare_derived(ctx, None, app_id, false, &mut schema, None)
+            .await?;
+        validate_table_schema(&schema)?;
+        // 内部整数キーはレジストリで採番する（不変・再利用しない・失敗時は欠番になるだけ）。
+        let keys = self.allocate_table_keys(&ctx.tenant_id).await?;
 
-        let mut tx = self.db.begin().await.map_err(map_db)?;
-        let row: TableRow = sqlx::query_as(
-            "INSERT INTO data_table (tenant_id, org, name, schema, created_by, app_id) \
-             VALUES ($1, $2, $3, $4, $5, $6) \
-             RETURNING id, name, app_id, schema, schema_version, created_by, created_at, updated_at",
-        )
+        let db = self.pools.for_tenant(&ctx.tenant_id);
+        let mut tx = db.begin().await.map_err(map_db)?;
+        let row: TableRow = sqlx::query_as(&format!(
+            "INSERT INTO data_table (tenant_id, org, name, schema, created_by, app_id, \
+               tenant_int, table_int, key_format, next_field_id, pivot_index_init, \
+               link_value_format) \
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 2, $9, true, 2) \
+             RETURNING {TABLE_COLS}"
+        ))
         .bind(&ctx.tenant_id)
         .bind(&ctx.org)
         .bind(name)
-        .bind(Json(&input.schema))
+        .bind(Json(&schema))
         .bind(&ctx.principal.id)
         .bind(app_id)
+        .bind(keys.tenant_int)
+        .bind(keys.table_int)
+        .bind(next_field_id)
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| match &e {
             sqlx::Error::Database(db) if db.is_unique_violation() => {
-                DataError::Conflict(format!("テーブル名 '{name}' は既に存在します"))
+                tracing::info!(%name, "テーブル名の重複（409 name_taken）");
+                DataError::NameTaken
             }
             _ => map_db(e),
         })?;
-        // 作成直後（空テーブル）に宣言インデックスを張る（同一 Tx・即時完了）。
-        ensure_indexes(&mut tx, &ctx.tenant_id, row.id, &input.schema).await?;
+        // 対称列（参照先に置く逆リンク）を作り、採番した ID をこのテーブルのスキーマへ書き戻す。
+        let row = if prep.needs_symmetric {
+            create_symmetric_fields(&mut tx, &ctx.tenant_id, row.id, &mut schema, None).await?;
+            sqlx::query_as(&format!(
+                "UPDATE data_table SET schema = $3 WHERE tenant_id = $1 AND id = $2 \
+                 RETURNING {TABLE_COLS}"
+            ))
+            .bind(&ctx.tenant_id)
+            .bind(row.id)
+            .bind(Json(&schema))
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(map_db)?
+        } else {
+            row
+        };
+        // 索引台帳（空テーブルなので全て active・バックフィル不要）とリンク列の宣言。
+        sync_ledger(&mut tx, keys, &schema, false).await?;
+        let table = row.into_table();
+        Self::finish_derived_save(&mut tx, &ctx.tenant_id, &table, None, &prep, false).await?;
         tx.commit().await.map_err(map_db)?;
 
         // 作成者を owner に（FGA）。失敗したら行を補償削除して孤立行を残さない。
-        let id = row.id;
+        let id = table.id;
         let obj = ctx.ns().data_table(&id.to_string());
         if let Err(e) = self
             .authz
             .write_tuple(&ctx.subject(), Relation::Owner, &obj)
             .await
         {
-            // 補償: 物理インデックス → 行の順で片付ける（インデックスは行に従属しないため
-            // 明示 DROP が要る。registry 行は data_table への CASCADE で消える）。
-            if let Err(cleanup) = self.drop_table_indexes(&ctx.tenant_id, id).await {
-                tracing::error!(error = %cleanup, table_id = %id, "補償時のインデックス削除に失敗（孤立インデックスが残存）");
-            }
+            // 補償: 行を消す（索引はランタイム DDL を持たないので物理的な後片付けは無い）。
             if let Err(cleanup) =
                 sqlx::query("DELETE FROM data_table WHERE tenant_id = $1 AND id = $2")
                     .bind(&ctx.tenant_id)
                     .bind(id)
-                    .execute(&self.db)
+                    .execute(db)
                     .await
             {
                 tracing::error!(error = %cleanup, table_id = %id, "owner タプル書込失敗後の補償削除にも失敗（孤立行が残存）");
@@ -167,7 +420,7 @@ impl DataStore {
             json!({ "name": name }),
         )
         .await;
-        Ok(row.into_table())
+        Ok(table)
     }
 
     /// テーブルのメタ＋スキーマを取得する（viewer）。
@@ -188,7 +441,7 @@ impl DataStore {
         self.fetch_live(ctx, id).await
     }
 
-    /// スキーマを改訂する（owner・additive のみ・式インデックス差分適用・楽観ロック）。
+    /// スキーマを改訂する（owner・additive のみ・索引台帳の差分適用・楽観ロック）。
     pub async fn update_table_schema(
         &self,
         ctx: &AuthContext,
@@ -205,12 +458,14 @@ impl DataStore {
             trace_id,
         )
         .await?;
-        let mut tx = self.db.begin().await.map_err(map_db)?;
-        let current: Option<TableRow> = sqlx::query_as(
-            "SELECT id, name, app_id, schema, schema_version, created_by, created_at, updated_at \
-             FROM data_table \
-             WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL FOR UPDATE",
-        )
+        // 未移行（v1 形式）なら先に 3 層へ移行させる（一方向・冪等）。
+        self.fetch_live(ctx, id).await?;
+        let db = self.pools.for_tenant(&ctx.tenant_id);
+        let mut tx = db.begin().await.map_err(map_db)?;
+        let current: Option<TableRow> = sqlx::query_as(&format!(
+            "SELECT {TABLE_COLS} FROM data_table \
+             WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL FOR UPDATE"
+        ))
         .bind(&ctx.tenant_id)
         .bind(id)
         .fetch_optional(&mut *tx)
@@ -225,20 +480,90 @@ impl DataStore {
                 )));
             }
         }
+        if current.key_format == KEY_FORMAT_LEGACY {
+            // fetch_live が移行済みのはず（一方向）。ここへ来るのは並行の異常系のみ。
+            return Err(DataError::Conflict(
+                "テーブルの識別子移行が完了していません。再試行してください".into(),
+            ));
+        }
+        // id の照合・採番（同じ id の key 変更・存在しない id の指定は 422）→ 互換性検証。
+        let mut next = next;
+        let next_field_id =
+            assign_field_ids(Some((&current.schema.0, current.next_field_id)), &mut next)?;
+        // 派生フィールド: 循環検出・値の型・材料化可否（4 階層）をサーバが決める（Task 15.4）。
+        let prep = self
+            .prepare_derived(
+                ctx,
+                Some(id),
+                current.app_id,
+                current.has_record_shares,
+                &mut next,
+                Some(&current.schema.0),
+            )
+            .await?;
+        if prep.needs_symmetric {
+            create_symmetric_fields(
+                &mut tx,
+                &ctx.tenant_id,
+                id,
+                &mut next,
+                Some(&current.schema.0),
+            )
+            .await?;
+        }
         validate_schema_update(&current.schema.0, &next)?;
-        let row: TableRow = sqlx::query_as(
-            "UPDATE data_table \
-             SET schema = $3, schema_version = schema_version + 1, updated_at = now() \
-             WHERE tenant_id = $1 AND id = $2 \
-             RETURNING id, name, app_id, schema, schema_version, created_by, created_at, updated_at",
+        // 既存データと矛盾する改訂（値の無い行がある列の必須化・使われている選択肢の削除）は理由付きで拒否
+        // （検証 2-A-P1-1。テーブル行は FOR UPDATE 済みなので並行する書込はこの前後に直列化される）。
+        crate::schema_data_check::check_schema_against_data(
+            &mut tx,
+            TableKeys {
+                tenant_int: current.tenant_int,
+                table_int: current.table_int,
+            },
+            &current.schema.0,
+            &next,
         )
+        .await?;
+        // display_name / order / description の変更はここ（data_table の 1 行）だけで完結し、
+        // data_record は 1 行も更新しない（JSONB キーは不変の id 由来・data-platform §4.2）。
+        let row: TableRow = sqlx::query_as(&format!(
+            "UPDATE data_table \
+             SET schema = $3, schema_version = schema_version + 1, next_field_id = $4, \
+                 updated_at = now() \
+             WHERE tenant_id = $1 AND id = $2 \
+             RETURNING {TABLE_COLS}"
+        ))
         .bind(&ctx.tenant_id)
         .bind(id)
         .bind(Json(&next))
+        .bind(next_field_id)
         .fetch_one(&mut *tx)
         .await
         .map_err(map_db)?;
-        ensure_indexes(&mut tx, &ctx.tenant_id, id, &next).await?;
+        // 索引台帳を宣言へ合わせる（増えた索引は既存レコードがあれば building にしてバックフィルを積む・
+        // テーブル行は FOR UPDATE 済みなので、並行する書込は遷移の前後どちらかに直列化される）。
+        let keys = TableKeys {
+            tenant_int: current.tenant_int,
+            table_int: current.table_int,
+        };
+        let has_rows = table_has_rows(&mut tx, keys).await?;
+        if sync_ledger(&mut tx, keys, &next, has_rows).await? {
+            // unique は同じ Tx で同期構築（重複は 409・一意性の強制に空白期間を作らない）。
+            build_unique_now(&mut tx, keys, &next, &ctx.tenant_id).await?;
+            start_backfill(&mut tx, keys, &ctx.tenant_id, id).await?;
+        }
+        let current_schema = current.schema.0.clone();
+        let row = row.into_table();
+        // 材料化の依存登録・昇格した列の再計算待ち・このテーブルを参照先にする列の降格（PIT-71）。
+        Self::finish_derived_save(
+            &mut tx,
+            &ctx.tenant_id,
+            &row,
+            Some(&current_schema),
+            &prep,
+            has_rows,
+        )
+        .await?;
         // 実データ変更のためスキーマ更新と同一 Tx で監査を残す（原子的・Chain=Yes）。
         self.record_audit_on(
             &mut tx,
@@ -249,8 +574,15 @@ impl DataStore {
             json!({ "schema_version": row.schema_version }),
         )
         .await?;
+        // 購読者へスキーマの改訂を知らせる（SSE は schema.changed を送って閉じる・Task 15.6）。
+        crate::stream::outbox::emit_schema_changed(&mut tx, ctx, &row, trace_id).await?;
+        // この表を参照する表の購読にも取り直させる（行述語・マスクの変更で参照元のルックアップ・
+        // リンク値の見え方が変わる・B-P2-1）。
+        crate::stream::relay::emit_refresh_for_referrers(&mut tx, &ctx.tenant_id, id).await?;
         tx.commit().await.map_err(map_db)?;
-        Ok(row.into_table())
+        // 版は DB 照合で必ず変わって見えるが、古い本文はここで落としておく（世代切替）。
+        self.schema_cache.invalidate_table(&ctx.tenant_id, id);
+        Ok(row)
     }
 
     /// テーブルを論理削除する（owner・レコード/履歴は保持・名前は再利用可能になる）。
@@ -268,18 +600,40 @@ impl DataStore {
             trace_id,
         )
         .await?;
-        let updated = sqlx::query(
+        let mut tx = self
+            .pools
+            .for_tenant(&ctx.tenant_id)
+            .begin()
+            .await
+            .map_err(map_db)?;
+        let updated: Option<(i32, i64)> = sqlx::query_as(
             "UPDATE data_table SET deleted_at = now(), updated_at = now() \
-             WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL",
+             WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL \
+             RETURNING tenant_int, table_int",
         )
         .bind(&ctx.tenant_id)
         .bind(id)
-        .execute(&self.db)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(map_db)?;
-        if updated.rows_affected() == 0 {
+        let Some((tenant_int, table_int)) = updated else {
             return Err(DataError::NotFound);
-        }
+        };
+        // このテーブルを参照先にしていた材料化列は前提が無くなるので降格する（同一 Tx・PIT-71）。
+        crate::derived::materialize::demote_dependents(
+            &mut tx,
+            &ctx.tenant_id,
+            TableKeys {
+                tenant_int,
+                table_int,
+            },
+            None,
+            "参照先テーブルが削除された",
+        )
+        .await?;
+        crate::stream::relay::emit_refresh_for_referrers(&mut tx, &ctx.tenant_id, id).await?;
+        tx.commit().await.map_err(map_db)?;
+        self.schema_cache.invalidate_table(&ctx.tenant_id, id);
         self.record_audit_best_effort(
             ctx,
             AuditAction::DataTableDelete,
@@ -292,80 +646,114 @@ impl DataStore {
     }
 
     /// テナント消去（SAAS.2）: data_table（CASCADE で record/registry/revision も）と
-    /// 物理式インデックス・FGA タプルを撤去する。監査ログは保持（purge 方針は storage と同一）。
+    /// FGA タプル・**索引テーブルと台帳**（`tenant_int` で持つ表・Task 15.2）を撤去する。
+    /// 監査ログは保持（purge 方針は storage と同一）。
     pub async fn purge_tenant(&self, tenant_id: &str) -> Result<u32, DataError> {
+        let db = self.pools.for_tenant(tenant_id);
+        let tenant_int: Option<i32> =
+            sqlx::query_scalar("SELECT tenant_int FROM tenant_placement WHERE tenant_id = $1")
+                .bind(tenant_id)
+                .fetch_optional(self.pools.registry())
+                .await
+                .map_err(map_db)?;
         let ids: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM data_table WHERE tenant_id = $1")
             .bind(tenant_id)
-            .fetch_all(&self.db)
+            .fetch_all(db)
             .await
             .map_err(map_db)?;
         let ns = authz::Namespace::for_tenant(tenant_id);
         let mut purged = 0u32;
         for id in &ids {
-            // 物理インデックス（partial・テーブル行に従属しない）→ FGA タプルの順で撤去。
-            self.drop_table_indexes(tenant_id, *id).await?;
+            // FGA タプルを撤去（索引は行なので下の DELETE で消える）。
             self.authz
                 .delete_object_tuples(&ns.data_table(&id.to_string()))
                 .await
                 .map_err(|e| DataError::Internal(format!("fga purge: {e}")))?;
             purged += 1;
         }
-        sqlx::query("DELETE FROM data_table WHERE tenant_id = $1")
-            .bind(tenant_id)
-            .execute(&self.db)
-            .await
-            .map_err(map_db)?;
-        Ok(purged)
-    }
-
-    /// テーブルの物理式インデックスを台帳経由で DROP する（補償・purge 用）。
-    pub(crate) async fn drop_table_indexes(
-        &self,
-        tenant_id: &str,
-        table_id: Uuid,
-    ) -> Result<(), DataError> {
-        let names: Vec<String> = sqlx::query_scalar(
-            "SELECT index_name FROM data_index_registry WHERE tenant_id = $1 AND table_id = $2",
-        )
-        .bind(tenant_id)
-        .bind(table_id)
-        .fetch_all(&self.db)
-        .await
-        .map_err(map_db)?;
-        for name in names {
-            // 台帳由来（本 crate が決定的命名で作った名前）のみ。防御的に識別子検証する。
-            if !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
-                continue;
+        let mut tx = db.begin().await.map_err(map_db)?;
+        if let Some(tenant_int) = tenant_int {
+            // 子（data_link は data_link_field を参照）→ 親の順。表名は固定集合のみ。
+            for table in PURGE_TENANT_INT_TABLES {
+                sqlx::query(&format!("DELETE FROM {table} WHERE tenant_int = $1"))
+                    .bind(tenant_int)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(map_db)?;
             }
-            sqlx::query(&format!("DROP INDEX IF EXISTS {name}"))
-                .execute(&self.db)
+        }
+        for table in PURGE_TENANT_ID_TABLES {
+            sqlx::query(&format!("DELETE FROM {table} WHERE tenant_id = $1"))
+                .bind(tenant_id)
+                .execute(&mut *tx)
                 .await
                 .map_err(map_db)?;
         }
-        Ok(())
+        sqlx::query("DELETE FROM data_table WHERE tenant_id = $1")
+            .bind(tenant_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(map_db)?;
+        sqlx::query("DELETE FROM data_tenant_settings WHERE tenant_id = $1")
+            .bind(tenant_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(map_db)?;
+        tx.commit().await.map_err(map_db)?;
+        // 撤去したテナントのスキーマを世代ごと落とす（purge 前に読み始めた読取も載せ戻せない）。
+        self.schema_cache.invalidate_tenant(tenant_id);
+        Ok(purged)
     }
 
-    /// 生存テーブル行を引く（認可済み前提の内部ヘルパ）。
-    pub(crate) async fn fetch_live(
+    /// テーブルの内部整数キーを採番する（`tenant_int` は配置レジストリ・`table_int` は採番サービス）。
+    async fn allocate_table_keys(&self, tenant_id: &str) -> Result<TableKeys, DataError> {
+        let mut conn = self.pools.registry().acquire().await.map_err(map_db)?;
+        let placement = storage::tenant::ensure_placement(&mut conn, tenant_id)
+            .await
+            .map_err(|e| DataError::Internal(format!("tenant placement: {e}")))?;
+        let table_int = storage::tenant::allocate_table_int(&mut conn)
+            .await
+            .map_err(|e| DataError::Internal(format!("table_int: {e}")))?;
+        Ok(TableKeys {
+            tenant_int: placement.tenant_int,
+            table_int,
+        })
+    }
+
+    /// このリクエストの認可メモを作る（Task 15.9）。
+    ///
+    /// メモは `self` の authz を借用するので `'static` ではなく、リクエスト（公開メソッドの 1 回）の
+    /// 外へ持ち出せない（PIT-18: リクエストを跨いだ再利用を型で禁止する）。
+    pub(crate) fn authz_memo(&self) -> AuthzMemo<'_> {
+        AuthzMemo::with_reach(self.authz.as_ref(), self.reach.as_deref())
+    }
+
+    /// 検証用: テナントについてスキーマキャッシュが保持する `(table_id, schema_version)`。
+    #[doc(hidden)]
+    pub fn cached_schema_versions(&self, tenant_id: &str) -> Vec<(Uuid, i64)> {
+        self.schema_cache.cached_versions(tenant_id)
+    }
+
+    /// テーブルへの relation を確かめる（生存テーブルのみ・不足は監査 deny＋Forbidden）。
+    ///
+    /// 委譲で動く主体（ワークフローの実行主体など）が「このテーブルを委譲されているか」を、
+    /// 実際の読み書きを別の主体で行う前に確かめる入口（Task 15.7）。実際の読み書きは各 API が
+    /// 自分の主体で改めて認可する（これは追加の門で、代わりにはならない）。
+    pub async fn authorize_table(
         &self,
         ctx: &AuthContext,
-        id: Uuid,
-    ) -> Result<DataTable, DataError> {
-        let row: Option<TableRow> = sqlx::query_as(
-            "SELECT id, name, app_id, schema, schema_version, created_by, created_at, updated_at \
-             FROM data_table \
-             WHERE tenant_id = $1 AND org = $2 AND id = $3 AND deleted_at IS NULL",
-        )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
-        .bind(id)
-        .fetch_optional(&self.db)
-        .await
-        .map_err(map_db)?;
-        Ok(row.ok_or(DataError::NotFound)?.into_table())
+        table_id: Uuid,
+        relation: Relation,
+        action: AuditAction,
+        trace_id: Option<&str>,
+    ) -> Result<(), DataError> {
+        self.require(ctx, table_id, relation, action, trace_id)
+            .await?;
+        self.fetch_live(ctx, table_id).await.map(|_| ())
     }
 
-    /// テーブルへの relation を要求する（不足は監査 deny＋Forbidden・剥奪即時反映）。
+    /// テーブルへの relation を要求する（不足は監査 deny・剥奪即時反映）。テーブルが見えない主体には
+    /// 404（存在しない・削除済みと区別しない）、見えるが relation が足りない主体には 403。
     pub(crate) async fn require(
         &self,
         ctx: &AuthContext,
@@ -374,17 +762,22 @@ impl DataStore {
         action: AuditAction,
         trace_id: Option<&str>,
     ) -> Result<(), DataError> {
-        let obj = ctx.ns().data_table(&id.to_string());
-        let ok = self
-            .authz
-            .check(
-                &ctx.subject(),
-                relation,
-                &obj,
-                Consistency::HigherConsistency,
-            )
+        self.require_in(&self.authz_memo(), ctx, id, relation, action, trace_id)
             .await
-            .map_err(|e| DataError::Internal(e.to_string()))?;
+    }
+
+    /// [`Self::require`] のリクエストメモ版（同じリクエストで先に引いた答えを使う）。
+    pub(crate) async fn require_in(
+        &self,
+        az: &AuthzMemo<'_>,
+        ctx: &AuthContext,
+        id: Uuid,
+        relation: Relation,
+        action: AuditAction,
+        trace_id: Option<&str>,
+    ) -> Result<(), DataError> {
+        let obj = ctx.ns().data_table(&id.to_string());
+        let ok = az.check(ctx, relation, &obj).await?;
         if !ok {
             let _ = self
                 .audit
@@ -400,12 +793,20 @@ impl DataStore {
                     },
                 )
                 .await;
-            return Err(DataError::Forbidden);
+            // テーブルが見えない主体（viewer でない）には存在も分からせない: 存在しない・削除済みと同じ 404
+            // （data-platform §16.1・検証 2-A P3）。見えるが操作の relation が無いときだけ 403。
+            let visible =
+                relation != Relation::Viewer && az.check(ctx, Relation::Viewer, &obj).await?;
+            return Err(if visible {
+                DataError::Forbidden
+            } else {
+                DataError::NotFound
+            });
         }
         Ok(())
     }
 
-    /// 既存 Tx 上で監査を残す（実データ変更用・Chain=Yes・書込と原子的）。
+    /// 既存 Tx 上で監査を残す（実データ変更用・Chain=Yes・書込と原子的）。対象はテーブル（`data_table`）。
     pub(crate) async fn record_audit_on(
         &self,
         conn: &mut sqlx::PgConnection,
@@ -415,12 +816,58 @@ impl DataStore {
         trace_id: Option<&str>,
         metadata: serde_json::Value,
     ) -> Result<(), DataError> {
+        Self::audit_on(
+            conn,
+            ctx,
+            action,
+            "data_table",
+            object_id,
+            trace_id,
+            metadata,
+        )
+        .await
+    }
+
+    /// [`Self::record_audit_on`] のレコード版（`object_type = data_record`・`object_id` はレコードの外部 ID）。
+    ///
+    /// 監査の語彙は個別共有・遷移（`data.record.share` / `data.record.transition`）と同じ。テーブルは
+    /// `metadata.table_id` に載せる。
+    pub(crate) async fn record_audit_record_on(
+        &self,
+        conn: &mut sqlx::PgConnection,
+        ctx: &AuthContext,
+        action: AuditAction,
+        record_id: Uuid,
+        trace_id: Option<&str>,
+        metadata: serde_json::Value,
+    ) -> Result<(), DataError> {
+        Self::audit_on(
+            conn,
+            ctx,
+            action,
+            "data_record",
+            &record_id.to_string(),
+            trace_id,
+            metadata,
+        )
+        .await
+    }
+
+    async fn audit_on(
+        conn: &mut sqlx::PgConnection,
+        ctx: &AuthContext,
+        action: AuditAction,
+        object_type: &str,
+        object_id: &str,
+        trace_id: Option<&str>,
+        metadata: serde_json::Value,
+    ) -> Result<(), DataError> {
         storage::audit::record_on(
             conn,
             ctx,
             AuditEntry {
                 action,
-                object_type: "data_table",
+                object_type,
                 object_id,
                 decision: Decision::Allow,
                 trace_id,

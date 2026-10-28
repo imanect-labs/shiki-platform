@@ -31,6 +31,10 @@ export type DocumentRef = {
   /// 提案バージョン（WOPI ロック中の office.edit・PIT-44）なら true。
   /// current には**まだ入っていない**ので「編集しました」と言い切らない。
   proposal: boolean;
+  /// 移動・名前変更（drive.move・#942）なら true。中身は変わっていないので版を出さない。
+  moved: boolean;
+  /// 移動先の表示名（読める範囲のパス）。名前変更だけなら null。
+  movedTo: string | null;
 };
 
 /// 参照 JSON を防御的にパースする（形が崩れていたら描画しない）。
@@ -45,6 +49,8 @@ export function parseDocumentRef(raw: unknown): DocumentRef | null {
     version: typeof r.version === "number" ? r.version : null,
     created: r.created === true,
     proposal: r.proposal === true,
+    moved: r.moved === true,
+    movedTo: typeof r.moved_to === "string" ? r.moved_to : null,
   };
 }
 
@@ -81,10 +87,14 @@ export function DocumentRefCard({ raw }: { raw: unknown }) {
   // 提案版は current に反映されていない。「編集しました」と言うとカードが嘘になる（PIT-44）。
   const action = doc.proposal
     ? "提案として保存しました（バージョン履歴から採用すると反映されます）"
-    : doc.created
-      ? "作成しました"
-      : "編集しました";
-  const version = doc.version === null ? "" : `（v${doc.version}）`;
+    : doc.moved
+      ? doc.movedTo
+        ? `「${doc.movedTo}」へ移動しました`
+        : "名前を変えました"
+      : doc.created
+        ? "作成しました"
+        : "編集しました";
+  const version = doc.version === null || doc.moved ? "" : `（v${doc.version}）`;
   const href = documentRefHref(doc);
   return (
     <div

@@ -18,21 +18,43 @@ mod dev_seed;
 mod gateway_ai;
 mod gateway_functions;
 mod miniapp_triggers;
+mod shutdown;
 mod wiring;
 mod wiring_gateway;
 mod wiring_gui;
 mod wiring_office;
 mod wiring_websearch;
+/// ランタイムを組んで `run` を走らせ、停止は有限時間で打ち切る（shutdown.rs・B-OPS-1）。
+fn main() -> anyhow::Result<()> {
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .context("tokio ランタイムの構築に失敗")?;
+    let r = rt.block_on(run());
+    // 常駐ワーカー・猶予を過ぎて残った接続のタスクを待ち続けない（プロセスを有限時間で終える・
+    // shutdown.rs）。
+    rt.shutdown_timeout(shutdown::RUNTIME_SHUTDOWN_TIMEOUT);
+    r
+}
+
 // main はアプリ全体（ストレージ/RAG/チャット/ワークフロー/data/ゲートウェイ等）の配線点で
 // あり、各フェーズの依存を順に組み上げる性質上どうしても長くなる（各配線は wire_* ヘルパへ
 // 分離済み）。分割で可読性を落とすより配線列挙として素直に保つ。
-#[allow(clippy::too_many_lines)]
-#[tokio::main]
-async fn main() -> anyhow::Result<()> {
+// 配線の列挙なので分岐の数（cognitive complexity）も行数と同じ理由で許す（`#[tokio::main]` の展開の
+// 内側にあった間は検査に掛からなかった）。
+#[allow(clippy::too_many_lines, clippy::cognitive_complexity)]
+async fn run() -> anyhow::Result<()> {
     let config = AppConfig::load().context("設定のロードに失敗")?;
     let _telemetry = telemetry::init(&config.telemetry).context("計装の初期化に失敗")?;
 
     tracing::info!(service = %config.telemetry.service_name, "shiki-server 起動中");
+    // script エンジン（ゲストの wasm のコンパイル・数秒〜十数秒）を先に別スレッドで始め、マイグレーション・
+    // 配線と重ねる（ワークフローの実行とミニアプリの関数が共有する・起動の無音区間の短縮）。
+    if config.workflow.enabled || config.gateway.enabled {
+        std::thread::spawn(|| {
+            let _ = script_runtime::ScriptEngine::shared();
+        });
+    }
 
     // Postgres は lazy 接続（compose の起動順に耐性を持たせ、/readyz で疎通を表現）。
     //
@@ -123,7 +145,8 @@ async fn main() -> anyhow::Result<()> {
     // アーティファクト共通枠（Task 6.1）: authz と同一インスタンスを共有（単一チョークポイント）。
     let artifacts = Arc::new(artifact::ArtifactStore::new(db.clone(), authz.clone()));
     // 構造化データサービス（Task 9.2〜9.10）: data ストア＋保存ビュー＋FSM を束ねて配線する。
-    let (data_store, data_views, fsms) = wire_data(&db, &authz, &directory, &storage, &artifacts);
+    let (data_store, data_views, fsms) =
+        wire_data(&config, &db, &authz, &directory, &storage, &artifacts)?;
     // ミニアプリ基盤（Task 9.1/9.13a）: マニフェスト store ＋汎用レジストリ。
     let mini_app_code = Arc::new(app_platform::MiniAppCodeStore::new(
         Arc::clone(&artifacts),
@@ -199,7 +222,10 @@ async fn main() -> anyhow::Result<()> {
     // office.live_edit（issue #352）がトークン鍵を共有するため wire_chat より先に組む。
     let office = wiring_office::wire_office(&config, &http, &db, &authz, &storage)?;
     // ブラウザ ↔ Collabora の中継（PIT-68）。ブラウザはここを通してだけ Collabora に触れる。
-    wiring_office::spawn_office_relay(&config).await?;
+    // 停止の合図は最初のリスナを開く直前から受け付ける（それより前の SIGTERM は既定どおり即時に終わる・
+    // 起動の途中で止まった依存先を待ち続けない）。以降は全リスナが同じ合図で受付を止める。
+    let shutdown = shutdown::Shutdown::on_signal();
+    wiring_office::spawn_office_relay(&config, &shutdown).await?;
     // skill の publish / 同意インストール（Phase 9 レジストリ流用・ユーザー単位・#344）。
     // chat の skill カタログ（インストール済み ∪ 本人）と V4 skill 照合の材料になる。
     let skill_installs = Arc::new(app_platform::SkillInstallService::new(
@@ -226,6 +252,7 @@ async fn main() -> anyhow::Result<()> {
         &tabular,
         office.as_ref(),
         &skill_installs,
+        &data_store,
     )
     .await?;
 
@@ -242,6 +269,7 @@ async fn main() -> anyhow::Result<()> {
         secrets.as_ref(),
         &tabular,
         &artifacts,
+        (&data_store, &fsms),
     )
     .await?;
 
@@ -249,14 +277,21 @@ async fn main() -> anyhow::Result<()> {
     // 受け付ける（トリガは runtime 有効時に発火）。
     let workflow_registration = Arc::new(workflow_engine::RegistrationService::new(
         db.clone(),
-        workflow_engine::DelegationStore::new(db.clone(), authz.clone()),
+        // 棚卸しで data_table の委譲タプルを撤去したら data へ知らせる（Task 15.7）。
+        workflow_engine::DelegationStore::new(db.clone(), authz.clone())
+            .with_data((*data_store).clone()),
     ));
     let audit = Arc::new(storage::audit::AuditRecorder::new(db.clone()));
     let workflow_summaries = Arc::new(workflow_engine::WorkflowSummaryStore::new(db.clone()));
     let workflow_layout = Arc::new(workflow_engine::EditorLayoutStore::new(db.clone()));
 
     // 宣言的 UI アクションの実行系（Task 6.5）: chat.submit・安全ツール・workflow 起動を束ねる。
-    let ui_actions = wiring_gui::wire_ui_actions(&db, chat.as_ref(), workflow_launcher.as_ref());
+    let ui_actions = wiring_gui::wire_ui_actions(
+        &db,
+        chat.as_ref(),
+        workflow_launcher.as_ref(),
+        Some(&data_views),
+    );
 
     // md→docx 合成（POST /documents・#332）: worker のみ必要なので office フラグに載せず常時配線。
     // 共有クライアントは無期限のため、worker 遅延がハンドラを永久ブロックしないよう専用に切る。
@@ -285,6 +320,7 @@ async fn main() -> anyhow::Result<()> {
         search: search.as_ref(),
         object_store: &object_store,
         secrets: secrets.as_ref(),
+        shutdown: &shutdown,
     })
     .await?;
     // 管理コンソール・モデル一覧・チャットのモデル解決が使うゲートウェイ（同一設定から構築）。
@@ -345,11 +381,59 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("bind に失敗")?;
     tracing::info!(%bind, "listening");
-    axum::serve(listener, build_router(state))
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .context("サーバ実行中のエラー")?;
+    // 合図で全リスナが同時に受付を止め、処理中の要求は猶予まで待つ（SSE が残っても戻る・B-OPS-1）。
+    // SSE は合図で本文を終える（猶予を待たない・クライアントは Last-Event-ID から再接続する）。
+    let router = shutdown::end_streams_on_shutdown(build_router(state), &shutdown);
+    let server = axum::serve(listener, router).with_graceful_shutdown(shutdown.clone().wait());
+    shutdown::serve_until_shutdown(
+        std::future::IntoFuture::into_future(server),
+        shutdown,
+        shutdown::SHUTDOWN_GRACE,
+    )
+    .await
+    .context("サーバ実行中のエラー")?;
+    tracing::info!("shiki-server を停止しました");
     Ok(())
+}
+
+/// data ストア・保存ビュー・FSM の組。
+type DataStores = (
+    std::sync::Arc<data::DataStore>,
+    std::sync::Arc<data::DataViewStore>,
+    std::sync::Arc<data::FsmStore>,
+);
+
+/// keyset カーソルの鍵を決める（設定ファイル → マスターキーからの導出 → 開発用の乱数 → 起動エラー）。
+fn cursor_key(config: &AppConfig) -> anyhow::Result<data::CursorKey> {
+    let read = |path: &str, what: &str| -> anyhow::Result<[u8; 32]> {
+        let raw = std::fs::read(path).with_context(|| format!("{what}を読めません: {path}"))?;
+        secrets::decode_key_material(&raw)
+            .map_err(|e| anyhow::anyhow!("{what}の形式が不正です: {e}"))
+    };
+    if let Some(path) = &config.data.cursor_key_file {
+        tracing::info!("data カーソル鍵を設定ファイルから読み込みました");
+        return Ok(data::CursorKey::from_bytes(read(
+            path,
+            "data カーソル鍵ファイル",
+        )?));
+    }
+    if let Some(path) = &config.secrets.master_key_file {
+        tracing::info!("data カーソル鍵をマスターキーから導出しました");
+        return Ok(data::CursorKey::derive_from_master(&read(
+            path,
+            "secrets マスターキーファイル",
+        )?));
+    }
+    if config.data.ephemeral_cursor_key {
+        tracing::warn!(
+            "data.ephemeral_cursor_key=true: カーソル鍵は起動時乱数（開発専用・再起動・レプリカ間でカーソルは無効）"
+        );
+        return Ok(data::CursorKey::ephemeral());
+    }
+    anyhow::bail!(
+        "data のカーソル鍵が未設定です。data.cursor_key_file か secrets.master_key_file を設定してください\
+         （開発環境だけは data.ephemeral_cursor_key=true で起動時乱数を許可できます）"
+    )
 }
 
 /// 構造化データ（Task 9.2〜9.10）の 3 ストアを配線する。
@@ -357,25 +441,65 @@ async fn main() -> anyhow::Result<()> {
 /// data ストア（テーブル/レコード/行述語）・保存ビュー（9.4）・FSM 宣言的ガード（9.10）は
 /// いずれも同じ data チョークポイントと artifact 共通枠の上に載る。
 fn wire_data(
+    config: &AppConfig,
     db: &sqlx::PgPool,
     authz: &std::sync::Arc<dyn AuthzClient>,
     directory: &std::sync::Arc<DirectoryStore>,
     storage: &std::sync::Arc<storage::StorageService>,
     artifacts: &std::sync::Arc<artifact::ArtifactStore>,
-) -> (
-    std::sync::Arc<data::DataStore>,
-    std::sync::Arc<data::DataViewStore>,
-    std::sync::Arc<data::FsmStore>,
-) {
+) -> anyhow::Result<DataStores> {
     // 参照整合（user/role/file）は directory / StorageService のチョークポイントへ委譲する。
-    let data_store = Arc::new(data::DataStore::new(
-        db.clone(),
+    // 接続プールは PoolRouter 経由（tenant → pool の継ぎ目・Task 15.1。現状は単一プール）。
+    let mut store = data::DataStore::new(
+        storage::PoolRouter::single(db.clone()),
         authz.clone(),
         Arc::new(api::data_refs::ApiRefResolver {
             directory: Arc::clone(directory),
             storage: Arc::clone(storage),
         }),
-    ));
+    );
+    // keyset カーソルの鍵（全レプリカで同じ鍵・Task 15.3）。決め方は DataConfig::cursor_key_file の doc。
+    store = store.with_cursor_key(&cursor_key(config)?);
+    // SSE 差分配信の認可材料の TTL・保持期間（`data.stream.*`・範囲は validate で検査済み）。
+    store = store.with_stream_config(config.data.stream.to_stream_config()?);
+    let data_store = Arc::new(store);
+    // v1 形式テーブルのフィールド識別子移行（jobq・テーブル単位・冪等・完了で停止）。
+    data::FieldKeyMigrationWorker::new((*data_store).clone()).spawn();
+    // pivot 索引の台帳初期化＋オンラインバックフィル＋parity 検証（jobq・チャンク・冪等・常駐）。
+    data::IndexBackfillWorker::new((*data_store).clone()).spawn();
+    // 一括取込（ステージング → 検証 → チャンク適用 → 索引の仕上げ・jobq・冪等・中断再開）。
+    data::BulkImportWorker::new((*data_store).clone()).spawn();
+    // レコード変更の outbox → テーブルのストリームへの採番（SSE 差分配信・スナップショット読取の
+    // 基準位置・Task 15.6）。購読が無くても回し、outbox の GC を止めない。
+    data::RecordStreamRelayWorker::new((*data_store).clone()).spawn();
+    // 自前オプティマイザの統計（outbox 消費側の行数・値頻度表＋統計収集ジョブ・Task 15.12）。
+    data::StatsWorker::new((*data_store).clone()).spawn();
+    // 起動時の較正ベンチ（較正用の固定表で単価を測り直す・顧客データに触れない・DDL を打たない）。
+    // 失敗しても初期値で動く。
+    {
+        let store = (*data_store).clone();
+        tokio::spawn(async move {
+            match store.calibrate_costs().await {
+                Ok(r) => {
+                    // 較正の前後の単価と、検証用の操作で見た予測と実測の一致（相関・平均対数誤差）の前後を
+                    // 記録に残す（管理 API `/org-admin/data/optimizer` でも引ける・query-optimizer §5.2）。
+                    tracing::info!(
+                        before = ?r.before,
+                        after = ?r.after,
+                        correlation_before = ?r.correlation_before,
+                        correlation_after = ?r.correlation_after,
+                        log_error_before = r.log_error_before,
+                        log_error_after = r.log_error_after,
+                        samples = r.validation_samples,
+                        "data のコスト単価を較正"
+                    );
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "data のコスト単価の較正に失敗（初期値のまま）");
+                }
+            }
+        });
+    }
     let data_views = Arc::new(data::DataViewStore::new(
         Arc::clone(artifacts),
         (*data_store).clone(),
@@ -384,32 +508,5 @@ fn wire_data(
         Arc::clone(artifacts),
         (*data_store).clone(),
     ));
-    (data_store, data_views, fsms)
-}
-
-// シグナルハンドラの登録失敗はプロセス起動直後の致命的な環境不整合であり、
-// 継続不能なため `expect` で即時 abort する（本番運用でも復帰手段が無い）。
-#[allow(clippy::expect_used)]
-async fn shutdown_signal() {
-    let ctrl_c = async {
-        tokio::signal::ctrl_c()
-            .await
-            .expect("ctrl_c ハンドラ設定に失敗");
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("SIGTERM ハンドラ設定に失敗")
-            .recv()
-            .await;
-    };
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        () = ctrl_c => {},
-        () = terminate => {},
-    }
-    tracing::info!("シャットダウンシグナル受信");
+    Ok((data_store, data_views, fsms))
 }

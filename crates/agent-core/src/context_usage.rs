@@ -219,7 +219,9 @@ fn reads_material(name: &str) -> bool {
         | ToolName::DocumentRead
         | ToolName::SlideRead
         | ToolName::OfficeRead
-        | ToolName::CsvQuery => true,
+        | ToolName::CsvQuery
+        | ToolName::DataQuery
+        | ToolName::DriveFind => true,
         ToolName::Skill
         | ToolName::SkillSearch
         | ToolName::QuoteCheck
@@ -237,6 +239,7 @@ fn reads_material(name: &str) -> bool {
         | ToolName::SaveNote
         | ToolName::SaveSlide
         | ToolName::SaveCsv
+        | ToolName::SaveSkill
         | ToolName::SaveDocument
         | ToolName::SaveSheet
         | ToolName::SlideEdit
@@ -245,7 +248,10 @@ fn reads_material(name: &str) -> bool {
         | ToolName::OfficeExcelEdit
         | ToolName::OfficeWordEdit
         | ToolName::CsvPatch
-        | ToolName::CsvWrite => false,
+        | ToolName::CsvWrite
+        | ToolName::DataSchema
+        | ToolName::DataRecordWrite
+        | ToolName::DriveMove => false,
     }
 }
 

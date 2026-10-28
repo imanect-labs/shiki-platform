@@ -29,6 +29,8 @@ shiki-gui.workspace = true
 shiki-yui.workspace = true
 # AI 編集ツール emit_workflow / read_workflow（保存パイプライン検証・Task 10.13）。
 shiki-workflow-engine.workspace = true
+# 構造化データのツール data_query / data_schema / data_record_write（Task 15.7）。
+shiki-data.workspace = true
 shiki-artifact.workspace = true
 # claim/リース/fencing/(id,seq) 追記/Redis pub/sub の共通プリミティブ（Task 10.0）。
 shiki-durable.workspace = true
@@ -76,6 +78,7 @@ ignored = [
     "shiki-gui",
     "shiki-yui",
     "shiki-workflow-engine",
+    "shiki-data",
     "shiki-artifact",
     "shiki-durable",
 ]

@@ -4,6 +4,8 @@
 //! `tenant_id`（＋ org）に必ず絞り込むため、別テナントのユーザーは結果に出ない
 //! （SaaS 隔離境界＝`tenant_id`）。全件取得を避けるため keyset カーソルでページングする。
 
+use std::collections::BTreeMap;
+
 use axum::{
     extract::{Query, State},
     Json,
@@ -148,5 +150,53 @@ pub async fn search_roles(
     Ok(Json(DirectoryRoleSearchResponse {
         items: page.items.into_iter().map(Into::into).collect(),
         next_cursor: page.next_cursor,
+    }))
+}
+
+/// 表示名の一括解決の上限（1 回の要求で引けるユーザー id の数）。
+pub const MAX_RESOLVE_USER_NAMES: usize = 200;
+
+/// ユーザー id 群の表示名の一括解決の要求（データのグリッドの `user_ref` 列の表示用）。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ResolveUserNamesRequest {
+    /// ユーザー id（OIDC `sub`）。最大 [`MAX_RESOLVE_USER_NAMES`] 件。
+    pub ids: Vec<String>,
+}
+
+/// 表示名の一括解決の結果（同テナントのディレクトリに居るユーザーだけ。居ない id は含まない）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ResolveUserNamesResponse {
+    /// ユーザー id → 表示名。
+    pub names: BTreeMap<String, String>,
+}
+
+/// 同テナント（＋ org）のユーザー id 群の表示名を一括で引く（検索と同じ範囲・別テナントの id は出ない）。
+#[utoipa::path(
+    post,
+    path = "/directory/users/names",
+    request_body = ResolveUserNamesRequest,
+    responses(
+        (status = 200, description = "表示名（同テナントのみ）", body = ResolveUserNamesResponse),
+        (status = 400, description = "id が多すぎる"),
+        (status = 401, description = "未認証"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn resolve_user_names(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    Json(req): Json<ResolveUserNamesRequest>,
+) -> Result<Json<ResolveUserNamesResponse>, ApiError> {
+    if req.ids.len() > MAX_RESOLVE_USER_NAMES {
+        return Err(ApiError::BadRequest(format!(
+            "ids は {MAX_RESOLVE_USER_NAMES} 件までです"
+        )));
+    }
+    let mut ids = req.ids;
+    ids.sort();
+    ids.dedup();
+    let names = state.directory.resolve_display_names(&ctx, &ids).await?;
+    Ok(Json(ResolveUserNamesResponse {
+        names: names.into_iter().filter(|(_, n)| !n.is_empty()).collect(),
     }))
 }

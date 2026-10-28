@@ -17,6 +17,11 @@ re!(
     RANGE,
     r"^(-?[0-9]+(?:\.[0-9]+)?)\s*(?:\.\.|〜|~|～)\s*(-?[0-9]+(?:\.[0-9]+)?)\s*"
 );
+// 片側だけの範囲（`1..`・`..100`）。読まずに警告する（単位に紛れ込ませない）。
+re!(
+    HALF_RANGE,
+    r"^(?:-?[0-9]+(?:\.[0-9]+)?\s*(?:\.\.|〜|~|～)|(?:\.\.|〜|~|～)\s*-?[0-9]+(?:\.[0-9]+)?)\s*"
+);
 re!(KEY, r"(^|\s)as\s+([A-Za-z_][A-Za-z0-9_.\-]{0,63})(\s|$)");
 re!(REQUIRED, r"(?i)(^|\s)(?:必須|required)(\s|$)");
 re!(MULTI, r"(?i)(^|\s)(?:multi|複数)(\s|$)");
@@ -34,8 +39,6 @@ re!(WORKFLOW, r"(?i)^(?:workflow|ワークフロー)\s*[:：]?\s*(.+)$");
 re!(BAD_NAME, r#"[:/\\<>"'`{}]"#);
 re!(OTHER_VALUE, r"(?i)^(その他|other)$");
 re!(KV, r"^(.+?)\s*[=＝]\s*(.+)$");
-re!(SPLIT_OPTIONS, r"\s*[|｜]\s*");
-re!(SPLIT_INIT, r"\s*[,、|]\s*");
 re!(RATING_MAX, r"^([0-9]{1,2})(?-u:\b)");
 re!(RANGE_SEP, r"\s*(?:〜|~|～)\s*");
 re!(DATE, r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$");
@@ -45,6 +48,26 @@ re!(
     r"^[0-9]{4}-[0-9]{2}-[0-9]{2}/[0-9]{4}-[0-9]{2}-[0-9]{2}$"
 );
 re!(ON, r"(?i)^(オン|on|1|true|はい)$");
+
+/// 選択肢・初期値を区切る。直前が `\` の区切りは文字として残し、`\|` `\｜` は `|` `｜` に戻す
+/// （TS 版の `(?<!\\)[|｜]` と `unescapeBar` と同じ）。
+fn split_unescaped(s: &str, seps: &[char]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut prev: Option<char> = None;
+    for ch in s.chars() {
+        if seps.contains(&ch) && prev != Some('\\') {
+            out.push(std::mem::take(&mut cur));
+        } else {
+            cur.push(ch);
+        }
+        prev = Some(ch);
+    }
+    out.push(cur);
+    out.into_iter()
+        .map(|p| p.trim().replace("\\|", "|").replace("\\｜", "｜"))
+        .collect()
+}
 
 fn field_kind(word: &str) -> Option<FieldKind> {
     let w = nfkc(word).to_lowercase();
@@ -352,10 +375,7 @@ fn read_field(
     if kind == FieldKind::Choice {
         // 選択肢は `a | b | c`（`表示名=値` も可）。例・初期は後ろに書く
         let (rest, values) = take_valued(&s);
-        let parts: Vec<String> = SPLIT_OPTIONS.as_ref().map_or_else(
-            || vec![rest.clone()],
-            |r| r.split(&rest).map(|o| o.trim().to_string()).collect(),
-        );
+        let parts = split_unescaped(&rest, &['|', '｜']);
         let mut options: Vec<ChoiceOption> = parts
             .into_iter()
             .filter(|o| !o.is_empty())
@@ -388,12 +408,7 @@ fn read_field(
         }
         options.truncate(20);
         if let Some(init) = get(&values, "初期").filter(|v| !v.is_empty()) {
-            let picked: Vec<String> = SPLIT_INIT
-                .as_ref()
-                .map_or_else(
-                    || vec![init.to_string()],
-                    |r| r.split(init).map(str::to_string).collect(),
-                )
+            let picked: Vec<String> = split_unescaped(init, &[',', '、', '|'])
                 .into_iter()
                 .filter_map(|v| {
                     options
@@ -434,6 +449,16 @@ fn read_field(
                 field.max = Some(hi);
                 let used = c.get(0).map_or(0, |m| m.end());
                 tail = tail[used..].trim().to_string();
+            } else if kind == FieldKind::Number && is_match(&HALF_RANGE, &tail) {
+                diags.add(
+                    line,
+                    "warning",
+                    "unrecognized_line",
+                    format!("範囲は「最小..最大」の両方を書いてください（片側だけの範囲は読みません）: {name}"),
+                );
+                tail = replace_first(&HALF_RANGE, &tail, |_| String::new())
+                    .trim()
+                    .to_string();
             } else if kind != FieldKind::Number {
                 let word = if kind == FieldKind::Slider {
                     "slider"
@@ -530,6 +555,7 @@ mod pattern_tests {
             &FIELD,
             &BUTTON,
             &RANGE,
+            &HALF_RANGE,
             &KEY,
             &REQUIRED,
             &MULTI,
@@ -544,8 +570,6 @@ mod pattern_tests {
             &BAD_NAME,
             &OTHER_VALUE,
             &KV,
-            &SPLIT_OPTIONS,
-            &SPLIT_INIT,
             &RATING_MAX,
             &RANGE_SEP,
             &DATE,

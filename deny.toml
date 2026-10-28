@@ -29,6 +29,16 @@ ignore = [
     # advisory は ID でしか外せないため、v1 側が 1.0.10 未満に戻ってもこの ID では止まらない
     # （Cargo.lock の差分で見る）。sqlx・tokio-tungstenite が v1 へ移ったら外す（要追跡）。
     { id = "RUSTSEC-2026-0381", reason = "webpki-roots 0.26.11 は v1 の再エクスポートのみ。実体の v1 は修正済みの 1.0.10。" },
+    # zstd 0.13.3 / zstd-safe 7.2.4 は tantivy 0.25（tantivy-sstable・lindera-tantivy が既定機能で
+    # 有効化）と wasmtime 49 の cache 機能の推移依存。修正版（zstd 0.14.3 / zstd-safe 8.2.0）は
+    # semver 非互換で、wasmtime は 50 でも zstd 0.13、tantivy 0.27 は lindera-tantivy が未対応のため
+    # cargo update では到達できない。3 件とも影響する関数を名指ししており、この経路では呼ばれない:
+    # tantivy-sstable は bulk API（Compressor/Decompressor）、wasmtime-internal-cache は
+    # encode_all/decode_all だけを使う。seekable 機能は無効で、自前のクレートは zstd を直接使わない。
+    # zstd を直接使うようになったら見直し、上流が zstd 0.14 に上がったら外す（#932）。
+    { id = "RUSTSEC-2026-0391", reason = "影響は stream::raw::{Encoder,Decoder}::with_context のみ。tantivy は bulk API、wasmtime は encode_all/decode_all だけを使う。" },
+    { id = "RUSTSEC-2026-0398", reason = "影響は seekable 機能の Seekable::decompress・AdvancedSeekable::decompress のみ。seekable 機能は無効。" },
+    { id = "RUSTSEC-2026-0403", reason = "影響は DCtx::decompress_stream（stream::write::Decoder 経由）のみ。bulk API・decode_all は対象外と advisory に明記。" },
 ]
 
 [licenses]

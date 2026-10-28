@@ -50,8 +50,12 @@ impl Scope {
             "workflow.start" | "workflow.call" => Scope::WorkflowStart,
             "csv.query" => Scope::CsvRead,
             "csv.patch" | "csv.write" => Scope::CsvWrite,
-            "data.query" | "data.get" => Scope::DataRead,
-            "data.record.create" | "data.record.update" | "data.transition" => Scope::DataWrite,
+            // data ノード（Task 15.7）と script の `Shiki.data.*`（HostCall api 名）を同じ表で引く。
+            "data.query" | "data.get" | "data.list_tables" => Scope::DataRead,
+            "data.record.create" | "data.record.update" | "data.record.delete"
+            | "data.bulk_upsert" | "data.transition" | "data.create" | "data.update" => {
+                Scope::DataWrite
+            }
             "notify.send" | "human.approval" => Scope::NotifySend,
             "sheet.read" => Scope::SheetRead,
             "sheet.write" | "sheet.append" => Scope::SheetWrite,
@@ -65,11 +69,14 @@ impl Scope {
         })
     }
 
-    /// Stage A で有効なスコープ（V3 が照合する集合）。data.* / notify.send / 予約分は Stage B 以降。
+    /// 保存できるスコープ（V3 が照合する集合）。data.read / data.write は Task 15.7 で解禁。
+    /// notify.send / 予約分は未実装。
     pub fn available_stage_a(self) -> bool {
         matches!(
             self,
-            Scope::StorageRead
+            Scope::DataRead
+                | Scope::DataWrite
+                | Scope::StorageRead
                 | Scope::StorageWrite
                 | Scope::RagQuery
                 | Scope::HttpEgress

@@ -44,7 +44,7 @@ impl Role {
     }
 }
 
-/// 引用チャンク（RAG 検索結果 → 会話内の citation ブロック / SSE citation イベント）。
+/// 引用（RAG 検索結果のチャンク・Web の出典 → 会話内の citation ブロック / SSE citation イベント）。
 ///
 /// 本文の `[n]` は `cite_id` で引く（配列の位置ではない）。権限で一部の引用を落としても
 /// 残りの番号はずれない（#508）。位置情報（anchor / quote / boxes）は引用時点の版
@@ -54,11 +54,11 @@ pub struct Citation {
     /// 応答内の通し番号（本文の `[n]`）。0 は採番前に保存された旧データ（配列の位置で引く）。
     #[serde(default)]
     pub cite_id: u32,
-    /// 引用元ファイルの storage node id。
+    /// 引用元ファイルの storage node id（Web の出典は空）。
     pub node_id: String,
-    /// 引用チャンク id（監査突合の鍵）。
+    /// 引用チャンク id（監査突合の鍵）。Web の出典は `web:` ＋ ページの URL（同じページは同じ番号）。
     pub chunk_id: String,
-    /// 表示スニペット（チャンク本文）。
+    /// 表示スニペット（チャンク本文・Web の出典は検索結果の抜粋かページ本文の先頭）。
     pub snippet: String,
     /// ページ番号（あれば）。
     #[serde(default)]
@@ -84,6 +84,18 @@ pub struct Citation {
     /// 本文の `[n]` を「閲覧できない出典」として描くために使う（番号は本文に既に出ている）。
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub withheld: bool,
+    /// Web の出典（web_search / web_fetch・#891）。社内文書の引用は無し（`node_id` を持つ）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web: Option<WebSource>,
+}
+
+/// Web の出典（公開 web のページ）。`agent_core::WebSource` と同型。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct WebSource {
+    /// ページの URL（http/https のみ）。
+    pub url: String,
+    /// ページのタイトル（無ければ空）。
+    pub title: String,
 }
 
 impl Citation {
@@ -103,7 +115,17 @@ impl Citation {
             quote: None,
             boxes: Vec::new(),
             withheld: true,
+            web: None,
         }
+    }
+
+    /// Web の出典か（社内文書のファイルを指さない）。
+    ///
+    /// 公開 web のページなので、共有された会話の閲覧者にファイルの権限で見直す対象ではない。
+    /// ファイルを指す引用（`node_id` を持つ）は、`web` が付いていても文書として見直す（fail-closed）。
+    #[must_use]
+    pub fn is_web(&self) -> bool {
+        self.web.is_some() && self.node_id.is_empty()
     }
 }
 
@@ -122,6 +144,10 @@ impl From<&agent_core::Citation> for Citation {
             quote: c.quote.clone(),
             boxes: c.boxes.clone(),
             withheld: false,
+            web: c.web.as_ref().map(|w| WebSource {
+                url: w.url.clone(),
+                title: w.title.clone(),
+            }),
         }
     }
 }
@@ -185,6 +211,10 @@ pub enum ContentBlock {
     /// `draft = {name, csv}`（csv=CSV 本文・StorageService 未作成）。
     /// フロントは下書き CSV 画面を開いて詰めてから「ドライブに保存」で確定する。
     CsvDraft { draft: serde_json::Value },
+    /// 未保存の下書きスキルカード（save_skill の下書き確定型・#919）。
+    /// `draft = {name, skill}`（skill=SkillBody 相当・保存時検証済み・artifact 未保存）。
+    /// フロントはスキルエディタを開いて詰めてから人が保存する。
+    SkillDraft { draft: serde_json::Value },
     /// AI が作成/編集した文書への参照カード（#381）。
     /// `document = {id, name, kind, version}`（kind=office/note/csv/slide・実在ノードのみ）。
     /// フロントは kind に応じて /office/{id}・/notes/{id}・/csv/{id}・/slides/{id} へ導線を出す。
@@ -266,6 +296,9 @@ pub struct Thread {
     /// 由来ノートの表示名（作成時点の非正規化・リネーム非追随・履歴表示用）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub origin_note_name: Option<String>,
+    /// ピン留めした時刻（None＝ピン留めなし）。サイドバー履歴の先頭に出す。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -483,6 +516,7 @@ mod tests {
             quote: None,
             boxes: Vec::new(),
             withheld: false,
+            web: None,
         });
         let json = serde_json::to_value(&block).unwrap();
         assert_eq!(json["type"], "citation");
@@ -495,6 +529,22 @@ mod tests {
         assert!(json.get("anchor").is_none());
         assert!(json.get("boxes").is_none());
         assert!(json.get("withheld").is_none());
+        assert!(json.get("web").is_none());
+    }
+
+    #[test]
+    fn web_citation_carries_url_and_title() {
+        let agent = agent_core::Citation::web("https://example.com/a", "例", "抜粋").unwrap();
+        let c = Citation::from(&agent);
+        assert!(c.is_web());
+        let json = serde_json::to_value(ContentBlock::Citation(c)).unwrap();
+        assert_eq!(json["web"]["url"], "https://example.com/a");
+        assert_eq!(json["web"]["title"], "例");
+        assert_eq!(json["node_id"], "");
+        // ファイルを指す引用は、web が付いていても文書として扱う。
+        let mut odd = Citation::from(&agent);
+        odd.node_id = "n1".into();
+        assert!(!odd.is_web());
     }
 
     #[test]

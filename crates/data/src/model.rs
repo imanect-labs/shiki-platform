@@ -17,7 +17,7 @@ pub enum FieldType {
     /// `YYYY-MM-DD`（保存形式そのまま・辞書順＝日付順）。
     Date,
     /// RFC3339 を受理し **UTC の固定幅 ISO-8601 文字列に正規化して保存**する
-    /// （辞書順＝時刻順になり、text 式インデックスで範囲検索できる）。
+    /// （辞書順＝時刻順になり、text の pivot 索引で範囲検索できる）。
     DateTime,
     Select,
     MultiSelect,
@@ -29,10 +29,30 @@ pub enum FieldType {
     FileRef,
     /// 他テーブルのレコード参照（`ref_table` 必須・同一テナント内で存在検証）。
     RecordRef,
-    /// record 参照を辿った参照先フィールドの射影（書込不可・解決は Task 9.3）。
+    /// record 参照を辿った参照先フィールドの射影（書込不可・参照先の行ポリシーを閲覧者本人の権限で適用）。
     Lookup,
-    /// 他フィールドからの計算値（書込不可・評価は Task 9.4 のクエリ層）。
+    /// 他フィールドからの計算値（書込不可・v1 の sum/concat。新規は `formula` を使う）。
     Computed,
+    /// リンク先の集合に対する集計（count/sum/avg/min/max/concat・書込不可・Task 15.4）。
+    Rollup,
+    /// 数式（閉じた AST・`numeric` 精度・書込不可・Task 15.4）。
+    Formula,
+}
+
+impl FieldType {
+    /// 書込不可の派生フィールド（lookup / computed / rollup / formula）か。
+    pub fn is_derived(self) -> bool {
+        matches!(
+            self,
+            FieldType::Lookup | FieldType::Computed | FieldType::Rollup | FieldType::Formula
+        )
+    }
+
+    /// 部分一致検索（`searchable`・`data_index_search`）を宣言できる型か。text は全文 1 行、
+    /// multi_select は**要素ごとに 1 行**（`Contains` は「要素のいずれかの部分文字列」・query-optimizer §3.1）。
+    pub fn supports_search(self) -> bool {
+        matches!(self, FieldType::Text | FieldType::MultiSelect)
+    }
 }
 
 /// lookup 定義: `via_field`（自テーブルの record_ref フィールド）を辿り、
@@ -60,23 +80,71 @@ pub struct ComputedDef {
     pub fields: Vec<String>,
 }
 
-/// フィールド定義。
+/// フィールドの内部 ID（テーブル内で採番・不変・再利用しない・data-platform §4）。
+///
+/// JSONB キー（`"f{id}"`）と索引テーブルの `field_id`（`int2`）に使う。PostgreSQL に unsigned は
+/// 無いため上限は [`MAX_FIELD_ID`]。`0..16` はシステム擬似列に予約（[`FIRST_USER_FIELD_ID`]）。
+pub type FieldId = u16;
+
+/// `FieldId` の上限（`int2` の正の最大値。採番時とスキーマ検証で強制・data-platform §3.2）。
+pub const MAX_FIELD_ID: FieldId = 32_767;
+/// ユーザー定義フィールドの最初の ID（`0..16` はシステム擬似列に予約）。
+pub const FIRST_USER_FIELD_ID: FieldId = 16;
+/// システム擬似列: レコード作成者（owner）。
+pub const SYSTEM_FIELD_OWNER: FieldId = 0;
+/// システム擬似列: 作成時刻。
+pub const SYSTEM_FIELD_CREATED_AT: FieldId = 1;
+/// システム擬似列: 更新時刻。
+pub const SYSTEM_FIELD_UPDATED_AT: FieldId = 2;
+
+/// フィールド定義（識別子 3 層・data-platform §4）。
+///
+/// | 層 | 役割 | 変更 |
+/// |---|---|---|
+/// | `id` | JSONB キー（`"f{id}"`）・索引の `field_id` | 不可 |
+/// | `key` | API / shiki script / workflow / SDK の参照名 | 不可 |
+/// | `display_name` | 画面表示（日本語可） | 自由（データは 1 行も動かない） |
+///
+/// 外部契約（レコードの `data`・フィルタ・ソート・集計・row_policy・field_policy・lookup・
+/// computed・status_field）は **`key` で受けて `key` で返す**。`"f{id}"` への変換は
+/// `crates/data` 内（保存・SQL 生成）に閉じる。
+///
+/// 入力の後方互換（§4.3）: v1 の `name` は `key` の別名として受ける。`id` を省略したフィールドは
+/// 既存フィールドの `key` と照合して ID を引き継ぎ、無ければ新規採番する。`display_name` を
+/// 省略したら `key` を使う。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[allow(clippy::struct_excessive_bools)] // 宣言フラグ群（required/unique/indexed/searchable）は API 契約そのもの。
 pub struct FieldDef {
-    /// フィールド名（`^[a-z][a-z0-9_]{0,63}$`・SQL の式インデックス DDL に埋め込むため
-    /// スキーマ検証で厳格に制限する）。
-    pub name: String,
+    /// 内部 ID（サーバ採番・不変）。入力で省略（0）したら採番・照合する。
+    #[serde(default)]
+    pub id: FieldId,
+    /// 参照名（`^[a-z][a-z0-9_]{0,63}$`・**不変**。v1 の `name` も別名として受理する）。
+    #[serde(alias = "name")]
+    pub key: String,
+    /// 表示名（自由文・日本語可・いつでも変更可）。省略時は `key`。
+    #[serde(default)]
+    pub display_name: String,
+    /// 既定の表示順（ビューが上書き可能）。全フィールド省略時は宣言順。改訂で省略した既存の列は今の順を
+    /// 保ち、新しい列は末尾に置く。保存時に重複・欠番を詰める（0 からの連番）。
+    #[serde(default = "order_unset")]
+    pub order: i32,
+    /// 説明（列ヘッダのツールチップ）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     #[serde(rename = "type")]
     pub field_type: FieldType,
     /// 必須（create 時に存在・null 不可。update でも除去不可）。
     #[serde(default)]
     pub required: bool,
-    /// テーブル内一意（unique 式インデックスで競合レースなく強制・null は重複可）。
+    /// テーブル内一意（一意索引テーブル `data_unique` で競合レースなく強制・null は重複可）。
     #[serde(default)]
     pub unique: bool,
-    /// フィルタ/ソート対象（式インデックスを生成する）。
+    /// フィルタ/ソート対象（pivot 索引テーブルに値の索引行を持つ・既存レコードはバックフィル）。
     #[serde(default)]
     pub indexed: bool,
+    /// 部分一致検索の対象（`data_index_search` へ載せる・text と multi_select（要素ごと）のみ）。
+    #[serde(default)]
+    pub searchable: bool,
     /// select / multi_select の選択肢（閉じた集合）。
     #[serde(default)]
     pub options: Vec<String>,
@@ -89,6 +157,135 @@ pub struct FieldDef {
     /// 計算定義（field_type=computed のとき必須）。
     #[serde(default)]
     pub computed: Option<ComputedDef>,
+    /// number 型のみ: 小数桁数と範囲の宣言（data-platform §4.2）。本体・索引・集計はすべて
+    /// この規則で正規化した同一値を使う。省略時は入力値をそのまま保存する（v1 互換）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub numeric_spec: Option<NumericSpec>,
+    /// record_ref のリンク定義（カーディナリティ・対称列・data-platform §7.1）。省略時は v1 互換の
+    /// `many_to_one`・片方向（値は要素 1 件までの UUID 配列。入力は単一 UUID 文字列も受ける）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<crate::derived::types::LinkDef>,
+    /// ロールアップ定義（field_type=rollup のとき必須）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rollup: Option<crate::derived::types::RollupDef>,
+    /// 数式（field_type=formula のとき必須）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub formula: Option<crate::formula::FormulaExpr>,
+    /// 派生フィールドの材料化可否（**サーバがスキーマ保存時に決める**・入力は無視・§7.4）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub materialization: Option<crate::derived::types::Materialization>,
+    /// 派生フィールドの値の型（**サーバが推論する**・入力は無視）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result_type: Option<crate::derived::types::ResultType>,
+}
+
+/// `number` フィールドの精度宣言（data-platform §4.2）。
+///
+/// 書込時に値を `scale` 桁へ正規化し（超過桁は `on_excess_scale` に従う）、**正規化後の値**で
+/// `min` / `max` を検証する。境界値は 10 進表記の最短表現として解釈する（`0.1` は 0.1 ちょうど）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
+pub struct NumericSpec {
+    /// 小数桁数（0..=9）。
+    pub scale: u8,
+    /// scale を超える桁が来たときの扱い（既定 `reject`）。
+    #[serde(default)]
+    pub on_excess_scale: ExcessScale,
+    /// 許容範囲の下限（含む）。省略時は型の上限のみ。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<f64>,
+    /// 許容範囲の上限（含む）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<f64>,
+}
+
+// min/max は有限値しか受け付けない（スキーマ検証で NaN/∞ を拒否する）ので Eq を名乗ってよい。
+impl Eq for NumericSpec {}
+
+/// scale を超える桁の扱い。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ExcessScale {
+    /// 拒否する（既定。入力ミスを黙って変えない）。
+    #[default]
+    Reject,
+    /// 指定の丸めモードで丸める。
+    Round(RoundingMode),
+}
+
+/// 丸めモード（曖昧さを残さないため明示列挙）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RoundingMode {
+    /// 0.5 は 0 から遠い方へ。
+    HalfUp,
+    /// 0.5 は偶数へ（銀行丸め）。
+    HalfEven,
+    /// 0 へ向けて切り捨て。
+    Down,
+    /// 0 から遠い方へ切り上げ。
+    Up,
+}
+
+/// 入力で `order` を省略した印（[`crate::field_key::assign_field_ids`] が採番する・保存値には残らない）。
+pub(crate) const ORDER_UNSET: i32 = i32::MIN;
+
+fn order_unset() -> i32 {
+    ORDER_UNSET
+}
+
+impl FieldDef {
+    /// 利用者向けの文言に使う列の名前（表示名・空なら参照名）。
+    pub fn label(&self) -> &str {
+        if self.display_name.trim().is_empty() {
+            &self.key
+        } else {
+            &self.display_name
+        }
+    }
+
+    /// 最小のフィールド定義（`id` 未採番・`display_name` = `key`）。
+    pub fn new(key: impl Into<String>, field_type: FieldType) -> Self {
+        let key = key.into();
+        FieldDef {
+            id: 0,
+            display_name: key.clone(),
+            key,
+            order: 0,
+            description: None,
+            field_type,
+            required: false,
+            unique: false,
+            indexed: false,
+            searchable: false,
+            options: Vec::new(),
+            ref_table: None,
+            lookup: None,
+            computed: None,
+            numeric_spec: None,
+            link: None,
+            rollup: None,
+            formula: None,
+            materialization: None,
+            result_type: None,
+        }
+    }
+
+    /// 対称列（参照先から見た逆方向のリンク・読取専用）か。
+    pub fn is_reverse_link(&self) -> bool {
+        self.link.as_ref().is_some_and(|l| l.reverse)
+    }
+
+    /// 書込時に材料化する派生フィールド（`invariant` かつ `indexed`）か。
+    pub(crate) fn is_materialized(&self) -> bool {
+        self.field_type.is_derived()
+            && self.indexed
+            && self.materialization == Some(crate::derived::types::Materialization::Invariant)
+    }
+
+    /// 保存形（`data_record.data`）の JSONB キー `"f{id}"`。
+    pub(crate) fn json_key(&self) -> String {
+        crate::field_key::json_key(self.id)
+    }
 }
 
 /// フィールドマスク（Task 9.4・PIT-19）。
@@ -129,12 +326,22 @@ pub struct TableSchema {
     /// 禁止され、遷移 API（`transition`）経由でのみ status を変えられる。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fsm_ref: Option<crate::fsm::FsmRef>,
+    /// 検索（RAG）へのオプトインと投影テンプレート（Task 15.8・docs/data/rag-integration.md）。
+    /// 未指定のテーブルは検索の対象にならない。投影にはフィールドマスク対象列・派生列を含められない
+    /// （スキーマ検証で拒否・fail-closed）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rag: Option<crate::rag::RagProjection>,
 }
 
 impl TableSchema {
-    /// フィールド定義を名前で引く。
-    pub fn field(&self, name: &str) -> Option<&FieldDef> {
-        self.fields.iter().find(|f| f.name == name)
+    /// フィールド定義を参照名（`key`）で引く。
+    pub fn field(&self, key: &str) -> Option<&FieldDef> {
+        self.fields.iter().find(|f| f.key == key)
+    }
+
+    /// フィールド定義を内部 ID で引く。
+    pub fn field_by_id(&self, id: FieldId) -> Option<&FieldDef> {
+        self.fields.iter().find(|f| f.id == id)
     }
 }
 
@@ -150,6 +357,22 @@ pub struct DataTable {
     pub created_by: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// 内部整数キー（`tenant_int` / `table_int`）。**外へ出さない**（serde・OpenAPI から除外）。
+    #[serde(skip)]
+    pub(crate) keys: TableKeys,
+    /// レコード個別共有タプルが 1 件でも作られたか（材料化可否の第 4 階層・§7.4）。外へ出さない。
+    #[serde(skip)]
+    pub(crate) has_record_shares: bool,
+    /// 機微なテーブル向けの固定戦略（コストベース選択・件数探索・統計の参照を止める・PIT-75）。外へ出さない。
+    #[serde(skip)]
+    pub(crate) planner_fixed: bool,
+}
+
+/// テーブルの内部整数キー（data-platform §3.2）。crate 外から読めない・直列化しない。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct TableKeys {
+    pub tenant_int: i32,
+    pub table_int: i64,
 }
 
 /// レコード。
@@ -163,6 +386,15 @@ pub struct DataRecord {
     pub owner: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// スモールセル抑制（参照先の `aggregate_min_rows` を継承・PIT-17）で値を伏せた派生列の参照名
+    /// （見える参照先が K 件未満のロールアップと、それを式に含む数式）。値は null で、画面は空欄ではなく
+    /// 「件数が少ないため非表示」と出す。判定は閲覧者に見える行だけで決まる（見えない行の件数は漏れない）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suppressed_fields: Vec<String>,
+    /// リンク列の参照先の表示名（参照先レコードの外部 ID → 参照先のタイトル列＝表示順で先頭の、閲覧者に
+    /// 読めるテキスト列の値）。閲覧者本人の権限で見える参照先だけ（リンク値の存在秘匿と同じ取得から作る）。
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub link_labels: std::collections::BTreeMap<String, String>,
 }
 
 /// フィールド単位の変更差分（リビジョン changelog の 1 要素・Task 9.5）。
@@ -220,10 +452,85 @@ mod tests {
         )
         .unwrap();
         assert_eq!(schema.fields.len(), 1);
+        // v1 の `name` は `key` の別名として読める（§4.3 の後方互換）。
+        assert_eq!(schema.fields[0].key, "title");
+        assert_eq!(schema.fields[0].id, 0, "id は未採番（サーバが採番する）");
         assert!(schema.fields[0].required);
         assert!(!schema.fields[0].unique);
         assert!(schema.status_field.is_none());
         assert!(schema.field("title").is_some());
         assert!(schema.field("missing").is_none());
+    }
+
+    #[test]
+    fn field_def_serializes_three_layers_without_name() {
+        let mut f = FieldDef::new("applicant", FieldType::UserRef);
+        f.id = 17;
+        f.display_name = "申請者".into();
+        let v = serde_json::to_value(&f).unwrap();
+        assert_eq!(v["id"], 17);
+        assert_eq!(v["key"], "applicant");
+        assert_eq!(v["display_name"], "申請者");
+        assert!(v.get("name").is_none(), "v1 の name は出力しない");
+        assert_eq!(f.json_key(), "f17");
+    }
+
+    #[test]
+    fn data_table_never_serializes_internal_keys() {
+        let ts = chrono::DateTime::from_timestamp(0, 0).unwrap();
+        let t = DataTable {
+            id: Uuid::nil(),
+            name: "t".into(),
+            app_id: None,
+            schema: TableSchema {
+                fields: vec![],
+                status_field: None,
+                row_policy: None,
+                field_policy: vec![],
+                aggregate_min_rows: None,
+                fsm_ref: None,
+                rag: None,
+            },
+            schema_version: 1,
+            created_by: "u".into(),
+            created_at: ts,
+            updated_at: ts,
+            keys: TableKeys {
+                tenant_int: 424_242,
+                table_int: 7_777_777,
+            },
+            has_record_shares: false,
+            planner_fixed: true,
+        };
+        let s = serde_json::to_string(&t).unwrap();
+        assert!(!s.contains("tenant_int") && !s.contains("table_int"), "{s}");
+        assert!(!s.contains("424242") && !s.contains("7777777"), "{s}");
+    }
+
+    #[test]
+    fn openapi_schema_has_three_layer_fields_and_no_internal_keys() {
+        use utoipa::PartialSchema;
+        let field = serde_json::to_string(&<FieldDef as PartialSchema>::schema()).unwrap();
+        for p in [
+            "\"id\"",
+            "\"key\"",
+            "\"display_name\"",
+            "\"order\"",
+            "\"searchable\"",
+        ] {
+            assert!(field.contains(p), "FieldDef に {p} が無い: {field}");
+        }
+        for schema in [
+            serde_json::to_string(&<DataTable as PartialSchema>::schema()).unwrap(),
+            serde_json::to_string(&<DataRecord as PartialSchema>::schema()).unwrap(),
+            serde_json::to_string(&<RecordRevision as PartialSchema>::schema()).unwrap(),
+        ] {
+            for k in ["record_int", "table_int", "tenant_int"] {
+                assert!(
+                    !schema.contains(k),
+                    "{k} が API スキーマに出ている: {schema}"
+                );
+            }
+        }
     }
 }

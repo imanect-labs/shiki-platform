@@ -41,7 +41,7 @@ export const SETTINGS_NAV: SettingsNavGroup[] = [
   },
   {
     label: "AI",
-    items: [{ label: "パーソナライズ", href: "/settings/ai", icon: Sparkles, mock: true }],
+    items: [{ label: "パーソナライズ", href: "/settings/ai", icon: Sparkles }],
   },
   {
     label: "連携",

@@ -24,7 +24,7 @@ use crate::{
 pub struct ApprovalDecisionRequest {
     /// 承認対象のツール呼び出し ID（SSE の approval_requested で受け取る）。
     pub tool_call_id: String,
-    /// 承認要求元のツール名（監査用）。
+    /// 承認要求元のツール名（承認要求の値と一致しなければ 400）。
     pub tool_name: String,
     /// true で承認、false で却下。
     pub approved: bool,
@@ -40,6 +40,7 @@ pub struct ApprovalDecisionRequest {
     request_body = ApprovalDecisionRequest,
     responses(
         (status = 204, description = "決定を受理（先勝ち・既決なら no-op）"),
+        (status = 400, description = "承認待ちのツール呼び出しでない・ツール名が承認要求と一致しない", body = crate::error_body::BadRequestBody),
         (status = 403, description = "認可されていない"),
         (status = 404, description = "存在しない"),
         (status = 503, description = "chat 無効"),

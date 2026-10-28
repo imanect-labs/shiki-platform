@@ -23,6 +23,10 @@ pub struct ExecCtx {
     pub principal_kind: String,
     /// OTel トレース id（監査 ↔ Langfuse ↔ OTel を同一トレースに束ねる）。
     pub trace_id: Option<String>,
+    /// 実行中の run（監査で run とワークフローを特定する・ノード実行外は `None`）。
+    pub run_id: Option<Uuid>,
+    /// 実行中の step の path（監査用・ノード実行外は `None`）。
+    pub step_path: Option<String>,
 }
 
 /// ポート呼び出しの失敗（executor が [`NodeError`](crate::run::NodeError) に写す）。
@@ -222,6 +226,102 @@ pub trait NodePorts: Send + Sync {
 
     /// csv.write（`TabularService.save_new`・作成権限）。冪等化は capability 層が担保する。
     async fn csv_write(&self, ctx: &ExecCtx, req: CsvWriteReq) -> Result<Value, PortError>;
+
+    // --- 構造化データ（Task 15.7）。既定は「未構成」（data を結線しない実装・テスト用）。---
+    //
+    // 実装は data の DataStore（行述語・フィールドマスク・OpenFGA の認可込み）を呼ぶ。schedule / event の
+    // run（実行主体 = workflow）は、①ワークフロー主体にテーブルが委譲されていること（タプル）を確かめ、
+    // ②委譲元ユーザーの権限で読み書きする（行は委譲元の行述語で絞られる）。
+
+    /// data.list_tables（実行主体が viewer のテーブル一覧）。
+    async fn data_list_tables(&self, _ctx: &ExecCtx) -> Result<Value, PortError> {
+        Err(data_unconfigured())
+    }
+
+    /// data.query（`DataStore::run_query`・data の `DataQuery` をそのまま渡す）。返り値は `QueryResult`。
+    async fn data_query(
+        &self,
+        _ctx: &ExecCtx,
+        _table_id: Uuid,
+        _query: &data::DataQuery,
+    ) -> Result<Value, PortError> {
+        Err(data_unconfigured())
+    }
+
+    /// data.get（`DataStore::get_record`）。返り値はマスク済みのレコード。
+    async fn data_get(
+        &self,
+        _ctx: &ExecCtx,
+        _table_id: Uuid,
+        _record_id: Uuid,
+    ) -> Result<Value, PortError> {
+        Err(data_unconfigured())
+    }
+
+    /// data の書込（作成・更新・削除・遷移・一括 upsert）。冪等化は capability 層の effect_journal が
+    /// 担保し、ポートは適用のみを行う（一括 upsert は `idempotency_key` から取込 ID を決めて二重取込を防ぐ）。
+    async fn data_write(&self, _ctx: &ExecCtx, _req: DataWriteReq) -> Result<Value, PortError> {
+        Err(data_unconfigured())
+    }
+}
+
+/// data ポート未構成のエラー（permanent・黙って成功扱いにしない）。
+fn data_unconfigured() -> PortError {
+    PortError::new(
+        "unsupported",
+        "構造化データ（data）が構成されていません",
+        false,
+    )
+}
+
+/// data 書込の要求。
+#[derive(Debug, Clone)]
+pub struct DataWriteReq {
+    pub table_id: Uuid,
+    pub op: DataWriteOp,
+    /// ステップ（script ならホスト呼び出し）の冪等キー。
+    pub idempotency_key: String,
+}
+
+/// data 書込の操作（ポートは DataStore の対応する入口を呼ぶ・status は Transition でしか動かない）。
+#[derive(Debug, Clone)]
+pub enum DataWriteOp {
+    Create {
+        data: Value,
+    },
+    Update {
+        record_id: Uuid,
+        patch: Value,
+        /// 省略時は実行時点の rev を読んでから書く。
+        expected_rev: Option<i64>,
+    },
+    Delete {
+        record_id: Uuid,
+        expected_rev: Option<i64>,
+    },
+    Transition {
+        record_id: Uuid,
+        to: String,
+        expected_rev: Option<i64>,
+    },
+    BulkUpsert {
+        rows: Vec<data::BulkUpsertRow>,
+        abort_on_invalid: bool,
+    },
+}
+
+impl DataWriteOp {
+    /// 能力 API 名（監査・スコープの語彙）。
+    #[must_use]
+    pub fn api(&self) -> &'static str {
+        match self {
+            DataWriteOp::Create { .. } => "data.record.create",
+            DataWriteOp::Update { .. } => "data.record.update",
+            DataWriteOp::Delete { .. } => "data.record.delete",
+            DataWriteOp::Transition { .. } => "data.transition",
+            DataWriteOp::BulkUpsert { .. } => "data.bulk_upsert",
+        }
+    }
 }
 
 /// csv.patch の要求（冪等化は capability 層の effect_journal・ポートは適用のみ）。

@@ -124,6 +124,35 @@ pub(super) fn apply_requested_tools(
     opts.system = Some(system);
 }
 
+impl ChatWorker {
+    /// run の実行主体のカスタム指示（#900）を system プロンプトの節にする（未設定なら `None`）。
+    ///
+    /// 読めなかったら警告して付けずに進める（回答の好みであって権限ではない。読めないことで
+    /// 生成そのものを止めない）。
+    pub(super) async fn custom_instructions_section(
+        &self,
+        ctx: &authz::AuthContext,
+    ) -> Option<String> {
+        match self.store.get_custom_instructions(ctx).await {
+            Ok(ci) => ci.system_section(),
+            Err(e) => {
+                tracing::warn!(error = %e, "カスタム指示を読めなかった（付けずに続行）");
+                None
+            }
+        }
+    }
+}
+
+/// system プロンプトの末尾へ節を足す（`None` なら何もしない）。
+pub(super) fn append_system_section(opts: &mut AgentOptions, section: Option<String>) {
+    let Some(section) = section else {
+        return;
+    };
+    let mut system = opts.system.take().unwrap_or_default();
+    system.push_str(&section);
+    opts.system = Some(system);
+}
+
 /// 設定値のタイムゾーン名（IANA・例 `Asia/Tokyo`）を解釈する（不正なら起動時に明示エラー）。
 pub fn parse_timezone(name: &str) -> Result<chrono_tz::Tz, String> {
     name.parse::<chrono_tz::Tz>()
@@ -191,6 +220,29 @@ mod tests {
 
     use super::*;
     use chrono::TimeZone;
+
+    /// カスタム指示の節は既存の system の後ろへ足し、未設定なら何も変えない（#900）。
+    #[test]
+    fn custom_instructions_section_appends_after_base() {
+        let mut opts = AgentOptions {
+            system: Some("基本".into()),
+            ..Default::default()
+        };
+        append_system_section(&mut opts, None);
+        assert_eq!(opts.system.as_deref(), Some("基本"));
+        let section = crate::CustomInstructions {
+            about: "法人営業".into(),
+            ..Default::default()
+        }
+        .system_section();
+        append_system_section(&mut opts, section);
+        let system = opts.system.as_deref().unwrap();
+        assert!(
+            system.starts_with("基本\n\n# ユーザーのカスタム指示\n"),
+            "{system}"
+        );
+        assert!(system.contains("法人営業"), "{system}");
+    }
 
     #[test]
     fn today_note_uses_the_configured_timezone_and_weekday() {

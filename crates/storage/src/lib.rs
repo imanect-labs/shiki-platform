@@ -36,6 +36,7 @@ pub mod indexing;
 pub mod model;
 pub mod object_store;
 pub mod outbox_gc;
+pub mod pool_router;
 pub mod service;
 pub mod tenant;
 pub mod tenant_scope;
@@ -53,5 +54,6 @@ pub use model::{
     Node, NodeKind, ShareEntry, ShareLink, ShareLinkGrant, ShareRole, ShareTarget, UploadTicket,
 };
 pub use object_store::{ObjectStore, ObjectStoreError, S3Config, S3ObjectStore};
+pub use pool_router::PoolRouter;
 pub use service::{StorageService, WriteAtOutcome};
-pub use tenant::{Tenant, TenantStatus, TenantStore};
+pub use tenant::{Tenant, TenantPlacement, TenantStatus, TenantStore};

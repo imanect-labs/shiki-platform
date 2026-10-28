@@ -22,6 +22,8 @@ use super::threads::map_db;
 impl ChatStore {
     /// 各メッセージの citation ブロックを閲覧者の viewer 権限で再評価し、読めない引用を落とす。
     ///
+    /// Web の出典（[`Citation::is_web`]）は公開 web のページなので見直さない（#891）。
+    ///
     /// 番号（`cite_id`）を持つ引用は、落とす代わりに番号だけの「閲覧できない出典」に置き換える
     /// （[`Citation::withheld`]）。本文の `[n]` を欠番として描けるようにするため。ファイル・本文・
     /// 位置情報は一切残さない。番号を持たない旧データは従来どおり落とす。
@@ -35,7 +37,8 @@ impl ChatStore {
         for m in messages.iter() {
             for b in &m.content {
                 if let ContentBlock::Citation(c) = b {
-                    if !decisions.contains_key(&c.node_id) {
+                    // Web の出典は公開情報（ファイルの権限で見直す対象ではない・#891）。
+                    if !c.is_web() && !decisions.contains_key(&c.node_id) {
                         let allowed = self.can_view_file(ctx, &c.node_id).await;
                         decisions.insert(c.node_id.clone(), allowed);
                     }
@@ -50,7 +53,9 @@ impl ChatStore {
             m.content = content
                 .into_iter()
                 .filter_map(|b| match b {
-                    ContentBlock::Citation(c) if !*decisions.get(&c.node_id).unwrap_or(&false) => {
+                    ContentBlock::Citation(c)
+                        if !c.is_web() && !*decisions.get(&c.node_id).unwrap_or(&false) =>
+                    {
                         (c.cite_id > 0)
                             .then(|| ContentBlock::Citation(Citation::withheld(c.cite_id)))
                     }
@@ -133,7 +138,8 @@ impl ChatStore {
     ///
     /// 保存済みメッセージ（`get_messages`）と同じ 2 つを、生成中の再送にも掛ける。掛けないと、
     /// 共有スレッドを開いた閲覧者が、自分では読めない文書の抜粋を生成中にだけ見られてしまう。
-    /// - 引用: 閲覧者が読めないファイルのものは番号だけの出典（[`Citation::withheld`]）に置き換える。
+    /// - 引用: 閲覧者が読めないファイルのものは番号だけの出典（[`Citation::withheld`]）に置き換える
+    ///   （Web の出典は公開情報なのでそのまま）。
     ///   許可は引用のたびに確かめ直し、拒否だけをストリームの間覚えておく（剥奪を直後の引用から反映する）。
     /// - ツール結果: 閲覧者が run の実行主体でなければ本文を落とす（成否は残す）。
     ///
@@ -201,6 +207,8 @@ impl ChatStore {
         mut ev: StreamEvent,
     ) -> Option<StreamEvent> {
         match &mut ev.event {
+            // Web の出典は公開情報（保存済みの経路と同じくそのまま流す・#891）。
+            StreamEventKind::Citation(c) if c.is_web() => {}
             StreamEventKind::Citation(c) => {
                 let allowed =
                     !denied.contains(&c.node_id) && self.can_view_file(ctx, &c.node_id).await;

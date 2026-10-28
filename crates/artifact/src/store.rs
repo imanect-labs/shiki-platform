@@ -47,7 +47,7 @@ pub struct SkillSummary {
 
 /// artifact 行。
 #[derive(sqlx::FromRow)]
-struct ArtifactRow {
+pub(crate) struct ArtifactRow {
     id: Uuid,
     kind: String,
     name: String,
@@ -58,7 +58,7 @@ struct ArtifactRow {
 }
 
 impl ArtifactRow {
-    fn into_artifact(self) -> Result<Artifact, ArtifactError> {
+    pub(crate) fn into_artifact(self) -> Result<Artifact, ArtifactError> {
         Ok(Artifact {
             id: self.id,
             kind: ArtifactKind::parse(&self.kind)
@@ -423,6 +423,12 @@ fn validate_name(name: &str) -> Result<&str, ArtifactError> {
     if name.is_empty() {
         return Err(ArtifactError::Invalid("name が空です".into()));
     }
+    // NUL 文字は Postgres の text に保存できない（DB の誤りの 500 にしない・検証 2-D-P3-1）。
+    if name.contains('\0') {
+        return Err(ArtifactError::Invalid(
+            "name に NUL 文字（U+0000）は使えません".into(),
+        ));
+    }
     if name.len() > MAX_NAME_LEN {
         return Err(ArtifactError::Invalid(format!(
             "name が長すぎます（最大 {MAX_NAME_LEN} 文字）"
@@ -431,9 +437,25 @@ fn validate_name(name: &str) -> Result<&str, ArtifactError> {
     Ok(name)
 }
 
+/// 値の中（入れ子の配列・オブジェクトのキーと文字列）に NUL があるか。
+fn contains_nul(v: &serde_json::Value) -> bool {
+    match v {
+        serde_json::Value::String(s) => s.contains('\0'),
+        serde_json::Value::Array(a) => a.iter().any(contains_nul),
+        serde_json::Value::Object(m) => m.iter().any(|(k, v)| k.contains('\0') || contains_nul(v)),
+        _ => false,
+    }
+}
+
 /// 本文 JSON のサイズ上限を検証する。
 pub(crate) fn validate_body(body: &serde_json::Value) -> Result<(), ArtifactError> {
     // serde_json の直列化長で近似（DB の jsonb サイズとオーダー一致で十分）。
+    // jsonb は文字列の NUL（U+0000）を保存できない（DB の誤りの 500 にしない・検証 2-D-P3-1）。
+    if contains_nul(body) {
+        return Err(ArtifactError::Invalid(
+            "body に NUL 文字（U+0000）は使えません".into(),
+        ));
+    }
     let size = serde_json::to_vec(body)
         .map_err(|e| ArtifactError::Invalid(format!("body: {e}")))?
         .len();
@@ -454,6 +476,9 @@ mod tests {
         assert!(validate_name("  wf-1  ").is_ok_and(|n| n == "wf-1"));
         assert!(validate_name("   ").is_err());
         assert!(validate_name(&"x".repeat(129)).is_err());
+        assert!(validate_name("a\0b").is_err());
+        assert!(validate_body(&serde_json::json!({"x": "a\u{0}b"})).is_err());
+        assert!(validate_body(&serde_json::json!({"x": "a\\u0000b"})).is_ok());
     }
 
     #[test]

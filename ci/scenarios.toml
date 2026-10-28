@@ -1,0 +1,246 @@
+# E2E の担当シナリオ対応表（#922）。変更ファイルから回す Playwright spec を選ぶ（scripts/ci_scenarios.py）。
+#
+# 選び方（どれにも当てはまらない変更は E2E を全部回す＝忘れても漏れずに遅くなるだけ）:
+#   - web/src/** : import を辿って、その変更が届くページ（page.tsx・layout.tsx 等）を求め、ページが属する
+#                  シナリオの spec を回す。部品・lib の対応は import から自動で決まるので、ここには書かない。
+#   - crates/**  : 変更したクレートに（推移的に）依存するクレートを求め、それを `crates` に持つシナリオを回す。
+#                  API ルート（crates/api）は shiki-api が [all] なので全部回す（ルートを使う spec は import から
+#                  辿れず、手で書くと漏れるため）。`paths` はファイル単位で決めたい入力があるときだけ使う。
+#   - web/e2e/X.spec.ts : その spec だけを回す（helpers・fixtures は全部）。
+#
+# 更新が要るとき（quality ジョブの `python3 scripts/ci-select.py check` が落として知らせる）:
+#   - E2E spec を足した → その spec が開くページのシナリオの `e2e` に足す
+#   - ページ（page.tsx）を足した → そのページを開く spec のシナリオの `pages` に足す（無ければシナリオを作る）
+#   - クレートを足した → どこからも依存されないなら `crates`・[all]・[none] のどれかに載せる
+#   - spec・ページ・クレートを消した・改名した → ここからも消す（空振りの glob・spec も落とす）
+#
+# glob は `*` が `/` を跨がず、`**` が跨ぐ。
+
+# 毎回回す spec（ログイン → 保護ページ → ログアウトの最小経路）。
+[always]
+e2e = ["auth.spec.ts"]
+
+# 変更されたら E2E を全部回すもの（全ページが通る入口・全機能が使う基盤）。
+[all]
+pages = ["web/src/app/login/page.tsx"]
+paths = [
+    "web/src/middleware.ts",
+    "web/e2e/helpers.ts",
+    "web/e2e/fixtures/**",
+]
+# shiki-api・shiki-authz・shiki-storage・shiki-workflow-engine・shiki-gui は gen:api で web の型と
+# 実行時の値（認可語彙・ツール一覧など）を生成するので、変更は import では辿れない形で全ページに届く。
+crates = [
+    "shiki-api",
+    "shiki-authz",
+    "shiki-storage",
+    "shiki-llm-gateway",
+    "shiki-artifact",
+    "shiki-workflow-engine",
+    "shiki-gui",
+]
+
+# E2E の実行環境（compose の shiki-server とその依存）に載らないクレート。変更しても E2E は回さない。
+[none]
+crates = [
+    "shiki-fuse",
+    "shiki-jtd",
+    "shiki-sandbox-agent-proto",
+    "shiki-sandbox-bench",
+    "shiki-sandbox-guest-agent",
+    "shiki-sandbox-netns",
+    "shiki-sandbox-orchestrator",
+]
+
+# ホーム（チャットの入力欄）とスレッド。ほとんどのクレートは shiki-chat から依存されるので、ここに届く。
+# チャットの部品（アシスタントパネル・選択範囲の AI）は各エディタでも使うので、そのシナリオも shiki-chat を持つ。
+[scenario.home]
+pages = ["web/src/app/(auth)/page.tsx", "web/src/app/(auth)/c/**"]
+crates = ["shiki-chat"]
+e2e = [
+    "admin-console.spec.ts",
+    "agent-full-stack.spec.ts",
+    "agent-tools.spec.ts",
+    "ai-insights.spec.ts",
+    "ai-workflow.spec.ts",
+    "chat-mobile.spec.ts",
+    "chat-modes.spec.ts",
+    "chat.spec.ts",
+    "composer-attach-same-name.spec.ts",
+    "composer-create.spec.ts",
+    "csv-conversation-drafts.spec.ts",
+    "custom-instructions.spec.ts",
+    "deep-research.spec.ts",
+    "drive-ai-save-move.spec.ts",
+    "mini-apps.spec.ts",
+    "note-conversation-drafts.spec.ts",
+    "office-chart-insert.spec.ts",
+    "office-conversation-create.spec.ts",
+    "office-live-real-llm-deep.spec.ts",
+    "office-live-video.spec.ts",
+    "queued-message.spec.ts",
+    "sheet-swipe.spec.ts",
+    "sidebar-mobile.spec.ts",
+    "skill-editor.spec.ts",
+    "skills.spec.ts",
+    "slash-command.spec.ts",
+    "slide-conversation-drafts.spec.ts",
+    "visual.spec.ts",
+    "yui-actions.spec.ts",
+    "yui.spec.ts",
+]
+
+# ドライブとファイルのビューア（ノート・Office・スライド・CSV はドライブから開く spec が多い）。
+[scenario.drive]
+pages = ["web/src/app/(auth)/drive/**", "web/src/app/(auth)/file/**", "web/src/app/(auth)/pdf/**"]
+crates = ["shiki-chat"]
+e2e = [
+    "agent-full-stack.spec.ts",
+    "ai-live-edit-video.spec.ts",
+    "composer-create.spec.ts",
+    "csv-editor.spec.ts",
+    "drive-crud.spec.ts",
+    "drive-mobile-tabs.spec.ts",
+    "drive-share.spec.ts",
+    "drive-versions.spec.ts",
+    "immersive-editor.spec.ts",
+    "notes-markdown.spec.ts",
+    "notes-yui.spec.ts",
+    "notes.spec.ts",
+    "office-assistant.spec.ts",
+    "office-chart-insert.spec.ts",
+    "office-conversation-create.spec.ts",
+    "office-live-real-llm-deep.spec.ts",
+    "office-live-real-llm.spec.ts",
+    "office-live-video.spec.ts",
+    "office.spec.ts",
+    "search-page.spec.ts",
+    "select-escape.spec.ts",
+    "selection-ai.spec.ts",
+    "share-export.spec.ts",
+    "share-link.spec.ts",
+    "sidebar-mobile.spec.ts",
+    "slide-ai-edit.spec.ts",
+    "slides-editor.spec.ts",
+    "slides-export.spec.ts",
+    "slides.spec.ts",
+    "visual-editors.spec.ts",
+]
+
+[scenario.notes]
+pages = ["web/src/app/(auth)/notes/**"]
+crates = ["shiki-collab", "shiki-chat"]
+e2e = [
+    "agent-full-stack.spec.ts",
+    "ai-live-edit-video.spec.ts",
+    "composer-create.spec.ts",
+    "drive-ai-save-move.spec.ts",
+    "immersive-editor.spec.ts",
+    "note-ai-edit.spec.ts",
+    "note-ai-suggest.spec.ts",
+    "note-conversation-drafts.spec.ts",
+    "notes-markdown.spec.ts",
+    "notes-yui.spec.ts",
+    "notes.spec.ts",
+    "office-live-real-llm-deep.spec.ts",
+    "office-live-real-llm.spec.ts",
+    "selection-ai.spec.ts",
+    "share-export.spec.ts",
+    "share-link.spec.ts",
+    "visual-editors.spec.ts",
+]
+
+[scenario.office]
+pages = ["web/src/app/(auth)/office/**"]
+crates = ["shiki-office", "shiki-chat"]
+e2e = [
+    "agent-full-stack.spec.ts",
+    "composer-create.spec.ts",
+    "office-assistant.spec.ts",
+    "office-chart-insert.spec.ts",
+    "office-conversation-create.spec.ts",
+    "office-live-real-llm-deep.spec.ts",
+    "office-live-real-llm.spec.ts",
+    "office-live-video.spec.ts",
+    "office.spec.ts",
+    "share-export.spec.ts",
+]
+
+[scenario.slides]
+pages = ["web/src/app/(auth)/slides/**"]
+crates = ["shiki-collab", "shiki-chat"]
+e2e = [
+    "composer-create.spec.ts",
+    "slide-ai-edit.spec.ts",
+    "slide-conversation-drafts.spec.ts",
+    "slides-editor.spec.ts",
+    "slides-export.spec.ts",
+    "slides.spec.ts",
+]
+
+[scenario.csv]
+pages = ["web/src/app/(auth)/csv/**"]
+crates = ["shiki-tabular", "shiki-chat"]
+e2e = [
+    "composer-create.spec.ts",
+    "csv-conversation-drafts.spec.ts",
+    "csv-editor.spec.ts",
+    "visual-editors.spec.ts",
+]
+
+[scenario.data]
+pages = ["web/src/app/(auth)/data/**"]
+crates = ["shiki-data"]
+e2e = [
+    "admin-data.spec.ts",
+    "data-display.spec.ts",
+    "data-grid-live.spec.ts",
+    "data-grid.spec.ts",
+    "data-import.spec.ts",
+    "data-schema.spec.ts",
+    "data-share.spec.ts",
+    "data-ui.spec.ts",
+    "select-escape.spec.ts",
+]
+
+[scenario.search]
+pages = ["web/src/app/(auth)/search/**"]
+crates = ["shiki-rag"]
+e2e = ["search-page.spec.ts"]
+
+[scenario.skills]
+pages = ["web/src/app/(auth)/skills/**"]
+crates = ["shiki-chat"]
+e2e = ["skill-editor.spec.ts", "skills.spec.ts"]
+
+[scenario.workflows]
+pages = ["web/src/app/(auth)/workflows/**"]
+crates = ["shiki-chat"]
+e2e = [
+    "ai-workflow.spec.ts",
+    "share-export.spec.ts",
+    "visual.spec.ts",
+    "workflows-editor.spec.ts",
+    "workflows-enable.spec.ts",
+    "workflows-history.spec.ts",
+]
+
+[scenario.apps]
+pages = ["web/src/app/(auth)/apps/**"]
+crates = ["shiki-app-platform", "shiki-app-gateway", "shiki-chat"]
+e2e = ["mini-apps.spec.ts", "miniapp-b1.spec.ts"]
+
+[scenario.admin]
+pages = ["web/src/app/(admin)/**"]
+crates = []
+e2e = ["admin-console.spec.ts", "admin-data.spec.ts", "ai-insights.spec.ts", "audit-log.spec.ts"]
+
+[scenario.settings]
+pages = ["web/src/app/(settings)/**"]
+crates = []
+e2e = ["admin-data.spec.ts", "custom-instructions.spec.ts", "sidebar-mobile.spec.ts"]
+
+[scenario.reference]
+pages = ["web/src/app/reference/**"]
+crates = []
+e2e = ["tool-activity-gallery.spec.ts", "yui-gallery-mobile.spec.ts"]

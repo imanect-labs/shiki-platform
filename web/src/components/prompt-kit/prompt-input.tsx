@@ -146,6 +146,13 @@ function PromptInputTextarea({
   // 中はメディアクエリが分からない）で決まってしまうので、マウント後に判定して自分で移す。
   React.useEffect(() => {
     if (!autoFocus || typeof window === "undefined") return;
+    // 利用者が既に別の入力欄で打っているとき（会話を開いた直後にサイドバーで名前を変える等）は
+    // 奪わない（奪うとその欄の blur で入力が確定・破棄される）。
+    const active = document.activeElement;
+    const typing =
+      active instanceof HTMLElement &&
+      (active.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(active.tagName));
+    if (typing) return;
     if (window.matchMedia("(pointer: fine)").matches) {
       textareaRef.current?.focus({ preventScroll: true });
     }

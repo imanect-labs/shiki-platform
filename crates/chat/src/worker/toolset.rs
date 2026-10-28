@@ -102,6 +102,8 @@ impl ChatWorker {
         tools.push(Arc::new(crate::slide_tool::SaveSlideTool::new()));
         // 下書き CSV（csv_draft・下書き確定型・Task 11.11・storage 非依存・確定は UI 保存）。
         tools.push(Arc::new(crate::csv_tool::SaveCsvTool::new()));
+        // 下書きスキル（skill_draft・下書き確定型・#919・保存はスキルエディタで人が行う）。
+        tools.push(Arc::new(crate::skill_draft_tool::SaveSkillTool::new()));
         let (Some(collab), Some(storage)) = (&self.collab, &self.storage) else {
             return;
         };
@@ -172,6 +174,15 @@ impl ChatWorker {
                 creator.clone(),
             )));
         }
+        // ドライブのファイル・フォルダを探す／移動する（種別を問わない・#942）。認可は
+        // StorageService が発話ユーザーの権限で行う（移動は承認ゲート対象）。
+        if let Some(storage) = &self.storage {
+            let drive: Arc<dyn crate::drive_tool::DriveOps> = storage.clone();
+            tools.push(Arc::new(crate::drive_tool::DriveFindTool::new(
+                drive.clone(),
+            )));
+            tools.push(Arc::new(crate::drive_tool::DriveMoveTool::new(drive)));
+        }
         if let Some(tabular) = &self.tabular {
             tools.push(Arc::new(crate::csv_tool::CsvQueryTool::new(
                 tabular.clone(),
@@ -183,6 +194,37 @@ impl ChatWorker {
                 tabular.clone(),
             )));
         }
+    }
+
+    /// 構造化データのツール（data_query / data_schema / data_record_write・Task 15.7）。
+    ///
+    /// DataStore が配線され、**発話ユーザーに見えるテーブルが 1 つ以上ある**ときだけ提示する
+    /// （見えるテーブルが無ければ使い道が無い・description の一覧は有界）。一覧の取得失敗は run を
+    /// 落とさない（warn してツールを出さない）。認可は各呼び出しで data が本人の権限で毎回判定する。
+    pub(super) async fn push_data_tools(&self, tools: &mut Vec<Arc<dyn Tool>>, ctx: &AuthContext) {
+        use crate::data_tool::{
+            DataQueryTool, DataRecordWriteTool, DataSchemaTool, DataTableCatalog,
+        };
+        let Some(data) = &self.data else {
+            return;
+        };
+        let catalog = match DataTableCatalog::load(data, ctx).await {
+            Ok(c) if !c.is_empty() => Arc::new(c),
+            Ok(_) => return,
+            Err(e) => {
+                tracing::warn!(error = %e, "テーブル一覧の取得に失敗（data ツールを提示しない）");
+                return;
+            }
+        };
+        tools.push(Arc::new(DataQueryTool::new(
+            data.clone(),
+            Arc::clone(&catalog),
+        )));
+        tools.push(Arc::new(DataSchemaTool::new(
+            data.clone(),
+            Arc::clone(&catalog),
+        )));
+        tools.push(Arc::new(DataRecordWriteTool::new(data.clone(), catalog)));
     }
 
     /// 自律ツール（file CRUD/grep/shell）を tools へ追加する。

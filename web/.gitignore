@@ -6,3 +6,6 @@
 /test-results/
 /blob-report/
 /playwright/.cache/
+
+# 並走用の出力先（next.config.mjs の NEXT_DIST_DIR）
+/.next-*/

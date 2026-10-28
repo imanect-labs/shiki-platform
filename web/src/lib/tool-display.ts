@@ -22,6 +22,8 @@ import {
   FileSpreadsheet,
   FileText,
   Files,
+  FolderInput,
+  FolderSearch,
   Globe,
   LayoutTemplate,
   ListChecks,
@@ -339,6 +341,14 @@ const TOOL_DISPLAY: Record<ToolName, ToolDisplay> = {
     suru: true,
     target: named(),
   },
+  save_skill: {
+    icon: Sparkles,
+    category: "write",
+    lead: (t) => (t ? `スキル「${t}」の下書きを` : "スキルの下書きを"),
+    verb: "作成",
+    suru: true,
+    target: named(),
+  },
   save_document: {
     icon: FileText,
     category: "write",
@@ -440,6 +450,48 @@ const TOOL_DISPLAY: Record<ToolName, ToolDisplay> = {
     verb: "作成",
     suru: true,
     target: named(),
+  },
+  // 構造化データ（テーブル）。table はテーブル名か id（Task 15.7）。
+  data_query: {
+    icon: Table2,
+    category: "read",
+    lead: (t) => (t ? `テーブル「${t}」を` : "テーブルを"),
+    verb: "検索",
+    suru: true,
+    target: named("table"),
+  },
+  data_schema: {
+    icon: Table2,
+    category: "read",
+    lead: (t) => (t ? `テーブル「${t}」の列を` : "テーブルの列を"),
+    verb: "確認",
+    suru: true,
+    target: named("table"),
+  },
+  data_record_write: {
+    icon: Table2,
+    category: "write",
+    lead: (t) => (t ? `テーブル「${t}」のレコードを` : "テーブルのレコードを"),
+    verb: (input) => (input.op === "update" ? "更新" : "追加"),
+    suru: true,
+    target: named("table"),
+  },
+  // ドライブのファイル・フォルダ（種別を問わない・#942）。
+  "drive.find": {
+    icon: FolderSearch,
+    category: "search",
+    lead: (t) => (t ? `ドライブで${t}を` : "ドライブを"),
+    verb: "検索",
+    suru: true,
+    target: quoted("query"),
+  },
+  "drive.move": {
+    icon: FolderInput,
+    category: "write",
+    lead: objectOf("ファイル"),
+    verb: (input) => (input.destination_folder_id ? "移動" : "名前変更"),
+    suru: true,
+    nodeIdKey: "node_id",
   },
 };
 
@@ -544,6 +596,15 @@ export function withTense(d: ToolDescription, running: boolean, failed = false):
   if (running) return `${d.lead}${d.verb}中`;
   if (failed) return `${d.lead}${d.failed}`;
   return d.suru ? `${d.lead}${d.verb}しました` : `${d.lead}${d.verb}ました`;
+}
+
+/// 利用者が承認を却下して実行しなかった操作の文言（失敗とは言わない・3-A-8）。
+/// 「テーブル「経費」のレコードの追加を却下しました」のように、対象と動詞を名詞句にして述べる。
+export function rejectedLabel(d: ToolDescription): string {
+  // 前置きの末尾の「を」を「の」に換えて「〈対象〉の〈動詞〉を却下しました」にする（サ変名詞のときだけ。
+  // 和語の連用形は名詞句にならないので「〈前置き〉〈動詞〉操作を却下しました」と言う）。
+  if (d.suru && d.lead.endsWith("を")) return `${d.lead.slice(0, -1)}の${d.verb}を却下しました`;
+  return `${d.lead}${d.verb}${d.suru ? "する" : ""}操作を却下しました`;
 }
 
 const CATEGORY_PHASE: Record<ToolCategory, string> = {

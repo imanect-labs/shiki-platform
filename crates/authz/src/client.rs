@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use crate::{
     error::AuthzError,
-    fga_http::FgaHttp,
+    fga_http::{FgaHttp, MAX_CHECKS_PER_BATCH},
     model,
     object::FgaObject,
     subject::Subject,
@@ -40,6 +40,14 @@ impl Consistency {
     }
 }
 
+/// [`AuthzClient::batch_check`] の 1 問（`object#relation@subject` を持つか）。
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct CheckTuple {
+    pub subject: Subject,
+    pub relation: Relation,
+    pub object: FgaObject,
+}
+
 /// 認可判定の単一エントリポイント（単一チョークポイント）。
 ///
 /// 判定（`check`）に加え、ReBAC タプルの付与/剥奪（`write_tuple`/`delete_tuple`）も
@@ -58,6 +66,28 @@ pub trait AuthzClient: Send + Sync {
         object: &FgaObject,
         consistency: Consistency,
     ) -> Result<bool, AuthzError>;
+
+    /// 複数の check をまとめて判定する。結果は `items` と同じ順（Task 15.9・data-platform §16.4）。
+    ///
+    /// OpenFGA 実装は BatchCheck API で **50 問ごとに 1 往復**にまとめる。1 問でも判定に失敗したら
+    /// 全体をエラーにする（単発 [`check`](Self::check) と同じく fail-closed）。
+    ///
+    /// 既定実装は 1 問ずつ [`check`](Self::check) を呼ぶ（追加的な拡張点。BatchCheck を持たない
+    /// 実装・テストダブルはそのまま動く）。
+    async fn batch_check(
+        &self,
+        items: &[CheckTuple],
+        consistency: Consistency,
+    ) -> Result<Vec<bool>, AuthzError> {
+        let mut out = Vec::with_capacity(items.len());
+        for i in items {
+            out.push(
+                self.check(&i.subject, i.relation, &i.object, consistency)
+                    .await?,
+            );
+        }
+        Ok(out)
+    }
 
     /// `object#relation@subject` のタプルを付与する。**実際に付与したら `true`**、既存で
     /// no-op なら `false`。
@@ -191,6 +221,26 @@ impl AuthzClient for OpenFgaClient {
                 consistency.as_str(),
             )
             .await
+    }
+
+    async fn batch_check(
+        &self,
+        items: &[CheckTuple],
+        consistency: Consistency,
+    ) -> Result<Vec<bool>, AuthzError> {
+        let mut out = Vec::with_capacity(items.len());
+        for chunk in items.chunks(MAX_CHECKS_PER_BATCH) {
+            let keys: Vec<(&str, &str, &str)> = chunk
+                .iter()
+                .map(|i| (i.subject.as_str(), i.relation.as_str(), i.object.as_str()))
+                .collect();
+            out.extend(
+                self.fga
+                    .batch_check(&self.store_id, &self.model_id, &keys, consistency.as_str())
+                    .await?,
+            );
+        }
+        Ok(out)
     }
 
     async fn write_tuple(

@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { ArrowRight, BarChart3, ScrollText, Sparkles, Users } from "lucide-react";
+import { ArrowRight, BarChart3, Database, ScrollText, Sparkles, Users } from "lucide-react";
 
 import { fetchAdminModels, fetchUsage, type AdminModelsResponse, type UsageResponse } from "@/lib/admin-ai-api";
 import { useMe } from "@/hooks/use-me";
@@ -17,6 +17,7 @@ import { metricWithData, UsageChart } from "./usage-chart";
 const SHORTCUTS = [
   { href: "/admin/ai/insights", icon: BarChart3, title: "活用分析", body: "浸透・用途・効果（部署別）" },
   { href: "/admin/ai/models", icon: Sparkles, title: "モデル", body: "公開するモデル・既定・Auto・円換算" },
+  { href: "/admin/data/settings", icon: Database, title: "データ", body: "業務データの上限・クエリ最適化" },
   { href: "/admin/members", icon: Users, title: "メンバー", body: "招待・無効化・アクセスの理由", mock: true },
   // 監査ログは audit_viewer（admin とは独立）を持つ管理者にだけ出す（#634）。
   { href: "/admin/audit", icon: ScrollText, title: "監査ログ", body: "操作・権限判定・引用の記録", audit: true },

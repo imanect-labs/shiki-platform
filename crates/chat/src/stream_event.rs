@@ -64,6 +64,8 @@ pub enum StreamEventKind {
     SlideDraft { draft: serde_json::Value },
     /// 未保存の下書き CSV カード（save_csv の下書き確定型・Task 11.11）。
     CsvDraft { draft: serde_json::Value },
+    /// 未保存の下書きスキルカード（save_skill の下書き確定型・#919）。
+    SkillDraft { draft: serde_json::Value },
     /// AI が作成/編集した文書への参照カード（#381）。`document = {id, name, kind, version}`。
     DocumentRef { document: serde_json::Value },
     /// **レガシー**: 未保存の下書き Word 文書カード（#332・#381 で廃止）。
@@ -100,6 +102,9 @@ pub enum StreamEventKind {
     /// 直前の LLM リクエストのコンテキスト使用量（チャット画面のコンテキスト表示）。
     /// 生成のたびに出る（後のものが最新）。content へは projection しない。
     ContextUsage { usage: agent_core::ContextUsage },
+    /// 会話の自動タイトルが付いた（最初の発話からの要約・生成ワーカーが本文と並行して付ける）。
+    /// UI はサイドバー履歴と会話の見出しを読み直す。content へは projection しない。
+    ThreadTitle { title: String },
     /// 状態遷移（running/waiting_approval/done/failed/cancelled）。UI の生成状態表示に使う。
     Status { status: RunStatus },
     /// エラー（生成失敗）。
@@ -132,6 +137,7 @@ impl StreamEventKind {
             StreamEventKind::NoteDraft { .. } => "note_draft",
             StreamEventKind::SlideDraft { .. } => "slide_draft",
             StreamEventKind::CsvDraft { .. } => "csv_draft",
+            StreamEventKind::SkillDraft { .. } => "skill_draft",
             StreamEventKind::DocumentRef { .. } => "document_ref",
             StreamEventKind::DocumentDraft { .. } => "document_draft",
             StreamEventKind::SkillInvoked { .. } => "skill_invoked",
@@ -142,6 +148,7 @@ impl StreamEventKind {
             StreamEventKind::ApprovalResolved { .. } => "approval_resolved",
             StreamEventKind::FailureRecovery { .. } => "failure_recovery",
             StreamEventKind::ContextUsage { .. } => "context_usage",
+            StreamEventKind::ThreadTitle { .. } => "thread_title",
             StreamEventKind::Status { .. } => "status",
             StreamEventKind::Error { .. } => "error",
             StreamEventKind::Done { .. } => "done",

@@ -52,8 +52,56 @@ pub fn insert_blocks_at(
     }
 }
 
+/// 以前の書き込みが BigInt で残した数値の属性（見出しの level・番号付きリストの start）を
+/// Number に直す（#886）。直した要素の数を返す（0 なら何も書かない）。
+pub fn repair_number_attrs<F: XmlFragment>(txn: &mut TransactionMut<'_>, parent: &F) -> usize {
+    let children: Vec<XmlOut> = parent.children(txn).collect();
+    let mut fixed = 0;
+    for child in children {
+        let XmlOut::Element(el) = child else {
+            continue;
+        };
+        let key = match &**el.tag() {
+            "heading" => Some("level"),
+            "orderedList" => Some("start"),
+            _ => None,
+        };
+        if let Some(key) = key {
+            if let Some(yrs::Out::Any(Any::BigInt(n))) = el.get_attribute(txn, key) {
+                #[allow(clippy::cast_precision_loss)] // 見出しの段・リストの開始番号は小さい。
+                el.insert_attribute(txn, key, Any::Number(n as f64));
+                fixed += 1;
+            }
+        }
+        fixed += repair_number_attrs(txn, &el);
+    }
+    fixed
+}
+
 /// 要素配下の全テキストに `aiSuggestion` フォーマット属性を付ける（提案マーク）。
 fn mark_suggestion(txn: &mut TransactionMut<'_>, el: &XmlElementRef) {
+    mark_all(txn, el, "aiSuggestion");
+}
+
+/// 要素配下の全テキストに `aiDeletion`（削除の提案）を付ける（#886）。人が承認すると消え、
+/// 棄却すると印だけが外れて元に戻る。
+pub fn mark_deleted(txn: &mut TransactionMut<'_>, el: &XmlElementRef) {
+    mark_all(txn, el, "aiDeletion");
+}
+
+fn mark_all(txn: &mut TransactionMut<'_>, el: &XmlElementRef, key: &str) {
+    // 文字を持たない要素（区切り線・埋め込み・空の段落）と、文字が書式を持てないコードブロックは
+    // 要素の属性に付ける（エディタはノードの属性として読み、承認/棄却で同じように扱う）。
+    let tag = el.tag().to_string();
+    if tag == "codeBlock" || !has_text(txn, el) {
+        el.insert_attribute(txn, key, Any::Bool(true));
+        return;
+    }
+    // 表は丸ごとの提案であることを要素の属性で示す（セルの文字だけへの提案と区別する）。
+    // 中の文字にも印を付けて、取り消し線などで見えるようにする。
+    if tag == "table" {
+        el.insert_attribute(txn, key, Any::Bool(true));
+    }
     // 子を先に収集してから編集する（走査中の変更を避ける）。
     let children: Vec<XmlOut> = el.children(txn).collect();
     for child in children {
@@ -62,12 +110,62 @@ fn mark_suggestion(txn: &mut TransactionMut<'_>, el: &XmlElementRef) {
                 let len = text.len(txn);
                 if len > 0 {
                     let mut attrs: Attrs = HashMap::new();
-                    attrs.insert(Arc::from("aiSuggestion"), Any::Bool(true));
+                    attrs.insert(Arc::from(key), Any::Bool(true));
                     text.format(txn, 0, len, attrs);
                 }
             }
-            XmlOut::Element(inner) => mark_suggestion(txn, &inner),
+            XmlOut::Element(inner) => mark_all(txn, &inner, key),
             XmlOut::Fragment(_) => {}
+        }
+    }
+}
+
+/// 要素の中に 1 文字でも文字があるか。
+fn has_text(txn: &TransactionMut<'_>, el: &XmlElementRef) -> bool {
+    el.children(txn).any(|c| match c {
+        XmlOut::Text(t) => t.len(txn) > 0,
+        XmlOut::Element(e) => has_text(txn, &e),
+        XmlOut::Fragment(_) => false,
+    })
+}
+
+/// リストのブロック（同じ種類のリスト）の項目を、既存のリスト `list` の `at` 番目へ入れる
+/// （#886・`insert_after` でリストの途中に項目を足す）。
+pub fn insert_list_items_at(
+    txn: &mut TransactionMut<'_>,
+    list: &XmlElementRef,
+    at: u32,
+    block: &Block,
+    suggest: bool,
+) {
+    let at = at.min(list.len(txn));
+    let count = match block {
+        Block::BulletList(items) | Block::OrderedList { items, .. } => {
+            for (i, item) in items.iter().enumerate() {
+                let item_el = list.insert(txn, at + i as u32, XmlElementPrelim::empty("listItem"));
+                for (j, b) in item.iter().enumerate() {
+                    append_block(txn, &item_el, j as u32, b);
+                }
+            }
+            items.len()
+        }
+        Block::TaskList(items) => {
+            for (i, item) in items.iter().enumerate() {
+                let item_el = list.insert(txn, at + i as u32, XmlElementPrelim::empty("taskItem"));
+                item_el.insert_attribute(txn, "checked", Any::Bool(item.checked));
+                for (j, b) in item.content.iter().enumerate() {
+                    append_block(txn, &item_el, j as u32, b);
+                }
+            }
+            items.len()
+        }
+        _ => 0,
+    };
+    if suggest {
+        for i in 0..count as u32 {
+            if let Some(XmlOut::Element(el)) = list.get(txn, at + i) {
+                mark_suggestion(txn, &el);
+            }
         }
     }
 }
@@ -86,7 +184,9 @@ fn append_block<F: XmlFragment>(
         }
         Block::Heading { level, content } => {
             let el = parent.insert(txn, index, XmlElementPrelim::empty("heading"));
-            el.insert_attribute(txn, "level", Any::BigInt(i64::from(*level)));
+            // 数値の属性は JS の number で読まれる形（Number）で書く。BigInt だとエディタの
+            // 見出しが `levels.includes(2n)` に外れて全部 H1 で描かれる（#886）。
+            el.insert_attribute(txn, "level", Any::Number(f64::from(*level)));
             write_inlines(txn, &el, content);
         }
         Block::CodeBlock { language, code } => {
@@ -113,7 +213,8 @@ fn append_block<F: XmlFragment>(
         Block::OrderedList { start, items } => {
             let el = parent.insert(txn, index, XmlElementPrelim::empty("orderedList"));
             if *start != 1 {
-                el.insert_attribute(txn, "start", Any::BigInt(*start as i64));
+                #[allow(clippy::cast_precision_loss)] // リストの開始番号は 2^52 より十分小さい。
+                el.insert_attribute(txn, "start", Any::Number(*start as f64));
             }
             write_list_items(txn, &el, items, "listItem");
         }

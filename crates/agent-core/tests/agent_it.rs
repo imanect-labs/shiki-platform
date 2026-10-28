@@ -121,6 +121,7 @@ impl Tool for MockSearchTool {
                 page: Some(1),
                 heading_path: vec!["第1章".into()],
                 score: 0.9,
+                web: None,
             }],
             // 成果物 1 件（ループが Artifact イベントとして外部化することの検証用）。
             artifacts: vec![agent_core::ArtifactRef {
@@ -132,6 +133,7 @@ impl Tool for MockSearchTool {
             note_drafts: vec![],
             slide_drafts: vec![],
             csv_drafts: vec![],
+            skill_drafts: vec![],
             document_refs: vec![],
             skill_invocations: vec![],
             subagent_runs: vec![],

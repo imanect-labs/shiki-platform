@@ -97,6 +97,10 @@ run_gate "file-size (1ファイルの行数上限)" bash scripts/check-file-size
 run_gate "migration version (番号重複)" bash scripts/check-migration-versions.sh
 # ホストポートの二重 publish も同種（CI は全サービスを同時起動しないため構造的に拾えない）。
 run_gate "compose port (二重 publish)" bash scripts/check-compose-ports.sh
+# テストの選択に使う表（E2E の担当シナリオ対応表・ALWAYS_RUN）の載せ忘れ。spec・ページ・クレートを
+# 足した PR で CI の quality ジョブが落ちる前に気づく（#922）。
+run_gate "test selector (scripts/ci-select.py の検査)" python3 -m unittest discover -s scripts -p 'test_*.py'
+run_gate "test selection tables (対応表・ALWAYS_RUN)" python3 scripts/ci-select.py check
 
 # ---------- Rust ----------
 if touches '^(crates/|Cargo\.(toml|lock)$)'; then

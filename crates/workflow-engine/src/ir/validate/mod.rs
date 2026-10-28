@@ -5,6 +5,8 @@
 
 mod refs;
 pub(crate) use refs::parse_skill_ref;
+mod semantics;
+pub use semantics::{semantics_warnings, SEMANTICS_CHANGED};
 mod v2_graph;
 mod v3_vocab;
 mod v5_dataflow;
@@ -327,8 +329,8 @@ mod tests {
     fn v3_unknown_scope_and_node() {
         let ir = json!({
             "ir_version": 1, "name": "wf",
-            "declared_scopes": ["data.read"],  // Stage A 未対応
-            "nodes": [{ "id": "q", "type": "data.query", "params": {} }],
+            "declared_scopes": ["notify.send"],  // 未実装（予約語彙）
+            "nodes": [{ "id": "q", "type": "notify.send", "params": {} }],
             "edges": []
         });
         let errs = validate(&ir, &catalog()).unwrap_err();
