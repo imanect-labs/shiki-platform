@@ -32,6 +32,8 @@ const REASON: Record<string, string> = {
 export function VerifyChainButton() {
   const [open, setOpen] = React.useState(false);
   const [progress, setProgress] = React.useState<Progress | null>(null);
+  // 保持期間で先頭を消したチェーンなら、消した行数（検証は削除の境目から始まる・#831）。
+  const [purged, setPurged] = React.useState(0);
   // 実行ごとの番号。閉じる・もう一度確かめると番号が進み、古い実行は結果を書かず続きも取りに行かない。
   const runId = React.useRef(0);
   React.useEffect(() => () => void (runId.current += 1), []);
@@ -48,6 +50,7 @@ export function VerifyChainButton() {
       for (;;) {
         const r: ChainReport = await verifyAuditChain(after);
         if (stale()) return;
+        setPurged(r.anchor_id != null ? r.purged_rows : 0);
         checked += r.checked;
         legacy += r.legacy;
         if (r.broken) {
@@ -119,9 +122,11 @@ export function VerifyChainButton() {
                     #{progress.broken.id}・{formatTime(progress.broken.created_at)}・
                     {actionLabel(progress.broken.action) ?? progress.broken.action}
                   </span>
-                  <span className="text-xs text-muted-foreground">
-                    それより前の {formatInt(Math.max(progress.checked - 1, 0))} 件は崩れていません。
-                  </span>
+                  {progress.checked > 1 ? (
+                    <span className="text-xs text-muted-foreground">
+                      それより前の {formatInt(progress.checked - 1)} 件は崩れていません。
+                    </span>
+                  ) : null}
                 </div>
               </div>
             ) : (
@@ -130,6 +135,11 @@ export function VerifyChainButton() {
                 検証できませんでした: {progress.message}
               </p>
             )}
+            {purged > 0 ? (
+              <p className="text-xs text-muted-foreground">
+                保持期間を過ぎた古い記録 {formatInt(purged)} 件は削除済みです。検証は削除した境目から始めています。
+              </p>
+            ) : null}
             <p className="text-xs leading-relaxed text-muted-foreground">
               記録の書き換え・削除・差し込みを検知できます。DB に書き込める人が、それ以降の記録をすべて計算し直す改ざんは検知できません。読み取り・拒否の記録はチェーンに入りません。
             </p>

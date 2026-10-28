@@ -4,6 +4,7 @@
 //! shiki-admin retenant (--legacy | --from <tenant>) --to <tenant> [--actor <id>] [--execute]
 //! shiki-admin secrets-reencrypt [--execute] [--batch <n>]
 //! shiki-admin audit-viewer (grant|revoke) --tenant <t> --org <o> --user <sub> [--actor <id>]
+//! shiki-admin audit-retention --tenant <t> --days <n> [--actor <id>]
 //! shiki-admin workflow-conditions [--tenant <t>] [--all-versions] [--batch <n>]
 //! shiki-admin data-table-shape --tenant <t> --table <uuid> [--out <path>]
 //! shiki-admin migrate-org-groups [--only <slug>]... [--exclude <slug>]... [--execute]
@@ -19,6 +20,7 @@
 //! `secrets-reencrypt` は旧版（AAD なし）シークレットを行束縛の現行版へ移す（#814・
 //! `shiki_admin/secrets_reencrypt.rs`）。
 //! `audit-viewer`: 監査閲覧者（`organization#audit_viewer`・#634）を付ける・外す（即時実行）。
+//! `audit-retention`: 監査ログの保持期間（90〜3650 日・既定 365・#831）を設定する（即時実行）。
 //!
 //! `migrate-org-groups` はテナント無修飾の旧 org group（`/acme`）を `/tenants/<tenant>/...` へ
 //! 移す（#811・`shiki_admin/org_groups.rs`）。以下は `retenant` の説明。
@@ -53,6 +55,8 @@ use storage::audit::AuditAction;
 use storage::{ObjectStore, S3ObjectStore};
 use uuid::Uuid;
 
+#[path = "shiki_admin/audit_retention.rs"]
+mod audit_retention;
 #[path = "shiki_admin/audit_viewer.rs"]
 mod audit_viewer;
 #[path = "shiki_admin/data_shape.rs"]
@@ -79,6 +83,7 @@ async fn main() -> anyhow::Result<()> {
         Some("retenant") => retenant(&args[1..]).await,
         Some("secrets-reencrypt") => secrets_reencrypt::run(&args[1..]).await,
         Some("audit-viewer") => audit_viewer::run(&args[1..]).await,
+        Some("audit-retention") => audit_retention::run(&args[1..]).await,
         Some("workflow-conditions") => workflow_conditions::run(&args[1..]).await,
         Some("data-table-shape") => data_shape::run(&args[1..]).await,
         Some("migrate-org-groups") => org_groups::run(&args[1..]).await,
@@ -87,6 +92,7 @@ async fn main() -> anyhow::Result<()> {
                 "usage: shiki-admin retenant (--legacy | --from <tenant>) --to <tenant> [--actor <id>] [--execute]\n       \
                  shiki-admin secrets-reencrypt [--execute] [--batch <n>]\n       \
                  shiki-admin audit-viewer (grant|revoke) --tenant <t> --org <o> --user <sub> [--actor <id>]\n       \
+                 shiki-admin audit-retention --tenant <t> --days <n> [--actor <id>]\n       \
                  shiki-admin workflow-conditions [--tenant <t>] [--all-versions] [--batch <n>]\n       \
                  shiki-admin data-table-shape --tenant <t> --table <uuid> [--out <path>]\n       \
                  shiki-admin migrate-org-groups [--only <slug>]... [--exclude <slug>]... [--execute]"

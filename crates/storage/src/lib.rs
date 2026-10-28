@@ -26,6 +26,7 @@
 pub mod audit;
 pub mod audit_action;
 pub mod audit_chain;
+pub mod audit_retention;
 pub mod audit_view;
 pub mod content_address;
 pub mod directory;
