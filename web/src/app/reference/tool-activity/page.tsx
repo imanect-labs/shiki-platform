@@ -190,6 +190,7 @@ const ALL_VOCAB: ToolActivityItem[] = [
   { name: "fs_edit", input: { name: "outline.md" } },
   { name: "fs_delete", input: { name: "tmp.txt" } },
   { name: "shell", input: { cmd: "ls -la" } },
+  { name: "ui_reference", input: { kinds: ["pie", "calc"] } },
   { name: "emit_workflow", input: {} },
   { name: "read_workflow", input: {} },
   { name: "search_workflows", input: { query: "経費" } },

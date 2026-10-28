@@ -74,6 +74,9 @@ vocab_enum! {
         /// 調査の**委譲**（隔離コンテキストのサブエージェントを 1 体走らせる・#391）。
         /// 子は新しい履歴・read-only ツールのみで走り、**合成済み findings だけ**を返す。
         Subagent => "subagent",
+        /// 回答の ```ui ブロック（Yui）の種類ごとの書き方を返す（`@imanect/yui/guide` から
+        /// 生成・読み取りのみ）。早見は system にあり、図を書く前にこれで読む。
+        UiReference => "ui_reference",
         /// 撤去した generative UI の発話ツール（#604）。図は回答の本文に ```ui で書く。
         /// 保存済みのスキルの `allowed_tools` が読めるよう**名前だけ**残す（どこにも提示しない）。
         EmitUi => "emit_ui",
@@ -209,6 +212,8 @@ impl ToolName {
             | Self::FsAppend
             | Self::FsEdit
             | Self::Subagent
+            // 図を書く回答のたびに使う（定義は小さい・遅延にすると検索の 1 手が毎回挟まる）。
+            | Self::UiReference
             | Self::EmitUi
             // 構造化データの読取は「社内の知識源」として doc_search と同じく常時載せる（発話ユーザーに
             // 見えるテーブルが 1 つも無ければ提示しない・description のテーブル一覧は有界）。
@@ -322,6 +327,7 @@ impl ToolName {
             | Self::FsAppend
             | Self::FsEdit
             | Self::Subagent
+            | Self::UiReference
             | Self::EmitUi
             | Self::DataQuery
             | Self::DataSchema => "",

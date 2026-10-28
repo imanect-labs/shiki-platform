@@ -32,6 +32,8 @@ mod toolset;
 pub mod trajectory;
 /// ```ui ブロック（Yui）の図の書き方（#530）。
 mod yui;
+/// ```ui の種類の早見と、種類ごとの書き方を返す `ui_reference`（`@imanect/yui/guide` から生成）。
+mod yui_reference;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;

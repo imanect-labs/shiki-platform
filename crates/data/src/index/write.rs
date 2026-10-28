@@ -533,12 +533,18 @@ impl Batch {
 /// (tenant_int, table_int, field_id) の 3 列で列の索引行を全部読む。この 3 列の前方一致は主キーと値索引で
 /// コストがほぼ同じなので、どちらの索引になるかも統計の具合で入れ替わる。そこで組ごとの探索を
 /// `LATERAL … OFFSET 0`（引き上げ不可＝必ず組ごとのパラメータ付き探索）にして行の ctid を集め、
-/// 本体は TID で消す。内側の条件は 4 列とも等値なので、主キー以外の索引は前方一致で負け、計画が統計に依らない。
+/// 本体は TID で消す。
+///
+/// 外側の `tenant_int` は `+ 0` で索引に使えない形にする（#961）。統計がその行をほとんど数えていないと
+/// (tenant_int, table_int) の索引探索の推定が 1 行まで下がり、TID 探索（推定 10 行）に勝って、テーブルの
+/// 索引行を全部たどって ctid で絞る計画になった。`table_int` はパーティションの枝刈りに要るので素のまま
+/// 残す（どの索引も先頭は `tenant_int` なので、`table_int` だけでは索引の全走査になり TID 探索に負ける）。
+///
 /// ctid はパーティションをまたぐと一意でないが、同じテーブルの行は 1 パーティション
 /// （`table_int` のハッシュ）に収まり、外側も `tenant_int` / `table_int` で絞るので取り違えない。
 pub(crate) fn delete_sql(relation: &str, record_column: &str) -> String {
     format!(
-        "DELETE FROM {relation} t WHERE t.tenant_int = $1 AND t.table_int = $2 AND t.ctid = ANY(ARRAY(\
+        "DELETE FROM {relation} t WHERE t.tenant_int + 0 = $1 AND t.table_int = $2 AND t.ctid = ANY(ARRAY(\
          SELECT i.ctid FROM unnest($3::int2[]) AS f(id) CROSS JOIN unnest($4::int8[]) AS r(id) \
          CROSS JOIN LATERAL (SELECT ctid FROM {relation} WHERE tenant_int = $1 AND table_int = $2 \
          AND field_id = f.id AND {record_column} = r.id OFFSET 0) i))"

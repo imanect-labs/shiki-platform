@@ -78,6 +78,11 @@ impl ChatWorker {
             }
             tools.push(Arc::new(fetch));
         }
+        // ```ui の種類ごとの書き方（早見は system にある・ui_reference で書く前に読む）。
+        // 外部への入出力も認可も無い読み取りなので、図を書かせる構成なら常に提示する。
+        if self.config.yui {
+            tools.push(Arc::new(super::yui_reference::UiReferenceTool));
+        }
         // AI ワークフロー編集（emit_workflow / read_workflow・Task 10.13）:
         // ストアとカタログ源（保存 API と同一実装）が両方配線されている時のみ提示する。
         if let (Some(store), Some(catalog)) = (&self.workflow_store, &self.workflow_catalog) {
