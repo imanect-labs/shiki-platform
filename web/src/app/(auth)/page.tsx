@@ -8,6 +8,7 @@ import { useMe } from "@/hooks/use-me";
 import { createThread, type Attachment } from "@/lib/chat-api";
 import type { ActiveCommand } from "@/lib/slash-command";
 import { stashPending } from "@/lib/pending-message";
+import { setPendingSelection, type SelectionContext } from "@/lib/selection-context";
 import { storageScopeGeneration } from "@/lib/user-storage";
 import { HOME_SCOPE, moveModelChoice } from "@/lib/model-choice";
 import { moveToolChoice } from "@/lib/tool-choice";
@@ -40,10 +41,14 @@ export default function HomePage() {
   const startChat = async (
     text: string,
     attachments: Attachment[],
-    _context?: unknown,
+    context?: SelectionContext,
     command?: ActiveCommand,
   ) => {
-    if (starting || !text.trim()) return;
+    // 入力欄は送信時に選択チップを消費する。送らなかったときは戻す（黙って捨てない）。
+    if (starting || !text.trim()) {
+      if (context) setPendingSelection(context);
+      return;
+    }
     setStarting(true);
     const startedAt = storageScopeGeneration();
     try {
@@ -66,6 +71,8 @@ export default function HomePage() {
           text,
           attachments,
           autonomous: asAutonomous,
+          // CSV の「AI に依頼」の選択範囲（node_id 付き）を最初の発話へ載せる。
+          context,
           skills: command
             ? [{ artifactId: command.skillId, version: command.skillVersion }]
             : undefined,
@@ -78,6 +85,7 @@ export default function HomePage() {
       moveToolChoice(HOME_SCOPE, thread.id);
       router.push(`/c/${thread.id}`);
     } catch {
+      if (context) setPendingSelection(context);
       toast({ description: "チャットを開始できませんでした。ログイン状態をご確認ください。" });
       setStarting(false);
     }

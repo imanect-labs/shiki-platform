@@ -522,7 +522,10 @@ pub(crate) async fn wire_chat(
     )
     // 構造化データのツール（data_query / data_schema / data_record_write・Task 15.7）。
     // API・ワークフローと同じ DataStore（クエリのチョークポイント）を共有する。
-    .with_data((**data).clone());
+    .with_data((**data).clone())
+    // 本人に見えるワークフローの検索（search_workflows）。一覧 API と同じ所有∪共有の認可で、
+    // 図のボタンの `-> workflow 名前` に実在する名前を書かせる。
+    .with_workflow_directory(workflow_directory(skill_artifacts, db));
     // ワーカータスクは detach（プロセス生存中は走り続ける）。
     worker.spawn(config.chat.worker_concurrency);
     tracing::info!(
@@ -531,6 +534,18 @@ pub(crate) async fn wire_chat(
         "チャット生成ワーカーを起動しました"
     );
     Ok(Some(Arc::new(store)))
+}
+
+/// 本人に見えるワークフローの検索源（search_workflows）。一覧 API と同じ ArtifactStore
+/// （所有∪共有の認可）と一覧要約の射影を使う。
+fn workflow_directory(
+    artifacts: &Arc<artifact::ArtifactStore>,
+    db: &sqlx::PgPool,
+) -> Arc<dyn chat::WorkflowDirectory> {
+    Arc::new(api::workflow_directory::ApiWorkflowDirectory::new(
+        Arc::clone(artifacts),
+        workflow_engine::WorkflowSummaryStore::new(db.clone()),
+    ))
 }
 
 /// ワークフロー実行時（run ワーカー/スケジューラ/イベント relay）を配線する（Stage A W3）。

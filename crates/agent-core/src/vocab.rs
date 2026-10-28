@@ -81,6 +81,9 @@ vocab_enum! {
         EmitWorkflow => "emit_workflow",
         /// 既存ワークフロー IR の読み取りツール（AI 編集の前提・Task 10.13）。
         ReadWorkflow => "read_workflow",
+        /// 本人に見えるワークフローを名前・説明で探すツール（図のボタン `-> workflow 名前` に
+        /// 実在する名前を書くため・入力の項目も返す・読み取りのみ）。
+        SearchWorkflows => "search_workflows",
         /// ノート（md/Yjs）の共同編集ツール（AI が編集参加者として編集・Task 11P.4）。
         DocumentEdit => "document.edit",
         /// ノート本文の読み取りツール（document.edit の前提・現状の md を得る・Task 11P.4）。
@@ -215,6 +218,7 @@ impl ToolName {
             | Self::Shell
             | Self::EmitWorkflow
             | Self::ReadWorkflow
+            | Self::SearchWorkflows
             | Self::DocumentEdit
             | Self::DocumentRead
             | Self::DocumentEmbed
@@ -250,6 +254,10 @@ impl ToolName {
             Self::Shell => "shell bash command terminal run コマンド 実行 端末",
             Self::EmitWorkflow => "workflow automation create update ワークフロー 自動化 作成",
             Self::ReadWorkflow => "workflow read inspect ワークフロー 読む 確認",
+            Self::SearchWorkflows => {
+                "workflow search find list lookup name button launch app form automation \
+                 ワークフロー 探す 検索 一覧 名前 ボタン 起動 実行 フォーム 自動化"
+            }
             Self::DocumentEdit => {
                 "note markdown document edit rewrite append ノート 文書 編集 追記 書き換え"
             }
