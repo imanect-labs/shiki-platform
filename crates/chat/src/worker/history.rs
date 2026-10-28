@@ -150,15 +150,8 @@ pub(super) fn message_text_with(
             // node_id を含める: 添付は「AI に読ませたい参照」であり、document.read /
             // office.live_edit / csv.query 等の対象指定にそのまま使える（認可は各ツールが
             // 実行主体の ReBAC で毎回強制するため、id の開示は権限を広げない）。
-            // 索引の無いファイル（大きな CSV 等）は doc_read で読めないため、種別ごとの
-            // 読み取りツールを名前で案内する（[`crate::file_reader`]）。
             ContentBlock::FileRef { node_id, name } => {
-                let hint = crate::file_reader::direct_read_hint(name, node_id)
-                    .map(|h| format!("。{h}"))
-                    .unwrap_or_default();
-                parts.push(format!(
-                    "[添付ファイル: {name}（node_id: {node_id}）{hint}]"
-                ));
+                parts.push(format!("[添付ファイル: {name}（node_id: {node_id}）]"));
             }
             // 「さっきのワークフローを直して」等の追編集に id/version が要る（Task 10.13）。
             ContentBlock::WorkflowRef { workflow } => {
@@ -333,9 +326,9 @@ pub(super) fn tools_in_use(blocks: &[ContentBlock], out: &mut Vec<String>) {
             ContentBlock::NoteDraft { .. } => push(T::SaveNote.as_str()),
             ContentBlock::SlideDraft { .. } => push(T::SaveSlide.as_str()),
             ContentBlock::CsvDraft { .. } => push(T::SaveCsv.as_str()),
-            // 添付の読み取りツール（上の観測テキストが案内する）を検索の 1 手なしで使わせる。
+            // 添付の読み取りツール（system の添付の節が案内する・#962）を検索の 1 手なしで使わせる。
             ContentBlock::FileRef { name, .. } => {
-                if let Some((t, _)) = crate::file_reader::direct_reader(name) {
+                if let Some(t) = crate::file_reader::direct_reader(name) {
                     push(t.as_str());
                 }
             }
@@ -896,9 +889,9 @@ mod tests {
         );
     }
 
-    /// 索引の無い大きな CSV でも読めるよう、添付の読み取りツールを案内して常時ロードする。
+    /// 索引の無い大きな CSV でも読めるよう、添付の読み取りツールを常時ロードする。
     #[test]
-    fn file_ref_names_and_loads_the_direct_reader() {
+    fn file_ref_loads_the_direct_reader() {
         let blocks = vec![
             ContentBlock::FileRef {
                 node_id: "c1".into(),
@@ -909,11 +902,6 @@ mod tests {
                 name: "報告.pdf".into(),
             },
         ];
-        let text = message_text(&blocks);
-        assert!(text.contains(
-            "[添付ファイル: customers-100000.csv（node_id: c1）。csv.query に node_id: c1 を渡して直接読める]"
-        ));
-        assert!(text.contains("[添付ファイル: 報告.pdf（node_id: p1）]"));
         let mut out = Vec::new();
         tools_in_use(&blocks, &mut out);
         assert_eq!(out, ["csv.query"]);

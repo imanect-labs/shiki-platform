@@ -180,9 +180,14 @@ fn observation(name: &str, file_id: Uuid, input: &ReadInput, read: DocRead) -> S
         DocRead::NotIndexed => {
             // 索引に頼らず原本を読めるツールがある種別は、ここで止めずにそちらへ案内する
             // （大きな CSV は索引が無く、ここで「読めない」と答えて終わっていた）。
-            let next = crate::file_reader::direct_read_hint(&name, &file_id.to_string())
-                .map(|h| format!("この形式は {h}。"))
-                .unwrap_or_default();
+            let next = if crate::file_reader::direct_reader(&name).is_some() {
+                format!(
+                    "この形式は原本を直接読むツールで読める（会話の添付なら system の添付の節に\
+                     載っている。node_id: {file_id}）。"
+                )
+            } else {
+                String::new()
+            };
             format!(
                 "文書「{name}」はまだ検索用の索引が無いか、本文を取り出せない形式のため doc_read では読めない。{next}"
             )
@@ -492,7 +497,7 @@ mod tests {
         );
         assert!(none.contains("索引が無い"));
         assert!(
-            !none.contains("直接読める"),
+            !none.contains("直接読む"),
             "読み取りツールの無い種別は案内しない"
         );
         // 索引の無い大きな CSV は、ここで止めずに csv.query へ案内する。
@@ -503,6 +508,7 @@ mod tests {
             &input(ReadFrom::Start, None),
             DocRead::NotIndexed,
         );
-        assert!(csv.contains(&format!("csv.query に node_id: {id} を渡して直接読める")));
+        assert!(csv.contains("原本を直接読むツールで読める"));
+        assert!(csv.contains(&format!("node_id: {id}")));
     }
 }
