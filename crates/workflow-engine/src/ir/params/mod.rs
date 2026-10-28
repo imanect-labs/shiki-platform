@@ -285,6 +285,22 @@ mod tests {
         );
     }
 
+    /// D-83: 置いたばかりの空の URL と判定用のモデルは保存を止めない（実行と自動実行のオンの前に止める）。
+    /// 書いた URL の誤りは今までどおり止める。
+    #[test]
+    fn blank_url_and_decide_model_do_not_block_save() {
+        assert!(check_params(NodeType::HttpRequest, &json!({ "url": "" })).is_ok());
+        assert!(check_params(NodeType::HttpRequest, &json!({ "url": "  " })).is_ok());
+        let err = check_params(NodeType::HttpRequest, &json!({ "url": "https://" })).unwrap_err();
+        assert_eq!(err.path, "/params/url");
+        assert!(check_params(NodeType::HttpRequest, &json!({ "url": "ftp://a.example" })).is_err());
+        let decide = json!({
+            "model": "", "state": "",
+            "questions": [{ "key": "q1", "type": "boolean", "instructions": "請求か" }]
+        });
+        assert!(check_params(NodeType::AiDecide, &decide).is_ok());
+    }
+
     #[test]
     fn nested_error_has_path() {
         let err = check_params(

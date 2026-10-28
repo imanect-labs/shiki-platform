@@ -119,6 +119,16 @@ pub(super) fn v4_refs(ir: &WorkflowIr, catalog: &Catalog, errors: &mut Vec<Valid
             );
             continue;
         };
+        // URL が空のうちは宛先を照合しない（実行と自動実行のオンの前に止まる・readiness・D-83）。入れた後の
+        // 保存で照合する。
+        if node
+            .params
+            .get("url")
+            .and_then(|v| v.as_str())
+            .is_some_and(|u| u.trim().is_empty())
+        {
+            continue;
+        }
         // secret を添付する http.request は URL ホスト部が**リテラル必須**（ir.md §7.2）。
         // url が文字列でない（$from 等）とホストが確定できず宛先束縛を検査できない＝
         // 実行時任意ホストへ secret を添付され得るため、保存時に拒否する（fail-closed・P1）。

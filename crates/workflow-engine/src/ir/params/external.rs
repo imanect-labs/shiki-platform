@@ -128,6 +128,11 @@ impl HttpRequestParams {
             path: "/params/url".to_string(),
             message,
         };
+        // 空の URL は保存を止めない（置いたばかりのブロックを保存できるように、実行と自動実行のオンの前に止める・
+        // readiness・D-83）。
+        if self.url.trim().is_empty() {
+            return Ok(());
+        }
         let parsed =
             url::Url::parse(&self.url).map_err(|e| issue(format!("url が解析できません: {e}")))?;
         if !matches!(parsed.scheme(), "http" | "https") {

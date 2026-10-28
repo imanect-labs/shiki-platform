@@ -171,10 +171,8 @@ fn options_and_levels_have_bounds() {
 
 #[test]
 fn model_and_state_are_checked() {
-    assert_eq!(
-        err(&with(base(), "/model", json!(""))).path,
-        "/params/model"
-    );
+    // 空のモデルは保存を止めない（実行と自動実行のオンの前に止める・readiness・D-83）。
+    assert!(check_params(NodeType::AiDecide, &with(base(), "/model", json!(""))).is_ok());
     // モデルはリテラルの文字列（値式にしない）。
     assert_eq!(
         err(&with(base(), "/model", json!({ "$from": "input" }))).path,

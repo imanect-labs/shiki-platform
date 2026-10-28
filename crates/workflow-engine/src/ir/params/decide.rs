@@ -197,9 +197,8 @@ impl AiDecideParams {
     /// # Errors
     /// 最初に見つけた誤り（path は `/params/...`）。
     pub fn check_cross_fields(&self) -> Result<(), ParamsIssue> {
-        if self.model.trim().is_empty() {
-            return Err(issue("/params/model", "判定用のモデルを選んでください"));
-        }
+        // 空のモデルは保存を止めない（置いたばかりのブロックを保存できるように、実行と自動実行のオンの前に止める・
+        // readiness・D-83）。
         if let ValueExpr::Literal(v) = &self.state {
             if !(v.is_string() || v.is_object() || v.is_array()) {
                 return Err(issue(
