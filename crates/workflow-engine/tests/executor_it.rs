@@ -1252,3 +1252,65 @@ async fn run_info_dates_can_be_inserted_into_file_names() {
     assert_eq!(w.name, "日報-2026-10-28.md");
     assert_eq!(w.bytes, b"2026-10-28T08:30:00+09:00");
 }
+
+/// 相手が誤りを返したとき: 省略（既存の定義）は今のまま成功として次へ渡す。fail_on_error_status なら失敗にし、
+/// 4xx はやり直さない、5xx と 429 はやり直せる失敗にする（BUG-99・D-95）。送ったことは監査に残す。
+#[tokio::test]
+async fn http_error_statuses_fail_the_block_only_when_asked() {
+    let base = json!({ "method": "POST", "url": "https://api.example.com/hook" });
+    for (status, fail, want) in [
+        (400, None, None),
+        (500, Some(false), None),
+        (200, Some(true), None),
+        (404, Some(true), Some(("http_error_status", false))),
+        (429, Some(true), Some(("http_retryable_status", true))),
+        (503, Some(true), Some(("http_retryable_status", true))),
+    ] {
+        let ports = Arc::new(FakePorts::with_http_status(status));
+        let audit = Arc::new(CapturingAudit::default());
+        let exec = executor(Arc::clone(&ports), Arc::clone(&audit));
+        let mut params = base.clone();
+        if let Some(f) = fail {
+            params["fail_on_error_status"] = json!(f);
+        }
+        let res = exec
+            .execute(
+                "http.request",
+                &params,
+                &ctx(json!({}), vec!["http.egress".into()]),
+            )
+            .await;
+        match want {
+            None => {
+                assert!(res.ok, "{status} {fail:?}: {:?}", res.error);
+                assert_eq!(res.output["status"], status);
+            }
+            Some((code, retryable)) => {
+                assert!(!res.ok, "{status}");
+                let err = res.error.unwrap();
+                assert_eq!(
+                    (err.code.as_str(), err.retryable),
+                    (code, retryable),
+                    "{status}"
+                );
+                assert!(err.message.contains("api.example.com"), "{}", err.message);
+                assert!(err.message.contains(&status.to_string()), "{}", err.message);
+                assert_eq!(
+                    workflow_engine::run::failure::category_of(code),
+                    if retryable {
+                        workflow_engine::FailureCategory::Temporary
+                    } else {
+                        workflow_engine::FailureCategory::Configuration
+                    }
+                );
+            }
+        }
+        let records = audit.records.lock().unwrap();
+        assert!(
+            records
+                .iter()
+                .any(|(api, ok, meta)| api == "http.request" && *ok && meta["status"] == status),
+            "{status}: 送ったことが監査に無い"
+        );
+    }
+}

@@ -15,7 +15,9 @@ use crate::run::NodeContext;
 
 use super::capability::parse_params;
 use super::exec::CapabilityNodeExecutor;
-use super::http::{check_destination, redirect_denied, summarize_response, HttpDenied};
+use super::http::{
+    check_destination, classify_error_status, redirect_denied, summarize_response, HttpDenied,
+};
 use super::ports::{ExecCtx, HttpSendReq, LlmInvokeReq, PortError, ResolvedSecretView};
 use super::resolver::{as_bytes, as_string, as_u32, opt_param, param, typed, ParamResolver};
 
@@ -224,13 +226,24 @@ impl CapabilityNodeExecutor {
             ));
         }
 
-        // 監査/journal には本文を載せない（ステータス＋ホストのみ）。
+        // 監査/journal には本文を載せない（ステータス＋ホストのみ）。送信は済んでいるので、相手の誤りで
+        // ブロックを失敗にするときも送ったことは残す。
         self.audit(
             &ec.tenant_id,
             "http.request",
             true,
             &summarize_response(resp.status, &host),
         );
+        // 相手の誤りでブロックを失敗にする（選んだときだけ・省略は今までどおり成功として次へ渡す・BUG-99）。
+        if p.fail_on_error_status == Some(true) {
+            if let Some((code, retryable)) = classify_error_status(resp.status) {
+                return Err(PortError::new(
+                    code,
+                    error_status_message(&host, resp.status, retryable),
+                    retryable,
+                ));
+            }
+        }
         // 出力は次ノードへ本文を渡す（監査には出さない）。外部の応答に反射した secret の平文は、step の出力
         // （実行履歴・画面に返す結果）へ書く前にマスクする（記録時のレダクト・write-only 原則・GAP-09 の T0）。
         let body = response_body(&resp.body, resolved_secret.as_ref());
@@ -270,6 +283,18 @@ impl CapabilityNodeExecutor {
         }
         Ok(host)
     }
+}
+
+/// 相手が誤りを返して失敗にしたときの文言（作成者向け・応答の本文は載せない・BUG-99）。
+fn error_status_message(host: &str, status: u16, retryable: bool) -> String {
+    let next = if retryable {
+        "送り先のサービスが一時的に応じられない状態です。少し待ってから、もう一度実行してください。"
+    } else {
+        "送る内容、URL、使うシークレットを確かめてください。"
+    };
+    format!(
+        "送り先のサービス（{host}）が誤りを返しました（応答のステータスコード {status}）。{next}"
+    )
 }
 
 /// 外部の応答に反射した secret の平文をマスクする Redactor（この呼び出しで解決した平文だけ・無ければ `None`）。

@@ -32,4 +32,12 @@ secret?: HttpSecretRef,
 /**
  * リダイレクトの扱い（既定 deny・Stage A は deny のみ）。
  */
-redirect?: RedirectPolicy, };
+redirect?: RedirectPolicy, 
+/**
+ * 相手が誤り（400 以上）を返したらブロックを失敗にするか（BUG-99・D-95）。
+ *
+ * 省略は `false`（この項目が無かったころの定義の挙動: 誤りの応答も成功として次へ渡す）。エディタで新しく
+ * 置くブロックは `true` を入れる。失敗の code は 4xx が `http_error_status`（やり直さない）、5xx と 429 が
+ * `http_retryable_status`（試す回数の規則でやり直す）。
+ */
+fail_on_error_status?: boolean, };

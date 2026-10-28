@@ -44,6 +44,8 @@ pub const KNOWN_CODES: &[(&str, FailureCategory)] = {
         ("effect_in_progress", Temporary),
         ("concurrency_limited", Temporary),
         ("fetch_failed", Temporary),
+        // 外部のサービスが一時的な誤り（5xx・429）を返した（http.request の fail_on_error_status・BUG-99）。
+        (crate::nodes::http::HTTP_RETRYABLE_STATUS, Temporary),
         // 利用の上限
         ("quota_exceeded", Quota),
         ("sandbox_limit", Quota),
@@ -69,6 +71,8 @@ pub const KNOWN_CODES: &[(&str, FailureCategory)] = {
         ("unsupported_stage_a", Configuration),
         ("unknown_node", Configuration),
         ("redirect_denied", Configuration),
+        // 外部のサービスが誤り（4xx）を返した（送る内容・URL・シークレットを直す・BUG-99）。
+        (crate::nodes::http::HTTP_ERROR_STATUS, Configuration),
         ("fanout_limit_exceeded", Configuration),
         ("model_unavailable", Configuration),
         ("model_choice_disabled", Configuration),
