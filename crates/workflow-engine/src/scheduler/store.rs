@@ -135,6 +135,15 @@ pub(crate) fn trigger_filter_admits(
     }
 }
 
+/// 読めないスケジュール（保存時の検証より前に保存された式など）は発火しない。黙って止まらないよう、どのトリガかを
+/// 警告に残す（曜日の読み方を標準に直したとき、写せない式を誤りにした・BUG-95）。
+fn unreadable_schedule(t: &ScheduleTriggerRow, cron5: &str, e: &cron::CronError) {
+    tracing::warn!(
+        tenant = %t.tenant_id, trigger = %t.trigger_id, workflow = %t.workflow_id, cron = %cron5, error = %e,
+        "スケジュールを読めないため発火しません（ワークフローを開いて式を直し、保存し直してください）"
+    );
+}
+
 /// スケジューラ/マッチャの永続化。
 #[derive(Clone)]
 pub struct SchedulerStore {
@@ -203,7 +212,10 @@ impl SchedulerStore {
                         vec![last]
                     }
                     Ok(_) => Vec::new(),
-                    Err(_) => continue,
+                    Err(e) => {
+                        unreadable_schedule(t, cron5, &e);
+                        continue;
+                    }
                 }
             } else if catchup == "skip" {
                 // **区間内の最新 occurrence のみ**。長時間ダウン（>1000 回分）でも最新を取りこぼさない
@@ -211,13 +223,19 @@ impl SchedulerStore {
                 match cron::latest_occurrence_between(cron5, tz, after, now) {
                     Ok(Some(last)) => vec![last],
                     Ok(None) => Vec::new(),
-                    Err(_) => continue,
+                    Err(e) => {
+                        unreadable_schedule(t, cron5, &e);
+                        continue;
+                    }
                 }
             } else {
                 // 全 occurrence（catchup=all は Stage A 外だが防御的に全件）。
                 match cron::occurrences_between(cron5, tz, after, now, 10_000) {
                     Ok(v) => v,
-                    Err(_) => continue,
+                    Err(e) => {
+                        unreadable_schedule(t, cron5, &e);
+                        continue;
+                    }
                 }
             };
             if occ.is_empty() {
