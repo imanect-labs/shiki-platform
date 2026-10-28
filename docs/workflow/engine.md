@@ -937,6 +937,9 @@ step の `timeout_sec`（ノード種ごとに既定・上限あり・ir.md §7�
     時間より先に打ち切らない（ノードの上限を超えても）。
   - 打ち切りで捨てた実行の副作用は §7 の at-least-once の範囲（内部能力は effect_journal の予約の回収窓・外部 http は
     exactly-once を約束しない）。途中で切れた LLM の呼び出しの使用量は記録されないことがある。
+  - `script.run`・`skill.invoke` の script は `spawn_blocking` の中で走り、フューチャを捨てても自分の wall-clock 上限まで
+    走り続ける。止める合図が立った後の `Shiki.*` 呼び出しはホストが断る（`step_cancelled`・retryable でない）。失敗にした
+    step の外部への送信や書き込みが後から起き、やり直しと二重になるのを防ぐ（BUG-96）。
 - run timeout: run failed ＋ in-flight step をドレイン。
 
 ### 9.5 リース失効（ワーカー死）
