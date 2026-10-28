@@ -67,11 +67,11 @@ pub struct ReplyColumn {
 #[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct ReplyFileSpec {
-    /// ファイルの ID の位置（既定 `/id`）。
+    /// ファイルの ID の位置（省略時は `/file_id`、無ければ `/id`・D-96）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub id_path: Option<String>,
-    /// ファイルの名前の位置（既定 `/name`）。
+    /// ファイルの名前の位置（省略時は `/name`、無ければ `/file_name`）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub name_path: Option<String>,

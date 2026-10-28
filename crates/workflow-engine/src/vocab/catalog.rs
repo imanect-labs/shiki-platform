@@ -648,8 +648,10 @@ fn output_shape(nt: NodeType) -> Shape {
         N::StorageRead => Fields(
             "",
             &[
-                field!("id", "string"),
+                field!("file_id", "string", "読んだファイルの ID"),
+                field!("id", "string", "file_id と同じ・古い名前"),
                 field!("name", "string"),
+                field!("version", "number", "読んだバージョン・CSV を編集の前提にできる"),
                 field!("content_type", "string"),
                 field!("size", "number"),
                 field!("text", "string"),
@@ -659,8 +661,9 @@ fn output_shape(nt: NodeType) -> Shape {
         N::StorageWrite => Fields(
             "",
             &[
-                field!("id", "string"),
-                field!("name", "string"),
+                field!("file_id", "string", "保存したファイルの ID"),
+                field!("id", "string", "file_id と同じ・古い名前"),
+                field!("name", "string", "保存した名前・番号を付けたときは付けた名前"),
                 field!("version", "number"),
                 field!("sha256", "string"),
                 field!("size", "number"),
@@ -679,7 +682,8 @@ fn output_shape(nt: NodeType) -> Shape {
             "",
             &[field!(
                 "results",
-                "Array<{ file_id: string, file_name: string, content: string, score: number }>"
+                "Array<{ file_id: string, file_name: string, content: string, relevance: \"high\" | \"medium\" | \"low\", score: number }>",
+                "関連の強いものから並ぶ・relevance は関連の強さの目安・score は順位から決めた値（1 位は 1、2 位は 0.5）で関連の強さではない"
             )],
             "",
         ),
@@ -796,17 +800,19 @@ fn output_shape(nt: NodeType) -> Shape {
             &[
                 field!("columns", "Array<string>"),
                 field!("column_types", "Array<string>"),
-                field!("rows", "Array<Array<unknown>>"),
+                field!("rows", "Array<Array<string | null>>", "値は列の種類にかかわらず文字・空は null"),
                 field!("total_rows", "number"),
-                field!("truncated", "boolean"),
+                field!("truncated", "boolean", "10,000 行で打ち切ったとき true"),
+                field!("version", "number", "集計した CSV のバージョン・CSV を編集の前提にできる"),
             ],
             "",
         ),
         N::CsvPatch => Fields(
             "",
             &[
-                field!("node_id", "string"),
-                field!("version", "number"),
+                field!("file_id", "string", "編集した CSV の ID"),
+                field!("node_id", "string", "file_id と同じ・古い名前"),
+                field!("version", "number", "編集の後のバージョン"),
                 field!("rows", "number"),
                 field!("cols", "number"),
             ],
@@ -815,9 +821,10 @@ fn output_shape(nt: NodeType) -> Shape {
         N::CsvWrite => Fields(
             "",
             &[
-                field!("node_id", "string"),
+                field!("file_id", "string", "保存した CSV の ID"),
+                field!("node_id", "string", "file_id と同じ・古い名前"),
                 field!("version", "number"),
-                field!("name", "string"),
+                field!("name", "string", "保存した名前・番号を付けたときは付けた名前"),
             ],
             "",
         ),

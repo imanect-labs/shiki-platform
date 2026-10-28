@@ -32,6 +32,21 @@ fn sha256_hex(bytes: &[u8]) -> String {
     format!("{:x}", h.finalize())
 }
 
+/// 結果にファイルの ID を `file_id` の名前でも載せる（D-96）。
+///
+/// ファイルの ID の項目名をそろえる（社内文書の検索・きっかけの内容と同じ `file_id`）。古い名前（`id`・
+/// `node_id`）も残す（保存済みの定義の `$from` を壊さない）。
+pub(super) fn with_file_id(mut out: Value, key: &str) -> Value {
+    if let Value::Object(map) = &mut out {
+        if !map.contains_key("file_id") {
+            if let Some(id) = map.get(key).cloned() {
+                map.insert("file_id".to_string(), id);
+            }
+        }
+    }
+    out
+}
+
 /// 保存先に同じ名前のファイルがあって保存できなかったときの誤り（BUG-97・permanent）。
 fn name_taken_error(name: &str, policy: NameTakenPolicy) -> PortError {
     let message = match policy {
@@ -139,7 +154,7 @@ impl CapabilityNodeExecutor {
             true,
             &json!({ "file_id": file_id.to_string() }),
         );
-        Ok(out)
+        Ok(with_file_id(out, "id"))
     }
 
     pub(super) async fn node_storage_write(
@@ -199,7 +214,7 @@ impl CapabilityNodeExecutor {
             true,
             &json!({ "name": saved, "parent": parent_id.map(|p| p.to_string()) }),
         );
-        Ok(out)
+        Ok(with_file_id(out, "id"))
     }
 
     pub(super) async fn node_storage_list(
@@ -392,9 +407,9 @@ impl CapabilityNodeExecutor {
                     true,
                     &json!({ "file_id": file_id.to_string() }),
                 );
-                Ok(out)
+                Ok(with_file_id(out, "node_id"))
             }
-            JournalDecision::AlreadyDone(v) => Ok(v),
+            JournalDecision::AlreadyDone(v) => Ok(with_file_id(v, "node_id")),
             JournalDecision::InProgress => Err(PortError::new(
                 "effect_in_progress",
                 "別ワーカーが編集処理中",
@@ -466,9 +481,9 @@ impl CapabilityNodeExecutor {
                     true,
                     &json!({ "name": saved, "parent": parent_id.map(|p| p.to_string()) }),
                 );
-                Ok(out)
+                Ok(with_file_id(out, "node_id"))
             }
-            JournalDecision::AlreadyDone(v) => Ok(v),
+            JournalDecision::AlreadyDone(v) => Ok(with_file_id(v, "node_id")),
             JournalDecision::InProgress => Err(PortError::new(
                 "effect_in_progress",
                 "別ワーカーが保存処理中",

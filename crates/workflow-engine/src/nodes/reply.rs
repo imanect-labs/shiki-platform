@@ -180,8 +180,17 @@ fn implicit_columns(rows: &[Value]) -> (Vec<String>, Vec<String>) {
 /// ファイルへのリンクの一覧。戻り値の bool は件数を切り詰めたか。
 fn files_of(v: &Value, p: &WorkflowReplyParams) -> Result<(ReplyBody, bool), String> {
     let spec = p.file.clone().unwrap_or_default();
-    let id_path = spec.id_path.as_deref().unwrap_or("/id");
-    let name_path = spec.name_path.as_deref().unwrap_or("/name");
+    // 位置を省いたときは、ファイルの ID の名前をそろえた `file_id`（D-96）を先に見て、無ければ `id` を見る
+    // （社内文書の検索の結果もそのまま渡せる・`id` だけの値は前と同じに読む）。名前も `name` か `file_name`。
+    let id_paths: Vec<&str> = spec
+        .id_path
+        .as_deref()
+        .map_or_else(|| vec!["/file_id", "/id"], |p| vec![p]);
+    let name_paths: Vec<&str> = spec
+        .name_path
+        .as_deref()
+        .map_or_else(|| vec!["/name", "/file_name"], |p| vec![p]);
+    let id_path = id_paths.join(" か ");
     let items: Vec<&Value> = match v {
         Value::Array(a) => a.iter().collect(),
         Value::Object(_) => vec![v],
@@ -195,8 +204,9 @@ fn files_of(v: &Value, p: &WorkflowReplyParams) -> Result<(ReplyBody, bool), Str
     let mut files = Vec::new();
     let mut truncated = false;
     for (i, item) in items.iter().enumerate() {
-        let id = item
-            .pointer(id_path)
+        let id = id_paths
+            .iter()
+            .find_map(|p| item.pointer(p))
             .and_then(Value::as_str)
             .and_then(|s| uuid::Uuid::parse_str(s).ok());
         let Some(id) = id else {
@@ -212,8 +222,9 @@ fn files_of(v: &Value, p: &WorkflowReplyParams) -> Result<(ReplyBody, bool), Str
             truncated = true;
             break;
         }
-        let name = item
-            .pointer(name_path)
+        let name = name_paths
+            .iter()
+            .find_map(|p| item.pointer(p))
             .and_then(Value::as_str)
             .filter(|s| !s.trim().is_empty())
             .map_or_else(
@@ -427,6 +438,38 @@ mod tests {
         assert_eq!(rows[1], ["y", ""]);
         assert!(!run(json!({ "format": "table", "value": [1, 2] }), Value::Null).ok);
         assert!(!run(json!({ "format": "table", "value": "x" }), Value::Null).ok);
+    }
+
+    /// 位置を省くと、社内文書の検索の結果（file_id・file_name）も、保存の結果（file_id と古い id・name）も読める
+    /// （D-96）。id だけの値（前からの定義）も前と同じに読む。
+    #[test]
+    fn file_links_default_to_file_id_then_id() {
+        let a = Uuid::new_v4().to_string();
+        let b = Uuid::new_v4().to_string();
+        let c = Uuid::new_v4().to_string();
+        let s = section(&run(
+            json!({ "format": "file_link", "value": { "$from": "nodes.s.output", "path": "/results" } }),
+            json!({ "s": { "results": [
+                { "file_id": a, "file_name": "規程.md" },
+                { "file_id": b, "id": b, "name": "週報.md" },
+                { "id": c, "name": "古い.md" }
+            ] } }),
+        ));
+        let ReplyBody::FileLink { files } = s.body else {
+            panic!("リンクではない");
+        };
+        let got: Vec<(String, String)> = files
+            .iter()
+            .map(|f| (f.id.to_string(), f.name.clone()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (a, "規程.md".to_string()),
+                (b, "週報.md".to_string()),
+                (c, "古い.md".to_string())
+            ]
+        );
     }
 
     #[test]

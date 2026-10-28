@@ -1167,7 +1167,7 @@ async fn storage_write_handles_taken_names_by_policy() {
 }
 
 /// ファイルの種類を決めないときは、ファイル名の拡張子から決める（社内文書の検索に出るように・D-97）。決めたときは
-/// それを使い、知らない拡張子は種類の分からないファイルにする。
+/// それを使い、知らない拡張子は種類の分からないファイルにする。結果にはファイルの ID を file_id でも載せる（D-96）。
 #[tokio::test]
 async fn storage_write_derives_the_content_type_from_the_name() {
     let ports = Arc::new(FakePorts::default());
@@ -1209,7 +1209,28 @@ async fn storage_write_derives_the_content_type_from_the_name() {
             .content_type
             .clone();
         assert_eq!(ct, want, "{params}");
+        assert_eq!(res.output["file_id"], res.output["id"], "{params}");
     }
+}
+
+/// ファイルを読むの結果にも file_id を載せる（古い id も残す・D-96）。
+#[tokio::test]
+async fn storage_read_adds_file_id_and_keeps_id() {
+    let exec = executor(
+        Arc::new(FakePorts::default()),
+        Arc::new(CapturingAudit::default()),
+    );
+    let f = Uuid::new_v4().to_string();
+    let res = exec
+        .execute(
+            "storage.read",
+            &json!({ "file": f }),
+            &ctx(json!({}), vec!["storage.read".into()]),
+        )
+        .await;
+    assert!(res.ok, "{:?}", res.error);
+    assert_eq!(res.output["file_id"], f);
+    assert_eq!(res.output["id"], f);
 }
 
 /// 実行情報（`$from run`）に、実行を始めた日と日時（日本時間）が入る。ファイル名に差し込める（D-97）。

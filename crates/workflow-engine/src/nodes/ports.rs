@@ -295,7 +295,8 @@ pub trait NodePorts: Send + Sync {
     /// storage.write（`write_file_internal` の in-TX 冪等版）。返り値は書込結果の要約。
     async fn storage_write(&self, ctx: &ExecCtx, req: StorageWriteReq) -> Result<Value, PortError>;
 
-    /// storage.read（`read_file_internal`）。返り値はメタ（id・name・content_type・size）＋本文の文章（text）。
+    /// storage.read（`read_file_internal`）。返り値はメタ（id・name・version・content_type・size）＋本文の文章（text）。
+    /// version は読んだ中身のバージョン（エンジンが `file_id` を足す・D-96）。
     /// 文章として読めないファイル（PDF・Office・画像など、または UTF-8 でない中身）は [`NOT_TEXT_FILE`] で失敗する
     /// （文字化けした中身を成功として渡さない・BUG-101）。
     async fn storage_read(&self, ctx: &ExecCtx, file_id: Uuid) -> Result<Value, PortError>;

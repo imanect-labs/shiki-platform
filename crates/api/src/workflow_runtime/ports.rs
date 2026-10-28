@@ -155,9 +155,11 @@ impl NodePorts for ProdNodePorts {
         }
         // UTF-8 でない中身を文字化けのまま成功させない（BUG-101）。
         let text = utf8_text(&bytes).ok_or_else(not_utf8_text)?;
+        // version は読んだ中身のバージョン（後ろの「CSV を編集」の前提にできる・D-96）。file_id はエンジンが足す。
         Ok(json!({
             "id": node.id.to_string(),
             "name": node.name,
+            "version": node.version,
             "content_type": node.content_type,
             "size": node.size_bytes,
             "text": text,
@@ -221,18 +223,7 @@ impl NodePorts for ProdNodePorts {
             )
             .await
             .map_err(|e| PortError::unavailable(format!("rag: {e}")))?;
-        let results: Vec<Value> = out
-            .results
-            .iter()
-            .map(|r| {
-                json!({
-                    "file_id": r.file_id.to_string(),
-                    "file_name": r.file_name,
-                    "content": r.content,
-                    "score": r.score,
-                })
-            })
-            .collect();
+        let results: Vec<Value> = out.results.iter().map(rag_result).collect();
         Ok(json!({ "results": results }))
     }
 
@@ -425,8 +416,8 @@ impl NodePorts for ProdNodePorts {
             .tabular
             .as_ref()
             .ok_or_else(|| PortError::forbidden("tabular が未構成です"))?;
-        let resp = tabular
-            .query(&ctx, file_id, sql, ec.trace_id.as_deref())
+        let (resp, version) = tabular
+            .query_with_version(&ctx, file_id, sql, ec.trace_id.as_deref())
             .await
             .map_err(map_tabular)?;
         let rows: Vec<Value> = resp
@@ -440,6 +431,8 @@ impl NodePorts for ProdNodePorts {
             "rows": rows,
             "total_rows": resp.total_rows,
             "truncated": resp.truncated,
+            // 集計した中身のバージョン（後ろの「CSV を編集」の前提にできる・D-96）。
+            "version": version,
         }))
     }
 
@@ -531,7 +524,63 @@ impl NodePorts for ProdNodePorts {
     }
 }
 
+/// 社内文書の検索の結果 1 件（ワークフローの rag.search の出力・カタログの output_fields と同じ形）。
+///
+/// relevance は reranker の生の値を設定のしきい値で段階に落とした関連の強さ（high・medium・low・チャットの
+/// 引用と同じ）。score は順位から決めた値（1/(順位+1)）で関連の強さではない。生の値はモデルで尺度が変わる
+/// ので出さない（しきい値を数で書かせない・D-96）。
+fn rag_result(r: &rag::SearchResult) -> Value {
+    json!({
+        "file_id": r.file_id.to_string(),
+        "file_name": r.file_name,
+        "content": r.content,
+        "relevance": r.relevance,
+        "score": r.score,
+    })
+}
+
 /// CSV セル（NULL は None）を JSON 値へ（NULL → null・値 → 文字列）。
 fn cell_to_json(cell: Option<&str>) -> Value {
     cell.map_or(Value::Null, |s| Value::String(s.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    /// 検索の結果に関連の強さ（段階）を載せ、生の reranker の値は載せない（D-96）。
+    #[test]
+    fn rag_results_carry_the_relevance_band_but_not_the_raw_score() {
+        let r = rag::SearchResult {
+            chunk_id: Uuid::nil(),
+            file_id: Uuid::nil(),
+            file_name: "規程.md".into(),
+            folder_id: None,
+            page: None,
+            heading_path: vec![],
+            content: "締め日は 25 日".into(),
+            parent_content: None,
+            score: 0.5,
+            rerank_score: 0.91,
+            relevance: rag::Relevance::High,
+            version: 3,
+            anchor: None,
+            quote: None,
+            boxes: vec![],
+        };
+        let v = rag_result(&r);
+        assert_eq!(v["relevance"], "high");
+        assert_eq!(v["score"], 0.5);
+        assert!(v.get("rerank_score").is_none(), "{v}");
+        let fields: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
+        // カタログの output_fields（rag.search の results の要素）と同じ項目。
+        let entry = workflow_engine::vocab::node_catalog()
+            .into_iter()
+            .find(|e| e.node_type == workflow_engine::vocab::NodeType::RagSearch)
+            .unwrap();
+        for f in fields {
+            assert!(entry.output_fields[0].ty.contains(&format!("{f}:")), "{f}");
+        }
+    }
 }

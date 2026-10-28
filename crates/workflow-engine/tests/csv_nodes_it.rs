@@ -330,9 +330,11 @@ async fn csv_write_numbers_taken_names_once_across_retry() {
     let r1 = exec.execute("csv.write", &params, &c).await;
     assert!(r1.ok, "{:?}", r1.error);
     assert_eq!(r1.output["name"], "集計 (2).csv");
+    assert_eq!(r1.output["file_id"], r1.output["node_id"]);
     let r2 = exec.execute("csv.write", &params, &c).await;
     assert!(r2.ok, "{:?}", r2.error);
     assert_eq!(r2.output["name"], "集計 (2).csv");
+    assert_eq!(r2.output["file_id"], r2.output["node_id"]);
     assert_eq!(
         *ports.write_calls.lock().unwrap(),
         1,

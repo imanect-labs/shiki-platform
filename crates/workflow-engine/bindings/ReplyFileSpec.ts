@@ -5,10 +5,10 @@
  */
 export type ReplyFileSpec = { 
 /**
- * ファイルの ID の位置（既定 `/id`）。
+ * ファイルの ID の位置（省略時は `/file_id`、無ければ `/id`・D-96）。
  */
 id_path?: string, 
 /**
- * ファイルの名前の位置（既定 `/name`）。
+ * ファイルの名前の位置（省略時は `/name`、無ければ `/file_name`）。
  */
 name_path?: string, };

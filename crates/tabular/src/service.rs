@@ -111,17 +111,36 @@ impl TabularService {
         sql: &str,
         trace_id: Option<&str>,
     ) -> Result<RunnerResponse, TabularError> {
+        Ok(self
+            .query_with_version(ctx, file_id, sql, trace_id)
+            .await?
+            .0)
+    }
+
+    /// [`Self::query`] と同じく SQL を実行し、集計した CSV のバージョン（読んだ中身の `node.version`）も返す。
+    ///
+    /// バージョンは中身と同じ読み取りで決まる（別に引き直さない）。ワークフローの「CSV を集計」が結果に載せ、
+    /// 後ろの「CSV を編集」の前提（base_rev）に使える（集計の後にほかの保存があれば、編集は競合で止まる・D-96）。
+    pub async fn query_with_version(
+        &self,
+        ctx: &AuthContext,
+        file_id: Uuid,
+        sql: &str,
+        trace_id: Option<&str>,
+    ) -> Result<(RunnerResponse, i64), TabularError> {
         // まず SQL を検証（api 側で拒否＝敵対的 SQL を隔離プロセスへ渡す前に弾く多層防御）。
         validate_read_only(sql)?;
-        let path = self.fetch_csv(ctx, file_id, trace_id).await?;
-        self.run(
-            RunnerOp::Query {
-                sql: sql.to_string(),
-            },
-            path.path(),
-            self.quotas.max_rows,
-        )
-        .await
+        let (path, version) = self.fetch_csv_versioned(ctx, file_id, trace_id).await?;
+        let response = self
+            .run(
+                RunnerOp::Query {
+                    sql: sql.to_string(),
+                },
+                path.path(),
+                self.quotas.max_rows,
+            )
+            .await?;
+        Ok((response, version))
     }
 
     /// パッチ列を適用して新バージョンを保存する（editor 認可・rev 楽観ロック）。
@@ -196,6 +215,16 @@ impl TabularService {
         file_id: Uuid,
         trace_id: Option<&str>,
     ) -> Result<tempfile::NamedTempFile, TabularError> {
+        Ok(self.fetch_csv_versioned(ctx, file_id, trace_id).await?.0)
+    }
+
+    /// [`Self::fetch_csv`] と同じく一時ファイルへ書き、読んだ中身のバージョンも返す。
+    async fn fetch_csv_versioned(
+        &self,
+        ctx: &AuthContext,
+        file_id: Uuid,
+        trace_id: Option<&str>,
+    ) -> Result<(tempfile::NamedTempFile, i64), TabularError> {
         let (node, bytes) = self
             .storage
             .read_file_internal(ctx, file_id, trace_id)
@@ -212,7 +241,7 @@ impl TabularService {
             .map_err(|e| TabularError::Internal(format!("一時ファイル書込に失敗: {e}")))?;
         tmp.flush()
             .map_err(|e| TabularError::Internal(format!("一時ファイル flush に失敗: {e}")))?;
-        Ok(tmp)
+        Ok((tmp, node.version))
     }
 
     /// 隔離ランナーを起動して結果を受け取る（クォータ付き）。

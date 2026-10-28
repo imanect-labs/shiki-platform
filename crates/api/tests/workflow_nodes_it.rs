@@ -956,6 +956,9 @@ async fn csv_query_node_reads_uploaded_csv() {
     assert!(result.contains("BBB"), "結果に BBB: {result}");
     assert!(result.contains("CCC"), "結果に CCC: {result}");
     assert!(!result.contains("AAA"), "AAA は WHERE で除外: {result}");
+    // 集計した CSV のバージョンが結果に載る（後ろの「CSV を編集」の前提にできる・D-96）。
+    let out: Value = serde_json::from_str(&result).unwrap();
+    assert_eq!(out["version"], node.version, "{out}");
 }
 
 /// csv.query は declared_scopes に csv.read が無いと scope 天井で拒否される（fail-closed）。
@@ -1879,14 +1882,14 @@ async fn decide_cache_reuses_answers_within_the_workflow_only() {
     }
 }
 
-// ------- ファイルの保存の名前と種類（BUG-97・D-97）-------------
+// ------- ファイルの保存の名前と種類・ファイルの ID の名前（BUG-97・D-96・D-97）-------------
 
 /// 本番のポートで、同じ名前のファイルがあるときの扱いを確かめる（BUG-97）。
 ///
 /// - 省略（既存の定義）は今のまま失敗にし、失敗の理由は「同じ名前のファイル」と言う（ほかの操作との重なりと
 ///   言わない）。
 /// - 番号を付ける扱いは、ドライブの新規作成と同じ規則（`名前 (2).txt`）で空いている名前に保存する。
-/// - ファイルの種類を決めなければ拡張子から決める（D-97）。
+/// - ファイルの種類を決めなければ拡張子から決め、結果にはファイルの ID を file_id でも載せる（D-96・D-97）。
 #[tokio::test]
 async fn storage_write_names_and_types_through_the_production_port() {
     let Some(h) = setup().await else { return };
@@ -1932,6 +1935,7 @@ async fn storage_write_names_and_types_through_the_production_port() {
     let (_, _, out) = step(first).await;
     let out = out.unwrap();
     assert_eq!(out["name"], name.as_str());
+    assert_eq!(out["file_id"], out["id"]);
     let ct: Option<String> =
         sqlx::query_scalar("SELECT content_type FROM node WHERE id = $1::uuid")
             .bind(out["id"].as_str().unwrap())
@@ -1991,4 +1995,52 @@ async fn storage_write_names_and_types_through_the_production_port() {
     for wf in [fail_wf, number_wf] {
         h.artifacts.delete(&h.alice, wf, None).await.unwrap();
     }
+}
+
+/// 本番のポートで、ファイルを読むの結果に読んだバージョンとファイルの ID（file_id）が載る（D-96）。
+#[tokio::test]
+async fn storage_read_returns_the_version_it_read() {
+    let Some(h) = setup().await else { return };
+    let executor = h.executor(None, vec![], None);
+    let node = h
+        .storage
+        .write_file_internal(
+            &h.alice,
+            None,
+            &format!("v-{}.txt", Uuid::new_v4().simple()),
+            b"a",
+            "text/plain",
+            None,
+        )
+        .await
+        .unwrap();
+    let ir = json!({
+        "ir_version": 1, "name": "read-version",
+        "declared_scopes": ["storage.read"],
+        "triggers": [{ "kind": "interactive" }],
+        "nodes": [{ "id": "rd", "type": "storage.read", "params": { "file": node.id.to_string() } }],
+        "edges": []
+    });
+    let wf = h.save(&ir).await;
+    let (run_id, status) = h.run(wf, &json!({}), executor).await;
+    let out: Option<Value> = sqlx::query_scalar(
+        "SELECT output FROM step_execution WHERE tenant_id = $1 AND run_id = $2 AND node_id = 'rd'",
+    )
+    .bind(&h.tenant)
+    .bind(run_id)
+    .fetch_one(&h.pool)
+    .await
+    .unwrap();
+    h.runs.purge_tenant_history(&h.tenant).await.unwrap();
+    h.storage
+        .soft_delete_file(&h.alice, node.id, None)
+        .await
+        .unwrap();
+    h.artifacts.delete(&h.alice, wf, None).await.unwrap();
+
+    assert_eq!(status, RunStatus::Succeeded);
+    let out = out.unwrap();
+    assert_eq!(out["version"], node.version);
+    assert_eq!(out["file_id"], node.id.to_string());
+    assert_eq!(out["id"], node.id.to_string());
 }
