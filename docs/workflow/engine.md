@@ -1037,9 +1037,18 @@ cancel 要求済み run の失効リースは sweeper の対象外とする。cl
 2. 有効化者が **自分の権限範囲内から**委譲する。範囲外のスコープが 1 つでも混じれば **全体を拒否**（fail-closed・部分委譲しない）。
 3. FGA タプル書込 ＋ `workflow_delegation` 記録 ＋ `workflow_trigger` 実体化 ＋ `workflow_registration`（enabled_version・consented_scopes）更新。
 
+同意の画面からの有効化（`POST /workflows/{id}/enable` の `consent: true`）は、委譲（grants）が空でも全面の同意し直しとして扱う。対象（テーブル・フォルダー）の無いワークフローは grants が空なので、§10.3 の軽量切替に落とすと、使ってよい操作が増えた版へいつまでも切り替えられなかった（BUG-102・D-90）。`consent` を付けない grants の空の enable は、これまでどおり §10.3 の軽量切替である。
+
 ### 10.2 disable
 
 トリガを無効化する（`workflow_trigger.enabled = false`）。実行中 run は既定で完走させる（ポリシで即キャンセルも選べる・§9.3 経路）。
+
+委譲は残す（取り消しを選ばなかったときの挙動。run 開始は status で fail-closed に止まる）。「権限も取り消す」（`POST /workflows/{id}/disable` の `revoke_delegations: true`・D-90）は、無効化と同じ Tx で委譲をすべて取り消す。
+
+- 取り消しは §10.3 の再同意で外れた委譲の撤去と同じ経路を通る（FGA のタプルを先に撤去 → `workflow_delegation` の行を revoke）。`workflow_registration` の行は `FOR UPDATE` で取り、同時の有効化と取り違えない。
+- `consented_scopes` も空にする。次の有効化は、使ってよい操作があれば軽量切替では通らず、同意が要る（委譲の無いまま動かさない）。
+- ワークフローが自身の定義を読むタプル（`artifact#viewer`）は委譲ではないので残す。
+- 監査は `workflow.disable` に加えて `workflow.delegation.revoke` を 1 行残し、取り消した委譲（委譲元・scope・対象・relation）を metadata に載せる。
 
 ### 10.3 新 version の enable（再同意）
 
