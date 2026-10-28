@@ -780,7 +780,7 @@ export function Conversation({
               pending.text,
               pending.attachments,
               pending.autonomous ?? false,
-              undefined,
+              pending.context,
               pending.skills,
             );
           }

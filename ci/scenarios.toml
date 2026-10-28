@@ -185,6 +185,7 @@ e2e = [
     "composer-create.spec.ts",
     "csv-conversation-drafts.spec.ts",
     "csv-editor.spec.ts",
+    "selection-ai.spec.ts",
     "visual-editors.spec.ts",
 ]
 
