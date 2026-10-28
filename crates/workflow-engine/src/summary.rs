@@ -24,6 +24,50 @@ pub struct WorkflowSummary {
     pub updated_at: DateTime<Utc>,
 }
 
+/// 名前検索の 1 件（AI の `search_workflows`・図のボタンに書く名前を引くため）。
+///
+/// 一覧要約に、ボタンのフォームを組むための `input_schema` だけを足した射影（IR 本文は運ばない）。
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct WorkflowSearchHit {
+    pub id: Uuid,
+    /// artifact の名前（＝図のボタン `-> workflow 名前` が解決する文字列）。
+    pub name: String,
+    pub display_name: Option<String>,
+    pub description: Option<String>,
+    /// IR triggers[] の kind 列（schedule/event/interactive）。
+    pub trigger_kinds: Vec<String>,
+    /// 対話トリガの入力スキーマ（JSON Schema サブセット・未定義は `None`）。
+    pub input_schema: Option<serde_json::Value>,
+    /// enabled / disabled / suspended_reconsent / none（未登録）。
+    pub enabled_status: String,
+    /// 検索した本人の所有か（false は共有されただけ＝他人が作ったもの）。
+    pub owned: bool,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// 検索語を ILIKE の部分一致パターンへ（空白区切りの語ごと・ワイルドカードは文字として扱う）。
+///
+/// 利用者・モデルが書いた `%`/`_` がワイルドカードとして効くと「全件一致」になるため、
+/// `\` でエスケープする（SQL 側は `ESCAPE '\'`）。空の語は捨てる。
+#[must_use]
+pub fn like_patterns(query: &str) -> Vec<String> {
+    query
+        .split_whitespace()
+        .map(|term| {
+            let mut p = String::with_capacity(term.len() + 2);
+            p.push('%');
+            for c in term.chars() {
+                if matches!(c, '%' | '_' | '\\') {
+                    p.push('\\');
+                }
+                p.push(c);
+            }
+            p.push('%');
+            p
+        })
+        .collect()
+}
+
 /// 一覧要約の読み取り（読み取り専用・認可は呼び出し側で解決済みの id 集合が前提）。
 #[derive(Clone)]
 pub struct WorkflowSummaryStore {
@@ -69,5 +113,83 @@ impl WorkflowSummaryStore {
         .bind(ids)
         .fetch_all(&self.db)
         .await
+    }
+
+    /// 認可済み id 集合を名前・表示名・説明で絞り、本人の所有を先に・更新日降順で `limit` 件返す。
+    ///
+    /// 絞り込み（語ごとの部分一致の AND・大文字小文字を区別しない）と件数の上限は SQL で効かせる
+    /// （取ってから捨てない）。`interactive_only` は対話トリガを持つもの（図のボタン・チャットから
+    /// 起動するもの）だけに絞る。id は認可済み前提で、tenant と kind で二重に絞る。
+    /// `owned` は `ids` のうち本人が所有するもの。共有されただけのものは他人が説明を自由に書けるので、
+    /// 更新日で上位を取られない（説明のスクワッティング）よう、所有分を先に並べて印を付ける。
+    pub async fn search(
+        &self,
+        tenant_id: &str,
+        ids: &[Uuid],
+        owned: &[Uuid],
+        query: &str,
+        interactive_only: bool,
+        limit: i64,
+    ) -> Result<Vec<WorkflowSearchHit>, sqlx::Error> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let patterns = like_patterns(query);
+        sqlx::query_as(
+            "SELECT a.id, a.name, \
+                    v.body->>'display_name' AS display_name, \
+                    v.body->>'description' AS description, \
+                    COALESCE( \
+                      (SELECT array_agg(t->>'kind') \
+                       FROM jsonb_array_elements(v.body->'triggers') AS t), \
+                      '{}') AS trigger_kinds, \
+                    v.body->'input_schema' AS input_schema, \
+                    COALESCE(r.status, 'none') AS enabled_status, \
+                    (a.id = ANY($7)) AS owned, \
+                    a.updated_at \
+             FROM artifact a \
+             JOIN artifact_version v \
+               ON v.tenant_id = a.tenant_id AND v.artifact_id = a.id \
+              AND v.version = a.current_version \
+             LEFT JOIN workflow_registration r \
+               ON r.tenant_id = a.tenant_id AND r.workflow_id = a.id \
+             WHERE a.tenant_id = $1 AND a.id = ANY($2) AND a.kind = $3 \
+               AND a.deleted_at IS NULL \
+               AND NOT EXISTS ( \
+                 SELECT 1 FROM unnest($4::text[]) AS p(pat) \
+                 WHERE NOT (a.name ILIKE p.pat ESCAPE '\\' \
+                         OR COALESCE(v.body->>'display_name', '') ILIKE p.pat ESCAPE '\\' \
+                         OR COALESCE(v.body->>'description', '') ILIKE p.pat ESCAPE '\\')) \
+               AND (NOT $5 OR EXISTS ( \
+                 SELECT 1 FROM jsonb_array_elements(v.body->'triggers') AS t \
+                 WHERE t->>'kind' = 'interactive')) \
+             ORDER BY (a.id = ANY($7)) DESC, a.updated_at DESC, a.id DESC \
+             LIMIT $6",
+        )
+        .bind(tenant_id)
+        .bind(ids)
+        .bind(artifact::ArtifactKind::Workflow.as_str())
+        .bind(&patterns)
+        .bind(interactive_only)
+        .bind(limit.clamp(1, 100))
+        .bind(owned)
+        .fetch_all(&self.db)
+        .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::like_patterns;
+
+    #[test]
+    fn like_patterns_split_terms_and_escape_wildcards() {
+        assert!(like_patterns("").is_empty());
+        assert!(like_patterns("   ").is_empty());
+        assert_eq!(like_patterns("経費 精算"), vec!["%経費%", "%精算%"]);
+        // 利用者の % _ \ はワイルドカードにしない（「全件一致」を作らせない）。
+        assert_eq!(like_patterns("100%"), vec!["%100\\%%"]);
+        assert_eq!(like_patterns("a_b"), vec!["%a\\_b%"]);
+        assert_eq!(like_patterns("c\\d"), vec!["%c\\\\d%"]);
     }
 }

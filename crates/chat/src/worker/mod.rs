@@ -81,6 +81,8 @@ pub struct ChatWorker {
     workflow_store: Option<Arc<workflow_engine::WorkflowStore>>,
     /// カタログ源（保存 API と同一実装を注入・Task 10.13）。
     workflow_catalog: Option<Arc<dyn crate::workflow_tool::WorkflowCatalogSource>>,
+    /// 本人に見えるワークフローの検索（search_workflows）。未配線なら提示しない。
+    workflow_directory: Option<Arc<dyn crate::workflow_search_tool::WorkflowDirectory>>,
     /// ノート共同編集ハブ（document.edit / document.read・Task 11P.4）。
     collab: Option<Arc<collab::CollabHub>>,
     /// CSV クエリ/パッチサービス（Task 11P.9）。
@@ -135,6 +137,7 @@ impl ChatWorker {
             skill_catalog,
             workflow_store,
             workflow_catalog,
+            workflow_directory: None,
             collab,
             tabular,
             office,
@@ -152,6 +155,19 @@ impl ChatWorker {
     #[must_use]
     pub fn with_data(mut self, data: data::DataStore) -> Self {
         self.data = Some(data);
+        self
+    }
+
+    /// 本人に見えるワークフローの検索（search_workflows）を配線する。
+    ///
+    /// 図のボタンの `-> workflow 名前` に実在する名前を書かせるための読み取り専用ツール。
+    /// 認可（ワークフロー一覧 API と同じ所有∪共有）は注入する実装が担う。
+    #[must_use]
+    pub fn with_workflow_directory(
+        mut self,
+        directory: Arc<dyn crate::workflow_search_tool::WorkflowDirectory>,
+    ) -> Self {
+        self.workflow_directory = Some(directory);
         self
     }
 

@@ -54,6 +54,7 @@ pub mod store;
 /// SSE の生成イベント（ワイヤ形式）。`model` から再エクスポートしている。
 pub mod stream_event;
 pub mod worker;
+pub mod workflow_search_tool;
 pub mod workflow_tool;
 pub mod workspace;
 /// 回答の本文の ```ui（Yui）のボタン（#604）。
@@ -83,5 +84,6 @@ pub use store::{
     YuiActionRequest, YuiAppDraft, CHAT_GENERATION_QUEUE, FEEDBACK_CATEGORIES,
 };
 pub use worker::{parse_timezone, with_yui_guide, ChatWorker, WorkerConfig, WorkerDeps};
+pub use workflow_search_tool::{SearchWorkflowsTool, WorkflowDirectory};
 pub use workflow_tool::{EmitWorkflowTool, ReadWorkflowTool, WorkflowCatalogSource};
 pub use workspace::StorageWorkspaceStore;
