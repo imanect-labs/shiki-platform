@@ -16,7 +16,7 @@ use serde_json::{json, Value};
 use crate::capability::{
     check_scope_ceiling, op_digest, CapabilityAudit, EffectJournal, JournalDecision, ScopeCeiling,
 };
-use crate::run::NodeContext;
+use crate::run::{CancelSignal, NodeContext};
 
 use crate::ir::params::ScriptRunParams;
 
@@ -110,6 +110,7 @@ impl CapabilityNodeExecutor {
             base_key: ctx.idempotency_key.clone(),
             http_allowlist: self.http_allowlist.clone(),
             http_timeout_ms: self.http_timeout_ms,
+            cancel: ctx.cancel.clone(),
         };
         let handle = tokio::runtime::Handle::current();
         // `Shiki.data.*` の糖衣をユーザーコードの前に置く（ゲスト wasm を再ビルドせずに足す・
@@ -160,7 +161,12 @@ struct HostBridge {
     /// http.request（Shiki.http.request）の egress allowlist（executor と同一値・#344）。
     http_allowlist: Vec<String>,
     http_timeout_ms: u64,
+    /// step の止める合図（時間の上限・run の取り消し・リースの喪失でワーカーが立てる）。
+    cancel: CancelSignal,
 }
+
+/// 止める合図の後の `Shiki.*` 呼び出しを断るときの code（BUG-96）。
+const SCRIPT_CANCELLED: &str = "step_cancelled";
 
 impl HostBridge {
     async fn dispatch(&self, call: &HostCall) -> HostResponse {
@@ -175,6 +181,16 @@ impl HostBridge {
                 }))
             }
             _ => {}
+        }
+        // 止める合図の後は能力を呼ばない（BUG-96）。script は `spawn_blocking` の中で走るので、ワーカーが step を
+        // 時間の上限で打ち切って（フューチャを捨てて）も止まらず、自分の wall-clock 上限まで走り続ける。そのまま
+        // 呼び出しを通すと、失敗にした step の外部への送信や書き込みが後から起き、やり直しの送信と二重になる。
+        if self.cancel.is_cancelled() {
+            return HostResponse::Err {
+                message: "このブロックは止められたため、これ以上の操作はしません".to_string(),
+                code: SCRIPT_CANCELLED.to_string(),
+                retryable: false,
+            };
         }
         // scope ceiling ゲート（script 経路のホスト呼び出しも declared_scopes 内に縛る）。
         let effective: BTreeSet<String> = self.ceiling.iter().cloned().collect();
