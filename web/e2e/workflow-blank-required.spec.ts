@@ -57,7 +57,7 @@ test("置いたばかりの必須の欄: 選んでいない空で置き、保存
     // 実行は、空の欄を名指しして止まる（run は作らない）。
     await page.getByRole("button", { name: "実行", exact: true }).click();
     await page.getByRole("button", { name: "実行する" }).click();
-    await expect(page.getByText("実行に失敗しました").first()).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByTestId("run-now-failure")).toContainText("実行できませんでした", { timeout: 15_000 });
     await expect(
       page.getByText("「調べる値」が空です。選ぶまで、実行も自動実行のオンもできません。").first(),
     ).toBeVisible();

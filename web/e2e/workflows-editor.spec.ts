@@ -1286,7 +1286,7 @@ test("実行の前の確認: 指示が空のままでは実行せず、理由を
   await expect(page.locator(".react-flow__node").first()).toBeVisible({ timeout: 15_000 });
   await page.getByRole("button", { name: "実行", exact: true }).click();
   await page.getByRole("button", { name: "実行する" }).click();
-  await expect(page.getByText("実行に失敗しました").first()).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByTestId("run-now-failure")).toContainText("実行できませんでした", { timeout: 15_000 });
   await expect(page.getByText(/「AI への指示」が空です/).first()).toBeVisible();
   // run は作られない（実行履歴へ移らない）。
   await expect(page).toHaveURL(new RegExp(`/workflows/${id}$`));

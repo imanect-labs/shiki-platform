@@ -32,13 +32,81 @@ function json(method: string, body: unknown): RequestInit {
   };
 }
 
-/// 対話トリガで実行する（実行主体 = 自分）。
-export async function startRun(
-  workflowId: string,
-  input: unknown,
-): Promise<string | null> {
-  const res = await apiFetch(`/workflows/${workflowId}/runs`, json("POST", { input }));
-  const body = await ok<{ run_id: string | null }>(res);
+/// 実行の入力の誤り 1 件（項目のキーと理由・サーバーの `InvalidRunInputBody`・BUG-109）。
+export type RunInputIssue = Schemas["InputIssueBody"];
+
+/// 実行を始められなかった理由（実行のダイアログが、欄の下と誤りの帯に出し分ける・BUG-109）。
+///
+/// - `issues`: 入力の誤り（`invalid_input`・項目のキーと理由）。
+/// - `field`: 誤りのある欄。
+/// - `reasons`: 実行できない設定（`not_ready`・ブロックの id と理由）。
+/// `message` は状態コードの既定の文言か、サーバーの文言（付録 C の §3.4.3）。
+export class RunStartError extends Error {
+  constructor(
+    public status: number,
+    public code: string | null,
+    message: string,
+    public issues: RunInputIssue[] = [],
+    public field: string | null = null,
+    public reasons: { nodeId: string | null; message: string }[] = [],
+  ) {
+    super(message);
+    this.name = "RunStartError";
+  }
+}
+
+/// 状態コードの既定の文言（サーバーが code を返さないときの最後の手段・付録 C の §3.4.3）。
+function runStatusMessage(status: number): string {
+  if (status === 401) return "ログインが切れました。もう一度ログインしてください。";
+  if (status === 403) return "この操作をする権限がありません。必要なら、ワークフローの持ち主か管理者に頼んでください。";
+  if (status === 404) return "ワークフローが見つかりません。削除されたか、見る権限がありません。";
+  if (status === 429) return "利用の上限か、操作の集中のため受け付けられませんでした。少し待ってから、もう一度実行してください。";
+  if (status === 503) return "ワークフローの実行はいま使えません。少し待ってから、もう一度実行してください。";
+  if (status >= 500) return "サーバーで問題が起きました。続くときは管理者に連絡してください。";
+  return "内容に誤りがあるため、受け付けられませんでした。入力した値を見直してください。";
+}
+
+/// 対話トリガで実行する（実行主体 = 自分）。始められなければ [`RunStartError`] を投げる（本文の理由を捨てない・
+/// BUG-109）。
+export async function startRun(workflowId: string, input: unknown): Promise<string | null> {
+  let res: Response;
+  try {
+    res = await apiFetch(`/workflows/${workflowId}/runs`, json("POST", { input }));
+  } catch {
+    throw new RunStartError(
+      0,
+      null,
+      "通信できませんでした。ネットワークにつながっているか確かめて、もう一度実行してください。",
+    );
+  }
+  if (!res.ok) {
+    let body: {
+      code?: string;
+      message?: string;
+      field?: string;
+      errors?: { key?: string; message?: string; node_id?: string | null }[];
+    } = {};
+    try {
+      body = (await res.json()) as typeof body;
+    } catch {
+      // 本文なし
+    }
+    const errors = body.errors ?? [];
+    const code = body.code ?? null;
+    throw new RunStartError(
+      res.status,
+      code,
+      body.message ?? runStatusMessage(res.status),
+      code === "invalid_input"
+        ? errors.flatMap((e) => (e.message ? [{ key: e.key ?? "", message: e.message }] : []))
+        : [],
+      body.field ?? null,
+      code === "not_ready"
+        ? errors.flatMap((e) => (e.message ? [{ nodeId: e.node_id ?? null, message: e.message }] : []))
+        : [],
+    );
+  }
+  const body = (await res.json()) as { run_id: string | null };
   return body.run_id;
 }
 
