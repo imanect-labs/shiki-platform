@@ -249,7 +249,7 @@ function ScheduleEditor({
       preset.kind === "weekdays" ||
       preset.kind === "weekly" ||
       preset.kind === "monthly" ? (
-        <div className="flex flex-wrap items-end gap-2">
+        <div className="flex flex-wrap items-start gap-2">
           {preset.kind === "weekly" ? (
             <Field label="曜日">
               <Select
