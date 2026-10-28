@@ -143,17 +143,34 @@ impl AuditRetention {
     }
 
     /// 全テナントに保持期間を適用する（`now` を起点に、各テナントの保持日数より古い行を消す）。
+    ///
+    /// 1 つの org で失敗しても後続の org・テナントは続けて処理し、最初のエラーを最後に返す
+    /// （テナントは毎回同じ順で回るので、先頭近くで失敗し続けると後ろが永久に消えなくなる）。
     pub async fn sweep(&self, now: DateTime<Utc>) -> Result<SweepReport, StorageError> {
         let mut total = SweepReport::default();
+        let mut first_err = None;
         for tenant_id in self.tenants().await? {
             let days = self.retention_days(&tenant_id).await?;
             let cutoff = now - chrono::Duration::days(i64::from(days));
             for org in self.orgs(&tenant_id).await? {
-                let done = self.sweep_org(&tenant_id, &org, cutoff, days).await?;
-                total.add(done);
+                match self.sweep_org(&tenant_id, &org, cutoff, days).await {
+                    Ok(done) => total.add(done),
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            tenant_id = %tenant_id,
+                            org = %org,
+                            "監査ログの保持期間の適用に失敗しました（この org を飛ばして続けます）"
+                        );
+                        first_err.get_or_insert(e);
+                    }
+                }
             }
         }
-        Ok(total)
+        match first_err {
+            Some(e) => Err(e),
+            None => Ok(total),
+        }
     }
 
     /// 1 つの tenant＋org に保持期間を適用する。
@@ -168,8 +185,13 @@ impl AuditRetention {
         days: i32,
     ) -> Result<SweepReport, StorageError> {
         let mut total = SweepReport::default();
+        // 連結行を消してよい上限（この id 未満）。最初のバッチでロックの中で 1 度だけ求めて使い回す。
+        // バッチごとに求め直すと、残っている期限切れの部分を毎回先頭から読み直すことになる。
+        let mut stop = None;
         loop {
-            let batch = self.sweep_batch(tenant_id, org, cutoff, days).await?;
+            let batch = self
+                .sweep_batch(tenant_id, org, cutoff, days, &mut stop)
+                .await?;
             total.add(batch);
             if batch.chained < BATCH as u64 && batch.unchained < BATCH as u64 {
                 return Ok(total);
@@ -184,25 +206,16 @@ impl AuditRetention {
         org: &str,
         cutoff: DateTime<Utc>,
         days: i32,
+        stop: &mut Option<i64>,
     ) -> Result<SweepReport, StorageError> {
         let mut tx = self.db.begin().await?;
         // 記録側（record_on）と同じロック: チェーンの末尾の読み書き・境目の更新・削除の記録を直列にする。
         crate::audit::lock_chain(&mut tx, tenant_id, org).await?;
 
-        // 連結行は **id 順で先頭から連続した期限切れの部分だけ**を消す。作成時刻はレプリカの時計
-        // （版 1 はトランザクション開始時刻）で決まり id 順と逆転しうるので、「期限より古い最後の行」
-        // までを消すと、間にある期限内の行まで消えてしまう。id 順で最初の「期限内の行」か撤去の記録
-        // （tenant.purge は消さない）より手前で止める。
-        let stop: Option<i64> = sqlx::query_scalar(
-            "SELECT min(id) FROM audit_log \
-             WHERE tenant_id = $1 AND org = $2 AND chained AND (created_at >= $3 OR action = $4)",
-        )
-        .bind(tenant_id)
-        .bind(org)
-        .bind(cutoff)
-        .bind(AuditAction::TenantPurge.as_str())
-        .fetch_one(&mut *tx)
-        .await?;
+        let stop = match *stop {
+            Some(s) => s,
+            None => *stop.insert(chain_stop(&mut tx, tenant_id, org, cutoff).await?),
+        };
         let chained: Vec<(i64, Option<String>)> = sqlx::query_as(
             "DELETE FROM audit_log WHERE id IN ( \
                  SELECT id FROM audit_log \
@@ -212,7 +225,7 @@ impl AuditRetention {
         )
         .bind(tenant_id)
         .bind(org)
-        .bind(stop.unwrap_or(i64::MAX))
+        .bind(stop)
         .bind(BATCH)
         .fetch_all(&mut *tx)
         .await?;
@@ -342,6 +355,45 @@ fn system_ctx(tenant_id: &str, org: &str) -> AuthContext {
         org.into(),
         tenant_id.into(),
     )
+}
+
+/// 連結行を消してよい上限（この id 未満を消す）。チェーンのロックの中で呼ぶ。
+///
+/// 連結行は **id 順で先頭から連続した期限切れの部分だけ**を消す。作成時刻はレプリカの時計
+/// （版 1 はトランザクション開始時刻）で決まり id 順と逆転しうるので、「期限より古い最後の行」
+/// までを消すと、間にある期限内の行まで消えてしまう。id 順で最初の「期限内の行」か撤去の記録
+/// （tenant.purge は消さない）で止める。
+///
+/// 全部が期限切れなら、今ある最後の連結行の次で止める。上限を無限にすると、使い回す間に
+/// 足された行（このあと記録する削除の記録など）まで消してしまう。ロックの中で求めるので、
+/// これより後に連結される行の id は必ずこの値以上になる。
+async fn chain_stop(
+    conn: &mut sqlx::PgConnection,
+    tenant_id: &str,
+    org: &str,
+    cutoff: DateTime<Utc>,
+) -> Result<i64, StorageError> {
+    let first_kept: Option<i64> = sqlx::query_scalar(
+        "SELECT min(id) FROM audit_log \
+         WHERE tenant_id = $1 AND org = $2 AND chained AND (created_at >= $3 OR action = $4)",
+    )
+    .bind(tenant_id)
+    .bind(org)
+    .bind(cutoff)
+    .bind(AuditAction::TenantPurge.as_str())
+    .fetch_one(&mut *conn)
+    .await?;
+    if let Some(id) = first_kept {
+        return Ok(id);
+    }
+    let last: Option<i64> = sqlx::query_scalar(
+        "SELECT max(id) FROM audit_log WHERE tenant_id = $1 AND org = $2 AND chained",
+    )
+    .bind(tenant_id)
+    .bind(org)
+    .fetch_one(&mut *conn)
+    .await?;
+    Ok(last.map_or(0, |id| id.saturating_add(1)))
 }
 
 /// 掃除の間隔の下限（設定ミスで休みなく回さない）。
