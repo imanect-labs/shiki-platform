@@ -79,20 +79,16 @@ export function NewMenuDesktop({ create }: { create: CreateHandlers }) {
 /// スマホの右下の「＋ 新規」と、タップで出る下からのシート（アップロード／新規フォルダ／
 /// 各種の新規作成）。PC はツールバーのボタンのまま（md 以上では出さない）。
 export function NewFab({
-  open,
-  onOpenChange: setOpen,
   create,
   onUpload,
   onNewFolder,
 }: {
-  /// シートの開閉。アップロードはファイルを選ぶまで開いておき、選んだら呼び出し側で閉じるので外に持つ。
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
   create: CreateHandlers;
-  /// 端末のファイルを選ぶ。シートは開いたままにするので、ファイルを選んだら呼び出し側で閉じる。
-  onUpload: () => void;
+  /// 端末のファイルを選ぶ。シートは開いたままにするので、ファイルを選んだら `closeSheet` を呼んで閉じる。
+  onUpload: (closeSheet: () => void) => void;
   onNewFolder: () => void;
 }) {
+  const [open, setOpen] = React.useState(false);
   const run = (fn: () => void) => {
     setOpen(false);
     fn();
@@ -129,7 +125,7 @@ export function NewFab({
               label="アップロード"
               // ファイル選択はタップの操作の中で開く（iOS は遅らせると開かない）。シートは開いたままにし、
               // ファイルを選んだら閉じる（取り消したら残る・チャットの「+」と同じ）。
-              onClick={onUpload}
+              onClick={() => onUpload(() => setOpen(false))}
             />
             <Tile icon={FolderPlus} label="新規フォルダ" onClick={() => run(onNewFolder)} />
           </div>

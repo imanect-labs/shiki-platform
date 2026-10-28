@@ -17,8 +17,14 @@ export function useKeyboardInset<T extends HTMLElement>(enabled: () => boolean):
   enabledRef.current = enabled;
   React.useEffect(() => {
     const vv = typeof window !== "undefined" ? window.visualViewport : null;
-    if (!node || !vv || !enabledRef.current()) return;
+    if (!node || !vv) return;
     const update = () => {
+      // 開いたまま回転して幅が変わることがあるので、毎回判定する（PC の中央ダイアログでは書かない）。
+      if (!enabledRef.current()) {
+        node.style.removeProperty("--keyboard-inset");
+        node.style.removeProperty("--visible-height");
+        return;
+      }
       // note-toolbar と同じく、見えている領域の下端に直接合わせる（innerHeight の挙動に依存しない）。
       const inset = Math.max(0, document.documentElement.clientHeight - (vv.offsetTop + vv.height));
       node.style.setProperty("--keyboard-inset", `${Math.round(inset)}px`);
