@@ -19,6 +19,8 @@
 /// （`GET /llm/models?purpose=workflow&modality=decision`・保存時の照合と同じ集合）で、判定には組織の既定が
 /// 無いので既定の行を出さず、必ず選ばせる。組織がモデルの選択を禁じていても判定のモデルには掛けない
 /// （ir.md §7.11）。
+///
+/// 欄の下の「詳しく」で、入れた内容がどの提供元に送られるかを言う（提供元の表示名と国外処理の印は一覧から・D-99）。
 
 import * as React from "react";
 import { ChevronDown } from "lucide-react";
@@ -28,12 +30,13 @@ import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EFFORT_LABEL } from "@/components/admin/format";
-import { ModelList, type ModelListDefaultRow } from "@/components/llm/model-list";
+import { AbroadBadge, ModelList, type ModelListDefaultRow } from "@/components/llm/model-list";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import type { LlmModelsResponse, ModelModality } from "@/lib/admin-ai-api";
 import { useLlmModelsState } from "@/lib/model-choice";
+import { providerOf } from "@/lib/model-provider";
 import { cn } from "@/lib/utils";
-import { Field } from "./common";
+import { Field, MoreInfo } from "./common";
 
 /// 設定パネルがシートになる幅（config-panel/index.tsx と同じ）。
 const PANEL_QUERY = "(min-width: 768px)";
@@ -179,31 +182,51 @@ export function ModelField({
   );
 
   return (
-    <Field label={label} error={message} hint={hint}>
-      {desktop ? (
-        <Popover open={open} onOpenChange={setOpen}>
-          <PopoverTrigger asChild>{button}</PopoverTrigger>
-          <PopoverContent
-            align="end"
-            collisionPadding={12}
-            className="flex max-h-[min(var(--radix-popover-content-available-height),24rem)] w-80 flex-col p-1.5"
-            data-testid="workflow-model-picker"
-          >
-            {list("popover")}
-          </PopoverContent>
-        </Popover>
-      ) : (
-        <>
-          {button}
-          {open ? <InlineList onClose={() => setOpen(false)}>{list("sheet")}</InlineList> : null}
-        </>
-      )}
-      {lockedOut ? (
-        <Button type="button" variant="outline" size="sm" onClick={() => onChange(undefined)}>
-          組織の既定に戻す
-        </Button>
-      ) : null}
-    </Field>
+    <div className="space-y-1">
+      <Field label={label} error={message} hint={hint}>
+        {desktop ? (
+          <Popover open={open} onOpenChange={setOpen}>
+            <PopoverTrigger asChild>{button}</PopoverTrigger>
+            <PopoverContent
+              align="end"
+              collisionPadding={12}
+              className="flex max-h-[min(var(--radix-popover-content-available-height),24rem)] w-80 flex-col p-1.5"
+              data-testid="workflow-model-picker"
+            >
+              {list("popover")}
+            </PopoverContent>
+          </Popover>
+        ) : (
+          <>
+            {button}
+            {open ? <InlineList onClose={() => setOpen(false)}>{list("sheet")}</InlineList> : null}
+          </>
+        )}
+        {lockedOut ? (
+          <Button type="button" variant="outline" size="sm" onClick={() => onChange(undefined)}>
+            組織の既定に戻す
+          </Button>
+        ) : null}
+      </Field>
+      <ProviderInfo data={data} value={value} />
+    </div>
+  );
+}
+
+/// 入れた内容の送り先（D-99）。選んだモデル（選ばなければ組織の既定）の提供元を一覧から引く。一覧に無いモデルは
+/// 提供元を言わない（欄の下の誤りが先に出る）。
+function ProviderInfo({ data, value }: { data: LlmModelsResponse; value: string | undefined }) {
+  const provider = providerOf(data, value);
+  return (
+    <MoreInfo testId="workflow-model-provider">
+      <p className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
+        <span>
+          入れた内容は、組織の AI の設定で決めたモデルの提供元に送られます
+          {provider ? `（いま: ${provider.label}）` : ""}。
+        </span>
+        {provider?.abroad ? <AbroadBadge /> : null}
+      </p>
+    </MoreInfo>
   );
 }
 

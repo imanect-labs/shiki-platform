@@ -2,13 +2,15 @@ import { expect, test, type Page } from "@playwright/test";
 
 import { cleanupAll, loginViaKeycloak, uniqueName } from "./helpers";
 
-/// 自動実行のダイアログの同意と取り消しの e2e（BUG-102・D-90）:
+/// 自動実行のダイアログの同意と取り消しの e2e（BUG-102・D-90）と、AI の提供元の表示（D-99）:
 /// - 対象（テーブル・フォルダー）の無いワークフローも、使ってよい操作が増えた版にダイアログから同意できる
 ///   （以前は 409 で止まった）。
 /// - いま使えるようにしている人と対象の一覧を出す。「自動実行をオフにする」は、取り消しを選ばなければ権限を残し、
 ///   「権限も取り消す」を選ぶと取り消す（オフにした後でも取り消せる）。
+/// - AI のブロックに入れた内容の送り先の提供元を、自動実行のダイアログとモデルの欄の「詳しく」で言う。
 ///
 /// スケジュールは発火しない時刻（毎年 1 月 1 日 3:00）にし、オンにしたワークフローは最後にオフにして消す。
+/// 実 LLM を呼ばない（AI のブロックのあるワークフローはオンにせず、実行もしない）。
 
 const SHOTS = process.env.E2E_SHOTS_DIR;
 /// 試験のあいだに発火しないスケジュール。
@@ -219,5 +221,58 @@ test("自動実行: いま使えるようにしているものを一覧にし、
         expect(del.status(), await del.text()).toBeLessThan(300);
       },
     );
+  }
+});
+
+type ModelOption = { id: string; label: string; provider_label: string; processed_abroad: boolean };
+
+test("AI の提供元: 自動実行のダイアログとモデルの欄の「詳しく」で、入れた内容の送り先を言う（D-99）", async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await loginViaKeycloak(page);
+  const listed = await page.request.get("/api/llm/models?purpose=workflow");
+  expect(listed.ok(), await listed.text()).toBeTruthy();
+  const models = ((await listed.json()) as { models: ModelOption[] }).models;
+  // 国外処理のモデルがあればそれを選ぶ（印も確かめる）。保存するだけで、実行もオンにもしない（実 LLM を呼ばない）。
+  const model = models.find((m) => m.processed_abroad) ?? models[0];
+  expect(model, "ワークフローで選べるモデルが無い").toBeTruthy();
+  const name = uniqueName("ai-provider");
+  const id = await createFlow(page, {
+    ir_version: 1,
+    name,
+    display_name: name,
+    triggers: [NEVER_SOON],
+    nodes: [
+      { id: "ask", type: "llm.invoke", label: "日報をまとめる", params: { prompt: "今日の日報をまとめてください", model: model!.id } },
+    ],
+    edges: [],
+  });
+  try {
+    await page.goto(`/workflows/${id}`);
+    await page.getByRole("button", { name: /自動実行を有効化/ }).click();
+    const note = page.getByRole("dialog").getByTestId("enable-ai-providers");
+    await expect(note).toContainText(`AI のブロックに入れた内容は、${model!.provider_label}`);
+    await expect(note).toContainText("に送られます。");
+    if (model!.processed_abroad) await expect(note.getByText("国外処理")).toBeVisible();
+    if (SHOTS) await page.waitForTimeout(400).then(() => page.screenshot({ path: `${SHOTS}/ai-provider-enable-pc.png` }));
+    await page.keyboard.press("Escape");
+
+    // モデルの欄の「詳しく」。
+    await page.locator(".react-flow").getByText("日報をまとめる").first().click();
+    const panel = page.getByRole("complementary", { name: "ブロックの設定" });
+    const info = panel.getByTestId("workflow-model-provider");
+    await info.getByRole("button", { name: "詳しく" }).click();
+    await expect(info).toContainText(
+      `入れた内容は、組織の AI の設定で決めたモデルの提供元に送られます（いま: ${model!.provider_label}）。`,
+    );
+    if (model!.processed_abroad) await expect(info.getByText("国外処理")).toBeVisible();
+    if (SHOTS) await page.waitForTimeout(400).then(() => page.screenshot({ path: `${SHOTS}/ai-provider-model-field-pc.png` }));
+    const reg = await registration(page, id);
+    expect(reg.status).toBe("none");
+  } finally {
+    await cleanupAll(async () => {
+      const del = await page.request.delete(`/api/artifacts/${id}`, { headers: await csrfHeaders(page) });
+      expect(del.status(), await del.text()).toBeLessThan(300);
+    });
   }
 });

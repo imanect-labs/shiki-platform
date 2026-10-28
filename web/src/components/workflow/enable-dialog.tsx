@@ -9,6 +9,7 @@
 /// - 同意は `consent: true` で送る（対象の無いワークフローも、使ってよい操作が増えた版へ同意できる・BUG-102）。
 /// - いま使えるようにしている人と対象を一覧にし、「自動実行をオフにする」に「権限も取り消す」を付ける（D-90）。
 ///   取り消しを選ばなければ、オフにしても権限は残る（今までどおり）。
+/// - AI のブロックに入れた内容の送り先の提供元を言う（D-99）。
 
 import * as React from "react";
 import { AlertTriangle, FileText, FolderOpen, Loader2, ShieldCheck } from "lucide-react";
@@ -30,6 +31,8 @@ import { DrivePicker } from "@/components/chat/drive-picker";
 import { DataTableSelect, UNREADABLE_TABLE, useDataTables } from "@/components/workflow/editor/config-panel/data-tables";
 import { DriveItemName, isCsvFile } from "@/components/workflow/editor/config-panel/forms-files";
 import { useMe } from "@/hooks/use-me";
+import type { Node as IrNode } from "@/generated/workflow-ir";
+import { AiProvidersNote, hasAiNodes } from "./ai-providers-note";
 import { DelegationList } from "./enable-delegations";
 import {
   disableWorkflow,
@@ -120,6 +123,8 @@ export function EnableDialog({
   /// データ変更で起動するか・承認を待つか（有効化の前に、値の残り方と受信箱を説明する・GAP-07・GAP-08）。
   const [dataTrigger, setDataTrigger] = React.useState(false);
   const [approval, setApproval] = React.useState(false);
+  /// ワークフローのブロック（AI の送り先の提供元を言う・D-99）。
+  const [nodes, setNodes] = React.useState<IrNode[]>([]);
   /// 「自動実行をオフにする」「権限も取り消す」の確認（D-90）。`revoke` は取り消しも選んだか。
   const [confirm, setConfirm] = React.useState<null | "off" | "revoke">(null);
   const [revokeToo, setRevokeToo] = React.useState(false);
@@ -162,6 +167,7 @@ export function EnableDialog({
           Boolean(wf?.ir.triggers.some((t) => t.kind === "event" && String(t.source).startsWith("data."))),
         );
         setApproval(Boolean(wf?.ir.nodes.some((n) => n.type === "human.approval")));
+        setNodes(wf?.ir.nodes ?? []);
         const grants: GrantRow[] = p.grants.map((g) => {
           const node = g.source.startsWith("node:") ? nodes.get(g.source.slice(5)) : undefined;
           const target = TARGETS[g.objectKind];
@@ -426,6 +432,8 @@ export function EnableDialog({
                 </ul>
               </div>
             ) : null}
+
+            {hasAiNodes(nodes) ? <AiProvidersNote nodes={nodes} /> : null}
 
             {delegations.length > 0 ? (
               <div>
