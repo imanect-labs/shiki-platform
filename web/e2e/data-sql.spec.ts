@@ -120,6 +120,18 @@ test("SQL の画面で結合・集計・続きの読み込みができ、拒否�
   await first.click();
   await expect(editor).toHaveValue(`SELECT title FROM "${deal}"`);
 
+  // 結合では候補が `別名.列` になる。列の誤りは修飾名ごと、別名の誤りは別名だけを置き換える。
+  const join = `FROM "${deal}" d JOIN "${cust}" c ON d.customer = c._id`;
+  await editor.fill(`SELECT d.titel ${join}`);
+  await page.getByTestId("sql-run").click();
+  await expect(err.getByTestId("sql-error-expected").getByRole("button").first()).toHaveText("d.title");
+  await err.getByTestId("sql-error-expected").getByRole("button").first().click();
+  await expect(editor).toHaveValue(`SELECT d.title ${join}`);
+  await editor.fill(`SELECT x.title ${join}`);
+  await page.getByTestId("sql-run").click();
+  await err.getByTestId("sql-error-expected").getByRole("button", { name: "d", exact: true }).click();
+  await expect(editor).toHaveValue(`SELECT d.title ${join}`);
+
   // 部分集合外（DML）: 理由。
   await editor.fill(`DELETE FROM "${deal}"`);
   await page.getByTestId("sql-run").click();

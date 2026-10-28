@@ -16,7 +16,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import { DataApiError, listTables, runSql, type DataTable, type SqlQueryResult } from "@/lib/data-api";
+import { DataApiError, listTables, runSql, type DataTable, type QueryRejection, type SqlQueryResult } from "@/lib/data-api";
 import {
   readScoped,
   removeScoped,
@@ -85,15 +85,37 @@ function useSqlDraft(sql: string, setSql: React.Dispatch<React.SetStateAction<st
   }, [restored]);
 }
 
-/// `off` から始まる名前（引用符付きなら閉じるまで・それ以外は文字・数字・_ の並び）の終わり。
-function nameEnd(text: string, off: number): number {
-  if (text[off] === '"') {
-    const close = text.indexOf('"', off + 1);
-    return close < 0 ? text.length : close + 1;
-  }
+/// `off` から始まる名前の終わり。各部は引用符付きなら閉じるまで・それ以外は文字・数字・_ の並び。
+/// 列の拒否は `別名.列` の先頭を指すので、`qualified` なら修飾名の全体を、テーブル（別名）の拒否なら
+/// 先頭の 1 部だけを名前とする。
+function nameEnd(text: string, off: number, qualified: boolean): number {
   let end = off;
-  while (end < text.length && /[\p{L}\p{N}_]/u.test(text[end])) end++;
-  return end;
+  for (;;) {
+    if (text[end] === '"') {
+      const close = text.indexOf('"', end + 1);
+      if (close < 0) return text.length;
+      end = close + 1;
+    } else {
+      const start = end;
+      while (end < text.length && /[\p{L}\p{N}_]/u.test(text[end])) end++;
+      if (end === start) return end;
+    }
+    if (!qualified || text[end] !== "." || !/["\p{L}\p{N}_]/u.test(text[end + 1] ?? "")) return end;
+    end++;
+  }
+}
+
+/// 列の名前の拒否か（拒否文は「列 '…'」「テーブル '…'」で始まる。data の query/reject.rs）。
+function isColumnRejection(r: QueryRejection | null | undefined): boolean {
+  return r?.code === "unknown_name" && r.message.startsWith("列 ");
+}
+
+/// 候補を SQL に書ける形へ。列の候補は `別名.列` のことがあり、列の参照名には `.` を含まないので
+/// 最後の `.` で分けて、それぞれを必要なら引用符で囲む。
+function candidateSql(candidate: string, tableNames: Set<string>): string {
+  if (tableNames.has(candidate)) return sqlIdent(candidate);
+  const dot = candidate.lastIndexOf(".");
+  return dot < 0 ? sqlIdent(candidate) : `${sqlIdent(candidate.slice(0, dot))}.${sqlIdent(candidate.slice(dot + 1))}`;
 }
 
 export function SqlConsole() {
@@ -182,12 +204,13 @@ export function SqlConsole() {
       setError({ error: e, sql: text });
       setResult(null);
       // 位置が分かる拒否は、入力欄のその名前を選んでおく（直してすぐ再実行できる）。
-      const loc = e instanceof DataApiError ? e.rejection?.location : null;
+      const rej = e instanceof DataApiError ? e.rejection : null;
+      const loc = rej?.location;
       const el = editorRef.current;
       if (loc && el) {
         const off = offsetOf(text, loc.line, loc.column);
         el.focus();
-        el.setSelectionRange(off, nameEnd(text, off));
+        el.setSelectionRange(off, nameEnd(text, off, isColumnRejection(rej)));
       }
     } finally {
       if (seq.current === id) setRunning(false);
@@ -222,10 +245,10 @@ export function SqlConsole() {
   // 入力欄が拒否された SQL のままなら、候補で誤った名前を置き換えられる。
   const replaceable = !!(rejection?.code === "unknown_name" && rejection.location && error?.sql === sql);
   const onCandidate = (candidate: string) => {
-    const text = tableNames.has(candidate) ? sqlIdent(candidate) : candidate;
+    const text = candidateSql(candidate, tableNames);
     if (replaceable && rejection?.location) {
       const off = offsetOf(sql, rejection.location.line, rejection.location.column);
-      replaceRange(text, off, nameEnd(sql, off));
+      replaceRange(text, off, nameEnd(sql, off, isColumnRejection(rejection)));
     } else {
       insert(text);
     }
@@ -320,7 +343,7 @@ export function SqlConsole() {
                 </span>
                 {data.suppressed ? (
                   <Badge variant="warning" data-testid="sql-suppressed">
-                    件数の少ないグループの値は伏せています
+                    件数の少ないグループの値は伏せています（— で表示）
                   </Badge>
                 ) : null}
                 {isAggregate && withCount ? <Badge variant="muted">集計では総件数を数えません</Badge> : null}

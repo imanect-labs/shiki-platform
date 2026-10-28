@@ -2,7 +2,7 @@
 
 /// SQL 画面（#978）の表示部品: 結果の表・拒否の理由と位置・書き方の早見。状態は持たない。
 
-import { BookOpen, ChevronDown, CircleAlert, EyeOff } from "lucide-react";
+import { BookOpen, ChevronDown, CircleAlert } from "lucide-react";
 import * as React from "react";
 
 import { DataApiError, type QueryRejection, type SqlQueryResult } from "@/lib/data-api";
@@ -17,7 +17,8 @@ const REJECT_TITLE: Record<string, string> = {
   limit_exceeded: "上限を超えました",
 };
 
-export const numberFmt = new Intl.NumberFormat("ja-JP", { maximumFractionDigits: 6 });
+/// 表のセルと同じ精度（数値列は小数 9 桁まで保存できる。lib/data-view と揃える）。
+export const numberFmt = new Intl.NumberFormat("ja-JP", { maximumFractionDigits: 10 });
 
 function cellText(v: unknown): string {
   if (v === null || v === undefined) return "";
@@ -60,7 +61,7 @@ function rankCandidates(r: QueryRejection): string[] {
   const list = [...(r.expected ?? [])];
   if (!name) return list;
   return list
-    .map((c, i) => ({ c, i, d: editDistance(name, c.toLowerCase()), sys: c.startsWith("_") }))
+    .map((c, i) => ({ c, i, d: editDistance(name, c.toLowerCase()), sys: c.slice(c.lastIndexOf(".") + 1).startsWith("_") }))
     .sort((a, b) => Number(a.sys) - Number(b.sys) || a.d - b.d || a.i - b.i)
     .map((x) => x.c);
 }
@@ -182,7 +183,8 @@ export function SqlResultTable({ result }: { result: SqlQueryResult }) {
             <tr key={r} className="border-b last:border-b-0 hover:bg-accent/40">
               <td className="px-2 py-1.5 text-right text-[11px] tabular-nums text-muted-foreground">{r + 1}</td>
               {row.map((v, c) => {
-                const hidden = v === null && numeric[c] && result.suppressed;
+                // 伏せた集計は NULL で返る。値なしの集計も NULL なので、セルごとには理由を断定しない。
+                const maybeHidden = v === null && numeric[c] && result.suppressed;
                 return (
                   <td
                     key={c}
@@ -191,18 +193,15 @@ export function SqlResultTable({ result }: { result: SqlQueryResult }) {
                       numeric[c] && "text-right tabular-nums",
                       v === null && "text-muted-foreground",
                     )}
-                    title={hidden ? "件数の少ないグループのため伏せています" : cellText(v)}
+                    title={
+                      maybeHidden
+                        ? "値が無いか、件数の少ないグループのため伏せています"
+                        : typeof v === "number"
+                          ? String(v)
+                          : cellText(v)
+                    }
                   >
-                    {hidden ? (
-                      <span className="inline-flex items-center gap-1 text-xs">
-                        <EyeOff className="size-3" aria-hidden />
-                        非表示
-                      </span>
-                    ) : v === null ? (
-                      "—"
-                    ) : (
-                      cellText(v)
-                    )}
+                    {v === null ? "—" : cellText(v)}
                   </td>
                 );
               })}
