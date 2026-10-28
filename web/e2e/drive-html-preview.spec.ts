@@ -39,9 +39,11 @@ test("ドライブの HTML を描画して表示し、スクリプトは動か�
     mimeType: "text/html",
     buffer: Buffer.from(html),
   });
-  await expect(page.getByText(fileName, { exact: true })).toBeVisible({ timeout: 20_000 });
-
-  await page.getByText(fileName, { exact: true }).dblclick();
+  // 一覧の行の操作メニューから開く（アップロード直後はファイル名が進捗の表示にも出るため、名前の文字では掴まない）。
+  const rowMenu = page.getByRole("button", { name: `「${fileName}」の操作` });
+  await expect(rowMenu).toBeVisible({ timeout: 20_000 });
+  await rowMenu.click();
+  await page.getByRole("menuitem", { name: "開く" }).click();
   await expect(page).toHaveURL(/\/file\//);
   await expect(page.getByTestId("text-preview")).toHaveAttribute("data-mode", "rendered");
 
