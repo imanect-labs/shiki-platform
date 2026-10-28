@@ -2,63 +2,98 @@ import { expect, test, type Browser, type Page } from "@playwright/test";
 
 import { loginViaKeycloak } from "./helpers";
 
-/// 生成中のスクロール追従: 下端にいる間だけ追い、上へスクロールしたら読んでいる位置を保つ。
-/// 前提: LLM=stub。`long:<段落数>` は番号付き段落の長文を数文字ずつ流す（生成中に読み返せる長さ）。
-///
-/// 上へは「小刻みに」動かす（トラックパッドや指のゆっくりした操作は 1 回の動きが 1〜2px で、
-/// それを下端扱いにして引き戻していた）。
+/// 生成中のスクロール: 回答の先頭（生成開始地点）が画面の上端に来るまでだけ追い、そこで止める。
+/// 以降は生成が続いても動かさない（上から読み進める）。「最新へ」は下端へ一度動かすだけ。
+/// 前提: LLM=stub。`long:<段落数>` は番号付き段落の長文を、`longthink:<段落数>` は思考を流してから
+/// 長文を、数文字ずつ流す（生成中に読める長さ）。
 
 const PHONE = { width: 390, height: 844 };
 
-type Metrics = { top: number; bottomGap: number; textLength: number };
+type Metrics = { top: number; bottomGap: number; textLength: number; answerOffset: number | null };
 
+/// スクロール位置と、生成中の回答の先頭が上端（本文の上の余白の位置）からどれだけ下にあるか。
 function metrics(page: Page): Promise<Metrics> {
-  return page.getByTestId("conversation-scroller").evaluate((el) => ({
-    top: el.scrollTop,
-    bottomGap: el.scrollHeight - el.scrollTop - el.clientHeight,
-    textLength: el.textContent?.length ?? 0,
-  }));
+  return page.getByTestId("conversation-scroller").evaluate((el) => {
+    const row = el.querySelector('[data-testid="streaming-row"]');
+    const inset = parseFloat(getComputedStyle(el.firstElementChild!).paddingTop) || 0;
+    return {
+      top: el.scrollTop,
+      bottomGap: el.scrollHeight - el.scrollTop - el.clientHeight,
+      textLength: el.textContent?.length ?? 0,
+      answerOffset: row
+        ? row.getBoundingClientRect().top - el.getBoundingClientRect().top - inset
+        : null,
+    };
+  });
 }
 
-/// 長文を送り、本文が画面を超えて伸びても下端へ追従していることを確かめる。
-async function startLongAnswer(page: Page, send: () => Promise<void>) {
-  const input = page.getByLabel("メッセージを入力");
-  await input.fill("long:150");
-  await send();
+const generating = (page: Page) => page.getByRole("button", { name: "生成を停止" });
+
+/// 1 往復済みの会話にする（2 通目の回答は画面の下の方から始まり、上端まで追う区間ができる）。
+async function startConversation(page: Page, send: (text: string) => Promise<void>) {
+  await send("long:12");
   await page.waitForURL(/\/c\/[0-9a-f-]+/i, { timeout: 20_000 });
-  await expect(page.getByRole("button", { name: "生成を停止" })).toBeVisible({ timeout: 30_000 });
-  // 1 画面ぶん以上伸びて、なお下端にいる（＝追従している）。
-  await expect.poll(async () => (await metrics(page)).top, { timeout: 30_000 }).toBeGreaterThan(600);
-  await expect.poll(async () => (await metrics(page)).bottomGap, { timeout: 5_000 }).toBeLessThanOrEqual(8);
+  await expect(page.getByText(/^段落12。/)).toBeVisible({ timeout: 30_000 });
+  await expect(generating(page)).toHaveCount(0, { timeout: 30_000 });
 }
 
-/// 上へ動かしたあと、生成が進んでも読んでいる位置が動かないことを確かめる。
+/// 長文を送り、回答の先頭が上端に来るまで下へ追っていることを確かめる。
+async function sendLongAnswer(page: Page, send: (text: string) => Promise<void>, text = "long:150") {
+  const sentAt = (await metrics(page)).top;
+  await send(text);
+  await expect(generating(page)).toBeVisible({ timeout: 30_000 });
+  await expect.poll(async () => (await metrics(page)).top, { timeout: 30_000 }).toBeGreaterThan(sentAt);
+}
+
+/// 回答の先頭が上端で止まり、生成が続いても動かないことを確かめる。
+async function expectStoppedAtAnswerStart(page: Page) {
+  await expect
+    .poll(async () => Math.abs((await metrics(page)).answerOffset ?? Number.NaN), { timeout: 30_000 })
+    .toBeLessThanOrEqual(2);
+  await expectPositionHeld(page);
+}
+
+/// 生成が進んでも読んでいる位置が動かないことを確かめる。
 async function expectPositionHeld(page: Page) {
   // スクロールの慣性が落ち着くのを待ってから位置を取る。
   await page.waitForTimeout(600);
   const before = await metrics(page);
-  // 下端から離れている（追従で引き戻されていない）。
   expect(before.bottomGap).toBeGreaterThan(30);
   await page.waitForTimeout(1_500);
   const after = await metrics(page);
   // 生成はまだ続いている（止まっていたら位置が動かないのは当然で、確かめたことにならない）。
   expect(after.textLength).toBeGreaterThan(before.textLength);
-  await expect(page.getByRole("button", { name: "生成を停止" })).toBeVisible();
+  await expect(generating(page)).toBeVisible();
   expect(Math.abs(after.top - before.top)).toBeLessThanOrEqual(1);
   await expect(page.getByTestId("jump-to-latest")).toBeVisible();
 }
 
-/// 「最新へ」で下端へ戻ると、再び生成に合わせて追従する。
-async function expectFollowAfterJump(page: Page) {
+/// 「最新へ」は下端へ一度動かすだけで、生成中でも追わない。
+async function expectJumpWithoutFollow(page: Page) {
+  // 追わないので、下端に着いた直後から本文の伸びたぶん離れていく。着いた瞬間をスクロールの
+  // たびに測って拾う（一定間隔で見ると取りこぼす）。測るのは位置を変えた次の描画なので、その間に
+  // 伸びた 1〜2 行は許す（「最新へ」が消える距離＝下端付近の内側に着けばよい）。
+  const scroller = page.getByTestId("conversation-scroller");
+  await scroller.evaluate((el) => {
+    const w = window as unknown as { minGap: number };
+    w.minGap = Infinity;
+    el.addEventListener("scroll", () => {
+      w.minGap = Math.min(w.minGap, el.scrollHeight - el.scrollTop - el.clientHeight);
+    });
+  });
   await page.getByTestId("jump-to-latest").click();
-  await expect.poll(async () => (await metrics(page)).bottomGap, { timeout: 5_000 }).toBeLessThanOrEqual(8);
+  await expect
+    .poll(() => page.evaluate(() => (window as unknown as { minGap: number }).minGap), {
+      timeout: 5_000,
+    })
+    .toBeLessThanOrEqual(60);
+  await page.waitForTimeout(400);
   const before = await metrics(page);
-  await page.waitForTimeout(1_000);
-  await expect.poll(async () => (await metrics(page)).bottomGap, { timeout: 5_000 }).toBeLessThanOrEqual(8);
+  await page.waitForTimeout(1_500);
   const after = await metrics(page);
   expect(after.textLength).toBeGreaterThan(before.textLength);
-  expect(after.top).toBeGreaterThan(before.top);
-  await expect(page.getByTestId("jump-to-latest")).toBeHidden();
+  expect(Math.abs(after.top - before.top)).toBeLessThanOrEqual(1);
+  expect(after.bottomGap).toBeGreaterThan(before.bottomGap);
 }
 
 async function phonePage(browser: Browser, page: Page): Promise<Page> {
@@ -74,92 +109,67 @@ async function phonePage(browser: Browser, page: Page): Promise<Page> {
   return ctx.newPage();
 }
 
-test.describe("生成中のスクロール追従", () => {
+const pcSend = (page: Page) => async (text: string) => {
+  await page.getByLabel("メッセージを入力").fill(text);
+  await page.getByLabel("メッセージを入力").press("Enter");
+};
+const phoneSend = (page: Page) => async (text: string) => {
+  await page.getByLabel("メッセージを入力").fill(text);
+  await page.getByRole("button", { name: "送信" }).click();
+};
+
+test.describe("生成中のスクロール", () => {
   test.setTimeout(120_000);
 
-  test("PC: ホイールで少し上へ動かすと追従が止まり、最新へで戻ると再び追う", async ({ page }) => {
+  test("PC: 回答の先頭が上端に来るまで追ってそこで止まり、「最新へ」は追わない", async ({ page }) => {
     await loginViaKeycloak(page);
     await page.goto("/");
-    await startLongAnswer(page, () => page.getByLabel("メッセージを入力").press("Enter"));
-
-    const box = await page.getByTestId("conversation-scroller").boundingBox();
-    // 本文の左右の余白（スクロール領域そのもの）をクリックしても追従は止まらない。
-    await page.mouse.click(box!.x + 8, box!.y + box!.height / 2);
-    const clicked = await metrics(page);
-    await page.waitForTimeout(1_000);
-    await expect.poll(async () => (await metrics(page)).bottomGap, { timeout: 5_000 }).toBeLessThanOrEqual(8);
-    expect((await metrics(page)).top).toBeGreaterThan(clicked.top);
-
-    await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 3);
-    // トラックパッドのような 2px ずつの動きだけで上へ。
-    for (let i = 0; i < 40; i += 1) {
-      await page.mouse.wheel(0, -2);
-      await page.waitForTimeout(16);
-    }
-    await expectPositionHeld(page);
-
-    // 読み返し中に、会話は動かない上向きのホイール（中の小さなスクロール領域だけが動く）が
-    // 来ても、下端へ飛ばない。
-    await page.getByTestId("conversation-scroller").evaluate((el) => {
-      el.firstElementChild!.dispatchEvent(new WheelEvent("wheel", { deltaY: -100, bubbles: true }));
-    });
-    await expectPositionHeld(page);
-
-    // 大きく上へ動かしてから下へ少し戻しても、下端から離れている間は追わない。
-    await page.mouse.wheel(0, -600);
-    await page.mouse.wheel(0, 100);
-    await expectPositionHeld(page);
-
-    await expectFollowAfterJump(page);
+    await startConversation(page, pcSend(page));
+    await sendLongAnswer(page, pcSend(page));
+    await expectStoppedAtAnswerStart(page);
+    await expectJumpWithoutFollow(page);
   });
 
-  test("スマホ: 指でゆっくり上へ動かすと追従が止まり、最新へで戻ると再び追う", async ({
+  test("スマホ: 回答の先頭が上端（浮いたボタンの下）に来るまで追ってそこで止まる", async ({
     browser,
     page,
   }) => {
     const phone = await phonePage(browser, page);
     await phone.goto("/");
-    await startLongAnswer(phone, () => phone.getByRole("button", { name: "送信" }).click());
-
-    // 指の操作（touchstart → touchmove → touchend）で、1 回 2px ずつゆっくり上へ。
-    const cdp = await phone.context().newCDPSession(phone);
-    const x = PHONE.width / 2;
-    const y0 = 300;
-    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x, y: y0 }] });
-    for (let i = 1; i <= 100; i += 1) {
-      await cdp.send("Input.dispatchTouchEvent", {
-        type: "touchMove",
-        touchPoints: [{ x, y: y0 + i * 2 }],
-      });
-      await phone.waitForTimeout(16);
-    }
-    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
-    await expectPositionHeld(phone);
-
-    await expectFollowAfterJump(phone);
+    await startConversation(phone, phoneSend(phone));
+    await sendLongAnswer(phone, phoneSend(phone));
+    await expectStoppedAtAnswerStart(phone);
+    await expectJumpWithoutFollow(phone);
   });
 
-  test("思考を開いたまま読み返していても、生成が終わって思考が閉じたり位置が飛んだりしない", async ({
-    page,
-  }) => {
+  test("PC: 先頭に着く前でも、上へ少し動かしたらそこで止まる", async ({ page }) => {
     await loginViaKeycloak(page);
     await page.goto("/");
-    const input = page.getByLabel("メッセージを入力");
-    await input.fill("longthink:25");
-    await input.press("Enter");
-    await page.waitForURL(/\/c\/[0-9a-f-]+/i, { timeout: 20_000 });
-    // 思考が流れている間に、思考パネルと詳細な思考を開く。
-    await page.getByRole("button", { name: /考えています/ }).click();
-    await page.getByRole("button", { name: "詳細な思考を表示" }).click();
-    await expect.poll(async () => (await metrics(page)).top, { timeout: 30_000 }).toBeGreaterThan(300);
-
+    await startConversation(page, pcSend(page));
+    await sendLongAnswer(page, pcSend(page));
     const box = await page.getByTestId("conversation-scroller").boundingBox();
     await page.mouse.move(box!.x + box!.width / 2, box!.y + box!.height / 3);
-    for (let i = 0; i < 40; i += 1) {
+    // トラックパッドのような 2px ずつの動き。
+    for (let i = 0; i < 20; i += 1) {
       await page.mouse.wheel(0, -2);
       await page.waitForTimeout(16);
     }
     await expectPositionHeld(page);
+    // 先頭までは追っていない（止まり位置まで動かされていない）。
+    expect((await metrics(page)).answerOffset ?? 0).toBeGreaterThan(20);
+  });
+
+  test("思考を開いたままでも先頭で止まり、生成が終わって思考が閉じたり位置が飛んだりしない", async ({
+    page,
+  }) => {
+    await loginViaKeycloak(page);
+    await page.goto("/");
+    await startConversation(page, pcSend(page));
+    await sendLongAnswer(page, pcSend(page), "longthink:25");
+    // 思考が流れている間に、思考パネルと詳細な思考を開く。
+    await page.getByRole("button", { name: /考えています/ }).click();
+    await page.getByRole("button", { name: "詳細な思考を表示" }).click();
+    await expectStoppedAtAnswerStart(page);
 
     // 読んでいる詳細な思考の位置（画面上の y）。
     const detail = page.getByText(/^思考1。/);
@@ -168,7 +178,7 @@ test.describe("生成中のスクロール追従", () => {
       y: Math.round((await detail.boundingBox())?.y ?? Number.NaN),
     });
     const before = await where();
-    await expect(page.getByRole("button", { name: "生成を停止" })).toHaveCount(0, { timeout: 60_000 });
+    await expect(generating(page)).toHaveCount(0, { timeout: 60_000 });
     // 確定（生成中の行 → 確定した行）と、その後の読み直し（→ サーバの行）を待つ。
     await page.waitForTimeout(3_000);
     await expect(page.getByRole("button", { name: "詳細な思考を隠す" })).toBeVisible();

@@ -276,8 +276,16 @@ export function Conversation({
   // スレッド名（クロームのタイトル・⋯ メニューの見出し）。page のときだけ引く。
   const threadTitle = useThreadTitle(isPanel ? null : threadId);
   // 追従スクロール（下端付近にいる間だけ追う・離れたら「最新へ」）。
-  const { scrollerRef, contentRef, scroller, content, showJump, scrollToBottom } =
-    useStickToBottom();
+  const {
+    scrollerRef,
+    contentRef,
+    stopAtRef,
+    scroller,
+    content,
+    showJump,
+    scrollToBottom,
+    jumpToLatest,
+  } = useStickToBottom();
   // 読み返し中の「一つ前／一つ後の自分の発話へ」。
   const turnJump = useTurnJump(scroller, content);
   // 入力欄は本文の上に重ねる（背後を透かす）。その高さだけ本文の末尾と「最新へ」を持ち上げる。
@@ -880,11 +888,14 @@ export function Conversation({
                   ),
                 )}
                 {stream ? (
-                  <StreamingRow
-                    stream={stream}
-                    onApproval={decideApproval}
-                    threadId={threadId}
-                  />
+                  // 生成中の回答の先頭（ここが画面の上端に来たら追従を終える）。
+                  <div ref={stopAtRef} className="min-w-0" data-testid="streaming-row">
+                    <StreamingRow
+                      stream={stream}
+                      onApproval={decideApproval}
+                      threadId={threadId}
+                    />
+                  </div>
                 ) : null}
                 {/* 順番待ちは「AI が答えている最中に積んだ次の発話」なので応答の後ろに置く。 */}
                 {queued.map((q) => (
@@ -932,7 +943,7 @@ export function Conversation({
                 </button>
                 <button
                   type="button"
-                  onClick={() => scrollToBottom("smooth")}
+                  onClick={jumpToLatest}
                   aria-label="最新のメッセージへ移動"
                   data-testid="jump-to-latest"
                   className={cn(JUMP_PILL, "size-10 justify-center")}

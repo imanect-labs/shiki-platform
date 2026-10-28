@@ -18,9 +18,14 @@ const UP_KEYS = new Set(["ArrowUp", "PageUp", "Home"]);
 ///
 /// - 下端にいる間だけ、中身が伸びたら（トークン・承認カード・計画・図の出現）下端へ合わせる。
 ///   中身の高さの変化は ResizeObserver で拾うので、何が伸びたかを呼び出し側で列挙しなくてよい。
+/// - **生成中は、回答の先頭（`stopAtRef` に渡した要素）が画面の上端に来たらそこで追従を終える。**
+///   以降は生成が続いても動かさない（回答を上から読み進められるように）。上端は本文の上の余白
+///   （浮いたクロームの下・最初の発話が来る位置）で、「一つ前／一つ後」の移動先と揃える。
 /// - 読み返すために上へスクロールしたら追従をやめ、読んでいる位置をそのまま保つ。「最新へ」ボタン
-///   （`showJump`）を出す。下へ戻ってきて下端付近に入ったら再び追従する。
-/// - 送信したときなど、呼び出し側が明示的に下端へ戻すときは `scrollToBottom()`。
+///   （`showJump`）を出す。下へ戻ってきて下端付近に入ったら再び追従する（止まり位置を過ぎた
+///   生成中は戻さない）。
+/// - 送信したときは `scrollToBottom()`（自分の発話を見せ、次の回答の先頭まで追う）。「最新へ」は
+///   `jumpToLatest()`（下端へ一度動かすだけで、生成中は追わない）。
 ///
 /// 「上へ動かした」はスクロール位置の変化だけで判断しない。トラックパッドや指のゆっくりした操作は
 /// 1 回の動きが 1〜2px で、位置だけ見ると下端と区別できず、生成中は次のトークンで引き戻していた。
@@ -40,13 +45,53 @@ export function useStickToBottom() {
   const draggingBar = React.useRef(false);
   const lastTop = React.useRef(0);
   const [showJump, setShowJump] = React.useState(false);
+  // 生成中の回答の先頭（追従の止まり位置）と、それに着いて追従を終えたか。
+  const [stopAt, setStopAt] = React.useState<HTMLElement | null>(null);
+  const stopAtEl = React.useRef<HTMLElement | null>(null);
+  const stopped = React.useRef(false);
 
   const distance = (el: HTMLElement) => el.scrollHeight - el.scrollTop - el.clientHeight;
 
-  const pin = React.useCallback((el: HTMLElement) => {
-    el.scrollTop = el.scrollHeight;
-    lastTop.current = el.scrollTop;
+  // 止まり位置の scrollTop（回答の先頭を上端の余白の位置に合わせる値）。生成中でなければ null。
+  const stopTop = React.useCallback(
+    (el: HTMLElement) => {
+      const target = stopAtEl.current;
+      if (!target || !content) return null;
+      const inset = parseFloat(getComputedStyle(content).paddingTop) || 0;
+      return (
+        target.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop - inset
+      );
+    },
+    [content],
+  );
+
+  // 下端へ合わせる。ただし生成中の回答の先頭が上端に着いたら、そこで止めて追従を終える。
+  const pin = React.useCallback(
+    (el: HTMLElement) => {
+      const limit = stopTop(el);
+      if (limit !== null && limit <= el.scrollHeight - el.clientHeight) {
+        if (el.scrollTop < limit) el.scrollTop = limit;
+        stick.current = false;
+        stopped.current = true;
+      } else {
+        el.scrollTop = el.scrollHeight;
+      }
+      lastTop.current = el.scrollTop;
+    },
+    [stopTop],
+  );
+
+  // 描画と同時に止まり位置を差し替える（effect を待つと、その間の追従が止まり位置を知らない）。
+  const stopAtRef = React.useCallback((el: HTMLElement | null) => {
+    stopAtEl.current = el;
+    setStopAt(el);
   }, []);
+
+  // 新しい回答が始まった（止まり位置が変わった）。下端付近で待っていたなら、その先頭まで追う。
+  React.useEffect(() => {
+    stopped.current = false;
+    if (stopAt && scroller && distance(scroller) <= NEAR_BOTTOM_PX) stick.current = true;
+  }, [stopAt, scroller]);
 
   React.useEffect(() => {
     if (!scroller) return;
@@ -116,6 +161,8 @@ export function useStickToBottom() {
         // 上へ動いて下端を離れた（入力を伴わない移動も含む）。
         stick.current = false;
         leaving.current = false;
+      } else if (stopped.current) {
+        // 生成中の回答の先頭まで追い終えた。下端へ戻ってきても、生成が終わるまでは追わない。
       } else if (d <= AT_BOTTOM_PX) {
         // 下端（中身が縮んで押し戻された場合も含む）。上へ動かす入力の直後は、まだ動き出して
         // いないだけなので追従へ戻さない（下へ動いて着いたのなら戻す）。
@@ -166,26 +213,54 @@ export function useStickToBottom() {
     return () => ro.disconnect();
   }, [scroller, content, pin]);
 
-  const scrollToBottom = React.useCallback(
-    (behavior: ScrollBehavior = "auto") => {
+  // 送信した: 自分の発話を見せ、次の回答の先頭まで追う。
+  const scrollToBottom = React.useCallback(() => {
+    stick.current = true;
+    stopped.current = false;
+    leaving.current = false;
+    if (scroller) pin(scroller);
+  }, [scroller, pin]);
+
+  // 「最新へ」: 下端へ一度動かす。生成中は追わない（止まり位置を過ぎたものとして扱う）。
+  const jumpToLatest = React.useCallback(() => {
+    leaving.current = false;
+    if (stopAtEl.current) {
+      stick.current = false;
+      stopped.current = true;
+    } else {
       stick.current = true;
-      leaving.current = false;
-      if (!scroller) return;
-      if (behavior === "smooth") {
-        scroller.scrollTo({ top: scroller.scrollHeight, behavior });
-      } else {
-        pin(scroller);
-      }
-    },
-    [scroller, pin],
-  );
+    }
+    const el = scroller;
+    if (!el) return;
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+    // 滑らかに動く間にも本文は伸びるので、押した時点の下端に着いても最新には届かない。動き終わったら
+    // その時点の下端へ合わせ直す（途中で利用者が操作したら、その操作を優先して何もしない）。
+    const inputs = ["wheel", "touchstart", "keydown", "pointerdown"] as const;
+    let done = false;
+    const finish = (snap: boolean) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      el.removeEventListener("scrollend", onEnd);
+      for (const ev of inputs) el.removeEventListener(ev, onInput);
+      if (snap) el.scrollTop = el.scrollHeight;
+    };
+    const onEnd = () => finish(true);
+    const onInput = () => finish(false);
+    el.addEventListener("scrollend", onEnd);
+    for (const ev of inputs) el.addEventListener(ev, onInput, { passive: true });
+    // scrollend の無いブラウザ（Safari の一部）向けの保険。
+    const timer = setTimeout(onEnd, 1_000);
+  }, [scroller]);
 
   return {
     scrollerRef: setScroller,
     contentRef: setContent,
+    stopAtRef,
     scroller,
     content,
     showJump,
     scrollToBottom,
+    jumpToLatest,
   };
 }
