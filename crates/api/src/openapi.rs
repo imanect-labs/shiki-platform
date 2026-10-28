@@ -232,6 +232,8 @@ use utoipa::{
         crate::error_body::PayloadTooLargeBody,
         crate::error_body::RetryLaterBody,
         crate::error_body::ImportInvalidBody,
+        crate::error_body::InvalidRunInputBody,
+        crate::error_body::InputIssueBody,
         crate::error_body::ForbiddenBody,
         crate::error_body::ForbiddenCode,
         crate::error_body::RequestErrorBody,

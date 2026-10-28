@@ -1204,3 +1204,70 @@ async fn consent_and_revoke_on_disable() {
         assert!(st.is_success(), "{st}");
     }
 }
+
+/// 金額（1 以上の整数・必須）を受ける手動のワークフローを作る（実行の入力の試験・BUG-109・D-93）。
+async fn create_amount_flow(env: &Env, prefix: &str) -> String {
+    let suffix = Uuid::new_v4().simple().to_string();
+    let ir = json!({
+        "ir_version": 1,
+        "name": format!("{prefix}-{}", &suffix[..12]),
+        "declared_scopes": [],
+        "input_schema": { "type": "object", "required": ["amount"], "properties": {
+            "amount": { "type": "integer", "minimum": 1, "title": "金額" } } },
+        "triggers": [{ "kind": "interactive" }],
+        "nodes": [{ "id": "echo", "type": "script.run",
+                    "params": { "source": { "inline": "function main(i){ return {}; }" } } }],
+        "edges": []
+    });
+    let (st, body) = req(env, "POST", "/workflows", Some(json!({ "ir": ir }))).await;
+    assert_eq!(st, StatusCode::CREATED, "{body}");
+    body["id"].as_str().unwrap().to_string()
+}
+
+/// 試験で作った run とワークフローを消す。
+async fn delete_flow_and_runs(env: &Env, id: &str) {
+    sqlx::query("DELETE FROM workflow_run WHERE tenant_id = 'default' AND workflow_id = $1::uuid")
+        .bind(id)
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    let (st, _) = req(env, "DELETE", &format!("/artifacts/{id}"), None).await;
+    assert!(st.is_success(), "{st}");
+}
+
+/// BUG-109: 実行の入力の誤りは本文を捨てず、項目のキーと理由を返す（code invalid_input）。run は作らない。
+#[tokio::test]
+async fn manual_run_reports_input_errors_by_field() {
+    let Some(env) = setup().await else { return };
+    let id = create_amount_flow(&env, "input-errors").await;
+    let start = |body: Value| {
+        let env = &env;
+        let id = id.clone();
+        async move { req(env, "POST", &format!("/workflows/{id}/runs"), Some(body)).await }
+    };
+    let (st, body) = start(json!({ "input": { "amount": 0 } })).await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["code"], "invalid_input", "{body}");
+    assert_eq!(
+        body["errors"],
+        json!([{ "key": "amount", "message": "1 以上にしてください" }]),
+        "{body}"
+    );
+    assert!(body["message"].as_str().unwrap().contains("誤り"), "{body}");
+    let (st, body) = start(json!({ "input": { "amount": "3" } })).await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(
+        body["errors"],
+        json!([{ "key": "amount", "message": "整数を入れてください" }]),
+        "{body}"
+    );
+    let runs: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM workflow_run WHERE tenant_id = 'default' AND workflow_id = $1::uuid",
+    )
+    .bind(&id)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(runs, 0, "入力の誤りでは run を作らない");
+    delete_flow_and_runs(&env, &id).await;
+}

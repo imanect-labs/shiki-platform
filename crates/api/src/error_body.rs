@@ -178,6 +178,49 @@ pub struct QueryRejectionBody {
     pub rejection: data::QueryRejection,
 }
 
+/// 実行の入力の誤り 1 件（項目のキーと理由・BUG-109）。
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct InputIssueBody {
+    /// 入力の項目のキー（入れ子は `addr.zip`・リストの要素は `tags[2]`）。入力全体の誤りは空。
+    pub key: String,
+    /// 理由（利用者に見せてよい日本語・例: `1 以上にしてください`）。
+    pub message: String,
+}
+
+/// 実行の入力が入力項目の形に合わない（構造化 400・`invalid_input`・BUG-109）。
+///
+/// 実行のダイアログは `errors` の `key` を項目の見出しに直して欄の下に出す（本文を捨てて「API 400」とだけ
+/// 出さない）。
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct InvalidRunInputBody {
+    /// 常に 400。
+    pub status: u16,
+    pub title: String,
+    /// `invalid_input`。
+    pub code: data::InvalidCode,
+    /// 全体の文言（例: `入力した値に誤りがあります。`）。
+    pub message: String,
+    pub errors: Vec<InputIssueBody>,
+}
+
+impl InvalidRunInputBody {
+    pub fn new(issues: &[workflow_engine::ir::input_schema::InputIssue]) -> Self {
+        InvalidRunInputBody {
+            status: 400,
+            title: "Bad Request".into(),
+            code: data::InvalidCode::InvalidInput,
+            message: "入力した値に誤りがあります。".into(),
+            errors: issues
+                .iter()
+                .map(|i| InputIssueBody {
+                    key: i.key.clone(),
+                    message: i.message.clone(),
+                })
+                .collect(),
+        }
+    }
+}
+
 /// 型を JSON 本文へ（直列化に失敗しない型だけを渡す）。
 pub(crate) fn to_body<T: Serialize>(v: &T) -> serde_json::Value {
     serde_json::to_value(v).unwrap_or_else(|_| serde_json::json!({}))

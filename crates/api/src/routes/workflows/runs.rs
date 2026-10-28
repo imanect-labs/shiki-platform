@@ -43,7 +43,7 @@ pub struct StartRunResponse {
     request_body = StartRunRequest,
     responses(
         (status = 202, description = "起動した", body = StartRunResponse),
-        (status = 400, description = "入力が input_schema に合わないか、実行できない設定がある（not_ready・errors 付き）"),
+        (status = 400, description = "入力が input_schema に合わない（invalid_input・項目ごとの errors 付き）か、実行できない設定がある（not_ready・errors 付き）", body = crate::error_body::InvalidRunInputBody),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限がない"),
         (status = 404, description = "存在しない"),
@@ -68,12 +68,20 @@ pub async fn start_workflow_run(
         .await
         .map_err(|e| match e {
             workflow_engine::run::LauncherError::Ir(_) => ApiError::NotFound,
-            workflow_engine::run::LauncherError::Input(m) => ApiError::BadRequest(m),
+            // 入力の誤りは項目ごとの理由を返す（本文を捨てて「API 400」にしない・BUG-109）。
+            workflow_engine::run::LauncherError::Input(issues) => invalid_input(&issues),
             // 必須の文字の欄が空のまま（保存は通る・実行の前に止める・D-43）。理由は欄に写せる形で返す。
             workflow_engine::run::LauncherError::NotReady(errors) => not_ready(&errors),
             other => ApiError::Internal(format!("run 起動: {other}")),
         })?;
     Ok((StatusCode::ACCEPTED, Json(StartRunResponse { run_id })))
+}
+
+/// 入力が入力項目の形に合わない 400（`invalid_input`・項目ごとの理由・BUG-109）。
+pub(super) fn invalid_input(issues: &[workflow_engine::ir::input_schema::InputIssue]) -> ApiError {
+    ApiError::UnprocessableJson(crate::error_body::to_body(
+        &crate::error_body::InvalidRunInputBody::new(issues),
+    ))
 }
 
 /// 実行できない設定（必須の文字の欄が空・D-43）の 400。有効化の 409 `not_ready` と同じ形で、理由を

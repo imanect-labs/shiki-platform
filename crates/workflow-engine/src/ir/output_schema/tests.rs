@@ -311,5 +311,5 @@ fn closed_schema_rejects_extras_and_enforces_dropped_constraints() {
     let errs = validate_output(&schema, r#"{"summary":"a"}"#).unwrap_err();
     assert_eq!(errs, vec!["category: 必須です"]);
     let errs = validate_output(&schema, "[1]").unwrap_err();
-    assert_eq!(errs, vec!["出力: 項目の組を入れてください"]);
+    assert_eq!(errs, vec!["出力: 項目のまとまりを入れてください"]);
 }

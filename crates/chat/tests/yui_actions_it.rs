@@ -166,7 +166,9 @@ impl gui::WorkflowStarter for TestStarter {
             .await
             .map_err(|e| match e {
                 workflow_engine::run::LauncherError::Ir(_) => gui::ActionError::NotFound,
-                workflow_engine::run::LauncherError::Input(m) => gui::ActionError::Invalid(m),
+                workflow_engine::run::LauncherError::Input(issues) => gui::ActionError::Invalid(
+                    workflow_engine::run::LauncherError::input_message(&issues),
+                ),
                 other => gui::ActionError::Internal(format!("run 起動: {other}")),
             })
     }

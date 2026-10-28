@@ -100,8 +100,8 @@ impl WorkflowRunLauncher {
             return Err(LauncherError::NotReady(blockers));
         }
         if let Some(schema) = &ir.input_schema {
-            crate::ir::input_schema::validate_input(schema, input)
-                .map_err(|errors| LauncherError::Input(errors.join("\n")))?;
+            crate::ir::input_schema::validate_input_issues(schema, input)
+                .map_err(LauncherError::Input)?;
         }
         let ir_json = serde_json::to_value(ir).map_err(|e| LauncherError::Ir(e.to_string()))?;
         let graph = RunGraph::build(ir);
@@ -315,9 +315,10 @@ pub enum LauncherError {
     Delegation(String),
     #[error("run 作成エラー: {0}")]
     Run(String),
-    /// 入力が `input_schema` に合わない（呼び出し側は 400 に写す）。
-    #[error("入力が正しくありません: {0}")]
-    Input(String),
+    /// 入力が `input_schema` に合わない（呼び出し側は 400 に写す）。誤りは場所（項目のキー）と理由に分けて持つ
+    /// （実行のダイアログが欄の下に出す・BUG-109）。文が要る呼び出し側は [`LauncherError::input_message`]。
+    #[error("入力が正しくありません: {}", LauncherError::input_message(.0))]
+    Input(Vec<crate::ir::input_schema::InputIssue>),
     /// IR が実行できる状態にない（必須の文字の欄が空・D-43）。理由は [`crate::run_blockers`] の全件
     /// （呼び出し側は 400 に写し、欄に写せるよう node_id・path を保つ）。
     #[error("実行できない設定があります: {}", LauncherError::messages(.0))]
@@ -329,6 +330,16 @@ pub enum LauncherError {
 }
 
 impl LauncherError {
+    /// 入力の誤りを「場所: 理由」の文にまとめる（構造を持てない呼び出し側・会話の図のボタン・workflow.start）。
+    #[must_use]
+    pub fn input_message(issues: &[crate::ir::input_schema::InputIssue]) -> String {
+        issues
+            .iter()
+            .map(|i| i.describe("入力"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     /// 理由の文言を 1 つにまとめる（構造を持てない呼び出し側・ログ用）。
     #[must_use]
     pub fn messages(errors: &[crate::ValidationError]) -> String {

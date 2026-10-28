@@ -394,9 +394,10 @@ impl NodePorts for ProdNodePorts {
             .await
             .map_err(|e| match e {
                 // 入力が子ワークフローの input_schema に合わない＝何度やっても通らない（再試行しない）。
-                workflow_engine::run::LauncherError::Input(m) => {
-                    PortError::invalid(format!("workflow.start の入力: {m}"))
-                }
+                workflow_engine::run::LauncherError::Input(issues) => PortError::invalid(format!(
+                    "workflow.start の入力: {}",
+                    workflow_engine::run::LauncherError::input_message(&issues)
+                )),
                 // 子ワークフローの必須の文字の欄が空（直すまで通らない・D-43）。
                 workflow_engine::run::LauncherError::NotReady(errors) => {
                     PortError::invalid(format!(

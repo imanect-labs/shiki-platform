@@ -124,9 +124,40 @@ fn pointer_token(key: &str) -> String {
     key.replace('~', "~0").replace('/', "~1")
 }
 
+/// 入力の誤り 1 件（場所と理由・BUG-109）。
+///
+/// 実行のダイアログが理由を欄の下に出せるよう、場所と理由を分けて持つ（「場所: 理由」の文を読み直させない）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputIssue {
+    /// 誤りの場所。入力の項目のキーで、入れ子は `addr.zip`、リストの要素は `tags[2]`。値全体の誤りは空。
+    pub key: String,
+    /// 理由（利用者に見せてよい日本語・例: `1 以上にしてください`）。
+    pub message: String,
+}
+
+impl InputIssue {
+    /// 「場所: 理由」の文（場所が空なら根の呼び名・「入力」「出力」など）。
+    #[must_use]
+    pub fn describe(&self, root: &str) -> String {
+        let at = if self.key.is_empty() { root } else { &self.key };
+        format!("{at}: {}", self.message)
+    }
+}
+
 /// 入力をスキーマで検証する。誤りは「場所: 理由」の文（日本語）の一覧。
 pub fn validate_input(schema: &Value, input: &Value) -> Result<(), Vec<String>> {
     validate_value(schema, input, "入力")
+}
+
+/// 入力をスキーマで検証する（誤りを場所と理由に分けて返す・実行のダイアログ向け・BUG-109）。
+pub fn validate_input_issues(schema: &Value, input: &Value) -> Result<(), Vec<InputIssue>> {
+    let mut errors = Vec::new();
+    Checker { root: "入力" }.check(schema, input, "", 0, &mut errors);
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
 }
 
 /// 値をスキーマで検証する（`root` は根の呼び名・「入力」「出力」など）。誤りは「場所: 理由」の文の一覧。
@@ -139,8 +170,16 @@ pub fn validate_value(schema: &Value, v: &Value, root: &str) -> Result<(), Vec<S
     if errors.is_empty() {
         Ok(())
     } else {
-        Err(errors)
+        Err(errors.iter().map(|e| e.describe(root)).collect())
     }
+}
+
+/// 誤りを積む（場所と理由）。
+fn issue(errs: &mut Vec<InputIssue>, key: &str, message: String) {
+    errs.push(InputIssue {
+        key: key.to_string(),
+        message,
+    });
 }
 
 /// 検査の文脈（文言の根の呼び名）。
@@ -149,52 +188,43 @@ struct Checker<'a> {
     root: &'a str,
 }
 
-impl<'a> Checker<'a> {
-    /// 誤りの場所（根は呼び名）。
-    fn at<'p>(self, path: &'p str) -> &'p str
-    where
-        'a: 'p,
-    {
-        if path.is_empty() {
-            self.root
-        } else {
-            path
-        }
-    }
-
-    fn check(self, schema: &Value, v: &Value, path: &str, depth: usize, errs: &mut Vec<String>) {
+impl Checker<'_> {
+    fn check(
+        self,
+        schema: &Value,
+        v: &Value,
+        path: &str,
+        depth: usize,
+        errs: &mut Vec<InputIssue>,
+    ) {
         if errs.len() >= MAX_ERRORS {
             return;
         }
         let s = match schema {
             Value::Bool(true) => return,
             Value::Bool(false) => {
-                errs.push(format!("{}: この値は受け付けません", self.at(path)));
+                issue(errs, path, "この値は受け付けません".into());
                 return;
             }
             Value::Object(s) => s,
             _ => {
-                errs.push(format!(
-                    "{}: {}スキーマが不正です",
-                    self.at(path),
-                    self.root
-                ));
+                issue(errs, path, format!("{}スキーマが不正です", self.root));
                 return;
             }
         };
         if depth > MAX_DEPTH {
-            errs.push(format!("{}: 入れ子が深すぎます", self.at(path)));
+            issue(errs, path, "入れ子が深すぎます".into());
             return;
         }
         if let Some(k) = s
             .keys()
             .find(|k| !ASSERTIONS.contains(&k.as_str()) && !ANNOTATIONS.contains(&k.as_str()))
         {
-            errs.push(format!(
-                "{}: {}スキーマの「{k}」には対応していません",
-                self.at(path),
-                self.root
-            ));
+            issue(
+                errs,
+                path,
+                format!("{}スキーマの「{k}」には対応していません", self.root),
+            );
             return;
         }
         if let Some(t) = s.get("type") {
@@ -204,37 +234,33 @@ impl<'a> Checker<'a> {
                 _ => Vec::new(),
             };
             if types.is_empty() {
-                errs.push(format!(
-                    "{}: {}スキーマの type が不正です",
-                    self.at(path),
-                    self.root
-                ));
+                issue(
+                    errs,
+                    path,
+                    format!("{}スキーマの type が不正です", self.root),
+                );
                 return;
             }
             if !types.iter().any(|t| type_matches(t, v)) {
                 let names: Vec<&str> = types.iter().map(|t| type_name(t)).collect();
-                errs.push(format!(
-                    "{}: {}を入れてください",
-                    self.at(path),
-                    names.join("か")
-                ));
+                issue(errs, path, format!("{}を入れてください", names.join("か")));
                 return;
             }
         }
         if let Some(e) = s.get("enum") {
             match e {
                 Value::Array(opts) if opts.iter().any(|o| json_eq(o, v)) => {}
-                Value::Array(_) => errs.push(format!("{}: 選択肢にない値です", self.at(path))),
-                _ => errs.push(format!(
-                    "{}: {}スキーマの enum が不正です",
-                    self.at(path),
-                    self.root
-                )),
+                Value::Array(_) => issue(errs, path, "選択肢にない値です".into()),
+                _ => issue(
+                    errs,
+                    path,
+                    format!("{}スキーマの enum が不正です", self.root),
+                ),
             }
         }
         if let Some(c) = s.get("const") {
             if !json_eq(c, v) {
-                errs.push(format!("{}: 決められた値ではありません", self.at(path)));
+                issue(errs, path, "決められた値ではありません".into());
             }
         }
         match v {
@@ -251,54 +277,60 @@ impl<'a> Checker<'a> {
         s: &Map<String, Value>,
         key: &str,
         path: &str,
-        errs: &mut Vec<String>,
+        errs: &mut Vec<InputIssue>,
     ) -> Option<f64> {
         let v = s.get(key)?;
         let n = v.as_f64();
         if n.is_none() {
-            errs.push(format!(
-                "{}: {}スキーマの {key} が不正です",
-                self.at(path),
-                self.root
-            ));
+            issue(
+                errs,
+                path,
+                format!("{}スキーマの {key} が不正です", self.root),
+            );
         }
         n
     }
 
-    fn check_number(self, s: &Map<String, Value>, x: f64, path: &str, errs: &mut Vec<String>) {
+    fn check_number(self, s: &Map<String, Value>, x: f64, path: &str, errs: &mut Vec<InputIssue>) {
         if let Some(m) = self.num(s, "minimum", path, errs) {
             if x < m {
-                errs.push(format!("{}: {m} 以上にしてください", self.at(path)));
+                issue(errs, path, format!("{m} 以上にしてください"));
             }
         }
         if let Some(m) = self.num(s, "maximum", path, errs) {
             if x > m {
-                errs.push(format!("{}: {m} 以下にしてください", self.at(path)));
+                issue(errs, path, format!("{m} 以下にしてください"));
             }
         }
         if let Some(m) = self.num(s, "exclusiveMinimum", path, errs) {
             if x <= m {
-                errs.push(format!("{}: {m} より大きくしてください", self.at(path)));
+                issue(errs, path, format!("{m} より大きくしてください"));
             }
         }
         if let Some(m) = self.num(s, "exclusiveMaximum", path, errs) {
             if x >= m {
-                errs.push(format!("{}: {m} より小さくしてください", self.at(path)));
+                issue(errs, path, format!("{m} より小さくしてください"));
             }
         }
     }
 
-    fn check_string(self, s: &Map<String, Value>, text: &str, path: &str, errs: &mut Vec<String>) {
+    fn check_string(
+        self,
+        s: &Map<String, Value>,
+        text: &str,
+        path: &str,
+        errs: &mut Vec<InputIssue>,
+    ) {
         // JSON Schema の文字数はコードポイントで数える。
         let len = count_f64(text.chars().count());
         if let Some(m) = self.num(s, "minLength", path, errs) {
             if len < m {
-                errs.push(format!("{}: {m} 文字以上にしてください", self.at(path)));
+                issue(errs, path, format!("{m} 文字以上にしてください"));
             }
         }
         if let Some(m) = self.num(s, "maxLength", path, errs) {
             if len > m {
-                errs.push(format!("{}: {m} 文字までです", self.at(path)));
+                issue(errs, path, format!("{m} 文字までです"));
             }
         }
         if let Some(p) = s.get("pattern") {
@@ -308,19 +340,16 @@ impl<'a> Checker<'a> {
                 .and_then(|p| regex::RegexBuilder::new(p).size_limit(1 << 20).build().ok());
             match re {
                 Some(re) if re.is_match(text) => {}
-                Some(_) => errs.push(format!("{}: 形式が違います", self.at(path))),
-                None => errs.push(format!(
-                    "{}: {}スキーマの pattern が不正です",
-                    self.at(path),
-                    self.root
-                )),
+                Some(_) => issue(errs, path, "形式が違います".into()),
+                None => issue(
+                    errs,
+                    path,
+                    format!("{}スキーマの pattern が不正です", self.root),
+                ),
             }
         }
         if s.get("format").and_then(Value::as_str) == Some("date") && !is_full_date(text) {
-            errs.push(format!(
-                "{}: 日付（例: 2026-04-01）を入れてください",
-                self.at(path)
-            ));
+            issue(errs, path, "日付（例: 2026-04-01）を入れてください".into());
         }
     }
 
@@ -330,17 +359,17 @@ impl<'a> Checker<'a> {
         items: &[Value],
         path: &str,
         depth: usize,
-        errs: &mut Vec<String>,
+        errs: &mut Vec<InputIssue>,
     ) {
         let n = count_f64(items.len());
         if let Some(m) = self.num(s, "minItems", path, errs) {
             if n < m {
-                errs.push(format!("{}: {m} 個以上選んでください", self.at(path)));
+                issue(errs, path, format!("{m} 個以上選んでください"));
             }
         }
         if let Some(m) = self.num(s, "maxItems", path, errs) {
             if n > m {
-                errs.push(format!("{}: {m} 個までです", self.at(path)));
+                issue(errs, path, format!("{m} 個までです"));
             }
         }
         if let Some(sub) = s.get("items") {
@@ -348,7 +377,8 @@ impl<'a> Checker<'a> {
                 self.check(
                     sub,
                     item,
-                    &format!("{}[{i}]", self.at(path)),
+                    // 根がリストのときは根の呼び名に番号を付ける（入力・出力の根はふつう項目のまとまり）。
+                    &format!("{}[{i}]", if path.is_empty() { self.root } else { path }),
                     depth + 1,
                     errs,
                 );
@@ -362,7 +392,7 @@ impl<'a> Checker<'a> {
         map: &Map<String, Value>,
         path: &str,
         depth: usize,
-        errs: &mut Vec<String>,
+        errs: &mut Vec<InputIssue>,
     ) {
         let child = |k: &str| {
             if path.is_empty() {
@@ -377,25 +407,25 @@ impl<'a> Checker<'a> {
             Some(Value::Array(req)) if req.iter().all(Value::is_string) => {
                 for k in req.iter().filter_map(Value::as_str) {
                     if !map.contains_key(k) {
-                        errs.push(format!("{}: 必須です", child(k)));
+                        issue(errs, &child(k), "必須です".into());
                     }
                 }
             }
-            Some(_) => errs.push(format!(
-                "{}: {}スキーマの required が不正です",
-                self.at(path),
-                self.root
-            )),
+            Some(_) => issue(
+                errs,
+                path,
+                format!("{}スキーマの required が不正です", self.root),
+            ),
         }
         let props = match s.get("properties") {
             None => None,
             Some(Value::Object(p)) => Some(p),
             Some(_) => {
-                errs.push(format!(
-                    "{}: {}スキーマの properties が不正です",
-                    self.at(path),
-                    self.root
-                ));
+                issue(
+                    errs,
+                    path,
+                    format!("{}スキーマの properties が不正です", self.root),
+                );
                 return;
             }
         };
@@ -405,7 +435,7 @@ impl<'a> Checker<'a> {
                 None => match s.get("additionalProperties") {
                     None | Some(Value::Bool(true)) => {}
                     Some(Value::Bool(false)) => {
-                        errs.push(format!("{}: 受け付けない項目です", child(k)));
+                        issue(errs, &child(k), "受け付けない項目です".into());
                     }
                     Some(sub) => self.check(sub, v, &child(k), depth + 1, errs),
                 },
@@ -447,15 +477,16 @@ fn type_matches(t: &str, v: &Value) -> bool {
     }
 }
 
+/// 値の種類の呼び名（列の種類と同じ名前にそろえる・付録 C の §9-15・付録 D の N4.7）。
 fn type_name(t: &str) -> &str {
     match t {
-        "string" => "文字",
+        "string" => "テキスト",
         "number" => "数値",
         "integer" => "整数",
-        "boolean" => "オンかオフ",
-        "object" => "項目の組",
-        "array" => "一覧",
-        "null" => "空",
+        "boolean" => "はい／いいえ",
+        "object" => "項目のまとまり",
+        "array" => "リスト",
+        "null" => "空の値",
         other => other,
     }
 }
@@ -541,9 +572,52 @@ mod tests {
         assert!(joined.contains("amount: 1 以上"), "{joined}");
         assert!(joined.contains("memo: 5 文字まで"), "{joined}");
         assert!(joined.contains("tags: 2 個まで"), "{joined}");
-        assert!(joined.contains("tags[2]: 文字を入れてください"), "{joined}");
+        assert!(
+            joined.contains("tags[2]: テキストを入れてください"),
+            "{joined}"
+        );
         assert!(joined.contains("extra: 受け付けない項目です"), "{joined}");
         assert!(joined.contains("code: 形式が違います"), "{joined}");
+    }
+
+    /// BUG-109: 誤りは場所（項目のキー）と理由に分けて返す（画面が欄の下に出す）。文の形は今と同じ。
+    #[test]
+    fn issues_split_the_key_from_the_reason() {
+        let s = json!({ "type": "object", "required": ["amount"], "properties": {
+            "amount": { "type": "integer", "minimum": 1 },
+            "addr": { "type": "object", "properties": { "zip": { "type": "string" } } },
+            "tags": { "type": "array", "items": { "type": "string" } } } });
+        let issues =
+            validate_input_issues(&s, &json!({ "addr": { "zip": 1 }, "tags": ["a", true] }))
+                .unwrap_err();
+        assert_eq!(
+            issues,
+            vec![
+                InputIssue {
+                    key: "amount".into(),
+                    message: "必須です".into()
+                },
+                InputIssue {
+                    key: "addr.zip".into(),
+                    message: "テキストを入れてください".into()
+                },
+                InputIssue {
+                    key: "tags[1]".into(),
+                    message: "テキストを入れてください".into()
+                },
+            ]
+        );
+        // 値全体の誤りは場所が空で、文では根の呼び名になる。
+        let root = validate_input_issues(&s, &json!([1])).unwrap_err();
+        assert_eq!(root[0].key, "");
+        assert_eq!(
+            root[0].describe("入力"),
+            "入力: 項目のまとまりを入れてください"
+        );
+        assert_eq!(
+            validate_input(&s, &json!([1])).unwrap_err(),
+            vec!["入力: 項目のまとまりを入れてください".to_string()]
+        );
     }
 
     #[test]
