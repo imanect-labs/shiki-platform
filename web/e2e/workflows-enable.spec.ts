@@ -1,10 +1,35 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { loginViaKeycloak, uniqueName } from "./helpers";
+import { cleanupAll, loginViaKeycloak, uniqueName } from "./helpers";
 
 /// 有効化・同意フローの e2e（Task 10.4a/10.12 DoD）:
 /// スケジュールトリガを UI で設定 → 保存 → 同意ダイアログ（日本語スコープ説明）→
 /// 有効化 → バッジ表示 → 停止 → バッジ解除。
+
+/// 作ったワークフローを、権限も取り消してオフにしてから消す（片付け）。
+async function removeFlow(page: Page, id: string) {
+  const csrf = (await page.context().cookies()).find((c) => c.name === "shiki_csrf")?.value ?? "";
+  const headers = { "x-csrf-token": csrf, "content-type": "application/json" };
+  const off = await page.request.post(`/api/workflows/${id}/disable`, { headers, data: { revoke_delegations: true } });
+  expect(off.status(), await off.text()).toBeLessThan(300);
+  const del = await page.request.delete(`/api/artifacts/${id}`, { headers });
+  expect(del.status(), await del.text()).toBeLessThan(300);
+}
+
+/// 作ったドライブの項目（フォルダー・ファイル）を消す（片付け）。
+async function removeDriveItem(page: Page, kind: "folders" | "files", id: string) {
+  const csrf = (await page.context().cookies()).find((c) => c.name === "shiki_csrf")?.value ?? "";
+  const del = await page.request.delete(`/api/${kind}/${id}`, { headers: { "x-csrf-token": csrf } });
+  expect(del.status(), await del.text()).toBeLessThan(300);
+}
+
+/// 試験で作ったものの片付け（作った逆の順に、互いに独立して走らせる・失敗した試験でも走る）。
+let created: (() => Promise<void>)[] = [];
+test.afterEach(async () => {
+  const steps = created.reverse();
+  created = [];
+  await cleanupAll(...steps);
+});
 
 /// BFF 経由でワークフローを作る（エディタ検証は workflows-editor.spec に集約）。
 async function createFlow(page: Page, name: string): Promise<string> {
@@ -41,6 +66,7 @@ test("有効化: スケジュール設定→同意→有効→停止", async ({ 
   await loginViaKeycloak(page);
   const name = uniqueName("enable-e2e");
   const id = await createFlow(page, name);
+  created.push(() => removeFlow(page, id));
   await page.goto(`/workflows/${id}`);
 
   // トリガ（きっかけ）ノードをクリック → 設定パネルでスケジュールに切替。
@@ -62,12 +88,12 @@ test("有効化: スケジュール設定→同意→有効→停止", async ({ 
   await expect(page.getByText(/保存しました/).first()).toBeVisible({ timeout: 15_000 });
   await enableButton.click();
 
-  // 同意ダイアログ: 何ができるかの日本語説明 → 同意して有効化。
+  // 同意ダイアログ: 何ができるかの日本語説明 → 同意してオンにする。
   const dialog = page.locator('[role="dialog"]');
   await expect(dialog.getByText("自動実行の設定")).toBeVisible();
   await expect(dialog.getByText("このワークフローができること")).toBeVisible();
-  await dialog.getByRole("button", { name: "同意して有効化" }).click();
-  await expect(page.getByText(/自動実行を有効にしました/).first()).toBeVisible({ timeout: 15_000 });
+  await dialog.getByRole("button", { name: "同意してオンにする" }).click();
+  await expect(page.getByText(/自動実行をオンにしました/).first()).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText(/自動実行 有効/)).toBeVisible({ timeout: 10_000 });
 
   // 一覧にも有効バッジが出る。
@@ -76,15 +102,16 @@ test("有効化: スケジュール設定→同意→有効→停止", async ({ 
   const row = page.getByRole("button", { name: new RegExp(`^${name}`) });
   await expect(row.getByText("有効", { exact: true })).toBeVisible();
 
-  // 停止: 設定ダイアログから無効化 → バッジが消える。
+  // 停止: 設定ダイアログからオフにする（確認でオフにする）→ バッジが消える。
   await row.click();
   await page.waitForURL(/\/workflows\/[0-9a-f-]+$/i);
   await page.getByRole("button", { name: "自動実行の設定" }).click();
   await page
     .locator('[role="dialog"]')
-    .getByRole("button", { name: "自動実行を止める" })
+    .getByRole("button", { name: "自動実行をオフにする" })
     .click();
-  await expect(page.getByText(/自動実行を無効にしました/).first()).toBeVisible({ timeout: 15_000 });
+  await page.getByTestId("enable-off-confirm").getByRole("button", { name: "オフにする", exact: true }).click();
+  await expect(page.getByText(/自動実行をオフにしました/).first()).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText(/自動実行 有効/)).toHaveCount(0);
 });
 
@@ -111,6 +138,7 @@ test("有効化: 実行の入力でテーブルを決めるブロックはテー
   });
   expect(res.ok(), await res.text()).toBeTruthy();
   const id = ((await res.json()) as { id: string }).id;
+  created.push(() => removeFlow(page, id));
   await page.goto(`/workflows/${id}`);
   await page.getByRole("button", { name: /自動実行を有効化/ }).click();
   const dialog = page.locator('[role="dialog"]');
@@ -119,7 +147,7 @@ test("有効化: 実行の入力でテーブルを決めるブロックはテー
   await expect(dialog.getByText(/「選んだ表を調べる」のテーブルは実行の入力で決まるため/)).toBeVisible();
   await expect(dialog.getByText(/スケジュールの実行には入力が無いので/)).toBeVisible();
   await expect(dialog.getByLabel("渡すテーブル")).toHaveCount(0);
-  await expect(dialog.getByRole("button", { name: "同意して有効化" })).toBeEnabled();
+  await expect(dialog.getByRole("button", { name: "同意してオンにする" })).toBeEnabled();
 });
 
 test("有効化: 実行の入力でファイルを決めるブロックはファイルを選ばせず、固定のファイルは名前で示す", async ({ page }) => {
@@ -133,6 +161,7 @@ test("有効化: 実行の入力でファイルを決めるブロックはファ
   });
   expect(file.ok(), await file.text()).toBeTruthy();
   const fileId = ((await file.json()) as { node_id: string }).node_id;
+  created.push(() => removeDriveItem(page, "files", fileId));
   const name = uniqueName("enable-input-file");
   const res = await page.request.post("/api/workflows", {
     headers: { "x-csrf-token": csrf, "content-type": "application/json" },
@@ -153,6 +182,7 @@ test("有効化: 実行の入力でファイルを決めるブロックはファ
   });
   expect(res.ok(), await res.text()).toBeTruthy();
   const id = ((await res.json()) as { id: string }).id;
+  created.push(() => removeFlow(page, id));
   await page.goto(`/workflows/${id}`);
   await page.getByRole("button", { name: /自動実行を有効化/ }).click();
   const dialog = page.locator('[role="dialog"]');
@@ -162,7 +192,7 @@ test("有効化: 実行の入力でファイルを決めるブロックはファ
   await expect(dialog.getByRole("button", { name: /渡すファイルを/ })).toHaveCount(0);
   // 固定のファイルは ID ではなく名前で出る。
   await expect(dialog.getByText(`ファイル「${fileName}」`)).toBeVisible({ timeout: 10_000 });
-  await expect(dialog.getByRole("button", { name: "同意して有効化" })).toBeEnabled();
+  await expect(dialog.getByRole("button", { name: "同意してオンにする" })).toBeEnabled();
 });
 
 /// 保存は通るが、そのままでは動かせない設定（D-40・D-43）: 必須の文字の欄が空のブロックと、スケジュールで動くのに
@@ -196,6 +226,7 @@ test("有効化: 指示が空のブロックと保存先を省いた書込があ
   });
   expect(res.ok(), await res.text()).toBeTruthy();
   const saved = (await res.json()) as { id: string; warnings: { code: string; path?: string }[] };
+  created.push(() => removeFlow(page, saved.id));
   // 保存は止めず、空の欄は path つきの警告で知らせる。
   expect(saved.warnings).toEqual(
     expect.arrayContaining([expect.objectContaining({ code: "ir.required_text_empty", path: "/params/prompt" })]),
@@ -240,6 +271,7 @@ test("有効化: きっかけで保存されたファイルを読むブロック
   });
   expect(folder.ok(), await folder.text()).toBeTruthy();
   const folderId = ((await folder.json()) as { id: string }).id;
+  created.push(() => removeDriveItem(page, "folders", folderId));
   const name = uniqueName("enable-trigger-file");
   const res = await page.request.post("/api/workflows", {
     headers,
@@ -264,6 +296,7 @@ test("有効化: きっかけで保存されたファイルを読むブロック
   });
   expect(res.ok(), await res.text()).toBeTruthy();
   const id = ((await res.json()) as { id: string }).id;
+  created.push(() => removeFlow(page, id));
   await page.goto(`/workflows/${id}`);
   await page.getByRole("button", { name: /自動実行を有効化/ }).click();
   const dialog = page.locator('[role="dialog"]');
@@ -276,5 +309,5 @@ test("有効化: きっかけで保存されたファイルを読むブロック
   await expect(dialog.getByText(/前のブロックの結果で決まる/)).toHaveCount(0);
   await expect(dialog.getByRole("button", { name: /渡すファイルを/ })).toHaveCount(0);
   await expect(dialog.getByTestId("enable-blockers")).toHaveCount(0);
-  await expect(dialog.getByRole("button", { name: "同意して有効化" })).toBeEnabled();
+  await expect(dialog.getByRole("button", { name: "同意してオンにする" })).toBeEnabled();
 });

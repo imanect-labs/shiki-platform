@@ -242,6 +242,9 @@ export type DelegationEntry = {
   delegator: string;
   scope: string;
   objectRef: string;
+  /// 対象の種類（folder / file / secret / workflow / data_table）と id。読めない台帳の参照は null。
+  objectKind: string | null;
+  objectId: string | null;
   relation: string;
   grantedAt: string;
 };
@@ -283,6 +286,8 @@ export async function getRegistration(id: string): Promise<Registration> {
       delegator: d.delegator,
       scope: d.scope,
       objectRef: d.object_ref,
+      objectKind: d.object_kind ?? null,
+      objectId: d.object_id ?? null,
       relation: d.relation,
       grantedAt: d.granted_at,
     })),
@@ -312,19 +317,26 @@ export async function getConsentPlan(
   };
 }
 
+/// 同意の画面からの有効化。`consent: true` で送り、対象（grants）が空でも同意し直す（使ってよい操作が増えた版へも
+/// 切り替わる・BUG-102・D-90）。
 export async function enableWorkflow(
   id: string,
   version: number,
   grants: GrantInput[],
 ): Promise<void> {
-  const res = await apiFetch(
-    `/workflows/${id}/enable`,
-    json("POST", { version, grants }),
-  );
+  const body: Schemas["EnableRequest"] = { version, grants, consent: true };
+  const res = await apiFetch(`/workflows/${id}/enable`, json("POST", body));
   await ok<unknown>(res);
 }
 
-export async function disableWorkflow(id: string): Promise<void> {
-  const res = await apiFetch(`/workflows/${id}/disable`, json("POST", {}));
-  await ok<unknown>(res);
+/// 自動実行をオフにする。`revokeDelegations` なら、ワークフローが使えるようにした権限もすべて取り消す（D-90）。
+/// 取り消した数を返す。
+export async function disableWorkflow(
+  id: string,
+  opts: { revokeDelegations?: boolean } = {},
+): Promise<number> {
+  const body: Schemas["DisableRequest"] = { revoke_delegations: Boolean(opts.revokeDelegations) };
+  const res = await apiFetch(`/workflows/${id}/disable`, json("POST", body));
+  const out = await ok<Schemas["DisableResponse"]>(res);
+  return out.revoked_delegations;
 }

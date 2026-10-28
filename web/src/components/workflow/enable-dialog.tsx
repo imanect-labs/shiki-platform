@@ -5,6 +5,10 @@
 /// スケジュール/イベントで自動実行するには、**自分の権限の範囲から**ワークフローに
 /// 権限を渡す（委譲）必要がある。consent-plan（IR 静的分析）の提案を日本語で見せ、
 /// 対象未確定のものはテーブル・フォルダ・ファイルのピッカーで選ばせてから enable する。
+///
+/// - 同意は `consent: true` で送る（対象の無いワークフローも、使ってよい操作が増えた版へ同意できる・BUG-102）。
+/// - いま使えるようにしている人と対象を一覧にし、「自動実行をオフにする」に「権限も取り消す」を付ける（D-90）。
+///   取り消しを選ばなければ、オフにしても権限は残る（今までどおり）。
 
 import * as React from "react";
 import { AlertTriangle, FileText, FolderOpen, Loader2, ShieldCheck } from "lucide-react";
@@ -25,6 +29,8 @@ import { FolderPicker } from "@/components/artifacts/folder-picker";
 import { DrivePicker } from "@/components/chat/drive-picker";
 import { DataTableSelect, UNREADABLE_TABLE, useDataTables } from "@/components/workflow/editor/config-panel/data-tables";
 import { DriveItemName, isCsvFile } from "@/components/workflow/editor/config-panel/forms-files";
+import { useMe } from "@/hooks/use-me";
+import { DelegationList } from "./enable-delegations";
 import {
   disableWorkflow,
   enableWorkflow,
@@ -114,12 +120,18 @@ export function EnableDialog({
   /// データ変更で起動するか・承認を待つか（有効化の前に、値の残り方と受信箱を説明する・GAP-07・GAP-08）。
   const [dataTrigger, setDataTrigger] = React.useState(false);
   const [approval, setApproval] = React.useState(false);
-  // 業務データのテーブル（data_table の委譲先を選ぶ・名前の表示にも使う）。
+  /// 「自動実行をオフにする」「権限も取り消す」の確認（D-90）。`revoke` は取り消しも選んだか。
+  const [confirm, setConfirm] = React.useState<null | "off" | "revoke">(null);
+  const [revokeToo, setRevokeToo] = React.useState(false);
+  const me = useMe();
+  const delegations = registration?.delegations ?? [];
+  // 業務データのテーブル（data_table の委譲先を選ぶ・名前の表示にも使う）。いま使えるようにしているテーブルも。
   const tableGrants = (plan?.grants ?? []).filter((g) => g.objectKind === "data_table");
+  const delegatedTables = delegations.filter((d) => d.objectKind === "data_table").map((d) => d.objectId);
   // ブロックが束縛したテーブルが一覧（200 件で打ち切る）に無くても、1 件取って名前を出す（BUG-68）。
   const tableSource = useDataTables({
-    enabled: open && tableGrants.length > 0,
-    bound: tableGrants.map((g) => g.objectId),
+    enabled: open && (tableGrants.length > 0 || delegatedTables.length > 0),
+    bound: [...tableGrants.map((g) => g.objectId), ...delegatedTables],
   });
   const tableName = (id: string | null) => {
     const found = tableSource.lookup(id);
@@ -139,6 +151,8 @@ export function EnableDialog({
   React.useEffect(() => {
     if (!open) return;
     setPlan(null);
+    setConfirm(null);
+    setRevokeToo(false);
     Promise.all([getConsentPlan(workflowId, version), getWorkflowVersion(workflowId, version).catch(() => null)])
       .then(([p, wf]) => {
         // 提案の出どころ（`node:<id>`）のブロックが、対象を前の結果から決めているか。
@@ -182,6 +196,12 @@ export function EnableDialog({
   const unresolved = (plan?.grants ?? []).filter((g) => g.needsUserPick && !g.picked && !g.dynamic);
   const blockers = plan?.blockers ?? [];
 
+  const reconsent = registration?.status === "suspended_reconsent";
+  const enabled = registration?.status === "enabled";
+  /// 同意計画で名前の分かる対象（シークレット・ワークフロー）の名前。
+  const otherName = (kind: string, id: string) =>
+    plan?.grants.find((g) => g.objectKind === kind && g.objectId === id)?.objectName ?? undefined;
+
   const enable = async () => {
     if (!plan) return;
     setBusy(true);
@@ -199,13 +219,13 @@ export function EnableDialog({
         })
         .filter((g): g is GrantInput => g !== null);
       await enableWorkflow(workflowId, version, grants);
-      toast({ title: "自動実行を有効にしました" });
+      toast({ title: "自動実行をオンにしました", description: `次のスケジュールや変更から、v${version} で実行します。` });
       onChanged();
       onOpenChange(false);
     } catch (e) {
       toast({
         variant: "destructive",
-        title: "有効化できませんでした",
+        title: "自動実行をオンにできませんでした",
         description: e instanceof Error ? e.message : String(e),
       });
     } finally {
@@ -213,17 +233,31 @@ export function EnableDialog({
     }
   };
 
-  const disable = async () => {
+  /// 自動実行をオフにする（`revoke` なら、使えるようにした権限も取り消す・D-90）。
+  const disable = async (revoke: boolean) => {
     setBusy(true);
     try {
-      await disableWorkflow(workflowId);
-      toast({ title: "自動実行を無効にしました" });
+      const revoked = await disableWorkflow(workflowId, { revokeDelegations: revoke });
+      toast(
+        revoke
+          ? {
+              title: enabled ? "自動実行をオフにし、権限も取り消しました" : "権限を取り消しました",
+              description: `このワークフローが使えるようにしていたもの（${revoked} 件）を取り消しました。もう一度オンにするときは、使えるようにするものを選び直します。`,
+            }
+          : {
+              title: "自動実行をオフにしました",
+              description:
+                delegations.length > 0
+                  ? "オフにしても、使えるようにした権限は残ります。取り消すには「権限も取り消す」を押してください。"
+                  : undefined,
+            },
+      );
       onChanged();
       onOpenChange(false);
     } catch (e) {
       toast({
         variant: "destructive",
-        title: "無効化できませんでした",
+        title: revoke ? "権限を取り消せませんでした" : "自動実行をオフにできませんでした",
         description: e instanceof Error ? e.message : String(e),
       });
     } finally {
@@ -231,7 +265,6 @@ export function EnableDialog({
     }
   };
 
-  const reconsent = registration?.status === "suspended_reconsent";
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -394,25 +427,105 @@ export function EnableDialog({
               </div>
             ) : null}
 
-            <div className="flex items-center justify-between gap-2 border-t pt-3">
-              {registration?.status === "enabled" ? (
-                <Button variant="outline" size="sm" onClick={disable} disabled={busy}>
-                  自動実行を止める
+            {delegations.length > 0 ? (
+              <div>
+                <h3 className="mb-1 text-xs font-semibold text-muted-foreground">いま使えるようにしているもの</h3>
+                <p className="mb-1.5 text-xs leading-relaxed text-muted-foreground">
+                  {enabled
+                    ? "自動実行では、このワークフローが下の人の代わりに、これらを使います。"
+                    : "自動実行はオフですが、ワークフローが使えるようにした権限は残っています。"}
+                </p>
+                <DelegationList
+                  delegations={delegations}
+                  meId={me.data?.id ?? null}
+                  tableName={(id) => tableName(id)}
+                  otherName={otherName}
+                />
+                {!enabled && confirm === null ? (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="mt-2"
+                    onClick={() => setConfirm("revoke")}
+                    disabled={busy}
+                  >
+                    権限も取り消す
+                  </Button>
+                ) : null}
+              </div>
+            ) : null}
+
+            {confirm ? (
+              <div
+                role="group"
+                aria-labelledby="enable-confirm-title"
+                className="space-y-2 rounded-md border p-3 text-xs"
+                data-testid="enable-off-confirm"
+              >
+                <p id="enable-confirm-title" className="text-sm font-medium">
+                  {confirm === "off" ? "自動実行をオフにしますか？" : "権限も取り消しますか？"}
+                </p>
+                {confirm === "off" ? (
+                  <p className="leading-relaxed text-muted-foreground">
+                    スケジュールや、ファイルやテーブルの変更では実行しなくなります。オフにしても、ワークフローが使えるようにした権限は残ります。
+                  </p>
+                ) : null}
+                {confirm === "off" && delegations.length > 0 ? (
+                  <label className="flex cursor-pointer items-start gap-2">
+                    <input
+                      type="checkbox"
+                      checked={revokeToo}
+                      onChange={(e) => setRevokeToo(e.target.checked)}
+                      className="mt-0.5 size-4 shrink-0 accent-[var(--primary)]"
+                      aria-describedby="enable-revoke-note"
+                    />
+                    <span className="min-w-0">
+                      <span className="block font-medium">権限も取り消す</span>
+                      <span id="enable-revoke-note" className="block leading-relaxed text-muted-foreground">
+                        上の一覧の権限を、すべて取り消します。もう一度オンにするときは、使えるようにするものを選び直します。
+                      </span>
+                    </span>
+                  </label>
+                ) : null}
+                {confirm === "revoke" ? (
+                  <p className="leading-relaxed text-muted-foreground">
+                    このワークフローが、上の一覧の人の代わりに使えるようにしたものを、すべて取り消します。もう一度オンにするときは、使えるようにするものを選び直します。
+                  </p>
+                ) : null}
+                <div className="flex flex-wrap justify-end gap-2">
+                  <Button variant="outline" size="sm" onClick={() => setConfirm(null)} disabled={busy}>
+                    キャンセル
+                  </Button>
+                  <Button
+                    variant={confirm === "revoke" || revokeToo ? "destructive" : "default"}
+                    size="sm"
+                    onClick={() => void disable(confirm === "revoke" || revokeToo)}
+                    disabled={busy}
+                  >
+                    {busy ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}
+                    {confirm === "revoke" ? "権限も取り消す" : revokeToo ? "オフにして権限も取り消す" : "オフにする"}
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between gap-2 border-t pt-3">
+                {enabled ? (
+                  <Button variant="outline" size="sm" onClick={() => setConfirm("off")} disabled={busy}>
+                    自動実行をオフにする
+                  </Button>
+                ) : (
+                  <span />
+                )}
+                <Button onClick={enable} disabled={busy || unresolved.length > 0 || blockers.length > 0}>
+                  {busy ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}
+                  {blockers.length > 0
+                    ? `設定を直してください（${blockers.length} 件）`
+                    : unresolved.length > 0
+                    ? `対象を選択してください（残り ${unresolved.length}）`
+                    : "同意してオンにする"}
                 </Button>
-              ) : (
-                <span />
-              )}
-              <Button onClick={enable} disabled={busy || unresolved.length > 0 || blockers.length > 0}>
-                {busy ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}
-                {blockers.length > 0
-                  ? `設定を直してください（${blockers.length} 件）`
-                  : unresolved.length > 0
-                  ? `対象を選択してください（残り ${unresolved.length}）`
-                  : reconsent
-                    ? "もう一度有効化する"
-                    : "同意して有効化"}
-              </Button>
-            </div>
+              </div>
+            )}
           </div>
         )}
 
