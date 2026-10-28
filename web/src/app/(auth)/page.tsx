@@ -9,6 +9,7 @@ import { useMediaQuery } from "@/hooks/use-media-query";
 import { useHomeFeed } from "@/hooks/use-home-feed";
 import {
   createThread,
+  deleteThread,
   setAutonomousMode,
   type Attachment,
   type AutonomousMode,
@@ -64,13 +65,14 @@ export default function HomePage() {
   const name = data?.email?.split("@")[0] ?? null;
   const desktop = useMediaQuery("(min-width: 768px)");
   // 会話画面へ移る前に画面を離れていたら、遷移で引き戻さない（承認モードの設定を待つ間に別の画面へ行った等）。
+  // セットアップでも true に戻す（開発時の Strict Mode はセットアップ→後始末→セットアップと 2 回走る）。
   const mounted = React.useRef(true);
-  React.useEffect(
-    () => () => {
+  React.useEffect(() => {
+    mounted.current = true;
+    return () => {
       mounted.current = false;
-    },
-    [],
-  );
+    };
+  }, []);
 
   // スキルはチャットのモードでだけ選べる。他のモードへ移ったら、見えない選択を残さない。
   const setMode = (next: HomeMode) => {
@@ -119,6 +121,22 @@ export default function HomePage() {
           .then((r) => r.mode)
           .catch(() => null);
         if (applied !== approvalMode) {
+          // 失敗の応答でもサーバでは設定済みのことがある（更新後の監査書き込みの失敗・応答の通信断）。
+          // 「承認必須で始める」と伝える以上、承認必須へ戻ったことを確かめてから送る。確かめられなければ
+          // 発話を送らずに取りやめ、作った空のスレッドは片付ける。
+          const reset =
+            applied === "require_approval" ||
+            (await setAutonomousMode(thread.id, "require_approval")
+              .then((r) => r.mode === "require_approval")
+              .catch(() => false));
+          if (!reset) {
+            void deleteThread(thread.id).catch(() => undefined);
+            toast({
+              description: "承認モードを確かめられなかったため、開始を取りやめました。もう一度お試しください。",
+            });
+            setStarting(false);
+            return;
+          }
           toast({
             description:
               "選んだ承認モードにできませんでした（組織の設定で禁止されている可能性があります）。承認必須で始めます。",
