@@ -2197,3 +2197,101 @@ async fn workflow_start_treats_missing_and_unreadable_targets_alike() {
         outcomes[0].1
     );
 }
+
+/// パスの数字をステータスコードとして返すローカル HTTP サーバ（`/s/404` は 404）。返り値は base URL。
+async fn spawn_http_status() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                break;
+            };
+            tokio::spawn(async move {
+                let mut buf = [0u8; 4096];
+                let n = sock.read(&mut buf).await.unwrap_or(0);
+                let head = String::from_utf8_lossy(&buf[..n]).to_string();
+                let status: u16 = head
+                    .split_whitespace()
+                    .nth(1)
+                    .and_then(|p| p.strip_prefix("/s/"))
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(200);
+                let body = br#"{"error":"nope"}"#;
+                let resp = format!(
+                    "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = sock.write_all(resp.as_bytes()).await;
+                let _ = sock.write_all(body).await;
+            });
+        }
+    });
+    format!("http://{addr}")
+}
+
+/// 本番のポートで、相手の誤りを失敗にする扱いを確かめる（BUG-99）。省略（既存の定義）は今のまま成功として
+/// status を返し、fail_on_error_status なら 4xx はやり直さない失敗、5xx はやり直せる失敗にする。
+#[tokio::test]
+async fn http_error_statuses_through_the_production_port() {
+    let Some(h) = setup().await else { return };
+    let base = spawn_http_status().await;
+    let executor = h.executor(None, vec!["127.0.0.1".into()], None);
+    let mut outcomes = Vec::new();
+    let mut workflows = Vec::new();
+    for (i, (path, fail)) in [
+        ("s/404", None),
+        ("s/404", Some(true)),
+        ("s/503", Some(true)),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut params = json!({ "method": "POST", "url": format!("{base}/{path}") });
+        if let Some(f) = fail {
+            params["fail_on_error_status"] = json!(f);
+        }
+        let wf = h
+            .save(&json!({
+                "ir_version": 1, "name": format!("http-status-{i}"),
+                "declared_scopes": ["http.egress"],
+                "triggers": [{ "kind": "interactive" }],
+                "nodes": [{ "id": "send", "type": "http.request", "params": params }],
+                "edges": []
+            }))
+            .await;
+        workflows.push(wf);
+        let (run_id, status) = h.run(wf, &json!({}), Arc::clone(&executor)).await;
+        let row: (Option<String>, Option<bool>, Option<Value>) = sqlx::query_as(
+            "SELECT error->>'code', (error->>'retryable')::bool, output FROM step_execution \
+             WHERE tenant_id = $1 AND run_id = $2 AND node_id = 'send'",
+        )
+        .bind(&h.tenant)
+        .bind(run_id)
+        .fetch_one(&h.pool)
+        .await
+        .unwrap();
+        outcomes.push((status, row));
+    }
+    h.runs.purge_tenant_history(&h.tenant).await.unwrap();
+    for wf in workflows {
+        h.artifacts.delete(&h.alice, wf, None).await.unwrap();
+    }
+
+    let (status, (code, _, output)) = &outcomes[0];
+    assert_eq!((*status, code.as_deref()), (RunStatus::Succeeded, None));
+    assert_eq!(output.as_ref().unwrap()["status"], 404);
+    let (status, (code, retryable, _)) = &outcomes[1];
+    assert_eq!(*status, RunStatus::Failed);
+    assert_eq!(
+        (code.as_deref(), *retryable),
+        (Some("http_error_status"), Some(false))
+    );
+    // 5xx はやり直せる失敗（試す回数が 1 なので実行は失敗で終わる）。
+    let (status, (code, retryable, _)) = &outcomes[2];
+    assert_eq!(*status, RunStatus::Failed);
+    assert_eq!(
+        (code.as_deref(), *retryable),
+        (Some("http_retryable_status"), Some(true))
+    );
+}
