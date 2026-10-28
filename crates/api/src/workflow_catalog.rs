@@ -188,52 +188,71 @@ pub async fn build_catalog_from(
     Ok(catalog)
 }
 
-/// 承認（human.approval）が束縛するテーブルを保存者の見え方で引いて、V4 の材料にする（GAP-08）。
+/// 承認（human.approval）・状態を進める（data.transition）・状態の変化のきっかけが束縛するテーブルを保存者の
+/// 見え方で引いて、V4 の材料にする（GAP-08・BUG-105）。
 ///
-/// IR に承認ノードが無ければ `None`（照合しない）。見えないテーブルは入れない（V4 が「見つからないか FSM で
-/// 管理されていない」と同じ文言で止める）。FSM の状態は状態の列の選択肢（FSM の保存時にこれと一致することを
-/// data が確かめている）。
+/// IR にそのどれも無ければ `None`（照合しない）。見えないテーブルは入れない（V4 が「見つからないか状態の進め方が
+/// ない」と同じ文言で止める）。FSM の状態は状態の列の選択肢（FSM の保存時にこれと一致することを data が
+/// 確かめている）。テーブルを参照（`$from`）で決める状態を進めるノードは引かない（実行時まで分からない）。
 ///
 /// 定義は閲覧者向けの絞り込み（[`data::DataStore::get_table_for_viewer`]）を通す。テーブルの owner でない
 /// 保存者には読める列だけが入るので、読めない列は無い列と同じ誤り（`ir.unknown_field`）になり、種別
 /// （`ir.bad_assignee`）も返らない（無い列と読めない列を区別させない・data-platform §16.1）。状態の列が
 /// 読めなければ状態を入れない（`ir.unknown_table` で止め、「使える状態」の一覧も出さない）。状態の列の名前も
 /// 同じときだけ入れる（受信箱に出す列に状態の列を選ぶと止める・BUG-67）。
-pub async fn approval_tables(
+pub async fn fsm_tables(
     data: &data::DataStore,
     ctx: &authz::AuthContext,
     ir: &serde_json::Value,
 ) -> Result<Option<std::collections::BTreeMap<String, workflow_engine::CatalogTable>>, String> {
-    let ids: std::collections::BTreeSet<uuid::Uuid> = ir
-        .get("nodes")
+    use workflow_engine::vocab::{EventSource, NodeType};
+    let nodes = || {
+        ir.get("nodes")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+    };
+    let of_type = |n: &serde_json::Value, t: NodeType| {
+        n.get("type").and_then(serde_json::Value::as_str) == Some(t.as_str())
+    };
+    // 状態の変化のきっかけ（data.transition のイベントトリガ）の対象のテーブル。
+    let trigger_tables: Vec<&str> = ir
+        .get("triggers")
         .and_then(serde_json::Value::as_array)
         .into_iter()
         .flatten()
-        .filter(|n| {
-            n.get("type").and_then(serde_json::Value::as_str)
-                == Some(workflow_engine::vocab::NodeType::HumanApproval.as_str())
+        .filter(|t| {
+            t.get("kind").and_then(serde_json::Value::as_str) == Some("event")
+                && t.get("source").and_then(serde_json::Value::as_str)
+                    == Some(EventSource::DataTransition.as_str())
         })
-        .filter_map(|n| n.pointer("/params/record/table")?.as_str())
-        .filter_map(|t| uuid::Uuid::parse_str(t).ok())
+        .filter_map(|t| t.pointer("/scope/table")?.as_str())
         .collect();
-    let has_approval = ir
-        .get("nodes")
-        .and_then(serde_json::Value::as_array)
-        .is_some_and(|ns| {
-            ns.iter().any(|n| {
-                n.get("type").and_then(serde_json::Value::as_str)
-                    == Some(workflow_engine::vocab::NodeType::HumanApproval.as_str())
-            })
-        });
-    if !has_approval {
+    let uses = nodes()
+        .any(|n| of_type(n, NodeType::HumanApproval) || of_type(n, NodeType::DataTransition))
+        || !trigger_tables.is_empty();
+    if !uses {
         return Ok(None);
     }
+    let ids: std::collections::BTreeSet<uuid::Uuid> = nodes()
+        .filter_map(|n| {
+            if of_type(n, NodeType::HumanApproval) {
+                n.pointer("/params/record/table")?.as_str()
+            } else if of_type(n, NodeType::DataTransition) {
+                n.pointer("/params/table")?.as_str()
+            } else {
+                None
+            }
+        })
+        .chain(trigger_tables)
+        .filter_map(|t| uuid::Uuid::parse_str(t).ok())
+        .collect();
     let mut out = std::collections::BTreeMap::new();
     for id in ids {
         let table = match data.get_table_for_viewer(ctx, id, None).await {
             Ok(t) => t,
             Err(data::DataError::NotFound | data::DataError::Forbidden) => continue,
-            Err(e) => return Err(format!("承認のテーブル: {e}")),
+            Err(e) => return Err(format!("状態の進め方を使うテーブル: {e}")),
         };
         let schema = &table.schema;
         // 状態の列（FSM で管理し、保存者が読めるときだけ・読めなければ定義の絞り込みが列ごと落とす）。
@@ -400,7 +419,7 @@ impl chat::WorkflowCatalogSource for ApiWorkflowCatalogSource {
     ) -> Result<Catalog, String> {
         let mut catalog = chat::WorkflowCatalogSource::catalog(self, ctx).await?;
         if let Some(data) = &self.data {
-            catalog.tables = approval_tables(data, ctx, ir).await?;
+            catalog.tables = fsm_tables(data, ctx, ir).await?;
         }
         if let Some(artifacts) = &self.artifacts {
             catalog.workflows = workflow_start_targets(artifacts, ctx, ir).await?;

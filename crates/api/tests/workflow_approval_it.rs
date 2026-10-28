@@ -2538,6 +2538,111 @@ impl Env {
     }
 }
 
+/// 状態を進める（data.transition）と状態の変化のきっかけは、状態の進め方（FSM）のあるテーブルにしか使えない
+/// （無いテーブルでは、ブロックは実行のたびに失敗し、きっかけはいつまでも起きない）。保存時の照合（V4）で、
+/// FSM の無いテーブルと見えないテーブルを同じ誤り（code・path・message）で止める。テーブルを参照で決める
+/// ブロックは照合しない（BUG-105）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn transitions_are_checked_for_a_state_flow_on_save() {
+    let _serial = SERIAL.lock().await;
+    let Some(env) = setup().await else { return };
+    let fsm_table = env.expense_table().await;
+    let plain = env
+        .data
+        .create_table(
+            &env.alice,
+            NewDataTable {
+                name: format!("plain-{}", Uuid::new_v4().simple()),
+                schema: expense_schema(None, &env.keiri),
+            },
+            None,
+        )
+        .await
+        .unwrap()
+        .id;
+    let node = |table: Value| {
+        json!({
+            "ir_version": 1, "name": format!("transition-{}", Uuid::new_v4().simple()),
+            "triggers": [{ "kind": "interactive" }],
+            "nodes": [{ "id": "advance", "type": "data.transition", "params": {
+                "table": table, "record": { "$from": "input", "path": "/id" }, "to": "approved"
+            } }],
+            "edges": []
+        })
+    };
+    let trigger = |table: Uuid| {
+        json!({
+            "ir_version": 1, "name": format!("on-transition-{}", table.simple()),
+            "triggers": [{ "kind": "event", "source": "data.transition",
+                           "scope": { "table": table.to_string() } }],
+            "nodes": [{ "id": "read", "type": "data.query", "params": { "table": table.to_string() } }],
+            "edges": []
+        })
+    };
+    let unknown = |path: &str| vec![("ir.unknown_table".to_string(), path.to_string())];
+    // 状態の進め方の無いテーブル（alice に見える）と、見えないテーブル（共有されていない dave）は、同じ誤りで
+    // 止まる。
+    assert_eq!(
+        env.v4_codes(&env.alice, &node(json!(plain.to_string())))
+            .await,
+        unknown("/params/table")
+    );
+    assert_eq!(
+        env.v4_codes(&env.dave, &node(json!(plain.to_string())))
+            .await,
+        unknown("/params/table")
+    );
+    let mut messages = Vec::new();
+    for who in [&env.alice, &env.dave] {
+        let table = plain;
+        let ir = node(json!(table.to_string()));
+        let (_, body) = env
+            .send(req(
+                "POST",
+                who,
+                "/workflows/validate",
+                Body::from(json!({ "ir": ir }).to_string()),
+            ))
+            .await;
+        messages.push(body["errors"][0]["message"].clone());
+    }
+    assert_eq!(
+        messages[0], messages[1],
+        "見えないテーブルと状態の進め方の無いテーブルを言い分けない"
+    );
+    // 状態の進め方のあるテーブルと、参照で決めるテーブルは通る。
+    assert_eq!(
+        env.v4_codes(&env.alice, &node(json!(fsm_table.to_string())))
+            .await,
+        vec![]
+    );
+    assert_eq!(
+        env.v4_codes(
+            &env.alice,
+            &node(json!({ "$from": "input", "path": "/table" }))
+        )
+        .await,
+        vec![]
+    );
+    // 状態の変化のきっかけも同じ（ブロックに付かない誤りで、path はきっかけの対象のテーブル）。
+    assert_eq!(
+        env.v4_codes(&env.alice, &trigger(plain)).await,
+        unknown("/triggers/0/scope/table")
+    );
+    assert_eq!(env.v4_codes(&env.alice, &trigger(fsm_table)).await, vec![]);
+    // 保存 API も同じ照合で止める（保存されない）。
+    let (st, body) = env
+        .send(req(
+            "POST",
+            &env.alice,
+            "/workflows",
+            Body::from(json!({ "ir": trigger(plain) }).to_string()),
+        ))
+        .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{body}");
+    env.cleanup().await;
+}
+
 /// 受信箱の一覧・件数は、他人が書いた台帳の候補を本人に見える分へ絞るだけなので、見えないテーブルの承認が
 /// 並んでいても、読み直すたびに Deny の監査を増やさない（件数は 60 秒ごととフォーカス時に読まれる・BUG-43）。
 /// 本人がその承認を開いたときは、従来どおり 404 で断り Deny を残す。見える承認は同じテーブルの行をまとめて

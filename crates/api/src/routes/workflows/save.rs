@@ -82,14 +82,15 @@ pub struct ValidationErrorResponse {
 /// 実装は [`crate::workflow_catalog::build_catalog_from`]（emit_workflow と共有・乖離禁止）。
 /// モデルは gateway があれば呼び出し主体から見た組織の許可リスト（BUG-11）、無ければデプロイ設定。
 ///
-/// IR の承認ノードが束縛するテーブル（保存者の見え方・V4・GAP-08）と、workflow.start の相手（BUG-107）も引いて足す。
+/// IR の承認・状態を進める・状態のきっかけが束縛するテーブル（保存者の見え方・V4・GAP-08・BUG-105）と、
+/// workflow.start の相手（BUG-107）も引いて足す。
 pub(crate) async fn build_catalog_for(
     state: &AppState,
     ctx: &authz::AuthContext,
     ir: &serde_json::Value,
 ) -> Result<Catalog, ApiError> {
     let mut catalog = build_catalog_base(state, ctx).await?;
-    catalog.tables = crate::workflow_catalog::approval_tables(&state.data, ctx, ir)
+    catalog.tables = crate::workflow_catalog::fsm_tables(&state.data, ctx, ir)
         .await
         .map_err(ApiError::Internal)?;
     // 別のワークフローを実行の相手が保存者に見えるか（無いと見えないは同じ誤り・BUG-107）。

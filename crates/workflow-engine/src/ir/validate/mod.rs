@@ -23,6 +23,7 @@ pub use readiness::{
 mod refs;
 pub(crate) use refs::parse_skill_ref;
 mod reply;
+mod transition;
 pub use reply::{MAX_REPLIES, REPLY_WITHOUT_INTERACTIVE};
 mod semantics;
 pub use semantics::{semantics_warnings, SEMANTICS_CHANGED};
@@ -118,9 +119,10 @@ pub struct Catalog {
     /// #344 Task 10.1b）。インストールはユーザー単位のため保存者基準で照合し、実行時は
     /// 実行主体の ReBAC で再検証する（fail-closed が最終防衛線・ir.md §8）。
     pub skills: BTreeMap<String, std::collections::BTreeSet<String>>,
-    /// 承認（human.approval）が束縛するテーブル（UUID → 保存者に見える列と FSM の状態・V4・GAP-08）。
-    /// API 層が IR の承認ノードのテーブルを保存者の権限で引いて詰める（見えないテーブルは入れない）。
-    /// `None` は照合しない（テーブルを引けない構成・AI 編集の説明文の検査など）。
+    /// 承認（human.approval）・状態を進める（data.transition）・状態のきっかけが束縛するテーブル（UUID →
+    /// 保存者に見える列と FSM の状態・V4・GAP-08・BUG-105）。API 層が IR のテーブルを保存者の権限で引いて
+    /// 詰める（見えないテーブルは入れない）。`None` は照合しない（テーブルを引けない構成・AI 編集の説明文の
+    /// 検査など）。
     pub tables: Option<BTreeMap<String, CatalogTable>>,
     /// AI エージェントの web.fetch が読んでよいサイトの天井（管理者が決める `workflow.agent.web_allowlist`・
     /// BUG-6・D-29）。ノードの `egress_allowlist` はこの部分集合に限る。`None` は照合しない（設定を引けない
@@ -244,9 +246,11 @@ pub fn validate(
         &ir.declared_scopes.iter().map(String::as_str).collect(),
         &mut errors,
     );
-    // V4: 参照存在（secret の宛先束縛事前チェック＋skill のインストール済み照合・#344・承認のテーブルと状態）。
+    // V4: 参照存在（secret の宛先束縛事前チェック＋skill のインストール済み照合・#344・承認のテーブルと状態・
+    // 状態を進めるテーブルと状態のきっかけのテーブル・BUG-105）。
     refs::v4_refs(&ir, catalog, &mut errors);
     approval::v4(&ir, catalog, &mut errors);
+    transition::v4(&ir, catalog, &mut errors);
     // V5: データフロー（$from 祖先性・default 要否・条件木型整合・regex）。
     v5_dataflow::check(&ir, &mut errors);
     agent::v5(&ir, &mut errors);
