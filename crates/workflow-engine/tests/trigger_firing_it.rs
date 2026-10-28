@@ -475,7 +475,7 @@ async fn same_event_creates_one_run() {
     let (ir, graph) = wait_ir(10);
     let origin = RunOrigin {
         trigger_event_id: Some(99),
-        parent_run_id: None,
+        ..RunOrigin::default()
     };
     let input = json!({});
     let principal = wf.to_string();
@@ -519,8 +519,8 @@ async fn same_event_creates_one_run() {
             &ir,
             &graph,
             RunOrigin {
-                trigger_event_id: None,
                 parent_run_id: Some(first),
+                ..RunOrigin::default()
             },
         )
         .await

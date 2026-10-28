@@ -1271,3 +1271,73 @@ async fn manual_run_reports_input_errors_by_field() {
     assert_eq!(runs, 0, "入力の誤りでは run を作らない");
     delete_flow_and_runs(&env, &id).await;
 }
+
+/// きっかけの内容と入力を、ブロックの結果としてそのまま返す（`$from trigger` の源を確かめる・D-93）。
+struct ContextEcho;
+
+#[async_trait]
+impl NodeExecutor for ContextEcho {
+    async fn execute(&self, _t: &str, _p: &Value, ctx: &NodeContext) -> NodeResult {
+        NodeResult::ok(json!({ "input": ctx.input, "trigger": ctx.trigger }))
+    }
+}
+
+/// D-93: 実行のダイアログは、手動の実行にきっかけの内容を入力と別に渡せる（`$from trigger` の源）。渡さなければ
+/// 今までどおり、きっかけの内容は入力と同じ。項目のまとまりでないきっかけの内容は 400（field = trigger）。
+#[tokio::test]
+async fn manual_run_takes_trial_trigger() {
+    let Some(env) = setup().await else { return };
+    let worker = WorkflowWorker::new(
+        RunStore::new(env.pool.clone(), workflow_engine::DEFAULT_LEASE_SECS),
+        Arc::new(ContextEcho),
+        WorkerConfig::default(),
+    )
+    .scoped_to_tenant("default");
+    let id = create_amount_flow(&env, "trial-trigger").await;
+    let start = |body: Value| {
+        let env = &env;
+        let id = id.clone();
+        async move { req(env, "POST", &format!("/workflows/{id}/runs"), Some(body)).await }
+    };
+
+    // --- きっかけの内容は項目のまとまりだけ。
+    let (st, body) = start(json!({ "input": { "amount": 3 }, "trigger": [1] })).await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["code"], "invalid_input", "{body}");
+    assert_eq!(body["field"], "trigger", "{body}");
+
+    // --- 試すきっかけの内容は `$from trigger` の源になり、入力はそのまま。
+    let trial = json!({ "record_id": "r-1", "to": "approved" });
+    let (st, body) = start(json!({ "input": { "amount": 3 }, "trigger": trial })).await;
+    assert_eq!(st, StatusCode::ACCEPTED, "{body}");
+    let with_trial = body["run_id"].as_str().unwrap().to_string();
+    // --- 渡さなければ、きっかけの内容は入力と同じ（今までどおり）。
+    let (st, body) = start(json!({ "input": { "amount": 4 } })).await;
+    assert_eq!(st, StatusCode::ACCEPTED, "{body}");
+    let without = body["run_id"].as_str().unwrap().to_string();
+    while worker.claim_and_run_once("w-trial").await.unwrap() {}
+    let output = |run: String| {
+        let env = &env;
+        let id = id.clone();
+        async move {
+            let (st, body) = req(
+                env,
+                "GET",
+                &format!("/workflows/{id}/runs/{run}/steps?path=echo"),
+                None,
+            )
+            .await;
+            assert_eq!(st, StatusCode::OK, "{body}");
+            body["output"].clone()
+        }
+    };
+    assert_eq!(
+        output(with_trial).await,
+        json!({ "input": { "amount": 3 }, "trigger": trial })
+    );
+    assert_eq!(
+        output(without).await,
+        json!({ "input": { "amount": 4 }, "trigger": { "amount": 4 } })
+    );
+    delete_flow_and_runs(&env, &id).await;
+}

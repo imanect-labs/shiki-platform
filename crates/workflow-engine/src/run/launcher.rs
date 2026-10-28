@@ -46,12 +46,32 @@ impl WorkflowRunLauncher {
         workflow_id: Uuid,
         input: &Value,
     ) -> Result<Option<Uuid>, LauncherError> {
+        self.start_interactive_trial(ctx, workflow_id, input, None)
+            .await
+    }
+
+    /// interactive 起動で、きっかけの内容を入力と別に渡す（実行のダイアログの「きっかけの内容」・D-93）。
+    ///
+    /// スケジュールやファイル・テーブルの変更をきっかけにするワークフローを、手動で試すためのもの。きっかけの
+    /// 内容は利用者が書いた値で、入力と同じく本人の権限で使う（本人が読めないものには触れない）。
+    /// `trigger` が `None` なら [`Self::start_interactive`] と同じ（きっかけの内容は入力と同じ）。
+    pub async fn start_interactive_trial(
+        &self,
+        ctx: &AuthContext,
+        workflow_id: Uuid,
+        input: &Value,
+        trigger: Option<&Value>,
+    ) -> Result<Option<Uuid>, LauncherError> {
         let (version, ir) = self
             .workflows
             .get_latest(ctx, workflow_id, None)
             .await
             .map_err(|e| LauncherError::Ir(format!("{e:?}")))?;
-        self.create_interactive_run(ctx, workflow_id, version, &ir, input, None)
+        let origin = RunOrigin {
+            trigger_payload: trigger,
+            ..RunOrigin::default()
+        };
+        self.create_interactive_run(ctx, workflow_id, version, &ir, input, origin)
             .await
     }
 
@@ -78,7 +98,11 @@ impl WorkflowRunLauncher {
                 ) => LauncherError::NotVisible,
                 other => LauncherError::Ir(format!("{other:?}")),
             })?;
-        self.create_interactive_run(ctx, workflow_id, version, &ir, input, parent_run_id)
+        let origin = RunOrigin {
+            parent_run_id,
+            ..RunOrigin::default()
+        };
+        self.create_interactive_run(ctx, workflow_id, version, &ir, input, origin)
             .await
     }
 
@@ -90,7 +114,7 @@ impl WorkflowRunLauncher {
         version: i64,
         ir: &WorkflowIr,
         input: &Value,
-        parent_run_id: Option<Uuid>,
+        origin: RunOrigin<'_>,
     ) -> Result<Option<Uuid>, LauncherError> {
         // 入力の契約（input_schema）は run を作る前に必ず確かめる。対話起動の全経路
         // （API・会話の図のボタン・ミニアプリ）がここを通るので、画面の検証に頼らない。
@@ -126,10 +150,7 @@ impl WorkflowRunLauncher {
                 input,
                 &ir_json,
                 &graph,
-                RunOrigin {
-                    trigger_event_id: None,
-                    parent_run_id,
-                },
+                origin,
             )
             .await
             .map_err(|e| LauncherError::Run(e.to_string()))?;
@@ -153,7 +174,7 @@ impl WorkflowRunLauncher {
             .get_version(ctx, workflow_id, version, None)
             .await
             .map_err(|e| LauncherError::Ir(format!("{e:?}")))?;
-        self.create_interactive_run(ctx, workflow_id, version, &ir, input, None)
+        self.create_interactive_run(ctx, workflow_id, version, &ir, input, RunOrigin::default())
             .await
     }
 
@@ -176,7 +197,7 @@ impl WorkflowRunLauncher {
             .get_version_via_bundle(ctx, bundle_id, workflow_id, version, None)
             .await
             .map_err(|e| LauncherError::Ir(format!("{e:?}")))?;
-        self.create_interactive_run(ctx, workflow_id, version, &ir, input, None)
+        self.create_interactive_run(ctx, workflow_id, version, &ir, input, RunOrigin::default())
             .await
     }
 
@@ -255,7 +276,7 @@ impl WorkflowRunLauncher {
                 &graph,
                 RunOrigin {
                     trigger_event_id: event_id,
-                    parent_run_id: None,
+                    ..RunOrigin::default()
                 },
             )
             .await

@@ -26,6 +26,11 @@ pub struct StartRunRequest {
     #[serde(default)]
     #[schema(value_type = Object)]
     pub input: serde_json::Value,
+    /// 試すきっかけの内容（`$from trigger` の源・項目のまとまり）。スケジュールやファイル・テーブルの変更を
+    /// きっかけにするワークフローを手動で試すときに渡す（D-93）。省略すると、きっかけの内容は入力と同じ。
+    #[serde(default)]
+    #[schema(value_type = Option<Object>)]
+    pub trigger: Option<serde_json::Value>,
 }
 
 /// run 起動レスポンス。
@@ -43,7 +48,7 @@ pub struct StartRunResponse {
     request_body = StartRunRequest,
     responses(
         (status = 202, description = "起動した", body = StartRunResponse),
-        (status = 400, description = "入力が input_schema に合わない（invalid_input・項目ごとの errors 付き）か、実行できない設定がある（not_ready・errors 付き）", body = crate::error_body::InvalidRunInputBody),
+        (status = 400, description = "入力が input_schema に合わない（invalid_input・項目ごとの errors 付き）か、きっかけの内容が項目のまとまりでない（invalid_input・field = trigger）か、実行できない設定がある（not_ready・errors 付き）", body = crate::error_body::InvalidRunInputBody),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限がない"),
         (status = 404, description = "存在しない"),
@@ -61,10 +66,20 @@ pub async fn start_workflow_run(
         .workflow_launcher
         .as_ref()
         .ok_or_else(|| ApiError::ServiceUnavailable("workflow 実行時が無効です".into()))?;
+    // きっかけの内容は項目のまとまりだけを受ける（ペイロードはどのきっかけでも項目のまとまり・D-93）。
+    if req.trigger.as_ref().is_some_and(|t| !t.is_object()) {
+        return Err(ApiError::UnprocessableJson(crate::error_body::to_body(
+            &crate::error_body::BadRequestBody::new(
+                data::InvalidCode::InvalidInput,
+                "きっかけの内容は、項目のまとまり（{ } で囲んだ JSON）で書いてください。",
+                Some("trigger"),
+            ),
+        )));
+    }
     // start_interactive 内で workflows.get_latest の OpenFGA 認可を通る。IR 取得失敗（権限なし/不在）は
     // 存在秘匿のため 404 に写す（500 にしない）。
     let run_id = launcher
-        .start_interactive(&ctx, id, &req.input)
+        .start_interactive_trial(&ctx, id, &req.input, req.trigger.as_ref())
         .await
         .map_err(|e| match e {
             workflow_engine::run::LauncherError::Ir(_) => ApiError::NotFound,

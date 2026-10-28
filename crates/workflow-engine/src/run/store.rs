@@ -91,6 +91,9 @@ pub struct ClaimedStep {
     pub fencing_token: i64,
     pub idempotency_key: String,
     pub input: Json<Value>,
+    /// きっかけの内容（`$from trigger` の源）。手動の実行で試すきっかけの内容を渡したときはそれ、ほかは入力と
+    /// 同じ（schedule / event の run は入力にペイロードを載せる・D-93）。
+    pub trigger: Json<Value>,
     /// step 固有の入力（map 要素の `each` コンテキスト等）。静的ノードは NULL。
     pub step_input: Option<Json<Value>>,
     /// 開始時にピンした IR（ワーカーがノード params/retry を引く）。
@@ -103,11 +106,14 @@ const RESUME_GRACE_MARGIN_SECS: i64 = 5;
 
 /// run の由来（[`RunStore::create_run_from`]・GAP-07）。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct RunOrigin {
+pub struct RunOrigin<'a> {
     /// 発火元の outbox イベント（イベントトリガの run・`(trigger_id, trigger_event_id)` で一意）。
     pub trigger_event_id: Option<i64>,
     /// 親の run（workflow.start で起動した子）。
     pub parent_run_id: Option<Uuid>,
+    /// 手動の実行で試すきっかけの内容（`$from trigger` の源・D-93）。`None` なら、きっかけの内容は入力と同じ
+    /// （今までどおり）。
+    pub trigger_payload: Option<&'a Value>,
 }
 
 /// running の run が多重度（`max_parallel_runs`）に数える条件（SQL の述語・別名 `r`）。
@@ -214,7 +220,7 @@ impl RunStore {
         input: &Value,
         ir_snapshot: &Value,
         graph: &RunGraph,
-        origin: RunOrigin,
+        origin: RunOrigin<'_>,
     ) -> Result<Option<Uuid>, RunStoreError> {
         let policies: crate::ir::Policies = ir_snapshot
             .get("policies")
@@ -289,12 +295,12 @@ impl RunStore {
             "INSERT INTO workflow_run \
              (tenant_id, org, workflow_id, version, trigger_kind, trigger_id, principal, \
               principal_kind, input, ir_snapshot, status, started_at, timeout_at, \
-              trigger_event_id, trigger_chain, cause_run_id, reply_nodes) \
+              trigger_event_id, trigger_chain, cause_run_id, reply_nodes, trigger_payload) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, \
                      CASE WHEN $11 = 'running' THEN now() END, \
                      CASE WHEN $11 = 'running' \
                           THEN now() + ($12 || ' seconds')::interval END, \
-                     $13, $14, $15, $16) \
+                     $13, $14, $15, $16, $17) \
              RETURNING run_id",
         )
         .bind(tenant_id)
@@ -314,6 +320,7 @@ impl RunStore {
         .bind(origin.parent_run_id)
         // 結果を画面に返すノード（実行順）。読取口が ir_snapshot を開かずに引く（GAP-09）。
         .bind(graph.reply_nodes())
+        .bind(origin.trigger_payload.map(Json))
         .fetch_one(&mut *tx)
         .await
         .map_err(map_db)?;

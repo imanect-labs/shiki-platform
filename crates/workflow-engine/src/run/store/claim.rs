@@ -36,7 +36,7 @@ use super::{map_db, ClaimedStep, RunStore, RunStoreError};
 /// step が先頭に居座っている間 claim が空振りし、他の run の実行待ちが進まなくなる。`OR` を外した
 /// 後は index 順の nested loop で流れるため、内側に置いても評価は 1 件で止まる（実測 22 バッファ）。
 ///
-/// run 側の列（workflow_id/org/principal/input/ir_snapshot/始めた時刻）は副問い合わせで一緒に取り出し、
+/// run 側の列（workflow_id/org/principal/input/きっかけの内容/ir_snapshot/始めた時刻）は副問い合わせで一緒に取り出し、
 /// `RETURNING` から `picked.*` として参照する（`workflow_run` への join を 1 本に保つ）。
 macro_rules! claim_ready_sql {
     ($tenant_pred:literal) => {
@@ -48,7 +48,8 @@ macro_rules! claim_ready_sql {
              FROM ( \
                  SELECT s2.tenant_id, s2.run_id, s2.step_path, \
                         r2.workflow_id, r2.org, r2.principal, r2.principal_kind, \
-                        r2.input, r2.ir_snapshot, \
+                        r2.input, coalesce(r2.trigger_payload, r2.input) AS trigger, \
+                        r2.ir_snapshot, \
                         coalesce(r2.started_at, r2.created_at) AS run_started_at \
                    FROM step_execution s2 \
                    JOIN workflow_run r2 \
@@ -65,7 +66,7 @@ macro_rules! claim_ready_sql {
                        s.node_id, s.tenant_id, \
                        picked.org, picked.principal, picked.principal_kind, \
                        s.attempt, s.fencing_token, s.idempotency_key, \
-                       picked.input, s.input AS step_input, picked.ir_snapshot"
+                       picked.input, picked.trigger, s.input AS step_input, picked.ir_snapshot"
         )
     };
 }
