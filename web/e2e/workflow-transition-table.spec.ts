@@ -2,10 +2,11 @@ import { expect, test, type Page } from "@playwright/test";
 
 import { cleanupAll, loginViaKeycloak, uniqueName } from "./helpers";
 
-/// 状態の進め方（FSM）を使うブロックのテーブルの e2e（BUG-105）:
+/// 状態の進め方（FSM）を使うブロックのテーブルの e2e（BUG-105）と、「データをまとめて登録」の注記（BUG-104）:
 /// - 「状態を進める」と、状態の変化のきっかけのテーブルの一覧は、状態の進め方のあるテーブルだけを出す（承認を
 ///   待つと同じ）。状態の進め方の無いテーブルは名前で探しても出ない。
 /// - 状態の進め方の無いテーブルを API で書いても、保存時の照合（V4）で止まる。
+/// - 「データをまとめて登録」のスイッチは、形の合わないレコードだけで止まり、ブロックは失敗にならないことを言う。
 /// 前提: shiki-server が SHIKI__WORKFLOW__ENABLED=true・LLM は stub（AI は呼ばない）。
 
 const SHOTS = process.env.E2E_SHOTS_DIR;
@@ -161,6 +162,60 @@ test("状態を進める・状態のきっかけ: 状態の進め方のあるテ
     await expect(picker).toHaveCount(0);
     await expect(triggerPanel.getByText("「どの状態でも」なら、どの状態に変わっても実行します。")).toBeVisible();
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/transition-trigger-pc.png` });
+  } finally {
+    await cleanup(page, made);
+  }
+});
+
+test("データをまとめて登録: スイッチの注記が実際の動き（形の合わないときだけ止まり、ブロックは失敗しない）を言う（BUG-104）", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await loginViaKeycloak(page);
+  const made: Made = { tables: [], artifacts: [] };
+  try {
+    const t = await table(page, made, "e2e-まとめて登録", false);
+    const name = uniqueName("bulk-note");
+    const res = await page.request.post("/api/workflows", {
+      headers: await csrfHeaders(page),
+      data: {
+        ir: {
+          ir_version: 1,
+          name,
+          display_name: name,
+          triggers: [{ kind: "interactive" }],
+          nodes: [
+            {
+              id: "bulk",
+              type: "data.bulk_upsert",
+              label: "まとめて登録",
+              params: { table: t.id, rows: { $from: "input", path: "/rows" }, abort_on_invalid: true },
+            },
+          ],
+          edges: [],
+        },
+      },
+    });
+    expect(res.ok(), await res.text()).toBeTruthy();
+    const id = ((await res.json()) as { id: string }).id;
+    made.artifacts.push(id);
+
+    await page.goto(`/workflows/${id}`);
+    await page.getByTestId("rf__node-bulk").click();
+    const panel = page.getByRole("complementary", { name: "ブロックの設定" });
+    await expect(panel.getByRole("combobox", { name: "対象のテーブル" })).toContainText(t.name, { timeout: 15_000 });
+    const toggle = panel.getByRole("switch", { name: "1 件でも合わなければ、どれも登録しない" });
+    await expect(toggle).toHaveAttribute("aria-checked", "true");
+    await expect(panel.getByTestId("bulk-abort-note")).toHaveText(
+      "オフなら、形の合うレコードだけを登録します。どちらでもブロックは失敗にならないので、結果の件数で確かめてください。",
+    );
+    await expect(panel.getByText("不合格の行があれば何も登録しない")).toHaveCount(0);
+    await panel.getByTestId("bulk-abort-more").getByRole("button", { name: "詳しく" }).click();
+    await expect(panel.getByTestId("bulk-abort-more")).toContainText(
+      "ほかの書き込みと重なって登録できなかったレコード（同じ値を入れられない列など）があっても、残りは登録します。",
+    );
+    if (SHOTS) await panel.screenshot({ path: `${SHOTS}/bulk-abort-note-pc.png` });
   } finally {
     await cleanup(page, made);
   }

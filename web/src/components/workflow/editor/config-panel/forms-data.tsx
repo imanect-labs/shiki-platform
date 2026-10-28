@@ -16,7 +16,7 @@ import type { ValueExpr } from "@/generated/workflow-ir";
 import type { DataQuery, DataTable } from "@/lib/data-api";
 import { buildFilter, resolveColumns, splitFilter } from "@/lib/data-view";
 import { cn } from "@/lib/utils";
-import { Field, NumberInput } from "./common";
+import { Field, MoreInfo, NumberInput } from "./common";
 import { DataTableSelect, isFsmTable, NoFsmTableNote, useDataTables, type DataTables } from "./data-tables";
 import type { FormProps } from "./forms-basic";
 import { paramsOf, patchParams } from "./params";
@@ -333,6 +333,9 @@ export function DataTransitionForm(props: FormProps) {
   );
 }
 
+/// 「データをまとめて登録」の、形の合わないレコードがあれば止めるスイッチ（付録 D の N3.3.6）。
+const ABORT_ON_INVALID_LABEL = "1 件でも合わなければ、どれも登録しない";
+
 export function DataBulkUpsertForm(props: FormProps) {
   const { node, dispatch, refCandidates, inMapRegion, fieldErrors } = props;
   const { source, table } = useNodeTable(node);
@@ -352,17 +355,26 @@ export function DataBulkUpsertForm(props: FormProps) {
         error={fieldErrors.get("rows")}
       />
       <FieldKeysHint table={table} />
-      <label className="flex items-center justify-between gap-3 text-xs">
-        <span>
-          <span className="font-medium">不合格の行があれば何も登録しない</span>
-          <span className="block text-[11px] text-muted-foreground">オフなら合格した行だけを登録します</span>
-        </span>
-        <Switch
-          aria-label="不合格の行があれば何も登録しない"
-          checked={Boolean(p.abort_on_invalid)}
-          onCheckedChange={(on) => patchParams(dispatch, node, { abort_on_invalid: on || undefined })}
-        />
-      </label>
+      <div className="space-y-1">
+        <label className="flex items-center justify-between gap-3 text-xs">
+          <span>
+            <span className="font-medium">{ABORT_ON_INVALID_LABEL}</span>
+            {/* 「何も登録しない」は言い過ぎだった（形の検査の後に、ほかの書き込みと重なって弾かれたレコードが
+                あっても、残りは登録する・どちらでもブロックは失敗しない・data の bulk・BUG-104）。 */}
+            <span className="block text-[11px] text-muted-foreground" data-testid="bulk-abort-note">
+              オフなら、形の合うレコードだけを登録します。どちらでもブロックは失敗にならないので、結果の件数で確かめてください。
+            </span>
+          </span>
+          <Switch
+            aria-label={ABORT_ON_INVALID_LABEL}
+            checked={Boolean(p.abort_on_invalid)}
+            onCheckedChange={(on) => patchParams(dispatch, node, { abort_on_invalid: on || undefined })}
+          />
+        </label>
+        <MoreInfo testId="bulk-abort-more">
+          オンでも、止めるのは形の合わないレコードがあるときだけです。ほかの書き込みと重なって登録できなかったレコード（同じ値を入れられない列など）があっても、残りは登録します。すべて登録できたかは、結果の「登録した件数」（rows_applied）と「渡した件数」（rows_total）が同じかで分かります。
+        </MoreInfo>
+      </div>
     </div>
   );
 }
