@@ -8,7 +8,7 @@
 
 import * as React from "react";
 
-import { FilterControl, SortControl } from "@/components/data/view-controls";
+import { FilterControl, SortControl, type FilterExprValue, type FilterTexts } from "@/components/data/view-controls";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import type { NodeParamsByType } from "@/generated/workflow-catalog";
@@ -20,7 +20,9 @@ import { Field, MoreInfo, NumberInput } from "./common";
 import { DataTableSelect, isFsmTable, NoFsmTableNote, useDataTables, type DataTables } from "./data-tables";
 import type { FormProps } from "./forms-basic";
 import { paramsOf, patchParams } from "./params";
-import { ValueExprInput } from "./value-expr-input";
+import { RefPicker } from "./ref-picker";
+import { InputFieldsContext, TriggerSourcesContext, ValueExprInput } from "./value-expr-input";
+import { isFromRef, type RefContext } from "./value-refs";
 
 /// 対象テーブル（固定値の選択 ／ 前の結果から）。選んだテーブルを返す（列の候補に使う）。`eligible` は選べる
 /// テーブル（状態を進めるは状態の進め方のあるテーブルだけ・BUG-105）。
@@ -106,13 +108,55 @@ function FieldKeysHint({ table }: { table: DataTable | null }) {
   );
 }
 
+/// 「探す条件」の文言（データの画面の「絞り込み」と同じ部品をワークフローの言葉で出す・付録 D の N3.3.1）。
+const QUERY_FILTER_TEXTS: FilterTexts = {
+  title: "探す条件",
+  subtitle: "すべての条件に合うレコード",
+  advanced: "ここでは編集できない条件が入っています（チャットで作った条件など）。",
+  clearAdvanced: "この条件を外す",
+  empty: "条件はまだありません。",
+  apply: "この条件で探す",
+};
+
+/// 「探す条件」の比べる値を、入力や結果から選ぶ（`$from` のまま保存する・BUG-98）。参照でない式（チャットで
+/// 作った差し込みの文章など）は、ここでは中身を変えずにそのまま残す。
+function useQueryExprValue(props: FormProps): FilterExprValue {
+  const inputFields = React.useContext(InputFieldsContext);
+  const triggerSources = React.useContext(TriggerSourcesContext);
+  const { refCandidates, inMapRegion } = props;
+  const ctx = React.useMemo<RefContext>(
+    () => ({ inputFields, ancestors: refCandidates, inMapRegion: Boolean(inMapRegion), triggerSources }),
+    [inputFields, refCandidates, inMapRegion, triggerSources],
+  );
+  return React.useMemo(
+    () => ({
+      render: ({ label, value, onChange }) =>
+        value !== null && !isFromRef(value) ? (
+          <p className="rounded-md border border-dashed px-2.5 py-1.5 text-[11px] text-muted-foreground" data-testid="filter-expr-fixed">
+            ここでは編集できない値です（チャットで作った値など）。
+          </p>
+        ) : (
+          <RefPicker
+            value={value !== null && isFromRef(value) ? value : null}
+            onChange={(ref) => onChange(ref as Record<string, unknown>)}
+            ctx={ctx}
+            ariaLabel={label}
+          />
+        ),
+    }),
+    [ctx],
+  );
+}
+
 export function DataQueryForm(props: FormProps) {
   const { node, dispatch, fieldErrors } = props;
   const { source, table } = useNodeTable(node);
   const p = paramsOf<NodeParamsByType["data.query"]>(node);
   const query: DataQuery = (p.query as DataQuery | undefined) ?? {};
   const columns = React.useMemo(() => (table ? resolveColumns(table.schema.fields, null, new Set()) : []), [table]);
-  const f = splitFilter(query.filter);
+  // 比べる値が参照（$from）の条件も行として持つ（文字に直して参照を消さない・BUG-98）。
+  const f = splitFilter(query.filter, { exprs: true });
+  const exprValue = useQueryExprValue(props);
   // 読む件数の上限の誤り（保存時の照合・`/params/query/limit`・BUG-108）は、その欄の下に出す（探す条件の下に重ねない）。
   const limitError = fieldErrors.get("query/limit") ?? null;
   const queryError = fieldErrors.get("query") ?? null;
@@ -125,12 +169,14 @@ export function DataQueryForm(props: FormProps) {
       <TableField {...props} source={source} />
       {table ? (
         <div className="space-y-1.5">
-          <span className="text-xs font-medium">絞り込み・並べ替え</span>
+          <span className="text-xs font-medium">探す条件と並べ替え（省略可）</span>
           <div className="flex flex-wrap gap-1 rounded-md border p-1">
             <FilterControl
               columns={columns}
               rows={f.rows}
               advanced={f.advanced !== null}
+              texts={QUERY_FILTER_TEXTS}
+              exprValue={exprValue}
               onClearAdvanced={() => setQuery({ ...query, filter: buildFilter(f.rows, null, columns) ?? undefined })}
               onChange={(rows) => setQuery({ ...query, filter: buildFilter(rows, f.advanced, columns) ?? undefined })}
             />

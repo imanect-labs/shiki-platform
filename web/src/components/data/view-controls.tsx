@@ -269,12 +269,85 @@ function ValueInput({
   );
 }
 
+/// 絞り込みの部品の文言（呼び出し側の画面の言葉で言う・付録 D の N3.3.1）。
+export type FilterTexts = {
+  /// ツールバーのボタンとポップオーバーの題。
+  title: string;
+  /// 題の横の補足。
+  subtitle: string;
+  /// 画面で編集できない条件があるときの文と、それを外すボタン。
+  advanced: string;
+  clearAdvanced: string;
+  /// 条件が無いとき。
+  empty: string;
+  /// 適用のボタン。
+  apply: string;
+};
+
+const DATA_FILTER_TEXTS: FilterTexts = {
+  title: "絞り込み",
+  subtitle: "すべての条件を満たす行",
+  advanced: "ビューに保存された詳細な条件が掛かっています",
+  clearAdvanced: "外す",
+  empty: "条件はありません。「条件を追加」で足せます。",
+  apply: "適用",
+};
+
+/// 比べる値を式で決める部品（ワークフローの「探す条件」の「入力や結果から選ぶ」・BUG-98）。
+export type FilterExprValue = {
+  /// 式を選ぶ欄（`value` は選んだ式・まだ選んでいなければ null）。
+  render: (p: {
+    label: string;
+    value: Record<string, unknown> | null;
+    onChange: (next: Record<string, unknown>) => void;
+  }) => React.ReactNode;
+};
+
+/// 比べる値の入れ方の切り替え（直接入力｜入力や結果から選ぶ・付録 D の N1.5.1）。
+function ValueModeToggle({
+  label,
+  expr,
+  onChange,
+}: {
+  label: string;
+  expr: boolean;
+  onChange: (expr: boolean) => void;
+}) {
+  const item = (on: boolean, text: string) => (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={expr === on}
+      onClick={() => expr !== on && onChange(on)}
+      className={cn(
+        "rounded px-1.5 py-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:py-1.5",
+        expr === on ? "bg-primary/10 font-medium text-primary" : "text-muted-foreground hover:text-foreground",
+      )}
+    >
+      {text}
+    </button>
+  );
+  return (
+    <div
+      role="radiogroup"
+      aria-label={`${label}の入れ方`}
+      className="mb-1 flex flex-wrap gap-0.5 whitespace-nowrap text-[11px]"
+      data-testid="filter-value-mode"
+    >
+      {item(false, "直接入力")}
+      {item(true, "入力や結果から選ぶ")}
+    </div>
+  );
+}
+
 export function FilterControl({
   columns,
   rows,
   onChange,
   advanced,
   onClearAdvanced,
+  texts,
+  exprValue,
 }: {
   columns: ColumnModel[];
   rows: FilterRow[];
@@ -282,7 +355,12 @@ export function FilterControl({
   /// 保存ビューの条件が画面で編集できない形（OR・入れ子）のとき true。
   advanced: boolean;
   onClearAdvanced: () => void;
+  /// 文言（省略でデータの画面の言葉）。
+  texts?: Partial<FilterTexts>;
+  /// 比べる値を式でも決められるようにする（省略で直接入力だけ）。
+  exprValue?: FilterExprValue;
 }) {
+  const t = { ...DATA_FILTER_TEXTS, ...texts };
   const filterable = columns.filter(isFilterable);
   const [draft, setDraft] = React.useState<FilterRow[]>(rows);
   const [open, setOpen] = React.useState(false);
@@ -292,15 +370,20 @@ export function FilterControl({
   const set = (i: number, patch: Partial<FilterRow>) =>
     setDraft((d) => d.map((r, j) => (j === i ? { ...r, ...patch } : r)));
   // 型に合わない値（数値の列に文字・日付でない文字列）は送らない（A-9）。空の値の条件は適用時に捨てる。
+  // 「入力や結果から選ぶ」にして値を選んでいない条件は、黙って捨てずに選ぶよう促す。
   const errorOf = (r: FilterRow): string | null => {
-    if (!r.field || NO_VALUE_OPS.includes(r.op) || r.value.trim() === "") return null;
+    if (!r.field || NO_VALUE_OPS.includes(r.op)) return null;
+    if (r.expr !== undefined) return r.expr === null ? "値を選んでください" : null;
+    if (r.value.trim() === "") return null;
     const v = parseFilterValue(r.value, columns.find((c) => c.key === r.field), r.op);
     return v.ok ? null : v.error;
   };
   const hasError = draft.some((r) => errorOf(r) !== null);
   const apply = () => {
     if (hasError) return;
-    onChange(draft.filter((r) => r.field && (NO_VALUE_OPS.includes(r.op) || r.value.trim() !== "")));
+    onChange(
+      draft.filter((r) => r.field && (NO_VALUE_OPS.includes(r.op) || r.expr !== undefined || r.value.trim() !== "")),
+    );
     setOpen(false);
   };
   return (
@@ -308,27 +391,32 @@ export function FilterControl({
       <PopoverTrigger asChild>
         <ToolbarButton
           icon={Filter}
-          label="絞り込み"
+          label={t.title}
           count={rows.length + (advanced ? 1 : 0)}
           active={rows.length > 0 || advanced}
           data-testid="data-filter-button"
         />
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-[min(30rem,calc(100vw-1.5rem))] space-y-3">
+      {/* 条件が多いとき・狭い画面では、画面の端に付けず、はみ出す分は中で送る（適用のボタンが画面の外に出ない）。 */}
+      <PopoverContent
+        align="start"
+        collisionPadding={12}
+        className="max-h-[var(--radix-popover-content-available-height)] w-[min(30rem,calc(100vw-1.5rem))] space-y-3 overflow-y-auto"
+      >
         <div className="flex items-center justify-between">
-          <h3 className="text-sm font-semibold">絞り込み</h3>
-          <span className="text-[11px] text-muted-foreground">すべての条件を満たす行</span>
+          <h3 className="text-sm font-semibold">{t.title}</h3>
+          <span className="text-[11px] text-muted-foreground">{t.subtitle}</span>
         </div>
         {advanced ? (
           <div className="flex items-center justify-between gap-2 rounded-md border border-dashed px-2.5 py-2 text-xs text-muted-foreground">
-            ビューに保存された詳細な条件が掛かっています
-            <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={onClearAdvanced}>
-              外す
+            {t.advanced}
+            <Button variant="ghost" size="sm" className="h-7 shrink-0 text-xs" onClick={onClearAdvanced}>
+              {t.clearAdvanced}
             </Button>
           </div>
         ) : null}
         {draft.length === 0 ? (
-          <p className="text-xs text-muted-foreground">条件はありません。「条件を追加」で足せます。</p>
+          <p className="text-xs text-muted-foreground">{t.empty}</p>
         ) : (
           <ul className="space-y-2">
             {draft.map((r, i) => {
@@ -336,13 +424,28 @@ export function FilterControl({
               const ops = opsFor(col);
               const err = errorOf(r);
               return (
-                <li key={i} className="grid grid-cols-[1fr_1fr_auto] items-center gap-1.5 sm:grid-cols-[9rem_9rem_1fr_auto]">
+                <li
+                  key={i}
+                  className={cn(
+                    "grid grid-cols-[1fr_1fr_auto] items-center gap-1.5",
+                    // 値の入れ方を選べるときは、値の欄を列と比べ方の下に広く取る（狭い列に押し込まない）。
+                    exprValue ? "border-b pb-2 last:border-b-0 last:pb-0" : "sm:grid-cols-[9rem_9rem_1fr_auto]",
+                  )}
+                >
                   <FieldSelect
                     label={`条件 ${i + 1} の列`}
                     value={r.field}
                     columns={filterable}
-                    // 列を変えたら比べ方と値は列の型に合わせて作り直す（前の列の値を持ち越さない）。
-                    onChange={(field) => set(i, { field, op: opsFor(columns.find((c) => c.key === field))[0], value: "" })}
+                    // 列を変えたら比べ方と値は列の型に合わせて作り直す（前の列の値を持ち越さない）。入れ方
+                    // （入力や結果から選ぶ）は残し、選んだ値だけを外す。
+                    onChange={(field) =>
+                      set(i, {
+                        field,
+                        op: opsFor(columns.find((c) => c.key === field))[0],
+                        value: "",
+                        expr: r.expr === undefined ? undefined : null,
+                      })
+                    }
                   />
                   <Select value={r.op} onValueChange={(op) => set(i, { op: op as CondOp })}>
                     <SelectTrigger aria-label={`条件 ${i + 1} の比べ方`} className="h-8 text-[13px]">
@@ -356,16 +459,38 @@ export function FilterControl({
                       ))}
                     </SelectContent>
                   </Select>
-                  <div className="col-span-2 row-start-2 sm:col-span-1 sm:row-start-auto">
+                  <div
+                    className={cn(
+                      "col-span-2 row-start-2 min-w-0",
+                      !exprValue && "sm:col-span-1 sm:row-start-auto",
+                    )}
+                  >
                     {NO_VALUE_OPS.includes(r.op) ? null : (
-                      <ValueInput
-                        col={col}
-                        label={`条件 ${i + 1} の値`}
-                        value={r.value}
-                        invalid={err !== null}
-                        onChange={(value) => set(i, { value })}
-                        onEnter={apply}
-                      />
+                      <>
+                        {exprValue ? (
+                          <ValueModeToggle
+                            label={`条件 ${i + 1} の値`}
+                            expr={r.expr !== undefined}
+                            onChange={(on) => set(i, on ? { expr: null, value: "" } : { expr: undefined, value: "" })}
+                          />
+                        ) : null}
+                        {exprValue && r.expr !== undefined ? (
+                          exprValue.render({
+                            label: `条件 ${i + 1} の値`,
+                            value: r.expr,
+                            onChange: (expr) => set(i, { expr }),
+                          })
+                        ) : (
+                          <ValueInput
+                            col={col}
+                            label={`条件 ${i + 1} の値`}
+                            value={r.value}
+                            invalid={err !== null}
+                            onChange={(value) => set(i, { value })}
+                            onEnter={apply}
+                          />
+                        )}
+                      </>
                     )}
                     {err ? (
                       <p className="mt-1 text-[11px] text-destructive" role="alert">
@@ -415,7 +540,7 @@ export function FilterControl({
               </Button>
             ) : null}
             <Button size="sm" className="h-8 text-xs" onClick={apply} disabled={hasError} data-testid="data-filter-apply">
-              適用
+              {t.apply}
             </Button>
           </div>
         </div>

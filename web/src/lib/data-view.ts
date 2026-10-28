@@ -525,17 +525,39 @@ export const OP_LABELS: Partial<Record<string, string>> = {
 };
 
 /// 絞り込みの 1 条件（画面で編集する形・すべて AND で結ぶ）。
-export type FilterRow = { field: string; op: CondOp; value: string };
+///
+/// `expr` は比べる値を式（ワークフローの「探す条件」の `$from` など）で決める条件。式はそのまま持ち、`value` は
+/// 使わない。`null` は「入力や結果から選ぶ」にしたが、まだ選んでいない下書き（適用できない・BUG-98）。
+export type FilterRow = { field: string; op: CondOp; value: string; expr?: Record<string, unknown> | null };
 
 const NO_VALUE: string[] = ["exists", "is_null"];
 
+/// 比べる値が式（`$from`・`$template` のような項目のまとまり）か。データの値は文字・数・真偽・リストなので、
+/// 項目のまとまりの値は式に限る。
+export function isExprValue(v: unknown): v is Record<string, unknown> {
+  return v !== null && typeof v === "object" && !Array.isArray(v);
+}
+
 /// 保存された条件 → 画面の条件行（AND の比較の並びだけ編集できる。それ以外は「詳細な条件」として残す）。
-export function splitFilter(c: Condition | null | undefined): { rows: FilterRow[]; advanced: Condition | null } {
+///
+/// 比べる値が式の条件は、文字に直さない（`String()` で「[object Object]」になり、適用するとその文字の条件に
+/// 置き換わって参照が黙って消えていた・BUG-98）。式を扱える画面（`exprs`）は行の `expr` に持ち、ほかの画面は
+/// 編集できない条件として丸ごと残す。
+export function splitFilter(
+  c: Condition | null | undefined,
+  { exprs = false }: { exprs?: boolean } = {},
+): { rows: FilterRow[]; advanced: Condition | null } {
   if (!c) return { rows: [], advanced: null };
   const leaves = "all" in c ? c.all : [c];
   const rows: FilterRow[] = [];
   for (const l of leaves) {
     if (!("cmp" in l) || (l.cmp.op === "in") || Array.isArray(l.cmp.value)) return { rows: [], advanced: c };
+    const raw: unknown = l.cmp.value;
+    if (isExprValue(raw)) {
+      if (!exprs) return { rows: [], advanced: c };
+      rows.push({ field: l.cmp.field, op: l.cmp.op, value: "", expr: raw });
+      continue;
+    }
     rows.push({ field: l.cmp.field, op: l.cmp.op, value: l.cmp.value == null ? "" : String(l.cmp.value) });
     // 日時の値（UTC の ISO）は datetime-local の入力欄に合わせて手元の時刻へ直して見せる。
     const last = rows[rows.length - 1];
@@ -552,6 +574,11 @@ export function buildFilter(rows: FilterRow[], advanced: Condition | null, colum
     const col = columns.find((c) => c.key === r.field);
     if (NO_VALUE.includes(r.op)) {
       leaves.push({ cmp: { field: r.field, op: r.op } });
+      continue;
+    }
+    // 式の値はそのまま戻す（選んでいない下書きは送らない）。
+    if (r.expr !== undefined) {
+      if (r.expr !== null) leaves.push({ cmp: { field: r.field, op: r.op, value: r.expr } } as Condition);
       continue;
     }
     // 型に合わない値の条件は送らない（画面で弾いているが、保存ビューの古い条件も含めて守る）。
