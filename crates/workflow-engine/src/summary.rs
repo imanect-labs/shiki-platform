@@ -40,6 +40,8 @@ pub struct WorkflowSearchHit {
     pub input_schema: Option<serde_json::Value>,
     /// enabled / disabled / suspended_reconsent / none（未登録）。
     pub enabled_status: String,
+    /// 検索した本人の所有か（false は共有されただけ＝他人が作ったもの）。
+    pub owned: bool,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -113,15 +115,18 @@ impl WorkflowSummaryStore {
         .await
     }
 
-    /// 認可済み id 集合を名前・表示名・説明で絞り、更新日降順で `limit` 件返す。
+    /// 認可済み id 集合を名前・表示名・説明で絞り、本人の所有を先に・更新日降順で `limit` 件返す。
     ///
     /// 絞り込み（語ごとの部分一致の AND・大文字小文字を区別しない）と件数の上限は SQL で効かせる
     /// （取ってから捨てない）。`interactive_only` は対話トリガを持つもの（図のボタン・チャットから
     /// 起動するもの）だけに絞る。id は認可済み前提で、tenant と kind で二重に絞る。
+    /// `owned` は `ids` のうち本人が所有するもの。共有されただけのものは他人が説明を自由に書けるので、
+    /// 更新日で上位を取られない（説明のスクワッティング）よう、所有分を先に並べて印を付ける。
     pub async fn search(
         &self,
         tenant_id: &str,
         ids: &[Uuid],
+        owned: &[Uuid],
         query: &str,
         interactive_only: bool,
         limit: i64,
@@ -140,6 +145,7 @@ impl WorkflowSummaryStore {
                       '{}') AS trigger_kinds, \
                     v.body->'input_schema' AS input_schema, \
                     COALESCE(r.status, 'none') AS enabled_status, \
+                    (a.id = ANY($7)) AS owned, \
                     a.updated_at \
              FROM artifact a \
              JOIN artifact_version v \
@@ -157,7 +163,7 @@ impl WorkflowSummaryStore {
                AND (NOT $5 OR EXISTS ( \
                  SELECT 1 FROM jsonb_array_elements(v.body->'triggers') AS t \
                  WHERE t->>'kind' = 'interactive')) \
-             ORDER BY a.updated_at DESC, a.id DESC \
+             ORDER BY (a.id = ANY($7)) DESC, a.updated_at DESC, a.id DESC \
              LIMIT $6",
         )
         .bind(tenant_id)
@@ -166,6 +172,7 @@ impl WorkflowSummaryStore {
         .bind(&patterns)
         .bind(interactive_only)
         .bind(limit.clamp(1, 100))
+        .bind(owned)
         .fetch_all(&self.db)
         .await
     }

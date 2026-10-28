@@ -196,6 +196,14 @@ async fn search_sees_owned_and_shared_only_within_the_tenant() {
         names(&all),
         ["bob-shared", "expense-approval", "nightly-report"]
     );
+    // 共有されただけのもの（bob-shared）は所有の印が付かず、本人の所有が先に並ぶ（更新が新しくても
+    // 共有分が上位を取らない＝説明のスクワッティング対策）。
+    let owned: Vec<(&str, bool)> = all.iter().map(|h| (h.name.as_str(), h.owned)).collect();
+    assert_eq!(owned.last(), Some(&("bob-shared", false)), "{owned:?}");
+    assert!(
+        owned[..owned.len() - 1].iter().all(|(_, o)| *o),
+        "{owned:?}"
+    );
     let bobs = dir.search(&bob, "", false, 20).await.expect("bob");
     assert_eq!(names(&bobs), ["bob-private", "bob-shared"]);
     let elsewhere = dir

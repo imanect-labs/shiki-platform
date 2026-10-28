@@ -18,21 +18,21 @@ const PAGE: i64 = 100;
 /// 所有分を辿るページ数の上限（1000 件）。これを超える古い所有分は検索に載らない。
 const MAX_OWNED_PAGES: usize = 10;
 
-/// 本人に見えるワークフローの id 集合（所有∪共有・重複なし）。
+/// 本人に見えるワークフローの id 集合（所有∪共有・重複なし）と、そのうち所有分。
 ///
 /// 所有分は keyset で辿り切る（上限 [`MAX_OWNED_PAGES`]）。共有分は artifact 層の上限
 /// （更新の新しい 100 件）までで、一覧 API の初回ページと同じ範囲になる。
 pub async fn visible_workflow_ids(
     artifacts: &ArtifactStore,
     ctx: &AuthContext,
-) -> Result<Vec<Uuid>, ArtifactError> {
-    let mut ids: Vec<Uuid> = Vec::new();
+) -> Result<(Vec<Uuid>, Vec<Uuid>), ArtifactError> {
+    let mut owned: Vec<Uuid> = Vec::new();
     let mut before = None;
     for _ in 0..MAX_OWNED_PAGES {
         let page = artifacts
             .list_mine(ctx, Some(ArtifactKind::Workflow), before, PAGE)
             .await?;
-        ids.extend(page.iter().map(|a| a.id));
+        owned.extend(page.iter().map(|a| a.id));
         if (page.len() as i64) < PAGE {
             break;
         }
@@ -41,10 +41,13 @@ pub async fn visible_workflow_ids(
     let shared = artifacts
         .list_shared_with_me(ctx, Some(ArtifactKind::Workflow), PAGE)
         .await?;
+    let mut ids = owned.clone();
     ids.extend(shared.iter().map(|a| a.id));
     ids.sort_unstable();
     ids.dedup();
-    Ok(ids)
+    owned.sort_unstable();
+    owned.dedup();
+    Ok((ids, owned))
 }
 
 /// chat ワーカー（`search_workflows`）へ注入する検索源。
@@ -72,11 +75,18 @@ impl chat::WorkflowDirectory for ApiWorkflowDirectory {
         interactive_only: bool,
         limit: usize,
     ) -> Result<Vec<WorkflowSearchHit>, String> {
-        let ids = visible_workflow_ids(&self.artifacts, ctx)
+        let (ids, owned) = visible_workflow_ids(&self.artifacts, ctx)
             .await
             .map_err(|e| format!("ワークフロー一覧: {e}"))?;
         self.summaries
-            .search(&ctx.tenant_id, &ids, query, interactive_only, limit as i64)
+            .search(
+                &ctx.tenant_id,
+                &ids,
+                &owned,
+                query,
+                interactive_only,
+                limit as i64,
+            )
             .await
             .map_err(|e| format!("ワークフロー検索: {e}"))
     }
