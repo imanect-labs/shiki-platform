@@ -38,6 +38,7 @@ const PREFETCH_RELS = ["dns-prefetch", "preconnect", "prefetch", "prerender", "p
 const EMBEDS = "iframe, frame, frameset, object, embed, portal, fencedframe";
 const HTML_NS = "http://www.w3.org/1999/xhtml";
 const XLINK_NS = "http://www.w3.org/1999/xlink";
+const MATHML_NS = "http://www.w3.org/1998/Math/MathML";
 
 /// 外部の資源を指しうる属性（リンクの href は除く）。
 const RESOURCE_ATTRS = ["src", "srcset", "poster", "background", "data", "href", "xlink:href"];
@@ -73,6 +74,14 @@ function absolutize(url: string): string {
 }
 
 function cleanLinks(root: ParentNode): void {
+  // MathML はどの要素も href でリンクになる（Firefox・Safari）。rel を持てないので、ページ内以外は外す。
+  for (const el of root.querySelectorAll("math, math *")) {
+    if (el.namespaceURI !== MATHML_NS) continue;
+    for (const [ns, name] of [[null, "href"], [XLINK_NS, "href"]] as const) {
+      const value = el.getAttributeNS(ns, name)?.trim();
+      if (value != null && !value.startsWith("#")) el.removeAttributeNS(ns, name);
+    }
+  }
   for (const a of root.querySelectorAll("a, area")) {
     a.removeAttribute("ping");
     const raw = (a.getAttribute("href") ?? a.getAttributeNS(XLINK_NS, "href"))?.trim();

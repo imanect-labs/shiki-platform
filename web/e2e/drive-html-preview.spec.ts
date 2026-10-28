@@ -6,6 +6,12 @@ import { loginViaKeycloak, uniqueName } from "./helpers";
 /// 外部リンクは新しいタブで開くように、相対リンクは外される。外部の画像は閲覧者が選ぶまで読み込まない。
 /// 「ソース」で中身のコードに切り替えられる。
 test("ドライブの HTML を描画して表示し、スクリプトは動かさない", async ({ page }) => {
+  // 親ページに届いたメッセージを記録する（ファイルの HTML のイベントハンドラから届かないことを確かめる）。
+  await page.addInitScript(() => {
+    const w = window as unknown as { __previewMessages: string[] };
+    w.__previewMessages = [];
+    window.addEventListener("message", (e) => w.__previewMessages.push(String(e.data)));
+  });
   await loginViaKeycloak(page);
   await page.goto("/drive");
   // 外部の画像は実際には取りに行かず、取りに来たかだけを数える。
@@ -25,6 +31,8 @@ test("ドライブの HTML を描画して表示し、スクリプトは動か�
 <body>
   <h1 id="title">描画された見出し</h1>
   <img id="remote" src="https://img.example/logo.svg" alt="外部画像">
+  <img id="handler" src="data:," onerror="parent.postMessage('handler-ran', '*')" alt="">
+  <math><mtext id="mlink" href="https://example.com/">数式のリンク</mtext></math>
   <p><a id="jump" href="#bottom">一番下へ</a> <a id="ext" href="https://example.com/">外部リンク</a> <a id="rel" href="other.html">相対リンク</a></p>
   <svg width="200" height="40"><a id="svglink" xlink:href="https://example.com/"><text x="4" y="28">SVG リンク</text></a></svg>
   <div><template shadowrootmode="open"><a id="dsd" href="https://example.com/">影のリンク</a></template></div>
@@ -49,7 +57,8 @@ test("ドライブの HTML を描画して表示し、スクリプトは動か�
 
   // 能力を絞った sandbox（スクリプト・同一オリジンを許さない）。
   const iframe = page.getByTestId("html-preview-frame");
-  const sandbox = (await iframe.getAttribute("sandbox")) ?? "";
+  const sandbox = await iframe.getAttribute("sandbox");
+  expect(sandbox).not.toBeNull();
   expect(sandbox).not.toContain("allow-scripts");
   expect(sandbox).not.toContain("allow-same-origin");
 
@@ -65,6 +74,8 @@ test("ドライブの HTML を描画して表示し、スクリプトは動か�
   await expect(frame.locator("#dsd")).toHaveAttribute("target", "_blank");
   await expect(frame.locator("#dsd")).toHaveAttribute("rel", "noopener noreferrer");
   await expect(frame.locator("#inner")).toHaveCount(0);
+  // MathML はどの要素も href でリンクになる（Firefox・Safari）ので外す。
+  await expect(frame.locator("#mlink")).not.toHaveAttribute("href", /.*/);
   // SVG のリンクは rel を持てず、押すと iframe の中が外部ページへ遷移するので外す。
   await frame.getByText("SVG リンク").click({ force: true });
   await expect(frame.locator("#title")).toHaveText("描画された見出し");
@@ -87,4 +98,9 @@ test("ドライブの HTML を描画して表示し、スクリプトは動か�
   await expect(page.getByTestId("text-preview")).toContainText('<h1 id="title">');
   await page.getByTestId("html-view-rendered").click();
   await expect(frame.locator("#title")).toHaveText("描画された見出し");
+
+  // イベントハンドラ（onerror）も動かず、描画から時間が経っても親ページに何も届かない。
+  await expect(frame.locator("#handler")).toBeAttached();
+  const messages = await page.evaluate(() => (window as unknown as { __previewMessages: string[] }).__previewMessages);
+  expect(messages).not.toContain("handler-ran");
 });
