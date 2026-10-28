@@ -4,33 +4,39 @@
 ///
 /// 中身を取り、行番号付きで出す。コードは shiki で色を付ける（ライト/ダークの 2 テーマを一度に出し、
 /// `.dark` で切り替える）。大きいファイルは色を付けずに出し、上限を超えるものは開かない。
-/// 中身は必ず文字列として描く（HTML や SVG のソースを実行しない）。
+/// ソースは必ず文字列として描く（HTML や SVG のソースをアプリの画面で実行しない）。
+/// HTML だけは例外として、既定で描画した姿を見せ、「ソース」に切り替えられる。描画はアプリの画面ではなく
+/// sandbox の iframe の中で、スクリプトを動かさずに行う（`HtmlFrame`・`lib/html-preview`）。
 ///
 /// 編集者には「編集」を出し、押すと同じ場所で CodeMirror に切り替える（エディタは押したときに読み込む）。
 /// 保存は明示保存（⌘S・保存ボタン）で新しい版を作る。開いた版を添えて保存し（サーバが版を比べる）、
 /// 開いた後に誰かが保存していたら 409 になるので確かめる。改行コードと BOM は開いたときのまま保つ
 /// （Shift_JIS は UTF-8 で保存する）。
 import * as React from "react";
-import { Check, Copy, Eye, Pencil, Save, WrapText } from "lucide-react";
+import { Check, Code, Copy, Eye, MonitorSmartphone, Pencil, Save, WrapText } from "lucide-react";
 
 import { EditorLoading, EditorStatusBadge } from "@/components/shell/editor-loading";
 import { ChromeIconButton, ChromePrimaryButton } from "@/components/shell/page-header-context";
+import { SegmentedControl, type SegmentedOption } from "@/components/ui/segmented-control";
 import { toast } from "@/components/ui/use-toast";
 import { formatBytes } from "@/lib/format";
 import {
   HIGHLIGHT_MAX_BYTES,
   TEXT_MAX_BYTES,
   TEXT_MAX_LINES,
+  isRenderableHtml,
   languageColor,
   languageLabel,
   looksBinary,
   textLanguage,
 } from "@/lib/file-preview";
+import { prepareHtmlPreview, type PreparedHtmlPreview } from "@/lib/html-preview";
 import { getCollabAccess } from "@/lib/notes-api";
 import { downloadUrl, StorageApiError, uploadFile, type NodeResponse } from "@/lib/storage";
 import { cn } from "@/lib/utils";
 
 import { useFileChrome } from "./file-chrome";
+import { HtmlFrame } from "./html-frame";
 import { DiscardDialog, ConflictDialog } from "./text-edit-dialogs";
 import type { TextEditorHandle } from "./text-editor";
 import { useUnsavedGuard } from "./use-unsaved-guard";
@@ -38,6 +44,11 @@ import { useUnsavedGuard } from "./use-unsaved-guard";
 const TextEditor = React.lazy(() => import("./text-editor").then((m) => ({ default: m.TextEditor })));
 
 export type PreviewFailure = { title?: string; description?: string };
+
+const HTML_VIEW_OPTIONS: SegmentedOption[] = [
+  { value: "rendered", label: "プレビュー", icon: MonitorSmartphone, testId: "html-view-rendered" },
+  { value: "source", label: "ソース", icon: Code, testId: "html-view-source" },
+];
 
 const tooLarge: PreviewFailure = {
   title: "大きすぎるためプレビューできません",
@@ -159,6 +170,11 @@ export function TextPreview({
     () => lang === "text" || (typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches),
   );
   const [copied, setCopied] = React.useState(false);
+  // HTML は描画した姿を既定にする（ソースはトグルで見る）。
+  const renderable = isRenderableHtml(node);
+  const [showSource, setShowSource] = React.useState(false);
+  // 外部の画像を読み込むと閲覧者が選んだ文書（ソースや編集に切り替えて戻っても保つ）。
+  const [allowedDoc, setAllowedDoc] = React.useState<PreparedHtmlPreview | null>(null);
   const failRef = React.useRef(onUnsupported);
   failRef.current = onUnsupported;
 
@@ -216,10 +232,30 @@ export function TextPreview({
     };
   }, [node.id]);
 
-  // 閲覧の表示。まず色なしで出し、色付けが終わったら差し替える（大きめのファイルでも待たせない）。
+  // 描画用の文書は中身ごとに 1 回だけ解析・掃除する（ソースや編集から戻るたびにやり直さない）。
+  // 想定外の入力で解析に失敗したら、描画せずにソースで見せる（画面ごと落とさない）。
   const text = content?.text;
+  const prepared = React.useMemo(() => {
+    if (!renderable || text == null) return null;
+    try {
+      return prepareHtmlPreview(text);
+    } catch {
+      return null;
+    }
+  }, [renderable, text]);
+  // 外部の画像を読み込む同意は、同意したときの中身にだけ効かせる（読み直した新しい版の参照には効かせない）。
+  const allowExternal = prepared != null && allowedDoc === prepared;
+  const onAllowExternal = React.useCallback(() => setAllowedDoc(prepared), [prepared]);
+
+  // 閲覧の表示。まず色なしで出し、色付けが終わったら差し替える（大きめのファイルでも待たせない）。
+  // HTML を描画して見せている間はソースの表示を作らない（shiki の読み込み・色付けを走らせない）。
+  const sourceShown = prepared == null || showSource;
   React.useEffect(() => {
     if (text == null) return;
+    if (!sourceShown) {
+      setRendered(null);
+      return;
+    }
     setRendered({ html: plainHtml(text), highlighted: false });
     if (lang === "text" || text.length > HIGHLIGHT_MAX_BYTES) return;
     let active = true;
@@ -230,7 +266,7 @@ export function TextPreview({
     return () => {
       active = false;
     };
-  }, [text, lang]);
+  }, [text, lang, sourceShown]);
 
   const copyAll = React.useCallback(async () => {
     if (!content) return;
@@ -386,6 +422,8 @@ export function TextPreview({
   }, [node]);
 
   const editing = mode === "edit";
+  // 編集はソースで行う。編集を終えると、切り替えておいた表示（描画かソース）に戻る。
+  const rendering = prepared != null && !showSource && !editing;
   useFileChrome(
     node,
     onDownload,
@@ -426,7 +464,7 @@ export function TextPreview({
     [editing, dirty, saving, canEdit, content, opening, save, startEdit, stopEdit, guard],
   );
 
-  if (!content || !rendered) return <EditorLoading kind="doc" message="ファイルを開いています…" />;
+  if (!content) return <EditorLoading kind="doc" message="ファイルを開いています…" />;
   const gutter = String(content.lines).length;
   const meta = [
     `${content.lines.toLocaleString("ja-JP")} 行`,
@@ -453,10 +491,22 @@ export function TextPreview({
         </span>
       ) : null}
       <span className="ml-auto flex shrink-0 items-center gap-0.5">
-        <HeaderButton label="折り返して表示" pressed={wrap} onClick={() => setWrap((w) => !w)} testId="text-wrap-toggle">
-          <WrapText aria-hidden />
-          <span className="max-sm:hidden">折り返し</span>
-        </HeaderButton>
+        {prepared != null && !editing ? (
+          <SegmentedControl
+            aria-label="表示の切り替え"
+            size="sm"
+            className="mr-1"
+            value={showSource ? "source" : "rendered"}
+            onValueChange={(v) => setShowSource(v === "source")}
+            options={HTML_VIEW_OPTIONS}
+          />
+        ) : null}
+        {!rendering ? (
+          <HeaderButton label="折り返して表示" pressed={wrap} onClick={() => setWrap((w) => !w)} testId="text-wrap-toggle">
+            <WrapText aria-hidden />
+            <span className="max-sm:hidden">折り返し</span>
+          </HeaderButton>
+        ) : null}
         {!editing ? (
           <HeaderButton label={copied ? "コピーしました" : "すべてコピー"} onClick={() => void copyAll()} testId="text-copy">
             {copied ? <Check aria-hidden /> : <Copy aria-hidden />}
@@ -518,6 +568,23 @@ export function TextPreview({
     );
   }
 
+  if (rendering) {
+    // 描画した HTML は iframe の中でスクロールする。カードは画面の高さいっぱいに置く。
+    return (
+      <div className="flex h-full min-h-0 flex-col bg-muted/40 md:px-6 md:py-5" data-testid="text-preview" data-mode="rendered">
+        <div className="mx-auto flex min-h-0 w-full max-w-6xl flex-1 flex-col bg-card md:overflow-hidden md:rounded-xl md:border md:border-border/70 md:shadow-sm">
+          {header}
+          {prepared ? (
+            <HtmlFrame prepared={prepared} allowExternal={allowExternal} onAllowExternal={onAllowExternal} title={node.name} />
+          ) : null}
+        </div>
+        {dialogs}
+      </div>
+    );
+  }
+
+  // 編集はエディタが、描画は iframe が出すので、ソースの表示（rendered）を待つのはここだけ。
+  if (!rendered) return <EditorLoading kind="doc" message="ファイルを開いています…" />;
   return (
     <div className="h-full min-h-0 overflow-auto bg-muted/40 md:px-6 md:py-5" data-testid="text-preview" data-mode="view" tabIndex={0}>
       <div className="mx-auto flex min-h-full w-full max-w-6xl flex-col bg-card md:min-h-0 md:overflow-hidden md:rounded-xl md:border md:border-border/70 md:shadow-sm">
