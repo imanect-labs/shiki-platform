@@ -31,6 +31,7 @@ mod template;
 pub use template::{TEMPLATE_ESCAPED_VAR, TEMPLATE_UNCLOSED_BRACE};
 mod timeout;
 mod v2_graph;
+pub use v2_graph::UNCONNECTED_NODE;
 mod v3_vocab;
 pub use v3_vocab::{OVERLAPPING_DATA_TRIGGERS, WAIT_FILTER_ALIAS};
 mod v5_dataflow;
@@ -146,7 +147,7 @@ pub struct Catalog {
 /// 小さすぎる上限トークン（[`OUTPUT_SCHEMA_FEW_TOKENS`]・GAP-13）と、組織の設定に従うので使われない思考の深さ
 /// （[`EFFORT_IGNORED`]・D-75・組織の設定は `catalog` から読む）と、判定のしきい値が低い・出口が多い・
 /// 版が固定されていないもの（[`DECIDE_LOW_CONFIDENCE`]・[`DECIDE_MANY_PORTS`]・[`DECIDE_UNPINNED_MODEL`]・
-/// FEAT-1）と、必須の文字の欄が空のもの
+/// FEAT-1）と、線が 1 本も無いブロック（[`UNCONNECTED_NODE`]・実行の始めに動く・BUG-106）と、必須の文字の欄が空のもの
 /// （[`REQUIRED_TEXT_EMPTY`]・有効化と実行の前には止める・D-43）。出しうるコードは [`SAVE_WARNING_CODES`] に
 /// 載せる（web はその表から生成した定数で受ける・BUG-48）。
 #[must_use]
@@ -160,6 +161,7 @@ pub fn save_warnings(ir: &WorkflowIr, catalog: &Catalog) -> Vec<ValidationError>
     out.extend(llm::warnings(ir));
     out.extend(llm::org_warnings(ir, catalog));
     out.extend(decide::warnings(ir));
+    out.extend(v2_graph::warnings(ir));
     // 表に無い警告は web の定数に出ない（警告を足したら表にも足す・テストのどの経路で起きても止める）。
     debug_assert!(
         out.iter()

@@ -8,7 +8,7 @@ use super::{
     APPROVAL_TIMEOUTS_EXCEED_RUN, DECIDE_LOW_CONFIDENCE, DECIDE_MANY_PORTS, DECIDE_UNPINNED_MODEL,
     EFFORT_IGNORED, OUTPUT_SCHEMA_FEW_TOKENS, OVERLAPPING_DATA_TRIGGERS, REPLY_WITHOUT_INTERACTIVE,
     REQUIRED_TEXT_EMPTY, SEMANTICS_CHANGED, TEMPLATE_ESCAPED_VAR, TEMPLATE_UNCLOSED_BRACE,
-    WAIT_FILTER_ALIAS,
+    UNCONNECTED_NODE, WAIT_FILTER_ALIAS,
 };
 
 /// 定数の名前と値の組の表を作る（名前は Rust の定数の名前をそのまま使い、別の綴りを持たない）。
@@ -33,6 +33,7 @@ pub const SAVE_WARNING_CODES: &[(&str, &str)] = named![
     DECIDE_LOW_CONFIDENCE,
     DECIDE_MANY_PORTS,
     DECIDE_UNPINNED_MODEL,
+    UNCONNECTED_NODE,
 ];
 
 #[cfg(test)]
@@ -205,6 +206,17 @@ mod tests {
                 ir(
                     interactive(),
                     json!([decide("0.8", 2, "decide-latest")]),
+                    json!([]),
+                ),
+            ),
+            (
+                UNCONNECTED_NODE,
+                ir(
+                    interactive(),
+                    json!([
+                        { "id": "a", "type": "storage.read", "params": {} },
+                        { "id": "dropped", "type": "storage.read", "params": {} }
+                    ]),
                     json!([]),
                 ),
             ),

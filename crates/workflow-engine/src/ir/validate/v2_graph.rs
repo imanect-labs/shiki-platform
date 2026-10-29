@@ -7,6 +7,36 @@ use super::ValidationError;
 use crate::ir::{Node, WorkflowIr};
 use crate::vocab::NodeType;
 
+/// 警告のコード: 線が 1 本も無いブロック（ほかにもブロックがあるとき・BUG-106）。
+///
+/// 前から線が来ないブロックは実行の始めにほかの入口と同時に動く（engine.md §4.5 の一括実体化）。ドラッグで置いて
+/// 線をつなぎ忘れたブロックが勝手に動くので、保存は止めずに注意する（意図して並べた入口もあるので誤りにしない）。
+pub const UNCONNECTED_NODE: &str = "ir.unconnected_node";
+
+/// [`UNCONNECTED_NODE`] の文言（ブロックに付けて出すので、ブロック名は前に置かない）。
+const UNCONNECTED_NODE_MESSAGE: &str =
+    "線でつながっていないので、実行の始めにほかのブロックと同時に動きます。\
+                                        線でつなぐか、要らなければ削除してください。";
+
+/// 保存を止めない警告: 本体（map の領域の外）のブロックで、入る線も出る線も無いもの（本体に 2 つ以上ブロックが
+/// あるときだけ。1 つだけなら線が無いのが当たり前）。map の領域の中は、領域の出口がちょうど 1 つの決まり（V2）が
+/// 線の無いブロックを誤りにする。
+pub(super) fn warnings(ir: &WorkflowIr) -> Vec<ValidationError> {
+    let body: Vec<&Node> = ir.nodes.iter().filter(|n| n.parent.is_none()).collect();
+    if body.len() < 2 {
+        return Vec::new();
+    }
+    let linked: HashSet<&str> = ir
+        .edges
+        .iter()
+        .flat_map(|e| [e.from.as_str(), e.to.as_str()])
+        .collect();
+    body.into_iter()
+        .filter(|n| !linked.contains(n.id.as_str()))
+        .map(|n| ValidationError::new(UNCONNECTED_NODE, UNCONNECTED_NODE_MESSAGE).at_node(&n.id))
+        .collect()
+}
+
 /// V2 検証を実行しエラーを収集する。
 pub(super) fn check(ir: &WorkflowIr, errors: &mut Vec<ValidationError>) {
     // id 一意・id 形式。
@@ -519,6 +549,44 @@ mod tests {
         let map = json!({ "id": "a", "type": "control.map", "on_error": "continue",
             "params": { "items": [] } });
         assert!(unknown_ports(map, "error").is_empty());
+    }
+
+    /// 線が 1 本も無い本体のブロックは注意する（ドラッグで置いてつなぎ忘れたもの・BUG-106）。線のある入口・
+    /// map の領域の中・ブロックが 1 つだけの定義は注意しない。
+    #[test]
+    fn unconnected_blocks_are_warned() {
+        let g = ir(json!({
+            "ir_version": 1, "name": "wf",
+            "nodes": [
+                { "id": "a", "type": "storage.read", "params": {} },
+                { "id": "b", "type": "storage.read", "params": {} },
+                { "id": "dropped", "type": "storage.read", "params": {} },
+                { "id": "entry2", "type": "storage.read", "params": {} },
+                { "id": "c", "type": "storage.read", "params": {} },
+                { "id": "m", "type": "control.map", "params": {} },
+                { "id": "inner", "type": "storage.read", "params": {}, "parent": "m" }
+            ],
+            "edges": [
+                { "from": "a", "to": "b" },
+                { "from": "entry2", "to": "c" },
+                { "from": "b", "to": "m" }
+            ]
+        }));
+        let w = warnings(&g);
+        let at: Vec<(&str, Option<&str>)> = w
+            .iter()
+            .map(|e| (e.code.as_str(), e.node_id.as_deref()))
+            .collect();
+        assert_eq!(at, [(UNCONNECTED_NODE, Some("dropped"))]);
+        assert!(w[0]
+            .message
+            .starts_with("線でつながっていないので、実行の始めに"));
+        let single = ir(json!({
+            "ir_version": 1, "name": "wf",
+            "nodes": [{ "id": "only", "type": "storage.read", "params": {} }],
+            "edges": []
+        }));
+        assert!(warnings(&single).is_empty());
     }
 
     #[test]
