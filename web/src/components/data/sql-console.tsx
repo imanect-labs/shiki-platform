@@ -12,6 +12,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import * as React from "react";
 
+import type { SqlEditorHandle } from "@/components/data/sql-editor";
 import { SqlReference, sqlIdent } from "@/components/data/sql-reference";
 import { numberFmt, offsetOf, SqlErrorPanel, SqlSyntaxHelp } from "@/components/data/sql-result";
 import { SqlResultGrid } from "@/components/data/sql-result-grid";
@@ -102,6 +103,9 @@ function exampleFor(t: DataTable): string {
   return `SELECT ${cols.join(", ") || "_id"} FROM ${sqlIdent(t.name)} LIMIT 50`;
 }
 
+/// 入力欄（CodeMirror）は重いので、画面を先に出してから読み込む（ファイルの編集と同じ）。
+const SqlEditor = React.lazy(() => import("@/components/data/sql-editor").then((m) => ({ default: m.SqlEditor })));
+
 /// 結果の上の小さな印（テーブルの画面の「並び順は概算」と同じ形）。
 const pill = "inline-flex items-center gap-1 whitespace-nowrap rounded-full border px-2 py-0.5 text-[11px] text-muted-foreground";
 
@@ -161,8 +165,7 @@ export function SqlConsole() {
   const refOpen = refChoice ?? wide;
   /// テーブルの画面から開いたとき、書きかけを残したので例への置き換えを申し出る。
   const [offerFrom, setOfferFrom] = React.useState(false);
-  const editorRef = React.useRef<HTMLTextAreaElement>(null);
-  const gutterRef = React.useRef<HTMLDivElement>(null);
+  const editorRef = React.useRef<SqlEditorHandle>(null);
   /// 実行・続きの読み込みの世代（新しい実行が始まったら古い応答を捨てる）。
   const seq = React.useRef(0);
   const abortRef = React.useRef<AbortController | null>(null);
@@ -201,20 +204,16 @@ export function SqlConsole() {
   }, [from, restored, sql]);
 
   /// [start, end) を `text` に置き換え、カーソルをその後ろへ置く。
+  /// （入力欄は変わった範囲の後ろにカーソルを置く・sql-editor.tsx）
   const replaceRange = React.useCallback((text: string, start: number, end: number) => {
     setSql((prev) => prev.slice(0, start) + text + prev.slice(end));
-    requestAnimationFrame(() => {
-      const el = editorRef.current;
-      if (!el) return;
-      el.focus();
-      el.setSelectionRange(start + text.length, start + text.length);
-    });
+    requestAnimationFrame(() => editorRef.current?.focus());
   }, []);
 
   const insert = React.useCallback(
     (text: string) => {
-      const el = editorRef.current;
-      replaceRange(text, el?.selectionStart ?? sql.length, el?.selectionEnd ?? sql.length);
+      const sel = editorRef.current?.selection() ?? { from: sql.length, to: sql.length };
+      replaceRange(text, sel.from, sel.to);
     },
     [replaceRange, sql.length],
   );
@@ -244,11 +243,9 @@ export function SqlConsole() {
       // 位置が分かる拒否は、入力欄のその名前を選んでおく（直してすぐ再実行できる）。
       const rej = e instanceof DataApiError ? e.rejection : null;
       const loc = rej?.location;
-      const el = editorRef.current;
-      if (loc && el) {
+      if (loc) {
         const off = offsetOf(text, loc.line, loc.column);
-        el.focus();
-        el.setSelectionRange(off, nameEnd(text, off, isColumnRejection(rej)));
+        editorRef.current?.select(off, nameEnd(text, off, isColumnRejection(rej)));
       }
     } finally {
       if (seq.current === id) setRunning(false);
@@ -322,12 +319,14 @@ export function SqlConsole() {
     }
   };
 
-  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.nativeEvent.isComposing) {
-      e.preventDefault();
-      void run();
-    }
-  };
+  // 補完に使うテーブル → 列（閲覧者に読める列とシステム列）。
+  const schema = React.useMemo(
+    () =>
+      Object.fromEntries(
+        (tables ?? []).map((t) => [t.name, [...t.schema.fields.map((f) => f.key), "_id", "_owner", "_created_at", "_updated_at"]]),
+      ),
+    [tables],
+  );
 
   const data = result?.data;
   const tableOf = data ? tables?.find((t) => t.id === data.table_id) : undefined;
@@ -344,7 +343,6 @@ export function SqlConsole() {
         ? `${numberFmt.format(data.rows.length)} 行（続きあり）`
         : `${numberFmt.format(data.rows.length)} 行`
     : "";
-  const lineCount = Math.max(1, sql.split("\n").length);
   const invalid = !!rejection && error?.sql === sql;
 
   return (
@@ -440,39 +438,27 @@ export function SqlConsole() {
 
           <div
             className={cn(
-              "flex h-40 max-h-[60vh] min-h-28 shrink-0 resize-y overflow-hidden rounded-lg border bg-card transition-[border-color,box-shadow] duration-fast focus-within:border-ring/60 focus-within:ring-2 focus-within:ring-ring/20 md:h-44",
+              "h-40 max-h-[60vh] min-h-28 shrink-0 resize-y overflow-hidden rounded-lg border bg-card transition-[border-color,box-shadow] duration-fast focus-within:border-ring/60 focus-within:ring-2 focus-within:ring-ring/20 md:h-44",
               invalid && "border-destructive/60 focus-within:border-destructive/60 focus-within:ring-destructive/15",
             )}
           >
-            <div
-              ref={gutterRef}
-              aria-hidden
-              className="shrink-0 select-none overflow-hidden border-r bg-muted/40 py-2 pl-3 pr-2.5 max-md:hidden text-right font-mono text-[12px] leading-6 tabular-nums text-muted-foreground/70"
+            <React.Suspense
+              fallback={
+                <pre className="h-full overflow-hidden whitespace-pre-wrap px-4 py-2 font-mono text-[13px] leading-[1.65] text-muted-foreground" aria-hidden>
+                  {sql}
+                </pre>
+              }
             >
-              {Array.from({ length: lineCount }, (_, i) => (
-                <div key={i}>{i + 1}</div>
-              ))}
-            </div>
-            <label htmlFor="sql-editor" className="sr-only">
-              SQL
-            </label>
-            <textarea
-              id="sql-editor"
-              ref={editorRef}
-              value={sql}
-              onChange={(e) => setSql(e.target.value)}
-              onKeyDown={onKeyDown}
-              onScroll={(e) => {
-                if (gutterRef.current) gutterRef.current.scrollTop = e.currentTarget.scrollTop;
-              }}
-              placeholder={example ? `例: ${example}` : "SELECT 列 FROM テーブル WHERE … ORDER BY … LIMIT 50"}
-              spellCheck={false}
-              autoCapitalize="off"
-              autoCorrect="off"
-              aria-invalid={invalid || undefined}
-              className="h-full min-w-0 flex-1 resize-none whitespace-pre-wrap bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 px-3 py-2 font-mono text-base leading-6 outline-none md:overflow-x-auto md:whitespace-pre scrollbar-subtle placeholder:text-muted-foreground/60 md:text-[13px]"
-              data-testid="sql-editor"
-            />
+              <SqlEditor
+                ref={editorRef}
+                value={sql}
+                onChange={setSql}
+                onRun={() => void runRef.current()}
+                schema={schema}
+                placeholder={example ? `例: ${example}` : "SELECT 列 FROM テーブル WHERE … ORDER BY … LIMIT 50"}
+                invalid={invalid}
+              />
+            </React.Suspense>
           </div>
 
           <section className="flex min-h-[18rem] flex-1 flex-col gap-1.5" aria-label="結果" aria-busy={running || loadingMore}>

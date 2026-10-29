@@ -76,8 +76,9 @@ test("SQL の画面で結合・集計・続きの読み込みができ、拒否�
   await page.goto(`/data/${d.id}`);
   await page.getByTestId("open-sql-table").click();
   await expect(page).toHaveURL(new RegExp(`/data/sql\\?table=${d.id}$`));
-  const editor = page.getByTestId("sql-editor");
-  await expect(editor).toHaveValue(`SELECT title, amount FROM "${deal}" LIMIT 50`);
+  // 入力欄は CodeMirror（contenteditable）。中身は .cm-content の文字で確かめる。
+  const editor = page.getByTestId("sql-editor").locator(".cm-content");
+  await expect(editor).toHaveText(`SELECT title, amount FROM "${deal}" LIMIT 50`);
 
   // 一覧の「SQL」からも開ける。
   await page.goto("/data");
@@ -90,7 +91,16 @@ test("SQL の画面で結合・集計・続きの読み込みができ、拒否�
   const ref = page.getByTestId("sql-reference");
   await ref.getByPlaceholder("テーブル・列を探す").fill(deal);
   await ref.getByRole("button", { name: /^title/ }).click();
-  await expect(editor).toHaveValue("SELECT title");
+  await expect(editor).toHaveText("SELECT title");
+
+  // テーブル名は補完できる。日本語で打っても候補が出て、記号を含む名前は引用符で囲んで入る。
+  await editor.fill("SELECT title FROM ");
+  await page.keyboard.press("End");
+  await page.keyboard.type("案件");
+  const option = page.locator(".cm-tooltip-autocomplete li", { hasText: deal });
+  await expect(option).toBeVisible();
+  await option.click();
+  await expect(editor).toHaveText(`SELECT title FROM "${deal}"`);
 
   // 結合と集計（Ctrl+Enter で実行）。名前に記号（-）を含むので二重引用符で囲む。
   await editor.fill(
@@ -160,7 +170,7 @@ test("SQL の画面で結合・集計・続きの読み込みができ、拒否�
   const first = err.getByTestId("sql-error-expected").getByRole("button").first();
   await expect(first).toHaveText("title");
   await first.click();
-  await expect(editor).toHaveValue(`SELECT title FROM "${deal}"`);
+  await expect(editor).toHaveText(`SELECT title FROM "${deal}"`);
 
   // 結合では候補が `別名.列` になる。列の誤りは修飾名ごと、別名の誤りは別名だけを置き換える。
   const join = `FROM "${deal}" d JOIN "${cust}" c ON d.customer = c._id`;
@@ -168,11 +178,11 @@ test("SQL の画面で結合・集計・続きの読み込みができ、拒否�
   await page.getByTestId("sql-run").click();
   await expect(err.getByTestId("sql-error-expected").getByRole("button").first()).toHaveText("d.title");
   await err.getByTestId("sql-error-expected").getByRole("button").first().click();
-  await expect(editor).toHaveValue(`SELECT d.title ${join}`);
+  await expect(editor).toHaveText(`SELECT d.title ${join}`);
   await editor.fill(`SELECT x.title ${join}`);
   await page.getByTestId("sql-run").click();
   await err.getByTestId("sql-error-expected").getByRole("button", { name: "d", exact: true }).click();
-  await expect(editor).toHaveValue(`SELECT d.title ${join}`);
+  await expect(editor).toHaveText(`SELECT d.title ${join}`);
 
   // 部分集合外（DML）: 理由。
   await editor.fill(`DELETE FROM "${deal}"`);
@@ -197,5 +207,5 @@ test("SQL の画面で結合・集計・続きの読み込みができ、拒否�
   // 書きかけは再読込しても残る（ユーザー単位の保存）。
   await page.waitForTimeout(600);
   await page.reload();
-  await expect(page.getByTestId("sql-editor")).toHaveValue(`SELECT name FROM "${absent}"`);
+  await expect(editor).toHaveText(`SELECT name FROM "${absent}"`);
 });
