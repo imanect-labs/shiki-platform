@@ -7,6 +7,8 @@ export type SchemaResponse = components["schemas"]["SchemaResponse"];
 export type TableResponse = components["schemas"]["TableResponse"];
 export type PatchResponse = components["schemas"]["PatchResponse"];
 export type SaveResponse = components["schemas"]["SaveResponse"];
+/// 同じ名前のファイルがあるときの扱い（`fail` は 409・`add_number` はサーバーが番号を付けて保存する）。
+export type OnNameTaken = components["schemas"]["OnNameTaken"];
 
 /// パッチ操作（backend の tabular::PatchOp と 1:1・タグ付き union）。
 export type PatchOp =
@@ -115,13 +117,20 @@ export async function saveNewCsv(input: {
   parentId?: string | null;
   name: string;
   csv: string;
+  /// 省略は失敗にする（同じ名前があれば 409）。
+  onNameTaken?: OnNameTaken;
 }): Promise<SaveResponse> {
   const res = await apiFetch(`/tabular/save`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ parent_id: input.parentId ?? null, name: input.name, csv: input.csv }),
+    body: JSON.stringify({
+      parent_id: input.parentId ?? null,
+      name: input.name,
+      csv: input.csv,
+      on_name_taken: input.onNameTaken,
+    }),
   });
-  // 同名ノードは 409（新規作成のため）。呼び出し側が連番リトライ等で扱えるよう区別する。
+  // 同じ名前のファイルは 409（新規作成のため・番号を付ける扱いなら上限まで埋まっている）。呼び出し側が区別できるようにする。
   if (res.status === 409) throw new TabularConflict(0, 0);
   if (!res.ok) throw new Error(`CSV 保存に失敗しました (${res.status})`);
   return (await res.json()) as SaveResponse;
