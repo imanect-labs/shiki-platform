@@ -297,29 +297,64 @@ impl RegistrationService {
     /// 取り消しは再同意で外れた委譲の撤去と同じ経路（FGA タプルを先に撤去 → 台帳の行を revoke・
     /// [`DelegationStore`]）。同意も取り消したことにするため consented_scopes を空にする: 次に有効化するとき、
     /// 使ってよい操作があれば軽量切替では通らず同意が要る（委譲の無いまま動かさない）。registration の行は
-    /// `FOR UPDATE` で取り、同時の有効化と取り違えない。返すのは取り消した委譲（監査に残す）。
+    /// `FOR UPDATE` で取り、同時の有効化と取り違えない。
+    ///
+    /// 同じ TX で、自動実行の run（実行主体が workflow・委譲で動いているもの）の取り消しを求める（engine.md §10.4・
+    /// §6.3 の「実行中 run キャンセル」・BUG-131）。人が手で実行した run は本人の権限で動くので止めない。返すのは
+    /// 取り消した委譲（監査に残す）と取り消しを求めた run。
     pub async fn disable_and_revoke(
         &self,
         tenant_id: &str,
         workflow_id: Uuid,
-    ) -> Result<Vec<RevokedDelegation>, EnableError> {
+    ) -> Result<Revocation, EnableError> {
+        self.revoke_and_stop(tenant_id, workflow_id, Some("workflow"))
+            .await
+    }
+
+    /// [`Self::disable_and_revoke`] の本体。`runs_of` は取り消す run の実行主体の種類（`None` はすべて）。
+    async fn revoke_and_stop(
+        &self,
+        tenant_id: &str,
+        workflow_id: Uuid,
+        runs_of: Option<&str>,
+    ) -> Result<Revocation, EnableError> {
         let mut tx = self.db.begin().await.map_err(map_db)?;
-        sqlx::query(
+        let registered = sqlx::query(
             "SELECT 1 FROM workflow_registration WHERE tenant_id = $1 AND workflow_id = $2 FOR UPDATE",
         )
         .bind(tenant_id)
         .bind(workflow_id)
         .fetch_optional(&mut *tx)
         .await
-        .map_err(map_db)?;
-        let revoked = self
+        .map_err(map_db)?
+        .is_some();
+        let delegations = self
             .delegation
             .revoke_all_within(&mut tx, tenant_id, workflow_id)
             .await?;
         stop_within(&mut tx, tenant_id, workflow_id, true).await?;
+        let cancelled_runs =
+            crate::run::store::cancel_runs_within(&mut tx, tenant_id, workflow_id, runs_of)
+                .await
+                .map_err(|e| EnableError::Internal(format!("cancel runs: {e}")))?;
         tx.commit().await.map_err(map_db)?;
-        Ok(revoked)
+        Ok(Revocation {
+            delegations,
+            cancelled_runs,
+            registered,
+        })
     }
+}
+
+/// 委譲の取り消しの結果（「権限も取り消す」。監査に残す）。
+#[derive(Debug, Clone, Default)]
+pub struct Revocation {
+    /// 取り消した委譲。
+    pub delegations: Vec<RevokedDelegation>,
+    /// 取り消しを求めた run（実行中の step があれば、完走後に cancelled になる）。
+    pub cancelled_runs: Vec<Uuid>,
+    /// 自動実行の登録があったか（無ければ自動実行の状態は変わっていない）。
+    pub registered: bool,
 }
 
 mod consent;

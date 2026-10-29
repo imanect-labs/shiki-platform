@@ -33,6 +33,7 @@ pub use approval::{
 pub use gc::{GcReport, HistoryGcWorker, WORKFLOW_GC_QUEUE};
 pub use history::{RunDetail, RunEventRow, RunListFilter, RunListItem, StepDetail, StepOverview};
 pub use limits::PromoteReport;
+pub(crate) use ops::cancel_runs_within;
 pub use ops::{CancelOutcome, ResumeOutcome};
 pub use outcome::{LiveState, OwnOutcome, RunOutcomeReader, MAX_REPLY_BYTES, MAX_REPLY_SECTIONS};
 pub use wait::{EventWaitGate, EventWaitSubscriber};

@@ -254,6 +254,41 @@ impl RunStore {
     }
 }
 
+/// その場でドレインする run の上限（[`cancel_runs_within`]・1 つの Tx を長くしない）。残りは取り消しを求めた印
+/// （`cancel_requested`）だけ付け、scheduler の tick（[`RunStore::drain_cancel_requested`]）がドレインする。印の付いた
+/// run は claim されず（新しい step を始めない）、受信箱にも出ない。
+const INLINE_DRAIN_MAX: usize = 100;
+
+/// ワークフローの動いている run（`queued`・`running`）の取り消しを求め、実行中でない step をその場でドレインする
+/// （呼び出し側 Tx・[`RunStore::request_cancel`] と同じ経路。保留中の承認の取り下げ・待ちの購読の消し込みを含む）。
+///
+/// `principal_kind` を渡すと、その実行主体の種類の run だけ（自動実行の `workflow`・BUG-131）。`None` はすべての run
+/// （ワークフローを消したとき・BUG-128）。返すのは取り消しを求めた run（実行中の step があれば、完走後に cancelled
+/// になる）。
+pub(crate) async fn cancel_runs_within(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant_id: &str,
+    workflow_id: Uuid,
+    principal_kind: Option<&str>,
+) -> Result<Vec<Uuid>, RunStoreError> {
+    let runs: Vec<Uuid> = sqlx::query_scalar(
+        "UPDATE workflow_run SET cancel_requested = true, updated_at = now() \
+         WHERE tenant_id = $1 AND workflow_id = $2 AND status IN ('queued', 'running') \
+           AND ($3::text IS NULL OR principal_kind = $3) \
+         RETURNING run_id",
+    )
+    .bind(tenant_id)
+    .bind(workflow_id)
+    .bind(principal_kind)
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(map_db)?;
+    for run_id in runs.iter().take(INLINE_DRAIN_MAX) {
+        drain_one(tx, tenant_id, *run_id).await?;
+    }
+    Ok(runs)
+}
+
 /// 1 run のドレイン: 実行中でない step を cancelled 化し、running が残らなければ run を
 /// terminal（cancelled）化する。戻り値 = run を terminal 化したか。
 pub(super) async fn drain_one(

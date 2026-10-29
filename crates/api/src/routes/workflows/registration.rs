@@ -20,7 +20,7 @@ use storage::audit::AuditAction;
 use storage::audit::{AuditEntry, Decision};
 use utoipa::ToSchema;
 use uuid::Uuid;
-use workflow_engine::{EnableError, GrantRequest, RegistrationService, WorkflowIr};
+use workflow_engine::{EnableError, GrantRequest, RegistrationService, Revocation, WorkflowIr};
 
 use crate::{
     error::ApiError,
@@ -415,6 +415,7 @@ pub async fn disable_workflow(
     require_editor(&state, &ctx, id).await?;
     let revoke = body.is_some_and(|Json(b)| b.revoke_delegations);
     let revoked = if revoke {
+        // 自動実行で動いている run も取り消す（engine.md §10.4・BUG-131）。
         state
             .workflow_registration
             .disable_and_revoke(&ctx.tenant_id, id)
@@ -426,7 +427,7 @@ pub async fn disable_workflow(
             .disable(&ctx.tenant_id, id)
             .await
             .map_err(map_enable_err)?;
-        Vec::new()
+        Revocation::default()
     };
     record_audit(
         &state,
@@ -434,35 +435,55 @@ pub async fn disable_workflow(
         AuditAction::WorkflowDisable,
         id,
         trace.as_deref(),
-        json!({ "revoke_delegations": revoke }),
+        json!({ "revoke_delegations": revoke, "cancelled_runs": revoked.cancelled_runs.len() }),
     )
     .await;
     if revoke {
-        // テーブルの ReBAC を data の外で変えた（配信の材料・材料化の前提を引き直させる・有効化と同じ）。
-        let ns = ctx.ns();
-        let tables: std::collections::BTreeSet<Uuid> = revoked
-            .iter()
-            .filter_map(|d| object_kind_of(&ns, &d.object_ref))
-            .filter(|(kind, _)| kind == "data_table")
-            .filter_map(|(_, local)| Uuid::parse_str(&local).ok())
-            .collect();
-        for table_id in tables {
-            state.data.after_table_rebac_changed(&ctx, table_id).await;
-        }
-        record_audit(
-            &state,
-            &ctx,
-            AuditAction::WorkflowDelegationRevoke,
-            id,
-            trace.as_deref(),
-            json!({ "revoked": revoked.len(), "delegations": revoked }),
-        )
-        .await;
+        audit_revocation(&state, &ctx, id, trace.as_deref(), &revoked, None).await;
     }
     Ok(Json(DisableResponse {
         status: "disabled".into(),
-        revoked_delegations: revoked.len(),
+        revoked_delegations: revoked.delegations.len(),
     }))
+}
+
+/// 取り消した委譲の後始末: テーブルの分を data に知らせ（配信の材料・材料化の前提を引き直させる・有効化と同じ）、
+/// `workflow.delegation.revoke` を 1 行残す（取り消したものが無ければ何もしない）。
+async fn audit_revocation(
+    state: &AppState,
+    ctx: &authz::AuthContext,
+    id: Uuid,
+    trace: Option<&str>,
+    r: &Revocation,
+    reason: Option<&str>,
+) {
+    if r.delegations.is_empty() {
+        return;
+    }
+    let ns = ctx.ns();
+    let tables: std::collections::BTreeSet<Uuid> = r
+        .delegations
+        .iter()
+        .filter_map(|d| object_kind_of(&ns, &d.object_ref))
+        .filter(|(kind, _)| kind == "data_table")
+        .filter_map(|(_, local)| Uuid::parse_str(&local).ok())
+        .collect();
+    for table_id in tables {
+        state.data.after_table_rebac_changed(ctx, table_id).await;
+    }
+    let mut metadata = json!({ "revoked": r.delegations.len(), "delegations": r.delegations });
+    if let Some(reason) = reason {
+        metadata["reason"] = json!(reason);
+    }
+    record_audit(
+        state,
+        ctx,
+        AuditAction::WorkflowDelegationRevoke,
+        id,
+        trace,
+        metadata,
+    )
+    .await;
 }
 
 /// 監査はコミット済み操作の記録（失敗しても操作結果は変えず、欠落をログで顕在化する）。

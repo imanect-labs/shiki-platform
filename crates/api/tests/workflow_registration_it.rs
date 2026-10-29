@@ -563,7 +563,8 @@ async fn disable_and_revoke_removes_delegations_and_consent() {
     let revoked = service
         .disable_and_revoke(&tenant, wf_id)
         .await
-        .expect("取り消し");
+        .expect("取り消し")
+        .delegations;
     assert_eq!(revoked.len(), 1);
     assert_eq!(revoked[0].object_ref, folder_obj.as_str());
     assert_eq!(revoked[0].delegator, "alice");
@@ -608,6 +609,7 @@ async fn disable_and_revoke_removes_delegations_and_consent() {
         .disable_and_revoke(&tenant, wf_id)
         .await
         .unwrap()
+        .delegations
         .is_empty());
     cleanup(&env.pool, &tenant).await;
 }
@@ -763,5 +765,114 @@ async fn reconsent_with_a_narrower_relation_revokes_the_wider_delegation() {
         ledger().await,
         vec![("storage.read".to_string(), "viewer".to_string())]
     );
+    cleanup(&env.pool, &tenant).await;
+}
+
+/// BUG-131: 「権限も取り消す」は、自動実行で動いている run（実行主体が workflow）を取り消す（engine.md §10.4）。
+/// 人が手で実行した run は本人の権限で動くので止めない。取り消しを選ばない無効化は run を完走させる（§10.2）。
+#[tokio::test]
+async fn revoking_delegations_cancels_the_automated_runs() {
+    let Some(env) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let alice = user_ctx(&tenant, "alice");
+    let folder = Uuid::new_v4();
+    mk_folder(&env.pool, &tenant, folder).await;
+    let folder_obj = alice.ns().folder(&folder.to_string());
+    env.fga
+        .write_tuple(&alice.subject(), Relation::Viewer, &folder_obj)
+        .await
+        .unwrap();
+    let wf_id = Uuid::new_v4();
+    let service = RegistrationService::new(
+        env.pool.clone(),
+        DelegationStore::new(env.pool.clone(), Arc::clone(&env.fga)),
+    );
+    let ir = WorkflowIr::from_json(&ir_v1(folder)).unwrap();
+    service
+        .consent(
+            &alice,
+            wf_id,
+            1,
+            &ir,
+            &[GrantRequest {
+                scope: "storage.read".into(),
+                object: folder_obj.clone(),
+                relation: Relation::Viewer,
+            }],
+        )
+        .await
+        .expect("有効化");
+    // 動いている run（どれも step はまだ始まっていない）: 自動実行 2 本と、人が手で実行した 1 本。
+    let ir_json = ir_v1(folder);
+    let graph = workflow_engine::run::graph::RunGraph::build(&ir);
+    let runs =
+        workflow_engine::RunStore::new(env.pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
+    let wf_principal = wf_id.to_string();
+    let mut started = Vec::new();
+    for (principal, kind, trigger) in [
+        (wf_principal.as_str(), "workflow", "schedule"),
+        (wf_principal.as_str(), "workflow", "event"),
+        ("alice", "user", "interactive"),
+    ] {
+        started.push(
+            runs.create_run(
+                &tenant,
+                "acme",
+                wf_id,
+                1,
+                trigger,
+                None,
+                principal,
+                kind,
+                &json!({}),
+                &ir_json,
+                &graph,
+            )
+            .await
+            .unwrap()
+            .unwrap(),
+        );
+    }
+    let [scheduled, on_event, manual] = started[..] else {
+        unreachable!()
+    };
+    let status = |run: Uuid| {
+        let (pool, tenant) = (env.pool.clone(), tenant.clone());
+        async move {
+            sqlx::query_scalar::<_, String>(
+                "SELECT status FROM workflow_run WHERE tenant_id = $1 AND run_id = $2",
+            )
+            .bind(&tenant)
+            .bind(run)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+
+    // 取り消しを選ばない無効化は、動いている run を止めない。
+    service.disable(&tenant, wf_id).await.unwrap();
+    assert_eq!(status(scheduled).await, "running");
+
+    let r = service.disable_and_revoke(&tenant, wf_id).await.unwrap();
+    assert_eq!(r.delegations.len(), 1);
+    let mut cancelled = r.cancelled_runs.clone();
+    cancelled.sort();
+    let mut expected = vec![scheduled, on_event];
+    expected.sort();
+    assert_eq!(cancelled, expected, "自動実行の run だけ");
+    assert_eq!(status(scheduled).await, "cancelled");
+    assert_eq!(status(on_event).await, "cancelled");
+    assert_eq!(
+        status(manual).await,
+        "running",
+        "人が手で実行した run は止めない"
+    );
+
+    sqlx::query("DELETE FROM workflow_run WHERE tenant_id = $1")
+        .bind(&tenant)
+        .execute(&env.pool)
+        .await
+        .unwrap();
     cleanup(&env.pool, &tenant).await;
 }
