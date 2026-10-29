@@ -217,8 +217,9 @@ IR のトップレベルは以下の形を取る。
 - **グラフ制約（保存時検証・§8 V2）**:
   - **DAG**（閉路拒否）。自己ループ拒否。多重エッジ（同一の from / from_port / to）拒否。
   - **join 以外のノードの入エッジは最大 1 本**。合流したければ必ず `control.join` を置く。ダイヤモンド合流の実行セマンティクスが曖昧化するのを型で排除する（重要決定）。
-  - すべてのノードは、いずれかのエントリノード（入エッジ 0 本のノード）から到達可能でなければならない。孤立ノード拒否。
+  - すべてのノードは、いずれかのエントリノード（入エッジ 0 本のノード）から到達可能でなければならない（DAG ではどのノードもエントリから辿れる）。
   - **エントリノード（入エッジ 0）は複数可**。run 開始時に全エントリノードが ready になる（静的並列。[engine.md](./engine.md) §4）。
+  - **孤立ノード**（本体のノードで、入るエッジも出るエッジも無いもの。本体に 2 つ以上ノードがあるとき）は保存を止めず、注意 `ir.unconnected_node` を出す（BUG-106）。孤立ノードもエントリなので実行の始めにほかのエントリと同時に動く。ドラッグで置いてつなぎ忘れたノードに気づかせるためで、意図して並べた入口もあるので誤りにはしない（保存済みの定義も保存し直せる）。map の領域の中は、出口ちょうど 1（§5.3）が孤立ノードを誤りにする。
 
 ### 5.2 ポートカタログ
 
@@ -752,7 +753,7 @@ AI 編集も dnd 保存も**同一エンドポイント・同一パイプライ�
 各ステージの詳細:
 
 - **V1 スキーマ**: トップレベルからノード params まで、JSON Schema で型・必須・deny-unknown を検証する。未知フィールドは全階層で拒否する（§2）。`input_schema` の項目の並び（`x-order`）の形もここで確かめる（§2・D-60）。step 属性 `cache` は付けられる種（ノードカタログの `step_cache`・いまは `ai.decide`）だけで、ほかの種は `ir.cache_unsupported`（path は `/cache`）、`ttl_sec` が範囲の外なら `ir.schema_violation`（path は `/cache/ttl_sec`・§4）。
-- **V2 グラフ**: `id` 一意、エッジの `from` / `to` が実在ノード、`from_port` が §5.2 のポートカタログに存在（出口はカタログの `port_rule` から導く。検証 API はノードごとの出口を `node_ports` で返す）、DAG（閉路なし）、join 以外の入エッジ ≤ 1、map 領域の閉包（領域跨ぎエッジなし）・出口ちょうど 1、全ノードのエントリからの到達可能性を検証する。`workflow.reply` は map 領域に置けない（`ir.reply_in_map`・§7.10）。
+- **V2 グラフ**: `id` 一意、エッジの `from` / `to` が実在ノード、`from_port` が §5.2 のポートカタログに存在（出口はカタログの `port_rule` から導く。検証 API はノードごとの出口を `node_ports` で返す）、DAG（閉路なし）、join 以外の入エッジ ≤ 1、map 領域の閉包（領域跨ぎエッジなし）・出口ちょうど 1、全ノードのエントリからの到達可能性を検証する。孤立ノードは保存を止めない注意（`ir.unconnected_node`・§5.1）。`workflow.reply` は map 領域に置けない（`ir.reply_in_map`・§7.10）。
 - **V3 語彙照合**: ノード `type`・`declared_scopes`・ツール名（`allowed_tools`）・モデル名を codegen が生成した閉じた語彙と、テナントの登録カタログ（モデルは組織が許可したモデル・本人専用を除く）へ照合する。**ハルシネーション境界**であり、実在しない語彙を参照する IR（特に AI 生成）を保存前に拒否する。`llm.invoke` の `model` は省略可で、省略（空文字を含む）は照合しない（実行時に組織の既定で解決する・§7.3）。組織がモデルの選択を禁じていれば、既定と異なるモデルを `ir.model_choice_disabled` で拒否する。
 - **V3 のモデルの種類**: カタログのモデルは文章を生成する chat と判定用の decision に分かれる（[design.md](../design.md) §4.5）。`llm.invoke`・`agent.invoke` の `model` は組織が許可した chat モデル、`ai.decide` の `model` は組織が許可した判定用のモデル（LLM に判定させるなら元にする chat モデルも許可されているもの）へ照合する。種類を取り違えたもの（`llm.invoke` に判定用のモデル・`ai.decide` に chat モデル）は `ir.model_modality_mismatch`（path は `/params/model`・使えるモデルを添える）、どちらにも無いものは `ir.unknown_model`。判定用のモデルが 0 件の組織では `ai.decide` をすべて拒否する。照合の材料（組織の許可リスト）は保存 API・検証 API・AI の `emit_workflow` が同じ関数（`build_catalog_from`）で組み、種類の振り分けもその中だけで行う（保存と AI 編集で結果を変えない）。
 - **V4 参照存在**: skill（レジストリ＋インストール済み）・secret（存在＋宛先束縛がノードの `http.request` URL ホストを許容する）・テーブル/フォルダ id の実在を検証する。`workflow.start` の `name`（リテラル）は、保存者に見える既存のワークフローであること（無い名前と見えない相手は同じ `ir.unknown_workflow`・同じ文言で、path は `/params/name`。存在を明かさない・BUG-107）。材料は保存 API・検証 API・AI の `emit_workflow` が IR の名前だけを保存者の権限で引く（`workflow_start_targets`）。空の名前は照合せず、必須の欄の空（`ir.required_text_empty`）として扱う。`human.approval` は、テーブルが保存者に見えて FSM で管理され、状態の列を保存者が読めること（見えないテーブル・FSM でないテーブル・状態の列が読めないテーブルは同じ文言 `ir.unknown_table`。状態の一覧は出さない）、判断の行き先が FSM の状態であること（`ir.unknown_state`）、`show_fields` と担当者の列がテーブルの列（担当者はユーザー・部署の列）であること、`show_fields` に状態の列が無いこと（`ir.bad_show_field`。状態の列は保存者が読めるときだけ材料に入るので、読めない列の手がかりにならない）を照合する。`data.transition` のテーブル（リテラル）と、`data.transition` のイベントトリガの `scope.table` も、保存者に見えて FSM で管理され、状態の列を保存者が読めること（FSM の無いテーブルでは、ノードは実行のたびに失敗し、トリガはいつまでも起きない。見えないテーブルと同じ `ir.unknown_table` で、path はノードなら `/params/table`、トリガなら `/triggers/<i>/scope/table`。テーブルを `$from` で決めるノードは照合しない・BUG-105）。材料は保存 API（検証 API・AI の `emit_workflow` も同じ）が**保存者の見え方**（`DataStore::get_table_for_viewer`・テーブルの owner でなければ読める列だけ）で引く。読めない列は無い列と同じ `ir.unknown_field`（code・path・message が同じ。文言も「このテーブルに無いか、読めない列です」とどちらとも言わない）になり、種別の違い（`ir.bad_assignee`）も返さない（無い列と読めない列を区別させない・data-platform §16.1）。
