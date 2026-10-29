@@ -673,8 +673,9 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
     "state": { "$from": "nodes.create.output", "path": "/data" },  // 判定の材料（値式・信頼しないデータ）
     "questions": [                                            // リテラルだけ・1〜20 件・順序を保つ
       { "key": "category", "type": "choice", "instructions": "問い合わせの種類はどれか",
-        "options": [ { "key": "billing", "description": "請求・返金" }, { "key": "bug", "description": "不具合" },
-                     { "key": "howto", "description": "使い方" }, { "key": "other", "description": "その他" } ] },
+        "options": [ { "key": "billing", "label": "請求", "description": "請求書・返金についての問い合わせ" },
+                     { "key": "bug", "label": "不具合" }, { "key": "howto", "label": "使い方" },
+                     { "key": "other", "label": "その他" } ] },
       { "key": "priority", "type": "score", "instructions": "対応の緊急度", "levels": ["低", "中", "高", "緊急"] },
       { "key": "angry", "type": "boolean", "instructions": "顧客は強い不満を示しているか",
         "yes": "苦情・強い不満・解約の示唆がある", "no": "通常の問い合わせ" } ],
@@ -688,7 +689,10 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 - **`state`**: 値式。実行時に文字・オブジェクト・配列のどれかに解決され、JSON にして 32 KiB まで（超えたら `decision_state_too_large`・permanent）。**信頼しないデータ**として扱う（決定器は材料の中の指示に従わない。LLM に判定させる決定器は材料を封筒に包み、閉じタグを中和する・PIT-56）。リテラルで書くなら文字・オブジェクト・配列（V1）。
 - **`questions`**（リテラルだけ・V1 で検査する）:
   - `key` は `^[a-z][a-z0-9_]{0,63}$` でノードの中で一意。`instructions` は 1〜2000 字。`type` は `choice` / `score` / `boolean`。
-  - `choice`: `options`（2〜100 件）。選択肢の `key` は同じ形で一意、予約名（`out`・`uncertain`・`error`・`default`・`timeout`・`true`・`false`）は不可（出口の名前と取り違えないため）。`description` は 500 字以内・省略可。
+  - `choice`: `options`（2〜100 件）。選択肢の `key` は同じ形で一意、予約名（`out`・`uncertain`・`error`・`default`・`timeout`・`true`・`false`）は不可（出口の名前と取り違えないため）。
+    - `label`（選択肢の名前・省略可・D-87）は利用者に見せる名前で、答えの `label` になる（テーブルの選択肢の列に書き込むなら、列の選択肢と同じ文字にする）。100 字以内で、質問の中で重ならない（空白だけは書いていないものとして扱う）。エディターは出口を名前で出す。
+    - `description`（AI への説明・省略可）は AI への手がかりで、500 字以内。決定器へは `label` とつないだ「名前: 説明」を渡す（片方だけならそれ）。つないだ長さが 500 字に収まること（名前と説明を合わせて 498 字まで）。
+    - `label` を省略した定義は、`description`（それも無ければ `key`）を答えの `label` にし、決定器へ渡す文も `description` のままにする（名前を足す前の定義の結果・プロンプト・決定キャッシュのキーを変えない）。
   - `score`: `levels`（低い順・2〜10 件・一意・各 1〜100 字）。
   - `boolean`: `yes` / `no`（それぞれに当たる場合の説明・500 字以内・省略可）。
   - 種類に合わない項目（choice に `levels` など）は拒否する。
@@ -701,7 +705,7 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 
   ```jsonc
   { "answers": {
-      "category": { "type": "choice", "value": "billing", "label": "請求・返金", "confidence": 0.9,
+      "category": { "type": "choice", "value": "billing", "label": "請求", "confidence": 0.9,
                     "probabilities": { "billing": 0.9, "bug": 0.03, "howto": 0.04, "other": 0.03 } },
       "priority": { "type": "score", "value": 1.0, "level": "中", "level_index": 1, "confidence": 0.8,
                     "probabilities": [0.05, 0.8, 0.1, 0.05] },
@@ -714,7 +718,7 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
     "routed": { "question": "category", "port": "out" } }       // route が無ければ null
   ```
 
-  `label` は選択肢の説明（無ければキー）。score の `value` は確率で重み付けした位置（0〜段階の数-1）、`level_index` は選んだ段階。`resolved_model` は実際に答えた決定器の版で、版が変わったらしきい値を測り直す。`provider` は答えた決定器の名前（国外処理の TypeSafe 互換か、LLM に判定させたものかを項目で絞れる・ポートが名前を返さなければ null）。`method` は `native`（決定器が出す確率）・`verbalized`（LLM の自己申告）・`vote`（多数決の得票率）。
+  `label` は選択肢の名前（`label`・無ければ説明、それも無ければキー・D-87）。score の `value` は確率で重み付けした位置（0〜段階の数-1）、`level_index` は選んだ段階。`resolved_model` は実際に答えた決定器の版で、版が変わったらしきい値を測り直す。`provider` は答えた決定器の名前（国外処理の TypeSafe 互換か、LLM に判定させたものかを項目で絞れる・ポートが名前を返さなければ null）。`method` は `native`（決定器が出す確率）・`verbalized`（LLM の自己申告）・`vote`（多数決の得票率）。
 - **応答の突き合わせ**: エンジンはポートの応答を型付きで読み、質問と突き合わせる（答えの過不足・種類の取り違え・選択肢の外・確率のキーが選択肢と一致しない・確率や確からしさの範囲の外は `decision_invalid_response`・permanent）。チョークポイントも同じ規則で突き合わせ（多層防御）、合わない応答（決定モデルの API が設定と違う版で答えた・応答の形が崩れたものも）はポートが同じ `decision_invalid_response` に写す（送り直しても直らないので再試行しない。試すたびに `#f` で課金されない）。
 - **失敗**: 判定用のモデルが未登録・判定用でない・組織で無効（元の chat モデルが無効なときも）は `model_unavailable`、判定の拒否は `llm_refused`、応答の途切れは `llm_output_truncated`、決められた形に合わない応答は `llm_output_invalid`（どれも permanent）。到達障害・利用上限は llm.invoke と同じ（再試行の分類・[engine.md](./engine.md) §7）。
 - **監査**: 出口と、振り分けに使った質問の確からしさだけを残す（要求したモデル・`resolved_model`・`provider`・`method`・`samples`・`calibrated`・`cached`・質問のキー）。**判定の材料と全部の答えは載せない**（D-52 の H5。run の step の出力には残る）。
