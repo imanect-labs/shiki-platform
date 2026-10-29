@@ -44,7 +44,11 @@ pub(crate) fn dataset_result(
         } else {
             None
         },
-        acceptance: theta.map(|t| metrics::acceptance(&per_rep, agreement, t)),
+        // 裁定を書いたデータ（adjudication/<データ名>.jsonl に裁定の行がある）の合否は暫定ではない。
+        acceptance: theta.map(|t| metrics::Acceptance {
+            provisional: !report::has_adjudicated(&report::adjudication_path(ds.name)),
+            ..metrics::acceptance(&per_rep, agreement, t)
+        }),
         reps: per_rep,
         agreement,
     }

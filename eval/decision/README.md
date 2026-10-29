@@ -78,7 +78,7 @@ cargo test -p shiki-llm-gateway --test decision_eval -- --ignored --nocapture de
 
 E1 の後に `adjudication/<データ名>.jsonl` を書く。中身は、test でモデルとラベルが食い違った行（どれかの反復で、主な質問の答えがラベルと違うか誤りになった行。経費は規程のフラグの無い行の needs_review で見る）の全件と、test から種を固定して抜いた 20%（16 件）。
 各行は `id`・`reasons`（`disagreement`・`random_20pct`）・`state`（本文）・`labels`・`tags`・`model_answers`（反復ごとの答えと確からしさ）・`adjudication`（`labels` と `note` が空）。裁定する人が `adjudication.labels` に正しいラベルを書き、ラベルを直したら `build_datasets.py` の該当行を直して作り直す（行の並びと種は変えない。`id` がずれず、ほかの行が変わらないことを、作り直す前後の JSONL で確かめる）。
-裁定を書いた行（`adjudication.labels` が空でない行）があるファイルは上書きしない。E1 を流し直したときの材料は `adjudication/<データ名>-<結果の名前>.jsonl` に書く。
+裁定を書いた行（`adjudication.labels` が空でない行）があるファイルは上書きしない。E1 を流し直したときの材料は `adjudication/<データ名>-<結果の名前>.jsonl` に書く。裁定を書いたデータの合否は、暫定ではなく「裁定の後」として出す。
 
 ### 2026-10-28 の裁定（E1 の材料 51 行）
 

@@ -266,6 +266,14 @@ fn rescore_scores_the_saved_answers_with_the_current_data() {
         .acceptance
         .as_ref()
         .is_some_and(|a| (a.theta - 0.6).abs() < 1e-12));
+    // 裁定を書いたデータの合否は暫定ではない（問い合わせは 2026-10-28 に裁定した）。
+    assert!(report::has_adjudicated(&report::adjudication_path(
+        "inquiry_triage"
+    )));
+    assert!(again.datasets[0]
+        .acceptance
+        .as_ref()
+        .is_some_and(|a| !a.provisional));
     assert!(again.datasets[0].suggested_theta.is_none());
     // 凍結の版と違う版の答えが混ざっていれば、合否を出さずに止めた印を付ける。
     let mut mixed = saved.clone();

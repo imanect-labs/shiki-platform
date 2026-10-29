@@ -95,8 +95,13 @@ async fn decision_eval() {
         for ds in &file.datasets {
             if let Some(a) = &ds.acceptance {
                 eprintln!(
-                    "  {}: 合格基準（暫定）{}",
+                    "  {}: 合格基準（{}）{}",
                     ds.name,
+                    if a.provisional {
+                        "暫定"
+                    } else {
+                        "裁定の後"
+                    },
                     if a.pass { "合格" } else { "不合格" }
                 );
             }
@@ -337,8 +342,13 @@ async fn decision_eval() {
         }
         if let Some(a) = &ds.acceptance {
             eprintln!(
-                "  {}: 合格基準（暫定）{}",
+                "  {}: 合格基準（{}）{}",
                 ds.name,
+                if a.provisional {
+                    "暫定"
+                } else {
+                    "裁定の後"
+                },
                 if a.pass { "合格" } else { "不合格" }
             );
         }

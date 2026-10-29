@@ -1042,7 +1042,7 @@
       "suggested_theta": null,
       "acceptance": {
         "theta": 0.6,
-        "provisional": true,
+        "provisional": false,
         "criteria": [
           {
             "name": "category の正解率",
@@ -2062,7 +2062,7 @@
       "suggested_theta": null,
       "acceptance": {
         "theta": 0.7,
-        "provisional": true,
+        "provisional": false,
         "criteria": [
           {
             "name": "経理確認の再現率（規程 OR AI）",

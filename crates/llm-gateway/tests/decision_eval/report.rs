@@ -297,7 +297,7 @@ fn render(file: &ResultFile) -> String {
                 if acc.provisional {
                     "・ラベルの裁定の前の暫定値"
                 } else {
-                    ""
+                    "・ラベルの裁定の後（裁定の方法は README）"
                 },
                 if acc.pass { "合格" } else { "不合格" }
             );
@@ -434,7 +434,14 @@ pub(crate) fn write_adjudication(
     (path, lines.len(), disagreements)
 }
 
-/// 裁定の材料のファイルに、human が裁定を書いた行（`adjudication.labels` が空でない）があるか。
+/// データの裁定の材料のファイル（`adjudication/<データ名>.jsonl`）。
+pub(crate) fn adjudication_path(name: &str) -> std::path::PathBuf {
+    eval_dir()
+        .join("adjudication")
+        .join(format!("{name}.jsonl"))
+}
+
+/// 裁定の材料のファイルに、裁定を書いた行（`adjudication.labels` が空でない）があるか。
 pub(crate) fn has_adjudicated(path: &std::path::Path) -> bool {
     let Ok(text) = std::fs::read_to_string(path) else {
         return false;

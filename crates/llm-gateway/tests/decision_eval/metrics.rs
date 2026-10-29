@@ -672,7 +672,7 @@ pub(crate) struct Criterion {
     pub(crate) pass: bool,
 }
 
-/// 合格基準（付録 B §6・H8 の案）に照らした結果。ラベルの裁定の前は暫定。
+/// 合格基準（付録 B §6・H8 の案）に照らした結果。ラベルの裁定の前は暫定（`provisional`・採点で決める）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct Acceptance {
     pub(crate) theta: f64,
