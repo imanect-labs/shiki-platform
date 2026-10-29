@@ -30,6 +30,7 @@ pub mod autonomous;
 pub mod csv_tool;
 pub mod custom_instructions;
 pub mod data_tool;
+mod data_tool_sql;
 pub mod doc_read_tool;
 pub mod document_ref;
 pub mod document_tool;

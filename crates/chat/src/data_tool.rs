@@ -4,8 +4,10 @@
 //! （テーブル ReBAC ＋行述語＋フィールドマスク・昇格しない）。`csv_tool.rs` の 3 ツールと同型で、
 //! 権限不足・存在しないはモデルが読む error 観測へ畳む（存在秘匿・confused-deputy 回避）。
 //!
-//! - **クエリは data の [`DataQuery`] をそのまま受ける**（ワークフローの `data.query`・shiki script の
-//!   `Shiki.data.query`・ミニアプリの保存ビューと同一の型。面ごとの独自フィルタ表現を作らない）。
+//! - **クエリは SQL（閉じた部分集合）か data の [`DataQuery`] で受ける**。SQL は data の SQL 前段面
+//!   （[`DataStore::run_sql`]・data-platform §16.1）で DataQuery へ変換され、以降は同じ経路を通る
+//!   （SQL テキストはデータベースへ届かない）。DataQuery はワークフローの `data.query`・shiki script の
+//!   `Shiki.data.query`・ミニアプリの保存ビューと同一の型（面ごとの独自フィルタ表現を作らない）。
 //! - description には**発話ユーザーが viewer のテーブル一覧**を run 開始時に載せる（`SkillTool` と同じ
 //!   流儀・件数は [`MAX_LISTED_TABLES`] で有界）。一覧は表示と名前解決の材料であって認可ではない
 //!   （実行時に data が本人の権限で毎回判定する）。
@@ -17,6 +19,8 @@ use std::sync::Arc;
 use agent_core::{Tool, ToolError, ToolName, ToolOutcome};
 use authz::AuthContext;
 use data::{DataError, DataQuery, DataRecord, DataStore, QueryResult};
+
+use crate::data_tool_sql::{format_sql_result, rejection_message, QueryForm};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use uuid::Uuid;
@@ -24,11 +28,44 @@ use uuid::Uuid;
 /// description に載せるテーブル数の上限（description を有界に保つ）。
 pub const MAX_LISTED_TABLES: usize = 30;
 /// 観測に載せる行数の上限（ページの残りは `next_cursor` で読む）。
-const MAX_ROWS_SHOWN: usize = 50;
+pub(crate) const MAX_ROWS_SHOWN: usize = 50;
 /// 観測テキストの上限（文字数）。超えた行は省き、注記する。
-const MAX_OUTPUT_CHARS: usize = 24_000;
+pub(crate) const MAX_OUTPUT_CHARS: usize = 24_000;
 /// テーブル名の表示の上限（文字数）。
 const MAX_NAME_CHARS: usize = 60;
+
+/// 観測に載せる名前・文言を 1 行・上限文字数にする（作成者が付けた名前で観測の行構造を崩させない）。
+pub(crate) fn one_line(s: &str, max_chars: usize) -> String {
+    let mut out: String = s
+        .chars()
+        .take(max_chars)
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect();
+    if s.chars().count() > max_chars {
+        out.push('…');
+    }
+    out
+}
+
+/// 結果の末尾の案内（省略・次ページ）。**表示しきれなかったときは cursor を出さない**
+/// （cursor は返した行の続きを指すので、表示しなかった行を飛ばしてしまう・独立レビュー S1）。
+pub(crate) fn page_note(
+    shown: usize,
+    returned: usize,
+    cursor: Option<&str>,
+    narrow: &str,
+    next: &str,
+) -> String {
+    if shown < returned {
+        return format!(
+            "…（一部のみ表示: {returned} 件のうち {shown} 件。{narrow}読み直す。続きのページは表示しきれる量に絞ってから読む）\n"
+        );
+    }
+    match cursor {
+        Some(c) => format!("続きがあります。次のページは{next} \"{c}\" を付けて呼ぶ。\n"),
+        None => String::new(),
+    }
+}
 
 /// 発話ユーザーが viewer のテーブル（run 開始時に固定・有界）。
 #[derive(Debug, Clone, Default)]
@@ -96,11 +133,7 @@ impl DataTableCatalog {
         let mut out = String::from("\n\n閲覧できるテーブル（名前 / id）:\n");
         for (id, name) in &self.entries {
             // 名前は作成者が付けた文字列なので、改行・制御文字で description の構造を崩させない。
-            let name: String = name
-                .chars()
-                .take(MAX_NAME_CHARS)
-                .map(|c| if c.is_control() { ' ' } else { c })
-                .collect();
+            let name = one_line(name, MAX_NAME_CHARS);
             let _ = writeln!(out, "- {name} / {id}");
         }
         if self.truncated {
@@ -111,7 +144,7 @@ impl DataTableCatalog {
 }
 
 /// data のエラーを**モデルが読む error 観測**へ（存在秘匿: 見えない・存在しないは区別しない）。
-fn denied(err: &DataError) -> ToolOutcome {
+pub(crate) fn denied(err: &DataError) -> ToolOutcome {
     let msg = match err {
         DataError::NotFound | DataError::Forbidden => {
             "テーブル・レコードが見つからないか、権限がありません。".to_string()
@@ -126,7 +159,7 @@ fn denied(err: &DataError) -> ToolOutcome {
         DataError::InvalidInput(e) => {
             format!("入力が不正です（{}）: {}", e.code().as_str(), e.message())
         }
-        DataError::Rejected(r) => format!("クエリを受け付けられません: {r}"),
+        DataError::Rejected(r) => rejection_message(r),
         // unique 違反は再試行で解決しない（値を変えるか、既存のレコードを更新する・3 回目の検証 3-B-3）。
         DataError::UniqueViolation { .. } => format!(
             "重複できない列の値が既に使われているため書き込めませんでした（unique_violation・再試行では解決しません）。\
@@ -176,6 +209,7 @@ fn record_line(r: &DataRecord) -> String {
 /// クエリ結果をモデル向けに整形する（行は上限まで・長さも有界）。
 fn format_result(table: &str, res: &QueryResult) -> String {
     use std::fmt::Write as _;
+    let table = one_line(table, MAX_NAME_CHARS);
     let mut out = String::new();
     let mut lines: Vec<String> = Vec::new();
     // 返った件数（行・グループ）。観測に載せるのは MAX_ROWS_SHOWN まで。
@@ -202,47 +236,65 @@ fn format_result(table: &str, res: &QueryResult) -> String {
         out.push('\n');
         lines.extend(items.iter().take(MAX_ROWS_SHOWN).map(record_line));
     }
-    let mut omitted = total > lines.len();
+    let mut shown = 0;
     for line in lines {
         if out.len() + line.len() > MAX_OUTPUT_CHARS {
-            omitted = true;
             break;
         }
         out.push_str(&line);
         out.push('\n');
-    }
-    if omitted {
-        out.push_str("…（一部のみ表示。select で列を絞るか limit を小さくする）\n");
+        shown += 1;
     }
     if res.suppressed {
         out.push_str("※ 件数の少ないグループは値を伏せています（null）。\n");
     }
-    if let Some(cursor) = &res.next_cursor {
-        let _ = writeln!(
-            out,
-            "続きがあります。次のページは query.cursor に \"{cursor}\" を指定する。"
-        );
-    }
+    out.push_str(&page_note(
+        shown,
+        total,
+        res.next_cursor.as_deref(),
+        "select で列を絞るか limit を小さくして",
+        "は query.cursor に",
+    ));
     out
 }
 
 const QUERY_DESCRIPTION: &str = "社内の構造化データ（テーブル）を検索・集計する（読み取り専用）。\
-     見えない行・列はあなたの権限で自動的に除かれる。列の参照名・型・選択肢が分からなければ先に \
-     data_schema で確かめること。query は DataQuery: filter は条件木（{\"cmp\":{\"field\":\"status\",\
-     \"op\":\"eq\",\"value\":\"承認待ち\"}}・{\"all\":[...]}・{\"any\":[...]}・{\"not\":{...}}。op は eq / neq / \
-     lt / lte / gt / gte / in / contains / starts_with / ends_with / exists / is_null）、sort は \
-     [{\"field\":\"amount\",\"descending\":true}]（作成・更新日時・作成者は _created_at / _updated_at / _owner）、\
-     select は返す列、limit は件数（既定 50・最大 200）、集計は group_by ＋ aggregate \
-     （[{\"metric\":\"sum\",\"field\":\"amount\"}]・metric は count / sum / avg / min / max）、with_count で総数。\
-     例: 経費の承認待ちを金額の大きい順 → {\"table\":\"経費\",\"query\":{\"filter\":{\"cmp\":{\"field\":\"status\",\
-     \"op\":\"eq\",\"value\":\"承認待ち\"}},\"sort\":[{\"field\":\"amount\",\"descending\":true}]}}";
+     見えない行・列はあなたの権限で自動的に除かれる。列の参照名・型・選択肢・リンク列が分からなければ先に \
+     data_schema で確かめること。\n\
+     通常は sql に SELECT 文を 1 つ渡す（閉じた部分集合）: SELECT 列, … FROM テーブル [別名]（SELECT * は不可）／\
+     結合は JOIN テーブル 別名 ON 元.リンク列 = 先._id の形だけ（宣言済みリンク列の等値 1 個・最大 3 個。\
+     絞り込みは WHERE に書く）／WHERE は = <> < <= > >=・AND OR NOT・IN (…)・BETWEEN・LIKE（'…%'・'%…%' など）・IS [NOT] NULL\
+     （比較は列とリテラルだけ・日付は 'YYYY-MM-DD'）／集計は COUNT(*)・SUM・AVG・MIN・MAX と GROUP BY・HAVING／\
+     ORDER BY 列 [DESC]（FROM のテーブルの列で並べる。集計するときはグループの列か集計関数）／LIMIT n（行は最大 200・集計のグループは最大 1000）。DISTINCT・副問い合わせ・WITH・UNION・OFFSET・関数は使えない。\
+     集計は数える・足す行のテーブルを FROM に置き、グループの列は JOIN 先から取る（例: 取引先ごとの案件の金額 → \
+     SELECT c.name, SUM(d.amount) FROM 案件 d JOIN 取引先 c ON d.customer = c._id GROUP BY c.name。\
+     件数の少ないグループは値が伏せられる）。\
+     テーブル名は下の一覧の名前（一覧に無いテーブルも正確な名前なら書ける。空白や記号を含むなら \"…\" で囲む）、\
+     列名は参照名。作成者・作成日時・更新日時は _owner / _created_at / _updated_at（絞り込み・並べ替えにも使える）、\
+     行の id は _id（SELECT と JOIN の ON だけ）。with_count で総数、続きのページは同じ sql に cursor を付ける。\
+     SQL の結果には rev が無いので、更新する行は table ＋ query で読んで rev を得る。\n\
+     例: 経費の承認待ちを金額の大きい順 → {\"sql\":\"SELECT title, amount FROM 経費 WHERE status = '承認待ち' \
+     ORDER BY amount DESC\"}\n\
+     受け付けられない SQL は理由・位置・手がかりを返すので、それに沿って書き直す。\
+     sql の代わりに table ＋ query（DataQuery の JSON: filter / sort / select / limit / cursor / group_by / \
+     aggregate / with_count / search）でも問い合わせられる。";
 
-/// `data_query` の入力（クエリは data の [`DataQuery`] そのもの）。
-#[derive(Debug, Clone, Deserialize)]
+/// `data_query` の入力（`sql` か、`table` ＋ data の [`DataQuery`] のどちらか）。
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DataQueryToolInput {
-    /// テーブルの名前（description の一覧）か id。
-    pub table: String,
+    /// SELECT 文（閉じた部分集合）。`table` / `query` とは同時に使わない。
+    #[serde(default)]
+    pub sql: Option<String>,
+    /// `sql` の次ページ（前の結果の続きの位置）。
+    #[serde(default)]
+    pub cursor: Option<String>,
+    /// `sql` で総数も数える（集計しない問い合わせだけ）。
+    #[serde(default)]
+    pub with_count: bool,
+    /// テーブルの名前（description の一覧）か id（`query` と組で使う）。
+    #[serde(default)]
+    pub table: Option<String>,
     /// クエリ（省略時は更新の新しい順に 50 件）。
     #[serde(default)]
     pub query: Option<DataQuery>,
@@ -278,7 +330,10 @@ impl Tool for DataQueryTool {
         json!({
             "type": "object",
             "properties": {
-                "table": { "type": "string", "description": "テーブルの名前（一覧）か id" },
+                "sql": { "type": "string", "description": "SELECT 文 1 つ（閉じた部分集合・説明を参照）" },
+                "cursor": { "type": "string", "description": "sql の次ページ（前の結果の続きの位置）" },
+                "with_count": { "type": "boolean", "description": "sql で総数も数える（集計しないときだけ）" },
+                "table": { "type": "string", "description": "query と組で使うテーブルの名前（一覧）か id" },
                 "query": {
                     "type": "object",
                     "description": "DataQuery（filter / sort / select / limit / cursor / group_by / aggregate / with_count / search）",
@@ -294,8 +349,7 @@ impl Tool for DataQueryTool {
                         "search": { "type": "string", "description": "検索対象の列への部分一致" }
                     }
                 }
-            },
-            "required": ["table"]
+            }
         })
     }
     fn is_read_only(&self) -> bool {
@@ -314,11 +368,27 @@ impl Tool for DataQueryTool {
             }
         }
         let input: DataQueryToolInput = serde_json::from_value(input).map_err(|e| invalid(&e))?;
-        let table_id = match self.catalog.resolve(&input.table) {
+        let (table, query) = match input.form() {
+            Ok(QueryForm::Ir { table, query }) => (table, query),
+            Ok(QueryForm::Sql(req)) => {
+                // テーブルの解決と認可は data の SQL 前段面が本人の権限で行う（一覧は使わない）。
+                return match self.data.run_sql(ctx, &req, trace_id).await {
+                    Ok(res) => {
+                        let name = self
+                            .catalog
+                            .name_of(res.table_id)
+                            .map_or_else(|| res.table_id.to_string(), str::to_string);
+                        Ok(ToolOutcome::ok(format_sql_result(&name, &res)))
+                    }
+                    Err(e) => Ok(denied(&e)),
+                };
+            }
+            Err(msg) => return Ok(ToolOutcome::error(msg)),
+        };
+        let table_id = match self.catalog.resolve(&table) {
             Ok(id) => id,
             Err(msg) => return Ok(ToolOutcome::error(msg)),
         };
-        let query = input.query.unwrap_or_default();
         match self.data.run_query(ctx, table_id, &query, trace_id).await {
             Ok(res) => {
                 let name = self
@@ -350,14 +420,69 @@ pub struct DataSchemaTool {
 }
 
 impl DataSchemaTool {
+    /// リンク先のテーブル名（一覧にあれば一覧から、無ければ発話ユーザーの権限で引く。見えなければ載せない）。
+    async fn ref_names(
+        &self,
+        ctx: &AuthContext,
+        table: &data::DataTable,
+        masked: &std::collections::HashSet<String>,
+        trace_id: Option<&str>,
+    ) -> std::collections::HashMap<Uuid, String> {
+        let mut out = std::collections::HashMap::new();
+        let targets: std::collections::BTreeSet<Uuid> = table
+            .schema
+            .fields
+            .iter()
+            .filter(|f| !masked.contains(&f.key))
+            .filter_map(|f| f.ref_table)
+            .collect();
+        for id in targets {
+            let name = match self.catalog.name_of(id) {
+                Some(n) => Some(n.to_string()),
+                None => self
+                    .data
+                    .get_table(ctx, id, trace_id)
+                    .await
+                    .ok()
+                    .map(|t| t.name),
+            };
+            if let Some(n) = name {
+                out.insert(id, n);
+            }
+        }
+        out
+    }
+
     pub fn new(data: DataStore, catalog: Arc<DataTableCatalog>) -> Self {
         DataSchemaTool { data, catalog }
     }
 }
 
-fn format_schema(table: &data::DataTable, masked: &std::collections::HashSet<String>) -> String {
+/// `ref_names` はリンク先のテーブル id → 名前（発話ユーザーに見えるものだけ）。
+/// SQL に書けるテーブル名（識別子として書けない文字を含むなら二重引用符で囲む）。
+fn sql_table_name(name: &str) -> String {
+    let plain = !name.is_empty()
+        && name.chars().all(|c| c.is_alphanumeric() || c == '_')
+        && !name.starts_with(|c: char| c.is_ascii_digit());
+    let name = one_line(name, MAX_NAME_CHARS);
+    if plain {
+        name
+    } else {
+        format!("\"{}\"", name.replace('"', "\"\""))
+    }
+}
+
+fn format_schema(
+    table: &data::DataTable,
+    masked: &std::collections::HashSet<String>,
+    ref_names: &std::collections::HashMap<Uuid, String>,
+) -> String {
     use std::fmt::Write as _;
-    let mut out = format!("テーブル「{}」（id: {}）\n", table.name, table.id);
+    let mut out = format!(
+        "テーブル「{}」（id: {}）\n",
+        one_line(&table.name, MAX_NAME_CHARS),
+        table.id
+    );
     if let Some(status) = table
         .schema
         .status_field
@@ -386,6 +511,27 @@ fn format_schema(table: &data::DataTable, masked: &std::collections::HashSet<Str
         if f.required {
             out.push_str("（必須）");
         }
+        if let Some(to) = f.ref_table {
+            match ref_names.get(&to) {
+                // 見えないリンク先は名前も書き方も出さない（その JOIN は必ず拒否される）。
+                None => out.push_str(" リンク先: 参照できないテーブル"),
+                Some(name) => {
+                    let to_name = sql_table_name(name);
+                    if f.link.as_ref().is_some_and(|l| l.reverse) {
+                        let _ = write!(
+                            out,
+                            " リンク先: {to_name}（逆向き。SQL は {to_name} 側のリンク列で JOIN {to_name} 別名 ON 別名.リンク列 = 元._id）"
+                        );
+                    } else {
+                        let _ = write!(
+                            out,
+                            " リンク先: {to_name}（SQL は JOIN {to_name} 別名 ON 元.{} = 別名._id）",
+                            f.key
+                        );
+                    }
+                }
+            }
+        }
         if !f.options.is_empty() {
             let _ = write!(out, " 選択肢: [{}]", f.options.join(", "));
         }
@@ -395,7 +541,9 @@ fn format_schema(table: &data::DataTable, masked: &std::collections::HashSet<Str
         }
         out.push('\n');
     }
-    out.push_str("システム列: _created_at / _updated_at / _owner（絞り込み・並べ替えに使える）\n");
+    out.push_str(
+        "システム列: _created_at / _updated_at / _owner（絞り込み・並べ替えに使える）、_id（行の id・SELECT と JOIN の ON だけ）\n",
+    );
     // 読めない列の有無・件数は書かない（列の存在オラクルを作らない・検証 2-B-P2-1）。
     out
 }
@@ -406,8 +554,8 @@ impl Tool for DataSchemaTool {
         ToolName::DataSchema.as_str()
     }
     fn description(&self) -> &'static str {
-        "テーブルの列（参照名・型・表示名・選択肢・状態の列）を調べる（読み取り専用）。data_query の \
-         filter / sort / select や data_record_write の値には、ここで得た参照名を使う。table は \
+        "テーブルの列（参照名・型・表示名・選択肢・状態の列・リンク先）を調べる（読み取り専用）。data_query の \
+         SQL の列名（filter / sort / select も同じ）や data_record_write の値には、ここで得た参照名を使う。table は \
          data_query の一覧の名前か id。"
     }
     fn input_schema(&self) -> Value {
@@ -438,7 +586,10 @@ impl Tool for DataSchemaTool {
             Err(e) => return Ok(denied(&e)),
         };
         match self.data.masked_field_keys(ctx, &table).await {
-            Ok(masked) => Ok(ToolOutcome::ok(format_schema(&table, &masked))),
+            Ok(masked) => {
+                let ref_names = self.ref_names(ctx, &table, &masked, trace_id).await;
+                Ok(ToolOutcome::ok(format_schema(&table, &masked, &ref_names)))
+            }
             Err(e) => Ok(denied(&e)),
         }
     }
@@ -534,7 +685,7 @@ impl Tool for DataRecordWriteTool {
                 "op": { "type": "string", "enum": ["create", "update"] },
                 "record_id": { "type": "string", "format": "uuid", "description": "update の対象" },
                 "data": { "type": "object", "description": "列の参照名 → 値（update は変更する列だけ・null で値を消す）" },
-                "expected_rev": { "type": "integer", "description": "楽観ロック（data_query の rev）" }
+                "expected_rev": { "type": "integer", "description": "楽観ロック（data_query を table ＋ query で読んだ結果の rev。SQL の結果には rev が無い）" }
             },
             "required": ["table", "op", "data"]
         })
