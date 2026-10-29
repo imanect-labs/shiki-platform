@@ -52,8 +52,11 @@ mod derived;
 mod field_key;
 mod formula;
 mod fsm;
+mod fsm_pin;
 mod fsm_rules;
 mod fsm_store;
+mod fsm_table;
+mod fsm_write_guard;
 mod index;
 mod job_lease;
 mod key_migration;
@@ -120,6 +123,7 @@ pub use formula::{FormulaCmpOp, FormulaExpr, SwitchCase, MAX_FORMULA_DEPTH};
 pub use fsm::{FsmBody, FsmRef, FsmTransition};
 pub use fsm_rules::{AllowedTransitions, ApprovalTargetView};
 pub use fsm_store::FsmStore;
+pub use fsm_table::{PinnedFsm, SaveTableFsm, TableFsm};
 #[doc(hidden)]
 pub use index::text_index_delete_sql;
 pub use index::{

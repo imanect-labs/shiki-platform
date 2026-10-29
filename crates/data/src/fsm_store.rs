@@ -18,8 +18,8 @@ use crate::DataError;
 /// FSM 定義の保存/解決（`crates/data` の一部・遷移実行と同じチョークポイント側）。
 #[derive(Clone)]
 pub struct FsmStore {
-    artifacts: Arc<ArtifactStore>,
-    data: DataStore,
+    pub(crate) artifacts: Arc<ArtifactStore>,
+    pub(crate) data: DataStore,
 }
 
 impl FsmStore {

@@ -175,13 +175,23 @@ async fn approval_reads_follow_row_and_field_visibility() {
         states: ["draft", "submitted", "approved", "rejected"]
             .map(String::from)
             .to_vec(),
+        // 同じ組（submitted → approved）を 2 つ置く定義は、保存の前に断る（GAP-44）。重複を積めないので、進める状態の
+        // 重複なしは定義の側で保たれる。
         transitions: vec![
             t("draft", "submitted"),
             t("submitted", "approved"),
             t("submitted", "rejected"),
-            t("submitted", "approved"),
         ],
     };
+    let mut dup = body.clone();
+    dup.transitions.push(t("submitted", "approved"));
+    assert_eq!(
+        fsms.create(&alice, "flow-dup", table.id, &dup, None)
+            .await
+            .unwrap_err()
+            .invalid_code(),
+        Some(data::InvalidCode::FsmInvalid)
+    );
     let fsm_id = fsms
         .create(&alice, "flow", table.id, &body, None)
         .await

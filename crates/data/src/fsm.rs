@@ -49,57 +49,50 @@ impl FsmBody {
     }
 }
 
-/// FSM 定義の静的検証（状態網羅・到達性・actor 式の妥当性）。
+/// FSM 定義の静的検証（状態網羅・遷移の重複・actor 式の妥当性）。
 ///
 /// `status_field` はテーブルの select フィールドで、その options が states と一致する必要が
-/// ある（呼び出し側が渡す）。actor 述語は 9.3 の行レベル検証を再利用する。
+/// ある（呼び出し側が渡す）。actor 述語は 9.3 の行レベル検証を再利用する。文言はテーブルの持ち主が
+/// 「状態の進め方」の画面で読むので、画面の呼び名（状態・進め方・状態の列）で言う（付録 C）。
 pub(crate) fn validate_fsm(
     body: &FsmBody,
     schema: &crate::model::TableSchema,
 ) -> Result<(), crate::DataError> {
-    use crate::DataError;
+    let invalid =
+        |m: String| crate::DataError::input_detail(crate::InvalidCode::FsmInvalid, None, m);
     if body.states.is_empty() {
-        return Err(DataError::input_detail(
-            crate::InvalidCode::FsmInvalid,
-            None,
-            "fsm: states が空です",
-        ));
+        return Err(invalid("状態を 1 つ以上決めてください。".into()));
     }
     let states: std::collections::HashSet<&str> = body.states.iter().map(String::as_str).collect();
     if states.len() != body.states.len() {
-        return Err(DataError::input_detail(
-            crate::InvalidCode::FsmInvalid,
-            None,
-            "fsm: states に重複があります",
+        return Err(invalid(
+            "同じ名前の状態が 2 つあります。どちらかの名前を変えてください。".into(),
         ));
     }
     if body.transitions.is_empty() {
-        return Err(DataError::input_detail(
-            crate::InvalidCode::FsmInvalid,
-            None,
-            "fsm: transitions が空です",
-        ));
+        return Err(invalid("進め方を 1 つ以上追加してください。".into()));
     }
+    let mut pairs = std::collections::HashSet::new();
     for (i, t) in body.transitions.iter().enumerate() {
-        if !states.contains(t.from.as_str()) {
-            return Err(DataError::input_detail(
-                crate::InvalidCode::FsmInvalid,
-                None,
-                format!(
-                    "fsm: transition[{i}] の from '{}' が states にありません",
-                    t.from
-                ),
-            ));
+        for s in [&t.from, &t.to] {
+            if !states.contains(s.as_str()) {
+                return Err(invalid(format!(
+                    "「{s}」は状態にありません。進め方の状態を選び直してください。"
+                )));
+            }
         }
-        if !states.contains(t.to.as_str()) {
-            return Err(DataError::input_detail(
-                crate::InvalidCode::FsmInvalid,
-                None,
-                format!(
-                    "fsm: transition[{i}] の to '{}' が states にありません",
-                    t.to
-                ),
-            ));
+        if t.from == t.to {
+            return Err(invalid(format!(
+                "「{}」から同じ状態へは進められません。次の状態を選び直してください。",
+                t.from
+            )));
+        }
+        // 同じ組を 2 つ置くと、遷移の判定（`transition`）は先の 1 つしか見ない（後の進められる人が効かない）。
+        if !pairs.insert((t.from.as_str(), t.to.as_str())) {
+            return Err(invalid(format!(
+                "「{}」から「{}」への進め方が 2 つあります。1 つにまとめてください。",
+                t.from, t.to
+            )));
         }
         // actor 述語は行レベル述語と同じ文法・型整合で検証する（field_cmp のフィールド実在等）。
         crate::policy::validate::validate_policy_expr(
@@ -109,27 +102,19 @@ pub(crate) fn validate_fsm(
         )?;
     }
     // status_field が select でその options が states と一致することを検証する。
-    let status_field = schema.status_field.as_deref().ok_or_else(|| {
-        DataError::input_detail(
-            crate::InvalidCode::FsmInvalid,
-            None,
-            "fsm: テーブルに status_field が定義されていません",
-        )
-    })?;
-    let field = schema.field(status_field).ok_or_else(|| {
-        DataError::input_detail(
-            crate::InvalidCode::FsmInvalid,
-            None,
-            format!("fsm: status_field '{status_field}' が fields にありません"),
-        )
-    })?;
+    let status_field = schema
+        .status_field
+        .as_deref()
+        .ok_or_else(|| invalid("状態の列を選んでください。".into()))?;
+    let field = schema
+        .field(status_field)
+        .ok_or_else(|| invalid("状態の列がテーブルにありません。選び直してください。".into()))?;
     let opts: std::collections::HashSet<&str> = field.options.iter().map(String::as_str).collect();
     if opts != states {
-        return Err(DataError::input_detail(
-            crate::InvalidCode::FsmInvalid,
-            None,
-            format!("fsm: status_field '{status_field}' の options が states と一致しません"),
-        ));
+        return Err(invalid(format!(
+            "「{}」の選択肢と、状態の進め方の状態が合いません。状態は「状態の進め方」で変えてください。",
+            field.label()
+        )));
     }
     Ok(())
 }
@@ -195,5 +180,23 @@ mod tests {
             f.options = vec!["draft".into()];
         }
         assert!(validate_fsm(&body(), &s).is_err());
+    }
+
+    /// 同じ組の進め方を 2 つ置く・同じ状態へ進める定義は、保存の前に断る（遷移の判定は先の 1 つしか見ない）。
+    #[test]
+    fn rejects_duplicate_pairs_and_self_loops() {
+        let mut b = body();
+        b.transitions.push(FsmTransition {
+            from: "draft".into(),
+            to: "submitted".into(),
+            actor: PolicyExpr::IsOwner,
+        });
+        let e = validate_fsm(&b, &schema()).unwrap_err();
+        assert_eq!(e.invalid_code(), Some(crate::InvalidCode::FsmInvalid));
+        assert!(e.to_string().contains("2 つあります"), "{e}");
+        let mut b = body();
+        b.transitions[0].to = "draft".into();
+        let e = validate_fsm(&b, &schema()).unwrap_err();
+        assert!(e.to_string().contains("同じ状態"), "{e}");
     }
 }

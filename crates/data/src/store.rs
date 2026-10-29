@@ -341,6 +341,8 @@ impl DataStore {
             .prepare_derived(ctx, None, app_id, false, &mut schema, None)
             .await?;
         validate_table_schema(&schema)?;
+        self.check_fsm_pin(ctx, None, None, &schema, trace_id)
+            .await?;
         // 内部整数キーはレジストリで採番する（不変・再利用しない・失敗時は欠番になるだけ）。
         let keys = self.allocate_table_keys(&ctx.tenant_id).await?;
 
@@ -514,6 +516,9 @@ impl DataStore {
             .await?;
         }
         validate_schema_update(&current.schema.0, &next)?;
+        // 指す状態の進め方と状態の列の選択肢が合うか（指す定義を替えたら、それを読めるか・GAP-44）。
+        self.check_fsm_pin(ctx, Some(id), Some(&current.schema.0), &next, trace_id)
+            .await?;
         // 既存データと矛盾する改訂（値の無い行がある列の必須化・使われている選択肢の削除）は理由付きで拒否
         // （検証 2-A-P1-1。テーブル行は FOR UPDATE 済みなので並行する書込はこの前後に直列化される）。
         crate::schema_data_check::check_schema_against_data(

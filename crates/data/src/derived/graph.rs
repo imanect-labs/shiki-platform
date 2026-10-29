@@ -464,8 +464,13 @@ impl Catalog {
         if src.app_id.is_none() || src.app_id != r.app_id || !contained.contains(&rt) {
             return pv;
         }
-        // ② 行述語 ④ 個別共有。
-        if r.schema.row_policy.is_some() || r.has_record_shares {
+        // ② 行述語（読む決まり。書き込みの決まりだけの表は見え方を絞らない・D-115） ④ 個別共有。
+        let reads_narrowed = r
+            .schema
+            .row_policy
+            .as_ref()
+            .is_some_and(|p| p.read != crate::policy::PolicyExpr::Public);
+        if reads_narrowed || r.has_record_shares {
             return pv;
         }
         if let Some(tk) = target {
