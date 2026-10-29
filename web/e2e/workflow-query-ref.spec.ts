@@ -109,7 +109,16 @@ test("データを調べる: 実行した人を使う探す条件を壊さずに
     await pop.getByRole("combobox", { name: "条件 3 の列" }).click();
     await page.getByRole("option", { name: "上長", exact: true }).click();
     const mode3 = pop.getByRole("radiogroup", { name: "条件 3 の値の入れ方" });
-    await mode3.getByRole("radio", { name: "入力や結果から選ぶ" }).click();
+    // 入れ方の切り替えは radiogroup の作り: 選んでいる方だけが Tab で止まり、矢印キーで選び直す。
+    const direct3 = mode3.getByRole("radio", { name: "直接入力" });
+    const ref3 = mode3.getByRole("radio", { name: "入力や結果から選ぶ" });
+    await expect(direct3).toHaveAttribute("tabindex", "0");
+    await expect(ref3).toHaveAttribute("tabindex", "-1");
+    await direct3.focus();
+    await page.keyboard.press("ArrowRight");
+    await expect(ref3).toHaveAttribute("aria-checked", "true");
+    await expect(ref3).toBeFocused();
+    await expect(direct3).toHaveAttribute("tabindex", "-1");
     // 値を選ぶまでは適用できない（黙って捨てない）。
     await expect(pop.getByText("値を選んでください")).toBeVisible();
     await expect(pop.getByRole("button", { name: "この条件で探す" })).toBeDisabled();
