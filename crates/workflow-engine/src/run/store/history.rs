@@ -67,6 +67,10 @@ pub struct RunDetail {
     pub started_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,
     /// ステップ（**実行の順**: 実行に入った・終わった順に並べ、まだ実行していないものを末尾に置く・検証 C P3）。
+    ///
+    /// 同じ時刻（1 つの前進の Tx で書いた・ブロックの完了と通らなかった後続の skip など）の中は、run の
+    /// `step_order`（線の前のブロックが先・map の後ろに領域）の順にする（名前の辞書順にしない・BUG-117）。
+    /// `step_order` の無い古い run と、順に無いノードは step_path の順。
     pub steps: Vec<StepOverview>,
 }
 
@@ -182,12 +186,14 @@ impl RunStore {
             return Ok(None);
         };
         let steps: Vec<StepOverview> = sqlx::query_as(
-            "SELECT step_path, node_id, status, attempt, taken_ports, \
-                    (output IS NOT NULL) AS has_output, error, next_retry_at, wake_at, \
-                    updated_at, langfuse_trace_id \
-             FROM step_execution \
-             WHERE tenant_id = $1 AND run_id = $2 \
-             ORDER BY (status IN ('pending', 'ready')), updated_at, step_path",
+            "SELECT s.step_path, s.node_id, s.status, s.attempt, s.taken_ports, \
+                    (s.output IS NOT NULL) AS has_output, s.error, s.next_retry_at, s.wake_at, \
+                    s.updated_at, s.langfuse_trace_id \
+             FROM step_execution s \
+             JOIN workflow_run r ON r.tenant_id = s.tenant_id AND r.run_id = s.run_id \
+             WHERE s.tenant_id = $1 AND s.run_id = $2 \
+             ORDER BY (s.status IN ('pending', 'ready')), s.updated_at, \
+                      array_position(r.step_order, s.node_id), s.step_path",
         )
         .bind(tenant_id)
         .bind(run_id)

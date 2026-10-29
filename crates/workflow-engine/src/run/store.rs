@@ -295,12 +295,13 @@ impl RunStore {
             "INSERT INTO workflow_run \
              (tenant_id, org, workflow_id, version, trigger_kind, trigger_id, principal, \
               principal_kind, input, ir_snapshot, status, started_at, timeout_at, \
-              trigger_event_id, trigger_chain, cause_run_id, reply_nodes, trigger_payload) \
+              trigger_event_id, trigger_chain, cause_run_id, reply_nodes, trigger_payload, \
+              step_order) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, \
                      CASE WHEN $11 = 'running' THEN now() END, \
                      CASE WHEN $11 = 'running' \
                           THEN now() + ($12 || ' seconds')::interval END, \
-                     $13, $14, $15, $16, $17) \
+                     $13, $14, $15, $16, $17, $18) \
              RETURNING run_id",
         )
         .bind(tenant_id)
@@ -321,6 +322,8 @@ impl RunStore {
         // 結果を画面に返すノード（実行順）。読取口が ir_snapshot を開かずに引く（GAP-09）。
         .bind(graph.reply_nodes())
         .bind(origin.trigger_payload.map(Json))
+        // 実行の詳細で同じ時刻の step を並べる順（ir_snapshot を開かない・BUG-117）。
+        .bind(graph.step_order())
         .fetch_one(&mut *tx)
         .await
         .map_err(map_db)?;
