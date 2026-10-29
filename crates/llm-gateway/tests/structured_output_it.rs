@@ -7,6 +7,8 @@
 //!   届く形（`response_format` か system の指示か）が変わること。行は作らない（組織の設定を読むだけ）。
 //! - 実エンドポイント（`ANTHROPIC_TEST_URL` が無ければスキップ）: Anthropic の構造化出力が実際に通る
 //!   こと・任意項目の上限（24）を超えたスキーマが定型文の誤りになること。
+//! - 項目の並び（BUG-123・D-103）: 届いた本文の JSON の文字列で、出力の形の項目が作者の並び（`x-order`）で
+//!   書かれていること（Anthropic・OpenAI 互換・OpenAI 互換の口で繋ぐ Gemini API。制約付きデコードと指示のモード）。
 
 #![allow(
     clippy::unwrap_used,
@@ -28,7 +30,7 @@ use llm_gateway::model::{
 };
 use llm_gateway::provider::{LlmError, LlmProvider};
 use llm_gateway::providers::{anthropic::AnthropicProvider, openai::OpenAiProvider};
-use llm_gateway::structured::is_schema_rejection;
+use llm_gateway::structured::{apply_mode, is_schema_rejection};
 use llm_gateway::{GatewayConfig, LlmGateway, ModelCatalog, ModelEntry, StructuredOutputMode};
 
 type SeenBody = Arc<Mutex<Option<Value>>>;
@@ -42,6 +44,32 @@ async fn spawn_mock(status: StatusCode, body: &'static str) -> (String, SeenBody
         async move {
             *rec.lock().unwrap() = serde_json::from_str(&req).ok();
             (status, [("content-type", "text/event-stream")], body).into_response()
+        }
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    (format!("http://{addr}"), seen)
+}
+
+type SeenRaw = Arc<Mutex<Option<String>>>;
+
+/// [`spawn_mock`] と同じで、受けたリクエストボディを文字列のまま記録する（キーの並びを見るため）。
+async fn spawn_raw_mock(body: &'static str) -> (String, SeenRaw) {
+    let seen: SeenRaw = Arc::new(Mutex::new(None));
+    let rec = seen.clone();
+    let app = Router::new().fallback(move |req: String| {
+        let rec = rec.clone();
+        async move {
+            *rec.lock().unwrap() = Some(req);
+            (
+                StatusCode::OK,
+                [("content-type", "text/event-stream")],
+                body,
+            )
+                .into_response()
         }
     });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -205,6 +233,142 @@ async fn openai_schema_rejection_hides_the_provider_body() {
         is_schema_rejection(&e) && !e.to_string().contains("org-123"),
         "{e}"
     );
+}
+
+// ---- 項目の並び（BUG-123・D-103） ----
+
+/// 作者が理由を先・結論を後に並べた形（辞書順なら answer・evidence・reason の順になる）。
+fn reasoned_request() -> GenerateRequest {
+    let mut req = GenerateRequest::new(vec![Message::text(Role::User, "判定してください")]);
+    req.system = Some("あなたは審査係です。".into());
+    req.response_format = Some(ResponseFormat::JsonSchema {
+        name: "judge".into(),
+        schema: json!({
+            "type": "object",
+            "x-order": ["reason", "evidence", "answer"],
+            "required": ["reason", "evidence", "answer"],
+            "additionalProperties": false,
+            "properties": {
+                "answer": { "type": "string", "enum": ["approve", "reject"] },
+                "evidence": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "x-order": ["quote", "page"],
+                        "required": ["quote", "page"],
+                        "additionalProperties": false,
+                        "properties": { "page": { "type": "integer" }, "quote": { "type": "string" } },
+                    },
+                },
+                "reason": { "type": "string" },
+            },
+        }),
+    });
+    req
+}
+
+/// 本文の文字列で、`keys` がこの順に書かれているか。`escaped` なら文字列の中（system の指示）を探す。
+fn written_in_order(raw: &str, keys: &[&str], escaped: bool) -> bool {
+    let at: Vec<Option<usize>> = keys
+        .iter()
+        .map(|k| {
+            let needle = if escaped {
+                format!("\\\"{k}\\\":")
+            } else {
+                format!("\"{k}\":")
+            };
+            raw.find(&needle)
+        })
+        .collect();
+    at.iter().all(Option::is_some) && at.windows(2).all(|w| w[0] < w[1])
+}
+
+const ANTHROPIC_DONE: &str = concat!(
+    "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":9}}}\n\n",
+    "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n",
+    "data: {\"type\":\"message_stop\"}\n\n",
+);
+
+const OPENAI_DONE: &str = concat!(
+    "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"{}\"}}]}\n\n",
+    "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+    "data: [DONE]\n\n",
+);
+
+#[tokio::test]
+async fn anthropic_sends_the_schema_in_the_authors_order() {
+    let (base, seen) = spawn_raw_mock(ANTHROPIC_DONE).await;
+    let provider = AnthropicProvider::new(reqwest::Client::new(), base, "k", "claude-haiku-5-5");
+    let mut req = reasoned_request();
+    req.effort = Some(Effort::Low);
+    drain(&provider, &req).await;
+    let raw = seen.lock().unwrap().clone().unwrap();
+    assert!(
+        written_in_order(&raw, &["reason", "evidence", "answer"], false),
+        "{raw}"
+    );
+    assert!(written_in_order(&raw, &["quote", "page"], false), "{raw}");
+    assert!(!raw.contains("x-order"), "{raw}");
+    // 並べ替えても中身は同じ（effort との併合・閉じたオブジェクト）。
+    let body: Value = serde_json::from_str(&raw).unwrap();
+    assert_eq!(body["output_config"]["effort"], "low");
+    assert_eq!(
+        body["output_config"]["format"]["schema"]["properties"]["evidence"]["items"]
+            ["additionalProperties"],
+        false
+    );
+}
+
+#[tokio::test]
+async fn openai_compatible_sends_the_schema_in_the_authors_order() {
+    // OpenAI 互換の制約付きデコード（json_schema を有効にしたモデル）と、同じ口で繋ぐ Gemini API
+    // （`/v1beta/openai`）。どちらも同じアダプタ・同じ本文の組み方を通る。
+    for path in ["/v1", "/v1beta/openai"] {
+        let (base, seen) = spawn_raw_mock(OPENAI_DONE).await;
+        let provider = OpenAiProvider::new(
+            reqwest::Client::new(),
+            format!("{base}{path}"),
+            Some("k".into()),
+            "gemini-2.5-flash",
+        );
+        drain(&provider, &reasoned_request()).await;
+        let raw = seen.lock().unwrap().clone().unwrap();
+        assert!(
+            written_in_order(&raw, &["reason", "evidence", "answer"], false),
+            "{path}: {raw}"
+        );
+        assert!(written_in_order(&raw, &["quote", "page"], false), "{raw}");
+        assert!(!raw.contains("x-order"), "{raw}");
+        let body: Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(body["response_format"]["json_schema"]["strict"], true);
+    }
+}
+
+#[tokio::test]
+async fn prompt_mode_writes_the_schema_in_the_authors_order_into_system() {
+    // OpenAI 互換の既定（指示だけ）。Gemini API などは形を system の指示で伝える（gateway が送る前に整える）。
+    for mode in [
+        StructuredOutputMode::Prompt,
+        StructuredOutputMode::JsonObject,
+    ] {
+        let (base, seen) = spawn_raw_mock(OPENAI_DONE).await;
+        let provider = OpenAiProvider::new(
+            reqwest::Client::new(),
+            format!("{base}/v1beta/openai"),
+            Some("k".into()),
+            "gemini-2.5-flash",
+        );
+        let mut req = reasoned_request();
+        apply_mode(&mut req, mode);
+        drain(&provider, &req).await;
+        let raw = seen.lock().unwrap().clone().unwrap();
+        assert!(
+            written_in_order(&raw, &["reason", "evidence", "answer"], true),
+            "{mode:?}: {raw}"
+        );
+        assert!(written_in_order(&raw, &["quote", "page"], true), "{raw}");
+        assert!(!raw.contains("x-order"), "{raw}");
+    }
 }
 
 // ---- gateway（カタログのモード → プロバイダへ届く形） ----

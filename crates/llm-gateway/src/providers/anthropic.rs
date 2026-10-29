@@ -19,7 +19,7 @@ use super::tool_names::ToolNameMap;
 use crate::config::LlmTimeouts;
 use crate::model::{Block, GenerateRequest, Message, Role, StopReason, StreamDelta, ToolDef};
 use crate::provider::{DeltaStream, LlmError, LlmProvider};
-use crate::structured::{anthropic_format, schema_rejection};
+use crate::structured::{anthropic_format, schema_rejection, with_json_body, ANTHROPIC_SCHEMA_AT};
 use crate::tool_loading::{context_tools, with_loaded_note};
 
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -291,8 +291,8 @@ impl LlmProvider for AnthropicProvider {
             .http
             .post(&url)
             .header("x-api-key", &self.api_key)
-            .header("anthropic-version", ANTHROPIC_VERSION)
-            .json(&body);
+            .header("anthropic-version", ANTHROPIC_VERSION);
+        let builder = with_json_body(builder, &body, req, &ANTHROPIC_SCHEMA_AT);
         let clock = RequestClock::start(self.timeouts, "anthropic");
         let resp = clock
             .send(self.identity.apply(builder, req.session_id.as_deref()))

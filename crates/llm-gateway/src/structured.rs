@@ -11,6 +11,8 @@
 //! - `prompt`・`json_object` モードでは system の末尾に指示とスキーマを足す（[`apply_mode`]）。
 //! - プロバイダがスキーマを拒んだ 400（複雑すぎる・使えない書き方）は、本文を利用者に出さない定型文の
 //!   [`LlmError::BadRequest`] にする（[`is_schema_rejection`] で見分けられる）。
+//! - 形の項目は、作者が並べた順（`x-order`・無ければ保存された順）でプロバイダへ書く（[`wire_schema_text`]・
+//!   [`body_bytes`]・指示のモードの [`apply_mode`]。制約付きデコードは送った順に書く・BUG-123・PIT-81）。
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -137,14 +139,15 @@ pub fn apply_mode(req: &mut GenerateRequest, mode: StructuredOutputMode) {
     }
 }
 
-/// 出力の形の指示（スキーマはこちらが組んだ JSON をそのまま埋める）。
+/// 出力の形の指示（スキーマはこちらが組んだ JSON を、項目を作者の並びにして埋める・`x-order` は書かない）。
 fn instruction(schema: Option<&Value>) -> String {
     const HEAD: &str = "出力の形式: ";
     const TAIL: &str = "前後に説明やコードフェンス（```）を付けないでください。";
     match schema {
         Some(s) => format!(
             "{HEAD}次の JSON Schema に合う JSON オブジェクトを 1 つだけ出力してください。{TAIL}\n\
-             {SCHEMA_OPEN}\n{s}\n{SCHEMA_CLOSE}"
+             {SCHEMA_OPEN}\n{}\n{SCHEMA_CLOSE}",
+            order::to_text(s)
         ),
         None => format!("{HEAD}JSON オブジェクトを 1 つだけ出力してください。{TAIL}"),
     }
@@ -180,7 +183,7 @@ const DROPPED_CONSTRAINTS: [&str; 10] = [
     "maxItems",
 ];
 /// 送っても意味のない注記（黙って落とす）。
-const DROPPED_ANNOTATIONS: [&str; 5] = ["default", "examples", "$schema", "$comment", "x-order"];
+const DROPPED_ANNOTATIONS: [&str; 5] = ["default", "examples", "$schema", "$comment", order::ORDER];
 /// プロバイダが受ける文字列の `format`（Anthropic の対応表）。それ以外は落として説明文に書く。
 const SUPPORTED_FORMATS: [&str; 10] = [
     "date-time",
@@ -201,14 +204,74 @@ const MAX_WIRE_DEPTH: usize = 64;
 /// （`additionalProperties: false`。Anthropic は全オブジェクトに求め、OpenAI の strict も同じ）。
 ///
 /// 元のスキーマ（呼び出し側が事後検証に使うもの）は変えない。落とした制約は、事後検証で守る。
+///
+/// 値の Map はキーを辞書順に並べるので、プロバイダへ書くときは [`wire_schema_text`]・[`body_bytes`] を使う
+/// （項目を作者の並びにする）。
 #[must_use]
 pub fn wire_schema(schema: &Value) -> Value {
     let mut out = schema.clone();
-    close_and_strip(&mut out, 0);
+    close_and_strip(&mut out, 0, false);
     out
 }
 
-fn close_and_strip(v: &mut Value, depth: usize) {
+/// プロバイダへ書く出力の形の JSON の文字列（[`wire_schema`] と同じ中身で、`properties` を作者の並びにしたもの）。
+///
+/// 並びは各オブジェクトの `x-order` に書かれたキーをその順に先に、残りを保存された順（辞書順）に後ろに置く。
+/// `x-order` は書かない（BUG-123・PIT-81）。
+#[must_use]
+pub fn wire_schema_text(schema: &Value) -> String {
+    order::to_text(&ordered_wire(schema))
+}
+
+/// [`wire_schema`] に、並べるための `x-order` を残したもの（書くときに [`order::OrderedSchema`] が落とす）。
+fn ordered_wire(schema: &Value) -> Value {
+    let mut out = schema.clone();
+    close_and_strip(&mut out, 0, true);
+    out
+}
+
+/// Anthropic の本文で出力の形を置く位置（[`anthropic_format`] の `schema`）。
+pub(crate) const ANTHROPIC_SCHEMA_AT: [&str; 3] = ["output_config", "format", "schema"];
+/// OpenAI 互換（Chat Completions）の本文で出力の形を置く位置（[`openai_response_format`] の `schema`）。
+pub(crate) const OPENAI_SCHEMA_AT: [&str; 3] = ["response_format", "json_schema", "schema"];
+
+/// 要求の本文を JSON のバイト列にする。`at` の位置に置いた出力の形だけは、項目を作者の並びで書く（BUG-123）。
+///
+/// 置き換えるのは、`at` の値が `format` のスキーマから組んだ [`wire_schema`] と同じときだけ（違えば本文をその
+/// まま書く。並びが辞書順に戻るだけで、送る中身は変えない）。
+pub(crate) fn body_bytes(body: &Value, format: Option<&ResponseFormat>, at: &[&str]) -> Vec<u8> {
+    let plain = || serde_json::to_vec(body).unwrap_or_default();
+    let Some(ResponseFormat::JsonSchema { schema, .. }) = format else {
+        return plain();
+    };
+    let placed = at.iter().try_fold(body, |v, key| v.get(*key));
+    if placed != Some(&wire_schema(schema)) {
+        return plain();
+    }
+    let ordered = ordered_wire(schema);
+    serde_json::to_vec(&order::Spliced {
+        value: body,
+        at,
+        schema: &ordered,
+    })
+    .unwrap_or_else(|_| plain())
+}
+
+/// 要求に本文（JSON）を載せる（[`reqwest::RequestBuilder::json`] の代わり）。`req` の出力の形は、本文の `at` の
+/// 位置に作者の並びで書く（Map のまま書くと辞書順になる・[`body_bytes`]・BUG-123）。
+pub(crate) fn with_json_body(
+    builder: reqwest::RequestBuilder,
+    body: &Value,
+    req: &GenerateRequest,
+    at: &[&str],
+) -> reqwest::RequestBuilder {
+    builder
+        .header(reqwest::header::CONTENT_TYPE, "application/json")
+        .body(body_bytes(body, req.response_format.as_ref(), at))
+}
+
+/// `keep_order` なら `x-order` を残す（[`ordered_wire`]・書くときに落とす）。
+fn close_and_strip(v: &mut Value, depth: usize, keep_order: bool) {
     let Value::Object(map) = v else {
         return;
     };
@@ -226,7 +289,9 @@ fn close_and_strip(v: &mut Value, depth: usize) {
         }
     }
     for key in DROPPED_ANNOTATIONS {
-        map.remove(key);
+        if !(keep_order && key == order::ORDER) {
+            map.remove(key);
+        }
     }
     if !notes.is_empty() {
         let note = notes.join("、");
@@ -240,7 +305,7 @@ fn close_and_strip(v: &mut Value, depth: usize) {
         map.insert("additionalProperties".into(), Value::Bool(false));
     }
     for child in child_schemas(map) {
-        close_and_strip(child, depth + 1);
+        close_and_strip(child, depth + 1, keep_order);
     }
 }
 
@@ -444,5 +509,6 @@ pub fn is_schema_rejection(err: &LlmError) -> bool {
     matches!(err, LlmError::BadRequest(m) if m.starts_with(SCHEMA_REJECTED_PREFIX))
 }
 
+mod order;
 #[cfg(test)]
 mod tests;

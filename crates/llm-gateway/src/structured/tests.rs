@@ -394,3 +394,151 @@ fn mode_reads_from_the_catalog_spelling() {
     let e: ModelEntry = serde_json::from_value(json!({ "id": "m" })).unwrap();
     assert_eq!(e.structured_output, None);
 }
+
+// ---- 項目の並び（BUG-123・D-103） ----
+
+/// 作者が「理由を先に、答えを後に」と並べた形（辞書順なら answer が先）。入れ子と配列の中にも並びを書く。
+fn ordered_schema() -> Value {
+    json!({
+        "type": "object",
+        "x-order": ["reason", "answer", "detail", "steps"],
+        "required": ["reason", "answer"],
+        "properties": {
+            "answer": { "type": "string", "enum": ["yes", "no"] },
+            "reason": { "type": "string", "maxLength": 200 },
+            "detail": {
+                "type": "object",
+                "x-order": ["zeta", "alpha"],
+                "properties": { "alpha": { "type": "string" }, "zeta": { "type": "string" } },
+            },
+            "steps": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "x-order": ["why", "what"],
+                    "properties": { "what": { "type": "string" }, "why": { "type": "string" } },
+                },
+            },
+        },
+    })
+}
+
+/// `text` の中で `keys` がこの順に現れるか（JSON の文字列のキーとして探す）。
+fn appear_in_order(text: &str, keys: &[&str]) -> bool {
+    let at: Vec<Option<usize>> = keys
+        .iter()
+        .map(|k| text.find(&format!("\"{k}\":")))
+        .collect();
+    at.iter().all(Option::is_some) && at.windows(2).all(|w| w[0] < w[1])
+}
+
+#[test]
+fn wire_schema_text_writes_properties_in_the_authors_order() {
+    let schema = ordered_schema();
+    let text = wire_schema_text(&schema);
+    assert!(
+        appear_in_order(&text, &["reason", "answer", "detail", "steps"]),
+        "{text}"
+    );
+    assert!(appear_in_order(&text, &["zeta", "alpha"]), "{text}");
+    assert!(appear_in_order(&text, &["why", "what"]), "{text}");
+    // 並びの注記は送らず、中身は wire_schema と同じ（受けない制約を落とし、オブジェクトを閉じる）。
+    assert!(!text.contains("x-order"), "{text}");
+    let parsed: Value = serde_json::from_str(&text).unwrap();
+    assert_eq!(parsed, wire_schema(&schema));
+    // 値の Map のまま書くと辞書順になる（直す前の送り方）。
+    assert!(appear_in_order(
+        &wire_schema(&schema).to_string(),
+        &["answer", "detail", "reason", "steps"]
+    ));
+}
+
+#[test]
+fn without_x_order_the_text_is_the_same_as_before() {
+    // 判定（llm_decider）の形など、並びの注記の無い形は今までと同じバイト列で送る（決定器の版を変えない）。
+    let s = schema();
+    assert_eq!(wire_schema_text(&s), wire_schema(&s).to_string());
+}
+
+#[test]
+fn keys_missing_from_x_order_follow_in_the_saved_order() {
+    // 書かれていないキーは後ろに保存された順（辞書順）で置く。誤った注記（無いキー・文字でない値・重なり）は
+    // 読み飛ばす（ミニアプリは任意の形を送れる）。
+    let s = json!({
+        "type": "object",
+        "x-order": ["delta", "nope", 3, "delta"],
+        "properties": {
+            "alpha": { "type": "string" },
+            "charlie": { "type": "string" },
+            "delta": { "type": "string" },
+        },
+    });
+    let text = wire_schema_text(&s);
+    assert!(
+        appear_in_order(&text, &["delta", "alpha", "charlie"]),
+        "{text}"
+    );
+    assert!(!text.contains("nope"), "{text}");
+}
+
+#[test]
+fn prompt_mode_writes_the_schema_in_the_authors_order() {
+    for mode in [
+        StructuredOutputMode::Prompt,
+        StructuredOutputMode::JsonObject,
+    ] {
+        let mut req = GenerateRequest::new(vec![Message::text(Role::User, "x")]);
+        req.response_format = Some(ResponseFormat::JsonSchema {
+            name: "judge".into(),
+            schema: ordered_schema(),
+        });
+        apply_mode(&mut req, mode);
+        let system = req.system.unwrap();
+        assert!(
+            appear_in_order(&system, &["reason", "answer", "detail", "steps"]),
+            "{mode:?}: {system}"
+        );
+        assert!(appear_in_order(&system, &["zeta", "alpha"]), "{system}");
+        // 指示のモードは制約も書いたまま（モデルが読む）。並びの注記は書かない。
+        assert!(system.contains("\"maxLength\":200"), "{system}");
+        assert!(!system.contains("x-order"), "{system}");
+    }
+}
+
+#[test]
+fn body_bytes_rewrites_only_the_schema_it_was_given() {
+    let format = ResponseFormat::JsonSchema {
+        name: "judge".into(),
+        schema: ordered_schema(),
+    };
+    let body = json!({
+        "model": "m",
+        "messages": [{ "role": "user", "content": "x" }],
+        "output_config": { "effort": "low", "format": anthropic_format(&format).unwrap() },
+    });
+    let bytes = body_bytes(&body, Some(&format), &ANTHROPIC_SCHEMA_AT);
+    let text = String::from_utf8(bytes).unwrap();
+    assert!(
+        appear_in_order(&text, &["reason", "answer", "detail", "steps"]),
+        "{text}"
+    );
+    // 中身は本文と同じ（並びだけが違う）。
+    assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), body);
+
+    // 形の無い要求・別の形が置かれた本文は、そのまま書く。
+    let plain = body_bytes(&body, None, &ANTHROPIC_SCHEMA_AT);
+    assert_eq!(plain, serde_json::to_vec(&body).unwrap());
+    let other = ResponseFormat::JsonSchema {
+        name: "other".into(),
+        schema: schema(),
+    };
+    assert_eq!(
+        body_bytes(&body, Some(&other), &ANTHROPIC_SCHEMA_AT),
+        serde_json::to_vec(&body).unwrap()
+    );
+    // OpenAI 互換の位置でも同じ。
+    let body = json!({ "model": "m", "response_format": openai_response_format(&format) });
+    let text = String::from_utf8(body_bytes(&body, Some(&format), &OPENAI_SCHEMA_AT)).unwrap();
+    assert!(appear_in_order(&text, &["reason", "answer"]), "{text}");
+    assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), body);
+}

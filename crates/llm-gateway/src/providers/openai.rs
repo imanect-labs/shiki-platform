@@ -18,7 +18,9 @@ use super::tool_names::ToolNameMap;
 use crate::config::LlmTimeouts;
 use crate::model::{Block, GenerateRequest, Message, Role, StopReason, StreamDelta, Usage};
 use crate::provider::{DeltaStream, LlmError, LlmProvider};
-use crate::structured::{openai_response_format, schema_rejection};
+use crate::structured::{
+    openai_response_format, schema_rejection, with_json_body, OPENAI_SCHEMA_AT,
+};
 use crate::tool_loading::{context_tools, with_loaded_note};
 
 /// OpenAI 互換アダプタ。
@@ -384,7 +386,7 @@ impl LlmProvider for OpenAiProvider {
         let think_tags = body["model"]
             .as_str()
             .is_some_and(|m| self.think_tag_models.contains(m));
-        let mut builder = self.http.post(&url).json(&body);
+        let mut builder = with_json_body(self.http.post(&url), &body, req, &OPENAI_SCHEMA_AT);
         if let Some(key) = &self.api_key {
             builder = builder.bearer_auth(key);
         }
