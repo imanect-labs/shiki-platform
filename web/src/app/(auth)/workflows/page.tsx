@@ -274,9 +274,9 @@ export default function WorkflowsPage() {
         <DialogContent className="max-w-sm">
           <DialogHeader>
             <DialogTitle>ワークフローを削除しますか？</DialogTitle>
+            {/* 影響の範囲と戻せる度合い（付録 C の §3.3・論理削除）。動いている実行（承認待ちを含む）も止める（BUG-128）。 */}
             <DialogDescription>
-              「{deleting ? deleting.displayName || deleting.name : ""}」
-              を削除します。スケジュール等の自動実行も止まります。
+              「{deleting ? deleting.displayName || deleting.name : ""}」を削除すると、自動実行も、動いている実行も止まります。元に戻せません。データは消さずに保管されます。
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
