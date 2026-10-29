@@ -377,7 +377,7 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 
 | type | 区分 | 概要 | 冪等性 | timeout 既定/最大 |
 |---|---|---|---|---|
-| `storage.read` | 能力 | 文章のファイルを読む（≤ 10MB。PDF・Office・画像などの種類〔MIME か拡張子〕と、UTF-8 でない中身は `not_text_file` で失敗・BUG-101。結果に読んだ中身のバージョン `version` を載せる・D-96） | pure | 30s / 120s |
+| `storage.read` | 能力 | 文章のファイルを読む（≤ 10MB。PDF・Office・画像などの種類と、UTF-8 でない中身は `not_text_file` で失敗・BUG-101。種類は、拡張子が文章の種類〔.txt・.md・.csv・.tsv・.json・.log など〕なら MIME より拡張子を優先して中身の確かめに任せ〔ブラウザーが付けた MIME をそのまま保存しているため。Windows の .csv の `application/vnd.ms-excel` など〕、それ以外は MIME で決め、MIME が無いか `application/octet-stream` のときだけ拡張子で決める〔.dot・.key のように文章にも使う拡張子では断らない〕。結果に読んだ中身のバージョン `version` を載せる・D-96） | pure | 30s / 120s |
 | `storage.write` | 能力 | 新しいファイルの保存（既存のファイルは書き換えず、新しいバージョンも足さない。同じ名前があれば `on_name_taken` に従い、省略・`fail` は `name_taken` で失敗、`add_number` は「名前 (2).md」〜「名前 (50).md」の空いている名前で保存する。`content_type` を省くと拡張子〔.txt・.md・.csv・.json・.html〕から決め、決まらなければ `application/octet-stream`・BUG-97・D-97） | engine-dedup | 30s / 120s |
 | `storage.list` | 能力 | フォルダ一覧 | pure | 30s / 120s |
 | `csv.query` | 能力 | CSV に読み取り専用の SQL を実行して集計・抽出する（隔離ランナー。結果に集計した中身のバージョン `version` を載せ、後ろの `csv.patch` の `base_rev` にできる・D-96） | pure | 30s / 120s |
