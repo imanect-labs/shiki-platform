@@ -87,6 +87,9 @@ pub(super) fn user_text(req: &DecideRequest) -> String {
 
 /// 出力の形での質問の名前（`{番号 2 桁}_{キー}`・質問は 20 件まで）。形は辞書順に書かれるので、番号を頭に
 /// 付けて作者が並べた順に答えさせる。
+///
+/// キーは 64 文字まで（[`crate::decision::check`]）なので、名前は最大 67 文字になる。Anthropic の構造化出力は
+/// 65〜67 文字のプロパティ名を受け付ける（2026-10-29 に Haiku 5.5 へ 1 回送って確かめた・BUG-127）。
 pub(super) fn wire_key(index: usize, q: &Question) -> String {
     format!("{:02}_{}", index + 1, q.key)
 }
@@ -435,6 +438,14 @@ pub(super) mod tests {
         }
         // 確からしさの意味（選んだ答えが正しい度合いで、はいの確率ではない）を system に書く。
         assert!(SYSTEM.contains("「はい」である確率ではありません"));
+    }
+
+    #[test]
+    fn the_longest_question_name_is_67_characters() {
+        // キーの上限 64 文字に番号（`NN_`）を足した長さ。Anthropic が受け付けることを実機で確かめた長さ（BUG-127）。
+        let mut req = request();
+        req.questions[0].key = "k".repeat(crate::decision::check::MAX_KEY_CHARS);
+        assert_eq!(wire_key(19, &req.questions[0]).chars().count(), 67);
     }
 
     #[test]
