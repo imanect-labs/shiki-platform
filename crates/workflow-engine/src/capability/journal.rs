@@ -11,7 +11,7 @@ use sqlx::PgPool;
 /// 孤児予約の回収までの猶予（秒）。予約後この時間 result_summary が NULL のままなら、予約した
 /// ワーカーはクラッシュしリースも失効したとみなし別ワーカーが再取得する。step リース TTL＋heartbeat
 /// 猶予より十分長く取る（生存ワーカーの副作用と競合しないため）。
-const RESERVATION_RECLAIM_SECS: i32 = 300;
+pub const RESERVATION_RECLAIM_SECS: i32 = 300;
 
 /// journal 参照の結果。
 #[derive(Debug, Clone, PartialEq, Eq)]

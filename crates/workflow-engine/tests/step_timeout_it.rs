@@ -73,10 +73,20 @@ async fn setup() -> Option<PgPool> {
 
 /// 時間の上限 1 秒の storage.read だけの run を作る（`retry` は試す回数）。
 async fn one_step_run(store: &RunStore, tenant: &str, max_attempts: u32) -> uuid::Uuid {
+    one_step_run_of(store, tenant, "storage.read", max_attempts).await
+}
+
+/// 時間の上限 1 秒の `node_type` のブロックだけの run を作る（executor は試験用なので params は見ない）。
+async fn one_step_run_of(
+    store: &RunStore,
+    tenant: &str,
+    node_type: &str,
+    max_attempts: u32,
+) -> uuid::Uuid {
     let ir = json!({
         "ir_version": 1, "name": "slow", "declared_scopes": ["storage.read"],
         "nodes": [{
-            "id": "rd", "type": "storage.read", "timeout_sec": 1,
+            "id": "rd", "type": node_type, "timeout_sec": 1,
             "retry": { "max_attempts": max_attempts,
                        "backoff": { "base_sec": 1, "max_sec": 1, "jitter": false } },
             "params": { "file": "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1" }
@@ -103,7 +113,7 @@ async fn one_step_run(store: &RunStore, tenant: &str, max_attempts: u32) -> uuid
         .expect("admitted")
 }
 
-fn worker(pool: &PgPool, tenant: &str, exec: Arc<SlowOnce>) -> WorkflowWorker {
+fn worker(pool: &PgPool, tenant: &str, exec: Arc<dyn NodeExecutor>) -> WorkflowWorker {
     WorkflowWorker::new(
         RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS),
         exec,
@@ -147,7 +157,7 @@ async fn steps_past_their_time_limit_fail_as_a_timeout() {
         calls: Arc::new(AtomicUsize::new(0)),
         cancelled: Arc::new(AtomicUsize::new(0)),
     });
-    let w = worker(&pool, &tenant, Arc::clone(&exec));
+    let w = worker(&pool, &tenant, Arc::clone(&exec) as Arc<dyn NodeExecutor>);
     let started = Instant::now();
     assert!(w.claim_and_run_once("w1").await.unwrap());
     let elapsed = started.elapsed();
@@ -190,7 +200,7 @@ async fn timed_out_steps_are_retried_within_their_attempts() {
         calls: Arc::new(AtomicUsize::new(0)),
         cancelled: Arc::new(AtomicUsize::new(0)),
     });
-    let w = worker(&pool, &tenant, Arc::clone(&exec));
+    let w = worker(&pool, &tenant, Arc::clone(&exec) as Arc<dyn NodeExecutor>);
     assert!(w.claim_and_run_once("w1").await.unwrap());
     let after_first = (
         store.run_status(&tenant, run).await.unwrap(),
@@ -227,3 +237,57 @@ async fn timed_out_steps_are_retried_within_their_attempts() {
     assert_eq!(calls, 2);
     assert_eq!(final_status, Some(RunStatus::Succeeded));
 }
+
+/// 次に試すまでの秒（ready に戻した step の `next_retry_at - now()`）。
+async fn seconds_until_retry(pool: &PgPool, tenant: &str, run: uuid::Uuid) -> f64 {
+    sqlx::query_scalar(
+        "SELECT EXTRACT(EPOCH FROM next_retry_at - now())::float8 FROM step_execution \
+         WHERE tenant_id = $1 AND run_id = $2 AND node_id = 'rd'",
+    )
+    .bind(tenant)
+    .bind(run)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+/// 効果の記録の予約を step の外の Tx で取る種（CSV を保存など）を打ち切ったら、やり直しは予約を回収できるまで
+/// （回収の猶予 300 秒より後）待つ。回収の前にやり直すと「別のワーカーが処理中」で試す回数を使い切り、効果が
+/// 済んでいても失敗になっていた。予約を残さない種（ファイルを読む）は、いままでどおり backoff だけ待つ。
+#[tokio::test]
+async fn timeouts_that_may_leave_a_reservation_retry_after_the_reclaim() {
+    let Some(pool) = setup().await else { return };
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let mut waits = Vec::new();
+    for node_type in ["csv.write", "storage.read"] {
+        let run = one_step_run_of(&store, &tenant, node_type, 3).await;
+        let exec = Arc::new(SlowOnce {
+            calls: Arc::new(AtomicUsize::new(0)),
+            cancelled: Arc::new(AtomicUsize::new(0)),
+        });
+        let w = worker(&pool, &tenant, exec as Arc<dyn NodeExecutor>);
+        assert!(w.claim_and_run_once("w1").await.unwrap());
+        let step = step_error(&pool, &tenant, run).await;
+        waits.push((
+            node_type,
+            step.0,
+            seconds_until_retry(&pool, &tenant, run).await,
+        ));
+    }
+    forget(&pool, &tenant).await;
+
+    let (_, status, csv_wait) = &waits[0];
+    assert_eq!(status, StepStatus::Ready.as_str(), "やり直す");
+    assert!(
+        *csv_wait > 300.0,
+        "CSV を保存の打ち切りは、予約を回収できる 300 秒より後にやり直す: {csv_wait}"
+    );
+    let (_, status, read_wait) = &waits[1];
+    assert_eq!(status, StepStatus::Ready.as_str());
+    assert!(
+        *read_wait < 10.0,
+        "ファイルを読むの打ち切りは backoff（1 秒）だけ待つ: {read_wait}"
+    );
+}
+

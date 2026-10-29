@@ -117,6 +117,17 @@ pub(super) async fn checkpoint_and_advance(
         };
         if retry {
             let delay = next_retry_delay_secs(run_id, &claimed.step_path, claimed.attempt);
+            // 打ち切った step が効果の予約を残しうるなら、回収できるまで待つ（試す回数を「処理中」で使い切らない）。
+            let delay = result
+                .error
+                .as_ref()
+                .and_then(|e| {
+                    super::super::step_timeout::retry_floor_after_timeout_sec(
+                        &e.code,
+                        graph.node_type(&claimed.node_id),
+                    )
+                })
+                .map_or(delay, |floor| delay.max(floor));
             // attempt の会計は「claim が +1 → 数えない実行を ready へ戻す経路が -1」（store/claim.rs
             // のモジュールドキュメントが正）。rate_limited は失敗ではなく並行上限の順番待ちなので
             // 試行として数えず、ready へ戻すこの UPDATE で打ち消す（engine.md §8.2）。
