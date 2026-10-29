@@ -41,6 +41,8 @@ import {
   usePageChrome,
   type ChromeMenuItem,
 } from "@/components/shell/page-header-context";
+import { useMe } from "@/hooks/use-me";
+import { getArtifact } from "@/lib/artifact-api";
 import { cn } from "@/lib/utils";
 import { getRegistration, type Registration } from "@/lib/workflow-api";
 import type { EditorChromeContext } from "@/components/workflow/editor/workflow-editor";
@@ -148,6 +150,22 @@ export function WorkflowChrome({ ctx }: { ctx: EditorChromeContext }) {
   }, [ctx.workflowId]);
   React.useEffect(reload, [reload]);
 
+  // 共有（相手の一覧と付与・解除）は持ち主だけができるので、持ち主にだけ出す（編集の共有を受けた人には、相手の
+  // 一覧が空に見え、付与が断られる・BUG-120）。持ち主が分かるまでは出さない。
+  const me = useMe();
+  const [owner, setOwner] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    let active = true;
+    setOwner(null);
+    getArtifact(ctx.workflowId)
+      .then((m) => active && setOwner(m.owner))
+      .catch(() => active && setOwner(null));
+    return () => {
+      active = false;
+    };
+  }, [ctx.workflowId]);
+  const canShare = owner !== null && owner === me.data?.id;
+
   const { state, dispatch, save, saving, desktop, workflowId } = ctx;
   const name = state.ir.display_name || state.ir.name;
   const errorCount = state.serverErrors.length;
@@ -194,7 +212,9 @@ export function WorkflowChrome({ ctx }: { ctx: EditorChromeContext }) {
               icon: RotateCcw,
               onSelect: () => setVersionsOpen(true),
             },
-            { key: "share", label: "共有", icon: Share2, onSelect: () => setShareOpen(true) },
+            ...(canShare
+              ? [{ key: "share", label: "共有", icon: Share2, onSelect: () => setShareOpen(true) }]
+              : []),
             ...(showEnable
               ? [
                   {
@@ -296,14 +316,17 @@ export function WorkflowChrome({ ctx }: { ctx: EditorChromeContext }) {
               <RotateCcw aria-hidden />
             </ChromeIconButton>
             {/* 共有: ワークフローは artifact（kind=workflow）なので artifact ReBAC（viewer/editor）に
-                そのまま載る（新規 relation 不要・#334）。skills/apps と同じ ArtifactShareDialog を再利用。 */}
-            <ChromeIconButton
-              label="共有"
-              onClick={() => setShareOpen(true)}
-              data-testid="workflow-share"
-            >
-              <Share2 aria-hidden />
-            </ChromeIconButton>
+                そのまま載る（新規 relation 不要・#334）。skills/apps と同じ ArtifactShareDialog を再利用。
+                持ち主にだけ出す（BUG-120）。 */}
+            {canShare ? (
+              <ChromeIconButton
+                label="共有"
+                onClick={() => setShareOpen(true)}
+                data-testid="workflow-share"
+              >
+                <Share2 aria-hidden />
+              </ChromeIconButton>
+            ) : null}
             {showEnable ? (
               <Button
                 variant="outline"
@@ -363,6 +386,7 @@ export function WorkflowChrome({ ctx }: { ctx: EditorChromeContext }) {
       runsHref,
       router,
       dispatch,
+      canShare,
     ],
   );
 
@@ -418,7 +442,7 @@ export function WorkflowChrome({ ctx }: { ctx: EditorChromeContext }) {
         currentVersion={state.savedVersion}
       />
       <ArtifactShareDialog
-        open={shareOpen}
+        open={shareOpen && canShare}
         onOpenChange={setShareOpen}
         artifactId={workflowId}
         name={name}

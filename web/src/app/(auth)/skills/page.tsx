@@ -23,6 +23,7 @@ import {
   type SkillVersion,
 } from "@/lib/artifact-api";
 import { createThread } from "@/lib/chat-api";
+import { useMe } from "@/hooks/use-me";
 import { publishSkill } from "@/lib/skill-registry-api";
 import { SkillStoreSection } from "@/components/artifacts/skill-store-section";
 
@@ -39,6 +40,11 @@ export default function SkillsPage() {
   const [items, setItems] = React.useState<ArtifactMeta[] | null>(null);
   const [dialog, setDialog] = React.useState<DialogState>({ kind: "closed" });
   const [pending, setPending] = React.useState<string | null>(null);
+  // 一覧には共有されたスキルも並ぶ。共有（相手の一覧と付与・解除）と削除は持ち主だけができるので、自分のスキルに
+  // だけ出す（共有を受けた人には相手の一覧が空に見え、付与・削除が断られる・BUG-120。アプリの一覧と同じ）。
+  // 自分が分かるまでは出さない。
+  const me = useMe();
+  const myId = me.data?.id;
 
   const reload = React.useCallback(() => {
     listArtifacts("skill")
@@ -170,7 +176,9 @@ export default function SkillsPage() {
                 }
                 menu={[
                   { key: "edit", label: "編集", icon: Pencil, onSelect: () => void openEdit(meta), disabled: busy },
-                  { key: "share", label: "共有", icon: Share2, onSelect: () => setDialog({ kind: "share", meta }) },
+                  ...(meta.owner === myId
+                    ? [{ key: "share", label: "共有", icon: Share2, onSelect: () => setDialog({ kind: "share", meta }) }]
+                    : []),
                   {
                     key: "publish",
                     label: "ストアへ公開",
@@ -184,14 +192,18 @@ export default function SkillsPage() {
                     icon: History,
                     onSelect: () => setDialog({ kind: "versions", meta }),
                   },
-                  {
-                    key: "delete",
-                    label: "削除",
-                    icon: Trash2,
-                    destructive: true,
-                    separatorBefore: true,
-                    onSelect: () => setDialog({ kind: "delete", meta }),
-                  },
+                  ...(meta.owner === myId
+                    ? [
+                        {
+                          key: "delete",
+                          label: "削除",
+                          icon: Trash2,
+                          destructive: true,
+                          separatorBefore: true,
+                          onSelect: () => setDialog({ kind: "delete", meta }),
+                        },
+                      ]
+                    : []),
                 ]}
               />
             );

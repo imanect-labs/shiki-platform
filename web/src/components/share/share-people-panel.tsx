@@ -10,10 +10,11 @@
 ///
 /// 付与・解除の API は呼び出し側から受け取る（ドライブ=ノード、アーティファクト=artifact）。
 /// 共有中の相手の一覧が 403（共有を管理できるのは持ち主だけ）なら、空の一覧と付与の欄を出さず、そのことを知らせる
-/// （黙って空に見せると、付与して初めて 403 になる・BUG-78）。
+/// （黙って空に見せると、付与して初めて 403 になる・BUG-78）。403 以外で読み込めなかったときも、空の一覧
+/// （まだ誰にも共有していません）に見せず、読み込めなかったことと、もう一度読み込むボタンを出す（BUG-120）。
 
 import * as React from "react";
-import { Loader2, Lock, Search, UserPlus, UserRound, Users, X } from "lucide-react";
+import { AlertCircle, Loader2, Lock, RotateCcw, Search, UserPlus, UserRound, Users, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -91,19 +92,29 @@ export function SharePeoplePanel({
   const [loadingShares, setLoadingShares] = React.useState(false);
   // 共有を管理する権限が無い（一覧が 403）。
   const [forbidden, setForbidden] = React.useState(false);
+  // 一覧を 403 以外で読み込めなかった（空の一覧に見せない）。
+  const [loadFailed, setLoadFailed] = React.useState(false);
+  // 「もう一度読み込む」で一覧だけを読み直す印。
+  const [loadKey, setLoadKey] = React.useState(0);
   const [pendingKey, setPendingKey] = React.useState<string | null>(null);
   const loadRef = React.useRef(load);
   loadRef.current = load;
 
-  // 開いたら状態リセット＋現在の共有相手を読む。
+  // 開いたら状態リセット。
   React.useEffect(() => {
     if (!open) return;
-    let active = true;
     setKind("user");
     setQuery("");
     setResults([]);
     setRowRole({});
+  }, [open, resourceId]);
+
+  // 開いたら（と「もう一度読み込む」で）現在の共有相手を読む。
+  React.useEffect(() => {
+    if (!open) return;
+    let active = true;
     setForbidden(false);
+    setLoadFailed(false);
     setLoadingShares(true);
     loadRef
       .current()
@@ -111,13 +122,15 @@ export function SharePeoplePanel({
       .catch((e: unknown) => {
         if (!active) return;
         setShares([]);
-        setForbidden((e as { status?: number } | null)?.status === 403);
+        const isForbidden = (e as { status?: number } | null)?.status === 403;
+        setForbidden(isForbidden);
+        setLoadFailed(!isForbidden);
       })
       .finally(() => active && setLoadingShares(false));
     return () => {
       active = false;
     };
-  }, [open, resourceId]);
+  }, [open, resourceId, loadKey]);
 
   // 種別を切り替えたら検索状態をリセットする（user↔role で結果の意味が変わるため）。
   React.useEffect(() => {
@@ -329,6 +342,22 @@ export function SharePeoplePanel({
           <div className="flex items-center gap-2 py-2 text-sm text-muted-foreground">
             <Loader2 className="size-4 animate-spin" aria-hidden />
             読み込み中…
+          </div>
+        ) : loadFailed ? (
+          <div
+            role="alert"
+            data-testid="share-load-failed"
+            className="flex min-w-0 flex-col items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2.5 text-sm"
+          >
+            <p className="flex items-start gap-2 font-medium text-destructive">
+              <AlertCircle className="mt-0.5 size-4 shrink-0" aria-hidden />
+              共有している相手を読み込めませんでした
+            </p>
+            <p className="text-muted-foreground">少し待ってから、もう一度読み込んでください。</p>
+            <Button type="button" size="sm" variant="outline" onClick={() => setLoadKey((k) => k + 1)}>
+              <RotateCcw className="size-4" aria-hidden />
+              もう一度読み込む
+            </Button>
           </div>
         ) : shares.length === 0 ? (
           <p className="py-1 text-sm text-muted-foreground">まだ誰にも共有していません。</p>
