@@ -146,13 +146,28 @@ export async function pinStubOrgDefault(page: Page): Promise<() => Promise<void>
 /// test.afterEach(() => cleanup.run());
 /// // テストの中: cleanup.add(() => removeWorkflowApi(page, id));
 /// ```
-export function cleanupQueue(): { add: (step: () => Promise<unknown>) => void; run: () => Promise<void> } {
+export function cleanupQueue(): {
+  add: (step: () => Promise<unknown>) => void;
+  /// 片付けを積む途中の処理（画面の応答の本文を読んでから積む・[`trackCreatedResources`]）。`run` はこれを待つ。
+  track: (pending: Promise<unknown>) => void;
+  run: () => Promise<void>;
+} {
   let steps: (() => Promise<unknown>)[] = [];
+  let tracked: Promise<unknown>[] = [];
   return {
     add(step) {
       steps.push(step);
     },
+    track(pending) {
+      tracked.push(pending);
+    },
     async run() {
+      // 本文を読み終わっていない応答の分を待ってから片付ける（そのテストの page のうちに消し、次のテストへ持ち越さない）。
+      while (tracked.length > 0) {
+        const waiting = tracked;
+        tracked = [];
+        await Promise.allSettled(waiting);
+      }
       const pending = steps.reverse();
       steps = [];
       await cleanupAll(...pending);
@@ -181,12 +196,14 @@ export function trackCreatedResources(page: Page, queue: CleanupQueue): void {
               ? (id) => trashFolderApi(page, id)
               : null;
     if (!remove) return;
-    void res
-      .json()
-      .then((body: { id?: string }) => {
-        if (body.id) queue.add(() => remove(body.id!));
-      })
-      .catch(() => undefined);
+    queue.track(
+      res
+        .json()
+        .then((body: { id?: string }) => {
+          if (body.id) queue.add(() => remove(body.id!));
+        })
+        .catch(() => undefined),
+    );
   });
 }
 
