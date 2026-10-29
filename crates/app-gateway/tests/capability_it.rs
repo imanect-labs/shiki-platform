@@ -778,7 +778,7 @@ async fn transition_without_expected_rev_uses_the_current_rev() {
 async fn data_add_only_user_creates_and_reads_only_own_records() {
     let Some(pool) = setup().await else { return };
     let tenant = format!("t-{}", Uuid::new_v4());
-    let (_app_id, client, owned, _foreign) = fixture(&pool, &tenant).await;
+    let (_app_id, client, owned, foreign) = fixture(&pool, &tenant).await;
     let authz = Arc::new(StubAuthz {
         objects: vec![format!("data_table:{tenant}|{owned}")],
         add_only_user: Some("bob".into()),
@@ -872,7 +872,7 @@ async fn data_add_only_user_creates_and_reads_only_own_records() {
     .await;
     assert_eq!(s, StatusCode::FORBIDDEN);
     // 片付け（このテストのテーブル・レコード）。
-    for t in [owned, _foreign] {
+    for t in [owned, foreign] {
         sqlx::query("DELETE FROM data_table WHERE tenant_id = $1 AND id = $2")
             .bind(&tenant)
             .bind(t)
