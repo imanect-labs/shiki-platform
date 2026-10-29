@@ -71,9 +71,9 @@ pub use document_tool::{DocumentEditTool, DocumentEmbedTool, DocumentReadTool, S
 pub use error::ChatError;
 pub use gui_actions::{ChatActionLedger, ChatSubmitHandler};
 pub use model::{
-    Attachment, Citation, ContentBlock, Message, PlanSubtask, Role, RunModel, RunStatus,
-    SelectionContext, SelectionKind, SkillPin, StreamEvent, StreamEventKind, Thread, ThreadRole,
-    UiActionRun, UiActionRunStatus, UiActionValue, WebSource,
+    Attachment, Citation, ContentBlock, Message, PendingApproval, PlanSubtask, Role, RunModel,
+    RunStatus, SelectionContext, SelectionKind, SkillPin, StreamEvent, StreamEventKind, Thread,
+    ThreadRole, UiActionRun, UiActionRunStatus, UiActionValue, WebSource,
 };
 pub use preferences::UserPreferences;
 pub use skill_catalog::{

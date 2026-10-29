@@ -303,6 +303,24 @@ pub struct Thread {
     pub updated_at: DateTime<Utc>,
 }
 
+/// 自分の承認を待っている run（ホームの「今日のこと」・#965）。
+///
+/// 承認できるのは run の actor 本人だけなので、一覧は自分が actor の run に限る。
+/// ツールの入力は載せない（大きく・機微になり得る。中身は会話画面の承認カードで確かめる）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct PendingApproval {
+    pub thread_id: Uuid,
+    pub thread_title: String,
+    pub run_id: Uuid,
+    pub tool_call_id: String,
+    /// 承認を求めているツール名。
+    pub tool_name: String,
+    /// 承認を求める理由（エージェントが添えたもの・長ければ詰める）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+    pub requested_at: DateTime<Utc>,
+}
+
 /// メッセージ（API DTO 兼ドメイン）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct Message {

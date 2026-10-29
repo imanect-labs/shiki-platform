@@ -45,6 +45,29 @@ pub struct WorkflowSearchHit {
     pub updated_at: DateTime<Utc>,
 }
 
+/// 直近に終わった実行の集計（ホームの「今日のこと」・#965）。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RunDigest {
+    /// 期間内に成功で終わった実行の数。
+    pub succeeded: i64,
+    /// 期間内に失敗で終わった実行の数。
+    pub failed: i64,
+    /// 期間内に失敗した実行（終了の新しい順・上限件数まで）。
+    pub recent_failures: Vec<FailedRun>,
+}
+
+/// 失敗した実行 1 件（どのワークフローの・いつの・なぜ）。
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct FailedRun {
+    pub run_id: Uuid,
+    pub workflow_id: Uuid,
+    pub workflow_name: String,
+    pub display_name: Option<String>,
+    /// 失敗の理由（先頭 200 文字まで・一覧に添えるだけなので全文は運ばない）。
+    pub fail_reason: Option<String>,
+    pub finished_at: DateTime<Utc>,
+}
+
 /// 検索語を ILIKE の部分一致パターンへ（空白区切りの語ごと・ワイルドカードは文字として扱う）。
 ///
 /// 利用者・モデルが書いた `%`/`_` がワイルドカードとして効くと「全件一致」になるため、
@@ -175,6 +198,62 @@ impl WorkflowSummaryStore {
         .bind(owned)
         .fetch_all(&self.db)
         .await
+    }
+}
+
+impl WorkflowSummaryStore {
+    /// 認可済み id 集合のワークフローについて、`since` 以降に終わった実行を集計する。
+    ///
+    /// 件数は 1 本の集計 SQL、失敗の明細は上限 `failure_limit` 件の 1 本の SQL（並行に引く）。
+    /// id は認可済み前提で、tenant で二重に絞る。削除済みのワークフローの実行は明細に出さない。
+    /// 集計の基準は終了時刻（`finished_at`・終端遷移で必ず入る）で、終了時刻の索引に乗る。
+    pub async fn run_digest(
+        &self,
+        tenant_id: &str,
+        ids: &[Uuid],
+        since: DateTime<Utc>,
+        failure_limit: i64,
+    ) -> Result<RunDigest, sqlx::Error> {
+        if ids.is_empty() {
+            return Ok(RunDigest::default());
+        }
+        let counts = sqlx::query_as::<_, (i64, i64)>(
+            "SELECT count(*) FILTER (WHERE status = 'succeeded'), \
+                    count(*) FILTER (WHERE status = 'failed') \
+             FROM workflow_run \
+             WHERE tenant_id = $1 AND workflow_id = ANY($2) \
+               AND status IN ('succeeded', 'failed', 'cancelled') AND finished_at >= $3",
+        )
+        .bind(tenant_id)
+        .bind(ids)
+        .bind(since)
+        .fetch_one(&self.db);
+        let failures = sqlx::query_as::<_, FailedRun>(
+            "SELECT r.run_id, r.workflow_id, a.name AS workflow_name, \
+                    v.body->>'display_name' AS display_name, \
+                    left(r.fail_reason, 200) AS fail_reason, r.finished_at \
+             FROM workflow_run r \
+             JOIN artifact a \
+               ON a.tenant_id = r.tenant_id AND a.id = r.workflow_id AND a.deleted_at IS NULL \
+             JOIN artifact_version v \
+               ON v.tenant_id = a.tenant_id AND v.artifact_id = a.id \
+              AND v.version = a.current_version \
+             WHERE r.tenant_id = $1 AND r.workflow_id = ANY($2) AND r.status = 'failed' \
+               AND r.finished_at >= $3 \
+             ORDER BY r.finished_at DESC, r.run_id DESC \
+             LIMIT $4",
+        )
+        .bind(tenant_id)
+        .bind(ids)
+        .bind(since)
+        .bind(failure_limit.clamp(1, 20))
+        .fetch_all(&self.db);
+        let ((succeeded, failed), recent_failures) = tokio::try_join!(counts, failures)?;
+        Ok(RunDigest {
+            succeeded,
+            failed,
+            recent_failures,
+        })
     }
 }
 

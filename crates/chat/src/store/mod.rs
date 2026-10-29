@@ -12,6 +12,7 @@ mod autonomous;
 mod custom_instructions;
 mod feedback;
 mod message_view;
+mod pending_approvals;
 mod post;
 mod preferences;
 mod reaper;

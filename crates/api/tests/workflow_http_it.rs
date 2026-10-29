@@ -671,6 +671,22 @@ async fn workflow_http_end_to_end() {
     .await;
     assert_eq!(body["status"], json!("failed"));
 
+    // --- ホームの「今日のこと」: 直近 24 時間の成功・失敗の件数と、失敗の明細（#965）。
+    // tenant は他のテストと共有なので件数は下限で見て、明細はこの run が載ることを確かめる。
+    let (st, body) = req(&env, "GET", "/me/workflow-runs", None).await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(body["window_hours"], json!(24));
+    assert!(body["succeeded"].as_i64().unwrap() >= 1, "{body}");
+    assert!(body["failed"].as_i64().unwrap() >= 1, "{body}");
+    let failures = body["recent_failures"].as_array().unwrap();
+    let mine = failures
+        .iter()
+        .find(|f| f["run_id"] == json!(run_fail.to_string()))
+        .unwrap_or_else(|| panic!("失敗した run が明細に載る: {body}"));
+    assert_eq!(mine["workflow_id"], json!(wf_fail));
+    assert_eq!(mine["display_name"], json!("テストフロー"));
+    assert!(mine["finished_at"].is_string());
+
     let (st, body) = req(
         &env,
         "POST",
