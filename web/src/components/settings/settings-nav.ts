@@ -1,6 +1,7 @@
 import {
   Bell,
   KeyRound,
+  MessageSquare,
   MonitorSmartphone,
   Palette,
   Plug,
@@ -36,6 +37,7 @@ export const SETTINGS_NAV: SettingsNavGroup[] = [
     label: "環境設定",
     items: [
       { label: "表示", href: "/settings/appearance", icon: Palette },
+      { label: "チャット", href: "/settings/chat", icon: MessageSquare },
       { label: "通知", href: "/settings/notifications", icon: Bell, mock: true },
     ],
   },

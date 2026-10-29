@@ -48,6 +48,8 @@ import {
   type SlashSuggestion,
 } from "@/lib/slash-command";
 import { toast } from "@/components/ui/use-toast";
+import { usePreferences } from "@/lib/preferences";
+import { useModKeyLabel } from "@/hooks/use-mod-key";
 import { DrivePicker } from "./drive-picker";
 
 /// 小さな × の押せる範囲を、見た目を変えずに周囲へ広げる（指で外せるように）。
@@ -196,6 +198,9 @@ export const Composer = React.memo(function Composer({
   const [modelOpen, setModelOpen] = React.useState(false);
   // この発話に使うツール（#734）。送信時に会話側が読み出して空に戻す。
   const toolChoice = useToolChoice(modelScope);
+  // 送信キー（ユーザー設定・#952）。Ctrl/⌘+Enter にしていれば Enter は改行。
+  const submitKey = usePreferences().prefs.submit_key;
+  const modKey = useModKeyLabel();
   const [pickerOpen, setPickerOpen] = React.useState(false);
   const [wsPickerOpen, setWsPickerOpen] = React.useState(false);
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
@@ -596,6 +601,7 @@ export const Composer = React.memo(function Composer({
               slashOpen ? slashOptionId(Math.min(slashIndex, slashHits!.length - 1)) : undefined
             }
             onKeyDown={onKeyDown}
+            submitKey={submitKey}
             onScroll={(e) => setTextScroll(e.currentTarget.scrollTop)}
             // 先頭の語の幅だけ 1 行目を下げる（続けて打った文字は語の右から、2 行目以降は左端から）。
             style={tokens.length > 0 ? { textIndent: tokensWidth + TOKEN_GAP } : undefined}
@@ -726,7 +732,13 @@ export const Composer = React.memo(function Composer({
               onClick={submit}
               disabled={!canSend}
               aria-label={streaming ? "順番待ちに追加" : "送信"}
-              title={streaming ? "生成が終わったら自動で送信します" : undefined}
+              title={
+                streaming
+                  ? "生成が終わったら自動で送信します"
+                  : submitKey === "mod_enter"
+                    ? `送信（${modKey}+Enter）`
+                    : undefined
+              }
               className={cn(
                 "flex size-10 shrink-0 items-center justify-center rounded-full transition-colors md:size-9",
                 "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card",

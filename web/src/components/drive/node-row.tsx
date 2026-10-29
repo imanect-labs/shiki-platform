@@ -4,7 +4,8 @@ import * as React from "react";
 import { Lock, Users } from "lucide-react";
 
 import type { NodeResponse } from "@/lib/storage";
-import { formatBytes, formatDateTime } from "@/lib/format";
+import { formatBytes } from "@/lib/format";
+import { DateTime } from "@/components/ui/date-time";
 import { cn } from "@/lib/utils";
 
 import { NodeActionsMenu, useLongPress, type NodeAction } from "./node-menu";
@@ -76,7 +77,7 @@ export function NodeRow({
       </button>
 
       <span className="hidden truncate text-[13px] text-muted-foreground @xl:block">
-        {formatDateTime(node.updated_at)}
+        <DateTime iso={node.updated_at} />
       </span>
       <span className="hidden truncate text-[13px] text-muted-foreground @4xl:block">
         {/* 最終更新者（updated_by・11P.10）。自分は「自分」、他者は表示名、AI は主体名義。 */}

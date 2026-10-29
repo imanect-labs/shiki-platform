@@ -70,7 +70,8 @@ function CharCount({ id, text }: { id: string; text: string }) {
 }
 
 /// 設定 → パーソナライズ。カスタム指示は保存され、以後の発話で AI の system プロンプトへ渡る（#900）。
-/// 記憶・Web 検索の既定はまだ API が無いため「準備中」（説明だけを出し、操作は置かない）。
+/// 記憶はまだ API が無いため「準備中」（説明だけを出し、操作は置かない）。Web 検索の既定は
+/// 設定 → チャット（#952）。
 export function AiView() {
   const [base, setBase] = React.useState<CustomInstructionsDraft | null>(null);
   const [draft, setDraft] = React.useState<CustomInstructionsDraft | null>(null);
@@ -208,14 +209,13 @@ export function AiView() {
       <SettingsSection
         title={
           <>
-            記憶と検索
+            記憶
             <SoonBadge />
           </>
         }
       >
         <SettingsRow label="会話を記憶する" description="過去のチャットから好みや前提を覚え、次の回答に活かします。" />
         <SettingsRow label="記憶を消去" description="これまでに覚えた内容をすべて忘れます。" />
-        <SettingsRow label="Web 検索を既定で使う" description="新しいチャットで Web 検索を最初から有効にします。" />
       </SettingsSection>
 
       {dirty ? (

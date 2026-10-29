@@ -240,6 +240,7 @@ audit_actions! {
     MeChatgptConnect = "me.chatgpt.connect", "ChatGPT プランを連携", Chat;
     MeChatgptDisconnect = "me.chatgpt.disconnect", "ChatGPT プランの連携を解除", Chat;
     MeCustomInstructionsUpdate = "me.custom_instructions.update", "カスタム指示を変更", Chat;
+    MePreferencesUpdate = "me.preferences.update", "ユーザー設定を変更", Chat;
     MiniappResolve = "miniapp.resolve", "ミニアプリを開く", App;
     NodeBreadcrumbRead = "node.breadcrumb.read", "フォルダの階層を参照", Folder;
     NodeSearch = "node.search", "ドライブを検索", Search;

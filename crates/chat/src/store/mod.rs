@@ -13,6 +13,7 @@ mod custom_instructions;
 mod feedback;
 mod message_view;
 mod post;
+mod preferences;
 mod reaper;
 mod runs;
 mod sharing;

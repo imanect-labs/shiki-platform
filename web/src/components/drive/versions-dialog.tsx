@@ -23,7 +23,8 @@ import {
   type FileVersionResponse,
   type NodeResponse,
 } from "@/lib/storage";
-import { formatBytes, formatDateTime } from "@/lib/format";
+import { formatBytes } from "@/lib/format";
+import { DateTime } from "@/components/ui/date-time";
 
 import { LoadingRow } from "./primitives";
 
@@ -162,7 +163,7 @@ export function VersionsDialog({
                         ) : null}
                       </p>
                       <p className="truncate text-xs text-muted-foreground">
-                        {formatDateTime(v.created_at)} · {formatBytes(v.size_bytes)}
+                        <DateTime iso={v.created_at} /> · {formatBytes(v.size_bytes)}
                         {v.author ? ` · ${authorLabel(v)}` : ""}
                       </p>
                     </div>

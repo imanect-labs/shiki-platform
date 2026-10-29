@@ -8,7 +8,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { toast } from "@/components/ui/use-toast";
 import { useInfiniteList, useInfiniteSentinel } from "@/hooks/use-infinite-list";
 import { isConflict, listTrash, restoreNode, type NodeResponse } from "@/lib/storage";
-import { formatDateTime } from "@/lib/format";
+import { DateTime } from "@/components/ui/date-time";
 
 import { LoadingRow, NodeIcon, nodeKindLabel } from "./primitives";
 
@@ -63,7 +63,7 @@ export function TrashView() {
           <div className="min-w-0 flex-1">
             <p className="line-clamp-2 text-sm font-medium [overflow-wrap:anywhere] md:truncate">{node.name}</p>
             <p className="truncate text-xs text-muted-foreground">
-              {nodeKindLabel(node)}・更新 {formatDateTime(node.updated_at)}
+              {nodeKindLabel(node)}・更新 <DateTime iso={node.updated_at} />
             </p>
           </div>
           <Button
