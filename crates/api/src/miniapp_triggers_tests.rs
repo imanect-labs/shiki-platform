@@ -189,16 +189,23 @@ async fn cron_tick_records_run_and_advances_next() {
     let tenant = format!("t-{}", Uuid::new_v4());
     let app_id = Uuid::new_v4();
 
+    // 期限の来た、式に当たる時刻（5 分ごとの区切り）。
+    let due = app_platform::next_cron_run_after(
+        "*/5 * * * *",
+        chrono::Utc::now() - chrono::Duration::minutes(10),
+    )
+    .unwrap();
     let (sched_id,): (Uuid,) = sqlx::query_as(
         "INSERT INTO app_function_schedule \
                  (tenant_id, org, app_id, function, expr, next_run_at) \
-             VALUES ($1, $2, $3, $4, $5, now() - interval '1 minute') RETURNING id",
+             VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
     )
     .bind(&tenant)
     .bind("acme")
     .bind(app_id)
     .bind("nightly")
     .bind("*/5 * * * *")
+    .bind(due)
     .fetch_one(&pool)
     .await
     .unwrap();
@@ -276,6 +283,56 @@ async fn realign_moves_stale_weekday_schedules_to_the_standard_reading() {
     // 何度流しても同じ（起動のたびに流してよい）。
     realign_schedules(&pool, now).await.unwrap();
     assert_eq!(at(stale).await, monday);
+
+    sqlx::query("DELETE FROM app_function_schedule WHERE tenant_id = $1")
+        .bind(&tenant)
+        .execute(&pool)
+        .await
+        .unwrap();
+}
+
+/// 期限の来た時刻が今の読み方で式に当たらない（古い読み方で計算した日曜の「毎週月曜」・ローリング更新の間に古い版
+/// が書き戻した時刻）なら、実行せず、次の時刻を今の読み方で計算し直す（BUG-129）。
+#[tokio::test]
+async fn cron_tick_does_not_run_a_time_the_expression_does_not_hit() {
+    let Some(pool) = pool().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let now = chrono::Utc::now();
+    // 過ぎた日曜 9:00（UTC）。「0 9 * * 1」を古い読み方（1 が日曜）で計算した時刻。
+    let sunday =
+        app_platform::next_cron_run_after("0 9 * * 0", now - chrono::Duration::days(8)).unwrap();
+    assert!(sunday < now);
+    let (sched_id,): (Uuid,) = sqlx::query_as(
+        "INSERT INTO app_function_schedule (tenant_id, org, app_id, function, expr, next_run_at) \
+         VALUES ($1, 'acme', $2, 'weekly', '0 9 * * 1', $3) RETURNING id",
+    )
+    .bind(&tenant)
+    .bind(Uuid::new_v4())
+    .bind(sunday)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    cron_tick(&deps(pool.clone())).await.unwrap();
+
+    let (runs,): (i64,) =
+        sqlx::query_as("SELECT count(*) FROM app_function_run WHERE schedule_id = $1")
+            .bind(sched_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(runs, 0, "日曜には実行しない");
+    let (next,): (chrono::DateTime<chrono::Utc>,) =
+        sqlx::query_as("SELECT next_run_at FROM app_function_schedule WHERE id = $1")
+            .bind(sched_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        next,
+        app_platform::next_cron_run_after("0 9 * * 1", chrono::Utc::now()).unwrap(),
+        "次の月曜 9:00 に計算し直す"
+    );
 
     sqlx::query("DELETE FROM app_function_schedule WHERE tenant_id = $1")
         .bind(&tenant)

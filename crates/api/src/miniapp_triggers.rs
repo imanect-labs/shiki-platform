@@ -218,6 +218,24 @@ async fn cron_tick(deps: &TriggerDeps) -> anyhow::Result<()> {
                 continue;
             }
         };
+        // 期限の来た時刻が、今の読み方で式に当たる時刻かを確かめる（BUG-129）。曜日を標準の読み方にする前に計算した
+        // 時刻や、ローリング更新の間に古い版のリーダーが書き戻した時刻は当たらない（曜日が 1 日ずれる）ので、実行せず
+        // 次の時刻を計算し直すだけにする。
+        let hits = app_platform::next_cron_run_after(
+            &s.expr,
+            s.next_run_at - chrono::Duration::seconds(1),
+        )
+        .is_ok_and(|at| at == s.next_run_at);
+        if !hits {
+            tracing::info!(schedule = %s.id, app_id = %s.app_id, at = %s.next_run_at, %next,
+                "式に当たらない時刻のため実行せず、次の時刻を計算し直します");
+            sqlx::query("UPDATE app_function_schedule SET next_run_at = $2 WHERE id = $1")
+                .bind(s.id)
+                .bind(next)
+                .execute(&mut *tx)
+                .await?;
+            continue;
+        }
         // (schedule_id, scheduled_at) 一意＝リーダー交代/再起動でも同一時刻の二重起動なし。
         let inserted = sqlx::query(
             "INSERT INTO app_function_run (tenant_id, schedule_id, scheduled_at) \
@@ -258,8 +276,9 @@ async fn cron_tick(deps: &TriggerDeps) -> anyhow::Result<()> {
 /// まだ来ていない実行の時刻（`next_run_at > now`）を、今の読み方で計算し直す（起動時・BUG-129）。
 ///
 /// 曜日を標準の読み方（1 が月曜・0 と 7 が日曜）で読むようにする前に保存した時刻は、cron クレートの読み方
-/// （1 が日曜）で計算してあり、そのままだと次の 1 回だけ 1 日ずれた曜日に動く。期限の来た行は次の tick が実行し、
-/// その後の時刻を今の読み方で求めるので触らない。読めない式は tick に任せる（実行せずに送る）。同じ読み方なら
+/// （1 が日曜）で計算してあり、そのままだと次の 1 回だけ 1 日ずれた曜日に動く。期限の来た行は次の tick が、式に
+/// 当たる時刻かを確かめてから実行し（当たらなければ実行せずに計算し直す）、その後の時刻を今の読み方で求めるので
+/// 触らない。読めない式は tick に任せる（実行せずに送る）。同じ読み方なら
 /// 値は変わらないので、起動のたびに流してよい。tick と取り違えないよう、読んだ時刻のままの行だけを書き換える。
 /// 戻り値 = 書き換えた行の数。
 async fn realign_schedules(db: &PgPool, now: chrono::DateTime<chrono::Utc>) -> anyhow::Result<u64> {
