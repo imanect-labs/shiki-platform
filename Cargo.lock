@@ -5196,7 +5196,6 @@ name = "shiki-agent-core"
 version = "0.0.0"
 dependencies = [
  "async-trait",
- "chardetng",
  "chrono",
  "dom_query",
  "dom_smoothie",
@@ -5211,6 +5210,7 @@ dependencies = [
  "shiki-llm-gateway",
  "shiki-rag",
  "shiki-sandbox-client",
+ "shiki-textenc",
  "shiki-websearch",
  "sqlx",
  "thiserror 2.0.18",
@@ -5795,6 +5795,14 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "shiki-textenc"
+version = "0.0.0"
+dependencies = [
+ "chardetng",
+ "encoding_rs",
 ]
 
 [[package]]

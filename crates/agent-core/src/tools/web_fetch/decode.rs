@@ -12,6 +12,8 @@
 //! 5. `chardetng` の推定（encoding_rs と同作者・Firefox 実績）
 //!
 //! 5 まで落ちるのは「宣言が無く UTF-8 でもない」ページだけで、そこは推定しか手がない。
+//! 1・4・5 はファイルの文字コードの判定と共有する（`textenc`・GAP-45。判定を 2 つ持たない）。ここに残すのは
+//! ウェブのページだけにある宣言（2・3）の読み方。
 
 use encoding_rs::Encoding;
 
@@ -28,12 +30,13 @@ pub(super) struct Decoded {
 
 /// 本文バイト列を文字列へ落とす。判定不能でも**必ず成功する**（推定にフォールバックする）。
 pub(super) fn decode(body: &[u8], content_type: Option<&str>) -> Decoded {
-    let declared = Encoding::for_bom(body)
+    let declared = textenc::bom(body)
         .map(|(enc, _)| enc)
         .or_else(|| from_content_type(content_type))
         .or_else(|| from_meta(body));
     // BOM 付きの一致は `decode` が自分で剥がす（宣言より BOM が優先されるのも仕様どおり）。
-    let encoding = declared.unwrap_or_else(|| guess(body));
+    // 本文は大きさの上限で途中で切れるので、末尾で切れた多バイト文字は UTF-8 の判定で許す（textenc::guess_any）。
+    let encoding = declared.unwrap_or_else(|| textenc::guess_any(body));
     let (text, actual, _had_errors) = encoding.decode(body);
     Decoded {
         text: text.into_owned(),
@@ -95,28 +98,6 @@ fn trim_label(raw: &str) -> String {
         .chars()
         .take_while(|c| !c.is_whitespace() && *c != ';' && *c != '"' && *c != '\'' && *c != '/')
         .collect()
-}
-
-/// 宣言が無いときの推定。妥当な UTF-8 を最優先し、それ以外は `chardetng` に委ねる。
-fn guess(body: &[u8]) -> &'static Encoding {
-    if is_utf8_ignoring_truncation(body) {
-        return encoding_rs::UTF_8;
-    }
-    let mut detector = chardetng::EncodingDetector::new();
-    detector.feed(body, true);
-    detector.guess(None, true)
-}
-
-/// 「末尾で切れた多バイト文字」を除けば妥当な UTF-8 か。
-///
-/// 本文はサイズ上限で**途中で打ち切られる**ため、末尾の不完全なシーケンスだけで
-/// 「UTF-8 ではない」と判定してはいけない（打ち切りが推定を狂わせる）。
-fn is_utf8_ignoring_truncation(body: &[u8]) -> bool {
-    match std::str::from_utf8(body) {
-        Ok(_) => true,
-        // error_len() == None は「入力の末尾で切れた」＝打ち切りによるもの。
-        Err(e) => e.error_len().is_none(),
-    }
 }
 
 #[cfg(test)]

@@ -1,0 +1,22 @@
+[package]
+name = "shiki-textenc"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+version = "0.0.0"
+
+# 文章のバイト列の文字コードを決めて読む・書く（GAP-45・#405）。ワークフローのファイルを読む・AI エージェントの
+# 窓読み（api）、CSV の集計と編集（tabular）、データの取り込み（data）、AI のウェブ取得（agent-core）が同じ判定を
+# 使う（判定を 2 つ持たない）。依存は encoding_rs・chardetng だけにする（どの層からも軽く使え、上の層に依存しない）。
+[lib]
+name = "textenc"
+
+[dependencies]
+# デコードとエンコード（WHATWG の Encoding Standard。Shift_JIS は CP932 の拡張を含む）。
+encoding_rs.workspace = true
+# 宣言の無いバイト列の推定（encoding_rs と同じ作者・Firefox の実績）。
+chardetng.workspace = true
+
+[lints]
+workspace = true

@@ -17,6 +17,8 @@ shiki-rag.workspace = true
 shiki-llm-gateway.workspace = true
 shiki-sandbox-client.workspace = true
 shiki-websearch.workspace = true
+# 文字コードの判定（BOM・UTF-8・推定）をファイルの読み取りと共有する（GAP-45）。
+shiki-textenc.workspace = true
 
 serde.workspace = true
 serde_json.workspace = true
@@ -34,8 +36,8 @@ tokio = { workspace = true, features = ["time", "rt"] }
 dom_smoothie.workspace = true
 dom_query.workspace = true
 htmd.workspace = true
+# 宣言（Content-Type・meta）の charset の名前を引いてデコードする（推定は shiki-textenc）。
 encoding_rs.workspace = true
-chardetng.workspace = true
 # 抽出の削減率・フォールバック率を観測する（回帰検知）。
 tracing.workspace = true
 # ツール名語彙（vocab.rs）を TS へ生成する（codegen が正・workflow-engine と同型）。
@@ -60,7 +62,7 @@ proptest.workspace = true
 
 # lib 名 authz/rag/llm_gateway で参照するため machete が誤検出する（実際は使用中）。
 [package.metadata.cargo-machete]
-ignored = ["shiki-authz", "shiki-rag", "shiki-llm-gateway", "shiki-sandbox-client", "shiki-websearch"]
+ignored = ["shiki-authz", "shiki-rag", "shiki-llm-gateway", "shiki-sandbox-client", "shiki-websearch", "shiki-textenc"]
 
 [lints]
 workspace = true
