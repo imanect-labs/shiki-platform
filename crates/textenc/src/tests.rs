@@ -246,3 +246,34 @@ fn refuses_characters_the_encoding_cannot_hold() {
     assert!(encode_like("😀", UTF_8, false).is_ok());
     assert!(encode_like("😀", UTF_16LE, true).is_ok());
 }
+
+/// Mac の入力でよく出る、Shift_JIS（CP932）では全角の別の文字で持つ記号は、見た目の同じ文字に置き換えて書く
+/// （〜 → ～ など）。読むと 0x8160 は ～ に見えるので、利用者には同じ文字なのに書けないと言わない。
+#[test]
+fn writes_mac_style_symbols_as_their_cp932_look_alikes() {
+    let pairs = [
+        ('\u{301C}', '\u{FF5E}'),
+        ('\u{2014}', '\u{2015}'),
+        ('\u{2016}', '\u{2225}'),
+        ('\u{00A2}', '\u{FFE0}'),
+        ('\u{00A3}', '\u{FFE1}'),
+        ('\u{00AC}', '\u{FFE2}'),
+    ];
+    for encoding in [SHIFT_JIS, EUC_JP] {
+        for (mac, cp932) in pairs {
+            let text = format!("10時{mac}12時");
+            let bytes = encode_like(&text, encoding, false);
+            assert_eq!(
+                bytes,
+                Ok(encoded(encoding, &format!("10時{cp932}12時"))),
+                "{} {mac:?}",
+                encoding.name()
+            );
+        }
+    }
+    // UTF-8・UTF-16 は置き換えない（どの文字も書ける）。
+    assert_eq!(
+        encode_like("\u{301C}", UTF_8, false).unwrap(),
+        "\u{301C}".as_bytes()
+    );
+}

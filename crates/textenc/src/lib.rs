@@ -169,9 +169,30 @@ fn is_binary_control(c: char) -> bool {
     (c.is_control() && !matches!(c, '\t' | '\n' | '\r' | '\u{0C}')) || c == '\u{FFFE}'
 }
 
+/// Shift_JIS・EUC-JP（encoding_rs は WHATWG の表）で書けない記号のうち、Windows（CP932）が見た目の同じ全角の文字で
+/// 持つもの。Mac の入力でよく出る（〜 など）。読むと 0x8160 は ～ に見えるので、書き戻すときはこちらに置き換える。
+const CP932_LOOK_ALIKES: [(char, char); 6] = [
+    ('\u{301C}', '\u{FF5E}'), // 〜 → ～
+    ('\u{2014}', '\u{2015}'), // — → ―
+    ('\u{2016}', '\u{2225}'), // ‖ → ∥
+    ('\u{00A2}', '\u{FFE0}'), // ¢ → ￠
+    ('\u{00A3}', '\u{FFE1}'), // £ → ￡
+    ('\u{00AC}', '\u{FFE2}'), // ¬ → ￢
+];
+
+/// [`CP932_LOOK_ALIKES`] の置き換え（無ければそのまま）。
+fn cp932_look_alike(c: char) -> char {
+    CP932_LOOK_ALIKES
+        .iter()
+        .find_map(|(from, to)| (*from == c).then_some(*to))
+        .unwrap_or(c)
+}
+
 /// 文章を、読んだときと同じ文字コードと BOM で書く（CSV を編集した後も、元の文字コードのまま保存する）。
 ///
 /// その文字コードに無い文字があれば、その文字を返して書かない（`&#…;` に置き換えて黙って中身を変えない）。
+/// Shift_JIS・EUC-JP では、Windows が見た目の同じ全角の文字で持つ記号（〜・— など・[`CP932_LOOK_ALIKES`]）を、
+/// その文字に置き換えて書く（読み直すと全角の文字になる）。
 pub fn encode_like(
     text: &str,
     encoding: &'static Encoding,
@@ -201,6 +222,14 @@ pub fn encode_like(
         }
         return Ok(out);
     }
+    let text: std::borrow::Cow<'_, str> = if (encoding == SHIFT_JIS || encoding == EUC_JP)
+        && text.chars().any(|c| cp932_look_alike(c) != c)
+    {
+        std::borrow::Cow::Owned(text.chars().map(cp932_look_alike).collect())
+    } else {
+        std::borrow::Cow::Borrowed(text)
+    };
+    let text = text.as_ref();
     let mut encoder = encoding.new_encoder();
     let capacity = encoder
         .max_buffer_length_from_utf8_without_replacement(text.len())
