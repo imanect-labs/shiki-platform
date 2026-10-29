@@ -189,7 +189,7 @@ README.md §4 の用語集と同じ語を使う。ここでは各用語が **実
 | script-runtime | `crates/script-runtime`（`ScriptEngine::run`、`engine.rs:173-180`）。能力呼び出しの gRPC 双方向ストリームは `server.rs:68`/`142-163`（`drive_stream`）。 |
 | WorkflowRunLauncher | `run/launcher.rs`（`WorkflowRunLauncher`・`LauncherError`）。interactive API・スケジューラ・イベント relay が共有するrun作成の唯一の入口。 |
 | WorkflowWorker | `run/worker.rs`（`WorkerConfig`・`WorkflowWorker`）。 |
-| LeaderLease / SchedulerStore | `scheduler/leader.rs:10-51` / `scheduler/store.rs`, `scheduler/cron.rs`。 |
+| LeaderLease / SchedulerStore | `scheduler/leader.rs:10-51` / `scheduler/store.rs`, `scheduler/cron.rs`（cron の読み方は `crates/cron5` の公開し直し・BUG-129）。 |
 | outbox fan-out | `crates/storage/src/event.rs`（`claim_undelivered`/`mark_delivered`/`register_consumer`/`gc_delivered`）＋ `outbox_delivery` テーブル（`0021`）。 |
 | `crates/durable` | `crates/durable/src/`（`claim.rs`/`events.rs`/`pubsub.rs`/`spec.rs`）。claim/リース/fencing/`append_event`/`RedisPubSub` をテーブル非依存プリミティブとして提供。chat の `generation_run` 実装（Task 3.11・#82）の抽出。 |
 
@@ -200,6 +200,7 @@ README.md §4 の用語集と同じ語を使う。ここでは各用語が **実
 | `crates/workflow-engine` | IR 検証・run/step 状態機械・能力ゲートウェイ・スケジューラ・委譲検証 | `ir/`（IR型・検証）・`run/`（launcher/worker/store/model/graph/readiness）・`nodes/`（exec/ports/capability/http/script/resolver）・`scheduler/`（leader/store/cron）・`capability/`（journal）・`control/`（branch/switch純関数）・`delegation.rs`・`vocab.rs`・`concurrency.rs`・`ratelimit.rs`・`retry.rs` |
 | `crates/api`（`workflow_runtime` サブモジュール） | shiki-server 起動時の結線（`spawn_workflow_runtime`）・`NodePorts` の本番実装・run 起動/履歴 API | `workflow_runtime/mod.rs`（`spawn_workflow_runtime:166`・`relay_events:237-268`・`WorkflowConfig`）・`workflow_runtime/ports.rs`（`ProdNodePorts`）・`routes/workflows.rs`（`start_workflow_run:275`・`get_workflow_run:312`） |
 | `crates/durable` | claim/リース/fencing/追記イベントログの共有プリミティブ（chat と workflow で共有・キュー/状態機械は共有しない） | `claim.rs`・`events.rs`・`pubsub.rs`・`spec.rs` |
+| `crates/cron5` | 5 つの欄の cron を標準の読み方（曜日は 0 と 7 が日曜）で解く写像の単一定義。ワークフローのスケジュールとミニアプリの B2 関数のスケジュールが共有する（BUG-95・BUG-129） | `lib.rs` |
 | `crates/script-runtime` | shiki script の非特権実行環境（QuickJS on wasmtime）・gRPC over UDS | `engine.rs`・`compile.rs`・`frames.rs`・`host.rs`・`server.rs`・`guest/` |
 | `crates/storage` | outbox・オブジェクト/構造化データ・StorageService（チョークポイント） | `event.rs`（outbox fan-out 関数群） |
 | `crates/authz` | AuthContext・PrincipalKind・OpenFGA クライアント | `context.rs` |
