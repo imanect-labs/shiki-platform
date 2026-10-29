@@ -164,7 +164,7 @@ export function cleanupQueue(): { add: (step: () => Promise<unknown>) => void; r
 export type CleanupQueue = ReturnType<typeof cleanupQueue>;
 
 /// 画面の操作で作られたもの（ブラウザーからの作成の応答）を、片付けの登録簿に積む（一覧の「新しいワークフロー」・
-/// アプリの作成・会話の「アプリとして保存」・スキルの作成・テーブルの作成・BUG-126）。`page.request` で作ったものは
+/// アプリの作成・会話の「アプリとして保存」・スキルの作成・テーブルの作成・ドライブのフォルダーの作成・BUG-126）。`page.request` で作ったものは
 /// 画面の応答に出ないので、呼び出し側が積む。
 export function trackCreatedResources(page: Page, queue: CleanupQueue): void {
   page.on("response", (res) => {
@@ -177,7 +177,9 @@ export function trackCreatedResources(page: Page, queue: CleanupQueue): void {
           ? (id) => deleteArtifactApi(page, id)
           : path === "/api/data/tables"
             ? (id) => deleteTableApi(page, id)
-            : null;
+            : path === "/api/folders"
+              ? (id) => trashFolderApi(page, id)
+              : null;
     if (!remove) return;
     void res
       .json()
