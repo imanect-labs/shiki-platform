@@ -125,11 +125,18 @@ type secret
 # owner/editor/viewer はミニアプリ・サービス identity（miniapp subject）も受理する（Task 9.6）。
 # 所有テーブルプロビジョン（Task 9.13）で owner@miniapp を書き、B2 自動化は自アプリの
 # 所有テーブルのみに束縛される（越境は per-call OpenFGA で fail-closed）。
+# submitter は「レコードを追加するだけ」の共有（D-113・kintone のアプリのアクセス権・Salesforce の
+# オブジェクトの作成権限と同じ形）。editor が含意する（編集できる人は追加もできる）が、**viewer は
+# submitter を含意せず、submitter も viewer を含意しない**（追加だけの人に他人のレコードを見せない・
+# 閲覧だけの人には追加させない）。追加だけの人が読めるのは自分が作ったレコードだけで、行述語との積で
+# 絞る（crates/data の table_access）。書き換え・削除・状態を進める・一括取込には editor が要る。
+# 付与先は人と部署（role#member）だけ（ワークフロー・ミニアプリの主体へは委譲しない）。
 type data_table
   relations
     define owner: [user, workflow, miniapp]
     define editor: [user, role#member, workflow, miniapp] or owner
     define viewer: [user, role#member, workflow, miniapp] or editor
+    define submitter: [user, role#member] or editor
 
 # 構造化データの個別共有行（Task 9.3）。「全行タプル化しない」原則の唯一の例外で、
 # 明示共有した行だけがスパースに載る（タプル数=共有件数）。行の基礎可視性は
