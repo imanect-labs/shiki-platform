@@ -522,11 +522,11 @@ const RETIRE_SWEEP_EVERY: std::time::Duration = std::time::Duration::from_mins(1
 /// 掃除の 1 回で取り消すワークフローの数の上限。
 const RETIRE_SWEEP_LIMIT: i64 = 20;
 
-/// 論理削除したワークフローに残る委譲を取り消す（scheduler tick・BUG-128）。
+/// 論理削除したワークフローに残る委譲と、取り消しの印の無い動いている run を取り消す（scheduler tick・BUG-128）。
 ///
 /// ふつうは削除の API が commit の後に取り消す（[`crate::routes::workflows::registration::after_workflow_deleted`]）。
-/// そこで OpenFGA に届かなかった分などを、ここが同じ経路（「権限も取り消す」）で取り消す。監査は system の主体で
-/// `workflow.delegation.revoke` を残す（理由 `workflow_deleted`）。
+/// そこで OpenFGA に届かなかった分や、削除と重なって作られた run を、ここが同じ経路（「権限も取り消す」）で取り消す。
+/// 監査は system の主体で、削除の API の後始末と同じ行を残す（[`retire_audit`]）。
 async fn retire_deleted_workflows(
     db: &sqlx::PgPool,
     registration: &workflow_engine::RegistrationService,
@@ -546,7 +546,7 @@ async fn retire_deleted_workflows(
             %workflow_id,
             revoked = r.delegations.len(),
             cancelled_runs = r.cancelled_runs.len(),
-            "消したワークフローに残っていた委譲を取り消しました"
+            "消したワークフローに残っていた委譲・実行を取り消しました"
         );
         let ctx = authz::AuthContext::new(
             authz::Principal {
@@ -560,26 +560,58 @@ async fn retire_deleted_workflows(
             w.org.clone(),
             tenant.clone(),
         );
-        let entry = storage::audit::AuditEntry {
-            action: storage::audit::AuditAction::WorkflowDelegationRevoke,
-            object_type: "workflow",
-            object_id: &workflow_id.to_string(),
-            decision: storage::audit::Decision::Allow,
-            trace_id: None,
-            metadata: serde_json::json!({
+        let object_id = workflow_id.to_string();
+        for (action, metadata) in retire_audit(r) {
+            let entry = storage::audit::AuditEntry {
+                action,
+                object_type: "workflow",
+                object_id: &object_id,
+                decision: storage::audit::Decision::Allow,
+                trace_id: None,
+                metadata,
+            };
+            if let Err(e) = storage::audit::AuditRecorder::new(db.clone())
+                .record(&ctx, entry)
+                .await
+            {
+                tracing::warn!(error = %e, %workflow_id, "消したワークフローの掃除の監査に失敗");
+            }
+        }
+    }
+}
+
+/// 掃除で止めたワークフロー 1 件の監査の行（削除の API の後始末と同じ形・理由 `workflow_deleted`）。
+///
+/// - 自動実行の登録があったか、run を取り消したなら `workflow.disable`（削除の API が後始末に失敗したときも、自動
+///   実行のオフと run の取り消しが監査に残る）。
+/// - 委譲を取り消したなら `workflow.delegation.revoke`（取り消したものが無ければ残さない）。
+fn retire_audit(
+    r: &workflow_engine::Revocation,
+) -> Vec<(storage::audit::AuditAction, serde_json::Value)> {
+    use storage::audit::AuditAction;
+    let mut out = Vec::new();
+    if r.registered || !r.cancelled_runs.is_empty() {
+        out.push((
+            AuditAction::WorkflowDisable,
+            serde_json::json!({
+                "reason": "workflow_deleted",
+                "revoke_delegations": true,
+                "cancelled_runs": r.cancelled_runs.len(),
+            }),
+        ));
+    }
+    if !r.delegations.is_empty() {
+        out.push((
+            AuditAction::WorkflowDelegationRevoke,
+            serde_json::json!({
                 "reason": "workflow_deleted",
                 "revoked": r.delegations.len(),
                 "delegations": r.delegations,
                 "cancelled_runs": r.cancelled_runs.len(),
             }),
-        };
-        if let Err(e) = storage::audit::AuditRecorder::new(db.clone())
-            .record(&ctx, entry)
-            .await
-        {
-            tracing::warn!(error = %e, %workflow_id, "委譲の掃除の監査に失敗");
-        }
+        ));
     }
+    out
 }
 
 /// queued run の昇格（scheduler tick・全テナント）。
@@ -685,6 +717,56 @@ mod audit_tests {
         assert_eq!(row.4["workflow_version"], 3);
         assert_eq!(row.4["step"], "n1");
         assert_eq!(row.4["principal_kind"], "workflow");
+    }
+}
+
+#[cfg(test)]
+mod retire_audit_tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+    use super::*;
+    use storage::audit::AuditAction;
+
+    /// 掃除で止めたものは、削除の API の後始末と同じ行で監査に残る（自動実行のオフと run の取り消し・委譲の取り消し）。
+    #[test]
+    fn the_sweep_records_what_it_stopped() {
+        let delegation = workflow_engine::RevokedDelegation {
+            delegator: "alice".into(),
+            scope: "data.write".into(),
+            object_ref: "data_table:t|1".into(),
+            relation: "editor".into(),
+        };
+        let run = uuid::Uuid::nil();
+        // 削除と重なって作られた run だけを止めた（委譲は API がもう外した）。
+        let only_run = workflow_engine::Revocation {
+            delegations: vec![],
+            cancelled_runs: vec![run],
+            registered: false,
+        };
+        let rows = retire_audit(&only_run);
+        assert_eq!(rows.len(), 1, "{rows:?}");
+        assert_eq!(rows[0].0, AuditAction::WorkflowDisable);
+        assert_eq!(rows[0].1["reason"], "workflow_deleted");
+        assert_eq!(rows[0].1["cancelled_runs"], 1);
+        // 削除の API が委譲を外せなかった。
+        let both = workflow_engine::Revocation {
+            delegations: vec![delegation],
+            cancelled_runs: vec![],
+            registered: true,
+        };
+        let actions: Vec<AuditAction> = retire_audit(&both).into_iter().map(|(a, _)| a).collect();
+        assert_eq!(
+            actions,
+            [
+                AuditAction::WorkflowDisable,
+                AuditAction::WorkflowDelegationRevoke
+            ]
+        );
+        assert_eq!(
+            retire_audit(&both)[1].1["delegations"][0]["relation"],
+            "editor"
+        );
+        // 何も止めていなければ何も残さない。
+        assert!(retire_audit(&workflow_engine::Revocation::default()).is_empty());
     }
 }
 

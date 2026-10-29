@@ -332,10 +332,15 @@ impl RegistrationService {
         self.revoke_and_stop(tenant_id, workflow_id, None).await
     }
 
-    /// 論理削除したワークフローに残る有効な委譲を取り消す（scheduler の掃除・[`Self::retire`] の取りこぼし・最大
-    /// `limit` 件のワークフロー）。返すのは取り消したワークフローごとの結果（テナント・登録の org・id）。
+    /// 論理削除したワークフローに残る有効な委譲と、取り消しの印の無い動いている run を取り消す（scheduler の掃除・
+    /// [`Self::retire`] の取りこぼし・最大 `limit` 件のワークフロー）。返すのは取り消したワークフローごとの結果
+    /// （テナント・登録の org・id）。
+    ///
+    /// run を拾うのは、削除と重なって作られた run（定義を読んだ後で削除が commit され、論理削除のトリガと削除の後の
+    /// 取り消しより後に run の INSERT が commit された）や、削除と重なった再開の run に、誰も取り消しの印を付けない
+    /// ため（BUG-128 の残り）。
     pub async fn retire_deleted(&self, limit: i64) -> Result<Vec<RetiredWorkflow>, EnableError> {
-        let gone: Vec<(String, String, Uuid)> = sqlx::query_as(
+        let mut gone: Vec<(String, String, Uuid)> = sqlx::query_as(
             "SELECT DISTINCT r.tenant_id, r.org, r.workflow_id FROM workflow_registration r \
              JOIN workflow_delegation d \
                ON d.tenant_id = r.tenant_id AND d.workflow_id = r.workflow_id AND d.revoked_at IS NULL \
@@ -348,6 +353,28 @@ impl RegistrationService {
         .fetch_all(&self.db)
         .await
         .map_err(map_db)?;
+        // 動いている run から辿る（queued・running の部分索引を使う。論理削除の索引は無い）。
+        let strays: Vec<(String, String, Uuid)> = sqlx::query_as(
+            "SELECT DISTINCT w.tenant_id, w.org, w.workflow_id FROM workflow_run w \
+             WHERE (w.status = 'queued' OR w.status = 'running') AND NOT w.cancel_requested \
+               AND EXISTS ( \
+                 SELECT 1 FROM artifact a WHERE a.tenant_id = w.tenant_id AND a.id = w.workflow_id \
+                   AND a.kind = 'workflow' AND a.deleted_at IS NOT NULL) \
+             LIMIT $1",
+        )
+        .bind(limit)
+        .fetch_all(&self.db)
+        .await
+        .map_err(map_db)?;
+        for stray in strays {
+            let limit = usize::try_from(limit).unwrap_or(0);
+            if gone.len() >= limit {
+                break;
+            }
+            if !gone.iter().any(|g| g.0 == stray.0 && g.2 == stray.2) {
+                gone.push(stray);
+            }
+        }
         let mut out = Vec::with_capacity(gone.len());
         for (tenant_id, org, workflow_id) in gone {
             // 1 件の失敗（OpenFGA の一時障害など）でほかのワークフローの掃除を止めない（次の掃除でもう一度）。

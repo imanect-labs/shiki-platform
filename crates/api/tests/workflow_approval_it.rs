@@ -3482,6 +3482,47 @@ async fn deleting_outside_the_api_is_caught_by_the_trigger_and_the_sweep() {
         "取り消し済みのものは掃除しない"
     );
 
+    // 削除と重なって作られた run（定義を読んだ後で削除が commit され、run の INSERT がトリガより後に commit された）
+    // には取り消しの印が付かない。掃除がそれも拾って取り消す（BUG-128 の残り）。
+    sqlx::query(
+        "UPDATE workflow_run SET status = 'running', cancel_requested = false, finished_at = NULL \
+         WHERE tenant_id = $1 AND run_id = $2",
+    )
+    .bind(&env.tenant)
+    .bind(run)
+    .execute(&env.pool)
+    .await
+    .unwrap();
+    let retired = env.registration.retire_deleted(100).await.unwrap();
+    let mine = retired
+        .iter()
+        .find(|w| w.workflow_id == wf)
+        .expect("取り消しの印の無い run が残る消したワークフローを掃除する");
+    assert_eq!(mine.revocation.cancelled_runs, vec![run]);
+    assert!(mine.revocation.delegations.is_empty());
+    let (status, marked): (String, bool) = sqlx::query_as(
+        "SELECT status, cancel_requested FROM workflow_run WHERE tenant_id = $1 AND run_id = $2",
+    )
+    .bind(&env.tenant)
+    .bind(run)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert!(marked, "{status}");
+    assert_eq!(
+        status, "cancelled",
+        "走っている step が無ければその場でドレインする"
+    );
+    assert!(
+        env.registration
+            .retire_deleted(100)
+            .await
+            .unwrap()
+            .iter()
+            .all(|w| w.workflow_id != wf),
+        "印を付けた run は拾い直さない"
+    );
+
     // 登録が有効のまま定義だけが消えた（削除と発火が重なった）ときも、発火は再試行しない見送りになる。
     sqlx::query(
         "UPDATE workflow_registration SET status = 'enabled' WHERE tenant_id = $1 AND workflow_id = $2",
