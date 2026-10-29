@@ -24,14 +24,18 @@ test("ワークフローの削除: 承認待ちの実行も止まり、承認者
 
     // 一覧から消す。確かめの文は、自動実行と動いている実行が止まること・戻せないことを言う。
     await page.goto("/workflows");
-    const row = page.getByRole("listitem").filter({ hasText: s.workflowName });
+    // 削除の通知（toast も li）は名前を含むので、一覧の行だけを数える。
+    const row = page
+      .getByRole("listitem")
+      .filter({ hasText: s.workflowName })
+      .and(page.locator(':not([data-slot="toast"])'));
     await expect(row).toBeVisible({ timeout: 15_000 });
     await row.hover();
     await row.getByRole("button", { name: `「${s.workflowName}」を削除` }).click();
     const dialog = page.getByRole("dialog", { name: "ワークフローを削除しますか？" });
     await expect(dialog).toBeVisible();
     await expect(dialog).toContainText(
-      `「${s.workflowName}」を削除すると、自動実行も、動いている実行も止まります。元に戻せません。データは消さずに保管されます。`,
+      `「${s.workflowName}」を削除すると、自動実行も、動いている実行も止まり、承認者に出している依頼も取り下げられます。元に戻せません。データは消さずに保管されます。`,
     );
     if (process.env.E2E_SHOTS_DIR) await page.screenshot({ path: `${process.env.E2E_SHOTS_DIR}/workflow-delete-confirm-pc.png` });
     const removed = page.waitForResponse(
