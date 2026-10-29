@@ -2,9 +2,10 @@ import { expect, test, type Page } from "@playwright/test";
 
 import { loginAs, loginViaKeycloak, uniqueName } from "./helpers";
 
-/// SQL で問い合わせる画面（#978）: 一覧から開いて、参照一覧から名前を入れ、結合・集計を実行する。
-/// LIMIT はその件数で終わり、省くと続きを読み込める。拒否は理由と位置を出し、候補で誤った名前を置き換える。
-/// 他人のテーブル（見えない）は存在しないテーブルと同じ表示になる。書きかけは再読込しても残る。
+/// SQL で問い合わせる画面（#978）: テーブルの画面・一覧から開いて、参照一覧から名前を入れ、結合・集計を実行する。
+/// LIMIT はその件数で終わり、省くと下へスクロールするたびに続きを読む（無限スクロール）。拒否は理由と位置を出し、
+/// 候補で誤った名前を置き換える。他人のテーブル（見えない）は存在しないテーブルと同じ表示になる。書きかけは再読込しても残る。
+/// 結果の表は canvas（glide-data-grid）なので、値は glide が描く読み上げ用の表（見えている行）から読む。
 
 async function csrf(page: Page): Promise<string> {
   return (await page.context().cookies()).find((c) => c.name === "shiki_csrf")?.value ?? "";
@@ -71,11 +72,17 @@ test("SQL の画面で結合・集計・続きの読み込みができ、拒否�
     );
   }
 
-  // 一覧の「SQL」から開く。
+  // テーブルの画面の「SQL」から開くと、そのテーブルの例が入る。
+  await page.goto(`/data/${d.id}`);
+  await page.getByTestId("open-sql-table").click();
+  await expect(page).toHaveURL(new RegExp(`/data/sql\\?table=${d.id}$`));
+  const editor = page.getByTestId("sql-editor");
+  await expect(editor).toHaveValue(`SELECT title, amount FROM "${deal}" LIMIT 50`);
+
+  // 一覧の「SQL」からも開ける。
   await page.goto("/data");
   await page.getByTestId("open-sql").click();
   await expect(page).toHaveURL(/\/data\/sql$/);
-  const editor = page.getByTestId("sql-editor");
   await expect(editor).toBeVisible();
 
   // 参照一覧から列名を入れられる（押すとカーソル位置に入る）。
@@ -91,23 +98,29 @@ test("SQL の画面で結合・集計・続きの読み込みができ、拒否�
   );
   await editor.press("Control+Enter");
   const result = page.getByTestId("sql-result");
-  await expect(result.locator("tbody tr")).toHaveCount(2, { timeout: 15_000 });
-  await expect(result.locator("tbody tr").first()).toContainText("山田精工");
-  await expect(result.locator("tbody tr").first()).toContainText("580");
+  const rows = result.locator("table[role=grid] tbody tr");
+  await expect(result).toHaveAttribute("data-rows", "2", { timeout: 15_000 });
+  await expect(rows.first()).toContainText("山田精工");
+  await expect(rows.first()).toContainText("580");
 
   // LIMIT を書けばその件数で終わる（続きは出さない）。
   await editor.fill(`SELECT title FROM "${deal}" LIMIT 2`);
   await page.getByTestId("sql-run").click();
   await expect(page.getByTestId("sql-result-count")).toHaveText("2 行");
-  await expect(page.getByTestId("sql-more")).toHaveCount(0);
+  await expect(result).toHaveAttribute("data-more", "0");
 
-  // LIMIT を省くと 50 件ずつ読み、続きを読み込める。
+  // LIMIT を省くと 50 件ずつ読み、表を下へスクロールすると続きを読む。
   await editor.fill(`SELECT title, amount FROM "${deal}"`);
   await page.getByTestId("sql-run").click();
-  await expect(page.getByTestId("sql-result-count")).toHaveText("50 行を表示（続きあり）");
-  await page.getByTestId("sql-more").click();
+  await expect(page.getByTestId("sql-result-count")).toHaveText("50 行（続きあり）");
+  await expect(result).toHaveAttribute("data-rows", "50");
+  const box = await result.boundingBox();
+  if (!box) throw new Error("結果の表が見えない");
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.wheel(0, 4000);
   await expect(page.getByTestId("sql-result-count")).toHaveText("55 行");
-  await expect(result.locator("tbody tr")).toHaveCount(55);
+  await expect(result).toHaveAttribute("data-rows", "55");
+  await expect(result).toHaveAttribute("data-more", "0");
 
   // 名前の誤り: 理由・位置・候補。一番近い候補を押すと誤った名前を置き換える。
   await editor.fill(`SELECT titel FROM "${deal}"`);

@@ -67,16 +67,19 @@ export function SqlReference({
   failed = false,
   onRetry,
   onInsert,
+  focusId,
   className,
 }: {
   tables: DataTable[] | null;
   failed?: boolean;
   onRetry?: () => void;
   onInsert: (text: string) => void;
+  /// 開いた状態で出すテーブル（テーブルの画面から開いたとき）。
+  focusId?: string;
   className?: string;
 }) {
   const [query, setQuery] = React.useState("");
-  const [open, setOpen] = React.useState<Set<string>>(new Set());
+  const [open, setOpen] = React.useState<Set<string>>(() => new Set(focusId ? [focusId] : []));
   const tableNames = React.useMemo(() => new Map((tables ?? []).map((t) => [t.id, t.name])), [tables]);
   const q = query.trim().toLowerCase();
   const visible = (tables ?? []).filter(
@@ -95,10 +98,7 @@ export function SqlReference({
 
   return (
     <section className={cn("flex min-h-0 flex-col gap-2", className)} aria-label="テーブルと列" data-testid="sql-reference">
-      <div className="flex items-center justify-between gap-2">
-        <h2 className="text-sm font-semibold">テーブルと列</h2>
-        <span className="text-[11px] text-muted-foreground">押すとカーソル位置に入ります</span>
-      </div>
+      <p className="px-1 text-[11px] text-muted-foreground">押すとカーソル位置に入ります</p>
       <div className="relative">
         <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden />
         <Input

@@ -17,10 +17,12 @@ import {
   Plus,
   Save,
   Settings2,
+  SquareTerminal,
   Share2,
   Table2,
   Upload,
 } from "lucide-react";
+import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
 import * as React from "react";
 
@@ -600,6 +602,13 @@ export function TableWorkspace({
               options={kindOptions}
             />
           )}
+          {/* このテーブルを SQL で問い合わせる（結合・集計）。読める人なら誰でも使える。 */}
+          <Button variant="ghost" size="sm" className="h-8 gap-1.5 px-2.5 text-[13px]" asChild>
+            <Link href={`/data/sql?table=${table.id}`} data-testid="open-sql-table" aria-label="SQL で問い合わせる">
+              <SquareTerminal className="size-4" aria-hidden />
+              <span className="max-sm:sr-only">SQL</span>
+            </Link>
+          </Button>
           {viewer.can_edit ? (
             <Button
               variant="ghost"

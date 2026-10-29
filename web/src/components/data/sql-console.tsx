@@ -1,21 +1,25 @@
 "use client";
 
 /// SQL で問い合わせる画面（#978・data-platform §16.1）: 入力欄・結果の表・拒否の理由と位置・参照一覧。
+/// テーブルの画面と同じ作業画面の形（上のバーに実行・ツールバー・左に参照一覧・結果は同じグリッド）にする。
 ///
 /// SQL はサーバの SQL 前段面（`POST /data/sql`）が DataQuery へ変換して実行する（データベースへは届かない）。
 /// 行述語・列のマスク・集計の抑制はサーバが閲覧者本人の権限で掛けるので、画面は返った表を出すだけにする。
 /// 見えない名前と存在しない名前はサーバが同じ拒否にするので、画面も言い分けない。
 
-import { ArrowUpRight, Loader2, Play, TableProperties } from "lucide-react";
+import { AlertTriangle, ArrowUpRight, BookOpen, EyeOff, FileCode2, Loader2, PanelLeft, Play, SquareTerminal, TableProperties } from "lucide-react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import * as React from "react";
 
 import { SqlReference, sqlIdent } from "@/components/data/sql-reference";
-import { numberFmt, offsetOf, SqlErrorPanel, SqlResultTable, SqlSyntaxHelp } from "@/components/data/sql-result";
-import { Badge } from "@/components/ui/badge";
+import { numberFmt, offsetOf, SqlErrorPanel, SqlSyntaxHelp } from "@/components/data/sql-result";
+import { SqlResultGrid } from "@/components/data/sql-result-grid";
+import { ChromePrimaryButton, usePageChrome } from "@/components/shell/page-header-context";
 import { Button } from "@/components/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Switch } from "@/components/ui/switch";
-import { Textarea } from "@/components/ui/textarea";
+import { useMediaQuery } from "@/hooks/use-media-query";
 import { DataApiError, listTables, runSql, type DataTable, type QueryRejection, type SqlQueryResult } from "@/lib/data-api";
 import {
   readScoped,
@@ -25,6 +29,7 @@ import {
   useStorageScopeReady,
   writeScoped,
 } from "@/lib/user-storage";
+import { cn } from "@/lib/utils";
 
 /// 書きかけの SQL の保存先（閲覧者のブラウザだけ・ユーザー単位。ログアウトで消える・isUserDataKey）。
 const DRAFT_KEY = "shiki.sql-drafts.v1";
@@ -43,7 +48,7 @@ function saveDraft(value: string, generation: number): void {
 
 /// 書きかけの保存と復元。保存先がユーザー単位なので、ユーザーが確定してから読み、復元の後から書く
 /// （復元前の空で保存値を消さない）。ログアウトで世代が進んだら入力欄から捨てる。
-function useSqlDraft(sql: string, setSql: React.Dispatch<React.SetStateAction<string>>): void {
+function useSqlDraft(sql: string, setSql: React.Dispatch<React.SetStateAction<string>>): boolean {
   const scopeReady = useStorageScopeReady();
   const [restored, setRestored] = React.useState(false);
   const generation = React.useRef(0);
@@ -83,7 +88,22 @@ function useSqlDraft(sql: string, setSql: React.Dispatch<React.SetStateAction<st
       flush();
     };
   }, [restored]);
+  return restored;
 }
+
+/// テーブルの例の SQL（値がそのまま読める列を 3 つまで。リンク・ユーザー等は id が並ぶだけなので避ける）。
+function exampleFor(t: DataTable): string {
+  const plain = new Set(["text", "number", "date", "date_time", "select"]);
+  const cols = [...t.schema.fields]
+    .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
+    .filter((f) => plain.has(f.type))
+    .slice(0, 3)
+    .map((f) => sqlIdent(f.key));
+  return `SELECT ${cols.join(", ") || "_id"} FROM ${sqlIdent(t.name)} LIMIT 50`;
+}
+
+/// 結果の上の小さな印（テーブルの画面の「並び順は概算」と同じ形）。
+const pill = "inline-flex items-center gap-1 whitespace-nowrap rounded-full border px-2 py-0.5 text-[11px] text-muted-foreground";
 
 /// `off` から始まる名前の終わり。各部は引用符付きなら閉じるまで・それ以外は文字・数字・_ の並び。
 /// 列の拒否は `別名.列` の先頭を指すので、`qualified` なら修飾名の全体を、テーブル（別名）の拒否なら
@@ -119,6 +139,9 @@ function candidateSql(candidate: string, tableNames: Set<string>): string {
 }
 
 export function SqlConsole() {
+  const params = useSearchParams();
+  const fromId = params.get("table");
+  const wide = useMediaQuery("(min-width: 1024px)");
   const [tables, setTables] = React.useState<DataTable[] | null>(null);
   const [tablesFailed, setTablesFailed] = React.useState(false);
   const [sql, setSql] = React.useState("");
@@ -129,12 +152,18 @@ export function SqlConsole() {
   const [result, setResult] = React.useState<{ data: SqlQueryResult; sql: string } | null>(null);
   /// 誤りとそれを出した SQL（位置の表示・候補の置き換えはこの SQL で行う）。
   const [error, setError] = React.useState<{ error: unknown; sql: string } | null>(null);
+  /// 参照一覧の開閉（広い画面は開いて始める・押したら利用者の選択を優先する）。
+  const [refChoice, setRefChoice] = React.useState<boolean | null>(null);
+  const refOpen = refChoice ?? wide;
+  /// テーブルの画面から開いたとき、書きかけを残したので例への置き換えを申し出る。
+  const [offerFrom, setOfferFrom] = React.useState(false);
   const editorRef = React.useRef<HTMLTextAreaElement>(null);
+  const gutterRef = React.useRef<HTMLDivElement>(null);
   /// 実行・続きの読み込みの世代（新しい実行が始まったら古い応答を捨てる）。
   const seq = React.useRef(0);
   const abortRef = React.useRef<AbortController | null>(null);
 
-  useSqlDraft(sql, setSql);
+  const restored = useSqlDraft(sql, setSql);
 
   const loadTables = React.useCallback(() => {
     setTablesFailed(false);
@@ -152,18 +181,20 @@ export function SqlConsole() {
   }, [loadTables]);
 
   const tableNames = React.useMemo(() => new Set((tables ?? []).map((t) => t.name)), [tables]);
+  const from = fromId ? tables?.find((t) => t.id === fromId) : undefined;
   const example = React.useMemo(() => {
-    const t = tables?.[0];
-    if (!t) return "";
-    // 例は値がそのまま読める列から選ぶ（リンク・ユーザー等は id が並ぶだけなので避ける）。
-    const plain = new Set(["text", "number", "date", "date_time", "select"]);
-    const cols = [...t.schema.fields]
-      .sort((a, b) => (a.order ?? 0) - (b.order ?? 0))
-      .filter((f) => plain.has(f.type))
-      .slice(0, 3)
-      .map((f) => sqlIdent(f.key));
-    return `SELECT ${cols.join(", ") || "_id"} FROM ${sqlIdent(t.name)} LIMIT 50`;
-  }, [tables]);
+    const t = from ?? tables?.[0];
+    return t ? exampleFor(t) : "";
+  }, [from, tables]);
+
+  // テーブルの画面から開いたら、そのテーブルの例を入れる（書きかけがあれば残して、置き換えを申し出る）。
+  const appliedFrom = React.useRef<string | null>(null);
+  React.useEffect(() => {
+    if (!from || !restored || appliedFrom.current === from.id) return;
+    appliedFrom.current = from.id;
+    if (sql.trim()) setOfferFrom(true);
+    else setSql(exampleFor(from));
+  }, [from, restored, sql]);
 
   /// [start, end) を `text` に置き換え、カーソルをその後ろへ置く。
   const replaceRange = React.useCallback((text: string, start: number, end: number) => {
@@ -195,6 +226,7 @@ export function SqlConsole() {
     setRunning(true);
     setLoadingMore(false);
     setError(null);
+    setOfferFrom(false);
     try {
       const data = await runSql({ sql: text, with_count: withCount }, { signal: ac.signal });
       if (seq.current !== id) return;
@@ -216,8 +248,12 @@ export function SqlConsole() {
       if (seq.current === id) setRunning(false);
     }
   }, [sql, withCount]);
+  const runRef = React.useRef(run);
+  React.useEffect(() => {
+    runRef.current = run;
+  }, [run]);
 
-  const loadMore = async () => {
+  const loadMore = React.useCallback(async () => {
     const cur = result;
     if (!cur?.data.next_cursor || loadingMore || running) return;
     const id = seq.current;
@@ -239,7 +275,22 @@ export function SqlConsole() {
     } finally {
       if (seq.current === id) setLoadingMore(false);
     }
-  };
+  }, [result, loadingMore, running]);
+
+  const hasSql = sql.trim() !== "";
+  usePageChrome(
+    () => ({
+      title: "SQL",
+      back: from ? { href: `/data/${from.id}`, label: `「${from.name}」へ戻る` } : { href: "/data", label: "テーブル一覧へ" },
+      primary: (
+        <ChromePrimaryButton onClick={() => void runRef.current()} disabled={running || !hasSql} data-testid="sql-run">
+          {running ? <Loader2 className="animate-spin" aria-hidden /> : <Play aria-hidden />}
+          実行
+        </ChromePrimaryButton>
+      ),
+    }),
+    [from?.id, from?.name, running, hasSql],
+  );
 
   const rejection = error?.error instanceof DataApiError ? error.error.rejection : null;
   // 入力欄が拒否された SQL のままなら、候補で誤った名前を置き換えられる。
@@ -272,124 +323,220 @@ export function SqlConsole() {
         ? `${numberFmt.format(data.rows.length)} 行 / 全 ${numberFmt.format(data.count.exact)} 件`
         : `${numberFmt.format(data.rows.length)} 行 / 全 ${numberFmt.format(data.count.at_least)} 件以上`
       : hasMore
-        ? `${numberFmt.format(data.rows.length)} 行を表示（続きあり）`
+        ? `${numberFmt.format(data.rows.length)} 行（続きあり）`
         : `${numberFmt.format(data.rows.length)} 行`
     : "";
+  const lineCount = Math.max(1, sql.split("\n").length);
+  const invalid = !!rejection && error?.sql === sql;
 
   return (
-    <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_17rem]">
-      <div className="min-w-0 space-y-4">
-        <div className="space-y-2">
-          <label htmlFor="sql-editor" className="sr-only">
-            SQL
+    <div className="flex h-full min-h-0 flex-col gap-2 overflow-y-auto px-3 pb-3 pt-2 md:px-5 md:pt-4 lg:overflow-hidden">
+      <h1 className="text-lg font-semibold leading-tight md:hidden">SQL</h1>
+      <div className="flex flex-wrap items-center gap-x-0.5 gap-y-1.5">
+        <Button
+          variant="ghost"
+          size="sm"
+          className={cn("h-8 gap-1.5 px-2.5 text-[13px]", refOpen && "bg-accent")}
+          aria-pressed={refOpen}
+          onClick={() => setRefChoice(!refOpen)}
+          data-testid="sql-reference-toggle"
+        >
+          <PanelLeft className="size-4" aria-hidden />
+          テーブルと列
+        </Button>
+        <div className="mx-1 h-5 w-px bg-border" aria-hidden />
+        <Popover>
+          <PopoverTrigger asChild>
+            <Button variant="ghost" size="sm" className="h-8 gap-1.5 px-2.5 text-[13px]" data-testid="sql-help-open">
+              <BookOpen className="size-4" aria-hidden />
+              使える SQL
+            </Button>
+          </PopoverTrigger>
+          <PopoverContent align="start" className="w-[28rem] max-w-[calc(100vw-2rem)]">
+            <SqlSyntaxHelp />
+          </PopoverContent>
+        </Popover>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="h-8 gap-1.5 px-2.5 text-[13px]"
+          onClick={() => setSql(example)}
+          disabled={!example || hasSql}
+          title={hasSql ? "入力欄が空のときに使えます" : undefined}
+        >
+          <FileCode2 className="size-4" aria-hidden />
+          例を入れる
+        </Button>
+        <div className="ml-auto flex items-center gap-3 pl-2">
+          <span className="hidden items-center gap-1 text-xs text-muted-foreground md:inline-flex">
+            <kbd className="rounded border bg-muted px-1 font-mono text-[11px]">⌘</kbd>
+            <kbd className="rounded border bg-muted px-1 font-mono text-[11px]">Enter</kbd>
+            で実行
+          </span>
+          <label
+            className="flex items-center gap-2 whitespace-nowrap text-[13px] text-muted-foreground"
+            title="集計しない問い合わせの総件数（上限付き）。少し遅くなることがあります"
+          >
+            <Switch checked={withCount} onCheckedChange={setWithCount} aria-label="総件数も数える" />
+            総件数も数える
           </label>
-          <Textarea
-            id="sql-editor"
-            ref={editorRef}
-            value={sql}
-            onChange={(e) => setSql(e.target.value)}
-            onKeyDown={onKeyDown}
-            placeholder={example ? `例: ${example}` : "SELECT 列 FROM テーブル WHERE … ORDER BY … LIMIT 50"}
-            spellCheck={false}
-            autoCapitalize="off"
-            autoCorrect="off"
-            rows={7}
-            aria-invalid={rejection && error?.sql === sql ? true : undefined}
-            className="min-h-28 resize-y font-mono text-[13px] leading-6 md:min-h-40 md:text-[13px]"
-            data-testid="sql-editor"
-          />
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-            <Button onClick={() => void run()} disabled={running || !sql.trim()} data-testid="sql-run">
-              {running ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Play className="size-4" aria-hidden />}
-              実行
-            </Button>
-            <span className="hidden text-xs text-muted-foreground sm:inline">
-              <kbd className="rounded border bg-muted px-1 font-mono text-[11px]">⌘</kbd> /{" "}
-              <kbd className="rounded border bg-muted px-1 font-mono text-[11px]">Ctrl</kbd> +{" "}
-              <kbd className="rounded border bg-muted px-1 font-mono text-[11px]">Enter</kbd> でも実行
-            </span>
-            <Button
-              variant="outline"
-              size="sm"
-              className="h-8 text-[13px]"
-              onClick={() => setSql(example)}
-              disabled={!example || !!sql.trim()}
-            >
-              例を入れる
-            </Button>
-            <label
-              className="ml-auto flex items-center gap-2 text-[13px]"
-              title="集計しない問い合わせの総件数（上限付き）。少し遅くなることがあります"
-            >
-              <Switch checked={withCount} onCheckedChange={setWithCount} aria-label="総件数も数える" />
-              総件数も数える
-            </label>
-          </div>
         </div>
+      </div>
 
-        {error ? (
-          <SqlErrorPanel error={error.error} ranSql={error.sql} replaceable={replaceable} onCandidate={onCandidate} />
+      <div className="flex min-h-0 flex-1 flex-col gap-3 lg:flex-row">
+        {refOpen ? (
+          <aside className="flex min-h-0 flex-col rounded-lg border bg-card p-2 max-lg:max-h-72 lg:w-64 lg:shrink-0">
+            <SqlReference
+              key={fromId ?? ""}
+              tables={tables}
+              failed={tablesFailed}
+              onRetry={loadTables}
+              onInsert={insert}
+              focusId={fromId ?? undefined}
+              className="min-h-0 flex-1"
+            />
+          </aside>
         ) : null}
 
-        <section className="space-y-2" aria-label="結果" aria-busy={running || loadingMore}>
-          <p className="sr-only" aria-live="polite">
-            {running ? "実行中" : data ? countLabel : ""}
-          </p>
-          {data ? (
-            <>
-              <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[13px]">
-                <span className="font-medium tabular-nums" data-testid="sql-result-count">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
+          {offerFrom && from ? (
+            <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/40 px-3 py-2 text-[13px]" role="status">
+              <TableProperties className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+              <span className="min-w-0 flex-1">「{from.name}」から開きました。書きかけの SQL はそのまま残しています。</span>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-7 text-xs"
+                onClick={() => {
+                  setSql(exampleFor(from));
+                  setOfferFrom(false);
+                }}
+              >
+                「{from.name}」の例に置き換える
+              </Button>
+              <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => setOfferFrom(false)}>
+                閉じる
+              </Button>
+            </div>
+          ) : null}
+
+          <div
+            className={cn(
+              "flex h-40 max-h-[60vh] min-h-28 shrink-0 resize-y overflow-hidden rounded-lg border bg-card transition-[border-color,box-shadow] duration-fast focus-within:border-ring/60 focus-within:ring-2 focus-within:ring-ring/20 md:h-44",
+              invalid && "border-destructive/60 focus-within:border-destructive/60 focus-within:ring-destructive/15",
+            )}
+          >
+            <div
+              ref={gutterRef}
+              aria-hidden
+              className="shrink-0 select-none overflow-hidden border-r bg-muted/40 py-2 pl-3 pr-2.5 max-md:hidden text-right font-mono text-[12px] leading-6 tabular-nums text-muted-foreground/70"
+            >
+              {Array.from({ length: lineCount }, (_, i) => (
+                <div key={i}>{i + 1}</div>
+              ))}
+            </div>
+            <label htmlFor="sql-editor" className="sr-only">
+              SQL
+            </label>
+            <textarea
+              id="sql-editor"
+              ref={editorRef}
+              value={sql}
+              onChange={(e) => setSql(e.target.value)}
+              onKeyDown={onKeyDown}
+              onScroll={(e) => {
+                if (gutterRef.current) gutterRef.current.scrollTop = e.currentTarget.scrollTop;
+              }}
+              placeholder={example ? `例: ${example}` : "SELECT 列 FROM テーブル WHERE … ORDER BY … LIMIT 50"}
+              spellCheck={false}
+              autoCapitalize="off"
+              autoCorrect="off"
+              aria-invalid={invalid || undefined}
+              className="h-full min-w-0 flex-1 resize-none whitespace-pre-wrap bg-transparent focus-visible:ring-0 focus-visible:ring-offset-0 px-3 py-2 font-mono text-base leading-6 outline-none md:overflow-x-auto md:whitespace-pre scrollbar-subtle placeholder:text-muted-foreground/60 md:text-[13px]"
+              data-testid="sql-editor"
+            />
+          </div>
+
+          <section className="flex min-h-[18rem] flex-1 flex-col gap-1.5" aria-label="結果" aria-busy={running || loadingMore}>
+            <p className="sr-only" aria-live="polite">
+              {running ? "実行中" : data ? countLabel : ""}
+            </p>
+            {error && data ? (
+              <SqlErrorPanel error={error.error} ranSql={error.sql} replaceable={replaceable} onCandidate={onCandidate} />
+            ) : null}
+            {data ? (
+              <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                <span className="whitespace-nowrap text-xs tabular-nums text-muted-foreground" data-testid="sql-result-count">
                   {countLabel}
                 </span>
                 {data.suppressed ? (
-                  <Badge variant="warning" data-testid="sql-suppressed">
-                    件数の少ないグループの値は伏せています（— で表示）
-                  </Badge>
+                  <span
+                    className={cn(pill, "text-foreground/80")}
+                    style={{
+                      borderColor: "color-mix(in oklab, var(--season-autumn) 40%, transparent)",
+                      backgroundColor: "color-mix(in oklab, var(--season-autumn) 8%, transparent)",
+                    }}
+                    title="件数の少ないグループの値は「—」で出ます（値の無い集計も「—」です）"
+                    data-testid="sql-suppressed"
+                  >
+                    <EyeOff className="size-3" aria-hidden />
+                    件数の少ないグループの値は伏せています
+                  </span>
                 ) : null}
-                {isAggregate && withCount ? <Badge variant="muted">集計では総件数を数えません</Badge> : null}
-                {data.sort_precision !== "exact" ? <Badge variant="muted">並び順は概算</Badge> : null}
-                {data.shares_truncated ? <Badge variant="muted">個別共有の一部は対象外</Badge> : null}
+                {isAggregate && withCount ? <span className={pill}>集計では総件数を数えません</span> : null}
+                {data.sort_precision !== "exact" ? (
+                  <span className={pill}>
+                    <AlertTriangle className="size-3" aria-hidden />
+                    並び順は概算
+                  </span>
+                ) : null}
+                {data.shares_truncated ? <span className={pill}>個別共有の一部は対象外</span> : null}
                 {tableOf ? (
                   <Link
                     href={`/data/${tableOf.id}`}
-                    className="ml-auto inline-flex items-center gap-1 text-xs text-muted-foreground transition-colors duration-fast hover:text-foreground"
+                    className="ml-auto inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-muted-foreground transition-colors duration-fast hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     <TableProperties className="size-3.5" aria-hidden />
-                    FROM のテーブル「{tableOf.name}」を開く
+                    「{tableOf.name}」を開く
                     <ArrowUpRight className="size-3" aria-hidden />
                   </Link>
                 ) : null}
               </div>
-              <SqlResultTable result={data} />
-              {hasMore ? (
-                <div className="flex justify-center">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => void loadMore()}
-                    disabled={loadingMore || running}
-                    data-testid="sql-more"
-                  >
-                    {loadingMore ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}
-                    さらに読み込む
-                  </Button>
+            ) : null}
+            <div className={cn("min-h-0 flex-1 transition-opacity duration-fast", running && data && "opacity-60")}>
+              {error && !data ? (
+                <div className="h-full overflow-y-auto scrollbar-subtle">
+                  <SqlErrorPanel error={error.error} ranSql={error.sql} replaceable={replaceable} onCandidate={onCandidate} />
                 </div>
-              ) : null}
-            </>
-          ) : null}
-        </section>
+              ) : data ? (
+                <SqlResultGrid result={data} hasMore={hasMore} loadingMore={loadingMore} onLoadMore={() => void loadMore()} />
+              ) : (
+                <div
+                  className="flex h-full flex-col items-center justify-center gap-2 rounded-lg border border-dashed px-6 text-center text-sm text-muted-foreground"
+                  data-testid="sql-empty"
+                >
+                  {running ? (
+                    <>
+                      <Loader2 className="size-5 animate-spin" aria-hidden />
+                      実行中…
+                    </>
+                  ) : (
+                    <>
+                      <SquareTerminal className="size-6" aria-hidden />
+                      <p>SQL を書いて実行すると、結果がここに出ます</p>
+                      <p className="text-xs">
+                        右上の「実行」か <kbd className="rounded border bg-muted px-1 font-mono text-[11px]">⌘</kbd> /{" "}
+                        <kbd className="rounded border bg-muted px-1 font-mono text-[11px]">Ctrl</kbd> +{" "}
+                        <kbd className="rounded border bg-muted px-1 font-mono text-[11px]">Enter</kbd>
+                      </p>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          </section>
+        </div>
       </div>
-
-      <aside className="flex min-h-0 flex-col gap-4 lg:sticky lg:top-6 lg:max-h-[calc(100dvh-8rem)] lg:self-start">
-        <SqlReference
-          tables={tables}
-          failed={tablesFailed}
-          onRetry={loadTables}
-          onInsert={insert}
-          className="min-h-0 flex-1"
-        />
-        <SqlSyntaxHelp />
-      </aside>
     </div>
   );
 }

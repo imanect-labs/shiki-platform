@@ -2,7 +2,7 @@
 
 /// SQL 画面（#978）の表示部品: 結果の表・拒否の理由と位置・書き方の早見。状態は持たない。
 
-import { BookOpen, ChevronDown, CircleAlert } from "lucide-react";
+import { CircleAlert } from "lucide-react";
 import * as React from "react";
 
 import { DataApiError, type QueryRejection, type SqlQueryResult } from "@/lib/data-api";
@@ -20,7 +20,7 @@ const REJECT_TITLE: Record<string, string> = {
 /// 表のセルと同じ精度（数値列は小数 9 桁まで保存できる。lib/data-view と揃える）。
 export const numberFmt = new Intl.NumberFormat("ja-JP", { maximumFractionDigits: 10 });
 
-function cellText(v: unknown): string {
+export function cellText(v: unknown): string {
   if (v === null || v === undefined) return "";
   if (Array.isArray(v)) return v.map(cellText).join(", ");
   if (typeof v === "number") return numberFmt.format(v);
@@ -110,7 +110,7 @@ export function SqlErrorPanel({
   const loc = rejection?.location && !(rejection.code === "unsupported" && rejection.location.column <= 1) ? rejection.location : null;
   const candidates = rejection ? rankCandidates(rejection).slice(0, 40) : [];
   return (
-    <div className="space-y-2.5 rounded-xl border border-destructive/40 bg-destructive/5 p-4" role="alert" data-testid="sql-error">
+    <div className="space-y-2.5 rounded-lg border border-destructive/40 bg-destructive/5 px-3.5 py-3" role="alert" data-testid="sql-error">
       <div className="flex items-start gap-2">
         <CircleAlert className="mt-0.5 size-4 shrink-0 text-destructive" aria-hidden />
         <div className="min-w-0 space-y-0.5">
@@ -151,89 +151,32 @@ export function SqlErrorPanel({
   );
 }
 
-export function SqlResultTable({ result }: { result: SqlQueryResult }) {
-  // 数値の列（値が数値だけ・伏せた集計だけの列を含む）は見出しも値も右に揃える。
-  const numeric = result.columns.map((_, c) => {
+/// 数値の列か（値が数値だけの列。伏せた集計だけの列は、伏せた結果なら数値の列とみなす）。見出しも値も右に揃える。
+export function numericColumns(result: SqlQueryResult): boolean[] {
+  return result.columns.map((_, c) => {
     const vals = result.rows.map((r) => r[c]);
     const present = vals.filter((v) => v !== null && v !== undefined);
     if (present.length === 0) return result.suppressed && vals.length > 0;
     return present.every((v) => typeof v === "number");
   });
-  return (
-    <div className="max-h-[70vh] overflow-auto rounded-xl border bg-card scrollbar-subtle" data-testid="sql-result">
-      <table className="w-full border-collapse text-[13px]">
-        <thead className="sticky top-0 z-10 bg-muted/90 backdrop-blur">
-          <tr>
-            <th className="w-10 border-b px-2 py-2 text-right text-[11px] font-medium text-muted-foreground" scope="col">
-              #
-            </th>
-            {result.columns.map((c, i) => (
-              <th
-                key={`${c}-${i}`}
-                scope="col"
-                className={cn("whitespace-nowrap border-b px-3 py-2 text-[12px] font-semibold", numeric[i] ? "text-right" : "text-left")}
-              >
-                {c}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {result.rows.map((row, r) => (
-            <tr key={r} className="border-b last:border-b-0 hover:bg-accent/40">
-              <td className="px-2 py-1.5 text-right text-[11px] tabular-nums text-muted-foreground">{r + 1}</td>
-              {row.map((v, c) => {
-                // 伏せた集計は NULL で返る。値なしの集計も NULL なので、セルごとには理由を断定しない。
-                const maybeHidden = v === null && numeric[c] && result.suppressed;
-                return (
-                  <td
-                    key={c}
-                    className={cn(
-                      "max-w-[28rem] truncate px-3 py-1.5",
-                      numeric[c] && "text-right tabular-nums",
-                      v === null && "text-muted-foreground",
-                    )}
-                    title={
-                      maybeHidden
-                        ? "値が無いか、件数の少ないグループのため伏せています"
-                        : typeof v === "number"
-                          ? String(v)
-                          : cellText(v)
-                    }
-                  >
-                    {v === null ? "—" : cellText(v)}
-                  </td>
-                );
-              })}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      {result.rows.length === 0 ? <p className="px-4 py-8 text-center text-sm text-muted-foreground">該当する行はありません。</p> : null}
-    </div>
-  );
 }
 
-/// 書き方の早見（チャットのツールの説明と同じ部分集合）。
-export function SqlSyntaxHelp({ className }: { className?: string }) {
+/// 書き方の早見（チャットのツールの説明と同じ部分集合）。ツールバーの「使える SQL」のポップオーバーに出す。
+export function SqlSyntaxHelp() {
   return (
-    <details className={cn("group rounded-xl border bg-card px-4 py-3 text-sm", className)} data-testid="sql-help">
-      <summary className="flex cursor-pointer list-none items-center gap-2 font-medium [&::-webkit-details-marker]:hidden">
-        <BookOpen className="size-4 text-muted-foreground" aria-hidden />
-        使える SQL
-        <ChevronDown className="ml-auto size-4 text-muted-foreground transition-transform duration-fast group-open:rotate-180" aria-hidden />
-      </summary>
-      <ul className="mt-2 list-disc space-y-1.5 pl-5 text-[13px] leading-6">
+    <div className="space-y-2 text-[13px]" data-testid="sql-help">
+      <p className="font-semibold">使える SQL</p>
+      <ul className="list-disc space-y-1.5 pl-4 leading-6">
         <li>
-          <code className="font-mono">SELECT 列, … FROM テーブル 別名</code>
+          <code className="font-mono text-[12.5px]">SELECT 列, … FROM テーブル 別名</code>
           <span className="text-muted-foreground">（SELECT * は使えません。列は参照名）</span>
         </li>
         <li>
-          結合はリンク列だけ: <code className="font-mono">FROM 案件 d JOIN 取引先 c ON d.customer = c._id</code>
+          結合はリンク列だけ: <code className="font-mono text-[12.5px]">FROM 案件 d JOIN 取引先 c ON d.customer = c._id</code>
           <span className="text-muted-foreground">（最大 3 個。絞り込みは WHERE に書く）</span>
         </li>
         <li>
-          WHERE: <code className="font-mono">= &lt;&gt; &lt; &lt;= &gt; &gt;=</code>・AND / OR / NOT・IN・BETWEEN・LIKE・IS NULL
+          WHERE: <code className="font-mono text-[12.5px]">= &lt;&gt; &lt; &lt;= &gt; &gt;=</code>・AND / OR / NOT・IN・BETWEEN・LIKE・IS NULL
           <span className="text-muted-foreground">（日付は &apos;2026-10-01&apos;）</span>
         </li>
         <li>
@@ -246,10 +189,10 @@ export function SqlSyntaxHelp({ className }: { className?: string }) {
         </li>
         <li>
           LIMIT を書くとその件数で終わります。
-          <span className="text-muted-foreground">省くと 50 件ずつ「さらに読み込む」で続きを読めます（行は 1 回 200 件まで）</span>
+          <span className="text-muted-foreground">省くと下へスクロールするたびに続きを読みます</span>
         </li>
         <li className="text-muted-foreground">DISTINCT・副問い合わせ・WITH・UNION・OFFSET・関数（UPPER など）・書き換えの文は使えません</li>
       </ul>
-    </details>
+    </div>
   );
 }
