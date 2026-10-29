@@ -101,9 +101,10 @@ test("ファイルを読む: PDF は文章として読めない誤りで失敗�
     await page.getByTestId("rf__node-rd").click();
     const panel = page.getByRole("complementary", { name: "ブロックの設定" });
     await expect(
-      panel.getByText("テキストのファイル（.txt、.md、.csv、.json など）を読みます。PDF や Word の本文は読めません。", {
-        exact: true,
-      }),
+      panel.getByText(
+        "UTF-8 か Shift_JIS のテキストのファイル（.txt、.md、.csv、.json など）を読みます。PDF や Word の本文は読めません。",
+        { exact: true },
+      ),
     ).toBeVisible();
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/storage-read-hint-pc.png` });
 

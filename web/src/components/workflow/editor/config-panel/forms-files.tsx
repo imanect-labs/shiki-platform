@@ -317,7 +317,10 @@ const UNATTENDED_FOLDER_HINT =
   "スケジュール・できごとで動かすなら指定してください（省略すると保存できず、有効化できません）。有効化のとき、このフォルダの編集権限を渡します";
 
 /// 「ファイルを読む」が読めるファイル（文章として読めない PDF・Word・画像などは実行で失敗する・BUG-101・付録 D の N3.5.1）。
-const TEXT_FILE_HINT = "テキストのファイル（.txt、.md、.csv、.json など）を読みます。PDF や Word の本文は読めません。";
+/// 文字コードは UTF-8 と Shift_JIS（日本語の Windows の Excel が保存する CSV の既定）を読む。BOM 付きの UTF-16 と、
+/// 推定がはっきりした EUC-JP も読むが、注記では主な 2 つだけを言う（GAP-45）。
+const TEXT_FILE_HINT =
+  "UTF-8 か Shift_JIS のテキストのファイル（.txt、.md、.csv、.json など）を読みます。PDF や Word の本文は読めません。";
 
 export function StorageReadForm(props: FormProps) {
   return (

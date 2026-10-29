@@ -28,15 +28,22 @@ export class TabularConflict extends Error {
   }
 }
 
+/// 構造化 400（`invalid_input`）の利用者向けの文言（文字コードを読み取れない CSV など・GAP-45）。無ければ null。
+async function invalidInputMessage(res: Response): Promise<string | null> {
+  if (res.status !== 400) return null;
+  const body = (await res.clone().json().catch(() => null)) as { code?: string; message?: string } | null;
+  return body?.code === "invalid_input" && body.message ? body.message : null;
+}
+
 export async function getSchema(nodeId: string): Promise<SchemaResponse> {
   const res = await apiFetch(`/files/${nodeId}/tabular/schema`);
-  if (!res.ok) throw new Error(`スキーマ取得に失敗しました (${res.status})`);
+  if (!res.ok) throw new Error((await invalidInputMessage(res)) ?? `スキーマ取得に失敗しました (${res.status})`);
   return (await res.json()) as SchemaResponse;
 }
 
 export async function getRows(nodeId: string, offset: number): Promise<TableResponse> {
   const res = await apiFetch(`/files/${nodeId}/tabular/rows?offset=${offset}`);
-  if (!res.ok) throw new Error(`行取得に失敗しました (${res.status})`);
+  if (!res.ok) throw new Error((await invalidInputMessage(res)) ?? `行取得に失敗しました (${res.status})`);
   return (await res.json()) as TableResponse;
 }
 
@@ -71,6 +78,8 @@ export async function applyPatch(
     throw new TabularConflict(body?.base_rev ?? baseRev, body?.current_rev ?? baseRev);
   }
   if (!res.ok) {
+    const invalid = await invalidInputMessage(res);
+    if (invalid) throw new Error(invalid);
     const body = (await res.json().catch(() => null)) as { title?: string } | null;
     throw new Error(body?.title ?? `保存に失敗しました (${res.status})`);
   }
