@@ -3,6 +3,16 @@
 //! 中身を読む前に、MIME と拡張子で PDF・Office・画像・音声・動画・圧縮などを断る（大きな文書を読み込んでから
 //! 捨てない）。読んだ後は、UTF-8 として正しく NUL を含まないものだけを文章とする。以前の storage.read は
 //! `from_utf8_lossy` で読んだので、PDF や Word を選ぶと文字化けしたまま成功し、後ろの AI に渡っていた。
+//!
+//! 読む前の判定は次の順（確かな手がかりから使う）:
+//!
+//! 1. 拡張子が文章の種類（[`TEXT_EXTENSIONS`]）なら、MIME を見ずに中身の確かめ（[`utf8_text`]）に任せる。
+//!    MIME はブラウザーが付けた値をそのまま保存しているので、文章のファイルにも文章でない型が付く
+//!    （Excel を入れた Windows のブラウザーは .csv に `application/vnd.ms-excel` を付ける）。
+//! 2. MIME があり `application/octet-stream` でなければ、MIME で決める（[`binary_mime`]）。
+//! 3. MIME が無いか `application/octet-stream` のときだけ、拡張子で決める（[`BINARY_EXTENSIONS`]）。
+//!    文章のファイルにも使う拡張子（Graphviz の .dot・PEM やライセンスキーの .key）は表に入れず、中身の
+//!    確かめに任せる。
 
 use workflow_engine::nodes::ports::NOT_TEXT_FILE;
 use workflow_engine::PortError;
@@ -27,27 +37,44 @@ fn binary_mime(ct: &str) -> bool {
         || ct.contains("gzip")
 }
 
-/// 文章でない種類の拡張子（MIME が `application/octet-stream` や空のときの手がかり）。
-const BINARY_EXTENSIONS: &[&str] = &[
-    "pdf", "doc", "docx", "docm", "dot", "dotx", "xls", "xlsx", "xlsm", "xlsb", "ppt", "pptx",
-    "pptm", "odt", "ods", "odp", "rtf", "pages", "numbers", "key", "png", "jpg", "jpeg", "gif",
-    "webp", "bmp", "tif", "tiff", "heic", "heif", "ico", "psd", "ai", "mp3", "wav", "m4a", "aac",
-    "flac", "ogg", "mp4", "mov", "avi", "mkv", "webm", "wmv", "zip", "gz", "tgz", "bz2", "xz",
-    "7z", "rar", "tar", "exe", "dll", "bin", "dmg", "iso", "woff", "woff2", "ttf", "otf", "eot",
-    "sqlite", "db", "parquet",
+/// 文章の種類の拡張子（MIME より優先する。中身が UTF-8 でなければ読んだ後に断る）。
+const TEXT_EXTENSIONS: &[&str] = &[
+    "txt", "text", "md", "markdown", "csv", "tsv", "json", "jsonl", "ndjson", "log", "xml", "html",
+    "htm", "yaml", "yml", "toml", "ini",
 ];
 
-/// 中身を読む前に断るファイルか（MIME か拡張子が文章でない種類）。
+/// 文章でない種類の拡張子（MIME が無いか `application/octet-stream` のときの手がかり）。
+const BINARY_EXTENSIONS: &[&str] = &[
+    "pdf", "doc", "docx", "docm", "dotx", "xls", "xlsx", "xlsm", "xlsb", "ppt", "pptx", "pptm",
+    "odt", "ods", "odp", "rtf", "pages", "numbers", "png", "jpg", "jpeg", "gif", "webp", "bmp",
+    "tif", "tiff", "heic", "heif", "ico", "psd", "ai", "mp3", "wav", "m4a", "aac", "flac", "ogg",
+    "mp4", "mov", "avi", "mkv", "webm", "wmv", "zip", "gz", "tgz", "bz2", "xz", "7z", "rar", "tar",
+    "exe", "dll", "bin", "dmg", "iso", "woff", "woff2", "ttf", "otf", "eot", "sqlite", "db",
+    "parquet",
+];
+
+/// ファイル名の拡張子（先頭の点だけの名前〔.pdf〕は拡張子なし）。
+fn extension(name: &str) -> Option<&str> {
+    name.rsplit_once('.')
+        .and_then(|(stem, ext)| (!stem.is_empty()).then_some(ext))
+}
+
+fn listed(table: &[&str], ext: &str) -> bool {
+    table.iter().any(|e| e.eq_ignore_ascii_case(ext))
+}
+
+/// 中身を読む前に断るファイルか（判定の順はモジュールの説明）。
 pub(super) fn is_binary(name: &str, content_type: Option<&str>) -> bool {
-    if content_type.is_some_and(binary_mime) {
-        return true;
+    let ext = extension(name);
+    if ext.is_some_and(|e| listed(TEXT_EXTENSIONS, e)) {
+        return false;
     }
-    name.rsplit_once('.').is_some_and(|(stem, ext)| {
-        !stem.is_empty()
-            && BINARY_EXTENSIONS
-                .iter()
-                .any(|b| b.eq_ignore_ascii_case(ext))
-    })
+    match content_type.map(str::trim) {
+        Some(ct) if !ct.is_empty() && !ct.eq_ignore_ascii_case("application/octet-stream") => {
+            binary_mime(ct)
+        }
+        _ => ext.is_some_and(|e| listed(BINARY_EXTENSIONS, e)),
+    }
 }
 
 /// 中身を文章として読む（UTF-8 として正しく、NUL を含まないときだけ）。
@@ -81,6 +108,7 @@ mod tests {
 
     #[test]
     fn binary_kinds_are_refused_by_mime_or_extension() {
+        // 拡張子が文章の種類でなければ、MIME で決める。
         for ct in [
             "application/pdf",
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -89,7 +117,8 @@ mod tests {
             "application/zip",
             "video/mp4",
         ] {
-            assert!(is_binary("a.txt", Some(ct)), "{ct}");
+            assert!(is_binary("契約書", Some(ct)), "{ct}");
+            assert!(is_binary("資料.dat", Some(ct)), "{ct}");
         }
         // MIME が分からない（octet-stream・空）ときは拡張子で決める（大小文字は問わない）。
         for name in [
@@ -100,6 +129,7 @@ mod tests {
             "まとめ.zip",
         ] {
             assert!(is_binary(name, Some("application/octet-stream")), "{name}");
+            assert!(is_binary(name, Some("")), "{name}");
             assert!(is_binary(name, None), "{name}");
         }
         for (name, ct) in [
@@ -113,6 +143,35 @@ mod tests {
         ] {
             assert!(!is_binary(name, ct), "{name}");
         }
+    }
+
+    /// 文章の種類の拡張子は MIME より優先する（ブラウザーが付けた型をそのまま保存しているため）。Excel を入れた
+    /// Windows のブラウザーは .csv に `application/vnd.ms-excel` を付ける。中身は読んだ後に UTF-8 か確かめる。
+    #[test]
+    fn text_extensions_win_over_the_browser_mime() {
+        for (name, ct) in [
+            ("売上.csv", "application/vnd.ms-excel"),
+            ("売上.CSV", "application/vnd.ms-excel"),
+            ("一覧.tsv", "application/vnd.ms-excel"),
+            ("メモ.txt", "application/pdf"),
+        ] {
+            assert!(!is_binary(name, Some(ct)), "{name} {ct}");
+        }
+        // 拡張子が文章の種類でなければ、ms-excel の MIME は断る（本物の .xls）。
+        assert!(is_binary("売上.xls", Some("application/vnd.ms-excel")));
+        assert!(is_binary("売上", Some("application/vnd.ms-excel")));
+    }
+
+    /// 文章のファイルにも使う拡張子（.dot・.key）は拡張子で断らず、中身の確かめに任せる。
+    #[test]
+    fn ambiguous_extensions_are_left_to_the_content() {
+        for name in ["graph.dot", "license.key", "server.KEY"] {
+            assert!(!is_binary(name, Some("text/plain")), "{name}");
+            assert!(!is_binary(name, Some("application/octet-stream")), "{name}");
+            assert!(!is_binary(name, None), "{name}");
+        }
+        // MIME が文章でない種類と言っていれば、MIME で断る（Word の .dot テンプレート）。
+        assert!(is_binary("template.dot", Some("application/msword")));
     }
 
     #[test]
