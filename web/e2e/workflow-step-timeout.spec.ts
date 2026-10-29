@@ -74,6 +74,20 @@ test("時間の上限: AI に聞くは既定 120 秒・最大 600 秒で、超�
     await page.getByTestId("rf__node-check").click();
     await expect(panel.getByRole("spinbutton", { name: /時間の上限/ })).toHaveCount(0);
 
+    // 承認を待つの時間の上限は、承認を頼むまでの処理だけに掛かる。判断を待つ時間は含まないことを注記で言う
+    // （「判断の期限」の欄と並ぶので、30 秒で承認を得ないと失敗すると読ませない）。
+    await page.getByRole("button", { name: "ブロック", exact: true }).click();
+    const palette = page.getByRole("complementary", { name: "ブロック一覧" });
+    await palette.getByRole("button", { name: /承認を待つ/ }).click();
+    await page.keyboard.press("Escape");
+    await page.locator('[data-testid^="rf__node-approval"]').first().click();
+    const approvalLimit = panel.getByRole("spinbutton", { name: /時間の上限/ });
+    await approvalLimit.scrollIntoViewIfNeeded();
+    await expect(approvalLimit).toHaveAccessibleDescription(
+      "空欄なら 30 秒で、最大 120 秒です。過ぎると、このブロックは失敗します。判断を待つ時間は含みません（「判断の期限」で決めます）。",
+    );
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/step-timeout-approval-pc.png` });
+
     // スマホ幅のシートでも欄と注記が出て、横にはみ出さない。
     const phoneCtx = await browser.newContext({
       storageState: await page.context().storageState(),
@@ -147,9 +161,12 @@ test("時間の上限: AI エージェントは「AI の作業時間の上限」
     await expect(duration).toHaveAccessibleDescription(/^空欄なら 600 秒（10 分）で、10〜3,600 秒にできます。/, {
       timeout: 10_000,
     });
+    // 空欄のときの値は、エンジンの打ち切りと同じく「AI の作業時間の上限」（省略は 600 秒）に 120 秒を足した時間
+    // （カタログの既定 600 秒ではない）。
     const limit = panel.getByRole("spinbutton", { name: /時間の上限（秒/ }).last();
     await expect(limit).toHaveAccessibleDescription(
-      "空欄なら 600 秒（10 分）で、最大 3,600 秒です。「AI の作業時間の上限」より短くはできません。過ぎると、このブロックは失敗します。",
+      "空欄なら 720 秒（12 分）で、最大 3,600 秒です。「AI の作業時間の上限」より短くはできず、打ち切るのはそれに 120 秒を足した時間より後です。過ぎると、このブロックは失敗します。",
+      { timeout: 10_000 },
     );
 
     // 作業時間（省略は 600 秒）より短い時間の上限は、保存時の誤りとして欄の下に出る。
@@ -158,9 +175,13 @@ test("時間の上限: AI エージェントは「AI の作業時間の上限」
     await expect(limit).toHaveAccessibleDescription(tooShort, { timeout: 10_000 });
     await panel.getByText(tooShort).scrollIntoViewIfNeeded();
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/step-timeout-agent-pc.png` });
-    // 作業時間を短くすると通る。
+    // 作業時間を短くすると通る。空欄のときの値も作業時間に合わせて変わる（120 秒＋120 秒より既定の 600 秒が長い）。
     await duration.fill("120");
     await expect(panel.getByText(tooShort)).toHaveCount(0, { timeout: 10_000 });
+    await limit.fill("");
+    await expect(limit).toHaveAccessibleDescription(/^空欄なら 600 秒（10 分）で、/, { timeout: 10_000 });
+    await duration.fill("900");
+    await expect(limit).toHaveAccessibleDescription(/^空欄なら 1,020 秒（17 分）で、/, { timeout: 10_000 });
   } finally {
     await cleanupAll(async () => {
       if (!id) return;
