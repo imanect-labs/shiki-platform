@@ -152,9 +152,10 @@ export function SqlConsole() {
   const [result, setResult] = React.useState<{ data: SqlQueryResult; sql: string } | null>(null);
   /// 誤りとそれを出した SQL（位置の表示・候補の置き換えはこの SQL で行う）。
   const [error, setError] = React.useState<{ error: unknown; sql: string } | null>(null);
-  /// 続きのページの読み込みの失敗。あるあいだは自動で読まない（同じ位置を繰り返し読みに行かない）。
-  /// 新しい実行か「読み込み直す」で消す。
+  /// 続きのページの読み込みの失敗（理由の表示）。読み直しが成功するか、新しい実行で消す。
   const [moreError, setMoreError] = React.useState<unknown>(null);
+  /// 失敗したあと自動の読み込みを止めているか（同じ位置を繰り返し読みに行かない）。「読み込み直す」で解く。
+  const [moreBlocked, setMoreBlocked] = React.useState(false);
   /// 参照一覧の開閉（広い画面は開いて始める・押したら利用者の選択を優先する）。
   const [refChoice, setRefChoice] = React.useState<boolean | null>(null);
   const refOpen = refChoice ?? wide;
@@ -230,6 +231,7 @@ export function SqlConsole() {
     setLoadingMore(false);
     setError(null);
     setMoreError(null);
+    setMoreBlocked(false);
     setOfferFrom(false);
     try {
       const data = await runSql({ sql: text, with_count: withCount }, { signal: ac.signal });
@@ -286,6 +288,7 @@ export function SqlConsole() {
     } catch (e) {
       if (seq.current !== id || ac.signal.aborted) return;
       setMoreError(e);
+      setMoreBlocked(true);
     } finally {
       if (seq.current === id) setLoadingMore(false);
     }
@@ -330,7 +333,7 @@ export function SqlConsole() {
   const tableOf = data ? tables?.find((t) => t.id === data.table_id) : undefined;
   // LIMIT を書いた問い合わせはその件数で終える（続きを読み込まない）。
   const canMore = !!data?.next_cursor && data.query.limit == null;
-  const hasMore = canMore && !moreError;
+  const hasMore = canMore && !moreBlocked;
   const isAggregate = (data?.query.aggregate?.length ?? 0) > 0;
   const countLabel = data
     ? data.count
@@ -486,7 +489,14 @@ export function SqlConsole() {
                 <span className="min-w-0 flex-1">
                   続きを読み込めませんでした（{moreError instanceof Error ? moreError.message : String(moreError)}）
                 </span>
-                <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => setMoreError(null)}>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7 text-xs"
+                  onClick={() => setMoreBlocked(false)}
+                  disabled={!moreBlocked || loadingMore}
+                >
+                  {loadingMore ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : null}
                   読み込み直す
                 </Button>
               </div>

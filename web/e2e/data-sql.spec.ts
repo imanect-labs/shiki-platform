@@ -133,7 +133,18 @@ test("SQL の画面で結合・集計・続きの読み込みができ、拒否�
   await page.waitForTimeout(800);
   expect(failedMore).toBe(1);
   await expect(result).toHaveAttribute("data-rows", "50");
+  // 読み直しの応答を待つあいだも理由は残し、成功してから消す。
+  let releaseRetry: () => void = () => {};
+  const retryHeld = new Promise<void>((r) => (releaseRetry = r));
+  await page.unroute("**/api/data/sql");
+  await page.route("**/api/data/sql", async (route) => {
+    if (route.request().postDataJSON()?.cursor) await retryHeld;
+    await route.continue();
+  });
   await moreError.getByRole("button", { name: "読み込み直す" }).click();
+  await expect(page.getByTestId("sql-loading-more")).toBeVisible();
+  await expect(moreError).toBeVisible();
+  releaseRetry();
   await expect(moreError).toHaveCount(0);
   await expect(page.getByTestId("sql-result-count")).toHaveText("55 行");
   await expect(result).toHaveAttribute("data-rows", "55");
