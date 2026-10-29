@@ -398,7 +398,14 @@ flowchart LR
     `ToolResult.tool_references` が正で、Anthropic は `defer_loading`＋`tool_reference`、OpenAI 互換は
     読み込んだ定義を `tools` 末尾へ追記して写す。遅延にできる定義が閾値未満の run・
     `SHIKI__CHAT__TOOL_SEARCH=false` では全定義を提示する。開いている文書・会話で使ったツール・
-    skill の `allowed_tools` は常時ロードに回す。
+    skill の `allowed_tools`・会話の添付の種別ごとの読み取りツールは常時ロードに回す。
+    - **添付の読み取り（#962）**: 添付は履歴に名前と node_id しか載らず、常時ロードの `doc_read` は
+      索引の無いファイル（大きな CSV・取り込み中など）を読めない。拡張子から原本を直接読むツール
+      （csv → `csv.query`・xlsx/ods/docx/odt → `office.read`・md → `document.read`・slide → `slide.read`。
+      引数はどれも `node_id`）を引き、常時ロードにしたうえで、system に添付ごとの読み方を載せる。
+      案内するのは**その run に提示済みのツールだけ**（配線の無い構成で無いツールを案内しない）。
+      ファイル名はユーザー由来なので無害化し、node_id は UUID として解釈できるものだけ載せる。
+      `doc_read` が「索引が無い」を返すときも、原本を読むツールがある形式ならその旨を添える。
     - 自然文の検索は BM25F と埋め込み（RAG と同じ `EmbeddingProvider`）の **RRF（k=10）**で順位付けする
       （#517）。文書は名前＋説明＋引数で、ベクトルはプロセス内で使い回す。埋め込みが未配線・失敗なら
       BM25F のみ（相対カットオフ 0.1・#518）。名前の一覧は 100 件を超えたら名前空間ごとの件数に要約する（#519）。
@@ -931,6 +938,8 @@ FR-8。スライドは Collabora に委任せず**自前の第一級ドキュメ
   → Collabora（§4.8）で再編集できる。
 - **選択→AI 指示（3エディタ共通）**: ノート（TipTap 選択）・CSV（グリッド範囲）・スライド（要素選択）で、
   選択箇所を `SelectionContext {kind, node_id|draft_name, excerpt, locator}` としてチャット送信に添付。
+  アシスタントパネルを持たない CSV はホームのチャットへ引き継ぎ、ホームで作った会話の**最初の発話**に
+  載せる（会話画面へ渡すまでの間だけ sessionStorage に置く・#959）。
   **クライアント由来の値は信用しない**: サーバは受信時に kind の閉集合・サイズ上限を検証し、
   `node_id` は実行主体の ReBAC（viewer 以上）で読めるノードへ再解決できた場合のみ採用する
   （読めない/存在しない対象は fail-closed で拒否・`draft_name` はそのスレッドの下書きのみ参照可）。
