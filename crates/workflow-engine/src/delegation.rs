@@ -231,10 +231,16 @@ impl DelegationStore {
         }
 
         // 再有効化で外れた委譲（新 grant 集合に無い既存 active 行）を撤去する。旧タプルを残すと
-        // ユーザーが同意から外したオブジェクトへワークフローが到達し続ける（P1）。
-        let new_objs: std::collections::BTreeSet<&str> =
-            grants.iter().map(|g| g.object.as_str()).collect();
-        let keep: Vec<&str> = new_objs.iter().copied().collect();
+        // ユーザーが同意から外したオブジェクトへワークフローが到達し続ける（P1）。外れたかは (scope, 対象, relation)
+        // の組で見る: 同じ対象の relation を狭めた（editor → viewer）ときも、前の広い委譲を撤去する（BUG-130）。
+        let keep: Vec<KeptGrant<'_>> = grants
+            .iter()
+            .map(|g| KeptGrant {
+                scope: &g.scope,
+                object_ref: g.object.as_str(),
+                relation: g.relation.as_str(),
+            })
+            .collect();
         self.revoke_except_within(tx, tenant, workflow_id, &keep)
             .await?;
 
@@ -287,9 +293,14 @@ impl DelegationStore {
         Ok(())
     }
 
-    /// `keep` に無い対象への有効な委譲を取り消す（呼び出し側 TX）。FGA のタプルを先に撤去し、撤去できたら
-    /// 台帳の行を revoke する（撤去に失敗したら Err で戻り、TX はコミットされない＝台帳は有効のまま残り、
-    /// 次の取り消しでもう一度撤去する）。
+    /// `keep` に無い委譲（(scope, 対象, relation) の組）を取り消す（呼び出し側 TX）。FGA のタプルを先に撤去し、
+    /// 撤去できたら台帳の行を revoke する（撤去に失敗したら Err で戻り、TX はコミットされない＝台帳は有効のまま
+    /// 残り、次の取り消しでもう一度撤去する）。
+    ///
+    /// 組で見るので、同じ対象の relation を狭めた再同意（editor → viewer）でも前の広い委譲が外れる（BUG-130。以前は
+    /// 対象の単位で見ていたので、editor のタプルと台帳の行が残った）。タプルは (relation, 対象) ごとに 1 つで、委譲元・
+    /// scope が違う行で共有するので、残す組のどれかが同じ (relation, 対象) を使っていれば撤去しない（台帳の行だけ revoke
+    /// する）。委譲元は見ない（ほかの委譲元の同じ組の行は残す・従来どおり）。
     ///
     /// 再同意で外れた委譲の撤去（[`Self::enable_within`]）と「権限も取り消す」（[`Self::revoke_all_within`]・
     /// BUG-102・D-90）が同じ経路を通る。台帳の行は `FOR UPDATE` で取り、同時の有効化と取り違えない。
@@ -299,22 +310,35 @@ impl DelegationStore {
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
         tenant: &str,
         workflow_id: Uuid,
-        keep: &[&str],
+        keep: &[KeptGrant<'_>],
     ) -> Result<Vec<DelegationRow>, DelegationError> {
-        let stale: Vec<DelegationRow> = sqlx::query_as(
+        let active: Vec<DelegationRow> = sqlx::query_as(
             "SELECT workflow_id, delegator, scope, object_ref, relation FROM workflow_delegation \
              WHERE tenant_id = $1 AND workflow_id = $2 AND revoked_at IS NULL \
-               AND NOT (object_ref = ANY($3)) \
              ORDER BY scope, object_ref, delegator FOR UPDATE",
         )
         .bind(tenant)
         .bind(workflow_id)
-        .bind(keep)
         .fetch_all(&mut **tx)
         .await
         .map_err(map_db)?;
+        let stale: Vec<DelegationRow> = active
+            .into_iter()
+            .filter(|d| {
+                !keep.iter().any(|k| {
+                    k.scope == d.scope && k.object_ref == d.object_ref && k.relation == d.relation
+                })
+            })
+            .collect();
         let wf_subject = Namespace::for_tenant(tenant).workflow_principal(&workflow_id.to_string());
+        let mut removed: std::collections::BTreeSet<(&str, &str)> =
+            std::collections::BTreeSet::new();
         for d in &stale {
+            let tuple = (d.relation.as_str(), d.object_ref.as_str());
+            // 残す組が同じタプルを使っている・もう撤去した。
+            if keep.iter().any(|k| (k.relation, k.object_ref) == tuple) || !removed.insert(tuple) {
+                continue;
+            }
             if let Some(relation) = Relation::parse(&d.relation) {
                 // 行は tenant_id = tenant で絞り込み済み。tenant 部の不一致（台帳破損・改竄）も None。
                 let Some(obj) = FgaObject::from_qualified(&d.object_ref, tenant) else {
@@ -327,17 +351,21 @@ impl DelegationStore {
                     .map_err(|e| DelegationError::Authz(e.to_string()))?;
             }
         }
-        sqlx::query(
-            "UPDATE workflow_delegation SET revoked_at = now() \
-             WHERE tenant_id = $1 AND workflow_id = $2 AND revoked_at IS NULL \
-               AND NOT (object_ref = ANY($3))",
-        )
-        .bind(tenant)
-        .bind(workflow_id)
-        .bind(keep)
-        .execute(&mut **tx)
-        .await
-        .map_err(map_db)?;
+        for d in &stale {
+            sqlx::query(
+                "UPDATE workflow_delegation SET revoked_at = now() \
+                 WHERE tenant_id = $1 AND workflow_id = $2 AND delegator = $3 \
+                   AND scope = $4 AND object_ref = $5 AND revoked_at IS NULL",
+            )
+            .bind(tenant)
+            .bind(workflow_id)
+            .bind(&d.delegator)
+            .bind(&d.scope)
+            .bind(&d.object_ref)
+            .execute(&mut **tx)
+            .await
+            .map_err(map_db)?;
+        }
         Ok(stale)
     }
 
@@ -625,6 +653,13 @@ pub struct RevokedDelegation {
     /// FGA オブジェクト参照（例: `data_table:<tenant>|<id>`）。
     pub object_ref: String,
     pub relation: String,
+}
+
+/// 再同意で残す委譲の組（[`DelegationStore::revoke_except_within`]）。
+struct KeptGrant<'a> {
+    scope: &'a str,
+    object_ref: &'a str,
+    relation: &'a str,
 }
 
 #[derive(Debug, Clone, sqlx::FromRow)]

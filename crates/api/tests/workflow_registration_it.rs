@@ -611,3 +611,157 @@ async fn disable_and_revoke_removes_delegations_and_consent() {
         .is_empty());
     cleanup(&env.pool, &tenant).await;
 }
+
+/// BUG-130: 再同意で同じ対象の relation を狭めると（editor → viewer）、前の広い委譲のタプルと台帳の行が外れる。
+/// scope が同じでも違っても外れる。同じタプル（relation と対象）を残す組が使っているなら、タプルは残して台帳の行だけ外す。
+#[tokio::test]
+async fn reconsent_with_a_narrower_relation_revokes_the_wider_delegation() {
+    let Some(env) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let alice = user_ctx(&tenant, "alice");
+    let folder = Uuid::new_v4();
+    mk_folder(&env.pool, &tenant, folder).await;
+    let folder_obj = alice.ns().folder(&folder.to_string());
+    env.fga
+        .write_tuple(&alice.subject(), Relation::Editor, &folder_obj)
+        .await
+        .unwrap();
+    let wf_id = Uuid::new_v4();
+    let wf_subject = alice.ns().workflow_principal(&wf_id.to_string());
+    let service = RegistrationService::new(
+        env.pool.clone(),
+        DelegationStore::new(env.pool.clone(), Arc::clone(&env.fga)),
+    );
+    let ir = WorkflowIr::from_json(&ir_v1(folder)).unwrap();
+    let grant = |scope: &str, relation: Relation| GrantRequest {
+        scope: scope.into(),
+        object: folder_obj.clone(),
+        relation,
+    };
+    let workflow_holds = |relation: Relation| {
+        let (fga, subject, obj) = (Arc::clone(&env.fga), wf_subject.clone(), folder_obj.clone());
+        async move {
+            // 直接のタプルを見る（editor は viewer を含むので、check では viewer が残ったか分からない）。
+            fga.read_tuples(&obj, Some(relation))
+                .await
+                .unwrap()
+                .iter()
+                .any(|t| t.user == subject.as_str())
+        }
+    };
+    let ledger = || {
+        let (pool, tenant) = (env.pool.clone(), tenant.clone());
+        async move {
+            let rows: Vec<(String, String)> = sqlx::query_as(
+                "SELECT scope, relation FROM workflow_delegation \
+                 WHERE tenant_id = $1 AND workflow_id = $2 AND revoked_at IS NULL \
+                 ORDER BY scope, relation",
+            )
+            .bind(&tenant)
+            .bind(wf_id)
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+            rows
+        }
+    };
+
+    // (1) 書き込み（editor）で委譲した対象を、読むだけ（viewer）で同意し直す（scope が違う）。
+    service
+        .consent(
+            &alice,
+            wf_id,
+            1,
+            &ir,
+            &[grant("storage.write", Relation::Editor)],
+        )
+        .await
+        .expect("editor で同意");
+    assert!(workflow_holds(Relation::Editor).await);
+    service
+        .consent(
+            &alice,
+            wf_id,
+            1,
+            &ir,
+            &[grant("storage.read", Relation::Viewer)],
+        )
+        .await
+        .expect("viewer だけで同意し直す");
+    assert!(
+        !workflow_holds(Relation::Editor).await,
+        "editor のタプルが外れる"
+    );
+    assert!(workflow_holds(Relation::Viewer).await);
+    assert_eq!(
+        ledger().await,
+        vec![("storage.read".to_string(), "viewer".to_string())],
+        "editor の台帳の行も外れる"
+    );
+
+    // (2) 同じ scope で relation だけを狭める（台帳の行は同じ鍵で上書きされ、editor のタプルは外れる）。
+    service
+        .consent(
+            &alice,
+            wf_id,
+            1,
+            &ir,
+            &[grant("storage.read", Relation::Editor)],
+        )
+        .await
+        .unwrap();
+    assert!(workflow_holds(Relation::Editor).await);
+    service
+        .consent(
+            &alice,
+            wf_id,
+            1,
+            &ir,
+            &[grant("storage.read", Relation::Viewer)],
+        )
+        .await
+        .unwrap();
+    assert!(
+        !workflow_holds(Relation::Editor).await,
+        "同じ scope でも外れる"
+    );
+    assert!(workflow_holds(Relation::Viewer).await);
+    assert_eq!(
+        ledger().await,
+        vec![("storage.read".to_string(), "viewer".to_string())]
+    );
+
+    // (3) 同じタプル（viewer と対象）を 2 つの scope で使っていて、片方だけを残す: タプルは残し、外した行だけを外す。
+    service
+        .consent(
+            &alice,
+            wf_id,
+            1,
+            &ir,
+            &[
+                grant("storage.read", Relation::Viewer),
+                grant("rag.query", Relation::Viewer),
+            ],
+        )
+        .await
+        .unwrap();
+    service
+        .consent(
+            &alice,
+            wf_id,
+            1,
+            &ir,
+            &[grant("storage.read", Relation::Viewer)],
+        )
+        .await
+        .unwrap();
+    assert!(
+        workflow_holds(Relation::Viewer).await,
+        "残す組のタプルは外さない"
+    );
+    assert_eq!(
+        ledger().await,
+        vec![("storage.read".to_string(), "viewer".to_string())]
+    );
+    cleanup(&env.pool, &tenant).await;
+}
