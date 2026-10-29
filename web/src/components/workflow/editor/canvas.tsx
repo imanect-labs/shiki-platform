@@ -29,7 +29,8 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 
-import type { Edge as IrEdge, ValidationError, WorkflowIr } from "@/generated/workflow-ir";
+import type { Edge as IrEdge, Node as IrNode, ValidationError, WorkflowIr } from "@/generated/workflow-ir";
+import { NODE_CATALOG } from "@/generated/workflow-catalog";
 import type { EditorLayout } from "@/lib/workflow-api";
 import { edgeKey, type EditorAction, type Selection } from "./ir-state";
 import { mapErrors } from "./validation";
@@ -40,6 +41,11 @@ import { PlusEdge, type PlusEdgeData } from "./plus-edge";
 import { PALETTE_DND_TYPE } from "./palette";
 import { edgePortsOf, type ServerPorts } from "./ports";
 import { nodePortLabel } from "../port-labels";
+
+/// ブロック名（付けた名前・無ければカタログの名前）。
+function blockName(node: IrNode | undefined, fallback: string): string {
+  return node?.label || NODE_CATALOG.find((c) => c.type === node?.type)?.label_ja || fallback;
+}
 
 const nodeTypes: NodeTypes = {
   irNode: NodeCard as never,
@@ -215,6 +221,8 @@ export function Canvas({
         data: {
           irEdge: e,
           portName: nodePortLabel(nodeById.get(e.from), e.from_port ?? "out"),
+          fromName: blockName(nodeById.get(e.from), e.from),
+          toName: blockName(nodeById.get(e.to), e.to),
           errorMessages: (errors.byEdge.get(errKey) ?? []).map((x) => x.message),
           onInsert: (nodeType: string, position: { x: number; y: number }) =>
             dispatch({

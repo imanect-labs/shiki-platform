@@ -4,7 +4,8 @@
 ///
 /// 主導線はノードの尻尾プラスボタン（node-card.tsx）。パレットは全体を見渡して
 /// 「何ができるか」を掴む場でもあるため、カテゴリ見出し＋検索を常設する。
-/// ドラッグはマウス前提なので、タップ（クリック）でも流れの末尾へ追加できるようにする。
+/// ドラッグはマウス前提なので、押しても流れの最後へ追加できるようにする（どこに入ったかは通知で言う・
+/// ドラッグで置いたブロックは線が無いので、線でつなぐよう言う・BUG-106）。
 
 import * as React from "react";
 import { GripVertical, Search } from "lucide-react";
@@ -48,7 +49,7 @@ export function Palette({ onPick }: { onPick: (nodeType: string) => void }) {
       <div className="shiki-dash-bottom px-3 py-3">
         <h2 className="text-sm font-semibold">ブロック</h2>
         <p className="mt-0.5 text-xs text-muted-foreground">
-          タップで末尾に追加・ドラッグで好きな位置に置く
+          押すと、流れの最後に追加します。ドラッグで置いたブロックは、線でつないでください。
         </p>
         <div className="relative mt-2">
           <Search
@@ -60,7 +61,7 @@ export function Palette({ onPick }: { onPick: (nodeType: string) => void }) {
             onChange={(e) => setQuery(e.target.value)}
             type="search"
             enterKeyHint="search"
-            placeholder="検索…"
+            placeholder="ブロックを検索"
             className="h-8 pl-8 md:text-sm"
             aria-label="ブロックを検索"
           />
@@ -102,10 +103,11 @@ export function Palette({ onPick }: { onPick: (nodeType: string) => void }) {
           </div>
         ))}
         {upcoming.length > 0 ? (
-          <div className="mb-2 border-t pt-2">
-            <p className="px-1.5 py-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-              近日対応
-            </p>
+          // 準備中のブロックは既定で閉じる（使えるものを先に見せる・付録 D の N2.10）。
+          <details className="group mb-2 border-t pt-2" open={q !== ""}>
+            <summary className="cursor-pointer list-none rounded-md px-1.5 py-1 text-[11px] font-medium text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring">
+              準備中
+            </summary>
             <ul className="space-y-0.5">
               {upcoming.slice(0, 12).map((entry) => {
                 const Icon = nodeIcon(entry.type);
@@ -113,7 +115,7 @@ export function Palette({ onPick }: { onPick: (nodeType: string) => void }) {
                   <li key={entry.type}>
                     <div
                       className="flex items-center gap-2 rounded-md px-1.5 py-1.5 opacity-45"
-                      title="近日対応予定です"
+                      title="準備中のため、まだ使えません。"
                     >
                       <span className="size-3.5 shrink-0" />
                       <Icon className="size-4 shrink-0" aria-hidden />
@@ -123,7 +125,7 @@ export function Palette({ onPick }: { onPick: (nodeType: string) => void }) {
                 );
               })}
             </ul>
-          </div>
+          </details>
         ) : null}
       </div>
     </aside>

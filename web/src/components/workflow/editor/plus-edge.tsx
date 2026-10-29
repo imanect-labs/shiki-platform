@@ -23,6 +23,9 @@ export type PlusEdgeData = {
   irEdge: IrEdge;
   /// 出口の表示名（出口のノードから引いたもの・判定の選択肢は名前・D-87）。無ければ出口の決まった名前。
   portName?: string;
+  /// 線の両端のブロック名（＋の読み上げと、ブロックを選ぶメニューの文脈の文に使う・付録 D の N2.10）。
+  fromName?: string;
+  toName?: string;
   /// このエッジ上に新ノードを割り込ませる。
   onInsert: (nodeType: string, position: { x: number; y: number }) => void;
   /// このつながりを消す（選択中に出す削除ボタン）。
@@ -63,6 +66,8 @@ export function PlusEdge({
   const [menuOpen, setMenuOpen] = React.useState(false);
   const hasError = data.errorMessages.length > 0;
   const port = data.irEdge.from_port ?? "out";
+  // 「{A}」と「{B}」の間（＋の読み上げとメニューの文脈の文・付録 D の N2.10）。
+  const between = data.fromName && data.toName ? `「${data.fromName}」と「${data.toName}」の間` : null;
   // 既定の出口（次へ）はつながりに名前を出さない（どのノードにもある・カードの出口の並びに出ている）。
   const portName = port === "out" ? "" : (data.portName ?? portLabel(port));
   // 短いつながりではラベルを出さない（尻尾の＋に重なる・BUG-41）。選んでいる間は＋の上に重ねずに出す。
@@ -98,7 +103,7 @@ export function PlusEdge({
               <PopoverTrigger asChild>
                 <button
                   type="button"
-                  aria-label="ここにブロックを挿入"
+                  aria-label={between ? `${between}にブロックを追加` : "この線の間にブロックを追加"}
                   className={cn(
                     "flex size-5 items-center justify-center rounded-full border bg-background text-muted-foreground shadow-sm pointer-coarse:size-7",
                     "transition-opacity duration-fast pointer-fine:opacity-0 pointer-fine:group-hover/edge:opacity-100 focus-visible:opacity-100",
@@ -112,7 +117,7 @@ export function PlusEdge({
               </PopoverTrigger>
               <PopoverContent side="bottom" align="center" className="w-auto p-3">
                 <AddNodeMenu
-                  contextLabel="この間にブロックを挿入"
+                  contextLabel={between ? `${between}に追加` : "この線の間に追加"}
                   onPick={(nodeType) => {
                     setMenuOpen(false);
                     data.onInsert(nodeType, { x: labelX, y: labelY });

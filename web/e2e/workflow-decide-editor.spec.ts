@@ -428,7 +428,7 @@ test.describe("AI で判定（エディタ）", () => {
       // 判定の後ろのブロックはつながったものとして並ぶ（つながっていない一覧に落ちない）。
       await expect(flow.getByText("要確認", { exact: true })).toBeVisible({ timeout: 10_000 });
       await expect(flow.getByText("billing", { exact: true })).toBeVisible();
-      await expect(flow.getByText("つながっていないブロック")).toHaveCount(0);
+      await expect(flow.getByTestId("mobile-flow-cycle")).toHaveCount(0);
       await phone.screenshot({ path: "test-results/decide-mobile-flow-phone.png" });
 
       await flow.getByRole("button", { name: /問い合わせを判定/ }).filter({ hasText: "問い合わせを判定" }).click();
@@ -695,7 +695,7 @@ test.describe("AI で判定（エディタ・編集の途中）", () => {
       await expect(flow).toBeVisible({ timeout: 15_000 });
       await expect(flow.getByText("次へ", { exact: true })).toBeVisible();
       await expect(flow.getByText("エラー時", { exact: true })).toBeVisible();
-      await expect(flow.getByRole("button", { name: "「AI で判定」の「エラー時」にブロックを追加" })).toBeVisible();
+      await expect(flow.getByRole("button", { name: "「AI で判定」の「エラー時」の後ろにブロックを追加" })).toBeVisible();
       await page.screenshot({ path: "test-results/decide-pending-error-phone.png" });
     } finally {
       // 検証の差し替えが応答を待っている間にテストが終わると、閉じたページへの応答で落ちる（後片付けの前に外す）。

@@ -24,6 +24,7 @@ import { useMediaQuery } from "@/hooks/use-media-query";
 import { scopeLabel } from "@/lib/workflow-scopes";
 import { cn } from "@/lib/utils";
 import type { ValidationError, WorkflowIr } from "@/generated/workflow-ir";
+import { NODE_CATALOG } from "@/generated/workflow-catalog";
 import {
   putLayout,
   updateWorkflow,
@@ -34,7 +35,7 @@ import {
   type EditorLayout,
 } from "@/lib/workflow-api";
 import { AddNodeSheet } from "./add-node-sheet";
-import { addAction, endTarget, type AddTarget } from "./add-target";
+import { addAction, endTarget, targetLabel, targetPlace, type AddTarget } from "./add-target";
 import { layoutForSave } from "./auto-layout";
 import { Canvas } from "./canvas";
 import { useEditorState } from "./ir-state";
@@ -267,9 +268,24 @@ export function WorkflowEditor({
       dispatch(addAction(target, nodeType, state.ir, state.layout)),
     [dispatch, state.ir, state.layout],
   );
-  const requestAddAtEnd = React.useCallback(
-    () => setAdding({ target: endTarget(state.ir, state.serverPorts), label: "流れの末尾に追加" }),
-    [state.ir, state.serverPorts],
+  const requestAddAtEnd = React.useCallback(() => {
+    const target = endTarget(state.ir, state.serverPorts);
+    // 流れの最後がどこか（分岐の後なら、どの出口の後ろか）を文脈の文で言う（BUG-106・付録 D の N2.10）。
+    setAdding({ target, label: targetLabel(target, state.ir, state.serverPorts) });
+  }, [state.ir, state.serverPorts]);
+  // パレットを押したら流れの最後に追加し、どこに入ったかを知らせる（分岐の後では最初の出口の側に入る・BUG-106）。
+  const pickFromPalette = React.useCallback(
+    (nodeType: string) => {
+      const target = endTarget(state.ir, state.serverPorts);
+      const place = targetPlace(target, state.ir, state.serverPorts);
+      pick(target, nodeType);
+      const name = NODE_CATALOG.find((c) => c.type === nodeType)?.label_ja ?? nodeType;
+      toast({
+        title: `「${name}」を追加しました`,
+        description: place ? `${place}に入れました。` : "流れの最初に置きました。",
+      });
+    },
+    [state.ir, state.serverPorts, pick],
   );
   const togglePalette = React.useCallback(() => setPaletteOpen((p) => !p), []);
   const chromeCtx: EditorChromeContext = {
@@ -313,7 +329,7 @@ export function WorkflowEditor({
             {desktop ? <ScopesPill scopes={scopes} className="absolute bottom-3 left-1/2 z-10 -translate-x-1/2" /> : null}
             {paletteOpen && desktop ? (
               <FadeSlide from="left" className="absolute inset-y-3 left-3 z-10 w-64">
-                <Palette onPick={(nodeType) => pick(endTarget(state.ir, state.serverPorts), nodeType)} />
+                <Palette onPick={pickFromPalette} />
               </FadeSlide>
             ) : null}
             {!desktop ? (

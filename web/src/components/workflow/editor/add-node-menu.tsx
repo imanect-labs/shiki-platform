@@ -3,7 +3,7 @@
 /// ノード追加メニュー（プラスボタン/エッジ挿入から開く・カテゴリ別・検索可）。
 ///
 /// カタログは codegen（NODE_CATALOG・日本語ラベル/説明/カテゴリの単一定義）。
-/// `available=false`（予約語彙）は「近日対応」でグレーアウトし、存在は見せて期待値を作る。
+/// `available=false`（予約語彙）は「準備中」に畳んでグレーアウトし、存在は見せて期待値を作る。
 
 import * as React from "react";
 import { Search } from "lucide-react";
@@ -50,7 +50,7 @@ export function AddNodeMenu({ onPick, contextLabel, className }: Props) {
       e.description_ja.toLowerCase().includes(q) ||
       e.type.toLowerCase().includes(q),
   );
-  // 利用可能なものを先に・予約語彙（近日対応）は末尾のカテゴリ群として見せる。
+  // 利用可能なものを先に・予約語彙（準備中）は末尾のカテゴリ群として見せる。
   const availableGroups = groupByCategory(filtered.filter((e) => e.available));
   const upcoming = filtered.filter((e) => !e.available);
 
@@ -70,7 +70,7 @@ export function AddNodeMenu({ onPick, contextLabel, className }: Props) {
           onChange={(e) => setQuery(e.target.value)}
           type="search"
           enterKeyHint="search"
-          placeholder="ブロックを検索…"
+          placeholder="ブロックを検索"
           className="h-9 pl-8 pointer-coarse:h-11"
           aria-label="ブロックを検索"
         />
@@ -115,10 +115,11 @@ export function AddNodeMenu({ onPick, contextLabel, className }: Props) {
           </div>
         ))}
         {upcoming.length > 0 ? (
-          <div className="mb-1 border-t pt-2">
-            <p className="px-1 py-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
-              近日対応
-            </p>
+          // 準備中のブロックは既定で閉じる（使えるものを先に見せる・付録 D の N2.10）。
+          <details className="mb-1 border-t pt-2" open={q !== ""}>
+            <summary className="cursor-pointer list-none rounded-md px-1 py-1 text-[11px] font-medium text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring">
+              準備中
+            </summary>
             <ul>
               {upcoming.map((entry) => {
                 const Icon = nodeIcon(entry.type);
@@ -127,7 +128,7 @@ export function AddNodeMenu({ onPick, contextLabel, className }: Props) {
                     <div
                       className="flex w-full cursor-not-allowed items-start gap-2.5 rounded-md px-2 py-1.5 opacity-45"
                       aria-disabled
-                      title="近日対応予定です"
+                      title="準備中のため、まだ使えません。"
                     >
                       <Icon className="mt-0.5 size-4 shrink-0" aria-hidden />
                       <span className="min-w-0">
@@ -143,11 +144,11 @@ export function AddNodeMenu({ onPick, contextLabel, className }: Props) {
                 );
               })}
             </ul>
-          </div>
+          </details>
         ) : null}
         {filtered.length === 0 ? (
           <p className="px-1 py-6 text-center text-sm text-muted-foreground">
-            「{query}」に一致するブロックはありません
+            「{query}」に一致するブロックはありません。別の言葉で探してください。
           </p>
         ) : null}
       </div>

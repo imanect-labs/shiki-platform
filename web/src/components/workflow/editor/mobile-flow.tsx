@@ -153,16 +153,19 @@ function StepCard({
   );
 }
 
-function PortRow({ label, missing = false }: { label: string; missing?: boolean }) {
+function PortRow({ label, missing = false, note }: { label: string; missing?: boolean; note?: string }) {
   return (
-    <div
-      className={cn(
-        "flex items-center gap-1.5 pb-1 pt-2 text-xs font-medium",
-        missing ? "text-destructive" : "text-muted-foreground",
-      )}
-    >
-      <CornerDownRight className="size-3.5" aria-hidden />
-      {missing ? `${label}（無い出口）` : label}
+    <div className="pb-1 pt-2">
+      <div
+        className={cn(
+          "flex items-center gap-1.5 text-xs font-medium",
+          missing ? "text-destructive" : "text-muted-foreground",
+        )}
+      >
+        <CornerDownRight className="size-3.5" aria-hidden />
+        {missing ? `${label}（無い出口）` : label}
+      </div>
+      {note ? <p className="mt-0.5 pl-5 text-[11px] leading-relaxed text-muted-foreground">{note}</p> : null}
     </div>
   );
 }
@@ -194,6 +197,10 @@ export function MobileFlow({
   const byId = React.useMemo(() => new Map(ir.nodes.map((n) => [n.id, n])), [ir.nodes]);
 
   const select = (next: Selection) => dispatch({ type: "select", selection: next });
+  const nameOf = (id: string) => {
+    const n = byId.get(id);
+    return n ? nodeName(n) : id;
+  };
 
   const card = (node: IrNode) => {
     const entry = NODE_CATALOG.find((c) => c.type === node.type);
@@ -265,11 +272,12 @@ export function MobileFlow({
         }
         if (edges.length === 1) {
           const edge = edges[0];
+          const between = `「${name}」と「${nameOf(edge.to)}」の間`;
           push(
             depth,
             <AddSlot
-              label={`「${name}」の後ろにブロックを挿入`}
-              onClick={() => onAdd({ kind: "edge", edge }, `「${name}」の後ろに挿入`)}
+              label={`${between}にブロックを追加`}
+              onClick={() => onAdd({ kind: "edge", edge }, `${between}に追加`)}
             />,
           );
           currentId = edge.to;
@@ -277,12 +285,13 @@ export function MobileFlow({
         }
         // 同じ出口から複数へ（並行）。各行き先を字下げで並べる。
         edges.forEach((edge, i) => {
-          push(depth + 1, <PortRow label={`並行 ${i + 1}`} />);
+          const between = `「${name}」と「${nameOf(edge.to)}」の間`;
+          push(depth + 1, <PortRow label={`同時に進む流れ ${i + 1}`} />);
           push(
             depth + 1,
             <AddSlot
-              label={`「${name}」の後ろにブロックを挿入`}
-              onClick={() => onAdd({ kind: "edge", edge }, `「${name}」の後ろに挿入`)}
+              label={`${between}にブロックを追加`}
+              onClick={() => onAdd({ kind: "edge", edge }, `${between}に追加`)}
             />,
           );
           walk(edge.to, depth + 1);
@@ -298,20 +307,21 @@ export function MobileFlow({
           push(
             depth + 1,
             <AddSlot
-              label={`「${name}」の「${label}」にブロックを追加`}
+              label={`「${name}」の「${label}」の後ろにブロックを追加`}
               onClick={() =>
-                onAdd({ kind: "after", from: node.id, port }, `「${name}」の「${label}」に追加`)
+                onAdd({ kind: "after", from: node.id, port }, `「${name}」の「${label}」の後ろに追加`)
               }
             />,
           );
           continue;
         }
         for (const edge of edges) {
+          const between = `「${name}」と「${nameOf(edge.to)}」の間`;
           push(
             depth + 1,
             <AddSlot
-              label={`「${name}」の「${label}」にブロックを挿入`}
-              onClick={() => onAdd({ kind: "edge", edge }, `「${name}」の「${label}」に挿入`)}
+              label={`${between}にブロックを追加`}
+              onClick={() => onAdd({ kind: "edge", edge }, `${between}に追加`)}
             />,
           );
           walk(edge.to, depth + 1);
@@ -327,12 +337,21 @@ export function MobileFlow({
     push(0, <AddSlot label="最初のブロックを追加" onClick={() => onAdd({ kind: "first" }, "最初のブロックを追加")} />);
   }
   entries.forEach((entry, i) => {
-    if (i > 0) push(0, <PortRow label="別の入口" />);
+    // 前から線が来ないブロックは、実行の始めにほかの入口と同時に動く（線のないブロックもここに並ぶ・BUG-106）。
+    if (i > 0) {
+      push(
+        0,
+        <PortRow
+          label="ここからも始まる流れ"
+          note="前から線が来ないブロックは、実行の始めにほかと同時に動きます。"
+        />,
+      );
+    }
     push(
       0,
       <AddSlot
-        label={`「${nodeName(entry)}」の前にブロックを挿入`}
-        onClick={() => onAdd({ kind: "before", before: entry.id }, `「${nodeName(entry)}」の前に挿入`)}
+        label={`「${nodeName(entry)}」の前にブロックを追加`}
+        onClick={() => onAdd({ kind: "before", before: entry.id }, `「${nodeName(entry)}」の前に追加`)}
       />,
     );
     walk(entry.id, 0);
@@ -361,9 +380,11 @@ export function MobileFlow({
       </ol>
       {items}
       {orphans.length > 0 ? (
-        <div className="mt-6 flex flex-col gap-2">
-          <p className="text-xs font-medium text-muted-foreground">
-            つながっていないブロック（キャンバスでつなげます）
+        // 入口から辿れないのは、線が輪になったブロックだけ（線のないブロックは入口として上に並ぶ・BUG-106）。
+        <div className="mt-6 flex flex-col gap-2" data-testid="mobile-flow-cycle">
+          <p className="text-xs font-medium text-muted-foreground">線が輪になっているブロック</p>
+          <p className="text-[11px] leading-relaxed text-muted-foreground">
+            前のブロックへ戻る線は保存できません。キャンバスで線を削除してください。
           </p>
           {orphans.map((n) => (
             <div key={n.id}>{card(n)}</div>
