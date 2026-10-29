@@ -280,6 +280,73 @@ test("承認待ち: 承認の期限が空欄でも「期限なし」と出さず
   }
 });
 
+test("承認待ち: 実行履歴の一覧と詳細で、承認を待つ run を実行中と分けて出す（BUG-119）", async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await loginViaKeycloak(page);
+  const s = await setup(page);
+  let runId = "";
+  try {
+    await waitForApproval(page, s);
+    runId = await runOf(page, s);
+    // サーバーは run の状態から、待っているもの（承認）を返す（画面で推し量らない）。
+    const listed = (await (await page.request.get(`/api/workflows/${s.workflowId}/runs`)).json()) as {
+      items: { run_id: string; status: string; waiting_for: string | null }[];
+    };
+    expect(listed.items.find((r) => r.run_id === runId)).toMatchObject({ status: "running", waiting_for: "approval" });
+
+    await page.goto(`/workflows/${s.workflowId}/runs`);
+    const badge = page.getByTestId("run-status-waiting").first();
+    await expect(badge).toHaveText("待機中（承認待ち）", { timeout: 15_000 });
+    await expect(badge.locator(".animate-spin")).toHaveCount(0);
+    await expect(page.locator("table").getByText("実行中", { exact: true })).toHaveCount(0);
+    if (process.env.E2E_SHOTS_DIR) await page.screenshot({ path: `${process.env.E2E_SHOTS_DIR}/runs-waiting-approval-pc.png` });
+
+    // 詳細の見出しの状態も待機中（承認待ち）。承認を待つブロックは承認待ちと言う。
+    await page.locator("table tbody tr").first().click();
+    const sheet = page.locator('[role="dialog"]');
+    await expect(sheet.locator("h2").getByText("待機中（承認待ち）")).toBeVisible({ timeout: 15_000 });
+    await expect(sheet.getByText("承認待ち（承認者の「承認」の画面に出ています）")).toBeVisible();
+    // 承認の後ろのブロックは前のブロック待ちで、やり直しの時刻は出さない（やり直さない）。
+    await expect(sheet.getByText("前のブロック待ち").first()).toBeVisible();
+    await expect(sheet.getByText(/に再試行|にもう一度実行します/)).toHaveCount(0);
+    if (process.env.E2E_SHOTS_DIR) await page.screenshot({ path: `${process.env.E2E_SHOTS_DIR}/run-detail-waiting-approval-pc.png` });
+
+    // スマホ幅の一覧も同じ言い方にする。
+    await page.keyboard.press("Escape");
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`/workflows/${s.workflowId}/runs`);
+    await expect(page.getByRole("list", { name: "実行の一覧" }).getByTestId("run-status-waiting").first()).toHaveText(
+      "待機中（承認待ち）",
+      { timeout: 15_000 },
+    );
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
+    if (process.env.E2E_SHOTS_DIR) await page.screenshot({ path: `${process.env.E2E_SHOTS_DIR}/runs-waiting-approval-phone.png` });
+  } finally {
+    const headers = await csrfHeaders(page);
+    await cleanupAll(
+      async () => {
+        // 待っている run は止めてから消す（承認の依頼を受信箱に残さない）。
+        if (!runId) return;
+        const res = await page.request.post(`/api/workflows/${s.workflowId}/runs/${runId}/cancel`, { headers, data: {} });
+        expect(res.status(), await res.text()).toBeLessThan(300);
+      },
+      async () => {
+        const del = await page.request.delete(`/api/artifacts/${s.workflowId}`, { headers });
+        expect(del.status(), await del.text()).toBeLessThan(300);
+      },
+      async () => {
+        const del = await page.request.delete(`/api/data/tables/${s.tableId}`, { headers });
+        expect(del.status(), await del.text()).toBeLessThan(300);
+      },
+      async () => {
+        const del = await page.request.delete(`/api/artifacts/${s.fsmId}`, { headers });
+        expect(del.status(), await del.text()).toBeLessThan(300);
+      },
+    );
+  }
+});
+
 test("承認待ち: スマホ幅の受信箱は横にはみ出さず、全画面のシートで判断できる（GAP-08）", async ({ browser }) => {
   test.setTimeout(180_000);
   const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
