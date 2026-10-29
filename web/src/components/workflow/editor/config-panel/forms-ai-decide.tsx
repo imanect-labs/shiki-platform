@@ -31,7 +31,7 @@ import type {
   ValidationError,
   ValueExpr,
 } from "@/generated/workflow-ir";
-import { portLabel } from "../node-card";
+import { nodePortLabel } from "../../port-labels";
 import { Field, FieldSelectTrigger, useFieldControl } from "./common";
 import { DecideQuestions, kindLabel, type QuestionErrors } from "./decide-questions";
 import { planOptionRename, planRouteRename, renameShape } from "./decide-renames";
@@ -203,6 +203,7 @@ export function AiDecideForm({
         generalError={errors.questions ?? (errors.byQuestion.size === 0 ? fieldErrors.get("questions") : null)}
       />
       <RouteSection
+        node={node}
         questions={questions}
         route={route}
         onChange={(next) => patch({ route: next })}
@@ -299,6 +300,7 @@ function CacheSection({
 }
 
 function RouteSection({
+  node,
   questions,
   route,
   onChange,
@@ -307,6 +309,7 @@ function RouteSection({
   ports,
   portsState,
 }: {
+  node: IrNode;
   questions: DecideQuestion[];
   route: DecideRoute | undefined;
   onChange: (next: DecideRoute | undefined) => void;
@@ -388,7 +391,7 @@ function RouteSection({
           </Field>
         </>
       ) : null}
-      <ExitsPreview ports={ports} state={portsState} hasRoute={route !== undefined} />
+      <ExitsPreview node={node} ports={ports} state={portsState} hasRoute={route !== undefined} />
       <CalibrationNote />
     </div>
   );
@@ -423,10 +426,12 @@ type ExitsState = "fresh" | "pending" | "unresolved";
 /// 出口の一覧（サーバが導いたもの）。応答が来るまで・設定が契約に合わない間は、その旨を出す。古い出口を今の出口と
 /// 取り違えないよう、今の設定のものでなければ薄く描いて注記する。
 function ExitsPreview({
+  node,
   ports,
   state,
   hasRoute,
 }: {
+  node: IrNode;
   ports: readonly string[] | undefined;
   state: ExitsState;
   hasRoute: boolean;
@@ -444,8 +449,8 @@ function ExitsPreview({
                 className="rounded-full border bg-background px-2 py-0.5 text-[11px]"
                 data-port={port}
               >
-                {portLabel(port)}
-                {portLabel(port) !== port ? (
+                {nodePortLabel(node, port)}
+                {nodePortLabel(node, port) !== port ? (
                   <span className="ml-1 font-mono text-muted-foreground">{port}</span>
                 ) : null}
               </li>

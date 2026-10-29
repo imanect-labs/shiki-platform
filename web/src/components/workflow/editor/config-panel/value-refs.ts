@@ -79,7 +79,8 @@ export function outputKeys(nodeType: string | undefined): string[] {
 /// - 「AI に聞く」（llm.invoke）: `data` は出力の形（`output_schema`）を書いたときだけ出し、その項目ごとに
 ///   `data/<項目>` を足す（ir.md §7.3）。
 /// - 「AI で判定」（ai.decide）: 質問ごとに答え（`answers/<キー>/value`）と確からしさ（`/confidence`）、
-///   段階の質問は段階の番号（`/level_index`・0 から）を足す（ir.md §7.11）。
+///   選択肢の質問は答えの名前（`/label`・D-87）、段階の質問は段階の番号（`/level_index`・0 から）を足す
+///   （ir.md §7.11）。
 export function outputRefFields(a: RefCandidate): { path: string[]; label: string }[] {
   const params = (a.params ?? {}) as Record<string, unknown>;
   const out: { path: string[]; label: string }[] = [];
@@ -95,6 +96,8 @@ export function outputRefFields(a: RefCandidate): { path: string[]; label: strin
       for (const q of params.questions as { key?: unknown; type?: unknown }[]) {
         if (typeof q?.key !== "string" || q.key === "") continue;
         out.push({ path: [k, q.key, "value"], label: `${q.key} の答え` });
+        // 選択肢の名前（D-87）。テーブルの選択肢の列に書き込むならこちら（答えはキー）。
+        if (q.type === "choice") out.push({ path: [k, q.key, "label"], label: `${q.key} の答えの名前` });
         out.push({ path: [k, q.key, "confidence"], label: `${q.key} の確からしさ` });
         if (q.type === "score") out.push({ path: [k, q.key, "level_index"], label: `${q.key} の段階の番号` });
       }

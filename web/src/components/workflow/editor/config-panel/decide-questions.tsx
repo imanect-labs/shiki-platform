@@ -3,7 +3,8 @@
 /// 「AI で判定」（ai.decide）の質問の編集（FEAT-1・ir.md §7.11）。
 ///
 /// 質問は作者が書くコード（リテラル）で、1〜20 件・順序を保つ。種類ごとに答えの値域を決める:
-/// - 選択肢（choice）: 選択肢のキー（英小文字・答えの値・値で振り分けるときは出口の名前）と説明。
+/// - 選択肢（choice）: 選択肢の名前（答えの名前・テーブルの選択肢の列に書き込む値・出口の名前）と、AI への説明
+///   （AI への手がかり）と、キー（英小文字・答えの値・値で振り分けるときは出口の内部名）を分けて書く（D-87）。
 /// - 段階（score）: 段階の名前を低い順に並べる。
 /// - はい/いいえ（boolean）: それぞれに当たる場合の説明（省略可）。
 /// キーの形と重なりはその場で知らせる。ほかの規則（予約名・件数・字数）はサーバの保存時の検証が決め、
@@ -34,7 +35,7 @@ export function kindLabel(kind: DecideQuestionType | undefined): string {
 }
 
 /// 質問ごとの誤り（欄の位置 → 文言）。位置は `key`・`instructions`・`options`・`options/<i>/key`・
-/// `options/<i>/description`・`levels`・`levels/<i>`・`yes`・`no`（i は今の並びの添字）。
+/// `options/<i>/label`・`options/<i>/description`・`levels`・`levels/<i>`・`yes`・`no`（i は今の並びの添字）。
 export type QuestionErrors = Map<string, string>;
 
 const KEY_HINT = "英小文字で始め、英小文字・数字・_ だけ（64 字まで）";
@@ -416,37 +417,52 @@ function OptionsEditor({
   onRename: (from: string, to: string, next: DecideOption[]) => void;
 }) {
   const headingId = React.useId();
+  const hintId = React.useId();
   const listRef = React.useRef<HTMLDivElement>(null);
   const focusRow = useFocusRow(listRef, '[data-testid="decide-option"]');
   const keys = options.map((o) => o.key);
+  const labels = options.map((o) => (o.label ?? "").trim());
   const replace = (i: number, o: DecideOption) => options.map((x, j) => (j === i ? o : x));
   return (
-    <div className="space-y-1.5" role="group" aria-labelledby={headingId}>
+    <div className="space-y-1.5" role="group" aria-labelledby={headingId} aria-describedby={hintId}>
       <p id={headingId} className="text-[11px] font-medium text-muted-foreground">
-        選択肢（キーは答えの値。答えで分けるときは出口の名前になる）
+        選択肢
+      </p>
+      <p id={hintId} className="text-[11px] leading-relaxed text-muted-foreground">
+        AI はこの中から 1 つを選びます。名前は答えの名前になります。テーブルの選択肢の列に書き込むなら、列の選択肢と同じ文字にします。
       </p>
       <div ref={listRef} className="space-y-1.5">
         {options.map((o, i) => {
-          const optName = `${name}の選択肢「${o.key || i + 1}」`;
+          const label = labels[i];
+          const optName = `${name}の選択肢「${label || o.key || i + 1}」`;
           const keyErr = keyError(o.key, keys.filter((_, j) => j !== i), "選択肢のキー") ?? errors.get(`options/${i}/key`);
+          const labelErr =
+            (label !== "" && labels.some((l, j) => j !== i && l === label)
+              ? `選択肢の名前「${label}」はほかの選択肢でも使っています。別の名前にしてください。`
+              : null) ?? errors.get(`options/${i}/label`);
           const descErr = errors.get(`options/${i}/description`);
+          const rowErr = keyErr ?? labelErr ?? descErr;
           const errId = `${headingId}-o${i}`;
+          // 名前の無い選択肢（名前を足す前の定義）は、今までどおり説明かキーが答えの名前になる（D-87）。
+          const fallback = (o.description ?? "").trim() || o.key;
+          const noteId = `${headingId}-n${i}`;
+          const describedBy = [rowErr ? errId : null, label === "" && fallback ? noteId : null].filter(Boolean).join(" ");
           return (
             <div key={i} className="space-y-1 rounded-md border bg-background p-1.5" data-testid="decide-option">
               <div className="flex items-center gap-0.5">
                 <Input
-                  value={o.key}
-                  onChange={(e) => {
-                    const to = e.target.value.trim();
-                    onRename(o.key, to, replace(i, { ...o, key: to }));
+                  value={o.label ?? ""}
+                  onChange={(e) => onChange(replace(i, { ...o, label: e.target.value === "" ? undefined : e.target.value }))}
+                  onBlur={(e) => {
+                    // 前後の空白は外して保存する（出口とテーブルの列に書く値）。
+                    const trimmed = e.target.value.trim();
+                    if (trimmed !== (o.label ?? "")) onChange(replace(i, { ...o, label: trimmed === "" ? undefined : trimmed }));
                   }}
-                  placeholder="キー（例: billing）"
-                  aria-label={`選択肢 ${i + 1} のキー`}
-                  aria-invalid={keyErr ? true : undefined}
-                  aria-describedby={keyErr || descErr ? errId : undefined}
-                  spellCheck={false}
-                  autoCapitalize="off"
-                  className="mr-1 h-8 min-w-0 flex-1 font-mono text-xs max-md:text-base"
+                  placeholder="例: 請求"
+                  aria-label={`選択肢 ${i + 1} の名前`}
+                  aria-invalid={labelErr ? true : undefined}
+                  aria-describedby={describedBy || undefined}
+                  className="mr-1 h-8 min-w-0 flex-1 text-xs max-md:text-base"
                 />
                 <MoveButtons
                   name={optName}
@@ -461,14 +477,39 @@ function OptionsEditor({
                   onRemove={() => onChange(options.filter((_, j) => j !== i))}
                 />
               </div>
-              <Input
-                value={o.description ?? ""}
-                onChange={(e) => onChange(replace(i, { ...o, description: e.target.value || undefined }))}
-                placeholder="説明（例: 請求・返金）"
-                aria-label={`選択肢 ${i + 1} の説明`}
-                className="h-8 text-xs max-md:text-base"
-              />
-              <FieldError id={errId} message={keyErr ?? descErr} />
+              <div className="flex items-center gap-1">
+                <Input
+                  value={o.description ?? ""}
+                  onChange={(e) => onChange(replace(i, { ...o, description: e.target.value || undefined }))}
+                  placeholder="AI への説明（省略可）"
+                  aria-label={`選択肢 ${i + 1} の AI への説明`}
+                  aria-invalid={descErr ? true : undefined}
+                  aria-describedby={descErr ? errId : undefined}
+                  className="h-8 min-w-0 flex-1 text-xs max-md:text-base"
+                />
+                {/* キーは答えの値と出口の内部名。ふだんは触らないので、行の右端に小さく出す。 */}
+                <Input
+                  value={o.key}
+                  onChange={(e) => {
+                    const to = e.target.value.trim();
+                    onRename(o.key, to, replace(i, { ...o, key: to }));
+                  }}
+                  placeholder="例: billing"
+                  aria-label={`選択肢 ${i + 1} のキー`}
+                  aria-invalid={keyErr ? true : undefined}
+                  aria-describedby={keyErr ? errId : undefined}
+                  title="キー（英数字の名前）"
+                  spellCheck={false}
+                  autoCapitalize="off"
+                  className="h-8 w-24 shrink-0 font-mono text-[11px] text-muted-foreground max-md:w-28 max-md:text-sm"
+                />
+              </div>
+              {label === "" && fallback && !rowErr ? (
+                <p id={noteId} className="text-[11px] text-muted-foreground">
+                  名前を入れないと、「{fallback}」が答えの名前になります。
+                </p>
+              ) : null}
+              <FieldError id={errId} message={rowErr} />
             </div>
           );
         })}

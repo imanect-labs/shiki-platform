@@ -26,7 +26,7 @@ import { AddNodeMenu } from "./add-node-menu";
 import { nodeIcon } from "./icons";
 import { continuationPort, drawnPorts, exitsPending, isStructuralPort, type DrawnPort } from "./ports";
 import { categoryVar } from "../category-accent";
-import { portLabel } from "../port-labels";
+import { nodePortLabel } from "../port-labels";
 
 export type NodeCardData = {
   irNode: IrNode;
@@ -54,9 +54,9 @@ function portColor(port: string): string {
   return "!bg-primary";
 }
 
-/// 出口の表示名（無い出口は印を添える）。
-function drawnLabel(p: DrawnPort): string {
-  const name = portLabel(p.port);
+/// 出口の表示名（判定の選択肢は名前・無い出口は印を添える）。
+function drawnLabel(node: IrNode, p: DrawnPort): string {
+  const name = nodePortLabel(node, p.port);
   return p.missing ? `${name}（無い出口）` : name;
 }
 
@@ -71,7 +71,7 @@ function parsePorts(key: string | undefined): string[] {
 }
 
 /// 名前付きの出口の行（名前の横にハンドル）。
-function PortRow({ port: p }: { port: DrawnPort }) {
+function PortRow({ node, port: p }: { node: IrNode; port: DrawnPort }) {
   return (
     <div className="relative flex h-6 items-center justify-end" data-port={p.port}>
       <span
@@ -80,7 +80,7 @@ function PortRow({ port: p }: { port: DrawnPort }) {
           p.missing ? "font-medium text-destructive" : "text-muted-foreground",
         )}
       >
-        {drawnLabel(p)}
+        {drawnLabel(node, p)}
       </span>
       <Handle
         id={p.port}
@@ -236,7 +236,7 @@ export function NodeCard({ id, data, selected }: NodeProps & { data: NodeCardDat
           {[...ports]
             .sort((a, b) => Number(isStructuralPort(a.port)) - Number(isStructuralPort(b.port)))
             .map((p) => (
-              <PortRow key={p.port} port={p} />
+              <PortRow key={p.port} node={irNode} port={p} />
             ))}
         </div>
       ) : ports.length === 1 && !ports[0].missing ? (
@@ -252,7 +252,7 @@ export function NodeCard({ id, data, selected }: NodeProps & { data: NodeCardDat
       ) : ports.length > 0 ? (
         <div className="border-t px-3.5 py-1.5">
           {ports.map((p) => (
-            <PortRow key={p.port} port={p} />
+            <PortRow key={p.port} node={irNode} port={p} />
           ))}
         </div>
       ) : null}

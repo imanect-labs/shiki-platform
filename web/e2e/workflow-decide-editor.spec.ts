@@ -313,14 +313,15 @@ test.describe("AI で判定（エディタ）", () => {
       await panel.locator('[data-value-expr="判定の材料"]').getByRole("button", { name: "差し込む" }).click();
       await page.getByRole("menuitem", { name: "本文（body）", exact: true }).click();
 
-      // 質問: キー・問い・選択肢（キーと説明）。
+      // 質問: キー・問い・選択肢（名前・AI への説明・キーを分けて書く・D-87）。
       const question = panel.getByRole("group", { name: /^質問 1/ });
       await question.getByRole("textbox", { name: "キー", exact: true }).fill("category");
       await question.getByRole("textbox", { name: "問い（何を判定するか）" }).fill("問い合わせの種類はどれか");
+      await question.getByRole("textbox", { name: "選択肢 1 の名前" }).fill("請求");
+      await question.getByRole("textbox", { name: "選択肢 1 の AI への説明" }).fill("請求書や返金についての問い合わせ");
       await question.getByRole("textbox", { name: "選択肢 1 のキー" }).fill("billing");
-      await question.getByRole("textbox", { name: "選択肢 1 の説明" }).fill("請求・返金");
+      await question.getByRole("textbox", { name: "選択肢 2 の名前" }).fill("不具合");
       await question.getByRole("textbox", { name: "選択肢 2 のキー" }).fill("bug");
-      await question.getByRole("textbox", { name: "選択肢 2 の説明" }).fill("不具合");
       // 予約名はサーバが知らせる（欄の下）。
       await question.getByRole("textbox", { name: "選択肢 2 のキー" }).fill("error");
       await expect(question.getByText(/選択肢のキーに「error」は使えません/)).toBeVisible({ timeout: 10_000 });
@@ -338,8 +339,11 @@ test.describe("AI で判定（エディタ）", () => {
       await expect(threshold).toHaveValue("0.8");
       await expect(panel.getByTestId("decide-calibration")).toContainText("較正なし");
 
-      // 検証の後に、選択肢ごとの出口と要確認のハンドルが出る。
+      // 検証の後に、選択肢ごとの出口と要確認のハンドルが出る。出口は選択肢の名前で出す（D-87）。
       await expect.poll(() => handleIds(node), { timeout: 10_000 }).toEqual(["billing", "bug", "uncertain"]);
+      await expect(node.locator('[data-port="billing"]')).toHaveText("請求");
+      await expect(node.locator('[data-port="bug"]')).toHaveText("不具合");
+      await expect(panel.getByTestId("decide-exits").locator('[data-port="billing"]')).toContainText("請求");
       await expect(page.locator('[aria-label^="検証エラー"]')).toHaveCount(0);
       await page.screenshot({ path: "test-results/decide-form-pc.png" });
 
@@ -356,8 +360,8 @@ test.describe("AI で判定（エディタ）", () => {
             type: "choice",
             instructions: "問い合わせの種類はどれか",
             options: [
-              { key: "billing", description: "請求・返金" },
-              { key: "bug", description: "不具合" },
+              { key: "billing", label: "請求", description: "請求書や返金についての問い合わせ" },
+              { key: "bug", label: "不具合" },
             ],
           },
         ],
@@ -368,6 +372,12 @@ test.describe("AI で判定（エディタ）", () => {
       const sure = await runToEnd(page, id, "billing の件で連絡しました");
       expect(sure.status).toBe("succeeded");
       expect(sure.steps.find((s) => s.node_id === "decide_1")?.taken_ports).toEqual(["billing"]);
+      // 答えの名前（label）は選択肢の名前（テーブルの選択肢の列に書き込む値）。答えの値はキーのまま。
+      const step = await page.request.get(`/api/workflows/${id}/runs/${sure.run_id}/steps?path=decide_1`);
+      expect(step.ok(), await step.text()).toBeTruthy();
+      const answer = ((await step.json()) as { output: { answers: Record<string, { value: string; label: string }> } })
+        .output.answers.category;
+      expect(answer).toMatchObject({ value: "billing", label: "請求" });
       const unsure = await runToEnd(page, id, "よく分からない内容です");
       expect(unsure.status).toBe("succeeded");
       expect(unsure.steps.find((s) => s.node_id === "decide_1")?.taken_ports).toEqual(["uncertain"]);
@@ -414,7 +424,8 @@ test.describe("AI で判定（エディタ）", () => {
       const question = sheet.getByRole("group", { name: /^質問 1/ });
       await question.getByRole("button", { name: "選択肢を追加" }).scrollIntoViewIfNeeded();
       await question.getByRole("button", { name: "選択肢を追加" }).click();
-      await expect(question.getByRole("textbox", { name: "選択肢 3 のキー" })).toBeFocused();
+      // 足した選択肢は、最初に決める名前の欄へフォーカスが移る（D-87）。
+      await expect(question.getByRole("textbox", { name: "選択肢 3 の名前" })).toBeFocused();
       expect(await sheet.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
       expect(await phone.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
       await phone.screenshot({ path: "test-results/decide-sheet-phone.png" });
@@ -428,7 +439,7 @@ test.describe("AI で判定（エディタ）", () => {
   });
 });
 
-type Run = { status: string; steps: { node_id: string; status: string; taken_ports: string[] }[] };
+type Run = { run_id: string; status: string; steps: { node_id: string; status: string; taken_ports: string[] }[] };
 
 /// 入力を渡して実行し、run が終わるまで待つ。
 async function runToEnd(page: Page, id: string, body: string): Promise<Run> {

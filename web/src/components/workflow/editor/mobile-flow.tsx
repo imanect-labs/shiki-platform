@@ -19,7 +19,7 @@ import { categoryVar } from "../category-accent";
 import type { AddTarget } from "./add-target";
 import { nodeIcon } from "./icons";
 import type { EditorAction, Selection } from "./ir-state";
-import { portLabel } from "./node-card";
+import { nodePortLabel } from "../port-labels";
 import { defaultOutPort, drawnPorts, edgePortsOf, exitsPending, type ServerPorts } from "./ports";
 import { triggerSeasonIndex, triggerView } from "./trigger-node";
 import { mapErrors } from "./validation";
@@ -291,7 +291,7 @@ export function MobileFlow({
       }
       // 複数の出口（分岐・振り分け・エラー時）。
       for (const { port, missing } of ports) {
-        const label = portLabel(port);
+        const label = nodePortLabel(node, port);
         push(depth + 1, <PortRow label={label} missing={missing} />);
         const edges = outs.filter((e) => (e.from_port ?? "out") === port);
         if (edges.length === 0) {

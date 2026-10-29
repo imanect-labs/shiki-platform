@@ -59,7 +59,7 @@ function useNodeInfo(workflowId: string, version: number | null) {
           new Map(
             nodes.map((n) => [
               n.id,
-              { label: n.label || CATALOG_LABELS.get(n.type) || n.id, type: n.type },
+              { label: n.label || CATALOG_LABELS.get(n.type) || n.id, type: n.type, params: n.params },
             ]),
           ),
         );

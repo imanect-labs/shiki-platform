@@ -39,6 +39,7 @@ import { TriggerNode, type TriggerNodeData } from "./trigger-node";
 import { PlusEdge, type PlusEdgeData } from "./plus-edge";
 import { PALETTE_DND_TYPE } from "./palette";
 import { edgePortsOf, type ServerPorts } from "./ports";
+import { nodePortLabel } from "../port-labels";
 
 const nodeTypes: NodeTypes = {
   irNode: NodeCard as never,
@@ -200,6 +201,7 @@ export function Canvas({
 
   // ── IR → React Flow edges（トリガ→エントリの視覚接続を含む）────────────
   const rfEdges = React.useMemo<RfEdge[]>(() => {
+    const nodeById = new Map(ir.nodes.map((n) => [n.id, n]));
     const edges: RfEdge[] = ir.edges.map((e) => {
       const key = edgeKey(e);
       const errKey = `${e.from} -> ${e.to}`;
@@ -212,6 +214,7 @@ export function Canvas({
         selected: selection.kind === "edge" && selection.key === key,
         data: {
           irEdge: e,
+          portName: nodePortLabel(nodeById.get(e.from), e.from_port ?? "out"),
           errorMessages: (errors.byEdge.get(errKey) ?? []).map((x) => x.message),
           onInsert: (nodeType: string, position: { x: number; y: number }) =>
             dispatch({

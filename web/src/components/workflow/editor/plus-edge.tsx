@@ -21,6 +21,8 @@ import { portLabel } from "../port-labels";
 
 export type PlusEdgeData = {
   irEdge: IrEdge;
+  /// 出口の表示名（出口のノードから引いたもの・判定の選択肢は名前・D-87）。無ければ出口の決まった名前。
+  portName?: string;
   /// このエッジ上に新ノードを割り込ませる。
   onInsert: (nodeType: string, position: { x: number; y: number }) => void;
   /// このつながりを消す（選択中に出す削除ボタン）。
@@ -62,7 +64,7 @@ export function PlusEdge({
   const hasError = data.errorMessages.length > 0;
   const port = data.irEdge.from_port ?? "out";
   // 既定の出口（次へ）はつながりに名前を出さない（どのノードにもある・カードの出口の並びに出ている）。
-  const portName = port === "out" ? "" : portLabel(port);
+  const portName = port === "out" ? "" : (data.portName ?? portLabel(port));
   // 短いつながりではラベルを出さない（尻尾の＋に重なる・BUG-41）。選んでいる間は＋の上に重ねずに出す。
   const portText =
     portName && (selected || portLabelFits({ sourceX, sourceY, labelX, labelY, text: portName })) ? portName : "";
