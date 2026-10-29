@@ -180,6 +180,16 @@ mod tests {
             step_timeout_sec(&node("storage.read", None, json!({}))),
             Some(30)
         );
+        // データをまとめて登録は、空欄でも最大の 600 秒（切れると途中まで登録したまま失敗する・D-106）。
+        assert_eq!(
+            step_timeout_sec(&node("data.bulk_upsert", None, json!({}))),
+            Some(600)
+        );
+        assert_eq!(
+            step_timeout_sec(&node("data.bulk_upsert", Some(120), json!({}))),
+            Some(120),
+            "書いた値はそのまま使う"
+        );
         assert_eq!(
             step_timeout_sec(&node("workflow.reply", Some(60), json!({}))),
             Some(10)

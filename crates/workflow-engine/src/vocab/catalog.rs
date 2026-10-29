@@ -527,8 +527,10 @@ pub fn step_timeout_limits(nt: NodeType) -> (Option<u32>, Option<u32>) {
         NodeType::WorkflowReply => (Some(5), Some(10)),
         NodeType::ScriptRun => (Some(30), Some(360)),
         NodeType::SkillInvoke => (Some(60), Some(360)),
-        // 一括 upsert は取込ジョブを同期で最後まで進める（最大 5,000 行・1 チャンク 500 行）。
-        NodeType::LlmInvoke | NodeType::DataBulkUpsert => (Some(120), Some(600)),
+        NodeType::LlmInvoke => (Some(120), Some(600)),
+        // 一括 upsert は取込ジョブを同期で最後まで進める（最大 5,000 行・1 チャンク 500 行）。切れると途中まで
+        // 登録したまま失敗する（やり直しは続きから）ので、既定でも最大の 600 秒まで待つ（D-106）。
+        NodeType::DataBulkUpsert => (Some(600), Some(600)),
         NodeType::AgentInvoke => (Some(600), Some(3600)),
         _ => (None, None),
     }
