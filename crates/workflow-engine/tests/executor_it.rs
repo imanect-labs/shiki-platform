@@ -19,6 +19,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
+use workflow_engine::ir::params::NameTakenPolicy;
 use workflow_engine::nodes::ports::{
     AgentInvokeReq, CsvPatchReq, CsvWriteReq, ExecCtx, HttpSendReq, HttpSendResp, LlmInvokeReq,
     NodePorts, PortError, ResolvedSecretView, StorageWriteReq,
@@ -63,9 +64,14 @@ struct FakePorts {
     http_echo: Mutex<bool>,
     /// 保存先にすでにある名前（storage.write は `name_taken` で断る・BUG-97）。
     taken_names: Mutex<Vec<String>>,
-    /// storage.write に渡った（名前・冪等キー・op_digest）の並び（番号を付けて試し直した順）。
-    write_tries: Mutex<Vec<(String, String, String)>>,
+    /// 番号を付ける扱いで、ポートの先（StorageService）が付けた名前。`None` は上限まで埋まっている（D-112）。
+    numbered_as: Mutex<Option<String>>,
+    /// storage.write に渡った要求の並び。
+    write_tries: Mutex<Vec<WriteTry>>,
 }
+
+/// storage.write に渡った（名前・扱い・冪等キー・op_digest）。
+type WriteTry = (String, NameTakenPolicy, String, String);
 impl FakePorts {
     fn with_http_status(status: u16) -> Self {
         let p = FakePorts::default();
@@ -83,18 +89,26 @@ impl NodePorts for FakePorts {
     ) -> Result<Value, PortError> {
         self.write_tries.lock().unwrap().push((
             req.name.clone(),
+            req.on_name_taken,
             req.idempotency_key.clone(),
             req.op_digest.clone(),
         ));
+        let mut saved = req.name.clone();
         if self.taken_names.lock().unwrap().contains(&req.name) {
-            return Err(PortError::new(
-                workflow_engine::nodes::ports::NAME_TAKEN,
-                "同じ名前のファイルがすでにあります",
-                false,
-            ));
+            // 番号はポートの先が付ける（ここでは付けた名前を仕込んでおく・規則を写さない）。
+            match (req.on_name_taken, self.numbered_as.lock().unwrap().clone()) {
+                (NameTakenPolicy::AddNumber, Some(n)) => saved = n,
+                _ => {
+                    return Err(PortError::new(
+                        workflow_engine::nodes::ports::NAME_TAKEN,
+                        "同じ名前のファイルがすでにあります",
+                        false,
+                    ))
+                }
+            }
         }
         let out = json!({
-            "id": Uuid::nil().to_string(), "name": req.name, "written": req.name,
+            "id": Uuid::nil().to_string(), "name": saved, "written": saved,
             "bytes": req.bytes.len()
         });
         *self.last_write.lock().unwrap() = Some(req);
@@ -347,6 +361,8 @@ async fn storage_write_passes_step_idempotency_key() {
     assert_eq!(w.name, "out.txt");
     assert_eq!(w.bytes, b"body-bytes");
     assert!(!w.op_digest.is_empty());
+    // 「同じ名前があるとき」の無い定義は、失敗にする扱いで頼む（D-112）。
+    assert_eq!(w.on_name_taken, NameTakenPolicy::Fail);
 }
 
 #[tokio::test]
@@ -1095,13 +1111,15 @@ async fn workflow_start_input_nested_refs_are_resolved() {
 }
 
 /// 同じ名前のファイルがあるとき: 省略（既存の定義）は今のまま失敗にし、原因どおりの code と文言を返す。
-/// 番号を付ける扱いなら、空いている名前（`週報 (3).md`）で保存し、どの試しも同じ冪等キーと op_digest で送る
-/// （BUG-97・D-97）。
+/// 番号を付ける扱いは、頼まれた名前と扱いをポートへ 1 回で渡し、ポートの先（StorageService）が付けた名前を結果と
+/// 監査に載せる。エンジンは名前を変えて呼び直さない（BUG-97・D-97・D-112）。
 #[tokio::test]
 async fn storage_write_handles_taken_names_by_policy() {
     let ports = Arc::new(FakePorts::default());
-    *ports.taken_names.lock().unwrap() = vec!["週報.md".into(), "週報 (2).md".into()];
-    let exec = executor(ports.clone(), Arc::new(CapturingAudit::default()));
+    *ports.taken_names.lock().unwrap() = vec!["週報.md".into(), "a.txt".into()];
+    *ports.numbered_as.lock().unwrap() = Some("週報 (3).md".into());
+    let audit = Arc::new(CapturingAudit::default());
+    let exec = executor(ports.clone(), audit.clone());
     let c = ctx(json!({}), vec!["storage.write".into()]);
 
     // 省略は失敗にする（この項目が無かったころの定義の挙動）。1 回しか試さない。
@@ -1122,9 +1140,11 @@ async fn storage_write_handles_taken_names_by_policy() {
     );
     assert!(!err.message.contains("重なった"), "{}", err.message);
     assert!(!err.retryable);
-    assert_eq!(ports.write_tries.lock().unwrap().len(), 1);
+    let tries = ports.write_tries.lock().unwrap().clone();
+    assert_eq!(tries.len(), 1);
+    assert_eq!(tries[0].1, NameTakenPolicy::Fail);
 
-    // 番号を付ける: 1 回目は元の名前、2 回目から拡張子の前に番号を付ける。
+    // 番号を付ける: 頼まれた名前と扱いを 1 回で渡し、付けた名前を結果と監査に載せる。
     ports.write_tries.lock().unwrap().clear();
     let res = exec
         .execute(
@@ -1136,19 +1156,18 @@ async fn storage_write_handles_taken_names_by_policy() {
     assert!(res.ok, "{:?}", res.error);
     assert_eq!(res.output["name"], "週報 (3).md");
     let tries = ports.write_tries.lock().unwrap().clone();
-    let names: Vec<&str> = tries.iter().map(|(n, _, _)| n.as_str()).collect();
-    assert_eq!(names, ["週報.md", "週報 (2).md", "週報 (3).md"]);
-    assert!(
-        tries
-            .iter()
-            .all(|(_, k, d)| *k == tries[0].1 && *d == tries[0].2),
-        "試し直しで冪等キーか op_digest が変わった: {tries:?}"
+    assert_eq!(
+        tries.len(),
+        1,
+        "エンジンが名前を変えて呼び直した: {tries:?}"
     );
+    assert_eq!(tries[0].0, "週報.md");
+    assert_eq!(tries[0].1, NameTakenPolicy::AddNumber);
+    let (_, _, meta) = audit.records.lock().unwrap().last().cloned().unwrap();
+    assert_eq!(meta["name"], "週報 (3).md");
 
     // 番号を付けた名前が上限まで埋まっていれば、上限の名前を言って失敗にする。
-    *ports.taken_names.lock().unwrap() = (1..=50)
-        .map(|n| workflow_engine::ir::params::numbered_name("a.txt", n))
-        .collect();
+    *ports.numbered_as.lock().unwrap() = None;
     let res = exec
         .execute(
             "storage.write",

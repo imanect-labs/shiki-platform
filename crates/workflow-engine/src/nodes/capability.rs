@@ -64,11 +64,21 @@ fn name_taken_error(name: &str, policy: NameTakenPolicy) -> PortError {
     PortError::new(NAME_TAKEN, message, false)
 }
 
-/// 同じ名前のファイルがあれば、扱い（`on_name_taken`）に従って番号を付けた名前で試し直す（BUG-97）。
+/// 名前の衝突（[`NAME_TAKEN`]）を、頼まれた名前と扱いで言い直す。ほかの失敗はそのまま返す。
+fn explain_name_taken(e: PortError, name: &str, policy: NameTakenPolicy) -> PortError {
+    if e.code == NAME_TAKEN {
+        name_taken_error(name, policy)
+    } else {
+        e
+    }
+}
+
+/// csv.write で同じ名前のファイルがあれば、扱い（`on_name_taken`）に従って番号を付けた名前で試し直す（BUG-97）。
 ///
-/// `save` は試す名前を受けて 1 回保存する。名前の衝突（[`NAME_TAKEN`]）で失敗した試しは何も書かないので、
-/// どの試しも同じ冪等キー・同じ op_digest で送ってよい（storage.write の in-TX journal は、前の試しで
-/// 保存済みなら最初の名前の試しで結果を返す）。名前の衝突のほかの失敗は、そのまま返す。
+/// storage.write は扱いを [`StorageWriteReq`] で頼み、番号は StorageService が付ける（D-112）。csv.write のポートの
+/// 要求（[`CsvWriteReq`]）は扱いを運ばないので、ここで名前を変えて呼び直す（規則は storage と同じ写し）。
+/// `save` は試す名前を受けて 1 回保存する。名前の衝突で失敗した試しは何も書かない。名前の衝突のほかの失敗は、
+/// そのまま返す。
 async fn save_avoiding_taken_names<F, Fut>(
     name: &str,
     policy: NameTakenPolicy,
@@ -190,8 +200,8 @@ impl CapabilityNodeExecutor {
                     .to_string()
             });
 
-        // op_digest は書込の同一性（親/頼まれた名前/内容ハッシュ）で安定。冪等キーはステップ固定。番号を付けた
-        // 名前で試し直しても同じ digest で送る（頼まれた書込は 1 つ）。
+        // op_digest は書込の同一性（親/頼まれた名前/内容ハッシュ）で安定。冪等キーはステップ固定。番号は
+        // StorageService が同じ TX の中で付けるので、頼まれた書込 1 つの digest のまま（D-112）。
         let digest = op_digest(
             "storage.write",
             &json!({
@@ -201,20 +211,22 @@ impl CapabilityNodeExecutor {
             }),
         );
         let policy = p.on_name_taken.unwrap_or_default();
-        let out = save_avoiding_taken_names(&name, policy, |candidate| {
-            self.ports.storage_write(
+        let out = self
+            .ports
+            .storage_write(
                 ec,
                 StorageWriteReq {
                     parent_id,
-                    name: candidate,
-                    bytes: bytes.clone(),
-                    content_type: content_type.clone(),
+                    name: name.clone(),
+                    bytes,
+                    content_type,
+                    on_name_taken: policy,
                     idempotency_key: ctx.idempotency_key.clone(),
-                    op_digest: digest.clone(),
+                    op_digest: digest,
                 },
             )
-        })
-        .await?;
+            .await
+            .map_err(|e| explain_name_taken(e, &name, policy))?;
         // 監査には実際に保存した名前（番号を付けたなら付けた名前）を残す。
         let saved = out.get("name").and_then(Value::as_str).unwrap_or(&name);
         self.audit(

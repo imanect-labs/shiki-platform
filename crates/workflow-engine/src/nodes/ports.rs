@@ -75,9 +75,14 @@ impl PortError {
 #[derive(Debug, Clone)]
 pub struct StorageWriteReq {
     pub parent_id: Option<Uuid>,
+    /// 頼まれた名前（番号を付ける前の名前）。
     pub name: String,
     pub bytes: Vec<u8>,
     pub content_type: String,
+    /// 保存先に同じ名前のファイルがあるとき（BUG-97・D-112）。番号はチョークポイント（StorageService）が付け、
+    /// 実際に保存した名前を結果の `name` で返す。番号を付けても冪等キーと op_digest は頼まれた書込 1 つのもので、
+    /// 試し直しは前に付けた名前の結果を返す。上限まで埋まっていれば [`NAME_TAKEN`] で失敗する。
+    pub on_name_taken: crate::ir::params::NameTakenPolicy,
     pub idempotency_key: String,
     pub op_digest: String,
 }
@@ -302,8 +307,9 @@ pub fn hidden_not_found(target: &str) -> String {
 
 /// storage.write・csv.write の保存先に同じ名前のファイルがあるときの code（BUG-97・permanent）。
 ///
-/// ポート実装は名前の衝突をこの code で返す（ほかの競合と分ける）。エンジンはこれを見て、params の
-/// `on_name_taken` が番号を付ける扱いなら次の名前で試す。
+/// ポート実装は名前の衝突をこの code で返す（ほかの競合と分ける）。storage.write は番号を付ける扱いでも
+/// 上限まで埋まっていればこれを返す（番号はポートの先が付ける・D-112）。csv.write は、エンジンがこれを見て
+/// params の `on_name_taken` が番号を付ける扱いなら次の名前で試す（[`CsvWriteReq`] は扱いを運ばない）。
 pub const NAME_TAKEN: &str = "name_taken";
 
 /// 能力ノードが叩く既存チョークポイントの単一ポート（server 側で具象注入）。

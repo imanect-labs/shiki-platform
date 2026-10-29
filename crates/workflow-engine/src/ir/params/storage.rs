@@ -29,14 +29,14 @@ pub enum NameTakenPolicy {
     AddNumber,
 }
 
-/// 番号を付けて試す上限（` (2)` 〜 ` (50)`）。ドライブの新規作成（`StorageService::write_file_unique_internal`
-/// の `MAX_NAME_ATTEMPTS`）と同じ数にそろえる。
+/// 番号を付けて試す上限（` (2)` 〜 ` (50)`）。正本は `storage::MAX_NUMBERED_NAME`（同じ数の写し）。
 pub const MAX_NUMBERED_NAME: u32 = 50;
 
 /// `attempt` 回目に試す名前（1 回目は元の名前・2 回目からは拡張子の前に ` (n)`）。
 ///
-/// 連番の規則はドライブの新規作成（`StorageService::write_file_unique_internal`）と同じ（`メモ (2).md`）。
-/// workflow-engine は storage に依存しないので同じ規則をここに書き、api の結合テストで両者を照らす。
+/// 正本は `storage::numbered_name`（番号は StorageService が付ける・D-112）。ここは、ポートの要求が扱いを運ばない
+/// `csv.write` の試し直しと、上限まで埋まったときの誤りの文言（「名前 (50).md」）のための写し。workflow-engine は
+/// storage に依存しない（`nodes::ports`）ので写しを持ち、api のテストで両者が同じ名前を作ることを照らす。
 #[must_use]
 pub fn numbered_name(file_name: &str, attempt: u32) -> String {
     if attempt <= 1 {

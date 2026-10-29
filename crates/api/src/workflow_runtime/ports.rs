@@ -76,7 +76,7 @@ pub(super) fn map_storage(e: storage::StorageError) -> PortError {
     match e {
         S::Forbidden => PortError::forbidden("storage 権限なし"),
         S::NotFound => PortError::new("not_found", "対象が見つかりません", false),
-        // 保存先の同じフォルダに同じ名前のファイルがある（エンジンが on_name_taken に従って扱う・BUG-97）。
+        // 保存先の同じフォルダに同じ名前のファイルがある（番号を付ける扱いなら上限まで埋まっている・BUG-97）。
         S::Conflict => PortError::new(NAME_TAKEN, "同じ名前のファイルがすでにあります", false),
         S::IdempotencyConflict => PortError::new(
             "effect_conflict",
@@ -85,6 +85,15 @@ pub(super) fn map_storage(e: storage::StorageError) -> PortError {
         ),
         S::Invalid(m) => PortError::invalid(m),
         other => PortError::unavailable(format!("storage: {other}")),
+    }
+}
+
+/// ワークフローの「同じ名前があるとき」を、StorageService の扱いに写す（値の名前は同じ・D-112）。
+fn on_name_taken(p: workflow_engine::ir::params::NameTakenPolicy) -> storage::OnNameTaken {
+    use workflow_engine::ir::params::NameTakenPolicy as P;
+    match p {
+        P::Fail => storage::OnNameTaken::Fail,
+        P::AddNumber => storage::OnNameTaken::AddNumber,
     }
 }
 
@@ -126,8 +135,8 @@ impl NodePorts for ProdNodePorts {
                 &req.name,
                 &req.bytes,
                 &req.content_type,
-                // 名前の衝突はエンジンが on_name_taken に従って扱う（1 回の書込は失敗にする扱い）。
-                storage::OnNameTaken::Fail,
+                // 番号を付けるのはチョークポイントの 1 か所（D-112）。
+                on_name_taken(req.on_name_taken),
                 &req.idempotency_key,
                 &req.op_digest,
                 ec.trace_id.as_deref(),
@@ -590,6 +599,36 @@ mod tests {
             .unwrap();
         for f in fields {
             assert!(entry.output_fields[0].ty.contains(&format!("{f}:")), "{f}");
+        }
+    }
+
+    /// 番号の規則の写し（エンジンの csv.write と誤りの文言）が、正本の storage と同じ名前を作る（D-112）。
+    /// 扱いの写像も、値の名前（`fail`・`add_number`）をそろえる。
+    #[test]
+    fn engine_numbering_copy_matches_the_storage_rule() {
+        use workflow_engine::ir::params::{self as wp, NameTakenPolicy};
+        assert_eq!(wp::MAX_NUMBERED_NAME, storage::MAX_NUMBERED_NAME);
+        for name in [
+            "週報.md",
+            "集計.csv",
+            "無題のノート",
+            "a.tar.gz",
+            ".env",
+            "a.",
+        ] {
+            for attempt in 0..=storage::MAX_NUMBERED_NAME + 1 {
+                assert_eq!(
+                    wp::numbered_name(name, attempt),
+                    storage::numbered_name(name, attempt),
+                    "{name} の {attempt} 回目"
+                );
+            }
+        }
+        for p in [NameTakenPolicy::Fail, NameTakenPolicy::AddNumber] {
+            assert_eq!(
+                serde_json::to_value(p).unwrap(),
+                serde_json::to_value(on_name_taken(p)).unwrap()
+            );
         }
     }
 }

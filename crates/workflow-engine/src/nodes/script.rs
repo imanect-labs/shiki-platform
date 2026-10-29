@@ -291,6 +291,8 @@ impl HostBridge {
                             name,
                             bytes,
                             content_type,
+                            // script の書込は同じ名前があると失敗にする（引数で扱いを選べない・API v1）。
+                            on_name_taken: crate::ir::params::NameTakenPolicy::Fail,
                             idempotency_key: call_key,
                             op_digest: digest,
                         },
