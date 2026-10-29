@@ -469,7 +469,7 @@ export function SkillEditorDialog({
           </Field>
 
           {error ? (
-            <p className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive" role="alert">
+            <p className="whitespace-pre-line rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive" role="alert">
               {error}
             </p>
           ) : null}

@@ -36,16 +36,16 @@ type GuiValidationError = components["schemas"]["GuiValidationError"];
 
 async function ok<T>(res: Response): Promise<T> {
   if (!res.ok) {
-    // 検証エラー（400 の {errors:[...]}）は本文をそのまま投げて UI が全件表示できるようにする。
+    // 検証エラー（400 の {errors:[...]}）は本文をそのまま投げて UI が全件表示できるようにする。文言は 1 件 1 行で、
+    // 位置（`description`・`workflows[0]` などの path）を添えない（利用者に出す画面向け・ミニアプリのエディターの
+    // [`validationMessages`] と同じ扱い・BUG-80・BUG-121）。位置は `errors` に残るので、欄に写す画面はそれを読む。
     let detail = "";
     let errors: GuiValidationError[] | undefined;
     try {
       const body = (await res.json()) as { errors?: GuiValidationError[] };
       if (body.errors?.length) {
         errors = body.errors;
-        detail = body.errors
-          .map((e) => (e.path ? `${e.message}（${e.path}）` : e.message))
-          .join(" / ");
+        detail = body.errors.map((e) => e.message).join("\n");
       }
     } catch {
       // 本文なし

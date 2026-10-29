@@ -104,4 +104,34 @@ test.describe("skill（作成・共有・チャット適用）", () => {
     await expect(page.getByText(/回答/).first()).toBeVisible({ timeout: 30_000 });
   });
 
+  test("保存の誤りは 1 件 1 行で出し、位置（description など）を添えない（BUG-121）", async ({ page }) => {
+    await loginViaKeycloak(page);
+    // サーバーの検証の誤り（位置つき）を返させる。画面は文言だけを出す（ミニアプリのエディターと同じ扱い）。
+    await page.route("**/api/skills", (route) =>
+      route.request().method() === "POST"
+        ? route.fulfill({
+            status: 400,
+            json: {
+              errors: [
+                { code: "skill.too_long", message: "説明が長すぎます。", path: "description" },
+                { code: "skill.too_long", message: "答え方のお手本の 1 組目が長すぎます。", path: "few_shot[0]" },
+              ],
+            },
+          })
+        : route.continue(),
+    );
+    await page.goto("/skills");
+    await page.getByRole("button", { name: "スキルを作成" }).first().click();
+    const dialog = page.getByRole("dialog");
+    await dialog.getByLabel(/名前/).fill(uniqueName("e2e-skill-error"));
+    await dialog.getByLabel(/説明/).fill("E2E 検証用のスキル");
+    await dialog.getByLabel(/指示文/).fill("あなたは E2E テストのアシスタントです。");
+    await dialog.getByRole("button", { name: "作成" }).click();
+    const alert = dialog.getByRole("alert");
+    await expect(alert).toContainText("説明が長すぎます。", { timeout: 15_000 });
+    expect(await alert.innerText()).toBe("説明が長すぎます。\n答え方のお手本の 1 組目が長すぎます。");
+    await expect(alert).not.toContainText("（description）");
+    await expect(alert).not.toContainText("few_shot[0]");
+    await page.unroute("**/api/skills");
+  });
 });
