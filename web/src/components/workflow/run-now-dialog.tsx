@@ -38,6 +38,7 @@ import { toast } from "@/components/ui/use-toast";
 import { cn } from "@/lib/utils";
 import { getWorkflow } from "@/lib/workflow-api";
 import { RunStartError, startRun } from "@/lib/workflow-run-api";
+import { blockDisplayName } from "@/lib/workflow-block-name";
 import { inputFieldsOf, type InputFieldInfo } from "@/lib/workflow-input-schema";
 import { EVENT_CATALOG } from "@/generated/workflow-catalog";
 import type { WorkflowIr } from "@/generated/workflow-ir";
@@ -215,7 +216,8 @@ export function RunNowDialog({
   const [fieldErrors, setFieldErrors] = React.useState<Record<string, string>>({});
   /// 欄に写せない誤り（ダイアログの中の帯）。
   const [failure, setFailure] = React.useState<{ message: string; lines: string[] } | null>(null);
-  const labels = React.useMemo(() => new Map(ir.nodes.map((n) => [n.id, n.label || n.id])), [ir.nodes]);
+  /// ブロックの名前（名前を付けていなければカタログのブロック名。ブロックの ID は出さない・付録 C の P1）。
+  const labels = React.useMemo(() => new Map(ir.nodes.map((n) => [n.id, blockDisplayName(n)])), [ir.nodes]);
 
   React.useEffect(() => {
     if (!open) return;
@@ -287,18 +289,21 @@ export function RunNowDialog({
         setFailure({ message: e instanceof Error ? e.message : String(e), lines: [] });
         return;
       }
-      // 入力の誤りは欄の下へ（表に無い項目・入力全体の誤りは帯へ）。
+      // 入力の誤りは欄の下へ（同じ項目の誤りはまとめて同じ欄の下に。表に無い項目・入力全体の誤りは帯へ）。帯では
+      // 項目のキー（`addr.zip`・`tags[2]`）を出さず、入力項目の見出しで言う（付録 C の P1）。
       const shown: Record<string, string> = {};
       const rest: string[] = [];
       for (const issue of e.issues) {
         const key = topKey(issue.key);
         const field = props?.find((f) => f.key === key);
-        if (field && !shown[key]) {
-          shown[key] = `${issue.message}。`;
+        if (field) {
+          shown[key] = `${shown[key] ?? ""}${issue.message}。`;
         } else if (!props && !shown.$input) {
           shown.$input = `${issue.key || "入力"}: ${issue.message}。`;
-        } else {
+        } else if (!props) {
           rest.push(`${issue.key || "入力"}: ${issue.message}`);
+        } else {
+          rest.push(`入力: ${issue.message}`);
         }
       }
       if (e.field === "trigger") {
