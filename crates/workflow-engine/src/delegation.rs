@@ -190,6 +190,8 @@ impl DelegationStore {
     /// [`RegistrationService`](crate::registration::RegistrationService) がトリガ実体化と
     /// **単一 TX** で有効化するために分離（enable コミット済みなのにトリガ未実体化、の中間状態を作らない）。
     /// FGA タプルは TX 外で先に書く（失敗時は未コミットで戻る＝all-or-nothing・従来と同じ）。
+    ///
+    /// 返すのは、同意から外れて取り消した委譲（ほかの委譲元の行も含む・呼び出し側が監査に残す）。
     pub(crate) async fn enable_within(
         &self,
         tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
@@ -198,7 +200,7 @@ impl DelegationStore {
         version: i64,
         declared_scopes: &[String],
         grants: &[GrantRequest],
-    ) -> Result<(), DelegationError> {
+    ) -> Result<Vec<RevokedDelegation>, DelegationError> {
         let tenant = &enabler.tenant_id;
         // ① 範囲検証: 有効化者が全 grant の relation を持つか（1 つでも欠ければ全体拒否）。
         for g in grants {
@@ -242,7 +244,8 @@ impl DelegationStore {
                 relation: g.relation.as_str(),
             })
             .collect();
-        self.revoke_except_within(tx, tenant, workflow_id, &keep)
+        let revoked = self
+            .revoke_except_within(tx, tenant, workflow_id, &keep)
             .await?;
 
         sqlx::query(
@@ -291,7 +294,7 @@ impl DelegationStore {
             .await
             .map_err(|e| DelegationError::Authz(e.to_string()))?;
 
-        Ok(())
+        Ok(revoked.into_iter().map(RevokedDelegation::from).collect())
     }
 
     /// `keep` に無い委譲（(scope, 対象, relation) の組）を取り消す（呼び出し側 TX）。FGA のタプルを先に撤去し、
@@ -383,15 +386,7 @@ impl DelegationStore {
         let rows = self
             .revoke_except_within(tx, tenant, workflow_id, &[])
             .await?;
-        Ok(rows
-            .into_iter()
-            .map(|d| RevokedDelegation {
-                delegator: d.delegator,
-                scope: d.scope,
-                object_ref: d.object_ref,
-                relation: d.relation,
-            })
-            .collect())
+        Ok(rows.into_iter().map(RevokedDelegation::from).collect())
     }
 
     /// 有効化者が (relation, object) を現に持つかを検査する（イベントトリガ束縛の原資確認等）。
@@ -654,6 +649,17 @@ pub struct RevokedDelegation {
     /// FGA オブジェクト参照（例: `data_table:<tenant>|<id>`）。
     pub object_ref: String,
     pub relation: String,
+}
+
+impl From<DelegationRow> for RevokedDelegation {
+    fn from(d: DelegationRow) -> Self {
+        RevokedDelegation {
+            delegator: d.delegator,
+            scope: d.scope,
+            object_ref: d.object_ref,
+            relation: d.relation,
+        }
+    }
 }
 
 /// 再同意で残す委譲の組（[`DelegationStore::revoke_except_within`]）。

@@ -1205,6 +1205,98 @@ async fn consent_and_revoke_on_disable() {
     }
 }
 
+/// 全面の再同意で同意から外した委譲も、「権限も取り消す」と同じ `workflow.delegation.revoke` に残す（理由
+/// `reconsent`・委譲元・scope・対象・relation）。再同意は (scope, 対象, relation) の組で外すので、ほかの委譲元の行も
+/// 外れうる（BUG-130）。誰の、どの委譲が、誰の操作で外れたかを後から追えるようにする。
+#[tokio::test]
+async fn reconsent_records_the_delegations_it_revokes() {
+    let Some(env) = setup().await else { return };
+    let suffix = Uuid::new_v4().simple().to_string();
+    let file = "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1";
+    let (st, body) = req(
+        &env,
+        "POST",
+        "/workflows",
+        Some(json!({ "ir": simple_ir(&format!("reconsent-{}", &suffix[..12]), "b") })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "{body}");
+    let id = body["id"].as_str().unwrap().to_string();
+    let enable = |grants: Value| json!({ "version": 1, "consent": true, "grants": grants });
+    let (st, body) = req(
+        &env,
+        "POST",
+        &format!("/workflows/{id}/enable"),
+        Some(enable(json!([
+            { "scope": "storage.read", "object_type": "file", "object_id": file, "relation": "editor" }
+        ]))),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    // 同じ対象の relation を狭めて同意し直す（editor → viewer）。
+    let (st, body) = req(
+        &env,
+        "POST",
+        &format!("/workflows/{id}/enable"),
+        Some(enable(json!([
+            { "scope": "storage.read", "object_type": "file", "object_id": file, "relation": "viewer" }
+        ]))),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let audit = |pool: sqlx::PgPool, id: String| async move {
+        sqlx::query_scalar::<_, Value>(
+            "SELECT metadata FROM audit_log WHERE action = 'workflow.delegation.revoke' AND object_id = $1 \
+             ORDER BY created_at",
+        )
+        .bind(id)
+        .fetch_all(&pool)
+        .await
+        .unwrap()
+    };
+    let rows = audit(env.pool.clone(), id.clone()).await;
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert_eq!(rows[0]["reason"], "reconsent", "{rows:?}");
+    assert_eq!(rows[0]["revoked"], 1, "{rows:?}");
+    assert_eq!(
+        rows[0]["delegations"][0],
+        json!({
+            "delegator": "00000000-0000-0000-0000-000000000001",
+            "scope": "storage.read",
+            "object_ref": format!("file:default|{file}"),
+            "relation": "editor",
+        }),
+        "{rows:?}"
+    );
+    // 対象を外して同意し直すと、残っていた委譲も残す。外すものが無い同意し直しは行を足さない。
+    for _ in 0..2 {
+        let (st, body) = req(
+            &env,
+            "POST",
+            &format!("/workflows/{id}/enable"),
+            Some(enable(json!([]))),
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+    }
+    let rows = audit(env.pool.clone(), id.clone()).await;
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert_eq!(rows[1]["delegations"][0]["relation"], "viewer", "{rows:?}");
+
+    // 片付け（監査の行は残す: 書き込みの監査はハッシュの鎖でつながっていて、消すと鎖が切れる）。
+    for table in ["workflow_delegation", "workflow_registration"] {
+        sqlx::query(&format!(
+            "DELETE FROM {table} WHERE tenant_id = 'default' AND workflow_id = $1::uuid"
+        ))
+        .bind(&id)
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    }
+    let (st, _) = req(&env, "DELETE", &format!("/artifacts/{id}"), None).await;
+    assert!(st.is_success(), "{st}");
+}
+
 /// 金額（1 以上の整数・必須）を受ける手動のワークフローを作る（実行の入力の試験・BUG-109・D-93）。
 async fn create_amount_flow(env: &Env, prefix: &str) -> String {
     let suffix = Uuid::new_v4().simple().to_string();

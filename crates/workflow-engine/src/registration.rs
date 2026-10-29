@@ -145,6 +145,9 @@ impl RegistrationService {
     ///   トリガ実体化を単一 TX で行う。
     /// - grants なし＋登録済み: **軽量切替**。新版 declared ⊆ 現 consented のときのみ
     ///   既存委譲を維持して enabled_version とトリガだけ更新する（拡大は `ScopeExpansion`）。
+    ///
+    /// 返すのは、全面（再）同意で同意から外れて取り消した委譲（ほかの委譲元の行も含む・軽量切替は空）。呼び出し側が
+    /// 監査に残す（誰の、どの委譲が、誰の操作で外れたかを追えるようにする）。
     pub async fn enable(
         &self,
         enabler: &AuthContext,
@@ -152,7 +155,7 @@ impl RegistrationService {
         version: i64,
         ir: &WorkflowIr,
         grants: &[GrantRequest],
-    ) -> Result<(), EnableError> {
+    ) -> Result<Vec<RevokedDelegation>, EnableError> {
         self.enable_with(enabler, workflow_id, version, ir, grants, false)
             .await
     }
@@ -162,7 +165,8 @@ impl RegistrationService {
     /// 同意の画面は使ってよい操作（declared_scopes）と選んだ対象を見せたうえで送るので、grants が空なのは
     /// 「対象の無いワークフローの同意」であって軽量切替ではない。[`Self::enable`] の軽量切替に落とすと、
     /// 使ってよい操作が増えた版を、対象の無いワークフローは `ScopeExpansion` のまま同意できなかった。
-    /// 委譲は grants の集合に置き換わる（外れた委譲は撤去する・[`Self::enable`] の全面再同意と同じ）。
+    /// 委譲は grants の集合に置き換わる（外れた委譲は撤去する・[`Self::enable`] の全面再同意と同じ）。返すのは
+    /// 取り消した委譲。
     pub async fn consent(
         &self,
         enabler: &AuthContext,
@@ -170,7 +174,7 @@ impl RegistrationService {
         version: i64,
         ir: &WorkflowIr,
         grants: &[GrantRequest],
-    ) -> Result<(), EnableError> {
+    ) -> Result<Vec<RevokedDelegation>, EnableError> {
         self.enable_with(enabler, workflow_id, version, ir, grants, true)
             .await
     }
@@ -184,7 +188,7 @@ impl RegistrationService {
         ir: &WorkflowIr,
         grants: &[GrantRequest],
         reconsent: bool,
-    ) -> Result<(), EnableError> {
+    ) -> Result<Vec<RevokedDelegation>, EnableError> {
         // 保存は通しても動かせない設定（必須の文字の欄が空・無人の run の保存先の省略）は、委譲より先に
         // 止める（タプルを書いてから断らない・D-40・D-43）。
         let blockers = crate::enable_blockers(ir);
@@ -244,12 +248,13 @@ impl RegistrationService {
             .map_err(map_db)?;
             materialize_triggers(&mut tx, tenant, workflow_id, version, ir).await?;
             tx.commit().await.map_err(map_db)?;
-            return Ok(());
+            return Ok(Vec::new());
         }
 
         // 全面（再）同意: FGA（TX 外先行）＋ registration/delegation ＋ トリガ実体化を単一 TX で。
         let mut tx = self.db.begin().await.map_err(map_db)?;
-        self.delegation
+        let revoked = self
+            .delegation
             .enable_within(
                 &mut tx,
                 enabler,
@@ -261,7 +266,7 @@ impl RegistrationService {
             .await?;
         materialize_triggers(&mut tx, tenant, workflow_id, version, ir).await?;
         tx.commit().await.map_err(map_db)?;
-        Ok(())
+        Ok(revoked)
     }
 
     /// run 開始/再開の委譲チェック（[`DelegationStore::check_run_start`] の合流点・fail-closed）。

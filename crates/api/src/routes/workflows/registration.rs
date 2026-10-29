@@ -342,7 +342,7 @@ pub async fn enable_workflow(
         .await
         .map_err(map_enable_err)?;
     let registration = &state.workflow_registration;
-    if req.consent {
+    let revoked = if req.consent {
         registration
             .consent(&ctx, id, req.version, &ir, &grants)
             .await
@@ -382,6 +382,17 @@ pub async fn enable_workflow(
             "consent": req.consent,
             "light_switch": req.grants.is_empty() && !req.consent,
         }),
+    )
+    .await;
+    // 同意から外れて取り消した委譲（ほかの委譲元の行も含む）は、「権限も取り消す」と同じ形で残す。テーブルの分の
+    // 知らせは上で済ませた（前の委譲先を含む）。
+    record_revoked(
+        &state,
+        &ctx,
+        id,
+        trace.as_deref(),
+        &revoked,
+        Some("reconsent"),
     )
     .await;
     Ok(Json(EnableResponse {
@@ -507,7 +518,23 @@ async fn audit_revocation(
     for table_id in tables {
         state.data.after_table_rebac_changed(ctx, table_id).await;
     }
-    let mut metadata = json!({ "revoked": r.delegations.len(), "delegations": r.delegations });
+    record_revoked(state, ctx, id, trace, &r.delegations, reason).await;
+}
+
+/// 取り消した委譲を `workflow.delegation.revoke` に 1 行で残す（委譲元・scope・対象・relation・取り消したものが
+/// 無ければ何もしない）。
+async fn record_revoked(
+    state: &AppState,
+    ctx: &authz::AuthContext,
+    id: Uuid,
+    trace: Option<&str>,
+    delegations: &[workflow_engine::RevokedDelegation],
+    reason: Option<&str>,
+) {
+    if delegations.is_empty() {
+        return;
+    }
+    let mut metadata = json!({ "revoked": delegations.len(), "delegations": delegations });
     if let Some(reason) = reason {
         metadata["reason"] = json!(reason);
     }
