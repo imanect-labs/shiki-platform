@@ -730,7 +730,7 @@ fn output_shape(nt: NodeType) -> Shape {
                 field!(
                     "answers",
                     "{ [質問のキー]: { type: \"choice\", value: string, label: string, confidence: number, probabilities: { [選択肢のキー]: number } } | { type: \"score\", value: number, level: string, level_index: number, confidence: number, probabilities: Array<number> } | { type: \"boolean\", value: boolean, probability: number, confidence: number } }",
-                    "確からしさ・確率は 0〜1"
+                    "確からしさ・確率は 0〜1。choice の label は選択肢の名前（無ければ説明、それも無ければキー）"
                 ),
                 field!("model", "string", "指定した判定用のモデル"),
                 field!("resolved_model", "string", "実際に答えた決定器の版"),

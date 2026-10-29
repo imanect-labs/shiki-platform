@@ -344,3 +344,73 @@ fn port_for_picks_one_of_the_ports() {
         assert!(p.ports().unwrap().contains(&got), "{got} は出口に無い");
     }
 }
+
+/// 選択肢の名前（D-87）: 名前は答えの名前になり、説明は AI への手がかりに残る。名前の無い定義は今までどおり
+/// 説明かキーを名前にし、AI への手がかりも名前を足す前と同じ文になる。
+#[test]
+fn an_option_label_names_the_answer_and_joins_the_hint() {
+    let option = |v: Value| -> DecideOption { serde_json::from_value(v).unwrap() };
+    let both = option(json!({ "key": "option_1", "label": "請求", "description": "請求書や返金" }));
+    assert_eq!(both.name(), "請求");
+    assert_eq!(both.ai_hint(), "請求: 請求書や返金");
+    let label_only = option(json!({ "key": "option_2", "label": " 不具合 " }));
+    // 名前は書いたまま返す（出口とテーブルの列に書く値。前後の空白は保存の前に画面が外す）。
+    assert_eq!(label_only.name(), " 不具合 ");
+    assert_eq!(label_only.ai_hint(), "不具合");
+    // 名前を足す前の定義（説明だけ・キーだけ）は、名前も手がかりも今までと同じ。
+    let legacy = option(json!({ "key": "billing", "description": "請求・返金" }));
+    assert_eq!(
+        (legacy.name(), legacy.ai_hint().as_str()),
+        ("請求・返金", "請求・返金")
+    );
+    let bare = option(json!({ "key": "bug" }));
+    assert_eq!((bare.name(), bare.ai_hint().as_str()), ("bug", ""));
+    // 空白だけの名前は書いていないものとして扱う。
+    let blank = option(json!({ "key": "other", "label": "  ", "description": "そのほか" }));
+    assert_eq!(
+        (blank.name(), blank.ai_hint().as_str()),
+        ("そのほか", "そのほか")
+    );
+    // 保存した形に名前が残る（省略は書かない）。
+    assert_eq!(
+        serde_json::to_value(&bare).unwrap(),
+        json!({ "key": "bug" })
+    );
+    assert_eq!(
+        serde_json::to_value(&both).unwrap(),
+        json!({ "key": "option_1", "label": "請求", "description": "請求書や返金" })
+    );
+}
+
+/// 選択肢の名前の決まり（D-87）: 100 字まで・質問の中で重ならない・説明とつないだ手がかりが説明の上限に収まる。
+#[test]
+fn option_labels_are_checked() {
+    let options = |o: Value| with(base(), "/questions/0/options", o);
+    assert!(check_params(
+        NodeType::AiDecide,
+        &options(json!([{ "key": "a", "label": "請求" }, { "key": "b", "label": "不具合" }]))
+    )
+    .is_ok());
+    let e = err(&options(
+        json!([{ "key": "a", "label": "x".repeat(101) }, { "key": "b" }]),
+    ));
+    assert_eq!(e.path, "/params/questions/0/options/0/label");
+    assert!(e.message.contains("100 字まで"), "{}", e.message);
+    let e = err(&options(
+        json!([{ "key": "a", "label": "請求" }, { "key": "b", "label": " 請求" }]),
+    ));
+    assert_eq!(e.path, "/params/questions/0/options/1/label");
+    assert!(
+        e.message.contains("ほかの選択肢でも使っています"),
+        "{}",
+        e.message
+    );
+    // 名前と説明を合わせて 498 字まで（つなぐ「: 」の 2 字を足して説明の上限 500 字に収める）。
+    let fits = json!([{ "key": "a", "label": "x".repeat(98), "description": "y".repeat(400) }, { "key": "b" }]);
+    assert!(check_params(NodeType::AiDecide, &options(fits)).is_ok());
+    let e = err(&options(
+        json!([{ "key": "a", "label": "x".repeat(99), "description": "y".repeat(400) }, { "key": "b" }]),
+    ));
+    assert_eq!(e.path, "/params/questions/0/options/0/description");
+    assert!(e.message.contains("合わせて 498 字まで"), "{}", e.message);
+}

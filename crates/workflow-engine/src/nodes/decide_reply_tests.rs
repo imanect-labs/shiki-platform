@@ -64,6 +64,20 @@ fn a_matching_reply_is_read_and_labelled() {
     assert!(r.routed("priority").is_none());
 }
 
+/// 選択肢に名前（D-87）があれば、答えの名前は説明ではなく名前になる（テーブルの選択肢の列に書き込む値）。
+#[test]
+fn an_option_label_becomes_the_answer_label() {
+    let labelled: Vec<DecideQuestion> = serde_json::from_value(with(
+        serde_json::to_value(questions()).unwrap(),
+        "/0/options/0",
+        json!({ "key": "billing", "label": "請求", "description": "請求書や返金についての問い合わせ" }),
+    ))
+    .unwrap();
+    let r = read(&reply(), &labelled).unwrap();
+    assert_eq!(r.answers_output(&labelled)["category"]["label"], "請求");
+    assert_eq!(r.answers_output(&labelled)["category"]["value"], "billing");
+}
+
 #[test]
 fn mismatching_replies_are_rejected() {
     let bad = [

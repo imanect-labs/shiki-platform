@@ -51,9 +51,11 @@ pub(super) fn to_question(q: &DecideQuestion) -> Question {
                 .options
                 .iter()
                 .flatten()
+                // 名前（D-87）は説明とつないで AI への手がかりにする（名前の無い定義は説明だけで、今までと
+                // 同じ要求＝プロンプトの版と決定キャッシュのキーを変えない）。
                 .map(|o| ChoiceOption {
                     key: o.key.clone(),
-                    description: o.description.clone().unwrap_or_default(),
+                    description: o.ai_hint(),
                 })
                 .collect(),
         },
@@ -249,6 +251,34 @@ mod tests {
                 no: None
             }
         );
+        let req = DecideRequest {
+            model: "decide".into(),
+            state: serde_json::json!("本文"),
+            questions: mapped,
+        };
+        assert_eq!(llm_gateway::decision::check::check_request(&req), Ok(()));
+    }
+
+    /// 選択肢の名前（D-87）は、説明とつないで AI への手がかりにする。名前の無い選択肢は今までと同じ要求になる
+    /// （プロンプトの版と決定キャッシュのキーを変えない）。上限いっぱいの名前と説明も gateway の検査を通る。
+    #[test]
+    fn option_labels_join_the_hint_sent_to_the_decider() {
+        let qs: Vec<DecideQuestion> = serde_json::from_value(serde_json::json!([
+            { "key": "category", "type": "choice", "instructions": "種類",
+              "options": [
+                  { "key": "option_1", "label": "請求", "description": "請求書や返金" },
+                  { "key": "option_2", "label": "不具合" },
+                  { "key": "billing", "description": "請求・返金" },
+                  { "key": "x".repeat(10), "label": "y".repeat(98), "description": "z".repeat(400) }
+              ] }
+        ]))
+        .unwrap();
+        let mapped: Vec<Question> = qs.iter().map(to_question).collect();
+        let QuestionKind::Choice { options } = &mapped[0].kind else {
+            panic!("choice");
+        };
+        let hints: Vec<&str> = options.iter().map(|o| o.description.as_str()).collect();
+        assert_eq!(hints[..3], ["請求: 請求書や返金", "不具合", "請求・返金"]);
         let req = DecideRequest {
             model: "decide".into(),
             state: serde_json::json!("本文"),

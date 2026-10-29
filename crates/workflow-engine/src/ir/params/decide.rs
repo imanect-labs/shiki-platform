@@ -25,8 +25,11 @@ pub const MIN_DECIDE_LEVELS: usize = 2;
 pub const MAX_DECIDE_LEVELS: usize = 10;
 /// 問い（`instructions`）の上限（文字数）。
 pub const MAX_DECIDE_INSTRUCTIONS_CHARS: usize = 2000;
-/// 選択肢・はい/いいえの説明の上限（文字数）。
+/// 選択肢・はい/いいえの説明の上限（文字数）。選択肢に名前があるときは、AI への手がかり（名前と説明を
+/// つないだもの・[`DecideOption::ai_hint`]）をこの長さに収める。
 pub const MAX_DECIDE_DESCRIPTION_CHARS: usize = 500;
+/// 選択肢の名前（`label`）の上限（文字数・段階の名前と同じ）。
+pub const MAX_DECIDE_OPTION_LABEL_CHARS: usize = 100;
 /// 段階の名前の上限（文字数）。
 pub const MAX_DECIDE_LEVEL_CHARS: usize = 100;
 /// キー（質問・選択肢）の上限（文字数）。
@@ -71,10 +74,47 @@ pub enum DecideQuestionType {
 pub struct DecideOption {
     /// 答えの値（`^[a-z][a-z0-9_]{0,63}$`・質問の中で一意・予約名は不可）。値で振り分けるときは出口の名前になる。
     pub key: String,
-    /// どんなときにこの選択肢か（500 字以内・省略可）。
+    /// 選択肢の名前（利用者に見せる名前・答えの `label`・テーブルの選択肢の列に書き込む値・100 字以内・質問の
+    /// 中で一意・省略可・D-87）。省略した定義は、今までどおり説明かキーを答えの名前にする（[`Self::name`]）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub label: Option<String>,
+    /// どんなときにこの選択肢か（AI への手がかり・500 字以内・省略可）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub description: Option<String>,
+}
+
+/// 空白だけの文字は書いていないものとして扱う。
+fn written(s: Option<&str>) -> Option<&str> {
+    s.filter(|v| !v.trim().is_empty())
+}
+
+impl DecideOption {
+    /// 答えの名前（出力の `answers.<キー>.label`）。名前が無ければ、名前を足す前の定義と同じく説明、それも
+    /// 無ければキー（保存済みの定義の後ろのブロックが読む値を変えない・D-87）。
+    #[must_use]
+    pub fn name(&self) -> &str {
+        written(self.label.as_deref())
+            .or_else(|| written(self.description.as_deref()))
+            .unwrap_or(&self.key)
+    }
+
+    /// AI への手がかり（判定のプロンプトで選択肢のキーの横に書く文）。名前と説明の両方があれば「名前: 説明」、
+    /// 片方だけならそれ、どちらも無ければ空。名前の無い定義は説明だけなので、名前を足す前と同じ文になる
+    /// （プロンプトの版と、決定キャッシュのキーを変えない・D-87）。
+    #[must_use]
+    pub fn ai_hint(&self) -> String {
+        match (
+            written(self.label.as_deref()),
+            written(self.description.as_deref()),
+        ) {
+            (Some(label), Some(description)) => format!("{}: {description}", label.trim()),
+            (Some(label), None) => label.trim().to_string(),
+            // 説明だけのときは、名前を足す前と同じく書いたままを渡す。
+            (None, _) => self.description.clone().unwrap_or_default(),
+        }
+    }
 }
 
 /// 質問 1 件（リテラル）。
@@ -407,6 +447,7 @@ fn check_options(options: Option<&[DecideOption]>, at: &str) -> Result<(), Param
         ));
     }
     let mut keys = std::collections::BTreeSet::new();
+    let mut labels = std::collections::BTreeSet::new();
     for (j, o) in options.iter().enumerate() {
         let path = format!("{at}/options/{j}");
         if !key_ok(&o.key) {
@@ -440,6 +481,43 @@ fn check_options(options: Option<&[DecideOption]>, at: &str) -> Result<(), Param
                 format!("選択肢の説明は {MAX_DECIDE_DESCRIPTION_CHARS} 字以内にしてください"),
             ));
         }
+        check_option_label(o, &path, &mut labels)?;
+    }
+    Ok(())
+}
+
+/// 選択肢の名前（D-87）: 100 字まで・質問の中で重ならない・説明とつないだ AI への手がかりが説明の上限に収まる。
+/// 空白だけの名前は書いていないものとして扱う（今までどおり説明かキーを名前にする）。
+fn check_option_label<'a>(
+    o: &'a DecideOption,
+    path: &str,
+    labels: &mut std::collections::BTreeSet<&'a str>,
+) -> Result<(), ParamsIssue> {
+    let Some(label) = written(o.label.as_deref()).map(str::trim) else {
+        return Ok(());
+    };
+    if chars(label) > MAX_DECIDE_OPTION_LABEL_CHARS {
+        return Err(issue(
+            format!("{path}/label"),
+            format!("「選択肢の名前」は {MAX_DECIDE_OPTION_LABEL_CHARS} 字までにしてください。"),
+        ));
+    }
+    if !labels.insert(label) {
+        return Err(issue(
+            format!("{path}/label"),
+            format!(
+                "選択肢の名前「{label}」はほかの選択肢でも使っています。別の名前にしてください。"
+            ),
+        ));
+    }
+    if chars(&o.ai_hint()) > MAX_DECIDE_DESCRIPTION_CHARS {
+        return Err(issue(
+            format!("{path}/description"),
+            format!(
+                "「選択肢の名前」と「AI への説明」は、合わせて {} 字までにしてください。",
+                MAX_DECIDE_DESCRIPTION_CHARS - 2
+            ),
+        ));
     }
     Ok(())
 }

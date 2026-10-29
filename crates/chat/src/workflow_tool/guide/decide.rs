@@ -4,8 +4,8 @@
 //! ずらさない・BUG-1・BUG-3）。
 
 use workflow_engine::ir::params::{
-    MAX_DECIDE_LEVELS, MAX_DECIDE_OPTIONS, MAX_DECIDE_QUESTIONS, MAX_DECIDE_STATE_BYTES,
-    MIN_DECIDE_CONFIDENCE, RESERVED_DECIDE_KEYS,
+    MAX_DECIDE_LEVELS, MAX_DECIDE_OPTIONS, MAX_DECIDE_OPTION_LABEL_CHARS, MAX_DECIDE_QUESTIONS,
+    MAX_DECIDE_STATE_BYTES, MIN_DECIDE_CONFIDENCE, RESERVED_DECIDE_KEYS,
 };
 use workflow_engine::ir::{MAX_CACHE_TTL_SEC, MIN_CACHE_TTL_SEC};
 
@@ -70,8 +70,9 @@ const EXAMPLE_DECIDE_NODE: &str = r#"{ "id": "triage", "type": "ai.decide", "lab
     "state": { "$from": "input", "path": "/body" },
     "questions": [
       { "key": "category", "type": "choice", "instructions": "問い合わせの種類はどれか",
-        "options": [ { "key": "billing", "description": "請求・返金" }, { "key": "bug", "description": "不具合" },
-                     { "key": "howto", "description": "使い方" }, { "key": "other", "description": "その他" } ] },
+        "options": [ { "key": "billing", "label": "請求", "description": "請求書・返金についての問い合わせ" },
+                     { "key": "bug", "label": "不具合" }, { "key": "howto", "label": "使い方" },
+                     { "key": "other", "label": "その他" } ] },
       { "key": "priority", "type": "score", "instructions": "対応の緊急度", "levels": ["低", "中", "高"] },
       { "key": "angry", "type": "boolean", "instructions": "顧客は強い不満を示しているか",
         "yes": "苦情・強い不満・解約の示唆がある", "no": "通常の問い合わせ" } ],
@@ -82,7 +83,7 @@ pub(super) fn guide(models: Option<&[DecisionModel]>) -> String {
     format!(
         "【AI で判定】ai.decide は、判定の材料（state・値式。文字・オブジェクト・配列で {state_kib} KiB まで）について、質問（questions・リテラルだけ）に決められた値域で答え、確からしさ（0〜1）を付けて返す。分類・はい/いいえ・段階の判定は llm.invoke よりこれを使う（答えが必ず選択肢の中に入る）。\n\
          {model_line}\n\
-         - questions（{max_q} 件まで）の要素: {{\"key\":\"英小文字で始め英小文字・数字・_\",\"type\":\"choice\"|\"score\"|\"boolean\",\"instructions\":\"何を判定するか\"}} に、choice は \"options\":[{{\"key\":\"billing\",\"description\":\"請求・返金\"}}, …]（2〜{max_o} 件。キーに {reserved} は使えない）、score は \"levels\":[\"低\",\"中\",\"高\"]（低い順・2〜{max_l} 件）、boolean は \"yes\" / \"no\"（それぞれに当たる場合の説明・省略可）を足す。種類に合わない項目は書かない。\n\
+         - questions（{max_q} 件まで）の要素: {{\"key\":\"英小文字で始め英小文字・数字・_\",\"type\":\"choice\"|\"score\"|\"boolean\",\"instructions\":\"何を判定するか\"}} に、choice は \"options\":[{{\"key\":\"billing\",\"label\":\"請求\",\"description\":\"請求書・返金についての問い合わせ\"}}, …]（2〜{max_o} 件。キーに {reserved} は使えない。label は利用者に見せる選択肢の名前で、答えの label になる（質問の中で重ならない・{max_label} 字まで。答えをテーブルの選択肢の列に書き込むなら、列の選択肢と同じ文字にする）。description は AI への手がかり（省略可）で、label とつないで AI に渡す。label を省略すると、description（それも無ければキー）が答えの label になる）、score は \"levels\":[\"低\",\"中\",\"高\"]（低い順・2〜{max_l} 件）、boolean は \"yes\" / \"no\"（それぞれに当たる場合の説明・省略可）を足す。種類に合わない項目は書かない。\n\
          - 出力 /answers/<key>: choice は {{ value（選択肢のキー）, label, confidence, probabilities }}、score は {{ value（確率で重み付けした位置）, level, level_index, confidence }}、boolean は {{ value, probability, confidence }}。\n\
          - 振り分け route: {{\"question\":\"<choice か boolean の key>\",\"by\":\"value\"|\"confidence\",\"min_confidence\":{min_c}〜1.0}}（min_confidence は必須・by の省略は value）。出口: route 無し＝out。by が confidence＝out（確からしさがしきい値以上）/ uncertain。by が value＝選択肢のキー（boolean は true / false）/ uncertain で、out と default は無い。score の質問では振り分けない（後ろの control.branch で /answers/<key>/level_index を使う）。\n\
          - 答えの使い回し（決定キャッシュ）は既定で使わない。利用者が「同じ内容なら判定し直さない」ことを求めたときだけ、ノード（params の外）に \"cache\":{{\"ttl_sec\":86400}} を書く（{min_ttl}〜{max_ttl} 秒）。同じワークフローの中で、同じ質問・同じ材料の答えを期間のあいだ使い回し、費用はかからない（出力の cached が true）。\n\
@@ -91,6 +92,7 @@ pub(super) fn guide(models: Option<&[DecisionModel]>) -> String {
         state_kib = MAX_DECIDE_STATE_BYTES / 1024,
         max_q = MAX_DECIDE_QUESTIONS,
         max_o = MAX_DECIDE_OPTIONS,
+        max_label = MAX_DECIDE_OPTION_LABEL_CHARS,
         max_l = MAX_DECIDE_LEVELS,
         min_c = MIN_DECIDE_CONFIDENCE,
         reserved = RESERVED_DECIDE_KEYS.join(" / "),
@@ -213,6 +215,8 @@ mod tests {
             "\"min_confidence\":0.5〜1.0",
             "\"cache\":{\"ttl_sec\":86400}",
             "60〜2592000 秒",
+            "label は利用者に見せる選択肢の名前で、答えの label になる",
+            "列の選択肢と同じ文字にする",
         ] {
             assert!(g.contains(needle), "{needle} が無い: {g}");
         }

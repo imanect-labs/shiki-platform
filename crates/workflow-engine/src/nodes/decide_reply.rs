@@ -173,7 +173,7 @@ impl Reply {
         }
     }
 
-    /// 出力の `answers`（選択肢の説明・段階の名前を添える。[`read`] を通った応答だけを渡す）。
+    /// 出力の `answers`（選択肢の名前・段階の名前を添える。[`read`] を通った応答だけを渡す）。
     pub(super) fn answers_output(&self, questions: &[DecideQuestion]) -> Value {
         let mut out = serde_json::Map::new();
         for q in questions {
@@ -186,14 +186,13 @@ impl Reply {
                     confidence,
                     probabilities,
                 } => {
+                    // 選択肢の名前（無ければ今までどおり説明、それも無ければキー・D-87）。
                     let label = q
                         .options
                         .iter()
                         .flatten()
                         .find(|o| o.key == *value)
-                        .and_then(|o| o.description.clone())
-                        .filter(|d| !d.is_empty())
-                        .unwrap_or_else(|| value.clone());
+                        .map_or_else(|| value.clone(), |o| o.name().to_string());
                     json!({ "type": "choice", "value": value, "label": label,
                             "confidence": confidence, "probabilities": probabilities })
                 }
