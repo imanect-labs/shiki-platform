@@ -273,3 +273,74 @@ async fn one_failed_vote_fails_the_decision_with_everything_used() {
     assert!(matches!(&f.error, LlmError::BadRequest(m) if m == "prompt is too long"));
     assert_eq!(f.usage, usage(500, 100));
 }
+
+/// 試験の間だけ、このスレッドのログを文字で受ける。
+#[derive(Clone, Default)]
+struct Logs(Arc<Mutex<Vec<u8>>>);
+
+impl std::io::Write for Logs {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Logs {
+    type Writer = Logs;
+
+    fn make_writer(&'a self) -> Logs {
+        self.clone()
+    }
+}
+
+impl Logs {
+    fn text(&self) -> String {
+        String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+    }
+}
+
+/// はい/いいえで 50% 未満を申告した答えは、値は 0.5 まで引き上げたまま（D-78 (3)）、引き上げた質問と数をログに残す
+/// （BUG-124）。一様以上の申告だけの判定と、多数決は残さない。
+#[tokio::test]
+async fn a_self_report_below_uniform_is_logged_with_its_question() {
+    let logs = Logs::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(logs.clone())
+        .with_ansi(false)
+        .with_max_level(tracing::Level::INFO)
+        .finish();
+    let _guard = tracing::subscriber::set_default(subscriber);
+
+    const LOW: &str = r#"{"01_category":{"answer":"billing","confidence":90},"02_priority":{"answer":"中","confidence":70},"03_angry":{"answer":true,"confidence":30}}"#;
+    let p = Scripted::new(vec![ok(LOW), ok(GOOD)]);
+    let d = decider(&p, StructuredOutputMode::JsonSchema, k(1));
+    let resp = d.decide(&request()).await.unwrap();
+    let Answer::Boolean {
+        value, confidence, ..
+    } = resp.answers["angry"]
+    else {
+        panic!("{resp:?}")
+    };
+    assert!(value && (confidence - 0.5).abs() < 1e-9);
+    let text = logs.text();
+    assert!(text.contains(LOW_SELF_REPORT_TARGET), "{text}");
+    assert!(
+        text.contains("raised=1") && text.contains(r#"questions=["angry"]"#),
+        "{text}"
+    );
+    assert!(text.contains("claude-haiku-5-5+llm_decider/"), "{text}");
+    // 判定の材料と答えはログに載せない。
+    assert!(
+        !text.contains("請求書の金額") && !text.contains("billing"),
+        "{text}"
+    );
+
+    // 一様以上の申告だけなら残さない。
+    let before = text.len();
+    d.decide(&request()).await.unwrap();
+    assert_eq!(logs.text().len(), before, "{}", logs.text());
+}

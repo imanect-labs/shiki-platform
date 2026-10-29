@@ -11,7 +11,9 @@
 //!   回が 1 つでもあれば判定全体を失敗にし、それまでに使ったトークン量を合わせて返す。
 //! - 温度は送らない（Haiku 5.5 は既定以外の温度を受けない）。思考の深さは既定 low、上限のトークン数は
 //!   low で 2048、それより深いと 4096（思考も上限に数えるため）。
-//! - 確からしさは較正されていない（`calibrated = false`・PIT-80）。
+//! - 確からしさは較正されていない（`calibrated = false`・PIT-80）。自己申告（1 回）で、一様より低い申告を引き上げた
+//!   ときは、引き上げた質問のキーと数をログに残す（取り違えや迷いの合図が値から消えるので・BUG-124。材料と答えは
+//!   載せない）。
 //!
 //! [`decide`]: crate::gateway::LlmGateway::decide
 
@@ -23,7 +25,7 @@ use futures::StreamExt;
 /// はこの値と照らす（版を上げたら凍結し直す・PIT-80）。
 pub use super::llm_decider_prompt::PROMPT_VERSION;
 use super::llm_decider_prompt::{self as prompt, Reply};
-use super::llm_decider_vote::aggregate;
+use super::llm_decider_vote::{aggregate, raised_below_uniform};
 use crate::config::DecisionTuning;
 use crate::decision::{
     DecideFailure, DecideRequest, DecideResponse, DecisionMethod, DecisionProvider,
@@ -35,6 +37,9 @@ use crate::model::{
 use crate::provider::{LlmError, LlmProvider};
 use crate::retry::{resume_unsettled, stream_with_retry, MIDSTREAM_RETRIES, UNAVAILABLE_BACKOFF};
 use crate::structured::{self, StructuredOutputMode};
+
+/// 自己申告の確からしさを引き上げたときのログの target（数えるときに絞り込む名前・BUG-124）。
+pub const LOW_SELF_REPORT_TARGET: &str = "llm_decider.low_self_report";
 
 /// 思考の深さが low のときの上限のトークン数。
 const MAX_TOKENS_LOW: u32 = 2048;
@@ -220,6 +225,16 @@ impl DecisionProvider for LlmDecider {
         }
         if let Some(error) = failure {
             return Err(DecideFailure::new(error, usage));
+        }
+        let raised = raised_below_uniform(req, &replies);
+        if !raised.is_empty() {
+            tracing::info!(
+                target: LOW_SELF_REPORT_TARGET,
+                resolved_model = %self.resolved,
+                raised = raised.len(),
+                questions = ?raised,
+                "自己申告の確からしさが一様より低い答えを一様まで引き上げた"
+            );
         }
         Ok(DecideResponse {
             resolved_model: self.resolved.clone(),

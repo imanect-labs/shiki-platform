@@ -1,7 +1,8 @@
 //! llm_decider の確からしさの出し方（`llm_decider.rs` から分割）。どちらも較正されていない（PIT-80）。
 //!
 //! - **自己申告**（1 回）: 申告 c（0〜1）を選んだ値の確率にする。ただし一様（1/n）より低くはしない。
-//!   残りは他の値に均等に配る。
+//!   残りは他の値に均等に配る。引き上げた質問（はい/いいえで 50% 未満を申告したなど。取り違えや迷いの合図）は
+//!   [`raised_below_uniform`] で数え、決定器がログに残す（値の扱いは変えない・D-78 (3)・BUG-124）。
 //! - **多数決**（k 回）: 得票率を確率にし、確からしさは勝った値の得票率。同数なら自己申告の合計が大きい
 //!   方、それも同じなら値域の順で先のもの（boolean は false が先）。
 //!
@@ -20,6 +21,27 @@ fn spread(n: usize, chosen: usize, c: f64) -> Vec<f64> {
     let rest = if n > 1 { (1.0 - top) / (nf - 1.0) } else { 0.0 };
     (0..n)
         .map(|i| if i == chosen { top } else { rest })
+        .collect()
+}
+
+/// 自己申告（1 回）の確からしさが一様（1/n・はい/いいえなら 0.5）より低く、[`spread`] が引き上げた質問のキー
+/// （質問の順）。多数決（2 回以上）は得票率を使うので数えない。
+pub(super) fn raised_below_uniform<'a>(
+    req: &'a DecideRequest,
+    samples: &[Vec<Reply>],
+) -> Vec<&'a str> {
+    let [one] = samples else {
+        return Vec::new();
+    };
+    req.questions
+        .iter()
+        .zip(one)
+        .filter(|(q, r)| {
+            #[allow(clippy::cast_precision_loss)] // 値域は 100 件まで
+            let uniform = 1.0 / arity(&q.kind).max(1) as f64;
+            r.confidence < uniform
+        })
+        .map(|(q, _)| q.key.as_str())
         .collect()
 }
 
@@ -152,6 +174,21 @@ mod tests {
         };
         assert!(!value);
         assert!(close(probability, 0.05));
+    }
+
+    #[test]
+    fn self_reports_below_uniform_are_counted_by_question() {
+        // はい/いいえは 0.5 未満、選択肢（3 件）は 1/3 未満、段階（3 件）も 1/3 未満を数える。ちょうど一様は数えない。
+        let req = request();
+        let raised = raised_below_uniform(&req, &[vec![r(1, 0.2), r(2, 0.9), r(1, 0.3)]]);
+        assert_eq!(raised, ["category", "angry"]);
+        assert!(
+            raised_below_uniform(&request(), &[vec![r(0, 1.0 / 3.0), r(0, 0.5), r(1, 0.5)]])
+                .is_empty()
+        );
+        // 多数決は得票率を使うので数えない。
+        let votes = vec![vec![r(1, 0.1), r(0, 0.1), r(1, 0.1)]; 3];
+        assert!(raised_below_uniform(&request(), &votes).is_empty());
     }
 
     #[test]
