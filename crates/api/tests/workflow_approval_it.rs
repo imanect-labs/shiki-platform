@@ -1119,6 +1119,56 @@ async fn approvals_are_decided_by_the_approver_in_the_inbox() {
     env.cleanup().await;
 }
 
+/// 承認者の欄は「承認」の画面に出す相手を決めるだけで、判断できるかは状態の進め方の規則が決める（BUG-110）。
+///
+/// 規則が申請者を除いていなければ、申請者は承認者の列を自分に書き換えて、テーブルの画面から自分の申請を承認
+/// できる（エディターの承認者の欄の注記が言うこと）。規則が変わったらこのテストと注記を一緒に直す。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn approvers_only_choose_the_inbox_and_the_state_flow_decides_who_approves() {
+    let _serial = SERIAL.lock().await;
+    let Some(env) = setup().await else { return };
+    let table = env.expense_table().await;
+    let wf = env.enable(table, None).await;
+    let record = env.submit(table, "自分で承認する申請", &env.bob).await;
+    env.settle().await;
+    let run = env.run_of(wf, record).await;
+    assert_eq!(env.step(run, "ok").await.0, "waiting_event");
+    // 「承認」の画面には承認者（bob）にだけ出て、申請者（alice）には出ない。
+    assert!(env.item_for(&env.bob, record).await.is_some());
+    assert!(env.item_for(&env.alice, record).await.is_none());
+
+    // 申請者が承認者の列を自分に書き換え、テーブルから承認の状態へ進める（規則は「承認者の列の人」）。
+    let row = env
+        .data
+        .get_record(&env.alice, table, record, None)
+        .await
+        .unwrap();
+    let row = env
+        .data
+        .update_record(
+            &env.alice,
+            table,
+            record,
+            json!({ "approver": env.alice.principal.id }),
+            row.rev,
+            None,
+        )
+        .await
+        .unwrap();
+    env.fsms
+        .transition(&env.alice, table, record, "approved", row.rev, None)
+        .await
+        .unwrap();
+    env.settle().await;
+    let (st, ports, out) = env.step(run, "ok").await;
+    assert_eq!(
+        (st.as_str(), ports),
+        ("succeeded", vec!["approved".to_string()])
+    );
+    assert_eq!(out.unwrap()["decided_by"], json!(env.alice.principal.id));
+    env.cleanup().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn expired_approvals_cannot_be_decided_and_take_the_timeout_port() {
     let _serial = SERIAL.lock().await;

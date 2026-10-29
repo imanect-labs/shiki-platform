@@ -22,7 +22,7 @@ import type {
 } from "@/generated/workflow-ir";
 import { getViewerContext, type DataTable } from "@/lib/data-api";
 import { cn } from "@/lib/utils";
-import { Field, FieldInput, FieldTextarea, NumberInput } from "./common";
+import { Field, FieldInput, FieldTextarea, MoreInfo, NumberInput } from "./common";
 import { DataTableSelect, isFsmTable, missingFsmTables, useDataTables, type TableLookup } from "./data-tables";
 import { nodeErrorView } from "../validation";
 import type { FormProps, ServerCheck } from "./forms-basic";
@@ -458,10 +458,24 @@ function AssigneesField({
     kind === "field" ? { field: refFields[0]?.key ?? "" } : kind === "user" ? { user: "" } : { role: "" };
   return (
     <fieldset className="space-y-2" data-node={node.id}>
-      <legend className="text-xs font-medium">受信箱に出す相手</legend>
-      <p className="text-[11px] leading-relaxed text-muted-foreground">
-        受信箱に出すだけで、判断できるかは表の状態の遷移の規則が決めます（代理の人も規則に入れてください）。
+      <legend className="text-xs font-medium">承認者</legend>
+      {/* 承認者は「承認」の画面に出す相手を決めるだけで、判断できるかは状態の進め方の規則が決める。規則が申請者を
+          除いていなければ、申請者は自分の申請を承認できる（BUG-110・付録 D の N3.4.1。api の
+          workflow_approval_it の approvers_only_choose_the_inbox… で確かめてある）。 */}
+      <p className="text-[11px] leading-relaxed text-muted-foreground" data-testid="approval-assignees-note">
+        選んだ人の「承認」の画面に依頼が出ます。判断できるかは状態の進め方で決まります。
       </p>
+      <MoreInfo testId="approval-assignees-more">
+        <p>
+          ここで選ぶのは依頼を出す相手で、判断できる人を決めるものではありません。状態の進め方で許された人は、ここに選ばれていなくても、テーブルの画面から判断できます。
+        </p>
+        <p>
+          そのため、状態の進め方によっては、申請者が自分の申請を承認できます。防ぐには、状態の進め方の条件から申請者本人を除き、承認者の列を申請者が書き換えられないようにします。状態の進め方と、テーブルの書き込みの決まりは、いまは画面では変えられません。管理者に頼んでください。
+        </p>
+        <p>
+          「承認」の画面に出す相手は、承認を始めたときの承認者の列の値で決まります。いまはお知らせ（メールなど）は届きません。承認者には「承認」の画面を見るよう伝えてください。判断は承認者本人の権限で行い、変更の記録にも承認者の操作として残ります。
+        </p>
+      </MoreInfo>
       {assignees.map((a, i) => {
         const kind = kindOf(a);
         return (
