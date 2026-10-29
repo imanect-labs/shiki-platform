@@ -1077,6 +1077,8 @@ cancel 要求済み run の失効リースは sweeper の対象外とする。cl
 ### 10.3 新 version の enable（再同意）
 
 - 全面の再同意は、委譲を grants の集合に置き換える。外れたかは (scope, 対象, relation) の組で見る（同じ対象の relation を狭めた〔editor → viewer〕ときも、前の広い委譲のタプルと台帳の行を外す・BUG-130）。タプルは (relation, 対象) ごとに 1 つなので、残す組が同じタプルを使っていれば撤去しない。
+- 外した委譲（ほかの委譲元の行も含む）は、§10.2 の「権限も取り消す」と同じ `workflow.delegation.revoke` に理由 `reconsent` で 1 行残す（委譲元・scope・対象・relation）。`workflow.enable` には grants の件数しか載らないので、誰の、どの委譲が、誰の操作で外れたかを後から追えるようにする。
+- 1 回の有効化の grants に、同じ (scope, 対象) で relation の違うものが並べば、タプルを書く前に全体を断る（API は `invalid_input` の 400）。台帳の一意キーは (委譲元, scope, 対象) なので、通すと台帳には後の relation の 1 行しか残らず、もう一方のタプルが台帳に載らないまま残って取り消しで外れない。同じ組の重なり（relation も同じ）は 1 つの委譲として通す。画面は scope ごとに relation を 1 つに決めて送る。
 - scope 差分を表示する。
 - **拡大がある場合のみ**再同意（新スコープの委譲）を要求する。
 - **縮小のみ**なら差分同意なしで切替可能。
