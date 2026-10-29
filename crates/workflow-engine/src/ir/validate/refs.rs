@@ -42,12 +42,13 @@ pub(super) fn v4_refs(ir: &WorkflowIr, catalog: &Catalog, errors: &mut Vec<Valid
     for node in &ir.nodes {
         // workflow.start: 名前（リテラル）で指す相手が保存者に見えるか（無いと見えないは同じ誤り・BUG-107）。
         // 空の名前は必須の欄の空として readiness が扱う（置いたばかりでも保存できる・D-83）。値式は実行時に決まる。
+        // 保存中のワークフロー自身の名前は見えるものとして扱う（自分を呼ぶ新しいワークフローを最初に保存できる）。
         if node.node_type == NodeType::WorkflowStart.as_str() {
             if let (Some(known), Some(name)) = (
                 catalog.workflows.as_ref(),
                 node.params.get("name").and_then(|v| v.as_str()),
             ) {
-                if !name.trim().is_empty() && !known.contains(name) {
+                if !name.trim().is_empty() && name != ir.name && !known.contains(name) {
                     errors.push(
                         ValidationError::new(
                             UNKNOWN_WORKFLOW,
@@ -198,5 +199,37 @@ pub(super) fn v6_script(ir: &WorkflowIr, errors: &mut Vec<ValidationError>) {
                     .at_node(&node.id),
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn start_errors(ir_name: &str, target: &str, known: &[&str]) -> Vec<ValidationError> {
+        let ir = WorkflowIr::from_json(&json!({
+            "ir_version": 1, "name": ir_name, "declared_scopes": ["workflow.start"],
+            "nodes": [{ "id": "s", "type": "workflow.start", "params": { "name": target } }],
+            "edges": []
+        }))
+        .unwrap();
+        let catalog = Catalog {
+            workflows: Some(known.iter().map(|s| (*s).to_string()).collect()),
+            ..Catalog::default()
+        };
+        let mut errors = Vec::new();
+        v4_refs(&ir, &catalog, &mut errors);
+        errors
+    }
+
+    /// 自分を呼ぶ新しいワークフロー（まだ保存者に見える一覧に無い）も、最初の保存で止めない。ほかの無い名前は止める。
+    #[test]
+    fn a_workflow_may_start_itself_before_it_is_saved() {
+        assert!(start_errors("retry-loop", "retry-loop", &[]).is_empty());
+        let errs = start_errors("retry-loop", "other-flow", &[]);
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        assert_eq!(errs[0].code, UNKNOWN_WORKFLOW);
+        assert!(start_errors("retry-loop", "other-flow", &["other-flow"]).is_empty());
     }
 }
