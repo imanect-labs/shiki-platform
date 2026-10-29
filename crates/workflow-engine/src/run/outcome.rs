@@ -147,6 +147,9 @@ pub struct ResumeHint {
     pub advice: ResumeAdvice,
     /// 再開を勧めるか（[`ResumeAdvice::Resume`]・[`ResumeAdvice::FixFirst`]）。勧めないときは再開のボタンを出さない。
     pub offer: bool,
+    /// 「同じ入力でもう一度実行」（この実行のバージョンで新しく実行する）を勧めるか。この実行のバージョンの設定だけで
+    /// 決まる失敗（使ってよい操作の天井など）では勧めない。設定を直して保存した後でも、同じ失敗をくり返す。
+    pub offer_rerun: bool,
     /// 再開で何が起きるか、または再開を勧めない理由と代わりの手段（作成者向け）。
     pub note: String,
 }

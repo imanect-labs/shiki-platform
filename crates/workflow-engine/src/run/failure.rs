@@ -239,6 +239,14 @@ pub const SAME_RESULT_CODES: &[&str] = &[
     "out_of_scope",
 ];
 
+/// [`SAME_RESULT_CODES`] のうち、この実行のバージョンの設定（ピンした IR）だけで決まる code。
+///
+/// 「同じ入力でもう一度実行」も同じバージョンで新しく実行するので、作成者が設定を直して新しいバージョンを保存した
+/// 後でも、同じ失敗をくり返す。そのため勧めず、エディターで直してから実行し直すよう言う。前のブロックの結果で
+/// 変わりうる code（参照の解決・型・params の値・件数の上限など）は置かない（最初から実行し直すと前のブロックの
+/// 結果が変わりうる）。
+pub const PINNED_VERSION_CODES: &[&str] = &["unknown_node", "unsupported_stage_a", "out_of_scope"];
+
 /// 設定の誤りの分類だが、AI の答えが毎回変わるので、再開すると通ることがある code（BUG-132）。
 const AI_ANSWER_CODES: &[&str] = &[
     crate::nodes::llm_structured::LLM_OUTPUT_INVALID,
@@ -278,9 +286,14 @@ pub fn resume_advice(code: Option<&str>, fail_reason: Option<&str>) -> ResumeAdv
 }
 
 /// 再開の勧めと、ボタンの近くに出す理由（作成者向け・付録 C の §3.4.4・P6）。
+///
+/// 「同じ入力でもう一度実行」（この実行のバージョンで新しく実行する）は、この実行のバージョンの設定だけで決まる
+/// 失敗（[`PINNED_VERSION_CODES`]）では勧めない（`offer_rerun = false`）。
 #[must_use]
 pub fn resume_hint(code: Option<&str>, fail_reason: Option<&str>) -> ResumeHint {
     let advice = resume_advice(code, fail_reason);
+    let pinned = advice == ResumeAdvice::SameResult
+        && code.is_some_and(|c| PINNED_VERSION_CODES.contains(&c));
     let note = match advice {
         ResumeAdvice::Resume => {
             "失敗したブロックから続けます。完了したブロックは実行し直しません。"
@@ -289,10 +302,16 @@ pub fn resume_hint(code: Option<&str>, fail_reason: Option<&str>) -> ResumeHint 
             "権限やデータなど、失敗の原因を直してから再開すると、失敗したブロックから続けます。\
              完了したブロックは実行し直しません。"
         }
+        ResumeAdvice::SameResult if pinned => {
+            "この実行のバージョンの設定で決まる失敗なので、再開しても、同じ入力でもう一度実行しても、\
+             同じ結果になります。エディターで設定を直して保存してから、「実行」で実行し直してください。\
+             前の実行で済んだ書き込みや送信も、もう一度行われます。"
+        }
         ResumeAdvice::SameResult => {
             "失敗したブロックを同じ設定と値でもう一度実行するので、再開しても同じ結果になります。\
-             設定か入力を直してから、ワークフローの「実行」で実行し直してください。\
-             前の実行で済んだ書き込みや送信も、もう一度行われます。"
+             設定か入力を直してから、エディターの「実行」で実行し直してください。\
+             「同じ入力でもう一度実行」は、この実行のバージョンの設定で動きます。\
+             最初から実行し直すと、前の実行で済んだ書き込みや送信も、もう一度行われます。"
         }
         ResumeAdvice::PastDeadline => {
             "実行の期限を過ぎているため、再開してもすぐに止まります。\
@@ -303,6 +322,7 @@ pub fn resume_hint(code: Option<&str>, fail_reason: Option<&str>) -> ResumeHint 
     ResumeHint {
         advice,
         offer: matches!(advice, ResumeAdvice::Resume | ResumeAdvice::FixFirst),
+        offer_rerun: !pinned,
         note: note.to_string(),
     }
 }
@@ -410,15 +430,38 @@ mod tests {
                 "{code}: {}",
                 h.note
             );
+            // この実行のバージョンの設定だけで決まる失敗は、「同じ入力でもう一度実行」もくり返すので勧めない。
+            let pinned = PINNED_VERSION_CODES.contains(code);
+            assert_eq!(h.offer_rerun, !pinned, "{code}");
+            assert_eq!(
+                h.note.contains("エディターで設定を直して保存してから"),
+                pinned,
+                "{code}: {}",
+                h.note
+            );
+        }
+        // 使ってよい操作の天井・知らないブロックは、この実行のバージョンで決まる。参照の解決や件数の上限は、最初から
+        // 実行し直すと前のブロックの結果が変わりうる。
+        for code in ["out_of_scope", "unknown_node", "unsupported_stage_a"] {
+            assert!(!resume_hint(Some(code), None).offer_rerun, "{code}");
+        }
+        for code in ["expr_resolve_error", "bad_params", "fanout_limit_exceeded"] {
+            assert!(resume_hint(Some(code), None).offer_rerun, "{code}");
         }
         // 読めないファイルは、同じファイルを保存し直せば再開で通る（再開は最新のバージョンを読み直す）。
         let h = resume_hint(Some(crate::nodes::ports::NOT_TEXT_FILE), None);
         assert_eq!(h.advice, ResumeAdvice::FixFirst);
-        assert!(h.offer, "{h:?}");
+        assert!(h.offer && h.offer_rerun, "{h:?}");
         // 実行の期限を過ぎた run は、step の code にかかわらず、再開してもすぐに止まる。
         let h = resume_hint(Some("unavailable"), Some("run_timeout"));
         assert_eq!(h.advice, ResumeAdvice::PastDeadline);
         assert!(!h.offer);
+        assert!(h.offer_rerun, "最初から実行し直すのが代わりの手段");
+        // 実行の期限で止めた run は、ピンした設定の code でも期限の理由を言う。
+        assert_eq!(
+            resume_hint(Some("out_of_scope"), Some("run_timeout")).advice,
+            ResumeAdvice::PastDeadline
+        );
         assert!(h.note.contains("同じ入力でもう一度実行"), "{}", h.note);
         assert!(h.note.contains("もう一度行われます"), "{}", h.note);
         // 一時的な問題・ブロックの時間切れ・AI の答え・分類できない失敗は、そのまま再開を勧める。
@@ -434,7 +477,7 @@ mod tests {
         ] {
             let h = resume_hint(Some(code), None);
             assert_eq!(h.advice, ResumeAdvice::Resume, "{code}");
-            assert!(h.offer, "{code}");
+            assert!(h.offer && h.offer_rerun, "{code}");
         }
         assert_eq!(resume_advice(None, None), ResumeAdvice::Resume);
         // 外の状態（権限・データ・モデル・状態の進め方・相手のサービス）は、直してから再開する。
@@ -467,6 +510,10 @@ mod tests {
         let known: BTreeSet<&str> = KNOWN_CODES.iter().map(|(c, _)| *c).collect();
         for code in SAME_RESULT_CODES.iter().chain(AI_ANSWER_CODES) {
             assert!(known.contains(code), "{code}");
+        }
+        // ピンした設定で決まる code は、どれも再開しても同じ結果になる code。
+        for code in PINNED_VERSION_CODES {
+            assert!(SAME_RESULT_CODES.contains(code), "{code}");
         }
     }
 

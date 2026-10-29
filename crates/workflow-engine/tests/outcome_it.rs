@@ -682,6 +682,8 @@ async fn the_history_detail_tells_the_failure_and_whether_resume_helps() {
         ),
         failing("unavailable"),
         ir(json!([reply("ok", "text", json!("できました"))]), json!([])),
+        // 使ってよい操作の天井は、この実行のバージョンの設定で決まる（同じ入力でもう一度実行も勧めない）。
+        failing("out_of_scope"),
     ] {
         let wf = Uuid::new_v4();
         let run = create(
@@ -721,9 +723,15 @@ async fn the_history_detail_tells_the_failure_and_whether_resume_helps() {
         )),
         Some((FailureCategory::Timeout, ResumeAdvice::PastDeadline, false)),
         None,
+        Some((FailureCategory::Permission, ResumeAdvice::SameResult, false)),
     ];
-    for ((wf, run), want) in runs.iter().zip(want) {
+    // 「同じ入力でもう一度実行」を勧めるか（ピンした設定だけで決まる失敗では勧めない）。
+    let want_rerun = [true, true, true, true, true, false];
+    for (((wf, run), want), rerun) in runs.iter().zip(want).zip(want_rerun) {
         let d = store.run_detail(&tenant, *wf, *run).await.unwrap().unwrap();
+        if let Some(r) = &d.resume {
+            assert_eq!(r.offer_rerun, rerun, "{run}");
+        }
         let got = d
             .failure
             .as_ref()

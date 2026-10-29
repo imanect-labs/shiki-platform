@@ -7,7 +7,8 @@
 /// 過約束せず明記する。node_id の表示名は run にピンされた version の IR から引く。
 
 import * as React from "react";
-import { Ban, Loader2, Play, RotateCcw } from "lucide-react";
+import Link from "next/link";
+import { Ban, Loader2, PencilLine, Play, RotateCcw } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -185,6 +186,10 @@ export function RunDetailSheet({
   // 勧めるか・理由の文はサーバーが失敗の分類の単一定義から返す（BUG-132）。
   const failed = detail?.status === "failed";
   const offerResume = failed && detail?.resume?.offer !== false;
+  // 再開しても同じ結果になる失敗は、エディターで直してから「実行」で実行し直すよう案内する。「同じ入力でもう一度
+  // 実行」もこの実行のバージョンで動くので、そのバージョンの設定だけで決まる失敗では出さない（BUG-132）。
+  const sameResult = failed && detail?.resume?.advice === "same_result";
+  const offerRerun = !failed || detail?.resume?.offer_rerun !== false;
 
   return (
     <Sheet open={runId !== null} onOpenChange={(o) => !o && onClose()}>
@@ -265,7 +270,15 @@ export function RunDetailSheet({
                       失敗したところから再開
                     </Button>
                   ) : null}
-                  {isTerminalRunStatus(detail.status) ? (
+                  {sameResult ? (
+                    <Button asChild size="sm">
+                      <Link href={`/workflows/${workflowId}`}>
+                        <PencilLine className="size-3.5" aria-hidden />
+                        エディターを開く
+                      </Link>
+                    </Button>
+                  ) : null}
+                  {isTerminalRunStatus(detail.status) && offerRerun ? (
                     <Button
                       variant="outline"
                       size="sm"
