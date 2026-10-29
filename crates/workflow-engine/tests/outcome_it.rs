@@ -712,11 +712,8 @@ async fn the_history_detail_tells_the_failure_and_whether_resume_helps() {
     let mine = reader.own_outcomes(&alice, &ids, &[]).await.unwrap();
     let want = [
         Some((FailureCategory::Conflict, ResumeAdvice::FixFirst, true)),
-        Some((
-            FailureCategory::Configuration,
-            ResumeAdvice::SameResult,
-            false,
-        )),
+        // 読めないファイルは、保存し直せば再開で読み直せる（再開は同じファイルの最新のバージョンを読む）。
+        Some((FailureCategory::Configuration, ResumeAdvice::FixFirst, true)),
         Some((
             FailureCategory::Configuration,
             ResumeAdvice::SameResult,

@@ -222,7 +222,11 @@ pub fn failure_code<'a>(step_code: Option<&'a str>, item_code: Option<&'a str>) 
 ///
 /// 再開は、この実行のバージョンの設定（ピンした IR）・実行の入力・きっかけの内容・完了したブロックの結果
 /// （checkpoint）をそのまま使って、失敗したブロックをもう一度実行する。ここに置くのは、それらだけで決まる失敗
-/// （外の状態を直しても変わらない）。読むファイルの種類（`not_text_file`）は、読むファイルを選び直すまで変わらない。
+/// （外の状態を直しても変わらない）。
+///
+/// 読めないファイル（`not_text_file`）は置かない。再開は同じファイルの最新のバージョンを読み直すので、作成者が
+/// ファイルを UTF-8 か Shift_JIS で保存し直せば通る（原因を直してから再開する・最初から実行し直すと、完了した
+/// ブロックの書き込みや送信がもう一度行われる）。
 pub const SAME_RESULT_CODES: &[&str] = &[
     "bad_params",
     "expr_resolve_error",
@@ -233,7 +237,6 @@ pub const SAME_RESULT_CODES: &[&str] = &[
     crate::nodes::decide::DECISION_STATE_TOO_LARGE,
     // 使ってよい操作の天井は、ピンした IR の宣言（`declared_scopes`）で決まる。
     "out_of_scope",
-    crate::nodes::ports::NOT_TEXT_FILE,
 ];
 
 /// 設定の誤りの分類だが、AI の答えが毎回変わるので、再開すると通ることがある code（BUG-132）。
@@ -288,7 +291,8 @@ pub fn resume_hint(code: Option<&str>, fail_reason: Option<&str>) -> ResumeHint 
         }
         ResumeAdvice::SameResult => {
             "失敗したブロックを同じ設定と値でもう一度実行するので、再開しても同じ結果になります。\
-             設定か入力を直してから、ワークフローの「実行」で実行し直してください。"
+             設定か入力を直してから、ワークフローの「実行」で実行し直してください。\
+             前の実行で済んだ書き込みや送信も、もう一度行われます。"
         }
         ResumeAdvice::PastDeadline => {
             "実行の期限を過ぎているため、再開してもすぐに止まります。\
@@ -394,13 +398,23 @@ mod tests {
     /// 再開しても同じ結果になる失敗では、再開を勧めず理由を言う（BUG-132）。
     #[test]
     fn resume_is_not_offered_when_it_would_fail_the_same_way() {
-        // 設定・値で決まる失敗は同じ結果。
+        // 設定・値で決まる失敗は同じ結果。最初から実行し直すよう言うので、済んだ書き込みや送信が二重になることも言う。
         for code in SAME_RESULT_CODES {
             let h = resume_hint(Some(code), None);
             assert_eq!(h.advice, ResumeAdvice::SameResult, "{code}");
             assert!(!h.offer, "{code}");
             assert!(h.note.contains("同じ結果"), "{code}: {}", h.note);
+            assert!(
+                h.note
+                    .contains("前の実行で済んだ書き込みや送信も、もう一度行われます"),
+                "{code}: {}",
+                h.note
+            );
         }
+        // 読めないファイルは、同じファイルを保存し直せば再開で通る（再開は最新のバージョンを読み直す）。
+        let h = resume_hint(Some(crate::nodes::ports::NOT_TEXT_FILE), None);
+        assert_eq!(h.advice, ResumeAdvice::FixFirst);
+        assert!(h.offer, "{h:?}");
         // 実行の期限を過ぎた run は、step の code にかかわらず、再開してもすぐに止まる。
         let h = resume_hint(Some("unavailable"), Some("run_timeout"));
         assert_eq!(h.advice, ResumeAdvice::PastDeadline);
@@ -435,6 +449,7 @@ mod tests {
             "approval_not_decidable",
             "http_error_status",
             "script_error",
+            "not_text_file",
         ] {
             let h = resume_hint(Some(code), None);
             assert_eq!(h.advice, ResumeAdvice::FixFirst, "{code}");

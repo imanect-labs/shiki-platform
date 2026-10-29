@@ -4,7 +4,7 @@ import { cleanupAll, loginViaKeycloak, uniqueName } from "./helpers";
 
 /// 「ファイルを読む」（storage.read）が文章として読めないファイルを断る e2e（BUG-101）:
 /// PDF を読もうとすると、ブロックは「文章として読めない」誤り（not_text_file・やり直さない）で失敗し、実行履歴に
-/// 読み方の案内が出る。テキストのファイルはそのまま読める。以前は PDF や Word を文字化けしたまま成功させていた。
+/// 読み方の案内と、原因を直してから再開する案内が出る。テキストのファイルはそのまま読める。以前は PDF や Word を文字化けしたまま成功させていた。
 /// 「読むファイル」の注記はテキストのファイルだけを読むことを言う。拡張子が文章の種類なら、ブラウザーが付けた MIME
 /// （Windows の .csv の application/vnd.ms-excel）で断らない。
 
@@ -141,19 +141,18 @@ test("ファイルを読む: PDF は文章として読めない誤りで失敗�
     expect(step?.error?.code).toBe("not_text_file");
     expect(step?.error?.retryable).toBe(false);
     expect(step?.error?.message).toBe(NOT_TEXT);
-    // 同じファイルを読み直しても同じ結果なので、再開を勧めない（失敗の分類の単一定義から・BUG-132）。
+    // 再開は同じファイルの最新のバージョンを読み直すので、ファイルを保存し直してから再開すれば通る。原因を直して
+    // から再開するよう勧める（最初から実行し直すと、済んだ書き込みや送信が二重になる・失敗の分類の単一定義から）。
     expect(bad.detail.failure?.category).toBe("configuration");
-    expect(bad.detail.resume).toMatchObject({ advice: "same_result", offer: false });
+    expect(bad.detail.resume).toMatchObject({ advice: "fix_first", offer: true });
 
     await page.goto(`/workflows/${id}/runs?run=${bad.runId}`);
     const sheet = page.getByRole("dialog");
     await expect(sheet.getByText(NOT_TEXT).first()).toBeVisible({ timeout: 30_000 });
-    // 「失敗したところから再開」は出さず、出さない理由と代わりの手段を言う。「同じ入力でもう一度実行」は残る。
     await expect(sheet.getByTestId("run-failure")).toHaveText(bad.detail.failure!.message);
-    await expect(sheet.getByRole("button", { name: "失敗したところから再開" })).toHaveCount(0);
+    await expect(sheet.getByRole("button", { name: "失敗したところから再開" })).toBeVisible();
     await expect(sheet.getByTestId("run-resume-note")).toHaveText(bad.detail.resume!.note);
-    await expect(sheet.getByTestId("run-resume-note")).toContainText("再開しても同じ結果になります");
-    await expect(sheet.getByRole("button", { name: "同じ入力でもう一度実行" })).toBeVisible();
+    await expect(sheet.getByTestId("run-resume-note")).toContainText("原因を直してから再開すると");
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/storage-read-not-text-pc.png` });
 
     const phoneCtx = await browser.newContext({
