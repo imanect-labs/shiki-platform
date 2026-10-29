@@ -102,6 +102,16 @@ pub struct AgentConfig {
 }
 
 impl WorkflowConfig {
+    /// run ワーカーの設定。外部 API 呼び出しの時間の上限の既定を、応答を待つ時間（`http_timeout_ms`）より短くしない。
+    #[must_use]
+    pub fn worker_config(&self) -> WorkerConfig {
+        WorkerConfig {
+            lease_secs: self.lease_secs,
+            http_timeout_ms: Some(self.http_timeout_ms),
+            ..WorkerConfig::default()
+        }
+    }
+
     /// web.fetch が読んでよいサイトの天井（`agent.web_allowlist` だけ・未設定は空＝web.fetch を提示しない）。
     ///
     /// 保存時の照合（V3）・実行時の宛先・`GET /workflows/agent-settings`（エディタ）・AI 作成の照合は、
@@ -359,22 +369,15 @@ pub async fn spawn_workflow_runtime(deps: RuntimeDeps) {
 
     // ① run ワーカー（多重起動安全・detach）。3 階層並行制御を結線（10.5・順番待ち）。
     let concurrency_store = workflow_engine::ConcurrencyStore::new(deps.db.clone());
-    let worker = WorkflowWorker::new(
-        runs.clone(),
-        executor,
-        WorkerConfig {
-            lease_secs: deps.config.lease_secs,
-            ..WorkerConfig::default()
-        },
-    )
-    .with_concurrency(
-        concurrency_store.clone(),
-        workflow_engine::ConcurrencyLimits {
-            tenant_steps: deps.config.tenant_step_limit,
-            workflow_steps: deps.config.workflow_step_limit,
-            node_kind_steps: deps.config.node_kind_step_limit,
-        },
-    );
+    let worker = WorkflowWorker::new(runs.clone(), executor, deps.config.worker_config())
+        .with_concurrency(
+            concurrency_store.clone(),
+            workflow_engine::ConcurrencyLimits {
+                tenant_steps: deps.config.tenant_step_limit,
+                workflow_steps: deps.config.workflow_step_limit,
+                node_kind_steps: deps.config.node_kind_step_limit,
+            },
+        );
     let worker_id = format!("wf-worker-{}", std::process::id());
     worker.spawn(deps.config.worker_concurrency, &worker_id);
     tracing::info!(

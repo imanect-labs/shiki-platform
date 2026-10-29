@@ -25,6 +25,9 @@ pub struct WorkerConfig {
     pub lease_secs: i64,
     /// claim が空振りしたときのポーリング間隔。
     pub idle_poll: Duration,
+    /// 外部 API 呼び出しが応答を待つ時間（設定 `workflow.http_timeout_ms`）。時間の上限を空欄にした外部 API
+    /// 呼び出しは、これより先に打ち切らない（[`super::step_timeout::step_timeout_sec_for`]）。
+    pub http_timeout_ms: Option<u64>,
 }
 
 impl Default for WorkerConfig {
@@ -32,6 +35,7 @@ impl Default for WorkerConfig {
         WorkerConfig {
             lease_secs: DEFAULT_LEASE_SECS,
             idle_poll: Duration::from_millis(200),
+            http_timeout_ms: None,
         }
     }
 }
@@ -141,7 +145,9 @@ impl WorkflowWorker {
         ctx: &NodeContext,
     ) -> NodeResult {
         let run = self.executor.execute(&node.node_type, &node.params, ctx);
-        let Some(limit) = super::step_timeout::step_timeout_sec(node) else {
+        let Some(limit) =
+            super::step_timeout::step_timeout_sec_for(node, self.config.http_timeout_ms)
+        else {
             return run.await;
         };
         if let Ok(result) = tokio::time::timeout(Duration::from_secs(u64::from(limit)), run).await {

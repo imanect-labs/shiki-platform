@@ -32,14 +32,28 @@ pub const STEP_TIMEOUT: &str = "step_timeout";
 /// 待ち、止まらなければ打ち切る（api の agent_port は上限の後に最大 60 秒）。そのあとに結果を書く時間を見込む。
 pub const AGENT_STOP_MARGIN_SEC: u32 = 120;
 
-/// step の時間の上限（秒・打ち切らない種は `None`）。
+/// step の時間の上限（秒・打ち切らない種は `None`）。外部 API 呼び出しの応答の待ちは既定のまま
+/// （[`step_timeout_sec_for`]）。
 #[must_use]
 pub fn step_timeout_sec(node: &Node) -> Option<u32> {
+    step_timeout_sec_for(node, None)
+}
+
+/// step の時間の上限（秒・打ち切らない種は `None`）。`http_wait_ms` は外部 API 呼び出しが応答を待つ時間（設定
+/// `workflow.http_timeout_ms`）で、時間の上限を空欄にした外部 API 呼び出しはこれより先に打ち切らない（管理者が応答の
+/// 待ちを延ばしたら、上限の既定もそれに従う。作成者が書いた値はそのまま使う）。
+#[must_use]
+pub fn step_timeout_sec_for(node: &Node, http_wait_ms: Option<u64>) -> Option<u32> {
     let nt = NodeType::parse(&node.node_type)?;
     let (default, max) = step_timeout_limits(nt);
     let (default, max) = (default?, max?);
-    let configured = node.timeout_sec.filter(|s| *s > 0).unwrap_or(default);
-    let limit = configured.min(max);
+    let written = node.timeout_sec.filter(|s| *s > 0);
+    let limit = written.unwrap_or(default).min(max);
+    if nt == NodeType::HttpRequest && written.is_none() {
+        if let Some(ms) = http_wait_ms {
+            return Some(limit.max(u32::try_from(ms.div_ceil(1000)).unwrap_or(u32::MAX)));
+        }
+    }
     if nt == NodeType::AgentInvoke {
         return Some(
             limit.max(agent_duration_sec(&node.params).saturating_add(AGENT_STOP_MARGIN_SEC)),
@@ -205,6 +219,28 @@ mod tests {
         );
         assert!(timeout_message(120).contains("（2 分）"));
         assert!(timeout_message(150).contains("（2 分 30 秒）"));
+    }
+
+    /// 時間の上限を空欄にした外部 API 呼び出しは、設定の応答の待ちより先に打ち切らない。書いた値と既定の設定はそのまま。
+    #[test]
+    fn http_defaults_follow_the_configured_response_wait() {
+        let http = |t: Option<u32>| node("http.request", t, json!({}));
+        assert_eq!(step_timeout_sec_for(&http(None), Some(60_000)), Some(60));
+        assert_eq!(step_timeout_sec_for(&http(None), Some(60_500)), Some(61));
+        // 既定の設定（30 秒）では既定の上限（30 秒）のまま。短くはしない。
+        assert_eq!(step_timeout_sec_for(&http(None), Some(30_000)), Some(30));
+        assert_eq!(step_timeout_sec_for(&http(None), Some(5_000)), Some(30));
+        assert_eq!(step_timeout_sec_for(&http(None), None), Some(30));
+        // 作成者が書いた値はそのまま（設定より短くても）。
+        assert_eq!(
+            step_timeout_sec_for(&http(Some(10)), Some(60_000)),
+            Some(10)
+        );
+        // ほかの種は設定を見ない。
+        assert_eq!(
+            step_timeout_sec_for(&node("storage.read", None, json!({})), Some(60_000)),
+            Some(30)
+        );
     }
 
     /// 制御のノードと未知の種は打ち切らない（待機の時間は params が決める）。
