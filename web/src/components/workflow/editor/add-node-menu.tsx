@@ -14,6 +14,7 @@ import { NODE_CATALOG } from "@/generated/workflow-catalog";
 import type { NodeCatalogEntry } from "@/generated/workflow-ir";
 import { nodeIcon } from "./icons";
 import { categoryVar } from "../category-accent";
+import { UpcomingDetails, useUpcomingOpen } from "./upcoming-details";
 
 type Props = {
   onPick: (nodeType: string) => void;
@@ -35,6 +36,7 @@ function groupByCategory(entries: readonly NodeCatalogEntry[]) {
 
 export function AddNodeMenu({ onPick, contextLabel, className }: Props) {
   const [query, setQuery] = React.useState("");
+  const [upcomingOpen, setUpcomingOpen] = useUpcomingOpen();
   const inputRef = React.useRef<HTMLInputElement>(null);
 
   // タッチ端末では開いた瞬間にキーボードを出さない（一覧から選ぶのが主）。
@@ -116,10 +118,11 @@ export function AddNodeMenu({ onPick, contextLabel, className }: Props) {
         ))}
         {upcoming.length > 0 ? (
           // 準備中のブロックは既定で閉じる（使えるものを先に見せる・付録 D の N2.10）。
-          <details className="mb-1 border-t pt-2" open={q !== ""}>
-            <summary className="cursor-pointer list-none rounded-md px-1 py-1 text-[11px] font-medium text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring">
-              準備中
-            </summary>
+          <UpcomingDetails
+            searching={q !== ""}
+            open={upcomingOpen}
+            onOpenChange={setUpcomingOpen}
+            className="mb-1 border-t pt-2" summaryClassName="px-1 py-1">
             <ul>
               {upcoming.map((entry) => {
                 const Icon = nodeIcon(entry.type);
@@ -144,7 +147,7 @@ export function AddNodeMenu({ onPick, contextLabel, className }: Props) {
                 );
               })}
             </ul>
-          </details>
+          </UpcomingDetails>
         ) : null}
         {filtered.length === 0 ? (
           <p className="px-1 py-6 text-center text-sm text-muted-foreground">

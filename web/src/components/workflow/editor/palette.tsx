@@ -16,6 +16,7 @@ import { NODE_CATALOG } from "@/generated/workflow-catalog";
 import type { NodeCatalogEntry } from "@/generated/workflow-ir";
 import { nodeIcon } from "./icons";
 import { categoryVar } from "../category-accent";
+import { UpcomingDetails, useUpcomingOpen } from "./upcoming-details";
 
 export const PALETTE_DND_TYPE = "application/x-shiki-node-type";
 
@@ -31,6 +32,7 @@ function groupByCategory(entries: readonly NodeCatalogEntry[]) {
 
 export function Palette({ onPick }: { onPick: (nodeType: string) => void }) {
   const [query, setQuery] = React.useState("");
+  const [upcomingOpen, setUpcomingOpen] = useUpcomingOpen();
   const q = query.trim().toLowerCase();
   const filtered = NODE_CATALOG.filter(
     (e) =>
@@ -104,10 +106,11 @@ export function Palette({ onPick }: { onPick: (nodeType: string) => void }) {
         ))}
         {upcoming.length > 0 ? (
           // 準備中のブロックは既定で閉じる（使えるものを先に見せる・付録 D の N2.10）。
-          <details className="group mb-2 border-t pt-2" open={q !== ""}>
-            <summary className="cursor-pointer list-none rounded-md px-1.5 py-1 text-[11px] font-medium text-muted-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring">
-              準備中
-            </summary>
+          <UpcomingDetails
+            searching={q !== ""}
+            open={upcomingOpen}
+            onOpenChange={setUpcomingOpen}
+            className="mb-2 border-t pt-2" summaryClassName="px-1.5 py-1">
             <ul className="space-y-0.5">
               {upcoming.slice(0, 12).map((entry) => {
                 const Icon = nodeIcon(entry.type);
@@ -125,7 +128,7 @@ export function Palette({ onPick }: { onPick: (nodeType: string) => void }) {
                 );
               })}
             </ul>
-          </details>
+          </UpcomingDetails>
         ) : null}
       </div>
     </aside>
