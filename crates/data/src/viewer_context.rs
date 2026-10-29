@@ -15,6 +15,8 @@ use crate::store::DataStore;
 use crate::DataError;
 
 /// テーブルに対する閲覧者本人の文脈。
+#[allow(clippy::struct_excessive_bools)]
+// 画面の出し分けの独立した可否（編集・追加・追加だけ・スキーマ）で、状態機械ではない。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
 pub struct TableViewerContext {
     /// 閲覧者本人に**読めない**列の参照名（フィールドマスク・ビューの列設定に出せない）。
@@ -25,6 +27,11 @@ pub struct TableViewerContext {
     pub masked_fields: Vec<String>,
     /// レコードを編集できる（テーブルの editor 以上）。行述語の書込条件は別途各行で効く。
     pub can_edit: bool,
+    /// レコードを追加できる（テーブルの editor 以上か、追加だけ・D-113）。
+    pub can_add: bool,
+    /// 追加だけで共有されている（自分が追加したレコードだけ見られる・編集・取込・状態を進める・保存ビューは
+    /// 使えない・D-113）。
+    pub add_only: bool,
     /// スキーマを変えられる（テーブルの owner）。
     pub can_manage: bool,
     /// 1 ビューで表示できるルックアップ・ロールアップ列の上限（テナント設定）。
@@ -32,7 +39,7 @@ pub struct TableViewerContext {
 }
 
 impl DataStore {
-    /// テーブルの閲覧者文脈（viewer）。
+    /// テーブルの閲覧者文脈（viewer か追加だけ）。
     pub async fn table_viewer_context(
         &self,
         ctx: &AuthContext,
@@ -40,21 +47,20 @@ impl DataStore {
         trace_id: Option<&str>,
     ) -> Result<TableViewerContext, DataError> {
         let az = self.authz_memo();
-        self.require_in(
-            &az,
-            ctx,
-            table_id,
-            Relation::Viewer,
-            AuditAction::DataTableGet,
-            trace_id,
-        )
-        .await?;
-        let table = self.fetch_live(ctx, table_id).await?;
+        // 追加だけの人（D-113）も開ける（画面は追加の操作と自分の行だけを出す）。
+        let table = self
+            .open_for_reader(ctx, &az, table_id, AuditAction::DataTableGet, trace_id)
+            .await?;
+        let add_only = table.narrowed.is_some();
         let obj = ctx.ns().data_table(&table_id.to_string());
         let rel = az
             .check_all(
                 ctx,
-                &[(Relation::Editor, obj.clone()), (Relation::Owner, obj)],
+                &[
+                    (Relation::Editor, obj.clone()),
+                    (Relation::Owner, obj.clone()),
+                    (Relation::Submitter, obj),
+                ],
             )
             .await?;
         let can_manage = rel.get(1).copied().unwrap_or(false);
@@ -70,6 +76,8 @@ impl DataStore {
         Ok(TableViewerContext {
             masked_fields: masked,
             can_edit: rel.first().copied().unwrap_or(false),
+            can_add: rel.get(2).copied().unwrap_or(false),
+            add_only,
             can_manage,
             max_view_lookup_columns: self.view_lookup_cap(ctx).await?,
         })

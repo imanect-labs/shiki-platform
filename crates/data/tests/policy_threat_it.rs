@@ -9,6 +9,8 @@
 //!    同一 Tx に破棄され、値が読めず・ソートに使えなくなる（PIT-71）
 //! ⑩ SSE 差分配信（Task 15.6）でも、見えない行・マスク列・可視→不可視の行の値が流れない
 //!    （PIT-73。購読者ごとに行述語とマスクを評価し、可視→不可視は id だけの removed）
+//! ⑫ テーブルの「追加だけ」（D-113）: 追加だけの人には自分が作った行だけが、どの経路でも見える
+//!    （[`submitter`]）
 //!
 //! 実 Postgres（`STORAGE_TEST_DATABASE_URL`）＋実 OpenFGA（`OPENFGA_TEST_URL`）で実行する。
 
@@ -43,6 +45,9 @@ use uuid::Uuid;
 /// 届くはずのイベントを待つ上限（届けばすぐ抜ける）。カバレッジ計測のビルドは遅く、共有 DB に先行テストの
 /// outbox が溜まっていると配信が数秒遅れるので、短すぎると誤って落ちる。
 const SSE_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+#[path = "policy_threat/submitter.rs"]
+mod submitter;
 
 struct AllowRefs;
 

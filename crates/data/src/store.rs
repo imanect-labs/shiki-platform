@@ -135,6 +135,8 @@ impl TableRow {
             created_by: self.created_by,
             created_at: self.created_at,
             updated_at: self.updated_at,
+            add_only: false,
+            narrowed: None,
             keys: TableKeys {
                 tenant_int: self.tenant_int,
                 table_int: self.table_int,
@@ -793,10 +795,11 @@ impl DataStore {
                     },
                 )
                 .await;
-            // テーブルが見えない主体（viewer でない）には存在も分からせない: 存在しない・削除済みと同じ 404
-            // （data-platform §16.1・検証 2-A P3）。見えるが操作の relation が無いときだけ 403。
+            // テーブルが見えない主体（viewer でも追加だけでもない）には存在も分からせない: 存在しない・削除済みと
+            // 同じ 404（data-platform §16.1・検証 2-A P3）。見えるが操作の relation が無いときだけ 403（追加だけの
+            // 人はテーブルの定義を読めるので、書き換え・削除・状態を進める・取込は 403・D-113）。
             let visible =
-                relation != Relation::Viewer && az.check(ctx, Relation::Viewer, &obj).await?;
+                relation != Relation::Viewer && self.read_scope(ctx, az, id).await?.is_some();
             return Err(if visible {
                 DataError::Forbidden
             } else {

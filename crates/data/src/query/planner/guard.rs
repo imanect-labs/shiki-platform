@@ -178,6 +178,13 @@ impl<'a> Guard<'a> {
             out.extend_from_slice(&t.to_le_bytes());
         }
         out.push(u8::from(self.ctx.schema.row_policy.is_some()));
+        // 行述語の形（材料は含まない）。スキーマの世代が同じでも、追加だけの閲覧者には絞った述語
+        // （`IsOwner AND 元の述語`・D-113・[`crate::table_access`]）で降下するので、テキストが違う。
+        if let Some(p) = &self.ctx.schema.row_policy {
+            let shape = format!("{:?}", p.read);
+            out.extend_from_slice(&(shape.len() as u64).to_le_bytes());
+            out.extend_from_slice(shape.as_bytes());
+        }
     }
 
     /// 認可駆動の入口の形（選言の種類と列・`HasRole` の畳み込みの結果。材料は積まない）。

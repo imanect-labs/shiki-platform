@@ -1,6 +1,7 @@
 //! テーブル一覧（Task 9.2/9.8）。`store.rs` から分離（1 ファイル行数規約）。
 //!
-//! FGA viewer 実効集合 → DB 突合の二段。app-gateway の所有束縛（`list_app_tables`）は
+//! FGA viewer 実効集合 → DB 突合の二段（画面の一覧は追加だけ＝`submitter` の実効集合も足す・D-113）。
+//! app-gateway の所有束縛（`list_app_tables`）は
 //! `app_id` の絞り込みを LIMIT より前に SQL で行う（上限超過時の欠落を防ぐ）。
 //!
 //! 画面の一覧（`GET /data/tables`）は名前の検索と続きの位置で引く（[`DataStore::list_tables_page`]・GAP-42）。
@@ -118,6 +119,10 @@ struct ListFilter {
     app_id: Option<Uuid>,
     pattern: Option<String>,
     after: Option<TableCursor>,
+    /// 追加だけ（`submitter`・D-113）で共有されたテーブルも含める（画面の一覧と、アプリへ見せる一覧だけ）。
+    /// 含めない一覧（チャットの AI・ワークフロー・SQL の名前の候補・アプリのイベント購読）は、そのテーブルを
+    /// viewer として開く使い手なので、従来どおり viewer の実効集合だけにする。
+    include_add_only: bool,
 }
 
 impl DataStore {
@@ -138,6 +143,37 @@ impl DataStore {
         ctx: &AuthContext,
         query: &TableListQuery,
     ) -> Result<TablePage, DataError> {
+        self.list_page_filtered(ctx, query, false).await
+    }
+
+    /// [`Self::list_tables`] に、追加だけで共有されたテーブルを足した一覧（画面の一覧・D-113）。
+    pub(crate) async fn list_tables_with_add_only(
+        &self,
+        ctx: &AuthContext,
+        limit: i64,
+    ) -> Result<Vec<DataTable>, DataError> {
+        let filter = ListFilter {
+            include_add_only: true,
+            ..ListFilter::default()
+        };
+        self.list_tables_filtered(ctx, &filter, limit).await
+    }
+
+    /// [`Self::list_tables_page`] に、追加だけで共有されたテーブルを足した 1 ページ（画面の一覧と名前の検索・D-113）。
+    pub(crate) async fn list_tables_page_with_add_only(
+        &self,
+        ctx: &AuthContext,
+        query: &TableListQuery,
+    ) -> Result<TablePage, DataError> {
+        self.list_page_filtered(ctx, query, true).await
+    }
+
+    async fn list_page_filtered(
+        &self,
+        ctx: &AuthContext,
+        query: &TableListQuery,
+        include_add_only: bool,
+    ) -> Result<TablePage, DataError> {
         let filter = ListFilter {
             app_id: None,
             pattern: search_term(query.q.as_deref())?,
@@ -146,6 +182,7 @@ impl DataStore {
                 .as_deref()
                 .map(TableCursor::decode)
                 .transpose()?,
+            include_add_only,
         };
         let limit = query.limit.clamp(1, MAX_TABLE_PAGE);
         // 1 件多く引いて続きの有無を知る。
@@ -173,6 +210,33 @@ impl DataStore {
             ..ListFilter::default()
         };
         self.list_tables_filtered(ctx, &filter, limit).await
+    }
+
+    /// アプリ所有 ∩ 自分が viewer か追加だけのテーブル一覧（app-gateway の `GET /gw/data/tables`・D-113）。
+    ///
+    /// 追加だけのテーブルには `add_only` を立てる。イベントの購読は [`Self::list_app_tables`]（viewer だけ）を使う
+    /// （他人のレコードの変更を追加だけの人へ流さない）。
+    pub async fn list_app_tables_for_reader(
+        &self,
+        ctx: &AuthContext,
+        app_id: Uuid,
+        limit: i64,
+    ) -> Result<Vec<DataTable>, DataError> {
+        let filter = ListFilter {
+            app_id: Some(app_id),
+            include_add_only: true,
+            ..ListFilter::default()
+        };
+        let tables = self.list_tables_filtered(ctx, &filter, limit).await?;
+        let az = self.authz_memo();
+        crate::table_redact::prefetch_table_relations(ctx, &az, &tables).await?;
+        let mut out = Vec::with_capacity(tables.len());
+        for mut t in tables {
+            t.add_only = self.read_scope(ctx, &az, t.id).await?
+                == Some(crate::table_access::ReadScope::OwnRecords);
+            out.push(t);
+        }
+        Ok(out)
     }
 
     /// アプリが所有する**全**テーブル ID（FGA 突合なし・Task 9.13b アンインストール撤去用）。
@@ -205,11 +269,20 @@ impl DataStore {
     ) -> Result<Vec<DataTable>, DataError> {
         // 1 ページ（200 件）＋続きの有無を知るための 1 件。
         let limit = limit.clamp(1, MAX_TABLE_PAGE + 1);
-        let objs = self
+        let mut objs = self
             .authz
             .list_objects(&ctx.subject(), Relation::Viewer, ObjectType::DataTable)
             .await
             .map_err(|e| DataError::Internal(e.to_string()))?;
+        if filter.include_add_only {
+            // 追加だけ（editor・owner も含む実効集合）を足す。重なりは下の DB 突合（`= ANY`）で 1 行になる。
+            objs.extend(
+                self.authz
+                    .list_objects(&ctx.subject(), Relation::Submitter, ObjectType::DataTable)
+                    .await
+                    .map_err(|e| DataError::Internal(e.to_string()))?,
+            );
+        }
         let mut ids: Vec<Uuid> = Vec::new();
         for o in objs {
             let Some((_, id_part)) = o.split_once(':') else {

@@ -5,7 +5,8 @@
 //! 値を作る必要がある（トリガは委譲元・wait は run の実行主体）。ここはその見え方を、レコードの読取
 //! （`get_record`）と変更履歴（`list_revisions`）と同じ関数で作る単一の入口:
 //!
-//! 1. テーブルの viewer とテーブルの生存を確かめる（見えないテーブルは `NotFound` / `Forbidden`）。
+//! 1. テーブルの viewer とテーブルの生存を確かめる（見えないテーブルは `NotFound` / `Forbidden`）。追加だけの
+//!    主体には自分が作ったレコードの変更だけを返す（D-113・[`crate::table_access`]）。
 //! 2. **今の行**が主体に見えるかを行述語で確かめる（見えない・削除済みなら `None`）。判定は呼んだ時点の
 //!    行で行う（SSE の after 判定と同じ）。
 //! 3. その rev のリビジョンを 1 件読み、`list_revisions` と同じくマスク列を落とし、リンク値を見える参照先
@@ -116,7 +117,7 @@ impl DataStore {
         }
         let az = self.authz_memo();
         let table = self
-            .open_for_read(ctx, &az, table_id, AuditAction::DataRecordGet, trace_id)
+            .open_for_reader(ctx, &az, table_id, AuditAction::DataRecordGet, trace_id)
             .await?;
         let masked = self.masked_fields(ctx, &az, &table).await?;
         let status = table

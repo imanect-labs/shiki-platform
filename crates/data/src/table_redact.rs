@@ -13,10 +13,13 @@ use uuid::Uuid;
 use crate::model::DataTable;
 use crate::policy::memo::AuthzMemo;
 use crate::store::DataStore;
+use crate::table_access::ReadScope;
 use crate::DataError;
 
 impl DataStore {
-    /// 閲覧者に見せるテーブル（viewer・スキーマ管理者以外は読める列だけ・ポリシーの定義なし）。
+    /// 閲覧者に見せるテーブル（viewer か追加だけ・スキーマ管理者以外は読める列だけ・ポリシーの定義なし）。
+    ///
+    /// 追加だけの人（D-113）には `add_only` を立てて返す（持ち主でない閲覧者と同じく読める列だけ）。
     pub async fn get_table_for_viewer(
         &self,
         ctx: &AuthContext,
@@ -24,27 +27,23 @@ impl DataStore {
         trace_id: Option<&str>,
     ) -> Result<DataTable, DataError> {
         let az = self.authz_memo();
-        self.require_in(
-            &az,
-            ctx,
-            id,
-            Relation::Viewer,
-            AuditAction::DataTableGet,
-            trace_id,
-        )
-        .await?;
-        let table = self.fetch_live(ctx, id).await?;
+        let table = self
+            .open_for_reader(ctx, &az, id, AuditAction::DataTableGet, trace_id)
+            .await?;
         self.redact_table(ctx, &az, table).await
     }
 
     /// 閲覧者に見せるテーブル一覧（各テーブルを [`Self::get_table_for_viewer`] と同じ規則で絞る）。
+    ///
+    /// 追加だけで共有されたテーブルも含め、`add_only` を立てる（画面の一覧の印・D-113）。
     pub async fn list_tables_for_viewer(
         &self,
         ctx: &AuthContext,
         limit: i64,
     ) -> Result<Vec<DataTable>, DataError> {
-        let tables = self.list_tables(ctx, limit).await?;
+        let tables = self.list_tables_with_add_only(ctx, limit).await?;
         let az = self.authz_memo();
+        prefetch_table_relations(ctx, &az, &tables).await?;
         let mut out = Vec::with_capacity(tables.len());
         for t in tables {
             out.push(self.redact_table(ctx, &az, t).await?);
@@ -59,8 +58,9 @@ impl DataStore {
         ctx: &AuthContext,
         query: &crate::TableListQuery,
     ) -> Result<crate::TablePage, DataError> {
-        let mut page = self.list_tables_page(ctx, query).await?;
+        let mut page = self.list_tables_page_with_add_only(ctx, query).await?;
         let az = self.authz_memo();
+        prefetch_table_relations(ctx, &az, &page.items).await?;
         let mut out = Vec::with_capacity(page.items.len());
         for t in page.items {
             out.push(self.redact_table(ctx, &az, t).await?);
@@ -69,7 +69,7 @@ impl DataStore {
         Ok(page)
     }
 
-    /// テーブル定義を閲覧者向けに絞る（owner はそのまま）。
+    /// テーブル定義を閲覧者向けに絞る（owner はそのまま）。追加だけ（viewer でない）なら `add_only` を立てる。
     pub(crate) async fn redact_table(
         &self,
         ctx: &AuthContext,
@@ -86,6 +86,9 @@ impl DataStore {
         if owner {
             return Ok(table);
         }
+        table.add_only = self.read_scope(ctx, az, table.id).await? == Some(ReadScope::OwnRecords);
+        // 絞った行述語（追加だけの見え方）も、ほかの閲覧者と同じく定義から外す（下で row_policy を消す）。
+        table.narrowed = None;
         let masked = self.masked_fields(ctx, az, &table).await?;
         let s = &mut table.schema;
         s.fields.retain(|f| !masked.contains(&f.key));
@@ -98,6 +101,27 @@ impl DataStore {
         s.rag = None;
         Ok(table)
     }
+}
+
+/// 一覧の各テーブルで問う relation（持ち主・閲覧・追加だけ）を BatchCheck にまとめてメモへ入れる（テーブルごとに
+/// OpenFGA を往復しない）。
+pub(crate) async fn prefetch_table_relations(
+    ctx: &AuthContext,
+    az: &AuthzMemo<'_>,
+    tables: &[DataTable],
+) -> Result<(), DataError> {
+    let items: Vec<(Relation, authz::FgaObject)> = tables
+        .iter()
+        .flat_map(|t| {
+            let obj = ctx.ns().data_table(&t.id.to_string());
+            [
+                (Relation::Owner, obj.clone()),
+                (Relation::Viewer, obj.clone()),
+                (Relation::Submitter, obj),
+            ]
+        })
+        .collect();
+    az.check_all(ctx, &items).await.map(|_| ())
 }
 
 /// 表示順（`order`）を詰め直す（読めない列を外した後の欠番で、その位置に列があることを見せない・

@@ -170,7 +170,8 @@ enum Out {
 }
 
 impl DataStore {
-    /// テーブルのレコード変更を購読する（viewer・SSE `GET /data/tables/{id}/stream` の本体）。
+    /// テーブルのレコード変更を購読する（viewer・SSE `GET /data/tables/{id}/stream` の本体）。追加だけの人
+    /// （D-113）には自分が作ったレコードの変更だけを配る。
     ///
     /// `since` は `Last-Event-ID`（連続して受けた最後の位置）。保持期間外・未来の位置は
     /// `stream.reset` を 1 件送って閉じる（クライアントは取り直して `since` なしで繋ぎ直す）。
@@ -189,7 +190,7 @@ impl DataStore {
         let epochs = self.authz_epochs(&ctx.tenant_id).await?;
         let az = self.authz_memo();
         let table = self
-            .open_for_read(
+            .open_for_reader(
                 ctx,
                 &az,
                 table_id,
@@ -522,8 +523,25 @@ impl DataStore {
             Ok(d) => d,
             Err(e) => return Err((subs, e)),
         };
+        // 追加だけの購読者（D-113）は、自分が作ったレコードだけに絞ったテーブルの行述語で判定する（REST の
+        // 読取と同じ式・[`crate::table_access`]）。配信のテーブルは全購読者で共有なので、絞った写しを別に持つ。
+        let own_schema = subs.iter().any(|s| s.auth.own_records).then(|| {
+            let mut t = table.clone();
+            crate::table_access::narrow_to_own(&mut t);
+            t.schema
+        });
+        let d_own = match own_schema.as_ref().map(Decomposed::of).transpose() {
+            Ok(d) => d,
+            Err(e) => return Err((subs, e)),
+        };
+        let pick = |own: bool| -> (&Decomposed, &crate::model::TableSchema) {
+            match (own, &d_own, &own_schema) {
+                (true, Some(d), Some(sc)) => (d, sc),
+                _ => (&d, &table.schema),
+            }
+        };
         // ロール共通部のグループごとに 1 回だけ評価する（principal・共有集合は鍵に入らない）。
-        let mut groups: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut groups: HashMap<String, (bool, Vec<usize>)> = HashMap::new();
         let mut plans = HashMap::new();
         for (i, s) in subs.iter().enumerate() {
             let v = Viewer {
@@ -531,18 +549,30 @@ impl DataStore {
                 material: &s.auth.material,
                 shared: &s.auth.shared,
             };
-            match group_plan(&d, &table.schema, &v) {
+            let own = s.auth.own_records;
+            let (dd, sc) = pick(own);
+            match group_plan(dd, sc, &v) {
                 Ok(p) => {
-                    groups.entry(p.key.clone()).or_default().push(i);
-                    plans.entry(p.key.clone()).or_insert(p);
+                    // 絞った述語と絞らない述語は葉の並びが違うので、同じ鍵に混ぜない。
+                    let key = if own {
+                        format!("own|{}", p.key)
+                    } else {
+                        p.key.clone()
+                    };
+                    groups
+                        .entry(key.clone())
+                        .or_insert((own, Vec::new()))
+                        .1
+                        .push(i);
+                    plans.entry(key).or_insert(p);
                 }
                 Err(e) => return Err((subs, e)),
             }
         }
         let mut common_of: Vec<Option<Arc<CommonBits>>> = vec![None; subs.len()];
-        for (k, members) in &groups {
+        for (k, (own, members)) in &groups {
             let Some(plan) = plans.get(k) else { continue };
-            let res = if d.has_policy() {
+            let res = if pick(*own).0.has_policy() {
                 match eval_group(&mut conn, plan, &states).await {
                     Ok(r) => r,
                     Err(e) => return Err((subs, e)),
@@ -579,14 +609,15 @@ impl DataStore {
                 material: &s.auth.material,
                 shared: &s.auth.shared,
             };
+            let (dd, sc) = pick(s.auth.own_records);
             let vis = |idx: Option<usize>| -> bool {
                 let Some(i) = idx else { return false };
                 let empty = Vec::new();
                 let c = common.get(i).unwrap_or(&empty);
-                if !visible(&d, &v, &states[i], c) {
+                if !visible(dd, &v, &states[i], c) {
                     return false;
                 }
-                if verify(&table.schema, &v, &states[i]) {
+                if verify(sc, &v, &states[i]) {
                     return true;
                 }
                 self.stream.verify_drops.fetch_add(1, Ordering::Relaxed);

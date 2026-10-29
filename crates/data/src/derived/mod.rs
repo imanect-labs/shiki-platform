@@ -34,7 +34,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use authz::{AuthContext, Relation};
+use authz::AuthContext;
 use serde_json::{Map, Value};
 use uuid::Uuid;
 
@@ -384,6 +384,7 @@ impl DataStore {
     /// 参照先テーブルの行を**閲覧者本人の権限で**バッチ取得する（PIT-20・二段 authz）。
     ///
     /// テーブル viewer が無い・テーブルが無い・行述語で見えない行は結果に含まれない（＝null・件数外）。
+    /// 参照先を追加だけで共有されている閲覧者には、自分が作った行だけが含まれる（D-113）。
     /// 返す行は外部形（key）・参照先のマスク適用済み。`targets` に参照先の派生列があれば、その行の
     /// 派生値も閲覧者の権限で計算する（`depth` が上限を超えたら打ち切る）。
     pub(crate) fn visible_ref_rows<'a>(
@@ -404,22 +405,19 @@ impl DataStore {
             if ids.is_empty() {
                 return Ok(empty);
             }
-            // 第 1 層: 参照先テーブルの viewer（閲覧者本人・剥奪は即時反映・リクエスト内はメモ）。
-            let can_view = az
-                .check(
-                    ctx,
-                    Relation::Viewer,
-                    &ctx.ns().data_table(&ref_table_id.to_string()),
-                )
-                .await?;
-            if !can_view {
+            // 第 1 層: 参照先テーブルの viewer（閲覧者本人・剥奪は即時反映・リクエスト内はメモ）。参照先が
+            // 追加だけの共有なら、自分が作ったレコードだけを辿る（D-113・[`crate::table_access`]）。
+            let Some(scope) = self.read_scope(ctx, az, ref_table_id).await? else {
                 return Ok(empty);
-            }
-            let ref_table = match self.fetch_live(ctx, ref_table_id).await {
+            };
+            let mut ref_table = match self.fetch_live(ctx, ref_table_id).await {
                 Ok(t) => t,
                 Err(DataError::NotFound) => return Ok(empty),
                 Err(e) => return Err(e),
             };
+            if scope == crate::table_access::ReadScope::OwnRecords {
+                crate::table_access::narrow_to_own(&mut ref_table);
+            }
             let ref_masked = self.masked_fields(ctx, az, &ref_table).await?;
             // 第 2 層: 行述語（材料はリクエストごとに OpenFGA から・跨いで持たない・PIT-18）。
             // SQL 前段 → Rust 事後検査。

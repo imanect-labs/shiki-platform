@@ -1,11 +1,11 @@
-//! テーブルの共有（#864・テーブル ReBAC の viewer / editor をユーザー・ロールへ付け外しする）。
+//! テーブルの共有（#864・テーブル ReBAC の viewer / editor / submitter をユーザー・ロールへ付け外しする）。
 //!
 //! 共有 = OpenFGA の `data_table` タプルの付与・削除だけ（DB 行は変えない）。保存ビュー（artifact）の
 //! 共有と同じ枠で、
 //!
 //! - 共有・解除・共有先の一覧ができるのは**テーブルの owner**（`Relation::Owner`）だけ。テーブルが
 //!   見えない主体には 404（存在しない・削除済みと区別しない）、見えるが owner でない主体には 403。
-//! - 付与できる役割は viewer / editor だけ（owner の横展開はしない）。
+//! - 付与できる役割は viewer / editor / submitter（追加だけ・D-113）だけ（owner の横展開はしない）。
 //! - **ミニアプリ所有のテーブル（`app_id` あり）は付与・解除・一覧とも 403**: アクセスはアプリのインストールと
 //!   スコープで配る（インストールが付けたロールのタプルを /data から外させない・インストールした人が owner を
 //!   持っていても同じ）。拒否は監査に deny で残す。
@@ -29,7 +29,7 @@ use crate::record_share::check_share_target_id;
 use crate::store::DataStore;
 use crate::DataError;
 
-/// テーブル共有の役割（共有語彙は viewer / editor のみ・owner は付け外ししない）。
+/// テーブル共有の役割（共有語彙は viewer / editor / submitter・owner は付け外ししない）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TableShareRole {
@@ -37,6 +37,9 @@ pub enum TableShareRole {
     Viewer,
     /// 読み書きできる（行述語の書込条件は各行で効く）。
     Editor,
+    /// レコードを追加するだけ（D-113）。読めるのは自分が追加したレコードだけ（行述語との積）で、
+    /// 書き換え・削除・状態を進める・一括取込はできない（[`crate::table_access`]）。
+    Submitter,
 }
 
 impl TableShareRole {
@@ -44,6 +47,7 @@ impl TableShareRole {
         match self {
             TableShareRole::Viewer => Relation::Viewer,
             TableShareRole::Editor => Relation::Editor,
+            TableShareRole::Submitter => Relation::Submitter,
         }
     }
 
@@ -51,13 +55,14 @@ impl TableShareRole {
         match relation {
             Relation::Viewer => Some(TableShareRole::Viewer),
             Relation::Editor => Some(TableShareRole::Editor),
+            Relation::Submitter => Some(TableShareRole::Submitter),
             _ => None,
         }
     }
 }
 
 impl DataStore {
-    /// テーブルを共有する（owner・viewer / editor・冪等）。
+    /// テーブルを共有する（owner・viewer / editor / submitter・冪等）。
     pub async fn share_table(
         &self,
         ctx: &AuthContext,
@@ -148,7 +153,7 @@ impl DataStore {
         Ok(())
     }
 
-    /// テーブルの共有先の一覧（owner・ユーザー / ロールへの直接の viewer / editor タプルのみ）。
+    /// テーブルの共有先の一覧（owner・ユーザー / ロールへの直接の viewer / editor / submitter タプルのみ）。
     ///
     /// owner タプル・ワークフローやミニアプリの主体への委譲は共有ではないので出さない。
     pub async fn list_table_shares(

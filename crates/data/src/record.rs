@@ -97,7 +97,10 @@ impl DataStore {
         }
     }
 
-    /// レコードを作成する（editor・サーバ検証・rev=1・リビジョン同時記録）。
+    /// レコードを作成する（追加だけ以上＝submitter・editor が含意する・サーバ検証・rev=1・リビジョン同時記録）。
+    ///
+    /// 追加だけの人（D-113）も作れる。作ったレコードの作成者（owner）は呼び出した本人で、追加だけの人が
+    /// 後から読めるのはこの作成者が本人のレコードだけ（[`crate::table_access`]）。
     pub async fn create_record(
         &self,
         ctx: &AuthContext,
@@ -110,7 +113,7 @@ impl DataStore {
             &az,
             ctx,
             table_id,
-            Relation::Editor,
+            Relation::Submitter,
             AuditAction::DataRecordCreate,
             trace_id,
         )
@@ -216,7 +219,7 @@ impl DataStore {
         Ok(row.into_record(&table.schema))
     }
 
-    /// レコードを取得する（viewer・行述語つき）。
+    /// レコードを取得する（viewer・行述語つき。追加だけの人は自分が作ったレコードだけ・D-113）。
     ///
     /// 行述語で不可視の行は存在しない行と**同一応答**（404・存在オラクルなし・PIT-21）。
     pub async fn get_record(
@@ -230,7 +233,7 @@ impl DataStore {
         // 認可の問いはリクエストのメモに束ねる（Task 15.9）。
         let az = self.authz_memo();
         let table = self
-            .open_for_read(ctx, &az, table_id, AuditAction::DataRecordGet, trace_id)
+            .open_for_reader(ctx, &az, table_id, AuditAction::DataRecordGet, trace_id)
             .await?;
         let row = self
             .select_visible_by_id(ctx, &az, &table, id)
@@ -262,7 +265,7 @@ impl DataStore {
         }
         let az = self.authz_memo();
         let table = self
-            .open_for_read(ctx, &az, table_id, AuditAction::DataRecordGet, trace_id)
+            .open_for_reader(ctx, &az, table_id, AuditAction::DataRecordGet, trace_id)
             .await?;
         self.visible_records_in(ctx, &az, &table, ids).await
     }

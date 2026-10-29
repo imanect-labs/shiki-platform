@@ -357,6 +357,13 @@ pub struct DataTable {
     pub created_by: String,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    /// 呼び出した人には「追加だけ」で共有されている（レコードを追加でき、自分が追加したレコードだけ
+    /// 見られる・D-113）。閲覧者向けの一覧と取得（[`crate::DataStore::get_table_for_viewer`]）でだけ立つ。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub add_only: bool,
+    /// 追加だけの閲覧者向けに行述語を絞った版なら、絞る前の行述語（[`crate::table_access`]）。外へ出さない。
+    #[serde(skip)]
+    pub(crate) narrowed: Option<crate::table_access::Narrowed>,
     /// 内部整数キー（`tenant_int` / `table_int`）。**外へ出さない**（serde・OpenAPI から除外）。
     #[serde(skip)]
     pub(crate) keys: TableKeys,
@@ -495,6 +502,8 @@ mod tests {
             created_by: "u".into(),
             created_at: ts,
             updated_at: ts,
+            add_only: false,
+            narrowed: None,
             keys: TableKeys {
                 tenant_int: 424_242,
                 table_int: 7_777_777,

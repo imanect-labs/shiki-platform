@@ -279,7 +279,8 @@ async fn delete_rows(
 }
 
 impl DataStore {
-    /// 列の索引を昇格する（自動昇格の本体・`approve` は上限超過の明示の承認＝owner のみ）。
+    /// 列の索引を昇格する（自動昇格の本体・`approve` は上限超過の明示の承認＝owner のみ）。追加だけの人
+    /// （D-113）の並べ替え・絞り込みも閲覧者と同じく契機にする（上限超過の承認は owner だけ）。
     ///
     /// 2 万行未満のテーブルはこの呼び出しの中で有効化まで済ませる（`Active`）。それ以上は
     /// バックフィルを積んで `Preparing` を返す。既に索引があれば今の状態を返す（冪等）。
@@ -293,7 +294,7 @@ impl DataStore {
     ) -> Result<IndexPromotion, DataError> {
         let az = self.authz_memo();
         let table = self
-            .open_for_read(ctx, &az, table_id, AuditAction::DataIndexPromote, trace_id)
+            .open_for_reader(ctx, &az, table_id, AuditAction::DataIndexPromote, trace_id)
             .await?;
         // 存在しない列と読めない列は同じ 403（列の存在オラクルを作らない・data-platform §16.1）。
         if self.masked_fields(ctx, &az, &table).await?.contains(field) {
@@ -475,7 +476,7 @@ impl DataStore {
         })
     }
 
-    /// テーブルの索引の一覧（viewer・件数や内部キーは返さない）。
+    /// テーブルの索引の一覧（viewer か追加だけ・件数や内部キーは返さない）。
     pub async fn table_indexes(
         &self,
         ctx: &AuthContext,
@@ -484,7 +485,7 @@ impl DataStore {
     ) -> Result<TableIndexOverview, DataError> {
         let az = self.authz_memo();
         let table = self
-            .open_for_read(ctx, &az, table_id, AuditAction::DataIndexList, trace_id)
+            .open_for_reader(ctx, &az, table_id, AuditAction::DataIndexList, trace_id)
             .await?;
         let masked = self.masked_fields(ctx, &az, &table).await?;
         let mut fields = Vec::new();

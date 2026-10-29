@@ -82,6 +82,7 @@ mod sql;
 mod stats;
 mod store;
 mod stream;
+mod table_access;
 mod table_list;
 mod table_load;
 mod table_redact;

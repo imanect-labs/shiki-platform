@@ -674,9 +674,12 @@ pub(crate) async fn demote_dependents(
 }
 
 /// スキーマ・アプリ・共有フラグからカタログの 1 行を作る。
+///
+/// 追加だけの閲覧者向けに絞ったテーブル（[`crate::table_access`]）は、**絞る前の**行述語で載せる（閲覧者
+/// 1 人の見え方で、全員の材料化の前提を崩れたと判定しない）。
 pub(crate) fn catalog_entry(t: &DataTable) -> CatalogTable {
     CatalogTable {
-        schema: t.schema.clone(),
+        schema: crate::table_access::unnarrowed_schema(t),
         app_id: t.app_id,
         has_record_shares: t.has_record_shares,
         keys: t.keys,
@@ -688,6 +691,9 @@ pub(crate) fn catalog_entry(t: &DataTable) -> CatalogTable {
 /// `data_table` の viewer は直接タプル（owner / editor / viewer）だけから決まる（親からの継承が無い）ので、
 /// `src` の各タプルの主体が `dst` に owner / editor / viewer のいずれかで載っていれば包含が成り立つ
 /// （健全だが完全ではない＝証明できなければ `per_viewer`）。`src_tuples` が `None` なら `src` を読む。
+///
+/// 追加だけ（`submitter`・D-113）は向きで扱いが違う: `src` の追加だけの人は自分の行の材料化列で絞り込める
+/// ので `src` の読み手に数える。`dst` の追加だけの人は `dst` の全行を読めないので、`dst` の読み手に数えない。
 pub(crate) async fn viewers_contained(
     az: &AuthzMemo<'_>,
     ctx: &AuthContext,
@@ -696,6 +702,12 @@ pub(crate) async fn viewers_contained(
     dst: Uuid,
 ) -> Result<bool, DataError> {
     let rels = [Relation::Owner, Relation::Editor, Relation::Viewer];
+    let src_rels = [
+        Relation::Owner,
+        Relation::Editor,
+        Relation::Viewer,
+        Relation::Submitter,
+    ];
     let read = |id: Uuid| {
         let obj = ctx.ns().data_table(&id.to_string());
         async move { az.read_tuples(&obj, None).await }
@@ -710,7 +722,7 @@ pub(crate) async fn viewers_contained(
         (Some(id), _) => read(id)
             .await?
             .iter()
-            .filter(|t| rels.iter().any(|r| r.as_str() == t.relation))
+            .filter(|t| src_rels.iter().any(|r| r.as_str() == t.relation))
             .map(|t| t.user.clone())
             .collect(),
         (None, Some(owner)) => vec![owner.to_string()],
