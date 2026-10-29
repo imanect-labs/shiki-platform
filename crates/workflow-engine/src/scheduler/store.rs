@@ -144,6 +144,46 @@ fn unreadable_schedule(t: &ScheduleTriggerRow, cron5: &str, e: &cron::CronError)
     );
 }
 
+/// 読めないスケジュールの警告を、同じトリガで出し直すまでの間。tick のたびに出すとログを埋める。
+const UNREADABLE_WARN_EVERY: std::time::Duration = std::time::Duration::from_hours(1);
+
+/// テナント・トリガ → 読めないスケジュールの警告を最後に出した時刻。
+type WarnedAt = std::collections::HashMap<(String, String), std::time::Instant>;
+
+/// 読めないスケジュールの警告を最後に出した時刻（このプロセスの中だけ）。
+static UNREADABLE_WARNED: std::sync::LazyLock<std::sync::Mutex<WarnedAt>> =
+    std::sync::LazyLock::new(Default::default);
+
+/// 読めないスケジュールの警告をいま出すか（このトリガではじめてか、前に出してから [`UNREADABLE_WARN_EVERY`] たった）。
+/// 出すなら時刻を覚える。
+fn warn_unreadable_now(
+    warned: &mut WarnedAt,
+    t: &ScheduleTriggerRow,
+    now: std::time::Instant,
+) -> bool {
+    let key = (t.tenant_id.clone(), t.trigger_id.clone());
+    match warned.get(&key) {
+        Some(at) if now.saturating_duration_since(*at) < UNREADABLE_WARN_EVERY => false,
+        _ => {
+            warned.insert(key, now);
+            true
+        }
+    }
+}
+
+/// 読めないスケジュールを飛ばす（警告はトリガごとに 1 時間に 1 回）。
+fn skip_unreadable(t: &ScheduleTriggerRow, cron5: &str, e: &cron::CronError) {
+    let now = std::time::Instant::now();
+    // 覚えておく表が使えない（ほかのスレッドが panic した）ときは、黙らずに毎回出す。
+    let warn = match UNREADABLE_WARNED.lock() {
+        Ok(mut warned) => warn_unreadable_now(&mut warned, t, now),
+        Err(_) => true,
+    };
+    if warn {
+        unreadable_schedule(t, cron5, e);
+    }
+}
+
 /// スケジューラ/マッチャの永続化。
 #[derive(Clone)]
 pub struct SchedulerStore {
@@ -213,7 +253,7 @@ impl SchedulerStore {
                     }
                     Ok(_) => Vec::new(),
                     Err(e) => {
-                        unreadable_schedule(t, cron5, &e);
+                        skip_unreadable(t, cron5, &e);
                         continue;
                     }
                 }
@@ -224,7 +264,7 @@ impl SchedulerStore {
                     Ok(Some(last)) => vec![last],
                     Ok(None) => Vec::new(),
                     Err(e) => {
-                        unreadable_schedule(t, cron5, &e);
+                        skip_unreadable(t, cron5, &e);
                         continue;
                     }
                 }
@@ -233,7 +273,7 @@ impl SchedulerStore {
                 match cron::occurrences_between(cron5, tz, after, now, 10_000) {
                     Ok(v) => v,
                     Err(e) => {
-                        unreadable_schedule(t, cron5, &e);
+                        skip_unreadable(t, cron5, &e);
                         continue;
                     }
                 }
@@ -443,5 +483,51 @@ impl SchedulerStore {
                 filter: r.filter.map(|j| j.0).filter(|v| !v.is_null()),
             })
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod unreadable_tests {
+    use super::*;
+
+    fn trigger(id: &str) -> ScheduleTriggerRow {
+        ScheduleTriggerRow {
+            tenant_id: "t1".into(),
+            trigger_id: id.into(),
+            workflow_id: Uuid::nil(),
+            spec: sqlx::types::Json(serde_json::json!({ "cron": "0 9 * * L" })),
+            last_planned_at: None,
+            created_at: Utc::now(),
+        }
+    }
+
+    /// 読めないスケジュールの警告は、トリガごとにはじめてと、前に出してから 1 時間たったときだけ出す（tick ごとに出さない）。
+    #[test]
+    fn unreadable_schedules_are_warned_once_an_hour() {
+        let mut warned = WarnedAt::new();
+        let start = std::time::Instant::now();
+        let (a, b) = (trigger("a"), trigger("b"));
+        assert!(warn_unreadable_now(&mut warned, &a, start));
+        assert!(!warn_unreadable_now(
+            &mut warned,
+            &a,
+            start + std::time::Duration::from_secs(5)
+        ));
+        assert!(!warn_unreadable_now(
+            &mut warned,
+            &a,
+            start + std::time::Duration::from_secs(3_599)
+        ));
+        // ほかのトリガは別に数える。
+        assert!(warn_unreadable_now(
+            &mut warned,
+            &b,
+            start + std::time::Duration::from_secs(5)
+        ));
+        assert!(warn_unreadable_now(
+            &mut warned,
+            &a,
+            start + UNREADABLE_WARN_EVERY
+        ));
     }
 }
