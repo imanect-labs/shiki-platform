@@ -171,8 +171,10 @@ type Props = {
   onPeers?: (peers: Peer[]) => void;
   /// 自分の取込の最中（取り込んだ行の出現を「新しいレコード」と数えない・終わったら呼び出し側が読み直す）。
   importing?: boolean;
-  /// 行が 1 件も無いときの「レコードを追加」（編集できる人だけ）。
+  /// 行が 1 件も無いときの「レコードを追加」（編集できる人と、追加だけの人）。
   onAddRecord?: () => void;
+  /// 追加だけで共有されている（D-113）: 編集はできないが追加はでき、見えるのは自分が追加したレコードだけ。
+  addOnly?: boolean;
   /// 閲覧者が読めるスキーマの列（サーバの文言の参照名を表示名に直す・非表示の列を含む）。
   fields?: readonly FieldDef[];
   /// FSM の状態の列（セルは「進める先」のメニューで開き、遷移 API を呼ぶ・2-C-P2-4）。
@@ -259,6 +261,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
     onPeers,
     importing,
     onAddRecord,
+    addOnly,
     fields,
     fsm,
     onSchemaChanged,
@@ -1434,6 +1437,8 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
       )}
       ref={containerRef}
       data-testid="data-grid"
+      // 編集できるか（追加だけ・閲覧だけの人は 0・E2E が編集の操作を出していないことを確かめる）。
+      data-editable={canEdit ? "1" : "0"}
       data-more-right={moreRight || undefined}
       data-loaded={status.current.loaded}
       data-first-render-ms={status.current.firstRenderMs ?? undefined}
@@ -1505,8 +1510,9 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
             className="absolute left-1/2 top-20 z-10 flex -translate-x-1/2 flex-col items-center gap-2.5 rounded-xl border bg-card px-6 py-5 text-center text-sm text-muted-foreground shadow-xs"
             data-testid="data-grid-empty"
           >
-            <p>まだレコードがありません</p>
-            {onAddRecord && canEdit ? (
+            {/* 追加だけの人に見えるのは自分が追加したレコードだけ（他の人のレコードの有無は言わない）。 */}
+            <p>{addOnly ? "まだ自分が追加したレコードはありません" : "まだレコードがありません"}</p>
+            {onAddRecord && (canEdit || addOnly) ? (
               <button
                 type="button"
                 onClick={onAddRecord}

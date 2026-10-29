@@ -2,7 +2,8 @@
 
 /// 共有ダイアログの「メンバー・部署」部分（ドライブとアーティファクトで共用）。
 ///
-/// - 相手の種別（メンバー / 部署・ロール）を選んで検索し、**行ごとに権限（閲覧/編集）を選んで**共有する。
+/// - 相手の種別（メンバー / 部署・ロール）を選んで検索し、**行ごとに権限（閲覧/編集。テーブルは追加だけも）を
+///   選んで**共有する。選べる権限は呼び出し側が `roles` で渡す。
 /// - 共有中の相手は表示名で出し（ID は出さない）、行の中で権限を変えたり解除したりできる。
 ///   表示名・email は共有一覧 API がテナント内ディレクトリから解決して返す（#741）。返らない相手
 ///   （ディレクトリ未登録など）は「名前を取得できないメンバー」＋短縮 ID で区別できるようにする。
@@ -31,17 +32,26 @@ import { searchDirectory, searchRoles } from "@/lib/storage";
 import { cn } from "@/lib/utils";
 
 export type PrincipalKind = "user" | "role";
-export type PeopleRole = "viewer" | "editor";
+/// 共有の権限。submitter（追加だけ）はテーブルの共有だけが使う（D-113）。
+export type PeopleRole = "viewer" | "editor" | "submitter";
+/// ドライブ・アーティファクトの共有の権限（既定）。
+export type BasicPeopleRole = "viewer" | "editor";
+/// 選べる権限の 1 つ（`hint` は一覧の中だけに出す補足）。
+export type PeopleRoleOption<R extends PeopleRole = PeopleRole> = { value: R; label: string; hint?: string };
 export type PeopleTarget = { type: PrincipalKind; id: string };
 /// 共有一覧の 1 件。`display_name` / `email` はサーバが解決できた時だけ入る（email は user のみ）。
-export type PeopleEntry = {
+export type PeopleEntry<R extends PeopleRole = PeopleRole> = {
   target: PeopleTarget;
-  role: PeopleRole;
+  role: R;
   display_name?: string | null;
   email?: string | null;
 };
 
-const ROLE_LABEL: Record<PeopleRole, string> = { viewer: "閲覧", editor: "編集" };
+/// ドライブ・アーティファクトの共有の権限（既定）。
+const DEFAULT_ROLES: PeopleRoleOption<BasicPeopleRole>[] = [
+  { value: "viewer", label: "閲覧" },
+  { value: "editor", label: "編集" },
+];
 
 const KINDS: { value: PrincipalKind; label: string; placeholder: string; empty: string }[] = [
   {
@@ -68,27 +78,32 @@ type Candidate = { id: string; primary: string; secondary: string };
 const entryKey = (e: { target: PeopleTarget; role: PeopleRole }) =>
   `${e.target.type}:${e.target.id}:${e.role}`;
 
-export function SharePeoplePanel({
+export function SharePeoplePanel<R extends PeopleRole = BasicPeopleRole>({
   open,
   resourceId,
   load,
   grant,
   revoke,
+  roles = DEFAULT_ROLES as PeopleRoleOption<R>[],
 }: {
   /// 開いた時に状態を戻して共有中の相手を読み直す。
   open: boolean;
   resourceId: string;
-  load: () => Promise<PeopleEntry[]>;
-  grant: (target: PeopleTarget, role: PeopleRole) => Promise<void>;
-  revoke: (target: PeopleTarget, role: PeopleRole) => Promise<void>;
+  load: () => Promise<PeopleEntry<R>[]>;
+  grant: (target: PeopleTarget, role: R) => Promise<void>;
+  revoke: (target: PeopleTarget, role: R) => Promise<void>;
+  /// 選べる権限（先頭が既定）。省略時は閲覧・編集。
+  roles?: PeopleRoleOption<R>[];
 }) {
+  const defaultRole = (roles[0]?.value ?? "viewer") as R;
+  const roleLabel = (r: R) => roles.find((o) => o.value === r)?.label ?? r;
   const [kind, setKind] = React.useState<PrincipalKind>("user");
   const [query, setQuery] = React.useState("");
   const [results, setResults] = React.useState<Candidate[]>([]);
   const [searching, setSearching] = React.useState(false);
   // 行ごとに選んだ権限（未選択は閲覧）。
-  const [rowRole, setRowRole] = React.useState<Record<string, PeopleRole>>({});
-  const [shares, setShares] = React.useState<PeopleEntry[]>([]);
+  const [rowRole, setRowRole] = React.useState<Record<string, R>>({});
+  const [shares, setShares] = React.useState<PeopleEntry<R>[]>([]);
   const [loadingShares, setLoadingShares] = React.useState(false);
   // 共有を管理する権限が無い（一覧が 403）。
   const [forbidden, setForbidden] = React.useState(false);
@@ -175,7 +190,7 @@ export function SharePeoplePanel({
   };
 
   const share = async (candidate: Candidate) => {
-    const role = rowRole[candidate.id] ?? "viewer";
+    const role = rowRole[candidate.id] ?? defaultRole;
     const target = { type: kind, id: candidate.id };
     const k = entryKey({ target, role });
     setPendingKey(k);
@@ -183,8 +198,8 @@ export function SharePeoplePanel({
       await grant(target, role);
       await refresh();
       toast({
-        title: "共有しました",
-        description: `${candidate.primary} に${ROLE_LABEL[role]}権限を付与`,
+        title: `「${candidate.primary}」と共有しました`,
+        description: `権限: ${roleLabel(role)}`,
       });
     } catch (e) {
       toast({
@@ -197,7 +212,7 @@ export function SharePeoplePanel({
     }
   };
 
-  const remove = async (entry: PeopleEntry) => {
+  const remove = async (entry: PeopleEntry<R>) => {
     const k = entryKey(entry);
     setPendingKey(k);
     try {
@@ -218,7 +233,7 @@ export function SharePeoplePanel({
 
   /// 共有中の相手の権限を変える（新しい権限を付けてから古い権限を外す・途中で失敗しても
   /// アクセスが消えない順序）。
-  const changeRole = async (entry: PeopleEntry, role: PeopleRole) => {
+  const changeRole = async (entry: PeopleEntry<R>, role: R) => {
     if (role === entry.role) return;
     const k = entryKey(entry);
     setPendingKey(k);
@@ -307,7 +322,7 @@ export function SharePeoplePanel({
         ) : (
           <ul className={cn("divide-y divide-border", searching && "opacity-60")}>
             {results.map((c) => {
-              const role = rowRole[c.id] ?? "viewer";
+              const role = rowRole[c.id] ?? defaultRole;
               const k = `${kind}:${c.id}:${role}`;
               const already = sharedKeys.has(k);
               return (
@@ -319,8 +334,9 @@ export function SharePeoplePanel({
                   </div>
                   <RoleSelect
                     value={role}
+                    roles={roles}
                     onChange={(r) => setRowRole((prev) => ({ ...prev, [c.id]: r }))}
-                    label={`${c.primary} に付与する権限`}
+                    label={`${c.primary} と共有する権限`}
                   />
                   <Button
                     type="button"
@@ -390,6 +406,7 @@ export function SharePeoplePanel({
                   </div>
                   <RoleSelect
                     value={s.role}
+                    roles={roles}
                     onChange={(r) => void changeRole(s, r)}
                     disabled={pendingKey === k}
                     label={`${a11yName} の権限`}
@@ -426,29 +443,47 @@ function PrincipalAvatar({ kind }: { kind: PrincipalKind }) {
   );
 }
 
-/// 権限（閲覧/編集）の小さな選択。行の中に収まる幅で、タッチでは高さ 36px（行全体で 44px 超）。
-function RoleSelect({
+/// 権限の小さな選択。行の中に収まる幅で、タッチでは高さ 36px（行全体で 44px 超）。欄には名前だけを出し、
+/// 補足（`hint`）は開いた一覧の中にだけ出す。
+function RoleSelect<R extends PeopleRole>({
   value,
+  roles,
   onChange,
   disabled,
   label,
 }: {
-  value: PeopleRole;
-  onChange: (role: PeopleRole) => void;
+  value: R;
+  roles: PeopleRoleOption<R>[];
+  onChange: (role: R) => void;
   disabled?: boolean;
   label: string;
 }) {
+  // 4 文字の名前（追加だけ）があるときだけ欄を広げる（閲覧・編集だけの共有は今の幅のまま）。
+  const wide = roles.some((o) => o.label.length > 2);
   return (
-    <Select value={value} onValueChange={(v) => onChange(v as PeopleRole)} disabled={disabled}>
+    <Select value={value} onValueChange={(v) => onChange(v as R)} disabled={disabled}>
       <SelectTrigger
         aria-label={label}
-        className="h-8 w-[4.75rem] shrink-0 gap-1 px-2 text-xs pointer-coarse:h-9 pointer-coarse:text-[13px]"
+        className={cn(
+          "h-8 shrink-0 gap-1 px-2 text-xs pointer-coarse:h-9 pointer-coarse:text-[13px]",
+          wide ? "w-[6.25rem]" : "w-[4.75rem]",
+        )}
       >
-        <SelectValue />
+        <SelectValue>{roles.find((o) => o.value === value)?.label ?? value}</SelectValue>
       </SelectTrigger>
-      <SelectContent align="end" className="min-w-[7rem]">
-        <SelectItem value="viewer">閲覧</SelectItem>
-        <SelectItem value="editor">編集</SelectItem>
+      <SelectContent align="end" className={cn(wide ? "w-80 max-w-[calc(100vw-2rem)]" : "min-w-[7rem]")}>
+        {roles.map((o) => (
+          <SelectItem key={o.value} value={o.value} data-testid={`share-role-${o.value}`}>
+            {o.hint ? (
+              <span className="flex flex-col gap-0.5 py-0.5">
+                <span>{o.label}</span>
+                <span className="text-xs text-muted-foreground">{o.hint}</span>
+              </span>
+            ) : (
+              o.label
+            )}
+          </SelectItem>
+        ))}
       </SelectContent>
     </Select>
   );

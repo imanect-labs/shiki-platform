@@ -262,6 +262,10 @@ export function TableSearchList({
               )}
             >
               <span className="min-w-0 flex-1 truncate">{t.name}</span>
+              {/* 追加だけの共有（D-113）: このテーブルで読めるのは自分が追加したレコードだけ。 */}
+              {t.add_only ? (
+                <span className="shrink-0 rounded-full border px-1.5 text-[11px] text-muted-foreground">追加だけ</span>
+              ) : null}
               {selected ? <Check className="size-4 shrink-0 text-primary" aria-hidden /> : null}
             </div>
           );

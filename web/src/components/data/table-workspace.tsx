@@ -177,6 +177,8 @@ export function TableWorkspace({
   const [shareOpen, setShareOpen] = React.useState(false);
   // テーブルの共有は owner だけ。ミニアプリ所有のテーブルはアプリのインストールで配るので共有しない（サーバも 403）。
   const canShare = viewer.can_manage && !table.app_id;
+  // 追加だけの共有（D-113）: 追加の操作と自分が追加したレコードだけを出す（編集・取込・保存ビューは出さない）。
+  const addOnly = viewer.add_only;
   const importJob = useImportJob(table.id);
   const [peers, setPeers] = React.useState<Peer[]>([]);
   const [names, setNames] = React.useState<Map<string, string>>(new Map());
@@ -491,22 +493,26 @@ export function TableWorkspace({
         {loaded.viewId ? <p className="truncate text-xs text-muted-foreground">{loaded.name}</p> : null}
       </div>
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
-        <ViewSwitcher
-          table={table}
-          views={views}
-          current={loaded}
-          mine={mine}
-          dirty={dirty}
-          body={body}
-          onOpen={(id) => router.push(id ? `/data/${table.id}?view=${id}` : `/data/${table.id}`)}
-          onSaved={(id, version, name) => {
-            onViewsChanged();
-            setLoaded((l) => ({ ...l, viewId: id, version, name, owner: me.data?.id ?? l.owner, spec: body.display, query: body.query }));
-            if (id !== loaded.viewId) router.replace(`/data/${table.id}?view=${id}`);
-          }}
-        />
-        {viewLoading ? <Loader2 className="size-4 animate-spin text-muted-foreground" aria-label="ビューを読み込み中" /> : null}
-        <div className="mx-0.5 hidden h-5 w-px bg-border sm:block" aria-hidden />
+        {addOnly ? null : (
+          <>
+            <ViewSwitcher
+              table={table}
+              views={views}
+              current={loaded}
+              mine={mine}
+              dirty={dirty}
+              body={body}
+              onOpen={(id) => router.push(id ? `/data/${table.id}?view=${id}` : `/data/${table.id}`)}
+              onSaved={(id, version, name) => {
+                onViewsChanged();
+                setLoaded((l) => ({ ...l, viewId: id, version, name, owner: me.data?.id ?? l.owner, spec: body.display, query: body.query }));
+                if (id !== loaded.viewId) router.replace(`/data/${table.id}?view=${id}`);
+              }}
+            />
+            {viewLoading ? <Loader2 className="size-4 animate-spin text-muted-foreground" aria-label="ビューを読み込み中" /> : null}
+            <div className="mx-0.5 hidden h-5 w-px bg-border sm:block" aria-hidden />
+          </>
+        )}
         <div className="flex items-center gap-0.5 overflow-x-auto scrollbar-none max-sm:-mx-1 max-sm:w-full max-sm:px-1">
           <FilterControl
             columns={columns}
@@ -624,7 +630,7 @@ export function TableWorkspace({
               </span>
             </Button>
           ) : null}
-          {viewer.can_edit ? (
+          {viewer.can_add ? (
             <Button size="sm" className="h-8" onClick={() => setRecordOpen(true)} data-testid="add-record">
               <Plus className="size-4" aria-hidden />
               <span className="max-sm:sr-only">レコード</span>
@@ -632,6 +638,12 @@ export function TableWorkspace({
           ) : null}
         </div>
       </div>
+
+      {addOnly ? (
+        <p className="text-xs text-muted-foreground" data-testid="data-add-only-note">
+          このテーブルは「追加だけ」で共有されています。表示しているのは、自分が追加したレコードだけです。
+        </p>
+      ) : null}
 
       {problem && !(problem.kind === "preparing" && spec.kind === "grid") ? (
         <div
@@ -703,6 +715,7 @@ export function TableWorkspace({
               onPeers={setPeers}
               importing={importJob.running}
               onAddRecord={() => setRecordOpen(true)}
+              addOnly={addOnly}
               fields={readableFields}
               fsm={fsm}
               onSchemaChanged={onSchemaStale}

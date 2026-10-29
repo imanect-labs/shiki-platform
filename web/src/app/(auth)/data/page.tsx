@@ -201,7 +201,14 @@ export default function DataTablesPage() {
                 <span className="min-w-0 flex-1">
                   <span className="flex items-center gap-2">
                     <span className="truncate text-sm font-medium">{t.name}</span>
-                    {t.created_by !== me.data?.id ? <Badge variant="muted">共有</Badge> : null}
+                    {/* 追加だけの共有（D-113）は、開くと自分が追加したレコードだけが見える。 */}
+                    {t.add_only ? (
+                      <Badge variant="muted" data-testid="data-table-add-only">
+                        追加だけ
+                      </Badge>
+                    ) : t.created_by !== me.data?.id ? (
+                      <Badge variant="muted">共有</Badge>
+                    ) : null}
                     {t.app_id ? <Badge variant="outline">アプリ</Badge> : null}
                   </span>
                   <span className="mt-0.5 block truncate text-xs text-muted-foreground">
