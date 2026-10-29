@@ -24,7 +24,29 @@ export type Setup = {
 
 /// 申請の表（下書き → 申請中 → 受付 は誰でも、受付 → 承認・却下 は承認者の列の人）と、申請中になった行を受け付けて
 /// 承認を待つワークフローを作り、1 件申請する。
+///
+/// 途中で落ちたら、それまでに作った分（テーブル・状態の進め方・オンにしたワークフロー）を消してから投げ直す（呼び出し
+/// 側は setup が返ってから片付けを積むので、途中の失敗は拾えない・BUG-126）。
 export async function setup(page: Page, runTimeoutSec = 1209600): Promise<Setup> {
+  const made: Partial<Pick<Setup, "tableId" | "fsmId" | "workflowId">> = {};
+  try {
+    return await build(page, runTimeoutSec, made);
+  } catch (e) {
+    await cleanupAll(
+      () => (made.workflowId ? removeWorkflowApi(page, made.workflowId) : Promise.resolve()),
+      () => (made.tableId ? deleteTableApi(page, made.tableId) : Promise.resolve()),
+      () => (made.fsmId ? deleteArtifactApi(page, made.fsmId) : Promise.resolve()),
+    ).catch(() => undefined);
+    throw e;
+  }
+}
+
+/// [`setup`] の本体。作るたびに `made` へ控える。
+async function build(
+  page: Page,
+  runTimeoutSec: number,
+  made: Partial<Pick<Setup, "tableId" | "fsmId" | "workflowId">>,
+): Promise<Setup> {
   const headers = await csrfHeaders(page);
   const me = (await (await page.request.get("/api/me")).json()) as { id: string };
   const states = ["下書き", "申請中", "受付", "承認", "却下"];
@@ -46,6 +68,7 @@ export async function setup(page: Page, runTimeoutSec = 1209600): Promise<Setup>
   });
   expect(created.status(), await created.text()).toBe(201);
   const table = (await created.json()) as { id: string; schema: Record<string, unknown>; schema_version: number };
+  made.tableId = table.id;
   const approverOnly = { field_cmp: { field: "approver", op: "eq", value: "user_id" } };
   const fsm = await page.request.post("/api/data/fsms", {
     headers,
@@ -65,6 +88,7 @@ export async function setup(page: Page, runTimeoutSec = 1209600): Promise<Setup>
   });
   expect(fsm.status(), await fsm.text()).toBe(201);
   const f = (await fsm.json()) as { id: string; version?: number };
+  made.fsmId = f.id;
   const put = await page.request.put(`/api/data/tables/${table.id}/schema`, {
     headers,
     data: {
@@ -125,6 +149,7 @@ export async function setup(page: Page, runTimeoutSec = 1209600): Promise<Setup>
   });
   expect(flow.ok(), await flow.text()).toBeTruthy();
   const workflowId = ((await flow.json()) as { id: string }).id;
+  made.workflowId = workflowId;
   const enabled = await page.request.post(`/api/workflows/${workflowId}/enable`, {
     headers,
     data: {
