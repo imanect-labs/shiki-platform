@@ -20,19 +20,29 @@ pub(crate) fn b2_secret_name(app_id: Uuid) -> String {
     format!("miniapp-b2-{app_id}")
 }
 
-/// cron 式（5 フィールド）から次回実行時刻を求める（`cron` crate は 6/7 フィールドの
-/// ため秒 `0` を先頭に補う）。不正式は Invalid。
+/// cron 式（5 つの欄: 分 時 日 月 曜日）から、`after` より後の次の実行の時刻を求める（UTC で読む）。
+///
+/// 曜日は標準の読み方（0 と 7 が日曜、1 が月曜〜6 が土曜。名前 SUN〜SAT も書ける）で、ワークフローの
+/// スケジュールと同じ写像（`shiki-cron5`）を通る。cron クレートへそのまま渡すと 1 を日曜と読み、`1-5`（平日）が
+/// 日曜〜木曜に動いていた（BUG-129・BUG-95 と同じずれ）。マニフェストの式は時間帯を持たないので UTC で読む。
+/// 読めない式は Invalid（文言は利用者向け。下位の原文は埋め込まない）。
 pub fn next_cron_run_after(
     expr: &str,
     after: chrono::DateTime<chrono::Utc>,
 ) -> Result<chrono::DateTime<chrono::Utc>, AppPlatformError> {
-    use std::str::FromStr;
-    let normalized = format!("0 {expr}");
-    let schedule = cron::Schedule::from_str(&normalized)
-        .map_err(|e| AppPlatformError::Invalid(format!("cron 式が不正です（{expr}）: {e}")))?;
-    schedule.after(&after).next().ok_or_else(|| {
-        AppPlatformError::Invalid(format!("cron 式に次回実行がありません（{expr}）"))
-    })
+    match cron5::next_after(expr, "UTC", after) {
+        Ok(Some(next)) => Ok(next),
+        Ok(None) => Err(AppPlatformError::Invalid(format!(
+            "cron の式（{expr}）には次の実行がありません。"
+        ))),
+        Err(e) => {
+            tracing::debug!(error = %e, expr, "cron の式を読めない");
+            Err(AppPlatformError::Invalid(format!(
+                "cron の式（{expr}）を読めません。{}",
+                e.user_message()
+            )))
+        }
+    }
 }
 
 impl InstallService {
@@ -436,6 +446,41 @@ mod tests {
         assert_eq!(next2.to_rfc3339(), "2026-07-10T09:00:00+00:00");
     }
 
+    /// 曜日は標準の読み方（1 が月曜・0 と 7 が日曜）。cron クレートの番号（1 が日曜）で読まない（BUG-129）。
+    #[test]
+    fn next_cron_run_after_reads_weekdays_like_workflows() {
+        use chrono::Datelike;
+        // 2026-10-25 は日曜。そこから 1 週間に実行する曜日（0＝日曜〜6＝土曜）。
+        let weekdays = |expr: &str| {
+            let mut at = chrono::DateTime::parse_from_rfc3339("2026-10-24T23:59:00Z")
+                .unwrap()
+                .with_timezone(&chrono::Utc);
+            let end = at + chrono::Duration::days(7);
+            let mut days = Vec::new();
+            loop {
+                at = next_cron_run_after(expr, at).expect("valid cron");
+                if at > end {
+                    break days;
+                }
+                days.push(at.weekday().num_days_from_sunday());
+            }
+        };
+        assert_eq!(weekdays("0 9 * * 1-5"), [1, 2, 3, 4, 5], "平日");
+        assert_eq!(weekdays("0 9 * * MON-FRI"), [1, 2, 3, 4, 5]);
+        assert_eq!(weekdays("0 9 * * 1"), [1], "月曜");
+        assert_eq!(weekdays("0 9 * * 0"), [0], "日曜（0）も書ける");
+        assert_eq!(weekdays("0 9 * * 7"), [0], "7 も日曜");
+        assert_eq!(weekdays("0 9 * * SAT,SUN"), [0, 6]);
+        // ワークフローのスケジュールと同じ時刻を返す（UTC で読む）。
+        let after = chrono::DateTime::parse_from_rfc3339("2026-10-25T03:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert_eq!(
+            Some(next_cron_run_after("30 8 * * 1-5", after).unwrap()),
+            cron5::next_after("30 8 * * 1-5", "UTC", after).unwrap()
+        );
+    }
+
     #[test]
     fn next_cron_run_after_rejects_malformed_expr() {
         let after = chrono::Utc::now();
@@ -448,5 +493,13 @@ mod tests {
             next_cron_run_after("0 9", after),
             Err(AppPlatformError::Invalid(_))
         ));
+        // 標準の読み方で写せない曜日（範囲の逆転）も不正。文言に下位の原文を入れない。
+        match next_cron_run_after("0 9 * * 5-1", after) {
+            Err(AppPlatformError::Invalid(m)) => {
+                assert!(m.contains("SUN〜SAT"), "{m}");
+                assert!(!m.contains("BadDayOfWeek"), "{m}");
+            }
+            other => panic!("{other:?}"),
+        }
     }
 }

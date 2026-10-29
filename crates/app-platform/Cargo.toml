@@ -33,7 +33,8 @@ reqwest.workspace = true
 tokio.workspace = true
 async-trait.workspace = true
 url.workspace = true
-cron.workspace = true
+# 関数のスケジュール（5 つの欄・標準の読み方・UTC）。ワークフローのスケジュールと同じ読み方を共有する（BUG-129）。
+shiki-cron5.workspace = true
 sha2.workspace = true
 ed25519-dalek.workspace = true
 hex.workspace = true

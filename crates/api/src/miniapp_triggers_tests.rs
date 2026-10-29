@@ -222,6 +222,110 @@ async fn cron_tick_records_run_and_advances_next() {
     assert!(next > chrono::Utc::now(), "next_run_at は将来へ前進する");
 }
 
+/// 曜日を揃える前の読み方（1 を日曜）で計算した、まだ来ていない実行の時刻は、起動時に今の読み方（1 が月曜）で
+/// 計算し直す。合っている時刻・期限の来た時刻は触らない（BUG-129）。
+#[tokio::test]
+async fn realign_moves_stale_weekday_schedules_to_the_standard_reading() {
+    let Some(pool) = pool().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let now = chrono::Utc::now();
+    // 「毎週月曜 9:00（UTC）」を、cron クレートの読み方で計算した時刻（日曜 9:00）のまま保存した行。
+    let sunday = app_platform::next_cron_run_after("0 9 * * 0", now).unwrap();
+    let monday = app_platform::next_cron_run_after("0 9 * * 1", now).unwrap();
+    let insert = |expr: &'static str, at: chrono::DateTime<chrono::Utc>| {
+        let (pool, tenant) = (pool.clone(), tenant.clone());
+        async move {
+            let (id,): (Uuid,) = sqlx::query_as(
+                "INSERT INTO app_function_schedule (tenant_id, org, app_id, function, expr, next_run_at) \
+                 VALUES ($1, 'acme', $2, 'weekly', $3, $4) RETURNING id",
+            )
+            .bind(&tenant)
+            .bind(Uuid::new_v4())
+            .bind(expr)
+            .bind(at)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            id
+        }
+    };
+    let stale = insert("0 9 * * 1", sunday).await;
+    let right = insert("0 9 * * 1", monday).await;
+    let due = insert("0 9 * * 1", now - chrono::Duration::minutes(1)).await;
+
+    assert!(realign_schedules(&pool, now).await.unwrap() >= 1);
+    let at = |id: Uuid| {
+        let pool = pool.clone();
+        async move {
+            let (t,): (chrono::DateTime<chrono::Utc>,) =
+                sqlx::query_as("SELECT next_run_at FROM app_function_schedule WHERE id = $1")
+                    .bind(id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap();
+            t
+        }
+    };
+    assert_eq!(
+        at(stale).await,
+        monday,
+        "日曜に送っていた月曜の予定は月曜になる"
+    );
+    assert_eq!(at(right).await, monday, "合っている時刻は変わらない");
+    assert!(at(due).await <= now, "期限の来た行は次の tick に任せる");
+    // 何度流しても同じ（起動のたびに流してよい）。
+    realign_schedules(&pool, now).await.unwrap();
+    assert_eq!(at(stale).await, monday);
+
+    sqlx::query("DELETE FROM app_function_schedule WHERE tenant_id = $1")
+        .bind(&tenant)
+        .execute(&pool)
+        .await
+        .unwrap();
+}
+
+/// 読めない式（標準の読み方で写せない曜日）は実行せず、毎時に実行しないよう 1 日後へ送る（BUG-129）。
+#[tokio::test]
+async fn cron_tick_skips_unreadable_expressions() {
+    let Some(pool) = pool().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let (sched_id,): (Uuid,) = sqlx::query_as(
+        "INSERT INTO app_function_schedule (tenant_id, org, app_id, function, expr, next_run_at) \
+         VALUES ($1, 'acme', $2, 'nightly', '0 9 * * 5-1', now() - interval '1 minute') RETURNING id",
+    )
+    .bind(&tenant)
+    .bind(Uuid::new_v4())
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+
+    cron_tick(&deps(pool.clone())).await.unwrap();
+
+    let (runs,): (i64,) =
+        sqlx::query_as("SELECT count(*) FROM app_function_run WHERE schedule_id = $1")
+            .bind(sched_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert_eq!(runs, 0, "読めない式では実行しない");
+    let (next,): (chrono::DateTime<chrono::Utc>,) =
+        sqlx::query_as("SELECT next_run_at FROM app_function_schedule WHERE id = $1")
+            .bind(sched_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(
+        next > chrono::Utc::now() + chrono::Duration::hours(23),
+        "確かめ直すのは 1 日後: {next}"
+    );
+
+    sqlx::query("DELETE FROM app_function_schedule WHERE tenant_id = $1")
+        .bind(&tenant)
+        .execute(&pool)
+        .await
+        .unwrap();
+}
+
 /// event_targets_app: table_id は所有アプリのみ・app_id は一致必須・無しは汎用配送（越境防止）。
 #[tokio::test]
 async fn event_targets_app_scopes_to_owned_resources() {

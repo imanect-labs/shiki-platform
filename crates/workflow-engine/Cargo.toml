@@ -47,9 +47,10 @@ sqlx.workspace = true
 shiki-durable.workspace = true
 async-trait.workspace = true
 tracing.workspace = true
-# cron 評価（5 フィールド）＋IANA tz 解決（スケジューラ・engine.md §5）。
-cron = "0.15"
+# cron 評価（5 フィールド・標準の読み方）＋IANA tz 解決（スケジューラ・engine.md §5）。ミニアプリと共有する。
+shiki-cron5.workspace = true
 chrono = { workspace = true }
+# 実行情報の時刻の時間帯（vocab/run_info.rs）。
 chrono-tz = "0.10"
 tokio = { workspace = true, features = ["rt", "time", "macros"] }
 

@@ -5317,7 +5317,6 @@ dependencies = [
  "async-trait",
  "axum",
  "chrono",
- "cron",
  "ed25519-dalek",
  "hex",
  "reqwest 0.12.28",
@@ -5329,6 +5328,7 @@ dependencies = [
  "shiki-app-gateway",
  "shiki-artifact",
  "shiki-authz",
+ "shiki-cron5",
  "shiki-data",
  "shiki-gui",
  "shiki-llm-gateway",
@@ -5433,6 +5433,16 @@ dependencies = [
  "tracing",
  "uuid",
  "yrs",
+]
+
+[[package]]
+name = "shiki-cron5"
+version = "0.0.0"
+dependencies = [
+ "chrono",
+ "chrono-tz",
+ "cron",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -5807,7 +5817,6 @@ dependencies = [
  "base64",
  "chrono",
  "chrono-tz",
- "cron",
  "proptest",
  "redis",
  "regex",
@@ -5818,6 +5827,7 @@ dependencies = [
  "sha2 0.10.9",
  "shiki-artifact",
  "shiki-authz",
+ "shiki-cron5",
  "shiki-data",
  "shiki-durable",
  "shiki-jobq",

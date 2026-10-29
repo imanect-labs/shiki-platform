@@ -1,0 +1,23 @@
+[package]
+name = "shiki-cron5"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+version = "0.0.0"
+
+# 5 つの欄の cron（分 時 日 月 曜日）を標準の読み方で解く（曜日は 0 と 7 が日曜・BUG-95・BUG-129）。
+# ワークフローのスケジュール（workflow-engine）とミニアプリの関数のスケジュール（app-platform）が同じ写像を使う
+# （写像を 2 つ持たない）。依存は cron・chrono・chrono-tz・thiserror だけにする（どちらからも軽く使える）。
+[lib]
+name = "cron5"
+
+[dependencies]
+# cron の評価（7 つの欄・曜日は 1 が日曜）。標準の読み方からここへ写す。
+cron.workspace = true
+chrono.workspace = true
+chrono-tz = "0.10"
+thiserror.workspace = true
+
+[lints]
+workspace = true

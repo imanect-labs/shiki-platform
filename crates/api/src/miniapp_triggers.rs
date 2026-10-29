@@ -54,6 +54,15 @@ pub(crate) fn spawn_miniapp_triggers(deps: TriggerDeps) {
         }
     });
     tokio::spawn(async move {
+        // 曜日の読み方を揃える前に計算した次の実行の時刻を、今の読み方で計算し直す（BUG-129）。
+        match realign_schedules(&deps.db, chrono::Utc::now()).await {
+            Ok(0) => {}
+            Ok(n) => tracing::info!(
+                realigned = n,
+                "miniapp cron の次の実行の時刻を計算し直しました"
+            ),
+            Err(e) => tracing::warn!(error = %e, "miniapp cron の次の実行の時刻の計算し直しに失敗"),
+        }
         loop {
             if let Err(e) = cron_tick(&deps).await {
                 tracing::warn!(error = %e, "miniapp cron トリガの処理に失敗");
@@ -194,6 +203,21 @@ async fn cron_tick(deps: &TriggerDeps) -> anyhow::Result<()> {
     .await?;
     let mut to_run = Vec::new();
     for s in due {
+        // 読めない式（標準の読み方で写せない曜日など・BUG-129）は実行しない。以前は 1 時間後へ送り、毎時に実行して
+        // いた。式は再インストールまで変わらないので、確かめ直すのは 1 日後にする。
+        let next = match app_platform::next_cron_run_after(&s.expr, chrono::Utc::now()) {
+            Ok(next) => next,
+            Err(e) => {
+                tracing::warn!(error = %e, schedule = %s.id, app_id = %s.app_id,
+                    "cron の式を読めないため、関数を実行しません");
+                sqlx::query("UPDATE app_function_schedule SET next_run_at = $2 WHERE id = $1")
+                    .bind(s.id)
+                    .bind(chrono::Utc::now() + chrono::Duration::days(1))
+                    .execute(&mut *tx)
+                    .await?;
+                continue;
+            }
+        };
         // (schedule_id, scheduled_at) 一意＝リーダー交代/再起動でも同一時刻の二重起動なし。
         let inserted = sqlx::query(
             "INSERT INTO app_function_run (tenant_id, schedule_id, scheduled_at) \
@@ -205,8 +229,6 @@ async fn cron_tick(deps: &TriggerDeps) -> anyhow::Result<()> {
         .execute(&mut *tx)
         .await?
         .rows_affected();
-        let next = app_platform::next_cron_run_after(&s.expr, chrono::Utc::now())
-            .unwrap_or(s.next_run_at + chrono::Duration::hours(1));
         sqlx::query("UPDATE app_function_schedule SET next_run_at = $2 WHERE id = $1")
             .bind(s.id)
             .bind(next)
@@ -231,6 +253,42 @@ async fn cron_tick(deps: &TriggerDeps) -> anyhow::Result<()> {
         }
     }
     Ok(())
+}
+
+/// まだ来ていない実行の時刻（`next_run_at > now`）を、今の読み方で計算し直す（起動時・BUG-129）。
+///
+/// 曜日を標準の読み方（1 が月曜・0 と 7 が日曜）で読むようにする前に保存した時刻は、cron クレートの読み方
+/// （1 が日曜）で計算してあり、そのままだと次の 1 回だけ 1 日ずれた曜日に動く。期限の来た行は次の tick が実行し、
+/// その後の時刻を今の読み方で求めるので触らない。読めない式は tick に任せる（実行せずに送る）。同じ読み方なら
+/// 値は変わらないので、起動のたびに流してよい。tick と取り違えないよう、読んだ時刻のままの行だけを書き換える。
+/// 戻り値 = 書き換えた行の数。
+async fn realign_schedules(db: &PgPool, now: chrono::DateTime<chrono::Utc>) -> anyhow::Result<u64> {
+    let rows: Vec<(Uuid, String, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+        "SELECT id, expr, next_run_at FROM app_function_schedule WHERE next_run_at > $1",
+    )
+    .bind(now)
+    .fetch_all(db)
+    .await?;
+    let mut changed = 0;
+    for (id, expr, at) in rows {
+        let Ok(next) = app_platform::next_cron_run_after(&expr, now) else {
+            continue;
+        };
+        if next == at {
+            continue;
+        }
+        changed += sqlx::query(
+            "UPDATE app_function_schedule SET next_run_at = $3 \
+             WHERE id = $1 AND next_run_at = $2 AND next_run_at > now()",
+        )
+        .bind(id)
+        .bind(at)
+        .bind(next)
+        .execute(db)
+        .await?
+        .rows_affected();
+    }
+    Ok(changed)
 }
 
 /// service identity（B2 client_credentials）で関数を実行する。

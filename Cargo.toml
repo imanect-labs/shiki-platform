@@ -198,6 +198,7 @@ shiki-data = { path = "crates/data" }
 shiki-app-platform = { path = "crates/app-platform" }
 shiki-app-gateway = { path = "crates/app-gateway" }
 shiki-durable = { path = "crates/durable" }
+shiki-cron5 = { path = "crates/cron5" }
 shiki-artifact = { path = "crates/artifact" }
 shiki-secrets = { path = "crates/secrets" }
 shiki-script-runtime = { path = "crates/script-runtime" }
