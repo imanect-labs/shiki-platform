@@ -1086,6 +1086,10 @@ flowchart TB
 - **構造化データ**（`crates/data`）: 概念表記として `record(tenant_int,table_int,id,record_int,data JSONB,rev)` ＋ `table_schema`。物理定義は [data-platform.md](./data-platform.md) §3.3 に従う。
   フィールド型に user/dept/file/record 参照。
   **行認可 = テーブルReBAC（OpenFGA・有界）＋クエリ時述語（ABAC・WHERE強制付与・集計にも適用・バイパス不可）＋フィールドマスク＋個別共有のみスパースtuple**。
+  テーブルReBAC の共有語彙は viewer / editor / **submitter（レコードを追加するだけ・D-113）**。submitter は editor が含意し、
+  viewer とは互いに含意しない。追加だけの人が読めるのは**自分が作ったレコード ∧ 行述語（∨ 個別共有）**だけで、
+  書き換え・削除・状態を進めるには editor が要る（申請者が申請の後に承認者の列を書き換える経路を最初から閉じる・
+  kintone のレコード追加／編集・Salesforce の作成／編集の分離と同じ形・[data-platform.md](./data-platform.md) §6.7）。
   宣言的クエリ/保存ビュー（生SQL非公開）、リビジョン履歴、`rev`で楽観ロック。
   **正本は [data-platform.md](./data-platform.md)**（Teable/Lists 級への再設計・Phase 15）。要点:
   索引はフィールドごとの式インデックスではなく**型付き pivot 索引テーブル**（Salesforce `MT_Indexes` /
