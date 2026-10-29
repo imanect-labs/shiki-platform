@@ -40,11 +40,12 @@ async function setup(page: Page, bobId: string): Promise<{ skill: string; skillI
   });
   const skillId = ((await s.json()) as { id: string }).id;
   cleanup.add(() => deleteArtifactApi(page, skillId));
+  // name は英小文字の名前（保存時に検証する）。画面に出る名前は display_name。
   const flow = uniqueName("e2e-共有のワークフロー");
   const w = await api(page, "POST", "/workflows", {
     ir: {
       ir_version: 1,
-      name: flow,
+      name: uniqueName("e2e-share-flow"),
       display_name: flow,
       triggers: [{ kind: "interactive" }],
       nodes: [
