@@ -65,6 +65,7 @@ e2e = [
     "ai-workflow.spec.ts",
     "chat-mobile.spec.ts",
     "chat-modes.spec.ts",
+    "chat-scroll-follow.spec.ts",
     "chat.spec.ts",
     "composer-attach-same-name.spec.ts",
     "composer-create.spec.ts",

@@ -38,6 +38,7 @@ import {
   rejectedLabel,
   withTense,
 } from "@/lib/tool-display";
+import { useRememberedOpen } from "./disclosure-memory";
 
 export type ToolActivityItem = {
   /// 描画上の一意キー。**呼び出し ID はループで再利用され得る**（stub の `loop:` は毎ステップ
@@ -204,17 +205,20 @@ export function ToolActivity({
   citations = [],
   /// ステップの合間（次のイベント待ち）のフェーズ行の文言。待った時間に応じて親が進める。
   waitingLabel = null,
+  /// 開閉を覚えておく鍵（ChainOfThought から）。確定で行が作り直されても開閉を保つ。
+  memoryKey = null,
 }: {
   items: ToolActivityItem[];
   streaming?: boolean;
   phaseOverride?: string | null;
   citations?: Citation[];
   waitingLabel?: string | null;
+  memoryKey?: string | null;
 }) {
   // 開閉は**自動で変えない**。既定は直近 3 件の窓（実行中はロールし、終わっても残す）で、
   // ヘッダを押すと全件のタイムラインになる。実行状態から開閉を導くと、ツールを使った瞬間に
   // 開き、終わる（または本文が流れ始める）と閉じるので、ステップごとにパカパカする。
-  const [manualOpen, setManualOpen] = React.useState<boolean | null>(null);
+  const [open, setOpen] = useRememberedOpen(memoryKey);
 
   // node_id しか持たないツール（office/document/slide/csv）と citation のファイル名を解決する。
   const nodeIds = React.useMemo(() => {
@@ -260,7 +264,6 @@ export function ToolActivity({
     );
   }
 
-  const open = manualOpen ?? false;
   const lastCategory = describeTool(items[items.length - 1]).category;
   const season = seasonVar(seasonIndexFor(lastCategory, running));
   const summary = summarizeTools(items);
@@ -290,7 +293,7 @@ export function ToolActivity({
     <div className="mb-2.5" data-testid="tool-activity">
       <button
         type="button"
-        onClick={() => setManualOpen(!open)}
+        onClick={() => setOpen(!open)}
         aria-expanded={open}
         className="group flex w-full items-center gap-2 rounded-lg py-1 text-left text-[13px] transition-colors hover:bg-accent/30"
       >

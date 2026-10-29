@@ -78,16 +78,38 @@ pub(super) fn paced_chunks_stream(
     chunk: usize,
     gap: Duration,
 ) -> DeltaStream {
-    let chars: Vec<char> = reply.chars().collect();
-    let pieces: Vec<String> = chars
-        .chunks(chunk.max(1))
-        .map(|c| c.iter().collect())
+    paced_thinking_then_text_stream("", reply, prompt_tokens, chunk, gap)
+}
+
+/// 思考（`ThinkingDelta`）を流し切ってから本文を流す。どちらも `chunk` 文字ずつ `gap` 間隔。
+pub(super) fn paced_thinking_then_text_stream(
+    thinking: &str,
+    reply: &str,
+    prompt_tokens: u64,
+    chunk: usize,
+    gap: Duration,
+) -> DeltaStream {
+    let pieces = |s: &str| -> Vec<String> {
+        let chars: Vec<char> = s.chars().collect();
+        chars
+            .chunks(chunk.max(1))
+            .map(|c| c.iter().collect())
+            .collect()
+    };
+    let deltas: Vec<StreamDelta> = pieces(thinking)
+        .into_iter()
+        .map(|text| StreamDelta::ThinkingDelta { text })
+        .chain(
+            pieces(reply)
+                .into_iter()
+                .map(|text| StreamDelta::TextDelta { text }),
+        )
         .collect();
-    let completion_tokens = pieces.len() as u64;
-    stream::iter(pieces)
-        .then(move |text| async move {
+    let completion_tokens = deltas.len() as u64;
+    stream::iter(deltas)
+        .then(move |delta| async move {
             tokio::time::sleep(gap).await;
-            Ok(StreamDelta::TextDelta { text })
+            Ok(delta)
         })
         .chain(stream::once(async move {
             Ok(StreamDelta::Done {

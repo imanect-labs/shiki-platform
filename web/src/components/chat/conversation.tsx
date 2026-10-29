@@ -62,6 +62,7 @@ import { useTurnJump } from "@/hooks/use-turn-jump";
 import { MessageFeedbackButtons, ThreadFeedbackProvider } from "./message-feedback";
 import { MessageFooter } from "./message-footer";
 import { MessageCitationsProvider, SourcePanelProvider } from "./citations/citation-context";
+import { DisclosureMemoryProvider } from "./disclosure-memory";
 import { CitationSources } from "./citations/citation-sources";
 import { EvidenceTable, EvidenceToggle } from "./citations/evidence-table";
 import { SourcePanelAside, SourcePanelSheet } from "./citations/source-panel";
@@ -275,8 +276,16 @@ export function Conversation({
   // スレッド名（クロームのタイトル・⋯ メニューの見出し）。page のときだけ引く。
   const threadTitle = useThreadTitle(isPanel ? null : threadId);
   // 追従スクロール（下端付近にいる間だけ追う・離れたら「最新へ」）。
-  const { scrollerRef, contentRef, scroller, content, showJump, scrollToBottom } =
-    useStickToBottom();
+  const {
+    scrollerRef,
+    contentRef,
+    stopAtRef,
+    scroller,
+    content,
+    showJump,
+    scrollToBottom,
+    jumpToLatest,
+  } = useStickToBottom();
   // 読み返し中の「一つ前／一つ後の自分の発話へ」。
   const turnJump = useTurnJump(scroller, content);
   // 入力欄は本文の上に重ねる（背後を透かす）。その高さだけ本文の末尾と「最新へ」を持ち上げる。
@@ -816,6 +825,7 @@ export function Conversation({
   return (
     <SourcePanelProvider key={threadId}>
       <ThreadFeedbackProvider threadId={threadId}>
+      <DisclosureMemoryProvider>
       <div className="flex h-full min-h-0">
         <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
           {/* page: 統一ヘッダスロットへタイトル＋共有/設定を注入（横バー二重を解消）。
@@ -878,11 +888,14 @@ export function Conversation({
                   ),
                 )}
                 {stream ? (
-                  <StreamingRow
-                    stream={stream}
-                    onApproval={decideApproval}
-                    threadId={threadId}
-                  />
+                  // 生成中の回答の先頭（ここが画面の上端に来たら追従を終える）。
+                  <div ref={stopAtRef} className="min-w-0" data-testid="streaming-row">
+                    <StreamingRow
+                      stream={stream}
+                      onApproval={decideApproval}
+                      threadId={threadId}
+                    />
+                  </div>
                 ) : null}
                 {/* 順番待ちは「AI が答えている最中に積んだ次の発話」なので応答の後ろに置く。 */}
                 {queued.map((q) => (
@@ -930,7 +943,7 @@ export function Conversation({
                 </button>
                 <button
                   type="button"
-                  onClick={() => scrollToBottom("smooth")}
+                  onClick={jumpToLatest}
                   aria-label="最新のメッセージへ移動"
                   data-testid="jump-to-latest"
                   className={cn(JUMP_PILL, "size-10 justify-center")}
@@ -985,6 +998,7 @@ export function Conversation({
         {sourceAside ? <SourcePanelAside /> : null}
       </div>
       {!sourceAside ? <SourcePanelSheet /> : null}
+      </DisclosureMemoryProvider>
       </ThreadFeedbackProvider>
     </SourcePanelProvider>
   );
@@ -1301,7 +1315,11 @@ const AssistantRow = React.memo(function AssistantRow({
         <div className="w-full min-w-0">
           <YuiActionContext.Provider value={yuiHost}>
             <div className="space-y-2">
-              <MessageTimeline segments={segments} citations={citations} />
+              <MessageTimeline
+                segments={segments}
+                citations={citations}
+                memoryKey={savedMessageId ?? messageId}
+              />
             </div>
           </YuiActionContext.Provider>
           {workflowRefs.map((b, i) => (
@@ -1407,6 +1425,7 @@ function StreamingRow({
             segments={segments}
             citations={stream.citations}
             streaming
+            memoryKey={stream.assistantMessageId}
             phase={runningSubtask(stream.plan)}
             waitingLabel={waiting.label}
           />

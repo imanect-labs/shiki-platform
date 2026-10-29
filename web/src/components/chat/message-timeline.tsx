@@ -140,6 +140,7 @@ export function MessageTimeline({
   streaming = false,
   phase = null,
   waitingLabel = null,
+  memoryKey = null,
 }: {
   segments: TimelineSegment[];
   citations: Citation[];
@@ -148,6 +149,9 @@ export function MessageTimeline({
   phase?: string | null;
   /// 次のイベントを待っている間の文言（末尾の操作のまとまり・本文前の見出しに出す）。
   waitingLabel?: string | null;
+  /// 開閉の記憶の鍵（サーバ上の回答 ID）。生成中の行と確定後の行で同じ値を渡すと、確定で
+  /// 行が作り直されても思考パネルなどの開閉が保たれる（閉じて読んでいる位置が飛ばない）。
+  memoryKey?: string | null;
 }) {
   const firstWork = segments.findIndex((s) => s.kind === "work");
   const lastText = segments.findLastIndex((s) => s.kind === "text");
@@ -168,9 +172,12 @@ export function MessageTimeline({
       {segments.map((s, i) => {
         const live = streaming && i === segments.length - 1;
         if (s.kind === "work") {
+          // 何番目の操作のまとまりか（生成中と確定後で同じ並び。区切りの key は本文も数える）。
+          const nth = segments.slice(0, i).filter((x) => x.kind === "work").length;
           return (
             <ChainOfThought
               key={s.key}
+              memoryKey={memoryKey && `${memoryKey}:w${nth}`}
               thinking={s.thinking}
               tools={s.tools}
               citations={i === firstWork ? citations : []}
