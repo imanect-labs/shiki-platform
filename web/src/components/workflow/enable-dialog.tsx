@@ -128,6 +128,26 @@ export function EnableDialog({
   /// 「自動実行をオフにする」「権限も取り消す」の確認（D-90）。`revoke` は取り消しも選んだか。
   const [confirm, setConfirm] = React.useState<null | "off" | "revoke">(null);
   const [revokeToo, setRevokeToo] = React.useState(false);
+  /// 確認を開いたボタン（閉じたらフォーカスを戻す。確認の枠に入れ替わって消えるので、戻す先を覚える）。
+  const offButton = React.useRef<HTMLButtonElement>(null);
+  const revokeButton = React.useRef<HTMLButtonElement>(null);
+  const confirmCancel = React.useRef<HTMLButtonElement>(null);
+  const [returnFocus, setReturnFocus] = React.useState<null | "off" | "revoke">(null);
+  // 確認を開いたら「キャンセル」へフォーカスを移す（押したボタンが消えて、フォーカスが容器へ落ちないように）。
+  React.useEffect(() => {
+    if (confirm) confirmCancel.current?.focus();
+  }, [confirm]);
+  // キャンセルで閉じたら、開いたボタンへフォーカスを戻す（ボタンは確認を閉じた後に描き直される）。
+  React.useEffect(() => {
+    if (!returnFocus) return;
+    (returnFocus === "off" ? offButton : revokeButton).current?.focus();
+    setReturnFocus(null);
+  }, [returnFocus]);
+  const cancelConfirm = () => {
+    setReturnFocus(confirm);
+    setConfirm(null);
+    setRevokeToo(false);
+  };
   const me = useMe();
   const delegations = registration?.delegations ?? [];
   // 業務データのテーブル（data_table の委譲先を選ぶ・名前の表示にも使う）。いま使えるようにしているテーブルも。
@@ -252,9 +272,10 @@ export function EnableDialog({
             }
           : {
               title: "自動実行をオフにしました",
+              // 1 文目は付録 C の §3.6 の決まった文。2 文目はダイアログが閉じた後に押すボタンの場所を言う。
               description:
                 delegations.length > 0
-                  ? "オフにしても、使えるようにした権限は残ります。取り消すには「権限も取り消す」を押してください。"
+                  ? "オフにしても、ワークフローが使えるようにした権限は残ります。取り消すには、もう一度「自動実行の設定」を開いて「権限も取り消す」を押してください。"
                   : undefined,
             },
       );
@@ -452,6 +473,7 @@ export function EnableDialog({
                 />
                 {!enabled && confirm === null ? (
                   <Button
+                    ref={revokeButton}
                     variant="outline"
                     size="sm"
                     className="mt-2"
@@ -466,8 +488,9 @@ export function EnableDialog({
 
             {confirm ? (
               <div
-                role="group"
+                role="alertdialog"
                 aria-labelledby="enable-confirm-title"
+                aria-describedby="enable-confirm-body"
                 className="space-y-2 rounded-md border p-3 text-xs"
                 data-testid="enable-off-confirm"
               >
@@ -475,7 +498,7 @@ export function EnableDialog({
                   {confirm === "off" ? "自動実行をオフにしますか？" : "権限も取り消しますか？"}
                 </p>
                 {confirm === "off" ? (
-                  <p className="leading-relaxed text-muted-foreground">
+                  <p id="enable-confirm-body" className="leading-relaxed text-muted-foreground">
                     スケジュールや、ファイルやテーブルの変更では実行しなくなります。オフにしても、ワークフローが使えるようにした権限は残ります。
                   </p>
                 ) : null}
@@ -497,12 +520,12 @@ export function EnableDialog({
                   </label>
                 ) : null}
                 {confirm === "revoke" ? (
-                  <p className="leading-relaxed text-muted-foreground">
+                  <p id="enable-confirm-body" className="leading-relaxed text-muted-foreground">
                     このワークフローが、上の一覧の人の代わりに使えるようにしたものを、すべて取り消します。もう一度オンにするときは、使えるようにするものを選び直します。
                   </p>
                 ) : null}
                 <div className="flex flex-wrap justify-end gap-2">
-                  <Button variant="outline" size="sm" onClick={() => setConfirm(null)} disabled={busy}>
+                  <Button ref={confirmCancel} variant="outline" size="sm" onClick={cancelConfirm} disabled={busy}>
                     キャンセル
                   </Button>
                   <Button
@@ -519,7 +542,7 @@ export function EnableDialog({
             ) : (
               <div className="flex items-center justify-between gap-2 border-t pt-3">
                 {enabled ? (
-                  <Button variant="outline" size="sm" onClick={() => setConfirm("off")} disabled={busy}>
+                  <Button ref={offButton} variant="outline" size="sm" onClick={() => setConfirm("off")} disabled={busy}>
                     自動実行をオフにする
                   </Button>
                 ) : (
