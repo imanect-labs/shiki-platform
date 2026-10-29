@@ -61,6 +61,14 @@ impl CapabilityNodeExecutor {
                 false,
             )
         })?;
+        // しきい値の空は実行の前に止める（readiness）。通らない経路でも AI を呼ばずに失敗させる（D-88）。
+        if p.route.as_ref().is_some_and(|r| r.min_confidence.is_none()) {
+            return Err(PortError::new(
+                "bad_params",
+                crate::ir::params::DECIDE_THRESHOLD_MISSING,
+                false,
+            ));
+        }
         let r = ParamResolver::new(ctx);
         let what = "ai.decide: state";
         let state = param(&p.state, &r, what)?;

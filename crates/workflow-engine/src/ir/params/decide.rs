@@ -172,8 +172,17 @@ pub struct DecideRoute {
     #[ts(optional)]
     pub by: Option<DecideRouteBy>,
     /// しきい値（0.5〜1.0）。確からしさがこれ以上なら答えに従い、届かなければ `uncertain` へ出す。
-    pub min_confidence: f64,
+    ///
+    /// 既定を置かない（版ごとに実測で決めるもの・PIT-80・D-88）。空のまま保存はでき、入れるまで実行と自動実行の
+    /// オンを止める（readiness）。実行時に空なら AI を呼ばずに失敗する（[`DECIDE_THRESHOLD_MISSING`]）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub min_confidence: Option<f64>,
 }
+
+/// 実行時にしきい値が空だったときの理由（readiness を通らない経路の多層防御・permanent）。
+pub const DECIDE_THRESHOLD_MISSING: &str =
+    "「しきい値（AI の自信）」が空です。入れるまで、このブロックは実行できません。";
 
 impl DecideRoute {
     /// 振り分けの仕方（省略は value）。
@@ -303,12 +312,15 @@ impl AiDecideParams {
                  後ろに条件分岐を置いて /answers/<キー>/level_index で分けてください）",
             ));
         }
-        let c = route.min_confidence;
+        // 空のしきい値は保存を止めず、実行と自動実行のオンの前に止める（readiness・D-88）。
+        let Some(c) = route.min_confidence else {
+            return Ok(());
+        };
         if !c.is_finite() || !(MIN_DECIDE_CONFIDENCE..=MAX_DECIDE_CONFIDENCE).contains(&c) {
             return Err(issue(
                 "/params/route/min_confidence",
                 format!(
-                    "しきい値は {MIN_DECIDE_CONFIDENCE}〜{MAX_DECIDE_CONFIDENCE} にしてください"
+                    "しきい値は {MIN_DECIDE_CONFIDENCE:.2}〜{MAX_DECIDE_CONFIDENCE:.2} にしてください。"
                 ),
             ));
         }
@@ -373,8 +385,12 @@ impl AiDecideParams {
         let (Some(route), Some((value, confidence))) = (&self.route, routed) else {
             return "out".to_string();
         };
-        // 非有限（NaN）は届かなかったものとして扱う（答えの検査を通った値だけが来るが、多層防御）。
-        if confidence.is_nan() || confidence < route.min_confidence {
+        // 非有限（NaN）は届かなかったものとして扱う（答えの検査を通った値だけが来るが、多層防御）。しきい値が空なら
+        // 答えに従わない（実行の前に止めるが、多層防御で人の確認へ回す・D-88）。
+        let Some(min) = route.min_confidence else {
+            return UNCERTAIN_PORT.to_string();
+        };
+        if confidence.is_nan() || confidence < min {
             return UNCERTAIN_PORT.to_string();
         }
         match (route.by(), value) {

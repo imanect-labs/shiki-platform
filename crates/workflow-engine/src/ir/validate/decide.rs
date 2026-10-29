@@ -115,13 +115,15 @@ pub(super) fn warnings(ir: &WorkflowIr) -> Vec<ValidationError> {
         let Some(route) = &p.route else {
             continue;
         };
-        if route.min_confidence.is_finite() && route.min_confidence < LOW_CONFIDENCE {
+        if let Some(min) = route
+            .min_confidence
+            .filter(|c| c.is_finite() && *c < LOW_CONFIDENCE)
+        {
             out.push(
                 ValidationError::new(
                     DECIDE_LOW_CONFIDENCE,
                     format!(
-                        "しきい値 {} は低めです。確からしさは較正されていないことがあり、自動の振り分けが誤りやすくなります",
-                        route.min_confidence
+                        "しきい値 {min} は低めです。確からしさは較正されていないことがあり、自動の振り分けが誤りやすくなります",
                     ),
                 )
                 .at_node(id)

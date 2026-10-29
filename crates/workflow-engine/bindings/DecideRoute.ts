@@ -15,5 +15,8 @@ question: string,
 by?: DecideRouteBy, 
 /**
  * しきい値（0.5〜1.0）。確からしさがこれ以上なら答えに従い、届かなければ `uncertain` へ出す。
+ *
+ * 既定を置かない（版ごとに実測で決めるもの・PIT-80・D-88）。空のまま保存はでき、入れるまで実行と自動実行の
+ * オンを止める（readiness）。実行時に空なら AI を呼ばずに失敗する（[`DECIDE_THRESHOLD_MISSING`]）。
  */
-min_confidence: number, };
+min_confidence?: number, };

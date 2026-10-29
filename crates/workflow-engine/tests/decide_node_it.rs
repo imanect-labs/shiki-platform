@@ -473,3 +473,25 @@ async fn the_default_port_is_unsupported() {
     assert_eq!(code(&res), ("unsupported".into(), false));
     assert!(res.error.unwrap().message.contains("ai.decide"));
 }
+
+/// 出口を分ける判定のしきい値が空なら、AI を呼ばずにやり直さない誤りで失敗する（実行の前に readiness が止める
+/// が、通らない経路の多層防御・既定を置かない・D-88）。
+#[tokio::test]
+async fn a_blank_threshold_fails_without_calling_the_decider() {
+    let ports = ScriptedDecider::new(vec![Ok(reply("billing", 0.9))]);
+    let audit = Arc::new(Audit::default());
+    let p = params(json!({ "question": "category" }));
+    let res = run(Arc::clone(&ports) as _, &audit, &p).await;
+    assert!(!res.ok);
+    assert_eq!(code(&res), ("bad_params".to_string(), false));
+    assert!(
+        res.error
+            .as_ref()
+            .unwrap()
+            .message
+            .contains("しきい値（AI の自信）"),
+        "{:?}",
+        res.error
+    );
+    assert!(ports.reqs().is_empty(), "AI を呼ばない");
+}

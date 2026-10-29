@@ -208,9 +208,27 @@ fn the_route_must_point_at_a_choice_or_boolean_question() {
         let p = with_route(json!({ "question": "category", "min_confidence": ok }));
         assert!(check_params(NodeType::AiDecide, &p).is_ok(), "{ok}");
     }
-    // しきい値は必須（版ごとに決めるもの・既定を置かない）。
-    let e = err(&with_route(json!({ "question": "category" })));
-    assert_eq!(e.path, "/params/route");
+    let e = err(&with_route(
+        json!({ "question": "category", "min_confidence": 0.3 }),
+    ));
+    assert_eq!(e.message, "しきい値は 0.50〜1.00 にしてください。");
+    // しきい値は既定を置かない（版ごとに決めるもの・PIT-80）。空のまま保存でき、実行と自動実行のオンの前に
+    // readiness が止める（D-88）。空のしきい値では答えに従わない（人の確認へ回す・多層防御）。
+    for blank in [
+        json!({ "question": "category" }),
+        json!({ "question": "category", "min_confidence": null }),
+    ] {
+        let p = parsed(&with_route(blank));
+        assert_eq!(p.route.as_ref().unwrap().min_confidence, None);
+        assert_eq!(
+            p.port_for(Some((RoutedValue::Choice("billing"), 0.99))),
+            "uncertain"
+        );
+        assert_eq!(
+            serde_json::to_value(p.route.as_ref().unwrap()).unwrap(),
+            json!({ "question": "category" })
+        );
+    }
     let e = err(&with_route(
         json!({ "question": "category", "by": "best", "min_confidence": 0.8 }),
     ));

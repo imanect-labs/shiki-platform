@@ -1,6 +1,7 @@
 //! 保存は止めず、有効化と実行の前に止める条件（D-40・D-43・D-83）。
 //!
-//! - **必須の欄が空**（[`REQUIRED_FIELDS`] の表と、`control.branch` の条件の調べる値）: 書きかけでも保存は
+//! - **必須の欄が空**（[`REQUIRED_FIELDS`] の表と、`control.branch` の条件の調べる値と、出口を分ける
+//!   `ai.decide` のしきい値（既定を置かない・D-88））: 書きかけでも保存は
 //!   できるように、保存時は path つきの警告（[`REQUIRED_TEXT_EMPTY`]）にとどめる。空のまま動かすと、空の依頼で
 //!   AI や検索を呼ぶ・いつも同じ出口へ進む・リストでない値を繰り返そうとして失敗する、などになるので、有効化
 //!   （[`enable_blockers`]）と対話の実行（[`run_blockers`]）の前に止める。置いたばかりのブロックは、選ぶ欄も
@@ -70,6 +71,8 @@ const REQUIRED_FIELDS: &[(NodeType, &str, &str, Fill)] = &[
 
 /// 条件で分ける（`control.branch`）の調べる値の見出し。
 const BRANCH_LEFT_LABEL: &str = "調べる値";
+/// AI で判定（`ai.decide`）の出口を分けるときのしきい値の見出し（既定を置かない・D-88）。
+const DECIDE_THRESHOLD_LABEL: &str = "しきい値（AI の自信）";
 
 /// 欄が空か（リテラルの空文字・空白だけ・null、または中身の無い `$template`）。
 ///
@@ -148,6 +151,19 @@ pub fn required_text_empty(ir: &WorkflowIr) -> Vec<ValidationError> {
         for (_, key, label, fill) in REQUIRED_FIELDS.iter().filter(|(t, ..)| *t == nt) {
             if node.params.get(*key).is_some_and(is_blank) {
                 out.push(blank(&node.id, format!("/params/{key}"), label, *fill));
+            }
+        }
+        // 出口を分ける判定のしきい値は、既定を置かず書かせる（版ごとに実測で決める・PIT-80・D-88）。
+        if nt == NodeType::AiDecide {
+            if let Some(route) = node.params.get("route").and_then(Value::as_object) {
+                if route.get("min_confidence").is_none_or(Value::is_null) {
+                    out.push(blank(
+                        &node.id,
+                        "/params/route/min_confidence".to_string(),
+                        DECIDE_THRESHOLD_LABEL,
+                        Fill::Text,
+                    ));
+                }
             }
         }
     }
@@ -261,6 +277,51 @@ mod tests {
         // 対話の起動も同じ理由で止める。
         assert_eq!(run_blockers(&ir).len(), 4);
         assert_eq!(enable_blockers(&ir).len(), 4);
+    }
+
+    /// D-88: 出口を分ける判定のしきい値は既定を置かないので、空なら保存の警告にとどめ、実行と自動実行のオンの
+    /// 前に止める（項目が無い・null のどちらも）。しきい値を書いた判定と、出口を分けない判定は止めない。
+    #[test]
+    fn a_blank_decide_threshold_blocks_run_and_enable() {
+        let decide = |id: &str, route: Option<Value>| {
+            let mut n = json!({ "id": id, "type": "ai.decide", "params": {
+                "model": "decide-stub", "state": "本文",
+                "questions": [{ "key": "q1", "type": "boolean", "instructions": "請求か" }] } });
+            if let Some(r) = route {
+                n["params"]["route"] = r;
+            }
+            n
+        };
+        let ir = ir(
+            json!([{ "kind": "interactive" }]),
+            json!([
+                decide("missing", Some(json!({ "question": "q1" }))),
+                decide(
+                    "null",
+                    Some(json!({ "question": "q1", "min_confidence": null }))
+                ),
+                decide(
+                    "set",
+                    Some(json!({ "question": "q1", "min_confidence": 0.8 }))
+                ),
+                decide("no_route", None)
+            ]),
+        );
+        let w = required_text_empty(&ir);
+        let at = Some("/params/route/min_confidence");
+        assert_eq!(
+            codes(&w),
+            vec![
+                (REQUIRED_TEXT_EMPTY, Some("missing"), at),
+                (REQUIRED_TEXT_EMPTY, Some("null"), at)
+            ]
+        );
+        assert_eq!(
+            w[0].message,
+            "「しきい値（AI の自信）」が空です。入れるまで、実行も自動実行のオンもできません。"
+        );
+        assert_eq!(run_blockers(&ir).len(), 2);
+        assert_eq!(enable_blockers(&ir).len(), 2);
     }
 
     /// D-83: 置いたばかりの選ぶ欄・文字の欄（調べる値・振り分ける値・繰り返すリスト・判定用のモデルと判定の
