@@ -24,16 +24,18 @@ import { cn } from "@/lib/utils";
 import { getStep, type StepDetail, type StepOverview } from "@/lib/workflow-run-api";
 import { nodeIcon } from "@/components/workflow/editor/icons";
 import { AgentResult, isAgentOutput } from "./agent-result";
-import { formatDateTime, STEP_STATUS_LABELS } from "./status";
+import { formatDateTime, STEP_STATUS_LABELS, WAITING_LABELS } from "./status";
 import { portLabel } from "../port-labels";
 
 /// node_id → 表示情報（run にピンされた version の IR から引く）。
 export type NodeInfo = { label: string; type: string };
 
-/// step の状態の文言（承認を待つブロックの待機は「承認待ち」・GAP-08）。
-function stepStatusLabel(status: string, type: string | undefined): string {
-  if (status === "waiting_event" && type === "human.approval") return "承認待ち（担当者の受信箱に出ています）";
-  return STEP_STATUS_LABELS[status] ?? status;
+/// step の状態の文言。待っている step は、サーバーが返す待っているもの（承認・変更・時刻）で言う
+/// （保留中の承認の台帳があれば承認待ち・GAP-08・BUG-119）。
+function stepStatusLabel(step: StepOverview): string {
+  if (step.waitingFor === "approval") return `${WAITING_LABELS.approval}（承認者の「承認」の画面に出ています）`;
+  if (step.waitingFor) return WAITING_LABELS[step.waitingFor];
+  return STEP_STATUS_LABELS[step.status] ?? step.status;
 }
 
 function statusIcon(status: string): React.ReactNode {
@@ -151,7 +153,7 @@ function StepRow({
               ))}
           </span>
           <span className="mt-0.5 flex items-center gap-2 text-[11px] text-muted-foreground">
-            <span>{stepStatusLabel(step.status, info?.type)}</span>
+            <span>{stepStatusLabel(step)}</span>
             {step.stepPath !== step.nodeId ? (
               <span className="truncate font-mono">{step.stepPath}</span>
             ) : null}

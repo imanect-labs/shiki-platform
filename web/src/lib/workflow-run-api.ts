@@ -119,9 +119,14 @@ export async function startRun(
 
 // ── 履歴（一覧・詳細・step・イベント）──────────────────────────────────
 
+/// 待機中の run・step が待っているもの（サーバーの run の状態から導いた値・engine.md §3.1・BUG-119）。
+export type WaitingFor = Schemas["WaitingFor"];
+
 export type RunListItem = {
   runId: string;
   status: string;
+  /// 待機中（承認・変更・時刻を待っている）なら待っているもの。実行中や終わった run は null。
+  waitingFor: WaitingFor | null;
   triggerKind: string;
   version: number;
   createdAt: string;
@@ -153,6 +158,7 @@ export async function listRuns(
   return body.items.map((i) => ({
     runId: i.run_id,
     status: i.status,
+    waitingFor: i.waiting_for ?? null,
     triggerKind: i.trigger_kind,
     version: i.version,
     createdAt: i.created_at,
@@ -173,11 +179,15 @@ export type StepOverview = {
   wakeAt: string | null;
   updatedAt: string;
   langfuseTraceId: string | null;
+  /// 待っている step なら待っているもの（承認・変更・時刻）。
+  waitingFor: WaitingFor | null;
 };
 
 export type RunDetail = {
   runId: string;
   status: string;
+  /// 待機中なら待っているもの（[`RunListItem.waitingFor`] と同じ）。
+  waitingFor: WaitingFor | null;
   triggerKind: string;
   version: number;
   input: unknown;
@@ -196,6 +206,7 @@ export async function getRun(workflowId: string, runId: string): Promise<RunDeta
   return {
     runId: d.run_id,
     status: d.status,
+    waitingFor: d.waiting_for ?? null,
     triggerKind: d.trigger_kind,
     version: d.version,
     input: d.input,
@@ -217,6 +228,7 @@ export async function getRun(workflowId: string, runId: string): Promise<RunDeta
       wakeAt: s.wake_at ?? null,
       updatedAt: s.updated_at,
       langfuseTraceId: s.langfuse_trace_id ?? null,
+      waitingFor: s.waiting_for ?? null,
     })),
   };
 }

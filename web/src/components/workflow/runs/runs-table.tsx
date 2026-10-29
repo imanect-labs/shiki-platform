@@ -113,7 +113,7 @@ const COLUMNS: ColumnDef<RunListItem>[] = [
   {
     id: "status",
     header: "状態",
-    cell: ({ row }) => <RunStatusBadge status={row.original.status} />,
+    cell: ({ row }) => <RunStatusBadge status={row.original.status} waitingFor={row.original.waitingFor} />,
   },
   {
     id: "trigger",
@@ -360,7 +360,7 @@ export function RunsTable({
                 >
                   <span className="flex min-w-0 flex-1 flex-col gap-1">
                     <span className="flex items-center gap-2">
-                      <RunStatusBadge status={run.status} />
+                      <RunStatusBadge status={run.status} waitingFor={run.waitingFor} />
                       <span className="truncate text-xs text-muted-foreground">
                         {TRIGGER_KIND_LABELS[run.triggerKind] ?? run.triggerKind}・v{run.version}
                       </span>

@@ -189,7 +189,7 @@ export function RunDetailSheet({
         <SheetHeader>
           <SheetTitle className="flex items-center gap-2">
             実行の詳細
-            {detail ? <RunStatusBadge status={detail.status} /> : null}
+            {detail ? <RunStatusBadge status={detail.status} waitingFor={detail.waitingFor} /> : null}
             {detail?.cancelRequested && !isTerminalRunStatus(detail.status) ? (
               <span className="text-xs font-normal text-muted-foreground">
                 中止しています…
