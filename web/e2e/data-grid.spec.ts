@@ -1,8 +1,8 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { cleanupQueue, deleteTableApi, loginViaKeycloak, uniqueName } from "./helpers";
+import { cleanupQueue, deleteArtifactApi, deleteTableApi, loginViaKeycloak, uniqueName } from "./helpers";
 
-/// テストで作ったテーブルを、テストの後に片付ける（失敗したテストでも走る・BUG-126）。
+/// テストで作ったテーブルとビューを、テストの後に片付ける（失敗したテストでも走る・BUG-126）。
 const cleanup = cleanupQueue();
 test.afterEach(() => cleanup.run());
 
@@ -57,6 +57,7 @@ test("テーブル作成 → 列追加 → レコード編集 → ビュー保�
   await page.getByTestId("create-table-submit").click();
   await page.waitForURL(/\/data\/[0-9a-f-]{36}$/);
   const tableId = new URL(page.url()).pathname.split("/").pop()!;
+  cleanup.add(() => deleteTableApi(page, tableId));
   await expect(page.getByTestId("data-grid")).toBeVisible();
 
   // 2. 列を追加する（数値の「金額」）。
@@ -112,6 +113,7 @@ test("テーブル作成 → 列追加 → レコード編集 → ビュー保�
   await page.getByTestId("view-save-confirm").click();
   await page.waitForURL(/\?view=[0-9a-f-]{36}$/);
   const viewId = new URL(page.url()).searchParams.get("view")!;
+  cleanup.add(() => deleteArtifactApi(page, viewId));
 
   // 保存した表示設定は型付きの ViewSpec としてサーバに残る。
   const view = await (await page.request.get(`/api/data/views/${viewId}`)).json();
