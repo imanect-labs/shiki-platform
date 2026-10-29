@@ -5,7 +5,8 @@ import { cleanupAll, loginViaKeycloak, uniqueName } from "./helpers";
 /// 「ファイルを読む」（storage.read）が文章として読めないファイルを断る e2e（BUG-101）:
 /// PDF を読もうとすると、ブロックは「文章として読めない」誤り（not_text_file・やり直さない）で失敗し、実行履歴に
 /// 読み方の案内が出る。テキストのファイルはそのまま読める。以前は PDF や Word を文字化けしたまま成功させていた。
-/// 「読むファイル」の注記はテキストのファイルだけを読むことを言う。
+/// 「読むファイル」の注記はテキストのファイルだけを読むことを言う。拡張子が文章の種類なら、ブラウザーが付けた MIME
+/// （Windows の .csv の application/vnd.ms-excel）で断らない。
 
 const SHOTS = process.env.E2E_SHOTS_DIR;
 
@@ -50,15 +51,23 @@ test("ファイルを読む: PDF は文章として読めない誤りで失敗�
     await expect(page.getByText(pdfName, { exact: true })).toBeVisible({ timeout: 20_000 });
     await input.setInputFiles({ name: txtName, mimeType: "text/plain", buffer: Buffer.from("経費の申請\n") });
     await expect(page.getByText(txtName, { exact: true })).toBeVisible({ timeout: 20_000 });
+    // Excel を入れた Windows のブラウザーは .csv に application/vnd.ms-excel を付ける（そのまま保存される）。
+    const csvName = `${uniqueName("売上")}.csv`;
+    await input.setInputFiles({
+      name: csvName,
+      mimeType: "application/vnd.ms-excel",
+      buffer: Buffer.from("日付,金額\n2026-10-29,1200\n"),
+    });
+    await expect(page.getByText(csvName, { exact: true })).toBeVisible({ timeout: 20_000 });
     // アップロードの確定を待ってから ID を引く（一覧に出るのは確定した後）。
     const ids = async (): Promise<string[]> => {
       const res = await page.request.get(`/api/nodes?parent_id=${folderId}`);
       const children = (await res.json()) as { items?: { id: string; name: string }[] };
-      return [pdfName, txtName].map((n) => children.items?.find((c) => c.name === n)?.id ?? "");
+      return [pdfName, txtName, csvName].map((n) => children.items?.find((c) => c.name === n)?.id ?? "");
     };
     await expect.poll(async () => (await ids()).every(Boolean), { timeout: 30_000 }).toBe(true);
-    const [pdfId, txtId] = await ids();
-    fileIds.push(pdfId, txtId);
+    const [pdfId, txtId, csvId] = await ids();
+    fileIds.push(pdfId, txtId, csvId);
 
     const name = uniqueName("read-text");
     const created = await page.request.post("/api/workflows", {
@@ -114,6 +123,13 @@ test("ファイルを読む: PDF は文章として読めない誤りで失敗�
     // テキストは読める。
     const ok = await run(txtId);
     expect(ok.detail.status).toBe("succeeded");
+    // 拡張子が文章の種類（.csv）なら、ブラウザーが付けた ms-excel の MIME で断らずに読む。
+    const csv = await run(csvId);
+    expect(csv.detail.status, JSON.stringify(csv.detail.steps)).toBe("succeeded");
+    const csvStep = (await (
+      await page.request.get(`/api/workflows/${id}/runs/${csv.runId}/steps?path=rd`)
+    ).json()) as { output?: { text?: string } };
+    expect(csvStep.output?.text).toBe("日付,金額\n2026-10-29,1200\n");
 
     // PDF は文章として読めない誤り（やり直さない）で失敗する。
     const bad = await run(pdfId);
