@@ -1094,7 +1094,7 @@ cancel 要求済み run の失効リースは sweeper の対象外とする。cl
 
 1. 論理削除の UPDATE に掛けたトリガ（migration 0117）が、削除の経路を問わず同じ Tx の中で、`workflow_registration` を disabled にして `consented_scopes` を空にし、`workflow_trigger` を止め、動いている run（queued・running）に `cancel_requested` を付ける。印の付いた run は claim されず、その承認は受信箱に出ず判断も受け付けない。
 2. 削除の API は commit の後に、§10.2 の「権限も取り消す」と同じ経路で委譲を取り消し、run をすべて（人が手で実行したものも）その場でドレインする（承認の依頼も取り下げる）。監査は `workflow.disable` と `workflow.delegation.revoke` に理由 `workflow_deleted` を残す。
-3. API で外せなかった委譲（OpenFGA に届かなかったなど）は、scheduler の掃除（1 分ごと・system の主体で同じ監査）が取り消す。ドレインの取りこぼしは §9.3 の tick が回収する。
+3. API で外せなかった委譲（OpenFGA に届かなかったなど）は、scheduler の掃除（1 分ごと・system の主体で同じ監査）が取り消す。ドレインの取りこぼしは §9.3 の tick が回収する。掃除は、消したワークフローの queued・running で取り消しの印の無い run も拾って取り消す（定義を読んだ後で削除が commit され、run の INSERT がトリガと削除の後の取り消しより後に commit された手動の実行・再開）。掃除の監査は、自動実行の登録があったか run を取り消したなら `workflow.disable`、委譲を取り消したなら `workflow.delegation.revoke` を残す（どちらも理由 `workflow_deleted`）。
 4. 定義が消えたワークフローへの発火（削除と重なった発火）は、一時障害として再試行せず見送る（`skipped`）。
 5. 消したワークフローを戻す経路はいまは無い。戻すときも自動実行はオフのままで、オンにするには同意し直す（同意が空のため）。
 
