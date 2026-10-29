@@ -558,6 +558,11 @@ flowchart LR
     落として説明文に書き足し、全オブジェクトを閉じる（`additionalProperties: false`）。OpenAI 互換の `strict` は
     全プロパティが必須のときだけ付ける。**正しさはどのモードでも呼び出し側の事後検証が正**で、制約付き
     デコードは形の誘導にすぎない（ワークフローの `llm.invoke` の検証・修復は workflow-engine が持つ）。
+  - 形の項目は、作者が並べた順でプロバイダへ書く（制約付きデコードは送った順に書き、指示だけのモードでもモデルは
+    示された順に書きがち・[PIT-81](./design-caveats.md)・D-103）。各オブジェクトの `x-order` に書かれたキーを
+    その順に先に、残りを保存された順（辞書順）で後ろに置き、`x-order` そのものは送らない。workspace の serde_json
+    は `preserve_order` を有効にしないので、値の Map は辞書順のまま、本文を書くときだけ順を決める（`x-order` の
+    無い形は今までと同じバイト列）。
   - Anthropic アダプタは effort と format を同じ `output_config` に併合する（片方で上書きしない）。
     `temperature`・`top_p`・`top_k` は Anthropic へ送らない（新しいモデルは既定以外を 400 で拒む）。決定性は
     temperature に頼らず、構造化出力・版の固定・checkpoint で担保する。
