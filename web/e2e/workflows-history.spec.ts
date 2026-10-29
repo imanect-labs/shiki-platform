@@ -51,12 +51,18 @@ test("実行履歴: 失敗詳細→フィルタ→失敗ステップから再開
     const sheet = page.locator('[role="dialog"]');
     await expect(sheet.locator("h2").getByText("失敗")).toBeVisible({ timeout: 60_000 });
     await expect(sheet.getByText(/boom-e2e/).first()).toBeVisible();
-    // 失敗の理由は、画面に返す結果と同じ分類の文言（サーバーが Rust の単一定義から組む・BUG-113）。
-    await expect(sheet.getByTestId("run-failure")).toHaveText(
-      "ワークフローの設定に問題があり、処理を完了できませんでした。作成者に連絡してください。",
-    );
-    // スクリプトの誤りは読むデータで変わりうるので、再開を出し、原因を直してから再開することを言う（BUG-132）。
-    await expect(sheet.getByTestId("run-resume-note")).toContainText("失敗の原因を直してから再開すると");
+    // 失敗の理由は、画面に返す結果と同じ分類の文言（サーバーが Rust の単一定義から組む・BUG-113）。script の
+    // throw は分類できない失敗（internal）なので、再開を勧め、再開で何が起きるかを添える（BUG-132）。
+    const runId = new URL(page.url()).searchParams.get("run")!;
+    const detail = (await (await page.request.get(`/api/workflows/${id}/runs/${runId}`)).json()) as {
+      failure: { category: string; message: string } | null;
+      resume: { advice: string; offer: boolean; note: string } | null;
+    };
+    expect(detail.failure?.category).toBe("unknown");
+    expect(detail.resume).toMatchObject({ advice: "resume", offer: true });
+    await expect(sheet.getByTestId("run-failure")).toHaveText(detail.failure!.message);
+    await expect(sheet.getByTestId("run-resume-note")).toHaveText(detail.resume!.note);
+    await expect(sheet.getByTestId("run-resume-note")).toContainText("失敗したブロックから続けます");
 
     // 「失敗したところから再開」→ 失敗 step が即 ready に戻り再実行される。
     // 決定的に再失敗するため過渡状態（実行中）は数秒で消える。再実行の証跡は
