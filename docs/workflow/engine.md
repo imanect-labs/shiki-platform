@@ -963,6 +963,8 @@ step の `timeout_sec`（ノード種ごとに既定・上限あり・ir.md §7�
     外部へ書くのは storage のファイルの作成（`storage.write`・`csv.write`。commit の前に owner・parent の FGA タプルを書き、
     commit に失敗したら外す）だけで、その間で捨てられると DB に無いファイルの id のタプルが残る。残ったタプルの id には
     DB の行が無いので、開けるファイルは無い（害は小さいが、掃除する仕組みも無い）。
+  - 外部 API 呼び出し（`http.request`）の時間の上限を空欄にしたときは、応答を待つ時間の設定（`workflow.http_timeout_ms`・
+    既定 30 秒）より先に打ち切らない（管理者が応答の待ちを延ばしたら上限の既定もそれに従う。作成者が書いた値はそのまま）。
 - run timeout: run failed ＋ in-flight step をドレイン。
 
 ### 9.5 リース失効（ワーカー死）
