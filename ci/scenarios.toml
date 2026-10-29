@@ -203,6 +203,7 @@ e2e = [
     "data-import.spec.ts",
     "data-schema.spec.ts",
     "data-share.spec.ts",
+    "data-sql.spec.ts",
     "data-ui.spec.ts",
     "select-escape.spec.ts",
 ]

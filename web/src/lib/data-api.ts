@@ -36,6 +36,8 @@ export type TableIndexOverview = S["TableIndexOverview"];
 export type IndexPromotion = S["IndexPromotion"];
 export type IndexStatus = S["IndexStatus"];
 export type QueryRejection = S["QueryRejection"];
+export type SqlRequest = S["SqlRequest"];
+export type SqlQueryResult = S["SqlQueryResult"];
 export type RecordUpsertedEvent = S["RecordUpsertedEvent"];
 export type RecordsBulkAppliedEvent = S["RecordsBulkAppliedEvent"];
 export type RecordRemovedEvent = S["RecordRemovedEvent"];
@@ -100,6 +102,12 @@ export class DataApiError extends Error {
   get code(): string | null {
     const c = this.body?.code;
     return typeof c === "string" ? c : null;
+  }
+
+  /// クエリの入口の拒否（422・SQL 前段面と IR の資源上限）。理由・位置・手がかり・候補を持つ。
+  get rejection(): QueryRejection | null {
+    if (this.status !== 422 || !this.body || typeof this.body.message !== "string") return null;
+    return this.body as unknown as QueryRejection;
   }
 
   /// 索引の準備中（並べ替え・絞り込みに使えるまで待つ）。
@@ -168,6 +176,8 @@ function codeMessage(body: Record<string, unknown> | null): string | null {
       return "今のデータと合わないため、この列の設定に変えられません";
     case "upstream_unavailable":
       return "サーバーに接続できません。少し待ってから再試行してください";
+    case "query_too_expensive":
+      return "対象の行が多すぎて実行できません。WHERE で絞り込むか、LIMIT を付けてください";
     case "read_timeout":
       return "混み合っていて読み込みが時間内に終わりませんでした。少し待ってから再試行してください";
     case "cursor_invalid":
@@ -361,6 +371,12 @@ export async function runQuery(
       signal: init?.signal,
     }),
   );
+}
+
+/// SQL（閉じた部分集合の SELECT）で読む（data-platform §16.1）。SQL はサーバで DataQuery へ変換され、
+/// データベースへは届かない。行述語・列のマスク・集計の抑制は他の読取と同じく閲覧者本人の権限で効く。
+export async function runSql(req: SqlRequest, init?: { signal?: AbortSignal }): Promise<SqlQueryResult> {
+  return ok<SqlQueryResult>(await apiFetch("/data/sql", { ...send("POST", req), signal: init?.signal }));
 }
 
 export async function createRecord(tableId: string, data: Record<string, unknown>): Promise<DataRecord> {
