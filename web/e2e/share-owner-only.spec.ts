@@ -126,6 +126,20 @@ test("共有の操作は持ち主にだけ出し、共有の相手を読み込�
   await failed.getByRole("button", { name: "もう一度読み込む" }).click();
   await expect(dialog.getByTestId("share-entry")).toHaveCount(1, { timeout: 15_000 });
   await expect(failed).toHaveCount(0);
+
+  // 読み込めなかったまま付与しても、付与の後に読み直せた一覧（いま付与した相手を含む）を出す。
+  await page.keyboard.press("Escape");
+  fail = true;
+  await page.getByRole("button", { name: `${s.skill} のその他の操作` }).click();
+  await page.getByRole("menuitem", { name: "共有" }).click();
+  await expect(failed).toBeVisible({ timeout: 15_000 });
+  fail = false;
+  await dialog.getByRole("searchbox").fill("bob");
+  const bobRow = dialog.getByRole("listitem").filter({ hasText: /bob/i }).first();
+  await bobRow.getByRole("button", { name: "共有", exact: true }).click();
+  await expect(page.getByText("共有しました").first()).toBeVisible({ timeout: 15_000 });
+  await expect(failed).toHaveCount(0);
+  await expect(dialog.getByTestId("share-entry")).toHaveCount(2, { timeout: 15_000 });
   await page.unroute(`**/api/artifacts/${s.skillId}/shares`);
 });
 

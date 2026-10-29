@@ -167,7 +167,12 @@ export function SharePeoplePanel({
   // (type, id, role) で既存共有を判定する（同じ役割のみ「付与済み」。役割の昇格は許可）。
   const sharedKeys = React.useMemo(() => new Set(shares.map(entryKey)), [shares]);
 
-  const refresh = async () => setShares(await loadRef.current());
+  // 読み直せたら、読み込めなかった表示も消す（付与の後に、いま付与した相手も含めた一覧を見せる）。
+  const refresh = async () => {
+    const next = await loadRef.current();
+    setShares(next);
+    setLoadFailed(false);
+  };
 
   const share = async (candidate: Candidate) => {
     const role = rowRole[candidate.id] ?? "viewer";
