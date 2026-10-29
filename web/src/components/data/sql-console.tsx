@@ -168,6 +168,8 @@ export function SqlConsole() {
   const editorRef = React.useRef<SqlEditorHandle>(null);
   /// 実行・続きの読み込みの世代（新しい実行が始まったら古い応答を捨てる）。
   const seq = React.useRef(0);
+  /// 続きの読み込み中か（同期で読む。描き直し前に表から続けて呼ばれても同じ位置を二重に読まない）。
+  const loadingMoreRef = React.useRef(false);
   const abortRef = React.useRef<AbortController | null>(null);
 
   const restored = useSqlDraft(sql, setSql);
@@ -227,6 +229,7 @@ export function SqlConsole() {
     // 送る SQL と位置の計算に使う SQL を同じにする（前後の空白も落とさない）。
     const text = sql;
     setRunning(true);
+    loadingMoreRef.current = false;
     setLoadingMore(false);
     setError(null);
     setMoreError(null);
@@ -258,7 +261,8 @@ export function SqlConsole() {
 
   const loadMore = React.useCallback(async () => {
     const cur = result;
-    if (!cur?.data.next_cursor || loadingMore || running) return;
+    if (!cur?.data.next_cursor || loadingMoreRef.current || running) return;
+    loadingMoreRef.current = true;
     const id = seq.current;
     const ac = new AbortController();
     abortRef.current = ac;
@@ -287,9 +291,12 @@ export function SqlConsole() {
       setMoreError(e);
       setMoreBlocked(true);
     } finally {
-      if (seq.current === id) setLoadingMore(false);
+      if (seq.current === id) {
+        loadingMoreRef.current = false;
+        setLoadingMore(false);
+      }
     }
-  }, [result, loadingMore, running]);
+  }, [result, running]);
 
   const hasSql = sql.trim() !== "";
   usePageChrome(
