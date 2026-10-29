@@ -377,11 +377,11 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 
 | type | 区分 | 概要 | 冪等性 | timeout 既定/最大 |
 |---|---|---|---|---|
-| `storage.read` | 能力 | 文章のファイルを読む（≤ 10MB。PDF・Office・画像などの種類と、UTF-8 でない中身は `not_text_file` で失敗・BUG-101。種類は、拡張子が文章の種類〔.txt・.md・.csv・.tsv・.json・.log など〕なら MIME より拡張子を優先して中身の確かめに任せ〔ブラウザーが付けた MIME をそのまま保存しているため。Windows の .csv の `application/vnd.ms-excel` など〕、それ以外は MIME で決め、MIME が無いか `application/octet-stream` のときだけ拡張子で決める〔.dot・.key のように文章にも使う拡張子では断らない〕。結果に読んだ中身のバージョン `version` を載せる・D-96） | pure | 30s / 120s |
+| `storage.read` | 能力 | 文章のファイルを読む（≤ 10MB。PDF・Office・画像などの種類と、文字コードを決められない中身・文章でない中身は `not_text_file` で失敗・BUG-101。文字コードは BOM〔UTF-8・UTF-16LE・UTF-16BE〕→ 全体が妥当な UTF-8 → 日本の文字コード〔Shift_JIS（CP932）・EUC-JP〕の推定の順で決め、推定の確からしさが低ければ断る。結果に読んだ文字コード `encoding` を載せ、`text` には BOM を含めない・GAP-45。種類は、拡張子が文章の種類〔.txt・.md・.csv・.tsv・.json・.log など〕なら MIME より拡張子を優先して中身の確かめに任せ〔ブラウザーが付けた MIME をそのまま保存しているため。Windows の .csv の `application/vnd.ms-excel` など〕、それ以外は MIME で決め、MIME が無いか `application/octet-stream` のときだけ拡張子で決める〔.dot・.key のように文章にも使う拡張子では断らない〕。結果に読んだ中身のバージョン `version` を載せる・D-96） | pure | 30s / 120s |
 | `storage.write` | 能力 | 新しいファイルの保存（既存のファイルは書き換えず、新しいバージョンも足さない。同じ名前があれば `on_name_taken` に従い、省略・`fail` は `name_taken` で失敗、`add_number` は「名前 (2).md」〜「名前 (50).md」の空いている名前で保存する。`content_type` を省くと拡張子〔.txt・.md・.csv・.json・.html〕から決め、決まらなければ `application/octet-stream`・BUG-97・D-97） | engine-dedup | 30s / 120s |
 | `storage.list` | 能力 | フォルダ一覧 | pure | 30s / 120s |
-| `csv.query` | 能力 | CSV に読み取り専用の SQL を実行して集計・抽出する（隔離ランナー。結果に集計した中身のバージョン `version` を載せ、後ろの `csv.patch` の `base_rev` にできる・D-96） | pure | 30s / 120s |
-| `csv.patch` / `csv.write` | 能力 | CSV のセル・行・列を書き換えて新しいバージョンを保存する／新しい CSV を保存する（同じ名前があるときは `storage.write` と同じ `on_name_taken`） | engine-dedup | 30s / 120s |
+| `csv.query` | 能力 | CSV に読み取り専用の SQL を実行して集計・抽出する（隔離ランナー。CSV の文字コードは `storage.read` と同じ判定で決めて UTF-8 にしてからランナーへ渡し、決められなければ `not_text_file`・GAP-45。結果に集計した中身のバージョン `version` を載せ、後ろの `csv.patch` の `base_rev` にできる・D-96） | pure | 30s / 120s |
+| `csv.patch` / `csv.write` | 能力 | CSV のセル・行・列を書き換えて新しいバージョンを保存する／新しい CSV を保存する（同じ名前があるときは `storage.write` と同じ `on_name_taken`。`csv.patch` は元の文字コードと BOM のまま書き戻し、元の文字コードに無い文字は書かずに `invalid` で失敗する・GAP-45） | engine-dedup | 30s / 120s |
 | `data.query` | 能力 | 宣言的クエリ（**data の `DataQuery` をそのまま使う**・比較値に `$from` 可・`query.limit` は 1〜200 で範囲の外は保存時に `ir.schema_violation`・BUG-108） | pure | 30s / 120s |
 | `data.record.create` / `data.record.update` / `data.record.delete` | 能力 | レコード書込（rev 楽観ロック・rev 省略時は実行時点の rev） | engine-dedup | 30s / 120s |
 | `data.transition` | 能力 | **FSM 遷移 API を叩く**（直接 status 書込は構造的に不可能） | engine-dedup | 30s / 120s |

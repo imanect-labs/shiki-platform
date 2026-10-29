@@ -740,7 +740,8 @@ flowchart TB
   （ハード強制は cgroups が使える環境の cgroup 上限・PIT-24）。
 - **web_fetch は生 HTML をモデルへ渡さない（2026-08・#405）**: 取得したバイト列は 4 段で本文へ落とす
   （`crates/agent-core/src/tools/web_fetch/`）。① `decode` — Content-Type / `<meta charset>` / BOM、
-  最後に chardetng で文字コードを決める（Shift_JIS・EUC-JP の国内サイトが `from_utf8_lossy` で全滅するため）
+  最後に chardetng で文字コードを決める（Shift_JIS・EUC-JP の国内サイトが `from_utf8_lossy` で全滅するため。
+  BOM・UTF-8・推定はファイルの読み取りと共有する `crates/textenc` にある・GAP-45）
   ② `extract` — ノイズ除去（script/style/nav/隠し要素）→ Readability 相当の本文特定（`dom_smoothie`）→
   構造保持 Markdown 化（`htmd`）。**掃除した DOM をそのまま本文特定へ渡す**（`dom_query` を共有＝二重パースしない）
   ③ `doc` — PDF/Office は ingestion-worker（Docling）へ回す。**URL ではなくバイト列**を渡す（PIT-55）。
@@ -967,6 +968,11 @@ flowchart TB
     結果はページ配信（グリッドの無限スクロールと共用）。
   - **編集**: セル/行/列の**パッチ操作＋rev 楽観ロック**→新バージョン保存（既存バージョニング・書込イベント・
     RAG 再索引に乗る）。CSV の CRDT 共同編集はやらない（巨大ファイルで update log が破綻するため）。
+  - **文字コード**: 読むときに BOM（UTF-8・UTF-16）→ UTF-8 → 日本の文字コード（Shift_JIS・EUC-JP）の推定の順で
+    決めて UTF-8 にし、ランナーへは UTF-8 だけを渡す（日本語の Windows の Excel が保存する CSV の既定は Shift_JIS）。
+    推定の確からしさが低い・文章でない CSV は断る。編集は元の文字コードと BOM のまま書き戻し、元の文字コードに無い
+    文字は書かずに拒否する（`&#…;` に置き換えて黙って中身を変えない）。判定は `crates/textenc` の単一定義で、
+    ワークフローの「ファイルを読む」・データの取り込み・web_fetch と共有する（GAP-45）。
   - **公開面**: `csv.query` / `csv.patch` / `csv.write` をエージェントツールとワークフローステップの両方へ。
     実行主体のファイル ReBAC で判定（workflow の実行主体交差則と同じ）。**操作別に要求 relation を分ける**:
     query=viewer / patch=editor / write=保存先フォルダへの作成権限（読めるだけの viewer が書き換え・派生保存
@@ -1439,6 +1445,7 @@ crates/
   office/          # OfficeSuite トレイト・WOPI ホスト（Collabora）
   collab/          # Yjs(yrs) 共同編集同期サーバ・DocKind（ノート md／スライド／HTML ページ）シリアライズ
   tabular/         # CSV クエリ/パッチ単一チョークポイント（DuckDB は非特権別プロセスに隔離）
+  textenc/         # 文字コードの判定（BOM・UTF-8・日本の文字コードの推定）と書き戻しの単一定義
   site/            # サイト/ページ/publication・publish パイプライン・マニフェスト・フォーム定義
 ingestion-worker/  # Python: Docling パース・docx/pptx 生成/編集
 web/               # Next.js / TypeScript（generative UIレンダラ・ミニアプリB1配信・dnd/TipTap エディタ・

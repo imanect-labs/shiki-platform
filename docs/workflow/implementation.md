@@ -201,6 +201,7 @@ README.md §4 の用語集と同じ語を使う。ここでは各用語が **実
 | `crates/api`（`workflow_runtime` サブモジュール） | shiki-server 起動時の結線（`spawn_workflow_runtime`）・`NodePorts` の本番実装・run 起動/履歴 API | `workflow_runtime/mod.rs`（`spawn_workflow_runtime:166`・`relay_events:237-268`・`WorkflowConfig`）・`workflow_runtime/ports.rs`（`ProdNodePorts`）・`routes/workflows.rs`（`start_workflow_run:275`・`get_workflow_run:312`） |
 | `crates/durable` | claim/リース/fencing/追記イベントログの共有プリミティブ（chat と workflow で共有・キュー/状態機械は共有しない） | `claim.rs`・`events.rs`・`pubsub.rs`・`spec.rs` |
 | `crates/cron5` | 5 つの欄の cron を標準の読み方（曜日は 0 と 7 が日曜）で解く写像の単一定義。ワークフローのスケジュールとミニアプリの B2 関数のスケジュールが共有する（BUG-95・BUG-129） | `lib.rs` |
+| `crates/textenc` | 文章のバイト列の文字コードの判定（BOM → UTF-8 → 日本の文字コードの推定・確からしさが低ければ断る）と、元の文字コードでの書き戻しの単一定義。「ファイルを読む」・AI エージェントの窓読み・`csv.*`（tabular）・データの取り込み・web_fetch が共有する（GAP-45） | `lib.rs`（`decode_text`・`encode_like`・`guess_any`） |
 | `crates/script-runtime` | shiki script の非特権実行環境（QuickJS on wasmtime）・gRPC over UDS | `engine.rs`・`compile.rs`・`frames.rs`・`host.rs`・`server.rs`・`guest/` |
 | `crates/storage` | outbox・オブジェクト/構造化データ・StorageService（チョークポイント） | `event.rs`（outbox fan-out 関数群） |
 | `crates/authz` | AuthContext・PrincipalKind・OpenFGA クライアント | `context.rs` |
