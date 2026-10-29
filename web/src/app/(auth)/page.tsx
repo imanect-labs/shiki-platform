@@ -40,7 +40,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Composer } from "@/components/chat/composer";
 import { ComposerArrow } from "@/components/home/composer-arrow";
 import { ContinueSection } from "@/components/home/continue-section";
-import { HomeModeOptions } from "@/components/home/home-mode-options";
+import { HomeModeOptions, type SearchFolder } from "@/components/home/home-mode-options";
 import { HomeModeTabs } from "@/components/home/home-mode-tabs";
 import { PromptSuggestions } from "@/components/chat/prompt-suggestions";
 import { ShortcutGrid } from "@/components/home/shortcut-grid";
@@ -63,6 +63,8 @@ export default function HomePage() {
   const [workspace, setWorkspace] = React.useState<WorkspaceChoice | null>(null);
   const [approvalMode, setApprovalMode] = React.useState<AutonomousMode>("require_approval");
   const [createKind, setCreateKind] = React.useState<CreateKind>("note");
+  // 社内検索で探すフォルダ（#965・null は見られる社内文書すべて）。
+  const [searchFolder, setSearchFolder] = React.useState<SearchFolder | null>(null);
   // 新しいチャットの既定（ユーザー設定・#952）。ホームを開いたときに 1 回だけ初期値にする:
   // モデル（選んでいなければ）・Web 検索（選択に足す）・エージェントのモードの承認モード。
   // 以後の付け外しは利用者に任せる。公開から外れたモデルは入力欄のモデル選択が Auto に戻す。
@@ -135,6 +137,8 @@ export default function HomePage() {
       const thread = await createThread(titleFrom(body), asAutonomous, {
         skill: pinned ? { artifactId: pinned.id, version: pinned.currentVersion } : undefined,
         workspace: mode === "agent" ? workspace ?? undefined : undefined,
+        // 探すフォルダは社内検索のモードで選んだときだけ使う（会話の社内文書検索をその配下に絞る）。
+        searchFolderId: mode === "search" ? searchFolder?.id : undefined,
       });
       // 承認モードは、エージェントのモードで利用者が明示的に選んだときだけ緩める（Codex P1）。
       // コマンドを選ぶ行為は「長ホライズンで実行してよい」の同意であって「事前許可の範囲を
@@ -232,6 +236,8 @@ export default function HomePage() {
             onApprovalModeChange={setApprovalMode}
             createKind={createKind}
             onCreateKindChange={setCreateKind}
+            searchFolder={searchFolder}
+            onSearchFolderChange={setSearchFolder}
           />
           <div className="relative mt-1 w-full max-w-2xl">
             {/* 入力欄の右外から、手描き風の点線矢印で「ここから話しかけてね」を演出（文字に重ねない）。 */}

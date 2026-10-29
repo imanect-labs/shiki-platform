@@ -73,6 +73,10 @@ export type Thread = {
   originNoteName?: string | null;
   /// ピン留めした時刻（null＝ピン留めなし）。サイドバー履歴の先頭に出す。
   pinnedAt: string | null;
+  /// 検索フォルダ（ホームの「社内検索」でフォルダを選んで始めた会話・#965）。社内文書の検索を
+  /// このフォルダの配下に絞る。名前は作成時点のもの。
+  searchFolderId?: string | null;
+  searchFolderName?: string | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -203,6 +207,8 @@ function toThread(t: ApiThread): Thread {
     originNoteId: t.origin_note_id ?? null,
     originNoteName: t.origin_note_name ?? null,
     pinnedAt: t.pinned_at ?? null,
+    searchFolderId: t.search_folder_id ?? null,
+    searchFolderName: t.search_folder_name ?? null,
     createdAt: t.created_at,
     updatedAt: t.updated_at,
   };
@@ -243,6 +249,8 @@ export async function createThread(
     workspace?: WorkspaceChoice;
     /// 由来ノート（ノートの分割ビューから作るスレッド・issue #282）。
     originNoteId?: string;
+    /// 検索フォルダ（ホームの「社内検索」・#965）。社内文書の検索をこのフォルダの配下に絞る。
+    searchFolderId?: string;
   },
 ): Promise<Thread> {
   const toPin = (p?: ArtifactPin) =>
@@ -263,6 +271,7 @@ export async function createThread(
         mini_app: toPin(pins?.miniApp),
         workspace,
         origin_note_id: pins?.originNoteId,
+        search_folder_id: pins?.searchFolderId,
       }),
     }),
   );
