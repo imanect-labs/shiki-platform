@@ -53,8 +53,9 @@ pub struct RunOutcomeReader {
     db: PgPool,
 }
 
-/// 待機中かどうかと、何を待っているか（承認 → できごと → 時間の順に見る）。別名 `r` の run に対する式。
-const WAITING_FOR: &str = "CASE WHEN r.status = 'running' AND NOT EXISTS ( \
+/// 待機中かどうかと、何を待っているか（承認 → できごと → 時間の順に見る）。別名 `r` の run に対する式
+/// （engine.md §3.1 の導出値 waiting の 1 つの定義・実行履歴の一覧と詳細も同じ式を使う・BUG-119）。
+pub(super) const WAITING_FOR: &str = "CASE WHEN r.status = 'running' AND NOT EXISTS ( \
          SELECT 1 FROM step_execution s WHERE s.tenant_id = r.tenant_id AND s.run_id = r.run_id \
            AND s.status IN ('ready', 'running')) \
      THEN CASE \

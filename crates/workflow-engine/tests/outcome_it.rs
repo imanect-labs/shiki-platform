@@ -2,6 +2,7 @@
 //!
 //! - 実行された分岐の reply だけが実行順に返る（実行されなかった側は skipped で出ない）
 //! - 待機の前の reply は待機中にも返り、状態は「待機中（時間・できごと・承認）」になる
+//! - 実行履歴の一覧と詳細も、同じ決め方で待っているものを返す（BUG-119）
 //! - 本人以外・別の org・schedule の run（workflow プリンシパル）の結果は返らない
 //! - 失敗の理由は利用者向けの分類で返り、生のエラー文を含まない。再開すると消える
 //! - 保持期間の GC で run が消えると結果も返らない
@@ -408,6 +409,144 @@ async fn replies_before_a_wait_are_returned_while_waiting() {
     .unwrap();
     let live = reader.live_states(&alice, &[run]).await.unwrap();
     assert_eq!(live[&run].waiting_for, Some(WaitingFor::Approval));
+}
+
+/// 保留中の承認の台帳を 1 行置く（承認を待つ step に見せる）。
+async fn pending_approval(pool: &PgPool, tenant: &str, workflow_id: Uuid, run: Uuid, step: &str) {
+    sqlx::query(
+        "INSERT INTO workflow_approval (tenant_id, approval_id, org, workflow_id, run_id, step_path, \
+             node_id, table_id, record_id, title, decisions, from_state, suspend_rev) \
+         VALUES ($1, $2, 'acme', $3, $4, $5, $5, $6, $7, '経費の承認', '[]'::jsonb, 'submitted', 1)",
+    )
+    .bind(tenant)
+    .bind(Uuid::new_v4())
+    .bind(workflow_id)
+    .bind(run)
+    .bind(step)
+    .bind(Uuid::new_v4())
+    .bind(Uuid::new_v4())
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// テナントの行を片付ける（step・承認の台帳・run_event は run に従って消える）。
+async fn forget(pool: &PgPool, tenant: &str) {
+    for table in ["wait_subscription", "concurrency_counter", "workflow_run"] {
+        sqlx::query(&format!("DELETE FROM {table} WHERE tenant_id = $1"))
+            .bind(tenant)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+}
+
+/// 実行履歴の一覧と詳細は、承認・変更・時刻を待つ run を実行中と分けられるよう、待っているものを返す。
+/// 待っている step にも同じものを付ける（BUG-119）。
+#[tokio::test]
+async fn the_history_tells_what_a_waiting_run_waits_for() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
+    let workflow_id = Uuid::new_v4();
+    let flow = |params: Option<Value>| {
+        let mut nodes = vec![json!({ "id": "first", "type": "storage.read", "params": {} })];
+        let mut edges = vec![];
+        if let Some(params) = params {
+            nodes.push(json!({ "id": "wait", "type": "control.wait", "params": params }));
+            edges.push(json!({ "from": "first", "to": "wait" }));
+        }
+        ir(json!(nodes), json!(edges))
+    };
+    let folder = Uuid::new_v4().to_string();
+    let event =
+        json!({ "kind": "event", "source": "storage.write", "scope": { "folder": folder } });
+    let mut runs = Vec::new();
+    for params in [
+        Some(json!({ "kind": "duration", "duration_sec": 3600 })),
+        Some(event.clone()),
+        Some(event),
+        None,
+    ] {
+        let ir = flow(params);
+        runs.push(
+            create(
+                &pool,
+                &tenant,
+                "acme",
+                workflow_id,
+                "alice",
+                "user",
+                json!({}),
+                &ir,
+            )
+            .await,
+        );
+    }
+    drive(&pool, &tenant).await;
+    pending_approval(&pool, &tenant, workflow_id, runs[2], "wait").await;
+
+    let list = store
+        .list_runs(
+            &tenant,
+            workflow_id,
+            &workflow_engine::RunListFilter::default(),
+            None,
+            50,
+        )
+        .await;
+    let mut details = Vec::new();
+    for run in &runs {
+        details.push(store.run_detail(&tenant, workflow_id, *run).await);
+    }
+    // 片付けを先に済ませてから確かめる（落ちても行を残さない）。
+    forget(&pool, &tenant).await;
+
+    let list = list.unwrap();
+    let listed: Vec<(String, Option<String>)> = runs
+        .iter()
+        .map(|run| {
+            let item = list.iter().find(|r| r.run_id == *run).unwrap();
+            (item.status.clone(), item.waiting_for.clone())
+        })
+        .collect();
+    let running = |w: &str| ("running".to_string(), Some(w.to_string()));
+    assert_eq!(
+        listed,
+        [
+            running("timer"),
+            running("event"),
+            running("approval"),
+            ("succeeded".to_string(), None)
+        ]
+    );
+
+    let details: Vec<_> = details.into_iter().map(|d| d.unwrap().unwrap()).collect();
+    let waits: Vec<(Option<&str>, Option<&str>)> = details
+        .iter()
+        .map(|d| {
+            let step = d.steps.iter().find(|s| s.step_path == "wait");
+            (
+                d.waiting_for.as_deref(),
+                step.and_then(|s| s.waiting_for.as_deref()),
+            )
+        })
+        .collect();
+    assert_eq!(
+        waits,
+        [
+            (Some("timer"), Some("timer")),
+            (Some("event"), Some("event")),
+            (Some("approval"), Some("approval")),
+            (None, None)
+        ]
+    );
+    let first = details[0]
+        .steps
+        .iter()
+        .find(|s| s.step_path == "first")
+        .unwrap();
+    assert_eq!(first.waiting_for, None, "終わった step は待っていない");
 }
 
 /// 失敗の理由は利用者向けの分類で返り、生のエラー文を含まない。再開すると理由は消える。

@@ -130,6 +130,11 @@ pub(super) fn runs_or_503(state: &AppState) -> Result<&workflow_engine::RunStore
         .ok_or_else(|| ApiError::ServiceUnavailable("workflow 実行時が無効です".into()))
 }
 
+/// 履歴の読取口が返す待っているもの（`approval`・`event`・`timer`）を API の型へ（知らない値は null）。
+fn waiting_for(raw: Option<&str>) -> Option<workflow_engine::WaitingFor> {
+    raw.and_then(workflow_engine::WaitingFor::parse)
+}
+
 /// run 一覧クエリ（faceted filter・keyset）。
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct ListRunsQuery {
@@ -154,6 +159,9 @@ pub struct ListRunsQuery {
 pub struct RunListItemDto {
     pub run_id: Uuid,
     pub status: String,
+    /// 待機中（`running` で、承認・変更・時刻を待つブロックで止まっている）なら待っているもの
+    /// （engine.md §3.1 の導出値・実行中と分けて出す・BUG-119）。待機中でなければ null。
+    pub waiting_for: Option<workflow_engine::WaitingFor>,
     pub trigger_kind: String,
     pub version: i64,
     pub created_at: String,
@@ -217,6 +225,7 @@ pub async fn list_workflow_runs(
             .into_iter()
             .map(|r| RunListItemDto {
                 run_id: r.run_id,
+                waiting_for: waiting_for(r.waiting_for.as_deref()),
                 status: r.status,
                 trigger_kind: r.trigger_kind,
                 version: r.version,
@@ -245,6 +254,8 @@ pub struct StepOverviewDto {
     pub updated_at: String,
     /// AI ノードの Langfuse trace 突合（engine.md §11.2）。
     pub langfuse_trace_id: Option<String>,
+    /// 待っている step なら待っているもの（承認・変更・時刻・run の `waiting_for` と同じ決め方・BUG-119）。
+    pub waiting_for: Option<workflow_engine::WaitingFor>,
 }
 
 /// run 詳細レスポンス（履歴 UI のヘッダ＋タイムライン素材）。
@@ -252,6 +263,8 @@ pub struct StepOverviewDto {
 pub struct RunDetailResponse {
     pub run_id: Uuid,
     pub status: String,
+    /// 待機中なら待っているもの（[`RunListItemDto::waiting_for`] と同じ）。
+    pub waiting_for: Option<workflow_engine::WaitingFor>,
     pub trigger_kind: String,
     pub version: i64,
     /// run 入力。
@@ -298,6 +311,7 @@ pub async fn get_workflow_run(
         .ok_or(ApiError::NotFound)?;
     Ok(Json(RunDetailResponse {
         run_id: d.run_id,
+        waiting_for: waiting_for(d.waiting_for.as_deref()),
         status: d.status,
         trigger_kind: d.trigger_kind,
         version: d.version,
@@ -323,6 +337,7 @@ pub async fn get_workflow_run(
                 wake_at: s.wake_at.map(|t| t.to_rfc3339()),
                 updated_at: s.updated_at.to_rfc3339(),
                 langfuse_trace_id: s.langfuse_trace_id,
+                waiting_for: waiting_for(s.waiting_for.as_deref()),
             })
             .collect(),
     }))
