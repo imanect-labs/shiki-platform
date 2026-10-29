@@ -193,3 +193,49 @@ fn catalog_serializes_to_json() {
     assert_eq!(arr[0]["type"], "control.branch");
     assert_eq!(arr[0]["category_label_ja"], "流れの制御");
 }
+
+/// BUG-108: 設定で決まる項目は、その設定の場所を持つ（画面が値の候補を出し分ける）。場所はその種類の params に
+/// 実在する（params の型が受け付ける）。
+#[test]
+fn fields_that_depend_on_params_say_where() {
+    let catalog = node_catalog();
+    let present_if = |nt: NodeType, name: &str| {
+        catalog
+            .iter()
+            .find(|e| e.node_type == nt)
+            .and_then(|e| e.output_fields.iter().find(|f| f.name == name))
+            .map(|f| f.present_if)
+            .unwrap()
+    };
+    assert_eq!(
+        present_if(NodeType::DataQuery, "count"),
+        "/query/with_count"
+    );
+    assert_eq!(
+        present_if(NodeType::DataQuery, "groups"),
+        "/query/aggregate"
+    );
+    assert_eq!(present_if(NodeType::DataQuery, "items"), "");
+    assert_eq!(present_if(NodeType::LlmInvoke, "data"), "/output_schema");
+    for e in &catalog {
+        for f in e.output_fields {
+            if !f.present_if.is_empty() {
+                assert!(
+                    f.present_if.starts_with('/') && f.optional,
+                    "{}: {}",
+                    e.node_type.as_str(),
+                    f.name
+                );
+            }
+        }
+    }
+    // 場所は params の型が受け付ける（綴りの誤りで、画面が候補を出さなくならない）。
+    let table = "00000000-0000-0000-0000-000000000001";
+    let q: crate::ir::params::DataQueryParams = serde_json::from_value(serde_json::json!({
+        "table": table,
+        "query": { "with_count": true, "group_by": ["k"], "aggregate": [{ "metric": "count" }] }
+    }))
+    .unwrap();
+    let q = q.query.unwrap();
+    assert!(q.with_count && !q.aggregate.is_empty());
+}

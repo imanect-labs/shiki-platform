@@ -177,6 +177,10 @@ pub struct OutputField {
     pub optional: bool,
     /// 補足（いつ入るか・何が入るか。空なら無し・表記は型の後ろの（…））。
     pub note: &'static str,
+    /// この項目が入るのは、ブロックの設定（params）のこの場所（JSON Pointer）に値があるときだけ（空なら、設定に
+    /// かかわらず入る）。値が無い・`false`・空の文字・空のリスト・空のオブジェクトは「値が無い」。画面は値の候補を
+    /// これで出し分ける（選んでも値が無く実行で失敗する候補を出さない・BUG-108）。
+    pub present_if: &'static str,
 }
 
 /// カタログ全量（NodeType::ALL と同順・exhaustive match で漏れを構造的に防ぐ）。
@@ -591,6 +595,7 @@ macro_rules! field {
             ty: $ty,
             optional: false,
             note: "",
+            present_if: "",
         }
     };
     ($name:literal, $ty:literal, $note:literal) => {
@@ -599,6 +604,7 @@ macro_rules! field {
             ty: $ty,
             optional: false,
             note: $note,
+            present_if: "",
         }
     };
 }
@@ -609,6 +615,7 @@ macro_rules! opt {
             ty: $ty,
             optional: true,
             note: "",
+            present_if: "",
         }
     };
     ($name:literal, $ty:literal, $note:literal) => {
@@ -617,6 +624,17 @@ macro_rules! opt {
             ty: $ty,
             optional: true,
             note: $note,
+            present_if: "",
+        }
+    };
+    // 設定のこの場所に値があるときだけ入る項目（[`OutputField::present_if`]）。
+    ($name:literal, $ty:literal, $note:literal, present_if = $at:literal) => {
+        OutputField {
+            name: $name,
+            ty: $ty,
+            optional: true,
+            note: $note,
+            present_if: $at,
         }
     };
 }
@@ -697,7 +715,8 @@ fn output_shape(nt: NodeType) -> Shape {
                 opt!(
                     "data",
                     "unknown",
-                    "output_schema を書いたとき・その形で検証済みの値"
+                    "output_schema を書いたとき・その形で検証済みの値",
+                    present_if = "/output_schema"
                 ),
             ],
             "",
@@ -837,12 +856,18 @@ fn output_shape(nt: NodeType) -> Shape {
                     "items",
                     "Array<{ id: string, data: { [列の参照名]: unknown }, rev: number, … }>"
                 ),
-                opt!("groups", "Array<集計の行>", "aggregate のとき"),
+                opt!(
+                    "groups",
+                    "Array<集計の行>",
+                    "aggregate のとき",
+                    present_if = "/query/aggregate"
+                ),
                 opt!("next_cursor", "string"),
                 opt!(
                     "count",
                     "{ exact: number } | { at_least: number }",
-                    "with_count のとき"
+                    "with_count のとき",
+                    present_if = "/query/with_count"
                 ),
             ],
             "",

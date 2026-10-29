@@ -65,17 +65,24 @@ function pathOf(segments: string[]): string | undefined {
   return segments.length > 0 ? `/${segments.map(pointerSegment).join("/")}` : undefined;
 }
 
-/// ノード種の出力の最上位の項目名（カタログの `output_fields`・D-42）。項目の組でない出力は空。
-///
-/// 項目はカタログの単一定義から生成される（crates/workflow-engine/src/vocab/catalog.rs）。表記の文字列
-/// （`output_shape`）は人と AI が読むためのもので、ここでは字句解析しない。
-export function outputKeys(nodeType: string | undefined): string[] {
-  const entry = NODE_CATALOG.find((c) => c.type === nodeType);
-  return (entry?.output_fields ?? []).map((f) => f.name);
+/// 設定（params）の JSON Pointer の場所に値があるか（無い・`false`・空の文字・空のリスト・空のオブジェクトは無い
+/// とする・カタログの `present_if` の約束）。
+function hasParamAt(params: unknown, pointer: string): boolean {
+  let v: unknown = params;
+  for (const seg of pointer.split("/").slice(1).map(unpointerSegment)) {
+    if (v === null || typeof v !== "object") return false;
+    v = (v as Record<string, unknown>)[seg];
+  }
+  if (v === undefined || v === null || v === false || v === "") return false;
+  if (Array.isArray(v)) return v.length > 0;
+  if (typeof v === "object") return Object.keys(v as object).length > 0;
+  return true;
 }
 
-/// 祖先ブロックの出力の項目の候補（path の段と表示）。最上位はカタログの `output_fields`（[`outputKeys`]）で、
-/// 設定で決まる項目をその後ろに足す:
+/// 祖先ブロックの出力の項目の候補（path の段と表示）。最上位はカタログの `output_fields`（単一定義から生成・
+/// crates/workflow-engine/src/vocab/catalog.rs・D-42）。設定で決まる項目（カタログの `present_if`）は、その設定が
+/// あるときだけ出す（選んでも値が無く実行で失敗する候補を出さない・「データを調べる」の件数と集計の結果・
+/// BUG-108）。設定で決まる項目をその後ろに足す:
 /// - 「AI に聞く」（llm.invoke）: `data` は出力の形（`output_schema`）を書いたときだけ出し、その項目ごとに
 ///   `data/<項目>` を足す（ir.md §7.3）。
 /// - 「AI で判定」（ai.decide）: 質問ごとに答え（`answers/<キー>/value`）と確からしさ（`/confidence`）、
@@ -84,9 +91,10 @@ export function outputKeys(nodeType: string | undefined): string[] {
 export function outputRefFields(a: RefCandidate): { path: string[]; label: string }[] {
   const params = (a.params ?? {}) as Record<string, unknown>;
   const out: { path: string[]; label: string }[] = [];
-  for (const k of outputKeys(a.type)) {
+  const fields = NODE_CATALOG.find((c) => c.type === a.type)?.output_fields ?? [];
+  for (const { name: k, present_if: presentIf } of fields) {
+    if (presentIf && !hasParamAt(params, presentIf)) continue;
     if (a.type === "llm.invoke" && k === "data") {
-      if (params.output_schema === undefined || params.output_schema === null) continue;
       out.push({ path: [k], label: k });
       for (const key of outputSchemaKeys(params.output_schema)) out.push({ path: [k, key], label: `${k}.${key}` });
       continue;
