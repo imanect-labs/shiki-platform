@@ -71,6 +71,7 @@ ignored = [
     "shiki-secrets",
     "shiki-jobq",
     "shiki-data",
+    "shiki-cron5",
 ]
 
 [lints]
