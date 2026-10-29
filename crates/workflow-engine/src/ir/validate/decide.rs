@@ -66,8 +66,9 @@ pub(super) fn v3(ir: &WorkflowIr, catalog: &Catalog, errors: &mut Vec<Validation
     };
     for (id, p) in decide_nodes(ir) {
         let model = p.model.as_str();
-        if model.is_empty() || allowed.iter().any(|m| m == model) {
-            continue; // 空は保存を止めず、実行と自動実行のオンの前に止める（readiness・D-83）。
+        // 空（空白だけを含む）は保存を止めず、実行と自動実行のオンの前に止める（readiness と同じ読み方・D-83）。
+        if model.trim().is_empty() || allowed.iter().any(|m| m == model) {
+            continue;
         }
         let e = if catalog
             .models

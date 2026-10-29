@@ -74,6 +74,14 @@ fn a_decision_model_passes_and_others_are_told_apart() {
         errs[0].message
     );
 
+    // 空と空白だけのモデルは照合せず保存を通す（実行と自動実行のオンの前に止める・readiness と同じ読み方・D-83）。
+    for blank in ["", "  "] {
+        assert!(
+            errors(&ir(json!([decide_node(blank)])), &cat).is_empty(),
+            "{blank:?}"
+        );
+    }
+
     // 照合の材料が無い構成（LLM 未構成）は照合しない（実行時に gateway が拒否する）。
     assert!(errors(&ir(json!([decide_node("anything")])), &Catalog::default()).is_empty());
 }
