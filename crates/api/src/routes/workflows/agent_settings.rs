@@ -24,6 +24,9 @@ pub struct AgentSettingsResponse {
     /// 実行時間の上限の範囲（秒）。
     pub min_duration_sec: u32,
     pub max_duration_sec: u32,
+    /// ブロックの時間の上限を、作業時間の上限にこの秒を足した時間より短くしない（エンジンの打ち切りと同じ値・
+    /// `run::step_timeout::AGENT_STOP_MARGIN_SEC`）。エディタが時間の上限の既定を言うときに足す。
+    pub stop_margin_sec: u32,
 }
 
 /// AI エージェントの設定の天井（ログインしていれば誰でも読める・組織の秘密は含まない）。
@@ -49,5 +52,6 @@ pub async fn get_agent_settings(
         default_max_duration_sec: DEFAULT_AGENT_DURATION_SEC,
         min_duration_sec,
         max_duration_sec,
+        stop_margin_sec: workflow_engine::run::step_timeout::AGENT_STOP_MARGIN_SEC,
     })
 }
