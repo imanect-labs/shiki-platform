@@ -14,6 +14,7 @@
 --   取り消しの通常の経路が行う: API の削除が commit の後にその場で、取りこぼしは scheduler の tick が行う。
 -- - 委譲（OpenFGA のタプル）は DB の外なので、API の削除が commit の後に「権限も取り消す」と同じ経路で外す。外せな
 --   かったものは scheduler の掃除が取り消す。
+-- - このトリガより前に消したワークフローにも、同じことを一度だけ行う（ファイルの末尾）。
 
 create function workflow_deleted_stop() returns trigger
 language plpgsql as $$
@@ -42,3 +43,31 @@ create trigger artifact_workflow_deleted_stop
     for each row
     when (new.kind = 'workflow' and old.deleted_at is null and new.deleted_at is not null)
     execute function workflow_deleted_stop();
+
+-- このトリガより前に消したワークフローにも同じことをする（残った承認の依頼が受信箱に出続けないように）。run の
+-- ドレインは scheduler の tick が、委譲は scheduler の掃除が行う。
+update workflow_registration r
+   set status = 'disabled', consented_scopes = '{}'::text[], updated_at = now()
+  from artifact a
+ where a.tenant_id = r.tenant_id
+   and a.id = r.workflow_id
+   and a.kind = 'workflow'
+   and a.deleted_at is not null
+   and (r.status <> 'disabled' or r.consented_scopes <> '{}'::text[]);
+update workflow_trigger t
+   set enabled = false
+  from artifact a
+ where a.tenant_id = t.tenant_id
+   and a.id = t.workflow_id
+   and a.kind = 'workflow'
+   and a.deleted_at is not null
+   and t.enabled;
+update workflow_run w
+   set cancel_requested = true, updated_at = now()
+  from artifact a
+ where a.tenant_id = w.tenant_id
+   and a.id = w.workflow_id
+   and a.kind = 'workflow'
+   and a.deleted_at is not null
+   and w.status in ('queued', 'running')
+   and not w.cancel_requested;
