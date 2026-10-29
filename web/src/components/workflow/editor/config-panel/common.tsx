@@ -183,11 +183,49 @@ export function period(sec: number): string {
   return s === 0 ? `${m.toLocaleString("ja-JP")} 分` : `${m.toLocaleString("ja-JP")} 分 ${s} 秒`;
 }
 
+/// 秒の数（4 桁以上はカンマ）と、1 分以上なら分の読み替え（付録 C の P11）。
+function seconds(sec: number): string {
+  return sec >= 60 ? `${sec.toLocaleString("ja-JP")} 秒（${period(sec)}）` : `${sec} 秒`;
+}
+
 /// 時間の上限の注記（数はカタログの timeout_default_sec と timeout_max_sec から・付録 D の N2.6）。
-function timeoutHint(defaultSec: number, maxSec: number, agent: boolean): string {
-  const def = defaultSec >= 60 ? `${defaultSec.toLocaleString("ja-JP")} 秒（${period(defaultSec)}）` : `${defaultSec} 秒`;
+function timeoutHint(defaultSec: number, maxSec: number, agent = false): string {
   const agentNote = agent ? "「AI の作業時間の上限」より短くはできません。" : "";
-  return `空欄なら ${def}で、最大 ${maxSec.toLocaleString("ja-JP")} 秒です。${agentNote}過ぎると、このブロックは失敗します。`;
+  return `空欄なら ${seconds(defaultSec)}で、最大 ${maxSec.toLocaleString("ja-JP")} 秒です。${agentNote}過ぎると、このブロックは失敗します。`;
+}
+
+/// 承認を待つの時間の上限の注記。打ち切るのは承認を頼むまでの処理だけで、判断を待つ時間は「判断の期限」と実行の期限が
+/// 決める（ir.md §7 の表の「停止まで」・付録 C の P7）。
+function approvalTimeoutHint(defaultSec: number, maxSec: number): string {
+  return `${timeoutHint(defaultSec, maxSec)}判断を待つ時間は含みません（「判断の期限」で決めます）。`;
+}
+
+type TimeoutFieldProps = {
+  node: IrNode;
+  dispatch: React.Dispatch<EditorAction>;
+  maxSec: number;
+  error: string | null;
+};
+
+/// 時間の上限（ノードの timeout_sec）の欄。
+function TimeoutField({ node, dispatch, maxSec, error, hint }: TimeoutFieldProps & { hint: string }) {
+  return (
+    <Field label="時間の上限（秒・省略可）" hint={hint} error={error}>
+      <NumberInput
+        value={node.timeout_sec ?? null}
+        min={1}
+        max={maxSec}
+        error={Boolean(error)}
+        onChange={(n) =>
+          dispatch({
+            type: "update_node",
+            id: node.id,
+            patch: { timeout_sec: n } as Partial<IrNode>,
+          })
+        }
+      />
+    </Field>
+  );
 }
 
 /// 共通セクション（全ノード種）。
@@ -264,25 +302,17 @@ export function CommonSection({
         {/* 時間の上限（ノードの timeout_sec）。エンジンが打ち切るようになったので出す（BUG-96・付録 D の N2.6）。
             打ち切らない種（流れの制御など・カタログに既定が無い）では出さない。 */}
         {entry?.timeout_default_sec && entry.timeout_max_sec ? (
-          <Field
-            label="時間の上限（秒・省略可）"
-            hint={timeoutHint(entry.timeout_default_sec, entry.timeout_max_sec, node.type === "agent.invoke")}
+          <TimeoutField
+            node={node}
+            dispatch={dispatch}
+            maxSec={entry.timeout_max_sec}
             error={timeoutError}
-          >
-            <NumberInput
-              value={node.timeout_sec ?? null}
-              min={1}
-              max={entry.timeout_max_sec}
-              error={Boolean(timeoutError)}
-              onChange={(n) =>
-                dispatch({
-                  type: "update_node",
-                  id: node.id,
-                  patch: { timeout_sec: n } as Partial<IrNode>,
-                })
-              }
-            />
-          </Field>
+            hint={
+              node.type === "human.approval"
+                ? approvalTimeoutHint(entry.timeout_default_sec, entry.timeout_max_sec)
+                : timeoutHint(entry.timeout_default_sec, entry.timeout_max_sec, node.type === "agent.invoke")
+            }
+          />
         ) : null}
       </div>
       <Field
