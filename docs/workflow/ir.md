@@ -377,7 +377,7 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 
 | type | 区分 | 概要 | 冪等性 | timeout 既定/最大 |
 |---|---|---|---|---|
-| `storage.read` | 能力 | 文章のファイルを読む（≤ 10MB。PDF・Office・画像などの種類と、文字コードを決められない中身・文章でない中身は `not_text_file` で失敗・BUG-101。文字コードは BOM〔UTF-8・UTF-16LE・UTF-16BE〕→ 全体が妥当な UTF-8 → 日本の文字コード〔Shift_JIS（CP932）・EUC-JP〕の推定の順で決め、推定の確からしさが低ければ断る。結果に読んだ文字コード `encoding` を載せ、`text` には BOM を含めない・GAP-45。種類は、拡張子が文章の種類〔.txt・.md・.csv・.tsv・.json・.log など〕なら MIME より拡張子を優先して中身の確かめに任せ〔ブラウザーが付けた MIME をそのまま保存しているため。Windows の .csv の `application/vnd.ms-excel` など〕、それ以外は MIME で決め、MIME が無いか `application/octet-stream` のときだけ拡張子で決める〔.dot・.key のように文章にも使う拡張子では断らない〕。結果に読んだ中身のバージョン `version` を載せる・D-96） | pure | 30s / 120s |
+| `storage.read` | 能力 | 文章のファイルの中身と、PDF・Office の本文を読む（≤ 10MB。文章の種類で文字コードを決められない中身・文章でない中身は `not_text_file` で失敗・BUG-101。PDF・Office など文章でない種類は、社内文書の検索に取り込まれた本文を先頭から 100,000 字〔`STORAGE_READ_MAX_DOCUMENT_CHARS`〕まで読み、原本は読み直さない〔下の「PDF・Office の本文」・D-111〕。文字コードは BOM〔UTF-8・UTF-16LE・UTF-16BE〕→ 全体が妥当な UTF-8 → 日本の文字コード〔Shift_JIS（CP932）・EUC-JP〕の推定の順で決め、推定の確からしさが低ければ断る。結果に読んだ文字コード `encoding` を載せ、`text` には BOM を含めない・GAP-45。種類は、拡張子が文章の種類〔.txt・.md・.csv・.tsv・.json・.log など〕なら MIME より拡張子を優先して中身の確かめに任せ〔ブラウザーが付けた MIME をそのまま保存しているため。Windows の .csv の `application/vnd.ms-excel` など〕、それ以外は MIME で決め、MIME が無いか `application/octet-stream` のときだけ拡張子で決める〔.dot・.key のように文章にも使う拡張子では断らない〕。結果に読んだ中身のバージョン `version` を載せる・D-96） | pure | 30s / 120s |
 | `storage.write` | 能力 | 新しいファイルの保存（既存のファイルは書き換えず、新しいバージョンも足さない。同じ名前があれば `on_name_taken` に従い、省略・`fail` は `name_taken` で失敗、`add_number` は「名前 (2).md」〜「名前 (50).md」の空いている名前で保存する。`content_type` を省くと拡張子〔.txt・.md・.csv・.json・.html〕から決め、決まらなければ `application/octet-stream`・BUG-97・D-97） | engine-dedup | 30s / 120s |
 | `storage.list` | 能力 | フォルダ一覧 | pure | 30s / 120s |
 | `csv.query` | 能力 | CSV に読み取り専用の SQL を実行して集計・抽出する（隔離ランナー。CSV の文字コードは `storage.read` と同じ判定で決めて UTF-8 にしてからランナーへ渡し、決められなければ `not_text_file`・GAP-45。結果に集計した中身のバージョン `version` を載せ、後ろの `csv.patch` の `base_rev` にできる・D-96） | pure | 30s / 120s |
@@ -401,6 +401,20 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 
 以下、設計上の要点を持つノード種を個別に規定する。params の網羅的スキーマは codegen 型が正であり、本節は制約と出力形を示す。
 
+- **PDF・Office の本文**（`storage.read`・D-111）: 文章でない種類（MIME か拡張子で決める。判定は上の表の文章のファイルと同じ）は、
+  社内文書の検索が取り込んだ本文（版のブロック列。無ければ検索用の断片）を、先頭から 100,000 字まで 1 つにつないで読む。
+  - 結果は文章のファイルと同じ項目（`file_id`・`id`・`name`・`version`・`content_type`・`size`・`text`）に、上限の字数で切ったかの
+    `truncated`（boolean）を足したもの。`text` にはページの変わり目の印（`〔p.2〕`）と見出しの行（`#` で始まる）が入り、`encoding` は
+    無い。`version` は読んだ本文の内容のバージョン（名前の変更・移動でファイルのバージョンが進んでも、本文は取り込んだ内容のもの）。
+    文章のファイルは切らないので、`truncated` はいつも false。
+  - 認可はチャットの `doc_read` と同じ契約: 閲覧の判定（StorageService）と、検索と同じ可読集合での本文の authz_tags の照合（pre-filter）の
+    両方を通す。見えない・無い・pre-filter で読めないは同じ `not_found`（存在の秘匿。文章のファイルも同じ）。要るスコープは
+    `storage.read` のまま（本文はファイルの中身から作ったもので、読める範囲は広がらない）。
+  - いまの内容（内容のバージョンの履歴の最新）の本文が索引に無いときは、待てば読めるかで分ける: 取り込みの結果がまだ無い・
+    取り込み中・一時的な失敗のやり直し待ちは `index_pending`（retryable）。取り込めない種類（画像・.doc・.xls など）・取り込みの上限より
+    大きい・本文の無い文書は `not_indexable`、取り込みに失敗した（やり直しを使い切った）ものは `index_failed`、社内文書の検索が使えない
+    環境では `not_text_file`（いずれも permanent）。新しい内容の取り込みが終わるまでは、古い内容の本文を読まない。
+  - script の `Shiki.storage.read` は文章のファイルだけを読む（いまのまま）。
 - **ファイルの ID の項目名は `file_id` にそろえる**（D-96）: `storage.read`・`storage.write`・`csv.write`・`csv.patch` の結果は `file_id` を載せ、古い名前（`storage.*` の `id`・`csv.*` の `node_id`）も同じ値で残す（保存済みの定義の `$from` を壊さない）。`rag.search` の結果・ファイル保存のトリガのペイロードはもとから `file_id`。出力の形の正はカタログの `output_fields`。
 
 **出力の形の正はノードカタログ**（`crates/workflow-engine/src/vocab/catalog.rs`）の `output_fields`（最上位の項目の名前・型・省略されうるか・補足）である。AI の説明文に載せる TS 風の表記（`output_shape`）はそこから作り、エディタの参照の候補も `output_fields` を読む（表記を字句解析しない・D-42）。設定で決まる項目は、その設定の場所（params の JSON Pointer・`present_if`）を持つ（`llm.invoke` の `data` は `/output_schema`、`data.query` の `count` は `/query/with_count`、`groups` は `/query/aggregate`）。エディタは、その場所に値があるときだけ参照の候補に出す（値の入らない候補を選ばせない・BUG-108）。項目の組でない出力（入力をそのまま通す・script の戻り値など）は文で書き、項目は空にする。
