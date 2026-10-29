@@ -304,6 +304,8 @@ export type FilterExprValue = {
 };
 
 /// 比べる値の入れ方の切り替え（直接入力｜入力や結果から選ぶ・付録 D の N1.5.1）。
+///
+/// ARIA の radiogroup の作り: 選んでいる方だけが Tab で止まり（roving tabindex）、矢印キーで選び直す。
 function ValueModeToggle({
   label,
   expr,
@@ -313,12 +315,27 @@ function ValueModeToggle({
   expr: boolean;
   onChange: (expr: boolean) => void;
 }) {
+  const refs = React.useRef<(HTMLButtonElement | null)[]>([]);
+  const choose = (on: boolean) => {
+    if (expr !== on) onChange(on);
+    refs.current[on ? 1 : 0]?.focus();
+  };
   const item = (on: boolean, text: string) => (
     <button
       type="button"
       role="radio"
+      ref={(el) => {
+        refs.current[on ? 1 : 0] = el;
+      }}
       aria-checked={expr === on}
+      tabIndex={expr === on ? 0 : -1}
       onClick={() => expr !== on && onChange(on)}
+      onKeyDown={(e) => {
+        if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) {
+          e.preventDefault();
+          choose(!on);
+        }
+      }}
       className={cn(
         "rounded px-1.5 py-0.5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:py-1.5",
         expr === on ? "bg-primary/10 font-medium text-primary" : "text-muted-foreground hover:text-foreground",
