@@ -66,7 +66,17 @@ impl ChatStore {
             let already_bypass = current
                 .map(UserPreferences::from_stored)
                 .is_some_and(|p| p.default_autonomous_mode == AutonomousMode::Bypass);
-            if !already_bypass && !self.autonomous_bypass_allowed(&ctx.tenant_id).await? {
+            // org キャップも同じトランザクションで読む（接続を握ったままプールから 2 本目を取りに
+            // 行かない。同時の保存が多いとプールを使い切って互いに待ち合う）。未登録のテナントは許可
+            // （`autonomous_bypass_allowed` と同じ扱い）。
+            let allowed: Option<bool> = sqlx::query_scalar(
+                "SELECT allow_autonomous_bypass FROM tenant WHERE tenant_id = $1",
+            )
+            .bind(&ctx.tenant_id)
+            .fetch_optional(&mut *tx)
+            .await
+            .map_err(map_db)?;
+            if !already_bypass && !allowed.unwrap_or(true) {
                 return Err(ChatError::Invalid(BYPASS_FORBIDDEN.into()));
             }
         }
