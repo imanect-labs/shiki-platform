@@ -256,7 +256,7 @@ export default function HomePage() {
 
         <SeasonDivider />
 
-        <ContinueSection threads={feed.threads} shares={feed.shares} />
+        <ContinueSection feed={feed} />
 
         <div className="hidden w-full sm:block">
           <ShortcutGrid />
