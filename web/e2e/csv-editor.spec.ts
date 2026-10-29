@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { loginAs, loginViaKeycloak, uniqueName } from "./helpers";
+import { shiftJis } from "./fixtures/shift-jis";
+import { cleanupAll, loginAs, loginViaKeycloak, uniqueName } from "./helpers";
 
 /// CSV グリッドエディタ（Task 11P.8）の受け入れ条件を検証する:
 /// - グリッドで表示・セル編集・保存（新バージョン）
@@ -143,4 +144,63 @@ test("CSV viewer は閲覧のみ", async ({ page, browser }) => {
   // 保存ボタンは editor のみ表示（viewer には出ない）。
   await expect(bobPage.getByTestId("csv-save")).toHaveCount(0);
   await bobCtx.close();
+});
+
+/// 日本語の Windows の Excel が既定で保存する Shift_JIS の CSV も、グリッドで日本語の列名のまま開ける（GAP-45）。
+/// 以前は DuckDB が UTF-8 でない中身を読めず、画面は開けなかった。
+test("CSV グリッド: Shift_JIS の CSV を開ける", async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await loginViaKeycloak(page);
+  const csrf = async () => (await page.context().cookies()).find((c) => c.name === "shiki_csrf")?.value ?? "";
+  let folderId = "";
+  let fileId = "";
+  try {
+    const folder = await page.request.post("/api/folders", {
+      headers: { "x-csrf-token": await csrf(), "content-type": "application/json" },
+      data: { name: uniqueName("e2e-sjis-csv"), parent_id: null },
+    });
+    expect(folder.ok(), await folder.text()).toBeTruthy();
+    folderId = ((await folder.json()) as { id: string }).id;
+    await page.goto(`/drive?folder=${folderId}`);
+    const name = `${uniqueName("経費")}.csv`;
+    await page.locator('input[type="file"][multiple]').setInputFiles({
+      name,
+      mimeType: "application/vnd.ms-excel",
+      buffer: shiftJis("経費,金額\n交通費,1200\n宿泊費,8000\n"),
+    });
+    await expect(page.getByText(name, { exact: true })).toBeVisible({ timeout: 20_000 });
+    await expect
+      .poll(
+        async () => {
+          const res = await page.request.get(`/api/nodes?parent_id=${folderId}`);
+          const items = ((await res.json()) as { items?: { id: string; name: string }[] }).items ?? [];
+          fileId = items.find((c) => c.name === name)?.id ?? "";
+          return fileId;
+        },
+        { timeout: 30_000 },
+      )
+      .not.toBe("");
+
+    await openCsv(page, fileId);
+    await expect(page.getByText(/2 行 × 2 列/)).toBeVisible({ timeout: 15_000 });
+    const schema = await page.request.get(`/api/files/${fileId}/tabular/schema`);
+    expect(((await schema.json()) as { columns: string[] }).columns).toEqual(["経費", "金額"]);
+    if (process.env.E2E_SHOTS_DIR) {
+      await page.screenshot({ path: `${process.env.E2E_SHOTS_DIR}/csv-grid-sjis-pc.png` });
+    }
+  } finally {
+    await cleanupAll(
+      async () => {
+        if (!fileId) return;
+        const del = await page.request.delete(`/api/files/${fileId}`, { headers: { "x-csrf-token": await csrf() } });
+        expect(del.status(), await del.text()).toBeLessThan(300);
+      },
+      async () => {
+        if (!folderId) return;
+        const del = await page.request.delete(`/api/folders/${folderId}`, { headers: { "x-csrf-token": await csrf() } });
+        expect(del.status(), await del.text()).toBeLessThan(300);
+      },
+    );
+  }
 });
