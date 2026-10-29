@@ -250,6 +250,8 @@ impl Tool for CsvWriteTool {
                 input.parent_id,
                 input.name.trim(),
                 input.csv.as_bytes(),
+                // AI の保存は同じ名前があると失敗にする（黙って別の名前で作らない）。
+                storage::OnNameTaken::Fail,
                 trace_id,
             )
             .await

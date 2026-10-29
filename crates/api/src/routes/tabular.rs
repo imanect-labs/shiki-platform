@@ -242,6 +242,10 @@ pub struct SaveRequest {
     pub name: String,
     /// CSV 本文（そのまま保存）。
     pub csv: String,
+    /// 同じ名前のファイルがあるとき（省略は失敗にする＝409）。`add_number` は `名前 (2).csv` から空いている
+    /// 名前で保存する（ドライブの新規作成・ノートと同じ規則・D-112）。
+    #[serde(default)]
+    pub on_name_taken: storage::OnNameTaken,
 }
 
 /// 保存結果。
@@ -275,6 +279,7 @@ pub async fn post_save(
             req.parent_id,
             name,
             req.csv.as_bytes(),
+            req.on_name_taken,
             trace.0.as_deref(),
         )
         .await

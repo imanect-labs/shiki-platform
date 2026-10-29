@@ -392,6 +392,8 @@ use utoipa::{
         storage::ShareLink,
         storage::ShareLinkGrant,
         storage::GeneralAccessLevel,
+        // 同じ名前のファイルがあるときの扱い（CSV の新規保存・D-112）。
+        storage::OnNameTaken,
         crate::routes::share_links::CreateShareLinkRequest,
         crate::routes::share_links::ExtendShareLinkRequest,
         crate::routes::share_links::RedeemShareLinkRequest,

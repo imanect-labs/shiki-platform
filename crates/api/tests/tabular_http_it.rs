@@ -741,3 +741,57 @@ async fn tabular_reads_shift_jis_and_explains_what_it_cannot_read_or_write() {
         "この CSV の中身は文章として読めません。UTF-8 か Shift_JIS で保存した CSV を選んでください。"
     );
 }
+
+/// 新規 CSV の保存で同じ名前があるとき: 省略は今のまま 409 で、`add_number` はノートと同じ規則（`名前 (2).csv`）で
+/// 空いている名前に保存する（ドライブの新規作成・D-112）。
+#[tokio::test]
+async fn tabular_save_numbers_taken_names_when_asked() {
+    let Some(env) = setup().await else { return };
+    let folder = env
+        .storage
+        .create_folder(
+            &env.ctx,
+            None,
+            &format!("csv-name-{}", Uuid::new_v4().simple()),
+            None,
+        )
+        .await
+        .unwrap();
+    let save = |extra: Value| {
+        let mut body = json!({
+            "parent_id": folder.id,
+            "name": "無題のスプレッドシート",
+            "csv": "列1,列2\n,\n",
+        });
+        if let (Value::Object(b), Value::Object(e)) = (&mut body, extra) {
+            b.extend(e);
+        }
+        let app = env.app.clone();
+        async move { json_body(app.oneshot(post("/tabular/save", body)).await.unwrap()).await }
+    };
+
+    let mut names = vec![];
+    for _ in 0..2 {
+        let (st, body) = save(json!({ "on_name_taken": "add_number" })).await;
+        assert_eq!(st, StatusCode::OK, "{body:?}");
+        names.push(body["name"].as_str().unwrap().to_string());
+    }
+    assert_eq!(
+        names,
+        [
+            "無題のスプレッドシート.csv",
+            storage::numbered_name("無題のスプレッドシート.csv", 2).as_str()
+        ]
+    );
+    assert_eq!(names[1], "無題のスプレッドシート (2).csv");
+    // 省略と fail は今のまま 409。
+    for extra in [json!({}), json!({ "on_name_taken": "fail" })] {
+        let (st, body) = save(extra).await;
+        assert_eq!(st, StatusCode::CONFLICT, "{body:?}");
+    }
+
+    env.storage
+        .soft_delete_folder(&env.ctx, folder.id, None)
+        .await
+        .unwrap();
+}

@@ -481,6 +481,8 @@ impl NodePorts for ProdNodePorts {
                 req.parent_id,
                 &req.name,
                 &req.csv_bytes,
+                // 番号を付ける扱いはエンジンが名前を変えて試す（CsvWriteReq は扱いを運ばない）。
+                storage::OnNameTaken::Fail,
                 ec.trace_id.as_deref(),
             )
             .await

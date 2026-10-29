@@ -4,7 +4,7 @@
 //! 認可は操作別に StorageService の内部 API が強制する（**実行主体交差則**・昇格しない）:
 //! - query/rows/schema … `read_file_internal`（viewer@file）
 //! - patch … `update_file_content_internal`（editor@file）
-//! - save（新規） … `write_file_internal`（member@org / editor@folder＝作成権限）
+//! - save（新規） … `write_file_named`（member@org / editor@folder＝作成権限・同じ名前の扱いを選ぶ）
 //!
 //! DuckDB 実行は [`crate::runner`] の非特権別プロセスに隔離し、api には CSV を食わせない。
 //!
@@ -16,7 +16,7 @@ use std::io::Write as _;
 use std::sync::Arc;
 
 use authz::AuthContext;
-use storage::{NodeKind, StorageService};
+use storage::{NodeKind, OnNameTaken, StorageService};
 use uuid::Uuid;
 
 use crate::error::TabularError;
@@ -189,13 +189,16 @@ impl TabularService {
         })
     }
 
-    /// 新規 CSV を保存する（作成権限＝write_file_internal が member@org/editor@folder を強制）。
+    /// 新規 CSV を保存する（作成権限＝write_file_named が member@org/editor@folder を強制）。
+    ///
+    /// 同じ名前のファイルがあるときは `on_taken` に従う（番号は StorageService が付ける・D-112）。
     pub async fn save_new(
         &self,
         ctx: &AuthContext,
         parent_id: Option<Uuid>,
         name: &str,
         csv_bytes: &[u8],
+        on_taken: OnNameTaken,
         trace_id: Option<&str>,
     ) -> Result<SavedCsv, TabularError> {
         let file_name = if name.to_lowercase().ends_with(".csv") {
@@ -205,7 +208,9 @@ impl TabularService {
         };
         let node = self
             .storage
-            .write_file_internal(ctx, parent_id, &file_name, csv_bytes, "text/csv", trace_id)
+            .write_file_named(
+                ctx, parent_id, &file_name, csv_bytes, "text/csv", on_taken, trace_id,
+            )
             .await?;
         Ok(SavedCsv {
             node_id: node.id,
