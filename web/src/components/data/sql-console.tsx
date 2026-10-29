@@ -152,6 +152,9 @@ export function SqlConsole() {
   const [result, setResult] = React.useState<{ data: SqlQueryResult; sql: string } | null>(null);
   /// 誤りとそれを出した SQL（位置の表示・候補の置き換えはこの SQL で行う）。
   const [error, setError] = React.useState<{ error: unknown; sql: string } | null>(null);
+  /// 続きのページの読み込みの失敗。あるあいだは自動で読まない（同じ位置を繰り返し読みに行かない）。
+  /// 新しい実行か「読み込み直す」で消す。
+  const [moreError, setMoreError] = React.useState<unknown>(null);
   /// 参照一覧の開閉（広い画面は開いて始める・押したら利用者の選択を優先する）。
   const [refChoice, setRefChoice] = React.useState<boolean | null>(null);
   const refOpen = refChoice ?? wide;
@@ -226,6 +229,7 @@ export function SqlConsole() {
     setRunning(true);
     setLoadingMore(false);
     setError(null);
+    setMoreError(null);
     setOfferFrom(false);
     try {
       const data = await runSql({ sql: text, with_count: withCount }, { signal: ac.signal });
@@ -260,18 +264,28 @@ export function SqlConsole() {
     const ac = new AbortController();
     abortRef.current = ac;
     setLoadingMore(true);
-    setError(null);
     try {
       const data = await runSql({ sql: cur.sql, cursor: cur.data.next_cursor, with_count: false }, { signal: ac.signal });
       if (seq.current !== id) return;
+      setMoreError(null);
+      // 伏せた値・個別共有の打ち切りは、どれかのページで起きていれば結果全体の印として残す。
       setResult((prev) =>
         prev && prev.sql === cur.sql
-          ? { sql: prev.sql, data: { ...data, rows: [...prev.data.rows, ...data.rows], count: prev.data.count } }
+          ? {
+              sql: prev.sql,
+              data: {
+                ...data,
+                rows: [...prev.data.rows, ...data.rows],
+                count: prev.data.count,
+                suppressed: prev.data.suppressed || data.suppressed,
+                shares_truncated: prev.data.shares_truncated || data.shares_truncated,
+              },
+            }
           : prev,
       );
     } catch (e) {
       if (seq.current !== id || ac.signal.aborted) return;
-      setError({ error: e, sql: cur.sql });
+      setMoreError(e);
     } finally {
       if (seq.current === id) setLoadingMore(false);
     }
@@ -315,14 +329,15 @@ export function SqlConsole() {
   const data = result?.data;
   const tableOf = data ? tables?.find((t) => t.id === data.table_id) : undefined;
   // LIMIT を書いた問い合わせはその件数で終える（続きを読み込まない）。
-  const hasMore = !!data?.next_cursor && data.query.limit == null;
+  const canMore = !!data?.next_cursor && data.query.limit == null;
+  const hasMore = canMore && !moreError;
   const isAggregate = (data?.query.aggregate?.length ?? 0) > 0;
   const countLabel = data
     ? data.count
       ? "exact" in data.count
         ? `${numberFmt.format(data.rows.length)} 行 / 全 ${numberFmt.format(data.count.exact)} 件`
         : `${numberFmt.format(data.rows.length)} 行 / 全 ${numberFmt.format(data.count.at_least)} 件以上`
-      : hasMore
+      : canMore
         ? `${numberFmt.format(data.rows.length)} 行（続きあり）`
         : `${numberFmt.format(data.rows.length)} 行`
     : "";
@@ -461,8 +476,20 @@ export function SqlConsole() {
             <p className="sr-only" aria-live="polite">
               {running ? "実行中" : data ? countLabel : ""}
             </p>
-            {error && data ? (
-              <SqlErrorPanel error={error.error} ranSql={error.sql} replaceable={replaceable} onCandidate={onCandidate} />
+            {moreError && data ? (
+              <div
+                className="flex items-center gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-[13px]"
+                role="alert"
+                data-testid="sql-more-error"
+              >
+                <AlertTriangle className="size-4 shrink-0 text-destructive" aria-hidden />
+                <span className="min-w-0 flex-1">
+                  続きを読み込めませんでした（{moreError instanceof Error ? moreError.message : String(moreError)}）
+                </span>
+                <Button size="sm" variant="outline" className="h-7 text-xs" onClick={() => setMoreError(null)}>
+                  読み込み直す
+                </Button>
+              </div>
             ) : null}
             {data ? (
               <div className="flex flex-wrap items-center gap-x-2 gap-y-1">

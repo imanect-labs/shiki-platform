@@ -114,13 +114,31 @@ test("SQL の画面で結合・集計・続きの読み込みができ、拒否�
   await page.getByTestId("sql-run").click();
   await expect(page.getByTestId("sql-result-count")).toHaveText("50 行（続きあり）");
   await expect(result).toHaveAttribute("data-rows", "50");
+  // 続きの読み込みが失敗したら、同じ位置を繰り返し読みに行かず、理由と「読み込み直す」を出す。
+  let failedMore = 0;
+  await page.route("**/api/data/sql", async (route) => {
+    if (route.request().postDataJSON()?.cursor && failedMore === 0) {
+      failedMore += 1;
+      await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ title: "unavailable", status: 503 }) });
+      return;
+    }
+    await route.continue();
+  });
   const box = await result.boundingBox();
   if (!box) throw new Error("結果の表が見えない");
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.wheel(0, 4000);
+  const moreError = page.getByTestId("sql-more-error");
+  await expect(moreError).toBeVisible();
+  await page.waitForTimeout(800);
+  expect(failedMore).toBe(1);
+  await expect(result).toHaveAttribute("data-rows", "50");
+  await moreError.getByRole("button", { name: "読み込み直す" }).click();
+  await expect(moreError).toHaveCount(0);
   await expect(page.getByTestId("sql-result-count")).toHaveText("55 行");
   await expect(result).toHaveAttribute("data-rows", "55");
   await expect(result).toHaveAttribute("data-more", "0");
+  await page.unroute("**/api/data/sql");
 
   // 名前の誤り: 理由・位置・候補。一番近い候補を押すと誤った名前を置き換える。
   await editor.fill(`SELECT titel FROM "${deal}"`);
