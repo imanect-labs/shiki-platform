@@ -674,7 +674,12 @@ fn output_shape(nt: NodeType) -> Shape {
                 field!("version", "number", "読んだバージョン・CSV を編集の前提にできる"),
                 field!("content_type", "string"),
                 field!("size", "number"),
-                field!("text", "string"),
+                field!(
+                    "encoding",
+                    "string",
+                    "読んだ文字コード（UTF-8・Shift_JIS・EUC-JP・UTF-16LE・UTF-16BE）"
+                ),
+                field!("text", "string", "中身の文章（先頭の BOM は含まない）"),
             ],
             "",
         ),

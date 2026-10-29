@@ -16,6 +16,8 @@
 //! ウェブのページ（[`guess_any`]）は、宣言（Content-Type・`<meta charset>`）を agent-core が先に見て、宣言が
 //! 無いときにここで決める。ページは読めなくても何かを見せる用途なので、推定の答えをそのまま使う（断らない）。
 
+/// 文字コードの定数（`textenc::encoding_rs::SHIFT_JIS` など）を使う側が別に依存しなくて済むように出す。
+pub use encoding_rs;
 use encoding_rs::{
     Encoding, BIG5, EUC_JP, EUC_KR, GB18030, GBK, ISO_2022_JP, SHIFT_JIS, UTF_16BE, UTF_16LE, UTF_8,
 };

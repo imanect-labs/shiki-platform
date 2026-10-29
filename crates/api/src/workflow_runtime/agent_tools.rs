@@ -27,6 +27,9 @@ const NOT_READABLE: &str = "ファイルが見つからないか、読む権限�
 const NOT_TEXT: &str =
     "このファイルはテキストではありません。PDF・Word などの文書は doc.read で読んでください。";
 
+/// テキストの種類でも中身を読めない（文字コードが UTF-8・Shift_JIS などでない・文章でない）ときの文言。
+const NOT_READABLE_TEXT: &str = "このファイルの中身はテキストとして読めません（読める文字コードは UTF-8 と Shift_JIS など）。PDF・Word などの文書は doc.read で読んでください。";
+
 fn hidden() -> PortError {
     PortError::new("not_found", NOT_READABLE, false)
 }
@@ -67,15 +70,17 @@ pub(super) async fn storage_read_window(
         Err(S::Invalid(m)) => return Err(PortError::invalid(m)),
         Err(e) => return Err(PortError::unavailable(format!("storage: {e}"))),
     };
-    let Some(text) = super::text_file::utf8_text(&bytes) else {
-        return Err(PortError::invalid(NOT_TEXT));
+    // 文字コードはワークフローの「ファイルを読む」と同じ判定で決める（GAP-45）。
+    let Some(decoded) = super::text_file::read_text(&bytes) else {
+        return Err(PortError::invalid(NOT_READABLE_TEXT));
     };
-    let (window, next) = char_window(text, offset, max_chars);
+    let (window, next) = char_window(&decoded.text, offset, max_chars);
     Ok(json!({
         "id": node.id.to_string(),
         "name": node.name,
         "content_type": node.content_type,
         "size": node.size_bytes,
+        "encoding": decoded.encoding.name(),
         "offset": offset,
         "text": window,
         "next_offset": next,

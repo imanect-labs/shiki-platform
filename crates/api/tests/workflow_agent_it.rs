@@ -294,6 +294,45 @@ async fn agent_reads_a_file_with_a_tool_and_answers() {
     );
 }
 
+/// AI エージェントの窓読みも、ワークフローの「ファイルを読む」と同じ判定で文字コードを決める（GAP-45）。
+/// 日本語の Windows の Excel が保存する Shift_JIS の CSV を、文字化けせずに出典まで読める。
+#[tokio::test]
+async fn agent_reads_a_shift_jis_file() {
+    let Some(h) = setup().await else { return };
+    let (sjis, _, _) = textenc::encoding_rs::SHIFT_JIS.encode("経費,金額\n日当,2000\n");
+    let file = h
+        .storage
+        .write_file_internal(
+            &h.alice,
+            None,
+            "経費.csv",
+            &sjis,
+            "application/vnd.ms-excel",
+            None,
+        )
+        .await
+        .expect("write")
+        .id;
+    let exec = h.executor(AgentLimits::default(), Arc::new(CapturingAudit::default()));
+    let instruction = format!("calltool:storage.read {{\"file_id\":\"{file}\"}}");
+    let (status, out) = h
+        .run_agent(
+            json!({ "instruction": instruction, "allowed_tools": ["storage.read"] }),
+            &["storage.read"],
+            exec,
+        )
+        .await;
+    assert_eq!(status, RunStatus::Succeeded, "{out}");
+    assert_eq!(
+        out["tool_calls"],
+        json!([{ "tool": "storage.read", "ok": true }]),
+        "{out}"
+    );
+    let snippet = out["citations"][0]["snippet"].as_str().unwrap();
+    assert!(snippet.contains("日当,2000"), "{snippet}");
+    assert!(!snippet.contains('\u{FFFD}'), "{snippet}");
+}
+
 /// 道具を省略した定義（旧 IR の形を含む）は道具なしで答える（依頼を Python として実行しない）。
 #[tokio::test]
 async fn agent_without_tools_answers_from_the_instruction() {

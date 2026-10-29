@@ -1,12 +1,17 @@
 //! ファイルを文章として読めるかの判定（ワークフローの storage.read と AI エージェントの窓読み・BUG-101）。
 //!
 //! 中身を読む前に、MIME と拡張子で PDF・Office・画像・音声・動画・圧縮などを断る（大きな文書を読み込んでから
-//! 捨てない）。読んだ後は、UTF-8 として正しく NUL を含まないものだけを文章とする。以前の storage.read は
-//! `from_utf8_lossy` で読んだので、PDF や Word を選ぶと文字化けしたまま成功し、後ろの AI に渡っていた。
+//! 捨てない）。読んだ後は、文字コードを決めて文章として読めるものだけを文章とする（[`read_text`]）。以前の
+//! storage.read は `from_utf8_lossy` で読んだので、PDF や Word を選ぶと文字化けしたまま成功し、後ろの AI に
+//! 渡っていた。
+//!
+//! 文字コードは、BOM（UTF-8・UTF-16）→ UTF-8 → 日本の文字コード（Shift_JIS・EUC-JP）の推定の順で決め、推定の
+//! 確からしさが低ければ断る（判定は `textenc` の 1 か所・AI のウェブ取得と共有する・GAP-45）。日本語の Windows の
+//! Excel が保存する CSV の既定は Shift_JIS。
 //!
 //! 読む前の判定は次の順（確かな手がかりから使う）:
 //!
-//! 1. 拡張子が文章の種類（[`TEXT_EXTENSIONS`]）なら、MIME を見ずに中身の確かめ（[`utf8_text`]）に任せる。
+//! 1. 拡張子が文章の種類（[`TEXT_EXTENSIONS`]）なら、MIME を見ずに中身の確かめ（[`read_text`]）に任せる。
 //!    MIME はブラウザーが付けた値をそのまま保存しているので、文章のファイルにも文章でない型が付く
 //!    （Excel を入れた Windows のブラウザーは .csv に `application/vnd.ms-excel` を付ける）。
 //! 2. MIME があり `application/octet-stream` でなければ、MIME で決める（[`binary_mime`]）。
@@ -37,7 +42,7 @@ fn binary_mime(ct: &str) -> bool {
         || ct.contains("gzip")
 }
 
-/// 文章の種類の拡張子（MIME より優先する。中身が UTF-8 でなければ読んだ後に断る）。
+/// 文章の種類の拡張子（MIME より優先する。中身を文章として読めなければ読んだ後に断る）。
 const TEXT_EXTENSIONS: &[&str] = &[
     "txt", "text", "md", "markdown", "csv", "tsv", "json", "jsonl", "ndjson", "log", "xml", "html",
     "htm", "yaml", "yml", "toml", "ini",
@@ -77,11 +82,9 @@ pub(super) fn is_binary(name: &str, content_type: Option<&str>) -> bool {
     }
 }
 
-/// 中身を文章として読む（UTF-8 として正しく、NUL を含まないときだけ）。
-pub(super) fn utf8_text(bytes: &[u8]) -> Option<&str> {
-    std::str::from_utf8(bytes)
-        .ok()
-        .filter(|t| !t.contains('\0'))
+/// 中身を文章として読む（文字コードを決めて読めるときだけ・NUL や制御文字を含むものは文章にしない）。
+pub(super) fn read_text(bytes: &[u8]) -> Option<textenc::Decoded> {
+    textenc::decode_text(bytes).ok()
 }
 
 /// 種類が文章でないファイルを storage.read で読もうとしたときの誤り（付録 D の N3.5.1）。
@@ -93,14 +96,13 @@ pub(super) fn not_text_kind() -> PortError {
     )
 }
 
-/// 中身が UTF-8 の文章でないファイルを storage.read で読もうとしたときの誤り。
-pub(super) fn not_utf8_text() -> PortError {
-    PortError::new(
-        NOT_TEXT_FILE,
-        "このファイルの中身は文章（UTF-8）として読めません。テキストのファイルなら UTF-8 で保存し直してください。PDF や Word の本文は「AI エージェント」の「文書の本文を読む」ツールで読みます。",
-        false,
-    )
+/// 中身を文章として読めない（文字コードが分からない・文章でない）ファイルを storage.read で読もうとしたときの誤り。
+pub(super) fn not_readable_text() -> PortError {
+    PortError::new(NOT_TEXT_FILE, NOT_READABLE_TEXT, false)
 }
+
+/// 中身を文章として読めないときの文言（ワークフローの「ファイルを読む」）。
+const NOT_READABLE_TEXT: &str = "このファイルの中身は文章として読めません。テキストのファイルなら、UTF-8 か Shift_JIS で保存し直してください。PDF や Word の本文は「AI エージェント」の「文書の本文を読む」ツールで読みます。";
 
 #[cfg(test)]
 mod tests {
@@ -146,7 +148,7 @@ mod tests {
     }
 
     /// 文章の種類の拡張子は MIME より優先する（ブラウザーが付けた型をそのまま保存しているため）。Excel を入れた
-    /// Windows のブラウザーは .csv に `application/vnd.ms-excel` を付ける。中身は読んだ後に UTF-8 か確かめる。
+    /// Windows のブラウザーは .csv に `application/vnd.ms-excel` を付ける。中身は読んだ後に文章か確かめる。
     #[test]
     fn text_extensions_win_over_the_browser_mime() {
         for (name, ct) in [
@@ -174,14 +176,29 @@ mod tests {
         assert!(is_binary("template.dot", Some("application/msword")));
     }
 
+    /// 文字コードを決めて読めるものだけを文章とする（GAP-45）。Excel が保存する Shift_JIS・BOM 付きの UTF-8・
+    /// UTF-16LE の CSV は読み、PDF の先頭・ZIP（Office）・NUL を含む中身・文字コードの分からない中身は文章にしない
+    /// （文字化けで成功させない）。
     #[test]
-    fn only_valid_utf8_without_nul_is_text() {
-        assert_eq!(utf8_text("経費の申請\n".as_bytes()), Some("経費の申請\n"));
-        // PDF の先頭・Shift_JIS の「経費」・NUL を含む中身は文章にしない（文字化けで成功させない）。
-        assert_eq!(utf8_text(b"%PDF-1.7\n\xe2\xe3\xcf\xd3"), None);
-        assert_eq!(utf8_text(b"\x8c\x6f\x94\xef"), None);
-        assert_eq!(utf8_text(b"PK\x03\x04\x00\x00"), None);
+    fn reads_text_in_the_encodings_excel_writes() {
+        let read = |bytes: &[u8]| read_text(bytes).map(|d| (d.text, d.encoding.name()));
+        let csv = "経費,金額\n交通費,1200\n";
+        assert_eq!(read(csv.as_bytes()), Some((csv.into(), "UTF-8")));
+        let (sjis, _, _) = textenc::encoding_rs::SHIFT_JIS.encode(csv);
+        assert_eq!(read(&sjis), Some((csv.into(), "Shift_JIS")));
+        let bom8 = [b"\xEF\xBB\xBF".as_slice(), csv.as_bytes()].concat();
+        assert_eq!(read(&bom8), Some((csv.into(), "UTF-8")));
+        let mut utf16 = vec![0xFF, 0xFE];
+        utf16.extend(csv.encode_utf16().flat_map(u16::to_le_bytes));
+        assert_eq!(read(&utf16), Some((csv.into(), "UTF-16LE")));
+
+        assert_eq!(read(b"%PDF-1.7\n\xe2\xe3\xcf\xd3"), None);
+        assert_eq!(read(b"PK\x03\x04\x00\x00"), None);
+        assert_eq!(read(b"abc\x00def"), None);
+        // 西欧の文字コード（windows-1252 の café）は推定で断る（「UTF-8 か Shift_JIS」と言っている）。
+        assert_eq!(read(b"caf\xe9\n"), None);
         assert_eq!(not_text_kind().code, NOT_TEXT_FILE);
-        assert!(!not_utf8_text().retryable);
+        assert_eq!(not_readable_text().code, NOT_TEXT_FILE);
+        assert!(!not_readable_text().retryable);
     }
 }

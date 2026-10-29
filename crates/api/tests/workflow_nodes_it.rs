@@ -786,8 +786,9 @@ async fn wait_then_error_port_through_production_executor() {
 }
 
 /// storage.read は文章として読めるファイルだけを読む（BUG-101）。PDF・Word などの種類（MIME か拡張子）と、
-/// UTF-8 でない中身（Shift_JIS のテキストなど）は `not_text_file`（やり直さない）で失敗し、文字化けした中身を
-/// 成功として後ろへ渡さない。
+/// 文字コードの分からない中身・文章でない中身は `not_text_file`（やり直さない）で失敗し、文字化けした中身を
+/// 成功として後ろへ渡さない。Excel が保存する Shift_JIS・BOM 付きの UTF-8・UTF-16LE の CSV は読み、読んだ
+/// 文字コードを結果の `encoding` に残す（GAP-45）。
 #[tokio::test]
 async fn storage_read_refuses_files_that_are_not_text() {
     let Some(h) = setup().await else { return };
@@ -802,8 +803,19 @@ async fn storage_read_refuses_files_that_are_not_text() {
         "edges": []
     });
     let wf_id = h.save(&ir).await;
-    let files: [(&str, &[u8], &str); 5] = [
+    let csv = "経費,金額\n交通費,1200\n";
+    let (sjis, _, _) = textenc::encoding_rs::SHIFT_JIS.encode(csv);
+    let bom8 = [b"\xEF\xBB\xBF".as_slice(), csv.as_bytes()].concat();
+    let utf16: Vec<u8> = [0xFF, 0xFE]
+        .into_iter()
+        .chain(csv.encode_utf16().flat_map(u16::to_le_bytes))
+        .collect();
+    let files: [(&str, &[u8], &str); 9] = [
         ("メモ.txt", "経費の申請\n".as_bytes(), "text/plain"),
+        // 日本語の Windows の Excel が既定で保存する CSV（ブラウザーは ms-excel の MIME を付ける）。
+        ("経費.csv", &sjis, "application/vnd.ms-excel"),
+        ("経費-utf8.csv", &bom8, "text/csv"),
+        ("経費-unicode.txt", &utf16, "text/plain"),
         (
             "契約書.pdf",
             b"%PDF-1.7\n%\xe2\xe3\xcf\xd3\n1 0 obj",
@@ -815,10 +827,12 @@ async fn storage_read_refuses_files_that_are_not_text() {
             b"PK\x03\x04\x14\x00\x06\x00",
             "application/octet-stream",
         ),
-        // テキストの種類でも UTF-8 でない中身（Shift_JIS の「経費」）は断る。
-        ("sjis.txt", b"\x8c\x6f\x94\xef", "text/plain"),
+        // テキストの種類でも、文字コードの分からない中身（西欧の windows-1252 の café）は断る。
+        ("latin1.txt", b"caf\xe9\n", "text/plain"),
         // NUL を含む中身は文章にしない。
         ("data.log", b"abc\x00def", "application/octet-stream"),
+        // Shift_JIS として読めても、制御文字を含む中身は文章にしない。
+        ("bin.txt", b"\x8c\x6f\x94\xef\x01\x02\x03", "text/plain"),
     ];
     let mut outcomes = Vec::new();
     let mut written = Vec::new();
@@ -858,10 +872,26 @@ async fn storage_read_refuses_files_that_are_not_text() {
     }
     h.artifacts.delete(&h.alice, wf_id, None).await.unwrap();
 
-    let (_, status, code, _, output) = &outcomes[0];
-    assert_eq!((*status, code.as_deref()), (RunStatus::Succeeded, None));
-    assert_eq!(output.as_ref().unwrap()["text"], "経費の申請\n");
-    for (name, status, code, retryable, _) in &outcomes[1..] {
+    for (i, (text, encoding)) in [
+        ("経費の申請\n", "UTF-8"),
+        (csv, "Shift_JIS"),
+        (csv, "UTF-8"),
+        (csv, "UTF-16LE"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let (name, status, code, _, output) = &outcomes[i];
+        assert_eq!(
+            (*status, code.as_deref()),
+            (RunStatus::Succeeded, None),
+            "{name}"
+        );
+        let output = output.as_ref().unwrap();
+        assert_eq!(output["text"], text, "{name}");
+        assert_eq!(output["encoding"], encoding, "{name}");
+    }
+    for (name, status, code, retryable, _) in &outcomes[4..] {
         assert_eq!(*status, RunStatus::Failed, "{name}");
         assert_eq!(
             (code.as_deref(), *retryable),
