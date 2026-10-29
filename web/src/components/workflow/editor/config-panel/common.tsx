@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { getAgentSettings, type AgentSettings } from "@/lib/workflow-api";
 import type { Node as IrNode } from "@/generated/workflow-ir";
 import { NODE_CATALOG } from "@/generated/workflow-catalog";
 import type { EditorAction } from "../ir-state";
@@ -189,15 +190,45 @@ function seconds(sec: number): string {
 }
 
 /// 時間の上限の注記（数はカタログの timeout_default_sec と timeout_max_sec から・付録 D の N2.6）。
-function timeoutHint(defaultSec: number, maxSec: number, agent = false): string {
-  const agentNote = agent ? "「AI の作業時間の上限」より短くはできません。" : "";
-  return `空欄なら ${seconds(defaultSec)}で、最大 ${maxSec.toLocaleString("ja-JP")} 秒です。${agentNote}過ぎると、このブロックは失敗します。`;
+function timeoutHint(defaultSec: number, maxSec: number): string {
+  return `空欄なら ${seconds(defaultSec)}で、最大 ${maxSec.toLocaleString("ja-JP")} 秒です。過ぎると、このブロックは失敗します。`;
 }
 
 /// 承認を待つの時間の上限の注記。打ち切るのは承認を頼むまでの処理だけで、判断を待つ時間は「判断の期限」と実行の期限が
 /// 決める（ir.md §7 の表の「停止まで」・付録 C の P7）。
 function approvalTimeoutHint(defaultSec: number, maxSec: number): string {
   return `${timeoutHint(defaultSec, maxSec)}判断を待つ時間は含みません（「判断の期限」で決めます）。`;
+}
+
+/// AI エージェントの作業時間の上限（秒・エンジンの読み方と同じ: 数なら範囲に収め、空欄は既定、入力や結果から選ぶなら最大）。
+function agentDurationSec(node: IrNode, s: AgentSettings): number {
+  const v = (node.params as { max_duration_sec?: unknown } | undefined)?.max_duration_sec;
+  if (v === undefined || v === null) return s.default_max_duration_sec;
+  if (typeof v === "number") return Math.min(Math.max(Math.round(v), s.min_duration_sec), s.max_duration_sec);
+  return s.max_duration_sec;
+}
+
+/// AI エージェントの時間の上限の注記。エンジンは「AI の作業時間の上限」に猶予を足した時間より先に打ち切らないので、
+/// 空欄のときの値はカタログの既定と、その時間の大きい方（run/step_timeout.rs・数は `GET /workflows/agent-settings`）。
+function agentTimeoutHint(node: IrNode, defaultSec: number, maxSec: number, s: AgentSettings | null): string {
+  const max = maxSec.toLocaleString("ja-JP");
+  if (!s) return `最大 ${max} 秒です。「AI の作業時間の上限」より短くはできません。過ぎると、このブロックは失敗します。`;
+  const effective = Math.max(defaultSec, agentDurationSec(node, s) + s.stop_margin_sec);
+  return `空欄なら ${seconds(effective)}で、最大 ${max} 秒です。「AI の作業時間の上限」より短くはできず、打ち切るのはそれに ${s.stop_margin_sec} 秒を足した時間より後です。過ぎると、このブロックは失敗します。`;
+}
+
+function useAgentSettingsOrNull(): AgentSettings | null {
+  const [settings, setSettings] = React.useState<AgentSettings | null>(null);
+  React.useEffect(() => {
+    let alive = true;
+    getAgentSettings()
+      .then((s) => alive && setSettings(s))
+      .catch(() => undefined);
+    return () => {
+      alive = false;
+    };
+  }, []);
+  return settings;
 }
 
 type TimeoutFieldProps = {
@@ -226,6 +257,12 @@ function TimeoutField({ node, dispatch, maxSec, error, hint }: TimeoutFieldProps
       />
     </Field>
   );
+}
+
+/// AI エージェントの時間の上限の欄（注記の数に、エージェントの設定の作業時間の上限と猶予を使う）。
+function AgentTimeoutField({ defaultSec, ...props }: TimeoutFieldProps & { defaultSec: number }) {
+  const settings = useAgentSettingsOrNull();
+  return <TimeoutField {...props} hint={agentTimeoutHint(props.node, defaultSec, props.maxSec, settings)} />;
 }
 
 /// 共通セクション（全ノード種）。
@@ -302,17 +339,27 @@ export function CommonSection({
         {/* 時間の上限（ノードの timeout_sec）。エンジンが打ち切るようになったので出す（BUG-96・付録 D の N2.6）。
             打ち切らない種（流れの制御など・カタログに既定が無い）では出さない。 */}
         {entry?.timeout_default_sec && entry.timeout_max_sec ? (
-          <TimeoutField
-            node={node}
-            dispatch={dispatch}
-            maxSec={entry.timeout_max_sec}
-            error={timeoutError}
-            hint={
-              node.type === "human.approval"
-                ? approvalTimeoutHint(entry.timeout_default_sec, entry.timeout_max_sec)
-                : timeoutHint(entry.timeout_default_sec, entry.timeout_max_sec, node.type === "agent.invoke")
-            }
-          />
+          node.type === "agent.invoke" ? (
+            <AgentTimeoutField
+              node={node}
+              dispatch={dispatch}
+              defaultSec={entry.timeout_default_sec}
+              maxSec={entry.timeout_max_sec}
+              error={timeoutError}
+            />
+          ) : (
+            <TimeoutField
+              node={node}
+              dispatch={dispatch}
+              maxSec={entry.timeout_max_sec}
+              error={timeoutError}
+              hint={
+                node.type === "human.approval"
+                  ? approvalTimeoutHint(entry.timeout_default_sec, entry.timeout_max_sec)
+                  : timeoutHint(entry.timeout_default_sec, entry.timeout_max_sec)
+              }
+            />
+          )
         ) : null}
       </div>
       <Field
