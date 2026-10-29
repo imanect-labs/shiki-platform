@@ -1069,12 +1069,14 @@ cancel 要求済み run の失効リースは sweeper の対象外とする。cl
 委譲は残す（取り消しを選ばなかったときの挙動。run 開始は status で fail-closed に止まる）。「権限も取り消す」（`POST /workflows/{id}/disable` の `revoke_delegations: true`・D-90）は、無効化と同じ Tx で委譲をすべて取り消す。
 
 - 取り消しは §10.3 の再同意で外れた委譲の撤去と同じ経路を通る（FGA のタプルを先に撤去 → `workflow_delegation` の行を revoke）。`workflow_registration` の行は `FOR UPDATE` で取り、同時の有効化と取り違えない。
+- 同じ Tx で、自動実行で動いている run（実行主体が `workflow`）の取り消しを求め、実行中でない step をその場でドレインする（§9.3 のキャンセル経路・保留中の承認の依頼も取り下げる・§10.4 の「実行中 run キャンセル」・BUG-131）。人が手で実行した run は本人の権限で動くので止めない。監査の `workflow.disable` に取り消した run の数を残す。
 - `consented_scopes` も空にする。次の有効化は、使ってよい操作があれば軽量切替では通らず、同意が要る（委譲の無いまま動かさない）。
 - ワークフローが自身の定義を読むタプル（`artifact#viewer`）は委譲ではないので残す。
 - 監査は `workflow.disable` に加えて `workflow.delegation.revoke` を 1 行残し、取り消した委譲（委譲元・scope・対象・relation）を metadata に載せる。
 
 ### 10.3 新 version の enable（再同意）
 
+- 全面の再同意は、委譲を grants の集合に置き換える。外れたかは (scope, 対象, relation) の組で見る（同じ対象の relation を狭めた〔editor → viewer〕ときも、前の広い委譲のタプルと台帳の行を外す・BUG-130）。タプルは (relation, 対象) ごとに 1 つなので、残す組が同じタプルを使っていれば撤去しない。
 - scope 差分を表示する。
 - **拡大がある場合のみ**再同意（新スコープの委譲）を要求する。
 - **縮小のみ**なら差分同意なしで切替可能。
@@ -1083,6 +1085,16 @@ cancel 要求済み run の失効リースは sweeper の対象外とする。cl
 ### 10.4 管理ダッシュボード
 
 委譲一覧・棚卸し・失効操作（FR-9）はこのテーブル群を read/write する。失効操作は §6.3 の棚卸しジョブと同じ撤去経路（FGA タプル撤去 → suspended_reconsent → 実行中 run キャンセル）を手動発火する。
+
+### 10.5 ワークフローの削除
+
+ワークフロー（artifact の kind=workflow）を論理削除したら止める（BUG-128・D-105）。消したものが動き続け、承認者の受信箱に依頼が残り、承認すると続きが動く、を作らない。
+
+1. 論理削除の UPDATE に掛けたトリガ（migration 0117）が、削除の経路を問わず同じ Tx の中で、`workflow_registration` を disabled にして `consented_scopes` を空にし、`workflow_trigger` を止め、動いている run（queued・running）に `cancel_requested` を付ける。印の付いた run は claim されず、その承認は受信箱に出ず判断も受け付けない。
+2. 削除の API は commit の後に、§10.2 の「権限も取り消す」と同じ経路で委譲を取り消し、run をすべて（人が手で実行したものも）その場でドレインする（承認の依頼も取り下げる）。監査は `workflow.disable` と `workflow.delegation.revoke` に理由 `workflow_deleted` を残す。
+3. API で外せなかった委譲（OpenFGA に届かなかったなど）は、scheduler の掃除（1 分ごと・system の主体で同じ監査）が取り消す。ドレインの取りこぼしは §9.3 の tick が回収する。
+4. 定義が消えたワークフローへの発火（削除と重なった発火）は、一時障害として再試行せず見送る（`skipped`）。
+5. 消したワークフローを戻す経路はいまは無い。戻すときも自動実行はオフのままで、オンにするには同意し直す（同意が空のため）。
 
 ---
 
