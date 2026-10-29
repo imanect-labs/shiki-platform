@@ -162,8 +162,8 @@ export function HttpRequestForm({ node, dispatch, refCandidates, inMapRegion, fi
       {p.fail_on_error_status ? (
         <MoreInfo>
           <p>
-            400〜499（429 を除く）は、送る内容か設定を直すまで通らないので、やり直しません。500 以上と 429
-            は一時的な誤りとして、「試す回数」が 2 以上ならやり直します。
+            400〜499（408・425・429 を除く）は、送る内容か設定を直すまで通らないので、やり直しません。500
+            以上と 408・425・429 は一時的な誤りとして、「試す回数」が 2 以上ならやり直します。
           </p>
         </MoreInfo>
       ) : null}
