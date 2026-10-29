@@ -41,6 +41,8 @@ pub const KNOWN_CODES: &[(&str, FailureCategory)] = {
         ("rate_limited", Temporary),
         ("read_timeout", Temporary),
         ("index_preparing", Temporary),
+        // PDF・Office の本文の社内文書の検索への取り込みが終わっていない（storage.read・D-111）。
+        (crate::nodes::ports::INDEX_PENDING, Temporary),
         ("effect_in_progress", Temporary),
         ("concurrency_limited", Temporary),
         ("fetch_failed", Temporary),
@@ -97,6 +99,10 @@ pub const KNOWN_CODES: &[(&str, FailureCategory)] = {
         ("approval_assignee_unreadable", Configuration),
         // 文章として読めないファイルを読もうとした（PDF・Office・画像・文字コードを決められない中身・BUG-101・GAP-45）。
         (crate::nodes::ports::NOT_TEXT_FILE, Configuration),
+        // 社内文書の検索に取り込めない種類・大きすぎる・本文の無いファイルと、取り込みに失敗したファイルの本文を
+        // 読もうとした（storage.read・D-111）。
+        (crate::nodes::ports::NOT_INDEXABLE, Configuration),
+        (crate::nodes::ports::INDEX_FAILED, Configuration),
         ("script_error", Configuration),
         // AI エージェントが同じ道具の失敗を繰り返した（依頼・道具・読める資料を作成者が見直す・BUG-6）。
         ("agent_loop", Configuration),
@@ -139,6 +145,16 @@ fn specific_message(code: &str) -> Option<&'static str> {
         // 「ほかの操作と重なった…表を読み直して」は原因と合わない（BUG-97・付録 D の N3.5.2）。
         crate::nodes::ports::NAME_TAKEN => {
             "同じ名前のファイルがすでにあるため、保存できませんでした。"
+        }
+        // 「一時的な問題…途中まで進んでいる」は原因と合わない（読むだけのブロック・D-111）。
+        crate::nodes::ports::INDEX_PENDING => {
+            "ファイルを社内文書の検索に取り込み終わっていないため、本文を読めませんでした。\
+             少し待ってから、失敗したところから再開してください。"
+        }
+        // 「ワークフローの設定に問題があり」は原因と合わない（ファイルの側の失敗・D-111）。
+        crate::nodes::ports::INDEX_FAILED => {
+            "ファイルを社内文書の検索に取り込めなかったため、本文を読めませんでした。\
+             ファイルを保存し直すと、取り込み直します。"
         }
         // 付録 C の §5.2（failure.rs の時間切れの文言の直し）。
         "run_timeout" => {
@@ -502,6 +518,40 @@ mod tests {
                 h.note
             );
         }
+    }
+
+    /// PDF・Office の本文を読めなかった失敗（D-111）: 取り込み待ちは一時的な問題で、そのまま再開を勧める（待てば
+    /// 読める）。取り込みに失敗した・取り込めない種類は設定の誤りの分類で、原因を直してから再開する。取り込み待ちと
+    /// 取り込みの失敗は、分類の文言（「途中まで処理が進んでいる」「ワークフローの設定に問題があり」）でなく原因を言う。
+    #[test]
+    fn unindexed_documents_say_whether_to_wait() {
+        use crate::nodes::ports::{INDEX_FAILED, INDEX_PENDING, NOT_INDEXABLE};
+        let id = Uuid::nil();
+        let f = run_failure(id, Some(INDEX_PENDING), None);
+        assert_eq!(f.category, FailureCategory::Temporary);
+        assert!(
+            f.message.contains("取り込み終わっていない"),
+            "{}",
+            f.message
+        );
+        assert!(!f.message.contains("途中まで"), "{}", f.message);
+        let h = resume_hint(Some(INDEX_PENDING), None);
+        assert_eq!(h.advice, ResumeAdvice::Resume);
+        assert!(h.offer);
+
+        let f = run_failure(id, Some(INDEX_FAILED), None);
+        assert_eq!(f.category, FailureCategory::Configuration);
+        assert!(f.message.contains("保存し直すと"), "{}", f.message);
+        assert!(!f.message.contains("設定に問題"), "{}", f.message);
+        for code in [INDEX_FAILED, NOT_INDEXABLE] {
+            let h = resume_hint(Some(code), None);
+            assert_eq!(h.advice, ResumeAdvice::FixFirst, "{code}");
+            assert!(h.offer && h.offer_rerun, "{code}");
+        }
+        assert_eq!(
+            run_failure(id, Some(NOT_INDEXABLE), None).category,
+            FailureCategory::Configuration
+        );
     }
 
     /// 同じ結果になる code と AI の答えの code は、どれも分類の表にある（綴りの誤りで黙って外れない）。

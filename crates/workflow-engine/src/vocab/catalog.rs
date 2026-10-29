@@ -211,8 +211,9 @@ fn labels(nt: NodeType) -> (NodeCategory, &'static str, &'static str) {
         NodeType::StorageRead => (
             C::Storage,
             "ファイルを読む",
-            // 文章として読めないファイルは読まない（BUG-101・付録 D の N3.5.1）。
-            "ファイルの中身を文章として読みます。PDF や Word の本文は読めません。",
+            // 文章として読めないファイルを文字化けのまま読まない（BUG-101）。PDF・Office は社内文書の検索に取り込まれた
+            // 本文を読む（D-111・付録 D の N3.5.1）。
+            "ファイルの中身を文章として読みます。PDF や Word は、社内文書の検索に取り込まれた本文を読みます。",
         ),
         NodeType::StorageWrite => (
             C::Storage,
@@ -674,12 +675,21 @@ fn output_shape(nt: NodeType) -> Shape {
                 field!("version", "number", "読んだバージョン・CSV を編集の前提にできる"),
                 field!("content_type", "string"),
                 field!("size", "number"),
-                field!(
+                opt!(
                     "encoding",
                     "string",
-                    "読んだ文字コード（UTF-8・Shift_JIS・EUC-JP・UTF-16LE・UTF-16BE）"
+                    "読んだ文字コード（UTF-8・Shift_JIS・EUC-JP・UTF-16LE・UTF-16BE）・文章のファイルのときだけ"
                 ),
-                field!("text", "string", "中身の文章（先頭の BOM は含まない）"),
+                field!(
+                    "text",
+                    "string",
+                    "中身の文章（先頭の BOM は含まない）・PDF や Word は社内文書の検索に取り込まれた本文で、ページの変わり目に〔p.2〕のような印と、見出しの行（# で始まる）が入る"
+                ),
+                field!(
+                    "truncated",
+                    "boolean",
+                    "PDF や Word の本文が長く、上限の字数で切ったとき true・文章のファイルは切らない（いつも false）"
+                ),
             ],
             "",
         ),

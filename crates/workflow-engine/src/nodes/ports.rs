@@ -279,6 +279,18 @@ pub struct ResolvedSkillView {
 /// storage.read で、文章として読めないファイルを読もうとしたときの code（BUG-101・permanent・失敗の分類は設定の誤り）。
 pub const NOT_TEXT_FILE: &str = "not_text_file";
 
+/// storage.read で、PDF・Office の本文の社内文書の検索への取り込みが終わっていないときの code（D-111・retryable・
+/// 失敗の分類は一時障害）。取り込みを待っている・取り込み中・一時的な失敗のやり直しを待っているもの。
+pub const INDEX_PENDING: &str = "index_pending";
+
+/// storage.read で、社内文書の検索に取り込めない種類のファイル（画像・古い形式の Office など）・大きすぎるファイル・
+/// 本文の無い文書の本文を読もうとしたときの code（D-111・permanent・失敗の分類は設定の誤り）。
+pub const NOT_INDEXABLE: &str = "not_indexable";
+
+/// storage.read で、社内文書の検索への取り込みに失敗したファイルの本文を読もうとしたときの code（D-111・permanent・
+/// 失敗の分類は設定の誤り）。ファイルを保存し直すと取り込み直す。
+pub const INDEX_FAILED: &str = "index_failed";
+
 /// 存在を明かさない「見つからない」の文（付録 C の §3.6・付録 D の N1.11）。`target` は「実行するワークフロー」など。
 ///
 /// 無いときと見る権限が無いときを言い分けない（名前の存在が分かってしまうため）。補いたい事実は呼び出し側が
@@ -310,6 +322,30 @@ pub trait NodePorts: Send + Sync {
     /// 文章として読めないファイル（PDF・Office・画像など、または文字コードを決められない中身）は [`NOT_TEXT_FILE`] で
     /// 失敗する（文字化けした中身を成功として渡さない・BUG-101）。
     async fn storage_read(&self, ctx: &ExecCtx, file_id: Uuid) -> Result<Value, PortError>;
+
+    /// 「ファイルを読む」（storage.read ノード）の読み口（D-111）。文章のファイルは [`Self::storage_read`] と同じに
+    /// 中身を読み、文章でない種類（PDF・Office など）は、社内文書の検索が取り込んだ本文を
+    /// `rag::SearchService::read_document_text` で先頭から `max_chars` 字まで読む（原本は読み直さない）。
+    ///
+    /// - 返り値は [`Self::storage_read`] と同じメタ（id・name・version・content_type・size）＋本文の文章（text）＋
+    ///   上限の字数で切ったか（truncated）。取り込んだ本文には、ページの変わり目の印（〔p.2〕）と見出しの行（# で
+    ///   始まる）が入り、encoding は無い。version は読んだ本文のバージョン（いまの内容のもの）。
+    /// - 閲覧の判定（StorageService）と可読集合の pre-filter（SearchService）の両方を通す。見えない・無いは同じ
+    ///   誤り（`not_found`・存在の秘匿・チャットの doc_read と同じ契約）。
+    /// - いまの内容の取り込みが終わっていなければ [`INDEX_PENDING`]（やり直せる）。取り込めない種類・大きすぎる・
+    ///   本文が無いは [`NOT_INDEXABLE`]、取り込みに失敗したものは [`INDEX_FAILED`]（やり直さない）。社内文書の
+    ///   検索が使えない環境では [`NOT_TEXT_FILE`]。
+    ///
+    /// script の `Shiki.storage.read` は [`Self::storage_read`]（文章だけ）のまま。既定は [`Self::storage_read`]
+    /// （索引を結線しない実装・テスト用。いつも中身を読み、truncated はエンジンが false にする）。
+    async fn storage_read_document(
+        &self,
+        ctx: &ExecCtx,
+        file_id: Uuid,
+        _max_chars: u32,
+    ) -> Result<Value, PortError> {
+        self.storage_read(ctx, file_id).await
+    }
 
     /// storage.list（`list_children`）。返り値は子ノードのメタ配列。
     async fn storage_list(

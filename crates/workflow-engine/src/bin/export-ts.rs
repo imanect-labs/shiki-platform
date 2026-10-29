@@ -34,7 +34,7 @@ use workflow_engine::vocab::{
     agent_tool_catalog, event_catalog, node_catalog, AgentTool, AgentToolCatalogEntry,
     EventCatalogEntry, EventPayloadField, EventSource, IdempotencyClass, NodeCatalogEntry,
     NodeCategory, NodeType, OutputField, PortRule, RunEventKind, RunInfoField, Scope,
-    RUN_INFO_FIELDS,
+    RUN_INFO_FIELDS, STORAGE_READ_MAX_DOCUMENT_CHARS,
 };
 
 /// 保存を止めない警告のコードの定数（定数の名前 → コード・Rust の表から引く・BUG-48）。
@@ -54,6 +54,14 @@ fn warning_codes_ts() -> String {
          /// 保存を止めない警告のコードの型。\n\
          export type WarningCode = (typeof WARNING_CODES)[keyof typeof WARNING_CODES];\n",
         rows.join("\n")
+    )
+}
+
+/// 画面の注記で言う上限の数（Rust の定数から引く・注記に数を手で書かない）。
+fn limits_ts() -> String {
+    format!(
+        "\n/// 「ファイルを読む」が PDF・Office の本文を読む字数の上限（超えた分は入らず truncated が true・D-111）。\n\
+         export const STORAGE_READ_MAX_DOCUMENT_CHARS = {STORAGE_READ_MAX_DOCUMENT_CHARS};\n"
     )
 }
 
@@ -219,7 +227,8 @@ fn main() {
             .collect::<Vec<_>>()
             .join("\n"),
         params_map.join("\n"),
-    ) + warning_codes_ts().as_str();
+    ) + warning_codes_ts().as_str()
+        + limits_ts().as_str();
     std::fs::write(&catalog_path, catalog_contents).expect("カタログ TS 書き出し");
     println!(
         "ノードカタログを {} に書き出しました",

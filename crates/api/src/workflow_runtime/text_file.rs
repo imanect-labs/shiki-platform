@@ -87,7 +87,10 @@ pub(super) fn read_text(bytes: &[u8]) -> Option<textenc::Decoded> {
     textenc::decode_text(bytes).ok()
 }
 
-/// 種類が文章でないファイルを storage.read で読もうとしたときの誤り（付録 D の N3.5.1）。
+/// 種類が文章でないファイルを script の `Shiki.storage.read`（文章だけを読む）で読もうとしたときの誤り。
+///
+/// ワークフローの「ファイルを読む」は、文章でない種類を社内文書の検索に取り込まれた本文で読む（document_read.rs・
+/// D-111）。読む間に種類が変わったとき（保存と重なった）だけ、こちらで断る。
 pub(super) fn not_text_kind() -> PortError {
     PortError::new(
         NOT_TEXT_FILE,
@@ -102,7 +105,9 @@ pub(super) fn not_readable_text() -> PortError {
 }
 
 /// 中身を文章として読めないときの文言（ワークフローの「ファイルを読む」）。
-const NOT_READABLE_TEXT: &str = "このファイルの中身は文章として読めません。テキストのファイルなら、UTF-8 か Shift_JIS で保存し直してください。PDF や Word の本文は「AI エージェント」の「文書の本文を読む」ツールで読みます。";
+///
+/// 種類は文章のファイル（読む前に PDF・Office などは別の経路へ分ける）なので、PDF や Word の読み方は言わない。
+const NOT_READABLE_TEXT: &str = "このファイルの中身は文章として読めません。テキストのファイルなら、UTF-8 か Shift_JIS で保存し直してください。";
 
 #[cfg(test)]
 mod tests {

@@ -71,7 +71,7 @@ impl ProdNodePorts {
     }
 }
 
-fn map_storage(e: storage::StorageError) -> PortError {
+pub(super) fn map_storage(e: storage::StorageError) -> PortError {
     use storage::StorageError as S;
     match e {
         S::Forbidden => PortError::forbidden("storage 権限なし"),
@@ -135,7 +135,7 @@ impl NodePorts for ProdNodePorts {
     }
 
     async fn storage_read(&self, ec: &ExecCtx, file_id: Uuid) -> Result<Value, PortError> {
-        use super::text_file::{is_binary, not_readable_text, not_text_kind, read_text};
+        use super::text_file::{is_binary, not_text_kind};
         let ctx = auth_ctx(ec);
         let trace = ec.trace_id.as_deref();
         // 文章でない種類（PDF・Office・画像など）は中身を読む前に断る（大きな文書を読み込んでから捨てない）。
@@ -147,27 +147,16 @@ impl NodePorts for ProdNodePorts {
         if is_binary(&meta.name, meta.content_type.as_deref()) {
             return Err(not_text_kind());
         }
-        let (node, bytes) = self
-            .storage
-            .read_file_internal(&ctx, file_id, trace)
-            .await
-            .map_err(map_storage)?;
-        if is_binary(&node.name, node.content_type.as_deref()) {
-            return Err(not_text_kind());
-        }
-        // 文字コードを決めて読めない中身を、文字化けのまま成功させない（BUG-101・GAP-45）。
-        let decoded = read_text(&bytes).ok_or_else(not_readable_text)?;
-        // version は読んだ中身のバージョン（後ろの「CSV を編集」の前提にできる・D-96）。file_id はエンジンが足す。
-        // encoding は読んだ文字コード（UTF-8・Shift_JIS など。読み違いを実行履歴で確かめられる）。
-        Ok(json!({
-            "id": node.id.to_string(),
-            "name": node.name,
-            "version": node.version,
-            "content_type": node.content_type,
-            "size": node.size_bytes,
-            "encoding": decoded.encoding.name(),
-            "text": decoded.text,
-        }))
+        super::document_read::read_text_file(&self.storage, &ctx, file_id, trace, map_storage).await
+    }
+
+    async fn storage_read_document(
+        &self,
+        ec: &ExecCtx,
+        file_id: Uuid,
+        max_chars: u32,
+    ) -> Result<Value, PortError> {
+        super::document_read::storage_read_document(self, ec, file_id, max_chars).await
     }
 
     async fn storage_list(

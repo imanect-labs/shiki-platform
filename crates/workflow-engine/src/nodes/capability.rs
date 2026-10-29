@@ -13,6 +13,7 @@ use crate::ir::params::{
     WorkflowStartParams, MAX_NUMBERED_NAME,
 };
 use crate::run::NodeContext;
+use crate::vocab::STORAGE_READ_MAX_DOCUMENT_CHARS;
 
 use super::exec::CapabilityNodeExecutor;
 use super::ports::{CsvPatchReq, CsvWriteReq, ExecCtx, PortError, StorageWriteReq, NAME_TAKEN};
@@ -147,7 +148,15 @@ impl CapabilityNodeExecutor {
         let p: StorageReadParams = parse_params(params)?;
         let what = "storage.read: file";
         let file_id = typed(&param(&p.file, r, what)?, what, "UUID", as_uuid)?;
-        let out = self.ports.storage_read(ec, file_id).await?;
+        // 文章のファイルは中身を、PDF・Office は社内文書の検索に取り込まれた本文を読む（D-111）。
+        let mut out = self
+            .ports
+            .storage_read_document(ec, file_id, STORAGE_READ_MAX_DOCUMENT_CHARS)
+            .await?;
+        // 文章のファイルの中身は切らない（切ったかの項目は、どちらの読み方でも結果に載せる）。
+        if let Value::Object(map) = &mut out {
+            map.entry("truncated").or_insert(Value::Bool(false));
+        }
         self.audit(
             &ec.tenant_id,
             "storage.read",

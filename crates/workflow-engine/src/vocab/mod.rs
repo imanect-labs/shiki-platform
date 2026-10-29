@@ -36,6 +36,12 @@ pub use node_type::NodeType;
 pub use run_info::{run_info, started_by, RunInfoField, RUN_INFO_FIELDS, RUN_INFO_TIMEZONE};
 pub use scope::Scope;
 
+/// 「ファイルを読む」が PDF・Office の本文を読む字数の上限（D-111）。超えた分は結果に入れず、`truncated` を true に
+/// する。文章のファイルの中身は切らない。画面の注記もこの値から出す（`workflow-catalog.ts` に書き出す）。
+///
+/// 10 万字は、日本語の A4 でおよそ 100 ページ分。後ろの「AI に聞く」に渡しても、一度に読める量に収まる大きさにした。
+pub const STORAGE_READ_MAX_DOCUMENT_CHARS: u32 = 100_000;
+
 /// variant と serde/IR 名の対応を単一定義から生成する（as_str/parse の乖離を構造的に防ぐ）。
 macro_rules! vocab_enum {
     (
