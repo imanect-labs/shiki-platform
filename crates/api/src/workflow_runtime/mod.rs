@@ -290,6 +290,8 @@ pub struct RuntimeDeps {
     pub fsms: Arc<data::FsmStore>,
     /// 公開 web の検索（agent.invoke の web.search・チャットと同じ設定）。
     pub web_search: Option<Arc<dyn websearch::SearchProvider>>,
+    /// 消したワークフローに残る委譲の掃除（scheduler の tick・BUG-128）。
+    pub registration: workflow_engine::RegistrationService,
 }
 
 /// 本番 executor を組む（能力ゲートウェイ → ポート・レート制御・script エンジン）。
@@ -407,6 +409,8 @@ pub async fn spawn_workflow_runtime(deps: RuntimeDeps) {
     let tick_data = Arc::clone(&deps.data);
     let tick_fsms = Arc::clone(&deps.fsms);
     let tick_concurrency = concurrency_store;
+    let tick_registration = deps.registration.clone();
+    let mut retire_due = std::time::Instant::now();
     // claim の走査の下限（アイドルの間は outbox を走査しない・3 回目の検証 3-D-1）。
     let claim_hints = storage::event::ClaimHints::default();
 
@@ -498,6 +502,11 @@ pub async fn spawn_workflow_runtime(deps: RuntimeDeps) {
                     if let Err(e) = tick_concurrency.reconcile().await {
                         tracing::warn!(error = %e, "並行カウンタ reconcile でエラー");
                     }
+                    // 消したワークフローに残る委譲の掃除（削除の後の取り消しが失敗した分・1 分ごと・BUG-128）。
+                    if retire_due.elapsed() >= RETIRE_SWEEP_EVERY {
+                        retire_due = std::time::Instant::now();
+                        retire_deleted_workflows(&tick_db, &tick_registration).await;
+                    }
                 }
                 Ok(false) => {} // 別インスタンスがリーダー。
                 Err(e) => tracing::warn!(error = %e, "リーダーリース取得に失敗"),
@@ -506,6 +515,71 @@ pub async fn spawn_workflow_runtime(deps: RuntimeDeps) {
         }
     });
     tracing::info!("ワークフロースケジューラ/イベント relay を起動しました");
+}
+
+/// 消したワークフローの掃除の間隔（委譲の行を走査するので tick ごとには回さない）。
+const RETIRE_SWEEP_EVERY: std::time::Duration = std::time::Duration::from_mins(1);
+/// 掃除の 1 回で取り消すワークフローの数の上限。
+const RETIRE_SWEEP_LIMIT: i64 = 20;
+
+/// 論理削除したワークフローに残る委譲を取り消す（scheduler tick・BUG-128）。
+///
+/// ふつうは削除の API が commit の後に取り消す（[`crate::routes::workflows::registration::after_workflow_deleted`]）。
+/// そこで OpenFGA に届かなかった分などを、ここが同じ経路（「権限も取り消す」）で取り消す。監査は system の主体で
+/// `workflow.delegation.revoke` を残す（理由 `workflow_deleted`）。
+async fn retire_deleted_workflows(
+    db: &sqlx::PgPool,
+    registration: &workflow_engine::RegistrationService,
+) {
+    let retired = match registration.retire_deleted(RETIRE_SWEEP_LIMIT).await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::warn!(error = ?e, "消したワークフローの委譲の掃除でエラー");
+            return;
+        }
+    };
+    for w in retired {
+        let (tenant, workflow_id, r) = (&w.tenant_id, w.workflow_id, &w.revocation);
+        registration.notify_revoked(tenant, workflow_id, r).await;
+        tracing::info!(
+            tenant = %tenant,
+            %workflow_id,
+            revoked = r.delegations.len(),
+            cancelled_runs = r.cancelled_runs.len(),
+            "消したワークフローに残っていた委譲を取り消しました"
+        );
+        let ctx = authz::AuthContext::new(
+            authz::Principal {
+                kind: authz::PrincipalKind::User,
+                id: "system:workflow-retire".into(),
+                email: None,
+                groups: vec![],
+                roles: vec![],
+                tenant_id: Some(tenant.clone()),
+            },
+            w.org.clone(),
+            tenant.clone(),
+        );
+        let entry = storage::audit::AuditEntry {
+            action: storage::audit::AuditAction::WorkflowDelegationRevoke,
+            object_type: "workflow",
+            object_id: &workflow_id.to_string(),
+            decision: storage::audit::Decision::Allow,
+            trace_id: None,
+            metadata: serde_json::json!({
+                "reason": "workflow_deleted",
+                "revoked": r.delegations.len(),
+                "delegations": r.delegations,
+                "cancelled_runs": r.cancelled_runs.len(),
+            }),
+        };
+        if let Err(e) = storage::audit::AuditRecorder::new(db.clone())
+            .record(&ctx, entry)
+            .await
+        {
+            tracing::warn!(error = %e, %workflow_id, "委譲の掃除の監査に失敗");
+        }
+    }
 }
 
 /// queued run の昇格（scheduler tick・全テナント）。

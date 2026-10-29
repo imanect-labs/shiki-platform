@@ -562,7 +562,7 @@ impl DelegationStore {
     ///
     /// 知らせないと、ワークフロー主体の SSE 購読が最大 TTL まで旧権限で配信を受け続け、材料化の
     /// 前提（テーブル viewer の範囲）も次の読取まで検査し直されない（PIT-70）。
-    async fn notify_table_rebac_changed(
+    pub(crate) async fn notify_table_rebac_changed(
         &self,
         tenant_id: &str,
         workflow_id: Uuid,

@@ -60,7 +60,8 @@ pub use nodes::{
 };
 pub use ratelimit::{BucketConfig, TokenBucket};
 pub use registration::{
-    DelegationView, EnableError, RegistrationService, RegistrationView, Revocation, SuggestedGrant,
+    DelegationView, EnableError, RegistrationService, RegistrationView, RetiredWorkflow,
+    Revocation, SuggestedGrant,
 };
 pub use retry::{backoff_with_jitter, classify, RetryClass};
 pub use run::{

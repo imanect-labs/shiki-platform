@@ -5,7 +5,8 @@
 //! あることは権限の正ではない（判断は FSM の遷移が actor 述語で改めて認可する）。
 //!
 //! 受信箱に出すのは、台帳が保留中で、run が実行中で、step が承認を待っている（waiting_event）ものだけ。
-//! 期限（承認の期限と run の期限の早い方）を過ぎたものも出さない（回収の tick を待たずに隠す）。
+//! 期限（承認の期限と run の期限の早い方）を過ぎたものも出さない（回収の tick を待たずに隠す）。取り消しを求めた
+//! run（`cancel_requested`・ワークフローの削除など）のものも、ドレインを待たずに出さず、判断も受け付けない（BUG-128）。
 
 use std::sync::Arc;
 
@@ -130,7 +131,8 @@ const COLUMNS: &str = "a.approval_id, a.workflow_id, a.run_id, a.table_id, a.rec
           WHEN r.timeout_at IS NULL THEN a.deadline \
           ELSE least(a.deadline, r.timeout_at) END AS deadline, \
      a.created_at, a.status, \
-     COALESCE(a.status = 'pending' AND r.status = 'running' AND s.status = 'waiting_event' \
+     COALESCE(a.status = 'pending' AND r.status = 'running' AND NOT r.cancel_requested \
+      AND s.status = 'waiting_event' \
       AND (a.deadline IS NULL OR a.deadline > now()) \
       AND (r.timeout_at IS NULL OR r.timeout_at > now()), false) AS decidable";
 
@@ -178,7 +180,7 @@ impl ApprovalStore {
              JOIN step_execution s ON s.tenant_id = a.tenant_id AND s.run_id = a.run_id \
                                   AND s.step_path = a.step_path \
              WHERE a.tenant_id = $1 AND a.org = $2 AND a.status = 'pending' \
-               AND r.status = 'running' AND s.status = 'waiting_event' \
+               AND r.status = 'running' AND NOT r.cancel_requested AND s.status = 'waiting_event' \
                AND (a.deadline IS NULL OR a.deadline > now()) \
                AND (r.timeout_at IS NULL OR r.timeout_at > now()) \
                AND {ASSIGNED} \
@@ -273,7 +275,8 @@ impl ApprovalStore {
         // 止めるので、受け付けた判断の後に run の期限が来れば、行は判断の状態・run は時間切れと分かれ得る。
         let state: Option<(String, bool, bool, bool)> = sqlx::query_as(
             "SELECT a.status, a.accepted IS NOT NULL, \
-                    COALESCE(r.status = 'running' AND s.status = 'waiting_event', false), \
+                    COALESCE(r.status = 'running' AND NOT r.cancel_requested \
+                             AND s.status = 'waiting_event', false), \
                     COALESCE(a.deadline <= clock_timestamp(), false) \
                       OR COALESCE(r.timeout_at <= clock_timestamp(), false) \
              FROM workflow_approval a \

@@ -447,6 +447,42 @@ pub async fn disable_workflow(
     }))
 }
 
+/// ワークフローを消したあとで止める（`DELETE /artifacts/{id}` の kind=workflow・BUG-128・D-105）。
+///
+/// 論理削除の commit の後に、「権限も取り消す」と同じ経路で委譲を取り消し、自動実行をオフにし、動いている run を
+/// すべて取り消す（承認の依頼も取り下げる）。DB の側は論理削除のトリガ（migration 0117）が済ませているので、ここが
+/// 失敗しても動き出さない。失敗は削除の結果を変えず、ログに残す（外せなかった委譲は scheduler の掃除が取り消す）。
+pub(crate) async fn after_workflow_deleted(
+    state: &AppState,
+    ctx: &authz::AuthContext,
+    id: Uuid,
+    trace: Option<&str>,
+) {
+    match state.workflow_registration.retire(&ctx.tenant_id, id).await {
+        Ok(r) => {
+            if r.registered || !r.cancelled_runs.is_empty() {
+                record_audit(
+                    state,
+                    ctx,
+                    AuditAction::WorkflowDisable,
+                    id,
+                    trace,
+                    json!({
+                        "reason": "workflow_deleted",
+                        "revoke_delegations": true,
+                        "cancelled_runs": r.cancelled_runs.len(),
+                    }),
+                )
+                .await;
+            }
+            audit_revocation(state, ctx, id, trace, &r, Some("workflow_deleted")).await;
+        }
+        Err(e) => {
+            tracing::error!(error = ?e, workflow = %id, "ワークフローを消したあとの停止に失敗（委譲は scheduler の掃除が取り消す）");
+        }
+    }
+}
+
 /// 取り消した委譲の後始末: テーブルの分を data に知らせ（配信の材料・材料化の前提を引き直させる・有効化と同じ）、
 /// `workflow.delegation.revoke` を 1 行残す（取り消したものが無ければ何もしない）。
 async fn audit_revocation(

@@ -566,6 +566,8 @@ pub(crate) async fn wire_workflow(
     let runs = workflow_engine::RunStore::new(db.clone(), config.workflow.lease_secs);
     let delegation = workflow_engine::DelegationStore::new(db.clone(), Arc::clone(authz))
         .with_data((**data.0).clone());
+    // 消したワークフローに残る委譲の掃除（scheduler の tick・BUG-128）は、API と同じ委譲の経路を使う。
+    let registration = workflow_engine::RegistrationService::new(db.clone(), delegation.clone());
     let launcher =
         workflow_engine::WorkflowRunLauncher::new(delegation, (**workflows).clone(), runs.clone());
     let gateway = Arc::new(build_gateway(config, http, db)?);
@@ -592,6 +594,7 @@ pub(crate) async fn wire_workflow(
         fsms: Arc::clone(data.1),
         // agent.invoke の web.search はチャットと同じ検索の設定を使う（BUG-6）。
         web_search: crate::wiring_websearch::wire_websearch(config, http)?,
+        registration,
     })
     .await;
     Ok((Some(Arc::new(launcher)), Some(Arc::new(runs))))

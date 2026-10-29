@@ -297,13 +297,17 @@ impl ArtifactStore {
         Ok(rows)
     }
 
-    /// 論理削除する（owner 権限・バージョン履歴は保持・名前は再利用可能になる）。
+    /// 論理削除する（owner 権限・バージョン履歴は保持・名前は再利用可能になる）。消したものの種類を返す。
+    ///
+    /// ワークフロー（kind=workflow）の論理削除には DB のトリガが掛かる（同じ文の Tx の中で、判定の決定キャッシュを
+    /// 消し〔0114〕、自動実行をオフにしてきっかけを止め、動いている run に取り消しの印を付ける〔0117・BUG-128〕）。
+    /// 委譲（FGA のタプル）の取り消しと run のドレインは、呼び出し側が commit の後に行う（API の削除）。
     pub async fn delete(
         &self,
         ctx: &AuthContext,
         id: Uuid,
         trace_id: Option<&str>,
-    ) -> Result<(), ArtifactError> {
+    ) -> Result<ArtifactKind, ArtifactError> {
         self.require(
             ctx,
             id,
@@ -312,18 +316,18 @@ impl ArtifactStore {
             trace_id,
         )
         .await?;
-        let updated = sqlx::query(
+        let kind: Option<String> = sqlx::query_scalar(
             "UPDATE artifact SET deleted_at = now(), updated_at = now() \
-             WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL",
+             WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL RETURNING kind",
         )
         .bind(&ctx.tenant_id)
         .bind(id)
-        .execute(&self.db)
+        .fetch_optional(&self.db)
         .await
         .map_err(map_db)?;
-        if updated.rows_affected() == 0 {
-            return Err(ArtifactError::NotFound);
-        }
+        let kind = kind.ok_or(ArtifactError::NotFound)?;
+        let kind = ArtifactKind::parse(&kind)
+            .ok_or_else(|| ArtifactError::Internal(format!("bad kind: {kind}")))?;
         self.record_audit(
             ctx,
             AuditAction::ArtifactDelete,
@@ -331,7 +335,8 @@ impl ArtifactStore {
             trace_id,
             json!({}),
         )
-        .await
+        .await?;
+        Ok(kind)
     }
 
     /// 生存行のメタを引く（認可済み前提の内部ヘルパ）。

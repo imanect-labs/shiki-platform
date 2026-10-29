@@ -246,11 +246,25 @@ impl WorkflowRunLauncher {
         // 最新版でなく有効化した版を実行し、未同意の新版が schedule/event で走るのを防ぐ。
         let wf_ctx =
             AuthContext::for_workflow(tenant_id.to_string(), org.clone(), &workflow_id.to_string());
-        let (version, ir) = self
+        let (version, ir) = match self
             .workflows
             .get_version(&wf_ctx, workflow_id, enabled_version, None)
             .await
-            .map_err(|e| LauncherError::Ir(format!("{e:?}")))?;
+        {
+            Ok(found) => found,
+            // ワークフロー（か有効化した版）が消えた。何度起こしても同じなので、一時障害として再試行しない
+            // （消したワークフローへの発火を、試す回数を使い切るまで繰り返さない・BUG-128）。ふつうは削除のトリガが
+            // 自動実行をオフにしているので、ここへ来るのは削除と発火が重なったときだけ。
+            Err(crate::store::WorkflowStoreError::Artifact(artifact::ArtifactError::NotFound)) => {
+                tracing::warn!(
+                    tenant_id,
+                    %workflow_id,
+                    "ワークフローの定義が見つからないため run を開始しません"
+                );
+                return Ok(LaunchOutcome::Skipped(SkipReason::NotEnabled));
+            }
+            Err(e) => return Err(LauncherError::Ir(format!("{e:?}"))),
+        };
 
         // 委譲チェック（fail-closed・不成立なら run を作らない）。
         let declared = ir.declared_scopes.clone();

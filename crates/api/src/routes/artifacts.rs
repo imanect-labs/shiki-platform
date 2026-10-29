@@ -196,7 +196,7 @@ pub async fn get_artifact(
     Ok(Json(state.artifacts.get(&ctx, id, trace.as_deref()).await?))
 }
 
-/// 論理削除する（owner・バージョン履歴は保持）。
+/// 論理削除する（owner・バージョン履歴は保持）。ワークフローなら、自動実行と動いている実行も止める（BUG-128）。
 #[utoipa::path(
     delete,
     path = "/artifacts/{id}",
@@ -215,7 +215,17 @@ pub async fn delete_artifact(
     trace: TraceIdExt,
     Path(id): Path<Uuid>,
 ) -> Result<StatusCode, ApiError> {
-    state.artifacts.delete(&ctx, id, trace.as_deref()).await?;
+    let kind = state.artifacts.delete(&ctx, id, trace.as_deref()).await?;
+    if kind == ArtifactKind::Workflow {
+        // 委譲（FGA のタプル）は削除の commit の後に外す（D-105）。
+        crate::routes::workflows::registration::after_workflow_deleted(
+            &state,
+            &ctx,
+            id,
+            trace.as_deref(),
+        )
+        .await;
+    }
     Ok(StatusCode::NO_CONTENT)
 }
 

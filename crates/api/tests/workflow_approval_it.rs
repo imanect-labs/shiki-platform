@@ -50,7 +50,7 @@ use tower::ServiceExt;
 use uuid::Uuid;
 use workflow_engine::{
     CapabilityNodeExecutor, Catalog, DelegationStore, EffectJournal, GrantRequest, NodeExecutor,
-    RegistrationService, RunStore, SchedulerStore, WorkerConfig, WorkflowRunLauncher,
+    RegistrationService, RunLauncher, RunStore, SchedulerStore, WorkerConfig, WorkflowRunLauncher,
     WorkflowStore,
 };
 
@@ -695,6 +695,16 @@ impl Env {
 
     /// 申請を受け付けて承認を待つワークフロー（alice が読取・書込を委譲して有効化）。
     async fn enable(&self, table: Uuid, timeout: Option<u32>) -> Uuid {
+        self.enable_with_triggers(table, timeout, Vec::new()).await
+    }
+
+    /// [`Self::enable`] に、きっかけ（`extra`・スケジュールなど）を足したワークフロー。
+    async fn enable_with_triggers(
+        &self,
+        table: Uuid,
+        timeout: Option<u32>,
+        extra: Vec<Value>,
+    ) -> Uuid {
         let t = table.to_string();
         let mut approval = json!({
             "title": "経費申請の承認", "instructions": "規程どおりか確認してください。",
@@ -722,10 +732,14 @@ impl Env {
             nodes.push(json!({ "id": "late", "type": "control.join", "params": {} }));
         }
         nodes.push(json!({ "id": "ok", "type": "human.approval", "params": approval }));
+        let mut triggers = vec![
+            json!({ "kind": "event", "source": "data.transition", "scope": { "table": t },
+            "filter": { "cmp": { "left": { "$from": "trigger", "path": "/to" }, "op": "eq", "right": "submitted" } } }),
+        ];
+        triggers.extend(extra);
         let ir = json!({
             "ir_version": 1, "name": format!("expense-{}", Uuid::new_v4().simple()),
-            "triggers": [{ "kind": "event", "source": "data.transition", "scope": { "table": t },
-                "filter": { "cmp": { "left": { "$from": "trigger", "path": "/to" }, "op": "eq", "right": "submitted" } } }],
+            "triggers": triggers,
             "nodes": nodes,
             "edges": edges,
             "policies": { "run_timeout_sec": 1_209_600 }
@@ -3182,6 +3196,266 @@ async fn decisions_racing_the_deadline_keep_the_row_and_the_run_in_step() {
         ("succeeded", vec!["timeout".to_string()])
     );
     assert_eq!(env.approval_of(run).await.1, "expired");
+    env.forget_runs(wf).await;
+    env.cleanup().await;
+}
+
+/// BUG-128・D-105: 承認待ちの run・スケジュール・委譲を持つワークフローを消すと（`DELETE /artifacts/{id}`）、run が
+/// 取り消され、承認者の受信箱から依頼が消え（判断もできない）、委譲のタプルと台帳の行が外れ、きっかけと自動実行が
+/// 止まる（同意もやり直しになる）。消したワークフローへの発火は再試行しない見送りになる。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn deleting_the_workflow_stops_its_runs_approvals_and_delegations() {
+    let _serial = SERIAL.lock().await;
+    let Some(env) = setup().await else { return };
+    let table = env.expense_table().await;
+    let wf = env
+        .enable_with_triggers(
+            table,
+            None,
+            vec![json!({ "kind": "schedule", "cron": "* * * * *", "tz": "UTC" })],
+        )
+        .await;
+    let record = env.submit(table, "出張旅費", &env.bob).await;
+    env.settle().await;
+    let run = env.run_of(wf, record).await;
+    assert_eq!(env.step(run, "ok").await.0, "waiting_event");
+    let item = env
+        .item_for(&env.bob, record)
+        .await
+        .expect("bob の受信箱に出る");
+    let object = env.alice.ns().data_table(&table.to_string());
+    let wf_subject = env.alice.ns().workflow_principal(&wf.to_string());
+    let holds = |relation: Relation| {
+        let (fga, subject, object) = (Arc::clone(&env.fga), wf_subject.clone(), object.clone());
+        async move {
+            fga.read_tuples(&object, Some(relation))
+                .await
+                .unwrap()
+                .iter()
+                .any(|t| t.user == subject.as_str())
+        }
+    };
+    assert!(holds(Relation::Editor).await && holds(Relation::Viewer).await);
+
+    let (st, body) = env
+        .send(req(
+            "DELETE",
+            &env.alice,
+            &format!("/artifacts/{wf}"),
+            Body::empty(),
+        ))
+        .await;
+    assert_eq!(st, StatusCode::NO_CONTENT, "{body}");
+
+    // run は取り消され、承認の依頼は取り下げられる（受信箱にも件数にも出ず、判断もできない）。
+    let (status, cancel_requested): (String, bool) = sqlx::query_as(
+        "SELECT status, cancel_requested FROM workflow_run WHERE tenant_id = $1 AND run_id = $2",
+    )
+    .bind(&env.tenant)
+    .bind(run)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!((status.as_str(), cancel_requested), ("cancelled", true));
+    let ledger: String = sqlx::query_scalar(
+        "SELECT status FROM workflow_approval WHERE tenant_id = $1 AND run_id = $2",
+    )
+    .bind(&env.tenant)
+    .bind(run)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(ledger, "cancelled");
+    assert!(
+        env.item_for(&env.bob, record).await.is_none(),
+        "受信箱から消える"
+    );
+    let (st, count) = env.get(&env.bob, "/approvals/count").await;
+    assert_eq!(
+        (st, &count["count"]),
+        (StatusCode::OK, &json!(0)),
+        "{count}"
+    );
+    let (st, body) = env
+        .decide(
+            &env.bob,
+            item["approval_id"].as_str().unwrap(),
+            json!({ "decision": "approve", "expected_rev": item["record"]["rev"] }),
+        )
+        .await;
+    assert_eq!(
+        st,
+        StatusCode::CONFLICT,
+        "消したワークフローの承認は判断できない: {body}"
+    );
+
+    // 委譲のタプルと台帳の行が外れ、自動実行はオフ（同意も空）、きっかけは止まる。
+    assert!(!holds(Relation::Editor).await && !holds(Relation::Viewer).await);
+    let view = env.registration.view(&env.tenant, wf).await.unwrap();
+    assert_eq!(view.status, "disabled");
+    assert!(view.delegations.is_empty(), "{:?}", view.delegations);
+    assert!(view.consented_scopes.is_empty());
+    let live_triggers: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM workflow_trigger WHERE tenant_id = $1 AND workflow_id = $2 AND enabled",
+    )
+    .bind(&env.tenant)
+    .bind(wf)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(live_triggers, 0);
+    let fired = SchedulerStore::new(env.pool.clone())
+        .tick_schedules(
+            chrono::Utc::now() + chrono::Duration::minutes(5),
+            Some(&env.tenant),
+            &env.launcher,
+        )
+        .await
+        .unwrap();
+    assert_eq!(fired, 0, "スケジュールは発火しない");
+    // 削除の監査（自動実行のオフと委譲の取り消し）が理由つきで残る。
+    let reasons: Vec<String> = sqlx::query_scalar(
+        "SELECT action FROM audit_log WHERE tenant_id = $1 AND object_id = $2 \
+           AND metadata->>'reason' = 'workflow_deleted' ORDER BY action",
+    )
+    .bind(&env.tenant)
+    .bind(wf.to_string())
+    .fetch_all(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(reasons, ["workflow.delegation.revoke", "workflow.disable"]);
+
+    // 消したワークフローへの発火（削除と重なった発火）は、一時障害として再試行せず見送る。
+    let trigger_id = format!("{wf}:0");
+    let outcome = env
+        .launcher
+        .launch(&env.tenant, wf, "event", &trigger_id, &json!({}), None)
+        .await;
+    assert!(
+        matches!(outcome, workflow_engine::LaunchOutcome::Skipped(_)),
+        "{outcome:?}"
+    );
+    env.forget_runs(wf).await;
+    env.cleanup().await;
+}
+
+/// BUG-128: API を通らずに消しても（論理削除の UPDATE だけ）、DB のトリガが自動実行をオフにしてきっかけを止め、run に
+/// 取り消しの印を付ける（受信箱にすぐ出なくなる）。ドレインは scheduler の tick、委譲は掃除が取り消す。定義が消えた
+/// 版の発火は、登録が残っていても再試行しない見送りになる。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn deleting_outside_the_api_is_caught_by_the_trigger_and_the_sweep() {
+    let _serial = SERIAL.lock().await;
+    let Some(env) = setup().await else { return };
+    let table = env.expense_table().await;
+    let wf = env.enable(table, None).await;
+    let record = env.submit(table, "書籍の購入", &env.bob).await;
+    env.settle().await;
+    let run = env.run_of(wf, record).await;
+    assert!(env.item_for(&env.bob, record).await.is_some());
+
+    sqlx::query("UPDATE artifact SET deleted_at = now() WHERE tenant_id = $1 AND id = $2")
+        .bind(&env.tenant)
+        .bind(wf)
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    let view = env.registration.view(&env.tenant, wf).await.unwrap();
+    assert_eq!(view.status, "disabled", "トリガが自動実行をオフにする");
+    assert!(view.consented_scopes.is_empty());
+    assert_eq!(
+        view.delegations.len(),
+        2,
+        "委譲は DB の外（掃除が取り消す）"
+    );
+    let marked: bool = sqlx::query_scalar(
+        "SELECT cancel_requested FROM workflow_run WHERE tenant_id = $1 AND run_id = $2",
+    )
+    .bind(&env.tenant)
+    .bind(run)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert!(marked, "run に取り消しの印が付く");
+    assert!(
+        env.item_for(&env.bob, record).await.is_none(),
+        "取り消しを求めた run の承認は、ドレインを待たずに受信箱から消える"
+    );
+
+    // scheduler の tick のドレインで run は取り消され、承認の依頼も取り下げられる。
+    env.runs
+        .drain_cancel_requested(Some(&env.tenant))
+        .await
+        .unwrap();
+    let (status, ledger): (String, String) = sqlx::query_as(
+        "SELECT r.status, a.status FROM workflow_run r JOIN workflow_approval a \
+           ON a.tenant_id = r.tenant_id AND a.run_id = r.run_id \
+         WHERE r.tenant_id = $1 AND r.run_id = $2",
+    )
+    .bind(&env.tenant)
+    .bind(run)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        (status.as_str(), ledger.as_str()),
+        ("cancelled", "cancelled")
+    );
+
+    // 掃除が残った委譲を取り消す（同じ経路・タプルも外れる）。
+    let retired = env.registration.retire_deleted(100).await.unwrap();
+    let mine = retired
+        .iter()
+        .find(|w| w.workflow_id == wf)
+        .expect("消したワークフローを掃除する");
+    assert_eq!(mine.revocation.delegations.len(), 2);
+    let object = env.alice.ns().data_table(&table.to_string());
+    let wf_subject = env.alice.ns().workflow_principal(&wf.to_string());
+    let tuples = env.fga.read_tuples(&object, None).await.unwrap();
+    assert!(
+        !tuples.iter().any(|t| t.user == wf_subject.as_str()),
+        "{tuples:?}"
+    );
+    assert!(env
+        .registration
+        .view(&env.tenant, wf)
+        .await
+        .unwrap()
+        .delegations
+        .is_empty());
+    assert!(
+        env.registration
+            .retire_deleted(100)
+            .await
+            .unwrap()
+            .iter()
+            .all(|w| w.workflow_id != wf),
+        "取り消し済みのものは掃除しない"
+    );
+
+    // 登録が有効のまま定義だけが消えた（削除と発火が重なった）ときも、発火は再試行しない見送りになる。
+    sqlx::query(
+        "UPDATE workflow_registration SET status = 'enabled' WHERE tenant_id = $1 AND workflow_id = $2",
+    )
+    .bind(&env.tenant)
+    .bind(wf)
+    .execute(&env.pool)
+    .await
+    .unwrap();
+    let outcome = env
+        .launcher
+        .launch(
+            &env.tenant,
+            wf,
+            "event",
+            &format!("{wf}:0"),
+            &json!({}),
+            None,
+        )
+        .await;
+    assert_eq!(
+        outcome,
+        workflow_engine::LaunchOutcome::Skipped(workflow_engine::SkipReason::NotEnabled)
+    );
     env.forget_runs(wf).await;
     env.cleanup().await;
 }

@@ -311,7 +311,68 @@ impl RegistrationService {
             .await
     }
 
-    /// [`Self::disable_and_revoke`] の本体。`runs_of` は取り消す run の実行主体の種類（`None` はすべて）。
+    /// ワークフローを消したときに止める（BUG-128・D-105）: 「権限も取り消す」と同じ経路で委譲を取り消して自動実行を
+    /// オフにし（同意も空にする）、同じ TX で動いている run をすべて（人が手で実行したものも）取り消す。取り消しは
+    /// run の取り消しの通常の経路で、保留中の承認の依頼も取り下げる（承認者の受信箱から消える）。
+    ///
+    /// ワークフローの論理削除の commit の後に呼ぶ（FGA のタプルを外すのは削除が確定してから）。DB の側（自動実行を
+    /// オフにし、トリガを止め、run に取り消しの印を付ける）は論理削除に掛けたトリガ（migration 0117）が削除の経路を
+    /// 問わず先に済ませているので、ここが失敗しても動き出さない。外せなかった委譲は scheduler の掃除
+    /// （[`Self::retire_deleted`]）が取り消す。何度呼んでもよい（取り消すものが無ければ何もしない）。
+    pub async fn retire(
+        &self,
+        tenant_id: &str,
+        workflow_id: Uuid,
+    ) -> Result<Revocation, EnableError> {
+        self.revoke_and_stop(tenant_id, workflow_id, None).await
+    }
+
+    /// 論理削除したワークフローに残る有効な委譲を取り消す（scheduler の掃除・[`Self::retire`] の取りこぼし・最大
+    /// `limit` 件のワークフロー）。返すのは取り消したワークフローごとの結果（テナント・登録の org・id）。
+    pub async fn retire_deleted(&self, limit: i64) -> Result<Vec<RetiredWorkflow>, EnableError> {
+        let gone: Vec<(String, String, Uuid)> = sqlx::query_as(
+            "SELECT DISTINCT r.tenant_id, r.org, r.workflow_id FROM workflow_registration r \
+             JOIN workflow_delegation d \
+               ON d.tenant_id = r.tenant_id AND d.workflow_id = r.workflow_id AND d.revoked_at IS NULL \
+             WHERE EXISTS ( \
+                 SELECT 1 FROM artifact a WHERE a.tenant_id = r.tenant_id AND a.id = r.workflow_id \
+                   AND a.kind = 'workflow' AND a.deleted_at IS NOT NULL) \
+             LIMIT $1",
+        )
+        .bind(limit)
+        .fetch_all(&self.db)
+        .await
+        .map_err(map_db)?;
+        let mut out = Vec::with_capacity(gone.len());
+        for (tenant_id, org, workflow_id) in gone {
+            // 1 件の失敗（OpenFGA の一時障害など）でほかのワークフローの掃除を止めない（次の掃除でもう一度）。
+            match self.retire(&tenant_id, workflow_id).await {
+                Ok(revocation) => out.push(RetiredWorkflow {
+                    tenant_id,
+                    org,
+                    workflow_id,
+                    revocation,
+                }),
+                Err(e) => {
+                    tracing::warn!(error = ?e, tenant = %tenant_id, %workflow_id, "消したワークフローの委譲を取り消せない（次の掃除で続ける）");
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// 取り消した委譲のうちテーブルの分を data に知らせる（配信の認可の世代・材料化の前提を引き直させる・
+    /// best-effort）。API を通らない取り消し（[`Self::retire_deleted`]）が使う。
+    pub async fn notify_revoked(&self, tenant_id: &str, workflow_id: Uuid, r: &Revocation) {
+        for d in &r.delegations {
+            self.delegation
+                .notify_table_rebac_changed(tenant_id, workflow_id, &d.object_ref)
+                .await;
+        }
+    }
+
+    /// [`Self::disable_and_revoke`] と [`Self::retire`] の本体。`runs_of` は取り消す run の実行主体の種類
+    /// （`None` はすべて）。
     async fn revoke_and_stop(
         &self,
         tenant_id: &str,
@@ -346,7 +407,17 @@ impl RegistrationService {
     }
 }
 
-/// 委譲の取り消しの結果（「権限も取り消す」。監査に残す）。
+/// 掃除で止めたワークフロー 1 件（[`RegistrationService::retire_deleted`]）。
+#[derive(Debug, Clone)]
+pub struct RetiredWorkflow {
+    pub tenant_id: String,
+    /// 自動実行の登録の org（監査の主体に使う）。
+    pub org: String,
+    pub workflow_id: Uuid,
+    pub revocation: Revocation,
+}
+
+/// 委譲の取り消しの結果（「権限も取り消す」・ワークフローの削除。監査に残す）。
 #[derive(Debug, Clone, Default)]
 pub struct Revocation {
     /// 取り消した委譲。
