@@ -942,7 +942,16 @@ step の `timeout_sec`（ノード種ごとに既定・上限あり・ir.md §7�
     決める）。`agent.invoke` は自分の作業時間の上限（`max_duration_sec`）で止まるので、それに猶予（120 秒）を足した
     時間より先に打ち切らない（ノードの上限を超えても）。
   - 打ち切りで捨てた実行の副作用は §7 の at-least-once の範囲（内部能力は effect_journal の予約の回収窓・外部 http は
-    exactly-once を約束しない）。途中で切れた LLM の呼び出しの使用量は記録されないことがある。
+    exactly-once を約束しない）。途中で切れた LLM の呼び出しの使用量は記録されないことがある。打ち切ったブロックは途中まで
+    進んでいることがある（`data.bulk_upsert` はチャンクごとに commit するので、切れた時点までのチャンクは登録済みのまま失敗
+    する。やり直すと同じ取込 ID で続きから進める）。
+  - effect_journal の予約を step の外の Tx で取る種（data の書き込み〔`data.record.*`・`data.transition`・`data.bulk_upsert`〕・
+    `csv.patch`・`csv.write`・`workflow.start`）は、副作用の途中で打ち切ると予約が結果の無いまま残る。回収の猶予
+    （`RESERVATION_RECLAIM_SECS` = 300 秒）より前にやり直すと予約が「処理中」（`effect_in_progress`・retryable）を返し、
+    試す回数を使い切って失敗する（効果が済んでいても）。そこで打ち切りのやり直しは、回収の猶予に 30 秒を足した時間より後に
+    する（`run::step_timeout::retry_floor_after_timeout_sec`）。回収した予約はもう一度実行するので、打ち切りの前に済んで
+    いた効果がもう一度起きることはある（回収窓の at-least-once・§7.3。`csv.write` の番号付けなら「名前 (2).csv」が増える）。
+    書き込みと記録を 1 つの Tx にする `storage.write` は、打ち切りで両方が巻き戻るので待たない。
   - `script.run`・`skill.invoke` の script は `spawn_blocking` の中で走り、フューチャを捨てても自分の wall-clock 上限まで
     走り続ける。止める合図が立った後の `Shiki.*` 呼び出しはホストが断る（`step_cancelled`・retryable でない）。失敗にした
     step の外部への送信や書き込みが後から起き、やり直しと二重になるのを防ぐ（BUG-96）。
