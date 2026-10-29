@@ -472,7 +472,7 @@ flowchart LR
   `GET /me/approvals` は自分が actor の承認待ち run（承認できるのは actor 本人だけ）を tenant＋org＋actor で
   1 本の SQL に絞り、thread の editor を OpenFGA でまとめて確かめる（承認 API と同じ relation・HigherConsistency）。
   ツールの入力・理由は返さない（中身は会話の承認カードで確かめる）。`GET /me/workflow-runs` は本人に見える
-  ワークフロー（一覧 API と同じ所有∪共有）を先に確定し、直近 24 時間に実行が終わったものだけを viewer で
+  ワークフロー（viewer の ListObjects・所有を含む。一覧の件数上限では切らない）を先に確定し、直近 24 時間に実行が終わったものだけを viewer で
   確かめ直してから、成功・失敗の件数と失敗の明細（最大 3 件）を返す。`GET /me/usage` は利用上限の判定と同じ
   集計（日本時間の暦月・tenant＋本人）で当月の利用額と上限を返し、上限が無い環境では集計しない（`null`）。
 - **会話履歴は tenant スコープのスキーマで新設（SAAS.1 / #91）**: thread/message テーブルは既存規約を踏襲し
