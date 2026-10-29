@@ -6,7 +6,7 @@ import { cleanupAll, loginViaKeycloak, removeWorkflowApi, uniqueName } from "./h
 /// 「ファイルを読む」（storage.read）が Shift_JIS の CSV を読む e2e（GAP-45）:
 /// 日本語の Windows の Excel が既定で保存する Shift_JIS の CSV をドライブに上げ、ワークフローの「ファイルを読む」で
 /// 読むと、文字化けせずに中身の文章が結果に入り、読んだ文字コード（encoding）が Shift_JIS になる。以前は
-/// UTF-8 でない中身として not_text_file で断っていた（6 回目）。「読むファイル」の注記は、読める文字コードを言う。
+/// UTF-8 でない中身として not_text_file で断っていた（6 回目）。読める文字コードは「読むファイル」の「詳しく」で言う。
 
 const SHOTS = process.env.E2E_SHOTS_DIR;
 
@@ -19,7 +19,9 @@ async function csrfHeaders(page: Page): Promise<Record<string, string>> {
 const EXPENSES = "経費,金額\n交通費,1200\n宿泊費,8000\n";
 
 const HINT =
-  "UTF-8 か Shift_JIS のテキストのファイル（.txt、.md、.csv、.json など）を読みます。PDF や Word の本文は読めません。";
+  "テキストのファイル（.txt、.md、.csv など）は中身を、PDF や Word は社内文書の検索に取り込まれた本文を読みます。";
+/// 読める文字コードは「詳しく」で言う（注記は 2 文まで・D-111 で PDF や Word の読み方を注記に足した）。
+const ENCODING_MORE = "テキストのファイルは、UTF-8 か Shift_JIS で保存したものを読みます。";
 
 type RunDetail = { status: string; steps: { node_id: string; status: string; error?: { code?: string } | null }[] };
 
@@ -84,6 +86,8 @@ test("ファイルを読む: Shift_JIS の CSV を文字化けせずに読む（
     await page.getByTestId("rf__node-rd").click();
     const panel = page.getByRole("complementary", { name: "ブロックの設定" });
     await expect(panel.getByText(HINT)).toBeVisible();
+    await panel.getByTestId("storage-read-more").getByRole("button", { name: "詳しく" }).click();
+    await expect(panel.getByText(ENCODING_MORE, { exact: true })).toBeVisible();
     await expect(panel.getByText(csvName)).toBeVisible({ timeout: 15_000 });
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/storage-read-sjis-hint-pc.png` });
 
@@ -132,7 +136,7 @@ test("ファイルを読む: Shift_JIS の CSV を文字化けせずに読む（
       await expect(flow).toBeVisible({ timeout: 15_000 });
       await flow.getByRole("button", { name: /経費を読む/ }).filter({ hasText: "経費を読む" }).first().click();
       const phoneSheet = phone.getByRole("dialog");
-      await expect(phoneSheet.getByText(/UTF-8 か Shift_JIS のテキストのファイル/)).toBeVisible();
+      await expect(phoneSheet.getByText(HINT)).toBeVisible();
       await expect(phoneSheet.getByText(csvName)).toBeVisible({ timeout: 15_000 });
       expect(await phoneSheet.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
       if (SHOTS) await phone.screenshot({ path: `${SHOTS}/storage-read-sjis-hint-phone.png` });

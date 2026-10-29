@@ -15,12 +15,12 @@ import { NodeIcon } from "@/components/drive/primitives";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import type { NodeParamsByType } from "@/generated/workflow-catalog";
+import { STORAGE_READ_MAX_DOCUMENT_CHARS, type NodeParamsByType } from "@/generated/workflow-catalog";
 import type { NameTakenPolicy, ValueExpr } from "@/generated/workflow-ir";
 import { breadcrumb, getNode, type NodeResponse } from "@/lib/storage";
 import { getSchema, runQuery, type SchemaResponse, type TableResponse } from "@/lib/tabular-api";
 import { cn } from "@/lib/utils";
-import { Field, FieldSelectTrigger, NumberInput } from "./common";
+import { Field, FieldSelectTrigger, MoreInfo, NumberInput } from "./common";
 import type { FormProps } from "./forms-basic";
 import { paramsOf, patchParams } from "./params";
 import { ValueExprInput } from "./value-expr-input";
@@ -316,20 +316,43 @@ export function FolderField({
 const UNATTENDED_FOLDER_HINT =
   "スケジュール・できごとで動かすなら指定してください（省略すると保存できず、有効化できません）。有効化のとき、このフォルダの編集権限を渡します";
 
-/// 「ファイルを読む」が読めるファイル（文章として読めない PDF・Word・画像などは実行で失敗する・BUG-101・付録 D の N3.5.1）。
-/// 文字コードは UTF-8 と Shift_JIS（日本語の Windows の Excel が保存する CSV の既定）を読む。BOM 付きの UTF-16 と、
-/// 推定がはっきりした EUC-JP も読むが、注記では主な 2 つだけを言う（GAP-45）。
-const TEXT_FILE_HINT =
-  "UTF-8 か Shift_JIS のテキストのファイル（.txt、.md、.csv、.json など）を読みます。PDF や Word の本文は読めません。";
+/// 「ファイルを読む」が読むもの（付録 D の N3.5.1）。テキストのファイルは中身を読み（BUG-101）、PDF・Office は社内文書の
+/// 検索に取り込まれた本文を読む（D-111）。取り込みが終わる前と、取り込めない種類（画像など）は実行で失敗する。
+const READ_FILE_HINT =
+  "テキストのファイル（.txt、.md、.csv など）は中身を、PDF や Word は社内文書の検索に取り込まれた本文を読みます。PDF や Word は、取り込みが終わるまで読めません。";
 
 export function StorageReadForm(props: FormProps) {
   return (
-    <FileField
-      {...props}
-      label="読むファイル"
-      hint={`${TEXT_FILE_HINT}自動実行をオンにするとき、このファイルを読めるようにします。`}
-      exprHint={TEXT_FILE_HINT}
-    />
+    <div className="space-y-1.5">
+      <FileField
+        {...props}
+        label="読むファイル"
+        hint={`${READ_FILE_HINT}自動実行をオンにするとき、このファイルを読めるようにします。`}
+        exprHint={READ_FILE_HINT}
+      />
+      <StorageReadMore />
+    </div>
+  );
+}
+
+/// 「読むファイル」の「詳しく」: 読める文字コード（GAP-45）・PDF や Word の本文の形と字数の上限（D-111・上限の数は
+/// Rust の定数から生成した値）・取り込みを待つ組み方・読める種類。やり直しの欄は、いま画面に出ている見出し
+/// （「リトライ回数」）で指す（付録 D の N2.4 で「試す回数」に直すときに、ここも直す）。
+function StorageReadMore() {
+  const max = STORAGE_READ_MAX_DOCUMENT_CHARS.toLocaleString("ja-JP");
+  return (
+    <MoreInfo testId="storage-read-more">
+      <p>テキストのファイルは、UTF-8 か Shift_JIS で保存したものを読みます。</p>
+      <p>
+        PDF や Word の本文は、先頭から {max} 字までを読みます。それより長いときは残りを読みません。切ったかどうかは、結果の
+        truncated（true か false）で分かります。
+      </p>
+      <p>本文には、ページの変わり目に〔p.2〕のような印と、見出しの行（# で始まる）が入ります。</p>
+      <p>
+        取り込みが終わる前に読むと、このブロックは失敗します。ファイルが保存されたときに実行するなら、「リトライ回数」を増やすと、少し待ってから読み直します。
+      </p>
+      <p>読める文書は PDF、Word（.docx）、Excel（.xlsx）、PowerPoint（.pptx）です。画像や古い形式（.doc、.xls）は読めません。</p>
+    </MoreInfo>
   );
 }
 

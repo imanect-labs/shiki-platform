@@ -2,11 +2,13 @@ import { expect, test, type Page } from "@playwright/test";
 
 import { cleanupAll, loginViaKeycloak, uniqueName } from "./helpers";
 
-/// 「ファイルを読む」（storage.read）が文章として読めないファイルを断る e2e（BUG-101）:
-/// PDF を読もうとすると、ブロックは「文章として読めない」誤り（not_text_file・やり直さない）で失敗し、実行履歴に
-/// 読み方の案内と、原因を直してから再開する案内が出る。テキストのファイルはそのまま読める。以前は PDF や Word を文字化けしたまま成功させていた。
-/// 「読むファイル」の注記はテキストのファイルだけを読むことを言う。拡張子が文章の種類なら、ブラウザーが付けた MIME
-/// （Windows の .csv の application/vnd.ms-excel）で断らない。
+/// 「ファイルを読む」（storage.read）が文章として読めないファイルを文字化けのまま読まない e2e（BUG-101）:
+/// PDF・Word は社内文書の検索に取り込まれた本文を読む（D-111）。社内文書の検索が無効な構成（CI の web-e2e と手元の
+/// 検証のスタック・SHIKI__RAG__ENABLED=false）では、PDF を読もうとすると、ブロックは分かる誤り（not_text_file・
+/// やり直さない）で失敗し、実行履歴に理由と、原因を直してから再開する案内が出る。テキストのファイルはそのまま読める。
+/// 以前は PDF や Word を文字化けしたまま成功させていた。「読むファイル」の注記は、テキストのファイルは中身を、PDF や
+/// Word は取り込まれた本文を読むことを言う。拡張子が文章の種類なら、ブラウザーが付けた MIME（Windows の .csv の
+/// application/vnd.ms-excel）で断らない。取り込みを待って PDF の本文を読む経路は workflow-storage-read-document.spec.ts。
 
 const SHOTS = process.env.E2E_SHOTS_DIR;
 
@@ -22,13 +24,16 @@ type RunDetail = {
   resume?: { advice: string; offer: boolean; note: string } | null;
 };
 
-const NOT_TEXT =
-  "このファイルは文章として読めません。PDF や Word の本文は「AI エージェント」の「文書の本文を読む」ツールで読みます。";
+/// 社内文書の検索が使えない環境で PDF を読んだときの誤り（api の document_read.rs）。
+const NOT_TEXT = "この環境では社内文書の検索が使えないため、PDF や Word の本文を読めません。";
 
-test("ファイルを読む: PDF は文章として読めない誤りで失敗し、テキストは読める（BUG-101）", async ({ browser, page }) => {
+test("ファイルを読む: PDF は文字化けのまま読まず分かる誤りで失敗し、テキストは読める（BUG-101）", async ({ browser, page }) => {
   test.setTimeout(180_000);
   await page.setViewportSize({ width: 1440, height: 900 });
   await loginViaKeycloak(page);
+  // 社内文書の検索が有効な構成では、PDF は取り込みを待って読む（この spec の対象外・document の spec が確かめる）。
+  const search = await page.request.post("/api/search", { headers: await csrfHeaders(page), data: { query: "probe" } });
+  test.skip(search.status() !== 503, "社内文書の検索が有効な構成（PDF は取り込みを待って読む）");
   let folderId = "";
   let id = "";
   const fileIds: string[] = [];
@@ -96,13 +101,13 @@ test("ファイルを読む: PDF は文章として読めない誤りで失敗�
     expect(created.ok(), await created.text()).toBeTruthy();
     id = ((await created.json()) as { id: string }).id;
 
-    // 「読むファイル」の注記は、入力から選ぶときも、テキストのファイルだけを読むことを言う。
+    // 「読むファイル」の注記は、入力から選ぶときも、テキストのファイルは中身を、PDF や Word は取り込まれた本文を読むことを言う。
     await page.goto(`/workflows/${id}`);
     await page.getByTestId("rf__node-rd").click();
     const panel = page.getByRole("complementary", { name: "ブロックの設定" });
     await expect(
       panel.getByText(
-        "UTF-8 か Shift_JIS のテキストのファイル（.txt、.md、.csv、.json など）を読みます。PDF や Word の本文は読めません。",
+        "テキストのファイル（.txt、.md、.csv など）は中身を、PDF や Word は社内文書の検索に取り込まれた本文を読みます。PDF や Word は、取り込みが終わるまで読めません。",
         { exact: true },
       ),
     ).toBeVisible();
@@ -134,7 +139,7 @@ test("ファイルを読む: PDF は文章として読めない誤りで失敗�
     ).json()) as { output?: { text?: string } };
     expect(csvStep.output?.text).toBe("日付,金額\n2026-10-29,1200\n");
 
-    // PDF は文章として読めない誤り（やり直さない）で失敗する。
+    // PDF は、社内文書の検索が使えない環境では分かる誤り（やり直さない）で失敗する（文字化けした中身で成功しない）。
     const bad = await run(pdfId);
     expect(bad.detail.status).toBe("failed");
     const step = bad.detail.steps.find((s) => s.node_id === "rd");
