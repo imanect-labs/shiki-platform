@@ -324,7 +324,7 @@ export function StorageReadForm(props: FormProps) {
     <FileField
       {...props}
       label="読むファイル"
-      hint={`${TEXT_FILE_HINT}有効化のとき、このファイルの閲覧権限を渡します`}
+      hint={`${TEXT_FILE_HINT}自動実行をオンにするとき、このファイルを読めるようにします。`}
       exprHint={TEXT_FILE_HINT}
     />
   );
@@ -338,7 +338,7 @@ function NameTakenField({ node, dispatch, fieldErrors, example }: FormProps & { 
   const hint =
     current === "add_number"
       ? `「${example}」のように、番号を付けた空いている名前で保存します。番号は 50 まで付けます。`
-      : "保存せずに、このブロックを失敗にします。毎回同じ名前で保存するなら、番号を付けて保存 を選んでください。";
+      : "保存せずに、このブロックを失敗にします。毎回同じ名前で保存するなら、「番号を付けて保存」を選んでください。";
   return (
     <Field label="同じ名前があるとき" hint={hint} error={fieldErrors.get("on_name_taken")}>
       <Select
@@ -358,7 +358,7 @@ function NameTakenField({ node, dispatch, fieldErrors, example }: FormProps & { 
 }
 
 /// ファイル名の注記（同じ名前を避ける差し込みの案内・D-97）。
-const DATE_NAME_HINT = "毎回実行するなら、「差し込む」で 実行した日 を入れると、日ごとに違う名前になります。";
+const DATE_NAME_HINT = "毎回実行するなら、「差し込む」で「実行した日」を入れると、日ごとに違う名前になります。";
 
 /// 保存するファイルの種類（Content-Type）。選ばなければファイル名の拡張子から決める（D-97・決まらなければ
 /// application/octet-stream で、社内文書の検索の対象にならない）。
