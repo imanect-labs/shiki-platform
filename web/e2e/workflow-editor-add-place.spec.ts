@@ -76,6 +76,21 @@ test("パレット: 押すと流れの最後に入り、分岐の後ではどの
     await expect(palette).toContainText("押すと、流れの最後に追加します。ドラッグで置いたブロックは、線でつないでください。");
     await expect(palette.getByRole("searchbox", { name: "ブロックを検索" })).toHaveAttribute("placeholder", "ブロックを検索");
 
+    // 準備中のブロックは閉じた見出しで出し、開けることが分かる印を付ける。検索を消しても、開けた状態は勝手に閉じない。
+    const upcoming = palette.locator("details").filter({ has: page.locator("summary", { hasText: "準備中" }) });
+    const isOpen = () => upcoming.evaluate((el) => (el as HTMLDetailsElement).open);
+    await expect.poll(isOpen).toBe(false);
+    await expect(upcoming.locator("summary svg")).toBeVisible();
+    await upcoming.locator("summary").click();
+    await expect.poll(isOpen).toBe(true);
+    const search = palette.getByRole("searchbox", { name: "ブロックを検索" });
+    await search.fill("該当しない語");
+    await expect(upcoming).toHaveCount(0);
+    await search.fill("");
+    await expect.poll(isOpen).toBe(true);
+    await upcoming.locator("summary").click();
+    await expect.poll(isOpen).toBe(false);
+
     // 押して足す: 分岐の後ろでは最初の出口（はい）の側に入る。通知で場所を言い、線で裏取りする。
     await palette.getByRole("button", { name: /AI に聞く/ }).click();
     await expect(page.getByText("「AI に聞く」を追加しました").first()).toBeVisible();
