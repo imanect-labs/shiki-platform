@@ -20,9 +20,11 @@ const RUN_STATUS: Record<string, { label: string; variant: BadgeVariant; live?: 
   cancelled: { label: "中止", variant: "muted" },
 };
 
+/// 状態の絞り込みの選択肢。サーバーの絞り込みは run の状態だけを見るので、「実行中」を選ぶと待機中（承認・変更・時刻を
+/// 待っている run）も出る。選択肢の名前でそれを言う（バッジは待機中を分けて出す・BUG-119）。
 export const RUN_STATUS_OPTIONS = Object.entries(RUN_STATUS).map(([value, s]) => ({
   value,
-  label: s.label,
+  label: value === "running" ? "実行中・待機中" : s.label,
 }));
 
 export const TRIGGER_KIND_LABELS: Record<string, string> = {
