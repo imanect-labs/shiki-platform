@@ -403,7 +403,7 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 
 - **ファイルの ID の項目名は `file_id` にそろえる**（D-96）: `storage.read`・`storage.write`・`csv.write`・`csv.patch` の結果は `file_id` を載せ、古い名前（`storage.*` の `id`・`csv.*` の `node_id`）も同じ値で残す（保存済みの定義の `$from` を壊さない）。`rag.search` の結果・ファイル保存のトリガのペイロードはもとから `file_id`。出力の形の正はカタログの `output_fields`。
 
-**出力の形の正はノードカタログ**（`crates/workflow-engine/src/vocab/catalog.rs`）の `output_fields`（最上位の項目の名前・型・省略されうるか・補足）である。AI の説明文に載せる TS 風の表記（`output_shape`）はそこから作り、エディタの参照の候補も `output_fields` を読む（表記を字句解析しない・D-42）。項目の組でない出力（入力をそのまま通す・script の戻り値など）は文で書き、項目は空にする。
+**出力の形の正はノードカタログ**（`crates/workflow-engine/src/vocab/catalog.rs`）の `output_fields`（最上位の項目の名前・型・省略されうるか・補足）である。AI の説明文に載せる TS 風の表記（`output_shape`）はそこから作り、エディタの参照の候補も `output_fields` を読む（表記を字句解析しない・D-42）。設定で決まる項目は、その設定の場所（params の JSON Pointer・`present_if`）を持つ（`llm.invoke` の `data` は `/output_schema`、`data.query` の `count` は `/query/with_count`、`groups` は `/query/aggregate`）。エディタは、その場所に値があるときだけ参照の候補に出す（値の入らない候補を選ばせない・BUG-108）。項目の組でない出力（入力をそのまま通す・script の戻り値など）は文で書き、項目は空にする。
 
 ### 7.1 `data.transition`（FSM 遷移）
 
