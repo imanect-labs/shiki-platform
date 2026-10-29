@@ -1284,6 +1284,7 @@ impl NodeExecutor for ContextEcho {
 
 /// D-93: 実行のダイアログは、手動の実行にきっかけの内容を入力と別に渡せる（`$from trigger` の源）。渡さなければ
 /// 今までどおり、きっかけの内容は入力と同じ。項目のまとまりでないきっかけの内容は 400（field = trigger）。
+/// 実行履歴の「新しく実行し直す」は、入力と一緒に試したきっかけの内容も引き継ぐ。
 #[tokio::test]
 async fn manual_run_takes_trial_trigger() {
     let Some(env) = setup().await else { return };
@@ -1332,11 +1333,41 @@ async fn manual_run_takes_trial_trigger() {
         }
     };
     assert_eq!(
-        output(with_trial).await,
+        output(with_trial.clone()).await,
         json!({ "input": { "amount": 3 }, "trigger": trial })
     );
     assert_eq!(
-        output(without).await,
+        output(without.clone()).await,
+        json!({ "input": { "amount": 4 }, "trigger": { "amount": 4 } })
+    );
+
+    // --- 「新しく実行し直す」は、元の run で試したきっかけの内容も引き継ぐ（入力だけを引き継ぐと、新しい run の
+    //     きっかけの内容が入力の値になっていた）。試していない run は、いままでどおり入力と同じ。
+    let retry_new = |run: String| {
+        let env = &env;
+        let id = id.clone();
+        async move {
+            let (st, body) = req(
+                env,
+                "POST",
+                &format!("/workflows/{id}/runs/{run}/retry"),
+                Some(json!({ "mode": "new" })),
+            )
+            .await;
+            assert_eq!(st, StatusCode::ACCEPTED, "{body}");
+            body["run_id"].as_str().unwrap().to_string()
+        }
+    };
+    let again_trial = retry_new(with_trial.clone()).await;
+    let again_without = retry_new(without).await;
+    assert_ne!(again_trial, with_trial, "新しい run を作る");
+    while worker.claim_and_run_once("w-trial").await.unwrap() {}
+    assert_eq!(
+        output(again_trial).await,
+        json!({ "input": { "amount": 3 }, "trigger": trial })
+    );
+    assert_eq!(
+        output(again_without).await,
         json!({ "input": { "amount": 4 }, "trigger": { "amount": 4 } })
     );
     delete_flow_and_runs(&env, &id).await;

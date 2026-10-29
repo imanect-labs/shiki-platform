@@ -77,6 +77,9 @@ pub struct RunDetail {
     pub trigger_kind: String,
     pub version: i64,
     pub input: Value,
+    /// 手動の実行で試したきっかけの内容（`trigger_payload`・D-93）。無ければ `None`（きっかけの内容は入力と同じ）。
+    /// 「新しく実行し直す」がこれも引き継ぐ。
+    pub trigger_payload: Option<Value>,
     pub fail_reason: Option<String>,
     pub trace_id: Option<String>,
     pub cancel_requested: bool,
@@ -170,6 +173,7 @@ impl RunStore {
             String,
             i64,
             Json<Value>,
+            Option<Json<Value>>,
             Option<String>,
             Option<String>,
             bool,
@@ -178,7 +182,8 @@ impl RunStore {
             Option<DateTime<Utc>>,
         );
         let row: Option<RunRow> = sqlx::query_as(&format!(
-            "SELECT r.status, {WAITING_FOR}, r.trigger_kind, r.version, r.input, r.fail_reason, \
+            "SELECT r.status, {WAITING_FOR}, r.trigger_kind, r.version, r.input, r.trigger_payload, \
+                    r.fail_reason, \
                     r.trace_id, r.cancel_requested, r.created_at, r.started_at, r.finished_at \
              FROM workflow_run r \
              WHERE r.tenant_id = $1 AND r.workflow_id = $2 AND r.run_id = $3"
@@ -195,6 +200,7 @@ impl RunStore {
             trigger_kind,
             version,
             input,
+            trigger_payload,
             fail_reason,
             trace_id,
             cancel_requested,
@@ -227,6 +233,7 @@ impl RunStore {
             trigger_kind,
             version,
             input: input.0,
+            trigger_payload: trigger_payload.map(|t| t.0),
             fail_reason,
             trace_id,
             cancel_requested,

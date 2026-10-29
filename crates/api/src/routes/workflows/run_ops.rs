@@ -221,9 +221,16 @@ pub async fn retry_workflow_run(
                 .await
                 .map_err(|e| ApiError::Internal(format!("run: {e}")))?
                 .ok_or(ApiError::NotFound)?;
-            // 元 version をピンし同一入力で新規 run（実行主体は呼び出し者＝正直な semantics）。
+            // 元 version をピンし同一入力で新規 run（実行主体は呼び出し者＝正直な semantics）。元の run で試した
+            // きっかけの内容も引き継ぐ（無ければ入力と同じ・D-93）。
             let new_run = launcher
-                .start_interactive_version(&ctx, id, detail.version, &detail.input)
+                .start_interactive_version_trial(
+                    &ctx,
+                    id,
+                    detail.version,
+                    &detail.input,
+                    detail.trigger_payload.as_ref(),
+                )
                 .await
                 .map_err(|e| match e {
                     // 元の入力が今の input_schema に合わない（版を固定しても入力は過去のもの）。

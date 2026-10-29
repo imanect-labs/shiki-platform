@@ -169,12 +169,30 @@ impl WorkflowRunLauncher {
         version: i64,
         input: &Value,
     ) -> Result<Option<Uuid>, LauncherError> {
+        self.start_interactive_version_trial(ctx, workflow_id, version, input, None)
+            .await
+    }
+
+    /// [`Self::start_interactive_version`] で、きっかけの内容も渡す（実行履歴の「新しく実行し直す」が、元の run で
+    /// 試したきっかけの内容を引き継ぐ・D-93）。`trigger` が `None` なら、きっかけの内容は入力と同じ。
+    pub async fn start_interactive_version_trial(
+        &self,
+        ctx: &AuthContext,
+        workflow_id: Uuid,
+        version: i64,
+        input: &Value,
+        trigger: Option<&Value>,
+    ) -> Result<Option<Uuid>, LauncherError> {
         let (version, ir) = self
             .workflows
             .get_version(ctx, workflow_id, version, None)
             .await
             .map_err(|e| LauncherError::Ir(format!("{e:?}")))?;
-        self.create_interactive_run(ctx, workflow_id, version, &ir, input, RunOrigin::default())
+        let origin = RunOrigin {
+            trigger_payload: trigger,
+            ..RunOrigin::default()
+        };
+        self.create_interactive_run(ctx, workflow_id, version, &ir, input, origin)
             .await
     }
 
