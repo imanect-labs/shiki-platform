@@ -43,6 +43,7 @@ import { ShareDialog } from "./share-dialog";
 import { SortMenu, ViewToggle, type ViewMode } from "./toolbar";
 import { UploadConflictDialog } from "./upload-conflict-dialog";
 import { useDriveUploads } from "./use-drive-uploads";
+import { useRevealNode } from "./use-reveal-node";
 import { VersionsDialog } from "./versions-dialog";
 
 /// 列見出しをクリックした時の既定の並び順（名前は昇順、更新日時・サイズは降順）。
@@ -191,7 +192,12 @@ export function DriveBrowser() {
     ? contentSearch.hits.filter((h) => !list.items.some((n) => n.id === h.fileId))
     : [];
 
-  const uploader = useDriveUploads({ folderId, onChanged: list.reload });
+  // 作った・名前を変えたものは、一覧の最初のページの外でも、すぐに見せる（続きを読み込んでその行へ移る・BUG-125）。
+  const reveal = useRevealNode(list);
+  const uploader = useDriveUploads({
+    folderId,
+    onChanged: (saved) => (saved.length > 0 ? reveal(saved[0].id) : list.reload()),
+  });
 
   // パンくず（現在フォルダが変わるたび取得）。ルートは空。
   React.useEffect(() => {
@@ -551,14 +557,15 @@ export function DriveBrowser() {
         label="フォルダ名"
         submitLabel="作成"
         onSubmit={async (name) => {
+          let created: NodeResponse;
           try {
-            await createFolder(name, folderId ?? undefined);
+            created = await createFolder(name, folderId ?? undefined);
           } catch (e) {
             // 入力欄の下に出る。番号だけのエラーにしない。
             if (isConflict(e)) throw new Error("同じ名前のフォルダがあります");
             throw e;
           }
-          list.reload();
+          reveal(created.id);
         }}
       />
 
@@ -587,7 +594,7 @@ export function DriveBrowser() {
             if (isConflict(e)) throw new Error("この場所に同じ名前のファイルまたはフォルダがあります");
             throw e;
           }
-          list.reload();
+          reveal(activeNode.id);
         }}
       />
 

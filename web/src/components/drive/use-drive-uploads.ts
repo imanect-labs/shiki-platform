@@ -41,8 +41,8 @@ export function useDriveUploads({
   onChanged,
 }: {
   folderId: string | null;
-  /// 1 件以上反映されたら呼ぶ（一覧の再読込）。
-  onChanged: () => void;
+  /// 1 件以上反映されたら呼ぶ（一覧の再読込）。`saved` は保存したファイル（送った順・作った直後に見せる・BUG-125）。
+  onChanged: (saved: NodeResponse[]) => void;
 }) {
   const [uploads, setUploads] = React.useState<UploadProgress[]>([]);
   const [conflicts, setConflicts] = React.useState<UploadConflict[]>([]);
@@ -96,7 +96,8 @@ export function useDriveUploads({
     [send],
   );
 
-  const report = (succeeded: number, failures: Failure[], what = "アップロード") => {
+  const report = (saved: NodeResponse[], failures: Failure[], what = "アップロード") => {
+    const succeeded = saved.length;
     if (failures.length > 0) {
       const names = failures.slice(0, 3).map((f) => `「${f.name}」`).join("");
       const more = failures.length > 3 ? ` ほか ${failures.length - 3} 件` : "";
@@ -120,7 +121,7 @@ export function useDriveUploads({
               : `${succeeded} 件を${what}しました`
             : `${succeeded} 件を${what}しました（${failures.length} 件は失敗）`,
       });
-      onChangedRef.current();
+      onChangedRef.current(saved);
     }
   };
 
@@ -144,7 +145,7 @@ export function useDriveUploads({
         ),
       );
 
-      let succeeded = 0;
+      const saved: NodeResponse[] = [];
       const failures: Failure[] = [];
       const pending: UploadConflict[] = [];
       const taken = new Set(files.map((f) => f.name));
@@ -155,9 +156,11 @@ export function useDriveUploads({
           continue;
         }
         try {
-          if (job.renameInBatch) await sendWithFreeName(job.file, parentId, taken);
-          else await send(job.file, { parentId });
-          succeeded += 1;
+          saved.push(
+            job.renameInBatch
+              ? await sendWithFreeName(job.file, parentId, taken)
+              : await send(job.file, { parentId }),
+          );
         } catch (e) {
           if (isConflict(e)) {
             const found = await findSiblingByName(parentId, job.file.name).catch(() => null);
@@ -167,7 +170,7 @@ export function useDriveUploads({
           }
         }
       }
-      report(succeeded, failures);
+      report(saved, failures);
       if (pending.length > 0) {
         conflictFolderRef.current = parentId;
         setConflicts((prev) => [...prev, ...pending]);
@@ -183,24 +186,23 @@ export function useDriveUploads({
       setConflicts([]);
       if (resolution === "skip" || items.length === 0) return;
       const parentId = conflictFolderRef.current;
-      let succeeded = 0;
+      const saved: NodeResponse[] = [];
       const failures: Failure[] = [];
       const taken = new Set<string>();
       for (const c of items) {
         try {
           // 新しいバージョンは既存の「ファイル」にだけ積める。フォルダと同名・特定できない
           // 同名は版にできないので、名前を変えて両方残す。
-          if (resolution === "version" && c.existing && c.existing.kind !== "folder") {
-            await send(c.file, { parentId, targetNodeId: c.existing.id });
-          } else {
-            await sendWithFreeName(c.file, parentId, taken);
-          }
-          succeeded += 1;
+          saved.push(
+            resolution === "version" && c.existing && c.existing.kind !== "folder"
+              ? await send(c.file, { parentId, targetNodeId: c.existing.id })
+              : await sendWithFreeName(c.file, parentId, taken),
+          );
         } catch (e) {
           failures.push({ name: c.file.name, message: e instanceof Error ? e.message : String(e) });
         }
       }
-      report(succeeded, failures, resolution === "version" ? "保存" : "アップロード");
+      report(saved, failures, resolution === "version" ? "保存" : "アップロード");
     },
     [conflicts, send, sendWithFreeName],
   );
@@ -209,9 +211,9 @@ export function useDriveUploads({
   const uploadNewVersion = React.useCallback(
     async (file: File, node: NodeResponse) => {
       try {
-        await send(file, { parentId: node.parent_id ?? null, targetNodeId: node.id });
+        const saved = await send(file, { parentId: node.parent_id ?? null, targetNodeId: node.id });
         toast({ title: "新しいバージョンをアップロードしました", description: node.name });
-        onChangedRef.current();
+        onChangedRef.current([saved]);
       } catch (e) {
         toast({
           variant: "destructive",

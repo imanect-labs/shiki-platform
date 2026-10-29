@@ -31,6 +31,7 @@ export function NodeCard({
         "pointer-coarse:select-none pointer-coarse:[-webkit-touch-callout:none]",
         menuOpen && "border-border bg-accent",
       )}
+      data-node-id={node.id}
       {...longPress}
     >
       <div className="absolute right-1 top-1 z-10">
@@ -45,6 +46,7 @@ export function NodeCard({
       </div>
       <button
         type="button"
+        data-node-primary
         onClick={() => onAction("open", node)}
         className="flex w-full flex-col gap-2.5 p-3 text-left outline-none"
       >

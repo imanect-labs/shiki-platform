@@ -232,6 +232,24 @@ export async function removeWorkflowApi(page: Page, id: string): Promise<void> {
   );
 }
 
+/// API でフォルダーを作る（`parentId` が無ければドライブのトップ）。
+export async function createFolderApi(page: Page, name: string, parentId: string | null = null): Promise<string> {
+  const csrf = (await page.context().cookies()).find((c) => c.name === "shiki_csrf")?.value ?? "";
+  const res = await page.request.post("/api/folders", {
+    headers: { "x-csrf-token": csrf, "content-type": "application/json" },
+    data: { name, parent_id: parentId },
+  });
+  expect(res.ok(), await res.text()).toBeTruthy();
+  return ((await res.json()) as { id: string }).id;
+}
+
+/// フォルダーを中身ごとゴミ箱へ移す（もう無ければ何もしない・E2E の片付け）。
+export async function trashFolderApi(page: Page, id: string): Promise<void> {
+  const csrf = (await page.context().cookies()).find((c) => c.name === "shiki_csrf")?.value ?? "";
+  const res = await page.request.delete(`/api/folders/${id}`, { headers: { "x-csrf-token": csrf } });
+  expect([204, 404], `DELETE /folders/${id} → ${res.status()}`).toContain(res.status());
+}
+
 /// 後片付けを互いに独立して全部走らせる（どれかが投げても残りを走らせ、最初の誤りを最後に投げる）。
 export async function cleanupAll(...steps: (() => Promise<unknown>)[]): Promise<void> {
   const errors: unknown[] = [];
