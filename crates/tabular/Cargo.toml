@@ -21,6 +21,8 @@ shiki-storage.workspace = true
 sqlparser.workspace = true
 # CSV 読み書き（パッチ書換）。
 csv.workspace = true
+# CSV の文字コード（Shift_JIS・BOM 付きの UTF-8・UTF-16）を決めて UTF-8 にする・編集後に元の文字コードで書く（GAP-45）。
+shiki-textenc.workspace = true
 
 serde = { workspace = true }
 serde_json.workspace = true
@@ -34,7 +36,7 @@ tempfile = "3"
 
 # lib 名 authz/storage で参照するため machete（名前一致）が誤検出する。
 [package.metadata.cargo-machete]
-ignored = ["shiki-authz", "shiki-storage"]
+ignored = ["shiki-authz", "shiki-storage", "shiki-textenc"]
 
 [lints]
 workspace = true

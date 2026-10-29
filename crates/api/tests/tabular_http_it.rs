@@ -636,3 +636,108 @@ async fn tabular_schema_rows_query_patch_flow() {
     assert_eq!(st, StatusCode::OK, "{body:?}");
     assert!(body["node_id"].is_string());
 }
+
+/// CSV の画面（schema・rows・patch）も、Excel が保存する文字コードの CSV を読む（GAP-45）。Shift_JIS の CSV を
+/// 日本語の列名で読み、編集は Shift_JIS のまま保存する。読めない CSV と、Shift_JIS に無い文字の編集は、画面が
+/// そのまま出せる文言つきの構造化 400（`invalid_input`）で断る。
+#[tokio::test]
+async fn tabular_reads_shift_jis_and_explains_what_it_cannot_read_or_write() {
+    let Some(env) = setup().await else { return };
+    // 中身は実行ごとに変える（中身の同じ blob は前の実行のバケットを指すので、同じ DB で流し直すと読めない）。
+    let tag = Uuid::new_v4().simple().to_string();
+    let csv = format!("経費,金額,番号\n交通費,1200,{tag}\n");
+    let (sjis, _, _) = textenc::encoding_rs::SHIFT_JIS.encode(&csv);
+    let node = env
+        .storage
+        .write_file_internal(
+            &env.ctx,
+            None,
+            &format!("経費-{}.csv", Uuid::new_v4()),
+            &sjis,
+            "application/vnd.ms-excel",
+            None,
+        )
+        .await
+        .expect("create csv");
+    let latin = env
+        .storage
+        .write_file_internal(
+            &env.ctx,
+            None,
+            &format!("latin-{}.csv", Uuid::new_v4()),
+            &[b"name\ncaf\xe9 ".as_slice(), tag.as_bytes(), b"\n"].concat(),
+            "text/csv",
+            None,
+        )
+        .await
+        .expect("create csv");
+    let call = |req: Request<Body>| {
+        let app = env.app.clone();
+        async move { json_body(app.oneshot(req).await.unwrap()).await }
+    };
+    let id = node.id;
+    let schema = call(get(&env.app, &format!("/files/{id}/tabular/schema"))).await;
+    let rows = call(get(&env.app, &format!("/files/{id}/tabular/rows?offset=0"))).await;
+    let patched = call(post(
+        &format!("/files/{id}/tabular/patch"),
+        json!({"base_rev": node.version, "ops": [
+            {"op": "cell_update", "row": 0, "col": 1, "value": "1500"}
+        ]}),
+    ))
+    .await;
+    let unmappable = call(post(
+        &format!("/files/{id}/tabular/patch"),
+        json!({"base_rev": node.version + 1, "ops": [
+            {"op": "cell_update", "row": 0, "col": 0, "value": "😀"}
+        ]}),
+    ))
+    .await;
+    let (_, saved) = env
+        .storage
+        .read_file_internal(&env.ctx, id, None)
+        .await
+        .unwrap();
+    let unreadable = call(get(
+        &env.app,
+        &format!("/files/{}/tabular/schema", latin.id),
+    ))
+    .await;
+    // 片付け（作った CSV）。
+    for file in [id, latin.id] {
+        env.storage
+            .soft_delete_file(&env.ctx, file, None)
+            .await
+            .unwrap();
+    }
+
+    assert_eq!(schema.0, StatusCode::OK, "{:?}", schema.1);
+    assert_eq!(schema.1["columns"], json!(["経費", "金額", "番号"]));
+    assert_eq!(rows.0, StatusCode::OK, "{:?}", rows.1);
+    assert_eq!(rows.1["rows"], json!([["交通費", "1200", tag]]));
+    assert_eq!(patched.0, StatusCode::OK, "{:?}", patched.1);
+    let edited = textenc::decode_text(&saved).unwrap();
+    assert_eq!(
+        (edited.encoding.name(), edited.text.as_str()),
+        (
+            "Shift_JIS",
+            format!("経費,金額,番号\n交通費,1500,{tag}\n").as_str()
+        ),
+        "Shift_JIS のまま保存する"
+    );
+    assert_eq!(unmappable.0, StatusCode::BAD_REQUEST, "{:?}", unmappable.1);
+    assert_eq!(unmappable.1["code"], "invalid_input");
+    assert!(
+        unmappable.1["message"]
+            .as_str()
+            .unwrap()
+            .contains("「😀」は、この CSV の文字コード（Shift_JIS）では書けません"),
+        "{:?}",
+        unmappable.1
+    );
+    assert_eq!(unreadable.0, StatusCode::BAD_REQUEST, "{:?}", unreadable.1);
+    assert_eq!(unreadable.1["code"], "invalid_input");
+    assert_eq!(
+        unreadable.1["message"],
+        "この CSV の中身は文章として読めません。UTF-8 か Shift_JIS で保存した CSV を選んでください。"
+    );
+}

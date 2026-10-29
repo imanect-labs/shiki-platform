@@ -991,6 +991,166 @@ async fn csv_query_node_reads_uploaded_csv() {
     assert_eq!(out["version"], node.version, "{out}");
 }
 
+/// csv.* のブロックは、Excel が保存する文字コードの CSV を読む（GAP-45）。Shift_JIS（日本語の Windows の既定）・
+/// BOM 付きの UTF-8・UTF-16LE（BOM 付き）の「経費,金額」の CSV を「CSV を集計」が日本語の列名で集計でき、
+/// 「CSV を編集」は元の文字コードのまま書き戻す。元の文字コードで書けない文字は書かずに失敗する（中身を変えない）。
+#[tokio::test]
+async fn csv_nodes_read_excel_encodings_and_keep_the_encoding_when_patching() {
+    use textenc::encoding_rs::{SHIFT_JIS, UTF_16LE};
+    let Some(h) = setup().await else { return };
+    let Some(runner) = runner_path() else {
+        eprintln!("shiki-tabular-runner 未ビルドのためスキップ（SHIKI_TABULAR_RUNNER 参照）");
+        return;
+    };
+    let csv = "経費,金額\n交通費,1200\n宿泊費,8000\n";
+    let (sjis, _, _) = SHIFT_JIS.encode(csv);
+    let bom8 = [b"\xEF\xBB\xBF".as_slice(), csv.as_bytes()].concat();
+    let utf16 = textenc::encode_like(csv, UTF_16LE, true).unwrap();
+    let mut written = Vec::new();
+    for (name, bytes, ct) in [
+        ("経費-sjis.csv", sjis.as_ref(), "application/vnd.ms-excel"),
+        ("経費-utf8.csv", bom8.as_slice(), "text/csv"),
+        ("経費-utf16.csv", utf16.as_slice(), "text/csv"),
+    ] {
+        let node = h
+            .storage
+            .write_file_internal(&h.alice, None, name, bytes, ct, None)
+            .await
+            .expect("csv アップロード");
+        written.push(node);
+    }
+    let step = |run_id: Uuid| {
+        let pool = h.pool.clone();
+        let tenant = h.tenant.clone();
+        async move {
+            let row: (String, Option<Value>, Option<Value>) = sqlx::query_as(
+                "SELECT status, output, error FROM step_execution \
+                 WHERE tenant_id = $1 AND run_id = $2 ORDER BY node_id LIMIT 1",
+            )
+            .bind(&tenant)
+            .bind(run_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            row
+        }
+    };
+
+    let query = h
+        .save(&json!({
+            "ir_version": 1, "name": "csv-encodings",
+            "declared_scopes": ["csv.read"],
+            "triggers": [{ "kind": "interactive" }],
+            "nodes": [ { "id": "q", "type": "csv.query", "params": {
+                "file": { "$from": "input", "path": "/file" },
+                "sql": "SELECT \"経費\", sum(\"金額\") AS 合計 FROM data GROUP BY \"経費\" ORDER BY 合計" } } ],
+            "edges": []
+        }))
+        .await;
+    let mut queried = Vec::new();
+    for node in &written {
+        let (run_id, status) = h
+            .run(
+                query,
+                &json!({ "file": node.id.to_string() }),
+                h.executor_with_tabular(&runner),
+            )
+            .await;
+        queried.push((node.name.clone(), status, step(run_id).await));
+    }
+
+    // Shift_JIS の CSV を編集する（金額を書き換える・元の文字コードのまま保存する）。
+    let sjis_file = &written[0];
+    let patch = h
+        .save(&json!({
+            "ir_version": 1, "name": "csv-patch-sjis",
+            "declared_scopes": ["csv.write"],
+            "triggers": [{ "kind": "interactive" }],
+            "nodes": [ { "id": "p", "type": "csv.patch", "params": {
+                "file": { "$from": "input", "path": "/file" },
+                "base_rev": { "$from": "input", "path": "/rev" },
+                "ops": { "$from": "input", "path": "/ops" } } } ],
+            "edges": []
+        }))
+        .await;
+    let patched = h
+        .run(
+            patch,
+            &json!({ "file": sjis_file.id.to_string(), "rev": sjis_file.version,
+                     "ops": [ { "op": "cell_update", "row": 0, "col": 1, "value": "1500" } ] }),
+            h.executor_with_tabular(&runner),
+        )
+        .await;
+    let patched_step = step(patched.0).await;
+    let (_, after_patch) = h
+        .storage
+        .read_file_internal(&h.alice, sjis_file.id, None)
+        .await
+        .unwrap();
+    // Shift_JIS に無い文字（絵文字）は書かずに失敗し、ファイルは変わらない。
+    let refused = h
+        .run(
+            patch,
+            &json!({ "file": sjis_file.id.to_string(), "rev": sjis_file.version + 1,
+                     "ops": [ { "op": "cell_update", "row": 0, "col": 0, "value": "交通費😀" } ] }),
+            h.executor_with_tabular(&runner),
+        )
+        .await;
+    let refused_step = step(refused.0).await;
+    let (unchanged, after_refusal) = h
+        .storage
+        .read_file_internal(&h.alice, sjis_file.id, None)
+        .await
+        .unwrap();
+
+    // 片付け（run の履歴・アップロードしたファイル・ワークフロー）。
+    h.runs.purge_tenant_history(&h.tenant).await.unwrap();
+    for node in &written {
+        h.storage
+            .soft_delete_file(&h.alice, node.id, None)
+            .await
+            .unwrap();
+    }
+    for wf in [query, patch] {
+        h.artifacts.delete(&h.alice, wf, None).await.unwrap();
+    }
+
+    for (name, status, (_, output, error)) in &queried {
+        assert_eq!(*status, RunStatus::Succeeded, "{name}: {error:?}");
+        let output = output.as_ref().unwrap();
+        assert_eq!(
+            output["columns"],
+            json!(["経費", "合計"]),
+            "{name}: {output}"
+        );
+        assert_eq!(
+            output["rows"],
+            json!([["交通費", "1200"], ["宿泊費", "8000"]]),
+            "{name}: {output}"
+        );
+    }
+    assert_eq!(patched.1, RunStatus::Succeeded, "{patched_step:?}");
+    assert_eq!(
+        patched_step.1.as_ref().unwrap()["version"],
+        sjis_file.version + 1
+    );
+    let edited = textenc::decode_text(&after_patch).unwrap();
+    assert_eq!(edited.encoding, SHIFT_JIS, "元の文字コードのまま保存する");
+    assert_eq!(edited.text, "経費,金額\n交通費,1500\n宿泊費,8000\n");
+    assert_eq!(refused.1, RunStatus::Failed);
+    let error = refused_step.2.unwrap();
+    assert_eq!(error["code"], "invalid", "{error}");
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("「😀」は、この CSV の文字コード（Shift_JIS）では書けません"),
+        "{error}"
+    );
+    assert_eq!(unchanged.version, sjis_file.version + 1, "書かない");
+    assert_eq!(after_refusal, after_patch);
+}
+
 /// csv.query は declared_scopes に csv.read が無いと scope 天井で拒否される（fail-closed）。
 #[tokio::test]
 async fn csv_query_denied_without_declared_scope() {

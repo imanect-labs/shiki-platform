@@ -20,7 +20,10 @@ pub enum TabularError {
     /// 楽観ロック失敗（base rev が現在の版と不一致）。リロードが必要。
     #[error("競合: base_rev={base}, current={current}")]
     RevConflict { base: i64, current: i64 },
-    /// パッチ入力が不正（範囲外の行/列・型不一致等）。
+    /// CSV の中身を文章として読めない（文字コードを決められない・文章でない・GAP-45）。文言は利用者向け。
+    #[error("{0}")]
+    NotText(String),
+    /// パッチ入力が不正（範囲外の行/列・型不一致・元の文字コードで書けない文字等）。
     #[error("不正なパッチ: {0}")]
     InvalidPatch(String),
     /// 隔離ランナーの実行失敗（デコード/プロセス異常）。

@@ -7,6 +7,10 @@
 //! - save（新規） … `write_file_internal`（member@org / editor@folder＝作成権限）
 //!
 //! DuckDB 実行は [`crate::runner`] の非特権別プロセスに隔離し、api には CSV を食わせない。
+//!
+//! CSV の文字コードは、読むときに `textenc` の判定（BOM → UTF-8 → 日本の文字コードの推定）で決めて UTF-8 にする
+//! （ランナーと編集は UTF-8 だけを扱う）。日本語の Windows の Excel が保存する CSV の既定は Shift_JIS。編集は、
+//! 元の文字コードと BOM のまま書き戻す（Excel や取り込む先の仕組みが読めなくならないように・GAP-45）。
 
 use std::io::Write as _;
 use std::sync::Arc;
@@ -169,10 +173,12 @@ impl TabularService {
             .storage
             .read_file_internal(ctx, file_id, trace_id)
             .await?;
-        let result = apply_patches(&bytes, ops)?;
+        let original = decode_csv(&bytes)?;
+        let result = apply_patches(original.text.as_bytes(), ops)?;
+        let csv = encode_back(&result.csv, &original)?;
         let updated = self
             .storage
-            .update_file_content_internal(ctx, file_id, &result.csv, "text/csv", trace_id)
+            .update_file_content_internal(ctx, file_id, &csv, "text/csv", trace_id)
             .await?;
         Ok(PatchApplied {
             node_id: updated.id,
@@ -208,7 +214,7 @@ impl TabularService {
         })
     }
 
-    /// viewer 認可で CSV を取得し、隔離ランナー用の私有一時ファイルへ書く。
+    /// viewer 認可で CSV を取得し、UTF-8 にして隔離ランナー用の私有一時ファイルへ書く。
     async fn fetch_csv(
         &self,
         ctx: &AuthContext,
@@ -232,12 +238,14 @@ impl TabularService {
         if node.kind != NodeKind::File {
             return Err(TabularError::NotFound(format!("file {file_id}")));
         }
+        // ランナー（DuckDB）は UTF-8 だけを読むので、文字コードを決めて UTF-8 にしてから渡す（BOM は含めない）。
+        let text = decode_csv(&bytes)?.text;
         let mut tmp = tempfile::Builder::new()
             .prefix("shiki-tabular-")
             .suffix(".csv")
             .tempfile()
             .map_err(|e| TabularError::Internal(format!("一時ファイル作成に失敗: {e}")))?;
-        tmp.write_all(&bytes)
+        tmp.write_all(text.as_bytes())
             .map_err(|e| TabularError::Internal(format!("一時ファイル書込に失敗: {e}")))?;
         tmp.flush()
             .map_err(|e| TabularError::Internal(format!("一時ファイル flush に失敗: {e}")))?;
@@ -274,5 +282,81 @@ impl TabularService {
 
     pub fn page_size(&self) -> u32 {
         self.quotas.page_size
+    }
+}
+
+/// CSV の中身を読めないときの文言（利用者向け・ワークフローの誤りと CSV の画面にそのまま出す）。
+const NOT_TEXT_CSV: &str =
+    "この CSV の中身は文章として読めません。UTF-8 か Shift_JIS で保存した CSV を選んでください。";
+
+/// CSV のバイト列の文字コードを決めて読む（読めなければ [`TabularError::NotText`]）。
+fn decode_csv(bytes: &[u8]) -> Result<textenc::Decoded, TabularError> {
+    textenc::decode_text(bytes).map_err(|_| TabularError::NotText(NOT_TEXT_CSV.into()))
+}
+
+/// 編集した CSV（UTF-8）を、元の文字コードと BOM で書き戻す。元の文字コードに無い文字は書かない
+/// （`&#…;` に置き換えて中身を黙って変えない）。
+fn encode_back(csv: &[u8], original: &textenc::Decoded) -> Result<Vec<u8>, TabularError> {
+    let text = std::str::from_utf8(csv).map_err(|e| {
+        TabularError::Internal(format!("編集した CSV が UTF-8 ではありません: {e}"))
+    })?;
+    textenc::encode_like(text, original.encoding, original.bom).map_err(|textenc::Unmappable(c)| {
+        TabularError::InvalidPatch(format!(
+            "「{c}」は、この CSV の文字コード（{}）では書けません。別の文字に置き換えてください。",
+            original.encoding.name()
+        ))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+    use textenc::encoding_rs::{SHIFT_JIS, UTF_16LE, UTF_8};
+
+    /// Excel が保存する文字コードの CSV を読み、編集は元の文字コードと BOM のまま書き戻す（GAP-45）。
+    #[test]
+    fn edits_are_written_back_in_the_original_encoding() {
+        let csv = "経費,金額\n交通費,1200\n";
+        for (encoding, bom) in [
+            (SHIFT_JIS, false),
+            (UTF_8, true),
+            (UTF_8, false),
+            (UTF_16LE, true),
+        ] {
+            let bytes = textenc::encode_like(csv, encoding, bom).unwrap();
+            let original = decode_csv(&bytes).unwrap();
+            assert_eq!(original.text, csv, "{}", encoding.name());
+            let edited = apply_patches(
+                original.text.as_bytes(),
+                &[PatchOp::CellUpdate {
+                    row: 0,
+                    col: 1,
+                    value: "1500".into(),
+                }],
+            )
+            .unwrap();
+            let back = encode_back(&edited.csv, &original).unwrap();
+            assert_eq!(
+                back,
+                textenc::encode_like("経費,金額\n交通費,1500\n", encoding, bom).unwrap(),
+                "{}",
+                encoding.name()
+            );
+        }
+    }
+
+    #[test]
+    fn refuses_csv_it_cannot_read_and_characters_it_cannot_write() {
+        assert!(matches!(
+            decode_csv(b"%PDF-1.7\n\x00\x01"),
+            Err(TabularError::NotText(m)) if m == NOT_TEXT_CSV
+        ));
+        let (sjis, _, _) = SHIFT_JIS.encode("経費\n");
+        let original = decode_csv(&sjis).unwrap();
+        assert!(matches!(
+            encode_back("経費😀\n".as_bytes(), &original),
+            Err(TabularError::InvalidPatch(m)) if m.contains("「😀」") && m.contains("Shift_JIS")
+        ));
     }
 }

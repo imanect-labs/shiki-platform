@@ -20,6 +20,13 @@ fn denied(err: &tabular::TabularError) -> ToolOutcome {
     if let TE::QueryFailed(m) = err {
         return ToolOutcome::error(format!("SQL の実行に失敗しました: {m}"));
     }
+    // 文字コードを決められない・文章でない CSV は、UTF-8 か Shift_JIS で保存し直すよう伝える。編集が元の文字コードで
+    // 書けない文字を含むときも、理由（どの文字か）を返してモデルに直させる（GAP-45）。
+    match err {
+        TE::NotText(m) => return ToolOutcome::error(m.clone()),
+        TE::InvalidPatch(m) => return ToolOutcome::error(format!("CSV を編集できません: {m}")),
+        _ => {}
+    }
     let msg = match err {
         TE::Forbidden | TE::Authz(_) | TE::Storage(storage::StorageError::Forbidden) => {
             "この CSV を操作する権限がありません。"
@@ -402,6 +409,17 @@ mod tests {
         })
         .content
         .contains("他の編集で更新されています"));
+        // 読めない CSV と、元の文字コードで書けない編集は、理由を返してモデルに直させる（GAP-45）。
+        assert_eq!(
+            denied(&TE::NotText(
+                "UTF-8 か Shift_JIS で保存した CSV を選んでください。".into()
+            ))
+            .content,
+            "UTF-8 か Shift_JIS で保存した CSV を選んでください。"
+        );
+        assert!(denied(&TE::InvalidPatch("「😀」は書けません".into()))
+            .content
+            .contains("「😀」は書けません"));
         // フォールバック（_）: クォータ超過等は汎用メッセージへ。
         assert_eq!(
             denied(&TE::QuotaExceeded("mem".into())).content,

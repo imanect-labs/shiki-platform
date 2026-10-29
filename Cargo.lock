@@ -5791,6 +5791,7 @@ dependencies = [
  "serde_json",
  "shiki-authz",
  "shiki-storage",
+ "shiki-textenc",
  "sqlparser",
  "tempfile",
  "thiserror 2.0.18",
