@@ -205,11 +205,13 @@ impl WorkflowSummaryStore {
     /// （期間内に実行が終わったワークフローだけを返す）。
     ///
     /// 呼び出し側は返ったワークフローだけを権限で確かめ直してから合計する（post-filter）。
-    /// id は認可済み前提で、tenant で二重に絞る。集計の基準は終了時刻（`finished_at`・終端遷移で
-    /// 必ず入る）で、終了時刻の索引（`workflow_run_gc_idx`）に乗る。
+    /// id は認可済み前提で、tenant・org で二重に絞り、削除済みのワークフローは数えない。
+    /// 集計の基準は終了時刻（`finished_at`・終端遷移で必ず入る）で、終了時刻の索引
+    /// （`workflow_run_gc_idx`）に乗る。
     pub async fn run_counts(
         &self,
         tenant_id: &str,
+        org: &str,
         ids: &[Uuid],
         since: DateTime<Utc>,
     ) -> Result<Vec<WorkflowRunCount>, sqlx::Error> {
@@ -217,15 +219,19 @@ impl WorkflowSummaryStore {
             return Ok(Vec::new());
         }
         sqlx::query_as(
-            "SELECT workflow_id, \
-                    count(*) FILTER (WHERE status = 'succeeded') AS succeeded, \
-                    count(*) FILTER (WHERE status = 'failed') AS failed \
-             FROM workflow_run \
-             WHERE tenant_id = $1 AND workflow_id = ANY($2) \
-               AND status IN ('succeeded', 'failed', 'cancelled') AND finished_at >= $3 \
-             GROUP BY workflow_id",
+            "SELECT r.workflow_id, \
+                    count(*) FILTER (WHERE r.status = 'succeeded') AS succeeded, \
+                    count(*) FILTER (WHERE r.status = 'failed') AS failed \
+             FROM workflow_run r \
+             JOIN artifact a \
+               ON a.tenant_id = r.tenant_id AND a.id = r.workflow_id \
+              AND a.org = $2 AND a.deleted_at IS NULL \
+             WHERE r.tenant_id = $1 AND r.workflow_id = ANY($3) \
+               AND r.status IN ('succeeded', 'failed', 'cancelled') AND r.finished_at >= $4 \
+             GROUP BY r.workflow_id",
         )
         .bind(tenant_id)
+        .bind(org)
         .bind(ids)
         .bind(since)
         .fetch_all(&self.db)

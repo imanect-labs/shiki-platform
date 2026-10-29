@@ -73,14 +73,20 @@ export function useHomeFeed(): HomeFeed {
             sharedFiles: items.filter((n) => n.kind !== "folder"),
           })),
       );
-    Promise.all([
-      fetchPendingApprovals().catch(() => [] as PendingApproval[]),
-      fetchWorkflowRunDigest().catch(() => EMPTY_DIGEST),
-      fetchMyUsage().catch(() => null),
-    ]).then(
-      ([approvals, workflows, usage]) =>
-        active && setFeed((f) => ({ ...f, approvals, workflows, usage, todayLoaded: true })),
-    );
+    // 届いたものから出す（遅い API に承認待ちまで引きずられない）。「読み込み済み」は 3 つとも
+    // 終わってから立てる。
+    const today = [
+      fetchPendingApprovals()
+        .catch(() => [] as PendingApproval[])
+        .then((approvals) => active && setFeed((f) => ({ ...f, approvals }))),
+      fetchWorkflowRunDigest()
+        .catch(() => EMPTY_DIGEST)
+        .then((workflows) => active && setFeed((f) => ({ ...f, workflows }))),
+      fetchMyUsage()
+        .catch(() => null)
+        .then((usage) => active && setFeed((f) => ({ ...f, usage }))),
+    ];
+    Promise.all(today).then(() => active && setFeed((f) => ({ ...f, todayLoaded: true })));
     return () => {
       active = false;
     };

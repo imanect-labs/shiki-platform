@@ -3,13 +3,14 @@
 //! どれも本人の分だけを返す読み取り API。範囲は `AuthContext` から決め、他人の分は出さない。
 //! - 承認待ち: 自分が actor の run（承認できるのは本人だけ）を SQL で絞り、thread の editor を
 //!   OpenFGA でまとめて確かめる（`ChatStore::list_pending_approvals`）。
-//! - ワークフロー: 本人に見えるワークフロー（一覧 API と同じ所有∪共有）を先に確定し、その
-//!   集合だけを集計する（pre-filter・PIT-13・`visible_workflow_ids`）。数を出す前に、期間内に
+//! - ワークフロー: 本人が viewer のアーティファクト（所有を含む）を OpenFGA の ListObjects で
+//!   先に確定し、その集合だけを集計する（pre-filter・PIT-13）。一覧用の `visible_workflow_ids`
+//!   は更新順の件数上限で切るため、古い共有ワークフローの失敗を取りこぼす。数を出す前に、期間内に
 //!   実行が終わったワークフローだけを viewer で確かめ直す（post-filter・実行履歴 API と同じ
 //!   HigherConsistency。共有を外した直後のワークフローを出さない）。
 //! - 利用量: 上限の判定と同じ集計（日本時間の暦月・本人の分）。上限が無い環境では集計しない。
 
-use authz::{CheckTuple, Consistency, Relation};
+use authz::{AuthContext, CheckTuple, Consistency, ObjectType, Relation};
 use axum::{extract::State, Json};
 use chrono::{DateTime, Duration, Utc};
 use serde::Serialize;
@@ -18,7 +19,7 @@ use uuid::Uuid;
 
 use super::chat::chat_store;
 use super::llm_models::gateway;
-use crate::{error::ApiError, extract::AuthContextExt, state::AppState, workflow_directory};
+use crate::{error::ApiError, extract::AuthContextExt, state::AppState};
 
 /// ホームに出す承認待ちの件数（全件は取らない）。
 const PENDING_LIMIT: i64 = 5;
@@ -80,6 +81,22 @@ pub struct WorkflowRunDigestResponse {
     pub recent_failures: Vec<FailedWorkflowRun>,
 }
 
+/// 本人が viewer のアーティファクト id（所有・共有とも・件数で切らない）。種類は問わず、
+/// ワークフロー以外の id は集計の SQL で当たらない。
+async fn readable_artifact_ids(state: &AppState, ctx: &AuthContext) -> Result<Vec<Uuid>, ApiError> {
+    let objects = state
+        .authz
+        .list_objects(&ctx.subject(), Relation::Viewer, ObjectType::Artifact)
+        .await?;
+    let ns = ctx.ns();
+    Ok(objects
+        .iter()
+        .filter_map(|o| o.split_once(':'))
+        .filter_map(|(_, id)| ns.strip_object_id(id))
+        .filter_map(|id| Uuid::parse_str(id).ok())
+        .collect())
+}
+
 /// 本人に見えるワークフローの、直近 24 時間に終わった実行の集計（ホームの「今日のこと」）。
 #[utoipa::path(
     get, path = "/me/workflow-runs",
@@ -93,11 +110,11 @@ pub async fn workflow_run_digest(
     State(state): State<AppState>,
     AuthContextExt(ctx): AuthContextExt,
 ) -> Result<Json<WorkflowRunDigestResponse>, ApiError> {
-    let (ids, _owned) = workflow_directory::visible_workflow_ids(&state.artifacts, &ctx).await?;
+    let ids = readable_artifact_ids(&state, &ctx).await?;
     let since = Utc::now() - Duration::hours(WORKFLOW_WINDOW_HOURS);
     let summaries = &state.workflow_summaries;
     let counts = summaries
-        .run_counts(&ctx.tenant_id, &ids, since)
+        .run_counts(&ctx.tenant_id, &ctx.org, &ids, since)
         .await
         .map_err(|e| ApiError::Internal(format!("ワークフロー実行の集計: {e}")))?;
     // post-filter: 期間内に実行があったワークフローだけを viewer で確かめ直す（数件〜数十件）。

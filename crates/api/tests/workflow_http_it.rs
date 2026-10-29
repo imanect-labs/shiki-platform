@@ -37,7 +37,12 @@ use workflow_engine::{
 };
 
 /// 全許可 authz（ルート層の配線検証用・実 FGA は registration IT が担う）。
-struct AllowAll;
+/// ListObjects だけは、書かれた owner タプルのオブジェクトを返す（所有は viewer を含むので、
+/// 実 FGA でも自分のアーティファクトは viewer の ListObjects に載る）。
+#[derive(Default)]
+struct AllowAll {
+    owned: std::sync::Mutex<Vec<String>>,
+}
 
 #[async_trait]
 impl AuthzClient for AllowAll {
@@ -53,9 +58,12 @@ impl AuthzClient for AllowAll {
     async fn write_tuple(
         &self,
         _s: &Subject,
-        _r: Relation,
-        _o: &FgaObject,
+        r: Relation,
+        o: &FgaObject,
     ) -> Result<bool, AuthzError> {
+        if r == Relation::Owner {
+            self.owned.lock().unwrap().push(o.as_str().to_owned());
+        }
         Ok(true)
     }
     async fn delete_tuple(
@@ -77,9 +85,15 @@ impl AuthzClient for AllowAll {
         &self,
         _s: &Subject,
         _r: Relation,
-        _t: ObjectType,
+        t: ObjectType,
     ) -> Result<Vec<String>, AuthzError> {
-        Ok(vec![])
+        let prefix = format!("{}:", t.as_str());
+        let owned = self.owned.lock().unwrap();
+        Ok(owned
+            .iter()
+            .filter(|o| o.starts_with(&prefix))
+            .cloned()
+            .collect())
     }
     async fn delete_object_tuples(&self, _o: &FgaObject) -> Result<u32, AuthzError> {
         Ok(0)
@@ -239,7 +253,7 @@ async fn setup() -> Option<Env> {
         .await
         .unwrap();
 
-    let authz: Arc<dyn AuthzClient> = Arc::new(AllowAll);
+    let authz: Arc<dyn AuthzClient> = Arc::new(AllowAll::default());
     let artifacts = Arc::new(artifact::ArtifactStore::new(
         pool.clone(),
         Arc::clone(&authz),
@@ -312,7 +326,7 @@ async fn setup() -> Option<Env> {
         app_platform::Registry::new(pool.clone()),
         Arc::clone(&mini_app_code),
         Arc::clone(&data_store),
-        Arc::new(AllowAll),
+        Arc::new(AllowAll::default()),
         None,
         vec![],
     ));
@@ -321,16 +335,16 @@ async fn setup() -> Option<Env> {
         app_platform::Registry::new(pool.clone()),
         app_platform::TrustedKeyStore::new(pool.clone()),
         Arc::clone(&artifacts),
-        Arc::new(AllowAll),
+        Arc::new(AllowAll::default()),
     ));
     let bundles = Arc::new(app_platform::BundleStore::new(
         Arc::new(NoopStore),
-        Arc::new(AllowAll),
+        Arc::new(AllowAll::default()),
         storage::audit::AuditRecorder::new(pool.clone()),
     ));
     let app_usage = Arc::new(app_platform::AppUsageStore::new(
         pool.clone(),
-        Arc::new(AllowAll),
+        Arc::new(AllowAll::default()),
     ));
     let state = AppState {
         config: Arc::new(config(&db_url)),
