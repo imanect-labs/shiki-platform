@@ -1,6 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { loginViaKeycloak, uniqueName } from "./helpers";
+import { cleanupAll, cleanupQueue, deleteArtifactApi, deleteTableApi, loginViaKeycloak, removeWorkflowApi, uniqueName } from "./helpers";
+
+/// テストで作ったもの（テーブル・ワークフロー・フォルダー）を、テストの後に片付ける（失敗したテストでも走る・BUG-126）。
+const cleanup = cleanupQueue();
+test.afterEach(() => cleanup.run());
+
 
 /// 束縛済みのテーブルがテーブルの一覧（GET /data/tables は更新の新しい順に 200 件で打ち切る）に無いときの
 /// ワークフローの設定画面の e2e（BUG-68）:
@@ -40,6 +45,13 @@ async function setup(page: Page): Promise<Setup> {
   });
   expect(created.status(), await created.text()).toBe(201);
   const table = (await created.json()) as { id: string; schema: Record<string, unknown>; schema_version: number };
+  let fsmId = "";
+  cleanup.add(() =>
+    cleanupAll(
+      () => deleteTableApi(page, table.id),
+      async () => fsmId && deleteArtifactApi(page, fsmId),
+    ),
+  );
   const fsm = await page.request.post("/api/data/fsms", {
     headers,
     data: {
@@ -58,6 +70,7 @@ async function setup(page: Page): Promise<Setup> {
   });
   expect(fsm.status(), await fsm.text()).toBe(201);
   const f = (await fsm.json()) as { id: string; version?: number };
+  fsmId = f.id;
   const put = await page.request.put(`/api/data/tables/${table.id}/schema`, {
     headers,
     data: {
@@ -122,6 +135,7 @@ async function setup(page: Page): Promise<Setup> {
   });
   expect(flow.ok(), await flow.text()).toBeTruthy();
   const workflowId = ((await flow.json()) as { id: string }).id;
+  cleanup.add(() => removeWorkflowApi(page, workflowId));
   return { tableId: table.id, tableName, workflowId };
 }
 

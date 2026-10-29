@@ -1,6 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { loginViaKeycloak, uniqueName } from "./helpers";
+import { cleanupQueue, deleteTableApi, loginViaKeycloak, removeWorkflowApi, uniqueName } from "./helpers";
+
+/// テストで作ったもの（テーブル・ワークフロー・フォルダー）を、テストの後に片付ける（失敗したテストでも走る・BUG-126）。
+const cleanup = cleanupQueue();
+test.afterEach(() => cleanup.run());
+
 
 /// データ変更トリガの e2e（GAP-07・D-47）:
 /// - きっかけの設定で「テーブルに行が追加されたとき」とテーブルを選んで保存すると、テーブルに束縛した
@@ -22,6 +27,7 @@ async function createTable(page: Page): Promise<{ id: string; name: string; titl
   });
   expect(res.status(), await res.text()).toBe(201);
   const table = (await res.json()) as { id: string; schema: { fields: { key: string; display_name: string }[] } };
+  cleanup.add(() => deleteTableApi(page, table.id));
   const titleKey = table.schema.fields.find((f) => f.display_name === "件名")?.key ?? "title";
   return { id: table.id, name, titleKey };
 }
@@ -29,7 +35,9 @@ async function createTable(page: Page): Promise<{ id: string; name: string; titl
 async function createFlow(page: Page, ir: Record<string, unknown>): Promise<string> {
   const res = await page.request.post("/api/workflows", { headers: await csrfHeaders(page), data: { ir } });
   expect(res.ok(), await res.text()).toBeTruthy();
-  return ((await res.json()) as { id: string }).id;
+  const id = ((await res.json()) as { id: string }).id;
+  cleanup.add(() => removeWorkflowApi(page, id));
+  return id;
 }
 
 type SavedIr = {

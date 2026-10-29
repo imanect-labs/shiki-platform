@@ -1,6 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { loginViaKeycloak, uniqueName } from "./helpers";
+import { cleanupQueue, deleteTableApi, loginViaKeycloak, uniqueName } from "./helpers";
+
+/// テストで作ったテーブルを、テストの後に片付ける（失敗したテストでも走る・BUG-126）。
+const cleanup = cleanupQueue();
+test.afterEach(() => cleanup.run());
 
 /// 業務データのグリッド（Task 15.5）: テーブル作成 → 列追加 → レコード編集 → ビュー保存。
 ///
@@ -153,6 +157,7 @@ async function seedTable(page: Page, codes: string[]) {
   });
   expect(res.status(), await res.text()).toBe(201);
   const tableId = ((await res.json()) as { id: string }).id;
+  cleanup.add(() => deleteTableApi(page, tableId));
   for (const [i, code] of codes.entries()) {
     const r = await page.request.post(`/api/data/tables/${tableId}/records`, {
       headers,

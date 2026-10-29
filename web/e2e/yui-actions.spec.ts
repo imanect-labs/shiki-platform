@@ -1,6 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { loginViaKeycloak, uniqueName } from "./helpers";
+import { cleanupQueue, loginViaKeycloak, removeWorkflowApi, uniqueName } from "./helpers";
+
+/// テストで作ったもの（ワークフローと実行）を、テストの後に片付ける（失敗したテストでも走る・BUG-126）。
+const cleanup = cleanupQueue();
+test.afterEach(() => cleanup.run());
+
 
 /// 回答の本文の ```ui（Yui）のボタン（#604）。押すとサーバーが保存済みの本文から図を読み直し、
 /// 値を検証してから会話へ送る・ワークフローを起動する。
@@ -37,6 +42,8 @@ async function createFlow(page: Page, name: string) {
     },
   });
   expect(res.ok()).toBeTruthy();
+  const id = ((await res.json()) as { id: string }).id;
+  cleanup.add(() => removeWorkflowApi(page, id));
 }
 
 test.describe("```ui の図のボタン", () => {

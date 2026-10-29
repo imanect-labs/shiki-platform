@@ -138,6 +138,100 @@ export async function pinStubOrgDefault(page: Page): Promise<() => Promise<void>
   return async () => put(auto ? { auto_model: settings.auto_model } : { default_model: settings.default_model });
 }
 
+/// テストで作ったものの片付けを積み、テストの後（`test.afterEach`）に、作った逆の順で互いに独立して全部走らせる
+/// （失敗したテストでも走る・BUG-126）。テストが多く、作る処理を関数にまとめている spec で使う。
+///
+/// ```ts
+/// const cleanup = cleanupQueue();
+/// test.afterEach(() => cleanup.run());
+/// // テストの中: cleanup.add(() => removeWorkflowApi(page, id));
+/// ```
+export function cleanupQueue(): { add: (step: () => Promise<unknown>) => void; run: () => Promise<void> } {
+  let steps: (() => Promise<unknown>)[] = [];
+  return {
+    add(step) {
+      steps.push(step);
+    },
+    async run() {
+      const pending = steps.reverse();
+      steps = [];
+      await cleanupAll(...pending);
+    },
+  };
+}
+
+/// [`cleanupQueue`] が返す登録簿。
+export type CleanupQueue = ReturnType<typeof cleanupQueue>;
+
+/// 画面の操作で作られたもの（ブラウザーからの作成の応答）を、片付けの登録簿に積む（一覧の「新しいワークフロー」・
+/// アプリの作成・会話の「アプリとして保存」・スキルの作成・テーブルの作成・BUG-126）。`page.request` で作ったものは
+/// 画面の応答に出ないので、呼び出し側が積む。
+export function trackCreatedResources(page: Page, queue: CleanupQueue): void {
+  page.on("response", (res) => {
+    if (res.request().method() !== "POST" || !res.ok()) return;
+    const path = new URL(res.url()).pathname;
+    const remove: ((id: string) => Promise<void>) | null =
+      path === "/api/workflows"
+        ? (id) => removeWorkflowApi(page, id)
+        : path === "/api/mini-apps" || path === "/api/skills" || path.endsWith("/save-as-app")
+          ? (id) => deleteArtifactApi(page, id)
+          : path === "/api/data/tables"
+            ? (id) => deleteTableApi(page, id)
+            : null;
+    if (!remove) return;
+    void res
+      .json()
+      .then((body: { id?: string }) => {
+        if (body.id) queue.add(() => remove(body.id!));
+      })
+      .catch(() => undefined);
+  });
+}
+
+async function csrfOf(page: Page): Promise<string> {
+  return (await page.context().cookies()).find((c) => c.name === "shiki_csrf")?.value ?? "";
+}
+
+/// アーティファクト（ワークフロー・状態の進め方・アプリ・スキル・ビュー）を消す（もう無ければ何もしない）。
+export async function deleteArtifactApi(page: Page, id: string): Promise<void> {
+  const res = await page.request.delete(`/api/artifacts/${id}`, { headers: { "x-csrf-token": await csrfOf(page) } });
+  expect([204, 404], `DELETE /artifacts/${id} → ${res.status()}`).toContain(res.status());
+}
+
+/// テーブルを消す（もう無ければ何もしない）。
+export async function deleteTableApi(page: Page, id: string): Promise<void> {
+  const res = await page.request.delete(`/api/data/tables/${id}`, { headers: { "x-csrf-token": await csrfOf(page) } });
+  expect([204, 404], `DELETE /data/tables/${id} → ${res.status()}`).toContain(res.status());
+}
+
+/// ワークフローの動いている実行（順番待ち・実行中・承認や変更を待っている実行）を止める（承認の依頼を「承認」の
+/// 画面に残さない・BUG-126）。ワークフローがもう無ければ何もしない。
+export async function cancelActiveRunsApi(page: Page, workflowId: string): Promise<void> {
+  const res = await page.request.get(`/api/workflows/${workflowId}/runs?status=queued,running&limit=100`);
+  if (res.status() === 404) return;
+  expect(res.ok(), await res.text()).toBeTruthy();
+  const { items } = (await res.json()) as { items: { run_id: string }[] };
+  const headers = { "x-csrf-token": await csrfOf(page), "content-type": "application/json" };
+  for (const run of items) {
+    const c = await page.request.post(`/api/workflows/${workflowId}/runs/${run.run_id}/cancel`, { headers, data: {} });
+    expect([200, 404], `cancel ${run.run_id} → ${c.status()}`).toContain(c.status());
+  }
+}
+
+/// ドライブのファイルをゴミ箱へ移す（もう無ければ何もしない）。
+export async function trashFileApi(page: Page, id: string): Promise<void> {
+  const res = await page.request.delete(`/api/files/${id}`, { headers: { "x-csrf-token": await csrfOf(page) } });
+  expect([204, 404], `DELETE /files/${id} → ${res.status()}`).toContain(res.status());
+}
+
+/// ワークフローを片付ける: 動いている実行を止めてから消す（消すと自動実行・きっかけも止まる・BUG-128）。
+export async function removeWorkflowApi(page: Page, id: string): Promise<void> {
+  await cleanupAll(
+    () => cancelActiveRunsApi(page, id),
+    () => deleteArtifactApi(page, id),
+  );
+}
+
 /// 後片付けを互いに独立して全部走らせる（どれかが投げても残りを走らせ、最初の誤りを最後に投げる）。
 export async function cleanupAll(...steps: (() => Promise<unknown>)[]): Promise<void> {
   const errors: unknown[] = [];

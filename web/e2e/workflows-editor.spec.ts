@@ -1,6 +1,20 @@
 import { expect, test, type Browser, type Page } from "@playwright/test";
 
-import { loginViaKeycloak, uniqueName } from "./helpers";
+import {
+  cleanupQueue,
+  deleteTableApi,
+  loginViaKeycloak,
+  removeWorkflowApi,
+  trackCreatedResources,
+  trashFileApi,
+  uniqueName,
+} from "./helpers";
+
+/// テストで作ったもの（ワークフロー・テーブル・CSV）を、テストの後に片付ける（失敗したテストでも走る・BUG-126）。
+/// 一覧の「新しいワークフロー」で作ったものは、画面の応答から拾って積む。
+const cleanup = cleanupQueue();
+test.beforeEach(({ page }) => trackCreatedResources(page, cleanup));
+test.afterEach(() => cleanup.run());
 
 /// dnd ワークフローエディタの e2e（Task 10.12 DoD）:
 /// 新規作成 → ブロック追加（ヘッダ導線＋尻尾プラス）→ ブロックが要する権限が「使う権限」に出る
@@ -82,6 +96,7 @@ test("エディタ: 意味論の切替で結果が変わり得る条件を、開
   });
   expect(res.ok(), await res.text()).toBeTruthy();
   const created = (await res.json()) as { id: string; warnings: { code: string }[] };
+  cleanup.add(() => removeWorkflowApi(page, created.id));
   expect(created.warnings.map((w) => w.code)).toEqual(["ir.condition_semantics_changed"]);
 
   // 開いた時点で、ノードに注意の印・上部に件数が出る（保存済みの定義の確認）。
@@ -118,6 +133,7 @@ test("データを追加のレコードの値は JSON のオブジェクトに�
   });
   expect(t.status(), await t.text()).toBe(201);
   const tableId = ((await t.json()) as { id: string }).id;
+  cleanup.add(() => deleteTableApi(page, tableId));
   const name = uniqueName("wf-data-object");
   const res = await page.request.post("/api/workflows", {
     headers,
@@ -135,6 +151,7 @@ test("データを追加のレコードの値は JSON のオブジェクトに�
   });
   expect(res.ok(), await res.text()).toBeTruthy();
   const id = ((await res.json()) as { id: string }).id;
+  cleanup.add(() => removeWorkflowApi(page, id));
   await page.goto(`/workflows/${id}`);
   await page.locator(".react-flow").getByText("データを追加").first().click();
   const value = page.getByLabel("レコードの値");
@@ -180,6 +197,7 @@ async function openChainWithoutLayout(page: Page): Promise<string> {
   });
   expect(res.ok(), await res.text()).toBeTruthy();
   const id = ((await res.json()) as { id: string }).id;
+  cleanup.add(() => removeWorkflowApi(page, id));
   await page.goto(`/workflows/${id}`);
   await expect(page.getByTestId("rf__node-c")).toBeVisible({ timeout: 15_000 });
   await settleViewport(page);
@@ -383,6 +401,7 @@ test("CSV を集計: ドライブから CSV を選び、SQL を書いて保存�
   });
   expect(created.ok(), await created.text()).toBeTruthy();
   const fileId = ((await created.json()) as { node_id: string }).node_id;
+  cleanup.add(() => trashFileApi(page, fileId));
 
   await page.goto("/workflows");
   await expect(page.getByText("読み込み中…")).toHaveCount(0);
@@ -522,7 +541,9 @@ async function createLlmFlow(
     },
   });
   expect(res.ok(), await res.text()).toBeTruthy();
-  return ((await res.json()) as { id: string }).id;
+  const id = ((await res.json()) as { id: string }).id;
+  cleanup.add(() => removeWorkflowApi(page, id));
+  return id;
 }
 
 async function openFlow(page: Page, id: string) {
@@ -1038,6 +1059,7 @@ async function openIr(page: Page, ir: Record<string, unknown>): Promise<string> 
   });
   expect(res.ok(), await res.text()).toBeTruthy();
   const id = ((await res.json()) as { id: string }).id;
+  cleanup.add(() => removeWorkflowApi(page, id));
   await page.goto(`/workflows/${id}`);
   await expect(page.locator(".react-flow__node").first()).toBeVisible({ timeout: 15_000 });
   await settleViewport(page);

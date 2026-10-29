@@ -112,19 +112,30 @@ test("AI エージェント: スマホのシートでも道具の一覧を選べ
     deviceScaleFactor: 3,
     ignoreHTTPSErrors: true,
   });
-  const phone = await ctx.newPage();
-  await phone.goto(`/workflows/${id}`);
-  const flow = phone.getByTestId("workflow-mobile-flow");
-  await expect(flow).toBeVisible({ timeout: 15_000 });
-  await flow.getByRole("button", { name: /規程を調べる/ }).filter({ hasText: "規程を調べる" }).click();
-  const sheet = phone.getByRole("dialog");
-  const tools = sheet.getByTestId("agent-tools");
-  await expect(tools).toBeVisible();
-  await expect(tools.getByRole("checkbox", { name: /社内検索/ })).toBeChecked();
-  await tools.getByRole("checkbox", { name: /Web 検索/ }).check();
-  await expect(tools.getByRole("checkbox", { name: /Web 検索/ })).toBeChecked();
-  expect(await sheet.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
-  await ctx.close();
+  try {
+    const phone = await ctx.newPage();
+    await phone.goto(`/workflows/${id}`);
+    const flow = phone.getByTestId("workflow-mobile-flow");
+    await expect(flow).toBeVisible({ timeout: 15_000 });
+    await flow.getByRole("button", { name: /規程を調べる/ }).filter({ hasText: "規程を調べる" }).click();
+    const sheet = phone.getByRole("dialog");
+    const tools = sheet.getByTestId("agent-tools");
+    await expect(tools).toBeVisible();
+    await expect(tools.getByRole("checkbox", { name: /社内検索/ })).toBeChecked();
+    await tools.getByRole("checkbox", { name: /Web 検索/ }).check();
+    await expect(tools.getByRole("checkbox", { name: /Web 検索/ })).toBeChecked();
+    expect(await sheet.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+  } finally {
+    // 作ったワークフローを消す（BUG-126）。
+    await cleanupAll(
+      () => ctx.close(),
+      async () => {
+        const csrf = (await page.context().cookies()).find((c) => c.name === "shiki_csrf")?.value ?? "";
+        const res = await page.request.delete(`/api/artifacts/${id}`, { headers: { "x-csrf-token": csrf } });
+        expect([204, 404], `DELETE /artifacts/${id} → ${res.status()}`).toContain(res.status());
+      },
+    );
+  }
 });
 
 /// 「規程を調べる」エージェントだけのフローを API で作る（道具は社内検索）。

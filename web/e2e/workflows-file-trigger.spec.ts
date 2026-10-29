@@ -1,6 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { loginViaKeycloak, uniqueName } from "./helpers";
+import { cleanupQueue, loginViaKeycloak, removeWorkflowApi, trashFolderApi, uniqueName } from "./helpers";
+
+/// テストで作ったもの（テーブル・ワークフロー・フォルダー）を、テストの後に片付ける（失敗したテストでも走る・BUG-126）。
+const cleanup = cleanupQueue();
+test.afterEach(() => cleanup.run());
+
 
 /// ファイル保存トリガの e2e（BUG-28・D-38）:
 /// - きっかけの設定で、フォルダへの保存が新しい版を含むこと・続く保存を 1 回にまとめることを示す。
@@ -27,6 +32,7 @@ test("ファイル保存トリガ: ドライブで新しい版を続けて保存
   });
   expect(created.ok(), await created.text()).toBeTruthy();
   const folder = (await created.json()) as { id: string };
+  cleanup.add(() => trashFolderApi(page, folder.id));
 
   const name = uniqueName("file-version-trigger");
   const res = await page.request.post("/api/workflows", {
@@ -52,6 +58,7 @@ test("ファイル保存トリガ: ドライブで新しい版を続けて保存
   });
   expect(res.ok(), await res.text()).toBeTruthy();
   const id = ((await res.json()) as { id: string }).id;
+  cleanup.add(() => removeWorkflowApi(page, id));
 
   // きっかけの設定に、新しい版も含むこと・続く保存をまとめることが出る。
   await page.goto(`/workflows/${id}`);

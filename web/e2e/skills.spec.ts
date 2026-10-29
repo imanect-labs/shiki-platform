@@ -1,6 +1,11 @@
 import { test, expect } from "@playwright/test";
 
-import { loginViaKeycloak, uniqueName } from "./helpers";
+import { cleanupQueue, deleteArtifactApi, loginViaKeycloak, trackCreatedResources, uniqueName } from "./helpers";
+
+/// 画面から作ったスキルを、テストの後に片付ける（画面の応答から拾う・失敗したテストでも走る・BUG-126）。
+const cleanup = cleanupQueue();
+test.beforeEach(({ page }) => trackCreatedResources(page, cleanup));
+test.afterEach(() => cleanup.run());
 
 /// skill 管理と適用（Phase 6 Task 6.7/6.9/6.11）の E2E。
 /// 前提: LLM=stub（skill を選んでも stub は「回答: <質問>」を返す＝適用経路の疎通を検証）。
@@ -67,9 +72,27 @@ test.describe("skill（作成・共有・チャット適用）", () => {
 
   test("ホームでスキルを選んでチャットを開始できる", async ({ page }) => {
     await loginViaKeycloak(page);
+    // 前のテストに頼らず、このテストのスキルを作る（前のテストのスキルは片付けで消える・BUG-126）。
+    const csrf = (await page.context().cookies()).find((c) => c.name === "shiki_csrf")?.value ?? "";
+    const created = await page.request.post("/api/skills", {
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
+      data: {
+        name: uniqueName("e2e-skill-home"),
+        body: {
+          description: "ホームから選ぶスキル",
+          instructions: "あなたは E2E テストのアシスタントです。",
+          knowledge_scope: null,
+          allowed_tools: null,
+          model: null,
+        },
+      },
+    });
+    expect(created.ok(), await created.text()).toBeTruthy();
+    const skillId = ((await created.json()) as { id: string }).id;
+    cleanup.add(() => deleteArtifactApi(page, skillId));
     await page.goto("/");
 
-    // 前テストで作成したスキルがピッカーに出る（読み込みは非同期なので待つ）。
+    // 作ったスキルがピッカーに出る（読み込みは非同期なので待つ）。
     const picker = page.getByLabel("スキルを選択");
     await picker.waitFor({ timeout: 10_000 });
 
@@ -80,4 +103,5 @@ test.describe("skill（作成・共有・チャット適用）", () => {
     await page.waitForURL(/\/c\/[0-9a-f-]+/i, { timeout: 20_000 });
     await expect(page.getByText(/回答/).first()).toBeVisible({ timeout: 30_000 });
   });
+
 });

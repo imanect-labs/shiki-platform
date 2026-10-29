@@ -1,6 +1,29 @@
 import { test, expect, type Page } from "@playwright/test";
 
-import { loginAs, loginViaKeycloak, uniqueName } from "./helpers";
+import {
+  cleanupQueue,
+  deleteArtifactApi,
+  deleteTableApi,
+  loginAs,
+  loginViaKeycloak,
+  removeWorkflowApi,
+  trackCreatedResources,
+  uniqueName,
+} from "./helpers";
+
+/// テストで作ったもの（アプリ・ワークフロー・スキル・テーブル・ビュー）を、テストの後に片付ける（失敗したテストでも
+/// 走る・BUG-126）。画面から作ったアプリ（作成・会話の「アプリとして保存」）は画面の応答から拾って積む。
+const cleanup = cleanupQueue();
+test.beforeEach(({ page }) => trackCreatedResources(page, cleanup));
+test.afterEach(() => cleanup.run());
+
+/// API の作成の経路と、作ったものの片付け方（`apiPost` が作ったものを積む）。
+function removerFor(page: Page, path: string): ((id: string) => Promise<void>) | null {
+  if (path === "/workflows") return (id) => removeWorkflowApi(page, id);
+  if (path === "/mini-apps" || path === "/skills" || path === "/data/views") return (id) => deleteArtifactApi(page, id);
+  if (path === "/data/tables") return (id) => deleteTableApi(page, id);
+  return null;
+}
 
 /// ミニアプリ（Phase 6 Task 6.10/6.11・#604）の E2E。
 /// 画面は Yui の ```ui を含む Markdown で、ボタンは束ねたワークフローを押した本人の権限で起動する。
@@ -17,7 +40,10 @@ async function apiPost(page: Page, path: string, body: unknown): Promise<{ id: s
     data: body,
   });
   expect(res.ok(), `${path} → ${res.status()}`).toBeTruthy();
-  return res.json();
+  const created = (await res.json()) as { id: string };
+  const remove = removerFor(page, path);
+  if (remove && created.id) cleanup.add(() => remove(created.id));
+  return created;
 }
 
 /// 手動実行のワークフロー（最小の IR）を作る。

@@ -1,6 +1,11 @@
 import { expect, test, type Browser, type Page } from "@playwright/test";
 
-import { loginViaKeycloak, pinStubOrgDefault, uniqueName } from "./helpers";
+import { cleanupQueue, loginViaKeycloak, pinStubOrgDefault, removeWorkflowApi, uniqueName } from "./helpers";
+
+/// テストで作ったもの（ワークフロー）を、テストの後に片付ける（失敗したテストでも走る・BUG-126）。
+const cleanup = cleanupQueue();
+test.afterEach(() => cleanup.run());
+
 
 /// ワークフローの「AI に聞く」のモデル欄: 「組織の既定に従う」の行（BUG-12・BUG-33・D-5・D-30・D-46）。
 ///
@@ -71,7 +76,9 @@ async function createLlmFlow(page: Page, model?: string): Promise<string> {
     },
   });
   expect(res.ok(), await res.text()).toBeTruthy();
-  return ((await res.json()) as { id: string }).id;
+  const id = ((await res.json()) as { id: string }).id;
+  cleanup.add(() => removeWorkflowApi(page, id));
+  return id;
 }
 
 async function deleteFlow(page: Page, id: string) {

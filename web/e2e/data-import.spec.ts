@@ -1,6 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { loginViaKeycloak, uniqueName } from "./helpers";
+import { cleanupQueue, deleteTableApi, loginViaKeycloak, uniqueName } from "./helpers";
+
+/// テストで作ったテーブルを、テストの後に片付ける（失敗したテストでも走る・BUG-126）。
+const cleanup = cleanupQueue();
+test.afterEach(() => cleanup.run());
 
 /// 業務データの CSV 取込（監査 B3-6・一括取込の HTTP API）: テーブル画面から CSV を選んで取り込み、
 /// 検証 → 適用の進捗と、取り込めなかった行の理由を見せる。合格した行は表に出る。
@@ -24,7 +28,9 @@ async function createTable(page: Page): Promise<string> {
     },
   });
   expect(res.status(), await res.text()).toBe(201);
-  return ((await res.json()) as { id: string }).id;
+  const id = ((await res.json()) as { id: string }).id;
+  cleanup.add(() => deleteTableApi(page, id));
+  return id;
 }
 
 test("CSV を取り込み、進捗と取り込めなかった行を見せる", async ({ page }) => {

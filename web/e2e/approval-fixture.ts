@@ -1,6 +1,6 @@
 import { expect, type Page } from "@playwright/test";
 
-import { uniqueName } from "./helpers";
+import { cleanupAll, deleteArtifactApi, deleteTableApi, removeWorkflowApi, uniqueName } from "./helpers";
 
 /// 承認待ち（human.approval・GAP-08）の e2e が共有する下ごしらえ（approvals.spec.ts・workflow-delete-stops.spec.ts）:
 /// 申請の表（状態の遷移の規則つき）と、申請中になった行を受け付けて承認を待つワークフローを作り、1 件申請する。
@@ -174,4 +174,14 @@ export async function runOf(page: Page, s: Setup): Promise<string> {
   };
   expect(list.items.length).toBeGreaterThan(0);
   return list.items[0].run_id;
+}
+
+/// [`setup`] で作ったものを片付ける: 待っている実行を止めてからワークフローを消し（承認の依頼を「承認」の画面に
+/// 残さない）、テーブルと状態の進め方を消す（互いに独立して全部走らせる・BUG-126）。
+export async function teardown(page: Page, s: Setup): Promise<void> {
+  await cleanupAll(
+    () => removeWorkflowApi(page, s.workflowId),
+    () => deleteTableApi(page, s.tableId),
+    () => deleteArtifactApi(page, s.fsmId),
+  );
 }

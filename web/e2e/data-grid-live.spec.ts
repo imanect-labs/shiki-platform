@@ -1,6 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { loginViaKeycloak, uniqueName } from "./helpers";
+import { cleanupQueue, deleteTableApi, loginViaKeycloak, uniqueName } from "./helpers";
+
+/// テストで作ったテーブルを、テストの後に片付ける（失敗したテストでも走る・BUG-126）。
+const cleanup = cleanupQueue();
+test.afterEach(() => cleanup.run());
 
 /// グリッドの変更の購読（SSE）の繋ぎ直しと、読み込み位置の失効（D-2・D-4・D-9）。
 ///
@@ -23,6 +27,7 @@ async function seedTable(page: Page, n: number): Promise<{ tableId: string; ids:
   });
   expect(res.status(), await res.text()).toBe(201);
   const tableId = ((await res.json()) as { id: string }).id;
+  cleanup.add(() => deleteTableApi(page, tableId));
   const ids: string[] = [];
   for (let i = 0; i < n; i++) {
     const r = await page.request.post(`/api/data/tables/${tableId}/records`, { headers, data: { data: { code: `R-${i}`, amount: i } } });

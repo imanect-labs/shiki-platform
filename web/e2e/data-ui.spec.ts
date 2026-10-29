@@ -1,6 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { loginAs, loginViaKeycloak, uniqueName } from "./helpers";
+import { cleanupQueue, deleteArtifactApi, deleteTableApi, loginAs, loginViaKeycloak, uniqueName } from "./helpers";
+
+/// テストで作ったテーブル（と状態の進め方）を、テストの後に片付ける（失敗したテストでも走る・BUG-126）。
+const cleanup = cleanupQueue();
+test.afterEach(() => cleanup.run());
 
 /// /data の画面の細部（検証で見つかった不具合の回帰・A-2/A-4/A-7/A-8/A-9/D-13）。
 
@@ -31,6 +35,7 @@ async function seedTable(page: Page, name: string, rows: Record<string, unknown>
   });
   expect(res.status(), await res.text()).toBe(201);
   const tableId = ((await res.json()) as { id: string }).id;
+  cleanup.add(() => deleteTableApi(page, tableId));
   for (const data of rows) {
     const r = await page.request.post(`/api/data/tables/${tableId}/records`, { headers, data: { data } });
     expect(r.status(), await r.text()).toBe(201);
@@ -164,6 +169,7 @@ test("ユーザーの列の絞り込みは候補から選び、表示名で見�
   });
   expect(res.status(), await res.text()).toBe(201);
   const tableId = ((await res.json()) as { id: string }).id;
+  cleanup.add(() => deleteTableApi(page, tableId));
   const BOB = "00000000-0000-0000-0000-000000000002";
   const ALICE = "00000000-0000-0000-0000-000000000001";
   for (const data of [{ name: "a", who: BOB }, { name: "b", who: ALICE }, { name: "c", who: BOB }]) {
@@ -212,6 +218,7 @@ test("FSM のテーブルの状態のセルは進める先のメニューで開�
   });
   expect(res.status(), await res.text()).toBe(201);
   const table = (await res.json()) as { id: string; schema: Record<string, unknown>; schema_version: number };
+  cleanup.add(() => deleteTableApi(page, table.id));
   const fsm = await page.request.post("/api/data/fsms", {
     headers,
     data: {
@@ -229,6 +236,7 @@ test("FSM のテーブルの状態のセルは進める先のメニューで開�
   });
   expect(fsm.status(), await fsm.text()).toBe(201);
   const f = (await fsm.json()) as { id: string; version?: number };
+  cleanup.add(() => deleteArtifactApi(page, f.id));
   const put = await page.request.put(`/api/data/tables/${table.id}/schema`, {
     headers,
     data: { schema: { ...table.schema, fsm_ref: { artifact_id: f.id, version: f.version ?? 1 } }, expected_schema_version: table.schema_version },
@@ -285,6 +293,7 @@ async function fsmTable(page: Page): Promise<{ tableId: string; recordId: string
   });
   expect(res.status(), await res.text()).toBe(201);
   const table = (await res.json()) as { id: string; schema: Record<string, unknown>; schema_version: number };
+  cleanup.add(() => deleteTableApi(page, table.id));
   const fsm = await page.request.post("/api/data/fsms", {
     headers,
     data: {
@@ -302,6 +311,7 @@ async function fsmTable(page: Page): Promise<{ tableId: string; recordId: string
   });
   expect(fsm.status(), await fsm.text()).toBe(201);
   const f = (await fsm.json()) as { id: string; version?: number };
+  cleanup.add(() => deleteArtifactApi(page, f.id));
   const put = await page.request.put(`/api/data/tables/${table.id}/schema`, {
     headers,
     data: { schema: { ...table.schema, fsm_ref: { artifact_id: f.id, version: f.version ?? 1 } }, expected_schema_version: table.schema_version },
@@ -370,6 +380,7 @@ test("見えないテーブル・削除したテーブル・存在しないテ�
   });
   expect(res.status(), await res.text()).toBe(201);
   const gone = ((await res.json()) as { id: string }).id;
+  cleanup.add(() => deleteTableApi(page, gone));
   expect((await page.request.delete(`/api/data/tables/${gone}`, { headers })).status()).toBeLessThan(300);
   const NOT_FOUND = "テーブルが見つかりません。削除されたか、見る権限がありません。";
   for (const id of [gone, "8f2b3c1e-0000-4000-8000-000000000000"]) {
@@ -386,6 +397,7 @@ test("見えないテーブル・削除したテーブル・存在しないテ�
     data: { name: uniqueName("e2e-見せない"), schema: { fields: [{ key: "name", display_name: "件名", type: "text", indexed: true }] } },
   });
   const hidden = ((await mine.json()) as { id: string }).id;
+  cleanup.add(() => deleteTableApi(page, hidden));
   expect((await page2.request.get(`/api/data/tables/${hidden}`)).status()).toBe(404);
   await page2.goto(`/data/${hidden}`);
   await expect(page2.getByText(NOT_FOUND)).toBeVisible();

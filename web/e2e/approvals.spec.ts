@@ -1,7 +1,21 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { csrfHeaders, runOf, setup, waitForApproval } from "./approval-fixture";
-import { cleanupAll, grantTableEditor, loginAs, loginViaKeycloak, uniqueName } from "./helpers";
+import { csrfHeaders, runOf, setup, teardown, waitForApproval } from "./approval-fixture";
+import {
+  cleanupAll,
+  cleanupQueue,
+  deleteArtifactApi,
+  deleteTableApi,
+  grantTableEditor,
+  loginAs,
+  loginViaKeycloak,
+  uniqueName,
+} from "./helpers";
+
+/// テストで作ったもの（表・状態の進め方・ワークフローと待っている実行・共有・ブラウザーの文脈）を、テストの後に
+/// 片付ける（失敗したテストでも走る・BUG-126）。
+const cleanup = cleanupQueue();
+test.afterEach(() => cleanup.run());
 
 /// 承認待ち（human.approval・GAP-08）の e2e:
 /// - 申請（テーブルの行を申請へ進める）→ ワークフローが受け付けて承認を待つ → 承認者が /approvals の受信箱から
@@ -14,6 +28,7 @@ test("承認待ち: 申請 → 受信箱で承認 → ワークフローが「�
   test.setTimeout(180_000);
   await loginViaKeycloak(page);
   const s = await setup(page);
+  cleanup.add(() => teardown(page, s));
   await waitForApproval(page, s);
 
   // サイドバーの「承認」に件数が出る（読み上げのラベルに件数を含める）。100 件以上は「99+」と出る。
@@ -81,6 +96,7 @@ test("承認待ち: 承認の期限が空欄でも「期限なし」と出さず
   await loginViaKeycloak(page);
   // 実行の期限は 14 日（承認を待つブロックには期限を書いていない）。
   const s = await setup(page, 1_209_600);
+  cleanup.add(() => teardown(page, s));
   try {
     await waitForApproval(page, s);
     const listed = (await (await page.request.get("/api/approvals")).json()) as {
@@ -126,6 +142,7 @@ test("承認待ち: 実行履歴の一覧と詳細で、承認を待つ run を�
   await page.setViewportSize({ width: 1440, height: 900 });
   await loginViaKeycloak(page);
   const s = await setup(page);
+  cleanup.add(() => teardown(page, s));
   let runId = "";
   try {
     await waitForApproval(page, s);
@@ -197,9 +214,11 @@ test("承認待ち: 実行履歴の一覧と詳細で、承認を待つ run を�
 test("承認待ち: スマホ幅の受信箱は横にはみ出さず、全画面のシートで判断できる（GAP-08）", async ({ browser }) => {
   test.setTimeout(180_000);
   const ctx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  cleanup.add(() => ctx.close());
   const page = await ctx.newPage();
   await loginViaKeycloak(page);
   const s = await setup(page);
+  cleanup.add(() => teardown(page, s));
   await waitForApproval(page, s);
 
   await page.goto("/approvals");
@@ -238,7 +257,6 @@ test("承認待ち: スマホ幅の受信箱は横にはみ出さず、全画面
   await expect(nav.getByRole("link", { name: /^承認/ })).toBeVisible();
   const drawerWidth = await page.evaluate(() => document.documentElement.scrollWidth);
   expect(drawerWidth).toBeLessThanOrEqual(390);
-  await ctx.close();
 });
 
 test("承認を待つブロック: テーブルの状態から行き先を選べ、実行の期限を 14 日に延ばす提案が出る（GAP-08）", async ({ page }) => {
@@ -246,6 +264,7 @@ test("承認を待つブロック: テーブルの状態から行き先を選べ
   await loginViaKeycloak(page);
   // 実行の期限は既定の 3 日のまま作る（承認を待つ間に切れやすい）。
   const s = await setup(page, 259200);
+  cleanup.add(() => teardown(page, s));
   await page.goto(`/workflows/${s.workflowId}`);
   const canvas = page.locator(".react-flow");
   await expect(canvas.getByText("上長の承認").first()).toBeVisible({ timeout: 15_000 });
@@ -300,6 +319,13 @@ async function otherFsmTable(page: Page): Promise<{ id: string; name: string }> 
   });
   expect(created.status(), await created.text()).toBe(201);
   const table = (await created.json()) as { id: string; schema: Record<string, unknown>; schema_version: number };
+  let fsmId = "";
+  cleanup.add(() =>
+    cleanupAll(
+      () => deleteTableApi(page, table.id),
+      async () => fsmId && deleteArtifactApi(page, fsmId),
+    ),
+  );
   const fsm = await page.request.post("/api/data/fsms", {
     headers,
     data: {
@@ -316,6 +342,7 @@ async function otherFsmTable(page: Page): Promise<{ id: string; name: string }> 
   });
   expect(fsm.status(), await fsm.text()).toBe(201);
   const f = (await fsm.json()) as { id: string; version?: number };
+  fsmId = f.id;
   const put = await page.request.put(`/api/data/tables/${table.id}/schema`, {
     headers,
     data: {
@@ -331,6 +358,7 @@ test("承認を待つブロック: テーブルを変えると前のテーブル
   test.setTimeout(120_000);
   await loginViaKeycloak(page);
   const s = await setup(page);
+  cleanup.add(() => teardown(page, s));
   const other = await otherFsmTable(page);
   await page.goto(`/workflows/${s.workflowId}`);
   const canvas = page.locator(".react-flow");
@@ -387,6 +415,7 @@ test("承認を待つブロック: テーブルに無い受信箱の列・担当
   test.setTimeout(120_000);
   await loginViaKeycloak(page);
   const s = await setup(page);
+  cleanup.add(() => teardown(page, s));
   // テーブルに無い列を show_fields に持つ版を開く（AI が書いた・検証が入る前に保存した）。列の削除はテーブルの
   // 設定が拒み、そういう IR の保存は検証が止めるので、エディタが読み込む IR だけを書き換える。
   let injected = false;
@@ -471,6 +500,13 @@ async function maskedFsmTable(
   });
   expect(created.status(), await created.text()).toBe(201);
   const table = (await created.json()) as { id: string; schema: Record<string, unknown>; schema_version: number };
+  let fsmId = "";
+  cleanup.add(() =>
+    cleanupAll(
+      () => deleteTableApi(page, table.id),
+      async () => fsmId && deleteArtifactApi(page, fsmId),
+    ),
+  );
   const fsm = await page.request.post("/api/data/fsms", {
     headers,
     data: {
@@ -481,6 +517,7 @@ async function maskedFsmTable(
   });
   expect(fsm.status(), await fsm.text()).toBe(201);
   const f = (await fsm.json()) as { id: string; version?: number };
+  fsmId = f.id;
   const put = await page.request.put(`/api/data/tables/${table.id}/schema`, {
     headers,
     data: {
@@ -496,6 +533,8 @@ test("承認を待つブロック: テーブルの owner でない編集者に�
   test.setTimeout(150_000);
   // alice: 金額と別の承認者の列を誰にも読めない列にしたテーブルと、ユーザーの列が読めない列だけのテーブルを作る。
   const aliceCtx = await browser.newContext();
+  // 表の片付けに alice の文脈を使うので、閉じるのは片付けの最後（BUG-126）。
+  cleanup.add(() => aliceCtx.close());
   const alice = await aliceCtx.newPage();
   await loginViaKeycloak(alice);
   const tableId = await maskedFsmTable(
@@ -518,15 +557,15 @@ test("承認を待つブロック: テーブルの owner でない編集者に�
     ],
     ["owner_user"],
   );
-  await aliceCtx.close();
 
   // bob: テーブルの editor（owner ではない）。bob に返る定義からは読めない金額が落ちる。
   const bobCtx = await browser.newContext();
+  cleanup.add(() => bobCtx.close());
   const bob = await bobCtx.newPage();
   await loginAs(bob, "bob");
   const me = (await (await bob.request.get("/api/me")).json()) as { id: string; tenant_id: string };
-  await grantTableEditor(bob, me.tenant_id, me.id, tableId);
-  await grantTableEditor(bob, me.tenant_id, me.id, otherId);
+  cleanup.add(await grantTableEditor(bob, me.tenant_id, me.id, tableId));
+  cleanup.add(await grantTableEditor(bob, me.tenant_id, me.id, otherId));
   const seen = (await (await bob.request.get(`/api/data/tables/${tableId}`)).json()) as {
     schema: { fields: { key: string }[] };
   };
@@ -580,6 +619,7 @@ test("承認を待つブロック: テーブルの owner でない編集者に�
   });
   expect(flow.ok(), await flow.text()).toBeTruthy();
   const workflowId = ((await flow.json()) as { id: string }).id;
+  cleanup.add(() => deleteArtifactApi(bob, workflowId));
 
   // 読めない列（金額・別の承認者・担当者）とテーブルに本当に無い列（ghost）を入れた版を開く（owner の alice が
   // 書いた・保存の照合が保存者の見え方になる前に保存した）。
@@ -675,7 +715,6 @@ test("承認を待つブロック: テーブルの owner でない編集者に�
   expect(params.show_fields).toEqual(["title"]);
   expect(params.assignees).toEqual([{ field: "approver" }]);
   expect(saved.ir.nodes.find((n) => n.id === "ok2")?.params.assignees).toEqual([{ user: me.id }]);
-  await bobCtx.close();
 });
 
 test("承認を待つブロック: 状態の列を読めないテーブルでは、進める状態の欄に「状態の列を読めません」と出す（GAP-08）", async ({
@@ -684,6 +723,8 @@ test("承認を待つブロック: 状態の列を読めないテーブルでは
   test.setTimeout(150_000);
   // alice: 状態の列を誰にも読めない列にした、状態の遷移の規則つきのテーブル。
   const aliceCtx = await browser.newContext();
+  // 表の片付けに alice の文脈を使うので、閉じるのは片付けの最後（BUG-126）。
+  cleanup.add(() => aliceCtx.close());
   const alice = await aliceCtx.newPage();
   await loginViaKeycloak(alice);
   const cols = [
@@ -691,14 +732,14 @@ test("承認を待つブロック: 状態の列を読めないテーブルでは
     { key: "approver", display_name: "承認者", type: "user_ref", indexed: true },
   ];
   const maskedId = await maskedFsmTable(alice, "e2e-稟議", cols, ["status"]);
-  await aliceCtx.close();
 
   // bob: そのテーブルの editor（owner ではない）。bob に返る定義には状態の列が無い（status_field も外れる）。
   const bobCtx = await browser.newContext();
+  cleanup.add(() => bobCtx.close());
   const bob = await bobCtx.newPage();
   await loginAs(bob, "bob");
   const me = (await (await bob.request.get("/api/me")).json()) as { id: string; tenant_id: string };
-  await grantTableEditor(bob, me.tenant_id, me.id, maskedId);
+  cleanup.add(await grantTableEditor(bob, me.tenant_id, me.id, maskedId));
   const masked = (await (await bob.request.get(`/api/data/tables/${maskedId}`)).json()) as {
     name: string;
     schema: { status_field?: string | null; fsm_ref?: unknown; fields: { key: string }[] };
@@ -741,6 +782,7 @@ test("承認を待つブロック: 状態の列を読めないテーブルでは
   });
   expect(flow.ok(), await flow.text()).toBeTruthy();
   const workflowId = ((await flow.json()) as { id: string }).id;
+  cleanup.add(() => deleteArtifactApi(bob, workflowId));
   await bob.goto(`/workflows/${workflowId}`);
   const canvas = bob.locator(".react-flow");
   await expect(canvas.getByText("上長の承認").first()).toBeVisible({ timeout: 15_000 });
@@ -777,7 +819,6 @@ test("承認を待つブロック: 状態の列を読めないテーブルでは
     ir: { nodes: { id: string; params: { record: { table: string } } }[] };
   };
   expect(saved.ir.nodes.find((n) => n.id === "ok")?.params.record.table).toBe(ownId);
-  await bobCtx.close();
 });
 
 test("承認の件数のバッジ: 数え切れずに数えた分が 0 件なら「…」、1 件以上なら「N+」（PC・レール・スマホ・GAP-08）", async ({
@@ -847,6 +888,7 @@ test("承認待ち: 見える承認が無いまま続きがあるページでも
   test.setTimeout(180_000);
   await loginViaKeycloak(page);
   const s = await setup(page);
+  cleanup.add(() => teardown(page, s));
   await waitForApproval(page, s);
   // サーバは見えない承認を読み飛ばすが、1 回に読む台帳の行には上限があるので、見える承認が無いまま続きの位置
   // だけを返すことがある。1 ページ目をその形にし、続きは本物の 1 ページ目を返す。件数も数え切れなかった形にする。
@@ -886,6 +928,7 @@ test("承認待ち: 判断の前に行が更新されたら、取り直せたと
   test.setTimeout(180_000);
   await loginViaKeycloak(page);
   const s = await setup(page);
+  cleanup.add(() => teardown(page, s));
   await waitForApproval(page, s);
   await page.goto("/approvals");
   const item = page.getByTestId("approval-item").filter({ hasText: s.tableName });
