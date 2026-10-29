@@ -60,8 +60,9 @@ fn map_db(e: sqlx::Error) -> DelegationError {
 /// 権限で**読み書きする（行述語・フィールドマスクを委譲元で評価する・Task 15.7）。
 ///
 /// 委譲元は**その操作に足る relation を自ら委譲した者**からだけ選ぶ（書込なら editor / owner・読取なら
-/// viewer 以上）。台帳の一意キーは (delegator, scope, object_ref) なので、B が editor で委譲した対象を
-/// A が viewer だけで再有効化すると両方の行が残る。relation を見ずに最新の委譲元を選ぶと、B のタプルで
+/// viewer 以上）。台帳の一意キーは (delegator, scope, object_ref) なので、委譲元の違う行が同じ対象に並びうる
+/// （再同意は委譲を組の単位で置き換えるようになったが〔BUG-130〕、それより前に B が editor・A が viewer で
+/// 委譲した保存済みの台帳には両方の行が残っている）。relation を見ずに最新の委譲元を選ぶと、B のタプルで
 /// 入口の検査を通った書込が、書込を委譲していない A の権限で走る（confused-deputy・R3-2）。
 /// 該当が無ければ `None`（呼び出し側は拒否する・fail-closed）。委譲元が今も権限を持つかは呼び出し側の
 /// 読み書き自体（委譲元の AuthContext で OpenFGA に問う）が確かめる。

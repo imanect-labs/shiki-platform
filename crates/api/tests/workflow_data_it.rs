@@ -252,6 +252,55 @@ impl Env {
         .await
         .unwrap()
     }
+
+    /// 有効な委譲（委譲元・scope・relation）の一覧（委譲元・scope の順）。
+    async fn active_delegations(&self, tenant: &str, wf: Uuid) -> Vec<(String, String, String)> {
+        sqlx::query_as(
+            "SELECT delegator, scope, relation FROM workflow_delegation \
+             WHERE tenant_id = $1 AND workflow_id = $2 AND revoked_at IS NULL \
+             ORDER BY delegator, scope",
+        )
+        .bind(tenant)
+        .bind(wf)
+        .fetch_all(&self.pool)
+        .await
+        .unwrap()
+    }
+
+    /// 再同意が委譲を組の単位で置き換えるようになる前（BUG-130）の台帳を作る: 別の委譲元が同じ対象を別の relation で
+    /// 委譲した行（とタプル）を、今の同意の横に足す。いまの有効化では作られない状態で、書込の主体の選び方
+    /// （`active_delegator` が relation を見る・R3-2）は、こうした保存済みの台帳でも守られなければならない。
+    async fn legacy_delegation(
+        &self,
+        tenant: &str,
+        wf: Uuid,
+        delegator: &str,
+        scope: &str,
+        object: &authz::FgaObject,
+        relation: Relation,
+    ) {
+        sqlx::query(
+            "INSERT INTO workflow_delegation \
+             (tenant_id, workflow_id, delegator, scope, object_ref, relation) \
+             VALUES ($1, $2, $3, $4, $5, $6) \
+             ON CONFLICT (tenant_id, workflow_id, delegator, scope, object_ref) \
+             DO UPDATE SET relation = $6, revoked_at = NULL, granted_at = now() - interval '1 minute'",
+        )
+        .bind(tenant)
+        .bind(wf)
+        .bind(delegator)
+        .bind(scope)
+        .bind(object.as_str())
+        .bind(relation.as_str())
+        .execute(&self.pool)
+        .await
+        .unwrap();
+        let subject = authz::Namespace::for_tenant(tenant).workflow_principal(&wf.to_string());
+        self.fga
+            .write_tuple(&subject, relation, object)
+            .await
+            .unwrap();
+    }
 }
 
 fn expenses_schema() -> TableSchema {
@@ -555,6 +604,21 @@ async fn writes_run_only_as_a_delegator_who_delegated_write() {
         )
         .await
         .expect("alice の再有効化");
+    // 再同意は委譲を alice の同意の組に置き換えるので、bob の書込の委譲は外れる（BUG-130）。
+    assert_eq!(
+        env.active_delegations(&tenant, wf).await,
+        vec![("alice".into(), "data.read".into(), "viewer".into())]
+    );
+    // 置き換える前の台帳（bob の書込の委譲が残っている）で、書込の主体の選び方を確かめる。
+    env.legacy_delegation(
+        &tenant,
+        wf,
+        "bob",
+        "data.write",
+        &table_obj,
+        Relation::Editor,
+    )
+    .await;
 
     let run = env.fire_schedule_and_run(&tenant, wf, 61).await;
     let (status, _, err) = env.step(&tenant, run, "u").await;
@@ -829,6 +893,21 @@ async fn workflow_cannot_follow_links_into_undelegated_tables() {
         )
         .await
         .expect("alice の有効化（A・B の読取）");
+    // 再同意は委譲を alice の同意の組に置き換える（bob の書込の委譲は外れる・BUG-130）。置き換える前の台帳で確かめる。
+    assert!(env
+        .active_delegations(&tenant, w_wf)
+        .await
+        .iter()
+        .all(|(d, _, _)| d == "alice"));
+    env.legacy_delegation(
+        &tenant,
+        w_wf,
+        "bob",
+        "data.write",
+        &orders_obj,
+        Relation::Editor,
+    )
+    .await;
     env.fire_schedule_and_run(&tenant, w_wf, 181).await;
     let (status, out, err) = latest_q(w_wf).await;
     assert_eq!(status, "succeeded", "{err:?}");
