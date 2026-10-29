@@ -176,9 +176,10 @@ test("承認待ち: 申請 → 受信箱で承認 → ワークフローが「�
   const s = await setup(page);
   await waitForApproval(page, s);
 
-  // サイドバーの「承認」に件数が出る（読み上げのラベルに件数を含める）。
+  // サイドバーの「承認」に件数が出る（読み上げのラベルに件数を含める）。100 件以上は「99+」と出る。
   await page.goto("/approvals");
-  await expect(page.getByRole("link", { name: /承認（\d+ 件）/ }).or(page.getByRole("button", { name: /承認（\d+ 件）/ })).first()).toBeVisible({
+  const badge = /承認（\d+\+? 件）/;
+  await expect(page.getByRole("link", { name: badge }).or(page.getByRole("button", { name: badge })).first()).toBeVisible({
     timeout: 15_000,
   });
   const item = page.getByTestId("approval-item").filter({ hasText: s.tableName });
