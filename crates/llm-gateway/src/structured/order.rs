@@ -11,6 +11,8 @@
 //! ない・`properties` に無い・重なり）は読み飛ばす（ワークフローは保存時に止めるが、ミニアプリは任意の形を送れる）。
 //! `x-order` の無い形（llm_decider の形など）は、今までと同じバイト列になる。
 
+use std::collections::BTreeSet;
+
 use serde::ser::{SerializeMap, SerializeSeq};
 use serde::{Serialize, Serializer};
 use serde_json::{Map, Value};
@@ -87,28 +89,26 @@ impl Serialize for SchemaList<'_> {
 }
 
 /// `order` に書かれたキーをその順に先に、残りを今の順に並べた項目（どのキーも 1 回だけ）。
+///
+/// 出したキーは集合で持つ（項目の数 n に対して O(n log n)）。要求のたびに async のタスクの中で呼ばれ、ミニアプリは
+/// 任意の大きさの形を送れるので、並べ直しの手間を項目の数の 2 乗にしない。
 fn ordered_entries<'a>(
     map: &'a Map<String, Value>,
     order: Option<&'a Value>,
 ) -> Vec<(&'a String, &'a Value)> {
+    let Some(named) = order.and_then(Value::as_array) else {
+        return map.iter().collect();
+    };
     let mut out: Vec<(&String, &Value)> = Vec::with_capacity(map.len());
-    let named = order
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(Value::as_str);
-    for name in named {
+    let mut placed: BTreeSet<&str> = BTreeSet::new();
+    for name in named.iter().filter_map(Value::as_str) {
         if let Some(entry) = map.get_key_value(name) {
-            if !out.iter().any(|(k, _)| *k == entry.0) {
+            if placed.insert(entry.0.as_str()) {
                 out.push(entry);
             }
         }
     }
-    for entry in map {
-        if !out.iter().any(|(k, _)| *k == entry.0) {
-            out.push(entry);
-        }
-    }
+    out.extend(map.iter().filter(|(k, _)| !placed.contains(k.as_str())));
     out
 }
 

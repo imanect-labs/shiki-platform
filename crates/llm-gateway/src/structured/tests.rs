@@ -542,3 +542,37 @@ fn body_bytes_rewrites_only_the_schema_it_was_given() {
     assert!(appear_in_order(&text, &["reason", "answer"]), "{text}");
     assert_eq!(serde_json::from_str::<Value>(&text).unwrap(), body);
 }
+
+#[test]
+fn many_properties_are_ordered_without_quadratic_work() {
+    // ミニアプリは任意の大きさの形を送れる（本文の上限 2MB で 3 文字のキーなら約 20 万項目）。並べ直しが項目の数の
+    // 2 乗の手間になると、断られる前にサーバー内で長く CPU を使い、async のタスクをふさぐ（5 万項目で数十秒）。
+    const N: usize = 50_000;
+    let props: Map<String, Value> = (0..N)
+        .map(|i| (format!("k{i}"), json!({ "type": "string" })))
+        .collect();
+    let order: Vec<Value> = (0..N).rev().map(|i| json!(format!("k{i}"))).collect();
+    let with_order = json!({ "type": "object", "x-order": order, "properties": props });
+    let without_order = json!({ "type": "object", "properties": with_order["properties"] });
+
+    let started = std::time::Instant::now();
+    let text = order::to_text(&with_order);
+    let plain = order::to_text(&without_order);
+    let took = started.elapsed();
+    assert!(took < std::time::Duration::from_secs(2), "{took:?}");
+    assert!(appear_in_order(&text, &["k49999", "k25000", "k0"]));
+    assert!(appear_in_order(&plain, &["k0", "k25000", "k49999"]));
+
+    // 本文を書く経路（OpenAI 互換の response_format）も同じ並べ方を通る。
+    let body =
+        json!({ "response_format": { "json_schema": { "schema": wire_schema(&with_order) } } });
+    let format = ResponseFormat::JsonSchema {
+        name: "big".into(),
+        schema: with_order,
+    };
+    let bytes = body_bytes(&body, Some(&format), &OPENAI_SCHEMA_AT);
+    assert!(appear_in_order(
+        &String::from_utf8(bytes).unwrap(),
+        &["k49999", "k0"]
+    ));
+}
