@@ -193,10 +193,21 @@ export function DriveBrowser() {
     : [];
 
   // 作った・名前を変えたものは、一覧の最初のページの外でも、すぐに見せる（続きを読み込んでその行へ移る・BUG-125）。
-  const reveal = useRevealNode(list);
+  // 見せるのは今の一覧に来るものだけにする。名前の検索中は名前に合わないと来ず、ほかのフォルダーのもの（内容の検索で
+  // 見つけたファイルの新しいバージョン・アップロードの途中で移ったフォルダー）も来ないので、読み直すだけにする（続きを
+  // 上限まで読み込んでから諦めない）。
+  const revealNode = useRevealNode(list);
+  const reloadList = list.reload;
+  const reveal = React.useCallback(
+    (node: Pick<NodeResponse, "id" | "parent_id">) => {
+      if (!searching && (node.parent_id ?? null) === (folderId ?? null)) revealNode(node.id);
+      else reloadList();
+    },
+    [searching, folderId, revealNode, reloadList],
+  );
   const uploader = useDriveUploads({
     folderId,
-    onChanged: (saved) => (saved.length > 0 ? reveal(saved[0].id) : list.reload()),
+    onChanged: (saved) => (saved.length > 0 ? reveal(saved[0]) : list.reload()),
   });
 
   // パンくず（現在フォルダが変わるたび取得）。ルートは空。
@@ -565,7 +576,7 @@ export function DriveBrowser() {
             if (isConflict(e)) throw new Error("同じ名前のフォルダがあります");
             throw e;
           }
-          reveal(created.id);
+          reveal(created);
         }}
       />
 
@@ -594,7 +605,7 @@ export function DriveBrowser() {
             if (isConflict(e)) throw new Error("この場所に同じ名前のファイルまたはフォルダがあります");
             throw e;
           }
-          reveal(activeNode.id);
+          reveal(activeNode);
         }}
       />
 

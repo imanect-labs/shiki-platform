@@ -135,6 +135,28 @@ test("ドライブ: 作ったものは一覧の最初のページの外でも、
     await renameDialog.getByRole("button", { name: "変更" }).click();
     await expect(page.getByText(renamed, { exact: true })).toBeInViewport({ timeout: 15_000 });
     if (process.env.E2E_SHOTS_DIR) await page.screenshot({ path: `${process.env.E2E_SHOTS_DIR}/bug125-drive-reveal-pc.png` });
+
+    // 名前の検索中に、検索に合わない名前で作ったものは一覧に来ないので、続きを読み込んで探さない（読み直すだけ）。
+    await page.goto(`/drive?folder=${work}&q=a-0`);
+    await expect(page.getByText("a-002", { exact: true })).toBeVisible({ timeout: 15_000 });
+    const pagesAfter: string[] = [];
+    const watch = (req: { url: () => string }) => {
+      const url = new URL(req.url());
+      if (url.pathname === "/api/nodes" && url.searchParams.has("cursor")) pagesAfter.push(url.search);
+    };
+    await page.getByRole("button", { name: "新規フォルダ" }).click();
+    const searchDialog = page.getByRole("dialog");
+    await searchDialog.getByRole("textbox").fill(uniqueName("y-検索に合わない"));
+    page.on("request", watch);
+    const reloaded = page.waitForResponse((r) => {
+      const url = new URL(r.url());
+      return url.pathname === "/api/nodes" && url.searchParams.get("q") === "a-0" && !url.searchParams.has("cursor");
+    });
+    await searchDialog.getByRole("button", { name: "作成" }).click();
+    await reloaded;
+    await page.waitForTimeout(2_000);
+    page.off("request", watch);
+    expect(pagesAfter, "検索に合わないものを探して続きを読み込まない").toEqual([]);
   } finally {
     await cleanupAll(() => trashFolderApi(page, work));
   }
