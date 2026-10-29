@@ -38,6 +38,9 @@ pub struct InstallRequest {
     pub viewer_roles: Vec<String>,
     /// プロビジョンしたテーブルへ editor を付与するロール。
     pub editor_roles: Vec<String>,
+    /// プロビジョンしたテーブルへ「追加だけ」（submitter・D-113）を付与するロール。追加でき、自分が追加した
+    /// レコードだけ読める（申請のアプリで社員に渡す形）。
+    pub submitter_roles: Vec<String>,
 }
 
 /// インストール結果。
@@ -306,10 +309,11 @@ impl InstallService {
                 .write_tuple(&miniapp_subject, Relation::Owner, &obj)
                 .await
                 .map_err(|e| AppPlatformError::Internal(format!("authz: {e}")))?;
-            // 管理者指定ロールへ viewer/editor を付与（role#member userset）。
+            // 管理者指定ロールへ viewer/editor/submitter を付与（role#member userset）。
             for (roles, rel) in [
                 (&req.viewer_roles, Relation::Viewer),
                 (&req.editor_roles, Relation::Editor),
+                (&req.submitter_roles, Relation::Submitter),
             ] {
                 for role in roles {
                     let subject = authz::Subject::userset(&ns.role(role), Relation::Member);

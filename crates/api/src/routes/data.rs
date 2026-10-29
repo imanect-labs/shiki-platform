@@ -56,7 +56,7 @@ pub struct TableListParams {
     pub limit: Option<i64>,
 }
 
-/// テーブルの共有・解除リクエスト（共有語彙は viewer / editor のみ・#864）。
+/// テーブルの共有・解除リクエスト（共有語彙は viewer / editor / submitter（追加だけ・D-113）・#864）。
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct ShareTableRequest {
     pub target: ShareTarget,
@@ -106,10 +106,11 @@ pub async fn create_table(
     Ok((StatusCode::CREATED, Json(created)))
 }
 
-/// 自分が使えるテーブル一覧（ReBAC viewer 実効集合・更新の新しい順）。
+/// 自分が使えるテーブル一覧（ReBAC viewer と追加だけ（submitter）の実効集合・更新の新しい順）。
 ///
 /// `q` で名前を探し、`next_cursor` で続きを読む（エディタのテーブルの選択が、先頭の 200 件より先の
-/// テーブルを名前で探せるように・GAP-42）。検索と続きは viewer 実効集合の中だけで絞る。
+/// テーブルを名前で探せるように・GAP-42）。検索と続きは実効集合の中だけで絞る。追加だけで共有された
+/// テーブルは `add_only` が立つ（D-113）。
 #[utoipa::path(
     get,
     path = "/data/tables",
@@ -139,9 +140,10 @@ pub async fn list_tables(
     }))
 }
 
-/// テーブルのメタ＋スキーマを取得する（viewer）。
+/// テーブルのメタ＋スキーマを取得する（viewer か追加だけ）。
 ///
 /// スキーマ管理者（owner）以外には**読める列だけ**を返し、`field_policy`・`row_policy`・RAG の投影設定は返さない。
+/// 追加だけで共有されている人には `add_only` が立つ（D-113）。
 #[utoipa::path(
     get,
     path = "/data/tables/{id}",
@@ -257,7 +259,7 @@ pub async fn delete_table(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// テーブルを共有する（owner・viewer / editor・冪等）。
+/// テーブルを共有する（owner・viewer / editor / submitter・冪等）。
 #[utoipa::path(
     put,
     path = "/data/tables/{id}/shares",

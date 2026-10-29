@@ -53,6 +53,8 @@ pub struct StubAuthz {
     pub deny: bool,
     pub roles: Vec<String>,
     pub objects: Vec<String>,
+    /// このユーザーには、テーブル（`data_table`）を「追加だけ」（submitter）でだけ持たせる（閲覧・編集・持ち主は偽・D-113）。
+    pub add_only_user: Option<String>,
 }
 
 impl StubAuthz {
@@ -71,11 +73,20 @@ impl StubAuthz {
 impl AuthzClient for StubAuthz {
     async fn check(
         &self,
-        _: &Subject,
-        _: Relation,
-        _: &FgaObject,
+        subject: &Subject,
+        relation: Relation,
+        object: &FgaObject,
         _: Consistency,
     ) -> Result<bool, AuthzError> {
+        if let Some(u) = &self.add_only_user {
+            let s = subject.as_str();
+            if s.starts_with("user:")
+                && s.ends_with(&format!("|{u}"))
+                && object.as_str().starts_with("data_table:")
+            {
+                return Ok(relation == Relation::Submitter);
+            }
+        }
         Ok(!self.deny)
     }
     async fn write_tuple(

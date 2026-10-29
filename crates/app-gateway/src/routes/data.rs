@@ -27,9 +27,12 @@ pub(crate) struct GwTable {
     pub name: String,
     pub schema_version: i64,
     pub updated_at: DateTime<Utc>,
+    /// 呼出ユーザーには追加だけで共有されている（追加でき、自分が追加したレコードだけ読める・D-113）。
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub add_only: bool,
 }
 
-/// アプリ所有かつ呼出ユーザーが viewer のテーブル一覧。
+/// アプリ所有かつ呼出ユーザーが viewer か追加だけのテーブル一覧。
 pub(crate) async fn list_tables(
     State(state): State<GatewayState>,
     Extension(ctx): Extension<GatewayCtx>,
@@ -37,7 +40,7 @@ pub(crate) async fn list_tables(
     let tables = state
         .caps
         .data
-        .list_app_tables(&ctx.auth, ctx.installation.app_id, 200)
+        .list_app_tables_for_reader(&ctx.auth, ctx.installation.app_id, 200)
         .await?;
     let own = tables
         .into_iter()
@@ -46,6 +49,7 @@ pub(crate) async fn list_tables(
             name: t.name,
             schema_version: t.schema_version,
             updated_at: t.updated_at,
+            add_only: t.add_only,
         })
         .collect();
     Ok(Json(own))

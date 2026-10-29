@@ -229,6 +229,8 @@ fn install_req(name: &str, granted: &[&str]) -> InstallRequest {
         granted_scopes: granted.iter().map(|s| (*s).to_string()).collect(),
         viewer_roles: vec!["sales".into()],
         editor_roles: vec![],
+        // 申請のアプリで社員に渡す「追加だけ」（D-113）。
+        submitter_roles: vec!["staff".into()],
     }
 }
 
@@ -283,7 +285,7 @@ async fn install_provisions_tables_tuples_and_pins() {
             .unwrap();
     assert_eq!(app_id, Some(id));
 
-    // FGA tuple: owner@miniapp ＋ viewer@role#member。
+    // FGA tuple: owner@miniapp ＋ viewer@role#member ＋ submitter@role#member。
     let writes = h.authz.writes.lock().unwrap().clone();
     let table_obj = format!("data_table:{tenant}|{}", installed.table_ids[0]);
     assert!(
@@ -301,6 +303,14 @@ async fn install_provisions_tables_tuples_and_pins() {
                 && r == "viewer"
                 && o == &table_obj),
         "{writes:?}"
+    );
+    assert!(
+        writes
+            .iter()
+            .any(|(s, r, o)| s == &format!("role:{tenant}|staff#member")
+                && r == "submitter"
+                && o == &table_obj),
+        "追加だけのロールにも付与する: {writes:?}"
     );
 
     // テーブルの ReBAC を変えたので、配信の認可材料の世代が進んでいる（購読を次のバッチで引き直させる・

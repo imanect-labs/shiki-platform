@@ -770,3 +770,114 @@ async fn transition_without_expected_rev_uses_the_current_rev() {
     assert_eq!(moved["data"]["status"], "approved");
     assert_eq!(moved["rev"], 3);
 }
+
+/// D-113: アプリ所有テーブルを「追加だけ」で持つ利用者（インストールの `submitter_roles`）は、アプリから
+/// 作成（data.write）・定義の参照（data.schema）・自分の行の読取（data.read）ができ、他人の行は「無い」と
+/// 同じ応答、書き換え・削除は拒否される（実効権限 = スコープ ∩ 本人の ReBAC）。一覧には追加だけの印が付く。
+#[tokio::test]
+async fn data_add_only_user_creates_and_reads_only_own_records() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let (_app_id, client, owned, _foreign) = fixture(&pool, &tenant).await;
+    let authz = Arc::new(StubAuthz {
+        objects: vec![format!("data_table:{tenant}|{owned}")],
+        add_only_user: Some("bob".into()),
+        ..StubAuthz::default()
+    });
+    let app = build_gateway_router(state_with(pool.clone(), &tenant, authz));
+    let alice = token(&client, ALL_SCOPES, &tenant);
+    let bob = token_as(&client, ALL_SCOPES, &tenant, "bob");
+    let records = format!("/gw/data/tables/{owned}/records");
+
+    let (s, theirs) = request_json(
+        &app,
+        "POST",
+        &records,
+        Some(&alice),
+        &json!({ "data": { "title": "alice の申請" } }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{theirs}");
+    let (s, mine) = request_json(
+        &app,
+        "POST",
+        &records,
+        Some(&bob),
+        &json!({ "data": { "title": "bob の申請", "amount": 300 } }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "追加だけでも作れる: {mine}");
+    assert_eq!(mine["owner"], "bob");
+
+    // 自分の行だけ（一覧・クエリ・1 件）。他人の行は「無い」と同じ。
+    let (s, listed) = get(&app, &format!("{records}?limit=50"), Some(&bob)).await;
+    assert_eq!(s, StatusCode::OK, "{listed}");
+    let items = listed["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1, "{listed}");
+    assert_eq!(items[0]["data"]["title"], "bob の申請");
+    let (s, q) = request_json(
+        &app,
+        "POST",
+        &format!("/gw/data/tables/{owned}/query"),
+        Some(&bob),
+        &json!({}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{q}");
+    assert_eq!(q["items"].as_array().map(Vec::len), Some(1), "{q}");
+    let (hidden, _) = get(
+        &app,
+        &format!("{records}/{}", theirs["id"].as_str().unwrap()),
+        Some(&bob),
+    )
+    .await;
+    let (missing, _) = get(&app, &format!("{records}/{}", Uuid::new_v4()), Some(&bob)).await;
+    assert_eq!(hidden, StatusCode::NOT_FOUND);
+    assert_eq!(hidden, missing);
+    let (s, _) = get(
+        &app,
+        &format!("{records}/{}", mine["id"].as_str().unwrap()),
+        Some(&bob),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+
+    // 定義と一覧（追加だけの印）。
+    let (s, schema) = get(&app, &format!("/gw/data/tables/{owned}/schema"), Some(&bob)).await;
+    assert_eq!(s, StatusCode::OK, "{schema}");
+    let (s, tables) = get(&app, "/gw/data/tables", Some(&bob)).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(tables[0]["add_only"], json!(true), "{tables}");
+    let (_, alice_tables) = get(&app, "/gw/data/tables", Some(&alice)).await;
+    assert!(alice_tables[0].get("add_only").is_none(), "{alice_tables}");
+
+    // 書き換え・削除は拒否（自分の行でも）。
+    let mine_id = mine["id"].as_str().unwrap();
+    let (s, _) = request_json(
+        &app,
+        "PATCH",
+        &format!("{records}/{mine_id}"),
+        Some(&bob),
+        &json!({ "patch": { "amount": 1 }, "expected_rev": 1 }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (s, _) = request_json(
+        &app,
+        "DELETE",
+        &format!("{records}/{mine_id}?expected_rev=1"),
+        Some(&bob),
+        &json!({}),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    // 片付け（このテストのテーブル・レコード）。
+    for t in [owned, _foreign] {
+        sqlx::query("DELETE FROM data_table WHERE tenant_id = $1 AND id = $2")
+            .bind(&tenant)
+            .bind(t)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+}

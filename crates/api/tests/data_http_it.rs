@@ -1459,3 +1459,282 @@ async fn table_share_routes_grant_list_and_revoke() {
         );
     }
 }
+
+/// このテストで作ったテーブルの行を消す（索引・レコード・テーブル行。共有の固定テナントなので、テナントごとは消さない）。
+async fn purge_table(env: &Env, table: Uuid) {
+    let keys: Option<(i32, i64)> = sqlx::query_as(
+        "SELECT tenant_int, table_int FROM data_table WHERE tenant_id = $1 AND id = $2",
+    )
+    .bind(TENANT)
+    .bind(table)
+    .fetch_optional(&env.pool)
+    .await
+    .unwrap();
+    if let Some((ti, tb)) = keys {
+        for t in [
+            "data_index_text",
+            "data_index_num",
+            "data_index_search",
+            "data_index_composite",
+            "data_unique",
+            "data_link",
+            "data_sort_set",
+            "data_index_state",
+            "data_index_backfill",
+            "data_index_purge",
+            "data_derived_dep",
+            "data_derived_pending",
+            "data_record",
+        ] {
+            sqlx::query(&format!(
+                "DELETE FROM {t} WHERE tenant_int = $1 AND table_int = $2"
+            ))
+            .bind(ti)
+            .bind(tb)
+            .execute(&env.pool)
+            .await
+            .unwrap_or_else(|e| panic!("{t}: {e}"));
+        }
+    }
+    sqlx::query("DELETE FROM data_table WHERE tenant_id = $1 AND id = $2")
+        .bind(TENANT)
+        .bind(table)
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    env.fga
+        .delete_object_tuples(&ctx("alice").ns().data_table(&table.to_string()))
+        .await
+        .unwrap();
+}
+
+/// テーブルの「追加だけ」の共有（D-113・GAP-49）: 持ち主が carol に追加だけを渡すと、carol の一覧と名前の検索に
+/// 印つきで出て、定義を読め、レコードを作れ、自分の行だけを読める（件数・集計・履歴も）。書き換え・削除は 403、
+/// 他人の行は 404。閲覧に変えると全行が見え、取り消すと表が 404 に戻る。作成は監査に残る。
+#[tokio::test]
+async fn table_add_only_share_creates_and_reads_only_own_records() {
+    let Some(env) = setup().await else { return };
+    let dir = storage::DirectoryStore::new(env.pool.clone());
+    dir.upsert_user("carol", TENANT, "acme", "carol@acme.example", "Carol")
+        .await
+        .unwrap();
+    let t = table(&env, "add-only").await; // alice: owner／bob: viewer
+    let base = format!("/data/tables/{}", t.id);
+    let shares = format!("{base}/shares");
+    let (st, a) = send(
+        &env,
+        post_json(
+            "alice",
+            &format!("{base}/records"),
+            &json!({ "data": { "title": "alice-secret", "amount": 900 } }),
+        ),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "{a}");
+    let a_id = a["id"].as_str().unwrap().to_string();
+
+    // 共有前の carol には表が無いのと同じ（作成も 404）。
+    let (st, _) = send(
+        &env,
+        post_json(
+            "carol",
+            &format!("{base}/records"),
+            &json!({ "data": { "title": "x" } }),
+        ),
+    )
+    .await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+
+    let carol_submitter =
+        json!({ "target": { "type": "user", "id": "carol" }, "role": "submitter" });
+    let (st, body) = send(&env, put_json("alice", &shares, &carol_submitter)).await;
+    assert_eq!(st, StatusCode::NO_CONTENT, "{body}");
+    let (st, body) = send(&env, get("alice", &shares)).await;
+    assert_eq!(st, StatusCode::OK);
+    assert!(
+        body.as_array()
+            .unwrap()
+            .iter()
+            .any(|e| e["target"]["id"] == json!("carol")
+                && e["role"] == json!("submitter")
+                && e["display_name"] == json!("Carol")),
+        "{body}"
+    );
+
+    // 一覧・名前の検索・定義・画面の文脈。
+    let name_q = &t.name[..12];
+    for path in [
+        "/data/tables".to_string(),
+        format!("/data/tables?q={name_q}"),
+    ] {
+        let (st, body) = send(&env, get("carol", &path)).await;
+        assert_eq!(st, StatusCode::OK, "{path}: {body}");
+        let item = body["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["id"] == json!(t.id))
+            .unwrap_or_else(|| panic!("{path} に出ない: {body}"))
+            .clone();
+        assert_eq!(item["add_only"], json!(true), "{item}");
+    }
+    let (st, def) = send(&env, get("carol", &base)).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(def["add_only"], json!(true));
+    let (_, bob_def) = send(&env, get("bob", &base)).await;
+    assert!(
+        bob_def.get("add_only").is_none(),
+        "閲覧者には印が無い: {bob_def}"
+    );
+    let (st, vc) = send(&env, get("carol", &format!("{base}/viewer-context"))).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(
+        (
+            &vc["can_add"],
+            &vc["add_only"],
+            &vc["can_edit"],
+            &vc["can_manage"]
+        ),
+        (&json!(true), &json!(true), &json!(false), &json!(false)),
+        "{vc}"
+    );
+
+    // 作成 → 自分の行だけ。
+    let (st, mine) = send(
+        &env,
+        post_json(
+            "carol",
+            &format!("{base}/records"),
+            &json!({ "data": { "title": "carol-own", "amount": 30 } }),
+        ),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "{mine}");
+    let mine_id = mine["id"].as_str().unwrap().to_string();
+    assert_eq!(mine["owner"], json!("carol"));
+    let (st, list) = send(&env, get("carol", &format!("{base}/records"))).await;
+    assert_eq!(st, StatusCode::OK);
+    let titles: Vec<&Value> = list["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| &i["data"]["title"])
+        .collect();
+    assert_eq!(titles, vec![&json!("carol-own")], "{list}");
+    let (_, count) = send(&env, get("carol", &format!("{base}/records/count"))).await;
+    assert_eq!(count["count"], json!(1), "{count}");
+    let (st, agg) = send(
+        &env,
+        post_json(
+            "carol",
+            &format!("{base}/query"),
+            &json!({ "aggregate": [{ "metric": "count" }] }),
+        ),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{agg}");
+    // 集計も自分の行だけが材料で、件数の少ない集計は伏せる規則（既定の K）がそのまま効く（他人の行で K を満たさない）。
+    assert_eq!(agg["suppressed"], json!(true), "{agg}");
+    assert_eq!(agg["groups"][0]["values"][0], Value::Null, "{agg}");
+    for (path, want) in [
+        (format!("{base}/records/{mine_id}"), StatusCode::OK),
+        (format!("{base}/records/{a_id}"), StatusCode::NOT_FOUND),
+        (
+            format!("{base}/records/{}", Uuid::new_v4()),
+            StatusCode::NOT_FOUND,
+        ),
+        (
+            format!("{base}/records/{mine_id}/revisions"),
+            StatusCode::OK,
+        ),
+        (
+            format!("{base}/records/{a_id}/revisions"),
+            StatusCode::NOT_FOUND,
+        ),
+    ] {
+        assert_eq!(send(&env, get("carol", &path)).await.0, want, "{path}");
+    }
+    // 書き換え・削除は自分の行でも 403（表の権限で断る）。
+    for id in [&mine_id, &a_id] {
+        let (st, _) = send(
+            &env,
+            req(
+                "PATCH",
+                "carol",
+                &format!("{base}/records/{id}"),
+                "application/json",
+                Body::from(json!({ "patch": { "title": "x" }, "expected_rev": 1 }).to_string()),
+            ),
+        )
+        .await;
+        assert_eq!(st, StatusCode::FORBIDDEN, "patch {id}");
+        let (st, _) = send(
+            &env,
+            req(
+                "DELETE",
+                "carol",
+                &format!("{base}/records/{id}?expected_rev=1"),
+                "application/json",
+                Body::empty(),
+            ),
+        )
+        .await;
+        assert_eq!(st, StatusCode::FORBIDDEN, "delete {id}");
+    }
+    // 作成は監査に残る（追加だけの人でも）。
+    let (n,): (i64,) = sqlx::query_as(
+        "SELECT count(*) FROM audit_log WHERE tenant_id = $1 AND actor = 'carol' \
+           AND action = 'data.record.create' AND decision = 'allow' AND object_id = $2",
+    )
+    .bind(TENANT)
+    .bind(&mine_id)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(n, 1, "作成の監査");
+
+    // 閲覧に変えると全行が見える（追加の操作は消える）。取り消すと表が無いのと同じに戻る。
+    let carol_viewer = json!({ "target": { "type": "user", "id": "carol" }, "role": "viewer" });
+    assert_eq!(
+        send(&env, put_json("alice", &shares, &carol_viewer))
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+    let del = |body: &Value| {
+        req(
+            "DELETE",
+            "alice",
+            &shares,
+            "application/json",
+            Body::from(body.to_string()),
+        )
+    };
+    assert_eq!(
+        send(&env, del(&carol_submitter)).await.0,
+        StatusCode::NO_CONTENT
+    );
+    let (_, list) = send(&env, get("carol", &format!("{base}/records"))).await;
+    assert_eq!(list["items"].as_array().unwrap().len(), 2, "{list}");
+    let (_, vc) = send(&env, get("carol", &format!("{base}/viewer-context"))).await;
+    assert_eq!(
+        (&vc["can_add"], &vc["add_only"]),
+        (&json!(false), &json!(false)),
+        "{vc}"
+    );
+    assert_eq!(
+        send(&env, del(&carol_viewer)).await.0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        send(&env, get("carol", &base)).await.0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        send(&env, get("carol", &format!("{base}/records/{mine_id}")))
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    purge_table(&env, t.id).await;
+}

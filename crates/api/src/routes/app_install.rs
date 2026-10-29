@@ -32,6 +32,10 @@ pub struct InstallAppRequest {
     /// プロビジョンしたテーブルへ editor を付与するロール ID。
     #[serde(default)]
     pub editor_roles: Vec<String>,
+    /// プロビジョンしたテーブルへ「追加だけ」（submitter・D-113）を付与するロール ID。追加でき、自分が
+    /// 追加したレコードだけ読める。
+    #[serde(default)]
+    pub submitter_roles: Vec<String>,
 }
 
 /// インストール応答。
@@ -88,6 +92,7 @@ pub async fn install_app(
                 granted_scopes: req.granted_scopes,
                 viewer_roles: req.viewer_roles,
                 editor_roles: req.editor_roles,
+                submitter_roles: req.submitter_roles,
             },
             trace.as_deref(),
         )
