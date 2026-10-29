@@ -126,6 +126,8 @@ impl NodePorts for ProdNodePorts {
                 &req.name,
                 &req.bytes,
                 &req.content_type,
+                // 名前の衝突はエンジンが on_name_taken に従って扱う（1 回の書込は失敗にする扱い）。
+                storage::OnNameTaken::Fail,
                 &req.idempotency_key,
                 &req.op_digest,
                 ec.trace_id.as_deref(),

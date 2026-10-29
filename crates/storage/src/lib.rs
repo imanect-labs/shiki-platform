@@ -33,6 +33,7 @@ pub mod event;
 pub mod expiry_timer;
 pub mod indexing;
 pub mod model;
+pub mod naming;
 pub mod object_store;
 pub mod outbox_gc;
 pub mod pool_router;
@@ -52,6 +53,7 @@ pub use model::{
     ChildPage, ChildSort, ChildSortKey, Crumb, DownloadTicket, FileVersion, GeneralAccessLevel,
     Node, NodeKind, ShareEntry, ShareLink, ShareLinkGrant, ShareRole, ShareTarget, UploadTicket,
 };
+pub use naming::{numbered_name, OnNameTaken, MAX_NUMBERED_NAME};
 pub use object_store::{ObjectStore, ObjectStoreError, S3Config, S3ObjectStore};
 pub use pool_router::PoolRouter;
 pub use service::{StorageService, WriteAtOutcome};

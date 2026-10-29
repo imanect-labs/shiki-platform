@@ -2977,6 +2977,7 @@ async fn write_file_internal_idempotent_dedups_by_key() {
             "idem.txt",
             b"payload",
             "text/plain",
+            storage::OnNameTaken::Fail,
             &key,
             digest,
             None,
@@ -2993,6 +2994,7 @@ async fn write_file_internal_idempotent_dedups_by_key() {
             "idem.txt",
             b"payload",
             "text/plain",
+            storage::OnNameTaken::Fail,
             &key,
             digest,
             None,
@@ -3019,6 +3021,7 @@ async fn write_file_internal_idempotent_dedups_by_key() {
             "idem-other.txt",
             b"payload",
             "text/plain",
+            storage::OnNameTaken::Fail,
             &key,
             "other-digest",
             None,
@@ -3028,7 +3031,7 @@ async fn write_file_internal_idempotent_dedups_by_key() {
         matches!(other, Err(StorageError::IdempotencyConflict)),
         "{other:?}"
     );
-    // 名前の衝突は Conflict（ワークフローの storage.write はこれを見て番号を付けて試し直す）。
+    // 失敗にする扱いの名前の衝突は Conflict（番号を付ける扱いは naming_it.rs で確かめる・D-112）。
     let taken = service
         .write_file_internal_idempotent(
             &actx,
@@ -3036,6 +3039,7 @@ async fn write_file_internal_idempotent_dedups_by_key() {
             "idem.txt",
             b"payload2",
             "text/plain",
+            storage::OnNameTaken::Fail,
             &format!("{key}:another"),
             digest,
             None,
@@ -3052,6 +3056,7 @@ async fn write_file_internal_idempotent_dedups_by_key() {
             "idem2.txt",
             b"payload",
             "text/plain",
+            storage::OnNameTaken::Fail,
             &key2,
             digest,
             None,
