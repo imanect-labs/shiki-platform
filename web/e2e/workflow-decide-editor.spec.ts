@@ -316,7 +316,7 @@ test.describe("AI で判定（エディタ）", () => {
       // 質問: キー・問い・選択肢（名前・AI への説明・キーを分けて書く・D-87）。
       const question = panel.getByRole("group", { name: /^質問 1/ });
       await question.getByRole("textbox", { name: "キー", exact: true }).fill("category");
-      await question.getByRole("textbox", { name: "問い（何を判定するか）" }).fill("問い合わせの種類はどれか");
+      await question.getByRole("textbox", { name: "AI に尋ねること" }).fill("問い合わせの種類はどれか");
       await question.getByRole("textbox", { name: "選択肢 1 の名前" }).fill("請求");
       await question.getByRole("textbox", { name: "選択肢 1 の AI への説明" }).fill("請求書や返金についての問い合わせ");
       await question.getByRole("textbox", { name: "選択肢 1 のキー" }).fill("billing");

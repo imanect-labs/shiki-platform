@@ -20,6 +20,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 import type { DecideOption, DecideQuestion, DecideQuestionType } from "@/generated/workflow-ir";
+import { BLANK_REQUIRED_MESSAGE } from "./common";
 
 /// 質問・選択肢のキーの形（エンジンの `key_ok` と同じ・その場で知らせるため）。
 export const DECIDE_KEY_RE = /^[a-z][a-z0-9_]{0,63}$/;
@@ -351,14 +352,18 @@ function QuestionCard({
           />
         )}
       </LabeledInput>
-      <LabeledInput label="問い（何を判定するか）" error={errors.get("instructions")}>
+      {/* 空のままでも保存はでき、実行と自動実行のオンの前に止まる（D-108）。空なら欄の下で入力を促す。 */}
+      <LabeledInput
+        label="AI に尋ねること"
+        error={errors.get("instructions") ?? (q.instructions.trim() === "" ? BLANK_REQUIRED_MESSAGE : undefined)}
+      >
         {(a11y) => (
           <Textarea
             {...a11y}
             value={q.instructions}
             rows={2}
             onChange={(e) => onChange({ ...q, instructions: e.target.value })}
-            placeholder="例: 問い合わせの種類はどれか"
+            placeholder="例: 問い合わせの種類はどれですか"
             className="text-sm"
           />
         )}
