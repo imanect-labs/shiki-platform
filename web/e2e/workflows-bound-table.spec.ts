@@ -181,7 +181,7 @@ test("束縛済みのテーブルが一覧に無くても、承認・data.*・�
   await expect(approveTo).toContainText("承認");
   await expect(panel.getByRole("combobox", { name: "却下したときに進める状態" })).toContainText("却下");
   await expect(panel.getByRole("textbox", { name: /に進める状態/ })).toHaveCount(0);
-  await expect(panel.getByRole("combobox", { name: "相手 1 の列" })).toContainText("承認者");
+  await expect(panel.getByRole("combobox", { name: "承認者 1 の列" })).toContainText("承認者");
   await expect(panel.getByRole("button", { name: "件名", pressed: true })).toBeVisible();
   await expect(panel.getByRole("button", { name: "金額", pressed: true })).toBeVisible();
   await expect(panel.getByTestId("workflow-table-note")).toHaveCount(0);
@@ -269,7 +269,7 @@ test("束縛済みのテーブルを読めない（無い・削除された）�
   await expect(panel.getByTestId("workflow-table-note")).toHaveText(NOTE);
   await expect(panel.getByRole("textbox", { name: /に進める状態/ })).toHaveCount(0);
   await expect(panel.getByText("先にテーブルを選んでください")).toHaveCount(0);
-  // 承認・却下の進める状態と、相手 1 の列。
+  // 承認・却下の進める状態と、承認者 1 の列。
   await expect(panel.getByText("テーブルを読めないため選べません")).toHaveCount(3);
 
   // data.* のブロックも同じ。一覧から選び直せば注記は消え、状態の選択肢が出る。

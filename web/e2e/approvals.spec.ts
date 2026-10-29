@@ -367,7 +367,7 @@ test("承認を待つブロック: テーブルを変えると前のテーブル
   const panel = page.getByRole("complementary", { name: "ブロックの設定" });
   const approveTo = panel.getByRole("combobox", { name: "承認したときに進める状態" });
   const rejectTo = panel.getByRole("combobox", { name: "却下したときに進める状態" });
-  const assignee = panel.getByRole("combobox", { name: "相手 1 の列" });
+  const assignee = panel.getByRole("combobox", { name: "承認者 1 の列" });
   await expect(approveTo).toContainText("承認");
   await expect(assignee).toContainText("承認者");
 
@@ -465,8 +465,8 @@ test("承認を待つブロック: テーブルに無い受信箱の列・担当
   await stray.getByRole("button", { name: "列 ghost を外す" }).click();
   await expect(stray).toHaveCount(0);
   await expect(panel.getByRole("button", { name: "金額", pressed: true })).toBeVisible();
-  await panel.getByRole("button", { name: "相手 3 を外す" }).click();
-  await panel.getByRole("button", { name: "相手 2 を外す" }).click();
+  await panel.getByRole("button", { name: "承認者 3 を外す" }).click();
+  await panel.getByRole("button", { name: "承認者 2 を外す" }).click();
   await page.getByRole("button", { name: "保存", exact: true }).click();
   await expect(page.getByText(/保存しました/).first()).toBeVisible({ timeout: 15_000 });
   const saved = (await (await page.request.get(`/api/workflows/${s.workflowId}`)).json()) as {
@@ -698,14 +698,14 @@ test("承認を待つブロック: テーブルの owner でない編集者に�
   await expect(panel.getByText("あなたが読める列に、ユーザー・部署の列がありません")).toBeVisible();
   await expect(panel.getByText(`${NEUTRAL}owner_user`)).toBeVisible();
   await expect(panel.getByText("このテーブルにユーザー・部署の列がありません")).toHaveCount(0);
-  await panel.getByRole("button", { name: "相手 2 を外す" }).click();
+  await panel.getByRole("button", { name: "承認者 2 を外す" }).click();
 
   // 読めない列・無い列を外せば保存できる。
   await canvas.getByText("上長の承認").first().click();
   await stray.getByRole("button", { name: "列 amount を外す" }).click();
   await expect(stray).toHaveCount(0);
-  await panel.getByRole("button", { name: "相手 3 を外す" }).click();
-  await panel.getByRole("button", { name: "相手 2 を外す" }).click();
+  await panel.getByRole("button", { name: "承認者 3 を外す" }).click();
+  await panel.getByRole("button", { name: "承認者 2 を外す" }).click();
   await bob.getByRole("button", { name: "保存", exact: true }).click();
   await expect(bob.getByText(/保存しました/).first()).toBeVisible({ timeout: 15_000 });
   const saved = (await (await bob.request.get(`/api/workflows/${workflowId}`)).json()) as {
@@ -800,7 +800,7 @@ test("承認を待つブロック: 状態の列を読めないテーブルでは
   await expect(panel.getByRole("combobox", { name: "承認したときに進める状態" })).toHaveCount(0);
   // 両方にある列（件名・承認者）は残る。
   await expect(panel.getByRole("button", { name: "件名", pressed: true })).toBeVisible();
-  await expect(panel.getByRole("combobox", { name: "相手 1 の列" })).toContainText("承認者");
+  await expect(panel.getByRole("combobox", { name: "承認者 1 の列" })).toContainText("承認者");
 
   // 検証はテーブルの欄で止め（状態の一覧は出さない）、選べない欄に「状態を選んでください」とは出さない。
   await expect(

@@ -201,7 +201,7 @@ async function pickOutsideTheFirstPage(page: Page, made: Made) {
   await page.getByRole("option", { name: "完了", exact: true }).click();
   await rejectTo.click();
   await page.getByRole("option", { name: "差し戻し", exact: true }).click();
-  await expect(panel.getByRole("combobox", { name: "相手 1 の列" })).toContainText("承認者");
+  await expect(panel.getByRole("combobox", { name: "承認者 1 の列" })).toContainText("承認者");
 
   // Esc は一覧だけを閉じ、選ぶ欄へ戻る。
   await select.click();

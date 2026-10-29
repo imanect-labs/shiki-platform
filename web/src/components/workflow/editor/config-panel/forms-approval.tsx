@@ -482,7 +482,7 @@ function AssigneesField({
           <div key={i} className="space-y-1.5 rounded-md border p-2">
             <div className="flex items-center gap-1.5">
               <Select value={kind} onValueChange={(k) => update(i, blank(k as AssigneeKind))}>
-                <SelectTrigger aria-label={`相手 ${i + 1} の種類`} className="h-8 flex-1 text-[13px]">
+                <SelectTrigger aria-label={`承認者 ${i + 1} の種類`} className="h-8 flex-1 text-[13px]">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -495,7 +495,7 @@ function AssigneesField({
                 variant="ghost"
                 size="icon"
                 className="size-8 shrink-0"
-                aria-label={`相手 ${i + 1} を外す`}
+                aria-label={`承認者 ${i + 1} を外す`}
                 onClick={() => onChange(assignees.filter((_, j) => j !== i))}
               >
                 <X className="size-4" aria-hidden />
@@ -505,7 +505,7 @@ function AssigneesField({
               <>
                 {refFields.length ? (
                   <Select value={a.field ?? ""} onValueChange={(field) => update(i, { field })}>
-                    <SelectTrigger aria-label={`相手 ${i + 1} の列`} className="h-8 text-[13px]">
+                    <SelectTrigger aria-label={`承認者 ${i + 1} の列`} className="h-8 text-[13px]">
                       <SelectValue placeholder="列を選ぶ" />
                     </SelectTrigger>
                     <SelectContent>
@@ -551,8 +551,11 @@ function AssigneesField({
         onClick={() => onChange([...assignees, blank("field")])}
       >
         <Plus className="size-4" aria-hidden />
-        相手を足す
+        承認者を追加
       </Button>
+      {assignees.length >= MAX_ASSIGNEES ? (
+        <p className="text-[11px] text-muted-foreground">承認者は {MAX_ASSIGNEES} 件までです。</p>
+      ) : null}
     </fieldset>
   );
 }

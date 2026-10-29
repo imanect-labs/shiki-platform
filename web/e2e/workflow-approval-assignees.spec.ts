@@ -36,6 +36,11 @@ test("承認を待つ: 承認者の欄は、判断できる人を決めないこ
   await expect(more).toContainText("ここで選ぶのは依頼を出す相手で、判断できる人を決めるものではありません。");
   await expect(more).toContainText("状態の進め方によっては、申請者が自分の申請を承認できます。");
   await expect(more).toContainText("いまは画面では変えられません。管理者に頼んでください。");
+  // 欄の中の呼び名は「承認者」にそろえる（付録 D の N3.4.1）。追加のボタンと、読み上げの名前も同じ。
+  await expect(panel.getByRole("button", { name: "承認者を追加" })).toBeVisible();
+  await expect(panel.getByRole("combobox", { name: "承認者 1 の種類" })).toBeVisible();
+  await expect(panel.getByRole("button", { name: "承認者 1 を外す" })).toBeVisible();
+  await expect(panel.getByRole("button", { name: "相手を足す" })).toHaveCount(0);
   await more.scrollIntoViewIfNeeded();
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/bug110-assignees-note-pc.png` });
 
