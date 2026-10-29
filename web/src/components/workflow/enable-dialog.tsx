@@ -447,6 +447,7 @@ export function EnableDialog({
                   delegations={delegations}
                   meId={me.data?.id ?? null}
                   tableName={(id) => tableName(id)}
+                  tableLoading={(id) => tableSource.lookup(id).state === "loading"}
                   otherName={otherName}
                 />
                 {!enabled && confirm === null ? (
