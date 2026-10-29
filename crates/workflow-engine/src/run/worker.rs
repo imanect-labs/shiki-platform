@@ -201,7 +201,7 @@ impl WorkflowWorker {
             input: claimed.input.0.clone(),
             // きっかけの内容（`$from trigger`）。schedule / event の run は入力にペイロードを載せる（schedule は
             // Null）ので入力と同じ。手動の run も、試すきっかけの内容を渡さなければ入力と同じ（D-93）。
-            trigger: claimed.trigger.0.clone(),
+            trigger: claimed.trigger_or_input(),
             node_outputs,
             each,
             trace_id: Some(claimed.run_id.simple().to_string()),

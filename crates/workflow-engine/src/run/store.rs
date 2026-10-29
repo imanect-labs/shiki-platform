@@ -91,13 +91,24 @@ pub struct ClaimedStep {
     pub fencing_token: i64,
     pub idempotency_key: String,
     pub input: Json<Value>,
-    /// きっかけの内容（`$from trigger` の源）。手動の実行で試すきっかけの内容を渡したときはそれ、ほかは入力と
-    /// 同じ（schedule / event の run は入力にペイロードを載せる・D-93）。
-    pub trigger: Json<Value>,
+    /// 手動の実行で試すきっかけの内容（`trigger_payload`・D-93）。無い run（ほとんどすべて）は `None` で、きっかけの
+    /// 内容は入力と同じ（schedule / event の run は入力にペイロードを載せる）。入力を DB から 2 回運ばないよう、
+    /// 入力での補いはワーカーがする（[`ClaimedStep::trigger_or_input`]）。
+    pub trigger: Option<Json<Value>>,
     /// step 固有の入力（map 要素の `each` コンテキスト等）。静的ノードは NULL。
     pub step_input: Option<Json<Value>>,
     /// 開始時にピンした IR（ワーカーがノード params/retry を引く）。
     pub ir_snapshot: Json<Value>,
+}
+
+impl ClaimedStep {
+    /// きっかけの内容（`$from trigger` の源）。試すきっかけの内容が無ければ入力と同じ（D-93）。
+    #[must_use]
+    pub fn trigger_or_input(&self) -> Value {
+        self.trigger
+            .as_ref()
+            .map_or_else(|| self.input.0.clone(), |t| t.0.clone())
+    }
 }
 
 /// resume がリース失効を待つときの上乗せ（秒）。旧 worker のリースが切れた「直後」を狙わず、

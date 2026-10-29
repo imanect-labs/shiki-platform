@@ -48,7 +48,7 @@ macro_rules! claim_ready_sql {
              FROM ( \
                  SELECT s2.tenant_id, s2.run_id, s2.step_path, \
                         r2.workflow_id, r2.org, r2.principal, r2.principal_kind, \
-                        r2.input, coalesce(r2.trigger_payload, r2.input) AS trigger, \
+                        r2.input, r2.trigger_payload AS trigger, \
                         r2.ir_snapshot, \
                         coalesce(r2.started_at, r2.created_at) AS run_started_at \
                    FROM step_execution s2 \
