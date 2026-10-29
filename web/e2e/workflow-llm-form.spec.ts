@@ -1,6 +1,6 @@
 import { expect, test, type Browser, type Locator, type Page } from "@playwright/test";
 
-import { loginViaKeycloak, uniqueName } from "./helpers";
+import { loginViaKeycloak, stubChatModelId, uniqueName } from "./helpers";
 
 /// 「AI に聞く」の設定フォームの思考の深さと出力の形（llm.invoke の effort・output_schema・GAP-13 の T3）を、
 /// エディタの画面で確かめる。
@@ -10,10 +10,9 @@ import { loginViaKeycloak, uniqueName } from "./helpers";
 /// - JSON で書いた形の誤りは、保存時の検証の位置（`/params/output_schema/...`）から欄の下に出る。
 /// - 後ろのブロックの「差し込む」の候補に、出力の形の項目（`data.<項目>`）が出る。形を外すと data も出ない。
 /// - 思考の深さは保存して開き直しても残る（stub のモデルは対応しないので、送られない旨を欄の下に出す）。
-/// 前提: compose の shiki-server が SHIKI__WORKFLOW__ENABLED=true・LLM は stub。モデルは stub（default）を明示し、
-/// 実行はしない（実 LLM を呼ばない）。作ったワークフローは最後に消す。
-
-const STUB_MODEL = "default";
+/// 前提: compose の shiki-server が SHIKI__WORKFLOW__ENABLED=true・LLM は stub。モデルは組織で使える stub のモデルを
+/// 引いて明示し（id は環境で違うので決め打ちしない・BUG-114）、実行はしない（実 LLM を呼ばない）。作ったワークフローは
+/// 最後に消す。
 
 async function csrfHeader(page: Page): Promise<Record<string, string>> {
   const csrf = (await page.context().cookies()).find((c) => c.name === "shiki_csrf")?.value ?? "";
@@ -22,6 +21,7 @@ async function csrfHeader(page: Page): Promise<Record<string, string>> {
 
 async function createFlow(page: Page): Promise<string> {
   const name = uniqueName("wf-llm-form");
+  const model = await stubChatModelId(page);
   const res = await page.request.post("/api/workflows", {
     headers: await csrfHeader(page),
     data: {
@@ -36,13 +36,13 @@ async function createFlow(page: Page): Promise<string> {
             id: "triage",
             type: "llm.invoke",
             label: "種類を判定",
-            params: { model: STUB_MODEL, prompt: { $from: "input", path: "/body" }, effort: "low" },
+            params: { model, prompt: { $from: "input", path: "/body" }, effort: "low" },
           },
           {
             id: "note",
             type: "llm.invoke",
             label: "結果を整える",
-            params: { model: STUB_MODEL, prompt: "判定の結果を短く書き出してください" },
+            params: { model, prompt: "判定の結果を短く書き出してください" },
           },
         ],
         edges: [{ from: "triage", from_port: "out", to: "note" }],

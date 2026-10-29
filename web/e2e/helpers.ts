@@ -91,6 +91,15 @@ export async function stubChatModel(page: Page): Promise<{ id: string; label: st
   return (await stubChatModels(page)).stub[0];
 }
 
+/// 組織で使える stub の chat モデルの id（無ければ落とす・モデルの id を決め打ちしない・BUG-114）。
+///
+/// 手元の検証の設定は stub のモデルを `default`、CI の compose は `shiki-default` と呼ぶので、id を書かずにここで引く。
+export async function stubChatModelId(page: Page): Promise<string> {
+  const m = await stubChatModel(page);
+  expect(m, "組織で使える stub のモデルが無い（実 LLM を呼ばないよう止める）").toBeDefined();
+  return m!.id;
+}
+
 /// 組織の既定（モデルを省略した呼び出し・Auto の振り先）が stub のモデルで動くようにする（実 LLM を呼ばない・BUG-85）。
 ///
 /// 既に stub で動くなら何も変えない。変えたら元に戻す関数を返す（呼び出し側が finally で呼ぶ）。既定が Auto なら振り先の

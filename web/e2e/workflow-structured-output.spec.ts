@@ -1,6 +1,6 @@
 import { expect, test, type Browser, type Page } from "@playwright/test";
 
-import { loginViaKeycloak, uniqueName } from "./helpers";
+import { loginViaKeycloak, stubChatModelId, uniqueName } from "./helpers";
 
 /// 「AI に聞く」の出力の形（llm.invoke の output_schema・effort・GAP-13）を、サーバの保存・検証・実行の経路で確かめる。
 ///
@@ -9,9 +9,8 @@ import { loginViaKeycloak, uniqueName } from "./helpers";
 ///   llm_output_invalid で失敗する（stub の json: / jsonalways: の決まった応答）。
 /// - 画面: 後ろのブロックの「差し込む」の候補に data が出る（カタログの output_fields から生成）。
 /// 前提: compose の shiki-server が SHIKI__WORKFLOW__ENABLED=true・LLM は stub。実 LLM に送らないよう、モデルは
-/// stub（default）を明示する（組織の既定が実 LLM でも使わない）。
-
-const STUB_MODEL = "default";
+/// 組織で使える stub のモデルを引いて明示する（組織の既定が実 LLM でも使わない。id は環境で違うので決め打ちしない・
+/// 手元は default・CI の compose は shiki-default・BUG-114）。
 
 async function csrfHeader(page: Page): Promise<Record<string, string>> {
   const csrf = (await page.context().cookies()).find((c) => c.name === "shiki_csrf")?.value ?? "";
@@ -28,7 +27,7 @@ const SCHEMA = {
   },
 };
 
-function structuredIr(name: string, params: Record<string, unknown> = {}) {
+function structuredIr(name: string, model: string, params: Record<string, unknown> = {}) {
   return {
     ir_version: 1,
     name,
@@ -41,7 +40,7 @@ function structuredIr(name: string, params: Record<string, unknown> = {}) {
         type: "llm.invoke",
         label: "種類を判定",
         params: {
-          model: STUB_MODEL,
+          model,
           prompt: { $from: "input", path: "/body" },
           effort: "low",
           output_schema: SCHEMA,
@@ -52,7 +51,7 @@ function structuredIr(name: string, params: Record<string, unknown> = {}) {
         id: "note",
         type: "llm.invoke",
         label: "結果を整える",
-        params: { model: STUB_MODEL, prompt: "判定の結果を短く書き出してください" },
+        params: { model, prompt: "判定の結果を短く書き出してください" },
       },
     ],
     edges: [{ from: "triage", from_port: "out", to: "note" }],
@@ -63,7 +62,7 @@ async function createFlow(page: Page): Promise<string> {
   const name = uniqueName("wf-structured");
   const res = await page.request.post("/api/workflows", {
     headers: await csrfHeader(page),
-    data: { ir: structuredIr(name) },
+    data: { ir: structuredIr(name, await stubChatModelId(page)) },
   });
   expect(res.ok(), await res.text()).toBeTruthy();
   return ((await res.json()) as { id: string }).id;
@@ -107,10 +106,11 @@ async function runTriage(page: Page, id: string, body: string): Promise<Step> {
 test("出力の形: 保存時に形を検査し、上限トークンが小さいと警告する", async ({ page }) => {
   test.setTimeout(120_000);
   await loginViaKeycloak(page);
+  const model = await stubChatModelId(page);
   const validate = async (params: Record<string, unknown>) => {
     const res = await page.request.post("/api/workflows/validate", {
       headers: await csrfHeader(page),
-      data: { ir: structuredIr(uniqueName("wf-structured-check"), params) },
+      data: { ir: structuredIr(uniqueName("wf-structured-check"), model, params) },
     });
     expect(res.ok(), await res.text()).toBeTruthy();
     return (await res.json()) as {
@@ -148,7 +148,7 @@ test("出力の形: 形に合う出力は data に載り、合わない出力は
     // stub は prompt に現れた選択肢を選ぶ。
     const ok = await runTriage(page, id, "アプリが落ちる bug の報告です");
     expect(ok.status, JSON.stringify(ok.error)).toBe("succeeded");
-    expect(ok.output.model).toBe(STUB_MODEL);
+    expect(ok.output.model).toBe(await stubChatModelId(page));
     expect(ok.output.data).toEqual({ category: "bug", summary: "" });
     expect(JSON.parse(ok.output.text as string)).toEqual(ok.output.data);
     expect(ok.output).not.toHaveProperty("stop_reason");
