@@ -815,7 +815,7 @@ step の処理順序を固定する: **ノード実行 → checkpoint 書込（o
 
 外部 `http.request` は exactly-once を **約束しない**（ノード契約・UI・実行履歴ドキュメントに明示）。エンジンが提供するのはオプトインの `Idempotency-Key: <冪等キー>` ヘッダ注入支援のみである。外部サービスがこのヘッダを解釈するかは外部の責任であり、エンジンは冪等性を代替しない。
 
-相手の誤り（応答のステータスコード 400 以上）は、ノードの `fail_on_error_status` が true のときだけ step の失敗にする（BUG-99）。4xx（429 を除く）は `http_error_status`（permanent）、5xx と 429 は `http_retryable_status`（retryable）で、後者は §7.5 のリトライ分類（retryable）として試す回数の範囲でやり直す（並行上限の `rate_limited` とは別の code にする。あちらは attempt を消費しないので、相手の 429 に使うと送り直しが止まらない）。やり直すと同じ `Idempotency-Key` で相手に同じ内容がもう一度届く。
+相手の誤り（応答のステータスコード 400 以上）は、ノードの `fail_on_error_status` が true のときだけ step の失敗にする（BUG-99）。4xx（408・425・429 を除く）は `http_error_status`（permanent）、5xx と 408（Request Timeout）・425（Too Early）・429 は `http_retryable_status`（retryable）で、後者は §7.5 のリトライ分類（retryable）として試す回数の範囲でやり直す（並行上限の `rate_limited` とは別の code にする。あちらは attempt を消費しないので、相手の 429 に使うと送り直しが止まらない）。やり直すと同じ `Idempotency-Key` で相手に同じ内容がもう一度届く。
 
 シークレット付き `http.request` の実行は **名前解決・コネクション確立・検証（allowlist ∩ 宛先束縛）をエンジン側で行い、検証済みコネクションにのみシークレットを注入**する（PIT-36 ③。ホスト名リテラル制約だけでは DNS rebinding — 検証後に解決先 IP が付け替わる — を塞げない）。`http.request` ノードと `Shiki.http.request` は同一実装を通る（script.md §6）。
 
