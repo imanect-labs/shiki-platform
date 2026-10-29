@@ -380,6 +380,7 @@ stateDiagram-v2
   - 判定式: `status = running` ∧ `waiting_timer` か `waiting_event` の step がある ∧ `ready`・`running` の step が無い（多重度の数え方 §8.3 の「待機中の run」と同じ）。
   - 何を待っているか（`waiting_for`）: 保留中の承認の台帳（`workflow_approval.status = pending`）がある `waiting_event` の step があれば `approval`、`waiting_event` があれば `event`、`waiting_timer` だけなら `timer`。
   - 画面（ミニアプリ・会話の図のボタンの記録）は待機中を「実行中」と区別して出し、待機中だけなら読み直しの間隔を空ける（§11.6）。
+  - 実行履歴の一覧と詳細も同じ式で `waiting_for` を返し、画面は「待機中（承認待ち）」のように実行中と分けて出す。待っている step にも同じ決め方の `waiting_for` を付ける（`waiting_event` に保留中の承認の台帳があれば `approval`、ほかの `waiting_event` は `event`、`waiting_timer` は `timer`・BUG-119）。
 - `cancelling` も同様に導出であり、`cancel_requested = true ∧ status = running` の表示ラベルである。
 
 ### 3.2 step 状態機械
