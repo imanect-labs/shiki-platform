@@ -91,7 +91,8 @@ async function ok<T>(res: Response): Promise<T> {
     } catch {
       // 本文なし
     }
-    throw new Error(message);
+    // 状態コードを添える（読めない＝403・404 を、画面が「読めない」として出し分ける・BUG-122）。
+    throw Object.assign(new Error(message), { status: res.status });
   }
   return (await res.json()) as T;
 }

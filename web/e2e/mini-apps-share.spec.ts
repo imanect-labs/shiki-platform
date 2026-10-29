@@ -208,6 +208,51 @@ test("共同編集者が読めないワークフローを束ねたアプリを�
   }
 });
 
+test("共同編集者が読めないワークフローを束ねたアプリを開くと、入力が無いとは言わず、読めないと言う（BUG-122）", async ({
+  page,
+  browser,
+}) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await loginViaKeycloak(page);
+  const flow = uniqueName("lend-flow");
+  const wfId = await createFlow(page, flow);
+  const appId = await createApp(page, {
+    description: "備品の貸出",
+    screen: `# 貸出の受付\n\n\`\`\`ui\napp 貸出の受付\n備品 = text 必須 as item\nbutton 借りる -> workflow ${flow}\n\`\`\`\n`,
+    workflows: [{ alias: flow, artifact_id: wfId, version: 1 }],
+  });
+  const bobCtx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const bob = await bobCtx.newPage();
+  const note = `ワークフロー「${flow}」が見つかりません。削除されたか、見る権限がありません。`;
+  try {
+    // 持ち主（ワークフローを読める）には、読めないという注記を出さない。
+    await page.goto(`/apps/${appId}`);
+    await page.getByRole("button", { name: "編集" }).click();
+    const own = page.getByRole("dialog");
+    await expect(own.getByText("貸出の受付").first()).toBeVisible({ timeout: 15_000 });
+    await expect(own.getByTestId("miniapp-workflow-unreadable")).toHaveCount(0);
+    await page.keyboard.press("Escape");
+
+    await loginAs(bob, "bob");
+    const bobId = ((await (await bob.request.get("/api/me")).json()) as { id: string }).id;
+    // アプリだけを編集で共有する（束ねたワークフローは共有しない）。
+    await share(page, appId, bobId, "editor");
+    await bob.goto(`/apps/${appId}`);
+    await expect(bob.getByRole("heading", { name: "備品の貸出", level: 1 })).toBeVisible({ timeout: 15_000 });
+    await bob.getByRole("button", { name: "編集" }).click();
+    const dialog = bob.getByRole("dialog");
+    // 入力の定義を読めないことを言い、組み立てるは「という入力はありません」と言わない（入力が無いのではない）。
+    await expect(dialog.getByTestId("miniapp-workflow-unreadable")).toContainText(note, { timeout: 15_000 });
+    await expect(dialog.getByText("貸出の受付").first()).toBeVisible();
+    await expect(dialog.getByText(/という入力はありません/)).toHaveCount(0);
+    if (SHOTS) await bob.screenshot({ path: `${SHOTS}/bug122-unreadable-workflow-pc.png` });
+  } finally {
+    await cleanup(page, [appId, wfId]);
+    await bobCtx.close().catch(() => undefined);
+  }
+});
+
 test("アプリの一覧のメニューの共有・削除は owner のアプリにだけ出し、共有の欄は 403 を空の一覧に見せない（BUG-78）", async ({
   page,
   browser,

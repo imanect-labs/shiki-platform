@@ -13,7 +13,7 @@ import * as React from "react";
 import dynamic from "next/dynamic";
 import { Loader2, Plus, X } from "lucide-react";
 
-import type { WorkflowChoice } from "@imanect/yui/editor";
+import type { WorkflowChoice, WorkflowInputHint } from "@imanect/yui/editor";
 
 import type { MiniAppBody } from "@/generated/gui-spec";
 import type { ScreenValidity } from "@/components/artifacts/screen-builder";
@@ -54,7 +54,15 @@ type PinnedSkill =
   /// 通信・サーバの誤りで決められない（読めないと決めつけない）。
   | { state: "unknown" };
 
-/// 誤りの状態コード（`artifact-api` の `ok` が添える）。
+/// 束ねたワークフローの入力の定義を読めたか（読めないときは「入力はありません」と扱わない・BUG-122）。
+type PinnedInputs =
+  | { state: "readable"; hints: WorkflowInputHint[] }
+  /// 403・404（削除されたか、見る権限がない。共同編集者がワークフローを見られないときなど）。
+  | { state: "unreadable" }
+  /// 通信・サーバの誤りで決められない。
+  | { state: "unknown" };
+
+/// 誤りの状態コード（`artifact-api`・`workflow-api` の `ok` が添える）。
 function statusOf(e: unknown): number | null {
   const status = (e as { status?: unknown } | null)?.status;
   return typeof status === "number" ? status : null;
@@ -122,7 +130,7 @@ export function MiniAppEditorDialog({
   const [validity, setValidity] = React.useState<ScreenValidity>({ errors: 0 });
   // 書くタブで記述を直したか（組み立てるの段は、次に開くときに分け直す）
   const sourceEdited = React.useRef(false);
-  const [inputs, setInputs] = React.useState<Record<string, WorkflowChoice["inputs"]>>({});
+  const [inputs, setInputs] = React.useState<Record<string, PinnedInputs>>({});
   const [skills, setSkills] = React.useState<ArtifactMeta[]>([]);
   const [pinnedSkill, setPinnedSkill] = React.useState<PinnedSkill>({ state: "checking" });
   const [workflows, setWorkflows] = React.useState<ArtifactMeta[]>([]);
@@ -198,11 +206,30 @@ export function MiniAppEditorDialog({
       if (requested.current.has(key)) continue;
       requested.current.add(key);
       void getWorkflowVersion(p.artifact_id, p.version)
-        .then((w) => setInputs((m) => ({ ...m, [key]: inputHints(w.ir.input_schema) })))
-        .catch(() => setInputs((m) => ({ ...m, [key]: [] })));
+        .then((w) =>
+          setInputs((m) => ({ ...m, [key]: { state: "readable", hints: inputHints(w.ir.input_schema) } })),
+        )
+        .catch((e: unknown) => {
+          const status = statusOf(e);
+          const state = status === 403 || status === 404 ? "unreadable" : "unknown";
+          setInputs((m) => ({ ...m, [key]: { state } }));
+        });
     }
   }, [pins, open]);
-  const choices = React.useMemo<WorkflowChoice[]>(() => pins.map((p) => ({ name: p.alias, inputs: inputs[`${p.artifact_id}@${p.version}`] })), [pins, inputs]);
+  // 読めなかったワークフローは入力を渡さない（空の入力を渡すと、組み立てるが画面のどの入力にも「という入力は
+  // ありません」と言う。入力が無いのではなく、読めないだけ・BUG-122）。
+  const choices = React.useMemo<WorkflowChoice[]>(
+    () =>
+      pins.map((p) => {
+        const s = inputs[`${p.artifact_id}@${p.version}`];
+        return { name: p.alias, inputs: s?.state === "readable" ? s.hints : undefined };
+      }),
+    [pins, inputs],
+  );
+  const unreadablePins = pins.flatMap((p) => {
+    const s = inputs[`${p.artifact_id}@${p.version}`];
+    return s && s.state !== "readable" ? [{ alias: p.alias, state: s.state }] : [];
+  });
   // 書くタブで直した後は、隠れている組み立てる（直す前の段）の数え直しを使わない（ワークフローを外したときなど）
   const onValidity = React.useCallback((v: ScreenValidity) => {
     if (!sourceEdited.current) setValidity(v);
@@ -334,6 +361,18 @@ export function MiniAppEditorDialog({
                 </span>
               ))}
             </div>
+            {unreadablePins.map((u) => (
+              <p
+                key={u.alias}
+                role="note"
+                data-testid="miniapp-workflow-unreadable"
+                className="text-xs text-amber-700 dark:text-amber-400"
+              >
+                {u.state === "unreadable"
+                  ? `ワークフロー「${u.alias}」が見つかりません。削除されたか、見る権限がありません。入力項目と画面の入力が合うかは、確かめていません。`
+                  : `ワークフロー「${u.alias}」の入力項目を読み込めませんでした。少し待ってから、開き直してください。`}
+              </p>
+            ))}
             <div className="flex items-center gap-2">
               <select
                 aria-label="追加するワークフロー"
