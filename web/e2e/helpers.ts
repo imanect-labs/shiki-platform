@@ -100,6 +100,22 @@ export async function stubChatModelId(page: Page): Promise<string> {
   return m!.id;
 }
 
+/// 組織の既定（モデルを省略した呼び出し・おまかせで使うモデル）が stub のモデルで動かないときの理由（動くなら
+/// null・BUG-115）。チャットを送る E2E の多くは、組織の既定が stub であることを前提にしている。
+export async function orgDefaultProblem(page: Page): Promise<string | null> {
+  const { stub, settings } = await stubChatModels(page);
+  const auto = settings.default_model === "auto";
+  const running = auto ? settings.auto_target_model : settings.default_model;
+  if (running && stub.some((m) => m.id === running)) return null;
+  const what = auto ? "おまかせで使うモデル" : "組織の既定のモデル";
+  return (
+    `${USER} の組織の${what}が stub のモデルではありません（いま: ${running ?? "なし"}）。` +
+    "チャットを送る E2E が実 LLM を呼ぶので、流す前に止めました。" +
+    `管理コンソールの「AI」で${what}を stub のモデル（${stub.map((m) => m.id).join("、") || "なし"}）にしてから流してください。` +
+    "実 LLM のまま流すと決めたときだけ、E2E_ALLOW_REAL_LLM_DEFAULT=1 を付けます。"
+  );
+}
+
 /// 組織の既定（モデルを省略した呼び出し・Auto の振り先）が stub のモデルで動くようにする（実 LLM を呼ばない・BUG-85）。
 ///
 /// 既に stub で動くなら何も変えない。変えたら元に戻す関数を返す（呼び出し側が finally で呼ぶ）。既定が Auto なら振り先の
