@@ -495,3 +495,23 @@ async fn a_blank_threshold_fails_without_calling_the_decider() {
     );
     assert!(ports.reqs().is_empty(), "AI を呼ばない");
 }
+
+/// 質問の「AI に尋ねること」が空なら、AI を呼ばずにやり直さない誤りで失敗する（実行の前に readiness が止める
+/// が、通らない経路の多層防御・空のままでも保存はできる・D-108）。
+#[tokio::test]
+async fn a_blank_question_fails_without_calling_the_decider() {
+    let ports = ScriptedDecider::new(vec![Ok(reply("billing", 0.9))]);
+    let audit = Arc::new(Audit::default());
+    for blank in ["", "   "] {
+        let mut p = params(Value::Null);
+        p["questions"][1]["instructions"] = json!(blank);
+        let res = run(Arc::clone(&ports) as _, &audit, &p).await;
+        assert!(!res.ok);
+        assert_eq!(code(&res), ("bad_params".to_string(), false));
+        assert_eq!(
+            res.error.as_ref().unwrap().message,
+            "「AI に尋ねること」が空です。入れるまで、このブロックは実行できません。"
+        );
+    }
+    assert!(ports.reqs().is_empty(), "AI を呼ばない");
+}

@@ -1,7 +1,7 @@
 //! 保存は止めず、有効化と実行の前に止める条件（D-40・D-43・D-83）。
 //!
-//! - **必須の欄が空**（[`REQUIRED_FIELDS`] の表と、`control.branch` の条件の調べる値と、出口を分ける
-//!   `ai.decide` のしきい値（既定を置かない・D-88））: 書きかけでも保存は
+//! - **必須の欄が空**（[`REQUIRED_FIELDS`] の表と、`control.branch` の条件の調べる値と、`ai.decide` の質問ごとの
+//!   「AI に尋ねること」（D-108）と、出口を分ける `ai.decide` のしきい値（既定を置かない・D-88））: 書きかけでも保存は
 //!   できるように、保存時は path つきの警告（[`REQUIRED_TEXT_EMPTY`]）にとどめる。空のまま動かすと、空の依頼で
 //!   AI や検索を呼ぶ・いつも同じ出口へ進む・リストでない値を繰り返そうとして失敗する、などになるので、有効化
 //!   （[`enable_blockers`]）と対話の実行（[`run_blockers`]）の前に止める。置いたばかりのブロックは、選ぶ欄も
@@ -73,6 +73,8 @@ const REQUIRED_FIELDS: &[(NodeType, &str, &str, Fill)] = &[
 const BRANCH_LEFT_LABEL: &str = "調べる値";
 /// AI で判定（`ai.decide`）の出口を分けるときのしきい値の見出し（既定を置かない・D-88）。
 const DECIDE_THRESHOLD_LABEL: &str = "しきい値（AI の自信）";
+/// AI で判定（`ai.decide`）の質問ごとの問いの見出し（D-108）。
+const DECIDE_INSTRUCTIONS_LABEL: &str = "AI に尋ねること";
 
 /// 欄が空か（リテラルの空文字・空白だけ・null、または中身の無い `$template`）。
 ///
@@ -153,8 +155,20 @@ pub fn required_text_empty(ir: &WorkflowIr) -> Vec<ValidationError> {
                 out.push(blank(&node.id, format!("/params/{key}"), label, *fill));
             }
         }
-        // 出口を分ける判定のしきい値は、既定を置かず書かせる（版ごとに実測で決める・PIT-80・D-88）。
+        // 判定の質問ごとの問いは、置いたばかりの空のままでも保存は通し、実行と自動実行のオンの前に止める（D-108）。
         if nt == NodeType::AiDecide {
+            let questions = node.params.get("questions").and_then(Value::as_array);
+            for (i, q) in questions.into_iter().flatten().enumerate() {
+                if q.get("instructions").is_some_and(is_blank) {
+                    out.push(blank(
+                        &node.id,
+                        format!("/params/questions/{i}/instructions"),
+                        DECIDE_INSTRUCTIONS_LABEL,
+                        Fill::Text,
+                    ));
+                }
+            }
+            // 出口を分ける判定のしきい値は、既定を置かず書かせる（版ごとに実測で決める・PIT-80・D-88）。
             if let Some(route) = node.params.get("route").and_then(Value::as_object) {
                 if route.get("min_confidence").is_none_or(Value::is_null) {
                     out.push(blank(
@@ -277,6 +291,45 @@ mod tests {
         // 対話の起動も同じ理由で止める。
         assert_eq!(run_blockers(&ir).len(), 4);
         assert_eq!(enable_blockers(&ir).len(), 4);
+    }
+
+    /// D-108: 判定の質問の「AI に尋ねること」が空なら、保存の警告にとどめ、実行と自動実行のオンの前に止める
+    /// （質問ごとの位置を返す）。参照は書けない欄なので、中身のある文だけが空でない。
+    #[test]
+    fn a_blank_decide_question_blocks_run_and_enable() {
+        let ir = ir(
+            json!([{ "kind": "interactive" }]),
+            json!([{ "id": "triage", "type": "ai.decide", "params": {
+                "model": "decide-stub", "state": "本文",
+                "questions": [
+                    { "key": "q1", "type": "choice", "instructions": "",
+                      "options": [{ "key": "option_1" }, { "key": "option_2" }] },
+                    { "key": "q2", "type": "boolean", "instructions": "請求か" },
+                    { "key": "q3", "type": "boolean", "instructions": "  " }
+                ] } }]),
+        );
+        let w = required_text_empty(&ir);
+        assert_eq!(
+            codes(&w),
+            vec![
+                (
+                    REQUIRED_TEXT_EMPTY,
+                    Some("triage"),
+                    Some("/params/questions/0/instructions")
+                ),
+                (
+                    REQUIRED_TEXT_EMPTY,
+                    Some("triage"),
+                    Some("/params/questions/2/instructions")
+                )
+            ]
+        );
+        assert_eq!(
+            w[0].message,
+            "「AI に尋ねること」が空です。入れるまで、実行も自動実行のオンもできません。"
+        );
+        assert_eq!(run_blockers(&ir).len(), 2);
+        assert_eq!(enable_blockers(&ir).len(), 2);
     }
 
     /// D-88: 出口を分ける判定のしきい値は既定を置かないので、空なら保存の警告にとどめ、実行と自動実行のオンの

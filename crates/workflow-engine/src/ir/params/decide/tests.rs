@@ -84,7 +84,15 @@ fn questions_are_literals_and_keys_follow_the_shape() {
     }
     let e = err(&with(base(), "/questions/1/key", json!("category")));
     assert!(e.message.contains("重なって"), "{}", e.message);
-    let e = err(&with(base(), "/questions/0/instructions", json!("  ")));
+    // 空の問いは保存を止めない（実行と自動実行のオンの前に止める・readiness・D-108）。長すぎる問いは止める。
+    for blank in ["", "  "] {
+        parsed(&with(base(), "/questions/0/instructions", json!(blank)));
+    }
+    let e = err(&with(
+        base(),
+        "/questions/0/instructions",
+        json!("あ".repeat(MAX_DECIDE_INSTRUCTIONS_CHARS + 1)),
+    ));
     assert_eq!(e.path, "/params/questions/0/instructions");
     let e = err(&with(base(), "/questions", json!([])));
     assert_eq!(e.path, "/params/questions");

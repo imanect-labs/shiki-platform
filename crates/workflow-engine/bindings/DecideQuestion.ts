@@ -15,7 +15,8 @@ key: string,
  */
 type: DecideQuestionType, 
 /**
- * 何を判定するか（1〜2000 字の自然文）。
+ * AI に尋ねること（2000 字までの自然文）。空のまま保存はでき、入れるまで実行と自動実行のオンを止める
+ * （readiness）。実行時に空なら AI を呼ばずに失敗する（[`DECIDE_INSTRUCTIONS_MISSING`]・D-108）。
  */
 instructions: string, 
 /**

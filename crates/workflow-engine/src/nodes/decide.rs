@@ -61,6 +61,14 @@ impl CapabilityNodeExecutor {
                 false,
             )
         })?;
+        // 問いの空は実行の前に止める（readiness）。通らない経路でも AI を呼ばずに失敗させる（D-108）。
+        if p.questions.iter().any(|q| q.instructions.trim().is_empty()) {
+            return Err(PortError::new(
+                "bad_params",
+                crate::ir::params::DECIDE_INSTRUCTIONS_MISSING,
+                false,
+            ));
+        }
         // しきい値の空は実行の前に止める（readiness）。通らない経路でも AI を呼ばずに失敗させる（D-88）。
         if p.route.as_ref().is_some_and(|r| r.min_confidence.is_none()) {
             return Err(PortError::new(

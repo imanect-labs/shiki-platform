@@ -128,7 +128,8 @@ pub struct DecideQuestion {
     #[serde(rename = "type")]
     #[ts(rename = "type")]
     pub kind: DecideQuestionType,
-    /// 何を判定するか（1〜2000 字の自然文）。
+    /// AI に尋ねること（2000 字までの自然文）。空のまま保存はでき、入れるまで実行と自動実行のオンを止める
+    /// （readiness）。実行時に空なら AI を呼ばずに失敗する（[`DECIDE_INSTRUCTIONS_MISSING`]・D-108）。
     pub instructions: String,
     /// choice の選択肢（2〜100 件）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -179,6 +180,10 @@ pub struct DecideRoute {
     #[ts(optional)]
     pub min_confidence: Option<f64>,
 }
+
+/// 実行時に「AI に尋ねること」が空だったときの理由（readiness を通らない経路の多層防御・permanent・D-108）。
+pub const DECIDE_INSTRUCTIONS_MISSING: &str =
+    "「AI に尋ねること」が空です。入れるまで、このブロックは実行できません。";
 
 /// 実行時にしきい値が空だったときの理由（readiness を通らない経路の多層防御・permanent）。
 pub const DECIDE_THRESHOLD_MISSING: &str =
@@ -277,13 +282,8 @@ impl AiDecideParams {
                     format!("質問のキー「{}」が重なっています", q.key),
                 ));
             }
-            let len = chars(q.instructions.trim());
-            if len == 0 {
-                return Err(issue(
-                    format!("{at}/instructions"),
-                    "何を判定するか（問い）を書いてください",
-                ));
-            }
+            // 空の問いは保存を止めない（置いたばかりのブロックを、問いを書く前に保存できるように、実行と自動実行の
+            // オンの前に止める・readiness・D-108）。
             if chars(&q.instructions) > MAX_DECIDE_INSTRUCTIONS_CHARS {
                 return Err(issue(
                     format!("{at}/instructions"),
