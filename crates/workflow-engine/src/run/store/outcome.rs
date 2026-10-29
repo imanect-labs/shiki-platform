@@ -19,9 +19,25 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 use super::{map_db, RunStoreError};
-use crate::run::failure::run_failure;
+use crate::run::failure::{failure_code, run_failure};
 use crate::run::outcome::{ReplySection, RunFailure, RunReply, WaitingFor};
 use crate::run::RunStatus;
+
+/// 失敗した run の理由の code を引く 2 つの列（別名 `r` の run に対する式・[`failure_code`] に渡す）。
+///
+/// 1 つ目は「最初の未処理の失敗 step」（error の出口を取っていない・map の要素ではない）の code、2 つ目は map の
+/// 要素の側の最初の失敗の code。失敗していない run はどちらも NULL。画面に返す結果（GAP-09）と実行履歴の詳細
+/// （BUG-113）が同じ式で引く。
+pub(super) const FAILURE_CODE_COLUMNS: &str = "CASE WHEN r.status = 'failed' THEN ( \
+        SELECT s.error->>'code' FROM step_execution s \
+        WHERE s.tenant_id = r.tenant_id AND s.run_id = r.run_id AND s.status = 'failed' \
+          AND s.taken_ports = '{}' AND strpos(s.step_path, '[') = 0 \
+        ORDER BY s.updated_at, s.step_path LIMIT 1) END, \
+    CASE WHEN r.status = 'failed' THEN ( \
+        SELECT s.error->>'code' FROM step_execution s \
+        WHERE s.tenant_id = r.tenant_id AND s.run_id = r.run_id AND s.status = 'failed' \
+          AND strpos(s.step_path, '[') > 0 \
+        ORDER BY s.updated_at, s.step_path LIMIT 1) END";
 
 /// run 全体で返す節の上限。
 pub const MAX_REPLY_SECTIONS: usize = 10;
@@ -138,17 +154,7 @@ impl RunOutcomeReader {
         // 失敗の理由は「最初の未処理の失敗 step」（error の出口を取っていない・map の要素ではない）の code。
         // map の要素の失敗で map が落ちたときは、要素の側の最初の失敗の code で分類する。
         let rows: Vec<OwnRow> = sqlx::query_as(&format!(
-            "SELECT r.run_id, r.status, r.fail_reason, \
-                CASE WHEN r.status = 'failed' THEN ( \
-                    SELECT s.error->>'code' FROM step_execution s \
-                    WHERE s.tenant_id = r.tenant_id AND s.run_id = r.run_id AND s.status = 'failed' \
-                      AND s.taken_ports = '{{}}' AND strpos(s.step_path, '[') = 0 \
-                    ORDER BY s.updated_at, s.step_path LIMIT 1) END, \
-                CASE WHEN r.status = 'failed' THEN ( \
-                    SELECT s.error->>'code' FROM step_execution s \
-                    WHERE s.tenant_id = r.tenant_id AND s.run_id = r.run_id AND s.status = 'failed' \
-                      AND strpos(s.step_path, '[') > 0 \
-                    ORDER BY s.updated_at, s.step_path LIMIT 1) END, \
+            "SELECT r.run_id, r.status, r.fail_reason, {FAILURE_CODE_COLUMNS}, \
                 EXISTS (SELECT 1 FROM step_execution s \
                         WHERE s.tenant_id = r.tenant_id AND s.run_id = r.run_id \
                           AND s.step_path = ANY(r.reply_nodes) AND s.status = 'succeeded') \
@@ -164,12 +170,7 @@ impl RunOutcomeReader {
         let mut out: HashMap<Uuid, OwnOutcome> = HashMap::new();
         for (run_id, status, fail_reason, step_code, item_code, has_reply) in rows {
             let failure = (status == "failed").then(|| {
-                let code = match step_code.as_deref() {
-                    Some("map_item_failed" | "item_failed") | None => {
-                        item_code.as_deref().or(step_code.as_deref())
-                    }
-                    other => other,
-                };
+                let code = failure_code(step_code.as_deref(), item_code.as_deref());
                 run_failure(run_id, code, fail_reason.as_deref())
             });
             out.insert(

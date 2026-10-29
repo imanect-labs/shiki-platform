@@ -8,8 +8,10 @@ use serde_json::Value;
 use sqlx::types::Json;
 use uuid::Uuid;
 
-use super::outcome::WAITING_FOR;
+use super::outcome::{FAILURE_CODE_COLUMNS, WAITING_FOR};
 use super::{map_db, RunStore, RunStoreError};
+use crate::run::failure::{failure_code, run_failure};
+use crate::run::outcome::RunFailure;
 
 /// run 一覧の 1 行（一覧に必要な列のみ）。
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -81,6 +83,9 @@ pub struct RunDetail {
     /// 「新しく実行し直す」がこれも引き継ぐ。
     pub trigger_payload: Option<Value>,
     pub fail_reason: Option<String>,
+    /// 失敗した run の理由（利用者向けの分類と文言・参照番号）。画面に返す結果（GAP-09）と同じ決め方で、
+    /// 失敗していなければ `None`（BUG-113）。
+    pub failure: Option<RunFailure>,
     pub trace_id: Option<String>,
     pub cancel_requested: bool,
     pub created_at: DateTime<Utc>,
@@ -180,11 +185,14 @@ impl RunStore {
             DateTime<Utc>,
             Option<DateTime<Utc>>,
             Option<DateTime<Utc>>,
+            Option<String>,
+            Option<String>,
         );
         let row: Option<RunRow> = sqlx::query_as(&format!(
             "SELECT r.status, {WAITING_FOR}, r.trigger_kind, r.version, r.input, r.trigger_payload, \
                     r.fail_reason, \
-                    r.trace_id, r.cancel_requested, r.created_at, r.started_at, r.finished_at \
+                    r.trace_id, r.cancel_requested, r.created_at, r.started_at, r.finished_at, \
+                    {FAILURE_CODE_COLUMNS} \
              FROM workflow_run r \
              WHERE r.tenant_id = $1 AND r.workflow_id = $2 AND r.run_id = $3"
         ))
@@ -207,10 +215,20 @@ impl RunStore {
             created_at,
             started_at,
             finished_at,
+            step_code,
+            item_code,
         )) = row
         else {
             return Ok(None);
         };
+        // 失敗の理由は、画面に返す結果と同じ code の決め方・同じ単一定義で組む（BUG-113）。
+        let failure = (status == "failed").then(|| {
+            run_failure(
+                run_id,
+                failure_code(step_code.as_deref(), item_code.as_deref()),
+                fail_reason.as_deref(),
+            )
+        });
         let steps: Vec<StepOverview> = sqlx::query_as(&format!(
             "SELECT s.step_path, s.node_id, s.status, s.attempt, s.taken_ports, \
                     (s.output IS NOT NULL) AS has_output, s.error, s.next_retry_at, s.wake_at, \
@@ -235,6 +253,7 @@ impl RunStore {
             input: input.0,
             trigger_payload: trigger_payload.map(|t| t.0),
             fail_reason,
+            failure,
             trace_id,
             cancel_requested,
             created_at,

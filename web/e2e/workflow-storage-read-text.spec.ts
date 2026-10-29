@@ -18,6 +18,7 @@ async function csrfHeaders(page: Page): Promise<Record<string, string>> {
 type RunDetail = {
   status: string;
   steps: { node_id: string; status: string; error?: { code?: string; message?: string; retryable?: boolean } | null }[];
+  failure?: { category: string; message: string } | null;
 };
 
 const NOT_TEXT =
@@ -138,10 +139,13 @@ test("ファイルを読む: PDF は文章として読めない誤りで失敗�
     expect(step?.error?.code).toBe("not_text_file");
     expect(step?.error?.retryable).toBe(false);
     expect(step?.error?.message).toBe(NOT_TEXT);
+    // 失敗の理由は、画面に返す結果と同じ分類（設定の誤り）の文言（失敗の分類の単一定義から・BUG-113）。
+    expect(bad.detail.failure?.category).toBe("configuration");
 
     await page.goto(`/workflows/${id}/runs?run=${bad.runId}`);
     const sheet = page.getByRole("dialog");
     await expect(sheet.getByText(NOT_TEXT).first()).toBeVisible({ timeout: 30_000 });
+    await expect(sheet.getByTestId("run-failure")).toHaveText(bad.detail.failure!.message);
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/storage-read-not-text-pc.png` });
 
     const phoneCtx = await browser.newContext({

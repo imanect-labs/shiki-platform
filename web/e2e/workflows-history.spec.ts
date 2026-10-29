@@ -51,6 +51,10 @@ test("実行履歴: 失敗詳細→フィルタ→失敗ステップから再開
     const sheet = page.locator('[role="dialog"]');
     await expect(sheet.locator("h2").getByText("失敗")).toBeVisible({ timeout: 60_000 });
     await expect(sheet.getByText(/boom-e2e/).first()).toBeVisible();
+    // 失敗の理由は、画面に返す結果と同じ分類の文言（サーバーが Rust の単一定義から組む・BUG-113）。
+    await expect(sheet.getByTestId("run-failure")).toHaveText(
+      "ワークフローの設定に問題があり、処理を完了できませんでした。作成者に連絡してください。",
+    );
 
     // 「失敗したところから再開」→ 失敗 step が即 ready に戻り再実行される。
     // 決定的に再失敗するため過渡状態（実行中）は数秒で消える。再実行の証跡は

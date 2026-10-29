@@ -183,6 +183,9 @@ export type StepOverview = {
   waitingFor: WaitingFor | null;
 };
 
+/// 失敗した run の理由（利用者向けの分類と文言・参照番号・Rust の単一定義から組んだもの・BUG-113）。
+export type RunFailure = Schemas["RunFailure"];
+
 export type RunDetail = {
   runId: string;
   status: string;
@@ -192,6 +195,8 @@ export type RunDetail = {
   version: number;
   input: unknown;
   failReason: string | null;
+  /// 失敗していれば理由（文言はサーバーが組む。web に対応表を持たない）。
+  failure: RunFailure | null;
   traceId: string | null;
   cancelRequested: boolean;
   createdAt: string;
@@ -211,6 +216,7 @@ export async function getRun(workflowId: string, runId: string): Promise<RunDeta
     version: d.version,
     input: d.input,
     failReason: d.fail_reason ?? null,
+    failure: d.failure ?? null,
     traceId: d.trace_id ?? null,
     cancelRequested: d.cancel_requested,
     createdAt: d.created_at,

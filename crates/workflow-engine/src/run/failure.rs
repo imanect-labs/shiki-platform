@@ -130,15 +130,41 @@ pub fn category_of(code: &str) -> FailureCategory {
         .map_or(FailureCategory::Unknown, |(_, cat)| *cat)
 }
 
-/// 分類の文言（`unique_violation` は同じ値が、`name_taken` は同じ名前のファイルがあることを伝える）。
+/// 分類の文言より詳しく言える code の文言（run の `fail_reason` に書く理由を含む・BUG-113）。
+///
+/// 実行履歴の詳細も画面に返す結果（GAP-09）も、この表から引く（web に対応表を持たない）。
+fn specific_message(code: &str) -> Option<&'static str> {
+    Some(match code {
+        "unique_violation" => "同じ値がすでに登録されているため、登録できませんでした。",
+        // 「ほかの操作と重なった…表を読み直して」は原因と合わない（BUG-97・付録 D の N3.5.2）。
+        crate::nodes::ports::NAME_TAKEN => {
+            "同じ名前のファイルがすでにあるため、保存できませんでした。"
+        }
+        // 付録 C の §5.2（failure.rs の時間切れの文言の直し）。
+        "run_timeout" => {
+            "実行の期限までに終わらなかったため、実行を止めました。途中まで進んでいることがあります。\
+             データや結果を確かめてから、必要ならもう一度実行してください。"
+        }
+        // 付録 D の N3.4.1（承認の期限）。
+        crate::approval::APPROVAL_TIMEOUT => {
+            "承認の期限までに判断がなかったため、実行を失敗にしました。"
+        }
+        // 付録 D の N3.1.5（変更を待つ期限）。
+        WAIT_TIMEOUT => "待つ期限までに変更が起きなかったため、実行を止めました。",
+        // 付録 D の N3.4.1（どの出口にも進まないとき）・付録 C の §3.6（実行する人）。
+        crate::approval::ACTOR_UNAVAILABLE => {
+            "承認を待つあいだに、実行する人（自動実行ではオンにした人）がテーブルを使えなくなったため、\
+             実行を止めました。"
+        }
+        _ => return None,
+    })
+}
+
+/// 分類の文言（[`specific_message`] にある code はそちら）。
 fn message(category: FailureCategory, code: Option<&str>) -> String {
     use FailureCategory as F;
-    if code == Some("unique_violation") {
-        return "同じ値がすでに登録されているため、登録できませんでした。".to_string();
-    }
-    // 「ほかの操作と重なった…表を読み直して」は原因と合わない（BUG-97・付録 D の N3.5.2）。
-    if code == Some(crate::nodes::ports::NAME_TAKEN) {
-        return "同じ名前のファイルがすでにあるため、保存できませんでした。".to_string();
+    if let Some(m) = code.and_then(specific_message) {
+        return m.to_string();
     }
     match category {
         F::Permission => {
@@ -180,6 +206,18 @@ pub fn run_failure(run_id: Uuid, code: Option<&str>, fail_reason: Option<&str>) 
     }
 }
 
+/// 失敗した run の理由にする code（最初の未処理の失敗 step の code と、map の要素の側の最初の失敗の code から）。
+///
+/// map の要素の失敗で map が落ちたとき（`map_item_failed`・`item_failed`）と、失敗 step の code が無いときは、
+/// 要素の側の code で分類する。画面に返す結果（GAP-09）と実行履歴の詳細が同じ決め方をする。
+#[must_use]
+pub fn failure_code<'a>(step_code: Option<&'a str>, item_code: Option<&'a str>) -> Option<&'a str> {
+    match step_code {
+        Some("map_item_failed" | "item_failed") | None => item_code.or(step_code),
+        other => other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -207,10 +245,14 @@ mod tests {
             run_failure(id, Some("forbidden"), None).category,
             FailureCategory::Permission
         );
-        // 承認を待つ間の実行主体の失権は権限の分類（共有した人に確かめる文言・D-62）。
+        // 承認を待つ間の実行主体の失権は権限の分類（D-62）。文言は何が起きたかを言う（BUG-113）。
         let f = run_failure(id, Some("actor_unavailable"), Some("actor_unavailable"));
         assert_eq!(f.category, FailureCategory::Permission);
-        assert!(f.message.contains("権限が足りない"), "{}", f.message);
+        assert!(
+            f.message.contains("テーブルを使えなくなった"),
+            "{}",
+            f.message
+        );
         // run の時間切れは step の code より優先する。
         assert_eq!(
             run_failure(id, Some("cancelled"), Some("run_timeout")).category,
@@ -230,6 +272,54 @@ mod tests {
             run_failure(id, None, None).category,
             FailureCategory::Unknown
         );
+    }
+
+    /// run の `fail_reason` に書く理由は、分類の文言より詳しく言う（web の対応表の代わり・BUG-113）。
+    #[test]
+    fn run_level_reasons_say_what_happened() {
+        let id = Uuid::nil();
+        let cases = [
+            ("run_timeout", "実行の期限までに終わらなかった"),
+            ("approval_timeout", "承認の期限までに判断がなかった"),
+            (
+                "wait_timeout",
+                "待つ期限までに変更が起きなかったため、実行を止めました。",
+            ),
+            ("actor_unavailable", "テーブルを使えなくなった"),
+        ];
+        for (reason, want) in cases {
+            // 承認・変更を待つ理由は step の code と run の fail_reason に同じ値を書く。run の時間切れは
+            // fail_reason だけに書く（取り消した step の code より優先する）。
+            let step_code = (reason != "run_timeout").then_some(reason);
+            let f = run_failure(id, step_code, Some(reason));
+            assert!(f.message.contains(want), "{reason}: {}", f.message);
+            // 内部の言葉（委譲・コード）を出さない（付録 C の P1）。
+            assert!(
+                !f.message.contains("委譲") && !f.message.contains(reason),
+                "{reason}: {}",
+                f.message
+            );
+        }
+        assert_eq!(
+            run_failure(id, Some("cancelled"), Some("run_timeout")).message,
+            specific_message("run_timeout").unwrap()
+        );
+    }
+
+    /// map の要素の失敗で落ちた run は、要素の側の code で分類する。
+    #[test]
+    fn failure_code_prefers_the_item_code_for_map_failures() {
+        assert_eq!(
+            failure_code(Some("forbidden"), Some("x")),
+            Some("forbidden")
+        );
+        assert_eq!(
+            failure_code(Some("map_item_failed"), Some("not_text_file")),
+            Some("not_text_file")
+        );
+        assert_eq!(failure_code(Some("item_failed"), None), Some("item_failed"));
+        assert_eq!(failure_code(None, Some("unavailable")), Some("unavailable"));
+        assert_eq!(failure_code(None, None), None);
     }
 
     /// 一時障害・時間切れ・分類できない失敗は押し直しを勧めない（別の run になり副作用が二重になり得る）。

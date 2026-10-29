@@ -25,7 +25,6 @@ import type { WorkflowIr } from "@/generated/workflow-ir";
 import { NODE_CATALOG } from "@/generated/workflow-catalog";
 import { StepTimeline, type NodeInfo } from "./step-timeline";
 import {
-  FAIL_REASON_LABELS,
   formatDateTime,
   formatDuration,
   isTerminalRunStatus,
@@ -182,6 +181,7 @@ export function RunDetailSheet({
     detail !== null &&
     !isTerminalRunStatus(detail.status) &&
     !detail.cancelRequested;
+  const failed = detail?.status === "failed";
 
   return (
     <Sheet open={runId !== null} onOpenChange={(o) => !o && onClose()}>
@@ -210,9 +210,13 @@ export function RunDetailSheet({
             </div>
           ) : (
             <div className="space-y-5">
-              {detail.status === "failed" && detail.failReason ? (
-                <p className="rounded-md border border-destructive/40 bg-destructive/5 p-2.5 text-xs text-destructive">
-                  {FAIL_REASON_LABELS[detail.failReason] ?? detail.failReason}
+              {/* 失敗の理由は、画面に返す結果と同じ分類の文言（サーバーが Rust の単一定義から組む・BUG-113）。 */}
+              {failed && detail.failure ? (
+                <p
+                  className="rounded-md border border-destructive/40 bg-destructive/5 p-2.5 text-xs text-destructive"
+                  data-testid="run-failure"
+                >
+                  {detail.failure.message}
                 </p>
               ) : null}
 
@@ -231,43 +235,45 @@ export function RunDetailSheet({
                 <MetaItem label="終了" value={formatDateTime(detail.finishedAt)} />
               </dl>
 
-              <div className="flex flex-wrap items-center gap-2">
-                {cancellable ? (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={cancel}
-                    disabled={busy !== null}
-                  >
-                    {busy === "cancel" ? (
-                      <Loader2 className="size-3.5 animate-spin" aria-hidden />
-                    ) : (
-                      <Ban className="size-3.5" aria-hidden />
-                    )}
-                    実行を中止
-                  </Button>
-                ) : null}
-                {detail.status === "failed" ? (
-                  <Button size="sm" onClick={() => retry("resume")} disabled={busy !== null}>
-                    {busy === "retry" ? (
-                      <Loader2 className="size-3.5 animate-spin" aria-hidden />
-                    ) : (
-                      <RotateCcw className="size-3.5" aria-hidden />
-                    )}
-                    失敗したところから再開
-                  </Button>
-                ) : null}
-                {isTerminalRunStatus(detail.status) ? (
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => retry("new")}
-                    disabled={busy !== null}
-                  >
-                    <Play className="size-3.5" aria-hidden />
-                    同じ入力でもう一度実行
-                  </Button>
-                ) : null}
+              <div className="space-y-1.5">
+                <div className="flex flex-wrap items-center gap-2">
+                  {cancellable ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={cancel}
+                      disabled={busy !== null}
+                    >
+                      {busy === "cancel" ? (
+                        <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                      ) : (
+                        <Ban className="size-3.5" aria-hidden />
+                      )}
+                      実行を中止
+                    </Button>
+                  ) : null}
+                  {failed ? (
+                    <Button size="sm" onClick={() => retry("resume")} disabled={busy !== null}>
+                      {busy === "retry" ? (
+                        <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                      ) : (
+                        <RotateCcw className="size-3.5" aria-hidden />
+                      )}
+                      失敗したところから再開
+                    </Button>
+                  ) : null}
+                  {isTerminalRunStatus(detail.status) ? (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => retry("new")}
+                      disabled={busy !== null}
+                    >
+                      <Play className="size-3.5" aria-hidden />
+                      同じ入力でもう一度実行
+                    </Button>
+                  ) : null}
+                </div>
               </div>
 
               {detail.input !== null && detail.input !== undefined ? (

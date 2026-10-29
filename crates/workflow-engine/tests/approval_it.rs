@@ -798,7 +798,7 @@ async fn expired_approvals_that_fail_keep_the_timeout_reason() {
     let failure = outcomes[&run].failure.as_ref().expect("失敗の理由");
     assert_eq!(failure.category, workflow_engine::FailureCategory::Timeout);
     assert!(
-        failure.message.contains("時間内に終わらなかった"),
+        failure.message.contains("承認の期限までに判断がなかった"),
         "{}",
         failure.message
     );

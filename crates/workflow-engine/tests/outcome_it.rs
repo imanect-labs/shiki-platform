@@ -653,6 +653,79 @@ async fn failures_are_classified_and_cleared_by_resume() {
     );
 }
 
+/// 実行履歴の詳細は、画面に返す結果と同じ失敗の理由を返す（BUG-113）。
+#[tokio::test]
+async fn the_history_detail_tells_the_failure() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let alice = user(&tenant, "alice", "acme");
+    let reader = RunOutcomeReader::new(pool.clone());
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
+    let failing = |code: &str| {
+        ir(
+            json!([{ "id": "read", "type": "storage.read", "params": { "fail": code } }]),
+            json!([]),
+        )
+    };
+    let mut runs = Vec::new();
+    for spec in [
+        failing("conflict"),
+        failing("not_text_file"),
+        // map の要素の失敗で落ちた run は、要素の側の code（設定の誤り）で決める。
+        ir(
+            json!([
+                { "id": "each", "type": "control.map", "params": { "items": [1], "on_item_error": "fail_map" } },
+                { "id": "inner", "type": "storage.read", "parent": "each", "params": { "fail": "bad_params" } }
+            ]),
+            json!([]),
+        ),
+        failing("unavailable"),
+        ir(json!([reply("ok", "text", json!("できました"))]), json!([])),
+    ] {
+        let wf = Uuid::new_v4();
+        let run = create(
+            &pool,
+            &tenant,
+            "acme",
+            wf,
+            "alice",
+            "user",
+            json!({}),
+            &spec,
+        )
+        .await;
+        runs.push((wf, run));
+    }
+    drive(&pool, &tenant).await;
+    // 実行の期限で止めた run（fail_reason = run_timeout）は、step の code にかかわらず時間切れ。
+    sqlx::query(
+        "UPDATE workflow_run SET fail_reason = 'run_timeout' WHERE tenant_id = $1 AND run_id = $2",
+    )
+    .bind(&tenant)
+    .bind(runs[3].1)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let ids: Vec<Uuid> = runs.iter().map(|(_, r)| *r).collect();
+    let mine = reader.own_outcomes(&alice, &ids, &[]).await.unwrap();
+    let want = [
+        Some(FailureCategory::Conflict),
+        Some(FailureCategory::Configuration),
+        Some(FailureCategory::Configuration),
+        Some(FailureCategory::Timeout),
+        None,
+    ];
+    for ((wf, run), want) in runs.iter().zip(want) {
+        let d = store.run_detail(&tenant, *wf, *run).await.unwrap().unwrap();
+        let got = d.failure.as_ref().map(|f| f.category);
+        assert_eq!(got, want, "{run}");
+        // 失敗の文言と参照番号は、画面に返す結果と同じ単一定義から組む。
+        assert_eq!(d.failure, mine[run].failure, "{run}");
+    }
+    forget(&pool, &tenant).await;
+}
+
 /// 保持期間の GC で run が消えると、結果も状態も返らない（別の場所へ写していない）。
 #[tokio::test]
 async fn results_follow_the_history_retention() {
