@@ -161,10 +161,14 @@ function StepRow({
             {step.wakeAt && step.status.startsWith("waiting") ? (
               <span>{formatDateTime(step.wakeAt)} に再開予定</span>
             ) : null}
-            {/* next_retry_at は実行リースにも使われるため、待ち状態のときだけ意味を持つ */}
+            {/* next_retry_at は実行リースにも使われ、作ったときの時刻も入っている。やり直しを待つ
+                （1 回は試した・順番待ちに戻った・まだ来ていない時刻）ときだけ出す。前のブロックを待つ step は
+                やり直さないので出さない。 */}
             {step.nextRetryAt &&
-            (step.status === "pending" || step.status === "ready") ? (
-              <span>{formatDateTime(step.nextRetryAt)} に再試行</span>
+            step.status === "ready" &&
+            step.attempt > 0 &&
+            new Date(step.nextRetryAt).getTime() > Date.now() ? (
+              <span>{formatDateTime(step.nextRetryAt)} にもう一度実行します</span>
             ) : null}
           </span>
           {failed && message ? (
