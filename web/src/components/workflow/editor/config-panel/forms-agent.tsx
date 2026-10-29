@@ -20,6 +20,7 @@ import type { AgentTool, ValueExpr } from "@/generated/workflow-ir";
 import { getAgentSettings, type AgentSettings } from "@/lib/workflow-api";
 import { scopeLabel } from "@/lib/workflow-scopes";
 import { cn } from "@/lib/utils";
+import { AGENT_DEFAULT_TOOLS } from "../ir-state";
 import { Field, NumberInput, period } from "./common";
 import type { FormProps } from "./forms-basic";
 import { ModelField } from "./model-field";
@@ -46,6 +47,11 @@ function useAgentSettings(): SettingsState {
 }
 
 const TOOLS = AGENT_TOOL_CATALOG.filter((t) => t.available);
+
+/// 選んでいるツールが、置いたときに選んでおくもの（[`AGENT_DEFAULT_TOOLS`]）のままか（並びは問わない）。
+function isDefaultTools(tools: readonly string[]): boolean {
+  return tools.length === AGENT_DEFAULT_TOOLS.length && AGENT_DEFAULT_TOOLS.every((t) => tools.includes(t));
+}
 
 /// AI の作業時間の上限の注記（数は agent の設定から・付録 D の N3.2.3）。
 function durationHint(s: AgentSettings): string {
@@ -104,13 +110,19 @@ export function AgentInvokeForm({ node, dispatch, refCandidates, inMapRegion, fi
         error={fieldErrors.get("context")}
       />
       <Field
-        label="使ってよい道具"
-        hint="選んだ道具だけを使います。選ばなければ道具なしで答えます。保存すると要る権限が自動で足されます"
+        label="使ってよいツール"
+        hint="AI が使えるのは、選んだツールだけです。選ばなければ、指示と資料だけから答えます。保存すると、このワークフローの使ってよい操作に、選んだツールの操作が足されます。"
         error={fieldErrors.get("allowed_tools")}
       >
+        {/* 置いたときの組み合わせのままなら、選んである理由を一覧の上に 1 行出す（付録 D の N3.2.3・D-100）。 */}
+        {isDefaultTools(tools) ? (
+          <p className="text-[11px] text-muted-foreground" data-testid="agent-tools-default-note">
+            社内の資料を読むツールを選んであります。
+          </p>
+        ) : null}
         <div
           role="group"
-          aria-label="使ってよい道具"
+          aria-label="使ってよいツール"
           className="space-y-0.5 rounded-lg border border-border p-1.5"
           data-testid="agent-tools"
         >
@@ -132,7 +144,7 @@ export function AgentInvokeForm({ node, dispatch, refCandidates, inMapRegion, fi
                     <span className={cn(blocked && "text-muted-foreground")}>{t.label_ja}</span>
                     {t.reaches_outside ? (
                       <Badge variant="warning" className="px-1.5 py-0 text-[10px]">
-                        社外へ出る
+                        社外に送信あり
                       </Badge>
                     ) : null}
                   </span>
@@ -140,11 +152,18 @@ export function AgentInvokeForm({ node, dispatch, refCandidates, inMapRegion, fi
                     id={`agent-tool-${node.id}-${t.tool}`}
                     className="block text-[11px] leading-snug text-muted-foreground"
                   >
-                    {t.tool === "web.fetch" && blocked
-                      ? settings.status === "loading"
-                        ? "読んでよいサイトを確かめています…"
-                        : "管理者が外部サイトを許可していないため選べません"
-                      : `${t.description_ja}（${scopeLabel(t.required_scope)}）`}
+                    {t.tool === "web.fetch" && blocked ? (
+                      settings.status === "loading" ? (
+                        "読んでよいサイトを確かめています…"
+                      ) : (
+                        "管理者が読んでよいサイトを決めていないため、選べません。"
+                      )
+                    ) : (
+                      <>
+                        <span className="block">{t.description_ja}</span>
+                        <span className="block">使ってよい操作: {scopeLabel(t.required_scope)}</span>
+                      </>
+                    )}
                   </span>
                 </span>
               </label>

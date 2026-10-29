@@ -3,7 +3,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { cleanupAll, loginViaKeycloak, pinStubOrgDefault } from "./helpers";
 
 /// AI エージェント（agent.invoke）の e2e（BUG-6）:
-/// ブロックを置く → 依頼を書く → 使ってよい道具を選ぶ → 保存（要る権限が補われる）→ 実行 → 実行履歴に
+/// ブロックを置く → 依頼を書く → 使ってよいツールを選ぶ → 保存（要る権限が補われる）→ 実行 → 実行履歴に
 /// エージェントの回答が残る。依頼は Python として実行されない（stub の LLM は「回答: <依頼>」を返す）。
 /// 前提: compose の shiki-server が SHIKI__WORKFLOW__ENABLED=true・LLM は stub。
 
@@ -34,7 +34,8 @@ test("AI エージェント: 依頼を書き、道具を選んで保存・実行
     await page.waitForURL(/\/workflows\/[0-9a-f-]+$/i, { timeout: 20_000 });
     id = page.url().split("/").pop() ?? "";
 
-    // 最初のブロックに「AI エージェント」を置く。既定は社内を読む道具だけが選ばれている。
+    // 最初のブロックに「AI エージェント」を置く。既定は社内を読むツールだけが選ばれていて、一覧の上に理由を出す
+    // （D-100）。
     await page.getByRole("button", { name: "最初のブロック" }).click();
     await page.getByRole("button", { name: /^AI エージェント/ }).click();
     const canvas = page.locator(".react-flow");
@@ -45,12 +46,15 @@ test("AI エージェント: 依頼を書き、道具を選んで保存・実行
     await expect(tools.getByRole("checkbox", { name: /文書の本文を読む/ })).toBeChecked();
     await expect(tools.getByRole("checkbox", { name: /フォルダの一覧/ })).toBeChecked();
     await expect(tools.getByRole("checkbox", { name: /Web 検索/ })).not.toBeChecked();
-    // 社外へ届く道具には目印が付く。管理者が外部サイトを許可していなければ Web ページを読む道具は選べない。
-    await expect(tools.getByText("社外へ出る").first()).toBeVisible();
+    await expect(panel.getByTestId("agent-tools-default-note")).toHaveText("社内の資料を読むツールを選んであります。");
+    await expect(tools.getByRole("checkbox", { name: /社内検索/ })).toHaveAccessibleDescription(/使ってよい操作: /);
+    await page.screenshot({ path: "test-results/agent-default-tools-pc.png" });
+    // 社外へ届くツールには目印が付く。管理者が読んでよいサイトを決めていなければ Web ページを読むツールは選べない。
+    await expect(tools.getByText("社外に送信あり").first()).toBeVisible();
     const fetchBox = tools.getByRole("checkbox", { name: /Web ページを読む/ });
     if (settings.web_allowlist.length === 0) {
       await expect(fetchBox).toBeDisabled();
-      await expect(tools.getByText("管理者が外部サイトを許可していないため選べません")).toBeVisible();
+      await expect(tools.getByText("管理者が読んでよいサイトを決めていないため、選べません。")).toBeVisible();
     } else {
       await expect(fetchBox).toBeEnabled();
     }
@@ -59,6 +63,8 @@ test("AI エージェント: 依頼を書き、道具を選んで保存・実行
     const instruction = panel.locator('[data-value-expr="エージェントへの依頼"]');
     await instruction.getByLabel("エージェントへの依頼").fill("旅費規程の要点をまとめて");
     await tools.getByRole("checkbox", { name: /文書の本文を読む/ }).uncheck();
+    // 置いたときの組み合わせから変えたら、選んである理由は出さない。
+    await expect(panel.getByTestId("agent-tools-default-note")).toHaveCount(0);
     await panel.getByLabel("手順の上限（回）").fill("4");
     await page.getByRole("button", { name: "保存", exact: true }).click();
     await expect(page.getByText(/保存しました/).first()).toBeVisible({ timeout: 15_000 });

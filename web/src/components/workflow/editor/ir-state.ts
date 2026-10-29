@@ -139,6 +139,10 @@ export { defaultOutPort };
 /// 一覧から選ばせる欄（storage.read・csv.* のファイル・data.* のテーブル）は入れない（保存時の検証の
 /// 「項目がありません」が欄の下に出る）。前の結果を指す既定を入れると、欄が「前の結果から」になり、
 /// スケジュールで有効化すると「入力が無いので失敗します」と出る（BUG-32）。
+/// 「AI エージェント」を置いたときに選んでおくツール（社内の資料を読むものだけ・社外へ送るツールは明示して選ぶ・
+/// BUG-6・D-100）。設定のパネルは、この組み合わせのままなら選んである理由を一覧の上に出す。
+export const AGENT_DEFAULT_TOOLS = ["rag.search", "doc.read", "storage.list"] as const;
+
 export function defaultParams(nodeType: string): unknown {
   switch (nodeType) {
     case "control.branch":
@@ -161,8 +165,8 @@ export function defaultParams(nodeType: string): unknown {
     case "llm.invoke":
       return { prompt: "" };
     case "agent.invoke":
-      // 道具は社内を読むものだけを選んだ状態で置く（省略は道具なし・社外へ出る道具は明示して選ぶ・BUG-6）。
-      return { instruction: "", allowed_tools: ["rag.search", "doc.read", "storage.list"] };
+      // ツールは社内を読むものだけを選んだ状態で置く（省略はツールなし・社外へ送るツールは明示して選ぶ・BUG-6・D-100）。
+      return { instruction: "", allowed_tools: [...AGENT_DEFAULT_TOOLS] };
     case "http.request":
       // 相手が誤り（400 以上）を返したら失敗にする（省略は成功として次へ渡す＝既存の定義の挙動・D-95）。
       // URL は書かせる（「https://」を入れておくと、置いた直後から URL の誤りが出ていた・D-83）。
