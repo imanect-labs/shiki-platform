@@ -107,6 +107,38 @@ test("実行のダイアログ: 決まった文で説明し、入力の誤りを
   }
 });
 
+/// 実行できない設定の行は、名前を付けていないブロックもブロック名（カタログの名前）で言う。ブロックの ID は出さない
+/// （利用者向けのダイアログ・付録 C の P1）。実行は作られないので AI は呼ばない。
+test("実行のダイアログ: 実行できない設定は、名前を付けていないブロックもブロック名で言う", async ({ page }) => {
+  test.setTimeout(90_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await loginViaKeycloak(page);
+  const name = uniqueName("run-dialog-unnamed");
+  const id = await createFlow(page, {
+    ir_version: 1,
+    name,
+    display_name: name,
+    triggers: [{ kind: "interactive" }],
+    nodes: [{ id: "invoke_1", type: "llm.invoke", params: { prompt: "" } }],
+    edges: [],
+  });
+  try {
+    await page.goto(`/workflows/${id}`);
+    await page.getByRole("button", { name: "実行", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "いま実行する" });
+    await dialog.getByRole("button", { name: "実行する" }).click();
+    await expect(dialog.getByText(/^「AI に聞く」: /)).toBeVisible({ timeout: 15_000 });
+    await expect(dialog).not.toContainText("invoke_1");
+    if (SHOTS) await page.waitForTimeout(400).then(() => page.screenshot({ path: `${SHOTS}/run-dialog-unnamed-pc.png` }));
+    expect(await runCount(page, id)).toBe(0);
+  } finally {
+    await cleanupAll(async () => {
+      const del = await page.request.delete(`/api/artifacts/${id}`, { headers: await csrfHeaders(page) });
+      expect(del.status(), await del.text()).toBeLessThan(300);
+    });
+  }
+});
+
 type StepOutput = { output: unknown };
 type RunDetail = { status: string };
 
