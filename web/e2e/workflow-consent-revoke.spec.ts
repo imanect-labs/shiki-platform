@@ -137,15 +137,30 @@ test("自動実行: いま使えるようにしているものを一覧にし、
     await expect(dialog.getByText("自動実行では、このワークフローが下の人の代わりに、これらを使います。")).toBeVisible();
 
     // 取り消しを選ばずにオフにする: 権限は残る（今までどおり）。
-    await dialog.getByRole("button", { name: "自動実行をオフにする" }).click();
+    // 確認を開くと押したボタンが消えるので、フォーカスを確認の「キャンセル」へ移す。キャンセルしたら開いたボタンへ戻す。
+    const offButton = dialog.getByRole("button", { name: "自動実行をオフにする" });
+    await offButton.click();
     const confirm = dialog.getByTestId("enable-off-confirm");
+    await expect(dialog.getByRole("alertdialog", { name: "自動実行をオフにしますか？" })).toBeVisible();
+    await expect(confirm.getByRole("button", { name: "キャンセル" })).toBeFocused();
+    await confirm.getByRole("button", { name: "キャンセル" }).click();
+    await expect(confirm).toHaveCount(0);
+    await expect(offButton).toBeFocused();
+    await page.keyboard.press("Enter");
+    await expect(confirm.getByRole("button", { name: "キャンセル" })).toBeFocused();
     await expect(confirm).toContainText("自動実行をオフにしますか？");
     await expect(confirm).toContainText("オフにしても、ワークフローが使えるようにした権限は残ります。");
     await expect(confirm.getByRole("checkbox", { name: "権限も取り消す" })).not.toBeChecked();
     if (SHOTS) await page.waitForTimeout(400).then(() => page.screenshot({ path: `${SHOTS}/revoke-confirm-pc.png` }));
     await confirm.getByRole("button", { name: "オフにする", exact: true }).click();
     await expect(page.getByText("自動実行をオフにしました").first()).toBeVisible({ timeout: 15_000 });
-    await expect(page.getByText(/取り消すには「権限も取り消す」を押してください/).first()).toBeVisible();
+    await expect(
+      page
+        .getByText(
+          "オフにしても、ワークフローが使えるようにした権限は残ります。取り消すには、もう一度「自動実行の設定」を開いて「権限も取り消す」を押してください。",
+        )
+        .first(),
+    ).toBeVisible();
     let reg = await registration(page, id);
     expect(reg.status).toBe("disabled");
     expect(reg.delegations).toEqual([expect.objectContaining({ object_kind: "folder", object_id: folderId })]);
@@ -154,7 +169,12 @@ test("自動実行: いま使えるようにしているものを一覧にし、
     await page.getByRole("button", { name: /自動実行を有効化/ }).click();
     await expect(dialog.getByText("自動実行はオフですが、ワークフローが使えるようにした権限は残っています。")).toBeVisible();
     if (SHOTS) await page.waitForTimeout(400).then(() => page.screenshot({ path: `${SHOTS}/revoke-after-off-pc.png` }));
-    await dialog.getByRole("button", { name: "権限も取り消す" }).click();
+    const revokeButton = dialog.getByRole("button", { name: "権限も取り消す" });
+    await revokeButton.click();
+    await expect(confirm.getByRole("button", { name: "キャンセル" })).toBeFocused();
+    await confirm.getByRole("button", { name: "キャンセル" }).click();
+    await expect(revokeButton).toBeFocused();
+    await revokeButton.click();
     await expect(confirm).toContainText("権限も取り消しますか？");
     await confirm.getByRole("button", { name: "権限も取り消す" }).click();
     await expect(page.getByText("権限を取り消しました").first()).toBeVisible({ timeout: 15_000 });
@@ -202,7 +222,10 @@ test("自動実行: いま使えるようにしているものを一覧にし、
       await phone.getByTestId("chrome-menu").click();
       await phone.getByRole("menu").getByRole("menuitem", { name: "自動実行の設定" }).click();
       const sheet = phone.getByRole("dialog");
-      await expect(sheet.getByTestId("enable-delegations")).toContainText(`フォルダー「${folderName}」のファイルを読む`);
+      // 新しい画面ではフォルダーの名前を引くまで「読み込み中…」と出るので、引き終えるのを待つ。
+      await expect(sheet.getByTestId("enable-delegations")).toContainText(`フォルダー「${folderName}」のファイルを読む`, {
+        timeout: 15_000,
+      });
       await sheet.getByRole("button", { name: "自動実行をオフにする" }).click();
       await expect(sheet.getByTestId("enable-off-confirm")).toBeVisible();
       expect(await sheet.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
@@ -211,6 +234,104 @@ test("自動実行: いま使えるようにしているものを一覧にし、
       await phoneCtx.close();
     }
   } finally {
+    await cleanupAll(
+      async () => {
+        if (id) await disableAndDelete(page, id);
+      },
+      async () => {
+        if (!folderId) return;
+        const del = await page.request.delete(`/api/folders/${folderId}`, { headers: await csrfHeaders(page) });
+        expect(del.status(), await del.text()).toBeLessThan(300);
+      },
+    );
+  }
+});
+
+/// 自動実行のダイアログの、ほかの人の名前と名前を引けない対象の言い方（付録 C の P5・D-90）と、名前を付けていない
+/// スキルのブロックの送り先（D-99）。ほかの人の委譲・見えない対象・スキルのブロックは、画面が読む応答を差し替えて作る
+/// （ほかの利用者とインストール済みのスキルを用意しない）。
+test("自動実行: ほかの人の名前は読み込み中と言い、引けない人と対象は名前のように見せない（D-90・D-99）", async ({ page }) => {
+  test.setTimeout(150_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await loginViaKeycloak(page);
+  const folderName = uniqueName("e2e-見積の箱");
+  let folderId = "";
+  let id = "";
+  try {
+    const folder = await page.request.post("/api/folders", {
+      headers: await csrfHeaders(page),
+      data: { name: folderName, parent_id: null },
+    });
+    expect(folder.ok(), await folder.text()).toBeTruthy();
+    folderId = ((await folder.json()) as { id: string }).id;
+    const name = uniqueName("consent-names");
+    id = await createFlow(page, {
+      ir_version: 1,
+      name,
+      display_name: name,
+      declared_scopes: ["storage.read"],
+      triggers: [NEVER_SOON],
+      nodes: [{ id: "ls", type: "storage.list", label: "見積を数える", params: { folder: folderId } }],
+      edges: [],
+    });
+    const enable = await page.request.post(`/api/workflows/${id}/enable`, {
+      headers: await csrfHeaders(page),
+      data: {
+        version: 1,
+        consent: true,
+        grants: [{ scope: "storage.read", object_type: "folder", object_id: folderId, relation: "viewer" }],
+      },
+    });
+    expect(enable.ok(), await enable.text()).toBeTruthy();
+
+    // ほかの人（ディレクトリに居ない id）が使えるようにした委譲と、見えないフォルダーの委譲に差し替える。
+    const someone = "00000000-0000-4000-8000-00000000e2e1";
+    const missingFolder = "00000000-0000-4000-8000-00000000e2e2";
+    await page.route(`**/api/workflows/${id}/registration`, async (route) => {
+      const res = await route.fetch();
+      const body = (await res.json()) as { delegations: Record<string, unknown>[] };
+      const [d] = body.delegations;
+      body.delegations = [
+        { ...d, delegator: someone },
+        { ...d, delegator: someone, object_id: missingFolder, object_ref: `${String(d.object_ref)}-missing` },
+      ];
+      await route.fulfill({ response: res, json: body });
+    });
+    // 名前の引き当ては遅らせてから「見つからない」と返す（引いている間に引けなかったと言わない）。
+    let releaseNames: () => void = () => undefined;
+    const namesHeld = new Promise<void>((resolve) => {
+      releaseNames = resolve;
+    });
+    await page.route("**/api/directory/users/names", async (route) => {
+      await namesHeld;
+      await route.fulfill({ json: { names: {} } });
+    });
+    // 名前を付けていないスキルのブロックを足す（送り先はスキルが決める）。
+    await page.route(`**/api/workflows/${id}/versions/1`, async (route) => {
+      const res = await route.fetch();
+      const body = (await res.json()) as { ir: { nodes: Record<string, unknown>[] } };
+      body.ir.nodes.push({ id: "skill_1", type: "skill.invoke", params: { skill: "skill:e2e@1" } });
+      await route.fulfill({ response: res, json: body });
+    });
+
+    await page.goto(`/workflows/${id}`);
+    await page.getByRole("button", { name: "自動実行の設定" }).click();
+    const dialog = page.getByRole("dialog");
+    const list = dialog.getByTestId("enable-delegations");
+    await expect(list.getByText("読み込み中…").first()).toBeVisible({ timeout: 15_000 });
+    await expect(list).not.toContainText("名前を読み込めない人");
+    releaseNames();
+    await expect(list).toContainText("名前を読み込めない人が使えるようにしました");
+    await expect(list).not.toContainText("さん");
+    await expect(list).toContainText(`フォルダー「${folderName}」のファイルを読む`);
+    await expect(list).toContainText("名前を読み込めないフォルダーのファイルを読む");
+    await expect(list).not.toContainText("「名前を読み込めない");
+    const note = dialog.getByTestId("enable-ai-providers");
+    await expect(note).toContainText("「スキルを使う」に入れた内容は、スキルで決めたモデルの提供元に送られます。");
+    await expect(note).not.toContainText("skill_1");
+    if (SHOTS) await page.waitForTimeout(400).then(() => page.screenshot({ path: `${SHOTS}/consent-names-pc.png` }));
+  } finally {
+    await page.unrouteAll({ behavior: "ignoreErrors" });
     await cleanupAll(
       async () => {
         if (id) await disableAndDelete(page, id);
