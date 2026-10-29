@@ -454,6 +454,30 @@ impl Env {
         }
     }
 
+    /// 落とした受付（drop した [`workflow_engine::DecisionTx`]）の後で、判断を受け付け直す（BUG-133）。
+    ///
+    /// drop した Tx の ROLLBACK は sqlx が接続をプールへ返すタスクに積むだけで、そのタスクがこのランタイムで
+    /// 動いて ROLLBACK を流すまで、台帳の行のロックは残る（その間の受付は、行を持つ別の受付と同じく「判断中」）。
+    /// 全体を流して CPU が混むとそれが遅れ、すぐ後の受付が「判断中」になってテストが落ちた。ロックが外れる
+    /// （ROLLBACK が届く）まで待ってから受け付ける。待ち切れなければ、外れないロックとして落とす。
+    async fn open_decision_after_drop(&self, approval: Uuid) -> workflow_engine::DecisionTx {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            match self
+                .inbox
+                .begin_decision(&self.tenant, approval)
+                .await
+                .unwrap()
+            {
+                workflow_engine::DecisionStart::Open(d) => return d,
+                workflow_engine::DecisionStart::Busy if std::time::Instant::now() < deadline => {
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+                _ => panic!("落とした受付のロックが外れ、判断を受け付けられる"),
+            }
+        }
+    }
+
     /// テストで作った run を消す（台帳・step は run と一緒に消える。購読は外部キーが無いので先に消す）。
     async fn forget_run(&self, run: Uuid) {
         for sql in [
@@ -897,8 +921,9 @@ async fn decision_comments_live_and_die_with_the_decision_tx() {
     assert!(env.comments(a).await.is_empty());
 
     // 受付が行を持っている間の別の受付は、待たずに「判断中」（同じプロセスなら枠も接続も取らない・別のプロセス
-    // なら台帳の行の NOWAIT で・接続を持ったまま行のロックを待たない）。
-    let mut d = env.open_decision(a).await;
+    // なら台帳の行の NOWAIT で・接続を持ったまま行のロックを待たない）。直前に落とした受付のロックは、ROLLBACK が
+    // 届くまで残るので、外れるのを待ってから受け付ける（BUG-133）。
+    let mut d = env.open_decision_after_drop(a).await;
     d.put_comment(5, "bob", approve, "規程どおりです")
         .await
         .unwrap();
