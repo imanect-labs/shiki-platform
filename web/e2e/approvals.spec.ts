@@ -301,6 +301,12 @@ test("承認待ち: 実行履歴の一覧と詳細で、承認を待つ run を�
     await expect(badge.locator(".animate-spin")).toHaveCount(0);
     await expect(page.locator("table").getByText("実行中", { exact: true })).toHaveCount(0);
     if (process.env.E2E_SHOTS_DIR) await page.screenshot({ path: `${process.env.E2E_SHOTS_DIR}/runs-waiting-approval-pc.png` });
+    // 状態の絞り込みの「実行中」は待機中の run も出す（サーバーは run の状態で絞る）ので、選択肢の名前でそれを言う。
+    await page.getByRole("button", { name: /^状態/ }).click();
+    await page.getByRole("button", { name: "実行中・待機中", exact: true }).click();
+    await expect(page.getByTestId("run-status-waiting").first()).toHaveText("待機中（承認待ち）", { timeout: 15_000 });
+    if (process.env.E2E_SHOTS_DIR) await page.screenshot({ path: `${process.env.E2E_SHOTS_DIR}/runs-filter-running-pc.png` });
+    await page.keyboard.press("Escape");
 
     // 詳細の見出しの状態も待機中（承認待ち）。承認を待つブロックは承認待ちと言う。
     await page.locator("table tbody tr").first().click();
