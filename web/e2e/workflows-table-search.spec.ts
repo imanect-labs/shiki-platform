@@ -336,9 +336,10 @@ test("読み込んだ一覧に状態の遷移の規則があるテーブルが�
     const panel = page.getByRole("complementary", { name: "ブロックの設定" });
     const note = panel.getByTestId("approval-no-fsm-table");
     await expect(note).toHaveText(
-      "読み込んだテーブルに、状態の遷移の規則があるものはありません。選ぶ欄で名前で探してください。",
+      "最近更新されたテーブルの中に、状態の進め方を決めてあるテーブルはありません。テーブル名で探すか、「さらに読み込む」で続きを読んでください。",
     );
-    await expect(panel.getByText("テーブルの設定で状態の列と遷移の規則を作ってください")).toHaveCount(0);
+    // 続きがあるときは「無い」と断定せず、作る画面への案内も出さない（GAP-44）。
+    await expect(note.getByTestId("state-flow-link")).toHaveCount(0);
   } finally {
     await page.unroute(/\/api\/data\/tables(\?.*)?$/);
     await page.unroute(new RegExp(`/api/data/tables/${listed}$`));

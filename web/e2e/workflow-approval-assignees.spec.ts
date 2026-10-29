@@ -35,7 +35,9 @@ test("承認を待つ: 承認者の欄は、判断できる人を決めないこ
   await more.getByRole("button", { name: "詳しく" }).click();
   await expect(more).toContainText("ここで選ぶのは依頼を出す相手で、判断できる人を決めるものではありません。");
   await expect(more).toContainText("状態の進め方によっては、申請者が自分の申請を承認できます。");
-  await expect(more).toContainText("いまは画面では変えられません。管理者に頼んでください。");
+  // 防ぎ方は、テーブルの「状態の進め方」の画面への案内（GAP-44・D-115）。
+  await expect(more).toContainText("「申請した本人は除く」と「最初の状態を過ぎたら、申請者は書き換えられない」をオンにすると防げます");
+  await expect(more.getByTestId("approval-state-flow-link")).toHaveAttribute("href", `/data/${s.tableId}?panel=states`);
   // 欄の中の呼び名は「承認者」にそろえる（付録 D の N3.4.1）。追加のボタンと、読み上げの名前も同じ。
   await expect(panel.getByRole("button", { name: "承認者を追加" })).toBeVisible();
   await expect(panel.getByRole("combobox", { name: "承認者 1 の種類" })).toBeVisible();

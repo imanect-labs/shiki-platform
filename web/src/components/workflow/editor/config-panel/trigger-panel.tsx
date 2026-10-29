@@ -458,6 +458,7 @@ function TableEventFields({ trigger, onChange }: { trigger: EventTrigger; onChan
               ? "このテーブルには状態の進め方がありません。状態の進め方（例: 申請中 → 承認済み）を決めたテーブルを選んでください。"
               : undefined
           }
+          stateFlowLink={byState}
           onChange={(id) => {
             // テーブルを変えたら状態の条件は外す（別のテーブルの状態名は当てはまらない）。
             const { filter: _filter, ...rest } = trigger;

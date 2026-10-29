@@ -12,7 +12,8 @@
 /// 選ぶ欄は名前で探せる（GAP-42）。先頭の 200 件より先のテーブルは、探す欄に名前を入れるとサーバで探し
 /// （`?q=`）、続きは「さらに読み込む」で足す（`table-search-list.tsx`）。
 
-import { ChevronDown } from "lucide-react";
+import { ChevronDown, ExternalLink } from "lucide-react";
+import Link from "next/link";
 import * as React from "react";
 
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -172,17 +173,48 @@ export function missingFsmTables(source: DataTables): "none" | "not_loaded" | nu
   return source.nextCursor === null ? "none" : "not_loaded";
 }
 
+/// テーブルの設定の「状態の進め方」（GAP-44）へのリンク。テーブルを選んでいればそのテーブルの「状態の進め方」を、
+/// 選んでいなければテーブルの一覧を、別のタブで開く（エディターの保存していない変更を残す）。作れるのはテーブルの
+/// 持ち主だけで、持ち主でなければ開いた先でそう言う。
+export function StateFlowLink({
+  tableId,
+  exists,
+  testId,
+}: {
+  tableId?: string | null;
+  /// テーブルにもう状態の進め方がある（「開く」と言う）。
+  exists?: boolean;
+  testId?: string;
+}) {
+  return (
+    <Link
+      href={tableId ? `/data/${tableId}?panel=states` : "/data"}
+      target="_blank"
+      rel="noopener"
+      className="inline-flex items-center gap-1 rounded-sm text-[11px] text-primary underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      data-testid={testId ?? "state-flow-link"}
+    >
+      {tableId ? (exists ? "このテーブルの状態の進め方を開く" : "このテーブルの状態の進め方を作る") : "テーブルの一覧を開く"}
+      <ExternalLink className="size-3" aria-hidden />
+      <span className="sr-only">（新しいタブで開きます）</span>
+    </Link>
+  );
+}
+
 /// 状態の進め方のあるテーブルを選ぶ欄の下の注記（読み込んだ一覧に 1 つも無いとき・状態を進める・状態の変化の
-/// きっかけ・BUG-105。文は付録 D の N3.4.1・N7 Q4）。
+/// きっかけ・BUG-105。文は付録 D の N3.4.1・N7 Q4・D-84 で作る画面への案内にした）。
 export function NoFsmTableNote({ source, testId }: { source: DataTables; testId?: string }) {
   const missing = missingFsmTables(source);
   if (!missing) return null;
   return (
-    <p className="text-[11px] leading-relaxed text-muted-foreground" data-testid={testId}>
-      {missing === "none"
-        ? "状態の進め方を決めてあるテーブルがありません。状態の進め方は、いまは画面では作れません。管理者に頼んでください。"
-        : "最近更新されたテーブルの中に、状態の進め方を決めてあるテーブルはありません。テーブル名で探すか、「さらに読み込む」で続きを読んでください。"}
-    </p>
+    <div className="space-y-0.5" data-testid={testId}>
+      <p className="text-[11px] leading-relaxed text-muted-foreground">
+        {missing === "none"
+          ? "状態の進め方を決めてあるテーブルがありません。テーブルを開き、「状態の進め方」で作ってください。"
+          : "最近更新されたテーブルの中に、状態の進め方を決めてあるテーブルはありません。テーブル名で探すか、「さらに読み込む」で続きを読んでください。"}
+      </p>
+      {missing === "none" ? <StateFlowLink /> : null}
+    </div>
   );
 }
 
@@ -201,6 +233,7 @@ export function DataTableSelect({
   source,
   eligible,
   ineligibleNote,
+  stateFlowLink,
   label = "対象のテーブル",
   id,
 }: {
@@ -211,6 +244,8 @@ export function DataTableSelect({
   eligible?: (t: DataTable) => boolean;
   /// 束縛済みのテーブルが `eligible` で外れるときの注記。
   ineligibleNote?: string;
+  /// 束縛済みのテーブルが `eligible` で外れるとき、注記の下に「状態の進め方」へのリンクを出す（GAP-44）。
+  stateFlowLink?: boolean;
   label?: string;
   id?: string;
 }) {
@@ -320,6 +355,7 @@ export function DataTableSelect({
           {note}
         </p>
       ) : null}
+      {ineligible && stateFlowLink && bound.state === "ok" ? <StateFlowLink tableId={bound.table.id} /> : null}
     </div>
   );
 }

@@ -56,6 +56,8 @@ function TableField({
             source={source}
             eligible={eligible}
             ineligibleNote={ineligibleNote}
+            // 選べないのは状態の進め方が無いテーブルだけ（状態を進める）なので、作る画面へ案内する（GAP-44）。
+            stateFlowLink={eligible !== undefined}
             onChange={(id) => patchParams(dispatch, node, { table: id })}
           />
           {children}

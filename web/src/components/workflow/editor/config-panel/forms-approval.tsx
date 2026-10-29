@@ -23,7 +23,15 @@ import type {
 import { getViewerContext, type DataTable } from "@/lib/data-api";
 import { cn } from "@/lib/utils";
 import { Field, FieldInput, FieldTextarea, MoreInfo, NumberInput } from "./common";
-import { DataTableSelect, isFsmTable, missingFsmTables, useDataTables, type TableLookup } from "./data-tables";
+import {
+  DataTableSelect,
+  isFsmTable,
+  missingFsmTables,
+  NoFsmTableNote,
+  StateFlowLink,
+  useDataTables,
+  type TableLookup,
+} from "./data-tables";
 import { nodeErrorView } from "../validation";
 import type { FormProps, ServerCheck } from "./forms-basic";
 import { paramsOf, patchParams } from "./params";
@@ -50,7 +58,7 @@ function boundTableNote(found: TableLookup): string | null {
     case "loading":
       return "読み込み中…";
     case "ok":
-      return isFsmTable(found.table) ? null : "状態の遷移の規則があるテーブルを選んでください";
+      return isFsmTable(found.table) ? null : "状態の進め方があるテーブルを選んでください。";
     default:
       return "テーブルを読めないため選べません";
   }
@@ -208,24 +216,20 @@ export function HumanApprovalForm(props: FormProps) {
       <Field
         label="承認するテーブル"
         error={fieldErrors.get("record")}
-        hint="状態の遷移の規則（FSM）で管理するテーブルだけを選べます。判断は担当者がこの表の状態を進めることです"
+        hint="状態の進め方（例: 申請中 → 承認済み）を決めてあるテーブルだけ選べます。承認者が判断すると、そのレコードの状態が進みます。"
       >
         <DataTableSelect
           value={record.table || null}
           source={source}
           eligible={isFsmTable}
-          ineligibleNote="このテーブルは状態の遷移の規則（FSM）で管理していないので、承認には使えません"
+          ineligibleNote="このテーブルには状態の進め方がないため、承認には使えません。"
+          stateFlowLink
           label="承認するテーブル"
           onChange={(id, t) => set(retargetTable(p, record, t, id))}
         />
       </Field>
-      {noFsmTable ? (
-        <p className="text-[11px] leading-relaxed text-muted-foreground" data-testid="approval-no-fsm-table">
-          {noFsmTable === "none"
-            ? "状態の遷移の規則があるテーブルがありません。テーブルの設定で状態の列と遷移の規則を作ってください。"
-            : "読み込んだテーブルに、状態の遷移の規則があるものはありません。選ぶ欄で名前で探してください。"}
-        </p>
-      ) : null}
+      {/* 読み込んだ分に状態の進め方のあるテーブルが無い（付録 D の N3.4.1・作る画面への案内・GAP-44）。 */}
+      {noFsmTable ? <NoFsmTableNote source={source} testId="approval-no-fsm-table" /> : null}
       <ValueExprInput
         label="承認する行"
         value={record.id}
@@ -470,8 +474,9 @@ function AssigneesField({
           ここで選ぶのは依頼を出す相手で、判断できる人を決めるものではありません。状態の進め方で許された人は、ここに選ばれていなくても、テーブルの画面から判断できます。
         </p>
         <p>
-          そのため、状態の進め方によっては、申請者が自分の申請を承認できます。防ぐには、状態の進め方の条件から申請者本人を除き、承認者の列を申請者が書き換えられないようにします。状態の進め方と、テーブルの書き込みの決まりは、いまは画面では変えられません。管理者に頼んでください。
+          そのため、状態の進め方によっては、申請者が自分の申請を承認できます。テーブルの「状態の進め方」で、進め方の「申請した本人は除く」と「最初の状態を過ぎたら、申請者は書き換えられない」をオンにすると防げます（新しく作るときは、はじめからオンです）。申請する人には、テーブルを「追加だけ」で共有してください。
         </p>
+        {table ? <StateFlowLink tableId={table.id} exists testId="approval-state-flow-link" /> : null}
         <p>
           「承認」の画面に出す相手は、承認を始めたときの承認者の列の値で決まります。いまはお知らせ（メールなど）は届きません。承認者には「承認」の画面を見るよう伝えてください。判断は承認者本人の権限で行い、変更の記録にも承認者の操作として残ります。
         </p>
