@@ -385,7 +385,7 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 | `data.query` | 能力 | 宣言的クエリ（**data の `DataQuery` をそのまま使う**・比較値に `$from` 可・`query.limit` は 1〜200 で範囲の外は保存時に `ir.schema_violation`・BUG-108） | pure | 30s / 120s |
 | `data.record.create` / `data.record.update` / `data.record.delete` | 能力 | レコード書込（rev 楽観ロック・rev 省略時は実行時点の rev） | engine-dedup | 30s / 120s |
 | `data.transition` | 能力 | **FSM 遷移 API を叩く**（直接 status 書込は構造的に不可能） | engine-dedup | 30s / 120s |
-| `data.bulk_upsert` | 能力 | 一括の作成・更新（data の一括書込パス・最大 5,000 行・誤りは行ごとに拒否） | engine-dedup | 120s / 600s |
+| `data.bulk_upsert` | 能力 | 一括の作成・更新（data の一括書込パス・最大 5,000 行・誤りは行ごとに拒否） | engine-dedup | 600s / 600s（切れると途中まで登録したまま失敗するので、既定でも最大まで待つ・D-106） |
 | `rag.search` | 能力 | permission-aware 検索（必要スコープは既存語彙 `rag.query`。結果の各件に関連の強さ `relevance`〔high・medium・low。reranker の値を設定のしきい値で段階に落としたもの〕を載せる。`score` は順位から決めた値〔1/(順位+1)〕で関連の強さではない・D-96） | pure | 60s / 120s |
 | `notify.send` | 能力 | アプリ内通知 | engine-dedup | 30s / 60s |
 | `workflow.start` | 能力 | 別ワークフロー起動（fire-and-forget・run_id 返し。相手は保存時に V4 で照合し、実行時に無い・見えない相手は同じ `not_found`〔permanent〕で失敗する・BUG-107。相手の最新の保存内容を、親の実行主体の権限で動かす・D-91） | engine-dedup（起動 1 回保証） | 10s / 30s |
