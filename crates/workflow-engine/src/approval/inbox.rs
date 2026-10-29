@@ -53,6 +53,17 @@ impl ApprovalRow {
     }
 }
 
+/// 承認を待っているレコードの、いまの状態から判断の行き先への 1 組と、その数（[`ApprovalStore::pending_moves`]）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingMove {
+    /// 承認を始めたときのレコードの状態。
+    pub from: String,
+    /// 判断で進める状態。
+    pub to: String,
+    /// この組で判断を待っている承認の数。
+    pub count: i64,
+}
+
 /// 受信箱の keyset（新しい順・作成時刻と承認 id）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InboxCursor {
@@ -227,6 +238,40 @@ impl ApprovalStore {
             .await
             .map_err(map_db)?;
         Ok(row.map(ApprovalRow::from))
+    }
+
+    /// テーブルの承認を待っているものの、いまの状態から判断の行き先への組ごとの数（状態の進め方の画面・GAP-44）。
+    ///
+    /// 状態の進め方を変えて、承認を待っているレコードが判断できなくなるか（その組の進め方が無くなるか）を、保存の前に
+    /// 確かめる材料。数だけを返す（どのワークフロー・どのレコードかは返さない）。取り消しを求めた run・終わった run の
+    /// 承認は数えない。並びは（いまの状態, 行き先）の文字列の順。
+    pub async fn pending_moves(
+        &self,
+        tenant_id: &str,
+        table_id: Uuid,
+    ) -> Result<Vec<PendingMove>, RunStoreError> {
+        let rows: Vec<(String, String, i64)> = sqlx::query_as(
+            "SELECT a.from_state, d.choice->>'to' AS to_state, count(DISTINCT a.approval_id)::bigint \
+             FROM workflow_approval a \
+             JOIN workflow_run r ON r.tenant_id = a.tenant_id AND r.run_id = a.run_id \
+             CROSS JOIN LATERAL jsonb_array_elements(a.decisions) AS d(choice) \
+             WHERE a.tenant_id = $1 AND a.table_id = $2 AND a.status = 'pending' \
+               AND r.status IN ('queued', 'running') AND NOT r.cancel_requested \
+               AND d.choice->>'to' IS NOT NULL \
+             GROUP BY 1, 2",
+        )
+        .bind(tenant_id)
+        .bind(table_id)
+        .fetch_all(&self.db)
+        .await
+        .map_err(map_db)?;
+        // 並びは DB の照合順序に依らず、文字列の並び（UTF-8 のバイト順）で決める。
+        let mut out: Vec<PendingMove> = rows
+            .into_iter()
+            .map(|(from, to, count)| PendingMove { from, to, count })
+            .collect();
+        out.sort_by(|a, b| (&a.from, &a.to).cmp(&(&b.from, &b.to)));
+        Ok(out)
     }
 
     /// 判断の受付を始める（判断 API・承認者本人の遷移の前）。台帳の行を `FOR UPDATE` でロックした Tx を返す。

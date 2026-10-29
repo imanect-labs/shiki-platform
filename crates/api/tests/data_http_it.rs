@@ -1738,3 +1738,490 @@ async fn table_add_only_share_creates_and_reads_only_own_records() {
     );
     purge_table(&env, t.id).await;
 }
+
+/// 申請のテーブル（状態の列・申請者と承認者のメンバーの列）。alice が持ち主、bob が編集者（承認する人）。
+async fn approval_table(env: &Env, name: &str) -> data::DataTable {
+    let mut title = FieldDef::new("title", FieldType::Text);
+    title.display_name = "件名".into();
+    let mut status = FieldDef::new("status", FieldType::Select);
+    status.display_name = "状態".into();
+    status.options = vec!["申請中".into(), "承認".into(), "却下".into()];
+    let mut applicant = FieldDef::new("applicant", FieldType::UserRef);
+    applicant.display_name = "申請者".into();
+    let mut approver = FieldDef::new("approver", FieldType::UserRef);
+    approver.display_name = "承認者".into();
+    approver.indexed = true;
+    let schema = TableSchema {
+        fields: vec![title, status, applicant, approver],
+        status_field: None,
+        row_policy: None,
+        field_policy: vec![],
+        aggregate_min_rows: None,
+        fsm_ref: None,
+        rag: None,
+    };
+    let t = env
+        .data
+        .create_table(
+            &ctx("alice"),
+            NewDataTable {
+                name: format!("{name}-{}", Uuid::new_v4().simple()),
+                schema,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let bob = ctx("bob");
+    env.fga
+        .write_tuple(
+            &bob.subject(),
+            Relation::Editor,
+            &bob.ns().data_table(&t.id.to_string()),
+        )
+        .await
+        .unwrap();
+    t
+}
+
+/// 承認・却下は「承認者の列の人で、申請した本人は除く」（D-115 の既定の形）。
+fn approval_fsm(states: &[&str], moves: &[(&str, &str)]) -> Value {
+    let who = json!({ "all": [
+        { "field_cmp": { "field": "approver", "op": "eq", "value": "user_id" } },
+        { "field_cmp": { "field": "applicant", "op": "ne", "value": "user_id" } }
+    ] });
+    json!({
+        "states": states,
+        "transitions": moves.iter().map(|(f, t)| json!({ "from": f, "to": t, "actor": who })).collect::<Vec<_>>(),
+    })
+}
+
+/// このテストで作った状態の進め方の定義（artifact）を消す（版は外部キーで一緒に消える）。
+async fn purge_fsm_artifacts(env: &Env, table: Uuid) {
+    let ids: Vec<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM artifact WHERE tenant_id = $1 AND kind = 'fsm' AND name LIKE $2",
+    )
+    .bind(TENANT)
+    .bind(format!("状態の進め方-{table}-%"))
+    .fetch_all(&env.pool)
+    .await
+    .unwrap();
+    purge_artifacts(env, &ids).await;
+}
+
+async fn purge_artifacts(env: &Env, ids: &[Uuid]) {
+    for id in ids {
+        env.fga
+            .delete_object_tuples(&ctx("alice").ns().artifact(&id.to_string()))
+            .await
+            .unwrap();
+    }
+    sqlx::query("DELETE FROM artifact WHERE tenant_id = $1 AND id = ANY($2)")
+        .bind(TENANT)
+        .bind(ids)
+        .execute(&env.pool)
+        .await
+        .unwrap();
+}
+
+/// テーブルの設定の「状態の進め方」（GAP-44・D-84・D-115）: 持ち主だけが読み書きでき、保存は状態の列の選択肢・
+/// 使う版・書き込みの決まりを 1 回で替える。既定の形では、申請した本人は自分の申請を承認できず、最初の状態を
+/// 過ぎると書き換えられない。承認を待っているレコードが判断できなくなる変更は確認が要り、列の編集だけで状態を
+/// 変える改訂と、読めない定義を指す改訂は断る。
+#[tokio::test]
+async fn table_fsm_routes_save_read_and_keep_applicants_from_approving() {
+    let Some(env) = setup().await else { return };
+    // メンバーの列の値はディレクトリに居る人だけ。
+    let dir = storage::DirectoryStore::new(env.pool.clone());
+    for u in ["alice", "bob"] {
+        dir.upsert_user(u, TENANT, "acme", &format!("{u}@acme.example"), u)
+            .await
+            .unwrap();
+    }
+    let t = approval_table(&env, "states").await;
+    let fsm_url = format!("/data/tables/{}/fsm", t.id);
+    let rec_url = format!("/data/tables/{}/records", t.id);
+    let mut cleanup_artifacts: Vec<Uuid> = Vec::new();
+
+    // 持ち主でない（編集者の bob）は読めも保存もできない（403）。見えない carol には 404。
+    assert_eq!(
+        send(&env, get("bob", &fsm_url)).await.0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        send(&env, get("carol", &fsm_url)).await.0,
+        StatusCode::NOT_FOUND
+    );
+    let (s, v) = send(&env, get("alice", &fsm_url)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(v["fsm"].is_null() && v["status_field"].is_null(), "{v}");
+    let version = v["schema_version"].as_i64().unwrap();
+    let body = approval_fsm(
+        &["申請中", "承認", "却下"],
+        &[("申請中", "承認"), ("申請中", "却下")],
+    );
+    let save = |b: &Value, sv: i64, extra: Value| {
+        let mut req = json!({
+            "status_field": "status",
+            "body": b,
+            "applicant_write_lock": "applicant",
+            "expected_schema_version": sv,
+        });
+        if let (Some(r), Some(e)) = (req.as_object_mut(), extra.as_object()) {
+            r.extend(e.clone());
+        }
+        req
+    };
+    assert_eq!(
+        send(
+            &env,
+            put_json("bob", &fsm_url, &save(&body, version, json!({})))
+        )
+        .await
+        .0,
+        StatusCode::FORBIDDEN
+    );
+
+    // 保存の前の誤り: 同じ組の進め方を 2 つ・同じ状態へ進める・状態の列に選択肢の列でない列。
+    for (bad, field) in [
+        (
+            approval_fsm(
+                &["申請中", "承認", "却下"],
+                &[("申請中", "承認"), ("申請中", "承認")],
+            ),
+            "status",
+        ),
+        (
+            approval_fsm(&["申請中", "承認", "却下"], &[("申請中", "申請中")]),
+            "status",
+        ),
+        (body.clone(), "title"),
+    ] {
+        let mut req = save(&bad, version, json!({}));
+        req["status_field"] = json!(field);
+        let (s, e) = send(&env, put_json("alice", &fsm_url, &req)).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{e}");
+        assert_eq!(e["code"], "fsm_invalid", "{e}");
+    }
+
+    // 作る: 状態の列の選択肢・指す版・書き込みの決まり（申請者は最初の状態のあいだだけ）が入る。
+    let (s, saved) = send(
+        &env,
+        put_json("alice", &fsm_url, &save(&body, version, json!({}))),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{saved}");
+    let schema = &saved["schema"];
+    assert_eq!(schema["status_field"], "status");
+    let pinned = schema["fsm_ref"]["artifact_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_eq!(schema["fsm_ref"]["version"], 1);
+    let field = |k: &str| {
+        schema["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["key"] == k)
+            .cloned()
+            .unwrap()
+    };
+    assert_eq!(
+        field("status")["options"],
+        json!(["申請中", "承認", "却下"])
+    );
+    // 行の決まりが使う列は索引つきになる。
+    assert_eq!(
+        (
+            field("status")["indexed"].clone(),
+            field("applicant")["indexed"].clone()
+        ),
+        (json!(true), json!(true))
+    );
+    assert_eq!(schema["row_policy"]["read"], "public", "{schema}");
+    let (s, v) = send(&env, get("alice", &fsm_url)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["fsm"]["body"], body);
+    assert_eq!(v["applicant_write_lock"], "applicant");
+    let version = v["schema_version"].as_i64().unwrap();
+
+    // 既定のままでは、申請した本人は承認者でも自分の申請を承認できない（403）。ほかの人の申請は承認できる。
+    let (s, own) = send(
+        &env,
+        post_json("alice", &rec_url, &json!({ "data": { "title": "自分の出張", "applicant": "alice", "approver": "alice" } })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{own}");
+    assert_eq!(own["data"]["status"], "申請中");
+    let own_id = own["id"].as_str().unwrap().to_string();
+    let (s, e) = send(
+        &env,
+        post_json(
+            "alice",
+            &format!("{rec_url}/{own_id}/transition"),
+            &json!({ "to": "承認", "expected_rev": own["rev"] }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{e}");
+    let (s, other) = send(
+        &env,
+        post_json(
+            "alice",
+            &rec_url,
+            &json!({ "data": { "title": "出張", "applicant": "alice", "approver": "bob" } }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{other}");
+    let other_id = other["id"].as_str().unwrap().to_string();
+    // 最初の状態のあいだは、申請者が書き換えられる。
+    let (s, other) = send(
+        &env,
+        req(
+            "PATCH",
+            "alice",
+            &format!("{rec_url}/{other_id}"),
+            "application/json",
+            Body::from(
+                json!({ "patch": { "title": "出張（直した）" }, "expected_rev": other["rev"] })
+                    .to_string(),
+            ),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{other}");
+    let (s, done) = send(
+        &env,
+        post_json(
+            "bob",
+            &format!("{rec_url}/{other_id}/transition"),
+            &json!({ "to": "承認", "expected_rev": other["rev"] }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{done}");
+    assert_eq!(done["data"]["status"], "承認");
+    // 最初の状態を過ぎたら、申請者は書き換えられない（承認者の列も変えられない）。申請者でない bob は書ける。
+    let patch = |user: &str, rev: &Value, title: &str| {
+        req(
+            "PATCH",
+            user,
+            &format!("{rec_url}/{other_id}"),
+            "application/json",
+            Body::from(
+                json!({ "patch": { "title": title, "approver": "alice" }, "expected_rev": rev })
+                    .to_string(),
+            ),
+        )
+    };
+    let (s, e) = send(&env, patch("alice", &done["rev"], "書き換え")).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{e}");
+    let (s, e) = send(&env, patch("bob", &done["rev"], "経理が直した")).await;
+    assert_eq!(s, StatusCode::OK, "{e}");
+
+    // 列の編集（スキーマの改訂）だけで状態の列の選択肢を変えるのは断る（状態の進め方で変える）。
+    let (_, table_now) = send(&env, get("alice", &format!("/data/tables/{}", t.id))).await;
+    let mut next = table_now["schema"].clone();
+    for f in next["fields"].as_array_mut().unwrap() {
+        if f["key"] == "status" {
+            f["options"] = json!(["申請中", "承認", "却下", "保留"]);
+        }
+    }
+    let (s, e) = send(
+        &env,
+        put_json(
+            "alice",
+            &format!("/data/tables/{}/schema", t.id),
+            &json!({ "schema": next, "expected_schema_version": table_now["schema_version"] }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{e}");
+    assert_eq!(
+        (e["code"].clone(), e["field"].clone()),
+        (json!("fsm_invalid"), json!("status")),
+        "{e}"
+    );
+
+    // 読めない定義（bob が自分のテーブルに作ったもの）を自分のテーブルに付けるのは断る（中身を読ませない）。
+    let mut st = FieldDef::new("phase", FieldType::Select);
+    st.options = vec!["申請中".into(), "承認".into(), "却下".into()];
+    let bobs = env
+        .data
+        .create_table(
+            &ctx("bob"),
+            NewDataTable {
+                name: format!("bobs-{}", Uuid::new_v4().simple()),
+                schema: TableSchema {
+                    fields: vec![st],
+                    status_field: Some("phase".into()),
+                    row_policy: None,
+                    field_policy: vec![],
+                    aggregate_min_rows: None,
+                    fsm_ref: None,
+                    rag: None,
+                },
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let mut bobs_fsm = approval_fsm(&["申請中", "承認", "却下"], &[("申請中", "承認")]);
+    bobs_fsm["transitions"][0]["actor"] = json!("public");
+    let (s, made) = send(
+        &env,
+        post_json("bob", "/data/fsms", &json!({ "name": format!("bob-{}", Uuid::new_v4().simple()), "table_id": bobs.id, "body": bobs_fsm })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{made}");
+    let bobs_artifact: Uuid = serde_json::from_value(made["id"].clone()).unwrap();
+    cleanup_artifacts.push(bobs_artifact);
+    let mut stolen = table_now["schema"].clone();
+    stolen["fsm_ref"] = json!({ "artifact_id": bobs_artifact, "version": 1 });
+    let (s, e) = send(
+        &env,
+        put_json(
+            "alice",
+            &format!("/data/tables/{}/schema", t.id),
+            &json!({ "schema": stolen, "expected_schema_version": table_now["schema_version"] }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{e}");
+    assert_eq!(e["code"], "fsm_invalid", "{e}");
+
+    // 状態の名前を変えて保存し直すと、同じ定義に版を積み、選択肢が変わる（使っているレコードがある「承認」は残す）。
+    let renamed = approval_fsm(
+        &["申請中", "承認", "差し戻し"],
+        &[("申請中", "承認"), ("申請中", "差し戻し")],
+    );
+    let (s, saved) = send(
+        &env,
+        put_json("alice", &fsm_url, &save(&renamed, version, json!({}))),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{saved}");
+    assert_eq!(saved["schema"]["fsm_ref"]["artifact_id"], json!(pinned));
+    assert_eq!(saved["schema"]["fsm_ref"]["version"], 2);
+    let version = saved["schema_version"].as_i64().unwrap();
+    // 使っているレコードがある状態（「承認」）を消すと、データと合わないので断る。
+    let gone = approval_fsm(&["申請中", "差し戻し"], &[("申請中", "差し戻し")]);
+    let (s, e) = send(
+        &env,
+        put_json("alice", &fsm_url, &save(&gone, version, json!({}))),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{e}");
+    assert_eq!(e["code"], "schema_conflicts_with_data", "{e}");
+
+    // 承認を待っているレコード（いまの状態 → 判断の行き先）と、このテーブルの状態を使う保存済みのワークフロー。
+    let run_id = Uuid::new_v4();
+    let workflow_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO workflow_run (tenant_id, run_id, org, workflow_id, version, trigger_kind, principal, status) \
+         VALUES ($1, $2, 'acme', $3, 1, 'event', $3::text, 'running')",
+    )
+    .bind(TENANT)
+    .bind(run_id)
+    .bind(workflow_id)
+    .execute(&env.pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO workflow_approval (tenant_id, approval_id, org, workflow_id, run_id, step_path, node_id, \
+           table_id, record_id, title, decisions, from_state, suspend_rev) \
+         VALUES ($1, $2, 'acme', $3, $4, 'ok', 'ok', $5, $6::uuid, '経費の承認', $7, '申請中', 1)",
+    )
+    .bind(TENANT)
+    .bind(Uuid::new_v4())
+    .bind(workflow_id)
+    .bind(run_id)
+    .bind(t.id)
+    .bind(&own_id)
+    .bind(json!([
+        { "kind": "approve", "to": "承認", "label": "承認する", "comment": "optional" },
+        { "kind": "return", "to": "差し戻し", "label": "差し戻す", "comment": "optional" }
+    ]))
+    .execute(&env.pool)
+    .await
+    .unwrap();
+    let artifacts = artifact::ArtifactStore::new(env.pool.clone(), Arc::clone(&env.fga));
+    let wf = artifacts
+        .create(
+            &ctx("alice"),
+            artifact::NewArtifact {
+                kind: artifact::ArtifactKind::Workflow,
+                name: format!("expense-{}", Uuid::new_v4().simple()),
+                body: json!({
+                    "ir_version": 1, "name": "expense", "display_name": "経費の承認", "triggers": [],
+                    "nodes": [{ "id": "ok", "type": "human.approval",
+                                "params": { "record": { "table": t.id }, "approve": { "to": "承認" },
+                                            "return": { "to": "差し戻し" } } }],
+                    "edges": []
+                }),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    cleanup_artifacts.push(wf.id);
+    let (s, v) = send(&env, get("alice", &fsm_url)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(
+        v["pending_approvals"],
+        json!([{ "from": "申請中", "to": "差し戻し", "count": 1 }, { "from": "申請中", "to": "承認", "count": 1 }]),
+        "{v}"
+    );
+    assert_eq!(
+        v["workflows"],
+        json!([{ "id": wf.id, "name": "経費の承認", "states": ["差し戻し", "承認"] }]),
+        "{v}"
+    );
+    // 承認を待っているレコードが判断できなくなる（「申請中」→「承認」を消す）変更は、確認が無ければ 409。
+    let narrowed = approval_fsm(&["申請中", "承認", "差し戻し"], &[("申請中", "差し戻し")]);
+    let (s, e) = send(
+        &env,
+        put_json("alice", &fsm_url, &save(&narrowed, version, json!({}))),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{e}");
+    assert_eq!(e["code"], "fsm_in_use", "{e}");
+    assert_eq!(
+        e["pending"],
+        json!([{ "from": "申請中", "to": "承認", "count": 1 }]),
+        "{e}"
+    );
+    let (s, saved) = send(
+        &env,
+        put_json(
+            "alice",
+            &fsm_url,
+            &save(&narrowed, version, json!({ "confirm_pending": true })),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{saved}");
+    // 書き込みの決まりを外すと、元の（行の決まりの無い）形に戻る。
+    let mut off = save(
+        &narrowed,
+        saved["schema_version"].as_i64().unwrap(),
+        json!({ "confirm_pending": true }),
+    );
+    off["applicant_write_lock"] = Value::Null;
+    let (s, saved) = send(&env, put_json("alice", &fsm_url, &off)).await;
+    assert_eq!(s, StatusCode::OK, "{saved}");
+    assert!(saved["schema"]["row_policy"].is_null(), "{saved}");
+
+    sqlx::query("DELETE FROM workflow_run WHERE tenant_id = $1 AND run_id = $2")
+        .bind(TENANT)
+        .bind(run_id)
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    purge_artifacts(&env, &cleanup_artifacts).await;
+    purge_fsm_artifacts(&env, t.id).await;
+    purge_table(&env, t.id).await;
+    purge_table(&env, bobs.id).await;
+}

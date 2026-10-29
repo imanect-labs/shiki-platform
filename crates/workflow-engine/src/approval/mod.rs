@@ -16,6 +16,7 @@ mod inbox;
 
 pub use inbox::{
     AcceptedDecision, ApprovalRow, ApprovalStore, DecisionStart, DecisionTx, InboxCursor,
+    PendingMove,
 };
 
 use chrono::{DateTime, Utc};

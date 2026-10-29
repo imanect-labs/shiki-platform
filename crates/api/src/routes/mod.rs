@@ -22,6 +22,7 @@ pub mod data_imports;
 pub mod data_indexes;
 pub mod data_records;
 pub mod data_stream;
+pub mod data_table_fsm;
 pub mod data_views;
 pub mod directory;
 pub mod doc_blocks;

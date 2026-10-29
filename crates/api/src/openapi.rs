@@ -209,6 +209,8 @@ use utoipa::{
         crate::routes::data_fsm::get_fsm,
         crate::routes::data_fsm::transition_record,
         crate::routes::data_fsm::allowed_transitions,
+        crate::routes::data_table_fsm::get_table_fsm,
+        crate::routes::data_table_fsm::save_table_fsm,
         crate::routes::approvals::list_approvals,
         crate::routes::approvals::count_approvals,
         crate::routes::approvals::get_approval,
@@ -606,6 +608,13 @@ use utoipa::{
         crate::routes::data_fsm::UpdateFsmRequest,
         crate::routes::data_fsm::FsmResponse,
         crate::routes::data_fsm::TransitionRequest,
+        // テーブルの設定の「状態の進め方」（GAP-44）。
+        crate::routes::data_table_fsm::TableFsmResponse,
+        crate::routes::data_table_fsm::SaveTableFsmRequest,
+        crate::routes::data_table_fsm::PendingApprovalMove,
+        crate::routes::data_table_fsm::WorkflowStateUse,
+        crate::routes::data_table_fsm::FsmInUseBody,
+        data::PinnedFsm,
         // 承認の受信箱（GAP-08）。
         crate::routes::approvals::ApprovalDecisionDto,
         crate::routes::approvals::ApprovalFieldDto,
