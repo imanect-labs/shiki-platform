@@ -8,6 +8,7 @@
 import { AbroadBadge } from "@/components/llm/model-list";
 import { useLlmModelsState } from "@/lib/model-choice";
 import { providerOf, type ModelProvider } from "@/lib/model-provider";
+import { blockDisplayName } from "@/lib/workflow-block-name";
 import type { Node as IrNode } from "@/generated/workflow-ir";
 
 /// モデルを選ぶ AI のブロックの種類と、選べるモデルの種類（`model` の欄があるブロック）。
@@ -61,8 +62,9 @@ export function AiProvidersNote({ nodes }: { nodes: IrNode[] }) {
       ) : null}
       {skills.length > 0 ? (
         <p>
-          {skills.map((s) => `「${s.label || s.id}」`).join("")}
-          は、スキルで決めたモデルの提供元に送ります。
+          {/* 名前を付けていないブロックはカタログのブロック名で言い、同じ名前は 1 回だけ並べる（ID を出さない）。 */}
+          {[...new Set(skills.map((s) => blockDisplayName(s)))].map((n) => `「${n}」`).join("")}
+          に入れた内容は、スキルで決めたモデルの提供元に送られます。
         </p>
       ) : null}
     </div>
