@@ -468,6 +468,13 @@ flowchart LR
   org キャップ（`tenant.allow_autonomous_bypass`）を検査して明示エラーにし（保存済みの全自動を持ったままの
   ほかの項目の保存は拒否しない）、org が禁止していればホームは承認必須を初期値にする。既定のモデルも
   送信時は従来どおり API が検証する。変更は監査に残す（`me.preferences.update`・保存した値。個人の記述を含まない）。
+- **ホームの「今日のこと」（#965）**: 本人の分だけを返す読み取り API を 3 本持つ。
+  `GET /me/approvals` は自分が actor の承認待ち run（承認できるのは actor 本人だけ）を tenant＋org＋actor で
+  1 本の SQL に絞り、thread の editor を OpenFGA でまとめて確かめる（承認 API と同じ relation・HigherConsistency）。
+  ツールの入力・理由は返さない（中身は会話の承認カードで確かめる）。`GET /me/workflow-runs` は本人に見える
+  ワークフロー（一覧 API と同じ所有∪共有）を先に確定し、直近 24 時間に実行が終わったものだけを viewer で
+  確かめ直してから、成功・失敗の件数と失敗の明細（最大 3 件）を返す。`GET /me/usage` は利用上限の判定と同じ
+  集計（日本時間の暦月・tenant＋本人）で当月の利用額と上限を返し、上限が無い環境では集計しない（`null`）。
 - **会話履歴は tenant スコープのスキーマで新設（SAAS.1 / #91）**: thread/message テーブルは既存規約を踏襲し
   全行 `tenant_id text not null`＋複合 PK/unique に `tenant_id` を含める（例: `node` の
   `(org, tenant_id, parent_id, name)`）。thread の OpenFGA オブジェクトも `thread:<tenant>|<id>` になるよう

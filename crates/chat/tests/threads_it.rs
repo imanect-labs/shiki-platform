@@ -1571,8 +1571,8 @@ async fn pending_approval_is_persisted_and_the_wait_releases_the_slot() {
     );
 }
 
-/// #965: ホームの「今日のこと」に出す承認待ちの一覧。自分が actor の run だけを返し、
-/// 理由は承認要求イベントから引く。他人の run・承認待ちでない run・editor を失った thread は出さない。
+/// #965: ホームの「今日のこと」に出す承認待ちの一覧。自分が actor の run だけを返す。
+/// 他人の run・承認待ちでない run・editor を失った thread は出さない。
 #[tokio::test]
 async fn list_pending_approvals_returns_only_my_waiting_runs_with_editor_access() {
     let Some(pool) = setup().await else { return };
@@ -1610,18 +1610,6 @@ async fn list_pending_approvals_returns_only_my_waiting_runs_with_editor_access(
         .execute(pool)
         .await
         .unwrap();
-        sqlx::query(
-            "INSERT INTO generation_event (run_id, seq, type, payload, tenant_id) \
-             VALUES ($1, 1000, 'approval_requested', \
-                     jsonb_build_object('type', 'approval_requested', 'tool_call_id', $2::text, \
-                         'name', 'drive.move', 'input', '{}'::jsonb, 'reason', '資料を移動します'), $3)",
-        )
-        .bind(res.run_id)
-        .bind(tool_call_id)
-        .bind(&c.tenant_id)
-        .execute(pool)
-        .await
-        .unwrap();
         (thread.id, res.run_id)
     }
 
@@ -1644,7 +1632,7 @@ async fn list_pending_approvals_returns_only_my_waiting_runs_with_editor_access(
     assert_eq!(got[0].thread_title, "移動の確認");
     assert_eq!(got[0].tool_call_id, "tc-a");
     assert_eq!(got[0].tool_name, "drive.move");
-    assert_eq!(got[0].reason.as_deref(), Some("資料を移動します"));
+    assert_eq!(got[0].origin_note_id, None);
 
     // 別 org の同名ユーザーには出さない（tenant ＋ org ＋ actor で絞る）。
     let mut other_org = ctx(&tenant);

@@ -31,9 +31,11 @@ export function fetchMyUsage(): Promise<MyUsage> {
   return getJson<MyUsage>("/me/usage");
 }
 
-/// 上限に対する利用の割合（0〜100 の整数・上限が無ければ null）。
+/// 上限に対する利用の割合（0〜100 の整数・上限が無い（集計していない）なら null）。
 export function usagePercent(usage: MyUsage): number | null {
   const limit = usage.limit_usd_micros;
+  const used = usage.used_usd_micros;
   if (limit === null || limit === undefined || limit <= 0) return null;
-  return Math.min(100, Math.floor((usage.used_usd_micros / limit) * 100));
+  if (used === null || used === undefined) return null;
+  return Math.min(100, Math.floor((used / limit) * 100));
 }

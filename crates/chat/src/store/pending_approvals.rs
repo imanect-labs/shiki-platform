@@ -18,16 +18,17 @@ use crate::ChatError;
 /// 1 回に返す件数の上限（ホームに出すのは数件。全件取得はしない）。
 const MAX_PENDING: i64 = 20;
 
-type PendingRow = (
-    Uuid,
-    String,
-    Uuid,
-    String,
-    String,
-    Option<DateTime<Utc>>,
-    DateTime<Utc>,
-    Option<String>,
-);
+#[derive(sqlx::FromRow)]
+struct PendingRow {
+    thread_id: Uuid,
+    thread_title: String,
+    origin_note_id: Option<Uuid>,
+    origin_note_name: Option<String>,
+    run_id: Uuid,
+    tool_call_id: String,
+    tool_name: String,
+    requested_at: DateTime<Utc>,
+}
 
 impl ChatStore {
     /// 自分の承認を待っている run を、承認を求めた時刻の新しい順に返す（最大 `limit` 件）。
@@ -38,27 +39,22 @@ impl ChatStore {
     ) -> Result<Vec<PendingApproval>, ChatError> {
         let limit = limit.clamp(1, MAX_PENDING);
         // pending_approval は status を waiting_approval にする直前に書かれる（sink → approver）。
-        // 両方そろった run だけを「承認待ち」とみなす。理由は承認要求イベントから引く（run には
-        // 載っていない・ホームの 1 行に添えるだけなので先頭 200 文字まで）。ツールの入力は引かない。
+        // 両方そろった run だけを「承認待ち」とみなす。並びは承認を求めた時刻（run の updated_at は
+        // 待機中もハートビートで進むので使わない）。読めない旧形式は run の作成時刻で代える。
+        // ツールの入力・理由は引かない（ホームでは出さない。中身は会話の承認カードで確かめる）。
         let rows: Vec<PendingRow> = sqlx::query_as(
-            "SELECT r.thread_id, t.title, r.run_id, \
-                    r.pending_approval->>'tool_call_id', r.pending_approval->>'tool_name', \
-                    (r.pending_approval->>'requested_at')::timestamptz, r.updated_at, \
-                    left(e.payload->>'reason', 200) \
+            "SELECT r.thread_id, t.title AS thread_title, t.origin_note_id, t.origin_note_name, \
+                    r.run_id, r.pending_approval->>'tool_call_id' AS tool_call_id, \
+                    r.pending_approval->>'tool_name' AS tool_name, \
+                    COALESCE((r.pending_approval->>'requested_at')::timestamptz, r.created_at) \
+                      AS requested_at \
              FROM generation_run r \
              JOIN thread t ON t.tenant_id = r.tenant_id AND t.id = r.thread_id \
                           AND t.deleted_at IS NULL \
-             LEFT JOIN LATERAL ( \
-                 SELECT ge.payload FROM generation_event ge \
-                 WHERE ge.tenant_id = r.tenant_id AND ge.run_id = r.run_id \
-                   AND ge.type = 'approval_requested' \
-                   AND ge.payload->>'tool_call_id' = r.pending_approval->>'tool_call_id' \
-                 ORDER BY ge.seq DESC LIMIT 1 \
-             ) e ON true \
              WHERE r.tenant_id = $1 AND r.org = $2 AND r.actor = $3 \
                AND r.status = 'waiting_approval' AND r.pending_approval IS NOT NULL \
                AND r.pending_approval ? 'tool_call_id' AND r.pending_approval ? 'tool_name' \
-             ORDER BY r.updated_at DESC, r.run_id DESC \
+             ORDER BY requested_at DESC, r.run_id DESC \
              LIMIT $4",
         )
         .bind(&ctx.tenant_id)
@@ -78,7 +74,7 @@ impl ChatStore {
             .map(|r| CheckTuple {
                 subject: ctx.subject(),
                 relation: Relation::Editor,
-                object: ctx.ns().thread(&r.0.to_string()),
+                object: ctx.ns().thread(&r.thread_id.to_string()),
             })
             .collect();
         let allowed = self
@@ -91,29 +87,16 @@ impl ChatStore {
             .into_iter()
             .zip(allowed)
             .filter_map(|(r, ok)| ok.then_some(r))
-            .map(
-                |(
-                    thread_id,
-                    thread_title,
-                    run_id,
-                    tool_call_id,
-                    tool_name,
-                    requested,
-                    updated,
-                    reason,
-                )| {
-                    PendingApproval {
-                        thread_id,
-                        thread_title,
-                        run_id,
-                        tool_call_id,
-                        tool_name,
-                        reason,
-                        // 要求時刻が読めない（旧形式）ときは run の更新時刻で代える。
-                        requested_at: requested.unwrap_or(updated),
-                    }
-                },
-            )
+            .map(|r| PendingApproval {
+                thread_id: r.thread_id,
+                thread_title: r.thread_title,
+                origin_note_id: r.origin_note_id,
+                origin_note_name: r.origin_note_name,
+                run_id: r.run_id,
+                tool_call_id: r.tool_call_id,
+                tool_name: r.tool_name,
+                requested_at: r.requested_at,
+            })
             .collect())
     }
 }

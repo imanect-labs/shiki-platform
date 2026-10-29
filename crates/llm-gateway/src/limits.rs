@@ -44,7 +44,8 @@ const NEXT_MONTH_START: &str = "(date_trunc('month', now() AT TIME ZONE 'Asia/To
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MonthUsage {
     /// 当月の合計コスト（マイクロ USD）。上限の判定と同じ集計（tenant ＋ 本人・全プロバイダ）。
-    pub used_usd_micros: i64,
+    /// 上限が無い環境では集計しない（`None`）。
+    pub used_usd_micros: Option<i64>,
     /// ユーザー単位の上限（マイクロ USD）。無効・未設定なら `None`。
     pub limit_usd_micros: Option<i64>,
     /// 集計期間の始まり（日本時間の今月 1 日 00:00）。
@@ -114,29 +115,39 @@ impl UsageLimiter {
 
     /// 呼び出しユーザーの当月（日本時間）の利用額と上限（本人向けの表示）。
     ///
-    /// 上限の判定（[`Self::check`]）と同じ集計なので、表示と止まる線がずれない。上限が無くても
-    /// 利用額は返す（表示側が出すかを決める）。`(tenant_id, user_sub, created_at)` の索引に乗る。
+    /// 上限の判定（[`Self::check`]）と同じ集計なので、表示と止まる線がずれない。
+    /// `(tenant_id, user_sub, created_at)` の索引に乗る。上限が無い環境では利用額を集計しない
+    /// （割合を出せず表示しないので、ホームを開くたびに月の合計を取るのは無駄）。
     pub async fn month_usage(
         &self,
         ctx: &AuthContext,
         limits: &UsageLimitsConfig,
     ) -> Result<MonthUsage, sqlx::Error> {
+        let limit = limits.per_user();
         let (used, start, end): (
-            i64,
+            Option<i64>,
             chrono::DateTime<chrono::Utc>,
             chrono::DateTime<chrono::Utc>,
-        ) = sqlx::query_as(&format!(
-            "SELECT COALESCE(SUM(cost_usd_micros), 0)::bigint, {MONTH_START}, {NEXT_MONTH_START} \
+        ) = if limit.is_some() {
+            sqlx::query_as(&format!(
+                "SELECT COALESCE(SUM(cost_usd_micros), 0)::bigint, {MONTH_START}, {NEXT_MONTH_START} \
                  FROM llm_usage \
                  WHERE tenant_id = $1 AND user_sub = $2 AND created_at >= {MONTH_START}"
-        ))
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.principal.id)
-        .fetch_one(&self.db)
-        .await?;
+            ))
+            .bind(&ctx.tenant_id)
+            .bind(&ctx.principal.id)
+            .fetch_one(&self.db)
+            .await?
+        } else {
+            sqlx::query_as(&format!(
+                "SELECT NULL::bigint, {MONTH_START}, {NEXT_MONTH_START}"
+            ))
+            .fetch_one(&self.db)
+            .await?
+        };
         Ok(MonthUsage {
             used_usd_micros: used,
-            limit_usd_micros: limits.per_user(),
+            limit_usd_micros: limit,
             period_start: start,
             period_end: end,
         })

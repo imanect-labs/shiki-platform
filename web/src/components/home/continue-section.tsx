@@ -47,11 +47,18 @@ type TodayItem = {
 function todayItems(feed: HomeFeed, now: number): TodayItem[] {
   const items: TodayItem[] = [];
   for (const a of (feed.approvals ?? []).slice(0, 2)) {
+    // 文書の横で始めた会話は文書の画面で開く（「続きから」と同じ解決・タイトルの接頭も外す）。
+    const thread = {
+      id: a.thread_id,
+      title: a.thread_title,
+      originNoteId: a.origin_note_id ?? null,
+      originNoteName: a.origin_note_name ?? null,
+    };
     items.push({
       key: `approval:${a.run_id}`,
-      href: `/c/${a.thread_id}`,
+      href: threadHref(thread),
       icon: ShieldCheck,
-      title: a.thread_title || "無題の会話",
+      title: threadDisplay(thread).title || "無題の会話",
       // ツールの入力は持たない（機微・大きい）ので、何をするかは会話の承認カードで確かめてもらう。
       meta: `承認待ち・${relativeTime(a.requested_at, now)}`,
       urgent: true,
@@ -86,7 +93,7 @@ function todayItems(feed: HomeFeed, now: number): TodayItem[] {
       key: "usage",
       icon: Gauge,
       title: "今月の AI 利用",
-      meta: `上限の ${pct}%（${formatUsd(usage.used_usd_micros)} / ${formatUsd(usage.limit_usd_micros ?? 0)}）`,
+      meta: `上限の ${pct}%（${formatUsd(usage.used_usd_micros ?? 0)} / ${formatUsd(usage.limit_usd_micros ?? 0)}）`,
       urgent: false,
       tone: pct >= 80 ? "warn" : undefined,
       progress: pct,
@@ -115,9 +122,11 @@ export function ContinueSection({ feed }: { feed: HomeFeed }) {
   const { threads } = feed;
   // 相対時刻の基準。描画のたびに変えない（一覧が揺れない）。
   const [now] = React.useState(() => Date.now());
-  // 読み込み中は骨組みを出し、読み終えて空なら列ごと出さない（列ごとに判定する）。
-  const todayLoading = feed.shares === null || !feed.todayLoaded;
-  const today = todayLoading ? [] : todayItems(feed, now);
+  // 「今日のこと」は読めた分から出す（遅い取得を待たない）。何も読めていない間だけ骨組みを出し、
+  // 全部読み終えて空なら列ごと出さない（列ごとに判定する）。
+  const today = todayItems(feed, now);
+  const todayDone = feed.shares !== null && feed.todayLoaded;
+  const todayLoading = today.length === 0 && !todayDone;
   const showThreads = threads === null || threads.length > 0;
   const showToday = todayLoading || today.length > 0;
   if (!showThreads && !showToday) return null;
@@ -242,9 +251,13 @@ function Row({
       <span
         className={cn(
           "flex size-[34px] shrink-0 items-center justify-center rounded-xl border border-border bg-card text-foreground/70 transition-colors",
-          href && "group-hover:border-[var(--season)]/45 group-hover:text-[var(--season)]",
-          tone === "danger" && "text-destructive",
-          tone === "warn" && "text-[var(--season-autumn)]",
+          href && "group-hover:border-[var(--season)]/45",
+          // 状態の色（失敗・注意）はホバーでも季節の色に上書きしない。
+          tone === "danger"
+            ? "text-destructive"
+            : tone === "warn"
+              ? "text-[var(--season-autumn)]"
+              : href && "group-hover:text-[var(--season)]",
         )}
       >
         <Icon className="size-4" aria-hidden />

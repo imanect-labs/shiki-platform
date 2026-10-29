@@ -1540,7 +1540,10 @@ async fn today_endpoints_over_http() {
     let resp = app.clone().oneshot(get("/me/usage")).await.unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let body = body_json(resp).await;
-    assert!(body["used_usd_micros"].as_i64().unwrap() >= 0, "{body}");
+    assert!(
+        body["used_usd_micros"].is_null(),
+        "上限が無い環境では集計しない: {body}"
+    );
     assert!(
         body["limit_usd_micros"].is_null(),
         "上限が無い環境では null: {body}"

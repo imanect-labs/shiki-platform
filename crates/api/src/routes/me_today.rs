@@ -4,9 +4,12 @@
 //! - 承認待ち: 自分が actor の run（承認できるのは本人だけ）を SQL で絞り、thread の editor を
 //!   OpenFGA でまとめて確かめる（`ChatStore::list_pending_approvals`）。
 //! - ワークフロー: 本人に見えるワークフロー（一覧 API と同じ所有∪共有）を先に確定し、その
-//!   集合だけを集計する（PIT-13・`visible_workflow_ids`）。
-//! - 利用量: 上限の判定と同じ集計（日本時間の暦月・本人の分）。
+//!   集合だけを集計する（pre-filter・PIT-13・`visible_workflow_ids`）。数を出す前に、期間内に
+//!   実行が終わったワークフローだけを viewer で確かめ直す（post-filter・実行履歴 API と同じ
+//!   HigherConsistency。共有を外した直後のワークフローを出さない）。
+//! - 利用量: 上限の判定と同じ集計（日本時間の暦月・本人の分）。上限が無い環境では集計しない。
 
+use authz::{CheckTuple, Consistency, Relation};
 use axum::{extract::State, Json};
 use chrono::{DateTime, Duration, Utc};
 use serde::Serialize;
@@ -92,17 +95,39 @@ pub async fn workflow_run_digest(
 ) -> Result<Json<WorkflowRunDigestResponse>, ApiError> {
     let (ids, _owned) = workflow_directory::visible_workflow_ids(&state.artifacts, &ctx).await?;
     let since = Utc::now() - Duration::hours(WORKFLOW_WINDOW_HOURS);
-    let digest = state
-        .workflow_summaries
-        .run_digest(&ctx.tenant_id, &ids, since, FAILURE_LIMIT)
+    let summaries = &state.workflow_summaries;
+    let counts = summaries
+        .run_counts(&ctx.tenant_id, &ids, since)
+        .await
+        .map_err(|e| ApiError::Internal(format!("ワークフロー実行の集計: {e}")))?;
+    // post-filter: 期間内に実行があったワークフローだけを viewer で確かめ直す（数件〜数十件）。
+    let checks: Vec<CheckTuple> = counts
+        .iter()
+        .map(|c| CheckTuple {
+            subject: ctx.subject(),
+            relation: Relation::Viewer,
+            object: ctx.ns().artifact(&c.workflow_id.to_string()),
+        })
+        .collect();
+    let allowed = state
+        .authz
+        .batch_check(&checks, Consistency::HigherConsistency)
+        .await?;
+    let readable: Vec<_> = counts
+        .into_iter()
+        .zip(allowed)
+        .filter_map(|(c, ok)| ok.then_some(c))
+        .collect();
+    let readable_ids: Vec<Uuid> = readable.iter().map(|c| c.workflow_id).collect();
+    let failures = summaries
+        .recent_failures(&ctx.tenant_id, &readable_ids, since, FAILURE_LIMIT)
         .await
         .map_err(|e| ApiError::Internal(format!("ワークフロー実行の集計: {e}")))?;
     Ok(Json(WorkflowRunDigestResponse {
         window_hours: WORKFLOW_WINDOW_HOURS,
-        succeeded: digest.succeeded,
-        failed: digest.failed,
-        recent_failures: digest
-            .recent_failures
+        succeeded: readable.iter().map(|c| c.succeeded).sum(),
+        failed: readable.iter().map(|c| c.failed).sum(),
+        recent_failures: failures
             .into_iter()
             .map(|f| FailedWorkflowRun {
                 run_id: f.run_id,
@@ -120,7 +145,8 @@ pub async fn workflow_run_digest(
 #[derive(Debug, Serialize, ToSchema)]
 pub struct MyUsageResponse {
     /// 当月の利用額（マイクロ USD）。上限の判定と同じ集計（全プロバイダ合算）。
-    pub used_usd_micros: i64,
+    /// 上限が無い環境では集計しない（`null`）。
+    pub used_usd_micros: Option<i64>,
     /// 本人の上限（マイクロ USD）。上限が無い環境では `null`。
     pub limit_usd_micros: Option<i64>,
     /// 集計期間の始まり（日本時間の今月 1 日 00:00）。
