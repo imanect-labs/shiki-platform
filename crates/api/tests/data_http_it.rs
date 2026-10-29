@@ -699,6 +699,86 @@ async fn bulk_import_routes_start_observe_and_authorize() {
     assert!(n >= 2, "CSV と JSON の開始が監査に残る: {n}");
 }
 
+/// Excel が保存する文字コードの CSV を取り込む（GAP-45）。Shift_JIS（日本語の Windows の既定）・BOM 付きの
+/// UTF-8・UTF-16LE（BOM 付き）の CSV が、文字化けせずに同じレコードになる。文字コードを決められない CSV は、
+/// 取込を始めずに直し方を言う構造化 400（`import_invalid`）。
+#[tokio::test]
+async fn bulk_import_reads_csv_in_the_encodings_excel_writes() {
+    use textenc::encoding_rs::{SHIFT_JIS, UTF_16LE, UTF_8};
+    let Some(env) = setup().await else { return };
+    let csv = "件名,amount\n交通費,1200\n宿泊費,8000\n";
+    let mut tables = Vec::new();
+    let mut seen = Vec::new();
+    for (encoding, bom) in [(SHIFT_JIS, false), (UTF_8, true), (UTF_16LE, true)] {
+        let t = table(&env, "import-encodings").await;
+        tables.push(t.id);
+        let base = format!("/data/tables/{}/imports", t.id);
+        let bytes = textenc::encode_like(csv, encoding, bom).unwrap();
+        let (s, b) = send(&env, post_csv("alice", &format!("{base}/csv"), bytes)).await;
+        assert_eq!(s, StatusCode::ACCEPTED, "{}: {b}", encoding.name());
+        let id: Uuid = serde_json::from_value(b["import_id"].clone()).unwrap();
+        finish(&env, t.id, id).await;
+        let rows = env
+            .data
+            .list_records(
+                &ctx("alice"),
+                t.id,
+                &data::ListRecordsOptions::default(),
+                None,
+            )
+            .await
+            .unwrap();
+        let mut titles: Vec<(String, Value)> = rows
+            .items
+            .iter()
+            .map(|r| {
+                (
+                    r.data["title"].as_str().unwrap_or_default().to_string(),
+                    r.data["amount"].clone(),
+                )
+            })
+            .collect();
+        titles.sort_by(|a, b| a.0.cmp(&b.0));
+        seen.push((encoding.name(), titles));
+    }
+    // 文字コードを決められない CSV（西欧の windows-1252 の é）は取り込まない。
+    let latin = table(&env, "import-encodings-latin").await;
+    tables.push(latin.id);
+    let (s, refused) = send(
+        &env,
+        post_csv(
+            "alice",
+            &format!("/data/tables/{}/imports/csv", latin.id),
+            b"title\ncaf\xe9\n".to_vec(),
+        ),
+    )
+    .await;
+    // 片付け（作ったテーブル）。
+    for id in tables {
+        env.data
+            .delete_table(&ctx("alice"), id, None)
+            .await
+            .unwrap();
+    }
+
+    for (name, titles) in seen {
+        assert_eq!(
+            titles,
+            vec![
+                ("交通費".to_string(), json!(1200)),
+                ("宿泊費".to_string(), json!(8000))
+            ],
+            "{name}"
+        );
+    }
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{refused}");
+    assert_eq!(refused["code"], "import_invalid");
+    assert_eq!(
+        refused["message"],
+        "CSV の文字コードを読み取れません。UTF-8 か Shift_JIS で保存してください"
+    );
+}
+
 /// 行エラーの keyset ページング（`next_after_row`）。
 #[tokio::test]
 async fn bulk_import_errors_are_paged_by_row_number() {
