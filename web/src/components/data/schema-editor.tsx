@@ -117,8 +117,10 @@ export function SchemaEditor({
   // 属性の警告の材料（行ポリシー・マスク。owner には定義が返る）。
   const traits: TableTraits = React.useMemo(
     () => ({
-      rowPolicy: Boolean(table.schema.row_policy),
+      // 読む決まりが「全員」なら行の見え方は絞っていない（書き込みの決まりだけ・状態の進め方の既定・D-115）。
+      rowPolicy: Boolean(table.schema.row_policy && table.schema.row_policy.read !== "public"),
       masked: new Set((table.schema.field_policy ?? []).map((p) => p.field)),
+      stateField: table.schema.fsm_ref ? (table.schema.status_field ?? null) : null,
     }),
     [table.schema],
   );

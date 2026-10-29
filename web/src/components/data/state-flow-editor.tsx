@@ -1,0 +1,549 @@
+"use client";
+
+/// テーブルの設定の「状態の進め方」（GAP-44・D-84・D-115）: 状態の列と状態の一覧、どの状態からどの状態へ誰が
+/// 進められるかを決める。「承認を待つ」「状態を進める」ブロックと、状態が変わったときのきっかけで使う。
+///
+/// - 読み書きはテーブルの持ち主だけ（サーバも持ち主でなければ 403）。状態の列の選択肢は、保存した状態の一覧になる。
+/// - 承認・却下・差し戻しにあたる進め方は「申請した本人は除く」をはじめからオンにする（最初の状態へ戻す進め方を
+///   除く）。最初の状態を過ぎたら申請者が書き換えられない決まりも、はじめからオンにする。どちらもオフにできる。
+/// - 保存の前に、行き止まり・届かない状態・重複を欄の下で言う。承認を待っているレコードが判断できなくなる変更は
+///   確認してから保存し、このテーブルの状態を使うワークフローへの影響は注意で言う。
+
+import { ArrowDown, ArrowUp, Loader2, Plus, Share2, Trash2, Workflow } from "lucide-react";
+import Link from "next/link";
+import * as React from "react";
+
+import { ConfirmDialog } from "@/components/drive/dialogs";
+import { MovesTable } from "@/components/data/state-flow-moves";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Sheet, SheetBody, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import { Switch } from "@/components/ui/switch";
+import { toast } from "@/components/ui/use-toast";
+import {
+  DataApiError,
+  getTableFsm,
+  saveTableFsm,
+  TABLE_NOT_FOUND,
+  type DataTable,
+  type PendingApprovalMove,
+  type TableFsmResponse,
+} from "@/lib/data-api";
+import {
+  bodyOf,
+  checkFlow,
+  draftFrom,
+  draftId,
+  guessApprover,
+  reachableNames,
+  statesFromField,
+  type FlowDraft,
+} from "@/lib/state-flow";
+import { cn } from "@/lib/utils";
+
+type Loaded = { resp: TableFsmResponse; draft: FlowDraft; mismatch: boolean };
+
+function Section({ title, children, testId }: { title: string; children: React.ReactNode; testId?: string }) {
+  return (
+    <section className="space-y-2" data-testid={testId}>
+      <h3 className="text-sm font-semibold">{title}</h3>
+      {children}
+    </section>
+  );
+}
+
+function Hint({ children, tone }: { children: React.ReactNode; tone?: "warn" | "error" }) {
+  return (
+    <p
+      className={cn(
+        "text-[11px] leading-relaxed",
+        tone === "error" ? "text-destructive" : tone === "warn" ? "text-[var(--season-autumn)]" : "text-muted-foreground",
+      )}
+      role={tone === "error" ? "alert" : undefined}
+    >
+      {children}
+    </p>
+  );
+}
+
+function loadError(e: unknown): string {
+  if (e instanceof DataApiError) {
+    if (e.status === 403) return "状態の進め方を変えられるのは、テーブルの持ち主だけです。変えたいときは、持ち主に頼んでください。";
+    if (e.status === 404) return TABLE_NOT_FOUND;
+  }
+  return "状態の進め方を読み込めませんでした。少し待ってから、もう一度開いてください。";
+}
+
+export function StateFlowEditor({
+  open,
+  onOpenChange,
+  table,
+  onSaved,
+  onOpenSchema,
+  onOpenShare,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  table: DataTable;
+  onSaved: (t: DataTable) => void;
+  /// 「列の編集」を開く（状態や申請者に使う列が無いとき）。
+  onOpenSchema?: () => void;
+  /// テーブルの共有を開く（申請する人に「追加だけ」で渡す）。持ち主でも共有できないテーブルでは無い。
+  onOpenShare?: () => void;
+}) {
+  const fields = table.schema.fields;
+  const [loaded, setLoaded] = React.useState<Loaded | null>(null);
+  const [draft, setDraft] = React.useState<FlowDraft | null>(null);
+  const [error, setError] = React.useState<string | null>(null);
+  const [saving, setSaving] = React.useState(false);
+  const [saveError, setSaveError] = React.useState<string | null>(null);
+  const [lostConfirm, setLostConfirm] = React.useState<PendingApprovalMove[] | null>(null);
+  const [confirmClose, setConfirmClose] = React.useState(false);
+  const tableRef = React.useRef(table);
+  tableRef.current = table;
+
+  const load = React.useCallback(() => {
+    setLoaded(null);
+    setDraft(null);
+    setError(null);
+    setSaveError(null);
+    getTableFsm(tableRef.current.id)
+      .then((resp) => {
+        const d = draftFrom(resp, tableRef.current.schema.fields);
+        setLoaded({ resp, ...d });
+        setDraft(d.draft);
+      })
+      .catch((e: unknown) => setError(loadError(e)));
+  }, []);
+  React.useEffect(() => {
+    if (open) load();
+  }, [open, load]);
+
+  const issues = React.useMemo(() => (draft ? checkFlow(draft) : null), [draft]);
+  const dirty = Boolean(draft && loaded && JSON.stringify(draft) !== JSON.stringify(loaded.draft));
+  const hasFsm = Boolean(loaded?.resp.fsm);
+  const selects = fields.filter((f) => f.type === "select");
+  const users = fields.filter((f) => f.type === "user_ref");
+  const label = (k: string | null) => fields.find((f) => f.key === k)?.display_name || k || "";
+  const set = (patch: Partial<FlowDraft>) => setDraft((d) => (d ? { ...d, ...patch } : d));
+
+  /// 承認を待っているレコードのうち、この下書きでは判断できなくなる組。
+  const lost = React.useMemo(() => {
+    if (!draft || !loaded) return [];
+    const body = bodyOf(draft);
+    return loaded.resp.pending_approvals.filter((p) => !body.transitions.some((t) => t.from === p.from && t.to === p.to));
+  }, [draft, loaded]);
+  /// このテーブルの状態を使うワークフローへの影響（保存は止めない）。
+  const workflowNotes = React.useMemo(() => {
+    if (!draft || !loaded) return [];
+    const names = new Set(draft.states.map((s) => s.name.trim()));
+    const reach = reachableNames(draft);
+    return loaded.resp.workflows.flatMap((w) => {
+      const missing = w.states.filter((s) => !names.has(s));
+      const unreachable = w.states.filter((s) => names.has(s) && !reach.has(s));
+      const parts = [
+        ...(missing.length ? [`${missing.map((s) => `「${s}」`).join("、")}は状態にありません。`] : []),
+        ...(unreachable.length ? [`${unreachable.map((s) => `「${s}」`).join("、")}へは、最初の状態から進めません。`] : []),
+      ];
+      return parts.length ? [{ id: w.id, name: w.name, text: parts.join("") }] : [];
+    });
+  }, [draft, loaded]);
+
+  const requestClose = (o: boolean) => {
+    if (o) return onOpenChange(true);
+    if (dirty && !saving) setConfirmClose(true);
+    else onOpenChange(false);
+  };
+
+  const addMove = () => {
+    if (!draft) return;
+    const named = draft.states.filter((s) => s.name.trim());
+    const from = draft.moves.at(-1)?.from ?? named[0]?.id ?? "";
+    const used = new Set(draft.moves.filter((m) => m.from === from).map((m) => m.to));
+    const to = named.find((s) => s.id !== from && !used.has(s.id))?.id ?? "";
+    // 最初の状態へ戻す進め方（出し直しなど）は申請者がするので、本人を除く既定をオフにする（D-115）。
+    const toInitial = to !== "" && to === draft.states[0]?.id;
+    set({
+      moves: [
+        ...draft.moves,
+        {
+          id: draftId("m"),
+          from,
+          to,
+          actor: { kind: "simple", who: [guessApprover(fields, draft.applicantField)], excludeApplicant: !toInitial },
+        },
+      ],
+    });
+  };
+
+  const save = async (confirmPending: boolean) => {
+    if (!draft || !loaded || !draft.statusField || issues?.hasErrors) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const saved = await saveTableFsm(table.id, {
+        status_field: draft.statusField,
+        body: bodyOf(draft),
+        applicant_write_lock: draft.writeLock && draft.applicantField ? draft.applicantField : null,
+        expected_schema_version: loaded.resp.schema_version,
+        confirm_pending: confirmPending,
+      });
+      toast({ title: "状態の進め方を保存しました" });
+      onSaved(saved);
+      onOpenChange(false);
+    } catch (e) {
+      const inUse = e instanceof DataApiError ? e.fsmInUse : null;
+      if (inUse) {
+        setLostConfirm(inUse);
+        return;
+      }
+      if (e instanceof DataApiError && e.status === 409) {
+        setSaveError("ほかの人がテーブルの設定を先に変えました。最新の内容を読み込んでから、もう一度保存してください。");
+      } else if (e instanceof DataApiError && e.status === 403) {
+        setSaveError("状態の進め方を変えられるのは、テーブルの持ち主だけです。");
+      } else {
+        setSaveError(e instanceof Error ? e.message : String(e));
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+  const trySave = () => {
+    if (lost.length > 0) setLostConfirm(lost);
+    else void save(false);
+  };
+
+  const initialName = draft?.states[0]?.name.trim() || "最初の状態";
+  const noApplicant = draft && !draft.applicantField;
+
+  return (
+    <Sheet open={open} onOpenChange={requestClose}>
+      <SheetContent side="right" className="w-full sm:max-w-3xl" data-testid="state-flow-editor">
+        <SheetHeader className="pr-14">
+          <SheetTitle>状態の進め方</SheetTitle>
+          <SheetDescription>
+            レコードの状態を、どの状態からどの状態へ、誰が進められるかを決めます（例: 申請中 → 承認済み）。「承認を待つ」「状態を進める」ブロックと、状態が変わったときのきっかけで使います。
+          </SheetDescription>
+        </SheetHeader>
+        <SheetBody className="space-y-6 px-4 pb-4">
+          {error ? (
+            <p className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive" role="alert" data-testid="state-flow-load-error">
+              {error}
+            </p>
+          ) : !draft || !loaded || !issues ? (
+            <p className="flex items-center gap-2 text-sm text-muted-foreground" role="status">
+              <Loader2 className="size-4 animate-spin" aria-hidden />
+              読み込み中…
+            </p>
+          ) : (
+            <>
+              <Section title="状態の列" testId="state-flow-status">
+                {selects.length === 0 ? (
+                  <div className="space-y-2 rounded-lg border border-dashed p-3">
+                    <Hint>状態に使える選択肢の列がありません。「列の編集」で選択肢の列（例: 状態）を追加してください。</Hint>
+                    {onOpenSchema ? (
+                      <Button size="sm" variant="outline" onClick={onOpenSchema}>
+                        列の編集を開く
+                      </Button>
+                    ) : null}
+                  </div>
+                ) : (
+                  <>
+                    <Select
+                      value={draft.statusField ?? undefined}
+                      disabled={hasFsm}
+                      onValueChange={(k) => set({ statusField: k, states: statesFromField(fields, k), moves: [] })}
+                    >
+                      <SelectTrigger aria-label="状態の列" className="h-9 sm:w-72">
+                        <SelectValue placeholder="選んでください" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {selects.map((f) => (
+                          <SelectItem key={f.key} value={f.key}>
+                            {f.display_name || f.key}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <Hint>
+                      {hasFsm
+                        ? "状態の進め方を作った後は、状態の列を変えられません。"
+                        : "レコードの状態を入れる選択肢の列です。保存すると、この列は状態を進める操作でだけ変わります。"}
+                    </Hint>
+                    {!draft.statusField ? <Hint tone="error">状態の列を選んでください。</Hint> : null}
+                  </>
+                )}
+              </Section>
+
+              {draft.statusField ? (
+                <>
+                  <Section title="状態" testId="state-flow-states">
+                    <Hint>
+                      いちばん上の状態が、レコードを追加したときの状態（最初の状態）です。ここで変えた状態は、「{label(draft.statusField)}」の選択肢になります。
+                    </Hint>
+                    {loaded.mismatch ? (
+                      <Hint tone="warn">
+                        「{label(draft.statusField)}」の選択肢と状態の進め方の状態が合っていなかったため、両方を合わせて出しています。保存すると、選択肢がこの一覧になります。
+                      </Hint>
+                    ) : null}
+                    <ol className="space-y-1.5">
+                      {draft.states.map((s, i) => {
+                        const err = issues.stateErrors.get(s.id);
+                        const warn = issues.stateWarnings.get(s.id);
+                        return (
+                          <li key={s.id} className="space-y-0.5" data-testid="state-flow-state">
+                            <div className="flex items-center gap-1.5">
+                              <Input
+                                value={s.name}
+                                maxLength={128}
+                                aria-label={`状態 ${i + 1} の名前`}
+                                aria-invalid={err ? true : undefined}
+                                onChange={(e) =>
+                                  set({ states: draft.states.map((x) => (x.id === s.id ? { ...x, name: e.target.value } : x)) })
+                                }
+                                className={cn("h-8 min-w-0 flex-1 text-[13px]", err && "border-destructive")}
+                              />
+                              {i === 0 ? (
+                                <Badge variant="secondary" className="shrink-0">
+                                  最初の状態
+                                </Badge>
+                              ) : issues.ends.has(s.id) ? (
+                                <Badge variant="muted" className="shrink-0">
+                                  終わり
+                                </Badge>
+                              ) : null}
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="size-7 shrink-0 text-muted-foreground"
+                                aria-label={`「${s.name || `状態 ${i + 1}`}」を上へ`}
+                                disabled={i === 0}
+                                onClick={() => {
+                                  const n = [...draft.states];
+                                  [n[i - 1], n[i]] = [n[i], n[i - 1]];
+                                  set({ states: n });
+                                }}
+                              >
+                                <ArrowUp className="size-3.5" aria-hidden />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="size-7 shrink-0 text-muted-foreground"
+                                aria-label={`「${s.name || `状態 ${i + 1}`}」を下へ`}
+                                disabled={i === draft.states.length - 1}
+                                onClick={() => {
+                                  const n = [...draft.states];
+                                  [n[i], n[i + 1]] = [n[i + 1], n[i]];
+                                  set({ states: n });
+                                }}
+                              >
+                                <ArrowDown className="size-3.5" aria-hidden />
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="size-7 shrink-0 text-muted-foreground hover:text-destructive"
+                                aria-label={`「${s.name || `状態 ${i + 1}`}」を削除`}
+                                onClick={() =>
+                                  set({
+                                    states: draft.states.filter((x) => x.id !== s.id),
+                                    moves: draft.moves.filter((m) => m.from !== s.id && m.to !== s.id),
+                                  })
+                                }
+                              >
+                                <Trash2 className="size-3.5" aria-hidden />
+                              </Button>
+                            </div>
+                            {err ? <Hint tone="error">{err}</Hint> : warn ? <Hint tone="warn">{warn}</Hint> : null}
+                          </li>
+                        );
+                      })}
+                    </ol>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full border-dashed"
+                      onClick={() => set({ states: [...draft.states, { id: draftId("s"), name: "" }] })}
+                    >
+                      <Plus className="size-4" aria-hidden />
+                      状態を追加
+                    </Button>
+                    <Hint>使っているレコードがある状態は、削除や名前の変更をすると保存できません。</Hint>
+                  </Section>
+
+                  <Section title="申請した本人の扱い" testId="state-flow-applicant">
+                    {users.length === 0 ? (
+                      <div className="space-y-2 rounded-lg border border-dashed p-3">
+                        <Hint tone="warn">
+                          メンバーの列が無いため、申請した本人も自分の申請を承認できます。「列の編集」でメンバーの列（例: 申請者）を追加すると、本人を除けます。
+                        </Hint>
+                        {onOpenSchema ? (
+                          <Button size="sm" variant="outline" onClick={onOpenSchema}>
+                            列の編集を開く
+                          </Button>
+                        ) : null}
+                      </div>
+                    ) : (
+                      <>
+                        <Select
+                          value={draft.applicantField ?? "__none"}
+                          onValueChange={(k) => set({ applicantField: k === "__none" ? null : k })}
+                        >
+                          <SelectTrigger aria-label="申請者の列" className="h-9 sm:w-72">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="__none">使わない</SelectItem>
+                            {users.map((f) => (
+                              <SelectItem key={f.key} value={f.key}>
+                                {f.display_name || f.key}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <Hint>申請した人が入るメンバーの列です。申請した本人を、承認する人から除くのに使います。</Hint>
+                        {noApplicant ? (
+                          <Hint tone="warn">申請者の列を選ばないと、申請した本人も自分の申請を承認できます。</Hint>
+                        ) : (
+                          <>
+                            <label className="flex items-center gap-2 text-[13px]">
+                              <Switch
+                                checked={draft.writeLock}
+                                onCheckedChange={(writeLock) => set({ writeLock })}
+                                aria-label="最初の状態を過ぎたら、申請者は書き換えられない"
+                                data-testid="state-flow-write-lock"
+                              />
+                              最初の状態を過ぎたら、申請者は書き換えられない
+                            </label>
+                            <Hint tone={draft.writeLock ? undefined : "warn"}>
+                              {draft.writeLock
+                                ? `「${initialName}」のあいだだけ、申請者はレコードを書き換えたり削除したりできます。申請者の列が空のレコードは、「${initialName}」を過ぎると誰も書き換えられません。`
+                                : "申請者は、承認された後もレコードを書き換えられます。承認者の列を書き換えて、自分で承認することもできます。"}
+                            </Hint>
+                          </>
+                        )}
+                      </>
+                    )}
+                    <div className="space-y-1.5 rounded-lg bg-muted/50 px-3 py-2">
+                      <Hint>
+                        申請する人には、テーブルを「追加だけ」で共有するのがおすすめです。追加だけの人は、レコードを追加して自分のレコードを見られるだけで、書き換えも状態を進めることもできません。
+                      </Hint>
+                      {onOpenShare ? (
+                        <Button size="sm" variant="outline" className="h-7 gap-1 text-xs" onClick={onOpenShare}>
+                          <Share2 className="size-3.5" aria-hidden />
+                          テーブルを共有
+                        </Button>
+                      ) : null}
+                    </div>
+                  </Section>
+
+                  <Section title="進め方" testId="state-flow-moves-section">
+                    <Hint>
+                      進められるのは、テーブルを編集できる人のうち、ここで選んだ人だけです（「追加だけ」で共有した人は進められません）。「承認を待つ」の承認者も、ここで許された人だけが判断できます。
+                    </Hint>
+                    <MovesTable
+                      draft={draft}
+                      fields={fields}
+                      errors={issues.moveErrors}
+                      pending={loaded.resp.pending_approvals}
+                      onChange={(moves) => set({ moves })}
+                      onAdd={addMove}
+                    />
+                    {issues.errors.map((e) => (
+                      <Hint key={e} tone="error">
+                        {e}
+                      </Hint>
+                    ))}
+                  </Section>
+
+                  {lost.length > 0 || workflowNotes.length > 0 ? (
+                    <Section title="影響を受けるもの" testId="state-flow-impact">
+                      {lost.length > 0 ? (
+                        <div className="space-y-1 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2" data-testid="state-flow-lost">
+                          <Hint tone="error">保存すると、承認を待っている次のレコードが判断できなくなります。</Hint>
+                          <ul className="list-disc space-y-0.5 pl-5 text-[11px] text-destructive">
+                            {lost.map((p) => (
+                              <li key={`${p.from}>${p.to}`}>
+                                「{p.from}」から「{p.to}」（{p.count.toLocaleString("ja-JP")} 件）
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      ) : null}
+                      {workflowNotes.length > 0 ? (
+                        <ul className="space-y-1" data-testid="state-flow-workflows">
+                          {workflowNotes.map((w) => (
+                            <li key={w.id} className="flex items-start gap-1.5 text-[11px] leading-relaxed text-[var(--season-autumn)]">
+                              <Workflow className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+                              <span>
+                                <Link href={`/workflows/${w.id}`} className="font-medium underline-offset-2 hover:underline" target="_blank">
+                                  {w.name}
+                                </Link>
+                                : {w.text}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      ) : null}
+                    </Section>
+                  ) : null}
+                </>
+              ) : null}
+            </>
+          )}
+        </SheetBody>
+        <div className="space-y-2 border-t px-4 py-3">
+          {saveError ? (
+            <p className="text-[12px] text-destructive" role="alert" data-testid="state-flow-save-error">
+              {saveError}
+              {saveError.startsWith("ほかの人") ? (
+                <Button size="sm" variant="link" className="h-auto px-1 text-[12px]" onClick={load}>
+                  最新の内容を読み込む
+                </Button>
+              ) : null}
+            </p>
+          ) : issues?.hasErrors ? (
+            <p className="text-[12px] text-muted-foreground">直す箇所があるため、保存できません。欄の下の誤りを直してください。</p>
+          ) : null}
+          <div className="flex items-center justify-end gap-2">
+            <Button variant="outline" onClick={() => requestClose(false)}>
+              閉じる
+            </Button>
+            <Button
+              onClick={trySave}
+              disabled={!draft || !draft.statusField || !dirty || saving || Boolean(issues?.hasErrors)}
+              data-testid="state-flow-save"
+            >
+              {saving ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}
+              保存
+            </Button>
+          </div>
+        </div>
+        <ConfirmDialog
+          open={confirmClose}
+          onOpenChange={setConfirmClose}
+          title="保存していない変更があります"
+          description="状態の進め方の変更を保存せずに閉じますか？保存していない変更は消えます。"
+          confirmLabel="変更を捨てて閉じる"
+          destructive
+          onConfirm={async () => onOpenChange(false)}
+        />
+        <ConfirmDialog
+          open={lostConfirm !== null}
+          onOpenChange={(o) => !o && setLostConfirm(null)}
+          title="承認を待っているレコードを判断できなくしますか？"
+          description={`承認を待っている ${(lostConfirm ?? []).reduce((n, p) => n + p.count, 0).toLocaleString("ja-JP")} 件は、判断しても状態を進められなくなります。承認の期限か実行の期限が来るまで、「承認」の画面に残ります。`}
+          confirmLabel="それでも保存"
+          destructive
+          onConfirm={async () => {
+            setLostConfirm(null);
+            await save(true);
+          }}
+        />
+      </SheetContent>
+    </Sheet>
+  );
+}

@@ -20,6 +20,7 @@ import {
   Share2,
   Table2,
   Upload,
+  Workflow,
 } from "lucide-react";
 import { useRouter, useSearchParams } from "next/navigation";
 import * as React from "react";
@@ -30,6 +31,7 @@ import { ImportDialog, importProgress, useImportJob } from "@/components/data/im
 import { RecordDialog } from "@/components/data/record-dialog";
 import { useFsm } from "@/components/data/transition-editor";
 import { SchemaEditor } from "@/components/data/schema-editor";
+import { StateFlowEditor } from "@/components/data/state-flow-editor";
 import { TableShareDialog } from "@/components/data/table-share-dialog";
 import {
   ColumnsControl,
@@ -171,6 +173,8 @@ export function TableWorkspace({
     | null
   >(null);
   const [schemaOpen, setSchemaOpen] = React.useState(false);
+  // 状態の進め方（GAP-44）。ワークフローのエディターの案内（`?panel=states`）から開いて来たら、最初から開く。
+  const [statesOpen, setStatesOpen] = React.useState(() => params.get("panel") === "states");
   const [recordOpen, setRecordOpen] = React.useState(false);
   const [viewLoading, setViewLoading] = React.useState(false);
   const [importOpen, setImportOpen] = React.useState(false);
@@ -551,6 +555,18 @@ export function TableWorkspace({
               <span className="max-sm:sr-only">列の編集</span>
             </Button>
           ) : null}
+          {viewer.can_manage ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-8 gap-1.5 px-2.5 text-[13px]"
+              onClick={() => setStatesOpen(true)}
+              data-testid="state-flow-open"
+            >
+              <Workflow className="size-4" aria-hidden />
+              <span className="max-sm:sr-only">状態の進め方</span>
+            </Button>
+          ) : null}
         </div>
         <div className="ml-auto flex items-center gap-2 max-sm:w-full max-sm:justify-end">
           {spec.kind === "grid" ? <PeerStrip peers={peers} label={peerLabel} /> : null}
@@ -750,6 +766,21 @@ export function TableWorkspace({
         />
       ) : null}
       <SchemaEditor open={schemaOpen} onOpenChange={setSchemaOpen} table={table} onSaved={onTableChanged} />
+      <StateFlowEditor
+        open={statesOpen}
+        onOpenChange={(o) => {
+          setStatesOpen(o);
+          // 案内のリンクで開いたときの印（?panel=states）は、閉じたら外す（再読み込みで開き直さない）。
+          if (!o && params.get("panel")) router.replace(viewParam ? `/data/${table.id}?view=${viewParam}` : `/data/${table.id}`);
+        }}
+        table={table}
+        onSaved={onTableChanged}
+        onOpenSchema={() => {
+          setStatesOpen(false);
+          setSchemaOpen(true);
+        }}
+        onOpenShare={canShare ? () => setShareOpen(true) : undefined}
+      />
       <RecordDialog
         open={recordOpen}
         onOpenChange={setRecordOpen}

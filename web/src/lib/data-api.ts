@@ -55,6 +55,14 @@ export type ImportErrorsResponse = S["ImportErrorsResponse"];
 export type FsmBody = S["FsmBody"];
 export type AllowedTransitions = S["AllowedTransitions"];
 export type FsmResponse = S["FsmResponse"];
+export type FsmTransition = S["FsmTransition"];
+export type PolicyExpr = S["PolicyExpr"];
+/// テーブルの設定の「状態の進め方」（持ち主だけ・GAP-44）。
+export type TableFsmResponse = S["TableFsmResponse"];
+export type SaveTableFsmRequest = S["SaveTableFsmRequest"];
+export type PendingApprovalMove = S["PendingApprovalMove"];
+export type WorkflowStateUse = S["WorkflowStateUse"];
+export type FsmInUseBody = S["FsmInUseBody"];
 /// 構造化した誤りの本文（400 入力の誤り・403 列が使えない・409 競合・要求の形の誤り）。
 export type BadRequestBody = S["BadRequestBody"];
 export type ForbiddenBody = S["ForbiddenBody"];
@@ -137,6 +145,13 @@ export class DataApiError extends Error {
     return this.status === 403 && this.code === "field_unavailable";
   }
 
+  /// 保存すると、承認を待っているレコードが判断できなくなる（`code=fsm_in_use`・判断できなくなる組と数）。
+  get fsmInUse(): PendingApprovalMove[] | null {
+    if (this.status !== 409 || this.code !== "fsm_in_use") return null;
+    const p = this.body?.pending;
+    return Array.isArray(p) ? (p as PendingApprovalMove[]) : [];
+  }
+
   /// 材料化した派生列が参照先の変更を受けて再計算中（`code=derived_recomputing`）。
   get derivedRecomputing(): { field: string } | null {
     if (this.status !== 409 || this.code !== "derived_recomputing") return null;
@@ -197,7 +212,9 @@ function codeMessage(body: Record<string, unknown> | null): string | null {
     case "snapshot_unsupported":
       return "この並べ替えでは固定の読み取りができません";
     case "fsm_invalid":
-      return "状態の遷移の定義が正しくありません";
+      return "状態の進め方が正しくありません";
+    case "fsm_in_use":
+      return "承認を待っているレコードが、この変更で判断できなくなります";
     // 要求の形の誤り（RequestErrorBody・サーバは日本語の message を付けるので、無いときの予備）。
     case "payload_too_large":
       return "送る内容が大きすぎます";
@@ -426,6 +443,18 @@ export async function getAllowedTransitions(tableId: string, recordId: string): 
 export async function getFsm(id: string, version?: number): Promise<FsmResponse> {
   const q = version != null ? `?version=${version}` : "";
   return ok<FsmResponse>(await apiFetch(`/data/fsms/${enc(id)}${q}`));
+}
+
+/// テーブルの状態の進め方と、変えたときに影響を受けるもの（承認を待っているレコードの数・状態を使う
+/// ワークフロー）。テーブルの持ち主だけ（ほかの人は 403、見えないテーブルは 404）。
+export async function getTableFsm(tableId: string): Promise<TableFsmResponse> {
+  return ok<TableFsmResponse>(await apiFetch(`/data/tables/${enc(tableId)}/fsm`));
+}
+
+/// テーブルの状態の進め方を保存する（状態の列の選択肢・使う版・書き込みの決まりを 1 回で替える）。承認を待って
+/// いるレコードが判断できなくなる変更は、`confirm_pending` が無ければ 409（`DataApiError.fsmInUse`）。
+export async function saveTableFsm(tableId: string, req: SaveTableFsmRequest): Promise<DataTable> {
+  return ok<DataTable>(await apiFetch(`/data/tables/${enc(tableId)}/fsm`, send("PUT", req)));
 }
 
 export async function getRecord(tableId: string, recordId: string): Promise<DataRecord> {

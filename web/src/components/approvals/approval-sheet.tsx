@@ -230,8 +230,8 @@ function ApprovalDetail({
               })}
             </div>
             {loaded && item.decisions.every((d) => d.allowed === false) ? (
-              <p className="text-xs text-muted-foreground">
-                あなたは担当ですが、状態の遷移の規則ではこの承認を判断できません（表の管理者に確認してください）。
+              <p className="text-xs text-muted-foreground" data-testid="approval-not-allowed">
+                テーブルの状態の進め方で許されていないため、あなたはこの承認を判断できません（自分の申請は判断できない決まりのことがあります）。ほかの承認者か、テーブルの持ち主に頼んでください。
               </p>
             ) : null}
           </fieldset>
