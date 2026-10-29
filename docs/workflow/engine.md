@@ -1092,7 +1092,8 @@ agent.invoke の会計の利用元は `workflow`（自律版のループでも `
 v1 は次の 2 つだけを提供する。step 単位の入力編集リプレイはやらない。
 
 - **失敗 step からの再開**: 同一 run 内で failed step を `ready` に戻す。成功済み checkpoint は再利用する（再実行しない）。
-- **run の再実行**: 新規 run（同一 input）を作成する。
+- **run の再実行**: 新規 run（同一 input）を作成する。手動の実行で試したきっかけの内容（`trigger_payload`・D-93）も
+  引き継ぐ（引き継がないと、新しい run の `$from trigger` が入力の値になる）。
 
 **claim 済みで中断された step（失敗ドレインで `cancelled` になった `attempt > 0`）は、旧リースが切れるまでの猶予を置いてから `ready` に戻す。** 猶予 > `lease_secs` が不変条件（初期値は `lease_secs` ＋ 5 秒）。失敗直後の resume では旧ワーカーがまだ生きている可能性があり、別ワーカーが即座に再 claim すると**外部副作用が併走する**（checkpoint 自体は fencing が無害化するが、`http.request` 等は二度出る）。猶予は固定秒ではなく `lease_secs` から導出する — 固定値だと `lease_secs` を既定より大きく設定した構成で猶予がリースより短くなり、不変条件が破れる（#446）。
 
