@@ -204,3 +204,108 @@ test("CSV グリッド: Shift_JIS の CSV を開ける", async ({ page }) => {
     );
   }
 });
+
+/// 文字コードを読み取れない CSV（西欧の文字コードなど）を開くと、「見つかりません」とは言わずに、サーバーが返す
+/// 理由と直し方（UTF-8 か Shift_JIS で保存する）を出す（GAP-45）。行の読み込みに失敗したときも、空の行に見せず、
+/// 読み込めなかったことと読み込み直す手段を出す。
+test("CSV グリッド: 読めない CSV は理由を言い、行を読み込めなければそう言う", async ({ page, browser }) => {
+  test.setTimeout(150_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await loginViaKeycloak(page);
+  const csrf = async () => (await page.context().cookies()).find((c) => c.name === "shiki_csrf")?.value ?? "";
+  let folderId = "";
+  const fileIds: string[] = [];
+  try {
+    const folder = await page.request.post("/api/folders", {
+      headers: { "x-csrf-token": await csrf(), "content-type": "application/json" },
+      data: { name: uniqueName("e2e-unreadable-csv"), parent_id: null },
+    });
+    expect(folder.ok(), await folder.text()).toBeTruthy();
+    folderId = ((await folder.json()) as { id: string }).id;
+    const upload = async (name: string, buffer: Buffer): Promise<string> => {
+      await page.goto(`/drive?folder=${folderId}`);
+      await page.locator('input[type="file"][multiple]').setInputFiles({ name, mimeType: "text/csv", buffer });
+      await expect(page.getByText(name, { exact: true })).toBeVisible({ timeout: 20_000 });
+      let id = "";
+      await expect
+        .poll(
+          async () => {
+            const res = await page.request.get(`/api/nodes?parent_id=${folderId}`);
+            const items = ((await res.json()) as { items?: { id: string; name: string }[] }).items ?? [];
+            id = items.find((c) => c.name === name)?.id ?? "";
+            return id;
+          },
+          { timeout: 30_000 },
+        )
+        .not.toBe("");
+      fileIds.push(id);
+      return id;
+    };
+    // 西欧の文字コード（Windows-1252）で保存した CSV。UTF-8 でも日本の文字コードでもない。
+    const latin = await upload(`${uniqueName("prix")}.csv`, Buffer.from("Müller,Straße\nCafé,Crème brûlée\n", "latin1"));
+    const schema = await page.request.get(`/api/files/${latin}/tabular/schema`);
+    expect(schema.status()).toBe(400);
+    const reason = ((await schema.json()) as { code: string; message: string }).message;
+    expect(reason).toContain("UTF-8 か Shift_JIS で保存");
+
+    await page.goto(`/csv/${latin}`);
+    await expect(page.getByText("CSV を開けません", { exact: true })).toBeVisible({ timeout: 20_000 });
+    await expect(page.getByText(reason, { exact: true })).toBeVisible();
+    await expect(page.getByText("CSV が見つかりません")).toHaveCount(0);
+    // 読み込み直しても変わらないので、読み込み直すボタンは出さない（ドライブへ戻る導線は残る）。
+    await expect(page.getByRole("button", { name: "もう一度読み込む" })).toHaveCount(0);
+    await expect(page.getByRole("link", { name: "ドライブへ戻る" })).toBeVisible();
+    if (process.env.E2E_SHOTS_DIR) {
+      await page.screenshot({ path: `${process.env.E2E_SHOTS_DIR}/csv-unreadable-pc.png` });
+    }
+    const phoneCtx = await browser.newContext({
+      storageState: await page.context().storageState(),
+      viewport: { width: 390, height: 844 },
+      hasTouch: true,
+      isMobile: true,
+      deviceScaleFactor: 3,
+      ignoreHTTPSErrors: true,
+    });
+    try {
+      const phone = await phoneCtx.newPage();
+      await phone.goto(`/csv/${latin}`);
+      await expect(phone.getByText(reason, { exact: true })).toBeVisible({ timeout: 20_000 });
+      expect(await phone.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+      if (process.env.E2E_SHOTS_DIR) {
+        await phone.screenshot({ path: `${process.env.E2E_SHOTS_DIR}/csv-unreadable-phone.png` });
+      }
+    } finally {
+      await phoneCtx.close();
+    }
+
+    // 行の読み込みに失敗したら、空の行に見せずにそう言い、読み込み直せる。
+    const ok = await upload(`${uniqueName("rows")}.csv`, Buffer.from("id,name\n1,alice\n2,bob\n"));
+    await page.route(`**/api/files/${ok}/tabular/rows**`, (route) =>
+      route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ status: 500, title: "x" }) }),
+    );
+    await openCsv(page, ok);
+    const banner = page.getByTestId("csv-rows-error");
+    await expect(banner).toBeVisible({ timeout: 20_000 });
+    await expect(banner).toContainText("行を読み込めませんでした。");
+    if (process.env.E2E_SHOTS_DIR) {
+      await page.screenshot({ path: `${process.env.E2E_SHOTS_DIR}/csv-rows-error-pc.png` });
+    }
+    await page.unroute(`**/api/files/${ok}/tabular/rows**`);
+    const rows = page.waitForResponse((r) => r.url().includes(`/api/files/${ok}/tabular/rows`) && r.ok());
+    await banner.getByRole("button", { name: "もう一度読み込む" }).click();
+    await rows;
+    await expect(banner).toHaveCount(0);
+  } finally {
+    await cleanupAll(
+      ...fileIds.map((id) => async () => {
+        const del = await page.request.delete(`/api/files/${id}`, { headers: { "x-csrf-token": await csrf() } });
+        expect(del.status(), await del.text()).toBeLessThan(300);
+      }),
+      async () => {
+        if (!folderId) return;
+        const del = await page.request.delete(`/api/folders/${folderId}`, { headers: { "x-csrf-token": await csrf() } });
+        expect(del.status(), await del.text()).toBeLessThan(300);
+      },
+    );
+  }
+});

@@ -6,7 +6,7 @@
 /// - 編集は明示保存（Cmd/Ctrl+S）で rev 付きパッチ→楽観ロック（409 は衝突ダイアログ）。
 /// - SQL コンソール（RO・隔離 DuckDB 経由）を併設し、結果を「新規 CSV」として保存できる。
 
-import { Eye, FileWarning } from "lucide-react";
+import { Eye, FileWarning, RotateCcw } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
 import * as React from "react";
 
@@ -33,17 +33,26 @@ import { toast } from "@/components/ui/use-toast";
 import { setPendingSelection } from "@/lib/selection-context";
 import { getCollabAccess, type CollabAccess } from "@/lib/notes-api";
 import { downloadUrl } from "@/lib/storage";
-import { applyPatch, getSchema, TabularConflict, type SchemaResponse } from "@/lib/tabular-api";
+import {
+  applyPatch,
+  getSchema,
+  TabularConflict,
+  TabularLoadError,
+  type SchemaResponse,
+} from "@/lib/tabular-api";
 
 type Loaded = {
   access: CollabAccess;
   schema: SchemaResponse;
 };
 
+/// 開けなかった理由（CSV として読めない・サーバーの問題）。`retry` なら読み込み直すと通ることがある。
+type Unopenable = { reason: string; retry: boolean };
+
 export default function CsvPage() {
   const params = useParams<{ id: string }>();
   const nodeId = params.id;
-  const [loaded, setLoaded] = React.useState<Loaded | null | "notfound">(null);
+  const [loaded, setLoaded] = React.useState<Loaded | Unopenable | null | "notfound">(null);
   const [baseRev, setBaseRev] = React.useState(0);
   const [dirty, setDirty] = React.useState(false);
   const [saving, setSaving] = React.useState(false);
@@ -53,17 +62,25 @@ export default function CsvPage() {
   const gridRef = React.useRef<CsvGridHandle>(null);
 
   const load = React.useCallback(async () => {
+    const access = await getCollabAccess(nodeId).catch(() => null);
+    if (!access) {
+      setLoaded("notfound");
+      return;
+    }
     try {
-      const access = await getCollabAccess(nodeId);
-      if (!access) {
-        setLoaded("notfound");
-        return;
-      }
       const schema = await getSchema(nodeId);
       setLoaded({ access, schema });
       setBaseRev(access.version);
-    } catch {
-      setLoaded("notfound");
+    } catch (e) {
+      // 見つからない（404・403）だけを「見つかりません」にする。文字コードを読み取れない CSV などは、サーバーが
+      // 返す理由と直し方をそのまま出す（ファイルが消えたと取り違えさせない・GAP-45）。
+      if (e instanceof TabularLoadError && e.notFound) {
+        setLoaded("notfound");
+      } else if (e instanceof TabularLoadError) {
+        setLoaded({ reason: e.message, retry: !e.unreadable });
+      } else {
+        setLoaded({ reason: "CSV を読み込めませんでした。通信の状態を確かめてから、もう一度読み込んでください。", retry: true });
+      }
     }
   }, [nodeId]);
 
@@ -71,7 +88,8 @@ export default function CsvPage() {
     void load();
   }, [load]);
 
-  const editable = loaded && loaded !== "notfound" && loaded.access.mode === "editor";
+  const ready = loaded !== null && loaded !== "notfound" && "access" in loaded ? loaded : null;
+  const editable = ready !== null && ready.access.mode === "editor";
 
   const save = React.useCallback(async () => {
     if (!gridRef.current?.hasPatches() || saving) return;
@@ -126,7 +144,6 @@ export default function CsvPage() {
       .catch(() => toast({ variant: "destructive", description: "ダウンロードできませんでした。" }));
   }, [nodeId]);
 
-  const ready = loaded !== null && loaded !== "notfound" ? loaded : null;
   // クロームはページ最上位で登録する（読み込み中・notfound でも戻る導線を残す）。
   useCsvChrome(
     ready
@@ -147,6 +164,28 @@ export default function CsvPage() {
 
   if (loaded === null) {
     return <EditorLoading kind="sheet" message="CSV を開いています…" />;
+  }
+  if (loaded !== "notfound" && "reason" in loaded) {
+    return (
+      <EditorUnavailable
+        icon={FileWarning}
+        title="CSV を開けません"
+        description={loaded.reason}
+        actions={
+          loaded.retry ? (
+            <Button
+              onClick={() => {
+                setLoaded(null);
+                void load();
+              }}
+            >
+              <RotateCcw aria-hidden />
+              もう一度読み込む
+            </Button>
+          ) : undefined
+        }
+      />
+    );
   }
   if (loaded === "notfound") {
     return (

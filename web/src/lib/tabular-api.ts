@@ -35,15 +35,40 @@ async function invalidInputMessage(res: Response): Promise<string | null> {
   return body?.code === "invalid_input" && body.message ? body.message : null;
 }
 
+/// CSV の列や行を読み込めなかった誤り。`message` は利用者に見せてよい文言。
+///
+/// - `notFound`: 無いか、見る権限が無い（404・403）。画面は「見つかりません」と言う。
+/// - `unreadable`: CSV として読めない（文字コードを読み取れないなど・`invalid_input`）。`message` がその理由と直し方。
+/// - どちらでもなければ、サーバーか通信の問題（読み込み直せば通ることがある）。
+export class TabularLoadError extends Error {
+  constructor(
+    message: string,
+    public readonly notFound: boolean,
+    public readonly unreadable: boolean,
+  ) {
+    super(message);
+    this.name = "TabularLoadError";
+  }
+}
+
+async function loadError(res: Response): Promise<TabularLoadError> {
+  if (res.status === 404 || res.status === 403) {
+    return new TabularLoadError("CSV が見つかりません。削除されたか、見る権限がありません。", true, false);
+  }
+  const invalid = await invalidInputMessage(res);
+  if (invalid) return new TabularLoadError(invalid, false, true);
+  return new TabularLoadError("サーバーで問題が起きました。続くときは管理者に連絡してください。", false, false);
+}
+
 export async function getSchema(nodeId: string): Promise<SchemaResponse> {
   const res = await apiFetch(`/files/${nodeId}/tabular/schema`);
-  if (!res.ok) throw new Error((await invalidInputMessage(res)) ?? `スキーマ取得に失敗しました (${res.status})`);
+  if (!res.ok) throw await loadError(res);
   return (await res.json()) as SchemaResponse;
 }
 
 export async function getRows(nodeId: string, offset: number): Promise<TableResponse> {
   const res = await apiFetch(`/files/${nodeId}/tabular/rows?offset=${offset}`);
-  if (!res.ok) throw new Error((await invalidInputMessage(res)) ?? `行取得に失敗しました (${res.status})`);
+  if (!res.ok) throw await loadError(res);
   return (await res.json()) as TableResponse;
 }
 
