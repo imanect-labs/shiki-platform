@@ -17,6 +17,8 @@
 import * as React from "react";
 import { TriangleAlert } from "lucide-react";
 
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { cn } from "@/lib/utils";
@@ -32,7 +34,7 @@ import type {
   ValueExpr,
 } from "@/generated/workflow-ir";
 import { nodePortLabel } from "../../port-labels";
-import { Field, FieldSelectTrigger, useFieldControl } from "./common";
+import { BLANK_REQUIRED_MESSAGE, Field, FieldSelectTrigger, useFieldControl } from "./common";
 import { DecideQuestions, kindLabel, type QuestionErrors } from "./decide-questions";
 import { planOptionRename, planRouteRename, renameShape } from "./decide-renames";
 import type { FormProps } from "./forms-basic";
@@ -43,10 +45,11 @@ import { ValueExprInput } from "./value-expr-input";
 type Params = Partial<NodeParamsByType["ai.decide"]>;
 type RouteMode = "none" | DecideRouteBy;
 
-/// しきい値の範囲（スライダ・ir.md §7.11 は 0.5〜1.0。1.0 では自己申告の確からしさがほぼ届かないので 0.99 まで）。
+/// しきい値の範囲（ir.md §7.11 の 0.5〜1.0）。既定は置かない（版ごとに実測で決める・PIT-80・D-88）。
 const MIN_CONFIDENCE = 0.5;
-const MAX_CONFIDENCE = 0.99;
-const DEFAULT_CONFIDENCE = 0.8;
+const MAX_CONFIDENCE = 1;
+/// 「0.80 から始める」で入れる仮の値（既定ではない・押した人が選んだと分かるようにボタンで入れる・D-88）。
+const STARTING_CONFIDENCE = 0.8;
 
 const PARAMS_PREFIX = "params が不正です: ";
 const strip = (m: string) => (m.startsWith(PARAMS_PREFIX) ? m.slice(PARAMS_PREFIX.length) : m);
@@ -111,6 +114,8 @@ export function AiDecideForm({
   const p = paramsOf<NodeParamsByType["ai.decide"]>(node) as Params;
   const questions = React.useMemo(() => (p.questions ?? []) as DecideQuestion[], [p.questions]);
   const route = p.route as DecideRoute | undefined;
+  const thresholdIsBlank = route !== undefined && typeof route.min_confidence !== "number";
+  const routeBlank = fieldErrors.get("route") === BLANK_REQUIRED_MESSAGE;
   const errors = React.useMemo(
     () => decideErrors(serverCheck.errors, serverCheck.node, questions),
     [serverCheck, questions],
@@ -208,7 +213,10 @@ export function AiDecideForm({
         route={route}
         onChange={(next) => patch({ route: next })}
         errors={errors.route}
-        routeError={fieldErrors.get("route")}
+        // しきい値が空の保存時の注意（`/params/route/min_confidence`・欄の空の知らせ）は、振り分けではなくしきい値の
+        // 欄の下に出す。入れた直後に検証が追いつくまで残る知らせも、振り分けの下には出さない。
+        routeError={routeBlank ? undefined : fieldErrors.get("route")}
+        blankThreshold={thresholdIsBlank && routeBlank}
         ports={serverPorts}
         portsState={
           serverPortsFresh
@@ -306,6 +314,7 @@ function RouteSection({
   onChange,
   errors,
   routeError,
+  blankThreshold,
   ports,
   portsState,
 }: {
@@ -316,6 +325,8 @@ function RouteSection({
   errors: Map<string, string>;
   /// `route` の欄の誤り（読み取りの誤りなど・項目に写せないもの）。
   routeError?: string;
+  /// しきい値が空だという保存時の注意があるか（欄の下に「入れてください」を出す・D-88）。
+  blankThreshold: boolean;
   /// サーバが導いた出口（まだ無ければ undefined）。
   ports: readonly string[] | undefined;
   /// 出口が今の設定のものか（`pending` は検証の応答待ち・`unresolved` は今の設定では導けなかった）。
@@ -327,7 +338,12 @@ function RouteSection({
   const setMode = (next: RouteMode) => {
     if (next === "none") return onChange(undefined);
     const question = route?.question && routable.some((q) => q.key === route.question) ? route.question : (routable[0]?.key ?? "");
-    onChange({ question, by: next, min_confidence: route?.min_confidence ?? DEFAULT_CONFIDENCE });
+    // しきい値は入れない（既定を置かない・「0.80 から始める」で入れる・D-88）。前に入れた値は残す。
+    onChange({
+      question,
+      by: next,
+      ...(route?.min_confidence !== undefined && route.min_confidence !== null ? { min_confidence: route.min_confidence } : {}),
+    });
   };
   const hint =
     mode === "none"
@@ -336,6 +352,7 @@ function RouteSection({
         ? "答えの選択肢（はい／いいえ）ごとに出口が分かれます。確からしさがしきい値に届かなければ「要確認」へ進みます"
         : "確からしさがしきい値以上なら次へ、届かなければ「要確認」へ進みます";
   const unknownQuestion = route && route.question !== "" && !questions.some((q) => q.key === route.question);
+  const threshold = typeof route?.min_confidence === "number" ? route.min_confidence : undefined;
   return (
     <div className="space-y-3 border-t pt-4" data-testid="decide-route">
       <Field label="振り分け" hint={hint} error={errors.get("by") ?? (errors.size === 0 ? routeError : undefined)}>
@@ -383,11 +400,22 @@ function RouteSection({
             </Select>
           </Field>
           <Field
-            label="しきい値（確からしさ）"
-            hint={`確からしさが ${route.min_confidence.toFixed(2)} 以上なら答えに従い、届かなければ「要確認」へ進みます`}
-            error={errors.get("min_confidence")}
+            label="しきい値（AI の自信）"
+            hint={thresholdHint(mode, threshold)}
+            error={
+              errors.get("min_confidence") ??
+              thresholdRangeError(threshold) ??
+              (threshold === undefined && blankThreshold ? "「しきい値（AI の自信）」を入れてください。" : undefined)
+            }
           >
-            <ThresholdInput value={route.min_confidence} onChange={(min_confidence) => onChange({ ...route, min_confidence })} />
+            <ThresholdInput
+              value={threshold}
+              onChange={(min_confidence) => {
+                // 空にしたら項目ごと外す（空は保存でき、実行の前に止まる・D-88）。
+                const rest: DecideRoute = { question: route.question, ...(route.by ? { by: route.by } : {}) };
+                onChange(min_confidence === undefined ? rest : { ...rest, min_confidence });
+              }}
+            />
           </Field>
         </>
       ) : null}
@@ -397,25 +425,64 @@ function RouteSection({
   );
 }
 
-/// しきい値のスライダ（0.50〜0.99・矢印キーで 0.01 ずつ・見出しを名前にする）。
-function ThresholdInput({ value, onChange }: { value: number; onChange: (next: number) => void }) {
+/// しきい値の注記（分け方ごとに進む出口を言う・数は 0〜1 を主に % を添える・付録 D の N3.2.2）。
+function thresholdHint(mode: RouteMode, value: number | undefined): string {
+  const at = value === undefined ? "しきい値" : ` ${value.toFixed(2)}（${Math.round(value * 100)}%）`;
+  const pass = mode === "confidence" ? "「次へ」へ進み" : "答えに従い";
+  const head = `AI の自信が${at}以上なら${pass}、届かないときは「要確認」へ進みます。`;
+  return value === undefined ? `${head}決まった値はありません。空のままでは実行できません。` : head;
+}
+
+/// しきい値の範囲の誤り（欄の下・保存時の検証と同じ範囲）。
+function thresholdRangeError(value: number | undefined): string | undefined {
+  if (value === undefined || (value >= MIN_CONFIDENCE && value <= MAX_CONFIDENCE)) return undefined;
+  return "しきい値は 0.50〜1.00 にしてください。";
+}
+
+/// しきい値の欄（0.50〜1.00 を数で入れる）。空のときは「0.80 から始める」で仮の値を入れられる（既定は置かない・
+/// D-88・PIT-80）。
+function ThresholdInput({ value, onChange }: { value: number | undefined; onChange: (next: number | undefined) => void }) {
   const a11y = useFieldControl();
-  const shown = Number.isFinite(value) ? value : DEFAULT_CONFIDENCE;
+  // 打っている途中の文字（「0.」など）を保つ。値が外から変わったら合わせる。
+  const [text, setText] = React.useState(value === undefined ? "" : String(value));
+  React.useEffect(() => {
+    setText((cur) => (cur !== "" && Number(cur) === value ? cur : value === undefined ? "" : String(value)));
+  }, [value]);
   return (
-    <div className="flex items-center gap-3">
-      <input
-        type="range"
+    <div className="flex flex-wrap items-center gap-2">
+      <Input
+        type="number"
+        inputMode="decimal"
+        step={0.01}
         min={MIN_CONFIDENCE}
         max={MAX_CONFIDENCE}
-        step={0.01}
-        value={Math.min(MAX_CONFIDENCE, Math.max(MIN_CONFIDENCE, shown))}
-        onChange={(e) => onChange(Math.round(Number(e.target.value) * 100) / 100)}
-        aria-valuetext={`${shown.toFixed(2)} 以上で進める`}
+        value={text}
+        placeholder="例: 0.80"
+        onChange={(e) => {
+          const raw = e.target.value;
+          setText(raw);
+          if (raw.trim() === "") return onChange(undefined);
+          const n = Number(raw);
+          if (Number.isFinite(n)) onChange(Math.round(n * 100) / 100);
+        }}
         data-testid="decide-threshold"
         {...a11y}
-        className="h-6 min-w-0 flex-1 cursor-pointer accent-[var(--primary)] pointer-coarse:h-11"
+        className="h-8 w-24 font-mono tabular-nums max-md:text-base"
       />
-      <span className="w-10 shrink-0 text-right font-mono text-xs tabular-nums">{shown.toFixed(2)}</span>
+      {value !== undefined ? (
+        <span className="text-xs tabular-nums text-muted-foreground">{Math.round(value * 100)}%</span>
+      ) : (
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="h-8 text-xs pointer-coarse:h-11"
+          onClick={() => onChange(STARTING_CONFIDENCE)}
+          data-testid="decide-threshold-start"
+        >
+          0.80 から始める
+        </Button>
+      )}
     </div>
   );
 }

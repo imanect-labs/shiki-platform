@@ -28,6 +28,10 @@ type FieldIds = { labelId: string; descId: string | undefined };
 const FieldContext = React.createContext<FieldIds | undefined>(undefined);
 
 /// `warning` は保存を止めない警告（サーバの保存時の警告のうち、欄に写すもの）。誤りが無ければ注記の代わりに出す。
+/// 必須の欄が空のとき、欄の下に出す文（置いたままの空欄と、保存時の注意 `REQUIRED_TEXT_EMPTY` の欄・index.tsx）。
+/// フォームはこの文かどうかで、空欄の知らせと読み取りの誤りを見分ける。
+export const BLANK_REQUIRED_MESSAGE = "入力してください";
+
 export function Field({
   label,
   hint,

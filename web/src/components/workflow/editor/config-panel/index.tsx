@@ -24,7 +24,7 @@ import { nodeIcon } from "../icons";
 import { defaultParams } from "../ir-state";
 import { edgePortsOf } from "../ports";
 import { mapErrors, nodeErrorView, paramField } from "../validation";
-import { CommonSection } from "./common";
+import { BLANK_REQUIRED_MESSAGE, CommonSection } from "./common";
 import { HumanApprovalForm } from "./forms-approval";
 import { WorkflowReplyForm } from "./forms-reply";
 import { AgentInvokeForm } from "./forms-agent";
@@ -222,7 +222,7 @@ function NodePanel({ ctx, node, sheet }: { ctx: EditorContext; node: IrNode; she
   );
   const fieldErrors = React.useMemo(() => {
     const map = new Map(errorView.fields);
-    for (const key of [...blankRequired(node), ...blankFields]) if (!map.has(key)) map.set(key, "入力してください");
+    for (const key of [...blankRequired(node), ...blankFields]) if (!map.has(key)) map.set(key, BLANK_REQUIRED_MESSAGE);
     return map;
   }, [errorView, node, blankFields]);
   // 欄に写す警告（書いた思考の深さが組織の設定に従うので使われない・D-75 など）は、その欄の下に出す。

@@ -327,16 +327,30 @@ test.describe("AI で判定（エディタ）", () => {
       await expect(question.getByText(/選択肢のキーに「error」は使えません/)).toBeVisible({ timeout: 10_000 });
       await question.getByRole("textbox", { name: "選択肢 2 のキー" }).fill("bug");
 
-      // 振り分け: 答えで分ける（使う質問は選択肢の質問・しきい値は 0.80 から）。しきい値は矢印キーで動かせる。
+      // 振り分け: 答えで分ける（使う質問は選択肢の質問）。しきい値は既定を置かず空のまま（D-88・PIT-80）で、
+      // 空のままでは実行できないことを欄の下で言う。「0.80 から始める」で仮の値を入れ、範囲の外は欄の下で知らせる。
       await choose(page, panel.getByRole("combobox", { name: "振り分け", exact: true }), "答えで分ける");
       await expect(panel.getByRole("combobox", { name: "振り分けに使う質問" })).toContainText("category");
-      const threshold = panel.getByRole("slider", { name: "しきい値（確からしさ）" });
+      const threshold = panel.getByRole("spinbutton", { name: "しきい値（AI の自信）" });
+      await expect(threshold).toHaveValue("");
+      await expect(panel.getByText("「しきい値（AI の自信）」を入れてください。")).toBeVisible({ timeout: 10_000 });
+      await page.screenshot({ path: "test-results/decide-threshold-blank-pc.png" });
+      // 空のしきい値は保存を止めない（実行と自動実行のオンの前に止める）。保存した定義にしきい値は無い。
+      await page.getByRole("button", { name: "保存", exact: true }).click();
+      await expect(page.getByText(/保存しました/).first()).toBeVisible({ timeout: 15_000 });
+      const blankSaved = (await savedIr(page, id)).nodes.find((n) => n.id === "decide_1")!;
+      expect(blankSaved.params.route).toEqual({ question: "category", by: "value" });
+      await panel.getByRole("button", { name: "0.80 から始める" }).click();
       await expect(threshold).toHaveValue("0.8");
-      await threshold.focus();
-      await page.keyboard.press("ArrowRight");
-      await expect(threshold).toHaveValue("0.81");
-      await page.keyboard.press("ArrowLeft");
-      await expect(threshold).toHaveValue("0.8");
+      await expect(panel.getByRole("button", { name: "0.80 から始める" })).toHaveCount(0);
+      await expect(panel.getByText("AI の自信が 0.80（80%）以上なら答えに従い、届かないときは「要確認」へ進みます。")).toBeVisible();
+      await threshold.fill("1.2");
+      await expect(panel.getByText("しきい値は 0.50〜1.00 にしてください。")).toBeVisible();
+      await threshold.fill("0.8");
+      await expect(panel.getByText("しきい値は 0.50〜1.00 にしてください。")).toHaveCount(0);
+      // 入れた後は、検証が追いつく前でも、空の知らせを振り分けやしきい値の下に残さない。
+      await expect(panel.getByTestId("decide-route").getByText("入力してください")).toHaveCount(0);
+      await expect(panel.getByText("「しきい値（AI の自信）」を入れてください。")).toHaveCount(0);
       await expect(panel.getByTestId("decide-calibration")).toContainText("較正なし");
 
       // 検証の後に、選択肢ごとの出口と要確認のハンドルが出る。出口は選択肢の名前で出す（D-87）。
