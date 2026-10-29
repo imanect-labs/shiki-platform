@@ -276,6 +276,8 @@ pub struct RunDetailResponse {
     /// 失敗した run の理由（利用者向けの分類と文言・参照番号・失敗していなければ null）。文言は Rust の単一定義
     /// （`run::failure`）から組む（web に対応表を持たない・BUG-113）。
     pub failure: Option<workflow_engine::RunFailure>,
+    /// 「失敗したところから再開」を勧めるかと理由（失敗していなければ null・BUG-132）。
+    pub resume: Option<workflow_engine::ResumeHint>,
     /// OTel trace id（監査↔OTel↔Langfuse 相関・Task 10.14 DoD）。
     pub trace_id: Option<String>,
     pub cancel_requested: bool,
@@ -323,6 +325,7 @@ pub async fn get_workflow_run(
         input: d.input,
         fail_reason: d.fail_reason,
         failure: d.failure,
+        resume: d.resume,
         trace_id: d.trace_id,
         cancel_requested: d.cancel_requested,
         created_at: d.created_at.to_rfc3339(),

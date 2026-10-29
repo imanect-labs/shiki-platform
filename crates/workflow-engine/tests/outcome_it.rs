@@ -653,9 +653,10 @@ async fn failures_are_classified_and_cleared_by_resume() {
     );
 }
 
-/// 実行履歴の詳細は、画面に返す結果と同じ失敗の理由を返す（BUG-113）。
+/// 実行履歴の詳細は、画面に返す結果と同じ失敗の理由と、再開で結果が変わりうるかを返す（BUG-113・BUG-132）。
 #[tokio::test]
-async fn the_history_detail_tells_the_failure() {
+async fn the_history_detail_tells_the_failure_and_whether_resume_helps() {
+    use workflow_engine::ResumeAdvice;
     let Some(pool) = setup().await else { return };
     let tenant = format!("t-{}", Uuid::new_v4());
     let alice = user(&tenant, "alice", "acme");
@@ -697,7 +698,7 @@ async fn the_history_detail_tells_the_failure() {
         runs.push((wf, run));
     }
     drive(&pool, &tenant).await;
-    // 実行の期限で止めた run（fail_reason = run_timeout）は、step の code にかかわらず時間切れ。
+    // 実行の期限で止めた run（fail_reason = run_timeout）は、step の code にかかわらず再開してもすぐ止まる。
     sqlx::query(
         "UPDATE workflow_run SET fail_reason = 'run_timeout' WHERE tenant_id = $1 AND run_id = $2",
     )
@@ -710,18 +711,33 @@ async fn the_history_detail_tells_the_failure() {
     let ids: Vec<Uuid> = runs.iter().map(|(_, r)| *r).collect();
     let mine = reader.own_outcomes(&alice, &ids, &[]).await.unwrap();
     let want = [
-        Some(FailureCategory::Conflict),
-        Some(FailureCategory::Configuration),
-        Some(FailureCategory::Configuration),
-        Some(FailureCategory::Timeout),
+        Some((FailureCategory::Conflict, ResumeAdvice::FixFirst, true)),
+        Some((
+            FailureCategory::Configuration,
+            ResumeAdvice::SameResult,
+            false,
+        )),
+        Some((
+            FailureCategory::Configuration,
+            ResumeAdvice::SameResult,
+            false,
+        )),
+        Some((FailureCategory::Timeout, ResumeAdvice::PastDeadline, false)),
         None,
     ];
     for ((wf, run), want) in runs.iter().zip(want) {
         let d = store.run_detail(&tenant, *wf, *run).await.unwrap().unwrap();
-        let got = d.failure.as_ref().map(|f| f.category);
+        let got = d
+            .failure
+            .as_ref()
+            .zip(d.resume.as_ref())
+            .map(|(f, r)| (f.category, r.advice, r.offer));
         assert_eq!(got, want, "{run}");
         // 失敗の文言と参照番号は、画面に返す結果と同じ単一定義から組む。
         assert_eq!(d.failure, mine[run].failure, "{run}");
+        if let Some(r) = &d.resume {
+            assert!(!r.note.is_empty());
+        }
     }
     forget(&pool, &tenant).await;
 }

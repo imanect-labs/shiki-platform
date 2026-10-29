@@ -9,7 +9,7 @@
 
 use uuid::Uuid;
 
-use super::outcome::{FailureCategory, RunFailure};
+use super::outcome::{FailureCategory, ResumeAdvice, ResumeHint, RunFailure};
 
 /// 既知の code と分類（エンジン・api のポート・script の実行時が出すもの）。
 ///
@@ -218,6 +218,91 @@ pub fn failure_code<'a>(step_code: Option<&'a str>, item_code: Option<&'a str>) 
     }
 }
 
+/// 再開しても同じ結果になる code（BUG-132）。
+///
+/// 再開は、この実行のバージョンの設定（ピンした IR）・実行の入力・きっかけの内容・完了したブロックの結果
+/// （checkpoint）をそのまま使って、失敗したブロックをもう一度実行する。ここに置くのは、それらだけで決まる失敗
+/// （外の状態を直しても変わらない）。読むファイルの種類（`not_text_file`）は、読むファイルを選び直すまで変わらない。
+pub const SAME_RESULT_CODES: &[&str] = &[
+    "bad_params",
+    "expr_resolve_error",
+    "expr_type_error",
+    "unknown_node",
+    "unsupported_stage_a",
+    "fanout_limit_exceeded",
+    crate::nodes::decide::DECISION_STATE_TOO_LARGE,
+    // 使ってよい操作の天井は、ピンした IR の宣言（`declared_scopes`）で決まる。
+    "out_of_scope",
+    crate::nodes::ports::NOT_TEXT_FILE,
+];
+
+/// 設定の誤りの分類だが、AI の答えが毎回変わるので、再開すると通ることがある code（BUG-132）。
+const AI_ANSWER_CODES: &[&str] = &[
+    crate::nodes::llm_structured::LLM_OUTPUT_INVALID,
+    crate::nodes::llm_structured::LLM_OUTPUT_TRUNCATED,
+    crate::nodes::llm_structured::LLM_REFUSED,
+    "agent_loop",
+];
+
+/// 失敗した run を「失敗したところから再開」したときに、結果が変わりうるか（BUG-132・上の 2 つの表と分類から）。
+///
+/// - 実行の期限で止めた run（`fail_reason = run_timeout`）は、再開しても実行の期限を延ばさないので、すぐに止まる。
+/// - [`SAME_RESULT_CODES`] は再開しても同じ結果になる。
+/// - 一時的な問題・時間切れ（ブロック・承認の期限・変更を待つ期限）・AI の答え・分類できない失敗は、そのまま再開できる。
+/// - 権限・重なり・見つからない・利用の上限と、ほかの設定の誤り（列・モデル・状態の進め方・相手のサービスなど、
+///   この実行の外にあるもの）は、原因を直してから再開する。
+#[must_use]
+pub fn resume_advice(code: Option<&str>, fail_reason: Option<&str>) -> ResumeAdvice {
+    use FailureCategory as F;
+    if fail_reason == Some("run_timeout") {
+        return ResumeAdvice::PastDeadline;
+    }
+    let Some(code) = code else {
+        return ResumeAdvice::Resume;
+    };
+    if SAME_RESULT_CODES.contains(&code) {
+        return ResumeAdvice::SameResult;
+    }
+    if AI_ANSWER_CODES.contains(&code) {
+        return ResumeAdvice::Resume;
+    }
+    match category_of(code) {
+        F::Temporary | F::Timeout | F::Unknown => ResumeAdvice::Resume,
+        F::Permission | F::Conflict | F::NotFound | F::Quota | F::Configuration => {
+            ResumeAdvice::FixFirst
+        }
+    }
+}
+
+/// 再開の勧めと、ボタンの近くに出す理由（作成者向け・付録 C の §3.4.4・P6）。
+#[must_use]
+pub fn resume_hint(code: Option<&str>, fail_reason: Option<&str>) -> ResumeHint {
+    let advice = resume_advice(code, fail_reason);
+    let note = match advice {
+        ResumeAdvice::Resume => {
+            "失敗したブロックから続けます。完了したブロックは実行し直しません。"
+        }
+        ResumeAdvice::FixFirst => {
+            "権限やデータなど、失敗の原因を直してから再開すると、失敗したブロックから続けます。\
+             完了したブロックは実行し直しません。"
+        }
+        ResumeAdvice::SameResult => {
+            "失敗したブロックを同じ設定と値でもう一度実行するので、再開しても同じ結果になります。\
+             設定か入力を直してから、ワークフローの「実行」で実行し直してください。"
+        }
+        ResumeAdvice::PastDeadline => {
+            "実行の期限を過ぎているため、再開してもすぐに止まります。\
+             「同じ入力でもう一度実行」で、最初から実行し直せます。\
+             前の実行で済んだ書き込みや送信も、もう一度行われます。"
+        }
+    };
+    ResumeHint {
+        advice,
+        offer: matches!(advice, ResumeAdvice::Resume | ResumeAdvice::FixFirst),
+        note: note.to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
@@ -304,6 +389,70 @@ mod tests {
             run_failure(id, Some("cancelled"), Some("run_timeout")).message,
             specific_message("run_timeout").unwrap()
         );
+    }
+
+    /// 再開しても同じ結果になる失敗では、再開を勧めず理由を言う（BUG-132）。
+    #[test]
+    fn resume_is_not_offered_when_it_would_fail_the_same_way() {
+        // 設定・値で決まる失敗は同じ結果。
+        for code in SAME_RESULT_CODES {
+            let h = resume_hint(Some(code), None);
+            assert_eq!(h.advice, ResumeAdvice::SameResult, "{code}");
+            assert!(!h.offer, "{code}");
+            assert!(h.note.contains("同じ結果"), "{code}: {}", h.note);
+        }
+        // 実行の期限を過ぎた run は、step の code にかかわらず、再開してもすぐに止まる。
+        let h = resume_hint(Some("unavailable"), Some("run_timeout"));
+        assert_eq!(h.advice, ResumeAdvice::PastDeadline);
+        assert!(!h.offer);
+        assert!(h.note.contains("同じ入力でもう一度実行"), "{}", h.note);
+        assert!(h.note.contains("もう一度行われます"), "{}", h.note);
+        // 一時的な問題・ブロックの時間切れ・AI の答え・分類できない失敗は、そのまま再開を勧める。
+        for code in [
+            "unavailable",
+            "timeout",
+            "approval_timeout",
+            "wait_timeout",
+            "llm_output_invalid",
+            "agent_loop",
+            "internal",
+            "never-seen",
+        ] {
+            let h = resume_hint(Some(code), None);
+            assert_eq!(h.advice, ResumeAdvice::Resume, "{code}");
+            assert!(h.offer, "{code}");
+        }
+        assert_eq!(resume_advice(None, None), ResumeAdvice::Resume);
+        // 外の状態（権限・データ・モデル・状態の進め方・相手のサービス）は、直してから再開する。
+        for code in [
+            "forbidden",
+            "actor_unavailable",
+            "not_found",
+            "name_taken",
+            "quota_exceeded",
+            "field_unavailable",
+            "model_unavailable",
+            "approval_not_decidable",
+            "http_error_status",
+            "script_error",
+        ] {
+            let h = resume_hint(Some(code), None);
+            assert_eq!(h.advice, ResumeAdvice::FixFirst, "{code}");
+            assert!(
+                h.offer && h.note.contains("原因を直してから"),
+                "{code}: {}",
+                h.note
+            );
+        }
+    }
+
+    /// 同じ結果になる code と AI の答えの code は、どれも分類の表にある（綴りの誤りで黙って外れない）。
+    #[test]
+    fn resume_tables_only_name_known_codes() {
+        let known: BTreeSet<&str> = KNOWN_CODES.iter().map(|(c, _)| *c).collect();
+        for code in SAME_RESULT_CODES.iter().chain(AI_ANSWER_CODES) {
+            assert!(known.contains(code), "{code}");
+        }
     }
 
     /// map の要素の失敗で落ちた run は、要素の側の code で分類する。

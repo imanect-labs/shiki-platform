@@ -181,7 +181,10 @@ export function RunDetailSheet({
     detail !== null &&
     !isTerminalRunStatus(detail.status) &&
     !detail.cancelRequested;
+  // 再開しても同じ結果になる失敗（設定・値で決まる失敗・実行の期限切れ）には、再開のボタンを出さず理由を言う。
+  // 勧めるか・理由の文はサーバーが失敗の分類の単一定義から返す（BUG-132）。
   const failed = detail?.status === "failed";
+  const offerResume = failed && detail?.resume?.offer !== false;
 
   return (
     <Sheet open={runId !== null} onOpenChange={(o) => !o && onClose()}>
@@ -252,7 +255,7 @@ export function RunDetailSheet({
                       実行を中止
                     </Button>
                   ) : null}
-                  {failed ? (
+                  {offerResume ? (
                     <Button size="sm" onClick={() => retry("resume")} disabled={busy !== null}>
                       {busy === "retry" ? (
                         <Loader2 className="size-3.5 animate-spin" aria-hidden />
@@ -274,6 +277,11 @@ export function RunDetailSheet({
                     </Button>
                   ) : null}
                 </div>
+                {failed && detail.resume ? (
+                  <p className="text-[11px] leading-relaxed text-muted-foreground" data-testid="run-resume-note">
+                    {detail.resume.note}
+                  </p>
+                ) : null}
               </div>
 
               {detail.input !== null && detail.input !== undefined ? (

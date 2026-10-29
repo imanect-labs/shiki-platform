@@ -28,8 +28,8 @@ use uuid::Uuid;
 pub use launcher::{LauncherError, WorkflowRunLauncher};
 pub use model::{idempotency_key, RunStatus, StepStatus};
 pub use outcome::{
-    FailureCategory, ReplyBody, ReplyFile, ReplySection, ReplyTone, RunFailure, RunReply,
-    WaitingFor,
+    FailureCategory, ReplyBody, ReplyFile, ReplySection, ReplyTone, ResumeAdvice, ResumeHint,
+    RunFailure, RunReply, WaitingFor,
 };
 pub use store::{
     ApprovalWait, CancelOutcome, DataWaitCandidate, DueApprovalCursor, DueApprovalPage,

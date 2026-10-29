@@ -469,6 +469,9 @@ use utoipa::{
         workflow_engine::WaitingFor,
         workflow_engine::FailureCategory,
         workflow_engine::RunFailure,
+        // 実行履歴の詳細の再開の勧め（BUG-132）。
+        workflow_engine::ResumeAdvice,
+        workflow_engine::ResumeHint,
         workflow_engine::RunReply,
         workflow_engine::ReplySection,
         workflow_engine::ReplyBody,

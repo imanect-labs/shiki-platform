@@ -19,6 +19,7 @@ type RunDetail = {
   status: string;
   steps: { node_id: string; status: string; error?: { code?: string; message?: string; retryable?: boolean } | null }[];
   failure?: { category: string; message: string } | null;
+  resume?: { advice: string; offer: boolean; note: string } | null;
 };
 
 const NOT_TEXT =
@@ -139,13 +140,19 @@ test("ファイルを読む: PDF は文章として読めない誤りで失敗�
     expect(step?.error?.code).toBe("not_text_file");
     expect(step?.error?.retryable).toBe(false);
     expect(step?.error?.message).toBe(NOT_TEXT);
-    // 失敗の理由は、画面に返す結果と同じ分類（設定の誤り）の文言（失敗の分類の単一定義から・BUG-113）。
+    // 同じファイルを読み直しても同じ結果なので、再開を勧めない（失敗の分類の単一定義から・BUG-132）。
     expect(bad.detail.failure?.category).toBe("configuration");
+    expect(bad.detail.resume).toMatchObject({ advice: "same_result", offer: false });
 
     await page.goto(`/workflows/${id}/runs?run=${bad.runId}`);
     const sheet = page.getByRole("dialog");
     await expect(sheet.getByText(NOT_TEXT).first()).toBeVisible({ timeout: 30_000 });
+    // 「失敗したところから再開」は出さず、出さない理由と代わりの手段を言う。「同じ入力でもう一度実行」は残る。
     await expect(sheet.getByTestId("run-failure")).toHaveText(bad.detail.failure!.message);
+    await expect(sheet.getByRole("button", { name: "失敗したところから再開" })).toHaveCount(0);
+    await expect(sheet.getByTestId("run-resume-note")).toHaveText(bad.detail.resume!.note);
+    await expect(sheet.getByTestId("run-resume-note")).toContainText("再開しても同じ結果になります");
+    await expect(sheet.getByRole("button", { name: "同じ入力でもう一度実行" })).toBeVisible();
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/storage-read-not-text-pc.png` });
 
     const phoneCtx = await browser.newContext({
@@ -160,6 +167,7 @@ test("ファイルを読む: PDF は文章として読めない誤りで失敗�
       const phone = await phoneCtx.newPage();
       await phone.goto(`/workflows/${id}/runs?run=${bad.runId}`);
       await expect(phone.getByRole("dialog").getByText(NOT_TEXT).first()).toBeVisible({ timeout: 30_000 });
+      await expect(phone.getByRole("dialog").getByTestId("run-resume-note")).toBeVisible();
       expect(await phone.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
       if (SHOTS) await phone.screenshot({ path: `${SHOTS}/storage-read-not-text-phone.png` });
     } finally {

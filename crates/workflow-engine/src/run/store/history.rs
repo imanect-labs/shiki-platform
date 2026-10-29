@@ -10,8 +10,8 @@ use uuid::Uuid;
 
 use super::outcome::{FAILURE_CODE_COLUMNS, WAITING_FOR};
 use super::{map_db, RunStore, RunStoreError};
-use crate::run::failure::{failure_code, run_failure};
-use crate::run::outcome::RunFailure;
+use crate::run::failure::{failure_code, resume_hint, run_failure};
+use crate::run::outcome::{ResumeHint, RunFailure};
 
 /// run 一覧の 1 行（一覧に必要な列のみ）。
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -86,6 +86,8 @@ pub struct RunDetail {
     /// 失敗した run の理由（利用者向けの分類と文言・参照番号）。画面に返す結果（GAP-09）と同じ決め方で、
     /// 失敗していなければ `None`（BUG-113）。
     pub failure: Option<RunFailure>,
+    /// 「失敗したところから再開」を勧めるかと理由（失敗していなければ `None`・BUG-132）。
+    pub resume: Option<ResumeHint>,
     pub trace_id: Option<String>,
     pub cancel_requested: bool,
     pub created_at: DateTime<Utc>,
@@ -221,14 +223,16 @@ impl RunStore {
         else {
             return Ok(None);
         };
-        // 失敗の理由は、画面に返す結果と同じ code の決め方・同じ単一定義で組む（BUG-113）。
-        let failure = (status == "failed").then(|| {
-            run_failure(
-                run_id,
-                failure_code(step_code.as_deref(), item_code.as_deref()),
-                fail_reason.as_deref(),
+        // 失敗の理由と再開の勧めは、画面に返す結果と同じ code の決め方・同じ単一定義で組む（BUG-113・BUG-132）。
+        let (failure, resume) = if status == "failed" {
+            let code = failure_code(step_code.as_deref(), item_code.as_deref());
+            (
+                Some(run_failure(run_id, code, fail_reason.as_deref())),
+                Some(resume_hint(code, fail_reason.as_deref())),
             )
-        });
+        } else {
+            (None, None)
+        };
         let steps: Vec<StepOverview> = sqlx::query_as(&format!(
             "SELECT s.step_path, s.node_id, s.status, s.attempt, s.taken_ports, \
                     (s.output IS NOT NULL) AS has_output, s.error, s.next_retry_at, s.wake_at, \
@@ -254,6 +258,7 @@ impl RunStore {
             trigger_payload: trigger_payload.map(|t| t.0),
             fail_reason,
             failure,
+            resume,
             trace_id,
             cancel_requested,
             created_at,

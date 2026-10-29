@@ -55,6 +55,8 @@ test("実行履歴: 失敗詳細→フィルタ→失敗ステップから再開
     await expect(sheet.getByTestId("run-failure")).toHaveText(
       "ワークフローの設定に問題があり、処理を完了できませんでした。作成者に連絡してください。",
     );
+    // スクリプトの誤りは読むデータで変わりうるので、再開を出し、原因を直してから再開することを言う（BUG-132）。
+    await expect(sheet.getByTestId("run-resume-note")).toContainText("失敗の原因を直してから再開すると");
 
     // 「失敗したところから再開」→ 失敗 step が即 ready に戻り再実行される。
     // 決定的に再失敗するため過渡状態（実行中）は数秒で消える。再実行の証跡は

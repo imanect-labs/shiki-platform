@@ -123,3 +123,30 @@ pub struct RunFailure {
     /// 参照番号（run_id の先頭 8 桁・作成者が実行履歴で探す手がかり）。
     pub reference: String,
 }
+
+/// 失敗した run を「失敗したところから再開」したときに、結果が変わりうるか（BUG-132・分類は
+/// [`crate::run::failure::resume_advice`] の単一定義）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ResumeAdvice {
+    /// 再開すると、失敗したブロックから続けられる（一時的な問題・ブロックの時間切れ・AI の答え・分類できない失敗）。
+    Resume,
+    /// 原因（権限・データ・相手のサービス・組織の設定など、この実行の外にあるもの）を直してから再開すると、失敗した
+    /// ブロックから続けられる。
+    FixFirst,
+    /// 再開しても同じ結果になる（原因が、この実行のバージョンの設定か、入力や前のブロックの結果の値にある。再開は
+    /// どれも同じものを使う）。
+    SameResult,
+    /// 実行の期限を過ぎているので、再開してもすぐに止まる（再開は実行の期限を延ばさない）。
+    PastDeadline,
+}
+
+/// 「失敗したところから再開」を勧めるかと、ボタンの近くに出す理由（BUG-132）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct ResumeHint {
+    pub advice: ResumeAdvice,
+    /// 再開を勧めるか（[`ResumeAdvice::Resume`]・[`ResumeAdvice::FixFirst`]）。勧めないときは再開のボタンを出さない。
+    pub offer: bool,
+    /// 再開で何が起きるか、または再開を勧めない理由と代わりの手段（作成者向け）。
+    pub note: String,
+}

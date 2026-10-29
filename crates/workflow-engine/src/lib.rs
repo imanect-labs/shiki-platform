@@ -76,7 +76,7 @@ pub use run::{
 };
 pub use run::{
     FailureCategory, LiveState, OwnOutcome, ReplyBody, ReplyFile, ReplySection, ReplyTone,
-    RunFailure, RunOutcomeReader, RunReply, WaitingFor,
+    ResumeAdvice, ResumeHint, RunFailure, RunOutcomeReader, RunReply, WaitingFor,
 };
 pub use scheduler::{
     Coalesce, DataTriggerCandidate, EventTriggerRef, FileTriggerCandidate, FireOutcome,
