@@ -65,14 +65,15 @@ pub(crate) fn check_model_allowed(pin: &AiPin, model: Option<&str>) -> Result<()
 
 /// モデルを省略した呼び出しのモデルを、組織の既定（Auto を含む・本人専用のモデルは除く）で決める。
 ///
-/// 思考強度は、既定が特定のモデルなら `effort`（無ければ組織の既定）、Auto なら Auto の設定に従う
-/// （チャットと同じ・アプリの指定で Auto の思考強度は変えない）。agent.invoke の port（api）も使う。
+/// 思考強度はワークフローのノードと同じ規則（D-75・BUG-116）: 組織がモデルの選択を禁じているときと、組織の既定が
+/// Auto のときは、アプリの `effort` を使わず組織の設定（既定の思考強度か Auto の設定）に従う。選べる組織で既定が
+/// 特定のモデルなら `effort`（無ければ組織の既定）。agent.invoke の port（api）も使う。
 pub async fn resolve_omitted_model(
     llm: &LlmGateway,
     auth: &AuthContext,
     effort: Option<Effort>,
 ) -> Result<ResolvedChoice, GatewayError> {
-    match llm.resolve_node_choice(auth, None, effort).await {
+    match llm.resolve_workflow_choice(auth, None, effort).await {
         Ok(Ok(choice)) => Ok(choice),
         // 省略で起こるのは「使えるモデルが無い」だけ（選択の禁止・無効なモデルは明示したときだけ）。
         Ok(Err(ChoiceError::NoModel)) => Err(GatewayError::Invalid(

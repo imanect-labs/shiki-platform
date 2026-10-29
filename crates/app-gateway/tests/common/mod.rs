@@ -364,6 +364,8 @@ pub fn stub_llm(pool: PgPool) -> Arc<llm_gateway::LlmGateway> {
                     prompt_price_micros_per_mtok: 1_000_000,
                     completion_price_micros_per_mtok: 1_000_000,
                     context_window_tokens: None,
+                    // stub-n は思考強度を受ける（省略時の思考強度の解決・BUG-116 を stub の `echoeffort:` で見る）。
+                    supports_effort: (id == "stub-n").then_some(true),
                     ..Default::default()
                 })
                 .collect(),

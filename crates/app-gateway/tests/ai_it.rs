@@ -5,6 +5,7 @@
 //! - llm.invoke の SSE ストリーミングと `llm_usage` への (app_id×user) 会計
 //! - agent.invoke がインストール時ピンの宣言ツール・日次残額を port へ渡すこと
 //! - モデルの省略は組織の既定で解決し、明示モデルは置き換えない（BUG-12）
+//! - モデルを省略したときの思考強度は、組織が選択を禁じていればアプリの指定を使わない（D-75・BUG-116）
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -371,4 +372,62 @@ async fn an_explicit_model_disabled_by_the_organization_is_not_replaced() {
     assert_eq!(s, StatusCode::BAD_REQUEST);
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     assert!(usage_models(&pool, &tenant, app_id, 0).await.is_empty());
+}
+
+/// SSE の本文から、流れてきた文字（`text_delta`）をつないだもの（stub は語ごとに分けて流す）。
+fn streamed_text(sse: &str) -> String {
+    sse.lines()
+        .filter_map(|l| l.strip_prefix("data: "))
+        .filter_map(|d| serde_json::from_str::<serde_json::Value>(d).ok())
+        .filter(|v| v["type"] == "text_delta")
+        .filter_map(|v| v["text"].as_str().map(str::to_string))
+        .collect()
+}
+
+/// モデルを省略した llm.invoke の思考強度（D-75・BUG-116）: 組織がモデルの選択を禁じているときは、アプリが書いた
+/// effort を使わず組織の既定の思考強度で動く。選べる組織では、アプリの effort を使う。
+#[tokio::test]
+async fn an_omitted_model_ignores_the_apps_effort_when_the_organization_disallows_choice() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let (app_id, client) = install(&pool, &tenant, AiPin::default()).await;
+    let st = state(pool.clone(), &tenant);
+    let tok = token(&client, AI_SCOPES, &tenant);
+    let body = json!({
+        "messages": [{ "role": "user", "content": [ { "type": "text", "text": "echoeffort:" } ] }],
+        "effort": "high",
+    });
+
+    for (allow, want) in [(false, "effort: low"), (true, "effort: high")] {
+        set_llm_settings(
+            &st,
+            &tenant,
+            SettingsPatch {
+                default_model: Some("stub-n".into()),
+                allow_user_choice: Some(allow),
+                default_effort: Some(llm_gateway::Effort::Low),
+                ..Default::default()
+            },
+        )
+        .await;
+        let app = build_gateway_router(st.clone());
+        let (s, sse) = post_sse(&app, "/gw/ai/llm/invoke", &tok, &body).await;
+        assert_eq!(s, StatusCode::OK, "{sse}");
+        assert_eq!(streamed_text(&sse), want, "選択を許す={allow}: {sse}");
+    }
+    // 作った行を片付ける（会計は Done の後に非同期で書くので、2 件そろうのを待ってから消す）。
+    assert_eq!(usage_models(&pool, &tenant, app_id, 2).await.len(), 2);
+    for table in [
+        "llm_usage",
+        "app_capability_usage",
+        "app_installation",
+        "tenant_llm_model",
+        "tenant_llm_settings",
+    ] {
+        sqlx::query(&format!("DELETE FROM {table} WHERE tenant_id = $1"))
+            .bind(&tenant)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
 }
