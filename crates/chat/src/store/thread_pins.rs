@@ -16,6 +16,49 @@ use uuid::Uuid;
 use crate::model::SkillPin;
 
 impl ChatStore {
+    /// スレッドの検索フォルダを設定する（作成直後・ホームの「社内検索」・#965）。
+    ///
+    /// フォルダの存在・種別と**作成者の viewer** は API 層（StorageService）が確かめてから呼ぶこと
+    /// （ワークスペースの設定 [`Self::set_thread_workspace`] と同じ分担）。絞り込みにしか使わないので
+    /// 権限は広げない。
+    pub async fn set_thread_search_folder(
+        &self,
+        thread_id: Uuid,
+        tenant_id: &str,
+        folder_id: Uuid,
+        folder_name: &str,
+    ) -> Result<(), ChatError> {
+        sqlx::query(
+            "UPDATE thread SET search_folder_id = $3, search_folder_name = $4 \
+             WHERE id = $1 AND tenant_id = $2",
+        )
+        .bind(thread_id)
+        .bind(tenant_id)
+        .bind(folder_id)
+        .bind(folder_name)
+        .execute(&self.db)
+        .await
+        .map_err(map_db)?;
+        Ok(())
+    }
+
+    /// スレッドの検索フォルダ（生成ワーカーが doc_search の絞り込みに使う・未設定は `None`）。
+    pub async fn thread_search_folder(
+        &self,
+        tenant_id: &str,
+        thread_id: Uuid,
+    ) -> Result<Option<Uuid>, ChatError> {
+        let folder: Option<Option<Uuid>> = sqlx::query_scalar(
+            "SELECT search_folder_id FROM thread WHERE id = $1 AND tenant_id = $2",
+        )
+        .bind(thread_id)
+        .bind(tenant_id)
+        .fetch_optional(&self.db)
+        .await
+        .map_err(map_db)?;
+        Ok(folder.flatten())
+    }
+
     /// スレッドに skill（複数可）/ ミニアプリのバージョンピンを設定する（作成直後・owner のみ・
     /// Task 6.7/6.10・#344 で複数化）。
     ///

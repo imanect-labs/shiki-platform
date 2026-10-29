@@ -40,7 +40,8 @@ impl ChatWorker {
             run.trace_id.as_deref(),
         )
         .await?;
-        let scope = crate::skill::combined_scope(&skills);
+        // 社内文書検索の範囲（skill の知識スコープ ∩ 会話の検索フォルダ・#965）。
+        let scope = self.effective_search_scope(ctx, run, &skills).await?;
         let mut history = history;
 
         // 直近ユーザー発話で事前検索し、文脈注入＋引用イベント。

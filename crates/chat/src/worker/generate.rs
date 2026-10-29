@@ -6,7 +6,7 @@
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
-use agent_core::{run_agent, AgentOptions, RunContext, Tool, WorkspaceStore};
+use agent_core::{run_agent, AgentOptions, RunContext, WorkspaceStore};
 use authz::AuthContext;
 use llm_gateway::{Message as LlmMessage, Role as LlmRole};
 use uuid::Uuid;
@@ -191,9 +191,7 @@ impl ChatWorker {
         )
         .await?;
 
-        // 提示ツール一式（共通＋ドキュメント/Office/CSV）は worker/toolset.rs に集約する。
-        let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
-        self.push_core_tools(&mut tools, &skills, attachments.clone(), run);
+        let mut tools = self.core_tools(ctx, &skills, &attachments, run).await?;
         // skill ツール（カタログ引き・#344 Task 10.11）。
         self.push_skill_tool(&mut tools, ctx, run, &skills).await;
         // AI ドキュメント共同編集（ノート/スライド・Task 11P.4/11.3）＋下書き系＋

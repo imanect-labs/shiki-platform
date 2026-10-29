@@ -1550,3 +1550,102 @@ async fn today_endpoints_over_http() {
     );
     assert!(body["period_start"].is_string() && body["period_end"].is_string());
 }
+
+/// #965: 検索フォルダ付きでスレッドを作る。作成者が見られるフォルダなら名前ごと保存して返し、
+/// 存在しない id は 404（孤児スレッドを作らない）。
+#[tokio::test]
+async fn create_thread_with_search_folder() {
+    let Some((state, sessions)) = build_state(true).await else {
+        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+        return;
+    };
+    let (cookie, csrf) = login(&sessions, "sid-search-folder").await;
+    let app = build_router(state);
+    let post = |uri: &str, body: serde_json::Value| {
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header(COOKIE, &cookie)
+            .header("x-csrf-token", csrf)
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+
+    let folder_name = format!("search-{}", uuid::Uuid::new_v4().simple());
+    let resp = app
+        .clone()
+        .oneshot(post("/folders", serde_json::json!({ "name": folder_name })))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let fid = body_json(resp).await["id"].as_str().unwrap().to_string();
+
+    let resp = app
+        .clone()
+        .oneshot(post(
+            "/threads",
+            serde_json::json!({ "title": "フォルダで探す", "search_folder_id": fid }),
+        ))
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["search_folder_id"], serde_json::json!(fid));
+    assert_eq!(body["search_folder_name"], serde_json::json!(folder_name));
+    let tid = body["id"].as_str().unwrap().to_string();
+
+    // 読み直しても残る。
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/threads/{tid}"))
+                .header(COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(resp).await["search_folder_name"],
+        serde_json::json!(folder_name)
+    );
+
+    // 入れ子のフォルダも選べる（パンくずの末尾が自身）。
+    let resp = app
+        .clone()
+        .oneshot(post(
+            "/folders",
+            serde_json::json!({ "name": "下の階層", "parent_id": fid }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let child = body_json(resp).await["id"].as_str().unwrap().to_string();
+    let resp = app
+        .clone()
+        .oneshot(post(
+            "/threads",
+            serde_json::json!({ "title": "下の階層で探す", "search_folder_id": child }),
+        ))
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["search_folder_name"], serde_json::json!("下の階層"));
+
+    // 存在しないフォルダは 404。
+    let resp = app
+        .clone()
+        .oneshot(post(
+            "/threads",
+            serde_json::json!({ "title": "x", "search_folder_id": uuid::Uuid::new_v4() }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+}

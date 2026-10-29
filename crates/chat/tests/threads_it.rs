@@ -1571,6 +1571,51 @@ async fn pending_approval_is_persisted_and_the_wait_releases_the_slot() {
     );
 }
 
+/// #965: 検索フォルダを設定すると、スレッドの取得とワーカー用の読み出しの両方に出る。
+#[tokio::test]
+async fn thread_search_folder_roundtrips() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let store = store(&pool, Arc::new(AllowAll::new())).await;
+    let c = ctx(&tenant);
+    let thread = store
+        .create_thread(&c, "フォルダで探す", false, None, None)
+        .await
+        .unwrap();
+    assert_eq!(thread.search_folder_id, None);
+    assert_eq!(
+        store
+            .thread_search_folder(&tenant, thread.id)
+            .await
+            .unwrap(),
+        None
+    );
+
+    let folder = uuid::Uuid::new_v4();
+    store
+        .set_thread_search_folder(thread.id, &tenant, folder, "規程集")
+        .await
+        .unwrap();
+    let got = store.get_thread(&c, thread.id, None).await.unwrap();
+    assert_eq!(got.search_folder_id, Some(folder));
+    assert_eq!(got.search_folder_name.as_deref(), Some("規程集"));
+    assert_eq!(
+        store
+            .thread_search_folder(&tenant, thread.id)
+            .await
+            .unwrap(),
+        Some(folder)
+    );
+    // 別テナントからは読めない（tenant で絞る）。
+    assert_eq!(
+        store
+            .thread_search_folder("other", thread.id)
+            .await
+            .unwrap(),
+        None
+    );
+}
+
 /// #965: ホームの「今日のこと」に出す承認待ちの一覧。自分が actor の run だけを返す。
 /// 他人の run・承認待ちでない run・editor を失った thread は出さない。
 #[tokio::test]
