@@ -291,3 +291,58 @@ async fn timeouts_that_may_leave_a_reservation_retry_after_the_reclaim() {
     );
 }
 
+/// 本体を `spawn_blocking` で走らせる executor（script と同じく、フューチャを捨ててもスレッドは止まらない）。
+struct BlockingBody {
+    finished: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl NodeExecutor for BlockingBody {
+    async fn execute(&self, _t: &str, _p: &Value, _ctx: &NodeContext) -> NodeResult {
+        let finished = Arc::clone(&self.finished);
+        tokio::task::spawn_blocking(move || {
+            std::thread::sleep(Duration::from_millis(2_500));
+            finished.fetch_add(1, Ordering::SeqCst);
+        })
+        .await
+        .unwrap();
+        NodeResult::ok(json!({ "done": true }))
+    }
+}
+
+/// script（スクリプトで計算）を打ち切っても、ワーカーは本体のスレッドが終わるまで待ってから戻る（並行上限の枠と
+/// リースを持ったまま）。捨ててすぐ戻ると、動いている script の数を並行上限が縛らなくなっていた。待たない種
+/// （ファイルを読む）は、いままでどおり上限ですぐ戻る。どちらも失敗の理由は時間の上限。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cut_scripts_hold_their_slot_until_the_thread_ends() {
+    let Some(pool) = setup().await else { return };
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let mut seen = Vec::new();
+    for node_type in ["script.run", "storage.read"] {
+        let run = one_step_run_of(&store, &tenant, node_type, 1).await;
+        let finished = Arc::new(AtomicUsize::new(0));
+        let exec = Arc::new(BlockingBody {
+            finished: Arc::clone(&finished),
+        });
+        let w = worker(&pool, &tenant, exec as Arc<dyn NodeExecutor>);
+        let started = Instant::now();
+        assert!(w.claim_and_run_once("w1").await.unwrap());
+        let elapsed = started.elapsed();
+        let done_when_returned = finished.load(Ordering::SeqCst);
+        let step = step_error(&pool, &tenant, run).await;
+        seen.push((node_type, elapsed, done_when_returned, step.1));
+        // 待たない種のスレッドが終わるのを待ってから次へ（後片付けの前に走り終える）。
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+    forget(&pool, &tenant).await;
+
+    let (_, elapsed, done, code) = &seen[0];
+    assert_eq!(*done, 1, "script はスレッドが終わってから戻る: {elapsed:?}");
+    assert!(*elapsed >= Duration::from_millis(2_400), "{elapsed:?}");
+    assert_eq!(code.as_deref(), Some(STEP_TIMEOUT));
+    let (_, elapsed, done, code) = &seen[1];
+    assert_eq!(*done, 0, "ファイルを読むは上限ですぐ戻る");
+    assert!(*elapsed < Duration::from_secs(2), "{elapsed:?}");
+    assert_eq!(code.as_deref(), Some(STEP_TIMEOUT));
+}

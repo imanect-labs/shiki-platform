@@ -98,7 +98,15 @@ impl CapabilityNodeExecutor {
             .map_err(|e| PortError::invalid(format!("script コンパイル失敗: {e}")))?;
 
         let input_json = input.to_string();
-        let limits = self.script_limits;
+        let mut limits = self.script_limits;
+        // step の時間の上限の期限より長く wasm を走らせない（epoch で止める・engine.md §9.4）。script は
+        // `spawn_blocking` の中で走るので、ワーカーが打ち切っても止まらない。打ち切りが先に起きるよう（失敗の理由を
+        // 時間の上限にする）、期限に少しの余白を足す。
+        if let Some(left) = ctx.cancel.remaining() {
+            limits.epoch_deadline = limits
+                .epoch_deadline
+                .min(left.saturating_add(SCRIPT_DEADLINE_MARGIN));
+        }
         let exec_id = format!("{}:{}", ctx.run_id.simple(), ctx.step_path);
 
         let bridge = HostBridge {
@@ -164,6 +172,9 @@ struct HostBridge {
     /// step の止める合図（時間の上限・run の取り消し・リースの喪失でワーカーが立てる）。
     cancel: CancelSignal,
 }
+
+/// step の時間の上限の期限に足す余白（ワーカーの打ち切りを script の epoch より先にする）。
+const SCRIPT_DEADLINE_MARGIN: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// 止める合図の後の `Shiki.*` 呼び出しを断るときの code（BUG-96）。
 const SCRIPT_CANCELLED: &str = "step_cancelled";

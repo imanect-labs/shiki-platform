@@ -25,6 +25,7 @@ use workflow_engine::{
 #[derive(Default)]
 struct SlowReadPorts {
     sent: Mutex<Vec<String>>,
+    reads: std::sync::atomic::AtomicUsize,
 }
 
 fn unused() -> PortError {
@@ -37,6 +38,7 @@ impl NodePorts for SlowReadPorts {
         Err(unused())
     }
     async fn storage_read(&self, _: &ExecCtx, file_id: Uuid) -> Result<Value, PortError> {
+        self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         tokio::time::sleep(Duration::from_millis(600)).await;
         Ok(json!({ "id": file_id.to_string(), "text": "経費の申請" }))
     }
@@ -184,4 +186,56 @@ async fn script_not_cut_sends_once() {
         *ports.sent.lock().unwrap(),
         ["https://api.example.com/hook"]
     );
+}
+
+/// 読み取り（600 ミリ秒）を 10 回くり返す script（止める合図が無くても 6 秒かかる）。
+const READ_TEN_TIMES: &str = r#"function main(input) {
+  for (let i = 0; i < 10; i++) {
+    Shiki.storage.read(input.id);
+  }
+  return "done";
+}"#;
+
+/// script は step の時間の上限の期限で wasm ごと止まる（期限に 1 秒の余白）。以前は打ち切っても script の
+/// wall-clock 上限（30 秒）まで走り続け、そのあいだメモリとスレッドを持っていた。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn script_stops_at_the_step_deadline() {
+    let ports = Arc::new(SlowReadPorts::default());
+    let exec = executor(Arc::clone(&ports));
+    let c = ctx(json!({ "id": Uuid::new_v4().to_string() }));
+    c.cancel
+        .set_deadline(std::time::Instant::now() + Duration::from_secs(1));
+    let started = std::time::Instant::now();
+    let res = exec
+        .execute(
+            "script.run",
+            &json!({ "source": { "inline": READ_TEN_TIMES } }),
+            &c,
+        )
+        .await;
+    let elapsed = started.elapsed();
+    let reads = ports.reads.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(!res.ok, "期限で止まる");
+    assert!(
+        elapsed < Duration::from_secs(4),
+        "期限（1 秒＋余白 1 秒）のあとの読み取りまでで止まる: {elapsed:?}"
+    );
+    assert!(reads < 10, "10 回は読まない: {reads}");
+}
+
+/// 期限が無ければ（打ち切らない呼び出し方）、同じ script は最後まで読む（上のテストが止まるのは期限のため）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn script_without_a_deadline_runs_to_the_end() {
+    let ports = Arc::new(SlowReadPorts::default());
+    let exec = executor(Arc::clone(&ports));
+    let c = ctx(json!({ "id": Uuid::new_v4().to_string() }));
+    let res = exec
+        .execute(
+            "script.run",
+            &json!({ "source": { "inline": READ_TEN_TIMES } }),
+            &c,
+        )
+        .await;
+    assert!(res.ok, "{:?}", res.error);
+    assert_eq!(ports.reads.load(std::sync::atomic::Ordering::SeqCst), 10);
 }

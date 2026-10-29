@@ -75,8 +75,9 @@ pub struct NodeContext {
     /// 「操作の要求スコープ ∈ scope_ceiling」を検証してから OpenFGA check を行う（二重ゲート）。
     /// run 開始時に declared ⊆ 委譲 が保証されるため実効スコープ = declared_scopes。
     pub scope_ceiling: Vec<String>,
-    /// 実行中の step を止める合図（run の取り消し・リースの喪失でワーカーが立てる・engine.md §9.3）。
-    /// 長く走るノード（agent.invoke）が手順の境界で見て止まる。ほかのノードは見なくてよい。
+    /// 実行中の step を止める合図（run の取り消し・リースの喪失・時間の上限でワーカーが立てる・engine.md §9.3）。
+    /// 長く走るノード（agent.invoke）が手順の境界で見て止まる。ほかのノードは見なくてよい。時間の上限の期限も
+    /// 持つ（script は wasm をその期限で止める・engine.md §9.4）。
     pub cancel: CancelSignal,
     /// 実行中の run のワークフロー（ai.decide の決定キャッシュの範囲・T10）。ノード実行外・試験は nil。
     pub workflow_id: Uuid,
@@ -90,18 +91,41 @@ pub struct NodeContext {
 /// 返したときに立てる。リースを失ったのに走り続けると、別のワーカーが同じ step を最初から走らせている間も
 /// 費用がかかり続ける（BUG-6 の R3）。
 #[derive(Debug, Clone, Default)]
-pub struct CancelSignal(std::sync::Arc<std::sync::atomic::AtomicBool>);
+pub struct CancelSignal(std::sync::Arc<SignalState>);
+
+#[derive(Debug, Default)]
+struct SignalState {
+    cancelled: std::sync::atomic::AtomicBool,
+    /// step の時間の上限の期限（ワーカーが実行の前に置く・打ち切らない種は無い）。
+    deadline: std::sync::OnceLock<std::time::Instant>,
+}
 
 impl CancelSignal {
     /// 合図を立てる（一度立てたら戻さない）。
     pub fn cancel(&self) {
-        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.0
+            .cancelled
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// 合図が立っているか。
     #[must_use]
     pub fn is_cancelled(&self) -> bool {
-        self.0.load(std::sync::atomic::Ordering::SeqCst)
+        self.0.cancelled.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// step の時間の上限の期限を置く（ワーカーが実行の前に 1 回だけ置く。2 回目からは変えない）。
+    pub fn set_deadline(&self, at: std::time::Instant) {
+        let _ = self.0.deadline.set(at);
+    }
+
+    /// 時間の上限の期限までの残り（期限が無ければ `None`・過ぎていれば 0）。
+    #[must_use]
+    pub fn remaining(&self) -> Option<std::time::Duration> {
+        self.0
+            .deadline
+            .get()
+            .map(|at| at.saturating_duration_since(std::time::Instant::now()))
     }
 }
 

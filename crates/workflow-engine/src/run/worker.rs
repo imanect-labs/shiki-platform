@@ -139,18 +139,28 @@ impl WorkflowWorker {
 
     /// ノードを実行する。step の時間の上限（ノード種の既定と上限・ir.md §4・engine.md §9.4・BUG-96）を過ぎたら
     /// 実行を打ち切り、止める合図を立てて、やり直せる失敗（`step_timeout`）として試す回数の規則に従わせる。
+    ///
+    /// 本体を `spawn_blocking` の中で走らせる種（script・skill）は、フューチャを捨てても止まらない。打ち切った後も
+    /// 本体が終わるまで（上限つきで）待ってから戻る（呼び出し側は戻ってから並行上限の枠を返す）。
     async fn execute_within_limit(
         &self,
         node: &crate::ir::node::Node,
         ctx: &NodeContext,
     ) -> NodeResult {
-        let run = self.executor.execute(&node.node_type, &node.params, ctx);
-        let Some(limit) =
-            super::step_timeout::step_timeout_sec_for(node, self.config.http_timeout_ms)
-        else {
-            return run.await;
+        use super::step_timeout::{
+            runs_on_blocking_thread, step_timeout_sec_for, BLOCKING_DRAIN_SEC,
         };
-        if let Ok(result) = tokio::time::timeout(Duration::from_secs(u64::from(limit)), run).await {
+        let Some(limit) = step_timeout_sec_for(node, self.config.http_timeout_ms) else {
+            return self
+                .executor
+                .execute(&node.node_type, &node.params, ctx)
+                .await;
+        };
+        let limit_d = Duration::from_secs(u64::from(limit));
+        // 期限を合図に置く（script は wasm をこの期限で止める）。実行を始める前に置く。
+        ctx.cancel.set_deadline(std::time::Instant::now() + limit_d);
+        let mut run = self.executor.execute(&node.node_type, &node.params, ctx);
+        if let Ok(result) = tokio::time::timeout(limit_d, &mut run).await {
             return result;
         }
         ctx.cancel.cancel();
@@ -158,6 +168,17 @@ impl WorkflowWorker {
             run_id = %ctx.run_id, step = %ctx.step_path, limit,
             "step が時間の上限を過ぎたので打ち切った"
         );
+        if runs_on_blocking_thread(crate::vocab::NodeType::parse(&node.node_type)) {
+            // script のスレッドが終わるまで、並行上限の枠とリースを持ったまま待つ（結果は捨てる）。止める合図の後の
+            // `Shiki.*` は断られ、wasm は期限で止まるので、待つのは走っていた呼び出しの残りだけ。
+            let drain = Duration::from_secs(BLOCKING_DRAIN_SEC);
+            if tokio::time::timeout(drain, &mut run).await.is_err() {
+                tracing::warn!(
+                    run_id = %ctx.run_id, step = %ctx.step_path,
+                    "打ち切った script が待つ上限までに終わらなかった（枠を返して進める）"
+                );
+            }
+        }
         NodeResult::fail(
             super::step_timeout::STEP_TIMEOUT,
             super::step_timeout::timeout_message(limit),

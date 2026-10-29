@@ -70,7 +70,7 @@ const RECLAIM_MARGIN_SEC: i64 = 30;
 /// 書き込みと記録を 1 つの Tx にする `storage.write`（打ち切りで両方が巻き戻る）と、予約を取らない種は含まない。
 /// 予約を取るのは `nodes/capability.rs`（workflow.start・csv.patch・csv.write）と `nodes/capability_data.rs`
 /// （data の書き込み）。script・skill の `Shiki.*` は、打ち切っても script のスレッドが呼び出しを終えるまで走る
-/// ので、予約は結果を書いてから外れる。
+/// （ワーカーが待つ・[`runs_on_blocking_thread`]）ので、予約は結果を書いてから外れる。
 fn holds_effect_reservation(nt: NodeType) -> bool {
     matches!(
         nt,
@@ -96,6 +96,20 @@ pub fn retry_floor_after_timeout_sec(code: &str, nt: Option<NodeType>) -> Option
     (code == STEP_TIMEOUT && nt.is_some_and(holds_effect_reservation))
         .then(|| i64::from(RESERVATION_RECLAIM_SECS) + RECLAIM_MARGIN_SEC)
 }
+
+/// 本体を `spawn_blocking` の中で走らせる種か（フューチャを捨てても止まらない・script と skill）。
+///
+/// ワーカーは打ち切ったあとも、本体が終わるまで（[`BLOCKING_DRAIN_SEC`] まで）待ってから並行上限の枠を返す。
+/// 捨てたまま枠を返すと、動いている script の数を並行上限が縛らなくなる。
+#[must_use]
+pub fn runs_on_blocking_thread(nt: Option<NodeType>) -> bool {
+    matches!(nt, Some(NodeType::ScriptRun | NodeType::SkillInvoke))
+}
+
+/// 打ち切った script・skill の本体の終わりを待つ上限（秒）。止める合図の後の `Shiki.*` は断られ、wasm は step の
+/// 期限で止まる（epoch）ので、待つのは打ち切りの時点で走っていた `Shiki.*` 呼び出しの残り（外部 API の応答の待ち
+/// など）だけ。これを過ぎても終わらなければ待たずに進める（以前と同じ）。
+pub const BLOCKING_DRAIN_SEC: u64 = 60;
 
 /// [`step_timeout_sec`] の `Duration`。
 #[must_use]
