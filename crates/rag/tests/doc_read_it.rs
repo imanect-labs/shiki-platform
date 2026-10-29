@@ -481,3 +481,244 @@ async fn many_blocks_are_read_in_order_across_windows() {
     assert_eq!(seen.len(), 50, "全ブロックを読む: {read}");
     assert_eq!(read.matches("段落").count(), 50, "重複しない");
 }
+
+/// このテストのテナントで積んだ行を片付ける（索引・取り込みの記録・内容の履歴・ファイル・監査）。
+async fn cleanup(env: &Env) {
+    let tenant = &env.ctx.tenant_id;
+    for sql in [
+        "delete from rag_chunk where tenant_id = $1",
+        "delete from doc_block where tenant_id = $1",
+        "delete from rag_ingest_job where tenant_id = $1",
+        "delete from node_version where tenant_id = $1",
+        "delete from node where tenant_id = $1",
+        "delete from blob where tenant_id = $1",
+        "delete from audit_log where tenant_id = $1",
+    ] {
+        sqlx::query(sql)
+            .bind(tenant)
+            .execute(&env.pool)
+            .await
+            .unwrap();
+    }
+}
+
+/// 先頭から続けて読む（D-111・ワークフローの「ファイルを読む」）: 窓を 1 つにつなぐので、ページの印や
+/// 「（前の続き）」が窓の境目で重ならず、1 回の SQL の件数の上限（400 件）を超える文書も順に欠けなく読める。
+/// 上限の字数で切ったときは続きの位置が返る（切った印）。監査は 1 回だけ残る。
+#[tokio::test]
+async fn reads_whole_text_across_batches_and_marks_the_cut() {
+    let Some(env) = setup().await else { return };
+    let node = make_file(&env, "就業規則.pdf", 1).await;
+    chunk(&env, &node, 1, 0, "leaf", Some(1), &[], "検索用").await;
+    block(&env, &node, 1, 0, "heading", 1, "第1条 目的").await;
+    for i in 1..=500 {
+        // 2 ページ目から後ろは 100 段落ごとにページが変わる。
+        block(
+            &env,
+            &node,
+            1,
+            i,
+            "paragraph",
+            1 + i / 100,
+            &format!("段落{i:03}"),
+        )
+        .await;
+    }
+    let ctx = &env.ctx;
+    let whole = page(
+        env.search
+            .read_document_text(ctx, &node, 200_000, Some("trace-whole"))
+            .await
+            .unwrap(),
+    );
+    assert_eq!(whole.version, 1);
+    assert_eq!(whole.next, None, "文書の終わりまで読んだ");
+    assert!(whole
+        .text
+        .starts_with("〔p.1〕\n## 第1条 目的\n\n段落001\n\n"));
+    let order: Vec<usize> = (1..=500)
+        .map(|i| {
+            whole
+                .text
+                .find(&format!("段落{i:03}\n"))
+                .expect("全段落を読む")
+        })
+        .collect();
+    assert!(order.windows(2).all(|w| w[0] < w[1]), "順に並ぶ");
+    assert_eq!(whole.text.matches("段落").count(), 500, "重複しない");
+    // ページの印はページが変わる所に 1 回だけ（窓の境目で繰り返さない）。
+    for p in 1..=6 {
+        assert_eq!(
+            whole.text.matches(&format!("〔p.{p}〕")).count(),
+            1,
+            "p.{p}"
+        );
+    }
+    assert!(!whole.text.contains("前の続き"));
+    let audited: i64 = sqlx::query_scalar(
+        "select count(*) from audit_log \
+         where tenant_id = $1 and action = 'rag.doc_read' and trace_id = 'trace-whole'",
+    )
+    .bind(&ctx.tenant_id)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(audited, 1, "続けて読んでも監査は 1 回");
+
+    // 上限の字数で切ると、続きの位置が返る（切った印）。切った後ろの段落は入らない。
+    let head = page(
+        env.search
+            .read_document_text(ctx, &node, 60, None)
+            .await
+            .unwrap(),
+    );
+    assert!(head.next.is_some(), "上限で切った");
+    assert!(head.text.chars().count() <= 60, "{}", head.text);
+    assert!(head.text.contains("段落001") && !head.text.contains("段落100"));
+
+    // pre-filter（可読集合）で読めなければ本文を返さない（read_document と同じ契約）。
+    sqlx::query("update rag_chunk set authz_tags = $1 where node_id = $2")
+        .bind(vec![ctx
+            .ns()
+            .folder(&Uuid::new_v4().to_string())
+            .as_str()
+            .to_string()])
+        .bind(node.id)
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    let denied = env
+        .search
+        .read_document_text(ctx, &node, 200_000, None)
+        .await
+        .unwrap();
+    cleanup(&env).await;
+    assert_eq!(denied, DocRead::Denied);
+}
+
+/// 索引に本文が無い理由（D-111）: 取り込めない種類・大きすぎる・取り込み待ち・取り込みに失敗・本文が無い。
+/// いまの内容は内容の履歴の最新で決めるので、名前の変更で node.version が進んでも索引の本文を読める。新しい内容の
+/// 取り込みが終わるまでは、古い内容を「読める」と言わない。
+#[tokio::test]
+async fn index_state_tells_why_the_text_is_not_readable_yet() {
+    let Some(env) = setup().await else { return };
+    let ctx = &env.ctx;
+    let mut node = make_file(&env, "契約書.pdf", 1).await;
+    sqlx::query("update node set content_type = 'application/pdf' where id = $1")
+        .bind(node.id)
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    node.content_type = Some("application/pdf".into());
+    let record_version = |version: i64| {
+        sqlx::query(
+            "insert into node_version (node_id, version, org, tenant_id, blob_sha256, size_bytes, \
+                                       content_type, author) \
+             values ($1, $2, $3, $4, $5, 10, 'application/pdf', 'alice')",
+        )
+        .bind(node.id)
+        .bind(version)
+        .bind(&ctx.org)
+        .bind(&ctx.tenant_id)
+        .bind(node.blob_sha256.clone().unwrap())
+    };
+    let job = |version: i64, op: &'static str, status: &'static str| {
+        sqlx::query(
+            "insert into rag_ingest_job (tenant_id, org, node_id, version, op, status) \
+             values ($1, $2, $3, $4, $5, $6) \
+             on conflict (tenant_id, node_id, version, op) do update set status = excluded.status",
+        )
+        .bind(&ctx.tenant_id)
+        .bind(&ctx.org)
+        .bind(node.id)
+        .bind(version)
+        .bind(op)
+        .bind(status)
+    };
+    record_version(1).execute(&env.pool).await.unwrap();
+    let mut states = Vec::new();
+    let mut state = |label: &'static str, s: rag::IndexState| states.push((label, s));
+
+    // 取り込みの結果がまだ無い・取り込み中・一時的な失敗のやり直し待ちは、待てば読める。
+    state("届く前", env.search.index_state(ctx, &node).await.unwrap());
+    job(1, "create", "failed").execute(&env.pool).await.unwrap();
+    state(
+        "やり直し待ち",
+        env.search.index_state(ctx, &node).await.unwrap(),
+    );
+    // 取り込みが終わったのに本文が無い（文字の無い文書）。
+    job(1, "create", "succeeded")
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    state(
+        "本文が無い",
+        env.search.index_state(ctx, &node).await.unwrap(),
+    );
+    chunk(&env, &node, 1, 0, "leaf", Some(1), &[], "第1条").await;
+    state(
+        "取り込み済み",
+        env.search.index_state(ctx, &node).await.unwrap(),
+    );
+    // 名前の変更は node.version を進めるが、内容は同じなので読める。
+    node.version = 2;
+    state(
+        "名前の変更の後",
+        env.search.index_state(ctx, &node).await.unwrap(),
+    );
+    // 新しい内容（v3）の取り込みが終わるまでは、古い内容（v1）を読めると言わない。
+    record_version(3).execute(&env.pool).await.unwrap();
+    node.version = 3;
+    state(
+        "新しい内容の取り込み待ち",
+        env.search.index_state(ctx, &node).await.unwrap(),
+    );
+    job(3, "update", "dead").execute(&env.pool).await.unwrap();
+    state(
+        "新しい内容の取り込みに失敗",
+        env.search.index_state(ctx, &node).await.unwrap(),
+    );
+    // 別の org の文脈では索引も取り込みの記録も見えない（いつまでも取り込み待ち・本文は返さない）。
+    let other = test_ctx_org(&ctx.tenant_id, "alice", "other-org");
+    state(
+        "別の org",
+        env.search.index_state(&other, &node).await.unwrap(),
+    );
+
+    // 種類と大きさは、取り込みの記録より先に決まる。
+    let mut image = node.clone();
+    image.content_type = Some("image/png".into());
+    state("画像", env.search.index_state(ctx, &image).await.unwrap());
+    let mut unknown = node.clone();
+    unknown.content_type = None;
+    state(
+        "種類が分からない",
+        env.search.index_state(ctx, &unknown).await.unwrap(),
+    );
+    let mut big = node.clone();
+    let limit_bytes = RagConfig::default().max_parse_bytes;
+    big.size_bytes = Some(limit_bytes + 1);
+    state(
+        "大きすぎる",
+        env.search.index_state(ctx, &big).await.unwrap(),
+    );
+    cleanup(&env).await;
+
+    use rag::IndexState as S;
+    assert_eq!(
+        states,
+        vec![
+            ("届く前", S::Pending),
+            ("やり直し待ち", S::Pending),
+            ("本文が無い", S::Empty),
+            ("取り込み済み", S::Ready),
+            ("名前の変更の後", S::Ready),
+            ("新しい内容の取り込み待ち", S::Pending),
+            ("新しい内容の取り込みに失敗", S::Failed),
+            ("別の org", S::Pending),
+            ("画像", S::Unsupported),
+            ("種類が分からない", S::Unsupported),
+            ("大きすぎる", S::TooLarge { limit_bytes }),
+        ]
+    );
+}

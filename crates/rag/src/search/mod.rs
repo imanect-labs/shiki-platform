@@ -33,12 +33,15 @@ use crate::vector_store::{PreFilter, ScoredChunk, VectorSearch, VectorStore};
 
 mod blocks;
 mod hydrate;
+mod index_state;
 mod narrow;
 mod read;
 
 pub use blocks::MAX_BLOCKS_PER_PAGE;
+pub use index_state::IndexState;
 pub use read::{
     Cursor, DocRead, DocReadPage, ReadFrom, ReadSource, DEFAULT_READ_CHARS, MAX_READ_CHARS,
+    MAX_TEXT_CHARS,
 };
 
 /// バックフィルの上限（PIT-2: 候補が尽きるまで最終件数が top_k を下回らない）。

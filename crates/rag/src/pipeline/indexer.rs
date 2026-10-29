@@ -28,7 +28,7 @@ use crate::store;
 use crate::types::ChunkKind;
 use crate::vector_store::ChunkPoint;
 
-/// パース対象の MIME（worker の対応形式と対にする）。
+/// パース対象の MIME（worker の対応形式と対にする）。取り込めるかの判定は [`parsable_type`] の 1 か所。
 const SUPPORTED_TYPES: &[&str] = &[
     "application/pdf",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
@@ -41,6 +41,21 @@ const SUPPORTED_TYPES: &[&str] = &[
     "text/csv",
     "text/plain",
 ];
+
+/// 取り込める種類なら、パラメーターを除いた小文字の MIME（取り込めない種類・種類が無いなら `None`）。
+///
+/// 取り込み（[`handle`]）と、索引にまだ本文が無い理由の判定（[`crate::SearchService::index_state`]）が使う。
+#[must_use]
+pub fn parsable_type(content_type: Option<&str>) -> Option<String> {
+    let base = content_type
+        .unwrap_or("")
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_ascii_lowercase();
+    SUPPORTED_TYPES.contains(&base.as_str()).then_some(base)
+}
 
 /// ジョブの結果（ログ・rag_ingest_job の status に対応）。
 #[derive(Debug)]
@@ -161,16 +176,9 @@ async fn index_node(
     if snapshot.version != message.version {
         return Ok(IndexOutcome::Skipped("superseded"));
     }
-    let content_type = snapshot.content_type.as_deref().unwrap_or("");
-    let base_type = content_type
-        .split(';')
-        .next()
-        .unwrap_or("")
-        .trim()
-        .to_ascii_lowercase();
-    if !SUPPORTED_TYPES.contains(&base_type.as_str()) {
+    let Some(base_type) = parsable_type(snapshot.content_type.as_deref()) else {
         return Ok(IndexOutcome::Skipped("unsupported-type"));
-    }
+    };
     if snapshot.size_bytes.unwrap_or(0) > deps.config.max_parse_bytes {
         return Ok(IndexOutcome::Skipped("too-large"));
     }
