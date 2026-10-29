@@ -1297,6 +1297,40 @@ async fn reconsent_records_the_delegations_it_revokes() {
     assert!(st.is_success(), "{st}");
 }
 
+/// 同じ操作と対象に relation の違う委譲を送る有効化は、構造化した 400（`invalid_input`）で断り、何も委譲しない。
+#[tokio::test]
+async fn enable_refuses_two_relations_for_one_target() {
+    let Some(env) = setup().await else { return };
+    let suffix = Uuid::new_v4().simple().to_string();
+    let file = "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1";
+    let (st, body) = req(
+        &env,
+        "POST",
+        "/workflows",
+        Some(json!({ "ir": simple_ir(&format!("two-rel-{}", &suffix[..12]), "b") })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "{body}");
+    let id = body["id"].as_str().unwrap().to_string();
+    let grant = |relation: &str| json!({ "scope": "storage.read", "object_type": "file", "object_id": file, "relation": relation });
+    let (st, body) = req(
+        &env,
+        "POST",
+        &format!("/workflows/{id}/enable"),
+        Some(json!({ "version": 1, "consent": true,
+                     "grants": [grant("viewer"), grant("editor")] })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["code"], "invalid_input", "{body}");
+    let (_, reg) = req(&env, "GET", &format!("/workflows/{id}/registration"), None).await;
+    assert_eq!(reg["status"], "none", "{reg}");
+    assert_eq!(reg["delegations"], json!([]), "{reg}");
+
+    let (st, _) = req(&env, "DELETE", &format!("/artifacts/{id}"), None).await;
+    assert!(st.is_success(), "{st}");
+}
+
 /// 金額（1 以上の整数・必須）を受ける手動のワークフローを作る（実行の入力の試験・BUG-109・D-93）。
 async fn create_amount_flow(env: &Env, prefix: &str) -> String {
     let suffix = Uuid::new_v4().simple().to_string();

@@ -40,6 +40,9 @@ pub enum RunAdmission {
 pub enum DelegationError {
     #[error("有効化者の権限範囲外の委譲が含まれます: {0}")]
     OutOfScope(String),
+    /// 同じ (scope, 対象) に relation の違う委譲が並んでいる（[`DelegationStore::enable`] が全体を断る）。
+    #[error("同じ操作と対象に違う relation の委譲が並んでいます: {0}")]
+    ConflictingGrants(String),
     #[error("registration が見つかりません")]
     NotRegistered,
     #[error("認可エラー: {0}")]
@@ -202,6 +205,26 @@ impl DelegationStore {
         grants: &[GrantRequest],
     ) -> Result<Vec<RevokedDelegation>, DelegationError> {
         let tenant = &enabler.tenant_id;
+        // ⓪ 同じ (scope, 対象) に relation の違う grant を断る（タプルを書く前に・全体拒否）。台帳の一意キーは
+        //    (委譲元, scope, 対象) なので、両方のタプルを書くと台帳には後の relation の 1 行しか残らない。もう一方の
+        //    タプルは台帳に載らないまま残り、その後の取り消し・再同意・削除で外れない。画面は scope ごとに relation を
+        //    1 つに決めて送るので、API を直接呼んだときだけ起きる。同じ組の重なり（relation も同じ）はそのまま通す。
+        let mut relation_of: std::collections::BTreeMap<(&str, &str), &str> =
+            std::collections::BTreeMap::new();
+        for g in grants {
+            let key = (g.scope.as_str(), g.object.as_str());
+            match relation_of.insert(key, g.relation.as_str()) {
+                Some(prev) if prev != g.relation.as_str() => {
+                    return Err(DelegationError::ConflictingGrants(format!(
+                        "{} on {}（{prev} と {}）",
+                        g.scope,
+                        g.object.as_str(),
+                        g.relation.as_str()
+                    )));
+                }
+                _ => {}
+            }
+        }
         // ① 範囲検証: 有効化者が全 grant の relation を持つか（1 つでも欠ければ全体拒否）。
         for g in grants {
             let ok = self

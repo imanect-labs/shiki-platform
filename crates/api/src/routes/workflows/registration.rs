@@ -314,6 +314,7 @@ pub async fn consent_plan(
     request_body = EnableRequest,
     responses(
         (status = 200, description = "有効化済み", body = EnableResponse),
+        (status = 400, description = "同じ操作と対象に違う relation の委譲が並んでいる（invalid_input）"),
         (status = 403, description = "有効化者の権限範囲外の委譲が含まれる"),
         (status = 404, description = "存在しない/editor でない"),
         (status = 409, description = "scope 拡大に grants が不足（missing_scopes 付き）か、有効化できない設定がある（not_ready・errors 付き）"),
@@ -635,6 +636,13 @@ fn map_enable_err(e: EnableError) -> ApiError {
         EnableError::Delegation(workflow_engine::DelegationError::OutOfScope(d)) => {
             tracing::warn!(detail = %d, "権限範囲外の委譲要求を拒否");
             ApiError::Forbidden
+        }
+        // 同じ操作と対象に relation の違う委譲（画面からは送らない・API を直接呼んだとき）。
+        EnableError::Delegation(workflow_engine::DelegationError::ConflictingGrants(d)) => {
+            tracing::warn!(detail = %d, "同じ対象に relation の違う委譲要求を拒否");
+            ApiError::invalid_input(
+                "同じ操作と対象に、違う権限が 2 つ選ばれています。どちらか 1 つにしてください。",
+            )
         }
         // 保存は通しても動かせない設定（D-40・D-43）。理由は検証エラーと同じ形で全件返す（欄に写せる）。
         EnableError::NotReady(errors) => ApiError::ConflictJson(json!({
