@@ -197,10 +197,12 @@ DATA_BENCH_SHAPE=shape.json cargo test -p shiki-data --all-features --test optim
 | この版（パーティション直・値を隠す） | 0.154ms | 32,150 |
 | 不採用: generic plan に固定する関数 | 0.223ms | 15,571 |
 | 不採用: 関数の中で EXECUTE する | 0.608ms | 7,027 |
+| 参考: この版を名前なしの文で毎回計画する | 0.342ms | 11,930 |
 
 - generic plan は実行時の刈り込みの前に全パーティションとその索引をロックする（1 回 132 個・うち fast-path 外
   115 個。変更前は 13 個）。並行するとロック管理で詰まる
-- EXECUTE は呼ぶたびに計画する。この版はアプリの prepared statement なので計画を使い回す
+- EXECUTE は呼ぶたびに計画する。この版はアプリの prepared statement なので計画を使い回す。パーティションごとに
+  文が変わり sqlx の文キャッシュ（既定 100）から溢れると計画し直しになるが、それでも名前なしと同じ費用で済む
 
 **一括取込**（`bench_100k_import` の deferred の「索引の仕上げ（バックフィル）」・各 DB は新規＝パーティションは
 一度も ANALYZE されていない。immediate は削除をほとんどしないので変わらない（6〜7 秒））:

@@ -400,10 +400,15 @@ impl IndexWriter<'_> {
             let partition = if groups.is_empty() {
                 None
             } else {
-                super::partition::partition_of(conn, keys).await?
+                super::partition::partition_of(conn, self.tenant_id, keys).await?
             };
             for (table, fields, records) in &groups {
-                delete_rows(conn, keys, partition, *table, fields, records).await?;
+                if let Err(e) = delete_rows(conn, keys, partition, *table, fields, records).await {
+                    if partition.is_some() {
+                        super::partition::forget_partition(self.tenant_id, keys.table_int);
+                    }
+                    return Err(e);
+                }
             }
             delete_unique(conn, keys, &batch.unique_delete).await?;
         }
@@ -546,7 +551,10 @@ impl Batch {
 /// いると値索引が選ばれた（1,000 件 × 2 列で 5 秒）。値を見せなければ統計の平均の選択率で見積もられ、
 /// 4 列等値の主キーが選ばれる（[`super::partition`]）。親テーブルに向けたまま値を隠すと計画時に
 /// パーティションを刈り込めない（全パーティションを計画しロックする）ので、パーティションが分からない
-/// ときは値を見せる元の形にする。
+/// ときは値を見せる元の形にする。パーティションごとに文が変わる（最大 3 表 × 分割数）が、名前付きの文として
+/// 計画を使い回す（名前なしにすると毎回計画し、1 件 0.34ms・並行時の tps が 1/3 になる）。sqlx の文キャッシュ
+/// （接続ごとに既定 100）から溢れた分は計画し直しになるが、それでも名前なしと同じ費用で済む。
+/// 値を隠した組ごとの探索は generic plan でも同じ見積もりになり、1 パーティションしか載らないのでロックも増えない。
 ///
 /// 外側の `tenant_int` は `+ 0` で索引に使えない形にする（#961）。統計がその行をほとんど数えていないと
 /// (tenant_int, table_int) の索引探索の推定が 1 行まで下がり、TID 探索（推定 10 行）に勝って、テーブルの

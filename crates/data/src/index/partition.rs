@@ -9,6 +9,11 @@
 //! パーティションに列統計が 1 行も無いと（一度も ANALYZE されていない・空のときに ANALYZE された）平均も無く、
 //! 値索引を選んで組ごとにその列の索引行を全部読む。自動 ANALYZE が追いつく前に大量に削除する経路
 //! （バックフィル・一括 upsert）は、始める前に [`analyze_index_partitions_without_stats`] で統計を作る。
+//! 1 件ずつの更新の経路では確かめない（毎回カタログを引く費用に見合わない）。その経路は自動 ANALYZE が
+//! 統計を作るまで（パーティションができた直後だけ）遅いままになる。
+//!
+//! パーティションやカタログを引く文は名前なしの文（`persistent(false)`）で流す。名前付きの文は 6 回目から
+//! generic plan になり得て、generic plan は実行時の刈り込みの前に全パーティションとその索引をロックする。
 
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
@@ -37,6 +42,7 @@ pub(crate) async fn partition_holding(
     ))
     .bind(keys.tenant_int)
     .bind(keys.table_int)
+    .persistent(false)
     .fetch_optional(pools.for_tenant(tenant_id))
     .await?;
     Ok(rel.filter(|r| is_partition_of(r, parent)))
@@ -46,16 +52,15 @@ pub(crate) async fn partition_holding(
 ///
 /// `data_record` と索引テーブルは同じ分割数・同じキー（`table_int`）でハッシュ分割してあり
 /// （migration 0085 の `data_create_hash_partitions`）、同じテーブルの行は同じ番号のパーティションに入る。
-/// 番号は `table_int` のハッシュで決まって変わらないので、プロセスで覚えておく（`table_int` は採番サービスが
-/// プール横断で一意に振る・docs/data/shard-safety.md）。
-///
-/// 引く文は名前なしの文（`persistent(false)`）で流す。名前付きの文は 6 回目から generic plan になり得て、
-/// generic plan は実行時の刈り込みの前に全パーティションとその索引をロックする。
+/// 番号はテナントのプールの分割数と `table_int` のハッシュで決まり、分割を作り直さない限り変わらないので、
+/// (テナント, `table_int`) ごとにプロセスで覚えておく。分割を作り直したら（再ハッシュ・別の分割数のプールへの
+/// 移設）プロセスを再起動する。覚えた番号で削除が失敗したら [`forget_partition`] で捨て、次は引き直す。
 pub(crate) async fn partition_of(
     conn: &mut PgConnection,
+    tenant_id: &str,
     keys: TableKeys,
 ) -> Result<Option<u16>, DataError> {
-    if let Some(n) = cached(keys.table_int) {
+    if let Some(n) = cached(tenant_id, keys.table_int) {
         return Ok(Some(n));
     }
     let rel: Option<String> = sqlx::query_scalar(
@@ -72,28 +77,36 @@ pub(crate) async fn partition_of(
         .as_deref()
         .and_then(|r| partition_number(r, "data_record"));
     if let Some(n) = n {
-        remember(keys.table_int, n);
+        remember(tenant_id, keys.table_int, n);
     }
     Ok(n)
 }
 
-/// `table_int` → パーティション番号。上限を超えたら捨てて引き直す（1 件 10 バイト程度）。
-static PARTITIONS: LazyLock<Mutex<HashMap<i64, u16>>> = LazyLock::new(Mutex::default);
+/// (テナント, `table_int`) → パーティション番号。上限を超えたら捨てて引き直す。
+type PartitionKey = (Box<str>, i64);
+static PARTITIONS: LazyLock<Mutex<HashMap<PartitionKey, u16>>> = LazyLock::new(Mutex::default);
 const MAX_REMEMBERED: usize = 100_000;
 
-fn cached(table_int: i64) -> Option<u16> {
+fn cached(tenant_id: &str, table_int: i64) -> Option<u16> {
     PARTITIONS
         .lock()
         .ok()
-        .and_then(|m| m.get(&table_int).copied())
+        .and_then(|m| m.get(&(Box::from(tenant_id), table_int)).copied())
 }
 
-fn remember(table_int: i64, n: u16) {
+fn remember(tenant_id: &str, table_int: i64, n: u16) {
     if let Ok(mut m) = PARTITIONS.lock() {
         if m.len() >= MAX_REMEMBERED {
             m.clear();
         }
-        m.insert(table_int, n);
+        m.insert((Box::from(tenant_id), table_int), n);
+    }
+}
+
+/// 覚えたパーティション番号を捨てる（それを使った削除が失敗したとき）。
+pub(crate) fn forget_partition(tenant_id: &str, table_int: i64) {
+    if let Ok(mut m) = PARTITIONS.lock() {
+        m.remove(&(Box::from(tenant_id), table_int));
     }
 }
 
@@ -140,6 +153,7 @@ pub async fn analyze_index_partitions_without_stats(
     ))
     .bind(tenant_int)
     .bind(table_int)
+    .persistent(false)
     .fetch_all(pools.for_tenant(tenant_id))
     .await;
     let missing = match missing {
