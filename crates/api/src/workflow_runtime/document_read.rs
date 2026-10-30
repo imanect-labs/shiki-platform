@@ -19,7 +19,7 @@ use uuid::Uuid;
 use workflow_engine::nodes::ports::{
     hidden_not_found, INDEX_FAILED, INDEX_PENDING, NOT_INDEXABLE, NOT_TEXT_FILE,
 };
-use workflow_engine::{ExecCtx, PortError};
+use workflow_engine::{ExecCtx, PortError, INDEX_WAIT_MAX_MINUTES};
 
 use super::auth::auth_ctx;
 use super::ports::{map_storage, ProdNodePorts};
@@ -28,9 +28,6 @@ use super::text_file::{is_binary, not_readable_text, not_text_kind, read_text};
 /// 社内文書の検索が使えない環境で、PDF・Office の本文を読もうとしたときの文言。
 const NO_SEARCH: &str =
     "この環境では社内文書の検索が使えないため、PDF や Word の本文を読めません。";
-
-/// 取り込みが終わっていないときの文言（作成者向け・やり直せる）。
-const PENDING: &str = "このファイルは社内文書の検索への取り込みが終わっていないため、まだ本文を読めません。少し待ってから再開するか、「試す回数」を増やしてください。";
 
 /// 取り込めない種類のときの文言。
 const UNSUPPORTED: &str = "このファイルの種類は社内文書の検索に取り込めないため、本文を読めません。読めるのは PDF、Word（.docx）、Excel（.xlsx）、PowerPoint（.pptx）です。";
@@ -139,9 +136,15 @@ pub(super) async fn storage_read_document(
     Ok(document_output(&meta, &page))
 }
 
-/// 取り込みが終わっていない誤り（やり直せる）。
+/// 取り込みが終わっていない誤り（やり直せる・エンジンは試す回数を使わずに待って読み直す・D-125）。
 fn pending() -> PortError {
-    PortError::new(INDEX_PENDING, PENDING, true)
+    PortError::new(
+        INDEX_PENDING,
+        format!(
+            "このファイルは、社内文書の検索への取り込みが {INDEX_WAIT_MAX_MINUTES} 分待っても終わらなかったため、本文を読めませんでした。取り込みが終わってから、失敗したところから再開してください。"
+        ),
+        true,
+    )
 }
 
 /// 索引から読んだ本文の結果（文章のファイルの結果と同じ項目＋切ったか。encoding は無い）。
@@ -221,5 +224,13 @@ mod tests {
         assert!(auto.message.ends_with("フォルダーの中だけを読めます。"));
         assert!(pending().retryable);
         assert_eq!(pending().code, INDEX_PENDING);
+        // 待つ上限を過ぎたときに残る文（試す回数を増やすよう言わない・D-125）。
+        let waited = format!("{INDEX_WAIT_MAX_MINUTES} 分待っても");
+        assert!(pending().message.contains(&waited), "{}", pending().message);
+        assert!(
+            !pending().message.contains("試す回数"),
+            "{}",
+            pending().message
+        );
     }
 }

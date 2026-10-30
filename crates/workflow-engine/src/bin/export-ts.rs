@@ -36,6 +36,7 @@ use workflow_engine::vocab::{
     NodeCategory, NodeType, OutputField, PortRule, RunEventKind, RunInfoField, Scope,
     RUN_INFO_FIELDS, STORAGE_READ_MAX_DOCUMENT_CHARS,
 };
+use workflow_engine::INDEX_WAIT_MAX_MINUTES;
 
 /// 保存を止めない警告のコードの定数（定数の名前 → コード・Rust の表から引く・BUG-48）。
 fn warning_codes_ts() -> String {
@@ -61,7 +62,9 @@ fn warning_codes_ts() -> String {
 fn limits_ts() -> String {
     format!(
         "\n/// 「ファイルを読む」が PDF・Office の本文を読む字数の上限（超えた分は入らず truncated が true・D-111）。\n\
-         export const STORAGE_READ_MAX_DOCUMENT_CHARS = {STORAGE_READ_MAX_DOCUMENT_CHARS};\n"
+         export const STORAGE_READ_MAX_DOCUMENT_CHARS = {STORAGE_READ_MAX_DOCUMENT_CHARS};\n\
+         \n/// 「ファイルを読む」が PDF・Office の本文の取り込みを待つ上限（分・過ぎたら index_pending で失敗・D-125）。\n\
+         export const STORAGE_READ_INDEX_WAIT_MAX_MINUTES = {INDEX_WAIT_MAX_MINUTES};\n"
     )
 }
 

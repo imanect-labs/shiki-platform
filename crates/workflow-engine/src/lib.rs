@@ -64,7 +64,10 @@ pub use registration::{
     DelegationView, EnableError, RegistrationService, RegistrationView, RetiredWorkflow,
     Revocation, SuggestedGrant,
 };
-pub use retry::{backoff_with_jitter, classify, RetryClass};
+pub use retry::{
+    backoff_with_jitter, classify, wait_policy, RetryClass, WaitPolicy, INDEX_WAIT,
+    INDEX_WAIT_MAX_MINUTES,
+};
 pub use run::{
     ApprovalWait, CancelSignal, ConcurrencyLimits, DataWaitCandidate, DueApprovalCursor,
     DueApprovalPage, EventWaitGate, EventWaitSubscriber, NodeContext, NodeExecutor, NodeResult,

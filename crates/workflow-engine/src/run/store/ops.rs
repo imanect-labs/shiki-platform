@@ -204,9 +204,11 @@ impl RunStore {
         let graph = crate::run::graph::RunGraph::build(&ir);
         // 未処理失敗 step（error ポート解決済みは除外 = taken_ports 空）を ready に戻す。
         // attempt は据え置き（リトライ上限の消費分は履歴として残す）。
+        // 取り込み待ちの上限を過ぎて失敗した step も、再開すると待ち直す（待ち始めた時刻を消す・D-125）。
         sqlx::query(
             "UPDATE step_execution SET status = 'ready', next_retry_at = now(), \
-                 lease_owner = NULL, lease_expires_at = NULL, updated_at = now() \
+                 lease_owner = NULL, lease_expires_at = NULL, wait_code = NULL, \
+                 wait_since = NULL, updated_at = now() \
              WHERE tenant_id = $1 AND run_id = $2 AND status = 'failed' \
                AND taken_ports = '{}'",
         )
@@ -220,7 +222,8 @@ impl RunStore {
         // 試行の消費だけを数える（rate_limited の順番待ちや claim 自体では増えない）ので、attempt=0 は
         // 「一度も claim されていない」を意味しない（#438）。
         sqlx::query(
-            "UPDATE step_execution SET status = 'pending', updated_at = now() \
+            "UPDATE step_execution SET status = 'pending', wait_code = NULL, wait_since = NULL, \
+                 updated_at = now() \
              WHERE tenant_id = $1 AND run_id = $2 AND status = 'cancelled' AND fencing_token = 0",
         )
         .bind(tenant_id)
@@ -245,7 +248,8 @@ impl RunStore {
         sqlx::query(
             "UPDATE step_execution SET status = 'ready', \
                  next_retry_at = greatest(now(), updated_at + ($3 || ' seconds')::interval), \
-                 lease_owner = NULL, lease_expires_at = NULL, updated_at = now() \
+                 lease_owner = NULL, lease_expires_at = NULL, wait_code = NULL, wait_since = NULL, \
+                 updated_at = now() \
              WHERE tenant_id = $1 AND run_id = $2 AND status = 'cancelled' AND fencing_token > 0",
         )
         .bind(tenant_id)

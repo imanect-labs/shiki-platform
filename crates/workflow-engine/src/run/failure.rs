@@ -158,9 +158,10 @@ fn specific_message(code: &str) -> Option<&'static str> {
         crate::nodes::ports::NAME_TAKEN => {
             "同じ名前のファイルがすでにあるため、保存できませんでした。"
         }
-        // 「一時的な問題…途中まで進んでいる」は原因と合わない（読むだけのブロック・D-111）。
+        // 「一時的な問題…途中まで進んでいる」は原因と合わない（読むだけのブロック・D-111）。取り込み待ちは試す回数を
+        // 使わずに待ち、待つ上限（`retry::INDEX_WAIT_MAX_MINUTES`）を過ぎたときにだけ失敗になる（D-125）。
         crate::nodes::ports::INDEX_PENDING => {
-            "ファイルを社内文書の検索に取り込み終わっていないため、本文を読めませんでした。\
+            "30 分待っても、ファイルの社内文書の検索への取り込みが終わらなかったため、本文を読めませんでした。\
              少し待ってから、失敗したところから再開してください。"
         }
         // 「ワークフローの設定に問題があり」は原因と合わない（ファイルの側の失敗・D-111）。
@@ -562,8 +563,12 @@ mod tests {
         let id = Uuid::nil();
         let f = run_failure(id, Some(INDEX_PENDING), None);
         assert_eq!(f.category, FailureCategory::Temporary);
+        // 待つ上限を過ぎたときにだけ失敗になるので、待った時間を言う（数は待ち方の単一定義から外さない・D-125）。
         assert!(
-            f.message.contains("取り込み終わっていない"),
+            f.message.contains(&format!(
+                "{} 分待っても、ファイルの社内文書の検索への取り込みが終わらなかった",
+                crate::retry::INDEX_WAIT_MAX_MINUTES
+            )),
             "{}",
             f.message
         );

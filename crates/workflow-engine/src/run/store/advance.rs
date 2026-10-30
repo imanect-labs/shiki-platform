@@ -125,10 +125,22 @@ pub(super) async fn checkpoint_and_advance(
         let class = result.error.as_ref().map_or(RetryClass::Permanent, |e| {
             crate::retry::classify(&e.code, e.retryable)
         });
+        // 取り込み待ち: 試す回数を使わずに、間隔を伸ばしながら読み直す。待つ上限を過ぎたら下の checkpoint で失敗に
+        // する（試す回数の残りは使わない・D-125）。
+        if let Some((e, policy)) = result
+            .error
+            .as_ref()
+            .and_then(|e| crate::retry::wait_policy(&e.code).map(|p| (e, p)))
+        {
+            if super::retry_wait::wait_and_retry(&mut tx, claimed, &e.code, policy).await? {
+                tx.commit().await.map_err(map_db)?;
+                return Ok(true);
+            }
+        }
         let retry = match class {
             RetryClass::RateLimited => true,
             RetryClass::Retryable => claimed.attempt < max_attempts,
-            RetryClass::Permanent => false,
+            RetryClass::Permanent | RetryClass::Wait => false,
         };
         if retry {
             let delay = next_retry_delay_secs(run_id, &claimed.step_path, claimed.attempt);
@@ -151,10 +163,12 @@ pub(super) async fn checkpoint_and_advance(
             } else {
                 0
             };
+            // ほかの理由のやり直しに移ったら、取り込みを待っている印（wait_code）は外す。待ち始めた時刻（wait_since）は
+            // 残す（やり直しを挟んでも、待つ上限は最初に待ち始めた時刻から数える・D-125）。
             sqlx::query(
                 "UPDATE step_execution SET status = 'ready', lease_owner = NULL, \
                  lease_expires_at = NULL, next_retry_at = now() + ($4 || ' seconds')::interval, \
-                 attempt = attempt + $5, updated_at = now() \
+                 attempt = attempt + $5, wait_code = NULL, updated_at = now() \
                  WHERE tenant_id = $1 AND run_id = $2 AND step_path = $3",
             )
             .bind(tenant_id)
@@ -231,7 +245,8 @@ pub(super) async fn checkpoint_and_advance(
     };
     sqlx::query(
         "UPDATE step_execution SET status = $4, output = $5, taken_ports = $6, error = $7, \
-         lease_owner = NULL, lease_expires_at = NULL, updated_at = now() \
+         lease_owner = NULL, lease_expires_at = NULL, wait_code = NULL, wait_since = NULL, \
+         updated_at = now() \
          WHERE tenant_id = $1 AND run_id = $2 AND step_path = $3",
     )
     .bind(tenant_id)

@@ -58,16 +58,21 @@ pub struct StepOverview {
     pub langfuse_trace_id: Option<String>,
     /// 待っている step なら待っているもの（保留中の承認の台帳がある `waiting_event` は `approval`、ほかの
     /// `waiting_event` は `event`、`waiting_timer` は `timer`・run の [`RunDetail::waiting_for`] と同じ決め方）。
+    /// 取り込み待ちで読み直しを待つ `ready` は `index`（step だけ・D-125）。
     pub waiting_for: Option<String>,
 }
 
 /// step が待っているもの（別名 `s` の step に対する式・run の `WAITING_FOR` と同じ決め方・BUG-119）。
+///
+/// 取り込み待ち（`wait_code = index_pending`・[`crate::retry::wait_policy`]）で読み直しを待っている `ready` の step は
+/// `index`（D-125）。run は実行中のまま（ready の step があるので待機中にしない）。
 const STEP_WAITING_FOR: &str = "CASE \
      WHEN s.status = 'waiting_event' AND EXISTS ( \
          SELECT 1 FROM workflow_approval a WHERE a.tenant_id = s.tenant_id AND a.run_id = s.run_id \
             AND a.step_path = s.step_path AND a.status = 'pending') THEN 'approval' \
      WHEN s.status = 'waiting_event' THEN 'event' \
-     WHEN s.status = 'waiting_timer' THEN 'timer' END";
+     WHEN s.status = 'waiting_timer' THEN 'timer' \
+     WHEN s.status = 'ready' AND s.wait_code = 'index_pending' THEN 'index' END";
 
 /// run 詳細（履歴 UI のヘッダ＋タイムライン素材）。
 #[derive(Debug, Clone)]
@@ -340,5 +345,26 @@ impl RunStore {
         .fetch_all(&self.db)
         .await
         .map_err(map_db)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::STEP_WAITING_FOR;
+    use crate::run::outcome::WaitingFor;
+
+    /// step の待っているものの式は、取り込み待ちの code と呼び名を Rust の定義から外さない（D-125）。
+    #[test]
+    fn step_waiting_for_names_the_index_wait() {
+        let code = crate::nodes::ports::INDEX_PENDING;
+        assert!(crate::retry::wait_policy(code).is_some());
+        assert!(
+            STEP_WAITING_FOR.contains(&format!(
+                "s.wait_code = '{code}' THEN '{}'",
+                WaitingFor::Index.as_str()
+            )),
+            "{STEP_WAITING_FOR}"
+        );
+        assert_eq!(WaitingFor::parse("index"), Some(WaitingFor::Index));
     }
 }

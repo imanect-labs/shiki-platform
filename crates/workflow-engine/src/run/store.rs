@@ -24,6 +24,7 @@ mod limits;
 mod map_region;
 mod ops;
 mod outcome;
+mod retry_wait;
 mod wait;
 mod wait_data;
 

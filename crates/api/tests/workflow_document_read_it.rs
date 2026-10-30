@@ -8,8 +8,9 @@
 //! - 取り込み済みの PDF の本文（ページの印・見出し）を読む。長い本文は上限の字数で切り、切った印を立てる。
 //!   名前を変えても（ファイルのバージョンが進んでも）読める。テキストのファイルはいまの経路のまま読む。
 //! - 見えない文書・無い文書・索引の pre-filter で読めない文書は、同じ誤り（存在の秘匿）。
-//! - 取り込み前はやり直せる失敗（index_pending）で、取り込んだ後に再開すると読める。取り込めない種類・取り込みに
-//!   失敗した文書・社内文書の検索が使えない環境は、やり直さない分かる誤り。
+//! - 取り込み前は失敗にせず、試す回数を使わずに待って読み直す（取り込んだ後に読める・D-125）。待つ上限（30 分）を
+//!   過ぎたらやり直せる失敗（index_pending）で、再開するともう一度待つ。取り込めない種類・取り込みに失敗した文書・
+//!   社内文書の検索が使えない環境は、やり直さない分かる誤り。
 //! - script の `Shiki.storage.read` の誤りは、捕まえていなければホストの code のまま、作成者が投げた誤りは
 //!   script_error で失敗になる（D-121）。再開しても同じ結果になる失敗は、再開を断る（D-116）。
 //!
@@ -307,6 +308,48 @@ impl Env {
             .expect("start")
             .expect("run id");
         self.drive(run_id, executor).await
+    }
+
+    /// `rd` の step の（状態・試した回数・待っている理由）。
+    async fn step_state(&self, run_id: Uuid) -> (String, i32, Option<String>) {
+        sqlx::query_as(
+            "SELECT status, attempt, wait_code FROM step_execution \
+             WHERE tenant_id = $1 AND run_id = $2 AND node_id = 'rd'",
+        )
+        .bind(&self.tenant)
+        .bind(run_id)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap()
+    }
+
+    /// 次に読み直すまでの秒数（取り込みを待っている `rd` の step の next_retry_at まで）。
+    async fn seconds_to_retry(&self, run_id: Uuid) -> f64 {
+        sqlx::query_scalar(
+            "SELECT extract(epoch FROM next_retry_at - now())::float8 FROM step_execution \
+             WHERE tenant_id = $1 AND run_id = $2 AND node_id = 'rd'",
+        )
+        .bind(&self.tenant)
+        .bind(run_id)
+        .fetch_one(&self.pool)
+        .await
+        .unwrap()
+    }
+
+    /// 待っている読み直しの時刻を今にする（待つ間隔を実時間で待たない）。`waited` を渡すと、待ち始めた時刻をその秒数
+    /// だけ前にする（上限を過ぎた状態を作る）。
+    async fn wake(&self, run_id: Uuid, waited: Option<i64>) {
+        sqlx::query(
+            "UPDATE step_execution SET next_retry_at = now(), \
+                 wait_since = coalesce(now() - make_interval(secs => $3::float8), wait_since) \
+             WHERE tenant_id = $1 AND run_id = $2 AND node_id = 'rd'",
+        )
+        .bind(&self.tenant)
+        .bind(run_id)
+        .bind(waited.map(|w| w as f64))
+        .execute(&self.pool)
+        .await
+        .unwrap();
     }
 
     /// `rd` に script を置いたワークフローを保存する（入力の file を `Shiki.storage.read` で読むなど）。
@@ -664,7 +707,8 @@ async fn hidden_and_missing_documents_fail_the_same_way() {
     }
 }
 
-/// 取り込み前の PDF はやり直せる失敗（index_pending）で、取り込んだ後に失敗したところから再開すると読める。
+/// 取り込み前の PDF は失敗にせず、試す回数を使わずに待って読み直し、取り込んだ後に読める（試す回数は既定の 1 のまま・
+/// D-125・GAP-50）。待っている間、実行の詳細の step は取り込みを待っている（`index`）と言う。
 /// 取り込めない種類（画像）・取り込みに失敗した PDF・AI エージェントの作業用のフォルダーの PDF・取り込みが届いて
 /// いない PDF・社内文書の検索が使えない環境は、やり直さない分かる誤り。
 #[tokio::test]
@@ -674,15 +718,24 @@ async fn unindexed_documents_fail_with_a_clear_reason() {
     let wf = env.save_reader().await;
     let pending = env.upload_pdf(&alice, None, "請求書.pdf").await;
     let before = env.read(wf, pending.id, &env.executor).await;
-    // 取り込みが終わってから、失敗したところから再開する（再開は同じファイルを読み直す）。
+    let waiting = env.step_state(before.run_id).await;
+    let first_delay = env.seconds_to_retry(before.run_id).await;
+    let waiting_for = env
+        .runs
+        .run_detail(&env.tenant, wf, before.run_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .steps
+        .into_iter()
+        .find(|s| s.node_id == "rd")
+        .and_then(|s| s.waiting_for);
+    // 取り込みが終わってから、読み直しの時刻が来る（間隔は実時間で待たない）。
     env.ingest(&alice, &pending, &[(1, "paragraph", "請求金額 12,000 円")])
         .await;
-    let resumed = env
-        .runs
-        .resume_failed(&env.tenant, wf, before.run_id)
-        .await
-        .unwrap();
+    env.wake(before.run_id, None).await;
     let after = env.drive(before.run_id, &env.executor).await;
+    let done = env.step_state(before.run_id).await;
 
     let image = env
         .storage
@@ -728,25 +781,29 @@ async fn unindexed_documents_fail_with_a_clear_reason() {
     )
     .await;
 
-    assert_eq!(before.status, RunStatus::Failed, "{before:?}");
     assert_eq!(
-        (before.code.as_deref(), before.retryable),
-        (Some(INDEX_PENDING), Some(true))
+        before.status,
+        RunStatus::Running,
+        "取り込みを待つ間は失敗にしない: {before:?}"
+    );
+    assert_eq!(before.code, None, "{before:?}");
+    assert_eq!(
+        waiting,
+        ("ready".to_string(), 0, Some(INDEX_PENDING.to_string())),
+        "試す回数を使わずに、取り込み待ちとして読み直しを待つ"
     );
     assert!(
-        before
-            .message
-            .as_deref()
-            .unwrap()
-            .contains("取り込みが終わっていないため"),
-        "{before:?}"
+        (1.0..=6.0).contains(&first_delay),
+        "最初は 5 秒ほど待つ: {first_delay}"
     );
-    assert!(
-        matches!(resumed, workflow_engine::ResumeOutcome::Resumed),
-        "{resumed:?}"
-    );
+    assert_eq!(waiting_for.as_deref(), Some("index"));
     assert_eq!(after.status, RunStatus::Succeeded, "{after:?}");
     assert_eq!(after.output.unwrap()["text"], "〔p.1〕\n請求金額 12,000 円");
+    assert_eq!(
+        done,
+        ("succeeded".to_string(), 1, None),
+        "読めた実行も 1 回目のまま"
+    );
 
     for (what, o, code, says) in [
         ("画像", &unsupported, NOT_INDEXABLE, "取り込めないため"),
@@ -901,6 +958,77 @@ async fn automated_runs_read_only_delegated_folders() {
         ),
         "{o:?}"
     );
+}
+
+/// 取り込みを待つ上限（30 分）を過ぎたら、待った時間を言うやり直せる失敗（index_pending）になる。失敗したところから
+/// 再開すると、待ち始め直してもう一度待ち、取り込んだ後に読める（D-125）。再開の API はこの失敗を断らない（D-116）。
+#[tokio::test]
+async fn index_wait_gives_up_after_the_limit_and_resume_waits_again() {
+    let Some(env) = setup().await else { return };
+    let alice = env.alice.clone();
+    let wf = env.save_reader().await;
+    let pdf = env.upload_pdf(&alice, None, "見積書.pdf").await;
+    let first = env.read(wf, pdf.id, &env.executor).await;
+    // 待ち始めてから上限を過ぎた（時計を進める代わりに、待ち始めた時刻を戻す）。
+    env.wake(
+        first.run_id,
+        Some(workflow_engine::INDEX_WAIT.max_wait_secs + 1),
+    )
+    .await;
+    let gave_up = env.drive(first.run_id, &env.executor).await;
+    let gave_up_state = env.step_state(first.run_id).await;
+    let detail = env
+        .runs
+        .run_detail(&env.tenant, wf, first.run_id)
+        .await
+        .unwrap()
+        .unwrap();
+    let resumed = env
+        .runs
+        .resume_failed(&env.tenant, wf, first.run_id)
+        .await
+        .unwrap();
+    let rewaiting = env.drive(first.run_id, &env.executor).await;
+    let rewaiting_state = env.step_state(first.run_id).await;
+    env.ingest(&alice, &pdf, &[(1, "paragraph", "見積金額 30,000 円")])
+        .await;
+    env.wake(first.run_id, None).await;
+    let done = env.drive(first.run_id, &env.executor).await;
+
+    env.cleanup(&[wf], &[(alice.clone(), pdf.id)], &[]).await;
+
+    assert_eq!(first.status, RunStatus::Running, "{first:?}");
+    assert_eq!(gave_up.status, RunStatus::Failed, "{gave_up:?}");
+    assert_eq!(
+        (gave_up.code.as_deref(), gave_up.retryable),
+        (Some(INDEX_PENDING), Some(true))
+    );
+    let message = gave_up.message.as_deref().unwrap();
+    assert!(message.contains("30 分待っても"), "{message}");
+    assert!(!message.contains("試す回数"), "{message}");
+    assert_eq!(gave_up_state, ("failed".to_string(), 1, None));
+    let failure = detail.failure.expect("失敗の理由");
+    assert_eq!(
+        failure.category,
+        workflow_engine::FailureCategory::Temporary
+    );
+    assert!(failure.message.contains("30 分待っても"), "{failure:?}");
+    let resume = detail.resume.expect("再開の勧め");
+    assert_eq!(resume.advice, workflow_engine::ResumeAdvice::Resume);
+    assert!(resume.offer);
+    assert!(
+        matches!(resumed, workflow_engine::ResumeOutcome::Resumed),
+        "{resumed:?}"
+    );
+    assert_eq!(
+        rewaiting.status,
+        RunStatus::Running,
+        "再開すると待ち直す: {rewaiting:?}"
+    );
+    assert_eq!(rewaiting_state.0, "ready");
+    assert_eq!(rewaiting_state.2.as_deref(), Some(INDEX_PENDING));
+    assert_eq!(done.status, RunStatus::Succeeded, "{done:?}");
+    assert_eq!(done.output.unwrap()["text"], "〔p.1〕\n見積金額 30,000 円");
 }
 
 /// script の `Shiki.storage.read` の誤りは、捕まえていなければホストの code のまま失敗になる（使ってよい操作の天井の

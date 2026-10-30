@@ -59,7 +59,7 @@ pub struct RunReply {
     pub omitted: u32,
 }
 
-/// 待機中の run が待っているもの（running の導出値）。
+/// 待機中の run（と step）が待っているもの（running の導出値）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum WaitingFor {
@@ -69,6 +69,8 @@ pub enum WaitingFor {
     Event,
     /// 担当者の承認を待つ。
     Approval,
+    /// ファイルの本文の社内文書の検索への取り込みを待って、読み直す（step だけが返す・run は実行中のまま・D-125）。
+    Index,
 }
 
 impl WaitingFor {
@@ -78,6 +80,7 @@ impl WaitingFor {
             WaitingFor::Timer => "timer",
             WaitingFor::Event => "event",
             WaitingFor::Approval => "approval",
+            WaitingFor::Index => "index",
         }
     }
 
@@ -87,6 +90,7 @@ impl WaitingFor {
             "timer" => WaitingFor::Timer,
             "event" => WaitingFor::Event,
             "approval" => WaitingFor::Approval,
+            "index" => WaitingFor::Index,
             _ => return None,
         })
     }
