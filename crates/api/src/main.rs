@@ -476,6 +476,8 @@ fn wire_data(
     data::RecordStreamRelayWorker::new((*data_store).clone()).spawn();
     // 自前オプティマイザの統計（outbox 消費側の行数・値頻度表＋統計収集ジョブ・Task 15.12）。
     data::StatsWorker::new((*data_store).clone()).spawn();
+    // 消したテーブルの OpenFGA のタプルの掃除（削除の後の撤去に失敗したもの・撤去を始める前に消したもの・BUG-149）。
+    data::DeletedTableTupleSweeper::new((*data_store).clone()).spawn();
     // 起動時の較正ベンチ（較正用の固定表で単価を測り直す・顧客データに触れない・DDL を打たない）。
     // 失敗しても初期値で動く。
     {

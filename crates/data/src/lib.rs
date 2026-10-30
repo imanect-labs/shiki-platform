@@ -88,6 +88,7 @@ mod stream;
 mod table_access;
 mod table_list;
 mod table_load;
+mod table_purge;
 mod table_redact;
 mod table_share;
 mod tenant_settings;
@@ -191,6 +192,7 @@ pub use stream::{
 pub use table_list::{
     TableListQuery, TablePage, MAX_TABLE_PAGE, TABLE_SCAN_CHUNK, TABLE_SCAN_MAX_CHECKS,
 };
+pub use table_purge::{DeletedTableTupleSweeper, TuplePurgeProgress, TUPLE_PURGE_BATCH};
 pub use table_share::TableShareRole;
 pub use tenant_settings::{DataTenantSettings, MAX_COUNT_CAP, MAX_INDEXED_FIELDS_CEILING};
 pub use transition::TRANSITION_EVENT_TYPE;

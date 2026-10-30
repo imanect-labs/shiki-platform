@@ -592,7 +592,8 @@ impl DataStore {
         Ok(row)
     }
 
-    /// テーブルを論理削除する（owner・レコード/履歴は保持・名前は再利用可能になる）。
+    /// テーブルを論理削除する（owner・レコード/履歴は保持・名前は再利用可能になる）。OpenFGA の
+    /// `data_table` のタプルは commit の後に撤去する（[`crate::table_purge`]）。
     pub async fn delete_table(
         &self,
         ctx: &AuthContext,
@@ -641,6 +642,12 @@ impl DataStore {
         crate::stream::relay::emit_refresh_for_referrers(&mut tx, &ctx.tenant_id, id).await?;
         tx.commit().await.map_err(map_db)?;
         self.schema_cache.invalidate_table(&ctx.tenant_id, id);
+        // OpenFGA のタプル（持ち主・共有・委譲）を撤去する（BUG-149・失敗は掃除がやり直す）。開いている購読には
+        // 次のバッチで認可を引き直させる。
+        self.purge_deleted_table_tuples_of(&ctx.tenant_id, id).await;
+        if let Err(e) = self.notify_authz_changed(ctx, Some(id)).await {
+            tracing::warn!(error = %e, table_id = %id, "テーブルの削除の後の配信の世代更新に失敗");
+        }
         self.record_audit_best_effort(
             ctx,
             AuditAction::DataTableDelete,
