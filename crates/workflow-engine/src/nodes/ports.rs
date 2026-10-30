@@ -294,8 +294,8 @@ pub const INDEX_PENDING: &str = "index_pending";
 pub const NOT_INDEXABLE: &str = "not_indexable";
 
 /// storage.read で、社内文書の検索への取り込みに失敗したファイル・取り込みが届いていない（待っても取り込まれない）
-/// ファイルの本文を読もうとしたときの code（D-111・permanent・失敗の分類は設定の誤り）。ファイルを保存し直すと
-/// 取り込み直す。
+/// ファイルの本文を読もうとしたときの code（D-111・permanent・失敗の分類は設定の誤り）。ファイルを編集できる人が
+/// ドライブのメニューの「検索に取り込み直す」を選ぶと取り込み直す（D-126）。保存し直しても取り込み直す。
 pub const INDEX_FAILED: &str = "index_failed";
 
 /// 存在を明かさない「見つからない」の文（付録 C の §3.6・付録 D の N1.11）。`target` は「実行するワークフロー」など。

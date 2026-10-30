@@ -11,7 +11,8 @@
 //!
 //! 索引に本文が無いときは、待てば読めるのか（`index_pending`・やり直せる）と、待っても読めないのか（取り込めない
 //! 種類・大きすぎる・本文が無い・AI エージェントの作業用のフォルダーにあるは `not_indexable`、取り込みに失敗したもの・
-//! 取り込みが届いていないものは `index_failed`・やり直さない）を分ける。
+//! 取り込みが届いていないものは `index_failed`・やり直さない）を分ける。`index_failed` は、ファイルを編集できる人が
+//! ドライブのメニューで取り込み直せる（D-126）ので、そう案内する。
 
 use serde_json::{json, Value};
 use storage::{Node, NodeKind, StorageError, StorageService};
@@ -32,14 +33,15 @@ const NO_SEARCH: &str =
 /// 取り込めない種類のときの文言。
 const UNSUPPORTED: &str = "このファイルの種類は社内文書の検索に取り込めないため、本文を読めません。読めるのは PDF、Word（.docx）、Excel（.xlsx）、PowerPoint（.pptx）です。";
 
-/// 取り込みに失敗したときの文言。
-const FAILED: &str = "このファイルは社内文書の検索に取り込めなかったため、本文を読めません。ファイルが壊れていないか確かめて、保存し直してください。";
+/// 取り込みに失敗したときの文言（取り込み直せる・D-126）。
+const FAILED: &str = "このファイルは社内文書の検索に取り込めなかったため、本文を読めません。ドライブのメニューで「検索に取り込み直す」を選んでください。もう一度取り込めないときは、ファイルが壊れていないか確かめて、保存し直してください。";
 
 /// 社内文書の検索に取り込まない場所（AI エージェントの作業用のフォルダー・システム領域）にあるときの文言。
 const EXCLUDED: &str = "このファイルは AI エージェントの作業用のフォルダーにあり、社内文書の検索に取り込まれないため、本文を読めません。";
 
-/// 取り込みへ向かう記録が無く、待っても取り込まれないときの文言（社内文書の検索を有効にする前に置いたファイルなど）。
-const NOT_INGESTED: &str = "このファイルは社内文書の検索に取り込まれていないため、本文を読めません。ドライブのファイルのメニューの「新しいバージョン」でアップロードし直すと、取り込まれます。";
+/// 取り込みへ向かう記録が無く、待っても取り込まれないときの文言（社内文書の検索を有効にする前に置いたファイルなど・
+/// 取り込み直せる・D-126）。
+const NOT_INGESTED: &str = "このファイルは社内文書の検索に取り込まれていないため、本文を読めません。ドライブのメニューで「検索に取り込み直す」を選ぶと、取り込まれます。";
 
 /// 取り込んだが本文が無かったときの文言。
 const EMPTY: &str = "このファイルからは本文を取り出せませんでした。文字の無い文書や、文字が画像になっていて読み取れない文書は読めません。";
@@ -112,7 +114,7 @@ pub(super) async fn storage_read_document(
         rag::IndexState::Failed => return Err(PortError::new(INDEX_FAILED, FAILED, false)),
         rag::IndexState::Empty => return Err(PortError::new(NOT_INDEXABLE, EMPTY, false)),
         rag::IndexState::Excluded => return Err(PortError::new(NOT_INDEXABLE, EXCLUDED, false)),
-        // 待っても取り込まれない（やり直さない）。保存し直すと取り込み直すので、取り込みに失敗したものと同じ code。
+        // 待っても取り込まれない（やり直さない）。取り込み直せる（D-126）ので、取り込みに失敗したものと同じ code。
         rag::IndexState::NotIngested => {
             return Err(PortError::new(INDEX_FAILED, NOT_INGESTED, false))
         }

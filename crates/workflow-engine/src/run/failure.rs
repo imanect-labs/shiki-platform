@@ -164,10 +164,17 @@ fn specific_message(code: &str) -> Option<&'static str> {
             "30 分待っても、ファイルの社内文書の検索への取り込みが終わらなかったため、本文を読めませんでした。\
              少し待ってから、失敗したところから再開してください。"
         }
-        // 「ワークフローの設定に問題があり」は原因と合わない（ファイルの側の失敗・D-111）。
+        // 「ワークフローの設定に問題があり」は原因と合わない（ファイルの側の失敗・D-111）。取り込み直しは、ファイルを
+        // 編集できる人がドライブのメニューから頼める（D-126）。再開すると、取り込みが終わるまで待ってから読む（D-125）。
         crate::nodes::ports::INDEX_FAILED => {
-            "ファイルを社内文書の検索に取り込めなかったため、本文を読めませんでした。\
-             ファイルを保存し直すと、取り込み直します。"
+            "ファイルが社内文書の検索に取り込まれていないため、本文を読めませんでした。\
+             ファイルを編集できる人が、ドライブのメニューで「検索に取り込み直す」を選んでから、\
+             失敗したところから再開してください。"
+        }
+        // 取り込めない種類・大きすぎる・取り込まない場所・本文の無い文書（D-111）。取り込み直しても変わらない（D-126）。
+        crate::nodes::ports::NOT_INDEXABLE => {
+            "このファイルからは、社内文書の検索で本文を取り出せないため、読めませんでした。\
+             取り込み直しても変わらないので、別のファイルを選んでください。"
         }
         // 付録 C の §5.2（failure.rs の時間切れの文言の直し）。
         "run_timeout" => {
@@ -577,9 +584,22 @@ mod tests {
         assert_eq!(h.advice, ResumeAdvice::Resume);
         assert!(h.offer);
 
+        // 取り込まれていないファイルは、取り込み直してから再開するよう言う（D-126）。取り込めないファイルは、取り込み
+        // 直しても変わらないと言う。
         let f = run_failure(id, Some(INDEX_FAILED), None);
         assert_eq!(f.category, FailureCategory::Configuration);
-        assert!(f.message.contains("保存し直すと"), "{}", f.message);
+        assert!(
+            f.message.contains("「検索に取り込み直す」を選んでから"),
+            "{}",
+            f.message
+        );
+        assert!(!f.message.contains("設定に問題"), "{}", f.message);
+        let f = run_failure(id, Some(NOT_INDEXABLE), None);
+        assert!(
+            f.message.contains("取り込み直しても変わらない"),
+            "{}",
+            f.message
+        );
         assert!(!f.message.contains("設定に問題"), "{}", f.message);
         for code in [INDEX_FAILED, NOT_INDEXABLE] {
             let h = resume_hint(Some(code), None);

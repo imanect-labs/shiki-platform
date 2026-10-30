@@ -11,6 +11,8 @@
 //! - 取り込み前は失敗にせず、試す回数を使わずに待って読み直す（取り込んだ後に読める・D-125）。待つ上限（30 分）を
 //!   過ぎたらやり直せる失敗（index_pending）で、再開するともう一度待つ。取り込めない種類・取り込みに失敗した文書・
 //!   社内文書の検索が使えない環境は、やり直さない分かる誤り。
+//! - 取り込みの記録が無い文書は、編集できる人が取り込み直し（outbox → 取り込み・D-126）、失敗したところから再開すると
+//!   読める。見えるだけの人は取り込み直せない。
 //! - script の `Shiki.storage.read` の誤りは、捕まえていなければホストの code のまま、作成者が投げた誤りは
 //!   script_error で失敗になる（D-121）。再開しても同じ結果になる失敗は、再開を断る（D-116）。
 //!
@@ -61,6 +63,9 @@ struct Env {
     /// 社内文書の検索を結線した executor と、結線しない executor（社内文書の検索が使えない環境）。
     executor: Arc<dyn NodeExecutor>,
     no_search: Arc<dyn NodeExecutor>,
+    /// 取り込み直し（D-126）と、取り込みの本体（パースはフェイク・索引の行は本物）。
+    search: Arc<rag::SearchService>,
+    ingest: Arc<rag::PipelineDeps>,
     tenant: String,
     alice: AuthContext,
 }
@@ -112,6 +117,18 @@ async fn setup() -> Option<Env> {
     };
     let object_store: Arc<dyn storage::ObjectStore> = Arc::new(storage::S3ObjectStore::new(&s3));
     object_store.ensure_bucket().await.expect("bucket");
+    let ingest = Arc::new(rag::PipelineDeps {
+        pool: pool.clone(),
+        config: rag::RagConfig::default(),
+        parser: Arc::new(InvoiceParser),
+        embedder: Arc::new(FixedEmbedder),
+        vector: Arc::new(NoVectors),
+        fulltext: Arc::new(NoFulltext),
+        indexer_storage: Arc::new(storage::IndexerStorage::new(
+            pool.clone(),
+            Arc::clone(&object_store),
+        )),
+    });
     let storage = Arc::new(storage::StorageService::new(
         pool.clone(),
         object_store,
@@ -199,8 +216,10 @@ async fn setup() -> Option<Env> {
         )
     };
     Some(Env {
-        executor: executor(Some(search)),
+        executor: executor(Some(Arc::clone(&search))),
         no_search: executor(None),
+        search,
+        ingest,
         pool,
         fga,
         storage,
@@ -807,7 +826,12 @@ async fn unindexed_documents_fail_with_a_clear_reason() {
 
     for (what, o, code, says) in [
         ("画像", &unsupported, NOT_INDEXABLE, "取り込めないため"),
-        ("取り込みに失敗", &failed, INDEX_FAILED, "保存し直して"),
+        (
+            "取り込みに失敗",
+            &failed,
+            INDEX_FAILED,
+            "「検索に取り込み直す」を選んでください",
+        ),
         (
             "作業用のフォルダー",
             &excluded,
@@ -818,7 +842,7 @@ async fn unindexed_documents_fail_with_a_clear_reason() {
             "取り込みが届いていない",
             &not_ingested,
             INDEX_FAILED,
-            "「新しいバージョン」でアップロードし直すと",
+            "「検索に取り込み直す」を選ぶと、取り込まれます",
         ),
         (
             "検索が使えない環境",
@@ -838,6 +862,154 @@ async fn unindexed_documents_fail_with_a_clear_reason() {
             "{what}: {o:?}"
         );
     }
+}
+
+/// 取り込みの記録が無い PDF（社内文書の検索を有効にする前に置いた）は、実行の詳細の 1 行目でも取り込み直す案内を
+/// 言う（D-126）。見えるだけの人は取り込み直せない。編集できる人が取り込み直すと、取り込み直しの依頼が outbox に
+/// 積まれ（同じ内容は二重に積まない）、取り込みの本体（`rag_ingest_job`・`reindex`）が本文を索引に入れる。失敗した
+/// ところから再開すると、本文を読める。
+#[tokio::test]
+async fn reindexing_an_unrecorded_pdf_makes_it_readable() {
+    let Some(env) = setup().await else { return };
+    let alice = env.alice.clone();
+    let bob = user_ctx(&env.tenant, "bob");
+    env.fga
+        .write_tuple(
+            &bob.subject(),
+            Relation::Member,
+            &bob.ns().organization(&bob.org),
+        )
+        .await
+        .unwrap();
+    let wf = env.save_reader().await;
+    let orphan = env.upload_pdf(&alice, None, "前からある請求書.pdf").await;
+    env.relayed(&orphan).await;
+    let failed = env.read(wf, orphan.id, &env.executor).await;
+    let failure = env
+        .runs
+        .run_detail(&env.tenant, wf, failed.run_id)
+        .await
+        .unwrap()
+        .unwrap()
+        .failure;
+
+    env.storage
+        .share_node(
+            &alice,
+            orphan.id,
+            &storage::ShareTarget::User { id: "bob".into() },
+            storage::ShareRole::Viewer,
+            None,
+        )
+        .await
+        .unwrap();
+    let viewer = env.storage.authorize_reindex(&bob, orphan.id, None).await;
+    let node = env
+        .storage
+        .authorize_reindex(&alice, orphan.id, None)
+        .await
+        .unwrap();
+    let queued = env
+        .search
+        .request_reindex(&alice, &node, None)
+        .await
+        .unwrap();
+    let again = env
+        .search
+        .request_reindex(&alice, &node, None)
+        .await
+        .unwrap();
+    // relay が job_queue へ写すイベント（op はそのまま）を、取り込みの本体に渡す。
+    let events: Vec<(i64, String, String)> = sqlx::query_as(
+        "select version, op, actor from storage_event_outbox \
+         where tenant_id = $1 and node_id = $2 and op = 'reindex' and processed_at is null",
+    )
+    .bind(&env.tenant)
+    .bind(orphan.id)
+    .fetch_all(&env.pool)
+    .await
+    .unwrap();
+    let mut indexed = Vec::new();
+    for (version, op, actor) in &events {
+        let message = rag::IngestMessage {
+            tenant_id: env.tenant.clone(),
+            org: alice.org.clone(),
+            node_id: orphan.id,
+            version: *version,
+            op: op.clone(),
+            actor: actor.clone(),
+        };
+        indexed.push(
+            rag::pipeline::indexer::handle(&env.ingest, &message, None)
+                .await
+                .unwrap()
+                .to_string(),
+        );
+    }
+    env.relayed(&orphan).await;
+    let state = env.search.index_state(&alice, &node).await.unwrap();
+    let resumed = env
+        .runs
+        .resume_failed(&env.tenant, wf, failed.run_id)
+        .await
+        .unwrap();
+    let after = env.drive(failed.run_id, &env.executor).await;
+    let audits: i64 = sqlx::query_scalar(
+        "select count(*) from audit_log where tenant_id = $1 and action = 'file.reindex'",
+    )
+    .bind(&env.tenant)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+
+    env.cleanup(&[wf], &[(alice.clone(), orphan.id)], &[]).await;
+    sqlx::query("delete from audit_log where tenant_id = $1 and action = 'file.reindex'")
+        .bind(&env.tenant)
+        .execute(&env.pool)
+        .await
+        .unwrap();
+
+    assert_eq!(failed.code.as_deref(), Some(INDEX_FAILED), "{failed:?}");
+    let failure = failure.unwrap();
+    assert!(
+        failure
+            .message
+            .contains("「検索に取り込み直す」を選んでから"),
+        "{failure:?}"
+    );
+    assert!(!failure.message.contains("設定に問題"), "{failure:?}");
+
+    assert!(
+        matches!(viewer, Err(storage::StorageError::Forbidden)),
+        "{viewer:?}"
+    );
+    assert_eq!(
+        queued,
+        rag::ReindexOutcome::Queued {
+            version: node.version
+        }
+    );
+    assert_eq!(again, rag::ReindexOutcome::InProgress, "二重に積まない");
+    assert_eq!(events.len(), 1, "{events:?}");
+    assert!(
+        indexed.len() == 1 && indexed[0].starts_with("indexed("),
+        "取り込み直しの依頼で本文を取り込んだ: {indexed:?}"
+    );
+    assert_eq!(state, rag::IndexState::Ready);
+    assert!(
+        matches!(resumed, workflow_engine::ResumeOutcome::Resumed),
+        "{resumed:?}"
+    );
+    assert_eq!(after.status, RunStatus::Succeeded, "{after:?}");
+    assert_eq!(
+        after.output.unwrap()["text"],
+        "〔p.1〕\n請求金額 34,000 円",
+        "取り込み直した本文を読む"
+    );
+    assert!(
+        audits >= 2,
+        "許可（alice）と拒否（bob）を監査に残す: {audits}"
+    );
 }
 
 /// 自動実行（workflow プリンシパル）でも、委譲したフォルダーの PDF の本文は読め、委譲していないフォルダーの PDF は
@@ -1143,6 +1315,30 @@ async fn script_failures_keep_the_host_code() {
 }
 
 // ------- 社内文書の検索の依存（本文の読み出しでは使わない）-------------------------------
+
+/// 取り込み直しのテストで、PDF の本文を 1 段落で返すパーサ（原本は読まない）。
+struct InvoiceParser;
+
+#[async_trait]
+impl rag::DocumentParser for InvoiceParser {
+    async fn parse(
+        &self,
+        _ctx: &AuthContext,
+        _req: rag::ParseRequest<'_>,
+    ) -> Result<rag::types::ParsedDocument, rag::RagError> {
+        Ok(rag::types::ParsedDocument {
+            blocks: vec![rag::types::ParsedBlock {
+                block_type: rag::types::BlockType::Paragraph,
+                level: None,
+                text: "請求金額 34,000 円".into(),
+                page: Some(1),
+                prov: Vec::new(),
+                list_marker: None,
+            }],
+            used_ocr: false,
+        })
+    }
+}
 
 struct FixedEmbedder;
 
