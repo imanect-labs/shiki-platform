@@ -78,6 +78,16 @@ async function createWorkflow(page: Page, made: Made, ir: Record<string, unknown
   return id;
 }
 
+/// 「保存」を押し、保存の応答が返るまで待つ。「保存しました」の通知は数秒残るので、2 回目の保存の後に通知で待つと、
+/// 1 回目の通知を見て保存の前の定義を読んでしまう（揺れの原因）。
+async function save(page: Page) {
+  const done = page.waitForResponse((r) => r.request().method() === "PUT" && /\/api\/workflows\/[^/]+$/.test(r.url()));
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  const res = await done;
+  expect(res.ok(), await res.text()).toBeTruthy();
+  await expect(page.getByText(/保存しました/).first()).toBeVisible({ timeout: 15_000 });
+}
+
 async function savedIr(page: Page, id: string) {
   const res = await page.request.get(`/api/workflows/${id}`);
   expect(res.ok(), await res.text()).toBeTruthy();
@@ -89,21 +99,39 @@ async function savedIr(page: Page, id: string) {
   }).ir;
 }
 
-/// キャンバスの表示位置（fitView のアニメーション）が落ち着くまで待つ（workflows-editor.spec と同じ）。
+/// キャンバスの表示位置（fitView のアニメーション）が落ち着くまで待つ。250 ミリ秒をおいた 2 回の読みが同じになるまで
+/// 待つ（続けて読むと、動いている途中でも同じ値になって、すぐに抜けてしまう）。待つ間に、出口が変わった後の
+/// ハンドルの測り直し（React Flow は次の描画のフレームで測る）も済む。
 async function settleViewport(page: Page) {
   const read = () => page.locator(".react-flow__viewport").evaluate((el) => (el as HTMLElement).style.transform);
-  let prev = await read();
   await expect
     .poll(
       async () => {
-        const cur = await read();
-        const still = cur === prev;
-        prev = cur;
-        return still;
+        const before = await read();
+        await page.waitForTimeout(250);
+        return before === (await read());
       },
-      { intervals: [200] },
+      { timeout: 10_000 },
     )
     .toBe(true);
+}
+
+/// 出口のハンドルから入口のハンドルへ線を引く。人の操作と同じく少しずつ動かし、React Flow が線を引き始め（引いている
+/// 線が出る）、入口をつなげる相手として受け付けた（valid）ことを確かめてから離す。離した後に線が無いとき、どの段で
+/// 止まったかが分かる（以前は dragTo の後に線の数を 5 秒待つだけで、つながらなかった理由が残らなかった）。
+async function connect(page: Page, from: Locator, to: Locator) {
+  const center = async (l: Locator) => {
+    const b = (await l.boundingBox())!;
+    return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+  };
+  const a = await center(from);
+  const b = await center(to);
+  await page.mouse.move(a.x, a.y);
+  await page.mouse.down();
+  await page.mouse.move(b.x, b.y, { steps: 12 });
+  await expect(page.locator(".react-flow__connectionline")).toBeVisible();
+  await expect(to).toHaveClass(/\bvalid\b/);
+  await page.mouse.up();
 }
 
 /// ノードの出口のハンドルの名前（描いた順）。
@@ -206,8 +234,7 @@ test.describe("AI で判定（エディタ）", () => {
       const question = panel.getByRole("group", { name: /^質問 1/ });
       await question.getByRole("textbox", { name: "選択肢 1 のキー" }).fill("invoice");
       await expect.poll(() => handleIds(node), { timeout: 10_000 }).toEqual(["invoice", "bug", "uncertain"]);
-      await page.getByRole("button", { name: "保存", exact: true }).click();
-      await expect(page.getByText(/保存しました/).first()).toBeVisible({ timeout: 15_000 });
+      await save(page);
       const ir = await savedIr(page, id);
       expect(ir.edges).toContainEqual({ from: "triage", from_port: "invoice", to: "on_billing" });
       await page.screenshot({ path: "test-results/decide-ports-value-pc.png" });
@@ -258,10 +285,9 @@ test.describe("AI で判定（エディタ）", () => {
       // 要確認の出口のハンドルから、承認待ちのブロックの入口へドラッグしてつなぐ。
       const from = node.locator('.react-flow__handle.source[data-handleid="uncertain"]');
       const to = page.getByTestId("rf__node-review").locator(".react-flow__handle.target");
-      await from.dragTo(to);
+      await connect(page, from, to);
       await expect(page.locator('[data-testid="rf__edge-e:triage|uncertain|review"]')).toHaveCount(1);
-      await page.getByRole("button", { name: "保存", exact: true }).click();
-      await expect(page.getByText(/保存しました/).first()).toBeVisible({ timeout: 15_000 });
+      await save(page);
       const ir = await savedIr(page, id);
       expect(ir.edges).toContainEqual({ from: "triage", from_port: "uncertain", to: "review" });
       await page.screenshot({ path: "test-results/decide-uncertain-approval-pc.png" });
@@ -336,8 +362,7 @@ test.describe("AI で判定（エディタ）", () => {
       await expect(panel.getByText("「しきい値（AI の自信）」を入れてください。")).toBeVisible({ timeout: 10_000 });
       await page.screenshot({ path: "test-results/decide-threshold-blank-pc.png" });
       // 空のしきい値は保存を止めない（実行と自動実行のオンの前に止める）。保存した定義にしきい値は無い。
-      await page.getByRole("button", { name: "保存", exact: true }).click();
-      await expect(page.getByText(/保存しました/).first()).toBeVisible({ timeout: 15_000 });
+      await save(page);
       const blankSaved = (await savedIr(page, id)).nodes.find((n) => n.id === "decide_1")!;
       expect(blankSaved.params.route).toEqual({ question: "category", by: "value" });
       await panel.getByRole("button", { name: "0.80 から始める" }).click();
@@ -361,8 +386,7 @@ test.describe("AI で判定（エディタ）", () => {
       await expect(page.locator('[aria-label^="検証エラー"]')).toHaveCount(0);
       await page.screenshot({ path: "test-results/decide-form-pc.png" });
 
-      await page.getByRole("button", { name: "保存", exact: true }).click();
-      await expect(page.getByText(/保存しました/).first()).toBeVisible({ timeout: 15_000 });
+      await save(page);
       const ir = await savedIr(page, id);
       const saved = ir.nodes.find((n) => n.id === "decide_1")!;
       expect(saved.params).toEqual({
@@ -622,8 +646,7 @@ test.describe("AI で判定（エディタ・編集の途中）", () => {
       }
       await page.keyboard.press("Escape");
 
-      await page.getByRole("button", { name: "保存", exact: true }).click();
-      await expect(page.getByText(/保存しました/).first()).toBeVisible({ timeout: 15_000 });
+      await save(page);
       const ir = await savedIr(page, id);
       expect(ir.edges).toEqual(
         expect.arrayContaining([
