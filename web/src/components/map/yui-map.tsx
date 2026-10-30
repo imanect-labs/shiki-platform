@@ -85,7 +85,7 @@ function MapCard({ figure, config, onFail }: { figure: MapFigure; config: MapCon
         onSelect={select}
         cooperative
         onFail={onFail}
-        className="h-[260px] rounded-[14px] border border-border sm:h-[340px]"
+        className="h-[260px] rounded-[14px] border border-border/60 sm:h-[340px]"
         onExpand={() => setExpanded(true)}
       />
       {figure.route ? (
@@ -116,7 +116,7 @@ function MapCard({ figure, config, onFail }: { figure: MapFigure; config: MapCon
             className="fixed inset-0 z-50 flex flex-col bg-background outline-none data-[state=open]:animate-in data-[state=open]:fade-in-0 sm:inset-4 sm:overflow-hidden sm:rounded-2xl sm:border sm:border-border sm:shadow-[var(--elevation-lg)]"
             aria-describedby={undefined}
           >
-            <div className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-4 pt-[env(safe-area-inset-top)]">
+            <div className="shiki-dash-bottom flex h-12 shrink-0 items-center gap-2 px-4 pt-[env(safe-area-inset-top)]">
               <DialogPrimitive.Title className="min-w-0 flex-1 truncate text-[15px] font-semibold">{title || "地図"}</DialogPrimitive.Title>
               <DialogPrimitive.Close
                 aria-label="閉じる"
@@ -135,11 +135,12 @@ function MapCard({ figure, config, onFail }: { figure: MapFigure; config: MapCon
                   cooperative={false}
                   onFail={onFail}
                   padding={{ bottom: 168 }}
+                  fullscreen
                   className="absolute inset-0"
                 />
               ) : null}
               <div className="pointer-events-none absolute inset-x-0 bottom-0 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
-                <PlaceList figure={figure} selected={selected} onSelect={select} floating className="pointer-events-auto px-3" />
+                <PlaceList figure={figure} selected={selected} onSelect={select} floating className="pointer-events-auto" />
               </div>
             </div>
           </DialogPrimitive.Content>
@@ -158,6 +159,7 @@ function MapSurface({
   onFail,
   onExpand,
   padding,
+  fullscreen,
   className,
 }: {
   figure: MapFigure;
@@ -168,6 +170,8 @@ function MapSurface({
   onFail: () => void;
   onExpand?: () => void;
   padding?: MapPadding;
+  /// 全画面（下に地点のカードが重なるので、操作ボタンと出典を上に置く）。
+  fullscreen?: boolean;
   className?: string;
 }) {
   const box = React.useRef<HTMLDivElement>(null);
@@ -185,6 +189,7 @@ function MapSurface({
     selected,
     onSelect,
     padding,
+    attribution: fullscreen ? "top-left" : "bottom-left",
   });
   React.useEffect(() => {
     if (status === "error") onFail();
@@ -210,30 +215,37 @@ function MapSurface({
         />
       </div>
       {status !== "ready" ? (
-        // 読み込み中: 地の色の上に、薄い格子を流す（白い箱や回転するアイコンは出さない）。
-        <div
-          aria-hidden
-          className="pointer-events-none absolute inset-0 animate-pulse bg-[linear-gradient(var(--border)_1px,transparent_1px),linear-gradient(90deg,var(--border)_1px,transparent_1px)] bg-[size:48px_48px] opacity-60"
-        />
+        // 読み込み中: 地の色をゆっくり明滅させ、中央に小さく文字を流す（白い箱や回転するアイコンは出さない）。
+        <div aria-hidden className="pointer-events-none absolute inset-0 flex items-center justify-center">
+          <div className="absolute inset-0 animate-pulse bg-muted/60" />
+          <span className="shiki-text-shimmer relative text-[12px] font-medium">地図を読み込んでいます</span>
+        </div>
       ) : null}
       <span className="sr-only" aria-live="polite">
         {status === "loading" ? "地図を読み込んでいます" : ""}
       </span>
-      <div className="absolute right-2.5 top-2.5 z-10 flex flex-col items-end gap-2">
-        {onExpand ? (
-          <MapButton label="全画面で見る" onClick={onExpand} testId="yui-map-expand">
+      {onExpand ? (
+        <div className="absolute right-2.5 top-2.5 z-10">
+          <MapButton label="全画面で見る" onClick={onExpand} testId="yui-map-expand" framed>
             <Maximize2 className="size-4" aria-hidden />
           </MapButton>
-        ) : null}
-        <div className="flex flex-col overflow-hidden rounded-lg border border-border bg-card/95 shadow-[var(--elevation-sm)] backdrop-blur">
-          <MapButton label="拡大" onClick={() => zoom(1)} bare disabled={status !== "ready"}>
-            <Plus className="size-4" aria-hidden />
-          </MapButton>
-          <div className="h-px bg-border" />
-          <MapButton label="縮小" onClick={() => zoom(-1)} bare disabled={status !== "ready"}>
-            <Minus className="size-4" aria-hidden />
-          </MapButton>
         </div>
+      ) : null}
+      {/* 拡大・縮小はマウスのときだけ（タッチは 2 本の指で動かす）。全画面では下にカードが重なるので上に置く。 */}
+      <div
+        className={cn(
+          "absolute right-2.5 z-10 flex flex-col overflow-hidden rounded-lg border border-border/60 bg-card/90 shadow-[var(--elevation-sm)] backdrop-blur",
+          fullscreen ? "top-2.5" : "bottom-2.5",
+        )}
+      >
+        <MapButton label="拡大" onClick={() => zoom(1)} disabled={status !== "ready"} className="pointer-coarse:hidden">
+          <Plus className="size-4" aria-hidden />
+        </MapButton>
+        <div className="h-px bg-border/60 pointer-coarse:hidden" />
+        <MapButton label="縮小" onClick={() => zoom(-1)} disabled={status !== "ready"} className="pointer-coarse:hidden">
+          <Minus className="size-4" aria-hidden />
+        </MapButton>
+        <div className="h-px bg-border/60 pointer-coarse:hidden" />
         <MapButton label="すべての地点を表示" onClick={recenter} disabled={status !== "ready"}>
           <LocateFixed className="size-4" aria-hidden />
         </MapButton>
@@ -246,16 +258,19 @@ function MapButton({
   label,
   onClick,
   children,
-  bare,
+  framed,
   disabled,
   testId,
+  className,
 }: {
   label: string;
   onClick: () => void;
   children: React.ReactNode;
-  bare?: boolean;
+  /// 単独で置く（枠と影を持つ）。
+  framed?: boolean;
   disabled?: boolean;
   testId?: string;
+  className?: string;
 }) {
   return (
     <button
@@ -266,8 +281,9 @@ function MapButton({
       disabled={disabled}
       data-testid={testId}
       className={cn(
-        "flex size-8 items-center justify-center text-foreground/80 transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-40 pointer-coarse:size-10",
-        !bare && "rounded-lg border border-border bg-card/95 shadow-[var(--elevation-sm)] backdrop-blur",
+        "flex size-8 items-center justify-center text-foreground/75 transition-colors duration-[var(--duration-fast)] hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-40 pointer-coarse:size-10",
+        framed && "rounded-lg border border-border/60 bg-card/90 shadow-[var(--elevation-sm)] backdrop-blur",
+        className,
       )}
     >
       {children}
@@ -275,7 +291,11 @@ function MapButton({
   );
 }
 
+/// PC の会話の中で最初に並べるカードの数（それ以上は「ほか N 件」で開く）。
+const GRID_LIMIT = 6;
+
 /// 地点のカード。番号はピンと同じ。←→ で選び、選んだ地点はピンが大きくなる。
+/// スマホと全画面では横に送るカルーセル、PC の会話の中では折り返して並べる（マウスで横に送らせない）。
 function PlaceList({
   figure,
   selected,
@@ -290,85 +310,104 @@ function PlaceList({
   className?: string;
 }) {
   const list = React.useRef<HTMLDivElement>(null);
+  const [showAll, setShowAll] = React.useState(false);
+  const total = figure.markers.length;
   React.useEffect(() => {
     if (selected === null) return;
+    // 畳んだカードの地点を選んだら開く。
+    if (!floating && selected >= GRID_LIMIT) setShowAll(true);
     // 横にだけ送る（scrollIntoView は会話のスクロールまで動かし、全画面の裏の読む位置がずれる）。
     const box = list.current;
     const card = box?.querySelector<HTMLElement>(`[data-index="${selected}"]`);
-    if (!box || !card) return;
-    const left = card.offsetLeft - box.offsetLeft;
-    if (left < box.scrollLeft || left + card.offsetWidth > box.scrollLeft + box.clientWidth) {
-      box.scrollTo({ left: Math.max(0, left - 12), behavior: "smooth" });
+    if (!box || !card || box.scrollWidth <= box.clientWidth) return;
+    const pad = parseFloat(getComputedStyle(box).paddingLeft) || 0;
+    const left = card.offsetLeft - box.offsetLeft - pad;
+    if (left < box.scrollLeft || left + card.offsetWidth + pad * 2 > box.scrollLeft + box.clientWidth) {
+      box.scrollTo({ left: Math.max(0, left), behavior: "smooth" });
     }
-  }, [selected]);
-  if (figure.markers.length === 0) return null;
-  const single = figure.markers.length === 1;
+  }, [selected, floating]);
+  if (total === 0) return null;
+  const single = total === 1;
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
     e.preventDefault();
-    const n = figure.markers.length;
-    const next = selected === null ? 0 : (selected + (e.key === "ArrowRight" ? 1 : -1) + n) % n;
+    const next = selected === null ? 0 : (selected + (e.key === "ArrowRight" ? 1 : -1) + total) % total;
     onSelect(next);
     list.current?.querySelector<HTMLElement>(`[data-index="${next}"] button`)?.focus();
   };
+  const folded = !floating && !showAll && total > GRID_LIMIT;
   return (
-    <div
-      ref={list}
-      role="list"
-      aria-label="地点"
-      onKeyDown={onKeyDown}
-      data-testid="yui-map-places"
-      className={cn(
-        "flex snap-x snap-mandatory gap-2 overflow-x-auto overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
-        className,
-      )}
-    >
-      {figure.markers.map((m, i) => {
-        const on = i === selected;
-        return (
-          <div
-            key={`${i}:${m.label}`}
-            role="listitem"
-            data-index={i}
-            className={cn(
-              "group relative flex shrink-0 snap-start items-start gap-2.5 rounded-xl border bg-card p-3 text-left transition-[border-color,box-shadow] duration-150",
-              // 次のカードの端を見せて、横に続くことが分かるようにする。
-              single ? "w-full" : "w-[min(14rem,78%)]",
-              floating && "shadow-[var(--elevation-md)]",
-              on ? "border-primary/50 ring-2 ring-primary/15" : "border-border hover:border-foreground/20",
-            )}
-          >
-            <span
+    <div className={className}>
+      <div
+        ref={list}
+        role="list"
+        aria-label="地点"
+        onKeyDown={onKeyDown}
+        data-testid="yui-map-places"
+        className={cn(
+          "flex snap-x snap-mandatory gap-2 overflow-x-auto overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+          floating ? "scroll-px-4 px-4" : "sm:grid sm:snap-none sm:grid-cols-[repeat(auto-fill,minmax(13rem,1fr))] sm:overflow-visible",
+        )}
+      >
+        {figure.markers.map((m, i) => {
+          const on = i === selected;
+          return (
+            <div
+              key={`${i}:${m.label}`}
+              role="listitem"
+              data-index={i}
               className={cn(
-                "mt-px flex size-5 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold tabular-nums",
-                on ? "bg-primary text-primary-foreground" : "bg-secondary text-secondary-foreground",
+                "group relative flex shrink-0 snap-start items-start gap-2.5 rounded-xl border p-3 text-left transition-colors duration-[var(--duration-fast)] ease-[var(--ease-standard)]",
+                // カルーセルでは次のカードの端を見せて、横に続くことが分かるようにする。
+                single ? "w-full" : floating ? "w-[min(15rem,80%)]" : "w-[min(14rem,78%)] sm:w-auto",
+                folded && i >= GRID_LIMIT && "sm:hidden",
+                // 選択は塗り（設計言語）。全画面では地図の上に浮かせるので不透明にする。
+                floating ? "bg-card shadow-[var(--elevation-md)]" : "bg-card/40",
+                on ? "border-border bg-accent" : "border-border/60 hover:border-border hover:bg-accent/60",
               )}
-              aria-hidden
             >
-              {i + 1}
-            </span>
-            <button
-              type="button"
-              onClick={() => onSelect(on ? -1 : i)}
-              aria-pressed={on}
-              className="min-w-0 flex-1 text-left outline-none after:absolute after:inset-0 after:rounded-xl focus-visible:after:ring-2 focus-visible:after:ring-ring"
-            >
-              <span className="block truncate text-[13px] font-semibold leading-5 text-foreground">{m.label}</span>
-              {m.desc ? <span className="mt-0.5 line-clamp-2 text-[12px] leading-[18px] text-muted-foreground">{m.desc}</span> : null}
-            </button>
-            <a
-              href={placeUrl(m.lat, m.lng)}
-              target="_blank"
-              rel="noopener noreferrer"
-              aria-label={`${m.label} を Google マップで開く`}
-              title="Google マップで開く"
-              className="relative z-10 -m-1 flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-70 transition hover:bg-accent hover:text-foreground hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              <ExternalLink className="size-3.5" aria-hidden />
-            </a>
-          </div>
-        );
-      })}
+              <span
+                className={cn(
+                  "mt-px flex size-5 shrink-0 items-center justify-center rounded-full text-[11px] font-semibold tabular-nums transition-colors",
+                  on ? "bg-primary text-primary-foreground" : "bg-secondary text-secondary-foreground",
+                )}
+                aria-hidden
+              >
+                {i + 1}
+              </span>
+              <button
+                type="button"
+                onClick={() => onSelect(on ? -1 : i)}
+                aria-pressed={on}
+                className="min-w-0 flex-1 text-left outline-none after:absolute after:inset-0 after:rounded-xl focus-visible:after:ring-2 focus-visible:after:ring-ring"
+              >
+                <span className="block truncate text-[13px] font-semibold leading-5 text-foreground">{m.label}</span>
+                {m.desc ? <span className="mt-0.5 line-clamp-2 text-[12px] leading-[18px] text-muted-foreground">{m.desc}</span> : null}
+              </button>
+              <a
+                href={placeUrl(m.lat, m.lng)}
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label={`${m.label} を Google マップで開く`}
+                title="Google マップで開く"
+                // マウスではカードに載せたときだけ出す（タッチは常に・押しやすい大きさ）。
+                className="relative z-10 -m-1 flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-background/60 hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover:opacity-100 pointer-coarse:-m-2 pointer-coarse:size-10 pointer-coarse:opacity-70"
+              >
+                <ExternalLink className="size-3.5" aria-hidden />
+              </a>
+            </div>
+          );
+        })}
+      </div>
+      {folded ? (
+        <button
+          type="button"
+          onClick={() => setShowAll(true)}
+          className="mt-2 hidden rounded-md px-2 py-1 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:inline-flex"
+        >
+          ほか {total - GRID_LIMIT} 件の地点を表示
+        </button>
+      ) : null}
     </div>
   );
 }

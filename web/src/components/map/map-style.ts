@@ -70,7 +70,8 @@ export const MAP_PALETTE: Record<MapMode, Palette> = {
 export const ROUTE_COLOR = "#398cb8";
 
 const GREEN = /park|grass|wood|forest|garden|pitch|cemetery|golf|meadow|scrub|wetland|national_park|nature|landcover_(?!ice|glacier)/;
-const HIDE_SYMBOL = /shield|one_way|oneway|road-number|road_number|housenum|poi_r\d|^poi-label$|^poi_label$/;
+/// 消す文字: 道路番号・一方通行の矢印・番地・店などの POI・細い道の名前（地点の名前を主役にする）。
+const HIDE_SYMBOL = /shield|one_way|oneway|road-number|road_number|housenum|poi_r\d|^poi-label$|^poi_label$|name-(minor|path)|label-(minor|path|small)/;
 const TRANSIT = /transit|station|rail|subway/;
 
 function sourceLayer(l: LayerSpecification): string {
@@ -116,7 +117,10 @@ function tintLayer(l: LayerSpecification, p: Palette): void {
     case "fill-extrusion": {
       const prop = l.type === "fill" ? "fill-color" : "fill-extrusion-color";
       if (/water/.test(key)) setPaint(l, prop, p.water);
-      else if (/building/.test(key)) setPaint(l, prop, p.building);
+      else if (/building/.test(key)) {
+        setPaint(l, prop, p.building);
+        if (l.type === "fill") setPaint(l, "fill-opacity", 0.7);
+      }
       else if (GREEN.test(key)) setPaint(l, prop, p.green);
       else if (/ice|glacier/.test(key)) setPaint(l, prop, p.land);
       else if (/road|transportation|aeroway|bridge|tunnel|pier/.test(key)) setPaint(l, prop, p.roadMinor);
@@ -148,8 +152,8 @@ function tintLayer(l: LayerSpecification, p: Palette): void {
       }
       const layout = (l.layout ??= {});
       if (usesName(layout["text-field"])) layout["text-field"] = NAME_JA;
-      const strong = /place|settlement|city|town|country|state|label_city|label_town/.test(key) && !/neighbo|suburb|other|village/.test(key);
-      setPaint(l, "text-color", /water|waterway|marine/.test(key) ? p.waterLabel : strong ? p.labelStrong : p.label);
+      // 地図の文字はすべて控えめにする（濃い文字は地点の名前だけ）。
+      setPaint(l, "text-color", /water|waterway|marine/.test(key) ? p.waterLabel : p.label);
       setPaint(l, "text-halo-color", p.halo);
       setPaint(l, "text-halo-width", 1.4);
       if (TRANSIT.test(key)) {

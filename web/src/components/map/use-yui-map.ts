@@ -55,6 +55,9 @@ function loadStyle(url: string): Promise<StyleSpecification> {
 
 const ROUTE = "yui-route";
 const PLACES = "yui-places";
+/// ピンの下に敷く透明な印の名前と大きさ（ピンは 24px）。
+const PIN_HOLE = "yui-pin-hole";
+const PIN_HOLE_PX = 24;
 /// 地点が多いと名前が重なるので、それ以上は選んだ地点の名前だけを出す。
 const MAX_LABELS = 8;
 
@@ -128,13 +131,22 @@ function withOverlay(base: StyleSpecification, mode: MapMode, figure: MapFigure,
         "text-field": ["get", "label"],
         "text-font": labelFont(s),
         "text-size": 12.5,
-        "text-anchor": "top",
-        "text-offset": [0, 1.3],
+        // 名前はピンの下を基本に、ほかのピン・名前とぶつかれば上・左・右へ逃がす。
+        "text-variable-anchor": ["top", "bottom", "left", "right"],
+        "text-radial-offset": 1.45,
+        "text-justify": "auto",
         "text-max-width": 9,
-        "text-allow-overlap": true,
         "symbol-sort-key": ["get", "i"],
       },
       paint: { "text-color": p.labelStrong, "text-halo-color": p.halo, "text-halo-width": 1.8 },
+    },
+    {
+      // ピンの大きさの透明な印。名前より上に置いて先に場所を取り、地図側の文字と地点の名前を
+      // ピンに重ねない（ピン自体は押せる部品なので DOM で描く）。
+      id: `${PLACES}-hole`,
+      type: "symbol",
+      source: PLACES,
+      layout: { "icon-image": PIN_HOLE, "icon-allow-overlap": true },
     },
   );
   return s;
@@ -174,7 +186,7 @@ function pinElement(index: number, label: string, onSelect: (i: number) => void)
   button.dataset.testid = "yui-map-pin";
   button.setAttribute("aria-label", `${index + 1}. ${label}`);
   button.className =
-    "flex size-7 items-center justify-center rounded-full border-2 border-white bg-primary text-[12px] font-semibold tabular-nums text-primary-foreground shadow-[var(--elevation-md)] outline-none transition-transform duration-150 hover:scale-110 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 dark:border-zinc-900 data-[selected=true]:scale-125 data-[selected=true]:ring-4 data-[selected=true]:ring-primary/25";
+    "flex size-6 items-center justify-center rounded-full border-2 border-white bg-primary text-[11px] font-semibold tabular-nums text-primary-foreground shadow-[var(--elevation-md)] outline-none transition-transform duration-[var(--duration-fast)] ease-[var(--ease-standard)] hover:scale-110 focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 dark:border-zinc-900 data-[selected=true]:scale-[1.3] data-[selected=true]:shadow-[var(--elevation-lg)]";
   button.textContent = String(index + 1);
   button.addEventListener("click", (e) => {
     e.stopPropagation();
@@ -184,6 +196,42 @@ function pinElement(index: number, label: string, onSelect: (i: number) => void)
   const root = document.createElement("div");
   root.appendChild(button);
   return root;
+}
+
+/// ピンどうしがこれより近いと重なって番号が読めない（ピンは 24px）。
+const PIN_GAP = 22;
+/// 離すときの上限（ずらしすぎると本当の位置から離れて見える）。
+const PIN_NUDGE_MAX = 10;
+
+/// 画面上で近すぎるピンだけを、互いに反対向きへ少しずらす（番号を読めるようにする）。
+/// 名前と透明な印は本当の位置に描くので、ずらす量は名前との間隔（text-radial-offset）より小さく抑える。
+function declutter(map: MaplibreMap, markers: Marker[]) {
+  const pts = markers.map((m) => map.project(m.getLngLat()));
+  const off = pts.map(() => ({ x: 0, y: 0 }));
+  for (let i = 0; i < pts.length; i++) {
+    for (let j = i + 1; j < pts.length; j++) {
+      const a = pts[i]!;
+      const b = pts[j]!;
+      let dx = b.x - a.x;
+      let dy = b.y - a.y;
+      const d = Math.hypot(dx, dy);
+      if (d >= PIN_GAP) continue;
+      // 同じ座標なら左右に分ける。
+      if (d < 0.5) [dx, dy] = [1, 0];
+      const len = Math.hypot(dx, dy);
+      const push = Math.min(PIN_NUDGE_MAX, (PIN_GAP - d) / 2);
+      off[i]!.x -= (dx / len) * push;
+      off[i]!.y -= (dy / len) * push;
+      off[j]!.x += (dx / len) * push;
+      off[j]!.y += (dy / len) * push;
+    }
+  }
+  markers.forEach((m, i) => {
+    const o = off[i]!;
+    const x = Math.max(-PIN_NUDGE_MAX, Math.min(PIN_NUDGE_MAX, o.x));
+    const y = Math.max(-PIN_NUDGE_MAX, Math.min(PIN_NUDGE_MAX, o.y));
+    m.setOffset([Math.round(x), Math.round(y)]);
+  });
 }
 
 export type MapStatus = "idle" | "loading" | "ready" | "error";
@@ -198,6 +246,7 @@ export function useYuiMap({
   selected,
   onSelect,
   padding,
+  attribution = "bottom-left",
 }: {
   container: React.RefObject<HTMLDivElement | null>;
   figure: MapFigure;
@@ -211,6 +260,8 @@ export function useYuiMap({
   onSelect: (index: number) => void;
   /// 地点を寄せるときに空ける余白（全画面では下に地点のカードが重なる）。
   padding?: MapPadding;
+  /// 出典を置く角。
+  attribution?: "bottom-left" | "top-left";
 }) {
   const [status, setStatus] = React.useState<MapStatus>("idle");
   const mapRef = React.useRef<MaplibreMap | null>(null);
@@ -249,7 +300,7 @@ export function useYuiMap({
         const map = new maplibre.Map({
           container: el,
           style: withOverlay(style, modeRef.current, fig, selectedRef.current),
-          attributionControl: { compact: true },
+          attributionControl: false,
           cooperativeGestures: cooperative,
           dragRotate: false,
           pitchWithRotate: false,
@@ -265,12 +316,21 @@ export function useYuiMap({
           },
         });
         map.touchZoomRotate.disableRotation();
+        // 出典は左下に畳んで置く（右下は操作ボタン）。
+        map.addControl(new maplibre.AttributionControl({ compact: true }), attribution);
+        // ピンの下の透明な印は、スタイルを差し替えるたびに求められる。
+        map.on("styleimagemissing", (e) => {
+          if (e.id !== PIN_HOLE || map.hasImage(PIN_HOLE)) return;
+          map.addImage(PIN_HOLE, { width: PIN_HOLE_PX, height: PIN_HOLE_PX, data: new Uint8Array(PIN_HOLE_PX * PIN_HOLE_PX * 4) });
+        });
         // 一度描けたら、以後の失敗（明暗の切り替え中のタイルなど）で静止画に戻さない。
         let loaded = false;
         mapRef.current = map;
         movedRef.current = false;
         frame(map, fig, false, paddingRef.current);
         map.on("dragstart", () => (movedRef.current = true));
+        // 縮尺が変わるとピンどうしの近さも変わる。
+        map.on("zoomend", () => declutter(map, markersRef.current));
         map.on("zoomstart", (e) => {
           if ((e as { originalEvent?: unknown }).originalEvent) movedRef.current = true;
         });
@@ -305,7 +365,7 @@ export function useYuiMap({
       setStatus("idle");
     };
     // mode・figure の変化は下の effect で差し替える（地図を作り直さない）。
-  }, [active, container, config.style_url_light, config.style_url_dark, cooperative]);
+  }, [active, container, config.style_url_light, config.style_url_dark, cooperative, attribution]);
 
   // 明暗の切り替え: スタイルだけを差し替える（ピンは DOM なので残る）。作ったときの明暗のままなら何もしない。
   const mapReady = status === "ready";
@@ -343,6 +403,7 @@ export function useYuiMap({
     (map.getSource(ROUTE) as GeoJSONSource | undefined)?.setData(routeData(fig));
     (map.getSource(PLACES) as GeoJSONSource | undefined)?.setData(placesData(fig));
     if (!movedRef.current) frame(map, fig, status === "ready", paddingRef.current);
+    declutter(map, markersRef.current);
   }, [markerKey, status]);
 
   // 選んだ地点: ピンを強調し、画面の外なら寄せる。
