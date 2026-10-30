@@ -37,6 +37,7 @@ pub mod org_group;
 pub mod scope;
 pub mod subject;
 pub mod tenancy;
+pub mod visible;
 pub mod vocab;
 
 pub use client::{

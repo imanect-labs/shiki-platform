@@ -188,7 +188,9 @@ pub use stream::{
     StreamMessage, StreamReadyEvent, StreamResetEvent, StreamResetReason, LEDGER_CONSUMER,
     RECORD_CHANGED_EVENT,
 };
-pub use table_list::{TableListQuery, TablePage, MAX_TABLE_PAGE};
+pub use table_list::{
+    TableListQuery, TablePage, MAX_TABLE_PAGE, TABLE_SCAN_CHUNK, TABLE_SCAN_MAX_CHECKS,
+};
 pub use table_share::TableShareRole;
 pub use tenant_settings::{DataTenantSettings, MAX_COUNT_CAP, MAX_INDEXED_FIELDS_CEILING};
 pub use transition::TRANSITION_EVENT_TYPE;

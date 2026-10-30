@@ -34,6 +34,8 @@ const NONCE_LEN: usize = 12;
 const MAX_TOKEN_LEN: usize = 4_096;
 /// AAD のドメイン分離ラベル（他用途の暗号文と取り違えない）。
 const AAD_LABEL: &[u8] = b"shiki/data/cursor/v1";
+/// テーブル一覧の続きの位置（[`CursorCodec::seal_table_list`]）の AAD のラベル（レコードのカーソルと取り違えない）。
+const TABLE_LIST_AAD_LABEL: &[u8] = b"shiki/data/table-list-cursor/v1";
 
 /// カーソル暗号鍵（32 バイト）。鍵ファイルの形式は secrets のマスターキーと同じ。
 #[derive(Clone)]
@@ -141,24 +143,7 @@ impl CursorCodec {
     ) -> Result<String, DataError> {
         let plain = serde_json::to_vec(payload)
             .map_err(|e| DataError::Internal(format!("cursor encode: {e}")))?;
-        let mut nonce = [0u8; NONCE_LEN];
-        rand::thread_rng().fill_bytes(&mut nonce);
-        let aad = scope.aad();
-        let ct = self
-            .cipher
-            .encrypt(
-                Nonce::from_slice(&nonce),
-                Payload {
-                    msg: &plain,
-                    aad: &aad,
-                },
-            )
-            .map_err(|_| DataError::Internal("cursor seal".into()))?;
-        let mut raw = Vec::with_capacity(1 + NONCE_LEN + ct.len());
-        raw.push(VERSION);
-        raw.extend_from_slice(&nonce);
-        raw.extend_from_slice(&ct);
-        Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw))
+        self.seal_bytes(&scope.aad(), &plain)
     }
 
     /// トークンを検証・復号する。改竄・別スコープへの流用・形式不正はすべて同一の 422。
@@ -167,6 +152,48 @@ impl CursorCodec {
         scope: &CursorScope<'_>,
         token: &str,
     ) -> Result<CursorPayload, DataError> {
+        let plain = self.open_bytes(&scope.aad(), token)?;
+        serde_json::from_slice(&plain)
+            .map_err(|_| DataError::input(crate::InvalidCode::CursorInvalid))
+    }
+
+    /// テーブル一覧の続きの位置を暗号化する（テナントに束縛・BUG-149）。
+    ///
+    /// 一覧は見えないテーブルの位置で止まることがある（DB の候補を OpenFGA で絞る経路の確かめる件数の
+    /// 上限）。位置をそのまま出すと、見えないテーブルの id と更新の時刻（名前で探したときは名前に当たる
+    /// ことも）が分かるので、レコードのカーソルと同じ鍵で暗号化する。
+    pub(crate) fn seal_table_list(
+        &self,
+        tenant_id: &str,
+        plain: &[u8],
+    ) -> Result<String, DataError> {
+        self.seal_bytes(&table_list_aad(tenant_id), plain)
+    }
+
+    /// [`Self::seal_table_list`] の逆。改竄・別テナントへの流用・形式不正は `cursor_invalid`。
+    pub(crate) fn open_table_list(
+        &self,
+        tenant_id: &str,
+        token: &str,
+    ) -> Result<Vec<u8>, DataError> {
+        self.open_bytes(&table_list_aad(tenant_id), token)
+    }
+
+    fn seal_bytes(&self, aad: &[u8], plain: &[u8]) -> Result<String, DataError> {
+        let mut nonce = [0u8; NONCE_LEN];
+        rand::thread_rng().fill_bytes(&mut nonce);
+        let ct = self
+            .cipher
+            .encrypt(Nonce::from_slice(&nonce), Payload { msg: plain, aad })
+            .map_err(|_| DataError::Internal("cursor seal".into()))?;
+        let mut raw = Vec::with_capacity(1 + NONCE_LEN + ct.len());
+        raw.push(VERSION);
+        raw.extend_from_slice(&nonce);
+        raw.extend_from_slice(&ct);
+        Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(raw))
+    }
+
+    fn open_bytes(&self, aad: &[u8], token: &str) -> Result<Vec<u8>, DataError> {
         let invalid = || DataError::input(crate::InvalidCode::CursorInvalid);
         if token.is_empty() || token.len() > MAX_TOKEN_LEN {
             return Err(invalid());
@@ -178,13 +205,19 @@ impl CursorCodec {
             return Err(invalid());
         }
         let (nonce, ct) = raw[1..].split_at(NONCE_LEN);
-        let aad = scope.aad();
-        let plain = self
-            .cipher
-            .decrypt(Nonce::from_slice(nonce), Payload { msg: ct, aad: &aad })
-            .map_err(|_| invalid())?;
-        serde_json::from_slice(&plain).map_err(|_| invalid())
+        self.cipher
+            .decrypt(Nonce::from_slice(nonce), Payload { msg: ct, aad })
+            .map_err(|_| invalid())
     }
+}
+
+/// テーブル一覧の続きの位置の AAD（ラベル・形式の版・テナント）。
+fn table_list_aad(tenant_id: &str) -> Vec<u8> {
+    let mut aad = Vec::with_capacity(TABLE_LIST_AAD_LABEL.len() + 1 + tenant_id.len());
+    aad.extend_from_slice(TABLE_LIST_AAD_LABEL);
+    aad.push(VERSION);
+    aad.extend_from_slice(tenant_id.as_bytes());
+    aad
 }
 
 #[cfg(test)]
