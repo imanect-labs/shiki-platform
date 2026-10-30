@@ -12,17 +12,23 @@
 //!   本人のルートに書けるので止めない。folder を省略した `storage.list` も同じ理由で一覧できないので、有効化の
 //!   時点で止める（[`LIST_FOLDER_REQUIRED`]・D-83）。
 //!
+//! - **中にブロックの無い繰り返し**（`control.map` の領域が空・D-85）: エディタで置いた直後の繰り返しは中が空なので、
+//!   保存は止めずに警告（[`EMPTY_REGION`]）にとどめる。空のまま動かすと、1 件目から中の最後のブロックを
+//!   いつまでも待つので、有効化と対話の実行の前に止める（D-83 と同じ扱い）。
+//!
 //! どれも IR だけで決まる純関数。有効化（`RegistrationService::enable`）・同意計画の API・対話の起動
 //! （`WorkflowRunLauncher`）が同じ関数を呼ぶ。
 
 use serde_json::Value;
 
-use super::ValidationError;
+use super::{block_name, ValidationError};
 use crate::ir::{Trigger, WorkflowIr};
 use crate::vocab::NodeType;
 
 /// 警告・止める理由のコード: 必須の欄が空（D-43・D-83）。
 pub const REQUIRED_TEXT_EMPTY: &str = "ir.required_text_empty";
+/// 警告・止める理由のコード: 繰り返し（`control.map`）の中にブロックが無い（D-85）。
+pub const EMPTY_REGION: &str = "ir.empty_region";
 /// 止める理由のコード: schedule / event で動く IR の保存先フォルダが省略されている（D-40）。
 pub const WRITE_FOLDER_REQUIRED: &str = "ir.write_folder_required";
 /// 止める理由のコード: schedule / event で動く IR の一覧にするフォルダが省略されている（D-83）。
@@ -184,6 +190,36 @@ pub fn required_text_empty(ir: &WorkflowIr) -> Vec<ValidationError> {
     out
 }
 
+/// 中にブロックの無い繰り返し（保存時の警告・有効化と実行の前に止める理由・D-85）。
+///
+/// 中のブロックは `parent` がその繰り返しの id のノード（ir.md §5.3）。文言はどの場面（保存・実行・自動実行のオン）
+/// でも通る形にする（付録 D の N4.10）。
+#[must_use]
+pub fn empty_regions(ir: &WorkflowIr) -> Vec<ValidationError> {
+    ir.nodes
+        .iter()
+        .filter(|m| NodeType::parse(&m.node_type) == Some(NodeType::ControlMap))
+        .filter(|m| !ir.nodes.iter().any(|n| n.parent.as_deref() == Some(m.id.as_str())))
+        .map(|m| {
+            ValidationError::new(
+                EMPTY_REGION,
+                format!(
+                    "「{}」の中にブロックがありません。1 件ごとに行う処理を中に置くまで、実行も自動実行のオンもできません。",
+                    block_name(m)
+                ),
+            )
+            .at_node(&m.id)
+        })
+        .collect()
+}
+
+/// 保存は通すが、実行と自動実行のオンの前に止めるもの（必須の欄が空・中にブロックの無い繰り返し）。
+fn not_ready(ir: &WorkflowIr) -> Vec<ValidationError> {
+    let mut out = required_text_empty(ir);
+    out.extend(empty_regions(ir));
+    out
+}
+
 /// schedule / event のきっかけを持つか（ワークフロー主体で動く run があるか）。
 fn runs_unattended(ir: &WorkflowIr) -> bool {
     ir.triggers
@@ -193,11 +229,11 @@ fn runs_unattended(ir: &WorkflowIr) -> bool {
 
 /// 有効化の前に止める理由（空なら有効化できる）。
 ///
-/// 必須の欄が空のもの（D-43・D-83）と、schedule / event で動く IR の保存先フォルダの省略（D-40）・一覧に
-/// するフォルダの省略（D-83）。
+/// 必須の欄が空のもの（D-43・D-83）と、中にブロックの無い繰り返し（D-85）と、schedule / event で動く IR の
+/// 保存先フォルダの省略（D-40）・一覧にするフォルダの省略（D-83）。
 #[must_use]
 pub fn enable_blockers(ir: &WorkflowIr) -> Vec<ValidationError> {
-    let mut out = required_text_empty(ir);
+    let mut out = not_ready(ir);
     if !runs_unattended(ir) {
         return out;
     }
@@ -229,12 +265,13 @@ pub fn enable_blockers(ir: &WorkflowIr) -> Vec<ValidationError> {
     out
 }
 
-/// 対話の実行の前に止める理由（空なら起動できる）。必須の欄が空のもの（D-43・D-83）。
+/// 対話の実行の前に止める理由（空なら起動できる）。必須の欄が空のもの（D-43・D-83）と、中にブロックの無い
+/// 繰り返し（D-85）。
 ///
 /// 保存先・一覧にするフォルダの省略は止めない（対話の run は起動した本人のルートを使える）。
 #[must_use]
 pub fn run_blockers(ir: &WorkflowIr) -> Vec<ValidationError> {
-    required_text_empty(ir)
+    not_ready(ir)
 }
 
 #[cfg(test)]
@@ -394,6 +431,7 @@ mod tests {
                   ] } } },
                 { "id": "switch", "type": "control.switch", "params": { "value": "", "cases": [] } },
                 { "id": "map", "type": "control.map", "params": { "items": "" } },
+                { "id": "map_body", "type": "storage.read", "parent": "map", "params": {} },
                 { "id": "decide", "type": "ai.decide", "params": {
                     "model": "", "state": "",
                     "questions": [{ "key": "q1", "type": "boolean", "instructions": "請求か" }] } },
@@ -443,6 +481,48 @@ mod tests {
         );
         assert_eq!(run_blockers(&ir).len(), w.len());
         assert_eq!(enable_blockers(&ir).len(), w.len());
+    }
+
+    /// D-85: 中にブロックの無い繰り返しは、保存の警告にとどめ、実行と自動実行のオンの前に止める（置いた直後の
+    /// 繰り返しを保存できるように）。中にブロックのある繰り返し（入れ子の中の繰り返しも）は止めない。文言は
+    /// 繰り返しの名前（付けた名前・無ければ種類の名前）を名指しする。
+    #[test]
+    fn an_empty_map_blocks_run_and_enable() {
+        let ir = ir(
+            json!([{ "kind": "interactive" }]),
+            json!([
+                { "id": "named", "type": "control.map", "label": "申請ごとに",
+                  "params": { "items": { "$from": "input", "path": "/rows" } } },
+                { "id": "unnamed", "type": "control.map",
+                  "params": { "items": { "$from": "input", "path": "/rows" } } },
+                { "id": "outer", "type": "control.map",
+                  "params": { "items": { "$from": "input", "path": "/rows" } } },
+                { "id": "inner", "type": "control.map", "parent": "outer",
+                  "params": { "items": { "$from": "each", "path": "/item" } } },
+                { "id": "leaf", "type": "storage.read", "parent": "inner", "params": {} }
+            ]),
+        );
+        let w = empty_regions(&ir);
+        assert_eq!(
+            codes(&w),
+            vec![
+                (EMPTY_REGION, Some("named"), None),
+                (EMPTY_REGION, Some("unnamed"), None)
+            ]
+        );
+        assert_eq!(
+            w[0].message,
+            "「申請ごとに」の中にブロックがありません。1 件ごとに行う処理を中に置くまで、実行も自動実行のオンもできません。"
+        );
+        assert!(
+            w[1].message.starts_with("「繰り返し」の中に"),
+            "{}",
+            w[1].message
+        );
+        // 必須の欄は埋まっているので、止める理由は中の空だけ。
+        assert!(required_text_empty(&ir).is_empty());
+        assert_eq!(codes(&run_blockers(&ir)), codes(&w));
+        assert_eq!(codes(&enable_blockers(&ir)), codes(&w));
     }
 
     /// D-83: schedule / event で動く IR の、一覧にするフォルダを省略した storage.list は有効化を止める。対話だけの

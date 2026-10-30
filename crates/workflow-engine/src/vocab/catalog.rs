@@ -437,6 +437,11 @@ pub fn approval_ports(params: &serde_json::Value) -> Vec<&'static str> {
     ports
 }
 
+/// ノード種の日本語の名前（画面のブロックの名前・誤りの文言でブロックを名指しする）。
+pub(crate) fn label_ja(nt: NodeType) -> &'static str {
+    labels(nt).1
+}
+
 /// 1 ノード種のエントリを組む。
 fn entry(nt: NodeType) -> NodeCatalogEntry {
     use IdempotencyClass::{BestEffort, EngineDedup, Pure};

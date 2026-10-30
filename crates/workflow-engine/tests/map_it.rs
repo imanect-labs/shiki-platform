@@ -317,3 +317,62 @@ async fn map_collect_gathers_errors_and_succeeds() {
         StepStatus::Succeeded
     );
 }
+
+/// D-85: 中にブロックの無い繰り返しは保存できる（実行と自動実行のオンの前に止める）。止める前に作られた実行が
+/// あっても、要素の分だけ中の最後のブロックを待ち続けず、やり直さない失敗にする（後続は動かさない）。
+/// 要素の無い繰り返しは、中が空でもそのまま次へ進む（いままでどおり）。
+#[tokio::test]
+async fn map_without_inner_blocks_fails_instead_of_waiting() {
+    let Some(pool) = setup().await else { return };
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let ir = |items: Value| {
+        json!({
+            "ir_version": 1, "name": "empty-map",
+            "declared_scopes": ["storage.read"],
+            "nodes": [
+                { "id": "map", "type": "control.map", "params": { "items": items } },
+                { "id": "after", "type": "storage.read", "params": {} }
+            ],
+            "edges": [{ "from": "map", "to": "after" }]
+        })
+    };
+    let failing = create_run(&store, &tenant, &ir(json!([1, 2]))).await;
+    let passing = create_run(&store, &tenant, &ir(json!([]))).await;
+
+    let w = worker(pool.clone(), &tenant);
+    while w.claim_and_run_once("w1").await.unwrap() {}
+
+    assert_eq!(
+        store.run_status(&tenant, failing).await.unwrap(),
+        Some(RunStatus::Failed),
+        "中が空の繰り返しは待ち続けずに失敗する"
+    );
+    let code: Option<String> = sqlx::query_scalar(
+        "SELECT error->>'code' FROM step_execution WHERE tenant_id = $1 AND run_id = $2 AND step_path = 'map'",
+    )
+    .bind(&tenant)
+    .bind(failing)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(code.as_deref(), Some("empty_region"));
+    let statuses = store.step_statuses(&tenant, failing).await.unwrap();
+    assert_eq!(
+        statuses.iter().find(|(p, _)| p == "after").map(|(_, s)| *s),
+        Some(StepStatus::Cancelled),
+        "後続は動かさない"
+    );
+    assert_eq!(
+        store.run_status(&tenant, passing).await.unwrap(),
+        Some(RunStatus::Succeeded),
+        "要素が無ければ中が空でも次へ進む"
+    );
+
+    // 作った実行を片付ける（step・run_event は FK で消える）。
+    sqlx::query("DELETE FROM workflow_run WHERE tenant_id = $1")
+        .bind(&tenant)
+        .execute(&pool)
+        .await
+        .unwrap();
+}

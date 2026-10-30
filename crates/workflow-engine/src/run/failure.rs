@@ -76,6 +76,8 @@ pub const KNOWN_CODES: &[(&str, FailureCategory)] = {
         // 外部のサービスが誤り（4xx）を返した（送る内容・URL・シークレットを直す・BUG-99）。
         (crate::nodes::http::HTTP_ERROR_STATUS, Configuration),
         ("fanout_limit_exceeded", Configuration),
+        // 中にブロックの無い繰り返しを実行しようとした（保存は通り、実行の前に止まるもの・D-85・[`EMPTY_REGION`]）。
+        (EMPTY_REGION, Configuration),
         ("model_unavailable", Configuration),
         ("model_choice_disabled", Configuration),
         ("no_model", Configuration),
@@ -123,6 +125,12 @@ pub const KNOWN_CODES: &[(&str, FailureCategory)] = {
 /// run の `fail_reason`）。分類は時間切れ。
 pub const WAIT_TIMEOUT: &str = "wait_timeout";
 
+/// 中にブロックの無い繰り返し（`control.map`）を実行しようとしたときの step の `error.code`（D-85）。
+///
+/// 保存は通るが、実行と自動実行のオンの前に止める（`ir.empty_region`）。それをすり抜けた実行も、中の最後の
+/// ブロックをいつまでも待たせずに失敗にする（実行時の再検証・ir.md §8）。
+pub const EMPTY_REGION: &str = "empty_region";
+
 /// 押し直しを勧めない注記（途中まで進んだ副作用を二重にしない・PIT-31）。
 const CHECK_BEFORE_RETRY: &str =
     "途中まで処理が進んでいることがあります。表や結果を確かめてから、必要ならもう一度お試しください。";
@@ -167,6 +175,9 @@ fn specific_message(code: &str) -> Option<&'static str> {
         }
         // 付録 D の N3.1.5（変更を待つ期限）。
         WAIT_TIMEOUT => "待つ期限までに変更が起きなかったため、実行を止めました。",
+        // D-85（中にブロックの無い繰り返し）。
+        EMPTY_REGION => "繰り返しの中にブロックが無いため、実行を止めました。",
+
         // 付録 D の N3.4.1（どの出口にも進まないとき）・付録 C の §3.6（実行する人）。
         crate::approval::ACTOR_UNAVAILABLE => {
             "承認を待つあいだに、実行する人（自動実行ではオンにした人）がテーブルを使えなくなったため、\
@@ -250,6 +261,7 @@ pub const SAME_RESULT_CODES: &[&str] = &[
     "unknown_node",
     "unsupported_stage_a",
     "fanout_limit_exceeded",
+    EMPTY_REGION,
     crate::nodes::decide::DECISION_STATE_TOO_LARGE,
     // 使ってよい操作の天井は、ピンした IR の宣言（`declared_scopes`）で決まる。
     "out_of_scope",
@@ -261,7 +273,12 @@ pub const SAME_RESULT_CODES: &[&str] = &[
 /// 後でも、同じ失敗をくり返す。そのため勧めず、エディターで直してから実行し直すよう言う。前のブロックの結果で
 /// 変わりうる code（参照の解決・型・params の値・件数の上限など）は置かない（最初から実行し直すと前のブロックの
 /// 結果が変わりうる）。
-pub const PINNED_VERSION_CODES: &[&str] = &["unknown_node", "unsupported_stage_a", "out_of_scope"];
+pub const PINNED_VERSION_CODES: &[&str] = &[
+    "unknown_node",
+    "unsupported_stage_a",
+    "out_of_scope",
+    EMPTY_REGION,
+];
 
 /// 設定の誤りの分類だが、AI の答えが毎回変わるので、再開すると通ることがある code（BUG-132）。
 const AI_ANSWER_CODES: &[&str] = &[
@@ -458,7 +475,12 @@ mod tests {
         }
         // 使ってよい操作の天井・知らないブロックは、この実行のバージョンで決まる。参照の解決や件数の上限は、最初から
         // 実行し直すと前のブロックの結果が変わりうる。
-        for code in ["out_of_scope", "unknown_node", "unsupported_stage_a"] {
+        for code in [
+            "out_of_scope",
+            "unknown_node",
+            "unsupported_stage_a",
+            EMPTY_REGION,
+        ] {
             assert!(!resume_hint(Some(code), None).offer_rerun, "{code}");
         }
         for code in ["expr_resolve_error", "bad_params", "fanout_limit_exceeded"] {

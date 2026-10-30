@@ -78,6 +78,21 @@ pub(super) async fn checkpoint_and_advance(
         return Ok(true);
     }
 
+    // 中にブロックの無い繰り返しは、要素があっても集約する出口が無く、いつまでも待ち続ける。保存は通る（D-85）が
+    // 実行と自動実行のオンの前に止めている（readiness）。すり抜けた実行も待たせず、やり直さない失敗にする。
+    let empty_region;
+    let result = match &result.fanout {
+        Some(f) if !f.items.is_empty() && graph.region_nodes(&claimed.node_id).is_empty() => {
+            empty_region = NodeResult::fail(
+                crate::run::failure::EMPTY_REGION,
+                "繰り返しの中にブロックがありません",
+                false,
+            );
+            &empty_region
+        }
+        _ => result,
+    };
+
     // map の動的 fan-out: 要素を挿入し map step を waiting_map にする（engine.md §4.5）。
     if let Some(fanout) = &result.fanout {
         let count = map_region::insert_fanout(

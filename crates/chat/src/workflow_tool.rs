@@ -90,6 +90,9 @@ fn format_validation_errors(errors: &[ValidationError], ir: &serde_json::Value) 
                 let _ = write!(out, ", path: {path}");
             }
             out.push('）');
+        } else if let Some(edge) = &e.edge {
+            // 線の誤り（領域をまたぐ線など）は、文言がブロックの名前で言うので、id は線で添える。
+            let _ = write!(out, "（edge: {edge}）");
         } else if let Some(path) = &e.path {
             let _ = write!(out, "（path: {path}）");
         }
@@ -404,5 +407,26 @@ mod tests {
             text.contains("補足:\nstorage.read の params の形（? は省略可）: { file: ValueExpr }"),
             "{text}"
         );
+    }
+
+    /// 線の誤り（繰り返しの中と外をまたぐ線）は文言がブロックの名前で言うので、どの線かを id で添える。
+    #[test]
+    fn edge_errors_name_the_edge_by_id() {
+        let ir = serde_json::json!({
+            "ir_version": 1, "name": "wf", "triggers": [{ "kind": "interactive" }],
+            "nodes": [
+                { "id": "each_row", "type": "control.map",
+                  "params": { "items": { "$from": "input", "path": "/rows" } } },
+                { "id": "inner", "type": "script.run", "parent": "each_row",
+                  "params": { "source": { "inline": "function main(i){ return i; }" } } },
+                { "id": "after", "type": "script.run",
+                  "params": { "source": { "inline": "function main(i){ return i; }" } } }
+            ],
+            "edges": [{ "from": "inner", "to": "after" }]
+        });
+        let errors = workflow_engine::validate(&ir, &Catalog::default()).unwrap_err();
+        let text = format_validation_errors(&errors, &ir);
+        assert!(text.contains("[ir.region_leak]"), "{text}");
+        assert!(text.contains("（edge: inner -> after）"), "{text}");
     }
 }

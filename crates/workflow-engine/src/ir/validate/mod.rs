@@ -17,8 +17,8 @@ mod ports;
 pub use ports::{node_ports, output_ports};
 mod readiness;
 pub use readiness::{
-    enable_blockers, required_text_empty, run_blockers, LIST_FOLDER_REQUIRED, REQUIRED_TEXT_EMPTY,
-    WRITE_FOLDER_REQUIRED,
+    empty_regions, enable_blockers, required_text_empty, run_blockers, EMPTY_REGION,
+    LIST_FOLDER_REQUIRED, REQUIRED_TEXT_EMPTY, WRITE_FOLDER_REQUIRED,
 };
 mod refs;
 pub(crate) use refs::parse_skill_ref;
@@ -40,7 +40,19 @@ pub use warning_codes::SAVE_WARNING_CODES;
 
 use std::collections::BTreeMap;
 
-use crate::ir::WorkflowIr;
+use crate::ir::{Node, WorkflowIr};
+use crate::vocab::NodeType;
+
+/// 誤りの文言でブロックを名指しする名前（付けた名前・無ければブロックの種類の名前・それも無ければ id）。
+pub(super) fn block_name(node: &Node) -> String {
+    match node.label.as_deref().map(str::trim) {
+        Some(label) if !label.is_empty() => label.to_string(),
+        _ => NodeType::parse(&node.node_type).map_or_else(
+            || node.id.clone(),
+            |nt| crate::vocab::label_ja(nt).to_string(),
+        ),
+    }
+}
 
 /// 検証エラー（コード＋メッセージ＋位置）。dnd がノード/エッジに紐付けて表示する。
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, ts_rs::TS, utoipa::ToSchema)]
@@ -148,13 +160,15 @@ pub struct Catalog {
 /// （[`EFFORT_IGNORED`]・D-75・組織の設定は `catalog` から読む）と、判定のしきい値が低い・出口が多い・
 /// 版が固定されていないもの（[`DECIDE_LOW_CONFIDENCE`]・[`DECIDE_MANY_PORTS`]・[`DECIDE_UNPINNED_MODEL`]・
 /// FEAT-1）と、線が 1 本も無いブロック（[`UNCONNECTED_NODE`]・実行の始めに動く・BUG-106）と、必須の文字の欄が空のもの
-/// （[`REQUIRED_TEXT_EMPTY`]・有効化と実行の前には止める・D-43）。出しうるコードは [`SAVE_WARNING_CODES`] に
+/// （[`REQUIRED_TEXT_EMPTY`]・有効化と実行の前には止める・D-43）と、中にブロックの無い繰り返し（[`EMPTY_REGION`]・
+/// 有効化と実行の前には止める・D-85）。出しうるコードは [`SAVE_WARNING_CODES`] に
 /// 載せる（web はその表から生成した定数で受ける・BUG-48）。
 #[must_use]
 pub fn save_warnings(ir: &WorkflowIr, catalog: &Catalog) -> Vec<ValidationError> {
     let mut out = semantics_warnings(ir);
     out.extend(template::warnings(ir));
     out.extend(readiness::required_text_empty(ir));
+    out.extend(readiness::empty_regions(ir));
     out.extend(v3_vocab::event_warnings(ir));
     out.extend(approval::warnings(ir));
     out.extend(reply::warnings(ir));

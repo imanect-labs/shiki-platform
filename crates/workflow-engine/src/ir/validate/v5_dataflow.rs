@@ -230,8 +230,8 @@ fn check_from(
                 errors.push(err(
                     "ir.bad_ref",
                     format!(
-                        "$from each.* は map 領域内でのみ使えます（node {} は領域外）",
-                        ctx.node.id
+                        "「繰り返し中の 1 件」は、「{}」の中のブロックでだけ使えます。",
+                        crate::vocab::label_ja(crate::vocab::NodeType::ControlMap)
                     ),
                     path,
                     Some(ctx),
@@ -411,6 +411,34 @@ mod tests {
             &mut errs,
         );
         assert!(errs.is_empty(), "{errs:?}");
+    }
+
+    /// 繰り返し中の 1 件（`each`）は繰り返しの中のブロックだけが使える。外で使うと、内部の名前（each・map・
+    /// node の id）を出さずに言う（付録 D の N3.1.4・D-98）。
+    #[test]
+    fn each_is_only_for_blocks_inside_a_map() {
+        let mut errs = Vec::new();
+        check(
+            &ir(json!({
+                "ir_version": 1, "name": "wf",
+                "nodes": [
+                    { "id": "m", "type": "control.map", "params": { "items": [] } },
+                    { "id": "inside", "type": "storage.read", "parent": "m",
+                      "params": { "id": { "$from": "each", "path": "/item" } } },
+                    { "id": "outside", "type": "storage.read",
+                      "params": { "id": { "$from": "each", "path": "/item" } } }
+                ],
+                "edges": []
+            })),
+            &mut errs,
+        );
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        assert_eq!(errs[0].node_id.as_deref(), Some("outside"));
+        assert_eq!(errs[0].path.as_deref(), Some("/params/id"));
+        assert_eq!(
+            errs[0].message,
+            "「繰り返し中の 1 件」は、「繰り返し」の中のブロックでだけ使えます。"
+        );
     }
 
     #[test]

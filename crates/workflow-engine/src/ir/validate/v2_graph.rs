@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use super::ports::{output_ports, unknown_port_message};
-use super::ValidationError;
+use super::{block_name, ValidationError};
 use crate::ir::{Node, WorkflowIr};
 use crate::vocab::NodeType;
 
@@ -128,13 +128,25 @@ pub(super) fn check(ir: &WorkflowIr, errors: &mut Vec<ValidationError>) {
             }
         }
         // 領域閉包: from と to は同じ parent（同一領域）に属す。
-        if parent_of.get(e.from.as_str()).copied().flatten()
-            != parent_of.get(e.to.as_str()).copied().flatten()
-        {
+        let from_region = parent_of.get(e.from.as_str()).copied().flatten();
+        let to_region = parent_of.get(e.to.as_str()).copied().flatten();
+        if from_region != to_region {
+            let name = |id: &str| {
+                nodes_by_id
+                    .get(id)
+                    .map_or_else(|| id.to_string(), |n| block_name(n))
+            };
+            // 中と外をまたぐ繰り返し（線の元が中にあればその繰り返し・無ければ線の先の繰り返し）。
+            let region = from_region.or(to_region).unwrap_or_default();
             errors.push(
                 ValidationError::new(
                     "ir.region_leak",
-                    format!("エッジが map 領域境界を跨いでいます: {edge_label}"),
+                    format!(
+                        "「{}」から「{}」への線が、「{}」の中と外をまたいでいます。中のブロックは、中のブロックとだけつなげます。",
+                        name(&e.from),
+                        name(&e.to),
+                        name(region)
+                    ),
                 )
                 .at_edge(&edge_label),
             );
@@ -173,6 +185,9 @@ pub(super) fn check(ir: &WorkflowIr, errors: &mut Vec<ValidationError>) {
 }
 
 /// map 領域の構造制約（ir.md §5.3）: 各領域は入口 ≥1・**出口ちょうど 1**・**ネスト最大深さ 2**。
+///
+/// 中にブロックの無い領域は誤りにしない（エディタで置いた直後の繰り返しを保存できるように・D-85）。保存時の
+/// 警告と、実行・自動実行のオンの前に止める理由は readiness（`ir.empty_region`）が出す。
 fn check_regions(
     ir: &WorkflowIr,
     node_types: &HashMap<&str, Option<NodeType>>,
@@ -190,7 +205,8 @@ fn check_regions(
             continue;
         }
         let map_id = node.id.as_str();
-        // 領域ノード（parent==map_id）。
+        let map_name = block_name(node);
+        // 領域ノード（parent==map_id）。空の領域は readiness が止める（入口・出口の決まりは中がある領域だけ）。
         let region: Vec<&str> = ir
             .nodes
             .iter()
@@ -198,13 +214,6 @@ fn check_regions(
             .map(|n| n.id.as_str())
             .collect();
         if region.is_empty() {
-            errors.push(
-                ValidationError::new(
-                    "ir.empty_region",
-                    format!("map {map_id} の領域にノードがありません"),
-                )
-                .at_node(map_id),
-            );
             continue;
         }
         let entries = region
@@ -220,7 +229,9 @@ fn check_regions(
             errors.push(
                 ValidationError::new(
                     "ir.region_no_entry",
-                    format!("map {map_id} の領域に入口（入エッジ 0）がありません"),
+                    format!(
+                        "「{map_name}」の中に、最初に動くブロック（前から線が来ないブロック）がありません。"
+                    ),
                 )
                 .at_node(map_id),
             );
@@ -229,7 +240,10 @@ fn check_regions(
             errors.push(
                 ValidationError::new(
                     "ir.region_exit",
-                    format!("map {map_id} の領域の出口は 1 つでなければなりません（現在 {exits}）"),
+                    format!(
+                        "「{map_name}」の中の流れは、最後のブロックを 1 つにしてください（いま {exits} 個）。分かれた流れは「{}」でまとめます。",
+                        crate::vocab::label_ja(NodeType::ControlJoin)
+                    ),
                 )
                 .at_node(map_id),
             );
@@ -245,7 +259,10 @@ fn check_regions(
             errors.push(
                 ValidationError::new(
                     "ir.region_too_deep",
-                    format!("map {map_id} のネストが深すぎます（最大深さ 2・ir.md §5.3）"),
+                    format!(
+                        "「{}」の中に置けるのは 2 段までです。",
+                        crate::vocab::label_ja(NodeType::ControlMap)
+                    ),
                 )
                 .at_node(map_id),
             );
@@ -426,6 +443,78 @@ mod tests {
         assert!(errs.iter().any(|e| e.code == "ir.region_exit"));
     }
 
+    /// D-85: 中にブロックの無い繰り返しは保存を止めない（置いた直後に保存できる。実行と自動実行のオンの前に
+    /// readiness が止める）。入口・出口の決まりも、中があるときだけ見る。
+    #[test]
+    fn empty_region_is_not_a_save_error() {
+        let mut errs = Vec::new();
+        check(
+            &ir(json!({
+                "ir_version": 1, "name": "wf",
+                "nodes": [
+                    { "id": "m", "type": "control.map", "params": { "items": "" } },
+                    { "id": "after", "type": "storage.read", "params": {} }
+                ],
+                "edges": [{ "from": "m", "to": "after" }]
+            })),
+            &mut errs,
+        );
+        assert!(errs.is_empty(), "{errs:?}");
+    }
+
+    /// 中の流れの誤りは、繰り返しの名前（付けた名前・無ければ種類の名前）と、つないだブロックの名前で言う
+    /// （内部の id や「領域」を出さない・付録 D の N3.1.4）。
+    #[test]
+    fn region_errors_name_the_blocks() {
+        let mut errs = Vec::new();
+        check(
+            &ir(json!({
+                "ir_version": 1, "name": "wf",
+                "nodes": [
+                    { "id": "m", "type": "control.map", "label": "申請ごとに", "params": { "items": [] } },
+                    { "id": "a", "type": "storage.read", "label": "読む", "parent": "m", "params": {} },
+                    { "id": "b", "type": "storage.read", "parent": "m", "params": {} },
+                    { "id": "out", "type": "storage.read", "label": "外", "params": {} }
+                ],
+                "edges": [{ "from": "out", "to": "a" }]
+            })),
+            &mut errs,
+        );
+        let msg = |code: &str| {
+            errs.iter()
+                .find(|e| e.code == code)
+                .map_or_else(String::new, |e| e.message.clone())
+        };
+        assert_eq!(
+            msg("ir.region_leak"),
+            "「外」から「読む」への線が、「申請ごとに」の中と外をまたいでいます。中のブロックは、中のブロックとだけつなげます。"
+        );
+        assert_eq!(
+            msg("ir.region_exit"),
+            "「申請ごとに」の中の流れは、最後のブロックを 1 つにしてください（いま 2 個）。分かれた流れは「合流」でまとめます。"
+        );
+        // 線の元が中のとき（中から外へ）も、またいだ繰り返しの名前で言う。名前の無いブロックは種類の名前。
+        let mut errs = Vec::new();
+        check(
+            &ir(json!({
+                "ir_version": 1, "name": "wf",
+                "nodes": [
+                    { "id": "m", "type": "control.map", "params": { "items": [] } },
+                    { "id": "a", "type": "storage.read", "parent": "m", "params": {} },
+                    { "id": "dst", "type": "storage.read", "params": {} }
+                ],
+                "edges": [{ "from": "a", "to": "dst" }]
+            })),
+            &mut errs,
+        );
+        let leak = errs.iter().find(|e| e.code == "ir.region_leak").unwrap();
+        assert_eq!(
+            leak.message,
+            "「ファイルを読む」から「ファイルを読む」への線が、「繰り返し」の中と外をまたいでいます。中のブロックは、中のブロックとだけつなげます。"
+        );
+        assert_eq!(leak.edge.as_deref(), Some("a -> dst"));
+    }
+
     #[test]
     fn region_valid_single_node() {
         // 単一ノード領域（入口=出口）は妥当。
@@ -467,7 +556,12 @@ mod tests {
             })),
             &mut errs,
         );
-        assert!(errs.iter().any(|e| e.code == "ir.region_too_deep"));
+        let deep = errs
+            .iter()
+            .find(|e| e.code == "ir.region_too_deep")
+            .unwrap();
+        assert_eq!(deep.message, "「繰り返し」の中に置けるのは 2 段までです。");
+        assert_eq!(deep.node_id.as_deref(), Some("m3"));
     }
 
     /// 2 ノード（`a` の出口 `port` → `b`）の IR を V2 に通し、ir.unknown_port のエラーを返す。

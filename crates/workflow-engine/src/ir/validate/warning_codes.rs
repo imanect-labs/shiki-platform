@@ -6,9 +6,9 @@
 
 use super::{
     APPROVAL_TIMEOUTS_EXCEED_RUN, DECIDE_LOW_CONFIDENCE, DECIDE_MANY_PORTS, DECIDE_UNPINNED_MODEL,
-    EFFORT_IGNORED, OUTPUT_SCHEMA_FEW_TOKENS, OVERLAPPING_DATA_TRIGGERS, REPLY_WITHOUT_INTERACTIVE,
-    REQUIRED_TEXT_EMPTY, SEMANTICS_CHANGED, TEMPLATE_ESCAPED_VAR, TEMPLATE_UNCLOSED_BRACE,
-    UNCONNECTED_NODE, WAIT_FILTER_ALIAS,
+    EFFORT_IGNORED, EMPTY_REGION, OUTPUT_SCHEMA_FEW_TOKENS, OVERLAPPING_DATA_TRIGGERS,
+    REPLY_WITHOUT_INTERACTIVE, REQUIRED_TEXT_EMPTY, SEMANTICS_CHANGED, TEMPLATE_ESCAPED_VAR,
+    TEMPLATE_UNCLOSED_BRACE, UNCONNECTED_NODE, WAIT_FILTER_ALIAS,
 };
 
 /// 定数の名前と値の組の表を作る（名前は Rust の定数の名前をそのまま使い、別の綴りを持たない）。
@@ -24,6 +24,7 @@ pub const SAVE_WARNING_CODES: &[(&str, &str)] = named![
     TEMPLATE_ESCAPED_VAR,
     TEMPLATE_UNCLOSED_BRACE,
     REQUIRED_TEXT_EMPTY,
+    EMPTY_REGION,
     OVERLAPPING_DATA_TRIGGERS,
     WAIT_FILTER_ALIAS,
     APPROVAL_TIMEOUTS_EXCEED_RUN,
@@ -143,6 +144,15 @@ mod tests {
                 ir(
                     interactive(),
                     json!([{ "id": "ask", "type": "llm.invoke", "params": { "prompt": "" } }]),
+                    json!([]),
+                ),
+            ),
+            (
+                EMPTY_REGION,
+                ir(
+                    interactive(),
+                    json!([{ "id": "each_row", "type": "control.map",
+                             "params": { "items": { "$from": "input", "path": "/rows" } } }]),
                     json!([]),
                 ),
             ),
