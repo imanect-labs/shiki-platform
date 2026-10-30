@@ -36,6 +36,10 @@ pub struct TableViewerContext {
     pub can_manage: bool,
     /// 1 ビューで表示できるルックアップ・ロールアップ列の上限（テナント設定）。
     pub max_view_lookup_columns: u32,
+    /// 状態の進め方のあるテーブルで、レコードを追加したときの状態（最初の状態）。状態の列が読めないか、
+    /// 状態の進め方が無ければ null。定義はテーブル側の参照として読む（定義の閲覧の権限は求めない・BUG-154）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_state: Option<String>,
 }
 
 impl DataStore {
@@ -73,6 +77,7 @@ impl DataStore {
             Vec::new()
         };
         masked.sort();
+        let initial_state = self.initial_state_for(ctx, &az, &table, trace_id).await?;
         Ok(TableViewerContext {
             masked_fields: masked,
             can_edit: rel.first().copied().unwrap_or(false),
@@ -80,6 +85,33 @@ impl DataStore {
             add_only,
             can_manage,
             max_view_lookup_columns: self.view_lookup_cap(ctx).await?,
+            initial_state,
         })
+    }
+
+    /// 閲覧者に見せる最初の状態（状態の列が読めて、指している状態の進め方が読めるときだけ）。
+    ///
+    /// 状態の名前は状態の列の選択肢として閲覧者に見えているので、どれが最初かを足すだけ。定義が消えていれば
+    /// 出さない（追加は失敗するので、画面は名前を出さずに追加させる）。
+    async fn initial_state_for(
+        &self,
+        ctx: &AuthContext,
+        az: &crate::policy::memo::AuthzMemo<'_>,
+        table: &crate::model::DataTable,
+        trace_id: Option<&str>,
+    ) -> Result<Option<String>, DataError> {
+        let Some(status) = table.schema.status_field.as_deref() else {
+            return Ok(None);
+        };
+        if table.schema.fsm_ref.is_none()
+            || self.masked_fields(ctx, az, table).await?.contains(status)
+        {
+            return Ok(None);
+        }
+        match self.pinned_fsm(ctx, table, trace_id).await {
+            Ok(fsm) => Ok(fsm.and_then(|(body, _)| body.states.into_iter().next())),
+            Err(DataError::NotFound) => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 }

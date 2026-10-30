@@ -12,39 +12,42 @@ import { ArrowRight, Loader2 } from "lucide-react";
 import * as React from "react";
 
 import type { ProvideEditorComponent, TextCell } from "@glideapps/glide-data-grid";
-import { DataApiError, getFsm, type AllowedTransitions, type DataTable, type FsmBody } from "@/lib/data-api";
+import { DataApiError, getViewerContext, type AllowedTransitions, type DataTable } from "@/lib/data-api";
 import { cn } from "@/lib/utils";
 
-/// テーブルの状態の列と、読めたら FSM の定義（作成のダイアログが最初の状態を出すのに使う）。
+/// テーブルの状態の列と、レコードを追加したときの状態（作成のダイアログが最初の状態を出すのに使う）。
 export type FsmInfo = {
   /// 状態として扱う select 列の参照名（`schema.status_field`）。
   field: string;
-  /// FSM の定義（読めなければ `null`）。
-  body: FsmBody | null;
+  /// 最初の状態（読めなければ `null`）。
+  initialState: string | null;
 };
 
-/// テーブルにピンされた FSM（状態の列があるテーブルだけ・読めなければ定義なし）。
+/// テーブルにピンされた状態の進め方（状態の列があるテーブルだけ）。
+///
+/// 最初の状態は閲覧者の文脈（`initial_state`）から読む。サーバは定義をテーブル側の参照として読むので、定義を
+/// 見る権限の無い編集者・追加だけの人にも出る（BUG-154）。指す版が変わったら読み直す。
 export function useFsm(table: DataTable): FsmInfo | null {
   const field = table.schema.status_field ?? null;
   const ref = table.schema.fsm_ref ?? null;
-  const [body, setBody] = React.useState<FsmBody | null>(null);
+  const [initialState, setInitialState] = React.useState<string | null>(null);
   const refKey = ref ? `${ref.artifact_id}@${ref.version}` : "";
   React.useEffect(() => {
     let active = true;
-    setBody(null);
+    setInitialState(null);
     if (!ref || !field) return;
-    getFsm(ref.artifact_id, ref.version)
-      .then((r) => active && setBody(r.body))
+    getViewerContext(table.id)
+      .then((v) => active && setInitialState(v.initial_state ?? null))
       .catch(() => {
-        // FSM の閲覧権限が無い（テーブルの editor でも遷移はできる）: 作成のダイアログは最初の状態の名前を出さない。
+        // 読めなければ、作成のダイアログは最初の状態の名前を出さない（追加はできる）。
       });
     return () => {
       active = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [refKey, field]);
+  }, [table.id, refKey, field]);
   if (!field || !ref) return null;
-  return { field, body };
+  return { field, initialState };
 }
 
 /// 遷移の失敗の利用者向けの文言。

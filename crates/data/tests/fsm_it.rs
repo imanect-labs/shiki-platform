@@ -822,3 +822,77 @@ async fn add_only_people_get_the_same_403_as_other_writes_when_moving_states() {
     );
     assert!(matches!(hidden, Err(DataError::NotFound)), "{hidden:?}");
 }
+
+/// BUG-154: レコードの追加のダイアログが出す最初の状態は、閲覧者の文脈から読む。定義はテーブル側の参照として
+/// 読むので、定義を見る権限の無い編集者・追加だけの人にも出る。状態の列が読めない人には出さない。
+#[tokio::test]
+async fn viewer_context_tells_the_initial_state_without_access_to_the_definition() {
+    let Some((pool, authz, fga)) = setup_cleaned().await else {
+        return;
+    };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let alice = ctx(&tenant, "alice");
+    let bob = ctx(&tenant, "bob");
+    let carol = ctx(&tenant, "carol");
+    let (store, fsms, table, fsm_id) = pinned_table(&pool, &authz, &alice, &bob).await;
+    store
+        .share_table(
+            &alice,
+            table,
+            &storage::ShareTarget::User { id: "carol".into() },
+            data::TableShareRole::Submitter,
+            None,
+        )
+        .await
+        .unwrap();
+    // 前提: bob と carol は定義そのものを読めない。
+    let bob_reads = fsms.get(&bob, fsm_id, Some(1), None).await;
+    let for_bob = store.table_viewer_context(&bob, table, None).await.unwrap();
+    let for_carol = store
+        .table_viewer_context(&carol, table, None)
+        .await
+        .unwrap();
+    // 状態の列を経理だけに見せると、ほかの人には出さない。
+    let current = store.get_table(&alice, table, None).await.unwrap();
+    let mut masked = current.schema.clone();
+    masked.field_policy = vec![data::FieldPolicy {
+        field: "status".into(),
+        readable_by: PolicyExpr::HasRole {
+            role: "keiri".into(),
+            subtree: true,
+        },
+    }];
+    store
+        .update_table_schema(&alice, table, masked, Some(current.schema_version), None)
+        .await
+        .unwrap();
+    let after_mask = store.table_viewer_context(&bob, table, None).await.unwrap();
+    // 状態の進め方の無いテーブルには出さない。
+    let plain = store
+        .create_table(
+            &alice,
+            NewDataTable {
+                name: "plain".into(),
+                schema: TableSchema {
+                    status_field: None,
+                    ..expense_schema()
+                },
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let no_fsm = store
+        .table_viewer_context(&alice, plain.id, None)
+        .await
+        .unwrap();
+    purge(&pool, &store, &tenant).await;
+    fga.delete().await;
+
+    assert!(bob_reads.is_err(), "{bob_reads:?}");
+    assert_eq!(for_bob.initial_state.as_deref(), Some("draft"));
+    assert_eq!(for_carol.initial_state.as_deref(), Some("draft"));
+    assert!(for_carol.add_only);
+    assert_eq!(after_mask.initial_state, None);
+    assert_eq!(no_fsm.initial_state, None);
+}

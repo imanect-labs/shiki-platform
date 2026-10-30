@@ -50,8 +50,8 @@ export function RecordDialog({
   );
   const readable = React.useMemo(() => table.schema.fields.filter((f) => !masked.has(f.key)), [table, masked]);
   const statusField = fsm ? table.schema.fields.find((f) => f.key === fsm.field && !masked.has(f.key)) : undefined;
-  // 作成時の状態（FSM の最初の状態・定義が読めなければ名前は出さない）。
-  const initialState = fsm?.body?.states[0] ?? null;
+  // 作成時の状態（状態の進め方の最初の状態・読めなければ名前は出さない）。
+  const initialState = fsm?.initialState ?? null;
   const [values, setValues] = React.useState<Record<string, string>>({});
   /// 参照の列で選んだ値（id）。
   const [refs, setRefs] = React.useState<Record<string, string[]>>({});
