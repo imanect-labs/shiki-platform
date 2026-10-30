@@ -44,6 +44,7 @@ pub mod org_admin_data;
 pub mod org_admin_insights;
 pub mod org_audit;
 pub mod search;
+pub mod search_ingest;
 pub mod secrets;
 pub mod share_links;
 pub(crate) mod share_profiles;

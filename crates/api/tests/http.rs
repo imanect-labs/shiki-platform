@@ -1601,3 +1601,48 @@ async fn search_debug_is_returned_only_to_org_admins() {
     .await
     .ok();
 }
+
+/// 社内文書の検索が使えない環境では、取り込み直し（ドライブのメニュー）とまとめての取り込み（管理コンソール）を、
+/// 画面にそのまま出せる文言で断る（D-126）。管理者の様子の取得は `enabled: false` を返す（画面が「この環境では
+/// 使えません」と言う材料）。管理者でない人は、まとめての取り込みの API に入れない。
+#[tokio::test]
+async fn search_ingest_refuses_when_search_is_disabled() {
+    let admin = build_router(state_with_authz(
+        store_with_valid_session().await,
+        Arc::new(AdminGate {
+            admin: true,
+            auditor: false,
+        }),
+    ));
+    let disabled = "この環境では社内文書の検索が使えません。管理者に連絡してください。";
+    let (status, body) = send_with_session(
+        admin.clone(),
+        "POST",
+        &format!("/files/{}/reindex", uuid::Uuid::new_v4()),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(body["code"], "search_disabled", "{body}");
+    assert_eq!(body["message"], disabled, "{body}");
+    let (status, body) = get_with_session(admin.clone(), "/org-admin/search/backfill").await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["enabled"], false, "{body}");
+    assert!(body["backfill"].is_null(), "{body}");
+    let (status, body) = send_with_session(admin, "POST", "/org-admin/search/backfill", None).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(body["code"], "search_disabled", "{body}");
+    assert_eq!(body["message"], disabled, "{body}");
+
+    let member = build_router(state_with_authz(
+        store_with_valid_session().await,
+        Arc::new(AdminGate {
+            admin: false,
+            auditor: false,
+        }),
+    ));
+    let (status, _) = get_with_session(member.clone(), "/org-admin/search/backfill").await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let (status, _) = send_with_session(member, "POST", "/org-admin/search/backfill", None).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+}

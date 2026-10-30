@@ -666,11 +666,16 @@ mod tests {
         assert_eq!(storage_write_event(&up).unwrap().payload["op"], "update");
     }
 
-    /// 削除・移動・名前の変更・復元・フォルダの作成・data のイベントは storage.write として配らない。
+    /// 削除・移動・名前の変更・復元・取り込み直し（D-126）・フォルダの作成・data のイベントは storage.write として
+    /// 配らない（取り込み直しは内容を変えないので、ファイルが保存されたときのきっかけにしない）。
     #[test]
     fn non_save_events_are_not_relayed() {
         for (op, payload) in [
             ("delete", json!({ "kind": "file", "parent_id": FOLDER })),
+            (
+                "reindex",
+                json!({ "kind": "file", "reason": "not_ingested" }),
+            ),
             ("move", json!({ "kind": "file", "new_parent": FOLDER })),
             ("rename", json!({ "kind": "file", "renamed": true })),
             ("restore", json!({ "kind": "file", "blob_sha256": "abc" })),
