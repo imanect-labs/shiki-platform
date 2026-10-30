@@ -321,6 +321,14 @@ flowchart LR
   （ゼロダウンタイム・[PIT-8](./design-caveats.md)）。
 - 親子チャンク（small-to-big）で日本語長文の文脈を保つ。チャンク ID は
   `uuid5(node_id, version/ordinal)` の決定的生成（再インジェスト＝上書きで冪等）。
+- **文章のファイルの文字コードは indexer が決める**（GAP-46・D-118）: `text/*`（.txt・.md・.csv・.html）は、
+  worker へ渡す前に `crates/textenc` の判定（BOM → UTF-8 → 日本の文字コードの推定）で UTF-8 にし、
+  バイト列（`ParseSource::Bytes`）で渡す（worker に判定を持たせない。Docling の CSV・Markdown は UTF-8 しか
+  読まず、Shift_JIS は `parse_failed`・テキストは文字化けして索引に入っていた）。BOM は本文に残さない。HTML は
+  UTF-8 にしたら先頭に BOM を付ける（HTML の読み手は BOM を `<meta charset>` の宣言より先に見る）。文字コードを
+  決められない HTML は、これまでどおり原本を presigned GET で渡して宣言で読ませる。ほかの文章で決められない
+  もの・文章でないものは恒久的なパースの失敗（`unknown_encoding`・`not_text`）にする。Excel を入れた Windows の
+  ブラウザーが `.csv` に付ける `application/vnd.ms-excel` は、名前が `.csv` のときだけ CSV として取り込む。
 - **leaf は必ず `max_leaf_chars` 以下**（[PIT-67](./design-caveats.md)）。切れ目は見出し →
   段落の順に尊重するが、パーサが段落を刻めない文書（空行を使わない議事録・字幕・ログ、
   改行を持たない PDF 抽出結果）では 1 段落が上限を超える。その場合は段落**内**も
@@ -979,7 +987,13 @@ flowchart TB
     文字は書かずに拒否する（`&#…;` に置き換えて黙って中身を変えない）。ただし Shift_JIS・EUC-JP へは、Windows
     （CP932）が見た目の同じ全角の文字で持つ記号（Mac の入力の 〜・—・‖・¢・£・¬）を、その全角の文字
     （～・―・∥・￠・￡・￢）にして書く（読むと 0x8160 は ～ に見えるので、同じ文字なのに書けないと言わない）。判定は `crates/textenc` の単一定義で、
-    ワークフローの「ファイルを読む」・データの取り込み・web_fetch と共有する（GAP-45）。
+    ワークフローの「ファイルを読む」・データの取り込み・web_fetch・社内文書の検索の取り込み（GAP-46）・
+    AI のワークスペースのファイルの読み書き（BUG-142）・ドライブのテキストの表示と編集（D-119）と共有する（GAP-45）。
+    区切りと改行は、集計の読み込み（`read_csv_auto`）と同じ推定（隔離ランナーの `sniff_csv`・同じ引数）で決め、
+    編集も同じ区切りと改行で書き戻す（Excel の「Unicode テキスト」は UTF-16LE・タブ区切り・CRLF。推定できなければ
+    以前と同じカンマ区切り・BUG-144）。新しく保存する CSV（`csv.write`・CSV として保存する `storage.write`）は
+    `encoding`（UTF-8〔BOM 付き〕・UTF-8・Shift_JIS）で書く。省略は BOM なしの UTF-8（保存済みの定義の挙動）で、
+    エディタで新しく置くブロックは BOM 付き（日本語の Windows の Excel は BOM の無い UTF-8 を文字化けして開く・D-120）。
   - **公開面**: `csv.query` / `csv.patch` / `csv.write` をエージェントツールとワークフローステップの両方へ。
     実行主体のファイル ReBAC で判定（workflow の実行主体交差則と同じ）。**操作別に要求 relation を分ける**:
     query=viewer / patch=editor / write=保存先フォルダへの作成権限（読めるだけの viewer が書き換え・派生保存
