@@ -276,12 +276,13 @@ mod tests {
                 }
             });
 
+            // 起点は kill の前に取る（シグナルは kill が返る前に届いて猶予の計時が始まりうる）。
+            let signalled_at = Instant::now();
             let status = std::process::Command::new("kill")
                 .args(["-TERM", &std::process::id().to_string()])
                 .status()
                 .unwrap();
             assert!(status.success());
-            let signalled_at = Instant::now();
 
             // 合図の直後に両リスナとも受付を止める（SSE が残っていても）。
             let deadline = Instant::now() + Duration::from_secs(1);
