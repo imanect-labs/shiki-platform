@@ -1,4 +1,4 @@
-import { expect, type Page } from "@playwright/test";
+import { expect, type APIResponse, type Page } from "@playwright/test";
 
 /// compose のテストユーザー（deploy/keycloak/shiki-realm.json の alice/password）。
 export const USER = process.env.E2E_USER ?? "alice";
@@ -189,29 +189,41 @@ export function cleanupQueue(): {
 /// [`cleanupQueue`] が返す登録簿。
 export type CleanupQueue = ReturnType<typeof cleanupQueue>;
 
+/// ドライブに新しいファイルを作る画面の要求（ノート・スライド・Word・Excel・CSV の新規作成と下書きの保存）。
+const FILE_CREATE_PATHS = new Set(["/api/notes", "/api/slides", "/api/documents", "/api/sheets", "/api/tabular/save"]);
+
 /// 画面の操作で作られたもの（ブラウザーからの作成の応答）を、片付けの登録簿に積む（一覧の「新しいワークフロー」・
-/// アプリの作成・会話の「アプリとして保存」・スキルの作成・テーブルの作成・ドライブのフォルダーの作成・BUG-126）。`page.request` で作ったものは
-/// 画面の応答に出ないので、呼び出し側が積む。
-export function trackCreatedResources(page: Page, queue: CleanupQueue): void {
+/// アプリの作成・会話の「アプリとして保存」・スキルの作成・テーブルの作成・ドライブのフォルダーの作成・ドライブの
+/// ファイルの新規作成とアップロード・BUG-126）。`page.request` で作ったものは画面の応答に出ないので、呼び出し側が積む。
+/// アップロードは新しいファイル（版 1）だけを積み、既存のファイルの新しい版は積まない（元のファイルを消さない）。
+/// `via` は片付けの要求を送る画面（テストの途中で閉じる別のコンテキストの画面で作るとき、ログイン済みで最後まで
+/// 開いている画面を渡す）。省略すると `page` で送る。
+export function trackCreatedResources(page: Page, queue: CleanupQueue, via: Page = page): void {
   page.on("response", (res) => {
     if (res.request().method() !== "POST" || !res.ok()) return;
     const path = new URL(res.url()).pathname;
+    const upload = /^\/api\/files\/[^/]+\/finalize$/.test(path);
     const remove: ((id: string) => Promise<void>) | null =
       path === "/api/workflows"
-        ? (id) => removeWorkflowApi(page, id)
+        ? (id) => removeWorkflowApi(via, id)
         : path === "/api/mini-apps" || path === "/api/skills" || path.endsWith("/save-as-app")
-          ? (id) => deleteArtifactApi(page, id)
+          ? (id) => deleteArtifactApi(via, id)
           : path === "/api/data/tables"
-            ? (id) => deleteTableApi(page, id)
+            ? (id) => deleteTableApi(via, id)
             : path === "/api/folders"
-              ? (id) => trashFolderApi(page, id)
-              : null;
+              ? (id) => trashFolderApi(via, id)
+              : FILE_CREATE_PATHS.has(path) || upload
+                ? (id) => trashFileApi(via, id)
+                : null;
     if (!remove) return;
     queue.track(
       res
         .json()
-        .then((body: { id?: string }) => {
-          if (body.id) queue.add(() => remove(body.id!));
+        .then((body: { id?: string; node_id?: string; version?: number }) => {
+          // CSV の保存は node_id で返す。アップロードは新しいファイル（版 1）のときだけ。
+          const id = body.id ?? body.node_id;
+          if (upload && body.version !== 1) return;
+          if (id) queue.add(() => remove(id));
         })
         .catch(() => undefined),
     );
@@ -222,35 +234,54 @@ async function csrfOf(page: Page): Promise<string> {
   return (await page.context().cookies()).find((c) => c.name === "shiki_csrf")?.value ?? "";
 }
 
+/// 片付けの要求を送る。閉じた接続に当たったときだけ、つなぎ直して 1 回送り直す（消す要求は何度送っても同じ）。
+///
+/// 画面のサーバー（next dev）は 5 秒使わない接続を閉じる（keep-alive: timeout=5）。テストの終わりの片付けは、
+/// `page.request` の前の要求から 5 秒より後になることが多く、閉じかけの接続を使って read ECONNRESET になる
+/// ことがある（要求はサーバーに届いていない）。
+async function sendCleanup(send: () => Promise<APIResponse>): Promise<APIResponse> {
+  try {
+    return await send();
+  } catch (e) {
+    if (!/ECONNRESET|socket hang up/.test(String(e))) throw e;
+    return send();
+  }
+}
+
 /// アーティファクト（ワークフロー・状態の進め方・アプリ・スキル・ビュー）を消す（もう無ければ何もしない）。
 export async function deleteArtifactApi(page: Page, id: string): Promise<void> {
-  const res = await page.request.delete(`/api/artifacts/${id}`, { headers: { "x-csrf-token": await csrfOf(page) } });
+  const headers = { "x-csrf-token": await csrfOf(page) };
+  const res = await sendCleanup(() => page.request.delete(`/api/artifacts/${id}`, { headers }));
   expect([204, 404], `DELETE /artifacts/${id} → ${res.status()}`).toContain(res.status());
 }
 
 /// テーブルを消す（もう無ければ何もしない）。
 export async function deleteTableApi(page: Page, id: string): Promise<void> {
-  const res = await page.request.delete(`/api/data/tables/${id}`, { headers: { "x-csrf-token": await csrfOf(page) } });
+  const headers = { "x-csrf-token": await csrfOf(page) };
+  const res = await sendCleanup(() => page.request.delete(`/api/data/tables/${id}`, { headers }));
   expect([204, 404], `DELETE /data/tables/${id} → ${res.status()}`).toContain(res.status());
 }
 
 /// ワークフローの動いている実行（順番待ち・実行中・承認や変更を待っている実行）を止める（承認の依頼を「承認」の
 /// 画面に残さない・BUG-126）。ワークフローがもう無ければ何もしない。
 export async function cancelActiveRunsApi(page: Page, workflowId: string): Promise<void> {
-  const res = await page.request.get(`/api/workflows/${workflowId}/runs?status=queued,running&limit=100`);
+  const res = await sendCleanup(() => page.request.get(`/api/workflows/${workflowId}/runs?status=queued,running&limit=100`));
   if (res.status() === 404) return;
   expect(res.ok(), await res.text()).toBeTruthy();
   const { items } = (await res.json()) as { items: { run_id: string }[] };
   const headers = { "x-csrf-token": await csrfOf(page), "content-type": "application/json" };
   for (const run of items) {
-    const c = await page.request.post(`/api/workflows/${workflowId}/runs/${run.run_id}/cancel`, { headers, data: {} });
+    const c = await sendCleanup(() =>
+      page.request.post(`/api/workflows/${workflowId}/runs/${run.run_id}/cancel`, { headers, data: {} }),
+    );
     expect([200, 404], `cancel ${run.run_id} → ${c.status()}`).toContain(c.status());
   }
 }
 
 /// ドライブのファイルをゴミ箱へ移す（もう無ければ何もしない）。
 export async function trashFileApi(page: Page, id: string): Promise<void> {
-  const res = await page.request.delete(`/api/files/${id}`, { headers: { "x-csrf-token": await csrfOf(page) } });
+  const headers = { "x-csrf-token": await csrfOf(page) };
+  const res = await sendCleanup(() => page.request.delete(`/api/files/${id}`, { headers }));
   expect([204, 404], `DELETE /files/${id} → ${res.status()}`).toContain(res.status());
 }
 
@@ -275,8 +306,8 @@ export async function createFolderApi(page: Page, name: string, parentId: string
 
 /// フォルダーを中身ごとゴミ箱へ移す（もう無ければ何もしない・E2E の片付け）。
 export async function trashFolderApi(page: Page, id: string): Promise<void> {
-  const csrf = (await page.context().cookies()).find((c) => c.name === "shiki_csrf")?.value ?? "";
-  const res = await page.request.delete(`/api/folders/${id}`, { headers: { "x-csrf-token": csrf } });
+  const headers = { "x-csrf-token": await csrfOf(page) };
+  const res = await sendCleanup(() => page.request.delete(`/api/folders/${id}`, { headers }));
   expect([204, 404], `DELETE /folders/${id} → ${res.status()}`).toContain(res.status());
 }
 

@@ -1,7 +1,13 @@
 import { expect, test, type Page } from "@playwright/test";
 
 import { shiftJis } from "./fixtures/shift-jis";
-import { cleanupAll, loginAs, loginViaKeycloak, uniqueName } from "./helpers";
+import { cleanupAll, cleanupQueue, loginAs, loginViaKeycloak, trackCreatedResources, uniqueName } from "./helpers";
+
+// 画面から作ったもの（ドライブのトップのノート・スライド・文書・CSV・アップロードしたファイルなど）を、テストの後に
+// 片付ける（BUG-126）。
+const cleanup = cleanupQueue();
+test.beforeEach(({ page }) => trackCreatedResources(page, cleanup));
+test.afterEach(() => cleanup.run());
 
 /// CSV グリッドエディタ（Task 11P.8）の受け入れ条件を検証する:
 /// - グリッドで表示・セル編集・保存（新バージョン）
