@@ -54,6 +54,8 @@ impl workflow_engine::CapabilityAudit for NoopAudit {
 struct Env {
     pool: sqlx::PgPool,
     fga: Arc<dyn AuthzClient>,
+    /// このテストの OpenFGA のストアの URL（片付けで消す）。
+    fga_store: String,
     storage: Arc<storage::StorageService>,
     artifacts: Arc<artifact::ArtifactStore>,
     workflows: WorkflowStore,
@@ -91,18 +93,19 @@ async fn setup() -> Option<Env> {
         .await
         .expect("migrate");
     let http = reqwest::Client::new();
-    let fga = Arc::new(
-        OpenFgaClient::connect(
-            http.clone(),
-            &OpenFgaConfig {
-                base_url: fga_url,
-                store_name: format!("shiki-wf-docread-{}", Uuid::new_v4()),
-            },
-            &authz::model::default_model(),
-        )
-        .await
-        .expect("fga"),
-    ) as Arc<dyn AuthzClient>;
+    let client = OpenFgaClient::connect(
+        http.clone(),
+        &OpenFgaConfig {
+            base_url: fga_url.clone(),
+            store_name: format!("shiki-wf-docread-{}", Uuid::new_v4()),
+        },
+        &authz::model::default_model(),
+    )
+    .await
+    .expect("fga");
+    // テストのストアは片付けで消す（タプルを残さない）。
+    let fga_store = format!("{fga_url}/stores/{}", client.store_id());
+    let fga = Arc::new(client) as Arc<dyn AuthzClient>;
     let s3 = storage::S3Config {
         internal_endpoint: s3_endpoint.clone(),
         public_endpoint: s3_endpoint,
@@ -223,6 +226,7 @@ async fn setup() -> Option<Env> {
         ingest,
         pool,
         fga,
+        fga_store,
         storage,
         artifacts,
         workflows,
@@ -525,6 +529,17 @@ impl Env {
                 .await
                 .unwrap();
         }
+        // このテストの OpenFGA のストアをタプルごと消す（片付けの最後・この後はタプルを読まない）。
+        let resp = reqwest::Client::new()
+            .delete(&self.fga_store)
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            resp.status().is_success(),
+            "delete store: {}",
+            resp.status()
+        );
     }
 }
 
