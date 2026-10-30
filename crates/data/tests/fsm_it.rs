@@ -760,3 +760,65 @@ async fn duplicate_pairs_in_a_legacy_definition_move_like_the_candidates() {
     assert!(!a2.transitions.contains(&"approved".to_string()), "{a2:?}");
     assert!(matches!(denied, Err(DataError::Forbidden)), "{denied:?}");
 }
+
+/// BUG-155: 「追加だけ」の人が状態を進めようとすると、テーブルが無いのと同じ 404 だった。書き換え・削除・取込と
+/// 同じ 403 にそろえる。レコードを引く前に断るので、無いレコードでも同じ 403（レコードの有無は分からない）。
+/// テーブルが見えない人には、これまでどおり 404。
+#[tokio::test]
+async fn add_only_people_get_the_same_403_as_other_writes_when_moving_states() {
+    let Some((pool, authz, fga)) = setup_cleaned().await else {
+        return;
+    };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let alice = ctx(&tenant, "alice");
+    let bob = ctx(&tenant, "bob");
+    let carol = ctx(&tenant, "carol"); // 追加だけ
+    let dave = ctx(&tenant, "dave"); // 権限なし
+    let (store, fsms, table, _) = pinned_table(&pool, &authz, &alice, &bob).await;
+    store
+        .share_table(
+            &alice,
+            table,
+            &storage::ShareTarget::User { id: "carol".into() },
+            data::TableShareRole::Submitter,
+            None,
+        )
+        .await
+        .unwrap();
+    let own = store
+        .create_record(
+            &carol,
+            table,
+            json!({"applicant": "carol", "approver": "bob", "amount": 1}),
+            None,
+        )
+        .await
+        .unwrap();
+    let on_own = fsms
+        .transition(&carol, table, own.id, "submitted", own.rev, None)
+        .await;
+    let on_missing = fsms
+        .transition(&carol, table, Uuid::new_v4(), "submitted", 1, None)
+        .await;
+    let candidates = fsms.allowed_transitions(&carol, table, own.id, None).await;
+    let update = store
+        .update_record(&carol, table, own.id, json!({"amount": 2}), own.rev, None)
+        .await;
+    let hidden = fsms
+        .transition(&dave, table, own.id, "submitted", own.rev, None)
+        .await;
+    purge(&pool, &store, &tenant).await;
+    fga.delete().await;
+
+    assert!(matches!(update, Err(DataError::Forbidden)), "{update:?}");
+    assert!(matches!(on_own, Err(DataError::Forbidden)), "{on_own:?}");
+    assert!(
+        matches!(on_missing, Err(DataError::Forbidden)),
+        "{on_missing:?}"
+    );
+    assert!(
+        matches!(candidates, Err(DataError::Forbidden)),
+        "{candidates:?}"
+    );
+    assert!(matches!(hidden, Err(DataError::NotFound)), "{hidden:?}");
+}

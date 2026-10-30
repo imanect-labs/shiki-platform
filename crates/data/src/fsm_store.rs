@@ -5,7 +5,6 @@
 //! 遷移実行は [`DataStore::transition_record`] へ委譲する（本ストアは定義の解決のみ）。
 
 use std::sync::Arc;
-use storage::audit::AuditAction;
 
 use artifact::{ArtifactError, ArtifactKind, ArtifactStore, NewArtifact};
 use authz::AuthContext;
@@ -194,7 +193,13 @@ impl FsmStore {
         expected_rev: i64,
         trace_id: Option<&str>,
     ) -> Result<crate::model::DataRecord, DataError> {
-        let table = self.data.get_table(ctx, table_id, trace_id).await?;
+        // 先にテーブルの editor を確かめる（FSM の本文を閲覧者に読ませない）。見えるが editor でない人
+        // （閲覧者・追加だけの人）は、書き換え・削除・取込と同じ 403。テーブルが見えない人は 404（存在を
+        // 明かさない）。レコードを引く前に断るので、403 からレコードの有無は分からない（BUG-155）。
+        let table = self
+            .data
+            .table_for_transition(ctx, table_id, trace_id)
+            .await?;
         let not_managed = || {
             DataError::input_detail(
                 crate::InvalidCode::FsmInvalid,
@@ -204,16 +209,6 @@ impl FsmStore {
         };
         let fsm_ref = table.schema.fsm_ref.clone().ok_or_else(not_managed)?;
         let status_field = table.schema.status_field.clone().ok_or_else(not_managed)?;
-        // FSM の本文を読む前にテーブルの editor を確かめる（閲覧者に定義を読ませない）。
-        self.data
-            .authorize_table(
-                ctx,
-                table_id,
-                authz::Relation::Editor,
-                AuditAction::DataRecordTransition,
-                trace_id,
-            )
-            .await?;
         let v = self
             .artifacts
             .get_version_pinned(
