@@ -12,13 +12,14 @@ import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { toast } from "@/components/ui/use-toast";
-import { runQuery, saveNewCsv, tableToCsv, type TableResponse } from "@/lib/tabular-api";
+import { CsvNameTaken, csvFileName, runQuery, saveNewCsv, tableToCsv, type TableResponse } from "@/lib/tabular-api";
 
 export function SqlConsole({
   nodeId,
@@ -37,6 +38,10 @@ export function SqlConsole({
   const [saveOpen, setSaveOpen] = React.useState(false);
   const [saveName, setSaveName] = React.useState("query-result");
   const [savingCsv, setSavingCsv] = React.useState(false);
+  // 保存先に同じ名前のファイルがあった（名前を変えるか、番号を付けて保存する・BUG-150）。知らせはその名前のときだけ出す
+  // （名前を変えれば消え、戻せばまた出る）。
+  const [takenError, setTakenError] = React.useState<CsvNameTaken | null>(null);
+  const nameTaken = takenError && takenError.fileName === csvFileName(saveName.trim()) ? takenError : null;
 
   // 数値列（右寄せ表示・表計算ソフトの体裁）。結果のサンプルから判定する。
   const numericCols = React.useMemo(() => {
@@ -76,19 +81,31 @@ export function SqlConsole({
     }
   };
 
-  const saveResult = async () => {
+  /// `addNumber` は同じ名前があったときに「名前 (2).csv」のように番号を付けて保存する（サーバーが空いている名前を探す）。
+  const saveResult = async (addNumber = false) => {
     // savingCsv 中は二重発火を防ぐ（Enter と 保存ボタンの多重呼び出し対策）。
     if (!result || !saveName.trim() || savingCsv) return;
     setSavingCsv(true);
     try {
-      const saved = await saveNewCsv({ parentId, name: saveName.trim(), csv: tableToCsv(result) });
-      toast({ title: "保存しました", description: `${saved.name} を作成しました。` });
+      const saved = await saveNewCsv({
+        parentId,
+        name: saveName.trim(),
+        csv: tableToCsv(result),
+        onNameTaken: addNumber ? "add_number" : undefined,
+      });
+      toast({ title: "保存しました", description: `「${saved.name}」を作成しました。` });
       setSaveOpen(false);
+      setTakenError(null);
       onSaved?.(saved.node_id);
     } catch (e) {
+      // 同じ名前は欄の下で言い、番号を付けて保存するボタンを出す（ほかの人の編集と取り違えない）。
+      if (e instanceof CsvNameTaken) {
+        setTakenError(e);
+        return;
+      }
       toast({
         variant: "destructive",
-        title: "保存に失敗しました",
+        title: "保存できませんでした",
         description: e instanceof Error ? e.message : String(e),
       });
     } finally {
@@ -201,10 +218,21 @@ export function SqlConsole({
       )}
 
       {/* 新規 CSV として保存（window.prompt の代わりにアプリの Dialog を使う） */}
-      <Dialog open={saveOpen} onOpenChange={setSaveOpen}>
+      <Dialog
+        open={saveOpen}
+        onOpenChange={(o) => {
+          setSaveOpen(o);
+          setTakenError(null);
+        }}
+      >
         <DialogContent data-testid="sql-save-dialog">
           <DialogHeader>
             <DialogTitle>新規 CSV として保存</DialogTitle>
+            <DialogDescription>
+              {parentId
+                ? "結果を新しい CSV として、この CSV と同じフォルダーに保存します。"
+                : "結果を新しい CSV として、ドライブのトップに保存します。"}
+            </DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-1.5">
             <label htmlFor="sql-save-name" className="text-sm font-medium">
@@ -217,9 +245,12 @@ export function SqlConsole({
               onKeyDown={(e) => {
                 if (e.key === "Enter") {
                   e.preventDefault();
-                  void saveResult();
+                  // 同じ名前の知らせが出ている間は、Enter で番号を付けた保存をしない（ボタンで選ぶ）。
+                  if (!nameTaken) void saveResult();
                 }
               }}
+              aria-invalid={nameTaken ? true : undefined}
+              aria-describedby={nameTaken ? "sql-save-name-taken" : undefined}
               autoFocus
               autoCapitalize="none"
               autoCorrect="off"
@@ -227,14 +258,40 @@ export function SqlConsole({
               enterKeyHint="done"
               placeholder="query-result"
             />
+            {nameTaken ? (
+              <p
+                id="sql-save-name-taken"
+                role="alert"
+                className="text-sm text-destructive"
+                data-testid="sql-save-name-taken"
+              >
+                {nameTaken.message}
+              </p>
+            ) : null}
           </div>
           <DialogFooter>
-            <Button variant="ghost" onClick={() => setSaveOpen(false)}>
+            <Button
+              variant="ghost"
+              onClick={() => {
+                setSaveOpen(false);
+                setTakenError(null);
+              }}
+            >
               キャンセル
             </Button>
-            <Button loading={savingCsv} disabled={!saveName.trim()} onClick={() => void saveResult()}>
-              保存
-            </Button>
+            {nameTaken && !nameTaken.numbered ? (
+              <Button loading={savingCsv} onClick={() => void saveResult(true)} data-testid="sql-save-numbered">
+                番号を付けて保存
+              </Button>
+            ) : (
+              <Button
+                loading={savingCsv}
+                disabled={!saveName.trim() || nameTaken !== null}
+                onClick={() => void saveResult()}
+              >
+                保存
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>

@@ -20,7 +20,7 @@ import { toast } from "@/components/ui/use-toast";
 import { createDocument, createSheet } from "@/lib/documents-api";
 import { createNote } from "@/lib/notes-api";
 import { createSlide } from "@/lib/slides-api";
-import { saveNewCsv, TabularConflict } from "@/lib/tabular-api";
+import { CsvNameTaken, saveNewCsv } from "@/lib/tabular-api";
 
 export type CreateContentKind = "note" | "document" | "sheet" | "slide" | "csv";
 
@@ -114,7 +114,7 @@ export function useCreateContent({ parentId }: { parentId?: string | null }) {
           });
           return `/csv/${saved.node_id}`;
         } catch (e) {
-          if (!(e instanceof TabularConflict)) throw e;
+          if (!(e instanceof CsvNameTaken)) throw e;
           throw new Error(
             "このフォルダーに「無題のスプレッドシート」の CSV が多すぎるため、作成できませんでした。いくつか名前を変えるか削除してから、もう一度作成してください。",
           );

@@ -9,6 +9,7 @@ export type PatchResponse = components["schemas"]["PatchResponse"];
 export type SaveResponse = components["schemas"]["SaveResponse"];
 /// 同じ名前のファイルがあるときの扱い（`fail` は 409・`add_number` はサーバーが番号を付けて保存する）。
 export type OnNameTaken = components["schemas"]["OnNameTaken"];
+type ConflictCode = components["schemas"]["ConflictCode"];
 
 /// パッチ操作（backend の tabular::PatchOp と 1:1・タグ付き union）。
 export type PatchOp =
@@ -19,7 +20,7 @@ export type PatchOp =
   | { op: "column_delete"; col: number }
   | { op: "column_rename"; col: number; name: string };
 
-/// 楽観ロック競合（409）。UI はリロードを促す。
+/// 楽観ロック競合（409・編集の重なり）。UI はリロードを促す。新規保存の名前の衝突は [`CsvNameTaken`]。
 export class TabularConflict extends Error {
   constructor(
     public baseRev: number,
@@ -113,11 +114,34 @@ export async function applyPatch(
   return (await res.json()) as PatchResponse;
 }
 
+/// 新規保存で、保存先に同じ名前のファイルがある（409 の `name_taken`・BUG-150）。
+///
+/// - `fileName`: サーバーが保存しようとした名前（`.csv` を付けた名前）。
+/// - `numbered`: 番号を付けて保存を頼んだのに、` (50)` まで埋まっていた。
+export class CsvNameTaken extends Error {
+  constructor(
+    public readonly fileName: string,
+    public readonly numbered: boolean,
+  ) {
+    super(
+      numbered
+        ? `保存先に「${fileName.replace(/\.csv$/i, "")}」の CSV が多すぎるため、番号を付けて保存できませんでした。名前を変えてから、もう一度保存してください。`
+        : `保存先に「${fileName}」がすでにあります。名前を変えるか、番号を付けて保存してください。`,
+    );
+    this.name = "CsvNameTaken";
+  }
+}
+
+/// サーバーが付ける拡張子（`.csv` で終わらない名前には付ける・tabular の save_new と同じ）。
+export function csvFileName(name: string): string {
+  return /\.csv$/i.test(name) ? name : `${name}.csv`;
+}
+
 export async function saveNewCsv(input: {
   parentId?: string | null;
   name: string;
   csv: string;
-  /// 省略は失敗にする（同じ名前があれば 409）。
+  /// 省略は失敗にする（同じ名前があれば 409 の `name_taken` → [`CsvNameTaken`]）。
   onNameTaken?: OnNameTaken;
 }): Promise<SaveResponse> {
   const res = await apiFetch(`/tabular/save`, {
@@ -130,10 +154,26 @@ export async function saveNewCsv(input: {
       on_name_taken: input.onNameTaken,
     }),
   });
-  // 同じ名前のファイルは 409（新規作成のため・番号を付ける扱いなら上限まで埋まっている）。呼び出し側が区別できるようにする。
-  if (res.status === 409) throw new TabularConflict(0, 0);
-  if (!res.ok) throw new Error(`CSV 保存に失敗しました (${res.status})`);
-  return (await res.json()) as SaveResponse;
+  if (res.ok) return (await res.json()) as SaveResponse;
+  if (res.status === 409) {
+    const body = (await res.json().catch(() => null)) as { code?: ConflictCode } | null;
+    if (body?.code === "name_taken") {
+      throw new CsvNameTaken(csvFileName(input.name.trim()), input.onNameTaken === "add_number");
+    }
+    throw new Error("いまの状態では保存できませんでした。少し待ってから、もう一度保存してください。");
+  }
+  const invalid = await invalidInputMessage(res);
+  if (invalid) throw new Error(invalid);
+  if (res.status === 403) {
+    throw new Error("保存先のフォルダーに保存する権限がありません。必要なら、フォルダーの持ち主に頼んでください。");
+  }
+  if (res.status === 404) {
+    throw new Error("保存先のフォルダーが見つかりません。削除されたか、見る権限がありません。");
+  }
+  if (res.status === 400) {
+    throw new Error("内容に誤りがあるため、受け付けられませんでした。名前を見直してください。");
+  }
+  throw new Error("サーバーで問題が起きました。続くときは管理者に連絡してください。");
 }
 
 /// TableResponse を CSV 文字列へ（SQL 結果の「新規保存」用・RFC4180 準拠のクォート）。

@@ -32,7 +32,12 @@ import { useMe } from "@/hooks/use-me";
 import { useStorageScopeReady } from "@/lib/user-storage";
 import { cn } from "@/lib/utils";
 
-export type SaveTarget = { name: string; parentId: string | null };
+/// `addNumber` は、同じ名前があったと知らせた後に「番号を付けて保存」を押したとき（CSV の下書き・BUG-150）。
+export type SaveTarget = { name: string; parentId: string | null; addNumber?: boolean };
+
+/// 保存先に同じ名前があった知らせ（その名前と保存先のままのときだけ出す・名前か保存先を変えたら消える）。
+/// `numbered` は番号を付けて保存しても空いている名前が無かったとき（番号を付けるボタンは出さない）。
+export type DraftNameTaken = { name: string; parentId: string | null; message: string; numbered: boolean };
 
 export function SaveDraftDialog({
   open,
@@ -42,6 +47,7 @@ export function SaveDraftDialog({
   onConfirm,
   entityLabel = "ノート",
   description = "下書きをノートとして保存します。保存後はバージョン管理・共有・共同編集ができます。",
+  nameTaken = null,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -52,6 +58,8 @@ export function SaveDraftDialog({
   entityLabel?: string;
   /// ダイアログの説明文（対象種別ごとに差し替え）。
   description?: string;
+  /// 保存先に同じ名前があった（呼び出し側が保存の応答から渡す）。
+  nameTaken?: DraftNameTaken | null;
 }) {
   const [name, setName] = React.useState(defaultName);
   const [folder, setFolder] = React.useState<{ id: string; name: string } | null>(null);
@@ -70,6 +78,9 @@ export function SaveDraftDialog({
   }, [open, defaultName]);
 
   const canSave = name.trim().length > 0 && !saving;
+  const parentId = folder?.id ?? null;
+  // 知らせは、知らせた名前と保存先のままのときだけ出す（直したら消える）。
+  const taken = nameTaken && nameTaken.name === name.trim() && nameTaken.parentId === parentId ? nameTaken : null;
 
   return (
     <>
@@ -88,9 +99,21 @@ export function SaveDraftDialog({
                 onChange={(e) => setName(e.target.value)}
                 placeholder={`${entityLabel}名`}
                 data-testid="save-draft-name"
+                aria-invalid={taken ? true : undefined}
+                aria-describedby={taken ? "save-draft-name-taken" : undefined}
                 autoFocus
               />
             </label>
+            {taken ? (
+              <p
+                id="save-draft-name-taken"
+                role="alert"
+                className="text-sm text-destructive"
+                data-testid="save-draft-name-taken"
+              >
+                {taken.message}
+              </p>
+            ) : null}
 
             <div className="space-y-1.5">
               <span className="text-sm font-medium">保存先</span>
@@ -122,14 +145,25 @@ export function SaveDraftDialog({
             <Button type="button" variant="ghost" onClick={() => onOpenChange(false)} disabled={saving}>
               キャンセル
             </Button>
-            <Button
-              type="button"
-              disabled={!canSave}
-              data-testid="save-draft-confirm"
-              onClick={() => onConfirm({ name: name.trim(), parentId: folder?.id ?? null })}
-            >
-              {saving ? "保存中…" : "保存"}
-            </Button>
+            {taken && !taken.numbered ? (
+              <Button
+                type="button"
+                disabled={!canSave}
+                data-testid="save-draft-numbered"
+                onClick={() => onConfirm({ name: name.trim(), parentId, addNumber: true })}
+              >
+                {saving ? "保存中…" : "番号を付けて保存"}
+              </Button>
+            ) : (
+              <Button
+                type="button"
+                disabled={!canSave || taken !== null}
+                data-testid="save-draft-confirm"
+                onClick={() => onConfirm({ name: name.trim(), parentId })}
+              >
+                {saving ? "保存中…" : "保存"}
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
