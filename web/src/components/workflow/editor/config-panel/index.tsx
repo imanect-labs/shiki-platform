@@ -192,6 +192,19 @@ function NodePanel({ ctx, node, sheet }: { ctx: EditorContext; node: IrNode; she
   const mapLabel = mapNode ? mapNode.label || NODE_CATALOG.find((c) => c.type === mapNode.type)?.label_ja || mapNode.id : null;
   // 繰り返しを消すと中のブロックも一緒に消える（ボタンでそう言う）。
   const insideCount = node.type === "control.map" ? ctx.state.ir.nodes.filter((n) => n.parent === node.id).length : 0;
+  // 繰り返しの中（入れ子の中を含む）のブロックの種類（中に AI のブロックがあれば、利用量がかかると言う）。
+  const insideTypes = React.useMemo(() => {
+    if (node.type !== "control.map") return undefined;
+    const nodes = ctx.state.ir.nodes;
+    const within = (n: IrNode): boolean => {
+      for (let p = n.parent ?? null, guard = 0; p && guard < 8; guard += 1) {
+        if (p === node.id) return true;
+        p = nodes.find((x) => x.id === p)?.parent ?? null;
+      }
+      return false;
+    };
+    return nodes.filter(within).map((n) => n.type);
+  }, [ctx.state.ir.nodes, node.id, node.type]);
   // 入力項目（「差し込む」・参照先の候補）。
   const inputFields = React.useMemo(() => inputFieldsOf(ctx.state.ir.input_schema), [ctx.state.ir.input_schema]);
   // きっかけの内容の項目（イベントトリガの source ごと・D-47）。
@@ -339,6 +352,7 @@ function NodePanel({ ctx, node, sheet }: { ctx: EditorContext; node: IrNode; she
                   serverPorts={ctx.state.serverPorts[node.id]}
                   serverPortsFresh={ctx.state.serverPortsParams[node.id] === node.params}
                   edgePorts={edgePorts}
+                  insideTypes={insideTypes}
                 />
               </MapRegionContext.Provider>
             </TriggerSourcesContext.Provider>

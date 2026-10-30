@@ -262,6 +262,18 @@ test("繰り返し: 中に AI に聞くとデータを追加を足して保存�
   await settleViewport(page);
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/map-region-pc.png` });
 
+  // 繰り返しを選ぶと、中に AI のブロックがあるので、件数の分だけ利用量がかかると言う（付録 D の N3.1.4・P8）。
+  await page.getByTestId("rf__node-map_1").click({ position: { x: 60, y: 24 } });
+  await expect(panel).toContainText("中に AI のブロックがあると、1 件ごとに AI を呼ぶので、件数の分だけ利用量がかかります。");
+  // 「失敗した件があるとき」の選択肢の補足は、欄の注記ではなく一覧の中に出す。
+  await expect(panel).toContainText("中で分岐して、最後のブロックまで進まなかった件も失敗と数えます。");
+  await expect(panel).not.toContainText("ほかの件は最後まで動きます。");
+  await panel.getByRole("combobox", { name: "失敗した件があるとき" }).click();
+  await expect(page.getByRole("option", { name: /失敗を記録して続ける/ })).toContainText("失敗した件の番号と内容を結果に残し、次へ進みます。");
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/map-region-form-pc.png` });
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("listbox")).toHaveCount(0);
+
   // 3 件で実行すると、中のブロックが 3 回ずつ動き、テーブルに 3 件入る。
   const started = await page.request.post(`/api/workflows/${id}/runs`, { headers: await csrfHeaders(page), data: { input: {} } });
   expect(started.status(), await started.text()).toBe(202);

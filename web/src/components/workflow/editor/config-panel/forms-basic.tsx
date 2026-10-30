@@ -39,6 +39,8 @@ export type FormProps = {
   serverPortsFresh?: boolean;
   /// このノードから出るエッジの出口（重なりなし・判定の選択肢のキーの付け替えで、どの出口に線があるかを見る）。
   edgePorts?: readonly string[];
+  /// 繰り返しの中（入れ子の中を含む）のブロックの種類（繰り返しのときだけ・利用量の注記に使う）。
+  insideTypes?: readonly string[];
 };
 
 export function RagSearchForm({ node, dispatch, refCandidates, inMapRegion, fieldErrors }: FormProps) {

@@ -17,7 +17,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { EVENT_CATALOG, type NodeParamsByType } from "@/generated/workflow-catalog";
+import { EVENT_CATALOG, NODE_CATALOG, type NodeParamsByType } from "@/generated/workflow-catalog";
 import type {
   CmpOp,
   Comparison,
@@ -382,9 +382,14 @@ const MAP_ITEM_ERROR: Record<string, { label: string; note: string }> = {
   },
 };
 
-export function MapForm({ node, dispatch, refCandidates, inMapRegion, fieldErrors }: FormProps) {
+/// AI を呼ぶブロックか（カタログの分類が AI のもの・利用量がかかる）。
+const isAiType = (type: string) => NODE_CATALOG.find((c) => c.type === type)?.category === "ai";
+
+export function MapForm({ node, dispatch, refCandidates, inMapRegion, fieldErrors, insideTypes }: FormProps) {
   const p = paramsOf<NodeParamsByType["control.map"]>(node);
   const onItemError = (p.on_item_error as string | undefined) ?? "fail_map";
+  // 中に AI のブロックがあると、件数の分だけ AI を呼ぶ（付録 D の N3.1.4・P8）。
+  const aiInside = (insideTypes ?? []).some(isAiType);
   return (
     <div className="space-y-3">
       <ValueExprInput
@@ -395,12 +400,14 @@ export function MapForm({ node, dispatch, refCandidates, inMapRegion, fieldError
         onChange={(v) => patchParams(dispatch, node, { items: v })}
         refCandidates={refCandidates}
         inMapRegion={inMapRegion}
-        hint="このリストの 1 件ずつに、中のブロックを実行します。最大 1,000 件で、空なら何もせずに次へ進みます。"
+        hint={`このリストの 1 件ずつに、中のブロックを実行します。最大 1,000 件で、空なら何もせずに次へ進みます。${
+          aiInside ? "中に AI のブロックがあると、1 件ごとに AI を呼ぶので、件数の分だけ利用量がかかります。" : ""
+        }`}
         error={fieldErrors.get("items")}
       />
       <Field
         label="失敗した件があるとき"
-        hint={`${MAP_ITEM_ERROR[onItemError]?.note ?? ""}中で分岐して、最後のブロックまで進まなかった件も失敗と数えます。`}
+        hint="中で分岐して、最後のブロックまで進まなかった件も失敗と数えます。"
         error={fieldErrors.get("on_item_error")}
       >
         <Select value={onItemError} onValueChange={(v) => patchParams(dispatch, node, { on_item_error: v })}>
@@ -409,7 +416,7 @@ export function MapForm({ node, dispatch, refCandidates, inMapRegion, fieldError
           </FieldSelectTrigger>
           <SelectContent>
             {Object.entries(MAP_ITEM_ERROR).map(([value, o]) => (
-              <SelectItem key={value} value={value}>
+              <SelectItem key={value} value={value} note={o.note}>
                 {o.label}
               </SelectItem>
             ))}
