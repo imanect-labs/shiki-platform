@@ -21,6 +21,7 @@ import {
 
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { STORAGE_READ_INDEX_WAIT_MAX_MINUTES } from "@/generated/workflow-catalog";
 import { getStep, type StepDetail, type StepOverview } from "@/lib/workflow-run-api";
 import { nodeIcon } from "@/components/workflow/editor/icons";
 import { AgentResult, isAgentOutput } from "./agent-result";
@@ -36,8 +37,20 @@ export type NodeInfo = { label: string; type: string; params?: unknown };
 /// （保留中の承認の台帳があれば承認待ち・GAP-08・BUG-119）。
 function stepStatusLabel(step: StepOverview): string {
   if (step.waitingFor === "approval") return `${WAITING_LABELS.approval}（承認者の「承認」の画面に出ています）`;
+  // 取り込みを待つ間は失敗にせず、試す回数を使わずに読み直す（待つ上限は Rust の定数から生成した値・D-125）。
+  if (step.waitingFor === "index") return "ファイルの取り込みを待っています";
   if (step.waitingFor) return WAITING_LABELS[step.waitingFor];
   return STEP_STATUS_LABELS[step.status] ?? step.status;
+}
+
+/// やり直しを待つ step の、次に動く時刻の文。取り込みを待つ step は試す回数を使わないので、何回目かによらず出す。
+function retryAtLabel(step: StepOverview): string | null {
+  if (!step.nextRetryAt || step.status !== "ready") return null;
+  if (new Date(step.nextRetryAt).getTime() <= Date.now()) return null;
+  if (step.waitingFor === "index") {
+    return `${formatDateTime(step.nextRetryAt)} にもう一度読みます（最大 ${STORAGE_READ_INDEX_WAIT_MAX_MINUTES} 分待ちます）`;
+  }
+  return step.attempt > 0 ? `${formatDateTime(step.nextRetryAt)} にもう一度実行します` : null;
 }
 
 function statusIcon(status: string): React.ReactNode {
@@ -100,6 +113,7 @@ function StepRow({
   const failed = step.status === "failed";
   const running = step.status === "running";
   const message = errorMessage(step.error);
+  const retryAt = retryAtLabel(step);
   const expandable = step.hasOutput || step.error !== null;
   const Icon = info ? nodeIcon(info.type) : null;
 
@@ -163,14 +177,9 @@ function StepRow({
               <span>{formatDateTime(step.wakeAt)} に再開予定</span>
             ) : null}
             {/* next_retry_at は実行リースにも使われ、作ったときの時刻も入っている。やり直しを待つ
-                （1 回は試した・順番待ちに戻った・まだ来ていない時刻）ときだけ出す。前のブロックを待つ step は
-                やり直さないので出さない。 */}
-            {step.nextRetryAt &&
-            step.status === "ready" &&
-            step.attempt > 0 &&
-            new Date(step.nextRetryAt).getTime() > Date.now() ? (
-              <span>{formatDateTime(step.nextRetryAt)} にもう一度実行します</span>
-            ) : null}
+                （1 回は試した・順番待ちに戻った・取り込みを待つ・まだ来ていない時刻）ときだけ出す。前のブロックを
+                待つ step はやり直さないので出さない。 */}
+            {retryAt ? <span data-testid="step-retry-at">{retryAt}</span> : null}
           </span>
           {failed && message ? (
             <span className="mt-1 flex items-start gap-1 text-[11px] text-destructive">

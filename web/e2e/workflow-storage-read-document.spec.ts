@@ -4,8 +4,8 @@ import { cleanupAll, loginViaKeycloak, removeWorkflowApi, uniqueName } from "./h
 
 /// 「ファイルを読む」（storage.read）で PDF の本文を読む e2e（D-111・BUG-101 の残り）:
 /// PDF・Word は、社内文書の検索に取り込まれた本文を読む（原本は読み直さない）。「読むファイル」の注記はそのことと、
-/// 取り込みが終わるまで読めないことを言い、「詳しく」で本文の字数の上限（Rust の定数から生成した値）と、
-/// 取り込みを待つ組み方を言う。
+/// 取り込みが終わるまで最大 30 分待つことを言い、「詳しく」で本文の字数の上限と待つ上限（どちらも Rust の定数から
+/// 生成した値）と、待つ間の読み直しはやり直しの欄（「リトライ回数」）に数えないことを言う（D-125）。
 ///
 /// 社内文書の検索が有効な構成（dev-up.sh --rag。取り込みの worker が要る）では、PDF を上げて取り込みを待ち、
 /// 「ファイルを読む」の結果に本文が入ることを確かめる。無効な構成（CI の web-e2e と、手元の検証のスタック・
@@ -20,8 +20,9 @@ async function csrfHeaders(page: Page): Promise<Record<string, string>> {
   return { "x-csrf-token": csrf, "content-type": "application/json" };
 }
 
+/// 待つ上限は STORAGE_READ_INDEX_WAIT_MAX_MINUTES（= 30）。
 const HINT =
-  "テキストのファイル（.txt、.md、.csv など）は中身を、PDF や Word は社内文書の検索に取り込まれた本文を読みます。PDF や Word は、取り込みが終わるまで読めません。";
+  "テキストのファイル（.txt、.md、.csv など）は中身を、PDF や Word は社内文書の検索に取り込まれた本文を読みます。PDF や Word の取り込みが終わっていなければ、終わるまで最大 30 分待ちます。";
 /// 「詳しく」の本文の字数の上限（STORAGE_READ_MAX_DOCUMENT_CHARS = 100,000）。
 const LIMIT = "PDF や Word の本文は、先頭から 100,000 字までを読みます。";
 const NO_SEARCH = "この環境では社内文書の検索が使えないため、PDF や Word の本文を読めません。";
@@ -116,7 +117,7 @@ test("ファイルを読む: PDF は社内文書の検索に取り込まれた�
     expect(created.ok(), await created.text()).toBeTruthy();
     id = ((await created.json()) as { id: string }).id;
 
-    // 「読むファイル」の注記と「詳しく」（本文の字数の上限・取り込みを待つ組み方・読める種類）。
+    // 「読むファイル」の注記と「詳しく」（本文の字数の上限・取り込みを待つこと・読める種類）。
     await page.goto(`/workflows/${id}`);
     await page.getByTestId("rf__node-rd").click();
     const panel = page.getByRole("complementary", { name: "ブロックの設定" });
@@ -125,7 +126,8 @@ test("ファイルを読む: PDF は社内文書の検索に取り込まれた�
     const more = panel.getByTestId("storage-read-more");
     await more.getByRole("button", { name: "詳しく" }).click();
     await expect(more.getByText(LIMIT)).toBeVisible();
-    await expect(more.getByText(/「リトライ回数」を増やすと、少し待ってから読み直します。/)).toBeVisible();
+    await expect(more.getByText(/取り込みを待ってから読み直します。待つ間の読み直しは「リトライ回数」に数えません。/)).toBeVisible();
+    await expect(more.getByText(/30 分待っても終わらなければ、このブロックは失敗します。/)).toBeVisible();
     await expect(more.getByText(/画像や古い形式（.doc、.xls）は読めません。/)).toBeVisible();
     await more.scrollIntoViewIfNeeded();
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/storage-read-document-hint-pc.png` });

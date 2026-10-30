@@ -107,7 +107,7 @@ test("ファイルを読む: PDF は文字化けのまま読まず分かる誤�
     const panel = page.getByRole("complementary", { name: "ブロックの設定" });
     await expect(
       panel.getByText(
-        "テキストのファイル（.txt、.md、.csv など）は中身を、PDF や Word は社内文書の検索に取り込まれた本文を読みます。PDF や Word は、取り込みが終わるまで読めません。",
+        "テキストのファイル（.txt、.md、.csv など）は中身を、PDF や Word は社内文書の検索に取り込まれた本文を読みます。PDF や Word の取り込みが終わっていなければ、終わるまで最大 30 分待ちます。",
         { exact: true },
       ),
     ).toBeVisible();

@@ -15,7 +15,11 @@ import { NodeIcon } from "@/components/drive/primitives";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { STORAGE_READ_MAX_DOCUMENT_CHARS, type NodeParamsByType } from "@/generated/workflow-catalog";
+import {
+  STORAGE_READ_INDEX_WAIT_MAX_MINUTES,
+  STORAGE_READ_MAX_DOCUMENT_CHARS,
+  type NodeParamsByType,
+} from "@/generated/workflow-catalog";
 import type { NameTakenPolicy, ValueExpr } from "@/generated/workflow-ir";
 import { breadcrumb, getNode, type NodeResponse } from "@/lib/storage";
 import { getSchema, runQuery, type SchemaResponse, type TableResponse } from "@/lib/tabular-api";
@@ -317,9 +321,9 @@ const UNATTENDED_FOLDER_HINT =
   "スケジュール・できごとで動かすなら指定してください（省略すると保存できず、有効化できません）。有効化のとき、このフォルダの編集権限を渡します";
 
 /// 「ファイルを読む」が読むもの（付録 D の N3.5.1）。テキストのファイルは中身を読み（BUG-101）、PDF・Office は社内文書の
-/// 検索に取り込まれた本文を読む（D-111）。取り込みが終わる前と、取り込めない種類（画像など）は実行で失敗する。
-const READ_FILE_HINT =
-  "テキストのファイル（.txt、.md、.csv など）は中身を、PDF や Word は社内文書の検索に取り込まれた本文を読みます。PDF や Word は、取り込みが終わるまで読めません。";
+/// 検索に取り込まれた本文を読む（D-111）。取り込みが終わる前は、試す回数を使わずに終わるまで待って読む（待つ上限は
+/// Rust の定数から生成した値・D-125）。取り込めない種類（画像など）は実行で失敗する。
+const READ_FILE_HINT = `テキストのファイル（.txt、.md、.csv など）は中身を、PDF や Word は社内文書の検索に取り込まれた本文を読みます。PDF や Word の取り込みが終わっていなければ、終わるまで最大 ${STORAGE_READ_INDEX_WAIT_MAX_MINUTES} 分待ちます。`;
 
 export function StorageReadForm(props: FormProps) {
   return (
@@ -336,8 +340,8 @@ export function StorageReadForm(props: FormProps) {
 }
 
 /// 「読むファイル」の「詳しく」: 読める文字コード（GAP-45）・PDF や Word の本文の形と字数の上限（D-111・上限の数は
-/// Rust の定数から生成した値）・取り込みを待つ組み方・読める種類。やり直しの欄は、いま画面に出ている見出し
-/// （「リトライ回数」）で指す（付録 D の N2.4 で「試す回数」に直すときに、ここも直す）。
+/// Rust の定数から生成した値）・取り込みを待つこと（試す回数を使わない・待つ上限も生成した値・D-125）・読める種類。
+/// やり直しの欄は、いま画面に出ている見出し（「リトライ回数」）で指す（付録 D の N2.4 で「試す回数」に直すときに、ここも直す）。
 function StorageReadMore() {
   const max = STORAGE_READ_MAX_DOCUMENT_CHARS.toLocaleString("ja-JP");
   return (
@@ -349,7 +353,8 @@ function StorageReadMore() {
       </p>
       <p>本文には、ページの変わり目に〔p.2〕のような印と、見出しの行（# で始まる）が入ります。</p>
       <p>
-        取り込みが終わる前に読むと、このブロックは失敗します。ファイルが保存されたときに実行するなら、「リトライ回数」を増やすと、少し待ってから読み直します。
+        取り込みが終わる前に読むと、取り込みを待ってから読み直します。待つ間の読み直しは「リトライ回数」に数えません。
+        {STORAGE_READ_INDEX_WAIT_MAX_MINUTES} 分待っても終わらなければ、このブロックは失敗します。
       </p>
       <p>読める文書は PDF、Word（.docx）、Excel（.xlsx）、PowerPoint（.pptx）です。画像や古い形式（.doc、.xls）は読めません。</p>
     </MoreInfo>

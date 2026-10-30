@@ -46,6 +46,8 @@ export const WAITING_LABELS: Record<WaitingFor, string> = {
   approval: "承認待ち",
   event: "変更待ち",
   timer: "時刻待ち",
+  // ファイルの本文の取り込みを待って読み直す（ブロックだけ。実行は実行中のまま・D-125）。
+  index: "取り込み待ち",
 };
 
 /// run の状態のバッジ。待機中（`running` で、承認・変更・時刻を待っている）は実行中と分け、回る印を出さない。
