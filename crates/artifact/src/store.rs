@@ -221,6 +221,9 @@ impl ArtifactStore {
     /// FGA `list_objects`（viewer の実効集合＝ロール継承込み）→ DB 突き合わせの二段。
     /// tenant 名前空間の突き合わせ（strip_object_id）と DB 側 tenant/org フィルタの二重防御。
     /// 共有集合は通常小さい前提で keyset ページングは持たない（上限 `limit`・Task 6.11）。
+    ///
+    /// 実効集合は持ち主の分も数えるので、たくさん作った人は ListObjects の上限に届く。届いたら実効集合を
+    /// 正にせず、DB の候補（自分が持ち主でないもの・新しい順）を OpenFGA で絞る（BUG-149・[`crate::visible`]）。
     pub async fn list_shared_with_me(
         &self,
         ctx: &AuthContext,
@@ -233,16 +236,10 @@ impl ArtifactStore {
             .list_objects(&ctx.subject(), Relation::Viewer, ObjectType::Artifact)
             .await
             .map_err(|e| ArtifactError::Internal(e.to_string()))?;
-        let mut ids: Vec<Uuid> = Vec::new();
-        for o in objs {
-            let Some((_, id_part)) = o.split_once(':') else {
-                continue;
-            };
-            if let Some(local) = ctx.ns().strip_object_id(id_part) {
-                if let Ok(id) = Uuid::parse_str(local) {
-                    ids.push(id);
-                }
-            }
+        let cut = authz::visible::list_may_be_cut(objs.len());
+        let ids = crate::visible::local_ids(ctx, &objs);
+        if cut {
+            return self.scan_shared_with_me(ctx, kind, limit, ids).await;
         }
         if ids.is_empty() {
             return Ok(Vec::new());
@@ -264,6 +261,84 @@ impl ArtifactStore {
         .await
         .map_err(map_db)?;
         rows.into_iter().map(ArtifactRow::into_artifact).collect()
+    }
+
+    /// [`Self::list_shared_with_me`] の、ListObjects が上限に届いたときの経路。自分が持ち主でない候補を新しい順に
+    /// 少しずつ引き、ListObjects が返した分は問い直さずに、それ以外を OpenFGA に問う（問うのは
+    /// [`crate::visible::MAX_CHECKS`] 問まで）。
+    async fn scan_shared_with_me(
+        &self,
+        ctx: &AuthContext,
+        kind: Option<ArtifactKind>,
+        limit: i64,
+        known: Vec<Uuid>,
+    ) -> Result<Vec<Artifact>, ArtifactError> {
+        use crate::visible::{Candidate, CHUNK, MAX_CHECKS};
+        let known: std::collections::HashSet<Uuid> = known.into_iter().collect();
+        let limit = usize::try_from(limit).unwrap_or(1);
+        let mut picked: Vec<Uuid> = Vec::new();
+        let mut after: Option<(DateTime<Utc>, Uuid)> = None;
+        let mut checks = 0usize;
+        loop {
+            let chunk: Vec<Candidate> = sqlx::query_as(
+                "SELECT id, owner, updated_at FROM artifact \
+                 WHERE tenant_id = $1 AND org = $2 AND owner <> $3 AND deleted_at IS NULL \
+                   AND ($4::text IS NULL OR kind = $4) \
+                   AND ($5::timestamptz IS NULL OR (updated_at, id) < ($5, $6::uuid)) \
+                 ORDER BY updated_at DESC, id DESC LIMIT $7",
+            )
+            .bind(&ctx.tenant_id)
+            .bind(&ctx.org)
+            .bind(&ctx.principal.id)
+            .bind(kind.map(ArtifactKind::as_str))
+            .bind(after.map(|(at, _)| at))
+            .bind(after.map(|(_, id)| id))
+            .bind(i64::try_from(CHUNK).unwrap_or(i64::MAX))
+            .fetch_all(&self.db)
+            .await
+            .map_err(map_db)?;
+            checks += chunk.iter().filter(|c| !known.contains(&c.id)).count();
+            let flags = self.visible_flags(ctx, &chunk, &known).await?;
+            for (c, visible) in chunk.iter().zip(flags) {
+                if visible {
+                    picked.push(c.id);
+                    if picked.len() >= limit {
+                        break;
+                    }
+                }
+            }
+            after = chunk.last().map(|c| (c.updated_at, c.id));
+            if picked.len() >= limit || chunk.len() < CHUNK {
+                break;
+            }
+            if checks >= MAX_CHECKS {
+                tracing::warn!(
+                    checks,
+                    found = picked.len(),
+                    "共有された一覧: OpenFGA に問う数の上限に届いたので見つけた分を返す"
+                );
+                break;
+            }
+        }
+        if picked.is_empty() {
+            return Ok(Vec::new());
+        }
+        let rows: Vec<ArtifactRow> = sqlx::query_as(
+            "SELECT id, kind, name, owner, current_version, created_at, updated_at \
+             FROM artifact \
+             WHERE tenant_id = $1 AND org = $2 AND id = ANY($3) AND deleted_at IS NULL",
+        )
+        .bind(&ctx.tenant_id)
+        .bind(&ctx.org)
+        .bind(&picked)
+        .fetch_all(&self.db)
+        .await
+        .map_err(map_db)?;
+        let items = rows
+            .into_iter()
+            .map(ArtifactRow::into_artifact)
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(crate::visible::in_order(&picked, items, |a| a.id))
     }
 
     /// 自分が owner の skill の要約一覧（name + description のみ・skill ツールのカタログ用・#344）。
