@@ -5,6 +5,7 @@ import {
   deleteTableApi,
   loginViaKeycloak,
   removeWorkflowApi,
+  stubChatModelId,
   trackCreatedResources,
   trashFileApi,
   uniqueName,
@@ -516,6 +517,16 @@ async function llmModels(page: Page): Promise<LlmModels | null> {
   return res.ok() ? ((await res.json()) as LlmModels) : null;
 }
 
+/// 一覧の中の、組織で使える stub のモデル（一覧の先頭を決め打ちしない・BUG-147。id は環境で違うので引く・BUG-114）。
+/// 一覧が取れない・空（LLM が構成されていない）ときは null。
+async function stubModelOf(page: Page, models: LlmModels | null): Promise<LlmModel | null> {
+  if (!models || models.models.length === 0) return null;
+  const id = await stubChatModelId(page);
+  const found = models.models.find((m) => m.id === id);
+  expect(found, `ワークフローで使えるモデルの一覧に stub のモデル（${id}）が無い`).toBeDefined();
+  return found!;
+}
+
 /// モデル欄が読む一覧の URL（`?purpose=workflow` を含めて当てる。glob は query まで一致を求める）。
 const isLlmModels = (url: URL) => url.pathname.endsWith("/api/llm/models");
 
@@ -575,7 +586,7 @@ test("差し込む: 入力項目を足し、AI に聞くの指示に差し込ん
   test.setTimeout(120_000);
   await loginViaKeycloak(page);
   const models = await llmModels(page);
-  const id = await createLlmFlow(page, { model: models?.models[0]?.id });
+  const id = await createLlmFlow(page, { model: (await stubModelOf(page, models))?.id });
   await openFlow(page, id);
   const canvas = page.locator(".react-flow");
 
@@ -625,7 +636,7 @@ test("差し込む: 直接入力に {{title}} と書くとその場で知らせ�
   await loginViaKeycloak(page);
   const models = await llmModels(page);
   const id = await createLlmFlow(page, {
-    model: models?.models[0]?.id,
+    model: (await stubModelOf(page, models))?.id,
     inputSchema: { type: "object", properties: { title: { type: "string", title: "件名" } } },
   });
   await openFlow(page, id);
@@ -732,7 +743,7 @@ test("入力項目: キーを変えるとブロックの参照も新しいキー
   await loginViaKeycloak(page);
   const models = await llmModels(page);
   const id = await createLlmFlow(page, {
-    model: models?.models[0]?.id,
+    model: (await stubModelOf(page, models))?.id,
     inputSchema: {
       type: "object",
       properties: { title: { type: "string", title: "件名" }, body: { type: "string", title: "本文" } },
@@ -801,7 +812,7 @@ test("入力項目: 並びは保存して開き直しても変わらず、上下
   test.setTimeout(150_000);
   await loginViaKeycloak(page);
   const models = await llmModels(page);
-  const id = await createLlmFlow(page, { model: models?.models[0]?.id, prompt: "次の申請を要約してください" });
+  const id = await createLlmFlow(page, { model: (await stubModelOf(page, models))?.id, prompt: "次の申請を要約してください" });
   // 途中で落ちても作ったワークフローを残さない（BUG-63・66）。
   try {
     await openFlow(page, id);
@@ -870,7 +881,7 @@ test("差し込む: {{key}} を直すボタンと差し込み名の変更で、�
   await loginViaKeycloak(page);
   const models = await llmModels(page);
   const id = await createLlmFlow(page, {
-    model: models?.models[0]?.id,
+    model: (await stubModelOf(page, models))?.id,
     inputSchema: { type: "object", properties: { title: { type: "string", title: "件名" } } },
     prompt: { $template: "{{title}} と {title} を要約してください", vars: { title: { $from: "input", path: "/title" } } },
   });
@@ -908,7 +919,7 @@ test("差し込む: 差し込みに直した直後は、直接入力のときの
   await loginViaKeycloak(page);
   const models = await llmModels(page);
   const id = await createLlmFlow(page, {
-    model: models?.models[0]?.id,
+    model: (await stubModelOf(page, models))?.id,
     inputSchema: { type: "object", properties: { title: { type: "string", title: "件名" } } },
   });
   await openFlow(page, id);
@@ -933,9 +944,9 @@ test("モデル: AI に聞くのモデルを一覧から選び、答えの長さ
   await loginViaKeycloak(page);
   const models = await llmModels(page);
   test.skip(!models || models.models.length === 0, "LLM が構成されていない（使えるモデルがない）環境");
-  const [first] = models!.models;
-  // 今と違うモデルを選ぶ（1 つしかなければ同じものを選び直す）。
-  const target = models!.models.at(-1)!;
+  const first = (await stubModelOf(page, models))!;
+  // 今と違うモデルを選ぶ（1 つしかなければ同じものを選び直す）。保存するだけで実行しない。
+  const target = models!.models.filter((m) => m.id !== first.id).at(-1) ?? first;
   const id = await createLlmFlow(page, { prompt: "今日の予定をまとめてください", model: first.id });
   await openFlow(page, id);
   await page.locator(".react-flow").getByText("要約する").first().click();
@@ -967,7 +978,7 @@ test("モデル: 一覧に無いモデルは値を消さずに赤字で知らせ
   await loginViaKeycloak(page);
   const models = await llmModels(page);
   test.skip(!models || models.models.length === 0, "LLM が構成されていない（使えるモデルがない）環境");
-  const saved = models!.models[0];
+  const saved = (await stubModelOf(page, models))!;
   const id = await createLlmFlow(page, { prompt: "今日の予定をまとめてください", model: saved.id });
 
   // 保存の後に管理者がそのモデルを外した状況（一覧から外し、別のモデルだけを返す）。
@@ -998,7 +1009,7 @@ test("スマホ: 入力項目・差し込む・モデルの一覧をシートの
   test.setTimeout(180_000);
   const phone = await phonePage(browser, page);
   const models = await llmModels(page);
-  const id = await createLlmFlow(page, { model: models?.models[0]?.id });
+  const id = await createLlmFlow(page, { model: (await stubModelOf(page, models))?.id });
   await phone.goto(`/workflows/${id}`);
   const flow = phone.getByTestId("workflow-mobile-flow");
   await expect(flow).toBeVisible({ timeout: 15_000 });
