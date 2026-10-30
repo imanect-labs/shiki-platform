@@ -250,6 +250,7 @@ IR のトップレベルは以下の形を取る。
   - 領域の**入口** = 領域内で入エッジ 0 本のノード（複数可）。
   - 領域の**出口** = 領域内で出エッジ 0 本のノード**ちょうど 1 つ**（出口の出力が要素結果になる）。
   - map の**ネスト可・最大深さ 2**。
+  - **中にノードの無い領域は保存を止めない**（エディタで置いた直後の map・D-85）。保存時の注意 `ir.empty_region` を出し、有効化と対話の起動の前に止める（§8 の保存を止めない警告・§9）。入口・出口の制約は、中にノードのある領域だけに掛ける。それをすり抜けて要素のある空の領域を実行したときは、map の step を `empty_region`（設定の誤り・やり直さない）で失敗させ、要素ごとの出口を待ち続けない（[engine.md](./engine.md) §4.5）。
 - **`params`**:
 
   ```jsonc
@@ -768,7 +769,7 @@ AI 編集も dnd 保存も**同一エンドポイント・同一パイプライ�
 各ステージの詳細:
 
 - **V1 スキーマ**: トップレベルからノード params まで、JSON Schema で型・必須・deny-unknown を検証する。未知フィールドは全階層で拒否する（§2）。`input_schema` の項目の並び（`x-order`）の形もここで確かめる（§2・D-60）。step 属性 `cache` は付けられる種（ノードカタログの `step_cache`・いまは `ai.decide`）だけで、ほかの種は `ir.cache_unsupported`（path は `/cache`）、`ttl_sec` が範囲の外なら `ir.schema_violation`（path は `/cache/ttl_sec`・§4）。
-- **V2 グラフ**: `id` 一意、エッジの `from` / `to` が実在ノード、`from_port` が §5.2 のポートカタログに存在（出口はカタログの `port_rule` から導く。検証 API はノードごとの出口を `node_ports` で返す）、DAG（閉路なし）、join 以外の入エッジ ≤ 1、map 領域の閉包（領域跨ぎエッジなし）・出口ちょうど 1、全ノードのエントリからの到達可能性を検証する。孤立ノードは保存を止めない注意（`ir.unconnected_node`・§5.1）。`workflow.reply` は map 領域に置けない（`ir.reply_in_map`・§7.10）。
+- **V2 グラフ**: `id` 一意、エッジの `from` / `to` が実在ノード、`from_port` が §5.2 のポートカタログに存在（出口はカタログの `port_rule` から導く。検証 API はノードごとの出口を `node_ports` で返す）、DAG（閉路なし）、join 以外の入エッジ ≤ 1、map 領域の閉包（領域跨ぎエッジなし）・出口ちょうど 1（中にノードのある領域だけ。空の領域は保存を止めない注意 `ir.empty_region`・§5.3）、全ノードのエントリからの到達可能性を検証する。孤立ノードは保存を止めない注意（`ir.unconnected_node`・§5.1）。`workflow.reply` は map 領域に置けない（`ir.reply_in_map`・§7.10）。
 - **V3 語彙照合**: ノード `type`・`declared_scopes`・ツール名（`allowed_tools`）・モデル名を codegen が生成した閉じた語彙と、テナントの登録カタログ（モデルは組織が許可したモデル・本人専用を除く）へ照合する。**ハルシネーション境界**であり、実在しない語彙を参照する IR（特に AI 生成）を保存前に拒否する。`llm.invoke` の `model` は省略可で、省略（空文字を含む）は照合しない（実行時に組織の既定で解決する・§7.3）。組織がモデルの選択を禁じていれば、既定と異なるモデルを `ir.model_choice_disabled` で拒否する。
 - **V3 のモデルの種類**: カタログのモデルは文章を生成する chat と判定用の decision に分かれる（[design.md](../design.md) §4.5）。`llm.invoke`・`agent.invoke` の `model` は組織が許可した chat モデル、`ai.decide` の `model` は組織が許可した判定用のモデル（LLM に判定させるなら元にする chat モデルも許可されているもの）へ照合する。種類を取り違えたもの（`llm.invoke` に判定用のモデル・`ai.decide` に chat モデル）は `ir.model_modality_mismatch`（path は `/params/model`・使えるモデルを添える）、どちらにも無いものは `ir.unknown_model`。判定用のモデルが 0 件の組織では `ai.decide` をすべて拒否する。照合の材料（組織の許可リスト）は保存 API・検証 API・AI の `emit_workflow` が同じ関数（`build_catalog_from`）で組み、種類の振り分けもその中だけで行う（保存と AI 編集で結果を変えない）。
 - **V4 参照存在**: skill（レジストリ＋インストール済み）・secret（存在＋宛先束縛がノードの `http.request` URL ホストを許容する）・テーブル/フォルダ id の実在を検証する。`workflow.start` の `name`（リテラル）は、保存者に見える既存のワークフローであること（無い名前と見えない相手は同じ `ir.unknown_workflow`・同じ文言で、path は `/params/name`。存在を明かさない・BUG-107）。保存中の IR 自身の `name` は見えるものとして扱う（自分を呼ぶ新しいワークフローを最初の保存で止めない。互いに呼び合う 2 つは、片方を相手なしで保存してから相手を足す）。材料は保存 API・検証 API・AI の `emit_workflow` が IR の名前だけを保存者の権限で引く（`workflow_start_targets`）。空の名前は照合せず、必須の欄の空（`ir.required_text_empty`）として扱う。`human.approval` は、テーブルが保存者に見えて FSM で管理され、状態の列を保存者が読めること（見えないテーブル・FSM でないテーブル・状態の列が読めないテーブルは同じ文言 `ir.unknown_table`。状態の一覧は出さない）、判断の行き先が FSM の状態であること（`ir.unknown_state`）、`show_fields` と担当者の列がテーブルの列（担当者はユーザー・部署の列）であること、`show_fields` に状態の列が無いこと（`ir.bad_show_field`。状態の列は保存者が読めるときだけ材料に入るので、読めない列の手がかりにならない）を照合する。`data.transition` のテーブル（リテラル）と、`data.transition` のイベントトリガの `scope.table` も、保存者に見えて FSM で管理され、状態の列を保存者が読めること（FSM の無いテーブルでは、ノードは実行のたびに失敗し、トリガはいつまでも起きない。見えないテーブルと同じ `ir.unknown_table` で、path はノードなら `/params/table`、トリガなら `/triggers/<i>/scope/table`。テーブルを `$from` で決めるノードは照合しない・BUG-105）。材料は保存 API（検証 API・AI の `emit_workflow` も同じ）が**保存者の見え方**（`DataStore::get_table_for_viewer`・テーブルの owner でなければ読める列だけ）で引く。読めない列は無い列と同じ `ir.unknown_field`（code・path・message が同じ。文言も「このテーブルに無いか、読めない列です」とどちらとも言わない）になり、種別の違い（`ir.bad_assignee`）も返さない（無い列と読めない列を区別させない・data-platform §16.1）。
@@ -780,6 +781,7 @@ AI 編集も dnd 保存も**同一エンドポイント・同一パイプライ�
 - **V6 script コンパイル**: inline script を swc でパースし、禁止構文を弾く（[script.md](./script.md) §3）。artifact 参照は version 固定なので存在確認のみ。
 - **V7 上限**: サイズ・数量の上限を検証する（すべて初期値・設定で調整可）。`workflow.reply` の `value` がリテラルなら形と合うこと（text・markdown は文字・table は配列・file_link はオブジェクトか配列。`ir.reply_type`・path は `/params/value`）。
 - **保存を止めない警告**（`workflow.reply`）: interactive のトリガが無い IR の reply は画面に出ない（`ir.reply_without_interactive`）。
+- **保存を止めない警告**（中の無い map）: 中にノードの無い `control.map`（`ir.empty_region`・node は map・path なし・D-85）。書きかけでも保存はできるが、有効化と実行の前に止める（§9）。文言は map のブロック名を名指しし、どの場面でも通る形（「{ブロック名}」の中にブロックがありません。1 件ごとに行う処理を中に置くまで、実行も自動実行のオンもできません。）にする。
 - **保存を止めない警告**（`ai.decide`）: しきい値が低い（`ir.decide_low_confidence`）・値で振り分ける出口が多い（`ir.decide_many_ports`）・版の固定されていないモデル名（`ir.decide_unpinned_model`）（§7.11）。
 - **保存を止めない警告**（テンプレート）: vars のキーを `{{key}}` と書いた（`ir.template_escaped_var`）・閉じの無い `{`（`ir.template_unclosed_brace`・§3.2・D-37）。
 - **保存を止めない警告**（必須の欄）: `llm.invoke` の `prompt`・`agent.invoke` の `instruction`・`rag.search` の `query`・`csv.query` の `sql`・`workflow.start` の `name`、置いたばかりのブロックの選ぶ欄と文字の欄（`control.branch` の条件の調べる値 `cmp.left`・`control.switch` の `value`・`control.map` の `items`・`ai.decide` の `model` と `state`・`storage.write` と `csv.write` の `name` と `content`・`http.request` の `url`・D-83）と、`ai.decide` の質問ごとの `instructions`（D-108）と、出口を分ける `ai.decide` のしきい値 `route.min_confidence`（既定を置かない・項目なしと null・D-88）が空（空文字・空白だけ・null・中身の無い `$template` を含む。参照は実行時まで分からないので対象外）なら `ir.required_text_empty`（path は `/params/<項目>`、調べる値は条件の中の位置 `/params/condition/…/cmp/left`、判定の問いは `/params/questions/<i>/instructions`、しきい値は `/params/route/min_confidence`）。書きかけでも保存はできるが、有効化と実行の前に止める（§9・D-43）。エディタは置いたばかりのこれらの欄を `""` で置く（入力全体を黙って入れない）。`ai.decide` の `model` と `http.request` の `url` は、空なら V1 の照合（モデルの必須・URL の形）もしない（値を入れた後の保存で照合する）。文言は欄の見出しを名指しし、どの場面でも通る形（「{見出し}」が空です。入れるまで（選ぶ欄は選ぶまで）、実行も自動実行のオンもできません。）にする。
@@ -814,6 +816,7 @@ AI 編集も dnd 保存も**同一エンドポイント・同一パイプライ�
 - **scope 拡大時の再同意**: 新 version の `declared_scopes` が旧版より広がった場合、有効化済みワークフローは再同意が済むまで新版へ切替不可（§2・fail-closed）。縮小のみなら差分同意なしで切替可能（同意フローの UI 契約は [engine.md](./engine.md) §10）。
 - **有効化と実行の前の確認**（保存は止めない・D-40・D-43）: 次の版は有効化できない（enable は委譲を書く前に 409 `not_ready` で全件の理由を返し、同意計画も同じ理由を `blockers` で返す）。
   - 必須の文字の欄が空（§8 の `ir.required_text_empty`）。対話の起動（API・会話の図・ミニアプリ・`workflow.start`）も run を作らずに断る（400 `not_ready`）。
+  - 中にノードの無い `control.map`（§8 の `ir.empty_region`・§5.3・D-85）。対話の起動も同じく断る。
   - schedule / event のきっかけを持つ版で、`folder` を省略した（または null の）`storage.write`・`csv.write`（`ir.write_folder_required`）。省略はルートへの保存で、schedule / event の run はワークフロー主体で動くのでルートには書けず、フォルダの委譲でも救えない。対話だけの版は止めない（起動した本人のルートに書ける）。
   - 同じく、`folder` を省略した（または null の）`storage.list`（`ir.list_folder_required`・D-83）。ワークフロー主体はルートを一覧できない。対話だけの版は止めない。
 
