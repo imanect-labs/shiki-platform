@@ -329,7 +329,7 @@ struct TestEnv {
     deps: Arc<PipelineDeps>,
     ctx: AuthContext,
     _tmp: tempfile::TempDir,
-    /// outbox（共有テーブル）を触るため、バイナリ内のテストを直列化するガード。
+    /// 取り込みのキューの消費（`consume_once`）は全テナントのジョブを取るので、バイナリ内のテストを直列化するガード。
     _serial: tokio::sync::MutexGuard<'static, ()>,
 }
 
@@ -366,12 +366,9 @@ async fn setup(parser: FakeParser) -> Option<TestEnv> {
         .expect("Postgres へ接続できること");
     sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
 
-    // テスト分離: テナントをテストごとに一意化し、他テストの outbox 残骸と混ざらないよう
-    // 未処理イベントを掃除する（このテストは relay を自分で駆動する）。
-    sqlx::query("update storage_event_outbox set processed_at = now() where processed_at is null")
-        .execute(&pool)
-        .await
-        .unwrap();
+    // テスト分離: テナントをテストごとに一意化し、relay は自分のテナントの outbox だけを流す
+    // （`relay_tenant_once`）。ほかのテストのテナントの未処理のイベントには触れない（以前は全テナントの未処理の
+    // イベントを処理済みにしていて、並行に走るほかのテストの取り込みを横取りしていた・BUG-159）。
 
     let tmp = tempfile::tempdir().unwrap();
     let tenant = format!("t-{}", Uuid::new_v4().simple());
@@ -505,26 +502,39 @@ async fn create_folder(env: &TestEnv, name: &str) -> Uuid {
 /// relay → consumer を、キューが空になるまで回す。
 async fn drain_pipeline(env: &TestEnv) {
     for _ in 0..20 {
-        // バックオフ待ちのリトライも即時消費し、drain を決定的にする（テスト専用）。
-        sqlx::query("update job_queue set visible_at = now() where queue = 'rag_ingest'")
-            .execute(&env.pool)
-            .await
-            .unwrap();
-        relay::relay_once(&env.pool, &env.deps.config)
+        // バックオフ待ちのリトライも即時消費し、drain を決定的にする（テスト専用・自分のテナントのジョブだけ）。
+        make_jobs_visible(env).await;
+        relay::relay_tenant_once(&env.pool, &env.deps.config, &env.ctx.tenant_id)
             .await
             .unwrap();
         let n = consumer::consume_once(&env.deps).await.unwrap();
         if n == 0 {
-            let queued: i64 = sqlx::query_scalar("select count(*) from job_queue where queue = $1")
-                .bind(RAG_INGEST_QUEUE)
-                .fetch_one(&env.pool)
-                .await
-                .unwrap();
+            let queued = queued_jobs(env).await;
             if queued == 0 {
                 return;
             }
         }
     }
+}
+
+/// 自分のテナントの取り込みのジョブを、バックオフを待たずに取れるようにする（ほかのテナントのジョブは変えない）。
+async fn make_jobs_visible(env: &TestEnv) {
+    sqlx::query("update job_queue set visible_at = now() where queue = $1 and tenant_id = $2")
+        .bind(RAG_INGEST_QUEUE)
+        .bind(&env.ctx.tenant_id)
+        .execute(&env.pool)
+        .await
+        .unwrap();
+}
+
+/// 自分のテナントの取り込みのジョブの数（ほかのテストのジョブは数えない）。
+async fn queued_jobs(env: &TestEnv) -> i64 {
+    sqlx::query_scalar("select count(*) from job_queue where queue = $1 and tenant_id = $2")
+        .bind(RAG_INGEST_QUEUE)
+        .bind(&env.ctx.tenant_id)
+        .fetch_one(&env.pool)
+        .await
+        .unwrap()
 }
 
 async fn job_status(env: &TestEnv, node: Uuid, op: &str) -> Option<(String, Option<String>)> {
@@ -701,16 +711,12 @@ async fn transient_failures_retry_until_attempts_exhausted() {
     };
     let node = create_file_with_event(&env, None, "flaky.txt").await;
 
-    relay::relay_once(&env.pool, &env.deps.config)
+    relay::relay_tenant_once(&env.pool, &env.deps.config, &env.ctx.tenant_id)
         .await
         .unwrap();
     // 1 回目: 失敗 → バックオフ再配信待ち。バックオフを 0 に潰して即再試行できるようにする。
     consumer::consume_once(&env.deps).await.unwrap();
-    sqlx::query("update job_queue set visible_at = now() where queue = $1")
-        .bind(RAG_INGEST_QUEUE)
-        .execute(&env.pool)
-        .await
-        .unwrap();
+    make_jobs_visible(&env).await;
     // 2 回目: attempts=2 >= max_attempts=2 → DLQ。
     consumer::consume_once(&env.deps).await.unwrap();
 
@@ -1102,12 +1108,7 @@ async fn headings_only_document_succeeds_without_vectors() {
     // 埋め込み対象ゼロでも失敗せず succeeded（dimension=0 の collection 初期化を避ける）。
     let (status, err) = job_status(&env, node, "create").await.unwrap();
     assert_eq!(status, "succeeded", "err={err:?}");
-    let queued: i64 = sqlx::query_scalar("select count(*) from job_queue where queue = $1")
-        .bind(RAG_INGEST_QUEUE)
-        .fetch_one(&env.pool)
-        .await
-        .unwrap();
-    assert_eq!(queued, 0, "リトライ/DLQ に落ちない");
+    assert_eq!(queued_jobs(&env).await, 0, "リトライ/DLQ に落ちない");
 }
 
 /// システム領域（`node.system`・#392）の書込は `rag_ingest` へ relay されない。
@@ -1128,7 +1129,8 @@ async fn system_area_writes_are_not_indexed() {
         .await
         .unwrap();
 
-    relay::relay_once(&env.pool, &env.deps.config)
+    // 本番の relay（`relay_once`）と同じ本体を、自分のテナントに絞って流す。
+    relay::relay_tenant_once(&env.pool, &env.deps.config, &env.ctx.tenant_id)
         .await
         .unwrap();
 
@@ -1165,4 +1167,66 @@ async fn system_area_writes_are_not_indexed() {
     .unwrap();
     assert_eq!(total, 1, "スキップしても outbox 行は残る（削除しない）");
     assert_eq!(unprocessed, 0, "relay がスキップした行も processed になる");
+}
+
+/// 結合テストの relay は自分のテナントの outbox だけを流し、ほかのテナントの未処理のイベントを処理済みにしない
+/// （並行に走るほかのテストの取り込みを横取りしない・BUG-159）。ほかのテナントのイベントは setup の前にも後にも積む。
+#[tokio::test]
+async fn relay_leaves_other_tenants_unprocessed_events_alone() {
+    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+        return;
+    };
+    let other_pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&db_url)
+        .await
+        .unwrap();
+    sqlx::migrate!("../../migrations")
+        .run(&other_pool)
+        .await
+        .unwrap();
+    let other = format!("t-{}", Uuid::new_v4().simple());
+    let foreign_event = || async {
+        sqlx::query_scalar::<_, i64>(
+            "insert into storage_event_outbox (org, tenant_id, node_id, version, op, actor, payload) \
+             values ('acme', $1, $2, 1, 'create', 'tester', '{}'::jsonb) returning id",
+        )
+        .bind(&other)
+        .bind(Uuid::new_v4())
+        .fetch_one(&other_pool)
+        .await
+        .unwrap()
+    };
+    let before = foreign_event().await;
+    let Some(env) = setup(FakeParser::ok()).await else {
+        return;
+    };
+    let after = foreign_event().await;
+    let node = create_file_with_event(&env, None, "mine.txt").await;
+    drain_pipeline(&env).await;
+
+    let (status, err) = job_status(&env, node, "create").await.unwrap();
+    assert_eq!(
+        status, "succeeded",
+        "自分のテナントのイベントは取り込む: {err:?}"
+    );
+    let unprocessed: i64 = sqlx::query_scalar(
+        "select count(*) from storage_event_outbox where id = any($1) and processed_at is null",
+    )
+    .bind(vec![before, after])
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        unprocessed, 2,
+        "ほかのテナントの未処理のイベントは処理済みにしない"
+    );
+
+    sqlx::query("delete from storage_event_outbox where tenant_id = $1")
+        .bind(&other)
+        .execute(&other_pool)
+        .await
+        .unwrap();
+    purge_tenant(&env).await;
 }

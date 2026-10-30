@@ -195,25 +195,50 @@ pub struct OutboxEvent {
     pub system: bool,
 }
 
+/// [`claim`] と [`claim_tenant`] の SQL（`$1` は件数・`$filter` は未処理の条件に足す絞り込み）。
+macro_rules! claim_sql {
+    ($filter:literal) => {
+        concat!(
+            "SELECT o.id, o.org, o.tenant_id, o.node_id, o.version, o.op, o.actor, o.trace_id, \
+                    o.payload, o.created_at, coalesce(n.system, false) AS system \
+             FROM storage_event_outbox o \
+             LEFT JOIN node n ON n.id = o.node_id \
+             WHERE o.processed_at IS NULL ",
+            $filter,
+            "ORDER BY o.id \
+             FOR UPDATE OF o SKIP LOCKED \
+             LIMIT $1"
+        )
+    };
+}
+
 /// 未処理イベントを FIFO で `limit` 件まで取り出す（**呼び出し側の txn 上で**）。
 ///
 /// `FOR UPDATE SKIP LOCKED` で同時消費者が同じ行を二重に掴まないようにする。掴んだ行は
 /// 同一 txn 内で処理 → [`mark_processed`] → commit する。commit 前に失敗すればロックが解放され
 /// **未処理のまま再配信**される（at-least-once）。
 pub async fn claim(conn: &mut PgConnection, limit: i64) -> Result<Vec<OutboxEvent>, StorageError> {
-    let rows: Vec<OutboxRow> = sqlx::query_as(
-        "SELECT o.id, o.org, o.tenant_id, o.node_id, o.version, o.op, o.actor, o.trace_id, \
-                o.payload, o.created_at, coalesce(n.system, false) AS system \
-         FROM storage_event_outbox o \
-         LEFT JOIN node n ON n.id = o.node_id \
-         WHERE o.processed_at IS NULL \
-         ORDER BY o.id \
-         FOR UPDATE OF o SKIP LOCKED \
-         LIMIT $1",
-    )
-    .bind(limit)
-    .fetch_all(conn)
-    .await?;
+    let rows: Vec<OutboxRow> = sqlx::query_as(claim_sql!(""))
+        .bind(limit)
+        .fetch_all(conn)
+        .await?;
+    Ok(rows.into_iter().map(OutboxRow::into_event).collect())
+}
+
+/// [`claim`] を 1 テナントのイベントに絞る（ほかのテナントの未処理のイベントは掴まない）。
+///
+/// 本番の消費者は全テナントを [`claim`] で流す。これは、共有のデータベースで relay を自分で回す結合テストが、
+/// ほかのテストのテナントのイベントを処理済みにしないために使う（BUG-159）。
+pub async fn claim_tenant(
+    conn: &mut PgConnection,
+    tenant_id: &str,
+    limit: i64,
+) -> Result<Vec<OutboxEvent>, StorageError> {
+    let rows: Vec<OutboxRow> = sqlx::query_as(claim_sql!("AND o.tenant_id = $2 "))
+        .bind(limit)
+        .bind(tenant_id)
+        .fetch_all(conn)
+        .await?;
     Ok(rows.into_iter().map(OutboxRow::into_event).collect())
 }
 

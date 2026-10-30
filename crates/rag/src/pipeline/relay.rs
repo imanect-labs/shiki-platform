@@ -16,8 +16,31 @@ const RELAY_BATCH: i64 = 64;
 
 /// outbox を 1 バッチ処理する。転送した件数を返す。
 pub async fn relay_once(pool: &PgPool, config: &RagConfig) -> Result<usize, RagError> {
+    relay_batch(pool, config, None).await
+}
+
+/// [`relay_once`] を 1 テナントの outbox に絞る（ほかのテナントの未処理のイベントは処理済みにしない）。
+///
+/// 本番の relay は全テナントを [`relay_once`] で流す。これは、共有のデータベースで relay を自分で回す結合テストが、
+/// ほかのテストのテナントのイベントに触れないために使う（BUG-159）。
+pub async fn relay_tenant_once(
+    pool: &PgPool,
+    config: &RagConfig,
+    tenant_id: &str,
+) -> Result<usize, RagError> {
+    relay_batch(pool, config, Some(tenant_id)).await
+}
+
+async fn relay_batch(
+    pool: &PgPool,
+    config: &RagConfig,
+    tenant_id: Option<&str>,
+) -> Result<usize, RagError> {
     let mut tx = pool.begin().await?;
-    let events = storage::event::claim(&mut tx, RELAY_BATCH).await?;
+    let events = match tenant_id {
+        Some(t) => storage::event::claim_tenant(&mut tx, t, RELAY_BATCH).await?,
+        None => storage::event::claim(&mut tx, RELAY_BATCH).await?,
+    };
     if events.is_empty() {
         return Ok(0);
     }
