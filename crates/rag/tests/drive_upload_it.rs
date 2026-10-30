@@ -2,8 +2,9 @@
 //!
 //! pipeline_it が DB 直挿入で経路を検証するのに対し、本テストは実サービスの
 //! declare → **presigned PUT（実 RustFS）** → finalize → outbox → relay → consumer
-//! → 索引 → SearchService（実 OpenFGA の二段 authz）を通し、パーサも
-//! **内部 presigned GET で実際に blob を読む**（IndexerStorage の presign 経路の実証）。
+//! → 索引 → SearchService（実 OpenFGA の二段 authz）を通し、blob を実際に読む。文章のファイルは取り込みが
+//! IndexerStorage で実 RustFS から読んで UTF-8 にしたバイト列を、PDF などはパーサが**内部 presigned GET** で
+//! 読んだ原本を使う（IndexerStorage の読み取りと presign の両方の経路の実証・D-118）。
 //!
 //! `STORAGE_TEST_DATABASE_URL` / `OPENFGA_TEST_URL` /（任意）`STORAGE_TEST_S3_ENDPOINT`
 //! が揃った時のみ実行（CI coverage で実走）。
@@ -13,6 +14,8 @@
 //! - authz_tags に**実 closure 由来の祖先フォルダ**が乗る（中間フォルダ共有で子孫が見える）
 //! - 実 API のフォルダ move → 子孫ファイルのタグが付け替わる
 //! - 実 API のファイル削除 → 検索から消える
+//! - 文章のファイル（Shift_JIS・BOM 付きの UTF-8・Windows の `.csv` の MIME）は、取り込みが文字コードを決めて
+//!   UTF-8 にしたバイト列で渡し（D-118）、PDF などは presigned GET で渡す
 
 // テストコード: pedantic/安全系 lint は本番コードのみ厳格化する方針のため許容する。
 #![allow(
@@ -27,7 +30,7 @@
 
 mod common;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -48,8 +51,23 @@ use uuid::Uuid;
 
 /// **presigned GET を実際に fetch** して本文をブロック化するパーサ
 /// （IndexerStorage → オブジェクトストア内部署名 URL の経路を実証する）。
+///
+/// 文章のファイルは、取り込みが中身を読んで UTF-8 にしたバイト列（`ParseSource::Bytes`）で渡す（D-118）。どちらの
+/// 渡し方でも、worker（Docling の CSV・Markdown）と同じく UTF-8 として厳密に読み、読めなければパースの失敗にする。
+/// 受け取った渡し方・種類・本文はファイル名ごとに残す（テストが確かめる）。
 struct FetchingParser {
     http: reqwest::Client,
+    seen: Mutex<Vec<Seen>>,
+}
+
+/// パーサが受け取ったもの。
+#[derive(Debug, Clone)]
+struct Seen {
+    file_name: String,
+    /// `url`（presigned GET）か `bytes`（取り込みが読んだ中身）。
+    source: &'static str,
+    content_type: String,
+    text: String,
 }
 
 #[async_trait]
@@ -59,20 +77,29 @@ impl DocumentParser for FetchingParser {
         _ctx: &AuthContext,
         req: ParseRequest<'_>,
     ) -> Result<ParsedDocument, RagError> {
-        // インジェスト経路は presigned URL を渡す（ParseSource::Url が正）。
-        let rag::ParseSource::Url(source_url) = req.source else {
-            return Err(RagError::Worker(
-                "インジェストは presigned URL で渡すこと".into(),
-            ));
+        let (source, bytes) = match req.source {
+            rag::ParseSource::Url(source_url) => {
+                let resp = self.http.get(source_url).send().await?;
+                if !resp.status().is_success() {
+                    return Err(RagError::Worker(format!(
+                        "presigned GET が失敗: {}",
+                        resp.status()
+                    )));
+                }
+                ("url", resp.bytes().await?.to_vec())
+            }
+            rag::ParseSource::Bytes(bytes) => ("bytes", bytes.to_vec()),
         };
-        let resp = self.http.get(source_url).send().await?;
-        if !resp.status().is_success() {
-            return Err(RagError::Worker(format!(
-                "presigned GET が失敗: {}",
-                resp.status()
-            )));
-        }
-        let text = resp.text().await?;
+        let text = String::from_utf8(bytes).map_err(|e| RagError::Parse {
+            code: "parse_failed".into(),
+            detail: format!("UTF-8 として読めません: {e}"),
+        })?;
+        self.seen.lock().unwrap().push(Seen {
+            file_name: req.file_name.to_string(),
+            source,
+            content_type: req.content_type.to_string(),
+            text: text.clone(),
+        });
         let blocks = text
             .split("\n\n")
             .filter(|p| !p.trim().is_empty())
@@ -97,9 +124,13 @@ struct Env {
     service: StorageService,
     http: reqwest::Client,
     deps: Arc<PipelineDeps>,
+    parser: Arc<FetchingParser>,
     search: SearchService,
     alice: AuthContext,
     bob: AuthContext,
+    /// テストのストア（後片付けで消す）。
+    fga_url: String,
+    store_id: String,
     _tmp: tempfile::TempDir,
     _serial: tokio::sync::MutexGuard<'static, ()>,
 }
@@ -156,13 +187,14 @@ async fn setup() -> Option<Env> {
     let fga = OpenFgaClient::connect(
         http.clone(),
         &OpenFgaConfig {
-            base_url: fga_url,
+            base_url: fga_url.clone(),
             store_name: format!("shiki-drive-it-{}", Uuid::new_v4()),
         },
         &authz::model::default_model(),
     )
     .await
     .expect("OpenFGA へ接続できること");
+    let store_id = fga.store_id().to_string();
     let authz: Arc<dyn AuthzClient> = Arc::new(fga);
 
     let s3 = S3Config {
@@ -207,10 +239,14 @@ async fn setup() -> Option<Env> {
     };
     let vector = Arc::new(FakeVectorStore::default());
     let fulltext = Arc::new(TantivyFulltext::new(tmp.path()));
+    let parser = Arc::new(FetchingParser {
+        http: http.clone(),
+        seen: Mutex::new(Vec::new()),
+    });
     let deps = Arc::new(PipelineDeps {
         pool: pool.clone(),
         config: config.clone(),
-        parser: Arc::new(FetchingParser { http: http.clone() }),
+        parser: Arc::clone(&parser) as _,
         embedder: Arc::new(FakeEmbedder),
         vector: Arc::clone(&vector) as _,
         fulltext: Arc::clone(&fulltext) as _,
@@ -231,9 +267,12 @@ async fn setup() -> Option<Env> {
         service,
         http,
         deps,
+        parser,
         search,
         alice,
         bob,
+        fga_url,
+        store_id,
         _tmp: tmp,
         _serial: serial,
     })
@@ -241,14 +280,24 @@ async fn setup() -> Option<Env> {
 
 /// 実 API: declare → presigned PUT（実 RustFS）→ finalize。
 async fn upload(env: &Env, parent: Option<Uuid>, name: &str, content: &str) -> Node {
-    let bytes = content.as_bytes();
+    upload_bytes(env, parent, name, content.as_bytes(), "text/plain").await
+}
+
+/// [`upload`] の中身と種類を決められる版（ブラウザーが付けた MIME のまま保存する）。
+async fn upload_bytes(
+    env: &Env,
+    parent: Option<Uuid>,
+    name: &str,
+    bytes: &[u8],
+    content_type: &str,
+) -> Node {
     let ticket = env
         .service
         .begin_upload(
             &env.alice,
             parent,
             name,
-            "text/plain",
+            content_type,
             &sha256_hex(bytes),
             bytes.len() as i64,
             None,
@@ -440,4 +489,107 @@ async fn real_folder_move_retags_descendants_and_delete_hides() {
         .unwrap();
     drain(&env).await;
     assert!(hit_files(&env, &env.alice, "議事録").await.is_empty());
+}
+
+/// テナントの行・タプル・オブジェクトと、テストのストアを消す（落ちても後片付けをしてから結果を返す）。
+async fn cleanup(env: &Env) {
+    let tenant = env.alice.tenant_id.clone();
+    env.service
+        .purge_tenant(&tenant, &env.alice.org, "drive-upload-it")
+        .await
+        .unwrap();
+    let resp = env
+        .http
+        .delete(format!("{}/stores/{}", env.fga_url, env.store_id))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        resp.status().is_success(),
+        "delete store: {}",
+        resp.status()
+    );
+}
+
+/// 日本語の Windows で作った文章のファイルが、文字化けせずに索引に入り、検索に出る（GAP-46・D-118）。
+///
+/// - Shift_JIS のテキスト（メモ帳・古いシステムの書き出し）
+/// - BOM 付きの UTF-8 の CSV（Excel の「CSV UTF-8」）。先頭の U+FEFF を本文に残さない
+/// - Excel を入れた Windows のブラウザーが `application/vnd.ms-excel` を付けた Shift_JIS の `.csv`（Excel の既定）
+///
+/// 文章のファイルは、取り込みが実 RustFS から中身を読み、文字コードを決めて UTF-8 にしたバイト列で worker へ渡す。
+/// PDF などの文章でない種類は、これまでどおり presigned GET で渡す。
+#[tokio::test]
+async fn japanese_encodings_are_indexed_as_utf8_and_found_by_search() {
+    let Some(env) = setup().await else { return };
+    let outcome = {
+        let env = &env;
+        async move {
+            let sjis_text = "出張旅費の精算は翌月5日までに申請する。";
+            let (sjis, _, _) = textenc::encoding_rs::SHIFT_JIS.encode(sjis_text);
+            let notice = upload_bytes(env, None, "旅費規程.txt", &sjis, "text/plain").await;
+
+            let bom_csv = "区分,金額\n宿泊,12000\n";
+            let bom = [b"\xEF\xBB\xBF".as_slice(), bom_csv.as_bytes()].concat();
+            let utf8_csv = upload_bytes(env, None, "宿泊費.csv", &bom, "text/csv").await;
+
+            let excel_csv = "勘定科目,支払額\n接待,8000\n";
+            let (excel, _, _) = textenc::encoding_rs::SHIFT_JIS.encode(excel_csv);
+            let excel_node =
+                upload_bytes(env, None, "交際費.csv", &excel, "application/vnd.ms-excel").await;
+
+            // 本物の .xls は取り込まない（名前が .csv のときだけ CSV として扱う）。
+            let xls =
+                upload_bytes(env, None, "古い表.xls", &excel, "application/vnd.ms-excel").await;
+
+            let pdf_text = "慶弔見舞金の規程。";
+            let pdf = upload_bytes(
+                env,
+                None,
+                "慶弔規程.pdf",
+                pdf_text.as_bytes(),
+                "application/pdf",
+            )
+            .await;
+            drain(env).await;
+
+            let seen = env.parser.seen.lock().unwrap().clone();
+            let find = |name: &str| {
+                seen.iter()
+                    .find(|s| s.file_name == name)
+                    .cloned()
+                    .unwrap_or_else(|| panic!("{name} がパーサに渡っていない: {seen:?}"))
+            };
+            let s = find("旅費規程.txt");
+            assert_eq!((s.source, s.text.as_str()), ("bytes", sjis_text));
+            let s = find("宿泊費.csv");
+            assert_eq!((s.source, s.text.as_str()), ("bytes", bom_csv));
+            assert!(!s.text.starts_with('\u{FEFF}'), "BOM を本文に残さない");
+            let s = find("交際費.csv");
+            assert_eq!(
+                (s.source, s.content_type.as_str(), s.text.as_str()),
+                ("bytes", "text/csv", excel_csv)
+            );
+            let s = find("慶弔規程.pdf");
+            assert_eq!((s.source, s.text.as_str()), ("url", pdf_text));
+            assert!(
+                !seen.iter().any(|s| s.file_name == "古い表.xls"),
+                "本物の .xls は取り込まない: {seen:?}"
+            );
+
+            assert_eq!(hit_files(env, &env.alice, "出張").await, vec![notice.id]);
+            assert_eq!(hit_files(env, &env.alice, "宿泊").await, vec![utf8_csv.id]);
+            assert_eq!(
+                hit_files(env, &env.alice, "接待").await,
+                vec![excel_node.id]
+            );
+            assert_eq!(hit_files(env, &env.alice, "慶弔").await, vec![pdf.id]);
+            let _ = xls;
+        }
+    };
+    let result = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(outcome)).await;
+    cleanup(&env).await;
+    if let Err(panic) = result {
+        std::panic::resume_unwind(panic);
+    }
 }

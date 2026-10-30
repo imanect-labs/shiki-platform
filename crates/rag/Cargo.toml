@@ -13,6 +13,8 @@ name = "rag"
 shiki-authz.workspace = true
 shiki-storage.workspace = true
 shiki-jobq.workspace = true
+# 文章のファイルを worker へ渡す前に文字コードを決めて UTF-8 にする（判定は textenc の 1 か所・D-118）。
+shiki-textenc.workspace = true
 
 tokio.workspace = true
 sqlx.workspace = true
@@ -52,7 +54,7 @@ shiki-data.workspace = true
 # shiki-authz/storage/jobq は lib 名 `authz`/`storage`/`jobq` で参照するため
 # cargo-machete が誤検出する（実際は使用中）。
 [package.metadata.cargo-machete]
-ignored = ["shiki-authz", "shiki-storage", "shiki-jobq", "shiki-data"]
+ignored = ["shiki-authz", "shiki-storage", "shiki-jobq", "shiki-data", "shiki-textenc"]
 
 [lints]
 workspace = true

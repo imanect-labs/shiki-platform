@@ -251,7 +251,7 @@ impl VectorStore for FakeVectorStore {
     }
 }
 
-/// presign だけ機能するフェイク ObjectStore（バイトは FakeParser が読まないため不要）。
+/// presign と読み取りだけ機能するフェイク ObjectStore（中身は FakeParser が読まないので決まった文章）。
 struct FakeObjectStore;
 
 #[async_trait]
@@ -295,7 +295,9 @@ impl ObjectStore for FakeObjectStore {
         unreachable!("テストでは使わない")
     }
     async fn get_object(&self, _key: &str) -> Result<Vec<u8>, ObjectStoreError> {
-        unreachable!("テストでは使わない")
+        // 文章のファイル（text/plain）は、取り込みが中身を読んで UTF-8 にしてから渡す（D-118）。フェイクのパーサは
+        // 中身を見ないので、読める短い文章を返す。
+        Ok("四半期の報告。".as_bytes().to_vec())
     }
     async fn exists(&self, _key: &str) -> Result<bool, ObjectStoreError> {
         Ok(true)

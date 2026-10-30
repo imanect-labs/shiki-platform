@@ -5622,6 +5622,7 @@ dependencies = [
  "shiki-data",
  "shiki-jobq",
  "shiki-storage",
+ "shiki-textenc",
  "sqlx",
  "tantivy",
  "tempfile",

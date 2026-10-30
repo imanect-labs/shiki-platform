@@ -18,6 +18,7 @@ use authz::{AuthContext, Principal};
 use uuid::Uuid;
 
 use super::job_state::{begin_job, finish_job};
+use super::text_source::{is_text_type, text_for_worker, TextForWorker};
 use super::{IngestMessage, PipelineDeps};
 use crate::chunker::{chunk_document, ChunkParams};
 use crate::embedding::EmbedInput;
@@ -45,8 +46,11 @@ const SUPPORTED_TYPES: &[&str] = &[
 /// 取り込める種類なら、パラメーターを除いた小文字の MIME（取り込めない種類・種類が無いなら `None`）。
 ///
 /// 取り込み（[`handle`]）と、索引にまだ本文が無い理由の判定（[`crate::SearchService::index_state`]）が使う。
+/// MIME はブラウザーが付けた値をそのまま保存しているので、Excel を入れた Windows のブラウザーが `.csv` に付ける
+/// `application/vnd.ms-excel` は、名前が `.csv` で終わるときだけ CSV（`text/csv`）として扱う（中身が文章で
+/// なければ、取り込みの文字コードの判定で断る・D-118）。本物の `.xls` は取り込まない。
 #[must_use]
-pub fn parsable_type(content_type: Option<&str>) -> Option<String> {
+pub fn parsable_type(content_type: Option<&str>, file_name: &str) -> Option<String> {
     let base = content_type
         .unwrap_or("")
         .split(';')
@@ -54,7 +58,13 @@ pub fn parsable_type(content_type: Option<&str>) -> Option<String> {
         .unwrap_or("")
         .trim()
         .to_ascii_lowercase();
-    SUPPORTED_TYPES.contains(&base.as_str()).then_some(base)
+    if SUPPORTED_TYPES.contains(&base.as_str()) {
+        return Some(base);
+    }
+    let csv_name = file_name
+        .rsplit_once('.')
+        .is_some_and(|(stem, ext)| !stem.is_empty() && ext.eq_ignore_ascii_case("csv"));
+    (base == "application/vnd.ms-excel" && csv_name).then(|| "text/csv".to_string())
 }
 
 /// ジョブの結果（ログ・rag_ingest_job の status に対応）。
@@ -179,7 +189,7 @@ async fn index_node(
     if message.version < snapshot.content_version {
         return Ok(IndexOutcome::Skipped("superseded"));
     }
-    let Some(base_type) = parsable_type(snapshot.content_type.as_deref()) else {
+    let Some(base_type) = parsable_type(snapshot.content_type.as_deref(), &snapshot.name) else {
         return Ok(IndexOutcome::Skipped("unsupported-type"));
     };
     if snapshot.size_bytes.unwrap_or(0) > deps.config.max_parse_bytes {
@@ -189,17 +199,34 @@ async fn index_node(
         return Ok(IndexOutcome::Skipped("no-blob"));
     };
 
-    // parse（worker への blob 受け渡しは内部向け・短 TTL presigned GET）。
-    let source_url = deps
-        .indexer_storage
-        .presign_internal_get(&ctx.tenant_id, &ctx.org, blob_sha256)
-        .await?;
+    // parse。文章のファイルは、文字コードを決めて UTF-8 にしたバイト列を渡す（worker に判定を持たせない・D-118）。
+    // ほかの種類（PDF・Office など）は、worker が内部向け・短 TTL の presigned GET で原本を読む。
+    let text = if is_text_type(&base_type) {
+        let bytes = deps
+            .indexer_storage
+            .read_blob(&ctx.tenant_id, &ctx.org, blob_sha256)
+            .await?;
+        text_for_worker(&bytes, &base_type, deps.config.max_parse_bytes)?
+    } else {
+        TextForWorker::Original
+    };
+    let source_url;
+    let source = match &text {
+        TextForWorker::Utf8(body) => ParseSource::Bytes(body),
+        TextForWorker::Original => {
+            source_url = deps
+                .indexer_storage
+                .presign_internal_get(&ctx.tenant_id, &ctx.org, blob_sha256)
+                .await?;
+            ParseSource::Url(&source_url)
+        }
+    };
     let parsed = deps
         .parser
         .parse(
             ctx,
             ParseRequest {
-                source: ParseSource::Url(&source_url),
+                source,
                 content_type: &base_type,
                 file_name: &snapshot.name,
             },
@@ -440,4 +467,32 @@ async fn replace_fulltext(
     })
     .await
     .map_err(|e| RagError::Fulltext(format!("spawn_blocking: {e}")))?
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parsable_type;
+
+    /// Excel を入れた Windows のブラウザーが `.csv` に付ける MIME は、名前が `.csv` のときだけ CSV として取り込む
+    /// （本物の `.xls` は取り込まない・D-118）。
+    #[test]
+    fn ms_excel_csv_is_parsed_as_csv() {
+        let ms_excel = Some("application/vnd.ms-excel");
+        assert_eq!(
+            parsable_type(ms_excel, "経費.csv").as_deref(),
+            Some("text/csv")
+        );
+        assert_eq!(
+            parsable_type(ms_excel, "経費.CSV").as_deref(),
+            Some("text/csv")
+        );
+        assert_eq!(parsable_type(ms_excel, "経費.xls"), None);
+        assert_eq!(parsable_type(ms_excel, ".csv"), None);
+        assert_eq!(
+            parsable_type(Some("text/csv; charset=shift_jis"), "a.csv").as_deref(),
+            Some("text/csv")
+        );
+        assert_eq!(parsable_type(Some("image/png"), "a.csv"), None);
+        assert_eq!(parsable_type(None, "a.csv"), None);
+    }
 }

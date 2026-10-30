@@ -100,7 +100,7 @@ impl SearchService {
         ctx: &AuthContext,
         node: &storage::Node,
     ) -> Result<IndexState, RagError> {
-        if parsable_type(node.content_type.as_deref()).is_none() {
+        if parsable_type(node.content_type.as_deref(), &node.name).is_none() {
             return Ok(IndexState::Unsupported);
         }
         if node.size_bytes.unwrap_or(0) > self.config.max_parse_bytes {

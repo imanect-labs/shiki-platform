@@ -136,6 +136,20 @@ impl IndexerStorage {
         Ok(files)
     }
 
+    /// 文章のファイルの blob を読む（取り込みが文字コードを決めて UTF-8 にしてから worker へ渡す・D-118）。
+    ///
+    /// 発行する presigned GET と同じ blob を、同じ tenant/org の鍵で読むだけ（読む範囲は変わらない）。大きさは
+    /// 呼び出し側が取り込みの上限（`max_parse_bytes`）で先に確かめる。
+    pub async fn read_blob(
+        &self,
+        tenant_id: &str,
+        org: &str,
+        blob_sha256: &str,
+    ) -> Result<Vec<u8>, StorageError> {
+        let key = blob_object_key(tenant_id, org, blob_sha256);
+        Ok(self.store.get_object(&key).await?)
+    }
+
     /// worker が blob を読むための**内部向け**短 TTL presigned GET URL を発行する。
     pub async fn presign_internal_get(
         &self,
