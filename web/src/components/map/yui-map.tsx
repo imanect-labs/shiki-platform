@@ -7,7 +7,7 @@
 
 import * as React from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
-import { ExternalLink, LocateFixed, Maximize2, Minus, Navigation, Plus, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, ExternalLink, LocateFixed, Maximize2, Minus, Navigation, Plus, X } from "lucide-react";
 import { useTheme } from "next-themes";
 import type { MapFigure } from "@imanect/yui";
 
@@ -99,7 +99,8 @@ function MapCard({ figure, config, onFail }: { figure: MapFigure; config: MapCon
               href={directions}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 font-medium text-foreground underline-offset-2 hover:underline"
+              // スマホでも押しやすいよう、見た目を変えずに押せる範囲を上下に広げる。
+              className="-mx-1 inline-flex items-center gap-1 rounded px-1 py-0.5 font-medium text-foreground underline-offset-2 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:-my-2 pointer-coarse:py-2.5"
             >
               <Navigation className="size-3" aria-hidden />
               Google マップで経路を見る
@@ -336,8 +337,10 @@ function PlaceList({
     list.current?.querySelector<HTMLElement>(`[data-index="${next}"] button`)?.focus();
   };
   const folded = !floating && !showAll && total > GRID_LIMIT;
+  const page = (dir: 1 | -1) => list.current?.scrollBy({ left: dir * list.current.clientWidth * 0.8, behavior: "smooth" });
   return (
-    <div className={className}>
+    <div className={cn("relative", className)}>
+      {floating ? <CarouselArrows target={list} onPage={page} /> : null}
       <div
         ref={list}
         role="list"
@@ -357,7 +360,7 @@ function PlaceList({
               role="listitem"
               data-index={i}
               className={cn(
-                "group relative flex shrink-0 snap-start items-start gap-2.5 rounded-xl border p-3 text-left transition-colors duration-[var(--duration-fast)] ease-[var(--ease-standard)]",
+                "group/card relative flex shrink-0 snap-start items-start gap-2.5 rounded-xl border p-3 text-left transition-colors duration-[var(--duration-fast)] ease-[var(--ease-standard)]",
                 // カルーセルでは次のカードの端を見せて、横に続くことが分かるようにする。
                 single ? "w-full" : floating ? "w-[min(15rem,80%)]" : "w-[min(14rem,78%)] sm:w-auto",
                 folded && i >= GRID_LIMIT && "sm:hidden",
@@ -382,7 +385,7 @@ function PlaceList({
                 className="min-w-0 flex-1 text-left outline-none after:absolute after:inset-0 after:rounded-xl focus-visible:after:ring-2 focus-visible:after:ring-ring"
               >
                 <span className="block truncate text-[13px] font-semibold leading-5 text-foreground">{m.label}</span>
-                {m.desc ? <span className="mt-0.5 line-clamp-2 text-[12px] leading-[18px] text-muted-foreground">{m.desc}</span> : null}
+                {m.desc ? <span className="mt-0.5 line-clamp-2 text-[12px] leading-[18px] text-muted-foreground [word-break:auto-phrase]">{m.desc}</span> : null}
               </button>
               <a
                 href={placeUrl(m.lat, m.lng)}
@@ -390,8 +393,8 @@ function PlaceList({
                 rel="noopener noreferrer"
                 aria-label={`${m.label} を Google マップで開く`}
                 title="Google マップで開く"
-                // マウスではカードに載せたときだけ出す（タッチは常に・押しやすい大きさ）。
-                className="relative z-10 -m-1 flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-background/60 hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover:opacity-100 pointer-coarse:-m-2 pointer-coarse:size-10 pointer-coarse:opacity-70"
+                // マウスではそのカードに載せたときだけ出す（会話のメッセージの group に反応しないよう名前付き）。タッチは常に・押しやすい大きさ。
+                className="relative z-10 -m-1 flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-background/60 hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring group-hover/card:opacity-100 pointer-coarse:-m-2 pointer-coarse:size-10 pointer-coarse:opacity-70"
               >
                 <ExternalLink className="size-3.5" aria-hidden />
               </a>
@@ -409,5 +412,43 @@ function PlaceList({
         </button>
       ) : null}
     </div>
+  );
+}
+
+/// 全画面のカード列の左右の送りボタン（マウスのときだけ・送れる向きだけ出す）。
+function CarouselArrows({ target, onPage }: { target: React.RefObject<HTMLDivElement | null>; onPage: (dir: 1 | -1) => void }) {
+  const [edge, setEdge] = React.useState({ left: false, right: false });
+  React.useEffect(() => {
+    const el = target.current;
+    if (!el) return;
+    const update = () =>
+      setEdge({ left: el.scrollLeft > 4, right: el.scrollLeft + el.clientWidth < el.scrollWidth - 4 });
+    update();
+    el.addEventListener("scroll", update, { passive: true });
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => {
+      el.removeEventListener("scroll", update);
+      ro.disconnect();
+    };
+  }, [target]);
+  const arrow = (dir: 1 | -1) => (
+    <button
+      type="button"
+      aria-label={dir < 0 ? "前の地点" : "次の地点"}
+      onClick={() => onPage(dir)}
+      className={cn(
+        "absolute top-1/2 z-10 hidden size-8 -translate-y-1/2 items-center justify-center rounded-full border border-border/60 bg-card/95 text-foreground/75 shadow-[var(--elevation-md)] backdrop-blur transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring pointer-fine:flex",
+        dir < 0 ? "left-2" : "right-2",
+      )}
+    >
+      {dir < 0 ? <ChevronLeft className="size-4" aria-hidden /> : <ChevronRight className="size-4" aria-hidden />}
+    </button>
+  );
+  return (
+    <>
+      {edge.left ? arrow(-1) : null}
+      {edge.right ? arrow(1) : null}
+    </>
   );
 }
