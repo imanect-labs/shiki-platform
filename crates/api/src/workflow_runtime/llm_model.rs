@@ -15,8 +15,8 @@ use authz::AuthContext;
 use llm_gateway::{ChoiceError, Effort, LlmGateway, ResolvedChoice};
 use workflow_engine::{ExecCtx, PortError};
 
-/// モデルが使えない（未登録・組織で無効・選択の禁止）ときの step の誤りの code。
-const MODEL_UNAVAILABLE: &str = "model_unavailable";
+/// モデルが使えない（未登録・組織で無効）ときの step の誤りの code（ミニアプリの AI の応答と同じ語彙・D-117）。
+const MODEL_UNAVAILABLE: &str = llm_gateway::MODEL_UNAVAILABLE;
 
 /// 実行のたびに実行主体の組織の設定でモデルと思考の深さを解決する（`effort` はノードに書いた思考の深さ）。
 pub(super) async fn resolve_for_workflow(
@@ -54,12 +54,12 @@ fn choice_port_error(gateway: &LlmGateway, e: &ChoiceError) -> PortError {
         }
         ChoiceError::ModelNotAllowed(model) => disabled_model(model),
         ChoiceError::ChoiceDisabled => PortError::new(
-            "model_choice_disabled",
+            e.code(),
             "この組織ではモデルを選べません。ノードの設定を「組織の既定に従う」にしてください。",
             false,
         ),
         ChoiceError::NoModel => PortError::new(
-            "no_model",
+            e.code(),
             "組織で使えるモデルがありません。管理者に AI の設定を確認してもらってください。",
             false,
         ),

@@ -56,7 +56,8 @@ impl LlmGateway {
     }
 
     /// ワークフローの `llm.invoke` のモデルと思考の深さを解決する（ノードの思考の深さの規則つき・D-75）。ミニアプリの
-    /// AI の能力も、モデルを省略した呼び出しはこれで解決する（アプリの指定した思考の深さに同じ規則を当てる・BUG-116）。
+    /// AI の能力も、モデルを省略した呼び出しと明示した呼び出しの両方をこれで解決する（アプリの指定した思考の深さに同じ
+    /// 規則を当て・BUG-116、選択を禁じた組織では既定と違うモデルを断る・D-117）。
     ///
     /// 設定は [`Self::resolve_node_choice`] と同じ。規則は [`crate::tenant::resolve_workflow_choice`] にある。
     pub async fn resolve_workflow_choice(

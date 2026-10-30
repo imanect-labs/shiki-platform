@@ -41,9 +41,10 @@ pub struct WorkflowModelCheck {
     pub decision_ids: Option<Vec<String>>,
 }
 
-/// 組織がモデルの選択を禁じているときの既定（[`Catalog::model_lock`]）。
+/// 組織がモデルの選択を禁じているときの既定（[`Catalog::model_lock`]・規則はチャットとミニアプリの AI と同じ
+/// [`llm_gateway::TenantLlmSettings::model_lock`] の 1 か所・D-30・D-117）。
 fn model_lock(settings: &llm_gateway::TenantLlmSettings) -> Option<String> {
-    (!settings.allow_user_choice).then(|| settings.default_model.clone())
+    settings.model_lock().map(str::to_string)
 }
 
 /// 組織の既定が Auto か（[`Catalog::default_is_auto`]）。

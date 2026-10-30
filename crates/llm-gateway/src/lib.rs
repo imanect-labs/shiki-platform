@@ -61,6 +61,6 @@ pub use provider::{DeltaStream, LlmError, LlmProvider};
 pub use structured::StructuredOutputMode;
 pub use tenant::{
     ChoiceError, ModelChoice, ResolvedChoice, SettingsError, SettingsPatch, TenantLlmSettings,
-    AUTO_MODEL,
+    AUTO_MODEL, MODEL_CHOICE_DISABLED, MODEL_UNAVAILABLE, NO_MODEL,
 };
 pub use usage_report::{UsageBreakdown, UsageDay, UsageFilter, UsageReport, UsageTotals};

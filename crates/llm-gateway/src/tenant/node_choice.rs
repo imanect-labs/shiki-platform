@@ -8,7 +8,8 @@
 //! - `auto` という文字列はモデルとして扱わない（IR のモデル欄に Auto は書けない・保存時検証 V3 と揃える）。
 //! - 思考強度は呼び出し側の指定だけを送る（組織の `default_effort` を足さない。effort を書かない明示モデルの
 //!   ワークフローは今までどおり思考強度なしで動く）。
-//! - 選択の禁止（`allow_user_choice=false`）はチャットと同じく、既定と同じモデル以外を拒否する。
+//! - 選択の禁止（`allow_user_choice=false`）はチャットと同じく、既定と同じモデル以外を拒否する（規則は
+//!   [`TenantLlmSettings::may_choose`] の 1 か所・ミニアプリの AI が明示したモデルにも当てる・D-117）。
 //!
 //! ワークフローの `llm.invoke` に書いた思考の深さ（`effort`）は [`resolve_workflow_choice`] が扱う。組織がモデルの
 //! 選択を禁じているときと、モデルを省略して組織の既定の Auto で動くときは使わず、組織の設定に従う（チャットと
@@ -47,7 +48,7 @@ pub fn resolve_node_choice(
             },
         );
     };
-    if !settings.allow_user_choice && model != settings.default_model {
+    if !settings.may_choose(model) {
         return Err(ChoiceError::ChoiceDisabled);
     }
     // 判定用のモデル（chat ではない）は生成に使えない（`ai.decide` の判定にだけ使う）。
@@ -69,7 +70,7 @@ pub fn resolve_node_choice(
 #[must_use]
 pub fn node_effort_applies(settings: &TenantLlmSettings, model: Option<&str>) -> bool {
     let omitted = model.is_none_or(str::is_empty);
-    settings.allow_user_choice && !(omitted && settings.default_model == AUTO_MODEL)
+    settings.model_lock().is_none() && !(omitted && settings.default_model == AUTO_MODEL)
 }
 
 /// ワークフローのノード（`llm.invoke`）のモデルと思考の深さを解決する。
@@ -87,8 +88,7 @@ pub fn resolve_workflow_choice(
     effort: Option<Effort>,
 ) -> Result<ResolvedChoice, ChoiceError> {
     let effort = effort.filter(|_| node_effort_applies(settings, model));
-    let model = model
-        .filter(|m| settings.allow_user_choice || *m != settings.default_model || *m == AUTO_MODEL);
+    let model = model.filter(|m| *m == AUTO_MODEL || settings.model_lock() != Some(*m));
     resolve_node_choice(catalog, auto, settings, supports_effort, model, effort)
 }
 
@@ -297,5 +297,55 @@ mod tests {
         let mut s = settings(AUTO_MODEL);
         s.allowed_models = Some(Vec::new());
         assert_eq!(resolve(&s, None, None), Err(ChoiceError::NoModel));
+    }
+
+    /// モデルの選択の禁止は、チャット（`resolve_choice`）・ノード（`resolve_node_choice`）・ワークフローとミニアプリの AI
+    /// （`resolve_workflow_choice`）で同じ規則（`may_choose`・保存時の照合の `model_lock`）から来る（D-30・D-117・BUG-140）。
+    /// 禁じた組織で既定と違うモデルを明示すると、どの経路も `ChoiceDisabled` で断り、それ以外は同じモデルで通す。
+    #[test]
+    fn chat_and_nodes_refuse_explicit_models_by_the_same_rule() {
+        for default in [AUTO_MODEL, "a", "local"] {
+            for allow in [true, false] {
+                let mut s = settings(default);
+                s.allow_user_choice = allow;
+                assert_eq!(s.model_lock(), (!allow).then_some(default), "{default}");
+                for m in ["a", "b", "local"] {
+                    let locked_out = !allow && m != default;
+                    assert_eq!(s.may_choose(m), !locked_out, "{default}/{allow}/{m}");
+                    let chat = resolve_choice(
+                        &catalog(),
+                        &auto(),
+                        &s,
+                        |e| e.supports_effort.unwrap_or(false),
+                        &ModelChoice {
+                            model: Some(m.into()),
+                            effort: Some(Effort::Low),
+                        },
+                    );
+                    let paths = [
+                        ("チャット", chat),
+                        ("ノード", resolve(&s, Some(m), Some(Effort::Low))),
+                        (
+                            "ワークフロー・ミニアプリ",
+                            workflow(&s, Some(m), Some(Effort::Low)),
+                        ),
+                    ];
+                    for (path, got) in paths {
+                        if locked_out {
+                            assert_eq!(got, Err(ChoiceError::ChoiceDisabled), "{path}: {m}");
+                        } else {
+                            assert_eq!(got.unwrap().model, m, "{path}: {default}/{allow}");
+                        }
+                    }
+                }
+            }
+        }
+        // 誤りのコードはワークフローの step とミニアプリの AI の応答で同じ語彙（保存済みのエラー時の出口が見る値）。
+        assert_eq!(ChoiceError::ChoiceDisabled.code(), "model_choice_disabled");
+        assert_eq!(
+            ChoiceError::ModelNotAllowed("x".into()).code(),
+            "model_unavailable"
+        );
+        assert_eq!(ChoiceError::NoModel.code(), "no_model");
     }
 }

@@ -66,6 +66,24 @@ impl TenantLlmSettings {
         catalog.get(model).is_some_and(|e| self.allows(e))
     }
 
+    /// 組織がモデルの選択を禁じているときの、全員が使うモデルの指定（既定・[`AUTO_MODEL`] かモデル ID）。選べる組織は
+    /// `None`。
+    ///
+    /// 選択の禁止（`allow_user_choice=false`）の規則はここと [`Self::may_choose`] の 1 か所にある。チャットの解決
+    /// （[`resolve_choice`]・[`resolve_at_run`]）、ノード（ワークフローの `llm.invoke`・ミニアプリの AI）の解決
+    /// （[`resolve_node_choice`]）、ワークフローの保存時の照合（api の `Catalog::model_lock`）がどれもこれを使う
+    /// （D-30・D-117）。
+    #[must_use]
+    pub fn model_lock(&self) -> Option<&str> {
+        (!self.allow_user_choice).then_some(self.default_model.as_str())
+    }
+
+    /// 呼び出し側がこのモデルの指定を選べるか（選べる組織か、禁じた組織の既定と同じ指定）。
+    #[must_use]
+    pub fn may_choose(&self, model: &str) -> bool {
+        self.model_lock().is_none_or(|lock| lock == model)
+    }
+
     /// 組織で使えるモデル（カタログ順）。
     pub fn enabled_models<'a>(&self, catalog: &'a ModelCatalog) -> Vec<&'a ModelEntry> {
         catalog.models.iter().filter(|m| self.allows(m)).collect()
@@ -131,6 +149,25 @@ pub enum ChoiceError {
     NoModel,
 }
 
+/// [`ChoiceError::ModelNotAllowed`] の誤りのコード。
+pub const MODEL_UNAVAILABLE: &str = "model_unavailable";
+/// [`ChoiceError::ChoiceDisabled`] の誤りのコード。
+pub const MODEL_CHOICE_DISABLED: &str = "model_choice_disabled";
+/// [`ChoiceError::NoModel`] の誤りのコード。
+pub const NO_MODEL: &str = "no_model";
+
+impl ChoiceError {
+    /// 呼び出し側へ返す誤りのコード（ワークフローの step の誤りとミニアプリの AI の応答で同じ語彙・D-117）。
+    #[must_use]
+    pub fn code(&self) -> &'static str {
+        match self {
+            ChoiceError::ModelNotAllowed(_) => MODEL_UNAVAILABLE,
+            ChoiceError::ChoiceDisabled => MODEL_CHOICE_DISABLED,
+            ChoiceError::NoModel => NO_MODEL,
+        }
+    }
+}
+
 /// Auto の振り先を決める。テナントの上書き → デプロイ設定 → 既定モデル → 有効な先頭の順で、
 /// **使える chat モデル**に当たったところで止める（Auto が「使えない」状態を作らない）。
 pub fn auto_target(
@@ -178,7 +215,7 @@ pub fn resolve_choice(
         .unwrap_or(settings.default_model.as_str());
     // 選択禁止なら既定以外は拒否する。既定が特定モデルの組織で `auto` を明示しても同じ
     // （Auto の振り先へ逃がすと「全員が既定で使う」が API から崩れる）。
-    if !settings.allow_user_choice && requested != settings.default_model {
+    if !settings.may_choose(requested) {
         return Err(ChoiceError::ChoiceDisabled);
     }
     let (model, effort, is_auto) = if requested == AUTO_MODEL {
@@ -221,10 +258,7 @@ pub fn resolve_at_run(
     snapshot: &ResolvedChoice,
     skill_model: Option<&str>,
 ) -> Result<ResolvedChoice, ChoiceError> {
-    let user_may_use = |m: &str| {
-        settings.is_chat_enabled(catalog, m)
-            && (settings.allow_user_choice || m == settings.default_model)
-    };
+    let user_may_use = |m: &str| settings.is_chat_enabled(catalog, m) && settings.may_choose(m);
     if !snapshot.auto {
         if user_may_use(&snapshot.model) {
             return Ok(snapshot.clone());
@@ -245,7 +279,7 @@ pub fn resolve_at_run(
         });
     }
     // 投入後に「既定を特定モデル＋選択禁止」へ変えられていたら、Auto ではなく既定で動かす。
-    let auto_allowed = settings.allow_user_choice || settings.default_model == AUTO_MODEL;
+    let auto_allowed = settings.may_choose(AUTO_MODEL);
     let choice = ModelChoice {
         model: auto_allowed.then(|| AUTO_MODEL.to_string()),
         effort: None,

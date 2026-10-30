@@ -308,3 +308,95 @@ async fn personal_models_are_left_out_even_for_their_owner() {
     assert_eq!(resolve(&gw, &owner, None).await, Err(ChoiceError::NoModel));
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+/// 組織がモデルの選択を禁じているとき、チャット・ワークフロー・ミニアプリの AI のどの解決でも、既定と違うモデルを
+/// 明示した呼び出しを断り、選べる組織では通す（規則は 1 か所・D-30・D-117・BUG-140）。禁じた組織で既定と同じモデルを
+/// 明示したノードとミニアプリの AI は、呼び出し側の思考の深さを使わず組織の既定の思考強度で動く（D-75）。
+#[tokio::test]
+async fn explicit_models_are_refused_on_every_path_while_choice_is_locked() {
+    let Some(pool) = pool().await else { return };
+    // fast・smart は思考強度を受ける（禁じた組織で、呼び出し側の思考の深さが使われないことを見る）。
+    let effort_entry = |id: &str| ModelEntry {
+        id: id.into(),
+        supports_effort: Some(true),
+        ..Default::default()
+    };
+    let gw = LlmGateway::build(
+        pool.clone(),
+        reqwest::Client::new(),
+        GatewayConfig {
+            catalog: ModelCatalog {
+                default_model: "fast".into(),
+                models: vec![effort_entry("fast"), effort_entry("smart")],
+            },
+            ..Default::default()
+        },
+    )
+    .expect("gateway");
+    let t = tenant();
+    let alice = user(&t, "alice");
+    let flow = workflow(&t);
+    let chat = |model: &str| llm_gateway::ModelChoice {
+        model: Some(model.into()),
+        effort: Some(Effort::Low),
+    };
+
+    for allow in [false, true] {
+        save(
+            &gw,
+            &alice,
+            SettingsPatch {
+                default_model: Some("fast".into()),
+                allow_user_choice: Some(allow),
+                default_effort: Some(Effort::High),
+                ..Default::default()
+            },
+        )
+        .await;
+        let chat_got = gw.resolve_choice(&alice, &chat("smart")).await.unwrap();
+        // ミニアプリの AI（app-gateway）とワークフローの llm.invoke は同じ解決を使う。
+        let app_got = gw
+            .resolve_workflow_choice(&alice, Some("smart"), Some(Effort::Low))
+            .await
+            .unwrap();
+        let flow_got = gw
+            .resolve_workflow_choice(&flow, Some("smart"), None)
+            .await
+            .unwrap();
+        if allow {
+            assert_eq!(chat_got.unwrap().model, "smart");
+            let app = app_got.unwrap();
+            assert_eq!(
+                (app.model.as_str(), app.effort),
+                ("smart", Some(Effort::Low))
+            );
+            assert_eq!(flow_got.unwrap().model, "smart");
+        } else {
+            for got in [chat_got, app_got, flow_got] {
+                assert_eq!(got, Err(ChoiceError::ChoiceDisabled));
+            }
+            assert_eq!(ChoiceError::ChoiceDisabled.code(), "model_choice_disabled");
+            // 既定と同じモデルの明示は通り、呼び出し側の思考の深さ（Low）ではなく組織の既定（High）で動く。
+            let same = gw
+                .resolve_workflow_choice(&alice, Some("fast"), Some(Effort::Low))
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                (same.model.as_str(), same.effort),
+                ("fast", Some(Effort::High))
+            );
+            let chat_same = gw.resolve_choice(&alice, &chat("fast")).await.unwrap();
+            assert_eq!(chat_same.unwrap().model, "fast");
+        }
+    }
+
+    // 作った組織の設定を片付ける。
+    for table in ["tenant_llm_model", "tenant_llm_settings"] {
+        sqlx::query(&format!("DELETE FROM {table} WHERE tenant_id = $1"))
+            .bind(&t)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+}
