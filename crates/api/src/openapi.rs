@@ -256,6 +256,7 @@ use utoipa::{
         crate::routes::me_today::FailedWorkflowRun,
         crate::routes::me_today::MyUsageResponse,
         chat::preferences::SubmitKey,
+        chat::preferences::InputFormat,
         chat::preferences::TimeFormat,
         crate::routes::me_security::SecurityOverview,
         crate::routes::me_security::PasswordInfo,

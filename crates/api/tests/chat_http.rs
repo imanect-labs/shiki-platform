@@ -1327,6 +1327,7 @@ async fn preferences_round_trip_over_http() {
         .oneshot(put(
             serde_json::json!({
                 "submit_key": "mod_enter",
+                "input_format": "plain",
                 "default_model": { "model": " claude-sonnet ", "effort": "high" },
                 "expand_reasoning": true,
                 "time_format": "relative",
@@ -1341,6 +1342,7 @@ async fn preferences_round_trip_over_http() {
         saved["preferences"],
         serde_json::json!({
             "submit_key": "mod_enter",
+            "input_format": "plain",
             "default_model": { "model": "claude-sonnet", "effort": "high" },
             "web_search_by_default": false,
             "default_autonomous_mode": "require_approval",
@@ -1397,6 +1399,7 @@ async fn preferences_round_trip_over_http() {
         body_json(resp).await["preferences"],
         serde_json::json!({
             "submit_key": "enter",
+            "input_format": "markdown",
             "default_model": null,
             "web_search_by_default": false,
             "default_autonomous_mode": "require_approval",

@@ -55,6 +55,9 @@ export const MarkdownClipboard = Extension.create({
             const html = data.getData("text/html");
             if (html && html.trim().length > 0) return false;
 
+            // コードブロックの中へ貼ったものはコードのまま（`# comment` を見出しにしない）。
+            if (view.state.selection.$from.parent.type.spec.code) return false;
+
             const text = data.getData("text/plain");
             if (!text || !looksLikeBlockMarkdown(text)) return false;
 

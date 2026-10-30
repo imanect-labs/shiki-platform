@@ -18,12 +18,14 @@ import { storageScopeReady, subscribeStorageScope } from "@/lib/user-storage";
 type Body = components["schemas"]["UserPreferencesBody"];
 type PrefsResponse = components["schemas"]["UserPreferencesResponse"];
 export type SubmitKey = components["schemas"]["SubmitKey"];
+export type InputFormat = components["schemas"]["InputFormat"];
 export type TimeFormat = components["schemas"]["TimeFormat"];
 export type DefaultModelChoice = components["schemas"]["DefaultModelChoice"];
 
 /// 欠けたフィールドを既定値で埋めた形（生成型では既定値のある項目は任意）。
 export type UserPreferences = {
   submit_key: SubmitKey;
+  input_format: InputFormat;
   default_model: DefaultModelChoice | null;
   web_search_by_default: boolean;
   default_autonomous_mode: NonNullable<Body["default_autonomous_mode"]>;
@@ -33,6 +35,7 @@ export type UserPreferences = {
 
 export const DEFAULT_PREFERENCES: UserPreferences = {
   submit_key: "enter",
+  input_format: "markdown",
   default_model: null,
   web_search_by_default: false,
   default_autonomous_mode: "require_approval",
@@ -43,6 +46,7 @@ export const DEFAULT_PREFERENCES: UserPreferences = {
 function prefsOf(b: Body): UserPreferences {
   return {
     submit_key: b.submit_key ?? DEFAULT_PREFERENCES.submit_key,
+    input_format: b.input_format ?? DEFAULT_PREFERENCES.input_format,
     default_model: b.default_model ?? null,
     web_search_by_default: b.web_search_by_default ?? false,
     default_autonomous_mode: b.default_autonomous_mode ?? DEFAULT_PREFERENCES.default_autonomous_mode,

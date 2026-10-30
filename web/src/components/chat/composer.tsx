@@ -33,6 +33,7 @@ import {
 } from "@/lib/selection-context";
 import { FolderPicker } from "@/components/artifacts/folder-picker";
 import { PromptInput, PromptInputTextarea } from "@/components/prompt-kit/prompt-input";
+import dynamic from "next/dynamic";
 import {
   SlashCommandMenu,
   slashOptionId,
@@ -51,6 +52,13 @@ import { toast } from "@/components/ui/use-toast";
 import { usePreferences } from "@/lib/preferences";
 import { useModKeyLabel } from "@/hooks/use-mod-key";
 import { DrivePicker } from "./drive-picker";
+
+/// Markdown の入力欄（TipTap）は重いので、出すときに読み込む（テキストの設定では読み込まない）。
+/// 読み込む間は入力欄と同じ高さの枠を置き、レイアウトを跳ねさせない。
+const PromptInputEditor = dynamic(
+  () => import("@/components/prompt-kit/prompt-input-editor").then((m) => m.PromptInputEditor),
+  { ssr: false, loading: () => <div aria-hidden className="min-h-10 md:min-h-[44px]" /> },
+);
 
 /// 小さな × の押せる範囲を、見た目を変えずに周囲へ広げる（指で外せるように）。
 const HIT_AREA = "relative after:absolute after:-inset-2";
@@ -199,7 +207,13 @@ export const Composer = React.memo(function Composer({
   // この発話に使うツール（#734）。送信時に会話側が読み出して空に戻す。
   const toolChoice = useToolChoice(modelScope);
   // 送信キー（ユーザー設定・#952）。Ctrl/⌘+Enter にしていれば Enter は改行。
-  const submitKey = usePreferences().prefs.submit_key;
+  const preferences = usePreferences();
+  const { submit_key: submitKey } = preferences.prefs;
+  // 入力欄の書き方（ユーザー設定）。設定を読む前は既定（Markdown）で出し、打てない時間を作らない。
+  // 読めた設定と違えば、本文が空のときだけ切り替える（書きかけを Markdown のエスケープ付きのまま
+  // textarea へ移さない。空になったとき＝送信後に切り替わる）。
+  const desiredFormat = preferences.loaded ? preferences.prefs.input_format : "markdown";
+  const [inputFormat, setInputFormat] = React.useState(desiredFormat);
   const modKey = useModKeyLabel();
   const [pickerOpen, setPickerOpen] = React.useState(false);
   const [wsPickerOpen, setWsPickerOpen] = React.useState(false);
@@ -230,6 +244,9 @@ export const Composer = React.memo(function Composer({
   }, [draftKey, scopeReady, draftRestored]);
   // 保存は打鍵ごとではなく、手が止まってからまとめて書く（長文の貼り付け後も入力を重くしない）。
   // 画面を離れる（アンマウント・リロードやタブを閉じる）ときは待たずに書く（直後に離れても取りこぼさない）。
+  React.useEffect(() => {
+    if (desiredFormat !== inputFormat && value === "") setInputFormat(desiredFormat);
+  }, [desiredFormat, inputFormat, value]);
   const latestValue = React.useRef(value);
   // コミットした値だけを持つ（破棄されたレンダーの値を保存しない）。保存の effect より先に置く。
   React.useEffect(() => {
@@ -324,18 +341,11 @@ export const Composer = React.memo(function Composer({
     }
   };
 
-  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+  /// 入力欄のキー（textarea と Markdown 入力で共通）。`atStart` はカーソルが本文の先頭で選択が無いか。
+  const onKeyDown = (e: KeyboardEvent, atStart: boolean) => {
     // 本文の先頭での Backspace は、見えている最後の語を外す（ChatGPT と同じ操作感）。
-    const el = e.currentTarget;
     const last = tokens[tokens.length - 1];
-    if (
-      last &&
-      e.key === "Backspace" &&
-      !e.nativeEvent.isComposing &&
-      e.keyCode !== 229 &&
-      el.selectionStart === 0 &&
-      el.selectionEnd === 0
-    ) {
+    if (last && e.key === "Backspace" && !e.isComposing && e.keyCode !== 229 && atStart) {
       e.preventDefault();
       last.onRemove();
       return;
@@ -353,7 +363,7 @@ export const Composer = React.memo(function Composer({
       e.preventDefault();
       setSlashIndex((i) => (i - 1 + len) % len);
     } else if (
-      (e.key === "Enter" && !e.nativeEvent.isComposing && e.keyCode !== 229) ||
+      (e.key === "Enter" && !e.isComposing && e.keyCode !== 229) ||
       e.key === "Tab"
     ) {
       e.preventDefault();
@@ -587,31 +597,62 @@ export const Composer = React.memo(function Composer({
               )}
             />
           ) : null}
-          {/* 補完中は combobox として関連付ける（Codex P2）。フォーカスは textarea に
-              残るため、aria-activedescendant が無いとスクリーンリーダーへ選択が伝わらない。 */}
-          <PromptInputTextarea
-            placeholder={effectivePlaceholder}
-            autoFocus={autoFocus}
-            aria-label="メッセージを入力"
-            role={slashOpen ? "combobox" : undefined}
-            aria-expanded={slashOpen || undefined}
-            aria-controls={slashOpen ? SLASH_LISTBOX_ID : undefined}
-            aria-autocomplete={slashOpen ? "list" : undefined}
-            aria-activedescendant={
-              slashOpen ? slashOptionId(Math.min(slashIndex, slashHits!.length - 1)) : undefined
-            }
-            onKeyDown={onKeyDown}
-            submitKey={submitKey}
-            onScroll={(e) => setTextScroll(e.currentTarget.scrollTop)}
-            // 先頭の語の幅だけ 1 行目を下げる（続けて打った文字は語の右から、2 行目以降は左端から）。
-            style={tokens.length > 0 ? { textIndent: tokensWidth + TOKEN_GAP } : undefined}
-            className={cn(
-              "min-h-10 min-w-0 px-0 py-2 text-base leading-6 placeholder:text-muted-foreground/70",
-              // 長いプレースホルダは折り返さずに切る（入力欄を 2 行に押し広げない）。
-              "placeholder-shown:overflow-hidden placeholder-shown:text-ellipsis placeholder-shown:whitespace-nowrap",
-              "md:min-h-[44px] md:pb-1 md:pt-0 md:text-[15px] md:leading-relaxed",
-            )}
-          />
+          {/* 補完中は combobox として関連付ける（Codex P2）。フォーカスは入力欄に
+              残るため、aria-activedescendant が無いとスクリーンリーダーへ選択が伝わらない。
+              書き方はユーザー設定（既定は Markdown の WYSIWYG・テキストは従来の textarea）。 */}
+          {inputFormat === "markdown" ? (
+            <PromptInputEditor
+              placeholder={effectivePlaceholder}
+              autoFocus={autoFocus}
+              attributes={{
+                "aria-label": "メッセージを入力",
+                role: slashOpen ? "combobox" : undefined,
+                "aria-expanded": slashOpen ? "true" : undefined,
+                "aria-controls": slashOpen ? SLASH_LISTBOX_ID : undefined,
+                "aria-autocomplete": slashOpen ? "list" : undefined,
+                "aria-activedescendant": slashOpen
+                  ? slashOptionId(Math.min(slashIndex, slashHits!.length - 1))
+                  : undefined,
+              }}
+              onKeyDown={(e, { atStart }) => onKeyDown(e, atStart)}
+              submitKey={submitKey}
+              onScroll={setTextScroll}
+              // 先頭の語の幅だけ 1 行目を下げる（続けて打った文字は語の右から、2 行目以降は左端から）。
+              firstLineIndent={tokens.length > 0 ? tokensWidth + TOKEN_GAP : undefined}
+              className={cn(
+                "min-h-10 min-w-0 py-2 text-base leading-6",
+                "md:min-h-[44px] md:pb-1 md:pt-0 md:text-[15px] md:leading-relaxed",
+              )}
+            />
+          ) : (
+            <PromptInputTextarea
+              placeholder={effectivePlaceholder}
+              autoFocus={autoFocus}
+              aria-label="メッセージを入力"
+              role={slashOpen ? "combobox" : undefined}
+              aria-expanded={slashOpen || undefined}
+              aria-controls={slashOpen ? SLASH_LISTBOX_ID : undefined}
+              aria-autocomplete={slashOpen ? "list" : undefined}
+              aria-activedescendant={
+                slashOpen ? slashOptionId(Math.min(slashIndex, slashHits!.length - 1)) : undefined
+              }
+              onKeyDown={(e) => {
+                const el = e.currentTarget;
+                onKeyDown(e.nativeEvent, el.selectionStart === 0 && el.selectionEnd === 0);
+                if (e.nativeEvent.defaultPrevented) e.preventDefault();
+              }}
+              submitKey={submitKey}
+              onScroll={(e) => setTextScroll(e.currentTarget.scrollTop)}
+              // 先頭の語の幅だけ 1 行目を下げる（続けて打った文字は語の右から、2 行目以降は左端から）。
+              style={tokens.length > 0 ? { textIndent: tokensWidth + TOKEN_GAP } : undefined}
+              className={cn(
+                "min-h-10 min-w-0 px-0 py-2 text-base leading-6 placeholder:text-muted-foreground/70",
+                // 長いプレースホルダは折り返さずに切る（入力欄を 2 行に押し広げない）。
+                "placeholder-shown:overflow-hidden placeholder-shown:text-ellipsis placeholder-shown:whitespace-nowrap",
+                "md:min-h-[44px] md:pb-1 md:pt-0 md:text-[15px] md:leading-relaxed",
+              )}
+            />
+          )}
         </div>
 
         {/* 左: 「+」（PC はエージェントモード等も同じ段に並べる）。 */}

@@ -638,6 +638,96 @@
   }
 }
 
+/* ============================================================================
+   チャットの入力欄（Markdown の WYSIWYG・prompt-input-editor）
+   入力欄は狭いので、ノートより詰めた本文にする。段落の間は空けない（Shift+Enter の改行が
+   1 行送りに見えるように）。送った後の吹き出し（UserRow）も同じ詰め方。
+   ========================================================================== */
+@layer components {
+  .composer-editor {
+    @apply break-words text-foreground;
+  }
+  .composer-editor:focus,
+  .composer-editor:focus-visible {
+    outline: none;
+    box-shadow: none;
+  }
+  /* 先頭の語（選んだツール・/ コマンド）の幅だけ 1 行目を下げる。text-indent は子へ継ぐので、
+     先頭のブロックだけに付け、2 つ目以降の項目・入れ子には継がせない。 */
+  .composer-editor > :first-child {
+    text-indent: var(--composer-indent, 0px);
+  }
+  .composer-editor > :first-child :is(li + li, li li) {
+    text-indent: 0;
+  }
+  .composer-editor h1 {
+    @apply text-[1.25em] font-semibold;
+  }
+  .composer-editor h2 {
+    @apply text-[1.125em] font-semibold;
+  }
+  .composer-editor :is(h3, h4, h5, h6) {
+    @apply font-semibold;
+  }
+  .composer-editor :is(ul, ol, blockquote, pre, hr) {
+    @apply my-1 first:mt-0 last:mb-0;
+  }
+  .composer-editor ul {
+    @apply list-disc pl-5 marker:text-muted-foreground;
+  }
+  .composer-editor ol {
+    @apply list-decimal pl-5 marker:text-muted-foreground;
+  }
+  .composer-editor blockquote {
+    @apply border-l-2 border-border pl-3 text-muted-foreground;
+  }
+  /* コードブロックは送った後の表示（CodeBlock）と同じ暗い面にする（ライトでも暗い）。 */
+  .composer-editor pre {
+    @apply overflow-x-auto whitespace-pre rounded-xl border border-border bg-[#0d1117] px-3 py-2 font-mono text-[13px] leading-5 text-white/90;
+  }
+  .composer-editor code:not(pre code) {
+    @apply rounded-[5px] bg-muted px-1.5 py-0.5 font-mono text-[0.85em];
+  }
+  .composer-editor a {
+    @apply text-primary underline decoration-primary/30 underline-offset-2;
+  }
+  .composer-editor hr {
+    @apply border-border;
+  }
+  .composer-editor ul[data-type="taskList"] {
+    @apply list-none pl-1;
+  }
+  .composer-editor ul[data-type="taskList"] li {
+    @apply flex items-start gap-2;
+  }
+  .composer-editor ul[data-type="taskList"] li > label {
+    @apply mt-[0.3em] shrink-0;
+  }
+  .composer-editor ul[data-type="taskList"] li > label input[type="checkbox"] {
+    @apply size-4 cursor-pointer accent-primary;
+  }
+  .composer-editor .tableWrapper {
+    @apply my-1 overflow-x-auto;
+  }
+  .composer-editor table {
+    @apply border-collapse text-[0.9em];
+  }
+  .composer-editor :is(th, td) {
+    @apply border border-border px-2 py-1 text-left align-top;
+  }
+  .composer-editor th {
+    @apply bg-muted/50 font-semibold;
+  }
+  /* プレースホルダは 1 行目に重ね、長ければ折り返さずに切る（入力欄を 2 行に押し広げない）。 */
+  .composer-editor p.is-editor-empty:first-child {
+    @apply relative;
+  }
+  .composer-editor p.is-editor-empty:first-child::before {
+    content: attr(data-placeholder);
+    @apply pointer-events-none absolute inset-x-0 top-0 truncate text-muted-foreground/70;
+  }
+}
+
 /* AI 提案マーク（document.edit suggest モード・Task 11P.4） */
 @layer components {
   .note-prose .note-ai-suggestion {

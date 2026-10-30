@@ -5,7 +5,7 @@
 //! （`llm_gateway::Effort` は OpenAPI のスキーマを持たないため）。変更は監査に残す。
 
 use axum::{extract::State, Json};
-use chat::preferences::{DefaultModel, SubmitKey, TimeFormat, UserPreferences};
+use chat::preferences::{DefaultModel, InputFormat, SubmitKey, TimeFormat, UserPreferences};
 use chat::{AutonomousMode, ChatError};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -35,6 +35,9 @@ pub struct UserPreferencesBody {
     /// 入力欄の送信キー（既定 `enter`）。
     #[serde(default)]
     pub submit_key: SubmitKey,
+    /// 入力欄の書き方（既定 `markdown`）。
+    #[serde(default)]
+    pub input_format: InputFormat,
     /// 新しいチャットの既定のモデル（`null` は Auto）。
     #[serde(default)]
     pub default_model: Option<DefaultModelChoice>,
@@ -64,6 +67,7 @@ impl From<UserPreferences> for UserPreferencesBody {
     fn from(p: UserPreferences) -> Self {
         UserPreferencesBody {
             submit_key: p.submit_key,
+            input_format: p.input_format,
             default_model: p.default_model.map(|m| DefaultModelChoice {
                 model: m.model,
                 effort: m.effort.into(),
@@ -80,6 +84,7 @@ impl From<UserPreferencesBody> for UserPreferences {
     fn from(b: UserPreferencesBody) -> Self {
         UserPreferences {
             submit_key: b.submit_key,
+            input_format: b.input_format,
             default_model: b.default_model.map(|m| DefaultModel {
                 model: m.model,
                 effort: m.effort.into(),

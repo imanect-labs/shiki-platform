@@ -99,20 +99,29 @@ test.describe("チャットのツール", () => {
     const tokens = page.getByTestId("composer-tool-chip");
     await expect(tokens).toHaveCount(2);
 
-    // 続けて打った文字は語の右から始まる（1 行目だけ字下げ）。
-    await input.fill("集計して");
-    const indent = await input.evaluate((el) => parseFloat(getComputedStyle(el).textIndent));
+    // 続けて打った文字は語の右から始まる（1 行目だけ字下げ）。入力欄は Markdown の WYSIWYG
+    // （contenteditable）なので、fill ではなく打鍵で入れる（カーソルの同期を実際の操作に揃える）。
+    await input.click();
+    await input.pressSequentially("集計して");
+    // 入力欄は Markdown の WYSIWYG（contenteditable）なので、字下げは先頭の段落に付く。
+    const indent = await input
+      .locator(":scope > :first-child")
+      .evaluate((el) => parseFloat(getComputedStyle(el).textIndent));
     expect(indent).toBeGreaterThan(40);
 
     // 本文の先頭で Backspace → 最後の語（コード実行）が外れる。本文は消えない。
     await input.press("Home");
     await input.press("Backspace");
     await expect(tokens).toHaveCount(1);
-    await expect(input).toHaveValue("集計して");
+    await expect(input).toHaveText("集計して");
 
     // 語を押しても外れる。
     await page.getByRole("button", { name: "Web 検索を外す" }).click();
     await expect(tokens).toHaveCount(0);
-    expect(await input.evaluate((el) => getComputedStyle(el).textIndent)).toBe("0px");
+    expect(
+      await input
+        .locator(":scope > :first-child")
+        .evaluate((el) => getComputedStyle(el).textIndent),
+    ).toBe("0px");
   });
 });
