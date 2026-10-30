@@ -24,11 +24,13 @@ import {
   deleteFolder,
   isConflict,
   listChildren,
+  reindexFile,
   triggerDownload,
   updateFile,
   updateFolder,
   type CrumbResponse,
   type NodeResponse,
+  type ReindexResponse,
   type SortField,
 } from "@/lib/storage";
 import { cn } from "@/lib/utils";
@@ -52,6 +54,22 @@ const DEFAULT_DESC: Record<SortField, boolean> = { name: false, updated: true, s
 type DialogKind = "newfolder" | "rename" | "move" | "share" | "versions" | "delete" | null;
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/// 「検索に取り込み直す」の答えごとの通知（D-126）。取り込み中・取り込み済みは積まずにそう答える。
+const REINDEX_TOAST: Record<ReindexResponse["status"], (name: string) => { title: string; description: string }> = {
+  queued: (name) => ({
+    title: `「${name}」の取り込み直しを受け付けました`,
+    description: "取り込みが終わると、社内文書の検索で見つかるようになります。",
+  }),
+  in_progress: (name) => ({
+    title: "取り込みの途中です",
+    description: `「${name}」はいま取り込んでいます。終わるまで、少し待ってください。`,
+  }),
+  indexed: (name) => ({
+    title: "取り込み済みです",
+    description: `「${name}」は、いまの内容で社内文書の検索に取り込まれています。`,
+  }),
+};
 
 /// Drive 本体。フォルダブラウズ（無限スクロール・パンくず・ソート）＋ D&D アップロード
 /// ＋ 移動/リネーム/削除/共有/版履歴を提供する。現在フォルダは `?folder=<id>` で表す。
@@ -128,6 +146,17 @@ export function DriveBrowser() {
         });
       }
       router.push(`/file/${node.id}`);
+    }
+  };
+
+  // 社内文書の検索に取り込み直す（D-126）。断られたとき（編集できない・取り込めない種類・この環境で使えない）は、
+  // サーバーが返す理由をそのまま出す。
+  const reindex = async (node: NodeResponse) => {
+    try {
+      const res = await reindexFile(node.id);
+      toast(REINDEX_TOAST[res.status](node.name));
+    } catch (e) {
+      toast({ variant: "destructive", title: "取り込み直せませんでした", description: errorText(e) });
     }
   };
 
@@ -272,6 +301,9 @@ export function DriveBrowser() {
       case "newversion":
         versionTargetRef.current = node;
         versionInputRef.current?.click();
+        break;
+      case "reindex":
+        void reindex(node);
         break;
       default:
         setActiveNode(node);

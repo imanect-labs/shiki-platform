@@ -14,6 +14,7 @@ export type DownloadUrlResponse = components["schemas"]["DownloadUrlResponse"];
 export type FileVersionResponse = components["schemas"]["FileVersionResponse"];
 export type FileVersionsResponse = components["schemas"]["FileVersionsResponse"];
 export type TextFileResponse = components["schemas"]["TextFileResponse"];
+export type ReindexResponse = components["schemas"]["ReindexResponse"];
 export type SaveTextFileRequest = components["schemas"]["SaveTextFileRequest"];
 export type DocBlock = components["schemas"]["DocBlock"];
 export type DocBlocksPage = components["schemas"]["DocBlocksPage"];
@@ -206,6 +207,12 @@ export function restoreFile(id: string): Promise<NodeResponse> {
   return apiFetch(`/files/${id}/restore`, { method: "POST" }).then((r) =>
     okJson<NodeResponse>(r),
   );
+}
+
+/// ファイルを社内文書の検索に取り込み直す（ファイルを編集できる人・D-126）。積んだときは `queued`、取り込み中・
+/// 取り込み済みのときは積まずにそう答える。断られたときの文言（サーバーが返す `message`）は StorageApiError に入る。
+export function reindexFile(id: string): Promise<ReindexResponse> {
+  return apiFetch(`/files/${id}/reindex`, { method: "POST" }).then((r) => okJson<ReindexResponse>(r));
 }
 
 export function downloadUrl(id: string): Promise<DownloadUrlResponse> {
