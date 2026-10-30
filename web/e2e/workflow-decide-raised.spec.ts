@@ -112,6 +112,11 @@ async function createAndRun(page: Page, model: string, ids: string[]): Promise<{
 }
 
 const TITLE = "AI が自信の低い答えを返しました（引き上げた質問: 2 件）";
+/// 引き上げた質問ごとの行（質問は「AI に尋ねること」の文・値は %）。
+const RAISED_ITEMS = [
+  `「${CATEGORY}」: AI の自信が 33.3% より低かったため、33.3% に引き上げました`,
+  `「${ANGRY}」: AI の自信が 50% より低かったため、50% に引き上げました`,
+];
 const CALIBRATION = "AI の自信（較正なし）は、正解の確率ではありません。";
 
 test("AI で判定: AI が自信の低い答えを返すと、実行履歴の詳細で引き上げた質問を言う（BUG-124・D-114）", async ({
@@ -150,10 +155,7 @@ test("AI で判定: AI が自信の低い答えを返すと、実行履歴の詳
     const note = sheet.getByTestId("decide-raised");
     await expect(note).toBeVisible({ timeout: 20_000 });
     await expect(note.getByText(TITLE, { exact: true })).toBeVisible();
-    await expect(note.getByRole("listitem")).toHaveText([
-      `「${CATEGORY}」（category）: 33.3% 未満を 0.33 に引き上げ`,
-      `「${ANGRY}」（angry）: 50% 未満を 0.50 に引き上げ`,
-    ]);
+    await expect(note.getByRole("listitem")).toHaveText(RAISED_ITEMS);
     await expect(note.getByText(CALIBRATION, { exact: false })).toBeVisible();
     // 結果の全体にも項目として出る（後ろのブロックや条件で使える）。
     await expect(sheet.getByText(/"raised_questions": \[/)).toBeVisible();

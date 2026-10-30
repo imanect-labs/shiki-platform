@@ -52,11 +52,12 @@ export function DecideRaised({ output, params }: { output: unknown; params: unkn
         {raised.map((key) => {
           const ask = questions.find((q) => q.key === key)?.instructions;
           const c = answers[key]?.confidence;
+          // 質問は「AI に尋ねること」の文で言う（内部の参照名は、文が無いときだけ）。値は % にそろえる。
           return (
             <li key={key} className="list-disc">
-              {typeof ask === "string" && ask.trim() !== "" ? `「${ask}」（${key}）` : key}
+              {typeof ask === "string" && ask.trim() !== "" ? `「${ask}」` : key}
               {typeof c === "number" && Number.isFinite(c)
-                ? `: ${percent(c)} 未満を ${c.toFixed(2)} に引き上げ`
+                ? `: AI の自信が ${percent(c)} より低かったため、${percent(c)} に引き上げました`
                 : null}
             </li>
           );
