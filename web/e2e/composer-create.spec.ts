@@ -13,7 +13,11 @@ import { loginViaKeycloak } from "./helpers";
 
 async function openCreateMenu(page: Page) {
   await page.goto("/");
-  await page.getByRole("button", { name: "追加メニューを開く" }).click();
+  const plus = page.getByRole("button", { name: "追加メニューを開く" });
+  // 画面が動き出す前（サーバーで描いたボタン・aria-haspopup="dialog"）に押すと、何も起きずにメニューが開かない
+  // （BUG-159）。動き出すと、PC の幅ではメニューを開くボタン（aria-haspopup="menu"）になるので、それを待って押す。
+  await expect(plus).toHaveAttribute("aria-haspopup", "menu", { timeout: 30_000 });
+  await plus.click();
   // 添付項目が従来どおり共存していること。
   await expect(page.getByRole("menuitem", { name: "ローカルからアップロード" })).toBeVisible();
   await expect(page.getByRole("menuitem", { name: "ドライブから選択" })).toBeVisible();
