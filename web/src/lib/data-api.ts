@@ -152,6 +152,12 @@ export class DataApiError extends Error {
     return Array.isArray(p) ? (p as PendingApprovalMove[]) : [];
   }
 
+  /// 書き込みの決まりを付けると、誰も書き換え・削除できなくなるレコードがある（`code=fsm_locks_records`・数だけ）。
+  get fsmLocksRecords(): { count: number; more: boolean } | null {
+    if (this.status !== 409 || this.code !== "fsm_locks_records") return null;
+    return { count: Number(this.body?.count ?? 0), more: this.body?.more === true };
+  }
+
   /// 材料化した派生列が参照先の変更を受けて再計算中（`code=derived_recomputing`）。
   get derivedRecomputing(): { field: string } | null {
     if (this.status !== 409 || this.code !== "derived_recomputing") return null;
@@ -215,6 +221,8 @@ function codeMessage(body: Record<string, unknown> | null): string | null {
       return "状態の進め方が正しくありません";
     case "fsm_in_use":
       return "承認を待っているレコードが、この変更で判断できなくなります";
+    case "fsm_locks_records":
+      return "誰も書き換えられなくなるレコードがあります";
     // 要求の形の誤り（RequestErrorBody・サーバは日本語の message を付けるので、無いときの予備）。
     case "payload_too_large":
       return "送る内容が大きすぎます";
@@ -452,7 +460,8 @@ export async function getTableFsm(tableId: string): Promise<TableFsmResponse> {
 }
 
 /// テーブルの状態の進め方を保存する（状態の列の選択肢・使う版・書き込みの決まりを 1 回で替える）。承認を待って
-/// いるレコードが判断できなくなる変更は、`confirm_pending` が無ければ 409（`DataApiError.fsmInUse`）。
+/// いるレコードが判断できなくなる変更は、`confirm_pending` が無ければ 409（`DataApiError.fsmInUse`）。書き込みの
+/// 決まりで誰も書き換えられなくなるレコードがあれば、`confirm_locked` が無ければ 409（`DataApiError.fsmLocksRecords`）。
 export async function saveTableFsm(tableId: string, req: SaveTableFsmRequest): Promise<DataTable> {
   return ok<DataTable>(await apiFetch(`/data/tables/${enc(tableId)}/fsm`, send("PUT", req)));
 }

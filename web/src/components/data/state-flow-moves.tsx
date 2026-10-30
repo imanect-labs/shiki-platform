@@ -97,7 +97,7 @@ function WhoEditor({
               type="button"
               aria-label={`「${whoLabel(w, fields)}」を外す`}
               onClick={() => set(actor.who.filter((_, j) => j !== i))}
-              className="rounded-full p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              className="rounded-full p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:p-2"
             >
               <X className="size-3" aria-hidden />
             </button>
@@ -197,7 +197,7 @@ function MoveRow({
     <Button
       variant="ghost"
       size="icon"
-      className="size-8 text-muted-foreground hover:text-destructive"
+      className="size-8 text-muted-foreground hover:text-destructive pointer-coarse:size-10"
       aria-label={`${name}（「${nameOf(move.from) || "未選択"}」から「${nameOf(move.to) || "未選択"}」）を削除`}
       onClick={onRemove}
     >
@@ -226,7 +226,20 @@ function MoveRow({
       <ArrowRight className="mt-2 hidden size-4 text-muted-foreground sm:block" aria-hidden />
       <div className="space-y-1">
         <span className="text-[11px] text-muted-foreground sm:sr-only">次の状態</span>
-        <StateSelect value={move.to} states={draft.states} aria={`${name}の次の状態`} onChange={(to) => onChange({ ...move, to })} />
+        <StateSelect
+          value={move.to}
+          states={draft.states}
+          aria={`${name}の次の状態`}
+          onChange={(to) =>
+            // 足したばかりの進め方で、まだ「申請した本人は除く」に触っていなければ、行き先に合わせて既定を決め直す
+            // （最初の状態へ戻す進め方は申請者がするので除かない・D-115）。
+            onChange(
+              move.autoExclude && a.kind === "simple"
+                ? { ...move, to, actor: { ...a, excludeApplicant: to !== draft.states[0]?.id } }
+                : { ...move, to },
+            )
+          }
+        />
       </div>
       <div className="min-w-0 space-y-1">
         <span className="text-[11px] text-muted-foreground sm:sr-only">進められる人</span>
@@ -244,7 +257,9 @@ function MoveRow({
             checked={a.kind === "simple" && a.excludeApplicant && Boolean(draft.applicantField)}
             disabled={a.kind !== "simple" || !draft.applicantField}
             aria-label={`${name}で申請した本人は除く`}
-            onCheckedChange={(on) => a.kind === "simple" && onChange({ ...move, actor: { ...a, excludeApplicant: on } })}
+            onCheckedChange={(on) =>
+              a.kind === "simple" && onChange({ ...move, autoExclude: false, actor: { ...a, excludeApplicant: on } })
+            }
           />
           <span className="sm:text-[11px] sm:text-muted-foreground">申請した本人は除く</span>
         </label>
@@ -258,7 +273,7 @@ function MoveRow({
       {error || pending > 0 ? (
         <div className="space-y-0.5 sm:col-span-6">
           {error ? (
-            <p id={errId} className="text-[11px] text-destructive" role="alert">
+            <p id={errId} className="text-[11px] text-destructive">
               {error}
             </p>
           ) : null}

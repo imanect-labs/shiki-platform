@@ -440,3 +440,160 @@ test("状態の進め方の無いテーブルを選んだブロックから作�
     );
   }
 });
+
+test("状態の進め方: 保存していない変更・ほかの人の先の保存・書き換えられなくなるレコードを、消す前・保存する前に言う（GAP-44・D-115）", async ({
+  page,
+  browser,
+}) => {
+  test.setTimeout(240_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await loginViaKeycloak(page);
+  const headers = await csrfHeaders(page);
+  const tables: string[] = [];
+  let phone: BrowserContext | null = null;
+  try {
+    // 申請者の列を後から足したテーブル: 状態を過ぎたのに申請者が空のレコードが 2 件ある。
+    const tableId = await createTable(page, uniqueName("e2e-前からある申請"));
+    tables.push(tableId);
+    await addRecord(page, tableId, { title: "前からある 1", status: "承認" });
+    await addRecord(page, tableId, { title: "前からある 2", status: "却下" });
+
+    await page.goto(`/data/${tableId}?panel=states`);
+    const editor = page.getByTestId("state-flow-editor");
+    await expect(editor.getByTestId("state-flow-state")).toHaveCount(3, { timeout: 15_000 });
+    await expect(editor.getByTestId("state-flow-write-lock")).toBeChecked();
+    // 申請者の列は、追加するときと最初の状態のあいだに書き換えられる（本人を除く決まりを迂回できる）ことを言う。
+    await expect(editor.getByTestId("state-flow-applicant")).toContainText(
+      "テーブルを編集できる人は、追加するときと「申請中」のあいだに、申請者の列をほかの人にできます。そうすると、自分の申請でも承認できます。",
+    );
+
+    // 足したばかりの進め方は、行き先を最初の状態（出し直し）にすると「申請した本人は除く」が外れる。
+    for (let i = 0; i < 3; i += 1) await editor.getByTestId("state-flow-add-move").click();
+    const moves = editor.getByTestId("state-flow-move");
+    const third = moves.nth(2);
+    const exclude = third.getByRole("switch", { name: "進め方 3で申請した本人は除く" });
+    await expect(exclude).toBeChecked();
+    await third.getByRole("combobox", { name: "進め方 3のいまの状態" }).click();
+    await page.getByRole("option", { name: "承認", exact: true }).click();
+    await third.getByRole("combobox", { name: "進め方 3の次の状態" }).click();
+    await page.getByRole("option", { name: "申請中", exact: true }).click();
+    await expect(exclude).not.toBeChecked();
+    await third.getByRole("button", { name: /進め方 3（「承認」から「申請中」）を削除/ }).first().click();
+    await expect(moves).toHaveCount(2);
+
+    // 保存: 申請者が空で最初の状態を過ぎたレコードが誰も書き換えられなくなるので、数を言って確かめる。
+    await editor.getByTestId("state-flow-save").click();
+    const lockDialog = page.getByRole("dialog", { name: "2 件のレコードを書き換えられなくしますか？" });
+    await expect(lockDialog).toBeVisible({ timeout: 15_000 });
+    await expect(lockDialog).toContainText("「申請者」が空で「申請中」を過ぎたレコードは、保存すると誰も書き換えや削除ができなくなります。");
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/state-flow-lock-confirm-pc.png` });
+    await lockDialog.getByRole("button", { name: "キャンセル" }).click();
+    await expect(lockDialog).toBeHidden();
+    expect(await fsmIdOf(page, tableId)).toBeNull();
+
+    // ほかの人が先にテーブルの設定を保存した: 変更が保存されていないこと・読み込むと消えることを言う。
+    const table = (await (await page.request.get(`/api/data/tables/${tableId}`)).json()) as {
+      schema: { fields: unknown[] } & Record<string, unknown>;
+      schema_version: number;
+    };
+    const bumped = await page.request.put(`/api/data/tables/${tableId}/schema`, {
+      headers,
+      data: {
+        schema: { ...table.schema, fields: [...table.schema.fields, { key: "memo", display_name: "メモ", type: "text" }] },
+        expected_schema_version: table.schema_version,
+      },
+    });
+    expect(bumped.ok(), await bumped.text()).toBeTruthy();
+    await editor.getByTestId("state-flow-save").click();
+    await page.getByRole("dialog", { name: "2 件のレコードを書き換えられなくしますか？" }).getByRole("button", { name: "それでも保存" }).click();
+    const conflict = editor.getByTestId("state-flow-save-error");
+    await expect(conflict).toContainText("ほかの人が先にテーブルの設定を保存しました", { timeout: 15_000 });
+    await expect(conflict).toContainText(
+      "あなたの変更は保存されていません。最新の内容を読み込むと、保存していない変更は消えます。残したい内容は先に控えてください。",
+    );
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/state-flow-conflict-pc.png` });
+    await conflict.getByRole("button", { name: "最新の内容を読み込む（変更は消えます）" }).click();
+    await expect(editor.getByTestId("state-flow-state")).toHaveCount(3, { timeout: 15_000 });
+    await expect(editor.getByTestId("state-flow-move")).toHaveCount(0);
+    await expect(editor.getByTestId("state-flow-save-error")).toHaveCount(0);
+
+    // 列の編集を開く（メンバーの列の無いテーブル）: 保存していない変更があれば、消えることを確かめてから開く。
+    const plain = await page.request.post("/api/data/tables", {
+      headers,
+      data: {
+        name: uniqueName("e2e-申請者の列の無い申請"),
+        schema: {
+          fields: [
+            { key: "title", display_name: "件名", type: "text", indexed: true },
+            { key: "status", display_name: "状態", type: "select", options: ["申請中", "承認"], indexed: true },
+          ],
+        },
+      },
+    });
+    expect(plain.status(), await plain.text()).toBe(201);
+    const plainId = ((await plain.json()) as { id: string }).id;
+    tables.push(plainId);
+    await page.goto(`/data/${plainId}?panel=states`);
+    await expect(editor.getByTestId("state-flow-state")).toHaveCount(2, { timeout: 15_000 });
+    await editor.getByRole("textbox", { name: "状態 2 の名前" }).fill("承認済み");
+    await editor.getByTestId("state-flow-open-schema").click();
+    const discard = page.getByRole("dialog", { name: "保存していない変更があります" });
+    await expect(discard).toContainText("列の編集を開くと、この画面を閉じます。保存していない状態の進め方の変更は消えます。");
+    await discard.getByRole("button", { name: "キャンセル" }).click();
+    await expect(editor.getByRole("textbox", { name: "状態 2 の名前" })).toHaveValue("承認済み");
+    await editor.getByTestId("state-flow-open-schema").click();
+    await discard.getByRole("button", { name: "変更を捨てて列の編集を開く" }).click();
+    await expect(editor).toBeHidden({ timeout: 15_000 });
+    await expect(page.getByTestId("schema-editor")).toBeVisible();
+    // 案内の印（?panel=states）は外れる（再読み込みで状態の進め方の画面が開き直さない）。
+    await expect(page).toHaveURL(new RegExp(`/data/${plainId}$`));
+    await page.keyboard.press("Escape");
+
+    // 列の選択肢と状態が合っていない定義: 読み込んだままでも保存できる（保存で選択肢を状態にそろえる）。
+    const t = (await (await page.request.get(`/api/data/tables/${plainId}/fsm`)).json()) as { schema_version: number };
+    const put = await page.request.put(`/api/data/tables/${plainId}/fsm`, {
+      headers,
+      data: {
+        status_field: "status",
+        body: { states: ["申請中", "承認"], transitions: [{ from: "申請中", to: "承認", actor: "public" }] },
+        applicant_write_lock: null,
+        expected_schema_version: t.schema_version,
+      },
+    });
+    expect(put.status(), await put.text()).toBe(200);
+    await page.route(`**/api/data/tables/${plainId}/fsm`, async (route) => {
+      if (route.request().method() !== "GET") return route.continue();
+      const res = await route.fetch();
+      const body = (await res.json()) as { fsm: { body: { states: string[] } } };
+      body.fsm.body.states = ["申請中", "承認", "保留"];
+      await route.fulfill({ response: res, json: body });
+    });
+    await page.goto(`/data/${plainId}?panel=states`);
+    await expect(editor.getByTestId("state-flow-states")).toContainText("両方を合わせて出しています", { timeout: 15_000 });
+    await expect(editor.getByTestId("state-flow-save")).toBeEnabled();
+    await page.unrouteAll({ behavior: "ignoreErrors" });
+
+    // スマホ: 申請者の列の注意と、書き換えられなくなるレコードの確かめが横にはみ出さない。
+    phone = await phoneOf(browser, page.context());
+    const p = await phone.newPage();
+    await p.goto(`/data/${tableId}?panel=states`);
+    const phoneEditor = p.getByTestId("state-flow-editor");
+    await expect(phoneEditor.getByTestId("state-flow-state")).toHaveCount(3, { timeout: 15_000 });
+    await phoneEditor.getByTestId("state-flow-applicant").scrollIntoViewIfNeeded();
+    expect(await phoneEditor.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+    if (SHOTS) await p.screenshot({ path: `${SHOTS}/state-flow-applicant-phone.png` });
+    await phoneEditor.getByTestId("state-flow-add-move").click();
+    await phoneEditor.getByTestId("state-flow-save").click();
+    const phoneLock = p.getByRole("dialog", { name: "2 件のレコードを書き換えられなくしますか？" });
+    await expect(phoneLock).toBeVisible({ timeout: 15_000 });
+    if (SHOTS) await p.screenshot({ path: `${SHOTS}/state-flow-lock-confirm-phone.png` });
+    await phoneLock.getByRole("button", { name: "キャンセル" }).click();
+  } finally {
+    const fsms = await Promise.all(tables.map((id) => fsmIdOf(page, id).catch(() => null)));
+    await cleanupAll(
+      ...tables.map((id) => () => deleteTableApi(page, id)),
+      ...fsms.map((id) => () => (id ? deleteArtifactApi(page, id) : Promise.resolve())),
+      () => (phone ? phone.close() : Promise.resolve()),
+    );
+  }
+});

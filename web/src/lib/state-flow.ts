@@ -25,7 +25,14 @@ export type ActorModel =
   | { kind: "custom"; expr: PolicyExpr };
 
 export type StateDraft = { id: string; name: string };
-export type MoveDraft = { id: string; from: string; to: string; actor: ActorModel };
+export type MoveDraft = {
+  id: string;
+  from: string;
+  to: string;
+  actor: ActorModel;
+  /// 足したばかりで「申請した本人は除く」にまだ触っていない（行き先を変えたら既定を決め直す・D-115）。
+  autoExclude?: boolean;
+};
 
 export type FlowDraft = {
   statusField: string | null;

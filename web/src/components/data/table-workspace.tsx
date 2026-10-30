@@ -775,10 +775,8 @@ export function TableWorkspace({
         }}
         table={table}
         onSaved={onTableChanged}
-        onOpenSchema={() => {
-          setStatesOpen(false);
-          setSchemaOpen(true);
-        }}
+        // 状態の進め方の画面は、保存していない変更を確かめてから自分で閉じる（onOpenChange で ?panel=states も外す）。
+        onOpenSchema={() => setSchemaOpen(true)}
         onOpenShare={canShare ? () => setShareOpen(true) : undefined}
       />
       <RecordDialog
