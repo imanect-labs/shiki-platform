@@ -41,7 +41,8 @@ test.describe("スマホのチャット", () => {
     const input = phone.getByLabel("メッセージを入力");
     await input.fill("一行目");
     await input.press("Enter");
-    await expect(input).toHaveValue("一行目\n");
+    // 入力欄は Markdown の WYSIWYG なので、改行は段落の区切りになる。
+    await expect(input.locator("p")).toHaveText(["一行目", ""]);
 
     const url = `https://example.com/${"very-long-path-segment-".repeat(12)}${Date.now().toString(36)}`;
     await input.fill(`このページを要約して ${url}`);

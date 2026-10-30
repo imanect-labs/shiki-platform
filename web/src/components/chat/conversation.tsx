@@ -47,6 +47,8 @@ import { newId } from "@/lib/chat-store";
 import { selectionKindLabel, type SelectionContext } from "@/lib/selection-context";
 import type { ActiveCommand } from "@/lib/slash-command";
 import { Message, MessageContent } from "@/components/prompt-kit/message";
+import { Markdown } from "@/components/prompt-kit/markdown";
+import { usePreferences } from "@/lib/preferences";
 import { invokeChatYuiAction } from "@/lib/artifact-api";
 import { SaveAsAppDialog, type SaveAsAppTarget } from "@/components/artifacts/save-as-app-dialog";
 import { Loader } from "@/components/prompt-kit/loader";
@@ -1107,6 +1109,8 @@ const UserRow = React.memo(function UserRow({
   blocks: ContentBlock[];
   footer?: React.ReactNode;
 }) {
+  // 書き方の設定が Markdown なら、送った発話も Markdown として描く（テキストなら打ったとおり）。
+  const markdown = usePreferences().prefs.input_format === "markdown";
   const text = blocks
     .filter((b): b is Extract<ContentBlock, { type: "text" }> => b.type === "text")
     .map((b) => b.text)
@@ -1157,7 +1161,16 @@ const UserRow = React.memo(function UserRow({
             )}
           </div>
         ) : null}
-        {text ? (
+        {text && markdown ? (
+          // 入力欄が Markdown のときは、打ったときの見た目のまま描く（段落の間は詰める）。
+          <Markdown
+            breaks
+            // 太字は入力欄と同じ太さにする（semibold は字形が無いフォントで太字に見えない）。
+            className="max-w-full rounded-2xl bg-secondary px-4 py-2.5 text-secondary-foreground [&_p]:my-0 [&_strong]:font-bold"
+          >
+            {text}
+          </Markdown>
+        ) : text ? (
           <MessageContent className="max-w-full rounded-2xl bg-secondary px-4 py-2.5 text-[15px] leading-relaxed text-secondary-foreground [overflow-wrap:anywhere]">
             {text}
           </MessageContent>

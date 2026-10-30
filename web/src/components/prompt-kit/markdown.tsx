@@ -75,6 +75,32 @@ function remarkBrTags() {
   return (tree: any) => walk(tree);
 }
 
+/// 段落の中の単独の改行を改行として描く（利用者の発話用・GFM の既定では空白に潰れる）。
+/// textarea の時代に送った「一行目\n二行目」も、そのまま 2 行で見せるため。コードは触らない。
+function remarkSoftBreaks() {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const walk = (node: any) => {
+    if (!node || !Array.isArray(node.children)) return;
+    for (let i = 0; i < node.children.length; i++) {
+      const child = node.children[i];
+      if (child.type === "text" && child.value.includes("\n")) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const replacement: any[] = [];
+        child.value.split("\n").forEach((part: string, idx: number) => {
+          if (idx > 0) replacement.push({ type: "break" });
+          if (part) replacement.push({ type: "text", value: part });
+        });
+        node.children.splice(i, 1, ...replacement);
+        i += replacement.length - 1;
+      } else {
+        walk(child);
+      }
+    }
+  };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (tree: any) => walk(tree);
+}
+
 /// 1 つの React 要素（```pre > code```）からコード文字列と言語を取り出す。
 /// `raw` は react-markdown が渡す中身そのもの（フェンスが閉じていなくても末尾に改行が足されている）。
 function extractCode(child: React.ReactNode): {
@@ -311,16 +337,22 @@ export function Markdown({
   children,
   className,
   streaming = false,
+  breaks = false,
 }: {
   children: string;
   className?: string;
   /// 生成中の本文か（```ui の図が書きかけの行を描かないようにする）。
   streaming?: boolean;
+  /// 段落の中の単独の改行も改行として描く（利用者の発話）。
+  breaks?: boolean;
 }) {
   return (
     <div className={cn("min-w-0 text-[15px] leading-relaxed text-foreground", WRAP_ANYWHERE, className)}>
       <SourceContext.Provider value={{ text: children, streaming }}>
-        <ReactMarkdown remarkPlugins={[remarkGfm, remarkBrTags]} components={components}>
+        <ReactMarkdown
+          remarkPlugins={breaks ? [remarkGfm, remarkBrTags, remarkSoftBreaks] : [remarkGfm, remarkBrTags]}
+          components={components}
+        >
           {children}
         </ReactMarkdown>
       </SourceContext.Provider>

@@ -69,6 +69,7 @@ e2e = [
     "chat.spec.ts",
     "composer-attach-same-name.spec.ts",
     "composer-create.spec.ts",
+    "composer-markdown.spec.ts",
     "csv-conversation-drafts.spec.ts",
     "custom-instructions.spec.ts",
     "deep-research.spec.ts",

@@ -203,6 +203,25 @@ export function ChatSettingsView() {
             ]}
           />
         </SettingsRow>
+        <SettingsRow
+          label="入力の形式"
+          description={
+            prefs.input_format === "plain"
+              ? "記法を変換せず、打ったとおりの文字で送ります。"
+              : "**太字**・# 見出し・- 箇条書き・``` コードなどの Markdown を、打つとその場で見た目に変えます。"
+          }
+        >
+          <SegmentedControl
+            aria-label="入力の形式"
+            size="sm"
+            value={prefs.input_format}
+            onValueChange={(v) => save({ input_format: v as UserPreferences["input_format"] })}
+            options={[
+              { value: "markdown", label: "Markdown", testId: "input-format-markdown" },
+              { value: "plain", label: "テキスト", testId: "input-format-plain" },
+            ]}
+          />
+        </SettingsRow>
       </SettingsSection>
 
       <SettingsSection

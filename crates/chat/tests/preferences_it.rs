@@ -18,7 +18,7 @@ use authz::{
     AuthContext, AuthzClient, AuthzError, Consistency, FgaObject, ObjectType, Principal,
     ReadTupleKey, Relation, Subject,
 };
-use chat::preferences::{DefaultModel, SubmitKey, TimeFormat};
+use chat::preferences::{DefaultModel, InputFormat, SubmitKey, TimeFormat};
 use chat::{AutonomousMode, ChatError, ChatStore, UserPreferences};
 use sqlx::{postgres::PgPoolOptions, PgPool};
 
@@ -154,6 +154,7 @@ async fn saved_preferences_are_scoped_to_the_owner() {
     );
     let input = UserPreferences {
         submit_key: SubmitKey::ModEnter,
+        input_format: InputFormat::Plain,
         default_model: Some(DefaultModel {
             model: Some("  claude-sonnet ".into()),
             effort: llm_gateway::Effort::High,

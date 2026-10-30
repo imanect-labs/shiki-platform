@@ -56,7 +56,8 @@ test.describe("ユーザー設定", () => {
     await input.pressSequentially("一行目");
     await input.press("Enter");
     await input.pressSequentially("二行目");
-    await expect(input).toHaveValue("一行目\n二行目");
+    // 入力欄は Markdown の WYSIWYG なので、改行は段落の区切りになる。
+    await expect(input.locator("p")).toHaveText(["一行目", "二行目"]);
     await expect(page).toHaveURL(/\/$/);
     await input.press("Control+Enter");
     await page.waitForURL(/\/c\/[0-9a-f-]+/i, { timeout: 20_000 });
@@ -75,6 +76,34 @@ test.describe("ユーザー設定", () => {
 
     await page.goto("/");
     await expect(page.getByRole("button", { name: "Web 検索を外す" })).toBeVisible({ timeout: 20_000 });
+  });
+
+  test("入力の形式をテキストにすると記法を変換せず、打ったとおりに送る", async ({ page }) => {
+    test.setTimeout(120_000);
+    await page.goto("/settings/chat");
+    const plain = page.getByTestId("input-format-plain");
+    await expect(page.getByTestId("input-format-markdown")).toHaveAttribute("aria-selected", "true", {
+      timeout: 20_000,
+    });
+    const saved = page.waitForResponse(
+      (r) => r.url().endsWith("/api/me/preferences") && r.request().method() === "PUT",
+    );
+    await plain.click();
+    expect((await saved).status()).toBe(200);
+    await expect(plain).toHaveAttribute("aria-selected", "true");
+
+    // ホームの入力欄は素の textarea（`**` は太字にならずに残る）。
+    await page.goto("/");
+    const input = page.getByLabel("メッセージを入力");
+    await input.click();
+    await input.pressSequentially("**そのまま**");
+    await expect(input).toHaveValue("**そのまま**");
+    await input.press("Enter");
+    await page.waitForURL(/\/c\/[0-9a-f-]+/i, { timeout: 20_000 });
+    // 吹き出しも打ったとおり（太字にしない）。
+    const turn = page.locator("[data-user-turn]").first();
+    await expect(turn).toContainText("**そのまま**");
+    await expect(turn.locator("strong")).toHaveCount(0);
   });
 
   test("既定の承認モードはホームのエージェントのモードの初期値になり、そのモードで始まる", async ({ page }) => {

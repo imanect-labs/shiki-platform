@@ -7,6 +7,8 @@
 // タッチ端末（pointer: coarse）では Enter を改行にし（送信はボタンのみ）、autoFocus は
 // マウスの端末だけで効かせる（開いた瞬間にソフトキーボードを出さない）。
 // 送信キーを Ctrl/⌘+Enter にできる（`submitKey`・ユーザー設定 #952。Enter は改行になる）。
+// 入力欄の要素（`textareaRef`）は Markdown の WYSIWYG 入力（prompt-input-editor）の
+// contenteditable のこともあるので HTMLElement で持つ。
 import * as React from "react";
 import {
   createContext,
@@ -33,7 +35,7 @@ type PromptInputContextType = {
   maxHeight: number | string;
   onSubmit?: () => void;
   disabled?: boolean;
-  textareaRef: React.RefObject<HTMLTextAreaElement | null>;
+  textareaRef: React.RefObject<HTMLElement | null>;
 };
 
 const PromptInputContext = createContext<PromptInputContextType>({
@@ -43,7 +45,7 @@ const PromptInputContext = createContext<PromptInputContextType>({
   maxHeight: 240,
   onSubmit: undefined,
   disabled: false,
-  textareaRef: React.createRef<HTMLTextAreaElement>(),
+  textareaRef: React.createRef<HTMLElement>(),
 });
 
 function usePromptInput() {
@@ -74,7 +76,7 @@ function PromptInput({
   ...props
 }: PromptInputProps) {
   const [internalValue, setInternalValue] = useState(value || "");
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const textareaRef = useRef<HTMLElement>(null);
 
   const handleChange = (newValue: string) => {
     setInternalValue(newValue);
@@ -190,9 +192,9 @@ function PromptInputTextarea({
   };
 
   useLayoutEffect(() => {
-    if (!textareaRef.current || disableAutosize) return;
-
     const el = textareaRef.current;
+    if (!(el instanceof HTMLTextAreaElement) || disableAutosize) return;
+
     el.style.height = "auto";
     if (!el.value) {
       el.style.height = "";

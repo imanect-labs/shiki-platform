@@ -28,6 +28,17 @@ pub enum SubmitKey {
     ModEnter,
 }
 
+/// 入力欄の書き方。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum InputFormat {
+    /// Markdown をその場で見た目に変えて書く（`**太字**` が太字になる等）。送る本文は Markdown。
+    #[default]
+    Markdown,
+    /// 記法を変換しない素のテキスト。
+    Plain,
+}
+
 /// 日時の表示形式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
@@ -52,6 +63,8 @@ pub struct DefaultModel {
 pub struct UserPreferences {
     #[serde(default)]
     pub submit_key: SubmitKey,
+    #[serde(default)]
+    pub input_format: InputFormat,
     #[serde(default)]
     pub default_model: Option<DefaultModel>,
     /// 新しいチャットで Web 検索を選んだ状態にする。
@@ -90,6 +103,7 @@ impl UserPreferences {
         }
         UserPreferences {
             submit_key: field(&map, "submit_key"),
+            input_format: field(&map, "input_format"),
             default_model: field(&map, "default_model"),
             web_search_by_default: field(&map, "web_search_by_default"),
             default_autonomous_mode: field(&map, "default_autonomous_mode"),
@@ -141,12 +155,18 @@ mod tests {
         let p = UserPreferences::from_stored(json!({ "submit_key": "mod_enter" }));
         assert_eq!(p.submit_key, SubmitKey::ModEnter);
         assert_eq!(p.default_autonomous_mode, AutonomousMode::RequireApproval);
+        assert_eq!(
+            p.input_format,
+            InputFormat::Markdown,
+            "入力欄の既定は Markdown"
+        );
     }
 
     #[test]
     fn unreadable_value_falls_back_to_default_for_that_field_only() {
         let p = UserPreferences::from_stored(json!({
             "submit_key": "mod_enter",
+            "input_format": "html",
             "default_autonomous_mode": "yolo",
             "time_format": 3,
             "expand_reasoning": true,
@@ -155,6 +175,7 @@ mod tests {
         assert!(p.expand_reasoning);
         assert_eq!(p.default_autonomous_mode, AutonomousMode::RequireApproval);
         assert_eq!(p.time_format, TimeFormat::Absolute);
+        assert_eq!(p.input_format, InputFormat::Markdown);
         assert_eq!(
             UserPreferences::from_stored(json!(["not", "an", "object"])),
             UserPreferences::default()
@@ -173,6 +194,7 @@ mod tests {
     fn roundtrip_through_json() {
         let p = UserPreferences {
             submit_key: SubmitKey::ModEnter,
+            input_format: InputFormat::Plain,
             default_model: Some(DefaultModel {
                 model: Some("claude-sonnet".into()),
                 effort: llm_gateway::Effort::High,

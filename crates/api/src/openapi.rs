@@ -248,6 +248,7 @@ use utoipa::{
         crate::routes::me_preferences::UserPreferencesResponse,
         crate::routes::me_preferences::DefaultModelChoice,
         chat::preferences::SubmitKey,
+        chat::preferences::InputFormat,
         chat::preferences::TimeFormat,
         crate::routes::me_security::SecurityOverview,
         crate::routes::me_security::PasswordInfo,

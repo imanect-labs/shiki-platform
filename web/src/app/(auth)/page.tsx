@@ -132,7 +132,7 @@ export default function HomePage() {
       // コマンドは**その発話だけ**の適用なので、ピンにはせず送信時に渡す（#387）。
       const pinned = mode === "chat" ? skill : null;
       // 作業フォルダはエージェントのモードで選んだときだけ使う（他のモードでは見えていない選択）。
-      const thread = await createThread(titleFrom(body), asAutonomous, {
+      const thread = await createThread(titleFrom(body, { markdown: prefs.input_format === "markdown" }), asAutonomous, {
         skill: pinned ? { artifactId: pinned.id, version: pinned.currentVersion } : undefined,
         workspace: mode === "agent" ? workspace ?? undefined : undefined,
       });
