@@ -12,6 +12,10 @@
 //!   誤りだけを信じる（作成者が `rate_limited` を名乗って、試す回数を使わない送り直しを起こせないようにする）。
 //! - 作成者がホストの誤りを捕まえて、同じ文でもう一度投げたもの（`catch (e) { throw e; }`）は、ホストの誤りのまま。
 //!   文を変えて投げ直したもの（`throw new Error('…: ' + e.message)`）は作成者の誤り。
+//! - やり直せる code（`unavailable` など）で投げ返すと、step の「リトライ回数」の範囲で script ごと動かし直す。
+//!   内部の能力（`Shiki.storage.write`・`Shiki.workflow.start`・`Shiki.data.*` など）の副作用は呼び出し連番の冪等
+//!   キーで高々 1 回だが、外部への `Shiki.http.request` は `Idempotency-Key` を付けるだけなので、前に成功した送信も
+//!   もう一度送られる（相手がそのキーを守るときだけ 1 回になる・script.md §6）。
 
 use std::fmt::Write as _;
 

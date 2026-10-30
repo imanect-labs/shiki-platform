@@ -6,8 +6,10 @@
 //! 自動実行のどちらにも効く（ファイルが保存されたときのきっかけは、作ったファイルですぐ実行する）。
 //!
 //! 待つかどうかは code だけで決める（[`crate::retry::wait_policy`]）。script の `Shiki.*` が投げ返した誤りも元の code
-//! で返る（D-121）ので、同じ code なら script ごと待って動かし直す（`Shiki.*` の副作用は呼び出し連番の冪等キーで
-//! 高々 1 回・engine.md §7）。いまの `Shiki.storage.read` は文章のファイルだけを読み、取り込み待ちを返さない。
+//! で返る（D-121）ので、同じ code なら script ごと待って動かし直す（内部の能力〔`Shiki.storage.write`・
+//! `Shiki.workflow.start`・`Shiki.data.*` など〕の副作用は呼び出し連番の冪等キーで高々 1 回・engine.md §7。外部への
+//! `Shiki.http.request` は `Idempotency-Key` を付けるだけで、相手がそれを守らなければ送り直される）。いまの
+//! `Shiki.storage.read` は文章のファイルだけを読み、取り込み待ちを返さない。
 
 use serde_json::json;
 
