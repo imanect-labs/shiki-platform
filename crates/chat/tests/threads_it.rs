@@ -1667,6 +1667,20 @@ async fn list_pending_approvals_returns_only_my_waiting_runs_with_editor_access(
         .await
         .unwrap()
         .is_empty());
+
+    // 件数の上限は editor の確認のあとで切る（新しい方が落ちたら古い承認待ちが繰り上がる）。
+    let (newer, _) = waiting_run(&store, &pool, &alice, "新しい承認待ち", "tc-c").await;
+    {
+        let mut deny = authz.deny_for.lock().unwrap();
+        deny.clear();
+        deny.push((
+            alice.subject().to_string(),
+            alice.ns().thread(&newer.to_string()).as_str().to_string(),
+        ));
+    }
+    let got = store.list_pending_approvals(&alice, 1).await.unwrap();
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert_eq!(got[0].run_id, mine_run);
 }
 
 /// R3-5: 承認待ちの保留の上限（ここではユーザーあたり 1 件）を超える承認要求は待たずに却下する。

@@ -17,6 +17,9 @@ use crate::ChatError;
 
 /// 1 回に返す件数の上限（ホームに出すのは数件。全件取得はしない）。
 const MAX_PENDING: i64 = 20;
+/// editor の確認にかける候補の数。確認で落ちた分だけ古い承認待ちが繰り上がるよう、`limit` より
+/// 多めに引く（1 ユーザーの承認待ちは保留の上限で数件に収まる・batch_check 1 往復の 50 件）。
+const CANDIDATES: i64 = 50;
 
 #[derive(sqlx::FromRow)]
 struct PendingRow {
@@ -60,7 +63,7 @@ impl ChatStore {
         .bind(&ctx.tenant_id)
         .bind(&ctx.org)
         .bind(&ctx.principal.id)
-        .bind(limit)
+        .bind(CANDIDATES)
         .fetch_all(&self.db)
         .await
         .map_err(|e| ChatError::Internal(format!("db: {e}")))?;
@@ -87,6 +90,7 @@ impl ChatStore {
             .into_iter()
             .zip(allowed)
             .filter_map(|(r, ok)| ok.then_some(r))
+            .take(usize::try_from(limit).unwrap_or(1))
             .map(|r| PendingApproval {
                 thread_id: r.thread_id,
                 thread_title: r.thread_title,
