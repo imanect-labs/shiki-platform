@@ -38,7 +38,7 @@ impl ArtifactStore {
                ON v.tenant_id = a.tenant_id AND v.artifact_id = a.id AND v.version = a.current_version \
              WHERE a.tenant_id = $1 AND a.org = $2 AND a.kind = $3 AND a.deleted_at IS NULL \
                AND v.body->>$4 = $5 \
-             ORDER BY a.updated_at DESC, a.id DESC LIMIT $6",
+             ORDER BY (a.owner = $7) DESC, a.updated_at DESC, a.id DESC LIMIT $6",
         )
         .bind(&ctx.tenant_id)
         .bind(&ctx.org)
@@ -46,10 +46,11 @@ impl ArtifactStore {
         .bind(body_key)
         .bind(body_value)
         .bind(MAX_CANDIDATES)
+        .bind(&ctx.principal.id)
         .fetch_all(&self.db)
         .await
         .map_err(map_db)?;
-        let ids = self.pick_candidates(ctx, &candidates, limit).await?;
+        let ids = self.pick_candidates(ctx, candidates, limit).await?;
         if ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -94,17 +95,18 @@ impl ArtifactStore {
                ON v.tenant_id = a.tenant_id AND v.artifact_id = a.id AND v.version = a.current_version \
              WHERE a.tenant_id = $1 AND a.org = $2 AND a.kind = $3 AND a.deleted_at IS NULL \
                AND v.body::text ILIKE $4 \
-             ORDER BY a.updated_at DESC, a.id DESC LIMIT $5",
+             ORDER BY (a.owner = $6) DESC, a.updated_at DESC, a.id DESC LIMIT $5",
         )
         .bind(&ctx.tenant_id)
         .bind(&ctx.org)
         .bind(kind.as_str())
         .bind(&needle)
         .bind(MAX_CANDIDATES)
+        .bind(&ctx.principal.id)
         .fetch_all(&self.db)
         .await
         .map_err(map_db)?;
-        let ids = self.pick_candidates(ctx, &candidates, limit).await?;
+        let ids = self.pick_candidates(ctx, candidates, limit).await?;
         if ids.is_empty() {
             return Ok(Vec::new());
         }
@@ -135,20 +137,57 @@ impl ArtifactStore {
         Ok(in_order(&ids, items, |(a, _)| a.id))
     }
 
-    /// 候補（新しい順）から、見えるものを先頭から `limit` 件選ぶ。
+    /// 候補（自分が持ち主のものを先に、それぞれ新しい順・SQL で上限まで）から、見えるものを新しい順に先頭から
+    /// `limit` 件選ぶ。
+    ///
+    /// 上限の打ち切りは、自分が持ち主の分を後回しにしない（ほかの人の非公開のものが上限を超えて多くても、自分の
+    /// 古いものが消えない）。選ぶ順は、持ち主を問わず新しい順に並べ直す。
     async fn pick_candidates(
         &self,
         ctx: &AuthContext,
-        candidates: &[Candidate],
+        mut candidates: Vec<Candidate>,
         limit: i64,
     ) -> Result<Vec<Uuid>, ArtifactError> {
         if i64::try_from(candidates.len()).unwrap_or(i64::MAX) >= MAX_CANDIDATES {
             tracing::warn!(
                 limit = MAX_CANDIDATES,
-                "本文の参照で絞った候補が上限に届いた（新しい順に打ち切る）"
+                "本文の参照で絞った候補が上限に届いた（自分のもの以外を新しい順に打ち切る）"
             );
         }
+        sort_newest_first(&mut candidates);
         let limit = usize::try_from(limit).unwrap_or(1);
-        Ok(self.pick_visible(ctx, candidates, limit).await?.ids)
+        Ok(self.pick_visible(ctx, &candidates, limit).await?.ids)
+    }
+}
+
+/// 候補を新しい順（`updated_at`・`id` の降順・一覧の並び）に並べる。
+fn sort_newest_first(candidates: &mut [Candidate]) {
+    candidates.sort_by(|a, b| b.updated_at.cmp(&a.updated_at).then(b.id.cmp(&a.id)));
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::{Duration, Utc};
+
+    use super::*;
+
+    /// 持ち主が先に並んだ候補を、持ち主を問わず新しい順に並べ直す（一覧の並びは変えない）。
+    #[test]
+    fn candidates_are_reordered_newest_first() {
+        let now = Utc::now();
+        let c = |n: u128, owner: &str, age: i64| Candidate {
+            id: Uuid::from_u128(n),
+            owner: owner.into(),
+            updated_at: now - Duration::minutes(age),
+        };
+        let mut list = vec![
+            c(1, "me", 30),
+            c(2, "me", 10),
+            c(3, "bob", 20),
+            c(4, "bob", 5),
+        ];
+        sort_newest_first(&mut list);
+        let ids: Vec<u128> = list.iter().map(|c| c.id.as_u128()).collect();
+        assert_eq!(ids, vec![4, 2, 3, 1]);
     }
 }

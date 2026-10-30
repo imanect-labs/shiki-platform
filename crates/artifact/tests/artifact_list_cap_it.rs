@@ -184,8 +184,14 @@ async fn lists_show_shared_artifacts_past_the_list_objects_cap() {
     let written = leftovers(&ctx(&tenant, "bob"));
     env.write("writes", &written).await;
     let outcome = tokio::spawn(past_the_cap(Arc::clone(&env), tenant.clone())).await;
-    // 後片付け（落ちても）: 直接書いたタプル・作ったアーティファクトのタプルと行・ストア。
+    // 後片付け（落ちても）: 直接書いたタプル・作ったアーティファクトのタプルと行・ストア。写した行はタプルを持たない
+    // ので、タプルを消す前に行を消す。
     env.write("deletes", &written).await;
+    sqlx::query("DELETE FROM artifact WHERE tenant_id = $1 AND name LIKE '見えないビュー-%'")
+        .bind(&tenant)
+        .execute(&env.pool)
+        .await
+        .unwrap();
     let ids: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM artifact WHERE tenant_id = $1")
         .bind(&tenant)
         .fetch_all(&env.pool)
@@ -319,4 +325,40 @@ async fn past_the_cap(env: Arc<Env>, tenant: String) {
         .unwrap();
     assert_eq!(mine.len(), 2);
     assert!(shared.iter().any(|a| a.id == w_shared.id));
+
+    // ほかの人の非公開のビューが候補の上限（1,000 件）を超えて新しい側に並んでも、自分のビューは打ち切られない
+    // （候補の SQL で自分のものを先に取る）。作成の入口を通すと遅いので、alice の非公開のビューの行を写す。
+    let copied = sqlx::query(
+        "WITH src AS ( \
+             SELECT a.tenant_id, a.org, a.kind, a.owner, a.current_version, a.created_at, v.body, v.created_by \
+             FROM artifact a JOIN artifact_version v \
+               ON v.tenant_id = a.tenant_id AND v.artifact_id = a.id AND v.version = a.current_version \
+             WHERE a.tenant_id = $1 AND a.name = 'view-秘密'), \
+         ins AS ( \
+             INSERT INTO artifact (tenant_id, id, org, kind, name, owner, current_version, created_at, updated_at) \
+             SELECT s.tenant_id, gen_random_uuid(), s.org, s.kind, '見えないビュー-' || gs, s.owner, \
+                    s.current_version, s.created_at, now() + interval '1 hour' + gs * interval '1 millisecond' \
+             FROM src s, generate_series(1, $2::bigint) gs \
+             RETURNING tenant_id, id, current_version) \
+         INSERT INTO artifact_version (tenant_id, artifact_id, version, body, created_by) \
+         SELECT ins.tenant_id, ins.id, ins.current_version, src.body, src.created_by FROM ins, src",
+    )
+    .bind(&tenant)
+    .bind(1_000_i64)
+    .execute(&env.pool)
+    .await
+    .unwrap()
+    .rows_affected();
+    assert_eq!(copied, 1_000);
+    let views = env
+        .store
+        .list_visible_with_body_ref(&bob, view, "table_id", &table.to_string(), 100)
+        .await
+        .unwrap();
+    assert!(
+        views.iter().any(|a| a.id == v_mine.id),
+        "自分のビューが候補の上限で消えない: {:?}",
+        names(&views)
+    );
+    assert!(views.iter().all(|a| !a.name.starts_with("見えないビュー-")));
 }
