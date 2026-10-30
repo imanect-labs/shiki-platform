@@ -419,10 +419,13 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
     ここに入る。`index_pending` はエンジンが試す回数（`retry`）を使わずに、間隔を伸ばしながら上限（30 分）まで待って読み直し、
     過ぎたときだけ step の失敗にする（engine.md §7.5 の `wait`・D-125・GAP-50）。取り込めない種類（画像・.doc・.xls など）・取り込みの上限より大きい・本文の無い文書・取り込まない場所（AI エージェントの
     作業用のフォルダー＝システム領域・`node.system`）のファイルは `not_indexable`、取り込みに失敗した（やり直しを使い切った）もの・
-    取り込みへ向かう記録がどこにも無いもの（社内文書の検索を有効にする前に置いた・取り込みを飛ばした）は `index_failed`（ドライブの
-    「新しいバージョン」でアップロードし直すと取り込まれる）、社内文書の検索が使えない環境では `not_text_file`（いずれも permanent）。
+    取り込みへ向かう記録がどこにも無いもの（社内文書の検索を有効にする前に置いた・取り込みを飛ばした）は `index_failed`（ファイルを
+    編集できる人がドライブのメニューの「検索に取り込み直す」を選ぶと取り込まれる・D-126。保存し直しても取り込まれる）、社内文書の
+    検索が使えない環境では `search_disabled`（失敗の分類は「この環境で使えない機能」・BUG-158。以前は `not_text_file`）
+    （いずれも permanent）。
     新しい内容の取り込みが終わるまでは、古い内容の本文を読まない。
-  - script の `Shiki.storage.read` は文章のファイルだけを読む（いまのまま）。
+  - script の `Shiki.storage.read` は文章のファイルだけを読む（いまのまま）。文章でない種類は `not_text_file` で断り、前に
+    「ファイルを読む」ブロックを置いてその結果を script の入力に渡す組み方を、script の作者向けに言う（BUG-158）。
 - **ファイルの ID の項目名は `file_id` にそろえる**（D-96）: `storage.read`・`storage.write`・`csv.write`・`csv.patch` の結果は `file_id` を載せ、古い名前（`storage.*` の `id`・`csv.*` の `node_id`）も同じ値で残す（保存済みの定義の `$from` を壊さない）。`rag.search` の結果・ファイル保存のトリガのペイロードはもとから `file_id`。出力の形の正はカタログの `output_fields`。
 
 **出力の形の正はノードカタログ**（`crates/workflow-engine/src/vocab/catalog.rs`）の `output_fields`（最上位の項目の名前・型・省略されうるか・補足）である。AI の説明文に載せる TS 風の表記（`output_shape`）はそこから作り、エディタの参照の候補も `output_fields` を読む（表記を字句解析しない・D-42）。設定で決まる項目は、その設定の場所（params の JSON Pointer・`present_if`）を持つ（`llm.invoke` の `data` は `/output_schema`、`data.query` の `count` は `/query/with_count`、`groups` は `/query/aggregate`）。エディタは、その場所に値があるときだけ参照の候補に出す（値の入らない候補を選ばせない・BUG-108）。項目の組でない出力（入力をそのまま通す・script の戻り値など）は文で書き、項目は空にする。

@@ -321,6 +321,8 @@ Shiki.storage.write(folderRef: string, name: string, bytes: Uint8Array, contentT
 - `write` は新しいファイルを作る（engine-dedup）。既存のファイルは書き換えず、新しいバージョンも足さない。同じ名前のファイルがあると `name_taken` で失敗する（ワークフローの `storage.write` の `on_name_taken` に当たる引数は無い・BUG-97・D-112）。読み書きとも StorageService（既存チョークポイント）を経由し、権限・監査・再索引が無改造で効く。
 - `read` の上限はブリッジの server→runtime 応答上限（§4.3・4MB）に一致させる。それ以上のファイルを扱う処理は script の守備範囲外であり、storage ノード（spill 対応・[engine.md](./engine.md) §12）または `sandbox.exec` ノード（予約・サンドボックスの仮想 FS）へ昇格させる。
 - エラー: サイズ超過は `payload_too_large`、権限不足は `permission_denied`。
+- `read` は文章のファイルだけを読む。PDF・Office・画像などは `not_text_file` で断り、文言は script の作者向けに、前に「ファイルを
+  読む」ブロック（社内文書の検索に取り込まれた本文を読む）を置いてその結果を script の入力に渡す組み方を言う（BUG-158）。
 
 ### 6.5 `Shiki.rag.search`（`rag.query`）
 

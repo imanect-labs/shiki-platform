@@ -1163,7 +1163,9 @@ v1 は次の 2 つだけを提供する。step 単位の入力編集リプレイ
   権限・データ・相手のサービスなど外の状態による失敗は直してから再開する（`fix_first`）。読めないファイル
   （`not_text_file`）もここに入る: 再開は同じファイルの最新のバージョンを読み直すので、ファイルを UTF-8 か Shift_JIS で
   保存し直せば通る。PDF・Office の本文の取り込みに失敗したもの・取り込みが届いていないもの（`index_failed`）と、取り込めない
-  種類・取り込まない場所のもの（`not_indexable`）もここに入る（保存し直すと取り込み直す）。取り込みが終わっていないもの（`index_pending`）は、§7.5 の
+  種類・取り込まない場所のもの（`not_indexable`）もここに入る（`index_failed` は、ファイルを編集できる人がドライブのメニューで
+  取り込み直してから再開すると、取り込みが終わるまで待って読む・D-126。`not_indexable` は取り込み直しても変わらないと言う）。
+  社内文書の検索が使えない環境の失敗（`search_disabled`・失敗の分類は environment）も、管理者が有効にしてから再開する（BUG-158）。取り込みが終わっていないもの（`index_pending`）は、§7.5 の
   `wait` で上限（30 分）まで待っても終わらなかったときだけ失敗になる。一時的な問題で、そのまま再開できる（再開は待ち始め直して、同じファイルを
   読み直す・D-111・D-125）。一時障害・時間切れ（ブロック・承認・変更を待つ期限）・AI の答え・分類できない失敗はそのまま再開
   できる（`resume`）。
@@ -1199,7 +1201,7 @@ queue 滞留・step 実行時間・リトライ率・リース失効率・スケ
   - `live_states(ctx, run_ids)`: 状態と `waiting_for`（§3.1）。`RunStatusReader` と同じく「状態だけ」で、呼び出し側が自分の境界で認可した run だけを渡す。
   - `own_outcomes(ctx, run_ids, with_reply)`: SQL で `principal = 本人 ∧ principal_kind = 'user' ∧ org = ctx.org ∧ trigger_kind = 'interactive'` の run だけを返す（呼び出し側が他人の run_id を渡しても空）。返すのは reply の節（実行順・10 節・32KB まで・超えた分は `omitted`）と失敗の理由だけで、他の step の出力・run の入力・IR は返さない。
 - **二重の関門**: 呼び出し側（gui・chat）が「アプリの viewer（会話は閲覧者）∧ 押した本人（`invoked_by`）∧ org」を確かめ、読取口が上の条件で絞る。ワークフローの viewer は求めない（interactive の run の値は本人の ReBAC ∩ declared_scopes・secret は本人の can_use で読んだもので、作成者に由来するのは固定の文言だけ）。schedule・event の run、`workflow.start` の子、ワークフロー画面から起動した run の結果は出ない。
-- **失敗の理由**: 読取のときに最初の未処理の失敗 step（`failed` ∧ `taken_ports` が空 ∧ map の要素ではない・`updated_at` の順）の `error.code` と run の `fail_reason`（`run_timeout` を優先）から、利用者向けの分類（permission・conflict・not_found・temporary・quota・timeout・configuration・unknown）と文言を決め、参照番号（run_id の先頭 8 桁）を添える。map の要素の失敗で落ちた run は要素の側の code で分類する。生の `message` は返さない。終端で書き込まないので、再開した run に古い理由は残らない。一時障害・時間切れ・分類できない失敗の文言は押し直しを勧めない（押し直すと新しい冪等キーで別の run になる・PIT-31）。分類の表は `run/failure.rs` の 1 か所。run 単位の理由（`run_timeout`・`approval_timeout`・`wait_timeout`・`actor_unavailable`）と、同じ値・同じ名前のファイルの失敗は、分類の文言より詳しい文言を同じ表に持つ。実行履歴の詳細（`GET /workflows/{id}/runs/{run_id}`）も、同じ code の決め方（`FAILURE_CODE_COLUMNS`・`failure_code`）と同じ表で組んだ `failure` を返し、画面はそれを出す（web に `fail_reason` の対応表を持たない・BUG-113）。`fail_reason` は古い画面の互換のために残す。
+- **失敗の理由**: 読取のときに最初の未処理の失敗 step（`failed` ∧ `taken_ports` が空 ∧ map の要素ではない・`updated_at` の順）の `error.code` と run の `fail_reason`（`run_timeout` を優先）から、利用者向けの分類（permission・conflict・not_found・temporary・quota・timeout・configuration・environment・unknown）と文言を決め、参照番号（run_id の先頭 8 桁）を添える。map の要素の失敗で落ちた run は要素の側の code で分類する。生の `message` は返さない。終端で書き込まないので、再開した run に古い理由は残らない。一時障害・時間切れ・分類できない失敗の文言は押し直しを勧めない（押し直すと新しい冪等キーで別の run になる・PIT-31）。分類の表は `run/failure.rs` の 1 か所。environment は、この環境で使えない機能を使おうとした失敗（社内文書の検索が使えない環境で PDF・Office の本文を読もうとした `search_disabled` など）で、作成者でなく管理者に連絡するよう言う（BUG-158）。run 単位の理由（`run_timeout`・`approval_timeout`・`wait_timeout`・`actor_unavailable`）と、同じ値・同じ名前のファイルの失敗は、分類の文言より詳しい文言を同じ表に持つ。実行履歴の詳細（`GET /workflows/{id}/runs/{run_id}`）も、同じ code の決め方（`FAILURE_CODE_COLUMNS`・`failure_code`）と同じ表で組んだ `failure` を返し、画面はそれを出す（web に `fail_reason` の対応表を持たない・BUG-113）。`fail_reason` は古い画面の互換のために残す。
 - **表示の無害化**: 結果の Markdown の中の ` ```ui `・` ```yui `・` ```data_grid ` は読取のとき（gui・chat）にすべて ` ```text ` へ書き換える（`yui::neutralize_fences`）。
 - **会話**: 結果と失敗の理由は `invoked_by = 閲覧者` の行にだけ付け、次の回答の履歴（モデル）には状態の語だけを渡す。
 - **応答の大きさ**: 一覧（`GET /mini-apps/{id}/runs`・スレッドのメッセージ）が結果を付けるのは、未確定の run と最新の終わった 1 件だけ（会話はメッセージごと）。他は `has_reply` を見て `GET /mini-apps/{id}/runs/{run_id}`・`GET /threads/{thread_id}/ui-runs/{run_id}` で読む（同じ関門）。
