@@ -27,6 +27,8 @@ shiki-textenc.workspace = true
 serde = { workspace = true }
 serde_json.workspace = true
 thiserror.workspace = true
+# 区切りを推定できなかったときの警告（編集はカンマ区切りとして続ける・BUG-144）。
+tracing.workspace = true
 tokio.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 # CSV を隔離ランナーへ渡すための一時ファイル（api 側の私有 tmp）。

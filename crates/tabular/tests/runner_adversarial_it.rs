@@ -253,3 +253,36 @@ async fn quota_timeout_kills_runner_not_caller() {
     // 呼び出し側（このプロセス）は生きている＝プロセス境界で封じられた。
     assert_eq!(2 + 2, 4);
 }
+
+/// 区切りと改行の推定（BUG-144）。集計がタブで列を分ける CSV は、推定もタブと答える（編集が同じ区切りで読み書き
+/// する）。CRLF の CSV は CRLF と答える。推定は利用者の SQL を流さない。
+#[tokio::test]
+async fn dialect_reports_the_delimiter_the_query_uses() {
+    let Some(_) = runner_path() else {
+        return;
+    };
+    for (text, delimiter, newline) in [
+        (
+            "品目\t金額\r\n交通費\t1200\r\n宿泊費\t9800\r\n",
+            "\t",
+            "\r\n",
+        ),
+        ("品目,金額\n交通費,1200\n", ",", "\n"),
+        ("品目;金額\n交通費;1200\n宿泊費;9800\n", ";", "\n"),
+        ("品目|金額\r\n交通費|1200\r\n宿泊費|9800\r\n", "|", "\r\n"),
+        // 見出しだけの CSV（ドライブで作った直後など）。
+        ("品目,金額\n", ",", "\n"),
+    ] {
+        let csv = write_csv(text);
+        let resp = run(&csv, RunnerOp::Dialect).await;
+        assert!(resp.ok, "{text:?}: {:?}", resp.error);
+        let dialect = resp.dialect.expect("dialect");
+        assert_eq!(
+            (dialect.delimiter.as_str(), dialect.newline.as_str()),
+            (delimiter, newline),
+            "{text:?}"
+        );
+        let schema = run(&csv, RunnerOp::Schema).await;
+        assert_eq!(schema.columns, vec!["品目", "金額"], "{text:?}");
+    }
+}

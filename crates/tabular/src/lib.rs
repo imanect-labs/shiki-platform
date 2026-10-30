@@ -23,8 +23,8 @@ pub mod service;
 pub mod sql_guard;
 
 pub use error::TabularError;
-pub use patch::{apply_patches, PatchOp, PatchResult};
-pub use protocol::{RunnerOp, RunnerRequest, RunnerResponse};
+pub use patch::{apply_patches, apply_patches_with, PatchOp, PatchResult};
+pub use protocol::{CsvDialect, RunnerOp, RunnerRequest, RunnerResponse};
 pub use runner::RunnerConfig;
 pub use service::{PatchApplied, Quotas, SavedCsv, TabularService};
 pub use sql_guard::validate_read_only;

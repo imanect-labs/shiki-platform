@@ -16,7 +16,7 @@ use std::io::{Read, Write};
 
 use duckdb::types::ValueRef;
 use duckdb::{Connection, Row};
-use tabular::{RunnerOp, RunnerRequest, RunnerResponse};
+use tabular::{CsvDialect, RunnerOp, RunnerRequest, RunnerResponse};
 
 fn main() {
     let mut input = Vec::new();
@@ -46,22 +46,66 @@ fn emit(resp: &RunnerResponse) {
 
 fn execute(req: &RunnerRequest) -> Result<RunnerResponse, String> {
     let conn = Connection::open_in_memory().map_err(|e| e.to_string())?;
+    if matches!(req.op, RunnerOp::Dialect) {
+        // 推定だけ（利用者の SQL は流さない）。読むのは渡された信頼パスだけ。
+        set_quotas(&conn, req)?;
+        return dialect(&conn, &req.csv_path);
+    }
     lockdown_load(&conn, req)?;
     match &req.op {
         RunnerOp::Schema => schema(&conn),
         RunnerOp::Rows { offset } => rows(&conn, *offset, req.max_rows),
         RunnerOp::Query { sql } => query(&conn, sql, req.max_rows),
+        RunnerOp::Dialect => Err("unreachable: dialect".into()),
+    }
+}
+
+/// メモリ/スレッド/一時領域のクォータ。
+fn set_quotas(conn: &Connection, req: &RunnerRequest) -> Result<(), String> {
+    conn.execute_batch(&format!(
+        "SET memory_limit='{}MB'; SET threads=1; SET max_temp_directory_size='0GB';",
+        req.memory_limit_mb
+    ))
+    .map_err(|e| format!("クォータ設定に失敗: {e}"))
+}
+
+/// 区切りと改行を推定する（BUG-144）。読み込み（[`lockdown_load`] の `read_csv_auto`）と同じ推定器と引数
+/// （`header=true`）なので、集計が列を分けたのと同じ区切りになる。
+fn dialect(conn: &Connection, csv_path: &str) -> Result<RunnerResponse, String> {
+    let mut stmt = conn
+        .prepare("SELECT Delimiter, NewLineDelimiter FROM sniff_csv(?, header=true)")
+        .map_err(|e| format!("区切りの推定の準備に失敗: {e}"))?;
+    let (delimiter, newline): (String, String) = stmt
+        .query_row([csv_path], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(|e| format!("区切りの推定に失敗: {e}"))?;
+    // 改行は `\r\n` などのエスケープした文字列で返る（実際の改行の文字のこともある）。
+    let crlf = newline.contains('\r') || newline.contains("\\r");
+    Ok(RunnerResponse {
+        ok: true,
+        columns: Vec::new(),
+        column_types: Vec::new(),
+        rows: Vec::new(),
+        total_rows: None,
+        truncated: false,
+        error: None,
+        dialect: Some(CsvDialect {
+            delimiter: unescape_delimiter(&delimiter),
+            newline: if crlf { "\r\n" } else { "\n" }.into(),
+        }),
+    })
+}
+
+/// 推定器が返す区切りのエスケープ（`\t`）を文字に戻す。
+fn unescape_delimiter(delimiter: &str) -> String {
+    match delimiter {
+        "\\t" => "\t".into(),
+        other => other.into(),
     }
 }
 
 /// CSV をロードしてから外部アクセスを封鎖する（順序が要）。
 fn lockdown_load(conn: &Connection, req: &RunnerRequest) -> Result<(), String> {
-    // メモリ/スレッド/一時領域のクォータ。
-    conn.execute_batch(&format!(
-        "SET memory_limit='{}MB'; SET threads=1; SET max_temp_directory_size='0GB';",
-        req.memory_limit_mb
-    ))
-    .map_err(|e| format!("クォータ設定に失敗: {e}"))?;
+    set_quotas(conn, req)?;
 
     // 唯一のファイル読取: 我々が渡した信頼パスから data テーブルへ。
     // - グリッド（Schema/Rows）: 全列 VARCHAR で取り込み、型推論の副作用を避ける
@@ -107,6 +151,7 @@ fn schema(conn: &Connection) -> Result<RunnerResponse, String> {
         total_rows: Some(total_rows(conn)?),
         truncated: false,
         error: None,
+        dialect: None,
     })
 }
 
@@ -175,6 +220,7 @@ fn select(conn: &Connection, sql: &str, max_rows: u32) -> Result<RunnerResponse,
         total_rows: None,
         truncated,
         error: None,
+        dialect: None,
     })
 }
 

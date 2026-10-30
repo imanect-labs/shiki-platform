@@ -742,6 +742,74 @@ async fn tabular_reads_shift_jis_and_explains_what_it_cannot_read_or_write() {
     );
 }
 
+/// Excel の「Unicode テキスト」（UTF-16LE・BOM 付き・タブ区切り・CRLF）の編集（BUG-144）。集計はタブで列を分けて
+/// 読む。編集も集計と同じ判定（隔離ランナーの区切りの推定）で区切りを決め、タブ区切り・CRLF・UTF-16LE と BOM の
+/// まま書き戻す。以前は区切りが「,」で決まっていたので、1 行が 1 列になり、2 列目の編集は範囲外で断られていた。
+#[tokio::test]
+async fn tabular_patch_keeps_the_tab_delimiter_of_excel_unicode_text() {
+    let Some(env) = setup().await else { return };
+    let tag = Uuid::new_v4().simple().to_string();
+    let text = format!("品目\t金額\t番号\r\n交通費\t1200\t{tag}\r\n宿泊費\t9800\t2\r\n");
+    let utf16 = textenc::encode_like(&text, textenc::encoding_rs::UTF_16LE, true).unwrap();
+    let node = env
+        .storage
+        .write_file_internal(
+            &env.ctx,
+            None,
+            &format!("一覧-{}.csv", Uuid::new_v4()),
+            &utf16,
+            "text/csv",
+            None,
+        )
+        .await
+        .expect("create csv");
+    let call = |req: Request<Body>| {
+        let app = env.app.clone();
+        async move { json_body(app.oneshot(req).await.unwrap()).await }
+    };
+    let id = node.id;
+    let query = call(post(
+        &format!("/files/{id}/tabular/query"),
+        json!({"sql": "SELECT \"品目\", \"金額\" FROM data ORDER BY \"金額\""}),
+    ))
+    .await;
+    let patched = call(post(
+        &format!("/files/{id}/tabular/patch"),
+        json!({"base_rev": node.version, "ops": [
+            {"op": "cell_update", "row": 0, "col": 1, "value": "1500"},
+            {"op": "row_insert", "at": 2, "values": ["日当", "3000", "3"]}
+        ]}),
+    ))
+    .await;
+    let (_, saved) = env
+        .storage
+        .read_file_internal(&env.ctx, id, None)
+        .await
+        .unwrap();
+    // 片付け（作った CSV）。
+    env.storage
+        .soft_delete_file(&env.ctx, id, None)
+        .await
+        .unwrap();
+
+    assert_eq!(query.0, StatusCode::OK, "{:?}", query.1);
+    assert_eq!(query.1["columns"], json!(["品目", "金額"]));
+    assert_eq!(patched.0, StatusCode::OK, "{:?}", patched.1);
+    let edited = textenc::decode_text(&saved).unwrap();
+    assert_eq!(
+        (edited.encoding.name(), edited.bom, edited.text.as_str()),
+        (
+            "UTF-16LE",
+            true,
+            format!(
+                "品目\t金額\t番号\r\n交通費\t1500\t{tag}\r\n宿泊費\t9800\t2\r\n日当\t3000\t3\r\n"
+            )
+            .as_str()
+        ),
+        "タブ区切り・CRLF・UTF-16LE と BOM のまま保存する"
+    );
+}
+
 /// 新規 CSV の保存で同じ名前があるとき: 省略は今のまま 409 で、`add_number` はノートと同じ規則（`名前 (2).csv`）で
 /// 空いている名前に保存する（ドライブの新規作成・D-112）。
 #[tokio::test]

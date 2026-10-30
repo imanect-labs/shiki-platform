@@ -439,6 +439,7 @@ mod tests {
             total_rows: total,
             truncated,
             error: None,
+            dialect: None,
         }
     }
 

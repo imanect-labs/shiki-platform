@@ -9,6 +9,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::error::TabularError;
+use crate::protocol::CsvDialect;
 
 /// 1 つのパッチ操作。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,13 +41,35 @@ pub struct PatchResult {
     pub cols: usize,
 }
 
-/// ヘッダ付き CSV バイト列にパッチ列を適用し、新しい CSV を返す。
+/// ヘッダ付き CSV バイト列（カンマ区切り・LF）にパッチ列を適用し、新しい CSV を返す。
 pub fn apply_patches(csv_bytes: &[u8], ops: &[PatchOp]) -> Result<PatchResult, TabularError> {
-    let (mut header, mut rows) = parse_csv(csv_bytes)?;
+    apply_patches_with(csv_bytes, ops, &CsvDialect::default())
+}
+
+/// [`apply_patches`] の区切りと改行を決められる版（読みも書き戻しも `dialect` で行う・BUG-144）。
+///
+/// 区切りは 1 バイトの ASCII 文字だけを扱う（タブ・`;`・`|` など。CSV の読み書きの部品の制約）。それ以外の区切りの
+/// CSV は、中身を変えずに断る。
+pub fn apply_patches_with(
+    csv_bytes: &[u8],
+    ops: &[PatchOp],
+    dialect: &CsvDialect,
+) -> Result<PatchResult, TabularError> {
+    let delimiter = match dialect.delimiter.as_bytes() {
+        [b] if b.is_ascii() => *b,
+        _ => {
+            return Err(TabularError::InvalidPatch(format!(
+                "この CSV の区切り文字（{}）では編集できません。",
+                dialect.delimiter
+            )))
+        }
+    };
+    let crlf = dialect.newline == "\r\n";
+    let (mut header, mut rows) = parse_csv(csv_bytes, delimiter)?;
     for op in ops {
         apply_one(&mut header, &mut rows, op)?;
     }
-    let csv = write_csv(&header, &rows)?;
+    let csv = write_csv(&header, &rows, delimiter, crlf)?;
     Ok(PatchResult {
         csv,
         rows: rows.len(),
@@ -121,10 +144,11 @@ fn apply_one(
 type Parsed = (Vec<String>, Vec<Vec<String>>);
 
 /// ヘッダ＋データ行に分解する（ヘッダ必須）。
-fn parse_csv(bytes: &[u8]) -> Result<Parsed, TabularError> {
+fn parse_csv(bytes: &[u8], delimiter: u8) -> Result<Parsed, TabularError> {
     let mut reader = csv::ReaderBuilder::new()
         .has_headers(true)
         .flexible(true)
+        .delimiter(delimiter)
         .from_reader(bytes);
     let header: Vec<String> = reader
         .headers()
@@ -144,8 +168,21 @@ fn parse_csv(bytes: &[u8]) -> Result<Parsed, TabularError> {
     Ok((header, rows))
 }
 
-fn write_csv(header: &[String], rows: &[Vec<String>]) -> Result<Vec<u8>, TabularError> {
-    let mut writer = csv::WriterBuilder::new().from_writer(Vec::new());
+fn write_csv(
+    header: &[String],
+    rows: &[Vec<String>],
+    delimiter: u8,
+    crlf: bool,
+) -> Result<Vec<u8>, TabularError> {
+    let terminator = if crlf {
+        csv::Terminator::CRLF
+    } else {
+        csv::Terminator::Any(b'\n')
+    };
+    let mut writer = csv::WriterBuilder::new()
+        .delimiter(delimiter)
+        .terminator(terminator)
+        .from_writer(Vec::new());
     writer
         .write_record(header)
         .map_err(|e| TabularError::Internal(format!("CSV 書込に失敗: {e}")))?;
@@ -250,8 +287,58 @@ mod tests {
         )
         .unwrap();
         // 再パースして値が保たれることを確認。
-        let (_h, rows) = parse_csv(&r.csv).unwrap();
+        let (_h, rows) = parse_csv(&r.csv, b',').unwrap();
         assert_eq!(rows[0][0], "has \"quote\"");
         assert_eq!(rows[0][1], "line1\nline2");
+    }
+
+    fn dialect(delimiter: &str, newline: &str) -> CsvDialect {
+        CsvDialect {
+            delimiter: delimiter.into(),
+            newline: newline.into(),
+        }
+    }
+
+    /// タブ区切り・CRLF（Excel の「Unicode テキスト」）は、同じ区切りと改行で読み書きする（BUG-144）。カンマを
+    /// 含む値はタブ区切りでは囲まない（そのまま書く）。
+    #[test]
+    fn tab_delimited_crlf_roundtrip() {
+        let r = apply_patches_with(
+            b"a\tb\r\n1,5\t2\r\n",
+            &[PatchOp::CellUpdate {
+                row: 0,
+                col: 1,
+                value: "x\ty".into(),
+            }],
+            &dialect("\t", "\r\n"),
+        )
+        .unwrap();
+        assert_eq!(csv_str(&r.csv), "a\tb\r\n1,5\t\"x\ty\"\r\n");
+        assert_eq!((r.rows, r.cols), (1, 2));
+        // 決め打ちのカンマで読むと、1 行が 1 列になって 2 列目は範囲外だった。
+        assert!(apply_patches(
+            b"a\tb\r\n1\t2\r\n",
+            &[PatchOp::CellUpdate {
+                row: 0,
+                col: 1,
+                value: "x".into()
+            }]
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn semicolon_and_unsupported_delimiters() {
+        let r = apply_patches_with(
+            b"a;b\n1;2\n",
+            &[PatchOp::ColumnAdd { name: "c".into() }],
+            &dialect(";", "\n"),
+        )
+        .unwrap();
+        assert_eq!(csv_str(&r.csv), "a;b;c\n1;2;\n");
+        assert!(matches!(
+            apply_patches_with(b"a||b\n", &[], &dialect("||", "\n")),
+            Err(TabularError::InvalidPatch(_))
+        ));
     }
 }

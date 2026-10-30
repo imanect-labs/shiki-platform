@@ -30,6 +30,28 @@ pub enum RunnerOp {
     Rows { offset: u64 },
     /// 読み取り専用 SQL（**検証済み**・単一 SELECT/WITH）。テーブル名は `data`。
     Query { sql: String },
+    /// 区切り文字と改行を推定して返す（[`RunnerResponse::dialect`]）。集計の読み込み（`read_csv_auto`）と同じ推定器
+    /// （DuckDB の `sniff_csv`）を同じ引数で使い、CSV の編集が集計と同じ区切りで読み書きする（BUG-144）。
+    Dialect,
+}
+
+/// CSV の区切りと改行（[`RunnerOp::Dialect`] の答え）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CsvDialect {
+    /// 区切り文字（`,`・タブ・`;`・`|` など）。
+    pub delimiter: String,
+    /// 行の終わり（`\n` か `\r\n`）。
+    pub newline: String,
+}
+
+impl Default for CsvDialect {
+    /// 推定しないとき（中身が空など）の形。以前の編集が決め打ちしていた形と同じ。
+    fn default() -> Self {
+        CsvDialect {
+            delimiter: ",".into(),
+            newline: "\n".into(),
+        }
+    }
 }
 
 /// ランナーの応答。
@@ -55,6 +77,9 @@ pub struct RunnerResponse {
     /// エラー理由（ok=false のとき）。
     #[serde(default)]
     pub error: Option<String>,
+    /// 推定した区切りと改行（[`RunnerOp::Dialect`] のときだけ）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dialect: Option<CsvDialect>,
 }
 
 impl RunnerResponse {
@@ -67,6 +92,7 @@ impl RunnerResponse {
             total_rows: None,
             truncated: false,
             error: Some(msg.into()),
+            dialect: None,
         }
     }
 }

@@ -20,8 +20,8 @@ use storage::{NodeKind, OnNameTaken, StorageService};
 use uuid::Uuid;
 
 use crate::error::TabularError;
-use crate::patch::{apply_patches, PatchOp};
-use crate::protocol::{RunnerOp, RunnerRequest, RunnerResponse};
+use crate::patch::{apply_patches_with, PatchOp};
+use crate::protocol::{CsvDialect, RunnerOp, RunnerRequest, RunnerResponse};
 use crate::runner::{run_isolated, RunnerConfig};
 use crate::sql_guard::validate_read_only;
 
@@ -174,7 +174,9 @@ impl TabularService {
             .read_file_internal(ctx, file_id, trace_id)
             .await?;
         let original = decode_csv(&bytes)?;
-        let result = apply_patches(original.text.as_bytes(), ops)?;
+        // 区切りと改行は、集計と同じ推定（隔離ランナー）で決め、書き戻しも同じ形にする（BUG-144）。
+        let dialect = self.dialect(&original.text).await;
+        let result = apply_patches_with(original.text.as_bytes(), ops, &dialect)?;
         let csv = encode_back(&result.csv, &original)?;
         let updated = self
             .storage
@@ -245,16 +247,32 @@ impl TabularService {
         }
         // ランナー（DuckDB）は UTF-8 だけを読むので、文字コードを決めて UTF-8 にしてから渡す（BOM は含めない）。
         let text = decode_csv(&bytes)?.text;
-        let mut tmp = tempfile::Builder::new()
-            .prefix("shiki-tabular-")
-            .suffix(".csv")
-            .tempfile()
-            .map_err(|e| TabularError::Internal(format!("一時ファイル作成に失敗: {e}")))?;
-        tmp.write_all(text.as_bytes())
-            .map_err(|e| TabularError::Internal(format!("一時ファイル書込に失敗: {e}")))?;
-        tmp.flush()
-            .map_err(|e| TabularError::Internal(format!("一時ファイル flush に失敗: {e}")))?;
-        Ok((tmp, node.version))
+        Ok((runner_input(&text)?, node.version))
+    }
+
+    /// CSV の区切りと改行を、集計の読み込みと同じ推定（隔離ランナーの [`RunnerOp::Dialect`]）で決める（BUG-144）。
+    ///
+    /// 中身が空のときと推定できないとき（ランナーが動かない・推定器が読めない CSV）は、以前の決め打ち（カンマ区切り・
+    /// LF）で読む。推定できない CSV は集計でも読めないが、編集はこれまでどおりカンマ区切りとして通す。
+    async fn dialect(&self, text: &str) -> CsvDialect {
+        if text.trim().is_empty() {
+            return CsvDialect::default();
+        }
+        let sniffed = match runner_input(text) {
+            Ok(tmp) => self.run(RunnerOp::Dialect, tmp.path(), 0).await,
+            Err(e) => Err(e),
+        };
+        match sniffed {
+            Ok(RunnerResponse {
+                dialect: Some(dialect),
+                ..
+            }) => dialect,
+            Ok(_) => CsvDialect::default(),
+            Err(e) => {
+                tracing::warn!(error = %e, "CSV の区切りを推定できませんでした（カンマ区切りとして編集します）");
+                CsvDialect::default()
+            }
+        }
     }
 
     /// 隔離ランナーを起動して結果を受け取る（クォータ付き）。
@@ -290,6 +308,20 @@ impl TabularService {
     }
 }
 
+/// UTF-8 にした CSV を、隔離ランナー用の私有一時ファイルへ書く。
+fn runner_input(text: &str) -> Result<tempfile::NamedTempFile, TabularError> {
+    let mut tmp = tempfile::Builder::new()
+        .prefix("shiki-tabular-")
+        .suffix(".csv")
+        .tempfile()
+        .map_err(|e| TabularError::Internal(format!("一時ファイル作成に失敗: {e}")))?;
+    tmp.write_all(text.as_bytes())
+        .map_err(|e| TabularError::Internal(format!("一時ファイル書込に失敗: {e}")))?;
+    tmp.flush()
+        .map_err(|e| TabularError::Internal(format!("一時ファイル flush に失敗: {e}")))?;
+    Ok(tmp)
+}
+
 /// CSV の中身を読めないときの文言（利用者向け・ワークフローの誤りと CSV の画面にそのまま出す）。
 const NOT_TEXT_CSV: &str =
     "この CSV の中身は文章として読めません。UTF-8 か Shift_JIS で保存した CSV を選んでください。";
@@ -317,6 +349,7 @@ fn encode_back(csv: &[u8], original: &textenc::Decoded) -> Result<Vec<u8>, Tabul
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+    use crate::patch::apply_patches;
     use textenc::encoding_rs::{SHIFT_JIS, UTF_16LE, UTF_8};
 
     /// Excel が保存する文字コードの CSV を読み、編集は元の文字コードと BOM のまま書き戻す（GAP-45）。
