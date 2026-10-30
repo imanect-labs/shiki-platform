@@ -19,7 +19,7 @@ import type {
 import type { MapFigure } from "@imanect/yui";
 
 import type { MapConfig } from "@/lib/map-api";
-import { mapboxTransform, mapboxUrl, MAP_PALETTE, ROUTE_COLOR, tintStyle, type MapMode } from "./map-style";
+import { MAP_PALETTE, ROUTE_COLOR, tintStyle, type MapMode } from "./map-style";
 
 type Maplibre = typeof import("maplibre-gl");
 
@@ -36,13 +36,13 @@ function loadMaplibre(): Promise<Maplibre> {
 
 const styles = new Map<string, Promise<StyleSpecification>>();
 /// スタイル JSON は地図ごとに読み直さない（同じ URL は 1 回）。
-function loadStyle(url: string, token: string | null | undefined): Promise<StyleSpecification> {
+function loadStyle(url: string): Promise<StyleSpecification> {
   let p = styles.get(url);
   if (!p) {
-    p = Promise.all([fetch(mapboxUrl(url, token)), import("./style-sanitize")])
-      .then(async ([r, { sanitizeStyle }]) => {
+    p = fetch(url)
+      .then(async (r) => {
         if (!r.ok) throw new Error(`style ${r.status}`);
-        return sanitizeStyle((await r.json()) as StyleSpecification);
+        return (await r.json()) as StyleSpecification;
       })
       .catch((e: unknown) => {
         styles.delete(url);
@@ -232,16 +232,15 @@ export function useYuiMap({
   paddingRef.current = padding;
 
   const styleUrl = mode === "dark" ? config.style_url_dark : config.style_url_light;
-  const token = config.mapbox_token;
 
   // 地図の生成と破棄（画面から離れたら破棄）。
   React.useEffect(() => {
     const el = container.current;
-    if (!active || !el || !config.provider || !config.style_url_light) return;
+    if (!active || !el || !config.style_url_light) return;
     let cancelled = false;
     setStatus("loading");
     const url = (modeRef.current === "dark" ? config.style_url_dark : config.style_url_light) ?? config.style_url_light;
-    Promise.all([loadMaplibre(), loadStyle(url, token)])
+    Promise.all([loadMaplibre(), loadStyle(url)])
       .then(([maplibre, style]) => {
         if (cancelled) return;
         libRef.current = maplibre;
@@ -250,7 +249,6 @@ export function useYuiMap({
         const map = new maplibre.Map({
           container: el,
           style: withOverlay(style, modeRef.current, fig, selectedRef.current),
-          transformRequest: mapboxTransform(token),
           attributionControl: { compact: true },
           cooperativeGestures: cooperative,
           dragRotate: false,
@@ -307,7 +305,7 @@ export function useYuiMap({
       setStatus("idle");
     };
     // mode・figure の変化は下の effect で差し替える（地図を作り直さない）。
-  }, [active, container, config.provider, config.style_url_light, config.style_url_dark, token, cooperative]);
+  }, [active, container, config.style_url_light, config.style_url_dark, cooperative]);
 
   // 明暗の切り替え: スタイルだけを差し替える（ピンは DOM なので残る）。作ったときの明暗のままなら何もしない。
   const mapReady = status === "ready";
@@ -316,7 +314,7 @@ export function useYuiMap({
     if (!map || !mapReady || !styleUrl || appliedModeRef.current === mode) return;
     appliedModeRef.current = mode;
     let cancelled = false;
-    loadStyle(styleUrl, token)
+    loadStyle(styleUrl)
       .then((style) => {
         if (!cancelled) map.setStyle(withOverlay(style, mode, figureRef.current, selectedRef.current));
       })
@@ -324,7 +322,7 @@ export function useYuiMap({
     return () => {
       cancelled = true;
     };
-  }, [mode, styleUrl, token, mapReady]);
+  }, [mode, styleUrl, mapReady]);
 
   // ピン・道順・視点（生成中に地点が増えるたび）。
   const markerKey = React.useMemo(

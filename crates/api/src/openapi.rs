@@ -296,7 +296,6 @@ use utoipa::{
         crate::routes::llm_models::LlmModelOption,
         crate::routes::llm_models::AutoTarget,
         crate::routes::llm_models::LlmModelsResponse,
-        crate::routes::map::MapProviderKind,
         crate::routes::map::MapConfigResponse,
         crate::routes::org_admin_ai::AdminProvider,
         crate::routes::org_admin_ai::AdminModel,

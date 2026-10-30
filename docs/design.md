@@ -697,8 +697,8 @@ flowchart TB
   `crates/chat/src/worker/yui_reference.json`。`cd web && pnpm gen:yui`・依存と版がずれたらテストと CI が落とす）。
   `ui_reference` は説明を返すだけで、図を出すツールではない。表示だけの種類は
   URL・HTML を持たず、描くのは文字と数値だけ＝扱いは Markdown の表と同じ信頼水準なので、別のスペックは持たず
-  本文と一緒に保存・再送する。例外は地図（`map`）で、地図が有効な構成（`map.provider`）では、図を開いた人の
-  ブラウザが本文の座標の周りのタイルを提供元から読む（外へ出るのは座標の周りのタイルの番号と、ブラウザの IP・UA。
+  本文と一緒に保存・再送する。例外は地図（`map`）で、地図が有効な構成（`map.style_url_light`）では、図を開いた人の
+  ブラウザが本文の座標の周りのタイルを配信元から読む（外へ出るのは座標の周りのタイルの番号と、ブラウザの IP・UA。
   本文の文字は出ない）。地点のカードの「Google マップで開く」は緯度・経度だけから作る通常のリンク（押したときだけ外へ出る）。
   ノート本文の `` ```ui `` コードブロックも同じ部品で図として描く（#597）。保存は language=`ui` の通常の
   コードブロックのままで、図にするのは表示（TipTap の NodeView）だけ。Yjs・md 往復・サーバ側の扱いは変えない。
@@ -735,11 +735,11 @@ flowchart TB
 - 図の種類（棒・折れ線・円・散布図・流れ図・構成図・地図など）の正本は Yui の仕様（`@imanect/yui`）。
 - 地図（`map`）は **データ（地点・道順・縮尺）と静止画は Yui、背景の地図はホスト（web）** が描く
   （Yui の React 部品の `renderMap` に web の地図部品を差し込む）。
-  - 背景の地図タイルは「外部接続必須機能」（NFR-2）。提供元は設定 `map.provider` で選ぶ
-    （SaaS＝Mapbox の公開トークン `pk.*`／オンプレ＝自前のタイル配信のスタイル URL／未設定＝無効）。
-    web は `GET /map/config` で設定を読み、ブラウザがタイルを提供元から直接読む（サーバーは中継しない）。
-  - 描画は MapLibre GL JS（BSD）。Mapbox のスタイルも MapLibre で読み（`mapbox://` の URL を書き換える）、
-    提供元ごとに分岐させない。読み込んだスタイルは Shiki の配色に塗り直す（`web/src/components/map/map-style.ts`）。
+  - 背景の地図タイルは「外部接続必須機能」（NFR-2）。配信元は設定 `map.style_url_light`（`_dark`）の
+    MapLibre のスタイル JSON の URL で選ぶ（OpenFreeMap・自前のタイル配信／未設定＝無効）。
+    web は `GET /map/config` で設定を読み、ブラウザがタイルを配信元から直接読む（サーバーは中継しない）。
+  - 描画は MapLibre GL JS（BSD）。読み込んだスタイルは Shiki の配色に塗り直す（`web/src/components/map/map-style.ts`）ので、
+    配信元ごとにスタイルを作り込まない。
   - 地図が無効・スタイルを読めないときは Yui の静止画（位置関係・道順・地点の一覧）に戻す。書き出し（PNG・コピー）も静止画。
   - 長い会話で WebGL の文脈が尽きないよう、画面から離れた地図は破棄する（PIT-77）。
 - ワークフロー・ミニアプリの編集面（dnd / AI 編集 / shiki script）は [miniapp-platform.md](./miniapp-platform.md) が正本。

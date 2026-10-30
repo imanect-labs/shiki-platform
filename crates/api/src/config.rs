@@ -311,7 +311,7 @@ pub use backends::{
     LlmProviderLimit, LogFormat, ObjectStoreBackend, StorageConfig, TabularConfig, TelemetryConfig,
     UploadGcConfig, VectorConfig, VectorStoreBackend, WebSearchBackend, WebSearchConfig,
 };
-pub use map::{MapClientConfig, MapConfig, MapProvider};
+pub use map::{MapClientConfig, MapConfig};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {

@@ -4,7 +4,7 @@ import { apiFetch } from "@/lib/api";
 /// OpenAPI(utoipa) から生成した型（手書きの対応物を作らない）。
 export type MapConfig = components["schemas"]["MapConfigResponse"];
 
-const DISABLED: MapConfig = { provider: null, style_url_light: null, style_url_dark: null, mapbox_token: null };
+const DISABLED: MapConfig = { style_url_light: null, style_url_dark: null };
 
 let cached: Promise<MapConfig> | null = null;
 

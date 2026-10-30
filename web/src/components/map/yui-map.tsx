@@ -42,7 +42,7 @@ function useMapConfig(): MapConfig | null {
     if (config) return;
     let alive = true;
     void fetchMapConfig().then((c) => {
-      if (c.provider) resolvedConfig = c;
+      if (c.style_url_light) resolvedConfig = c;
       if (alive) setConfig(c);
     });
     return () => {
@@ -55,7 +55,7 @@ function useMapConfig(): MapConfig | null {
 export function YuiMap({ figure, fallback }: { figure: MapFigure; fallback: React.ReactNode }) {
   const config = useMapConfig();
   const [failed, setFailed] = React.useState(false);
-  if (config && (!config.provider || failed)) {
+  if (config && (!config.style_url_light || failed)) {
     return (
       <div data-testid="yui-map-static">
         {fallback}
@@ -178,9 +178,9 @@ function MapSurface({
   const { status, zoom, recenter } = useYuiMap({
     container: canvas,
     figure,
-    config: config ?? { provider: null, style_url_light: null, style_url_dark: null, mapbox_token: null },
+    config: config ?? { style_url_light: null, style_url_dark: null },
     mode,
-    active: near && !!config?.provider,
+    active: near && !!config?.style_url_light,
     cooperative,
     selected,
     onSelect,

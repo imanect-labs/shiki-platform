@@ -1,16 +1,11 @@
 // 地図のスタイル（提供元のスタイル JSON）を Shiki の配色に塗り直す。
 //
-// 提供元（Mapbox・OpenFreeMap・自前のタイル配信）ごとにスタイルを作り込まず、読み込んだスタイルの
+// 配信元（OpenFreeMap・自前のタイル配信）ごとにスタイルを作り込まず、読み込んだスタイルの
 // レイヤーを種類（塗り・線・文字）と出典のレイヤー名（water・park・road…）で見分けて色を差し替える。
-// Mapbox Streets v8 と OpenMapTiles のどちらのレイヤー名にも当たるようにしている。
+// OpenMapTiles のレイヤー名を基準にし、似た名前の他のスキーマにも当たるようにしている。
 // 色は zinc の地に、水は冬・緑地は夏の季節色を薄く敷き、店の POI と道路番号は消す（地点のピンを主役にする）。
 
-import type {
-  ExpressionSpecification,
-  LayerSpecification,
-  RequestParameters,
-  StyleSpecification,
-} from "maplibre-gl";
+import type { ExpressionSpecification, LayerSpecification, StyleSpecification } from "maplibre-gl";
 
 export type MapMode = "light" | "dark";
 
@@ -82,7 +77,7 @@ function sourceLayer(l: LayerSpecification): string {
   return "source-layer" in l && typeof l["source-layer"] === "string" ? l["source-layer"] : "";
 }
 
-/// 日本語の名前を優先する（OpenMapTiles は `name:ja`、Mapbox は `name_ja`）。
+/// 日本語の名前を優先する（OpenMapTiles は `name:ja`。`name_ja` の形のスキーマもある）。
 /// 既定のスタイルは英語名か「英語\n日本語」の 2 段で出すため、利用者の言語に合わせて 1 段にする。
 const NAME_JA: ExpressionSpecification = ["coalesce", ["get", "name:ja"], ["get", "name_ja"], ["get", "name"]];
 
@@ -174,29 +169,4 @@ export function tintStyle(style: StyleSpecification, mode: MapMode): StyleSpecif
   const next = structuredClone(style);
   for (const l of next.layers) tintLayer(l, p);
   return next;
-}
-
-/// `mapbox://` の URL を HTTPS の API に書き換える（MapLibre は mapbox:// を解決しない）。
-/// Mapbox 公式の「MapLibre GL JS で Mapbox の API を使う」に沿う。トークンは公開トークン（pk.*）。
-export function mapboxUrl(url: string, token: string | null | undefined): string {
-  if (!token || !url.startsWith("mapbox://")) return url;
-  const t = `access_token=${encodeURIComponent(token)}`;
-  const rest = url.slice("mapbox://".length);
-  const [path, query] = rest.split("?", 2) as [string, string | undefined];
-  const q = query ? `${query}&${t}` : t;
-  if (path.startsWith("styles/")) return `https://api.mapbox.com/styles/v1/${path.slice("styles/".length)}?${q}`;
-  if (path.startsWith("sprites/")) {
-    // mapbox://sprites/{user}/{style}[@2x] → /styles/v1/{user}/{style}/sprite[@2x].{json|png}
-    const m = /^sprites\/([^/]+)\/([^/@.]+)(@2x)?(\.\w+)?$/.exec(path);
-    if (m) return `https://api.mapbox.com/styles/v1/${m[1]}/${m[2]}/sprite${m[3] ?? ""}${m[4] ?? ""}?${q}`;
-  }
-  if (path.startsWith("fonts/")) return `https://api.mapbox.com/fonts/v1/${path.slice("fonts/".length)}?${q}`;
-  if (path.startsWith("tiles/")) return `https://api.mapbox.com/v4/${path.slice("tiles/".length)}?${q}`;
-  // タイルセット（mapbox://mapbox.mapbox-streets-v8,…）は TileJSON。
-  return `https://api.mapbox.com/v4/${path}.json?secure&${q}`;
-}
-
-/// MapLibre の transformRequest。mapbox:// だけを書き換え、他はそのまま。
-export function mapboxTransform(token: string | null | undefined) {
-  return (url: string): RequestParameters => ({ url: mapboxUrl(url, token) });
 }
