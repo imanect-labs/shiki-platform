@@ -139,7 +139,7 @@ fn amount(n: i64) -> String {
     }
 }
 
-fn group_digits(n: i64) -> String {
+pub(crate) fn group_digits(n: i64) -> String {
     let s = n.to_string();
     let mut out = String::new();
     for (i, c) in s.chars().enumerate() {

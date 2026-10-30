@@ -1824,6 +1824,112 @@ async fn purge_artifacts(env: &Env, ids: &[Uuid]) {
         .unwrap();
 }
 
+/// 書き込みの決まり（最初の状態を過ぎたら申請者は書き換えられない）を付けると、途中から申請者の列を足したテーブルの
+/// 既存のレコード（状態が最初の状態でなく、申請者の列が空）は誰も書き換えられなくなる。保存は数を言って 409
+/// `fsm_locks_records` で止め、確かめたら保存する。決まりを外す保存・同じ形のまま保存し直す保存は止めない。
+#[tokio::test]
+async fn table_fsm_write_lock_asks_before_locking_existing_records() {
+    let Some(env) = setup().await else { return };
+    let t = approval_table(&env, "locks").await;
+    let fsm_url = format!("/data/tables/{}/fsm", t.id);
+    let rec_url = format!("/data/tables/{}/records", t.id);
+    // 状態の進め方を作る前のレコード: 承認済みで申請者が空（2 件）・申請中で申請者が空・承認済みで申請者あり。
+    let dir = storage::DirectoryStore::new(env.pool.clone());
+    dir.upsert_user("alice", TENANT, "acme", "alice@acme.example", "alice")
+        .await
+        .unwrap();
+    for data in [
+        json!({ "title": "前からある 1", "status": "承認" }),
+        json!({ "title": "前からある 2", "status": "却下" }),
+        json!({ "title": "まだ申請中", "status": "申請中" }),
+        json!({ "title": "申請者あり", "status": "承認", "applicant": "alice" }),
+    ] {
+        let (s, v) = send(&env, post_json("alice", &rec_url, &json!({ "data": data }))).await;
+        assert_eq!(s, StatusCode::CREATED, "{v}");
+    }
+    let (_, v) = send(&env, get("alice", &fsm_url)).await;
+    let body = approval_fsm(
+        &["申請中", "承認", "却下"],
+        &[("申請中", "承認"), ("申請中", "却下")],
+    );
+    let save = |sv: &Value, lock: Value, extra: Value| {
+        let mut req = json!({
+            "status_field": "status",
+            "body": body,
+            "applicant_write_lock": lock,
+            "expected_schema_version": sv,
+        });
+        if let (Some(r), Some(e)) = (req.as_object_mut(), extra.as_object()) {
+            r.extend(e.clone());
+        }
+        req
+    };
+    let (s, locked) = send(
+        &env,
+        put_json(
+            "alice",
+            &fsm_url,
+            &save(&v["schema_version"], json!("applicant"), json!({})),
+        ),
+    )
+    .await;
+    // 確かめると保存する（決まりは付く）。
+    let (s2, saved) = send(
+        &env,
+        put_json(
+            "alice",
+            &fsm_url,
+            &save(
+                &v["schema_version"],
+                json!("applicant"),
+                json!({ "confirm_locked": true }),
+            ),
+        ),
+    )
+    .await;
+    // 同じ形のまま保存し直すのは止めない（効きが変わらない）。
+    let (s3, again) = send(
+        &env,
+        put_json(
+            "alice",
+            &fsm_url,
+            &save(&saved["schema_version"], json!("applicant"), json!({})),
+        ),
+    )
+    .await;
+    // 決まりを外す保存も止めない。
+    let (s4, off) = send(
+        &env,
+        put_json(
+            "alice",
+            &fsm_url,
+            &save(&again["schema_version"], Value::Null, json!({})),
+        ),
+    )
+    .await;
+    purge_fsm_artifacts(&env, t.id).await;
+    purge_table(&env, t.id).await;
+
+    assert_eq!(s, StatusCode::CONFLICT, "{locked}");
+    assert_eq!(locked["code"], "fsm_locks_records", "{locked}");
+    assert_eq!(
+        (locked["count"].clone(), locked["more"].clone()),
+        (json!(2), json!(false))
+    );
+    assert_eq!(
+        locked["message"],
+        "申請者の列が空で、最初の状態を過ぎたレコードが 2 件あります。保存すると、これらのレコードは誰も書き換えたり削除したりできなくなります。"
+    );
+    assert_eq!(s2, StatusCode::OK, "{saved}");
+    assert!(
+        saved["schema"]["row_policy"]["write"].is_object(),
+        "{saved}"
+    );
+    assert_eq!(s3, StatusCode::OK, "{again}");
+    assert_eq!(s4, StatusCode::OK, "{off}");
+    assert!(off["schema"]["row_policy"].is_null(), "{off}");
+}
+
 /// テーブルの設定の「状態の進め方」（GAP-44・D-84・D-115）: 持ち主だけが読み書きでき、保存は状態の列の選択肢・
 /// 使う版・書き込みの決まりを 1 回で替える。既定の形では、申請した本人は自分の申請を承認できず、最初の状態を
 /// 過ぎると書き換えられない。承認を待っているレコードが判断できなくなる変更は確認が要り、列の編集だけで状態を

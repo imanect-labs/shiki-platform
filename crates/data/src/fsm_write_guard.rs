@@ -34,8 +34,9 @@ fn guard(status_field: &str, initial: &str, applicant: &str) -> PolicyExpr {
     ])
 }
 
-/// `expr` がこの決まりの後半の形なら、申請者の列（最初の状態の値は問わない・保存のたびに今の値で組み直す）。
-fn guard_applicant<'a>(expr: &'a PolicyExpr, status_field: &str) -> Option<&'a str> {
+/// `expr` がこの決まりの後半の形なら、（最初の状態, 申請者の列）。最初の状態の値は形の判定では問わない（保存の
+/// たびに今の値で組み直す）。
+fn guard_parts<'a>(expr: &'a PolicyExpr, status_field: &str) -> Option<(&'a str, &'a str)> {
     let PolicyExpr::Any(v) = expr else {
         return None;
     };
@@ -43,25 +44,39 @@ fn guard_applicant<'a>(expr: &'a PolicyExpr, status_field: &str) -> Option<&'a s
         [PolicyExpr::FieldCmp {
             field: s,
             op: CmpOp::Eq,
-            value: PolicyOperand::Lit(Value::String(_)),
+            value: PolicyOperand::Lit(Value::String(initial)),
         }, PolicyExpr::FieldCmp {
             field: a,
             op: CmpOp::Ne,
             value: PolicyOperand::UserId,
-        }] if s == status_field => Some(a.as_str()),
+        }] if s == status_field => Some((initial.as_str(), a.as_str())),
         _ => None,
     }
 }
 
-/// 書き込みの決まりがこの決まりの形なら、（元の書き込みの決まり, 申請者の列）。
-fn split(policy: &RowPolicy, status_field: &str) -> Option<(PolicyExpr, String)> {
+/// 書き込みの決まりがこの決まりの形なら、（元の書き込みの決まり, 最初の状態, 申請者の列）。
+fn split<'a>(
+    policy: &'a RowPolicy,
+    status_field: &str,
+) -> Option<(&'a PolicyExpr, &'a str, &'a str)> {
     let PolicyExpr::All(v) = policy.write.as_ref()? else {
         return None;
     };
     match v.as_slice() {
-        [base, tail] => guard_applicant(tail, status_field).map(|a| (base.clone(), a.to_string())),
+        [base, tail] => guard_parts(tail, status_field).map(|(i, a)| (base, i, a)),
         _ => None,
     }
+}
+
+/// いまの行の決まりで付いているこの決まりの（最初の状態, 申請者の列）（オフなら `None`）。
+#[must_use]
+pub(crate) fn current_guard(
+    policy: Option<&RowPolicy>,
+    status_field: &str,
+) -> Option<(String, String)> {
+    policy
+        .and_then(|p| split(p, status_field))
+        .map(|(_, i, a)| (i.to_string(), a.to_string()))
 }
 
 /// いまの行の決まりで、この決まりが使っている申請者の列（オフなら `None`）。
@@ -70,7 +85,9 @@ pub(crate) fn applicant_write_lock(
     policy: Option<&RowPolicy>,
     status_field: &str,
 ) -> Option<String> {
-    policy.and_then(|p| split(p, status_field)).map(|(_, a)| a)
+    policy
+        .and_then(|p| split(p, status_field))
+        .map(|(_, _, a)| a.to_string())
 }
 
 /// この決まりを（組み直して）付けた行の決まり。元の書き込みの決まりは保つ。
@@ -83,7 +100,9 @@ pub(crate) fn with_guard(
 ) -> RowPolicy {
     let read = policy.map_or(PolicyExpr::Public, |p| p.read.clone());
     let base = match policy {
-        Some(p) => split(p, status_field).map_or_else(|| p.write_expr().clone(), |(b, _)| b),
+        Some(p) => {
+            split(p, status_field).map_or_else(|| p.write_expr().clone(), |(b, _, _)| b.clone())
+        }
         None => PolicyExpr::Public,
     };
     RowPolicy {
@@ -99,11 +118,11 @@ pub(crate) fn with_guard(
 #[must_use]
 pub(crate) fn without_guard(policy: Option<&RowPolicy>, status_field: &str) -> Option<RowPolicy> {
     let p = policy?;
-    let Some((base, _)) = split(p, status_field) else {
+    let Some((base, _, _)) = split(p, status_field) else {
         return Some(p.clone());
     };
     // 元の書き込みの決まりが読む決まりと同じなら、書き込みの決まりは無かった（read を流用していた）。
-    let write = (base != p.read).then_some(base);
+    let write = (*base != p.read).then(|| base.clone());
     if write.is_none() && p.read == PolicyExpr::Public {
         // 行の決まりが無かったテーブル（付けるときに read = public で作った）。
         return None;
@@ -133,6 +152,11 @@ mod tests {
             Some("applicant")
         );
         assert_eq!(without_guard(Some(&p), "status"), None);
+        assert_eq!(
+            current_guard(Some(&p), "status"),
+            Some(("申請中".to_string(), "applicant".to_string()))
+        );
+        assert_eq!(current_guard(None, "status"), None);
         let again = with_guard(Some(&p), "status", "下書き", "applicant");
         assert_eq!(
             again.write,

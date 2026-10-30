@@ -614,6 +614,7 @@ use utoipa::{
         crate::routes::data_table_fsm::PendingApprovalMove,
         crate::routes::data_table_fsm::WorkflowStateUse,
         crate::routes::data_table_fsm::FsmInUseBody,
+        crate::routes::data_table_fsm::FsmLocksRecordsBody,
         data::PinnedFsm,
         // 承認の受信箱（GAP-08）。
         crate::routes::approvals::ApprovalDecisionDto,

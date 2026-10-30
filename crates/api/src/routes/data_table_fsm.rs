@@ -8,6 +8,9 @@
 //!   実行の期限まで残るため）。どのワークフロー・どのレコードかは返さない（数だけ）。
 //! - 保存済みのワークフロー: このテーブルの状態を使う（承認の判断の行き先・状態を進める先・状態のきっかけと
 //!   待ちの絞り込み）もののうち、持ち主が見られるもの。止めずに画面で注意を出す材料にする。
+//! - 書き込みの決まり（最初の状態を過ぎたら申請者は書き換えられない）を付けると、だれも書き換え・削除できなくなる
+//!   レコード（状態が最初の状態でなく、申請者の列が空）: `confirm_locked` が無い限り 409 `fsm_locks_records`
+//!   （数だけ）で止める。途中から申請者の列を足したテーブルで、保存済みのワークフローの更新・削除が断られ始めるため。
 
 use std::collections::BTreeSet;
 
@@ -83,6 +86,10 @@ pub struct SaveTableFsmRequest {
     /// 承認を待っているレコードが判断できなくなる変更でも保存する（無ければ 409 `fsm_in_use` で止める）。
     #[serde(default)]
     pub confirm_pending: bool,
+    /// 書き込みの決まりを付けると、だれも書き換え・削除できなくなるレコードがあっても保存する（無ければ 409
+    /// `fsm_locks_records` で止める）。
+    #[serde(default)]
+    pub confirm_locked: bool,
 }
 
 /// 409 `fsm_in_use`: 保存すると、承認を待っているレコードが判断できなくなる。
@@ -97,6 +104,23 @@ pub struct FsmInUseBody {
     pub message: String,
     /// 判断できなくなる組（いまの状態 → 判断の行き先・数）。
     pub pending: Vec<PendingApprovalMove>,
+}
+
+/// 409 `fsm_locks_records`: 書き込みの決まりを付けると、だれも書き換え・削除できなくなるレコードがある
+/// （状態が最初の状態でなく、申請者の列が空のレコード）。
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct FsmLocksRecordsBody {
+    /// 常に 409。
+    pub status: u16,
+    pub title: String,
+    /// 常に `fsm_locks_records`。
+    pub code: String,
+    /// 利用者に見せてよい文言。
+    pub message: String,
+    /// 書き換えられなくなるレコードの数（上限で打ち切る）。
+    pub count: i64,
+    /// 上限を超えた（「{count} 件以上」）。
+    pub more: bool,
 }
 
 fn internal(e: impl std::fmt::Display) -> ApiError {
@@ -189,7 +213,7 @@ pub async fn get_table_fsm(
         (status = 401, description = "未認証"),
         (status = 403, description = "テーブルの持ち主でない"),
         (status = 404, description = "テーブルが見つからない（見えないを含む）"),
-        (status = 409, description = "スキーマの版が違う（code=conflict）・承認を待っているレコードが判断できなくなる（code=fsm_in_use）", body = FsmInUseBody),
+        (status = 409, description = "スキーマの版が違う（code=conflict）・承認を待っているレコードが判断できなくなる（code=fsm_in_use・FsmInUseBody）・書き込みの決まりでだれも書き換えられなくなるレコードがある（code=fsm_locks_records・FsmLocksRecordsBody）", body = FsmInUseBody),
     ),
     security(("session" = [])),
 )]
@@ -233,19 +257,35 @@ pub async fn save_table_fsm(
             ));
         }
     }
+    let save = data::SaveTableFsm {
+        status_field: req.status_field,
+        body: req.body,
+        applicant_write_lock: req.applicant_write_lock,
+        expected_schema_version: req.expected_schema_version,
+    };
+    // 書き込みの決まりを付けると、途中から申請者の列を足したテーブルの既存のレコードが、持ち主・編集者・保存済みの
+    // ワークフローのどれからも書き換えられなくなる。数を言って確かめてから保存する（承認待ちと同じく数だけ返す）。
+    if !req.confirm_locked {
+        if let Some(locked) = state.fsms.records_locked_by(&ctx, id, &save).await? {
+            let amount = locked.amount();
+            let body = FsmLocksRecordsBody {
+                status: 409,
+                title: "Conflict".into(),
+                code: "fsm_locks_records".into(),
+                message: format!(
+                    "申請者の列が空で、最初の状態を過ぎたレコードが {amount}あります。保存すると、これらのレコードは誰も書き換えたり削除したりできなくなります。"
+                ),
+                count: locked.count,
+                more: locked.more,
+            };
+            return Err(ApiError::ConflictJson(
+                serde_json::to_value(body).map_err(internal)?,
+            ));
+        }
+    }
     let saved = state
         .fsms
-        .save_for_table(
-            &ctx,
-            id,
-            &data::SaveTableFsm {
-                status_field: req.status_field,
-                body: req.body,
-                applicant_write_lock: req.applicant_write_lock,
-                expected_schema_version: req.expected_schema_version,
-            },
-            trace.as_deref(),
-        )
+        .save_for_table(&ctx, id, &save, trace.as_deref())
         .await?;
     Ok(Json(saved))
 }

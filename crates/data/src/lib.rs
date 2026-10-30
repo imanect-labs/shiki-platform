@@ -123,7 +123,7 @@ pub use formula::{FormulaCmpOp, FormulaExpr, SwitchCase, MAX_FORMULA_DEPTH};
 pub use fsm::{FsmBody, FsmRef, FsmTransition};
 pub use fsm_rules::{AllowedTransitions, ApprovalTargetView};
 pub use fsm_store::FsmStore;
-pub use fsm_table::{PinnedFsm, SaveTableFsm, TableFsm};
+pub use fsm_table::{LockedRecords, PinnedFsm, SaveTableFsm, TableFsm, LOCK_COUNT_CAP};
 #[doc(hidden)]
 pub use index::text_index_delete_sql;
 pub use index::{

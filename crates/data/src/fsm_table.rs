@@ -60,6 +60,31 @@ pub struct SaveTableFsm {
     pub expected_schema_version: i64,
 }
 
+/// 書き込みの決まりを付けると、だれも書き換え・削除できなくなるレコードの数（[`FsmStore::records_locked_by`]）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LockedRecords {
+    /// 数（上限 [`LOCK_COUNT_CAP`] で打ち切る）。
+    pub count: i64,
+    /// 上限を超えた（「{上限} 件以上」と言う）。
+    pub more: bool,
+}
+
+impl LockedRecords {
+    /// 数の言い方（「1,234 件」・上限を超えたら「10,000 件以上」）。
+    #[must_use]
+    pub fn amount(&self) -> String {
+        let n = crate::schema_data_check::group_digits(self.count);
+        if self.more {
+            format!("{n} 件以上")
+        } else {
+            format!("{n} 件")
+        }
+    }
+}
+
+/// [`LockedRecords`] の数の上限（これを超えたら「以上」）。
+pub const LOCK_COUNT_CAP: i64 = 10_000;
+
 fn invalid(field: Option<&str>, m: &str) -> DataError {
     DataError::input_detail(InvalidCode::FsmInvalid, field, m)
 }
@@ -168,6 +193,58 @@ impl FsmStore {
                 trace_id,
             )
             .await
+    }
+
+    /// 保存で書き込みの決まり（[`crate::fsm_write_guard`]）を付ける・付け直すと、だれも書き換え・削除できなく
+    /// なるレコードの数（認可は呼び出し側が持ち主で済ませる・数えるのはテーブルの全行）。
+    ///
+    /// 値なしの `ne` は偽なので、状態が最初の状態でなく申請者の列が空のレコードは、決まりを付けると持ち主・
+    /// 編集者・保存済みのワークフローのどれからも書き換えられない（途中から申請者の列を足したテーブルで起きる）。
+    /// 決まりを外す保存・同じ最初の状態と申請者の列のまま保存し直す保存は、効きが変わらないので数えない（`None`）。
+    /// 列が無いなど保存が断る要求も数えない（保存が理由を言う）。
+    pub async fn records_locked_by(
+        &self,
+        ctx: &AuthContext,
+        table_id: Uuid,
+        req: &SaveTableFsm,
+    ) -> Result<Option<LockedRecords>, DataError> {
+        let (Some(applicant), Some(initial)) =
+            (req.applicant_write_lock.as_deref(), req.body.states.first())
+        else {
+            return Ok(None);
+        };
+        let table = self.data.fetch_live(ctx, table_id).await?;
+        let schema = &table.schema;
+        let status = req.status_field.as_str();
+        let current = crate::fsm_write_guard::current_guard(schema.row_policy.as_ref(), status);
+        if current.is_some_and(|(i, a)| i == *initial && a == applicant) {
+            return Ok(None);
+        }
+        let (Some(sf), Some(af)) = (schema.field(status), schema.field(applicant)) else {
+            return Ok(None);
+        };
+        // 値はすべてバインド（SQL へ埋め込むのは固定の条件文だけ・PIT-21）。空は schema_data_check と同じ
+        // （キーが無い・null・空の配列）。
+        let n: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM (SELECT 1 FROM data_record \
+             WHERE tenant_int = $1 AND table_int = $2 \
+               AND NOT (jsonb_typeof(data -> $3) = 'string' AND data ->> $3 = $5) \
+               AND (NOT (data ? $4) OR data -> $4 = 'null'::jsonb OR data -> $4 = '[]'::jsonb) \
+             LIMIT $6) s",
+        )
+        .bind(table.keys.tenant_int)
+        .bind(table.keys.table_int)
+        .bind(sf.json_key())
+        .bind(af.json_key())
+        .bind(initial)
+        .bind(LOCK_COUNT_CAP + 1)
+        .fetch_one(self.data.pools.for_tenant(&ctx.tenant_id))
+        .await
+        .map_err(crate::map_db)?;
+        Ok((n > 0).then_some(LockedRecords {
+            count: n.min(LOCK_COUNT_CAP),
+            more: n > LOCK_COUNT_CAP,
+        }))
     }
 
     /// テーブルの持ち主を確かめて、生きているテーブルを返す。
