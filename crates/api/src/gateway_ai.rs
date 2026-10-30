@@ -184,14 +184,12 @@ impl AgentPort for GatewayAgentPort {
             .unwrap_or(DEFAULT_MAX_STEPS)
             .clamp(1, MAX_STEPS_CEILING);
         let mut opts = AgentOptions::chat(max_steps);
-        opts.model = spec.model.clone();
-        // 省略時だけ組織の既定で解決する（agent-core の既定＝デプロイ既定に頼らない・明示モデルは
-        // 置き換えない・BUG-12）。
-        if opts.model.is_none() {
-            let choice = app_gateway::resolve_omitted_model(&self.llm, ctx, None).await?;
-            opts.model = Some(choice.model);
-            opts.effort = choice.effort;
-        }
+        // モデルは省略も明示も組織の設定で決める（agent-core の既定＝デプロイ既定に頼らない・明示モデルは置き換えず、
+        // 使えなければ断る・BUG-12・D-117）。ゲートウェイの経路が先に同じ規則で確かめ、分かる誤りで断っている。
+        let choice =
+            app_gateway::resolve_app_model(&self.llm, ctx, spec.model.as_deref(), None).await?;
+        opts.model = Some(choice.model);
+        opts.effort = choice.effort;
         if let Some(cap) = spec.max_tokens.and_then(|t| u32::try_from(t).ok()) {
             opts.max_tokens = Some(opts.max_tokens.map_or(cap, |d| d.min(cap)));
         }
@@ -388,6 +386,50 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(models, ["stub-n"]);
+
+        // 組織がモデルの選択を禁じると、既定と違うモデルを明示した呼び出しは port でも断る（ゲートウェイの経路が先に
+        // 確かめた後に設定が変わったときの守り・D-117）。既定と同じモデルの明示は通る。
+        let lock = llm_gateway::SettingsPatch {
+            allow_user_choice: Some(false),
+            ..Default::default()
+        };
+        port.llm
+            .update_tenant_settings(&ctx, &lock)
+            .await
+            .unwrap()
+            .unwrap();
+        let spec = |model: &str| AgentInvokeSpec {
+            app_id,
+            prompt: "こんにちは".into(),
+            model: Some(model.into()),
+            declared_tools: vec![],
+            scopes: vec![],
+            max_tokens: None,
+            max_steps: Some(1),
+            max_cost_usd_micros: 1_000_000,
+            trace_id: None,
+        };
+        let refused = port.invoke(&ctx, spec("stub-m")).await.err();
+        assert!(
+            matches!(&refused, Some(GatewayError::Invalid(m)) if m.contains("「stub-m」は使えません")),
+            "選択を禁じた組織で既定と違うモデルが通った: {refused:?}"
+        );
+        let events: Vec<AiEvent> = port
+            .invoke(&ctx, spec("stub-n"))
+            .await
+            .unwrap()
+            .collect()
+            .await;
+        assert!(events.iter().any(|e| e.event == "done"), "{events:?}");
+
+        // 作った行を片付ける（会計は run_agent が終わる前に書く）。
+        for table in ["llm_usage", "tenant_llm_model", "tenant_llm_settings"] {
+            sqlx::query(&format!("DELETE FROM {table} WHERE tenant_id = $1"))
+                .bind(&tenant)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
     }
 
     #[test]

@@ -39,7 +39,7 @@ pub use ports::{
     NoFunctions, NoRag, RagHit, RagPort,
 };
 pub use router::{build_gateway_router, CapabilityDeps, GatewayCtx, GatewayState};
-pub use routes::ai::resolve_omitted_model;
+pub use routes::ai::{resolve_app_model, AiError};
 pub use scope_map::{required_scope_for, GatewayRoute, RouteScope};
 pub use token::{verify_gateway_token, GatewayIdentity, GatewayTokenConfig, KeyResolver};
 pub use token_exchange::{exchange_for_user, exchange_params, ExchangedToken};

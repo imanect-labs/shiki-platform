@@ -9,9 +9,10 @@
 //! ③max_tokens キャップ。予算は `llm_usage` の当日集計で事前チェックし、agent は
 //! 残額を agent-core Budget にも渡す（ループ中の超過も止まる）。
 //!
-//! **モデルの省略**は組織の既定（Auto を含む・本人専用のモデルは除く）で解決する（BUG-12・D-30）。
-//! 明示したモデルは置き換えない（インストール時に同意した許可モデルの外へ振り替えない）。明示モデルの
-//! 許可は allowlist（①）と gateway の `stream` が確かめる。
+//! **モデル**は省略も明示も、ワークフローのノードと同じ規則で組織の設定に照らす（[`resolve_app_model`]）。
+//! 省略は組織の既定（Auto を含む・本人専用のモデルは除く・BUG-12・D-30）。明示したモデルは置き換えない（インストール時に
+//! 同意した許可モデルの外へ振り替えない）。組織で使えないモデルと、組織がモデルの選択を禁じているときの既定と違うモデルは、
+//! 分かる誤り（`code`）で断る（D-117）。allowlist（①）と gateway の `stream` の許可チェックはその手前と後ろに残る。
 
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -19,11 +20,14 @@ use std::sync::Arc;
 use authz::AuthContext;
 use axum::{
     extract::State,
+    http::StatusCode,
     response::sse::{Event, KeepAlive, Sse},
+    response::IntoResponse,
     Extension, Json,
 };
 use llm_gateway::{
-    ChoiceError, Effort, GenerateRequest, GenerationRecord, LlmGateway, ResolvedChoice, StreamDelta,
+    ChoiceError, Effort, GenerateRequest, GenerationRecord, LlmGateway, ResolvedChoice,
+    StreamDelta, AUTO_MODEL,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -63,27 +67,100 @@ pub(crate) fn check_model_allowed(pin: &AiPin, model: Option<&str>) -> Result<()
     }
 }
 
-/// モデルを省略した呼び出しのモデルを、組織の既定（Auto を含む・本人専用のモデルは除く）で決める。
+/// ミニアプリの AI の能力の誤り。モデルを組織の設定で使えないときだけ `code` を付けて返す（D-117）。
 ///
-/// 思考強度はワークフローのノードと同じ規則（D-75・BUG-116）: 組織がモデルの選択を禁じているときと、組織の既定が
-/// Auto のときは、アプリの `effort` を使わず組織の設定（既定の思考強度か Auto の設定）に従う。選べる組織で既定が
-/// 特定のモデルなら `effort`（無ければ組織の既定）。agent.invoke の port（api）も使う。
-pub async fn resolve_omitted_model(
+/// 本文は `{ "status": 400, "code": …, "error": 文言 }`（401 と同じ形）。`code` はワークフローの step の誤りと同じ語彙
+/// （[`ChoiceError::code`]・`model_choice_disabled`・`model_unavailable`・`no_model`）。それ以外はゲートウェイの誤り
+/// （[`GatewayError`]）のまま返す。
+#[derive(Debug)]
+pub enum AiError {
+    /// モデルを使えない（400）。
+    Model {
+        code: &'static str,
+        message: String,
+    },
+    Gateway(GatewayError),
+}
+
+impl From<GatewayError> for AiError {
+    fn from(e: GatewayError) -> Self {
+        AiError::Gateway(e)
+    }
+}
+
+/// port（agent.invoke の api 側）が返すときは、ゲートウェイの 400 に落とす（経路の手前で同じ規則を確かめてあるので、
+/// ここに来るのは確かめた後に組織の設定が変わったときだけ）。
+impl From<AiError> for GatewayError {
+    fn from(e: AiError) -> Self {
+        match e {
+            AiError::Model { message, .. } => GatewayError::Invalid(message),
+            AiError::Gateway(e) => e,
+        }
+    }
+}
+
+impl IntoResponse for AiError {
+    fn into_response(self) -> axum::response::Response {
+        match self {
+            AiError::Model { code, message } => (
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "status": 400, "code": code, "error": message })),
+            )
+                .into_response(),
+            AiError::Gateway(e) => e.into_response(),
+        }
+    }
+}
+
+/// モデルを使えない理由の文言（アプリを作る人とアプリを使う人の両方が読む・内部の用語を出さない）。
+fn choice_message(e: &ChoiceError, requested: Option<&str>) -> String {
+    match e {
+        ChoiceError::ChoiceDisabled => format!(
+            "この組織では AI のモデルを選べないため、「{}」は使えません。モデルを指定しないで呼び出すと、組織の既定のモデルで動きます。",
+            requested.unwrap_or_default()
+        ),
+        ChoiceError::ModelNotAllowed(m) if m == AUTO_MODEL => format!(
+            "「{m}」はモデルの名前として指定できません。組織の既定（Auto など）で動かすには、モデルを指定しないで呼び出してください。"
+        ),
+        ChoiceError::ModelNotAllowed(m) => format!(
+            "AI のモデル「{m}」はこの組織では使えません。組織で使えるモデルを指定するか、モデルを指定しないで呼び出してください。"
+        ),
+        ChoiceError::NoModel => {
+            "組織で使えるモデルがありません。管理者に、組織で使う AI のモデルを有効にしてもらってください。".into()
+        }
+    }
+}
+
+/// ミニアプリの AI の能力のモデルと思考の深さを、組織の設定で決める（省略も明示も・ワークフローのノードと同じ規則）。
+///
+/// - 省略（空文字を含む）は組織の既定（Auto を含む・本人専用のモデルは除く・BUG-12）。
+/// - 明示したモデルは置き換えない（D-30）。組織で使えないモデル（本人専用のモデルを含む）と、組織がモデルの選択を
+///   禁じているときの既定と違うモデルは断る（D-117・BUG-140）。黙って既定へ置き換えない。
+/// - 思考の深さ（D-75・BUG-116）: 組織がモデルの選択を禁じているときと、省略して既定の Auto で動くときは、アプリの
+///   `effort` を使わず組織の設定に従う。選択を禁じた組織で既定と同じモデルを明示したものは、省略と同じに解決する。
+///   選べる組織で明示したモデルは `effort` だけを送る（組織の既定の思考強度を足さない・D-61）。
+///
+/// 規則は llm-gateway の [`LlmGateway::resolve_workflow_choice`] にあり、チャットとワークフローと同じ 1 か所
+/// （[`llm_gateway::TenantLlmSettings::may_choose`]）から来る。agent.invoke の port（api）も使う。
+pub async fn resolve_app_model(
     llm: &LlmGateway,
     auth: &AuthContext,
+    model: Option<&str>,
     effort: Option<Effort>,
-) -> Result<ResolvedChoice, GatewayError> {
-    match llm.resolve_workflow_choice(auth, None, effort).await {
+) -> Result<ResolvedChoice, AiError> {
+    let model = model.filter(|m| !m.is_empty());
+    match llm.resolve_workflow_choice(auth, model, effort).await {
         Ok(Ok(choice)) => Ok(choice),
-        // 省略で起こるのは「使えるモデルが無い」だけ（選択の禁止・無効なモデルは明示したときだけ）。
-        Ok(Err(ChoiceError::NoModel)) => Err(GatewayError::Invalid(
-            "組織で使えるモデルがありません。管理者に AI の設定を確認してもらってください".into(),
-        )),
-        Ok(Err(e)) => Err(GatewayError::Invalid(e.to_string())),
+        Ok(Err(e)) => Err(AiError::Model {
+            code: e.code(),
+            message: choice_message(&e, model),
+        }),
         Err(e) => {
             // DB 詳細は out-of-trust クライアントへ出さない（tracing にのみ残す）。
             tracing::error!(error = %e, "組織の AI 設定の読み出しに失敗");
-            Err(GatewayError::Internal("内部エラーが発生しました".into()))
+            Err(AiError::Gateway(GatewayError::Internal(
+                "内部エラーが発生しました".into(),
+            )))
         }
     }
 }
@@ -135,7 +212,6 @@ fn to_sse(ev: AiEvent) -> Event {
 type SseResult = axum::response::Response;
 
 fn sse_from_events(rx: mpsc::Receiver<AiEvent>) -> SseResult {
-    use axum::response::IntoResponse;
     use futures::StreamExt;
     let stream = ReceiverStream::new(rx)
         .map(|ev| Ok::<Event, Infallible>(to_sse(ev)))
@@ -150,25 +226,24 @@ pub(crate) async fn llm_invoke(
     State(state): State<GatewayState>,
     Extension(ctx): Extension<GatewayCtx>,
     Json(mut req): Json<GenerateRequest>,
-) -> Result<SseResult, GatewayError> {
+) -> Result<SseResult, AiError> {
     let llm = require_llm(&state)?;
     let pin = &ctx.installation.ai;
     if req.messages.is_empty() {
-        return Err(GatewayError::Invalid("messages が空です".into()));
+        return Err(GatewayError::Invalid("messages が空です".into()).into());
     }
     // 空文字は省略と同じ（allowlist の照合・組織の既定の解決とも）。
     req.model = req.model.filter(|m| !m.is_empty());
     check_model_allowed(pin, req.model.as_deref())?;
+    // 省略も明示も組織の設定で決める（明示モデルは置き換えず、使えなければ断る・D-117）。解決後の名前と思考の深さを
+    // 生成と会計に使う。
+    let choice = resolve_app_model(&llm, &ctx.auth, req.model.as_deref(), req.effort).await?;
+    req.effort = choice.effort;
+    req.model = Some(choice.model);
     check_budget(&llm, &ctx, state.caps.ai_daily_cap_usd_micros).await?;
     req.max_tokens = cap_max_tokens(req.max_tokens, pin.budget_max_tokens);
     strip_reasoning(&mut req);
 
-    // 省略時だけ組織の既定で解決する（明示モデルは置き換えない）。解決後の名前を生成と会計に使う。
-    if req.model.is_none() {
-        let choice = resolve_omitted_model(&llm, &ctx.auth, req.effort).await?;
-        req.effort = choice.effort;
-        req.model = Some(choice.model);
-    }
     let logical_model = req.model.clone().unwrap_or_default();
     let input_preview: String = req
         .messages
@@ -282,17 +357,22 @@ pub(crate) async fn agent_invoke(
     State(state): State<GatewayState>,
     Extension(ctx): Extension<GatewayCtx>,
     Json(mut req): Json<AgentInvokeRequest>,
-) -> Result<SseResult, GatewayError> {
+) -> Result<SseResult, AiError> {
     if req.prompt.trim().is_empty() {
-        return Err(GatewayError::Invalid("prompt が空です".into()));
+        return Err(GatewayError::Invalid("prompt が空です".into()).into());
     }
-    // 空文字は省略と同じ（省略時のモデルは port が組織の既定で解決する）。
+    // 空文字は省略と同じ（モデルは port が組織の設定で決める）。
     req.model = req.model.filter(|m| !m.is_empty());
     let pin = &ctx.installation.ai;
     check_model_allowed(pin, req.model.as_deref())?;
     // 予算は llm-gateway の会計が正（agent の LLM 呼び出しも app_id 付きで同じ財布に落ちる）。
     let remaining = match require_llm(&state) {
-        Ok(llm) => check_budget(&llm, &ctx, state.caps.ai_daily_cap_usd_micros).await?,
+        Ok(llm) => {
+            // モデルを使えるかは port と同じ規則でここでも確かめ、分かる誤り（code）で断る（D-117。port の誤りは
+            // code を運べない）。
+            resolve_app_model(&llm, &ctx.auth, req.model.as_deref(), None).await?;
+            check_budget(&llm, &ctx, state.caps.ai_daily_cap_usd_micros).await?
+        }
         // LLM 未構成なら port 側も NoAgent（502）のはず。チェックは素通しにする。
         Err(_) => state.caps.ai_daily_cap_usd_micros,
     };
@@ -320,7 +400,6 @@ pub(crate) async fn agent_invoke(
         trace_id: None,
     };
     let events = state.caps.agent.invoke(&ctx.auth, spec).await?;
-    use axum::response::IntoResponse;
     use futures::StreamExt;
     let stream: futures::stream::BoxStream<'static, Result<Event, Infallible>> =
         events.map(|ev| Ok::<Event, Infallible>(to_sse(ev))).boxed();

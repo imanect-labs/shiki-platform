@@ -6,6 +6,7 @@
 //! - agent.invoke がインストール時ピンの宣言ツール・日次残額を port へ渡すこと
 //! - モデルの省略は組織の既定で解決し、明示モデルは置き換えない（BUG-12）
 //! - モデルを省略したときの思考強度は、組織が選択を禁じていればアプリの指定を使わない（D-75・BUG-116）
+//! - 組織が選択を禁じていれば、既定と違うモデルを明示した呼び出しを分かる誤り（code）で断る（D-117・BUG-140）
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -367,6 +368,13 @@ async fn an_explicit_model_disabled_by_the_organization_is_not_replaced() {
     )
     .await;
     assert_eq!(s, StatusCode::BAD_REQUEST, "{body}");
+    // 理由はコードで分かる（ワークフローの step の誤りと同じ語彙・D-117）。
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["code"], "model_unavailable", "{body}");
+    assert_eq!(
+        v["error"],
+        "AI のモデル「stub-m」はこの組織では使えません。組織で使えるモデルを指定するか、モデルを指定しないで呼び出してください。"
+    );
     // 許可モデルがあるアプリは省略できない（組織の既定へ落とさない・従来どおり）。
     let (s, _) = post_sse(&app, "/gw/ai/llm/invoke", &tok, &json!({ "messages": msg })).await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
@@ -417,6 +425,99 @@ async fn an_omitted_model_ignores_the_apps_effort_when_the_organization_disallow
     }
     // 作った行を片付ける（会計は Done の後に非同期で書くので、2 件そろうのを待ってから消す）。
     assert_eq!(usage_models(&pool, &tenant, app_id, 2).await.len(), 2);
+    for table in [
+        "llm_usage",
+        "app_capability_usage",
+        "app_installation",
+        "tenant_llm_model",
+        "tenant_llm_settings",
+    ] {
+        sqlx::query(&format!("DELETE FROM {table} WHERE tenant_id = $1"))
+            .bind(&tenant)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+}
+
+/// 組織がモデルの選択を禁じているとき（D-117・BUG-140）: 既定と違うモデルを明示した llm.invoke・agent.invoke は、
+/// 生成せず、会計の行も残さずに 400 と `model_choice_disabled` で断る（黙って既定へ置き換えない）。既定と同じモデルの
+/// 明示は通り、アプリが書いた effort を使わず組織の既定の思考強度で動く（D-75）。選べる組織では明示したモデルと
+/// アプリの effort をそのまま使う。
+#[tokio::test]
+async fn explicit_models_are_refused_while_the_organization_disallows_choice() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let (app_id, client) = install(&pool, &tenant, AiPin::default()).await;
+    let st = state(pool.clone(), &tenant);
+    let tok = token(&client, AI_SCOPES, &tenant);
+    let ask = |model: &str| {
+        json!({
+            "model": model,
+            "messages": [{ "role": "user", "content": [ { "type": "text", "text": "echoeffort:" } ] }],
+            "effort": "high",
+        })
+    };
+    let lock = |allow: bool, default_model: &str| SettingsPatch {
+        default_model: Some(default_model.into()),
+        allow_user_choice: Some(allow),
+        default_effort: Some(llm_gateway::Effort::Low),
+        ..Default::default()
+    };
+
+    // 禁じた組織（既定 stub-m）: stub-n の明示は断る。agent.invoke も同じ。
+    set_llm_settings(&st, &tenant, lock(false, "stub-m")).await;
+    let app = build_gateway_router(st.clone());
+    let (s, body) = post_sse(&app, "/gw/ai/llm/invoke", &tok, &ask("stub-n")).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["code"], "model_choice_disabled", "{body}");
+    assert_eq!(v["status"], 400, "{body}");
+    assert_eq!(
+        v["error"],
+        "この組織では AI のモデルを選べないため、「stub-n」は使えません。モデルを指定しないで呼び出すと、組織の既定のモデルで動きます。"
+    );
+    let (s, body) = post_sse(
+        &app,
+        "/gw/ai/agent/invoke",
+        &tok,
+        &json!({ "prompt": "調査して", "model": "stub-n" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{body}");
+    let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(v["code"], "model_choice_disabled", "{body}");
+    // 断った呼び出しは生成しないので、会計の行は残らない。
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert!(usage_models(&pool, &tenant, app_id, 0).await.is_empty());
+
+    // 禁じた組織（既定 stub-n）: 既定と同じモデルの明示は通り、アプリの high ではなく組織の既定の low で動く。
+    set_llm_settings(&st, &tenant, lock(false, "stub-n")).await;
+    let app = build_gateway_router(st.clone());
+    let (s, sse) = post_sse(&app, "/gw/ai/llm/invoke", &tok, &ask("stub-n")).await;
+    assert_eq!(s, StatusCode::OK, "{sse}");
+    assert_eq!(streamed_text(&sse), "effort: low", "{sse}");
+    let (s, sse) = post_sse(
+        &app,
+        "/gw/ai/agent/invoke",
+        &tok,
+        &json!({ "prompt": "調査して", "model": "stub-n" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{sse}");
+
+    // 選べる組織（既定 stub-m）: 明示した stub-n とアプリの high をそのまま使う。
+    set_llm_settings(&st, &tenant, lock(true, "stub-m")).await;
+    let app = build_gateway_router(st.clone());
+    let (s, sse) = post_sse(&app, "/gw/ai/llm/invoke", &tok, &ask("stub-n")).await;
+    assert_eq!(s, StatusCode::OK, "{sse}");
+    assert_eq!(streamed_text(&sse), "effort: high", "{sse}");
+    assert_eq!(
+        usage_models(&pool, &tenant, app_id, 2).await,
+        ["stub-n", "stub-n"]
+    );
+
+    // 作った行を片付ける（会計は Done の後に非同期で書くので、2 件そろうのを待ってから消す）。
     for table in [
         "llm_usage",
         "app_capability_usage",
