@@ -40,7 +40,8 @@ export function fieldValueText(type: FieldType, value: unknown): string {
   if (Array.isArray(value)) {
     return value.length ? value.map((v) => fieldValueText(type, v)).join("、") : "—";
   }
-  if (type === "user_ref" && typeof value === "string") return userLabel(value);
+  // 作成者の列の値は申請した人（レコードの作成者）と同じ id（名前は申請した人と一緒に引いてある）。
+  if ((type === "user_ref" || type === "created_by") && typeof value === "string") return userLabel(value);
   if (type === "role_ref" && typeof value === "string") return cachedRoleName(value) || value;
   if (typeof value === "number") return value.toLocaleString("ja-JP");
   if (typeof value === "boolean") return value ? "はい" : "いいえ";
