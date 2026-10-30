@@ -651,7 +651,9 @@ export function DriveBrowser() {
             if (activeNode.kind === "folder") await updateFolder(activeNode.id, { move: dest });
             else await updateFile(activeNode.id, { move: dest });
           } catch (e) {
-            if (isConflict(e)) throw new Error("移動先に同じ名前のファイルまたはフォルダがあります");
+            if (isConflict(e)) {
+              throw new Error("移動先に同じ名前のファイルかフォルダーがあるため、移動できませんでした。名前を変えてから、もう一度移動してください。");
+            }
             throw e;
           }
           list.reload();

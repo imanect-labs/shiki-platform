@@ -13,7 +13,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { listChildren, type NodeResponse } from "@/lib/storage";
+import { breadcrumb, listChildren, type NodeResponse } from "@/lib/storage";
 import { cn } from "@/lib/utils";
 import { NodeIcon } from "./primitives";
 
@@ -234,9 +234,17 @@ export function ConfirmDialog({
 /// パンくずの 1 段（タッチでは高さ 40px）。
 const CRUMB_BUTTON =
   "flex h-8 shrink-0 items-center rounded-md px-1.5 transition-colors hover:bg-accent hover:text-foreground pointer-coarse:h-10";
+/// 名前の段（狭い幅では縮めて … で切る。flex にすると文字が切れずに隣の段へはみ出す）。
+const CRUMB_NAME_BUTTON =
+  "block h-8 min-w-0 max-w-[160px] truncate rounded-md px-1.5 leading-8 transition-colors hover:bg-accent hover:text-foreground pointer-coarse:h-10 pointer-coarse:leading-10";
+
+/// パンくずの先頭（ドライブのトップ）。
+const MOVE_ROOT: { id: string | null; name: string } = { id: null, name: "ドライブ" };
 
 /// 移動先フォルダを選ぶダイアログ。フォルダ階層をたどって「ここへ移動」する。
 /// 移動対象（とその子孫）は循環を避けるため選択不可（サーバも 400 で拒否）。
+/// 開いたときは、移すものがいまあるフォルダーから始める（近くのフォルダーへ移すのに、トップから
+/// たどり直させない・GAP-48）。いまある場所そのものへは移せない。
 export function MoveDialog({
   open,
   onOpenChange,
@@ -251,10 +259,12 @@ export function MoveDialog({
 }) {
   // 移動先ピッカーのパンくず（ルートからの階層）。最後の要素が現在地。
   // サブフォルダに入っても各階層をクリックして戻れる（履歴スタック）。
-  const [path, setPath] = React.useState<{ id: string | null; name: string }[]>([
-    { id: null, name: "ドライブ" },
-  ]);
+  const [path, setPath] = React.useState<{ id: string | null; name: string }[]>([MOVE_ROOT]);
+  // 始める場所（いまあるフォルダーのパンくず）を読んでいる間は、一覧を読まない（トップや前に開いた場所を一度読んで
+  // から移らない）。閉じている間は真にしておき、開いた最初の描画から待つ。
+  const [starting, setStarting] = React.useState(true);
   const folderId = path[path.length - 1].id;
+  const startId = node?.parent_id ?? null;
   const [folders, setFolders] = React.useState<NodeResponse[]>([]);
   const [cursor, setCursor] = React.useState<string | undefined>(undefined);
   const [hasMore, setHasMore] = React.useState(false);
@@ -263,18 +273,39 @@ export function MoveDialog({
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
-  // 開いたらルートから。
+  // 開いたら、いまあるフォルダーから（そこまでのパンくずを読む）。読めなければドライブのトップから。
   React.useEffect(() => {
-    if (open) {
-      setPath([{ id: null, name: "ドライブ" }]);
-      setError(null);
-      setBusy(false);
+    if (!open) {
+      setStarting(true);
+      return;
     }
-  }, [open]);
+    setError(null);
+    setBusy(false);
+    if (!startId) {
+      setPath([MOVE_ROOT]);
+      setStarting(false);
+      return;
+    }
+    let active = true;
+    setStarting(true);
+    breadcrumb(startId)
+      .then((crumbs) => {
+        if (active) setPath([MOVE_ROOT, ...crumbs.map((c) => ({ id: c.id, name: c.name }))]);
+      })
+      .catch(() => {
+        if (active) setPath([MOVE_ROOT]);
+      })
+      .finally(() => {
+        if (active) setStarting(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, [open, startId]);
 
   // 現在地のサブフォルダを先頭ページから読み込む（フォルダのみ表示）。
   React.useEffect(() => {
-    if (!open) return;
+    if (!open || starting) return;
     let active = true;
     setLoading(true);
     setFolders([]);
@@ -296,7 +327,7 @@ export function MoveDialog({
     return () => {
       active = false;
     };
-  }, [open, folderId]);
+  }, [open, starting, folderId]);
 
   // 続きのページを読み込み、フォルダを追記する（>100 件でも移動先に辿り着ける）。
   const loadMoreFolders = async () => {
@@ -334,13 +365,15 @@ export function MoveDialog({
 
   // 移動対象自身の中へは入れられない（子孫への移動はサーバが 400 で弾く）。
   const sameAsSource = node?.kind === "folder" && folderId === node.id;
+  // いまある場所へは移せない（移しても変わらない）。
+  const here = node !== null && !starting && folderId === startId;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-xl">
         <DialogHeader>
           <DialogTitle>{node ? `「${node.name}」を移動` : "移動"}</DialogTitle>
-          <DialogDescription>移動先のフォルダを選んでください。</DialogDescription>
+          <DialogDescription>移動先のフォルダーを開いて、「ここへ移動」を押してください。</DialogDescription>
         </DialogHeader>
 
         {/* パンくず: 祖先はクリックで戻れる（現在地は非活性）。深い階層は中間を … にまとめ、
@@ -356,7 +389,11 @@ export function MoveDialog({
             const hidden = path.length > 3 && i > 0 && i < path.length - 2;
             if (hidden && i !== 1) return null;
             return (
-              <span key={`${seg.id ?? "root"}-${i}`} className="flex min-w-0 items-center gap-0.5">
+              <span
+                key={`${seg.id ?? "root"}-${i}`}
+                // 先頭（ドライブ）と … は縮めない。名前の段だけを縮める。
+                className={cn("flex items-center gap-0.5", i === 0 || hidden ? "shrink-0" : "min-w-0")}
+              >
                 {i > 0 ? <ChevronRight className="size-3.5 shrink-0" aria-hidden /> : null}
                 {hidden ? (
                   <button
@@ -375,7 +412,7 @@ export function MoveDialog({
                   <button
                     type="button"
                     onClick={() => setPath((p) => p.slice(0, i + 1))}
-                    className={cn(CRUMB_BUTTON, "min-w-0 max-w-[160px] truncate")}
+                    className={i === 0 ? CRUMB_BUTTON : CRUMB_NAME_BUTTON}
                   >
                     {seg.name}
                   </button>
@@ -387,13 +424,13 @@ export function MoveDialog({
 
         {/* 一覧の高さはシート（92dvh）の中に収まる範囲に抑え、外側と二重に伸びないようにする。 */}
         <div className="max-h-[min(55dvh,28rem)] min-h-[200px] min-w-0 overflow-y-auto overscroll-contain rounded-lg border border-border">
-          {loading ? (
+          {loading || starting ? (
             <div className="flex items-center justify-center gap-2 py-6 text-sm text-muted-foreground">
               <Loader2 className="size-4 animate-spin" aria-hidden />
               読み込み中…
             </div>
           ) : folders.length === 0 && !hasMore ? (
-            <p className="px-3 py-6 text-center text-sm text-muted-foreground">サブフォルダはありません</p>
+            <p className="px-3 py-6 text-center text-sm text-muted-foreground">中にフォルダーはありません</p>
           ) : (
             <ul className="divide-y divide-border">
               {folders.map((f) => {
@@ -433,13 +470,18 @@ export function MoveDialog({
           )}
         </div>
 
+        {here ? (
+          <p className="text-sm text-muted-foreground" data-testid="move-here-note">
+            いまある場所です。移動先のフォルダーを開いてください。
+          </p>
+        ) : null}
         {error ? <p className="text-sm text-destructive">{error}</p> : null}
 
         <DialogFooter>
           <Button type="button" variant="ghost" onClick={() => onOpenChange(false)} disabled={busy}>
             キャンセル
           </Button>
-          <Button type="button" onClick={() => void move()} disabled={busy || sameAsSource}>
+          <Button type="button" onClick={() => void move()} disabled={busy || starting || sameAsSource || here}>
             {busy ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}
             ここへ移動
           </Button>
