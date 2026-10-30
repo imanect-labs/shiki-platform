@@ -97,12 +97,14 @@ pub(super) const EXAMPLE_REVIEW: &str = r#"{
   ]
 }"#;
 
-/// 出力の形（llm.invoke の output_schema・GAP-13）の例のノード（問い合わせの種類を enum で決める）。
+/// 出力の形（llm.invoke の output_schema・GAP-13）の例のノード（問い合わせを要約してから、種類を enum で決める）。
+/// x-order で要約を先に書かせる（項目の名前の辞書順では category が先になる・BUG-123・BUG-139）。
 pub(super) const EXAMPLE_STRUCTURED_NODE: &str = r#"{ "id": "classify", "type": "llm.invoke", "label": "種類を判定",
   "params": {
-    "prompt": { "$template": "次の問い合わせの種類を決め、1 行で要約してください。\n{body}",
+    "prompt": { "$template": "次の問い合わせを 1 行で要約し、種類を決めてください。\n{body}",
                 "vars": { "body": { "$from": "input", "path": "/body" } } },
-    "output_schema": { "type": "object", "required": ["category", "summary"],
+    "output_schema": { "type": "object", "required": ["summary", "category"],
+      "x-order": ["summary", "category"],
       "properties": {
         "category": { "type": "string", "enum": ["billing", "bug", "howto", "other"] },
         "summary": { "type": "string", "maxLength": 100 } } } } }"#;
@@ -331,6 +333,7 @@ fn structured_guide() -> String {
         "【AI の出力の形】llm.invoke に output_schema（JSON Schema のリテラル）を書くと、出力は {{ text, model, data }} になり、data に形で検証した値が入る（後続は {{\"$from\":\"nodes.<id>.output\",\"path\":\"/data/<項目>\"}} で読む。分類・抽出は script で JSON を解析せずにこれを使い、選択肢は enum で縛る）。\n\
          - 根は {{\"type\":\"object\"}}。オブジェクトは決めた項目だけ（additionalProperties は false か省略。省略しても閉じたものとして扱う）。type は 1 つの型か [型, \"null\"]。項目名は英字か _ で始め英数字と _ だけ。使えるのは input_schema と同じキーワード（$ref・anyOf・oneOf は使えない）。\n\
          - 上限: 入れ子 {MAX_DEPTH} 段・項目 {MAX_PROPERTIES}・任意の項目（required に無い項目）{MAX_OPTIONAL}・null を許す項目 {MAX_UNIONS}・enum の値 {MAX_ENUM_VALUES}（どれも全体で数える）。\n\
+         - 項目の順: オブジェクトに \"x-order\":[\"summary\",\"category\"] を書くと、AI はその順に項目を書く（properties のキーだけを重ねずに書く・入れ子のオブジェクトにも書ける）。省くと項目は名前の辞書順で AI に渡る。理由や要約を先に、結論（enum の選択など）を後に並べると、答えの質が上がることがある。\n\
          - 形に合わない出力は 1 回だけ直させ、それでも合わなければ step は llm_output_invalid で失敗する。上限で切れたら llm_output_truncated、AI が回答を拒否したら llm_refused（どちらも直さない）。max_tokens を書くなら {MIN_STRUCTURED_MAX_TOKENS} 以上（思考の分も数える）。\n\
          - effort（\"low\" | \"medium\" | \"high\"）は思考の深さ。省略は組織の既定。model を省略して組織の既定の Auto で動くときと、組織がモデルの選択を禁じているときは組織の設定に従い、書いても使われない（保存時に {effort_ignored} の警告）ので、model を選んだときだけ書く。分類・抽出は low で足りることが多い。\n\
          例（ノード）: {example}\n",
@@ -756,6 +759,25 @@ mod tests {
         assert!(
             node["params"].get("model").is_none(),
             "例に model を書かない"
+        );
+        // 項目の順は x-order で決まり、AI へ送る形は要約を先に書く（名前の辞書順なら category が先・BUG-123・BUG-139）。
+        assert!(
+            d.contains("\"x-order\":[\"summary\",\"category\"] を書くと、AI はその順に項目を書く"),
+            "{d}"
+        );
+        let schema = &node["params"]["output_schema"];
+        let wire = llm_gateway::structured::wire_schema_text(schema);
+        assert!(
+            wire.find("\"summary\"").unwrap() < wire.find("\"category\"").unwrap(),
+            "{wire}"
+        );
+        assert!(!wire.contains("x-order"), "{wire}");
+        let mut unordered = schema.clone();
+        unordered.as_object_mut().unwrap().remove("x-order");
+        let wire = llm_gateway::structured::wire_schema_text(&unordered);
+        assert!(
+            wire.find("\"category\"").unwrap() < wire.find("\"summary\"").unwrap(),
+            "{wire}"
         );
         let ir = serde_json::json!({
             "ir_version": 1, "name": "triage", "triggers": [{ "kind": "interactive" }],
