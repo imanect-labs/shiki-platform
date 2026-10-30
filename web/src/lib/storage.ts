@@ -13,6 +13,8 @@ export type UploadTicketResponse = components["schemas"]["UploadTicketResponse"]
 export type DownloadUrlResponse = components["schemas"]["DownloadUrlResponse"];
 export type FileVersionResponse = components["schemas"]["FileVersionResponse"];
 export type FileVersionsResponse = components["schemas"]["FileVersionsResponse"];
+export type TextFileResponse = components["schemas"]["TextFileResponse"];
+export type SaveTextFileRequest = components["schemas"]["SaveTextFileRequest"];
 export type DocBlock = components["schemas"]["DocBlock"];
 export type DocBlocksPage = components["schemas"]["DocBlocksPage"];
 export type ShareEntry = components["schemas"]["ShareEntry"];
@@ -208,6 +210,22 @@ export function restoreFile(id: string): Promise<NodeResponse> {
 
 export function downloadUrl(id: string): Promise<DownloadUrlResponse> {
   return apiFetch(`/files/${id}/download-url`).then((r) => okJson<DownloadUrlResponse>(r));
+}
+
+/// テキストの中身を読む（文字コードはサーバーが決める・BOM は含めない・D-119）。決められないときは `encoding` が
+/// `null`（見るだけ）。テキストでない・大きすぎるときは 400 で、画面に出せる文言が `message` に入る。
+export function getTextFile(id: string): Promise<TextFileResponse> {
+  return apiFetch(`/files/${id}/text`).then((r) => okJson<TextFileResponse>(r));
+}
+
+/// テキストを、元の文字コードと BOM のまま新しい版として保存する（D-119）。開いた後にほかの保存が入っていれば 409、
+/// 元の文字コードに無い文字があれば 400（画面に出せる文言が `message` に入る）。
+export function saveTextFile(id: string, body: SaveTextFileRequest): Promise<NodeResponse> {
+  return apiFetch(`/files/${id}/text`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }).then((r) => okJson<NodeResponse>(r));
 }
 
 /// 1 ファイルのメタ情報（名前・content_type・サイズ等）を取得する。ビューアで使う。

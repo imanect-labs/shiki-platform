@@ -8,8 +8,11 @@
 ///
 /// 編集者には「編集」を出し、押すと同じ場所で CodeMirror に切り替える（エディタは押したときに読み込む）。
 /// 保存は明示保存（⌘S・保存ボタン）で新しい版を作る。開いた版を添えて保存し（サーバが版を比べる）、
-/// 開いた後に誰かが保存していたら 409 になるので確かめる。改行コードと BOM は開いたときのまま保つ
-/// （Shift_JIS は UTF-8 で保存する）。
+/// 開いた後に誰かが保存していたら 409 になるので確かめる。改行コードは開いたときのまま保つ。
+///
+/// 文字コードはサーバー（`GET /files/{id}/text`・textenc）が決める。画面で判定を持たない（BUG-141・D-119）。
+/// 保存（`PUT /files/{id}/text`）は、元の文字コードと BOM のままサーバーが書き戻す（Shift_JIS は Shift_JIS のまま）。
+/// 元の文字コードに無い文字は、サーバーの文言で断る（編集した内容は残す）。
 import * as React from "react";
 import { Check, Copy, Eye, Pencil, Save, WrapText } from "lucide-react";
 
@@ -23,11 +26,10 @@ import {
   TEXT_MAX_LINES,
   languageColor,
   languageLabel,
-  looksBinary,
   textLanguage,
 } from "@/lib/file-preview";
 import { getCollabAccess } from "@/lib/notes-api";
-import { downloadUrl, StorageApiError, uploadFile, type NodeResponse } from "@/lib/storage";
+import { getTextFile, saveTextFile, StorageApiError, type NodeResponse, type TextFileResponse } from "@/lib/storage";
 import { cn } from "@/lib/utils";
 
 import { useFileChrome } from "./file-chrome";
@@ -44,48 +46,21 @@ const tooLarge: PreviewFailure = {
   description: `${TEXT_MAX_BYTES / 1024 / 1024}MB を超えるテキストは、ダウンロードして開いてください。`,
 };
 
-/// 開いたファイルの中身と、保存のときに元へ戻すための情報（文字コード・BOM・改行コード）。
-/// `unknown` は UTF-8 でも Shift_JIS でもないもの（見るだけ。保存すると中身が壊れるので編集させない）。
+/// 開いたファイルの中身と、表示に使う情報（文字コード・改行コード・中身の版）。
+/// `encoding` はサーバーが決めた文字コード（`UTF-8`・`Shift_JIS` など）。`null` は決められなかったもの
+/// （見るだけ。保存すると中身が壊れるので編集させない）。保存はサーバーが元の文字コードと BOM で書き戻す。
 type Content = {
   text: string;
-  encoding: "utf-8" | "shift_jis" | "unknown";
-  bom: boolean;
+  encoding: string | null;
   eol: "\n" | "\r\n";
   lines: number;
+  version: number;
 };
 type Rendered = { html: string; highlighted: boolean };
 
-/// 文字コードを決めて文字列にする。UTF-8 として壊れていれば Shift_JIS を試す（日本の古い CSV・ログに多い）。
-/// どちらでも読めなければ、置換文字入りの UTF-8 として見せるだけにする。
-function decode(bytes: Uint8Array): Pick<Content, "text" | "encoding" | "bom"> {
-  const bom = bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf;
-  try {
-    // BOM は取り除かれる（保存のときに付け直す）。
-    return { text: new TextDecoder("utf-8", { fatal: true }).decode(bytes), encoding: "utf-8", bom };
-  } catch {
-    try {
-      return { text: new TextDecoder("shift_jis", { fatal: true }).decode(bytes), encoding: "shift_jis", bom: false };
-    } catch {
-      return { text: new TextDecoder("utf-8").decode(bytes), encoding: "unknown", bom: false };
-    }
-  }
-}
-
-/// 保存する中身（UTF-8・開いたときに BOM があれば付ける）。
-function encode(text: string, bom: boolean): Uint8Array<ArrayBuffer> {
-  const body = new TextEncoder().encode(text);
-  const prefix = bom ? 3 : 0;
-  const out = new Uint8Array(new ArrayBuffer(body.length + prefix));
-  if (bom) out.set([0xef, 0xbb, 0xbf]);
-  out.set(body, prefix);
-  return out;
-}
-
-/// 保存するときの content-type。文字コードの指定があれば UTF-8 に直す（Shift_JIS も UTF-8 で保存するため）。
-function saveContentType(contentType: string | null | undefined): string {
-  const ct = (contentType ?? "").trim();
-  if (!ct || ct.toLowerCase().startsWith("application/octet-stream")) return "text/plain; charset=utf-8";
-  return /charset=/i.test(ct) ? ct.replace(/charset=[^;]*/i, "charset=utf-8") : ct;
+/// 書けない文字があると保存できない文字コード（Unicode でないもの）。編集中に注記を出す。
+function narrowEncoding(encoding: string | null): boolean {
+  return encoding !== null && !/^UTF-/i.test(encoding);
 }
 
 function countLines(text: string): number {
@@ -119,17 +94,15 @@ async function highlight(text: string, lang: string): Promise<string> {
 }
 
 /// 中身を取りに行って、表示・編集できるか確かめる。できなければ理由を返す。
+/// テキストでない・大きすぎる中身は、サーバーが断った文言をそのまま出す。
 async function fetchContent(node: NodeResponse): Promise<Content | PreviewFailure> {
-  const { url } = await downloadUrl(node.id);
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`取得に失敗しました（${res.status}）`);
-  const bytes = new Uint8Array(await res.arrayBuffer());
-  // メタ情報のサイズが無い・古い場合に備えて、実際に取れた大きさでも確かめる。
-  if (bytes.length > TEXT_MAX_BYTES) return tooLarge;
-  if (looksBinary(bytes)) {
-    return { description: "テキストではないため表示できません。ダウンロードして、お使いのアプリで開いてください。" };
+  let decoded: TextFileResponse;
+  try {
+    decoded = await getTextFile(node.id);
+  } catch (e) {
+    if (e instanceof StorageApiError && e.status === 400) return { description: e.message };
+    throw e;
   }
-  const decoded = decode(bytes);
   const lines = countLines(decoded.text);
   if (lines > TEXT_MAX_LINES) {
     return {
@@ -139,7 +112,7 @@ async function fetchContent(node: NodeResponse): Promise<Content | PreviewFailur
   }
   // 1 つでも CRLF があれば CRLF のファイルとして扱う（保存で LF に変えない。LF の行が混ざっていれば CRLF に揃う）。
   const eol = decoded.text.includes("\r\n") ? "\r\n" : "\n";
-  return { ...decoded, eol, lines };
+  return { text: decoded.text, encoding: decoded.encoding ?? null, eol, lines, version: decoded.version };
 }
 
 export function TextPreview({
@@ -193,8 +166,10 @@ export function TextPreview({
     fetchContent(node)
       .then((c) => {
         if (!active) return;
-        if ("text" in c) setContent(c);
-        else failRef.current(c);
+        if ("text" in c) {
+          setContent(c);
+          setBaseVersion(c.version);
+        } else failRef.current(c);
       })
       .catch(() => {
         if (active) failRef.current({ title: "ファイルを読み込めませんでした", description: "時間をおいてもう一度開くか、ダウンロードしてください。" });
@@ -263,13 +238,13 @@ export function TextPreview({
           return;
         }
         setContent(c);
-        setBaseVersion(access.version);
-        // 新しい版が UTF-8・Shift_JIS 以外なら、保存で中身が壊れるので閲覧のみに留める。
-        if (c.encoding === "unknown") {
+        setBaseVersion(c.version);
+        // 新しい版の文字コードを決められなければ、保存で中身が壊れるので閲覧のみに留める。
+        if (c.encoding === null) {
           toast({
             variant: "destructive",
             title: "このファイルは編集できません",
-            description: "新しい版の文字コードを判別できないため、閲覧のみになります。",
+            description: "新しい版の文字コードが分からないため、見ることだけできます。",
           });
           return;
         }
@@ -292,18 +267,23 @@ export function TextPreview({
       const snap = editor.snapshot();
       setSaving(true);
       try {
-        const file = new File([encode(snap.text, content.bom)], node.name, { type: saveContentType(node.content_type) });
-        const saved = await uploadFile({ file, targetNodeId: node.id, baseVersion: opts?.base ?? baseVersion });
+        // 文字コードと BOM はサーバーが元のまま書き戻す（Shift_JIS は Shift_JIS のまま・D-119）。
+        const saved = await saveTextFile(node.id, { text: snap.text, base_version: opts?.base ?? baseVersion });
         if (!mounted.current) return;
         setBaseVersion(saved.version);
         setSize(saved.size_bytes);
-        setContent({ ...content, text: snap.text, encoding: "utf-8", lines: countLines(snap.text) });
+        setContent({ ...content, text: snap.text, lines: countLines(snap.text), version: saved.version });
         editor.markSaved(snap.doc);
         toast({ title: "保存しました", description: `版 ${saved.version} として保存しました。` });
       } catch (e) {
         // 開いた後に他の保存が入っていた（サーバが版を比べて断った）。
         if (e instanceof StorageApiError && e.status === 409) {
           if (mounted.current) setConflict(true);
+          return;
+        }
+        // 元の文字コードに無い文字など、サーバーが理由を言って断った（編集した内容はエディタに残っている）。
+        if (e instanceof StorageApiError && e.status === 400) {
+          toast({ variant: "destructive", title: "保存できませんでした", description: e.message });
           return;
         }
         const denied = e instanceof StorageApiError && e.status === 403;
@@ -371,7 +351,6 @@ export function TextPreview({
     setDirty(false);
     setContent(null);
     try {
-      const access = await getCollabAccess(node.id);
       const c = await fetchContent(node);
       if (!mounted.current) return;
       if (!("text" in c)) {
@@ -379,7 +358,7 @@ export function TextPreview({
         return;
       }
       setContent(c);
-      if (access) setBaseVersion(access.version);
+      setBaseVersion(c.version);
     } catch {
       if (mounted.current) failRef.current({ title: "ファイルを読み込めませんでした", description: "時間をおいてもう一度開くか、ダウンロードしてください。" });
     }
@@ -410,7 +389,7 @@ export function TextPreview({
           <Save aria-hidden />
           {saving ? "保存中…" : "保存"}
         </ChromePrimaryButton>
-      ) : canEdit && content && content.encoding !== "unknown" ? (
+      ) : canEdit && content && content.encoding !== null ? (
         <ChromePrimaryButton onClick={() => void startEdit()} disabled={opening} data-testid="text-edit">
           <Pencil aria-hidden />
           編集
@@ -431,7 +410,7 @@ export function TextPreview({
   const meta = [
     `${content.lines.toLocaleString("ja-JP")} 行`,
     formatBytes(size),
-    content.encoding === "shift_jis" ? "Shift_JIS" : content.encoding === "unknown" ? "文字コード不明" : null,
+    content.encoding === null ? "文字コード不明" : content.encoding === "UTF-8" ? null : content.encoding,
     content.eol === "\r\n" ? "CRLF" : null,
   ].filter(Boolean);
 
@@ -494,9 +473,10 @@ export function TextPreview({
       <div className="flex h-full min-h-0 flex-col bg-muted/40 md:px-6 md:py-5" data-testid="text-preview" data-mode="edit">
         <div className="mx-auto flex min-h-0 w-full max-w-6xl flex-1 flex-col bg-card md:overflow-hidden md:rounded-xl md:border md:border-border/70 md:shadow-sm">
           {header}
-          {content.encoding === "shift_jis" ? (
+          {narrowEncoding(content.encoding) ? (
             <p className="shrink-0 border-b border-border/70 bg-season-autumn/10 px-4 py-2 text-xs text-foreground/80" data-testid="text-encoding-note">
-              Shift_JIS のファイルです。保存すると文字コードは UTF-8 になります。
+              {content.encoding} のファイルです。保存しても {content.encoding} のままで、{content.encoding}{" "}
+              にない文字（絵文字など）は保存できません。
             </p>
           ) : null}
           <div className="min-h-0 flex-1 [&_.cm-editor]:h-full [&_.text-editor]:h-full">
