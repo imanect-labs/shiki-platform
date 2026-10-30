@@ -708,7 +708,7 @@ impl DataStore {
                 }
             }
             flush(&mut bulk, &mut out);
-            // awareness（データを含まない・見えない行・マスク列のものは送らない）。接続直後の購読者には
+            // awareness（データを含まない・見えない行・マスク列のもの・「追加だけ」の人へのほかの人の離脱は送らない）。接続直後の購読者には
             // 有効期間内の現在の状態（離脱済みを除く）も、同じ判定を通して送る。
             if !terminal {
                 let snapshot = std::mem::take(&mut s.awareness_snapshot);
@@ -725,6 +725,11 @@ impl DataStore {
                         continue;
                     }
                     if a.record_id.is_some() && !vis(a.state) {
+                        continue;
+                    }
+                    // 「追加だけ」の購読者には、ほかの人の離脱（どの行から離れたかを持たない）を送らない。見えない行で
+                    // 作業していたことを明かさない（手元の表示は有効期間で消える）。
+                    if a.record_id.is_none() && s.auth.own_records {
                         continue;
                     }
                     out.push(Out::Msg(StreamMessage {
