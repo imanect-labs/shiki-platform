@@ -33,7 +33,7 @@ import {
 } from "@/lib/selection-context";
 import { FolderPicker } from "@/components/artifacts/folder-picker";
 import { PromptInput, PromptInputTextarea } from "@/components/prompt-kit/prompt-input";
-import { PromptInputEditor } from "@/components/prompt-kit/prompt-input-editor";
+import dynamic from "next/dynamic";
 import {
   SlashCommandMenu,
   slashOptionId,
@@ -52,6 +52,13 @@ import { toast } from "@/components/ui/use-toast";
 import { usePreferences } from "@/lib/preferences";
 import { useModKeyLabel } from "@/hooks/use-mod-key";
 import { DrivePicker } from "./drive-picker";
+
+/// Markdown の入力欄（TipTap）は重いので、出すときに読み込む（テキストの設定では読み込まない）。
+/// 読み込む間は入力欄と同じ高さの枠を置き、レイアウトを跳ねさせない。
+const PromptInputEditor = dynamic(
+  () => import("@/components/prompt-kit/prompt-input-editor").then((m) => m.PromptInputEditor),
+  { ssr: false, loading: () => <div aria-hidden className="min-h-10 md:min-h-[44px]" /> },
+);
 
 /// 小さな × の押せる範囲を、見た目を変えずに周囲へ広げる（指で外せるように）。
 const HIT_AREA = "relative after:absolute after:-inset-2";
@@ -202,11 +209,11 @@ export const Composer = React.memo(function Composer({
   // 送信キー（ユーザー設定・#952）。Ctrl/⌘+Enter にしていれば Enter は改行。
   const preferences = usePreferences();
   const { submit_key: submitKey } = preferences.prefs;
-  // 入力欄の書き方（ユーザー設定）。設定が分かるまでは決めない（既定の Markdown で打ち始めてから
-  // テキストへ切り替わると、書きかけが Markdown のエスケープ付きで textarea に移ってしまう）。
-  // 読めなかったとき（chat 無効・通信失敗）は既定値で出す。
-  const inputFormat =
-    preferences.loaded || preferences.error !== null ? preferences.prefs.input_format : null;
+  // 入力欄の書き方（ユーザー設定）。設定を読む前は既定（Markdown）で出し、打てない時間を作らない。
+  // 読めた設定と違えば、本文が空のときだけ切り替える（書きかけを Markdown のエスケープ付きのまま
+  // textarea へ移さない。空になったとき＝送信後に切り替わる）。
+  const desiredFormat = preferences.loaded ? preferences.prefs.input_format : "markdown";
+  const [inputFormat, setInputFormat] = React.useState(desiredFormat);
   const modKey = useModKeyLabel();
   const [pickerOpen, setPickerOpen] = React.useState(false);
   const [wsPickerOpen, setWsPickerOpen] = React.useState(false);
@@ -237,6 +244,9 @@ export const Composer = React.memo(function Composer({
   }, [draftKey, scopeReady, draftRestored]);
   // 保存は打鍵ごとではなく、手が止まってからまとめて書く（長文の貼り付け後も入力を重くしない）。
   // 画面を離れる（アンマウント・リロードやタブを閉じる）ときは待たずに書く（直後に離れても取りこぼさない）。
+  React.useEffect(() => {
+    if (desiredFormat !== inputFormat && value === "") setInputFormat(desiredFormat);
+  }, [desiredFormat, inputFormat, value]);
   const latestValue = React.useRef(value);
   // コミットした値だけを持つ（破棄されたレンダーの値を保存しない）。保存の effect より先に置く。
   React.useEffect(() => {
@@ -614,14 +624,6 @@ export const Composer = React.memo(function Composer({
                 "md:min-h-[44px] md:pb-1 md:pt-0 md:text-[15px] md:leading-relaxed",
               )}
             />
-          ) : inputFormat === null ? (
-            // 設定を読むまでの一瞬は、入力欄と同じ高さの枠とプレースホルダだけを出す。
-            <p
-              aria-hidden
-              className="min-h-10 truncate py-2 text-base leading-6 text-muted-foreground/70 md:min-h-[44px] md:pb-1 md:pt-0 md:text-[15px] md:leading-relaxed"
-            >
-              {effectivePlaceholder}
-            </p>
           ) : (
             <PromptInputTextarea
               placeholder={effectivePlaceholder}

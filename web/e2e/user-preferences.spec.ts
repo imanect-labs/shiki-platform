@@ -92,9 +92,11 @@ test.describe("ユーザー設定", () => {
     expect((await saved).status()).toBe(200);
     await expect(plain).toHaveAttribute("aria-selected", "true");
 
-    // ホームの入力欄は素の textarea（`**` は太字にならずに残る）。
+    // ホームの入力欄は素の textarea（`**` は太字にならずに残る）。設定を読むまでは既定の Markdown の
+    // 入力欄が出て、読めたら（本文が空なので）textarea に替わる。
     await page.goto("/");
-    const input = page.getByLabel("メッセージを入力");
+    const input = page.locator('textarea[aria-label="メッセージを入力"]');
+    await expect(input).toBeVisible({ timeout: 20_000 });
     await input.click();
     await input.pressSequentially("**そのまま**");
     await expect(input).toHaveValue("**そのまま**");

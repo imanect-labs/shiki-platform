@@ -14,6 +14,7 @@
 /// - 送信キーが Ctrl/⌘+Enter: Enter は改行、Ctrl/⌘+Enter で送信。
 /// - タッチ端末（pointer: coarse）: Enter は改行（送信はボタンだけ）。
 /// - 日本語入力の変換確定中の Enter は送信しない。
+import { Fragment, type Node as PMNode } from "@tiptap/pm/model";
 import { Selection } from "@tiptap/pm/state";
 import type { EditorView } from "@tiptap/pm/view";
 import Link from "@tiptap/extension-link";
@@ -29,15 +30,38 @@ import { parseMarkdownToNodes } from "@/lib/notes/markdown-parse";
 import { serializeFragment } from "@/lib/notes/markdown-serialize";
 import { cn } from "@/lib/utils";
 
+/// 空行。Markdown は空の段落を持てない（続く空行は 1 つに潰れる）ので、ノーブレークスペースだけの
+/// 段落として送る（読む側にも表示にも空行として残る）。読み直すときは空の段落へ戻す。
+const BLANK_LINE = "\u00a0";
+
 /// md → エディタ doc（`<tag>` は文字のまま。HTML としては描かない）。
 function docFromMarkdown(md: string) {
-  return { type: "doc", content: parseMarkdownToNodes(md, { htmlAsText: true }) };
+  const content = parseMarkdownToNodes(md, { htmlAsText: true }).map((node) =>
+    node.type === "paragraph" &&
+    node.content?.length === 1 &&
+    node.content[0]?.text === BLANK_LINE
+      ? { type: "paragraph" }
+      : node,
+  );
+  return { type: "doc", content };
 }
 
 /// エディタ doc → md。AI が読む本文なので、エスケープは記法に化けるものだけにする
-/// （`doc_search` を `doc\_search` にしない）。末尾の改行は付けない（textarea の値と同じ形）。
+/// （`doc_search` を `doc\_search` にしない）。先頭と末尾の空行は落とし、末尾の改行は付けない
+/// （textarea の値と同じ形）。間の空行は残す。
 function markdownOf(editor: Editor): string {
-  return serializeFragment(editor.state.doc.content, { literalText: true }).replace(/\n+$/, "");
+  const { doc, schema } = editor.state;
+  const blocks: PMNode[] = [];
+  doc.forEach((node) => blocks.push(node));
+  const blank = (node: PMNode) => node.type.name === "paragraph" && node.childCount === 0;
+  let start = 0;
+  let end = blocks.length;
+  while (start < end && blank(blocks[start]!)) start++;
+  while (end > start && blank(blocks[end - 1]!)) end--;
+  const body = blocks
+    .slice(start, end)
+    .map((node) => (blank(node) ? schema.nodes.paragraph!.create(null, schema.text(BLANK_LINE)) : node));
+  return serializeFragment(Fragment.fromArray(body), { literalText: true }).replace(/\n+$/, "");
 }
 
 /// コードブロックに変わる途中の行（`` ``` `` か `~~~` に言語名だけ）。Enter で送らずブロックにする。
@@ -109,7 +133,14 @@ export function PromptInputEditor({
   const extensions = React.useMemo(
     () => [
       StarterKit.configure({ link: false }),
-      Link.configure({ openOnClick: false, autolink: true, protocols: ["http", "https", "mailto"] }),
+      // 打った語・貼った文字を自動でリンクにしない（`README.md` や `main.rs` が http://README.md の
+      // リンクとして送られてしまう）。URL は文字のまま送り、表示側の GFM がリンクにする。
+      Link.configure({
+        openOnClick: false,
+        autolink: false,
+        linkOnPaste: false,
+        protocols: ["http", "https", "mailto"],
+      }),
       Placeholder.configure({ placeholder: () => latest.current.placeholder ?? "" }),
       MarkdownClipboard,
     ],
@@ -144,6 +175,17 @@ export function PromptInputEditor({
     () => ({
       attributes: attrs,
       handleKeyDown: (view: EditorView, event: KeyboardEvent) => handleKey(view, event),
+      handleDOMEvents: {
+        // Ctrl/⌘+Enter の送信は DOM の keydown で拾う。Android の Chrome では ProseMirror が Enter の
+        // keydown を handleKeyDown へ渡さない（修飾キーの無い Enter として作り直す）ため。
+        keydown: (_view: EditorView, event: KeyboardEvent) => {
+          if (event.key !== "Enter" || !(event.ctrlKey || event.metaKey)) return false;
+          if (event.isComposing || event.keyCode === 229) return false;
+          event.preventDefault();
+          latest.current.onSubmit?.();
+          return true;
+        },
+      },
     }),
     [attrs],
   );
@@ -162,8 +204,6 @@ export function PromptInputEditor({
       setValue(md);
     },
   });
-  const editorRef = React.useRef<Editor | null>(null);
-  editorRef.current = editor;
 
   /// キー操作（editorProps から呼ぶ。変わる値は ref 越しに読むので、作り直さなくてよい）。
   function handleKey(view: EditorView, event: KeyboardEvent): boolean {
@@ -175,20 +215,19 @@ export function PromptInputEditor({
     // IME 変換確定中（日本語入力）の Enter は確定に使わせる。Safari は確定の Enter で
     // isComposing を落とすことがあるので keyCode 229 も見る。
     if (event.key !== "Enter" || event.isComposing || event.keyCode === 229) return false;
-    const mod = event.ctrlKey || event.metaKey;
-    if (mod) {
-      // 修飾キーは明示の操作なので、どの送信キー・タッチ端末の外付けキーボードでも送る。
-      onSubmit?.();
-      return true;
-    }
+    // Ctrl/⌘+Enter（どの送信キー・タッチ端末の外付けキーボードでも送る）は handleDOMEvents で済ませている。
+    if (event.ctrlKey || event.metaKey) return true;
     // 改行にする側（Ctrl/⌘+Enter で送る設定・タッチ端末）は既定の Enter のまま。
     if (submitKey === "mod_enter" || coarse) return false;
     if (event.shiftKey) {
       // 既定の Shift+Enter は段落内の強制改行だが、ここでは Enter と同じ動き（新しい段落・
       // 次の項目・コード内の改行）にする。段落を分けておくと、続く行の `- ` などの記法が効く。
+      // 修飾キーの無い Enter として各拡張の Enter 処理へ流し直す（トランザクションはそのまま
+      // 反映されるので、コードブロックを抜けたときのカーソル移動も保たれる）。
+      const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
       replaying.current = true;
       try {
-        editorRef.current?.commands.keyboardShortcut("Enter");
+        view.someProp("handleKeyDown", (f) => f(view, enter));
       } finally {
         replaying.current = false;
       }

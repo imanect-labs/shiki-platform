@@ -2,8 +2,6 @@
 
 import * as React from "react";
 
-import { parseMarkdownToNodes, type PmJson } from "@/lib/notes/markdown-parse";
-
 /// クライアント側のチャット永続化（localStorage）。
 ///
 /// チャット backend（Phase 3 / #70）は未実装のため、ここでは issue #68 が要求する
@@ -105,24 +103,10 @@ export function newId(): string {
 }
 
 /// 先頭メッセージからセッションタイトルを作る（長すぎる場合は丸める）。
-/// `markdown` なら記法（`**`・`#`・`- `・`` ` `` など）を外した文字だけにする（Markdown の入力欄）。
-export function titleFrom(text: string, { markdown = false }: { markdown?: boolean } = {}): string {
-  const trimmed = (markdown ? markdownPlainText(text) : text).trim().replace(/\s+/g, " ");
+export function titleFrom(text: string): string {
+  const trimmed = text.trim().replace(/\s+/g, " ");
   if (!trimmed) return "新しいチャット";
   return trimmed.length > 40 ? `${trimmed.slice(0, 40)}…` : trimmed;
-}
-
-/// Markdown の本文から、見えている文字だけを取り出す（ブロックの間は空白で区切る）。
-function markdownPlainText(md: string): string {
-  const out: string[] = [];
-  const walk = (node: PmJson) => {
-    if (typeof node.text === "string") out.push(node.text);
-    else if (node.type === "hardBreak") out.push(" ");
-    node.content?.forEach(walk);
-    if (node.type !== "text") out.push(" ");
-  };
-  parseMarkdownToNodes(md, { htmlAsText: true }).forEach(walk);
-  return out.join("");
 }
 
 // ── 公開 API（backend 差し替え時もこの形を保つ）─────────────────────

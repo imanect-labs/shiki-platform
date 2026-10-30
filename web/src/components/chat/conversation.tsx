@@ -1165,8 +1165,10 @@ const UserRow = React.memo(function UserRow({
           // 入力欄が Markdown のときは、打ったときの見た目のまま描く（段落の間は詰める）。
           <Markdown
             breaks
+            untrusted
             // 太字は入力欄と同じ太さにする（semibold は字形が無いフォントで太字に見えない）。
-            className="max-w-full rounded-2xl bg-secondary px-4 py-2.5 text-secondary-foreground [&_p]:my-0 [&_strong]:font-bold"
+            // インラインコードの地は吹き出しと同じ色なので、背景の色で浮かせる。
+            className="max-w-full rounded-2xl bg-secondary px-4 py-2.5 text-secondary-foreground [&_:not(pre)>code]:bg-background/70 [&_p]:my-0 [&_strong]:font-bold"
           >
             {text}
           </Markdown>

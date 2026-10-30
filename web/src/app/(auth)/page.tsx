@@ -23,6 +23,7 @@ import { HOME_SCOPE, moveModelChoice, readModelChoice, writeModelChoice } from "
 import { usePreferences } from "@/lib/preferences";
 import { moveToolChoice, readToolChoice, writeToolChoice } from "@/lib/tool-choice";
 import { titleFrom } from "@/lib/chat-store";
+import type { InputFormat } from "@/lib/preferences";
 import { currentSeasonIndex, seasonVar } from "@/lib/season";
 import { microSeasonOf } from "@/lib/microseason";
 import { notableDayOf } from "@/lib/notable-days";
@@ -132,7 +133,7 @@ export default function HomePage() {
       // コマンドは**その発話だけ**の適用なので、ピンにはせず送信時に渡す（#387）。
       const pinned = mode === "chat" ? skill : null;
       // 作業フォルダはエージェントのモードで選んだときだけ使う（他のモードでは見えていない選択）。
-      const thread = await createThread(titleFrom(body, { markdown: prefs.input_format === "markdown" }), asAutonomous, {
+      const thread = await createThread(await threadTitle(body, prefs.input_format), asAutonomous, {
         skill: pinned ? { artifactId: pinned.id, version: pinned.currentVersion } : undefined,
         workspace: mode === "agent" ? workspace ?? undefined : undefined,
       });
@@ -307,4 +308,12 @@ function SeasonDivider() {
       <span className="shiki-dash-x h-4 flex-1" aria-hidden />
     </div>
   );
+}
+
+/// スレッドの仮タイトル。Markdown の入力欄で書いた本文は記法を外してから丸める
+/// （記法を外す処理は marked を引くので、送るときに読み込む）。
+async function threadTitle(body: string, format: InputFormat): Promise<string> {
+  if (format !== "markdown") return titleFrom(body);
+  const { markdownPlainText } = await import("@/lib/markdown-plain-text");
+  return titleFrom(markdownPlainText(body));
 }

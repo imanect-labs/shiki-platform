@@ -681,8 +681,9 @@
   .composer-editor blockquote {
     @apply border-l-2 border-border pl-3 text-muted-foreground;
   }
+  /* コードブロックは送った後の表示（CodeBlock）と同じ暗い面にする（ライトでも暗い）。 */
   .composer-editor pre {
-    @apply overflow-x-auto whitespace-pre rounded-lg bg-muted px-3 py-2 font-mono text-[13px] leading-5;
+    @apply overflow-x-auto whitespace-pre rounded-xl border border-border bg-[#0d1117] px-3 py-2 font-mono text-[13px] leading-5 text-white/90;
   }
   .composer-editor code:not(pre code) {
     @apply rounded-[5px] bg-muted px-1.5 py-0.5 font-mono text-[0.85em];

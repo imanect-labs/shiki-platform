@@ -129,9 +129,11 @@ function extractCode(child: React.ReactNode): {
 }
 
 /// 描画中の本文と、生成中かどうか（```ui の図が書きかけの行を描かないようにする）。
-const SourceContext = React.createContext<{ text: string; streaming: boolean }>({
+/// `untrusted` は利用者が書いた本文（発話の吹き出し）。図・表・引用番号にせず、リンク先を見せる。
+const SourceContext = React.createContext<{ text: string; streaming: boolean; untrusted: boolean }>({
   text: "",
   streaming: false,
+  untrusted: false,
 });
 
 /// フェンスが原文で終わっているか。react-markdown（mdast-util-to-hast）はフェンスの中身の末尾に
@@ -154,6 +156,35 @@ function fenceMeta(node: ExtraProps["node"]): string | undefined {
   return typeof meta === "string" ? meta.trim().split(/\s+/)[0] : undefined;
 }
 
+/// 利用者が書いたリンク。表示の文字と行き先が違うときは行き先のホストを添える（文字で行き先を偽れない）。
+function UserLink({ href, children }: { href: string; children: React.ReactNode }) {
+  let host: string | null = null;
+  try {
+    const u = new URL(href);
+    if (u.protocol === "http:" || u.protocol === "https:") host = u.host;
+  } catch {
+    /* 相対・不正な URL はリンクにしない */
+  }
+  if (!host) return <>{children}</>;
+  const label = typeof children === "string" ? children : null;
+  const shown = label !== null && (label === href || label === href.replace(/^https?:\/\//, ""));
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer nofollow"
+      title={href}
+      className={cn(
+        "font-medium text-primary underline decoration-primary/30 underline-offset-2 hover:decoration-primary",
+        WRAP_ANYWHERE,
+      )}
+    >
+      {children}
+      {shown ? null : <span className="ml-1 text-[0.85em] font-normal text-muted-foreground">({host})</span>}
+    </a>
+  );
+}
+
 /// 図の「表で表示」。リンク・画像は描かない（図と同じく文字と数値だけにする）。
 /// ノートの ```ui の図（NodeView）も同じ描き方にする。
 export function renderFigureTable(markdown: string) {
@@ -171,11 +202,13 @@ export function renderFigureTable(markdown: string) {
 
 /// ブロックコード。```ui（Yui）の図は図にし、描けなければ通常のコードブロックに戻す（#530）。
 function FencedCode({ node, children }: { node: ExtraProps["node"]; children: React.ReactNode }) {
-  const { text, streaming } = React.useContext(SourceContext);
+  const { text, streaming, untrusted } = React.useContext(SourceContext);
   const { code, raw, lang, ui, uiKind, dataGrid } = extractCode(children);
   const closed = fenceEnded(text, node);
   const nested = React.useContext(YuiNestedContext);
   const gridHost = React.useContext(DataGridHostContext);
+  // 利用者が書いたフェンスは図・表にせず、コードとして見せる（図と操作は AI の回答だけのもの）。
+  if (untrusted) return <CodeBlock code={code} lang={lang} />;
   // ```data_grid はミニアプリの画面の表（トップレベルだけ・サーバーと同じ規則）。中身の 1 行目が別名。
   if (dataGrid && gridHost && !nested && closed) {
     const alias = code.split(/\r?\n/)[0]?.trim() ?? "";
@@ -232,7 +265,10 @@ const components: Components = {
     );
   },
   a({ href, children }) {
+    // eslint-disable-next-line react-hooks/rules-of-hooks -- react-markdown は要素を部品として描く
+    const { untrusted } = React.useContext(SourceContext);
     const url = href ?? "";
+    if (untrusted) return <UserLink href={url}>{children}</UserLink>;
     // 引用マーカー（`#cite-n`・linkifyCitations が付ける）は本文中の上付き番号チップにする。
     // ホバーで原文カード、クリックで出典パネル（メッセージの引用文脈があるときのみ）。
     const cite = citeNumberFromHref(url);
@@ -338,6 +374,7 @@ export function Markdown({
   className,
   streaming = false,
   breaks = false,
+  untrusted = false,
 }: {
   children: string;
   className?: string;
@@ -345,13 +382,17 @@ export function Markdown({
   streaming?: boolean;
   /// 段落の中の単独の改行も改行として描く（利用者の発話）。
   breaks?: boolean;
+  /// 利用者が書いた本文。画像は読み込まず（外部へのアクセスを生まない）、図・表・引用番号にせず、
+  /// リンクには行き先のホストを添える。
+  untrusted?: boolean;
 }) {
   return (
     <div className={cn("min-w-0 text-[15px] leading-relaxed text-foreground", WRAP_ANYWHERE, className)}>
-      <SourceContext.Provider value={{ text: children, streaming }}>
+      <SourceContext.Provider value={{ text: children, streaming, untrusted }}>
         <ReactMarkdown
           remarkPlugins={breaks ? [remarkGfm, remarkBrTags, remarkSoftBreaks] : [remarkGfm, remarkBrTags]}
           components={components}
+          disallowedElements={untrusted ? ["img"] : undefined}
         >
           {children}
         </ReactMarkdown>
