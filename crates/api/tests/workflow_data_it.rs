@@ -76,6 +76,8 @@ fn user(tenant: &str, id: &str) -> AuthContext {
 struct Env {
     pool: sqlx::PgPool,
     fga: Arc<dyn AuthzClient>,
+    /// テストが作った OpenFGA のストア（片付けで消す）。
+    fga_store: (String, String),
     data: Arc<DataStore>,
     executor: Arc<dyn NodeExecutor>,
     workflows: WorkflowStore,
@@ -104,18 +106,18 @@ async fn setup() -> Option<Env> {
         .await
         .expect("migrate");
     let http = reqwest::Client::new();
-    let fga = Arc::new(
-        OpenFgaClient::connect(
-            http.clone(),
-            &OpenFgaConfig {
-                base_url: fga_url,
-                store_name: format!("shiki-wf-data-{}", Uuid::new_v4()),
-            },
-            &authz::model::default_model(),
-        )
-        .await
-        .expect("fga"),
-    ) as Arc<dyn AuthzClient>;
+    let client = OpenFgaClient::connect(
+        http.clone(),
+        &OpenFgaConfig {
+            base_url: fga_url.clone(),
+            store_name: format!("shiki-wf-data-{}", Uuid::new_v4()),
+        },
+        &authz::model::default_model(),
+    )
+    .await
+    .expect("fga");
+    let fga_store = (fga_url, client.store_id().to_string());
+    let fga = Arc::new(client) as Arc<dyn AuthzClient>;
     let s3 = storage::S3Config {
         internal_endpoint: s3_endpoint.clone(),
         public_endpoint: s3_endpoint,
@@ -195,6 +197,7 @@ async fn setup() -> Option<Env> {
     Some(Env {
         pool,
         fga,
+        fga_store,
         data,
         executor,
         workflows,
@@ -1075,4 +1078,174 @@ async fn saved_workflows_with_array_conditions_are_listed() {
         .find(|f| f.workflow_id == wf_prefix)
         .expect("tags-prefix");
     assert_eq!(sw_hit.node_id.as_deref(), Some("sw"));
+}
+
+/// 列がすべて文章（索引つき・探す条件に使える）の、決まりの無いテーブルの定義。
+fn text_schema(keys: &[&str]) -> TableSchema {
+    plain_schema(
+        keys.iter()
+            .map(|k| {
+                let mut f = data::FieldDef::new(*k, FieldType::Text);
+                f.indexed = true;
+                f
+            })
+            .collect(),
+    )
+}
+
+impl Env {
+    /// テナントで作ったものを片付ける（実行・副作用の記録・ワークフロー・テーブル・イベント・OpenFGA のストア）。
+    async fn cleanup_tenant(&self, tenant: &str) {
+        for table in [
+            "workflow_run",
+            "effect_journal",
+            "artifact",
+            "storage_event_outbox",
+        ] {
+            sqlx::query(&format!("DELETE FROM {table} WHERE tenant_id = $1"))
+                .bind(tenant)
+                .execute(&self.pool)
+                .await
+                .unwrap();
+        }
+        self.data.purge_tenant(tenant).await.unwrap();
+        let (base, store) = &self.fga_store;
+        let res = reqwest::Client::new()
+            .delete(format!("{base}/stores/{store}"))
+            .send()
+            .await
+            .expect("OpenFGA のストアを消す");
+        assert!(res.status().is_success(), "delete store: {}", res.status());
+    }
+}
+
+/// D-123・BUG-152: 繰り返しの中のブロックは、繰り返しの手前の「レコードを探す」の結果を参照できる。承認者の表を
+/// 先に引いて、入力の 3 件をそれぞれ書く組み方が、保存でき（以前は ir.bad_ref で止まった）、実行で 3 件とも
+/// 引いた承認者で書かれる。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn blocks_in_a_map_use_a_query_made_before_the_map() {
+    let Some(env) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4().simple());
+    let alice = user(&tenant, "alice");
+    let body = async {
+        let approvers = env
+            .data
+            .create_table(
+                &alice,
+                NewDataTable {
+                    name: "approvers".into(),
+                    schema: text_schema(&["name", "role"]),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        for (name, role) in [("佐藤", "経理"), ("鈴木", "総務")] {
+            env.data
+                .create_record(
+                    &alice,
+                    approvers.id,
+                    json!({ "name": name, "role": role }),
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+        let tasks = env
+            .data
+            .create_table(
+                &alice,
+                NewDataTable {
+                    name: "tasks".into(),
+                    schema: text_schema(&["title", "approver"]),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let ir = json!({
+            "ir_version": 1, "name": "assign-each",
+            "declared_scopes": ["data.read", "data.write"],
+            "input_schema": { "type": "object", "properties": {
+                "titles": { "type": "array", "items": { "type": "string" } } } },
+            "triggers": [ { "kind": "interactive" } ],
+            "nodes": [
+                { "id": "find_approver", "type": "data.query", "params": {
+                    "table": approvers.id.to_string(),
+                    "query": { "filter": { "cmp": { "field": "role", "op": "eq", "value": "経理" } } } } },
+                { "id": "each_title", "type": "control.map",
+                  "params": { "items": { "$from": "input", "path": "/titles" } } },
+                { "id": "write", "type": "data.record.create", "parent": "each_title", "params": {
+                    "table": tasks.id.to_string(),
+                    "data": {
+                        "title": { "$from": "each", "path": "/item" },
+                        "approver": { "$from": "nodes.find_approver.output", "path": "/items/0/data/name" } } } }
+            ],
+            "edges": [ { "from": "find_approver", "to": "each_title" } ]
+        });
+        let (wf, _) = env
+            .workflows
+            .create(&alice, &ir, &Catalog::default(), None)
+            .await
+            .expect("繰り返しの手前の結果を中で参照する定義を保存できる");
+        let run = env
+            .launcher
+            .start_interactive(
+                &alice,
+                wf,
+                &json!({ "titles": ["交通費", "宿泊費", "会議費"] }),
+            )
+            .await
+            .unwrap()
+            .expect("run が作られる");
+        let worker = workflow_engine::WorkflowWorker::new(
+            env.runs.clone(),
+            Arc::clone(&env.executor),
+            WorkerConfig::default(),
+        )
+        .scoped_to_tenant(&tenant);
+        while worker.claim_and_run_once("w1").await.unwrap() {}
+        let steps: Vec<(String, String, Option<Value>)> = sqlx::query_as(
+            "SELECT step_path, status, error FROM step_execution \
+             WHERE tenant_id = $1 AND run_id = $2 ORDER BY step_path",
+        )
+        .bind(&tenant)
+        .bind(run)
+        .fetch_all(&env.pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            env.runs.run_status(&tenant, run).await.unwrap(),
+            Some(RunStatus::Succeeded),
+            "{steps:?}"
+        );
+        let page = env
+            .data
+            .list_records(&alice, tasks.id, &data::ListRecordsOptions::default(), None)
+            .await
+            .unwrap();
+        let mut written: Vec<(String, String)> = page
+            .items
+            .iter()
+            .map(|r| {
+                (
+                    r.data["title"].as_str().unwrap_or_default().to_string(),
+                    r.data["approver"].as_str().unwrap_or_default().to_string(),
+                )
+            })
+            .collect();
+        written.sort();
+        let mut want: Vec<(String, String)> = ["交通費", "宿泊費", "会議費"]
+            .iter()
+            .map(|t| ((*t).to_string(), "佐藤".to_string()))
+            .collect();
+        want.sort();
+        assert_eq!(written, want);
+    };
+    // 落ちても片付けてから結果を返す。
+    let outcome = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(body)).await;
+    env.cleanup_tenant(&tenant).await;
+    if let Err(e) = outcome {
+        std::panic::resume_unwind(e);
+    }
 }

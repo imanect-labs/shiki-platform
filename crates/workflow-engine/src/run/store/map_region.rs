@@ -44,6 +44,17 @@ pub(crate) fn split_step_path(step_path: &str) -> (&str, &str) {
     }
 }
 
+/// 要素スコープと、それを囲む要素スコープ（外から内へ・自分を含む）。静的（空）は空。
+///
+/// `m1[0].m2[1]` → `m1[0]`・`m1[0].m2[1]`。入れ子の map の中のブロックに、外側の要素の結果も見せるのに使う
+/// （`RunStore::step_outputs`・D-123）。
+pub(crate) fn enclosing_scopes(scope_prefix: &str) -> Vec<&str> {
+    scope_prefix
+        .match_indices(']')
+        .map(|(i, _)| &scope_prefix[..=i])
+        .collect()
+}
+
 /// 同一スコープの源ノードの step_path（`scope_prefix.node`・静的は `node`）。
 pub(crate) fn scoped_path(scope_prefix: &str, node_id: &str) -> String {
     if scope_prefix.is_empty() {
@@ -400,6 +411,16 @@ mod tests {
         assert_eq!(split_step_path("m1[0].m2[1].leaf"), ("m1[0].m2[1]", "leaf"));
         // map ノード自身（領域内のノードだが map）: 接頭辞は外側要素。
         assert_eq!(split_step_path("m1[0].m2"), ("m1[0]", "m2"));
+    }
+
+    #[test]
+    fn enclosing_scopes_go_from_outer_to_inner() {
+        assert!(enclosing_scopes("").is_empty());
+        assert_eq!(enclosing_scopes("m[3]"), vec!["m[3]"]);
+        assert_eq!(
+            enclosing_scopes("m1[0].m2[12]"),
+            vec!["m1[0]", "m1[0].m2[12]"]
+        );
     }
 
     #[test]

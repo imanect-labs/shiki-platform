@@ -49,7 +49,18 @@ impl NodeExecutor for MapExecutor {
                         return NodeResult::fail("boom", "element failed", false);
                     }
                 }
-                NodeResult::ok(json!({ "node": node_type, "each": ctx.each }))
+                // 見えた前の結果（`$from nodes.<id>.output` で引けるもの）のノード id と、その要素の番号。
+                let seen: Value = ctx
+                    .node_outputs
+                    .as_object()
+                    .map(|m| {
+                        m.iter()
+                            .map(|(k, v)| (k.clone(), v["each"]["item"].clone()))
+                            .collect::<serde_json::Map<_, _>>()
+                    })
+                    .unwrap_or_default()
+                    .into();
+                NodeResult::ok(json!({ "node": node_type, "each": ctx.each, "seen": seen }))
             }
         }
     }
@@ -316,6 +327,82 @@ async fn map_collect_gathers_errors_and_succeeds() {
             .1,
         StepStatus::Succeeded
     );
+}
+
+/// 繰り返しの中のブロックには、本体の結果と、自分の要素と、それを囲む外側の要素の結果が見える（D-123）。
+/// ほかの要素の結果と、中が終わっていない繰り返しの結果は見えない（保存時検証 V5 の祖先と同じ範囲）。
+#[tokio::test]
+async fn nested_map_blocks_see_the_body_and_every_enclosing_element() {
+    let Some(pool) = setup().await else { return };
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let ir = json!({
+        "ir_version": 1, "name": "nested-map-outputs",
+        "declared_scopes": ["storage.read"],
+        "nodes": [
+            { "id": "first", "type": "storage.read", "params": {} },
+            { "id": "outer", "type": "control.map", "params": { "items": [1, 2] } },
+            { "id": "pre", "type": "storage.read", "parent": "outer", "params": {} },
+            { "id": "inner", "type": "control.map", "parent": "outer", "params": { "items": [10, 20] } },
+            { "id": "a", "type": "storage.read", "parent": "inner", "params": {} },
+            { "id": "leaf", "type": "storage.read", "parent": "inner", "params": {} },
+            { "id": "after", "type": "storage.read", "params": {} }
+        ],
+        "edges": [
+            { "from": "first", "to": "outer" },
+            { "from": "outer", "to": "after" },
+            { "from": "pre", "to": "inner" },
+            { "from": "a", "to": "leaf" }
+        ]
+    });
+    let run_id = create_run(&store, &tenant, &ir).await;
+    let w = worker(pool.clone(), &tenant);
+    while w.claim_and_run_once("w1").await.unwrap() {}
+    assert_eq!(
+        store.run_status(&tenant, run_id).await.unwrap(),
+        Some(RunStatus::Succeeded)
+    );
+
+    let output = |path: &'static str| {
+        let pool = pool.clone();
+        let tenant = tenant.clone();
+        async move {
+            let out: Value = sqlx::query_scalar(
+                "SELECT output FROM step_execution WHERE tenant_id = $1 AND run_id = $2 AND step_path = $3",
+            )
+            .bind(&tenant)
+            .bind(run_id)
+            .bind(path)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            out
+        }
+    };
+    // 内側の 2 段目の中（outer[1].inner[0]）の leaf: 本体の first、外側の要素 1 の pre、同じ要素の a。
+    assert_eq!(
+        output("outer[1].inner[0].leaf").await["seen"],
+        json!({ "first": null, "pre": 2, "a": 10 })
+    );
+    // 外側の中の pre: 本体の first だけ（ほかの要素の pre・中が終わっていない outer は見えない）。
+    assert_eq!(
+        output("outer[0].pre").await["seen"],
+        json!({ "first": null })
+    );
+    // 本体の after: 本体の結果だけ（中のブロックの結果は見えない）。
+    let after = output("after").await["seen"].clone();
+    assert_eq!(
+        after
+            .as_object()
+            .map(|m| m.keys().cloned().collect::<Vec<_>>()),
+        Some(vec!["first".to_string(), "outer".to_string()])
+    );
+
+    sqlx::query("DELETE FROM workflow_run WHERE tenant_id = $1")
+        .bind(&tenant)
+        .execute(&pool)
+        .await
+        .unwrap();
 }
 
 /// D-85: 中にブロックの無い繰り返しは保存できる（実行と自動実行のオンの前に止める）。止める前に作られた実行が

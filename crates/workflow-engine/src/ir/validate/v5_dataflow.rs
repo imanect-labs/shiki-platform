@@ -338,6 +338,12 @@ fn check_cmp(
 }
 
 /// 各ノードの祖先ノード集合を求める（エッジの推移閉包・逆向き到達）。
+///
+/// 繰り返し（map）の中のブロックは、繰り返しのブロックの祖先も祖先に数える（入れ子なら外側の繰り返しの祖先も・
+/// D-123）。中のブロックが動くのは繰り返しのブロックが動いた後なので、その祖先の結果はもう出ている。実行時も
+/// 本体と外側の要素の結果を中に見せる（`RunStore::step_outputs`）。繰り返しのブロックそのものは数えない（中が
+/// 終わるまで結果が無い）。領域の閉包（V2）で線は同じ領域の中にしか引けないので、線でたどれるのは同じ領域の
+/// ブロックだけになる。
 fn compute_ancestors(ir: &WorkflowIr) -> HashMap<String, HashSet<String>> {
     // 前段（predecessors）隣接。
     let mut preds: HashMap<&str, Vec<&str>> = HashMap::new();
@@ -350,10 +356,26 @@ fn compute_ancestors(ir: &WorkflowIr) -> HashMap<String, HashSet<String>> {
             .or_default()
             .push(e.from.as_str());
     }
+    let parent_of: HashMap<&str, &str> = ir
+        .nodes
+        .iter()
+        .filter_map(|n| n.parent.as_deref().map(|p| (n.id.as_str(), p)))
+        .collect();
     let mut result: HashMap<String, HashSet<String>> = HashMap::new();
     for n in &ir.nodes {
         let mut seen: HashSet<String> = HashSet::new();
-        let mut stack: Vec<&str> = preds.get(n.id.as_str()).cloned().unwrap_or_default();
+        // 自分と、自分を囲む繰り返し（内から外へ）の前段から逆向きにたどる。親の連鎖が輪になっていても
+        // （V2 が誤りにする）止まるよう、たどった繰り返しを覚える。
+        let mut enclosing: HashSet<&str> = HashSet::new();
+        let mut cur = Some(n.id.as_str());
+        let mut stack: Vec<&str> = Vec::new();
+        while let Some(c) = cur {
+            if !enclosing.insert(c) {
+                break;
+            }
+            stack.extend(preds.get(c).into_iter().flatten().copied());
+            cur = parent_of.get(c).copied();
+        }
         while let Some(p) = stack.pop() {
             if seen.insert(p.to_string()) {
                 if let Some(pp) = preds.get(p) {
@@ -411,6 +433,125 @@ mod tests {
             &mut errs,
         );
         assert!(errs.is_empty(), "{errs:?}");
+    }
+
+    /// 繰り返しの中のブロックが `nodes.<id>.output` で指したブロックごとの V5 の誤り（ノード id の一覧）。
+    #[allow(clippy::needless_pass_by_value)]
+    fn bad_refs(v: serde_json::Value) -> Vec<String> {
+        let mut errs = Vec::new();
+        check(&ir(v), &mut errs);
+        errs.iter()
+            .map(|e| {
+                assert_eq!(e.code, "ir.bad_ref", "{e:?}");
+                e.node_id.clone().unwrap_or_default()
+            })
+            .collect()
+    }
+
+    fn out(id: &str) -> serde_json::Value {
+        json!({ "$from": format!("nodes.{id}.output"), "path": "/items" })
+    }
+
+    /// 繰り返しの中のブロックは、繰り返しの手前のブロック（線でたどれる祖先）の結果を参照できる（D-123・BUG-152）。
+    /// 線の無い外のブロック・繰り返しの後ろのブロック・繰り返しのブロックそのものは祖先ではない。
+    #[test]
+    fn inside_a_map_the_map_ancestors_are_ancestors() {
+        let wf = |inside_ref: serde_json::Value| {
+            json!({
+                "ir_version": 1, "name": "wf",
+                "nodes": [
+                    { "id": "approvers", "type": "data.query", "params": {} },
+                    { "id": "before", "type": "storage.read", "params": {} },
+                    { "id": "loose", "type": "storage.read", "params": {} },
+                    { "id": "m", "type": "control.map", "params": { "items": out("before") } },
+                    { "id": "first", "type": "script.run", "parent": "m",
+                      "params": { "input": { "$from": "each", "path": "/item" } } },
+                    { "id": "write", "type": "data.record.create", "parent": "m",
+                      "params": { "table": "t", "data": inside_ref } },
+                    { "id": "after", "type": "storage.read", "params": {} }
+                ],
+                "edges": [
+                    { "from": "approvers", "to": "before" },
+                    { "from": "before", "to": "m" },
+                    { "from": "m", "to": "after" },
+                    { "from": "first", "to": "write" }
+                ]
+            })
+        };
+        // 繰り返しの手前（線で 2 段前まで）・中の前のブロックは参照できる。
+        for ok in ["approvers", "before", "first"] {
+            assert!(bad_refs(wf(out(ok))).is_empty(), "{ok}");
+        }
+        // 線の無い外のブロック・繰り返しの後ろ・繰り返しそのもの（中が終わるまで結果が無い）は default が要る。
+        for ng in ["loose", "after", "m"] {
+            assert_eq!(bad_refs(wf(out(ng))), vec!["write".to_string()], "{ng}");
+            let with_default = json!({ "$from": format!("nodes.{ng}.output"), "default": [] });
+            assert!(bad_refs(wf(with_default)).is_empty(), "{ng}");
+        }
+    }
+
+    /// 入れ子の繰り返しの中は、内側の繰り返しの祖先（外側の中のブロック）と、外側の繰り返しの祖先（本体）を
+    /// たどる。内側の中のブロックは外側の中から参照できない（内側が終わるまで結果が無い）。
+    #[test]
+    fn nested_maps_reach_the_ancestors_of_every_enclosing_map() {
+        let wf = |leaf_ref: serde_json::Value, outer_ref: serde_json::Value| {
+            json!({
+                "ir_version": 1, "name": "wf",
+                "nodes": [
+                    { "id": "list", "type": "storage.list", "params": {} },
+                    { "id": "loose", "type": "storage.read", "params": {} },
+                    { "id": "outer", "type": "control.map", "params": { "items": out("list") } },
+                    { "id": "read", "type": "storage.read", "parent": "outer", "params": {} },
+                    { "id": "sibling", "type": "storage.read", "parent": "outer", "params": {} },
+                    { "id": "inner", "type": "control.map", "parent": "outer",
+                      "params": { "items": out("read") } },
+                    { "id": "done", "type": "script.run", "parent": "outer",
+                      "params": { "input": outer_ref } },
+                    { "id": "leaf", "type": "script.run", "parent": "inner",
+                      "params": { "input": leaf_ref } }
+                ],
+                "edges": [
+                    { "from": "list", "to": "outer" },
+                    { "from": "read", "to": "inner" },
+                    { "from": "inner", "to": "done" }
+                ]
+            })
+        };
+        let none = json!({ "$from": "each", "path": "/item" });
+        // 内側の中: 内側の祖先（外側の中の read）と外側の祖先（本体の list）。
+        for ok in ["read", "list"] {
+            assert!(bad_refs(wf(out(ok), none.clone())).is_empty(), "{ok}");
+        }
+        // 外側の中でも線の無いブロック・本体の線の無いブロック・囲む繰り返しは祖先ではない。
+        for ng in ["sibling", "loose", "inner", "outer"] {
+            assert_eq!(
+                bad_refs(wf(out(ng), none.clone())),
+                vec!["leaf".to_string()],
+                "{ng}"
+            );
+        }
+        // 外側の中の done は、内側の繰り返し（線の前段）を参照でき、内側の中の leaf は参照できない。
+        assert!(bad_refs(wf(none.clone(), out("inner"))).is_empty());
+        assert_eq!(
+            bad_refs(wf(none.clone(), out("leaf"))),
+            vec!["done".to_string()]
+        );
+    }
+
+    /// 親の連鎖が輪になった IR（V2 が誤りにする）でも、祖先をたどる処理は止まる。
+    #[test]
+    fn a_cyclic_parent_chain_does_not_hang() {
+        let errs = bad_refs(json!({
+            "ir_version": 1, "name": "wf",
+            "nodes": [
+                { "id": "a", "type": "control.map", "parent": "b", "params": { "items": [] } },
+                { "id": "b", "type": "control.map", "parent": "a", "params": { "items": [] } },
+                { "id": "c", "type": "script.run", "parent": "a",
+                  "params": { "input": out("x") } }
+            ],
+            "edges": []
+        }));
+        assert_eq!(errs, vec!["c".to_string()]);
     }
 
     /// 繰り返し中の 1 件（`each`）は繰り返しの中のブロックだけが使える。外で使うと、内部の名前（each・map・

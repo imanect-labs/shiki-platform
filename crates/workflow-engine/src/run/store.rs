@@ -496,10 +496,15 @@ impl RunStore {
     /// 実行対象 step から見える `node_id → output` を集める（`$from nodes.<id>.output` 解決用）。
     ///
     /// ワーカーが次ノード実行前に呼び、[`NodeContext`](super::NodeContext) の `node_outputs` を組む。
-    /// `step_path` が map 要素（`<map>[i].<node>`）なら **同一要素スコープの兄弟出力**＋静的 body 出力を、
-    /// 静的ノードなら静的 body 出力のみを返す（要素どうしを混同しない）。ノード id は IR 内で一意なので
-    /// スコープ横断でキー衝突しない。on_error=continue で error ポートを取った failed step も含める
-    /// （`$from nodes.<id>.output.error.*` で参照できるように）。
+    /// `step_path` が map 要素（`<map>[i].<node>`）なら **同一要素スコープの兄弟出力**と、それを囲む要素
+    /// スコープ（入れ子の map の外側の要素 `<m1>[i]`）の出力と、静的 body 出力を返す。静的ノードなら静的 body
+    /// 出力のみを返す（要素どうしを混同しない）。保存時検証 V5 が繰り返しの中のブロックの祖先に、囲む繰り返しの
+    /// 祖先を数えるのと同じ範囲（D-123）。ノード id は IR 内で一意で、囲むスコープの連鎖の中では 1 つの id に
+    /// 1 つの step しか無いので、キーは衝突しない。on_error=continue で error ポートを取った failed step も
+    /// 含める（`$from nodes.<id>.output.error.*` で参照できるように）。
+    ///
+    /// 見せないスコープ（ほかの要素）の行は DB から読まない（要素の数だけ step が増えても、読む出力は見える分に
+    /// とどめる）。
     pub async fn step_outputs(
         &self,
         tenant_id: &str,
@@ -507,14 +512,19 @@ impl RunStore {
         step_path: &str,
     ) -> Result<Vec<(String, Value)>, RunStoreError> {
         let (scope_prefix, _) = map_region::split_step_path(step_path);
+        let scopes = map_region::enclosing_scopes(scope_prefix);
+        // 要素の step（`[` を含む）のスコープは最後の `.` より前（ノード id は `.` を含まない）。
         let rows: Vec<(String, Option<Json<Value>>)> = sqlx::query_as(
             "SELECT step_path, output FROM step_execution \
              WHERE tenant_id = $1 AND run_id = $2 \
                AND (status = 'succeeded' \
-                    OR (status = 'failed' AND 'error' = ANY(taken_ports)))",
+                    OR (status = 'failed' AND 'error' = ANY(taken_ports))) \
+               AND (strpos(step_path, '[') = 0 \
+                    OR regexp_replace(step_path, '\\.[^.]*$', '') = ANY($3))",
         )
         .bind(tenant_id)
         .bind(run_id)
+        .bind(&scopes)
         .fetch_all(&self.db)
         .await
         .map_err(map_db)?;
@@ -522,8 +532,8 @@ impl RunStore {
             .into_iter()
             .filter_map(|(sp, out)| {
                 let (sp_scope, sp_node) = map_region::split_step_path(&sp);
-                // 静的 body 出力（scope 空）＋自要素スコープの兄弟出力のみを見せる。
-                (sp_scope.is_empty() || sp_scope == scope_prefix)
+                // 静的 body 出力（scope 空）＋自要素とそれを囲む要素のスコープの出力のみを見せる。
+                (sp_scope.is_empty() || scopes.contains(&sp_scope))
                     .then(|| (sp_node.to_string(), out.map_or(Value::Null, |j| j.0)))
             })
             .collect())

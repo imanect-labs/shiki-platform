@@ -278,7 +278,7 @@ pub(super) fn emit_description(
          - edges の要素: {edge}。キーはこの 3 つだけ（port というキーは無い）。from_port を省くと out。出口: 通常のノードは out、control.branch は true / false、control.switch は cases の port と default、on_error が \"continue\" のノードは error、control.wait（kind: event・on_timeout: \"continue\"）は timeout、ai.decide は route で決まる（【AI で判定】）。無い出口につないだエッジは保存できない。\n\
          - 入るエッジは 1 ノード 1 本まで（複数を受けられるのは control.join だけ）。\n\
          - on_error が \"continue\" のノードが失敗すると、出力は {{\"error\":{{\"code\",\"message\",…}}}} になり error の出口へ進む（error につないだ先が無ければ run は失敗する）。\n\
-         - map 領域: control.map は items の要素ごとに、\"parent\":\"<map の id>\" を持つノードを繰り返す。領域の中は parent が同じノードどうしだけをつなぐ（入口は入るエッジなし・出口はちょうど 1 つ・map ノードから領域へのエッジは書かない）。領域の中では {{\"$from\":\"each\",\"path\":\"/item\"}}（今の要素）と /index（番号）が使える。\n",
+         - map 領域: control.map は items の要素ごとに、\"parent\":\"<map の id>\" を持つノードを繰り返す。領域の中は parent が同じノードどうしだけをつなぐ（入口は入るエッジなし・出口はちょうど 1 つ・map ノードから領域へのエッジは書かない）。領域の中では {{\"$from\":\"each\",\"path\":\"/item\"}}（今の要素）と /index（番号）が使える。領域の中のノードは、map ノードの前のノード（エッジでたどれるもの。入れ子なら外側の map の前も）の出力も nodes.<id>.output で読める（承認者の表を先に引いて、1 件ずつ書く、など）。map ノード自身と map の後ろのノードは読めない。\n",
         sources = event_sources(),
         coalesce = workflow_engine::scheduler::COALESCE_QUIET_SECS,
         node = NODE_SHAPE,
