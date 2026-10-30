@@ -1510,7 +1510,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
             className="absolute left-1/2 top-20 z-10 flex -translate-x-1/2 flex-col items-center gap-2.5 rounded-xl border bg-card px-6 py-5 text-center text-sm text-muted-foreground shadow-xs"
             data-testid="data-grid-empty"
           >
-            {/* 追加だけの人に見えるのは自分が追加したレコードだけ（他の人のレコードの有無は言わない）。 */}
+            {/* 追加だけの人に見えるのは自分が追加したレコードと個別に共有されたレコード（他の人のレコードの有無は言わない）。 */}
             <p>{addOnly ? "まだ自分が追加したレコードはありません" : "まだレコードがありません"}</p>
             {onAddRecord && (canEdit || addOnly) ? (
               <button

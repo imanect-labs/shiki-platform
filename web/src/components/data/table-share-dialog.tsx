@@ -24,7 +24,11 @@ import { listTableShares, shareTable, unshareTable, type TableShareRole } from "
 const TABLE_ROLES: PeopleRoleOption<TableShareRole>[] = [
   { value: "viewer", label: "閲覧", hint: "レコードを見られます。追加や編集はできません。" },
   { value: "editor", label: "編集", hint: "レコードを追加・編集・削除できます。" },
-  { value: "submitter", label: "追加だけ", hint: "レコードを追加できます。見られるのは自分が追加したレコードだけです。" },
+  {
+    value: "submitter",
+    label: "追加だけ",
+    hint: "レコードを追加できます。見られるのは、自分が追加したレコードと、個別に共有されたレコードです。",
+  },
 ];
 
 export function TableShareDialog({

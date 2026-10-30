@@ -480,7 +480,7 @@ export function StateFlowEditor({
                     )}
                     <div className="space-y-1.5 rounded-lg bg-muted/50 px-3 py-2">
                       <Hint>
-                        申請する人には、テーブルを「追加だけ」で共有するのがおすすめです。追加だけの人は、レコードを追加して自分のレコードを見られるだけで、書き換えも状態を進めることもできません。
+                        申請する人には、テーブルを「追加だけ」で共有するのがおすすめです。追加だけの人は、レコードを追加し、自分が追加したレコードと個別に共有されたレコードを見られるだけで、書き換えも状態を進めることもできません。
                       </Hint>
                       {onOpenShare ? (
                         <Button size="sm" variant="outline" className="h-7 gap-1 text-xs" onClick={onOpenShare}>

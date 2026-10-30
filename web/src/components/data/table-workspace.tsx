@@ -657,7 +657,7 @@ export function TableWorkspace({
 
       {addOnly ? (
         <p className="text-xs text-muted-foreground" data-testid="data-add-only-note">
-          このテーブルは「追加だけ」で共有されています。表示しているのは、自分が追加したレコードだけです。
+          このテーブルは「追加だけ」で共有されています。表示しているのは、自分が追加したレコードと、個別に共有されたレコードです。
         </p>
       ) : null}
 

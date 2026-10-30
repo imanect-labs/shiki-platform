@@ -85,9 +85,9 @@ test("テーブルを「追加だけ」で共有すると、相手は追加で�
     const bobRow = share.locator("li", { hasText: "bob@" });
     await expect(bobRow).toBeVisible({ timeout: 10_000 });
     await bobRow.getByRole("combobox", { name: /と共有する権限$/ }).click();
-    // 一覧の中にだけ補足（見られるのは自分が追加したレコードだけ）が出る。
+    // 一覧の中にだけ補足（見られるのは自分が追加したレコードと個別に共有されたレコード）が出る。
     const option = page.getByTestId("share-role-submitter");
-    await expect(option).toContainText("見られるのは自分が追加したレコードだけです。");
+    await expect(option).toContainText("見られるのは、自分が追加したレコードと、個別に共有されたレコードです。");
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/add-only-share-menu-pc.png` });
     await option.click();
     await bobRow.getByRole("button", { name: "共有", exact: true }).click();
