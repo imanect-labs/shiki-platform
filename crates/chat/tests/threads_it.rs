@@ -1583,7 +1583,9 @@ async fn list_pending_approvals_returns_only_my_waiting_runs_with_editor_access(
     let mut bob = ctx(&tenant);
     bob.principal.id = "bob".into();
 
-    // 承認待ちの run を作る（ワーカーが書く状態を SQL で再現する: pending_approval → waiting_approval）。
+    // 承認待ちの run を作る（ワーカーが書く状態を SQL で再現する）。`post_message` を通すと
+    // 一瞬 queued になり、同じバイナリの別テストが回すワーカーに拾われる（自動タイトルで題名が
+    // 書き換わる・run が終わる）ので、生成ジョブを積まずに waiting_approval の run を直接作る。
     async fn waiting_run(
         store: &ChatStore,
         pool: &PgPool,
@@ -1595,22 +1597,34 @@ async fn list_pending_approvals_returns_only_my_waiting_runs_with_editor_access(
             .create_thread(c, title, true, None, None)
             .await
             .unwrap();
-        let res = store
-            .post_message(c, thread.id, "do it", &[], None, None, false, &[], None)
-            .await
-            .unwrap();
-        sqlx::query(
-            "UPDATE generation_run SET status = 'waiting_approval', \
-                 pending_approval = jsonb_build_object('tool_call_id', $2::text, \
-                     'tool_name', 'drive.move', 'requested_at', now()) \
-             WHERE run_id = $1",
+        let message_id: uuid::Uuid = sqlx::query_scalar(
+            "INSERT INTO message (thread_id, org, tenant_id, role, content, agent_mode) \
+             VALUES ($1, $2, $3, 'assistant', '[]'::jsonb, true) RETURNING id",
         )
-        .bind(res.run_id)
-        .bind(tool_call_id)
-        .execute(pool)
+        .bind(thread.id)
+        .bind(&c.org)
+        .bind(&c.tenant_id)
+        .fetch_one(pool)
         .await
         .unwrap();
-        (thread.id, res.run_id)
+        let run_id: uuid::Uuid = sqlx::query_scalar(
+            "INSERT INTO generation_run (message_id, thread_id, org, tenant_id, actor, agent_mode, \
+                                         status, pending_approval) \
+             VALUES ($1, $2, $3, $4, $5, true, 'waiting_approval', \
+                     jsonb_build_object('tool_call_id', $6::text, 'tool_name', 'drive.move', \
+                                        'requested_at', now())) \
+             RETURNING run_id",
+        )
+        .bind(message_id)
+        .bind(thread.id)
+        .bind(&c.org)
+        .bind(&c.tenant_id)
+        .bind(&c.principal.id)
+        .bind(tool_call_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        (thread.id, run_id)
     }
 
     let (mine, mine_run) = waiting_run(&store, &pool, &alice, "移動の確認", "tc-a").await;
