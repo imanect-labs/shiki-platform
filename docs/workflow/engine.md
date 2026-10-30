@@ -628,7 +628,9 @@ content_update・提案の採用・ワークスペースへの上書き）から
 
 **起動の結果と再試行**（D-21）: `RunLauncher::launch` は発火元の `event_id` を受け、`Started(run_id)` /
 `Skipped(理由)` / `Failed` を返す。見送り（委譲の不成立・`on_trigger_overflow = skip` の多重度あふれ・無効化）は
-再試行しない。一時失敗（IR の取得・DB・OpenFGA）は `pending` にして指数で間隔を延ばして再試行し（10 秒〜最大 10 分・
+再試行しない。workflow プリンシパルが有効化した版の定義を読めない（`Forbidden`・オンにした後に認可だけが食い違った）のも、
+何度起こしても同じなので委譲の不成立として見送り、警告は（テナント・ワークフロー・版）ごとにプロセスで 1 回だけ出す
+（BUG-146。きっかけは止めない。自動実行をオンにし直せば直る）。一時失敗（IR の取得・DB・OpenFGA）は `pending` にして指数で間隔を延ばして再試行し（10 秒〜最大 10 分・
 5 回まで）、超えたら `gave_up` にして監査（`workflow.trigger.suppressed`・reason=gave_up）に残す。再試行で起動する
 run も同じ `trigger_event_id` を持つので二重にならない。
 
@@ -843,6 +845,13 @@ step の処理順序を固定する: **ノード実行 → checkpoint 書込（o
 - `retryable`: attempt を消費し、backoff 後に再スケジュール。
 - `permanent`: attempts 残があっても **即 failed**。
 - `rate_limited`: **attempt を消費せず**遅延再スケジュール（§8 の rate limit 枯渇と接続）。
+- `wait`: 待てば通る失敗（いまは PDF・Office の本文の取り込み待ち `index_pending` だけ・D-125・GAP-50）。**attempt を消費せず**、
+  間隔を伸ばしながらやり直す（5 秒から始めて待った時間と同じだけ・1 回は最大 2 分）。待ち始めてから上限（30 分）を過ぎたら、
+  その code で failed にする（attempts の残りは使わない）。待ち始めた時刻は `step_execution.wait_since`、いま待っている理由は
+  `wait_code` に持つ（migration 0120）。ほかの理由のやり直しを挟んでも上限は最初に待ち始めた時刻から数え、step が terminal に
+  なったとき・失敗 step から再開したとき（§11.4）に消す（再開は待ち直す）。手動の実行・自動実行のどちらにも効く。待つかどうかは
+  code だけで決める（`retry::wait_policy` の 1 か所）ので、script の `Shiki.*` が同じ code を投げ返したときも同じに待つ。
+  待っている step は、実行履歴の詳細で `waiting_for = index`（取り込みを待っている）になる（run は実行中のまま）。
 
 backoff は exponential＋full jitter。`next_retry_at` に時刻を書き、ready 相当のスケジュールに乗せる（§3.2 の `running → ready`）。retry の既定は `max_attempts: 1`（リトライなし）であり、リトライは at-least-once を顕在化させる明示オプトインである（ir.md §4）。
 
@@ -856,6 +865,7 @@ backoff は exponential＋full jitter。`next_retry_at` に時刻を書き、rea
 - checkpoint 済み（terminal）step は再 claim 時に **再実行されない**（§7.1 順序固定で担保）。
 - `http.request` は exactly-once を約束せず、ノード契約・UI にその旨が明記される（構造ではなくドキュメントで担保）。
 - `rate_limited` エラーは attempt を消費せず、step を失敗させず遅延させる（§8・Task 10.5 受け入れ条件）。
+- 取り込み待ち（`wait`）は attempt を消費せず、待つ上限を過ぎたときだけ step を失敗させる（D-125）。
 
 ---
 
@@ -1153,9 +1163,20 @@ v1 は次の 2 つだけを提供する。step 単位の入力編集リプレイ
   権限・データ・相手のサービスなど外の状態による失敗は直してから再開する（`fix_first`）。読めないファイル
   （`not_text_file`）もここに入る: 再開は同じファイルの最新のバージョンを読み直すので、ファイルを UTF-8 か Shift_JIS で
   保存し直せば通る。PDF・Office の本文の取り込みに失敗したもの・取り込みが届いていないもの（`index_failed`）と、取り込めない
-  種類・取り込まない場所のもの（`not_indexable`）もここに入る（保存し直すと取り込み直す）。取り込みが終わっていないもの（`index_pending`）は一時的な問題で、そのまま再開
-  できる（再開は同じファイルを読み直し、取り込みが終わっていれば読める・D-111）。一時障害・時間切れ（ブロック・承認・変更を待つ期限）・AI の答え・分類できない失敗はそのまま再開
-  できる（`resume`）。再開の API そのものは断らない（画面の出し分けだけ）。
+  種類・取り込まない場所のもの（`not_indexable`）もここに入る（保存し直すと取り込み直す）。取り込みが終わっていないもの（`index_pending`）は、§7.5 の
+  `wait` で上限（30 分）まで待っても終わらなかったときだけ失敗になる。一時的な問題で、そのまま再開できる（再開は待ち始め直して、同じファイルを
+  読み直す・D-111・D-125）。一時障害・時間切れ（ブロック・承認・変更を待つ期限）・AI の答え・分類できない失敗はそのまま再開
+  できる（`resume`）。
+- **script の失敗の code**（D-121・BUG-136・BUG-137）: `script.run`・`skill.invoke` の script が捕まえずに投げ返した `Shiki.*` の誤りは、
+  ホストが返した code・retryable・文のまま step の失敗にする（`out_of_scope` なら上のとおり `same_result`）。作成者の script が投げた誤り
+  （`throw`・`Shiki.fail`・書き誤り）は `script_error`（設定の誤り・やり直さない）にし、`same_result` に数える（再開は同じ script を同じ
+  入力で動かす。script が `Shiki.*` で読んだ値で投げたものは、値を直せば通ることもあるので、同じ入力でもう一度実行は勧める）。
+  分け方は script.md §6.9。
+- **再開の API も断る**（D-116・BUG-138）: `POST /workflows/{id}/runs/{run_id}/retry`（`mode = resume`）は、`same_result` と
+  `past_deadline` の run を 409 で断り、`code` に `resume.advice` と同じ名前（`same_result`・`past_deadline`）、`message` に
+  `resume.note` と同じ文を返す。判定は run 行のロックの中で、実行履歴の詳細と同じ code の決め方（`FAILURE_CODE_COLUMNS`・
+  `failure_code`）と同じ単一定義（`resume_hint`）で行い、断った run の step は戻さない（失敗のまま）。期限を過ぎた run を戻すと、
+  期限を延ばさないまま失敗した step が動き、書き込みが走ってからまた期限で止まりうるため。
 - **同じ入力でもう一度実行を勧めるか**（BUG-132）: `resume.offer_rerun` で返す。run の再実行は失敗した run のバージョンに
   固定して新しく実行するので、そのバージョンの設定だけで決まる失敗（`run/failure.rs` の `PINNED_VERSION_CODES`: 知らない
   ブロック・未実装のブロック・使ってよい操作の天井）は、作成者が設定を直して新しいバージョンを保存した後でも同じ失敗を

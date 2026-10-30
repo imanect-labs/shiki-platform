@@ -386,7 +386,17 @@ Shiki.context: { runId: string; workflowId: string; nodeId: string; attempt: num
 Shiki.fail(message: string, opts?: { permanent?: boolean }): never;
 ```
 
-- **エラー表現**: 能力エラーは JS 例外 `ShikiError { code, retryable }` として throw される。`retryable` は engine のリトライ分類（`retryable` / `permanent` / `rate_limited`）に接続する。`Shiki.fail(msg, { permanent: true })` は残 attempt があっても即 failed にする。
+- **エラー表現**: 能力エラーは JS 例外 `ShikiError { code, retryable }` として throw される。捕まえずに `main` から投げ返された能力エラーは、
+  ホストが返した `code`・`retryable`・文のまま step の失敗になり、engine のリトライ分類（`retryable` / `permanent` / `rate_limited` / `wait`）と
+  失敗の分類（engine.md §11.4）に接続する（D-121・BUG-136）。
+  - ゲストの結果エンベロープは例外の文しか運ばない（`code` は常に `internal`・[script-runtime-guest.md](../script-runtime-guest.md)）ので、
+    ゲストは変えずにホスト側で写す: ホストは 1 実行の中で返した誤りを記録し、投げ返された例外の文（`Error: <文>` に続くスタックの行）が
+    そのどれかの文と一致すれば、その誤りとみなす（いちばん後のもの）。エンベロープの `code`・`retryable` は使わない（ゲストの中の値は
+    作成者が書き換えられるので、ホストが実際に返した誤りだけを信じる）。
+  - 捕まえて同じ例外を投げ直したもの（`catch (e) { throw e; }`）はホストの誤りのまま。文を変えて投げ直したもの・作成者が投げたもの
+    （`throw`・`Shiki.fail`・`TypeError` などの書き誤り）は `script_error`（設定の誤り・やり直さない・再開しても同じ結果）になる
+    （BUG-137）。`Shiki.fail` の `permanent` を省いても、やり直しはしない（いまの挙動のまま）。
+  - 要求が大きすぎる・応答をゲストのメモリに置けない呼び出し（ゲストには `host returned empty`）は `resource`。
 - `Shiki.context.idempotencyKey` は冪等にしたい副作用の相関に使う（内部能力は host 側 dedupe が既定で効く・http は明示ヘッダ）。
 
 ---
