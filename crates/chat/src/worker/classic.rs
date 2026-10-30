@@ -40,8 +40,8 @@ impl ChatWorker {
             run.trace_id.as_deref(),
         )
         .await?;
-        // 社内文書検索の範囲（skill の知識スコープ ∩ 会話の検索フォルダ・#965）。
-        let scope = self.effective_search_scope(ctx, run, &skills).await?;
+        // 社内文書検索に課す範囲（skill の知識スコープと会話の検索フォルダ・#965）。
+        let bounds = self.search_bounds(run, &skills).await?;
         let mut history = history;
 
         // 直近ユーザー発話で事前検索し、文脈注入＋引用イベント。
@@ -80,7 +80,7 @@ impl ChatWorker {
                 ctx,
                 &query,
                 None,
-                scope.as_ref(),
+                &bounds.as_slice(),
                 // この回答のための検索として監査に残す（#829）。
                 rag::AuditTrail::for_answer(run.trace_id.as_deref(), run.thread_id, run.message_id),
             )

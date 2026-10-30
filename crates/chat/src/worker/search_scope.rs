@@ -1,10 +1,11 @@
-//! 会話の社内文書検索の実効スコープ（skill の知識スコープ ∩ 会話の検索フォルダ・#965）。
+//! 会話の社内文書検索に課す範囲（skill の知識スコープと会話の検索フォルダ・#965）。
 //!
 //! どちらも**絞り込みだけ**で、権限は広げない（検索結果はこれまでどおり可読集合の pre-filter と
-//! OpenFGA の post-filter を通る）。両方あるときは交差を取る（union にするとどちらかの範囲を
-//! もう一方で広げられる）。交差は rag の [`rag::SearchService::narrow_scope`] が木に対して求める。
+//! OpenFGA の post-filter を通る）。両方あるときは**交差前のまま**別々に課す。先に交差を 1 つへ
+//! まとめると、その後に検索フォルダが skill の範囲の外へ移動されたとき skill の制約が失われる。
+//! doc_search（[`rag::SearchService::search_narrowed_within`]）と doc_read は、検索・読み出しの
+//! たびに全部の範囲の内側かを検索時点の木で確かめる。
 
-use authz::AuthContext;
 use rag::SearchScope;
 use uuid::Uuid;
 
@@ -12,81 +13,50 @@ use super::ChatWorker;
 use crate::store::ClaimedRun;
 use crate::ChatError;
 
-/// 実効スコープの決め方（木を引かずに決まるか、交差を取るか）。
-#[derive(Debug, PartialEq, Eq)]
-enum ScopePlan {
-    /// そのまま使う（`None` は全可読範囲）。
-    Use(Option<SearchScope>),
-    /// skill の知識スコープと検索フォルダの交差を取る。
-    Intersect {
-        base: SearchScope,
-        folder: SearchScope,
-    },
-}
-
-/// skill の知識スコープと会話の検索フォルダから、実効スコープの決め方を選ぶ。
-fn plan(skill_scope: Option<SearchScope>, folder: Option<Uuid>) -> ScopePlan {
-    let skill_scope = skill_scope.filter(|s| !s.is_empty());
-    let Some(folder) = folder else {
-        return ScopePlan::Use(skill_scope);
-    };
-    let folder = SearchScope {
-        folders: vec![folder],
+/// 課す範囲（空は全可読範囲）。skill の知識スコープ・検索フォルダの順で、空の範囲は入れない。
+fn bounds(skill_scope: Option<SearchScope>, folder: Option<Uuid>) -> SearchBounds {
+    let skill = skill_scope.filter(|s| !s.is_empty());
+    let folder = folder.map(|f| SearchScope {
+        folders: vec![f],
         files: Vec::new(),
-    };
-    match skill_scope {
-        // skill の範囲が無いなら、フォルダがそのまま実効スコープ。
-        None => ScopePlan::Use(Some(folder)),
-        Some(base) => ScopePlan::Intersect { base, folder },
-    }
+    });
+    SearchBounds { skill, folder }
 }
 
-/// 交差が空なら「何にも当たらない」スコープにする。空の [`SearchScope`] は「絞らない」と
-/// 解釈される（全可読範囲になる）ので、そのまま返すと絞り込みが外れてしまう（fail-closed）。
-fn non_empty_or_nothing(scope: SearchScope) -> SearchScope {
-    if scope.is_empty() {
-        SearchScope {
-            folders: Vec::new(),
-            // どのチャンクのタグにも一致しない ID（nil）。
-            files: vec![Uuid::nil()],
-        }
-    } else {
-        scope
+/// doc_search / doc_read に課す範囲。
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(super) struct SearchBounds {
+    /// skill の知識スコープ（無ければ `None`）。
+    pub(super) skill: Option<SearchScope>,
+    /// 会話の検索フォルダ（無ければ `None`）。
+    pub(super) folder: Option<SearchScope>,
+}
+
+impl SearchBounds {
+    /// 課す範囲の列（古典の事前検索に渡す）。
+    pub(super) fn as_slice(&self) -> Vec<&SearchScope> {
+        self.skill.iter().chain(self.folder.iter()).collect()
     }
 }
 
 impl ChatWorker {
-    /// この run の doc_search / doc_read に課す知識スコープ。`None` は全可読範囲。
-    pub(super) async fn effective_search_scope(
+    /// この run の doc_search / doc_read に課す範囲。
+    pub(super) async fn search_bounds(
         &self,
-        ctx: &AuthContext,
         run: &ClaimedRun,
         skills: &[crate::skill::AppliedSkill],
-    ) -> Result<Option<SearchScope>, ChatError> {
+    ) -> Result<SearchBounds, ChatError> {
         let folder = self
             .store
             .thread_search_folder(&run.tenant_id, run.thread_id)
             .await?;
-        match plan(crate::skill::combined_scope(skills), folder) {
-            ScopePlan::Use(scope) => Ok(scope),
-            ScopePlan::Intersect { base, folder } => {
-                let Some(search) = &self.search else {
-                    // 検索が未配線なら doc_search 自体を出さないので、範囲は使われない。
-                    return Ok(Some(base));
-                };
-                let both = search
-                    .narrow_scope(ctx, Some(&base), &folder)
-                    .await
-                    .map_err(|e| ChatError::Internal(format!("search scope: {e}")))?;
-                Ok(Some(non_empty_or_nothing(both)))
-            }
-        }
+        Ok(bounds(crate::skill::combined_scope(skills), folder))
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{non_empty_or_nothing, plan, ScopePlan};
+    use super::{bounds, SearchBounds};
     use rag::SearchScope;
     use uuid::Uuid;
 
@@ -98,41 +68,28 @@ mod tests {
     }
 
     #[test]
-    fn plan_uses_skill_scope_when_no_folder_is_chosen() {
-        assert_eq!(plan(None, None), ScopePlan::Use(None));
-        let s = folders(&[Uuid::new_v4()]);
-        assert_eq!(plan(Some(s.clone()), None), ScopePlan::Use(Some(s)));
+    fn no_skill_scope_and_no_folder_leaves_the_whole_readable_range() {
+        assert_eq!(bounds(None, None), SearchBounds::default());
         // 空の知識スコープは「絞らない」と同じ。
         assert_eq!(
-            plan(Some(SearchScope::default()), None),
-            ScopePlan::Use(None)
+            bounds(Some(SearchScope::default()), None),
+            SearchBounds::default()
         );
+        assert!(SearchBounds::default().as_slice().is_empty());
     }
 
     #[test]
-    fn plan_uses_the_folder_alone_or_intersects_with_the_skill_scope() {
+    fn skill_scope_and_folder_are_kept_apart_instead_of_being_intersected() {
         let f = Uuid::new_v4();
-        assert_eq!(plan(None, Some(f)), ScopePlan::Use(Some(folders(&[f]))));
-        assert_eq!(
-            plan(Some(SearchScope::default()), Some(f)),
-            ScopePlan::Use(Some(folders(&[f])))
-        );
+        let only_folder = bounds(None, Some(f));
+        assert_eq!(only_folder.folder, Some(folders(&[f])));
+        assert_eq!(only_folder.as_slice(), vec![&folders(&[f])]);
+
         let base = folders(&[Uuid::new_v4()]);
-        assert_eq!(
-            plan(Some(base.clone()), Some(f)),
-            ScopePlan::Intersect {
-                base,
-                folder: folders(&[f])
-            }
-        );
-    }
-
-    #[test]
-    fn empty_intersection_matches_nothing_instead_of_everything() {
-        let s = non_empty_or_nothing(SearchScope::default());
-        assert!(!s.is_empty(), "空のままだと全可読範囲になる");
-        assert_eq!(s.files, vec![Uuid::nil()]);
-        let f = Uuid::new_v4();
-        assert_eq!(non_empty_or_nothing(folders(&[f])), folders(&[f]));
+        let both = bounds(Some(base.clone()), Some(f));
+        assert_eq!(both.skill, Some(base.clone()));
+        assert_eq!(both.folder, Some(folders(&[f])));
+        // 交差前のまま両方を課す（検索・読み出しのたびに両方の内側かを確かめる）。
+        assert_eq!(both.as_slice(), vec![&base, &folders(&[f])]);
     }
 }

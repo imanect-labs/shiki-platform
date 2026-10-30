@@ -21,20 +21,21 @@ impl ChatWorker {
     ///
     /// `attachments` は会話の添付で、`code_interpreter` が実行前に `/workspace` へ置く（#379）。
     ///
-    /// doc_search / doc_read には skill の知識スコープ ∩ 会話の検索フォルダを課す
-    /// （[`Self::effective_search_scope`]・絞り込みのみ・#965）。
+    /// doc_search / doc_read には skill の知識スコープと会話の検索フォルダを交差前のまま課す
+    /// （[`Self::search_bounds`]・絞り込みのみ・#965）。
     pub(super) async fn core_tools(
         &self,
-        ctx: &AuthContext,
         skills: &[crate::skill::AppliedSkill],
         attachments: &[AttachmentRef],
         run: &ClaimedRun,
     ) -> Result<Vec<Arc<dyn Tool>>, crate::ChatError> {
         let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
         if let Some(search) = &self.search {
-            let scope = self.effective_search_scope(ctx, run, skills).await?;
+            let bounds = self.search_bounds(run, skills).await?;
+            let folder = bounds.folder.clone().unwrap_or_default();
             // この回答のための検索・読み出しとして監査に残す（1 回答の判定と引用を引ける・#829）。
-            let doc_search = DocSearchTool::with_scope(search.clone(), scope.clone())
+            let doc_search = DocSearchTool::with_scope(search.clone(), bounds.skill.clone())
+                .within(folder.clone())
                 .for_answer(run.thread_id, run.message_id);
             // 当たった文書を引用の外まで読む（#425）。認可は StorageService の viewer 判定で、
             // 知識スコープは検索と同じものを課す（スコープ ∩ ReBAC）。
@@ -44,8 +45,9 @@ impl ChatWorker {
                     crate::doc_read_tool::DocReadTool::with_scope(
                         search.clone(),
                         storage.clone(),
-                        scope,
+                        bounds.skill,
                     )
+                    .within(folder)
                     .for_answer(run.thread_id, run.message_id),
                 ));
             } else {

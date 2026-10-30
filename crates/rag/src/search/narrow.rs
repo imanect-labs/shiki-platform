@@ -46,30 +46,62 @@ impl SearchService {
         narrow: &SearchScope,
         trail: impl Into<crate::AuditTrail<'_>>,
     ) -> Result<SearchOutput, RagError> {
+        let bases: Vec<&SearchScope> = base.into_iter().collect();
+        self.search_narrowed_within(ctx, query, top_k, mode, &bases, narrow, trail)
+            .await
+    }
+
+    /// [`Self::search_narrowed`] の知識スコープを複数にしたもの（全部の内側だけを探す）。
+    ///
+    /// skill の知識スコープと会話の検索フォルダのように、別々に課された範囲を**交差前のまま**
+    /// 渡す（#965）。交差を先に 1 つへまとめて渡すと、その後に片方のフォルダがもう一方の外へ
+    /// 移動されたとき、もう一方の制約が失われる。ここでは交差を順に取って検索し、候補を全部の
+    /// 範囲で検索時点の木に対して再検証する。空の範囲は「課さない」として捨てる。
+    #[allow(clippy::too_many_arguments)] // search の引数＋範囲の列＋絞り込み。
+    pub async fn search_narrowed_within(
+        &self,
+        ctx: &AuthContext,
+        query: &str,
+        top_k: Option<u32>,
+        mode: SearchMode,
+        bases: &[&SearchScope],
+        narrow: &SearchScope,
+        trail: impl Into<crate::AuditTrail<'_>>,
+    ) -> Result<SearchOutput, RagError> {
         let trail = trail.into();
-        let base = base.filter(|b| !b.is_empty());
-        if narrow.is_empty() {
-            return self.search(ctx, query, top_k, mode, base, trail).await;
+        let bases: Vec<&SearchScope> = bases.iter().copied().filter(|b| !b.is_empty()).collect();
+        if narrow.is_empty() && bases.len() <= 1 {
+            return self
+                .search(ctx, query, top_k, mode, bases.first().copied(), trail)
+                .await;
         }
-        let scope = self.narrow_scope(ctx, base, narrow).await?;
-        if scope.is_empty() {
-            self.audit_citations(
-                ctx,
-                query,
-                &[],
-                &std::collections::HashMap::new(),
-                Some(&scope),
-                trail,
-            )
-            .await?;
-            return Ok(SearchOutput {
-                results: Vec::new(),
-                debug: SearchDebug::default(),
-            });
+        let bounds: Vec<&SearchScope> = bases
+            .into_iter()
+            .chain((!narrow.is_empty()).then_some(narrow))
+            .collect();
+        // 交差を順に取る（木の部分木どうしは入れ子か交わらないので、交差は 1 つで表せる）。
+        let mut scope: Option<SearchScope> = None;
+        for bound in &bounds {
+            let next = self.narrow_scope(ctx, scope.as_ref(), bound).await?;
+            if next.is_empty() {
+                self.audit_citations(
+                    ctx,
+                    query,
+                    &[],
+                    &std::collections::HashMap::new(),
+                    Some(&next),
+                    trail,
+                )
+                .await?;
+                return Ok(SearchOutput {
+                    results: Vec::new(),
+                    debug: SearchDebug::default(),
+                });
+            }
+            scope = Some(next);
         }
-        // 知識スコープと絞り込みの両方を検索時点の木で再検証する（両方の内側 = 交差の内側）。
-        let bounds: Vec<&SearchScope> = base.into_iter().chain(std::iter::once(narrow)).collect();
-        self.search_bounded(ctx, query, top_k, mode, Some(&scope), &bounds, trail)
+        // 全部の範囲を検索時点の木で再検証する（全部の内側 = 交差の内側）。
+        self.search_bounded(ctx, query, top_k, mode, scope.as_ref(), &bounds, trail)
             .await
     }
 

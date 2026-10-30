@@ -191,7 +191,7 @@ impl ChatWorker {
         )
         .await?;
 
-        let mut tools = self.core_tools(ctx, &skills, &attachments, run).await?;
+        let mut tools = self.core_tools(&skills, &attachments, run).await?;
         // skill ツール（カタログ引き・#344 Task 10.11）。
         self.push_skill_tool(&mut tools, ctx, run, &skills).await;
         // AI ドキュメント共同編集（ノート/スライド・Task 11P.4/11.3）＋下書き系＋
