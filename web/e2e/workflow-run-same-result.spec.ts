@@ -120,10 +120,15 @@ test("実行履歴: 再開しても同じ結果になる失敗は、エディタ
       expect(await phone.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
       if (SHOTS) await phone.screenshot({ path: `${SHOTS}/run-same-result-pinned-phone.png` });
     } finally {
+      // 詳細の画面は実行の詳細を読み直し続けるので、差し替えの途中の応答が閉じた画面に当たらないよう、閉じる前に
+      // 差し替えを外す（途中のものは待たずに捨てる）。
+      for (const p of phoneCtx.pages()) await p.unrouteAll({ behavior: "ignoreErrors" });
       await phoneCtx.close();
     }
 
-    // リンクはエディターへ移り、そこに「実行」がある。
+    // リンクはエディターへ移り、そこに「実行」がある。エディターでは差し替えを使わないので、移る前に外す
+    // （テストの終わりに、途中の差し替えが閉じた画面に当たって落ちない）。
+    await page.unrouteAll({ behavior: "ignoreErrors" });
     await editor.click();
     await page.waitForURL(new RegExp(`/workflows/${id}$`), { timeout: 20_000 });
     await expect(page.getByRole("button", { name: "実行", exact: true })).toBeVisible({ timeout: 30_000 });
