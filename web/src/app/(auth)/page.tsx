@@ -314,6 +314,11 @@ function SeasonDivider() {
 /// （記法を外す処理は marked を引くので、送るときに読み込む）。
 async function threadTitle(body: string, format: InputFormat): Promise<string> {
   if (format !== "markdown") return titleFrom(body);
-  const { markdownPlainText } = await import("@/lib/markdown-plain-text");
-  return titleFrom(markdownPlainText(body));
+  try {
+    const { markdownPlainText } = await import("@/lib/markdown-plain-text");
+    return titleFrom(markdownPlainText(body));
+  } catch {
+    // 読み込みに失敗しても会話は始める（記法が残るだけで題名は作れる）。
+    return titleFrom(body);
+  }
 }

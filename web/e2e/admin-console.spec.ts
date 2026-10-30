@@ -118,6 +118,10 @@ test.describe("チャットのツール", () => {
     // 語を押しても外れる。
     await page.getByRole("button", { name: "Web 検索を外す" }).click();
     await expect(tokens).toHaveCount(0);
-    expect(await input.evaluate((el) => getComputedStyle(el).textIndent)).toBe("0px");
+    expect(
+      await input
+        .locator(":scope > :first-child")
+        .evaluate((el) => getComputedStyle(el).textIndent),
+    ).toBe("0px");
   });
 });
