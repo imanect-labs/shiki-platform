@@ -178,8 +178,9 @@ export function defaultParams(nodeType: string): unknown {
       return { file: "" };
     case "storage.write":
       // 同じ名前があれば番号を付けて保存する（省略は失敗にする＝既存の定義の挙動・2 回目から失敗しない・D-97）。
-      // ファイル名と内容は書かせる（D-83）。
-      return { name: "", content: "", on_name_taken: "add_number" };
+      // ファイル名と内容は書かせる（D-83）。CSV として保存するなら BOM 付きの UTF-8 で書く（省略は BOM なし＝既存の
+      // 定義の挙動・日本語の Windows の Excel で文字化けしない・D-120）。ほかの種類では使わない。
+      return { name: "", content: "", on_name_taken: "add_number", encoding: "utf8_bom" };
     case "rag.search":
       return { query: "" };
     case "llm.invoke":
@@ -207,8 +208,8 @@ export function defaultParams(nodeType: string): unknown {
       return { file: "", ops: [] };
     case "csv.write":
       // 入力全体（オブジェクト）を入れると JSON の文字がそのまま .csv に保存される（失敗もしない）。
-      // ファイル名も書かせる（D-83）。
-      return { name: "", content: "", on_name_taken: "add_number" };
+      // ファイル名も書かせる（D-83）。文字コードは BOM 付きの UTF-8（省略は BOM なし＝既存の定義の挙動・D-120）。
+      return { name: "", content: "", on_name_taken: "add_number", encoding: "utf8_bom" };
     case "ai.decide":
       // モデル・判定の材料・AI に尋ねることは利用者が書く（空のままなら欄の下で入力を促す。空でも保存はでき、
       // 実行と自動実行のオンの前に止まる・D-83・D-108）。

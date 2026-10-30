@@ -20,7 +20,7 @@ import {
   STORAGE_READ_MAX_DOCUMENT_CHARS,
   type NodeParamsByType,
 } from "@/generated/workflow-catalog";
-import type { NameTakenPolicy, ValueExpr } from "@/generated/workflow-ir";
+import type { CsvEncoding, NameTakenPolicy, ValueExpr } from "@/generated/workflow-ir";
 import { breadcrumb, getNode, type NodeResponse } from "@/lib/storage";
 import { getSchema, runQuery, type SchemaResponse, type TableResponse } from "@/lib/tabular-api";
 import { cn } from "@/lib/utils";
@@ -388,6 +388,53 @@ function NameTakenField({ node, dispatch, fieldErrors, example }: FormProps & { 
   );
 }
 
+/// 新しく保存する CSV の文字コード（GAP-47・D-120）。省略は「UTF-8」（BOM なし・この欄が無かったころの定義の
+/// 挙動）。新しく置くブロックは「UTF-8（BOM 付き）」で置く（ir-state の defaultParams）。日本語の Windows の Excel は、
+/// BOM の無い UTF-8 の CSV を文字化けして開く。
+const CSV_ENCODINGS: [CsvEncoding, string, string][] = [
+  ["utf8_bom", "UTF-8（BOM 付き）", "日本語の Windows の Excel でも、文字化けせずに開けます。"],
+  ["utf8", "UTF-8", "日本語の Windows の Excel で開くと文字化けします。Excel で開くなら「UTF-8（BOM 付き）」を選んでください。"],
+  ["shift_jis", "Shift_JIS", "Shift_JIS にない文字（絵文字など）が内容にあると、保存できずに失敗します。"],
+];
+
+function CsvEncodingField({ node, dispatch, fieldErrors, note }: FormProps & { note?: string }) {
+  const p = paramsOf<{ encoding?: CsvEncoding }>(node);
+  const current: CsvEncoding = p.encoding ?? "utf8";
+  const hint = CSV_ENCODINGS.find(([value]) => value === current)?.[2] ?? "";
+  return (
+    <Field label="文字コード" hint={note ? `${note}${hint}` : hint} error={fieldErrors.get("encoding")}>
+      <Select value={current} onValueChange={(v) => patchParams(dispatch, node, { encoding: v as CsvEncoding })}>
+        <FieldSelectTrigger className="h-8 text-[13px]" data-testid="csv-encoding-select">
+          <SelectValue />
+        </FieldSelectTrigger>
+        <SelectContent>
+          {CSV_ENCODINGS.map(([value, label]) => (
+            <SelectItem key={value} value={value}>
+              {label}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </Field>
+  );
+}
+
+/// 「新しいファイルを保存」が CSV として保存するか（文字コードの欄を出すか）。種類を選んでいればそれで、選んで
+/// いなければファイル名の拡張子で決める（実行と同じ・D-97）。名前や種類を前の結果から渡すときは分からない（`null`）。
+function savesAsCsv(p: Partial<NodeParamsByType["storage.write"]>): boolean | null {
+  const type = p.content_type as ValueExpr | undefined;
+  if (typeof type === "string" && type !== "") return type.split(";")[0].trim().toLowerCase() === "text/csv";
+  if (type !== undefined && type !== "") return null;
+  const name = p.name as ValueExpr | undefined;
+  const text =
+    typeof name === "string"
+      ? name
+      : name && typeof name === "object" && "$template" in name && typeof name.$template === "string"
+        ? name.$template
+        : null;
+  return text === null ? null : text.trim().toLowerCase().endsWith(".csv");
+}
+
 /// ファイル名の注記（同じ名前を避ける差し込みの案内・D-97）。
 const DATE_NAME_HINT = "毎回実行するなら、「差し込む」で「実行した日」を入れると、日ごとに違う名前になります。";
 
@@ -451,6 +498,7 @@ function ContentTypeField({ node, dispatch, refCandidates, inMapRegion, fieldErr
 export function StorageWriteForm(props: FormProps) {
   const { node, dispatch, refCandidates, inMapRegion, fieldErrors } = props;
   const p = paramsOf<NodeParamsByType["storage.write"]>(node);
+  const csv = savesAsCsv(p);
   return (
     <div className="space-y-4">
       <ValueExprInput
@@ -477,6 +525,9 @@ export function StorageWriteForm(props: FormProps) {
       />
       <FolderField {...props} label="保存先フォルダ（省略可）" optional hint={UNATTENDED_FOLDER_HINT} />
       <ContentTypeField {...props} />
+      {csv === false ? null : (
+        <CsvEncodingField {...props} note={csv === null ? "CSV として保存するときだけ使います。" : undefined} />
+      )}
     </div>
   );
 }
@@ -798,6 +849,7 @@ export function CsvWriteForm(props: FormProps) {
         error={fieldErrors.get("content")}
       />
       <p className="text-[11px] text-muted-foreground">1 行目は見出し（列名）です。前の結果を渡すときは CSV の文字列を渡してください。</p>
+      <CsvEncodingField {...props} />
       <FolderField {...props} label="保存先フォルダ（省略可）" optional hint={UNATTENDED_FOLDER_HINT} />
     </div>
   );
