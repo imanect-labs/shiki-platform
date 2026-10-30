@@ -220,12 +220,12 @@ function ValueInput({
 }) {
   const t = col?.field?.type;
   const rt = col?.field?.result_type;
-  // 作成者（擬似列）もユーザーとして選ぶ。
+  // 作成者（作成者の列・擬似列）もユーザーとして選ぶ。
   const refField =
     (t === "user_ref" || t === "role_ref") && col?.field
       ? col.field
-      : col?.key === "_owner"
-        ? ({ key: "_owner", type: "user_ref" } as const)
+      : t === "created_by" || col?.key === "_owner"
+        ? ({ key: col?.key ?? "_owner", type: "user_ref" } as const)
         : null;
   if (refField) {
     // ユーザー・部署は候補から選ぶ（表示名を打って黙って 0 件にならない・比べる値は id・2-A-P2-3）。

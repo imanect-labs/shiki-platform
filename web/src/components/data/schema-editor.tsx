@@ -308,8 +308,12 @@ export function SchemaEditor({
             {fields.map((f, i) => {
               const derived = isDerived(f.type);
               const reverse = Boolean(f.link?.reverse);
+              // 作成者の列はいつでも絞り込み・並べ替えに使える（サーバが追加した人の索引で引く）ので切り替えない。
               const canIndex =
-                !f.isNew && !(derived && f.materialization !== "invariant") && f.type !== "record_ref";
+                !f.isNew &&
+                !(derived && f.materialization !== "invariant") &&
+                f.type !== "record_ref" &&
+                f.type !== "created_by";
               const name = f.display_name || f.key;
               return (
                 <li key={f.key} data-testid={`schema-field-${f.key}`}>

@@ -5,8 +5,9 @@
 /// - 進められる人は「テーブルを編集できる人」「レコードを追加した人」「メンバーの列の人」「部署・グループの列の人」
 ///   「部署・グループ」の組み合わせ（どれか 1 つに当てはまる人）で書く。これに当てはまらない条件（チャットや API で
 ///   書いたもの）は `custom` として、そのまま保つ（画面では変えない・保存済みの定義を壊さない）。
-/// - 「申請した本人は除く」は、申請者の列（メンバーの列）と `ne $user.id` の比べを `all` で足して書く（D-115・
-///   経費のテンプレート expense_policy と同じ形）。行の決まりに `not` は無いので、この形で書く。
+/// - 「申請した本人は除く」は、申請者の列と `ne $user.id` の比べを `all` で足して書く（D-115・経費のテンプレート
+///   expense_policy と同じ形）。行の決まりに `not` は無いので、この形で書く。申請者の列は作成者の列（追加した人が
+///   入り、だれも書き換えられない・D-122）を勧める。メンバーの列は書き換えられるので、本人を除く判定をすり抜けられる。
 /// - 状態は下書きの中で id で持つ（名前を変えても、進め方の行き先が付いてくる）。保存のときに名前へ戻す。
 
 import type { FieldDef, FsmBody, PolicyExpr, TableFsmResponse } from "@/lib/data-api";
@@ -122,9 +123,12 @@ export function buildActor(a: ActorModel, applicant: string | null): PolicyExpr 
   return a.excludeApplicant && applicant ? { all: [who, NE_SELF(applicant)] } : who;
 }
 
+/// 申請者の列に選べる列か（作成者の列かメンバーの列）。
+export const isApplicantColumn = (f: FieldDef) => f.type === "created_by" || f.type === "user_ref";
+
 /// 保存済みの進め方が「申請した本人は除く」に使っている申請者の列（最初に見つかったもの）。
 export function applicantFromBody(body: FsmBody, fields: FieldDef[]): string | null {
-  const users = new Set(fields.filter((f) => f.type === "user_ref").map((f) => f.key));
+  const users = new Set(fields.filter(isApplicantColumn).map((f) => f.key));
   for (const t of body.transitions) {
     const e = t.actor;
     const tail = typeof e === "object" && "all" in e ? e.all[e.all.length - 1] : e;
@@ -139,8 +143,10 @@ export function applicantFromBody(body: FsmBody, fields: FieldDef[]): string | n
 const label = (f: FieldDef) => f.display_name || f.key;
 const looks = (f: FieldDef, words: string[]) => words.some((w) => label(f).includes(w) || f.key.includes(w));
 
-/// 申請者の列の見当（名前に「申請」・applicant などが入るメンバーの列）。見当が付かなければ選ばない。
+/// 申請者の列の見当（作成者の列。無ければ名前に「申請」・applicant などが入るメンバーの列）。見当が付かなければ選ばない。
 export function guessApplicant(fields: FieldDef[]): string | null {
+  const creator = fields.find((f) => f.type === "created_by");
+  if (creator) return creator.key;
   return fields.find((f) => f.type === "user_ref" && looks(f, ["申請", "applicant", "requester", "submitter"]))?.key ?? null;
 }
 

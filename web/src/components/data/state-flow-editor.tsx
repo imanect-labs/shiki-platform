@@ -6,33 +6,37 @@
 /// - 読み書きはテーブルの持ち主だけ（サーバも持ち主でなければ 403）。状態の列の選択肢は、保存した状態の一覧になる。
 /// - 承認・却下・差し戻しにあたる進め方は「申請した本人は除く」をはじめからオンにする（最初の状態へ戻す進め方を
 ///   除く）。最初の状態を過ぎたら申請者が書き換えられない決まりも、はじめからオンにする。どちらもオフにできる。
+///   申請者の列は作成者の列を勧め、無ければボタン 1 つで足せる（D-122・[`ApplicantSection`]）。
 /// - 保存の前に、行き止まり・届かない状態・重複を欄の下で言う（欄の誤りは読み上げで割り込まず、欄に結ぶ）。
 ///   承認を待っているレコードが判断できなくなる変更と、書き込みの決まりで誰も書き換えられなくなるレコードが
 ///   出る変更は確認してから保存し、このテーブルの状態を使うワークフローへの影響は注意で言う。
 /// - 保存していない変更があるときは、閉じる・列の編集を開く・最新の内容を読み込む前に、変更が消えることを言う。
 
-import { ArrowDown, ArrowUp, Loader2, Plus, Share2, Trash2, Workflow } from "lucide-react";
+import { ArrowDown, ArrowUp, Loader2, Plus, Trash2, Workflow } from "lucide-react";
 import Link from "next/link";
 import * as React from "react";
 
 import { ConfirmDialog } from "@/components/drive/dialogs";
+import { ApplicantSection } from "@/components/data/state-flow-applicant";
 import { MovesTable } from "@/components/data/state-flow-moves";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Sheet, SheetBody, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
-import { Switch } from "@/components/ui/switch";
 import { toast } from "@/components/ui/use-toast";
 import {
   DataApiError,
   getTableFsm,
   saveTableFsm,
   TABLE_NOT_FOUND,
+  updateSchema,
   type DataTable,
+  type FieldDef,
   type PendingApprovalMove,
   type TableFsmResponse,
 } from "@/lib/data-api";
+import { uniqueKey } from "@/lib/data-view";
 import {
   bodyOf,
   checkFlow,
@@ -110,6 +114,9 @@ export function StateFlowEditor({
   const [conflict, setConflict] = React.useState(false);
   /// 保存していない変更を捨てる確認（閉じる・列の編集を開く）。
   const [confirmClose, setConfirmClose] = React.useState<"close" | "schema" | null>(null);
+  /// 作成者の列を足している・足せなかった理由。
+  const [addingCreator, setAddingCreator] = React.useState(false);
+  const [addCreatorError, setAddCreatorError] = React.useState<string | null>(null);
   const tableRef = React.useRef(table);
   tableRef.current = table;
 
@@ -119,6 +126,7 @@ export function StateFlowEditor({
     setError(null);
     setSaveError(null);
     setConflict(false);
+    setAddCreatorError(null);
     getTableFsm(tableRef.current.id)
       .then((resp) => {
         const d = draftFrom(resp, tableRef.current.schema.fields);
@@ -138,7 +146,6 @@ export function StateFlowEditor({
   const unsaved = Boolean(draft && loaded && JSON.stringify(draft) !== JSON.stringify(loaded.draft));
   const hasFsm = Boolean(loaded?.resp.fsm);
   const selects = fields.filter((f) => f.type === "select");
-  const users = fields.filter((f) => f.type === "user_ref");
   const label = (k: string | null) => fields.find((f) => f.key === k)?.display_name || k || "";
   const set = (patch: Partial<FlowDraft>) => setDraft((d) => (d ? { ...d, ...patch } : d));
 
@@ -239,13 +246,41 @@ export function StateFlowEditor({
       setSaving(false);
     }
   };
+  /// 作成者の列を足して、申請者の列にする（列はすぐ保存する。状態の進め方は保存するまで変わらない）。
+  const addCreator = async () => {
+    if (!loaded || !draft) return;
+    setAddingCreator(true);
+    setAddCreatorError(null);
+    try {
+      const key = uniqueKey("created_by", new Set(fields.map((f) => f.key)));
+      const names = new Set(fields.map((f) => f.display_name || f.key));
+      const name = names.has("作成者") ? "作成者（自動）" : "作成者";
+      const field = { key, display_name: name, type: "created_by" } as FieldDef;
+      const t = await updateSchema(table.id, { ...table.schema, fields: [...table.schema.fields, field] }, loaded.resp.schema_version);
+      onSaved(t);
+      // 状態の進め方の保存は、新しいスキーマの版で送る（列を足した保存と食い違わせない）。
+      setLoaded((l) => (l ? { ...l, resp: { ...l.resp, schema_version: t.schema_version } } : l));
+      set({ applicantField: key });
+      toast({ title: `「${name}」の列を追加しました`, description: "状態の進め方を保存すると、申請した本人を除くのに使います。" });
+    } catch (e) {
+      setAddCreatorError(
+        e instanceof DataApiError && e.status === 409
+          ? "ほかの人が先にテーブルの設定を保存したため、列を追加できませんでした。最新の内容を読み込んでから、もう一度追加してください。"
+          : e instanceof DataApiError && e.status === 403
+            ? "列を追加できるのは、テーブルの持ち主だけです。"
+            : "作成者の列を追加できませんでした。少し待ってから、もう一度追加してください。",
+      );
+    } finally {
+      setAddingCreator(false);
+    }
+  };
+
   const trySave = () => {
     if (lost.length > 0) setLostConfirm(lost);
     else void save({});
   };
 
   const initialName = draft?.states[0]?.name.trim() || "最初の状態";
-  const noApplicant = draft && !draft.applicantField;
 
   return (
     <Sheet open={open} onOpenChange={requestClose}>
@@ -421,74 +456,17 @@ export function StateFlowEditor({
                   </Section>
 
                   <Section title="申請した本人の扱い" testId="state-flow-applicant">
-                    {users.length === 0 ? (
-                      <div className="space-y-2 rounded-lg border border-dashed p-3">
-                        <Hint tone="warn">
-                          メンバーの列が無いため、申請した本人も自分の申請を承認できます。「列の編集」でメンバーの列（例: 申請者）を追加すると、本人を除けます。
-                        </Hint>
-                        {openSchema ? (
-                          <Button size="sm" variant="outline" onClick={openSchema} data-testid="state-flow-open-schema">
-                            列の編集を開く
-                          </Button>
-                        ) : null}
-                      </div>
-                    ) : (
-                      <>
-                        <Select
-                          value={draft.applicantField ?? "__none"}
-                          onValueChange={(k) => set({ applicantField: k === "__none" ? null : k })}
-                        >
-                          <SelectTrigger aria-label="申請者の列" className="h-9 sm:w-72">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="__none">使わない</SelectItem>
-                            {users.map((f) => (
-                              <SelectItem key={f.key} value={f.key}>
-                                {f.display_name || f.key}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                        <Hint>申請した人が入るメンバーの列です。申請した本人を、承認する人から除くのに使います。</Hint>
-                        {!noApplicant ? (
-                          <Hint tone="warn">
-                            テーブルを編集できる人は、追加するときと「{initialName}」のあいだに、申請者の列をほかの人にできます。そうすると、自分の申請でも承認できます。
-                          </Hint>
-                        ) : null}
-                        {noApplicant ? (
-                          <Hint tone="warn">申請者の列を選ばないと、申請した本人も自分の申請を承認できます。</Hint>
-                        ) : (
-                          <>
-                            <label className="flex items-center gap-2 text-[13px]">
-                              <Switch
-                                checked={draft.writeLock}
-                                onCheckedChange={(writeLock) => set({ writeLock })}
-                                aria-label="最初の状態を過ぎたら、申請者は書き換えられない"
-                                data-testid="state-flow-write-lock"
-                              />
-                              最初の状態を過ぎたら、申請者は書き換えられない
-                            </label>
-                            <Hint tone={draft.writeLock ? undefined : "warn"}>
-                              {draft.writeLock
-                                ? `「${initialName}」のあいだだけ、申請者はレコードを書き換えたり削除したりできます。申請者の列が空のレコードは、「${initialName}」を過ぎると誰も書き換えられません。`
-                                : "申請者は、承認された後もレコードを書き換えられます。承認者の列を書き換えて、自分で承認することもできます。"}
-                            </Hint>
-                          </>
-                        )}
-                      </>
-                    )}
-                    <div className="space-y-1.5 rounded-lg bg-muted/50 px-3 py-2">
-                      <Hint>
-                        申請する人には、テーブルを「追加だけ」で共有するのがおすすめです。追加だけの人は、レコードを追加し、自分が追加したレコードと個別に共有されたレコードを見られるだけで、書き換えも状態を進めることもできません。
-                      </Hint>
-                      {onOpenShare ? (
-                        <Button size="sm" variant="outline" className="h-7 gap-1 text-xs" onClick={onOpenShare}>
-                          <Share2 className="size-3.5" aria-hidden />
-                          テーブルを共有
-                        </Button>
-                      ) : null}
-                    </div>
+                    <ApplicantSection
+                      draft={draft}
+                      fields={fields}
+                      initialName={initialName}
+                      onChange={set}
+                      onAddCreator={() => void addCreator()}
+                      adding={addingCreator}
+                      addError={addCreatorError}
+                      onOpenSchema={openSchema}
+                      onOpenShare={onOpenShare}
+                    />
                   </Section>
 
                   <Section title="進め方" testId="state-flow-moves-section">

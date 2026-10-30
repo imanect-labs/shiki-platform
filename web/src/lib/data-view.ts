@@ -38,6 +38,7 @@ export const FIELD_TYPE_LABELS: Record<FieldType, string> = {
   computed: "計算",
   rollup: "ロールアップ",
   formula: "数式",
+  created_by: "作成者",
 };
 
 /// 表示する 1 列。
@@ -247,7 +248,7 @@ export const SUPPRESSED_LABEL = "件数が少ないため非表示";
 
 /// 1 セルの表示（参照系の列は名前に置き換える・抑制したセルは理由を出す）。
 ///
-/// - `user_ref` 列・作成者列: ディレクトリの表示名（引けなければ id のまま）
+/// - `user_ref` 列・作成者の列（`created_by` と擬似列 `_owner`）: ディレクトリの表示名（引けなければ id のまま）
 /// - リンク列（逆向きの列を含む）: 参照先のタイトル列（サーバが閲覧者に見える参照先の分だけ `link_labels` に
 ///   載せる）。タイトルの無い参照先は {@link UNTITLED}
 /// - スモールセル抑制に掛かった派生列（`suppressed_fields`）: {@link SUPPRESSED_LABEL}
@@ -264,7 +265,7 @@ export function displayCell(
   const type = c.field?.type;
   const ids = (x: unknown): string[] =>
     (Array.isArray(x) ? x : x == null ? [] : [x]).filter((e): e is string => typeof e === "string");
-  if (type === "user_ref" || c.key === "_owner") {
+  if (type === "user_ref" || type === "created_by" || c.key === "_owner") {
     return { text: ids(v).map((id) => userName(id) || id).join(", "), muted: false };
   }
   if (type === "role_ref") {
@@ -297,7 +298,9 @@ export function roleRefIds(rows: readonly DataRecord[], cols: readonly ColumnMod
 
 /// 表示名を引く対象の id（`user_ref` 列・作成者列の値）。
 export function userRefIds(rows: readonly DataRecord[], cols: readonly ColumnModel[]): string[] {
-  const keys = cols.filter((c) => c.field?.type === "user_ref" || c.key === "_owner").map((c) => c.key);
+  const keys = cols
+    .filter((c) => c.field?.type === "user_ref" || c.field?.type === "created_by" || c.key === "_owner")
+    .map((c) => c.key);
   const out = new Set<string>();
   for (const r of rows) {
     for (const k of keys) {

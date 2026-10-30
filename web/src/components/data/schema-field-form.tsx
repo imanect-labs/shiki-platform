@@ -39,10 +39,17 @@ export const ADDABLE_TYPES: FieldType[] = [
   "lookup",
   "rollup",
   "formula",
+  "created_by",
 ];
 
 const DERIVED: FieldType[] = ["lookup", "rollup", "formula", "computed"];
 export const isDerived = (t: FieldType) => DERIVED.includes(t);
+/// 作成者の列（レコードを追加した人が自動で入り、だれも書けない・D-122）。
+export const isCreatedBy = (t: FieldType) => t === "created_by";
+
+/// 作成者の列の説明（列の追加・列の設定で同じ文）。
+export const CREATED_BY_HINT =
+  "レコードを追加した人が自動で入り、だれも書き換えられません。この列を足す前に追加したレコードにも、追加した人が入ります。";
 
 /// 一対多はこの列の側からは作れない（参照先の多対一の逆向きとして現れる）。
 const CARDINALITIES: { value: LinkCardinality; label: string }[] = [
@@ -332,6 +339,14 @@ function BasicAttributes({
   traits?: TableTraits;
 }) {
   const t = field.type;
+  if (isCreatedBy(t)) {
+    // 必須・重複なし・部分一致は意味を持たない（いつも追加した人が入る・サーバも断る）。
+    return (
+      <p className="text-[11px] leading-relaxed text-muted-foreground" data-testid="schema-created-by-hint">
+        {CREATED_BY_HINT}
+      </p>
+    );
+  }
   return (
     <div className="space-y-2.5">
       {(t === "select" || t === "multi_select") && !isNew && traits.stateField === field.key ? (

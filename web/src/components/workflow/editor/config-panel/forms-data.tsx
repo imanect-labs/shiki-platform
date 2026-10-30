@@ -8,7 +8,7 @@
 
 import * as React from "react";
 
-import { isDerived } from "@/components/data/schema-field-form";
+import { isCreatedBy, isDerived } from "@/components/data/schema-field-form";
 import { FilterControl, SortControl, type FilterExprValue, type FilterTexts } from "@/components/data/view-controls";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
@@ -108,8 +108,8 @@ function columnKeys(table: DataTable | null): ComposeKeys | undefined {
   const status = table.schema.fsm_ref ? table.schema.status_field : null;
   return {
     options: table.schema.fields
-      // 書けない列（計算の列とリンク先の値・付録 D の N3.3.2）は、列の編集と同じ判定（isDerived）で外す。
-      .filter((f) => !isDerived(f.type) && f.key !== status)
+      // 書けない列（計算の列とリンク先の値・付録 D の N3.3.2・追加した人が入る作成者の列）は、列の編集と同じ判定で外す。
+      .filter((f) => !isDerived(f.type) && !isCreatedBy(f.type) && f.key !== status)
       .map((f) => ({
         key: f.key,
         label: f.display_name && f.display_name !== f.key ? `${f.display_name}（${f.key}）` : f.key,
