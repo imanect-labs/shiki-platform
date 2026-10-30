@@ -191,7 +191,8 @@ pub use stream::{
     RECORD_CHANGED_EVENT,
 };
 pub use table_list::{
-    TableListQuery, TablePage, MAX_TABLE_PAGE, TABLE_SCAN_CHUNK, TABLE_SCAN_MAX_CHECKS,
+    TableListQuery, TableListing, TablePage, APP_TABLE_ROUNDS, MAX_TABLE_PAGE, TABLE_SCAN_CHUNK,
+    TABLE_SCAN_MAX_CHECKS,
 };
 pub use table_purge::{DeletedTableTupleSweeper, TuplePurgeProgress, TUPLE_PURGE_BATCH};
 pub use table_share::TableShareRole;

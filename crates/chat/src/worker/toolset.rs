@@ -233,7 +233,7 @@ impl ChatWorker {
     /// 構造化データのツール（data_query / data_schema / data_record_write・Task 15.7）。
     ///
     /// DataStore が配線され、**発話ユーザーに見えるテーブルが 1 つ以上ある**ときだけ提示する
-    /// （見えるテーブルが無ければ使い道が無い・description の一覧は有界）。一覧の取得失敗は run を
+    /// （見えるテーブルが無ければ使い道が無い・description の一覧は有界。一覧が上限で切れて 0 件のときも提示する）。一覧の取得失敗は run を
     /// 落とさない（warn してツールを出さない）。認可は各呼び出しで data が本人の権限で毎回判定する。
     pub(super) async fn push_data_tools(&self, tools: &mut Vec<Arc<dyn Tool>>, ctx: &AuthContext) {
         use crate::data_tool::{

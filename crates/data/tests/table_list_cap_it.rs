@@ -5,7 +5,7 @@
 //! - 見えないテーブルは出ない。続きの位置で読み進めると、見えるテーブルを重ならず漏れなく新しい順に一巡する
 //! - 追加だけの共有も、上限を超えた人の一覧に印つきで出る
 //! - 見えないテーブルばかりが続くと、OpenFGA に問う数の上限で止まって続きの位置を返す（位置は暗号化され、見えない
-//!   テーブルの id を含まない）。読み進めると残りが出る
+//!   テーブルの id を含まない）。読み進めると残りが出る。ページを持たない一覧は、切れたら続きがあると言う
 //!
 //! 各テストは自分のテナント（`t-<uuid>`）と OpenFGA のストアに閉じ、最後に書いたタプルとテナントを撤去する。
 
@@ -345,10 +345,18 @@ async fn past_the_cap(env: Arc<Env>, tenant: String) {
         names(&hit.items),
         vec!["経費-新しい-C", "経費-新しい-B", "経費-新しい-A"]
     );
-    // ページの外の一覧（チャット・ワークフロー・SQL の名前の候補）も同じ。
-    let listed = env.store.list_tables(&bob, 200).await.unwrap();
-    assert_eq!(listed.iter().map(|t| t.id).collect::<Vec<_>>(), want);
-    assert!(listed.iter().all(|t| t.id != hidden && t.id != add_only));
+    // ページの外の一覧（チャット・ワークフロー・SQL の名前の候補）も同じ。読み切ったので続きは無い。
+    let listed = env.store.list_tables_listing(&bob, 200).await.unwrap();
+    assert_eq!(listed.items.iter().map(|t| t.id).collect::<Vec<_>>(), want);
+    assert!(listed
+        .items
+        .iter()
+        .all(|t| t.id != hidden && t.id != add_only));
+    assert!(!listed.more);
+    // 上限の件数で切れたら続きがあると言う。
+    let short = env.store.list_tables_listing(&bob, 2).await.unwrap();
+    assert_eq!(short.items.len(), 2);
+    assert!(short.more);
 
     // アプリ所有の一覧（app-gateway）も、上限を超えた人に所有テーブルを返す。
     let app = Uuid::new_v4();
@@ -360,7 +368,8 @@ async fn past_the_cap(env: Arc<Env>, tenant: String) {
         .await
         .unwrap();
     let owned = env.store.list_app_tables(&bob, app, 200).await.unwrap();
-    assert_eq!(names(&owned), vec!["経費-新しい-A"]);
+    assert_eq!(names(&owned.items), vec!["経費-新しい-A"]);
+    assert!(!owned.more);
 
     // 2 件ずつ読み進めても、重ならず漏れなく新しい順に一巡する（続きの位置は暗号化されている）。
     let (seen, pages) = read_all(&env, &bob, None, 2).await;
@@ -458,6 +467,11 @@ async fn scan_budget(env: Arc<Env>, tenant: String) {
     let (seen, pages) = read_all(&env, &bob, Some("見えない"), 50).await;
     assert!(seen.is_empty());
     assert_eq!(pages, 2);
+    // ページを持たない一覧（チャットの AI・ワークフロー）は、問う数の上限で 0 件に切れても続きがあると言う
+    // （チャットはデータのツールを出し、「他にもテーブルがあります」と添える）。
+    let listing = env.store.list_tables_listing(&bob, 31).await.unwrap();
+    assert!(listing.items.is_empty(), "{:?}", names(&listing.items));
+    assert!(listing.more);
 }
 
 fn rand_u16() -> u16 {

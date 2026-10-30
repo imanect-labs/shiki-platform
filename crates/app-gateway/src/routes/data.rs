@@ -37,12 +37,20 @@ pub(crate) async fn list_tables(
     State(state): State<GatewayState>,
     Extension(ctx): Extension<GatewayCtx>,
 ) -> Result<Json<Vec<GwTable>>, GatewayError> {
-    let tables = state
+    let listing = state
         .caps
         .data
         .list_app_tables_for_reader(&ctx.auth, ctx.installation.app_id, 200)
         .await?;
-    let own = tables
+    if listing.more {
+        tracing::warn!(
+            app_id = %ctx.installation.app_id,
+            tables = listing.items.len(),
+            "data.list_tables: 見えるアプリのテーブルが上限を超えたので、一部を返していない"
+        );
+    }
+    let own = listing
+        .items
         .into_iter()
         .map(|t| GwTable {
             id: t.id,

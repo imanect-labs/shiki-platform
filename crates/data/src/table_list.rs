@@ -18,6 +18,10 @@
 //! [`TABLE_SCAN_MAX_CHECKS`] 問までにし、届いたら見つけた分と続きの位置を返す（ページが `limit` より少なくても
 //! 続きがある）。DB から引く候補は「選んだもの（`limit` + 1 件まで）か問うたもの」なので、これで DB の側も抑えられる。
 //! 続きの位置は見えないテーブルを指しうるので暗号化する（[`crate::cursor::CursorCodec::seal_table_list`]）。
+//!
+//! ページを持たない一覧（チャットの AI・ワークフローの `data.list_tables`・アプリの一覧と購読）は、問う数の上限で切れたら
+//! 続きがあることを呼び出し側へ返す（[`TableListing::more`]・黙って短い一覧を全部と見せない）。アプリの一覧と購読は
+//! 候補がそのアプリのテーブルだけなので、続きを [`APP_TABLE_ROUNDS`] 回まで読み足す。
 
 use std::collections::{HashMap, HashSet};
 
@@ -40,6 +44,18 @@ pub const TABLE_SCAN_CHUNK: i64 = 200;
 pub const TABLE_SCAN_MAX_CHECKS: usize = 1_000;
 /// 名前の検索の文字数の上限（テーブル名の上限と同じ・これより長い語はどの名前にも当たらない）。
 const MAX_TABLE_QUERY_CHARS: usize = 128;
+/// アプリのテーブルの一覧（ページを持たない）で、問う数の上限で切れたときに続きを読み足す回数の上限（候補はアプリの
+/// テーブルだけ）。
+pub const APP_TABLE_ROUNDS: usize = 5;
+
+/// ページを持たない一覧の結果（[モジュール文書](self)）。
+#[derive(Debug, Clone, Default)]
+pub struct TableListing {
+    /// 見えるテーブル（更新の新しい順・`limit` まで）。
+    pub items: Vec<DataTable>,
+    /// 一覧に載らなかった見えるテーブルがあるかもしれない（`limit` を超えたか、OpenFGA に問う数の上限で切れた）。
+    pub more: bool,
+}
 
 /// テーブル一覧の 1 ページの頼み（`GET /data/tables` の `q`・`cursor`・`limit`・GAP-42）。
 #[derive(Debug, Clone, Default)]
@@ -163,16 +179,24 @@ impl ListFilter {
 }
 
 impl DataStore {
-    /// 自分が使えるテーブル一覧（FGA viewer 実効集合 → DB 突合の二段・owner 含む）。
+    /// 自分が使えるテーブル一覧（FGA viewer 実効集合 → DB 突合の二段・owner 含む）。続きがあるかを捨てる（名前の候補など、
+    /// 欠けても困らない使い道だけ）。続きを知りたいときは [`Self::list_tables_listing`]。
     pub async fn list_tables(
         &self,
         ctx: &AuthContext,
         limit: i64,
     ) -> Result<Vec<DataTable>, DataError> {
-        Ok(self
-            .list_tables_filtered(ctx, &ListFilter::default(), limit)
-            .await?
-            .items)
+        Ok(self.list_tables_listing(ctx, limit).await?.items)
+    }
+
+    /// [`Self::list_tables`] と同じ一覧に、続きがあるか（[`TableListing::more`]）を添える（チャットの AI・ワークフロー）。
+    pub async fn list_tables_listing(
+        &self,
+        ctx: &AuthContext,
+        limit: i64,
+    ) -> Result<TableListing, DataError> {
+        self.collect_tables(ctx, ListFilter::default(), limit, 1)
+            .await
     }
 
     /// 自分が使えるテーブルの 1 ページ（名前の検索・続きの位置・GAP-42）。並びは [`Self::list_tables`] と同じ
@@ -243,12 +267,13 @@ impl DataStore {
         ctx: &AuthContext,
         app_id: Uuid,
         limit: i64,
-    ) -> Result<Vec<DataTable>, DataError> {
+    ) -> Result<TableListing, DataError> {
         let filter = ListFilter {
             app_id: Some(app_id),
             ..ListFilter::default()
         };
-        Ok(self.list_tables_filtered(ctx, &filter, limit).await?.items)
+        self.collect_tables(ctx, filter, limit, APP_TABLE_ROUNDS)
+            .await
     }
 
     /// アプリ所有 ∩ 自分が viewer か追加だけのテーブル一覧（app-gateway の `GET /gw/data/tables`・D-113）。
@@ -260,22 +285,57 @@ impl DataStore {
         ctx: &AuthContext,
         app_id: Uuid,
         limit: i64,
-    ) -> Result<Vec<DataTable>, DataError> {
+    ) -> Result<TableListing, DataError> {
         let filter = ListFilter {
             app_id: Some(app_id),
             include_add_only: true,
             ..ListFilter::default()
         };
-        let tables = self.list_tables_filtered(ctx, &filter, limit).await?.items;
+        let listing = self
+            .collect_tables(ctx, filter, limit, APP_TABLE_ROUNDS)
+            .await?;
         let az = self.authz_memo();
-        crate::table_redact::prefetch_table_relations(ctx, &az, &tables).await?;
-        let mut out = Vec::with_capacity(tables.len());
-        for mut t in tables {
+        crate::table_redact::prefetch_table_relations(ctx, &az, &listing.items).await?;
+        let mut out = Vec::with_capacity(listing.items.len());
+        for mut t in listing.items {
             t.add_only = self.read_scope(ctx, &az, t.id).await?
                 == Some(crate::table_access::ReadScope::OwnRecords);
             out.push(t);
         }
-        Ok(out)
+        Ok(TableListing {
+            items: out,
+            more: listing.more,
+        })
+    }
+
+    /// ページを持たない一覧（[`TableListing`]）。問う数の上限で切れたら、続きを `rounds` 回まで読み足す（`limit` は
+    /// 1〜[`MAX_TABLE_PAGE`] に丸める）。
+    async fn collect_tables(
+        &self,
+        ctx: &AuthContext,
+        mut filter: ListFilter,
+        limit: i64,
+        rounds: usize,
+    ) -> Result<TableListing, DataError> {
+        let limit = limit.clamp(1, MAX_TABLE_PAGE);
+        let mut items: Vec<DataTable> = Vec::new();
+        for _ in 0..rounds.max(1) {
+            let want = limit - i64::try_from(items.len()).unwrap_or(limit);
+            let listed = self.list_tables_filtered(ctx, &filter, want).await?;
+            items.extend(listed.items);
+            match listed.next {
+                Some(next) if i64::try_from(items.len()).unwrap_or(limit) < limit => {
+                    filter.after = Some(next);
+                }
+                next => {
+                    return Ok(TableListing {
+                        items,
+                        more: next.is_some(),
+                    })
+                }
+            }
+        }
+        Ok(TableListing { items, more: true })
     }
 
     /// アプリが所有する**全**テーブル ID（FGA 突合なし・Task 9.13b アンインストール撤去用）。

@@ -40,11 +40,15 @@ pub struct DataTableCatalog {
 
 impl DataTableCatalog {
     /// 本人が viewer のテーブルを上限 +1 件だけ引く（全件取得しない）。
+    ///
+    /// 見えるテーブルが多い人では、一覧が OpenFGA に問う数の上限で上限より短く切れることがある（BUG-149）。その
+    /// ときも「他にもテーブルがある」と言う（`more`・短い一覧を全部と見せない）。
     pub async fn load(data: &DataStore, ctx: &AuthContext) -> Result<Self, DataError> {
         let limit = i64::try_from(MAX_LISTED_TABLES + 1).unwrap_or(i64::MAX);
-        let tables = data.list_tables(ctx, limit).await?;
-        let truncated = tables.len() > MAX_LISTED_TABLES;
-        let entries = tables
+        let listing = data.list_tables_listing(ctx, limit).await?;
+        let truncated = listing.more || listing.items.len() > MAX_LISTED_TABLES;
+        let entries = listing
+            .items
             .into_iter()
             .take(MAX_LISTED_TABLES)
             .map(|t| (t.id, t.name))
@@ -52,9 +56,10 @@ impl DataTableCatalog {
         Ok(DataTableCatalog { entries, truncated })
     }
 
-    /// 一覧が空（見えるテーブルが無い＝ツールを提示しない）。
+    /// 見えるテーブルが無い（一覧が空で、続きも無い＝ツールを提示しない）。一覧が上限で切れて 0 件のときは、
+    /// 一覧に載らないテーブルを id で指せるので提示する。
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.entries.is_empty() && !self.truncated
     }
 
     /// テーブルの指定（id か一覧の名前）を id へ。名前は一覧の中だけで引く（ハルシネーション境界）。
@@ -600,6 +605,19 @@ mod tests {
         let r = catalog().render();
         assert!(r.contains("- 経費 / 00000000-0000-0000-0000-000000000001"));
         assert!(r.contains("他にもテーブルがあります"));
+    }
+
+    /// 一覧が OpenFGA に問う数の上限で 0 件に切れたとき（見えるテーブルが多い人・BUG-149）は、ツールを出す（id で
+    /// 指せる）。見えるテーブルが本当に無いときだけ出さない。
+    #[test]
+    fn an_empty_but_cut_list_still_offers_the_tools() {
+        let cut = DataTableCatalog {
+            entries: vec![],
+            truncated: true,
+        };
+        assert!(!cut.is_empty());
+        assert!(cut.render().contains("他にもテーブルがあります"));
+        assert!(DataTableCatalog::default().is_empty());
     }
 
     #[test]

@@ -213,18 +213,22 @@ impl DataPort<'_> {
     }
 
     /// 実行主体（ワークフロー主体なら委譲されたテーブル）の一覧。中身ではなく名前と id だけ。
+    ///
+    /// `truncated` は一覧に載らなかった見えるテーブルがあるかもしれないこと（上限の件数を超えたか、見えるテーブルが
+    /// 多い人で OpenFGA に問う数の上限で切れた・BUG-149）。
     pub(super) async fn list_tables(&self, ec: &ExecCtx) -> Result<Value, PortError> {
         let ctx = auth_ctx(ec);
-        let tables = self
+        let listing = self
             .data
-            .list_tables(&ctx, MAX_LISTED_TABLES)
+            .list_tables_listing(&ctx, MAX_LISTED_TABLES)
             .await
             .map_err(map_data)?;
-        let items: Vec<Value> = tables
+        let items: Vec<Value> = listing
+            .items
             .iter()
             .map(|t| json!({ "id": t.id, "name": t.name }))
             .collect();
-        Ok(json!({ "items": items }))
+        Ok(json!({ "items": items, "truncated": listing.more }))
     }
 
     pub(super) async fn query(
