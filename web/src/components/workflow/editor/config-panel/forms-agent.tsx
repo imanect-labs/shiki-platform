@@ -23,6 +23,7 @@ import { cn } from "@/lib/utils";
 import { AGENT_DEFAULT_TOOLS } from "../ir-state";
 import { Field, NumberInput, period } from "./common";
 import type { FormProps } from "./forms-basic";
+import { ANY_SHAPES } from "./value-shape";
 import { ModelField } from "./model-field";
 import { paramsOf, patchParams } from "./params";
 import { ValueExprInput } from "./value-expr-input";
@@ -103,6 +104,7 @@ export function AgentInvokeForm({ node, dispatch, refCandidates, inMapRegion, fi
       />
       <ValueExprInput
         label="参考データ（省略可）"
+        shapes={ANY_SHAPES}
         value={p.context as ValueExpr | undefined}
         onChange={(v) => patchParams(dispatch, node, { context: v })}
         refCandidates={refCandidates}

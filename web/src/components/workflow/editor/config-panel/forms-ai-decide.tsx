@@ -38,6 +38,7 @@ import { BLANK_REQUIRED_MESSAGE, Field, FieldSelectTrigger, useFieldControl } fr
 import { DecideQuestions, kindLabel, type QuestionErrors } from "./decide-questions";
 import { planOptionRename, planRouteRename, renameShape } from "./decide-renames";
 import type { FormProps } from "./forms-basic";
+import { ANY_SHAPES } from "./value-shape";
 import { ModelField } from "./model-field";
 import { paramsOf, patchParams } from "./params";
 import { ValueExprInput } from "./value-expr-input";
@@ -187,6 +188,7 @@ export function AiDecideForm({
           label="判定の材料"
           text
           multiline
+          shapes={ANY_SHAPES}
           value={p.state as ValueExpr | undefined}
           onChange={(v) => patch({ state: v })}
           refCandidates={refCandidates}

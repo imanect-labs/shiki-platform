@@ -1,16 +1,18 @@
 "use client";
 
-/// 値の入力ウィジェット（IR の ValueExpr = 固定値 / $from 参照 / $template）。
+/// 値の入力ウィジェット（IR の ValueExpr = リテラル / $from 参照 / $template）。
 ///
-/// IT に詳しくない人向けに「固定値」「前の結果から」「文章を組み立て」の 3 モードで見せる。
+/// IT に詳しくない人向けに、値の入れ方を「直接入力」「入力や結果から選ぶ」「文章に値を差し込む」で見せる
+/// （付録 D の N1.5.1）。項目のまとまりやリストを受ける欄（`shapes`・`json`）には「項目を並べる」「リストを並べる」も
+/// 出し、項目ごと・1 件ずつ値の入れ方を選ばせる（入れ子は 2 段まで・ir.md §3.1 の「任意の位置」・BUG-118）。
 /// $from の source は閉集合（input / trigger / each / nodes.<id>.output）で、ブロックの結果は
 /// 祖先候補（呼び出し側が渡す）、入力項目は input_schema（`InputFieldsContext`）から選ぶ。
 ///
 /// 文字を求める欄（`text`）には「差し込む」を置く（BUG-1）。選ぶとカーソル位置に `{名前}` を入れて vars に
-/// 参照を足し、固定値ならテンプレート（文章を組み立て）へ切り替える。差し込み名は path から付ける（/title → title）。
+/// 参照を足し、直接入力ならテンプレート（文章に値を差し込む）へ切り替える。差し込み名は path から付ける（/title → title）。
 /// 文字でない欄（リスト・数・オブジェクト・比較の値・ID）には出さない: 差し込むと値が文字列に変わり、
-/// 保存は通っても実行で型が合わなくなる。参照は「前の結果から」で `$from` のまま入れる。
-/// 固定値に `{{x}}`・`{x}`・`${x}` と書くと差し込みにならず文字のまま送られるので、その場で知らせ、
+/// 保存は通っても実行で型が合わなくなる。参照は「入力や結果から選ぶ」で `$from` のまま入れる。
+/// 直接入力に `{{x}}`・`{x}`・`${x}` と書くと差し込みにならず文字のまま送られるので、その場で知らせ、
 /// ワンクリックでテンプレートに変換できるようにする（テンプレートの記法は `{name}`・`{{` は波括弧そのもの）。
 
 import * as React from "react";
@@ -31,6 +33,7 @@ import { cn } from "@/lib/utils";
 import type { TemplateExpr, ValueExpr } from "@/generated/workflow-ir";
 import type { InputFieldInfo } from "@/lib/workflow-input-schema";
 import { InsertMenu, RefPicker } from "./ref-picker";
+import { ListComposer, ObjectComposer, type ComposeKeys, type RenderSlot } from "./value-compose";
 import {
   escapeTemplateText,
   findSuspects,
@@ -50,8 +53,18 @@ import {
   type RefContext,
   type RefValue,
 } from "./value-refs";
+import {
+  composeBlock,
+  composeShapesAt,
+  exprKind,
+  fitsCompose,
+  initialCompose,
+  isBlankValue,
+  type ComposeBlock,
+  type ComposeShape,
+} from "./value-shape";
 
-export type { RefCandidate };
+export type { ComposeKeys, ComposeShape, RefCandidate };
 
 /// この実行の入力項目（ワークフローの input_schema の properties）。設定パネルが渡す。
 export const InputFieldsContext = React.createContext<InputFieldInfo[]>([]);
@@ -61,7 +74,24 @@ export const MapRegionContext = React.createContext<string | null>(null);
 /// ワークフローのイベントトリガの source（きっかけの内容の項目を候補に出す・BUG-36）。設定パネルが渡す。
 export const TriggerSourcesContext = React.createContext<string[]>([]);
 
-type Mode = "literal" | "from" | "template";
+type Mode = "literal" | "from" | "template" | ComposeShape;
+
+/// 値の入れ方の呼び名（付録 D の N1.5.1・用語集の「欄の値の入れ方」）。
+const MODE_LABELS: Record<Mode, string> = {
+  literal: "直接入力",
+  from: "入力や結果から選ぶ",
+  template: "文章に値を差し込む",
+  object: "項目を並べる",
+  array: "リストを並べる",
+};
+
+/// 項目のまとまり・リストを行に分けられないとき、JSON の欄の上に出す理由（BUG-118）。
+function composeBlockNote(block: ComposeBlock, shape: ComposeShape): string {
+  const name = `「${MODE_LABELS[shape]}」`;
+  if (block === "deep") return `入れ子が 3 段以上あるため、${name}では組み立てられません（組み立てられるのは 2 段まで）。JSON のまま直してください。`;
+  if (block === "blank_key") return `キーが空の項目があるため、${name}では組み立てられません。JSON のまま直してください。`;
+  return `ここでは読み取れない値の指定が入っているため、${name}では組み立てられません。JSON のまま直してください。`;
+}
 
 function modeOf(value: ValueExpr | undefined): Mode {
   if (value && typeof value === "object" && value !== null) {
@@ -104,6 +134,11 @@ function literalText(value: unknown): { text: string; isJson: boolean } {
   return { text: JSON.stringify(value), isJson: true };
 }
 
+/// JSON の欄の誤り（付録 D の N1.5.7）。
+const JSON_ARRAY_ERROR = '[ と ] で囲んだリストで書いてください。例: ["a", "b"]';
+const JSON_OBJECT_ERROR = '{ と } で囲んだ項目のまとまりで書いてください。例: {"金額": 100}';
+const JSON_SYNTAX_ERROR = "JSON の書き方が正しくありません。引用符、カンマ、括弧の対応を確かめてください。";
+
 /// 注意の色（設定パネルの「保存はできますが、確認してください」と揃える）。
 const NOTE_STYLE: React.CSSProperties = {
   borderColor: "color-mix(in oklab, var(--season-autumn) 45%, transparent)",
@@ -130,20 +165,33 @@ type Props = {
   json?: "object" | "array";
   /// 文字を求める欄（指示・検索語・名前・内容など）。「差し込む」と固定値の差し込みの注意を出す。
   text?: boolean;
-  /// 固定値の数字を数として保存する（条件の比べる値・[`numericLiteral`]・BUG-31）。数になった値は
-  /// 「数値やリストとして扱う」をオンにしなくても数のまま見せ、その旨を欄の下に出す。
+  /// 直接入力の数字を数として保存する（条件の比べる値・[`numericLiteral`]・BUG-31）。数になった値は
+  /// 「JSON で入れる」をオンにしなくても数のまま見せ、その旨を欄の下に出す（`numericNote`）。
   numeric?: NumericMode;
-  /// 欄の下の注記（値の決め方によらず出す）。
+  /// 欄の下の注記（値の入れ方によらず出す）。
   hint?: string;
-  /// 値が空のとき（置いたばかりのブロック）は「前の結果から」で開き、候補から選ばせる（調べる値・振り分ける値・
-  /// 繰り返すリストのように、固定値では意味のない欄・D-83）。空の値は IR に `""` のまま残す。
+  /// 値が空のとき（置いたばかりのブロック）は「入力や結果から選ぶ」で開き、候補から選ばせる（調べる値・振り分ける値・
+  /// 繰り返すリストのように、直接入力では意味のない欄・D-83）。空の値は IR に `""` のまま残す。
   preferFrom?: boolean;
+  /// 「項目を並べる」「リストを並べる」で組み立てられる形（BUG-118）。省略時は `json` の形だけ。項目のまとまりに限る
+  /// 欄（`json="object"`）は、空のとき「項目を並べる」で開く。
+  shapes?: readonly ComposeShape[];
+  /// 「項目を並べる」のキーを一覧から選ばせる（テーブルの列）。欄そのもの（段 0）の組み立てにだけ効く。
+  keys?: ComposeKeys;
+  /// 入れ子の段（欄そのものは 0・組み立ての行の値の欄は 1 から）。2 段目からは組み立てを出さない。
+  depth?: number;
+  /// 見出しに出す文字（省略時は `label`）。`label` は読み上げと data-value-expr に使う（組み立ての行の値の欄）。
+  shownLabel?: string;
+  /// 見出しの右に足すボタン（組み立ての行の「外す」）。
+  actions?: React.ReactNode;
+  /// 置いたときに入力の欄へ移る（組み立てに足した行）。
+  autoFocus?: boolean;
+  /// `numeric` で数になった値の注記。null なら出さない（テーブルの数値の列など、比べる欄でないとき）。
+  numericNote?: string | null;
 };
 
-/// 選んでいない値（置いたばかりの欄の `""`・null・未設定）。
-function isBlankValue(value: ValueExpr | undefined): boolean {
-  return value === undefined || value === null || (typeof value === "string" && value.trim() === "");
-}
+/// 比べる欄の数の注記（条件の比べる値・BUG-31）。
+const COMPARE_NUMBER_NOTE = "数値として比べます（文字として比べるなら「文章に値を差し込む」で書きます）";
 
 export function ValueExprInput({
   label,
@@ -159,6 +207,13 @@ export function ValueExprInput({
   numeric,
   hint,
   preferFrom,
+  shapes,
+  keys,
+  depth = 0,
+  shownLabel,
+  actions,
+  autoFocus,
+  numericNote = COMPARE_NUMBER_NOTE,
 }: Props) {
   const inputFields = React.useContext(InputFieldsContext);
   const triggerSources = React.useContext(TriggerSourcesContext);
@@ -167,20 +222,37 @@ export function ValueExprInput({
     () => ({ inputFields, ancestors: refCandidates, inMapRegion: Boolean(inMapRegion), mapLabel, triggerSources }),
     [inputFields, refCandidates, inMapRegion, mapLabel, triggerSources],
   );
-  // 「前の結果から」を選んだが、まだ参照先を選んでいない間（IR は変えずに候補を見せる）。選ぶ欄の空の値は
+  // 「入力や結果から選ぶ」を選んだが、まだ値を選んでいない間（IR は変えずに候補を見せる）。選ぶ欄の空の値は
   // はじめからこの状態で開く（`preferFrom`）。
   const [pendingFrom, setPendingFrom] = React.useState(() => Boolean(preferFrom) && isBlankValue(value));
   const actual = modeOf(value);
-  const mode: Mode = pendingFrom && actual !== "from" ? "from" : actual;
+  // この段で組み立てられる形（2 段目からは出さない）と、組み立てて見せている形（BUG-118）。組み立ては IR では
+  // リテラルなので、どちらで見せるかは欄が持つ。外で値が組み立てられない形に変わったら、JSON の欄に戻す。
+  const allowed = composeShapesAt(shapes ?? (json ? [json] : []), depth);
+  const [compose, setCompose] = React.useState<ComposeShape | null>(() =>
+    initialCompose(value, allowed, depth, json === "object" ? "object" : undefined),
+  );
+  const composed =
+    compose !== null && actual === "literal" && allowed.includes(compose) && fitsCompose(value, compose, depth)
+      ? compose
+      : null;
+  const mode: Mode = pendingFrom && actual !== "from" ? "from" : (composed ?? actual);
   const from = actual === "from" ? (value as RefValue) : null;
   const template = actual === "template" ? (value as TemplateExpr) : null;
   const literal = actual === "literal" ? literalText(value) : { text: "", isJson: false };
-  // 数の欄（`numeric`）では、数は数字を打てば数になるので「数値やリストとして扱う」をオンにして見せない
+  // 数の欄（`numeric`）では、数は数字を打てば数になるので「JSON で入れる」をオンにして見せない
   // （リスト・真偽・null を書くときだけオンにする）。
   const autoNumber = Boolean(numeric) && typeof value === "number";
   const [jsonMode, setJsonMode] = React.useState(literal.isJson && !autoNumber);
+  // 数の欄だと後から分かった（テーブルの列の種類は、テーブルを読んでから届く）ときも、数は「JSON で入れる」を
+  // オフにして見せる（はじめから数の欄だったときと同じ見え方にする）。
+  const [numericSeen, setNumericSeen] = React.useState(numeric);
+  if (numeric !== numericSeen) {
+    setNumericSeen(numeric);
+    if (autoNumber) setJsonMode(false);
+  }
   const toText = (text: string): ValueExpr => (numeric ? numericLiteral(text, numeric) : text) as ValueExpr;
-  // 固定値の欄に打った文字から作る値（「数値やリストとして扱う」なら JSON として読み、読めなければ文字）。
+  // 直接入力の欄に打った文字から作る値（「JSON で入れる」なら JSON として読み、読めなければ文字）。
   const literalOf = (text: string): ValueExpr => {
     if (jsonMode) {
       try {
@@ -191,7 +263,7 @@ export function ValueExprInput({
     }
     return toText(text);
   };
-  // 固定値の欄の入力中の文字。値を数・JSON に直すと「0.」「1.0」「-0」が正規形に潰れ、打ち続けると別の数
+  // 直接入力の欄の入力中の文字。値を数・JSON に直すと「0.」「1.0」「-0」が正規形に潰れ、打ち続けると別の数
   // （「0.08」が 8）になる・IME の変換が壊れるので、打った文字のまま見せる（BUG-31）。いまの値がこの文字から
   // 作った値と違う（元に戻した・ほかの操作で書き換わった）ときは使わない。
   const [literalDraft, setLiteralDraft] = React.useState<string | null>(null);
@@ -208,9 +280,9 @@ export function ValueExprInput({
     try {
       const v = JSON.parse(text) as unknown;
       const ok = json === "array" ? Array.isArray(v) : v !== null && typeof v === "object" && !Array.isArray(v);
-      return ok ? null : json === "array" ? "[ … ] の配列で書いてください" : "{ … } のオブジェクトで書いてください";
+      return ok ? null : json === "array" ? JSON_ARRAY_ERROR : JSON_OBJECT_ERROR;
     } catch {
-      return "JSON として読めません（引用符・カンマ・括弧を確かめてください）";
+      return JSON_SYNTAX_ERROR;
     }
   }, [json, mode, jsonDraft, literal.text]);
 
@@ -240,7 +312,7 @@ export function ValueExprInput({
     onChange(next);
   };
 
-  // 文字として差し込める欄か（文字を求める欄だけ。JSON として扱う固定値・JSON 限定の欄には差し込まない）。
+  // 文字として差し込める欄か（文字を求める欄だけ。JSON として扱う直接入力・JSON 限定の欄には差し込まない）。
   const textual =
     Boolean(text) &&
     ((mode === "literal" && !json && !jsonMode && (value === undefined || typeof value === "string")) ||
@@ -255,7 +327,7 @@ export function ValueExprInput({
       return;
     }
     const text = typeof value === "string" ? value : "";
-    // カーソルの位置は固定値の文字の位置。テンプレートでは波括弧が二重になるので位置を写して差し込む。
+    // カーソルの位置は直接入力の文字の位置。テンプレートでは波括弧が二重になるので位置を写して差し込む。
     const range = selection.current ?? { start: text.length, end: text.length };
     const r = insertIntoLiteral(text, range, ref);
     caretAfter.current = r.caret;
@@ -265,11 +337,26 @@ export function ValueExprInput({
   const setMode = (next: Mode) => {
     if (next === mode) return;
     setJsonDraft(null);
-    // 前の欄のカーソル位置は持ち越さない（固定値とテンプレートでは文字の位置が違う）。
+    // 前の欄のカーソル位置は持ち越さない（直接入力とテンプレートでは文字の位置が違う）。
     selection.current = null;
-    // 参照先を選ぶ前に元の入力方法へ戻した（IR は変えていない）。
+    if (next === "object" || next === "array") {
+      // 組み立てへ: 形の合う値（JSON で書いた項目のまとまりなど）はそのまま行に分け、空の欄は 0 行で開く（IR は
+      // 変えない）。ほかの値（選んだ値・文章・別の形）は外して、空の入れ物から始める。
+      setPendingFrom(false);
+      setJsonMode(false);
+      setCompose(next);
+      if (!fitsCompose(value, next, depth)) emit((next === "object" ? {} : []) as ValueExpr);
+      return;
+    }
+    setCompose(null);
+    // 値を選ぶ前に元の入力方法へ戻した（IR は変えていない）。
     if (pendingFrom && next === actual) {
       setPendingFrom(false);
+      return;
+    }
+    if (next === "literal" && composed) {
+      // 組み立てた値は、そのまま JSON で見せる（IR は変えない・行き来しても項目と参照は残る）。
+      setJsonMode(!isBlankValue(value));
       return;
     }
     if (next !== "literal") setJsonMode(false);
@@ -289,8 +376,8 @@ export function ValueExprInput({
       else emit((json ? undefined : "") as ValueExpr);
       return;
     }
-    // テンプレートへ: 参照は 1 つの差し込みにする。固定値は差し込みのつもりの書き方（`{{x}}` など）を
-    // 差し込みに直し、ほかの文字はそのまま出るように残す（「差し込みに変換する」と同じ）。
+    // テンプレートへ: 参照は 1 つの差し込みにする。直接入力の文字は差し込みのつもりの書き方（`{{x}}` など）を
+    // 差し込みに直し、ほかの文字はそのまま出るように残す（「差し込みに直す」と同じ）。
     if (from) {
       const { name } = varNameFor(from, {});
       emit({ $template: `{${name}}`, vars: { [name]: from } } as ValueExpr);
@@ -302,11 +389,37 @@ export function ValueExprInput({
   };
 
   const suspects = mode === "literal" && textual && typeof value === "string" ? findSuspects(value) : [];
+  // 項目のまとまり・リストを受ける欄に、行に分けられない値が入っているときの理由（JSON の欄で出す・BUG-118）。
+  const blocked: { shape: ComposeShape; block: ComposeBlock } | null = (() => {
+    if (mode !== "literal") return null;
+    const kind = exprKind(value);
+    if ((kind !== "object" && kind !== "array") || !allowed.includes(kind)) return null;
+    const block = composeBlock(value, depth);
+    return block ? { shape: kind, block } : null;
+  })();
+  // 行の値の欄（1 段深い・値の入れ方を選べる）。
+  const renderSlot: RenderSlot = (p) => (
+    <ValueExprInput
+      label={p.label}
+      shownLabel={p.shownLabel}
+      value={p.value}
+      onChange={p.onChange}
+      refCandidates={refCandidates}
+      inMapRegion={inMapRegion}
+      depth={p.depth}
+      shapes={["object", "array"]}
+      text={p.text}
+      numeric={p.numeric}
+      numericNote={null}
+      actions={p.actions}
+      autoFocus={p.autoFocus}
+    />
+  );
 
   return (
-    <div className="space-y-1.5" data-value-expr={label}>
+    <div className="min-w-0 space-y-1.5" data-value-expr={label}>
       <div className="flex flex-wrap items-center justify-between gap-x-2 gap-y-0.5">
-        <label className="min-w-0 text-xs font-medium text-foreground">{label}</label>
+        <label className="min-w-0 text-xs font-medium text-foreground">{shownLabel ?? label}</label>
         <div className="ml-auto flex items-center gap-0.5">
           {textual ? (
             <InsertMenu ctx={ctx} onPick={insert} onClosed={() => textRef.current?.focus()} />
@@ -314,19 +427,33 @@ export function ValueExprInput({
           <Select value={mode} onValueChange={(v) => setMode(v as Mode)}>
             <SelectTrigger
               // 欄の名前（label）を含めない（getByLabel(label) が入力の欄だけに当たるように）。
-              aria-label="値の決め方"
-              className="h-6 w-auto gap-1 border-none bg-transparent px-1.5 text-[11px] text-muted-foreground shadow-none"
+              aria-label="値の入れ方"
+              className="h-6 w-auto gap-1 border-none bg-transparent px-1.5 text-[11px] text-muted-foreground shadow-none pointer-coarse:h-8"
             >
               <SelectValue />
             </SelectTrigger>
-            <SelectContent align="end">
-              <SelectItem value="literal">固定値</SelectItem>
-              <SelectItem value="from">前の結果から</SelectItem>
-              <SelectItem value="template">文章を組み立て</SelectItem>
+            <SelectContent align="end" className="w-auto min-w-[10.5rem]">
+              {(["literal", "from", "template", ...allowed] as Mode[]).map((m) => (
+                <SelectItem
+                  key={m}
+                  value={m}
+                  // 行に分けられない値（深い入れ子など）は、組み立てに切り替えると消えるので選べない（理由は欄の上）。
+                  disabled={(m === "object" || m === "array") && blocked?.shape === m}
+                >
+                  {MODE_LABELS[m]}
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
+          {actions}
         </div>
       </div>
+
+      {blocked ? (
+        <p className="text-[11px] leading-relaxed text-muted-foreground" role="note" data-testid="compose-blocked">
+          {composeBlockNote(blocked.block, blocked.shape)}
+        </p>
+      ) : null}
 
       {mode === "literal" && json ? (
         <div className="space-y-1">
@@ -366,14 +493,15 @@ export function ValueExprInput({
             invalid={Boolean(error)}
             textRef={textRef}
             onSelect={remember}
+            autoFocus={autoFocus}
             onChange={(text) => {
               setLiteralDraft(text);
               emit(literalOf(text));
             }}
           />
-          {autoNumber && !jsonMode ? (
+          {autoNumber && !jsonMode && numericNote ? (
             <p className="text-[11px] text-muted-foreground" data-testid="numeric-literal-note">
-              数値として比べます（文字として比べるなら「文章を組み立て」で書きます）
+              {numericNote}
             </p>
           ) : null}
           {suspects.length > 0 ? (
@@ -386,7 +514,7 @@ export function ValueExprInput({
                     .map((s) => `「${s.text}」`)
                     .join("")}
                   {suspects.length > 3 ? ` ほか ${suspects.length - 3} 件` : ""}
-                  は差し込みになりません。固定値のままでは文字のまま送られます。
+                  は値に置き換わらず、書いたとおりの文字が使われます。
                 </span>
               </p>
               <Button
@@ -395,32 +523,46 @@ export function ValueExprInput({
                 className="h-7 text-xs"
                 onClick={() => emit(literalToTemplate(literal.text, ctx) as ValueExpr)}
               >
-                差し込みに変換する
+                差し込みに直す
               </Button>
             </div>
           ) : null}
-          <label className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-            <Switch
-              checked={jsonMode}
-              onCheckedChange={(on) => {
-                setJsonMode(on);
-                // 切替時に IR 内の値も追随させる（ON: 今のテキストを JSON として解釈、
-                // OFF: 文字列に戻す）。トグルだけで型が変わらない齟齬を防ぐ。
-                if (on) {
-                  try {
-                    emit(JSON.parse(shownLiteral) as ValueExpr);
-                  } catch {
-                    // 解釈できないテキストは文字列のまま（入力継続で解釈される）。
+          {/* 組み立ての行の文章の列には出さない（オンにすると文章が別の種類の値に変わるだけ・付録 D の N1.5.7）。 */}
+          {depth > 0 && text && !jsonMode ? null : (
+            <label className="flex items-start gap-1.5 text-[11px] text-muted-foreground">
+              <Switch
+                aria-label="JSON で入れる"
+                checked={jsonMode}
+                onCheckedChange={(on) => {
+                  setJsonMode(on);
+                  // 切替時に IR 内の値も追随させる（ON: 今のテキストを JSON として解釈、
+                  // OFF: 文字列に戻す）。トグルだけで型が変わらない齟齬を防ぐ。
+                  if (on) {
+                    try {
+                      emit(JSON.parse(shownLiteral) as ValueExpr);
+                    } catch {
+                      // 解釈できないテキストは文字列のまま（入力継続で解釈される）。
+                    }
+                  } else if (literal.isJson) {
+                    emit(toText(shownLiteral));
                   }
-                } else if (literal.isJson) {
-                  emit(toText(shownLiteral));
-                }
-              }}
-              className="scale-75"
-            />
-            数値やリストとして扱う（JSON）
-          </label>
+                }}
+                className="mt-px shrink-0 scale-75"
+              />
+              <span className="min-w-0 pt-0.5">
+                JSON で入れる
+                {depth === 0 ? <span className="block">数値、はい／いいえ、リスト、項目のまとまりを書けます。</span> : null}
+              </span>
+            </label>
+          )}
         </div>
+      ) : null}
+
+      {composed === "object" ? (
+        <ObjectComposer value={value} onChange={emit} depth={depth} keys={depth === 0 ? keys : undefined} renderSlot={renderSlot} />
+      ) : null}
+      {composed === "array" ? (
+        <ListComposer label={label} value={value} onChange={emit} depth={depth} renderSlot={renderSlot} />
       ) : null}
 
       {mode === "from" ? (
@@ -463,6 +605,7 @@ function TextField({
   onSelect,
   onChange,
   rows = 3,
+  autoFocus,
 }: {
   multiline?: boolean;
   label: string;
@@ -473,6 +616,7 @@ function TextField({
   onSelect: (e: React.SyntheticEvent<TextEl>) => void;
   onChange: (text: string) => void;
   rows?: number;
+  autoFocus?: boolean;
 }) {
   if (multiline) {
     return (
@@ -481,6 +625,7 @@ function TextField({
         aria-label={label}
         value={value}
         rows={rows}
+        autoFocus={autoFocus}
         placeholder={placeholder}
         onSelect={onSelect}
         onChange={(e) => {
@@ -496,6 +641,7 @@ function TextField({
       ref={textRef as React.Ref<HTMLInputElement>}
       aria-label={label}
       value={value}
+      autoFocus={autoFocus}
       placeholder={placeholder}
       onSelect={onSelect}
       onChange={(e) => {
@@ -614,7 +760,7 @@ function TemplateEditor({
           </div>
           {isFromRef(expr) ? null : (
             <p className="px-0.5 text-[11px] text-muted-foreground">
-              固定の値: <code className="break-all font-mono">{JSON.stringify(expr)}</code>
+              直接入力した値: <code className="break-all font-mono">{JSON.stringify(expr)}</code>
             </p>
           )}
           <RefPicker

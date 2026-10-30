@@ -16,6 +16,7 @@ import type { NodeParamsByType } from "@/generated/workflow-catalog";
 import type { ReplyColumn, ReplyFormat, ReplyTone, ValueExpr } from "@/generated/workflow-ir";
 import { Field, FieldInput, FieldSelectTrigger } from "./common";
 import type { FormProps } from "./forms-basic";
+import { ANY_SHAPES, LIST_SHAPE } from "./value-shape";
 import { paramsOf, patchParams } from "./params";
 import { ValueExprInput } from "./value-expr-input";
 
@@ -98,6 +99,7 @@ export function WorkflowReplyForm({ node, dispatch, refCandidates, inMapRegion, 
         label={textual ? "返す内容" : format === "table" ? "表にするリスト" : "ファイルのリスト"}
         text={textual}
         multiline={textual}
+        shapes={format === "table" ? LIST_SHAPE : format === "file_link" ? ANY_SHAPES : undefined}
         value={p.value as ValueExpr | undefined}
         onChange={(v) => set({ value: v })}
         refCandidates={refCandidates}

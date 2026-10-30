@@ -112,12 +112,13 @@ export function RefPicker({
         </SelectContent>
       </Select>
       {custom ? (
-        <div className="flex items-center gap-1.5">
+        // 狭い欄（項目を並べるの行の中など）では、どこの値かと場所を 2 行に分ける。
+        <div className="flex flex-wrap items-center gap-1.5">
           <Select
             value={value?.$from ?? ""}
             onValueChange={(v) => onChange({ $from: v, ...(value?.path ? { path: value.path } : {}), ...keepDefault })}
           >
-            <SelectTrigger className="h-8 min-w-0 flex-1 text-xs" aria-label="参照元">
+            <SelectTrigger className="h-8 min-w-[7.5rem] flex-1 text-xs" aria-label="参照元">
               <SelectValue placeholder="参照元" />
             </SelectTrigger>
             <SelectContent>
@@ -140,7 +141,7 @@ export function RefPicker({
             }
             placeholder="/title（空で全体）"
             aria-label="取り出す場所"
-            className="h-8 min-w-0 flex-1 font-mono text-[11px] md:text-[11px] max-md:text-base"
+            className="h-8 min-w-[7.5rem] flex-1 font-mono text-[11px] md:text-[11px] max-md:text-base"
           />
           {hints.length > 0 ? (
             <datalist id={listId}>

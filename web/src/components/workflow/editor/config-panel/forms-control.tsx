@@ -29,6 +29,7 @@ import { paramsOf, patchParams } from "./params";
 import { InputFieldsContext, numericLiteral, ValueExprInput, type NumericMode } from "./value-expr-input";
 import { isFromRef } from "./value-refs";
 import type { FormProps } from "./forms-basic";
+import { LIST_SHAPE } from "./value-shape";
 import type { InputFieldInfo } from "@/lib/workflow-input-schema";
 
 const OP_LABELS: [CmpOp, string][] = [
@@ -389,6 +390,7 @@ export function MapForm({ node, dispatch, refCandidates, inMapRegion, fieldError
       <ValueExprInput
         label="繰り返すリスト"
         preferFrom
+        shapes={LIST_SHAPE}
         value={p.items as ValueExpr | undefined}
         onChange={(v) => patchParams(dispatch, node, { items: v })}
         refCandidates={refCandidates}

@@ -18,6 +18,7 @@ import { ModelField } from "./model-field";
 import { OutputSchemaEditor } from "./output-schema-editor";
 import { paramsOf, patchParams } from "./params";
 import { ValueExprInput, type RefCandidate } from "./value-expr-input";
+import { ANY_SHAPES, OBJECT_SHAPE } from "./value-shape";
 
 /// このノードへのサーバ検証の誤り（path 付き）と、その検証の対象だったこのノード（無ければ `null`）。
 /// 誤りの path の添字はこのノードの値で引く（検証の後に並びが変わっても、今の値に取り違えない）。
@@ -253,6 +254,7 @@ export function WorkflowStartForm({ node, dispatch, refCandidates, inMapRegion, 
       </div>
       <ValueExprInput
         label="渡す入力項目（省略可）"
+        shapes={OBJECT_SHAPE}
         value={p.input as ValueExpr | undefined}
         onChange={(v) => patchParams(dispatch, node, { input: v })}
         refCandidates={refCandidates}
@@ -327,6 +329,7 @@ export function SkillInvokeForm({ node, dispatch, refCandidates, inMapRegion, fi
       </Field>
       <ValueExprInput
         label="渡す入力（省略可）"
+        shapes={ANY_SHAPES}
         value={p.input as ValueExpr | undefined}
         onChange={(v) => patchParams(dispatch, node, { input: v })}
         refCandidates={refCandidates}

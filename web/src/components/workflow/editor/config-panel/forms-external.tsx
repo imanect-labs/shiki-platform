@@ -19,6 +19,7 @@ import { Field, FieldInput, FieldSelectTrigger, FieldTextarea, MoreInfo } from "
 import { paramsOf, patchParams } from "./params";
 import { ValueExprInput } from "./value-expr-input";
 import type { FormProps } from "./forms-basic";
+import { ANY_SHAPES } from "./value-shape";
 
 const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"] as const;
 
@@ -78,6 +79,7 @@ export function HttpRequestForm({ node, dispatch, refCandidates, inMapRegion, fi
       <ValueExprInput
         label="送る内容（省略可）"
         text
+        shapes={ANY_SHAPES}
         value={p.body as ValueExpr | undefined}
         onChange={(v) => patchParams(dispatch, node, { body: v })}
         refCandidates={refCandidates}
@@ -196,6 +198,7 @@ export function ScriptRunForm({ node, dispatch, refCandidates, inMapRegion, fiel
       </Field>
       <ValueExprInput
         label="渡す入力（省略可）"
+        shapes={ANY_SHAPES}
         value={p.input as ValueExpr | undefined}
         onChange={(v) => patchParams(dispatch, node, { input: v })}
         refCandidates={refCandidates}
