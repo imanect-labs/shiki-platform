@@ -1217,7 +1217,10 @@ const AssistantRow = React.memo(function AssistantRow({
   return (
     <MessageCitationsProvider messageKey={messageId} citations={citations} text={text}>
       <Message className="group justify-start">
-        <div className="w-full min-w-0">
+        {/* 回答の行の状態（saved: 読み込んだ確定の行・reloading: 生成直後の仮の行で、読み直すと確定の行に置き換わる・
+            stopped: 止めた生成の仮の行）。図を含む回答は仮の行から確定の行へ置き換わり、図が描き直されて、開いていた表示や
+            カーソルの表示が消える。E2E は確定の行の図を操作する。 */}
+        <div className="w-full min-w-0" data-message-state={provisional ?? "saved"}>
           <YuiActionContext.Provider value={yuiHost}>
             <div className="space-y-2">
               <MessageTimeline segments={segments} citations={citations} />

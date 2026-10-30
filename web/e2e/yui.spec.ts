@@ -13,6 +13,13 @@ async function send(page: Page, text: string) {
   await page.waitForURL(/\/c\/[0-9a-f-]+/i, { timeout: 20_000 });
 }
 
+/// 読み直した確定の回答の行の図。図を含む回答は、生成が終わると仮の行から確定の行に置き換わり、図が描き直される
+/// （開いた表示やカーソルの表示が消える）。置き換わる前に図を操作すると、置き換わった時に表示が戻って揺れるので、
+/// 操作は確定の行の図で行う（BUG-159・台帳 §9.4 の yui.spec.ts:19）。
+function savedFigure(page: Page) {
+  return page.locator('[data-message-state="saved"]').getByTestId("ui-figure");
+}
+
 /// 回答の Markdown 内の ```ui ブロック（Yui）を図にする（#530）。
 /// 前提: LLM=stub。`yui:<kind>` で ```ui ブロックを含む本文が数文字ずつ（行の途中でも区切れて）流れる。
 test.describe("```ui ブロックの図", () => {
@@ -46,11 +53,14 @@ test.describe("```ui ブロックの図", () => {
     expect(seen).toMatch(/\|\s*Q4\s*\|\s*210\s*\|\s*44\s*\|/);
     expect(seen).not.toMatch(/\|\s*(1|2|3|4|15)\s*\|/);
 
+    // ここから先は、読み直した確定の行の図を操作する。
+    const saved = savedFigure(page);
+    await expect(saved.getByRole("button", { name: "表で表示" })).toBeVisible({ timeout: 30_000 });
     // Q4 の棒にカーソルを載せると、その四半期の全系列の値がツールチップに出る。
-    const q4 = figure.locator("svg path").filter({ has: page.locator("title", { hasText: "Q4 売上" }) });
+    const q4 = saved.locator("svg path").filter({ has: page.locator("title", { hasText: "Q4 売上" }) });
     // 棒の上には区画ごとの透明な当たり判定が重なっているので、棒の位置へマウスを動かす。
     await q4.hover({ force: true });
-    const tip = figure.locator("[data-yui-tip]");
+    const tip = saved.locator("[data-yui-tip]");
     await expect(tip).toContainText("Q4");
     await expect(tip).toContainText("210");
     await expect(tip).toContainText("44");
@@ -58,7 +68,7 @@ test.describe("```ui ブロックの図", () => {
     await expect(tip).toHaveCount(0);
     // キーボードでも辿れる（図に入り、矢印キーで四半期を送る）。フォーカスの当て方で
     // 先頭の値が出るかが変わる（キーボードで入ったときだけ出す）ので、一度閉じてから送る。
-    await figure.getByRole("group").focus();
+    await saved.getByRole("group").focus();
     await page.keyboard.press("Escape");
     await page.keyboard.press("ArrowRight");
     await expect(tip).toContainText("Q1");
@@ -68,10 +78,10 @@ test.describe("```ui ブロックの図", () => {
     await expect(tip).toHaveCount(0);
 
     // 表に切り替えると、値が表のセルとして読める。
-    await figure.getByRole("button", { name: "表で表示" }).click();
-    await expect(figure.getByRole("cell", { name: "210" })).toBeVisible();
-    await figure.getByRole("button", { name: "図で表示" }).click();
-    await expect(figure.getByRole("img")).toBeVisible();
+    await saved.getByRole("button", { name: "表で表示" }).click();
+    await expect(saved.getByRole("cell", { name: "210" })).toBeVisible();
+    await saved.getByRole("button", { name: "図で表示" }).click();
+    await expect(saved.getByRole("img")).toBeVisible();
   });
 
   test("流れ図・構成図・数値カードも描ける", async ({ page }) => {
@@ -104,7 +114,8 @@ test.describe("```ui ブロックの図の書き出し", () => {
     await loginViaKeycloak(page);
     await send(page, "yui:bar");
     await expect(page.getByText("以上です。")).toBeVisible({ timeout: 30_000 });
-    const figure = page.getByTestId("ui-figure");
+    const figure = savedFigure(page);
+    await expect(figure).toBeVisible({ timeout: 30_000 });
 
     await figure.getByRole("button", { name: "図を画像と表としてコピー" }).click();
     await expect(figure.getByRole("button", { name: "図を画像と表としてコピー" })).toContainText("コピー済み");
@@ -164,7 +175,8 @@ test.describe("```ui ブロックの図（スマホ）", () => {
     await page.getByRole("button", { name: "送信" }).tap();
     await page.waitForURL(/\/c\/[0-9a-f-]+/i, { timeout: 20_000 });
     await expect(page.getByText("以上です。")).toBeVisible({ timeout: 30_000 });
-    const figure = page.getByTestId("ui-figure");
+    const figure = savedFigure(page);
+    await expect(figure).toBeVisible({ timeout: 30_000 });
     const tip = figure.locator("[data-yui-tip]");
     const center = async (label: string) => {
       const bar = figure.locator("svg path").filter({ has: page.locator("title", { hasText: label }) });
