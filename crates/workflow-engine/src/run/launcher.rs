@@ -170,13 +170,7 @@ impl WorkflowRunLauncher {
         }
         let ir_json = serde_json::to_value(ir).map_err(|e| LauncherError::Ir(e.to_string()))?;
         let graph = RunGraph::build(ir);
-        // principal_kind は呼び出し主体の種別に従う（ユーザー起動＝user・workflow.start＝workflow）。
-        let principal_kind = match ctx.principal.kind {
-            authz::PrincipalKind::Workflow => "workflow",
-            authz::PrincipalKind::User => "user",
-            // ミニアプリ・サービス identity 起動（B2 自動化・Task 9.6）。
-            authz::PrincipalKind::MiniApp => "miniapp",
-        };
+        let principal_kind = run_principal_kind(ctx.principal.kind)?;
         let run_id = self
             .runs
             .create_run_from(
@@ -404,6 +398,20 @@ impl RunLauncher for WorkflowRunLauncher {
     }
 }
 
+/// 対話の run の実行主体の種類（`workflow_run.principal_kind`・ユーザーの起動は user・workflow.start は workflow）。
+///
+/// ミニアプリの主体（B2 のサービス・Task 9.6）が run を作る経路はいま無い。ミニアプリの関数は `Shiki.workflow.*` を
+/// 持たず、API・会話の図のボタン・ミニアプリの画面は利用者の主体で起動する。ワーカーは user・workflow の主体しか
+/// 組めず（`principal_kind` の check も同じ 2 つ・migration 0022）、ミニアプリの主体を user として組むと別人の権限に
+/// なるので、届いても run を作らずに断る（BUG-145）。
+fn run_principal_kind(kind: authz::PrincipalKind) -> Result<&'static str, LauncherError> {
+    match kind {
+        authz::PrincipalKind::Workflow => Ok("workflow"),
+        authz::PrincipalKind::User => Ok("user"),
+        authz::PrincipalKind::MiniApp => Err(LauncherError::UnsupportedPrincipal),
+    }
+}
+
 /// Wrapper を `Arc<dyn RunLauncher>` として scheduler へ渡すためのヘルパ。
 #[must_use]
 pub fn into_dyn(launcher: WorkflowRunLauncher) -> Arc<dyn RunLauncher> {
@@ -430,6 +438,9 @@ pub enum LauncherError {
     /// 無いと見えないを言い分けない・BUG-107）。何度やっても通らないので、呼び出し側はやり直さない。
     #[error("ワークフローが見つからないか、見る権限がありません")]
     NotVisible,
+    /// 実行主体の種類が run を作れないもの（ミニアプリのサービスの主体・[`run_principal_kind`]・BUG-145）。
+    #[error("この主体ではワークフローを実行できません")]
+    UnsupportedPrincipal,
 }
 
 impl LauncherError {
@@ -458,6 +469,26 @@ impl LauncherError {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    /// ミニアプリの主体では run を作らない（`principal_kind` の check は user・workflow だけ・BUG-145）。
+    #[test]
+    fn only_users_and_workflows_run() {
+        assert_eq!(
+            run_principal_kind(authz::PrincipalKind::User).ok(),
+            Some("user")
+        );
+        assert_eq!(
+            run_principal_kind(authz::PrincipalKind::Workflow).ok(),
+            Some("workflow")
+        );
+        assert!(matches!(
+            run_principal_kind(authz::PrincipalKind::MiniApp),
+            Err(LauncherError::UnsupportedPrincipal)
+        ));
+        // migration 0022 の check と同じ 2 つ（ワーカーの実行主体の組み方も同じ）。
+        let check = include_str!("../../../../migrations/0022_workflow_principal_kind.sql");
+        assert!(check.contains("check (principal_kind in ('user', 'workflow'))"));
+    }
 
     /// 定義を読めない自動実行の警告は、(テナント・ワークフロー・版) ごとに 1 回（BUG-146）。
     #[test]
