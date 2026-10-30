@@ -118,7 +118,7 @@ pub use fsm::{FsmBody, FsmRef, FsmTransition};
 pub use fsm_rules::AllowedTransitions;
 pub use fsm_store::FsmStore;
 #[doc(hidden)]
-pub use index::text_index_delete_sql;
+pub use index::{analyze_index_partitions_without_stats, text_index_delete_sql};
 pub use index::{
     sort_precision, FieldIndexStatus, IndexBackfillStatus, IndexBackfillStep, IndexBackfillWorker,
     IndexParityMismatch, IndexParityReport, IndexPromotion, IndexState, IndexStatus, SortPrecision,

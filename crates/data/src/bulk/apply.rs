@@ -27,9 +27,10 @@ use super::{
 };
 use crate::field_key::encode_record;
 use crate::index::backfill::{start_backfill_from, BACKFILL_CHUNK};
+use crate::index::partition::{analyze_index_partitions_without_stats, partition_holding};
 use crate::index::state::{load_states, lock_plan, set_state, IndexPlan};
 use crate::index::{IndexState, IndexTable};
-use crate::model::{DataTable, FieldId, TableSchema, FIRST_USER_FIELD_ID};
+use crate::model::{DataTable, FieldId, TableKeys, TableSchema, FIRST_USER_FIELD_ID};
 use crate::record_effects::CreatedRecord;
 use crate::store::DataStore;
 use crate::{map_db, DataError};
@@ -203,6 +204,15 @@ impl DataStore {
                 .await?;
             return Ok(0);
         }
+        // 更新行は 1 件ずつ旧い索引行を消す。列統計の無いパーティションでは削除が列の索引行を全部
+        // 読むので、Tx の前に統計を作る（#986・統計があれば 1 文で終わる）。
+        analyze_index_partitions_without_stats(
+            &self.pools,
+            tenant_id,
+            table.keys.tenant_int,
+            table.keys.table_int,
+        )
+        .await;
         let mut tx = self
             .pools
             .for_tenant(tenant_id)
@@ -714,18 +724,14 @@ async fn analyze_table_partitions(
         "data_link",
         "data_unique",
     ];
+    let keys = TableKeys {
+        tenant_int,
+        table_int,
+    };
     for parent in PARENTS {
-        let rel: Result<Option<String>, sqlx::Error> = sqlx::query_scalar(&format!(
-            "SELECT tableoid::regclass::text FROM {parent} \
-             WHERE tenant_int = $1 AND table_int = $2 LIMIT 1"
-        ))
-        .bind(tenant_int)
-        .bind(table_int)
-        .fetch_optional(pool)
-        .await;
-        let rel = match rel {
-            Ok(Some(r)) if is_partition_of(&r, parent) => r,
-            Ok(_) => continue,
+        let rel = match partition_holding(pools, tenant_id, parent, keys).await {
+            Ok(Some(r)) => r,
+            Ok(None) => continue,
             Err(e) => {
                 tracing::warn!(error = %e, parent, "取込の後の統計の取り直しの対象を引けません");
                 continue;
@@ -734,32 +740,6 @@ async fn analyze_table_partitions(
         if let Err(e) = sqlx::query(&format!("ANALYZE {rel}")).execute(pool).await {
             tracing::warn!(error = %e, rel, "取込の後の統計の取り直しに失敗（自動 ANALYZE に任せる）");
         }
-    }
-}
-
-/// `rel` が `parent` かそのハッシュパーティション（`{parent}_p{n}`）の名前か。
-fn is_partition_of(rel: &str, parent: &str) -> bool {
-    rel == parent
-        || rel
-            .strip_prefix(parent)
-            .and_then(|r| r.strip_prefix("_p"))
-            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
-}
-
-#[cfg(test)]
-mod analyze_tests {
-    use super::is_partition_of;
-
-    #[test]
-    fn only_partitions_of_the_parent_are_analyzed() {
-        assert!(is_partition_of("data_index_num_p12", "data_index_num"));
-        assert!(is_partition_of("data_record", "data_record"));
-        assert!(!is_partition_of(
-            "data_index_num_p1; DROP",
-            "data_index_num"
-        ));
-        assert!(!is_partition_of("data_index_num_p", "data_index_num"));
-        assert!(!is_partition_of("data_index_text_p1", "data_index_num"));
     }
 }
 

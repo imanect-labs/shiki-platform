@@ -396,8 +396,19 @@ impl IndexWriter<'_> {
                     None => groups.push((*table, fields, vec![*record_int])),
                 }
             }
+            // 消す行のあるテーブルなら本体の行もあるので、パーティションが引ける（引けなければ親へ向ける）。
+            let partition = if groups.is_empty() {
+                None
+            } else {
+                super::partition::partition_of(conn, self.tenant_id, keys).await?
+            };
             for (table, fields, records) in &groups {
-                delete_rows(conn, keys, *table, fields, records).await?;
+                if let Err(e) = delete_rows(conn, keys, partition, *table, fields, records).await {
+                    if partition.is_some() {
+                        super::partition::forget_partition(self.tenant_id, keys.table_int);
+                    }
+                    return Err(e);
+                }
             }
             delete_unique(conn, keys, &batch.unique_delete).await?;
         }
@@ -522,7 +533,7 @@ impl Batch {
     }
 }
 
-/// (フィールド, レコード) の組の索引行を消す文（表名・列名は固定集合からだけ埋め込む・PIT-21）。
+/// (フィールド, レコード) の組の索引行を消す文（表名・列名は固定集合とパーティション番号からだけ埋め込む・PIT-21）。
 ///
 /// **組ごとに主キー (tenant_int, table_int, field_id, record_int, ord) の前方一致で引く形にする**（検証 D-6）。
 /// `field_id = ANY($3) AND record_int = ANY($4)` の形は、新しい列で統計が古いと Postgres が値索引
@@ -530,10 +541,20 @@ impl Batch {
 /// 全部読み直した（バックフィルの 1 チャンクの削除が 3.5 秒・行数の 2 乗で遅くなる）。
 ///
 /// 配列を `unnest` との結合に開くだけでは足りない（#915）。統計が古いとハッシュ結合が選ばれ、内側は
-/// (tenant_int, table_int, field_id) の 3 列で列の索引行を全部読む。この 3 列の前方一致は主キーと値索引で
-/// コストがほぼ同じなので、どちらの索引になるかも統計の具合で入れ替わる。そこで組ごとの探索を
+/// (tenant_int, table_int, field_id) の 3 列で列の索引行を全部読む。そこで組ごとの探索を
 /// `LATERAL … OFFSET 0`（引き上げ不可＝必ず組ごとのパラメータ付き探索）にして行の ctid を集め、
 /// 本体は TID で消す。
+///
+/// `partition` が分かれば、そのパーティションへ直接向け、組ごとの探索では `tenant_int` / `table_int` を
+/// `(SELECT $n)` で包んで計画時に見せない（#986）。値が見えると、統計にこのテーブルの行が無いとき選択率が
+/// 0 になり、主キーと値索引の推定がどちらも 1 行の下限で並ぶ。差は索引の大きさだけになり、主キーが肥大して
+/// いると値索引が選ばれた（1,000 件 × 2 列で 5 秒）。値を見せなければ統計の平均の選択率で見積もられ、
+/// 4 列等値の主キーが選ばれる（[`super::partition`]）。親テーブルに向けたまま値を隠すと計画時に
+/// パーティションを刈り込めない（全パーティションを計画しロックする）ので、パーティションが分からない
+/// ときは値を見せる元の形にする。パーティションごとに文が変わる（最大 3 表 × 分割数）が、名前付きの文として
+/// 計画を使い回す（名前なしにすると毎回計画し、1 件 0.34ms・並行時の tps が 1/3 になる）。sqlx の文キャッシュ
+/// （接続ごとに既定 100）から溢れた分は計画し直しになるが、それでも名前なしと同じ費用で済む。
+/// 値を隠した組ごとの探索は generic plan でも同じ見積もりになり、1 パーティションしか載らないのでロックも増えない。
 ///
 /// 外側の `tenant_int` は `+ 0` で索引に使えない形にする（#961）。統計がその行をほとんど数えていないと
 /// (tenant_int, table_int) の索引探索の推定が 1 行まで下がり、TID 探索（推定 10 行）に勝って、テーブルの
@@ -542,29 +563,38 @@ impl Batch {
 ///
 /// ctid はパーティションをまたぐと一意でないが、同じテーブルの行は 1 パーティション
 /// （`table_int` のハッシュ）に収まり、外側も `tenant_int` / `table_int` で絞るので取り違えない。
-pub(crate) fn delete_sql(relation: &str, record_column: &str) -> String {
+pub(crate) fn delete_sql(relation: &str, record_column: &str, partition: Option<u16>) -> String {
+    let (rel, tenant, table) = match partition {
+        Some(n) => (
+            format!("{relation}_p{n}"),
+            "(SELECT $1::int4)",
+            "(SELECT $2::int8)",
+        ),
+        None => (relation.to_string(), "$1", "$2"),
+    };
     format!(
-        "DELETE FROM {relation} t WHERE t.tenant_int + 0 = $1 AND t.table_int = $2 AND t.ctid = ANY(ARRAY(\
+        "DELETE FROM {rel} t WHERE t.tenant_int + 0 = $1 AND t.table_int = $2 AND t.ctid = ANY(ARRAY(\
          SELECT i.ctid FROM unnest($3::int2[]) AS f(id) CROSS JOIN unnest($4::int8[]) AS r(id) \
-         CROSS JOIN LATERAL (SELECT ctid FROM {relation} WHERE tenant_int = $1 AND table_int = $2 \
+         CROSS JOIN LATERAL (SELECT ctid FROM {rel} WHERE tenant_int = {tenant} AND table_int = {table} \
          AND field_id = f.id AND {record_column} = r.id OFFSET 0) i))"
     )
 }
 
 /// 値索引（text）の [`delete_sql`]（計画の形の回帰テスト用・実行時には使わない）。
 #[doc(hidden)]
-pub fn text_index_delete_sql() -> String {
-    delete_sql("data_index_text", "record_int")
+pub fn text_index_delete_sql(partition: Option<u16>) -> String {
+    delete_sql("data_index_text", "record_int", partition)
 }
 
 async fn delete_rows(
     conn: &mut PgConnection,
     keys: crate::model::TableKeys,
+    partition: Option<u16>,
     table: IndexTable,
     fields: &[i16],
     records: &[i64],
 ) -> Result<(), DataError> {
-    let sql = delete_sql(table.relation(), table.record_column());
+    let sql = delete_sql(table.relation(), table.record_column(), partition);
     sqlx::query(&sql)
         .bind(keys.tenant_int)
         .bind(keys.table_int)
