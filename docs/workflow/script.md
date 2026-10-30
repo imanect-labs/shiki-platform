@@ -280,7 +280,7 @@ Shiki.data.query(tableId: string, q: DataQuery): QueryResult;   // { items, next
 Shiki.data.get(tableId: string, recordId: string): DataRecord;   // { id, rev, data, ... }
 
 // 実行主体が viewer のテーブル一覧
-Shiki.data.listTables(): { items: { id: string; name: string }[] };
+Shiki.data.listTables(): { items: { id: string; name: string }[]; truncated: boolean };  // truncated: 載らなかったテーブルがあるかもしれない
 ```
 
 - 認可: 行レベル述語・フィールドマスクは能力ゲートウェイ側で適用（ゲストは post-mask 済みの行しか受け取らない）。
@@ -399,6 +399,9 @@ Shiki.fail(message: string, opts?: { permanent?: boolean }): never;
     （`throw`・`Shiki.fail`・`TypeError` などの書き誤り）は `script_error`（設定の誤り・やり直さない・再開しても同じ結果）になる
     （BUG-137）。`Shiki.fail` の `permanent` を省いても、やり直しはしない（いまの挙動のまま）。
   - 要求が大きすぎる・応答をゲストのメモリに置けない呼び出し（ゲストには `host returned empty`）は `resource`。
+  - やり直せる `code`（`unavailable` など）を投げ返すと、step の `retry` の範囲で script ごと動かし直す。内部能力の副作用は
+    §7 の host 側 dedupe で高々 1 回だが、外部 http（`Shiki.http.request`）は前に成功した送信も**もう一度送られる**
+    （`Idempotency-Key` を守る相手だけが 1 回にできる）。
 - `Shiki.context.idempotencyKey` は冪等にしたい副作用の相関に使う（内部能力は host 側 dedupe が既定で効く・http は明示ヘッダ）。
 
 ---
