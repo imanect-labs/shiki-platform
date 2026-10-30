@@ -207,14 +207,29 @@ fn check_regions(
         let map_id = node.id.as_str();
         let map_name = block_name(node);
         // ネスト深さ: map の親 map 連鎖が 2 以上（＝深さ 3 以上）は不可。中が空でも決める（後から中に足した
-        // 時点で突然誤りにしない）。
+        // 時点で突然誤りにしない）。連鎖が自分へ戻る（自分を親にした・2 つが互いを親にした）IR は、たどり
+        // 続けると止まらない（保存と検証の API がスレッドを使い切る）ので、輪として断る。
         let mut ancestors = 0;
+        let mut seen: HashSet<&str> = HashSet::from([map_id]);
+        let mut cyclic = false;
         let mut cur = parent_of.get(map_id).copied().flatten();
         while let Some(p) = cur {
+            if !seen.insert(p) {
+                cyclic = true;
+                break;
+            }
             ancestors += 1;
             cur = parent_of.get(p).copied().flatten();
         }
-        if ancestors >= 2 {
+        if cyclic {
+            errors.push(
+                ValidationError::new(
+                    "ir.bad_region",
+                    format!("「{map_name}」が自分自身の中に入っています。入れ子を外してください。"),
+                )
+                .at_node(map_id),
+            );
+        } else if ancestors >= 2 {
             errors.push(
                 ValidationError::new(
                     "ir.region_too_deep",
@@ -583,6 +598,39 @@ mod tests {
                 .any(|e| e.code == "ir.region_too_deep" && e.node_id.as_deref() == Some("m3")),
             "{errs:?}"
         );
+    }
+
+    /// 親の連鎖が輪になった繰り返し（自分を親にした・互いを親にした）は、止まらずに輪として断る（以前は深さを
+    /// 数える処理が止まらず、保存と検証の API が返らなかった）。
+    #[test]
+    fn a_cyclic_parent_chain_is_rejected() {
+        for nodes in [
+            json!([{ "id": "m", "type": "control.map", "parent": "m", "params": { "items": [] } }]),
+            json!([
+                { "id": "a", "type": "control.map", "parent": "b", "params": { "items": [] } },
+                { "id": "b", "type": "control.map", "parent": "a", "params": { "items": [] } },
+                { "id": "c", "type": "storage.read", "parent": "a", "params": {} }
+            ]),
+        ] {
+            let mut errs = Vec::new();
+            check(
+                &ir(json!({ "ir_version": 1, "name": "wf", "nodes": nodes, "edges": [] })),
+                &mut errs,
+            );
+            let cyclic: Vec<_> = errs.iter().filter(|e| e.code == "ir.bad_region").collect();
+            assert!(!cyclic.is_empty(), "{errs:?}");
+            assert!(
+                cyclic[0]
+                    .message
+                    .ends_with("が自分自身の中に入っています。入れ子を外してください。"),
+                "{}",
+                cyclic[0].message
+            );
+            assert!(
+                errs.iter().all(|e| e.code != "ir.region_too_deep"),
+                "{errs:?}"
+            );
+        }
     }
 
     /// 2 ノード（`a` の出口 `port` → `b`）の IR を V2 に通し、ir.unknown_port のエラーを返す。

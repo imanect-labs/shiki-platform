@@ -414,6 +414,24 @@ mod tests {
         assert!(validate(&ok, &catalog()).is_ok());
     }
 
+    /// 親の連鎖が輪になった繰り返しを含む IR でも、検証は止まって誤りを返す（V2 の深さの数え上げと V5 の祖先の
+    /// たどりが止まらず、保存と検証の API が返らなかった）。
+    #[test]
+    fn a_cyclic_parent_chain_returns_errors() {
+        let ir = json!({
+            "ir_version": 1, "name": "wf",
+            "nodes": [
+                { "id": "m", "type": "control.map", "parent": "m",
+                  "params": { "items": { "$from": "input", "path": "/rows" } } },
+                { "id": "leaf", "type": "storage.read", "parent": "m",
+                  "params": { "file": { "$from": "nodes.m.output" } } }
+            ],
+            "edges": []
+        });
+        let errs = validate(&ir, &catalog()).unwrap_err();
+        assert!(errs.iter().any(|e| e.code == "ir.bad_region"), "{errs:?}");
+    }
+
     #[test]
     fn v5_from_source_requires_exact_vocabulary() {
         // `each.item` のような「先頭一致だが実行時に解決不能」な source は保存時に弾く。
