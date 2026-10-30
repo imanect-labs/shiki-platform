@@ -76,8 +76,8 @@ pub(crate) struct Facts {
 
 /// [`facts_on`] の SQL（`storage::CONTENT_VERSION_SQL` を差し込む）。
 ///
-/// 待ち行列は、テナントの取り込みのジョブを 1 回だけ読んで突き合わせる（ファイルごとに待ち行列を読み直さない・
-/// 取り込み直しのまとめての走査は 1 回に数百件を引く）。
+/// 待ち行列は、問うノードのジョブだけを 1 回だけ読んで突き合わせる（ファイルごとに待ち行列を読み直さない・
+/// 取り込み直しのまとめての走査は 1 回に数百件を引く。問わないノードのジョブは持ち出さない）。
 static FACTS_SQL: LazyLock<String> = LazyLock::new(|| {
     format!(
         "with cur as ( \
@@ -89,7 +89,8 @@ static FACTS_SQL: LazyLock<String> = LazyLock::new(|| {
                and o.op in {ops}), \
          jobs as materialized ( \
              select distinct q.payload->>'node_id' as node_id from job_queue q \
-             where q.tenant_id = $1 and q.queue = $4 and q.payload->>'op' in {ops}) \
+             where q.tenant_id = $1 and q.queue = $4 and q.payload->>'op' in {ops} \
+               and q.payload->>'node_id' = any(array(select unnest($3::uuid[])::text))) \
          select cur.id, cur.version as content, cur.system, \
                 (select max(c.version) from rag_chunk c \
                  where c.tenant_id = $1 and c.org = $2 and c.node_id = cur.id) as indexed, \
