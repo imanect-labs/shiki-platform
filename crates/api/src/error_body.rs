@@ -31,7 +31,7 @@ impl BadRequestBody {
     }
 }
 
-/// 409 の構造化コード（data）。
+/// 409 の構造化コード（data・CSV の新規保存）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ConflictCode {
@@ -46,13 +46,14 @@ pub enum ConflictCode {
     IndexPreparing,
     /// 索引列数の上限を超える（`field`・`indexed_fields`・`max_indexed_fields`）。
     IndexApprovalRequired,
-    /// 同じ名前のテーブルが既にある。
+    /// 同じ名前のテーブルが既にある。CSV の新規保存（`POST /tabular/save`）では、保存先に同じ名前のファイルが
+    /// ある（番号を付けるときは ` (50)` まで埋まっている・BUG-150）。
     NameTaken,
     /// その他の競合（取込 ID の再利用・並行のスキーマ切替など）。
     Conflict,
 }
 
-/// 構造化 409（data の競合）。コードごとに使う項目だけが入る。
+/// 構造化 409（data の競合・CSV の新規保存の名前の衝突）。コードごとに使う項目だけが入る。
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ConflictBody {
     /// 常に 409。

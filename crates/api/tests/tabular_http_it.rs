@@ -824,8 +824,9 @@ async fn tabular_patch_keeps_the_tab_delimiter_of_excel_unicode_text() {
     );
 }
 
-/// 新規 CSV の保存で同じ名前があるとき: 省略は今のまま 409 で、`add_number` はノートと同じ規則（`名前 (2).csv`）で
-/// 空いている名前に保存する（ドライブの新規作成・D-112）。
+/// 新規 CSV の保存で同じ名前があるとき: 省略は今のまま 409（code は name_taken・BUG-150）で、`add_number` はノートと
+/// 同じ規則（`名前 (2).csv`）で空いている名前に保存する（ドライブの新規作成・D-112）。(50) まで埋まれば 409 の
+/// name_taken。
 #[tokio::test]
 async fn tabular_save_numbers_taken_names_when_asked() {
     let Some(env) = setup().await else { return };
@@ -866,11 +867,26 @@ async fn tabular_save_numbers_taken_names_when_asked() {
         ]
     );
     assert_eq!(names[1], "無題のスプレッドシート (2).csv");
-    // 省略と fail は今のまま 409。
+    // 省略と fail は今のまま 409。名前の衝突は code の name_taken で言い、編集の重なり（rev の衝突）と分ける
+    // （画面が「CSV が他の編集で更新されました」と取り違えない・BUG-150）。
     for extra in [json!({}), json!({ "on_name_taken": "fail" })] {
         let (st, body) = save(extra).await;
         assert_eq!(st, StatusCode::CONFLICT, "{body:?}");
+        assert_eq!(body["code"], "name_taken", "{body:?}");
+        assert!(body.get("current_rev").is_none(), "{body:?}");
     }
+    // 番号を付けて保存は (50) まで埋まると、名前の衝突として断る（黙って上書きしない）。
+    for n in 3..=storage::MAX_NUMBERED_NAME {
+        let (st, body) = save(json!({ "on_name_taken": "add_number" })).await;
+        assert_eq!(st, StatusCode::OK, "{n}: {body:?}");
+        assert_eq!(
+            body["name"],
+            storage::numbered_name("無題のスプレッドシート.csv", n)
+        );
+    }
+    let (st, body) = save(json!({ "on_name_taken": "add_number" })).await;
+    assert_eq!(st, StatusCode::CONFLICT, "{body:?}");
+    assert_eq!(body["code"], "name_taken", "{body:?}");
 
     env.storage
         .soft_delete_folder(&env.ctx, folder.id, None)

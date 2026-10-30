@@ -65,6 +65,21 @@ fn to_api_error(err: tabular::TabularError) -> ApiError {
     }
 }
 
+/// 新規保存の誤りを HTTP へ写す。
+///
+/// 新規保存の名前の衝突（[`storage::StorageError::Conflict`]）は、編集の重なり（`rev` の衝突）と分けて
+/// `name_taken` の構造化 409 にする。画面は「同じ名前のファイルがある」と言い、番号を付けて保存する道を出す
+/// （BUG-150）。新規作成なので、版の衝突はここでは起きない。
+fn save_error(err: tabular::TabularError) -> ApiError {
+    use crate::error_body::{to_body, ConflictBody, ConflictCode};
+    match err {
+        tabular::TabularError::Storage(storage::StorageError::Conflict) => {
+            ApiError::ConflictJson(to_body(&ConflictBody::new(ConflictCode::NameTaken)))
+        }
+        other => to_api_error(other),
+    }
+}
+
 /// 結果テーブル（クエリ/行取得の共通レスポンス）。
 #[derive(Debug, Serialize, ToSchema)]
 pub struct TableResponse {
@@ -242,8 +257,8 @@ pub struct SaveRequest {
     pub name: String,
     /// CSV 本文（そのまま保存）。
     pub csv: String,
-    /// 同じ名前のファイルがあるとき（省略は失敗にする＝409）。`add_number` は `名前 (2).csv` から空いている
-    /// 名前で保存する（ドライブの新規作成・ノートと同じ規則・D-112）。
+    /// 同じ名前のファイルがあるとき（省略は失敗にする＝`name_taken` の 409）。`add_number` は `名前 (2).csv` から
+    /// 空いている名前で保存する（ドライブの新規作成・ノートと同じ規則・D-112）。
     #[serde(default)]
     pub on_name_taken: storage::OnNameTaken,
 }
@@ -259,7 +274,12 @@ pub struct SaveResponse {
 /// 新規 CSV を保存する（保存先フォルダの作成権限）。
 #[utoipa::path(
     post, path = "/tabular/save", request_body = SaveRequest,
-    responses((status = 200, body = SaveResponse), (status = 400), (status = 403)),
+    responses(
+        (status = 200, body = SaveResponse),
+        (status = 400),
+        (status = 403),
+        (status = 409, description = "保存先に同じ名前のファイルがある（code=name_taken・番号を付けるときは (50) まで埋まっている）", body = crate::error_body::ConflictBody),
+    ),
     security(("session" = [])),
 )]
 pub async fn post_save(
@@ -283,7 +303,7 @@ pub async fn post_save(
             trace.0.as_deref(),
         )
         .await
-        .map_err(to_api_error)?;
+        .map_err(save_error)?;
     Ok(Json(SaveResponse {
         node_id: saved.node_id,
         version: saved.version,
