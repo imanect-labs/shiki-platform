@@ -28,14 +28,15 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { toast } from "@/components/ui/use-toast";
-import { searchDirectory, searchRoles } from "@/lib/storage";
+import type { TableShareRole } from "@/lib/data-api";
+import { searchDirectory, searchRoles, type ShareRole } from "@/lib/storage";
 import { cn } from "@/lib/utils";
 
 export type PrincipalKind = "user" | "role";
-/// 共有の権限。submitter（追加だけ）はテーブルの共有だけが使う（D-113）。
-export type PeopleRole = "viewer" | "editor" | "submitter";
-/// ドライブ・アーティファクトの共有の権限（既定）。
-export type BasicPeopleRole = "viewer" | "editor";
+/// ドライブ・アーティファクトの共有の権限（既定・Rust の ShareRole から生成した型）。
+export type BasicPeopleRole = ShareRole;
+/// 共有の権限。submitter（追加だけ）はテーブルの共有だけが使う（D-113・Rust の TableShareRole から生成した型）。
+export type PeopleRole = TableShareRole | BasicPeopleRole;
 /// 選べる権限の 1 つ（`hint` は一覧の中だけに出す補足）。
 export type PeopleRoleOption<R extends PeopleRole = PeopleRole> = { value: R; label: string; hint?: string };
 export type PeopleTarget = { type: PrincipalKind; id: string };
