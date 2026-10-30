@@ -121,6 +121,59 @@ test.describe("地図（```ui の map）", () => {
     expect(url.searchParams.get("travelmode")).toBe("walking");
   });
 
+  test("Mapbox のスタイル（MapLibre に無い項目を含む）も読み、mapbox:// をトークン付きの URL に書き換える", async ({ page }) => {
+    const token = "pk.test-token";
+    const mapboxStyle = {
+      version: 8,
+      // MapLibre の仕様に無い項目（Mapbox v11 以降）。
+      projection: { name: "globe" },
+      fog: { range: [1, 10] },
+      sources: { composite: { type: "vector", url: "mapbox://mapbox.mapbox-streets-v8" } },
+      sprite: "mapbox://sprites/mapbox/light-v11",
+      glyphs: "mapbox://fonts/mapbox/{fontstack}/{range}.pbf",
+      layers: [
+        { id: "land", type: "background", paint: { "background-color": "#fff", "background-emissive-strength": 1 } },
+        { id: "water", type: "fill", source: "composite", "source-layer": "water", slot: "bottom", paint: { "fill-color": "#00f" } },
+        { id: "model", type: "model", source: "composite", "source-layer": "landmark" },
+        { id: "odd", type: "line", source: "composite", "source-layer": "road", paint: { "line-color": ["config", "theme"] } },
+        { id: "place-label", type: "symbol", source: "composite", "source-layer": "place_label", layout: { "text-field": ["get", "name_en"], "text-font": ["DIN Pro Bold"] } },
+      ],
+    };
+    const requests: string[] = [];
+    await page.route("**/api/map/config", (r) =>
+      r.fulfill({
+        json: {
+          provider: "mapbox",
+          style_url_light: `https://api.mapbox.com/styles/v1/mapbox/light-v11?access_token=${token}`,
+          style_url_dark: `https://api.mapbox.com/styles/v1/mapbox/dark-v11?access_token=${token}`,
+          mapbox_token: token,
+        },
+      }),
+    );
+    await page.route("https://api.mapbox.com/**", (r) => {
+      const url = r.request().url();
+      requests.push(url);
+      const path = new URL(url).pathname;
+      if (/^\/styles\/v1\/mapbox\/(light|dark)-v11$/.test(path)) return r.fulfill({ json: mapboxStyle });
+      if (path === "/v4/mapbox.mapbox-streets-v8.json") {
+        return r.fulfill({
+          json: { tilejson: "2.2.0", tiles: [`https://api.mapbox.com/v4/mapbox.mapbox-streets-v8/{z}/{x}/{y}.vector.pbf?access_token=${token}`], maxzoom: 16 },
+        });
+      }
+      if (path.endsWith(".json")) return r.fulfill({ json: {} });
+      return r.fulfill({ status: 204, body: "" });
+    });
+    await page.goto("/reference/yui");
+    const sec = section(page);
+    await sec.scrollIntoViewIfNeeded();
+    await expect(sec.getByTestId("yui-map-surface")).toHaveAttribute("data-map-status", "ready", { timeout: 30_000 });
+    await expect(sec.getByTestId("yui-map-pin")).toHaveCount(5);
+    // mapbox:// はトークン付きの HTTPS に書き換わる（スタイル・TileJSON・スプライト）。
+    expect(requests).toContain(`https://api.mapbox.com/v4/mapbox.mapbox-streets-v8.json?secure&access_token=${token}`);
+    expect(requests.some((u) => u.startsWith("https://api.mapbox.com/styles/v1/mapbox/light-v11/sprite"))).toBe(true);
+    for (const u of requests) expect(new URL(u).searchParams.get("access_token")).toBe(token);
+  });
+
   test("地図が無効な構成では、Yui の静止画（位置関係だけ）を描く", async ({ page }) => {
     const requests = await mockMap(page, "disabled");
     await page.goto("/reference/yui");

@@ -41,6 +41,9 @@ importers:
       '@lezer/highlight':
         specifier: ^1.2.5
         version: 1.2.5
+      '@maplibre/maplibre-gl-style-spec':
+        specifier: 24.10.0
+        version: 24.10.0
       '@radix-ui/react-accordion':
         specifier: 1.2.14
         version: 1.2.14(@types/react-dom@19.0.2(@types/react@19.0.2))(@types/react@19.0.2)(react-dom@19.0.0(react@19.0.0))(react@19.0.0)

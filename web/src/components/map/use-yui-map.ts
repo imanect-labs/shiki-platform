@@ -39,10 +39,10 @@ const styles = new Map<string, Promise<StyleSpecification>>();
 function loadStyle(url: string, token: string | null | undefined): Promise<StyleSpecification> {
   let p = styles.get(url);
   if (!p) {
-    p = fetch(mapboxUrl(url, token))
-      .then(async (r) => {
+    p = Promise.all([fetch(mapboxUrl(url, token)), import("./style-sanitize")])
+      .then(async ([r, { sanitizeStyle }]) => {
         if (!r.ok) throw new Error(`style ${r.status}`);
-        return (await r.json()) as StyleSpecification;
+        return sanitizeStyle((await r.json()) as StyleSpecification);
       })
       .catch((e: unknown) => {
         styles.delete(url);
@@ -224,6 +224,8 @@ export function useYuiMap({
   modeRef.current = mode;
   const onSelectRef = React.useRef(onSelect);
   onSelectRef.current = onSelect;
+  /// 地図に当てている明暗（作ったとき・切り替えたとき）。
+  const appliedModeRef = React.useRef<MapMode | null>(null);
   const selectedRef = React.useRef(selected);
   selectedRef.current = selected;
   const paddingRef = React.useRef(padding);
@@ -244,6 +246,7 @@ export function useYuiMap({
         if (cancelled) return;
         libRef.current = maplibre;
         const fig = figureRef.current;
+        appliedModeRef.current = modeRef.current;
         const map = new maplibre.Map({
           container: el,
           style: withOverlay(style, modeRef.current, fig, selectedRef.current),
@@ -264,6 +267,8 @@ export function useYuiMap({
           },
         });
         map.touchZoomRotate.disableRotation();
+        // 一度描けたら、以後の失敗（明暗の切り替え中のタイルなど）で静止画に戻さない。
+        let loaded = false;
         mapRef.current = map;
         movedRef.current = false;
         frame(map, fig, false, paddingRef.current);
@@ -273,6 +278,7 @@ export function useYuiMap({
         });
         map.on("click", () => onSelectRef.current(-1));
         map.once("load", () => {
+          loaded = true;
           if (cancelled) return;
           // 出典は畳んだ「i」から始める（開いたままだと小さな地図の下を覆う）。
           el.querySelector(".maplibregl-ctrl-attrib")?.classList.remove("maplibregl-compact-show");
@@ -280,10 +286,11 @@ export function useYuiMap({
         });
         // スタイルが読めない（提供元の障害・トークンの失効）ときは静止画に戻す。タイル 1 枚の失敗は無視する。
         map.on("error", (e) => {
-          if (!cancelled && !map.isStyleLoaded() && !map.loaded()) {
-            console.warn("[map] 地図を読み込めませんでした", e.error);
-            setStatus("error");
-          }
+          // タイル・ソース単位の失敗（500・429・通信断）は、その部分が欠けるだけなので地図は残す。
+          const scoped = e as { tile?: unknown; sourceId?: unknown };
+          if (cancelled || loaded || scoped.tile || scoped.sourceId) return;
+          console.warn("[map] 地図を読み込めませんでした", e.error);
+          setStatus("error");
         });
       })
       .catch((e: unknown) => {
@@ -302,11 +309,12 @@ export function useYuiMap({
     // mode・figure の変化は下の effect で差し替える（地図を作り直さない）。
   }, [active, container, config.provider, config.style_url_light, config.style_url_dark, token, cooperative]);
 
-  // 明暗の切り替え: スタイルだけを差し替える（ピンは DOM なので残る）。
+  // 明暗の切り替え: スタイルだけを差し替える（ピンは DOM なので残る）。作ったときの明暗のままなら何もしない。
   const mapReady = status === "ready";
   React.useEffect(() => {
     const map = mapRef.current;
-    if (!map || !mapReady || !styleUrl) return;
+    if (!map || !mapReady || !styleUrl || appliedModeRef.current === mode) return;
+    appliedModeRef.current = mode;
     let cancelled = false;
     loadStyle(styleUrl, token)
       .then((style) => {
@@ -377,6 +385,15 @@ export function useYuiMap({
 }
 
 /// 要素が画面に近い（上下 1 画面ぶん以内）あいだだけ true。
+/// いちばん近い縦にスクロールする祖先（無ければ null＝画面）。
+function scrollParent(el: HTMLElement): HTMLElement | null {
+  for (let p = el.parentElement; p; p = p.parentElement) {
+    const y = getComputedStyle(p).overflowY;
+    if (y === "auto" || y === "scroll" || y === "overlay") return p;
+  }
+  return null;
+}
+
 export function useNearViewport(ref: React.RefObject<HTMLElement | null>): boolean {
   const [near, setNear] = React.useState(false);
   React.useEffect(() => {
@@ -385,7 +402,10 @@ export function useNearViewport(ref: React.RefObject<HTMLElement | null>): boole
       setNear(true);
       return;
     }
+    // 余白（rootMargin）は root にしか効かない。会話は自前のスクロール領域の中で動くので、
+    // 画面（viewport）を root にすると領域の外の地図は余白に関係なく見えない扱いになる。
     const io = new IntersectionObserver((entries) => setNear(entries.some((e) => e.isIntersecting)), {
+      root: scrollParent(el),
       rootMargin: "100% 0px",
     });
     io.observe(el);

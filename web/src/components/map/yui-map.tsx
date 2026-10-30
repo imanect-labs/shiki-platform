@@ -292,8 +292,14 @@ function PlaceList({
   const list = React.useRef<HTMLDivElement>(null);
   React.useEffect(() => {
     if (selected === null) return;
-    const card = list.current?.querySelector<HTMLElement>(`[data-index="${selected}"]`);
-    card?.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
+    // 横にだけ送る（scrollIntoView は会話のスクロールまで動かし、全画面の裏の読む位置がずれる）。
+    const box = list.current;
+    const card = box?.querySelector<HTMLElement>(`[data-index="${selected}"]`);
+    if (!box || !card) return;
+    const left = card.offsetLeft - box.offsetLeft;
+    if (left < box.scrollLeft || left + card.offsetWidth > box.scrollLeft + box.clientWidth) {
+      box.scrollTo({ left: Math.max(0, left - 12), behavior: "smooth" });
+    }
   }, [selected]);
   if (figure.markers.length === 0) return null;
   const single = figure.markers.length === 1;

@@ -1324,3 +1324,42 @@ async fn chatgpt_login_starts_and_rejects_wrong_callbacks_with_a_reason() {
     assert_eq!(body["state"], "not_connected");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// 地図の設定（`GET /map/config`）: 要セッション。無効なら provider が null、Mapbox なら
+/// スタイルの URL と公開トークンだけを返す（#997）。
+#[tokio::test]
+async fn map_config_requires_session_and_returns_public_settings() {
+    let app = build_router(state_with(Arc::new(MemorySessionStore::new()), None));
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/map/config")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // 既定は無効。
+    let app = build_router(state_with(store_with_valid_session().await, None));
+    let (status, body) = get_with_session(app, "/map/config").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["provider"], serde_json::Value::Null);
+    assert_eq!(body["style_url_light"], serde_json::Value::Null);
+
+    // Mapbox。
+    let mut state = state_with(store_with_valid_session().await, None);
+    let mut config = (*state.config).clone();
+    config.map.provider = Some(api::config::MapProvider::Mapbox);
+    config.map.mapbox_token = Some("pk.test-token".into());
+    state.config = Arc::new(config);
+    let (status, body) = get_with_session(build_router(state), "/map/config").await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["provider"], "mapbox");
+    assert_eq!(body["mapbox_token"], "pk.test-token");
+    assert_eq!(
+        body["style_url_dark"],
+        "https://api.mapbox.com/styles/v1/mapbox/dark-v11?access_token=pk.test-token"
+    );
+}
