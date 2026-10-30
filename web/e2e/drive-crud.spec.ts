@@ -59,8 +59,8 @@ test("ドライブの CRUD がUIから完結する", async ({ page }) => {
     await page.getByRole("button", { name: `「${renamed}」の操作` }).click();
     await page.getByRole("menuitem", { name: "移動", exact: true }).click();
     const moveDialog = page.getByRole("dialog");
-    // 移動先はドライブのトップから選ぶ。作業用のフォルダー → 作成したフォルダへ入り、「ここへ移動」で確定する。
-    await openInMoveDialog(moveDialog, workName);
+    // 移動先は、ファイルがいまある作業用のフォルダーから選ぶ（GAP-48）。作成したフォルダへ入り、「ここへ移動」で確定する。
+    await expect(moveDialog.getByRole("navigation", { name: "移動先の階層" })).toContainText(workName);
     await openInMoveDialog(moveDialog, folder);
     await moveDialog.getByRole("button", { name: "ここへ移動" }).click();
     await expect(moveDialog).toBeHidden();
