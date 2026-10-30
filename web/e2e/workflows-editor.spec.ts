@@ -154,11 +154,18 @@ test("データを追加のレコードの値は JSON のオブジェクトに�
   cleanup.add(() => removeWorkflowApi(page, id));
   await page.goto(`/workflows/${id}`);
   await page.locator(".react-flow").getByText("データを追加").first().click();
+  // 項目のまとまりは「項目を並べる」で開く。JSON で書くときは「直接入力」に切り替える（BUG-118）。
+  const field = page.locator('[data-value-expr="レコードの値"]');
+  await expect(field.getByRole("combobox", { name: "値の入れ方" }).first()).toHaveText("項目を並べる");
+  await field.getByRole("combobox", { name: "値の入れ方" }).first().click();
+  await page.getByRole("option", { name: "直接入力", exact: true }).click();
   const value = page.getByLabel("レコードの値");
+  await expect(value).toHaveValue('{"name":"x"}');
+  const notObject = '{ と } で囲んだ項目のまとまりで書いてください。例: {"金額": 100}';
   await value.fill('"文字列"');
-  await expect(page.getByText("{ … } のオブジェクトで書いてください")).toBeVisible();
+  await expect(page.getByText(notObject)).toBeVisible();
   await value.fill('{"name": "出張"}');
-  await expect(page.getByText("{ … } のオブジェクトで書いてください")).toHaveCount(0);
+  await expect(page.getByText(notObject)).toHaveCount(0);
   await page.getByRole("button", { name: "保存", exact: true }).click();
   await expect(page.getByText(/保存しました/).first()).toBeVisible({ timeout: 15_000 });
   const saved = (await (await page.request.get(`/api/workflows/${id}`)).json()) as {
@@ -584,7 +591,7 @@ test("差し込む: 入力項目を足し、AI に聞くの指示に差し込ん
   await expect(row.getByLabel("表示名")).toHaveValue("件名 A");
   await row.getByRole("switch", { name: "必須" }).click();
 
-  // 指示を書き、末尾に「差し込む」から件名を入れる（固定値から文章の組み立てに切り替わる）。
+  // 指示を書き、末尾に「差し込む」から件名を入れる（直接入力から「文章に値を差し込む」に切り替わる）。
   await canvas.getByText("要約する").first().click();
   const panel = page.getByRole("complementary", { name: "ブロックの設定" });
   const prompt = panel.locator('[data-value-expr="AI への指示"]');
@@ -592,7 +599,7 @@ test("差し込む: 入力項目を足し、AI に聞くの指示に差し込ん
   await prompt.getByRole("button", { name: "差し込む" }).click();
   await page.getByRole("menuitem", { name: "件名 A（title）" }).click();
   await expect(prompt.getByLabel("AI への指示")).toHaveValue("次の件名を 1 行で要約してください: {title}");
-  await expect(prompt.getByRole("combobox").filter({ hasText: "文章を組み立て" })).toBeVisible();
+  await expect(prompt.getByRole("combobox").filter({ hasText: "文章に値を差し込む" })).toBeVisible();
   await expect(prompt.getByTestId("template-var").getByLabel("差し込み名")).toHaveValue("title");
   await expect(prompt.getByRole("combobox", { name: "「title」に入る値" })).toContainText("件名 A（title）");
 
@@ -611,7 +618,7 @@ test("差し込む: 入力項目を足し、AI に聞くの指示に差し込ん
   });
 });
 
-test("差し込む: 固定値に {{title}} と書くとその場で知らせ、変換ボタンで文章の組み立てにする（BUG-1）", async ({
+test("差し込む: 直接入力に {{title}} と書くとその場で知らせ、直すボタンで「文章に値を差し込む」にする（BUG-1）", async ({
   page,
 }) => {
   test.setTimeout(120_000);
@@ -629,11 +636,11 @@ test("差し込む: 固定値に {{title}} と書くとその場で知らせ、�
   // n8n・Dify の書き方（{{title}}）は差し込みにならず、文字のまま送られる。
   await prompt.getByLabel("AI への指示").fill("{{title}} を要約してください");
   const warning = prompt.getByTestId("literal-var-warning");
-  await expect(warning).toContainText("「{{title}}」は差し込みになりません");
-  await warning.getByRole("button", { name: "差し込みに変換する" }).click();
+  await expect(warning).toContainText("「{{title}}」は値に置き換わらず、書いたとおりの文字が使われます。");
+  await warning.getByRole("button", { name: "差し込みに直す" }).click();
   await expect(warning).toHaveCount(0);
   await expect(prompt.getByLabel("AI への指示")).toHaveValue("{title} を要約してください");
-  await expect(prompt.getByRole("combobox").filter({ hasText: "文章を組み立て" })).toBeVisible();
+  await expect(prompt.getByRole("combobox").filter({ hasText: "文章に値を差し込む" })).toBeVisible();
   await expect(prompt.getByRole("combobox", { name: "「title」に入る値" })).toContainText("件名（title）");
 
   await saveFlow(page);
@@ -659,7 +666,7 @@ test("差し込む: 文字を求める欄だけに出し、CSV を保存の内�
     panel.locator(`[data-value-expr="${label}"]`).getByRole("button", { name: "差し込む" });
 
   // 実行するワークフローは一覧から選ぶ（BUG-107）。「入力や結果から選ぶ」にすると、名前は文字の欄なので
-  // 差し込める。渡す入力項目（オブジェクト）は差し込むと文字列に変わるので出さない（参照は「前の結果から」で
+  // 差し込める。渡す入力項目（オブジェクト）は差し込むと文字列に変わるので出さない（参照は「入力や結果から選ぶ」で
   // $from のまま入れる）。
   await page.getByRole("button", { name: "最初のブロック" }).click();
   await page.getByRole("button", { name: /^別のフローを開始/ }).click();
@@ -669,11 +676,11 @@ test("差し込む: 文字を求める欄だけに出し、CSV を保存の内�
   await expect(panel.locator('[data-value-expr="渡す入力項目（省略可）"]')).toBeVisible();
   await expect(insertIn("渡す入力項目（省略可）")).toHaveCount(0);
 
-  // 「CSV を保存」の内容は空の固定値で置かれ（入力全体を JSON のまま .csv にしない）、欄の下で入力を促す。
+  // 「CSV を保存」の内容は空の直接入力で置かれ（入力全体を JSON のまま .csv にしない）、欄の下で入力を促す。
   await canvas.getByLabel("次のブロックを追加").first().click();
   await page.getByRole("button", { name: /^CSV を保存/ }).click();
   const content = panel.locator('[data-value-expr="CSV の内容"]');
-  await expect(content.getByRole("combobox").filter({ hasText: "固定値" })).toBeVisible();
+  await expect(content.getByRole("combobox").filter({ hasText: "直接入力" })).toBeVisible();
   await expect(content.getByLabel("CSV の内容")).toHaveValue("");
   await expect(content.getByText("入力してください")).toBeVisible();
   await expect(insertIn("CSV の内容")).toHaveCount(1);
@@ -894,7 +901,7 @@ test("差し込む: {{key}} を直すボタンと差し込み名の変更で、�
   });
 });
 
-test("差し込む: 差し込みに変換した直後は、固定値のときのカーソル位置ではなく末尾に差し込む（BUG-1）", async ({
+test("差し込む: 差し込みに直した直後は、直接入力のときのカーソル位置ではなく末尾に差し込む（BUG-1）", async ({
   page,
 }) => {
   test.setTimeout(120_000);
@@ -909,12 +916,12 @@ test("差し込む: 差し込みに変換した直後は、固定値のときの
   const prompt = page.getByRole("complementary", { name: "ブロックの設定" }).locator('[data-value-expr="AI への指示"]');
   const text = prompt.getByLabel("AI への指示");
   await text.fill("{{title}} を要約 {x}");
-  // カーソルを固定値の 2 文字目に置いてから変換する（テンプレートでは文字の位置がずれる）。
+  // カーソルを直接入力の 2 文字目に置いてから直す（テンプレートでは文字の位置がずれる）。
   await text.click();
   await page.keyboard.press("Home");
   await page.keyboard.press("ArrowRight");
   await page.keyboard.press("ArrowRight");
-  await prompt.getByTestId("literal-var-warning").getByRole("button", { name: "差し込みに変換する" }).click();
+  await prompt.getByTestId("literal-var-warning").getByRole("button", { name: "差し込みに直す" }).click();
   await expect(text).toHaveValue("{title} を要約 {x}");
   await prompt.getByRole("button", { name: "差し込む" }).click();
   await page.getByRole("menuitem", { name: "件名（title）" }).click();

@@ -3,7 +3,7 @@ import { expect, test, type Page } from "@playwright/test";
 import { cleanupAll, loginViaKeycloak } from "./helpers";
 
 /// 置いたばかりで必須の欄が空のブロックの e2e（D-83・付録 D の N7 Q3）:
-/// - 条件で分ける の調べる値・値で振り分ける の値は、入力全体を黙って入れず、選んでいない空で置き、「前の結果から」
+/// - 条件で分ける の調べる値・値で振り分ける の値は、入力全体を黙って入れず、選んでいない空で置き、「入力や結果から選ぶ」
 ///   の候補を開いた状態で出す。外部 API 呼び出しの URL は空で置き、置いた直後に URL の誤りを出さない。
 /// - 空のままでも保存はでき（注意つき）、実行はその理由（「{見出し}」が空です。…）を言って止まる。
 /// 前提: shiki-server が SHIKI__WORKFLOW__ENABLED=true・LLM は stub（AI は呼ばない）。
@@ -30,11 +30,11 @@ test("置いたばかりの必須の欄: 選んでいない空で置き、保存
     const canvas = page.locator(".react-flow");
     const panel = page.getByRole("complementary", { name: "ブロックの設定" });
 
-    // 条件分岐: 調べる値は「前の結果から」で開き、まだ何も選んでいない。
+    // 条件分岐: 調べる値は「入力や結果から選ぶ」で開き、まだ何も選んでいない。
     await page.getByRole("button", { name: "最初のブロック" }).click();
     await page.getByRole("button", { name: /^条件分岐/ }).click();
     const left = panel.locator('[data-value-expr="調べる値"]');
-    await expect(left.getByRole("combobox", { name: "値の決め方" })).toHaveText("前の結果から");
+    await expect(left.getByRole("combobox", { name: "値の入れ方" })).toHaveText("入力や結果から選ぶ");
     await expect(left.getByRole("combobox", { name: "参照先" })).toHaveText("参照先を選んでください");
 
     // 外部 API 呼び出し: URL は空で置き、置いた直後に URL の形の誤りを出さない。
@@ -66,7 +66,7 @@ test("置いたばかりの必須の欄: 選んでいない空で置き、保存
     const runs = (await (await page.request.get(`/api/workflows/${id}/runs`)).json()) as { items: unknown[] };
     expect(runs.items).toHaveLength(0);
 
-    // スマホ幅: 一覧から開いたシートでも、調べる値は「前の結果から」で開き、横にはみ出さない。
+    // スマホ幅: 一覧から開いたシートでも、調べる値は「入力や結果から選ぶ」で開き、横にはみ出さない。
     const phoneCtx = await browser.newContext({
       storageState: await page.context().storageState(),
       viewport: { width: 390, height: 844 },
@@ -83,7 +83,7 @@ test("置いたばかりの必須の欄: 選んでいない空で置き、保存
       await list.getByRole("button", { name: /条件分岐/ }).filter({ hasText: "条件分岐" }).first().click();
       const sheet = phone.getByRole("dialog").filter({ has: phone.locator('[data-value-expr="調べる値"]') });
       const phoneLeft = sheet.locator('[data-value-expr="調べる値"]');
-      await expect(phoneLeft.getByRole("combobox", { name: "値の決め方" })).toHaveText("前の結果から");
+      await expect(phoneLeft.getByRole("combobox", { name: "値の入れ方" })).toHaveText("入力や結果から選ぶ");
       expect(await sheet.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
       if (SHOTS) await phone.screenshot({ path: `${SHOTS}/blank-required-phone.png` });
     } finally {

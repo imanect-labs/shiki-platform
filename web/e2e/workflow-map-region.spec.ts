@@ -137,8 +137,8 @@ test("繰り返し: 中に AI に聞くとデータを追加を足して保存�
 
   // 繰り返すリスト: 3 件の固定のリスト。
   const items = panel.locator('[data-value-expr="繰り返すリスト"]');
-  await items.getByRole("combobox", { name: "値の決め方" }).click();
-  await page.getByRole("option", { name: "固定値" }).click();
+  await items.getByRole("combobox", { name: "値の入れ方" }).click();
+  await page.getByRole("option", { name: "直接入力" }).click();
   await items.getByRole("textbox", { name: "繰り返すリスト" }).fill('["請求書", "見積書", "納品書"]');
   await items.getByRole("switch").click();
 
@@ -179,6 +179,10 @@ test("繰り返し: 中に AI に聞くとデータを追加を足して保存�
   await panel.getByRole("textbox", { name: "対象のテーブル" }).fill(tableId);
   await panel.getByRole("button", { name: "一覧から選ぶ" }).click();
   await expect(panel.getByRole("combobox", { name: "対象のテーブル" })).toContainText(tableName, { timeout: 30_000 });
+  // レコードの値は JSON で書く（「項目を並べる」で開くので「直接入力」に切り替える・BUG-118）。
+  const record = panel.locator('[data-value-expr="レコードの値"]');
+  await record.getByRole("combobox", { name: "値の入れ方" }).first().click();
+  await page.getByRole("option", { name: "直接入力", exact: true }).click();
   await panel
     .getByRole("textbox", { name: "レコードの値" })
     .fill(
