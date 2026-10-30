@@ -10,7 +10,7 @@
 import * as React from "react";
 
 import { EditorLoading } from "@/components/shell/editor-loading";
-import { buildOfficeFrameUrl, type OfficeSession } from "@/lib/office-api";
+import { buildOfficeFrameUrl, OFFICE_UI_DEFAULTS, type OfficeSession } from "@/lib/office-api";
 
 export interface OfficeEditorHandle {
   /// 現在の選択テキストを取得する（無選択・タイムアウトは null）。
@@ -163,6 +163,7 @@ export const OfficeEditor = React.forwardRef<
           type="hidden"
           readOnly
         />
+        <input name="ui_defaults" value={OFFICE_UI_DEFAULTS} type="hidden" readOnly />
       </form>
       {!frameReady ? (
         <div className="absolute inset-0 z-10 bg-background">

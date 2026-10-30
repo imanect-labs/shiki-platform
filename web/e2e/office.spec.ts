@@ -31,6 +31,9 @@ test("新規ドキュメント→Collabora エディタが起動し文書が編�
   await expect(frame.getByText("Editing", { exact: true }).first()).toBeVisible({
     timeout: 60_000,
   });
+  // Writer のルーラーが出ている（Collabora はブラウザでは既定で隠すので、起動時の
+  // ui_defaults で出している・#995）。
+  await expect(frame.locator(".cool-ruler")).toBeVisible();
 });
 
 test("Office 未対応拡張子は開くとダウンロードにフォールバックする", async ({ page }) => {
