@@ -1824,6 +1824,85 @@ async fn purge_artifacts(env: &Env, ids: &[Uuid]) {
         .unwrap();
 }
 
+/// 指す状態の進め方を同じ定義の別の版へ替えるときも、指す人がその定義を読めることを確かめる。定義の共有を外された
+/// 持ち主が、新しい版を指してテーブル側の参照として中身（進められる人の条件）を読む経路を作らない。
+#[tokio::test]
+async fn repinning_another_version_needs_to_see_the_definition() {
+    let Some(env) = setup().await else { return };
+    let t = approval_table(&env, "repin").await;
+    // bob が自分のテーブルに作った定義（v1）を alice に見せ、alice が自分のテーブルで指す。
+    let mut st = FieldDef::new("phase", FieldType::Select);
+    st.options = vec!["申請中".into(), "承認".into(), "却下".into()];
+    let bobs = env
+        .data
+        .create_table(
+            &ctx("bob"),
+            NewDataTable {
+                name: format!("bobs-repin-{}", Uuid::new_v4().simple()),
+                schema: TableSchema {
+                    fields: vec![st],
+                    status_field: Some("phase".into()),
+                    row_policy: None,
+                    field_policy: vec![],
+                    aggregate_min_rows: None,
+                    fsm_ref: None,
+                    rag: None,
+                },
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let mut fsm = approval_fsm(&["申請中", "承認", "却下"], &[("申請中", "承認")]);
+    fsm["transitions"][0]["actor"] = json!("public");
+    let (s, made) = send(
+        &env,
+        post_json("bob", "/data/fsms", &json!({ "name": format!("bob-repin-{}", Uuid::new_v4().simple()), "table_id": bobs.id, "body": fsm })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{made}");
+    let artifact_id: Uuid = serde_json::from_value(made["id"].clone()).unwrap();
+    let viewer = (
+        ctx("alice").subject(),
+        ctx("alice").ns().artifact(&artifact_id.to_string()),
+    );
+    env.fga
+        .write_tuple(&viewer.0, Relation::Viewer, &viewer.1)
+        .await
+        .unwrap();
+    let pin = |table: &Value, version: i64| {
+        let mut next = table["schema"].clone();
+        next["status_field"] = json!("status");
+        next["fsm_ref"] = json!({ "artifact_id": artifact_id, "version": version });
+        json!({ "schema": next, "expected_schema_version": table["schema_version"] })
+    };
+    let schema_url = format!("/data/tables/{}/schema", t.id);
+    let (_, table) = send(&env, get("alice", &format!("/data/tables/{}", t.id))).await;
+    let (shared, pinned) = send(&env, put_json("alice", &schema_url, &pin(&table, 1))).await;
+    // 共有を外した後で bob が v2 を積む。alice が v2 を指そうとすると断る（中身を読ませない）。
+    env.fga
+        .delete_tuple(&viewer.0, Relation::Viewer, &viewer.1)
+        .await
+        .unwrap();
+    let artifacts = artifact::ArtifactStore::new(env.pool.clone(), Arc::clone(&env.fga));
+    let v2 = artifacts
+        .append_version(&ctx("bob"), artifact_id, fsm.clone(), None, None)
+        .await
+        .unwrap();
+    let (unshared, e) = send(
+        &env,
+        put_json("alice", &schema_url, &pin(&pinned, v2.version)),
+    )
+    .await;
+    purge_artifacts(&env, &[artifact_id]).await;
+    purge_table(&env, t.id).await;
+    purge_table(&env, bobs.id).await;
+
+    assert_eq!(shared, StatusCode::OK, "{pinned}");
+    assert_eq!(unshared, StatusCode::BAD_REQUEST, "{e}");
+    assert_eq!(e["code"], "fsm_invalid", "{e}");
+}
+
 /// 書き込みの決まり（最初の状態を過ぎたら申請者は書き換えられない）を付けると、途中から申請者の列を足したテーブルの
 /// 既存のレコード（状態が最初の状態でなく、申請者の列が空）は誰も書き換えられなくなる。保存は数を言って 409
 /// `fsm_locks_records` で止め、確かめたら保存する。決まりを外す保存・同じ形のまま保存し直す保存は止めない。
