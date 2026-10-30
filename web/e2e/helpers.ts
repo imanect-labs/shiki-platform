@@ -55,6 +55,17 @@ export async function stubDecisionModel<T extends { id: string; modality: string
   return models.find((m) => m.modality === "decision" && !m.decision_via && stub.has(m.provider_id));
 }
 
+/// stub の chat モデルに判定を真似させる判定用のモデル（llm_decider・実 LLM を呼ばない・カタログに無ければ undefined）。
+///
+/// 元にする chat モデル（`decision_via`）を持ち、振り先のプロバイダの種別が stub のもの（判定用のモデルの振り先は元の
+/// モデルと同じ）。stub は AI の自信を 0 と答えるので、自信を引き上げた質問（BUG-124・D-114）の経路を通せる。
+export async function stubLlmDecisionModel<
+  T extends { id: string; modality: string; provider_id: string; decision_via?: string | null },
+>(page: Page, models: T[]): Promise<T | undefined> {
+  const stub = await stubProviderIds(page);
+  return models.find((m) => m.modality === "decision" && !!m.decision_via && stub.has(m.provider_id));
+}
+
 type AdminChatModel = {
   id: string;
   label: string;
