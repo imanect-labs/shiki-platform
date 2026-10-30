@@ -96,6 +96,7 @@ fn published_answers_map_to_the_neutral_shape() {
         calibrated: false,
         method: DecisionMethod::Native,
         samples: 1,
+        raised_questions: Vec::new(),
     };
     assert_eq!(
         check_response(&req, &resp),

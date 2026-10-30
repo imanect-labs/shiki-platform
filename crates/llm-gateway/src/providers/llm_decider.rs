@@ -12,8 +12,8 @@
 //! - 温度は送らない（Haiku 5.5 は既定以外の温度を受けない）。思考の深さは既定 low、上限のトークン数は
 //!   low で 2048、それより深いと 4096（思考も上限に数えるため）。
 //! - 確からしさは較正されていない（`calibrated = false`・PIT-80）。自己申告（1 回）で、一様より低い申告を引き上げた
-//!   ときは、引き上げた質問のキーと数をログに残す（取り違えや迷いの合図が値から消えるので・BUG-124。材料と答えは
-//!   載せない）。
+//!   ときは、引き上げた質問のキーを応答の `raised_questions` に載せ（作る人が実行の詳細で見る・D-114）、キーと数を
+//!   ログにも残す（取り違えや迷いの合図が値から消えるので・BUG-124。材料と答えは載せない）。
 //!
 //! [`decide`]: crate::gateway::LlmGateway::decide
 
@@ -247,6 +247,7 @@ impl DecisionProvider for LlmDecider {
                 DecisionMethod::Vote
             },
             samples: self.samples,
+            raised_questions: raised.into_iter().map(str::to_string).collect(),
         })
     }
 }

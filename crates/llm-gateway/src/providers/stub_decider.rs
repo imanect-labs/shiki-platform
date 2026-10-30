@@ -147,6 +147,8 @@ impl DecisionProvider for StubDecider {
             calibrated: false,
             method: DecisionMethod::Native,
             samples: 1,
+            // 決定器が出す確率をそのまま使い、引き上げない（BUG-124・D-114）。
+            raised_questions: Vec::new(),
         })
     }
 }

@@ -139,7 +139,7 @@ fn unit(x: f64) -> bool {
     x.is_finite() && (0.0..=1.0).contains(&x)
 }
 
-/// 応答が要求に合うか（答えの過不足・種類・値域・確率の範囲）。合わなければ原因（ログ用）。
+/// 応答が要求に合うか（答えの過不足・種類・値域・確率の範囲・引き上げた質問）。合わなければ原因（ログ用）。
 pub fn check_response(req: &DecideRequest, resp: &DecideResponse) -> Result<(), String> {
     if resp.samples == 0 {
         return Err("samples が 0".into());
@@ -156,6 +156,13 @@ pub fn check_response(req: &DecideRequest, resp: &DecideResponse) -> Result<(), 
             return Err(format!("{}: 答えが無い", q.key));
         };
         check_answer(&q.key, &q.kind, a)?;
+    }
+    // 引き上げた質問（BUG-124・D-114）は質問のキーで、重ならない（後続へ渡る項目なので、質問に無いキーを通さない）。
+    let mut raised = BTreeSet::new();
+    for key in &resp.raised_questions {
+        if !asked.contains(key.as_str()) || !raised.insert(key.as_str()) {
+            return Err(format!("引き上げた質問 {key} が質問に無いか、重なっている"));
+        }
     }
     Ok(())
 }
@@ -301,6 +308,7 @@ mod tests {
             calibrated: false,
             method: DecisionMethod::Native,
             samples: 1,
+            raised_questions: Vec::new(),
         }
     }
 
@@ -356,6 +364,22 @@ mod tests {
             ]),
         };
         assert!(check_response(&r, &resp(vec![("a", extra)])).is_err());
+    }
+
+    /// 引き上げた質問（BUG-124・D-114）は質問のキーだけで、重ならない。
+    #[test]
+    fn raised_questions_must_be_asked_once() {
+        let r = req(vec![choice("a", &["x", "y"]), choice("b", &["x", "y"])]);
+        let with = |raised: &[&str]| {
+            let mut got = resp(vec![("a", picked("x", 0.5)), ("b", picked("y", 0.9))]);
+            got.raised_questions = raised.iter().map(ToString::to_string).collect();
+            got
+        };
+        assert!(check_response(&r, &with(&[])).is_ok());
+        assert!(check_response(&r, &with(&["a"])).is_ok());
+        assert!(check_response(&r, &with(&["b", "a"])).is_ok());
+        assert!(check_response(&r, &with(&["c"])).is_err(), "質問に無いキー");
+        assert!(check_response(&r, &with(&["a", "a"])).is_err(), "重なり");
     }
 
     #[test]

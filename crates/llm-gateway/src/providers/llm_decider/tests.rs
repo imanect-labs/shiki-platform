@@ -8,6 +8,7 @@ use serde_json::json;
 
 use super::super::llm_decider_prompt::tests::request;
 use super::*;
+use crate::decision::check::check_response;
 use crate::decision::{decide_error_kind, Answer, DecideErrorKind};
 use crate::model::Block;
 use crate::provider::DeltaStream;
@@ -303,8 +304,9 @@ impl Logs {
     }
 }
 
-/// はい/いいえで 50% 未満を申告した答えは、値は 0.5 まで引き上げたまま（D-78 (3)）、引き上げた質問と数をログに残す
-/// （BUG-124）。一様以上の申告だけの判定と、多数決は残さない。
+/// はい/いいえで 50% 未満を申告した答えは、値は 0.5 まで引き上げたまま（D-78 (3)）、引き上げた質問を応答の
+/// `raised_questions` に載せ（D-114）、質問と数をログに残す（BUG-124）。一様以上の申告だけの判定と、多数決は
+/// 載せず、残さない。
 #[tokio::test]
 async fn a_self_report_below_uniform_is_logged_with_its_question() {
     let logs = Logs::default();
@@ -326,6 +328,7 @@ async fn a_self_report_below_uniform_is_logged_with_its_question() {
         panic!("{resp:?}")
     };
     assert!(value && (confidence - 0.5).abs() < 1e-9);
+    assert_eq!(resp.raised_questions, ["angry"]);
     let text = logs.text();
     assert!(text.contains(LOW_SELF_REPORT_TARGET), "{text}");
     assert!(
@@ -339,8 +342,35 @@ async fn a_self_report_below_uniform_is_logged_with_its_question() {
         "{text}"
     );
 
-    // 一様以上の申告だけなら残さない。
+    // 一様以上の申告だけなら載せず、残さない。
     let before = text.len();
-    d.decide(&request()).await.unwrap();
+    assert!(d
+        .decide(&request())
+        .await
+        .unwrap()
+        .raised_questions
+        .is_empty());
     assert_eq!(logs.text().len(), before, "{}", logs.text());
+}
+
+/// 引き上げた質問は質問の順に並ぶ（選択肢は 1/n 未満・はい/いいえは 0.5 未満）。多数決は得票率を使うので、どの回が
+/// 低く申告しても載せない（D-114）。
+#[tokio::test]
+async fn raised_questions_follow_the_question_order_and_votes_raise_none() {
+    const LOW: &str = r#"{"01_category":{"answer":"billing","confidence":10},"02_priority":{"answer":"中","confidence":70},"03_angry":{"answer":false,"confidence":0}}"#;
+    let p = Scripted::new(vec![ok(LOW)]);
+    let resp = decider(&p, StructuredOutputMode::JsonSchema, k(1))
+        .decide(&request())
+        .await
+        .unwrap();
+    assert_eq!(resp.raised_questions, ["category", "angry"]);
+    assert_eq!(check_response(&request(), &resp), Ok(()));
+
+    let p = Scripted::new(vec![ok(LOW), ok(LOW), ok(LOW)]);
+    let votes = decider(&p, StructuredOutputMode::JsonSchema, k(3))
+        .decide(&request())
+        .await
+        .unwrap();
+    assert_eq!(votes.method, DecisionMethod::Vote);
+    assert!(votes.raised_questions.is_empty(), "{votes:?}");
 }

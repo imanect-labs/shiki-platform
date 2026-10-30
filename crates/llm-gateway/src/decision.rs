@@ -94,6 +94,13 @@ pub struct DecideResponse {
     pub method: DecisionMethod,
     /// 1 回の判定で答えさせた回数。
     pub samples: u8,
+    /// AI が自分の答えに一様（1/n・はい/いいえなら 0.5）より低い自信を申告し、一様まで引き上げた質問のキー
+    /// （質問の順・重ならない・BUG-124・D-114）。取り違えや迷いの合図で、作る人が実行の詳細で見る。
+    ///
+    /// 引き上げるのは LLM の自己申告（1 回・llm_decider）だけで、ほかの決定器（stub・TypeSafe）と多数決（得票率を
+    /// 使う）は空を返す。この項目の無い決定キャッシュの古い答えは空として読む。
+    #[serde(default)]
+    pub raised_questions: Vec<String>,
 }
 
 /// 確からしさの出し方。
@@ -318,6 +325,32 @@ mod tests {
             kind(LlmError::BadRequest(format!("{INVALID_RESPONSE_HEAD}x"))),
             None,
             "頭は Internal のときだけ"
+        );
+    }
+
+    /// 引き上げた質問（BUG-124・D-114）の無い応答（決定キャッシュに残った古い答え）は、空として読む。書くときは
+    /// いつも載せる。
+    #[test]
+    fn responses_without_raised_questions_read_as_none() {
+        let old = serde_json::json!({
+            "resolved_model": "m",
+            "answers": { "angry": { "type": "boolean", "value": true, "probability": 0.5, "confidence": 0.5 } },
+            "usage": Usage::default(),
+            "calibrated": false,
+            "method": "verbalized",
+            "samples": 1
+        });
+        let resp: DecideResponse = serde_json::from_value(old).unwrap();
+        assert!(resp.raised_questions.is_empty());
+        let raised = DecideResponse {
+            raised_questions: vec!["angry".into()],
+            ..resp
+        };
+        let back = serde_json::to_value(&raised).unwrap();
+        assert_eq!(back["raised_questions"], serde_json::json!(["angry"]));
+        assert_eq!(
+            serde_json::from_value::<DecideResponse>(back).unwrap(),
+            raised
         );
     }
 

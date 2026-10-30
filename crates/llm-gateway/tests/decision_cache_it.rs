@@ -8,6 +8,7 @@
 //! - 範囲はテナント＋組織＋ワークフロー: 別のワークフロー・別の組織では当たらない。
 //! - 期限（書き込みからの ttl と、ノードの今の ttl）を過ぎた答えは当たらない。期限切れの行は書き込みで消える。
 //! - 当たりは利用上限を確かめない（費用が出ない）。失敗した判定は使い回さない。
+//! - 引き上げた質問（BUG-124・D-114）は答えと一緒に残る。項目の無い古い行も当たり、空として読む。
 //!
 //! テストで作った行（会計・組織の AI 設定・キャッシュ）はテナントごとに最後に消す。
 
@@ -502,5 +503,50 @@ async fn hits_skip_usage_limits_and_failures_are_not_cached() {
         &hit.response.answers["category"],
         Answer::Choice { .. }
     ));
+    cleanup(&pool, &t).await;
+}
+
+/// 引き上げた質問（BUG-124・D-114）は答えと一緒にキャッシュに残り、当たりでも返る。項目の無い古い行（D-114 の前に
+/// 書いた答え）も当たり、引き上げた質問は空として読む。
+#[tokio::test]
+async fn raised_questions_survive_the_cache_and_old_rows_read_as_none() {
+    let Some(pool) = pool().await else { return };
+    let gw = gateway(pool.clone(), "paid-unused", UsageLimitsConfig::default());
+    let t = tenant();
+    let flow = workflow_in(&t, "org");
+    let wf = Uuid::new_v4();
+    // fast（stub）に判定させる決定器は、stub が自信を 0 で答えるので、選択肢の質問を一様（1/2）へ引き上げる。
+    let req = request("decide-fast", "請求について");
+    let first = gw
+        .decide_cached(&flow, &req, &call("wf:r1:ai"), &scope(wf))
+        .await
+        .unwrap();
+    assert!(!first.cached);
+    assert_eq!(first.response.raised_questions, ["category"]);
+    let hit = gw
+        .decide_cached(&flow, &req, &call("wf:r2:ai"), &scope(wf))
+        .await
+        .unwrap();
+    assert!(hit.cached);
+    assert_eq!(hit.response.raised_questions, ["category"]);
+
+    // D-114 の前に書いた行の形（引き上げた質問の項目が無い）に戻しても、当たって読める。
+    let stripped = sqlx::query(
+        "UPDATE llm_decision_cache SET response = response - 'raised_questions' \
+          WHERE tenant_id = $1 AND response ? 'raised_questions'",
+    )
+    .bind(&t)
+    .execute(&pool)
+    .await
+    .unwrap();
+    assert_eq!(stripped.rows_affected(), 1);
+    let old = gw
+        .decide_cached(&flow, &req, &call("wf:r3:ai"), &scope(wf))
+        .await
+        .unwrap();
+    assert!(old.cached, "古い行も当たる");
+    assert!(old.response.raised_questions.is_empty());
+    assert_eq!(old.response.answers, first.response.answers);
+    assert_eq!(usage_keys(&pool, &t).await, ["wf:r1:ai"]);
     cleanup(&pool, &t).await;
 }
