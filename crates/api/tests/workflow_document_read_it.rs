@@ -35,8 +35,9 @@ use uuid::Uuid;
 use workflow_engine::nodes::ports::{INDEX_FAILED, INDEX_PENDING, NOT_INDEXABLE, NOT_TEXT_FILE};
 use workflow_engine::vocab::STORAGE_READ_MAX_DOCUMENT_CHARS;
 use workflow_engine::{
-    CapabilityNodeExecutor, Catalog, DelegationStore, EffectJournal, NodeExecutor, RunStatus,
-    RunStore, WorkerConfig, WorkflowRunLauncher, WorkflowStore,
+    CapabilityNodeExecutor, Catalog, DelegationStore, EffectJournal, GrantRequest, NodeExecutor,
+    RegistrationService, RunStatus, RunStore, SchedulerStore, WorkerConfig, WorkflowIr,
+    WorkflowRunLauncher, WorkflowStore,
 };
 
 struct NoopAudit;
@@ -52,6 +53,8 @@ struct Env {
     workflows: WorkflowStore,
     runs: RunStore,
     launcher: WorkflowRunLauncher,
+    /// 自動実行のオン（委譲の付与）。
+    registration: RegistrationService,
     /// 社内文書の検索を結線した executor と、結線しない executor（社内文書の検索が使えない環境）。
     executor: Arc<dyn NodeExecutor>,
     no_search: Arc<dyn NodeExecutor>,
@@ -161,7 +164,8 @@ async fn setup() -> Option<Env> {
     let workflows = WorkflowStore::new(Arc::clone(&artifacts));
     let runs = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
     let delegation = DelegationStore::new(pool.clone(), Arc::clone(&fga));
-    let launcher = WorkflowRunLauncher::new(delegation, workflows.clone(), runs.clone());
+    let launcher = WorkflowRunLauncher::new(delegation.clone(), workflows.clone(), runs.clone());
+    let registration = RegistrationService::new(pool.clone(), delegation);
     let executor = |search: Option<Arc<rag::SearchService>>| -> Arc<dyn NodeExecutor> {
         let ports = Arc::new(api::workflow_runtime::ProdNodePorts {
             storage: Arc::clone(&storage),
@@ -195,6 +199,7 @@ async fn setup() -> Option<Env> {
         workflows,
         runs,
         launcher,
+        registration,
         tenant,
         alice,
     })
@@ -420,6 +425,8 @@ impl Env {
             "delete from doc_block where tenant_id = $1",
             "delete from rag_ingest_job where tenant_id = $1",
             "delete from storage_event_outbox where tenant_id = $1",
+            "delete from trigger_firing where tenant_id = $1",
+            "delete from workflow_registration where tenant_id = $1",
             "delete from audit_log where tenant_id = $1 and action = 'rag.doc_read'",
         ] {
             sqlx::query(sql)
@@ -747,6 +754,126 @@ async fn unindexed_documents_fail_with_a_clear_reason() {
             "{what}: {o:?}"
         );
     }
+}
+
+/// 自動実行（workflow プリンシパル）でも、委譲したフォルダーの PDF の本文は読め、委譲していないフォルダーの PDF は
+/// 見えないと同じ誤り（自動実行で読める範囲を 2 文目で言う）になる。閲覧の判定（StorageService）も索引の可読集合
+/// （ListObjects）も、実行の主体（委譲を受けたワークフロー）で引く。
+#[tokio::test]
+async fn automated_runs_read_only_delegated_folders() {
+    let Some(env) = setup().await else { return };
+    let alice = env.alice.clone();
+    let shared = env
+        .storage
+        .create_folder(&alice, None, "委譲する", None)
+        .await
+        .unwrap();
+    let private = env
+        .storage
+        .create_folder(&alice, None, "委譲しない", None)
+        .await
+        .unwrap();
+    let granted = env.upload_pdf(&alice, Some(shared.id), "規程.pdf").await;
+    env.ingest(&alice, &granted, &[(1, "paragraph", "就業時間は 9 時から")])
+        .await;
+    let other = env.upload_pdf(&alice, Some(private.id), "人事.pdf").await;
+    env.ingest(&alice, &other, &[(1, "paragraph", "評価の基準")])
+        .await;
+    let ir = json!({
+        "ir_version": 1, "name": "nightly-read",
+        "declared_scopes": ["storage.read"],
+        "triggers": [ { "kind": "schedule", "cron": "* * * * *", "tz": "UTC" } ],
+        "nodes": [
+            { "id": "ok", "type": "storage.read", "params": { "file": granted.id.to_string() } },
+            { "id": "rd", "type": "storage.read", "params": { "file": other.id.to_string() } }
+        ],
+        "edges": [ { "from": "ok", "to": "rd" } ]
+    });
+    let (wf, _) = env
+        .workflows
+        .create(&alice, &ir, &Catalog::default(), None)
+        .await
+        .expect("save ir");
+    let parsed = WorkflowIr::from_json(&ir).unwrap();
+    env.registration
+        .enable(
+            &alice,
+            wf,
+            1,
+            &parsed,
+            &[GrantRequest {
+                scope: "storage.read".into(),
+                object: alice.ns().folder(&shared.id.to_string()),
+                relation: Relation::Viewer,
+            }],
+        )
+        .await
+        .expect("enable");
+    let fired = SchedulerStore::new(env.pool.clone())
+        .tick_schedules(
+            chrono::Utc::now() + chrono::Duration::seconds(61),
+            Some(&env.tenant),
+            &env.launcher,
+        )
+        .await
+        .unwrap();
+    let run_id: Option<Uuid> = sqlx::query_scalar(
+        "SELECT run_id FROM workflow_run WHERE tenant_id = $1 AND workflow_id = $2 \
+         ORDER BY created_at DESC LIMIT 1",
+    )
+    .bind(&env.tenant)
+    .bind(wf)
+    .fetch_optional(&env.pool)
+    .await
+    .unwrap();
+    let outcome = match run_id {
+        Some(run_id) => Some(env.drive(run_id, &env.executor).await),
+        None => None,
+    };
+    let (principal, first): (Option<String>, Option<Value>) = match run_id {
+        Some(run_id) => sqlx::query_as(
+            "SELECT r.principal_kind, s.output FROM workflow_run r \
+             JOIN step_execution s ON s.tenant_id = r.tenant_id AND s.run_id = r.run_id AND s.node_id = 'ok' \
+             WHERE r.tenant_id = $1 AND r.run_id = $2",
+        )
+        .bind(&env.tenant)
+        .bind(run_id)
+        .fetch_optional(&env.pool)
+        .await
+        .unwrap()
+        .unwrap_or((None, None)),
+        None => (None, None),
+    };
+
+    env.cleanup(
+        &[wf],
+        &[(alice.clone(), granted.id), (alice.clone(), other.id)],
+        &[(alice.clone(), shared.id), (alice.clone(), private.id)],
+    )
+    .await;
+
+    assert!(fired >= 1, "スケジュールが発火する（fired={fired}）");
+    let o = outcome.expect("自動実行の run が作られる");
+    assert_eq!(principal.as_deref(), Some("workflow"), "自動実行の主体");
+    assert_eq!(
+        first.as_ref().and_then(|v| v["text"].as_str()),
+        Some("〔p.1〕\n就業時間は 9 時から"),
+        "委譲したフォルダーの PDF は読める: {first:?}"
+    );
+    assert_eq!(o.status, RunStatus::Failed, "{o:?}");
+    assert_eq!(
+        (o.code.as_deref(), o.retryable),
+        (Some("not_found"), Some(false)),
+        "{o:?}"
+    );
+    assert_eq!(
+        o.message.as_deref(),
+        Some(
+            "ファイルが見つかりません。削除されたか、見る権限がありません。\
+             自動実行では、オンにするときに使えるようにしたファイルとフォルダーの中だけを読めます。"
+        ),
+        "{o:?}"
+    );
 }
 
 // ------- 社内文書の検索の依存（本文の読み出しでは使わない）-------------------------------
