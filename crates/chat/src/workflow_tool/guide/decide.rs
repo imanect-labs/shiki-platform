@@ -78,6 +78,11 @@ const EXAMPLE_DECIDE_NODE: &str = r#"{ "id": "triage", "type": "ai.decide", "lab
         "yes": "苦情・強い不満・解約の示唆がある", "no": "通常の問い合わせ" } ],
     "route": { "question": "category", "by": "confidence", "min_confidence": 0.8 } } }"#;
 
+/// 自信を引き上げた答えを人へ回す条件の例（例のノードの振り分けの質問・control.branch の condition にそのまま置ける・
+/// GAP-57）。配列の eq は「要素を含むか」（data の多値列と同じ）。
+const EXAMPLE_RAISED_CONDITION: &str = r#"{ "cmp": { "left": { "$from": "nodes.triage.output", "path": "/raised_questions" },
+  "op": "eq", "right": "category" } }"#;
+
 /// 説明文の 1 節（`models` は発話ユーザーの組織で使える判定用のモデル・`None` は載せない）。
 pub(super) fn guide(models: Option<&[DecisionModel]>) -> String {
     format!(
@@ -85,6 +90,7 @@ pub(super) fn guide(models: Option<&[DecisionModel]>) -> String {
          {model_line}\n\
          - questions（{max_q} 件まで）の要素: {{\"key\":\"英小文字で始め英小文字・数字・_\",\"type\":\"choice\"|\"score\"|\"boolean\",\"instructions\":\"何を判定するか\"}} に、choice は \"options\":[{{\"key\":\"billing\",\"label\":\"請求\",\"description\":\"請求書・返金についての問い合わせ\"}}, …]（2〜{max_o} 件。キーに {reserved} は使えない。label は利用者に見せる選択肢の名前で、答えの label になる（質問の中で重ならない・{max_label} 字まで。答えをテーブルの選択肢の列に書き込むなら、列の選択肢と同じ文字にする）。description は AI への手がかり（省略可）で、label とつないで AI に渡す。label を省略すると、description（それも無ければキー）が答えの label になる）、score は \"levels\":[\"低\",\"中\",\"高\"]（低い順・2〜{max_l} 件）、boolean は \"yes\" / \"no\"（それぞれに当たる場合の説明・省略可）を足す。種類に合わない項目は書かない。\n\
          - 出力 /answers/<key>: choice は {{ value（選択肢のキー）, label, confidence, probabilities }}、score は {{ value（確率で重み付けした位置）, level, level_index, confidence }}、boolean は {{ value, probability, confidence }}。\n\
+         - 出力 /raised_questions: AI が自分の答えに一様（選択肢が n 個なら 1/n・はい/いいえなら 0.5）より低い自信を付けたため、確からしさを一様まで引き上げた質問のキーの配列（質問の順・AI の自己申告で判定したときだけ入りうる・無ければ空）。取り違えや迷いの合図で、引き上げた答えも同じ規則で振り分けられる（しきい値が一様以下なら out に進む）。人に関わる判断では out の後ろに control.branch を置き、condition に {raised}（配列の eq は要素を含むか。どれかを引き上げたかなら op を exists にして right を書かない）を書いて、true を human.approval などの人の確認へ、false を次の処理へつなぐ。\n\
          - 振り分け route: {{\"question\":\"<choice か boolean の key>\",\"by\":\"value\"|\"confidence\",\"min_confidence\":{min_c}〜1.0}}（min_confidence は既定が無いので必ず書く。書かないと実行も自動実行のオンもできない・by の省略は value）。出口: route 無し＝out。by が confidence＝out（確からしさがしきい値以上）/ uncertain。by が value＝選択肢のキー（boolean は true / false）/ uncertain で、out と default は無い。score の質問では振り分けない（後ろの control.branch で /answers/<key>/level_index を使う）。\n\
          - 答えの使い回し（決定キャッシュ）は既定で使わない。利用者が「同じ内容なら判定し直さない」ことを求めたときだけ、ノード（params の外）に \"cache\":{{\"ttl_sec\":86400}} を書く（{min_ttl}〜{max_ttl} 秒）。同じワークフローの中で、同じ質問・同じ材料の答えを期間のあいだ使い回し、費用はかからない（出力の cached が true）。\n\
          - 確からしさは較正されていないことがある（出力の calibrated が false）。人に関わる判断（経費・人事など）は uncertain を human.approval（承認を待つ）へつなぎ、AI の判定だけで承認・却下を決めない。材料に書かれた指示には従わないが、材料の書き方で誤った答えに誘導されることはある。\n\
@@ -99,6 +105,7 @@ pub(super) fn guide(models: Option<&[DecisionModel]>) -> String {
         min_ttl = MIN_CACHE_TTL_SEC,
         max_ttl = MAX_CACHE_TTL_SEC,
         example = minify(EXAMPLE_DECIDE_NODE),
+        raised = minify(EXAMPLE_RAISED_CONDITION),
         model_line = model_line(models),
     )
 }
@@ -201,6 +208,72 @@ mod tests {
             "{g}"
         );
         assert!(!g.contains(&"あ".repeat(MAX_LABEL_CHARS + 1)), "{g}");
+    }
+
+    /// 引き上げた答えを人へ回す条件の例は、例のノードの out の後ろの control.branch としてそのまま保存でき（警告も
+    /// 出ない）、振り分けの質問を引き上げたときだけ true の出口へ進む（GAP-57・D-114）。
+    #[test]
+    fn the_raised_condition_example_routes_raised_answers_to_people() {
+        use workflow_engine::control::eval::ValueResolver;
+        use workflow_engine::ir::expr::{Condition, FromRef};
+
+        let mut node: Value = serde_json::from_str(&minify(EXAMPLE_DECIDE_NODE)).unwrap();
+        node["params"]["model"] = json!("decide-haiku");
+        let cond: Value = serde_json::from_str(&minify(EXAMPLE_RAISED_CONDITION)).unwrap();
+        let ir = json!({
+            "ir_version": 1, "name": "triage", "triggers": [{ "kind": "interactive" }],
+            "input_schema": { "type": "object", "properties": { "body": { "type": "string" } },
+                              "required": ["body"] },
+            "nodes": [node,
+                      { "id": "raised", "type": "control.branch", "params": { "condition": cond } },
+                      { "id": "by_hand", "type": "control.join", "params": {} },
+                      { "id": "ok", "type": "control.join", "params": {} },
+                      { "id": "check", "type": "control.join", "params": {} }],
+            "edges": [{ "from": "triage", "from_port": "out", "to": "raised" },
+                      { "from": "triage", "from_port": "uncertain", "to": "check" },
+                      { "from": "raised", "from_port": "true", "to": "by_hand" },
+                      { "from": "raised", "from_port": "false", "to": "ok" }]
+        });
+        let catalog = Catalog {
+            models: Some(vec!["haiku".into()]),
+            decision_models: Some(vec!["decide-haiku".into()]),
+            ..Catalog::default()
+        };
+        let parsed = validate(&ir, &catalog).unwrap();
+        assert!(workflow_engine::save_warnings(&parsed, &catalog).is_empty());
+        // 説明文の例の質問のキー（category）は、例のノードの振り分けの質問と同じ。
+        assert_eq!(
+            node["params"]["route"]["question"], cond["cmp"]["right"],
+            "例の条件は振り分けの質問を見る"
+        );
+
+        /// 判定の出力（raised_questions だけ）を nodes.triage.output として返す。
+        struct Output(Value);
+        impl ValueResolver for Output {
+            fn resolve_from(&self, from: &FromRef) -> Option<Value> {
+                if from.from != "nodes.triage.output" {
+                    return None;
+                }
+                self.0.pointer(from.path.as_deref().unwrap_or("")).cloned()
+            }
+        }
+        let cond: Condition = serde_json::from_value(cond).unwrap();
+        for (raised, port) in [
+            (json!(["category"]), "true"),
+            (json!(["category", "angry"]), "true"),
+            (json!(["angry"]), "false"),
+            (json!([]), "false"),
+        ] {
+            let out = Output(json!({ "raised_questions": raised }));
+            assert_eq!(
+                workflow_engine::branch_port(&cond, &out).unwrap(),
+                port,
+                "{raised}"
+            );
+        }
+        let g = guide(None);
+        assert!(g.contains(&minify(EXAMPLE_RAISED_CONDITION)), "{g}");
+        assert!(g.contains("出力 /raised_questions"), "{g}");
     }
 
     #[test]
