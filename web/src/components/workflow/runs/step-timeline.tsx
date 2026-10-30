@@ -24,6 +24,7 @@ import { cn } from "@/lib/utils";
 import { getStep, type StepDetail, type StepOverview } from "@/lib/workflow-run-api";
 import { nodeIcon } from "@/components/workflow/editor/icons";
 import { AgentResult, isAgentOutput } from "./agent-result";
+import { DecideRaised } from "./decide-result";
 import { formatDateTime, STEP_STATUS_LABELS, WAITING_LABELS } from "./status";
 import { nodePortLabel } from "../port-labels";
 
@@ -218,6 +219,9 @@ function StepRow({
               ) : null}
               {info?.type === "agent.invoke" && isAgentOutput(detail.output) ? (
                 <AgentResult output={detail.output} />
+              ) : null}
+              {info?.type === "ai.decide" ? (
+                <DecideRaised output={detail.output} params={info.params} />
               ) : null}
               {detail.output !== null && detail.output !== undefined ? (
                 <JsonBlock title="このブロックの結果" value={detail.output} />
