@@ -108,6 +108,10 @@ export const ADMIN_SECTIONS: AdminSection[] = [
           { label: "クエリ最適化", href: "/admin/data/optimizer" },
         ],
       },
+      {
+        label: "社内文書の検索",
+        items: [{ label: "取り込み", href: "/admin/data/search" }],
+      },
     ],
   },
   {
