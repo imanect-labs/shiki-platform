@@ -152,6 +152,10 @@ function blankRequired(node: IrNode): string[] {
 
 /// 祖先ノード（`$from nodes.<id>.output` の参照候補）を逆辺 BFS で求める。ノード種は出力の形から
 /// 項目の候補を出すのに使う。
+///
+/// 繰り返しの中のブロックは、繰り返しのブロックの祖先も祖先に数える（入れ子なら外側の繰り返しの祖先も）。
+/// 保存時の検証（V5）と実行時の解決が同じ範囲を見る（D-123）。繰り返しのブロックそのものは中が終わるまで結果が
+/// 無いので数えない。
 function ancestorsOf(ctx: EditorContext, nodeId: string): RefCandidate[] {
   const incoming = new Map<string, string[]>();
   for (const e of ctx.state.ir.edges) {
@@ -159,8 +163,15 @@ function ancestorsOf(ctx: EditorContext, nodeId: string): RefCandidate[] {
     list.push(e.from);
     incoming.set(e.to, list);
   }
+  const parentOf = new Map(ctx.state.ir.nodes.map((n) => [n.id, n.parent ?? null] as const));
+  const queue: string[] = [];
+  // 自分と、囲む繰り返し（内から外へ）の前段から始める（親の連鎖が輪でも止まる）。
+  const enclosing = new Set<string>();
+  for (let cur: string | null = nodeId; cur && !enclosing.has(cur); cur = parentOf.get(cur) ?? null) {
+    enclosing.add(cur);
+    queue.push(...(incoming.get(cur) ?? []));
+  }
   const seen = new Set<string>();
-  const queue = [...(incoming.get(nodeId) ?? [])];
   while (queue.length > 0) {
     const id = queue.shift()!;
     if (seen.has(id)) continue;
