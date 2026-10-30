@@ -5,7 +5,7 @@ import type { Edge, Node as IrNode, WorkflowIr } from "@/generated/workflow-ir";
 import type { EditorLayout } from "@/lib/workflow-api";
 import { nodePortLabel } from "../port-labels";
 import { NODE_W, nextPosition, resolvePositions } from "./auto-layout";
-import { frameRects, insideOrigin } from "./frames";
+import { frameRects, insideOrigin, NODE_H, type Point, type Rect } from "./frames";
 import type { EditorAction } from "./ir-state";
 import { continuationPort, isStructuralPort, outputPorts, type ServerPorts } from "./ports";
 import { blockName as nameOf, childrenOf } from "./regions";
@@ -55,6 +55,29 @@ function flowEnd(ir: WorkflowIr, members: IrNode[], serverPorts: ServerPorts): A
   }
 }
 
+/// 枠の右に空ける間。
+const FRAME_GAP = 48;
+
+function overlaps(a: Rect, b: Rect): boolean {
+  return a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+}
+
+/// 新しいブロックの座標を、追加先の外の繰り返しの枠と重ならない位置へずらす（枠の右へ送る）。枠に重なって置くと、
+/// 本体のブロックなのに繰り返しの中にあるように見え、少し動かすと枠に入ってしまう（キャンバスのドラッグの判定）。
+/// 追加先の繰り返しとその外側の枠は避けない（中に足したブロックで枠が広がる）。
+function clearOfFrames(p: Point, target: AddTarget, ir: WorkflowIr, frames: Map<string, Rect>): Point {
+  const keep = new Set<string>();
+  for (let id = targetRegion(target, ir); id; id = ir.nodes.find((n) => n.id === id)?.parent ?? null) keep.add(id);
+  const obstacles = [...frames].filter(([id]) => !keep.has(id)).map(([, r]) => r);
+  let q = { ...p };
+  for (let i = 0; i < obstacles.length; i += 1) {
+    const hit = obstacles.find((r) => overlaps({ ...q, width: NODE_W, height: NODE_H }, r));
+    if (!hit) break;
+    q = { x: hit.x + hit.width + FRAME_GAP, y: q.y };
+  }
+  return q;
+}
+
 /// 追加先＋ノード種 → reducer action（座標は現在の配置から決める）。
 export function addAction(
   target: AddTarget,
@@ -63,24 +86,30 @@ export function addAction(
   layout: EditorLayout,
 ): EditorAction {
   const positions = resolvePositions(ir, layout).nodes;
+  const frames = frameRects(ir, positions, layout.sizes ?? {});
+  // 線の元の座標（繰り返しは枠の右端に揃える。枠の座標は左上なので、枠の幅の分ずらす・キャンバスの尻尾の＋と同じ）。
+  const tail = (id: string): Point => {
+    const frame = frames.get(id);
+    return frame ? { x: frame.x + frame.width - NODE_W, y: frame.y } : (positions[id] ?? { x: 0, y: 0 });
+  };
+  const place = (p: Point) => clearOfFrames(p, target, ir, frames);
   switch (target.kind) {
     case "after": {
-      const from = positions[target.from] ?? { x: 0, y: 0 };
       return {
         type: "add_node",
         nodeType,
-        position: nextPosition(from, positions),
+        position: place(nextPosition(tail(target.from), positions)),
         from: { id: target.from, port: target.port },
       };
     }
     case "edge": {
-      const a = positions[target.edge.from] ?? { x: 0, y: 0 };
+      const a = tail(target.edge.from);
       const b = positions[target.edge.to] ?? a;
       return {
         type: "insert_on_edge",
         nodeType,
         edge: target.edge,
-        position: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 + 40 },
+        position: place({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 + 40 }),
       };
     }
     case "before": {
@@ -89,7 +118,7 @@ export function addAction(
         type: "insert_before",
         nodeType,
         before: target.before,
-        position: { x: b.x - NODE_W - 96, y: b.y },
+        position: place({ x: b.x - NODE_W - 96, y: b.y }),
       };
     }
     case "inside": {

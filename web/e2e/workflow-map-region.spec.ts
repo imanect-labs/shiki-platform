@@ -1,5 +1,9 @@
 import { expect, test, type Browser, type Locator, type Page } from "@playwright/test";
 
+import { addAction } from "@/components/workflow/editor/add-target";
+import { frameRects, NODE_H, NODE_W, type Rect } from "@/components/workflow/editor/frames";
+import type { WorkflowIr } from "@/generated/workflow-ir";
+
 import { cleanupQueue, deleteTableApi, loginViaKeycloak, pinStubOrgDefault, removeWorkflowApi, uniqueName } from "./helpers";
 
 /// 「繰り返し」（control.map）の中をエディターで編集する e2e（BUG-103・D-85）:
@@ -14,6 +18,62 @@ import { cleanupQueue, deleteTableApi, loginViaKeycloak, pinStubOrgDefault, remo
 /// 作ったテーブル・ワークフローは最後に消す。
 
 const SHOTS = process.env.E2E_SHOTS_DIR;
+
+// ── 単体 ──────────────────────────────────────────────────────────
+
+/// 本体が「受付 → 繰り返し（中に 2 個）→ 後ろ」の IR と、保存した配置。
+function loopFlow(withTail: boolean): { ir: WorkflowIr; positions: Record<string, { x: number; y: number }> } {
+  const node = (id: string, type: string, parent: string | null = null) => ({ id, type, parent, params: {} });
+  const ir = {
+    ir_version: 1,
+    name: "wf",
+    triggers: [{ kind: "interactive" }],
+    nodes: [
+      node("in", "storage.read"),
+      node("m", "control.map"),
+      node("a", "storage.read", "m"),
+      node("b", "storage.read", "m"),
+      ...(withTail ? [node("x", "storage.read")] : []),
+    ],
+    edges: [
+      { from: "in", to: "m" },
+      { from: "a", to: "b" },
+      ...(withTail ? [{ from: "m", to: "x" }] : []),
+    ],
+  } as unknown as WorkflowIr;
+  const positions = { in: { x: -336, y: 0 }, m: { x: 0, y: 0 }, a: { x: 52, y: 88 }, b: { x: 388, y: 88 }, x: { x: 776, y: 0 } };
+  return { ir, positions };
+}
+
+function overlaps(p: { x: number; y: number }, r: Rect): boolean {
+  return p.x < r.x + r.width && r.x < p.x + NODE_W && p.y < r.y + r.height && r.y < p.y + NODE_H;
+}
+
+test.describe("繰り返しの後ろ・間に足すブロックの座標（単体）", () => {
+  test("後ろ・間に足したブロックは、繰り返しの枠に重ならない（パレット・追加のシート・スマホの＋）", () => {
+    for (const withTail of [true, false]) {
+      const { ir, positions } = loopFlow(withTail);
+      const layout = { positions, frames: 1 as const };
+      const frame = frameRects(ir, positions).get("m")!;
+      const placed = [
+        addAction({ kind: "after", from: "m", port: "out" }, "storage.read", ir, layout),
+        ...(withTail ? [addAction({ kind: "edge", edge: ir.edges.find((e) => e.from === "m")! }, "storage.read", ir, layout)] : []),
+      ];
+      for (const action of placed) {
+        const position = (action as { position: { x: number; y: number } }).position;
+        expect(overlaps(position, frame), `${action.type} ${JSON.stringify(position)} / 枠 ${JSON.stringify(frame)}`).toBe(false);
+        expect(position.x).toBeGreaterThanOrEqual(frame.x + frame.width);
+      }
+    }
+  });
+
+  test("中のブロックの後ろに足すブロックは、枠の外へ送らない（中に足すと枠が広がる）", () => {
+    const { ir, positions } = loopFlow(false);
+    const action = addAction({ kind: "after", from: "b", port: "out" }, "storage.read", ir, { positions, frames: 1 });
+    const position = (action as { position: { x: number; y: number } }).position;
+    expect(position).toEqual({ x: 388 + NODE_W + 96, y: 88 });
+  });
+});
 
 const cleanup = cleanupQueue();
 test.afterEach(() => cleanup.run());
