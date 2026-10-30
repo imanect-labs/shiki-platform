@@ -1,8 +1,9 @@
 //! 1 インジェスト・ジョブの実処理（Task 2.8/2.9）。
 //!
 //! op ごとの索引整合:
-//! - `create` / `update` / `restore`: parse → chunk → embed → rag_chunk 差替え →
-//!   Qdrant upsert（＋旧版掃除）→ Tantivy 差替え。
+//! - `create` / `update` / `restore` / `reindex`: parse → chunk → embed → rag_chunk 差替え →
+//!   Qdrant upsert（＋旧版掃除）→ Tantivy 差替え。`reindex` は取り込み直しの依頼（内容は変わらない・
+//!   いまの内容のバージョン・D-126）。
 //! - `move`: authz_tags 再評価のみ（rag_chunk 更新・Qdrant payload 再書込・Tantivy 再投入。
 //!   再パース/再埋め込みはしない）。
 //! - `rename`: no-op（ファイル名は検索ハイドレーション時に node JOIN で現在値を返す）。
@@ -141,7 +142,8 @@ pub async fn handle(
         .is_some_and(|s| s.kind == "folder");
     let result = match (message.op.as_str(), is_folder) {
         ("move" | "delete" | "restore", true) => fan_out_folder(deps, &ctx, message).await,
-        ("create" | "update" | "restore", _) => index_node(deps, &ctx, message).await,
+        // 取り込み直し（`reindex`・D-126）は、いまの内容のバージョンで作成・更新と同じに取り込む。
+        ("create" | "update" | "restore" | "reindex", _) => index_node(deps, &ctx, message).await,
         ("move", _) => retag_node(deps, &ctx, message).await,
         ("rename", _) => Ok(IndexOutcome::Skipped("rename-noop")),
         ("delete", _) => remove_node(deps, &ctx, message).await,

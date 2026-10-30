@@ -213,6 +213,7 @@ audit_actions! {
     FileDownloadUrlIssue = "file.download_url.issue", "ダウンロード URL を発行", File;
     FileMetadataRead = "file.metadata.read", "ファイル情報を参照", File;
     FileReadInternal = "file.read.internal", "ファイルを読む（内部）", File;
+    FileReindex = "file.reindex", "ファイルを検索に取り込み直す", File;
     FileResolveWorkspace = "file.resolve.workspace", "作業フォルダのファイルを解決", File;
     FileRestore = "file.restore", "ファイルを復元", File;
     FileUpdate = "file.update", "ファイルを移動・名前変更", File;
@@ -259,6 +260,7 @@ audit_actions! {
     OrgAdminAiSettingsUpdate = "org_admin.ai_settings.update", "AI 設定を変更", Admin;
     OrgAdminInsightsPeopleView = "org_admin.insights.people.view", "利用者別の AI 活用を閲覧", Admin;
     OrgAdminInsightsSettingsUpdate = "org_admin.insights_settings.update", "AI 活用分析の設定を変更", Admin;
+    OrgAdminSearchBackfill = "org_admin.search_backfill", "取り込まれていないファイルをまとめて取り込む", Admin;
     OrgAuditAccess = "org_audit.access", "監査ログへのアクセス", Audit;
     OrgAuditExport = "org_audit.export", "監査ログを書き出し", Audit;
     OrgAuditSearch = "org_audit.search", "監査ログを検索", Audit;

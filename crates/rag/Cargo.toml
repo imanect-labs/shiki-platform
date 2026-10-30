@@ -18,6 +18,8 @@ shiki-textenc.workspace = true
 
 tokio.workspace = true
 sqlx.workspace = true
+# 取り込み直しのまとめての取り込みの進み具合（始めた・終えた時刻・D-126）。
+chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 reqwest.workspace = true

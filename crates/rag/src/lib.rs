@@ -55,8 +55,9 @@ pub use record_source::{
 };
 pub use rerank::{HttpReranker, Reranker};
 pub use search::{
-    Cursor, DocRead, DocReadPage, IndexState, ReadFrom, ReadSource, SearchOutput, SearchService,
-    DEFAULT_READ_CHARS, MAX_READ_CHARS, MAX_TEXT_CHARS,
+    BackfillState, BackfillStatus, Cursor, DocRead, DocReadPage, IndexState, NotIndexable,
+    ReadFrom, ReadSource, ReindexOutcome, SearchIngestStatus, SearchOutput, SearchService,
+    DEFAULT_READ_CHARS, MAX_READ_CHARS, MAX_TEXT_CHARS, WAITING_COUNT_CAP,
 };
 pub use search_types::{
     DocBlock, DocBlocksPage, RecordSearchResult, Relevance, SearchDebug, SearchHit, SearchMode,

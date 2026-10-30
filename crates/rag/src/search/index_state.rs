@@ -22,7 +22,10 @@
 use std::sync::LazyLock;
 
 use authz::AuthContext;
+use sqlx::PgConnection;
+use uuid::Uuid;
 
+use crate::config::RagConfig;
 use crate::error::RagError;
 use crate::pipeline::indexer::parsable_type;
 use crate::pipeline::RAG_INGEST_QUEUE;
@@ -39,59 +42,127 @@ pub enum IndexState {
     Unsupported,
     /// 取り込みの上限（[`crate::RagConfig::max_parse_bytes`]・`limit_bytes`）より大きい。
     TooLarge { limit_bytes: i64 },
-    /// 取り込みに失敗した（やり直しを使い切った）。
+    /// 取り込みに失敗した（やり直しを使い切った）。取り込み直せる（[`SearchService::request_reindex`]）。
     Failed,
     /// 取り込んだが、本文が無かった（文字の無い文書など）。
     Empty,
     /// 社内文書の検索に取り込まない場所（システム領域・`node.system`。AI エージェントの作業用のフォルダー）にある。
     Excluded,
     /// 取り込みへ向かう記録が無く、待っても取り込まれない（取り込みを有効にする前に置いた・取り込みを飛ばした）。
-    /// 内容を保存し直す（新しいバージョンにする）と取り込まれる。
+    /// 取り込み直す（[`SearchService::request_reindex`]・D-126）か、内容を保存し直す（新しいバージョンにする）と
+    /// 取り込まれる。
     NotIngested,
 }
 
-/// 状態を決める材料（1 本の SQL で引く）。
+/// 内容の取り込みへ向かう op（outbox・待ち行列・取り込みの記録で同じ。取り込み直しの `reindex` を含む・D-126）。
+const CONTENT_OPS: &str = "('create', 'update', 'restore', 'reindex')";
+
+/// 状態を決める材料（1 本の SQL で、何件でもまとめて引く）。
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
-struct Facts {
+pub(crate) struct Facts {
+    pub(crate) id: Uuid,
     /// いまの内容のバージョン。
-    content: i64,
+    pub(crate) content: i64,
     /// 索引の最新のバージョン（無ければ `None`）。
-    indexed: Option<i64>,
+    pub(crate) indexed: Option<i64>,
     /// システム領域（取り込まない場所）か。
-    system: bool,
+    pub(crate) system: bool,
     /// 取り込みへ向かう内容のイベントが outbox か待ち行列にあるか。
-    queued: bool,
+    pub(crate) queued: bool,
     /// いまの内容より後の取り込みの記録のうち、いちばん新しいもの（op と status）。
-    latest_op: Option<String>,
-    latest_status: Option<String>,
+    pub(crate) latest_op: Option<String>,
+    pub(crate) latest_status: Option<String>,
 }
 
-/// [`SearchService::index_state`] の SQL（`storage::CONTENT_VERSION_SQL` を差し込む）。
+/// [`facts_on`] の SQL（`storage::CONTENT_VERSION_SQL` を差し込む）。
+///
+/// 待ち行列は、テナントの取り込みのジョブを 1 回だけ読んで突き合わせる（ファイルごとに待ち行列を読み直さない・
+/// 取り込み直しのまとめての走査は 1 回に数百件を引く）。
 static FACTS_SQL: LazyLock<String> = LazyLock::new(|| {
     format!(
         "with cur as ( \
              select node.id, node.system, {cv} as version from node \
-             where node.id = $3 and node.tenant_id = $1 and node.org = $2) \
-         select cur.version as content, cur.system, \
+             where node.id = any($3) and node.tenant_id = $1 and node.org = $2), \
+         outbox as materialized ( \
+             select distinct o.node_id from storage_event_outbox o \
+             where o.tenant_id = $1 and o.processed_at is null and o.node_id = any($3) \
+               and o.op in {ops}), \
+         jobs as materialized ( \
+             select distinct q.payload->>'node_id' as node_id from job_queue q \
+             where q.tenant_id = $1 and q.queue = $4 and q.payload->>'op' in {ops}) \
+         select cur.id, cur.version as content, cur.system, \
                 (select max(c.version) from rag_chunk c \
                  where c.tenant_id = $1 and c.org = $2 and c.node_id = cur.id) as indexed, \
-                (exists (select 1 from storage_event_outbox o \
-                         where o.tenant_id = $1 and o.node_id = cur.id and o.processed_at is null \
-                           and o.op in ('create', 'update', 'restore')) \
-                 or exists (select 1 from job_queue q \
-                            where q.tenant_id = $1 and q.queue = $4 \
-                              and q.payload->>'node_id' = cur.id::text \
-                              and q.payload->>'op' in ('create', 'update', 'restore'))) as queued, \
+                (cur.id in (select node_id from outbox) \
+                 or cur.id::text in (select node_id from jobs)) as queued, \
                 j.op as latest_op, j.status as latest_status \
          from cur \
          left join lateral (select j.op, j.status from rag_ingest_job j \
                             where j.tenant_id = $1 and j.org = $2 and j.node_id = cur.id \
                               and j.version >= cur.version \
-                              and j.op in ('create', 'update', 'restore', 'delete') \
-                            order by j.version desc, j.updated_at desc limit 1) j on true",
+                              and (j.op in {ops} or j.op = 'delete') \
+                            order by j.version desc, j.updated_at desc limit 1) j on true \
+         order by cur.id",
         cv = storage::CONTENT_VERSION_SQL,
+        ops = CONTENT_OPS,
     )
 });
+
+/// `ids` のノード（`ctx` の tenant・org のもの）の状態の材料を引く（`conn` は呼び出し側の接続か Tx）。
+///
+/// 別の tenant・org のノードと無いノードは返らない。
+pub(crate) async fn facts_on(
+    conn: &mut PgConnection,
+    tenant_id: &str,
+    org: &str,
+    ids: &[Uuid],
+) -> Result<Vec<Facts>, RagError> {
+    Ok(sqlx::query_as(FACTS_SQL.as_str())
+        .bind(tenant_id)
+        .bind(org)
+        .bind(ids)
+        .bind(RAG_INGEST_QUEUE)
+        .fetch_all(conn)
+        .await?)
+}
+
+/// 中身を見る前に決まる状態（取り込めない種類・大きすぎる）。どちらでもなければ `None`。
+pub(crate) fn precheck(
+    config: &RagConfig,
+    content_type: Option<&str>,
+    name: &str,
+    size_bytes: Option<i64>,
+) -> Option<IndexState> {
+    if parsable_type(content_type, name).is_none() {
+        return Some(IndexState::Unsupported);
+    }
+    (size_bytes.unwrap_or(0) > config.max_parse_bytes).then_some(IndexState::TooLarge {
+        limit_bytes: config.max_parse_bytes,
+    })
+}
+
+/// `node`（呼び出し側が閲覧を確かめたもの）の状態と、いまの内容のバージョン（`conn` の上で引く）。
+///
+/// 別の org の文脈ではノードが見えない（呼び出し側の閲覧の判定と食い違う）。読めるとは言わず `Pending`。
+pub(crate) async fn state_on(
+    conn: &mut PgConnection,
+    config: &RagConfig,
+    ctx: &AuthContext,
+    node: &storage::Node,
+) -> Result<(IndexState, Option<i64>), RagError> {
+    if let Some(state) = precheck(
+        config,
+        node.content_type.as_deref(),
+        &node.name,
+        node.size_bytes,
+    ) {
+        return Ok((state, None));
+    }
+    let facts = facts_on(conn, &ctx.tenant_id, &ctx.org, &[node.id]).await?;
+    Ok(facts.first().map_or((IndexState::Pending, None), |f| {
+        (classify(f), Some(f.content))
+    }))
+}
 
 impl SearchService {
     /// `node`（呼び出し側が閲覧を確かめたもの）の本文が、いまの内容のまま索引にあるか。
@@ -100,28 +171,13 @@ impl SearchService {
         ctx: &AuthContext,
         node: &storage::Node,
     ) -> Result<IndexState, RagError> {
-        if parsable_type(node.content_type.as_deref(), &node.name).is_none() {
-            return Ok(IndexState::Unsupported);
-        }
-        if node.size_bytes.unwrap_or(0) > self.config.max_parse_bytes {
-            return Ok(IndexState::TooLarge {
-                limit_bytes: self.config.max_parse_bytes,
-            });
-        }
-        let facts: Option<Facts> = sqlx::query_as(FACTS_SQL.as_str())
-            .bind(&ctx.tenant_id)
-            .bind(&ctx.org)
-            .bind(node.id)
-            .bind(RAG_INGEST_QUEUE)
-            .fetch_optional(&self.pool)
-            .await?;
-        // 別の org の文脈ではノードが見えない（呼び出し側の閲覧の判定と食い違う）。読めるとは言わない。
-        Ok(facts.map_or(IndexState::Pending, |f| classify(&f)))
+        let mut conn = self.pool.acquire().await?;
+        Ok(state_on(&mut conn, &self.config, ctx, node).await?.0)
     }
 }
 
 /// 状態を決める。
-fn classify(f: &Facts) -> IndexState {
+pub(crate) fn classify(f: &Facts) -> IndexState {
     if f.indexed.is_some_and(|v| v >= f.content) {
         return IndexState::Ready;
     }
@@ -129,7 +185,8 @@ fn classify(f: &Facts) -> IndexState {
     if f.system {
         return IndexState::Excluded;
     }
-    // 内容のイベントが取り込みへ向かっている（ごみ箱から戻した直後・新しい内容を保存した直後など）。
+    // 内容のイベントが取り込みへ向かっている（ごみ箱から戻した直後・新しい内容を保存した直後・取り込み直しを
+    // 頼んだ直後など）。
     if f.queued {
         return IndexState::Pending;
     }
@@ -155,6 +212,7 @@ mod tests {
 
     fn facts(content: i64, indexed: Option<i64>, latest: Option<(&str, &str)>) -> Facts {
         Facts {
+            id: Uuid::nil(),
             content,
             indexed,
             system: false,

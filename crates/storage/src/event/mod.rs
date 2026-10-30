@@ -61,6 +61,13 @@ pub enum WriteOp {
     Move,
     Delete,
     Restore,
+    /// 社内文書の検索への取り込み直しの依頼（内容もメタも変わらない・D-126・GAP-51）。
+    ///
+    /// 取り込みの記録が無いファイル（検索を有効にする前に置いた・前の版の不具合で取り込みを飛ばした）と、取り込みに
+    /// 失敗したファイルを、いまの内容のバージョンで取り込み直す。積むのは社内文書の検索（`rag`）で、読むのも取り込みの
+    /// relay だけ。ほかの consumer（ワークフローのきっかけ・ミニアプリの関数・購読）は `op` を許可した値で絞るので、
+    /// このイベントは読み飛ばす（ファイルの保存のきっかけにならない）。
+    Reindex,
 }
 
 impl WriteOp {
@@ -72,6 +79,7 @@ impl WriteOp {
             WriteOp::Move => "move",
             WriteOp::Delete => "delete",
             WriteOp::Restore => "restore",
+            WriteOp::Reindex => "reindex",
         }
     }
 }
