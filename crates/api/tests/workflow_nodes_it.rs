@@ -892,19 +892,27 @@ async fn storage_read_refuses_files_that_are_not_text() {
         assert_eq!(output["encoding"], encoding, "{name}");
     }
     for (name, status, code, retryable, _) in &outcomes[4..] {
+        // PDF・Word は社内文書の検索の本文で読む。この executor は社内文書の検索を結線しないので、この環境で使えない
+        // 機能の誤り（search_disabled・BUG-158）。文章の種類で読めない中身は not_text_file。
+        let want = if name.ends_with(".pdf") || name.ends_with(".docx") {
+            workflow_engine::nodes::ports::SEARCH_DISABLED
+        } else {
+            workflow_engine::nodes::ports::NOT_TEXT_FILE
+        };
         assert_eq!(*status, RunStatus::Failed, "{name}");
         assert_eq!(
             (code.as_deref(), *retryable),
-            (
-                Some(workflow_engine::nodes::ports::NOT_TEXT_FILE),
-                Some(false)
-            ),
+            (Some(want), Some(false)),
             "{name}"
         );
     }
     assert_eq!(
         workflow_engine::run::failure::category_of(workflow_engine::nodes::ports::NOT_TEXT_FILE),
         workflow_engine::FailureCategory::Configuration
+    );
+    assert_eq!(
+        workflow_engine::run::failure::category_of(workflow_engine::nodes::ports::SEARCH_DISABLED),
+        workflow_engine::FailureCategory::Environment
     );
 }
 
