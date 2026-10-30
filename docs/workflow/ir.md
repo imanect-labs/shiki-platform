@@ -733,11 +733,12 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
     "provider": "llm_decider",                                   // 答えた決定器（llm_decider・typesafe・stub）
     "calibrated": false, "method": "verbalized", "samples": 1,
     "cached": false,                                             // 決定キャッシュの答えなら true
-    "routed": { "question": "category", "port": "out" } }       // route が無ければ null
+    "routed": { "question": "category", "port": "out" },        // route が無ければ null
+    "raised_questions": [] }                                     // AI の自信を引き上げた質問のキー（無ければ空）
   ```
 
-  `label` は選択肢の名前（`label`・無ければ説明、それも無ければキー・D-87）。score の `value` は確率で重み付けした位置（0〜段階の数-1）、`level_index` は選んだ段階。`resolved_model` は実際に答えた決定器の版で、版が変わったらしきい値を測り直す。`provider` は答えた決定器の名前（国外処理の TypeSafe 互換か、LLM に判定させたものかを項目で絞れる・ポートが名前を返さなければ null）。`method` は `native`（決定器が出す確率）・`verbalized`（LLM の自己申告）・`vote`（多数決の得票率）。
-- **応答の突き合わせ**: エンジンはポートの応答を型付きで読み、質問と突き合わせる（答えの過不足・種類の取り違え・選択肢の外・確率のキーが選択肢と一致しない・確率や確からしさの範囲の外は `decision_invalid_response`・permanent）。チョークポイントも同じ規則で突き合わせ（多層防御）、合わない応答（決定モデルの API が設定と違う版で答えた・応答の形が崩れたものも）はポートが同じ `decision_invalid_response` に写す（送り直しても直らないので再試行しない。試すたびに `#f` で課金されない）。
+  `label` は選択肢の名前（`label`・無ければ説明、それも無ければキー・D-87）。score の `value` は確率で重み付けした位置（0〜段階の数-1）、`level_index` は選んだ段階。`resolved_model` は実際に答えた決定器の版で、版が変わったらしきい値を測り直す。`provider` は答えた決定器の名前（国外処理の TypeSafe 互換か、LLM に判定させたものかを項目で絞れる・ポートが名前を返さなければ null）。`method` は `native`（決定器が出す確率）・`verbalized`（LLM の自己申告）・`vote`（多数決の得票率）。`raised_questions` は、AI が自分の答えに一様（1/n・はい/いいえなら 0.5）より低い自信を申告し、確からしさを一様まで引き上げた質問のキー（質問の順・D-78 の (3)・BUG-124・D-114）。取り違えや迷いの合図で、作る人は実行履歴の詳細で「AI が自信の低い答えを返しました」と見る。引き上げた答えも同じ規則で振り分ける。入りうるのは `verbalized` のときだけで、ほかの決定器・多数決・この項目の無い決定キャッシュの古い答えでは空。
+- **応答の突き合わせ**: エンジンはポートの応答を型付きで読み、質問と突き合わせる（答えの過不足・種類の取り違え・選択肢の外・確率のキーが選択肢と一致しない・確率や確からしさの範囲の外・引き上げた質問が質問に無いか重なるは `decision_invalid_response`・permanent）。チョークポイントも同じ規則で突き合わせ（多層防御）、合わない応答（決定モデルの API が設定と違う版で答えた・応答の形が崩れたものも）はポートが同じ `decision_invalid_response` に写す（送り直しても直らないので再試行しない。試すたびに `#f` で課金されない）。
 - **失敗**: 判定用のモデルが未登録・判定用でない・組織で無効（元の chat モデルが無効なときも）は `model_unavailable`、判定の拒否は `llm_refused`、応答の途切れは `llm_output_truncated`、決められた形に合わない応答は `llm_output_invalid`（どれも permanent）。到達障害・利用上限は llm.invoke と同じ（再試行の分類・[engine.md](./engine.md) §7）。
 - **監査**: 出口と、振り分けに使った質問の確からしさだけを残す（要求したモデル・`resolved_model`・`provider`・`method`・`samples`・`calibrated`・`cached`・質問のキー）。**判定の材料と全部の答えは載せない**（D-52 の H5。run の step の出力には残る）。
 - **決定キャッシュ**（step 属性 `cache`・§4・D-52 の H6）: 書いたノードだけ、同じ答えを使い回す（既定は使わない）。
