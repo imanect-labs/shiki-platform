@@ -141,6 +141,19 @@ pub enum ResumeAdvice {
     PastDeadline,
 }
 
+impl ResumeAdvice {
+    /// 直列化した名前（再開の API が断るときの code・serde の名前と同じ）。
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            ResumeAdvice::Resume => "resume",
+            ResumeAdvice::FixFirst => "fix_first",
+            ResumeAdvice::SameResult => "same_result",
+            ResumeAdvice::PastDeadline => "past_deadline",
+        }
+    }
+}
+
 /// 「失敗したところから再開」を勧めるかと、ボタンの近くに出す理由（BUG-132）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 pub struct ResumeHint {

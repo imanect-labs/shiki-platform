@@ -148,7 +148,7 @@ pub struct RetryResponse {
     responses(
         (status = 202, description = "再実行を受理", body = RetryResponse),
         (status = 404, description = "存在しない/権限なし"),
-        (status = 409, description = "failed でない run の resume"),
+        (status = 409, description = "failed でない run の resume（code=not_failed）・再開しても同じ結果になる失敗（code=same_result）・実行の期限を過ぎた run（code=past_deadline）・委譲が無効（code=delegation_invalid）"),
         (status = 503, description = "workflow 実行時が無効"),
     ),
     tag = "workflows"
@@ -208,6 +208,14 @@ pub async fn retry_workflow_run(
                     "code": "not_failed",
                     "message": format!("failed でない run（{s}）は再開できません"),
                 }))),
+                // 再開しても同じ結果になる失敗（same_result）・実行の期限を過ぎた run（past_deadline）。code と文は
+                // 実行履歴の詳細の `resume` と同じ単一定義から返す（D-116・BUG-138）。
+                ResumeOutcome::NotResumable(hint) => {
+                    Err(ApiError::ConflictJson(serde_json::json!({
+                        "code": hint.advice.as_str(),
+                        "message": hint.note,
+                    })))
+                }
                 ResumeOutcome::NotFound => Err(ApiError::NotFound),
             }
         }

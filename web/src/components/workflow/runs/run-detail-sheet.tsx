@@ -173,6 +173,9 @@ export function RunDetailSheet({
         title: "再実行できませんでした",
         description: e instanceof Error ? e.message : String(e),
       });
+      // 再開を断られた（再開しても同じ結果になる失敗・実行の期限切れ）ら、詳細を読み直して理由とボタンを今の状態に
+      // そろえる（サーバーも画面と同じ定義で断る・D-116）。
+      if (mode === "resume") refresh();
     } finally {
       setBusy(null);
     }

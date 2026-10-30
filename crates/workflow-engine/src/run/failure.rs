@@ -576,6 +576,22 @@ mod tests {
         );
     }
 
+    /// 再開の API が断るときの code は、詳細の `resume.advice` と同じ名前（D-116）。
+    #[test]
+    fn advice_names_match_the_serialized_names() {
+        for a in [
+            ResumeAdvice::Resume,
+            ResumeAdvice::FixFirst,
+            ResumeAdvice::SameResult,
+            ResumeAdvice::PastDeadline,
+        ] {
+            assert_eq!(
+                serde_json::to_value(a).unwrap(),
+                serde_json::Value::String(a.as_str().to_string())
+            );
+        }
+    }
+
     /// 同じ結果になる code と AI の答えの code は、どれも分類の表にある（綴りの誤りで黙って外れない）。
     #[test]
     fn resume_tables_only_name_known_codes() {

@@ -93,16 +93,17 @@ impl AuthzClient for AllowAll {
     }
 }
 
-/// ノード id `boom` だけ permanent 失敗する pass-through executor。
+/// ノード id `boom` だけ permanent 失敗し、`bad_ref` は参照の解決の誤り（再開しても同じ結果になる失敗）で失敗する
+/// pass-through executor。
 struct PassExecutor;
 
 #[async_trait]
 impl NodeExecutor for PassExecutor {
     async fn execute(&self, _t: &str, _p: &Value, ctx: &NodeContext) -> NodeResult {
-        if ctx.step_path == "boom" {
-            NodeResult::fail("boom", "意図的失敗", false)
-        } else {
-            NodeResult::ok(json!({ "from": ctx.step_path }))
+        match ctx.step_path.as_str() {
+            "boom" => NodeResult::fail("boom", "意図的失敗", false),
+            "bad_ref" => NodeResult::fail("expr_resolve_error", "参照を解決できません", false),
+            _ => NodeResult::ok(json!({ "from": ctx.step_path })),
         }
     }
 }
@@ -728,6 +729,111 @@ async fn workflow_http_end_to_end() {
     .await;
     assert_eq!(st, StatusCode::OK);
     assert_eq!(body["outcome"], json!("already_terminal"));
+}
+
+/// 再開しても同じ結果になる失敗と、実行の期限を過ぎた run は、再開の API も 409 で断り、理由の code と文（実行履歴の
+/// 詳細の `resume` と同じ単一定義）を返す。断った run は失敗のまま残り、同じ入力でもう一度実行はできる（D-116・BUG-138）。
+#[tokio::test]
+async fn resume_refuses_failures_that_would_repeat() {
+    let Some(env) = setup().await else { return };
+    let suffix = Uuid::new_v4().simple().to_string();
+    let worker = WorkflowWorker::new(
+        RunStore::new(env.pool.clone(), workflow_engine::DEFAULT_LEASE_SECS),
+        Arc::new(PassExecutor),
+        WorkerConfig::default(),
+    )
+    .scoped_to_tenant("default");
+    let (wf_same, run_same) = failed_run(&env, &worker, &suffix, "bad_ref").await;
+    let (wf_late, run_late) = failed_run(&env, &worker, &suffix, "boom").await;
+    let flows = [wf_same.clone(), wf_late.clone()];
+
+    let detail_url = format!("/workflows/{wf_same}/runs/{run_same}");
+    let (_, detail) = req(&env, "GET", &detail_url, None).await;
+    let refused = retry(&env, &wf_same, &run_same, "resume").await;
+    let (_, after) = req(&env, "GET", &detail_url, None).await;
+    let rerun = retry(&env, &wf_same, &run_same, "new").await;
+
+    // 実行の期限で止めた run（step の code は再開できる失敗でも、再開は期限を延ばさない）。
+    sqlx::query("UPDATE workflow_run SET fail_reason = 'run_timeout' WHERE run_id = $1::uuid")
+        .bind(&run_late)
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    let (_, late_detail) = req(
+        &env,
+        "GET",
+        &format!("/workflows/{wf_late}/runs/{run_late}"),
+        None,
+    )
+    .await;
+    let late = retry(&env, &wf_late, &run_late, "resume").await;
+
+    while worker.claim_and_run_once("w1").await.unwrap() {}
+    for id in &flows {
+        delete_flow_and_runs(&env, id).await;
+    }
+
+    assert_eq!(detail["status"], json!("failed"), "{detail}");
+    assert_eq!(detail["resume"]["advice"], json!("same_result"), "{detail}");
+    assert_eq!(detail["resume"]["offer"], json!(false));
+    assert_eq!(refused.0, StatusCode::CONFLICT, "{}", refused.1);
+    assert_eq!(refused.1["code"], json!("same_result"));
+    assert_eq!(refused.1["message"], detail["resume"]["note"]);
+    assert_eq!(
+        after["status"],
+        json!("failed"),
+        "断った run は失敗のまま: {after}"
+    );
+    assert_eq!(
+        after["steps"], detail["steps"],
+        "step も戻さない（失敗した step を ready にしない）"
+    );
+    assert_eq!(rerun.0, StatusCode::ACCEPTED, "{}", rerun.1);
+    assert_eq!(late_detail["resume"]["advice"], json!("past_deadline"));
+    assert_eq!(late.0, StatusCode::CONFLICT, "{}", late.1);
+    assert_eq!(late.1["code"], json!("past_deadline"));
+    assert_eq!(late.1["message"], late_detail["resume"]["note"]);
+}
+
+/// `second` を 2 つ目のノードにしたワークフローを保存して実行し、終わるまで進める（ワークフローと run の id）。
+async fn failed_run(
+    env: &Env,
+    worker: &WorkflowWorker,
+    suffix: &str,
+    second: &str,
+) -> (String, String) {
+    let name = format!("http-{}-{}", second.replace('_', "-"), &suffix[..12]);
+    let (st, body) = req(
+        env,
+        "POST",
+        "/workflows",
+        Some(json!({ "ir": simple_ir(&name, second) })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::CREATED, "{body}");
+    let wf = body["id"].as_str().unwrap().to_string();
+    let (st, body) = req(
+        env,
+        "POST",
+        &format!("/workflows/{wf}/runs"),
+        Some(json!({ "input": {} })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::ACCEPTED, "{body}");
+    let run = body["run_id"].as_str().unwrap().to_string();
+    while worker.claim_and_run_once("w1").await.unwrap() {}
+    (wf, run)
+}
+
+/// run を再実行する（`mode` は resume / new）。
+async fn retry(env: &Env, wf: &str, run: &str, mode: &str) -> (StatusCode, Value) {
+    req(
+        env,
+        "POST",
+        &format!("/workflows/{wf}/runs/{run}/retry"),
+        Some(json!({ "mode": mode })),
+    )
+    .await
 }
 
 /// data ノード・ストレージノードを置いたワークフローは、`declared_scopes` を書かなくても保存できる

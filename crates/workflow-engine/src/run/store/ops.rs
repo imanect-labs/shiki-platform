@@ -10,9 +10,12 @@
 use serde_json::Value;
 use uuid::Uuid;
 
+use crate::run::failure::{failure_code, resume_hint};
+use crate::run::outcome::ResumeHint;
 use crate::vocab::RunEventKind;
 
 use super::advance::advance_downstream;
+use super::outcome::FAILURE_CODE_COLUMNS;
 use super::{append_event, map_db, RunStore, RunStoreError};
 
 /// キャンセル要求の結果。
@@ -33,6 +36,9 @@ pub enum ResumeOutcome {
     Resumed,
     /// failed でない run は再開できない。
     NotFailed(String),
+    /// 再開しても同じ結果になる失敗か、実行の期限を過ぎた run なので再開しない（D-116・BUG-138）。勧め方と理由は
+    /// 実行履歴の詳細の `resume` と同じ単一定義（[`crate::run::failure::resume_hint`]）で決める。
+    NotResumable(ResumeHint),
     /// run が存在しない。
     NotFound,
 }
@@ -157,21 +163,40 @@ impl RunStore {
         run_id: Uuid,
     ) -> Result<ResumeOutcome, RunStoreError> {
         let mut tx = self.db.begin().await.map_err(map_db)?;
-        let row: Option<(String, sqlx::types::Json<Value>)> = sqlx::query_as(
-            "SELECT status, ir_snapshot FROM workflow_run \
-             WHERE tenant_id = $1 AND workflow_id = $2 AND run_id = $3 FOR UPDATE",
-        )
+        type Row = (
+            String,
+            sqlx::types::Json<Value>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        );
+        // 失敗の理由の code は実行履歴の詳細と同じ式で引く（run 行のロックの中で決める・画面の出し分けと同じ定義）。
+        let row: Option<Row> = sqlx::query_as(&format!(
+            "SELECT r.status, r.ir_snapshot, r.fail_reason, {FAILURE_CODE_COLUMNS} \
+             FROM workflow_run r \
+             WHERE r.tenant_id = $1 AND r.workflow_id = $2 AND r.run_id = $3 FOR UPDATE OF r"
+        ))
         .bind(tenant_id)
         .bind(workflow_id)
         .bind(run_id)
         .fetch_optional(&mut *tx)
         .await
         .map_err(map_db)?;
-        let Some((status, ir_snapshot)) = row else {
+        let Some((status, ir_snapshot, fail_reason, step_code, item_code)) = row else {
             return Ok(ResumeOutcome::NotFound);
         };
         if status != "failed" {
             return Ok(ResumeOutcome::NotFailed(status));
+        }
+        // 再開しても同じ結果になる失敗・実行の期限を過ぎた run は、step を戻さずに断る（画面がボタンを出さないのと
+        // 同じ定義・D-116）。期限を過ぎた run を戻すと、期限を延ばさないまま失敗した step が動き、書き込みが走って
+        // からまた期限で止まりうる。
+        let hint = resume_hint(
+            failure_code(step_code.as_deref(), item_code.as_deref()),
+            fail_reason.as_deref(),
+        );
+        if !hint.offer {
+            return Ok(ResumeOutcome::NotResumable(hint));
         }
         // readiness 再計算は run 開始時と同じくピン済み ir_snapshot のグラフで行う。
         let ir = crate::ir::WorkflowIr::from_json(&ir_snapshot.0)
