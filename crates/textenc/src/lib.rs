@@ -43,7 +43,7 @@ pub struct Decoded {
 /// 文章として読めない理由。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotText {
-    /// 文章でない中身（NUL や、改行・タブ以外の制御文字を含む）。
+    /// 文章でない中身（NUL を含む。BOM で始まる UTF-16 は、改行・タブ以外の制御文字も）。
     Binary,
     /// 文字コードを決められない（UTF-8 でも日本の文字コードでもない、推定の確からしさが低い、
     /// BOM の文字コードとして壊れている）。
@@ -119,7 +119,10 @@ pub fn decode_text(bytes: &[u8]) -> Result<Decoded, NotText> {
     let text = encoding
         .decode_without_bom_handling_and_without_replacement(bytes)
         .ok_or(NotText::UnknownEncoding)?;
-    if text.chars().any(is_binary_control) {
+    // Shift_JIS・EUC-JP も UTF-8 と同じく NUL だけで断る（以前の画面の判定と同じ）。MS-DOS の頃の帳票の末尾の
+    // EOF の印（0x1A）や、ログの色の指定（ESC）は文章として読む。誤りなく読めることと推定で、文章でない中身は
+    // ほぼ落ちる。
+    if text.contains('\0') {
         return Err(NotText::Binary);
     }
     Ok(Decoded {

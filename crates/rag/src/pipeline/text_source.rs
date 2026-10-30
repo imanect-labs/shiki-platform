@@ -99,6 +99,12 @@ mod tests {
             utf8(text_for_worker(&euc, "text/plain", MAX)),
             "議事録の本文です。\n"
         );
+        // MS-DOS の頃の帳票（末尾に EOF の印の 0x1A）も取り込む（恒久的な失敗にしない）。
+        let (dos, _, _) = SHIFT_JIS.encode("売上日報\r\n合計,12000\r\n\u{1A}");
+        assert_eq!(
+            utf8(text_for_worker(&dos, "text/plain", MAX)),
+            "売上日報\r\n合計,12000\r\n\u{1A}"
+        );
         let bom = [UTF8_BOM, csv.as_bytes()].concat();
         let read = utf8(text_for_worker(&bom, "text/csv", MAX));
         assert_eq!(read, csv);

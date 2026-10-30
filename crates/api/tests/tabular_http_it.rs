@@ -1084,3 +1084,62 @@ async fn drive_text_edit_writes_back_in_the_original_encoding() {
         .unwrap()
         .starts_with("2 MB を超えるテキストは表示できません。"));
 }
+
+/// MS-DOS の頃の帳票（末尾に EOF の印の 0x1A・ログの色の指定の ESC）を含む Shift_JIS のテキストも、ドライブで表示・
+/// 保存できる（以前の画面でも見られた。UTF-8 と同じく NUL だけで「テキストではない」とする）。保存は Shift_JIS の
+/// まま、0x1A も残して書き戻す。
+#[tokio::test]
+async fn drive_text_reads_shift_jis_with_a_dos_eof_mark() {
+    use textenc::encoding_rs::SHIFT_JIS;
+    let Some(env) = setup().await else { return };
+    let tag = Uuid::new_v4().simple().to_string();
+    let report = format!("売上日報\r\n\u{1B}[31m在庫少\u{1B}[0m\r\n{tag}\r\n\u{1A}");
+    let (sjis, _, _) = SHIFT_JIS.encode(&report);
+    let node = env
+        .storage
+        .write_file_internal(
+            &env.ctx,
+            None,
+            &format!("{tag}-日報.txt"),
+            &sjis,
+            "text/plain",
+            None,
+        )
+        .await
+        .expect("create file");
+    let call = |req: Request<Body>| {
+        let app = env.app.clone();
+        async move { json_body(app.oneshot(req).await.unwrap()).await }
+    };
+    let opened = call(get(&env.app, &format!("/files/{}/text", node.id))).await;
+    let edited = format!("売上日報（修正）\r\n\u{1B}[31m在庫少\u{1B}[0m\r\n{tag}\r\n\u{1A}");
+    let saved = call(put(
+        &format!("/files/{}/text", node.id),
+        json!({ "text": edited, "base_version": node.version }),
+    ))
+    .await;
+    let (_, bytes) = env
+        .storage
+        .read_file_internal(&env.ctx, node.id, None)
+        .await
+        .unwrap();
+    // 片付け（作ったファイル）。
+    env.storage
+        .soft_delete_file(&env.ctx, node.id, None)
+        .await
+        .unwrap();
+
+    assert_eq!(opened.0, StatusCode::OK, "{:?}", opened.1);
+    assert_eq!(
+        (&opened.1["text"], &opened.1["encoding"]),
+        (&json!(report), &json!("Shift_JIS"))
+    );
+    assert_eq!(saved.0, StatusCode::OK, "{:?}", saved.1);
+    let (want, _, _) = SHIFT_JIS.encode(&edited);
+    assert_eq!(
+        bytes,
+        want.to_vec(),
+        "Shift_JIS のまま、0x1A も残して保存する"
+    );
+    assert_eq!(bytes.last(), Some(&0x1A));
+}

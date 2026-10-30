@@ -165,9 +165,9 @@ fn refuses_binaries() {
     ] {
         assert!(decode_text(&bytes).is_err(), "{bytes:?}");
     }
-    // Shift_JIS として読めても、制御文字を含むものは文章にしない。
+    // Shift_JIS として読めても、NUL を含むものは文章にしない。
     let mut sjis = encoded(SHIFT_JIS, "経費");
-    sjis.extend_from_slice(b"\x01\x02");
+    sjis.extend_from_slice(b"\x00\x02");
     assert_eq!(decode_text(&sjis), Err(NotText::Binary));
     // BOM で始まっても、UTF-16 として壊れているもの・制御文字だらけのものは断る。
     assert_eq!(decode_text(b"\xFF\xFEa"), Err(NotText::UnknownEncoding));
@@ -175,6 +175,30 @@ fn refuses_binaries() {
         decode_text(b"\xFF\xFE\x00\x00\x01\x00"),
         Err(NotText::Binary)
     );
+}
+
+/// MS-DOS の頃の帳票の末尾の EOF の印（0x1A）や、ログの色の指定（ESC）を含む Shift_JIS・EUC-JP の文章は読める
+/// （UTF-8 と同じく NUL だけで断る・以前の画面でも見られた）。書き戻しても同じバイト列になる。
+#[test]
+fn reads_shift_jis_with_dos_eof_and_escape() {
+    for (encoding, text) in [
+        (SHIFT_JIS, "売上日報\r\n合計,12000\r\n\u{1A}"),
+        (
+            SHIFT_JIS,
+            "\u{1B}[31m異常\u{1B}[0m 在庫が発注点を下回りました。倉庫の在庫を確かめてください。\n",
+        ),
+        (
+            EUC_JP,
+            "議事録の本文です。次の会議までに資料を用意します。担当者は営業部です。\n\u{1A}",
+        ),
+    ] {
+        let bytes = encoded(encoding, text);
+        let d = decode_text(&bytes);
+        assert!(d.is_ok(), "{text:?}: {d:?}");
+        let d = d.unwrap();
+        assert_eq!((d.text.as_str(), d.encoding), (text, encoding));
+        assert_eq!(encode_like(&d.text, d.encoding, d.bom).unwrap(), bytes);
+    }
 }
 
 #[test]
