@@ -489,6 +489,8 @@ async fn cleanup(env: &Env) {
         "delete from rag_chunk where tenant_id = $1",
         "delete from doc_block where tenant_id = $1",
         "delete from rag_ingest_job where tenant_id = $1",
+        "delete from storage_event_outbox where tenant_id = $1",
+        "delete from job_queue where tenant_id = $1",
         "delete from node_version where tenant_id = $1",
         "delete from node where tenant_id = $1",
         "delete from blob where tenant_id = $1",
@@ -596,9 +598,10 @@ async fn reads_whole_text_across_batches_and_marks_the_cut() {
     assert_eq!(denied, DocRead::Denied);
 }
 
-/// 索引に本文が無い理由（D-111）: 取り込めない種類・大きすぎる・取り込み待ち・取り込みに失敗・本文が無い。
-/// いまの内容は内容の履歴の最新で決めるので、名前の変更で node.version が進んでも索引の本文を読める。新しい内容の
-/// 取り込みが終わるまでは、古い内容を「読める」と言わない。
+/// 索引に本文が無い理由（D-111）: 取り込めない種類・大きすぎる・取り込み待ち・取り込みに失敗・本文が無い・取り込まない
+/// 場所にある・取り込みが届いていない。いまの内容は内容の履歴の最新で決めるので、名前の変更で node.version が進んでも
+/// 索引の本文を読める。新しい内容の取り込みが終わるまでは、古い内容を「読める」と言わない。「待てば読める」は、
+/// 取り込みへ向かう記録（outbox の未処理のイベント・取り込みの待ち行列・取り込みの記録）があるときだけ言う。
 #[tokio::test]
 async fn index_state_tells_why_the_text_is_not_readable_yet() {
     let Some(env) = setup().await else { return };
@@ -635,15 +638,72 @@ async fn index_state_tells_why_the_text_is_not_readable_yet() {
         .bind(op)
         .bind(status)
     };
+    let set_node_version = |version: i64| {
+        sqlx::query("update node set version = $2 where id = $1")
+            .bind(node.id)
+            .bind(version)
+    };
     record_version(1).execute(&env.pool).await.unwrap();
     let mut states = Vec::new();
     let mut state = |label: &'static str, s: rag::IndexState| states.push((label, s));
 
-    // 取り込みの結果がまだ無い・取り込み中・一時的な失敗のやり直し待ちは、待てば読める。
-    state("届く前", env.search.index_state(ctx, &node).await.unwrap());
+    // 取り込みへ向かう記録がどこにも無い（社内文書の検索を有効にする前に置いた・outbox の掃除で消えた）。
+    state(
+        "記録が無い",
+        env.search.index_state(ctx, &node).await.unwrap(),
+    );
+    // 書き込みと同じ Tx で outbox に積まれ、relay がまだ取り込みへ積んでいない。
+    sqlx::query(
+        "insert into storage_event_outbox (org, tenant_id, node_id, version, op, actor) \
+         values ($1, $2, $3, 1, 'create', 'alice')",
+    )
+    .bind(&ctx.org)
+    .bind(&ctx.tenant_id)
+    .bind(node.id)
+    .execute(&env.pool)
+    .await
+    .unwrap();
+    state(
+        "outbox にある",
+        env.search.index_state(ctx, &node).await.unwrap(),
+    );
+    // relay が取り込みの待ち行列へ積んだ（outbox は処理済み）。
+    sqlx::query("update storage_event_outbox set processed_at = now() where tenant_id = $1")
+        .bind(&ctx.tenant_id)
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    sqlx::query("insert into job_queue (queue, tenant_id, payload) values ('rag_ingest', $1, $2)")
+        .bind(&ctx.tenant_id)
+        .bind(
+            serde_json::json!({ "tenant_id": ctx.tenant_id, "org": ctx.org,
+            "node_id": node.id, "version": 1, "op": "create", "actor": "alice" }),
+        )
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    state(
+        "待ち行列にある",
+        env.search.index_state(ctx, &node).await.unwrap(),
+    );
+    sqlx::query("delete from job_queue where tenant_id = $1")
+        .bind(&ctx.tenant_id)
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    // 取り込み中・一時的な失敗のやり直し待ちは、待てば読める。
     job(1, "create", "failed").execute(&env.pool).await.unwrap();
     state(
         "やり直し待ち",
+        env.search.index_state(ctx, &node).await.unwrap(),
+    );
+    // 取り込みを飛ばした（前の版で、取り込みより先に名前を変えたファイル）: 待っても取り込まれない。
+    job(1, "create", "skipped")
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    state(
+        "取り込みを飛ばした",
         env.search.index_state(ctx, &node).await.unwrap(),
     );
     // 取り込みが終わったのに本文が無い（文字の無い文書）。
@@ -661,28 +721,69 @@ async fn index_state_tells_why_the_text_is_not_readable_yet() {
         env.search.index_state(ctx, &node).await.unwrap(),
     );
     // 名前の変更は node.version を進めるが、内容は同じなので読める。
+    set_node_version(2).execute(&env.pool).await.unwrap();
     node.version = 2;
     state(
         "名前の変更の後",
         env.search.index_state(ctx, &node).await.unwrap(),
     );
-    // 新しい内容（v3）の取り込みが終わるまでは、古い内容（v1）を読めると言わない。
-    record_version(3).execute(&env.pool).await.unwrap();
-    node.version = 3;
+    // ごみ箱に入れて索引を消し（v3）、戻した（v4）。戻した取り込みが記録に入る前でも、本文が無いとは言わない。
+    job(3, "delete", "succeeded")
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    sqlx::query("delete from rag_chunk where node_id = $1")
+        .bind(node.id)
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    set_node_version(4).execute(&env.pool).await.unwrap();
+    node.version = 4;
+    state(
+        "ごみ箱から戻した直後",
+        env.search.index_state(ctx, &node).await.unwrap(),
+    );
+    job(4, "restore", "succeeded")
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    chunk(&env, &node, 4, 0, "leaf", Some(1), &[], "第1条").await;
+    state(
+        "ごみ箱から戻して取り込み直した",
+        env.search.index_state(ctx, &node).await.unwrap(),
+    );
+    // 新しい内容（v5）の取り込みが終わるまでは、古い内容（v1）を読めると言わない。
+    record_version(5).execute(&env.pool).await.unwrap();
+    set_node_version(5).execute(&env.pool).await.unwrap();
+    node.version = 5;
+    job(5, "update", "running")
+        .execute(&env.pool)
+        .await
+        .unwrap();
     state(
         "新しい内容の取り込み待ち",
         env.search.index_state(ctx, &node).await.unwrap(),
     );
-    job(3, "update", "dead").execute(&env.pool).await.unwrap();
+    job(5, "update", "dead").execute(&env.pool).await.unwrap();
     state(
         "新しい内容の取り込みに失敗",
         env.search.index_state(ctx, &node).await.unwrap(),
     );
-    // 別の org の文脈では索引も取り込みの記録も見えない（いつまでも取り込み待ち・本文は返さない）。
+    // 別の org の文脈ではノードも索引も見えない（本文は返さない）。
     let other = test_ctx_org(&ctx.tenant_id, "alice", "other-org");
     state(
         "別の org",
         env.search.index_state(&other, &node).await.unwrap(),
+    );
+    // システム領域（AI エージェントの作業用のフォルダー）のファイルは取り込まない。
+    sqlx::query("update node set system = true where id = $1")
+        .bind(node.id)
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    state(
+        "システム領域",
+        env.search.index_state(ctx, &node).await.unwrap(),
     );
 
     // 種類と大きさは、取り込みの記録より先に決まる。
@@ -708,14 +809,20 @@ async fn index_state_tells_why_the_text_is_not_readable_yet() {
     assert_eq!(
         states,
         vec![
-            ("届く前", S::Pending),
+            ("記録が無い", S::NotIngested),
+            ("outbox にある", S::Pending),
+            ("待ち行列にある", S::Pending),
             ("やり直し待ち", S::Pending),
+            ("取り込みを飛ばした", S::NotIngested),
             ("本文が無い", S::Empty),
             ("取り込み済み", S::Ready),
             ("名前の変更の後", S::Ready),
+            ("ごみ箱から戻した直後", S::Pending),
+            ("ごみ箱から戻して取り込み直した", S::Ready),
             ("新しい内容の取り込み待ち", S::Pending),
             ("新しい内容の取り込みに失敗", S::Failed),
             ("別の org", S::Pending),
+            ("システム領域", S::Excluded),
             ("画像", S::Unsupported),
             ("種類が分からない", S::Unsupported),
             ("大きすぎる", S::TooLarge { limit_bytes }),

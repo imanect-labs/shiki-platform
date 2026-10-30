@@ -362,6 +362,19 @@ impl Env {
         .unwrap();
     }
 
+    /// outbox の `node` のイベントを、relay が取り込みへ渡した後のように処理済みにする（このテストは relay を動かさない）。
+    async fn relayed(&self, node: &storage::Node) {
+        sqlx::query(
+            "update storage_event_outbox set processed_at = now() \
+             where tenant_id = $1 and node_id = $2 and processed_at is null",
+        )
+        .bind(&node.tenant_id)
+        .bind(node.id)
+        .execute(&self.pool)
+        .await
+        .unwrap();
+    }
+
     /// PDF（中身は形だけ）を `parent` に置く。
     async fn upload_pdf(
         &self,
@@ -406,6 +419,7 @@ impl Env {
             "delete from rag_chunk where tenant_id = $1",
             "delete from doc_block where tenant_id = $1",
             "delete from rag_ingest_job where tenant_id = $1",
+            "delete from storage_event_outbox where tenant_id = $1",
             "delete from audit_log where tenant_id = $1 and action = 'rag.doc_read'",
         ] {
             sqlx::query(sql)
@@ -617,7 +631,8 @@ async fn hidden_and_missing_documents_fail_the_same_way() {
 }
 
 /// 取り込み前の PDF はやり直せる失敗（index_pending）で、取り込んだ後に失敗したところから再開すると読める。
-/// 取り込めない種類（画像）・取り込みに失敗した PDF・社内文書の検索が使えない環境は、やり直さない分かる誤り。
+/// 取り込めない種類（画像）・取り込みに失敗した PDF・AI エージェントの作業用のフォルダーの PDF・取り込みが届いて
+/// いない PDF・社内文書の検索が使えない環境は、やり直さない分かる誤り。
 #[tokio::test]
 async fn unindexed_documents_fail_with_a_clear_reason() {
     let Some(env) = setup().await else { return };
@@ -649,9 +664,22 @@ async fn unindexed_documents_fail_with_a_clear_reason() {
         .unwrap();
     let unsupported = env.read(wf, image.id, &env.executor).await;
     let broken = env.upload_pdf(&alice, None, "壊れた.pdf").await;
+    env.relayed(&broken).await;
     env.job(&broken, "dead").await;
     let failed = env.read(wf, broken.id, &env.executor).await;
     let no_search = env.read(wf, pending.id, &env.no_search).await;
+    // AI エージェントの作業用のフォルダー（システム領域）のファイルは、取り込みへ積まれない。
+    let scratch = env.upload_pdf(&alice, None, "作業メモ.pdf").await;
+    sqlx::query("update node set system = true where id = $1")
+        .bind(scratch.id)
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    let excluded = env.read(wf, scratch.id, &env.executor).await;
+    // 取り込みへ向かう記録がどこにも無い（社内文書の検索を有効にする前に置いたファイルなど）。
+    let orphan = env.upload_pdf(&alice, None, "前からある.pdf").await;
+    env.relayed(&orphan).await;
+    let not_ingested = env.read(wf, orphan.id, &env.executor).await;
 
     env.cleanup(
         &[wf],
@@ -659,6 +687,8 @@ async fn unindexed_documents_fail_with_a_clear_reason() {
             (alice.clone(), pending.id),
             (alice.clone(), image.id),
             (alice.clone(), broken.id),
+            (alice.clone(), scratch.id),
+            (alice.clone(), orphan.id),
         ],
         &[],
     )
@@ -687,6 +717,18 @@ async fn unindexed_documents_fail_with_a_clear_reason() {
     for (what, o, code, says) in [
         ("画像", &unsupported, NOT_INDEXABLE, "取り込めないため"),
         ("取り込みに失敗", &failed, INDEX_FAILED, "保存し直して"),
+        (
+            "作業用のフォルダー",
+            &excluded,
+            NOT_INDEXABLE,
+            "AI エージェントの作業用のフォルダーにあり",
+        ),
+        (
+            "取り込みが届いていない",
+            &not_ingested,
+            INDEX_FAILED,
+            "「新しいバージョン」でアップロードし直すと",
+        ),
         (
             "検索が使えない環境",
             &no_search,

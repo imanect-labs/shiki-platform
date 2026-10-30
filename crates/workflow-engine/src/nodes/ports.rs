@@ -289,11 +289,13 @@ pub const NOT_TEXT_FILE: &str = "not_text_file";
 pub const INDEX_PENDING: &str = "index_pending";
 
 /// storage.read で、社内文書の検索に取り込めない種類のファイル（画像・古い形式の Office など）・大きすぎるファイル・
-/// 本文の無い文書の本文を読もうとしたときの code（D-111・permanent・失敗の分類は設定の誤り）。
+/// 本文の無い文書・取り込まない場所（AI エージェントの作業用のフォルダー）のファイルの本文を読もうとしたときの code
+/// （D-111・permanent・失敗の分類は設定の誤り）。
 pub const NOT_INDEXABLE: &str = "not_indexable";
 
-/// storage.read で、社内文書の検索への取り込みに失敗したファイルの本文を読もうとしたときの code（D-111・permanent・
-/// 失敗の分類は設定の誤り）。ファイルを保存し直すと取り込み直す。
+/// storage.read で、社内文書の検索への取り込みに失敗したファイル・取り込みが届いていない（待っても取り込まれない）
+/// ファイルの本文を読もうとしたときの code（D-111・permanent・失敗の分類は設定の誤り）。ファイルを保存し直すと
+/// 取り込み直す。
 pub const INDEX_FAILED: &str = "index_failed";
 
 /// 存在を明かさない「見つからない」の文（付録 C の §3.6・付録 D の N1.11）。`target` は「実行するワークフロー」など。
@@ -339,8 +341,8 @@ pub trait NodePorts: Send + Sync {
     /// - 閲覧の判定（StorageService）と可読集合の pre-filter（SearchService）の両方を通す。見えない・無いは同じ
     ///   誤り（`not_found`・存在の秘匿・チャットの doc_read と同じ契約）。
     /// - いまの内容の取り込みが終わっていなければ [`INDEX_PENDING`]（やり直せる）。取り込めない種類・大きすぎる・
-    ///   本文が無いは [`NOT_INDEXABLE`]、取り込みに失敗したものは [`INDEX_FAILED`]（やり直さない）。社内文書の
-    ///   検索が使えない環境では [`NOT_TEXT_FILE`]。
+    ///   本文が無い・取り込まない場所にあるは [`NOT_INDEXABLE`]、取り込みに失敗したもの・取り込みが届いていない
+    ///   ものは [`INDEX_FAILED`]（やり直さない）。社内文書の検索が使えない環境では [`NOT_TEXT_FILE`]。
     ///
     /// script の `Shiki.storage.read` は [`Self::storage_read`]（文章だけ）のまま。既定は [`Self::storage_read`]
     /// （索引を結線しない実装・テスト用。いつも中身を読み、truncated はエンジンが false にする）。
