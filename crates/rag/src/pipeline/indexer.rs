@@ -10,7 +10,7 @@
 //!
 //! 冪等性: `(tenant_id, node_id, version, op)` を rag_ingest_job の一意キーとし、
 //! 成功/スキップ済みのジョブは再配信されても再処理しない。stale イベント
-//! （node の現行 version と不一致）は skipped として捨てる。
+//! （より新しい内容のバージョンがある・[`storage::CONTENT_VERSION_SQL`]）は skipped として捨てる。
 
 use std::sync::Arc;
 
@@ -172,8 +172,11 @@ async fn index_node(
     if snapshot.kind != "file" {
         return Ok(IndexOutcome::Skipped("folder"));
     }
-    // stale イベント: 現行版と不一致（更新が続いた）なら最新版のイベントに任せる。
-    if snapshot.version != message.version {
+    // stale イベント: このジョブより新しい内容がある（更新が続いた）なら、新しい内容のイベントに任せる。
+    // 比べるのは内容のバージョン（`node.version` ではない）。名前の変更・移動は `node.version` を進めるが取り込み
+    // 直さない（rename は no-op・move は retag）ので、`node.version` と比べると、取り込みより先に名前を変えた
+    // ファイルが二度と取り込まれない。ごみ箱から戻したジョブは戻したときの `node.version`（内容のバージョン以上）。
+    if message.version < snapshot.content_version {
         return Ok(IndexOutcome::Skipped("superseded"));
     }
     let Some(base_type) = parsable_type(snapshot.content_type.as_deref()) else {

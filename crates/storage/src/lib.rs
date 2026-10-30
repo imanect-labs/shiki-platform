@@ -48,7 +48,7 @@ pub use directory::{
 };
 pub use error::StorageError;
 pub use event::{OutboxEvent, WriteOp};
-pub use indexing::{IndexerStorage, NodeSnapshot};
+pub use indexing::{IndexerStorage, NodeSnapshot, CONTENT_VERSION_SQL};
 pub use model::{
     ChildPage, ChildSort, ChildSortKey, Crumb, DownloadTicket, FileVersion, GeneralAccessLevel,
     Node, NodeKind, ShareEntry, ShareLink, ShareLinkGrant, ShareRole, ShareTarget, UploadTicket,

@@ -19,6 +19,15 @@ use crate::content_address::blob_object_key;
 use crate::error::StorageError;
 use crate::object_store::ObjectStore;
 
+/// `node` 行（別名 `node`）の**いまの内容のバージョン**を返す SQL の式。
+///
+/// 内容のバージョンの履歴（`node_version`）のうち、提案でない最新（`node.version` 以下）。履歴が無いノードは
+/// `node.version`。名前の変更・移動・ごみ箱への移動と戻しも `node.version` を進めるが、本文は変わらないので、
+/// 取り込み（RAG）が「この取り込みは古いか」と「索引の本文はいまの内容か」を決めるときはこの値と比べる
+/// （`node.version` と比べると、取り込みより先に名前を変えたファイルが二度と取り込まれない）。
+pub const CONTENT_VERSION_SQL: &str = "coalesce((select max(v.version) from node_version v \
+     where v.node_id = node.id and not v.is_proposal and v.version <= node.version), node.version)";
+
 /// インジェスト時点のノード状態のスナップショット。
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct NodeSnapshot {
@@ -27,6 +36,8 @@ pub struct NodeSnapshot {
     pub kind: String,
     pub name: String,
     pub version: i64,
+    /// いまの内容のバージョン（[`CONTENT_VERSION_SQL`]）。名前の変更や移動では進まない。
+    pub content_version: i64,
     pub blob_sha256: Option<String>,
     pub size_bytes: Option<i64>,
     pub content_type: Option<String>,
@@ -57,11 +68,11 @@ impl IndexerStorage {
         tenant_id: &str,
         node_id: Uuid,
     ) -> Result<Option<NodeSnapshot>, StorageError> {
-        let snapshot = sqlx::query_as::<_, NodeSnapshot>(
-            "select id, org, kind, name, version, blob_sha256, size_bytes, content_type, \
-                    (deleted_at is not null) as deleted \
-             from node where id = $1 and tenant_id = $2",
-        )
+        let snapshot = sqlx::query_as::<_, NodeSnapshot>(&format!(
+            "select id, org, kind, name, version, {CONTENT_VERSION_SQL} as content_version, \
+                    blob_sha256, size_bytes, content_type, (deleted_at is not null) as deleted \
+             from node where id = $1 and tenant_id = $2"
+        ))
         .bind(node_id)
         .bind(tenant_id)
         .fetch_optional(&self.pool)

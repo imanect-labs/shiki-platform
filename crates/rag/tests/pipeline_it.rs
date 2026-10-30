@@ -887,6 +887,99 @@ async fn rename_is_noop_for_indexes() {
     assert_eq!(fulltext_hits(&env, "売上", &PreFilter::TenantOnly).len(), 1);
 }
 
+/// 取り込みより先に名前を変えたファイルも取り込む（取り込みの「古いジョブ」は内容のバージョンで決める）。
+///
+/// アップロード（内容 v1・create のイベント）の後、取り込みが追いつく前に名前を変える（node.version = 2・rename の
+/// イベント）。rename は索引を作り直さないので、create のジョブを node.version と比べて飛ばすと、二度と取り込まれない。
+/// 新しい内容（v3）を保存した後に届いた古い create（v1）は、新しい内容の取り込みに任せて飛ばす。
+#[tokio::test]
+async fn file_renamed_before_ingest_is_still_indexed() {
+    let Some(env) = setup(FakeParser::ok()).await else {
+        return;
+    };
+    let node = create_file_with_event(&env, None, "受付前.txt").await;
+    record_content_version(&env, node, 1).await;
+    let mut tx = env.pool.begin().await.unwrap();
+    sqlx::query("update node set name = '受付後.txt', version = 2 where id = $1")
+        .bind(node)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    emit_on(
+        &mut tx,
+        &env.ctx,
+        WriteEvent {
+            node_id: node,
+            version: 2,
+            op: WriteOp::Rename,
+            payload: serde_json::json!({}),
+        },
+        None,
+    )
+    .await
+    .unwrap();
+    tx.commit().await.unwrap();
+    drain_pipeline(&env).await;
+
+    let renamed = job_status(&env, node, "create").await.unwrap();
+    let hits = fulltext_hits(&env, "売上", &PreFilter::TenantOnly).len();
+
+    // 新しい内容（v3）を保存した後で、古い create（v1）が遅れて届いても、古い内容では取り込まない。
+    let stale = create_file_with_event(&env, None, "遅れて届く.txt").await;
+    record_content_version(&env, stale, 1).await;
+    record_content_version(&env, stale, 3).await;
+    sqlx::query("update node set version = 3 where id = $1")
+        .bind(stale)
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    drain_pipeline(&env).await;
+    let (status, _) = job_status(&env, stale, "create").await.unwrap();
+    purge_tenant(&env).await;
+
+    assert_eq!(
+        renamed.0, "succeeded",
+        "名前を変えても取り込む: {renamed:?}"
+    );
+    assert_eq!(hits, 1, "名前を変えたファイルも検索に出る");
+    assert_eq!(status, "skipped", "新しい内容の取り込みに任せる");
+}
+
+/// このテストのテナントで作った行を片付ける（索引・取り込みの記録・outbox・ノード・内容の履歴・blob）。
+async fn purge_tenant(env: &TestEnv) {
+    for sql in [
+        "delete from rag_chunk where tenant_id = $1",
+        "delete from doc_block where tenant_id = $1",
+        "delete from rag_ingest_job where tenant_id = $1",
+        "delete from job_queue where tenant_id = $1",
+        "delete from storage_event_outbox where tenant_id = $1",
+        "delete from node_closure where tenant_id = $1",
+        "delete from node_version where tenant_id = $1",
+        "delete from node where tenant_id = $1",
+        "delete from blob where tenant_id = $1",
+    ] {
+        sqlx::query(sql)
+            .bind(&env.ctx.tenant_id)
+            .execute(&env.pool)
+            .await
+            .unwrap();
+    }
+}
+
+/// 内容のバージョンの履歴（`node_version`）を 1 行積む（StorageService の保存と同じく、内容を書いたときだけ）。
+async fn record_content_version(env: &TestEnv, node: Uuid, version: i64) {
+    sqlx::query(
+        "insert into node_version (node_id, version, org, tenant_id, blob_sha256, size_bytes, \
+                                   content_type, author) \
+         select id, $2, org, tenant_id, blob_sha256, 10, 'text/plain', 'alice' from node where id = $1",
+    )
+    .bind(node)
+    .bind(version)
+    .execute(&env.pool)
+    .await
+    .unwrap();
+}
+
 #[tokio::test]
 async fn folder_move_fans_out_to_descendant_files() {
     let Some(env) = setup(FakeParser::ok()).await else {
