@@ -5,6 +5,12 @@ import { cleanupAll, loginViaKeycloak, removeWorkflowApi, uniqueName } from "./h
 /// 実行履歴 UI の e2e（Task 10.14 DoD）:
 /// 失敗する run → 詳細シートで失敗ステップ強調＋エラー内容 → 状態フィルタ →
 /// 「失敗したところから再開」→ ライブ更新（失敗 → 実行中/順番待ち → 再失敗・試行 2 回目）。
+///
+/// 失敗は、原因を直せば再開で通る失敗（script が無いファイルを読む・not_found）にする。script が自分で投げた誤りは、
+/// 再開しても同じ結果になる失敗（script_error）で再開を勧めない（D-121・workflow-run-failure-reasons.spec.ts）。
+
+/// 無いファイル（script は捕まえずに投げ返す）。
+const MISSING_FILE = "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1";
 
 async function createFailingFlow(page: Page, name: string): Promise<string> {
   const cookies = await page.context().cookies();
@@ -16,6 +22,7 @@ async function createFailingFlow(page: Page, name: string): Promise<string> {
         ir_version: 1,
         name,
         display_name: "失敗フロー",
+        declared_scopes: ["storage.read"],
         triggers: [{ kind: "interactive" }],
         nodes: [
           {
@@ -23,7 +30,7 @@ async function createFailingFlow(page: Page, name: string): Promise<string> {
             type: "script.run",
             label: "爆発する",
             params: {
-              source: { inline: "function main(){ throw new Error('boom-e2e'); }" },
+              source: { inline: `function main(){ return Shiki.storage.read('${MISSING_FILE}'); }` },
             },
           },
         ],
@@ -50,16 +57,17 @@ test("実行履歴: 失敗詳細→フィルタ→失敗ステップから再開
     // 詳細シート: SSE ライブ更新で「失敗」に到達し、失敗ステップにエラー内容が出る。
     const sheet = page.locator('[role="dialog"]');
     await expect(sheet.locator("h2").getByText("失敗")).toBeVisible({ timeout: 60_000 });
-    await expect(sheet.getByText(/boom-e2e/).first()).toBeVisible();
-    // 失敗の理由は、画面に返す結果と同じ分類の文言（サーバーが Rust の単一定義から組む・BUG-113）。script の
-    // throw は分類できない失敗（internal）なので、再開を勧め、再開で何が起きるかを添える（BUG-132）。
+    await expect(sheet.getByTestId("step-error-code")).toHaveText("（not_found）");
+    // 失敗の理由は、画面に返す結果と同じ分類の文言（サーバーが Rust の単一定義から組む・BUG-113）。script が
+    // 捕まえずに投げ返した読み取りの誤りは元の code（not_found）で分類し（D-121）、原因を直してから再開するよう
+    // 勧め、再開で何が起きるかを添える（BUG-132）。
     const runId = new URL(page.url()).searchParams.get("run")!;
     const detail = (await (await page.request.get(`/api/workflows/${id}/runs/${runId}`)).json()) as {
       failure: { category: string; message: string } | null;
       resume: { advice: string; offer: boolean; note: string } | null;
     };
-    expect(detail.failure?.category).toBe("unknown");
-    expect(detail.resume).toMatchObject({ advice: "resume", offer: true });
+    expect(detail.failure?.category).toBe("not_found");
+    expect(detail.resume).toMatchObject({ advice: "fix_first", offer: true });
     await expect(sheet.getByTestId("run-failure")).toHaveText(detail.failure!.message);
     await expect(sheet.getByTestId("run-resume-note")).toHaveText(detail.resume!.note);
     await expect(sheet.getByTestId("run-resume-note")).toContainText("失敗したブロックから続けます");

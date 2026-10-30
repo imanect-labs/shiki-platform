@@ -10,6 +10,8 @@
 //! - 見えない文書・無い文書・索引の pre-filter で読めない文書は、同じ誤り（存在の秘匿）。
 //! - 取り込み前はやり直せる失敗（index_pending）で、取り込んだ後に再開すると読める。取り込めない種類・取り込みに
 //!   失敗した文書・社内文書の検索が使えない環境は、やり直さない分かる誤り。
+//! - script の `Shiki.storage.read` の誤りは、捕まえていなければホストの code のまま、作成者が投げた誤りは
+//!   script_error で失敗になる（D-121）。再開しても同じ結果になる失敗は、再開を断る（D-116）。
 //!
 //! `STORAGE_TEST_DATABASE_URL` と `OPENFGA_TEST_URL` が無いとスキップする。
 
@@ -183,11 +185,17 @@ async fn setup() -> Option<Env> {
             fsms: None,
             web_search: None,
         });
-        Arc::new(CapabilityNodeExecutor::new(
-            ports,
-            EffectJournal::new(pool.clone()),
-            Arc::new(NoopAudit),
-        ))
+        Arc::new(
+            CapabilityNodeExecutor::new(
+                ports,
+                EffectJournal::new(pool.clone()),
+                Arc::new(NoopAudit),
+            )
+            .with_script_engine(
+                script_runtime::EngineHandle::shared(),
+                script_runtime::engine::Limits::default(),
+            ),
+        )
     };
     Some(Env {
         executor: executor(Some(search)),
@@ -299,6 +307,25 @@ impl Env {
             .expect("start")
             .expect("run id");
         self.drive(run_id, executor).await
+    }
+
+    /// `rd` に script を置いたワークフローを保存する（入力の file を `Shiki.storage.read` で読むなど）。
+    async fn save_script(&self, name: &str, scopes: &[&str], source: &str) -> Uuid {
+        let ir = json!({
+            "ir_version": 1, "name": name,
+            "declared_scopes": scopes,
+            "triggers": [{ "kind": "interactive" }],
+            "nodes": [
+                { "id": "rd", "type": "script.run",
+                  "params": { "source": { "inline": source }, "input": { "$from": "input" } } }
+            ],
+            "edges": []
+        });
+        self.workflows
+            .create(&self.alice, &ir, &Catalog::default(), None)
+            .await
+            .expect("save ir")
+            .0
     }
 
     /// 取り込みが書く行を積む（パース済みのブロック列・検索用のチャンク・取り込みの記録）。
@@ -874,6 +901,117 @@ async fn automated_runs_read_only_delegated_folders() {
         ),
         "{o:?}"
     );
+}
+
+/// script の `Shiki.storage.read` の誤りは、捕まえていなければホストの code のまま失敗になる（使ってよい操作の天井の
+/// 外は out_of_scope・無いファイルは not_found・BUG-136）。作成者が投げた誤りは script_error（BUG-137）。再開しても
+/// 同じ結果になる失敗（out_of_scope・script_error）は、再開を断って run を失敗のまま残す（D-116）。原因を直せば
+/// 通る失敗（not_found）は再開できる。
+#[tokio::test]
+async fn script_failures_keep_the_host_code() {
+    let Some(env) = setup().await else { return };
+    let read = "function main(input) { return Shiki.storage.read(input.file); }";
+    let no_scope = env.save_script("script-no-scope", &[], read).await;
+    let missing = env
+        .save_script("script-missing", &["storage.read"], read)
+        .await;
+    let thrown = env
+        .save_script(
+            "script-throw",
+            &["storage.read"],
+            "function main(input) { if (!input.amount) { throw new Error('金額がありません'); } return 1; }",
+        )
+        .await;
+    let file = Uuid::new_v4();
+    let mut outcomes = Vec::new();
+    for wf in [no_scope, missing, thrown] {
+        let o = env.read(wf, file, &env.executor).await;
+        let detail = env
+            .runs
+            .run_detail(&env.tenant, wf, o.run_id)
+            .await
+            .unwrap()
+            .unwrap();
+        let resumed = env
+            .runs
+            .resume_failed(&env.tenant, wf, o.run_id)
+            .await
+            .unwrap();
+        let status = env
+            .runs
+            .run_status(&env.tenant, o.run_id)
+            .await
+            .unwrap()
+            .unwrap();
+        outcomes.push((o, detail, resumed, status));
+    }
+
+    env.cleanup(&[no_scope, missing, thrown], &[], &[]).await;
+
+    let [(scope_o, scope_d, scope_r, scope_s), (missing_o, missing_d, missing_r, _), (throw_o, throw_d, throw_r, throw_s)] =
+        <[_; 3]>::try_from(outcomes).unwrap();
+    // 使ってよい操作の天井の外: 権限の分類で、この実行のバージョンの設定で決まる（再開も同じ入力の実行も勧めない）。
+    assert_eq!(scope_o.status, RunStatus::Failed, "{scope_o:?}");
+    assert_eq!(
+        (scope_o.code.as_deref(), scope_o.retryable),
+        (Some("out_of_scope"), Some(false)),
+        "{scope_o:?}"
+    );
+    assert_eq!(
+        scope_d.failure.unwrap().category,
+        workflow_engine::FailureCategory::Permission
+    );
+    let hint = scope_d.resume.unwrap();
+    assert_eq!(hint.advice, workflow_engine::ResumeAdvice::SameResult);
+    assert!(!hint.offer && !hint.offer_rerun, "{hint:?}");
+    assert_eq!(
+        scope_r,
+        workflow_engine::ResumeOutcome::NotResumable(hint),
+        "再開しても同じ結果になる失敗は断る"
+    );
+    assert_eq!(scope_s, RunStatus::Failed, "断った run は失敗のまま");
+    // 無いファイル: ポートの誤りのまま（原因を直せば通るので再開できる）。
+    assert_eq!(
+        (missing_o.code.as_deref(), missing_o.retryable),
+        (Some("not_found"), Some(false)),
+        "{missing_o:?}"
+    );
+    assert_eq!(
+        missing_d.resume.unwrap().advice,
+        workflow_engine::ResumeAdvice::FixFirst
+    );
+    assert!(
+        matches!(missing_r, workflow_engine::ResumeOutcome::Resumed),
+        "{missing_r:?}"
+    );
+    // 作成者が投げた誤り: 設定の誤りで、再開しても同じ結果になる（同じ入力でもう一度実行は勧める）。
+    assert_eq!(
+        (throw_o.code.as_deref(), throw_o.retryable),
+        (Some(script_runtime::SCRIPT_ERROR), Some(false)),
+        "{throw_o:?}"
+    );
+    assert!(
+        throw_o
+            .message
+            .as_deref()
+            .unwrap()
+            .contains("金額がありません"),
+        "{throw_o:?}"
+    );
+    let failure = throw_d.failure.unwrap();
+    assert_eq!(
+        failure.category,
+        workflow_engine::FailureCategory::Configuration
+    );
+    assert!(failure.message.contains("作成者に連絡"), "{failure:?}");
+    let hint = throw_d.resume.unwrap();
+    assert_eq!(hint.advice, workflow_engine::ResumeAdvice::SameResult);
+    assert!(!hint.offer && hint.offer_rerun, "{hint:?}");
+    assert!(
+        matches!(throw_r, workflow_engine::ResumeOutcome::NotResumable(_)),
+        "{throw_r:?}"
+    );
+    assert_eq!(throw_s, RunStatus::Failed);
 }
 
 // ------- 社内文書の検索の依存（本文の読み出しでは使わない）-------------------------------

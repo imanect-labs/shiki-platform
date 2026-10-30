@@ -145,10 +145,11 @@ impl CapabilityNodeExecutor {
         if outcome.ok {
             Ok(outcome.value.unwrap_or(Value::Null))
         } else {
+            // 捕まえていないホスト呼び出しの誤りは元の code、作成者が投げた誤りは script_error で返る（D-121）。
             let (message, code, retryable) = outcome.error.unwrap_or_else(|| {
                 (
                     "script 実行に失敗".to_string(),
-                    "script_error".to_string(),
+                    script_runtime::SCRIPT_ERROR.to_string(),
                     false,
                 )
             });
@@ -177,7 +178,7 @@ struct HostBridge {
 const SCRIPT_DEADLINE_MARGIN: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// 止める合図の後の `Shiki.*` 呼び出しを断るときの code（BUG-96）。
-const SCRIPT_CANCELLED: &str = "step_cancelled";
+pub(crate) const SCRIPT_CANCELLED: &str = "step_cancelled";
 
 impl HostBridge {
     async fn dispatch(&self, call: &HostCall) -> HostResponse {

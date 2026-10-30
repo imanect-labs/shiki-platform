@@ -172,7 +172,16 @@ impl ExecOutcome {
                 logs,
             };
         }
-        let parsed: Value = serde_json::from_str(envelope).unwrap_or(Value::Null);
+        let Some(parsed) = crate::uncaught::parse_envelope(envelope) else {
+            // ゲストの封筒が読めない（ゲストの不具合）。作成者の誤りとは言えない。
+            return ExecOutcome {
+                ok: false,
+                value: None,
+                error: Some(("script failed".to_string(), "internal".to_string(), false)),
+                termination: Termination::Completed,
+                logs,
+            };
+        };
         let ok = parsed.get("ok").and_then(Value::as_bool).unwrap_or(false);
         if ok {
             ExecOutcome {
@@ -183,25 +192,18 @@ impl ExecOutcome {
                 logs,
             }
         } else {
-            let err = parsed.get("error");
-            let message = err
+            // 封筒の code と retryable はゲストが決めた値（いまは常に internal・false）なので使わない。投げ返された
+            // 例外の文から、ホストが返した誤りか作成者の誤りかを決める（D-121・[`crate::uncaught`]）。
+            let message = parsed
+                .get("error")
                 .and_then(|e| e.get("message"))
                 .and_then(Value::as_str)
-                .unwrap_or("script failed")
-                .to_string();
-            let code = err
-                .and_then(|e| e.get("code"))
-                .and_then(Value::as_str)
-                .unwrap_or("internal")
-                .to_string();
-            let retryable = err
-                .and_then(|e| e.get("retryable"))
-                .and_then(Value::as_bool)
-                .unwrap_or(false);
+                .unwrap_or("script failed");
+            let error = crate::uncaught::classify(message, &store.data().host_errors);
             ExecOutcome {
                 ok: false,
                 value: None,
-                error: Some((message, code, retryable)),
+                error: Some(error),
                 termination: Termination::Completed,
                 logs,
             }

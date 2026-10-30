@@ -105,7 +105,9 @@ pub const KNOWN_CODES: &[(&str, FailureCategory)] = {
         // 読もうとした（storage.read・D-111）。
         (crate::nodes::ports::NOT_INDEXABLE, Configuration),
         (crate::nodes::ports::INDEX_FAILED, Configuration),
-        ("script_error", Configuration),
+        // 作成者の script が投げた誤り（throw・Shiki.fail・書き誤り）。捕まえていないホスト呼び出しの誤りは、元の
+        // code で失敗にする（D-121）。
+        (script_runtime::SCRIPT_ERROR, Configuration),
         // AI エージェントが同じ道具の失敗を繰り返した（依頼・道具・読める資料を作成者が見直す・BUG-6）。
         ("agent_loop", Configuration),
         ("frame_violation", Configuration),
@@ -115,6 +117,8 @@ pub const KNOWN_CODES: &[(&str, FailureCategory)] = {
         ("item_failed", Unknown),
         ("item_skipped", Unknown),
         ("cancelled", Unknown),
+        // 止める合図の後の `Shiki.*` を断った（ふつうはワーカーが打ち切りの理由で失敗にする・BUG-96）。
+        (crate::nodes::script::SCRIPT_CANCELLED, Unknown),
         ("internal", Unknown),
         // 判定の応答が質問と合わない（ポートの実装の誤り・FEAT-1）。
         (crate::nodes::decide::DECISION_INVALID_RESPONSE, Unknown),
@@ -265,6 +269,9 @@ pub const SAME_RESULT_CODES: &[&str] = &[
     crate::nodes::decide::DECISION_STATE_TOO_LARGE,
     // 使ってよい操作の天井は、ピンした IR の宣言（`declared_scopes`）で決まる。
     "out_of_scope",
+    // 作成者の script が投げた誤り。再開は同じ script を同じ入力で動かす（D-121）。script が `Shiki.*` で読んだ値で
+    // 投げたものは、値を直せば通ることもあるが、「同じ入力でもう一度実行」で動かし直せる（offer_rerun）。
+    script_runtime::SCRIPT_ERROR,
 ];
 
 /// [`SAME_RESULT_CODES`] のうち、この実行のバージョンの設定（ピンした IR）だけで決まる code。
@@ -483,7 +490,12 @@ mod tests {
         ] {
             assert!(!resume_hint(Some(code), None).offer_rerun, "{code}");
         }
-        for code in ["expr_resolve_error", "bad_params", "fanout_limit_exceeded"] {
+        for code in [
+            "expr_resolve_error",
+            "bad_params",
+            "fanout_limit_exceeded",
+            "script_error",
+        ] {
             assert!(resume_hint(Some(code), None).offer_rerun, "{code}");
         }
         // 読めないファイルは、同じファイルを保存し直せば再開で通る（再開は最新のバージョンを読み直す）。
@@ -529,7 +541,6 @@ mod tests {
             "model_unavailable",
             "approval_not_decidable",
             "http_error_status",
-            "script_error",
             "not_text_file",
         ] {
             let h = resume_hint(Some(code), None);
@@ -590,6 +601,26 @@ mod tests {
                 serde_json::Value::String(a.as_str().to_string())
             );
         }
+    }
+
+    /// 作成者の script が投げた誤りは設定の誤りで、再開しても同じ結果になる（D-121・BUG-137）。捕まえていない
+    /// ホスト呼び出しの誤りは元の code の分類のまま（使ってよい操作の天井の外は、設定で決まる・BUG-136）。
+    #[test]
+    fn script_errors_are_configuration_and_same_result() {
+        let id = Uuid::nil();
+        let f = run_failure(id, Some(script_runtime::SCRIPT_ERROR), None);
+        assert_eq!(f.category, FailureCategory::Configuration);
+        assert!(f.message.contains("作成者に連絡"), "{}", f.message);
+        let h = resume_hint(Some(script_runtime::SCRIPT_ERROR), None);
+        assert_eq!(h.advice, ResumeAdvice::SameResult);
+        assert!(!h.offer && h.offer_rerun, "{h:?}");
+        let h = resume_hint(Some("out_of_scope"), None);
+        assert_eq!(h.advice, ResumeAdvice::SameResult);
+        assert!(!h.offer && !h.offer_rerun, "{h:?}");
+        assert_eq!(
+            category_of(crate::nodes::script::SCRIPT_CANCELLED),
+            FailureCategory::Unknown
+        );
     }
 
     /// 同じ結果になる code と AI の答えの code は、どれも分類の表にある（綴りの誤りで黙って外れない）。
