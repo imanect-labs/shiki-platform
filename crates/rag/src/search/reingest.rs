@@ -171,25 +171,30 @@ impl SearchIngestStatus {
 /// 取り込みを待っている件数を数える上限（管理コンソールの表示用・大きなテナントで数えきらない）。
 pub const WAITING_COUNT_CAP: i64 = 10_000;
 
-/// テナントの取り込みを待っている内容の作業の数（outbox の未処理と待ち行列・`cap` 件で打ち切る）。
+/// 組織の取り込みを待っている内容の作業の数（outbox の未処理と待ち行列・`cap` 件で打ち切る）。
+///
+/// 組織で数える（同じテナントのほかの組織の取り込みの量を管理者に見せず、ほかの組織に待ちが多くても自分の組織の
+/// まとめての取り込みを止めない）。
 pub(crate) async fn waiting_on(
     conn: &mut PgConnection,
     tenant_id: &str,
+    org: &str,
     cap: i64,
 ) -> Result<i64, RagError> {
     let n: i64 = sqlx::query_scalar(
         "select (select count(*) from (select 1 from job_queue q \
-                  where q.tenant_id = $1 and q.queue = $2 \
+                  where q.tenant_id = $1 and q.queue = $2 and q.payload->>'org' = $4 \
                     and q.payload->>'op' in ('create', 'update', 'restore', 'reindex') \
                   limit $3) a) \
               + (select count(*) from (select 1 from storage_event_outbox o \
-                  where o.tenant_id = $1 and o.processed_at is null \
+                  where o.tenant_id = $1 and o.org = $4 and o.processed_at is null \
                     and o.op in ('create', 'update', 'restore', 'reindex') \
                   limit $3) b)",
     )
     .bind(tenant_id)
     .bind(RAG_INGEST_QUEUE)
     .bind(cap)
+    .bind(org)
     .fetch_one(conn)
     .await?;
     Ok(n)
@@ -357,7 +362,7 @@ impl SearchService {
         .bind(&ctx.org)
         .fetch_optional(&mut *conn)
         .await?;
-        let waiting = waiting_on(&mut conn, &ctx.tenant_id, WAITING_COUNT_CAP).await?;
+        let waiting = waiting_on(&mut conn, &ctx.tenant_id, &ctx.org, WAITING_COUNT_CAP).await?;
         Ok(SearchIngestStatus {
             enabled: true,
             waiting: waiting.min(WAITING_COUNT_CAP),

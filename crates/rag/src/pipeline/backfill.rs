@@ -5,8 +5,8 @@
 //!
 //! 1. 動いているもののうち、いちばん長く進めていないものを `FOR UPDATE SKIP LOCKED` で押さえる（テナントの間で
 //!    順番に進める）。
-//! 2. そのテナントの取り込みを待っている作業が [`MAX_WAITING`] 件以上なら、積まずに次の回へ回す（大きなテナントでも
-//!    待ち行列を溜めない。取り込みが進むと待つ件数が減り、また積む）。
+//! 2. その組織の取り込みを待っている作業が [`MAX_WAITING`] 件以上なら、積まずに次の回へ回す（大きな組織でも
+//!    待ち行列を溜めない。取り込みが進むと待つ件数が減り、また積む。同じテナントのほかの組織の待ちでは止めない）。
 //! 3. 続きの位置（ファイルの id の順）から [`SCAN_BATCH`] 件のファイルを読み、取り込みの状態を同じ判定
 //!    （`index_state.rs` の `classify`）で決め、取り込みの記録が無いものだけを outbox に積む（空いている件数まで）。
 //! 4. 続きの位置と件数を進め、最後まで読んだら `done` にする。
@@ -28,7 +28,7 @@ use crate::search::reingest::{backfill_target, lock_nodes, reindex_event, waitin
 
 /// 1 回に読むファイルの数。
 pub const SCAN_BATCH: i64 = 200;
-/// テナントの取り込みを待っている作業がこの件数に達したら、積むのを待つ。
+/// 組織の取り込みを待っている作業がこの件数に達したら、積むのを待つ。
 pub const MAX_WAITING: i64 = 100;
 /// 進めるものが無い・待つときの間隔。
 pub(super) const IDLE: Duration = Duration::from_secs(2);
@@ -96,7 +96,7 @@ pub async fn step_once(deps: &PipelineDeps) -> Result<StepOutcome, RagError> {
             done: true,
         });
     }
-    let waiting = waiting_on(&mut tx, &run.tenant_id, MAX_WAITING).await?;
+    let waiting = waiting_on(&mut tx, &run.tenant_id, &run.org, MAX_WAITING).await?;
     let budget = usize::try_from(MAX_WAITING - waiting).unwrap_or(0);
     if budget == 0 {
         // 順番を後ろへ回す（ほかのテナントのものを先に進める）。

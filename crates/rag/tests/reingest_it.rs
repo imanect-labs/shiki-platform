@@ -656,19 +656,23 @@ async fn backfill_queues_files_without_a_record_little_by_little() {
             .await
             .unwrap();
 
-        // テナントの待ち行列を、上限の 1 件手前まで埋める（ほかの取り込みが溜まっている状態）。
-        sqlx::query(
-            "insert into job_queue (queue, tenant_id, payload, visible_at, fair_seq) \
-             select $1, $2, jsonb_build_object('node_id', gen_random_uuid()::text, 'op', 'create'), \
-                    now() + interval '1 day', 0 \
-             from generate_series(1, $3)",
-        )
-        .bind(RAG_INGEST_QUEUE)
-        .bind(&env.alice.tenant_id)
-        .bind((MAX_WAITING - 1) as i32)
-        .execute(&env.pool)
-        .await
-        .unwrap();
+        // 組織の待ち行列を、上限の 1 件手前まで埋める（ほかの取り込みが溜まっている状態）。同じテナントのほかの組織の
+        // 待ちは、上限を超えるほどあっても数えない（ほかの組織の量を見せず、この組織のまとめての取り込みを止めない）。
+        for (org, n) in [(env.alice.org.as_str(), MAX_WAITING - 1), ("another-org", MAX_WAITING * 2)] {
+            sqlx::query(
+                "insert into job_queue (queue, tenant_id, payload, visible_at, fair_seq) \
+                 select $1, $2, jsonb_build_object('node_id', gen_random_uuid()::text, 'op', 'create', 'org', $4::text), \
+                        now() + interval '1 day', 0 \
+                 from generate_series(1, $3)",
+            )
+            .bind(RAG_INGEST_QUEUE)
+            .bind(&env.alice.tenant_id)
+            .bind(n as i32)
+            .bind(org)
+            .execute(&env.pool)
+            .await
+            .unwrap();
+        }
 
         let (started, fresh) = env.search.start_backfill(&env.alice, None).await.unwrap();
         let (_, again) = env.search.start_backfill(&env.alice, None).await.unwrap();
