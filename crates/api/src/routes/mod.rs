@@ -30,6 +30,7 @@ pub mod files;
 pub mod folders;
 pub mod gui_errors;
 pub mod llm_models;
+pub mod map;
 pub mod me;
 pub mod me_chatgpt;
 pub mod me_custom_instructions;

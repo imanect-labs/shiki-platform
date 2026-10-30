@@ -656,6 +656,13 @@ services:
       SHIKI__WEBSEARCH__BACKEND: ${SHIKI__WEBSEARCH__BACKEND:-stub}
       SHIKI__WEBSEARCH__BRAVE_API_KEY: ${SHIKI__WEBSEARCH__BRAVE_API_KEY:-}
       SHIKI__WEBSEARCH__SEARXNG_BASE_URL: ${SHIKI__WEBSEARCH__SEARXNG_BASE_URL:-http://searxng:8080}
+      # 地図の背景（回答の ```ui の map）。既定は無効（静止画）。.env.example の「地図」を参照。
+      SHIKI__MAP__PROVIDER: ${SHIKI__MAP__PROVIDER:-}
+      SHIKI__MAP__MAPBOX_TOKEN: ${SHIKI__MAP__MAPBOX_TOKEN:-}
+      SHIKI__MAP__MAPBOX_STYLE_LIGHT: ${SHIKI__MAP__MAPBOX_STYLE_LIGHT:-mapbox/light-v11}
+      SHIKI__MAP__MAPBOX_STYLE_DARK: ${SHIKI__MAP__MAPBOX_STYLE_DARK:-mapbox/dark-v11}
+      SHIKI__MAP__STYLE_URL_LIGHT: ${SHIKI__MAP__STYLE_URL_LIGHT:-}
+      SHIKI__MAP__STYLE_URL_DARK: ${SHIKI__MAP__STYLE_URL_DARK:-}
       SHIKI__RAG__WORKER_BASE_URL: http://ingestion-worker:8000
       # ingestion-worker / Qdrant 側と同じ値（#812）。既定値は dev 用の固定文字列。
       SHIKI__RAG__WORKER_AUTH_TOKEN: ${INGESTION_WORKER_AUTH_TOKEN:-shiki-worker-dev-token}

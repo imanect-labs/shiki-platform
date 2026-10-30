@@ -353,6 +353,7 @@ fn config_with(idp_base: &str, cors: Vec<String>) -> AppConfig {
         },
         chat: api::config::ChatConfig::default(),
         websearch: api::config::WebSearchConfig::default(),
+        map: Default::default(),
         secrets: api::config::SecretsConfig::default(),
         data: api::config::DataConfig::default(),
         workflow: api::workflow_runtime::WorkflowConfig::default(),

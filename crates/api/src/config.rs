@@ -36,6 +36,9 @@ pub struct AppConfig {
     /// web 検索（web_search / web_fetch ツール・Phase 4）。既定は無効。
     #[serde(default)]
     pub websearch: WebSearchConfig,
+    /// 地図の背景タイル（回答の ```ui の map・外部接続必須機能）。既定は無効。
+    #[serde(default)]
+    pub map: MapConfig,
     /// CSV クエリサービス（tabular・Task 11P.7）。既定値で有効（隔離 DuckDB ランナー）。
     #[serde(default)]
     pub tabular: TabularConfig,
@@ -296,6 +299,7 @@ mod auth;
 mod backends;
 #[cfg(test)]
 mod data_tests;
+mod map;
 #[cfg(test)]
 mod tests;
 
@@ -307,6 +311,7 @@ pub use backends::{
     LlmProviderLimit, LogFormat, ObjectStoreBackend, StorageConfig, TabularConfig, TelemetryConfig,
     UploadGcConfig, VectorConfig, VectorStoreBackend, WebSearchBackend, WebSearchConfig,
 };
+pub use map::{MapClientConfig, MapConfig, MapProvider};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -389,6 +394,7 @@ impl AppConfig {
         Self::check_llm_limits(&self.llm)?;
         self.data.stream.to_stream_config()?;
         Self::check_llm_chatgpt(&self.llm)?;
+        self.map.validate()?;
         // 必須 URL。
         let mut urls: Vec<(&str, &str)> = vec![
             ("auth.issuer", self.auth.issuer.as_str()),

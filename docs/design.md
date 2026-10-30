@@ -731,8 +731,15 @@ flowchart TB
   ②エージェントへのツールマウント（agent.invoke）③ワークフローの skill ノード、の3つ。
 - すべて「共有可能アーティファクト＋ReBAC＋監査」の共通枠に収まる。
 - 図の種類（棒・折れ線・円・散布図・流れ図・構成図・地図など）の正本は Yui の仕様（`@imanect/yui`）。
-  地図（`map`）は地点の位置関係と道順だけを描き、背景の地図タイルは読まない（外部接続なし）。タイル表示を足すなら
-  「外部接続必須機能」区分（NFR-2 参照）として扱う。
+- 地図（`map`）は **データ（地点・道順・縮尺）と静止画は Yui、背景の地図はホスト（web）** が描く
+  （Yui の React 部品の `renderMap` に web の地図部品を差し込む）。
+  - 背景の地図タイルは「外部接続必須機能」（NFR-2）。提供元は設定 `map.provider` で選ぶ
+    （SaaS＝Mapbox の公開トークン `pk.*`／オンプレ＝自前のタイル配信のスタイル URL／未設定＝無効）。
+    web は `GET /map/config` で設定を読み、ブラウザがタイルを提供元から直接読む（サーバーは中継しない）。
+  - 描画は MapLibre GL JS（BSD）。Mapbox のスタイルも MapLibre で読み（`mapbox://` の URL を書き換える）、
+    提供元ごとに分岐させない。読み込んだスタイルは Shiki の配色に塗り直す（`web/src/components/map/map-style.ts`）。
+  - 地図が無効・スタイルを読めないときは Yui の静止画（位置関係・道順・地点の一覧）に戻す。書き出し（PNG・コピー）も静止画。
+  - 長い会話で WebGL の文脈が尽きないよう、画面から離れた地図は破棄する（PIT-77）。
 - ワークフロー・ミニアプリの編集面（dnd / AI 編集 / shiki script）は [miniapp-platform.md](./miniapp-platform.md) が正本。
 
 ### 4.8 資料作成・Office 統合（Collabora＝docx/xlsx 系・スライドは §4.8.3 の自前実装）
