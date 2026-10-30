@@ -68,16 +68,23 @@ impl DataStore {
             )
             .await?;
         let can_manage = rel.get(1).copied().unwrap_or(false);
+        // 読めない列は 1 回だけ数える（スキーマ管理者に返すのと、最初の状態を出すかの判定に使う）。どちらも要らない
+        // ときは数えない。
+        let has_fsm = table.schema.status_field.is_some() && table.schema.fsm_ref.is_some();
+        let unreadable = if can_manage || has_fsm {
+            self.masked_fields(ctx, &az, &table).await?
+        } else {
+            std::collections::HashSet::new()
+        };
+        let initial_state = self
+            .initial_state_for(ctx, &table, &unreadable, trace_id)
+            .await;
         let mut masked: Vec<String> = if can_manage {
-            self.masked_fields(ctx, &az, &table)
-                .await?
-                .into_iter()
-                .collect()
+            unreadable.into_iter().collect()
         } else {
             Vec::new()
         };
         masked.sort();
-        let initial_state = self.initial_state_for(ctx, &az, &table, trace_id).await?;
         Ok(TableViewerContext {
             masked_fields: masked,
             can_edit: rel.first().copied().unwrap_or(false),
@@ -92,26 +99,27 @@ impl DataStore {
     /// 閲覧者に見せる最初の状態（状態の列が読めて、指している状態の進め方が読めるときだけ）。
     ///
     /// 状態の名前は状態の列の選択肢として閲覧者に見えているので、どれが最初かを足すだけ。定義が消えていれば
-    /// 出さない（追加は失敗するので、画面は名前を出さずに追加させる）。
+    /// 出さない（追加は失敗するので、画面は名前を出さずに追加させる）。最初の状態は補助の表示なので、定義を
+    /// 読めない誤り（一時的な障害・監査の書き込みの失敗など）でも閲覧者の文脈は返す（出さずに tracing に残す）。
+    /// 状態の列の選択肢の先頭は使わない（選択肢と状態は同じ集合だが、同じ順とは限らない・`fsm_pin`）。
     async fn initial_state_for(
         &self,
         ctx: &AuthContext,
-        az: &crate::policy::memo::AuthzMemo<'_>,
         table: &crate::model::DataTable,
+        unreadable: &std::collections::HashSet<String>,
         trace_id: Option<&str>,
-    ) -> Result<Option<String>, DataError> {
-        let Some(status) = table.schema.status_field.as_deref() else {
-            return Ok(None);
-        };
-        if table.schema.fsm_ref.is_none()
-            || self.masked_fields(ctx, az, table).await?.contains(status)
-        {
-            return Ok(None);
+    ) -> Option<String> {
+        let status = table.schema.status_field.as_deref()?;
+        if table.schema.fsm_ref.is_none() || unreadable.contains(status) {
+            return None;
         }
         match self.pinned_fsm(ctx, table, trace_id).await {
-            Ok(fsm) => Ok(fsm.and_then(|(body, _)| body.states.into_iter().next())),
-            Err(DataError::NotFound) => Ok(None),
-            Err(e) => Err(e),
+            Ok(fsm) => fsm.and_then(|(body, _)| body.states.into_iter().next()),
+            Err(DataError::NotFound) => None,
+            Err(e) => {
+                tracing::warn!(error = %e, table_id = %table.id, "閲覧者の文脈: 最初の状態を読めなかった（出さずに返す）");
+                None
+            }
         }
     }
 }

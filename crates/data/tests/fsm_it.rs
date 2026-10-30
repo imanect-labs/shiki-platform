@@ -852,6 +852,10 @@ async fn viewer_context_tells_the_initial_state_without_access_to_the_definition
         .table_viewer_context(&carol, table, None)
         .await
         .unwrap();
+    // 定義を読めないとき（ここでは定義を読む口の無い構成）も、閲覧者の文脈は返す（最初の状態は補助の表示なので
+    // 出さないだけ・テーブルの画面を開けなくしない）。
+    let bare = DataStore::new(pool.clone(), Arc::clone(&authz), Arc::new(AllowRefs));
+    let degraded = bare.table_viewer_context(&bob, table, None).await;
     // 状態の列を経理だけに見せると、ほかの人には出さない。
     let current = store.get_table(&alice, table, None).await.unwrap();
     let mut masked = current.schema.clone();
@@ -895,4 +899,7 @@ async fn viewer_context_tells_the_initial_state_without_access_to_the_definition
     assert!(for_carol.add_only);
     assert_eq!(after_mask.initial_state, None);
     assert_eq!(no_fsm.initial_state, None);
+    let degraded = degraded.expect("定義を読めなくても閲覧者の文脈は返す");
+    assert_eq!(degraded.initial_state, None);
+    assert!(degraded.can_edit);
 }
