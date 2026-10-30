@@ -531,18 +531,13 @@ async fn json_body(resp: axum::response::Response) -> (StatusCode, Value) {
 #[tokio::test]
 async fn tabular_schema_rows_query_patch_flow() {
     let Some(env) = setup().await else { return };
-    // CSV を作成（storage 経由）。
+    // CSV を作成（storage 経由）。中身は実行ごとに変える。blob は中身のハッシュで共有され、テストはバケットを実行ごとに
+    // 作り直すので、同じ中身だと前の実行の blob の行（前のバケットの本体）を指して読めない（BUG-143）。
     let name = format!("data-{}.csv", Uuid::new_v4());
+    let csv = format!("id,score\n1-{},10\n2,30\n3,20\n", Uuid::new_v4().simple());
     let node = env
         .storage
-        .write_file_internal(
-            &env.ctx,
-            None,
-            &name,
-            b"id,score\n1,10\n2,30\n3,20\n",
-            "text/csv",
-            None,
-        )
+        .write_file_internal(&env.ctx, None, &name, csv.as_bytes(), "text/csv", None)
         .await
         .expect("create csv");
     let id = node.id;
