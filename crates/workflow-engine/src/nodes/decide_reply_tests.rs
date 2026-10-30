@@ -149,3 +149,24 @@ fn mismatching_replies_are_rejected() {
         assert!(read(&v, &questions()).is_err(), "{name}");
     }
 }
+
+/// 引き上げた質問（BUG-124・D-114）は、無い応答（古いポート・決定キャッシュの古い答え）なら空。あれば質問の順に
+/// 並べて出し、質問に無いキー・重なりは突き合わせで弾く。
+#[test]
+fn raised_questions_are_read_in_question_order_and_checked() {
+    let r = read(&reply(), &questions()).unwrap();
+    assert!(r.raised_output(&questions()).is_empty());
+    let mut raised = reply();
+    raised["raised_questions"] = json!(["angry", "category"]);
+    let r = read(&raised, &questions()).unwrap();
+    assert_eq!(r.raised_output(&questions()), ["category", "angry"]);
+    for bad in [
+        json!(["unknown"]),
+        json!(["angry", "angry"]),
+        json!("angry"),
+    ] {
+        let mut v = reply();
+        v["raised_questions"] = bad.clone();
+        assert!(read(&v, &questions()).is_err(), "{bad}");
+    }
+}

@@ -1831,6 +1831,8 @@ async fn decide_routes_through_the_production_port() {
     assert_eq!(output["model"], "decide-stub");
     assert_eq!(output["provider"], "stub", "答えた決定器の名前");
     assert_eq!(output["calibrated"], false);
+    // stub の決定器は自分の確率をそのまま使い、AI の自信を引き上げない（BUG-124・D-114）。
+    assert_eq!(output["raised_questions"], json!([]), "{output}");
     assert!(output["resolved_model"]
         .as_str()
         .is_some_and(|m| !m.is_empty()));
@@ -1961,6 +1963,16 @@ async fn decide_fails_closed_once_the_model_or_its_base_is_disabled() {
     assert_eq!(output["model"], "decide-via");
     assert_eq!(output["provider"], "llm_decider", "{output}");
     assert_eq!(output["method"], "verbalized", "{output}");
+    // stub の chat モデルは自信を 0 で答える → 一様（選択肢 2 件・はい/いいえとも 0.5）へ引き上げた質問が、質問の順で
+    // step の出力に載る（BUG-124・D-114）。引き上げた答えでも同じ規則で振り分ける（0.5 はしきい値 0.8 に届かない）。
+    assert_eq!(
+        output["raised_questions"],
+        json!(["category", "angry"]),
+        "{output}"
+    );
+    assert_eq!(output["answers"]["category"]["confidence"], 0.5, "{output}");
+    assert_eq!(output["answers"]["angry"]["confidence"], 0.5, "{output}");
+    assert_eq!(output["routed"]["port"], "uncertain", "{output}");
     assert!(
         output["resolved_model"]
             .as_str()

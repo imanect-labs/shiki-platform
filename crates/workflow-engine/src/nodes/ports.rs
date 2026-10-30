@@ -384,9 +384,10 @@ pub trait NodePorts: Send + Sync {
 
     /// ai.decide（`LlmGateway::decide`・組織の許可・利用上限・会計はチョークポイントの中・FEAT-1）。
     ///
-    /// 返す Value は判定の結果 `{ resolved_model, answers: { <key>: { type, … } }, calibrated, method, samples }`
-    /// （llm-gateway の `DecideResponse` の形）に、決定キャッシュの答えなら `cached: true` を足したもの（無ければ
-    /// false とみなす）。エンジンが型付きで読み、質問と突き合わせてから出力を組む。
+    /// 返す Value は判定の結果 `{ resolved_model, answers: { <key>: { type, … } }, calibrated, method, samples,
+    /// raised_questions }`（llm-gateway の `DecideResponse` の形・`raised_questions` は AI の自信を引き上げた質問で、
+    /// 無ければ空とみなす・D-114）に、決定キャッシュの答えなら `cached: true` を足したもの（無ければ false と
+    /// みなす）。エンジンが型付きで読み、質問と突き合わせてから出力を組む。
     /// 既定は「未構成」（判定のチョークポイントを結線しない実装・テスト用・H1）。
     async fn llm_decide(&self, _ctx: &ExecCtx, _req: LlmDecideReq) -> Result<Value, PortError> {
         Err(PortError::new(

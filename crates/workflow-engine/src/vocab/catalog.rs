@@ -797,6 +797,11 @@ fn output_shape(nt: NodeType) -> Shape {
                     "{ question: string, port: string } | null",
                     "route を書いたとき・進んだ出口"
                 ),
+                field!(
+                    "raised_questions",
+                    "Array<string>",
+                    "AI が自分の答えに一様（はい/いいえなら 50%）より低い自信を付け、一様まで引き上げた質問のキー（質問の順・AI の自己申告のときだけ入りうる・無ければ空）"
+                ),
             ],
             "",
         ),

@@ -148,6 +148,8 @@ impl CapabilityNodeExecutor {
             "samples": reply.samples,
             "cached": reply.cached,
             "routed": routed_out,
+            // AI の自信を引き上げた質問（BUG-124・D-114・作る人が実行の詳細で見る）。
+            "raised_questions": reply.raised_output(&p.questions),
         });
         // 材料と全部の答えは載せない（出口と、振り分けに使った質問の確からしさだけ・H5）。
         let keys: Vec<&str> = p.questions.iter().map(|q| q.key.as_str()).collect();

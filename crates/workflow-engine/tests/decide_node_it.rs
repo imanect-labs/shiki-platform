@@ -300,6 +300,28 @@ async fn the_step_cache_reaches_the_port_and_a_hit_is_reported() {
     assert_eq!(res.output["provider"], serde_json::Value::Null);
 }
 
+/// AI の自信を引き上げた質問（BUG-124・D-114）は、出力の `raised_questions` に質問の順で載る（作る人が実行の詳細で
+/// 見る）。引き上げた答えも同じ規則で振り分ける。監査には載せない（質問のキーは `questions` にある）。
+#[tokio::test]
+async fn raised_questions_reach_the_output_in_question_order() {
+    let mut raised = reply("bug", 0.5);
+    raised["raised_questions"] = json!(["angry", "category"]);
+    let ports = ScriptedDecider::new(vec![Ok(raised)]);
+    let audit = Arc::new(Audit::default());
+    let p = params(json!({ "question": "category", "min_confidence": 0.8 }));
+    let res = run(ports as _, &audit, &p).await;
+    assert!(res.ok, "{:?}", res.error);
+    assert_eq!(res.taken_ports, ["uncertain"]);
+    assert_eq!(res.output["raised_questions"], json!(["category", "angry"]));
+    assert!(audit.rows()[0].1.get("raised_questions").is_none());
+    // 質問に無いキーを返すポートは、質問と合わない応答として止める（後続へ渡さない）。
+    let mut wrong = reply("bug", 0.5);
+    wrong["raised_questions"] = json!(["refund"]);
+    let res = run(ScriptedDecider::new(vec![Ok(wrong)]) as _, &audit, &p).await;
+    assert!(!res.ok);
+    assert_eq!(code(&res), ("decision_invalid_response".into(), false));
+}
+
 fn code(r: &NodeResult) -> (String, bool) {
     let e = r.error.as_ref().unwrap();
     (e.code.clone(), e.retryable)
@@ -328,7 +350,8 @@ async fn routes_by_value_to_the_chosen_option() {
             "resolved_model": "claude-haiku-5-5+llm_decider/v1/k1/low",
             "provider": "llm_decider",
             "calibrated": false, "method": "verbalized", "samples": 1, "cached": false,
-            "routed": { "question": "category", "port": "billing" }
+            "routed": { "question": "category", "port": "billing" },
+            "raised_questions": []
         })
     );
     let reqs = ports.reqs();

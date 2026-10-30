@@ -76,7 +76,8 @@ fn structural_flags_match_vocab() {
             "method",
             "samples",
             "cached",
-            "routed"
+            "routed",
+            "raised_questions"
         ]
     );
     // 決定キャッシュ（step 属性 cache・T10）を付けられるのは判定だけ。

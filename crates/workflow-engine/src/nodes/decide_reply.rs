@@ -36,6 +36,9 @@ pub(super) struct Reply {
     /// 答えた決定器の名前（`llm_decider` / `typesafe` / `stub`・ポートが足す・無ければ null）。
     #[serde(default)]
     pub provider: Option<String>,
+    /// AI が一様より低い自信を申告し、一様まで引き上げた質問のキー（BUG-124・D-114。無ければ空）。
+    #[serde(default)]
+    pub raised_questions: Vec<String>,
 }
 
 /// 答え 1 件（llm-gateway の `Answer` の形）。
@@ -95,6 +98,13 @@ pub(super) fn read(raw: &Value, questions: &[DecideQuestion]) -> Result<Reply, S
             .get(&q.key)
             .ok_or_else(|| format!("質問 {} の答えが無い", q.key))?;
         check_answer(q, a).map_err(|why| format!("質問 {}: {why}", q.key))?;
+    }
+    // 引き上げた質問は後続へ渡るので、質問に無いキー・重なりを通さない（D-114）。
+    let mut raised = std::collections::BTreeSet::new();
+    for key in &reply.raised_questions {
+        if !questions.iter().any(|q| &q.key == key) || !raised.insert(key.as_str()) {
+            return Err(format!("引き上げた質問 {key} が質問に無いか、重なっている"));
+        }
     }
     Ok(reply)
 }
@@ -171,6 +181,15 @@ impl Reply {
             } => Some((RoutedValue::Boolean(*value), *confidence)),
             WireAnswer::Score { .. } => None,
         }
+    }
+
+    /// 出力の `raised_questions`（AI の自信を引き上げた質問のキーを、質問の順に・[`read`] を通った応答だけを渡す）。
+    pub(super) fn raised_output<'a>(&self, questions: &'a [DecideQuestion]) -> Vec<&'a str> {
+        questions
+            .iter()
+            .filter(|q| self.raised_questions.contains(&q.key))
+            .map(|q| q.key.as_str())
+            .collect()
     }
 
     /// 出力の `answers`（選択肢の名前・段階の名前を添える。[`read`] を通った応答だけを渡す）。
