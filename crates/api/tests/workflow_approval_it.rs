@@ -3550,3 +3550,54 @@ async fn deleting_outside_the_api_is_caught_by_the_trigger_and_the_sweep() {
     env.forget_runs(wf).await;
     env.cleanup().await;
 }
+
+/// BUG-146: 自動実行の主体が自分の定義を読めない（オンにした後に認可だけが食い違った・別の認可ストアに向いた登録など）
+/// とき、発火は一時障害として再試行に回さず、委譲が成り立たない見送りにする。run は作らない。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn unreadable_definition_is_skipped_not_retried() {
+    let _serial = SERIAL.lock().await;
+    let Some(env) = setup().await else { return };
+    let table = env.expense_table().await;
+    let wf = env.enable(table, None).await;
+    let ns = env.alice.ns();
+    env.fga
+        .delete_tuple(
+            &ns.workflow_principal(&wf.to_string()),
+            Relation::Viewer,
+            &ns.artifact(&wf.to_string()),
+        )
+        .await
+        .unwrap();
+    let trigger_id = format!("{wf}:0");
+    let mut outcomes = Vec::new();
+    for _ in 0..2 {
+        outcomes.push(
+            env.launcher
+                .launch(&env.tenant, wf, "event", &trigger_id, &json!({}), None)
+                .await,
+        );
+    }
+    let runs: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM workflow_run WHERE tenant_id = $1 AND workflow_id = $2",
+    )
+    .bind(&env.tenant)
+    .bind(wf)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    env.forget_runs(wf).await;
+    env.cleanup().await;
+
+    for outcome in &outcomes {
+        assert!(
+            matches!(
+                outcome,
+                workflow_engine::LaunchOutcome::Skipped(
+                    workflow_engine::SkipReason::DelegationInvalid(_)
+                )
+            ),
+            "再試行する一時障害（Failed）にしない: {outcome:?}"
+        );
+    }
+    assert_eq!(runs, 0);
+}

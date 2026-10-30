@@ -26,6 +26,27 @@ pub struct WorkflowRunLauncher {
     delegation: DelegationStore,
     workflows: WorkflowStore,
     runs: RunStore,
+    /// 定義を読めないことを警告した自動実行（テナント・ワークフロー・有効化した版）。発火のたびに警告しない（BUG-146）。
+    unreadable_warned: Arc<WarnOnce>,
+}
+
+/// 同じ相手への警告をプロセスで 1 回にする覚え（BUG-146）。覚える数が上限に届いたら忘れて、また 1 回ずつ警告する。
+#[derive(Debug, Default)]
+struct WarnOnce(std::sync::Mutex<std::collections::HashSet<(String, Uuid, i64)>>);
+
+impl WarnOnce {
+    /// 覚える数の上限。
+    const MAX: usize = 10_000;
+
+    /// はじめての相手なら覚えて `true`（警告する）。覚えていれば `false`。
+    fn first(&self, tenant_id: &str, workflow_id: Uuid, version: i64) -> bool {
+        self.0.lock().is_ok_and(|mut seen| {
+            if seen.len() >= Self::MAX {
+                seen.clear();
+            }
+            seen.insert((tenant_id.to_string(), workflow_id, version))
+        })
+    }
 }
 
 impl WorkflowRunLauncher {
@@ -34,6 +55,26 @@ impl WorkflowRunLauncher {
             delegation,
             workflows,
             runs,
+            unreadable_warned: Arc::default(),
+        }
+    }
+
+    /// 自動実行で定義を読めないことを、(テナント・ワークフロー・有効化した版) ごとにプロセスで 1 回だけ警告する
+    /// （BUG-146）。2 回目からは debug に落とす（監査の deny は artifact の側で毎回残る）。
+    fn warn_unreadable_once(&self, tenant_id: &str, workflow_id: Uuid, version: i64) {
+        if self
+            .unreadable_warned
+            .first(tenant_id, workflow_id, version)
+        {
+            tracing::warn!(
+                tenant_id,
+                %workflow_id,
+                version,
+                "自動実行の主体がワークフローの定義を読めないため run を開始しません（自動実行をオンにし直すと直ります。\
+                 以後この版の発火では警告しません）"
+            );
+        } else {
+            tracing::debug!(tenant_id, %workflow_id, version, "定義を読めないため run を開始しません");
         }
     }
 
@@ -263,6 +304,15 @@ impl WorkflowRunLauncher {
                 );
                 return Ok(LaunchOutcome::Skipped(SkipReason::NotEnabled));
             }
+            // 自動実行の主体（workflow プリンシパル）が、自分の定義を読めない（登録と認可の食い違い。HigherConsistency
+            // の判定で、OpenFGA の障害は Forbidden にならない）。何度起こしても同じなので、一時障害として再試行しない。
+            // 警告は版ごとに 1 回（発火のたびに出さない・BUG-146）。きっかけは止めない（オンにし直せば直る）。
+            Err(crate::store::WorkflowStoreError::Artifact(artifact::ArtifactError::Forbidden)) => {
+                self.warn_unreadable_once(tenant_id, workflow_id, enabled_version);
+                return Ok(LaunchOutcome::Skipped(SkipReason::DelegationInvalid(
+                    "自動実行の主体がワークフローの定義を読めません".to_string(),
+                )));
+            }
             Err(e) => return Err(LauncherError::Ir(format!("{e:?}"))),
         };
 
@@ -401,5 +451,30 @@ impl LauncherError {
             .map(|e| e.message.as_str())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    /// 定義を読めない自動実行の警告は、(テナント・ワークフロー・版) ごとに 1 回（BUG-146）。
+    #[test]
+    fn unreadable_definitions_are_warned_once_per_version() {
+        let seen = WarnOnce::default();
+        let wf = Uuid::new_v4();
+        assert!(seen.first("t", wf, 1));
+        assert!(
+            !seen.first("t", wf, 1),
+            "同じ版の 2 回目の発火では警告しない"
+        );
+        assert!(seen.first("t", wf, 2), "オンにし直した別の版は警告する");
+        assert!(seen.first("u", wf, 1), "別のテナント");
+        // 上限に届いたら忘れる（覚えが際限なく増えない）。
+        for i in 0..WarnOnce::MAX {
+            seen.first("x", Uuid::new_v4(), i64::try_from(i).unwrap_or(0));
+        }
+        assert!(seen.0.lock().unwrap().len() <= WarnOnce::MAX);
     }
 }
