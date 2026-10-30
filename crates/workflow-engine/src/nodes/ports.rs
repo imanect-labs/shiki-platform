@@ -298,6 +298,11 @@ pub const NOT_INDEXABLE: &str = "not_indexable";
 /// ドライブのメニューの「検索に取り込み直す」を選ぶと取り込み直す（D-126）。保存し直しても取り込み直す。
 pub const INDEX_FAILED: &str = "index_failed";
 
+/// storage.read で、社内文書の検索が使えない環境（`rag.enabled = false`）で PDF・Office の本文を読もうとしたときの
+/// code（BUG-158・permanent・失敗の分類はこの環境で使えない機能）。以前は `not_text_file`（設定の誤り）で、実行の
+/// 詳細の 1 行目が「ワークフローの設定に問題があり…」になっていた。
+pub const SEARCH_DISABLED: &str = "search_disabled";
+
 /// 存在を明かさない「見つからない」の文（付録 C の §3.6・付録 D の N1.11）。`target` は「実行するワークフロー」など。
 ///
 /// 無いときと見る権限が無いときを言い分けない（名前の存在が分かってしまうため）。補いたい事実は呼び出し側が

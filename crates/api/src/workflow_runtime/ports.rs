@@ -158,7 +158,15 @@ impl NodePorts for ProdNodePorts {
         if is_binary(&meta.name, meta.content_type.as_deref()) {
             return Err(not_text_kind());
         }
-        super::document_read::read_text_file(&self.storage, &ctx, file_id, trace, map_storage).await
+        super::document_read::read_text_file(
+            &self.storage,
+            &ctx,
+            file_id,
+            trace,
+            map_storage,
+            not_text_kind,
+        )
+        .await
     }
 
     async fn storage_read_document(

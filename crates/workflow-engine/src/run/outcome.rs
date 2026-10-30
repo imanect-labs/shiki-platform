@@ -114,6 +114,8 @@ pub enum FailureCategory {
     Timeout,
     /// ワークフローの設定の誤り。
     Configuration,
+    /// この環境で使えない機能を使おうとした（管理者がサーバーの設定で有効にする・BUG-158）。
+    Environment,
     /// 上記以外。
     Unknown,
 }

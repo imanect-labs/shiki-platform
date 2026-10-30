@@ -10,7 +10,8 @@
 //! - 見えない文書・無い文書・索引の pre-filter で読めない文書は、同じ誤り（存在の秘匿）。
 //! - 取り込み前は失敗にせず、試す回数を使わずに待って読み直す（取り込んだ後に読める・D-125）。待つ上限（30 分）を
 //!   過ぎたらやり直せる失敗（index_pending）で、再開するともう一度待つ。取り込めない種類・取り込みに失敗した文書・
-//!   社内文書の検索が使えない環境は、やり直さない分かる誤り。
+//!   社内文書の検索が使えない環境は、やり直さない分かる誤り（検索が使えない環境は、この環境で使えない機能の分類・
+//!   BUG-158）。
 //! - 取り込みの記録が無い文書は、編集できる人が取り込み直し（outbox → 取り込み・D-126）、失敗したところから再開すると
 //!   読める。見えるだけの人は取り込み直せない。
 //! - script の `Shiki.storage.read` の誤りは、捕まえていなければホストの code のまま、作成者が投げた誤りは
@@ -37,7 +38,7 @@ use authz::{AuthContext, AuthzClient, Principal, PrincipalKind, Relation};
 use serde_json::{json, Value};
 use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
-use workflow_engine::nodes::ports::{INDEX_FAILED, INDEX_PENDING, NOT_INDEXABLE, NOT_TEXT_FILE};
+use workflow_engine::nodes::ports::{INDEX_FAILED, INDEX_PENDING, NOT_INDEXABLE, SEARCH_DISABLED};
 use workflow_engine::vocab::STORAGE_READ_MAX_DOCUMENT_CHARS;
 use workflow_engine::{
     CapabilityNodeExecutor, Catalog, DelegationStore, EffectJournal, GrantRequest, NodeExecutor,
@@ -847,7 +848,7 @@ async fn unindexed_documents_fail_with_a_clear_reason() {
         (
             "検索が使えない環境",
             &no_search,
-            NOT_TEXT_FILE,
+            SEARCH_DISABLED,
             "社内文書の検索が使えない",
         ),
     ] {
@@ -867,7 +868,7 @@ async fn unindexed_documents_fail_with_a_clear_reason() {
 /// 取り込みの記録が無い PDF（社内文書の検索を有効にする前に置いた）は、実行の詳細の 1 行目でも取り込み直す案内を
 /// 言う（D-126）。見えるだけの人は取り込み直せない。編集できる人が取り込み直すと、取り込み直しの依頼が outbox に
 /// 積まれ（同じ内容は二重に積まない）、取り込みの本体（`rag_ingest_job`・`reindex`）が本文を索引に入れる。失敗した
-/// ところから再開すると、本文を読める。
+/// ところから再開すると、本文を読める。社内文書の検索が使えない環境の失敗は、環境の問題として言う（BUG-158）。
 #[tokio::test]
 async fn reindexing_an_unrecorded_pdf_makes_it_readable() {
     let Some(env) = setup().await else { return };
@@ -892,6 +893,13 @@ async fn reindexing_an_unrecorded_pdf_makes_it_readable() {
         .unwrap()
         .unwrap()
         .failure;
+    let no_search = env.read(wf, orphan.id, &env.no_search).await;
+    let no_search_detail = env
+        .runs
+        .run_detail(&env.tenant, wf, no_search.run_id)
+        .await
+        .unwrap()
+        .unwrap();
 
     env.storage
         .share_node(
@@ -978,6 +986,23 @@ async fn reindexing_an_unrecorded_pdf_makes_it_readable() {
         "{failure:?}"
     );
     assert!(!failure.message.contains("設定に問題"), "{failure:?}");
+    // 社内文書の検索が使えない環境は、この環境で使えない機能（作成者でなく管理者に連絡する）。
+    assert_eq!(
+        no_search.code.as_deref(),
+        Some(SEARCH_DISABLED),
+        "{no_search:?}"
+    );
+    let f = no_search_detail.failure.unwrap();
+    assert_eq!(f.category, workflow_engine::FailureCategory::Environment);
+    assert!(
+        f.message
+            .starts_with("この環境では社内文書の検索が使えないため"),
+        "{f:?}"
+    );
+    assert_eq!(
+        no_search_detail.resume.unwrap().advice,
+        workflow_engine::ResumeAdvice::FixFirst
+    );
 
     assert!(
         matches!(viewer, Err(storage::StorageError::Forbidden)),

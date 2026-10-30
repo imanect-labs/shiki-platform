@@ -89,15 +89,15 @@ pub(super) fn read_text(bytes: &[u8]) -> Option<textenc::Decoded> {
 
 /// 種類が文章でないファイルを script の `Shiki.storage.read`（文章だけを読む）で読もうとしたときの誤り。
 ///
+/// 読み手は script の作者（実行の詳細の誤りの欄）。以前は「AI エージェント」のツールを案内していた（BUG-158）。
 /// ワークフローの「ファイルを読む」は、文章でない種類を社内文書の検索に取り込まれた本文で読む（document_read.rs・
-/// D-111）。読む間に種類が変わったとき（保存と重なった）だけ、こちらで断る。
+/// D-111）ので、その結果を script の入力に渡す組み方を言う。
 pub(super) fn not_text_kind() -> PortError {
-    PortError::new(
-        NOT_TEXT_FILE,
-        "このファイルは文章として読めません。PDF や Word の本文は「AI エージェント」の「文書の本文を読む」ツールで読みます。",
-        false,
-    )
+    PortError::new(NOT_TEXT_FILE, SCRIPT_NOT_TEXT, false)
 }
+
+/// [`not_text_kind`] の文言（script の作者向け）。
+const SCRIPT_NOT_TEXT: &str = "Shiki.storage.read が読めるのは、テキストのファイル（.txt、.md、.csv など）だけです。PDF や Word の本文は、前に「ファイルを読む」ブロックを置いて読み、その結果を script の入力に渡してください。";
 
 /// 中身を文章として読めない（文字コードが分からない・文章でない）ファイルを storage.read で読もうとしたときの誤り。
 pub(super) fn not_readable_text() -> PortError {
@@ -203,6 +203,15 @@ mod tests {
         // 西欧の文字コード（windows-1252 の café）は推定で断る（「UTF-8 か Shift_JIS」と言っている）。
         assert_eq!(read(b"caf\xe9\n"), None);
         assert_eq!(not_text_kind().code, NOT_TEXT_FILE);
+        // script の作者向けに、PDF や Word の本文を読む組み方（「ファイルを読む」の結果を渡す）を言う。AI エージェントの
+        // ツールは案内しない（BUG-158）。
+        let script = not_text_kind().message;
+        assert!(
+            script.starts_with("Shiki.storage.read が読めるのは"),
+            "{script}"
+        );
+        assert!(script.contains("「ファイルを読む」ブロック"), "{script}");
+        assert!(!script.contains("AI エージェント"), "{script}");
         assert_eq!(not_readable_text().code, NOT_TEXT_FILE);
         assert!(!not_readable_text().retryable);
     }

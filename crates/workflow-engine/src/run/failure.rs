@@ -17,7 +17,8 @@ use super::outcome::{FailureCategory, ResumeAdvice, ResumeHint, RunFailure};
 /// ソースを走査して、ここに無い code を見つける）。
 pub const KNOWN_CODES: &[(&str, FailureCategory)] = {
     use FailureCategory::{
-        Configuration, Conflict, NotFound, Permission, Quota, Temporary, Timeout, Unknown,
+        Configuration, Conflict, Environment, NotFound, Permission, Quota, Temporary, Timeout,
+        Unknown,
     };
     &[
         // 権限
@@ -105,6 +106,8 @@ pub const KNOWN_CODES: &[(&str, FailureCategory)] = {
         // 読もうとした（storage.read・D-111）。
         (crate::nodes::ports::NOT_INDEXABLE, Configuration),
         (crate::nodes::ports::INDEX_FAILED, Configuration),
+        // この環境では使えない機能（社内文書の検索が無効な環境で PDF・Office の本文を読もうとした・BUG-158）。
+        (crate::nodes::ports::SEARCH_DISABLED, Environment),
         // 作成者の script が投げた誤り（throw・Shiki.fail・書き誤り）。捕まえていないホスト呼び出しの誤りは、元の
         // code で失敗にする（D-121）。
         (script_runtime::SCRIPT_ERROR, Configuration),
@@ -176,6 +179,11 @@ fn specific_message(code: &str) -> Option<&'static str> {
             "このファイルからは、社内文書の検索で本文を取り出せないため、読めませんでした。\
              取り込み直しても変わらないので、別のファイルを選んでください。"
         }
+        // 「ワークフローの設定に問題があり」は原因と合わない（環境の側・BUG-158）。
+        crate::nodes::ports::SEARCH_DISABLED => {
+            "この環境では社内文書の検索が使えないため、PDF や Word の本文を読めませんでした。\
+             管理者に連絡してください。"
+        }
         // 付録 C の §5.2（failure.rs の時間切れの文言の直し）。
         "run_timeout" => {
             "実行の期限までに終わらなかったため、実行を止めました。途中まで進んでいることがあります。\
@@ -218,6 +226,10 @@ fn message(category: FailureCategory, code: Option<&str>) -> String {
         F::Timeout => format!("時間内に終わらなかったため、処理を止めました。{CHECK_BEFORE_RETRY}"),
         F::Configuration => {
             "ワークフローの設定に問題があり、処理を完了できませんでした。作成者に連絡してください。"
+                .to_string()
+        }
+        F::Environment => {
+            "この環境では使えない機能を使おうとしたため、処理を完了できませんでした。管理者に連絡してください。"
                 .to_string()
         }
         F::Unknown => format!(
@@ -327,9 +339,12 @@ pub fn resume_advice(code: Option<&str>, fail_reason: Option<&str>) -> ResumeAdv
     }
     match category_of(code) {
         F::Temporary | F::Timeout | F::Unknown => ResumeAdvice::Resume,
-        F::Permission | F::Conflict | F::NotFound | F::Quota | F::Configuration => {
-            ResumeAdvice::FixFirst
-        }
+        F::Permission
+        | F::Conflict
+        | F::NotFound
+        | F::Quota
+        | F::Configuration
+        | F::Environment => ResumeAdvice::FixFirst,
     }
 }
 
@@ -610,6 +625,32 @@ mod tests {
             run_failure(id, Some(NOT_INDEXABLE), None).category,
             FailureCategory::Configuration
         );
+    }
+
+    /// 社内文書の検索が使えない環境で PDF を読んだ失敗は、この環境で使えない機能の分類で、1 行目は環境の原因と
+    /// 相談先（管理者）を言う（BUG-158）。管理者が有効にした後は、再開で通る。
+    #[test]
+    fn search_disabled_is_an_environment_problem() {
+        use crate::nodes::ports::SEARCH_DISABLED;
+        let f = run_failure(Uuid::nil(), Some(SEARCH_DISABLED), None);
+        assert_eq!(f.category, FailureCategory::Environment);
+        assert!(
+            f.message
+                .starts_with("この環境では社内文書の検索が使えないため"),
+            "{}",
+            f.message
+        );
+        assert!(f.message.contains("管理者に連絡"), "{}", f.message);
+        assert!(
+            !f.message.contains("設定に問題") && !f.message.contains("作成者"),
+            "{}",
+            f.message
+        );
+        let h = resume_hint(Some(SEARCH_DISABLED), None);
+        assert_eq!(h.advice, ResumeAdvice::FixFirst);
+        assert!(h.offer && h.offer_rerun, "{h:?}");
+        // 分類の文言（code ごとの文言が無いとき）も、環境の問題と言う。
+        assert!(message(FailureCategory::Environment, None).contains("この環境では使えない"));
     }
 
     /// 再開の API が断るときの code は、詳細の `resume.advice` と同じ名前（D-116）。
