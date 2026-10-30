@@ -4,8 +4,8 @@ import { cleanupAll, loginViaKeycloak, uniqueName } from "./helpers";
 
 /// 「ファイルを読む」（storage.read）が文章として読めないファイルを文字化けのまま読まない e2e（BUG-101）:
 /// PDF・Word は社内文書の検索に取り込まれた本文を読む（D-111）。社内文書の検索が無効な構成（CI の web-e2e と手元の
-/// 検証のスタック・SHIKI__RAG__ENABLED=false）では、PDF を読もうとすると、ブロックは分かる誤り（not_text_file・
-/// やり直さない）で失敗し、実行履歴に理由と、原因を直してから再開する案内が出る。テキストのファイルはそのまま読める。
+/// 検証のスタック・SHIKI__RAG__ENABLED=false）では、PDF を読もうとすると、ブロックは分かる誤り（search_disabled・
+/// やり直さない・この環境で使えない機能の分類・BUG-158）で失敗し、実行履歴に理由と、原因を直してから再開する案内が出る。テキストのファイルはそのまま読める。
 /// 以前は PDF や Word を文字化けしたまま成功させていた。「読むファイル」の注記は、テキストのファイルは中身を、PDF や
 /// Word は取り込まれた本文を読むことを言う。拡張子が文章の種類なら、ブラウザーが付けた MIME（Windows の .csv の
 /// application/vnd.ms-excel）で断らない。取り込みを待って PDF の本文を読む経路は workflow-storage-read-document.spec.ts。
@@ -143,12 +143,15 @@ test("ファイルを読む: PDF は文字化けのまま読まず分かる誤�
     const bad = await run(pdfId);
     expect(bad.detail.status).toBe("failed");
     const step = bad.detail.steps.find((s) => s.node_id === "rd");
-    expect(step?.error?.code).toBe("not_text_file");
+    expect(step?.error?.code).toBe("search_disabled");
     expect(step?.error?.retryable).toBe(false);
     expect(step?.error?.message).toBe(NOT_TEXT);
-    // 再開は同じファイルの最新のバージョンを読み直すので、ファイルを保存し直してから再開すれば通る。原因を直して
-    // から再開するよう勧める（最初から実行し直すと、済んだ書き込みや送信が二重になる・失敗の分類の単一定義から）。
-    expect(bad.detail.failure?.category).toBe("configuration");
+    // 1 行目は、ワークフローの設定の問題でなく、この環境の問題として言う（BUG-158）。管理者が社内文書の検索を有効に
+    // してから再開すれば通るので、原因を直してから再開するよう勧める（最初から実行し直すと、済んだ書き込みや送信が
+    // 二重になる・失敗の分類の単一定義から）。
+    expect(bad.detail.failure?.category).toBe("environment");
+    expect(bad.detail.failure?.message).toMatch(/^この環境では社内文書の検索が使えないため/);
+    expect(bad.detail.failure?.message).not.toContain("作成者に連絡");
     expect(bad.detail.resume).toMatchObject({ advice: "fix_first", offer: true });
 
     await page.goto(`/workflows/${id}/runs?run=${bad.runId}`);

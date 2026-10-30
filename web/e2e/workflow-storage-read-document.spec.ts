@@ -10,7 +10,7 @@ import { cleanupAll, loginViaKeycloak, removeWorkflowApi, uniqueName } from "./h
 /// 社内文書の検索が有効な構成（dev-up.sh --rag。取り込みの worker が要る）では、PDF を上げて取り込みを待ち、
 /// 「ファイルを読む」の結果に本文が入ることを確かめる。無効な構成（CI の web-e2e と、手元の検証のスタック・
 /// SHIKI__RAG__ENABLED=false）では取り込みが走らないので、PDF は「社内文書の検索が使えない」分かる誤り（やり直さない）で
-/// 失敗し、実行履歴に理由が出ることを確かめる（取り込み済みの本文を読む経路は、api の結合テスト
+/// 失敗し、実行履歴に理由が出る（1 行目は環境の問題として言う・BUG-158）ことを確かめる（取り込み済みの本文を読む経路は、api の結合テスト
 /// workflow_document_read_it が取り込みの行を積んで確かめる）。
 
 const SHOTS = process.env.E2E_SHOTS_DIR;
@@ -26,6 +26,9 @@ const HINT =
 /// 「詳しく」の本文の字数の上限（STORAGE_READ_MAX_DOCUMENT_CHARS = 100,000）。
 const LIMIT = "PDF や Word の本文は、先頭から 100,000 字までを読みます。";
 const NO_SEARCH = "この環境では社内文書の検索が使えないため、PDF や Word の本文を読めません。";
+/// 実行の詳細の 1 行目（失敗の分類の単一定義・crates/workflow-engine/src/run/failure.rs）。
+const RUN_NO_SEARCH =
+  "この環境では社内文書の検索が使えないため、PDF や Word の本文を読めませんでした。管理者に連絡してください。";
 
 /// 1 ページに `text`（ASCII）を書いた PDF（Helvetica・取り込みの worker が本文を取り出せる最小の形）。
 function textPdf(text: string): Buffer {
@@ -180,13 +183,15 @@ test("ファイルを読む: PDF は社内文書の検索に取り込まれた�
       await expect(sheet.getByText(new RegExp(token)).first()).toBeVisible({ timeout: 20_000 });
     } else {
       // 社内文書の検索が使えない環境では、分かる誤り（やり直さない）で失敗し、原因を直してから再開する案内が出る。
+      // 1 行目は、ワークフローの設定の問題でなく、この環境の問題として言う（管理者に連絡する・BUG-158）。
       expect(finished.status).toBe("failed");
       const step = finished.steps.find((s) => s.node_id === "rd");
-      expect(step?.error).toMatchObject({ code: "not_text_file", message: NO_SEARCH, retryable: false });
-      expect(finished.failure?.category).toBe("configuration");
+      expect(step?.error).toMatchObject({ code: "search_disabled", message: NO_SEARCH, retryable: false });
+      expect(finished.failure?.category).toBe("environment");
+      expect(finished.failure?.message).toBe(RUN_NO_SEARCH);
       expect(finished.resume).toMatchObject({ advice: "fix_first", offer: true });
       await expect(sheet.getByText(NO_SEARCH).first()).toBeVisible({ timeout: 30_000 });
-      await expect(sheet.getByTestId("run-failure")).toHaveText(finished.failure!.message);
+      await expect(sheet.getByTestId("run-failure")).toHaveText(RUN_NO_SEARCH);
     }
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/storage-read-document-run-pc.png` });
 
@@ -218,6 +223,7 @@ test("ファイルを読む: PDF は社内文書の検索に取り込まれた�
       const runSheet = phone.getByRole("dialog");
       if (rag) await runSheet.getByRole("button", { name: /請求書を読む/ }).click();
       await expect(runSheet.getByText(rag ? new RegExp(token) : NO_SEARCH).first()).toBeVisible({ timeout: 30_000 });
+      if (!rag) await expect(runSheet.getByTestId("run-failure")).toHaveText(RUN_NO_SEARCH);
       expect(await phone.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
       if (SHOTS) await phone.screenshot({ path: `${SHOTS}/storage-read-document-run-phone.png` });
     } finally {
