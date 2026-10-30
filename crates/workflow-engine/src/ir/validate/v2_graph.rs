@@ -206,6 +206,26 @@ fn check_regions(
         }
         let map_id = node.id.as_str();
         let map_name = block_name(node);
+        // ネスト深さ: map の親 map 連鎖が 2 以上（＝深さ 3 以上）は不可。中が空でも決める（後から中に足した
+        // 時点で突然誤りにしない）。
+        let mut ancestors = 0;
+        let mut cur = parent_of.get(map_id).copied().flatten();
+        while let Some(p) = cur {
+            ancestors += 1;
+            cur = parent_of.get(p).copied().flatten();
+        }
+        if ancestors >= 2 {
+            errors.push(
+                ValidationError::new(
+                    "ir.region_too_deep",
+                    format!(
+                        "「{}」の中に置けるのは 2 段までです。",
+                        crate::vocab::label_ja(NodeType::ControlMap)
+                    ),
+                )
+                .at_node(map_id),
+            );
+        }
         // 領域ノード（parent==map_id）。空の領域は readiness が止める（入口・出口の決まりは中がある領域だけ）。
         let region: Vec<&str> = ir
             .nodes
@@ -243,25 +263,6 @@ fn check_regions(
                     format!(
                         "「{map_name}」の中の流れは、最後のブロックを 1 つにしてください（いま {exits} 個）。分かれた流れは「{}」でまとめます。",
                         crate::vocab::label_ja(NodeType::ControlJoin)
-                    ),
-                )
-                .at_node(map_id),
-            );
-        }
-        // ネスト深さ: map の親 map 連鎖が 2 以上（＝深さ 3 以上）は不可。
-        let mut ancestors = 0;
-        let mut cur = parent_of.get(map_id).copied().flatten();
-        while let Some(p) = cur {
-            ancestors += 1;
-            cur = parent_of.get(p).copied().flatten();
-        }
-        if ancestors >= 2 {
-            errors.push(
-                ValidationError::new(
-                    "ir.region_too_deep",
-                    format!(
-                        "「{}」の中に置けるのは 2 段までです。",
-                        crate::vocab::label_ja(NodeType::ControlMap)
                     ),
                 )
                 .at_node(map_id),
@@ -562,6 +563,26 @@ mod tests {
             .unwrap();
         assert_eq!(deep.message, "「繰り返し」の中に置けるのは 2 段までです。");
         assert_eq!(deep.node_id.as_deref(), Some("m3"));
+
+        // 3 段目の繰り返しの中が空でも、深さの誤りにする（中に足した時点で突然誤りにしない）。
+        let mut errs = Vec::new();
+        check(
+            &ir(json!({
+                "ir_version": 1, "name": "wf",
+                "nodes": [
+                    { "id": "m1", "type": "control.map", "params": { "items": [] } },
+                    { "id": "m2", "type": "control.map", "parent": "m1", "params": { "items": [] } },
+                    { "id": "m3", "type": "control.map", "parent": "m2", "params": { "items": [] } }
+                ],
+                "edges": []
+            })),
+            &mut errs,
+        );
+        assert!(
+            errs.iter()
+                .any(|e| e.code == "ir.region_too_deep" && e.node_id.as_deref() == Some("m3")),
+            "{errs:?}"
+        );
     }
 
     /// 2 ノード（`a` の出口 `port` → `b`）の IR を V2 に通し、ir.unknown_port のエラーを返す。
