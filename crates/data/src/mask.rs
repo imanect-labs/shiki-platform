@@ -187,7 +187,7 @@ impl DataStore {
         })
     }
 
-    /// 読取応答の出口（閲覧者本人の権限での派生値・リンク値の解決 → マスク列の除去）。
+    /// 読取応答の出口（作成者の列 → 閲覧者本人の権限での派生値・リンク値の解決 → マスク列の除去）。
     ///
     /// レコードを外へ返す面（get・query・SQL・SSE・遷移や更新の応答）はこの順で掛ける。リンク列の
     /// 値もここで閲覧者に見える参照先だけに絞られる（[`DataStore::resolve_derived_fields`]・§7.2）。
@@ -199,6 +199,8 @@ impl DataStore {
         masked: &HashSet<String>,
         records: &mut [DataRecord],
     ) -> Result<(), DataError> {
+        // 作成者の列はレコードの作成者で埋める（保存しない・派生列の材料にもなるので先に入れる・D-122）。
+        crate::created_by::fill(&table.schema, records);
         self.resolve_derived_fields(ctx, az, table, masked, records)
             .await?;
         Self::apply_mask_records(masked, records);

@@ -458,6 +458,8 @@ impl DataStore {
                     link_labels: std::collections::BTreeMap::new(),
                 })
                 .collect();
+            // 参照先の作成者の列（ルックアップ・ロールアップの対象）は参照先の行の作成者で埋める（D-122）。
+            crate::created_by::fill(&ref_table.schema, &mut recs);
             // 参照先の派生列を対象にする場合（多段）は、参照先でも閲覧者の権限で計算する。
             // 参照先のリンク列を射影する lookup も、参照先の参照先の存在秘匿を同じ規則で掛ける。
             let needs_derived = targets

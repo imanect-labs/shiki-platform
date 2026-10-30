@@ -2410,3 +2410,298 @@ async fn table_fsm_routes_save_read_and_keep_applicants_from_approving() {
     purge_table(&env, t.id).await;
     purge_table(&env, bobs.id).await;
 }
+
+/// 作成者の列（D-122・BUG-148）: 列を足すと前からあるレコードも作成者で埋まって見え、だれも書けない（作成・更新・
+/// CSV の取込で 400）。状態の進め方の「申請した本人は除く」と書き込みの決まりを作成者の列で付けると、申請者の列
+/// （メンバーの列）をほかの人にしても自分の申請は承認できない。申請者の列が空のレコードで止める確かめ（409
+/// `fsm_locks_records`）は出ない（作成者は空にならない）。あわせて、定義を読めない編集者にも閲覧者の文脈で
+/// 最初の状態が出る（BUG-154）、追加だけの人が状態を進めると 403（BUG-155）。
+#[tokio::test]
+async fn created_by_column_is_server_filled_and_keeps_creators_from_approving() {
+    let Some(env) = setup().await else { return };
+    let dir = storage::DirectoryStore::new(env.pool.clone());
+    for u in ["alice", "bob", "carol"] {
+        dir.upsert_user(u, TENANT, "acme", &format!("{u}@acme.example"), u)
+            .await
+            .unwrap();
+    }
+    let t = approval_table(&env, "created-by").await; // alice: 持ち主／bob: 編集者
+    let base = format!("/data/tables/{}", t.id);
+    let rec_url = format!("{base}/records");
+    let fsm_url = format!("{base}/fsm");
+
+    // 列を足す前のレコード（承認済み・申請者の列は空）。
+    let (s, before) = send(
+        &env,
+        post_json(
+            "alice",
+            &rec_url,
+            &json!({ "data": { "title": "前からある", "status": "承認" } }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{before}");
+    // 作成者の列を足す（索引の宣言は要らない・indexed は立って返る）。
+    let (_, table_now) = send(&env, get("alice", &base)).await;
+    let mut next = table_now["schema"].clone();
+    next["fields"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({ "key": "made_by", "display_name": "作成者", "type": "created_by" }));
+    let (s, saved) = send(
+        &env,
+        put_json(
+            "alice",
+            &format!("{base}/schema"),
+            &json!({ "schema": next, "expected_schema_version": table_now["schema_version"] }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{saved}");
+    let made_by = saved["schema"]["fields"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|f| f["key"] == "made_by")
+        .cloned()
+        .unwrap();
+    assert_eq!(
+        (made_by["type"].clone(), made_by["indexed"].clone()),
+        (json!("created_by"), json!(true))
+    );
+    let before_id = before["id"].as_str().unwrap();
+    let (s, got) = send(&env, get("bob", &format!("{rec_url}/{before_id}"))).await;
+    assert_eq!(s, StatusCode::OK, "{got}");
+    assert_eq!(
+        got["data"]["made_by"], "alice",
+        "前からあるレコードも作成者で埋まる"
+    );
+    // 必須・重複なしは付けられない。
+    let mut bad = saved["schema"].clone();
+    for f in bad["fields"].as_array_mut().unwrap() {
+        if f["key"] == "made_by" {
+            f["required"] = json!(true);
+        }
+    }
+    let (s, e) = send(
+        &env,
+        put_json(
+            "alice",
+            &format!("{base}/schema"),
+            &json!({ "schema": bad, "expected_schema_version": saved["schema_version"] }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{e}");
+    assert_eq!(e["code"], "schema_invalid", "{e}");
+
+    // 書けない: 作成・更新・CSV の取込は 400（黙って捨てない）。
+    let (s, e) = send(
+        &env,
+        post_json(
+            "bob",
+            &rec_url,
+            &json!({ "data": { "title": "x", "made_by": "alice" } }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{e}");
+    assert_eq!(
+        (e["code"].clone(), e["field"].clone()),
+        (json!("invalid_input"), json!("made_by")),
+        "{e}"
+    );
+    assert_eq!(
+        e["message"],
+        "「作成者」には書き込めません。作成者の列には、レコードを追加した人が自動で入ります",
+        "{e}"
+    );
+    let (s, e) = send(
+        &env,
+        req(
+            "PATCH",
+            "alice",
+            &format!("{rec_url}/{before_id}"),
+            "application/json",
+            Body::from(
+                json!({ "patch": { "made_by": "bob" }, "expected_rev": before["rev"] }).to_string(),
+            ),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{e}");
+    assert_eq!(e["field"], "made_by", "{e}");
+    let (s, e) = send(
+        &env,
+        post_csv(
+            "bob",
+            &format!("{base}/imports/csv"),
+            "title,made_by\n偽,alice\n",
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{e}");
+    assert!(
+        e.to_string()
+            .contains("作成者の列には、レコードを追加した人が自動で入ります"),
+        "{e}"
+    );
+
+    // 状態の進め方: 承認・却下は「承認者の列の人で、作成者は除く」。書き込みの決まりも作成者の列で付ける。
+    // 申請者の列が空で最初の状態を過ぎたレコード（前からある）があっても、作成者の列なら確かめは出ない。
+    let (_, v) = send(&env, get("alice", &fsm_url)).await;
+    let who = json!({ "all": [
+        { "field_cmp": { "field": "approver", "op": "eq", "value": "user_id" } },
+        { "field_cmp": { "field": "made_by", "op": "ne", "value": "user_id" } }
+    ] });
+    let body = json!({
+        "states": ["申請中", "承認", "却下"],
+        "transitions": [
+            { "from": "申請中", "to": "承認", "actor": who },
+            { "from": "申請中", "to": "却下", "actor": who }
+        ],
+    });
+    let (s, saved) = send(
+        &env,
+        put_json(
+            "alice",
+            &fsm_url,
+            &json!({
+                "status_field": "status",
+                "body": body,
+                "applicant_write_lock": "made_by",
+                "expected_schema_version": v["schema_version"],
+            }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{saved}");
+    let (_, v) = send(&env, get("alice", &fsm_url)).await;
+    assert_eq!(v["applicant_write_lock"], "made_by", "{v}");
+
+    // bob が申請者の列を alice にして申請し、承認者の列も自分にする。作成者は bob なので、自分では承認できない。
+    let (s, own) = send(
+        &env,
+        post_json(
+            "bob",
+            &rec_url,
+            &json!({ "data": { "title": "bob の出張", "applicant": "alice", "approver": "bob" } }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{own}");
+    assert_eq!(own["data"]["made_by"], "bob");
+    let own_id = own["id"].as_str().unwrap().to_string();
+    let (s, cand) = send(&env, get("bob", &format!("{rec_url}/{own_id}/transitions"))).await;
+    assert_eq!(s, StatusCode::OK, "{cand}");
+    assert_eq!(cand["transitions"], json!([]), "{cand}");
+    let (s, e) = send(
+        &env,
+        post_json(
+            "bob",
+            &format!("{rec_url}/{own_id}/transition"),
+            &json!({ "to": "承認", "expected_rev": own["rev"] }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{e}");
+    // alice の申請（承認者は bob）は bob が承認できる。
+    let (s, other) = send(
+        &env,
+        post_json(
+            "alice",
+            &rec_url,
+            &json!({ "data": { "title": "alice の出張", "applicant": "alice", "approver": "bob" } }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{other}");
+    let other_id = other["id"].as_str().unwrap().to_string();
+    let (s, done) = send(
+        &env,
+        post_json(
+            "bob",
+            &format!("{rec_url}/{other_id}/transition"),
+            &json!({ "to": "承認", "expected_rev": other["rev"] }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{done}");
+    // 最初の状態を過ぎたら、作成者（alice）は書き換えられない。作成者でない bob は書ける。
+    let patch = |user: &str, rev: &Value| {
+        req(
+            "PATCH",
+            user,
+            &format!("{rec_url}/{other_id}"),
+            "application/json",
+            Body::from(json!({ "patch": { "title": "直した" }, "expected_rev": rev }).to_string()),
+        )
+    };
+    let (s, e) = send(&env, patch("alice", &done["rev"])).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{e}");
+    let (s, e) = send(&env, patch("bob", &done["rev"])).await;
+    assert_eq!(s, StatusCode::OK, "{e}");
+    // 作成者の列で絞り込める（表示名ではなく ID）。
+    let (s, q) = send(
+        &env,
+        post_json(
+            "alice",
+            &format!("{base}/query"),
+            &json!({ "filter": { "cmp": { "field": "made_by", "op": "eq", "value": "bob" } } }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{q}");
+    let titles: Vec<&str> = q["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|it| it["data"]["title"].as_str().unwrap())
+        .collect();
+    assert_eq!(titles, vec!["bob の出張"], "{q}");
+
+    // BUG-154: 定義を読めない編集者（bob）にも、閲覧者の文脈で最初の状態が出る。
+    let (s, vc) = send(&env, get("bob", &format!("{base}/viewer-context"))).await;
+    assert_eq!(s, StatusCode::OK, "{vc}");
+    assert_eq!(vc["initial_state"], "申請中", "{vc}");
+    // BUG-155: 追加だけの人（carol）が状態を進めると、書き換えと同じ 403（無いレコードでも同じ）。
+    let (s, b) = send(
+        &env,
+        put_json(
+            "alice",
+            &format!("{base}/shares"),
+            &json!({ "target": { "type": "user", "id": "carol" }, "role": "submitter" }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::NO_CONTENT, "{b}");
+    let (s, mine) = send(
+        &env,
+        post_json(
+            "carol",
+            &rec_url,
+            &json!({ "data": { "title": "carol の申請", "approver": "bob" } }),
+        ),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{mine}");
+    let mine_id = mine["id"].as_str().unwrap().to_string();
+    let missing = Uuid::new_v4().to_string();
+    let mut moved = Vec::new();
+    for id in [&mine_id, &missing] {
+        let (s, _) = send(
+            &env,
+            post_json(
+                "carol",
+                &format!("{rec_url}/{id}/transition"),
+                &json!({ "to": "承認", "expected_rev": 1 }),
+            ),
+        )
+        .await;
+        moved.push(s);
+    }
+
+    purge_fsm_artifacts(&env, t.id).await;
+    purge_table(&env, t.id).await;
+    assert_eq!(moved, vec![StatusCode::FORBIDDEN, StatusCode::FORBIDDEN]);
+}

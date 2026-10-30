@@ -53,8 +53,8 @@ pub struct SaveTableFsm {
     pub status_field: String,
     /// 状態の一覧（先頭が最初の状態）と進め方。状態の列の選択肢は、この一覧（この順）になる。
     pub body: FsmBody,
-    /// 「最初の状態を過ぎたら、申請者はレコードを書き換えられない」決まりの申請者の列（メンバーの列）。
-    /// `None` なら、この決まりを外す。
+    /// 「最初の状態を過ぎたら、申請者はレコードを書き換えられない」決まりの申請者の列（作成者の列か
+    /// メンバーの列）。`None` なら、この決まりを外す。
     pub applicant_write_lock: Option<String>,
     /// 読んだときのスキーマの版（違えば 409）。
     pub expected_schema_version: i64,
@@ -159,11 +159,12 @@ impl FsmStore {
         next.row_policy = match req.applicant_write_lock.as_deref() {
             Some(applicant) => {
                 match next.field(applicant) {
-                    Some(f) if f.field_type == FieldType::UserRef => {}
+                    Some(f)
+                        if matches!(f.field_type, FieldType::UserRef | FieldType::CreatedBy) => {}
                     _ => {
                         return Err(invalid(
                             Some(applicant),
-                            "申請者の列には、メンバーの列を選んでください。",
+                            "申請者の列には、作成者の列かメンバーの列を選んでください。",
                         ))
                     }
                 }
@@ -223,6 +224,10 @@ impl FsmStore {
         let (Some(sf), Some(af)) = (schema.field(status), schema.field(applicant)) else {
             return Ok(None);
         };
+        // 作成者の列は空にならない（レコードの作成者）ので、決まりで書き換えられなくなるレコードは無い（D-122）。
+        if af.is_created_by() {
+            return Ok(None);
+        }
         // 値はすべてバインド（SQL へ埋め込むのは固定の条件文だけ・PIT-21）。空は schema_data_check と同じ
         // （キーが無い・null・空の配列）。
         let n: i64 = sqlx::query_scalar(

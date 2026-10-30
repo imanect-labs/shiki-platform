@@ -105,7 +105,8 @@ pub(crate) fn policy_keys(schema: &TableSchema) -> Vec<String> {
         match e {
             PolicyExpr::Any(v) | PolicyExpr::All(v) => v.iter().for_each(|c| walk(c, schema, out)),
             PolicyExpr::FieldCmp { field, .. } => {
-                if let Some(f) = schema.field(field) {
+                // 作成者の列は owner と比べる（owner は before に別に載る・D-122）。
+                if let Some(f) = schema.field(field).filter(|f| !f.is_created_by()) {
                     let k = json_key(f.id);
                     if !out.contains(&k) {
                         out.push(k);

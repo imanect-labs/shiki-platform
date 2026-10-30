@@ -265,6 +265,21 @@ impl<'a> Guard<'a> {
             PolicyExpr::All(v) => v.iter().find_map(|c| self.driver_of(c)),
             PolicyExpr::FieldCmp { field, op, value } => {
                 let f = self.ctx.schema.field(field)?;
+                if f.is_created_by() {
+                    // 作成者の列は owner の擬似列で引く（D-122）。等値だけを入口にする。
+                    if !active(SYSTEM_FIELD_OWNER, IndexTable::Text) {
+                        return None;
+                    }
+                    return match (op, value) {
+                        (CmpOp::Eq, PolicyOperand::UserId) => {
+                            Some(Driver::Owner(self.ctx.user.to_string()))
+                        }
+                        (CmpOp::Eq, PolicyOperand::Lit(v)) => {
+                            Some(Driver::Owner(v.as_str()?.to_string()))
+                        }
+                        _ => None,
+                    };
+                }
                 let numeric = f.field_type == FieldType::Number;
                 let table = if numeric {
                     IndexTable::Num

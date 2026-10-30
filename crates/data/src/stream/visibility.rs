@@ -10,7 +10,7 @@
 //! |---|---|---|
 //! | `FieldCmp`（リテラル・`$user.roles`） | **SQL**（v1 のコンパイラ・同じ意味論） | ロール構成が同じ購読者でグループ化し、**グループごとに 1 回** |
 //! | `HasRole` / `Public` | 材料から定数に畳む | グループの鍵に入る |
-//! | `IsOwner` / `FieldCmp($user.id)` | SQL を発行しない（イベントの owner・旧値と principal id の O(1) 比較） | 購読者ごと |
+//! | `IsOwner` / `FieldCmp($user.id)` | SQL を発行しない（イベントの owner・旧値と principal id の O(1) 比較。作成者の列は owner と比べる） | 購読者ごと |
 //! | 個別共有 | `record_id ∈ 購読者の共有集合`（O(1) のハッシュ集合判定） | 購読者ごと |
 //!
 //! 木（`any` / `all`）は Rust で組み立て直す。v1 の SQL は 3 値論理だが、文法に `NOT` が無い
@@ -48,6 +48,8 @@ enum LeafKind {
     Owner,
     /// `$user.id` との比較（保存形キー・演算子）。
     UserId { key: String, op: CmpOp },
+    /// 作成者の列と `$user.id` の比較（行の owner と比べる・空にならない・D-122）。
+    OwnerCmp { op: CmpOp },
 }
 
 /// 木（葉は `leaves` の添字）。
@@ -120,6 +122,9 @@ fn build(
             let f = schema.field(field).ok_or_else(|| {
                 DataError::Internal(format!("row_policy が未知フィールド '{field}' を参照"))
             })?;
+            if f.is_created_by() {
+                return Ok(leaf(LeafKind::OwnerCmp { op: *op }, leaves));
+            }
             let key = json_key(f.id);
             if !is_json_key(&key) {
                 return Err(DataError::Internal(
@@ -277,6 +282,11 @@ pub(crate) fn visible(d: &Decomposed, v: &Viewer<'_>, row: &RowState, common: &[
             LeafKind::Const(e) => const_value(e, v.material),
             LeafKind::Common(_) => common_idx.get(&i).copied().unwrap_or(false),
             LeafKind::Owner => row.owner == v.principal,
+            LeafKind::OwnerCmp { op } => match op {
+                CmpOp::Eq => row.owner == v.principal,
+                CmpOp::Ne => row.owner != v.principal,
+                CmpOp::In => false,
+            },
             LeafKind::UserId { key, op } => {
                 let text = scalar_text(row.data.get(key));
                 match op {

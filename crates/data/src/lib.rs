@@ -47,6 +47,7 @@
 
 mod bulk;
 mod change_view;
+mod created_by;
 mod cursor;
 mod derived;
 mod field_key;

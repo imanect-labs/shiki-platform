@@ -36,7 +36,8 @@ pub(crate) fn prune_keys(bq: &BoundQuery, schema: &TableSchema) -> Option<Vec<St
     let mut keys = BTreeSet::new();
     for k in sel {
         // 擬似列（`_created_at` 等）は本体の列から取るので JSONB のキーは要らない。
-        let Some(f) = schema.field(k) else {
+        // 作成者の列は本体の owner から入れる（JSONB のキーは要らない・D-122）。
+        let Some(f) = schema.field(k).filter(|f| !f.is_created_by()) else {
             continue;
         };
         if f.field_type.is_derived() || f.is_reverse_link() {
@@ -56,7 +57,7 @@ pub(crate) fn prune_keys(bq: &BoundQuery, schema: &TableSchema) -> Option<Vec<St
         let mut refs = Vec::new();
         walk(&p.read, &mut refs);
         for r in refs {
-            if let Some(f) = schema.field(r) {
+            if let Some(f) = schema.field(r).filter(|f| !f.is_created_by()) {
                 keys.insert(f.json_key());
             }
         }

@@ -88,6 +88,12 @@ fn columns<'a>(
         if f.field_type.is_derived() || f.is_reverse_link() {
             return Err(invalid(format!("列 '{h}' は書き込めません（派生列）")));
         }
+        // 作成者の列はレコードを追加した人で埋まる（取り込む値で書き換えさせない・D-122）。
+        if f.is_created_by() {
+            return Err(invalid(format!(
+                "列 '{h}' には書き込めません。作成者の列には、レコードを追加した人が自動で入ります。CSV からこの列を外してください"
+            )));
+        }
         if seen.contains(&f.id) {
             return Err(invalid(format!(
                 "フィールド '{}' の列が重複しています",

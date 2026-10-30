@@ -84,7 +84,8 @@ pub struct TableIndexOverview {
 
 /// 上限の対象になる索引列か（値索引を持つ通常列・材料化した派生列。リンクと対称列は数えない）。
 pub(crate) fn counts_toward_cap(f: &FieldDef) -> bool {
-    if f.is_reverse_link() || f.field_type == FieldType::RecordRef {
+    // 作成者の列は列の索引を持たない（owner の擬似列で引く・D-122）。
+    if f.is_reverse_link() || f.field_type == FieldType::RecordRef || f.is_created_by() {
         return false;
     }
     if f.field_type.is_derived() {
@@ -107,6 +108,7 @@ pub(crate) fn promotable(f: &FieldDef) -> bool {
     !f.field_type.is_derived()
         && !f.is_reverse_link()
         && f.field_type != FieldType::RecordRef
+        && !f.is_created_by()
         && !f.indexed
         && !f.unique
 }
@@ -452,14 +454,20 @@ impl DataStore {
             .map_err(map_db)?;
         let ledger = load_states(&mut conn, table.keys).await?;
         let want = value_table(f);
+        // 作成者の列は owner の擬似列の索引で引く（D-122）。
+        let id = if f.is_created_by() {
+            crate::model::SYSTEM_FIELD_OWNER
+        } else {
+            f.id
+        };
         let st = ledger
             .iter()
-            .find(|(fid, t, _)| *fid == f.id && *t == want)
+            .find(|(fid, t, _)| *fid == id && *t == want)
             .map_or(IndexState::Absent, |s| s.2);
         let status = match st {
             IndexState::Active => IndexStatus::Active,
             IndexState::Building => IndexStatus::Preparing,
-            IndexState::Absent if purge_pending(&mut conn, table.keys, f.id, want).await? => {
+            IndexState::Absent if purge_pending(&mut conn, table.keys, id, want).await? => {
                 IndexStatus::Preparing
             }
             IndexState::Absent => IndexStatus::Absent,

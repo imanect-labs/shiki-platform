@@ -216,7 +216,11 @@ impl DataStore {
         )
         .await?;
         tx.commit().await.map_err(map_db)?;
-        Ok(row.into_record(&table.schema))
+        let mut out = [row.into_record(&table.schema)];
+        // 作成者の列は作った本人で埋めて返す（保存しない・読取の出口と同じ・D-122）。
+        crate::created_by::fill(&table.schema, &mut out);
+        let [record] = out;
+        Ok(record)
     }
 
     /// レコードを取得する（viewer・行述語つき。追加だけの人は自分が作ったレコードだけ・D-113）。

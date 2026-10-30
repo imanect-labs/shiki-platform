@@ -10,6 +10,7 @@
 //!   `searchable` の列は `indexed` でなくてよい（検索索引で引ける）
 //! - `matches`（正規表現）は採用しない（400）
 //! - システム擬似列 `_owner` / `_created_at` / `_updated_at` は常に索引済みで、駆動になれる
+//! - 作成者の列（`created_by`・D-122）は擬似列 `_owner` と同じ索引で引く（列の参照名で出す）
 
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashSet};
@@ -529,6 +530,20 @@ impl<'a> Binder<'a> {
             return Ok(p);
         }
         let f = self.user_field(key)?;
+        if f.is_created_by() {
+            // 作成者の列は owner の擬似列（全レコードに 1 行・常に索引済み）で引く。出力の名前（集計のキーなど）は
+            // この列の参照名。同じクエリで `_owner` も使うと、先に束縛した名前になる（値は同じ）。
+            let b = BField {
+                id: SYSTEM_FIELD_OWNER,
+                key: f.key.clone(),
+                ty: None,
+                kind: FieldKind::Text,
+                searchable: false,
+                ref_table: None,
+                derived: false,
+            };
+            return Ok(self.fields.entry(b.id).or_insert(b).clone());
+        }
         if need == Need::Searchable
             && f.searchable
             && f.field_type.supports_search()

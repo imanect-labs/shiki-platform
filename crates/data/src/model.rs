@@ -37,6 +37,11 @@ pub enum FieldType {
     Rollup,
     /// 数式（閉じた AST・`numeric` 精度・書込不可・Task 15.4）。
     Formula,
+    /// レコードの作成者（principal id・D-122・BUG-148）。サーバーがレコードの作成者（`data_record.owner`）で
+    /// 埋め、だれも書き換えられない（作成・更新・取込のどの入口でも値を書くと 400）。値は保存せず、読むときに
+    /// 作成者から出す（[`crate::created_by`]）ので、列を足す前のレコードも作成者で埋まって見える。条件・並べ替え・
+    /// 行の決まりの比べ（`field_cmp`）は owner の擬似列（`field_id = 0`）で評価する。
+    CreatedBy,
 }
 
 impl FieldType {
@@ -268,6 +273,11 @@ impl FieldDef {
             materialization: None,
             result_type: None,
         }
+    }
+
+    /// 作成者の列（値はレコードの作成者・保存しない・だれも書けない・[`crate::created_by`]）か。
+    pub fn is_created_by(&self) -> bool {
+        self.field_type == FieldType::CreatedBy
     }
 
     /// 対称列（参照先から見た逆方向のリンク・読取専用）か。
