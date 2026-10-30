@@ -173,8 +173,9 @@ export function defaultParams(nodeType: string): unknown {
     case "control.wait":
       return { kind: "duration", duration_sec: 60 };
     case "storage.read":
-      // ファイルはドライブから選ばせる（前の結果から読むなら欄で切り替える）。
-      return {};
+      // ファイルはドライブから選ばせる（前の結果から読むなら欄で切り替える）。選ぶまでは空で置く（保存はでき、
+      // 実行と自動実行のオンの前に止まる・D-83・BUG-151）。
+      return { file: "" };
     case "storage.write":
       // 同じ名前があれば番号を付けて保存する（省略は失敗にする＝既存の定義の挙動・2 回目から失敗しない・D-97）。
       // ファイル名と内容は書かせる（D-83）。
@@ -200,9 +201,10 @@ export function defaultParams(nodeType: string): unknown {
       // 返す内容は利用者が書く（空のままなら欄の下で入力を促す）。
       return { format: "text", value: "" };
     case "csv.query":
-      return { sql: "SELECT * FROM data LIMIT 100" };
+      return { file: "", sql: "SELECT * FROM data LIMIT 100" };
     case "csv.patch":
-      return { ops: [] };
+      // ファイル・編集前の版・編集の内容は利用者が決める（空でも保存はでき、実行の前に止まる・BUG-151）。
+      return { file: "", ops: [] };
     case "csv.write":
       // 入力全体（オブジェクト）を入れると JSON の文字がそのまま .csv に保存される（失敗もしない）。
       // ファイル名も書かせる（D-83）。
@@ -218,6 +220,20 @@ export function defaultParams(nodeType: string): unknown {
           { key: "q1", type: "choice", instructions: "", options: [{ key: "option_1" }, { key: "option_2" }] },
         ],
       };
+    // 業務データのブロック: テーブルと、値・レコード・次の状態・行は利用者が選ぶか書く（空でも保存はでき、実行と
+    // 自動実行のオンの前に止まる・D-83・BUG-151）。
+    case "data.query":
+      return { table: "" };
+    case "data.record.create":
+      return { table: "", data: "" };
+    case "data.record.update":
+      return { table: "", record: "", patch: "" };
+    case "data.record.delete":
+      return { table: "", record: "" };
+    case "data.transition":
+      return { table: "", record: "", to: "" };
+    case "data.bulk_upsert":
+      return { table: "", rows: "" };
     case "human.approval":
       // テーブル・判断の行き先・担当者は選ばせる（テーブルの列と状態から選ぶ）。行は既定でトリガの行。
       return {

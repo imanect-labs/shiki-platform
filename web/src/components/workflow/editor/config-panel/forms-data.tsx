@@ -267,6 +267,7 @@ function RecordAndRev(props: FormProps) {
   const p = paramsOf<{ record?: ValueExpr; expected_rev?: ValueExpr }>(node);
   return (
     <>
+      {/* レコードの ID は画面に出ないので、前の結果やきっかけから選ぶ（置いたばかりの空の欄は候補を開いて置く・D-83）。 */}
       <ValueExprInput
         label="対象のレコード"
         value={p.record}
@@ -275,6 +276,7 @@ function RecordAndRev(props: FormProps) {
         inMapRegion={inMapRegion}
         placeholder="レコード ID"
         error={fieldErrors.get("record")}
+        preferFrom
       />
       <ValueExprInput
         label="版（rev・省略可）"
