@@ -485,8 +485,8 @@ export function AiModelsView() {
 
       <Panel title="ユーザーの選択肢">
         <SettingRow
-          label="チャットでのモデル選択"
-          description="オフにすると、全員が既定（Auto など）で使います。"
+          label="メンバーがモデルを選ぶ"
+          description="オフにすると、チャット・ワークフロー・アプリの AI は、どれも組織の既定のモデルで動きます。ほかのモデルを指定したワークフローとアプリの AI は動かなくなります。"
           htmlFor="allow-user-choice"
         >
           <Switch
