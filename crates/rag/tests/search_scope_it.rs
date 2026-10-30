@@ -614,6 +614,9 @@ async fn search_narrowed_within_keeps_every_bound() {
     let left = make_node(&env, "file", Some(moved_out)).await;
     seed_chunk_on(&env, kept, "kept", query, 0.8, &[a, inside]).await;
     seed_chunk_on(&env, left, "left", query, 0.9, &[a, moved_out]).await;
+    // 検索フォルダの外へ移動済みのファイル（索引上はまだ検索フォルダ配下のタグを持つ）。
+    let drifted = make_node(&env, "file", Some(c)).await;
+    seed_chunk_on(&env, drifted, "drifted", query, 0.95, &[moved_out]).await;
     let svc = service(
         &env,
         allow_all_authz(&env, &[a, c, inside, moved_out]),
@@ -629,8 +632,8 @@ async fn search_narrowed_within_keeps_every_bound() {
             query,
             Some(5),
             SearchMode::Dense,
-            &[&folders(&[a]), &folders(&[inside])],
-            &SearchScope::default(),
+            Some(&folders(&[a])),
+            &[&folders(&[inside])],
             None,
         )
         .await
@@ -643,8 +646,8 @@ async fn search_narrowed_within_keeps_every_bound() {
             query,
             Some(5),
             SearchMode::Dense,
-            &[&folders(&[a]), &folders(&[moved_out])],
-            &SearchScope::default(),
+            Some(&folders(&[a])),
+            &[&folders(&[moved_out])],
             None,
         )
         .await
@@ -655,15 +658,16 @@ async fn search_narrowed_within_keeps_every_bound() {
         found(out)
     );
 
-    // 検索フォルダだけなら、その中の文書は返る（範囲を課しすぎていないこと）。
+    // 検索フォルダだけなら、その中の文書は返る（範囲を課しすぎていないこと）。木の上で検索
+    // フォルダの外へ出たファイルは、索引のタグが古くても返さない（CodeRabbit）。
     let out = svc
         .search_narrowed_within(
             ctx,
             query,
             Some(5),
             SearchMode::Dense,
+            None,
             &[&folders(&[moved_out])],
-            &SearchScope::default(),
             None,
         )
         .await
@@ -677,11 +681,14 @@ async fn search_narrowed_within_keeps_every_bound() {
             query,
             Some(5),
             SearchMode::Dense,
-            &[&folders(&[a]), &folders(&[moved_out])],
-            &SearchScope {
-                folders: Vec::new(),
-                files: vec![left],
-            },
+            Some(&folders(&[a])),
+            &[
+                &folders(&[moved_out]),
+                &SearchScope {
+                    folders: Vec::new(),
+                    files: vec![left],
+                },
+            ],
             None,
         )
         .await
