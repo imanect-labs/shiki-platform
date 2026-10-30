@@ -464,6 +464,27 @@ async fn files_without_a_record_are_reingested_once_by_editors() {
         let skipped = env.state(&renamed).await;
         let renamed_out = env.reindex(&env.alice, &renamed).await.unwrap();
 
+        // 取り込み直しを飛ばしたファイル（記録が reindex の skipped・中身が見つからなかったなど）は、失敗として言い、
+        // もう一度頼むと試し直す（以前は「記録が無い」と言って積むが、取り込みは処理済みとして何もしなかった）。
+        let reskipped = env
+            .orphan("reskipped.txt", "取り込み直しを飛ばした文書")
+            .await;
+        sqlx::query(
+            "insert into rag_ingest_job (tenant_id, org, node_id, version, op, status) \
+             values ($1, $2, $3, $4, 'reindex', 'skipped')",
+        )
+        .bind(&reskipped.tenant_id)
+        .bind(&reskipped.org)
+        .bind(reskipped.id)
+        .bind(reskipped.version)
+        .execute(&env.pool)
+        .await
+        .unwrap();
+        let reskipped_state = env.state(&reskipped).await;
+        let reskipped_out = env.reindex(&env.alice, &reskipped).await.unwrap();
+        env.drain().await;
+        let reskipped_after = env.state(&reskipped).await;
+
         // 取り込めない種類・取り込まない場所（AI エージェントの作業用のフォルダー）。
         let image = env
             .put("photo.png", b"\x89PNG\r\n\x1a\n", "image/png")
@@ -506,6 +527,7 @@ async fn files_without_a_record_are_reingested_once_by_editors() {
             repaired,
             skipped,
             renamed_out,
+            (reskipped_state, reskipped_out, reskipped_after),
             unsupported,
             excluded,
             allowed,
@@ -516,6 +538,7 @@ async fn files_without_a_record_are_reingested_once_by_editors() {
     .await;
     let parsed_memo = env.parsed("memo.txt");
     let parsed_twin = env.parsed("twin.txt");
+    let parsed_reskipped = env.parsed("reskipped.txt");
     env.cleanup().await;
     let (
         memo,
@@ -535,6 +558,7 @@ async fn files_without_a_record_are_reingested_once_by_editors() {
         repaired,
         skipped,
         renamed_out,
+        (reskipped_state, reskipped_out, reskipped_after),
         unsupported,
         excluded,
         allowed,
@@ -589,6 +613,13 @@ async fn files_without_a_record_are_reingested_once_by_editors() {
     );
     assert_eq!(skipped, IndexState::NotIngested);
     assert_eq!(renamed_out, ReindexOutcome::Queued { version: 1 });
+    assert_eq!(reskipped_state, IndexState::Failed);
+    assert_eq!(reskipped_out, ReindexOutcome::Queued { version: 1 });
+    assert_eq!(
+        (reskipped_after, parsed_reskipped),
+        (IndexState::Ready, 1),
+        "取り込み直しを飛ばした記録があっても、頼み直すと取り込む"
+    );
     assert_eq!(
         unsupported,
         ReindexOutcome::NotIndexable(NotIndexable::Unsupported)
@@ -598,8 +629,8 @@ async fn files_without_a_record_are_reingested_once_by_editors() {
         ReindexOutcome::NotIndexable(NotIndexable::Excluded)
     );
 
-    // 積んだ 4 件（memo・twin・broken・renamed）の許可。拒否は bob（編集できない）と carol（見えない）。
-    assert_eq!(allowed, 4, "積んだときだけ許可を残す");
+    // 積んだ 5 件（memo・twin・broken・renamed・reskipped）の許可。拒否は bob（編集できない）と carol（見えない）。
+    assert_eq!(allowed, 5, "積んだときだけ許可を残す");
     assert!(denied >= 2, "見えない・編集できない拒否を残す: {denied}");
 }
 

@@ -195,8 +195,10 @@ pub(crate) fn classify(f: &Facts) -> IndexState {
         (None, _) => IndexState::NotIngested,
         // ごみ箱に入れて索引を消した後で戻した（フォルダーごと戻すと、ファイルごとの取り込みは展開を待つ）。
         (Some("delete"), _) => IndexState::Pending,
-        // DLQ へ移した（やり直しを使い切った・恒久的な失敗）。
-        (_, Some("dead")) => IndexState::Failed,
+        // DLQ へ移した（やり直しを使い切った・恒久的な失敗）。取り込み直し（D-126）を飛ばした（中身が見つからない
+        // など）も同じ: 待っても取り込まれない。「記録が無い」と言うと、取り込み直すたびに「取り込みに回した」と答えて
+        // 何も起きないので、失敗として言う（取り込み直すと、もう一度試す・`begin_job`）。
+        (_, Some("dead")) | (Some("reindex"), Some("skipped")) => IndexState::Failed,
         // 取り込みを飛ばした（前の版で、取り込みより先に名前を変えたファイルなど）。新しい内容の取り込みは来ない。
         (_, Some("skipped")) => IndexState::NotIngested,
         // 取り込みは終わったのに、いまの内容の本文が索引に無い（本文の無い文書。古い版の索引も消してある）。
@@ -264,6 +266,11 @@ mod tests {
         assert_eq!(
             c(facts(1, None, Some(("create", "skipped")))),
             IndexState::NotIngested
+        );
+        // 取り込み直しを飛ばした（中身が見つからないなど）は失敗（取り込み直すと、もう一度試す）。
+        assert_eq!(
+            c(facts(1, None, Some(("reindex", "skipped")))),
+            IndexState::Failed
         );
         // ごみ箱に入れて索引を消した後で戻した（戻した取り込みがまだ記録に無い）: 本文が無いとは言わない。
         assert_eq!(
