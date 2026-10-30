@@ -5,7 +5,8 @@
 //! - 見えないテーブルは出ない。続きの位置で読み進めると、見えるテーブルを重ならず漏れなく新しい順に一巡する
 //! - 追加だけの共有も、上限を超えた人の一覧に印つきで出る
 //! - 見えないテーブルばかりが続くと、OpenFGA に問う数の上限で止まって続きの位置を返す（位置は暗号化され、見えない
-//!   テーブルの id を含まない）。読み進めると残りが出る。ページを持たない一覧は、切れたら続きがあると言う
+//!   テーブルの id を含まない）。読み進めると残りが出る。問う数は名前の検索の語によらない（見えないテーブルの名前を
+//!   応答の時間から推し量らせない）。ページを持たない一覧は、切れたら続きがあると言う
 //!
 //! 各テストは自分のテナント（`t-<uuid>`）と OpenFGA のストアに閉じ、最後に書いたタプルとテナントを撤去する。
 
@@ -467,6 +468,25 @@ async fn scan_budget(env: Arc<Env>, tenant: String) {
     let (seen, pages) = read_all(&env, &bob, Some("見えない"), 50).await;
     assert!(seen.is_empty());
     assert_eq!(pages, 2);
+    // 頼む回数（と OpenFGA に問う数）は、見えないテーブルの名前に当たる語でも当たらない語でも同じ（語で候補を
+    // 選ばない）。以前は、当たらない語なら OpenFGA を呼ばずに 1 回で終わり、名前があるかが分かった。
+    let first = env
+        .store
+        .list_tables_page(&bob, &page(Some("どこにもない名前"), None, 50))
+        .await
+        .unwrap();
+    assert!(first.items.is_empty());
+    assert!(
+        first.next_cursor.is_some(),
+        "当たらない語でも、問う数の上限で止まる"
+    );
+    let (seen, nowhere_pages) = read_all(&env, &bob, Some("どこにもない名前"), 50).await;
+    assert!(seen.is_empty());
+    assert_eq!(nowhere_pages, pages);
+    // 見えるテーブルの名前で探すと、見えない候補の先で見つかる。
+    let (seen, _) = read_all(&env, &bob, Some("見える"), 50).await;
+    assert_eq!(seen, vec![newer, older]);
+
     // ページを持たない一覧（チャットの AI・ワークフロー）は、問う数の上限で 0 件に切れても続きがあると言う
     // （チャットはデータのツールを出し、「他にもテーブルがあります」と添える）。
     let listing = env.store.list_tables_listing(&bob, 31).await.unwrap();

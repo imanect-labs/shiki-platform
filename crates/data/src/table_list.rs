@@ -19,6 +19,11 @@
 //! 続きがある）。DB から引く候補は「選んだもの（`limit` + 1 件まで）か問うたもの」なので、これで DB の側も抑えられる。
 //! 続きの位置は見えないテーブルを指しうるので暗号化する（[`crate::cursor::CursorCodec::seal_table_list`]）。
 //!
+//! この経路では、名前の検索の語で候補を選ばない。候補はテナント・組織・アプリ・続きの位置だけで選び、名前に当たるかは
+//! 見えると決まった候補にだけ使う（SQL は当たるかを列で返すだけ）。語で候補を選ぶと、当たる見えないテーブルがあるときだけ
+//! OpenFGA に問うことになり、応答の時間と「0 件で続きあり」から、見えないテーブルの名前が分かってしまう。問う数は語に
+//! よらない。
+//!
 //! ページを持たない一覧（チャットの AI・ワークフローの `data.list_tables`・アプリの一覧と購読）は、問う数の上限で切れたら
 //! 続きがあることを呼び出し側へ返す（[`TableListing::more`]・黙って短い一覧を全部と見せない）。アプリの一覧と購読は
 //! 候補がそのアプリのテーブルだけなので、続きを [`APP_TABLE_ROUNDS`] 回まで読み足す。
@@ -434,11 +439,12 @@ impl DataStore {
         let mut picked: Vec<TableCursor> = Vec::new();
         let mut checks = 0usize;
         let next = loop {
-            let chunk: Vec<(Uuid, DateTime<Utc>)> = sqlx::query_as(
-                "SELECT id, updated_at FROM data_table \
+            // 名前の検索の語では候補を選ばない（当たるかを列で返すだけ・[モジュール文書](self)）。
+            let chunk: Vec<(Uuid, DateTime<Utc>, bool)> = sqlx::query_as(
+                "SELECT id, updated_at, ($4::text IS NULL OR name ILIKE $4 ESCAPE '\\') AS hit \
+                 FROM data_table \
                  WHERE tenant_id = $1 AND org = $2 AND deleted_at IS NULL \
                    AND ($3::uuid IS NULL OR app_id = $3) \
-                   AND ($4::text IS NULL OR name ILIKE $4 ESCAPE '\\') \
                    AND ($5::timestamptz IS NULL OR (updated_at, id) < ($5, $6::uuid)) \
                  ORDER BY updated_at DESC, id DESC LIMIT $7",
             )
@@ -452,10 +458,11 @@ impl DataStore {
             .fetch_all(pool)
             .await
             .map_err(map_db)?;
+            // 名前に当たらない候補も問う（問う数を語によらせない）。
             let unknown: Vec<authz::FgaObject> = chunk
                 .iter()
-                .filter(|(id, _)| !known.contains(id))
-                .map(|(id, _)| ns.data_table(&id.to_string()))
+                .filter(|(id, ..)| !known.contains(id))
+                .map(|(id, ..)| ns.data_table(&id.to_string()))
                 .collect();
             checks += unknown.len() * filter.relations().len();
             let mut held = authz::visible::holds_any(
@@ -469,13 +476,13 @@ impl DataStore {
             .map_err(|e| DataError::Internal(format!("authz: {e}")))?
             .into_iter();
             let mut full = None;
-            for (id, updated_at) in &chunk {
+            for (id, updated_at, hit) in &chunk {
                 let pos = TableCursor {
                     updated_at: *updated_at,
                     id: *id,
                 };
                 let visible = known.contains(id) || held.next().unwrap_or(false);
-                if visible {
+                if visible && *hit {
                     if picked.len() == limit {
                         // 見えるテーブルがまだある（続きはこのページの最後のテーブルの後から）。
                         full = picked.last().copied();
