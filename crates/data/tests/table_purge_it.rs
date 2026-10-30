@@ -43,9 +43,11 @@ impl RefResolver for AllowRefs {
 }
 
 /// 実 OpenFGA に委ね、`fail_purge` が立っている間だけタプルの一括撤去を失敗させる（撤去の失敗の再現）。
+/// `fail_object` のテーブルの撤去は、それが入っている間ずっと失敗させる（撤去に失敗し続けるテーブル）。
 struct Flaky {
     inner: OpenFgaClient,
     fail_purge: AtomicBool,
+    fail_object: std::sync::Mutex<Option<String>>,
 }
 
 #[async_trait]
@@ -98,7 +100,8 @@ impl AuthzClient for Flaky {
         self.inner.list_objects(s, r, t).await
     }
     async fn delete_object_tuples(&self, o: &FgaObject) -> Result<u32, AuthzError> {
-        if self.fail_purge.load(Ordering::SeqCst) {
+        let stuck = self.fail_object.lock().unwrap().as_deref() == Some(o.as_str());
+        if stuck || self.fail_purge.load(Ordering::SeqCst) {
             return Err(AuthzError::Unexpected {
                 status: 503,
                 body: "テストで撤去を失敗させた".into(),
@@ -120,6 +123,13 @@ struct Env {
     authz: Arc<Flaky>,
     pool: PgPool,
     base_url: String,
+}
+
+/// このファイルのテストを 1 つずつ流す。掃除は DB の全テナントの消したテーブルを引くので、同時に流すと、ほかの
+/// テストのテーブル（撤去に失敗させているもの）を自分の OpenFGA のストアで撤去したことにしてしまう。
+fn serial() -> &'static tokio::sync::Mutex<()> {
+    static SERIAL: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    SERIAL.get_or_init(|| tokio::sync::Mutex::new(()))
 }
 
 async fn setup() -> Option<Env> {
@@ -155,6 +165,7 @@ async fn setup() -> Option<Env> {
     let authz = Arc::new(Flaky {
         inner,
         fail_purge: AtomicBool::new(false),
+        fail_object: std::sync::Mutex::new(None),
     });
     let dyn_authz: Arc<dyn AuthzClient> = authz.clone();
     Some(Env {
@@ -256,6 +267,7 @@ async fn purged_mark(env: &Env, tenant: &str, id: Uuid) -> bool {
 /// テーブルを消すと、`data_table` のタプルが消えて撤去の印が付く（見えるテーブルの数が減る）。
 #[tokio::test]
 async fn deleting_a_table_removes_its_tuples() {
+    let _serial = serial().lock().await;
     let Some(env) = setup().await else { return };
     let tenant = format!("t-{}", Uuid::new_v4());
     let id = shared_table(&env, &tenant, "消すテーブル").await;
@@ -290,6 +302,7 @@ async fn deleting_a_table_removes_its_tuples() {
 /// 削除の後の撤去に失敗したもの・撤去を始める前に消したものは、掃除が撤去して印を付ける。
 #[tokio::test]
 async fn sweeper_purges_what_deletion_left_behind() {
+    let _serial = serial().lock().await;
     let Some(env) = setup().await else { return };
     let tenant = format!("t-{}", Uuid::new_v4());
     // この版より前に消したテーブル（論理削除だけでタプルが残る）。
@@ -332,6 +345,80 @@ async fn sweeper_purges_what_deletion_left_behind() {
         assert_eq!(tuples(&env, &tenant, id).await, 0);
         assert!(purged_mark(&env, &tenant, id).await);
     }
+
+    teardown(&env, &tenant).await;
+}
+
+/// 撤去に失敗し続けるテーブルは、掃除が後回しにできる（外したテーブルは試さず、後ろのテーブルの撤去を進める）。
+/// 失敗が直れば、外すのをやめた掃除が撤去する。
+#[tokio::test]
+async fn sweeper_can_defer_a_table_that_keeps_failing() {
+    let _serial = serial().lock().await;
+    let Some(env) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let stuck = shared_table(&env, &tenant, "撤去に失敗し続ける").await;
+    let behind = shared_table(&env, &tenant, "後ろのテーブル").await;
+    // どちらも撤去する前に消した（stuck の方が先に消した＝掃除の先頭に並ぶ）。
+    for (id, ago) in [(stuck, 2), (behind, 1)] {
+        sqlx::query(
+            "UPDATE data_table SET deleted_at = now() - $3 * interval '1 minute', updated_at = now() \
+             WHERE tenant_id = $1 AND id = $2",
+        )
+        .bind(&tenant)
+        .bind(id)
+        .bind(f64::from(ago))
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    }
+    let stuck_object = ctx(&tenant, "alice")
+        .ns()
+        .data_table(&stuck.to_string())
+        .as_str()
+        .to_string();
+    *env.authz.fail_object.lock().unwrap() = Some(stuck_object);
+
+    // 失敗したテーブルを外しながら、撤去するものが無くなるまで回す（ほかのテストが消したテーブルも同じ DB にありうる）。
+    let mut skip: Vec<Uuid> = Vec::new();
+    for round in 0.. {
+        let (p, failed) = env
+            .store
+            .purge_deleted_table_tuples_except(&skip)
+            .await
+            .unwrap();
+        skip.extend(failed);
+        if p.purged == 0 && p.failed == 0 {
+            break;
+        }
+        assert!(round < 1_000, "掃除が終わらない");
+    }
+    assert!(skip.contains(&stuck), "失敗したテーブルを返す: {skip:?}");
+    assert_eq!(
+        tuples(&env, &tenant, behind).await,
+        0,
+        "後ろのテーブルは撤去が進む"
+    );
+    assert!(purged_mark(&env, &tenant, behind).await);
+    assert_eq!(tuples(&env, &tenant, stuck).await, 3);
+    // 外したテーブルは試さない（失敗が増えない）。
+    let (_, failed) = env
+        .store
+        .purge_deleted_table_tuples_except(&[stuck])
+        .await
+        .unwrap();
+    assert!(!failed.contains(&stuck), "{failed:?}");
+
+    // 失敗が直れば、外すのをやめた掃除が撤去する。
+    *env.authz.fail_object.lock().unwrap() = None;
+    for round in 0.. {
+        let p = env.store.purge_deleted_table_tuples().await.unwrap();
+        if p.purged == 0 {
+            break;
+        }
+        assert!(round < 1_000, "掃除が終わらない");
+    }
+    assert_eq!(tuples(&env, &tenant, stuck).await, 0);
+    assert!(purged_mark(&env, &tenant, stuck).await);
 
     teardown(&env, &tenant).await;
 }

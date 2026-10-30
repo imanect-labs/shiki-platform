@@ -7,13 +7,16 @@
 //! - 削除の commit の後に、その場でタプルを撤去する（[`DataStore::delete_table`]）。撤去を終えた時刻を
 //!   `authz_purged_at` に残す（migration 0119）。
 //! - 撤去に失敗したもの・この仕組みより前に消したもの（`authz_purged_at` が空のまま）は、
-//!   [`DeletedTableTupleSweeper`] が起動時と一定の間隔で古い順に撤去する（全プール・冪等）。
+//!   [`DeletedTableTupleSweeper`] が起動時と一定の間隔で古い順に撤去する（全プール・冪等）。掃除でも撤去に失敗した
+//!   テーブルは、しばらく対象から外す（失敗し続けるテーブルが 1 回の枠を埋めて、後ろのテーブルの撤去が進まなく
+//!   ならないように・サーバーごとの記録）。
 //!
 //! 消したテーブルは戻せない（論理削除を戻す経路が無い）ので、タプルを撤去しても失うものはない。
 //! レコードの個別共有（`data_record` のタプル）は、どのレコードが共有されたかを DB に持たないので、ここでは
 //! 撤去しない（テーブルを通さずには読めないので、残っても見えるものは増えない）。
 
-use std::time::Duration;
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
 
 use authz::Namespace;
 use uuid::Uuid;
@@ -27,6 +30,10 @@ pub const TUPLE_PURGE_BATCH: i64 = 50;
 const SWEEP_IDLE: Duration = Duration::from_mins(10);
 /// 掃除が失敗したときに、やり直すまで。
 const SWEEP_RETRY: Duration = Duration::from_mins(1);
+/// 撤去に失敗したテーブルを、次に試すまで（その間は掃除の対象から外し、後ろのテーブルの撤去を進める）。
+const FAILED_RETRY_AFTER: Duration = Duration::from_mins(30);
+/// 後回しにするテーブルの数の上限（覚えきれない分は、古い順に掃除の対象へ戻す）。
+const MAX_DEFERRED: usize = 10_000;
 
 /// 掃除 1 回の結果。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -65,7 +72,17 @@ impl DataStore {
     /// 対象の行を `FOR UPDATE SKIP LOCKED` で押さえる（複数のサーバーが同時に掃除しても同じテーブルを
     /// 二度撤去しない。撤去は冪等なので、重なっても壊れはしない）。
     pub async fn purge_deleted_table_tuples(&self) -> Result<TuplePurgeProgress, DataError> {
+        Ok(self.purge_deleted_table_tuples_except(&[]).await?.0)
+    }
+
+    /// [`Self::purge_deleted_table_tuples`] の、`skip` のテーブルを対象から外すもの。撤去に失敗したテーブルの id も
+    /// 返す（掃除はそれをしばらく後回しにし、撤去に失敗し続けるテーブルが先頭の枠を埋めて後ろが進まないのを防ぐ）。
+    pub async fn purge_deleted_table_tuples_except(
+        &self,
+        skip: &[Uuid],
+    ) -> Result<(TuplePurgeProgress, Vec<Uuid>), DataError> {
         let mut progress = TuplePurgeProgress::default();
+        let mut failed_ids = Vec::new();
         let mut budget = TUPLE_PURGE_BATCH;
         for (_, pool) in self.pools.all() {
             if budget <= 0 {
@@ -76,9 +93,11 @@ impl DataStore {
             let targets: Vec<(String, Uuid)> = sqlx::query_as(
                 "SELECT tenant_id, id FROM data_table \
                  WHERE deleted_at IS NOT NULL AND authz_purged_at IS NULL \
+                   AND NOT (id = ANY($2)) \
                  ORDER BY deleted_at LIMIT $1 FOR UPDATE SKIP LOCKED",
             )
             .bind(budget)
+            .bind(skip)
             .fetch_all(&mut *tx)
             .await
             .map_err(map_db)?;
@@ -99,14 +118,40 @@ impl DataStore {
                         progress.purged += 1;
                     }
                     Err(e) => {
-                        tracing::warn!(error = %e, table_id = %id, "消したテーブルのタプルの撤去に失敗（次の掃除でやり直す）");
+                        tracing::warn!(error = %e, table_id = %id, "消したテーブルのタプルの撤去に失敗（しばらく後回しにしてやり直す）");
                         progress.failed += 1;
+                        failed_ids.push(id);
                     }
                 }
             }
             tx.commit().await.map_err(map_db)?;
         }
-        Ok(progress)
+        Ok((progress, failed_ids))
+    }
+}
+
+/// 撤去に失敗したテーブルを後回しにする記録（掃除の常駐ワーカーが持つ・サーバーごと）。
+#[derive(Debug, Default)]
+struct Deferred {
+    /// テーブルの id と、次に試してよい時刻。
+    until: HashMap<Uuid, Instant>,
+}
+
+impl Deferred {
+    /// いま外すテーブル（試してよい時刻を過ぎたものは忘れ、掃除の対象へ戻す）。
+    fn skip(&mut self, now: Instant) -> Vec<Uuid> {
+        self.until.retain(|_, until| *until > now);
+        self.until.keys().copied().collect()
+    }
+
+    /// 撤去に失敗したテーブルを、[`FAILED_RETRY_AFTER`] の間は後回しにする（上限を超える分は覚えない）。
+    fn record(&mut self, failed: &[Uuid], now: Instant) {
+        for id in failed {
+            if self.until.len() >= MAX_DEFERRED {
+                break;
+            }
+            self.until.insert(*id, now + FAILED_RETRY_AFTER);
+        }
     }
 }
 
@@ -127,9 +172,12 @@ impl DeletedTableTupleSweeper {
     }
 
     async fn run(self) {
+        let mut deferred = Deferred::default();
         loop {
-            let wait = match self.store.purge_deleted_table_tuples().await {
-                Ok(p) => {
+            let skip = deferred.skip(Instant::now());
+            let wait = match self.store.purge_deleted_table_tuples_except(&skip).await {
+                Ok((p, failed)) => {
+                    deferred.record(&failed, Instant::now());
                     if p.purged > 0 || p.failed > 0 {
                         tracing::info!(
                             purged = p.purged,
@@ -153,5 +201,26 @@ impl DeletedTableTupleSweeper {
             };
             tokio::time::sleep(wait).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 撤去に失敗したテーブルは、しばらく掃除の対象から外し、時刻を過ぎたら戻す。
+    #[test]
+    fn failed_tables_are_deferred_then_retried() {
+        let mut d = Deferred::default();
+        let t0 = Instant::now();
+        let (a, b) = (Uuid::from_u128(1), Uuid::from_u128(2));
+        assert!(d.skip(t0).is_empty());
+        d.record(&[a, b], t0);
+        let mut skipped = d.skip(t0 + Duration::from_mins(1));
+        skipped.sort();
+        assert_eq!(skipped, vec![a, b]);
+        assert!(d
+            .skip(t0 + FAILED_RETRY_AFTER + Duration::from_secs(1))
+            .is_empty());
     }
 }
