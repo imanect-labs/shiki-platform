@@ -532,3 +532,107 @@ async fn explicit_models_are_refused_while_the_organization_disallows_choice() {
             .unwrap();
     }
 }
+
+/// モデルの一覧（allowlist）を宣言したアプリと、モデルの選択を禁じた組織（D-117 の続き）: 省略は組織の既定で解決し、
+/// その既定が一覧に入っていれば動く（一覧の照合は解決した後のモデルで行う）。既定が一覧の外なら、明示も省略も
+/// `model_choice_disabled` で断り、どう呼んでも使えないことと直し方を言う（「省略すると動く」と案内しない）。選べる
+/// 組織で既定が一覧の外なら、省略は断り（fail-closed）、一覧のモデルの明示は通る。
+#[tokio::test]
+async fn apps_with_a_model_list_follow_the_organization_default_when_it_is_listed() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let (app_id, client) = install(
+        &pool,
+        &tenant,
+        AiPin {
+            budget_models: vec!["stub-m".into()],
+            ..AiPin::default()
+        },
+    )
+    .await;
+    let st = state(pool.clone(), &tenant);
+    let tok = token(&client, AI_SCOPES, &tenant);
+    let msg = json!([{ "role": "user", "content": [ { "type": "text", "text": "hi" } ] }]);
+    let lock = |allow: bool, default_model: &str| SettingsPatch {
+        default_model: Some(default_model.into()),
+        allow_user_choice: Some(allow),
+        ..Default::default()
+    };
+    let refused = |s: StatusCode, body: &str| -> serde_json::Value {
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{body}");
+        serde_json::from_str(body).unwrap()
+    };
+
+    // 禁じた組織で既定（stub-m）が一覧に入っている: 省略は動く（以前は「model を明示してください」で断っていた）。
+    set_llm_settings(&st, &tenant, lock(false, "stub-m")).await;
+    let app = build_gateway_router(st.clone());
+    let (s, sse) = post_sse(&app, "/gw/ai/llm/invoke", &tok, &json!({ "messages": msg })).await;
+    assert_eq!(s, StatusCode::OK, "{sse}");
+    let (s, sse) = post_sse(
+        &app,
+        "/gw/ai/agent/invoke",
+        &tok,
+        &json!({ "prompt": "調査して" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{sse}");
+
+    // 禁じた組織で既定（stub-n）が一覧の外: 一覧の stub-m の明示も、省略も、直し方を言って断る。
+    set_llm_settings(&st, &tenant, lock(false, "stub-n")).await;
+    let app = build_gateway_router(st.clone());
+    let explicit = json!({ "model": "stub-m", "messages": msg });
+    for body in [explicit, json!({ "messages": msg })] {
+        let (s, resp) = post_sse(&app, "/gw/ai/llm/invoke", &tok, &body).await;
+        let v = refused(s, &resp);
+        assert_eq!(v["code"], "model_choice_disabled", "{resp}");
+        let error = v["error"].as_str().unwrap();
+        assert!(error.contains("AI を使えません"), "{error}");
+        assert!(!error.contains("指定しないで呼び出すと"), "{error}");
+    }
+    let (s, resp) = post_sse(
+        &app,
+        "/gw/ai/agent/invoke",
+        &tok,
+        &json!({ "prompt": "調査して" }),
+    )
+    .await;
+    assert_eq!(refused(s, &resp)["code"], "model_choice_disabled", "{resp}");
+
+    // 選べる組織で既定（stub-n）が一覧の外: 省略は断り（既定へ落とさない）、一覧の stub-m の明示は通る。
+    set_llm_settings(&st, &tenant, lock(true, "stub-n")).await;
+    let app = build_gateway_router(st.clone());
+    let (s, resp) = post_sse(&app, "/gw/ai/llm/invoke", &tok, &json!({ "messages": msg })).await;
+    let v = refused(s, &resp);
+    assert!(
+        v["error"].as_str().unwrap().contains("「stub-n」"),
+        "{resp}"
+    );
+    let (s, sse) = post_sse(
+        &app,
+        "/gw/ai/llm/invoke",
+        &tok,
+        &json!({ "model": "stub-m", "messages": msg }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{sse}");
+    // 動いた 2 回の llm.invoke は、どちらも一覧の stub-m で生成した（既定の stub-n へ落ちていない）。
+    assert_eq!(
+        usage_models(&pool, &tenant, app_id, 2).await,
+        ["stub-m", "stub-m"]
+    );
+
+    // 作った行を片付ける。
+    for table in [
+        "llm_usage",
+        "app_capability_usage",
+        "app_installation",
+        "tenant_llm_model",
+        "tenant_llm_settings",
+    ] {
+        sqlx::query(&format!("DELETE FROM {table} WHERE tenant_id = $1"))
+            .bind(&tenant)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+}

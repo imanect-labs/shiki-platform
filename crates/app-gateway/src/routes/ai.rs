@@ -12,7 +12,8 @@
 //! **モデル**は省略も明示も、ワークフローのノードと同じ規則で組織の設定に照らす（[`resolve_app_model`]）。
 //! 省略は組織の既定（Auto を含む・本人専用のモデルは除く・BUG-12・D-30）。明示したモデルは置き換えない（インストール時に
 //! 同意した許可モデルの外へ振り替えない）。組織で使えないモデルと、組織がモデルの選択を禁じているときの既定と違うモデルは、
-//! 分かる誤り（`code`）で断る（D-117）。allowlist（①）と gateway の `stream` の許可チェックはその手前と後ろに残る。
+//! 分かる誤り（`code`）で断る（D-117）。allowlist（①）は、明示したモデルは解決の手前で、省略は解決した組織の既定で
+//! 照らす（[`resolve_for_app`]・既定が一覧の外なら断る）。gateway の `stream` の許可チェックは後ろに残る。
 
 use std::convert::Infallible;
 use std::sync::Arc;
@@ -48,22 +49,73 @@ pub(crate) fn effective_daily_limit(pin: &AiPin, admin_cap: i64) -> i64 {
         .map_or(admin_cap, |d| d.min(admin_cap))
 }
 
-/// モデル allowlist（インストール時ピン）。空 allowlist はテナントカタログ全体を許可。
-///
-/// allowlist が非空のとき、モデル未指定は**拒否**（既定モデルが allowlist 外へ落ちる
-/// 事故を防ぐ・fail-closed）。
+/// モデル allowlist（インストール時ピン）に入っているか。空 allowlist はテナントカタログ全体を許可。
+fn in_allowlist(pin: &AiPin, model: &str) -> bool {
+    pin.budget_models.is_empty() || pin.budget_models.iter().any(|a| a == model)
+}
+
+/// 明示したモデルの allowlist の照合（一覧の外は 403・組織の設定より先に照らす）。省略は組織の既定で解決してから
+/// [`resolve_for_app`] が照合する（既定が allowlist 外なら断る・fail-closed）。
 pub(crate) fn check_model_allowed(pin: &AiPin, model: Option<&str>) -> Result<(), GatewayError> {
-    if pin.budget_models.is_empty() {
-        return Ok(());
-    }
     match model {
-        Some(m) if pin.budget_models.iter().any(|a| a == m) => Ok(()),
-        Some(m) => Err(GatewayError::Forbidden(format!(
+        Some(m) if !in_allowlist(pin, m) => Err(GatewayError::Forbidden(format!(
             "モデル {m} はこのアプリに許可されていません"
         ))),
-        None => Err(GatewayError::Invalid(
-            "このアプリはモデル allowlist が設定されています。model を明示してください".into(),
-        )),
+        _ => Ok(()),
+    }
+}
+
+/// 組織がモデルの選択を禁じ、組織の既定のモデルがアプリのモデルの一覧に入っていないときの文言（どう呼んでも使えない）。
+const LOCKED_OUT: &str = "この組織ではモデルを選べず、組織の既定のモデルがこのアプリで使うモデルに入っていないため、AI を使えません。アプリを作った人にアプリで使うモデルへ組織の既定のモデルを足して入れ直してもらうか、管理者にモデルを選べるようにしてもらってください。";
+
+/// ミニアプリの AI のモデルを決める（アプリのモデルの一覧・組織の設定の両方に照らす）。
+///
+/// - 明示したモデルは、まず一覧で照合する（一覧の外は 403）。次に組織の設定で解決する（[`resolve_app_model`]）。
+/// - 省略は組織の既定で解決し、解決したモデルを一覧で照合する（既定が一覧の外なら断る・fail-closed）。一覧を宣言した
+///   アプリでも、組織の既定が一覧に入っていれば省略で動く（組織がモデルの選択を禁じていても使える）。
+/// - 選択を禁じた組織の断り（`model_choice_disabled`）は「省略すると組織の既定で動く」と案内するので、その既定が一覧に
+///   入っていないときは、どう呼んでも使えないことと直し方を言う文に替える。
+async fn resolve_for_app(
+    llm: &LlmGateway,
+    auth: &AuthContext,
+    pin: &AiPin,
+    model: Option<&str>,
+    effort: Option<Effort>,
+) -> Result<ResolvedChoice, AiError> {
+    let model = model.filter(|m| !m.is_empty());
+    check_model_allowed(pin, model)?;
+    let locked_out = || AiError::Model {
+        code: llm_gateway::MODEL_CHOICE_DISABLED,
+        message: LOCKED_OUT.into(),
+    };
+    match resolve_app_model(llm, auth, model, effort).await {
+        Ok(choice) if in_allowlist(pin, &choice.model) => Ok(choice),
+        // 明示したモデルは一覧で照合済みで、解決は置き換えないので、ここに来るのは省略だけ。
+        Ok(choice) => {
+            let locked = llm
+                .tenant_settings(auth)
+                .await
+                .is_ok_and(|s| s.model_lock().is_some());
+            if locked {
+                return Err(locked_out());
+            }
+            Err(AiError::Gateway(GatewayError::Invalid(format!(
+                "組織の既定のモデル「{}」は、このアプリで使うモデルに入っていません。このアプリで使うモデル（{}）を指定して呼び出してください。",
+                choice.model,
+                pin.budget_models.join("、")
+            ))))
+        }
+        Err(AiError::Model { code, message })
+            if code == llm_gateway::MODEL_CHOICE_DISABLED && !pin.budget_models.is_empty() =>
+        {
+            match resolve_app_model(llm, auth, None, None).await {
+                Ok(default) if in_allowlist(pin, &default.model) => {
+                    Err(AiError::Model { code, message })
+                }
+                _ => Err(locked_out()),
+            }
+        }
+        Err(e) => Err(e),
     }
 }
 
@@ -234,10 +286,9 @@ pub(crate) async fn llm_invoke(
     }
     // 空文字は省略と同じ（allowlist の照合・組織の既定の解決とも）。
     req.model = req.model.filter(|m| !m.is_empty());
-    check_model_allowed(pin, req.model.as_deref())?;
-    // 省略も明示も組織の設定で決める（明示モデルは置き換えず、使えなければ断る・D-117）。解決後の名前と思考の深さを
-    // 生成と会計に使う。
-    let choice = resolve_app_model(&llm, &ctx.auth, req.model.as_deref(), req.effort).await?;
+    // 省略も明示も組織の設定で決め、allowlist に照らす（明示モデルは置き換えず、使えなければ断る・D-117。省略は解決した
+    // 既定を照合する）。解決後の名前と思考の深さを生成と会計に使う。
+    let choice = resolve_for_app(&llm, &ctx.auth, pin, req.model.as_deref(), req.effort).await?;
     req.effort = choice.effort;
     req.model = Some(choice.model);
     check_budget(&llm, &ctx, state.caps.ai_daily_cap_usd_micros).await?;
@@ -364,17 +415,23 @@ pub(crate) async fn agent_invoke(
     // 空文字は省略と同じ（モデルは port が組織の設定で決める）。
     req.model = req.model.filter(|m| !m.is_empty());
     let pin = &ctx.installation.ai;
-    check_model_allowed(pin, req.model.as_deref())?;
     // 予算は llm-gateway の会計が正（agent の LLM 呼び出しも app_id 付きで同じ財布に落ちる）。
-    let remaining = match require_llm(&state) {
-        Ok(llm) => {
-            // モデルを使えるかは port と同じ規則でここでも確かめ、分かる誤り（code）で断る（D-117。port の誤りは
-            // code を運べない）。
-            resolve_app_model(&llm, &ctx.auth, req.model.as_deref(), None).await?;
-            check_budget(&llm, &ctx, state.caps.ai_daily_cap_usd_micros).await?
+    let remaining = if let Ok(llm) = require_llm(&state) {
+        // モデルを使えるかは port と同じ規則でここでも確かめ、allowlist に照らし、分かる誤り（code）で断る（D-117。
+        // port の誤りは code を運べない）。省略は解決した組織の既定を照合する（port も同じ設定から同じモデルに解決する）。
+        resolve_for_app(&llm, &ctx.auth, pin, req.model.as_deref(), None).await?;
+        check_budget(&llm, &ctx, state.caps.ai_daily_cap_usd_micros).await?
+    } else {
+        // LLM 未構成なら port 側も NoAgent（502）のはず。既定を解決できないので、allowlist のあるアプリの省略は断る
+        // （fail-closed）。
+        check_model_allowed(pin, req.model.as_deref())?;
+        if req.model.is_none() && !pin.budget_models.is_empty() {
+            return Err(GatewayError::Invalid(
+                "このアプリで使うモデルを指定して呼び出してください。".into(),
+            )
+            .into());
         }
-        // LLM 未構成なら port 側も NoAgent（502）のはず。チェックは素通しにする。
-        Err(_) => state.caps.ai_daily_cap_usd_micros,
+        state.caps.ai_daily_cap_usd_micros
     };
     let spec = AgentInvokeSpec {
         app_id: ctx.installation.app_id,
@@ -487,11 +544,10 @@ mod tests {
             check_model_allowed(&p, Some("gpt-b")),
             Err(GatewayError::Forbidden(_))
         ));
-        // allowlist 非空でモデル未指定は 400（既定モデルへのすり抜けを防ぐ）。
-        assert!(matches!(
-            check_model_allowed(&p, None),
-            Err(GatewayError::Invalid(_))
-        ));
+        // 省略はここでは通し、組織の既定で解決してから照合する（resolve_for_app・結合テストで確かめる）。
+        assert!(check_model_allowed(&p, None).is_ok());
+        assert!(in_allowlist(&p, "gpt-a"));
+        assert!(!in_allowlist(&p, "gpt-b"));
         // allowlist 空は何でも通す（テナントカタログが最終判定）。
         assert!(check_model_allowed(&pin(&[], None, None), None).is_ok());
     }
