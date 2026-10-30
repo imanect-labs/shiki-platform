@@ -728,8 +728,12 @@ run 前チェックだけでは「実行中 run の失権」を止められな�
 `storage_read` と同じに中身を読み、文章でない種類は社内文書の検索が取り込んだ本文を `rag::SearchService::read_document_text` で
 読む（原本は読み直さない）。字数の上限はエンジンが渡す（`STORAGE_READ_MAX_DOCUMENT_CHARS`）。二段目は StorageService の閲覧の判定と、
 SearchService の可読集合での pre-filter の両方で、見えない・無いは同じ `not_found`。索引に本文が無い理由（取り込みの状態）は
-`SearchService::index_state` が、内容のバージョンの履歴と取り込みの記録（`rag_ingest_job`）から決める。script の `Shiki.storage.read` は
-`storage_read`（文章だけ）のまま。ポートの既定は `storage_read`（索引を結線しない実装・テスト用）。
+`SearchService::index_state` が、内容のバージョンの履歴（`storage::CONTENT_VERSION_SQL`）・ノードのシステム領域の印・取り込みへ向かう
+記録（outbox の未処理のイベント・`job_queue` の `rag_ingest`・`rag_ingest_job`）から決める。記録がどこにも無いファイルは待っても
+取り込まれないので、待てば読めるとは言わない。取り込みの側も、古いジョブかどうかを `node.version` ではなく内容のバージョンと比べる
+（名前の変更・移動は `node.version` を進めるが取り込み直さないので、`node.version` と比べると取り込みより先に名前を変えたファイルが
+二度と取り込まれない）。script の `Shiki.storage.read` は `storage_read`（文章だけ）のまま。ポートの既定は `storage_read`（索引を
+結線しない実装・テスト用）。
 
 ### 6.6 OpenFGA モデリング（解決済み・実装済み）
 
@@ -1147,8 +1151,8 @@ v1 は次の 2 つだけを提供する。step 単位の入力編集リプレイ
   入力でもう一度実行）を出す。最初から実行し直すと前の実行で済んだ書き込みや送信ももう一度行われるので、文にそう書く。
   権限・データ・相手のサービスなど外の状態による失敗は直してから再開する（`fix_first`）。読めないファイル
   （`not_text_file`）もここに入る: 再開は同じファイルの最新のバージョンを読み直すので、ファイルを UTF-8 か Shift_JIS で
-  保存し直せば通る。PDF・Office の本文の取り込みに失敗したもの（`index_failed`）と取り込めない種類（`not_indexable`）も
-  ここに入る（保存し直すと取り込み直す）。取り込みが終わっていないもの（`index_pending`）は一時的な問題で、そのまま再開
+  保存し直せば通る。PDF・Office の本文の取り込みに失敗したもの・取り込みが届いていないもの（`index_failed`）と、取り込めない
+  種類・取り込まない場所のもの（`not_indexable`）もここに入る（保存し直すと取り込み直す）。取り込みが終わっていないもの（`index_pending`）は一時的な問題で、そのまま再開
   できる（再開は同じファイルを読み直し、取り込みが終わっていれば読める・D-111）。一時障害・時間切れ（ブロック・承認・変更を待つ期限）・AI の答え・分類できない失敗はそのまま再開
   できる（`resume`）。再開の API そのものは断らない（画面の出し分けだけ）。
 - **同じ入力でもう一度実行を勧めるか**（BUG-132）: `resume.offer_rerun` で返す。run の再実行は失敗した run のバージョンに
