@@ -41,6 +41,8 @@ export type NodeCardData = {
   edgePortsKey?: string;
   /// `fromId` の `port` から新ノードをつないで追加する（全ノード共通の参照の変わらない関数）。
   onAddFrom: (fromId: string, port: string, nodeType: string) => void;
+  /// 後ろに置けないブロックの種類と理由（繰り返しの中のブロック・regions.ts）。
+  refusedTypes?: Readonly<Record<string, string>>;
   [key: string]: unknown;
 };
 
@@ -71,7 +73,7 @@ function parsePorts(key: string | undefined): string[] {
 }
 
 /// 名前付きの出口の行（名前の横にハンドル）。
-function PortRow({ node, port: p }: { node: IrNode; port: DrawnPort }) {
+export function PortRow({ node, port: p }: { node: IrNode; port: DrawnPort }) {
   return (
     <div className="relative flex h-6 items-center justify-end" data-port={p.port}>
       <span
@@ -99,11 +101,97 @@ function PortRow({ node, port: p }: { node: IrNode; port: DrawnPort }) {
   );
 }
 
+/// ブロックの見出し（種類のアイコン・名前・説明・要修正と注意の印）。通常のブロックと繰り返しの枠の見出しで使う。
+export function NodeHeading({
+  irNode,
+  errors,
+  warnings,
+  className,
+}: {
+  irNode: IrNode;
+  errors: ValidationError[];
+  warnings: ValidationError[];
+  className?: string;
+}) {
+  const entry = NODE_CATALOG.find((c) => c.type === irNode.type);
+  const Icon = nodeIcon(irNode.type);
+  const hasError = errors.length > 0;
+  return (
+    <div className={cn("flex items-start gap-2.5 px-3.5 py-3", className)}>
+      <span
+        className={cn(
+          "mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg",
+          hasError ? "bg-destructive/10 text-destructive" : "",
+        )}
+        style={
+          hasError
+            ? undefined
+            : {
+                backgroundColor: "color-mix(in oklab, var(--accent) 14%, transparent)",
+                color: "var(--accent)",
+              }
+        }
+      >
+        <Icon className="size-4" aria-hidden />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-sm font-medium leading-5">
+          {irNode.label || entry?.label_ja || irNode.type}
+        </span>
+        <span className="block truncate text-xs text-muted-foreground">
+          {entry?.description_ja ?? irNode.type}
+        </span>
+      </span>
+      {hasError ? (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span
+              className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full bg-destructive text-destructive-foreground"
+              aria-label={`検証エラー ${errors.length} 件`}
+            >
+              <AlertCircle className="size-3.5" aria-hidden />
+            </span>
+          </TooltipTrigger>
+          <TooltipContent side="top" className="max-w-72">
+            <ul className="list-disc space-y-1 pl-4 text-xs">
+              {errors.slice(0, 5).map((e, i) => (
+                <li key={i}>{e.message}</li>
+              ))}
+              {errors.length > 5 ? <li>ほか {errors.length - 5} 件</li> : null}
+            </ul>
+          </TooltipContent>
+        </Tooltip>
+      ) : null}
+      {!hasError && warnings.length > 0 ? (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span
+              tabIndex={0}
+              className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full text-[var(--season-autumn)] outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              style={{ backgroundColor: "color-mix(in oklab, var(--season-autumn) 16%, transparent)" }}
+              aria-label={`注意 ${warnings.length} 件`}
+            >
+              <TriangleAlert className="size-3.5" aria-hidden />
+            </span>
+          </TooltipTrigger>
+          <TooltipContent side="top" className="max-w-80">
+            <ul className="list-disc space-y-1 pl-4 text-xs">
+              {warnings.slice(0, 3).map((e, i) => (
+                <li key={i}>{e.message}</li>
+              ))}
+              {warnings.length > 3 ? <li>ほか {warnings.length - 3} 件</li> : null}
+            </ul>
+          </TooltipContent>
+        </Tooltip>
+      ) : null}
+    </div>
+  );
+}
+
 export function NodeCard({ id, data, selected }: NodeProps & { data: NodeCardData }) {
   const { irNode, errors, onAddFrom } = data;
   const warnings = data.warnings ?? [];
   const entry = NODE_CATALOG.find((c) => c.type === irNode.type);
-  const Icon = nodeIcon(irNode.type);
   const ports = React.useMemo(
     () => drawnPorts(irNode, data.knownPorts, parsePorts(data.edgePortsKey), data.portsFresh ?? true),
     [irNode, data.knownPorts, data.edgePortsKey, data.portsFresh],
@@ -155,74 +243,7 @@ export function NodeCard({ id, data, selected }: NodeProps & { data: NodeCardDat
         className="!size-2.5 !border-2 !border-background !bg-muted-foreground transition-transform duration-[var(--duration-fast)] hover:!scale-125 pointer-coarse:!size-4"
       />
 
-      <div className="flex items-start gap-2.5 px-3.5 py-3">
-        <span
-          className={cn(
-            "mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-lg",
-            hasError ? "bg-destructive/10 text-destructive" : "",
-          )}
-          style={
-            hasError
-              ? undefined
-              : {
-                  backgroundColor: "color-mix(in oklab, var(--accent) 14%, transparent)",
-                  color: "var(--accent)",
-                }
-          }
-        >
-          <Icon className="size-4" aria-hidden />
-        </span>
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-sm font-medium leading-5">
-            {irNode.label || entry?.label_ja || irNode.type}
-          </span>
-          <span className="block truncate text-xs text-muted-foreground">
-            {entry?.description_ja ?? irNode.type}
-          </span>
-        </span>
-        {hasError ? (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <span
-                className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full bg-destructive text-destructive-foreground"
-                aria-label={`検証エラー ${errors.length} 件`}
-              >
-                <AlertCircle className="size-3.5" aria-hidden />
-              </span>
-            </TooltipTrigger>
-            <TooltipContent side="top" className="max-w-72">
-              <ul className="list-disc space-y-1 pl-4 text-xs">
-                {errors.slice(0, 5).map((e, i) => (
-                  <li key={i}>{e.message}</li>
-                ))}
-                {errors.length > 5 ? <li>ほか {errors.length - 5} 件</li> : null}
-              </ul>
-            </TooltipContent>
-          </Tooltip>
-        ) : null}
-        {!hasError && warnings.length > 0 ? (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <span
-                tabIndex={0}
-                className="mt-0.5 flex size-5 shrink-0 items-center justify-center rounded-full text-[var(--season-autumn)] outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                style={{ backgroundColor: "color-mix(in oklab, var(--season-autumn) 16%, transparent)" }}
-                aria-label={`注意 ${warnings.length} 件`}
-              >
-                <TriangleAlert className="size-3.5" aria-hidden />
-              </span>
-            </TooltipTrigger>
-            <TooltipContent side="top" className="max-w-80">
-              <ul className="list-disc space-y-1 pl-4 text-xs">
-                {warnings.slice(0, 3).map((e, i) => (
-                  <li key={i}>{e.message}</li>
-                ))}
-                {warnings.length > 3 ? <li>ほか {warnings.length - 3} 件</li> : null}
-              </ul>
-            </TooltipContent>
-          </Tooltip>
-        ) : null}
-      </div>
+      <NodeHeading irNode={irNode} errors={errors} warnings={warnings} />
 
       {/* 出力ポート（複数のときはラベル付きで下部に列挙）。 */}
       {pending ? (
@@ -283,6 +304,7 @@ export function NodeCard({ id, data, selected }: NodeProps & { data: NodeCardDat
         <PopoverContent side="right" align="start" className="w-auto p-3">
           <AddNodeMenu
             contextLabel={`「${irNode.label || entry?.label_ja || irNode.id}」の後ろに追加`}
+            refused={data.refusedTypes}
             onPick={(nodeType) => {
               setMenuOpen(false);
               onAddFrom(irNode.id, tailPort, nodeType);

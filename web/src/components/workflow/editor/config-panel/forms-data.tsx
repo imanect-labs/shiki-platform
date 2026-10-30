@@ -21,7 +21,7 @@ import { DataTableSelect, isFsmTable, NoFsmTableNote, useDataTables, type DataTa
 import type { FormProps } from "./forms-basic";
 import { paramsOf, patchParams } from "./params";
 import { RefPicker } from "./ref-picker";
-import { InputFieldsContext, TriggerSourcesContext, ValueExprInput } from "./value-expr-input";
+import { InputFieldsContext, MapRegionContext, TriggerSourcesContext, ValueExprInput } from "./value-expr-input";
 import { isFromRef, type RefContext } from "./value-refs";
 
 /// 対象テーブル（固定値の選択 ／ 前の結果から）。選んだテーブルを返す（列の候補に使う）。`eligible` は選べる
@@ -125,10 +125,11 @@ const QUERY_FILTER_TEXTS: FilterTexts = {
 function useQueryExprValue(props: FormProps): FilterExprValue {
   const inputFields = React.useContext(InputFieldsContext);
   const triggerSources = React.useContext(TriggerSourcesContext);
+  const mapLabel = React.useContext(MapRegionContext);
   const { refCandidates, inMapRegion } = props;
   const ctx = React.useMemo<RefContext>(
-    () => ({ inputFields, ancestors: refCandidates, inMapRegion: Boolean(inMapRegion), triggerSources }),
-    [inputFields, refCandidates, inMapRegion, triggerSources],
+    () => ({ inputFields, ancestors: refCandidates, inMapRegion: Boolean(inMapRegion), mapLabel, triggerSources }),
+    [inputFields, refCandidates, inMapRegion, mapLabel, triggerSources],
   );
   return React.useMemo(
     () => ({

@@ -57,7 +57,7 @@ import {
 import { patchParams } from "./params";
 import type { InputRefUsage } from "./input-schema-editor";
 import { TriggerPanel } from "./trigger-panel";
-import { InputFieldsContext, TriggerSourcesContext, type RefCandidate } from "./value-expr-input";
+import { InputFieldsContext, MapRegionContext, TriggerSourcesContext, type RefCandidate } from "./value-expr-input";
 import { inputRefKeys } from "./value-refs";
 
 const FORMS: Record<string, React.ComponentType<FormProps>> = {
@@ -187,6 +187,11 @@ function NodePanel({ ctx, node, sheet }: { ctx: EditorContext; node: IrNode; she
     [ctx, node.id],
   );
   const inMapRegion = node.parent != null;
+  // 中にいる繰り返しの名前（繰り返し中の 1 件の候補に添える・D-98）。
+  const mapNode = node.parent ? ctx.state.ir.nodes.find((n) => n.id === node.parent) : undefined;
+  const mapLabel = mapNode ? mapNode.label || NODE_CATALOG.find((c) => c.type === mapNode.type)?.label_ja || mapNode.id : null;
+  // 繰り返しを消すと中のブロックも一緒に消える（ボタンでそう言う）。
+  const insideCount = node.type === "control.map" ? ctx.state.ir.nodes.filter((n) => n.parent === node.id).length : 0;
   // 入力項目（「差し込む」・参照先の候補）。
   const inputFields = React.useMemo(() => inputFieldsOf(ctx.state.ir.input_schema), [ctx.state.ir.input_schema]);
   // きっかけの内容の項目（イベントトリガの source ごと・D-47）。
@@ -321,19 +326,21 @@ function NodePanel({ ctx, node, sheet }: { ctx: EditorContext; node: IrNode; she
           // ノードを選び直したらフォームの手元の状態（入力方法の切り替えなど）を持ち越さない。
           <InputFieldsContext.Provider value={inputFields}>
             <TriggerSourcesContext.Provider value={triggerSources}>
-              <Form
-                key={node.id}
-                node={node}
-                dispatch={ctx.dispatch}
-                refCandidates={refCandidates}
-                inMapRegion={inMapRegion}
-                fieldErrors={fieldErrors}
-                fieldWarnings={fieldWarnings}
-                serverCheck={serverCheck}
-                serverPorts={ctx.state.serverPorts[node.id]}
-                serverPortsFresh={ctx.state.serverPortsParams[node.id] === node.params}
-                edgePorts={edgePorts}
-              />
+              <MapRegionContext.Provider value={mapLabel}>
+                <Form
+                  key={node.id}
+                  node={node}
+                  dispatch={ctx.dispatch}
+                  refCandidates={refCandidates}
+                  inMapRegion={inMapRegion}
+                  fieldErrors={fieldErrors}
+                  fieldWarnings={fieldWarnings}
+                  serverCheck={serverCheck}
+                  serverPorts={ctx.state.serverPorts[node.id]}
+                  serverPortsFresh={ctx.state.serverPortsParams[node.id] === node.params}
+                  edgePorts={edgePorts}
+                />
+              </MapRegionContext.Provider>
             </TriggerSourcesContext.Provider>
           </InputFieldsContext.Provider>
         ) : (
@@ -349,7 +356,7 @@ function NodePanel({ ctx, node, sheet }: { ctx: EditorContext; node: IrNode; she
           onClick={() => ctx.dispatch({ type: "delete_nodes", ids: [node.id] })}
         >
           <Trash2 className="size-4" aria-hidden />
-          このブロックを削除
+          {insideCount > 0 ? "このブロックと中のブロックを削除" : "このブロックを削除"}
         </Button>
       </div>
     </>

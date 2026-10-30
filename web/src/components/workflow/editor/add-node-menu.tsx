@@ -22,6 +22,8 @@ type Props = {
   contextLabel?: string;
   /// 外枠の幅・高さの上書き（スマホの下からのシートでは全幅）。
   className?: string;
+  /// ここには置けないブロックの種類と理由（繰り返しの中の「結果を画面に返す」など・regions.ts）。灰色にして理由を添える。
+  refused?: Readonly<Record<string, string>>;
 };
 
 function groupByCategory(entries: readonly NodeCatalogEntry[]) {
@@ -34,7 +36,7 @@ function groupByCategory(entries: readonly NodeCatalogEntry[]) {
   return [...groups.values()];
 }
 
-export function AddNodeMenu({ onPick, contextLabel, className }: Props) {
+export function AddNodeMenu({ onPick, contextLabel, className, refused }: Props) {
   const [query, setQuery] = React.useState("");
   const [upcomingOpen, setUpcomingOpen] = useUpcomingOpen();
   const inputRef = React.useRef<HTMLInputElement>(null);
@@ -57,7 +59,16 @@ export function AddNodeMenu({ onPick, contextLabel, className }: Props) {
   const upcoming = filtered.filter((e) => !e.available);
 
   return (
-    <div className={cn("flex max-h-96 w-80 flex-col", className)} data-testid="add-node-menu">
+    <div
+      className={cn("flex max-h-96 w-80 flex-col", className)}
+      data-testid="add-node-menu"
+      // ブロック（キャンバスのノード）から開いたメニューの操作を、ブロックの選択・拡大・矢印キーでの移動へ伝えない
+      // （ポップオーバーは画面の外側へ描くが、React のイベントは開いたブロックへ伝わる）。Escape は閉じるのに使う。
+      onClick={(e) => e.stopPropagation()}
+      onKeyDown={(e) => {
+        if (e.key !== "Escape") e.stopPropagation();
+      }}
+    >
       {contextLabel ? (
         <p className="px-1 pb-2 text-xs text-muted-foreground">{contextLabel}</p>
       ) : null}
@@ -86,6 +97,25 @@ export function AddNodeMenu({ onPick, contextLabel, className }: Props) {
             <ul>
               {group.items.map((entry) => {
                 const Icon = nodeIcon(entry.type);
+                const reason = refused?.[entry.type];
+                if (reason) {
+                  // ここには置けない（理由を読める形で残す・押しても何もしない）。
+                  return (
+                    <li key={entry.type}>
+                      <div
+                        className="flex w-full cursor-not-allowed items-start gap-2.5 rounded-md px-2 py-1.5 opacity-55 pointer-coarse:py-2.5"
+                        aria-disabled
+                        data-refused={entry.type}
+                      >
+                        <Icon className="mt-0.5 size-4 shrink-0" aria-hidden />
+                        <span className="min-w-0">
+                          <span className="block text-sm font-medium leading-5">{entry.label_ja}</span>
+                          <span className="block text-xs text-muted-foreground">{reason}</span>
+                        </span>
+                      </div>
+                    </li>
+                  );
+                }
                 return (
                   <li key={entry.type}>
                     <button

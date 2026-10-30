@@ -2,16 +2,19 @@
 /// 追加先 → reducer action の写像。キャンバスの座標は既存配置の近くへ置く（座標は化粧品）。
 
 import type { Edge, Node as IrNode, WorkflowIr } from "@/generated/workflow-ir";
-import { NODE_CATALOG } from "@/generated/workflow-catalog";
 import type { EditorLayout } from "@/lib/workflow-api";
 import { nodePortLabel } from "../port-labels";
 import { NODE_W, nextPosition, resolvePositions } from "./auto-layout";
+import { frameRects, insideOrigin } from "./frames";
 import type { EditorAction } from "./ir-state";
 import { continuationPort, isStructuralPort, outputPorts, type ServerPorts } from "./ports";
+import { blockName as nameOf, childrenOf } from "./regions";
 
 export type AddTarget =
   /// ノードが 1 つも無い（最初のブロック）。
   | { kind: "first" }
+  /// 中にブロックの無い繰り返し `map` の中の最初のブロック。
+  | { kind: "inside"; map: string }
   /// `from` の `port` の後ろにつないで追加する（下流がまだ無い出口）。
   | { kind: "after"; from: string; port: string }
   /// 既存のつながりの間に割り込ませる。
@@ -22,10 +25,24 @@ export type AddTarget =
 /// 「流れの最後」: 先頭の入口から既定の出口を辿った最後のノードの後ろ（無ければ最初のブロック）。分岐の後では
 /// 最初の出口（「はい」など）の側の最後になるので、どこに入るかは [`targetPlace`] で言う（BUG-106）。
 /// `serverPorts` はサーバが導いた出口（判定のノードの出口・検証 API の `node_ports`）。
+/// 繰り返しの中のブロックは数えない（本体の流れの最後・繰り返しの中の最後は [`regionEndTarget`]）。
 export function endTarget(ir: WorkflowIr, serverPorts: ServerPorts = {}): AddTarget {
-  if (ir.nodes.length === 0) return { kind: "first" };
+  const body = ir.nodes.filter((n) => !n.parent);
+  if (body.length === 0) return { kind: "first" };
+  return flowEnd(ir, body, serverPorts);
+}
+
+/// 繰り返し `mapId` の中の流れの最後（中が空なら中の最初のブロック）。
+export function regionEndTarget(ir: WorkflowIr, mapId: string, serverPorts: ServerPorts = {}): AddTarget {
+  const inside = childrenOf(ir, mapId);
+  if (inside.length === 0) return { kind: "inside", map: mapId };
+  return flowEnd(ir, inside, serverPorts);
+}
+
+/// 同じ中（本体・1 つの繰り返しの中）のブロックのうち、先頭の入口から既定の出口を辿った最後のブロックの後ろ。
+function flowEnd(ir: WorkflowIr, members: IrNode[], serverPorts: ServerPorts): AddTarget {
   const incoming = new Set(ir.edges.map((e) => e.to));
-  let current = ir.nodes.find((n) => !incoming.has(n.id)) ?? ir.nodes[0];
+  let current = members.find((n) => !incoming.has(n.id)) ?? members[0];
   const seen = new Set<string>();
   for (;;) {
     seen.add(current.id);
@@ -75,13 +92,43 @@ export function addAction(
         position: { x: b.x - NODE_W - 96, y: b.y },
       };
     }
+    case "inside": {
+      // 枠の左上（見出しの下）に置く。
+      const map = ir.nodes.find((n) => n.id === target.map);
+      const frame = frameRects(ir, positions, layout.sizes ?? {}).get(target.map);
+      const anchor = frame ?? positions[target.map] ?? { x: 0, y: 0 };
+      return {
+        type: "add_node",
+        nodeType,
+        position: map ? insideOrigin(map, anchor) : anchor,
+        parent: target.map,
+      };
+    }
     default:
       return { type: "add_node", nodeType, position: { x: 0, y: 0 } };
   }
 }
 
 function blockName(node: IrNode | undefined, fallback: string): string {
-  return node?.label || NODE_CATALOG.find((c) => c.type === node?.type)?.label_ja || fallback;
+  return node ? nameOf(node) : fallback;
+}
+
+/// 追加先が繰り返しの中なら、その繰り返しの id（本体なら null）。ブロックを選ぶメニューで、中に置けない種類を
+/// 灰色にするのに使う。
+export function targetRegion(target: AddTarget, ir: WorkflowIr): string | null {
+  const parentOf = (id: string) => ir.nodes.find((n) => n.id === id)?.parent ?? null;
+  switch (target.kind) {
+    case "inside":
+      return target.map;
+    case "after":
+      return parentOf(target.from);
+    case "edge":
+      return parentOf(target.edge.from);
+    case "before":
+      return parentOf(target.before);
+    default:
+      return null;
+  }
 }
 
 /// 追加先の場所の句（「{A}」の後ろ／「{A}」の「{出口}」の後ろ／「{A}」と「{B}」の間／「{A}」の前・付録 D の
@@ -102,6 +149,8 @@ export function targetPlace(target: AddTarget, ir: WorkflowIr, serverPorts: Serv
       return `「${blockName(byId(target.edge.from), target.edge.from)}」と「${blockName(byId(target.edge.to), target.edge.to)}」の間`;
     case "before":
       return `「${blockName(byId(target.before), target.before)}」の前`;
+    case "inside":
+      return `「${blockName(byId(target.map), target.map)}」の中`;
     default:
       return null;
   }

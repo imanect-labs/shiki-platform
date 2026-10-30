@@ -224,6 +224,11 @@ export async function previewSchedule(cron: string, tz: string): Promise<Schedul
 export type EditorLayout = {
   positions?: Record<string, { x: number; y: number }>;
   triggers?: Record<string, { x: number; y: number }>;
+  /// 繰り返し（control.map）の枠を広げた大きさ（ブロックの id → 幅と高さ・中身より小さくはならない）。
+  sizes?: Record<string, { width: number; height: number }>;
+  /// 繰り返しの枠を描く版のエディタで保存した印（無ければ前の版の配置として、中のある繰り返しを含む定義は開くときに
+  /// 一度並べ直す・auto-layout.ts）。
+  frames?: 1;
 };
 
 export async function getLayout(id: string): Promise<EditorLayout> {

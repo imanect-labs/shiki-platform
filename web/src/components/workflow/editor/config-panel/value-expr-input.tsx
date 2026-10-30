@@ -55,6 +55,8 @@ export type { RefCandidate };
 
 /// この実行の入力項目（ワークフローの input_schema の properties）。設定パネルが渡す。
 export const InputFieldsContext = React.createContext<InputFieldInfo[]>([]);
+/// 中にいる繰り返しのブロック名（繰り返しの中のブロックの設定だけ・繰り返し中の 1 件の候補に添える）。
+export const MapRegionContext = React.createContext<string | null>(null);
 
 /// ワークフローのイベントトリガの source（きっかけの内容の項目を候補に出す・BUG-36）。設定パネルが渡す。
 export const TriggerSourcesContext = React.createContext<string[]>([]);
@@ -160,9 +162,10 @@ export function ValueExprInput({
 }: Props) {
   const inputFields = React.useContext(InputFieldsContext);
   const triggerSources = React.useContext(TriggerSourcesContext);
+  const mapLabel = React.useContext(MapRegionContext);
   const ctx = React.useMemo<RefContext>(
-    () => ({ inputFields, ancestors: refCandidates, inMapRegion: Boolean(inMapRegion), triggerSources }),
-    [inputFields, refCandidates, inMapRegion, triggerSources],
+    () => ({ inputFields, ancestors: refCandidates, inMapRegion: Boolean(inMapRegion), mapLabel, triggerSources }),
+    [inputFields, refCandidates, inMapRegion, mapLabel, triggerSources],
   );
   // 「前の結果から」を選んだが、まだ参照先を選んでいない間（IR は変えずに候補を見せる）。選ぶ欄の空の値は
   // はじめからこの状態で開く（`preferFrom`）。

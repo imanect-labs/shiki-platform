@@ -35,12 +35,13 @@ import {
   type EditorLayout,
 } from "@/lib/workflow-api";
 import { AddNodeSheet } from "./add-node-sheet";
-import { addAction, endTarget, targetLabel, targetPlace, type AddTarget } from "./add-target";
+import { addAction, endTarget, targetLabel, targetPlace, targetRegion, type AddTarget } from "./add-target";
 import { layoutForSave } from "./auto-layout";
 import { Canvas } from "./canvas";
 import { useEditorState } from "./ir-state";
 import { MobileFlow } from "./mobile-flow";
 import { Palette } from "./palette";
+import { refusedTypesIn } from "./regions";
 
 type Props = {
   workflowId: string;
@@ -389,6 +390,7 @@ export function WorkflowEditor({
         open={adding !== null}
         onOpenChange={(open) => !open && setAdding(null)}
         contextLabel={adding?.label ?? ""}
+        refused={adding ? refusedTypesIn(state.ir, targetRegion(adding.target, state.ir)) : undefined}
         onPick={(nodeType) => {
           if (adding) pick(adding.target, nodeType);
         }}

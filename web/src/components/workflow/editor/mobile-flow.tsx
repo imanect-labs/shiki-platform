@@ -6,10 +6,12 @@
 ///   出口の末尾・きっかけ直後の 3 通り）。
 /// - 分岐（はい／いいえ・振り分けの各出口・エラー時など）は出口名の行と字下げで簡易に表す。
 ///   合流（2 本目以降の入エッジ）は「〜へ合流」の行で示し、同じカードを二重に描かない。
+/// - 繰り返し（control.map）の中のブロックは、繰り返しのカードの下に字下げして並べる。中が空なら「中にブロックを追加」
+///   の＋を出す（BUG-103・D-85）。中の入口は、きっかけの直後の「別の入口」には並べない（実行の始めには動かない）。
 /// - 完全なグラフ編集（任意の接続・座標）はキャンバスで行う（「キャンバスで開く」）。
 
 import * as React from "react";
-import { AlertCircle, ChevronRight, CornerDownRight, GitMerge, Plus, TriangleAlert } from "lucide-react";
+import { AlertCircle, ChevronRight, CornerDownRight, GitMerge, Plus, Repeat, TriangleAlert } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { seasonVar } from "@/lib/season";
@@ -21,6 +23,7 @@ import { nodeIcon } from "./icons";
 import type { EditorAction, Selection } from "./ir-state";
 import { nodePortLabel } from "../port-labels";
 import { defaultOutPort, drawnPorts, edgePortsOf, exitsPending, type ServerPorts } from "./ports";
+import { isMap, typeLabel } from "./regions";
 import { triggerSeasonIndex, triggerView } from "./trigger-node";
 import { mapErrors } from "./validation";
 
@@ -49,6 +52,7 @@ function Indent({ depth, children }: { depth: number; children: React.ReactNode 
   const d = Math.min(depth, MAX_DEPTH);
   return (
     <div
+      data-depth={depth}
       className={cn(d > 0 && "border-l border-border")}
       style={d > 0 ? { marginLeft: `${(d - 1) * 14 + 6}px`, paddingLeft: "12px" } : undefined}
     >
@@ -170,6 +174,37 @@ function PortRow({ label, missing = false, note }: { label: string; missing?: bo
   );
 }
 
+/// 中にブロックの無い繰り返しの「中にブロックを追加」（カード間の＋と見分けがつくよう、文字の付いた破線の枠）。
+function InsideSlot({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <div className="py-2">
+      <button
+        type="button"
+        onClick={onClick}
+        aria-label={label}
+        className={cn(
+          "flex min-h-11 w-full items-center justify-center gap-1.5 rounded-xl border border-dashed bg-background px-3 text-sm text-muted-foreground outline-none",
+          "transition-colors duration-fast hover:border-primary hover:text-primary active:bg-accent focus-visible:ring-2 focus-visible:ring-ring",
+        )}
+      >
+        <Plus className="size-4" aria-hidden />
+        中にブロックを追加
+      </button>
+    </div>
+  );
+}
+
+/// 繰り返しの中の見出し（この下に字下げして並ぶブロックを、1 件ずつ実行する）。
+function RegionRow({ name, mapId }: { name: string; mapId: string }) {
+  return (
+    <div className="pb-1 pt-2" data-testid={`mobile-region-${mapId}`}>
+      <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+        <Repeat className="size-3.5" aria-hidden />「{name}」の中（1 件ずつ実行）
+      </div>
+    </div>
+  );
+}
+
 function MergeRow({ name }: { name: string }) {
   return (
     <div className="flex items-center gap-1.5 rounded-lg border border-dashed px-3 py-2 text-xs text-muted-foreground">
@@ -229,6 +264,46 @@ export function MobileFlow({
       </Indent>,
     );
 
+  const incoming = new Set(ir.edges.map((e) => e.to));
+
+  // 繰り返しの中（中のブロックを字下げで並べ、中が空なら中に足す＋を出す）。
+  const walkRegion = (map: IrNode, depth: number) => {
+    const name = nodeName(map);
+    const inside = ir.nodes.filter((n) => n.parent === map.id);
+    push(depth + 1, <RegionRow name={name} mapId={map.id} />);
+    if (inside.length === 0) {
+      push(
+        depth + 1,
+        <InsideSlot
+          label={`「${name}」の中にブロックを追加`}
+          onClick={() => onAdd({ kind: "inside", map: map.id }, `「${name}」の中に追加`)}
+        />,
+      );
+      return;
+    }
+    inside
+      .filter((n) => !incoming.has(n.id))
+      .forEach((entry, i) => {
+        if (i > 0) {
+          push(
+            depth + 1,
+            <PortRow
+              label="中でここからも始まる流れ"
+              note={`中の最後のブロックは 1 つにします。分かれた流れは「${typeLabel("control.join")}」でまとめます。`}
+            />,
+          );
+        }
+        push(
+          depth + 1,
+          <AddSlot
+            label={`「${nodeName(entry)}」の前にブロックを追加`}
+            onClick={() => onAdd({ kind: "before", before: entry.id }, `「${nodeName(entry)}」の前に追加`)}
+          />,
+        );
+        walk(entry.id, depth + 1);
+      });
+  };
+
   const walk = (startId: string, depth: number) => {
     let currentId: string | null = startId;
     while (currentId) {
@@ -240,6 +315,7 @@ export function MobileFlow({
       }
       visited.add(node.id);
       push(depth, card(node));
+      if (isMap(node)) walkRegion(node, depth);
 
       // 判定の出口はサーバの導出。今の設定に無い出口から出るエッジも行き先ごと見せる（無い出口の印つき）。
       const drawn = drawnPorts(
@@ -331,8 +407,8 @@ export function MobileFlow({
     }
   };
 
-  const incoming = new Set(ir.edges.map((e) => e.to));
-  const entries = ir.nodes.filter((n) => !incoming.has(n.id));
+  // 本体の入口（繰り返しの中のブロックは、その繰り返しのカードの下に並べる）。
+  const entries = ir.nodes.filter((n) => !incoming.has(n.id) && !(n.parent && isMap(byId.get(n.parent))));
   if (ir.nodes.length === 0) {
     push(0, <AddSlot label="最初のブロックを追加" onClick={() => onAdd({ kind: "first" }, "最初のブロックを追加")} />);
   }

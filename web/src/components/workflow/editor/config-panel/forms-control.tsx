@@ -17,7 +17,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import type { NodeParamsByType } from "@/generated/workflow-catalog";
+import { EVENT_CATALOG, type NodeParamsByType } from "@/generated/workflow-catalog";
 import type {
   CmpOp,
   Comparison,
@@ -366,8 +366,24 @@ export function SwitchForm({ node, dispatch, refCandidates, inMapRegion, fieldEr
   );
 }
 
+/// きっかけ「テーブルの行の状態が変わったとき」の名前（イベントのカタログの単一定義）。
+const TRANSITION_TRIGGER = EVENT_CATALOG.find((e) => e.source === "data.transition")?.label_ja ?? "";
+
+/// 失敗した件があるときの扱い（付録 D の N3.1.4）。
+const MAP_ITEM_ERROR: Record<string, { label: string; note: string }> = {
+  fail_map: {
+    label: "繰り返しを失敗にする（おすすめ）",
+    note: "ほかの件は最後まで動きます。そのあと「失敗したとき」の設定に従います。",
+  },
+  collect: {
+    label: "失敗を記録して続ける",
+    note: "失敗した件の番号と内容を結果に残し、次へ進みます。実行は「完了」になります。",
+  },
+};
+
 export function MapForm({ node, dispatch, refCandidates, inMapRegion, fieldErrors }: FormProps) {
   const p = paramsOf<NodeParamsByType["control.map"]>(node);
+  const onItemError = (p.on_item_error as string | undefined) ?? "fail_map";
   return (
     <div className="space-y-3">
       <ValueExprInput
@@ -377,25 +393,36 @@ export function MapForm({ node, dispatch, refCandidates, inMapRegion, fieldError
         onChange={(v) => patchParams(dispatch, node, { items: v })}
         refCandidates={refCandidates}
         inMapRegion={inMapRegion}
+        hint="このリストの 1 件ずつに、中のブロックを実行します。最大 1,000 件で、空なら何もせずに次へ進みます。"
         error={fieldErrors.get("items")}
       />
-      <Field label="失敗した要素の扱い">
-        <Select
-          value={(p.on_item_error as string | undefined) ?? "fail_map"}
-          onValueChange={(v) => patchParams(dispatch, node, { on_item_error: v })}
-        >
+      <Field
+        label="失敗した件があるとき"
+        hint={`${MAP_ITEM_ERROR[onItemError]?.note ?? ""}中で分岐して、最後のブロックまで進まなかった件も失敗と数えます。`}
+        error={fieldErrors.get("on_item_error")}
+      >
+        <Select value={onItemError} onValueChange={(v) => patchParams(dispatch, node, { on_item_error: v })}>
           <FieldSelectTrigger className="h-8">
             <SelectValue />
           </FieldSelectTrigger>
           <SelectContent>
-            <SelectItem value="fail_map">1 つでも失敗したら全体を失敗に</SelectItem>
-            <SelectItem value="collect">失敗も結果に集めて続行</SelectItem>
+            {Object.entries(MAP_ITEM_ERROR).map(([value, o]) => (
+              <SelectItem key={value} value={value}>
+                {o.label}
+              </SelectItem>
+            ))}
           </SelectContent>
         </Select>
       </Field>
-      <p className="rounded-md border bg-muted/40 p-2 text-[11px] text-muted-foreground">
-        繰り返しの中に入れるブロックは、追加後にこのブロックを「親」に指定します（現在は AI 編集での作成が確実です）
-      </p>
+      {/* 中のブロックの案内（D-85: キャンバスは枠の中、スマホは字下げした一覧の「中にブロックを追加」から足す）。 */}
+      <div className="space-y-1 rounded-md border bg-muted/40 p-2 text-[11px] leading-relaxed text-muted-foreground" data-testid="map-inside-note">
+        <p>
+          1 件ごとに動かすブロックは、「中にブロックを追加」から、このブロックの中に追加します。中のブロックでは「繰り返し中の 1 件」を値に使えます。
+        </p>
+        <p>
+          テーブルのレコードを 1 件ずつ処理するなら、きっかけ「{TRANSITION_TRIGGER}」などを使うと、繰り返しは要りません。
+        </p>
+      </div>
     </div>
   );
 }

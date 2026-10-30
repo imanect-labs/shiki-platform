@@ -10,9 +10,10 @@ import * as React from "react";
 import { NODE_CATALOG } from "@/generated/workflow-catalog";
 import type { Edge, Node, Trigger, ValidationError, WorkflowIr } from "@/generated/workflow-ir";
 import type { EditorLayout } from "@/lib/workflow-api";
-import { carryTriggerPositions, seedLayout } from "./auto-layout";
+import { carryTriggerPositions, seedLayout, type Positions } from "./auto-layout";
 import { rewriteInputRefs } from "./config-panel/value-refs";
 import { defaultOutPort, outputPorts, type ServerPorts } from "./ports";
+import { descendantsOf, isMap, moveIntoRegion } from "./regions";
 
 export type Selection =
   | { kind: "none" }
@@ -70,7 +71,14 @@ export type EditorState = {
 };
 
 export type EditorAction =
-  | { type: "add_node"; nodeType: string; position: { x: number; y: number }; from?: { id: string; port: string } }
+  /// `parent` は置く繰り返しの中（null・省略は本体。`from` があればつなぐ相手と同じ中）。
+  | {
+      type: "add_node";
+      nodeType: string;
+      position: { x: number; y: number };
+      from?: { id: string; port: string };
+      parent?: string | null;
+    }
   | { type: "insert_on_edge"; nodeType: string; edge: Edge; position: { x: number; y: number } }
   /// 入口ノード（入エッジ 0 本）の手前に挿入する（スマホの縦一覧で「きっかけ」直後の＋）。
   | { type: "insert_before"; nodeType: string; before: string; position: { x: number; y: number } }
@@ -79,6 +87,17 @@ export type EditorAction =
   /// ノードとつながりをまとめて消す（キャンバスの Delete キー・つながりの削除ボタン）。undo は 1 段。
   | { type: "delete_elements"; nodes: string[]; edges: Edge[] }
   | { type: "move"; positions: Record<string, { x: number; y: number }> }
+  /// ブロックを繰り返しの枠に入れる・枠から出す（`parent` が null なら本体へ）。中と外をまたぐことになる線は外す。
+  /// `positions` は動かした後の座標（中身ごと）、`before` は動かす前の座標（Undo で一緒に戻す）。undo は 1 段。
+  | {
+      type: "set_parent";
+      id: string;
+      parent: string | null;
+      positions: Record<string, { x: number; y: number }>;
+      before: Record<string, { x: number; y: number }>;
+    }
+  /// 繰り返しの枠を広げた大きさ（layout だけ・undo の対象外）。
+  | { type: "resize_frame"; id: string; size: { width: number; height: number } }
   /// `key` は `triggerKeys` のきっかけの座標キー。
   | { type: "move_trigger"; key: string; position: { x: number; y: number } }
   /// `at` は dispatch した時刻（`useEditorState` が付ける・連続入力をまとめる判定に使う）。
@@ -215,9 +234,10 @@ export function defaultParams(nodeType: string): unknown {
 /// 新規ノードを作る。`near` を渡すとそのノードと同じ領域（`parent`）に置く。
 /// 繋ぐ相手と領域が違うとエッジが領域境界を跨ぎ、サーバが `ir.region_leak` で拒否するため
 /// （control.map の本体内へ挿入する場合など）、エッジで繋ぐ挿入は必ず相手の parent を継ぐ。
-function makeNode(ir: WorkflowIr, nodeType: string, near?: string): Node {
+/// つなぐ相手の無い追加（繰り返しの中の最初のブロック・枠へのドロップ）は `parent` で中を決める。
+function makeNode(ir: WorkflowIr, nodeType: string, near?: string, inside?: string | null): Node {
   const entry = NODE_CATALOG.find((c) => c.type === nodeType);
-  const parent = near ? (ir.nodes.find((n) => n.id === near)?.parent ?? null) : null;
+  const parent = near ? (ir.nodes.find((n) => n.id === near)?.parent ?? null) : (inside ?? null);
   return {
     id: newNodeId(ir, nodeType),
     type: nodeType,
@@ -267,10 +287,24 @@ function withIr(state: EditorState, ir: WorkflowIr): EditorState {
   return { ...state, ...pushUndo(state), ir, dirty: true, lastEdit: null };
 }
 
+/// IR の版ごとに、その版へ Undo / Redo で戻したときに戻す座標（ブロックを枠に出し入れした手の前後・
+/// `set_parent`）。座標は IR に入れず undo の段にも積まないので、版の参照に結び付けておく（版が捨てられれば消える）。
+const POSITIONS_AT = new WeakMap<WorkflowIr, Positions>();
+
+/// Undo / Redo で `ir` に戻したときの layout（`POSITIONS_AT` にある座標だけを戻す）。
+function positionsFor(layout: EditorLayout, ir: WorkflowIr): EditorLayout {
+  const at = POSITIONS_AT.get(ir);
+  return at ? { ...layout, positions: { ...(layout.positions ?? {}), ...at } } : layout;
+}
+
 /// ノードとつながりを消す（つながっているエッジも一緒に消える）。undo は 1 段。
+/// 繰り返しを消すと中のブロックも一緒に消える（中だけが残ると、入れ先の無いブロックになり保存できない）。
 /// 座標（layout）は消さない: Undo で戻したノードを同じ位置に出すため（保存時に今の IR に無いものを落とす）。
 function deleteElements(state: EditorState, nodeIds: string[], edges: Edge[]): EditorState {
   const ids = new Set(nodeIds);
+  for (const id of nodeIds) {
+    if (isMap(state.ir.nodes.find((n) => n.id === id))) for (const d of descendantsOf(state.ir, id)) ids.add(d);
+  }
   const keys = new Set(edges.map(edgeKey));
   const nodes = state.ir.nodes.filter((n) => !ids.has(n.id));
   const nextEdges = state.ir.edges.filter(
@@ -329,7 +363,7 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 export function editorReducer(state: EditorState, action: EditorAction): EditorState {
   switch (action.type) {
     case "add_node": {
-      const node = makeNode(state.ir, action.nodeType, action.from?.id);
+      const node = makeNode(state.ir, action.nodeType, action.from?.id, action.parent);
       const edges = action.from
         ? [
             ...state.ir.edges,
@@ -430,6 +464,29 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
         layoutDirty: true,
       };
     }
+    case "set_parent": {
+      const node = state.ir.nodes.find((n) => n.id === action.id);
+      if (!node || (node.parent ?? null) === action.parent) return state;
+      const { ir } = moveIntoRegion(state.ir, action.id, action.parent);
+      POSITIONS_AT.set(state.ir, { ...POSITIONS_AT.get(state.ir), ...action.before });
+      POSITIONS_AT.set(ir, { ...action.positions });
+      const next = withIr(state, ir);
+      return {
+        ...next,
+        selection: keepSelection(state.selection, ir.edges),
+        layout: {
+          ...state.layout,
+          positions: { ...(state.layout.positions ?? {}), ...action.positions },
+        },
+        layoutDirty: true,
+      };
+    }
+    case "resize_frame":
+      return {
+        ...state,
+        layout: { ...state.layout, sizes: { ...(state.layout.sizes ?? {}), [action.id]: action.size } },
+        layoutDirty: true,
+      };
     case "move_trigger": {
       return {
         ...state,
@@ -503,6 +560,10 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
       // 元の id の座標も残す（Undo で元の id に戻したときに同じ位置へ出すため）。
       const positions = { ...(state.layout.positions ?? {}) };
       if (positions[action.id]) positions[nextId] = positions[action.id];
+      // 繰り返しの枠を広げた大きさも新しい id へ写す。
+      const sizes = state.layout.sizes?.[action.id]
+        ? { ...state.layout.sizes, [nextId]: state.layout.sizes[action.id] }
+        : state.layout.sizes;
       const renamed = withIr(state, {
         ...state.ir,
         nodes: state.ir.nodes.map((n) => {
@@ -526,7 +587,7 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
       const known = state.serverPorts[action.id];
       return {
         ...renamed,
-        layout: { ...state.layout, positions },
+        layout: { ...state.layout, positions, ...(sizes ? { sizes } : {}) },
         layoutDirty: true,
         selection: { kind: "node", id: nextId },
         ...(known
@@ -622,6 +683,7 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
       return {
         ...state,
         ir: prev,
+        layout: positionsFor(state.layout, prev),
         undoStack: state.undoStack.slice(0, -1),
         redoStack: [...state.redoStack, state.ir],
         dirty: true,
@@ -635,6 +697,7 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
       return {
         ...state,
         ir: next,
+        layout: positionsFor(state.layout, next),
         redoStack: state.redoStack.slice(0, -1),
         undoStack: [...state.undoStack, state.ir],
         dirty: true,

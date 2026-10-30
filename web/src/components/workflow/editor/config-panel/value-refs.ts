@@ -34,6 +34,8 @@ export type RefContext = {
   inputFields: InputFieldInfo[];
   ancestors: RefCandidate[];
   inMapRegion: boolean;
+  /// 中にいる繰り返しのブロック名（繰り返し中の 1 件の候補に添える・D-98）。
+  mapLabel?: string | null;
   /// ワークフローのイベントトリガの source（きっかけの内容の項目を候補に出す・BUG-36）。
   triggerSources?: string[];
 };
@@ -41,7 +43,7 @@ export type RefContext = {
 export const SOURCE_LABELS: Record<string, string> = {
   input: "この実行の入力",
   trigger: "きっかけの内容",
-  each: "繰り返し中の要素",
+  each: "繰り返し中の 1 件",
   run: "実行情報",
 };
 
@@ -128,7 +130,7 @@ export function triggerFields(sources: string[] | undefined): { name: string; de
 }
 
 /// 参照の候補（差し込むメニューと参照先の選択に使う）。並びは画面の並び。
-export function refOptions({ inputFields, ancestors, inMapRegion, triggerSources }: RefContext): RefOption[] {
+export function refOptions({ inputFields, ancestors, inMapRegion, mapLabel, triggerSources }: RefContext): RefOption[] {
   const out: RefOption[] = [];
   const add = (ref: RefValue, label: string, group: string) => out.push({ key: refKey(ref), ref, label, group });
   for (const f of inputFields) {
@@ -142,8 +144,10 @@ export function refOptions({ inputFields, ancestors, inMapRegion, triggerSources
     add({ $from: from }, `「${a.label}」の結果（全体）`, "前のブロックの結果");
   }
   if (inMapRegion) {
-    add({ $from: "each", path: "/item" }, "繰り返し中の要素", "繰り返し");
-    add({ $from: "each", path: "/index" }, "繰り返しの番号（0 から）", "繰り返し");
+    // 繰り返しの名前と並べて出す（付録 D の N3.1.4・D-98）。入れ子のときは、すぐ外の繰り返しの 1 件。
+    const of = mapLabel ? `「${mapLabel}」の` : "";
+    add({ $from: "each", path: "/item" }, `${of}${SOURCE_LABELS.each}`, SOURCE_LABELS.each);
+    add({ $from: "each", path: "/index" }, `${of}繰り返しの番号（0 から）`, SOURCE_LABELS.each);
   }
   for (const f of triggerFields(triggerSources)) {
     add({ $from: "trigger", path: pathOf([f.name]) }, `${f.description}（${f.name}）`, SOURCE_LABELS.trigger);

@@ -31,6 +31,8 @@ export type PlusEdgeData = {
   /// このつながりを消す（選択中に出す削除ボタン）。
   onDelete: () => void;
   errorMessages: string[];
+  /// 間に置けないブロックの種類と理由（繰り返しの中の線・regions.ts）。
+  refusedTypes?: Readonly<Record<string, string>>;
   [key: string]: unknown;
 };
 
@@ -118,6 +120,7 @@ export function PlusEdge({
               <PopoverContent side="bottom" align="center" className="w-auto p-3">
                 <AddNodeMenu
                   contextLabel={between ? `${between}に追加` : "この線の間に追加"}
+                  refused={data.refusedTypes}
                   onPick={(nodeType) => {
                     setMenuOpen(false);
                     data.onInsert(nodeType, { x: labelX, y: labelY });
