@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-use super::NameTakenPolicy;
+use super::{CsvEncoding, NameTakenPolicy};
 use crate::ir::expr::ValueExpr;
 
 /// `csv.query` — CSV への読み取り専用 SQL（テーブル名 `data`・viewer・pure）。
@@ -56,4 +56,8 @@ pub struct CsvWriteParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub on_name_taken: Option<NameTakenPolicy>,
+    /// 文字コード（省略時は BOM なしの UTF-8・この項目が無かったころの定義の挙動・D-120）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub encoding: Option<CsvEncoding>,
 }

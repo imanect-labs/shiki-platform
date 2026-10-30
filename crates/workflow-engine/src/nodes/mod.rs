@@ -11,6 +11,7 @@ pub mod capability;
 pub mod capability_agent;
 pub mod capability_ai;
 pub mod capability_data;
+mod csv_encoding;
 pub mod decide;
 mod decide_reply;
 pub mod exec;

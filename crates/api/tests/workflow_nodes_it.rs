@@ -1151,6 +1151,161 @@ async fn csv_nodes_read_excel_encodings_and_keep_the_encoding_when_patching() {
     assert_eq!(after_refusal, after_patch);
 }
 
+/// 新しく保存する CSV の文字コード（GAP-47・D-120）。「新しい CSV を保存」と、CSV として保存する「新しいファイルを
+/// 保存」は、選んだ文字コード（UTF-8〔BOM 付き〕・UTF-8・Shift_JIS）で書く。欄の無い保存済みの定義は、これまでどおり
+/// BOM の無い UTF-8 で書く。CSV でない種類には使わない。Shift_JIS に無い文字は書かずに失敗する。
+#[tokio::test]
+async fn new_csv_files_are_saved_in_the_chosen_encoding() {
+    use textenc::encoding_rs::{SHIFT_JIS, UTF_8};
+    let Some(h) = setup().await else { return };
+    let Some(runner) = runner_path() else {
+        eprintln!("shiki-tabular-runner 未ビルドのためスキップ（SHIKI_TABULAR_RUNNER 参照）");
+        return;
+    };
+    let tag = Uuid::new_v4().simple().to_string();
+    let csv = format!("品目,金額\n交通費,1200\n{tag},4\u{301C}6月\n");
+    let write = |id: &str, ty: &str, name: String, extra: Value| {
+        let mut params = json!({ "name": name, "content": csv });
+        if let (Some(p), Some(e)) = (params.as_object_mut(), extra.as_object()) {
+            p.extend(e.clone());
+        }
+        json!({ "id": id, "type": ty, "params": params })
+    };
+    let saved = h
+        .save(&json!({
+            "ir_version": 1, "name": format!("csv-encoding-{tag}"),
+            "declared_scopes": ["csv.write", "storage.write"],
+            "triggers": [{ "kind": "interactive" }],
+            "nodes": [
+                write("a_old", "csv.write", format!("old-{tag}"), json!({})),
+                write("b_bom", "csv.write", format!("bom-{tag}"), json!({ "encoding": "utf8_bom" })),
+                write("c_sjis", "csv.write", format!("sjis-{tag}"), json!({ "encoding": "shift_jis" })),
+                write("d_file_csv", "storage.write", format!("file-{tag}.csv"), json!({ "encoding": "utf8_bom" })),
+                write("e_file_md", "storage.write", format!("note-{tag}.md"), json!({ "encoding": "shift_jis" }))
+            ],
+            "edges": []
+        }))
+        .await;
+    let refused_wf = h
+        .save(&json!({
+            "ir_version": 1, "name": format!("csv-encoding-refused-{tag}"),
+            "declared_scopes": ["csv.write"],
+            "triggers": [{ "kind": "interactive" }],
+            "nodes": [ { "id": "w", "type": "csv.write", "params": {
+                "name": format!("emoji-{tag}"), "content": "名前\n😀\n", "encoding": "shift_jis" } } ],
+            "edges": []
+        }))
+        .await;
+    let (run_id, status) = h
+        .run(saved, &json!({}), h.executor_with_tabular(&runner))
+        .await;
+    let steps: Vec<(String, Option<Value>, Option<Value>)> = sqlx::query_as(
+        "SELECT node_id, output, error FROM step_execution \
+         WHERE tenant_id = $1 AND run_id = $2 ORDER BY node_id",
+    )
+    .bind(&h.tenant)
+    .bind(run_id)
+    .fetch_all(&h.pool)
+    .await
+    .unwrap();
+    let mut files = Vec::new();
+    for (node, output, _) in &steps {
+        let id = output
+            .as_ref()
+            .and_then(|o| o.get("file_id"))
+            .and_then(Value::as_str)
+            .and_then(|s| Uuid::parse_str(s).ok());
+        if let Some(id) = id {
+            let (meta, bytes) = h
+                .storage
+                .read_file_internal(&h.alice, id, None)
+                .await
+                .unwrap();
+            files.push((node.clone(), meta, bytes));
+        }
+    }
+    let (refused_run, refused_status) = h
+        .run(refused_wf, &json!({}), h.executor_with_tabular(&runner))
+        .await;
+    let refused_error: Option<Value> =
+        sqlx::query_scalar("SELECT error FROM step_execution WHERE tenant_id = $1 AND run_id = $2")
+            .bind(&h.tenant)
+            .bind(refused_run)
+            .fetch_one(&h.pool)
+            .await
+            .unwrap();
+    let emoji_saved: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM node WHERE tenant_id = $1 AND name LIKE $2")
+            .bind(&h.tenant)
+            .bind(format!("emoji-{tag}%"))
+            .fetch_one(&h.pool)
+            .await
+            .unwrap();
+
+    // 片付け（run の履歴・保存したファイル・ワークフロー）。
+    h.runs.purge_tenant_history(&h.tenant).await.unwrap();
+    for (_, meta, _) in &files {
+        h.storage
+            .soft_delete_file(&h.alice, meta.id, None)
+            .await
+            .unwrap();
+    }
+    for wf in [saved, refused_wf] {
+        h.artifacts.delete(&h.alice, wf, None).await.unwrap();
+    }
+
+    assert_eq!(status, RunStatus::Succeeded, "{steps:?}");
+    let by_node = |node: &str| {
+        files
+            .iter()
+            .find(|(n, _, _)| n == node)
+            .map(|(_, meta, bytes)| (meta.name.clone(), bytes.clone()))
+            .unwrap_or_else(|| panic!("{node} のファイルが無い: {steps:?}"))
+    };
+    let (old_name, old) = by_node("a_old");
+    assert_eq!(old_name, format!("old-{tag}.csv"));
+    assert_eq!(
+        old,
+        csv.as_bytes(),
+        "欄の無い定義は BOM の無い UTF-8（これまでどおり）"
+    );
+    let bom = textenc::encode_like(&csv, UTF_8, true).unwrap();
+    assert_eq!(by_node("b_bom").1, bom, "UTF-8（BOM 付き）");
+    assert!(by_node("b_bom").1.starts_with(b"\xEF\xBB\xBF"));
+    let wave = csv.replace('\u{301C}', "\u{FF5E}");
+    let (sjis, _, _) = SHIFT_JIS.encode(&wave);
+    assert_eq!(
+        by_node("c_sjis").1,
+        sjis.as_ref(),
+        "Shift_JIS（〜 は ～ にする）"
+    );
+    assert_eq!(
+        textenc::decode_text(&by_node("c_sjis").1).unwrap().encoding,
+        SHIFT_JIS
+    );
+    assert_eq!(
+        by_node("d_file_csv").1,
+        bom,
+        "CSV として保存する「新しいファイルを保存」"
+    );
+    assert_eq!(
+        by_node("e_file_md").1,
+        csv.as_bytes(),
+        "CSV でない種類には文字コードの欄を使わない"
+    );
+    assert_eq!(refused_status, RunStatus::Failed);
+    let error = refused_error.unwrap();
+    assert_eq!(error["code"], "invalid", "{error}");
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("「😀」は Shift_JIS で書けないため、CSV を保存できませんでした。"),
+        "{error}"
+    );
+    assert_eq!(emoji_saved, 0, "書けない文字があるときは保存しない");
+}
+
 /// csv.query は declared_scopes に csv.read が無いと scope 天井で拒否される（fail-closed）。
 #[tokio::test]
 async fn csv_query_denied_without_declared_scope() {

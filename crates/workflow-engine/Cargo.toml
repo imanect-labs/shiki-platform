@@ -49,6 +49,8 @@ async-trait.workspace = true
 tracing.workspace = true
 # cron 評価（5 フィールド・標準の読み方）＋IANA tz 解決（スケジューラ・engine.md §5）。ミニアプリと共有する。
 shiki-cron5.workspace = true
+# 新しく保存する CSV の文字コード（UTF-8〔BOM 付き〕・Shift_JIS）の書き方（CSV の編集の書き戻しと同じ・D-120）。
+shiki-textenc.workspace = true
 chrono = { workspace = true }
 # 実行情報の時刻の時間帯（vocab/run_info.rs）。
 chrono-tz = "0.10"
@@ -72,6 +74,7 @@ ignored = [
     "shiki-jobq",
     "shiki-data",
     "shiki-cron5",
+    "shiki-textenc",
 ]
 
 [lints]

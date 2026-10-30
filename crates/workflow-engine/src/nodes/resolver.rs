@@ -138,18 +138,31 @@ pub fn as_u32(v: &Value) -> Option<u32> {
 /// - その他 → JSON 直列化バイト（構造化データの保存）。
 #[must_use]
 pub fn as_bytes(v: &Value) -> Vec<u8> {
+    if let Some(bytes) = as_base64_bytes(v) {
+        return bytes;
+    }
+    as_text(v).into_bytes()
+}
+
+/// `{ "base64": "..." }`（読めるもの）なら、そのバイト列（[`as_bytes`] のバイナリの扱い）。
+#[must_use]
+pub fn as_base64_bytes(v: &Value) -> Option<Vec<u8>> {
     use base64::Engine as _;
     match v {
-        Value::String(s) => s.clone().into_bytes(),
-        Value::Object(map) => {
-            if let Some(Value::String(b64)) = map.get("base64") {
-                if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(b64) {
-                    return bytes;
-                }
-            }
-            serde_json::to_vec(v).unwrap_or_default()
-        }
-        other => serde_json::to_vec(other).unwrap_or_default(),
+        Value::Object(map) => match map.get("base64") {
+            Some(Value::String(b64)) => base64::engine::general_purpose::STANDARD.decode(b64).ok(),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// バイナリでない値の文章（[`as_bytes`] の文字列と JSON 直列化の扱い）。
+#[must_use]
+pub fn as_text(v: &Value) -> String {
+    match v {
+        Value::String(s) => s.clone(),
+        other => serde_json::to_string(other).unwrap_or_default(),
     }
 }
 

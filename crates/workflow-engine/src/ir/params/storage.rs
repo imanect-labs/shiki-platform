@@ -30,6 +30,24 @@ pub enum NameTakenPolicy {
     AddNumber,
 }
 
+/// 新しく保存する CSV の文字コード（`csv.write`・`storage.write` で CSV として保存するとき・GAP-47・D-120）。
+///
+/// 省略は [`CsvEncoding::Utf8`]（BOM なし。この項目が無かったころの定義の挙動を変えない）。エディタで新しく置く
+/// ブロックは [`CsvEncoding::Utf8Bom`] を入れる（日本語の Windows の Excel は、BOM の無い UTF-8 を Shift_JIS として
+/// 開いて文字化けする）。値の名前は保存される IR の値なので変えない。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
+#[serde(rename_all = "snake_case")]
+#[ts(export)]
+pub enum CsvEncoding {
+    /// UTF-8（BOM 付き）。日本語の Windows の Excel でそのまま開ける。
+    Utf8Bom,
+    /// UTF-8（BOM なし）。
+    #[default]
+    Utf8,
+    /// Shift_JIS（CP932）。Shift_JIS だけを読む古い仕組みへ渡す CSV など。Shift_JIS に無い文字は書けない。
+    ShiftJis,
+}
+
 /// 番号を付けて試す上限（` (2)` 〜 ` (50)`）。正本は `storage::MAX_NUMBERED_NAME`（同じ数の写し）。
 pub const MAX_NUMBERED_NAME: u32 = 50;
 
@@ -93,6 +111,11 @@ pub struct StorageWriteParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub on_name_taken: Option<NameTakenPolicy>,
+    /// CSV として保存するとき（種類が `text/csv`）の文字コード（省略時は BOM なしの UTF-8・D-120）。ほかの種類では
+    /// 使わない（文章は UTF-8 のまま保存する）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub encoding: Option<CsvEncoding>,
 }
 
 /// `storage.list` — フォルダ一覧（pure）。

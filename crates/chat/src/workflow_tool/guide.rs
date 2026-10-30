@@ -294,7 +294,7 @@ pub(super) fn emit_description(
          - 参照 {{\"$from\":\"<source>\",\"path\":\"/キー/0\",\"default\":既定値}}（path・default は省略可）。source は input（実行の入力）・trigger（トリガの内容）・run（実行情報 {{ {run} }}。日時は日本時間で、同じ実行の中ではやり直しても同じ値）・nodes.<id>.output（エッジでたどれる前のノードの出力。形は【ノード】の出力）・each（map 領域の中だけ）のどれか。中身は path（JSON Pointer・/ で始める）で指し、source に input.title のような書き方はしない。解決できず default も無ければ step は失敗する。\n\
          - 文章の組み立て {{\"$template\":\"件名: {{title}}（{{count}} 件）\",\"vars\":{{\"title\":{{\"$from\":\"input\",\"path\":\"/title\"}},\"count\":…}}}}。差し込みは {{名前}} で、名前は vars のキー（vars に無い名前はエラー）。{{{{ と }}}} は差し込みではなく波括弧そのものを出す書き方（{{{{title}}}} と書くと「{{title}}」という文字が出る）。\n\
          - url・secret・skill・model など型が string の項目はリテラルの文字列だけ（参照は書けない）。テーブル・フォルダ・ファイルの id は実在する uuid を書く（data_schema・doc_search などで調べる。推測しない）。\n\
-         - schedule・event で動かすワークフローの storage.write・csv.write には folder を必ず書く（省略はルートへの保存で、自動の実行はルートに書けないので有効化できない）。storage.write・csv.write は既存のファイルを上書きしない。同じ名前のファイルがあると失敗するので、毎回動くワークフローは on_name_taken に \"add_number\" を書く（「名前 (2).md」のように番号を付けて保存する）か、名前に {{\"$from\":\"run\",\"path\":\"/date\"}} を差し込む。content_type を省くとファイル名の拡張子（.md・.txt・.csv・.json・.html）から決まる。\n\
+         - schedule・event で動かすワークフローの storage.write・csv.write には folder を必ず書く（省略はルートへの保存で、自動の実行はルートに書けないので有効化できない）。storage.write・csv.write は既存のファイルを上書きしない。同じ名前のファイルがあると失敗するので、毎回動くワークフローは on_name_taken に \"add_number\" を書く（「名前 (2).md」のように番号を付けて保存する）か、名前に {{\"$from\":\"run\",\"path\":\"/date\"}} を差し込む。content_type を省くとファイル名の拡張子（.md・.txt・.csv・.json・.html）から決まる。CSV（csv.write と、種類が text/csv の storage.write）は encoding に \"utf8_bom\" を書く（日本語の Windows の Excel で文字化けしない。省略は BOM なしの UTF-8。Shift_JIS だけを読む仕組みへ渡すなら \"shift_jis\"）。\n\
          - llm.invoke の prompt・agent.invoke の instruction・rag.search の query・csv.query の sql は空にしない（空のままでは有効化も実行もできない）。\n\
          - http.request は fail_on_error_status: true で、相手が 400 以上を返したときブロックを失敗にする（省略は成功として status を返す）。\n\
          - workflow.start の name は、保存する人が見られる既存のワークフローの name（無い・見えない name は保存できない）。\n\
@@ -625,6 +625,8 @@ mod tests {
             "{d}"
         );
         assert!(d.contains("on_name_taken に \"add_number\""), "{d}");
+        // 新しい CSV は Excel で開ける文字コードで保存する（D-120）。
+        assert!(d.contains("encoding に \"utf8_bom\" を書く"), "{d}");
         // 演算子の一覧とイベント source は型・語彙から生成する。
         assert!(d.contains("\"starts_with\""), "{d}");
         assert!(d.contains("EventSource = \"storage.write\""), "{d}");

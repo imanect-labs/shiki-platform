@@ -15,6 +15,7 @@ use crate::ir::params::{
 use crate::run::NodeContext;
 use crate::vocab::STORAGE_READ_MAX_DOCUMENT_CHARS;
 
+use super::csv_encoding::{csv_bytes as encode_csv, is_csv_type};
 use super::exec::CapabilityNodeExecutor;
 use super::ports::{CsvPatchReq, CsvWriteReq, ExecCtx, PortError, StorageWriteReq, NAME_TAKEN};
 use super::resolver::{
@@ -188,7 +189,7 @@ impl CapabilityNodeExecutor {
         let parent_id = folder_param(p.folder.as_ref(), r, "storage.write: folder")?;
         let what = "storage.write: name";
         let name = typed(&param(&p.name, r, what)?, what, "文字列", as_string)?;
-        let bytes = as_bytes(&param(&p.content, r, "storage.write: content")?);
+        let content = param(&p.content, r, "storage.write: content")?;
         let what = "storage.write: content_type";
         // 種類を決めないときは、ファイル名の拡張子から決める（社内文書の検索に出るように・D-97）。
         let content_type = opt_param(p.content_type.as_ref(), r, what)?
@@ -199,6 +200,12 @@ impl CapabilityNodeExecutor {
                     .unwrap_or("application/octet-stream")
                     .to_string()
             });
+        // CSV として保存するときだけ、選んだ文字コードで書く（省略は BOM なしの UTF-8・D-120）。
+        let bytes = if is_csv_type(&content_type) {
+            encode_csv(&content, p.encoding.unwrap_or_default())?
+        } else {
+            as_bytes(&content)
+        };
 
         // op_digest は書込の同一性（親/頼まれた名前/内容ハッシュ）で安定。冪等キーはステップ固定。番号は
         // StorageService が同じ TX の中で付けるので、頼まれた書込 1 つの digest のまま（D-112）。
@@ -456,7 +463,11 @@ impl CapabilityNodeExecutor {
         let parent_id = folder_param(p.folder.as_ref(), r, "csv.write: folder")?;
         let what = "csv.write: name";
         let name = typed(&param(&p.name, r, what)?, what, "文字列", as_string)?;
-        let csv_bytes = as_bytes(&param(&p.content, r, "csv.write: content")?);
+        // 選んだ文字コードで書く（省略は BOM なしの UTF-8・この欄が無かったころの定義の挙動・D-120）。
+        let csv_bytes = encode_csv(
+            &param(&p.content, r, "csv.write: content")?,
+            p.encoding.unwrap_or_default(),
+        )?;
         let policy = p.on_name_taken.unwrap_or_default();
 
         let digest = op_digest(

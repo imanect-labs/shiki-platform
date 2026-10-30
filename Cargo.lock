@@ -5848,6 +5848,7 @@ dependencies = [
  "shiki-jobq",
  "shiki-script-runtime",
  "shiki-secrets",
+ "shiki-textenc",
  "sqlx",
  "thiserror 2.0.18",
  "tokio",

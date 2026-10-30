@@ -15,15 +15,16 @@ use workflow_engine::ir::expr::{CmpOp, Comparison, Condition, FromRef, TemplateE
 use workflow_engine::ir::node::{Backoff, Node, OnError, RetryPolicy, StepCache, StepCacheLimits};
 use workflow_engine::ir::params::{
     params_type_name, AgentInvokeParams, AiDecideParams, ApprovalAssignee, ApprovalChoice,
-    ApprovalComment, ApprovalRecord, BranchParams, CsvPatchParams, CsvQueryParams, CsvWriteParams,
-    DataBulkUpsertParams, DataQueryParams, DataRecordCreateParams, DataRecordDeleteParams,
-    DataRecordUpdateParams, DataTransitionParams, DecideOption, DecideQuestion, DecideQuestionType,
-    DecideRoute, DecideRouteBy, HttpMethod, HttpRequestParams, HttpSecretRef, HumanApprovalParams,
-    JoinMode, JoinParams, LlmEffort, LlmInvokeParams, MapItemError, MapParams, NameTakenPolicy,
-    RagSearchParams, RedirectPolicy, ReplyColumn, ReplyFileSpec, ReplyFormat, ReplyTone,
-    ScriptRunParams, ScriptSourceSpec, SecretAttach, SecretAttachKind, SkillInvokeParams,
-    StorageListParams, StorageReadParams, StorageWriteParams, SwitchCase, SwitchParams, WaitKind,
-    WaitParams, WaitTimeout, WorkflowReplyParams, WorkflowStartParams,
+    ApprovalComment, ApprovalRecord, BranchParams, CsvEncoding, CsvPatchParams, CsvQueryParams,
+    CsvWriteParams, DataBulkUpsertParams, DataQueryParams, DataRecordCreateParams,
+    DataRecordDeleteParams, DataRecordUpdateParams, DataTransitionParams, DecideOption,
+    DecideQuestion, DecideQuestionType, DecideRoute, DecideRouteBy, HttpMethod, HttpRequestParams,
+    HttpSecretRef, HumanApprovalParams, JoinMode, JoinParams, LlmEffort, LlmInvokeParams,
+    MapItemError, MapParams, NameTakenPolicy, RagSearchParams, RedirectPolicy, ReplyColumn,
+    ReplyFileSpec, ReplyFormat, ReplyTone, ScriptRunParams, ScriptSourceSpec, SecretAttach,
+    SecretAttachKind, SkillInvokeParams, StorageListParams, StorageReadParams, StorageWriteParams,
+    SwitchCase, SwitchParams, WaitKind, WaitParams, WaitTimeout, WorkflowReplyParams,
+    WorkflowStartParams,
 };
 use workflow_engine::ir::trigger::{
     Catchup, EventTrigger, InteractiveTrigger, ScheduleTrigger, Trigger, TriggerKind,
@@ -117,6 +118,7 @@ fn ir_decls() -> Vec<String> {
         WaitParams,
         StorageReadParams,
         NameTakenPolicy,
+        CsvEncoding,
         StorageWriteParams,
         StorageListParams,
         RagSearchParams,
