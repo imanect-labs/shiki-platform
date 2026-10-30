@@ -206,16 +206,17 @@ impl WorkflowSummaryStore {
     ///
     /// 呼び出し側は返ったワークフローだけを権限で確かめ直してから合計する（post-filter）。
     /// id は認可済み前提で、tenant・org で二重に絞り、削除済みのワークフローは数えない。
+    /// `ids` が `None` のときは id で絞らない（可読集合が大きすぎるときの縮退。post-filter 必須）。
     /// 集計の基準は終了時刻（`finished_at`・終端遷移で必ず入る）で、終了時刻の索引
     /// （`workflow_run_gc_idx`）に乗る。
     pub async fn run_counts(
         &self,
         tenant_id: &str,
         org: &str,
-        ids: &[Uuid],
+        ids: Option<&[Uuid]>,
         since: DateTime<Utc>,
     ) -> Result<Vec<WorkflowRunCount>, sqlx::Error> {
-        if ids.is_empty() {
+        if ids.is_some_and(<[Uuid]>::is_empty) {
             return Ok(Vec::new());
         }
         sqlx::query_as(
@@ -226,7 +227,7 @@ impl WorkflowSummaryStore {
              JOIN artifact a \
                ON a.tenant_id = r.tenant_id AND a.id = r.workflow_id \
               AND a.org = $2 AND a.deleted_at IS NULL \
-             WHERE r.tenant_id = $1 AND r.workflow_id = ANY($3) \
+             WHERE r.tenant_id = $1 AND ($3::uuid[] IS NULL OR r.workflow_id = ANY($3)) \
                AND r.status IN ('succeeded', 'failed', 'cancelled') AND r.finished_at >= $4 \
              GROUP BY r.workflow_id",
         )

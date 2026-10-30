@@ -39,9 +39,11 @@ use workflow_engine::{
 /// 全許可 authz（ルート層の配線検証用・実 FGA は registration IT が担う）。
 /// ListObjects だけは、書かれた owner タプルのオブジェクトを返す（所有は viewer を含むので、
 /// 実 FGA でも自分のアーティファクトは viewer の ListObjects に載る）。
+/// `padding` を立てると、無関係なアーティファクトを足して可読集合を大きく見せる（縮退経路の検証）。
 #[derive(Default)]
 struct AllowAll {
     owned: std::sync::Mutex<Vec<String>>,
+    padding: std::sync::atomic::AtomicUsize,
 }
 
 #[async_trait]
@@ -89,11 +91,14 @@ impl AuthzClient for AllowAll {
     ) -> Result<Vec<String>, AuthzError> {
         let prefix = format!("{}:", t.as_str());
         let owned = self.owned.lock().unwrap();
-        Ok(owned
+        let mut objects: Vec<String> = owned
             .iter()
             .filter(|o| o.starts_with(&prefix))
             .cloned()
-            .collect())
+            .collect();
+        let padding = self.padding.load(std::sync::atomic::Ordering::Relaxed);
+        objects.extend((0..padding).map(|_| format!("{prefix}default|{}", Uuid::new_v4())));
+        Ok(objects)
     }
     async fn delete_object_tuples(&self, _o: &FgaObject) -> Result<u32, AuthzError> {
         Ok(0)
@@ -212,6 +217,7 @@ fn config(db_url: &str) -> AppConfig {
 
 struct Env {
     app: axum::Router,
+    stub: Arc<AllowAll>,
     pool: sqlx::PgPool,
     cookie: &'static str,
     csrf: &'static str,
@@ -253,7 +259,8 @@ async fn setup() -> Option<Env> {
         .await
         .unwrap();
 
-    let authz: Arc<dyn AuthzClient> = Arc::new(AllowAll::default());
+    let stub = Arc::new(AllowAll::default());
+    let authz: Arc<dyn AuthzClient> = Arc::clone(&stub) as Arc<dyn AuthzClient>;
     let artifacts = Arc::new(artifact::ArtifactStore::new(
         pool.clone(),
         Arc::clone(&authz),
@@ -407,6 +414,7 @@ async fn setup() -> Option<Env> {
     };
     Some(Env {
         app: build_router(state),
+        stub,
         pool,
         cookie: "shiki_session=sid-wf.default; shiki_csrf=csrf-wf",
         csrf: "csrf-wf",
@@ -700,6 +708,25 @@ async fn workflow_http_end_to_end() {
     assert_eq!(mine["workflow_id"], json!(wf_fail));
     assert_eq!(mine["display_name"], json!("テストフロー"));
     assert!(mine["finished_at"].is_string());
+    // 可読集合が大きい（ListObjects が切り詰められうる）ときは tenant＋org に縮退して数え、
+    // post-filter で確かめる。同じ失敗がやはり明細に載る。
+    env.stub
+        .padding
+        .store(600, std::sync::atomic::Ordering::Relaxed);
+    let (st, body) = req(&env, "GET", "/me/workflow-runs", None).await;
+    env.stub
+        .padding
+        .store(0, std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert!(body["failed"].as_i64().unwrap() >= 1, "{body}");
+    assert!(
+        body["recent_failures"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["run_id"] == json!(run_fail.to_string())),
+        "縮退しても失敗した run が明細に載る: {body}"
+    );
 
     let (st, body) = req(
         &env,
