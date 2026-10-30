@@ -125,6 +125,28 @@ pub async fn create_thread(
         None
     };
 
+    // 検索フォルダは**作成者の viewer 権限**で解決する（見えないフォルダで絞れない・名前は解決時点の
+    // 表示名を非正規化して持つ・#965）。フォルダでなければ 400。fail-closed。
+    let search_folder = if let Some(folder_id) = req.search_folder_id {
+        let crumbs = state
+            .storage
+            .breadcrumb(&ctx, folder_id, trace.as_deref())
+            .await?;
+        // パンくずは root → 自身の順（自身は末尾）。
+        match crumbs.last() {
+            Some(c) if c.id == folder_id && c.kind == storage::model::NodeKind::Folder => {
+                Some((folder_id, c.name.clone()))
+            }
+            _ => {
+                return Err(ApiError::BadRequest(
+                    "検索フォルダにはフォルダを指定してください".into(),
+                ))
+            }
+        }
+    } else {
+        None
+    };
+
     // 由来ノートは**発話ユーザーの viewer 権限**で解決する（見えないノートに紐づけられない・
     // 表示名は解決時点の name を非正規化して持つ・issue #282）。fail-closed。
     let origin = if let Some(note_id) = req.origin_note_id {
@@ -162,6 +184,13 @@ pub async fn create_thread(
         store
             .set_thread_workspace(thread.id, &ctx.tenant_id, folder, parent)
             .await?;
+    }
+    if let Some((folder_id, name)) = search_folder {
+        store
+            .set_thread_search_folder(thread.id, &ctx.tenant_id, folder_id, &name)
+            .await?;
+        thread.search_folder_id = Some(folder_id);
+        thread.search_folder_name = Some(name);
     }
     Ok(Json(thread))
 }

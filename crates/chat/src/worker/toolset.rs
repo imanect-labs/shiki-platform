@@ -17,21 +17,25 @@ use crate::store::ClaimedRun;
 
 impl ChatWorker {
     /// 全プロファイル共通のツール（検索・コード実行・web・generative UI・ワークフロー）。
+    /// 提示ツール一式（共通＋ドキュメント/Office/CSV）はここ（worker/toolset.rs）に集約する。
     ///
     /// `attachments` は会話の添付で、`code_interpreter` が実行前に `/workspace` へ置く（#379）。
-    pub(super) fn push_core_tools(
+    ///
+    /// doc_search / doc_read には skill の知識スコープと会話の検索フォルダを交差前のまま課す
+    /// （[`Self::search_bounds`]・絞り込みのみ・#965）。
+    pub(super) async fn core_tools(
         &self,
-        tools: &mut Vec<Arc<dyn Tool>>,
         skills: &[crate::skill::AppliedSkill],
-        attachments: Vec<AttachmentRef>,
+        attachments: &[AttachmentRef],
         run: &ClaimedRun,
-    ) {
+    ) -> Result<Vec<Arc<dyn Tool>>, crate::ChatError> {
+        let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
         if let Some(search) = &self.search {
-            // skill の知識スコープを doc_search に反映する（Task 6.8・絞り込みのみ・
-            // 複数ピンは全ピンが scope を持つ時のみ union・#344）。
-            let scope = crate::skill::combined_scope(skills);
+            let bounds = self.search_bounds(run, skills).await?;
+            let folder = bounds.folder.clone().unwrap_or_default();
             // この回答のための検索・読み出しとして監査に残す（1 回答の判定と引用を引ける・#829）。
-            let doc_search = DocSearchTool::with_scope(search.clone(), scope.clone())
+            let doc_search = DocSearchTool::with_scope(search.clone(), bounds.skill.clone())
+                .within(folder.clone())
                 .for_answer(run.thread_id, run.message_id);
             // 当たった文書を引用の外まで読む（#425）。認可は StorageService の viewer 判定で、
             // 知識スコープは検索と同じものを課す（スコープ ∩ ReBAC）。
@@ -41,8 +45,9 @@ impl ChatWorker {
                     crate::doc_read_tool::DocReadTool::with_scope(
                         search.clone(),
                         storage.clone(),
-                        scope,
+                        bounds.skill,
                     )
+                    .within(folder)
                     .for_answer(run.thread_id, run.message_id),
                 ));
             } else {
@@ -62,7 +67,7 @@ impl ChatWorker {
                     Arc::new(crate::attachments::StorageAttachmentStore::new(
                         storage.clone(),
                     )),
-                    attachments,
+                    attachments.to_vec(),
                 );
             }
             tools.push(Arc::new(code));
@@ -101,6 +106,7 @@ impl ChatWorker {
                 crate::workflow_search_tool::SearchWorkflowsTool::new(directory.clone()),
             ));
         }
+        Ok(tools)
     }
 
     /// ドキュメント共同編集ツールの配線（ノート=Task 11P.4／スライド=Task 11.3）。

@@ -1,6 +1,17 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 
-import { loginViaKeycloak } from "./helpers";
+import { loginViaKeycloak, uniqueName } from "./helpers";
+
+async function createFolder(page: Page, name: string): Promise<string> {
+  const csrf =
+    (await page.context().cookies()).find((c) => c.name === "shiki_csrf")?.value ?? "";
+  const res = await page.request.post("/api/folders", {
+    headers: { "X-CSRF-Token": csrf },
+    data: { name, parent_id: null },
+  });
+  expect(res.status(), await res.text()).toBeLessThan(300);
+  return ((await res.json()) as { id: string }).id;
+}
 
 /// ホームのモード切替（#964）・ワークスペース選択（Phase 6 UX）の E2E。
 /// 会話の図を「アプリとして保存」する経路は mini-apps.spec.ts（```ui app・#604）で確かめる。
@@ -113,5 +124,57 @@ test.describe("ホームのモード切替", () => {
     expect(body.tools).toContain("doc_search");
     expect(body.autonomous ?? false).toBe(false);
     expect(modePut).toBe(false);
+  });
+
+  test("社内検索のモードでフォルダを選ぶと、その会話の検索はそのフォルダの中に絞られる", async ({
+    page,
+  }) => {
+    await loginViaKeycloak(page);
+    // フォルダ一覧の先頭に来る名前にする（一覧は名前順・過去の実行のフォルダが溜まっていても見える）。
+    const name = `000-${uniqueName("検索")}`;
+    const folderId = await createFolder(page, name);
+    await page.goto("/");
+
+    await page.getByTestId("home-mode-search").click();
+    const chip = page.getByTestId("home-search-folder");
+    await expect(chip).toContainText("すべての社内文書");
+    await chip.click();
+    const picker = page.getByRole("dialog", { name: "フォルダを選択" });
+    await picker
+      .getByRole("listitem")
+      .filter({ hasText: name })
+      .getByRole("button", { name: "選択" })
+      .click();
+    await expect(chip).toContainText(name);
+
+    // 送ると、スレッドに検索フォルダが付き、会話画面に「〜の中から探します」が出る。
+    const created = page.waitForRequest(
+      (r) => r.method() === "POST" && /\/api\/threads$/.test(r.url()),
+    );
+    await page.getByLabel("メッセージを入力").fill(`出張の規程 ${Date.now().toString(36)}`);
+    await page.getByRole("button", { name: "送信" }).click();
+    const body = JSON.parse((await created).postData() ?? "{}") as { search_folder_id?: string };
+    expect(body.search_folder_id).toBe(folderId);
+    await page.waitForURL(/\/c\/[0-9a-f-]+/i, { timeout: 20_000 });
+    await expect(page.getByTestId("thread-search-folder")).toContainText(name, {
+      timeout: 20_000,
+    });
+  });
+
+  test("社内検索のフォルダの指定は外せる", async ({ page }) => {
+    await loginViaKeycloak(page);
+    const name = `000-${uniqueName("外す")}`;
+    await createFolder(page, name);
+    await page.goto("/");
+    await page.getByTestId("home-mode-search").click();
+    await page.getByTestId("home-search-folder").click();
+    await page
+      .getByRole("dialog", { name: "フォルダを選択" })
+      .getByRole("listitem")
+      .filter({ hasText: name })
+      .getByRole("button", { name: "選択" })
+      .click();
+    await page.getByRole("button", { name: "フォルダの指定を外す" }).click();
+    await expect(page.getByTestId("home-search-folder")).toContainText("すべての社内文書");
   });
 });

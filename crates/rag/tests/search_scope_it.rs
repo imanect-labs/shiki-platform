@@ -597,6 +597,105 @@ async fn search_narrowed_rechecks_base_and_audits_empty_intersection() {
     assert_eq!(out.results.len(), 2);
 }
 
+/// 課された範囲が複数（skill の知識スコープと会話の検索フォルダ）でも、交差前のまま全部で
+/// 確かめる（#965・Codex）。検索フォルダが知識スコープの外へ移動された後は、索引のタグが古い
+/// ままでも、検索フォルダの中の文書を返さない（知識スコープの制約が失われない）。
+#[tokio::test]
+async fn search_narrowed_within_keeps_every_bound() {
+    let Some(env) = setup().await else { return };
+    let query = "検索フォルダの資料";
+    // A（skill の範囲）── inside ── kept／C ── moved_out ── left
+    // moved_out は A の外へ移動済み（索引上はまだ A 配下のタグを持つ）。
+    let a = make_node(&env, "folder", None).await;
+    let c = make_node(&env, "folder", None).await;
+    let inside = make_node(&env, "folder", Some(a)).await;
+    let moved_out = make_node(&env, "folder", Some(c)).await;
+    let kept = make_node(&env, "file", Some(inside)).await;
+    let left = make_node(&env, "file", Some(moved_out)).await;
+    seed_chunk_on(&env, kept, "kept", query, 0.8, &[a, inside]).await;
+    seed_chunk_on(&env, left, "left", query, 0.9, &[a, moved_out]).await;
+    // 検索フォルダの外へ移動済みのファイル（索引上はまだ検索フォルダ配下のタグを持つ）。
+    let drifted = make_node(&env, "file", Some(c)).await;
+    seed_chunk_on(&env, drifted, "drifted", query, 0.95, &[moved_out]).await;
+    let svc = service(
+        &env,
+        allow_all_authz(&env, &[a, c, inside, moved_out]),
+        RagConfig::default(),
+    );
+    let ctx = &env.ctx;
+    let found =
+        |out: rag::SearchOutput| -> Vec<Uuid> { out.results.iter().map(|r| r.file_id).collect() };
+
+    let out = svc
+        .search_narrowed_within(
+            ctx,
+            query,
+            Some(5),
+            SearchMode::Dense,
+            Some(&folders(&[a])),
+            &[&folders(&[inside])],
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(found(out), vec![kept], "両方の内側の文書は返す");
+
+    let out = svc
+        .search_narrowed_within(
+            ctx,
+            query,
+            Some(5),
+            SearchMode::Dense,
+            Some(&folders(&[a])),
+            &[&folders(&[moved_out])],
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(
+        out.results.is_empty(),
+        "検索フォルダが知識スコープの外へ出たら何も返さない: {:?}",
+        found(out)
+    );
+
+    // 検索フォルダだけなら、その中の文書は返る（範囲を課しすぎていないこと）。木の上で検索
+    // フォルダの外へ出たファイルは、索引のタグが古くても返さない（CodeRabbit）。
+    let out = svc
+        .search_narrowed_within(
+            ctx,
+            query,
+            Some(5),
+            SearchMode::Dense,
+            None,
+            &[&folders(&[moved_out])],
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(found(out), vec![left]);
+
+    // モデルの絞り込みを重ねても、課された範囲の外へは出ない。
+    let out = svc
+        .search_narrowed_within(
+            ctx,
+            query,
+            Some(5),
+            SearchMode::Dense,
+            Some(&folders(&[a])),
+            &[
+                &folders(&[moved_out]),
+                &SearchScope {
+                    folders: Vec::new(),
+                    files: vec![left],
+                },
+            ],
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(out.results.is_empty());
+}
+
 /// 結果には reranker の生スコアと、設定の閾値で落とした関連度が付く（#424）。
 /// 候補が 1 件でも採点する（以前は 1 件だと rerank を飛ばしていた）。
 #[tokio::test]

@@ -21,6 +21,7 @@ mod job_lease;
 mod opts;
 mod run_model;
 pub use opts::parse_timezone;
+mod search_scope;
 mod sink;
 /// 生成の枠と承認待ちの保留（検証 C-P1-3）。
 pub mod slot;

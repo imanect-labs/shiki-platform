@@ -30,8 +30,9 @@ const OUT_OF_SCOPE: &str = "この文書は、適用中の skill の参照範囲
 pub struct DocReadTool {
     search: Arc<SearchService>,
     storage: Arc<StorageService>,
-    /// 知識スコープ（skill・Task 6.8）。None は全可読範囲。
-    scope: Option<SearchScope>,
+    /// 課された範囲（skill の知識スコープ・Task 6.8／会話の検索フォルダ・#965）。空なら
+    /// 全可読範囲。交差前のまま持ち、読むたびに全部の内側かを確かめる。
+    bounds: Vec<SearchScope>,
     /// 会話の回答のための読み出しなら、その会話と回答（監査に残す・#829）。
     answer: Option<(Uuid, Uuid)>,
 }
@@ -50,9 +51,18 @@ impl DocReadTool {
         DocReadTool {
             search,
             storage,
-            scope: scope.filter(|s| !s.is_empty()),
+            bounds: scope.into_iter().filter(|s| !s.is_empty()).collect(),
             answer: None,
         }
+    }
+
+    /// 範囲をもう 1 つ課す（会話の検索フォルダ・#965。`DocSearchTool::within` と同じものを渡す）。
+    #[must_use]
+    pub fn within(mut self, bound: SearchScope) -> Self {
+        if !bound.is_empty() {
+            self.bounds.push(bound);
+        }
+        self
     }
 
     /// 会話（thread）の回答（assistant のメッセージ）のための読み出しとして構成する（#829）。
@@ -334,10 +344,10 @@ impl Tool for DocReadTool {
                 "フォルダは読めない。中の文書は doc_search の folder_ids で絞って探す。",
             ));
         }
-        if let Some(scope) = &self.scope {
+        for bound in &self.bounds {
             let inside = self
                 .search
-                .file_in_scope(ctx, scope, node.id)
+                .file_in_scope(ctx, bound, node.id)
                 .await
                 .map_err(|e| ToolError::Unavailable(format!("doc_read failed: {e}")))?;
             if !inside {

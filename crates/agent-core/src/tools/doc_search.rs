@@ -64,6 +64,7 @@ pub async fn run_doc_search(
     query: &str,
     top_k: Option<u32>,
     scope: Option<&SearchScope>,
+    within: &[&SearchScope],
     trail: AuditTrail<'_>,
 ) -> Result<DocSearchResult, ToolError> {
     // 古典注入にはツールループが無く、モデルが ID を使い道が無いので載せない（トークンの無駄・
@@ -76,7 +77,7 @@ pub async fn run_doc_search(
             top_k,
             mode: SearchMode::Hybrid,
             base: scope,
-            narrow: &SearchScope::default(),
+            narrows: within,
             for_tool: false,
         },
         trail,
@@ -91,8 +92,9 @@ struct SearchParams<'a> {
     mode: SearchMode,
     /// 知識スコープ（skill）。None は全可読範囲。
     base: Option<&'a SearchScope>,
-    /// モデルの絞り込み（空 = 絞らない）。`base` との交差で検索する。
-    narrow: &'a SearchScope,
+    /// 絞り込み（会話の検索フォルダ・モデルの指定。空なら絞らない）。`base` と全部の絞り込みの
+    /// 交差で検索し、候補は全部で検索時点の木に対して再検証する。
+    narrows: &'a [&'a SearchScope],
     /// ツール経路か（観測に各結果の `file_id`（と `folder_id`）を載せ、探し直し方を案内する）。
     /// ID はモデルが「この文書に絞って再検索」（[`DocSearchTool`] の `file_ids`）や本文の
     /// 読み出しを指定するのに使う。載るのは post-filter を通過したチャンクの ID だけなので、
@@ -114,7 +116,7 @@ async fn search_docs(
     // 絞り込みは知識スコープとの交差（union だと skill の範囲を広げられる）。交差が空なら
     // 検索せずに 0 件・交差で検索するときは元の知識スコープで候補を再検証する（SearchService 側）。
     let out = search
-        .search_narrowed(ctx, query, p.top_k, p.mode, p.base, p.narrow, trail)
+        .search_narrowed_within(ctx, query, p.top_k, p.mode, p.base, p.narrows, trail)
         .await
         .map_err(|e| ToolError::Unavailable(format!("doc_search failed: {e}")))?;
 
@@ -210,6 +212,9 @@ pub struct DocSearchTool {
     search: Arc<SearchService>,
     /// 知識スコープ（skill・Task 6.8）。None は全可読範囲。
     scope: Option<SearchScope>,
+    /// 常に課す絞り込み（会話の検索フォルダ・#965）。知識スコープとは交差前のまま持ち、
+    /// 検索のたびに検索時点の木で確かめる。
+    within: Vec<SearchScope>,
     /// ツール説明（同じ束に `doc_read` があれば本文の読み方の案内を足す・#425）。
     description: String,
     /// 会話の回答のための検索なら、その会話と回答（監査に残す・#829）。
@@ -227,9 +232,20 @@ impl DocSearchTool {
         DocSearchTool {
             search,
             scope: scope.filter(|s| !s.is_empty()),
+            within: Vec::new(),
             description: DESCRIPTION.to_string(),
             answer: None,
         }
+    }
+
+    /// 絞り込みを常に課す（会話の検索フォルダ・#965）。知識スコープとは交差前のまま持ち、
+    /// 検索のたびに両方の内側かを検索時点の木で確かめる。空なら何も課さない。
+    #[must_use]
+    pub fn within(mut self, bound: SearchScope) -> Self {
+        if !bound.is_empty() {
+            self.within.push(bound);
+        }
+        self
     }
 
     /// 会話（thread）の回答（assistant のメッセージ）を生成するための検索として構成する。
@@ -430,7 +446,11 @@ impl Tool for DocSearchTool {
                 top_k: Some(top_k),
                 mode: input.mode,
                 base: self.scope.as_ref(),
-                narrow: &input.narrow,
+                narrows: &self
+                    .within
+                    .iter()
+                    .chain(std::iter::once(&input.narrow))
+                    .collect::<Vec<_>>(),
                 for_tool: true,
             },
             match self.answer {

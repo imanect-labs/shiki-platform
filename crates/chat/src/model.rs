@@ -299,6 +299,13 @@ pub struct Thread {
     /// ピン留めした時刻（None＝ピン留めなし）。サイドバー履歴の先頭に出す。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pinned_at: Option<DateTime<Utc>>,
+    /// 検索フォルダ（ホームの「社内検索」でフォルダを選んで始めた会話・#965）。社内文書の検索を
+    /// このフォルダの配下に絞る（絞り込みのみ・権限は広げない）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_folder_id: Option<Uuid>,
+    /// 検索フォルダの表示名（作成時点の非正規化・改名には追随しない）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_folder_name: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }

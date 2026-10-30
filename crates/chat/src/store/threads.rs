@@ -20,7 +20,8 @@ pub(super) const THREAD_COLUMNS: &str = "id, title, agent_mode, autonomous_mode,
         'skill_id', p.skill_id, 'skill_version', p.skill_version) \
         ORDER BY p.position, p.skill_id), '[]'::jsonb) \
      FROM thread_skill_pin p WHERE p.thread_id = thread.id) AS skill_pins, \
-    mini_app_id, mini_app_version, origin_note_id, origin_note_name, pinned_at, created_at, updated_at";
+    mini_app_id, mini_app_version, origin_note_id, origin_note_name, pinned_at, \
+    search_folder_id, search_folder_name, created_at, updated_at";
 
 /// thread 行。
 #[derive(sqlx::FromRow)]
@@ -35,6 +36,8 @@ pub(super) struct ThreadRow {
     origin_note_id: Option<Uuid>,
     origin_note_name: Option<String>,
     pinned_at: Option<DateTime<Utc>>,
+    search_folder_id: Option<Uuid>,
+    search_folder_name: Option<String>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -53,6 +56,8 @@ impl ThreadRow {
             origin_note_id: self.origin_note_id,
             origin_note_name: self.origin_note_name,
             pinned_at: self.pinned_at,
+            search_folder_id: self.search_folder_id,
+            search_folder_name: self.search_folder_name,
             created_at: self.created_at,
             updated_at: self.updated_at,
         }
@@ -125,7 +130,7 @@ impl ChatStore {
             // 作成直後のピンは常に空（set_thread_pins が後から入れる）。
             "INSERT INTO thread (id, org, tenant_id, owner, title, agent_mode, origin_note_id, origin_note_name, title_pending) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true) \
-             RETURNING id, title, agent_mode, autonomous_mode, '[]'::jsonb AS skill_pins, mini_app_id, mini_app_version, origin_note_id, origin_note_name, pinned_at, created_at, updated_at",
+             RETURNING id, title, agent_mode, autonomous_mode, '[]'::jsonb AS skill_pins, mini_app_id, mini_app_version, origin_note_id, origin_note_name, pinned_at, search_folder_id, search_folder_name, created_at, updated_at",
         )
         .bind(id)
         .bind(&ctx.org)

@@ -11,6 +11,7 @@ import {
   ChevronUp,
   Clock3,
   FileDown,
+  FolderSearch,
 } from "lucide-react";
 
 import {
@@ -273,8 +274,8 @@ export function Conversation({
   const reload = React.useCallback(() => setReloadKey((k) => k + 1), []);
   // 回答の ```ui app を「アプリとして保存」する対象（#604）。
   const [saveTarget, setSaveTarget] = React.useState<SaveAsAppTarget | null>(null);
-  // スレッド名（クロームのタイトル・⋯ メニューの見出し）。page のときだけ引く。
-  const threadTitle = useThreadTitle(isPanel ? null : threadId);
+  // スレッド名（クロームのタイトル・⋯ メニューの見出し）と検索フォルダ（#965）。page のときだけ引く。
+  const { title: threadTitle, searchFolderName } = useThreadMeta(isPanel ? null : threadId);
   // 追従スクロール（下端付近にいる間だけ追う・離れたら「最新へ」）。
   const {
     scrollerRef,
@@ -978,6 +979,16 @@ export function Conversation({
                   isPanel ? "max-w-none md:pb-3" : "max-w-3xl",
                 )}
               >
+                {searchFolderName ? (
+                  // この会話の社内文書検索はこのフォルダの配下に絞られる（ホームの社内検索・#965）。
+                  <p
+                    className="mb-1.5 flex items-center justify-center gap-1.5 text-xs text-muted-foreground"
+                    data-testid="thread-search-folder"
+                  >
+                    <FolderSearch className="size-3.5 shrink-0" aria-hidden />
+                    <span className="truncate">「{searchFolderName}」の中から社内文書を探します</span>
+                  </p>
+                ) : null}
                 <Composer
                   onSubmit={submitFromComposer}
                   onStop={stop}
@@ -1072,16 +1083,28 @@ function finalizeStream(
 
 // ── 行レンダリング ───────────────────────────────────────────────────
 
-/// 会話画面のスレッド名。作成直後の自動命名・改名に追従するため、一覧の変更通知で読み直す。
-function useThreadTitle(threadId: string | null): string | null {
-  const [title, setTitle] = React.useState<string | null>(null);
+/// 会話画面のスレッド名と検索フォルダ名。作成直後の自動命名・改名に追従するため、一覧の変更通知で読み直す。
+function useThreadMeta(threadId: string | null): {
+  title: string | null;
+  searchFolderName: string | null;
+} {
+  const [meta, setMeta] = React.useState<{ title: string | null; searchFolderName: string | null }>(
+    { title: null, searchFolderName: null },
+  );
   React.useEffect(() => {
-    setTitle(null);
+    setMeta({ title: null, searchFolderName: null });
     if (!threadId) return;
     let active = true;
     const load = () =>
       getThread(threadId)
-        .then((t) => active && setTitle(t.title.trim() || null))
+        .then(
+          (t) =>
+            active &&
+            setMeta({
+              title: t.title.trim() || null,
+              searchFolderName: t.searchFolderId ? (t.searchFolderName ?? "フォルダ") : null,
+            }),
+        )
         .catch(() => {
           /* 読めなければ「新しいチャット」のまま（会話そのものは別に読み込む） */
         });
@@ -1092,7 +1115,7 @@ function useThreadTitle(threadId: string | null): string | null {
       unsubscribe();
     };
   }, [threadId]);
-  return title;
+  return meta;
 }
 
 /// 読み返し中に浮かせる移動ボタン（最新へ・一つ前・一つ後）の共通の面。

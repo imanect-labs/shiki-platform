@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { ChevronDown, HardDrive } from "lucide-react";
+import { ChevronDown, FolderSearch, HardDrive, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import type { ArtifactMeta } from "@/lib/artifact-api";
@@ -14,12 +14,15 @@ import { SkillPicker } from "@/components/home/skill-picker";
 import { HOME_MODE_PANEL_ID, homeModeTabId } from "./home-mode-tabs";
 import { useRovingSelect } from "./use-roving-select";
 
+/// 社内検索で探すフォルダ（ホームで選んだもの）。
+export type SearchFolder = { id: string; name: string };
+
 const APPROVAL_KEYS = APPROVAL_MODES.map((m) => m.mode);
 const CREATE_KEYS = CREATE_KINDS.map((k) => k.key);
 
 /// モード切替の下に 1 段だけ出す、そのモードの設定（#964）。
 /// - チャット: スキル（無ければ一言の説明）
-/// - 社内検索: 何をするかの説明と、検索画面への導線
+/// - 社内検索: 探すフォルダ（未指定は見られる社内文書すべて）と、検索画面への導線
 /// - エージェント: 作業フォルダ（ワークスペース）と承認モード
 /// - 作成: 作るものの種類
 ///
@@ -34,6 +37,8 @@ export function HomeModeOptions({
   onApprovalModeChange,
   createKind,
   onCreateKindChange,
+  searchFolder,
+  onSearchFolderChange,
 }: {
   mode: HomeMode;
   skill: ArtifactMeta | null;
@@ -44,8 +49,12 @@ export function HomeModeOptions({
   onApprovalModeChange: (m: AutonomousMode) => void;
   createKind: CreateKind;
   onCreateKindChange: (k: CreateKind) => void;
+  /// 社内検索で探すフォルダ（null は見られる社内文書すべて・#965）。
+  searchFolder: SearchFolder | null;
+  onSearchFolderChange: (f: SearchFolder | null) => void;
 }) {
   const [wsPickerOpen, setWsPickerOpen] = React.useState(false);
+  const [searchPickerOpen, setSearchPickerOpen] = React.useState(false);
   const approvalRoving = useRovingSelect(APPROVAL_KEYS, approvalMode, onApprovalModeChange);
   const createRoving = useRovingSelect(CREATE_KEYS, createKind, onCreateKindChange);
   const approval = approvalModeDef(approvalMode);
@@ -58,7 +67,7 @@ export function HomeModeOptions({
       // スマホでは、チャット・社内検索の段（スキル・説明）は出さない（スキルは「+」から選べる）。
       className={cn(
         "flex w-full justify-center sm:min-h-8",
-        (mode === "chat" || mode === "search") && "max-sm:hidden",
+        mode === "chat" && "max-sm:hidden",
       )}
       data-testid="home-mode-options"
     >
@@ -71,10 +80,46 @@ export function HomeModeOptions({
       </Row>
 
       <Row hidden={mode !== "search"}>
-        <Hint>見る権限のある社内文書だけから探して、出典つきで答えます</Hint>
+        {/* エージェントの作業フォルダと同じ形。選ぶとその会話の社内文書検索をフォルダの配下に絞る。 */}
+        <span className="inline-flex items-center gap-2">
+          <span className="sr-only text-xs text-muted-foreground sm:not-sr-only">探すフォルダ</span>
+          <span className="inline-flex items-center">
+            <button
+              type="button"
+              onClick={() => setSearchPickerOpen(true)}
+              aria-label={`探すフォルダ: ${searchFolder ? searchFolder.name : "すべての社内文書"}`}
+              title="社内文書を探すフォルダを選ぶ"
+              data-testid="home-search-folder"
+              className={cn(
+                OPTION,
+                searchFolder
+                  ? "rounded-r-none border-r-0 border-[var(--season-winter)]/50 bg-[var(--season-winter)]/[0.08] text-foreground"
+                  : "text-foreground/75",
+              )}
+            >
+              <FolderSearch className="size-3.5 shrink-0" aria-hidden />
+              <span className="max-w-[180px] truncate">
+                {searchFolder ? searchFolder.name : "すべての社内文書"}
+              </span>
+              {searchFolder ? null : (
+                <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+              )}
+            </button>
+            {searchFolder ? (
+              <button
+                type="button"
+                onClick={() => onSearchFolderChange(null)}
+                aria-label="フォルダの指定を外す"
+                className="inline-flex h-8 items-center rounded-r-full border border-l-0 border-[var(--season-winter)]/50 bg-[var(--season-winter)]/[0.08] pl-1 pr-2.5 text-muted-foreground outline-none transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <X className="size-3.5" aria-hidden />
+              </button>
+            ) : null}
+          </span>
+        </span>
         <Link
           href="/search"
-          className="rounded text-xs text-foreground/70 underline-offset-4 outline-none hover:text-foreground hover:underline focus-visible:ring-2 focus-visible:ring-ring"
+          className="hidden rounded text-xs text-foreground/70 underline-offset-4 outline-none hover:text-foreground hover:underline focus-visible:ring-2 focus-visible:ring-ring sm:inline"
         >
           検索画面で探す
         </Link>
@@ -194,6 +239,12 @@ export function HomeModeOptions({
         onOpenChange={setWsPickerOpen}
         purpose="workspace"
         onSelect={(f) => onWorkspaceChange({ mode: f.mode, folderId: f.id, folderName: f.name })}
+      />
+      <FolderPicker
+        open={searchPickerOpen}
+        onOpenChange={setSearchPickerOpen}
+        purpose="search"
+        onSelect={(f) => onSearchFolderChange({ id: f.id, name: f.name })}
       />
     </div>
   );
