@@ -37,19 +37,57 @@ export interface GwRecord<T = Record<string, unknown>> {
   owner: string;
 }
 
+/// ゲートウェイが断った呼び出し。`message` はゲートウェイの文言（そのまま利用者に見せてよい日本語）。
+///
+/// `code` は理由を分けて扱いたい誤りにだけ付く（無ければ `undefined`）。AI（`invokeLlm`・`invokeAgent`）でモデルを
+/// 使えないときは、ワークフローの誤りと同じ語彙の次の 3 つ:
+/// - `model_choice_disabled`: 組織がモデルの選択を禁じていて、既定と違うモデルを指定した（モデルを指定しなければ動く）
+/// - `model_unavailable`: 指定したモデルはこの組織では使えない
+/// - `no_model`: 組織で使えるモデルが無い
 export class GatewayError extends Error {
-  constructor(
-    message: string,
-    readonly status: number,
-  ) {
+  readonly status: number;
+  readonly code: string | undefined;
+
+  constructor(message: string, status: number, code?: string) {
     super(message);
     this.name = "GatewayError";
+    this.status = status;
+    this.code = code;
   }
 }
 
+/// 失敗した応答を [`GatewayError`] にする（本文の `error` を文言、`code` を理由として読む）。
+async function errorOf(res: Response): Promise<GatewayError> {
+  let message = `HTTP ${res.status}`;
+  let code: string | undefined;
+  try {
+    const b = (await res.json()) as { error?: unknown; code?: unknown };
+    if (typeof b.error === "string" && b.error) message = b.error;
+    if (typeof b.code === "string" && b.code) code = b.code;
+  } catch {
+    // 本文なし・JSON でない。
+  }
+  return new GatewayError(message, res.status, code);
+}
+
+/// AI の 1 回の呼び出し（`/gw/ai/llm/invoke`）の要求。形はゲートウェイの要求のとおりで、ここでは SDK が説明に使う項目
+/// だけを型にする（手書きの写しを増やさない。ほかの項目もそのまま送る）。
+///
+/// `model` を省略すると組織の既定のモデルで動く。組織がモデルの選択を禁じているときに既定と違うモデルを書くと、
+/// `model_choice_disabled` で断られる。思考の深さ（`effort`）は、組織がモデルの選択を禁じているときと、省略して
+/// 組織の既定のおまかせ（Auto）で動くときは使われない。
+export type GwLlmInvokeRequest = { messages: unknown[]; model?: string } & Record<string, unknown>;
+
+/// AI エージェントの呼び出し（`/gw/ai/agent/invoke`）の要求。`model` の扱いは [`GwLlmInvokeRequest`] と同じ。
+export type GwAgentInvokeRequest = { prompt: string; model?: string } & Record<string, unknown>;
+
 /// 型付きゲートウェイクライアント。
 export class ShikiGateway {
-  constructor(private readonly config: GatewayConfig) {}
+  private readonly config: GatewayConfig;
+
+  constructor(config: GatewayConfig) {
+    this.config = config;
+  }
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
     const token = await this.config.getToken();
@@ -61,16 +99,7 @@ export class ShikiGateway {
       },
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
-    if (!res.ok) {
-      let message = `HTTP ${res.status}`;
-      try {
-        const b = (await res.json()) as { error?: string };
-        message = b.error ?? message;
-      } catch {
-        // 本文なし。
-      }
-      throw new GatewayError(message, res.status);
-    }
+    if (!res.ok) throw await errorOf(res);
     return (res.status === 204 ? undefined : await res.json()) as T;
   }
 
@@ -135,7 +164,7 @@ export class ShikiGateway {
     return this.request("POST", "/gw/notify/send", { recipient, title, body });
   }
 
-  /// SSE を購読する（events / ai.*）。`onEvent(type, data)` を各フレームで呼ぶ。
+  /// SSE を購読する（events）。`onEvent(type, data)` を各フレームで呼ぶ。断られたら [`GatewayError`] を投げる。
   async subscribe(
     path: string,
     onEvent: (type: string, data: unknown) => void,
@@ -146,29 +175,70 @@ export class ShikiGateway {
       headers: { authorization: `Bearer ${token}` },
       signal,
     });
-    if (!res.ok || !res.body) throw new GatewayError(`SSE HTTP ${res.status}`, res.status);
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const frames = buffer.split("\n\n");
-      buffer = frames.pop() ?? "";
-      for (const frame of frames) {
-        let event = "message";
-        let data = "";
-        for (const line of frame.split("\n")) {
-          if (line.startsWith("event:")) event = line.slice(6).trim();
-          else if (line.startsWith("data:")) data += line.slice(5).trim();
-        }
-        if (data) {
-          try {
-            onEvent(event, JSON.parse(data));
-          } catch {
-            onEvent(event, data);
-          }
+    await readSse(res, onEvent);
+  }
+
+  /// AI に 1 回聞く（SSE）。文字は `text` のイベントで少しずつ届き、`done` で終わる。モデルを使えないときなどは、
+  /// 流れ始める前に [`GatewayError`] を投げる（理由は `code`）。
+  invokeLlm(
+    request: GwLlmInvokeRequest,
+    onEvent: (type: string, data: unknown) => void,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    return this.postStream("/gw/ai/llm/invoke", request, onEvent, signal);
+  }
+
+  /// AI エージェントに頼む（SSE）。誤りの扱いは [`ShikiGateway.invokeLlm`] と同じ。
+  invokeAgent(
+    request: GwAgentInvokeRequest,
+    onEvent: (type: string, data: unknown) => void,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    return this.postStream("/gw/ai/agent/invoke", request, onEvent, signal);
+  }
+
+  private async postStream(
+    path: string,
+    body: unknown,
+    onEvent: (type: string, data: unknown) => void,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const token = await this.config.getToken();
+    const res = await fetch(`${this.config.baseUrl}${path}`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify(body),
+      signal,
+    });
+    await readSse(res, onEvent);
+  }
+}
+
+/// SSE の応答を最後まで読み、フレームごとに `onEvent(type, data)` を呼ぶ（失敗の応答は [`GatewayError`]）。
+async function readSse(res: Response, onEvent: (type: string, data: unknown) => void): Promise<void> {
+  if (!res.ok) throw await errorOf(res);
+  if (!res.body) throw new GatewayError(`HTTP ${res.status}`, res.status);
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const frames = buffer.split("\n\n");
+    buffer = frames.pop() ?? "";
+    for (const frame of frames) {
+      let event = "message";
+      let data = "";
+      for (const line of frame.split("\n")) {
+        if (line.startsWith("event:")) event = line.slice(6).trim();
+        else if (line.startsWith("data:")) data += line.slice(5).trim();
+      }
+      if (data) {
+        try {
+          onEvent(event, JSON.parse(data));
+        } catch {
+          onEvent(event, data);
         }
       }
     }
