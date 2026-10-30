@@ -262,6 +262,14 @@ mod tests {
             let main_addr = listener.local_addr().unwrap();
             let server =
                 axum::serve(listener, sse_router()).with_graceful_shutdown(shutdown.clone().wait());
+            // 合図を受けた時刻を、猶予の計時と同じ合図（watch）から取る（kill の起動・待ちは含めない）。
+            let observed = {
+                let s = shutdown.clone();
+                tokio::spawn(async move {
+                    s.wait().await;
+                    Instant::now()
+                })
+            };
             let main = tokio::spawn(serve_until_shutdown(
                 std::future::IntoFuture::into_future(server),
                 shutdown,
@@ -276,8 +284,6 @@ mod tests {
                 }
             });
 
-            // 起点は kill の前に取る（シグナルは kill が返る前に届いて猶予の計時が始まりうる）。
-            let signalled_at = Instant::now();
             let status = std::process::Command::new("kill")
                 .args(["-TERM", &std::process::id().to_string()])
                 .status()
@@ -301,10 +307,14 @@ mod tests {
                 .expect("猶予を過ぎてもメインが戻らない")
                 .unwrap()
                 .unwrap();
-            (main_addr, signalled_at)
+            (main_addr, observed.await.unwrap())
         });
+        // 観測側と猶予の計時は同じ合図で起きるが、起きる順は決まらないので、その揺れだけ許す。
         let returned = signalled_at.elapsed();
-        assert!(returned >= grace, "猶予の前に戻った: {returned:?}");
+        assert!(
+            returned + Duration::from_millis(100) >= grace,
+            "猶予の前に戻った: {returned:?}"
+        );
         rt.shutdown_timeout(RUNTIME_SHUTDOWN_TIMEOUT);
         let finished = signalled_at.elapsed();
         assert!(
