@@ -17,8 +17,15 @@
 import { Fragment, type Node as PMNode } from "@tiptap/pm/model";
 import { Selection } from "@tiptap/pm/state";
 import type { EditorView } from "@tiptap/pm/view";
+import { getSchema } from "@tiptap/core";
 import Link from "@tiptap/extension-link";
 import Placeholder from "@tiptap/extension-placeholder";
+import { Table } from "@tiptap/extension-table";
+import { TableCell } from "@tiptap/extension-table-cell";
+import { TableHeader } from "@tiptap/extension-table-header";
+import { TableRow } from "@tiptap/extension-table-row";
+import { TaskItem } from "@tiptap/extension-task-item";
+import { TaskList } from "@tiptap/extension-task-list";
 import { EditorContent, useEditor, type Editor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import * as React from "react";
@@ -34,7 +41,29 @@ import { cn } from "@/lib/utils";
 /// 段落として送る（読む側にも表示にも空行として残る）。読み直すときは空の段落へ戻す。
 const BLANK_LINE = "\u00a0";
 
-/// md → エディタ doc（`<tag>` は文字のまま。HTML としては描かない）。
+/// 本文の構造を決める拡張（Markdown の読み込みが作るノードを全部受けられるようにする:
+/// チェックリスト・表も含む）。
+const SCHEMA_EXTENSIONS = [
+  StarterKit.configure({ link: false }),
+  // 打った語・貼った文字を自動でリンクにしない（`README.md` や `main.rs` が http://README.md の
+  // リンクとして送られてしまう）。URL は文字のまま送り、表示側の GFM がリンクにする。
+  Link.configure({
+    openOnClick: false,
+    autolink: false,
+    linkOnPaste: false,
+    protocols: ["http", "https", "mailto"],
+  }),
+  TaskList,
+  TaskItem.configure({ nested: true }),
+  Table.configure({ resizable: false, renderWrapper: true }),
+  TableRow,
+  TableHeader,
+  TableCell,
+];
+const SCHEMA = getSchema(SCHEMA_EXTENSIONS);
+
+/// md → エディタ doc（`<tag>` は文字のまま。HTML としては描かない）。スキーマに合わないもの
+/// （読み込みが増やしたノードなど）が混じったら、本文を失わないよう行ごとの段落に落とす。
 function docFromMarkdown(md: string) {
   const content = parseMarkdownToNodes(md, { htmlAsText: true }).map((node) =>
     node.type === "paragraph" &&
@@ -43,7 +72,18 @@ function docFromMarkdown(md: string) {
       ? { type: "paragraph" }
       : node,
   );
-  return { type: "doc", content };
+  const doc = { type: "doc", content };
+  try {
+    SCHEMA.nodeFromJSON(doc).check();
+    return doc;
+  } catch {
+    return {
+      type: "doc",
+      content: md
+        .split("\n")
+        .map((line) => (line ? { type: "paragraph", content: [{ type: "text", text: line }] } : { type: "paragraph" })),
+    };
+  }
 }
 
 /// エディタ doc → md。AI が読む本文なので、エスケープは記法に化けるものだけにする
@@ -132,15 +172,7 @@ export function PromptInputEditor({
 
   const extensions = React.useMemo(
     () => [
-      StarterKit.configure({ link: false }),
-      // 打った語・貼った文字を自動でリンクにしない（`README.md` や `main.rs` が http://README.md の
-      // リンクとして送られてしまう）。URL は文字のまま送り、表示側の GFM がリンクにする。
-      Link.configure({
-        openOnClick: false,
-        autolink: false,
-        linkOnPaste: false,
-        protocols: ["http", "https", "mailto"],
-      }),
+      ...SCHEMA_EXTENSIONS,
       Placeholder.configure({ placeholder: () => latest.current.placeholder ?? "" }),
       MarkdownClipboard,
     ],

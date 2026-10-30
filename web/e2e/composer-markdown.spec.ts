@@ -121,5 +121,38 @@ test.describe("入力欄の Markdown", () => {
     const turn = page.locator("[data-user-turn]").first();
     await expect(turn.locator("p")).toHaveCount(3);
   });
+
+  test("コードブロックへの貼り付けはコードのまま、チェックリストも書ける", async ({ page }) => {
+    test.setTimeout(90_000);
+    await loginViaKeycloak(page);
+    await page.goto("/");
+    const input = page.getByLabel("メッセージを入力");
+    await input.click();
+
+    // コードブロックの中へ貼った `# comment` は見出しにせず、コードのまま。
+    await input.pressSequentially("```");
+    await input.press("Enter");
+    await page.evaluate(() => {
+      const el = document.querySelector('[aria-label="メッセージを入力"]');
+      const data = new DataTransfer();
+      data.setData("text/plain", "# comment\nprint(1)");
+      el?.dispatchEvent(new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true }));
+    });
+    await expect(input.locator("pre")).toHaveText("# comment\nprint(1)");
+    await expect(input.locator("h1")).toHaveCount(0);
+
+    // コードブロックを抜けて、行頭の `[ ] ` でチェックリストにする。
+    await input.press("ArrowDown");
+    await input.pressSequentially("[ ] 確認する");
+    await expect(input.locator('ul[data-type="taskList"] li')).toHaveText("確認する");
+
+    const sent = page.waitForRequest(
+      (r) => r.method() === "POST" && (r.postData() ?? "").includes('"text":'),
+    );
+    await input.press("Enter");
+    const body = JSON.parse((await sent).postData() ?? "{}") as { text?: string };
+    expect(body.text).toContain("```\n# comment\nprint(1)\n```");
+    expect(body.text).toContain("- [ ] 確認する");
+  });
 });
 

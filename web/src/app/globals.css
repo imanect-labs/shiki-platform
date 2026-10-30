@@ -694,6 +694,30 @@
   .composer-editor hr {
     @apply border-border;
   }
+  .composer-editor ul[data-type="taskList"] {
+    @apply list-none pl-1;
+  }
+  .composer-editor ul[data-type="taskList"] li {
+    @apply flex items-start gap-2;
+  }
+  .composer-editor ul[data-type="taskList"] li > label {
+    @apply mt-[0.3em] shrink-0;
+  }
+  .composer-editor ul[data-type="taskList"] li > label input[type="checkbox"] {
+    @apply size-4 cursor-pointer accent-primary;
+  }
+  .composer-editor .tableWrapper {
+    @apply my-1 overflow-x-auto;
+  }
+  .composer-editor table {
+    @apply border-collapse text-[0.9em];
+  }
+  .composer-editor :is(th, td) {
+    @apply border border-border px-2 py-1 text-left align-top;
+  }
+  .composer-editor th {
+    @apply bg-muted/50 font-semibold;
+  }
   /* プレースホルダは 1 行目に重ね、長ければ折り返さずに切る（入力欄を 2 行に押し広げない）。 */
   .composer-editor p.is-editor-empty:first-child {
     @apply relative;
