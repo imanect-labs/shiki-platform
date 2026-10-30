@@ -1569,6 +1569,75 @@ async fn content_update_base_version_conflict() {
     );
 }
 
+/// サーバー内のバイトで内容を差し替えるときの楽観ロック（ドライブのテキストの編集が元の文字コードで書き戻す・
+/// D-119）。版が合っていれば新しい版になり、古い版を申告したら今の版つきの 409 で書かない（版を増やさない）。
+/// 消えたファイルは 404 のまま。
+#[tokio::test]
+async fn content_update_from_base_refuses_a_stale_version() {
+    let Some(ctx) = setup().await else { return };
+    let Ctx {
+        service,
+        pool,
+        authz,
+        http,
+        ..
+    } = ctx;
+
+    // テナントを分け、最後にテナントごと撤去する（タプル・オブジェクト・行を残さない）。
+    let org = format!("itorg{}", Uuid::new_v4().simple());
+    let tenant = format!("it-text-{}", Uuid::new_v4().simple());
+    let alice = format!("ituser{}", Uuid::new_v4().simple());
+    let actx = make_ctx_tenant(&org, &tenant, &alice);
+    authz
+        .write_tuple(
+            &actx.subject(),
+            Relation::Member,
+            &actx.ns().organization(&org),
+        )
+        .await
+        .expect("seed member");
+    let file = upload(&service, &http, &actx, None, "memo.txt", b"v1")
+        .await
+        .expect("upload v1");
+
+    let v2 = service
+        .update_file_content_from_base(&actx, file.id, file.version, b"v2", "text/plain", None)
+        .await
+        .expect("base が合っていれば保存する");
+    assert_eq!(v2.version, file.version + 1);
+    let stale = service
+        .update_file_content_from_base(&actx, file.id, file.version, b"stale", "text/plain", None)
+        .await;
+    assert!(
+        matches!(stale, Err(StorageError::VersionConflict { current }) if current == v2.version),
+        "{stale:?}"
+    );
+    let now = service
+        .get_metadata(&actx, file.id, None)
+        .await
+        .expect("get");
+    assert_eq!(now.version, v2.version, "古い版の上には書かない");
+    assert_eq!(now.blob_sha256.as_deref(), Some(sha256_hex(b"v2").as_str()));
+    assert_eq!(
+        node_version_count(&pool, file.id).await,
+        2,
+        "版を増やさない"
+    );
+
+    service
+        .soft_delete_file(&actx, file.id, None)
+        .await
+        .expect("delete");
+    let gone = service
+        .update_file_content_from_base(&actx, file.id, now.version + 1, b"x", "text/plain", None)
+        .await;
+    assert!(matches!(gone, Err(StorageError::NotFound)), "{gone:?}");
+    service
+        .purge_tenant(&tenant, &org, "provisioner:test")
+        .await
+        .expect("purge");
+}
+
 #[tokio::test]
 async fn versioning_end_to_end() {
     let Some(ctx) = setup().await else { return };

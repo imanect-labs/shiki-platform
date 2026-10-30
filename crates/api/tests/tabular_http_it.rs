@@ -3,6 +3,9 @@
 //! `STORAGE_TEST_DATABASE_URL`＋`STORAGE_TEST_S3_ENDPOINT`＋隔離ランナーバイナリが揃う時のみ
 //! 実行する（未設定はスキップ）。HTTP ルータ経由で schema/rows/query/patch/save を通し、
 //! 楽観ロック 409・SQL 拒否 400 を検証する（routes/tabular.rs のカバレッジ）。
+//!
+//! CSV の編集と同じく元の文字コードで書き戻す、ドライブのテキストの表示と編集（`/files/{id}/text`・
+//! routes/file_text.rs・D-119）も、同じ組み立て（実 Postgres＋RustFS）でここで確かめる。
 
 #![allow(
     clippy::unwrap_used,
@@ -507,6 +510,17 @@ fn post(path: &str, body: Value) -> Request<Body> {
         .unwrap()
 }
 
+fn put(path: &str, body: Value) -> Request<Body> {
+    Request::builder()
+        .method("PUT")
+        .uri(path)
+        .header(COOKIE, "shiki_session=sid-tab.default; shiki_csrf=csrf-tab")
+        .header("content-type", "application/json")
+        .header("x-csrf-token", "csrf-tab")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
 async fn json_body(resp: axum::response::Response) -> (StatusCode, Value) {
     let status = resp.status();
     let bytes = resp.into_body().collect().await.unwrap().to_bytes();
@@ -862,4 +876,200 @@ async fn tabular_save_numbers_taken_names_when_asked() {
         .soft_delete_folder(&env.ctx, folder.id, None)
         .await
         .unwrap();
+}
+
+/// ドライブのテキストの表示と編集（BUG-141・D-119）。文字コードはサーバーが決め、保存は元の文字コードと BOM の
+/// まま書き戻す（以前の画面は Shift_JIS のファイルを BOM の無い UTF-8 で保存していた）。改行コードは送られた
+/// とおり。元の文字コードに無い文字・文字コードを決められないファイルの保存・開いた後のほかの保存は、中身を変えずに
+/// 断る。
+#[tokio::test]
+async fn drive_text_edit_writes_back_in_the_original_encoding() {
+    use textenc::encoding_rs::{SHIFT_JIS, UTF_16LE, UTF_8};
+    let Some(env) = setup().await else { return };
+    // 中身は実行ごとに変える（中身の同じ blob は前の実行のバケットを指すので、同じ DB で流し直すと読めない）。
+    let tag = Uuid::new_v4().simple().to_string();
+    let memo = format!("交通費の精算\r\n期限は月末\r\n{tag}\r\n");
+    let (sjis, _, _) = SHIFT_JIS.encode(&memo);
+    let bom_csv = format!("品目,金額\n交通費,1200\n{tag},1\n");
+    let mut files = Vec::new();
+    for (name, bytes, ct) in [
+        ("メモ.txt", sjis.to_vec(), "text/plain"),
+        (
+            "表.csv",
+            textenc::encode_like(&bom_csv, UTF_8, true).unwrap(),
+            "text/csv",
+        ),
+        (
+            "unicode.txt",
+            textenc::encode_like(&memo, UTF_16LE, true).unwrap(),
+            "text/plain",
+        ),
+        (
+            "画像.txt",
+            [b"\x89PNG\r\n\x1a\n\x00".as_slice(), tag.as_bytes()].concat(),
+            "text/plain",
+        ),
+        (
+            "latin.txt",
+            [b"caf\xe9 ".as_slice(), tag.as_bytes()].concat(),
+            "text/plain",
+        ),
+        (
+            "大きい.txt",
+            [tag.as_bytes(), &vec![b'a'; 2 * 1024 * 1024 + 1]].concat(),
+            "text/plain",
+        ),
+    ] {
+        let node = env
+            .storage
+            .write_file_internal(&env.ctx, None, &format!("{tag}-{name}"), &bytes, ct, None)
+            .await
+            .expect("create file");
+        files.push(node);
+    }
+    let call = |req: Request<Body>| {
+        let app = env.app.clone();
+        async move { json_body(app.oneshot(req).await.unwrap()).await }
+    };
+    let text = |i: usize| call(get(&env.app, &format!("/files/{}/text", files[i].id)));
+    let save = |i: usize, text: &str, base: i64| {
+        call(put(
+            &format!("/files/{}/text", files[i].id),
+            json!({ "text": text, "base_version": base }),
+        ))
+    };
+    let raw = |i: usize| {
+        let storage = Arc::clone(&env.storage);
+        let ctx = env.ctx.clone();
+        let id = files[i].id;
+        async move { storage.read_file_internal(&ctx, id, None).await.unwrap() }
+    };
+
+    let opened = text(0).await;
+    let edited = format!("交通費の精算（4\u{301C}6月）\r\n期限は月末\r\n{tag}\r\n");
+    let saved = save(0, &edited, files[0].version).await;
+    let (after_save, sjis_saved) = raw(0).await;
+    let stale = save(0, "古い版の上に保存", files[0].version).await;
+    let unmappable = save(0, "絵文字😀", after_save.version).await;
+    let (after_refusal, sjis_after_refusal) = raw(0).await;
+    let csv_opened = text(1).await;
+    let csv_saved = save(
+        1,
+        &format!("品目,金額\n交通費,1500\n{tag},1\n"),
+        files[1].version,
+    )
+    .await;
+    let (_, csv_bytes) = raw(1).await;
+    let utf16_opened = text(2).await;
+    let utf16_text = format!("ユニコードの本文\r\n{tag}\r\n");
+    let utf16_saved = save(2, &utf16_text, files[2].version).await;
+    let (_, utf16_bytes) = raw(2).await;
+    let binary = text(3).await;
+    let latin = text(4).await;
+    let latin_saved = save(4, "café", files[4].version).await;
+    let too_large = text(5).await;
+    // 片付け（作ったファイル）。
+    for node in &files {
+        env.storage
+            .soft_delete_file(&env.ctx, node.id, None)
+            .await
+            .unwrap();
+    }
+
+    assert_eq!(opened.0, StatusCode::OK, "{:?}", opened.1);
+    assert_eq!(
+        (
+            &opened.1["text"],
+            &opened.1["encoding"],
+            &opened.1["bom"],
+            &opened.1["version"]
+        ),
+        (
+            &json!(memo),
+            &json!("Shift_JIS"),
+            &json!(false),
+            &json!(files[0].version)
+        ),
+        "Shift_JIS のファイルを文字化けせずに読む（改行コードはそのまま）"
+    );
+    assert_eq!(saved.0, StatusCode::OK, "{:?}", saved.1);
+    assert_eq!(saved.1["version"], files[0].version + 1);
+    let decoded = textenc::decode_text(&sjis_saved).unwrap();
+    assert_eq!(
+        (decoded.encoding.name(), decoded.bom, decoded.text.as_str()),
+        (
+            "Shift_JIS",
+            false,
+            format!("交通費の精算（4\u{FF5E}6月）\r\n期限は月末\r\n{tag}\r\n").as_str()
+        ),
+        "Shift_JIS のまま保存する（〜 は ～ にする）"
+    );
+    assert_eq!(stale.0, StatusCode::CONFLICT, "{:?}", stale.1);
+    assert_eq!(stale.1["code"], "version_conflict");
+    assert_eq!(stale.1["current_version"], after_save.version);
+    assert_eq!(unmappable.0, StatusCode::BAD_REQUEST, "{:?}", unmappable.1);
+    assert_eq!(unmappable.1["code"], "invalid_input");
+    assert_eq!(
+        unmappable.1["message"],
+        "「😀」は、このファイルの文字コード（Shift_JIS）では保存できません。別の文字に置き換えてください。"
+    );
+    assert_eq!(
+        after_refusal.version, after_save.version,
+        "断ったときは書かない"
+    );
+    assert_eq!(sjis_after_refusal, sjis_saved);
+
+    assert_eq!(csv_opened.0, StatusCode::OK, "{:?}", csv_opened.1);
+    assert_eq!(
+        (
+            &csv_opened.1["text"],
+            &csv_opened.1["encoding"],
+            &csv_opened.1["bom"]
+        ),
+        (&json!(bom_csv), &json!("UTF-8"), &json!(true)),
+        "BOM は中身に含めず、あったことを返す"
+    );
+    assert_eq!(csv_saved.0, StatusCode::OK, "{:?}", csv_saved.1);
+    assert_eq!(
+        csv_bytes,
+        textenc::encode_like(&format!("品目,金額\n交通費,1500\n{tag},1\n"), UTF_8, true).unwrap(),
+        "BOM を付けたまま保存する"
+    );
+    assert_eq!(
+        utf16_opened.1["encoding"], "UTF-16LE",
+        "{:?}",
+        utf16_opened.1
+    );
+    assert_eq!(utf16_saved.0, StatusCode::OK, "{:?}", utf16_saved.1);
+    assert_eq!(
+        utf16_bytes,
+        textenc::encode_like(&utf16_text, UTF_16LE, true).unwrap()
+    );
+    assert_eq!(binary.0, StatusCode::BAD_REQUEST, "{:?}", binary.1);
+    assert_eq!(
+        binary.1["message"],
+        "テキストではないため表示できません。ダウンロードして、お使いのアプリで開いてください。"
+    );
+    // 文字コードを決められないファイルは見るだけ（置き換え文字で読む）。保存は断る。
+    assert_eq!(latin.0, StatusCode::OK, "{:?}", latin.1);
+    assert_eq!(latin.1["encoding"], Value::Null);
+    assert!(latin.1["text"]
+        .as_str()
+        .unwrap()
+        .starts_with("caf\u{FFFD} "));
+    assert_eq!(
+        latin_saved.0,
+        StatusCode::BAD_REQUEST,
+        "{:?}",
+        latin_saved.1
+    );
+    assert!(latin_saved.1["message"]
+        .as_str()
+        .unwrap()
+        .starts_with("このファイルの文字コードを決められないため、保存できません。"));
+    assert_eq!(too_large.0, StatusCode::BAD_REQUEST, "{:?}", too_large.1);
+    assert!(too_large.1["message"]
+        .as_str()
+        .unwrap()
+        .starts_with("2 MB を超えるテキストは表示できません。"));
 }

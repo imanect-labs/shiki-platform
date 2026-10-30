@@ -28,6 +28,8 @@ use utoipa::{
         crate::routes::files::update_file,
         crate::routes::files::delete_file,
         crate::routes::files::restore_file,
+        crate::routes::file_text::get_text,
+        crate::routes::file_text::put_text,
         crate::routes::file_versions::list_versions,
         crate::routes::file_versions::version_download_url,
         crate::routes::doc_blocks::list_blocks,

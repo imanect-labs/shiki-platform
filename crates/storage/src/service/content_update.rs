@@ -27,6 +27,45 @@ impl StorageService {
         content_type: &str,
         trace_id: Option<&str>,
     ) -> Result<Node, StorageError> {
+        self.update_content(ctx, file_id, None, bytes, content_type, trace_id)
+            .await
+    }
+
+    /// [`Self::update_file_content_internal`] に、内容更新の楽観ロック（`base_version`）を足したもの。
+    ///
+    /// 版の更新を `version = base_version` の条件付きにし（アップロードの finalize と同じ・#827）、その間に入った
+    /// 保存を上書きしない。今の版が違えば [`StorageError::VersionConflict`]（今の版つき）。ドライブのテキストの編集が
+    /// 元の文字コードで書き戻すときに使う（D-119）。
+    pub async fn update_file_content_from_base(
+        &self,
+        ctx: &AuthContext,
+        file_id: Uuid,
+        base_version: i64,
+        bytes: &[u8],
+        content_type: &str,
+        trace_id: Option<&str>,
+    ) -> Result<Node, StorageError> {
+        self.update_content(
+            ctx,
+            file_id,
+            Some(base_version),
+            bytes,
+            content_type,
+            trace_id,
+        )
+        .await
+    }
+
+    /// 内容の差し替えの本体（`base_version` があれば、その版のときだけ差し替える）。
+    async fn update_content(
+        &self,
+        ctx: &AuthContext,
+        file_id: Uuid,
+        base_version: Option<i64>,
+        bytes: &[u8],
+        content_type: &str,
+        trace_id: Option<&str>,
+    ) -> Result<Node, StorageError> {
         let size = i64::try_from(bytes.len())
             .map_err(|_| StorageError::Invalid("size が大きすぎます".into()))?;
         if size > self.max_upload_size {
@@ -77,14 +116,16 @@ impl StorageService {
         )
         .await?;
         // 行ロック込みの UPDATE（finalize_content_update / write_file_at の update と同一形）。
+        // `base_version` があれば、その版のときだけ差し替える（finalize の内容更新と同じ条件）。
         let sql = format!(
             "UPDATE node \
              SET blob_sha256 = $1, size_bytes = $2, content_type = $3, version = {NEXT_CONTENT_VERSION}, \
              updated_by = $7, updated_at = now() \
              WHERE id = $4 AND org = $5 AND tenant_id = $6 AND kind = 'file' AND deleted_at IS NULL \
+               AND ($8::bigint IS NULL OR version = $8) \
              RETURNING {NODE_COLS}"
         );
-        let row: NodeRow = sqlx::query_as(&sql)
+        let row: Option<NodeRow> = sqlx::query_as(&sql)
             .bind(&sha256)
             .bind(size)
             .bind(content_type)
@@ -92,9 +133,27 @@ impl StorageService {
             .bind(&ctx.org)
             .bind(&ctx.tenant_id)
             .bind(&ctx.principal.id)
+            .bind(base_version)
             .fetch_optional(&mut *tx)
-            .await?
-            .ok_or(StorageError::NotFound)?;
+            .await?;
+        let Some(row) = row else {
+            // 版が変わっていたのか、ファイルが消えたのかを分ける（finalize と同じ）。
+            if base_version.is_some() {
+                let current: Option<i64> = sqlx::query_scalar(
+                    "SELECT version FROM node \
+                     WHERE id = $1 AND org = $2 AND tenant_id = $3 AND kind = 'file' AND deleted_at IS NULL",
+                )
+                .bind(file_id)
+                .bind(&ctx.org)
+                .bind(&ctx.tenant_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+                if let Some(current) = current {
+                    return Err(StorageError::VersionConflict { current });
+                }
+            }
+            return Err(StorageError::NotFound);
+        };
         let node = row_to_node(row)?;
 
         self.record_version(
