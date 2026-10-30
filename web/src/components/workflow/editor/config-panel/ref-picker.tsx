@@ -195,6 +195,11 @@ export function InsertMenu({
         onCloseAutoFocus={(e) => {
           // 開いたボタンではなく入力欄へ戻す（続けて書けるように）。
           e.preventDefault();
+          // 閉じきる（メニューが消える）までの間に、ほかのメニューや欄へフォーカスが移っていたら奪わない。奪うと、
+          // 直後に開いたブロックの＋のメニューが外へのフォーカスとみなして閉じる（BUG-160）。メニューの中にあった
+          // フォーカスは、メニューが消えると本文（body）に落ちるので、そのときだけ戻す。
+          const active = document.activeElement;
+          if (active && active !== document.body && active.isConnected) return;
           onClosed();
         }}
       >
