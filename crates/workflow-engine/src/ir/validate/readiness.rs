@@ -1,6 +1,7 @@
 //! 保存は止めず、有効化と実行の前に止める条件（D-40・D-43・D-83）。
 //!
-//! - **必須の欄が空**（[`REQUIRED_FIELDS`] の表と、`control.branch` の条件の調べる値と、`ai.decide` の質問ごとの
+//! - **必須の欄が空**（[`REQUIRED_FIELDS`] の表と、業務データ・ファイルを選ぶブロックの [`REQUIRED_VALUES`] の表（項目が
+//!   無いのと中身の無い入れ物も空・BUG-151）と、`control.branch` の条件の調べる値と、`ai.decide` の質問ごとの
 //!   「AI に尋ねること」（D-108）と、出口を分ける `ai.decide` のしきい値（既定を置かない・D-88））: 書きかけでも保存は
 //!   できるように、保存時は path つきの警告（[`REQUIRED_TEXT_EMPTY`]）にとどめる。空のまま動かすと、空の依頼で
 //!   AI や検索を呼ぶ・いつも同じ出口へ進む・リストでない値を繰り返そうとして失敗する、などになるので、有効化
@@ -73,7 +74,170 @@ const REQUIRED_FIELDS: &[(NodeType, &str, &str, Fill)] = &[
     (NodeType::CsvWrite, "name", "ファイル名", Fill::Text),
     (NodeType::CsvWrite, "content", "CSV の内容", Fill::Text),
     (NodeType::HttpRequest, "url", "URL", Fill::Text),
+    // スキルを選ぶまでは保存だけ通す（形とインストールの照合は V4・BUG-151）。
+    (NodeType::SkillInvoke, "skill", "実行するスキル", Fill::Pick),
 ];
+
+/// 必須の値の欄に入る値の形（中身の無い入れ物も空として数えるか）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Holds {
+    /// テーブル・レコード・ファイルの ID、状態の名前、版（1 つの値）。
+    One,
+    /// 列ごとの値（項目のまとまり）。「項目を並べる」で 0 行（`{}`）も空。
+    Object,
+    /// 行・操作の並び（リスト）。0 件（`[]`）も空。
+    List,
+}
+
+/// 業務データのブロックのテーブルの欄の見出し。
+const TABLE_LABEL: &str = "対象のテーブル";
+/// 業務データのブロックのレコードの欄の見出し。
+const RECORD_LABEL: &str = "対象のレコード";
+
+/// 必須の値の欄（業務データのブロックと、ファイルを選ぶブロック・D-83 と同じ扱い・BUG-151）。
+///
+/// 保存の契約（V1）は項目が無くても通す（`ir::params` の `unset`）ので、項目が無いのも空として数える（エディタの値の
+/// 欄は、読めない JSON・入れ方の切り替え・数の欄を空にしたときに項目を外す）。値を書く欄は、中身の無い項目のまとまり・
+/// リストも空（列を 1 つも選ばずに追加・書き換えるブロック、操作の無い CSV の編集は、動いても何も書かない）。
+const REQUIRED_VALUES: &[(NodeType, &str, &str, Fill, Holds)] = &[
+    (
+        NodeType::StorageRead,
+        "file",
+        "読むファイル",
+        Fill::Pick,
+        Holds::One,
+    ),
+    (
+        NodeType::CsvQuery,
+        "file",
+        "集計する CSV ファイル",
+        Fill::Pick,
+        Holds::One,
+    ),
+    (
+        NodeType::CsvPatch,
+        "file",
+        "編集する CSV ファイル",
+        Fill::Pick,
+        Holds::One,
+    ),
+    (
+        NodeType::CsvPatch,
+        "base_rev",
+        "編集前の版",
+        Fill::Text,
+        Holds::One,
+    ),
+    (
+        NodeType::CsvPatch,
+        "ops",
+        "編集の内容（操作の並び）",
+        Fill::Text,
+        Holds::List,
+    ),
+    (
+        NodeType::DataQuery,
+        "table",
+        TABLE_LABEL,
+        Fill::Pick,
+        Holds::One,
+    ),
+    (
+        NodeType::DataRecordCreate,
+        "table",
+        TABLE_LABEL,
+        Fill::Pick,
+        Holds::One,
+    ),
+    (
+        NodeType::DataRecordCreate,
+        "data",
+        "レコードの値",
+        Fill::Text,
+        Holds::Object,
+    ),
+    (
+        NodeType::DataRecordUpdate,
+        "table",
+        TABLE_LABEL,
+        Fill::Pick,
+        Holds::One,
+    ),
+    (
+        NodeType::DataRecordUpdate,
+        "record",
+        RECORD_LABEL,
+        Fill::Pick,
+        Holds::One,
+    ),
+    (
+        NodeType::DataRecordUpdate,
+        "patch",
+        "変更する値",
+        Fill::Text,
+        Holds::Object,
+    ),
+    (
+        NodeType::DataRecordDelete,
+        "table",
+        TABLE_LABEL,
+        Fill::Pick,
+        Holds::One,
+    ),
+    (
+        NodeType::DataRecordDelete,
+        "record",
+        RECORD_LABEL,
+        Fill::Pick,
+        Holds::One,
+    ),
+    (
+        NodeType::DataTransition,
+        "table",
+        TABLE_LABEL,
+        Fill::Pick,
+        Holds::One,
+    ),
+    (
+        NodeType::DataTransition,
+        "record",
+        RECORD_LABEL,
+        Fill::Pick,
+        Holds::One,
+    ),
+    (
+        NodeType::DataTransition,
+        "to",
+        "次の状態",
+        Fill::Pick,
+        Holds::One,
+    ),
+    (
+        NodeType::DataBulkUpsert,
+        "table",
+        TABLE_LABEL,
+        Fill::Pick,
+        Holds::One,
+    ),
+    (
+        NodeType::DataBulkUpsert,
+        "rows",
+        "登録する行",
+        Fill::Text,
+        Holds::List,
+    ),
+];
+
+/// 必須の値の欄が空か（項目なし・[`is_blank`]・中身の無い入れ物）。
+fn is_unset(v: Option<&Value>, holds: Holds) -> bool {
+    let Some(v) = v else { return true };
+    is_blank(v)
+        || match (holds, v) {
+            (Holds::Object, Value::Object(m)) => m.is_empty(),
+            (Holds::List, Value::Array(a)) => a.is_empty(),
+            _ => false,
+        }
+}
 
 /// 条件で分ける（`control.branch`）の調べる値の見出し。
 const BRANCH_LEFT_LABEL: &str = "調べる値";
@@ -158,6 +322,11 @@ pub fn required_text_empty(ir: &WorkflowIr) -> Vec<ValidationError> {
         }
         for (_, key, label, fill) in REQUIRED_FIELDS.iter().filter(|(t, ..)| *t == nt) {
             if node.params.get(*key).is_some_and(is_blank) {
+                out.push(blank(&node.id, format!("/params/{key}"), label, *fill));
+            }
+        }
+        for (_, key, label, fill, holds) in REQUIRED_VALUES.iter().filter(|(t, ..)| *t == nt) {
+            if is_unset(node.params.get(*key), *holds) {
                 out.push(blank(&node.id, format!("/params/{key}"), label, *fill));
             }
         }
@@ -431,7 +600,8 @@ mod tests {
                   ] } } },
                 { "id": "switch", "type": "control.switch", "params": { "value": "", "cases": [] } },
                 { "id": "map", "type": "control.map", "params": { "items": "" } },
-                { "id": "map_body", "type": "storage.read", "parent": "map", "params": {} },
+                { "id": "map_body", "type": "storage.read", "parent": "map",
+                  "params": { "file": { "$from": "each", "path": "/item" } } },
                 { "id": "decide", "type": "ai.decide", "params": {
                     "model": "", "state": "",
                     "questions": [{ "key": "q1", "type": "boolean", "instructions": "請求か" }] } },
@@ -483,6 +653,94 @@ mod tests {
         assert_eq!(enable_blockers(&ir).len(), w.len());
     }
 
+    /// BUG-151: 置いたばかりの業務データのブロック（テーブル・値・レコード・次の状態・行が空）は、保存の警告にとどめ、
+    /// 実行と自動実行のオンの前に止める。項目が無いのと、中身の無い項目のまとまり・リスト（「項目を並べる」で 0 行）
+    /// も空。選んだ値・参照・中身のある値は止めない。
+    #[test]
+    fn blank_data_block_fields_block_run_and_enable() {
+        const T: &str = "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1";
+        let r = json!({ "$from": "input", "path": "/id" });
+        let ir = ir(
+            json!([{ "kind": "interactive" }]),
+            json!([
+                { "id": "query", "type": "data.query", "params": {} },
+                { "id": "add", "type": "data.record.create", "params": { "table": "", "data": "" } },
+                { "id": "add_rows", "type": "data.record.create", "params": { "table": T, "data": {} } },
+                { "id": "edit", "type": "data.record.update", "params": { "table": T, "record": " ", "patch": {} } },
+                { "id": "del", "type": "data.record.delete", "params": { "table": T } },
+                { "id": "move", "type": "data.transition", "params": { "table": T, "record": r, "to": "" } },
+                { "id": "bulk", "type": "data.bulk_upsert", "params": { "table": T, "rows": [] } },
+                // 選んだ値・参照・中身のある値は止めない。
+                { "id": "ok_add", "type": "data.record.create",
+                  "params": { "table": T, "data": { "title": "a" } } },
+                { "id": "ok_bulk", "type": "data.bulk_upsert",
+                  "params": { "table": { "$from": "input", "path": "/t" }, "rows": { "$from": "input", "path": "/rows" } } }
+            ]),
+        );
+        let w = required_text_empty(&ir);
+        assert_eq!(
+            codes(&w),
+            vec![
+                (REQUIRED_TEXT_EMPTY, Some("query"), Some("/params/table")),
+                (REQUIRED_TEXT_EMPTY, Some("add"), Some("/params/table")),
+                (REQUIRED_TEXT_EMPTY, Some("add"), Some("/params/data")),
+                (REQUIRED_TEXT_EMPTY, Some("add_rows"), Some("/params/data")),
+                (REQUIRED_TEXT_EMPTY, Some("edit"), Some("/params/record")),
+                (REQUIRED_TEXT_EMPTY, Some("edit"), Some("/params/patch")),
+                (REQUIRED_TEXT_EMPTY, Some("del"), Some("/params/record")),
+                (REQUIRED_TEXT_EMPTY, Some("move"), Some("/params/to")),
+                (REQUIRED_TEXT_EMPTY, Some("bulk"), Some("/params/rows")),
+            ]
+        );
+        assert_eq!(
+            w[0].message,
+            "「対象のテーブル」が空です。選ぶまで、実行も自動実行のオンもできません。"
+        );
+        assert_eq!(
+            w[2].message,
+            "「レコードの値」が空です。入れるまで、実行も自動実行のオンもできません。"
+        );
+        assert_eq!(run_blockers(&ir).len(), w.len());
+        assert_eq!(enable_blockers(&ir).len(), w.len());
+    }
+
+    /// BUG-151: ファイルを選ぶブロック（読むファイル・集計と編集の CSV ファイル・編集前の版・編集の内容）と、実行する
+    /// スキルも、置いたばかりの空のまま保存でき、実行と自動実行のオンの前に止める。選んだファイル・参照は止めない。
+    #[test]
+    fn blank_file_and_skill_fields_block_run_and_enable() {
+        const F: &str = "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1";
+        let ir = ir(
+            json!([{ "kind": "interactive" }]),
+            json!([
+                { "id": "read", "type": "storage.read", "params": { "file": "" } },
+                { "id": "sum", "type": "csv.query", "params": { "sql": "SELECT 1" } },
+                { "id": "edit", "type": "csv.patch", "params": { "file": F, "ops": [] } },
+                { "id": "skill", "type": "skill.invoke", "params": { "skill": "" } },
+                { "id": "ok_read", "type": "storage.read",
+                  "params": { "file": { "$from": "input", "path": "/file" } } },
+                { "id": "ok_edit", "type": "csv.patch",
+                  "params": { "file": F, "base_rev": 3, "ops": [{ "op": "row_delete", "row": 0 }] } }
+            ]),
+        );
+        let w = required_text_empty(&ir);
+        assert_eq!(
+            codes(&w),
+            vec![
+                (REQUIRED_TEXT_EMPTY, Some("read"), Some("/params/file")),
+                (REQUIRED_TEXT_EMPTY, Some("sum"), Some("/params/file")),
+                (REQUIRED_TEXT_EMPTY, Some("edit"), Some("/params/base_rev")),
+                (REQUIRED_TEXT_EMPTY, Some("edit"), Some("/params/ops")),
+                (REQUIRED_TEXT_EMPTY, Some("skill"), Some("/params/skill")),
+            ]
+        );
+        assert_eq!(
+            w[0].message,
+            "「読むファイル」が空です。選ぶまで、実行も自動実行のオンもできません。"
+        );
+        assert_eq!(run_blockers(&ir).len(), w.len());
+        assert_eq!(enable_blockers(&ir).len(), w.len());
+    }
+
     /// D-85: 中にブロックの無い繰り返しは、保存の警告にとどめ、実行と自動実行のオンの前に止める（置いた直後の
     /// 繰り返しを保存できるように）。中にブロックのある繰り返し（入れ子の中の繰り返しも）は止めない。文言は
     /// 繰り返しの名前（付けた名前・無ければ種類の名前）を名指しする。
@@ -499,7 +757,8 @@ mod tests {
                   "params": { "items": { "$from": "input", "path": "/rows" } } },
                 { "id": "inner", "type": "control.map", "parent": "outer",
                   "params": { "items": { "$from": "each", "path": "/item" } } },
-                { "id": "leaf", "type": "storage.read", "parent": "inner", "params": {} }
+                { "id": "leaf", "type": "storage.read", "parent": "inner",
+                  "params": { "file": { "$from": "each", "path": "/item" } } }
             ]),
         );
         let w = empty_regions(&ir);

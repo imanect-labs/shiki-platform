@@ -17,6 +17,7 @@ use crate::ir::expr::ValueExpr;
 #[ts(export)]
 pub struct CsvQueryParams {
     /// 対象 CSV ファイル id（UUID に解決される値）。
+    #[serde(default = "super::unset")]
     pub file: ValueExpr,
     /// 読み取り専用 SELECT（テーブル名 `data`）。
     pub sql: ValueExpr,
@@ -28,10 +29,13 @@ pub struct CsvQueryParams {
 #[ts(export)]
 pub struct CsvPatchParams {
     /// 対象 CSV ファイル id。
+    #[serde(default = "super::unset")]
     pub file: ValueExpr,
     /// 編集前の版（node.version・楽観ロックの base）。
+    #[serde(default = "super::unset")]
     pub base_rev: ValueExpr,
     /// パッチ操作の配列（tabular の `PatchOp` に解決される JSON 値）。
+    #[serde(default = "super::unset")]
     pub ops: ValueExpr,
 }
 

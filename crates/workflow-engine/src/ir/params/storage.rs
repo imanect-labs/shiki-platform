@@ -11,6 +11,7 @@ use crate::ir::expr::ValueExpr;
 #[ts(export)]
 pub struct StorageReadParams {
     /// 読むファイル id（UUID に解決される値）。
+    #[serde(default = "super::unset")]
     pub file: ValueExpr,
 }
 

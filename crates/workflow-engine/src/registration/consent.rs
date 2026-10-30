@@ -289,9 +289,11 @@ fn agent_folder_scopes(params: &serde_json::Value) -> Vec<&'static str> {
 }
 
 /// params のフィールドが文字列リテラルならその値（`$from`/`$template` は None）。
+///
+/// 空の文字（置いたばかりで選んでいない欄・D-83）は対象が決まっていないので None（選ばせる側に回す）。
 fn literal_str(params: &serde_json::Value, key: &str) -> Option<String> {
     match params.get(key) {
-        Some(serde_json::Value::String(s)) => Some(s.clone()),
+        Some(serde_json::Value::String(s)) if !s.trim().is_empty() => Some(s.clone()),
         _ => None,
     }
 }
@@ -320,6 +322,21 @@ mod tests {
         let found = plan.iter().find(|g| g.source == source);
         assert!(found.is_some(), "{source} の提案が無い: {plan:?}");
         found.expect("提案がある")
+    }
+
+    /// 置いたばかりで選んでいない欄（空の文字・D-83・BUG-151）は、対象の決まっていない提案にする（空の id で
+    /// テーブルを指さない）。
+    #[test]
+    fn blank_literals_ask_the_user_to_pick() {
+        let plan = plan(&json!([
+            { "id": "add", "type": "data.record.create", "params": { "table": "", "data": "" } },
+            { "id": "q", "type": "csv.query", "params": { "file": " ", "sql": "SELECT 1" } }
+        ]));
+        for node in ["add", "q"] {
+            let g = by_source(&plan, node);
+            assert_eq!(g.object_id, None, "{g:?}");
+            assert!(g.needs_user_pick, "{g:?}");
+        }
     }
 
     /// csv.* もリテラルの対象は id 付きで提案する（schedule / event の run が委譲で読める・BUG-10）。

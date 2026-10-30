@@ -432,6 +432,62 @@ mod tests {
         assert!(errs.iter().any(|e| e.code == "ir.bad_region"), "{errs:?}");
     }
 
+    /// BUG-151: 置いたばかりの業務データ・ファイルを読む・スキルのブロック（エディタは選ぶ欄・書く欄を空の文字で置く）は
+    /// 保存でき、空の欄は保存の警告になる（実行と自動実行のオンの前に止まる）。以前は「項目 'data' がありません」・
+    /// 「skill 参照は skill:<name>@<version> 形式です」で保存が止まった。
+    #[test]
+    fn freshly_placed_data_blocks_can_be_saved() {
+        let ir = json!({
+            "ir_version": 1, "name": "wf",
+            "triggers": [{ "kind": "interactive" }],
+            "nodes": [
+                { "id": "add", "type": "data.record.create", "params": { "table": "", "data": "" } },
+                { "id": "move", "type": "data.transition", "params": { "table": "", "record": "", "to": "" } },
+                { "id": "bulk", "type": "data.bulk_upsert", "params": {} },
+                { "id": "read", "type": "storage.read", "params": { "file": "" } },
+                { "id": "skill", "type": "skill.invoke", "params": { "skill": "" } }
+            ],
+            "edges": [
+                { "from": "add", "to": "move" }, { "from": "move", "to": "bulk" },
+                { "from": "bulk", "to": "read" }, { "from": "read", "to": "skill" }
+            ]
+        });
+        // 使ってよい操作は保存の API と同じく補う。
+        let (ir, _) = crate::ir::scopes::complete_declared_scopes(&ir);
+        let parsed = validate(&ir, &catalog()).expect("置いたばかりのブロックを保存できる");
+        let warned: Vec<_> = save_warnings(&parsed, &catalog())
+            .into_iter()
+            .map(|w| (w.code, w.node_id, w.path))
+            .collect();
+        let at = |node: &str, field: &str| {
+            (
+                REQUIRED_TEXT_EMPTY.to_string(),
+                Some(node.to_string()),
+                Some(format!("/params/{field}")),
+            )
+        };
+        assert_eq!(
+            warned,
+            vec![
+                at("add", "table"),
+                at("add", "data"),
+                at("move", "table"),
+                at("move", "record"),
+                at("move", "to"),
+                at("bulk", "table"),
+                at("bulk", "rows"),
+                at("read", "file"),
+                at("skill", "skill"),
+            ]
+        );
+        // 材料（テーブルの一覧）を引ける構成でも、空のテーブルは照合しない（見えないテーブルの誤りにしない）。
+        let with_tables = Catalog {
+            tables: Some(BTreeMap::new()),
+            ..Catalog::default()
+        };
+        assert!(validate(&ir, &with_tables).is_ok());
+    }
+
     #[test]
     fn v5_from_source_requires_exact_vocabulary() {
         // `each.item` のような「先頭一致だが実行時に解決不能」な source は保存時に弾く。
@@ -502,7 +558,7 @@ mod tests {
             "name": "wf",
             "declared_scopes": ["storage.read"],
             "nodes": [
-                { "id": "read", "type": "storage.read", "params": {} }
+                { "id": "read", "type": "storage.read", "params": { "file": "x", "surprise": 1 } }
             ],
             "edges": []
         });

@@ -8,6 +8,10 @@
 //!   担保する（二重ゲート）。schedule / event の run は委譲元ユーザーの権限で行が絞られる（ポート実装）。
 //! - 書込（作成・更新・削除・遷移・一括 upsert）は EngineDedup（effect_journal の冪等キーで高々 1 回・PIT-31）。
 //! - status は `data.transition` でしか動かせない（FSM の不変条件・`data.record.update` で status を書くと 422）。
+//! - 必須の欄（テーブル・値・レコード・次の状態・行）は、項目が無くても保存の契約では誤りにしない（置いたばかりの
+//!   ブロックを保存できるように・D-83・BUG-151）。空のまま（項目なし・空の文字・null・中身の無い項目のまとまりや
+//!   リスト）なら、保存時の警告にとどめ、実行と自動実行のオンの前に止める（`validate::readiness`）。項目が無いときは
+//!   null として読む（実行の前に止まるので、実行で使われることはない）。
 
 use data::DataQuery;
 use serde::{Deserialize, Serialize};
@@ -26,6 +30,7 @@ pub const MAX_WORKFLOW_BULK_ROWS: usize = 5_000;
 #[ts(export)]
 pub struct DataQueryParams {
     /// 対象テーブル id（UUID に解決される値）。
+    #[serde(default = "super::unset")]
     pub table: ValueExpr,
     /// クエリ（data の `DataQuery`・OpenAPI の `DataQuery` と同一型）。省略時は既定（更新の新しい順に 50 件）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -57,8 +62,10 @@ impl DataQueryParams {
 #[ts(export)]
 pub struct DataRecordCreateParams {
     /// 対象テーブル id。
+    #[serde(default = "super::unset")]
     pub table: ValueExpr,
     /// レコードの値（参照名 key → 値のオブジェクトに解決される値）。
+    #[serde(default = "super::unset")]
     pub data: ValueExpr,
 }
 
@@ -68,10 +75,13 @@ pub struct DataRecordCreateParams {
 #[ts(export)]
 pub struct DataRecordUpdateParams {
     /// 対象テーブル id。
+    #[serde(default = "super::unset")]
     pub table: ValueExpr,
     /// 対象レコード id。
+    #[serde(default = "super::unset")]
     pub record: ValueExpr,
     /// 変更するフィールドだけのオブジェクト（`null` はフィールド除去）。
+    #[serde(default = "super::unset")]
     pub patch: ValueExpr,
     /// 楽観ロックの rev（省略時は実行時点の rev を読んでから書く）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -85,8 +95,10 @@ pub struct DataRecordUpdateParams {
 #[ts(export)]
 pub struct DataRecordDeleteParams {
     /// 対象テーブル id。
+    #[serde(default = "super::unset")]
     pub table: ValueExpr,
     /// 対象レコード id。
+    #[serde(default = "super::unset")]
     pub record: ValueExpr,
     /// 楽観ロックの rev（省略時は実行時点の rev を読んでから消す）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -103,10 +115,13 @@ pub struct DataRecordDeleteParams {
 #[ts(export)]
 pub struct DataTransitionParams {
     /// 対象テーブル id。
+    #[serde(default = "super::unset")]
     pub table: ValueExpr,
     /// 対象レコード id。
+    #[serde(default = "super::unset")]
     pub record: ValueExpr,
     /// 遷移先の status。
+    #[serde(default = "super::unset")]
     pub to: ValueExpr,
     /// 楽観ロックの rev（省略時は実行時点の rev を読んでから遷移する）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -125,8 +140,10 @@ pub struct DataTransitionParams {
 #[ts(export)]
 pub struct DataBulkUpsertParams {
     /// 対象テーブル id。
+    #[serde(default = "super::unset")]
     pub table: ValueExpr,
     /// 行の配列（最大 5,000 行）。
+    #[serde(default = "super::unset")]
     pub rows: ValueExpr,
     /// 不合格の行が 1 つでもあれば何も適用しない（既定は合格した行だけを適用する）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -140,6 +157,26 @@ mod tests {
 
     use crate::ir::params::check_params;
     use crate::vocab::NodeType;
+
+    /// 置いたばかりで必須の欄（テーブル・値・レコード・次の状態・行）が無いブロックも、保存の契約は通す（実行と自動実行の
+    /// オンの前に止める・BUG-151）。以前は「項目 'data' がありません」で保存が止まった。
+    #[test]
+    fn freshly_placed_blocks_pass_without_their_required_fields() {
+        for nt in [
+            NodeType::DataQuery,
+            NodeType::DataRecordCreate,
+            NodeType::DataRecordUpdate,
+            NodeType::DataRecordDelete,
+            NodeType::DataTransition,
+            NodeType::DataBulkUpsert,
+        ] {
+            assert!(check_params(nt, &json!({})).is_ok(), "{nt:?}");
+            let parsed = crate::ir::params::parse::<super::DataRecordCreateParams>(&json!({}));
+            assert!(parsed.is_ok(), "{parsed:?}");
+        }
+        // 知らない項目は、これまでどおり断る。
+        assert!(check_params(NodeType::DataRecordCreate, &json!({ "rows": [] })).is_err());
+    }
 
     /// 読む件数の上限は 1〜200。範囲の外は保存で止め、直す欄（`/params/query/limit`）を指す（BUG-108。以前は
     /// 201 以上も保存でき、実行で黙って 200 件に切り詰められていた）。

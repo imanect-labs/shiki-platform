@@ -67,6 +67,15 @@ use serde_json::Value;
 
 use crate::vocab::NodeType;
 
+/// 必須の値の欄の項目が無いときの値（null）。
+///
+/// 置いたばかりのブロックを保存できるように、業務データ・ファイルを選ぶブロックの必須の値の欄は、項目が無くても契約
+/// では誤りにしない（D-83・BUG-151）。空のまま（項目なし・空の文字・null・中身の無い入れ物）なら、保存時の警告に
+/// とどめ、実行と自動実行のオンの前に止める（`validate::readiness` の `REQUIRED_VALUES`）ので、実行で使われることはない。
+fn unset() -> crate::ir::expr::ValueExpr {
+    crate::ir::expr::ValueExpr::Literal(Value::Null)
+}
+
 /// typed 契約違反（保存時検証 V1 が `ir.schema_violation` として全件収集する）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParamsIssue {

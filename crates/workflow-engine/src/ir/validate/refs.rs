@@ -67,6 +67,10 @@ pub(super) fn v4_refs(ir: &WorkflowIr, catalog: &Catalog, errors: &mut Vec<Valid
             let Some(skill_ref) = node.params.get("skill").and_then(|v| v.as_str()) else {
                 continue; // params 型は V1b が検証済み（欠落はそちらで拒否）。
             };
+            // 空の参照は必須の欄の空として readiness が扱う（置いたばかりでも保存できる・D-83・BUG-151）。
+            if skill_ref.trim().is_empty() {
+                continue;
+            }
             match parse_skill_ref(skill_ref) {
                 None => {
                     errors.push(
