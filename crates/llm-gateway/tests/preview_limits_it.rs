@@ -171,6 +171,46 @@ async fn per_user_limit_stops_only_that_user() {
     stream(&gw, &bob, "cheap").await.expect("別ユーザーは通る");
 }
 
+/// 本人の当月の利用額（#965）: 上限の判定と同じ集計で、本人の分だけを返す。上限が無効なら
+/// 集計しない（`None`）。期間は日本時間の今月 1 日から来月 1 日まで。
+#[tokio::test]
+async fn month_usage_reports_only_my_spend_and_the_limit() {
+    let Some(pool) = pool().await else { return };
+    let limited = gateway(
+        pool.clone(),
+        &paid_id(),
+        UsageLimitsConfig {
+            enabled: true,
+            per_user_usd_micros: Some(5_000_000), // $5
+            providers: vec![],
+        },
+    );
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let alice = ctx(&tenant, "acme", "alice");
+    let bob = ctx(&tenant, "acme", "bob");
+
+    record(&limited, &alice, "cheap", 1_250_000).await; // $1.25
+    record(&limited, &alice, "costly", 250_000).await; // 別プロバイダも合算する
+    record(&limited, &bob, "cheap", 9_000_000).await; // 他人の分は混ざらない
+
+    let mine = limited.month_usage(&alice).await.unwrap();
+    assert_eq!(mine.used_usd_micros, Some(1_500_000));
+    assert_eq!(mine.limit_usd_micros, Some(5_000_000));
+    assert!(mine.period_start <= chrono::Utc::now() && chrono::Utc::now() < mine.period_end);
+    let span = mine.period_end - mine.period_start;
+    assert!(
+        span >= chrono::Duration::days(28) && span <= chrono::Duration::days(31),
+        "{span}"
+    );
+
+    // 上限が無効なら集計しない（利用額・上限とも None。期間は返す）。
+    let unlimited = gateway(pool, &paid_id(), UsageLimitsConfig::default());
+    let mine = unlimited.month_usage(&alice).await.unwrap();
+    assert_eq!(mine.used_usd_micros, None);
+    assert_eq!(mine.limit_usd_micros, None);
+    assert!(mine.period_start < mine.period_end);
+}
+
 /// プロバイダ別の環境総枠はテナント横断で数え、別プロバイダのモデルは通る。
 #[tokio::test]
 async fn provider_limit_counts_across_tenants() {

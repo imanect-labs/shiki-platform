@@ -1571,6 +1571,118 @@ async fn pending_approval_is_persisted_and_the_wait_releases_the_slot() {
     );
 }
 
+/// #965: ホームの「今日のこと」に出す承認待ちの一覧。自分が actor の run だけを返す。
+/// 他人の run・承認待ちでない run・editor を失った thread は出さない。
+#[tokio::test]
+async fn list_pending_approvals_returns_only_my_waiting_runs_with_editor_access() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let authz = Arc::new(AllowAll::new());
+    let store = store(&pool, Arc::clone(&authz)).await;
+    let alice = ctx(&tenant);
+    let mut bob = ctx(&tenant);
+    bob.principal.id = "bob".into();
+
+    // 承認待ちの run を作る（ワーカーが書く状態を SQL で再現する）。`post_message` を通すと
+    // 一瞬 queued になり、同じバイナリの別テストが回すワーカーに拾われる（自動タイトルで題名が
+    // 書き換わる・run が終わる）ので、生成ジョブを積まずに waiting_approval の run を直接作る。
+    async fn waiting_run(
+        store: &ChatStore,
+        pool: &PgPool,
+        c: &AuthContext,
+        title: &str,
+        tool_call_id: &str,
+    ) -> (uuid::Uuid, uuid::Uuid) {
+        let thread = store
+            .create_thread(c, title, true, None, None)
+            .await
+            .unwrap();
+        let message_id: uuid::Uuid = sqlx::query_scalar(
+            "INSERT INTO message (thread_id, org, tenant_id, role, content, agent_mode) \
+             VALUES ($1, $2, $3, 'assistant', '[]'::jsonb, true) RETURNING id",
+        )
+        .bind(thread.id)
+        .bind(&c.org)
+        .bind(&c.tenant_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        let run_id: uuid::Uuid = sqlx::query_scalar(
+            "INSERT INTO generation_run (message_id, thread_id, org, tenant_id, actor, agent_mode, \
+                                         status, pending_approval) \
+             VALUES ($1, $2, $3, $4, $5, true, 'waiting_approval', \
+                     jsonb_build_object('tool_call_id', $6::text, 'tool_name', 'drive.move', \
+                                        'requested_at', now())) \
+             RETURNING run_id",
+        )
+        .bind(message_id)
+        .bind(thread.id)
+        .bind(&c.org)
+        .bind(&c.tenant_id)
+        .bind(&c.principal.id)
+        .bind(tool_call_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        (thread.id, run_id)
+    }
+
+    let (mine, mine_run) = waiting_run(&store, &pool, &alice, "移動の確認", "tc-a").await;
+    let (_, _) = waiting_run(&store, &pool, &bob, "bob の承認待ち", "tc-b").await;
+    // 承認待ちでない run（生成中のまま）は出さない。
+    let idle = store
+        .create_thread(&alice, "ふつうの会話", false, None, None)
+        .await
+        .unwrap();
+    store
+        .post_message(&alice, idle.id, "hi", &[], None, None, false, &[], None)
+        .await
+        .unwrap();
+
+    let got = store.list_pending_approvals(&alice, 10).await.unwrap();
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert_eq!(got[0].thread_id, mine);
+    assert_eq!(got[0].run_id, mine_run);
+    assert_eq!(got[0].thread_title, "移動の確認");
+    assert_eq!(got[0].tool_call_id, "tc-a");
+    assert_eq!(got[0].tool_name, "drive.move");
+    assert_eq!(got[0].origin_note_id, None);
+
+    // 別 org の同名ユーザーには出さない（tenant ＋ org ＋ actor で絞る）。
+    let mut other_org = ctx(&tenant);
+    other_org.org = "other".into();
+    assert!(store
+        .list_pending_approvals(&other_org, 10)
+        .await
+        .unwrap()
+        .is_empty());
+
+    // thread の editor を失ったら出さない（post-filter・共有の剥奪は即時に効く）。
+    authz.deny_for.lock().unwrap().push((
+        alice.subject().to_string(),
+        alice.ns().thread(&mine.to_string()).as_str().to_string(),
+    ));
+    assert!(store
+        .list_pending_approvals(&alice, 10)
+        .await
+        .unwrap()
+        .is_empty());
+
+    // 件数の上限は editor の確認のあとで切る（新しい方が落ちたら古い承認待ちが繰り上がる）。
+    let (newer, _) = waiting_run(&store, &pool, &alice, "新しい承認待ち", "tc-c").await;
+    {
+        let mut deny = authz.deny_for.lock().unwrap();
+        deny.clear();
+        deny.push((
+            alice.subject().to_string(),
+            alice.ns().thread(&newer.to_string()).as_str().to_string(),
+        ));
+    }
+    let got = store.list_pending_approvals(&alice, 1).await.unwrap();
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert_eq!(got[0].run_id, mine_run);
+}
+
 /// R3-5: 承認待ちの保留の上限（ここではユーザーあたり 1 件）を超える承認要求は待たずに却下する。
 /// 枠は返さず・承認待ちへ遷移せず・承認待ちの記録も残さず、理由を `failure_recovery`
 /// （action = `approval_overloaded`）でストリームに出す。

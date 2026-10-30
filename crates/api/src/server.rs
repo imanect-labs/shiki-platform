@@ -139,6 +139,16 @@ pub fn route_table() -> Vec<RouteDecl> {
             get(routes::me_preferences::get_preferences)
                 .put(routes::me_preferences::put_preferences)
         }),
+        // ホームの「今日のこと」（本人の承認待ち・ワークフロー実行の集計・今月の利用量・#965）。
+        r("/me/approvals", &["GET"], Session, || {
+            get(routes::me_today::list_pending_approvals)
+        }),
+        r("/me/workflow-runs", &["GET"], Session, || {
+            get(routes::me_today::workflow_run_digest)
+        }),
+        r("/me/usage", &["GET"], Session, || {
+            get(routes::me_today::my_usage)
+        }),
         // ChatGPT プランの接続（プレビュー環境の個人利用・#854。無効な環境では 404）。
         r("/me/chatgpt", &["GET", "DELETE"], Session, || {
             get(routes::me_chatgpt::get_chatgpt).delete(routes::me_chatgpt::disconnect_chatgpt)

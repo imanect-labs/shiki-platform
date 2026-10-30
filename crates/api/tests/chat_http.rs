@@ -1422,3 +1422,131 @@ async fn preferences_round_trip_over_http() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
 }
+
+/// #965: ホームの「今日のこと」の `/me/approvals` と `/me/usage`。
+/// 承認待ちは自分が actor の run が載り、未認証は 401。利用量は LLM 未構成なら 503、構成済みなら
+/// 本人の当月の利用額と上限（上限なしは null）を返す。
+#[tokio::test]
+async fn today_endpoints_over_http() {
+    let Some((mut state, sessions)) = build_state(true).await else {
+        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+        return;
+    };
+    let db_url = std::env::var("STORAGE_TEST_DATABASE_URL").unwrap();
+    let pool = PgPoolOptions::new().connect(&db_url).await.unwrap();
+    let (cookie, csrf) = login(&sessions, "sid-today").await;
+    let get = |uri: &str| {
+        Request::builder()
+            .uri(uri)
+            .header(COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    // LLM 未構成の利用量は 503（承認待ちは chat だけで答えられる）。
+    let app = build_router(state.clone());
+    let resp = app.clone().oneshot(get("/me/usage")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/me/approvals")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // スレッドを作って発話し、その run を承認待ちにする（ワーカーが書く状態を SQL で再現）。
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/threads")
+                .header(COOKIE, &cookie)
+                .header("x-csrf-token", csrf)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"title":"承認のテスト","agent_mode":true}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let tid = body_json(resp).await["id"].as_str().unwrap().to_string();
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/threads/{tid}/messages"))
+                .header(COOKIE, &cookie)
+                .header("x-csrf-token", csrf)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"text":"移動して"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    let run_id: uuid::Uuid = body_json(resp).await["run_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    sqlx::query(
+        "UPDATE generation_run SET status = 'waiting_approval', \
+             pending_approval = jsonb_build_object('tool_call_id', 'tc-home', \
+                 'tool_name', 'drive.move', 'requested_at', now()) \
+         WHERE run_id = $1",
+    )
+    .bind(run_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let resp = app.clone().oneshot(get("/me/approvals")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    let item = body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["run_id"] == serde_json::json!(run_id.to_string()))
+        .unwrap_or_else(|| panic!("承認待ちの run が載る: {body}"));
+    assert_eq!(item["thread_id"], serde_json::json!(tid));
+    assert_eq!(item["thread_title"], serde_json::json!("承認のテスト"));
+    assert_eq!(item["tool_name"], serde_json::json!("drive.move"));
+    assert!(item["requested_at"].is_string());
+    // 後続のテストに承認待ちを残さない。
+    sqlx::query(
+        "UPDATE generation_run SET status = 'cancelled', pending_approval = NULL WHERE run_id = $1",
+    )
+    .bind(run_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let gw = llm_gateway::LlmGateway::build(
+        pool.clone(),
+        reqwest::Client::new(),
+        llm_gateway::GatewayConfig::default(),
+    )
+    .unwrap();
+    state.llm = Some(Arc::new(gw));
+    let app = build_router(state);
+    let resp = app.clone().oneshot(get("/me/usage")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert!(
+        body["used_usd_micros"].is_null(),
+        "上限が無い環境では集計しない: {body}"
+    );
+    assert!(
+        body["limit_usd_micros"].is_null(),
+        "上限が無い環境では null: {body}"
+    );
+    assert!(body["period_start"].is_string() && body["period_end"].is_string());
+}

@@ -45,6 +45,28 @@ pub struct WorkflowSearchHit {
     pub updated_at: DateTime<Utc>,
 }
 
+/// ワークフロー 1 つの、直近に終わった実行の件数（ホームの「今日のこと」・#965）。
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct WorkflowRunCount {
+    pub workflow_id: Uuid,
+    /// 期間内に成功で終わった実行の数。
+    pub succeeded: i64,
+    /// 期間内に失敗で終わった実行の数。
+    pub failed: i64,
+}
+
+/// 失敗した実行 1 件（どのワークフローの・いつの・なぜ）。
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct FailedRun {
+    pub run_id: Uuid,
+    pub workflow_id: Uuid,
+    pub workflow_name: String,
+    pub display_name: Option<String>,
+    /// 失敗の理由（先頭 200 文字まで・一覧に添えるだけなので全文は運ばない）。
+    pub fail_reason: Option<String>,
+    pub finished_at: DateTime<Utc>,
+}
+
 /// 検索語を ILIKE の部分一致パターンへ（空白区切りの語ごと・ワイルドカードは文字として扱う）。
 ///
 /// 利用者・モデルが書いた `%`/`_` がワイルドカードとして効くと「全件一致」になるため、
@@ -173,6 +195,81 @@ impl WorkflowSummaryStore {
         .bind(interactive_only)
         .bind(limit.clamp(1, 100))
         .bind(owned)
+        .fetch_all(&self.db)
+        .await
+    }
+}
+
+impl WorkflowSummaryStore {
+    /// 認可済み id 集合のワークフローごとに、`since` 以降に終わった実行の件数を数える
+    /// （期間内に実行が終わったワークフローだけを返す）。
+    ///
+    /// 呼び出し側は返ったワークフローだけを権限で確かめ直してから合計する（post-filter）。
+    /// id は認可済み前提で、tenant・org で二重に絞り、削除済みのワークフローは数えない。
+    /// `ids` が `None` のときは id で絞らない（可読集合が大きすぎるときの縮退。post-filter 必須）。
+    /// 集計の基準は終了時刻（`finished_at`・終端遷移で必ず入る）で、終了時刻の索引
+    /// （`workflow_run_gc_idx`）に乗る。
+    pub async fn run_counts(
+        &self,
+        tenant_id: &str,
+        org: &str,
+        ids: Option<&[Uuid]>,
+        since: DateTime<Utc>,
+    ) -> Result<Vec<WorkflowRunCount>, sqlx::Error> {
+        if ids.is_some_and(<[Uuid]>::is_empty) {
+            return Ok(Vec::new());
+        }
+        sqlx::query_as(
+            "SELECT r.workflow_id, \
+                    count(*) FILTER (WHERE r.status = 'succeeded') AS succeeded, \
+                    count(*) FILTER (WHERE r.status = 'failed') AS failed \
+             FROM workflow_run r \
+             JOIN artifact a \
+               ON a.tenant_id = r.tenant_id AND a.id = r.workflow_id \
+              AND a.org = $2 AND a.deleted_at IS NULL \
+             WHERE r.tenant_id = $1 AND ($3::uuid[] IS NULL OR r.workflow_id = ANY($3)) \
+               AND r.status IN ('succeeded', 'failed', 'cancelled') AND r.finished_at >= $4 \
+             GROUP BY r.workflow_id",
+        )
+        .bind(tenant_id)
+        .bind(org)
+        .bind(ids)
+        .bind(since)
+        .fetch_all(&self.db)
+        .await
+    }
+
+    /// 認可済み id 集合のワークフローで `since` 以降に失敗した実行を、終了の新しい順に
+    /// `limit` 件返す。削除済みのワークフローの実行は出さない。
+    pub async fn recent_failures(
+        &self,
+        tenant_id: &str,
+        ids: &[Uuid],
+        since: DateTime<Utc>,
+        limit: i64,
+    ) -> Result<Vec<FailedRun>, sqlx::Error> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        sqlx::query_as(
+            "SELECT r.run_id, r.workflow_id, a.name AS workflow_name, \
+                    v.body->>'display_name' AS display_name, \
+                    left(r.fail_reason, 200) AS fail_reason, r.finished_at \
+             FROM workflow_run r \
+             JOIN artifact a \
+               ON a.tenant_id = r.tenant_id AND a.id = r.workflow_id AND a.deleted_at IS NULL \
+             JOIN artifact_version v \
+               ON v.tenant_id = a.tenant_id AND v.artifact_id = a.id \
+              AND v.version = a.current_version \
+             WHERE r.tenant_id = $1 AND r.workflow_id = ANY($2) AND r.status = 'failed' \
+               AND r.finished_at >= $3 \
+             ORDER BY r.finished_at DESC, r.run_id DESC \
+             LIMIT $4",
+        )
+        .bind(tenant_id)
+        .bind(ids)
+        .bind(since)
+        .bind(limit.clamp(1, 20))
         .fetch_all(&self.db)
         .await
     }

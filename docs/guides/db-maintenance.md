@@ -77,6 +77,11 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS thread_owner_pinned_idx
 
 CREATE INDEX CONCURRENTLY IF NOT EXISTS generation_run_thread_idx
     ON generation_run (tenant_id, thread_id, created_at);
+
+-- #965 / migration 0108: ホームの「今日のこと」の承認待ちを actor で引く（承認待ちだけの部分索引）
+CREATE INDEX CONCURRENTLY IF NOT EXISTS generation_run_waiting_actor_idx
+    ON generation_run (tenant_id, actor)
+    WHERE status = 'waiting_approval';
 ```
 
 停止時間を取れる環境なら、事前作成せずにそのまま migration に任せてもよい（通常の

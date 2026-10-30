@@ -36,6 +36,23 @@ use crate::config::{ProviderLimit, UsageLimitsConfig};
 /// 日本時間の「今月 1 日 00:00」（timestamptz）。`created_at` の範囲に使う。
 const MONTH_START: &str = "(date_trunc('month', now() AT TIME ZONE 'Asia/Tokyo')) \
      AT TIME ZONE 'Asia/Tokyo'";
+/// 日本時間の「来月 1 日 00:00」（timestamptz）。上限がリセットされる時刻。
+const NEXT_MONTH_START: &str = "(date_trunc('month', now() AT TIME ZONE 'Asia/Tokyo') \
+     + interval '1 month') AT TIME ZONE 'Asia/Tokyo'";
+
+/// 呼び出しユーザーの当月（日本時間）の利用額（本人向けの表示・#965）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MonthUsage {
+    /// 当月の合計コスト（マイクロ USD）。上限の判定と同じ集計（tenant ＋ 本人・全プロバイダ）。
+    /// 上限が無い環境では集計しない（`None`）。
+    pub used_usd_micros: Option<i64>,
+    /// ユーザー単位の上限（マイクロ USD）。無効・未設定なら `None`。
+    pub limit_usd_micros: Option<i64>,
+    /// 集計期間の始まり（日本時間の今月 1 日 00:00）。
+    pub period_start: chrono::DateTime<chrono::Utc>,
+    /// 集計期間の終わり（日本時間の来月 1 日 00:00・この時刻を含まない）。
+    pub period_end: chrono::DateTime<chrono::Utc>,
+}
 
 /// 制限判定の失敗。
 #[derive(Debug)]
@@ -94,6 +111,46 @@ impl UsageLimiter {
             }
         }
         Ok(())
+    }
+
+    /// 呼び出しユーザーの当月（日本時間）の利用額と上限（本人向けの表示）。
+    ///
+    /// 上限の判定（[`Self::check`]）と同じ集計なので、表示と止まる線がずれない。
+    /// `(tenant_id, user_sub, created_at)` の索引に乗る。上限が無い環境では利用額を集計しない
+    /// （割合を出せず表示しないので、ホームを開くたびに月の合計を取るのは無駄）。
+    pub async fn month_usage(
+        &self,
+        ctx: &AuthContext,
+        limits: &UsageLimitsConfig,
+    ) -> Result<MonthUsage, sqlx::Error> {
+        let limit = limits.per_user();
+        let (used, start, end): (
+            Option<i64>,
+            chrono::DateTime<chrono::Utc>,
+            chrono::DateTime<chrono::Utc>,
+        ) = if limit.is_some() {
+            sqlx::query_as(&format!(
+                "SELECT COALESCE(SUM(cost_usd_micros), 0)::bigint, {MONTH_START}, {NEXT_MONTH_START} \
+                 FROM llm_usage \
+                 WHERE tenant_id = $1 AND user_sub = $2 AND created_at >= {MONTH_START}"
+            ))
+            .bind(&ctx.tenant_id)
+            .bind(&ctx.principal.id)
+            .fetch_one(&self.db)
+            .await?
+        } else {
+            sqlx::query_as(&format!(
+                "SELECT NULL::bigint, {MONTH_START}, {NEXT_MONTH_START}"
+            ))
+            .fetch_one(&self.db)
+            .await?
+        };
+        Ok(MonthUsage {
+            used_usd_micros: used,
+            limit_usd_micros: limit,
+            period_start: start,
+            period_end: end,
+        })
     }
 
     /// 呼び出しユーザーの当月（日本時間）の合計コスト。`limit` が無ければ問い合わせない。

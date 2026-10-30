@@ -17,7 +17,7 @@ use crate::config::{
     DEFAULT_PROVIDER_ID,
 };
 use crate::langfuse::{GenerationTrace, LangfuseClient};
-use crate::limits::{LimitError, UsageLimiter};
+use crate::limits::{LimitError, MonthUsage, UsageLimiter};
 use crate::model::{Effort, GenerateRequest, Usage};
 use crate::provider::{DeltaStream, LlmError, LlmProvider};
 use crate::providers::{
@@ -307,6 +307,17 @@ impl LlmGateway {
             settings,
         )
         .ok()
+    }
+
+    /// 呼び出しユーザー本人の当月（日本時間）の利用額と上限（ホームの「今日のこと」・#965）。
+    ///
+    /// 上限の判定と同じ集計（[`UsageLimiter::month_usage`](crate::limits::UsageLimiter::month_usage)）。
+    /// 本人の分だけを返すので管理者権限は要らない。
+    pub async fn month_usage(&self, ctx: &AuthContext) -> Result<MonthUsage, sqlx::Error> {
+        self.inner
+            .limits
+            .month_usage(ctx, &self.inner.config.limits)
+            .await
     }
 
     /// 利用量ダッシュボードの集計（tenant_id ＋ org に閉じる）。
