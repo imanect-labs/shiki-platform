@@ -27,7 +27,8 @@ test("承認を待つ: 承認者の欄は、判断できる人を決めないこ
   await expect(canvas.getByText("上長の承認").first()).toBeVisible({ timeout: 15_000 });
   await canvas.getByText("上長の承認").first().click();
   const panel = page.getByRole("complementary", { name: "ブロックの設定" });
-  await expect(panel.getByText("承認者", { exact: true })).toBeVisible();
+  // 「承認者」はテーブルの列の名前にもあるので（受信箱に出す列・承認者の列）、欄の枠で探す。
+  await expect(panel.getByRole("group", { name: "承認者", exact: true })).toBeVisible();
   await expect(panel.getByTestId("approval-assignees-note")).toHaveText(
     "選んだ人の「承認」の画面に依頼が出ます。判断できるかは状態の進め方で決まります。",
   );
