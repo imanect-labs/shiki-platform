@@ -12,6 +12,9 @@ import { cleanupAll, loginViaKeycloak, removeWorkflowApi, stubDecisionModel, stu
 /// 前提: stub の chat モデルに判定させる判定用のモデル（`~/.config/shiki-dev/llm-stub.toml` の decide-llm-stub。
 /// stub は AI の自信を 0 と答える）と、stub の決定器（decide-stub）を持つカタログ・LLM は stub。実 LLM は呼ばない。
 /// 判定用のモデルと元の chat モデルを組織で公開し、finally で元に戻す。
+///
+/// 判定用のモデルの無い構成（CI の compose）でも、実行の詳細の表示の経路が黙って飛ばされないよう、2 つ目のテストは
+/// 判定を使わない実行の詳細の応答（版の IR と、そのブロックの結果）を差し替えて、注意の表示を確かめる。
 
 const SHOTS = process.env.E2E_SHOTS_DIR;
 
@@ -198,5 +201,75 @@ test("AI で判定: AI が自信の低い答えを返すと、実行履歴の詳
       ...ids.map((id) => () => removeWorkflowApi(page, id)),
       () => setEnabled(page, opened.map((id) => ({ id, enabled: false }))),
     );
+  }
+});
+
+test("AI で判定: 実行の詳細の注意は、判定用のモデルが無い構成でも、結果の形から出る（応答を差し替えて確かめる・D-114）", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await loginViaKeycloak(page);
+  const ids: string[] = [];
+  try {
+    // 判定を使わないワークフロー（1 ブロック）を実行し、実行の詳細の応答だけを判定の形に差し替える。
+    const name = uniqueName("wf-decide-raised-shape");
+    const created = await page.request.post("/api/workflows", {
+      headers: await csrfHeaders(page),
+      data: {
+        ir: {
+          ir_version: 1,
+          name,
+          display_name: name,
+          triggers: [{ kind: "interactive" }],
+          nodes: [{ id: "triage", type: "control.join", label: "問い合わせを判定", params: {} }],
+          edges: [],
+        },
+      },
+    });
+    expect(created.status(), await created.text()).toBe(201);
+    const id = ((await created.json()) as { id: string }).id;
+    ids.push(id);
+    const started = await page.request.post(`/api/workflows/${id}/runs`, { headers: await csrfHeaders(page), data: { input: {} } });
+    expect(started.status(), await started.text()).toBe(202);
+    const runId = ((await started.json()) as { run_id: string }).run_id;
+    await expect
+      .poll(async () => ((await (await page.request.get(`/api/workflows/${id}/runs/${runId}`)).json()) as { status: string }).status, {
+        timeout: 60_000,
+        intervals: [1_000],
+      })
+      .toBe("succeeded");
+
+    const params = decideIr(name, "decide-llm-stub").nodes[0].params;
+    await page.route(`**/api/workflows/${id}/versions/*`, async (route) => {
+      const res = await route.fetch();
+      const body = (await res.json()) as { ir: { nodes: { id: string; type: string; params: unknown }[] } };
+      const node = body.ir.nodes.find((n) => n.id === "triage");
+      if (node) Object.assign(node, { type: "ai.decide", params });
+      await route.fulfill({ response: res, json: body });
+    });
+    await page.route(`**/api/workflows/${id}/runs/${runId}/steps?path=triage*`, async (route) => {
+      const res = await route.fetch();
+      const body = (await res.json()) as Record<string, unknown>;
+      body.output = {
+        answers: { category: { value: "billing", confidence: 1 / 3 }, angry: { value: true, confidence: 0.5 } },
+        raised_questions: ["category", "angry"],
+        provider: "llm_decider",
+      };
+      await route.fulfill({ response: res, json: body });
+    });
+
+    await page.goto(`/workflows/${id}/runs?run=${runId}`);
+    const sheet = page.getByRole("dialog");
+    await sheet.getByRole("button", { name: /問い合わせを判定/ }).click();
+    const note = sheet.getByTestId("decide-raised");
+    await expect(note.getByText(TITLE, { exact: true })).toBeVisible({ timeout: 20_000 });
+    await expect(note.getByRole("listitem")).toHaveText(RAISED_ITEMS);
+    await expect(note.getByText(CALIBRATION, { exact: false })).toBeVisible();
+    await note.scrollIntoViewIfNeeded();
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/decide-raised-shape-pc.png` });
+  } finally {
+    await page.unrouteAll({ behavior: "ignoreErrors" });
+    await cleanupAll(...ids.map((id) => () => removeWorkflowApi(page, id)));
   }
 });
