@@ -558,3 +558,205 @@ async fn table_editor_transitions_without_fsm_artifact_access() {
         "{r:?}"
     );
 }
+
+/// このファイルの後ろのテストが作る OpenFGA のストア（テストの終わりに消す）。
+struct TestStore {
+    base_url: String,
+    store_id: String,
+}
+
+impl TestStore {
+    async fn delete(&self) {
+        let r = reqwest::Client::new()
+            .delete(format!("{}/stores/{}", self.base_url, self.store_id))
+            .send()
+            .await
+            .expect("OpenFGA delete store");
+        assert!(r.status().is_success(), "delete store: {}", r.status());
+    }
+}
+
+/// [`setup`] と同じ環境に、後で消すストアの情報を添える。
+async fn setup_cleaned() -> Option<(PgPool, Arc<dyn AuthzClient>, TestStore)> {
+    let db_url = std::env::var("STORAGE_TEST_DATABASE_URL").ok()?;
+    let base_url = std::env::var("OPENFGA_TEST_URL").ok()?;
+    let pool = PgPoolOptions::new()
+        .max_connections(5)
+        .connect(&db_url)
+        .await
+        .expect("pg");
+    sqlx::migrate!("../../migrations")
+        .run(&pool)
+        .await
+        .expect("migrate");
+    let model: serde_json::Value =
+        serde_json::from_str(include_str!("../../authz/model/authorization-model.json")).unwrap();
+    let config = OpenFgaConfig {
+        base_url: base_url.clone(),
+        store_name: format!("shiki-data-fsm-test-{}", Uuid::new_v4()),
+    };
+    let fga = OpenFgaClient::connect(reqwest::Client::new(), &config, &model)
+        .await
+        .expect("fga");
+    let store = TestStore {
+        base_url,
+        store_id: fga.store_id().to_string(),
+    };
+    Some((pool, Arc::new(fga), store))
+}
+
+/// テナントのテーブル・レコード・状態の進め方の定義を消す。
+async fn purge(pool: &PgPool, store: &DataStore, tenant: &str) {
+    store.purge_tenant(tenant).await.unwrap();
+    sqlx::query("DELETE FROM artifact WHERE tenant_id = $1")
+        .bind(tenant)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+/// 申請の表に、承認の進め方（submitted → approved）を付けて指す。bob に編集者を渡す。
+async fn pinned_table(
+    pool: &PgPool,
+    authz: &Arc<dyn AuthzClient>,
+    alice: &AuthContext,
+    bob: &AuthContext,
+) -> (DataStore, FsmStore, Uuid, Uuid) {
+    let store = DataStore::new(pool.clone(), Arc::clone(authz), Arc::new(AllowRefs));
+    let artifacts = Arc::new(artifact::ArtifactStore::new(
+        pool.clone(),
+        Arc::clone(authz),
+    ));
+    let fsms = FsmStore::new(Arc::clone(&artifacts), store.clone());
+    let table = store
+        .create_table(
+            alice,
+            NewDataTable {
+                name: "expense".into(),
+                schema: expense_schema(),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let fsm_id = fsms
+        .create(alice, "approval", table.id, &approval_fsm(), None)
+        .await
+        .unwrap();
+    let mut schema = expense_schema();
+    schema.fsm_ref = Some(FsmRef {
+        artifact_id: fsm_id,
+        version: 1,
+    });
+    store
+        .update_table_schema(alice, table.id, schema, Some(1), None)
+        .await
+        .unwrap();
+    authz
+        .write_tuple(
+            &bob.subject(),
+            Relation::Editor,
+            &alice.ns().data_table(&table.id.to_string()),
+        )
+        .await
+        .unwrap();
+    (store, fsms, table.id, fsm_id)
+}
+
+/// BUG-153: 前から保存されていた定義に同じ組の進め方が 2 つあると、遷移の候補は 2 つ目の進められる人にも出すのに、
+/// 遷移は 1 つ目しか見ないので進めなかった。遷移の判定を候補と同じ（どれか 1 つに当てはまれば進める）にする。
+#[tokio::test]
+async fn duplicate_pairs_in_a_legacy_definition_move_like_the_candidates() {
+    let Some((pool, authz, fga)) = setup_cleaned().await else {
+        return;
+    };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let alice = ctx(&tenant, "alice");
+    let bob = ctx(&tenant, "bob");
+    let (store, fsms, table, fsm_id) = pinned_table(&pool, &authz, &alice, &bob).await;
+    // 前から保存されていた形: submitted → approved が 2 つ（1 つ目は申請者・2 つ目は承認者）。新しい保存では断るので、
+    // 保存済みの版の本文を書き換えて作る。
+    let mut legacy = approval_fsm();
+    legacy.transitions[1].actor = PolicyExpr::FieldCmp {
+        field: "applicant".into(),
+        op: CmpOp::Eq,
+        value: PolicyOperand::UserId,
+    };
+    legacy.transitions.push(FsmTransition {
+        from: "submitted".into(),
+        to: "approved".into(),
+        actor: PolicyExpr::FieldCmp {
+            field: "approver".into(),
+            op: CmpOp::Eq,
+            value: PolicyOperand::UserId,
+        },
+    });
+    sqlx::query(
+        "UPDATE artifact_version SET body = $3 WHERE tenant_id = $1 AND artifact_id = $2 AND version = 1",
+    )
+    .bind(&tenant)
+    .bind(fsm_id)
+    .bind(serde_json::to_value(&legacy).unwrap())
+    .execute(&pool)
+    .await
+    .unwrap();
+    let rec = store
+        .create_record(
+            &alice,
+            table,
+            json!({"applicant": "alice", "approver": "bob", "amount": 1}),
+            None,
+        )
+        .await
+        .unwrap();
+    let sub = fsms
+        .transition(&alice, table, rec.id, "submitted", rec.rev, None)
+        .await
+        .unwrap();
+    // 承認者 bob は 1 つ目（申請者）には当てはまらず、2 つ目（承認者）に当てはまる: 候補に出て、実際に進める。
+    let a = fsms
+        .allowed_transitions(&bob, table, sub.id, None)
+        .await
+        .unwrap();
+    assert!(a.transitions.contains(&"approved".to_string()), "{a:?}");
+    let moved = fsms
+        .transition(&bob, table, sub.id, "approved", sub.rev, None)
+        .await;
+    // どちらの進められる人にも当てはまらない編集者（dave）には、候補に出ず、進めない。
+    let dave = ctx(&tenant, "dave");
+    authz
+        .write_tuple(
+            &dave.subject(),
+            Relation::Editor,
+            &alice.ns().data_table(&table.to_string()),
+        )
+        .await
+        .unwrap();
+    let rec2 = store
+        .create_record(
+            &alice,
+            table,
+            json!({"applicant": "alice", "approver": "bob", "amount": 2}),
+            None,
+        )
+        .await
+        .unwrap();
+    let sub2 = fsms
+        .transition(&alice, table, rec2.id, "submitted", rec2.rev, None)
+        .await
+        .unwrap();
+    let a2 = fsms
+        .allowed_transitions(&dave, table, sub2.id, None)
+        .await
+        .unwrap();
+    let denied = fsms
+        .transition(&dave, table, sub2.id, "approved", sub2.rev, None)
+        .await;
+    purge(&pool, &store, &tenant).await;
+    fga.delete().await;
+
+    let moved = moved.expect("2 つ目の進め方の進められる人は進める");
+    assert_eq!(moved.data["status"], json!("approved"));
+    assert!(!a2.transitions.contains(&"approved".to_string()), "{a2:?}");
+    assert!(matches!(denied, Err(DataError::Forbidden)), "{denied:?}");
+}

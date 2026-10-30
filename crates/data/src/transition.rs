@@ -92,16 +92,17 @@ impl DataStore {
             })?
             .to_string();
         // ②定義外遷移は 422（Invalid）。
-        let transition = fsm.transition(&from, to).ok_or_else(|| {
-            DataError::input_detail(
+        if fsm.transition(&from, to).is_none() {
+            return Err(DataError::input_detail(
                 crate::InvalidCode::FsmInvalid,
                 None,
                 "この状態からは指定の状態へ遷移できません",
-            )
-        })?;
-        // ③actor 述語を当該行に評価（不許可 403）。読取述語ではなく actor 述語を使う。
+            ));
+        }
+        // ③actor 述語を当該行に評価（不許可 403）。読取述語ではなく actor 述語を使う。同じ組の進め方が
+        // 複数ある定義では、遷移の候補と同じく、どれか 1 つに当てはまれば進める（BUG-153）。
         if !self
-            .actor_allows(ctx, &az, &table, record_id, &transition.actor)
+            .may_transition(ctx, &az, &table, record_id, fsm, &from, to)
             .await?
         {
             let _ = self

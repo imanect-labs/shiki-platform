@@ -41,11 +41,28 @@ pub struct FsmRef {
 }
 
 impl FsmBody {
-    /// from 状態から to への遷移定義を引く（定義外は None）。
+    /// from 状態から to への遷移定義を引く（定義外は None・同じ組が複数あれば先の 1 つ）。
+    ///
+    /// 定義に組があるかを見るためのもの。誰が進められるかは [`Self::transitions_between`] の全部で決める。
     pub fn transition(&self, from: &str, to: &str) -> Option<&FsmTransition> {
         self.transitions
             .iter()
             .find(|t| t.from == from && t.to == to)
+    }
+
+    /// from 状態から to への遷移定義のすべて（定義順）。
+    ///
+    /// 新しい保存では同じ組を 2 つ置けない（[`validate_fsm`]）が、前から保存されていた定義には残りうる。
+    /// 遷移の可否と遷移の候補は、どれか 1 つの進められる人に当てはまれば進めるとして、同じ規則で決める
+    /// （`DataStore::may_transition`・BUG-153）。
+    pub fn transitions_between<'a>(
+        &'a self,
+        from: &'a str,
+        to: &'a str,
+    ) -> impl Iterator<Item = &'a FsmTransition> + 'a {
+        self.transitions
+            .iter()
+            .filter(move |t| t.from == from && t.to == to)
     }
 }
 
@@ -87,7 +104,8 @@ pub(crate) fn validate_fsm(
                 t.from
             )));
         }
-        // 同じ組を 2 つ置くと、遷移の判定（`transition`）は先の 1 つしか見ない（後の進められる人が効かない）。
+        // 同じ組を 2 つ置くと、どちらの進められる人が効くのかが画面から読めない（前から保存されていた定義は、
+        // どれか 1 つに当てはまれば進める・`transitions_between`）。
         if !pairs.insert((t.from.as_str(), t.to.as_str())) {
             return Err(invalid(format!(
                 "「{}」から「{}」への進め方が 2 つあります。1 つにまとめてください。",

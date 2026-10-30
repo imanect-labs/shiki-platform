@@ -164,12 +164,14 @@ impl DataStore {
             .map(str::to_string);
         let mut transitions: Vec<String> = Vec::new();
         if let Some(from) = &current {
+            let mut tried: Vec<&str> = Vec::new();
             for t in fsm.transitions.iter().filter(|t| &t.from == from) {
-                if transitions.contains(&t.to) {
+                if tried.contains(&t.to.as_str()) {
                     continue;
                 }
+                tried.push(&t.to);
                 if self
-                    .actor_allows(ctx, &az, table, record_id, &t.actor)
+                    .may_transition(ctx, &az, table, record_id, fsm, from, &t.to)
                     .await?
                 {
                     transitions.push(t.to.clone());
@@ -239,6 +241,32 @@ impl DataStore {
             targets,
             refs,
         })
+    }
+
+    /// 主体がレコードを `from` から `to` へ進められるか（遷移と遷移の候補の**同じ判定**・BUG-153）。
+    ///
+    /// 同じ組の進め方が複数ある定義（前から保存されていたもの）では、どれか 1 つの進められる人に当てはまれば
+    /// 進められる。組が無ければ偽。進められる人は当該行で評価する（[`Self::actor_allows`]）。
+    #[allow(clippy::too_many_arguments)] // 主体・メモ・テーブル・行・定義・組は全て別物。
+    pub(crate) async fn may_transition(
+        &self,
+        ctx: &AuthContext,
+        az: &crate::policy::memo::AuthzMemo<'_>,
+        table: &DataTable,
+        record_id: Uuid,
+        fsm: &FsmBody,
+        from: &str,
+        to: &str,
+    ) -> Result<bool, DataError> {
+        for t in fsm.transitions_between(from, to) {
+            if self
+                .actor_allows(ctx, az, table, record_id, &t.actor)
+                .await?
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// テーブルの editor を確かめて生きているテーブルを返す（遷移の候補の入口）。
