@@ -8,12 +8,13 @@
 
 import * as React from "react";
 
+import { isDerived } from "@/components/data/schema-field-form";
 import { FilterControl, SortControl, type FilterExprValue, type FilterTexts } from "@/components/data/view-controls";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import type { NodeParamsByType } from "@/generated/workflow-catalog";
 import type { ValueExpr } from "@/generated/workflow-ir";
-import type { DataQuery, DataTable, FieldType } from "@/lib/data-api";
+import type { DataQuery, DataTable } from "@/lib/data-api";
 import { buildFilter, resolveColumns, splitFilter } from "@/lib/data-view";
 import { cn } from "@/lib/utils";
 import { Field, MoreInfo, NumberInput } from "./common";
@@ -100,9 +101,6 @@ function useNodeTable(node: FormProps["node"]): { source: DataTables; table: Dat
   return { source, table: found.state === "ok" ? found.table : null };
 }
 
-/// 書けない列の種類（計算の列とリンク先の値・付録 D の N3.3.2）。
-const UNWRITABLE_TYPES: readonly FieldType[] = ["lookup", "computed", "rollup", "formula"];
-
 /// 「項目を並べる」で選ぶ列（書ける列だけ・BUG-118）。状態の進め方のあるテーブルの状態の列も出さない（追加では
 /// 最初の状態に決まり、変えるのは「状態を進める」だけ・data の record.rs）。名前は「{列名}（{キー}）」。
 function columnKeys(table: DataTable | null): ComposeKeys | undefined {
@@ -110,7 +108,8 @@ function columnKeys(table: DataTable | null): ComposeKeys | undefined {
   const status = table.schema.fsm_ref ? table.schema.status_field : null;
   return {
     options: table.schema.fields
-      .filter((f) => !UNWRITABLE_TYPES.includes(f.type) && f.key !== status)
+      // 書けない列（計算の列とリンク先の値・付録 D の N3.3.2）は、列の編集と同じ判定（isDerived）で外す。
+      .filter((f) => !isDerived(f.type) && f.key !== status)
       .map((f) => ({
         key: f.key,
         label: f.display_name && f.display_name !== f.key ? `${f.display_name}（${f.key}）` : f.key,
