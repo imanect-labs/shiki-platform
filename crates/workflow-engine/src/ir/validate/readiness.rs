@@ -1,7 +1,7 @@
 //! 保存は止めず、有効化と実行の前に止める条件（D-40・D-43・D-83）。
 //!
 //! - **必須の欄が空**（[`REQUIRED_FIELDS`] の表と、業務データ・ファイルを選ぶブロックの [`REQUIRED_VALUES`] の表（項目が
-//!   無いのと中身の無い入れ物も空・BUG-151）と、`control.branch` の条件の調べる値と、`ai.decide` の質問ごとの
+//!   無いのも空・BUG-151）と、`control.branch` の条件の調べる値と、`ai.decide` の質問ごとの
 //!   「AI に尋ねること」（D-108）と、出口を分ける `ai.decide` のしきい値（既定を置かない・D-88））: 書きかけでも保存は
 //!   できるように、保存時は path つきの警告（[`REQUIRED_TEXT_EMPTY`]）にとどめる。空のまま動かすと、空の依頼で
 //!   AI や検索を呼ぶ・いつも同じ出口へ進む・リストでない値を繰り返そうとして失敗する、などになるので、有効化
@@ -16,6 +16,10 @@
 //! - **中にブロックの無い繰り返し**（`control.map` の領域が空・D-85）: エディタで置いた直後の繰り返しは中が空なので、
 //!   保存は止めずに警告（[`EMPTY_REGION`]）にとどめる。空のまま動かすと、1 件目から中の最後のブロックを
 //!   いつまでも待つので、有効化と対話の実行の前に止める（D-83 と同じ扱い）。
+//!
+//! - **値を書く欄が中身の無い入れ物**（`data.record.create` の `data: {}` など・[`EMPTY_CONTAINERS`]）: 保存の注意
+//!   （[`EMPTY_VALUES`]）だけにし、有効化も実行も止めない。状態の進め方のあるテーブルに最初の状態だけのレコードを
+//!   作るのは正しい使い方で、前から保存されている定義にもある。
 //!
 //! どれも IR だけで決まる純関数。有効化（`RegistrationService::enable`）・同意計画の API・対話の起動
 //! （`WorkflowRunLauncher`）が同じ関数を呼ぶ。
@@ -78,17 +82,6 @@ const REQUIRED_FIELDS: &[(NodeType, &str, &str, Fill)] = &[
     (NodeType::SkillInvoke, "skill", "実行するスキル", Fill::Pick),
 ];
 
-/// 必須の値の欄に入る値の形（中身の無い入れ物も空として数えるか）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Holds {
-    /// テーブル・レコード・ファイルの ID、状態の名前、版（1 つの値）。
-    One,
-    /// 列ごとの値（項目のまとまり）。「項目を並べる」で 0 行（`{}`）も空。
-    Object,
-    /// 行・操作の並び（リスト）。0 件（`[]`）も空。
-    List,
-}
-
 /// 業務データのブロックのテーブルの欄の見出し。
 const TABLE_LABEL: &str = "対象のテーブル";
 /// 業務データのブロックのレコードの欄の見出し。
@@ -97,146 +90,124 @@ const RECORD_LABEL: &str = "対象のレコード";
 /// 必須の値の欄（業務データのブロックと、ファイルを選ぶブロック・D-83 と同じ扱い・BUG-151）。
 ///
 /// 保存の契約（V1）は項目が無くても通す（`ir::params` の `unset`）ので、項目が無いのも空として数える（エディタの値の
-/// 欄は、読めない JSON・入れ方の切り替え・数の欄を空にしたときに項目を外す）。値を書く欄は、中身の無い項目のまとまり・
-/// リストも空（列を 1 つも選ばずに追加・書き換えるブロック、操作の無い CSV の編集は、動いても何も書かない）。
-const REQUIRED_VALUES: &[(NodeType, &str, &str, Fill, Holds)] = &[
-    (
-        NodeType::StorageRead,
-        "file",
-        "読むファイル",
-        Fill::Pick,
-        Holds::One,
-    ),
+/// 欄は、読めない JSON・入れ方の切り替え・数の欄を空にしたときに項目を外す）。中身の無い項目のまとまり・リスト（`{}`・
+/// `[]`）は空と数えない（[`EMPTY_CONTAINERS`] の注意にとどめる）。
+const REQUIRED_VALUES: &[(NodeType, &str, &str, Fill)] = &[
+    (NodeType::StorageRead, "file", "読むファイル", Fill::Pick),
     (
         NodeType::CsvQuery,
         "file",
         "集計する CSV ファイル",
         Fill::Pick,
-        Holds::One,
     ),
     (
         NodeType::CsvPatch,
         "file",
         "編集する CSV ファイル",
         Fill::Pick,
-        Holds::One,
     ),
-    (
-        NodeType::CsvPatch,
-        "base_rev",
-        "編集前の版",
-        Fill::Text,
-        Holds::One,
-    ),
+    (NodeType::CsvPatch, "base_rev", "編集前の版", Fill::Text),
     (
         NodeType::CsvPatch,
         "ops",
         "編集の内容（操作の並び）",
         Fill::Text,
-        Holds::List,
     ),
-    (
-        NodeType::DataQuery,
-        "table",
-        TABLE_LABEL,
-        Fill::Pick,
-        Holds::One,
-    ),
-    (
-        NodeType::DataRecordCreate,
-        "table",
-        TABLE_LABEL,
-        Fill::Pick,
-        Holds::One,
-    ),
+    (NodeType::DataQuery, "table", TABLE_LABEL, Fill::Pick),
+    (NodeType::DataRecordCreate, "table", TABLE_LABEL, Fill::Pick),
     (
         NodeType::DataRecordCreate,
         "data",
         "レコードの値",
         Fill::Text,
-        Holds::Object,
     ),
-    (
-        NodeType::DataRecordUpdate,
-        "table",
-        TABLE_LABEL,
-        Fill::Pick,
-        Holds::One,
-    ),
+    (NodeType::DataRecordUpdate, "table", TABLE_LABEL, Fill::Pick),
     (
         NodeType::DataRecordUpdate,
         "record",
         RECORD_LABEL,
         Fill::Pick,
-        Holds::One,
     ),
     (
         NodeType::DataRecordUpdate,
         "patch",
         "変更する値",
         Fill::Text,
-        Holds::Object,
     ),
-    (
-        NodeType::DataRecordDelete,
-        "table",
-        TABLE_LABEL,
-        Fill::Pick,
-        Holds::One,
-    ),
+    (NodeType::DataRecordDelete, "table", TABLE_LABEL, Fill::Pick),
     (
         NodeType::DataRecordDelete,
         "record",
         RECORD_LABEL,
         Fill::Pick,
-        Holds::One,
+    ),
+    (NodeType::DataTransition, "table", TABLE_LABEL, Fill::Pick),
+    (NodeType::DataTransition, "record", RECORD_LABEL, Fill::Pick),
+    (NodeType::DataTransition, "to", "次の状態", Fill::Pick),
+    (NodeType::DataBulkUpsert, "table", TABLE_LABEL, Fill::Pick),
+    (NodeType::DataBulkUpsert, "rows", "登録する行", Fill::Text),
+];
+
+/// 必須の値の欄が空か（項目なし・[`is_blank`]）。
+fn is_unset(v: Option<&Value>) -> bool {
+    v.is_none_or(is_blank)
+}
+
+/// 注意のコード: 値を書く欄が中身の無い項目のまとまり・リスト（保存も実行も止めない）。
+pub const EMPTY_VALUES: &str = "ir.empty_values";
+
+/// 値を書く欄が中身の無い入れ物（`{}`・`[]`）のときの注意（ノード種・params の項目・文言）。
+///
+/// 保存・有効化・実行のどれも止めない。状態の進め方のあるテーブルに最初の状態だけのレコードを作る（`data: {}`）のは
+/// 正しい使い方で、前から保存されている定義にもある（子の実行・ミニアプリが固定した版も止めない）。何も書かない・
+/// 変えないことを、保存のときに言うだけにする。
+const EMPTY_CONTAINERS: &[(NodeType, &str, &str)] = &[
+    (
+        NodeType::DataRecordCreate,
+        "data",
+        "「レコードの値」に列がありません。このままでは、どの列にも値を入れずにレコードを追加します。",
     ),
     (
-        NodeType::DataTransition,
-        "table",
-        TABLE_LABEL,
-        Fill::Pick,
-        Holds::One,
-    ),
-    (
-        NodeType::DataTransition,
-        "record",
-        RECORD_LABEL,
-        Fill::Pick,
-        Holds::One,
-    ),
-    (
-        NodeType::DataTransition,
-        "to",
-        "次の状態",
-        Fill::Pick,
-        Holds::One,
-    ),
-    (
-        NodeType::DataBulkUpsert,
-        "table",
-        TABLE_LABEL,
-        Fill::Pick,
-        Holds::One,
+        NodeType::DataRecordUpdate,
+        "patch",
+        "「変更する値」に列がありません。このままでは、どの列も書き換えません。",
     ),
     (
         NodeType::DataBulkUpsert,
         "rows",
-        "登録する行",
-        Fill::Text,
-        Holds::List,
+        "「登録する行」に行がありません。このままでは、1 行も登録しません。",
+    ),
+    (
+        NodeType::CsvPatch,
+        "ops",
+        "「編集の内容（操作の並び）」に操作がありません。このままでは、行も列も変えずに保存し直します。",
     ),
 ];
 
-/// 必須の値の欄が空か（項目なし・[`is_blank`]・中身の無い入れ物）。
-fn is_unset(v: Option<&Value>, holds: Holds) -> bool {
-    let Some(v) = v else { return true };
-    is_blank(v)
-        || match (holds, v) {
-            (Holds::Object, Value::Object(m)) => m.is_empty(),
-            (Holds::List, Value::Array(a)) => a.is_empty(),
-            _ => false,
+/// 値を書く欄が中身の無い入れ物のもの（保存時の注意だけ・[`EMPTY_CONTAINERS`]）。
+#[must_use]
+pub fn empty_values(ir: &WorkflowIr) -> Vec<ValidationError> {
+    let mut out = Vec::new();
+    for node in &ir.nodes {
+        let Some(nt) = NodeType::parse(&node.node_type) else {
+            continue;
+        };
+        for (_, key, message) in EMPTY_CONTAINERS.iter().filter(|(t, ..)| *t == nt) {
+            let empty = match node.params.get(*key) {
+                Some(Value::Object(m)) => m.is_empty(),
+                Some(Value::Array(a)) => a.is_empty(),
+                _ => false,
+            };
+            if empty {
+                out.push(
+                    ValidationError::new(EMPTY_VALUES, *message)
+                        .at_node(&node.id)
+                        .at_path(format!("/params/{key}")),
+                );
+            }
         }
+    }
+    out
 }
 
 /// 条件で分ける（`control.branch`）の調べる値の見出し。
@@ -325,8 +296,8 @@ pub fn required_text_empty(ir: &WorkflowIr) -> Vec<ValidationError> {
                 out.push(blank(&node.id, format!("/params/{key}"), label, *fill));
             }
         }
-        for (_, key, label, fill, holds) in REQUIRED_VALUES.iter().filter(|(t, ..)| *t == nt) {
-            if is_unset(node.params.get(*key), *holds) {
+        for (_, key, label, fill) in REQUIRED_VALUES.iter().filter(|(t, ..)| *t == nt) {
+            if is_unset(node.params.get(*key)) {
                 out.push(blank(&node.id, format!("/params/{key}"), label, *fill));
             }
         }
@@ -654,8 +625,8 @@ mod tests {
     }
 
     /// BUG-151: 置いたばかりの業務データのブロック（テーブル・値・レコード・次の状態・行が空）は、保存の警告にとどめ、
-    /// 実行と自動実行のオンの前に止める。項目が無いのと、中身の無い項目のまとまり・リスト（「項目を並べる」で 0 行）
-    /// も空。選んだ値・参照・中身のある値は止めない。
+    /// 実行と自動実行のオンの前に止める。項目が無いのも空。中身の無い項目のまとまり・リスト（「項目を並べる」で 0 行）
+    /// は止めず、保存の注意（`ir.empty_values`）だけにする。選んだ値・参照・中身のある値は止めない。
     #[test]
     fn blank_data_block_fields_block_run_and_enable() {
         const T: &str = "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1";
@@ -684,13 +655,24 @@ mod tests {
                 (REQUIRED_TEXT_EMPTY, Some("query"), Some("/params/table")),
                 (REQUIRED_TEXT_EMPTY, Some("add"), Some("/params/table")),
                 (REQUIRED_TEXT_EMPTY, Some("add"), Some("/params/data")),
-                (REQUIRED_TEXT_EMPTY, Some("add_rows"), Some("/params/data")),
                 (REQUIRED_TEXT_EMPTY, Some("edit"), Some("/params/record")),
-                (REQUIRED_TEXT_EMPTY, Some("edit"), Some("/params/patch")),
                 (REQUIRED_TEXT_EMPTY, Some("del"), Some("/params/record")),
                 (REQUIRED_TEXT_EMPTY, Some("move"), Some("/params/to")),
-                (REQUIRED_TEXT_EMPTY, Some("bulk"), Some("/params/rows")),
             ]
+        );
+        // 中身の無い入れ物は、保存の注意だけ（止めない）。
+        let e = empty_values(&ir);
+        assert_eq!(
+            codes(&e),
+            vec![
+                (EMPTY_VALUES, Some("add_rows"), Some("/params/data")),
+                (EMPTY_VALUES, Some("edit"), Some("/params/patch")),
+                (EMPTY_VALUES, Some("bulk"), Some("/params/rows")),
+            ]
+        );
+        assert_eq!(
+            e[0].message,
+            "「レコードの値」に列がありません。このままでは、どの列にも値を入れずにレコードを追加します。"
         );
         assert_eq!(
             w[0].message,
@@ -729,9 +711,12 @@ mod tests {
                 (REQUIRED_TEXT_EMPTY, Some("read"), Some("/params/file")),
                 (REQUIRED_TEXT_EMPTY, Some("sum"), Some("/params/file")),
                 (REQUIRED_TEXT_EMPTY, Some("edit"), Some("/params/base_rev")),
-                (REQUIRED_TEXT_EMPTY, Some("edit"), Some("/params/ops")),
                 (REQUIRED_TEXT_EMPTY, Some("skill"), Some("/params/skill")),
             ]
+        );
+        assert_eq!(
+            codes(&empty_values(&ir)),
+            vec![(EMPTY_VALUES, Some("edit"), Some("/params/ops"))]
         );
         assert_eq!(
             w[0].message,
@@ -739,6 +724,31 @@ mod tests {
         );
         assert_eq!(run_blockers(&ir).len(), w.len());
         assert_eq!(enable_blockers(&ir).len(), w.len());
+    }
+
+    /// 中身の無い入れ物（`data: {}`・`patch: {}`・`rows: []`・`ops: []`）は、実行も自動実行のオンも止めない。
+    /// 状態の進め方のあるテーブルに最初の状態だけのレコードを作る `data: {}` は正しい使い方で、前から保存されている
+    /// 定義（子の実行・ミニアプリが固定した版も同じ起動の道を通る）を止めない。
+    #[test]
+    fn empty_containers_do_not_block_run_or_enable() {
+        const T: &str = "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1";
+        let r = json!({ "$from": "input", "path": "/id" });
+        let ir = ir(
+            json!([{ "kind": "interactive" }, { "kind": "schedule", "cron": "0 9 * * 1", "tz": "Asia/Tokyo" }]),
+            json!([
+                { "id": "add", "type": "data.record.create", "params": { "table": T, "data": {} } },
+                { "id": "edit", "type": "data.record.update", "params": { "table": T, "record": r, "patch": {} } },
+                { "id": "bulk", "type": "data.bulk_upsert", "params": { "table": T, "rows": [] } },
+                { "id": "csv", "type": "csv.patch", "params": { "file": T, "base_rev": 1, "ops": [] } }
+            ]),
+        );
+        assert!(run_blockers(&ir).is_empty(), "{:?}", run_blockers(&ir));
+        assert!(
+            enable_blockers(&ir).is_empty(),
+            "{:?}",
+            enable_blockers(&ir)
+        );
+        assert_eq!(empty_values(&ir).len(), 4);
     }
 
     /// D-85: 中にブロックの無い繰り返しは、保存の警告にとどめ、実行と自動実行のオンの前に止める（置いた直後の

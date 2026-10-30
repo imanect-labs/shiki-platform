@@ -17,8 +17,8 @@ mod ports;
 pub use ports::{node_ports, output_ports};
 mod readiness;
 pub use readiness::{
-    empty_regions, enable_blockers, required_text_empty, run_blockers, EMPTY_REGION,
-    LIST_FOLDER_REQUIRED, REQUIRED_TEXT_EMPTY, WRITE_FOLDER_REQUIRED,
+    empty_regions, empty_values, enable_blockers, required_text_empty, run_blockers, EMPTY_REGION,
+    EMPTY_VALUES, LIST_FOLDER_REQUIRED, REQUIRED_TEXT_EMPTY, WRITE_FOLDER_REQUIRED,
 };
 mod refs;
 pub(crate) use refs::parse_skill_ref;
@@ -161,14 +161,15 @@ pub struct Catalog {
 /// 版が固定されていないもの（[`DECIDE_LOW_CONFIDENCE`]・[`DECIDE_MANY_PORTS`]・[`DECIDE_UNPINNED_MODEL`]・
 /// FEAT-1）と、線が 1 本も無いブロック（[`UNCONNECTED_NODE`]・実行の始めに動く・BUG-106）と、必須の文字の欄が空のもの
 /// （[`REQUIRED_TEXT_EMPTY`]・有効化と実行の前には止める・D-43）と、中にブロックの無い繰り返し（[`EMPTY_REGION`]・
-/// 有効化と実行の前には止める・D-85）。出しうるコードは [`SAVE_WARNING_CODES`] に
-/// 載せる（web はその表から生成した定数で受ける・BUG-48）。
+/// 有効化と実行の前には止める・D-85）と、値を書く欄の中身の無い入れ物（[`EMPTY_VALUES`]・何も止めない）。
+/// 出しうるコードは [`SAVE_WARNING_CODES`] に載せる（web はその表から生成した定数で受ける・BUG-48）。
 #[must_use]
 pub fn save_warnings(ir: &WorkflowIr, catalog: &Catalog) -> Vec<ValidationError> {
     let mut out = semantics_warnings(ir);
     out.extend(template::warnings(ir));
     out.extend(readiness::required_text_empty(ir));
     out.extend(readiness::empty_regions(ir));
+    out.extend(readiness::empty_values(ir));
     out.extend(v3_vocab::event_warnings(ir));
     out.extend(approval::warnings(ir));
     out.extend(reply::warnings(ir));
