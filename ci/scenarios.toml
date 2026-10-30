@@ -249,4 +249,4 @@ e2e = ["admin-data.spec.ts", "custom-instructions.spec.ts", "sidebar-mobile.spec
 [scenario.reference]
 pages = ["web/src/app/reference/**"]
 crates = []
-e2e = ["tool-activity-gallery.spec.ts", "yui-gallery-mobile.spec.ts"]
+e2e = ["tool-activity-gallery.spec.ts", "yui-gallery-mobile.spec.ts", "yui-map.spec.ts"]
