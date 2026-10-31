@@ -831,8 +831,8 @@ async fn storage_read_refuses_files_that_are_not_text() {
         ("latin1.txt", b"caf\xe9\n", "text/plain"),
         // NUL を含む中身は文章にしない。
         ("data.log", b"abc\x00def", "application/octet-stream"),
-        // Shift_JIS として読めても、制御文字を含む中身は文章にしない。
-        ("bin.txt", b"\x8c\x6f\x94\xef\x01\x02\x03", "text/plain"),
+        // Shift_JIS として読めても、NUL を含む中身は文章にしない（NUL のない制御文字は UTF-8 と同じく文章として読む）。
+        ("bin.txt", b"\x8c\x6f\x94\xef\x00\x01\x02", "text/plain"),
     ];
     let mut outcomes = Vec::new();
     let mut written = Vec::new();
