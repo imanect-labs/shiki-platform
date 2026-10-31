@@ -244,3 +244,53 @@ test("置いたばかりの「データを追加」は、テーブルも値も�
   expect(await sheet.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
   if (SHOTS) await phone.screenshot({ path: `${SHOTS}/blank-record-create-phone.png` });
 });
+
+test("「レコードの値」に列が無い「データを追加」は、注意だけ出して実行できる（中身の無いまとまりは止めない）", async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await loginViaKeycloak(page);
+  const ledger = await createTable(page, "e2e-値の無い追加", [{ key: "title", display_name: "件名" }]);
+  const name = uniqueName("wf-empty-values");
+  const created = await page.request.post("/api/workflows", {
+    headers: await csrfHeaders(page),
+    data: {
+      ir: {
+        ir_version: 1,
+        name,
+        display_name: name,
+        triggers: [{ kind: "interactive" }],
+        nodes: [{ id: "add", type: "data.record.create", label: "起票する", params: { table: ledger.id, data: {} } }],
+        edges: [],
+      },
+    },
+  });
+  expect(created.ok(), await created.text()).toBeTruthy();
+  const id = ((await created.json()) as { id: string }).id;
+  cleanup.add(() => removeWorkflowApi(page, id));
+  // 保存の注意（ir.empty_values）は返るが、実行を止める理由（required_text_empty）にはしない。
+  const saved = (await created.json()) as { warnings?: { code: string; path?: string }[] };
+  expect((saved.warnings ?? []).map((w) => `${w.code}${w.path ?? ""}`)).toContain("ir.empty_values/params/data");
+
+  await page.goto(`/workflows/${id}`);
+  const panel = page.getByRole("complementary", { name: "ブロックの設定" });
+  await page.getByTestId("rf__node-add").click({ position: { x: 60, y: 24 } });
+  await expect(panel.getByTestId("node-warnings")).toContainText(
+    "「レコードの値」に列がありません。このままでは、どの列にも値を入れずにレコードを追加します。",
+    { timeout: 30_000 },
+  );
+  await expect(panel.getByText("入力してください", { exact: true })).toHaveCount(0);
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/empty-values-pc.png` });
+
+  // 実行すると、値の無いレコードが 1 件できる（以前の直しでは「レコードの値」が空として止まった）。
+  const started = await page.request.post(`/api/workflows/${id}/runs`, { headers: await csrfHeaders(page), data: { input: {} } });
+  expect(started.status(), await started.text()).toBe(202);
+  const runId = ((await started.json()) as { run_id: string }).run_id;
+  await expect
+    .poll(
+      async () => ((await (await page.request.get(`/api/workflows/${id}/runs/${runId}`)).json()) as { status: string }).status,
+      { timeout: 90_000 },
+    )
+    .toBe("succeeded");
+  const records = await page.request.get(`/api/data/tables/${ledger.id}/records`);
+  expect(((await records.json()) as { items: unknown[] }).items).toHaveLength(1);
+});
