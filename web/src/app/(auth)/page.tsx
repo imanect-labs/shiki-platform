@@ -284,7 +284,8 @@ function timeGreeting(now: Date): string {
 
 /// あいさつの上に添える今日の 1 行（日付・七十二候・「〜の日」）。
 /// 日付はサーバと端末でずれるので、文字は端末で描いてから出す（hydration の食い違いを作らない）。
-/// 描くまでも高さは取っておく（あいさつが後から下へずれない）。
+/// 描くまでも 1 行分の高さは取っておく（あいさつが後から下へずれない）。折り返したら伸びる。
+/// 開いたまま日付をまたいでも、午前 0 時とタブに戻ったときに描き直す。
 function TodayLine() {
   const [label, setLabel] = React.useState<{
     date: string;
@@ -293,13 +294,29 @@ function TodayLine() {
     day: string | null;
   } | null>(null);
   React.useEffect(() => {
-    const now = new Date();
-    const kou = microSeasonOf(now);
-    setLabel({ date: dateLabel(now), kou: kou.name, term: kou.term, day: notableDayOf(now) });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const render = () => {
+      const now = new Date();
+      const kou = microSeasonOf(now);
+      setLabel({ date: dateLabel(now), kou: kou.name, term: kou.term, day: notableDayOf(now) });
+      // 次の午前 0 時に描き直す（数秒遅らせて日付の境目をまたいでから描く）。
+      const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 5);
+      clearTimeout(timer);
+      timer = setTimeout(render, next.getTime() - now.getTime());
+    };
+    const onVisible = () => {
+      if (document.visibilityState === "visible") render();
+    };
+    render();
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, []);
 
   return (
-    <p className="mb-2 h-5 text-sm text-muted-foreground" data-testid="home-today-line">
+    <p className="mb-2 min-h-5 text-sm text-muted-foreground" data-testid="home-today-line">
       {label ? (
         <>
           <span className="tabular-nums">{label.date}</span>
