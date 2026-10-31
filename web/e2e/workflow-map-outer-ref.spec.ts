@@ -221,7 +221,9 @@ test("置いたばかりの「データを追加」は、テーブルも値も�
   expect(await savedParams(page, id, "create_1")).toEqual({ table: "", data: "" });
   // 空の欄は、その欄の下で入力を促す（保存の誤りにはしない）。
   await expect(panel.getByText(/項目 'data' がありません|項目 'table' がありません/)).toHaveCount(0);
-  await expect(panel.getByText("入力してください")).toHaveCount(2);
+  // 選ぶ欄（対象のテーブル）は「選んでください」、打つ欄（レコードの値）は「入力してください」。
+  await expect(panel.getByText("選んでください", { exact: true })).toHaveCount(1);
+  await expect(panel.getByText("入力してください", { exact: true })).toHaveCount(1);
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/blank-record-create-pc.png` });
 
   // 実行は、空の欄を名指しして止まる（run は作らない）。

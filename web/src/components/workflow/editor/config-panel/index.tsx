@@ -18,13 +18,13 @@ import { useMediaQuery } from "@/hooks/use-media-query";
 import { WARNING_CODES } from "@/lib/workflow-api";
 import { inputFieldsOf } from "@/lib/workflow-input-schema";
 import type { Node as IrNode, Trigger } from "@/generated/workflow-ir";
-import { NODE_CATALOG } from "@/generated/workflow-catalog";
+import { NODE_CATALOG, REQUIRED_PICK_FIELDS } from "@/generated/workflow-catalog";
 import type { EditorContext } from "../workflow-editor";
 import { nodeIcon } from "../icons";
 import { defaultParams } from "../ir-state";
 import { edgePortsOf } from "../ports";
 import { mapErrors, nodeErrorView, paramField } from "../validation";
-import { BLANK_REQUIRED_MESSAGE, CommonSection } from "./common";
+import { BLANK_PICK_MESSAGE, BLANK_REQUIRED_MESSAGE, CommonSection } from "./common";
 import { HumanApprovalForm } from "./forms-approval";
 import { WorkflowReplyForm } from "./forms-reply";
 import { AgentInvokeForm } from "./forms-agent";
@@ -251,7 +251,11 @@ function NodePanel({ ctx, node, sheet }: { ctx: EditorContext; node: IrNode; she
   );
   const fieldErrors = React.useMemo(() => {
     const map = new Map(errorView.fields);
-    for (const key of [...blankRequired(node), ...blankFields]) if (!map.has(key)) map.set(key, BLANK_REQUIRED_MESSAGE);
+    // 選ぶ欄は「選んでください」、打つ欄は「入力してください」（どちらの欄かは Rust の表から生成した一覧）。
+    const picks = REQUIRED_PICK_FIELDS[node.type] ?? [];
+    for (const key of [...blankRequired(node), ...blankFields]) {
+      if (!map.has(key)) map.set(key, picks.includes(key) ? BLANK_PICK_MESSAGE : BLANK_REQUIRED_MESSAGE);
+    }
     return map;
   }, [errorView, node, blankFields]);
   // 欄に写す警告（書いた思考の深さが組織の設定に従うので使われない・D-75 など）は、その欄の下に出す。

@@ -423,8 +423,9 @@ test("CSV を集計: ドライブから CSV を選び、SQL を書いて保存�
   const panel = page.getByRole("complementary", { name: "ブロックの設定" });
   await expect(panel.getByLabel("SQL")).toHaveValue("SELECT * FROM data LIMIT 100");
   await expect(panel.getByText("このブロックに設定はありません")).toHaveCount(0);
-  // ファイルが未選択の誤り（サーバは「項目 'file' がありません」）は、上の帯ではなくファイルの欄の下に出る。
-  await expect(panel.getByText("入力してください")).toBeVisible({ timeout: 10_000 });
+  // ファイルが未選択の誤り（サーバは「項目 'file' がありません」）は、上の帯ではなくファイルの欄の下に出る（選ぶ欄なので
+  // 「選んでください」）。
+  await expect(panel.getByText("選んでください", { exact: true })).toBeVisible({ timeout: 10_000 });
   await expect(panel.getByText(/項目 'file'/)).toHaveCount(0);
 
   // ドライブから CSV を選ぶと、ファイル名と列の案内が出る（誤りも消える）。
@@ -436,7 +437,8 @@ test("CSV を集計: ドライブから CSV を選び、SQL を書いて保存�
   const columns = panel.getByTestId("csv-columns");
   await expect(columns).toContainText("item", { timeout: 20_000 });
   await expect(columns).toContainText("amount");
-  await expect(panel.getByText("入力してください")).toHaveCount(0, { timeout: 10_000 });
+  await expect(panel.getByText("選んでください", { exact: true })).toHaveCount(0, { timeout: 10_000 });
+  await expect(panel.getByText("入力してください")).toHaveCount(0);
 
   // SQL を書いて試しに実行すると、本人の権限で上位の行が見える。
   const sql = "SELECT item, SUM(amount) AS total FROM data GROUP BY item ORDER BY item";

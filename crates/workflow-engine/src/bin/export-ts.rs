@@ -29,7 +29,7 @@ use workflow_engine::ir::params::{
 use workflow_engine::ir::trigger::{
     Catchup, EventTrigger, InteractiveTrigger, ScheduleTrigger, Trigger, TriggerKind,
 };
-use workflow_engine::ir::validate::{ValidationError, SAVE_WARNING_CODES};
+use workflow_engine::ir::validate::{required_pick_fields, ValidationError, SAVE_WARNING_CODES};
 use workflow_engine::ir::{Policies, TriggerOverflow, WorkflowIr};
 use workflow_engine::vocab::{
     agent_tool_catalog, event_catalog, node_catalog, AgentTool, AgentToolCatalogEntry,
@@ -55,6 +55,31 @@ fn warning_codes_ts() -> String {
          export const WARNING_CODES = {{\n{}\n}} as const;\n\n\
          /// 保存を止めない警告のコードの型。\n\
          export type WarningCode = (typeof WARNING_CODES)[keyof typeof WARNING_CODES];\n",
+        rows.join("\n")
+    )
+}
+
+/// 必須の欄のうち選ぶ欄（ノード種 → params の項目・Rust の表から引く）。エディタは空の欄の下の促しを
+/// 「選んでください」と「入力してください」に分ける。
+fn required_picks_ts() -> String {
+    let mut by_type: std::collections::BTreeMap<&str, Vec<&str>> =
+        std::collections::BTreeMap::new();
+    for (node_type, key) in required_pick_fields() {
+        by_type.entry(node_type).or_default().push(key);
+    }
+    let rows: Vec<String> = by_type
+        .iter()
+        .map(|(t, keys)| {
+            format!(
+                "  {}: {},",
+                serde_json::to_string(t).expect("ノード種の直列化"),
+                serde_json::to_string(keys).expect("項目の直列化")
+            )
+        })
+        .collect();
+    format!(
+        "\n/// 必須の欄のうち、選ぶ欄（ノード種 → params の項目・Rust の readiness の表から生成）。\n\
+         export const REQUIRED_PICK_FIELDS: Readonly<Record<string, readonly string[]>> = {{\n{}\n}};\n",
         rows.join("\n")
     )
 }
@@ -233,6 +258,7 @@ fn main() {
             .join("\n"),
         params_map.join("\n"),
     ) + warning_codes_ts().as_str()
+        + required_picks_ts().as_str()
         + limits_ts().as_str();
     std::fs::write(&catalog_path, catalog_contents).expect("カタログ TS 書き出し");
     println!(

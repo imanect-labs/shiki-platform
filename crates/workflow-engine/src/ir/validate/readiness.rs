@@ -148,6 +148,24 @@ const REQUIRED_VALUES: &[(NodeType, &str, &str, Fill)] = &[
     (NodeType::DataBulkUpsert, "rows", "登録する行", Fill::Text),
 ];
 
+/// 必須の欄のうち、選ぶ欄（一覧や入力・結果から選ぶ）の（ノード種の名前, params の項目）。エディタは、空の欄の下の
+/// 促しを、この表で「選んでください」と「入力してください」に分ける（web へは `export-workflow-ts` が書き出す・
+/// 手書きの対応物を持たない）。
+#[must_use]
+pub fn required_pick_fields() -> Vec<(&'static str, &'static str)> {
+    REQUIRED_FIELDS
+        .iter()
+        .map(|(t, key, _, fill)| (*t, *key, *fill))
+        .chain(
+            REQUIRED_VALUES
+                .iter()
+                .map(|(t, key, _, fill)| (*t, *key, *fill)),
+        )
+        .filter(|(.., fill)| *fill == Fill::Pick)
+        .map(|(t, key, _)| (t.as_str(), key))
+        .collect()
+}
+
 /// 必須の値の欄が空か（項目なし・[`is_blank`]）。
 fn is_unset(v: Option<&Value>) -> bool {
     v.is_none_or(is_blank)
@@ -724,6 +742,28 @@ mod tests {
         );
         assert_eq!(run_blockers(&ir).len(), w.len());
         assert_eq!(enable_blockers(&ir).len(), w.len());
+    }
+
+    /// 選ぶ欄の表は、止める文言の「選ぶまで」と同じ欄を挙げる（エディタの欄の下の促しの出し分けに使う）。
+    #[test]
+    fn pick_fields_list_the_fields_blocked_until_picked() {
+        let picks = required_pick_fields();
+        for want in [
+            ("data.record.create", "table"),
+            ("data.transition", "to"),
+            ("storage.read", "file"),
+            ("skill.invoke", "skill"),
+            ("workflow.start", "name"),
+        ] {
+            assert!(picks.contains(&want), "{want:?}");
+        }
+        for text in [
+            ("storage.write", "name"),
+            ("data.record.create", "data"),
+            ("llm.invoke", "prompt"),
+        ] {
+            assert!(!picks.contains(&text), "{text:?}");
+        }
     }
 
     /// 中身の無い入れ物（`data: {}`・`patch: {}`・`rows: []`・`ops: []`）は、実行も自動実行のオンも止めない。

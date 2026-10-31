@@ -32,6 +32,9 @@ const FieldContext = React.createContext<FieldIds | undefined>(undefined);
 /// 必須の欄が空のとき、欄の下に出す文（置いたままの空欄と、保存時の注意 `REQUIRED_TEXT_EMPTY` の欄・index.tsx）。
 /// フォームはこの文かどうかで、空欄の知らせと読み取りの誤りを見分ける。
 export const BLANK_REQUIRED_MESSAGE = "入力してください";
+/// 選ぶ欄（テーブル・次の状態・ファイル・スキルなど）が空のとき、欄の下に出す文（欄の操作に動詞を合わせる・付録 C の
+/// P2・P4）。どの欄が選ぶ欄かは Rust の表から生成した `REQUIRED_PICK_FIELDS` で決める（index.tsx）。
+export const BLANK_PICK_MESSAGE = "選んでください";
 
 export function Field({
   label,
