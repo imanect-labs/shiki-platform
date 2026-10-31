@@ -148,7 +148,7 @@ export function TableWorkspace({
   // 読めない列（古いサーバは名前を返す。新しいサーバは読めない列をスキーマから外して返し、ここは空・2-B-P2-1）。
   const masked = React.useMemo(() => new Set(viewer.masked_fields ?? []), [viewer]);
   const gridRef = React.useRef<DataGridHandle>(null);
-  const fsm = useFsm(table);
+  const fsm = useFsm(table, viewer);
   // 閲覧者が読める列（サーバの文言の参照名を表示名に直す）。
   const readableFields = React.useMemo(() => table.schema.fields.filter((f) => !masked.has(f.key)), [table, masked]);
 
