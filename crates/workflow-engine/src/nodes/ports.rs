@@ -81,7 +81,8 @@ pub struct StorageWriteReq {
     pub content_type: String,
     /// 保存先に同じ名前のファイルがあるとき（BUG-97・D-112）。番号はチョークポイント（StorageService）が付け、
     /// 実際に保存した名前を結果の `name` で返す。番号を付けても冪等キーと op_digest は頼まれた書込 1 つのもので、
-    /// 試し直しは前に付けた名前の結果を返す。上限まで埋まっていれば [`NAME_TAKEN`] で失敗する。
+    /// 試し直しは前に付けた名前の結果を返す。上限まで埋まっていれば [`NAME_TAKEN`] で失敗する（文は
+    /// [`name_taken_error`]）。
     pub on_name_taken: crate::ir::params::NameTakenPolicy,
     pub idempotency_key: String,
     pub op_digest: String,
@@ -314,10 +315,30 @@ pub fn hidden_not_found(target: &str) -> String {
 
 /// storage.write・csv.write の保存先に同じ名前のファイルがあるときの code（BUG-97・permanent）。
 ///
-/// ポート実装は名前の衝突をこの code で返す（ほかの競合と分ける）。storage.write は番号を付ける扱いでも
-/// 上限まで埋まっていればこれを返す（番号はポートの先が付ける・D-112）。csv.write は、エンジンがこれを見て
-/// params の `on_name_taken` が番号を付ける扱いなら次の名前で試す（[`CsvWriteReq`] は扱いを運ばない）。
+/// ポート実装は名前の衝突をこの code で返す（ほかの競合と分ける）。番号はポートの先（StorageService）が付け
+/// （D-112・D-124）、番号を付ける扱いでも上限まで埋まっていればこれを返す。そのときの文は、最後に試した名前を
+/// 言う [`name_taken_error`] にする（番号の規則はポートの先にしか無いので、エンジンは名前を作れない）。
 pub const NAME_TAKEN: &str = "name_taken";
+
+/// 保存先に同じ名前のファイルがあって保存できなかったときの誤り（[`NAME_TAKEN`]・permanent・BUG-97）。
+///
+/// `name` は頼まれた名前（番号を付ける前。csv.write は `.csv` を付けた名前）。`last_numbered` は番号を付ける扱いで
+/// 最後に試した名前（「名前 (50).md」）で、`None` は番号を付けない扱い。番号の規則は StorageService の 1 か所に
+/// あるので（D-112・D-124）、番号を付ける扱いの文はポートの実装がその規則で名前を求めて組む。
+#[must_use]
+pub fn name_taken_error(name: &str, last_numbered: Option<&str>) -> PortError {
+    let message = match last_numbered {
+        None => format!(
+            "保存先に同じ名前のファイル「{name}」がすでにあります。\
+             「同じ名前があるとき」を 番号を付けて保存 にするか、ファイル名に日付などを差し込んでください。"
+        ),
+        Some(last) => format!(
+            "保存先に「{name}」と、番号を付けた「{last}」までのファイルがすでにあります。\
+             ファイル名に日付などを差し込んでください。"
+        ),
+    };
+    PortError::new(NAME_TAKEN, message, false)
+}
 
 /// 能力ノードが叩く既存チョークポイントの単一ポート（server 側で具象注入）。
 ///
@@ -636,6 +657,11 @@ pub struct CsvPatchReq {
 #[derive(Debug, Clone)]
 pub struct CsvWriteReq {
     pub parent_id: Option<Uuid>,
+    /// 頼まれた名前（`.csv` を付けた名前・番号を付ける前の名前）。
     pub name: String,
     pub csv_bytes: Vec<u8>,
+    /// 保存先に同じ名前のファイルがあるとき（BUG-97・D-124・[`StorageWriteReq::on_name_taken`] と同じ）。番号は
+    /// チョークポイント（StorageService）が書込の 1 つの TX の中で付け、実際に保存した名前を結果の `name` で返す。
+    /// 上限まで埋まっていれば [`NAME_TAKEN`] で失敗する（文は [`name_taken_error`]）。
+    pub on_name_taken: crate::ir::params::NameTakenPolicy,
 }

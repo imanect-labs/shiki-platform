@@ -20,7 +20,7 @@ use storage::model::ChildSort;
 use super::auth::auth_ctx;
 use storage::StorageService;
 use uuid::Uuid;
-use workflow_engine::nodes::ports::NAME_TAKEN;
+use workflow_engine::nodes::ports::{name_taken_error, NAME_TAKEN};
 use workflow_engine::{
     CsvPatchReq, CsvWriteReq, DataWriteReq, ExecCtx, HttpSendReq, HttpSendResp, LlmDecideReq,
     LlmInvokeReq, NodePorts, PortError, ResolvedSecretView, ResolvedSkillView, StorageWriteReq,
@@ -76,7 +76,8 @@ pub(super) fn map_storage(e: storage::StorageError) -> PortError {
     match e {
         S::Forbidden => PortError::forbidden("storage 権限なし"),
         S::NotFound => PortError::new("not_found", "対象が見つかりません", false),
-        // 保存先の同じフォルダに同じ名前のファイルがある（番号を付ける扱いなら上限まで埋まっている・BUG-97）。
+        // 保存先の同じフォルダに同じ名前のファイルがある（BUG-97）。新しく保存する書込（storage.write・csv.write）は
+        // 扱いに合わせて [`name_taken`] で言う。
         S::Conflict => PortError::new(NAME_TAKEN, "同じ名前のファイルがすでにあります", false),
         S::IdempotencyConflict => PortError::new(
             "effect_conflict",
@@ -94,6 +95,23 @@ fn on_name_taken(p: workflow_engine::ir::params::NameTakenPolicy) -> storage::On
     match p {
         P::Fail => storage::OnNameTaken::Fail,
         P::AddNumber => storage::OnNameTaken::AddNumber,
+    }
+}
+
+/// 名前の衝突（[`storage::StorageError::Conflict`]）を、頼まれた名前と扱いで言う（BUG-97・D-112・D-124）。
+///
+/// 番号を付ける扱いで上限まで埋まっていたときは、最後に試した名前（「名前 (50).csv」）を言う。番号の規則は
+/// StorageService の 1 か所（`storage::numbered_name`）にあるので、その規則で名前を求める（エンジンは写しを
+/// 持たない）。番号を付けない扱いの文は、呼び出した側（ブロック・script）が言い直す。
+fn name_taken(name: &str, policy: storage::OnNameTaken) -> PortError {
+    match policy {
+        storage::OnNameTaken::Fail => {
+            PortError::new(NAME_TAKEN, "同じ名前のファイルがすでにあります", false)
+        }
+        storage::OnNameTaken::AddNumber => name_taken_error(
+            name,
+            Some(&storage::numbered_name(name, storage::MAX_NUMBERED_NAME)),
+        ),
     }
 }
 
@@ -128,6 +146,8 @@ fn map_tabular(e: tabular::TabularError) -> PortError {
 impl NodePorts for ProdNodePorts {
     async fn storage_write(&self, ec: &ExecCtx, req: StorageWriteReq) -> Result<Value, PortError> {
         let ctx = auth_ctx(ec);
+        // 番号を付けるのはチョークポイントの 1 か所（D-112）。
+        let policy = on_name_taken(req.on_name_taken);
         self.storage
             .write_file_internal_idempotent(
                 &ctx,
@@ -135,14 +155,16 @@ impl NodePorts for ProdNodePorts {
                 &req.name,
                 &req.bytes,
                 &req.content_type,
-                // 番号を付けるのはチョークポイントの 1 か所（D-112）。
-                on_name_taken(req.on_name_taken),
+                policy,
                 &req.idempotency_key,
                 &req.op_digest,
                 ec.trace_id.as_deref(),
             )
             .await
-            .map_err(map_storage)
+            .map_err(|e| match e {
+                storage::StorageError::Conflict => name_taken(&req.name, policy),
+                other => map_storage(other),
+            })
     }
 
     async fn storage_read(&self, ec: &ExecCtx, file_id: Uuid) -> Result<Value, PortError> {
@@ -483,18 +505,24 @@ impl NodePorts for ProdNodePorts {
             .tabular
             .as_ref()
             .ok_or_else(|| PortError::forbidden("tabular が未構成です"))?;
+        // 番号は StorageService が書込の 1 つの TX の中で付ける（ファイルを保存・ドライブの新規作成と同じ規則・D-124）。
+        let policy = on_name_taken(req.on_name_taken);
         let saved = tabular
             .save_new(
                 &ctx,
                 req.parent_id,
                 &req.name,
                 &req.csv_bytes,
-                // 番号を付ける扱いはエンジンが名前を変えて試す（CsvWriteReq は扱いを運ばない）。
-                storage::OnNameTaken::Fail,
+                policy,
                 ec.trace_id.as_deref(),
             )
             .await
-            .map_err(map_tabular)?;
+            .map_err(|e| match e {
+                tabular::TabularError::Storage(storage::StorageError::Conflict) => {
+                    name_taken(&req.name, policy)
+                }
+                other => map_tabular(other),
+            })?;
         Ok(json!({
             "node_id": saved.node_id.to_string(),
             "version": saved.version,
@@ -612,33 +640,36 @@ mod tests {
         }
     }
 
-    /// 番号の規則の写し（エンジンの csv.write と誤りの文言）が、正本の storage と同じ名前を作る（D-112）。
-    /// 扱いの写像も、値の名前（`fail`・`add_number`）をそろえる。
+    /// 「同じ名前があるとき」の値の名前（`fail`・`add_number`）は、StorageService の扱いと同じ（D-112）。
     #[test]
-    fn engine_numbering_copy_matches_the_storage_rule() {
-        use workflow_engine::ir::params::{self as wp, NameTakenPolicy};
-        assert_eq!(wp::MAX_NUMBERED_NAME, storage::MAX_NUMBERED_NAME);
-        for name in [
-            "週報.md",
-            "集計.csv",
-            "無題のノート",
-            "a.tar.gz",
-            ".env",
-            "a.",
-        ] {
-            for attempt in 0..=storage::MAX_NUMBERED_NAME + 1 {
-                assert_eq!(
-                    wp::numbered_name(name, attempt),
-                    storage::numbered_name(name, attempt),
-                    "{name} の {attempt} 回目"
-                );
-            }
-        }
+    fn name_taken_policies_keep_their_value_names() {
+        use workflow_engine::ir::params::NameTakenPolicy;
         for p in [NameTakenPolicy::Fail, NameTakenPolicy::AddNumber] {
             assert_eq!(
                 serde_json::to_value(p).unwrap(),
                 serde_json::to_value(on_name_taken(p)).unwrap()
             );
         }
+    }
+
+    /// 名前の衝突は name_taken（やり直さない）。番号を付ける扱いで上限まで埋まっていたら、StorageService の規則で
+    /// 求めた最後の名前（「集計 (50).csv」）を言う（エンジンは番号を付けた名前を作らない・D-124）。
+    #[test]
+    fn name_taken_names_the_last_numbered_name_by_the_storage_rule() {
+        let plain = name_taken("集計.csv", storage::OnNameTaken::Fail);
+        assert_eq!(plain.code, NAME_TAKEN);
+        assert!(!plain.retryable);
+        let full = name_taken("集計.csv", storage::OnNameTaken::AddNumber);
+        assert_eq!(full.code, NAME_TAKEN);
+        assert!(!full.retryable);
+        assert_eq!(
+            full.message,
+            "保存先に「集計.csv」と、番号を付けた「集計 (50).csv」までのファイルがすでにあります。\
+             ファイル名に日付などを差し込んでください。"
+        );
+        assert!(full.message.contains(&storage::numbered_name(
+            "集計.csv",
+            storage::MAX_NUMBERED_NAME
+        )));
     }
 }

@@ -21,8 +21,8 @@ use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
 use workflow_engine::ir::params::NameTakenPolicy;
 use workflow_engine::nodes::ports::{
-    AgentInvokeReq, CsvPatchReq, CsvWriteReq, ExecCtx, HttpSendReq, HttpSendResp, LlmInvokeReq,
-    NodePorts, PortError, ResolvedSecretView, StorageWriteReq,
+    name_taken_error, AgentInvokeReq, CsvPatchReq, CsvWriteReq, ExecCtx, HttpSendReq, HttpSendResp,
+    LlmInvokeReq, NodePorts, PortError, ResolvedSecretView, StorageWriteReq,
 };
 use workflow_engine::{
     CapabilityAudit, CapabilityNodeExecutor, EffectJournal, NodeContext, NodeExecutor,
@@ -66,6 +66,8 @@ struct FakePorts {
     taken_names: Mutex<Vec<String>>,
     /// 番号を付ける扱いで、ポートの先（StorageService）が付けた名前。`None` は上限まで埋まっている（D-112）。
     numbered_as: Mutex<Option<String>>,
+    /// 上限まで埋まっていたときに、ポートの先が最後に試した名前（文はポートが組む・D-124）。
+    last_tried_as: Mutex<Option<String>>,
     /// storage.write に渡った要求の並び。
     write_tries: Mutex<Vec<WriteTry>>,
 }
@@ -98,6 +100,10 @@ impl NodePorts for FakePorts {
             // 番号はポートの先が付ける（ここでは付けた名前を仕込んでおく・規則を写さない）。
             match (req.on_name_taken, self.numbered_as.lock().unwrap().clone()) {
                 (NameTakenPolicy::AddNumber, Some(n)) => saved = n,
+                (NameTakenPolicy::AddNumber, None) => {
+                    let last = self.last_tried_as.lock().unwrap().clone().unwrap();
+                    return Err(name_taken_error(&req.name, Some(&last)));
+                }
                 _ => {
                     return Err(PortError::new(
                         workflow_engine::nodes::ports::NAME_TAKEN,
@@ -1166,8 +1172,10 @@ async fn storage_write_handles_taken_names_by_policy() {
     let (_, _, meta) = audit.records.lock().unwrap().last().cloned().unwrap();
     assert_eq!(meta["name"], "週報 (3).md");
 
-    // 番号を付けた名前が上限まで埋まっていれば、上限の名前を言って失敗にする。
+    // 番号を付けた名前が上限まで埋まっていれば、ポートが最後に試した名前で組んだ文のまま失敗にする（エンジンは
+    // 番号を付けた名前を作らない・D-124）。
     *ports.numbered_as.lock().unwrap() = None;
+    *ports.last_tried_as.lock().unwrap() = Some("a (50).txt".into());
     let res = exec
         .execute(
             "storage.write",

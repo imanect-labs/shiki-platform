@@ -26,7 +26,8 @@ pub enum NameTakenPolicy {
     /// 保存せずに失敗にする（`name_taken`・既存のファイルは変えない）。
     #[default]
     Fail,
-    /// 名前に ` (2)` ` (3)` … を付けて、空いている名前で保存する（上限 [`MAX_NUMBERED_NAME`]）。
+    /// 名前に ` (2)` ` (3)` … を付けて、空いている名前で保存する（` (50)` まで）。番号は StorageService が付け
+    /// （D-112・D-124）、規則は `storage::numbered_name` の 1 か所にある（エンジンは写しを持たない）。
     AddNumber,
 }
 
@@ -46,25 +47,6 @@ pub enum CsvEncoding {
     Utf8,
     /// Shift_JIS（CP932）。Shift_JIS だけを読む古い仕組みへ渡す CSV など。Shift_JIS に無い文字は書けない。
     ShiftJis,
-}
-
-/// 番号を付けて試す上限（` (2)` 〜 ` (50)`）。正本は `storage::MAX_NUMBERED_NAME`（同じ数の写し）。
-pub const MAX_NUMBERED_NAME: u32 = 50;
-
-/// `attempt` 回目に試す名前（1 回目は元の名前・2 回目からは拡張子の前に ` (n)`）。
-///
-/// 正本は `storage::numbered_name`（番号は StorageService が付ける・D-112）。ここは、ポートの要求が扱いを運ばない
-/// `csv.write` の試し直しと、上限まで埋まったときの誤りの文言（「名前 (50).md」）のための写し。workflow-engine は
-/// storage に依存しない（`nodes::ports`）ので写しを持ち、api のテストで両者が同じ名前を作ることを照らす。
-#[must_use]
-pub fn numbered_name(file_name: &str, attempt: u32) -> String {
-    if attempt <= 1 {
-        return file_name.to_string();
-    }
-    match file_name.rsplit_once('.') {
-        Some((stem, ext)) => format!("{stem} ({attempt}).{ext}"),
-        None => format!("{file_name} ({attempt})"),
-    }
 }
 
 /// ファイルの種類を決めない保存で、ファイル名の拡張子から決める種類（D-97）。

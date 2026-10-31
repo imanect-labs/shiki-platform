@@ -20,9 +20,10 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
+use workflow_engine::ir::params::NameTakenPolicy;
 use workflow_engine::nodes::ports::{
-    AgentInvokeReq, CsvPatchReq, CsvWriteReq, ExecCtx, HttpSendReq, HttpSendResp, LlmInvokeReq,
-    NodePorts, PortError, ResolvedSecretView, StorageWriteReq,
+    name_taken_error, AgentInvokeReq, CsvPatchReq, CsvWriteReq, ExecCtx, HttpSendReq, HttpSendResp,
+    LlmInvokeReq, NodePorts, PortError, ResolvedSecretView, StorageWriteReq,
 };
 use workflow_engine::{
     CapabilityAudit, CapabilityNodeExecutor, EffectJournal, NodeContext, NodeExecutor,
@@ -35,9 +36,16 @@ struct CsvPorts {
     write_calls: Mutex<u32>,
     /// 保存先にすでにある名前（csv.write は `name_taken` で断る・BUG-97）。
     taken_names: Mutex<Vec<String>>,
-    /// csv.write に渡った名前の並び。
-    write_names: Mutex<Vec<String>>,
+    /// 番号を付ける扱いで、ポートの先（StorageService）が付けた名前。`None` は上限まで埋まっている（D-124）。
+    numbered_as: Mutex<Option<String>>,
+    /// 上限まで埋まっていたときに、ポートの先が最後に試した名前（文はポートが組む）。
+    last_tried_as: Mutex<Option<String>>,
+    /// csv.write に渡った要求の並び。
+    writes: Mutex<Vec<CsvWriteTry>>,
 }
+
+/// csv.write に渡った（名前・扱い・文字コードを含む中身）。
+type CsvWriteTry = (String, NameTakenPolicy, Vec<u8>);
 
 #[async_trait]
 impl NodePorts for CsvPorts {
@@ -108,16 +116,31 @@ impl NodePorts for CsvPorts {
         )
     }
     async fn csv_write(&self, _c: &ExecCtx, req: CsvWriteReq) -> Result<Value, PortError> {
-        self.write_names.lock().unwrap().push(req.name.clone());
+        self.writes.lock().unwrap().push((
+            req.name.clone(),
+            req.on_name_taken,
+            req.csv_bytes.clone(),
+        ));
+        let mut saved = req.name.clone();
         if self.taken_names.lock().unwrap().contains(&req.name) {
-            return Err(PortError::new(
-                workflow_engine::nodes::ports::NAME_TAKEN,
-                "同じ名前のファイルがすでにあります",
-                false,
-            ));
+            // 番号はポートの先が付ける（ここでは付けた名前を仕込んでおく・規則を写さない）。
+            match (req.on_name_taken, self.numbered_as.lock().unwrap().clone()) {
+                (NameTakenPolicy::AddNumber, Some(n)) => saved = n,
+                (NameTakenPolicy::AddNumber, None) => {
+                    let last = self.last_tried_as.lock().unwrap().clone().unwrap();
+                    return Err(name_taken_error(&req.name, Some(&last)));
+                }
+                (NameTakenPolicy::Fail, _) => {
+                    return Err(PortError::new(
+                        workflow_engine::nodes::ports::NAME_TAKEN,
+                        "同じ名前のファイルがすでにあります",
+                        false,
+                    ))
+                }
+            }
         }
         *self.write_calls.lock().unwrap() += 1;
-        Ok(json!({ "node_id": Uuid::nil().to_string(), "name": req.name, "version": 0 }))
+        Ok(json!({ "node_id": Uuid::nil().to_string(), "name": saved, "version": 0 }))
     }
 }
 
@@ -284,7 +307,9 @@ async fn csv_patch_is_idempotent_across_retry() {
 }
 
 /// DB 必須: csv.write は同じ名前があるとき、省略なら失敗にし、番号を付ける扱いなら `集計 (2).csv` で保存する。
-/// 番号を付けて試し直しても journal の書込は 1 つで、再試行は保存し直さない（BUG-97・PIT-31）。
+/// エンジンは頼まれた名前（`.csv` を付けた名前）と扱いをポートへ 1 回で渡し、番号はポートの先（StorageService）が
+/// 付ける（名前を変えて呼び直さない・D-124）。journal の書込は 1 つで、再試行は保存し直さない（BUG-97・PIT-31）。
+/// 上限まで埋まっていれば、ポートが最後に試した名前で組んだ文のまま失敗にする。
 #[tokio::test]
 async fn csv_write_numbers_taken_names_once_across_retry() {
     let Ok(db) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
@@ -298,17 +323,17 @@ async fn csv_write_numbers_taken_names_once_across_retry() {
         .expect("test DB 接続");
     let ports = Arc::new(CsvPorts::default());
     *ports.taken_names.lock().unwrap() = vec!["集計.csv".into()];
+    *ports.numbered_as.lock().unwrap() = Some("集計 (2).csv".into());
     let exec = CapabilityNodeExecutor::new(
         ports.clone(),
         EffectJournal::new(pool.clone()),
         Arc::new(SilentAudit),
     );
-    let keys = [
-        format!("wf:csvname:{}", Uuid::new_v4()),
-        format!("wf:csvname:{}", Uuid::new_v4()),
-    ];
+    let keys: Vec<String> = (0..3)
+        .map(|_| format!("wf:csvname:{}", Uuid::new_v4()))
+        .collect();
 
-    // 省略（既存の定義）は失敗にする。.csv は付けてから照らす。
+    // 省略（既存の定義）は失敗にする。.csv は付けてから頼む。
     let mut c = ctx(vec!["csv.write".into()]);
     c.idempotency_key = keys[0].clone();
     let res = exec
@@ -321,12 +346,19 @@ async fn csv_write_numbers_taken_names_once_across_retry() {
     assert!(!res.ok);
     let err = res.error.unwrap();
     assert_eq!(err.code, "name_taken");
-    assert!(err.message.contains("「集計.csv」"), "{}", err.message);
+    assert!(!err.retryable);
+    assert!(
+        err.message.contains("同じ名前のファイル「集計.csv」"),
+        "{}",
+        err.message
+    );
 
-    // 番号を付ける: 空いている名前で 1 回だけ保存し、同じキーの再試行は journal が畳む。
+    // 番号を付ける: 頼まれた名前と扱いを 1 回で渡し、同じキーの再試行は journal が畳む。
     let mut c = ctx(vec!["csv.write".into()]);
     c.idempotency_key = keys[1].clone();
-    let params = json!({ "name": "集計", "content": "a\n1", "on_name_taken": "add_number" });
+    let params = json!({
+        "name": "集計", "content": "a\n1", "on_name_taken": "add_number", "encoding": "utf8_bom"
+    });
     let r1 = exec.execute("csv.write", &params, &c).await;
     assert!(r1.ok, "{:?}", r1.error);
     assert_eq!(r1.output["name"], "集計 (2).csv");
@@ -340,10 +372,37 @@ async fn csv_write_numbers_taken_names_once_across_retry() {
         1,
         "再試行で保存し直した"
     );
+    let writes = ports.writes.lock().unwrap().clone();
+    let asked: Vec<(&str, NameTakenPolicy)> =
+        writes.iter().map(|(n, p, _)| (n.as_str(), *p)).collect();
     assert_eq!(
-        *ports.write_names.lock().unwrap(),
-        ["集計.csv", "集計.csv", "集計 (2).csv"]
+        asked,
+        [
+            ("集計.csv", NameTakenPolicy::Fail),
+            ("集計.csv", NameTakenPolicy::AddNumber)
+        ],
+        "エンジンが名前を変えて呼び直した"
     );
+    // 選んだ文字コード（BOM 付きの UTF-8）のまま、ポートへ 1 回で渡す（D-120）。
+    assert_eq!(writes[1].2, b"\xEF\xBB\xBFa\n1");
+
+    // 上限まで埋まっていれば、ポートが組んだ文（最後に試した名前）のまま失敗にし、呼び直さない。
+    *ports.numbered_as.lock().unwrap() = None;
+    *ports.last_tried_as.lock().unwrap() = Some("集計 (50).csv".into());
+    let mut c = ctx(vec!["csv.write".into()]);
+    c.idempotency_key = keys[2].clone();
+    let res = exec.execute("csv.write", &params, &c).await;
+    assert!(!res.ok);
+    let err = res.error.unwrap();
+    assert_eq!(err.code, "name_taken");
+    assert!(!err.retryable);
+    assert!(
+        err.message
+            .contains("「集計.csv」と、番号を付けた「集計 (50).csv」まで"),
+        "{}",
+        err.message
+    );
+    assert_eq!(ports.writes.lock().unwrap().len(), 3);
 
     for key in &keys {
         let _ = sqlx::query("DELETE FROM effect_journal WHERE idempotency_key = $1")

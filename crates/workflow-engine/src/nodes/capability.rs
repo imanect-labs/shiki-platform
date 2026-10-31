@@ -8,16 +8,17 @@ use sha2::{Digest, Sha256};
 
 use crate::capability::{op_digest, JournalDecision};
 use crate::ir::params::{
-    content_type_from_name, numbered_name, CsvPatchParams, CsvQueryParams, CsvWriteParams,
-    NameTakenPolicy, RagSearchParams, StorageListParams, StorageReadParams, StorageWriteParams,
-    WorkflowStartParams, MAX_NUMBERED_NAME,
+    content_type_from_name, CsvPatchParams, CsvQueryParams, CsvWriteParams, NameTakenPolicy,
+    RagSearchParams, StorageListParams, StorageReadParams, StorageWriteParams, WorkflowStartParams,
 };
 use crate::run::NodeContext;
 use crate::vocab::STORAGE_READ_MAX_DOCUMENT_CHARS;
 
 use super::csv_encoding::{csv_bytes as encode_csv, is_csv_type};
 use super::exec::CapabilityNodeExecutor;
-use super::ports::{CsvPatchReq, CsvWriteReq, ExecCtx, PortError, StorageWriteReq, NAME_TAKEN};
+use super::ports::{
+    name_taken_error, CsvPatchReq, CsvWriteReq, ExecCtx, PortError, StorageWriteReq, NAME_TAKEN,
+};
 use super::resolver::{
     as_bytes, as_string, as_u32, as_uuid, opt_param, param, typed, ParamResolver,
 };
@@ -49,57 +50,17 @@ pub(super) fn with_file_id(mut out: Value, key: &str) -> Value {
     out
 }
 
-/// 保存先に同じ名前のファイルがあって保存できなかったときの誤り（BUG-97・permanent）。
-fn name_taken_error(name: &str, policy: NameTakenPolicy) -> PortError {
-    let message = match policy {
-        NameTakenPolicy::Fail => format!(
-            "保存先に同じ名前のファイル「{name}」がすでにあります。\
-             「同じ名前があるとき」を 番号を付けて保存 にするか、ファイル名に日付などを差し込んでください。"
-        ),
-        NameTakenPolicy::AddNumber => format!(
-            "保存先に「{name}」と、番号を付けた「{}」までのファイルがすでにあります。\
-             ファイル名に日付などを差し込んでください。",
-            numbered_name(name, MAX_NUMBERED_NAME)
-        ),
-    };
-    PortError::new(NAME_TAKEN, message, false)
-}
-
-/// 名前の衝突（[`NAME_TAKEN`]）を、頼まれた名前と扱いで言い直す。ほかの失敗はそのまま返す。
+/// 名前の衝突（[`NAME_TAKEN`]）を、頼まれた名前で言い直す（BUG-97）。ほかの失敗はそのまま返す。
+///
+/// 番号を付けない扱いは、ブロックの欄（「同じ名前があるとき」）で直せることを言う。番号を付ける扱いで上限まで
+/// 埋まっていたときは、ポートが最後に試した名前で組んだ文（[`name_taken_error`]）のまま返す（番号の規則は
+/// StorageService の 1 か所にあり、エンジンは番号を付けた名前を作らない・D-112・D-124）。
 fn explain_name_taken(e: PortError, name: &str, policy: NameTakenPolicy) -> PortError {
-    if e.code == NAME_TAKEN {
-        name_taken_error(name, policy)
+    if e.code == NAME_TAKEN && policy == NameTakenPolicy::Fail {
+        name_taken_error(name, None)
     } else {
         e
     }
-}
-
-/// csv.write で同じ名前のファイルがあれば、扱い（`on_name_taken`）に従って番号を付けた名前で試し直す（BUG-97）。
-///
-/// storage.write は扱いを [`StorageWriteReq`] で頼み、番号は StorageService が付ける（D-112）。csv.write のポートの
-/// 要求（[`CsvWriteReq`]）は扱いを運ばないので、ここで名前を変えて呼び直す（規則は storage と同じ写し）。
-/// `save` は試す名前を受けて 1 回保存する。名前の衝突で失敗した試しは何も書かない。名前の衝突のほかの失敗は、
-/// そのまま返す。
-async fn save_avoiding_taken_names<F, Fut>(
-    name: &str,
-    policy: NameTakenPolicy,
-    mut save: F,
-) -> Result<Value, PortError>
-where
-    F: FnMut(String) -> Fut,
-    Fut: std::future::Future<Output = Result<Value, PortError>>,
-{
-    let tries = match policy {
-        NameTakenPolicy::Fail => 1,
-        NameTakenPolicy::AddNumber => MAX_NUMBERED_NAME,
-    };
-    for attempt in 1..=tries {
-        match save(numbered_name(name, attempt)).await {
-            Err(e) if e.code == NAME_TAKEN => {}
-            other => return other,
-        }
-    }
-    Err(name_taken_error(name, policy))
 }
 
 /// csv.write が保存するファイル名（`.csv` で終わらなければ付ける・`TabularService::save_new` と同じ規則）。
@@ -486,19 +447,22 @@ impl CapabilityNodeExecutor {
             .map_err(|e| PortError::unavailable(format!("journal: {e}")))?
         {
             JournalDecision::Proceed => {
-                // 番号を付けた名前で試し直しても、journal の予約は頼まれた書込 1 つ（digest は頼まれた名前）。
+                // 番号は StorageService が書込の 1 つの TX の中で付ける（D-124）。journal の予約は頼まれた書込
+                // 1 つ（digest は頼まれた名前）で、試し直しは前に付けた名前の結果を返す。
                 let file_name = csv_file_name(&name);
-                let out = save_avoiding_taken_names(&file_name, policy, |candidate| {
-                    self.ports.csv_write(
+                let out = self
+                    .ports
+                    .csv_write(
                         ec,
                         CsvWriteReq {
                             parent_id,
-                            name: candidate,
-                            csv_bytes: csv_bytes.clone(),
+                            name: file_name.clone(),
+                            csv_bytes,
+                            on_name_taken: policy,
                         },
                     )
-                })
-                .await?;
+                    .await
+                    .map_err(|e| explain_name_taken(e, &file_name, policy))?;
                 self.journal
                     .record(&ec.tenant_id, key, &digest, &out)
                     .await

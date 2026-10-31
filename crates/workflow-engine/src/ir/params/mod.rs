@@ -57,8 +57,8 @@ pub use reply::{
 };
 pub use shape::{compact_ts, params_shape, params_type_name, ParamsShape, COMMON_TYPES};
 pub use storage::{
-    content_type_from_name, numbered_name, CsvEncoding, NameTakenPolicy, RagSearchParams,
-    StorageListParams, StorageReadParams, StorageWriteParams, MAX_NUMBERED_NAME,
+    content_type_from_name, CsvEncoding, NameTakenPolicy, RagSearchParams, StorageListParams,
+    StorageReadParams, StorageWriteParams,
 };
 pub use tabular::{CsvPatchParams, CsvQueryParams, CsvWriteParams};
 
