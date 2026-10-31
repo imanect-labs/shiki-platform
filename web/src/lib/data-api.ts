@@ -326,9 +326,46 @@ export async function listTablesPage(
   return ok<TableListPage>(await apiFetch(`/data/tables${qs ? `?${qs}` : ""}`, init));
 }
 
-/// 自分が使えるテーブルの先頭の 200 件（更新の新しい順）。それより先は [`listTablesPage`] で名前で探すか続きを読む。
+/// 続きを読みにいく回数の上限（[`listTablesUpTo`]・1 回は最大 200 件）。
+const TABLE_LIST_MAX_PAGES = 5;
+
+/// 自分が使えるテーブルを、`want` 件たまるか続きが無くなるまで読む（更新の新しい順・往復は最大 5 回）。
+///
+/// 見られるテーブルが多い人では、1 ページが `limit` より少ないか 0 件のまま、続きの位置だけが付いて返ることがある
+/// （サーバーが OpenFGA に問う数を抑えるため・BUG-149）。先頭の 1 ページだけを読むと、あるテーブルを無いと見せる。
+/// 往復の上限で止まったら `next_cursor` を返す（画面は「さらに読み込む」で続きを読む）。
+export async function listTablesUpTo(
+  opts: { want?: number; cursor?: string | null; q?: string } = {},
+): Promise<{ items: DataTable[]; next_cursor: string | null }> {
+  const want = opts.want ?? 200;
+  const items: DataTable[] = [];
+  let cursor = opts.cursor ?? null;
+  for (let page = 0; page < TABLE_LIST_MAX_PAGES; page += 1) {
+    const p = await listTablesPage({ q: opts.q, cursor, limit: Math.min(200, Math.max(1, want - items.length)) });
+    items.push(...p.items);
+    cursor = p.next_cursor ?? null;
+    if (!cursor || items.length >= want) break;
+  }
+  return { items, next_cursor: cursor };
+}
+
+/// 自分が使えるテーブルの先頭の 200 件（更新の新しい順・続きの位置をたどって読む）。それより先は
+/// [`listTablesPage`] で名前で探すか続きを読む。
 export async function listTables(): Promise<DataTable[]> {
-  return (await listTablesPage()).items;
+  return (await listTablesUpTo()).items;
+}
+
+/// 名前がちょうど `name` のテーブル（名前で探して、続きの位置をたどる・見つからなければ `null`）。
+export async function findTableByName(name: string): Promise<DataTable | null> {
+  let cursor: string | null = null;
+  for (let page = 0; page < TABLE_LIST_MAX_PAGES; page += 1) {
+    const p: TableListPage = await listTablesPage({ q: name, cursor, limit: 50 });
+    const hit = p.items.find((t) => t.name === name);
+    if (hit) return hit;
+    cursor = p.next_cursor ?? null;
+    if (!cursor) return null;
+  }
+  return null;
 }
 
 export async function getTable(id: string): Promise<DataTable> {

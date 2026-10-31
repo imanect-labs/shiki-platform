@@ -22,7 +22,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { Input } from "@/components/ui/input";
 import { toast } from "@/components/ui/use-toast";
 import { useMe } from "@/hooks/use-me";
-import { createTable, DataApiError, deleteTable, listTables, type DataTable } from "@/lib/data-api";
+import { createTable, DataApiError, deleteTable, listTablesUpTo, type DataTable } from "@/lib/data-api";
 import { keyFromLabel } from "@/lib/data-view";
 import { cn } from "@/lib/utils";
 
@@ -133,25 +133,67 @@ function CreateTableDialog({
   );
 }
 
+/// 一覧を読めなかったときの文（読み込みの失敗を、まだテーブルが無いように見せない・付録 C の P5）。
+const LOAD_ERROR = "テーブルの一覧を読み込めませんでした。少し待ってから、もう一度読み込んでください。";
+
+/// 足したページを、すでにあるテーブルと重ねずにつなぐ（更新の新しい順はサーバーの並びのまま）。
+function appendTables(xs: DataTable[], more: DataTable[]): DataTable[] {
+  const seen = new Set(xs.map((t) => t.id));
+  return [...xs, ...more.filter((t) => !seen.has(t.id))];
+}
+
 export default function DataTablesPage() {
   const router = useRouter();
   const me = useMe();
   const [items, setItems] = React.useState<DataTable[] | null>(null);
+  /// 続きを読む位置（見られるテーブルが多い人では、先頭のページが短いか空でも続きがある・BUG-149）。
+  const [next, setNext] = React.useState<string | null>(null);
+  const [loadError, setLoadError] = React.useState<string | null>(null);
+  const [loadingMore, setLoadingMore] = React.useState(false);
+  const [moreError, setMoreError] = React.useState<string | null>(null);
   const [creating, setCreating] = React.useState(false);
   const [deleting, setDeleting] = React.useState<DataTable | null>(null);
 
-  React.useEffect(() => {
-    listTables()
-      .then((ts) => setItems([...ts].sort((a, b) => b.updated_at.localeCompare(a.updated_at))))
-      .catch((e) => {
-        setItems([]);
-        toast({
-          variant: "destructive",
-          title: "一覧の取得に失敗しました",
-          description: e instanceof Error ? e.message : String(e),
-        });
-      });
+  const load = React.useCallback(() => {
+    setItems(null);
+    setLoadError(null);
+    setMoreError(null);
+    listTablesUpTo()
+      .then((p) => {
+        setItems(p.items);
+        setNext(p.next_cursor);
+      })
+      .catch(() => setLoadError(LOAD_ERROR));
   }, []);
+  React.useEffect(load, [load]);
+
+  const loadMore = async () => {
+    if (!next || loadingMore) return;
+    setLoadingMore(true);
+    setMoreError(null);
+    try {
+      const p = await listTablesUpTo({ cursor: next });
+      setItems((xs) => appendTables(xs ?? [], p.items));
+      setNext(p.next_cursor);
+    } catch {
+      setMoreError("続きを読み込めませんでした。少し待ってから、もう一度読み込んでください。");
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+  const moreButton = next ? (
+    <div className="flex flex-col items-center gap-1.5 py-3">
+      <Button variant="outline" size="sm" onClick={() => void loadMore()} disabled={loadingMore} data-testid="data-table-list-more">
+        {loadingMore ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}
+        さらに読み込む
+      </Button>
+      {moreError ? (
+        <p className="text-xs text-destructive" role="alert">
+          {moreError}
+        </p>
+      ) : null}
+    </div>
+  ) : null;
 
   const createButton = (
     <Button onClick={() => setCreating(true)} data-testid="create-table">
@@ -168,10 +210,25 @@ export default function DataTablesPage() {
       className="max-w-4xl"
       actions={createButton}
     >
-      {items === null ? (
+      {loadError ? (
+        <div className="flex flex-col items-center gap-3 py-16 text-center" data-testid="data-table-list-error">
+          <p className="text-sm text-destructive" role="alert">
+            {loadError}
+          </p>
+          <Button variant="outline" size="sm" onClick={load}>
+            もう一度読み込む
+          </Button>
+        </div>
+      ) : items === null ? (
         <div className="flex items-center justify-center gap-2 py-16 text-sm text-muted-foreground" role="status">
           <Loader2 className="size-4 animate-spin" aria-hidden />
           読み込み中…
+        </div>
+      ) : items.length === 0 && next ? (
+        // 先頭の読み込みでは見つからなかったが、続きがある（まだテーブルが無いとは言わない）。
+        <div className="py-12 text-center" data-testid="data-table-list-pending">
+          <p className="text-sm text-muted-foreground">まだ見つかっていません。「さらに読み込む」で続きを探します。</p>
+          {moreButton}
         </div>
       ) : items.length === 0 ? (
         <EmptyState
@@ -233,6 +290,7 @@ export default function DataTablesPage() {
           ))}
         </ul>
       )}
+      {items && items.length > 0 ? moreButton : null}
       <ConfirmDialog
         open={deleting !== null}
         onOpenChange={(o) => !o && setDeleting(null)}

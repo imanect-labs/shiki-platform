@@ -9,7 +9,7 @@
 import { ArrowRight, Loader2 } from "lucide-react";
 import * as React from "react";
 
-import { getRecord, getTable, listTables, type DataRecord, type DataTable } from "@/lib/data-api";
+import { findTableByName, getRecord, getTable, type DataRecord, type DataTable } from "@/lib/data-api";
 import { displayCell, formatValue } from "@/lib/data-view";
 import { cachedRoleName, resolveRoleNames } from "@/lib/role-names";
 import { cachedUserName, resolveUserNames } from "@/lib/user-names";
@@ -25,8 +25,8 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 async function resolveTable(ref: string): Promise<DataTable | null> {
   if (UUID_RE.test(ref)) return getTable(ref).catch(() => null);
-  const all = await listTables().catch(() => [] as DataTable[]);
-  const hit = all.find((t) => t.name === ref);
+  // 名前で探す（先頭の一覧だけを見ると、見られるテーブルが多い人で、あるテーブルが見つからない）。
+  const hit = await findTableByName(ref).catch(() => null);
   return hit ? getTable(hit.id).catch(() => hit) : null;
 }
 
