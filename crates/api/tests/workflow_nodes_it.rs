@@ -37,6 +37,9 @@ use workflow_engine::{
 // ------- 共通ハーネス --------------------------------------------------------
 
 struct Harness {
+    /// このハーネスの OpenFGA のストア（片付けるテストが消す・[`Harness::delete_fga_store`]）。
+    fga_url: String,
+    fga_store: String,
     pool: sqlx::PgPool,
     storage: Arc<storage::StorageService>,
     gateway: Arc<llm_gateway::LlmGateway>,
@@ -70,18 +73,18 @@ async fn setup() -> Option<Harness> {
         .expect("migrate");
 
     let http = reqwest::Client::new();
-    let fga = Arc::new(
-        OpenFgaClient::connect(
-            http.clone(),
-            &OpenFgaConfig {
-                base_url: fga_url,
-                store_name: format!("shiki-wf-nodes-{}", Uuid::new_v4()),
-            },
-            &authz::model::default_model(),
-        )
-        .await
-        .expect("fga"),
-    ) as Arc<dyn AuthzClient>;
+    let fga_client = OpenFgaClient::connect(
+        http.clone(),
+        &OpenFgaConfig {
+            base_url: fga_url.clone(),
+            store_name: format!("shiki-wf-nodes-{}", Uuid::new_v4()),
+        },
+        &authz::model::default_model(),
+    )
+    .await
+    .expect("fga");
+    let fga_store = fga_client.store_id().to_string();
+    let fga = Arc::new(fga_client) as Arc<dyn AuthzClient>;
 
     let s3 = storage::S3Config {
         internal_endpoint: s3_endpoint.clone(),
@@ -187,6 +190,8 @@ async fn setup() -> Option<Harness> {
     let launcher = WorkflowRunLauncher::new(delegation, workflows.clone(), runs.clone());
 
     Some(Harness {
+        fga_url,
+        fga_store,
         pool,
         storage,
         gateway,
@@ -335,6 +340,20 @@ impl Harness {
             .unwrap()
             .into_iter()
             .collect()
+    }
+
+    /// このハーネスの OpenFGA のストアを消す（テストの最後の片付け・タプルはストアごと消える）。
+    async fn delete_fga_store(&self) {
+        let resp = reqwest::Client::new()
+            .delete(format!("{}/stores/{}", self.fga_url, self.fga_store))
+            .send()
+            .await
+            .expect("OpenFGA delete store");
+        assert!(
+            resp.status().is_success(),
+            "delete store: {}",
+            resp.status()
+        );
     }
 
     /// org 直下の指定名ファイルの本文を読む（検証用）。
@@ -2328,17 +2347,14 @@ async fn storage_write_names_and_types_through_the_production_port() {
     let (third, status) = h.run(number_wf, &json!({}), Arc::clone(&executor)).await;
     assert_eq!(status, RunStatus::Succeeded);
     let (_, _, out) = step(third).await;
-    let numbered = workflow_engine::ir::params::numbered_name(&name, 2);
+    let numbered = storage::numbered_name(&name, 2);
     assert_eq!(out.unwrap()["name"], numbered.as_str());
     let drive = h
         .storage
         .write_file_unique_internal(&h.alice, None, &name, b"x", "text/markdown", None)
         .await
         .unwrap();
-    assert_eq!(
-        drive.name,
-        workflow_engine::ir::params::numbered_name(&name, 3)
-    );
+    assert_eq!(drive.name, storage::numbered_name(&name, 3));
 
     // 片付け（run の履歴・保存したファイル・ワークフロー）。
     h.runs.purge_tenant_history(&h.tenant).await.unwrap();
@@ -2360,6 +2376,262 @@ async fn storage_write_names_and_types_through_the_production_port() {
     for wf in [fail_wf, number_wf] {
         h.artifacts.delete(&h.alice, wf, None).await.unwrap();
     }
+}
+
+/// 本番のポートで、新しい CSV を保存（csv.write）の同じ名前の扱いを確かめる（BUG-97・D-124）。
+///
+/// - 省略（既存の定義）は今のまま失敗にし、理由は同じ名前のファイル（.csv を付けた名前）と言う。
+/// - 番号を付ける扱いは、ファイルを保存・ドライブの新規作成と同じ規則（`名前 (2).csv`）で、続きの番号を付ける。
+///   番号は StorageService の書込の入口が付ける（ポートへの 1 回の要求で、空いている名前を同じ TX の中で探す）。
+///   選んだ文字コードは番号を付けても変わらない（D-120）。
+/// - 同じ名前へ同時に保存しても、それぞれ別の空いている名前になる。
+/// - 上限（`(50)`）まで埋まっていれば name_taken で失敗し、最後に試した名前を言う。
+#[tokio::test]
+async fn csv_write_numbers_taken_names_through_the_production_port() {
+    use workflow_engine::ir::params::NameTakenPolicy;
+    use workflow_engine::NodePorts;
+    let Some(h) = setup().await else { return };
+    let Some(runner) = runner_path() else {
+        eprintln!("shiki-tabular-runner 未ビルドのためスキップ（SHIKI_TABULAR_RUNNER 参照）");
+        return;
+    };
+    let tag = Uuid::new_v4().simple().to_string();
+    let folder = h
+        .storage
+        .create_folder(&h.alice, None, &format!("csv-dup-{tag}"), None)
+        .await
+        .unwrap();
+    let folder_id = folder.id;
+    let base = format!("集計-{tag}");
+    let csv = "品目,金額\n交通費,1200\n";
+    let write = |label: &str, name: &str, ty: &str, extra: Value| {
+        let mut params = json!({ "folder": folder_id.to_string(), "name": name, "content": csv });
+        if let (Some(p), Some(e)) = (params.as_object_mut(), extra.as_object()) {
+            p.extend(e.clone());
+        }
+        json!({
+            "ir_version": 1,
+            "name": format!("csv-dup-{label}"),
+            "declared_scopes": [ty],
+            "triggers": [{ "kind": "interactive" }],
+            "nodes": [{ "id": "save", "type": ty, "params": params }],
+            "edges": []
+        })
+    };
+    let step = |run_id: Uuid| {
+        let pool = h.pool.clone();
+        let tenant = h.tenant.clone();
+        async move {
+            let row: (Option<String>, Option<String>, Option<Value>) = sqlx::query_as(
+                "SELECT error->>'code', error->>'message', output FROM step_execution \
+                 WHERE tenant_id = $1 AND run_id = $2 AND node_id = 'save'",
+            )
+            .bind(&tenant)
+            .bind(run_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            row
+        }
+    };
+    let names_in_folder = || {
+        let pool = h.pool.clone();
+        async move {
+            sqlx::query_scalar::<_, String>(
+                "SELECT name FROM node WHERE parent_id = $1 AND deleted_at IS NULL",
+            )
+            .bind(folder_id)
+            .fetch_all(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    let fail_wf = h.save(&write("fail", &base, "csv.write", json!({}))).await;
+    let number_wf = h
+        .save(&write(
+            "number",
+            &base,
+            "csv.write",
+            json!({ "on_name_taken": "add_number", "encoding": "utf8_bom" }),
+        ))
+        .await;
+    let file_wf = h
+        .save(&write(
+            "file",
+            &format!("{base}.csv"),
+            "storage.write",
+            json!({ "on_name_taken": "add_number" }),
+        ))
+        .await;
+    let executor = h.executor_with_tabular(&runner);
+    let file_name = format!("{base}.csv");
+
+    // 1 回目は元の名前（.csv を付けた名前）で保存する。
+    let (first, first_status) = h.run(fail_wf, &json!({}), Arc::clone(&executor)).await;
+    let first_out = step(first).await.2;
+    // 省略は失敗にする（既存の定義の挙動）。理由は同じ名前のファイル。
+    let (second, second_status) = h.run(fail_wf, &json!({}), Arc::clone(&executor)).await;
+    let (second_code, second_message, _) = step(second).await;
+    // 番号を付ける扱いは「名前 (2).csv」。選んだ文字コード（BOM 付きの UTF-8）のまま。
+    let (third, third_status) = h.run(number_wf, &json!({}), Arc::clone(&executor)).await;
+    let third_out = step(third).await.2;
+    let third_bytes = match third_out
+        .as_ref()
+        .and_then(|o| o["file_id"].as_str())
+        .and_then(|s| Uuid::parse_str(s).ok())
+    {
+        Some(id) => Some(
+            h.storage
+                .read_file_internal(&h.alice, id, None)
+                .await
+                .unwrap()
+                .1,
+        ),
+        None => None,
+    };
+    // ファイルを保存とドライブの新規作成も、同じ規則で続きの番号を付ける。
+    let (fourth, fourth_status) = h.run(file_wf, &json!({}), Arc::clone(&executor)).await;
+    let fourth_out = step(fourth).await.2;
+    let drive = h
+        .storage
+        .write_file_unique_internal(
+            &h.alice,
+            Some(folder_id),
+            &file_name,
+            b"x",
+            "text/csv",
+            None,
+        )
+        .await;
+
+    // 同じ名前へ同時に保存しても、ポートへの 1 回の要求ごとに別の空いている名前になる。
+    let tabular = Arc::new(tabular::TabularService::new(
+        Arc::clone(&h.storage),
+        tabular::RunnerConfig::new(
+            runner.to_string_lossy().to_string(),
+            Duration::from_secs(20),
+        ),
+        tabular::Quotas::default(),
+    ));
+    let mut ports = Arc::into_inner(h.ports(None, None)).unwrap();
+    ports.tabular = Some(tabular);
+    let ec = workflow_engine::ExecCtx {
+        tenant_id: h.tenant.clone(),
+        org: h.org.clone(),
+        principal: "alice".into(),
+        principal_kind: "user".into(),
+        trace_id: None,
+        run_id: None,
+        step_path: None,
+    };
+    let req = || workflow_engine::CsvWriteReq {
+        parent_id: Some(folder_id),
+        name: file_name.clone(),
+        csv_bytes: csv.as_bytes().to_vec(),
+        on_name_taken: NameTakenPolicy::AddNumber,
+    };
+    let concurrent = futures::future::join_all((0..4).map(|_| ports.csv_write(&ec, req()))).await;
+
+    // 上限（(50)）まで埋めると、番号を付ける扱いも失敗し、最後に試した名前を言う。
+    let have = names_in_folder().await.len();
+    for _ in have..storage::MAX_NUMBERED_NAME as usize {
+        h.storage
+            .write_file_unique_internal(
+                &h.alice,
+                Some(folder_id),
+                &file_name,
+                b"x",
+                "text/csv",
+                None,
+            )
+            .await
+            .unwrap();
+    }
+    let (full, full_status) = h.run(number_wf, &json!({}), Arc::clone(&executor)).await;
+    let (full_code, full_message, _) = step(full).await;
+    let names = names_in_folder().await;
+
+    // 片付け（run の履歴・保存したファイル・フォルダー・ワークフロー・OpenFGA のストア）。
+    h.runs.purge_tenant_history(&h.tenant).await.unwrap();
+    let ids: Vec<Uuid> =
+        sqlx::query_scalar("SELECT id FROM node WHERE parent_id = $1 AND deleted_at IS NULL")
+            .bind(folder_id)
+            .fetch_all(&h.pool)
+            .await
+            .unwrap();
+    for id in ids {
+        h.storage
+            .soft_delete_file(&h.alice, id, None)
+            .await
+            .unwrap();
+    }
+    h.storage
+        .soft_delete_folder(&h.alice, folder_id, None)
+        .await
+        .unwrap();
+    for wf in [fail_wf, number_wf, file_wf] {
+        h.artifacts.delete(&h.alice, wf, None).await.unwrap();
+    }
+    h.delete_fga_store().await;
+
+    assert_eq!(first_status, RunStatus::Succeeded);
+    assert_eq!(first_out.unwrap()["name"], file_name.as_str());
+    assert_eq!(second_status, RunStatus::Failed);
+    assert_eq!(
+        second_code.as_deref(),
+        Some(workflow_engine::nodes::ports::NAME_TAKEN)
+    );
+    let second_message = second_message.unwrap();
+    assert!(
+        second_message.contains(&format!("同じ名前のファイル「{file_name}」")),
+        "{second_message}"
+    );
+    assert_eq!(third_status, RunStatus::Succeeded, "{third_out:?}");
+    let third_out = third_out.unwrap();
+    assert_eq!(
+        third_out["name"],
+        storage::numbered_name(&file_name, 2).as_str()
+    );
+    assert_eq!(third_out["file_id"], third_out["node_id"]);
+    assert_eq!(
+        third_bytes.unwrap(),
+        textenc::encode_like(csv, textenc::encoding_rs::UTF_8, true).unwrap(),
+        "番号を付けても選んだ文字コードのまま"
+    );
+    assert_eq!(fourth_status, RunStatus::Succeeded);
+    assert_eq!(
+        fourth_out.unwrap()["name"],
+        storage::numbered_name(&file_name, 3).as_str()
+    );
+    assert_eq!(drive.unwrap().name, storage::numbered_name(&file_name, 4));
+    let mut got: Vec<String> = concurrent
+        .into_iter()
+        .map(|r| r.unwrap()["name"].as_str().unwrap().to_string())
+        .collect();
+    got.sort();
+    let mut want: Vec<String> = (5..=8)
+        .map(|n| storage::numbered_name(&file_name, n))
+        .collect();
+    want.sort();
+    assert_eq!(got, want, "同時の保存が同じ名前を取り合った");
+    assert_eq!(full_status, RunStatus::Failed);
+    assert_eq!(
+        full_code.as_deref(),
+        Some(workflow_engine::nodes::ports::NAME_TAKEN)
+    );
+    let full_message = full_message.unwrap();
+    assert!(
+        full_message.contains(&format!(
+            "「{file_name}」と、番号を付けた「{}」まで",
+            storage::numbered_name(&file_name, storage::MAX_NUMBERED_NAME)
+        )),
+        "{full_message}"
+    );
+    assert_eq!(
+        names.len(),
+        storage::MAX_NUMBERED_NAME as usize,
+        "上限を超えて保存した"
+    );
 }
 
 /// 本番のポートで、ファイルを読むの結果に読んだバージョンとファイルの ID（file_id）が載る（D-96）。
