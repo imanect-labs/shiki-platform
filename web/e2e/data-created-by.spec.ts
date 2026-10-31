@@ -275,3 +275,64 @@ test("作成者の列を画面で足して状態の進め方を作ると、申�
     );
   }
 });
+
+/// 状態の進め方の「作成者の列を追加」は、押した時点のテーブルの定義に列を足す。画面のテーブルが古くても（購読が
+/// 届いていない）、ほかで変えた列の設定を元に戻さない（送る中身と版の番号を同じ時点のものにする）。作成者の列の
+/// あるテーブルでは、同じ値の「作成者」（レコードの作成者の擬似列）を列の候補に出さない（同じ名前を 2 つ並べない）。
+test("作成者の列を足しても、ほかで変えた列の設定を元に戻さない。列の候補の「作成者」は 1 つ（D-122）", async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await loginViaKeycloak(page);
+  let tableId = "";
+  try {
+    tableId = await createTable(page, uniqueName("e2e-作成者の列の追加"));
+    // 購読を止めて、ほかでの変更が画面に届かない（画面のテーブルが古いままの）状態にする。
+    await page.route(`**/api/data/tables/${tableId}/stream**`, (r) => r.abort());
+    await page.goto(`/data/${tableId}`);
+    await expect(page.getByTestId("data-grid")).toHaveAttribute("data-loaded", "0", { timeout: 15_000 });
+
+    // ほか（別のタブ・チャットの AI）で、列の表示名を変える。
+    type Field = { key: string; display_name?: string; type: string };
+    const before = (await (await page.request.get(`/api/data/tables/${tableId}`)).json()) as {
+      schema: { fields: Field[] } & Record<string, unknown>;
+      schema_version: number;
+    };
+    const renamed = {
+      ...before.schema,
+      fields: before.schema.fields.map((f) => (f.key === "title" ? { ...f, display_name: "件名（変更）" } : f)),
+    };
+    const put = await page.request.put(`/api/data/tables/${tableId}/schema`, {
+      headers: await csrfHeaders(page),
+      data: { schema: renamed, expected_schema_version: before.schema_version },
+    });
+    expect(put.status(), await put.text()).toBe(200);
+
+    // 状態の進め方を開いて、作成者の列を足す。
+    await page.getByTestId("state-flow-open").click();
+    const editor = page.getByTestId("state-flow-editor");
+    await expect(editor.getByTestId("state-flow-state")).toHaveCount(3, { timeout: 15_000 });
+    const added = page.waitForResponse((r) => r.url().endsWith(`/data/tables/${tableId}/schema`) && r.request().method() === "PUT");
+    await editor.getByTestId("state-flow-applicant").getByTestId("state-flow-add-creator").click();
+    expect((await added).status()).toBe(200);
+    await expect(page.getByText("「作成者」の列を追加しました").first()).toBeVisible();
+    await expect(editor.getByTestId("state-flow-add-creator-error")).toHaveCount(0);
+    // 裏取り: ほかで変えた表示名は残り、作成者の列が足された。
+    const after = (await (await page.request.get(`/api/data/tables/${tableId}`)).json()) as { schema: { fields: Field[] } };
+    expect(after.schema.fields.find((f) => f.key === "title")?.display_name).toBe("件名（変更）");
+    expect(after.schema.fields.filter((f) => f.type === "created_by")).toHaveLength(1);
+
+    // 閉じる（申請者の列の変更は保存しない）。Escape は先に出ている知らせを閉じるので、下のボタンで閉じる。
+    await editor.getByRole("button", { name: "閉じる", exact: true }).filter({ hasText: "閉じる" }).click();
+    await page.getByRole("button", { name: "変更を捨てて閉じる" }).click();
+    await expect(editor).toBeHidden();
+
+    // 列の候補: 「作成者」は作成者の列の 1 つだけ（擬似列の「作成者」を並べない）。
+    await page.getByTestId("data-columns-button").click();
+    await expect(page.getByRole("textbox", { name: "「件名（変更）」の見出し" })).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "「作成者」の見出し" })).toHaveCount(1);
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/created-by-columns-pc.png` });
+    await page.keyboard.press("Escape");
+  } finally {
+    await cleanupAll(() => (tableId ? deleteTableApi(page, tableId) : Promise.resolve()));
+  }
+});

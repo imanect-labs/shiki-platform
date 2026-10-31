@@ -27,6 +27,7 @@ import { Sheet, SheetBody, SheetContent, SheetDescription, SheetHeader, SheetTit
 import { toast } from "@/components/ui/use-toast";
 import {
   DataApiError,
+  getTable,
   getTableFsm,
   saveTableFsm,
   TABLE_NOT_FOUND,
@@ -247,28 +248,38 @@ export function StateFlowEditor({
     }
   };
   /// 作成者の列を足して、申請者の列にする（列はすぐ保存する。状態の進め方は保存するまで変わらない）。
+  ///
+  /// 足す先は、押した時点のテーブルの定義を読み直したもの（画面のテーブルは、ほかのタブや AI の変更より古いことが
+  /// ある）。送る中身と版の番号を同じ時点のものにし、ほかの人の列の変更を黙って元に戻さない。
   const addCreator = async () => {
     if (!loaded || !draft) return;
     setAddingCreator(true);
     setAddCreatorError(null);
     try {
-      const key = uniqueKey("created_by", new Set(fields.map((f) => f.key)));
-      const names = new Set(fields.map((f) => f.display_name || f.key));
+      const latest = await getTable(table.id);
+      const current = latest.schema.fields;
+      const key = uniqueKey("created_by", new Set(current.map((f) => f.key)));
+      const names = new Set(current.map((f) => f.display_name || f.key));
       const name = names.has("作成者") ? "作成者（自動）" : "作成者";
       const field = { key, display_name: name, type: "created_by" } as FieldDef;
-      const t = await updateSchema(table.id, { ...table.schema, fields: [...table.schema.fields, field] }, loaded.resp.schema_version);
+      const t = await updateSchema(table.id, { ...latest.schema, fields: [...current, field] }, latest.schema_version);
       onSaved(t);
-      // 状態の進め方の保存は、新しいスキーマの版で送る（列を足した保存と食い違わせない）。
-      setLoaded((l) => (l ? { ...l, resp: { ...l.resp, schema_version: t.schema_version } } : l));
+      // 状態の進め方を読んだ後にテーブルの設定が変わっていなければ、状態の進め方の保存は新しいスキーマの版で送る
+      // （列を足した保存と食い違わせない）。変わっていたら、そのまま送って「ほかの人が先に保存した」にする。
+      setLoaded((l) =>
+        l && l.resp.schema_version === latest.schema_version ? { ...l, resp: { ...l.resp, schema_version: t.schema_version } } : l,
+      );
       set({ applicantField: key });
       toast({ title: `「${name}」の列を追加しました`, description: "状態の進め方を保存すると、申請した本人を除くのに使います。" });
     } catch (e) {
       setAddCreatorError(
         e instanceof DataApiError && e.status === 409
-          ? "ほかの人が先にテーブルの設定を保存したため、列を追加できませんでした。最新の内容を読み込んでから、もう一度追加してください。"
+          ? "ほかの人が同時にテーブルの設定を保存したため、列を追加できませんでした。もう一度追加してください。"
           : e instanceof DataApiError && e.status === 403
             ? "列を追加できるのは、テーブルの持ち主だけです。"
-            : "作成者の列を追加できませんでした。少し待ってから、もう一度追加してください。",
+            : e instanceof DataApiError && e.status === 400
+              ? `作成者の列を追加できませんでした。${e.message}`
+              : "作成者の列を追加できませんでした。少し待ってから、もう一度追加してください。",
       );
     } finally {
       setAddingCreator(false);

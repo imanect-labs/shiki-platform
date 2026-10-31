@@ -88,11 +88,21 @@ export function resolveColumns(
       system: !field,
     });
   };
-  for (const c of configs) push(c.field, c, false);
+  // 作成者の列（`created_by`）があるテーブルでは、同じ値の擬似列 `_owner`（作成者）を候補に出さない（同じ名前が
+  // 2 つ並ぶ）。前に表で出していた（ビューの設定で非表示でない）ときだけ残す。
+  const hasCreatedBy = fields.some((f) => f.type === "created_by");
+  const keepOwner = configs.some((c) => c.field === "_owner" && !c.hidden);
+  for (const c of configs) {
+    if (c.field === "_owner" && hasCreatedBy && !keepOwner) continue;
+    push(c.field, c, false);
+  }
   const ordered = [...fields].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
   for (const f of ordered) push(f.key, null, false);
   // 擬似列は設定に無ければ非表示で末尾に置く（列メニューから出せる）。
-  for (const s of SYSTEM_COLUMNS) push(s.key, null, true);
+  for (const s of SYSTEM_COLUMNS) {
+    if (s.key === "_owner" && hasCreatedBy) continue;
+    push(s.key, null, true);
+  }
   return out;
 }
 
