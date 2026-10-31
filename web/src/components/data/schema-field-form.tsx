@@ -49,7 +49,7 @@ export const isCreatedBy = (t: FieldType) => t === "created_by";
 
 /// 作成者の列の説明（列の追加・列の設定で同じ文）。
 export const CREATED_BY_HINT =
-  "レコードを追加した人が自動で入り、だれも書き換えられません。この列を足す前に追加したレコードにも、追加した人が入ります。";
+  "レコードを追加した人が自動で入り、誰も書き換えられません。この列を足す前に追加したレコードにも、追加した人が入ります。";
 
 /// 一対多はこの列の側からは作れない（参照先の多対一の逆向きとして現れる）。
 const CARDINALITIES: { value: LinkCardinality; label: string }[] = [

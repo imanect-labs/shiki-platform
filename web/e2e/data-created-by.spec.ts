@@ -117,7 +117,7 @@ test("作成者の列を画面で足して状態の進め方を作ると、申�
     await expect(editor.getByRole("combobox", { name: "申請者の列" })).toContainText("作成者（作成者の列）");
     await expect(section.getByTestId("state-flow-member-bypass")).toHaveCount(0);
     await expect(section.getByTestId("state-flow-applicant-creator")).toContainText(
-      "「作成者」には、レコードを追加した人が自動で入ります。だれも書き換えられないので、申請した本人を承認する人から確実に除けます。",
+      "「作成者」には、レコードを追加した人が自動で入ります。誰も書き換えられないので、レコードを追加した人を、承認する人から除けます。",
     );
     await section.getByRole("button", { name: "詳しく" }).click();
     await expect(section.getByTestId("state-flow-applicant-more")).toContainText(
@@ -233,7 +233,7 @@ test("作成者の列を画面で足して状態の進め方を作ると、申�
     const schemaEditor = page.getByTestId("schema-editor");
     await schemaEditor.getByRole("button", { name: "「作成者」の設定" }).click();
     await expect(schemaEditor.getByTestId("schema-created-by-hint")).toHaveText(
-      "レコードを追加した人が自動で入り、だれも書き換えられません。この列を足す前に追加したレコードにも、追加した人が入ります。",
+      "レコードを追加した人が自動で入り、誰も書き換えられません。この列を足す前に追加したレコードにも、追加した人が入ります。",
     );
     await expect(schemaEditor.getByRole("switch", { name: "「作成者」の索引" })).toBeDisabled();
     await expect(schemaEditor.getByRole("switch", { name: "「作成者」の索引" })).toBeChecked();

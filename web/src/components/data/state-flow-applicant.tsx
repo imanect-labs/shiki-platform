@@ -93,7 +93,7 @@ export function ApplicantSection({
         <div className="space-y-2 rounded-lg border border-dashed p-3" data-testid="state-flow-no-applicant">
           <Hint tone="warn">申請した本人も、自分の申請を承認できます。</Hint>
           <Hint>
-            作成者の列を追加すると、レコードを追加した人を、承認する人から除けます。作成者の列には追加した人が自動で入り、だれも書き換えられません。
+            作成者の列を追加すると、レコードを追加した人を、承認する人から除けます。作成者の列には追加した人が自動で入り、誰も書き換えられません。
           </Hint>
           <div className="flex flex-wrap gap-2">
             {switchButton}
@@ -123,7 +123,7 @@ export function ApplicantSection({
           {byCreator ? (
             <div className="space-y-1" data-testid="state-flow-applicant-creator">
               <Hint>
-                「{labelOf(selected)}」には、レコードを追加した人が自動で入ります。だれも書き換えられないので、申請した本人を承認する人から確実に除けます。
+                「{labelOf(selected)}」には、レコードを追加した人が自動で入ります。誰も書き換えられないので、レコードを追加した人を、承認する人から除けます。
               </Hint>
               <MoreInfo testId="state-flow-applicant-more">
                 <p>
