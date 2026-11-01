@@ -157,6 +157,7 @@ async fn write_and_delete_tuple_are_idempotent() {
 }
 
 /// BatchCheck（Task 15.9）: 入力順で判定が返り、50 問超は分割して全問を判定する。単発 check と一致する。
+/// 分けた BatchCheck は 4 本ずつ並べて送る（BUG-163）ので、並べる組をまたいでも入力順のまま返ること。
 #[tokio::test]
 async fn batch_check_matches_single_checks_and_chunks() {
     let Ok(base_url) = std::env::var("OPENFGA_TEST_URL") else {
@@ -164,7 +165,7 @@ async fn batch_check_matches_single_checks_and_chunks() {
         return;
     };
     let config = OpenFgaConfig {
-        base_url,
+        base_url: base_url.clone(),
         store_name: format!("shiki-test-{}", uuid::Uuid::new_v4()),
     };
     let client = OpenFgaClient::connect(reqwest::Client::new(), &config, &model_json())
@@ -172,12 +173,13 @@ async fn batch_check_matches_single_checks_and_chunks() {
         .expect("OpenFGA へ接続できること");
     let ctx = ctx_for("t1", "carol");
     let carol = ctx.subject();
-    // 偶数番目の組織にだけ member を付与する（120 問 = 50 + 50 + 20 の 3 往復）。
-    let orgs: Vec<_> = (0..120)
+    // 3 つおきの組織にだけ member を付与する（470 問 = 4 本並べる組 200 問 × 2 ＋ 70 問・50 問ずつ 10 往復）。
+    const N: usize = 470;
+    let orgs: Vec<_> = (0..N)
         .map(|i| ctx.ns().organization(&format!("org{i}")))
         .collect();
     for (i, o) in orgs.iter().enumerate() {
-        if i % 2 == 0 {
+        if i % 3 == 0 {
             client
                 .write_tuple(&carol, Relation::Member, o)
                 .await
@@ -196,12 +198,12 @@ async fn batch_check_matches_single_checks_and_chunks() {
         .batch_check(&items, Consistency::HigherConsistency)
         .await
         .expect("batch_check");
-    assert_eq!(got.len(), 120);
+    assert_eq!(got.len(), N);
     for (i, allowed) in got.iter().enumerate() {
-        assert_eq!(*allowed, i % 2 == 0, "問い {i} の判定が入力順で返ること");
+        assert_eq!(*allowed, i % 3 == 0, "問い {i} の判定が入力順で返ること");
     }
-    // 単発 check と一致する（抜き取り）。
-    for i in [0usize, 1, 49, 50, 51, 119] {
+    // 単発 check と一致する（抜き取り・分けた境目と並べる組の境目）。
+    for i in [0usize, 1, 49, 50, 51, 199, 200, 201, 399, 400, N - 1] {
         let single = client
             .check(
                 &carol,
@@ -211,7 +213,7 @@ async fn batch_check_matches_single_checks_and_chunks() {
             )
             .await
             .unwrap();
-        assert_eq!(single, got[i]);
+        assert_eq!(single, got[i], "問い {i}");
     }
     // 空の入力は往復せず空を返す。
     assert!(client
@@ -219,6 +221,17 @@ async fn batch_check_matches_single_checks_and_chunks() {
         .await
         .unwrap()
         .is_empty());
+    // このテストのストアを消す（書いたタプルも消える）。
+    let resp = reqwest::Client::new()
+        .delete(format!("{base_url}/stores/{}", client.store_id()))
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        resp.status().is_success(),
+        "delete store: {}",
+        resp.status()
+    );
 }
 
 /// テーブルの「追加だけ」（data_table#submitter・D-113）: editor（owner）が含意するが、viewer とは

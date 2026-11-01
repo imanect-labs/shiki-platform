@@ -8,7 +8,6 @@
 
 use crate::client::{AuthzClient, CheckTuple, Consistency};
 use crate::error::AuthzError;
-use crate::fga_http::MAX_CHECKS_PER_BATCH;
 use crate::object::FgaObject;
 use crate::subject::Subject;
 use crate::vocab::{ObjectType, Relation};
@@ -29,16 +28,18 @@ pub const fn list_may_be_cut(n: usize) -> bool {
     n >= LIST_OBJECTS_MAX_RESULTS
 }
 
-/// [`holds_any`] が同時に送る BatchCheck の本数（1 本は 50 問）。
+/// 1 回の問いで同時に送る BatchCheck の本数（1 本は 50 問・OpenFGA の実装の [`AuthzClient::batch_check`]・BUG-163）。
 ///
 /// OpenFGA の BatchCheck は 1 本ずつだと 50 問に 100 ミリ秒ほどかかる（v1.8・手元の計測。単発の check は 1 問
-/// 2 ミリ秒ほど）。4 本ずつ並べると 200 問がおよそ 1 往復の時間で済む。並べすぎると OpenFGA を占有するので絞る。
+/// 2 ミリ秒ほど）。600 問を順に送ると 1.6 秒、4 本ずつ並べると 0.6 秒、8 本ずつで 0.5 秒（2 CPU の手元。並べる
+/// 効き目は OpenFGA の CPU で頭打ちになる）。並べすぎると OpenFGA を占有するので 4 本に絞る（1 回の問いが同時に
+/// 掛けるのは 200 問まで）。
 pub const BATCH_CHECKS_IN_FLIGHT: usize = 4;
 
 /// `objects` のそれぞれについて、`subject` が `relations` のどれかを持つか（入力順）。
 ///
-/// 問いは 50 問ずつの [`AuthzClient::batch_check`] にまとめ、[`BATCH_CHECKS_IN_FLIGHT`] 本ずつ並べて送る。
-/// 1 問でも判定に失敗したら全体を誤りにする（fail-closed）。
+/// 問いは 1 回の [`AuthzClient::batch_check`] にまとめる（OpenFGA の実装が 50 問ずつに分けて
+/// [`BATCH_CHECKS_IN_FLIGHT`] 本ずつ並べて送る）。1 問でも判定に失敗したら全体を誤りにする（fail-closed）。
 pub async fn holds_any(
     authz: &dyn AuthzClient,
     subject: &Subject,
@@ -59,17 +60,7 @@ pub async fn holds_any(
             })
         })
         .collect();
-    let mut got: Vec<bool> = Vec::with_capacity(items.len());
-    // 50 問ずつの BatchCheck を BATCH_CHECKS_IN_FLIGHT 本ずつまとめて送り、入力順に並べ直す。
-    for group in items.chunks(MAX_CHECKS_PER_BATCH * BATCH_CHECKS_IN_FLIGHT) {
-        let calls: Vec<_> = group
-            .chunks(MAX_CHECKS_PER_BATCH)
-            .map(|chunk| authz.batch_check(chunk, consistency))
-            .collect();
-        for part in futures::future::try_join_all(calls).await? {
-            got.extend(part);
-        }
-    }
+    let got = authz.batch_check(&items, consistency).await?;
     if got.len() != items.len() {
         return Err(AuthzError::Unexpected {
             status: 200,
