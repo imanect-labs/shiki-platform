@@ -10,7 +10,8 @@ import * as React from "react";
 import type { NodeParamsByType } from "@/generated/workflow-catalog";
 import type { LlmEffort, Node as IrNode, ValidationError, ValueExpr } from "@/generated/workflow-ir";
 import { Select, SelectContent, SelectItem, SelectValue } from "@/components/ui/select";
-import { listWorkflows, type WorkflowSummary } from "@/lib/workflow-api";
+import { getWorkflow, listWorkflows, type WorkflowSummary } from "@/lib/workflow-api";
+import { orderedProperties } from "@/lib/workflow-input-schema";
 import type { EditorAction } from "../ir-state";
 import { Field, FieldInput, FieldNativeSelect, FieldSelectTrigger, NumberInput } from "./common";
 import { EffortField } from "./effort-field";
@@ -175,6 +176,23 @@ function useWorkflowList(): [WorkflowList, () => void] {
   return [list, reload];
 }
 
+/// 実行するワークフローの入力項目の並び（相手の入力項目の x-order の順・D-128・BUG-156）。渡す入力の「項目を並べる」の
+/// 行をこの順で出す（保存した値のキーは名前の順に並び直る）。相手を読めない・入力項目が無いときは並べない。
+function useTargetInputOrder(targetId: string | null): readonly string[] | undefined {
+  const [order, setOrder] = React.useState<{ id: string; keys: string[] } | null>(null);
+  React.useEffect(() => {
+    if (!targetId) return;
+    let active = true;
+    getWorkflow(targetId)
+      .then((w) => active && setOrder({ id: targetId, keys: orderedProperties(w.ir.input_schema).map(([k]) => k) }))
+      .catch(() => active && setOrder({ id: targetId, keys: [] }));
+    return () => {
+      active = false;
+    };
+  }, [targetId]);
+  return order?.id === targetId ? order.keys : undefined;
+}
+
 /// 一覧の 1 行の名前（画面に出る名前。同じ表示名が 2 つあるときだけ内部の名前を添えて見分ける）。
 function workflowOptionLabel(w: WorkflowSummary, items: WorkflowSummary[]): string {
   const shown = w.displayName?.trim() || w.name;
@@ -194,6 +212,7 @@ export function WorkflowStartForm({ node, dispatch, refCandidates, inMapRegion, 
   const error = fieldErrors.get("name");
   const items = list.state === "ready" ? list.items : [];
   const listed = literal !== null && items.some((w) => w.name === literal);
+  const inputOrder = useTargetInputOrder(items.find((w) => w.name === literal)?.id ?? null);
   return (
     <div className="space-y-3">
       <div className="space-y-1.5">
@@ -257,6 +276,7 @@ export function WorkflowStartForm({ node, dispatch, refCandidates, inMapRegion, 
       <ValueExprInput
         label="渡す入力項目（省略可）"
         shapes={OBJECT_SHAPE}
+        keyOrder={inputOrder}
         value={p.input as ValueExpr | undefined}
         onChange={(v) => patchParams(dispatch, node, { input: v })}
         refCandidates={refCandidates}

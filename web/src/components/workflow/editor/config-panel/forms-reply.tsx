@@ -25,6 +25,20 @@ type Params = NodeParamsByType["workflow.reply"];
 const MAX_LABEL = 40;
 const MAX_COLUMNS = 20;
 
+/// 表の列の位置（JSON Pointer）が指す、行の最上位の項目の名前（`/data/name` → `data`・行そのものの `""` は無し）。
+function topKey(path: string): string | null {
+  if (!path.startsWith("/")) return null;
+  const head = path.slice(1).split("/")[0];
+  return head ? head.replace(/~1/g, "/").replace(/~0/g, "~") : null;
+}
+
+/// 表の 1 行の項目を並べる順（列の順・D-128・BUG-156）。直接書いた表の行は、保存すると項目が名前の順に並び直るので、
+/// 開いたときに列の順で出す。列を決めていなければ並べない。
+function rowKeyOrder(columns: readonly ReplyColumn[] | undefined): string[] | undefined {
+  const keys = (columns ?? []).flatMap((c) => topKey(c.path) ?? []);
+  return keys.length ? [...new Set(keys)] : undefined;
+}
+
 const FORMATS: { value: ReplyFormat; label: string; hint: string }[] = [
   { value: "text", label: "文章", hint: "改行をそのまま出します" },
   { value: "markdown", label: "Markdown", hint: "見出し・箇条書き・表を使えます（ボタンや画面の表は無効になります）" },
@@ -100,6 +114,7 @@ export function WorkflowReplyForm({ node, dispatch, refCandidates, inMapRegion, 
         text={textual}
         multiline={textual}
         shapes={format === "table" ? LIST_SHAPE : format === "file_link" ? ANY_SHAPES : undefined}
+        itemKeyOrder={format === "table" ? rowKeyOrder(p.columns) : undefined}
         value={p.value as ValueExpr | undefined}
         onChange={(v) => set({ value: v })}
         refCandidates={refCandidates}

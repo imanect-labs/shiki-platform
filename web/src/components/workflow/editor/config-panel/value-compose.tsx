@@ -7,6 +7,8 @@
 /// - 行は入力の途中の状態（キーが空・値が無い）を持てる。IR に入れるのは、キーと値がそろった行だけ。
 /// - 外で値が変わった（元に戻す・AI の編集など）ときは、行を値から作り直す。
 /// - キーをテーブルの列から選ばせるとき（`keys`）は、ほかの行で選んだ列を選べなくする。
+/// - 行の並び: 保存した値のキーは名前の順に並び直る（IR は jsonb に保存する）ので、自然な順のある欄だけ、開いたときに
+///   その順で並べる（テーブルの列の順・`keys`、相手の入力項目や表の列の順・`order`・D-128）。並べるだけで値は変えない。
 
 import * as React from "react";
 import { Plus, X } from "lucide-react";
@@ -94,15 +96,15 @@ const ROW_ISSUE_TEXT = {
   no_value: { column: "値を入れるまで、この列は保存しません。", key: "値を入れるまで、この項目は保存しません。" },
 } as const;
 
-/// 列から選ぶときの行の並び（テーブルの列の並び・一覧に無いキーは後ろ）。保存した値のキーは名前の順に並び直るので、
-/// 開き直したときも列の並びで出す。
-function byColumnOrder(rows: ObjectRow[], keys: ComposeKeys | undefined): ObjectRow[] {
-  if (!keys) return rows;
-  const order = (key: string) => {
-    const i = keys.options.findIndex((o) => o.key === key);
-    return i < 0 ? keys.options.length : i;
+/// 行の並び（`order` の順・`order` に無いキーは後ろに今の順で）。保存した値のキーは名前の順に並び直るので、
+/// 開き直したときも自然な順で出す（D-128・BUG-156）。
+function byKeyOrder(rows: ObjectRow[], order: readonly string[] | undefined): ObjectRow[] {
+  if (!order?.length) return rows;
+  const rank = (key: string) => {
+    const i = order.indexOf(key);
+    return i < 0 ? order.length : i;
   };
-  return [...rows].sort((a, b) => order(a.key) - order(b.key));
+  return [...rows].sort((a, b) => rank(a.key) - rank(b.key));
 }
 
 /// 「項目を並べる」: キーと値の行。
@@ -111,20 +113,26 @@ export function ObjectComposer({
   onChange,
   depth,
   keys,
+  order,
   renderSlot,
 }: {
   value: ValueExpr | undefined;
   onChange: (next: ValueExpr) => void;
   depth: number;
   keys?: ComposeKeys;
+  /// 行を並べる順（キーの並び・`keys` があればテーブルの列の順が先）。
+  order?: readonly string[];
   renderSlot: RenderSlot;
 }) {
-  const [rows, update] = useRows<ObjectRow>(value, (v) => byColumnOrder(objectRows(v), keys), objectOfRows, onChange);
-  // 列の一覧はテーブルを読んでから届くので、届いたときに 1 度だけ列の並びにする（並びだけで値は変わらない）。
-  const [ordered, setOrdered] = React.useState(Boolean(keys));
-  if (keys && !ordered) {
-    setOrdered(true);
-    update(byColumnOrder(rows, keys));
+  const sortKeys = keys ? keys.options.map((o) => o.key) : order;
+  const [rows, update] = useRows<ObjectRow>(value, (v) => byKeyOrder(objectRows(v), sortKeys), objectOfRows, onChange);
+  // 列の一覧や相手の入力項目は読んでから届くので、届いた（変わった）ときに 1 度だけその並びにする（並びだけで値は
+  // 変わらない）。打っている途中の行は動かさない（並べ直すのは順が変わったときだけ）。
+  const orderKey = sortKeys?.join("\u0000") ?? "";
+  const [orderedBy, setOrderedBy] = React.useState(orderKey);
+  if (orderKey !== orderedBy) {
+    setOrderedBy(orderKey);
+    update(byKeyOrder(rows, sortKeys));
   }
   const [added, setAdded] = React.useState<number | null>(null);
   const noun = keys ? "column" : "key";

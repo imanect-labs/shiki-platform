@@ -33,7 +33,7 @@ import { cn } from "@/lib/utils";
 import type { TemplateExpr, ValueExpr } from "@/generated/workflow-ir";
 import type { InputFieldInfo } from "@/lib/workflow-input-schema";
 import { InsertMenu, RefPicker } from "./ref-picker";
-import { ListComposer, ObjectComposer, type ComposeKeys, type RenderSlot } from "./value-compose";
+import { ListComposer, ObjectComposer, type ComposeKeys, type RenderSlot, type SlotProps } from "./value-compose";
 import {
   escapeTemplateText,
   findSuspects,
@@ -178,6 +178,11 @@ type Props = {
   shapes?: readonly ComposeShape[];
   /// 「項目を並べる」のキーを一覧から選ばせる（テーブルの列）。欄そのもの（段 0）の組み立てにだけ効く。
   keys?: ComposeKeys;
+  /// 「項目を並べる」の行を開いたときに並べる順（キーの並び・自然な順のある欄だけ。別のワークフローを実行で渡す入力は
+  /// 相手の入力項目の順・D-128）。保存した値のキーは名前の順に並び直るので、並びだけをここで決める（値は変えない）。
+  keyOrder?: readonly string[];
+  /// 「リストを並べる」の 1 件ずつが項目のまとまりのとき、その行を並べる順（結果を画面に返すの表の行は列の順・D-128）。
+  itemKeyOrder?: readonly string[];
   /// 入れ子の段（欄そのものは 0・組み立ての行の値の欄は 1 から）。2 段目からは組み立てを出さない。
   depth?: number;
   /// 見出しに出す文字（省略時は `label`）。`label` は読み上げと data-value-expr に使う（組み立ての行の値の欄）。
@@ -209,6 +214,8 @@ export function ValueExprInput({
   preferFrom,
   shapes,
   keys,
+  keyOrder,
+  itemKeyOrder,
   depth = 0,
   shownLabel,
   actions,
@@ -397,8 +404,9 @@ export function ValueExprInput({
     const block = composeBlock(value, depth);
     return block ? { shape: kind, block } : null;
   })();
-  // 行の値の欄（1 段深い・値の入れ方を選べる）。
-  const renderSlot: RenderSlot = (p) => (
+  // 行の値の欄（1 段深い・値の入れ方を選べる）。リストの 1 件ずつの欄は、項目のまとまりなら `itemKeyOrder` の順に
+  // 並べる（`order`）。
+  const slot = (p: SlotProps, order?: readonly string[]) => (
     <ValueExprInput
       label={p.label}
       shownLabel={p.shownLabel}
@@ -413,8 +421,11 @@ export function ValueExprInput({
       numericNote={null}
       actions={p.actions}
       autoFocus={p.autoFocus}
+      keyOrder={order}
     />
   );
+  const renderSlot: RenderSlot = (p) => slot(p);
+  const renderItemSlot: RenderSlot = (p) => slot(p, itemKeyOrder);
 
   return (
     <div className="min-w-0 space-y-1.5" data-value-expr={label}>
@@ -559,10 +570,17 @@ export function ValueExprInput({
       ) : null}
 
       {composed === "object" ? (
-        <ObjectComposer value={value} onChange={emit} depth={depth} keys={depth === 0 ? keys : undefined} renderSlot={renderSlot} />
+        <ObjectComposer
+          value={value}
+          onChange={emit}
+          depth={depth}
+          keys={depth === 0 ? keys : undefined}
+          order={keyOrder}
+          renderSlot={renderSlot}
+        />
       ) : null}
       {composed === "array" ? (
-        <ListComposer label={label} value={value} onChange={emit} depth={depth} renderSlot={renderSlot} />
+        <ListComposer label={label} value={value} onChange={emit} depth={depth} renderSlot={renderItemSlot} />
       ) : null}
 
       {mode === "from" ? (
