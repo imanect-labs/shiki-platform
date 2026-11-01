@@ -239,6 +239,20 @@ export function creatorMoveStates(d: FlowDraft): string[] {
   return d.states.filter((s) => from.has(s.id)).map((s) => s.id);
 }
 
+/// 出し直す状態の id（状態の一覧の順）: 最初の状態を除き、「レコードを追加した人」が進められ、ほかの人は進められない
+/// 状態（その状態から出る進め方の進められる人が、どれも「レコードを追加した人」だけ）。申請者の列が作成者の列で、
+/// 「最初の状態を過ぎたら、申請者は書き換えられない」がオンなら、このあいだも申請者が直せる（サーバの
+/// `creator_grant::resubmit_states` と同じ決め方・D-127）。審査中の状態から取り下げる進め方を許しても、審査中は開かない。
+export function resubmitStates(d: FlowDraft): string[] {
+  const movable = new Set(creatorMoveStates(d));
+  const initial = d.states[0]?.id;
+  const onlyCreator = (m: MoveDraft) =>
+    m.actor.kind === "simple" && m.actor.who.length > 0 && m.actor.who.every((w) => w.kind === "creator");
+  return d.states
+    .filter((s) => s.id !== initial && movable.has(s.id) && d.moves.filter((m) => m.from === s.id).every(onlyCreator))
+    .map((s) => s.id);
+}
+
 /// 申請・承認のひな形（申請中 → 承認・却下・差し戻しは承認する人、差し戻し → 申請中は「レコードを追加した人」）。
 ///
 /// 今の状態の一覧に同じ名前の状態があれば使い（id を保つ）、ひな形に無い状態は後ろに残す（使っているレコードの状態を
