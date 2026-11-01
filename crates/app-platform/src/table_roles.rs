@@ -134,7 +134,8 @@ impl InstallService {
     ///
     /// **アプリのテーブルの部署・グループのタプルを書き換えるのはこの関数だけ**（インストールの provision と、
     /// インストールの後の変更で共通）。id の形を確かめてから書く。実際に変えた（部署・グループ, 役割）を返す
-    /// （冪等の書き込みで既にあった・無かったものは含めない。監査の失敗で戻すため）。
+    /// （冪等の書き込みで既にあった・無かったものは含めない。監査の失敗で戻すため）。途中で失敗したら、この呼び出しで
+    /// 変えたものを戻してから失敗を返す（best-effort）。
     pub(crate) async fn write_table_roles(
         &self,
         ctx: &AuthContext,
@@ -146,18 +147,43 @@ impl InstallService {
         let ns = ctx.ns();
         let mut changed = Vec::new();
         for (role, relation) in roles.entries() {
-            let subject = Subject::userset(&ns.role(role), Relation::Member);
-            let done = if grant {
-                self.authz.write_tuple(&subject, relation, object).await
-            } else {
-                self.authz.delete_tuple(&subject, relation, object).await
-            }
-            .map_err(|e| AppPlatformError::Internal(format!("authz: {e}")))?;
-            if done {
-                changed.push((role.to_string(), relation));
+            match self
+                .set_role_tuple(&ns, role, relation, object, grant)
+                .await
+            {
+                Ok(true) => changed.push((role.to_string(), relation)),
+                Ok(false) => {}
+                Err(e) => {
+                    for (done, rel) in changed.iter().rev() {
+                        if let Err(undo) =
+                            self.set_role_tuple(&ns, done, *rel, object, !grant).await
+                        {
+                            tracing::error!(error = %undo, role = %done, "部署・グループのタプルを戻せません");
+                        }
+                    }
+                    return Err(e);
+                }
             }
         }
         Ok(changed)
+    }
+
+    /// 部署・グループ 1 つの役割のタプルを付ける・外す（変えたら `true`）。
+    async fn set_role_tuple(
+        &self,
+        ns: &authz::Namespace<'_>,
+        role: &str,
+        relation: Relation,
+        object: &FgaObject,
+        grant: bool,
+    ) -> Result<bool, AppPlatformError> {
+        let subject = Subject::userset(&ns.role(role), Relation::Member);
+        if grant {
+            self.authz.write_tuple(&subject, relation, object).await
+        } else {
+            self.authz.delete_tuple(&subject, relation, object).await
+        }
+        .map_err(|e| AppPlatformError::Internal(format!("authz: {e}")))
     }
 
     /// アプリのテーブルと、それを使える部署・グループを返す（変えられる人だけ・GAP-68）。
@@ -355,7 +381,153 @@ fn validate_change(change: &AppTableRolesChange) -> Result<(), AppPlatformError>
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
+    use std::sync::{Arc, Mutex};
+
+    use authz::{AuthzClient, AuthzError, Consistency, ObjectType, ReadTupleKey};
+
     use super::*;
+
+    /// 書き込みと削除を記録し、部署 `boom` への書き込みだけ失敗する認可。
+    #[derive(Default)]
+    struct FailsOnBoom(Mutex<Vec<String>>);
+
+    #[async_trait::async_trait]
+    impl AuthzClient for FailsOnBoom {
+        async fn check(
+            &self,
+            _: &Subject,
+            _: Relation,
+            _: &FgaObject,
+            _: Consistency,
+        ) -> Result<bool, AuthzError> {
+            Ok(true)
+        }
+        async fn write_tuple(
+            &self,
+            s: &Subject,
+            r: Relation,
+            _: &FgaObject,
+        ) -> Result<bool, AuthzError> {
+            if s.as_str().contains("|boom#") {
+                return Err(AuthzError::Unexpected {
+                    status: 500,
+                    body: "boom".into(),
+                });
+            }
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("write {} {}", s.as_str(), r.as_str()));
+            Ok(true)
+        }
+        async fn delete_tuple(
+            &self,
+            s: &Subject,
+            r: Relation,
+            _: &FgaObject,
+        ) -> Result<bool, AuthzError> {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("delete {} {}", s.as_str(), r.as_str()));
+            Ok(true)
+        }
+        async fn read_tuples(
+            &self,
+            _: &FgaObject,
+            _: Option<Relation>,
+        ) -> Result<Vec<ReadTupleKey>, AuthzError> {
+            Ok(vec![])
+        }
+        async fn list_objects(
+            &self,
+            _: &Subject,
+            _: Relation,
+            _: ObjectType,
+        ) -> Result<Vec<String>, AuthzError> {
+            Ok(vec![])
+        }
+        async fn delete_object_tuples(&self, _: &FgaObject) -> Result<u32, AuthzError> {
+            Ok(0)
+        }
+        async fn read_subject_objects(
+            &self,
+            _: &Subject,
+            _: ObjectType,
+        ) -> Result<Vec<String>, AuthzError> {
+            Ok(vec![])
+        }
+    }
+
+    struct NoRefs;
+
+    #[async_trait::async_trait]
+    impl data::RefResolver for NoRefs {
+        async fn user_exists(&self, _: &AuthContext, _: &str) -> Result<bool, String> {
+            Ok(false)
+        }
+        async fn role_exists(&self, _: &AuthContext, _: &str) -> Result<bool, String> {
+            Ok(false)
+        }
+        async fn file_readable(&self, _: &AuthContext, _: Uuid) -> Result<bool, String> {
+            Ok(false)
+        }
+    }
+
+    /// 途中で失敗したら、その呼び出しで付けたものを戻してから失敗を返す（DB には触らない）。
+    #[tokio::test]
+    async fn a_failed_write_undoes_what_the_call_already_wrote() {
+        let db = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://localhost/none")
+            .unwrap();
+        let fga = Arc::new(FailsOnBoom::default());
+        let authz: Arc<dyn AuthzClient> = fga.clone();
+        let artifacts = Arc::new(artifact::ArtifactStore::new(db.clone(), authz.clone()));
+        let code = Arc::new(crate::MiniAppCodeStore::new(
+            artifacts,
+            crate::Registry::new(db.clone()),
+        ));
+        let data = Arc::new(data::DataStore::new(
+            db.clone(),
+            authz.clone(),
+            Arc::new(NoRefs),
+        ));
+        let installs = InstallService::new(
+            db.clone(),
+            crate::Registry::new(db),
+            code,
+            data,
+            authz,
+            None,
+            vec![],
+        );
+        let ctx = AuthContext::new(
+            authz::Principal {
+                kind: authz::PrincipalKind::User,
+                id: "owner".into(),
+                email: None,
+                groups: vec![],
+                roles: vec![],
+                tenant_id: Some("t".into()),
+            },
+            "acme".into(),
+            "t".into(),
+        );
+        let obj = ctx.ns().data_table("tbl");
+        let out = installs
+            .write_table_roles(&ctx, &obj, &roles(&["sales", "boom"], &[], &[]), true)
+            .await;
+        assert!(matches!(out, Err(AppPlatformError::Internal(_))), "{out:?}");
+        assert_eq!(
+            *fga.0.lock().unwrap(),
+            [
+                "write role:t|sales#member viewer",
+                "delete role:t|sales#member viewer"
+            ]
+        );
+    }
 
     fn roles(viewer: &[&str], editor: &[&str], submitter: &[&str]) -> AppTableRoles {
         let v = |x: &[&str]| x.iter().map(|s| (*s).to_string()).collect();
