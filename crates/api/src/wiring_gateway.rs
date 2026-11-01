@@ -98,7 +98,6 @@ pub(crate) fn wire_gateway(
         audit: storage::audit::AuditRecorder::new(db.clone()),
         // 内部 API と同じ解決規則（single=固定値・multi=tenant クレーム必須で fail-closed）。
         tenant_source: config.auth.tenant_source(),
-        default_org: "default".to_string(),
         caps: app_gateway::CapabilityDeps {
             db: db.clone(),
             storage: Arc::clone(storage_service),

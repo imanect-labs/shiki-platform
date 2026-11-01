@@ -620,8 +620,8 @@ where
     }
 }
 
-/// インストールは B1 のクライアントを、シェルの戻り先・sub を載せる既定のスコープ・tenant と groups のマッパーで
-/// 登録する。アンインストールで無効になり、再インストールで有効に戻る（BUG-172 の ③）。
+/// インストールは B1 のクライアントを、シェルの戻り先・sub を載せる既定のスコープ・tenant のマッパーで登録する
+/// （所属グループのマッパーは付けない・D-130）。アンインストールで無効になり、再インストールで有効に戻る（BUG-172 の ③）。
 #[tokio::test]
 async fn install_registers_b1_client_and_reinstall_enables_it() {
     let Some(pool) = setup().await else { return };
@@ -656,7 +656,7 @@ async fn install_registers_b1_client_and_reinstall_enables_it() {
         assert_eq!(sorted_names(&client["defaultClientScopes"]), ["basic"]);
         assert_eq!(
             sorted_names(&client["protocolMappers"]),
-            ["groups", "shiki-gateway-audience", "tenant"]
+            ["shiki-gateway-audience", "tenant"]
         );
         // インストールは、今の形で揃えた印を付ける（起動時の照合が揃え直さない）。
         assert_eq!(
@@ -726,11 +726,17 @@ async fn startup_repair_fixes_previous_clients_once() {
         serde_json::json!({
             "clientId": "",
             "redirectUris": [redirect],
+            // 7d の版が付けた所属グループのマッパー（D-130 の前）も模す。照合で外れる。
             "protocolMappers": [{
                 "name": "shiki-gateway-audience",
                 "protocol": "openid-connect",
                 "protocolMapper": "oidc-audience-mapper",
                 "config": { "included.custom.audience": "shiki-gateway", "access.token.claim": "true" },
+            }, {
+                "name": "groups",
+                "protocol": "openid-connect",
+                "protocolMapper": "oidc-group-membership-mapper",
+                "config": { "full.path": "true", "claim.name": "groups", "access.token.claim": "true" },
             }],
         })
     };
@@ -751,6 +757,10 @@ async fn startup_repair_fixes_previous_clients_once() {
             rep["clientId"] = serde_json::json!(client);
             realm.update_client_raw(client, &rep).await;
             realm.remove_default_scopes(client).await;
+            assert_eq!(
+                sorted_names(&realm.client(client).await.unwrap()["protocolMappers"]),
+                ["groups", "shiki-gateway-audience"]
+            );
         }
         sqlx::query("UPDATE app_installation SET oauth_client_spec = NULL WHERE tenant_id = $1")
             .bind(&tenant)
@@ -771,7 +781,7 @@ async fn startup_repair_fixes_previous_clients_once() {
         assert_eq!(sorted_names(&fixed["defaultClientScopes"]), ["basic"]);
         assert_eq!(
             sorted_names(&fixed["protocolMappers"]),
-            ["groups", "shiki-gateway-audience", "tenant"]
+            ["shiki-gateway-audience", "tenant"]
         );
         let token = realm
             .user_token(&active_client, SHELL_CALLBACK, "alice", "openid llm.invoke")
@@ -781,6 +791,10 @@ async fn startup_repair_fixes_previous_clients_once() {
         assert!(
             claims["sub"].is_string() && claims["tenant"] == "a-corp",
             "{claims}"
+        );
+        assert!(
+            claims.get("groups").is_none(),
+            "所属グループは載らない: {claims}"
         );
         let spec = app_gateway::client_spec_fingerprint(&redirects);
         assert_eq!(

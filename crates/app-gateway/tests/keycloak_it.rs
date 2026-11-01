@@ -5,10 +5,11 @@
 //! テストの最後に消す。
 //!
 //! - シェルのポップアップの戻り先（`/apps/oauth/callback`）でコードを受け取れる。
-//! - トークンに sub・tenant・groups が載り、ゲートウェイが multi テナントで受け付ける。名前・メール・ロールは
-//!   載らない。別のテナントの人のトークンは、そのテナントにインストールが無いので断られる。
+//! - トークンに sub・tenant が載り、ゲートウェイが multi テナントで受け付ける。名前・メール・ロール・所属グループは
+//!   載らない（所属グループは D-130）。別のテナントの人のトークンは、そのテナントにインストールが無いので断られる。
 //! - 無効にしたクライアント（アンインストール）は、登録し直すと有効に戻る。
-//! - 前の版で登録したクライアント（BFF の戻り先・既定のスコープ無し・マッパー無し）を今の形に直す。
+//! - 前の版で登録したクライアント（BFF の戻り先・既定のスコープ無し・マッパー無し、7d の版の groups のマッパー）を
+//!   今の形に直す。
 
 #![allow(
     clippy::unwrap_used,
@@ -107,7 +108,7 @@ fn names(list: &serde_json::Value) -> Vec<String> {
     v
 }
 
-/// 今の形のクライアントか（有効・シェルの戻り先・既定のスコープは basic だけ・マッパーは aud・tenant・groups）。
+/// 今の形のクライアントか（有効・シェルの戻り先・既定のスコープは basic だけ・マッパーは aud・tenant）。
 fn assert_current_shape(client: &serde_json::Value) {
     assert_eq!(client["enabled"], true, "{client}");
     assert_eq!(client["redirectUris"], serde_json::json!([SHELL_CALLBACK]));
@@ -118,7 +119,7 @@ fn assert_current_shape(client: &serde_json::Value) {
     );
     assert_eq!(
         names(&client["protocolMappers"]),
-        ["groups", "shiki-gateway-audience", "tenant"]
+        ["shiki-gateway-audience", "tenant"]
     );
 }
 
@@ -154,14 +155,13 @@ async fn shell_callback_tokens_carry_sub_tenant_and_reach_the_gateway() {
             .await;
         assert!(bff.is_err(), "{bff:?}");
 
-        // ゲートウェイの検証を本物の鍵で通す: sub・tenant・groups・能力スコープが取れる。
+        // ゲートウェイの検証を本物の鍵で通す: sub・tenant・能力スコープが取れる。
         let identity = verify_gateway_token(&token, &realm.key_resolver(), &gateway_cfg(&realm))
             .await
             .expect("verify");
         assert_eq!(identity.user_sub, ALICE);
         assert_eq!(identity.client_id, client_id);
         assert_eq!(identity.tenant.as_deref(), Some("a-corp"));
-        assert_eq!(identity.groups, ["/tenants/a-corp/a-corp"]);
         assert_eq!(identity.token_scopes, [CapabilityScope::LlmInvoke]);
         assert_eq!(
             authz::TenantSource::Claim
@@ -169,9 +169,9 @@ async fn shell_callback_tokens_carry_sub_tenant_and_reach_the_gateway() {
                 .unwrap(),
             "a-corp"
         );
-        // アプリに渡すトークンに、名前・メール・ロールは載らない。
+        // アプリに渡すトークンに、名前・メール・ロール・所属グループは載らない（所属グループは D-130）。
         let raw = claims(&token);
-        for absent in ["roles", "email", "name", "preferred_username"] {
+        for absent in ["roles", "email", "name", "preferred_username", "groups"] {
             assert!(raw.get(absent).is_none(), "{absent}: {raw}");
         }
 
@@ -272,18 +272,24 @@ async fn previous_clients_are_repaired_in_place() {
     let oauth = realm.oauth_client();
     let redirects = [SHELL_CALLBACK.to_string()];
     let result = async {
-        // 前の版の形（BFF の戻り先・既定のスコープ無し・aud のマッパーだけ）。E2E が手で足したロールのマッパーも模す。
+        // 前の版の形（BFF の戻り先・既定のスコープ無し・aud のマッパーだけ）。E2E が手で足したロールのマッパーと、7d の
+        // 版が付けた所属グループのマッパー（D-130 の前）も模す。
         let mut previous = previous_b1_representation(&client_id);
-        previous["protocolMappers"]
-            .as_array_mut()
-            .unwrap()
-            .push(serde_json::json!({
-                "name": "roles",
-                "protocol": "openid-connect",
-                "protocolMapper": "oidc-usermodel-attribute-mapper",
-                "config": { "user.attribute": "roles", "claim.name": "roles", "multivalued": "true",
-                            "access.token.claim": "true" },
-            }));
+        let mappers = previous["protocolMappers"].as_array_mut().unwrap();
+        mappers.push(serde_json::json!({
+            "name": "roles",
+            "protocol": "openid-connect",
+            "protocolMapper": "oidc-usermodel-attribute-mapper",
+            "config": { "user.attribute": "roles", "claim.name": "roles", "multivalued": "true",
+                        "access.token.claim": "true" },
+        }));
+        mappers.push(serde_json::json!({
+            "name": "groups",
+            "protocol": "openid-connect",
+            "protocolMapper": "oidc-group-membership-mapper",
+            "config": { "full.path": "true", "claim.name": "groups", "access.token.claim": "true",
+                        "id.token.claim": "false", "userinfo.token.claim": "false" },
+        }));
         realm.create_client_raw(&previous).await;
         let before = realm.client(&client_id).await.unwrap();
         assert_eq!(names(&before["defaultClientScopes"]), Vec::<String>::new());
@@ -313,7 +319,9 @@ async fn previous_clients_are_repaired_in_place() {
             .expect("verify");
         assert_eq!(identity.user_sub, ALICE);
         assert_eq!(identity.tenant.as_deref(), Some("a-corp"));
+        // 照合で前の版のマッパーが外れ、トークンにロールも所属グループも載らない。
         assert!(claims(&token).get("roles").is_none());
+        assert!(claims(&token).get("groups").is_none(), "{}", claims(&token));
 
         // 無いクライアントは作らない（confidential の secret を保管し直す経路が照合に無いため）。
         assert!(oauth
@@ -350,7 +358,7 @@ async fn confidential_clients_get_the_same_scopes_and_keep_their_secret() {
         );
         assert_eq!(
             names(&client["protocolMappers"]),
-            ["groups", "shiki-gateway-audience", "tenant"]
+            ["shiki-gateway-audience", "tenant"]
         );
         // 再インストール・照合で secret は作り直さない（保管済みの secret のまま使える）。
         oauth.set_enabled(&client_id, false).await.expect("disable");

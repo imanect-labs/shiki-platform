@@ -259,11 +259,12 @@ export function InstalledAppsSection() {
               </li>
             ))}
           </ul>
-          {/* アプリのトークンには、ゲートウェイが組織を決めるために所属グループの完全なパスが載る（Keycloak の groups
-              のマッパー）。トークンはアプリのコードに渡るので、身元を読む権限を選ばなくても所属はアプリに見える。 */}
+          {/* アプリのトークンはアプリのコードに渡る。載るのは使う人（sub）と契約（tenant）の ID だけで、所属グループは
+              載せない（ゲートウェイは組織をインストールから決める・D-130）。所属するロールは identity.read を付けたときだけ
+              ゲートウェイが返す。 */}
           {consent?.runsCode ? (
             <p className="text-[11px] leading-relaxed text-muted-foreground" data-testid="install-identity-note">
-              使う人の所属する組織と部署・グループの名前は、選んだ権限にかかわらず、このアプリに渡ります。
+              選んだ権限にかかわらず、使う人と契約を見分ける ID は、このアプリに渡ります。所属する部署・グループは、使う人の情報を読む権限を付けたときだけ渡ります。
             </p>
           ) : null}
           {consent && consent.tables.length > 0 ? (

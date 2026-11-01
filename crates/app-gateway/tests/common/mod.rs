@@ -48,11 +48,16 @@ pub const AUDIENCE: &str = "shiki-gateway";
 
 /// 認可スタブ: `deny` で全 check を拒否・`roles` は read_subject_objects・
 /// `objects` は list_objects（可視オブジェクト列挙）の応答。
+///
+/// 組織のメンバーか（`organization#member`・ゲートウェイの入口・D-130）は `deny` と別に `org_members` で答える
+/// （`None` は全員メンバー。`deny_all` でも入口は通し、第4ゲートの否認を確かめられるようにする）。
 #[derive(Default)]
 pub struct StubAuthz {
     pub deny: bool,
     pub roles: Vec<String>,
     pub objects: Vec<String>,
+    /// `organization#member` が真になる (subject, object)。`None` なら誰でも真。
+    pub org_members: Option<Vec<(String, String)>>,
     /// このユーザーには、テーブル（`data_table`）を「追加だけ」（submitter）でだけ持たせる（閲覧・編集・持ち主は偽・D-113）。
     pub add_only_user: Option<String>,
 }
@@ -78,6 +83,12 @@ impl AuthzClient for StubAuthz {
         object: &FgaObject,
         _: Consistency,
     ) -> Result<bool, AuthzError> {
+        if relation == Relation::Member && object.as_str().starts_with("organization:") {
+            return Ok(self.org_members.as_ref().is_none_or(|m| {
+                m.iter()
+                    .any(|(sub, obj)| sub == subject.as_str() && obj == object.as_str())
+            }));
+        }
         if let Some(u) = &self.add_only_user {
             let s = subject.as_str();
             if s.starts_with("user:")
@@ -449,7 +460,6 @@ pub fn state_with(pool: PgPool, tenant: &str, authz: Arc<dyn AuthzClient>) -> Ga
         authz: authz.clone(),
         audit: AuditRecorder::new(pool.clone()),
         tenant_source: authz::TenantSource::Fixed(tenant.into()),
-        default_org: "acme".into(),
         caps: CapabilityDeps {
             db: pool.clone(),
             storage: storage_service,

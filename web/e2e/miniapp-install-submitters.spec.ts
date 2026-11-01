@@ -4,7 +4,8 @@ import { cleanupAll, loginViaKeycloak, uniqueName } from "./helpers";
 
 /// コードアプリの同意インストールで、アプリのテーブルに「追加だけ」を渡す部署・グループを選べる（GAP-53・
 /// インストールの `submitter_roles`）。テーブルを持つアプリだけに欄が出て、選んだ部署がインストールの要求に載る。
-/// 画面かサーバーの処理を持つアプリには、使う人の所属がアプリに渡ることを言う（アプリのトークンの groups）。
+/// 画面かサーバーの処理を持つアプリには、アプリのトークンで何が渡るかを言う（使う人と契約の ID。所属グループは
+/// 載らない・D-130）。
 /// PC（1440px）とスマホ（390px）で見る。`E2E_SHOTS_DIR` があれば画面を撮る。
 
 const SHOTS = process.env.E2E_SHOTS_DIR;
@@ -64,7 +65,7 @@ test("コードアプリの同意インストールで、テーブルに「追�
     try {
       const p = await phoneCtx.newPage();
       // 画面（B1）を持つアプリとして見せる（バンドルは作らない・マニフェストの応答だけ差し替える）。画面やサーバーの
-      // 処理を持つアプリには、所属がトークンでアプリに渡ることを言う。
+      // 処理を持つアプリには、トークンでアプリに渡るものを言う。
       await p.route(`**/api/apps/manifests/${appId}*`, async (route) => {
         const res = await route.fetch();
         const body = (await res.json()) as { manifest: Record<string, unknown> };
@@ -77,7 +78,7 @@ test("コードアプリの同意インストールで、テーブルに「追�
       const field = p.getByTestId("install-submitters");
       await expect(field).toContainText(`このアプリのテーブル（「${table}」）`);
       await expect(p.getByTestId("install-identity-note")).toHaveText(
-        "使う人の所属する組織と部署・グループの名前は、選んだ権限にかかわらず、このアプリに渡ります。",
+        "選んだ権限にかかわらず、使う人と契約を見分ける ID は、このアプリに渡ります。所属する部署・グループは、使う人の情報を読む権限を付けたときだけ渡ります。",
       );
       expect(await p.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
       if (SHOTS) await p.screenshot({ path: `${SHOTS}/install-submitters-phone.png` });
@@ -91,7 +92,7 @@ test("コードアプリの同意インストールで、テーブルに「追�
     await row.getByRole("button", { name: "インストール" }).click();
     const field = page.getByTestId("install-submitters");
     await expect(field).toContainText("レコードを追加するだけの部署・グループ");
-    // 画面もサーバーの処理も無いアプリはトークンを受け取らないので、所属が渡ることは言わない。
+    // 画面もサーバーの処理も無いアプリはトークンを受け取らないので、渡るものは言わない。
     await expect(page.getByTestId("install-identity-note")).toHaveCount(0);
     await expect(field).toContainText(
       `選んだ部署・グループの人は、このアプリのテーブル（「${table}」）にレコードを追加できます。見られるのは、自分が追加したレコードと、個別に共有されたレコードだけです。`,

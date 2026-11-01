@@ -10,6 +10,8 @@ pub mod callback;
 pub mod login;
 pub mod logout;
 pub(crate) mod org_member;
+#[cfg(test)]
+mod org_member_it;
 pub mod session;
 
 use axum_extra::extract::cookie::{Cookie, SameSite};

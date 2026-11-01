@@ -246,7 +246,6 @@ async fn spawn_gateway(
         authz: env.authz.clone(),
         audit: storage::audit::AuditRecorder::new(env.pool.clone()),
         tenant_source,
-        default_org: "acme".into(),
         caps: app_gateway::CapabilityDeps {
             db: env.pool.clone(),
             storage: Arc::new(storage::StorageService::new(
@@ -404,6 +403,12 @@ async fn b2_functions_run_as_the_app_on_schedule_and_as_the_user_on_request() {
             .write_tuple(&ns.user(ALICE), Relation::Member, &ns.role("sales"))
             .await
             .expect("alice in sales");
+        // alice はアプリを入れた組織（acme）のメンバー（ログインの同期が付ける・D-130）。ゲートウェイは利用者の組織を
+        // インストールから決め、このタプルで確かめる。
+        env.authz
+            .write_tuple(&ns.user(ALICE), Relation::Member, &ns.organization("acme"))
+            .await
+            .expect("alice in acme");
 
         // 自動実行（multi テナント）: B2 の client_credentials のトークンで、アプリの主体として行を足す。
         let (_, multi_port, multi_runner) = spawn_gateway(&env, authz::TenantSource::Claim).await;

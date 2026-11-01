@@ -284,21 +284,22 @@ impl AppInstallationStore {
         Ok(exists)
     }
 
-    /// azp（登録 client_id）から**有効な**インストールを引く（ゲートウェイの二重ゲート第2段）。
+    /// azp（登録 client_id）から**有効な**インストールと、それを入れた組織を引く（ゲートウェイの二重ゲート第2段）。
     ///
-    /// B1/B2 いずれの client_id でも解決する。revoked / 不在は `None`（fail-closed）。
+    /// B1/B2 いずれの client_id でも解決する。revoked / 不在は `None`（fail-closed）。組織は、ゲートウェイが利用者の
+    /// 組織として使う（トークンの所属グループでは決めない・D-130）。
     pub async fn resolve_active_by_client(
         &self,
         tenant_id: &str,
         client_id: &str,
-    ) -> Result<Option<AppInstallation>, GatewayError> {
+    ) -> Result<Option<ResolvedInstallation>, GatewayError> {
         let sql = format!(
-            "SELECT {COLS} FROM app_installation \
+            "SELECT tenant_id AS service_tenant_id, org AS service_org, {COLS} FROM app_installation \
              WHERE tenant_id = $1 AND status = 'active' \
                AND (client_id_b1 = $2 OR client_id_b2 = $2) \
              LIMIT 1"
         );
-        let row: Option<Row> = sqlx::query_as(&sql)
+        let row: Option<ServiceRow> = sqlx::query_as(&sql)
             .bind(tenant_id)
             .bind(client_id)
             .fetch_optional(&self.db)
@@ -321,7 +322,7 @@ impl AppInstallationStore {
         &self,
         client_id: &str,
         sub: &str,
-    ) -> Result<Option<ServiceInstallation>, GatewayError> {
+    ) -> Result<Option<ResolvedInstallation>, GatewayError> {
         let sql = format!(
             "SELECT tenant_id AS service_tenant_id, org AS service_org, {COLS} FROM app_installation \
              WHERE b2_service_sub = $1 AND client_id_b2 = $2 AND status = 'active' LIMIT 2"
@@ -333,11 +334,7 @@ impl AppInstallationStore {
             .await
             .map_err(map_db)?;
         match <[ServiceRow; 1]>::try_from(rows) {
-            Ok([row]) => Ok(Some(ServiceInstallation {
-                tenant_id: row.service_tenant_id,
-                org: row.service_org,
-                installation: row.row.into(),
-            })),
+            Ok([row]) => Ok(Some(row.into())),
             Err(rows) if rows.is_empty() => Ok(None),
             Err(_) => {
                 tracing::error!(
@@ -504,23 +501,37 @@ impl AppInstallationStore {
     }
 }
 
-/// B2 のサービスアカウントのトークンが指すインストール（[`AppInstallationStore::resolve_service_identity`]）。
+/// トークンが指すインストールと、それを入れたテナント・組織（[`AppInstallationStore::resolve_active_by_client`]・
+/// [`AppInstallationStore::resolve_service_identity`]）。
+///
+/// ゲートウェイは、利用者の経路でもアプリの主体（自動実行）の経路でも、組織をここから決める（トークンのクレームでは
+/// 決めない・BUG-183・D-130）。
 #[derive(Debug, Clone)]
-pub struct ServiceInstallation {
-    /// インストールしたテナント（アプリの主体のテナント）。
+pub struct ResolvedInstallation {
+    /// インストールしたテナント。
     pub tenant_id: String,
-    /// インストールした組織（アプリの主体の組織）。
+    /// インストールした組織。
     pub org: String,
     pub installation: AppInstallation,
 }
 
-/// [`ServiceInstallation`] の生行（テナント・組織と、[`Row`] の全列）。
+/// [`ResolvedInstallation`] の生行（テナント・組織と、[`Row`] の全列）。
 #[derive(sqlx::FromRow)]
 struct ServiceRow {
     service_tenant_id: String,
     service_org: String,
     #[sqlx(flatten)]
     row: Row,
+}
+
+impl From<ServiceRow> for ResolvedInstallation {
+    fn from(row: ServiceRow) -> Self {
+        ResolvedInstallation {
+            tenant_id: row.service_tenant_id,
+            org: row.service_org,
+            installation: row.row.into(),
+        }
+    }
 }
 
 /// クライアントを今の登録の形に揃えるインストール 1 件（[`AppInstallationStore::clients_to_repair`]）。

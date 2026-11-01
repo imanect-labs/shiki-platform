@@ -537,11 +537,13 @@ pub fn default_client_scopes(kind: ClientKind) -> &'static [&'static str] {
 /// - `tenant`: 利用者の属性 `tenant`（multi テナントでゲートウェイがテナントを決める）。値は Keycloak の利用者に
 ///   束縛されていて、アプリは選べない。別のテナントの人がこのクライアントでトークンを得ても、そのテナントには
 ///   このアプリのインストールが無いので、ゲートウェイが断る（インストールはテナントの中で引く）。
-/// - `groups`: 所属グループの完全なパス（`/tenants/<tenant>/<org>`・ゲートウェイが組織を決める）。
 ///
-/// どちらもアクセストークンにだけ載せる（ID トークン・userinfo には載せない）。ロール（`roles`）は載せない
-/// （ゲートウェイは ReBAC のロールを読み、トークンのロールを使わない。ロールは identity.read の同意で渡す）。
-fn identity_mappers() -> [serde_json::Value; 2] {
+/// アクセストークンにだけ載せる（ID トークン・userinfo には載せない）。所属グループ（`groups`）とロール（`roles`）は
+/// 載せない。B1 ではトークンがアプリのコードに渡るので、載せると身元を読む能力（identity.read）を同意していない
+/// アプリにも所属の部署が見える。ゲートウェイは組織をインストールから決め、OpenFGA の organization#member で確かめる
+/// （D-130）。ロールは ReBAC のものを読み、identity.read の同意で渡す。前の版で付けた `groups` のマッパーは、
+/// 登録の形の指紋が変わるので、起動時の照合が外す（[`OAuthClient::repair`]・PUT はマッパーを名前で突き合わせる）。
+fn identity_mappers() -> [serde_json::Value; 1] {
     let only_access_token = |extra: serde_json::Value| {
         let mut config = serde_json::json!({
             "access.token.claim": "true",
@@ -553,28 +555,17 @@ fn identity_mappers() -> [serde_json::Value; 2] {
         }
         config
     };
-    [
-        serde_json::json!({
-            "name": "tenant",
-            "protocol": "openid-connect",
-            "protocolMapper": "oidc-usermodel-attribute-mapper",
-            "config": only_access_token(serde_json::json!({
-                "user.attribute": "tenant",
-                "claim.name": "tenant",
-                "jsonType.label": "String",
-                "multivalued": "false",
-            })),
-        }),
-        serde_json::json!({
-            "name": "groups",
-            "protocol": "openid-connect",
-            "protocolMapper": "oidc-group-membership-mapper",
-            "config": only_access_token(serde_json::json!({
-                "full.path": "true",
-                "claim.name": "groups",
-            })),
-        }),
-    ]
+    [serde_json::json!({
+        "name": "tenant",
+        "protocol": "openid-connect",
+        "protocolMapper": "oidc-usermodel-attribute-mapper",
+        "config": only_access_token(serde_json::json!({
+            "user.attribute": "tenant",
+            "claim.name": "tenant",
+            "jsonType.label": "String",
+            "multivalued": "false",
+        })),
+    })]
 }
 
 /// Keycloak client 登録 body を組み立てる（純粋関数・単体検証対象）。
@@ -719,10 +710,10 @@ mod tests {
         assert_eq!(rep["redirectUris"][0], "https://apps.example/cb");
     }
 
-    /// 既定のスコープ（sub を載せる basic）と、tenant・groups のマッパーを付ける。名前・メール・ロールは載せない
-    /// （BUG-172。これが無いとトークンに sub と tenant が無く、ゲートウェイが 401 で断る）。
+    /// 既定のスコープ（sub を載せる basic）と、tenant のマッパーを付ける。名前・メール・ロール・所属グループは載せない
+    /// （BUG-172。これが無いとトークンに sub と tenant が無く、ゲートウェイが 401 で断る。所属グループは D-130）。
     #[test]
-    fn both_kinds_carry_sub_tenant_and_groups_only() {
+    fn both_kinds_carry_sub_and_tenant_only() {
         for kind in [ClientKind::PublicPkce, ClientKind::Confidential] {
             let rep = client_representation(kind, "app-x", "経費", &[], None);
             let defaults = rep["defaultClientScopes"].as_array().unwrap();
@@ -734,7 +725,7 @@ mod tests {
             assert_eq!(optional.len(), CapabilityScope::ALL.len());
             let mappers = rep["protocolMappers"].as_array().unwrap();
             let names: Vec<&str> = mappers.iter().filter_map(|m| m["name"].as_str()).collect();
-            assert_eq!(names, ["shiki-gateway-audience", "tenant", "groups"]);
+            assert_eq!(names, ["shiki-gateway-audience", "tenant"]);
             let tenant = &mappers[1];
             assert_eq!(tenant["protocolMapper"], "oidc-usermodel-attribute-mapper");
             // テナントは利用者の属性から写す（アプリが値を選べる固定のクレームにしない）。
@@ -742,10 +733,11 @@ mod tests {
             assert_eq!(tenant["config"]["claim.name"], "tenant");
             assert_eq!(tenant["config"]["access.token.claim"], "true");
             assert_eq!(tenant["config"]["id.token.claim"], "false");
-            let groups = &mappers[2];
-            assert_eq!(groups["protocolMapper"], "oidc-group-membership-mapper");
-            assert_eq!(groups["config"]["full.path"], "true");
-            assert!(!names.contains(&"roles"));
+            // 所属グループはトークンに載せない（組織はゲートウェイがインストールから決める・D-130）。
+            assert!(mappers
+                .iter()
+                .all(|m| m["protocolMapper"] != "oidc-group-membership-mapper"));
+            assert!(!names.contains(&"roles") && !names.contains(&"groups"));
             assert!(mappers
                 .iter()
                 .all(|m| m["protocolMapper"] != "oidc-hardcoded-claim-mapper"));
@@ -785,14 +777,13 @@ mod tests {
             [
                 "shiki-gateway-audience",
                 "tenant",
-                "groups",
                 "shiki-function-audience"
             ]
         );
-        assert_eq!(mappers[3]["protocolMapper"], "oidc-audience-mapper");
-        assert_eq!(mappers[3]["config"]["included.custom.audience"], "app-1-b2");
-        assert_eq!(mappers[3]["config"]["access.token.claim"], "true");
-        assert_eq!(mappers[3]["config"]["id.token.claim"], "false");
+        assert_eq!(mappers[2]["protocolMapper"], "oidc-audience-mapper");
+        assert_eq!(mappers[2]["config"]["included.custom.audience"], "app-1-b2");
+        assert_eq!(mappers[2]["config"]["access.token.claim"], "true");
+        assert_eq!(mappers[2]["config"]["id.token.claim"], "false");
         let without = client_representation(ClientKind::PublicPkce, "app-1-b1", "経費", &[], None);
         let b2 = client_representation(
             ClientKind::Confidential,

@@ -1141,7 +1141,6 @@ async fn b1_install_tokens_reach_the_gateway_in_multi_tenancy() {
         authz: state.authz.clone(),
         audit: storage::audit::AuditRecorder::new(pool.clone()),
         tenant_source: config.auth.tenant_source(),
-        default_org: "default".into(),
         caps: app_gateway::CapabilityDeps {
             db: pool.clone(),
             storage: Arc::clone(&state.storage),

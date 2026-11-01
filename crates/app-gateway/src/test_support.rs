@@ -191,6 +191,41 @@ impl TestRealm {
         }
     }
 
+    /// 利用者 `username` の所属グループの完全なパス（ログインのクライアントのトークンの `groups` と同じ値）。
+    pub async fn user_group_paths(&self, username: &str) -> Vec<String> {
+        let token = self.admin_token().await;
+        let users: Vec<serde_json::Value> = self
+            .http
+            .get(format!("{}/users", self.admin_base()))
+            .query(&[("username", username), ("exact", "true")])
+            .bearer_auth(&token)
+            .send()
+            .await
+            .expect("users")
+            .json()
+            .await
+            .expect("users json");
+        let id = users
+            .first()
+            .and_then(|u| u["id"].as_str())
+            .expect("user")
+            .to_string();
+        let groups: Vec<serde_json::Value> = self
+            .http
+            .get(format!("{}/users/{id}/groups", self.admin_base()))
+            .bearer_auth(&token)
+            .send()
+            .await
+            .expect("groups")
+            .json()
+            .await
+            .expect("groups json");
+        groups
+            .iter()
+            .filter_map(|g| g["path"].as_str().map(str::to_string))
+            .collect()
+    }
+
     async fn internal_id(&self, client_id: &str) -> Option<String> {
         self.client(client_id)
             .await
