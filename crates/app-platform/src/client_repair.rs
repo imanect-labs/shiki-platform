@@ -102,13 +102,14 @@ impl InstallService {
                     b1,
                     &row.app_name,
                     &self.b1_redirect_uris,
+                    row.client_id_b2.as_deref(),
                 )
                 .await
                 .map_err(map_gateway)?;
         }
         if let Some(b2) = &row.client_id_b2 {
             found &= oauth
-                .repair(ClientKind::Confidential, b2, &row.app_name, &[])
+                .repair(ClientKind::Confidential, b2, &row.app_name, &[], None)
                 .await
                 .map_err(map_gateway)?;
         }

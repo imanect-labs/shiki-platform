@@ -85,7 +85,6 @@ fn deps(pool: PgPool) -> TriggerDeps {
         http: reqwest::Client::new(),
         token_endpoint: "http://127.0.0.1:1/token".into(),
         secrets: None,
-        gateway_audience: "shiki-gateway".into(),
         installations: app_gateway::AppInstallationStore::new(pool.clone()),
     });
     TriggerDeps {

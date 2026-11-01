@@ -4,6 +4,10 @@
 //! - **B1 = public client**（authcode+PKCE 強制・secret なし・短命トークン）。
 //! - **B2 = confidential client**（secret はサーバ側 secrets 保管・service account＋standard
 //!   token-exchange 有効。ユーザー操作は token-exchange でユーザー代理を維持＝単独昇格しない）。
+//! - **交換の相手（BUG-182）**: Keycloak 26.2 の標準のトークンの交換は、交換を頼むクライアント（B2）が元のトークンの
+//!   `aud` に入っていることを求める（自分に発行されたトークンを除く）。B2 を持つアプリの B1 のクライアントには、
+//!   同じアプリの B2 の client_id を `aud` に足すマッパーを付ける（[`client_representation`] の `exchanger`）。別の
+//!   アプリの B2 は `aud` に入らないので、そのアプリの利用者のトークンを交換できない。
 //!
 //! クライアント表現（登録 body）の組み立ては純粋関数（[`client_representation`]）に切り出し
 //! 単体検証する。実登録は Keycloak admin REST（provisioner service account）で行い IT で確認する。
@@ -108,19 +112,21 @@ impl OAuthClient {
     ///
     /// アンインストールはクライアントを無効にする（[`Self::set_enabled`]）。再インストールは同じ client_id を
     /// 登録し直すので、ここで有効に戻す（これまでは 409 を成功として扱い、無効のまま残っていた・BUG-172）。
-    /// confidential は登録後に生成 secret を取得して返す（サーバ側で secrets 保管する前提）。
+    /// confidential は登録後に生成 secret を取得して返す（サーバ側で secrets 保管する前提）。`exchanger` は
+    /// [`client_representation`] のとおり（B1 の利用者のトークンを交換する同じアプリの B2）。
     pub async fn register(
         &self,
         kind: ClientKind,
         client_id: &str,
         app_name: &str,
         redirect_uris: &[String],
+        exchanger: Option<&str>,
     ) -> Result<RegisteredClient, GatewayError> {
         let token = self.admin_token().await?;
         // 能力スコープの realm client-scope を冪等作成する（optionalClientScopes 名前解決の前提）。
         // realm JSON のビルトインを汚さないため動的に用意する（Task 9.11/9.12）。
         self.ensure_capability_scopes(&token).await?;
-        let body = client_representation(kind, client_id, app_name, redirect_uris);
+        let body = client_representation(kind, client_id, app_name, redirect_uris, exchanger);
         let resp = self
             .http
             .post(format!("{}/clients", self.admin_base))
@@ -153,13 +159,14 @@ impl OAuthClient {
     /// 有効なインストールのクライアントに使うので、有効に戻す。クライアントが無ければ作らずに `Ok(false)` を
     /// 返す（confidential の secret を保管し直す経路がここに無いため。作り直しは再インストールが行う）。secret は
     /// 取得しない・作り直さない。能力スコープの用意は、この [`OAuthClient`] で 1 回だけ試す（多くのクライアントを
-    /// 続けて揃えるとき、クライアントごとに realm へ作り直しを送らない）。
+    /// 続けて揃えるとき、クライアントごとに realm へ作り直しを送らない）。`exchanger` は [`Self::register`] と同じ。
     pub async fn repair(
         &self,
         kind: ClientKind,
         client_id: &str,
         app_name: &str,
         redirect_uris: &[String],
+        exchanger: Option<&str>,
     ) -> Result<bool, GatewayError> {
         let token = self.admin_token().await?;
         if !self.scopes_ready.load(std::sync::atomic::Ordering::Acquire) {
@@ -172,7 +179,7 @@ impl OAuthClient {
             Err(GatewayError::NotFound) => return Ok(false),
             Err(e) => return Err(e),
         };
-        let body = client_representation(kind, client_id, app_name, redirect_uris);
+        let body = client_representation(kind, client_id, app_name, redirect_uris, exchanger);
         self.update_client(&token, &internal_id, &body).await?;
         Ok(true)
     }
@@ -462,11 +469,17 @@ fn identity_mappers() -> [serde_json::Value; 2] {
 /// B2: `publicClient=false` ＋ `serviceAccountsEnabled=true` ＋ standard token-exchange 有効
 ///     （`standard.token.exchange.enabled=true`・RFC 8693／Keycloak 26.2）。
 /// どちらも既定のスコープ（[`default_client_scopes`]）と、[`identity_mappers`] のマッパーを付ける。
+///
+/// `exchanger` は、B1 のクライアントで取った利用者のトークンを交換してよい B2 の client_id（同じアプリの
+/// サーバーの関数・BUG-182）。B1 のアクセストークンの `aud` に足す。Keycloak 26.2 の標準の交換は、交換を頼む
+/// クライアントが元のトークンの `aud` に無いと 403「Client is not within the token audience」で断る。B2 を持たない
+/// アプリと B2 自身は `None`（B2 では使わない）。
 pub fn client_representation(
     kind: ClientKind,
     client_id: &str,
     app_name: &str,
     redirect_uris: &[String],
+    exchanger: Option<&str>,
 ) -> serde_json::Value {
     let public = kind.is_public();
     let mut attributes = serde_json::Map::new();
@@ -504,6 +517,18 @@ pub fn client_representation(
         }
     })];
     mappers.extend(identity_mappers());
+    if let (true, Some(b2)) = (public, exchanger) {
+        mappers.push(serde_json::json!({
+            "name": EXCHANGER_AUDIENCE_MAPPER,
+            "protocol": "openid-connect",
+            "protocolMapper": "oidc-audience-mapper",
+            "config": {
+                "included.custom.audience": b2,
+                "access.token.claim": "true",
+                "id.token.claim": "false",
+            }
+        }));
+    }
     serde_json::json!({
         "clientId": client_id,
         "name": app_name,
@@ -530,15 +555,23 @@ pub fn client_representation(
 /// 出したとき・戻り先（web のオリジン）を変えたときに変わり、その後の最初の起動で、すべての有効なインストールの
 /// クライアントを揃え直す。
 pub fn client_spec_fingerprint(b1_redirect_uris: &[String]) -> String {
+    let b1 = |exchanger| {
+        client_representation(ClientKind::PublicPkce, "", "", b1_redirect_uris, exchanger)
+    };
     let spec = serde_json::json!({
-        "b1": client_representation(ClientKind::PublicPkce, "", "", b1_redirect_uris),
-        "b2": client_representation(ClientKind::Confidential, "", "", &[]),
+        "b1": b1(None),
+        // B2 を持つアプリの B1（交換の相手の aud を足す・BUG-182）。
+        "b1_with_b2": b1(Some("")),
+        "b2": client_representation(ClientKind::Confidential, "", "", &[], None),
     });
     storage::content_address::sha256_hex(spec.to_string().as_bytes())
 }
 
 /// ゲートウェイトークンの audience（verify_gateway_token の既定 aud と一致させる）。
 const GATEWAY_AUDIENCE: &str = "shiki-gateway";
+
+/// B1 のトークンの `aud` に交換の相手（同じアプリの B2）を足すマッパーの名前（BUG-182）。
+const EXCHANGER_AUDIENCE_MAPPER: &str = "shiki-function-audience";
 
 #[cfg(test)]
 mod tests {
@@ -551,6 +584,7 @@ mod tests {
             "app-b1",
             "経費",
             &["https://apps.example/cb".into()],
+            None,
         );
         assert_eq!(rep["publicClient"], true);
         assert_eq!(rep["standardFlowEnabled"], true);
@@ -574,7 +608,7 @@ mod tests {
     #[test]
     fn both_kinds_carry_sub_tenant_and_groups_only() {
         for kind in [ClientKind::PublicPkce, ClientKind::Confidential] {
-            let rep = client_representation(kind, "app-x", "経費", &[]);
+            let rep = client_representation(kind, "app-x", "経費", &[], None);
             let defaults = rep["defaultClientScopes"].as_array().unwrap();
             assert_eq!(defaults[0], "basic");
             assert!(defaults
@@ -617,9 +651,52 @@ mod tests {
         assert_eq!(a.len(), 64);
     }
 
+    /// B2 を持つアプリの B1 は、同じアプリの B2 をトークンの aud に足す（Keycloak 26.2 の標準の交換は、交換を頼む
+    /// クライアントが元のトークンの aud に無いと断る・BUG-182）。B2 を持たないアプリと B2 自身には付けない。
+    #[test]
+    fn b1_tokens_name_their_own_b2_as_audience() {
+        let with = client_representation(
+            ClientKind::PublicPkce,
+            "app-1-b1",
+            "経費",
+            &[],
+            Some("app-1-b2"),
+        );
+        let mappers = with["protocolMappers"].as_array().unwrap();
+        let names: Vec<&str> = mappers.iter().filter_map(|m| m["name"].as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "shiki-gateway-audience",
+                "tenant",
+                "groups",
+                "shiki-function-audience"
+            ]
+        );
+        assert_eq!(mappers[3]["protocolMapper"], "oidc-audience-mapper");
+        assert_eq!(mappers[3]["config"]["included.custom.audience"], "app-1-b2");
+        assert_eq!(mappers[3]["config"]["access.token.claim"], "true");
+        assert_eq!(mappers[3]["config"]["id.token.claim"], "false");
+        let without = client_representation(ClientKind::PublicPkce, "app-1-b1", "経費", &[], None);
+        let b2 = client_representation(
+            ClientKind::Confidential,
+            "app-1-b2",
+            "経費",
+            &[],
+            Some("app-1-b2"),
+        );
+        for rep in [without, b2] {
+            assert!(rep["protocolMappers"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|m| m["name"] != "shiki-function-audience"));
+        }
+    }
+
     #[test]
     fn b2_confidential_token_exchange_representation() {
-        let rep = client_representation(ClientKind::Confidential, "app-b2", "経費", &[]);
+        let rep = client_representation(ClientKind::Confidential, "app-b2", "経費", &[], None);
         assert_eq!(rep["publicClient"], false);
         assert_eq!(rep["serviceAccountsEnabled"], true);
         assert_eq!(rep["standardFlowEnabled"], false);

@@ -236,7 +236,6 @@ pub(crate) fn wire_functions(
         http: reqwest::Client::new(),
         token_endpoint: config.auth.token_endpoint(),
         secrets: secrets.cloned(),
-        gateway_audience: config.gateway.audience.clone(),
         installations: app_gateway::AppInstallationStore::new(db.clone()),
     });
     Some((port, runner))

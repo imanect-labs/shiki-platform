@@ -349,29 +349,35 @@ impl InstallService {
             return Ok((None, None, None));
         };
         let b1_id = format!("app-{app_id}-b1");
+        // サーバーの関数を持つアプリは、B1 の利用者のトークンを同じアプリの B2 が交換できるようにする（BUG-182）。
+        let b2_id = manifest
+            .server
+            .is_some()
+            .then(|| format!("app-{app_id}-b2"));
         oauth
             .register(
                 app_gateway::ClientKind::PublicPkce,
                 &b1_id,
                 &manifest.name,
                 &self.b1_redirect_uris,
+                b2_id.as_deref(),
             )
             .await
             .map_err(map_gateway)?;
-        let (b2_id, b2_secret) = if manifest.server.is_some() {
-            let id = format!("app-{app_id}-b2");
+        let b2_secret = if let Some(id) = &b2_id {
             let registered = oauth
                 .register(
                     app_gateway::ClientKind::Confidential,
-                    &id,
+                    id,
                     &manifest.name,
                     &[],
+                    None,
                 )
                 .await
                 .map_err(map_gateway)?;
-            (Some(id), registered.client_secret)
+            registered.client_secret
         } else {
-            (None, None)
+            None
         };
         Ok((Some(b1_id), b2_id, b2_secret))
     }

@@ -137,6 +137,7 @@ async fn shell_callback_tokens_carry_sub_tenant_and_reach_the_gateway() {
                 &client_id,
                 "経費",
                 &[SHELL_CALLBACK.to_string()],
+                None,
             )
             .await
             .expect("register");
@@ -235,7 +236,7 @@ async fn registering_again_enables_a_disabled_client() {
     let redirects = [SHELL_CALLBACK.to_string()];
     let result = async {
         oauth
-            .register(ClientKind::PublicPkce, &client_id, "経費", &redirects)
+            .register(ClientKind::PublicPkce, &client_id, "経費", &redirects, None)
             .await
             .expect("register");
         // アンインストールはクライアントを無効にする。無効のクライアントではトークンが出ない。
@@ -248,7 +249,7 @@ async fn registering_again_enables_a_disabled_client() {
 
         // 再インストール（同じ client_id の登録）で有効に戻る。
         oauth
-            .register(ClientKind::PublicPkce, &client_id, "経費", &redirects)
+            .register(ClientKind::PublicPkce, &client_id, "経費", &redirects, None)
             .await
             .expect("register again");
         assert_current_shape(&realm.client(&client_id).await.unwrap());
@@ -296,7 +297,7 @@ async fn previous_clients_are_repaired_in_place() {
 
         // 起動時の照合と同じ直し方。既にある内部の id は変えない。
         assert!(oauth
-            .repair(ClientKind::PublicPkce, &client_id, "経費", &redirects)
+            .repair(ClientKind::PublicPkce, &client_id, "経費", &redirects, None)
             .await
             .expect("repair"));
         let after = realm.client(&client_id).await.unwrap();
@@ -315,7 +316,7 @@ async fn previous_clients_are_repaired_in_place() {
 
         // 無いクライアントは作らない（confidential の secret を保管し直す経路が照合に無いため）。
         assert!(!oauth
-            .repair(ClientKind::PublicPkce, &missing, "経費", &redirects)
+            .repair(ClientKind::PublicPkce, &missing, "経費", &redirects, None)
             .await
             .expect("repair missing"));
         assert!(realm.client(&missing).await.is_none());
@@ -337,7 +338,7 @@ async fn confidential_clients_get_the_same_scopes_and_keep_their_secret() {
     let oauth = realm.oauth_client();
     let result = async {
         let first = oauth
-            .register(ClientKind::Confidential, &client_id, "経費", &[])
+            .register(ClientKind::Confidential, &client_id, "経費", &[], None)
             .await
             .expect("register");
         let client = realm.client(&client_id).await.unwrap();
@@ -352,7 +353,7 @@ async fn confidential_clients_get_the_same_scopes_and_keep_their_secret() {
         // 再インストール・照合で secret は作り直さない（保管済みの secret のまま使える）。
         oauth.set_enabled(&client_id, false).await.expect("disable");
         let again = oauth
-            .register(ClientKind::Confidential, &client_id, "経費", &[])
+            .register(ClientKind::Confidential, &client_id, "経費", &[], None)
             .await
             .expect("register again");
         assert_eq!(again.client_secret, first.client_secret);
@@ -363,7 +364,7 @@ async fn confidential_clients_get_the_same_scopes_and_keep_their_secret() {
             ["basic", "service_account"]
         );
         assert!(oauth
-            .repair(ClientKind::Confidential, &client_id, "経費", &[])
+            .repair(ClientKind::Confidential, &client_id, "経費", &[], None)
             .await
             .expect("repair"));
         let service = reqwest::Client::new()
