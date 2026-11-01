@@ -117,6 +117,19 @@ async function fixAndResubmit(p: Page, tableId: string, recId: string, amount: s
   expect((await moved).status()).toBe(200);
 }
 
+/// 表の一番上の行の金額のセルを開こうとしても、編集の欄が出ない（直せない状態の自分の申請）。
+async function expectCellLocked(p: Page) {
+  const box = (await p.getByTestId("data-grid").boundingBox())!;
+  const x = box.x + ROW_MARKER + COL_WIDTH + COL_WIDTH / 2;
+  const y = box.y + HEADER + ROW / 2;
+  await p.mouse.click(x, y);
+  await p.keyboard.press("Enter");
+  // 開くなら Enter のすぐ後に出る。少し待ってから、出ていないことを確かめる。
+  await p.waitForTimeout(500);
+  await expect(p.locator("#portal textarea")).toHaveCount(0);
+  await p.keyboard.press("Escape");
+}
+
 test("「追加だけ」の申請者が、差し戻された自分の申請を直して出し直せる（D-127）", async ({ page, browser }) => {
   test.setTimeout(300_000);
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -146,7 +159,9 @@ test("「追加だけ」の申請者が、差し戻された自分の申請を�
     expect((await added).status()).toBe(200);
     await expect(editor.getByRole("combobox", { name: "申請者の列" })).toContainText("作成者（作成者の列）");
     const template = editor.getByTestId("state-flow-template");
-    await expect(template).toContainText("差し戻されたレコードを追加した人が直して出し直す進め方");
+    await expect(template).toContainText("承認する人が判断する進め方、追加した人が直して出し直す進め方が入ります。");
+    // ひな形を使うと、いまの状態の並びと申請者の列が替わることを言う（作成者の列がある）。
+    await expect(template).toContainText("いまの状態の並びと申請者の列は、ひな形に合わせて替わります。");
     await editor.getByTestId("state-flow-use-template").click();
     await expect(editor.getByTestId("state-flow-state")).toHaveCount(4);
     await expect(template).toHaveCount(0);
@@ -164,16 +179,39 @@ test("「追加だけ」の申請者が、差し戻された自分の申請を�
     );
     // 本人が進めるための進め方なので、「申請した本人も進められます」の注意は出さない。
     await expect(resubmit.getByTestId("state-flow-self-allowed")).toHaveCount(0);
-    await expect(addOnlyBox.getByTestId("state-flow-add-only-now")).toHaveText(
+    const addOnlyNow = addOnlyBox.getByTestId("state-flow-add-only-now");
+    await expect(addOnlyNow).toHaveText(
       "いまの進め方では、自分が追加したレコードが「差し戻し」のとき、追加だけの人も、そのレコードを進められます。「差し戻し」のあいだは直せます。",
     );
     await expect(editor.getByTestId("state-flow-write-lock")).toBeChecked();
-    await expect(editor.getByTestId("state-flow-applicant")).toContainText(
-      "「申請中」と「差し戻し」のあいだだけ、レコードを追加した人はレコードを書き換えたり削除したりできます。",
+    const lockHint = "テーブルを編集できる人は、自分が追加したレコードを、「申請中」と「差し戻し」のあいだだけ書き換えたり削除したりできます。";
+    await expect(editor.getByTestId("state-flow-applicant")).toContainText(lockHint);
+    // 承認する人も進められる状態は、作成者に許した進め方があっても、そのあいだは直せない（審査中に書き換えさせない）。
+    // 差し戻しから承認する人が却下できる進め方を足すと、差し戻しのあいだも直せなくなる（外すと戻る）。
+    await editor.getByTestId("state-flow-add-move").click();
+    await expect(moves).toHaveCount(5);
+    const extra = moves.nth(4);
+    await extra.getByRole("combobox", { name: "進め方 5のいまの状態" }).click();
+    await page.getByRole("option", { name: "差し戻し", exact: true }).click();
+    await extra.getByRole("combobox", { name: "進め方 5の次の状態" }).click();
+    await page.getByRole("option", { name: "却下", exact: true }).click();
+    await expect(extra).toContainText("「承認者」の人");
+    await expect(addOnlyNow).toHaveText(
+      "いまの進め方では、自分が追加したレコードが「差し戻し」のとき、追加だけの人も、そのレコードを進められます。直すことはできません。",
     );
+    await expect(editor.getByTestId("state-flow-applicant")).toContainText(
+      "テーブルを編集できる人は、自分が追加したレコードを、「申請中」のあいだだけ書き換えたり削除したりできます。",
+    );
+    await extra.getByRole("button", { name: /進め方 5（「差し戻し」から「却下」）を削除/ }).first().click();
+    await expect(moves).toHaveCount(4);
+    await expect(editor.getByTestId("state-flow-applicant")).toContainText(lockHint);
     await addOnlyBox.getByRole("button", { name: "詳しく" }).click();
-    await expect(addOnlyBox.getByTestId("state-flow-add-only-more")).toContainText(
-      "削除と取り込みはできません。ほかの人のレコードは、見ることも直すこともできません。",
+    const addOnlyMore = addOnlyBox.getByTestId("state-flow-add-only-more");
+    await expect(addOnlyMore).toContainText(
+      "最初の状態と、承認する人も進められる状態（例: 申請中）のあいだは直せません。",
+    );
+    await expect(addOnlyMore).toContainText(
+      "削除と取り込みはできません。ほかの人のレコードは、個別に共有されたものだけ見られます。直すことはできません。",
     );
     await addOnlyBox.scrollIntoViewIfNeeded();
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/resubmit-flow-pc.png` });
@@ -235,15 +273,17 @@ test("「追加だけ」の申請者が、差し戻された自分の申請を�
     await bob.goto(`/data/${tableId}`);
     await expect(bob.getByTestId("data-grid")).toHaveAttribute("data-loaded", "1", { timeout: 15_000 });
     await expect(bob.getByTestId("data-add-only-note")).toContainText(
-      "自分が追加したレコードは、「差し戻し」のあいだ直せます。「差し戻し」のレコードは、「状態」のセルを開いて進められます。",
+      "自分が追加したレコードは、「差し戻し」のあいだ直せ、「状態」のセルを開いて進められます。",
     );
     if (SHOTS) await bob.screenshot({ path: `${SHOTS}/resubmit-bob-sent-back-pc.png` });
     await fixAndResubmit(bob, tableId, req1.id, "1200", "resubmit-bob-menu-pc.png");
     let now = await recordOf(page, tableId, req1.id);
     expect(now.data).toMatchObject({ amount: 1200, status: "申請中", created_by: bobMe.id });
     if (SHOTS) await bob.screenshot({ path: `${SHOTS}/resubmit-bob-done-pc.png` });
-    // 出し直した後は直せない（セルも開かない）。alice が承認する。
+    // 出し直した後は直せない（セルも開かない）。alice が承認する。own_records は表の単位なので "1" のまま。セルは、
+    // 行の状態を直せる状態と照らして開かない。
     await expect(bob.getByTestId("data-grid")).toHaveAttribute("data-own-edit", "1");
+    await expectCellLocked(bob);
     const late = await bob.request.patch(`/api/data/tables/${tableId}/records/${req1.id}`, {
       headers: await csrfHeaders(bob),
       data: { patch: { amount: 1 }, expected_rev: now.rev },
@@ -260,7 +300,7 @@ test("「追加だけ」の申請者が、差し戻された自分の申請を�
     const p = await phone.newPage();
     await p.goto(`/data/${tableId}`);
     await expect(p.getByTestId("data-grid")).toHaveAttribute("data-loaded", "2", { timeout: 15_000 });
-    await expect(p.getByTestId("data-add-only-note")).toContainText("「差し戻し」のあいだ直せます。");
+    await expect(p.getByTestId("data-add-only-note")).toContainText("「差し戻し」のあいだ直せ、「状態」のセルを開いて進められます。");
     expect(await p.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
     if (SHOTS) await p.screenshot({ path: `${SHOTS}/resubmit-bob-sent-back-phone.png` });
     await fixAndResubmit(p, tableId, req2.id, "2800", "resubmit-bob-menu-phone.png");
