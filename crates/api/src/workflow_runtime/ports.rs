@@ -228,8 +228,19 @@ impl NodePorts for ProdNodePorts {
         let page = list(None, max).await?;
         // 上限で切ったかを返す（黙って切らない・BUG-180）。list_children は上限ちょうどでも続きの位置を返すので、
         // 続きの見えるものを 1 件だけ読んで確かめる。続きを読む口はまだ無い（NodePorts::storage_list に続きの位置を渡す引数が要る）。
+        // 確かめる読み込みが失敗しても（その間に親が消えた・権限が外れた・一時障害）、読めた items は返し、続きがありうる
+        // ので truncated は true にする（一覧そのものを失敗にしない）。
         let truncated = match page.next_cursor.clone() {
-            Some(cursor) => !list(Some(cursor), 1).await?.items.is_empty(),
+            Some(cursor) => match list(Some(cursor), 1).await {
+                Ok(next) => !next.items.is_empty(),
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e.message,
+                        "フォルダ一覧の続きを確かめられなかったため、truncated を true にします"
+                    );
+                    true
+                }
+            },
             None => false,
         };
         let items: Vec<Value> = page
