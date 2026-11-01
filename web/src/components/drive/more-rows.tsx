@@ -39,10 +39,10 @@ export function MoreRows<T>({
   if (isStalled(list)) {
     return (
       <div className="flex flex-col items-center gap-2 px-3 py-6 text-center" data-testid={`${testId}-stalled`}>
-        <p className="text-balance text-sm text-muted-foreground [word-break:auto-phrase]">
-          {list.items.length === 0
-            ? "まだ見つかっていません。「さらに読み込む」で続きを探します。"
-            : "続きはまだ見つかっていません。「さらに読み込む」で続きを探します。"}
+        {/* 狭い幅では文の切れ目で折り返す（「さらに読み込む」の途中で割らない）。 */}
+        <p className="text-sm text-muted-foreground">
+          <span className="inline-block">{list.items.length === 0 ? "まだ見つかっていません。" : "続きはまだ見つかっていません。"}</span>
+          <span className="inline-block">「さらに読み込む」で続きを探します。</span>
         </p>
         <Button variant="outline" size="sm" onClick={list.loadMore} disabled={list.loadingMore} data-testid={testId}>
           {list.loadingMore ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}
