@@ -16,7 +16,8 @@ folder?: ValueExpr,
  */
 name: ValueExpr, 
 /**
- * CSV 本文（ヘッダ行＋データ行）。
+ * CSV 本文（ヘッダ行＋データ行の文字）。表（`csv.query` の結果 `{columns, rows}`）と項目のまとまりのリストは、
+ * 実行時に CSV に組み立てる（JSON の文字のまま保存しない・BUG-178）。
  */
 content: ValueExpr, 
 /**
