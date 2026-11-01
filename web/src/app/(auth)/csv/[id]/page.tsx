@@ -244,7 +244,7 @@ export default function CsvPage() {
             }}
           />
         ) : (
-          <SqlConsole nodeId={nodeId} parentId={null} />
+          <SqlConsole nodeId={nodeId} canEditFile={!!editable} />
         )}
       </div>
 

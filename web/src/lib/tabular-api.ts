@@ -137,6 +137,16 @@ export function csvFileName(name: string): string {
   return /\.csv$/i.test(name) ? name : `${name}.csv`;
 }
 
+/// 新規保存で、保存先のフォルダーに保存できない（書き込む権限が無い・削除されたか見られない・GAP-66）。
+///
+/// 呼び出し側はドライブのトップに保存し直せる（SQL の結果の「新規 CSV として保存」）。文は利用者向け。
+export class CsvFolderUnavailable extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CsvFolderUnavailable";
+  }
+}
+
 export async function saveNewCsv(input: {
   parentId?: string | null;
   name: string;
@@ -165,10 +175,10 @@ export async function saveNewCsv(input: {
   const invalid = await invalidInputMessage(res);
   if (invalid) throw new Error(invalid);
   if (res.status === 403) {
-    throw new Error("保存先のフォルダーに保存する権限がありません。必要なら、フォルダーの持ち主に頼んでください。");
+    throw new CsvFolderUnavailable("保存先のフォルダーに保存する権限がありません。必要なら、フォルダーの持ち主に頼んでください。");
   }
   if (res.status === 404) {
-    throw new Error("保存先のフォルダーが見つかりません。削除されたか、見る権限がありません。");
+    throw new CsvFolderUnavailable("保存先のフォルダーが見つかりません。削除されたか、見る権限がありません。");
   }
   if (res.status === 400) {
     throw new Error("内容に誤りがあるため、受け付けられませんでした。名前を見直してください。");
