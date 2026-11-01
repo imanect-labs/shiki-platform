@@ -1120,6 +1120,8 @@ flowchart TB
 
 - **認可（FR-11最重要）**: ユーザー委譲OAuth2(PKCE)。実効権限 = アプリスコープ ∩ ユーザーReBAC。
   内部APIは晒さずゲートウェイが能力面を再公開。B2はtoken-exchangeでユーザー代理を維持、自動化のみ所有データ限定サービスidentity。
+  サービス identity（B2 のサービスアカウントのトークン）が使えるのは、アプリのテーブル（`owner@miniapp`）と通知の記録だけで、
+  利用者のファイル・文書・身元・AI・できごとの購読・関数の起動はゲートウェイが断る（ルート表で決める・BUG-183）。
 - **能力カタログ**: storage/data/rag/ai/identity/events。`能力.操作`＋リソース束縛、実認可OpenFGA、アプリ所有リソースあり。
 - **構造化データ**（`crates/data`）: 概念表記として `record(tenant_int,table_int,id,record_int,data JSONB,rev)` ＋ `table_schema`。物理定義は [data-platform.md](./data-platform.md) §3.3 に従う。
   フィールド型に user/dept/file/record 参照。
