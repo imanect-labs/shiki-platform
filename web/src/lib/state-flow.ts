@@ -239,17 +239,26 @@ export function creatorMoveStates(d: FlowDraft): string[] {
   return d.states.filter((s) => from.has(s.id)).map((s) => s.id);
 }
 
-/// 出し直す状態の id（状態の一覧の順）: 最初の状態を除き、「レコードを追加した人」が進められ、ほかの人は進められない
-/// 状態（その状態から出る進め方の進められる人が、どれも「レコードを追加した人」だけ）。申請者の列が作成者の列で、
-/// 「最初の状態を過ぎたら、申請者は書き換えられない」がオンなら、このあいだも申請者が直せる（サーバの
-/// `creator_grant::resubmit_states` と同じ決め方・D-127）。審査中の状態から取り下げる進め方を許しても、審査中は開かない。
+/// 出し直す状態の id（状態の一覧の順）: 最初の状態を除き、「レコードを追加した人」が、承認する人の判断する状態
+/// （審査の状態: 「レコードを追加した人」でない人も進められる進め方が出ている状態）へ進められる状態。出し直す先の
+/// 審査の状態は数えない。申請者の列が作成者の列で、「最初の状態を過ぎたら、申請者は書き換えられない」がオンなら、
+/// このあいだも申請者が直せる（サーバの `creator_grant::resubmit_states` と同じ決め方・D-127）。審査中の状態から
+/// 取り下げる進め方を許しても、審査中は開かない。
 export function resubmitStates(d: FlowDraft): string[] {
-  const movable = new Set(creatorMoveStates(d));
+  const creator = d.creatorField ?? null;
+  if (!creator) return [];
+  /// 「レコードを追加した人」でない人も進められるか（決められない条件は進められるとみなす）。
+  const othersMay = (m: MoveDraft) =>
+    !(m.actor.kind === "simple" && m.actor.who.length > 0 && m.actor.who.every((w) => w.kind === "creator"));
+  const review = new Set(d.moves.filter(othersMay).map((m) => m.from));
+  const byCreator = (m: MoveDraft) =>
+    m.actor.kind === "simple" &&
+    m.actor.who.some((w) => w.kind === "creator") &&
+    !(m.actor.excludeApplicant && d.applicantField === creator);
+  const resubmits = d.moves.filter((m) => m.to !== m.from && review.has(m.to) && byCreator(m));
   const initial = d.states[0]?.id;
-  const onlyCreator = (m: MoveDraft) =>
-    m.actor.kind === "simple" && m.actor.who.length > 0 && m.actor.who.every((w) => w.kind === "creator");
   return d.states
-    .filter((s) => s.id !== initial && movable.has(s.id) && d.moves.filter((m) => m.from === s.id).every(onlyCreator))
+    .filter((s) => s.id !== initial && resubmits.some((m) => m.from === s.id) && !resubmits.some((m) => m.to === s.id))
     .map((s) => s.id);
 }
 

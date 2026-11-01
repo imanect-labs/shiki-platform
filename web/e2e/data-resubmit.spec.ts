@@ -186,29 +186,32 @@ test("「追加だけ」の申請者が、差し戻された自分の申請を�
     await expect(editor.getByTestId("state-flow-write-lock")).toBeChecked();
     const lockHint = "テーブルを編集できる人は、自分が追加したレコードを、「申請中」と「差し戻し」のあいだだけ書き換えたり削除したりできます。";
     await expect(editor.getByTestId("state-flow-applicant")).toContainText(lockHint);
-    // 承認する人も進められる状態は、作成者に許した進め方があっても、そのあいだは直せない（審査中に書き換えさせない）。
-    // 差し戻しから承認する人が却下できる進め方を足すと、差し戻しのあいだも直せなくなる（外すと戻る）。
+    // 取り下げのように、審査しない状態へ進めるだけの進め方を作成者に許しても、そのあいだは直せない（承認 → 却下 を
+    // 「レコードを追加した人」に足すと、承認のときも進められるが、直せるのは差し戻しのあいだだけ。外すと戻る）。
     await editor.getByTestId("state-flow-add-move").click();
     await expect(moves).toHaveCount(5);
     const extra = moves.nth(4);
     await extra.getByRole("combobox", { name: "進め方 5のいまの状態" }).click();
-    await page.getByRole("option", { name: "差し戻し", exact: true }).click();
+    await page.getByRole("option", { name: "承認", exact: true }).click();
     await extra.getByRole("combobox", { name: "進め方 5の次の状態" }).click();
     await page.getByRole("option", { name: "却下", exact: true }).click();
-    await expect(extra).toContainText("「承認者」の人");
+    await extra.getByRole("button", { name: "進め方 5の進められる人を追加" }).click();
+    await page.getByRole("menuitem", { name: "レコードを追加した人" }).click();
+    await extra.getByRole("button", { name: /承認者.*を外す/ }).click();
+    await expect(extra.getByRole("list", { name: "進め方 5の進められる人" })).toHaveText("レコードを追加した人");
     await expect(addOnlyNow).toHaveText(
-      "いまの進め方では、自分が追加したレコードが「差し戻し」のとき、追加だけの人も、そのレコードを進められます。直すことはできません。",
+      "いまの進め方では、自分が追加したレコードが「承認」と「差し戻し」のとき、追加だけの人も、そのレコードを進められます。「差し戻し」のあいだは直せます。",
     );
-    await expect(editor.getByTestId("state-flow-applicant")).toContainText(
-      "テーブルを編集できる人は、自分が追加したレコードを、「申請中」のあいだだけ書き換えたり削除したりできます。",
-    );
-    await extra.getByRole("button", { name: /進め方 5（「差し戻し」から「却下」）を削除/ }).first().click();
-    await expect(moves).toHaveCount(4);
     await expect(editor.getByTestId("state-flow-applicant")).toContainText(lockHint);
+    await extra.getByRole("button", { name: /進め方 5（「承認」から「却下」）を削除/ }).first().click();
+    await expect(moves).toHaveCount(4);
+    await expect(addOnlyNow).toHaveText(
+      "いまの進め方では、自分が追加したレコードが「差し戻し」のとき、追加だけの人も、そのレコードを進められます。「差し戻し」のあいだは直せます。",
+    );
     await addOnlyBox.getByRole("button", { name: "詳しく" }).click();
     const addOnlyMore = addOnlyBox.getByTestId("state-flow-add-only-more");
     await expect(addOnlyMore).toContainText(
-      "最初の状態と、承認する人も進められる状態（例: 申請中）のあいだは直せません。",
+      "最初の状態と、出し直した先の審査中の状態（例: 申請中）のあいだは直せません。",
     );
     await expect(addOnlyMore).toContainText(
       "削除と取り込みはできません。ほかの人のレコードは、個別に共有されたものだけ見られます。直すことはできません。",
