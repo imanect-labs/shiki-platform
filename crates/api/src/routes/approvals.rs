@@ -241,10 +241,23 @@ async fn my_roles(
     let known: std::collections::HashSet<&str> = roles.iter().map(String::as_str).collect();
     // 台帳の値は作者が書いたもの。OpenFGA が object として受け付けない形は問わない（誰も所属できない・
     // BatchCheck は 1 問の形式違反で全体を拒否する）。
-    let ask: Vec<(String, authz::FgaObject)> = store(state)
+    let candidates = store(state)
         .assignee_roles(&ctx.tenant_id, &ctx.org, approval, MAX_ROLE_CHECKS)
         .await
-        .map_err(internal)?
+        .map_err(internal)?;
+    // 候補は名前の順で上限まで。届いたら、後ろのロール宛ての承認はこの人の受信箱に出ない（件数にも数えない）ので、
+    // 黙って切らずに残す（応答には印を足さない・BUG-161 の残り）。
+    if i64::try_from(candidates.len()).unwrap_or(i64::MAX) >= MAX_ROLE_CHECKS {
+        tracing::warn!(
+            tenant_id = %ctx.tenant_id,
+            org = %ctx.org,
+            approval = ?approval,
+            limit = MAX_ROLE_CHECKS,
+            "所属ロールが上限に届いた人の承認の担当のロールの候補が上限に届きました。名前の順で後ろのロール宛ての承認は、\
+             この人の受信箱に出ません"
+        );
+    }
+    let ask: Vec<(String, authz::FgaObject)> = candidates
         .into_iter()
         .filter(|r| !known.contains(r.as_str()) && authz::validate_local_id(r).is_ok())
         .map(|r| {
