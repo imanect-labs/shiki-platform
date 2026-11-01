@@ -350,6 +350,59 @@ mod tests {
     use super::*;
     use crate::policy::ast::CmpOp;
 
+    /// 上限に届いたときの読み直し（[`shared_by_direct_tuples`]）は、`data_record` の直接のタプルを relation を問わず
+    /// 閲覧として数える（Read API は relation を問わずに返す）。viewer を含意しない直接の relation（例: commenter）を
+    /// 足すと、ListObjects の経路では見えないのに、この経路だけ見える側に倒れる（fail-open）。モデルの `data_record` の
+    /// 直接に付けられる relation が、どれも viewer を含意することを確かめる（足したら、この経路を直すまで落ちる）。
+    #[test]
+    #[allow(clippy::unwrap_used)]
+    fn every_direct_data_record_relation_implies_viewer() {
+        let model = authz::model::default_model();
+        let t = model["type_definitions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|t| t["type"] == "data_record")
+            .unwrap();
+        let relations = t["relations"].as_object().unwrap();
+        // viewer を含意する relation（viewer の和に計算の userset で入っているものを、たどれるだけたどる）。
+        let mut implied: Vec<String> = vec!["viewer".into()];
+        let mut i = 0;
+        while i < implied.len() {
+            let def = &relations[&implied[i]];
+            let parts: Vec<&serde_json::Value> = def["union"]["child"]
+                .as_array()
+                .map_or_else(|| vec![def], |c| c.iter().collect());
+            for part in parts {
+                if let Some(r) = part["computedUserset"]["relation"].as_str() {
+                    if !implied.iter().any(|x| x == r) {
+                        implied.push(r.to_string());
+                    }
+                }
+            }
+            i += 1;
+        }
+        let direct: Vec<&String> = t["metadata"]["relations"]
+            .as_object()
+            .unwrap()
+            .iter()
+            .filter(|(_, m)| {
+                m["directly_related_user_types"]
+                    .as_array()
+                    .is_some_and(|v| !v.is_empty())
+            })
+            .map(|(r, _)| r)
+            .collect();
+        assert!(!direct.is_empty());
+        for r in direct {
+            assert!(
+                implied.contains(r),
+                "data_record の直接の relation「{r}」は viewer を含意しません。上限に届いたときの読み直し\
+                 （shared_by_direct_tuples）が見える側に倒れるので、読み直しを viewer の判定で確かめ直してください"
+            );
+        }
+    }
+
     #[test]
     fn analyze_detects_role_needs() {
         let mut needs = Needs::default();
