@@ -206,20 +206,32 @@ impl NodePorts for ProdNodePorts {
         parent_id: Option<Uuid>,
     ) -> Result<Value, PortError> {
         let ctx = auth_ctx(ec);
-        let page = self
-            .storage
-            .list_children(
-                &ctx,
-                parent_id,
-                ChildSort::default(),
-                None,
-                100,
-                // ワークフローの ls もユーザー向けの列挙（システム領域は出さない・#392）。
-                false,
-                ec.trace_id.as_deref(),
-            )
-            .await
-            .map_err(map_storage)?;
+        let max = workflow_engine::vocab::STORAGE_LIST_MAX_ITEMS;
+        let list = |cursor: Option<String>, limit: usize| {
+            let ctx = &ctx;
+            async move {
+                self.storage
+                    .list_children(
+                        ctx,
+                        parent_id,
+                        ChildSort::default(),
+                        cursor.as_deref(),
+                        limit,
+                        // ワークフローの ls もユーザー向けの列挙（システム領域は出さない・#392）。
+                        false,
+                        ec.trace_id.as_deref(),
+                    )
+                    .await
+                    .map_err(map_storage)
+            }
+        };
+        let page = list(None, max).await?;
+        // 上限で切ったかを返す（黙って切らない・BUG-180）。list_children は上限ちょうどでも続きの位置を返すので、
+        // 続きの見えるものを 1 件だけ読んで確かめる。続きを読む口はまだ無い（NodePorts::storage_list に続きの位置を渡す引数が要る）。
+        let truncated = match page.next_cursor.clone() {
+            Some(cursor) => !list(Some(cursor), 1).await?.items.is_empty(),
+            None => false,
+        };
         let items: Vec<Value> = page
             .items
             .iter()
@@ -232,7 +244,7 @@ impl NodePorts for ProdNodePorts {
                 })
             })
             .collect();
-        Ok(json!({ "items": items }))
+        Ok(json!({ "items": items, "truncated": truncated }))
     }
 
     async fn rag_search(

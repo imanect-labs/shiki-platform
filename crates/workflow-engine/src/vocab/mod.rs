@@ -42,6 +42,11 @@ pub use scope::Scope;
 /// 10 万字は、日本語の A4 でおよそ 100 ページ分。後ろの「AI に聞く」に渡しても、一度に読める量に収まる大きさにした。
 pub const STORAGE_READ_MAX_DOCUMENT_CHARS: u32 = 100_000;
 
+/// 「フォルダ一覧」（storage.list・script の `Shiki.storage.list`・AI エージェントの道具）が一度に返す件数の上限
+/// （BUG-180）。多いときは名前の順で先頭のこの件数だけを返し、結果の `truncated` を true にする（黙って切らない・
+/// BUG-149 の `data.list_tables` と同じ）。画面の注記もこの値から出す（`workflow-catalog.ts` に書き出す）。
+pub const STORAGE_LIST_MAX_ITEMS: usize = 100;
+
 /// variant と serde/IR 名の対応を単一定義から生成する（as_str/parse の乖離を構造的に防ぐ）。
 macro_rules! vocab_enum {
     (

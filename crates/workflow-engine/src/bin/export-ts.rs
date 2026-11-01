@@ -35,7 +35,7 @@ use workflow_engine::vocab::{
     agent_tool_catalog, event_catalog, node_catalog, AgentTool, AgentToolCatalogEntry,
     EventCatalogEntry, EventPayloadField, EventSource, IdempotencyClass, NodeCatalogEntry,
     NodeCategory, NodeType, OutputField, PortRule, RunEventKind, RunInfoField, Scope,
-    RUN_INFO_FIELDS, STORAGE_READ_MAX_DOCUMENT_CHARS,
+    RUN_INFO_FIELDS, STORAGE_LIST_MAX_ITEMS, STORAGE_READ_MAX_DOCUMENT_CHARS,
 };
 use workflow_engine::INDEX_WAIT_MAX_MINUTES;
 
@@ -90,7 +90,9 @@ fn limits_ts() -> String {
         "\n/// 「ファイルを読む」が PDF・Office の本文を読む字数の上限（超えた分は入らず truncated が true・D-111）。\n\
          export const STORAGE_READ_MAX_DOCUMENT_CHARS = {STORAGE_READ_MAX_DOCUMENT_CHARS};\n\
          \n/// 「ファイルを読む」が PDF・Office の本文の取り込みを待つ上限（分・過ぎたら index_pending で失敗・D-125）。\n\
-         export const STORAGE_READ_INDEX_WAIT_MAX_MINUTES = {INDEX_WAIT_MAX_MINUTES};\n"
+         export const STORAGE_READ_INDEX_WAIT_MAX_MINUTES = {INDEX_WAIT_MAX_MINUTES};\n\
+         \n/// 「フォルダ一覧」が一度に返す件数の上限（多いと先頭のこの件数だけで truncated が true・BUG-180）。\n\
+         export const STORAGE_LIST_MAX_ITEMS = {STORAGE_LIST_MAX_ITEMS};\n"
     )
 }
 

@@ -710,13 +710,22 @@ fn output_shape(nt: NodeType) -> Shape {
             ],
             "",
         ),
+        // 件数の上限は vocab::STORAGE_LIST_MAX_ITEMS（試験で文と照らす・BUG-180）。
         N::StorageList => Fields(
             "",
-            &[field!(
-                "items",
-                "Array<{ id: string, name: string, kind: string, size: number }>"
-            )],
-            "（最大 100 件）",
+            &[
+                field!(
+                    "items",
+                    "Array<{ id: string, name: string, kind: string, size: number }>",
+                    "名前の順・最大 100 件・kind は file か folder"
+                ),
+                field!(
+                    "truncated",
+                    "boolean",
+                    "100 件より多いとき true・残りは items に入らない"
+                ),
+            ],
+            "",
         ),
         N::RagSearch => Fields(
             "",
