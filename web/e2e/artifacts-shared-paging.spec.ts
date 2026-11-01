@@ -6,7 +6,8 @@ import { cleanupQueue, deleteArtifactApi, loginAs, loginViaKeycloak, uniqueName 
 /// - 共有された分が `limit` を超えると `shared_next_cursor` が付き、`shared_cursor` に渡すと共有された分の続きだけが
 ///   返る（重ならず新しい順）。位置は不透明（id を含まない）で、読めない位置は 400（cursor_invalid）。
 /// - 画面（スキルの一覧）は、共有された分が 0 件のまま続きの位置だけが付いて返っても、続きをたどって出す（応答は
-///   route で差し替える）。
+///   route で差し替える）。往復の上限で読み切れなかったら「さらに読み込む」を出し、続きの頼みが失敗しても自分の
+///   ものは捨てずに、読み込めなかったことを言う。
 /// 作ったもの（アーティファクト・ブラウザーの文脈）は最後に片付ける（失敗したテストでも走る）。
 
 const cleanup = cleanupQueue();
@@ -108,5 +109,120 @@ test("スキルの一覧: 共有された分が 0 件のまま続きの位置が
     expect(asked).toEqual(["", "s1", "s2"]);
   } finally {
     await page.unroute(LIST, handler);
+  }
+});
+
+function fakeSkill(n: number, name: string) {
+  return {
+    id: `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`,
+    kind: "skill",
+    name,
+    owner: "someone-else",
+    current_version: 1,
+    created_at: "2026-10-30T00:00:00Z",
+    updated_at: `2026-10-${String(10 + n).padStart(2, "0")}T00:00:00Z`,
+  };
+}
+
+/// スキルの一覧の頼みに、共有された分の続きの位置ごとの応答を返す（`fail` に入れた位置は 1 回だけ 500）。
+async function serveSkills(page: Page, pages: Record<string, unknown>, fail: Set<string> = new Set()) {
+  const asked: string[] = [];
+  const handler = async (route: Route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    const cursor = new URL(route.request().url()).searchParams.get("shared_cursor") ?? "";
+    asked.push(cursor);
+    if (fail.delete(cursor) || !(cursor in pages)) {
+      return route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ status: 500 }) });
+    }
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(pages[cursor]) });
+  };
+  await page.route(LIST, handler);
+  return { asked, stop: () => page.unroute(LIST, handler) };
+}
+
+test("スキルの一覧: 共有された分を往復の上限で読み切れなかったら「さらに読み込む」を出し、押すと続きを読む（BUG-162）", async ({
+  page,
+}) => {
+  test.setTimeout(90_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await loginViaKeycloak(page);
+  const pages: Record<string, unknown> = { "": { items: [fakeSkill(1, "自分のスキル")], shared_next_cursor: "s1" } };
+  for (let i = 1; i <= 5; i += 1) pages[`s${i}`] = { items: [], shared_next_cursor: `s${i + 1}` };
+  pages.s6 = { items: [fakeSkill(2, "続きで見つかったスキル")], shared_next_cursor: null };
+  const served = await serveSkills(page, pages);
+  try {
+    await page.goto("/skills");
+    await expect(page.getByText("自分のスキル")).toBeVisible({ timeout: 15_000 });
+    const more = page.getByTestId("artifacts-shared-more");
+    await expect(more).toHaveText(/共有されたスキルの続きは、まだ見つかっていません。「さらに読み込む」で続きを探します。/);
+    expect(served.asked).toEqual(["", "s1", "s2", "s3", "s4", "s5"]);
+    await more.getByTestId("artifacts-shared-more-button").click();
+    await expect(page.getByText("続きで見つかったスキル")).toBeVisible();
+    await expect(page.getByTestId("artifacts-shared-more")).toHaveCount(0);
+    expect(served.asked.slice(6)).toEqual(["s6"]);
+  } finally {
+    await served.stop();
+  }
+});
+
+test("スキルの一覧: 共有された分の続きの頼みが失敗しても、読めた分を出して読み込めなかったことを言う（BUG-162）", async ({
+  page,
+  browser,
+}) => {
+  test.setTimeout(90_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await loginViaKeycloak(page);
+  const pages: Record<string, unknown> = {
+    "": { items: [fakeSkill(1, "自分のスキル")], shared_next_cursor: "s1" },
+    s1: { items: [fakeSkill(2, "続きで見つかったスキル")], shared_next_cursor: null },
+  };
+  const served = await serveSkills(page, pages, new Set(["s1"]));
+  try {
+    await page.goto("/skills");
+    await expect(page.getByText("自分のスキル")).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText("スキルはまだありません")).toHaveCount(0);
+    const more = page.getByTestId("artifacts-shared-more");
+    await expect(more).toHaveText(/共有されたスキルの続きを読み込めませんでした。「さらに読み込む」でもう一度試します。/);
+    if (process.env.E2E_SHOTS_DIR) await page.screenshot({ path: `${process.env.E2E_SHOTS_DIR}/skills-shared-failed-pc.png` });
+    // 押すと、失敗した位置から頼み直す。
+    await more.getByTestId("artifacts-shared-more-button").click();
+    await expect(page.getByText("続きで見つかったスキル")).toBeVisible();
+    await expect(page.getByTestId("artifacts-shared-more")).toHaveCount(0);
+    expect(served.asked).toEqual(["", "s1", "s1"]);
+  } finally {
+    await served.stop();
+  }
+  if (process.env.E2E_SHOTS_DIR) {
+    const phone = await browser.newContext({
+      storageState: await page.context().storageState(),
+      viewport: { width: 390, height: 844 },
+      deviceScaleFactor: 2,
+      isMobile: true,
+      hasTouch: true,
+    });
+    try {
+      const p = await phone.newPage();
+      const phoneServed = await serveSkills(p, pages, new Set(["s1"]));
+      await p.goto("/skills");
+      await expect(p.getByTestId("artifacts-shared-more")).toBeVisible({ timeout: 15_000 });
+      expect(await p.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
+      await p.screenshot({ path: `${process.env.E2E_SHOTS_DIR}/skills-shared-failed-phone.png` });
+      await phoneServed.stop();
+    } finally {
+      await phone.close();
+    }
+  }
+});
+
+test("スキルの一覧: 最初の読み込みが失敗したら、空の状態に見せずに読み込めなかったことを言う", async ({ page }) => {
+  test.setTimeout(60_000);
+  await loginViaKeycloak(page);
+  const served = await serveSkills(page, {}, new Set());
+  try {
+    await page.goto("/skills");
+    await expect(page.getByTestId("artifacts-load-failed")).toContainText("スキルの一覧を読み込めませんでした。", { timeout: 15_000 });
+    await expect(page.getByText("スキルはまだありません")).toHaveCount(0);
+  } finally {
+    await served.stop();
   }
 });

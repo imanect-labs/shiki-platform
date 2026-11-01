@@ -15,13 +15,9 @@ import { toast } from "@/components/ui/use-toast";
 import { ArtifactShareDialog } from "@/components/artifacts/share-dialog";
 import { SkillEditorDialog } from "@/components/artifacts/skill-editor";
 import { VersionsDialog } from "@/components/artifacts/versions-dialog";
-import {
-  deleteArtifact,
-  getSkill,
-  listArtifacts,
-  type ArtifactMeta,
-  type SkillVersion,
-} from "@/lib/artifact-api";
+import { ListLoadFailed, SharedMore } from "@/components/artifacts/shared-more";
+import { deleteArtifact, getSkill, type ArtifactMeta, type SkillVersion } from "@/lib/artifact-api";
+import { useArtifactList } from "@/hooks/use-artifact-list";
 import { createThread } from "@/lib/chat-api";
 import { useMe } from "@/hooks/use-me";
 import { publishSkill } from "@/lib/skill-registry-api";
@@ -37,7 +33,8 @@ type DialogState =
 
 export default function SkillsPage() {
   const router = useRouter();
-  const [items, setItems] = React.useState<ArtifactMeta[] | null>(null);
+  const list = useArtifactList("skill");
+  const { items, reload } = list;
   const [dialog, setDialog] = React.useState<DialogState>({ kind: "closed" });
   const [pending, setPending] = React.useState<string | null>(null);
   // 一覧には共有されたスキルも並ぶ。共有（相手の一覧と付与・解除）と削除は持ち主だけができるので、自分のスキルに
@@ -45,13 +42,6 @@ export default function SkillsPage() {
   // 自分が分かるまでは出さない。
   const me = useMe();
   const myId = me.data?.id;
-
-  const reload = React.useCallback(() => {
-    listArtifacts("skill")
-      .then(setItems)
-      .catch(() => setItems([]));
-  }, []);
-  React.useEffect(reload, [reload]);
 
   const openEdit = async (meta: ArtifactMeta) => {
     setPending(meta.id);
@@ -140,6 +130,10 @@ export default function SkillsPage() {
           <Loader2 className="size-4 animate-spin" aria-hidden />
           読み込み中…
         </div>
+      ) : list.error ? (
+        <ListLoadFailed noun="スキル" onRetry={reload} />
+      ) : items.length === 0 && list.sharedCursor ? (
+        <SharedMore noun="スキル" found={false} failed={list.sharedFailed} loading={list.loadingMore} onMore={list.loadMore} />
       ) : items.length === 0 ? (
         <EmptyState
           icon={Sparkles}
@@ -210,6 +204,9 @@ export default function SkillsPage() {
           })}
         </ul>
       )}
+      {items && items.length > 0 && list.sharedCursor ? (
+        <SharedMore noun="スキル" found failed={list.sharedFailed} loading={list.loadingMore} onMore={list.loadMore} />
+      ) : null}
 
       <SkillStoreSection />
 

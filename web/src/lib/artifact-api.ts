@@ -100,28 +100,71 @@ function toMeta(a: ApiArtifact): ArtifactMeta {
 /// 一覧の応答（codegen）。`shared_next_cursor` は共有された分の続きの位置。
 type ArtifactListResponse = components["schemas"]["ArtifactListResponse"];
 
-/// 共有された分の続きを読みにいく回数の上限（[`listArtifacts`]）。
+/// 共有された分の続きを読みにいく回数の上限（[`listArtifacts`]・[`listMoreSharedArtifacts`] の 1 回あたり）。
 const SHARED_MAX_PAGES = 5;
+
+/// アーティファクトの一覧と、共有された分を読み切れたか。
+export type ArtifactList = {
+  items: ArtifactMeta[];
+  /// 共有された分を読み切れなかったときの続きの位置（[`listMoreSharedArtifacts`] に渡す）。読み切ったら `null`。
+  sharedCursor: string | null;
+  /// 共有された分の続きの頼みが失敗した（`sharedCursor` から頼み直せる）。
+  sharedFailed: boolean;
+};
 
 /// 自分が使えるアーティファクト（自分のもの＋共有されたもの・更新の新しい順）。
 ///
 /// 共有された分は、続きの位置（`shared_next_cursor`）をたどって最大 5 回まで読み足す。共有されたものが多い人では、
 /// 共有された分が 0 件のまま続きの位置だけが付いて返ることがある（サーバーが OpenFGA に問う数を抑えるため・BUG-162）。
-export async function listArtifacts(kind: ArtifactKind): Promise<ArtifactMeta[]> {
+/// 5 回で読み切れなかったら続きの位置を、続きの頼みが失敗したらそこまでの分と印を返す（黙って欠かない・自分の
+/// ものまで捨てない）。最初の頼みの失敗は投げる。
+export async function listArtifacts(kind: ArtifactKind): Promise<ArtifactList> {
   const base = `/artifacts?kind=${encodeURIComponent(kind)}`;
   const first = await ok<ArtifactListResponse>(await apiFetch(base));
-  const items: ApiArtifact[] = [...(first.items as ApiArtifact[])];
-  let cursor = first.shared_next_cursor ?? null;
+  const rest = await readShared(base, first.shared_next_cursor ?? null);
+  return {
+    items: sortedMeta([...(first.items as ApiArtifact[]), ...rest.items]),
+    sharedCursor: rest.cursor,
+    sharedFailed: rest.failed,
+  };
+}
+
+/// 共有された分の続きを、`cursor` から最大 5 回まで読む（[`listArtifacts`] が読み切れなかったとき）。返す `items` は
+/// 読み足した分だけ（前の分とは [`mergeArtifacts`] で合わせる）。
+export async function listMoreSharedArtifacts(kind: ArtifactKind, cursor: string): Promise<ArtifactList> {
+  const rest = await readShared(`/artifacts?kind=${encodeURIComponent(kind)}`, cursor);
+  return { items: sortedMeta(rest.items), sharedCursor: rest.cursor, sharedFailed: rest.failed };
+}
+
+/// 2 つの一覧を、重ねずに更新の新しい順で合わせる。
+export function mergeArtifacts(a: ArtifactMeta[], b: ArtifactMeta[]): ArtifactMeta[] {
+  const seen = new Set<string>();
+  return [...a, ...b]
+    .filter((m) => (seen.has(m.id) ? false : (seen.add(m.id), true)))
+    .sort((x, y) => Date.parse(y.updatedAt) - Date.parse(x.updatedAt) || y.id.localeCompare(x.id));
+}
+
+async function readShared(
+  base: string,
+  start: string | null,
+): Promise<{ items: ApiArtifact[]; cursor: string | null; failed: boolean }> {
+  const items: ApiArtifact[] = [];
+  let cursor = start;
   for (let page = 0; cursor && page < SHARED_MAX_PAGES; page += 1) {
-    const more = await ok<ArtifactListResponse>(await apiFetch(`${base}&shared_cursor=${encodeURIComponent(cursor)}`));
+    let more: ArtifactListResponse;
+    try {
+      more = await ok<ArtifactListResponse>(await apiFetch(`${base}&shared_cursor=${encodeURIComponent(cursor)}`));
+    } catch {
+      return { items, cursor, failed: true };
+    }
     items.push(...(more.items as ApiArtifact[]));
     cursor = more.shared_next_cursor ?? null;
   }
-  const seen = new Set<string>();
-  return items
-    .filter((a) => (seen.has(a.id) ? false : (seen.add(a.id), true)))
-    .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at) || b.id.localeCompare(a.id))
-    .map(toMeta);
+  return { items, cursor, failed: false };
+}
+
+function sortedMeta(items: ApiArtifact[]): ArtifactMeta[] {
+  return mergeArtifacts(items.map(toMeta), []);
 }
 
 export async function getArtifact(id: string): Promise<ArtifactMeta> {

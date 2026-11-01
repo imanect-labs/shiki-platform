@@ -155,8 +155,9 @@ export function MiniAppEditorDialog({
     setBuilderKey((k) => k + 1);
     setInputs({});
     setError(null);
-    void listArtifacts("skill").then(setSkills).catch(() => setSkills([]));
-    void listArtifacts("workflow").then(setWorkflows).catch(() => setWorkflows([]));
+    // 共有された分を読み切れなくても、読めた分を選択肢に出す（自分のものまで捨てない・BUG-162）。
+    void listArtifacts("skill").then((l) => setSkills(l.items)).catch(() => setSkills([]));
+    void listArtifacts("workflow").then((l) => setWorkflows(l.items)).catch(() => setWorkflows([]));
     // 束ねているスキルは一覧（先頭のページだけ）に有るかでなく、ピンの版を直に読んで確かめる。
     setPinnedSkill({ state: "checking" });
     const pin = app?.body.skill;

@@ -21,7 +21,7 @@ export function SkillPicker({
   React.useEffect(() => {
     let active = true;
     listArtifacts("skill")
-      .then((items) => active && setSkills(items))
+      .then((list) => active && setSkills(list.items))
       .catch(() => active && setSkills([]));
     return () => {
       active = false;

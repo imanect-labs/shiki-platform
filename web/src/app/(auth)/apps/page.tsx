@@ -15,7 +15,9 @@ import { toast } from "@/components/ui/use-toast";
 import { ArtifactShareDialog } from "@/components/artifacts/share-dialog";
 import { MiniAppEditorDialog } from "@/components/artifacts/miniapp-editor";
 import { VersionsDialog } from "@/components/artifacts/versions-dialog";
-import { deleteArtifact, listArtifacts, type ArtifactMeta } from "@/lib/artifact-api";
+import { ListLoadFailed, SharedMore } from "@/components/artifacts/shared-more";
+import { deleteArtifact, type ArtifactMeta } from "@/lib/artifact-api";
+import { useArtifactList } from "@/hooks/use-artifact-list";
 import { InstalledAppsSection } from "@/components/miniapp/installed-apps";
 import { useMe } from "@/hooks/use-me";
 
@@ -27,7 +29,8 @@ type DialogState =
   | { kind: "delete"; meta: ArtifactMeta };
 
 export default function AppsPage() {
-  const [items, setItems] = React.useState<ArtifactMeta[] | null>(null);
+  const list = useArtifactList("mini_app");
+  const { items, reload } = list;
   const [dialog, setDialog] = React.useState<DialogState>({ kind: "closed" });
   const [pending, setPending] = React.useState<string | null>(null);
   // 一覧には共有されたアプリも並ぶ。共有（相手の一覧と付与・解除）と削除は持ち主（owner）だけができるので、
@@ -35,13 +38,6 @@ export default function AppsPage() {
   // 自分が分かるまでは出さない（実行画面の共有ボタンはサーバの答え `can_share` で出し分ける）。
   const me = useMe();
   const myId = me.data?.id;
-
-  const reload = React.useCallback(() => {
-    listArtifacts("mini_app")
-      .then(setItems)
-      .catch(() => setItems([]));
-  }, []);
-  React.useEffect(reload, [reload]);
 
   /// 削除は確認ダイアログから（失敗はダイアログ内に出す）。
   const remove = async (meta: ArtifactMeta) => {
@@ -74,6 +70,10 @@ export default function AppsPage() {
           <Loader2 className="size-4 animate-spin" aria-hidden />
           読み込み中…
         </div>
+      ) : list.error ? (
+        <ListLoadFailed noun="アプリ" onRetry={reload} />
+      ) : items.length === 0 && list.sharedCursor ? (
+        <SharedMore noun="アプリ" found={false} failed={list.sharedFailed} loading={list.loadingMore} onMore={list.loadMore} />
       ) : items.length === 0 ? (
         <EmptyState
           icon={LayoutGrid}
@@ -124,6 +124,9 @@ export default function AppsPage() {
           ))}
         </ul>
       )}
+      {items && items.length > 0 && list.sharedCursor ? (
+        <SharedMore noun="アプリ" found failed={list.sharedFailed} loading={list.loadingMore} onMore={list.loadMore} />
+      ) : null}
 
       <InstalledAppsSection />
 
