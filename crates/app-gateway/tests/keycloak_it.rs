@@ -299,7 +299,8 @@ async fn previous_clients_are_repaired_in_place() {
         assert!(oauth
             .repair(ClientKind::PublicPkce, &client_id, "経費", &redirects, None)
             .await
-            .expect("repair"));
+            .expect("repair")
+            .is_some());
         let after = realm.client(&client_id).await.unwrap();
         assert_eq!(after["id"], before["id"]);
         assert_current_shape(&after);
@@ -315,10 +316,11 @@ async fn previous_clients_are_repaired_in_place() {
         assert!(claims(&token).get("roles").is_none());
 
         // 無いクライアントは作らない（confidential の secret を保管し直す経路が照合に無いため）。
-        assert!(!oauth
+        assert!(oauth
             .repair(ClientKind::PublicPkce, &missing, "経費", &redirects, None)
             .await
-            .expect("repair missing"));
+            .expect("repair missing")
+            .is_none());
         assert!(realm.client(&missing).await.is_none());
     };
     run_then(result, async {
@@ -363,10 +365,14 @@ async fn confidential_clients_get_the_same_scopes_and_keep_their_secret() {
             names(&again["defaultClientScopes"]),
             ["basic", "service_account"]
         );
-        assert!(oauth
+        let repaired = oauth
             .repair(ClientKind::Confidential, &client_id, "経費", &[], None)
             .await
-            .expect("repair"));
+            .expect("repair")
+            .expect("client");
+        // 登録と照合は、サービスアカウントの利用者（自動実行のトークンの sub）を返す（BUG-183）。
+        assert!(first.service_account_sub.is_some());
+        assert_eq!(repaired.service_account_sub, first.service_account_sub);
         let service = reqwest::Client::new()
             .post(realm.token_endpoint())
             .form(&[
@@ -380,8 +386,13 @@ async fn confidential_clients_get_the_same_scopes_and_keep_their_secret() {
         assert!(service.status().is_success(), "{}", service.status());
         let body: serde_json::Value = service.json().await.unwrap();
         let token = body["access_token"].as_str().unwrap();
-        // サービスアカウントのトークンにも sub が載る（basic）。
-        assert!(claims(token)["sub"].as_str().is_some(), "{}", claims(token));
+        // サービスアカウントのトークンにも sub が載る（basic）。登録が返したサービスアカウントの利用者と同じ。
+        assert_eq!(
+            claims(token)["sub"].as_str(),
+            first.service_account_sub.as_deref(),
+            "{}",
+            claims(token)
+        );
     };
     run_then(result, realm.delete_client(&client_id)).await;
 }

@@ -4,6 +4,11 @@
 //! ①JWKS トークン検証 → ②ルート→必要スコープの宣言的マップ → ③`granted_scopes` 突合
 //! （同意失効の即時反映）→ ④ハンドラ内 per-call OpenFGA（呼出ユーザーの ReBAC）。
 //! 全ての許可/拒否を監査へ残す（拒否は security タグ付き・trace_id 貫通）。
+//!
+//! **呼び出す主体**: 利用者のトークン（B1 の PKCE・B2 が交換したもの）は利用者（`user`）。B2 の自動実行の
+//! サービスアカウントのトークン（`azp` が有効なインストールの B2 で、`sub` がそのサービスアカウントの利用者）だけを
+//! アプリの主体（`miniapp:<tenant>|<app_id>`・BUG-183）として扱い、テナントと組織はインストールから決める。アプリの
+//! 主体が通れるルートはルート表の `app_principal` のものだけ（アプリのテーブルと通知の記録）。
 
 use std::sync::Arc;
 use storage::audit::AuditAction;
@@ -23,7 +28,7 @@ use storage::audit::{AuditEntry, AuditRecorder, Decision};
 use crate::{
     notification::NotificationStore,
     ports::RagPort,
-    scope_map::{required_scope_for, RouteScope},
+    scope_map::{required_scope_for, route_for, RouteScope},
     token::{verify_gateway_token, GatewayIdentity, GatewayTokenConfig, KeyResolver},
     usage, AppInstallation, AppInstallationStore, GatewayError,
 };
@@ -80,6 +85,10 @@ pub struct GatewayCtx {
     pub identity: GatewayIdentity,
     pub installation: AppInstallation,
 }
+
+/// アプリの主体（自動実行）が、通さないルートを呼んだときの文（BUG-183）。
+const APP_PRINCIPAL_DENIED: &str =
+    "自動で動くアプリの処理が使えるのは、アプリのテーブルと通知だけです";
 
 /// 401 の固定の文言（理由を含めない）。
 const UNAUTHENTICATED_MSG: &str =
@@ -250,12 +259,29 @@ async fn authorize(
     let route = matched.as_str().to_string();
 
     // ② ルート→必要スコープ（未宣言は fail-closed で拒否＝到達不能）。
-    let requirement = required_scope_for(&method, &route)
+    let entry = route_for(&method, &route)
         .ok_or_else(|| GatewayError::Forbidden("未宣言のルートです".into()))?;
 
     // ① トークン検証（JWKS・aud=gateway・azp）。
     let token = bearer(req)?;
     let identity = verify_gateway_token(&token, &*state.keys, &state.token_cfg).await?;
+
+    // B2 の自動実行のサービスアカウントのトークンは、アプリの主体（BUG-183）。テナントと組織はトークンのクレームでは
+    // なくインストールから決める（サービスアカウントの利用者には tenant の属性も所属も無い）。B2 が交換した利用者の
+    // トークンは sub が利用者なので当たらず、下の利用者の経路を通る。
+    if let Some(svc) = state
+        .installations
+        .resolve_service_identity(&identity.client_id, &identity.user_sub)
+        .await?
+    {
+        let auth =
+            AuthContext::for_miniapp(svc.tenant_id, svc.org, &svc.installation.app_id.to_string());
+        if !entry.app_principal {
+            record(state, &auth, &svc.installation, &route, Decision::Deny).await;
+            return Err(GatewayError::Forbidden(APP_PRINCIPAL_DENIED.into()));
+        }
+        return require_scope(state, &route, entry.scope, auth, identity, svc.installation).await;
+    }
 
     // テナント解決（内部 API と同じ規則）。multi では tenant クレーム必須（欠落は fail-closed で
     // 拒否＝既定テナントへ紛れ込ませない）。single は設定の固定値を使いクレームを無視する。
@@ -288,7 +314,18 @@ async fn authorize(
         .await?
         .ok_or_else(|| GatewayError::Forbidden("有効なインストールがありません".into()))?;
 
-    // スコープ要件: granted_scopes ∩ token_scopes に必要スコープが含まれること。
+    require_scope(state, &route, entry.scope, auth, identity, installation).await
+}
+
+/// スコープ要件: granted_scopes ∩ token_scopes に必要スコープが含まれること（利用者・アプリの主体で共通）。
+async fn require_scope(
+    state: &GatewayState,
+    route: &str,
+    requirement: RouteScope,
+    auth: AuthContext,
+    identity: GatewayIdentity,
+    installation: AppInstallation,
+) -> Result<GatewayCtx, GatewayError> {
     if let RouteScope::Scoped(need) = requirement {
         let granted = installation
             .granted_scopes
@@ -296,7 +333,7 @@ async fn authorize(
             .any(|g| g == need.as_str());
         let in_token = identity.token_scopes.contains(&need);
         if !(granted && in_token) {
-            record(state, &auth, &installation, &route, Decision::Deny).await;
+            record(state, &auth, &installation, route, Decision::Deny).await;
             return Err(GatewayError::Forbidden(format!(
                 "スコープ {} が付与されていません",
                 need.as_str()
@@ -355,8 +392,15 @@ async fn record(
 }
 
 /// 呼出主体の自己情報（app_id・granted_scopes・user sub）。能力スコープ不要。
+///
+/// `principal` は呼び出す主体の種類（利用者は `user`・自動実行のアプリの主体は `app`・BUG-183）。
 async fn whoami(Extension(ctx): Extension<GatewayCtx>) -> Json<serde_json::Value> {
+    let principal = match ctx.auth.principal.kind {
+        PrincipalKind::MiniApp => "app",
+        _ => "user",
+    };
     Json(json!({
+        "principal": principal,
         "user_sub": ctx.identity.user_sub,
         "client_id": ctx.identity.client_id,
         "app_id": ctx.installation.app_id,

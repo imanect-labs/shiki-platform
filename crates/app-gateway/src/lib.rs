@@ -33,12 +33,12 @@ pub use b1::{build_b1_router, bundle_csp, B1State};
 pub use builtin::{build_builtin_router, builtin_csp, BuiltinState};
 pub use installation::{
     AiPin, AppInstallation, AppInstallationStore, ClientsToRepair, InstallStatus,
-    NewAppInstallation,
+    NewAppInstallation, ServiceInstallation,
 };
 pub use notification::{AppNotification, NotificationStore};
 pub use oauth::{
     client_representation, client_spec_fingerprint, default_client_scopes, ClientKind, OAuthClient,
-    RegisteredClient,
+    RegisteredClient, RepairedClient,
 };
 pub use ports::{
     AgentInvokeSpec, AgentPort, AiEvent, AiEventStream, FunctionInvokeSpec, FunctionPort, NoAgent,
@@ -46,7 +46,7 @@ pub use ports::{
 };
 pub use router::{build_gateway_router, CapabilityDeps, GatewayCtx, GatewayState};
 pub use routes::ai::{resolve_app_model, AiError};
-pub use scope_map::{required_scope_for, GatewayRoute, RouteScope};
+pub use scope_map::{required_scope_for, route_for, GatewayRoute, RouteScope};
 pub use token::{verify_gateway_token, GatewayIdentity, GatewayTokenConfig, KeyResolver};
 pub use token_exchange::{exchange_for_user, exchange_params, ExchangedToken};
 pub use usage::{fetch_usage, CapabilityUsage};

@@ -44,6 +44,16 @@ pub struct RegisteredClient {
     pub client_id: String,
     /// confidential のみ Some（サーバ側 secrets 保管・ゲストへは渡さない）。
     pub client_secret: Option<String>,
+    /// confidential のサービスアカウントの利用者の id（client_credentials のトークンの `sub`・BUG-183）。
+    /// ゲートウェイがアプリの主体のトークンを見分ける（`app_installation.b2_service_sub`）。public は None。
+    pub service_account_sub: Option<String>,
+}
+
+/// 揃えたクライアント（[`OAuthClient::repair`]）。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RepairedClient {
+    /// confidential のサービスアカウントの利用者の id（[`RegisteredClient::service_account_sub`]）。public は None。
+    pub service_account_sub: Option<String>,
 }
 
 /// Keycloak admin REST 越しにクライアントを登録する OAuth 配線。
@@ -143,22 +153,27 @@ impl OAuthClient {
         } else if !status.is_success() {
             return Err(GatewayError::Upstream(format!("client 登録応答: {status}")));
         }
-        let client_secret = if kind.is_public() {
-            None
+        let (client_secret, service_account_sub) = if kind.is_public() {
+            (None, None)
         } else {
-            Some(self.fetch_secret(&token, client_id).await?)
+            let internal_id = self.find_internal_id(&token, client_id).await?;
+            (
+                Some(self.fetch_secret(&token, &internal_id).await?),
+                Some(self.service_account_sub(&token, &internal_id).await?),
+            )
         };
         Ok(RegisteredClient {
             client_id: client_id.to_string(),
             client_secret,
+            service_account_sub,
         })
     }
 
     /// 既にあるクライアントを今の登録の形に揃える（前の版で登録したクライアントを直す・起動時の照合）。
     ///
-    /// 有効なインストールのクライアントに使うので、有効に戻す。クライアントが無ければ作らずに `Ok(false)` を
+    /// 有効なインストールのクライアントに使うので、有効に戻す。クライアントが無ければ作らずに `Ok(None)` を
     /// 返す（confidential の secret を保管し直す経路がここに無いため。作り直しは再インストールが行う）。secret は
-    /// 取得しない・作り直さない。能力スコープの用意は、この [`OAuthClient`] で 1 回だけ試す（多くのクライアントを
+    /// 取得しない・作り直さない。confidential はサービスアカウントの利用者の id を返す（BUG-183）。能力スコープの用意は、この [`OAuthClient`] で 1 回だけ試す（多くのクライアントを
     /// 続けて揃えるとき、クライアントごとに realm へ作り直しを送らない）。`exchanger` は [`Self::register`] と同じ。
     pub async fn repair(
         &self,
@@ -167,7 +182,7 @@ impl OAuthClient {
         app_name: &str,
         redirect_uris: &[String],
         exchanger: Option<&str>,
-    ) -> Result<bool, GatewayError> {
+    ) -> Result<Option<RepairedClient>, GatewayError> {
         let token = self.admin_token().await?;
         if !self.scopes_ready.load(std::sync::atomic::Ordering::Acquire) {
             self.ensure_capability_scopes(&token).await?;
@@ -176,12 +191,19 @@ impl OAuthClient {
         }
         let internal_id = match self.find_internal_id(&token, client_id).await {
             Ok(id) => id,
-            Err(GatewayError::NotFound) => return Ok(false),
+            Err(GatewayError::NotFound) => return Ok(None),
             Err(e) => return Err(e),
         };
         let body = client_representation(kind, client_id, app_name, redirect_uris, exchanger);
         self.update_client(&token, &internal_id, &body).await?;
-        Ok(true)
+        let service_account_sub = if kind.is_public() {
+            None
+        } else {
+            Some(self.service_account_sub(&token, &internal_id).await?)
+        };
+        Ok(Some(RepairedClient {
+            service_account_sub,
+        }))
     }
 
     /// 既にあるクライアントを `body`（[`client_representation`]）の形に書き直す（有効・戻り先・属性・マッパー・
@@ -369,9 +391,43 @@ impl OAuthClient {
             .ok_or(GatewayError::NotFound)
     }
 
-    /// confidential client の生成 secret を取得する（内部 uuid を引いてから secret を GET）。
-    async fn fetch_secret(&self, token: &str, client_id: &str) -> Result<String, GatewayError> {
-        let internal_id = self.find_internal_id(token, client_id).await?;
+    /// confidential client のサービスアカウントの利用者の id（client_credentials のトークンの `sub`・BUG-183）。
+    ///
+    /// クライアントを管理できる provisioner の権限（manage-clients）で読める（権限は足さない）。
+    async fn service_account_sub(
+        &self,
+        token: &str,
+        internal_id: &str,
+    ) -> Result<String, GatewayError> {
+        #[derive(Deserialize)]
+        struct User {
+            id: String,
+        }
+        let resp = self
+            .http
+            .get(format!(
+                "{}/clients/{internal_id}/service-account-user",
+                self.admin_base
+            ))
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(|e| GatewayError::Upstream(format!("service account 取得: {e}")))?;
+        if !resp.status().is_success() {
+            return Err(GatewayError::Upstream(format!(
+                "service account 応答: {}",
+                resp.status()
+            )));
+        }
+        let user: User = resp
+            .json()
+            .await
+            .map_err(|e| GatewayError::Upstream(format!("service account parse: {e}")))?;
+        Ok(user.id)
+    }
+
+    /// confidential client の生成 secret を取得する（内部 uuid の secret を GET）。
+    async fn fetch_secret(&self, token: &str, internal_id: &str) -> Result<String, GatewayError> {
         #[derive(Deserialize)]
         struct Secret {
             value: String,
@@ -563,6 +619,8 @@ pub fn client_spec_fingerprint(b1_redirect_uris: &[String]) -> String {
         // B2 を持つアプリの B1（交換の相手の aud を足す・BUG-182）。
         "b1_with_b2": b1(Some("")),
         "b2": client_representation(ClientKind::Confidential, "", "", &[], None),
+        // 揃えるときにインストールへ書き戻すもの（B2 のサービスアカウントの利用者・BUG-183）。
+        "records": ["b2_service_sub"],
     });
     storage::content_address::sha256_hex(spec.to_string().as_bytes())
 }

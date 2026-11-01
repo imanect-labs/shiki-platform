@@ -303,6 +303,50 @@ impl AppInstallationStore {
         Ok(row.map(Into::into))
     }
 
+    /// B2 のサービスアカウントのトークン（`azp` = `client_id`・`sub` = `sub`）から、そのアプリの**有効な**
+    /// インストールと、それを入れたテナント・組織を引く（自動実行のアプリの主体・BUG-183）。
+    ///
+    /// 一致するのは、インストールの B2 のクライアントと、そのサービスアカウントの利用者（`b2_service_sub`・
+    /// migration 0126）の両方が合うトークンだけ。同じ B2 が交換した利用者のトークン（`sub` は利用者）・別のアプリの
+    /// クライアントのトークン・アンインストールしたアプリのトークンは `None`（利用者として扱うか、断る）。
+    ///
+    /// **テナントで絞らない理由**: サービスアカウントの利用者には tenant の属性が無く、トークンにテナントが無い。
+    /// テナントと組織は、トークンのクレームではなく、この行から決める（クライアントの id は realm で一意・有効な
+    /// app_id は大域で一意・migration 0081）。2 行返れば不変条件の違反として fail-closed にする。
+    pub async fn resolve_service_identity(
+        &self,
+        client_id: &str,
+        sub: &str,
+    ) -> Result<Option<ServiceInstallation>, GatewayError> {
+        let sql = format!(
+            "SELECT tenant_id AS service_tenant_id, org AS service_org, {COLS} FROM app_installation \
+             WHERE b2_service_sub = $1 AND client_id_b2 = $2 AND status = 'active' LIMIT 2"
+        );
+        let rows: Vec<ServiceRow> = sqlx::query_as(&sql)
+            .bind(sub)
+            .bind(client_id)
+            .fetch_all(&self.db)
+            .await
+            .map_err(map_db)?;
+        match <[ServiceRow; 1]>::try_from(rows) {
+            Ok([row]) => Ok(Some(ServiceInstallation {
+                tenant_id: row.service_tenant_id,
+                org: row.service_org,
+                installation: row.row.into(),
+            })),
+            Err(rows) if rows.is_empty() => Ok(None),
+            Err(_) => {
+                tracing::error!(
+                    client_id,
+                    "B2 のサービスアカウントの解決先が一意ではありません"
+                );
+                Err(GatewayError::Internal(
+                    "インストールの解決先が一意ではありません".into(),
+                ))
+            }
+        }
+    }
+
     /// app_id から**有効な**インストールを引く（アンインストール時の client 特定など）。
     pub async fn resolve_active_by_app(
         &self,
@@ -427,24 +471,47 @@ impl AppInstallationStore {
     }
 
     /// インストールのクライアントを `fingerprint` の登録の形で揃えた印を付ける（インストールと起動時の照合）。
+    ///
+    /// あわせて、B2 のサービスアカウントの利用者（`b2_service_sub`・B2 が無ければ `None`）を書く（BUG-183）。
     pub async fn mark_clients_repaired(
         &self,
         tenant_id: &str,
         app_id: Uuid,
         fingerprint: &str,
+        b2_service_sub: Option<&str>,
     ) -> Result<(), GatewayError> {
         sqlx::query(
-            "UPDATE app_installation SET oauth_client_spec = $3 \
+            "UPDATE app_installation SET oauth_client_spec = $3, b2_service_sub = $4 \
              WHERE tenant_id = $1 AND app_id = $2",
         )
         .bind(tenant_id)
         .bind(app_id)
         .bind(fingerprint)
+        .bind(b2_service_sub)
         .execute(&self.db)
         .await
         .map_err(map_db)?;
         Ok(())
     }
+}
+
+/// B2 のサービスアカウントのトークンが指すインストール（[`AppInstallationStore::resolve_service_identity`]）。
+#[derive(Debug, Clone)]
+pub struct ServiceInstallation {
+    /// インストールしたテナント（アプリの主体のテナント）。
+    pub tenant_id: String,
+    /// インストールした組織（アプリの主体の組織）。
+    pub org: String,
+    pub installation: AppInstallation,
+}
+
+/// [`ServiceInstallation`] の生行（テナント・組織と、[`Row`] の全列）。
+#[derive(sqlx::FromRow)]
+struct ServiceRow {
+    service_tenant_id: String,
+    service_org: String,
+    #[sqlx(flatten)]
+    row: Row,
 }
 
 /// クライアントを今の登録の形に揃えるインストール 1 件（[`AppInstallationStore::clients_to_repair`]）。

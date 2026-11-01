@@ -816,3 +816,130 @@ async fn startup_repair_fixes_previous_clients_once() {
     })
     .await;
 }
+
+/// サーバーの関数を持つアプリ（B2）のインストールは、B1 の aud に同じアプリの B2 を足し（利用者が起点の交換・
+/// BUG-182）、B2 のサービスアカウントの利用者（自動実行のトークンの sub）をインストールに書く（BUG-183）。前の版の
+/// インストール（印もサービスアカウントも無い）は、起動時の照合が書き足す。
+#[tokio::test]
+async fn install_with_server_records_the_service_account_and_exchange_audience() {
+    let Some(pool) = setup().await else { return };
+    let Some(realm) = app_gateway::test_support::TestRealm::from_env() else {
+        eprintln!("KEYCLOAK_TEST_URL 未設定のためスキップ");
+        return;
+    };
+    let redirects = vec![SHELL_CALLBACK.to_string()];
+    let h = harness_with_oauth(
+        pool.clone(),
+        false,
+        Some(realm.oauth_client()),
+        redirects.clone(),
+    );
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let c = ctx(&tenant, "admin");
+    let name = format!("b2-{}", Uuid::new_v4().simple());
+    let mut m = manifest(&name, TrustTier::InHouse, vec![]);
+    m.requested_scopes = vec!["data.read".into()];
+    m.server = Some(app_platform::ServerSpec {
+        functions: vec!["remind".into()],
+        ..app_platform::ServerSpec::default()
+    });
+    let id = h.code.create(&c, &m, None).await.expect("create");
+    h.code
+        .publish(&c, id, None, None, None)
+        .await
+        .expect("publish");
+    let (b1, b2) = (format!("app-{id}-b1"), format!("app-{id}-b2"));
+    let service_sub = |pool: PgPool, tenant: String| async move {
+        sqlx::query_scalar::<_, Option<String>>(
+            "SELECT b2_service_sub FROM app_installation WHERE tenant_id = $1 AND app_id = $2",
+        )
+        .bind(tenant)
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+    };
+    let body = async {
+        let installed = h
+            .installs
+            .install(&c, install_req(&name, &["data.read"]), None)
+            .await
+            .expect("install");
+        assert_eq!(
+            installed.installation.client_id_b2.as_deref(),
+            Some(b2.as_str())
+        );
+        let client = realm.client(&b1).await.expect("b1");
+        let exchange_aud = client["protocolMappers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|m| m["name"] == "shiki-function-audience")
+            .expect("交換の相手の aud");
+        assert_eq!(
+            exchange_aud["config"]["included.custom.audience"],
+            b2.as_str()
+        );
+
+        // 書いたサービスアカウントの利用者は、B2 の client_credentials のトークンの sub と同じ。
+        let secret = installed.client_secret_b2.expect("secret");
+        let resp = reqwest::Client::new()
+            .post(realm.token_endpoint())
+            .form(&[
+                ("grant_type", "client_credentials"),
+                ("client_id", b2.as_str()),
+                ("client_secret", secret.as_str()),
+            ])
+            .send()
+            .await
+            .expect("service token");
+        let token: serde_json::Value = resp.json().await.unwrap();
+        let sub = app_gateway::test_support::claims(token["access_token"].as_str().unwrap())["sub"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(
+            service_sub(pool.clone(), tenant.clone()).await,
+            Some(sub.clone())
+        );
+
+        // 前の版のインストール（印・サービスアカウント・交換の相手の aud が無い）を、起動時の照合が直す。
+        sqlx::query(
+            "UPDATE app_installation SET oauth_client_spec = NULL, b2_service_sub = NULL \
+             WHERE tenant_id = $1",
+        )
+        .bind(&tenant)
+        .execute(&pool)
+        .await
+        .unwrap();
+        let mut previous = client.clone();
+        if let Some(mappers) = previous["protocolMappers"].as_array_mut() {
+            mappers.retain(|m| m["name"] != "shiki-function-audience");
+        }
+        realm.update_client_raw(&b1, &previous).await;
+        assert!(realm.client(&b1).await.unwrap()["protocolMappers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|m| m["name"] != "shiki-function-audience"));
+        let progress = h.installs.repair_oauth_clients().await.expect("repair");
+        assert_eq!(progress.failed, 0, "{progress:?}");
+        assert_eq!(service_sub(pool.clone(), tenant.clone()).await, Some(sub));
+        assert!(realm.client(&b1).await.unwrap()["protocolMappers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["name"] == "shiki-function-audience"));
+    };
+    run_then(body, async {
+        let _ = h.installs.uninstall(&c, id, None).await;
+        realm.delete_client(&b1).await;
+        realm.delete_client(&b2).await;
+        sqlx::query("DELETE FROM app_installation WHERE tenant_id = $1")
+            .bind(&tenant)
+            .execute(&pool)
+            .await
+            .expect("cleanup installation");
+    })
+    .await;
+}

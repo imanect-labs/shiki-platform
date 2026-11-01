@@ -96,6 +96,11 @@ async fn spawn_mock_keycloak_with(seen: Seen) -> (String, String) {
         .route(
             "/admin/realms/shiki/clients/{id}/client-secret",
             get(|| async { Json(json!({ "value": "generated-secret" })) }),
+        )
+        // confidential client のサービスアカウントの利用者（自動実行のトークンの sub）。
+        .route(
+            "/admin/realms/shiki/clients/{id}/service-account-user",
+            get(|| async { Json(json!({ "id": "service-account-1", "username": "service-account-app-b2" })) }),
         );
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -129,8 +134,9 @@ async fn register_b1_public_has_no_secret() {
         .await
         .expect("register b1");
     assert_eq!(reg.client_id, "app-b1");
-    // public は secret を持たない。
+    // public は secret もサービスアカウントも持たない。
     assert!(reg.client_secret.is_none());
+    assert!(reg.service_account_sub.is_none());
 }
 
 #[tokio::test]
@@ -148,8 +154,12 @@ async fn register_b2_confidential_fetches_secret() {
         .await
         .expect("register b2");
     assert_eq!(reg.client_id, "app-b2");
-    // confidential は生成 secret を取得して返す。
+    // confidential は生成 secret と、サービスアカウントの利用者を取得して返す。
     assert_eq!(reg.client_secret.as_deref(), Some("generated-secret"));
+    assert_eq!(
+        reg.service_account_sub.as_deref(),
+        Some("service-account-1")
+    );
 }
 
 #[tokio::test]

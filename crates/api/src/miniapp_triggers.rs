@@ -386,3 +386,7 @@ async fn invoke_service(
 #[cfg(test)]
 #[path = "miniapp_triggers_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "miniapp_b2_tests.rs"]
+mod b2_tests;

@@ -166,7 +166,12 @@ impl InstallService {
         let result = self
             .provision(ctx, &manifest, app_id, &req, &mut created, trace_id)
             .await;
-        let (client_b1, client_b2, secret_b2) = match result {
+        let Clients {
+            b1: client_b1,
+            b2: client_b2,
+            b2_secret: secret_b2,
+            b2_service_sub,
+        } = match result {
             Ok(clients) => clients,
             Err(e) => {
                 self.compensate_tables(ctx, &created, trace_id).await;
@@ -221,7 +226,12 @@ impl InstallService {
         if self.oauth.is_some() {
             if let Err(e) = self
                 .installations
-                .mark_clients_repaired(&ctx.tenant_id, app_id, &self.client_spec())
+                .mark_clients_repaired(
+                    &ctx.tenant_id,
+                    app_id,
+                    &self.client_spec(),
+                    b2_service_sub.as_deref(),
+                )
                 .await
             {
                 tracing::warn!(error = %e, %app_id, "クライアントを揃えた印を付けられません（起動時の照合が揃え直す）");
@@ -298,7 +308,7 @@ impl InstallService {
         req: &InstallRequest,
         created: &mut Vec<Uuid>,
         trace_id: Option<&str>,
-    ) -> Result<(Option<String>, Option<String>, Option<String>), AppPlatformError> {
+    ) -> Result<Clients, AppPlatformError> {
         let ns = ctx.ns();
         let miniapp_subject = ns.miniapp_principal(&app_id.to_string());
         for t in &manifest.tables {
@@ -346,7 +356,7 @@ impl InstallService {
         // oauth 未配線（dev）は None。
         let Some(oauth) = &self.oauth else {
             tracing::warn!("Keycloak admin 未配線: client 登録をスキップします（dev モード）");
-            return Ok((None, None, None));
+            return Ok(Clients::default());
         };
         let b1_id = format!("app-{app_id}-b1");
         // サーバーの関数を持つアプリは、B1 の利用者のトークンを同じアプリの B2 が交換できるようにする（BUG-182）。
@@ -364,7 +374,7 @@ impl InstallService {
             )
             .await
             .map_err(map_gateway)?;
-        let b2_secret = if let Some(id) = &b2_id {
+        let (b2_secret, b2_service_sub) = if let Some(id) = &b2_id {
             let registered = oauth
                 .register(
                     app_gateway::ClientKind::Confidential,
@@ -375,12 +385,28 @@ impl InstallService {
                 )
                 .await
                 .map_err(map_gateway)?;
-            registered.client_secret
+            (registered.client_secret, registered.service_account_sub)
         } else {
-            None
+            (None, None)
         };
-        Ok((Some(b1_id), b2_id, b2_secret))
+        Ok(Clients {
+            b1: Some(b1_id),
+            b2: b2_id,
+            b2_secret,
+            b2_service_sub,
+        })
     }
+}
+
+/// インストールが Keycloak に登録したクライアント（Keycloak の管理が未配線なら空）。
+#[derive(Default)]
+struct Clients {
+    b1: Option<String>,
+    b2: Option<String>,
+    /// B2 の secret（secrets に保管する・ゲストへは渡さない）。
+    b2_secret: Option<String>,
+    /// B2 のサービスアカウントの利用者（自動実行のトークンの sub・BUG-183）。
+    b2_service_sub: Option<String>,
 }
 
 /// granted ⊆ requested（両方 CapabilityScope 閉集合でパース・未知は fail-closed）。
