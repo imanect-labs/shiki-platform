@@ -245,24 +245,80 @@ async function readSse(res: Response, onEvent: (type: string, data: unknown) => 
   }
 }
 
+/// シェルがホスト支援 PKCE で渡すトークン（`shiki:token` の知らせ）。
+export interface HostToken {
+  /// ゲートウェイのアクセストークン。
+  accessToken: string;
+  /// トークンが使える秒数（シェルが渡さなければ 0）。
+  expiresIn: number;
+  /// ゲートウェイの場所（origin。`GatewayConfig.baseUrl` に渡す）。シェルが渡さなければ `undefined`。
+  gatewayOrigin: string | undefined;
+}
+
+/// シェルへトークンを 1 回求める（ホスト支援 PKCE）。シェルはポップアップでログインの確認をしてからトークンを返す。
+///
+/// 答えはシェル（`window.parent`）からの知らせだけを読む。シェルが断ったら（`shiki:token-error`）その文で失敗する。
+export function requestHostToken(scopes: string[]): Promise<HostToken> {
+  return new Promise<HostToken>((resolve, reject) => {
+    function onMessage(ev: MessageEvent) {
+      if (ev.source !== window.parent) return;
+      const data = ev.data as {
+        type?: string;
+        accessToken?: unknown;
+        expiresIn?: unknown;
+        gatewayOrigin?: unknown;
+        error?: unknown;
+      };
+      if (data?.type === "shiki:token" && typeof data.accessToken === "string" && data.accessToken) {
+        window.removeEventListener("message", onMessage);
+        resolve({
+          accessToken: data.accessToken,
+          expiresIn: typeof data.expiresIn === "number" ? data.expiresIn : 0,
+          gatewayOrigin:
+            typeof data.gatewayOrigin === "string" && data.gatewayOrigin ? data.gatewayOrigin : undefined,
+        });
+      } else if (data?.type === "shiki:token-error") {
+        window.removeEventListener("message", onMessage);
+        reject(new Error(typeof data.error === "string" && data.error ? data.error : "トークンを受け取れませんでした"));
+      }
+    }
+    window.addEventListener("message", onMessage);
+    window.parent.postMessage({ type: "shiki:token-request", scopes }, "*");
+  });
+}
+
 /// B1 ホスト支援 PKCE のトークン供給を作る（iframe 側 SDK 利用者向け）。
 ///
-/// シェルへ `shiki:token-request` を postMessage し、`shiki:token` を待つ。SDK 利用者は
+/// 呼ぶたびにシェルへ `shiki:token-request` を postMessage し、`shiki:token` を待つ。ゲートウェイの場所も
+/// シェルから受け取るなら [`hostAssistedGateway`] を使う（トークンの使い回しもする）。SDK 利用者は
 /// `new ShikiGateway({ baseUrl, getToken: hostAssistedToken(scopes) })` として使う。
 export function hostAssistedToken(scopes: string[]): () => Promise<string> {
-  return () =>
-    new Promise<string>((resolve, reject) => {
-      function onMessage(ev: MessageEvent) {
-        const data = ev.data as { type?: string; accessToken?: string; error?: string };
-        if (data?.type === "shiki:token" && data.accessToken) {
-          window.removeEventListener("message", onMessage);
-          resolve(data.accessToken);
-        } else if (data?.type === "shiki:token-error") {
-          window.removeEventListener("message", onMessage);
-          reject(new Error(data.error ?? "token error"));
-        }
-      }
-      window.addEventListener("message", onMessage);
-      window.parent.postMessage({ type: "shiki:token-request", scopes }, "*");
+  return () => requestHostToken(scopes).then((t) => t.accessToken);
+}
+
+/// トークンを期限のこの秒数前に求め直す（呼び出しの途中で切れないように）。
+const TOKEN_RENEW_MARGIN_SECONDS = 30;
+
+/// ホスト支援 PKCE で、シェルが渡すゲートウェイの場所とトークンを使うクライアントを作る（B1 のアプリ向け）。
+///
+/// 最初にシェルへトークンを求め、その答えのゲートウェイの場所を `baseUrl` にする（アプリが場所を別に知らなくて
+/// よい）。トークンは期限の 30 秒前まで使い回し、それを過ぎたらシェルに求め直す（同時に求めた分は 1 回にまとめる）。
+/// シェルがゲートウェイの場所を渡さなければ失敗する。
+export async function hostAssistedGateway(scopes: string[]): Promise<ShikiGateway> {
+  let current = await requestHostToken(scopes);
+  const baseUrl = current.gatewayOrigin;
+  if (!baseUrl) throw new Error("シェルがゲートウェイの場所を渡しませんでした");
+  let expiresAt = Date.now() + current.expiresIn * 1000;
+  let pending: Promise<HostToken> | null = null;
+  const getToken = async (): Promise<string> => {
+    if (Date.now() < expiresAt - TOKEN_RENEW_MARGIN_SECONDS * 1000) return current.accessToken;
+    pending ??= requestHostToken(scopes).finally(() => {
+      pending = null;
     });
+    const next = await pending;
+    current = next;
+    expiresAt = Date.now() + next.expiresIn * 1000;
+    return next.accessToken;
+  };
+  return new ShikiGateway({ baseUrl, getToken });
 }
