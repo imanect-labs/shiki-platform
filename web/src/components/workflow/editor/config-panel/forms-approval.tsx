@@ -22,7 +22,15 @@ import type {
 } from "@/generated/workflow-ir";
 import { getViewerContext, type DataTable } from "@/lib/data-api";
 import { cn } from "@/lib/utils";
-import { Field, FieldInput, FieldTextarea, MoreInfo, NumberInput } from "./common";
+import {
+  BLANK_PICK_MESSAGE,
+  BLANK_REQUIRED_MESSAGE,
+  Field,
+  FieldInput,
+  FieldTextarea,
+  MoreInfo,
+  NumberInput,
+} from "./common";
 import {
   DataTableSelect,
   isFsmTable,
@@ -48,6 +56,14 @@ const CHOICES: { key: ChoiceKey; title: string; defaultLabel: string; optional: 
 
 const MAX_ASSIGNEES = 20;
 const MAX_SHOW_FIELDS = 30;
+
+/// 承認者が 0 件のときの欄の下の文（置いたばかりの承認・D-129・付録 D の N3.4.1）。
+const NO_ASSIGNEE_MESSAGE = "承認者を 1 人以上追加してください。";
+
+/// 空の欄の促し（「選んでください」「入力してください」）か。置いたばかりの空の欄は保存でき、実行の前に止まる（D-129）。
+function isBlankPrompt(message: string | undefined): boolean {
+  return message === BLANK_PICK_MESSAGE || message === BLANK_REQUIRED_MESSAGE;
+}
 
 /// 承認するテーブルを束縛したのに、その定義を使えないときの、テーブルに依存する欄（進める状態・相手の列）の注記。
 /// 束縛していなければ null（それぞれの欄の「先にテーブルを選んでください」のまま）。
@@ -261,7 +277,8 @@ export function HumanApprovalForm(props: FormProps) {
             states={states}
             statesUnreadable={unreadableStates}
             tableNote={tableNote}
-            error={fieldErrors.get(c.key)}
+            // テーブルを選ぶまでは状態を選べないので、空の促しは出さない（欄が「先にテーブルを選んでください」と言う）。
+            error={!record.table && isBlankPrompt(fieldErrors.get(c.key)) ? undefined : fieldErrors.get(c.key)}
             onChange={(next) => set({ [c.key]: next })}
           />
         );
@@ -547,7 +564,11 @@ function AssigneesField({
           </div>
         );
       })}
-      {error ? <p className="text-[11px] text-destructive">{error}</p> : null}
+      {error ? (
+        <p className="text-[11px] text-destructive" data-testid="approval-assignees-error">
+          {assignees.length === 0 && isBlankPrompt(error) ? NO_ASSIGNEE_MESSAGE : error}
+        </p>
+      ) : null}
       <Button
         variant="outline"
         size="sm"
