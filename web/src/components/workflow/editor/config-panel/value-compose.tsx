@@ -96,6 +96,28 @@ const ROW_ISSUE_TEXT = {
   no_value: { column: "値を入れるまで、この列は保存しません。", key: "値を入れるまで、この項目は保存しません。" },
 } as const;
 
+/// キーを打つ「項目を並べる」の呼び名（欄ごとに、キーをその欄の言葉で言う。既定は「キー」と「項目」）。
+export type ComposeNouns = {
+  /// キーの入力の読み上げの名前。
+  key: string;
+  /// キーの入力の placeholder。
+  keyPlaceholder: string;
+  /// 行を足すボタン。
+  add: string;
+  /// 行が無いときの案内。
+  empty: string;
+  /// 行が IR に入らない理由（[`objectRowIssue`]）。
+  issues: Record<keyof typeof ROW_ISSUE_TEXT, string>;
+};
+
+const KEY_NOUNS: ComposeNouns = {
+  key: "キー",
+  keyPlaceholder: "キー（英数字の名前）",
+  add: "項目を追加",
+  empty: "「項目を追加」で、キーと値の組を追加します。",
+  issues: { blank_key: ROW_ISSUE_TEXT.blank_key.key, duplicate: ROW_ISSUE_TEXT.duplicate.key, no_value: ROW_ISSUE_TEXT.no_value.key },
+};
+
 /// 行の並び（`order` の順・`order` に無いキーは後ろに今の順で）。保存した値のキーは名前の順に並び直るので、
 /// 開き直したときも自然な順で出す（D-128・BUG-156）。
 function byKeyOrder(rows: ObjectRow[], order: readonly string[] | undefined): ObjectRow[] {
@@ -114,6 +136,7 @@ export function ObjectComposer({
   depth,
   keys,
   order,
+  nouns = KEY_NOUNS,
   renderSlot,
 }: {
   value: ValueExpr | undefined;
@@ -122,6 +145,8 @@ export function ObjectComposer({
   keys?: ComposeKeys;
   /// 行を並べる順（キーの並び・`keys` があればテーブルの列の順が先）。
   order?: readonly string[];
+  /// キーを打つときの呼び名（「外部 API 呼び出し」のヘッダーなど・`keys` があれば使わない）。
+  nouns?: ComposeNouns;
   renderSlot: RenderSlot;
 }) {
   const sortKeys = keys ? keys.options.map((o) => o.key) : order;
@@ -148,7 +173,7 @@ export function ObjectComposer({
     <div className="space-y-1.5 rounded-md border bg-muted/40 p-2" data-testid="compose-object">
       {rows.length === 0 ? (
         <p className="text-[11px] leading-relaxed text-muted-foreground">
-          {keys ? "値を入れる列を「列を追加」で選びます。" : "「項目を追加」で、キーと値の組を追加します。"}
+          {keys ? "値を入れる列を「列を追加」で選びます。" : nouns.empty}
         </p>
       ) : null}
       {rows.map((r, i) => {
@@ -182,8 +207,8 @@ export function ObjectComposer({
                 <Input
                   value={r.key}
                   onChange={(e) => setRow(r.id, { key: e.target.value })}
-                  placeholder="キー（英数字の名前）"
-                  aria-label="キー"
+                  placeholder={nouns.keyPlaceholder}
+                  aria-label={nouns.key}
                   autoFocus={added === r.id}
                   className="h-8 min-w-0 flex-1 font-mono text-xs max-md:text-base"
                 />
@@ -201,13 +226,13 @@ export function ObjectComposer({
             })}
             {issue ? (
               <p className="text-[11px] leading-relaxed text-muted-foreground" data-testid="compose-row-issue">
-                {ROW_ISSUE_TEXT[issue][noun]}
+                {noun === "column" ? ROW_ISSUE_TEXT[issue].column : nouns.issues[issue]}
               </p>
             ) : null}
           </div>
         );
       })}
-      <AddButton label={keys ? "列を追加" : "項目を追加"} onClick={add} disabled={allUsed} />
+      <AddButton label={keys ? "列を追加" : nouns.add} onClick={add} disabled={allUsed} />
     </div>
   );
 }

@@ -3456,3 +3456,83 @@ async fn http_to_internal_addresses_is_refused_through_the_production_port() {
     assert_eq!(meta_node, refused("destination_link_local"));
     assert_eq!(meta_script, refused("destination_link_local"));
 }
+
+// ------- GAP-19: 「外部 API 呼び出し」の作成者のヘッダー（本番のポート）-----------------------
+
+/// 「外部 API 呼び出し」の「ヘッダー」は、本番のポートで相手に届く（値の差し込み・作成者の Content-Type）。送っては
+/// いけないヘッダーを書いた定義は保存できない（GAP-19）。
+#[tokio::test]
+async fn http_request_node_sends_author_headers_through_the_production_port() {
+    let Some(h) = setup().await else { return };
+    let (base, seen) = spawn_http_recorder().await;
+    let ir = |name: &str, headers: Value| {
+        json!({
+            "ir_version": 1, "name": name,
+            "declared_scopes": ["http.egress"],
+            "triggers": [{ "kind": "interactive" }],
+            "nodes": [{ "id": "send", "type": "http.request", "params": {
+                "method": "POST", "url": format!("{base}/hdr"), "body": "品目=交通費",
+                "headers": headers } }],
+            "edges": [],
+        })
+    };
+    let wf = h
+        .save(&ir(
+            "http-node-headers",
+            json!({
+                "X-Request-Id": { "$template": "req-{id}", "vars": { "id": { "$from": "input", "path": "/id" } } },
+                "Content-Type": "text/plain; charset=utf-8"
+            }),
+        ))
+        .await;
+    let refused = h
+        .workflows
+        .create(
+            &h.alice,
+            &ir("http-node-host", json!({ "Host": "internal.example.com" })),
+            &Catalog::default(),
+            None,
+        )
+        .await;
+    let (run, status) = h
+        .run(
+            wf,
+            &json!({ "id": 7 }),
+            h.executor(None, vec!["127.0.0.1".into()], None),
+        )
+        .await;
+    let error: Option<Value> =
+        sqlx::query_scalar("SELECT error FROM step_execution WHERE tenant_id = $1 AND run_id = $2")
+            .bind(&h.tenant)
+            .bind(run)
+            .fetch_one(&h.pool)
+            .await
+            .unwrap();
+    let requests = seen.lock().await.clone();
+
+    // 片付け（run の履歴・ワークフロー・OpenFGA のストア）。
+    h.runs.purge_tenant_history(&h.tenant).await.unwrap();
+    h.artifacts.delete(&h.alice, wf, None).await.unwrap();
+    if let Ok((id, _)) = &refused {
+        h.artifacts.delete(&h.alice, *id, None).await.unwrap();
+    }
+    h.delete_fga_store().await;
+
+    assert_eq!(status, RunStatus::Succeeded, "{error:?}");
+    let raw = requests
+        .iter()
+        .find(|r| r.starts_with("POST /hdr "))
+        .unwrap_or_else(|| panic!("/hdr への要求が無い: {requests:?}"));
+    let lower = raw.to_ascii_lowercase();
+    assert!(lower.contains("\r\nx-request-id: req-7\r\n"), "{raw}");
+    assert!(
+        lower.contains("\r\ncontent-type: text/plain; charset=utf-8\r\n"),
+        "{raw}"
+    );
+    assert!(lower.contains("\r\nidempotency-key: "), "{raw}");
+    let err = format!("{:?}", refused.expect_err("Host は保存できない"));
+    assert!(
+        err.contains("ヘッダー「Host」は Shiki が決めるため、指定できません。"),
+        "{err}"
+    );
+}

@@ -13,17 +13,87 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import type { NodeParamsByType } from "@/generated/workflow-catalog";
+import {
+  HTTP_MAX_HEADERS,
+  HTTP_MAX_HEADER_VALUE_BYTES,
+  type NodeParamsByType,
+} from "@/generated/workflow-catalog";
 import type { ValueExpr } from "@/generated/workflow-ir";
 import { Field, FieldInput, FieldSelectTrigger, FieldTextarea, MoreInfo } from "./common";
 import { paramsOf, patchParams } from "./params";
 import { ValueExprInput } from "./value-expr-input";
 import type { FormProps } from "./forms-basic";
+import { ObjectComposer, type ComposeNouns } from "./value-compose";
 import { ANY_SHAPES } from "./value-shape";
 
 const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"] as const;
 
-export function HttpRequestForm({ node, dispatch, refCandidates, inMapRegion, fieldErrors }: FormProps) {
+/// 「ヘッダー」の行の呼び名（GAP-19）。
+const HEADER_NOUNS: ComposeNouns = {
+  key: "ヘッダーの名前",
+  keyPlaceholder: "ヘッダーの名前（例: X-Request-Id）",
+  add: "ヘッダーを追加",
+  empty: "「ヘッダーを追加」で、ヘッダーの名前と値の組を足します。",
+  issues: {
+    blank_key: "ヘッダーの名前を入れてください。",
+    duplicate: "同じ名前のヘッダーがほかにもあります。別の名前にしてください。",
+    no_value: "値を入れるまで、このヘッダーは保存しません。",
+  },
+};
+
+/// 「ヘッダー」の欄（名前と値の組・値は差し込める・GAP-19）。決まり（書けないヘッダー・上限）は保存時にサーバが
+/// 確かめ、誤りは欄の下に出す（nodes/http_headers.rs が正。画面では決まりを写さない）。
+function HttpHeadersField({ node, dispatch, refCandidates, inMapRegion, fieldErrors }: FormProps) {
+  const p = paramsOf<NodeParamsByType["http.request"]>(node);
+  return (
+    <div className="space-y-1">
+      <Field
+        label="ヘッダー（省略可）"
+        hint="書いたヘッダーを付けて送ります。値には、入力や前のブロックの結果を差し込めます。"
+        error={fieldErrors.get("headers")}
+      >
+        <ObjectComposer
+          value={p.headers as ValueExpr | undefined}
+          // 行をすべて外したら、欄ごと消す（ヘッダーを書かない定義と同じ形に戻す）。
+          onChange={(v) =>
+            patchParams(dispatch, node, {
+              headers: v && typeof v === "object" && Object.keys(v).length > 0 ? v : undefined,
+            })
+          }
+          depth={0}
+          nouns={HEADER_NOUNS}
+          renderSlot={(slot) => (
+            <ValueExprInput
+              label={slot.label}
+              shownLabel={slot.shownLabel}
+              value={slot.value}
+              onChange={slot.onChange}
+              depth={slot.depth}
+              actions={slot.actions}
+              autoFocus={slot.autoFocus}
+              text
+              refCandidates={refCandidates}
+              inMapRegion={inMapRegion}
+              placeholder="例: application/json"
+            />
+          )}
+        />
+      </Field>
+      <MoreInfo testId="http-headers-rule">
+        <p>
+          Host や Content-Length など、Shiki が決めるヘッダーは書けません。シークレットを付けるヘッダーと同じ名前も書けません。
+        </p>
+        <p>
+          {HTTP_MAX_HEADERS} 個まで、値は 1 つ {HTTP_MAX_HEADER_VALUE_BYTES / 1024} KB
+          までです。Idempotency-Key や Content-Type を書くと、Shiki が付ける値の代わりに、書いた値を送ります。
+        </p>
+      </MoreInfo>
+    </div>
+  );
+}
+
+export function HttpRequestForm(props: FormProps) {
+  const { node, dispatch, refCandidates, inMapRegion, fieldErrors } = props;
   const p = paramsOf<NodeParamsByType["http.request"]>(node);
   const secret = p.secret as { name?: string; attach?: { kind?: string; header?: string } } | undefined;
   return (
@@ -146,6 +216,7 @@ export function HttpRequestForm({ node, dispatch, refCandidates, inMapRegion, fi
           ) : null}
         </div>
       </Field>
+      <HttpHeadersField {...props} />
       <label className="flex items-center justify-between gap-3 text-xs">
         <span>
           <span className="font-medium">相手が誤りを返したら失敗にする</span>

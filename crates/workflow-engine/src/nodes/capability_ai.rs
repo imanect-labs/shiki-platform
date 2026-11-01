@@ -171,9 +171,9 @@ impl CapabilityNodeExecutor {
         // 文字列はそのまま・`{ "base64": … }` はバイト列なので、種類を決めつけない。
         let json_body = body.as_ref().is_some_and(is_json_body);
         let body = body.map(|v| as_bytes(&v));
-        // シークレットを付けるヘッダーの名前は、シークレットを解く前に確かめる（保存時の V1 と同じ決まり・保存時を
-        // 通らない定義も送らない・BUG-184）。
-        self.check_secret_header(&p, ec)?;
+        // シークレットを付けるヘッダーの名前と作成者のヘッダーは、シークレットを解く前に確かめる（保存時の V1 と同じ
+        // 決まり・保存時を通らない定義も送らない・BUG-184・GAP-19）。
+        let author_headers = self.block_headers(&p, r, ec)?;
 
         // secret 解決（あれば）→ 宛先束縛の照合材料。
         let resolved_secret = if let Some(sref) = &p.secret {
@@ -193,10 +193,15 @@ impl CapabilityNodeExecutor {
             let (hname, hval) = attach_secret(sref.attach.as_ref(), &value);
             headers.push((hname, hval));
         }
-        headers.push(("Idempotency-Key".to_string(), ctx.idempotency_key.clone()));
-        if json_body {
+        // 作成者が Idempotency-Key・Content-Type を書いたら、Shiki が付ける値の代わりにそれを送る（script と同じ）。
+        let wrote = |name: &str| super::http_headers::has_header(&author_headers, name);
+        if !wrote("Idempotency-Key") {
+            headers.push(("Idempotency-Key".to_string(), ctx.idempotency_key.clone()));
+        }
+        if json_body && !wrote("Content-Type") {
             headers.push(("Content-Type".to_string(), "application/json".to_string()));
         }
+        headers.extend(author_headers);
 
         // Stage A は **常にリダイレクト非追従**（3xx は拒否）。`follow_stripped` は追従先の宛先束縛
         // 再照合（各ホップの host ∈ binding）が要るため後続で実装するまで fail-closed で扱う
@@ -265,14 +270,28 @@ impl CapabilityNodeExecutor {
         Ok(json!({ "status": resp.status, "host": host, "body": body }))
     }
 
-    /// シークレットを付けるヘッダーの名前の決まりを当てる（BUG-184）。Shiki が決めるヘッダーに付けようとした定義は、
-    /// script と同じく監査に残す。
-    fn check_secret_header(&self, p: &HttpRequestParams, ec: &ExecCtx) -> Result<(), PortError> {
-        use super::http_headers::{check_secret_header_on, HeaderRefused, HeaderSurface};
-        let Some(name) = p.secret_header() else {
-            return Ok(());
+    /// 「ヘッダー」の値を解決し、シークレットを付けるヘッダーの名前と合わせて決まりを当てる（BUG-184・GAP-19）。
+    /// 送ってはいけないヘッダー（Shiki が決めるもの・シークレットのヘッダー）は、script と同じく監査に残す。
+    fn block_headers(
+        &self,
+        p: &HttpRequestParams,
+        r: &ParamResolver<'_>,
+        ec: &ExecCtx,
+    ) -> Result<Vec<(String, String)>, PortError> {
+        use super::http_headers::{
+            block_headers, check_secret_header_on, HeaderRefused, HeaderSurface,
         };
-        check_secret_header_on(HeaderSurface::Block, name).map_err(|refused| {
+        let secret_header = p.secret_header();
+        let mut resolved = Vec::new();
+        for (name, value) in p.headers.iter().flatten() {
+            resolved.push((name.clone(), param(value, r, "http.request: headers")?));
+        }
+        let checked = match secret_header {
+            Some(name) => check_secret_header_on(HeaderSurface::Block, name),
+            None => Ok(()),
+        }
+        .and_then(|()| block_headers(&resolved, secret_header));
+        checked.map_err(|refused| {
             if matches!(refused, HeaderRefused::Reserved(_)) {
                 self.audit(
                     &ec.tenant_id,

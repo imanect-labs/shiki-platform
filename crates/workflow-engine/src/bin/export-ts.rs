@@ -93,6 +93,17 @@ fn limits_ts() -> String {
          export const STORAGE_READ_INDEX_WAIT_MAX_MINUTES = {INDEX_WAIT_MAX_MINUTES};\n\
          \n/// 「フォルダ一覧」が一度に返す件数の上限（多いと先頭のこの件数だけで truncated が true・BUG-180）。\n\
          export const STORAGE_LIST_MAX_ITEMS = {STORAGE_LIST_MAX_ITEMS};\n"
+    ) + http_headers_ts().as_str()
+}
+
+/// 「外部 API 呼び出し」の「ヘッダー」の上限（数と値の長さ・`nodes::http_headers`・注記に数を手で書かない・GAP-19）。
+fn http_headers_ts() -> String {
+    use workflow_engine::nodes::http_headers::{MAX_HEADERS, MAX_VALUE_BYTES};
+    format!(
+        "\n/// 「外部 API 呼び出し」の「ヘッダー」に書ける数の上限（script の Shiki.http.request と同じ・GAP-19）。\n\
+         export const HTTP_MAX_HEADERS = {MAX_HEADERS};\n\
+         \n/// ヘッダーの値の長さの上限（バイト）。\n\
+         export const HTTP_MAX_HEADER_VALUE_BYTES = {MAX_VALUE_BYTES};\n"
     )
 }
 

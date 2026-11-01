@@ -691,9 +691,68 @@ async fn script_http_refuses_headers_it_must_not_send() {
     }
 }
 
-/// シークレットを付けるヘッダーの名前の誤りは、保存時を通らない定義でも、シークレットを解いて送る前に分かる誤りで
-/// 断る（以前は Host などにも平文を付けて送り、空の名前は一時的な問題になっていた・BUG-184）。Shiki が決める
-/// ヘッダーに付けようとした定義は監査に残す。
+/// 「外部 API 呼び出し」の「ヘッダー」は作成者が書いたとおりに送る（値は差し込める・GAP-19）。作成者が
+/// Idempotency-Key・Content-Type を書けば、Shiki が付ける値の代わりにそれを送る（script と同じ）。
+#[tokio::test]
+async fn http_request_node_sends_the_headers_the_author_wrote() {
+    let ports = Arc::new(FakePorts::with_http_status(200));
+    *ports.secret_hosts.lock().unwrap() = vec!["api.example.com".into()];
+    let exec = executor(Arc::clone(&ports), Arc::new(CapturingAudit::default()));
+    let params = json!({
+        "method": "POST",
+        "url": "https://api.example.com/v1/items",
+        "secret": { "name": "tok", "attach": { "kind": "header", "header": "X-Api-Key" } },
+        "headers": {
+            "X-Request-Id": { "$template": "req-{id}", "vars": { "id": { "$from": "input", "path": "/id" } } },
+            "Accept": "text/plain",
+            "Idempotency-Key": "mine"
+        },
+        "body": { "a": 1 }
+    });
+    let res = exec
+        .execute(
+            "http.request",
+            &params,
+            &ctx(json!({ "id": 7 }), vec!["http.egress".into()]),
+        )
+        .await;
+    assert!(res.ok, "{:?}", res.error);
+    let mut sent = ports.last_http.lock().unwrap().clone().unwrap().headers;
+    sent.sort();
+    assert_eq!(
+        sent,
+        [
+            ("Accept", "text/plain"),
+            ("Content-Type", "application/json"),
+            ("Idempotency-Key", "mine"),
+            ("X-Api-Key", "super-secret-token"),
+            ("X-Request-Id", "req-7"),
+        ]
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+    );
+
+    // ヘッダーを書かない定義（この欄が無かったころの定義）は、これまでどおり Shiki が付けるものだけを送る。
+    let res = exec
+        .execute(
+            "http.request",
+            &json!({ "method": "POST", "url": "https://api.example.com/v1/items", "body": { "a": 1 } }),
+            &ctx(json!({}), vec!["http.egress".into()]),
+        )
+        .await;
+    assert!(res.ok, "{:?}", res.error);
+    let req = ports.last_http.lock().unwrap().clone().unwrap();
+    assert_eq!(
+        req.headers,
+        [
+            ("Idempotency-Key", "wf:t1:0:n1"),
+            ("Content-Type", "application/json")
+        ]
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+    );
+}
+
+/// 送ってはいけないヘッダーと、シークレットを付けるヘッダーの名前の誤りは、保存時を通らない定義でも、シークレットを
+/// 解いて送る前に分かる誤りで断る（BUG-184・GAP-19）。送ってはいけないものを書いた定義は監査に残す。
 #[tokio::test]
 async fn http_request_node_refuses_headers_it_must_not_send() {
     let cases = [
@@ -710,6 +769,26 @@ async fn http_request_node_refuses_headers_it_must_not_send() {
         (
             json!({ "secret": { "name": "tok", "attach": { "kind": "header", "header": "X Api" } } }),
             "シークレットを付けるヘッダーの名前「X Api」は使えません。",
+            false,
+        ),
+        (
+            json!({ "headers": { "Host": "internal.example.com" } }),
+            "ヘッダー「Host」は Shiki が決めるため、指定できません。",
+            true,
+        ),
+        (
+            json!({ "secret": { "name": "tok" }, "headers": { "authorization": "Bearer other" } }),
+            "ヘッダー「authorization」は、シークレットを付けるヘッダーと同じため送れません。",
+            true,
+        ),
+        (
+            json!({ "headers": { "X-A": { "$from": "input", "path": "/n" } } }),
+            "ヘッダー「X-A」の値は文字にしてください。",
+            false,
+        ),
+        (
+            json!({ "headers": { "X-A": { "$from": "input", "path": "/crlf" } } }),
+            "ヘッダー「X-A」の値に、改行などの制御文字は入れられません。",
             false,
         ),
     ];

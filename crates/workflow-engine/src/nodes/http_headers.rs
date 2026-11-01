@@ -83,6 +83,14 @@ pub fn author_headers(
     sendable(HeaderSurface::Script, &pairs, secret_header)
 }
 
+/// 「外部 API 呼び出し」ブロックの「ヘッダー」（値を解決した後・名前の順）を、送るヘッダーの並びにする（GAP-19）。
+pub fn block_headers(
+    resolved: &[(String, Value)],
+    secret_header: Option<&str>,
+) -> Result<Vec<(String, String)>, HeaderRefused> {
+    sendable(HeaderSurface::Block, resolved, secret_header)
+}
+
 /// 決まりを当て、文字の値のヘッダーの並びにする。
 fn sendable(
     surface: HeaderSurface,
@@ -483,6 +491,97 @@ mod tests {
             matches!(check_secret_header("X Api"), Err(HeaderRefused::Invalid(m)) if m.starts_with(
                 "Shiki.http.request の secret.attach.header「X Api」は使えません。"
             ))
+        );
+    }
+
+    /// ブロックの「ヘッダー」は script と同じ決まりで、欄の見出しで言う（GAP-19・BUG-184）。
+    #[test]
+    fn block_headers_follow_the_same_rules_in_the_words_of_the_field() {
+        let pairs = |v: &[(&str, Value)]| -> Vec<(String, Value)> {
+            v.iter()
+                .map(|(n, v)| ((*n).to_string(), v.clone()))
+                .collect()
+        };
+        assert_eq!(
+            block_headers(
+                &pairs(&[("Accept", json!("application/json"))]),
+                Some("Authorization")
+            )
+            .unwrap(),
+            vec![("Accept".to_string(), "application/json".to_string())]
+        );
+        let refused = |v: &[(&str, Value)], secret: Option<&str>| {
+            block_headers(&pairs(v), secret).unwrap_err()
+        };
+        assert_eq!(
+            refused(&[("Host", json!("evil.example"))], None),
+            HeaderRefused::Reserved(
+                "ヘッダー「Host」は Shiki が決めるため、指定できません。".into()
+            )
+        );
+        assert_eq!(
+            refused(&[("x-api-key", json!("v"))], Some("X-Api-Key")),
+            HeaderRefused::Reserved(
+                "ヘッダー「x-api-key」は、シークレットを付けるヘッダーと同じため送れません。シークレットの付け方か、\
+                 ヘッダーの名前を変えてください。"
+                    .into()
+            )
+        );
+        assert_eq!(
+            refused(&[("X-A", json!(1))], None).into_message(),
+            "ヘッダー「X-A」の値は文字にしてください。"
+        );
+        assert_eq!(
+            refused(&[("X-A", json!("1\nX-B: 2"))], None).into_message(),
+            "ヘッダー「X-A」の値に、改行などの制御文字は入れられません。"
+        );
+        assert_eq!(
+            refused(&[("X A", json!("1"))], None).into_message(),
+            "ヘッダーの名前「X A」は使えません。英数字と - などの記号で、64 字までにしてください。"
+        );
+        assert_eq!(
+            refused(&[("X-A", json!("1")), ("x-a", json!("2"))], None).into_message(),
+            "ヘッダー「x-a」が 2 回あります（大文字と小文字は区別しません）。1 回にしてください。"
+        );
+        let many: Vec<(String, Value)> = (0..=MAX_HEADERS)
+            .map(|i| (format!("X-{i:02}"), json!("1")))
+            .collect();
+        assert_eq!(
+            block_headers(&many, None).unwrap_err().into_message(),
+            "ヘッダーは 20 個までにしてください。"
+        );
+        let long: Vec<(String, Value)> = (0..3)
+            .map(|i| (format!("X-{i}"), json!("a".repeat(3_000))))
+            .collect();
+        assert_eq!(
+            block_headers(&long, None).unwrap_err().into_message(),
+            "ヘッダーが長すぎます（名前と値を合わせて 8 KB まで）。"
+        );
+        assert_eq!(
+            refused(&[("X-A", json!("a".repeat(MAX_VALUE_BYTES + 1)))], None).into_message(),
+            "ヘッダー「X-A」の値が長すぎます（4 KB まで）。"
+        );
+    }
+
+    /// 保存時は、実行のときに決まる値（差し込み・参照）の値を確かめず、名前と数だけを確かめる。
+    #[test]
+    fn saved_headers_skip_values_decided_at_run_time() {
+        let later = [
+            ("X-Request-Id", HeaderValue::Later),
+            ("Accept", HeaderValue::Text("text/plain")),
+        ];
+        assert_eq!(check_headers(HeaderSurface::Block, &later, None), Ok(()));
+        let reserved = [("Content-Length", HeaderValue::Later)];
+        assert!(matches!(
+            check_headers(HeaderSurface::Block, &reserved, None),
+            Err(HeaderRefused::Reserved(_))
+        ));
+        let not_text = [("X-Count", HeaderValue::NotText)];
+        assert_eq!(
+            check_headers(HeaderSurface::Block, &not_text, None)
+                .unwrap_err()
+                .into_message(),
+            "ヘッダー「X-Count」の値は文字にしてください。"
         );
     }
 
