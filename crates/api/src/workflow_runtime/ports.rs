@@ -206,43 +206,23 @@ impl NodePorts for ProdNodePorts {
         parent_id: Option<Uuid>,
     ) -> Result<Value, PortError> {
         let ctx = auth_ctx(ec);
-        let max = workflow_engine::vocab::STORAGE_LIST_MAX_ITEMS;
-        let list = |cursor: Option<String>, limit: usize| {
-            let ctx = &ctx;
-            async move {
-                self.storage
-                    .list_children(
-                        ctx,
-                        parent_id,
-                        ChildSort::default(),
-                        cursor.as_deref(),
-                        limit,
-                        // ワークフローの ls もユーザー向けの列挙（システム領域は出さない・#392）。
-                        false,
-                        ec.trace_id.as_deref(),
-                    )
-                    .await
-                    .map_err(map_storage)
-            }
-        };
-        let page = list(None, max).await?;
-        // 上限で切ったかを返す（黙って切らない・BUG-180）。list_children は上限ちょうどでも続きの位置を返すので、
-        // 続きの見えるものを 1 件だけ読んで確かめる。続きを読む口はまだ無い（NodePorts::storage_list に続きの位置を渡す引数が要る）。
-        // 確かめる読み込みが失敗しても（その間に親が消えた・権限が外れた・一時障害）、読めた items は返し、続きがありうる
-        // ので truncated は true にする（一覧そのものを失敗にしない）。
-        let truncated = match page.next_cursor.clone() {
-            Some(cursor) => match list(Some(cursor), 1).await {
-                Ok(next) => !next.items.is_empty(),
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e.message,
-                        "フォルダ一覧の続きを確かめられなかったため、truncated を true にします"
-                    );
-                    true
-                }
-            },
-            None => false,
-        };
+        // 上限で切ったかを返す（黙って切らない・BUG-180）。list_children は後ろに見えるものがあるときだけ続きの位置を
+        // 返すので（上限 + 1 件目まで探す）、1 回の読み込み（権限の確認 1 回・監査 1 行）で truncated が決まる。
+        let page = self
+            .storage
+            .list_children(
+                &ctx,
+                parent_id,
+                ChildSort::default(),
+                None,
+                workflow_engine::vocab::STORAGE_LIST_MAX_ITEMS,
+                // ワークフローの ls もユーザー向けの列挙（システム領域は出さない・#392）。
+                false,
+                ec.trace_id.as_deref(),
+            )
+            .await
+            .map_err(map_storage)?;
+        let truncated = page.next_cursor.is_some();
         let items: Vec<Value> = page
             .items
             .iter()

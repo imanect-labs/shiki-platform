@@ -1748,7 +1748,8 @@ async fn script_http_request_sends_the_headers_the_author_wrote() {
 }
 
 /// 「フォルダ一覧」は、上限（100 件）より多いフォルダーでは名前の順の先頭 100 件と `truncated: true` を返す（黙って
-/// 切らない・BUG-180）。ちょうど上限の件数なら `truncated` は false。
+/// 切らない・BUG-180）。ちょうど上限の件数なら `truncated` は false。どちらも 1 回の読み込み（フォルダーの中身の一覧の
+/// 監査が 1 行）で決める（続きを確かめる 2 回目の読み込みをしない）。
 #[tokio::test]
 async fn storage_list_says_when_it_cuts_the_folder() {
     let Some(h) = setup().await else { return };
@@ -1803,16 +1804,37 @@ async fn storage_list_says_when_it_cuts_the_folder() {
             .unwrap_or(Value::Null)
         }
     };
+    // フォルダーの中身の一覧の監査の行数（run ごとに増えた分を見る）。
+    let listed = || {
+        let pool = h.pool.clone();
+        let tenant = h.tenant.clone();
+        let folder = folder.id.to_string();
+        async move {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM audit_log \
+                 WHERE tenant_id = $1 AND action = 'folder.children.list' AND object_id = $2",
+            )
+            .bind(tenant)
+            .bind(folder)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    let before = listed().await;
     let (over_run, over_status) = h.run(wf, &json!({}), h.executor(None, vec![], None)).await;
     let over = output_of(over_run).await;
+    let over_audits = listed().await - before;
     // 1 件減らして、ちょうど上限の件数にする。
     let last = files.pop().unwrap();
     h.storage
         .soft_delete_file(&h.alice, last, None)
         .await
         .unwrap();
+    let before = listed().await;
     let (exact_run, exact_status) = h.run(wf, &json!({}), h.executor(None, vec![], None)).await;
     let exact = output_of(exact_run).await;
+    let exact_audits = listed().await - before;
 
     // 片付け（run の履歴・フォルダーと中のファイル・ワークフロー・OpenFGA のストア）。
     h.runs.purge_tenant_history(&h.tenant).await.unwrap();
@@ -1848,6 +1870,11 @@ async fn storage_list_says_when_it_cuts_the_folder() {
     assert_eq!(
         exact["truncated"], false,
         "ちょうど上限なら truncated にしない: {exact}"
+    );
+    assert_eq!(
+        (over_audits, exact_audits),
+        (1, 1),
+        "1 回の読み込みで決める（監査は 1 行）"
     );
 }
 

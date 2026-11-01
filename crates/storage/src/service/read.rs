@@ -74,10 +74,11 @@ impl StorageService {
     /// move 直後は DB の `parent_id` が先に見え、新親の FGA `parent` タプルが遅延し得るため、
     /// DB 親子関係を認可の近道にすると未認可の子を露出し得る（FGA を真実とする）。
     ///
-    /// 1 回の頼みで OpenFGA に問う数は [`super::node_scan::NODE_SCAN_MAX_CHECKS`] 問まで（BUG-187）。届いたら、
-    /// `limit` より少ない（空のこともある）ページに続きの位置を付けて返す。`next_cursor` が `Some` なら続きがある
-    /// （末尾ちょうどで空ページが 1 回返ることはあるが、欠落や重複は起きない）。続きの位置は見えない子の名前を
-    /// 含みうる内部の値なので、外へ出す API は封をする（`data::DataStore::seal_list_cursor`）。
+    /// `next_cursor` は、ページの後ろに見える子があるときだけ `Some`（`limit` + 1 件目まで探して決める。ちょうど
+    /// `limit` 件で尽きたら `None`・BUG-180）。1 回の頼みで OpenFGA に問う数は
+    /// [`super::node_scan::NODE_SCAN_MAX_CHECKS`] 問まで（BUG-187）。届いたら、`limit` より少ない（空のこともある）
+    /// ページに続きの位置を付けて返す（このときは後ろに見えるものが無いこともある。欠落や重複は起きない）。続きの
+    /// 位置は見えない子の名前を含みうる内部の値なので、外へ出す API は封をする（`data::DataStore::seal_list_cursor`）。
     #[allow(clippy::too_many_arguments)] // 認可 ctx ＋ 親 ＋ ソート ＋ ページング ＋ 可視性 ＋ trace。
     pub async fn list_children(
         &self,

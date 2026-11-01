@@ -98,8 +98,9 @@ pub struct DownloadTicket {
 ///
 /// `items` は呼び出しユーザーが viewer 以上を持つノードのみ。`next_cursor` が
 /// `Some` なら続きがあり、次回 `list_children`（名前の検索は `search_nodes_by_name`）に渡すと続きから取得できる
-/// （keyset カーソル方式。末尾で空ページが 1 回返り得る）。OpenFGA に問う数の上限に届いたページは `limit` より
-/// 少ないか空で、続きの位置は見えないノードを指しうる（BUG-187）。中身は見えないノードの名前を含みうる内部の値
+/// （keyset カーソル方式）。ページの後ろに見えるものがあるときだけ `Some` で、ちょうど `limit` 件で尽きたら `None`
+/// （BUG-180）。OpenFGA に問う数の上限に届いたページは `limit` より少ないか空で、続きの位置は見えないノードを
+/// 指しうる（このときは後ろに見えるものが無く、次のページが空で終わることもある・BUG-187）。中身は見えないノードの名前を含みうる内部の値
 /// なので、外へ出す API はテナントと一覧の種類に束縛して暗号化する（`data::DataStore::seal_list_cursor`）。
 #[derive(Debug)]
 pub struct ChildPage {

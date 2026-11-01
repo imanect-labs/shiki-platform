@@ -508,6 +508,82 @@ async fn a_folder_lists_its_children_with_batch_checks() {
     .await;
 }
 
+/// ページの後ろに見えるものがあるときだけ続きの位置を返す（ちょうど `limit` 件で尽きたら返さない・BUG-180）。
+/// フォルダーの中身と名前の検索（見える集合の経路）の両方。
+#[tokio::test]
+async fn a_full_page_returns_a_cursor_only_when_more_follow() {
+    run(|env| async move {
+        let top = env
+            .service
+            .create_folder(&env.bob, None, "zzz-ちょうど", None)
+            .await
+            .unwrap();
+        for i in 0..3 {
+            env.service
+                .create_folder(&env.bob, Some(top.id), &format!("控え-{i}"), None)
+                .await
+                .unwrap();
+        }
+        let list = |limit| {
+            let env = Arc::clone(&env);
+            async move {
+                env.service
+                    .list_children(
+                        &env.bob,
+                        Some(top.id),
+                        ChildSort::default(),
+                        None,
+                        limit,
+                        false,
+                        None,
+                    )
+                    .await
+                    .unwrap()
+            }
+        };
+        let exact = list(3).await;
+        assert_eq!(exact.items.len(), 3);
+        assert!(exact.next_cursor.is_none(), "ちょうどで尽きたら続きは無い");
+        let short = list(2).await;
+        assert_eq!(short.items.len(), 2);
+        let rest = env
+            .service
+            .list_children(
+                &env.bob,
+                Some(top.id),
+                ChildSort::default(),
+                short.next_cursor.as_deref(),
+                2,
+                false,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(rest.items.len(), 1, "後ろに 1 件ある");
+        assert!(rest.next_cursor.is_none());
+
+        let search = |limit| {
+            let env = Arc::clone(&env);
+            async move {
+                env.service
+                    .search_nodes_by_name(&env.bob, "控え", ChildSort::default(), None, limit, None)
+                    .await
+                    .unwrap()
+            }
+        };
+        let exact = search(3).await;
+        assert_eq!(exact.items.len(), 3);
+        assert!(
+            exact.next_cursor.is_none(),
+            "検索もちょうどで尽きたら続きは無い"
+        );
+        let short = search(2).await;
+        assert_eq!(short.items.len(), 2);
+        assert!(short.next_cursor.is_some());
+    })
+    .await;
+}
+
 #[tokio::test]
 async fn name_search_within_the_visible_set_asks_nothing() {
     run(|env| async move {

@@ -85,8 +85,10 @@ fn encode_at(sort: ChildSort, at: Option<&(String, Uuid)>) -> Option<String> {
 impl StorageService {
     /// 候補を並びの順に引き、BatchCheck で viewer を確かめて 1 ページを返す（[モジュール文書](self)）。
     ///
-    /// `known` は ListObjects が viewer と返したノード（問い直さない）。返す続きの位置は、ページが `limit` 件で
-    /// 埋まったら最後の件、問う数の上限に届いたら最後に確かめた候補（見えないことがある）、候補が尽きたら `None`。
+    /// `known` は ListObjects が viewer と返したノード（問い直さない）。ページの後ろに見えるものがあるかを確かめるため、
+    /// `limit` + 1 件目まで探す（BUG-180）。返す続きの位置は、`limit` + 1 件目が見つかったら `limit` 件目、問う数の
+    /// 上限に届いたら最後に確かめた候補（見えないことがある・後ろに見えるものが無いこともある）、候補が尽きたら
+    /// `None`（ちょうど `limit` 件で尽きたときも `None`）。
     pub(super) async fn scan_nodes(
         &self,
         ctx: &AuthContext,
@@ -100,11 +102,13 @@ impl StorageService {
         let ns = ctx.ns();
         let subject = ctx.subject();
         let mut at = cursor.map(|c| decode_child_cursor(sort, c)).transpose()?;
-        let mut items: Vec<Node> = Vec::with_capacity(limit);
+        let mut items: Vec<Node> = Vec::with_capacity(limit + 1);
+        // 選んだ件の位置（`limit` + 1 件目が見つかったら、`limit` 件目の位置を続きにする）。
+        let mut picked: Vec<(String, Uuid)> = Vec::with_capacity(limit + 1);
         let mut checks = 0usize;
         let mut first = true;
         loop {
-            let want = limit - items.len();
+            let want = limit + 1 - items.len();
             let n = if first {
                 want.clamp(NODE_SCAN_FIRST_MIN, NODE_SCAN_CHUNK)
             } else {
@@ -142,9 +146,12 @@ impl StorageService {
                 if !visible || !r.hit {
                     continue;
                 }
+                picked.push((child_sort_value(sort.key, &r.node), r.node.id));
                 items.push(row_to_node(r.node)?);
-                if items.len() == limit {
-                    return Ok((items, encode_at(sort, at.as_ref())));
+                if items.len() > limit {
+                    // 後ろに見えるものがある: その 1 件は次のページで問い直す。
+                    items.truncate(limit);
+                    return Ok((items, encode_at(sort, picked.get(limit - 1))));
                 }
             }
             if exhausted {
@@ -250,10 +257,13 @@ impl StorageService {
             .bind(terms)
             .bind(at.as_ref().map(|(v, _)| v.as_str()))
             .bind(at.as_ref().map(|(_, id)| *id))
-            .bind(i64::try_from(limit).unwrap_or(100))
+            // 後ろに見えるものがあるかを確かめるため 1 件多く引く（BUG-180）。
+            .bind(i64::try_from(limit + 1).unwrap_or(101))
             .fetch_all(&self.db)
             .await?;
-        let next = if rows.len() == limit {
+        let mut rows = rows;
+        let next = if rows.len() > limit {
+            rows.truncate(limit);
             rows.last()
                 .map(|r| encode_child_cursor(sort, &child_sort_value(sort.key, r), r.id))
         } else {
