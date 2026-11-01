@@ -141,7 +141,7 @@ pub use key_migration::{
     FieldKeyMigrationWorker, KeyMigrationProgress, FIELD_KEY_MIGRATION_QUEUE, MIGRATION_BATCH,
 };
 pub use link_values::{LinkValueMigrationStatus, LinkValueStep, LINK_VALUE_CHUNK};
-pub use list_position::{ListPosition, ListPositionKind};
+pub use list_position::{ListCursorKind, ListPosition, ListPositionKind};
 pub use model::{
     ComputedDef, ComputedOp, DataRecord, DataTable, ExcessScale, FieldDef, FieldId, FieldPatch,
     FieldPolicy, FieldType, LookupDef, NumericSpec, RecordRevision, RoundingMode, TableSchema,

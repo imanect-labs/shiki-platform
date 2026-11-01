@@ -13,7 +13,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { breadcrumb, listChildren, type NodeResponse } from "@/lib/storage";
+import { breadcrumb, listChildrenUpTo, type NodeResponse } from "@/lib/storage";
 import { cn } from "@/lib/utils";
 import { NodeIcon } from "./primitives";
 
@@ -311,7 +311,8 @@ export function MoveDialog({
     setFolders([]);
     setCursor(undefined);
     setHasMore(false);
-    listChildren({ parentId: folderId ?? undefined, sort: "name", limit: 100 })
+    // 見えないものが多いドライブのトップでは、短いページに続きの位置だけが付くことがある（数回たどる・BUG-187）。
+    listChildrenUpTo({ parentId: folderId ?? undefined, sort: "name", want: 100 })
       .then((page) => {
         if (!active) return;
         setFolders(page.items.filter((n) => n.kind === "folder"));
@@ -334,11 +335,11 @@ export function MoveDialog({
     if (!cursor || loadingMore) return;
     setLoadingMore(true);
     try {
-      const page = await listChildren({
+      const page = await listChildrenUpTo({
         parentId: folderId ?? undefined,
         sort: "name",
         cursor,
-        limit: 100,
+        want: 100,
       });
       setFolders((prev) => [...prev, ...page.items.filter((n) => n.kind === "folder")]);
       setCursor(page.next_cursor ?? undefined);

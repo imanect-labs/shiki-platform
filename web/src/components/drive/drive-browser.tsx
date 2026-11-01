@@ -23,7 +23,7 @@ import {
   deleteFile,
   deleteFolder,
   isConflict,
-  listChildren,
+  listChildrenUpTo,
   reindexFile,
   triggerDownload,
   updateFile,
@@ -40,6 +40,7 @@ import { DriveChrome } from "./drive-chrome";
 import { NewFab, NewMenuDesktop, type CreateHandlers } from "./new-menu";
 import { NodeCard } from "./node-card";
 import { NodeRow, type NodeAction } from "./node-row";
+import { MoreRows, sentinelEnabled } from "./more-rows";
 import { Breadcrumbs, ListHeader, LoadingRow, MobileBreadcrumbs } from "./primitives";
 import { ShareDialog } from "./share-dialog";
 import { SortMenu, ViewToggle, type ViewMode } from "./toolbar";
@@ -201,21 +202,23 @@ export function DriveBrowser() {
   const versionInputRef = React.useRef<HTMLInputElement>(null);
   const versionTargetRef = React.useRef<NodeResponse | null>(null);
 
+  // 見えないものが多い場所（トップ・名前の検索）では、サーバーが短いか 0 件のページに続きの位置だけを付けて返すことが
+  // ある（BUG-187）。1 回の読み込みで続きを数回たどり、それでも見つからなければ末尾に「さらに読み込む」を出す。
   const fetchPage = React.useCallback(
     (cursor?: string) =>
-      listChildren({
+      listChildrenUpTo({
         // 検索中はフォルダを跨いで横断検索（parent を渡さない）。
         parentId: searching ? undefined : (folderId ?? undefined),
         sort,
         desc,
         cursor,
-        limit: 50,
+        want: 50,
         q: searching ? query : undefined,
       }),
     [folderId, sort, desc, searching, query],
   );
   const list = useInfiniteList<NodeResponse>(fetchPage, [folderId, sort, desc, searching, query]);
-  const sentinelRef = useInfiniteSentinel(list.loadMore, list.hasMore && !list.loading);
+  const sentinelRef = useInfiniteSentinel(list.loadMore, sentinelEnabled(list), list.items.length);
   // 表示する内容一致行（名前一致にも出るファイルは名前行に譲る）。件数表示と共有する。
   const contentRows = searching
     ? contentSearch.hits.filter((h) => !list.items.some((n) => n.id === h.fileId))
@@ -548,7 +551,7 @@ export function DriveBrowser() {
           <LoadingRow />
         ) : list.error ? (
           <p className="px-3 py-10 text-center text-sm text-destructive">{list.error}</p>
-        ) : list.items.length === 0 ? (
+        ) : list.items.length === 0 && !list.hasMore ? (
           searching ? (
             contentSearch.loading ? (
               <LoadingRow />
@@ -569,8 +572,8 @@ export function DriveBrowser() {
               <NodeCard key={node.id} node={node} onAction={handleAction} />
             ))}
             {list.hasMore ? (
-              <div ref={sentinelRef} className="col-span-full">
-                {list.loadingMore ? <LoadingRow /> : null}
+              <div className="col-span-full">
+                <MoreRows list={list} sentinelRef={sentinelRef} />
               </div>
             ) : null}
           </div>
@@ -579,7 +582,7 @@ export function DriveBrowser() {
             {list.items.map((node) => (
               <NodeRow key={node.id} node={node} onAction={handleAction} meId={me.data?.id} />
             ))}
-            {list.hasMore ? <div ref={sentinelRef}>{list.loadingMore ? <LoadingRow /> : null}</div> : null}
+            <MoreRows list={list} sentinelRef={sentinelRef} />
           </div>
         )}
       </div>

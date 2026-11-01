@@ -3,8 +3,9 @@
 import * as React from "react";
 import { ChevronLeft } from "lucide-react";
 
-import { listChildren, type NodeResponse } from "@/lib/storage";
+import { listChildrenUpTo, type NodeResponse } from "@/lib/storage";
 import { useInfiniteList, useInfiniteSentinel } from "@/hooks/use-infinite-list";
+import { MoreRows, sentinelEnabled } from "@/components/drive/more-rows";
 import { NodeIcon, LoadingRow } from "@/components/drive/primitives";
 import {
   Dialog,
@@ -15,7 +16,8 @@ import {
 } from "@/components/ui/dialog";
 
 /// ドライブからファイルを選ぶダイアログ（既定は添付）。フォルダは辿れ、ファイルを選ぶと閉じる。
-/// 一覧は next_cursor を消費する無限スクロール（100 件超のフォルダでも辿り着ける）。
+/// 一覧は next_cursor を消費する無限スクロール（100 件超のフォルダでも辿り着ける）。見えないものが多いドライブのトップ
+/// では、続きを数回たどっても見つからなければ「さらに読み込む」を出す（BUG-187）。
 /// `accept` を渡すと、それに合うファイルだけを並べる（フォルダは常に並べる）。
 export function DrivePicker({
   open,
@@ -38,12 +40,12 @@ export function DrivePicker({
   const fetchPage = React.useCallback(
     (cursor?: string) => {
       if (!open) return Promise.resolve({ items: [] as NodeResponse[], next_cursor: null });
-      return listChildren({ parentId, cursor, limit: 50 });
+      return listChildrenUpTo({ parentId, cursor, want: 50 });
     },
     [open, parentId],
   );
   const list = useInfiniteList<NodeResponse>(fetchPage, [open, parentId]);
-  const sentinelRef = useInfiniteSentinel(list.loadMore, open && list.hasMore && !list.loading);
+  const sentinelRef = useInfiniteSentinel(list.loadMore, open && sentinelEnabled(list), list.items.length);
   const items = accept ? list.items.filter((n) => n.kind === "folder" || accept(n)) : list.items;
 
   // 開くたびにルートへ戻す。
@@ -117,7 +119,7 @@ export function DrivePicker({
               })}
               {list.hasMore ? (
                 <li>
-                  <div ref={sentinelRef}>{list.loadingMore ? <LoadingRow /> : null}</div>
+                  <MoreRows list={list} sentinelRef={sentinelRef} testId="picker-more" />
                 </li>
               ) : null}
             </ul>

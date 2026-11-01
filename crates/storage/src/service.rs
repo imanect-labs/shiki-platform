@@ -162,6 +162,7 @@ mod finalize;
 mod folder;
 mod internal_io;
 mod move_rename;
+mod node_scan;
 mod proposal;
 mod read;
 mod reindex;
@@ -181,6 +182,7 @@ mod upload_gc;
 mod versions;
 mod workspace_io;
 
+pub use node_scan::{named_scan_sql, NODE_SCAN_MAX_CHECKS};
 pub use shared_list::{shared_scan_sql, SHARED_SCAN_CHUNK, SHARED_SCAN_MAX_CHECKS};
 pub use workspace_io::WriteAtOutcome;
 

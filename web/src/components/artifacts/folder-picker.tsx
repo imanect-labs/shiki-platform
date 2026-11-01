@@ -10,8 +10,9 @@
 import * as React from "react";
 import { ChevronLeft, FolderPlus } from "lucide-react";
 
-import { listChildren, type NodeResponse } from "@/lib/storage";
+import { listChildrenUpTo, type NodeResponse } from "@/lib/storage";
 import { useInfiniteList, useInfiniteSentinel } from "@/hooks/use-infinite-list";
+import { MoreRows, sentinelEnabled } from "@/components/drive/more-rows";
 import { NodeIcon, LoadingRow } from "@/components/drive/primitives";
 import { Button } from "@/components/ui/button";
 import {
@@ -45,12 +46,13 @@ export function FolderPicker({
   const fetchPage = React.useCallback(
     (cursor?: string) => {
       if (!open) return Promise.resolve({ items: [] as NodeResponse[], next_cursor: null });
-      return listChildren({ parentId: current.id, cursor, limit: 50 });
+      // 見えないものが多いドライブのトップでは、続きを数回たどっても見つからなければ「さらに読み込む」を出す（BUG-187）。
+      return listChildrenUpTo({ parentId: current.id, cursor, want: 50 });
     },
     [open, current.id],
   );
   const list = useInfiniteList<NodeResponse>(fetchPage, [open, current.id]);
-  const sentinelRef = useInfiniteSentinel(list.loadMore, open && list.hasMore && !list.loading);
+  const sentinelRef = useInfiniteSentinel(list.loadMore, open && sentinelEnabled(list), list.items.length);
 
   React.useEffect(() => {
     if (open) setStack([{ name: "マイドライブ" }]);
@@ -138,7 +140,7 @@ export function FolderPicker({
               ))}
               {list.hasMore ? (
                 <li>
-                  <div ref={sentinelRef}>{list.loadingMore ? <LoadingRow /> : null}</div>
+                  <MoreRows list={list} sentinelRef={sentinelRef} testId="picker-more" />
                 </li>
               ) : null}
             </ul>

@@ -3,9 +3,11 @@
 //! `service.rs`（親）が持つ struct/フィールド/自由関数を `use super::*` で参照する。
 
 // 分割した impl ブロック。親 `service.rs` の struct/フィールド/自由関数/型 import を総取りする。
+use super::node_scan::ScanWhere;
 #[allow(clippy::wildcard_imports)]
 use super::*;
 use crate::audit::AuditAction;
+use std::collections::HashSet;
 
 impl StorageService {
     /// ファイルメタを取得する（viewer 権限が要る）。
@@ -65,13 +67,17 @@ impl StorageService {
     ///
     /// `parent_id` が `None` なら org ルート直下。`limit` は 1..=100 にクランプ。
     /// `sort`（name/updated/size×方向）を **keyset カーソルに織り込んで**サーバ側で並べる。
-    /// `next_cursor` が `Some` なら続きがある（末尾ちょうどで空ページが 1 回返ることはあるが、
-    /// 欠落や重複は起きない）。クライアント側の全件ソートは採らない（全件取得の禁止）。
+    /// クライアント側の全件ソートは採らない（全件取得の禁止）。
     ///
-    /// 権限フィルタは **子ごとに OpenFGA viewer を post-filter**する（読めない子はオーバーフェッチで
-    /// 読み飛ばす）。継承を pre-filter にした「親が読めれば全子可視」の最適化は採らない:
+    /// 権限フィルタは **子の候補を BatchCheck でまとめて OpenFGA viewer の post-filter に通す**（読めない子は読み飛ばす・
+    /// [`super::node_scan`]）。継承を pre-filter にした「親が読めれば全子可視」の最適化は採らない:
     /// move 直後は DB の `parent_id` が先に見え、新親の FGA `parent` タプルが遅延し得るため、
     /// DB 親子関係を認可の近道にすると未認可の子を露出し得る（FGA を真実とする）。
+    ///
+    /// 1 回の頼みで OpenFGA に問う数は [`super::node_scan::NODE_SCAN_MAX_CHECKS`] 問まで（BUG-187）。届いたら、
+    /// `limit` より少ない（空のこともある）ページに続きの位置を付けて返す。`next_cursor` が `Some` なら続きがある
+    /// （末尾ちょうどで空ページが 1 回返ることはあるが、欠落や重複は起きない）。続きの位置は見えない子の名前を
+    /// 含みうる内部の値なので、外へ出す API は封をする（`data::DataStore::seal_list_cursor`）。
     #[allow(clippy::too_many_arguments)] // 認可 ctx ＋ 親 ＋ ソート ＋ ページング ＋ 可視性 ＋ trace。
     pub async fn list_children(
         &self,
@@ -117,92 +123,21 @@ impl StorageService {
             }
         }
 
-        let limit = limit.clamp(1, 100);
-        // 1 ラウンドのフェッチ歩幅（フィルタ落ちを見越して多めに引く）。
-        let batch: i64 = (limit as i64 * 2).clamp(16, 200);
-        // ソートキーごとの列式・型キャスト・方向。keyset 比較とカーソルをこれに合わせる。
-        let (sort_col, sort_cast) = match sort.key {
-            ChildSortKey::Name => ("name", "text"),
-            ChildSortKey::Updated => ("updated_at", "timestamptz"),
-            // フォルダは size_bytes が NULL のため 0 とみなす（NULL を keyset から排除）。
-            ChildSortKey::Size => ("coalesce(size_bytes, 0)", "bigint"),
-        };
-        let (order_dir, keyset_cmp) = if sort.desc {
-            ("DESC", "<")
-        } else {
-            ("ASC", ">")
-        };
-        let (mut after_val, mut after_id) = match cursor {
-            Some(c) => {
-                let (val, id) = decode_child_cursor(sort, c)?;
-                (Some(val), Some(id))
-            }
-            None => (None, None),
-        };
-
-        let mut items: Vec<Node> = Vec::with_capacity(limit);
-        let mut exhausted = false;
-        while items.len() < limit && !exhausted {
-            // keyset: (sort_col, id) cmp (after_val, after_id)。parent_id は IS NOT DISTINCT FROM で
-            // NULL（ルート）も同値比較する。after_val は text で受けて列型へキャストして比較する。
-            // `include_system=false`（ドライブ UI 等）はシステム領域（#392）を除外する。
-            // true はエージェント自身のワークスペース列挙だけが使う（chat::StorageWorkspaceStore）。
-            let sql = format!(
-                "SELECT {NODE_COLS} FROM node \
-                 WHERE org = $1 AND tenant_id = $2 AND deleted_at IS NULL \
-                   AND ($7 OR system = false) \
-                   AND parent_id IS NOT DISTINCT FROM $3 \
-                   AND ($4::text IS NULL OR ({sort_col}, id) {keyset_cmp} ($4::{sort_cast}, $5)) \
-                 ORDER BY {sort_col} {order_dir}, id {order_dir} LIMIT $6"
-            );
-            let rows: Vec<NodeRow> = sqlx::query_as(&sql)
-                .bind(&ctx.org)
-                .bind(&ctx.tenant_id)
-                .bind(parent_id)
-                .bind(after_val.as_deref())
-                .bind(after_id)
-                .bind(batch)
-                .bind(include_system)
-                .fetch_all(&self.db)
-                .await?;
-            if (rows.len() as i64) < batch {
-                exhausted = true;
-            }
-            if rows.is_empty() {
-                break;
-            }
-            for row in rows {
-                after_val = Some(child_sort_value(sort.key, &row));
-                after_id = Some(row.id);
-                // 子ごとに viewer を確認（FGA を真実とする post-filter）。即時剥奪反映のため強整合。
-                let kind = NodeKind::parse(&row.kind).unwrap_or(NodeKind::File);
-                let allowed = self
-                    .authz
-                    .check(
-                        &ctx.subject(),
-                        Relation::Viewer,
-                        &node_fga_object(&ctx.ns(), kind, row.id),
-                        Consistency::HigherConsistency,
-                    )
-                    .await?;
-                if !allowed {
-                    continue;
-                }
-                items.push(row_to_node(row)?);
-                if items.len() == limit {
-                    break;
-                }
-            }
-        }
-        // limit 充足で止めたなら続きがあり得る → カーソルを返す。尽きたなら None。
-        let next_cursor = if items.len() == limit {
-            match (after_val, after_id) {
-                (Some(v), Some(i)) => Some(encode_child_cursor(sort, &v, i)),
-                _ => None,
-            }
-        } else {
-            None
-        };
+        // `include_system=false`（ドライブ UI 等）はシステム領域（#392）を除外する。
+        // true はエージェント自身のワークスペース列挙だけが使う（chat::StorageWorkspaceStore）。
+        let (items, next_cursor) = self
+            .scan_nodes(
+                ctx,
+                &ScanWhere::Children {
+                    parent_id,
+                    include_system,
+                },
+                sort,
+                cursor,
+                limit,
+                &HashSet::new(),
+            )
+            .await?;
         // 成功した一覧（ディレクトリ列挙）も監査に残す（NFR-6・読取系なので未チェーン）。
         self.audit
             .record(
@@ -225,9 +160,11 @@ impl StorageService {
     /// 空白区切りの各語を AND の部分一致（ILIKE・ワイルドカード無害化）で名前へ適用する。
     /// `ILIKE ALL(array)` は ESCAPE 句を取れないため、既定のエスケープ文字 `\` を前提に
     /// `escape_like` が `\` で無害化した語をそのまま使う。
-    /// 認可は `list_children` と同じ方針: org メンバー確認 → **子ごとに OpenFGA viewer を
-    /// post-filter**（強整合・読めないものはオーバーフェッチで読み飛ばす）。内容検索
-    /// （RAG `/search`）とフロントで統合される想定で、こちらは名前一致のみを担う。
+    /// 認可は org メンバー確認 → 自分が viewer のファイルとフォルダー（ListObjects）の中だけを名前に当てる。どちらかが
+    /// 上限に届いたら、候補を語で選ばずに並びの順に引いて BatchCheck で絞る（OpenFGA に問う数は語によらず、
+    /// [`super::node_scan::NODE_SCAN_MAX_CHECKS`] 問まで・BUG-187・[`super::node_scan`]）。上限に届いたら、`limit`
+    /// より少ない（空のこともある）ページに続きの位置を付けて返す。内容検索（RAG `/search`）とフロントで統合される
+    /// 想定で、こちらは名前一致のみを担う。
     pub async fn search_nodes_by_name(
         &self,
         ctx: &AuthContext,
@@ -259,82 +196,23 @@ impl StorageService {
             });
         }
 
-        let limit = limit.clamp(1, 100);
-        let batch: i64 = (limit as i64 * 2).clamp(16, 200);
-        let (sort_col, sort_cast) = match sort.key {
-            ChildSortKey::Name => ("name", "text"),
-            ChildSortKey::Updated => ("updated_at", "timestamptz"),
-            ChildSortKey::Size => ("coalesce(size_bytes, 0)", "bigint"),
-        };
-        let (order_dir, keyset_cmp) = if sort.desc {
-            ("DESC", "<")
+        // 名前検索はユーザー向けの導線のみ（システム領域は常に対象外・#392）。
+        // エージェントのワークスペースは名前解決（`resolve_child_file`）で引く。
+        let (known, cut) = self.visible_nodes(ctx).await?;
+        let (items, next_cursor) = if cut {
+            self.scan_nodes(
+                ctx,
+                &ScanWhere::Named { terms: &terms },
+                sort,
+                cursor,
+                limit,
+                &known,
+            )
+            .await?
         } else {
-            ("ASC", ">")
-        };
-        let (mut after_val, mut after_id) = match cursor {
-            Some(c) => {
-                let (val, id) = decode_child_cursor(sort, c)?;
-                (Some(val), Some(id))
-            }
-            None => (None, None),
-        };
-
-        let mut items: Vec<Node> = Vec::with_capacity(limit);
-        let mut exhausted = false;
-        while items.len() < limit && !exhausted {
-            // 名前検索はユーザー向けの導線のみ（システム領域は常に対象外・#392）。
-            // エージェントのワークスペースは名前解決（`resolve_child_file`）で引く。
-            let sql = format!(
-                "SELECT {NODE_COLS} FROM node \
-                 WHERE org = $1 AND tenant_id = $2 AND deleted_at IS NULL AND system = false \
-                   AND name ILIKE ALL($3) \
-                   AND ($4::text IS NULL OR ({sort_col}, id) {keyset_cmp} ($4::{sort_cast}, $5)) \
-                 ORDER BY {sort_col} {order_dir}, id {order_dir} LIMIT $6"
-            );
-            let rows: Vec<NodeRow> = sqlx::query_as(&sql)
-                .bind(&ctx.org)
-                .bind(&ctx.tenant_id)
-                .bind(&terms)
-                .bind(after_val.as_deref())
-                .bind(after_id)
-                .bind(batch)
-                .fetch_all(&self.db)
-                .await?;
-            if (rows.len() as i64) < batch {
-                exhausted = true;
-            }
-            if rows.is_empty() {
-                break;
-            }
-            for row in rows {
-                after_val = Some(child_sort_value(sort.key, &row));
-                after_id = Some(row.id);
-                let kind = NodeKind::parse(&row.kind).unwrap_or(NodeKind::File);
-                let allowed = self
-                    .authz
-                    .check(
-                        &ctx.subject(),
-                        Relation::Viewer,
-                        &node_fga_object(&ctx.ns(), kind, row.id),
-                        Consistency::HigherConsistency,
-                    )
-                    .await?;
-                if !allowed {
-                    continue;
-                }
-                items.push(row_to_node(row)?);
-                if items.len() == limit {
-                    break;
-                }
-            }
-        }
-        let next_cursor = if items.len() == limit {
-            match (after_val, after_id) {
-                (Some(v), Some(i)) => Some(encode_child_cursor(sort, &v, i)),
-                _ => None,
-            }
-        } else {
-            None
+            let ids: Vec<Uuid> = known.into_iter().collect();
+            self.search_in_visible(ctx, &terms, sort, cursor, limit, &ids)
+                .await?
         };
         // 検索も列挙操作として監査へ（クエリ本文は含めない: 低エントロピー語の露出回避）。
         self.audit

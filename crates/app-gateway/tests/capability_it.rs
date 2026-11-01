@@ -366,6 +366,82 @@ async fn data_links_do_not_reach_unowned_tables() {
     }
 }
 
+/// 子一覧の続きの位置は、テナントとフォルダーに束縛した不透明な文字列（BUG-187）。名前を含む生の位置を出さず、
+/// 読めない位置・別のフォルダーの位置は 400 で断る。
+#[tokio::test]
+async fn storage_children_cursor_is_sealed() {
+    use std::fmt::Write as _;
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let (_app_id, client, _owned, _foreign) = fixture(&pool, &tenant).await;
+    let app = build_gateway_router(state_with(
+        pool.clone(),
+        &tenant,
+        Arc::new(StubAuthz::default()),
+    ));
+    let tok = token(&client, ALL_SCOPES, &tenant);
+    let (s, folder) = request_json(
+        &app,
+        "POST",
+        "/gw/storage/folders",
+        Some(&tok),
+        &json!({ "parent_id": null, "name": "アプリ出力" }),
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{folder}");
+    let folder_id = folder["id"].as_str().expect("folder id");
+
+    let mut kids = Vec::new();
+    for name in ["見積-1", "見積-2"] {
+        let (s, f) = request_json(
+            &app,
+            "POST",
+            "/gw/storage/folders",
+            Some(&tok),
+            &json!({ "parent_id": folder_id, "name": name }),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{f}");
+        kids.push(f["id"].as_str().expect("id").to_string());
+    }
+    let hex = |s: &str| {
+        s.bytes().fold(String::new(), |mut out, b| {
+            let _ = write!(out, "{b:02x}");
+            out
+        })
+    };
+    let page_url = |cursor: Option<&str>| {
+        let base = format!("/gw/storage/nodes/{folder_id}/children?limit=1");
+        cursor.map_or(base.clone(), |c| format!("{base}&cursor={c}"))
+    };
+    let (s, first) = get(&app, &page_url(None), Some(&tok)).await;
+    assert_eq!(s, StatusCode::OK, "{first}");
+    assert_eq!(first["items"][0]["id"], kids[0].as_str());
+    let next = first["next_cursor"]
+        .as_str()
+        .expect("続きがある")
+        .to_string();
+    assert!(
+        !next.contains(&hex("見積-1")) && !next.contains(&kids[0]),
+        "生の位置（名前・id）を出さない: {next}"
+    );
+    let (s, second) = get(&app, &page_url(Some(&next)), Some(&tok)).await;
+    assert_eq!(s, StatusCode::OK, "{second}");
+    assert_eq!(second["items"][0]["id"], kids[1].as_str());
+    let raw = hex(&format!("n{}見積-1", kids[0]));
+    for bad in [raw.as_str(), "garbage"] {
+        let (s, body) = get(&app, &page_url(Some(bad)), Some(&tok)).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{bad}: {body}");
+    }
+    let (s, body) = get(
+        &app,
+        &format!("/gw/storage/nodes/{}/children?cursor={next}", kids[0]),
+        Some(&tok),
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "別のフォルダーの位置: {body}");
+}
+
 #[tokio::test]
 async fn storage_rag_identity_notify_matrix() {
     let Some(pool) = setup().await else { return };

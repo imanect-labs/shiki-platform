@@ -135,6 +135,30 @@ export function listChildren(opts: {
   ).then((r) => okJson<ChildrenResponse>(r));
 }
 
+/// 続きを読みにいく回数の上限（[`listChildrenUpTo`]）。
+const CHILDREN_MAX_PAGES = 5;
+
+/// フォルダーの中身（`q` があれば名前の検索）を、`want` 件たまるか続きが無くなるまで読む（往復は最大 5 回）。
+///
+/// 見えないものが多い場所（ドライブのトップ・名前の検索）では、1 ページが `limit` より少ないか 0 件のまま、続きの
+/// 位置だけが付いて返ることがある（サーバーが OpenFGA に問う数を抑えるため・BUG-187）。往復の上限で止まったら
+/// `next_cursor` を返す（画面は「さらに読み込む」で続きを読む）。
+export async function listChildrenUpTo(
+  opts: Parameters<typeof listChildren>[0] & { want?: number },
+): Promise<ChildrenResponse> {
+  const { want: wantOpt, ...rest } = opts;
+  const want = wantOpt ?? rest.limit ?? 50;
+  const items: NodeResponse[] = [];
+  let cursor = rest.cursor;
+  for (let page = 0; page < CHILDREN_MAX_PAGES; page += 1) {
+    const p = await listChildren({ ...rest, cursor, limit: Math.min(100, Math.max(1, want - items.length)) });
+    items.push(...p.items);
+    cursor = p.next_cursor ?? undefined;
+    if (!cursor || items.length >= want) break;
+  }
+  return { items, next_cursor: cursor ?? null };
+}
+
 /// ノードのパンくず（root→自身。読める接頭のみ）。
 export function breadcrumb(nodeId: string): Promise<CrumbResponse[]> {
   return apiFetch(`/nodes/${nodeId}/breadcrumb`).then((r) => okJson<CrumbResponse[]>(r));

@@ -69,7 +69,8 @@ pub struct ChildrenQuery {
     /// 降順にするか（既定 false=昇順）。
     #[serde(default)]
     pub desc: bool,
-    /// 前回応答の `next_cursor`。続きから取得する（省略で先頭）。
+    /// 前回応答の `next_cursor`。続きから取得する（省略で先頭）。同じ親（検索なら同じ `q`）・同じ並びの応答の値だけを
+    /// 使える。読めない値（別の親・別の並び・前の版の位置を含む）は 400（`cursor_invalid`）。
     pub cursor: Option<String>,
     /// 1 ページの最大件数（1..=100。既定 50）。
     pub limit: Option<usize>,
@@ -90,7 +91,9 @@ pub struct PageQuery {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ChildrenResponse {
     pub items: Vec<NodeResponse>,
-    /// 続きがあれば次回 `cursor` に渡す値（末尾なら `null`）。
+    /// 続きがあれば次回 `cursor` に渡す値（末尾なら `null`）。テナントに束縛した不透明な文字列。`items` が `limit` より
+    /// 少ないか空でも付くことがある（サーバーが OpenFGA に問う数を抑えるため・BUG-162・BUG-187）。`null` になるまで
+    /// 続きを読む。
     pub next_cursor: Option<String>,
 }
 
@@ -148,12 +151,18 @@ pub async fn create_folder(
 
 /// フォルダ/ルートの子を権限フィルタ済みで 1 ページ返す。
 /// `q` 指定時はフォルダ横断の名前検索（同じく権限フィルタ済み）になる。
+///
+/// 見えないものが多い場所（組織の最上位・名前の検索）では、1 ページが `limit` より少ないか空のまま `next_cursor`
+/// だけが付いて返ることがある（サーバーが OpenFGA に問う数を抑えるため・BUG-187）。`next_cursor` が無くなるまで
+/// 続きを読む。`next_cursor` はテナント・一覧（親か検索の語）・並びに束縛した不透明な文字列（見えないものの名前を
+/// 含む位置を外へ出さない）。
 #[utoipa::path(
     get,
     path = "/nodes",
     params(ChildrenQuery),
     responses(
         (status = 200, description = "子一覧（読めるもののみ）", body = ChildrenResponse),
+        (status = 400, description = "cursor が読めない（cursor_invalid）"),
         (status = 401, description = "未認証"),
         (status = 403, description = "認可されていない"),
         (status = 404, description = "親フォルダが無い"),
@@ -171,7 +180,22 @@ pub async fn list_children(
         desc: q.desc,
     };
     let limit = q.limit.unwrap_or(50);
-    let page = match q.q.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+    let name_query = q.q.as_deref().map(str::trim).filter(|s| !s.is_empty());
+    // 続きの位置は見えないノードの名前を含みうるので、テナント・一覧・並びに束縛して封をする（BUG-187）。
+    let (kind, scope) = match name_query {
+        Some(text) => (data::ListCursorKind::DriveSearch, sort.cursor_scope(text)),
+        None => (
+            data::ListCursorKind::DriveFolder,
+            sort.cursor_scope(&q.parent_id.map_or_else(|| "root".into(), |p| p.to_string())),
+        ),
+    };
+    let cursor = q
+        .cursor
+        .as_deref()
+        .filter(|c| !c.is_empty())
+        .map(|c| state.data.open_list_cursor(kind, &ctx.tenant_id, &scope, c))
+        .transpose()?;
+    let page = match name_query {
         Some(name_query) => {
             state
                 .storage
@@ -179,7 +203,7 @@ pub async fn list_children(
                     &ctx,
                     name_query,
                     sort,
-                    q.cursor.as_deref(),
+                    cursor.as_deref(),
                     limit,
                     trace.as_deref(),
                 )
@@ -192,7 +216,7 @@ pub async fn list_children(
                     &ctx,
                     q.parent_id,
                     sort,
-                    q.cursor.as_deref(),
+                    cursor.as_deref(),
                     limit,
                     // ドライブ UI にシステム領域（エージェントのワークスペース）は出さない（#392）。
                     false,
@@ -201,12 +225,17 @@ pub async fn list_children(
                 .await?
         }
     };
+    let next_cursor = page
+        .next_cursor
+        .map(|c| {
+            state
+                .data
+                .seal_list_cursor(kind, &ctx.tenant_id, &scope, &c)
+        })
+        .transpose()?;
     let mut items: Vec<NodeResponse> = page.items.into_iter().map(Into::into).collect();
     resolve_updated_by_names(&state, &ctx, &mut items).await;
-    Ok(Json(ChildrenResponse {
-        items,
-        next_cursor: page.next_cursor,
-    }))
+    Ok(Json(ChildrenResponse { items, next_cursor }))
 }
 
 /// ノードのパンくず（root→自身。読める接頭辞のみ）。
