@@ -41,6 +41,11 @@ protocol mapper で claim にしたものから来る（`crates/api/src/middlewa
   の作成時 `attributes.tenant`／`update_user_tenant`）が黙って効かなくなる（tenant claim の無い
   ユーザーは SaaS では fail-closed でログイン不可）。
 - `groups` claim（org 解決）の元はグループ所属で、Account API からは変更できない（admin のみ）。
+  ログインとセッションの更新（アクセストークンの寿命ごと）で、そこから決まる組織の `organization#member` を
+  OpenFGA に書き、ほかの組織の member を外す（D-130・`crates/api/src/routes/auth/org_member.rs`）。グループから組織が
+  決まらない人（既定の組織 `default` に落ちる人）には書かない。**グループから外した人の member は、その人が次に
+  ログインするかセッションを更新するまで残る**（ロールの同期と同じ）。すぐに止めるには Keycloak でその人を無効にする
+  （Back-Channel Logout がセッションを切る）。
 - **顧客 IdP / LDAP のマッパーで `tenant` / `roles` を顧客が制御できる値から取り込まない**。
   IdP の Attribute Importer（sync mode FORCE 等）や LDAP の user-attribute mapper はサーバ側で属性を
   直接書くため、上の `edit: ["admin"]` をすり抜ける（顧客 IdP が `tenant=<他社>` を出せば越境する）。
@@ -66,12 +71,12 @@ provisioner の資格情報で登録する（`crates/app-gateway/src/oauth.rs` �
 - 既定のスコープは `basic` だけ（B2 は Keycloak が付ける `service_account` も）。トークンに `sub` を載せる `basic` は、
   Keycloak 25 以降の realm の既定のスコープ。**本番 realm に `basic` が無いと、アプリのトークンに `sub` が無く、
   ゲートウェイが 401 で断る。** 任意のスコープは能力スコープ（`data.read` など・サーバーが作る）。
-- マッパーは aud（`shiki-gateway`）・`tenant`（利用者の属性 `tenant`・上の User Profile の保護がそのまま効く）・
-  `groups`（完全なパス）で、アクセストークンにだけ載せる。名前・メールアドレス・ロールは載せない（B1 では
-  トークンがアプリのコードに渡る）。**`groups` には組織の下の部署・グループのパス（`/tenants/<tenant>/<org>/<dept>`
-  ＝ロールの id と同じ値）も載るので、身元を読む能力（`identity.read`）を同意していないアプリのコードにも、
-  利用者の所属が見える。** 同意の画面はそのことを言う。ゲートウェイが組織をトークンに頼らずサーバー側で決めれば
-  `groups` を外せる（human の判断待ち）。
+- マッパーは aud（`shiki-gateway`）と `tenant`（利用者の属性 `tenant`・上の User Profile の保護がそのまま効く）で、
+  アクセストークンにだけ載せる。名前・メールアドレス・ロール・所属グループ（`groups`）は載せない（B1 では
+  トークンがアプリのコードに渡る）。ゲートウェイは利用者の組織をトークンではなくインストールの組織で決め、その組織の
+  `organization#member`（上のログインの同期が書く）を OpenFGA で確かめる。member でなければ 403（D-130）。
+  所属するロールは、身元を読む能力（`identity.read`）を同意したアプリにだけゲートウェイが返す。7d の版が付けた
+  `groups` のマッパーは、登録の形が変わるので起動時の照合で外れる。
 - サーバーの関数（B2）を持つアプリの B1 には、同じアプリの B2 の client_id をアクセストークンの `aud` に足すマッパー
   （`shiki-function-audience`）も付ける（BUG-182）。利用者が起点の関数の呼び出しは、B1 で取った利用者のトークンを
   B2 が Keycloak 26.2 の標準のトークンの交換（RFC 8693）で交換する。実 Keycloak で確かめた決まりは次のとおり。

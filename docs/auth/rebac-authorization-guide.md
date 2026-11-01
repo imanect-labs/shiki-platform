@@ -837,6 +837,20 @@ flowchart TB
 - **fail-safe**: READ 失敗時は剥奪をスキップして付与のみ（誤って全ロールを剥がさない）。claims が空＝ロール無しは
   正当に解釈して stale タプルを剥奪する（fail-open を避ける）。
 
+### 組織の member（D-130）
+
+`organization:<tenant>|<org>#member` も同じ契機（ログインとセッションの更新）で claims にそろえる
+（`routes/auth/org_member.rs`）。
+
+- **desired**: `groups` claim から [`resolve_org`](../../crates/authz/src/org_group.rs)（内部 API の `AuthContext` と同じ規則）で
+  決まる 1 つの組織。決まらない人（既定の組織 `default` に落ちる人）と、FGA の識別子にできない名前には書かない。
+- **current**: `read_subject_objects(user, organization)`（relation を問わず直接タプルのある組織）。desired でない組織の
+  `member` だけを外す（`admin`・`audit_viewer` は管理の側の付与なので触らない・PIT-65）。READ 失敗時は外さない。
+- 付ける前に `check`（HigherConsistency）で確かめ、無いときだけ書く。ログインはリダイレクトの前に待つ（3 秒まで）。
+  戻った直後の `/me` と、アプリのゲートウェイがこのタプルで組織のメンバーかを判定するため。
+- アプリのゲートウェイは利用者の組織をトークンではなくインストールから決め、このタプルで確かめる（member でなければ
+  403）。グループから外した人の member は、次のログインかセッションの更新で外れる（それまでは残る）。
+
 ---
 
 ## 13. 規約・不変条件チェックリスト（DO / DON'T）
