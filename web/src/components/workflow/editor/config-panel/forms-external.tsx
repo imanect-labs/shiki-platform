@@ -106,7 +106,7 @@ export function HttpRequestForm({ node, dispatch, refCandidates, inMapRegion, fi
             className="h-8 font-mono text-xs max-md:text-base"
           />
           {secret?.name ? (
-            <div className="grid grid-cols-2 gap-1.5">
+            <div className="space-y-1.5">
               <Select
                 value={secret.attach?.kind ?? "bearer"}
                 onValueChange={(v) =>
@@ -118,18 +118,18 @@ export function HttpRequestForm({ node, dispatch, refCandidates, inMapRegion, fi
                   })
                 }
               >
-                <SelectTrigger className="h-8" aria-label="シークレットの渡し方">
+                <SelectTrigger className="h-8" aria-label="シークレットの付け方">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="bearer">Bearer 認証</SelectItem>
-                  <SelectItem value="header">ヘッダに添付</SelectItem>
+                  <SelectItem value="bearer">Authorization ヘッダーに Bearer で付ける（おすすめ）</SelectItem>
+                  <SelectItem value="header">決めたヘッダーに付ける</SelectItem>
                 </SelectContent>
               </Select>
               {secret.attach?.kind === "header" ? (
                 <Input
                   value={secret.attach?.header ?? ""}
-                  aria-label="シークレットを添付するヘッダ名"
+                  aria-label="シークレットを付けるヘッダーの名前"
                   onChange={(e) =>
                     patchParams(dispatch, node, {
                       secret: {
@@ -138,7 +138,7 @@ export function HttpRequestForm({ node, dispatch, refCandidates, inMapRegion, fi
                       },
                     })
                   }
-                  placeholder="ヘッダ名"
+                  placeholder="例: X-Api-Key"
                   className="h-8 font-mono text-xs max-md:text-base"
                 />
               ) : null}

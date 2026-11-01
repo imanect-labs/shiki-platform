@@ -171,6 +171,9 @@ impl CapabilityNodeExecutor {
         // 文字列はそのまま・`{ "base64": … }` はバイト列なので、種類を決めつけない。
         let json_body = body.as_ref().is_some_and(is_json_body);
         let body = body.map(|v| as_bytes(&v));
+        // シークレットを付けるヘッダーの名前は、シークレットを解く前に確かめる（保存時の V1 と同じ決まり・保存時を
+        // 通らない定義も送らない・BUG-184）。
+        self.check_secret_header(&p, ec)?;
 
         // secret 解決（あれば）→ 宛先束縛の照合材料。
         let resolved_secret = if let Some(sref) = &p.secret {
@@ -260,6 +263,26 @@ impl CapabilityNodeExecutor {
         // （実行履歴・画面に返す結果）へ書く前にマスクする（記録時のレダクト・write-only 原則・GAP-09 の T0）。
         let body = response_body(&resp.body, resolved_secret.as_ref());
         Ok(json!({ "status": resp.status, "host": host, "body": body }))
+    }
+
+    /// シークレットを付けるヘッダーの名前の決まりを当てる（BUG-184）。Shiki が決めるヘッダーに付けようとした定義は、
+    /// script と同じく監査に残す。
+    fn check_secret_header(&self, p: &HttpRequestParams, ec: &ExecCtx) -> Result<(), PortError> {
+        use super::http_headers::{check_secret_header_on, HeaderRefused, HeaderSurface};
+        let Some(name) = p.secret_header() else {
+            return Ok(());
+        };
+        check_secret_header_on(HeaderSurface::Block, name).map_err(|refused| {
+            if matches!(refused, HeaderRefused::Reserved(_)) {
+                self.audit(
+                    &ec.tenant_id,
+                    "http.request",
+                    false,
+                    &json!({ "reason": "header_not_allowed" }),
+                );
+            }
+            refused.into_port_error()
+        })
     }
 
     /// 宛先束縛（secret.allowed_hosts）× egress allowlist の AND を URL ホスト部リテラルで照合する。

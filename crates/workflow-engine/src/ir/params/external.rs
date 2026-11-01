@@ -5,6 +5,7 @@ use ts_rs::TS;
 
 use super::ParamsIssue;
 use crate::ir::expr::ValueExpr;
+use crate::nodes::http_headers::{check_secret_header_on, HeaderSurface};
 
 /// HTTP メソッド（閉集合・UI セレクト用）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize, TS)]
@@ -122,8 +123,10 @@ pub struct HttpRequestParams {
 }
 
 impl HttpRequestParams {
-    /// URL の静的整合（scheme・解析可能性）を検査する。宛先束縛照合は V4/実行時。
+    /// URL の静的整合（scheme・解析可能性）と、シークレットを付けるヘッダーの名前（BUG-184）を検査する。
+    /// 宛先束縛照合は V4/実行時。
     pub fn check_cross_fields(&self) -> Result<(), ParamsIssue> {
+        self.check_headers()?;
         let issue = |message: String| ParamsIssue {
             path: "/params/url".to_string(),
             message,
@@ -142,6 +145,30 @@ impl HttpRequestParams {
             return Err(issue("url にホストがありません".to_string()));
         }
         Ok(())
+    }
+
+    /// シークレットを付けるヘッダーの名前（ヘッダーに付けるとき）。シークレットを使わないなら `None`。
+    #[must_use]
+    pub fn secret_header(&self) -> Option<&str> {
+        let secret = self.secret.as_ref()?;
+        Some(match &secret.attach {
+            Some(SecretAttach {
+                kind: SecretAttachKind::Header,
+                header: Some(name),
+            }) => name.as_str(),
+            _ => "Authorization",
+        })
+    }
+
+    /// シークレットを付けるヘッダーの名前を確かめる（Shiki が決めるヘッダー・名前の形・実行時と同じ決まり）。
+    fn check_headers(&self) -> Result<(), ParamsIssue> {
+        let Some(name) = self.secret_header() else {
+            return Ok(());
+        };
+        check_secret_header_on(HeaderSurface::Block, name).map_err(|refused| ParamsIssue {
+            path: "/params/secret/attach/header".to_string(),
+            message: refused.into_message(),
+        })
     }
 }
 
@@ -200,4 +227,64 @@ pub struct WorkflowStartParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub input: Option<ValueExpr>,
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::super::{check_params, ParamsIssue};
+    use crate::vocab::NodeType;
+
+    fn check(params: &serde_json::Value) -> Result<(), ParamsIssue> {
+        check_params(NodeType::HttpRequest, params)
+    }
+
+    fn issue(path: &str, message: &str) -> Result<(), ParamsIssue> {
+        Err(ParamsIssue {
+            path: path.to_string(),
+            message: message.to_string(),
+        })
+    }
+
+    /// シークレットを付けるヘッダーの名前は、保存の時点で確かめる（Host などに平文を載せない・BUG-184）。
+    #[test]
+    fn the_header_the_secret_is_attached_to_is_checked_on_save() {
+        let with = |header: &str| {
+            json!({
+                "url": "https://api.example.com",
+                "secret": { "name": "tok", "attach": { "kind": "header", "header": header } }
+            })
+        };
+        assert_eq!(check(&with("X-Api-Key")), Ok(()));
+        assert_eq!(
+            check(&with("Host")),
+            issue(
+                "/params/secret/attach/header",
+                "シークレットを付けるヘッダー「Host」は Shiki が決めるため、指定できません。"
+            )
+        );
+        for bad in ["", "X Api", "X-Api\r\nHost: evil"] {
+            let e = check(&with(bad)).unwrap_err();
+            assert_eq!(e.path, "/params/secret/attach/header", "{bad:?}");
+            assert!(
+                e.message
+                    .starts_with("シークレットを付けるヘッダーの名前「"),
+                "{bad:?}: {}",
+                e.message
+            );
+        }
+        // Bearer（既定）と、名前を省いたヘッダー（Authorization）は通る。
+        assert_eq!(
+            check(&json!({ "url": "https://api.example.com", "secret": { "name": "tok" } })),
+            Ok(())
+        );
+        assert_eq!(
+            check(&json!({
+                "url": "https://api.example.com",
+                "secret": { "name": "tok", "attach": { "kind": "header" } }
+            })),
+            Ok(())
+        );
+    }
 }

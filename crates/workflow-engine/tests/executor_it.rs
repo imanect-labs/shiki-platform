@@ -691,6 +691,64 @@ async fn script_http_refuses_headers_it_must_not_send() {
     }
 }
 
+/// シークレットを付けるヘッダーの名前の誤りは、保存時を通らない定義でも、シークレットを解いて送る前に分かる誤りで
+/// 断る（以前は Host などにも平文を付けて送り、空の名前は一時的な問題になっていた・BUG-184）。Shiki が決める
+/// ヘッダーに付けようとした定義は監査に残す。
+#[tokio::test]
+async fn http_request_node_refuses_headers_it_must_not_send() {
+    let cases = [
+        (
+            json!({ "secret": { "name": "tok", "attach": { "kind": "header", "header": "Host" } } }),
+            "シークレットを付けるヘッダー「Host」は Shiki が決めるため、指定できません。",
+            true,
+        ),
+        (
+            json!({ "secret": { "name": "tok", "attach": { "kind": "header", "header": "" } } }),
+            "シークレットを付けるヘッダーの名前「」は使えません。",
+            false,
+        ),
+        (
+            json!({ "secret": { "name": "tok", "attach": { "kind": "header", "header": "X Api" } } }),
+            "シークレットを付けるヘッダーの名前「X Api」は使えません。",
+            false,
+        ),
+    ];
+    for (extra, message, audited) in cases {
+        let ports = Arc::new(FakePorts::with_http_status(200));
+        *ports.secret_hosts.lock().unwrap() = vec!["api.example.com".into()];
+        let audit = Arc::new(CapturingAudit::default());
+        let exec = executor(Arc::clone(&ports), Arc::clone(&audit));
+        let mut params = json!({ "method": "POST", "url": "https://api.example.com/v1" });
+        params
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        let res = exec
+            .execute(
+                "http.request",
+                &params,
+                &ctx(
+                    json!({ "n": 1, "crlf": "1\r\nX-Injected: yes" }),
+                    vec!["http.egress".into()],
+                ),
+            )
+            .await;
+        assert!(!res.ok, "{extra}");
+        let err = res.error.unwrap();
+        assert_eq!(err.code, "invalid", "{extra}: {err:?}");
+        assert!(!err.retryable, "{extra}");
+        assert!(err.message.starts_with(message), "{extra}: {}", err.message);
+        assert!(
+            ports.last_http.lock().unwrap().is_none(),
+            "{extra}: 送らない"
+        );
+        let denied = audit.records.lock().unwrap().iter().any(|(api, ok, meta)| {
+            api == "http.request" && !ok && meta["reason"] == "header_not_allowed"
+        });
+        assert_eq!(denied, audited, "{extra}");
+    }
+}
+
 /// 送り口が名前解決の後のアドレスで断った送信は、ブロックと script のどちらの経路でも、その code で失敗にして監査に
 /// 残す（送り先のホストと理由・BUG-181）。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
