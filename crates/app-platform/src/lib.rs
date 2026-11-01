@@ -6,6 +6,7 @@
 //! [`agent_core::ToolName`]）へ照合し、実在しない権限名を拒否する（ハルシネーション境界）。
 
 mod bundle;
+mod client_repair;
 mod egress_guard;
 mod functions;
 mod install;
@@ -22,6 +23,7 @@ mod usage;
 mod validate;
 
 pub use bundle::{BundleStore, MAX_BUNDLE_BYTES};
+pub use client_repair::ClientRepairProgress;
 pub use functions::{
     egress_allowed, FunctionActor, FunctionInvocation, FunctionOutcome, FunctionRunner,
 };

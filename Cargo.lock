@@ -5322,6 +5322,7 @@ dependencies = [
  "axum",
  "chrono",
  "ed25519-dalek",
+ "futures",
  "hex",
  "reqwest 0.12.28",
  "semver",

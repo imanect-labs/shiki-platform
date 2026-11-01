@@ -64,7 +64,8 @@ pub struct InstallService {
     pub(crate) keys: TrustedKeyStore,
     pub(crate) oauth: Option<OAuthClient>,
     pub(crate) audit: AuditRecorder,
-    /// B1 public client の redirect URI（ホスト支援 PKCE のシェル callback・PR10 が消費）。
+    /// B1 public client の redirect URI（ホスト支援 PKCE のシェルのポップアップの戻り先
+    /// `{web のオリジン}/apps/oauth/callback`・BUG-172）。
     pub(crate) b1_redirect_uris: Vec<String>,
     /// B2 confidential secret の保管先（宛先束縛・未配線は保管スキップ＝トリガ無効）。
     pub(crate) secrets: Option<Arc<secrets::SecretStore>>,
@@ -216,6 +217,17 @@ impl InstallService {
             }
         };
 
+        // クライアントを今の登録の形で揃えた印（起動時の照合が同じ形のクライアントを揃え直さない・BUG-172）。
+        if self.oauth.is_some() {
+            if let Err(e) = self
+                .installations
+                .mark_clients_repaired(&ctx.tenant_id, app_id, &self.client_spec())
+                .await
+            {
+                tracing::warn!(error = %e, %app_id, "クライアントを揃えた印を付けられません（起動時の照合が揃え直す）");
+            }
+        }
+
         // B2: secret 保管（宛先束縛）＋ event/cron トリガの実体化（Task 9.12）。
         if let Some(secret) = secret_b2.as_deref() {
             self.store_b2_secret(ctx, app_id, secret).await;
@@ -330,7 +342,8 @@ impl InstallService {
         }
 
         // ⑤ Keycloak client 登録（B1 は常時・B2 は server 宣言時のみ）。決定的 client_id
-        // （app-<uuid>-b1/b2）＝再インストールは冪等（409 許容）。oauth 未配線（dev）は None。
+        // （app-<uuid>-b1/b2）＝再インストールは冪等（既にあれば有効に戻して今の形に揃える・BUG-172）。
+        // oauth 未配線（dev）は None。
         let Some(oauth) = &self.oauth else {
             tracing::warn!("Keycloak admin 未配線: client 登録をスキップします（dev モード）");
             return Ok((None, None, None));

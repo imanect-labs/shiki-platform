@@ -9,7 +9,13 @@
 //! - オフライン import（署名検証のみで登録・不変 publish）
 //! - 部分失敗の補償（残骸なし）・アンインストール（失効＋archive＋tuple 撤去）
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::print_stderr,
+    clippy::large_futures
+)]
 
 use std::sync::{Arc, Mutex};
 
@@ -190,6 +196,16 @@ struct Harness {
 }
 
 fn harness(pool: PgPool, deny: bool) -> Harness {
+    harness_with_oauth(pool, deny, None, vec![])
+}
+
+/// Keycloak の管理（provisioner）を配線した harness（クライアントの登録まで通す・BUG-172）。
+fn harness_with_oauth(
+    pool: PgPool,
+    deny: bool,
+    oauth: Option<app_gateway::OAuthClient>,
+    b1_redirects: Vec<String>,
+) -> Harness {
     let authz = Arc::new(RecordingAuthz {
         deny,
         ..RecordingAuthz::default()
@@ -211,8 +227,8 @@ fn harness(pool: PgPool, deny: bool) -> Harness {
         Arc::clone(&code),
         data,
         authz_dyn,
-        None,
-        vec![],
+        oauth,
+        b1_redirects,
     );
     Harness {
         keys: TrustedKeyStore::new(pool),
@@ -541,4 +557,262 @@ fn ed25519_public(secret: &[u8; 32]) -> Vec<u8> {
         .verifying_key()
         .to_bytes()
         .to_vec()
+}
+
+/// web シェルのホスト支援 PKCE の戻り先（api の `AppConfig::miniapp_b1_redirect_uris` が dev で求めるもの）。
+const SHELL_CALLBACK: &str = "http://localhost:3000/apps/oauth/callback";
+
+/// B1 のアプリ（テーブル無し）を作って publish し、artifact の id を返す。
+async fn publish_b1(h: &Harness, c: &AuthContext, name: &str) -> Uuid {
+    let m = manifest(name, TrustTier::InHouse, vec![]);
+    let id = h.code.create(c, &m, None).await.expect("create");
+    h.code
+        .publish(c, id, None, None, None)
+        .await
+        .expect("publish");
+    id
+}
+
+fn sorted_names(list: &serde_json::Value) -> Vec<String> {
+    let mut v: Vec<String> = list
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .filter_map(|x| {
+                    x.as_str()
+                        .or_else(|| x["name"].as_str())
+                        .map(str::to_string)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    v.sort();
+    v
+}
+
+async fn spec_of(pool: &PgPool, tenant: &str, app_id: Uuid) -> Option<String> {
+    sqlx::query_scalar(
+        "SELECT oauth_client_spec FROM app_installation WHERE tenant_id = $1 AND app_id = $2",
+    )
+    .bind(tenant)
+    .bind(app_id)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+/// テストの本体を走らせ、落ちても片付け（`cleanup`）をしてから落とす。
+async fn run_then<F, C>(body: F, cleanup: C)
+where
+    F: std::future::Future<Output = ()>,
+    C: std::future::Future<Output = ()>,
+{
+    use futures::FutureExt as _;
+    let outcome = std::panic::AssertUnwindSafe(body).catch_unwind().await;
+    cleanup.await;
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+/// インストールは B1 のクライアントを、シェルの戻り先・sub を載せる既定のスコープ・tenant と groups のマッパーで
+/// 登録する。アンインストールで無効になり、再インストールで有効に戻る（BUG-172 の ③）。
+#[tokio::test]
+async fn install_registers_b1_client_and_reinstall_enables_it() {
+    let Some(pool) = setup().await else { return };
+    let Some(realm) = app_gateway::test_support::TestRealm::from_env() else {
+        eprintln!("KEYCLOAK_TEST_URL 未設定のためスキップ");
+        return;
+    };
+    let h = harness_with_oauth(
+        pool.clone(),
+        false,
+        Some(realm.oauth_client()),
+        vec![SHELL_CALLBACK.into()],
+    );
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let c = ctx(&tenant, "admin");
+    let name = format!("b1-{}", Uuid::new_v4().simple());
+    let id = publish_b1(&h, &c, &name).await;
+    let client_id = format!("app-{id}-b1");
+    let body = async {
+        let installed = h
+            .installs
+            .install(&c, install_req(&name, &["llm.invoke"]), None)
+            .await
+            .expect("install");
+        assert_eq!(
+            installed.installation.client_id_b1.as_deref(),
+            Some(client_id.as_str())
+        );
+        let client = realm.client(&client_id).await.expect("client");
+        assert_eq!(client["enabled"], true);
+        assert_eq!(client["redirectUris"], serde_json::json!([SHELL_CALLBACK]));
+        assert_eq!(sorted_names(&client["defaultClientScopes"]), ["basic"]);
+        assert_eq!(
+            sorted_names(&client["protocolMappers"]),
+            ["groups", "shiki-gateway-audience", "tenant"]
+        );
+        // インストールは、今の形で揃えた印を付ける（起動時の照合が揃え直さない）。
+        assert_eq!(
+            spec_of(&pool, &tenant, id).await.as_deref(),
+            Some(app_gateway::client_spec_fingerprint(&[SHELL_CALLBACK.into()]).as_str())
+        );
+        realm
+            .user_token(&client_id, SHELL_CALLBACK, "alice", "openid llm.invoke")
+            .await
+            .expect("token");
+
+        // アンインストールは無効にする（トークンが出ない）。
+        h.installs.uninstall(&c, id, None).await.expect("uninstall");
+        assert_eq!(realm.client(&client_id).await.unwrap()["enabled"], false);
+        assert!(realm
+            .user_token(&client_id, SHELL_CALLBACK, "alice", "openid")
+            .await
+            .is_err());
+
+        // 再インストールで有効に戻り、トークンが出る（これまでは 409 を冪等として扱い、無効のまま残った）。
+        h.installs
+            .install(&c, install_req(&name, &["llm.invoke"]), None)
+            .await
+            .expect("reinstall");
+        assert_eq!(realm.client(&client_id).await.unwrap()["enabled"], true);
+        realm
+            .user_token(&client_id, SHELL_CALLBACK, "alice", "openid llm.invoke")
+            .await
+            .expect("token after reinstall");
+    };
+    run_then(body, async {
+        let _ = h.installs.uninstall(&c, id, None).await;
+        realm.delete_client(&client_id).await;
+        sqlx::query("DELETE FROM app_installation WHERE tenant_id = $1")
+            .bind(&tenant)
+            .execute(&pool)
+            .await
+            .expect("cleanup installation");
+    })
+    .await;
+}
+
+/// 起動時の照合は、前の版の形のクライアントを今の形に揃え、印を付ける。印が今の形なら触らない。アンインストール
+/// したアプリのクライアントは無効のまま（BUG-172）。
+#[tokio::test]
+async fn startup_repair_fixes_previous_clients_once() {
+    let Some(pool) = setup().await else { return };
+    let Some(realm) = app_gateway::test_support::TestRealm::from_env() else {
+        eprintln!("KEYCLOAK_TEST_URL 未設定のためスキップ");
+        return;
+    };
+    let redirects = vec![SHELL_CALLBACK.to_string()];
+    let h = harness_with_oauth(
+        pool.clone(),
+        false,
+        Some(realm.oauth_client()),
+        redirects.clone(),
+    );
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let c = ctx(&tenant, "admin");
+    let active_name = format!("b1-{}", Uuid::new_v4().simple());
+    let revoked_name = format!("b1-{}", Uuid::new_v4().simple());
+    let active = publish_b1(&h, &c, &active_name).await;
+    let revoked = publish_b1(&h, &c, &revoked_name).await;
+    let (active_client, revoked_client) = (format!("app-{active}-b1"), format!("app-{revoked}-b1"));
+    let previous = |redirect: &str| {
+        serde_json::json!({
+            "clientId": "",
+            "redirectUris": [redirect],
+            "protocolMappers": [{
+                "name": "shiki-gateway-audience",
+                "protocol": "openid-connect",
+                "protocolMapper": "oidc-audience-mapper",
+                "config": { "included.custom.audience": "shiki-gateway", "access.token.claim": "true" },
+            }],
+        })
+    };
+    let body = async {
+        for name in [&active_name, &revoked_name] {
+            h.installs
+                .install(&c, install_req(name, &["llm.invoke"]), None)
+                .await
+                .expect("install");
+        }
+        h.installs
+            .uninstall(&c, revoked, None)
+            .await
+            .expect("uninstall");
+        // 前の版でインストールしたことにする（BFF の戻り先・既定のスコープ無し・aud のマッパーだけ・印が無い）。
+        for client in [&active_client, &revoked_client] {
+            let mut rep = previous("http://localhost:3000/auth/callback");
+            rep["clientId"] = serde_json::json!(client);
+            realm.update_client_raw(client, &rep).await;
+            realm.remove_default_scopes(client).await;
+        }
+        sqlx::query("UPDATE app_installation SET oauth_client_spec = NULL WHERE tenant_id = $1")
+            .bind(&tenant)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert!(realm
+            .user_token(&active_client, SHELL_CALLBACK, "alice", "openid")
+            .await
+            .is_err());
+
+        let progress = h.installs.repair_oauth_clients().await.expect("repair");
+        assert!(progress.repaired >= 1, "{progress:?}");
+        assert_eq!(progress.failed, 0, "{progress:?}");
+        let fixed = realm.client(&active_client).await.unwrap();
+        assert_eq!(fixed["enabled"], true);
+        assert_eq!(fixed["redirectUris"], serde_json::json!([SHELL_CALLBACK]));
+        assert_eq!(sorted_names(&fixed["defaultClientScopes"]), ["basic"]);
+        assert_eq!(
+            sorted_names(&fixed["protocolMappers"]),
+            ["groups", "shiki-gateway-audience", "tenant"]
+        );
+        let token = realm
+            .user_token(&active_client, SHELL_CALLBACK, "alice", "openid llm.invoke")
+            .await
+            .expect("token after repair");
+        let claims = app_gateway::test_support::claims(&token);
+        assert!(
+            claims["sub"].is_string() && claims["tenant"] == "a-corp",
+            "{claims}"
+        );
+        let spec = app_gateway::client_spec_fingerprint(&redirects);
+        assert_eq!(
+            spec_of(&pool, &tenant, active).await.as_deref(),
+            Some(spec.as_str())
+        );
+        // アンインストールしたアプリは揃えない（無効のまま・印も付けない）。
+        let still = realm.client(&revoked_client).await.unwrap();
+        assert_eq!(still["enabled"], false);
+        assert_eq!(
+            still["redirectUris"],
+            serde_json::json!(["http://localhost:3000/auth/callback"])
+        );
+        assert_eq!(spec_of(&pool, &tenant, revoked).await, None);
+
+        // 印が今の形なら、次の起動では触らない（Keycloak を呼ばない）。
+        let mut rep = previous("http://localhost:3000/auth/callback");
+        rep["clientId"] = serde_json::json!(&active_client);
+        realm.update_client_raw(&active_client, &rep).await;
+        h.installs
+            .repair_oauth_clients()
+            .await
+            .expect("repair again");
+        assert_eq!(
+            realm.client(&active_client).await.unwrap()["redirectUris"],
+            serde_json::json!(["http://localhost:3000/auth/callback"])
+        );
+    };
+    run_then(body, async {
+        let _ = h.installs.uninstall(&c, active, None).await;
+        realm.delete_client(&active_client).await;
+        realm.delete_client(&revoked_client).await;
+        sqlx::query("DELETE FROM app_installation WHERE tenant_id = $1")
+            .bind(&tenant)
+            .execute(&pool)
+            .await
+            .expect("cleanup installation");
+    })
+    .await;
 }
