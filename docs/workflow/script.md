@@ -348,7 +348,7 @@ Shiki.notify.send(to: { user?: string; role?: string }, msg: { title: string; bo
 Shiki.http.request(req: {
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   url: string;                                 // ホスト部の allowlist・宛先束縛はエンジン側で強制
-  headers?: Record<string, string>;
+  headers?: Record<string, string>;            // 書いたとおりに送る（決まりは下・BUG-179）
   body?: string | Record<string, unknown>;     // object は JSON 化
   secret?: {                                    // ← 参照名のみ。平文はゲストに存在しない
     name: string;                               // 例: "slack-bot-token"
@@ -357,10 +357,17 @@ Shiki.http.request(req: {
   redirect?: "deny" | "follow_stripped";        // 既定 deny
 }): {
   status: number;
-  headers: Record<string, string>;              // 許可リストのみ
+  headers: Record<string, string>;              // 許可リストのみ（未実装・いまは返さない）
+  host: string;                                 // 送り先のホスト（照合したもの）
   body: unknown;                                // JSON なら parse・そうでなければ text・≤1MB（初期値）
 };
 ```
+
+- **`headers` は作成者が書いたとおりに送る**（以前は黙って捨てていた・BUG-179）。次のものは送らずに `invalid` で断る（黙って捨てない）。
+  - Shiki が決めるヘッダー: `Host`・`Content-Length`・`Transfer-Encoding`・`Connection`・`Keep-Alive`・`Proxy-Connection`・`Proxy-Authorization`・`TE`・`Trailer`・`Upgrade`・`Expect`・`Accept-Encoding`（大文字と小文字は区別しない）。`Host` を変えると宛先の照合（URL のホスト部）と違う相手に届きうる。応答は圧縮を解かずに読むので `Accept-Encoding` も書けない。断った呼び出しは監査に残す（reason `header_not_allowed`）。
+  - シークレットを付けるヘッダー（`bearer` なら `Authorization`、`header` ならその名前）と同じ名前。シークレットを使わないなら `Authorization` も書ける。`secret.attach.header` も同じ決まりで確かめ、Shiki が決めるヘッダーには付けられない。
+  - 名前が HTTP の token でない・64 字を超える。値が文字でない・制御文字（タブを除く）を含む（改行でヘッダーを差し込ませない）・4 KB を超える。同じ名前が 2 つ（大文字と小文字は区別しない）。20 個を超える。名前と値を合わせて 8 KB を超える。
+- `Idempotency-Key` と `Content-Type` を書いたら、Shiki が付ける値（呼び出しごとの冪等キー・本文があるときの `application/json`）の代わりにそれを送る。書かなければ、これまでどおり Shiki が付ける。
 
 - **`Shiki.http.request({ secret: { name } })` は参照名のみを渡す。** シークレットの解決・宛先束縛検証（PIT-36）・注入は**エンジン側で行い、http.request ノードと同一実装を通る**（二重実装しない）。平文がゲストメモリに乗る経路はレスポンス経由を含め存在しない（レスポンスに反射するのは外部サービスの責任範囲外であり、レダクトは run 履歴側で実施する）。
 - リダイレクトは既定 deny。`follow_stripped` 時はシークレットを剥がし再検証する（PIT-36）。

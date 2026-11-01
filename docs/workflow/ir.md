@@ -382,9 +382,9 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 |---|---|---|---|---|
 | `storage.read` | 能力 | 文章のファイルの中身と、PDF・Office の本文を読む（≤ 10MB。文章の種類で文字コードを決められない中身・文章でない中身は `not_text_file` で失敗・BUG-101。PDF・Office など文章でない種類は、社内文書の検索に取り込まれた本文を先頭から 100,000 字〔`STORAGE_READ_MAX_DOCUMENT_CHARS`〕まで読み、原本は読み直さない〔下の「PDF・Office の本文」・D-111〕。文字コードは BOM〔UTF-8・UTF-16LE・UTF-16BE〕→ 全体が妥当な UTF-8 → 日本の文字コード〔Shift_JIS（CP932）・EUC-JP〕の推定の順で決め、推定の確からしさが低ければ断る。結果に読んだ文字コード `encoding` を載せ、`text` には BOM を含めない・GAP-45。種類は、拡張子が文章の種類〔.txt・.md・.csv・.tsv・.json・.log など〕なら MIME より拡張子を優先して中身の確かめに任せ〔ブラウザーが付けた MIME をそのまま保存しているため。Windows の .csv の `application/vnd.ms-excel` など〕、それ以外は MIME で決め、MIME が無いか `application/octet-stream` のときだけ拡張子で決める〔.dot・.key のように文章にも使う拡張子では断らない〕。結果に読んだ中身のバージョン `version` を載せる・D-96） | pure | 30s / 120s |
 | `storage.write` | 能力 | 新しいファイルの保存（既存のファイルは書き換えず、新しいバージョンも足さない。同じ名前があれば `on_name_taken` に従い、省略・`fail` は `name_taken` で失敗、`add_number` は「名前 (2).md」〜「名前 (50).md」の空いている名前で保存する。`content_type` を省くと拡張子〔.txt・.md・.csv・.json・.html〕から決め、決まらなければ `application/octet-stream`・BUG-97・D-97。種類が `text/csv` のときだけ `encoding`〔`utf8_bom`・`utf8`・`shift_jis`〕の文字コードで書く。省略は BOM なしの UTF-8〔この項目が無かったころの定義の挙動〕で、エディタで新しく置くブロックは `utf8_bom`。ほかの種類では使わない・D-120） | engine-dedup | 30s / 120s |
-| `storage.list` | 能力 | フォルダ一覧 | pure | 30s / 120s |
+| `storage.list` | 能力 | フォルダ一覧（名前の順で最大 100 件〔`STORAGE_LIST_MAX_ITEMS`〕。多いときは先頭の 100 件だけを `items` に入れ、`truncated` を true にする。ちょうど 100 件なら false。続きを読む欄はまだ無い・BUG-180） | pure | 30s / 120s |
 | `csv.query` | 能力 | CSV に読み取り専用の SQL を実行して集計・抽出する（隔離ランナー。CSV の文字コードは `storage.read` と同じ判定で決めて UTF-8 にしてからランナーへ渡し、決められなければ `not_text_file`・GAP-45。結果に集計した中身のバージョン `version` を載せ、後ろの `csv.patch` の `base_rev` にできる・D-96） | pure | 30s / 120s |
-| `csv.patch` / `csv.write` | 能力 | CSV のセル・行・列を書き換えて新しいバージョンを保存する／新しい CSV を保存する（同じ名前があるときは `storage.write` と同じ `on_name_taken`。`csv.patch` は元の文字コードと BOM のまま書き戻し、元の文字コードに無い文字は書かずに `invalid` で失敗する・GAP-45。`csv.patch` の区切りと改行は `csv.query` の読み込みと同じ推定〔隔離ランナーの `sniff_csv`〕で決め、同じ区切りと改行で書き戻す〔Excel の「Unicode テキスト」のタブ区切り・推定できなければカンマ区切り・BUG-144〕。`csv.write` は `encoding`〔`utf8_bom`・`utf8`・`shift_jis`〕の文字コードで書き、省略は BOM なしの UTF-8〔この項目が無かったころの定義の挙動〕、エディタで新しく置くブロックは `utf8_bom`。`shift_jis` で書けない文字は書かずに `invalid` で失敗する・D-120） | engine-dedup | 30s / 120s |
+| `csv.patch` / `csv.write` | 能力 | CSV のセル・行・列を書き換えて新しいバージョンを保存する／新しい CSV を保存する（同じ名前があるときは `storage.write` と同じ `on_name_taken`。`csv.patch` は元の文字コードと BOM のまま書き戻し、元の文字コードに無い文字は書かずに `invalid` で失敗する・GAP-45。`csv.patch` の区切りと改行は `csv.query` の読み込みと同じ推定〔隔離ランナーの `sniff_csv`〕で決め、同じ区切りと改行で書き戻す〔Excel の「Unicode テキスト」のタブ区切り・推定できなければカンマ区切り・BUG-144〕。`csv.write` は `encoding`〔`utf8_bom`・`utf8`・`shift_jis`〕の文字コードで書き、省略は BOM なしの UTF-8〔この項目が無かったころの定義の挙動〕、エディタで新しく置くブロックは `utf8_bom`。`shift_jis` で書けない文字は書かずに `invalid` で失敗する・D-120。`csv.write` の `content` と、種類が `text/csv` の `storage.write` の `content` は、文字ならそのまま書き、表〔`csv.query` の結果 `{columns, rows}`。行は値のリストか、列の名前で引く項目のまとまり〕と項目のまとまりのリスト〔列はすべての項目の名前を合わせたもの・名前の順〕は CSV に組み立てる。区切りはカンマ・行の終わりは CRLF・カンマ／二重引用符／改行を含むセルは二重引用符で囲む〔RFC 4180〕。先頭が `=` `+` `-` `@` タブ CR の 2 字以上の文字で数の表記でないセルは、先頭に `'` を付けて表計算ソフトの式にしない〔監査ログの書き出しと同じ打ち消し方〕。数・真偽・空の値・表でない項目のまとまり・まとまりでないもののリスト・入れ子の値・`csv.query` が打ち切った表〔`truncated: true`〕は、JSON の文字のまま保存せずに `invalid` で失敗する・BUG-178） | engine-dedup | 30s / 120s |
 | `data.query` | 能力 | 宣言的クエリ（**data の `DataQuery` をそのまま使う**・比較値に `$from` 可・`query.limit` は 1〜200 で範囲の外は保存時に `ir.schema_violation`・BUG-108） | pure | 30s / 120s |
 | `data.record.create` / `data.record.update` / `data.record.delete` | 能力 | レコード書込（rev 楽観ロック・rev 省略時は実行時点の rev） | engine-dedup | 30s / 120s |
 | `data.transition` | 能力 | **FSM 遷移 API を叩く**（直接 status 書込は構造的に不可能） | engine-dedup | 30s / 120s |
@@ -545,7 +545,7 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
   | 道具 | 中身 | 要求スコープ |
   |---|---|---|
   | `rag.search` | 権限を考慮した社内検索（1 件 1,500 字・20 件まで） | `rag.query` |
-  | `storage.list` | フォルダの一覧（100 件まで） | `storage.read` |
+  | `storage.list` | フォルダの一覧（100 件まで・多いと `truncated` が true・BUG-180） | `storage.read` |
   | `storage.read` | テキストのファイルを窓で読む（`offset`・`max_chars` ≤ 20,000・続きは `next_offset`）。PDF・Word などは `doc.read` へ誘導する | `storage.read` |
   | `doc.read` | 索引済みの文書の本文を窓で読む（権限なしと不在は同じ応答・索引が無ければその旨） | `doc.read` |
   | `web.search` | 公開 web の検索（**検索語が社外の検索サービスへ出る**・10 件まで） | `http.egress` |
@@ -834,6 +834,7 @@ AI 編集も dnd 保存も**同一エンドポイント・同一パイプライ�
   - 値を書く欄の中身の無いオブジェクト・配列（§8 の `ir.empty_values`）は止めない（注意だけ）。
   - schedule / event のきっかけを持つ版で、`folder` を省略した（または null の）`storage.write`・`csv.write`（`ir.write_folder_required`）。省略はルートへの保存で、schedule / event の run はワークフロー主体で動くのでルートには書けず、フォルダの委譲でも救えない。対話だけの版は止めない（起動した本人のルートに書ける）。
   - 同じく、`folder` を省略した（または null の）`storage.list`（`ir.list_folder_required`・D-83）。ワークフロー主体はルートを一覧できない。対話だけの版は止めない。
+  - 必須の文字の欄が空・中にノードの無い `control.map` の版は、自動実行（schedule / event）の起動でも run を作らない。この確認より前に有効化した版や、確認する欄が後から増えた版でも、空のまま動かさない。見送りは再試行しない（委譲の不成立・定義を読めない見送りと同じ `DelegationInvalid` に理由の文を添える）。警告は版ごとに 1 回。きっかけは止めない（欄を埋めて自動実行をオンにし直せば直る・BUG-51）。保存先・一覧にするフォルダの省略は、この起動の確認では止めない（有効化の前の確認だけ）。
 
 ---
 
