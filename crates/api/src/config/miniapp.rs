@@ -13,21 +13,17 @@ pub const MINIAPP_OAUTH_CALLBACK_PATH: &str = "/apps/oauth/callback";
 impl AppConfig {
     /// web シェルのオリジン（B1 の配信の frame-ancestors と、B1 のクライアントの戻り先の元）。
     ///
-    /// `gateway.web_origin` があればそれ（末尾の `/` は外す）。無ければ `auth.redirect_uri`（BFF のログインの戻り先・
-    /// web と同じオリジン）のオリジン。オリジンはブラウザーの `location.origin` と同じ形（既定のポートは書かない）。
-    /// どちらも読めなければ dev の既定 `http://localhost:3000`。
+    /// `gateway.web_origin` があればそれ。無ければ `auth.redirect_uri`（BFF のログインの戻り先・web と同じオリジン）の
+    /// オリジン。どちらもブラウザーの `location.origin` と同じ形にそろえる（既定のポートと末尾の `/` は書かない。
+    /// B1 のクライアントの戻り先として Keycloak に登録する文字列になり、シェルが送る戻り先と 1 字でも違うと断られる）。
+    /// `gateway.web_origin` が URL として読めなければ、末尾の `/` だけを外してそのまま使う。`auth.redirect_uri` が
+    /// 読めなければ dev の既定 `http://localhost:3000`。
     pub fn web_shell_origin(&self) -> String {
         if let Some(origin) = self.gateway.web_origin.as_deref() {
-            return origin.trim_end_matches('/').to_string();
+            let trimmed = origin.trim_end_matches('/');
+            return origin_of(trimmed).unwrap_or_else(|| trimmed.to_string());
         }
-        url::Url::parse(&self.auth.redirect_uri)
-            .ok()
-            .map(|u| u.origin())
-            .filter(url::Origin::is_tuple)
-            .map_or_else(
-                || "http://localhost:3000".to_string(),
-                |o| o.ascii_serialization(),
-            )
+        origin_of(&self.auth.redirect_uri).unwrap_or_else(|| "http://localhost:3000".to_string())
     }
 
     /// B1 のクライアントの戻り先（web シェルのポップアップの callback）。
@@ -37,6 +33,15 @@ impl AppConfig {
             self.web_shell_origin()
         )]
     }
+}
+
+/// URL のオリジン（`location.origin` と同じ形）。読めないか、オリジンの無い URL なら `None`。
+fn origin_of(raw: &str) -> Option<String> {
+    url::Url::parse(raw)
+        .ok()
+        .map(|u| u.origin())
+        .filter(url::Origin::is_tuple)
+        .map(|o| o.ascii_serialization())
 }
 
 #[cfg(test)]
@@ -71,6 +76,17 @@ mod tests {
             cfg.miniapp_b1_redirect_uris(),
             ["https://apps.shiki.example/apps/oauth/callback"]
         );
+        // 設定した値も location.origin の形にそろえる（既定のポートを書いても登録する戻り先には書かない）。
+        cfg.gateway.web_origin = Some("https://apps.shiki.example:443".into());
+        assert_eq!(
+            cfg.miniapp_b1_redirect_uris(),
+            ["https://apps.shiki.example/apps/oauth/callback"]
+        );
+        cfg.gateway.web_origin = Some("http://localhost:3000/".into());
+        assert_eq!(cfg.web_shell_origin(), "http://localhost:3000");
+        // URL として読めない値は、末尾の / だけを外してそのまま使う（前の版と同じ）。
+        cfg.gateway.web_origin = Some("shiki.example/".into());
+        assert_eq!(cfg.web_shell_origin(), "shiki.example");
 
         // 読めない戻り先は dev の既定。
         cfg.gateway.web_origin = None;
