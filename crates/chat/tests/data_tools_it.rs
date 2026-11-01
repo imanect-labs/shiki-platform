@@ -513,7 +513,7 @@ async fn add_only_tables_are_listed_with_what_the_speaker_can_do() {
 
     assert!(
         desc.contains(&format!(
-            "- 経費 / {}（追加だけ: 見えるのは自分が追加したレコードだけ。",
+            "- 経費 / {}（追加だけ: 見えるのは自分が追加したレコードと、個別に共有されたレコードだけ。",
             f.table_id
         )),
         "{desc}"
