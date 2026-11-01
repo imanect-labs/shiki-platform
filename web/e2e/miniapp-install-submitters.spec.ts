@@ -80,7 +80,11 @@ test("コードアプリの同意インストールで、テーブルに「追�
     const field = page.getByTestId("install-submitters");
     await expect(field).toContainText("レコードを追加するだけの部署・グループ");
     await expect(field).toContainText(
-      `選んだ部署・グループの人は、このアプリのテーブル（「${table}」）にレコードを追加し、自分が追加したレコードを見られます。`,
+      `選んだ部署・グループの人は、このアプリのテーブル（「${table}」）にレコードを追加できます。見られるのは、自分が追加したレコードと、個別に共有されたレコードだけです。`,
+    );
+    // アプリのテーブルはテーブルの共有で渡せないので、あとから足すには入れ直すしかないことを言う。
+    await expect(field.getByTestId("install-submitters-later")).toHaveText(
+      "あとから足すには、アプリを入れ直す必要があります。入れ直すと、これまでのレコードは使えなくなります。",
     );
     await field.getByRole("combobox", { name: "レコードを追加するだけの部署・グループを探す" }).fill("営業");
     await page.getByRole("option", { name: /営業部/ }).first().click();

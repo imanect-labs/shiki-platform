@@ -245,7 +245,12 @@ export function InstalledAppsSection() {
             <div className="space-y-1.5" data-testid="install-submitters">
               <p className="text-sm font-medium">レコードを追加するだけの部署・グループ</p>
               <p className="text-[11px] leading-relaxed text-muted-foreground">
-                選んだ部署・グループの人は、このアプリのテーブル（{consent.tables.map((n) => `「${n}」`).join("、")}）にレコードを追加し、自分が追加したレコードを見られます。ほかの人のレコードは見られません。選ばなければ、あとからテーブルの共有で渡せます。
+                選んだ部署・グループの人は、このアプリのテーブル（{consent.tables.map((n) => `「${n}」`).join("、")}）にレコードを追加できます。見られるのは、自分が追加したレコードと、個別に共有されたレコードだけです。
+              </p>
+              {/* アプリのテーブルはテーブルの共有で渡せない（付与・解除・一覧とも断る）。渡す口はインストールだけで、
+                  アンインストールはアプリのテーブルをしまうので、入れ直すとたまったレコードを使えなくなる。 */}
+              <p className="text-[11px] leading-relaxed text-[var(--season-autumn)]" data-testid="install-submitters-later">
+                あとから足すには、アプリを入れ直す必要があります。入れ直すと、これまでのレコードは使えなくなります。
               </p>
               {consent.submitters.length > 0 ? (
                 <ul className="flex flex-wrap gap-1" aria-label="レコードを追加するだけの部署・グループ">
