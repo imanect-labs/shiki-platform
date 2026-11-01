@@ -1623,6 +1623,115 @@ async fn http_request_sends_object_bodies_as_json() {
     assert!(!plain.contains("content-type"), "{plain}");
 }
 
+/// script の `Shiki.http.request` は、作成者が書いた headers を本番のポートで相手に送る（以前は黙って捨てていた・
+/// BUG-179）。作成者の Content-Type は Shiki が付ける値の代わりに送る。Shiki が決めるヘッダー（Host）を書いた呼び出しは、
+/// 送らずに invalid で失敗する。
+#[tokio::test]
+async fn script_http_request_sends_the_headers_the_author_wrote() {
+    let Some(h) = setup().await else { return };
+    let (base, seen) = spawn_http_recorder().await;
+    let script = |path: &str, headers: &str| {
+        format!(
+            "function main(input) {{ const r = Shiki.http.request({{ method: \"POST\", url: \"{base}/{path}\", \
+             headers: {headers}, body: \"品目=交通費\" }}); return {{ status: r.status }}; }}"
+        )
+    };
+    let ir = |name: &str, source: String| {
+        json!({
+            "ir_version": 1, "name": name,
+            "declared_scopes": ["http.egress"],
+            "triggers": [{ "kind": "interactive" }],
+            "nodes": [ { "id": "sc", "type": "script.run", "params": { "source": { "inline": source } } } ],
+            "edges": []
+        })
+    };
+    let sent = h
+        .save(&ir(
+            "script-http-headers",
+            script(
+                "hdr",
+                r#"{ "X-Request-Id": "req-1", "Content-Type": "text/plain; charset=utf-8" }"#,
+            ),
+        ))
+        .await;
+    let refused = h
+        .save(&ir(
+            "script-http-host",
+            script("host", r#"{ "Host": "internal.example.com" }"#),
+        ))
+        .await;
+    let (sent_run, sent_status) = h
+        .run(
+            sent,
+            &json!({}),
+            h.executor(None, vec!["127.0.0.1".into()], None),
+        )
+        .await;
+    let (refused_run, refused_status) = h
+        .run(
+            refused,
+            &json!({}),
+            h.executor(None, vec!["127.0.0.1".into()], None),
+        )
+        .await;
+    let error_of = |run: Uuid| {
+        let pool = h.pool.clone();
+        let tenant = h.tenant.clone();
+        async move {
+            sqlx::query_scalar::<_, Option<Value>>(
+                "SELECT error FROM step_execution WHERE tenant_id = $1 AND run_id = $2",
+            )
+            .bind(tenant)
+            .bind(run)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    let sent_error = error_of(sent_run).await;
+    let refused_error = error_of(refused_run).await;
+    let requests = seen.lock().await.clone();
+
+    // 片付け（run の履歴・ワークフロー・OpenFGA のストア）。
+    h.runs.purge_tenant_history(&h.tenant).await.unwrap();
+    for id in [sent, refused] {
+        h.artifacts.delete(&h.alice, id, None).await.unwrap();
+    }
+    h.delete_fga_store().await;
+
+    assert_eq!(sent_status, RunStatus::Succeeded, "{sent_error:?}");
+    let raw = requests
+        .iter()
+        .find(|r| r.starts_with("POST /hdr "))
+        .unwrap_or_else(|| panic!("/hdr への要求が無い: {requests:?}"));
+    let lower = raw.to_ascii_lowercase();
+    assert!(lower.contains("\r\nx-request-id: req-1\r\n"), "{raw}");
+    assert!(
+        lower.contains("\r\ncontent-type: text/plain; charset=utf-8\r\n"),
+        "{raw}"
+    );
+    assert!(
+        !lower.contains("application/json"),
+        "作成者の Content-Type の代わりに付けない: {raw}"
+    );
+    assert!(lower.contains("\r\nidempotency-key: "), "{raw}");
+    assert!(raw.ends_with("品目=交通費"), "{raw}");
+
+    assert_eq!(refused_status, RunStatus::Failed);
+    let error = refused_error.unwrap();
+    assert_eq!(error["code"], "invalid", "{error}");
+    assert!(
+        error["message"].as_str().unwrap().starts_with(
+            "Shiki.http.request の headers の「Host」は Shiki が決めるため、指定できません。"
+        ),
+        "{error}"
+    );
+    assert!(
+        !requests.iter().any(|r| r.starts_with("POST /host ")),
+        "Host を書いた呼び出しは送らない: {requests:?}"
+    );
+}
+
 // ------- Test 9: llm.invoke の誤りの文言（GAP-41）----------------------------
 
 /// 使えないモデルの誤りは、実行履歴に利用者向けの日本語で残る（gateway の英語の原文は出さない）。
