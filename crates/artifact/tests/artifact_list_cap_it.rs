@@ -5,6 +5,9 @@
 //! - テーブルの保存ビュー（本文の参照で絞る一覧）に、共有されたビューが出る
 //! - テーブルの状態の進め方の影響（本文にテーブルの id が書かれたワークフロー）に、共有されたワークフローが出る
 //!
+//! - 共有された一覧は、見えないものばかりが続くと OpenFGA に問う数の上限で止まって続きの位置を返し、読み進めると
+//!   残りが出る（BUG-162）
+//!
 //! どれも見えないものは出ない。上限を超えるタプルは OpenFGA へ直接書く（DB に無いアーティファクトのタプル＝
 //! 消したものの残りと同じ形）。最後に書いたタプル・作った行・ストアを片付ける（落ちても片付ける）。
 
@@ -361,4 +364,42 @@ async fn past_the_cap(env: Arc<Env>, tenant: String) {
         names(&views)
     );
     assert!(views.iter().all(|a| !a.name.starts_with("見えないビュー-")));
+
+    shared_page_resumes_past_the_check_budget(&env, &bob).await;
+}
+
+/// 共有された一覧も、見えないものばかりが新しい側に並ぶと、OpenFGA に問う数の上限で止まって続きの位置を返す
+/// （BUG-162・これまでは見つけた分だけを全部のように返し、上限より古い共有が黙って欠けた）。読み進めると残りが
+/// 新しい順に重ならず出る（[`past_the_cap`] の最後に、見えないビューを 1,000 件写した後で呼ぶ）。
+async fn shared_page_resumes_past_the_check_budget(env: &Env, bob: &AuthContext) {
+    let first = env
+        .store
+        .list_shared_page(bob, None, None, 50)
+        .await
+        .unwrap();
+    assert!(first.items.is_empty(), "{:?}", names(&first.items));
+    assert!(first.next.is_some(), "空でも続きがある");
+    let mut seen: Vec<Artifact> = Vec::new();
+    let mut after = None;
+    for _ in 0..20 {
+        let page = env
+            .store
+            .list_shared_page(bob, None, after, 1)
+            .await
+            .unwrap();
+        assert!(page.items.len() <= 1);
+        seen.extend(page.items);
+        match page.next {
+            Some(p) => after = Some(p),
+            None => break,
+        }
+    }
+    assert_eq!(names(&seen), vec!["view-共有", "wf-使う-共有", "wf-共有"]);
+    // 先頭のページの一覧（list_shared_with_me）は、これまでどおり先頭のページだけ。
+    assert!(env
+        .store
+        .list_shared_with_me(bob, None, 50)
+        .await
+        .unwrap()
+        .is_empty());
 }

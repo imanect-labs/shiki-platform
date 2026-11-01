@@ -6,7 +6,7 @@
 //!
 //! - 本文の参照で絞る一覧（[`crate::store::ArtifactStore::list_visible_with_body_ref`] など）は候補が少ないので、
 //!   はじめから DB の候補を絞る（ListObjects を引かない）。
-//! - 共有された一覧（[`crate::store::ArtifactStore::list_shared_with_me`]）は候補が多いので、ListObjects が上限より
+//! - 共有された一覧（[`crate::store::ArtifactStore::list_shared_page`]）は候補が多いので、ListObjects が上限より
 //!   少なく返したときはそれを正にし、上限に届いたときだけ DB の候補を絞る。
 //!
 //! どちらも OpenFGA に問うのは 1 回の頼みで [`MAX_CHECKS`] 問までにし、届いたら見つけた分を返す（一覧は先頭の

@@ -15,11 +15,13 @@
 mod by_ref;
 mod model;
 mod share;
+mod shared;
 mod store;
 mod versions;
 mod visible;
 
 pub use model::{Artifact, ArtifactKind, ArtifactRole, ArtifactVersion, VersionMeta};
+pub use shared::{SharedArtifacts, SharedPosition};
 pub use store::{ArtifactStore, NewArtifact, SkillSummary};
 
 /// アーティファクト操作のエラー。

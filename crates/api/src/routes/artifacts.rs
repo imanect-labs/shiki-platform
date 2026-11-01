@@ -62,12 +62,18 @@ pub struct ListArtifactsQuery {
     /// 前ページ末尾の id（updated_at と対で使う）。
     pub before_id: Option<Uuid>,
     pub limit: Option<i64>,
+    /// 共有された分の続き（前の応答の `shared_next_cursor`）。渡すと、共有された分の続きだけを返す（所有分は
+    /// 返さない・`before_*` と同時には使えない）。
+    pub shared_cursor: Option<String>,
 }
 
 /// 一覧レスポンス。
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ArtifactListResponse {
     pub items: Vec<Artifact>,
+    /// 共有された分に続きがあるときの位置（`shared_cursor` に渡す・無ければ `null`）。共有された分が多い人では、
+    /// 共有された分が `limit` より少ないか 0 件でも続きがあることがある（BUG-162）。
+    pub shared_next_cursor: Option<String>,
 }
 
 /// バージョン履歴レスポンス。
@@ -136,14 +142,16 @@ pub async fn create_artifact(
 /// 自分が使えるアーティファクト一覧（所有＋共有された・kind 絞り込み・更新日降順）。
 ///
 /// 共有された分（ReBAC viewer の実効集合）が無いと、共有相手が skill/ミニアプリを
-/// UI から見つけて実行できない（Task 6.11「共有相手の実行」）。keyset カーソルは
-/// 所有分にのみ適用し、共有分は初回ページに合流する（共有集合は小さい前提）。
+/// UI から見つけて実行できない（Task 6.11「共有相手の実行」）。keyset カーソル（`before_*`）は
+/// 所有分にのみ適用し、共有分は初回ページに合流する。共有分の続きは `shared_next_cursor` を
+/// `shared_cursor` に渡して読む（共有分だけが返る・BUG-162）。
 #[utoipa::path(
     get,
     path = "/artifacts",
     params(ListArtifactsQuery),
     responses(
         (status = 200, description = "一覧", body = ArtifactListResponse),
+        (status = 400, description = "shared_cursor が読めない（cursor_invalid）・before_* と同時に渡した"),
         (status = 401, description = "未認証"),
     ),
     security(("session" = [])),
@@ -158,20 +166,62 @@ pub async fn list_artifacts(
         _ => None,
     };
     let limit = q.limit.unwrap_or(50);
+    let shared_kind = data::ListPositionKind::ArtifactsShared;
+    if let Some(c) = q.shared_cursor.as_deref().filter(|c| !c.is_empty()) {
+        if before.is_some() {
+            return Err(ApiError::BadRequest(
+                "shared_cursor と before_updated_at・before_id は同時に使えません".into(),
+            ));
+        }
+        let p = state
+            .data
+            .open_list_position(shared_kind, &ctx.tenant_id, c)?;
+        let page = state
+            .artifacts
+            .list_shared_page(&ctx, q.kind, Some((p.updated_at, p.id)), limit)
+            .await?;
+        let shared_next_cursor = seal_shared(&state, &ctx, page.next)?;
+        return Ok(Json(ArtifactListResponse {
+            items: page.items,
+            shared_next_cursor,
+        }));
+    }
     let mut items = state
         .artifacts
         .list_mine(&ctx, q.kind, before, limit)
         .await?;
     // 2 ページ目以降（カーソルあり）は所有分の続きだけを返す（共有分は初回に合流済み）。
+    let mut shared_next_cursor = None;
     if before.is_none() {
         let shared = state
             .artifacts
-            .list_shared_with_me(&ctx, q.kind, limit)
+            .list_shared_page(&ctx, q.kind, None, limit)
             .await?;
-        items.extend(shared);
+        items.extend(shared.items);
         items.sort_by_key(|a| std::cmp::Reverse((a.updated_at, a.id)));
+        shared_next_cursor = seal_shared(&state, &ctx, shared.next)?;
     }
-    Ok(Json(ArtifactListResponse { items }))
+    Ok(Json(ArtifactListResponse {
+        items,
+        shared_next_cursor,
+    }))
+}
+
+/// 共有された分の続きの位置を、テナントに束縛して暗号化する（見えないものを指しうる・BUG-162）。
+fn seal_shared(
+    state: &AppState,
+    ctx: &authz::AuthContext,
+    next: Option<artifact::SharedPosition>,
+) -> Result<Option<String>, ApiError> {
+    next.map(|(updated_at, id)| {
+        state.data.seal_list_position(
+            data::ListPositionKind::ArtifactsShared,
+            &ctx.tenant_id,
+            data::ListPosition { updated_at, id },
+        )
+    })
+    .transpose()
+    .map_err(Into::into)
 }
 
 /// メタデータを取得する（viewer）。
