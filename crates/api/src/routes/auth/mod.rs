@@ -9,6 +9,7 @@ pub mod backchannel_logout;
 pub mod callback;
 pub mod login;
 pub mod logout;
+pub(crate) mod org_member;
 pub mod session;
 
 use axum_extra::extract::cookie::{Cookie, SameSite};
@@ -18,7 +19,7 @@ use serde::{Deserialize, Serialize};
 pub use action::start_account_action;
 pub use backchannel_logout::backchannel_logout;
 pub use callback::callback;
-pub(crate) use callback::provision_roles;
+pub(crate) use callback::sync_memberships;
 pub use login::login;
 pub use logout::logout;
 pub use session::session;

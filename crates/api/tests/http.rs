@@ -852,6 +852,136 @@ async fn expired_access_token_is_refreshed_and_continues() {
     assert_eq!(updated.principal.groups, vec!["/neworg".to_string()]);
 }
 
+/// 組織の member の直接タプルだけを持つ認可（セッションの更新での同期を見る・D-130）。ほかの check は通す。
+#[derive(Default)]
+struct OrgMembers(std::sync::Mutex<Vec<String>>);
+
+#[async_trait]
+impl AuthzClient for OrgMembers {
+    async fn check(
+        &self,
+        _subject: &Subject,
+        relation: Relation,
+        object: &FgaObject,
+        _consistency: Consistency,
+    ) -> Result<bool, AuthzError> {
+        if relation == Relation::Member && object.as_str().starts_with("organization:") {
+            return Ok(self.0.lock().unwrap().contains(&object.to_string()));
+        }
+        Ok(true)
+    }
+    async fn write_tuple(
+        &self,
+        _subject: &Subject,
+        relation: Relation,
+        object: &FgaObject,
+    ) -> Result<bool, AuthzError> {
+        if relation == Relation::Member && object.as_str().starts_with("organization:") {
+            self.0.lock().unwrap().push(object.to_string());
+        }
+        Ok(true)
+    }
+    async fn delete_tuple(
+        &self,
+        _subject: &Subject,
+        relation: Relation,
+        object: &FgaObject,
+    ) -> Result<bool, AuthzError> {
+        let mut rows = self.0.lock().unwrap();
+        let before = rows.len();
+        if relation == Relation::Member {
+            rows.retain(|o| o != object.as_str());
+        }
+        Ok(rows.len() != before)
+    }
+    async fn read_tuples(
+        &self,
+        _object: &FgaObject,
+        _relation: Option<Relation>,
+    ) -> Result<Vec<ReadTupleKey>, AuthzError> {
+        Ok(vec![])
+    }
+    async fn list_objects(
+        &self,
+        _subject: &Subject,
+        _relation: Relation,
+        _object_type: ObjectType,
+    ) -> Result<Vec<String>, AuthzError> {
+        Ok(vec![])
+    }
+    async fn delete_object_tuples(&self, _object: &FgaObject) -> Result<u32, AuthzError> {
+        Ok(0)
+    }
+    async fn read_subject_objects(
+        &self,
+        _subject: &Subject,
+        object_type: ObjectType,
+    ) -> Result<Vec<String>, AuthzError> {
+        Ok(if object_type == ObjectType::Organization {
+            self.0.lock().unwrap().clone()
+        } else {
+            vec![]
+        })
+    }
+}
+
+/// セッションの更新でも、所属グループから決まる組織の member にそろえる（D-130）。組織を移った人の前の組織の
+/// member は外れる（組織を離れた人が、アプリのゲートウェイでその組織に入り続けない）。
+#[tokio::test]
+async fn refresh_moves_the_org_member_with_the_groups() {
+    let new_access = fake_jwt(serde_json::json!({
+        "sub": "00000000-0000-0000-0000-000000000001",
+        "groups": ["/neworg"],
+    }));
+    let token_base = spawn_token_server(
+        StatusCode::OK,
+        serde_json::json!({ "access_token": new_access, "expires_in": 3600 }),
+    )
+    .await;
+    let store = Arc::new(MemorySessionStore::new());
+    store
+        .put(
+            "default",
+            "sid-org",
+            &session_record(now() - 10, Some("refresh-token"), "csrf"),
+            Duration::from_secs(3600),
+        )
+        .await
+        .unwrap();
+    // 前のトークンの groups（/acme）で付けた member。
+    let members = Arc::new(OrgMembers::default());
+    members
+        .0
+        .lock()
+        .unwrap()
+        .push("organization:default|acme".into());
+    let app = build_router(AppState {
+        authz: members.clone(),
+        ..state_with(store.clone(), Some(token_base))
+    });
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .uri("/me")
+                .header(COOKIE, "shiki_session=sid-org.default")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    // 同期は裏で走る（リクエストの待ち時間に載せない）。
+    let mut rows = Vec::new();
+    for _ in 0..50 {
+        rows = members.0.lock().unwrap().clone();
+        if rows == ["organization:default|neworg"] {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert_eq!(rows, ["organization:default|neworg"]);
+}
+
 #[tokio::test]
 async fn transient_refresh_failure_keeps_session_when_access_still_valid() {
     // token endpoint が 5xx（一過性）でも、access がまだ有効ならセッションを破棄せず継続。

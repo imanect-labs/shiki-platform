@@ -821,6 +821,144 @@ async fn session_status_true_after_login_callback() {
     );
 }
 
+/// 組織の member の直接タプルだけを持つ認可（D-130 のログインの同期を見る）。check は少し待ってから答え、
+/// 同期を待たずに戻す実装ではリダイレクトの時点でタプルが無いことを見分けられるようにする。
+#[derive(Default)]
+struct OrgMembers(std::sync::Mutex<Vec<(String, String)>>);
+
+impl OrgMembers {
+    fn rows(&self) -> Vec<(String, String)> {
+        let mut rows = self.0.lock().unwrap().clone();
+        rows.sort();
+        rows
+    }
+}
+
+#[async_trait]
+impl AuthzClient for OrgMembers {
+    async fn check(
+        &self,
+        subject: &Subject,
+        relation: Relation,
+        object: &FgaObject,
+        _consistency: Consistency,
+    ) -> Result<bool, AuthzError> {
+        if relation == Relation::Member && object.as_str().starts_with("organization:") {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let row = (subject.as_str().to_string(), object.as_str().to_string());
+            return Ok(self.0.lock().unwrap().contains(&row));
+        }
+        Ok(true)
+    }
+    async fn write_tuple(
+        &self,
+        subject: &Subject,
+        relation: Relation,
+        object: &FgaObject,
+    ) -> Result<bool, AuthzError> {
+        if relation == Relation::Member && object.as_str().starts_with("organization:") {
+            self.0
+                .lock()
+                .unwrap()
+                .push((subject.as_str().to_string(), object.as_str().to_string()));
+        }
+        Ok(true)
+    }
+    async fn delete_tuple(
+        &self,
+        subject: &Subject,
+        relation: Relation,
+        object: &FgaObject,
+    ) -> Result<bool, AuthzError> {
+        let row = (subject.as_str().to_string(), object.as_str().to_string());
+        let mut rows = self.0.lock().unwrap();
+        let before = rows.len();
+        if relation == Relation::Member {
+            rows.retain(|r| r != &row);
+        }
+        Ok(rows.len() != before)
+    }
+    async fn read_tuples(
+        &self,
+        _object: &FgaObject,
+        _relation: Option<Relation>,
+    ) -> Result<Vec<ReadTupleKey>, AuthzError> {
+        Ok(vec![])
+    }
+    async fn list_objects(
+        &self,
+        _subject: &Subject,
+        _relation: Relation,
+        _object_type: ObjectType,
+    ) -> Result<Vec<String>, AuthzError> {
+        Ok(vec![])
+    }
+    async fn delete_object_tuples(&self, _object: &FgaObject) -> Result<u32, AuthzError> {
+        Ok(0)
+    }
+    async fn read_subject_objects(
+        &self,
+        subject: &Subject,
+        object_type: ObjectType,
+    ) -> Result<Vec<String>, AuthzError> {
+        if object_type != ObjectType::Organization {
+            return Ok(vec![]);
+        }
+        Ok(self
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(s, _)| s == subject.as_str())
+            .map(|(_, o)| o.clone())
+            .collect())
+    }
+}
+
+/// ログインは、所属グループから決まる組織の member を、リダイレクトで戻す前に OpenFGA へ書く（D-130）。戻った直後の
+/// `/me` とアプリのゲートウェイが、このタプルで組織のメンバーかを判定するため。ほかの組織の member は外す。
+#[tokio::test]
+async fn login_writes_the_org_member_before_redirecting() {
+    let token_body = serde_json::json!({
+        "access_token": valid_access_token(),
+        "refresh_token": "rt",
+        "expires_in": 3600,
+    });
+    let idp = spawn_idp(StatusCode::OK, token_body, KID).await;
+    let members = Arc::new(OrgMembers::default());
+    // 前に別の組織（old）の member だった。
+    let me = "user:default|00000000-0000-0000-0000-000000000001".to_string();
+    members
+        .0
+        .lock()
+        .unwrap()
+        .push((me.clone(), "organization:default|old".into()));
+    let state = AppState {
+        authz: members.clone(),
+        ..state_with(config_with(&idp, vec![]))
+    };
+    let app = build_router(state);
+
+    let (state, flow_cookie) = do_login(app.clone()).await;
+    let cb = app
+        .oneshot(
+            Request::builder()
+                .uri(format!("/auth/callback?code=abc&state={state}"))
+                .header(COOKIE, flow_cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(cb.status(), StatusCode::SEE_OTHER);
+    // single・テナント default。トークンの groups `/acme`（従来の直下のグループ）から組織 acme が決まる。
+    assert_eq!(
+        members.rows(),
+        [(me, "organization:default|acme".to_string())],
+        "リダイレクトの時点で member がそろっている"
+    );
+}
+
 #[tokio::test]
 async fn cors_preflight_is_allowed_for_configured_origin() {
     // cors_allowed_origins 設定時、許可オリジンの preflight に CORS ヘッダを返す（cors_layer Some 経路）。

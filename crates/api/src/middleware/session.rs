@@ -71,9 +71,10 @@ pub async fn require_session(
                 // role reconciliation を refresh 周期でも実行する（#91 H-1）。ログイン時のみだと
                 // refresh で延命される長寿命セッションが IdP 側で剥奪済みの role を再ログインまで
                 // 保持し続ける。ここで claims↔FGA を diff 同期し、失効窓を access token 寿命
-                // （≒refresh 周期）まで縮める。login と同じく detached・best-effort で
-                // リクエストレイテンシに載せない。
-                tokio::spawn(crate::routes::auth::provision_roles(
+                // （≒refresh 周期）まで縮める。組織の member も同じ周期でそろえる（D-130・組織を
+                // 離れた人がアプリのゲートウェイで組織に入り続けない）。login と同じく detached・
+                // best-effort でリクエストレイテンシに載せない。
+                tokio::spawn(crate::routes::auth::sync_memberships(
                     state.clone(),
                     record.principal.clone(),
                     tenant_id.clone(),

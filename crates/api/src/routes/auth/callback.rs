@@ -13,8 +13,11 @@ use authz::{AuthContext, Principal, Relation};
 
 use super::{
     action::{normalize_action_status, AccountAction},
-    build_cookie, parse_flow, removal_cookie, FLOW_COOKIE,
+    build_cookie, org_member, parse_flow, removal_cookie, FLOW_COOKIE,
 };
+
+/// ログインの往復で、組織の member の同期を待つ長さ（[`org_member`]・過ぎたら裏で続ける）。
+const ORG_MEMBER_WAIT: Duration = Duration::from_secs(3);
 use crate::{
     config::AuthConfig,
     error::ApiError,
@@ -104,6 +107,9 @@ pub async fn callback(
         }
     }
 
+    // 組織の member（D-130・org_member）は、ログインの往復の中でそろえてから戻す。
+    sync_org_member_before_redirect(&state, &principal, &tenant_id).await;
+
     // role provisioning（#76・claim 同期）: IdP の roles/groups（AD 部署を含む）を
     // OpenFGA の role メンバーシップタプルへ同期する。**login パスから切り離した detached タスク**で
     // 実行する: (1) login レイテンシに provisioning I/O を載せない (2) provisioning の失敗/遅延が
@@ -184,6 +190,24 @@ pub async fn callback(
     Ok((jar, Redirect::to(&target)))
 }
 
+/// 組織の member（[`org_member`]・D-130）を、ログインの往復の中でそろえる。
+///
+/// 戻った直後の `/me` と、続けて開くアプリのゲートウェイが、どちらもこのタプルで組織のメンバーかを判定するため、
+/// リダイレクトの前に待つ。待つのは [`ORG_MEMBER_WAIT`] までで、過ぎたら裏で続けさせてログインを進める（OpenFGA の
+/// 遅れでログインを止めない）。
+async fn sync_org_member_before_redirect(state: &AppState, principal: &Principal, tenant_id: &str) {
+    let sync = tokio::spawn({
+        let authz = state.authz.clone();
+        let principal = principal.clone();
+        let tenant_id = tenant_id.to_string();
+        let layout = group_layout(&state.config.auth);
+        async move { org_member::sync_org_member(&*authz, &principal, &tenant_id, layout).await }
+    });
+    if tokio::time::timeout(ORG_MEMBER_WAIT, sync).await.is_err() {
+        tracing::warn!("組織の member の同期が時間内に終わりません（裏で続ける）");
+    }
+}
+
 /// アカウント操作の開始ユーザーと認証後のユーザーが食い違えば、設定画面への error の戻り先を返す。
 fn action_subject_mismatch(action: Option<&AccountAction>, principal_id: &str) -> Option<String> {
     let action = action?;
@@ -199,6 +223,21 @@ fn action_error_redirect(jar: &CookieJar, returned_state: Option<&str>) -> Optio
     let flow = jar.get(FLOW_COOKIE).and_then(|c| parse_flow(c.value()))?;
     let action = flow.action?;
     (returned_state? == flow.state).then(|| action.return_url("error"))
+}
+
+/// セッションの更新（アクセストークンの寿命ごと・`middleware/session.rs`）で、組織の member（[`org_member`]・
+/// D-130）とロールのメンバーシップ（[`provision_roles`]）を claims にそろえる（detached・best-effort）。
+///
+/// 組織を移った人・所属グループから外れた人の member は、ここか次のログインで外れる。
+pub(crate) async fn sync_memberships(state: AppState, principal: Principal, tenant_id: String) {
+    org_member::sync_org_member(
+        &*state.authz,
+        &principal,
+        &tenant_id,
+        group_layout(&state.config.auth),
+    )
+    .await;
+    provision_roles(state, principal, tenant_id).await;
 }
 
 /// IdP claim（roles ＋ groups）由来のロール/部署メンバーシップを OpenFGA へ **diff 同期**する
