@@ -28,6 +28,8 @@ pub struct WorkflowRunLauncher {
     runs: RunStore,
     /// 定義を読めないことを警告した自動実行（テナント・ワークフロー・有効化した版）。発火のたびに警告しない（BUG-146）。
     unreadable_warned: Arc<WarnOnce>,
+    /// 実行の前に止める設定があることを警告した自動実行（同じく版ごとに 1 回・BUG-51）。
+    not_ready_warned: Arc<WarnOnce>,
 }
 
 /// 同じ相手への警告をプロセスで 1 回にする覚え（BUG-146）。覚える数が上限に届いたら忘れて、また 1 回ずつ警告する。
@@ -56,6 +58,24 @@ impl WorkflowRunLauncher {
             workflows,
             runs,
             unreadable_warned: Arc::default(),
+            not_ready_warned: Arc::default(),
+        }
+    }
+
+    /// 自動実行の版に実行の前に止める設定があることを、(テナント・ワークフロー・有効化した版) ごとにプロセスで 1 回だけ
+    /// 警告する（BUG-51）。2 回目からは debug に落とす。
+    fn warn_not_ready_once(&self, tenant_id: &str, workflow_id: Uuid, version: i64, reason: &str) {
+        if self.not_ready_warned.first(tenant_id, workflow_id, version) {
+            tracing::warn!(
+                tenant_id,
+                %workflow_id,
+                version,
+                reason,
+                "自動実行の版に、実行の前に止める設定があるため run を開始しません（欄を埋めて自動実行をオンにし直すと\
+                 直ります。以後この版の発火では警告しません）"
+            );
+        } else {
+            tracing::debug!(tenant_id, %workflow_id, version, "実行の前に止める設定があるため run を開始しません");
         }
     }
 
@@ -331,6 +351,23 @@ impl WorkflowRunLauncher {
                     reason.clone(),
                 )));
             }
+        }
+
+        // 保存は通しても空のまま動かせない欄（必須の欄が空・中にブロックの無い繰り返し・D-43・D-83・D-85）のある版は、
+        // 自動実行でも起動しない。有効化の前の確認より前に有効化した版や、確認の欄が後から増えた版でも、空のまま
+        // 動かさない（BUG-51）。何度起こしても同じなので見送り（BUG-146 の定義を読めない見送りと同じ形）、警告は版ごと
+        // に 1 回。きっかけは止めない（欄を埋めて自動実行をオンにし直せば直る）。
+        let blockers = crate::run_blockers(&ir);
+        if let Some(first) = blockers.first() {
+            let reason = format!(
+                "実行の前に止める設定があります（{} 件）: {}",
+                blockers.len(),
+                first.message
+            );
+            self.warn_not_ready_once(tenant_id, workflow_id, enabled_version, &reason);
+            return Ok(LaunchOutcome::Skipped(SkipReason::DelegationInvalid(
+                reason,
+            )));
         }
 
         let ir_json = serde_json::to_value(&ir).map_err(|e| LauncherError::Ir(e.to_string()))?;
