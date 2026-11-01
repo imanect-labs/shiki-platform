@@ -17,7 +17,8 @@ import type { ToolName } from "@/generated/gui-spec";
 /// ページの本文を返すツール（封筒の内側がページ由来）。語彙は codegen の `ToolName` で縛る。
 const WEB_PAGE_TOOL: ToolName = "web_fetch";
 /// web_fetch の封筒（`crates/agent-core/src/tools/web_fetch/envelope.rs` の OPEN / CLOSE）。
-/// ページ本文の `<web_page` / `</web_page` はサーバが実体参照に潰すので、本文から封筒は偽れない。
+/// ページ由来のヘッダと本文の `<web_page` / `</web_page` はサーバが実体参照に潰すので、**最初の**閉じタグが
+/// 本物。封筒の後ろの案内にはモデルの入力（`query`）がそのまま入るので、最後の閉じタグを探してはいけない。
 const PAGE_OPEN = "<web_page>";
 const PAGE_CLOSE = "</web_page>";
 
@@ -52,23 +53,37 @@ export function canonicalImageUrl(raw: string): string | null {
 /// ツール結果の本文のうち、ページ由来の部分（web_fetch の封筒の内側）。
 function webPageBody(result: string): string | null {
   const start = result.indexOf(PAGE_OPEN);
-  const end = result.lastIndexOf(PAGE_CLOSE);
-  return start >= 0 && end > start ? result.slice(start + PAGE_OPEN.length, end) : null;
+  if (start < 0) return null;
+  const from = start + PAGE_OPEN.length;
+  const end = result.indexOf(PAGE_CLOSE, from);
+  return end >= 0 ? result.slice(from, end) : null;
 }
 
-/// 本文の並びから、画像として現れた URL の集合を作る（呼び出し側が、ページ由来の本文だけを渡す）。
-export function collectImageSources(texts: Iterable<string | null | undefined>): Set<string> {
-  const out = new Set<string>();
+/// 出典の画像。比較用の正規化した URL → **出典に書かれていた** URL（読み込むのはこちら）。
+///
+/// 比較は正規化した値で行うが、読み込みに回答側の字句を使うと、`a` と `%61` の書き分けや 16 進の大小で
+/// 1 枚の画像に任意のビットを載せられる。読み込む URL を出典の字句に固定し、回答の書き方を通信に効かせない。
+export type ImageSources = ReadonlyMap<string, string>;
+
+/// 出典の URL を、読み込みに使う形（WHATWG URL の href・断片なし）にする。
+function fetchableUrl(raw: string): string {
+  const u = new URL(raw.trim());
+  u.hash = "";
+  return u.href;
+}
+
+/// 本文の並びから、画像として現れた URL を集める（呼び出し側が、ページ由来の本文だけを渡す）。
+export function collectImageSources(texts: Iterable<string | null | undefined>): Map<string, string> {
+  const out = new Map<string, string>();
+  const add = (raw: string) => {
+    const key = canonicalImageUrl(raw);
+    // 同じ画像が複数の書き方で現れたら、最初のものを使う（どれも第三者が書いた字句）。
+    if (key && !out.has(key)) out.set(key, fetchableUrl(raw));
+  };
   for (const text of texts) {
     if (!text) continue;
-    for (const m of text.matchAll(MD_IMAGE)) {
-      const url = m[1] ? canonicalImageUrl(m[1].replace(/\\(.)/g, "$1")) : null;
-      if (url) out.add(url);
-    }
-    for (const m of text.matchAll(HTML_IMAGE)) {
-      const url = m[1] ? canonicalImageUrl(m[1].replace(/&amp;/g, "&")) : null;
-      if (url) out.add(url);
-    }
+    for (const m of text.matchAll(MD_IMAGE)) if (m[1]) add(m[1].replace(/\\(.)/g, "$1"));
+    for (const m of text.matchAll(HTML_IMAGE)) if (m[1]) add(m[1].replace(/&amp;/g, "&"));
   }
   return out;
 }
@@ -95,11 +110,11 @@ export type AnswerImageDecision =
   | { kind: "link"; href: string; host: string }
   | { kind: "drop" };
 
-export function decideAnswerImage(src: string, sources: ReadonlySet<string>): AnswerImageDecision {
-  const url = canonicalImageUrl(src);
-  if (!url) return { kind: "drop" };
-  const href = new URL(src.trim());
-  href.hash = "";
-  if (sources.has(url)) return { kind: "load", src: href.href };
-  return { kind: "link", href: href.href, host: href.host };
+export function decideAnswerImage(src: string, sources: ImageSources): AnswerImageDecision {
+  const key = canonicalImageUrl(src);
+  if (!key) return { kind: "drop" };
+  const source = sources.get(key);
+  if (source) return { kind: "load", src: source };
+  const href = fetchableUrl(src);
+  return { kind: "link", href, host: new URL(href).host };
 }

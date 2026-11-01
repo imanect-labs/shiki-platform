@@ -32,7 +32,7 @@ for (const theme of ["light", "dark"] as const) {
 
     // 出典（web_fetch の結果）に現れた画像は描く。Referer を送らない。
     const all = timeline.getByTestId("answer-image");
-    await expect(all).toHaveCount(2);
+    await expect(all).toHaveCount(3);
     const shown = all.first();
     await expect(shown).toHaveAttribute("src", "https://images.example.test/market/saas-share-2026.png");
     await expect(shown).toHaveAttribute("referrerpolicy", "no-referrer");
@@ -56,7 +56,9 @@ for (const theme of ["light", "dark"] as const) {
     // モデル自身が書いた文字列（シェルの出力・封筒の外の案内）にだけ現れる URL は出所に数えない。
     await expect(blocked.nth(2)).toHaveText(/^外部の画像\s*collector\.attacker\.test$/);
     await expect(blocked.nth(2)).toHaveAttribute("href", "https://collector.attacker.test/e?d=Q3%20margin%2018%25");
-    await expect(timeline.locator("img")).toHaveCount(2);
+    await expect(timeline.locator("img")).toHaveCount(3);
+    // 出典と同じ画像を別の書き方（`%61`）で書いても、読み込むのは出典に書かれた URL（書き方で情報を載せられない）。
+    await expect(all.nth(2)).toHaveAttribute("src", "https://images.example.test/market/saas-share-2026.png");
     // リンクの中の画像は、外側のリンクを残してラベルだけにする（<a> を入れ子にしない）。
     await expect(blocked.nth(3)).toHaveText(/^外部の画像「build」\s*badge\.example\.test$/);
     await expect(timeline.locator("a a")).toHaveCount(0);
@@ -64,8 +66,11 @@ for (const theme of ["light", "dark"] as const) {
 
     // 通信は出典の画像の 2 件だけ（組み立てた URL へは 1 度も送っていない）。
     await page.waitForLoadState("networkidle");
-    expect(requested.map((u) => new URL(u).host).sort()).toEqual(["charts.example.test", "images.example.test"]);
-    expect(requested).toContain("https://images.example.test/market/saas-share-2026.png");
+    // 要求した URL は、出典（web_fetch の封筒の内側）に書かれていた字句そのものだけ。
+    expect([...new Set(requested)].sort()).toEqual([
+      "https://charts.example.test/render_(v2).png?series=41|27|32",
+      "https://images.example.test/market/saas-share-2026.png",
+    ]);
 
     if (SHOTS) await timeline.screenshot({ path: `${SHOTS}/answer-images-${theme}.png` });
   });

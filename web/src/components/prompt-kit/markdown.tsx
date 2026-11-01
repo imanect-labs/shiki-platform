@@ -12,7 +12,7 @@ import { EyeOff } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { citeNumberFromHref } from "@/lib/citation";
-import { decideAnswerImage } from "@/lib/answer-images";
+import { decideAnswerImage, type ImageSources } from "@/lib/answer-images";
 import { CitationMarker } from "@/components/chat/citations/citation-marker";
 import { resolveKind } from "@imanect/yui";
 import { isYuiLanguage } from "@imanect/yui/react";
@@ -38,7 +38,7 @@ const UiFigure = dynamic(() => import("./ui-figure").then((m) => m.UiFigure), {
 });
 
 /// 出典の画像が無い（会話以外の本文・出典を持たない閲覧者）。外部の画像は 1 枚も読み込まない。
-const NO_IMAGE_SOURCES: ReadonlySet<string> = new Set();
+const NO_IMAGE_SOURCES: ImageSources = new Map();
 
 /// リンクの中を描いているか（リンクの中の画像を読み込まないとき、リンクを入れ子にしない）。
 const InLinkContext = React.createContext(false);
@@ -143,7 +143,7 @@ const SourceContext = React.createContext<{
   text: string;
   streaming: boolean;
   untrusted: boolean;
-  imageSources: ReadonlySet<string>;
+  imageSources: ImageSources;
 }>({
   text: "",
   streaming: false,
@@ -489,7 +489,7 @@ export function Markdown({
   untrusted?: boolean;
   /// 画像として読み込んでよい URL（回答なら、その回答のツール結果・引用に現れた画像・lib/answer-images）。
   /// 省略すると外部の画像は読み込まず、行き先のホストを添えたリンクにする。
-  imageSources?: ReadonlySet<string>;
+  imageSources?: ImageSources;
 }) {
   return (
     <div className={cn("min-w-0 text-[15px] leading-relaxed text-foreground", WRAP_ANYWHERE, className)}>

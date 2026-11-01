@@ -138,7 +138,7 @@ export function segmentsFromBlocks(blocks: ContentBlock[]): TimelineSegment[] {
 ///
 /// 共有された会話を run の実行者以外が見るときはツール結果が空で届く（サーバが伏せる）ので、
 /// 引用の抜粋に現れた分しか描けない。描けない画像はリンクに落ちる（読み込まない側に倒す）。
-export function answerImageSources(segments: TimelineSegment[], citations: Citation[]): Set<string> {
+export function answerImageSources(segments: TimelineSegment[], citations: Citation[]): Map<string, string> {
   const tools = segments.flatMap((s) => (s.kind === "work" ? s.tools : []));
   const webSnippets = citations.flatMap((c) => (c.web ? [c.snippet] : []));
   return collectImageSources(pageSourcedTexts(tools, webSnippets));
