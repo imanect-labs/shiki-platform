@@ -13,6 +13,8 @@
 //!    （[`submitter`]）
 //! ⑬ 作成者の列（D-122）: 作成者で埋まり書けない。行の決まりの比べがどの経路でも作成者で効き、申請者の列を
 //!    書き換えても作成者を除く判定をすり抜けられない（[`created_by`]）
+//! ⑭ 追加だけの人の出し直し（D-127）: 作成者の列で本人を指す進め方と書き込みの決まりの分だけ、自分のレコードを
+//!    直して進められる。他人のレコード・許していない状態と進め方・削除・取込は断る（[`resubmit`]）
 //!
 //! 実 Postgres（`STORAGE_TEST_DATABASE_URL`）＋実 OpenFGA（`OPENFGA_TEST_URL`）で実行する。
 
@@ -53,6 +55,9 @@ mod submitter;
 
 #[path = "policy_threat/created_by.rs"]
 mod created_by;
+
+#[path = "policy_threat/resubmit.rs"]
+mod resubmit;
 
 struct AllowRefs;
 

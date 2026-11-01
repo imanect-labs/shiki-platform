@@ -6,13 +6,14 @@
 //! [`crate::link_merge`]）・索引の差分更新・材料化・リビジョン・outbox・監査が
 //! どちらの経路でも同じに効く（一括経路だけ抜ける不変条件を作らない）。
 
-use authz::{AuthContext, Relation};
+use authz::AuthContext;
 use serde_json::{Map, Value};
 use sqlx::types::Json;
 use sqlx::PgConnection;
 use storage::audit::AuditAction;
 use uuid::Uuid;
 
+use crate::creator_grant::GrantNeed;
 use crate::field_key::encode_record;
 use crate::index::state::{lock_plan, IndexPlan};
 use crate::model::{DataRecord, DataTable};
@@ -21,6 +22,7 @@ use crate::record::{map_unique, WrittenRow, WRITTEN_RETURNING};
 use crate::revision::{diff_fields, insert_revision, RevisionInsert};
 use crate::store::DataStore;
 use crate::stream::outbox::{emit_record_changes_as, Before, ChangeKind, RecordChange};
+use crate::table_access::WriteAccess;
 use crate::validate::validate_record_patch;
 use crate::{map_db, DataError};
 
@@ -47,16 +49,17 @@ impl DataStore {
         trace_id: Option<&str>,
     ) -> Result<DataRecord, DataError> {
         let az = self.authz_memo();
-        self.require_in(
-            &az,
-            ctx,
-            table_id,
-            Relation::Editor,
-            AuditAction::DataRecordUpdate,
-            trace_id,
-        )
-        .await?;
-        let table = self.fetch_live(ctx, table_id).await?;
+        // editor か、追加だけで作成者として書き換えを許したテーブル（D-127）。それ以外はこれまでどおり断る。
+        let (table, access) = self
+            .write_access(
+                &az,
+                ctx,
+                table_id,
+                AuditAction::DataRecordUpdate,
+                GrantNeed::Write,
+                trace_id,
+            )
+            .await?;
         let patch_obj = patch.as_object().ok_or_else(|| {
             DataError::Invalid("patch は JSON オブジェクトである必要があります".into())
         })?;
@@ -84,6 +87,7 @@ impl DataStore {
                 id,
                 patch_obj,
                 Some(expected_rev),
+                &access,
                 false,
                 trace_id,
             )
@@ -94,10 +98,12 @@ impl DataStore {
         } else {
             tx.commit().await.map_err(map_db)?;
         }
-        // 応答は読取と同じ出口を通す（書き手に見えない参照先の id・件数を応答で漏らさない・§7.2）。
-        let masked = self.masked_fields(ctx, &az, &table).await?;
+        // 応答は読取と同じ出口を通す（書き手に見えない参照先の id・件数を応答で漏らさない・§7.2）。追加だけの人には
+        // 読取と同じ自分の行に絞った見え方で返す。
+        let view = access.view(&table);
+        let masked = self.masked_fields(ctx, &az, &view).await?;
         let mut out = [out.record];
-        self.project_read(ctx, &az, &table, &masked, &mut out)
+        self.project_read(ctx, &az, &view, &masked, &mut out)
             .await?;
         let [record] = out;
         Ok(record)
@@ -105,7 +111,9 @@ impl DataStore {
 
     /// 呼び出し側の Tx 上で 1 件を更新する（テーブル行の `FOR KEY SHARE` は呼び出し側が [`lock_plan`] で取得済み）。
     ///
-    /// テーブルの editor は呼び出し側が確認済みであること。`expected_rev = None` は `rev` を照合しない
+    /// テーブルの第 1 層は呼び出し側が確認済みであること（`access`・一括書込は editor だけ）。追加だけの人
+    /// （[`WriteAccess::Creator`]）は、自分の行に絞った見え方で行を引き、書き込みの決まりの代わりに作成者として
+    /// 許した分（[`crate::creator_grant`]）で判定する。`expected_rev = None` は `rev` を照合しない
     /// （行ロックの下の後勝ち。一括書込で `rev` を指定しなかった行）。`bulk` は一括 upsert の更新行
     /// （outbox の非公開部に目印を付け、ワークフローのトリガが一括取込で発火しないようにする・D-26）。
     #[allow(clippy::too_many_arguments)] // Tx・認可の文脈・計画・行識別・楽観ロック・一括の目印の束。
@@ -120,16 +128,25 @@ impl DataStore {
         id: Uuid,
         patch_obj: &Map<String, Value>,
         expected_rev: Option<i64>,
+        access: &WriteAccess,
         bulk: bool,
         trace_id: Option<&str>,
     ) -> Result<Updated, DataError> {
         let table_id = table.id;
-        // 行述語つきロック: 不可視行は NotFound（rev オラクル封じ・PIT-21）。
+        // 行述語つきロック: 不可視行は NotFound（rev オラクル封じ・PIT-21）。追加だけの人は自分の行に絞って引く。
         let current = self
-            .lock_visible_by_id(ctx, az, tx, table, id)
+            .lock_visible_by_id(ctx, az, tx, &access.view(table), id)
             .await?
             .ok_or(DataError::NotFound)?;
-        if !self.write_allowed(ctx, az, table, id).await? {
+        let allowed = match access {
+            WriteAccess::Editor => self.write_allowed(ctx, az, table, id).await?,
+            WriteAccess::Creator(g) => {
+                let data = crate::field_key::decode_record(&table.schema, &current.data.0);
+                let from = data.get(&g.status_field).and_then(Value::as_str);
+                self.creator_may_write(ctx, az, table, id, g, from).await?
+            }
+        };
+        if !allowed {
             return Err(DataError::Forbidden);
         }
         if let Some(expected) = expected_rev {

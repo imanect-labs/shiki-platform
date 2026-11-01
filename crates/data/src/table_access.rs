@@ -6,7 +6,9 @@
 //! 2. レコードを作れる（読めない列には書けない・作成の監査を残す・[`crate::DataStore::create_record`]）
 //! 3. **自分が作ったレコードだけ**を読める。行述語があればその積で絞り、個別共有された行は今の規則どおり
 //!    足す（`(作成者 = 自分 AND 行述語) OR 個別共有`）
-//! 4. 書き換え・削除・状態を進める・一括取込はできない（これまでどおり editor が要る）
+//! 4. 書き換え・削除・状態を進める・一括取込はできない（これまでどおり editor が要る）。ただし、状態の進め方と
+//!    書き込みの決まりが作成者の列で本人を指すときは、その分の状態を進めると書き換えを自分のレコードに許す
+//!    （D-127・[`DataStore::write_access`]・判定は [`crate::creator_grant`]）。削除と一括取込は許さない
 //!
 //! # 絞り方（単一の表現）
 //!
@@ -29,6 +31,7 @@ use authz::{AuthContext, Relation};
 use storage::audit::AuditAction;
 use uuid::Uuid;
 
+use crate::creator_grant::{CreatorGrant, GrantNeed};
 use crate::model::DataTable;
 use crate::policy::ast::PolicyExpr;
 use crate::policy::memo::AuthzMemo;
@@ -49,6 +52,29 @@ pub(crate) enum ReadScope {
     All,
     /// 追加だけ（submitter で viewer でない）: 自分が作ったレコードだけ（行述語との積・個別共有は足す）。
     OwnRecords,
+}
+
+/// 書き換え・状態を進めるの第 1 層（テーブルの ReBAC と、追加だけの人に作成者として許したもの）。
+#[derive(Debug, Clone)]
+pub(crate) enum WriteAccess {
+    /// テーブルの editor: 行の決まり・個別共有・進められる人のとおり。
+    Editor,
+    /// 追加だけ（D-113）で、作成者として許したものがある（D-127）: 自分が作成者のレコードで、作成者に許した分だけ。
+    Creator(CreatorGrant),
+}
+
+impl WriteAccess {
+    /// 行を引くテーブル（追加だけなら自分の行に絞った写し）。
+    pub(crate) fn view<'a>(&self, table: &'a DataTable) -> std::borrow::Cow<'a, DataTable> {
+        match self {
+            WriteAccess::Editor => std::borrow::Cow::Borrowed(table),
+            WriteAccess::Creator(_) => {
+                let mut own = table.clone();
+                narrow_to_own(&mut own);
+                std::borrow::Cow::Owned(own)
+            }
+        }
+    }
 }
 
 /// テーブルを追加だけの閲覧者の見え方にする（冪等）。
@@ -138,6 +164,42 @@ impl DataStore {
             narrow_to_own(&mut table);
         }
         Ok(table)
+    }
+
+    /// 書き換え・状態を進めるの入口（1 件の更新・状態を進める・遷移の候補）。editor なら [`WriteAccess::Editor`]、
+    /// 追加だけで作成者として何か許したテーブルなら [`WriteAccess::Creator`]。それ以外は、これまでどおり表の
+    /// 権限で断る（見える人は 403・見えない人は 404・deny の監査・レコードを引く前なので行の有無は分からない）。
+    ///
+    /// 削除・一括取込はここを通らない（追加だけの人には editor を求めたまま・D-127）。
+    pub(crate) async fn write_access(
+        &self,
+        az: &AuthzMemo<'_>,
+        ctx: &AuthContext,
+        table_id: Uuid,
+        action: AuditAction,
+        need: GrantNeed<'_>,
+        trace_id: Option<&str>,
+    ) -> Result<(DataTable, WriteAccess), DataError> {
+        let obj = ctx.ns().data_table(&table_id.to_string());
+        let got = az
+            .check_all(
+                ctx,
+                &[(Relation::Editor, obj.clone()), (Relation::Submitter, obj)],
+            )
+            .await?;
+        if got.first().copied() == Some(true) {
+            return Ok((self.fetch_live(ctx, table_id).await?, WriteAccess::Editor));
+        }
+        if got.get(1).copied() == Some(true) {
+            let table = self.fetch_live(ctx, table_id).await?;
+            if let Some(g) = self.creator_grant(ctx, &table, need, trace_id).await? {
+                return Ok((table, WriteAccess::Creator(g)));
+            }
+        }
+        self.require_in(az, ctx, table_id, Relation::Editor, action, trace_id)
+            .await?;
+        // ここまでに editor でないと答えたので、間に共有が足されても断る（fail-closed）。
+        Err(DataError::Forbidden)
     }
 
     /// 開いたテーブルを読み直す（スキーマの改訂・降格の後）。前のテーブルが追加だけの見え方なら、読み直した

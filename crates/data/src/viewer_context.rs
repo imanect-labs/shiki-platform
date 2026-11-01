@@ -29,8 +29,8 @@ pub struct TableViewerContext {
     pub can_edit: bool,
     /// レコードを追加できる（テーブルの editor 以上か、追加だけ・D-113）。
     pub can_add: bool,
-    /// 追加だけで共有されている（自分が追加したレコードだけ見られる・編集・取込・状態を進める・保存ビューは
-    /// 使えない・D-113）。
+    /// 追加だけで共有されている（自分が追加したレコードだけ見られる・取込・保存ビューは使えない・D-113）。
+    /// 書き換えと状態を進めるは、作成者として許したもの（`own_records`）だけ（D-127）。
     pub add_only: bool,
     /// スキーマを変えられる（テーブルの owner）。
     pub can_manage: bool,
@@ -40,6 +40,10 @@ pub struct TableViewerContext {
     /// 状態の進め方が無ければ null。定義はテーブル側の参照として読む（定義の閲覧の権限は求めない・BUG-154）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initial_state: Option<String>,
+    /// 追加だけの人が、自分が追加したレコードで状態を進められる・直せる状態（状態の進め方と書き込みの決まりが
+    /// 作成者の列で本人を指すときだけ・D-127）。追加だけでない人・何も許していないテーブルには返さない。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub own_records: Option<crate::creator_grant::OwnRecordRights>,
 }
 
 impl DataStore {
@@ -76,9 +80,22 @@ impl DataStore {
         } else {
             std::collections::HashSet::new()
         };
-        let initial_state = self
-            .initial_state_for(ctx, &table, &unreadable, trace_id)
+        // 指している状態の進め方は 1 回だけ読む（最初の状態と、追加だけの人の手がかりに使う）。
+        let pinned = self
+            .pinned_for_viewer(ctx, &table, &unreadable, trace_id)
             .await;
+        let initial_state = pinned
+            .as_ref()
+            .and_then(|(body, _)| body.states.first().cloned());
+        // 追加だけの人に作成者として許したもの（絞る前の書き込みの決まりで判定する・D-127）。
+        let own_records = match &pinned {
+            Some((body, status)) if add_only => crate::creator_grant::own_record_rights(
+                &crate::table_access::unnarrowed_schema(&table),
+                body,
+                status,
+            ),
+            _ => None,
+        };
         let mut masked: Vec<String> = if can_manage {
             unreadable.into_iter().collect()
         } else {
@@ -93,28 +110,30 @@ impl DataStore {
             can_manage,
             max_view_lookup_columns: self.view_lookup_cap(ctx).await?,
             initial_state,
+            own_records,
         })
     }
 
-    /// 閲覧者に見せる最初の状態（状態の列が読めて、指している状態の進め方が読めるときだけ）。
+    /// 閲覧者の文脈に使う、指している状態の進め方（状態の列が読めて、指している状態の進め方が読めるときだけ）。
     ///
-    /// 状態の名前は状態の列の選択肢として閲覧者に見えているので、どれが最初かを足すだけ。定義が消えていれば
-    /// 出さない（追加は失敗するので、画面は名前を出さずに追加させる）。最初の状態は補助の表示なので、定義を
-    /// 読めない誤り（一時的な障害・監査の書き込みの失敗など）でも閲覧者の文脈は返す（出さずに tracing に残す）。
-    /// 状態の列の選択肢の先頭は使わない（選択肢と状態は同じ集合だが、同じ順とは限らない・`fsm_pin`）。
-    async fn initial_state_for(
+    /// 最初の状態（状態の名前は状態の列の選択肢として閲覧者に見えているので、どれが最初かを足すだけ）と、追加だけの
+    /// 人の手がかり（`own_records`・D-127）に使う。定義が消えていれば出さない（追加は失敗するので、画面は名前を出さずに
+    /// 追加させる）。補助の表示なので、定義を読めない誤り（一時的な障害・監査の書き込みの失敗など）でも閲覧者の文脈は
+    /// 返す（出さずに tracing に残す）。状態の列の選択肢の先頭は使わない（選択肢と状態は同じ集合だが、同じ順とは
+    /// 限らない・`fsm_pin`）。
+    async fn pinned_for_viewer(
         &self,
         ctx: &AuthContext,
         table: &crate::model::DataTable,
         unreadable: &std::collections::HashSet<String>,
         trace_id: Option<&str>,
-    ) -> Option<String> {
+    ) -> Option<(crate::fsm::FsmBody, String)> {
         let status = table.schema.status_field.as_deref()?;
         if table.schema.fsm_ref.is_none() || unreadable.contains(status) {
             return None;
         }
         match self.pinned_fsm(ctx, table, trace_id).await {
-            Ok(fsm) => fsm.and_then(|(body, _)| body.states.into_iter().next()),
+            Ok(fsm) => fsm,
             Err(DataError::NotFound) => None,
             Err(e) => {
                 tracing::warn!(error = %e, table_id = %table.id, "閲覧者の文脈: 最初の状態を読めなかった（出さずに返す）");

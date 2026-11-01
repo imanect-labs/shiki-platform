@@ -4,7 +4,14 @@
 //!
 //! ```text
 //! write = all[ 元の書き込みの決まり, any[ 状態 = 最初の状態, 申請者 ≠ 自分 ] ]
+//! write = all[ 元の書き込みの決まり, any[ 状態 = 最初の状態, 申請者 ≠ 自分, all[ 状態 in 出し直す状態, 申請者 = 自分 ] ] ]
 //! ```
+//!
+//! 2 つ目の形は、申請者が進められる進め方（例: 差し戻し → 申請中 を「作成者」に許す）があるときに付ける
+//! （出し直す状態は、その進め方の元の状態・最初の状態を除く・[`crate::creator_grant::resubmit_states`]）。申請者は
+//! 差し戻しのあいだ自分の申請を直して出し直せる（D-127）。申請者の列が作成者の列なら、この枝は作成者の列で本人を
+//! 指すので、「追加だけ」の人にも差し戻しのあいだの書き換えを許す（[`crate::creator_grant`]）。出し直す状態は保存の
+//! たびに進め方から組み直す（進め方を変えれば決まりも変わる）。
 //!
 //! - 行の決まりに `Not` は足さない（data-platform §5.1 の意図した非対称）。「申請者でない」は申請者の列
 //!   （作成者の列 `created_by` か `user_ref`）と `ne $user.id` の比べで書く（経費のテンプレート expense_policy の
@@ -20,9 +27,9 @@ use serde_json::Value;
 
 use crate::policy::{CmpOp, PolicyExpr, PolicyOperand, RowPolicy};
 
-/// 決まりの後半（`any[ 状態 = 最初の状態, 申請者 ≠ 自分 ]`）。
-fn guard(status_field: &str, initial: &str, applicant: &str) -> PolicyExpr {
-    PolicyExpr::Any(vec![
+/// 決まりの後半（`any[ 状態 = 最初の状態, 申請者 ≠ 自分 (, all[ 状態 in 出し直す状態, 申請者 = 自分 ]) ]`）。
+fn guard(status_field: &str, initial: &str, applicant: &str, resubmit: &[String]) -> PolicyExpr {
+    let mut v = vec![
         PolicyExpr::FieldCmp {
             field: status_field.to_string(),
             op: CmpOp::Eq,
@@ -33,16 +40,59 @@ fn guard(status_field: &str, initial: &str, applicant: &str) -> PolicyExpr {
             op: CmpOp::Ne,
             value: PolicyOperand::UserId,
         },
-    ])
+    ];
+    if !resubmit.is_empty() {
+        v.push(PolicyExpr::All(vec![
+            PolicyExpr::FieldCmp {
+                field: status_field.to_string(),
+                op: CmpOp::In,
+                value: PolicyOperand::Lit(Value::Array(
+                    resubmit.iter().cloned().map(Value::String).collect(),
+                )),
+            },
+            PolicyExpr::FieldCmp {
+                field: applicant.to_string(),
+                op: CmpOp::Eq,
+                value: PolicyOperand::UserId,
+            },
+        ]));
+    }
+    PolicyExpr::Any(v)
 }
 
-/// `expr` がこの決まりの後半の形なら、（最初の状態, 申請者の列）。最初の状態の値は形の判定では問わない（保存の
-/// たびに今の値で組み直す）。
+/// 出し直す状態の枝（`all[ 状態 in […], 申請者 = 自分 ]`）なら、その状態。
+fn resubmit_part<'a>(
+    expr: &'a PolicyExpr,
+    status_field: &str,
+    applicant: &str,
+) -> Option<&'a [Value]> {
+    let PolicyExpr::All(v) = expr else {
+        return None;
+    };
+    match v.as_slice() {
+        [PolicyExpr::FieldCmp {
+            field: s,
+            op: CmpOp::In,
+            value: PolicyOperand::Lit(Value::Array(states)),
+        }, PolicyExpr::FieldCmp {
+            field: a,
+            op: CmpOp::Eq,
+            value: PolicyOperand::UserId,
+        }] if s == status_field && a == applicant && states.iter().all(Value::is_string) => {
+            Some(states.as_slice())
+        }
+        _ => None,
+    }
+}
+
+/// `expr` がこの決まりの後半の形なら、（最初の状態, 申請者の列）。最初の状態・出し直す状態の値は形の判定では
+/// 問わない（保存のたびに今の値で組み直す）。
 fn guard_parts<'a>(expr: &'a PolicyExpr, status_field: &str) -> Option<(&'a str, &'a str)> {
     let PolicyExpr::Any(v) = expr else {
         return None;
     };
-    match v.as_slice() {
+    let (head, rest) = v.split_at_checked(2)?;
+    let parts = match head {
         [PolicyExpr::FieldCmp {
             field: s,
             op: CmpOp::Eq,
@@ -51,7 +101,12 @@ fn guard_parts<'a>(expr: &'a PolicyExpr, status_field: &str) -> Option<(&'a str,
             field: a,
             op: CmpOp::Ne,
             value: PolicyOperand::UserId,
-        }] if s == status_field => Some((initial.as_str(), a.as_str())),
+        }] if s == status_field => (initial.as_str(), a.as_str()),
+        _ => return None,
+    };
+    match rest {
+        [] => Some(parts),
+        [r] if resubmit_part(r, status_field, parts.1).is_some() => Some(parts),
         _ => None,
     }
 }
@@ -92,13 +147,15 @@ pub(crate) fn applicant_write_lock(
         .map(|(_, _, a)| a.to_string())
 }
 
-/// この決まりを（組み直して）付けた行の決まり。元の書き込みの決まりは保つ。
+/// この決まりを（組み直して）付けた行の決まり。元の書き込みの決まりは保つ。`resubmit` は申請者が直して出し直せる
+/// 状態（空なら最初の状態のあいだだけ）。
 #[must_use]
 pub(crate) fn with_guard(
     policy: Option<&RowPolicy>,
     status_field: &str,
     initial: &str,
     applicant: &str,
+    resubmit: &[String],
 ) -> RowPolicy {
     let read = policy.map_or(PolicyExpr::Public, |p| p.read.clone());
     let base = match policy {
@@ -111,7 +168,7 @@ pub(crate) fn with_guard(
         read,
         write: Some(PolicyExpr::All(vec![
             base,
-            guard(status_field, initial, applicant),
+            guard(status_field, initial, applicant, resubmit),
         ])),
     }
 }
@@ -136,6 +193,7 @@ pub(crate) fn without_guard(policy: Option<&RowPolicy>, status_field: &str) -> O
 }
 
 #[cfg(test)]
+#[allow(clippy::panic)]
 mod tests {
     use super::*;
 
@@ -147,7 +205,7 @@ mod tests {
     /// 今の最初の状態で組み直す（元の決まりを二重に包まない）。
     #[test]
     fn round_trips_on_a_table_without_row_policy() {
-        let p = with_guard(None, "status", "申請中", "applicant");
+        let p = with_guard(None, "status", "申請中", "applicant", &[]);
         assert_eq!(p.read, PolicyExpr::Public);
         assert_eq!(
             applicant_write_lock(Some(&p), "status").as_deref(),
@@ -159,12 +217,12 @@ mod tests {
             Some(("申請中".to_string(), "applicant".to_string()))
         );
         assert_eq!(current_guard(None, "status"), None);
-        let again = with_guard(Some(&p), "status", "下書き", "applicant");
+        let again = with_guard(Some(&p), "status", "下書き", "applicant", &[]);
         assert_eq!(
             again.write,
             Some(PolicyExpr::All(vec![
                 PolicyExpr::Public,
-                guard("status", "下書き", "applicant"),
+                guard("status", "下書き", "applicant", &[]),
             ]))
         );
     }
@@ -176,14 +234,14 @@ mod tests {
             read: own(),
             write: None,
         };
-        let p = with_guard(Some(&read_only), "status", "申請中", "applicant");
+        let p = with_guard(Some(&read_only), "status", "申請中", "applicant", &[]);
         assert_eq!(p.read, own());
         assert_eq!(without_guard(Some(&p), "status"), Some(read_only));
         let explicit = RowPolicy {
             read: PolicyExpr::Public,
             write: Some(own()),
         };
-        let p = with_guard(Some(&explicit), "status", "申請中", "applicant");
+        let p = with_guard(Some(&explicit), "status", "申請中", "applicant", &[]);
         assert_eq!(without_guard(Some(&p), "status"), Some(explicit));
     }
 
@@ -197,7 +255,69 @@ mod tests {
         assert_eq!(applicant_write_lock(Some(&other), "status"), None);
         assert_eq!(without_guard(Some(&other), "status"), Some(other.clone()));
         // 別の状態の列で書いた決まりも、この列の決まりとは読まない。
-        let p = with_guard(None, "phase", "申請中", "applicant");
+        let p = with_guard(None, "phase", "申請中", "applicant", &[]);
         assert_eq!(applicant_write_lock(Some(&p), "status"), None);
+    }
+
+    /// 出し直す状態のある決まり（D-127）も同じ決まりと読み、付け直すと今の出し直す状態で組み直す。外すと元に戻る。
+    #[test]
+    fn resubmit_branch_round_trips() {
+        let back = vec!["差し戻し".to_string()];
+        let p = with_guard(None, "status", "申請中", "made_by", &back);
+        let Some(PolicyExpr::All(v)) = &p.write else {
+            panic!("{p:?}");
+        };
+        assert_eq!(v[1], guard("status", "申請中", "made_by", &back));
+        let PolicyExpr::Any(branches) = &v[1] else {
+            panic!("{v:?}");
+        };
+        assert_eq!(
+            branches[2],
+            PolicyExpr::All(vec![
+                PolicyExpr::FieldCmp {
+                    field: "status".into(),
+                    op: CmpOp::In,
+                    value: PolicyOperand::Lit(serde_json::json!(["差し戻し"])),
+                },
+                PolicyExpr::FieldCmp {
+                    field: "made_by".into(),
+                    op: CmpOp::Eq,
+                    value: PolicyOperand::UserId,
+                },
+            ])
+        );
+        assert_eq!(
+            current_guard(Some(&p), "status"),
+            Some(("申請中".to_string(), "made_by".to_string()))
+        );
+        // 出し直す状態が無くなれば 2 つの枝に戻す（元の書き込みの決まりは二重に包まない）。
+        let again = with_guard(Some(&p), "status", "申請中", "made_by", &[]);
+        assert_eq!(
+            again.write,
+            Some(PolicyExpr::All(vec![
+                PolicyExpr::Public,
+                guard("status", "申請中", "made_by", &[]),
+            ]))
+        );
+        assert_eq!(without_guard(Some(&p), "status"), None);
+        // 出し直す枝の申請者の列が違うものは、この決まりとは読まない。
+        let mut other = p.clone();
+        if let Some(PolicyExpr::All(v)) = &mut other.write {
+            if let PolicyExpr::Any(b) = &mut v[1] {
+                b[2] = PolicyExpr::All(vec![
+                    PolicyExpr::FieldCmp {
+                        field: "status".into(),
+                        op: CmpOp::In,
+                        value: PolicyOperand::Lit(serde_json::json!(["差し戻し"])),
+                    },
+                    PolicyExpr::FieldCmp {
+                        field: "approver".into(),
+                        op: CmpOp::Eq,
+                        value: PolicyOperand::UserId,
+                    },
+                ]);
+            }
+        }
+        assert_eq!(applicant_write_lock(Some(&other), "status"), None);
     }
 }

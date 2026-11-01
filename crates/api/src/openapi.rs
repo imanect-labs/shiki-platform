@@ -602,6 +602,7 @@ use utoipa::{
         data::GalleryView,
         data::DataViewSummary,
         data::TableViewerContext,
+        data::OwnRecordRights,
         data::AllowedTransitions,
         crate::routes::data_views::ViewListResponse,
         // ミニアプリの画面の表（data_grid）: 画面が送る params と、`ui-actions` の

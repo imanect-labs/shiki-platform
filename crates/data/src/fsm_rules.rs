@@ -12,17 +12,19 @@
 //! 読み口は [`crate::FsmStore::new`] がストアの複製間で共有する枠に登録する。未登録（FSM の保存先が無い
 //! 構成）で FSM 管理テーブルに作成しようとしたら失敗させる（初期状態の検査を素通りさせない）。
 
-use authz::{AuthContext, Relation};
+use authz::AuthContext;
 use serde::Serialize;
 use serde_json::{Map, Value};
 use storage::audit::AuditAction;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
+use crate::creator_grant::GrantNeed;
 use crate::field_key::decode_record;
 use crate::fsm::FsmBody;
 use crate::model::DataTable;
 use crate::store::DataStore;
+use crate::table_access::WriteAccess;
 use crate::{DataError, InvalidCode};
 
 /// レコードのいまの状態と、閲覧者が実行できる遷移先。
@@ -135,26 +137,32 @@ impl DataStore {
         }))
     }
 
-    /// レコードのいまの状態と、閲覧者が実行できる遷移先（editor・不可視行は 404・状態の列が読めなければ
-    /// 存在しない列と同じ 403）。
+    /// レコードのいまの状態と、閲覧者が実行できる遷移先（editor か作成者として許した追加だけの人・不可視行は
+    /// 404・状態の列が読めなければ存在しない列と同じ 403）。
+    ///
+    /// 追加だけの人（[`WriteAccess::Creator`]）は自分の行に絞って引き、進められる人のうち作成者として許した部分で
+    /// 判定する（遷移と同じ・D-127）。
+    #[allow(clippy::too_many_arguments)] // 主体・テーブル・第 1 層・行・定義・状態の列は全て別物。
     pub(crate) async fn allowed_transitions_with(
         &self,
         ctx: &AuthContext,
         table: &DataTable,
+        access: &WriteAccess,
         record_id: Uuid,
         fsm: &FsmBody,
         status_field: &str,
     ) -> Result<AllowedTransitions, DataError> {
         let az = self.authz_memo();
+        let view = access.view(table);
         if self
-            .masked_fields(ctx, &az, table)
+            .masked_fields(ctx, &az, &view)
             .await?
             .contains(status_field)
         {
             return Err(DataError::FieldUnavailable);
         }
         let row = self
-            .select_visible_by_id(ctx, &az, table, record_id)
+            .select_visible_by_id(ctx, &az, &view, record_id)
             .await?
             .ok_or(DataError::NotFound)?;
         let data = decode_record(&table.schema, &row.data.0);
@@ -170,10 +178,17 @@ impl DataStore {
                     continue;
                 }
                 tried.push(&t.to);
-                if self
-                    .may_transition(ctx, &az, table, record_id, fsm, from, &t.to)
-                    .await?
-                {
+                let ok = match access {
+                    WriteAccess::Editor => {
+                        self.may_transition(ctx, &az, table, record_id, fsm, from, &t.to)
+                            .await?
+                    }
+                    WriteAccess::Creator(g) => {
+                        self.creator_may_transition(ctx, &az, table, record_id, g, from, &t.to)
+                            .await?
+                    }
+                };
+                if ok {
                     transitions.push(t.to.clone());
                 }
             }
@@ -269,22 +284,23 @@ impl DataStore {
         Ok(false)
     }
 
-    /// テーブルの editor を確かめて生きているテーブルを返す（遷移の候補の入口）。
+    /// 状態を進める・遷移の候補の入口: テーブルの editor か、追加だけで作成者として進め方を許したテーブル
+    /// （D-127）を確かめて、生きているテーブルを返す。それ以外は、レコードを引く前に表の権限で断る（BUG-155）。
     pub(crate) async fn table_for_transition(
         &self,
         ctx: &AuthContext,
         table_id: Uuid,
         trace_id: Option<&str>,
-    ) -> Result<DataTable, DataError> {
-        self.require(
+    ) -> Result<(DataTable, WriteAccess), DataError> {
+        self.write_access(
+            &self.authz_memo(),
             ctx,
             table_id,
-            Relation::Editor,
             AuditAction::DataRecordTransition,
+            GrantNeed::Move,
             trace_id,
         )
-        .await?;
-        self.fetch_live(ctx, table_id).await
+        .await
     }
 }
 

@@ -12,7 +12,7 @@ use super::*;
 use data::{BulkImportOptions, BulkImportRow, FsmBody, FsmTransition};
 
 /// [`setup`] と同じ環境に、後で消すストアを添える。
-async fn setup_cleaned() -> Option<(PgPool, Arc<dyn AuthzClient>, String, String)> {
+pub(super) async fn setup_cleaned() -> Option<(PgPool, Arc<dyn AuthzClient>, String, String)> {
     let db_url = std::env::var("STORAGE_TEST_DATABASE_URL").ok()?;
     let base_url = std::env::var("OPENFGA_TEST_URL").ok()?;
     let pool = PgPoolOptions::new()
@@ -39,7 +39,7 @@ async fn setup_cleaned() -> Option<(PgPool, Arc<dyn AuthzClient>, String, String
     Some((pool, Arc::new(fga), base_url, store_id))
 }
 
-async fn delete_store(base_url: &str, store_id: &str) {
+pub(super) async fn delete_store(base_url: &str, store_id: &str) {
     let r = reqwest::Client::new()
         .delete(format!("{base_url}/stores/{store_id}"))
         .send()

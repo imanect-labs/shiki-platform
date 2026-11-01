@@ -10,17 +10,19 @@
 //! **副作用はここに含めない**（通知/転記/AI は Phase 10 workflow-engine のトリガ）。
 //! ワークフローが status を進める場合も必ずこの API を叩く（ガード・認可を再評価）。
 
-use authz::{AuthContext, Relation};
+use authz::AuthContext;
 use serde_json::{json, Value};
 use storage::audit::AuditAction;
 use storage::audit::{AuditEntry, Chain, Decision};
 use storage::event::{emit_on, WriteEvent, WriteOp};
 use uuid::Uuid;
 
+use crate::creator_grant::GrantNeed;
 use crate::field_key::{decode_record, encode_record};
 use crate::fsm::FsmBody;
 use crate::revision::{insert_revision, RevisionInsert};
 use crate::store::DataStore;
+use crate::table_access::WriteAccess;
 use crate::{map_db, DataError};
 
 /// outbox payload の `event_type`（storage 書込イベントと区別する。storage/workflow relay は
@@ -46,16 +48,21 @@ impl DataStore {
         status_field: &str,
         trace_id: Option<&str>,
     ) -> Result<crate::model::DataRecord, DataError> {
-        self.require(
-            ctx,
-            table_id,
-            Relation::Editor,
-            AuditAction::DataRecordTransition,
-            trace_id,
-        )
-        .await?;
-        let table = self.fetch_live(ctx, table_id).await?;
         let az = self.authz_memo();
+        // editor か、追加だけでこの進め方の中に作成者として許した進め方があるテーブル（D-127）。それ以外はこれまで
+        // どおり、レコードを引く前に表の権限で断る（BUG-155）。
+        let (table, access) = self
+            .write_access(
+                &az,
+                ctx,
+                table_id,
+                AuditAction::DataRecordTransition,
+                GrantNeed::MoveWith(fsm, status_field),
+                trace_id,
+            )
+            .await?;
+        // 行を引くテーブル（追加だけの人は自分の行に絞る）。進められる人は絞る前の定義で評価する。
+        let view = access.view(&table);
 
         let db = self.pools.for_tenant(&ctx.tenant_id);
         let mut tx = db.begin().await.map_err(map_db)?;
@@ -70,7 +77,7 @@ impl DataStore {
         .await?;
         // ①行ロック（行述語込み・不可視は 404＝存在オラクルなし）。
         let current = self
-            .lock_visible_by_id(ctx, &az, &mut tx, &table, record_id)
+            .lock_visible_by_id(ctx, &az, &mut tx, &view, record_id)
             .await?
             .ok_or(DataError::NotFound)?;
         if current.rev != expected_rev {
@@ -100,11 +107,19 @@ impl DataStore {
             ));
         }
         // ③actor 述語を当該行に評価（不許可 403）。読取述語ではなく actor 述語を使う。同じ組の進め方が
-        // 複数ある定義では、遷移の候補と同じく、どれか 1 つに当てはまれば進める（BUG-153）。
-        if !self
-            .may_transition(ctx, &az, &table, record_id, fsm, &from, to)
-            .await?
-        {
+        // 複数ある定義では、遷移の候補と同じく、どれか 1 つに当てはまれば進める（BUG-153）。追加だけの人は、
+        // 進められる人のうち作成者として許した部分だけで評価する（D-127）。
+        let allowed = match &access {
+            WriteAccess::Editor => {
+                self.may_transition(ctx, &az, &table, record_id, fsm, &from, to)
+                    .await?
+            }
+            WriteAccess::Creator(g) => {
+                self.creator_may_transition(ctx, &az, &table, record_id, g, &from, to)
+                    .await?
+            }
+        };
+        if !allowed {
             let _ = self
                 .audit
                 .record(
@@ -235,10 +250,11 @@ impl DataStore {
         .await
         .map_err(|e| DataError::Internal(format!("audit: {e}")))?;
         tx.commit().await.map_err(map_db)?;
-        // 応答もマスクを掛けて返す（遷移した本人が読めない列の値を応答で漏らさない・PIT-19）。
+        // 応答もマスクを掛けて返す（遷移した本人が読めない列の値を応答で漏らさない・PIT-19）。追加だけの人には
+        // 読取と同じ自分の行に絞った見え方で返す。
         let mut out = [row.into_record(&table.schema)];
-        let masked = self.masked_fields(ctx, &az, &table).await?;
-        self.project_read(ctx, &az, &table, &masked, &mut out)
+        let masked = self.masked_fields(ctx, &az, &view).await?;
+        self.project_read(ctx, &az, &view, &masked, &mut out)
             .await?;
         let [out] = out;
         Ok(out)

@@ -168,11 +168,14 @@ impl FsmStore {
                         ))
                     }
                 }
+                // 申請者が進められる進め方の元の状態（差し戻しなど）のあいだも、申請者は直せる（D-127）。
+                let resubmit = crate::creator_grant::resubmit_states(&req.body, status, applicant);
                 Some(crate::fsm_write_guard::with_guard(
                     next.row_policy.as_ref(),
                     status,
                     initial,
                     applicant,
+                    &resubmit,
                 ))
             }
             None => crate::fsm_write_guard::without_guard(next.row_policy.as_ref(), status),

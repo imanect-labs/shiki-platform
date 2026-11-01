@@ -77,6 +77,8 @@ impl DataStore {
                     r.id,
                     &r.patch,
                     r.expected_rev,
+                    // 一括取込は editor だけ（追加だけの人には作成者として許したものがあっても許さない・D-127）。
+                    &crate::table_access::WriteAccess::Editor,
                     // 一括取込の行（outbox の目印・ワークフローのトリガは発火しない・D-26）。
                     true,
                     trace_id,

@@ -49,7 +49,7 @@ impl FsmStore {
         record_id: Uuid,
         trace_id: Option<&str>,
     ) -> Result<crate::fsm_rules::AllowedTransitions, DataError> {
-        let table = self
+        let (table, access) = self
             .data
             .table_for_transition(ctx, table_id, trace_id)
             .await?;
@@ -65,7 +65,7 @@ impl FsmStore {
                 )
             })?;
         self.data
-            .allowed_transitions_with(ctx, &table, record_id, &fsm, &status_field)
+            .allowed_transitions_with(ctx, &table, &access, record_id, &fsm, &status_field)
             .await
     }
 
@@ -193,10 +193,11 @@ impl FsmStore {
         expected_rev: i64,
         trace_id: Option<&str>,
     ) -> Result<crate::model::DataRecord, DataError> {
-        // 先にテーブルの editor を確かめる（FSM の本文を閲覧者に読ませない）。見えるが editor でない人
-        // （閲覧者・追加だけの人）は、書き換え・削除・取込と同じ 403。テーブルが見えない人は 404（存在を
-        // 明かさない）。レコードを引く前に断るので、403 からレコードの有無は分からない（BUG-155）。
-        let table = self
+        // 先にテーブルの editor（か、作成者として進め方を許した追加だけの人・D-127）を確かめる（FSM の本文を
+        // 閲覧者に使わせない）。見えるがそうでない人（閲覧者・作成者に何も許していない追加だけの人）は、書き換え・
+        // 削除・取込と同じ 403。テーブルが見えない人は 404（存在を明かさない）。レコードを引く前に断るので、403 から
+        // レコードの有無は分からない（BUG-155）。遷移そのものの判定は transition_record が改めて行う。
+        let (table, _) = self
             .data
             .table_for_transition(ctx, table_id, trace_id)
             .await?;
