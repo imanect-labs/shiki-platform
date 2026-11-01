@@ -105,6 +105,9 @@ pub async fn install_app(
 }
 
 /// インストール一覧（管理 UI 用）。
+///
+/// 各項目に `table_count`（アプリが持つ、呼ぶ人の組織の生きているテーブルの数）を添える。0 より多いアプリだけ、
+/// 画面がテーブルを使える部署・グループを変える口を出す（GAP-68）。
 #[utoipa::path(
     get,
     path = "/apps/installations",
@@ -121,6 +124,19 @@ pub async fn list_installations(
         .list(&ctx)
         .await
         .map_err(|e| ApiError::Internal(format!("installations: {e}")))?;
+    let ids: Vec<Uuid> = items.iter().map(|i| i.app_id).collect();
+    let counts = state.data.app_table_counts(&ctx, &ids).await?;
+    let items: Vec<serde_json::Value> = items
+        .into_iter()
+        .map(|i| {
+            let count = counts.get(&i.app_id).copied().unwrap_or(0);
+            let mut v = serde_json::to_value(i).unwrap_or_default();
+            if let Some(obj) = v.as_object_mut() {
+                obj.insert("table_count".into(), count.into());
+            }
+            v
+        })
+        .collect();
     Ok(Json(serde_json::json!({ "items": items })))
 }
 
@@ -147,6 +163,58 @@ pub async fn uninstall_app(
         .uninstall(&ctx, app_id, trace.as_deref())
         .await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
+}
+
+/// アプリのテーブルと、それを使える部署・グループ（GAP-68・インストールとアンインストールができる人だけ）。
+#[utoipa::path(
+    get,
+    path = "/apps/installations/{app_id}/roles",
+    params(("app_id" = Uuid, Path, description = "アプリ（mini_app_code artifact）ID")),
+    responses(
+        (status = 200, description = "アプリのテーブルと、見られる・編集できる・追加だけの部署・グループ", body = app_platform::AppTableAccess),
+        (status = 403, description = "アーティファクト owner でない"),
+        (status = 404, description = "インストールが存在しない"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn app_table_roles(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    Path(app_id): Path<Uuid>,
+) -> Result<Json<app_platform::AppTableAccess>, ApiError> {
+    Ok(Json(state.installs.table_roles(&ctx, app_id).await?))
+}
+
+/// アプリのテーブルを使える部署・グループを足す・外す（GAP-68）。
+///
+/// 意味はインストールの要求の `viewer_roles`・`editor_roles`・`submitter_roles` と同じで、アプリのすべてのテーブルに
+/// 効く。足す部署・グループは同じテナントのディレクトリに居ること。変えた内容は監査に残る。
+#[utoipa::path(
+    patch,
+    path = "/apps/installations/{app_id}/roles",
+    params(("app_id" = Uuid, Path, description = "アプリ（mini_app_code artifact）ID")),
+    request_body = app_platform::AppTableRolesChange,
+    responses(
+        (status = 200, description = "変えた後のアプリのテーブルと部署・グループ", body = app_platform::AppTableAccess),
+        (status = 400, description = "部署・グループの id が不正・見つからない・足して外す食い違い・件数の上限・テーブルが無い"),
+        (status = 403, description = "アーティファクト owner でない"),
+        (status = 404, description = "インストールが存在しない"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn update_app_table_roles(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    trace: TraceIdExt,
+    Path(app_id): Path<Uuid>,
+    Json(change): Json<app_platform::AppTableRolesChange>,
+) -> Result<Json<app_platform::AppTableAccess>, ApiError> {
+    Ok(Json(
+        state
+            .installs
+            .update_table_roles(&ctx, app_id, change, trace.as_deref())
+            .await?,
+    ))
 }
 
 /// アプリ利用量（capability＋llm・user×app 集計・Task 9.15）。
@@ -353,6 +421,12 @@ pub(crate) fn app_install_route_decls() -> Vec<crate::server::RouteDecl> {
         r("/apps/installations/{app_id}", &["DELETE"], Session, || {
             delete(uninstall_app)
         }),
+        r(
+            "/apps/installations/{app_id}/roles",
+            &["GET", "PATCH"],
+            Session,
+            || get(app_table_roles).patch(update_app_table_roles),
+        ),
         r("/apps/registry/import", &["POST"], Session, || {
             post(import_app)
         }),

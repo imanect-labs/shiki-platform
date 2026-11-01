@@ -20,8 +20,8 @@ import {
 } from "@/components/ui/dialog";
 import { listTableShares, shareTable, unshareTable, type TableShareRole } from "@/lib/data-api";
 
-/// テーブルの共有で選べる権限（先頭が既定）。
-const TABLE_ROLES: PeopleRoleOption<TableShareRole>[] = [
+/// テーブルの共有で選べる権限（先頭が既定）。アプリのテーブルを使える部署・グループ（GAP-68）も同じ呼び名を使う。
+export const TABLE_ROLES: PeopleRoleOption<TableShareRole>[] = [
   { value: "viewer", label: "閲覧", hint: "レコードを見られます。追加や編集はできません。" },
   { value: "editor", label: "編集", hint: "レコードを追加・編集・削除できます。" },
   {

@@ -24,6 +24,7 @@ use uuid::Uuid;
 use crate::manifest::TrustTier;
 use crate::sign::verify_manifest_signature;
 use crate::store::MiniAppCodeStore;
+use crate::table_roles::AppTableRoles;
 use crate::trusted_key::TrustedKeyStore;
 use crate::{AppPlatformError, MiniAppManifest, Registry};
 
@@ -41,6 +42,17 @@ pub struct InstallRequest {
     /// プロビジョンしたテーブルへ「追加だけ」（submitter・D-113）を付与するロール。追加でき、自分が追加した
     /// レコードだけ読める（申請のアプリで社員に渡す形）。
     pub submitter_roles: Vec<String>,
+}
+
+impl InstallRequest {
+    /// テーブルに付ける部署・グループ（インストールの後に変えるときと同じ形・GAP-68）。
+    pub(crate) fn table_roles(&self) -> AppTableRoles {
+        AppTableRoles {
+            viewer_roles: self.viewer_roles.clone(),
+            editor_roles: self.editor_roles.clone(),
+            submitter_roles: self.submitter_roles.clone(),
+        }
+    }
 }
 
 /// インストール結果。
@@ -160,6 +172,8 @@ impl InstallService {
 
         // ③ granted ⊆ requested（語彙は CapabilityScope 閉集合・未知は fail-closed）。
         validate_granted(&req.granted_scopes, &manifest.requested_scopes)?;
+        // テーブルに付ける部署・グループの id の形（テーブルを作る前に断る・GAP-68 と同じ決まり）。
+        crate::table_roles::check_role_ids(&req.table_roles())?;
 
         // ④ 所有テーブル・プロビジョン（＋FGA tuple）。失敗時は補償。
         let mut created: Vec<Uuid> = Vec::new();
@@ -312,6 +326,7 @@ impl InstallService {
     ) -> Result<Clients, AppPlatformError> {
         let ns = ctx.ns();
         let miniapp_subject = ns.miniapp_principal(&app_id.to_string());
+        let roles = req.table_roles();
         for t in &manifest.tables {
             let table = self
                 .data
@@ -332,20 +347,9 @@ impl InstallService {
                 .write_tuple(&miniapp_subject, Relation::Owner, &obj)
                 .await
                 .map_err(|e| AppPlatformError::Internal(format!("authz: {e}")))?;
-            // 管理者指定ロールへ viewer/editor/submitter を付与（role#member userset）。
-            for (roles, rel) in [
-                (&req.viewer_roles, Relation::Viewer),
-                (&req.editor_roles, Relation::Editor),
-                (&req.submitter_roles, Relation::Submitter),
-            ] {
-                for role in roles {
-                    let subject = authz::Subject::userset(&ns.role(role), Relation::Member);
-                    self.authz
-                        .write_tuple(&subject, rel, &obj)
-                        .await
-                        .map_err(|e| AppPlatformError::Internal(format!("authz: {e}")))?;
-                }
-            }
+            // 管理者指定ロールへ viewer/editor/submitter を付与（role#member userset）。インストールの後の変更と
+            // 同じ 1 か所を通す（GAP-68）。
+            self.write_table_roles(ctx, &obj, &roles, true).await?;
             // テーブルの ReBAC を data の外で変えた: 配信（SSE）の認可材料を次のバッチで引き直させ、
             // 材料化の前提（viewer の範囲で値が変わらないか）を検査し直す（data-platform §7.4・§9.4）。
             // どちらも呼ばなくても次の読取・TTL で追いつくため、失敗はインストールを止めない。

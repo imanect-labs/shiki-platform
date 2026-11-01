@@ -387,6 +387,52 @@ impl DataStore {
         Ok(rows.into_iter().map(|(id,)| id).collect())
     }
 
+    /// アプリが持つ（`app_id` に束縛した）生きているテーブルの id と名前を、作った順に返す（GAP-68・インストールの
+    /// 後からアプリのテーブルを使える部署・グループを変える画面）。
+    ///
+    /// 呼ぶ人の組織のものだけ（`org = ctx.org`・PIT-45）。権限の確かめは呼び出し側（アプリのインストールの権限）。
+    pub async fn tables_owned_by_app(
+        &self,
+        ctx: &AuthContext,
+        app_id: Uuid,
+    ) -> Result<Vec<(Uuid, String)>, DataError> {
+        sqlx::query_as(
+            "SELECT id, name FROM data_table \
+             WHERE tenant_id = $1 AND org = $2 AND app_id = $3 AND deleted_at IS NULL \
+             ORDER BY created_at, id",
+        )
+        .bind(&ctx.tenant_id)
+        .bind(&ctx.org)
+        .bind(app_id)
+        .fetch_all(self.pools.for_tenant(&ctx.tenant_id))
+        .await
+        .map_err(map_db)
+    }
+
+    /// アプリごとの、持っている生きているテーブルの数（インストール済みのアプリの一覧で、テーブルを使える
+    /// 部署・グループを変える口を出すか決める・GAP-68）。呼ぶ人の組織のものだけ。テーブルの無いアプリは返さない。
+    pub async fn app_table_counts(
+        &self,
+        ctx: &AuthContext,
+        app_ids: &[Uuid],
+    ) -> Result<std::collections::HashMap<Uuid, i64>, DataError> {
+        if app_ids.is_empty() {
+            return Ok(std::collections::HashMap::new());
+        }
+        let rows: Vec<(Uuid, i64)> = sqlx::query_as(
+            "SELECT app_id, count(*) FROM data_table \
+             WHERE tenant_id = $1 AND org = $2 AND app_id = ANY($3) AND deleted_at IS NULL \
+             GROUP BY app_id",
+        )
+        .bind(&ctx.tenant_id)
+        .bind(&ctx.org)
+        .bind(app_ids)
+        .fetch_all(self.pools.for_tenant(&ctx.tenant_id))
+        .await
+        .map_err(map_db)?;
+        Ok(rows.into_iter().collect())
+    }
+
     /// 一覧の本体（[モジュール文書](self)）。`limit` は 1〜[`MAX_TABLE_PAGE`] に丸める。
     async fn list_tables_filtered(
         &self,

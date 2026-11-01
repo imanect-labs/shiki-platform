@@ -181,6 +181,24 @@ impl DataStore {
             .collect())
     }
 
+    /// 部署・グループ（ロール）を共有先にできるか（id の形と、同じテナントのディレクトリに居ること）を確かめる。
+    ///
+    /// テーブルの共有の付与と同じ検査（[`Self::share_table`]）。ミニアプリのテーブルの部署・グループをインストールの
+    /// 後から足すとき（GAP-68）に使う。
+    pub async fn check_role_share_target(
+        &self,
+        ctx: &AuthContext,
+        role_id: &str,
+    ) -> Result<(), DataError> {
+        self.validate_share_target(
+            ctx,
+            &ShareTarget::Role {
+                id: role_id.to_string(),
+            },
+        )
+        .await
+    }
+
     /// 共有の操作の権限: テーブルの owner で、ミニアプリ所有でないこと。
     ///
     /// 存在しない・削除済みのテーブルは**誰にも** 404（authz より先に副作用のない読み取りで生存を確かめる:

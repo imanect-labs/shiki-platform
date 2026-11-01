@@ -79,6 +79,12 @@ type Candidate = { id: string; primary: string; secondary: string };
 const entryKey = (e: { target: PeopleTarget; role: PeopleRole }) =>
   `${e.target.type}:${e.target.id}:${e.role}`;
 
+/// 共有を管理できない人（一覧が 403）に出す文（既定はテーブル・ドライブなどの持ち主）。
+const DEFAULT_OWNER_ONLY = {
+  title: "共有を管理できるのは持ち主だけです",
+  body: "共有する相手を変えたいときは、持ち主に頼んでください。",
+};
+
 export function SharePeoplePanel<R extends PeopleRole = BasicPeopleRole>({
   open,
   resourceId,
@@ -86,6 +92,8 @@ export function SharePeoplePanel<R extends PeopleRole = BasicPeopleRole>({
   grant,
   revoke,
   roles = DEFAULT_ROLES as PeopleRoleOption<R>[],
+  kinds = ["user", "role"],
+  ownerOnly = DEFAULT_OWNER_ONLY,
 }: {
   /// 開いた時に状態を戻して共有中の相手を読み直す。
   open: boolean;
@@ -95,10 +103,15 @@ export function SharePeoplePanel<R extends PeopleRole = BasicPeopleRole>({
   revoke: (target: PeopleTarget, role: R) => Promise<void>;
   /// 選べる権限（先頭が既定）。省略時は閲覧・編集。
   roles?: PeopleRoleOption<R>[];
+  /// 共有できる相手の種別（先頭が既定）。1 つだけなら種別の切り替えを出さない（アプリのテーブルは部署だけ・GAP-68）。
+  kinds?: PrincipalKind[];
+  /// 共有を管理できない人に出す文。
+  ownerOnly?: { title: string; body: string };
 }) {
   const defaultRole = (roles[0]?.value ?? "viewer") as R;
   const roleLabel = (r: R) => roles.find((o) => o.value === r)?.label ?? r;
-  const [kind, setKind] = React.useState<PrincipalKind>("user");
+  const firstKind = kinds[0] ?? "user";
+  const [kind, setKind] = React.useState<PrincipalKind>(firstKind);
   const [query, setQuery] = React.useState("");
   const [results, setResults] = React.useState<Candidate[]>([]);
   const [searching, setSearching] = React.useState(false);
@@ -119,11 +132,11 @@ export function SharePeoplePanel<R extends PeopleRole = BasicPeopleRole>({
   // 開いたら状態リセット。
   React.useEffect(() => {
     if (!open) return;
-    setKind("user");
+    setKind(firstKind);
     setQuery("");
     setResults([]);
     setRowRole({});
-  }, [open, resourceId]);
+  }, [open, resourceId, firstKind]);
 
   // 開いたら（と「もう一度読み込む」で）現在の共有相手を読む。
   React.useEffect(() => {
@@ -265,8 +278,8 @@ export function SharePeoplePanel<R extends PeopleRole = BasicPeopleRole>({
       >
         <Lock className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />
         <div className="min-w-0">
-          <p className="font-medium">共有を管理できるのは持ち主だけです</p>
-          <p className="mt-0.5 text-muted-foreground">共有する相手を変えたいときは、持ち主に頼んでください。</p>
+          <p className="font-medium">{ownerOnly.title}</p>
+          <p className="mt-0.5 text-muted-foreground">{ownerOnly.body}</p>
         </div>
       </div>
     );
@@ -275,14 +288,16 @@ export function SharePeoplePanel<R extends PeopleRole = BasicPeopleRole>({
   return (
     // min-w-0: grid（DialogContent）の子として、メール等の折り返さない文字幅まで広がらないように。
     <div className="flex min-w-0 flex-col gap-3">
-      <SegmentedControl
-        aria-label="共有先の種別"
-        size="sm"
-        options={KIND_OPTIONS}
-        value={kind}
-        onValueChange={(v) => setKind(v as PrincipalKind)}
-        className="self-start"
-      />
+      {kinds.length > 1 ? (
+        <SegmentedControl
+          aria-label="共有先の種別"
+          size="sm"
+          options={KIND_OPTIONS.filter((o) => kinds.includes(o.value as PrincipalKind))}
+          value={kind}
+          onValueChange={(v) => setKind(v as PrincipalKind)}
+          className="self-start"
+        />
+      ) : null}
 
       {/* 検索 */}
       <div className="relative">

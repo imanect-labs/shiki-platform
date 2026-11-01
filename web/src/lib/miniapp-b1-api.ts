@@ -10,6 +10,10 @@ import type { components } from "@/generated/api";
 
 type InstallAppRequest = components["schemas"]["InstallAppRequest"];
 type MiniAppManifest = components["schemas"]["MiniAppManifest"];
+/// アプリのテーブルと、それを使える部署・グループ（GAP-68）。
+export type AppTableAccess = components["schemas"]["AppTableAccess"];
+/// 足す・外す部署・グループ（インストールの要求の viewer_roles・editor_roles・submitter_roles と同じ意味）。
+export type AppTableRolesChange = components["schemas"]["AppTableRolesChange"];
 
 export type RegistryEntry = {
   id: string;
@@ -44,18 +48,21 @@ export type AppInstallation = {
   frontend_bundle: string | null;
   /// Keycloak にアプリの登録が無く、サーバーが作り直せなかった（入れ直しが要る・GAP-70）。前の版のサーバーは返さない。
   oauth_client_missing?: boolean;
+  /// アプリが持つテーブルの数（テーブルを使える部署・グループを変える口を出すか・GAP-68）。前の版のサーバーは返さない。
+  table_count?: number;
 };
 
 async function ok<T>(res: Response): Promise<T> {
   if (!res.ok) {
     let message = `HTTP ${res.status}`;
     try {
-      const body = (await res.json()) as { error?: string; title?: string };
-      message = body.error ?? body.title ?? message;
+      const body = (await res.json()) as { error?: string; title?: string; detail?: string };
+      message = body.error ?? body.detail ?? body.title ?? message;
     } catch {
       // 本文なし（204 等）はステータスのみ。
     }
-    throw new Error(message);
+    // 呼び出し側が 403（変えられない人）を見分けられるよう、状態を添える。
+    throw Object.assign(new Error(message), { status: res.status });
   }
   return (res.status === 204 ? undefined : await res.json()) as T;
 }
@@ -101,6 +108,24 @@ export async function installApp(input: {
 export async function uninstallApp(appId: string): Promise<void> {
   const res = await apiFetch(`/apps/installations/${appId}`, { method: "DELETE" });
   await ok<void>(res);
+}
+
+/// アプリのテーブルと、それを使える部署・グループを読む（インストールできる人だけ・それ以外は 403）。
+export async function getAppTableRoles(appId: string): Promise<AppTableAccess> {
+  return ok(await apiFetch(`/apps/installations/${appId}/roles`));
+}
+
+/// アプリのテーブルを使える部署・グループを足す・外す（アプリのすべてのテーブルに効く）。変えた後の状態を返す。
+export async function updateAppTableRoles(
+  appId: string,
+  change: AppTableRolesChange,
+): Promise<AppTableAccess> {
+  const res = await apiFetch(`/apps/installations/${appId}/roles`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(change),
+  });
+  return ok(res);
 }
 
 /// マニフェスト（レジストリ経由の要求スコープ表示に使う）。

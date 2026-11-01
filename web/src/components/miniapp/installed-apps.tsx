@@ -5,11 +5,12 @@
 /// A（宣言的 mini_app）と同じ「アプリ」ページに載せ、同一シェルから一覧・起動できるようにする。
 /// インストールはレジストリ（publish 済みエントリ）から**要求スコープを見て同意**する。アプリがテーブルを持つときは、
 /// テーブルに「追加だけ」（レコードを追加し、自分が追加したレコードだけ見られる・D-113）を渡す部署・グループを選べる
-/// （GAP-53・インストールの `submitter_roles`）。
+/// （GAP-53・インストールの `submitter_roles`）。インストールの後は、カードの「使える部署・グループ」から、アプリの
+/// テーブルを使える部署・グループ（閲覧・編集・追加だけ）を足す・外す（GAP-68）。
 
 import * as React from "react";
 import Link from "next/link";
-import { AlertTriangle, Download, Loader2, Package, Play, Trash2, X } from "lucide-react";
+import { AlertTriangle, Download, Loader2, Package, Play, Trash2, Users, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -23,6 +24,7 @@ import {
 import { toast } from "@/components/ui/use-toast";
 import { ConfirmDialog } from "@/components/drive/dialogs";
 import { RefPicker } from "@/components/data/ref-picker";
+import { AppTableRolesDialog } from "@/components/miniapp/app-table-roles-dialog";
 import type { FieldDef } from "@/lib/data-api";
 import { cachedRoleName, rememberRoleName } from "@/lib/role-names";
 import {
@@ -54,6 +56,9 @@ export function InstalledAppsSection() {
   } | null>(null);
   const [pending, setPending] = React.useState<string | null>(null);
   const [removing, setRemoving] = React.useState<AppInstallation | null>(null);
+  /// テーブルを使える部署・グループを開いているアプリ（GAP-68）。閉じる動きの間も題を保つよう、アプリは閉じても残す。
+  const [roles, setRoles] = React.useState<AppInstallation | null>(null);
+  const [rolesOpen, setRolesOpen] = React.useState(false);
 
   const reload = React.useCallback(() => {
     listInstallations()
@@ -179,6 +184,20 @@ export function InstalledAppsSection() {
                     開く
                   </Link>
                 </Button>
+                {(app.table_count ?? 0) > 0 ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      setRoles(app);
+                      setRolesOpen(true);
+                    }}
+                    aria-label={`「${app.app_name}」のテーブルを使える部署・グループ`}
+                  >
+                    <Users className="size-4" aria-hidden />
+                    使える部署・グループ
+                  </Button>
+                ) : null}
                 <Button
                   size="sm"
                   variant="ghost"
@@ -273,10 +292,10 @@ export function InstalledAppsSection() {
               <p className="text-[11px] leading-relaxed text-muted-foreground">
                 選んだ部署・グループの人は、このアプリのテーブル（{consent.tables.map((n) => `「${n}」`).join("、")}）にレコードを追加できます。見られるのは、自分が追加したレコードと、個別に共有されたレコードだけです。
               </p>
-              {/* アプリのテーブルはテーブルの共有で渡せない（付与・解除・一覧とも断る）。渡す口はインストールだけで、
-                  アンインストールはアプリのテーブルをしまうので、入れ直すとたまったレコードを使えなくなる。 */}
-              <p className="text-[11px] leading-relaxed text-[var(--season-autumn)]" data-testid="install-submitters-later">
-                あとから足すには、アプリを入れ直す必要があります。入れ直すと、これまでのレコードは使えなくなります。
+              {/* アプリのテーブルはテーブルの共有では渡せない。インストールの後は、カードの「使える部署・グループ」で足す・
+                  外す（GAP-68・PATCH /apps/installations/{app_id}/roles）。 */}
+              <p className="text-[11px] leading-relaxed text-muted-foreground" data-testid="install-submitters-later">
+                インストールの後も、アプリの「使える部署・グループ」で足したり外したりできます。
               </p>
               {consent.submitters.length > 0 ? (
                 <ul className="flex flex-wrap gap-1" aria-label="レコードを追加するだけの部署・グループ">
@@ -319,6 +338,12 @@ export function InstalledAppsSection() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+      <AppTableRolesDialog
+        open={rolesOpen && roles !== null}
+        onOpenChange={setRolesOpen}
+        appId={roles?.app_id ?? ""}
+        appName={roles?.app_name ?? ""}
+      />
       <ConfirmDialog
         open={removing !== null}
         onOpenChange={(open) => !open && setRemoving(null)}

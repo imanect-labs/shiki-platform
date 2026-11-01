@@ -160,6 +160,7 @@ audit_actions! {
     AppImport = "app.import", "アプリを取り込み", App;
     AppInstall = "app.install", "アプリをインストール", App;
     AppInstallSignature = "app.install.signature", "アプリの署名を検証", App;
+    AppTableRolesUpdate = "app.table_roles.update", "アプリのテーブルを使える部署・グループを変更", App;
     AppUninstall = "app.uninstall", "アプリをアンインストール", App;
     ArtifactCreate = "artifact.create", "アーティファクトを作成", App;
     ArtifactDelete = "artifact.delete", "アーティファクトを削除", App;

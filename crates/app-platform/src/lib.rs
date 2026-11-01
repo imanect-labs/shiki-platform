@@ -19,6 +19,7 @@ mod skill_catalog_queries;
 mod skill_import;
 mod skill_install;
 mod store;
+mod table_roles;
 mod trusted_key;
 mod usage;
 mod validate;
@@ -38,6 +39,9 @@ pub use registry::{NewRegistryEntry, Registry, RegistryEntry};
 pub use sign::{sign_digest, sign_manifest, verify_digest_signature, verify_manifest_signature};
 pub use skill_install::{InstalledSkillSummary, SkillInstallService, SkillInstallation};
 pub use store::{manifest_digest, registry_signing_digest, value_digest, MiniAppCodeStore};
+pub use table_roles::{
+    AppTable, AppTableAccess, AppTableRoles, AppTableRolesChange, MAX_TABLE_ROLE_CHANGES,
+};
 pub use trusted_key::{TrustedKey, TrustedKeyStore};
 pub use usage::{AppUsage, AppUsageStore};
 pub use validate::validate_manifest;

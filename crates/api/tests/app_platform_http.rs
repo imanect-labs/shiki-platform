@@ -657,11 +657,69 @@ async fn install_import_uninstall_over_http() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body: serde_json::Value =
         serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
-    assert!(body["items"]
+    let listed = body["items"]
         .as_array()
         .unwrap()
         .iter()
-        .any(|i| i["app_id"] == id.as_str()));
+        .find(|i| i["app_id"] == id.as_str())
+        .expect("listed");
+    // テーブルの数を添える（画面がテーブルを使える部署・グループを変える口を出すか決める・GAP-68）。
+    assert_eq!(listed["table_count"], 1, "{listed}");
+
+    // アプリのテーブルを使える部署・グループ（GAP-68）: 読める・足せる。ディレクトリに居ない部署は 400。
+    let roles = |method: &str, body: Option<serde_json::Value>| {
+        Request::builder()
+            .method(method)
+            .uri(format!("/apps/installations/{id}/roles"))
+            .header(COOKIE, cookie)
+            .header("x-csrf-token", "csrf")
+            .header("content-type", "application/json")
+            .body(body.map_or_else(Body::empty, |b| Body::from(b.to_string())))
+            .unwrap()
+    };
+    let resp = app.clone().oneshot(roles("GET", None)).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body: serde_json::Value =
+        serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(body["tables"][0]["name"], "http_install_t", "{body}");
+    assert!(body["roles"]["submitter_roles"].is_array(), "{body}");
+    let resp = app
+        .clone()
+        .oneshot(roles(
+            "PATCH",
+            Some(serde_json::json!({ "add": { "submitter_roles": ["ghost-http"] } })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    storage::DirectoryStore::new(pool.clone())
+        .upsert_role("staff-http", "default", "acme", "社員")
+        .await
+        .unwrap();
+    let resp = app
+        .clone()
+        .oneshot(roles(
+            "PATCH",
+            Some(serde_json::json!({ "add": { "submitter_roles": ["staff-http"] } })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let audited: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM audit_log WHERE tenant_id = 'default' AND object_id = $1 \
+           AND action = 'app.table_roles.update' AND decision = 'allow'",
+    )
+    .bind(&id)
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(audited, 1);
+    sqlx::query(
+        "DELETE FROM directory_role WHERE tenant_id = 'default' AND role_id = 'staff-http'",
+    )
+    .execute(&pool)
+    .await
+    .unwrap();
 
     // オフライン import: 信頼鍵を台帳へ直接登録 → 署名付きマニフェストを import。
     let secret = [11u8; 32];
