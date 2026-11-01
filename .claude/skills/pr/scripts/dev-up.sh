@@ -495,7 +495,10 @@ else
     EFF_CORS='[*]'
     EMBED_LINE="# 埋め込みの版は server の既定値（ローカルの worker と同じ）"
   fi
+  # CSV の集計の隔離ランナー（csv.* のブロックと CSV の画面の SQL が使う・BUG-22）。呼び出し側の env にあればそれを使う。
+  TABULAR_RUNNER=${SHIKI__TABULAR__RUNNER_PATH:-$ROOT/crates/tabular/runner/target/debug/shiki-tabular-runner}
   # 生成するスクリプトへ値を埋め込むので、シェルの構文としてクォートする（& などを含んでも壊れない）。
+  Q_TABULAR_RUNNER=$(printf '%q' "$TABULAR_RUNNER")
   Q_S3_INTERNAL=$(printf '%q' "$EFF_S3_INTERNAL")
   Q_S3_PUBLIC=$(printf '%q' "$EFF_S3_PUBLIC")
   Q_S3_BUCKET=$(printf '%q' "$EFF_S3_BUCKET")
@@ -563,6 +566,10 @@ export SHIKI__CHAT__ENABLED=true
 # 回答の ui ブロック（Yui）の図（#530）。compose の既定と揃える。
 export SHIKI__CHAT__YUI=true
 export SHIKI__WORKFLOW__ENABLED=true
+# data の一覧の続きの位置の鍵（無いと起動が止まる）は開発用の乱数鍵にする。CSV の集計は隔離ランナーで動かす
+# （無いと csv.* が失敗する）。どちらも呼び出し側の env にあればそれを使う（BUG-22）。
+export SHIKI__DATA__EPHEMERAL_CURSOR_KEY=${SHIKI__DATA__EPHEMERAL_CURSOR_KEY:-true}
+export SHIKI__TABULAR__RUNNER_PATH=${Q_TABULAR_RUNNER}
 # 既定は stub（E2E の前提）。実 LLM で確かめるときは呼び出し側で BACKEND 等を渡す
 # （シェルに残った値を拾うことがあるので、起動後のまとめに LLM の種類を出して警告する）。
 export SHIKI__LLM__BACKEND=${SHIKI__LLM__BACKEND:-stub}
@@ -631,6 +638,12 @@ EOF
   if ! cargo build -p shiki-api --bin shiki-server; then
     err "shiki-server のビルドに失敗しました。"
     exit 1
+  fi
+
+  if [ ! -x "$TABULAR_RUNNER" ]; then
+    err "   ⚠️ CSV の集計の隔離ランナーがありません: $TABULAR_RUNNER"
+    err "      このままでは csv.* のブロックと CSV の画面の SQL が失敗します。次でビルドしてください:"
+    err "      cargo build --locked --manifest-path crates/tabular/runner/Cargo.toml"
   fi
 
   apply_store_switch
