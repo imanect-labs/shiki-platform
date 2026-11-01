@@ -601,13 +601,18 @@ async fn spec_of(pool: &PgPool, tenant: &str, app_id: Uuid) -> Option<String> {
     .unwrap()
 }
 
-/// テストの本体を走らせ、落ちても片付け（`cleanup`）をしてから落とす。
+/// Keycloak を使うテストを 1 本ずつ流す。起動時の照合（[`InstallService::repair_oauth_clients`]）は DB の有効な
+/// インストールをすべて揃えるので、並べて流すと、別のテストがクライアントを作り・消している途中に重なる。
+static KEYCLOAK_SERIAL: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// テストの本体を走らせ、落ちても片付け（`cleanup`）をしてから落とす（Keycloak を使うテストは 1 本ずつ）。
 async fn run_then<F, C>(body: F, cleanup: C)
 where
     F: std::future::Future<Output = ()>,
     C: std::future::Future<Output = ()>,
 {
     use futures::FutureExt as _;
+    let _serial = KEYCLOAK_SERIAL.lock().await;
     let outcome = std::panic::AssertUnwindSafe(body).catch_unwind().await;
     cleanup.await;
     if let Err(panic) = outcome {
