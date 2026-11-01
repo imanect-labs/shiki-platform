@@ -12,7 +12,7 @@ import * as React from "react";
 
 import type { Citation, ContentBlock } from "@/lib/chat-api";
 import { linkifyCitations } from "@/lib/citation";
-import { collectImageSources } from "@/lib/answer-images";
+import { collectImageSources, pageSourcedTexts } from "@/lib/answer-images";
 import { Markdown } from "@/components/prompt-kit/markdown";
 import { ChainOfThought } from "./chain-of-thought";
 import type { ToolActivityItem } from "./tool-activity";
@@ -132,15 +132,16 @@ export function segmentsFromBlocks(blocks: ContentBlock[]): TimelineSegment[] {
   return out;
 }
 
-/// 回答の本文に画像として描いてよい URL（#1005・PIT-77）。この回答のツール結果（web_fetch が返した
-/// ページの `![](src)` など）と引用の抜粋に、画像として字句どおり現れたものだけ。
+/// 回答の本文に画像として描いてよい URL（#1005・PIT-77）。この回答で取得した Web ページの本文
+/// （web_fetch の封筒の内側。サブエージェントの分も含む）と Web の引用の抜粋に、画像として字句どおり
+/// 現れたものだけ。ツール結果全般は数えない（モデル自身が書いた文字列を含むため・lib/answer-images）。
 ///
 /// 共有された会話を run の実行者以外が見るときはツール結果が空で届く（サーバが伏せる）ので、
 /// 引用の抜粋に現れた分しか描けない。描けない画像はリンクに落ちる（読み込まない側に倒す）。
 export function answerImageSources(segments: TimelineSegment[], citations: Citation[]): Set<string> {
-  const texts: (string | undefined)[] = citations.map((c) => c.snippet);
-  for (const s of segments) if (s.kind === "work") for (const t of s.tools) texts.push(t.result);
-  return collectImageSources(texts);
+  const tools = segments.flatMap((s) => (s.kind === "work" ? s.tools : []));
+  const webSnippets = citations.flatMap((c) => (c.web ? [c.snippet] : []));
+  return collectImageSources(pageSourcedTexts(tools, webSnippets));
 }
 
 /// 区切りを順に描く。生成中は末尾の区切りだけが「動いている」。
@@ -172,7 +173,9 @@ export function MessageTimeline({
   const sourcesKey =
     segments
       .flatMap((s) => (s.kind === "work" ? s.tools.map((t) => `${t.key}:${t.result?.length ?? -1}`) : []))
-      .join(",") + `|${citations.length}`;
+      .join(",") +
+    "|" +
+    citations.map((c) => `${c.cite_id}:${c.web ? c.snippet.length : -1}`).join(",");
   // eslint-disable-next-line react-hooks/exhaustive-deps -- 出典が変わったかは sourcesKey が表す
   const imageSources = React.useMemo(() => answerImageSources(segments, citations), [sourcesKey]);
   const leading =

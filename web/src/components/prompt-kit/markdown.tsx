@@ -40,6 +40,9 @@ const UiFigure = dynamic(() => import("./ui-figure").then((m) => m.UiFigure), {
 /// 出典の画像が無い（会話以外の本文・出典を持たない閲覧者）。外部の画像は 1 枚も読み込まない。
 const NO_IMAGE_SOURCES: ReadonlySet<string> = new Set();
 
+/// リンクの中を描いているか（リンクの中の画像を読み込まないとき、リンクを入れ子にしない）。
+const InLinkContext = React.createContext(false);
+
 /// 長い URL・英数字の連なりで折り返す（はみ出すと会話全体が横にずれ、吹き出しの左端が切れる）。
 const WRAP_ANYWHERE = "[overflow-wrap:anywhere]";
 
@@ -202,18 +205,38 @@ function UserLink({ href, children }: { href: string; children: React.ReactNode 
 /// 会話の中身を外へ送らせない）。読み込む画像も Referer を送らない（どの会話から開いたかを渡さない）。
 function AnswerImage({ src, alt }: { src: string; alt: string }) {
   const { imageSources } = React.useContext(SourceContext);
+  const inLink = React.useContext(InLinkContext);
   const decision = decideAnswerImage(src, imageSources);
   if (decision.kind === "drop") return alt ? <>{alt}</> : null;
   if (decision.kind === "link") {
-    const label = `出典に無い外部の画像のため読み込んでいません（${decision.host}）。押すと新しいタブで開きます`;
+    const label = `出典に無い外部の画像のため読み込んでいません（${decision.host}）`;
+    const content = (
+      <>
+        <EyeOff aria-hidden className="mr-1 inline size-[0.95em] -translate-y-px align-middle text-muted-foreground" />
+        外部の画像{alt ? `「${alt}」` : ""}
+        <span className="ml-1 text-muted-foreground">{decision.host}</span>
+      </>
+    );
+    // リンクの中（`[![badge](img)](href)`）では外側のリンクに任せ、ラベルだけにする（<a> を入れ子にしない）。
+    if (inLink) {
+      return (
+        <span
+          title={`${label}: ${decision.href}`}
+          data-testid="answer-image-blocked"
+          className={cn("rounded-[5px] bg-muted/60 px-1 text-[0.9em] text-foreground/80", WRAP_ANYWHERE)}
+        >
+          {content}
+        </span>
+      );
+    }
     return (
       <a
         href={decision.href}
         target="_blank"
         rel="noopener noreferrer nofollow"
         referrerPolicy="no-referrer"
-        title={`${label}: ${decision.href}`}
-        aria-label={`${alt || "画像"}: ${label}`}
+        title={`${label}。押すと新しいタブで開きます: ${decision.href}`}
+        aria-label={`${alt || "画像"}: ${label}。押すと新しいタブで開きます`}
         data-testid="answer-image-blocked"
         className={cn(
           // 本文の行の高さを変えない（上下の余白を持たせない）。枠は付けず、押せることは下線と hover で見せる。
@@ -223,14 +246,12 @@ function AnswerImage({ src, alt }: { src: string; alt: string }) {
           WRAP_ANYWHERE,
         )}
       >
-        <EyeOff aria-hidden className="mr-1 inline size-[0.95em] -translate-y-px align-middle text-muted-foreground" />
-        外部の画像{alt ? `「${alt}」` : ""}
-        <span className="ml-1 text-muted-foreground">{decision.host}</span>
+        {content}
       </a>
     );
   }
   // 段落（<p>）の中に置かれるので、ブロック要素（figure）ではなく span で組む。
-  const host = decision.src.startsWith("data:") ? null : new URL(decision.src).host;
+  const host = new URL(decision.src).host;
   return (
     <span className="my-3 block">
       {/* eslint-disable-next-line @next/next/no-img-element -- 外部の任意のホストの画像で、next/image の最適化対象外 */}
@@ -243,12 +264,10 @@ function AnswerImage({ src, alt }: { src: string; alt: string }) {
         data-testid="answer-image"
         className="block h-auto max-h-[28rem] max-w-full rounded-lg border border-border/60"
       />
-      {host ? (
-        <span data-testid="answer-image-caption" className="mt-1.5 block text-[12px] text-muted-foreground">
-          {alt ? `${alt} · ` : ""}
-          {host}
-        </span>
-      ) : null}
+      <span data-testid="answer-image-caption" className="mt-1.5 block text-[12px] text-muted-foreground">
+        {alt ? `${alt} · ` : ""}
+        {host}
+      </span>
     </span>
   );
 }
@@ -313,6 +332,44 @@ function FencedCode({ node, children }: { node: ExtraProps["node"]; children: Re
   );
 }
 
+/// 本文のリンク（引用番号・内部リンク・外部リンク・利用者が書いたリンク）。
+function MarkdownLink({ href, children }: { href?: string; children: React.ReactNode }) {
+  const { untrusted } = React.useContext(SourceContext);
+  const url = href ?? "";
+  if (untrusted) return <UserLink href={url}>{children}</UserLink>;
+  // 引用マーカー（`#cite-n`・linkifyCitations が付ける）は本文中の上付き番号チップにする。
+  // ホバーで原文カード、クリックで出典パネル（メッセージの引用文脈があるときのみ）。
+  const cite = citeNumberFromHref(url);
+  if (cite != null) return <CitationMarker n={cite}>{children}</CitationMarker>;
+  // その他の内部リンクはクライアント遷移。
+  if (url.startsWith("/")) {
+    return (
+      <Link
+        href={url}
+        className={cn(
+          "font-medium text-primary underline decoration-primary/30 underline-offset-2 hover:decoration-primary",
+          WRAP_ANYWHERE,
+        )}
+      >
+        {children}
+      </Link>
+    );
+  }
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={cn(
+        "font-medium text-primary underline decoration-primary/30 underline-offset-2 hover:decoration-primary",
+        WRAP_ANYWHERE,
+      )}
+    >
+      {children}
+    </a>
+  );
+}
+
 const components: Components = {
   // ブロックコードは pre をフックして CodeBlock に差し替える。
   pre({ node, children }) {
@@ -333,40 +390,10 @@ const components: Components = {
     );
   },
   a({ href, children }) {
-    // eslint-disable-next-line react-hooks/rules-of-hooks -- react-markdown は要素を部品として描く
-    const { untrusted } = React.useContext(SourceContext);
-    const url = href ?? "";
-    if (untrusted) return <UserLink href={url}>{children}</UserLink>;
-    // 引用マーカー（`#cite-n`・linkifyCitations が付ける）は本文中の上付き番号チップにする。
-    // ホバーで原文カード、クリックで出典パネル（メッセージの引用文脈があるときのみ）。
-    const cite = citeNumberFromHref(url);
-    if (cite != null) return <CitationMarker n={cite}>{children}</CitationMarker>;
-    // その他の内部リンクはクライアント遷移。
-    if (url.startsWith("/")) {
-      return (
-        <Link
-          href={url}
-          className={cn(
-            "font-medium text-primary underline decoration-primary/30 underline-offset-2 hover:decoration-primary",
-            WRAP_ANYWHERE,
-          )}
-        >
-          {children}
-        </Link>
-      );
-    }
     return (
-      <a
-        href={url}
-        target="_blank"
-        rel="noopener noreferrer"
-        className={cn(
-          "font-medium text-primary underline decoration-primary/30 underline-offset-2 hover:decoration-primary",
-          WRAP_ANYWHERE,
-        )}
-      >
-        {children}
-      </a>
+      <InLinkContext.Provider value={true}>
+        <MarkdownLink href={href}>{children}</MarkdownLink>
+      </InLinkContext.Provider>
     );
   },
   p({ children }) {
@@ -437,7 +464,9 @@ const components: Components = {
   },
   img({ src, alt }) {
     // 利用者の発話は disallowedElements で画像を落とすので、ここに来るのは回答・画面の本文だけ。
-    return typeof src === "string" && src ? <AnswerImage src={src} alt={alt ?? ""} /> : null;
+    // react-markdown は http(s) 以外（data:・javascript: など）の URL を空にして渡す。そのときは代替テキストだけ出す。
+    if (typeof src === "string" && src) return <AnswerImage src={src} alt={alt ?? ""} />;
+    return alt ? <>{alt}</> : null;
   },
 };
 
