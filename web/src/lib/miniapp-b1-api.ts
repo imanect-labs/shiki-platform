@@ -42,6 +42,8 @@ export type AppInstallation = {
     agent_tools: string[];
   };
   frontend_bundle: string | null;
+  /// Keycloak にアプリの登録が無く、サーバーが作り直せなかった（入れ直しが要る・GAP-70）。前の版のサーバーは返さない。
+  oauth_client_missing?: boolean;
 };
 
 async function ok<T>(res: Response): Promise<T> {

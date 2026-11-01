@@ -79,6 +79,8 @@ pub struct AppInstallation {
     pub server_bundle: Option<String>,
     /// ServerSpec 全体の同意時ピン（JSON・app-platform が解釈する。gateway は不透明に運ぶ）。
     pub server_spec: Option<serde_json::Value>,
+    /// Keycloak にアプリのクライアントが無く、起動時の照合が作り直せなかった（入れ直しが要る・GAP-70・migration 0127）。
+    pub oauth_client_missing: bool,
 }
 
 /// インストール作成の入力（PR9 の同意フロー・本 PR はデブ用 fixture）。
@@ -120,6 +122,7 @@ struct Row {
     frontend_bundle: Option<String>,
     server_bundle: Option<String>,
     server_spec: Option<serde_json::Value>,
+    oauth_client_missing: bool,
 }
 
 impl From<Row> for AppInstallation {
@@ -144,6 +147,7 @@ impl From<Row> for AppInstallation {
             frontend_bundle: r.frontend_bundle,
             server_bundle: r.server_bundle,
             server_spec: r.server_spec,
+            oauth_client_missing: r.oauth_client_missing,
         }
     }
 }
@@ -152,7 +156,7 @@ impl From<Row> for AppInstallation {
 const COLS: &str = "id, app_id, app_name, installed_version, granted_scopes, \
                     client_id_b1, client_id_b2, status, installed_by, created_at, \
                     budget_models, budget_daily_usd_micros, budget_max_tokens, agent_tools, \
-                    frontend_bundle, server_bundle, server_spec";
+                    frontend_bundle, server_bundle, server_spec, oauth_client_missing";
 
 /// active な app_id の大域一意索引（migration 0081・B1 配信のテナント跨ぎ解決の前提）。
 const ACTIVE_APP_ID_UIDX: &str = "app_installation_active_app_id_uidx";
@@ -443,8 +447,9 @@ impl AppInstallationStore {
         Ok(())
     }
 
-    /// 有効なインストールのうち、クライアントを `fingerprint` の登録の形で揃えていないものを、古い順に最大 `limit` 件
-    /// 引く（起動時の照合・BUG-172・migration 0124）。`skip`（この照合で揃えられなかったアプリ）は外す。
+    /// 有効なインストールのうち、クライアントを `fingerprint` の登録の形で揃えていないものと、前の照合でクライアントを
+    /// 作り直せなかったもの（`oauth_client_missing`・GAP-70）を、古い順に最大 `limit` 件引く（起動時の照合・BUG-172・
+    /// migration 0124）。`skip`（この照合で揃えた・揃えられなかったアプリ）は外す。
     ///
     /// **テナントで絞らない理由**: 起動時の保守の走査で、呼び出す人がいない（[`Self::resolve_active_by_app_global`]
     /// と同じく文脈にテナントが無い）。読むのはクライアントを揃えるための列だけで、利用者のデータは読まない。
@@ -455,10 +460,10 @@ impl AppInstallationStore {
         limit: i64,
     ) -> Result<Vec<ClientsToRepair>, GatewayError> {
         sqlx::query_as(
-            "SELECT tenant_id, app_id, app_name, client_id_b1, client_id_b2 FROM app_installation \
+            "SELECT tenant_id, org, app_id, app_name, client_id_b1, client_id_b2 FROM app_installation \
              WHERE status = 'active' \
                AND (client_id_b1 IS NOT NULL OR client_id_b2 IS NOT NULL) \
-               AND oauth_client_spec IS DISTINCT FROM $1 \
+               AND (oauth_client_spec IS DISTINCT FROM $1 OR oauth_client_missing) \
                AND NOT (app_id = ANY($2)) \
              ORDER BY created_at, id LIMIT $3",
         )
@@ -472,22 +477,26 @@ impl AppInstallationStore {
 
     /// インストールのクライアントを `fingerprint` の登録の形で揃えた印を付ける（インストールと起動時の照合）。
     ///
-    /// あわせて、B2 のサービスアカウントの利用者（`b2_service_sub`・B2 が無ければ `None`）を書く（BUG-183）。
+    /// あわせて、B2 のサービスアカウントの利用者（`b2_service_sub`・B2 が無ければ `None`・BUG-183）と、作り直せない
+    /// クライアントがあったか（`client_missing`・GAP-70）を書く。
     pub async fn mark_clients_repaired(
         &self,
         tenant_id: &str,
         app_id: Uuid,
         fingerprint: &str,
         b2_service_sub: Option<&str>,
+        client_missing: bool,
     ) -> Result<(), GatewayError> {
         sqlx::query(
-            "UPDATE app_installation SET oauth_client_spec = $3, b2_service_sub = $4 \
+            "UPDATE app_installation \
+             SET oauth_client_spec = $3, b2_service_sub = $4, oauth_client_missing = $5 \
              WHERE tenant_id = $1 AND app_id = $2",
         )
         .bind(tenant_id)
         .bind(app_id)
         .bind(fingerprint)
         .bind(b2_service_sub)
+        .bind(client_missing)
         .execute(&self.db)
         .await
         .map_err(map_db)?;
@@ -518,6 +527,8 @@ struct ServiceRow {
 #[derive(Debug, Clone, sqlx::FromRow)]
 pub struct ClientsToRepair {
     pub tenant_id: String,
+    /// インストールした組織（B2 の secret をアプリの主体で読む・GAP-70）。
+    pub org: String,
     pub app_id: Uuid,
     pub app_name: String,
     pub client_id_b1: Option<String>,

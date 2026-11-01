@@ -231,6 +231,7 @@ impl InstallService {
                     app_id,
                     &self.client_spec(),
                     b2_service_sub.as_deref(),
+                    false,
                 )
                 .await
             {

@@ -443,6 +443,7 @@ async fn service_tokens_reach_only_app_tables_in_single_and_multi_tenancy() {
                 app_id,
                 "spec",
                 registered.service_account_sub.as_deref(),
+                false,
             )
             .await
             .expect("service account");

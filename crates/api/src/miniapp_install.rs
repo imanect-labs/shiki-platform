@@ -56,21 +56,25 @@ pub fn build_install_service(
 
 /// 照合を試し直すまでの間（Keycloak が起動の途中など）。
 const REPAIR_RETRY: Duration = Duration::from_mins(5);
-/// 照合を試す回数の上限（揃えられないものが残っても、上限を過ぎたら次の起動に任せる）。
+/// 短い間で試す回数（その後は [`REPAIR_RETRY_LATER`] おきに試し続ける）。
 const REPAIR_ATTEMPTS: u32 = 12;
+/// 短い間で揃えられなかったときに、試し続ける間（Keycloak が長く落ちていたとき・GAP-70）。
+const REPAIR_RETRY_LATER: Duration = Duration::from_hours(1);
 
 /// 前の版で登録したアプリのクライアントを、今の登録の形に揃える常駐の処理を起動する（BUG-172）。
 ///
 /// 起動を待たせないように裏で動かす。揃えられないもの（Keycloak の失敗）が残ったら、[`REPAIR_RETRY`] おきに
-/// [`REPAIR_ATTEMPTS`] 回まで試し直す。Keycloak の管理が未配線なら何もしない。
+/// [`REPAIR_ATTEMPTS`] 回試し、その後も揃うまで [`REPAIR_RETRY_LATER`] おきに試し続ける（これまでは次の起動まで
+/// 止まった・GAP-70）。Keycloak の管理が未配線なら何もしない。
 pub fn spawn_client_repair(installs: Arc<app_platform::InstallService>) {
     tokio::spawn(async move {
-        for attempt in 1..=REPAIR_ATTEMPTS {
+        for attempt in 1u32.. {
             match installs.repair_oauth_clients().await {
                 Ok(p) if p.failed == 0 => {
                     if p.repaired + p.missing > 0 {
                         tracing::info!(
                             repaired = p.repaired,
+                            recreated = p.recreated,
                             missing = p.missing,
                             "アプリのクライアントを今の登録の形に揃えました"
                         );
@@ -80,6 +84,7 @@ pub fn spawn_client_repair(installs: Arc<app_platform::InstallService>) {
                 Ok(p) => {
                     tracing::warn!(
                         repaired = p.repaired,
+                        recreated = p.recreated,
                         missing = p.missing,
                         failed = p.failed,
                         attempt,
@@ -90,7 +95,12 @@ pub fn spawn_client_repair(installs: Arc<app_platform::InstallService>) {
                     tracing::warn!(error = %e, attempt, "アプリのクライアントの照合に失敗（試し直す）");
                 }
             }
-            tokio::time::sleep(REPAIR_RETRY).await;
+            let wait = if attempt < REPAIR_ATTEMPTS {
+                REPAIR_RETRY
+            } else {
+                REPAIR_RETRY_LATER
+            };
+            tokio::time::sleep(wait).await;
         }
     });
 }

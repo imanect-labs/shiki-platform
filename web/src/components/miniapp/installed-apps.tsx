@@ -9,7 +9,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { Download, Loader2, Package, Play, Trash2, X } from "lucide-react";
+import { AlertTriangle, Download, Loader2, Package, Play, Trash2, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -157,6 +157,21 @@ export function InstalledAppsSection() {
                   v{app.installed_version}・スコープ {app.granted_scopes.length} 件
                 </p>
               </div>
+              {app.oauth_client_missing ? (
+                // 起動時の照合が Keycloak にアプリの登録を作り直せなかった（GAP-70）。入れ直すとテーブルが新しくなる。
+                <div
+                  role="status"
+                  className="flex gap-2 rounded-md border border-destructive/40 bg-destructive/5 p-2.5 text-xs"
+                >
+                  <AlertTriangle className="mt-0.5 size-4 shrink-0 text-destructive" aria-hidden />
+                  <div className="min-w-0">
+                    <p className="font-medium text-destructive">このアプリは動かない状態です</p>
+                    <p className="mt-0.5 text-muted-foreground">
+                      アプリの登録が見つかりません。入れ直すと直りますが、これまでのレコードは使えなくなります。
+                    </p>
+                  </div>
+                </div>
+              ) : null}
               <div className="mt-auto flex flex-wrap items-center gap-1 pt-1">
                 <Button size="sm" asChild disabled={!app.frontend_bundle}>
                   <Link href={`/apps/b1/${app.app_id}`}>

@@ -948,3 +948,157 @@ async fn install_with_server_records_the_service_account_and_exchange_audience()
     })
     .await;
 }
+
+/// 起動時の照合は、Keycloak に無くなったアプリのクライアントを作り直す。B2 は保管してある secret で作るので、保管し
+/// 直さずに自動実行のトークンが取れる（サービスアカウントの利用者は新しいものを書く）。secret を読めないときは
+/// 作らずに入れ直しが要る印を付け、読めるようになった次の照合で作り直して印を外す（GAP-70）。
+#[tokio::test]
+async fn startup_repair_recreates_missing_clients_with_the_stored_secret() {
+    let Some(pool) = setup().await else { return };
+    let Some(realm) = app_gateway::test_support::TestRealm::from_env() else {
+        eprintln!("KEYCLOAK_TEST_URL 未設定のためスキップ");
+        return;
+    };
+    let redirects = vec![SHELL_CALLBACK.to_string()];
+    let without_secrets = harness_with_oauth(
+        pool.clone(),
+        false,
+        Some(realm.oauth_client()),
+        redirects.clone(),
+    );
+    let Harness { code, installs, .. } = harness_with_oauth(
+        pool.clone(),
+        false,
+        Some(realm.oauth_client()),
+        redirects.clone(),
+    );
+    let authz: Arc<dyn AuthzClient> = Arc::new(RecordingAuthz::default());
+    let secrets = Arc::new(secrets::SecretStore::new(
+        pool.clone(),
+        authz,
+        Arc::new(secrets::LocalKeyFileProvider::from_bytes([9u8; 32])),
+    ));
+    let installs = installs.with_secrets(Some(secrets), Some("localhost".into()));
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let c = ctx(&tenant, "admin");
+    let name = format!("b2-{}", Uuid::new_v4().simple());
+    let mut m = manifest(&name, TrustTier::InHouse, vec![]);
+    m.requested_scopes = vec!["data.read".into()];
+    m.server = Some(app_platform::ServerSpec {
+        functions: vec!["remind".into()],
+        ..app_platform::ServerSpec::default()
+    });
+    let id = code.create(&c, &m, None).await.expect("create");
+    code.publish(&c, id, None, None, None)
+        .await
+        .expect("publish");
+    let (b1, b2) = (format!("app-{id}-b1"), format!("app-{id}-b2"));
+    let row = || client_row(&pool, id);
+    let service_sub = |secret: String| service_token_sub(&realm, &b2, secret);
+    let body = async {
+        let installed = installs
+            .install(&c, install_req(&name, &["data.read"]), None)
+            .await
+            .expect("install");
+        let secret = installed.client_secret_b2.expect("secret");
+        let before = row().await;
+        assert_eq!(before.0, Some(service_sub(secret.clone()).await));
+
+        // 2 つとも Keycloak から消える（管理者が消した・realm を作り直したなど）。照合は登録の形が変わった後の起動で
+        // 走るので、前の版のインストールにする（印を消す）。
+        realm.delete_client(&b1).await;
+        realm.delete_client(&b2).await;
+        sqlx::query("UPDATE app_installation SET oauth_client_spec = NULL WHERE tenant_id = $1")
+            .bind(&tenant)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // secret を読めない照合（secrets が未構成）は、B1 だけを作り直し、入れ直しが要る印を付ける。
+        let progress = without_secrets
+            .installs
+            .repair_oauth_clients()
+            .await
+            .expect("repair without secrets");
+        assert_eq!(progress.failed, 0, "{progress:?}");
+        assert!(progress.missing >= 1, "{progress:?}");
+        assert!(realm.client(&b1).await.is_some(), "B1 は作り直す");
+        assert!(
+            realm.client(&b2).await.is_none(),
+            "B2 は secret を読めないので作らない"
+        );
+        assert!(row().await.1, "入れ直しが要る印");
+        let listed = installs.installations().list(&c).await.expect("list");
+        assert!(listed[0].oauth_client_missing);
+
+        // secret を読める照合は、印のあるインストールを試し直し、保管してある secret で B2 を作り直す。
+        let progress = installs.repair_oauth_clients().await.expect("repair");
+        assert_eq!(progress.failed, 0, "{progress:?}");
+        assert!(progress.recreated >= 1, "{progress:?}");
+        let after = row().await;
+        assert!(!after.1, "印を外す");
+        let sub = service_sub(secret.clone()).await;
+        assert_eq!(after.0, Some(sub.clone()));
+        assert_ne!(
+            after.0, before.0,
+            "サービスアカウントの利用者は作り直すと変わる"
+        );
+        let client = realm.client(&b1).await.expect("b1");
+        assert!(client["protocolMappers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["name"] == "shiki-function-audience"));
+    };
+    run_then(body, async {
+        let _ = installs.uninstall(&c, id, None).await;
+        realm.delete_client(&b1).await;
+        realm.delete_client(&b2).await;
+        for sql in [
+            "DELETE FROM app_installation WHERE tenant_id = $1",
+            "DELETE FROM secret WHERE tenant_id = $1",
+        ] {
+            sqlx::query(sql)
+                .bind(&tenant)
+                .execute(&pool)
+                .await
+                .expect(sql);
+        }
+    })
+    .await;
+}
+
+/// インストールの B2 のサービスアカウントの利用者と、入れ直しが要る印。
+async fn client_row(pool: &PgPool, app_id: Uuid) -> (Option<String>, bool) {
+    sqlx::query_as(
+        "SELECT b2_service_sub, oauth_client_missing FROM app_installation WHERE app_id = $1",
+    )
+    .bind(app_id)
+    .fetch_one(pool)
+    .await
+    .unwrap()
+}
+
+/// B2 の client_credentials のトークンの sub（サービスアカウントの利用者）。
+async fn service_token_sub(
+    realm: &app_gateway::test_support::TestRealm,
+    b2: &str,
+    secret: String,
+) -> String {
+    let resp = reqwest::Client::new()
+        .post(realm.token_endpoint())
+        .form(&[
+            ("grant_type", "client_credentials"),
+            ("client_id", b2),
+            ("client_secret", secret.as_str()),
+        ])
+        .send()
+        .await
+        .expect("service token");
+    assert!(resp.status().is_success(), "{}", resp.status());
+    let token: serde_json::Value = resp.json().await.unwrap();
+    app_gateway::test_support::claims(token["access_token"].as_str().unwrap())["sub"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}

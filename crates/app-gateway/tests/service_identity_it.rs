@@ -176,7 +176,7 @@ async fn fixture(pool: sqlx::PgPool) -> Fixture {
         .await
         .expect("install");
     store
-        .mark_clients_repaired(&tenant, app_id, "spec", Some(&sa))
+        .mark_clients_repaired(&tenant, app_id, "spec", Some(&sa), false)
         .await
         .expect("service account");
     let data = DataStore::new(
