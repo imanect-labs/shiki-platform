@@ -36,6 +36,8 @@ const MAX_TOKEN_LEN: usize = 4_096;
 const AAD_LABEL: &[u8] = b"shiki/data/cursor/v1";
 /// テーブル一覧の続きの位置（[`CursorCodec::seal_table_list`]）の AAD のラベル（レコードのカーソルと取り違えない）。
 const TABLE_LIST_AAD_LABEL: &[u8] = b"shiki/data/table-list-cursor/v1";
+/// ほかの一覧の続きの位置（[`CursorCodec::seal_list_position`]）の AAD のラベル。
+const LIST_POSITION_AAD_LABEL: &[u8] = b"shiki/list-position/v1";
 
 /// カーソル暗号鍵（32 バイト）。鍵ファイルの形式は secrets のマスターキーと同じ。
 #[derive(Clone)]
@@ -179,6 +181,26 @@ impl CursorCodec {
         self.open_bytes(&table_list_aad(tenant_id), token)
     }
 
+    /// ほかの一覧の続きの位置を暗号化する（テナントと一覧の種類に束縛・BUG-162・[`crate::list_position`]）。
+    pub(crate) fn seal_list_position(
+        &self,
+        kind: &[u8],
+        tenant_id: &str,
+        plain: &[u8],
+    ) -> Result<String, DataError> {
+        self.seal_bytes(&list_position_aad(kind, tenant_id), plain)
+    }
+
+    /// [`Self::seal_list_position`] の逆。改竄・別テナント・別の一覧への流用・形式不正は `cursor_invalid`。
+    pub(crate) fn open_list_position(
+        &self,
+        kind: &[u8],
+        tenant_id: &str,
+        token: &str,
+    ) -> Result<Vec<u8>, DataError> {
+        self.open_bytes(&list_position_aad(kind, tenant_id), token)
+    }
+
     fn seal_bytes(&self, aad: &[u8], plain: &[u8]) -> Result<String, DataError> {
         let mut nonce = [0u8; NONCE_LEN];
         rand::thread_rng().fill_bytes(&mut nonce);
@@ -216,6 +238,18 @@ fn table_list_aad(tenant_id: &str) -> Vec<u8> {
     let mut aad = Vec::with_capacity(TABLE_LIST_AAD_LABEL.len() + 1 + tenant_id.len());
     aad.extend_from_slice(TABLE_LIST_AAD_LABEL);
     aad.push(VERSION);
+    aad.extend_from_slice(tenant_id.as_bytes());
+    aad
+}
+
+/// ほかの一覧の続きの位置の AAD（ラベル・版・一覧の種類・テナント。種類とテナントは長さで区切る）。
+fn list_position_aad(kind: &[u8], tenant_id: &str) -> Vec<u8> {
+    let mut aad =
+        Vec::with_capacity(LIST_POSITION_AAD_LABEL.len() + 9 + kind.len() + tenant_id.len());
+    aad.extend_from_slice(LIST_POSITION_AAD_LABEL);
+    aad.push(VERSION);
+    aad.extend_from_slice(&u32::try_from(kind.len()).unwrap_or(u32::MAX).to_be_bytes());
+    aad.extend_from_slice(kind);
     aad.extend_from_slice(tenant_id.as_bytes());
     aad
 }
