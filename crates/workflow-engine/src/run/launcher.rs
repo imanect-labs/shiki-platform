@@ -132,7 +132,8 @@ impl WorkflowRunLauncher {
             trigger_payload: trigger,
             ..RunOrigin::default()
         };
-        self.create_interactive_run(ctx, workflow_id, version, &ir, input, origin)
+        let blockers = crate::run_blockers(&ir);
+        self.create_interactive_run(ctx, workflow_id, version, &ir, input, origin, blockers)
             .await
     }
 
@@ -163,11 +164,17 @@ impl WorkflowRunLauncher {
             parent_run_id,
             ..RunOrigin::default()
         };
-        self.create_interactive_run(ctx, workflow_id, version, &ir, input, origin)
+        // 子の run の結果（workflow.reply）はどの画面にも出ないので、返す値の空では止めない（BUG-168）。
+        let blockers = crate::unattended_run_blockers(&ir);
+        self.create_interactive_run(ctx, workflow_id, version, &ir, input, origin, blockers)
             .await
     }
 
     /// interactive 系共通の run 作成（IR 取得＝認可は呼び出し側で済んでいる前提）。
+    ///
+    /// `blockers` は呼び出し側が組んだ実行の前に止める理由（ボタン・会話・画面からの起動は [`crate::run_blockers`]、
+    /// 子の実行は結果が画面に出ないので [`crate::unattended_run_blockers`]・BUG-168）。
+    #[allow(clippy::too_many_arguments)] // 主体・ワークフロー・版・IR・入力・由来・止める理由は全て別物。
     async fn create_interactive_run(
         &self,
         ctx: &AuthContext,
@@ -176,11 +183,11 @@ impl WorkflowRunLauncher {
         ir: &WorkflowIr,
         input: &Value,
         origin: RunOrigin<'_>,
+        blockers: Vec<crate::ValidationError>,
     ) -> Result<Option<Uuid>, LauncherError> {
         // 入力の契約（input_schema）は run を作る前に必ず確かめる。対話起動の全経路
         // （API・会話の図のボタン・ミニアプリ）がここを通るので、画面の検証に頼らない。
         // 保存は通しても空のまま動かせない欄（必須の文字の欄が空・D-43）は、入力より先に断る。
-        let blockers = crate::run_blockers(ir);
         if !blockers.is_empty() {
             return Err(LauncherError::NotReady(blockers));
         }
@@ -247,7 +254,8 @@ impl WorkflowRunLauncher {
             trigger_payload: trigger,
             ..RunOrigin::default()
         };
-        self.create_interactive_run(ctx, workflow_id, version, &ir, input, origin)
+        let blockers = crate::run_blockers(&ir);
+        self.create_interactive_run(ctx, workflow_id, version, &ir, input, origin, blockers)
             .await
     }
 
@@ -270,7 +278,9 @@ impl WorkflowRunLauncher {
             .get_version_via_bundle(ctx, bundle_id, workflow_id, version, None)
             .await
             .map_err(|e| LauncherError::Ir(format!("{e:?}")))?;
-        self.create_interactive_run(ctx, workflow_id, version, &ir, input, RunOrigin::default())
+        let blockers = crate::run_blockers(&ir);
+        let origin = RunOrigin::default();
+        self.create_interactive_run(ctx, workflow_id, version, &ir, input, origin, blockers)
             .await
     }
 
@@ -356,8 +366,9 @@ impl WorkflowRunLauncher {
         // 保存は通しても空のまま動かせない欄（必須の欄が空・中にブロックの無い繰り返し・D-43・D-83・D-85）のある版は、
         // 自動実行でも起動しない。有効化の前の確認より前に有効化した版や、確認の欄が後から増えた版でも、空のまま
         // 動かさない（BUG-51）。何度起こしても同じなので見送り（BUG-146 の定義を読めない見送りと同じ形）、警告は版ごと
-        // に 1 回。きっかけは止めない（欄を埋めて自動実行をオンにし直せば直る）。
-        let blockers = crate::run_blockers(&ir);
+        // に 1 回。きっかけは止めない（欄を埋めて自動実行をオンにし直せば直る）。結果を画面に返すの返す値の空では
+        // 止めない（自動実行の結果はどの画面にも出ない・前から動いていた自動実行を止めない・BUG-168）。
+        let blockers = crate::unattended_run_blockers(&ir);
         if let Some(first) = blockers.first() {
             let reason = format!(
                 "実行の前に止める設定があります（{} 件）: {}",
@@ -467,8 +478,8 @@ pub enum LauncherError {
     /// （実行のダイアログが欄の下に出す・BUG-109）。文が要る呼び出し側は [`LauncherError::input_message`]。
     #[error("入力が正しくありません: {}", LauncherError::input_message(.0))]
     Input(Vec<crate::ir::input_schema::InputIssue>),
-    /// IR が実行できる状態にない（必須の文字の欄が空・D-43）。理由は [`crate::run_blockers`] の全件
-    /// （呼び出し側は 400 に写し、欄に写せるよう node_id・path を保つ）。
+    /// IR が実行できる状態にない（必須の文字の欄が空・D-43）。理由は [`crate::run_blockers`]（子の実行は
+    /// [`crate::unattended_run_blockers`]）の全件（呼び出し側は 400 に写し、欄に写せるよう node_id・path を保つ）。
     #[error("実行できない設定があります: {}", LauncherError::messages(.0))]
     NotReady(Vec<crate::ValidationError>),
     /// 子のワークフローが無いか、実行主体から見えない（[`WorkflowRunLauncher::start_child`] だけが返す・

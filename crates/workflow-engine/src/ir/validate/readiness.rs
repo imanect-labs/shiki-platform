@@ -6,8 +6,11 @@
 //!   `human.approval` の件名・テーブル・承認者・判断の行き先（D-129）と、`workflow.reply` の返す値（BUG-168））: 書きかけでも保存は
 //!   できるように、保存時は path つきの警告（[`REQUIRED_TEXT_EMPTY`]）にとどめる。空のまま動かすと、空の依頼で
 //!   AI や検索を呼ぶ・いつも同じ出口へ進む・リストでない値を繰り返そうとして失敗する、などになるので、有効化
-//!   （[`enable_blockers`]）と対話の実行（[`run_blockers`]）の前に止める。置いたばかりのブロックは、選ぶ欄も
-//!   空の文字（`""`）で置く（エディタの既定・D-83）。
+//!   （[`enable_blockers`]）と対話の実行（[`run_blockers`]）と自動実行・子の実行の起動（[`unattended_run_blockers`]）の
+//!   前に止める。置いたばかりのブロックは、選ぶ欄も空の文字（`""`）で置く（エディタの既定・D-83）。
+//!   - 例外は `workflow.reply` の返す値: 結果が出るのはボタン・会話から起動した run だけなので、対話の実行の前にだけ
+//!     止め、有効化と自動実行・子の実行の起動では止めない（値が使われないのに、前から動いていた自動実行を止めない・
+//!     BUG-168 と BUG-51 の重なり）。
 //! - **schedule / event で動く IR の、folder を省略した `storage.write`・`csv.write`**: 省略はルートへの保存で、
 //!   schedule / event の run はワークフロー主体で動くので、ルートには書けない（フォルダの委譲でも救えない）。
 //!   有効化の時点で止め、保存先のフォルダを決めさせる（[`WRITE_FOLDER_REQUIRED`]）。対話の run は起動した
@@ -22,8 +25,8 @@
 //!   （[`EMPTY_VALUES`]）だけにし、有効化も実行も止めない。状態の進め方のあるテーブルに最初の状態だけのレコードを
 //!   作るのは正しい使い方で、前から保存されている定義にもある。
 //!
-//! どれも IR だけで決まる純関数。有効化（`RegistrationService::enable`）・同意計画の API・対話の起動
-//! （`WorkflowRunLauncher`）が同じ関数を呼ぶ。
+//! どれも IR だけで決まる純関数。有効化（`RegistrationService::enable`）・同意計画の API・対話と自動実行と子の実行の
+//! 起動（`WorkflowRunLauncher`）が同じ関数を呼ぶ。
 
 use serde_json::Value;
 
@@ -424,8 +427,17 @@ fn blank_lefts(cond: &Value, at: &str, out: &mut Vec<String>) {
 }
 
 /// 必須の欄が空のもの（保存時の警告・有効化と実行の前に止める理由）。
+///
+/// `workflow.reply` の返す値の空も含む（保存の警告と対話の実行の前に止める理由。有効化と自動実行・子の実行の起動では
+/// 止めない・[`unattended_run_blockers`]）。
 #[must_use]
 pub fn required_text_empty(ir: &WorkflowIr) -> Vec<ValidationError> {
+    blank_fields(ir, true)
+}
+
+/// [`required_text_empty`] の本体。`with_reply` が偽なら、`workflow.reply` の返す値の空を数えない（結果がどの画面にも
+/// 出ない起動・BUG-168）。
+fn blank_fields(ir: &WorkflowIr, with_reply: bool) -> Vec<ValidationError> {
     let mut out = Vec::new();
     for node in &ir.nodes {
         let Some(nt) = NodeType::parse(&node.node_type) else {
@@ -449,14 +461,23 @@ pub fn required_text_empty(ir: &WorkflowIr) -> Vec<ValidationError> {
         if nt == NodeType::HumanApproval {
             approval_blanks(node, &mut out);
         }
-        // 返す値が空なら、空の結果を返すだけなので止める（BUG-168）。見出しは形ごとの欄の見出し。
-        if nt == NodeType::WorkflowReply && node.params.get("value").is_some_and(is_blank) {
-            out.push(blank(
-                &node.id,
-                "/params/value".to_string(),
-                reply_value_label(node),
-                Fill::Text,
-            ));
+        // 返す値が空なら、空の結果を返すだけなので、ボタン・会話からの実行の前に止める（BUG-168）。見出しは形ごとの
+        // 欄の見出し。
+        if with_reply
+            && nt == NodeType::WorkflowReply
+            && node.params.get("value").is_some_and(is_blank)
+        {
+            out.push(
+                ValidationError::new(
+                    REQUIRED_TEXT_EMPTY,
+                    format!(
+                        "「{}」が空です。入れるまで、ボタンや会話からは実行できません。",
+                        reply_value_label(node)
+                    ),
+                )
+                .at_node(&node.id)
+                .at_path("/params/value"),
+            );
         }
         for (_, key, label, fill) in REQUIRED_VALUES.iter().filter(|(t, ..)| *t == nt) {
             if is_unset(node.params.get(*key)) {
@@ -515,9 +536,10 @@ pub fn empty_regions(ir: &WorkflowIr) -> Vec<ValidationError> {
         .collect()
 }
 
-/// 保存は通すが、実行と自動実行のオンの前に止めるもの（必須の欄が空・中にブロックの無い繰り返し）。
-fn not_ready(ir: &WorkflowIr) -> Vec<ValidationError> {
-    let mut out = required_text_empty(ir);
+/// 保存は通すが、実行と自動実行のオンの前に止めるもの（必須の欄が空・中にブロックの無い繰り返し）。`with_reply` が
+/// 偽なら、`workflow.reply` の返す値の空を数えない（結果がどの画面にも出ない起動・BUG-168）。
+fn not_ready(ir: &WorkflowIr, with_reply: bool) -> Vec<ValidationError> {
+    let mut out = blank_fields(ir, with_reply);
     out.extend(empty_regions(ir));
     out
 }
@@ -532,10 +554,11 @@ fn runs_unattended(ir: &WorkflowIr) -> bool {
 /// 有効化の前に止める理由（空なら有効化できる）。
 ///
 /// 必須の欄が空のもの（D-43・D-83）と、中にブロックの無い繰り返し（D-85）と、schedule / event で動く IR の
-/// 保存先フォルダの省略（D-40）・一覧にするフォルダの省略（D-83）。
+/// 保存先フォルダの省略（D-40）・一覧にするフォルダの省略（D-83）。`workflow.reply` の返す値の空は止めない
+/// （自動実行の結果はどの画面にも出ない・BUG-168）。
 #[must_use]
 pub fn enable_blockers(ir: &WorkflowIr) -> Vec<ValidationError> {
-    let mut out = not_ready(ir);
+    let mut out = not_ready(ir, false);
     if !runs_unattended(ir) {
         return out;
     }
@@ -567,13 +590,22 @@ pub fn enable_blockers(ir: &WorkflowIr) -> Vec<ValidationError> {
     out
 }
 
-/// 対話の実行の前に止める理由（空なら起動できる）。必須の欄が空のもの（D-43・D-83）と、中にブロックの無い
-/// 繰り返し（D-85）。
+/// 対話の実行（ボタン・会話・ワークフローの画面から起動する run）の前に止める理由（空なら起動できる）。必須の欄が
+/// 空のもの（D-43・D-83・`workflow.reply` の返す値の空を含む・BUG-168）と、中にブロックの無い繰り返し（D-85）。
 ///
 /// 保存先・一覧にするフォルダの省略は止めない（対話の run は起動した本人のルートを使える）。
 #[must_use]
 pub fn run_blockers(ir: &WorkflowIr) -> Vec<ValidationError> {
-    not_ready(ir)
+    not_ready(ir, true)
+}
+
+/// 自動実行（schedule / event）と子の実行（`workflow.start`）の起動の前に止める理由（空なら起動できる・BUG-51）。
+///
+/// [`run_blockers`] から `workflow.reply` の返す値の空を除いたもの。これらの run の結果はどの画面にも出ないので、
+/// 返す値が空でも止めない（前から自動実行がオンの版や、呼び出される側のワークフローを黙って止めない・BUG-168）。
+#[must_use]
+pub fn unattended_run_blockers(ir: &WorkflowIr) -> Vec<ValidationError> {
+    not_ready(ir, false)
 }
 
 #[cfg(test)]

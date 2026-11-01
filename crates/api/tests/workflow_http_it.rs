@@ -1085,11 +1085,11 @@ async fn a_blank_reply_value_saves_but_blocks_the_run() {
     );
     assert_eq!(
         body["errors"][0]["message"],
-        "「返す内容」が空です。入れるまで、実行も自動実行のオンもできません。"
+        "「返す内容」が空です。入れるまで、ボタンや会話からは実行できません。"
     );
     assert_eq!(
         body["errors"][1]["message"],
-        "「表にするリスト」が空です。入れるまで、実行も自動実行のオンもできません。"
+        "「表にするリスト」が空です。入れるまで、ボタンや会話からは実行できません。"
     );
     let runs: i64 = sqlx::query_scalar("SELECT count(*) FROM workflow_run WHERE workflow_id = $1")
         .bind(Uuid::parse_str(&id).unwrap())
@@ -1097,6 +1097,16 @@ async fn a_blank_reply_value_saves_but_blocks_the_run() {
         .await
         .unwrap();
     assert_eq!(runs, 0);
+    // 自動実行のオンは止めない（自動実行の結果はどの画面にも出ない・BUG-51 との重なり）。
+    let (st, body) = req(
+        &env,
+        "GET",
+        &format!("/workflows/{id}/versions/1/consent-plan"),
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(body["blockers"], json!([]), "{body}");
 
     // 片付け（ワークフローは artifact として消す）。
     let (st, _) = req(&env, "DELETE", &format!("/artifacts/{id}"), None).await;

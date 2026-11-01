@@ -186,10 +186,11 @@ mod tests {
         }
     }
 
-    /// BUG-168: 空の値は形を問わず保存を止めない（空の結果を返さないよう、実行と自動実行のオンの前に止める）。
+    /// BUG-168: 空の値は形を問わず保存を止めない（空の結果を返さないよう、ボタン・会話からの実行の前に止める）。
     /// 見出しは形ごとの欄の見出し。空のリスト（表・ファイルへのリンク）は止めず、保存の注意だけにする。
+    /// 自動実行のオンと、自動実行・子の実行の起動では止めない（結果がどの画面にも出ない）。
     #[test]
-    fn a_blank_value_saves_but_blocks_run_and_enable() {
+    fn a_blank_value_saves_but_blocks_only_interactive_runs() {
         let reply = |id: &str, format: &str, value: serde_json::Value| json!({ "id": id, "type": "workflow.reply", "params": { "format": format, "value": value } });
         let v = ir(
             json!([
@@ -220,23 +221,23 @@ mod tests {
             [
                 (
                     "text",
-                    "「返す内容」が空です。入れるまで、実行も自動実行のオンもできません。"
+                    "「返す内容」が空です。入れるまで、ボタンや会話からは実行できません。"
                 ),
                 (
                     "md",
-                    "「返す内容」が空です。入れるまで、実行も自動実行のオンもできません。"
+                    "「返す内容」が空です。入れるまで、ボタンや会話からは実行できません。"
                 ),
                 (
                     "table",
-                    "「表にするリスト」が空です。入れるまで、実行も自動実行のオンもできません。"
+                    "「表にするリスト」が空です。入れるまで、ボタンや会話からは実行できません。"
                 ),
                 (
                     "files",
-                    "「ファイルのリスト」が空です。入れるまで、実行も自動実行のオンもできません。"
+                    "「ファイルのリスト」が空です。入れるまで、ボタンや会話からは実行できません。"
                 ),
                 (
                     "tmpl",
-                    "「返す内容」が空です。入れるまで、実行も自動実行のオンもできません。"
+                    "「返す内容」が空です。入れるまで、ボタンや会話からは実行できません。"
                 ),
             ]
         );
@@ -258,6 +259,18 @@ mod tests {
                 ),
             ]
         );
+        // 自動実行のオンと、自動実行・子の実行の起動では止めない（自動実行もきっかけに持つ定義でも同じ）。
+        let both = ir(
+            v["nodes"].clone(),
+            json!([
+                { "kind": "interactive" },
+                { "kind": "schedule", "cron": "0 9 * * *", "tz": "Asia/Tokyo" }
+            ]),
+        );
+        let both = validate(&both, &Catalog::default()).unwrap();
+        assert_eq!(super::super::enable_blockers(&both), Vec::new());
+        assert_eq!(super::super::unattended_run_blockers(&both), Vec::new());
+        assert_eq!(super::super::run_blockers(&both).len(), 5);
         // 値のある形の誤りは今までどおり保存で止める。
         let bad = ir(
             json!([reply("table", "table", json!("x"))]),

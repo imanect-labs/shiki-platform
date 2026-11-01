@@ -397,6 +397,108 @@ async fn scheduled_launch_skips_enabled_versions_with_blank_required_fields() {
     assert_eq!(created, 0, "run を作らない");
 }
 
+/// 結果を画面に返すの返す値が空でも、自動実行（schedule / event）と子の実行（workflow.start）は起動する（BUG-168 と
+/// BUG-51 の重なり）。これらの run の結果はどの画面にも出ないので、前から自動実行がオンの版を止めない。ボタン・会話・
+/// 画面からの実行だけは、空の結果を返さないよう起動の前に止める。
+#[tokio::test]
+async fn unattended_and_child_launches_run_versions_with_a_blank_reply() {
+    let Some((pool, fga)) = setup().await else {
+        return;
+    };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let alice = user_ctx(&tenant, "alice");
+    let artifacts = Arc::new(ArtifactStore::new(
+        pool.clone(),
+        fga.clone() as Arc<dyn AuthzClient>,
+    ));
+    let workflows = WorkflowStore::new(artifacts.clone());
+    let delegation = DelegationStore::new(pool.clone(), fga.clone() as Arc<dyn AuthzClient>);
+    let runs = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
+
+    // エディターで置いたまま埋めなかった「結果を画面に返す」（値は空の文字）。
+    let ir = json!({
+        "ir_version": 1,
+        "name": "blank-reply",
+        "nodes": [ { "id": "done", "type": "workflow.reply", "params": { "format": "text", "value": "" } } ],
+        "edges": [],
+        "triggers": [
+            { "kind": "interactive" },
+            { "kind": "schedule", "cron": "0 9 * * *", "tz": "Asia/Tokyo" }
+        ]
+    });
+    let (wf_id, _ir) = workflows
+        .create(&alice, &ir, &Catalog::default(), None)
+        .await
+        .expect("save");
+    delegation
+        .enable(&alice, wf_id, 1, &[], &[])
+        .await
+        .expect("enable");
+    let launcher = WorkflowRunLauncher::new(delegation.clone(), workflows.clone(), runs.clone());
+    let mut outcomes = Vec::new();
+    for kind in ["schedule", "event"] {
+        outcomes.push(
+            <WorkflowRunLauncher as workflow_engine::RunLauncher>::launch(
+                &launcher,
+                &tenant,
+                wf_id,
+                kind,
+                "trg-1",
+                &serde_json::Value::Null,
+                None,
+            )
+            .await,
+        );
+    }
+    let child = launcher.start_child(&alice, wf_id, &json!({}), None).await;
+    let interactive = launcher.start_interactive(&alice, wf_id, &json!({})).await;
+    let created: i64 = sqlx::query_scalar("SELECT count(*) FROM workflow_run WHERE tenant_id = $1")
+        .bind(&tenant)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+
+    // 片付け（run・ワークフロー・登録・OpenFGA のストア）。
+    sqlx::query("DELETE FROM workflow_run WHERE tenant_id = $1")
+        .bind(&tenant)
+        .execute(&pool)
+        .await
+        .unwrap();
+    artifacts.delete(&alice, wf_id, None).await.unwrap();
+    sqlx::query("DELETE FROM workflow_registration WHERE tenant_id = $1")
+        .bind(&tenant)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let fga_url = std::env::var("OPENFGA_TEST_URL").unwrap();
+    let deleted = reqwest::Client::new()
+        .delete(format!("{fga_url}/stores/{}", fga.store_id()))
+        .send()
+        .await
+        .unwrap();
+    assert!(deleted.status().is_success(), "{}", deleted.status());
+
+    for outcome in &outcomes {
+        assert!(
+            matches!(outcome, workflow_engine::LaunchOutcome::Started(_)),
+            "空の結果を画面に返すを持つ自動実行の版を見送った: {outcome:?}"
+        );
+    }
+    assert!(matches!(child, Ok(Some(_))), "子の実行を止めた: {child:?}");
+    match interactive {
+        Err(workflow_engine::run::LauncherError::NotReady(errors)) => {
+            assert_eq!(errors.len(), 1, "{errors:?}");
+            assert_eq!(errors[0].node_id.as_deref(), Some("done"));
+            assert_eq!(
+                errors[0].message,
+                "「返す内容」が空です。入れるまで、ボタンや会話からは実行できません。"
+            );
+        }
+        other => panic!("ボタンからの実行を止めなかった: {other:?}"),
+    }
+    assert_eq!(created, 3, "自動実行 2 件と子の実行 1 件だけを作る");
+}
+
 /// RunGraph が e2e で参照されることを型チェックで担保（未使用 import 警告回避）。
 #[allow(dead_code)]
 fn _uses_graph(ir: &workflow_engine::WorkflowIr) -> RunGraph {
