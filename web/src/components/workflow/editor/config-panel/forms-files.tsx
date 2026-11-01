@@ -495,6 +495,10 @@ function ContentTypeField({ node, dispatch, refCandidates, inMapRegion, fieldErr
   );
 }
 
+/// 表や項目のまとまりのリストを CSV に直して保存すること（BUG-178）。式に見える値の打ち消しなどの決まりは
+/// ir.md §7（csv.write）。
+const CSV_FROM_RESULTS_HINT = "「CSV を集計」の結果（表）や、項目のまとまりのリストを入れると、CSV に直して保存します。";
+
 export function StorageWriteForm(props: FormProps) {
   const { node, dispatch, refCandidates, inMapRegion, fieldErrors } = props;
   const p = paramsOf<NodeParamsByType["storage.write"]>(node);
@@ -521,6 +525,7 @@ export function StorageWriteForm(props: FormProps) {
         refCandidates={refCandidates}
         inMapRegion={inMapRegion}
         multiline
+        hint={csv === true ? CSV_FROM_RESULTS_HINT : csv === null ? `CSV として保存するとき、${CSV_FROM_RESULTS_HINT}` : undefined}
         error={fieldErrors.get("content")}
       />
       <FolderField {...props} label="保存先フォルダ（省略可）" optional hint={UNATTENDED_FOLDER_HINT} />
@@ -846,9 +851,9 @@ export function CsvWriteForm(props: FormProps) {
         inMapRegion={inMapRegion}
         multiline
         placeholder={"例: 品目,金額\n交通費,1200"}
+        hint={`1 行目に列名、2 行目から値を、カンマで区切って書きます。${CSV_FROM_RESULTS_HINT}`}
         error={fieldErrors.get("content")}
       />
-      <p className="text-[11px] text-muted-foreground">1 行目は見出し（列名）です。前の結果を渡すときは CSV の文字列を渡してください。</p>
       <CsvEncodingField {...props} />
       <FolderField {...props} label="保存先フォルダ（省略可）" optional hint={UNATTENDED_FOLDER_HINT} />
     </div>
