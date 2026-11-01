@@ -202,11 +202,10 @@ fn resubmit_states_are_where_the_applicant_can_move() {
     assert!(resubmit_states(&f, "status", "made_by").is_empty());
 }
 
-/// 承認する人も進められる状態（審査中）は、作成者に取り下げを許していても出し直す状態にしない。承認する人が見ている
-/// あいだに申請者が書き換えられないようにする（D-115 を緩めない）。作成者でない人が成り立ちうるかを決められない
-/// 進められる人（部署など）がいる状態も数えない。
+/// 出し直す状態は、作成者が審査の状態へ出し直せる状態だけ。審査中の状態（申請中）は、作成者に取り下げを許していても
+/// 出し直す状態にしない（承認する人が見ているあいだに申請者が書き換えられないようにする・D-115 を緩めない）。
 #[test]
-fn resubmit_states_skip_states_where_others_also_move() {
+fn resubmit_states_skip_review_states_and_plain_withdrawals() {
     let creator = cmp("made_by", CmpOp::Eq);
     let approver = PolicyExpr::All(vec![cmp("approver", CmpOp::Eq), cmp("made_by", CmpOp::Ne)]);
     let states = ["下書き", "申請中", "承認", "却下", "差し戻し", "取り下げ"];
@@ -216,7 +215,7 @@ fn resubmit_states_skip_states_where_others_also_move() {
             mv("下書き", "申請中", creator.clone()),
             mv("申請中", "承認", approver.clone()),
             mv("申請中", "却下", approver.clone()),
-            mv("申請中", "差し戻し", approver),
+            mv("申請中", "差し戻し", approver.clone()),
             mv("申請中", "取り下げ", creator.clone()),
             mv("差し戻し", "申請中", creator.clone()),
             mv("差し戻し", "取り下げ", creator.clone()),
@@ -226,39 +225,49 @@ fn resubmit_states_skip_states_where_others_also_move() {
         resubmit_states(&flow, "status", "made_by"),
         vec!["差し戻し".to_string()]
     );
-    // 差し戻しのあいだ、部署の人も取り下げられるなら、差し戻しも出し直す状態にしない（決められない人は進められると
-    // みなす）。作成者と部署のどちらでも進められる進め方も同じ。
+    // 差し戻しのあいだ承認する人や部署の人も進められても（却下・取り下げ）、差し戻しは出し直す状態のまま。
+    let role = PolicyExpr::HasRole {
+        role: "admin".into(),
+        subtree: false,
+    };
     for other in [
-        PolicyExpr::HasRole {
-            role: "admin".into(),
-            subtree: false,
-        },
-        PolicyExpr::Any(vec![
-            creator.clone(),
-            PolicyExpr::HasRole {
-                role: "admin".into(),
-                subtree: false,
-            },
-        ]),
+        approver.clone(),
+        role.clone(),
+        PolicyExpr::Any(vec![creator.clone(), role.clone()]),
         PolicyExpr::IsOwner,
     ] {
         let mut f = flow.clone();
         f.transitions[6] = mv("差し戻し", "取り下げ", other.clone());
-        assert!(
-            resubmit_states(&f, "status", "made_by").is_empty(),
+        assert_eq!(
+            resubmit_states(&f, "status", "made_by"),
+            vec!["差し戻し".to_string()],
             "{other:?}"
         );
     }
+    // 取り下げだけ（審査の状態でないところへ進めるだけ）なら、出し直す状態は無い。
+    let mut f = flow.clone();
+    f.transitions.remove(5);
+    assert!(resubmit_states(&f, "status", "made_by").is_empty());
+    // 審査の状態を部署の人が判断する進め方も、承認する人の判断と同じに数える。
+    let mut f = flow.clone();
+    for t in &mut f.transitions[1..4] {
+        t.actor = role.clone();
+    }
+    assert_eq!(
+        resubmit_states(&f, "status", "made_by"),
+        vec!["差し戻し".to_string()]
+    );
+    // 作成者が審査中の状態から別の審査の状態へ進められても（申請中 → 差し戻し を作成者に・差し戻しでは承認する人が
+    // 却下できる）、出し直す先の審査の状態（申請中・差し戻し）は数えない（書き換えを開く側に倒さない）。
+    let mut f = flow.clone();
+    f.transitions[3] = mv("申請中", "差し戻し", creator.clone());
+    f.transitions[6] = mv("差し戻し", "却下", approver);
+    assert!(resubmit_states(&f, "status", "made_by").is_empty());
     // 作成者を本人で除く進め方（成り立たない）しか作成者に無い状態は、作成者が進められないので数えない。
     let mut f = flow.clone();
     f.transitions[5] = mv(
         "差し戻し",
         "申請中",
-        PolicyExpr::All(vec![creator.clone(), cmp("made_by", CmpOp::Ne)]),
-    );
-    f.transitions[6] = mv(
-        "差し戻し",
-        "取り下げ",
         PolicyExpr::All(vec![creator, cmp("made_by", CmpOp::Ne)]),
     );
     assert!(resubmit_states(&f, "status", "made_by").is_empty());

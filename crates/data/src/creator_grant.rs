@@ -26,7 +26,7 @@
 //! - **書き換え**: (1) いまの状態から、作成者に許した進め方のどれかが当該行で真で、(2) 書き込みの決まりから
 //!   取り出した部分が当該行で真のとき（「その状態のあいだ作成者の書き換えを許す」決まり）。行の決まりの無い
 //!   テーブルの書き換えは許さない（状態は進められる）。状態の進め方の画面の決まり（[`crate::fsm_write_guard`]）は、
-//!   作成者だけが進められる状態（出し直す状態・[`resubmit_states`]。承認する人も進められる審査中の状態は除く）の
+//!   作成者が審査の状態へ出し直せる状態（出し直す状態・[`resubmit_states`]。出し直す先の審査中の状態は除く）の
 //!   あいだ、作成者の書き換えを許す枝を自動で持つ。
 //! - 削除・一括取込・作成者の列への書き込み・状態の列の直接の書き換えは、これまでどおり断る。
 //!
@@ -150,7 +150,7 @@ pub(crate) fn may_hold(
 }
 
 /// 状態 `state` で、`is_creator` の列が本人ではない人（作成者でない人）について `expr` が成り立ちうるか（[`may_hold`]
-/// の逆の立場）。出し直す状態を、作成者のほかに進められる人がいない状態に限るのに使う（[`resubmit_states`]）。
+/// の逆の立場）。承認する人の判断する状態を見分けるのに使う（[`resubmit_states`]）。
 fn others_may_hold(
     expr: &PolicyExpr,
     status_field: &str,
@@ -225,27 +225,38 @@ fn move_part(
     creator_part(&t.actor, is_creator).filter(|p| may_hold(p, status_field, &t.from, is_creator))
 }
 
-/// 出し直す状態: 作成者（`applicant` の列 = 本人）が進められ、作成者のほかに進められる人がいない状態（最初の状態を
-/// 除く・状態の進め方の順・重複なし）。書き込みの決まり（[`crate::fsm_write_guard`]）が、この状態のあいだ作成者の
-/// 書き換えを許す（例: 差し戻し → 申請中 だけを作成者に許した「差し戻し」）。
+/// 出し直す状態: 作成者（`applicant` の列 = 本人）が、承認する人の判断する状態へ出し直せる状態（最初の状態を除く・
+/// 状態の進め方の順・重複なし）。書き込みの決まり（[`crate::fsm_write_guard`]）が、この状態のあいだ作成者の書き換えを
+/// 許す（例: 差し戻し → 申請中 を作成者に許した「差し戻し」）。
 ///
-/// 承認する人も進められる状態（審査中）は、作成者に取り下げなどの進め方を許していても数えない。数えると、承認する人が
-/// 見ているあいだに申請者が書き換えられ、書き換えた後の値で承認してしまう（D-115 の「最初の状態を過ぎたら申請者は
-/// 書き換えられない」が、作る人の気づかないうちに緩む）。作成者でない人が成り立ちうるかを決められない進められる人
-/// （部署・`is_owner`・ほかの列など）は、進められるとみなして数えない（書き換えを開く側に倒さない）。
+/// - 承認する人の判断する状態（審査の状態）: 作成者でない人も進められる進め方が出ている状態（例: 申請中）。作成者で
+///   ない人が成り立ちうるかを決められない進められる人（部署・`is_owner`・ほかの列）は、進められるとみなす。
+/// - 出し直す状態は、作成者に許した進め方で審査の状態へ進められる状態。取り下げのように、審査の状態でないところへ
+///   進めるだけの進め方では数えない。
+/// - 作成者が出し直す先の審査の状態（例: 申請中）は、そこから作成者に別の進め方を許していても数えない。数えると、
+///   承認する人が見ているあいだに申請者が書き換えられ、書き換えた後の値で承認してしまう（D-115 の「最初の状態を
+///   過ぎたら申請者は書き換えられない」が、作る人の気づかないうちに緩む）。
 pub(crate) fn resubmit_states(body: &FsmBody, status_field: &str, applicant: &str) -> Vec<String> {
     let is_applicant = |f: &str| f == applicant;
     let initial = body.states.first();
+    let review = |state: &str| {
+        body.transitions
+            .iter()
+            .filter(|t| t.from == state)
+            .any(|t| others_may_hold(&t.actor, status_field, state, &is_applicant))
+    };
+    // 作成者に許した進め方のうち、審査の状態へ出し直すもの（元の状態から行き先が変わるもの）。
+    let resubmits: Vec<&FsmTransition> = body
+        .transitions
+        .iter()
+        .filter(|t| t.to != t.from && review(&t.to))
+        .filter(|t| move_part(t, status_field, &is_applicant).is_some())
+        .collect();
     body.states
         .iter()
         .filter(|s| Some(*s) != initial)
-        .filter(|s| {
-            let mut out = body.transitions.iter().filter(|t| &t.from == *s);
-            let creator_moves = out
-                .clone()
-                .any(|t| move_part(t, status_field, &is_applicant).is_some());
-            creator_moves && !out.any(|t| others_may_hold(&t.actor, status_field, s, &is_applicant))
-        })
+        .filter(|s| resubmits.iter().any(|t| &t.from == *s))
+        .filter(|s| !resubmits.iter().any(|t| &t.to == *s))
         .cloned()
         .collect()
 }
