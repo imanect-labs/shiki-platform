@@ -40,7 +40,7 @@ test("インストール済みアプリ: 登録が見つからないアプリの
   };
   const registry = async (route: Route) => {
     if (route.request().method() !== "GET") return route.fallback();
-    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify([]) });
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ items: [] }) });
   };
   await page.route(/\/api\/apps\/installations$/, list);
   await page.route(/\/api\/apps\/registry$/, registry);
