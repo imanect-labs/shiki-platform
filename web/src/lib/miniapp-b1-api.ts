@@ -6,6 +6,10 @@
 "use client";
 
 import { apiFetch } from "@/lib/api";
+import type { components } from "@/generated/api";
+
+type InstallAppRequest = components["schemas"]["InstallAppRequest"];
+type MiniAppManifest = components["schemas"]["MiniAppManifest"];
 
 export type RegistryEntry = {
   id: string;
@@ -72,18 +76,22 @@ export async function installApp(input: {
   grantedScopes: string[];
   viewerRoles?: string[];
   editorRoles?: string[];
+  /// アプリのテーブルに「追加だけ」（レコードを追加し、自分が追加したレコードだけ見られる）を渡す部署・グループ。
+  submitterRoles?: string[];
 }): Promise<{ app_id: string; table_ids: string[] }> {
+  const body: InstallAppRequest = {
+    name: input.name,
+    version: input.version,
+    granted_scopes: input.grantedScopes,
+    viewer_roles: input.viewerRoles ?? [],
+    editor_roles: input.editorRoles ?? [],
+    submitter_roles: input.submitterRoles ?? [],
+  };
   // 文字列の本文は Content-Type を付けないと text/plain になり、サーバは 415 で断る（画面からのインストールが通らなかった）。
   const res = await apiFetch("/apps/installations", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      name: input.name,
-      version: input.version,
-      granted_scopes: input.grantedScopes,
-      viewer_roles: input.viewerRoles ?? [],
-      editor_roles: input.editorRoles ?? [],
-    }),
+    body: JSON.stringify(body),
   });
   return ok(res);
 }
@@ -97,10 +105,10 @@ export async function uninstallApp(appId: string): Promise<void> {
 export async function fetchManifest(
   artifactId: string,
   version?: number,
-): Promise<{ requested_scopes: string[]; description: string; name: string; version: string }> {
+): Promise<MiniAppManifest> {
   const q = version !== undefined ? `?version=${version}` : "";
   const res = await apiFetch(`/apps/manifests/${artifactId}${q}`);
-  const body = await ok<{ manifest: { requested_scopes: string[]; description: string; name: string; version: string } }>(res);
+  const body = await ok<{ manifest: MiniAppManifest }>(res);
   return body.manifest;
 }
 

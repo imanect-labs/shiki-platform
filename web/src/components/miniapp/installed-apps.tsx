@@ -3,11 +3,13 @@
 /// インストール済みコードアプリ（B1/B2）セクション（Task 9.11/9.13b）。
 ///
 /// A（宣言的 mini_app）と同じ「アプリ」ページに載せ、同一シェルから一覧・起動できるようにする。
-/// インストールはレジストリ（publish 済みエントリ）から**要求スコープを見て同意**する。
+/// インストールはレジストリ（publish 済みエントリ）から**要求スコープを見て同意**する。アプリがテーブルを持つときは、
+/// テーブルに「追加だけ」（レコードを追加し、自分が追加したレコードだけ見られる・D-113）を渡す部署・グループを選べる
+/// （GAP-53・インストールの `submitter_roles`）。
 
 import * as React from "react";
 import Link from "next/link";
-import { Download, Loader2, Package, Play, Trash2 } from "lucide-react";
+import { Download, Loader2, Package, Play, Trash2, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -20,6 +22,9 @@ import {
 } from "@/components/ui/dialog";
 import { toast } from "@/components/ui/use-toast";
 import { ConfirmDialog } from "@/components/drive/dialogs";
+import { RefPicker } from "@/components/data/ref-picker";
+import type { FieldDef } from "@/lib/data-api";
+import { cachedRoleName, rememberRoleName } from "@/lib/role-names";
 import {
   fetchManifest,
   installApp,
@@ -30,6 +35,9 @@ import {
   type RegistryEntry,
 } from "@/lib/miniapp-b1-api";
 
+/// 部署・グループを探して選ぶ（ディレクトリの部署・`role_ref` の列と同じ探し方）。
+const ROLE_FIELD: FieldDef = { key: "role", display_name: "部署・グループ", type: "role_ref" } as FieldDef;
+
 export function InstalledAppsSection() {
   const [installed, setInstalled] = React.useState<AppInstallation[] | null>(null);
   const [registry, setRegistry] = React.useState<RegistryEntry[]>([]);
@@ -37,6 +45,10 @@ export function InstalledAppsSection() {
     entry: RegistryEntry;
     requested: string[];
     granted: Set<string>;
+    /// アプリが持つテーブルの名前（インストールで作られる）。
+    tables: string[];
+    /// テーブルに「追加だけ」を渡す部署・グループ（id）。
+    submitters: string[];
   } | null>(null);
   const [pending, setPending] = React.useState<string | null>(null);
   const [removing, setRemoving] = React.useState<AppInstallation | null>(null);
@@ -54,10 +66,13 @@ export function InstalledAppsSection() {
   const openConsent = async (entry: RegistryEntry) => {
     try {
       const manifest = await fetchManifest(entry.artifact_id, entry.artifact_version);
+      const requested = manifest.requested_scopes ?? [];
       setConsent({
         entry,
-        requested: manifest.requested_scopes,
-        granted: new Set(manifest.requested_scopes),
+        requested,
+        granted: new Set(requested),
+        tables: (manifest.tables ?? []).map((t) => t.name),
+        submitters: [],
       });
     } catch (e) {
       toast({
@@ -76,6 +91,7 @@ export function InstalledAppsSection() {
         name: consent.entry.name,
         version: consent.entry.version,
         grantedScopes: [...consent.granted],
+        submitterRoles: consent.submitters,
       });
       toast({ title: `${consent.entry.name} をインストールしました` });
       setConsent(null);
@@ -225,6 +241,42 @@ export function InstalledAppsSection() {
               </li>
             ))}
           </ul>
+          {consent && consent.tables.length > 0 ? (
+            <div className="space-y-1.5" data-testid="install-submitters">
+              <p className="text-sm font-medium">レコードを追加するだけの部署・グループ</p>
+              <p className="text-[11px] leading-relaxed text-muted-foreground">
+                選んだ部署・グループの人は、このアプリのテーブル（{consent.tables.map((n) => `「${n}」`).join("、")}）にレコードを追加し、自分が追加したレコードを見られます。ほかの人のレコードは見られません。選ばなければ、あとからテーブルの共有で渡せます。
+              </p>
+              {consent.submitters.length > 0 ? (
+                <ul className="flex flex-wrap gap-1" aria-label="レコードを追加するだけの部署・グループ">
+                  {consent.submitters.map((id) => (
+                    <li key={id} className="inline-flex max-w-full items-center gap-1 rounded-full border bg-card py-0.5 pl-2 pr-0.5 text-xs">
+                      <span className="truncate">{cachedRoleName(id) || id}</span>
+                      <button
+                        type="button"
+                        aria-label={`「${cachedRoleName(id) || id}」を外す`}
+                        onClick={() => setConsent({ ...consent, submitters: consent.submitters.filter((x) => x !== id) })}
+                        className="rounded-full p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:p-2"
+                      >
+                        <X className="size-3" aria-hidden />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              <RefPicker
+                field={ROLE_FIELD}
+                value={[]}
+                ariaLabel="レコードを追加するだけの部署・グループを探す"
+                onChange={(ids, labels) => {
+                  const id = ids[0];
+                  if (!id || consent.submitters.includes(id)) return;
+                  if (labels[id]) rememberRoleName(id, labels[id]);
+                  setConsent({ ...consent, submitters: [...consent.submitters, id] });
+                }}
+              />
+            </div>
+          ) : null}
           <DialogFooter>
             <Button variant="outline" onClick={() => setConsent(null)}>
               キャンセル
