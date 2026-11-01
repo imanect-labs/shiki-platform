@@ -49,6 +49,8 @@ export function InstalledAppsSection() {
     tables: string[];
     /// テーブルに「追加だけ」を渡す部署・グループ（id）。
     submitters: string[];
+    /// アプリのコード（画面かサーバーの処理）がある（ゲートウェイを呼ぶトークンを受け取る）。
+    runsCode: boolean;
   } | null>(null);
   const [pending, setPending] = React.useState<string | null>(null);
   const [removing, setRemoving] = React.useState<AppInstallation | null>(null);
@@ -73,6 +75,7 @@ export function InstalledAppsSection() {
         granted: new Set(requested),
         tables: (manifest.tables ?? []).map((t) => t.name),
         submitters: [],
+        runsCode: Boolean(manifest.frontend || manifest.server),
       });
     } catch (e) {
       toast({
@@ -241,6 +244,13 @@ export function InstalledAppsSection() {
               </li>
             ))}
           </ul>
+          {/* アプリのトークンには、ゲートウェイが組織を決めるために所属グループの完全なパスが載る（Keycloak の groups
+              のマッパー）。トークンはアプリのコードに渡るので、身元を読む権限を選ばなくても所属はアプリに見える。 */}
+          {consent?.runsCode ? (
+            <p className="text-[11px] leading-relaxed text-muted-foreground" data-testid="install-identity-note">
+              使う人の所属する組織と部署・グループの名前は、選んだ権限にかかわらず、このアプリに渡ります。
+            </p>
+          ) : null}
           {consent && consent.tables.length > 0 ? (
             <div className="space-y-1.5" data-testid="install-submitters">
               <p className="text-sm font-medium">レコードを追加するだけの部署・グループ</p>
