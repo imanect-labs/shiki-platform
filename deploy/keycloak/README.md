@@ -56,6 +56,23 @@ compose の Keycloak は `--import-realm`（既存 realm は `IGNORE_EXISTING`�
 realm を import 済みの dev DB には反映されない。Keycloak の DB（compose の postgres の `keycloak`
 DB）を作り直すか、管理コンソールの「Realm settings → User profile」で同じ設定を入れること。
 
+## ミニアプリのクライアント（`app-<アプリの id>-b1` / `-b2`・BUG-172）
+
+コードのミニアプリ（B1・B2）のクライアントは、この realm の JSON には無い。インストールのときに shiki-server が
+provisioner の資格情報で登録する（`crates/app-gateway/src/oauth.rs` の `client_representation`）。
+
+- B1（public・PKCE S256・アクセストークンは 5 分）の戻り先は `{web のオリジン}/apps/oauth/callback`（web シェルの
+  ポップアップ・ホスト支援 PKCE）。web のオリジンは `gateway.web_origin`、無ければ `auth.redirect_uri` のオリジン。
+- 既定のスコープは `basic` だけ（B2 は Keycloak が付ける `service_account` も）。トークンに `sub` を載せる `basic` は、
+  Keycloak 25 以降の realm の既定のスコープ。**本番 realm に `basic` が無いと、アプリのトークンに `sub` が無く、
+  ゲートウェイが 401 で断る。** 任意のスコープは能力スコープ（`data.read` など・サーバーが作る）。
+- マッパーは aud（`shiki-gateway`）・`tenant`（利用者の属性 `tenant`・上の User Profile の保護がそのまま効く）・
+  `groups`（完全なパス）で、アクセストークンにだけ載せる。名前・メールアドレス・ロールは載せない（B1 では
+  トークンがアプリのコードに渡る）。
+- サーバーは起動時に、有効なインストールのクライアントを今の形に揃える（戻り先・スコープ・マッパー・有効）。
+  **これらのクライアントに管理者が手で足したマッパーやスコープは、揃えるときに消える。**
+- アンインストールはクライアントを無効にする（消さない）。再インストールで有効に戻り、今の形に揃う。
+
 ## Back-Channel Logout（#91）
 
 `shiki-web` client には OIDC Back-Channel Logout を設定済み（dev fixture）:
