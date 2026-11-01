@@ -117,6 +117,17 @@ function PeerStrip({ peers, label }: { peers: Peer[]; label: (p: Peer) => string
   );
 }
 
+/// 追加だけの人の帯の、自分が追加したレコードでできることの 1 文（D-127）。`edit_in` は `move_from` の一部。
+function ownRecordsNote(own: { move_from: string[]; edit_in: string[] }, fsmLabel: string): string {
+  const quoted = (xs: string[]) => xs.map((x) => `「${x}」`).join("と");
+  const cell = `「${fsmLabel}」のセルを開いて進められ`;
+  if (own.edit_in.length === 0) return `自分が追加したレコードは、${quoted(own.move_from)}のとき${cell}ます。`;
+  if (own.edit_in.length === own.move_from.length) {
+    return `自分が追加したレコードは、${quoted(own.move_from)}のあいだ直せ、${cell}ます。`;
+  }
+  return `自分が追加したレコードは、${quoted(own.move_from)}のとき${cell}、${quoted(own.edit_in)}のあいだは直せます。`;
+}
+
 function countLabel(s: DataGridStatus | null): string {
   if (!s) return "";
   const c = s.count;
@@ -666,12 +677,7 @@ export function TableWorkspace({
       {addOnly ? (
         <p className="text-xs text-muted-foreground" data-testid="data-add-only-note">
           このテーブルは「追加だけ」で共有されています。表示しているのは、自分が追加したレコードと、個別に共有されたレコードです。
-          {ownRecords && ownRecords.edit_in.length > 0
-            ? `自分が追加したレコードは、${ownRecords.edit_in.map((s) => `「${s}」`).join("と")}のあいだ直せます。`
-            : ""}
-          {ownRecords
-            ? `${ownRecords.move_from.map((s) => `「${s}」`).join("と")}のレコードは、「${fsmLabel}」のセルを開いて進められます。`
-            : ""}
+          {ownRecords ? ownRecordsNote(ownRecords, fsmLabel) : ""}
         </p>
       ) : null}
 
