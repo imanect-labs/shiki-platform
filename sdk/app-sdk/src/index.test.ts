@@ -88,3 +88,20 @@ test("AI の答えは SSE のフレームごとに受け取る", async () => {
     ["done", { type: "done" }],
   ]);
 });
+
+test("サーバー関数の失敗は、結果の error で理由と文を受け取る", async () => {
+  const seen = respond(
+    Response.json({
+      ok: false,
+      value: null,
+      logs: [],
+      error: { code: "script_error", message: "金額が空です", retryable: false },
+    }),
+  );
+  const result = await gw().invokeFunction("approve", { id: "r1" });
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.error, { code: "script_error", message: "金額が空です", retryable: false });
+  assert.equal(seen[0].url, "https://gw.example/gw/apps/functions/approve/invoke");
+  assert.equal(seen[0].init?.method, "POST");
+  assert.deepEqual(JSON.parse(String(seen[0].init?.body)), { id: "r1" });
+});

@@ -376,9 +376,9 @@ async fn invoke_service(
         )
         .await
         .map_err(|e| anyhow::anyhow!("run: {e}"))?;
-    if !outcome.ok {
+    if let Some(error) = &outcome.error {
         tracing::warn!(app_id = %sub.app_id, function = %sub.function,
-            value = %outcome.value, "関数がエラー終了");
+            code = %error.code, message = %error.message, "関数がエラー終了");
     }
     Ok(())
 }

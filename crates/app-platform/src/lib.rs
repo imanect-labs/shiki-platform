@@ -8,6 +8,7 @@
 mod bundle;
 mod client_repair;
 mod egress_guard;
+mod function_failure;
 mod functions;
 mod install;
 mod install_ops;
@@ -24,6 +25,7 @@ mod validate;
 
 pub use bundle::{BundleStore, MAX_BUNDLE_BYTES};
 pub use client_repair::ClientRepairProgress;
+pub use function_failure::FunctionFailure;
 pub use functions::{
     egress_allowed, FunctionActor, FunctionInvocation, FunctionOutcome, FunctionRunner,
 };

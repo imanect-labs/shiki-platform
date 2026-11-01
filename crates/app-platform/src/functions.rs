@@ -83,9 +83,12 @@ pub struct FunctionInvocation {
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct FunctionOutcome {
     pub ok: bool,
-    /// スクリプトの戻り値（`ok=false` は打ち切り理由）。
+    /// スクリプトの戻り値（`ok=false` は null）。
     pub value: serde_json::Value,
     pub logs: Vec<String>,
+    /// 失敗の理由と文（`ok=false` のときだけ・GAP-60）。スタックの行・内部の文を含まない。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<crate::FunctionFailure>,
 }
 
 /// B2 関数ランナ（engine＋コード取得＋ホスト委譲の束）。
@@ -162,6 +165,7 @@ impl FunctionRunner {
             AppPlatformError::Internal(format!("script エンジンを準備できません: {e}"))
         })?;
         let limits = function_limits();
+        let limits_secs = limits.epoch_deadline.as_secs();
         let handle = tokio::runtime::Handle::current();
         // prelude はコンパイル後に前置する（compile の禁止構文 lint はユーザーコードにのみ適用）。
         // `Shiki.data.*` / `Shiki.notify.*` の糖衣（ゲスト wasm を再ビルドせずに足す・script-runtime の共通定義）。
@@ -178,10 +182,18 @@ impl FunctionRunner {
         .await
         .map_err(|e| AppPlatformError::Internal(format!("関数実行スレッド: {e}")))?;
 
+        let error = (!outcome.ok).then(|| {
+            crate::function_failure::function_failure(
+                outcome.error,
+                &outcome.termination,
+                limits_secs,
+            )
+        });
         Ok(FunctionOutcome {
             ok: outcome.ok,
             value: outcome.value.unwrap_or(serde_json::Value::Null),
             logs: outcome.logs,
+            error,
         })
     }
 }

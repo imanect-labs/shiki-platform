@@ -315,3 +315,82 @@ async fn tampered_code_is_rejected() {
         .await;
     assert!(err.is_err(), "{err:?}");
 }
+
+/// 捕まえずに投げた誤りとゲートウェイの断りは、失敗の理由（code）と文として呼び出し側へ返る。スタックの行と内部の文は
+/// 返さない（GAP-60）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failures_return_code_and_message_without_stack() {
+    let app = Router::new().route(
+        "/gw/data/tables/{t}/records/{id}",
+        get(|| async {
+            (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({ "error": "権限がありません: この操作は許可されていません" })),
+            )
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let engine = Arc::new(ScriptEngine::new().expect("engine"));
+    let run = |script: &'static str| {
+        let engine = Arc::clone(&engine);
+        async move {
+            let tenant = format!("t-{}", Uuid::new_v4());
+            let sha = sha256_hex(script.as_bytes());
+            let store = Arc::new(MemStore::default());
+            store.0.lock().unwrap().insert(
+                miniapp_bundle_key(&tenant, &sha),
+                script.as_bytes().to_vec(),
+            );
+            FunctionRunner::new(engine, store, format!("http://{addr}"))
+                .unwrap()
+                .run(
+                    &sha,
+                    FunctionInvocation {
+                        tenant_id: tenant,
+                        app_id: Uuid::new_v4(),
+                        function: "f".into(),
+                        payload: serde_json::Value::Null,
+                        bearer: "t".into(),
+                        actor: FunctionActor::User,
+                        egress_allowlist: vec![],
+                    },
+                )
+                .await
+                .expect("run")
+        }
+    };
+
+    // 作成者が投げた誤り: 文の最初の行（スタックの行は返さない）。
+    let thrown = run(
+        r#"function main(input) { if (!input.payload) { throw new Error("金額が空です"); } return 1; }"#,
+    )
+    .await;
+    assert!(!thrown.ok);
+    let error = thrown.error.as_ref().expect("error");
+    assert_eq!(error.code, "script_error");
+    assert_eq!(error.message, "金額が空です");
+    assert!(!error.retryable);
+    let body = serde_json::to_value(&thrown).unwrap();
+    assert_eq!(body["error"]["code"], "script_error");
+    assert!(!body.to_string().contains("eval_script"), "{body}");
+
+    // 捕まえずに投げ返したゲートウェイの断り: その code と文。
+    let denied = run(r#"function main(input) {
+  Shiki.data.get("11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222");
+  return 1;
+}"#)
+    .await;
+    let error = denied.error.as_ref().expect("error");
+    assert_eq!(error.code, "http_403");
+    assert_eq!(
+        error.message,
+        "権限がありません: この操作は許可されていません"
+    );
+
+    // 成功したときは error を返さない（これまでの応答の形のまま）。
+    let ok = run("function main(input) { return { done: true }; }").await;
+    assert!(ok.ok && ok.error.is_none());
+    assert!(serde_json::to_value(&ok).unwrap().get("error").is_none());
+}

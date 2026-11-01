@@ -161,11 +161,11 @@ impl FunctionPort for GatewayFunctionPort {
             )
             .await
             .map_err(map_platform)?;
-        Ok(serde_json::json!({
-            "ok": outcome.ok,
-            "value": outcome.value,
-            "logs": outcome.logs,
-        }))
+        // 失敗のときは理由と文（error）も返す（GAP-60・スタックの行と内部の文は含まない）。
+        serde_json::to_value(&outcome).map_err(|e| {
+            tracing::error!(error = %e, "B2 関数の結果を JSON にできない");
+            GatewayError::Internal("内部エラーが発生しました".into())
+        })
     }
 }
 

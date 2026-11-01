@@ -78,6 +78,18 @@ async function errorOf(res: Response): Promise<GatewayError> {
 /// 組織の既定のおまかせ（Auto）で動くときは使われない。
 export type GwLlmInvokeRequest = { messages: unknown[]; model?: string } & Record<string, unknown>;
 
+/// アプリのサーバー関数（B2）の結果（`/gw/apps/functions/{function}/invoke`）。
+///
+/// 関数が失敗すると `ok` が false で、`error` に理由（`code`）と、利用者に見せてよい文（`message`）が入る。`code` は
+/// 関数が投げた誤りなら `script_error`、時間や計算の量の上限で止めたなら `resource`、ゲートウェイが断ったなら
+/// `http_403` のような形。文にスタックの行と内部の文は入らない。
+export interface GwFunctionResult<T = unknown> {
+  ok: boolean;
+  value: T | null;
+  logs: string[];
+  error?: { code: string; message: string; retryable: boolean };
+}
+
 /// AI エージェントの呼び出し（`/gw/ai/agent/invoke`）の要求。`model` の扱いは [`GwLlmInvokeRequest`] と同じ。
 export type GwAgentInvokeRequest = { prompt: string; model?: string } & Record<string, unknown>;
 
@@ -148,6 +160,13 @@ export class ShikiGateway {
       to,
       expected_rev: expectedRev,
     });
+  }
+
+  // --- functions（B2） ---
+  /// アプリのサーバー関数を呼ぶ。関数の失敗は例外にせず、結果の `error` で返す（ゲートウェイが呼び出し自体を
+  /// 断ったときだけ [`GatewayError`] を投げる）。
+  invokeFunction<T = unknown>(name: string, payload: unknown = {}): Promise<GwFunctionResult<T>> {
+    return this.request("POST", `/gw/apps/functions/${encodeURIComponent(name)}/invoke`, payload);
   }
 
   // --- identity / notify / rag ---
