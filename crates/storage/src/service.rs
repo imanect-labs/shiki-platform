@@ -173,6 +173,7 @@ mod share_link_ratelimit;
 mod share_link_reconcile;
 mod share_link_redeem;
 mod share_link_util;
+mod shared_list;
 mod sharing;
 mod trash;
 mod upload;
@@ -180,6 +181,7 @@ mod upload_gc;
 mod versions;
 mod workspace_io;
 
+pub use shared_list::{SHARED_SCAN_CHUNK, SHARED_SCAN_MAX_CHECKS};
 pub use workspace_io::WriteAtOutcome;
 
 fn row_to_node(row: NodeRow) -> Result<Node, StorageError> {

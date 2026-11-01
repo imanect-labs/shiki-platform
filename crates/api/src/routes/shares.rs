@@ -112,13 +112,18 @@ pub async fn list_shares(
     Ok(Json(entries))
 }
 
-/// 自分に共有されたノード一覧（自分が作成したものを除く）。keyset ページング。
+/// 自分に共有されたノード一覧（自分が作成したものを除く・新しい順）。keyset ページング。
+///
+/// 共有されたものが多い人では、1 ページが `limit` より少ないか空のまま `next_cursor` だけが付いて返ることがある
+/// （サーバーが OpenFGA に問う数を抑えるため・BUG-162）。`next_cursor` が無くなるまで続きを読む。`next_cursor` は
+/// テナントに束縛した不透明な文字列で、読めない値（前の版の位置を含む）は 400（`cursor_invalid`）。
 #[utoipa::path(
     get,
     path = "/shares/shared-with-me",
     params(crate::routes::folders::PageQuery),
     responses(
         (status = 200, description = "共有されたノード一覧（1 ページ）", body = crate::routes::folders::ChildrenResponse),
+        (status = 400, description = "cursor が読めない（cursor_invalid）"),
         (status = 401, description = "未認証"),
     ),
     security(("session" = [])),
@@ -129,17 +134,36 @@ pub async fn shared_with_me(
     trace: TraceIdExt,
     axum::extract::Query(q): axum::extract::Query<crate::routes::folders::PageQuery>,
 ) -> Result<Json<crate::routes::folders::ChildrenResponse>, ApiError> {
+    let kind = data::ListPositionKind::DriveShared;
+    let after = match q.cursor.as_deref().filter(|c| !c.is_empty()) {
+        Some(c) => {
+            let p = state.data.open_list_position(kind, &ctx.tenant_id, c)?;
+            Some(storage::SharedPosition {
+                updated_at: p.updated_at,
+                id: p.id,
+            })
+        }
+        None => None,
+    };
     let page = state
         .storage
-        .list_shared_with_me(
-            &ctx,
-            q.cursor.as_deref(),
-            q.limit.unwrap_or(50),
-            trace.as_deref(),
-        )
+        .list_shared_with_me(&ctx, after, q.limit.unwrap_or(50), trace.as_deref())
         .await?;
+    let next_cursor = page
+        .next
+        .map(|p| {
+            state.data.seal_list_position(
+                kind,
+                &ctx.tenant_id,
+                data::ListPosition {
+                    updated_at: p.updated_at,
+                    id: p.id,
+                },
+            )
+        })
+        .transpose()?;
     Ok(Json(crate::routes::folders::ChildrenResponse {
         items: page.items.into_iter().map(Into::into).collect(),
-        next_cursor: page.next_cursor,
+        next_cursor,
     }))
 }

@@ -105,6 +105,22 @@ pub struct ChildPage {
     pub next_cursor: Option<String>,
 }
 
+/// 「共有されたもの」の続きの位置（並びのキー `(updated_at, id)` の最後の値・キーセット）。
+///
+/// 見えないノードを指すことがある（BUG-162）ので、外へ出すときは呼び出し側（API）がテナントに束縛して暗号化する。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SharedPosition {
+    pub updated_at: DateTime<Utc>,
+    pub id: Uuid,
+}
+
+/// 「共有されたもの」の 1 ページ（新しい順）。`next` が `Some` なら続きがある（`items` が空でも続きがあることがある）。
+#[derive(Debug)]
+pub struct SharedPage {
+    pub items: Vec<Node>,
+    pub next: Option<SharedPosition>,
+}
+
 /// 子一覧の並び替えキー。keyset カーソルをこのキーに織り込み、サーバ側でソートする
 /// （クライアント側の全件ソートは採らない＝全件取得の禁止・無限スクロール）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
