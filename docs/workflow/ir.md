@@ -463,16 +463,18 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
     "query": { /* $from / $template 可 */ },
     "body": { "$template": "…", "vars": { /* … */ } },
     "secret": { "name": "slack-bot-token", "attach": { "kind": "bearer" } },
-    "redirect": "deny",            // deny（既定）| follow_stripped
+    "headers": { "X-Request-Id": { "$from": "input", "path": "/request_id" } },  // 名前はリテラル・値は $from / $template 可
+    "redirect": "deny",            // deny（既定・いまはこれだけ。follow_stripped は未実装）
     "fail_on_error_status": true   // 相手が 400 以上を返したら失敗にする（省略は false）
   } }
 ```
 
 - **URL のホスト部は IR 上リテラル必須**（`$from` / `$template` 不可。パス・クエリ・ボディは可）。保存時に egress allowlist・シークレット宛先束縛と照合できるのはこの制約のおかげであり、PIT-36 の動的 URL 迂回を型で殺す（§8 V4）。
-- **`secret`**: `{ "name": "<参照名>", "attach": { "kind": "bearer" | "header", "header"?: "X-Api-Key" } }`。参照名のみを書き、解決・宛先束縛検証・注入はエンジンが実行直前に行う（値がデータフローに乗らない・§3.1）。
-- **`redirect`**: 既定 `deny`。`follow_stripped` は追従時にシークレットを剥がして再検証する（PIT-36）。
+- **`secret`**: `{ "name": "<参照名>", "attach": { "kind": "bearer" | "header", "header"?: "X-Api-Key" } }`。参照名のみを書き、解決・宛先束縛検証・注入はエンジンが実行直前に行う（値がデータフローに乗らない・§3.1）。`attach.header` は下の `headers` と同じ決まりで、保存時（V1）と実行時に名前を確かめる（Shiki が決めるヘッダー・HTTP の名前の形でないものは断る・BUG-184）。
+- **`headers`**（省略可・GAP-19）: 作成者が決めるヘッダー（名前 → 値）。名前はリテラルで、値は `$from` / `$template` を書ける（値は文字にする）。送れるヘッダーの決まりと上限は `Shiki.http.request` と同じ（`nodes/http_headers.rs`・[script.md](./script.md) §6.7）: Shiki が決めるヘッダー（`Host`・`Content-Length`・`Transfer-Encoding`・`Connection` ほか hop-by-hop・`Accept-Encoding`）・シークレットを付けるヘッダーと同じ名前・形の誤り・制御文字・重複（大文字と小文字は区別しない）・20 個／値 4 KB／合計 8 KB を超えるものは、保存時に分かる範囲は V1 で、値が実行時に決まるものは実行時に `invalid` で断る。`Idempotency-Key`・`Content-Type` を書くと、Shiki が付ける値の代わりにそれを送る。省略はこの項目が無かったころの定義の挙動。
+- **`redirect`**: 既定 `deny`。いまは `deny` だけで、`follow_stripped`（追従時にシークレットを剥がして再検証する・PIT-36）は未実装（IR の `RedirectPolicy` に無いので保存で断り、`Shiki.http.request` は `invalid` で断る・GAP-27）。
 - **実行時の注入はコネクション検証後**: ホスト部リテラル制約は動的 URL 迂回を塞ぐが、DNS rebinding（検証後に解決先 IP が付け替わる）は塞げない。エンジンが名前解決・コネクション確立・検証を行い、**検証済みコネクションにのみ**シークレットを注入する（PIT-36 ③。実行時の正は [engine.md](./engine.md) §7.4・`Shiki.http.request` と同一実装）。名前解決の後のアドレスが内部のネットワーク（リンクローカル・クラウドのメタデータを含む）なら、シークレットの有無によらず送らない（BUG-181・D-135）。
-- 応答: `{ "status", "headers": { /* 許可リストのみ */ }, "body": /* JSON なら parse・そうでなければ text・≤ 1MB */ }`。
+- 応答: `{ "status", "host", "body": /* JSON なら parse・そうでなければ text・≤ 1MB */ }`（`host` は照合した送り先）。応答の `headers`（許可リストのみ）は未実装で、いまは返さない（GAP-27）。
 - 冪等性は best-effort。`Idempotency-Key: <冪等キー>` ヘッダの注入支援のみ提供する（[engine.md](./engine.md) §7）。
 - **`fail_on_error_status`**（省略は false・BUG-99・D-95）: true なら、相手が 400 以上を返したときブロックを失敗にする。400〜499（408・425・429 を除く）は `http_error_status`（permanent）、500 以上と 408・425・429 は `http_retryable_status`（retryable・`max_attempts` の範囲でやり直す。408 と 425 は同じ要求を後で送り直せば通りうる）。省略・false は誤りの応答も成功として `status` を返す（この項目が無かったころの定義の挙動）。エディタで新しく置くブロックは true で置く。送ったことは失敗にするときも監査に残す。
 - **送れる先**: シークレットを使わない送信は、デプロイ設定 `workflow.http_allowlist` の宛先だけ（既定は空で、空ならシークレットなしの送信はすべて拒否する）。シークレットを使う送信は、そのシークレットの宛先束縛の中だけで、`http_allowlist` を設定していればその中にも限る（`nodes/capability_ai.rs` の `check_http_destination`）。
