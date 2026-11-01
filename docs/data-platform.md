@@ -896,6 +896,11 @@ v1 の `Metric { Count, Sum, Avg, Min, Max }` と `Aggregate { group_by, metric,
 > 付与できる役割は **viewer / editor / submitter（追加だけ・§6.7）**で、owner は付け外ししない。見えないテーブルは 404、見えるが owner でなければ 403
 > （**ミニアプリ所有のテーブル（`app_id` あり）は付与・解除・一覧とも 403**: アクセスはアプリのインストールとスコープで配るので、
 > インストールした人が owner を持っていても /data からは触らせない（インストールが付けたロールのタプルを外させない）。拒否は監査に deny）。
+> ミニアプリ所有のテーブルの部署・グループ（viewer / editor / submitter の `role#member`）は、インストールの要求
+> （`viewer_roles`・`editor_roles`・`submitter_roles`）と、インストールの後の `GET / PATCH /apps/installations/{app_id}/roles`
+> （GAP-68・`InstallService::update_table_roles`・アプリのすべてのテーブルに効く）で付け外しする。変えられるのはインストールと
+> 同じくアプリの持ち主だけで、監査は `app.table_roles.update`（失敗したらタプルを戻す）。タプルを書き換えるのは
+> `InstallService::write_table_roles` の 1 か所。
 > 削除済みのテーブルは、タプルが残っている相手にも 404。テーブルを消すと、commit の後に `data_table` のタプル
 > （持ち主・共有・委譲）を撤去し、撤去を終えた時刻を `authz_purged_at` に残す。撤去に失敗したもの・撤去を始める前に
 > 消したものは、サーバーの掃除（`DeletedTableTupleSweeper`・起動時と 10 分ごと）が古い順に撤去する（残ったタプルは
@@ -1037,7 +1042,8 @@ define viewer:    [user, role#member, workflow, miniapp] or editor   ← viewer 
   `add_only` を立てて出す。チャットの AI のテーブル一覧（data ツール）にも印つきで出し、見えるのは自分が追加した
   レコードだけで、作成と作成者に許した書き換えだけができると AI に伝える。`data_schema` は閲覧者に見せる定義（読める
   列だけ）を返す（GAP-53）。ミニアプリの所有テーブルはインストールの `submitter_roles`（画面は同意のダイアログの
-  「レコードを追加するだけの部署・グループ」）で部署に追加だけを渡す。
+  「レコードを追加するだけの部署・グループ」）で部署に追加だけを渡す。インストールの後は、インストール済みアプリの
+  「使える部署・グループ」（`PATCH /apps/installations/{app_id}/roles`・GAP-68）で足す・外す。
 - 材料化（§7.4 ①）: 参照元の追加だけの人は参照元の読み手に数える（自分の行の材料化列で絞り込めるので）。参照先の
   追加だけの人は参照先の読み手に数えない（参照先の全行を読めない）。材料化の前提の検査は**絞る前の**定義で行う
   （追加だけの人の読取で全員の材料化列を降格させない）。
