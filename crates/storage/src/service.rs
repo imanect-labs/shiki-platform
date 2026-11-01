@@ -181,7 +181,7 @@ mod upload_gc;
 mod versions;
 mod workspace_io;
 
-pub use shared_list::{SHARED_SCAN_CHUNK, SHARED_SCAN_MAX_CHECKS};
+pub use shared_list::{shared_scan_sql, SHARED_SCAN_CHUNK, SHARED_SCAN_MAX_CHECKS};
 pub use workspace_io::WriteAtOutcome;
 
 fn row_to_node(row: NodeRow) -> Result<Node, StorageError> {

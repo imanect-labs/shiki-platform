@@ -25,6 +25,21 @@ pub const SHARED_SCAN_CHUNK: i64 = 200;
 /// DB の候補を OpenFGA で絞る経路で、1 回の頼みに OpenFGA へ問う数の上限（ListObjects が返した分は問わない）。
 pub const SHARED_SCAN_MAX_CHECKS: usize = 1_000;
 
+/// DB の候補を並びの順に引く文（[`StorageService::list_shared_with_me`] の上限に届いた経路）。
+///
+/// 引数は `$1` = org・`$2` = tenant_id・`$3` = 自分・`$4`・`$5` = 続きの位置（`updated_at`・`id`。無ければ NULL）・
+/// `$6` = 件数。並びの索引（migration 0125 の `node_shared_scan_idx`）を逆にたどって打ち切る前提で、計画の回帰
+/// テストが EXPLAIN する（引くたびに組織の生きているノードをすべて読んで並べ直す形に戻さない）。
+#[must_use]
+pub fn shared_scan_sql() -> String {
+    format!(
+        "SELECT {NODE_COLS} FROM node \
+         WHERE org = $1 AND tenant_id = $2 AND deleted_at IS NULL AND created_by <> $3 \
+           AND ($4::timestamptz IS NULL OR (updated_at, id) < ($4::timestamptz, $5)) \
+         ORDER BY updated_at DESC, id DESC LIMIT $6"
+    )
+}
+
 impl StorageService {
     /// 自分に共有されたノード一覧（自分が作成したものを除く・org+tenant スコープ・新しい順）。
     ///
@@ -133,12 +148,7 @@ impl StorageService {
         let known: std::collections::HashSet<Uuid> = known.into_iter().collect();
         let ns = ctx.ns();
         let subject = ctx.subject();
-        let sql = format!(
-            "SELECT {NODE_COLS} FROM node \
-             WHERE org = $1 AND tenant_id = $2 AND deleted_at IS NULL AND created_by <> $3 \
-               AND ($4::timestamptz IS NULL OR (updated_at, id) < ($4::timestamptz, $5)) \
-             ORDER BY updated_at DESC, id DESC LIMIT $6"
-        );
+        let sql = shared_scan_sql();
         let mut picked: Vec<NodeRow> = Vec::new();
         let mut at = after;
         let mut checks = 0usize;

@@ -57,5 +57,7 @@ pub use model::{
 pub use naming::{numbered_name, OnNameTaken, MAX_NUMBERED_NAME};
 pub use object_store::{ObjectStore, ObjectStoreError, S3Config, S3ObjectStore};
 pub use pool_router::PoolRouter;
-pub use service::{StorageService, WriteAtOutcome, SHARED_SCAN_CHUNK, SHARED_SCAN_MAX_CHECKS};
+pub use service::{
+    shared_scan_sql, StorageService, WriteAtOutcome, SHARED_SCAN_CHUNK, SHARED_SCAN_MAX_CHECKS,
+};
 pub use tenant::{Tenant, TenantPlacement, TenantStatus, TenantStore};

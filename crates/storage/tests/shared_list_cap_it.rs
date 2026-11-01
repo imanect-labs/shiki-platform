@@ -6,6 +6,8 @@
 //! - 見えないノードばかりが続くと、OpenFGA に問う数の上限で止まって続きの位置を返す（ページが空でも続きがある）。
 //!   読み進めると残りが出る
 //!
+//! - 上限に届いた経路で候補を引く文は、並びの索引を逆にたどって打ち切る（引くたびに組織のノードを並べ直さない）
+//!
 //! 各テストは自分のテナント（`t-<uuid>`）と OpenFGA のストアに閉じ、最後に行とストアを消す（落ちても消す）。
 
 #![allow(
@@ -337,4 +339,49 @@ async fn invisible_nodes_stop_at_the_check_budget_and_the_rest_follows() {
         assert_eq!(sizes[0], 0);
     })
     .await;
+}
+
+/// 上限に届いた経路で候補を引く文（`storage::shared_scan_sql`）は、並びの索引（migration 0125 の
+/// `node_shared_scan_idx`）を逆にたどって件数で打ち切る。索引が無いと、引くたびに組織の生きているノードをすべて
+/// 読んで並べ直す計画になる（1 回の頼みで最大 5 回）。小さな表でも索引を選べるかだけを見るため、走査と並べ直しを
+/// 抑えて計画を立てさせる（索引で並びを満たせないと Sort が残る）。続きの位置の有無の両方を見る。行は作らない。
+#[tokio::test]
+async fn the_candidate_scan_walks_the_order_index_without_sorting() {
+    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+        return;
+    };
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect(&db_url)
+        .await
+        .expect("Postgres へ接続できること");
+    sqlx::migrate!("../../migrations")
+        .run(&pool)
+        .await
+        .expect("マイグレーション適用");
+    let explain = format!("EXPLAIN {}", storage::shared_scan_sql());
+    for after in [None, Some((chrono::Utc::now(), Uuid::new_v4()))] {
+        let mut tx = pool.begin().await.unwrap();
+        for set in [
+            "SET LOCAL enable_seqscan = off",
+            "SET LOCAL enable_sort = off",
+        ] {
+            sqlx::query(set).execute(&mut *tx).await.unwrap();
+        }
+        let plan: Vec<String> = sqlx::query_scalar(&explain)
+            .bind(ORG)
+            .bind("t-plan")
+            .bind("alice")
+            .bind(after.map(|a| a.0))
+            .bind(after.map(|a| a.1))
+            .bind(storage::SHARED_SCAN_CHUNK)
+            .fetch_all(&mut *tx)
+            .await
+            .unwrap();
+        tx.rollback().await.unwrap();
+        let plan = plan.join("\n");
+        assert!(plan.contains("node_shared_scan_idx"), "{plan}");
+        assert!(!plan.contains("Sort"), "{plan}");
+    }
 }
