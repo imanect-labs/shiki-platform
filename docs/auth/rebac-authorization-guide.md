@@ -585,8 +585,14 @@ let revoked = self.authz
 - `ShareTarget`（`model.rs:156`）: `User{id}` → `user:acme|<id>`、`Role{id}` → `role:acme|<id>#member`（部署共有）。
 - `ShareRole`（`model.rs:189`）: `Viewer` / `Editor` のみ（owner/parent/member は共有語彙から除外）。
 - 共有相手一覧 `list_shares`（`sharing.rs:94`）は `read_tuples`（直接タプルのみ）で「誰に共有したか」を返す。
-- 自分に共有された一覧 `list_shared_with_me`（`sharing.rs:123`）は `list_objects`（継承込み実効集合）で引き、
+- 自分に共有された一覧 `list_shared_with_me`（`shared_list.rs`）は `list_objects`（継承込み実効集合）で引き、
   自テナント分のみ `strip_object_id` で抽出、作成者本人分を除いてページング。
+  file か folder の `list_objects` の応答が上限（1,000 件・`authz::visible`）に届いたら実効集合を正にせず、組織・テナントの
+  生きている、自分が作っていないノードを新しい順に 200 件ずつ引いて BatchCheck で絞る（`list_objects` が返した分は問い直さない・
+  1 回の頼みで問うのは 1,000 問まで）。届いたら見つけた分と続きの位置を返す（**ページが空でも `next_cursor` があれば続きがある**）。
+  続きの位置は見えないノードを指しうるので、API がテナントに束縛して暗号化する（読めない位置は `cursor_invalid`・BUG-162）。
+- アーティファクトの一覧（`GET /artifacts`）の共有分も同じ形で絞る（`crates/artifact/src/shared.rs`）。共有分に続きがあれば
+  `shared_next_cursor` を返し、`shared_cursor` に渡すと共有分の続きだけを返す（所有分の `before_*` とは同時に使えない・BUG-162）。
 
 ```mermaid
 flowchart LR

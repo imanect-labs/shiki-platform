@@ -911,6 +911,14 @@ v1 の `Metric { Count, Sum, Avg, Min, Max }` と `Aggregate { group_by, metric,
 （権限剥奪・ロール変更・共有解除の即時反映のため）。`MAX_ROLE_SET = 1000` 超過は fail-closed、
 `MAX_SHARED_IDS = 10_000` 超過は切り詰め＋`shares_truncated` 通知（可視が減る方向）も継承。
 
+> **ListObjects の応答の上限（BUG-161）**: 実効集合（ListObjects）の応答は上限（1,000 件・`authz::visible`）で黙って
+> 切れる。ロールの実効集合（`$user.roles { subtree: true }`）は、上限ちょうどに届いたら超過と同じく fail-closed で
+> 断る（直接所属は Read API なので切れない）。個別共有の実効集合が上限に届いたら、`data_record` の viewer は直接の
+> タプル（`[user, role#member]`・editor を含む）だけなので、本人と所属ロール（配下込みの実効集合）それぞれの直接
+> タプルを Read API（件数の上限が無い・4 本ずつ並べる）で読み直して足す（`MAX_SHARED_IDS` の切り詰めはそのまま）。
+> 所属ロールの実効集合も上限に届いたら、読み直せないロールへの共有は見えない方向に倒し `shares_truncated` を立てる。
+> 共有の集合はリクエストの中で 1 回だけ引く（式の違う材料でも読み直さない）。
+
 **例外はリアルタイム配信のみ**（§9.4 で TTL 付き再解決を明示の約束として定義する）。
 
 ### 6.2 行述語を索引テーブルで評価する
@@ -2288,6 +2296,8 @@ PIT-18 の不変条件を弱めずに取れる、最も費用対効果の高い�
 > **実装（Task 15.9・`crates/data/src/policy/memo.rs`）**: グリッド 1 画面（ページ＋件数＋lookup / rollup の解決）の OpenFGA 往復は
 > **計 2 回**: ①テーブル viewer・参照先テーブルの viewer・`has_role(subtree=true)` の名指しロールの check をまとめた
 > **BatchCheck 1 往復** ②個別共有の `list_objects(DataRecord)` 1 往復（`authz_memo_it::grid_screen_reads_with_at_most_two_fga_round_trips`）。
+> ②が上限に届いた人だけ、所属ロールの `list_objects(Role)` と、本人と所属ロールの数だけ Read API の往復が足される（§6.1・BUG-161）。
+> BatchCheck は 50 問ずつに分け、4 本ずつ並べて送る（1 回の問いが OpenFGA に同時に掛けるのは 200 問まで・BUG-163）。
 > `has_role(subtree=true)` は配下ロール込みの集合を展開せず名指しのロールだけを check で判定するので、`MAX_ROLE_SET` 超過のエラーに
 > ならない。`has_role(subtree=false)` と `$user.roles` は従来どおり集合で引き、超過は fail-closed。
 
