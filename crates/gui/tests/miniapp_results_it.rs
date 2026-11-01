@@ -145,7 +145,11 @@ impl NodePorts for NoPorts {
     async fn storage_read(&self, _: &ExecCtx, _: Uuid) -> Result<Value, PortError> {
         Err(unused())
     }
-    async fn storage_list(&self, _: &ExecCtx, _: Option<Uuid>) -> Result<Value, PortError> {
+    async fn storage_list(
+        &self,
+        _: &ExecCtx,
+        _: workflow_engine::StorageListReq,
+    ) -> Result<Value, PortError> {
         Err(unused())
     }
     async fn rag_search(&self, _: &ExecCtx, _: &str, _: Option<u32>) -> Result<Value, PortError> {

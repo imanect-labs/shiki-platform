@@ -42,7 +42,11 @@ impl NodePorts for SlowReadPorts {
         tokio::time::sleep(Duration::from_millis(600)).await;
         Ok(json!({ "id": file_id.to_string(), "text": "経費の申請" }))
     }
-    async fn storage_list(&self, _: &ExecCtx, _: Option<Uuid>) -> Result<Value, PortError> {
+    async fn storage_list(
+        &self,
+        _: &ExecCtx,
+        _: workflow_engine::StorageListReq,
+    ) -> Result<Value, PortError> {
         Err(unused())
     }
     async fn rag_search(&self, _: &ExecCtx, _: &str, _: Option<u32>) -> Result<Value, PortError> {

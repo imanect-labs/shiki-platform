@@ -319,6 +319,7 @@ pub(super) fn emit_description(
          - 文章の組み立て {{\"$template\":\"件名: {{title}}（{{count}} 件）\",\"vars\":{{\"title\":{{\"$from\":\"input\",\"path\":\"/title\"}},\"count\":…}}}}。差し込みは {{名前}} で、名前は vars のキー（vars に無い名前はエラー）。{{{{ と }}}} は差し込みではなく波括弧そのものを出す書き方（{{{{title}}}} と書くと「{{title}}」という文字が出る）。\n\
          - url・secret・skill・model など型が string の項目はリテラルの文字列だけ（参照は書けない）。テーブル・フォルダ・ファイルの id は実在する uuid を書く（data_schema・doc_search などで調べる。推測しない）。\n\
          - schedule・event で動かすワークフローの storage.write・csv.write には folder を必ず書く（省略はルートへの保存で、自動の実行はルートに書けないので有効化できない）。storage.write・csv.write は既存のファイルを上書きしない。同じ名前のファイルがあると失敗するので、毎回動くワークフローは on_name_taken に \"add_number\" を書く（「名前 (2).md」のように番号を付けて保存する）か、名前に {{\"$from\":\"run\",\"path\":\"/date\"}} を差し込む。content_type を省くとファイル名の拡張子（.md・.txt・.csv・.json・.html）から決まる。CSV（csv.write と、種類が text/csv の storage.write）は encoding に \"utf8_bom\" を書く（日本語の Windows の Excel で文字化けしない。省略は BOM なしの UTF-8。Shift_JIS だけを読む仕組みへ渡すなら \"shift_jis\"）。CSV の content には、CSV の文字のほか、csv.query の結果（{{\"$from\":\"nodes.<id>.output\"}}・{{columns, rows}} の表）や、項目のまとまりのリスト（列は項目の名前を合わせたもので名前の順）をそのまま渡せる（CSV に組み立てる。数・入れ子の値・csv.query が打ち切った表〔truncated〕は失敗する）。\n\
+         - storage.list は名前の順に {list_max} 件までを返し、続きがあると truncated が true で next_cursor に続きの位置が入る。続きは、同じ folder の storage.list の cursor に {{\"$from\":\"nodes.<id>.output\",\"path\":\"/next_cursor\"}} を書いて読む（別のフォルダーの続きの位置は失敗する。省略・null は先頭から）。\n\
          - llm.invoke の prompt・agent.invoke の instruction・rag.search の query・csv.query の sql は空にしない（空のままでは有効化も実行もできない）。\n\
          - http.request は fail_on_error_status: true で、相手が 400 以上を返したときブロックを失敗にする（省略は成功として status を返す）。\n\
          - http.request の headers は {{\"ヘッダーの名前\": 値}}（名前はリテラル・値は差し込みや参照も書ける・{max_headers} 個まで・値は {max_value_kb} KB まで）。{reserved} と、シークレットを付けるヘッダー（既定は Authorization）は書けない（保存できない）。Idempotency-Key・Content-Type を書くと、Shiki が付ける値の代わりにそれを送る。送り先が内部のネットワークのアドレスにつながる URL には送れない（管理者がそのホストを許可したときだけ送れる）。\n\
@@ -326,6 +327,7 @@ pub(super) fn emit_description(
          - 条件（control.branch の condition・トリガと control.wait の filter）: {{\"cmp\":{{\"left\":値,\"op\":CmpOp,\"right\":値}}}}・{{\"all\":[条件…]}}・{{\"any\":[条件…]}}・{{\"not\":条件}}。CmpOp = {ops}（exists・is_null は right を書かない）。例: {cond}\n\
          - data.query の filter は形が違う: {{\"cmp\":{{\"field\":\"<列の参照名>\",\"op\":CmpOp,\"value\":値}}}}（all / any / not は同じ）。query.limit は 1〜{max_limit}（省略は 50。範囲の外は保存できない）。集計は query の group_by と aggregate（[{{\"metric\":\"count\"}}] や {{\"metric\":\"sum\",\"field\":\"<数値の列>\"}}）で書け、結果は groups に入る（エディタの画面では作れない）。\n",
         max_limit = data::MAX_QUERY_LIMIT,
+        list_max = workflow_engine::vocab::STORAGE_LIST_MAX_ITEMS,
         max_headers = workflow_engine::nodes::http_headers::MAX_HEADERS,
         max_value_kb = workflow_engine::nodes::http_headers::MAX_VALUE_BYTES / 1024,
         reserved = reserved_headers(),
@@ -740,6 +742,14 @@ mod tests {
         );
         // web.fetch の宛先は AI エージェント用の許可だけ（http.request の許可先を継がない・D-59）。
         assert!(d.contains("http.request の許可先とは別"), "{d}");
+        // フォルダ一覧の続きの読み方（D-131・件数は上限の単一定義から）。
+        assert!(
+            d.contains(&format!(
+                "storage.list は名前の順に {} 件までを返し",
+                workflow_engine::vocab::STORAGE_LIST_MAX_ITEMS
+            )) && d.contains("\"path\":\"/next_cursor\"}"),
+            "{d}"
+        );
         // http.request のヘッダーの書き方と、書けないヘッダー（Shiki が決める表から・GAP-19）。
         assert!(
             d.contains("http.request の headers は {\"ヘッダーの名前\": 値}"),

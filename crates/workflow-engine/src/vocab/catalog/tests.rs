@@ -148,17 +148,15 @@ fn output_shape_text_is_built_from_fields() {
         "{ items: Array<unknown>（領域の出口ノードの出力・要素の順）, errors?: Array<{ index: number, error: { code: string, message: string } }>（on_item_error: collect のとき） }"
     );
     assert!(map.output_fields[1].optional);
-    // フォルダ一覧は上限で切ったことを truncated で言う。文の件数は上限の単一定義と同じ（BUG-180）。
+    // フォルダ一覧は上限で切ったことを truncated で言い、続きの位置を next_cursor で返す（BUG-180・D-131）。文の件数は
+    // 上限の単一定義と同じ。
     let list = find(NodeType::StorageList);
     assert_eq!(
         list.output_shape,
-        "{ items: Array<{ id: string, name: string, kind: string, size: number }>（名前の順・最大 100 件・kind は file か folder）, truncated: boolean（100 件より多いとき true・残りは items に入らない） }"
+        "{ items: Array<{ id: string, name: string, kind: string, size: number }>（名前の順・最大 100 件・kind は file か folder）, truncated: boolean（続きがあるとき true・残りは items に入らない）, next_cursor: string | null（続きの位置・同じフォルダーで cursor に渡すと続きを読む・続きが無ければ null） }"
     );
     let max = format!("{} 件", crate::vocab::STORAGE_LIST_MAX_ITEMS);
-    assert!(
-        list.output_fields.iter().all(|f| f.note.contains(&max)),
-        "{max}"
-    );
+    assert!(list.output_fields[0].note.contains(&max), "{max}");
     // 項目に分けられない形は項目を持たない（参照の候補は「結果（全体）」だけ）。
     for nt in [
         NodeType::ScriptRun,

@@ -55,7 +55,11 @@ impl NodePorts for CsvPorts {
     async fn storage_read(&self, _c: &ExecCtx, _f: Uuid) -> Result<Value, PortError> {
         unreachable!()
     }
-    async fn storage_list(&self, _c: &ExecCtx, _p: Option<Uuid>) -> Result<Value, PortError> {
+    async fn storage_list(
+        &self,
+        _c: &ExecCtx,
+        _: workflow_engine::StorageListReq,
+    ) -> Result<Value, PortError> {
         unreachable!()
     }
     async fn rag_search(

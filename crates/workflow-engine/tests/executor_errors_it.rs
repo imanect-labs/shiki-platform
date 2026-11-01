@@ -58,8 +58,16 @@ impl NodePorts for FakePorts {
     async fn storage_read(&self, _c: &ExecCtx, _f: Uuid) -> Result<Value, PortError> {
         self.gate(json!({ "text": "x" }))
     }
-    async fn storage_list(&self, _c: &ExecCtx, parent: Option<Uuid>) -> Result<Value, PortError> {
-        self.gate(json!({ "parent": parent.map(|p| p.to_string()), "items": [] }))
+    async fn storage_list(
+        &self,
+        _c: &ExecCtx,
+        req: workflow_engine::StorageListReq,
+    ) -> Result<Value, PortError> {
+        self.gate(json!({
+            "parent": req.parent_id.map(|p| p.to_string()),
+            "cursor": req.cursor,
+            "items": []
+        }))
     }
     async fn rag_search(
         &self,
@@ -197,6 +205,31 @@ async fn rag_llm_agent_storage_list_workflow_start_dispatch() {
 
     let list = exec.execute("storage.list", &json!({}), &c).await;
     assert!(list.ok, "{:?}", list.error);
+    assert_eq!(list.output["cursor"], Value::Null, "省くと先頭から");
+    // 続きの位置（cursor・D-131）はそのままポートへ渡す。null・空の文字は先頭から、文字でない値は invalid。
+    let folder = Uuid::new_v4().to_string();
+    let list = exec
+        .execute(
+            "storage.list",
+            &json!({ "folder": folder, "cursor": "c-1" }),
+            &c,
+        )
+        .await;
+    assert!(list.ok, "{:?}", list.error);
+    assert_eq!(list.output["cursor"], "c-1");
+    assert_eq!(list.output["parent"], folder.as_str());
+    for empty in [json!(null), json!("")] {
+        let list = exec
+            .execute("storage.list", &json!({ "cursor": empty }), &c)
+            .await;
+        assert!(list.ok, "{:?}", list.error);
+        assert_eq!(list.output["cursor"], Value::Null, "{empty}");
+    }
+    let bad = exec
+        .execute("storage.list", &json!({ "cursor": 5 }), &c)
+        .await;
+    assert!(!bad.ok);
+    assert_eq!(bad.error.unwrap().code, "invalid");
     // workflow.start は cross-TX journal（実 DB 必須）なので e2e で検証する。
 }
 

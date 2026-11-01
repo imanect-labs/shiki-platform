@@ -381,12 +381,14 @@ pub trait NodePorts: Send + Sync {
         self.storage_read(ctx, file_id).await
     }
 
-    /// storage.list（`list_children`）。返り値は子ノードのメタ配列。
-    async fn storage_list(
-        &self,
-        ctx: &ExecCtx,
-        parent_id: Option<Uuid>,
-    ) -> Result<Value, PortError>;
+    /// storage.list（`list_children`・「フォルダ一覧」・script の `Shiki.storage.list`・AI エージェントの道具）。
+    ///
+    /// 返り値は `{ items, truncated, next_cursor }`。`items` は子ノードのメタ（名前の順・最大
+    /// [`crate::vocab::STORAGE_LIST_MAX_ITEMS`] 件）、`next_cursor` は続きがあるときの続きの位置（無ければ null・
+    /// `truncated` はその有無）。続きの位置はテナントと一覧（フォルダー）に束縛した不透明な文字列で、
+    /// [`StorageListReq::cursor`] に渡すと続きから読む。読めない位置（別のテナント・別のフォルダー・改竄・古い形）は
+    /// `invalid` で失敗する（D-131）。
+    async fn storage_list(&self, ctx: &ExecCtx, req: StorageListReq) -> Result<Value, PortError>;
 
     /// rag.search（`SearchService.search`・二段 authz はサービス内で担保）。
     async fn rag_search(
@@ -651,6 +653,15 @@ pub struct CsvPatchReq {
     pub base_rev: i64,
     /// `tabular::PatchOp` の配列に解決される JSON 値（ポート実装で型変換する）。
     pub ops: Value,
+}
+
+/// storage.list の要求（D-131）。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StorageListReq {
+    /// 一覧にするフォルダー（`None` は実行主体のドライブのトップ）。
+    pub parent_id: Option<Uuid>,
+    /// 続きの位置（前の結果の `next_cursor`・同じフォルダーのもの）。`None` は先頭から。
+    pub cursor: Option<String>,
 }
 
 /// csv.write の要求（冪等化は capability 層の effect_journal・ポートは適用のみ）。

@@ -56,6 +56,8 @@ struct FakePorts {
     skill: Mutex<Option<workflow_engine::nodes::ResolvedSkillView>>,
     /// llm_invoke へ渡った system（skill instructions の伝播検証用）。
     last_llm_system: Mutex<Option<String>>,
+    /// storage_list へ渡った要求（続きの位置の伝播の検証用・D-131）。
+    last_list: Mutex<Option<workflow_engine::StorageListReq>>,
     /// llm_invoke へ渡った model（省略が None のまま届くかの検証用）。
     last_llm_model: Mutex<Option<Option<String>>>,
     /// workflow_start へ渡った（name, input）（入れ子の値の展開の検証用）。
@@ -128,9 +130,10 @@ impl NodePorts for FakePorts {
     async fn storage_list(
         &self,
         _ctx: &ExecCtx,
-        _parent: Option<Uuid>,
+        req: workflow_engine::StorageListReq,
     ) -> Result<Value, PortError> {
-        Ok(json!({ "items": [] }))
+        *self.last_list.lock().unwrap() = Some(req);
+        Ok(json!({ "items": [], "truncated": false, "next_cursor": null }))
     }
     async fn rag_search(
         &self,
@@ -1739,5 +1742,66 @@ async fn http_error_statuses_fail_the_block_only_when_asked() {
                 .any(|(api, ok, meta)| api == "http.request" && *ok && meta["status"] == status),
             "{status}: 送ったことが監査に無い"
         );
+    }
+}
+
+/// script の `Shiki.storage.list(parent, cursor)` は続きの位置を渡す（D-131）。省くと先頭から読み、フォルダーに
+/// 読めない値・文字でない続きの位置はドライブのトップへ黙って落とさずに断る。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn script_storage_list_passes_the_cursor() {
+    const SCRIPT: &str = r#"function main(input) {
+  if (input.mode === "both") return Shiki.storage.list(input.parent, input.cursor);
+  if (input.mode === "parent") return Shiki.storage.list(input.parent);
+  return Shiki.storage.list();
+}"#;
+    let ports = Arc::new(FakePorts::default());
+    let audit = Arc::new(CapturingAudit::default());
+    let engine = Arc::new(script_runtime::engine::ScriptEngine::new().expect("script engine"));
+    let exec = script_executor(&ports, &audit, &engine);
+    let folder = Uuid::new_v4();
+    let run = |input: Value| {
+        let exec = &exec;
+        async move {
+            exec.execute(
+                "script.run",
+                &json!({ "source": { "inline": SCRIPT } }),
+                &ctx(input, vec!["storage.read".into()]),
+            )
+            .await
+        }
+    };
+    let last = || ports.last_list.lock().unwrap().take();
+
+    let res = run(json!({ "mode": "both", "parent": folder.to_string(), "cursor": "c-1" })).await;
+    assert!(res.ok, "{:?}", res.error);
+    assert_eq!(
+        last(),
+        Some(workflow_engine::StorageListReq {
+            parent_id: Some(folder),
+            cursor: Some("c-1".into())
+        })
+    );
+    // 続きの位置を省く・null・空の文字は先頭から。
+    for input in [
+        json!({ "mode": "parent", "parent": folder.to_string() }),
+        json!({ "mode": "both", "parent": folder.to_string(), "cursor": null }),
+        json!({ "mode": "both", "parent": folder.to_string(), "cursor": "" }),
+    ] {
+        let res = run(input.clone()).await;
+        assert!(res.ok, "{input}: {:?}", res.error);
+        assert_eq!(last().unwrap().cursor, None, "{input}");
+    }
+    let res = run(json!({ "mode": "none" })).await;
+    assert!(res.ok, "{:?}", res.error);
+    assert_eq!(last(), Some(workflow_engine::StorageListReq::default()));
+    // フォルダーに読めない値・文字でない続きの位置は invalid（ポートを呼ばない）。
+    for input in [
+        json!({ "mode": "parent", "parent": "not-a-uuid" }),
+        json!({ "mode": "parent", "parent": 3 }),
+        json!({ "mode": "both", "parent": folder.to_string(), "cursor": 5 }),
+    ] {
+        let res = run(input.clone()).await;
+        assert!(!res.ok, "{input}");
+        assert!(last().is_none(), "{input}");
     }
 }

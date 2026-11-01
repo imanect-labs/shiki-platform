@@ -28,6 +28,7 @@ import { cn } from "@/lib/utils";
 import { Field, FieldSelectTrigger, MoreInfo, NumberInput } from "./common";
 import type { FormProps } from "./forms-basic";
 import { paramsOf, patchParams } from "./params";
+import { typeLabel as blockTypeLabel } from "../regions";
 import { ValueExprInput } from "./value-expr-input";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -539,9 +540,32 @@ export function StorageWriteForm(props: FormProps) {
 }
 
 export function StorageListForm(props: FormProps) {
-  // 上限で切ったことは結果の truncated で分かる（黙って切らない・BUG-180）。数はカタログの単一定義から出す。
-  const hint = `有効化のとき、このフォルダの閲覧権限を渡します。名前の順で最大 ${STORAGE_LIST_MAX_ITEMS} 件を一覧にし、それより多いときは結果の truncated が true になります。`;
-  return <FolderField {...props} label="一覧するフォルダ（省略可）" optional hint={hint} />;
+  const { node, dispatch, refCandidates, inMapRegion, fieldErrors } = props;
+  const p = paramsOf<NodeParamsByType["storage.list"]>(node);
+  // 数はカタログの単一定義から出す。続きがあることと続きの位置は結果で分かる（黙って切らない・BUG-180・D-131）。
+  const hint = `有効化のとき、このフォルダの閲覧権限を渡します。名前の順に最大 ${STORAGE_LIST_MAX_ITEMS} 件を一覧にします。`;
+  const name = blockTypeLabel("storage.list");
+  return (
+    <div className="space-y-4">
+      <FolderField {...props} label="一覧するフォルダ（省略可）" optional hint={hint} />
+      <div className="space-y-1.5" data-testid="storage-list-cursor">
+        <ValueExprInput
+          label="続きの位置（省略可）"
+          value={p.cursor as ValueExpr | undefined}
+          onChange={(v) => patchParams(dispatch, node, { cursor: v })}
+          refCandidates={refCandidates}
+          inMapRegion={inMapRegion}
+          preferFrom
+          hint={`前の「${name}」の結果の続きの位置（next_cursor）を選ぶと、その続きを一覧にします。空欄なら先頭から一覧にします。`}
+          error={fieldErrors.get("cursor")}
+        />
+        <MoreInfo testId="storage-list-cursor-more">
+          <p>続きの位置は、同じフォルダーを一覧にした結果のものだけを使えます。別のフォルダーの続きの位置を選ぶと、実行が失敗します。</p>
+          <p>続きが無いときは、結果の続きの位置は空（null）で、続きがあるか（truncated）は false です。</p>
+        </MoreInfo>
+      </div>
+    </div>
+  );
 }
 
 // ── CSV（csv.*）─────────────────────────────────────────────────────────

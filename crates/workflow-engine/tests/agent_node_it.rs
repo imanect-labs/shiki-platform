@@ -68,12 +68,17 @@ impl NodePorts for AgentPorts {
     async fn storage_read(&self, _: &ExecCtx, _: Uuid) -> Result<Value, PortError> {
         unreachable!()
     }
-    async fn storage_list(&self, _: &ExecCtx, _: Option<Uuid>) -> Result<Value, PortError> {
+    async fn storage_list(
+        &self,
+        _: &ExecCtx,
+        req: workflow_engine::StorageListReq,
+    ) -> Result<Value, PortError> {
         let n = if self.huge_results { 5_000 } else { 1 };
         let items: Vec<Value> = (0..n)
             .map(|i| json!({ "id": format!("{i:08}"), "name": "ファイル名のそこそこ長い例.txt" }))
             .collect();
-        Ok(json!({ "items": items }))
+        // 渡った要求を返す（続きの位置の伝播の検証・D-131）。
+        Ok(json!({ "items": items, "parent": req.parent_id, "cursor": req.cursor }))
     }
     async fn rag_search(
         &self,
@@ -310,6 +315,44 @@ async fn calls_are_checked_against_the_offered_tools() {
                 .any(|(a, ok, meta)| a == api && !*ok && meta["reason"] == "not_offered"),
             "{api}: {records:?}"
         );
+    }
+}
+
+/// 道具の storage.list は続きの位置（cursor）を渡す（D-131）。空の文字は先頭から、文字でない値と長すぎる値は invalid。
+#[tokio::test]
+async fn storage_list_tool_passes_the_cursor() {
+    let ports = Arc::new(AgentPorts::default());
+    let folder = Uuid::new_v4().to_string();
+    let too_long = "c".repeat(workflow_engine::vocab::STORAGE_LIST_MAX_CURSOR_CHARS + 1);
+    *ports.calls.lock().unwrap() = vec![
+        (
+            AgentTool::StorageList,
+            json!({ "folder_id": folder, "cursor": "c-1" }),
+        ),
+        (AgentTool::StorageList, json!({ "cursor": "  " })),
+        (AgentTool::StorageList, json!({ "cursor": 5 })),
+        (AgentTool::StorageList, json!({ "cursor": too_long })),
+    ];
+    let audit = Arc::new(CapturingAudit::default());
+    let exec = executor(
+        Arc::clone(&ports),
+        Arc::clone(&audit),
+        AgentLimits::default(),
+    );
+    let params = json!({ "instruction": "x", "allowed_tools": ["storage.list"] });
+    let res = exec
+        .execute("agent.invoke", &params, &ctx(&["storage.read"]))
+        .await;
+    assert!(res.ok, "{:?}", res.error);
+    let results = res.output["results"].as_array().unwrap();
+    assert_eq!(results[0]["ok"], true, "{}", results[0]);
+    assert_eq!(results[0]["out"]["cursor"], "c-1");
+    assert_eq!(results[0]["out"]["parent"], folder.as_str());
+    assert_eq!(results[1]["ok"], true, "{}", results[1]);
+    assert_eq!(results[1]["out"]["cursor"], Value::Null, "空は先頭から");
+    for r in &results[2..] {
+        assert_eq!(r["ok"], false, "{r}");
+        assert_eq!(r["code"], "invalid", "{r}");
     }
 }
 

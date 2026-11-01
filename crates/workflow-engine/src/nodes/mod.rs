@@ -31,5 +31,5 @@ pub use ports::{
     AgentInvokeReq, AgentToolGateway, ApprovalTarget, CodeRunReq, CsvPatchReq, CsvWriteReq,
     DataWriteOp, DataWriteReq, DecideCache, DocReadReq, ExecCtx, HttpSendReq, HttpSendResp,
     LlmDecideReq, LlmInvokeReq, LlmRepair, NodePorts, PortError, ResolvedSecretView,
-    ResolvedSkillView, StorageWriteReq, WebFetchReq,
+    ResolvedSkillView, StorageListReq, StorageWriteReq, WebFetchReq,
 };

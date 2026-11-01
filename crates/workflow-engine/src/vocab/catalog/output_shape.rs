@@ -160,7 +160,7 @@ pub(super) fn output_shape(nt: NodeType) -> Shape {
             ],
             "",
         ),
-        // 件数の上限は vocab::STORAGE_LIST_MAX_ITEMS（試験で文と照らす・BUG-180）。
+        // 件数の上限は vocab::STORAGE_LIST_MAX_ITEMS（試験で文と照らす・BUG-180）。続きの位置は D-131。
         N::StorageList => Fields(
             "",
             &[
@@ -172,7 +172,12 @@ pub(super) fn output_shape(nt: NodeType) -> Shape {
                 field!(
                     "truncated",
                     "boolean",
-                    "100 件より多いとき true・残りは items に入らない"
+                    "続きがあるとき true・残りは items に入らない"
+                ),
+                field!(
+                    "next_cursor",
+                    "string | null",
+                    "続きの位置・同じフォルダーで cursor に渡すと続きを読む・続きが無ければ null"
                 ),
             ],
             "",

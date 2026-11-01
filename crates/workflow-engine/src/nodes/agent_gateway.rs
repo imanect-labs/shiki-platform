@@ -24,12 +24,13 @@ use crate::run::CancelSignal;
 use crate::vocab::{
     AgentTool, DEFAULT_READ_WINDOW_CHARS, MAX_CODE_BYTES, MAX_QUERY_CHARS, MAX_READ_WINDOW_CHARS,
     MAX_SEARCH_SNIPPET_CHARS, MAX_SEARCH_TOP_K, MAX_TOOL_RESULT_CHARS, MAX_URL_CHARS,
-    MAX_WEB_RESULTS,
+    MAX_WEB_RESULTS, STORAGE_LIST_MAX_CURSOR_CHARS,
 };
 
 use super::http::{check_destination, HttpDenied};
 use super::ports::{
-    AgentToolGateway, CodeRunReq, DocReadReq, ExecCtx, NodePorts, PortError, WebFetchReq,
+    AgentToolGateway, CodeRunReq, DocReadReq, ExecCtx, NodePorts, PortError, StorageListReq,
+    WebFetchReq,
 };
 
 /// コードの 1 回の実行の時間の上限（ミリ秒）。
@@ -107,8 +108,12 @@ impl ExecutorAgentGateway {
                 Ok(out)
             }
             AgentTool::StorageList => {
-                let folder = opt_uuid_arg(a, "folder_id")?;
-                self.ports.storage_list(ec, folder).await
+                let parent_id = opt_uuid_arg(a, "folder_id")?;
+                let cursor = opt_text_arg(a, "cursor", STORAGE_LIST_MAX_CURSOR_CHARS)?
+                    .filter(|c| !c.is_empty());
+                self.ports
+                    .storage_list(ec, StorageListReq { parent_id, cursor })
+                    .await
             }
             AgentTool::StorageRead => {
                 let file = uuid_arg(a, "file_id")?;

@@ -22,7 +22,7 @@ use crate::ir::params::ScriptRunParams;
 
 use super::capability::parse_params;
 use super::exec::CapabilityNodeExecutor;
-use super::ports::{ExecCtx, NodePorts, PortError, StorageWriteReq};
+use super::ports::{ExecCtx, NodePorts, PortError, StorageListReq, StorageWriteReq};
 use super::resolver::{as_bytes, opt_param, ParamResolver};
 
 /// `run_script_source` の引数束（script.run と skill.invoke で共用・7 引数制限対応）。
@@ -249,11 +249,10 @@ impl HostBridge {
                 Ok(out)
             }
             "storage.list" => {
-                let parent = a
-                    .get("parent")
-                    .and_then(Value::as_str)
-                    .and_then(|s| uuid::Uuid::parse_str(s).ok());
-                let out = self.ports.storage_list(&self.ec, parent).await?;
+                let out = self
+                    .ports
+                    .storage_list(&self.ec, storage_list_req(a)?)
+                    .await?;
                 self.audit.record(
                     &self.ec.tenant_id,
                     "storage.list",
@@ -599,4 +598,28 @@ pub(super) fn sha_hex(bytes: &[u8]) -> String {
     let mut h = Sha256::new();
     h.update(bytes);
     format!("{:x}", h.finalize())
+}
+
+/// `Shiki.storage.list(parent, cursor)` の引数（D-131）。フォルダーに読めない値を渡したら、ドライブのトップへ黙って
+/// 落とさずに断る（続きの位置はフォルダーに束縛される）。続きの位置の省略・null・空の文字は先頭から。
+fn storage_list_req(a: &Value) -> Result<StorageListReq, PortError> {
+    let parent_id = match a.get("parent") {
+        None | Some(Value::Null) => None,
+        Some(v) => Some(
+            v.as_str()
+                .and_then(|s| uuid::Uuid::parse_str(s).ok())
+                .ok_or_else(|| PortError::invalid("storage.list: parent が UUID ではありません"))?,
+        ),
+    };
+    let cursor = match a.get("cursor") {
+        None | Some(Value::Null) => None,
+        Some(Value::String(s)) if s.is_empty() => None,
+        Some(Value::String(s)) => Some(s.clone()),
+        Some(_) => {
+            return Err(PortError::invalid(
+                "storage.list: cursor が文字列ではありません",
+            ))
+        }
+    };
+    Ok(StorageListReq { parent_id, cursor })
 }

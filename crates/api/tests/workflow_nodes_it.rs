@@ -36,10 +36,27 @@ use workflow_engine::{
 
 // ------- 共通ハーネス --------------------------------------------------------
 
+/// 参照先を確かめない RefResolver（data を続きの位置の封にだけ使う・D-131）。
+struct NoRefs;
+
+#[async_trait::async_trait]
+impl data::RefResolver for NoRefs {
+    async fn user_exists(&self, _: &AuthContext, _: &str) -> Result<bool, String> {
+        Ok(false)
+    }
+    async fn role_exists(&self, _: &AuthContext, _: &str) -> Result<bool, String> {
+        Ok(false)
+    }
+    async fn file_readable(&self, _: &AuthContext, _: Uuid) -> Result<bool, String> {
+        Ok(false)
+    }
+}
+
 struct Harness {
     /// このハーネスの OpenFGA のストア（片付けるテストが消す・[`Harness::delete_fga_store`]）。
     fga_url: String,
     fga_store: String,
+    fga: Arc<dyn AuthzClient>,
     pool: sqlx::PgPool,
     storage: Arc<storage::StorageService>,
     gateway: Arc<llm_gateway::LlmGateway>,
@@ -192,6 +209,7 @@ async fn setup() -> Option<Harness> {
     Some(Harness {
         fga_url,
         fga_store,
+        fga: Arc::clone(&fga),
         pool,
         storage,
         gateway,
@@ -263,6 +281,23 @@ impl Harness {
             .with_script_engine(engine, script_runtime::engine::Limits::default())
             .with_http_allowlist(http_allowlist, 5_000),
         )
+    }
+
+    /// 本番 executor に構造化データ（続きの位置の封・D-131）を結線した形。続きの位置を同じ鍵で作れるよう、data も返す。
+    fn executor_with_data(&self) -> (Arc<dyn NodeExecutor>, Arc<data::DataStore>) {
+        let data = Arc::new(data::DataStore::new(
+            self.pool.clone(),
+            Arc::clone(&self.fga),
+            Arc::new(NoRefs),
+        ));
+        let mut ports = Arc::into_inner(self.ports(None, None)).expect("ports");
+        ports.data = Some(Arc::clone(&data));
+        let exec = Arc::new(CapabilityNodeExecutor::new(
+            Arc::new(ports),
+            EffectJournal::new(self.pool.clone()),
+            Arc::new(NoopAudit),
+        ));
+        (exec, data)
     }
 
     /// 本番 executor（隔離 DuckDB ランナー付き・csv.* ノード用）を組む。
@@ -1876,6 +1911,174 @@ async fn storage_list_says_when_it_cuts_the_folder() {
         (1, 1),
         "1 回の読み込みで決める（監査は 1 行）"
     );
+}
+
+/// 「フォルダ一覧」の続きの位置（D-131）: 結果の next_cursor を次の「フォルダ一覧」の cursor に渡すと続きを読む。
+/// 続きの位置はテナントとフォルダーに束縛した不透明な文字列で、別のフォルダー・別のテナント・読めない値は invalid。
+#[tokio::test]
+async fn storage_list_reads_on_from_the_cursor() {
+    let Some(h) = setup().await else { return };
+    let max = workflow_engine::vocab::STORAGE_LIST_MAX_ITEMS;
+    let make = |name: String| {
+        let h = &h;
+        async move {
+            h.storage
+                .create_folder(&h.alice, None, &name, None)
+                .await
+                .unwrap()
+        }
+    };
+    let folder = make(format!("list-{}", Uuid::new_v4().simple())).await;
+    let other = make(format!("other-{}", Uuid::new_v4().simple())).await;
+    let mut files = Vec::new();
+    for i in 0..=max {
+        let node = h
+            .storage
+            .write_file_internal(
+                &h.alice,
+                Some(folder.id),
+                &format!("社外秘-{i:03}.txt"),
+                b"x",
+                "text/plain",
+                None,
+            )
+            .await
+            .unwrap();
+        files.push(node.id);
+    }
+    let (exec, data) = h.executor_with_data();
+    let chained = h
+        .save(&json!({
+            "ir_version": 1, "name": "storage-list-cursor",
+            "declared_scopes": ["storage.read"],
+            "triggers": [{ "kind": "interactive" }],
+            "nodes": [
+                { "id": "ls1", "type": "storage.list", "params": { "folder": folder.id.to_string() } },
+                { "id": "ls2", "type": "storage.list", "params": {
+                    "folder": folder.id.to_string(),
+                    "cursor": { "$from": "nodes.ls1.output", "path": "/next_cursor" } } }
+            ],
+            "edges": [{ "from": "ls1", "to": "ls2" }]
+        }))
+        .await;
+    let (run, status) = h.run(chained, &json!({}), Arc::clone(&exec)).await;
+    let steps: Vec<(String, Option<Value>)> = sqlx::query_as(
+        "SELECT node_id, output FROM step_execution WHERE tenant_id = $1 AND run_id = $2 ORDER BY node_id",
+    )
+    .bind(&h.tenant)
+    .bind(run)
+    .fetch_all(&h.pool)
+    .await
+    .unwrap();
+    // 読めない続きの位置を渡す版（別のフォルダー・別のテナント・壊れた値）。
+    let token = steps
+        .first()
+        .and_then(|s| s.1.as_ref())
+        .and_then(|o| o["next_cursor"].as_str())
+        .unwrap_or_default()
+        .to_string();
+    let scope = storage::ChildSort::default().cursor_scope(&folder.id.to_string());
+    let foreign = data
+        .seal_list_cursor(
+            data::ListCursorKind::WorkflowFolder,
+            "t-other",
+            &scope,
+            "n00000000-0000-0000-0000-000000000000a",
+        )
+        .unwrap();
+    let mut refused = Vec::new();
+    for (name, target, cursor) in [
+        ("cursor-other-folder", other.id, token.clone()),
+        ("cursor-other-tenant", folder.id, foreign),
+        ("cursor-broken", folder.id, format!("{token}x")),
+    ] {
+        let wf = h
+            .save(&json!({
+                "ir_version": 1, "name": name,
+                "declared_scopes": ["storage.read"],
+                "triggers": [{ "kind": "interactive" }],
+                "nodes": [ { "id": "ls", "type": "storage.list",
+                             "params": { "folder": target.to_string(), "cursor": cursor } } ],
+                "edges": []
+            }))
+            .await;
+        let (run, status) = h.run(wf, &json!({}), Arc::clone(&exec)).await;
+        let error: Option<Value> = sqlx::query_scalar(
+            "SELECT error FROM step_execution WHERE tenant_id = $1 AND run_id = $2",
+        )
+        .bind(&h.tenant)
+        .bind(run)
+        .fetch_one(&h.pool)
+        .await
+        .unwrap();
+        refused.push((name, status, error.unwrap_or(Value::Null), wf));
+    }
+
+    // 片付け（run の履歴・フォルダーと中のファイル・ワークフロー・OpenFGA のストア）。
+    h.runs.purge_tenant_history(&h.tenant).await.unwrap();
+    for id in &files {
+        h.storage
+            .soft_delete_file(&h.alice, *id, None)
+            .await
+            .unwrap();
+    }
+    for f in [folder.id, other.id] {
+        h.storage
+            .soft_delete_folder(&h.alice, f, None)
+            .await
+            .unwrap();
+    }
+    h.artifacts.delete(&h.alice, chained, None).await.unwrap();
+    for (_, _, _, wf) in &refused {
+        h.artifacts.delete(&h.alice, *wf, None).await.unwrap();
+    }
+    h.delete_fga_store().await;
+
+    assert_eq!(status, RunStatus::Succeeded, "{steps:?}");
+    let out = |id: &str| {
+        steps
+            .iter()
+            .find(|s| s.0 == id)
+            .and_then(|s| s.1.clone())
+            .unwrap()
+    };
+    let (first, second) = (out("ls1"), out("ls2"));
+    assert_eq!(first["items"].as_array().unwrap().len(), max);
+    assert_eq!(first["truncated"], true);
+    assert!(!token.is_empty(), "{first}");
+    let hex = |s: &str| {
+        s.bytes().fold(String::new(), |mut o, b| {
+            use std::fmt::Write as _;
+            let _ = write!(o, "{b:02x}");
+            o
+        })
+    };
+    for leak in [hex("社外秘"), files[max - 1].to_string()] {
+        assert!(
+            !token.contains(&leak),
+            "続きの位置は中身が読めない: {token}"
+        );
+    }
+    let rest: Vec<&str> = second["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(rest, vec![format!("社外秘-{max:03}.txt")], "続きから読む");
+    assert_eq!(second["truncated"], false);
+    assert_eq!(second["next_cursor"], Value::Null);
+    for (name, status, error, _) in &refused {
+        assert_eq!(*status, RunStatus::Failed, "{name}: {error}");
+        assert_eq!(error["code"], "invalid", "{name}: {error}");
+        assert!(
+            error["message"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("続きの位置が読めません"),
+            "{name}: {error}"
+        );
+    }
 }
 
 // ------- Test 9: llm.invoke の誤りの文言（GAP-41）----------------------------

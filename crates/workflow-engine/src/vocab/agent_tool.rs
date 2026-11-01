@@ -12,7 +12,7 @@ use serde::Serialize;
 use serde_json::{json, Value};
 use ts_rs::TS;
 
-use super::{vocab_enum, Scope};
+use super::{vocab_enum, Scope, STORAGE_LIST_MAX_CURSOR_CHARS};
 
 vocab_enum! {
     /// agent.invoke の `allowed_tools` に書ける道具の閉集合。予約分は V3 が `ir.unknown_tool` で拒否する。
@@ -137,7 +137,9 @@ impl AgentTool {
                  実行している人が読める文書だけが返る。本文を通して読むときは doc.read に file_id を渡す。"
             }
             AgentTool::StorageList => {
-                "フォルダの中のファイルとフォルダの一覧（id・名前・種類・大きさ）を返す。folder_id を省くと最上位を返す。"
+                "フォルダの中のファイルとフォルダの一覧（id・名前・種類・大きさ・名前の順）を返す。\
+                 folder_id を省くと最上位を返す。続きがあれば next_cursor が返るので、同じ folder_id と一緒に \
+                 cursor に渡して続きを読む。"
             }
             AgentTool::StorageRead => {
                 "テキストのファイルを offset から max_chars 字だけ読む（既定 8000 字・最大 20000 字）。\
@@ -185,7 +187,13 @@ impl AgentTool {
             }),
             AgentTool::StorageList => json!({
                 "type": "object",
-                "properties": { "folder_id": uuid("一覧するフォルダ（省くと最上位）") },
+                "properties": {
+                    "folder_id": uuid("一覧するフォルダ（省くと最上位）"),
+                    "cursor": {
+                        "type": "string", "maxLength": STORAGE_LIST_MAX_CURSOR_CHARS,
+                        "description": "続きの位置（前の結果の next_cursor・同じ folder_id のもの。省くと先頭から）"
+                    }
+                },
                 "additionalProperties": false
             }),
             AgentTool::StorageRead => json!({
@@ -348,5 +356,15 @@ mod tests {
         assert!(catalog
             .iter()
             .any(|e| e.tool == AgentTool::WebFetch && e.reaches_outside));
+        // フォルダの一覧は続きの位置を受け、続きの読み方を説明する（D-131）。
+        let list = AgentTool::StorageList.input_schema();
+        assert_eq!(list["properties"]["cursor"]["type"], "string");
+        assert_eq!(
+            list["properties"]["cursor"]["maxLength"],
+            STORAGE_LIST_MAX_CURSOR_CHARS
+        );
+        assert!(AgentTool::StorageList
+            .model_description()
+            .contains("next_cursor"));
     }
 }

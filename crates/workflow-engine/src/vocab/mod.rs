@@ -47,6 +47,10 @@ pub const STORAGE_READ_MAX_DOCUMENT_CHARS: u32 = 100_000;
 /// BUG-149 の `data.list_tables` と同じ）。画面の注記もこの値から出す（`workflow-catalog.ts` に書き出す）。
 pub const STORAGE_LIST_MAX_ITEMS: usize = 100;
 
+/// 「フォルダ一覧」の続きの位置（`cursor`・前の結果の `next_cursor`）の字数の上限（D-131）。続きの位置は API が作る
+/// 不透明な暗号文で、これより長い値は読めない位置として断る（AI エージェントの道具の入力の上限にも使う）。
+pub const STORAGE_LIST_MAX_CURSOR_CHARS: usize = 4_096;
+
 /// variant と serde/IR 名の対応を単一定義から生成する（as_str/parse の乖離を構造的に防ぐ）。
 macro_rules! vocab_enum {
     (

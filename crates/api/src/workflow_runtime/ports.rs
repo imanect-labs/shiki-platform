@@ -23,8 +23,8 @@ use uuid::Uuid;
 use workflow_engine::nodes::ports::{name_taken_error, NAME_TAKEN};
 use workflow_engine::{
     CsvPatchReq, CsvWriteReq, DataWriteReq, ExecCtx, HttpSendReq, HttpSendResp, LlmDecideReq,
-    LlmInvokeReq, NodePorts, PortError, ResolvedSecretView, ResolvedSkillView, StorageWriteReq,
-    WorkflowRunLauncher,
+    LlmInvokeReq, NodePorts, PortError, ResolvedSecretView, ResolvedSkillView, StorageListReq,
+    StorageWriteReq, WorkflowRunLauncher,
 };
 
 /// 本番ポート（AppState のチョークポイント参照を保持）。
@@ -87,6 +87,13 @@ pub(super) fn map_storage(e: storage::StorageError) -> PortError {
         S::Invalid(m) => PortError::invalid(m),
         other => PortError::unavailable(format!("storage: {other}")),
     }
+}
+
+/// 「フォルダ一覧」に読めない続きの位置が渡された（別のテナント・別のフォルダー・改竄・古い形・D-131）。
+fn storage_cursor_invalid() -> PortError {
+    PortError::invalid(
+        "続きの位置が読めません。同じフォルダーを一覧にした結果の続きの位置（next_cursor）を、そのまま渡してください。",
+    )
 }
 
 /// ワークフローの「同じ名前があるとき」を、StorageService の扱いに写す（値の名前は同じ・D-112）。
@@ -200,21 +207,36 @@ impl NodePorts for ProdNodePorts {
         super::document_read::storage_read_document(self, ec, file_id, max_chars).await
     }
 
-    async fn storage_list(
-        &self,
-        ec: &ExecCtx,
-        parent_id: Option<Uuid>,
-    ) -> Result<Value, PortError> {
+    async fn storage_list(&self, ec: &ExecCtx, req: StorageListReq) -> Result<Value, PortError> {
         let ctx = auth_ctx(ec);
+        let sort = ChildSort::default();
+        // 続きの位置は見えない子の名前を含みうるので、テナントと一覧（フォルダー・並び）に束縛して封をする（D-131）。
+        let kind = data::ListCursorKind::WorkflowFolder;
+        let scope = sort.cursor_scope(
+            &req.parent_id
+                .map_or_else(|| "root".into(), |p| p.to_string()),
+        );
+        let cursor = match req.cursor.as_deref() {
+            None => None,
+            Some(token) => {
+                let data = self.data.as_ref().ok_or_else(|| {
+                    PortError::new("unsupported", "この環境では続きの位置を使えません", false)
+                })?;
+                Some(
+                    data.open_list_cursor(kind, &ctx.tenant_id, &scope, token)
+                        .map_err(|_| storage_cursor_invalid())?,
+                )
+            }
+        };
         // 上限で切ったかを返す（黙って切らない・BUG-180）。list_children は後ろに見えるものがあるときだけ続きの位置を
         // 返すので（上限 + 1 件目まで探す）、1 回の読み込み（権限の確認 1 回・監査 1 行）で truncated が決まる。
         let page = self
             .storage
             .list_children(
                 &ctx,
-                parent_id,
-                ChildSort::default(),
-                None,
+                req.parent_id,
+                sort,
+                cursor.as_deref(),
                 workflow_engine::vocab::STORAGE_LIST_MAX_ITEMS,
                 // ワークフローの ls もユーザー向けの列挙（システム領域は出さない・#392）。
                 false,
@@ -223,6 +245,14 @@ impl NodePorts for ProdNodePorts {
             .await
             .map_err(map_storage)?;
         let truncated = page.next_cursor.is_some();
+        // 封をできない構成（data が無い）では続きの位置を出さず、truncated だけで言う。
+        let next_cursor = match (page.next_cursor.as_deref(), self.data.as_ref()) {
+            (Some(raw), Some(data)) => Some(
+                data.seal_list_cursor(kind, &ctx.tenant_id, &scope, raw)
+                    .map_err(|e| PortError::unavailable(format!("続きの位置: {e}")))?,
+            ),
+            _ => None,
+        };
         let items: Vec<Value> = page
             .items
             .iter()
@@ -235,7 +265,7 @@ impl NodePorts for ProdNodePorts {
                 })
             })
             .collect();
-        Ok(json!({ "items": items, "truncated": truncated }))
+        Ok(json!({ "items": items, "truncated": truncated, "next_cursor": next_cursor }))
     }
 
     async fn rag_search(

@@ -109,6 +109,11 @@ pub struct StorageListParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub folder: Option<ValueExpr>,
+    /// 続きの位置（前の「フォルダ一覧」の結果の `next_cursor`・同じフォルダーのもの）。省略・null・空の文字は先頭から
+    /// 読む（この項目が無かったころの定義の挙動・D-131）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub cursor: Option<ValueExpr>,
 }
 
 /// `rag.search` — permission-aware 検索（必要スコープは `rag.query`・pure）。

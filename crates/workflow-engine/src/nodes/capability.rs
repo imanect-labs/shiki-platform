@@ -17,7 +17,8 @@ use crate::vocab::STORAGE_READ_MAX_DOCUMENT_CHARS;
 use super::csv_encoding::{csv_bytes as encode_csv, is_csv_type};
 use super::exec::CapabilityNodeExecutor;
 use super::ports::{
-    name_taken_error, CsvPatchReq, CsvWriteReq, ExecCtx, PortError, StorageWriteReq, NAME_TAKEN,
+    name_taken_error, CsvPatchReq, CsvWriteReq, ExecCtx, PortError, StorageListReq,
+    StorageWriteReq, NAME_TAKEN,
 };
 use super::resolver::{
     as_bytes, as_string, as_u32, as_uuid, opt_param, param, typed, ParamResolver,
@@ -83,6 +84,22 @@ fn folder_param(
     opt_param(e, r, what)?
         .map(|v| typed(&v, what, "UUID", as_uuid))
         .transpose()
+}
+
+/// 「フォルダ一覧」の続きの位置（`cursor`・D-131）。省略・null・空の文字は先頭から読む（`None`・ループの 1 回目に
+/// 前の結果が無いときにそのまま渡せる）。文字でない値は `invalid`。
+fn cursor_param(
+    e: Option<&crate::ir::expr::ValueExpr>,
+    r: &ParamResolver<'_>,
+    what: &str,
+) -> Result<Option<String>, PortError> {
+    match opt_param(e, r, what)? {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => {
+            let s = typed(&v, what, "文字列", as_string)?;
+            Ok((!s.is_empty()).then_some(s))
+        }
+    }
 }
 
 impl CapabilityNodeExecutor {
@@ -216,12 +233,17 @@ impl CapabilityNodeExecutor {
     ) -> Result<Value, PortError> {
         let p: StorageListParams = parse_params(params)?;
         let parent_id = folder_param(p.folder.as_ref(), r, "storage.list: folder")?;
-        let out = self.ports.storage_list(ec, parent_id).await?;
+        let cursor = cursor_param(p.cursor.as_ref(), r, "storage.list: cursor")?;
+        let continued = cursor.is_some();
+        let out = self
+            .ports
+            .storage_list(ec, StorageListReq { parent_id, cursor })
+            .await?;
         self.audit(
             &ec.tenant_id,
             "storage.list",
             true,
-            &json!({ "parent": parent_id.map(|p| p.to_string()) }),
+            &json!({ "parent": parent_id.map(|p| p.to_string()), "continued": continued }),
         );
         Ok(out)
     }
