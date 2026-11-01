@@ -73,8 +73,10 @@ export async function installApp(input: {
   viewerRoles?: string[];
   editorRoles?: string[];
 }): Promise<{ app_id: string; table_ids: string[] }> {
+  // 文字列の本文は Content-Type を付けないと text/plain になり、サーバは 415 で断る（画面からのインストールが通らなかった）。
   const res = await apiFetch("/apps/installations", {
     method: "POST",
+    headers: { "content-type": "application/json" },
     body: JSON.stringify({
       name: input.name,
       version: input.version,
