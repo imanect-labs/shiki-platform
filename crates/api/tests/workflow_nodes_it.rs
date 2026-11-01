@@ -1333,6 +1333,158 @@ async fn new_csv_files_are_saved_in_the_chosen_encoding() {
     assert_eq!(emoji_saved, 0, "書けない文字があるときは保存しない");
 }
 
+/// 「CSV を集計」の結果（表）を「CSV を保存」に渡すと、表がそのまま CSV になる（JSON の文字のまま .csv にしない・
+/// BUG-178）。項目のまとまりのリストを CSV として保存する「ファイルを保存」も CSV に組み立てる。CSV にできない値は
+/// 保存せずに、欄の名前を言って失敗する。
+#[tokio::test]
+async fn csv_write_saves_tables_and_lists_as_csv() {
+    let Some(h) = setup().await else { return };
+    let Some(runner) = runner_path() else {
+        eprintln!("shiki-tabular-runner 未ビルドのためスキップ（SHIKI_TABULAR_RUNNER 参照）");
+        return;
+    };
+    let tag = Uuid::new_v4().simple().to_string();
+    let src = h
+        .storage
+        .write_file_internal(
+            &h.alice,
+            None,
+            &format!("src-{tag}.csv"),
+            "品目,金額\n交通費,1200\n会議費,300\n交通費,800\n".as_bytes(),
+            "text/csv",
+            None,
+        )
+        .await
+        .expect("csv アップロード");
+    let wf = h
+        .save(&json!({
+            "ir_version": 1, "name": format!("csv-compose-{tag}"),
+            "declared_scopes": ["csv.read", "csv.write", "storage.write"],
+            "triggers": [{ "kind": "interactive" }],
+            "nodes": [
+                { "id": "q", "type": "csv.query", "params": {
+                    "file": { "$from": "input", "path": "/file" },
+                    "sql": "SELECT 品目, SUM(金額) AS 合計 FROM data GROUP BY 品目 ORDER BY 合計 DESC" } },
+                { "id": "save", "type": "csv.write", "params": {
+                    "name": format!("合計-{tag}"),
+                    "content": { "$from": "nodes.q.output" },
+                    "encoding": "utf8_bom" } },
+                { "id": "list", "type": "storage.write", "params": {
+                    "name": format!("list-{tag}.csv"),
+                    "content": { "$from": "input", "path": "/records" } } }
+            ],
+            "edges": [ { "from": "q", "to": "save" } ]
+        }))
+        .await;
+    let refused_wf = h
+        .save(&json!({
+            "ir_version": 1, "name": format!("csv-compose-refused-{tag}"),
+            "declared_scopes": ["csv.write"],
+            "triggers": [{ "kind": "interactive" }],
+            "nodes": [ { "id": "w", "type": "csv.write", "params": {
+                "name": format!("number-{tag}"), "content": { "$from": "input", "path": "/n" } } } ],
+            "edges": []
+        }))
+        .await;
+    let input = json!({
+        "file": src.id.to_string(),
+        "records": [ { "氏名": "佐藤", "金額": 1200 }, { "氏名": "=鈴木", "メモ": "a,b" } ]
+    });
+    let (run_id, status) = h.run(wf, &input, h.executor_with_tabular(&runner)).await;
+    let steps: Vec<(String, Option<Value>, Option<Value>)> = sqlx::query_as(
+        "SELECT node_id, output, error FROM step_execution \
+         WHERE tenant_id = $1 AND run_id = $2 ORDER BY node_id",
+    )
+    .bind(&h.tenant)
+    .bind(run_id)
+    .fetch_all(&h.pool)
+    .await
+    .unwrap();
+    let mut files = Vec::new();
+    for (node, output, _) in &steps {
+        let id = output
+            .as_ref()
+            .and_then(|o| o.get("file_id"))
+            .and_then(Value::as_str)
+            .and_then(|s| Uuid::parse_str(s).ok());
+        if let Some(id) = id {
+            let (meta, bytes) = h
+                .storage
+                .read_file_internal(&h.alice, id, None)
+                .await
+                .unwrap();
+            files.push((node.clone(), meta, bytes));
+        }
+    }
+    let (refused_run, refused_status) = h
+        .run(
+            refused_wf,
+            &json!({ "n": 3 }),
+            h.executor_with_tabular(&runner),
+        )
+        .await;
+    let refused_error: Option<Value> =
+        sqlx::query_scalar("SELECT error FROM step_execution WHERE tenant_id = $1 AND run_id = $2")
+            .bind(&h.tenant)
+            .bind(refused_run)
+            .fetch_one(&h.pool)
+            .await
+            .unwrap();
+    let number_saved: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM node WHERE tenant_id = $1 AND name LIKE $2")
+            .bind(&h.tenant)
+            .bind(format!("number-{tag}%"))
+            .fetch_one(&h.pool)
+            .await
+            .unwrap();
+
+    // 片付け（run の履歴・保存したファイル・元の CSV・ワークフロー・OpenFGA のストア）。
+    h.runs.purge_tenant_history(&h.tenant).await.unwrap();
+    for id in files.iter().map(|(_, meta, _)| meta.id).chain([src.id]) {
+        h.storage
+            .soft_delete_file(&h.alice, id, None)
+            .await
+            .unwrap();
+    }
+    for id in [wf, refused_wf] {
+        h.artifacts.delete(&h.alice, id, None).await.unwrap();
+    }
+    h.delete_fga_store().await;
+
+    assert_eq!(status, RunStatus::Succeeded, "{steps:?}");
+    let text_of = |node: &str| {
+        files
+            .iter()
+            .find(|(n, _, _)| n == node)
+            .map(|(_, meta, bytes)| (meta.name.clone(), String::from_utf8(bytes.clone()).unwrap()))
+            .unwrap_or_else(|| panic!("{node} のファイルが無い: {steps:?}"))
+    };
+    assert_eq!(
+        text_of("save"),
+        (
+            format!("合計-{tag}.csv"),
+            "\u{FEFF}品目,合計\r\n交通費,2000\r\n会議費,300\r\n".to_string()
+        ),
+        "表は CSV に組み立て、選んだ文字コード（BOM 付きの UTF-8）で保存する"
+    );
+    assert_eq!(
+        text_of("list").1,
+        "メモ,氏名,金額\r\n,佐藤,1200\r\n\"a,b\",'=鈴木,\r\n",
+        "項目のまとまりのリストは、名前の順の列の CSV にする（式に見える値は打ち消す）"
+    );
+    assert_eq!(refused_status, RunStatus::Failed);
+    let error = refused_error.unwrap();
+    assert_eq!(error["code"], "invalid", "{error}");
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .starts_with("「CSV の内容」に数が入っているため、CSV にできません。"),
+        "{error}"
+    );
+    assert_eq!(number_saved, 0, "CSV にできない値は保存しない");
+}
+
 /// csv.query は declared_scopes に csv.read が無いと scope 天井で拒否される（fail-closed）。
 #[tokio::test]
 async fn csv_query_denied_without_declared_scope() {
