@@ -382,6 +382,7 @@ impl HostBridge {
         let secret_header =
             secret_name.map(|_| super::capability_ai::attach_secret(attach.as_ref(), "").0);
         let author_headers = self.author_headers(a, secret_header.as_deref())?;
+        check_redirect(a)?;
         let resolved = match secret_name {
             Some(name) => Some(self.ports.resolve_secret(&self.ec, name).await?),
             None => None,
@@ -574,6 +575,21 @@ impl HostBridge {
                 false,
             )),
         }
+    }
+}
+
+/// `Shiki.http.request` の `redirect` は、省略と `"deny"` だけを受ける（GAP-27）。
+///
+/// 移った先へ追う `follow_stripped` はまだ無い（ノードの IR の `RedirectPolicy` も deny だけ）。以前は redirect を読まず、
+/// 何を書いても黙って deny として扱っていた。書いたとおりに動くと思わせないよう、ほかの値は `invalid` で断る。
+fn check_redirect(a: &Value) -> Result<(), PortError> {
+    match a.get("redirect") {
+        None | Some(Value::Null) => Ok(()),
+        Some(Value::String(s)) if s == "deny" => Ok(()),
+        Some(_) => Err(PortError::invalid(
+            "Shiki.http.request の redirect に書けるのは \"deny\" だけです。送り先が別の URL へ移るよう返したら、\
+             送るのをやめます（省略しても同じです）。",
+        )),
     }
 }
 

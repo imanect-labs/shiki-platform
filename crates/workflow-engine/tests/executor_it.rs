@@ -875,6 +875,46 @@ async fn http_destination_refusals_fail_and_are_audited_on_both_paths() {
     }
 }
 
+/// `Shiki.http.request` の redirect は、省略と "deny" だけを受ける（ほかの値を黙って deny として扱わない・GAP-27）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn script_http_accepts_only_deny_for_redirect() {
+    let engine = Arc::new(script_runtime::engine::ScriptEngine::new().expect("script engine"));
+    for (redirect, ok) in [
+        ("", true),
+        (r#", redirect: "deny""#, true),
+        (r#", redirect: null"#, true),
+        (r#", redirect: "follow_stripped""#, false),
+        (r#", redirect: "follow""#, false),
+        (r#", redirect: true"#, false),
+    ] {
+        let ports = Arc::new(FakePorts::with_http_status(200));
+        let audit = Arc::new(CapturingAudit::default());
+        let exec = script_executor(&ports, &audit, &engine);
+        let script = format!(
+            "function main(input) {{ Shiki.http.request({{ url: \"https://api.example.com/v1\"{redirect} }}); return 1; }}"
+        );
+        let res = exec
+            .execute(
+                "script.run",
+                &json!({ "source": { "inline": script } }),
+                &ctx(json!({}), vec!["http.egress".into()]),
+            )
+            .await;
+        assert_eq!(res.ok, ok, "{redirect}: {:?}", res.error);
+        assert_eq!(ports.last_http.lock().unwrap().is_some(), ok, "{redirect}");
+        if !ok {
+            let err = res.error.unwrap();
+            assert_eq!(err.code, "invalid", "{redirect}");
+            assert!(
+                err.message
+                    .starts_with("Shiki.http.request の redirect に書けるのは \"deny\" だけです。"),
+                "{redirect}: {}",
+                err.message
+            );
+        }
+    }
+}
+
 /// 結果を画面に返すノードは、宣言したスコープが空でも実行できる（scope 天井の外にしない・GAP-09）。
 #[tokio::test]
 async fn reply_runs_without_declared_scopes() {
