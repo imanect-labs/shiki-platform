@@ -52,6 +52,8 @@ pub struct OAuthClient {
     token_endpoint: String,
     provisioner_id: String,
     provisioner_secret: String,
+    /// 能力スコープを realm に用意し終えたか（起動時の照合は、クライアントごとに作り直しを試さない）。
+    scopes_ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl OAuthClient {
@@ -68,6 +70,7 @@ impl OAuthClient {
             token_endpoint,
             provisioner_id,
             provisioner_secret,
+            scopes_ready: std::sync::Arc::default(),
         }
     }
 
@@ -147,8 +150,10 @@ impl OAuthClient {
 
     /// 既にあるクライアントを今の登録の形に揃える（前の版で登録したクライアントを直す・起動時の照合）。
     ///
-    /// 有効なインストールのクライアントに使うので、有効に戻す。クライアントが無ければ作らずに `Ok(false)` を返す（confidential の secret を保管し直す経路がここに無いため。作り直しは
-    /// 再インストールが行う）。secret は取得しない・作り直さない。
+    /// 有効なインストールのクライアントに使うので、有効に戻す。クライアントが無ければ作らずに `Ok(false)` を
+    /// 返す（confidential の secret を保管し直す経路がここに無いため。作り直しは再インストールが行う）。secret は
+    /// 取得しない・作り直さない。能力スコープの用意は、この [`OAuthClient`] で 1 回だけ試す（多くのクライアントを
+    /// 続けて揃えるとき、クライアントごとに realm へ作り直しを送らない）。
     pub async fn repair(
         &self,
         kind: ClientKind,
@@ -157,7 +162,11 @@ impl OAuthClient {
         redirect_uris: &[String],
     ) -> Result<bool, GatewayError> {
         let token = self.admin_token().await?;
-        self.ensure_capability_scopes(&token).await?;
+        if !self.scopes_ready.load(std::sync::atomic::Ordering::Acquire) {
+            self.ensure_capability_scopes(&token).await?;
+            self.scopes_ready
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
         let internal_id = match self.find_internal_id(&token, client_id).await {
             Ok(id) => id,
             Err(GatewayError::NotFound) => return Ok(false),
