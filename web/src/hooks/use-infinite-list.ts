@@ -12,6 +12,8 @@ export type InfiniteList<T> = {
   loadingMore: boolean;
   error: string | null;
   hasMore: boolean;
+  /// 取得に成功した回数（0 件のページでも増える・[`useInfiniteSentinel`] の `progress` に渡す）。
+  fetches: number;
   /// 次ページを取得する（無限スクロールの sentinel から呼ぶ）。
   loadMore: () => void;
   /// 先頭から取り直す（作成/削除/リネーム後の反映）。
@@ -33,6 +35,7 @@ export function useInfiniteList<T>(
   const [loadingMore, setLoadingMore] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [reloadKey, setReloadKey] = React.useState(0);
+  const [fetches, setFetches] = React.useState(0);
 
   // 競合防止: 最新リクエストのみ反映する世代カウンタ。
   const generation = React.useRef(0);
@@ -58,6 +61,7 @@ export function useInfiniteList<T>(
         setItems(page.items);
         setCursor(page.next_cursor ?? undefined);
         setHasMore(Boolean(page.next_cursor));
+        setFetches((n) => n + 1);
       })
       .catch((e: unknown) => {
         if (gen !== generation.current) return;
@@ -84,6 +88,7 @@ export function useInfiniteList<T>(
         setItems((prev) => [...prev, ...page.items]);
         setCursor(page.next_cursor ?? undefined);
         setHasMore(Boolean(page.next_cursor));
+        setFetches((n) => n + 1);
       })
       .catch((e: unknown) => {
         if (gen !== generation.current) return;
@@ -99,7 +104,7 @@ export function useInfiniteList<T>(
 
   const reload = React.useCallback(() => setReloadKey((k) => k + 1), []);
 
-  return { items, loading, loadingMore, error, hasMore, loadMore, reload };
+  return { items, loading, loadingMore, error, hasMore, fetches, loadMore, reload };
 }
 
 /// 無限スクロールの sentinel を監視し、可視になったら `onVisible` を呼ぶ。

@@ -461,6 +461,26 @@ export function sharedWithMe(opts?: { cursor?: string; limit?: number }): Promis
   );
 }
 
+/// 続きを読みにいく回数の上限（[`sharedWithMeUpTo`]）。
+const SHARED_MAX_PAGES = 5;
+
+/// 自分に共有されたノードを、`want` 件たまるか続きが無くなるまで読む（新しい順・往復は最大 5 回）。
+///
+/// 共有されたものが多い人では、1 ページが `limit` より少ないか 0 件のまま、続きの位置だけが付いて返ることがある
+/// （サーバーが OpenFGA に問う数を抑えるため・BUG-162）。往復の上限で止まったら `next_cursor` を返す。
+export async function sharedWithMeUpTo(opts: { cursor?: string; want?: number } = {}): Promise<ChildrenResponse> {
+  const want = opts.want ?? 50;
+  const items: NodeResponse[] = [];
+  let cursor = opts.cursor;
+  for (let page = 0; page < SHARED_MAX_PAGES; page += 1) {
+    const p = await sharedWithMe({ cursor, limit: Math.min(100, Math.max(1, want - items.length)) });
+    items.push(...p.items);
+    cursor = p.next_cursor ?? undefined;
+    if (!cursor || items.length >= want) break;
+  }
+  return { items, next_cursor: cursor ?? null };
+}
+
 // --- ディレクトリ（共有相手検索。自テナントのみ） -------------------------
 
 export function searchDirectory(opts: {

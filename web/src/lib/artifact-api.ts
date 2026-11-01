@@ -97,11 +97,31 @@ function toMeta(a: ApiArtifact): ArtifactMeta {
   };
 }
 
+/// 一覧の応答（codegen）。`shared_next_cursor` は共有された分の続きの位置。
+type ArtifactListResponse = components["schemas"]["ArtifactListResponse"];
+
+/// 共有された分の続きを読みにいく回数の上限（[`listArtifacts`]）。
+const SHARED_MAX_PAGES = 5;
+
+/// 自分が使えるアーティファクト（自分のもの＋共有されたもの・更新の新しい順）。
+///
+/// 共有された分は、続きの位置（`shared_next_cursor`）をたどって最大 5 回まで読み足す。共有されたものが多い人では、
+/// 共有された分が 0 件のまま続きの位置だけが付いて返ることがある（サーバーが OpenFGA に問う数を抑えるため・BUG-162）。
 export async function listArtifacts(kind: ArtifactKind): Promise<ArtifactMeta[]> {
-  const data = await ok<{ items: ApiArtifact[] }>(
-    await apiFetch(`/artifacts?kind=${encodeURIComponent(kind)}`),
-  );
-  return data.items.map(toMeta);
+  const base = `/artifacts?kind=${encodeURIComponent(kind)}`;
+  const first = await ok<ArtifactListResponse>(await apiFetch(base));
+  const items: ApiArtifact[] = [...(first.items as ApiArtifact[])];
+  let cursor = first.shared_next_cursor ?? null;
+  for (let page = 0; cursor && page < SHARED_MAX_PAGES; page += 1) {
+    const more = await ok<ArtifactListResponse>(await apiFetch(`${base}&shared_cursor=${encodeURIComponent(cursor)}`));
+    items.push(...(more.items as ApiArtifact[]));
+    cursor = more.shared_next_cursor ?? null;
+  }
+  const seen = new Set<string>();
+  return items
+    .filter((a) => (seen.has(a.id) ? false : (seen.add(a.id), true)))
+    .sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at) || b.id.localeCompare(a.id))
+    .map(toMeta);
 }
 
 export async function getArtifact(id: string): Promise<ArtifactMeta> {
