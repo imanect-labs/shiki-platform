@@ -106,7 +106,8 @@ test("スキルの一覧: 共有された分が 0 件のまま続きの位置が
   try {
     await page.goto("/skills");
     await expect(page.getByText("続きで見つかったスキル")).toBeVisible({ timeout: 15_000 });
-    expect(asked).toEqual(["", "s1", "s2"]);
+    // ログインの後のホームの画面（スキルの選択）も同じ一覧を頼むので、最後の読み込みからの頼みを見る。
+    expect(asked.slice(asked.lastIndexOf(""))).toEqual(["", "s1", "s2"]);
   } finally {
     await page.unroute(LIST, handler);
   }
@@ -155,11 +156,12 @@ test("スキルの一覧: 共有された分を往復の上限で読み切れな
     await expect(page.getByText("自分のスキル")).toBeVisible({ timeout: 15_000 });
     const more = page.getByTestId("artifacts-shared-more");
     await expect(more).toHaveText(/共有されたスキルの続きは、まだ見つかっていません。「さらに読み込む」で続きを探します。/);
-    expect(served.asked).toEqual(["", "s1", "s2", "s3", "s4", "s5"]);
+    const start = served.asked.lastIndexOf("");
+    expect(served.asked.slice(start)).toEqual(["", "s1", "s2", "s3", "s4", "s5"]);
     await more.getByTestId("artifacts-shared-more-button").click();
     await expect(page.getByText("続きで見つかったスキル")).toBeVisible();
     await expect(page.getByTestId("artifacts-shared-more")).toHaveCount(0);
-    expect(served.asked.slice(6)).toEqual(["s6"]);
+    expect(served.asked.slice(start + 6)).toEqual(["s6"]);
   } finally {
     await served.stop();
   }
@@ -188,7 +190,8 @@ test("スキルの一覧: 共有された分の続きの頼みが失敗しても
     await more.getByTestId("artifacts-shared-more-button").click();
     await expect(page.getByText("続きで見つかったスキル")).toBeVisible();
     await expect(page.getByTestId("artifacts-shared-more")).toHaveCount(0);
-    expect(served.asked).toEqual(["", "s1", "s1"]);
+    // ログインの後のホームの画面（スキルの選択）も同じ一覧を頼むので、最後の読み込みからの頼みを見る。
+    expect(served.asked.slice(served.asked.lastIndexOf(""))).toEqual(["", "s1", "s1"]);
   } finally {
     await served.stop();
   }
