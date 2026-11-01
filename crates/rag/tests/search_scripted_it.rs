@@ -310,6 +310,61 @@ async fn readable_set_overflow_falls_back_to_tenant_only() {
     );
 }
 
+/// 上限の設定を ListObjects の上限より大きくしても、ListObjects が上限で切った可読集合は使わずに縮退する
+/// （切れた集合で絞ると、読めるはずの文書が黙って出ない・BUG-190）。作った行は最後に消す。
+#[tokio::test]
+async fn readable_set_cut_by_list_objects_falls_back_even_with_a_large_setting() {
+    let Some(env) = setup().await else { return };
+    let folder_tag = env.ctx.ns().folder("beyond-the-cap").as_str().to_string();
+    let query = "出張報告";
+    let file = seed_chunk(&env, "shutcho", query, 0.9, &folder_tag).await;
+
+    // ListObjects がちょうど上限の件数を返す（本当に読めるフォルダはその外にある）。
+    let cap = authz::visible::LIST_OBJECTS_MAX_RESULTS;
+    let authz = ScriptedAuthz {
+        readable_folders: (0..cap)
+            .map(|i| format!("folder:{}|f{i}", env.ctx.tenant_id))
+            .collect(),
+        readable_files: vec![],
+        denied_files: HashSet::new(),
+    };
+    let output = service(
+        &env,
+        authz,
+        RagConfig {
+            enabled: true,
+            readable_tags_max: cap * 10,
+            ..RagConfig::default()
+        },
+    )
+    .search(&env.ctx, query, Some(5), SearchMode::Dense, None, None)
+    .await
+    .unwrap();
+
+    assert_eq!(
+        output.debug.prefilter_mode, "tenant_only",
+        "切れた集合で絞らない"
+    );
+    let hit_files: HashSet<Uuid> = output.results.iter().map(|r| r.file_id).collect();
+    assert_eq!(
+        hit_files,
+        [file].into_iter().collect::<HashSet<_>>(),
+        "読めるはずの文書が出る"
+    );
+
+    for sql in [
+        "delete from rag_chunk where tenant_id = $1",
+        "delete from node where tenant_id = $1",
+        "delete from blob where tenant_id = $1",
+    ] {
+        sqlx::query(sql)
+            .bind(&env.ctx.tenant_id)
+            .execute(&env.pool)
+            .await
+            .unwrap();
+    }
+}
+
 #[tokio::test]
 async fn deleted_node_is_hidden_even_if_indexes_are_stale() {
     let Some(env) = setup().await else { return };

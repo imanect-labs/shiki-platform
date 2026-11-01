@@ -6,6 +6,8 @@
 //!   **grant は次のクエリで即反映**される（PIT-3 解消）。
 //!   可読集合が上限を超えたら pre-filter を放棄して tenant-only へ縮退し、
 //!   post-filter 全依存＋over-fetch で正しさを維持する（PIT-1 のフォールバック）。
+//!   OpenFGA の ListObjects が応答の上限で切ったかもしれない集合（[`authz::visible::list_may_be_cut`]）も、
+//!   設定の上限によらず同じく縮退する（切れた集合を正にすると、読めるはずの文書が黙って出ない・BUG-190）。
 //! - **post-filter**: 取得後に OpenFGA で file 粒度の最終 check（HigherConsistency）。
 //!   pre-filter のタグが陳腐化していても（move 直後など）権限変更に追従する二重防御。
 //!   chunk を FGA オブジェクトにしない（PIT-7）。
@@ -29,9 +31,11 @@ pub struct ReadableSet {
 
 /// ユーザーの可読 folder/file 集合を算出する（クエリごと・キャッシュしない）。
 ///
-/// `max_tags` は OpenFGA ListObjects の応答上限（既定 1000）より小さく設定すること。
-/// 応答が上限で切り詰められた「不完全な集合」を正として使うと可読文書が silent に
-/// 欠落する（under-recall）ため、上限手前で縮退する方が安全。
+/// 次のどちらかなら tenant-only へ縮退する（`overflowed`）。
+/// - folder か file の応答が ListObjects の上限に届いた（[`authz::visible::list_may_be_cut`]）。上限で切り詰められた
+///   「不完全な集合」を正として使うと、可読文書が黙って欠ける（under-recall）。集合ごとに見るので、`max_tags` を
+///   ListObjects の上限より大きく設定しても切れた集合は使わない（BUG-190）。
+/// - タグの数の合計が `max_tags` を超えた（pre-filter の式が大きくなりすぎる）。
 pub async fn readable_set(
     ctx: &AuthContext,
     authz: &dyn AuthzClient,
@@ -42,7 +46,7 @@ pub async fn readable_set(
         authz.list_objects(&subject, Relation::Viewer, ObjectType::Folder),
         authz.list_objects(&subject, Relation::Viewer, ObjectType::File),
     )?;
-    if folders.len() + files.len() > max_tags {
+    if may_be_cut(&[folders.len(), files.len()]) || folders.len() + files.len() > max_tags {
         return Ok(ReadableSet {
             tags: Vec::new(),
             overflowed: true,
@@ -54,6 +58,13 @@ pub async fn readable_set(
         tags,
         overflowed: false,
     })
+}
+
+/// ListObjects の応答のどれかが上限で切れたかもしれないか（`lens` は応答ごとの件数・BUG-190）。
+///
+/// 可読集合（[`readable_set`]）と可読テーブル（[`crate::record_source::readable_tables`]）が同じ規則で縮退する。
+pub(crate) fn may_be_cut(lens: &[usize]) -> bool {
+    lens.iter().any(|n| authz::visible::list_may_be_cut(*n))
 }
 
 /// post-filter の結果。
@@ -134,4 +145,179 @@ pub(crate) async fn file_decisions(
         }));
     }
     Ok(distinct_files.into_iter().zip(allowed).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::record_source::readable_tables;
+    use async_trait::async_trait;
+    use authz::visible::LIST_OBJECTS_MAX_RESULTS;
+    use authz::{AuthzError, FgaObject, Principal, ReadTupleKey, Subject};
+
+    /// ListObjects が種類ごとに決まった件数を返す偽物（ほかの口は呼ばれない）。
+    struct Lists {
+        folders: usize,
+        files: usize,
+        tables: usize,
+    }
+
+    #[async_trait]
+    impl AuthzClient for Lists {
+        async fn check(
+            &self,
+            _: &Subject,
+            _: Relation,
+            _: &FgaObject,
+            _: Consistency,
+        ) -> Result<bool, AuthzError> {
+            unreachable!()
+        }
+        async fn write_tuple(
+            &self,
+            _: &Subject,
+            _: Relation,
+            _: &FgaObject,
+        ) -> Result<bool, AuthzError> {
+            unreachable!()
+        }
+        async fn delete_tuple(
+            &self,
+            _: &Subject,
+            _: Relation,
+            _: &FgaObject,
+        ) -> Result<bool, AuthzError> {
+            unreachable!()
+        }
+        async fn read_tuples(
+            &self,
+            _: &FgaObject,
+            _: Option<Relation>,
+        ) -> Result<Vec<ReadTupleKey>, AuthzError> {
+            unreachable!()
+        }
+        async fn list_objects(
+            &self,
+            _: &Subject,
+            _: Relation,
+            ty: ObjectType,
+        ) -> Result<Vec<String>, AuthzError> {
+            let n = match ty {
+                ObjectType::Folder => self.folders,
+                ObjectType::File => self.files,
+                ObjectType::DataTable => self.tables,
+                other => unreachable!("{other:?}"),
+            };
+            Ok((0..n).map(|i| format!("{}:t|{i}", ty.as_str())).collect())
+        }
+        async fn delete_object_tuples(&self, _: &FgaObject) -> Result<u32, AuthzError> {
+            unreachable!()
+        }
+        async fn read_subject_objects(
+            &self,
+            _: &Subject,
+            _: ObjectType,
+        ) -> Result<Vec<String>, AuthzError> {
+            unreachable!()
+        }
+    }
+
+    fn ctx() -> AuthContext {
+        AuthContext::new(
+            Principal {
+                kind: authz::PrincipalKind::User,
+                id: "u".into(),
+                email: None,
+                groups: vec![],
+                roles: vec![],
+                tenant_id: None,
+            },
+            "org".into(),
+            "t".into(),
+        )
+    }
+
+    /// 上限を ListObjects の上限より大きく設定しても、上限に届いた集合は使わずに縮退する（BUG-190）。
+    #[tokio::test]
+    async fn a_set_cut_by_list_objects_falls_back_whatever_the_setting() {
+        let cap = LIST_OBJECTS_MAX_RESULTS;
+        let generous = cap * 10;
+        for (folders, files) in [(cap, 0), (0, cap), (cap + 5, 3)] {
+            let set = readable_set(
+                &ctx(),
+                &Lists {
+                    folders,
+                    files,
+                    tables: 0,
+                },
+                generous,
+            )
+            .await
+            .unwrap();
+            assert!(set.overflowed, "folders={folders} files={files}");
+            assert!(set.tags.is_empty());
+        }
+        // 片方ずつは上限の内なら、合計が上限を超えていても設定の内なら使う（集合ごとに判定する）。
+        let set = readable_set(
+            &ctx(),
+            &Lists {
+                folders: cap - 1,
+                files: cap - 1,
+                tables: 0,
+            },
+            generous,
+        )
+        .await
+        .unwrap();
+        assert!(!set.overflowed);
+        assert_eq!(set.tags.len(), 2 * (cap - 1));
+        // 設定の上限は前と同じく効く（合計で見る）。
+        let set = readable_set(
+            &ctx(),
+            &Lists {
+                folders: 300,
+                files: 201,
+                tables: 0,
+            },
+            500,
+        )
+        .await
+        .unwrap();
+        assert!(set.overflowed);
+        let set = readable_set(
+            &ctx(),
+            &Lists {
+                folders: 300,
+                files: 200,
+                tables: 0,
+            },
+            500,
+        )
+        .await
+        .unwrap();
+        assert!(!set.overflowed);
+        assert_eq!(set.tags.len(), 500);
+    }
+
+    /// 可読テーブル（レコードの pre-filter）も同じ規則で縮退する（BUG-190）。
+    #[tokio::test]
+    async fn readable_tables_falls_back_when_cut() {
+        let cap = LIST_OBJECTS_MAX_RESULTS;
+        let lists = |tables| Lists {
+            folders: 0,
+            files: 0,
+            tables,
+        };
+        let cut = readable_tables(&ctx(), &lists(cap), cap * 10)
+            .await
+            .unwrap();
+        assert!(cut.overflowed && cut.tags.is_empty());
+        let whole = readable_tables(&ctx(), &lists(cap - 1), cap * 10)
+            .await
+            .unwrap();
+        assert!(!whole.overflowed);
+        assert_eq!(whole.tags.len(), cap - 1);
+        let over = readable_tables(&ctx(), &lists(501), 500).await.unwrap();
+        assert!(over.overflowed);
+    }
 }

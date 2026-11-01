@@ -94,7 +94,8 @@ pub fn record_authz_tag(ctx: &AuthContext, table_id: Uuid) -> String {
 
 /// 閲覧者が viewer のテーブル集合（pre-filter のタグ・クエリごとに算出・キャッシュしない）。
 ///
-/// 上限を超えたら tenant-only へ縮退する（[`crate::authz_filter::readable_set`] と同じ規則・PIT-1）。
+/// 上限を超えたとき、または ListObjects の応答が上限に届いたとき（切れた集合を正にしない・BUG-190）は tenant-only へ
+/// 縮退する（[`crate::authz_filter::readable_set`] と同じ規則・PIT-1）。
 pub async fn readable_tables(
     ctx: &AuthContext,
     authz: &dyn AuthzClient,
@@ -103,7 +104,7 @@ pub async fn readable_tables(
     let tables = authz
         .list_objects(&ctx.subject(), Relation::Viewer, ObjectType::DataTable)
         .await?;
-    if tables.len() > max_tags {
+    if crate::authz_filter::may_be_cut(&[tables.len()]) || tables.len() > max_tags {
         return Ok(ReadableSet {
             tags: Vec::new(),
             overflowed: true,
