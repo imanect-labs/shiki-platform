@@ -1081,3 +1081,195 @@ fn base64_encode(bytes: &[u8]) -> String {
     use base64::Engine as _;
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
+
+/// B1 のアプリのインストールは、設定から求めたシェルのポップアップの戻り先でクライアントを登録し、そのクライアントで
+/// 取ったトークンで multi テナントのゲートウェイを呼べる。アンインストールでトークンが出なくなり、再インストールで
+/// 戻る（BUG-172）。`KEYCLOAK_TEST_URL`（realm shiki を import 済み）と DB が要る。
+#[tokio::test]
+async fn b1_install_tokens_reach_the_gateway_in_multi_tenancy() {
+    use app_gateway::test_support::TestRealm;
+    let Some(pool) = setup().await else { return };
+    let Some(realm) = TestRealm::from_env() else {
+        eprintln!("KEYCLOAK_TEST_URL 未設定のためスキップ");
+        return;
+    };
+    // alice（realm の a-corp の人）のセッション。
+    const ALICE: &str = "00000000-0000-0000-0000-000000000001";
+    let mut record = session_record("csrf");
+    record.principal.id = ALICE.into();
+    record.principal.groups = vec!["/tenants/a-corp/a-corp".into()];
+    record.principal.tenant_id = Some("a-corp".into());
+    record.tenant_id = "a-corp".into();
+    let sid = format!("sid-{}", uuid::Uuid::new_v4().simple());
+    let sessions = Arc::new(MemorySessionStore::new());
+    sessions
+        .put("a-corp", &sid, &record, Duration::from_secs(3600))
+        .await
+        .unwrap();
+    let mut state = state_with(pool.clone(), sessions);
+    let mut config = (*state.config).clone();
+    config.auth.issuer = realm.issuer();
+    config.auth.tenancy = Tenancy::Multi;
+    let (id, secret) = realm.provisioner();
+    config.auth.provisioner_client_id = Some(id.into());
+    config.auth.provisioner_client_secret = Some(secret.into());
+    // web のオリジンは BFF のログインの戻り先（既定 http://localhost:3000/auth/callback）から求める。
+    config.gateway.web_origin = None;
+    let shell_callback = "http://localhost:3000/apps/oauth/callback";
+    assert_eq!(config.miniapp_b1_redirect_uris(), [shell_callback]);
+    state.installs = Arc::new(api::miniapp_install::build_install_service(
+        &config,
+        &reqwest::Client::new(),
+        &pool,
+        &state.authz,
+        &state.mini_app_code,
+        &state.data,
+        None,
+    ));
+    state.config = Arc::new(config.clone());
+    let gateway = app_gateway::build_gateway_router(app_gateway::GatewayState {
+        installations: app_gateway::AppInstallationStore::new(pool.clone()),
+        keys: Arc::new(api::middleware::JwksCache::new(
+            reqwest::Client::new(),
+            config.auth.effective_jwks_uri(),
+            Duration::from_secs(300),
+        )),
+        token_cfg: app_gateway::GatewayTokenConfig {
+            audience: config.gateway.audience.clone(),
+            issuer: config.auth.issuer.clone(),
+        },
+        authz: state.authz.clone(),
+        audit: storage::audit::AuditRecorder::new(pool.clone()),
+        tenant_source: config.auth.tenant_source(),
+        default_org: "default".into(),
+        caps: app_gateway::CapabilityDeps {
+            db: pool.clone(),
+            storage: Arc::clone(&state.storage),
+            data: Arc::clone(&state.data),
+            fsms: Arc::clone(&state.fsms),
+            rag: Arc::new(app_gateway::NoRag),
+            notifications: app_gateway::NotificationStore::new(pool.clone()),
+            llm: None,
+            agent: Arc::new(app_gateway::NoAgent),
+            ai_daily_cap_usd_micros: 0,
+            functions: Arc::new(app_gateway::NoFunctions),
+        },
+    });
+    let app = build_router(state);
+    let cookie = format!("shiki_session={sid}.a-corp; shiki_csrf=csrf");
+    let call = |method: &str, uri: String, body: Option<serde_json::Value>| {
+        let app = app.clone();
+        let req = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header(COOKIE, cookie.clone())
+            .header("x-csrf-token", "csrf")
+            .header("content-type", "application/json")
+            .body(body.map_or_else(Body::empty, |b| Body::from(b.to_string())))
+            .unwrap();
+        async move {
+            let resp = app.oneshot(req).await.unwrap();
+            let status = resp.status();
+            let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+            (
+                status,
+                serde_json::from_slice::<serde_json::Value>(&bytes).unwrap_or_default(),
+            )
+        }
+    };
+    let whoami = |token: String| {
+        let gateway = gateway.clone();
+        async move {
+            let resp = gateway
+                .oneshot(
+                    Request::builder()
+                        .uri("/gw/whoami")
+                        .header("authorization", format!("Bearer {token}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            let status = resp.status();
+            let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+            (
+                status,
+                serde_json::from_slice::<serde_json::Value>(&bytes).unwrap_or_default(),
+            )
+        }
+    };
+
+    let name = format!("b1-http-{}", uuid::Uuid::new_v4().simple());
+    let (s, body) = call(
+        "POST",
+        "/apps/manifests".into(),
+        Some(serde_json::json!({ "manifest": manifest_json(&name, "1.0.0") })),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{body}");
+    let app_id = body["id"].as_str().unwrap().to_string();
+    let client_id = format!("app-{app_id}-b1");
+    let install =
+        serde_json::json!({ "name": name, "version": "1.0.0", "granted_scopes": ["data.read"] });
+    let body = async {
+        let (s, body) = call(
+            "POST",
+            format!("/apps/manifests/{app_id}/publish"),
+            Some(serde_json::json!({})),
+        )
+        .await;
+        assert_eq!(s, StatusCode::CREATED, "{body}");
+        let (s, body) = call("POST", "/apps/installations".into(), Some(install.clone())).await;
+        assert_eq!(s, StatusCode::OK, "{body}");
+        assert_eq!(body["client_id_b1"], client_id);
+        let client = realm.client(&client_id).await.expect("client");
+        assert_eq!(client["redirectUris"], serde_json::json!([shell_callback]));
+
+        // シェルのポップアップと同じ要求で取ったトークンで、multi テナントのゲートウェイを呼べる。
+        let token = realm
+            .user_token(&client_id, shell_callback, "alice", "openid data.read")
+            .await
+            .expect("token");
+        let (s, body) = whoami(token.clone()).await;
+        assert_eq!(s, StatusCode::OK, "{body}");
+        assert_eq!(body["user_sub"], ALICE);
+        assert_eq!(body["app_id"], app_id);
+
+        // アンインストール: 発行済みのトークンは断られ、新しいトークンは出ない。
+        let (s, body) = call("DELETE", format!("/apps/installations/{app_id}"), None).await;
+        assert!(s.is_success(), "{s} {body}");
+        assert_eq!(whoami(token).await.0, StatusCode::FORBIDDEN);
+        assert!(realm
+            .user_token(&client_id, shell_callback, "alice", "openid data.read")
+            .await
+            .is_err());
+
+        // 再インストールでクライアントが有効に戻り、またゲートウェイを呼べる。
+        let (s, body) = call("POST", "/apps/installations".into(), Some(install.clone())).await;
+        assert_eq!(s, StatusCode::OK, "{body}");
+        let token = realm
+            .user_token(&client_id, shell_callback, "alice", "openid data.read")
+            .await
+            .expect("token after reinstall");
+        assert_eq!(whoami(token).await.0, StatusCode::OK);
+    };
+    let outcome = futures_catch(body).await;
+    let _ = call("DELETE", format!("/apps/installations/{app_id}"), None).await;
+    realm.delete_client(&client_id).await;
+    sqlx::query("DELETE FROM app_installation WHERE tenant_id = 'a-corp' AND app_id = $1::uuid")
+        .bind(&app_id)
+        .execute(&pool)
+        .await
+        .expect("cleanup installation");
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
+}
+
+/// 本体の panic を捕まえる（片付けをしてから落とすため）。
+async fn futures_catch<F: std::future::Future<Output = ()>>(
+    body: F,
+) -> Result<(), Box<dyn std::any::Any + Send>> {
+    use futures::FutureExt as _;
+    std::panic::AssertUnwindSafe(body).catch_unwind().await
+}

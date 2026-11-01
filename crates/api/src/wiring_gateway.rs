@@ -143,10 +143,8 @@ pub(crate) async fn spawn_gateway_listener(
     Ok(())
 }
 
-/// 同意インストール（Task 9.13b）の InstallService を組む。
-///
-/// Keycloak admin（provisioner 資格情報＋admin base）が構成済みなら client 登録も配線する。
-/// 未構成（dev/テスト）は登録スキップ（InstallService 側で warn）。
+/// 同意インストール（Task 9.13b）の InstallService を組む（組み立ては結合テストと同じ
+/// [`api::miniapp_install::build_install_service`]）。
 pub(crate) fn wire_installs(
     config: &AppConfig,
     http: &reqwest::Client,
@@ -156,36 +154,15 @@ pub(crate) fn wire_installs(
     data_store: &Arc<data::DataStore>,
     secrets: Option<&Arc<secrets::SecretStore>>,
 ) -> app_platform::InstallService {
-    let oauth = if let (Some(base), Some((id, secret))) = (
-        config.auth.admin_base(),
-        config.auth.provisioner_credentials(),
-    ) {
-        Some(app_gateway::OAuthClient::new(
-            http.clone(),
-            base,
-            config.auth.token_endpoint(),
-            id.to_string(),
-            secret.to_string(),
-        ))
-    } else {
-        tracing::info!("Keycloak admin 未構成: インストール時の client 登録は無効（dev）");
-        None
-    };
-    // B1 redirect は web シェルの popup callback（PR10 が消費）。web origin 由来。
-    let b1_redirects = vec![config.auth.redirect_uri.clone()];
-    let token_host = url::Url::parse(&config.auth.token_endpoint())
-        .ok()
-        .and_then(|u| u.host_str().map(str::to_string));
-    app_platform::InstallService::new(
-        db.clone(),
-        app_platform::Registry::new(db.clone()),
-        Arc::clone(mini_app_code),
-        Arc::clone(data_store),
-        authz.clone(),
-        oauth,
-        b1_redirects,
+    api::miniapp_install::build_install_service(
+        config,
+        http,
+        db,
+        authz,
+        mini_app_code,
+        data_store,
+        secrets,
     )
-    .with_secrets(secrets.cloned(), token_host)
 }
 
 /// B1 フロントバンドル配信（第3リスナ・Task 9.11）の Router を組む（gateway 無効時は None）。
@@ -206,20 +183,7 @@ pub(crate) fn wire_b1(
         .clone()
         .unwrap_or_else(|| format!("http://localhost:{}", config.gateway.port));
     // frame-ancestors は web シェルのオリジン（未設定は auth.redirect_uri から導出）。
-    let host_origin = config.gateway.web_origin.clone().unwrap_or_else(|| {
-        url::Url::parse(&config.auth.redirect_uri)
-            .ok()
-            .and_then(|u| {
-                u.port_or_known_default().map(|p| {
-                    format!(
-                        "{}://{}:{p}",
-                        u.scheme(),
-                        u.host_str().unwrap_or("localhost")
-                    )
-                })
-            })
-            .unwrap_or_else(|| "http://localhost:3000".to_string())
-    });
+    let host_origin = config.web_shell_origin();
     let state = app_gateway::B1State {
         installations: app_gateway::AppInstallationStore::new(db.clone()),
         store: Arc::clone(object_store),

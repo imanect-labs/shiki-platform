@@ -136,8 +136,8 @@ pub struct GatewayConfig {
     /// `http://localhost:<port>`（dev 既定）。
     #[serde(default)]
     pub public_origin: Option<String>,
-    /// ホスト（web シェル）のオリジン（CSP frame-ancestors）。未設定は
-    /// `auth.redirect_uri` のオリジンから導出。
+    /// ホスト（web シェル）のオリジン（CSP frame-ancestors と B1 のクライアントの戻り先）。未設定は
+    /// `auth.redirect_uri` のオリジンから導出（[`AppConfig::web_shell_origin`]）。
     #[serde(default)]
     pub web_origin: Option<String>,
     /// 組み込み砂箱バンドル（スライドエディタ等）の配置ディレクトリ（Task 11.2）。
@@ -298,6 +298,7 @@ mod backends;
 mod data_tests;
 #[cfg(test)]
 mod decision_tests;
+mod miniapp;
 #[cfg(test)]
 mod tests;
 
@@ -309,6 +310,7 @@ pub use backends::{
     ObjectStoreBackend, StorageConfig, TabularConfig, TelemetryConfig, UploadGcConfig,
     VectorConfig, VectorStoreBackend, WebSearchBackend, WebSearchConfig,
 };
+pub use miniapp::MINIAPP_OAUTH_CALLBACK_PATH;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {

@@ -27,6 +27,7 @@ pub mod insights;
 pub mod keycloak_account;
 pub mod keycloak_admin;
 pub mod middleware;
+pub mod miniapp_install;
 pub mod oidc;
 pub mod openapi;
 pub mod routes;

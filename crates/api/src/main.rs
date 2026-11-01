@@ -192,6 +192,8 @@ async fn run() -> anyhow::Result<()> {
         &data_store,
         secrets.as_ref(),
     ));
+    // 前の版で登録したアプリのクライアントを今の登録の形に揃える（裏で動かす・BUG-172）。
+    api::miniapp_install::spawn_client_repair(Arc::clone(&installs));
 
     // チャット（Phase 3）: enabled のとき llm-gateway＋生成ワーカーを配線し、API 用ストアを返す。
     // ノート共同編集ハブ（Task 11P.1）: authz ゲート＋update log/snapshot 永続化。

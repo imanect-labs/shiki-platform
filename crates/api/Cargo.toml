@@ -85,6 +85,8 @@ tokio-tungstenite.workspace = true
 yrs = { workspace = true, features = ["sync"] }
 hex.workspace = true
 ed25519-dalek.workspace = true
+# 実 Keycloak の結合テストの手助け（B1 のクライアントの登録とトークン・BUG-172）。
+shiki-app-gateway = { workspace = true, features = ["test-support"] }
 
 # shiki-authz / shiki-storage / shiki-rag は lib 名 `authz` / `storage` / `rag` で参照する
 # ため cargo-machete が誤検出する（実際は使用中）。

@@ -264,7 +264,7 @@ fn effective_jwks_uri_derives_from_issuer_when_no_internal() {
 // ---- AppConfig::validate() の各失敗分岐 ----
 
 /// defaults() を素に valid な AppConfig を組み立てる（必須項目を補完）。
-fn valid_config() -> AppConfig {
+pub(super) fn valid_config() -> AppConfig {
     let mut value = defaults();
     // 必須項目（defaults に含まれない）を補完する。
     value["database"]["url"] = serde_json::json!("postgres://localhost/shiki");
