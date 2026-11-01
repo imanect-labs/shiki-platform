@@ -1,33 +1,37 @@
 {
-  "cols": [
-    {
-      "name": "k",
-      "ty": "Number",
-      "indexed": true
-    }
-  ],
-  "rows": [
-    [
+  "expect": "same",
+  "note": "(TRUE) IS NOT NULL が「IS NULL の左辺は列か条件式です」で拒否されていた",
+  "case": {
+    "cols": [
       {
-        "Num": "1"
+        "name": "k",
+        "ty": "Number",
+        "indexed": true
       }
-    ]
-  ],
-  "query": {
-    "Rows": {
-      "cols": [
-        "k"
-      ],
-      "filter": {
-        "Unknown": [
-          {
-            "Const": true
-          },
-          true
-        ]
-      },
-      "order": [],
-      "limit": null
+    ],
+    "rows": [
+      [
+        {
+          "Num": "1"
+        }
+      ]
+    ],
+    "query": {
+      "Rows": {
+        "cols": [
+          "k"
+        ],
+        "filter": {
+          "Unknown": [
+            {
+              "Const": true
+            },
+            true
+          ]
+        },
+        "order": [],
+        "limit": null
+      }
     }
   }
 }

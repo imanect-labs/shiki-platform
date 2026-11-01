@@ -64,6 +64,7 @@ pub fn case(rng: &mut StdRng) -> Case {
         name: "k".into(),
         ty: Ty::Number,
         indexed: true,
+        searchable: false,
     }];
     for i in 0..rng.gen_range(2..=4) {
         let ty = *[Ty::Text, Ty::Number, Ty::Date, Ty::Select]
@@ -74,6 +75,8 @@ pub fn case(rng: &mut StdRng) -> Case {
             ty,
             // 索引の無い列での絞り込みは 400（`field-not-indexed`）なので、比べられる件数のために多めに張る。
             indexed: rng.gen_bool(0.85),
+            // 部分一致・後方一致の LIKE を比べるため、テキストの列には半分ほど付ける。
+            searchable: ty == Ty::Text && rng.gen_bool(0.5),
         });
     }
     // ときどき既定のページ（`DEFAULT_LIMIT`）を超える行数にして、カーソルでのページ送りも比べる。

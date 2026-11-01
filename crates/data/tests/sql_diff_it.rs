@@ -32,12 +32,17 @@ fn env_num(key: &str, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
+/// 種（`random` なら毎回変える・読めない値は既定に戻さず止める）。最初に表示する。
 fn seed() -> u64 {
-    match std::env::var("SQL_DIFF_SEED").as_deref() {
+    let seed = match std::env::var("SQL_DIFF_SEED").as_deref() {
         Ok("random") => rand::random(),
-        Ok(s) => s.parse().unwrap_or(1004),
+        Ok(s) => s
+            .parse()
+            .unwrap_or_else(|_| panic!("SQL_DIFF_SEED は整数か random: {s}")),
         Err(_) => 1004,
-    }
+    };
+    eprintln!("SQL_DIFF_SEED={seed}");
+    seed
 }
 
 /// 探索の結果。
@@ -66,7 +71,10 @@ async fn explore(
         let tenant = if mutate.is_none() {
             match load_shiki(&vs[0].store, &base).await {
                 Ok((t, _)) => Some(t),
-                Err(e) => panic!("表を作れない: {e}\n{}", base.describe()),
+                Err(e) => panic!(
+                    "表を作れない（SQL_DIFF_SEED={seed}）: {e}\n{}",
+                    base.describe()
+                ),
             }
         } else {
             None
@@ -148,7 +156,8 @@ async fn harness_finds_and_shrinks_a_planted_difference() {
         return;
     };
     let mutate = |s: String| s.replace(" < ", " <= ");
-    let t = explore(&pool, 7, 40, 1, 1, Some(&mutate)).await;
+    // 最初の 1 件が見つかるまで（生成を変えても見つかる程度の件数・見つけたらそこで止まる）。
+    let t = explore(&pool, 7, 200, 1, 1, Some(&mutate)).await;
     let (path, detail) = t.found.first().expect("壊した参照との食い違いを見つける");
     let body = std::fs::read_to_string(path).unwrap();
     let min: Case = serde_json::from_str(&body).unwrap();
@@ -172,12 +181,15 @@ async fn saved_repros_stay_fixed() {
         return;
     };
     let vs = variants(&pool);
-    for (name, case) in sql_diff::corpus() {
-        let v = check(&pool, &vs, &case, None).await;
-        assert!(
-            matches!(v, Verdict::Same | Verdict::Skipped(_)),
-            "{name}: {v:?}\n{}",
-            case.describe()
-        );
+    let saved = sql_diff::corpus();
+    assert!(!saved.is_empty(), "保存済みの再現が読めない");
+    for (name, s) in saved {
+        let v = check(&pool, &vs, &s.case, None).await;
+        let got = match &v {
+            Verdict::Same => "same".to_string(),
+            Verdict::Skipped(id) => id.clone(),
+            Verdict::Differ { .. } => format!("{v:?}"),
+        };
+        assert_eq!(got, s.expect, "{name}（{}）\n{}", s.note, s.case.describe());
     }
 }

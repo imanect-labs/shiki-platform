@@ -41,19 +41,33 @@ fn fxhash(s: &str) -> u64 {
     })
 }
 
-/// 保存済みの再現（`tests/sql_diff/corpus/*.json`）。直した不具合の回帰として毎回流す。
-pub fn corpus() -> Vec<(String, Case)> {
+/// 保存済みの再現（`tests/sql_diff/corpus/*.json`）。直した食い違いの回帰として毎回流す。
+#[derive(serde::Deserialize)]
+pub struct Saved {
+    /// 期待する結果（`same` か、許容リストの拒否の id）。
+    pub expect: String,
+    /// どの食い違いだったか（人が読む）。
+    #[serde(default)]
+    pub note: String,
+    pub case: Case,
+}
+
+/// 保存済みの再現を読む（読めないファイルは黙って捨てずに落とす）。
+pub fn corpus() -> Vec<(String, Saved)> {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/sql_diff/corpus");
     let Ok(rd) = std::fs::read_dir(&dir) else {
         return vec![];
     };
-    let mut out: Vec<(String, Case)> = rd
+    let mut out: Vec<(String, Saved)> = rd
         .filter_map(Result::ok)
         .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
-        .filter_map(|e| {
-            let body = std::fs::read_to_string(e.path()).ok()?;
-            let case = serde_json::from_str(&body).ok()?;
-            Some((e.file_name().to_string_lossy().into_owned(), case))
+        .map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let body = std::fs::read_to_string(e.path())
+                .unwrap_or_else(|err| panic!("{name} を読めない: {err}"));
+            let saved = serde_json::from_str(&body)
+                .unwrap_or_else(|err| panic!("{name} の形が今の Case と合わない: {err}"));
+            (name, saved)
         })
         .collect();
     out.sort_by(|a, b| a.0.cmp(&b.0));

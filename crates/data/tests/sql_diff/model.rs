@@ -38,6 +38,9 @@ pub struct Col {
     pub ty: Ty,
     /// Shiki で値索引を張るか（張ると索引から読む戦略が選ばれ得る）。
     pub indexed: bool,
+    /// 部分一致の索引（`searchable`・テキストの列だけ）。無いと `LIKE '%p%'` / `'%p'` は 400。
+    #[serde(default)]
+    pub searchable: bool,
 }
 
 /// セルの値（数値は 10 進表記のまま持つ）。
@@ -325,12 +328,19 @@ impl Case {
             .map(|c| format!("{} {}", c.name, c.ty.pg()))
             .collect();
         let mut out = vec![format!("CREATE TABLE {table} ({})", cols.join(", "))];
-        for r in &self.rows {
-            let vals: Vec<String> = r
-                .iter()
-                .map(|v| v.as_ref().map_or_else(|| "NULL".into(), lit))
-                .collect();
-            out.push(format!("INSERT INTO {table} VALUES ({})", vals.join(", ")));
+        let rows: Vec<String> = self
+            .rows
+            .iter()
+            .map(|r| {
+                let vals: Vec<String> = r
+                    .iter()
+                    .map(|v| v.as_ref().map_or_else(|| "NULL".into(), lit))
+                    .collect();
+                format!("({})", vals.join(", "))
+            })
+            .collect();
+        if !rows.is_empty() {
+            out.push(format!("INSERT INTO {table} VALUES {}", rows.join(", ")));
         }
         out
     }

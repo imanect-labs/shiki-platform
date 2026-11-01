@@ -1,42 +1,46 @@
 {
-  "cols": [
-    {
-      "name": "k",
-      "ty": "Number",
-      "indexed": true
-    },
-    {
-      "name": "c0",
-      "ty": "Select",
-      "indexed": true
-    },
-    {
-      "name": "c1",
-      "ty": "Date",
-      "indexed": true
-    }
-  ],
-  "rows": [],
-  "query": {
-    "Rows": {
-      "cols": [
-        "c0"
-      ],
-      "filter": {
-        "Unknown": [
-          {
-            "Like": [
-              "c1",
-              "a%",
-              false,
-              true
-            ]
-          },
-          true
-        ]
+  "expect": "no-ilike",
+  "note": "(c ILIKE 'a%') IS NOT NULL が ILIKE ではなく「IS NULL の左辺は列か条件式です」で拒否されていた",
+  "case": {
+    "cols": [
+      {
+        "name": "k",
+        "ty": "Number",
+        "indexed": true
       },
-      "order": [],
-      "limit": null
+      {
+        "name": "c0",
+        "ty": "Select",
+        "indexed": true
+      },
+      {
+        "name": "c1",
+        "ty": "Date",
+        "indexed": true
+      }
+    ],
+    "rows": [],
+    "query": {
+      "Rows": {
+        "cols": [
+          "c0"
+        ],
+        "filter": {
+          "Unknown": [
+            {
+              "Like": [
+                "c1",
+                "a%",
+                false,
+                true
+              ]
+            },
+            true
+          ]
+        },
+        "order": [],
+        "limit": null
+      }
     }
   }
 }

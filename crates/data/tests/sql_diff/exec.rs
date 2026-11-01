@@ -14,7 +14,7 @@ use serde_json::{Map, Value};
 use sqlx::{PgPool, Row};
 use uuid::Uuid;
 
-use super::allow::rejection_allowed;
+use super::allow::refusal_for;
 use super::model::{Case, Pred, Query, Side, Ty, Val};
 
 /// 比べる Shiki 側の構成（読取の経路と強制戦略）。
@@ -23,7 +23,7 @@ pub struct Variant {
     pub store: DataStore,
 }
 
-/// 既定・本体経路・各強制戦略（CI の `data-strategies` ジョブと同じ並び）。
+/// 既定・本体経路・各強制戦略・統計で選ぶ計画・切替を必ず起こす予算（CI の `data-strategies` ジョブの変種に合わせる）。
 pub fn variants(pool: &PgPool) -> Vec<Variant> {
     let mk = |name: &'static str, tuning: QueryTuning| Variant {
         name,
@@ -52,6 +52,22 @@ pub fn variants(pool: &PgPool) -> Vec<Variant> {
         mk("union", forced("union")),
         mk("intersect", forced("intersect")),
         mk("batch", forced("batch")),
+        mk("policy", forced("policy")),
+        mk("safe", forced("safe")),
+        mk(
+            "analyze",
+            QueryTuning {
+                analyze_on_read: true,
+                ..QueryTuning::default()
+            },
+        ),
+        mk(
+            "budget",
+            QueryTuning {
+                sort_budget: Some(1),
+                ..QueryTuning::default()
+            },
+        ),
     ]
 }
 
@@ -88,6 +104,7 @@ fn field(c: &super::model::Col) -> FieldDef {
     };
     let mut f = FieldDef::new(&c.name, ty);
     f.indexed = c.indexed;
+    f.searchable = c.searchable && c.ty == Ty::Text;
     if c.ty == Ty::Select {
         f.options = super::gen::OPTIONS.iter().map(|s| (*s).into()).collect();
     }
@@ -196,17 +213,23 @@ pub async fn run_pg(pool: &PgPool, case: &Case, sql_of: impl Fn(&str) -> String)
         }
     }
     let out = match sqlx::query(&sql_of(&table)).fetch_all(&mut *conn).await {
-        Ok(rows) => Outcome::Rows {
-            rows: rows
+        Ok(rows) => {
+            let decoded: Result<Vec<Vec<Option<String>>>, sqlx::Error> = rows
                 .iter()
                 .map(|r| {
                     (0..r.len())
-                        .map(|i| r.try_get::<Option<String>, _>(i).ok().flatten())
+                        .map(|i| r.try_get::<Option<String>, _>(i))
                         .collect()
                 })
-                .collect(),
-            suppressed: false,
-        },
+                .collect();
+            match decoded {
+                Ok(rows) => Outcome::Rows {
+                    rows,
+                    suppressed: false,
+                },
+                Err(e) => Outcome::Error(format!("参照側の結果を読めない: {e}")),
+            }
+        }
         Err(e) => Outcome::Error(format!("{e}")),
     };
     let _ = sqlx::query(&format!("DROP TABLE IF EXISTS {table}"))
@@ -339,47 +362,90 @@ async fn compare(
     case: &Case,
     expected: Vec<Vec<Option<String>>>,
 ) -> Verdict {
+    // 許容リストの拒否は、全構成が同じ理由で断ったときだけ飛ばす（ある構成だけが断るなら食い違い）。
+    let mut refused: Option<&'static str> = None;
+    let mut answered: Option<&'static str> = None;
+    let mut small_cell = false;
     for v in variants {
-        match run_shiki(&v.store, tenant, case).await {
-            Outcome::Rejected(msg) => match rejection_allowed(&msg) {
-                Some(why) => return Verdict::Skipped(format!("rejected: {why}")),
-                None => {
-                    return Verdict::Differ {
-                        variant: v.name.into(),
-                        detail: format!("許容リストに無い拒否: {msg}"),
-                    }
-                }
-            },
-            Outcome::Error(e) => match rejection_allowed(&e) {
-                Some(why) => return Verdict::Skipped(format!("refused: {why}")),
-                None => {
-                    return Verdict::Differ {
-                        variant: v.name.into(),
-                        detail: format!("エラー: {e}"),
-                    }
-                }
-            },
+        let (msg, kind) = match run_shiki(&v.store, tenant, case).await {
+            Outcome::Rejected(m) => (m, "許容リストに無い拒否"),
+            Outcome::Error(e) => (e, "エラー"),
             Outcome::Rows { rows, suppressed } => {
                 if suppressed {
-                    if only_empty_suppressed(pool, case).await {
-                        return Verdict::Skipped("small-cell".into());
+                    if !only_empty_suppressed(pool, case).await {
+                        return Verdict::Differ {
+                            variant: v.name.into(),
+                            detail: "K = 1 なのに行のある集計を伏せた".into(),
+                        };
                     }
+                    small_cell = true;
+                } else {
+                    let got = normalize(case, &rows);
+                    if got != expected {
+                        return Verdict::Differ {
+                            variant: v.name.into(),
+                            detail: format!("Shiki: {got:?}\n参照: {expected:?}"),
+                        };
+                    }
+                }
+                answered.get_or_insert(v.name);
+                if let Some(id) = refused {
                     return Verdict::Differ {
                         variant: v.name.into(),
-                        detail: "K = 1 なのに行のある集計を伏せた".into(),
+                        detail: format!("ほかの構成は拒否した（{id}）のに、この構成は答えた"),
                     };
                 }
-                let got = normalize(case, &rows);
-                if got != expected {
-                    return Verdict::Differ {
-                        variant: v.name.into(),
-                        detail: format!("Shiki: {got:?}\n参照: {expected:?}"),
-                    };
+                continue;
+            }
+        };
+        match refusal_for(case, &msg) {
+            Some(id) if answered.is_none() && refused.is_none_or(|r| r == id) => {
+                refused = Some(id);
+            }
+            Some(id) => {
+                return Verdict::Differ {
+                    variant: v.name.into(),
+                    detail: format!(
+                        "構成によって答えが違う（{}・この構成は {id} で拒否）",
+                        answered.map_or_else(
+                            || format!("ほかの構成は {}", refused.unwrap_or_default()),
+                            |a| format!("{a} は答えた")
+                        )
+                    ),
+                };
+            }
+            None => {
+                return Verdict::Differ {
+                    variant: v.name.into(),
+                    detail: format!("{kind}: {msg}"),
                 }
             }
         }
     }
-    Verdict::Same
+    match (refused, small_cell) {
+        (Some(id), _) => Verdict::Skipped(id.into()),
+        (None, true) => Verdict::Skipped("small-cell".into()),
+        (None, false) => Verdict::Same,
+    }
+}
+
+/// 食い違いの種類（縮小で同じ食い違いを追い続けるため）。
+pub fn kind(v: &Verdict) -> Option<String> {
+    let Verdict::Differ { variant, detail } = v else {
+        return None;
+    };
+    let what = if detail.starts_with("Shiki:") {
+        "rows".to_string()
+    } else if let Some(i) = detail.find("code: ") {
+        detail[i..]
+            .split(',')
+            .next()
+            .unwrap_or_default()
+            .to_string()
+    } else {
+        detail.chars().take(24).collect()
+    };
+    Some(format!("{variant}/{what}"))
 }
 
 /// 条件式の部分木を列挙する（縮小で使う）。

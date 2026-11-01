@@ -5,7 +5,7 @@
 
 use sqlx::PgPool;
 
-use super::exec::{check, children, Variant, Verdict};
+use super::exec::{check, children, kind, Variant, Verdict};
 use super::model::{Case, Pred, Query};
 
 /// 条件式を 1 段だけ簡単にした候補（部分木への置き換え・定数への置き換え）。
@@ -177,7 +177,7 @@ fn candidates(c: &Case) -> Vec<Case> {
     out
 }
 
-/// 食い違いが残る限り縮める（試す回数に上限）。縮めた 1 件と、その食い違いを返す。
+/// 同じ食い違い（同じ構成・同じ種類）が残る限り縮める（試す回数と時間に上限）。縮めた 1 件と、その食い違いを返す。
 pub async fn shrink(
     pool: &PgPool,
     variants: &[Variant],
@@ -185,18 +185,19 @@ pub async fn shrink(
     first: Verdict,
     mutate: Option<&dyn Fn(String) -> String>,
 ) -> (Case, Verdict) {
+    let target = kind(&first);
+    let started = std::time::Instant::now();
     let mut cur = case;
     let mut verdict = first;
-    let mut budget = 400;
+    let mut budget = 150;
     'outer: loop {
         for cand in candidates(&cur) {
-            if budget == 0 {
+            if budget == 0 || started.elapsed() > std::time::Duration::from_secs(90) {
                 break 'outer;
             }
             budget -= 1;
             let v = check(pool, variants, &cand, mutate).await;
-            let still = matches!(&v, Verdict::Differ { variant, .. } if variant != "参照" && variant != "読込");
-            if still {
+            if kind(&v).is_some() && kind(&v) == target {
                 cur = cand;
                 verdict = v;
                 continue 'outer;
