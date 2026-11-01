@@ -8,9 +8,11 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import ReactMarkdown, { type Components, type ExtraProps } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { ImageOff } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { citeNumberFromHref } from "@/lib/citation";
+import { decideAnswerImage } from "@/lib/answer-images";
 import { CitationMarker } from "@/components/chat/citations/citation-marker";
 import { resolveKind } from "@imanect/yui";
 import { isYuiLanguage } from "@imanect/yui/react";
@@ -34,6 +36,9 @@ const UiFigure = dynamic(() => import("./ui-figure").then((m) => m.UiFigure), {
     <div className="my-3 h-48 w-full animate-pulse rounded-xl border border-border/60 bg-secondary/40" />
   ),
 });
+
+/// 出典の画像が無い（会話以外の本文・出典を持たない閲覧者）。外部の画像は 1 枚も読み込まない。
+const NO_IMAGE_SOURCES: ReadonlySet<string> = new Set();
 
 /// 長い URL・英数字の連なりで折り返す（はみ出すと会話全体が横にずれ、吹き出しの左端が切れる）。
 const WRAP_ANYWHERE = "[overflow-wrap:anywhere]";
@@ -130,10 +135,17 @@ function extractCode(child: React.ReactNode): {
 
 /// 描画中の本文と、生成中かどうか（```ui の図が書きかけの行を描かないようにする）。
 /// `untrusted` は利用者が書いた本文（発話の吹き出し）。図・表・引用番号にせず、リンク先を見せる。
-const SourceContext = React.createContext<{ text: string; streaming: boolean; untrusted: boolean }>({
+/// `imageSources` は画像として読み込んでよい URL（出典に現れたもの・lib/answer-images）。
+const SourceContext = React.createContext<{
+  text: string;
+  streaming: boolean;
+  untrusted: boolean;
+  imageSources: ReadonlySet<string>;
+}>({
   text: "",
   streaming: false,
   untrusted: false,
+  imageSources: NO_IMAGE_SOURCES,
 });
 
 /// フェンスが原文で終わっているか。react-markdown（mdast-util-to-hast）はフェンスの中身の末尾に
@@ -182,6 +194,48 @@ function UserLink({ href, children }: { href: string; children: React.ReactNode 
       {children}
       {shown ? null : <span className="ml-1 text-[0.85em] font-normal text-muted-foreground">({host})</span>}
     </a>
+  );
+}
+
+/// 回答の画像。出典に現れた URL と埋め込み画像だけを読み込み、それ以外はホストを添えたリンクにする
+/// （#1005・PIT-77: 回答の画像は閲覧者のブラウザがクリック無しで取りに行くので、LLM が組み立てた URL で
+/// 会話の中身を外へ送らせない）。読み込む画像も Referer を送らない（どの会話から開いたかを渡さない）。
+function AnswerImage({ src, alt }: { src: string; alt: string }) {
+  const { imageSources } = React.useContext(SourceContext);
+  const decision = decideAnswerImage(src, imageSources);
+  if (decision.kind === "drop") return alt ? <>{alt}</> : null;
+  if (decision.kind === "link") {
+    return (
+      <a
+        href={decision.href}
+        target="_blank"
+        rel="noopener noreferrer nofollow"
+        referrerPolicy="no-referrer"
+        title={`出典に無い画像のため読み込んでいません: ${decision.href}`}
+        data-testid="answer-image-blocked"
+        className={cn(
+          "inline-flex max-w-full items-baseline gap-1 rounded-md border border-border/70 bg-muted/40 px-1.5 py-0.5",
+          "align-baseline text-[0.85em] text-muted-foreground no-underline hover:bg-muted hover:text-foreground",
+          WRAP_ANYWHERE,
+        )}
+      >
+        <ImageOff aria-hidden className="size-3.5 shrink-0 translate-y-[0.15em]" />
+        <span className="min-w-0">{alt || "画像"}</span>
+        <span className="shrink-0">({decision.host})</span>
+      </a>
+    );
+  }
+  return (
+    // eslint-disable-next-line @next/next/no-img-element -- 外部の任意のホストの画像で、next/image の最適化対象外
+    <img
+      src={decision.src}
+      alt={alt}
+      loading="lazy"
+      decoding="async"
+      referrerPolicy="no-referrer"
+      data-testid="answer-image"
+      className="my-2 inline-block h-auto max-h-[28rem] max-w-full rounded-lg border border-border/60"
+    />
   );
 }
 
@@ -367,6 +421,10 @@ const components: Components = {
   strong({ children }) {
     return <strong className="font-semibold text-foreground">{children}</strong>;
   },
+  img({ src, alt }) {
+    // 利用者の発話は disallowedElements で画像を落とすので、ここに来るのは回答・画面の本文だけ。
+    return typeof src === "string" && src ? <AnswerImage src={src} alt={alt ?? ""} /> : null;
+  },
 };
 
 export function Markdown({
@@ -375,6 +433,7 @@ export function Markdown({
   streaming = false,
   breaks = false,
   untrusted = false,
+  imageSources = NO_IMAGE_SOURCES,
 }: {
   children: string;
   className?: string;
@@ -385,10 +444,13 @@ export function Markdown({
   /// 利用者が書いた本文。画像は読み込まず（外部へのアクセスを生まない）、図・表・引用番号にせず、
   /// リンクには行き先のホストを添える。
   untrusted?: boolean;
+  /// 画像として読み込んでよい URL（回答なら、その回答のツール結果・引用に現れた画像・lib/answer-images）。
+  /// 省略すると外部の画像は読み込まず、行き先のホストを添えたリンクにする。
+  imageSources?: ReadonlySet<string>;
 }) {
   return (
     <div className={cn("min-w-0 text-[15px] leading-relaxed text-foreground", WRAP_ANYWHERE, className)}>
-      <SourceContext.Provider value={{ text: children, streaming, untrusted }}>
+      <SourceContext.Provider value={{ text: children, streaming, untrusted, imageSources }}>
         <ReactMarkdown
           remarkPlugins={breaks ? [remarkGfm, remarkBrTags, remarkSoftBreaks] : [remarkGfm, remarkBrTags]}
           components={components}
