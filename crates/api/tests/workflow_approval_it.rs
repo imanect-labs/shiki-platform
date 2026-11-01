@@ -255,6 +255,8 @@ struct Env {
     keiri: String,
     /// このテストのテナント（テストごとに一意・最後に [`Env::cleanup`] で撤去する）。
     tenant: String,
+    /// このテストの OpenFGA のストア（URL・id・[`Env::delete_store`]）。
+    fga_store: (String, String),
 }
 
 async fn setup() -> Option<Env> {
@@ -277,18 +279,18 @@ async fn setup() -> Option<Env> {
         .await
         .expect("migrate");
     let http = reqwest::Client::new();
-    let fga: Arc<dyn AuthzClient> = Arc::new(
-        OpenFgaClient::connect(
-            http.clone(),
-            &OpenFgaConfig {
-                base_url: fga_url,
-                store_name: format!("shiki-wf-approval-{}", Uuid::new_v4()),
-            },
-            &authz::model::default_model(),
-        )
-        .await
-        .expect("fga"),
-    );
+    let client = OpenFgaClient::connect(
+        http.clone(),
+        &OpenFgaConfig {
+            base_url: fga_url.clone(),
+            store_name: format!("shiki-wf-approval-{}", Uuid::new_v4()),
+        },
+        &authz::model::default_model(),
+    )
+    .await
+    .expect("fga");
+    let fga_store = (fga_url, client.store_id().to_string());
+    let fga: Arc<dyn AuthzClient> = Arc::new(client);
     let s3 = storage::S3Config {
         internal_endpoint: s3_endpoint.clone(),
         public_endpoint: s3_endpoint,
@@ -425,6 +427,7 @@ async fn setup() -> Option<Env> {
         dave: ctx(&ids[3], &tenant),
         keiri: format!("keiri-{sfx}"),
         tenant,
+        fga_store,
     })
 }
 
@@ -1440,6 +1443,38 @@ impl Env {
         .await
         .unwrap();
         assert_eq!(left, 0, "テストのテナントに行が残っている");
+    }
+
+    /// このテストの OpenFGA のストアを消す（書いたタプルも消える・[`Self::cleanup`] の後に呼ぶ）。
+    async fn delete_store(&self) {
+        let (url, id) = &self.fga_store;
+        let resp = reqwest::Client::new()
+            .delete(format!("{url}/stores/{id}"))
+            .send()
+            .await
+            .expect("OpenFGA delete store");
+        assert!(
+            resp.status().is_success(),
+            "delete store: {}",
+            resp.status()
+        );
+    }
+
+    /// `who` を部署 `prefix-0`〜`prefix-{n-1}` に入れる（所属ロールを ListObjects の上限まで積む）。
+    async fn join_roles(&self, who: &AuthContext, prefix: &str, n: usize) {
+        let roles: Vec<authz::FgaObject> = (0..n)
+            .map(|i| who.ns().role(&format!("{prefix}-{i}")))
+            .collect();
+        let subject = who.subject();
+        for chunk in roles.chunks(25) {
+            futures::future::try_join_all(
+                chunk
+                    .iter()
+                    .map(|r| self.fga.write_tuple(&subject, Relation::Member, r)),
+            )
+            .await
+            .unwrap();
+        }
     }
 
     /// テストで作った run を消す（step・承認の台帳は FK で消え、購読は先に消す・同じ DB のほかのテストやサーバに
@@ -3600,4 +3635,69 @@ async fn unreadable_definition_is_skipped_not_retried() {
         );
     }
     assert_eq!(runs, 0);
+}
+
+/// 所属ロールが ListObjects の上限（1,000 件）に届いた人にも、部署宛ての承認が受信箱・件数・1 件の取得・判断で
+/// 見つかる（BUG-161）。これまでは実効集合を 1,000 件で打ち切り、上限の外の部署宛ての承認が黙って欠けた。
+/// 上限の外の部署は担当のロールを OpenFGA に確かめて足すだけで、所属していない部署の承認は出ない。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn role_assignees_beyond_the_list_objects_cap_reach_the_inbox() {
+    let _serial = SERIAL.lock().await;
+    let Some(env) = setup().await else { return };
+    // 落ちてもテナントの行とストアを消す（積んだタプルはストアごと消える）。
+    let env = Arc::new(env);
+    let outcome = tokio::spawn(roles_beyond_the_cap(Arc::clone(&env))).await;
+    env.cleanup().await;
+    env.delete_store().await;
+    if let Err(e) = outcome {
+        std::panic::resume_unwind(e.into_panic());
+    }
+}
+
+async fn roles_beyond_the_cap(env: Arc<Env>) {
+    let cap = authz::visible::LIST_OBJECTS_MAX_RESULTS;
+    // 経理のロールに入れる前に積む（ListObjects が返す 1,000 件に経理が入らない位置）。dave は経理ではない。
+    env.join_roles(&env.carol, "filler", cap).await;
+    env.join_roles(&env.dave, "filler", cap).await;
+    let table = env.expense_table().await;
+    env.enable(table, None).await;
+    let mine = env.submit(table, "出張旅費", &env.bob).await;
+    env.settle().await;
+
+    let item = env
+        .item_for(&env.carol, mine)
+        .await
+        .expect("上限の外の部署宛ての承認も受信箱に出る");
+    let (_, count) = env.get(&env.carol, "/approvals/count").await;
+    assert_eq!(count, json!({ "count": 1, "more": false }));
+    let id = item["approval_id"].as_str().unwrap().to_string();
+    let rev = item["record"]["rev"].as_i64().unwrap();
+    let (st, one) = env.get(&env.carol, &format!("/approvals/{id}")).await;
+    assert_eq!(st, StatusCode::OK, "{one}");
+    // 経理は状態の進め方では承認できない（担当者としては見つかるので 404 ではなく 403）。
+    let (st, body) = env
+        .decide(
+            &env.carol,
+            &id,
+            json!({ "decision": "approve", "expected_rev": rev }),
+        )
+        .await;
+    assert_eq!(st, StatusCode::FORBIDDEN, "{body}");
+    assert_eq!(body["code"], "not_allowed", "{body}");
+    // 経理でない dave には出ない（行の決まりで行は見えない人にも、担当のロールを足さない）。
+    assert!(env.item_for(&env.dave, mine).await.is_none());
+    assert_eq!(
+        env.get(&env.dave, &format!("/approvals/{id}")).await.0,
+        StatusCode::NOT_FOUND
+    );
+    // 承認者の列の bob（ロールは少ない）は、これまでどおり判断できる。
+    let (st, body) = env
+        .decide(
+            &env.bob,
+            &id,
+            json!({ "decision": "approve", "expected_rev": rev }),
+        )
+        .await;
+    assert_eq!(st, StatusCode::ACCEPTED, "{body}");
+    env.settle().await;
 }

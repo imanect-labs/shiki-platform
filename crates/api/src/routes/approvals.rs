@@ -44,8 +44,11 @@ const PAGE: i64 = 50;
 const COUNT_CAP: usize = 99;
 /// 一覧の 1 回・件数の 1 回で読み直す台帳の行の上限（見えない行ばかりでも際限なく読まない）。
 const SCAN_LIMIT: usize = 500;
-/// 所属ロールの上限（受信箱の照会の材料・超えた分は使わない）。
-const MAX_ROLES: usize = 1000;
+/// 所属ロールの実効集合が ListObjects の上限で切れたときに、OpenFGA に確かめる担当のロールの数の上限
+/// （[`my_roles`]・BUG-161）。
+const MAX_ROLE_CHECKS: i64 = 1_000;
+/// OpenFGA の object 識別子の最大長（`^[^\s]{2,256}$`）。
+const MAX_FGA_OBJECT_LEN: usize = 256;
 /// コメントの上限（文字数・台帳の check と同じ）。
 const MAX_COMMENT_CHARS: usize = 2000;
 
@@ -209,21 +212,63 @@ fn internal(e: impl std::fmt::Display) -> ApiError {
     ApiError::Internal(format!("approvals: {e}"))
 }
 
-/// 本人の所属ロール（ローカル id・上限つき）。
-async fn my_roles(state: &AppState, ctx: &AuthContext) -> Result<Vec<String>, ApiError> {
+/// 本人の所属ロール（ローカル id・配下ロール込み）。
+///
+/// 実効集合（ListObjects）は応答の上限で黙って切れる（BUG-161）。上限に届いたら、承認の担当のロール（`approval`
+/// があればその承認の、無ければ保留中の承認の）のうち集合に無いものを、本人が所属するか OpenFGA に確かめて足す
+/// （台帳の候補が pre-filter、OpenFGA の判定が post-filter）。確かめるのは [`MAX_ROLE_CHECKS`] 件まで。
+async fn my_roles(
+    state: &AppState,
+    ctx: &AuthContext,
+    approval: Option<Uuid>,
+) -> Result<Vec<String>, ApiError> {
+    let unavailable = |e: authz::AuthzError| ApiError::ServiceUnavailable(format!("authz: {e}"));
     let raw = state
         .authz
         .list_objects(&ctx.subject(), Relation::Member, ObjectType::Role)
         .await
-        .map_err(|e| ApiError::ServiceUnavailable(format!("authz: {e}")))?;
+        .map_err(unavailable)?;
     let ns = ctx.ns();
-    Ok(raw
+    let mut roles: Vec<String> = raw
         .iter()
         .filter_map(|o| o.split_once(':').map(|(_, id)| id))
         .filter_map(|id| ns.strip_object_id(id))
-        .take(MAX_ROLES)
         .map(str::to_string)
-        .collect())
+        .collect();
+    if !authz::visible::list_may_be_cut(raw.len()) {
+        return Ok(roles);
+    }
+    let known: std::collections::HashSet<&str> = roles.iter().map(String::as_str).collect();
+    // 台帳の値は作者が書いたもの。OpenFGA が object として受け付けない形は問わない（誰も所属できない・
+    // BatchCheck は 1 問の形式違反で全体を拒否する）。
+    let ask: Vec<(String, authz::FgaObject)> = store(state)
+        .assignee_roles(&ctx.tenant_id, &ctx.org, approval, MAX_ROLE_CHECKS)
+        .await
+        .map_err(internal)?
+        .into_iter()
+        .filter(|r| !known.contains(r.as_str()) && authz::validate_local_id(r).is_ok())
+        .map(|r| {
+            let object = ns.role(&r);
+            (r, object)
+        })
+        .filter(|(_, o)| o.as_str().len() <= MAX_FGA_OBJECT_LEN)
+        .collect();
+    let objects: Vec<authz::FgaObject> = ask.iter().map(|(_, o)| o.clone()).collect();
+    let held = authz::visible::holds_any(
+        state.authz.as_ref(),
+        &ctx.subject(),
+        &[Relation::Member],
+        &objects,
+        authz::Consistency::HigherConsistency,
+    )
+    .await
+    .map_err(unavailable)?;
+    roles.extend(
+        ask.into_iter()
+            .zip(held)
+            .filter_map(|((r, _), member)| member.then_some(r)),
+    );
+    Ok(roles)
 }
 
 /// 台帳の行の読み方（見えないテーブルを Deny の監査に残すか）。
@@ -418,7 +463,7 @@ pub async fn list_approvals(
             InboxCursor::decode(c).ok_or_else(|| ApiError::invalid_input("cursor が不正です"))?,
         ),
     };
-    let roles = my_roles(&state, &ctx).await?;
+    let roles = my_roles(&state, &ctx, None).await?;
     let page = PAGE as usize;
     let mut items: Vec<ApprovalItem> = Vec::new();
     let mut scanned = 0usize;
@@ -470,7 +515,7 @@ pub async fn count_approvals(
     AuthContextExt(ctx): AuthContextExt,
     trace: TraceIdExt,
 ) -> Result<Json<ApprovalCountResponse>, ApiError> {
-    let roles = my_roles(&state, &ctx).await?;
+    let roles = my_roles(&state, &ctx, None).await?;
     let mut count = 0usize;
     let mut scanned = 0usize;
     let mut truncated = false;
@@ -527,7 +572,7 @@ pub async fn get_approval(
     trace: TraceIdExt,
     Path(id): Path<Uuid>,
 ) -> Result<Json<ApprovalItem>, ApiError> {
-    let roles = my_roles(&state, &ctx).await?;
+    let roles = my_roles(&state, &ctx, Some(id)).await?;
     let row = store(&state)
         .get_assigned(&ctx.tenant_id, &ctx.org, &ctx.principal.id, &roles, id)
         .await
@@ -566,7 +611,7 @@ pub async fn decide_approval(
     Path(id): Path<Uuid>,
     Json(req): Json<ApprovalDecisionRequest>,
 ) -> Result<(StatusCode, Json<ApprovalDecisionResponse>), ApiError> {
-    let roles = my_roles(&state, &ctx).await?;
+    let roles = my_roles(&state, &ctx, Some(id)).await?;
     let row = store(&state)
         .get_assigned(&ctx.tenant_id, &ctx.org, &ctx.principal.id, &roles, id)
         .await

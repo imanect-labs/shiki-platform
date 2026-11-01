@@ -240,6 +240,34 @@ impl ApprovalStore {
         Ok(row.map(ApprovalRow::from))
     }
 
+    /// 承認の担当のロール（ローカル id・重ねない・名前の順に `limit` 件まで）。`approval_id` があればその承認の、
+    /// 無ければ保留中の承認の担当のロール。
+    ///
+    /// 所属ロールの実効集合（ListObjects）が応答の上限で切れた人の受信箱の材料（BUG-161）: 担当のロールの
+    /// うち本人が所属するものを、呼び出し側が OpenFGA に 1 つずつ確かめる（ここは候補を出すだけで、権限の正ではない）。
+    pub async fn assignee_roles(
+        &self,
+        tenant_id: &str,
+        org: &str,
+        approval_id: Option<Uuid>,
+        limit: i64,
+    ) -> Result<Vec<String>, RunStoreError> {
+        sqlx::query_scalar(
+            "SELECT DISTINCT x.subject FROM workflow_approval_assignee x \
+             JOIN workflow_approval a ON a.tenant_id = x.tenant_id AND a.approval_id = x.approval_id \
+             WHERE x.tenant_id = $1 AND a.org = $2 AND x.kind = 'role' \
+               AND (CASE WHEN $3::uuid IS NULL THEN a.status = 'pending' ELSE a.approval_id = $3 END) \
+             ORDER BY x.subject LIMIT $4",
+        )
+        .bind(tenant_id)
+        .bind(org)
+        .bind(approval_id)
+        .bind(limit)
+        .fetch_all(&self.db)
+        .await
+        .map_err(map_db)
+    }
+
     /// テーブルの承認を待っているものの、いまの状態から判断の行き先への組ごとの数（状態の進め方の画面・GAP-44）。
     ///
     /// 状態の進め方を変えて、承認を待っているレコードが判断できなくなるか（その組の進め方が無くなるか）を、保存の前に
