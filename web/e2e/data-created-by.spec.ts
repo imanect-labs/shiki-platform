@@ -119,7 +119,8 @@ test("作成者の列を画面で足して状態の進め方を作ると、申�
     await expect(section.getByTestId("state-flow-applicant-creator")).toContainText(
       "「作成者」には、レコードを追加した人が自動で入ります。誰も書き換えられないので、レコードを追加した人を、承認する人から除けます。",
     );
-    await section.getByRole("button", { name: "詳しく" }).click();
+    // 「詳しく」は申請者の列の説明と、追加だけの人の説明の 2 つある（D-127）。申請者の列の方を開く。
+    await section.getByTestId("state-flow-applicant-more").getByRole("button", { name: "詳しく" }).click();
     await expect(section.getByTestId("state-flow-applicant-more")).toContainText(
       "代わりに申請する業務（レコードを追加する人と、申請する人が違う）では、除かれるのはレコードを追加した人です。",
     );
