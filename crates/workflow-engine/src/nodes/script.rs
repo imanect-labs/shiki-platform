@@ -375,6 +375,14 @@ impl HostBridge {
             .get("secret")
             .and_then(|s| s.get("name"))
             .and_then(Value::as_str);
+        let attach: Option<crate::ir::params::SecretAttach> = a
+            .get("secret")
+            .and_then(|s| s.get("attach"))
+            .and_then(|v| serde_json::from_value(v.clone()).ok());
+        // 作成者が決めたヘッダー（BUG-179）。送ってはいけないものは、シークレットを解く前に断る（黙って捨てない）。
+        let secret_header =
+            secret_name.map(|_| super::capability_ai::attach_secret(attach.as_ref(), "").0);
+        let author_headers = self.author_headers(a, secret_header.as_deref())?;
         let resolved = match secret_name {
             Some(name) => Some(self.ports.resolve_secret(&self.ec, name).await?),
             None => None,
@@ -426,17 +434,18 @@ impl HostBridge {
         let mut headers: Vec<(String, String)> = Vec::new();
         if let Some(sec) = resolved.as_ref() {
             let value = String::from_utf8_lossy(&sec.plaintext).into_owned();
-            let attach = a
-                .get("secret")
-                .and_then(|s| s.get("attach"))
-                .and_then(|v| serde_json::from_value(v.clone()).ok());
             let (hname, hval) = super::capability_ai::attach_secret(attach.as_ref(), &value);
             headers.push((hname, hval));
         }
-        headers.push(("Idempotency-Key".to_string(), call_key.to_string()));
-        if a.get("body").is_some() {
+        // 作成者が Idempotency-Key・Content-Type を書いたら、Shiki が付ける値の代わりにそれを送る。
+        let wrote = |name: &str| super::http_headers::has_header(&author_headers, name);
+        if !wrote("Idempotency-Key") {
+            headers.push(("Idempotency-Key".to_string(), call_key.to_string()));
+        }
+        if a.get("body").is_some() && !wrote("Content-Type") {
             headers.push(("Content-Type".to_string(), "application/json".to_string()));
         }
+        headers.extend(author_headers);
         let body = a.get("body").map(|v| match v {
             Value::String(s) => s.clone().into_bytes(),
             other => other.to_string().into_bytes(),
@@ -476,6 +485,32 @@ impl HostBridge {
         // 外部の応答に反射した secret の平文は、script へ返す前にマスクする（GAP-09 の T0・ノード経路と同じ）。
         let body = super::capability_ai::response_body(&resp.body, resolved.as_ref());
         Ok(json!({ "status": resp.status, "host": host, "body": body }))
+    }
+
+    /// `Shiki.http.request` の `headers` と、シークレットを付けるヘッダーの名前を確かめる（BUG-179）。送ってはいけない
+    /// ヘッダー（Shiki が決めるもの・シークレットのヘッダー）を書いた呼び出しは、宛先の拒否と同じく監査に残す。
+    fn author_headers(
+        &self,
+        a: &Value,
+        secret_header: Option<&str>,
+    ) -> Result<Vec<(String, String)>, PortError> {
+        use super::http_headers::{author_headers, check_secret_header, HeaderRefused};
+        let checked = match secret_header {
+            Some(name) => check_secret_header(name),
+            None => Ok(()),
+        }
+        .and_then(|()| author_headers(a.get("headers"), secret_header));
+        checked.map_err(|refused| {
+            if matches!(refused, HeaderRefused::Reserved(_)) {
+                self.audit.record(
+                    &self.ec.tenant_id,
+                    "http.request",
+                    false,
+                    &json!({ "reason": "header_not_allowed", "via": "script" }),
+                );
+            }
+            refused.into_port_error()
+        })
     }
 
     /// workflow.start（cross-TX effect_journal で start-once）。

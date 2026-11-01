@@ -541,6 +541,151 @@ async fn script_http_reflected_secret_is_redacted() {
     assert!(!dump.contains("super-secret-token"), "{dump}");
 }
 
+/// script の実行器（http の allowlist は api.example.com・script の実行系は作るのに時間がかかるので使い回す）。
+fn script_executor(
+    ports: &Arc<FakePorts>,
+    audit: &Arc<CapturingAudit>,
+    engine: &Arc<script_runtime::engine::ScriptEngine>,
+) -> CapabilityNodeExecutor {
+    let engine = Arc::clone(engine);
+    CapabilityNodeExecutor::new(
+        Arc::clone(ports) as Arc<dyn NodePorts>,
+        lazy_journal(),
+        Arc::clone(audit) as Arc<dyn CapabilityAudit>,
+    )
+    .with_script_engine(engine, script_runtime::engine::Limits::default())
+    .with_http_allowlist(vec!["api.example.com".into()], 5_000)
+}
+
+/// `Shiki.http.request` の headers は作成者が書いたとおりに送る（以前は黙って捨てていた・BUG-179）。作成者が
+/// Idempotency-Key・Content-Type を書けば、Shiki が付ける値の代わりにそれを送る。書かなければこれまでどおり付ける。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn script_http_sends_the_headers_the_author_wrote() {
+    const SCRIPT: &str = r#"function main(input) {
+  Shiki.http.request({
+    method: "POST",
+    url: "https://api.example.com/v1/items",
+    secret: { name: "tok", attach: { kind: "header", header: "X-Api-Key" } },
+    headers: { "X-Request-Id": "req-1", "Accept": "text/plain", "Idempotency-Key": "mine", "Content-Type": "text/plain" },
+    body: "品目=交通費",
+  });
+  return 1;
+}"#;
+    let ports = Arc::new(FakePorts::with_http_status(200));
+    *ports.secret_hosts.lock().unwrap() = vec!["api.example.com".into()];
+    let audit = Arc::new(CapturingAudit::default());
+    let engine = Arc::new(script_runtime::engine::ScriptEngine::new().expect("script engine"));
+    let exec = script_executor(&ports, &audit, &engine);
+    let res = exec
+        .execute(
+            "script.run",
+            &json!({ "source": { "inline": SCRIPT } }),
+            &ctx(json!({}), vec!["http.egress".into()]),
+        )
+        .await;
+    assert!(res.ok, "{:?}", res.error);
+    let req = ports.last_http.lock().unwrap().clone().unwrap();
+    let mut sent = req.headers.clone();
+    sent.sort();
+    assert_eq!(
+        sent,
+        [
+            ("Accept", "text/plain"),
+            ("Content-Type", "text/plain"),
+            ("Idempotency-Key", "mine"),
+            ("X-Api-Key", "super-secret-token"),
+            ("X-Request-Id", "req-1"),
+        ]
+        .map(|(k, v)| (k.to_string(), v.to_string()))
+    );
+
+    // headers を書かない呼び出しは、これまでどおり Idempotency-Key と Content-Type を Shiki が付ける。
+    const PLAIN: &str = r#"function main(input) {
+  Shiki.http.request({ method: "POST", url: "https://api.example.com/v1/items", body: { a: 1 } });
+  return 1;
+}"#;
+    let res = exec
+        .execute(
+            "script.run",
+            &json!({ "source": { "inline": PLAIN } }),
+            &ctx(json!({}), vec!["http.egress".into()]),
+        )
+        .await;
+    assert!(res.ok, "{:?}", res.error);
+    let req = ports.last_http.lock().unwrap().clone().unwrap();
+    let names: Vec<&str> = req.headers.iter().map(|(k, _)| k.as_str()).collect();
+    assert_eq!(names, ["Idempotency-Key", "Content-Type"]);
+    assert!(
+        req.headers[0].1.starts_with("wf:t1:0:n1#c"),
+        "{:?}",
+        req.headers
+    );
+    assert_eq!(req.headers[1].1, "application/json");
+}
+
+/// 送ってはいけないヘッダー（Shiki が決めるもの・シークレットのヘッダー）と、形の誤りは、送らずに分かる誤りで断る
+/// （黙って捨てない・BUG-179）。送ってはいけないものを書いた呼び出しは監査に残す。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn script_http_refuses_headers_it_must_not_send() {
+    let cases = [
+        (
+            r#"headers: { "Host": "internal.example.com" }"#,
+            "Shiki.http.request の headers の「Host」は Shiki が決めるため、指定できません。",
+            true,
+        ),
+        (
+            r#"secret: { name: "tok" }, headers: { "authorization": "Bearer other" }"#,
+            "Shiki.http.request の headers の「authorization」は、シークレットを付けるヘッダーと同じため送れません。",
+            true,
+        ),
+        (
+            r#"secret: { name: "tok", attach: { kind: "header", header: "Host" } }"#,
+            "Shiki.http.request の secret.attach.header「Host」は Shiki が決めるため、指定できません。",
+            true,
+        ),
+        (
+            r#"headers: { "X-A": "1\r\nX-Injected: yes" }"#,
+            "Shiki.http.request の headers の「X-A」の値に、改行などの制御文字は入れられません。",
+            false,
+        ),
+        (
+            r#"headers: { "X-A": 1 }"#,
+            "Shiki.http.request の headers の「X-A」の値は文字で書いてください。",
+            false,
+        ),
+    ];
+    let engine = Arc::new(script_runtime::engine::ScriptEngine::new().expect("script engine"));
+    for (args, message, audited) in cases {
+        let script = format!(
+            "function main(input) {{ Shiki.http.request({{ method: \"POST\", url: \"https://api.example.com/v1\", {args} }}); return 1; }}"
+        );
+        let ports = Arc::new(FakePorts::with_http_status(200));
+        *ports.secret_hosts.lock().unwrap() = vec!["api.example.com".into()];
+        let audit = Arc::new(CapturingAudit::default());
+        let exec = script_executor(&ports, &audit, &engine);
+        let res = exec
+            .execute(
+                "script.run",
+                &json!({ "source": { "inline": script } }),
+                &ctx(json!({}), vec!["http.egress".into()]),
+            )
+            .await;
+        assert!(!res.ok, "{args}");
+        let err = res.error.unwrap();
+        assert_eq!(err.code, "invalid", "{args}: {err:?}");
+        assert!(!err.retryable);
+        assert!(err.message.starts_with(message), "{args}: {}", err.message);
+        assert!(
+            ports.last_http.lock().unwrap().is_none(),
+            "{args}: 送ってはいけない"
+        );
+        let denied = audit.records.lock().unwrap().iter().any(|(api, ok, meta)| {
+            api == "http.request" && !ok && meta["reason"] == "header_not_allowed"
+        });
+        assert_eq!(denied, audited, "{args}");
+    }
+}
+
 /// 結果を画面に返すノードは、宣言したスコープが空でも実行できる（scope 天井の外にしない・GAP-09）。
 #[tokio::test]
 async fn reply_runs_without_declared_scopes() {

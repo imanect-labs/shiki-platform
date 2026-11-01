@@ -17,6 +17,7 @@ pub mod decide;
 mod decide_reply;
 pub mod exec;
 pub mod http;
+pub mod http_headers;
 pub mod llm_structured;
 pub mod ports;
 pub mod reply;
