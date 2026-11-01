@@ -4,6 +4,9 @@
 ///
 /// PC は 1 行 1 つの表、スマホ（640px 未満）は 1 つずつのカードにする。進められる人は「どれか 1 つに当てはまる人」で、
 /// 「申請した本人は除く」は申請者の列（メンバーの列）があるときだけ使える（D-115）。
+///
+/// 「レコードを追加した人」を進められる人に足すと、申請者の列が作成者の列なら「申請した本人は除く」を外す（両方だと
+/// 誰も進められない）。作成者の列があれば、その進め方は「追加だけ」で共有した人も使えることを行の下で言う（D-127）。
 
 import { ArrowRight, Plus, Trash2, X } from "lucide-react";
 import * as React from "react";
@@ -55,12 +58,14 @@ function WhoEditor({
   actor,
   fields,
   applicantField,
+  creatorField,
   onChange,
   name,
 }: {
   actor: Extract<ActorModel, { kind: "simple" }>;
   fields: FieldDef[];
   applicantField: string | null;
+  creatorField: string | null;
   onChange: (a: ActorModel) => void;
   name: string;
 }) {
@@ -81,9 +86,13 @@ function WhoEditor({
   ];
   const choices = all.filter((c) => !actor.who.some((w) => sameWho(w, c)));
   const set = (who: Who[]) => onChange({ ...actor, who });
-  // 「テーブルを編集できる人」はほかを含むので、選んだらほかを外す（ほかを選んだら外す）。
-  const add = (w: Who) =>
-    set(w.kind === "editors" ? [w] : [...actor.who.filter((x) => x.kind !== "editors"), w]);
+  // 「テーブルを編集できる人」はほかを含むので、選んだらほかを外す（ほかを選んだら外す）。「レコードを追加した人」を
+  // 足すとき、申請者の列が作成者の列なら「申請した本人は除く」を外す（両方だと、追加した人は進められない）。
+  const add = (w: Who) => {
+    const who = w.kind === "editors" ? [w] : [...actor.who.filter((x) => x.kind !== "editors"), w];
+    const excludeApplicant = w.kind === "creator" && creatorField && applicantField === creatorField ? false : actor.excludeApplicant;
+    onChange({ ...actor, who, excludeApplicant });
+  };
   return (
     <div className="space-y-1.5">
       <ul className="flex flex-wrap gap-1" aria-label={`${name}の進められる人`}>
@@ -192,6 +201,11 @@ function MoveRow({
   const nameOf = (id: string) => draft.states.find((s) => s.id === id)?.name.trim() || "";
   const name = `進め方 ${index + 1}`;
   const a = move.actor;
+  /// 進められる人に「レコードを追加した人」がいる（出し直しなど・D-127）。
+  const byCreator = a.kind === "simple" && a.who.some((w) => w.kind === "creator");
+  /// その人を「申請した本人は除く」で除いてしまっている（申請者の列が作成者の列のとき）。
+  const creatorExcluded =
+    byCreator && a.kind === "simple" && a.excludeApplicant && Boolean(draft.applicantField) && draft.applicantField === draft.creatorField;
   const errId = `move-error-${move.id}`;
   const remove = (
     <Button
@@ -244,7 +258,34 @@ function MoveRow({
       <div className="min-w-0 space-y-1">
         <span className="text-[11px] text-muted-foreground sm:sr-only">進められる人</span>
         {a.kind === "simple" ? (
-          <WhoEditor actor={a} fields={fields} applicantField={draft.applicantField} name={name} onChange={(actor) => onChange({ ...move, actor })} />
+          <>
+            <WhoEditor
+              actor={a}
+              fields={fields}
+              applicantField={draft.applicantField}
+              creatorField={draft.creatorField ?? null}
+              name={name}
+              // 進められる人を変えたら、行き先に合わせた「申請した本人は除く」の既定の決め直しはやめる。
+              onChange={(actor) =>
+                onChange({
+                  ...move,
+                  actor,
+                  autoExclude: move.autoExclude && actor.kind === "simple" && actor.excludeApplicant === a.excludeApplicant,
+                })
+              }
+            />
+            {byCreator && draft.creatorField ? (
+              creatorExcluded ? (
+                <p className="text-[11px] leading-relaxed text-[var(--season-autumn)]" data-testid="state-flow-creator-excluded">
+                  「申請した本人は除く」がオンなので、レコードを追加した人はこの進め方で進められません。
+                </p>
+              ) : (
+                <p className="text-[11px] leading-relaxed text-muted-foreground" data-testid="state-flow-add-only-move">
+                  「追加だけ」で共有した人も、自分が追加したレコードなら進められます。
+                </p>
+              )
+            ) : null}
+          </>
         ) : (
           <p className="rounded-md bg-muted/60 px-2 py-1.5 text-[11px] leading-relaxed text-muted-foreground" data-testid="state-flow-custom-actor">
             チャットや API で決めた条件です。ここでは変えられません。変えるには、この進め方を削除して追加し直してください。
@@ -263,7 +304,8 @@ function MoveRow({
           />
           <span className="sm:text-[11px] sm:text-muted-foreground">申請した本人は除く</span>
         </label>
-        {a.kind === "simple" && draft.applicantField && !a.excludeApplicant ? (
+        {/* 「レコードを追加した人」を選んだ進め方（出し直しなど）は、本人が進めるのが目的なので注意を出さない。 */}
+        {a.kind === "simple" && draft.applicantField && !a.excludeApplicant && !byCreator ? (
           <p className="text-[11px] leading-relaxed text-[var(--season-autumn)]" data-testid="state-flow-self-allowed">
             申請した本人も、この進め方で進められます。
           </p>

@@ -7,6 +7,8 @@
 /// - 承認・却下・差し戻しにあたる進め方は「申請した本人は除く」をはじめからオンにする（最初の状態へ戻す進め方を
 ///   除く）。最初の状態を過ぎたら申請者が書き換えられない決まりも、はじめからオンにする。どちらもオフにできる。
 ///   申請者の列は作成者の列を勧め、無ければボタン 1 つで足せる（D-122・[`ApplicantSection`]）。
+/// - 進め方が無いうちは「申請・承認のひな形」を出す（承認する人の進め方と、差し戻しから「レコードを追加した人」が
+///   出し直す進め方）。「レコードを追加した人」に許した進め方は、「追加だけ」で共有した人も自分のレコードで使える（D-127）。
 /// - 保存の前に、行き止まり・届かない状態・重複を欄の下で言う（欄の誤りは読み上げで割り込まず、欄に結ぶ）。
 ///   承認を待っているレコードが判断できなくなる変更と、書き込みの決まりで誰も書き換えられなくなるレコードが
 ///   出る変更は確認してから保存し、このテーブルの状態を使うワークフローへの影響は注意で言う。
@@ -39,6 +41,7 @@ import {
 } from "@/lib/data-api";
 import { uniqueKey } from "@/lib/data-view";
 import {
+  applyTemplate,
   bodyOf,
   checkFlow,
   draftFrom,
@@ -269,7 +272,7 @@ export function StateFlowEditor({
       setLoaded((l) =>
         l && l.resp.schema_version === latest.schema_version ? { ...l, resp: { ...l.resp, schema_version: t.schema_version } } : l,
       );
-      set({ applicantField: key });
+      set({ applicantField: key, creatorField: key });
       toast({ title: `「${name}」の列を追加しました`, description: "状態の進め方を保存すると、申請した本人を除くのに使います。" });
     } catch (e) {
       setAddCreatorError(
@@ -482,8 +485,27 @@ export function StateFlowEditor({
 
                   <Section title="進め方" testId="state-flow-moves-section">
                     <Hint>
-                      進められるのは、テーブルを編集できる人のうち、ここで選んだ人だけです（「追加だけ」で共有した人は進められません）。「承認を待つ」の承認者も、ここで許された人だけが判断できます。
+                      進められるのは、テーブルを編集できる人のうち、ここで選んだ人だけです。「承認を待つ」の承認者も、ここで許された人だけが判断できます。
+                      {draft.creatorField
+                        ? "「追加だけ」で共有した人は、「レコードを追加した人」を選んだ進め方だけを、自分が追加したレコードで進められます。"
+                        : "「追加だけ」で共有した人は進められません。"}
                     </Hint>
+                    {draft.moves.length === 0 ? (
+                      <div className="space-y-1.5 rounded-lg border border-dashed p-3" data-testid="state-flow-template">
+                        <Hint>
+                          申請と承認に使うなら、ひな形から始められます。「申請中」「承認」「却下」「差し戻し」の状態と、承認する人が判断する進め方、差し戻されたレコードを追加した人が直して出し直す進め方を入れます。保存する前に変えられます。
+                        </Hint>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-7 text-xs pointer-coarse:h-9"
+                          onClick={() => setDraft((d) => (d ? applyTemplate(d, fields) : d))}
+                          data-testid="state-flow-use-template"
+                        >
+                          申請・承認のひな形を使う
+                        </Button>
+                      </div>
+                    ) : null}
                     <MovesTable
                       draft={draft}
                       fields={fields}

@@ -8,6 +8,9 @@
 /// - 「申請した本人は除く」は、申請者の列と `ne $user.id` の比べを `all` で足して書く（D-115・経費のテンプレート
 ///   expense_policy と同じ形）。行の決まりに `not` は無いので、この形で書く。申請者の列は作成者の列（追加した人が
 ///   入り、だれも書き換えられない・D-122）を勧める。メンバーの列は書き換えられるので、本人を除く判定をすり抜けられる。
+/// - 「レコードを追加した人」は、作成者の列があればその列と `eq $user.id` の比べで書く（無ければ `is_owner`）。
+///   作成者の列で書いた進め方は、「追加だけ」で共有した人も自分が追加したレコードで進められる（D-127・サーバの
+///   `creator_grant`）。`is_owner` で保存済みの進め方も「レコードを追加した人」と読み、保存し直すと作成者の列で書く。
 /// - 状態は下書きの中で id で持つ（名前を変えても、進め方の行き先が付いてくる）。保存のときに名前へ戻す。
 
 import type { FieldDef, FsmBody, PolicyExpr, TableFsmResponse } from "@/lib/data-api";
@@ -42,6 +45,8 @@ export type FlowDraft = {
   applicantField: string | null;
   /// 最初の状態を過ぎたら、申請者は書き換えられない（D-115）。
   writeLock: boolean;
+  /// 作成者の列（「レコードを追加した人」をこの列で書く・無ければ null・D-127）。
+  creatorField?: string | null;
 };
 
 let seq = 0;
@@ -63,14 +68,16 @@ function isExclusion(e: PolicyExpr, applicant: string): boolean {
   );
 }
 
-function baseWho(e: PolicyExpr): Who | null {
+function baseWho(e: PolicyExpr, creator: string | null): Who | null {
   if (e === "public") return { kind: "editors" };
   if (e === "is_owner") return { kind: "creator" };
   if (typeof e !== "object") return null;
   if ("has_role" in e) return e.has_role.subtree ? { kind: "role", role: e.has_role.role } : null;
   if ("field_cmp" in e) {
     const c = e.field_cmp;
-    if (c.op === "eq" && c.value === "user_id") return { kind: "user_field", field: c.field };
+    if (c.op === "eq" && c.value === "user_id") {
+      return c.field === creator ? { kind: "creator" } : { kind: "user_field", field: c.field };
+    }
     if (c.op === "in" && typeof c.value === "object" && "user_roles" in c.value && c.value.user_roles.subtree) {
       return { kind: "role_field", field: c.field };
     }
@@ -78,34 +85,36 @@ function baseWho(e: PolicyExpr): Who | null {
   return null;
 }
 
-function whoList(e: PolicyExpr): Who[] | null {
+function whoList(e: PolicyExpr, creator: string | null): Who[] | null {
   if (typeof e === "object" && "any" in e) {
-    const xs = e.any.map(baseWho);
-    return xs.length > 0 && xs.every((x) => x !== null) ? (xs as Who[]) : null;
+    const xs = e.any.map((x) => baseWho(x, creator));
+    if (xs.length === 0 || xs.some((x) => x === null)) return null;
+    // 作成者の列と is_owner の両方で「レコードを追加した人」を書いた条件は 1 つにまとめない（そのまま保つ）。
+    return xs.filter((x) => x?.kind === "creator").length > 1 ? null : (xs as Who[]);
   }
-  const b = baseWho(e);
+  const b = baseWho(e, creator);
   return b ? [b] : null;
 }
 
-/// 保存済みの進められる人を、画面の形に読む（読めない条件は `custom` のまま保つ）。
-export function parseActor(e: PolicyExpr, applicant: string | null): ActorModel {
+/// 保存済みの進められる人を、画面の形に読む（読めない条件は `custom` のまま保つ）。`creator` は作成者の列。
+export function parseActor(e: PolicyExpr, applicant: string | null, creator: string | null = null): ActorModel {
   if (applicant) {
     if (isExclusion(e, applicant)) return { kind: "simple", who: [{ kind: "editors" }], excludeApplicant: true };
     if (typeof e === "object" && "all" in e && e.all.length === 2 && isExclusion(e.all[1], applicant)) {
-      const w = whoList(e.all[0]);
+      const w = whoList(e.all[0], creator);
       if (w) return { kind: "simple", who: w, excludeApplicant: true };
     }
   }
-  const w = whoList(e);
+  const w = whoList(e, creator);
   return w ? { kind: "simple", who: w, excludeApplicant: false } : { kind: "custom", expr: e };
 }
 
-function whoExpr(w: Who): PolicyExpr {
+function whoExpr(w: Who, creator: string | null): PolicyExpr {
   switch (w.kind) {
     case "editors":
       return "public";
     case "creator":
-      return "is_owner";
+      return creator ? { field_cmp: { field: creator, op: "eq", value: "user_id" } } : "is_owner";
     case "user_field":
       return { field_cmp: { field: w.field, op: "eq", value: "user_id" } };
     case "role_field":
@@ -116,9 +125,9 @@ function whoExpr(w: Who): PolicyExpr {
 }
 
 /// 画面の形から、保存する進められる人を組む（申請者の列が無ければ「申請した本人は除く」は効かない）。
-export function buildActor(a: ActorModel, applicant: string | null): PolicyExpr {
+export function buildActor(a: ActorModel, applicant: string | null, creator: string | null = null): PolicyExpr {
   if (a.kind === "custom") return a.expr;
-  const parts = a.who.map(whoExpr);
+  const parts = a.who.map((w) => whoExpr(w, creator));
   const who: PolicyExpr = parts.length === 1 ? parts[0] : { any: parts };
   return a.excludeApplicant && applicant ? { all: [who, NE_SELF(applicant)] } : who;
 }
@@ -173,11 +182,12 @@ export function statesFromField(fields: FieldDef[], key: string | null): StateDr
 /// サーバの状態の進め方から下書きを作る。`mismatch` は列の選択肢と状態が合っていなかった（両方を合わせて出す）。
 export function draftFrom(resp: TableFsmResponse, fields: FieldDef[]): { draft: FlowDraft; mismatch: boolean } {
   const fsm = resp.fsm;
+  const creatorField = creatorOf(fields);
   if (!fsm) {
     const statusField = guessStatusField(fields, resp.status_field);
     const applicantField = guessApplicant(fields);
     return {
-      draft: { statusField, states: statesFromField(fields, statusField), moves: [], applicantField, writeLock: true },
+      draft: { statusField, states: statesFromField(fields, statusField), moves: [], applicantField, writeLock: true, creatorField },
       mismatch: false,
     };
   }
@@ -191,11 +201,80 @@ export function draftFrom(resp: TableFsmResponse, fields: FieldDef[]): { draft: 
     id: draftId("m"),
     from: idOf.get(t.from) ?? "",
     to: idOf.get(t.to) ?? "",
-    actor: parseActor(t.actor, applicantField),
+    actor: parseActor(t.actor, applicantField, creatorField),
   }));
   return {
-    draft: { statusField: resp.status_field ?? null, states, moves, applicantField, writeLock: Boolean(resp.applicant_write_lock) },
+    draft: {
+      statusField: resp.status_field ?? null,
+      states,
+      moves,
+      applicantField,
+      writeLock: Boolean(resp.applicant_write_lock),
+      creatorField,
+    },
     mismatch,
+  };
+}
+
+/// 作成者の列（最初に見つかったもの・無ければ null）。
+export function creatorOf(fields: FieldDef[]): string | null {
+  return fields.find((f) => f.type === "created_by")?.key ?? null;
+}
+
+/// 「レコードを追加した人」が進められる進め方の元の状態の id（状態の一覧の順）。作成者の列が無ければ空
+/// （`is_owner` の進め方は「追加だけ」の人には効かない）。「申請した本人は除く」が作成者の列で付いている進め方は数えない。
+export function creatorMoveStates(d: FlowDraft): string[] {
+  const creator = d.creatorField ?? null;
+  if (!creator) return [];
+  const from = new Set(
+    d.moves
+      .filter(
+        (m) =>
+          m.actor.kind === "simple" &&
+          m.actor.who.some((w) => w.kind === "creator") &&
+          !(m.actor.excludeApplicant && d.applicantField === creator),
+      )
+      .map((m) => m.from),
+  );
+  return d.states.filter((s) => from.has(s.id)).map((s) => s.id);
+}
+
+/// 申請・承認のひな形（申請中 → 承認・却下・差し戻しは承認する人、差し戻し → 申請中は「レコードを追加した人」）。
+///
+/// 今の状態の一覧に同じ名前の状態があれば使い（id を保つ）、ひな形に無い状態は後ろに残す（使っているレコードの状態を
+/// 消さない）。申請者の列は作成者の列があればそれにする。
+export const TEMPLATE_STATES = ["申請中", "承認", "却下", "差し戻し"] as const;
+export function applyTemplate(d: FlowDraft, fields: FieldDef[]): FlowDraft {
+  const byName = new Map(d.states.map((s) => [s.name.trim(), s]));
+  const named = TEMPLATE_STATES.map((n) => byName.get(n) ?? { id: draftId("s"), name: n });
+  const rest = d.states.filter((s) => !TEMPLATE_STATES.includes(s.name.trim() as (typeof TEMPLATE_STATES)[number]));
+  const [submitted, approved, rejected, sentBack] = named;
+  const creatorField = d.creatorField ?? creatorOf(fields);
+  const applicantField = creatorField ?? d.applicantField;
+  const approver = guessApprover(fields, applicantField);
+  const decide = (to: StateDraft): MoveDraft => ({
+    id: draftId("m"),
+    from: submitted.id,
+    to: to.id,
+    actor: { kind: "simple", who: [approver], excludeApplicant: true },
+  });
+  return {
+    ...d,
+    states: [...named, ...rest],
+    moves: [
+      decide(approved),
+      decide(rejected),
+      decide(sentBack),
+      {
+        id: draftId("m"),
+        from: sentBack.id,
+        to: submitted.id,
+        actor: { kind: "simple", who: [{ kind: "creator" }], excludeApplicant: false },
+      },
+    ],
+    applicantField,
+    creatorField,
+    writeLock: true,
   };
 }
 
@@ -207,7 +286,7 @@ export function bodyOf(d: FlowDraft): FsmBody {
     transitions: d.moves.map((m) => ({
       from: name.get(m.from) ?? "",
       to: name.get(m.to) ?? "",
-      actor: buildActor(m.actor, d.applicantField),
+      actor: buildActor(m.actor, d.applicantField, d.creatorField ?? null),
     })),
   };
 }

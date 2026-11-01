@@ -181,8 +181,16 @@ export function TableWorkspace({
   const [shareOpen, setShareOpen] = React.useState(false);
   // テーブルの共有は owner だけ。ミニアプリ所有のテーブルはアプリのインストールで配るので共有しない（サーバも 403）。
   const canShare = viewer.can_manage && !table.app_id;
-  // 追加だけの共有（D-113）: 追加の操作と自分が追加したレコードだけを出す（編集・取込・保存ビューは出さない）。
+  // 追加だけの共有（D-113）: 追加の操作と自分が追加したレコードだけを出す（取込・保存ビューは出さない）。作成者として
+  // 許された状態（D-127・`own_records`）では、自分が追加したレコードの状態を進め、直せる。
   const addOnly = viewer.add_only;
+  const myId = me.data?.id ?? null;
+  const fsmLabel = fsm ? (readableFields.find((f) => f.key === fsm.field)?.display_name || fsm.field) : "";
+  const ownRecords = addOnly ? (viewer.own_records ?? null) : null;
+  const ownEdit = React.useMemo(
+    () => (ownRecords && myId ? { me: myId, moveFrom: ownRecords.move_from, editIn: ownRecords.edit_in } : null),
+    [ownRecords, myId],
+  );
   const importJob = useImportJob(table.id);
   const [peers, setPeers] = React.useState<Peer[]>([]);
   const [names, setNames] = React.useState<Map<string, string>>(new Map());
@@ -658,6 +666,12 @@ export function TableWorkspace({
       {addOnly ? (
         <p className="text-xs text-muted-foreground" data-testid="data-add-only-note">
           このテーブルは「追加だけ」で共有されています。表示しているのは、自分が追加したレコードと、個別に共有されたレコードです。
+          {ownRecords && ownRecords.edit_in.length > 0
+            ? `自分が追加したレコードは、${ownRecords.edit_in.map((s) => `「${s}」`).join("と")}のあいだ直せます。`
+            : ""}
+          {ownRecords
+            ? `${ownRecords.move_from.map((s) => `「${s}」`).join("と")}のレコードは、「${fsmLabel}」のセルを開いて進められます。`
+            : ""}
         </p>
       ) : null}
 
@@ -732,6 +746,7 @@ export function TableWorkspace({
               importing={importJob.running}
               onAddRecord={() => setRecordOpen(true)}
               addOnly={addOnly}
+              ownEdit={ownEdit}
               fields={readableFields}
               fsm={fsm}
               onSchemaChanged={onSchemaStale}

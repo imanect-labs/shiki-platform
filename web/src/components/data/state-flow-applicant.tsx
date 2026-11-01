@@ -7,6 +7,8 @@
 ///   テーブルを編集できる人が書き換えられるので、申請者の列をほかの人にすると自分の申請でも承認できる（BUG-148）。
 /// - 作成者の列が無いテーブルでは、ボタン 1 つで足せる（列を足すのはすぐ保存する。状態の進め方の保存は別）。
 /// - メンバーの列で判定している保存済みの進め方は、そのまま動く。作成者の列に替えるよう案内するだけで、勝手に替えない。
+/// - 「追加だけ」で共有した人にできることを「詳しく」で言う（D-127: 「レコードを追加した人」に許した進め方と、その
+///   状態のあいだの書き換えだけを、自分が追加したレコードでできる）。いまの下書きで直せる状態も言う。
 
 import { Loader2, Plus, Share2 } from "lucide-react";
 import * as React from "react";
@@ -16,7 +18,7 @@ import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import type { FieldDef } from "@/lib/data-api";
-import { isApplicantColumn, type FlowDraft } from "@/lib/state-flow";
+import { creatorMoveStates, isApplicantColumn, type FlowDraft } from "@/lib/state-flow";
 import { cn } from "@/lib/utils";
 
 const labelOf = (f: FieldDef) => f.display_name || f.key;
@@ -61,6 +63,13 @@ export function ApplicantSection({
   const selected = fields.find((f) => f.key === draft.applicantField) ?? null;
   const byCreator = selected?.type === "created_by";
   const byMember = selected?.type === "user_ref";
+  /// 「レコードを追加した人」が進められる状態（最初の状態を除く）。書き込みの決まりは、このあいだも申請者に直させる。
+  const nameOf = (id: string) => draft.states.find((x) => x.id === id)?.name.trim() ?? "";
+  const creatorStates = creatorMoveStates(draft).map(nameOf).filter(Boolean);
+  const resubmit = byCreator ? creatorStates.filter((n) => n !== initialName) : [];
+  const quoted = (names: string[]) => names.map((n) => `「${n}」`).join("と");
+  /// 追加だけの人が直せる状態（書き込みの決まりが作成者の列でオンのときだけ）。
+  const addOnlyEdit = byCreator && draft.writeLock ? resubmit : [];
 
   /// 作成者の列に替える・足すボタン（作成者の列で判定していないときだけ）。
   const switchButton = byCreator ? null : creator ? (
@@ -159,7 +168,7 @@ export function ApplicantSection({
               <Hint tone={draft.writeLock ? undefined : "warn"}>
                 {draft.writeLock
                   ? byCreator
-                    ? `「${initialName}」のあいだだけ、レコードを追加した人はレコードを書き換えたり削除したりできます。`
+                    ? `${quoted([initialName, ...resubmit])}のあいだだけ、レコードを追加した人はレコードを書き換えたり削除したりできます。`
                     : `「${initialName}」のあいだだけ、申請者はレコードを書き換えたり削除したりできます。申請者の列が空のレコードは、「${initialName}」を過ぎると誰も書き換えられません。`
                   : byCreator
                     ? "レコードを追加した人は、承認された後もレコードを書き換えられます。"
@@ -174,10 +183,27 @@ export function ApplicantSection({
           {addError}
         </p>
       ) : null}
-      <div className="space-y-1.5 rounded-lg bg-muted/50 px-3 py-2">
+      <div className="space-y-1.5 rounded-lg bg-muted/50 px-3 py-2" data-testid="state-flow-add-only">
         <Hint>
-          申請する人には、テーブルを「追加だけ」で共有するのがおすすめです。追加だけの人は、レコードを追加し、自分が追加したレコードと個別に共有されたレコードを見られるだけで、書き換えも状態を進めることもできません。
+          申請する人には、テーブルを「追加だけ」で共有するのがおすすめです。追加だけの人は、レコードを追加し、自分が追加したレコードと個別に共有されたレコードを見られます。
         </Hint>
+        <Hint testId="state-flow-add-only-now">
+          {creatorStates.length > 0
+            ? `いまの進め方では、自分が追加したレコードが${quoted(creatorStates)}のとき、追加だけの人も、そのレコードを進められます。${
+                addOnlyEdit.length > 0 ? `${quoted(addOnlyEdit)}のあいだは直せます。` : "直すことはできません。"
+              }`
+            : "いまの進め方では、追加だけの人は書き換えも状態を進めることもできません。"}
+        </Hint>
+        <MoreInfo testId="state-flow-add-only-more">
+          <p>追加だけの人は、ふつうは書き換えも状態を進めることもできません。</p>
+          <p>
+            進められる人に「レコードを追加した人」を選んだ進め方（例: 差し戻し → 申請中）だけは、自分が追加したレコードで進められます。テーブルに作成者の列が要ります。
+          </p>
+          <p>
+            申請者の列が作成者の列で、「最初の状態を過ぎたら、申請者は書き換えられない」がオンなら、その進め方の元の状態（例: 差し戻し）のあいだは、自分が追加したレコードを直せます。
+          </p>
+          <p>削除と取り込みはできません。ほかの人のレコードは、見ることも直すこともできません。</p>
+        </MoreInfo>
         {onOpenShare ? (
           <Button size="sm" variant="outline" className="h-7 gap-1 text-xs" onClick={onOpenShare}>
             <Share2 className="size-3.5" aria-hidden />

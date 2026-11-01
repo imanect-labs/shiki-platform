@@ -175,6 +175,10 @@ type Props = {
   onAddRecord?: () => void;
   /// 追加だけで共有されている（D-113）: 編集はできないが追加はでき、見えるのは自分が追加したレコードだけ。
   addOnly?: boolean;
+  /// 追加だけの人が自分のレコードで状態を進められる・直せる状態（D-127・サーバの閲覧者の文脈 `own_records`）。
+  /// 自分（`me`）が追加した行のうち、状態が `moveFrom` の行の状態のセルと、`editIn` の行の直接入力できるセルだけを
+  /// 開けるようにする（実際に書けるかはサーバが行ごとに決める）。
+  ownEdit?: { me: string; moveFrom: readonly string[]; editIn: readonly string[] } | null;
   /// 閲覧者が読めるスキーマの列（サーバの文言の参照名を表示名に直す・非表示の列を含む）。
   fields?: readonly FieldDef[];
   /// FSM の状態の列（セルは「進める先」のメニューで開き、遷移 API を呼ぶ・2-C-P2-4）。
@@ -262,12 +266,15 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
     importing,
     onAddRecord,
     addOnly,
+    ownEdit,
     fields,
     fsm,
     onSchemaChanged,
   },
   ref,
 ) {
+  /// セルを開ける操作（編集の受け口）を渡すか（編集できる人か、自分のレコードの一部を直せる追加だけの人）。
+  const editHandlers = canEdit || Boolean(ownEdit && (ownEdit.moveFrom.length > 0 || ownEdit.editIn.length > 0));
   const importingRef = React.useRef(importing);
   importingRef.current = importing;
   const onSchemaChangedRef = React.useRef(onSchemaChanged);
@@ -879,7 +886,14 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
       const shown = displayCell(r, c, cachedUserName, cachedRoleName);
       const text = shown.text;
       const isFsm = Boolean(fsm && c.key === fsm.field && c.field);
-      const editable = canEdit && !showingStale && (isEditable(c.field) || isFsm);
+      // 追加だけの人は、自分が追加した行で、作成者として許された状態のときだけ（D-127）。
+      const state = fsm ? cellValue(r, fsm.field) : null;
+      const own =
+        ownEdit != null &&
+        r.owner === ownEdit.me &&
+        typeof state === "string" &&
+        (isFsm ? ownEdit.moveFrom.includes(state) : ownEdit.editIn.includes(state));
+      const editable = (canEdit || own) && !showingStale && (isEditable(c.field) || isFsm);
       const fmt = formatFor(grid, r, c.key);
       const numeric = c.field?.type === "number" || c.field?.result_type === "number";
       const override: Partial<Theme> | undefined = pending.current.has(r.id)
@@ -914,7 +928,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
       return cell;
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [display, columns, canEdit, grid, collapsed, editedBg, formatTheme, glideTheme, version, source, showingStale, namesVersion, fsm],
+    [display, columns, canEdit, ownEdit, grid, collapsed, editedBg, formatTheme, glideTheme, version, source, showingStale, namesVersion, fsm],
   );
 
   /// 行の保存を順に送る（同じ行の保存の完了を待ってから・保存中は薄く色を付ける）。
@@ -1439,6 +1453,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
       data-testid="data-grid"
       // 編集できるか（追加だけ・閲覧だけの人は 0・E2E が編集の操作を出していないことを確かめる）。
       data-editable={canEdit ? "1" : "0"}
+      data-own-edit={!canEdit && editHandlers ? "1" : undefined}
       data-more-right={moreRight || undefined}
       data-loaded={status.current.loaded}
       data-first-render-ms={status.current.firstRenderMs ?? undefined}
@@ -1633,10 +1648,10 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
         rows={totalRows}
         rowHeight={rowHeight}
         getCellContent={getCellContent}
-        onCellEdited={canEdit ? onCellEdited : undefined}
-        provideEditor={canEdit ? provideEditor : undefined}
-        onFinishedEditing={canEdit ? onFinishedEditing : undefined}
-        onKeyDown={canEdit ? typeAhead.onKeyDown : undefined}
+        onCellEdited={editHandlers ? onCellEdited : undefined}
+        provideEditor={editHandlers ? provideEditor : undefined}
+        onFinishedEditing={editHandlers ? onFinishedEditing : undefined}
+        onKeyDown={editHandlers ? typeAhead.onKeyDown : undefined}
         // 選択中のセルをもう一度クリックしても編集欄を開かない（開いたまま Enter を押すと「変更なしで確定 →
         // 1 つ下へ移動」になり、続けて打った文字が下の行に保存されていた・D-10）。編集は Enter・ダブルクリック・
         // 文字の入力で始める（表計算と同じ）。
@@ -1648,7 +1663,7 @@ export const DataGrid = React.forwardRef<DataGridHandle, Props>(function DataGri
         gridSelection={selection}
         // 選択は同期で確定する（クリック直後の Enter・打鍵が、選択の反映前の描画に届いて取りこぼされない）。
         onGridSelectionChange={onSelectionChange}
-        onDelete={canEdit && !embedded ? onDelete : undefined}
+        onDelete={editHandlers && !embedded ? onDelete : undefined}
         highlightRegions={highlightRegions}
         onHeaderClicked={onHeaderClick ? (col) => columns[col] && onHeaderClick(columns[col].key) : undefined}
         onHeaderMenuClick={onHeaderMenu ? (col, b) => columns[col] && onHeaderMenu(columns[col].key, b) : undefined}
