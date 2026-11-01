@@ -29,14 +29,23 @@ reqwest.workspace = true
 async-trait.workspace = true
 tokio.workspace = true
 futures.workspace = true
+# test-support（実 Keycloak の結合テストの手助け・PKCE）だけが使う。
+base64 = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
+
+[features]
+# 実 Keycloak を使う結合テストの手助け（app_gateway::test_support）。本番のビルドには入れない。
+test-support = ["dep:base64", "dep:sha2"]
 
 [dev-dependencies]
 http-body-util = "0.1"
 shiki-artifact.workspace = true
+# 自分の結合テストで test_support を使う。
+shiki-app-gateway = { path = ".", features = ["test-support"] }
 
 [package.metadata.cargo-machete]
 # shiki-authz / shiki-data は lib 名 `authz` / `data` で参照するため machete が誤検知する。
-ignored = ["shiki-authz", "shiki-storage", "shiki-data", "shiki-llm-gateway"]
+ignored = ["shiki-authz", "shiki-storage", "shiki-data", "shiki-llm-gateway", "shiki-app-gateway"]
 
 [lints]
 workspace = true

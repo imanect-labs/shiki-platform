@@ -23,6 +23,8 @@ mod ports;
 mod router;
 mod routes;
 mod scope_map;
+#[cfg(feature = "test-support")]
+pub mod test_support;
 mod token;
 mod token_exchange;
 mod usage;
@@ -30,10 +32,14 @@ mod usage;
 pub use b1::{build_b1_router, bundle_csp, B1State};
 pub use builtin::{build_builtin_router, builtin_csp, BuiltinState};
 pub use installation::{
-    AiPin, AppInstallation, AppInstallationStore, InstallStatus, NewAppInstallation,
+    AiPin, AppInstallation, AppInstallationStore, ClientsToRepair, InstallStatus,
+    NewAppInstallation,
 };
 pub use notification::{AppNotification, NotificationStore};
-pub use oauth::{client_representation, ClientKind, OAuthClient, RegisteredClient};
+pub use oauth::{
+    client_representation, client_spec_fingerprint, default_client_scopes, ClientKind, OAuthClient,
+    RegisteredClient,
+};
 pub use ports::{
     AgentInvokeSpec, AgentPort, AiEvent, AiEventStream, FunctionInvokeSpec, FunctionPort, NoAgent,
     NoFunctions, NoRag, RagHit, RagPort,

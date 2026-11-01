@@ -398,6 +398,63 @@ impl AppInstallationStore {
         }
         Ok(())
     }
+
+    /// 有効なインストールのうち、クライアントを `fingerprint` の登録の形で揃えていないものを、古い順に最大 `limit` 件
+    /// 引く（起動時の照合・BUG-172・migration 0124）。`skip`（この照合で揃えられなかったアプリ）は外す。
+    ///
+    /// **テナントで絞らない理由**: 起動時の保守の走査で、呼び出す人がいない（[`Self::resolve_active_by_app_global`]
+    /// と同じく文脈にテナントが無い）。読むのはクライアントを揃えるための列だけで、利用者のデータは読まない。
+    pub async fn clients_to_repair(
+        &self,
+        fingerprint: &str,
+        skip: &[Uuid],
+        limit: i64,
+    ) -> Result<Vec<ClientsToRepair>, GatewayError> {
+        sqlx::query_as(
+            "SELECT tenant_id, app_id, app_name, client_id_b1, client_id_b2 FROM app_installation \
+             WHERE status = 'active' \
+               AND (client_id_b1 IS NOT NULL OR client_id_b2 IS NOT NULL) \
+               AND oauth_client_spec IS DISTINCT FROM $1 \
+               AND NOT (app_id = ANY($2)) \
+             ORDER BY created_at, id LIMIT $3",
+        )
+        .bind(fingerprint)
+        .bind(skip)
+        .bind(limit)
+        .fetch_all(&self.db)
+        .await
+        .map_err(map_db)
+    }
+
+    /// インストールのクライアントを `fingerprint` の登録の形で揃えた印を付ける（インストールと起動時の照合）。
+    pub async fn mark_clients_repaired(
+        &self,
+        tenant_id: &str,
+        app_id: Uuid,
+        fingerprint: &str,
+    ) -> Result<(), GatewayError> {
+        sqlx::query(
+            "UPDATE app_installation SET oauth_client_spec = $3 \
+             WHERE tenant_id = $1 AND app_id = $2",
+        )
+        .bind(tenant_id)
+        .bind(app_id)
+        .bind(fingerprint)
+        .execute(&self.db)
+        .await
+        .map_err(map_db)?;
+        Ok(())
+    }
+}
+
+/// クライアントを今の登録の形に揃えるインストール 1 件（[`AppInstallationStore::clients_to_repair`]）。
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct ClientsToRepair {
+    pub tenant_id: String,
+    pub app_id: Uuid,
+    pub app_name: String,
+    pub client_id_b1: Option<String>,
+    pub client_id_b2: Option<String>,
 }
 
 #[cfg(test)]

@@ -5291,6 +5291,7 @@ version = "0.0.0"
 dependencies = [
  "async-trait",
  "axum",
+ "base64",
  "chrono",
  "futures",
  "http-body-util",
@@ -5298,6 +5299,8 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "shiki-app-gateway",
  "shiki-artifact",
  "shiki-authz",
  "shiki-data",
