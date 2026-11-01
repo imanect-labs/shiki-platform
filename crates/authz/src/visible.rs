@@ -11,7 +11,7 @@ use crate::error::AuthzError;
 use crate::fga_http::MAX_CHECKS_PER_BATCH;
 use crate::object::FgaObject;
 use crate::subject::Subject;
-use crate::vocab::Relation;
+use crate::vocab::{ObjectType, Relation};
 
 /// ListObjects の応答の上限（OpenFGA の `OPENFGA_LIST_OBJECTS_MAX_RESULTS` の既定）。
 ///
@@ -84,6 +84,27 @@ pub async fn holds_any(
         .chunks(relations.len())
         .map(|held| held.iter().any(|h| *h))
         .collect())
+}
+
+/// `subjects` のそれぞれが**直接タプル**を持つ `object_type` のオブジェクト（`type:id`・入力順）。
+///
+/// [`AuthzClient::read_subject_objects`]（Read API・ページを最後までたどる）を [`BATCH_CHECKS_IN_FLIGHT`] 本ずつ
+/// 並べて読む。ListObjects と違って応答の件数に上限が無いので、上限に届いた実効集合を直接タプルから組み直すのに
+/// 使う（継承は展開しないので、userset の subject は呼び出し側が展開して渡す）。1 本でも読めなければ全体を誤りにする。
+pub async fn read_direct_objects(
+    authz: &dyn AuthzClient,
+    subjects: &[Subject],
+    object_type: ObjectType,
+) -> Result<Vec<Vec<String>>, AuthzError> {
+    let mut out = Vec::with_capacity(subjects.len());
+    for group in subjects.chunks(BATCH_CHECKS_IN_FLIGHT) {
+        let calls: Vec<_> = group
+            .iter()
+            .map(|s| authz.read_subject_objects(s, object_type))
+            .collect();
+        out.extend(futures::future::try_join_all(calls).await?);
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -167,10 +188,16 @@ mod tests {
         }
         async fn read_subject_objects(
             &self,
-            _: &Subject,
-            _: ObjectType,
+            subject: &Subject,
+            ty: ObjectType,
         ) -> Result<Vec<String>, AuthzError> {
-            unreachable!()
+            if subject.as_str().contains("broken") {
+                return Err(AuthzError::Unexpected {
+                    status: 500,
+                    body: "read".into(),
+                });
+            }
+            Ok(vec![format!("{}:of-{}", ty.as_str(), subject.as_str())])
         }
     }
 
@@ -220,6 +247,34 @@ mod tests {
         .unwrap();
         assert!(none.is_empty());
         assert_eq!(fake.asked.lock().unwrap().len(), 6);
+    }
+
+    #[tokio::test]
+    async fn direct_objects_keep_subject_order_and_fail_closed() {
+        let fake = Fake::default();
+        let ns = Namespace::for_tenant("t1");
+        let subjects: Vec<Subject> = (0..(BATCH_CHECKS_IN_FLIGHT * 2 + 1))
+            .map(|i| ns.user(&format!("u{i}")))
+            .collect();
+        let got = read_direct_objects(&fake, &subjects, ObjectType::DataRecord)
+            .await
+            .unwrap();
+        assert_eq!(got.len(), subjects.len());
+        for (s, objs) in subjects.iter().zip(&got) {
+            assert_eq!(objs, &vec![format!("data_record:of-{}", s.as_str())]);
+        }
+        assert!(read_direct_objects(&fake, &[], ObjectType::DataRecord)
+            .await
+            .unwrap()
+            .is_empty());
+        // 1 本でも読めなければ全体を誤りにする（読めた分だけで集合を作らない）。
+        let mut with_broken = subjects.clone();
+        with_broken.insert(3, ns.user("broken"));
+        assert!(
+            read_direct_objects(&fake, &with_broken, ObjectType::DataRecord)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]

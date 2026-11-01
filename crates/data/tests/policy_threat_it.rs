@@ -15,6 +15,8 @@
 //!    書き換えても作成者を除く判定をすり抜けられない（[`created_by`]）
 //! ⑭ 追加だけの人の出し直し（D-127）: 作成者の列で本人を指す進め方と書き込みの決まりの分だけ、自分のレコードを
 //!    直して進められる。他人のレコード・許していない状態と進め方・削除・取込は断る（[`resubmit`]）
+//! ⑮ ListObjects の応答の上限（BUG-161）: 上限の外の個別共有も見え、所属ロールが上限に届いたら fail-closed
+//!    （[`share_cap`]）
 //!
 //! 実 Postgres（`STORAGE_TEST_DATABASE_URL`）＋実 OpenFGA（`OPENFGA_TEST_URL`）で実行する。
 
@@ -58,6 +60,9 @@ mod created_by;
 
 #[path = "policy_threat/resubmit.rs"]
 mod resubmit;
+
+#[path = "policy_threat/share_cap.rs"]
+mod share_cap;
 
 struct AllowRefs;
 
