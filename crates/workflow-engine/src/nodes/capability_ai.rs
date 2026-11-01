@@ -16,7 +16,8 @@ use crate::run::NodeContext;
 use super::capability::parse_params;
 use super::exec::CapabilityNodeExecutor;
 use super::http::{
-    check_destination, classify_error_status, redirect_denied, summarize_response, HttpDenied,
+    check_destination, classify_error_status, destination_refused, redirect_denied,
+    summarize_response, HttpDenied,
 };
 use super::ports::{ExecCtx, HttpSendReq, LlmInvokeReq, PortError, ResolvedSecretView};
 use super::resolver::{as_bytes, as_string, as_u32, opt_param, param, typed, ParamResolver};
@@ -210,7 +211,18 @@ impl CapabilityNodeExecutor {
                     timeout_ms: Some(self.http_timeout_ms),
                 },
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                // 名前解決の後のアドレスで断った送信も監査に残す（送り先と理由・BUG-181）。
+                if destination_refused(&e.code) {
+                    self.audit(
+                        &ec.tenant_id,
+                        "http.request",
+                        false,
+                        &json!({ "host": host, "reason": e.code }),
+                    );
+                }
+            })?;
 
         if redirect_denied(resp.status) {
             self.audit(

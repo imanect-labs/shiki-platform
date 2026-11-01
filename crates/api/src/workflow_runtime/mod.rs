@@ -12,6 +12,7 @@ mod auth;
 mod data_port;
 mod decide_port;
 mod document_read;
+mod http_egress;
 mod llm_error;
 mod llm_model;
 mod llm_port;
@@ -32,6 +33,7 @@ use workflow_engine::{
     SchedulerStore, TokenBucket, WorkerConfig, WorkflowRunLauncher, WorkflowWorker,
 };
 
+pub use http_egress::HttpEgress;
 pub use ports::ProdNodePorts;
 pub use relay::{relay_events, retry_event_firings, RelayDeps};
 pub use relay_approval::{
@@ -282,7 +284,6 @@ pub struct RuntimeDeps {
     pub tabular: Option<Arc<tabular::TabularService>>,
     /// skill.invoke の実行時解決（レジストリ→artifact を実行主体 ReBAC で読む・#344）。
     pub skill_artifacts: Option<Arc<artifact::ArtifactStore>>,
-    pub http: reqwest::Client,
     pub redis_url: Option<String>,
     pub config: WorkflowConfig,
     /// 構造化データ（data ノード・`Shiki.data.*`・Task 15.7）。
@@ -310,7 +311,8 @@ async fn build_prod_executor(
         tabular: deps.tabular.clone(),
         skill_artifacts: deps.skill_artifacts.clone(),
         launcher: launcher.clone(),
-        http: deps.http.clone(),
+        // 管理者の許可（http_allowlist）のうちそのまま書いたホストだけ、内部の IP へ送れる（D-135）。
+        http: HttpEgress::new(&deps.config.http_allowlist),
         db: deps.db.clone(),
         data: Some(Arc::clone(&deps.data)),
         fsms: Some(Arc::clone(&deps.fsms)),

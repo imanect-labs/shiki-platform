@@ -41,8 +41,8 @@ pub struct ProdNodePorts {
     /// skill.invoke の実行時解決（レジストリ→artifact を実行主体 ReBAC で読む・#344）。
     pub skill_artifacts: Option<Arc<artifact::ArtifactStore>>,
     pub launcher: WorkflowRunLauncher,
-    /// http.request の外部送信クライアント（リダイレクト非追従の別クライアントも内部で使う）。
-    pub http: reqwest::Client,
+    /// http.request・`Shiki.http.request` の送り口（名前解決の後のアドレスの確認と接続の固定・BUG-181）。
+    pub http: super::HttpEgress,
     /// workflow.start の名前解決に使う（artifact 名 → workflow_id）。委譲台帳（data の委譲元）も引く。
     pub db: PgPool,
     /// 構造化データ（data.* ノード・`Shiki.data.*`・Task 15.7）。未結線なら data ノードは「未構成」で失敗する。
@@ -340,44 +340,9 @@ impl NodePorts for ProdNodePorts {
     }
 
     async fn http_send(&self, _ec: &ExecCtx, req: HttpSendReq) -> Result<HttpSendResp, PortError> {
-        // Stage A は常に非追従（executor が redirect を拒否する）。SSRF/内部 rebind を防ぐため
-        // auto-follow は使わない（`follow_redirects` が来ても Policy::none）。
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|e| PortError::unavailable(format!("http client: {e}")))?;
-        let method = reqwest::Method::from_bytes(req.method.as_bytes())
-            .map_err(|_| PortError::invalid("不正な HTTP メソッド"))?;
-        let mut builder = client.request(method, &req.url);
-        for (k, v) in &req.headers {
-            builder = builder.header(k, v);
-        }
-        if let Some(body) = req.body {
-            builder = builder.body(body);
-        }
-        if let Some(ms) = req.timeout_ms {
-            builder = builder.timeout(std::time::Duration::from_millis(ms));
-        }
-        let mut resp = builder
-            .send()
-            .await
-            .map_err(|e| PortError::unavailable(format!("http 送信: {e}")))?;
-        let status = resp.status().as_u16();
-        // 本文は上限まで**ストリーミング読み**する（巨大レスポンスの全量バッファで OOM しない）。
-        const MAX_BODY: usize = 8 * 1024 * 1024;
-        let mut body = Vec::new();
-        while let Some(chunk) = resp
-            .chunk()
-            .await
-            .map_err(|e| PortError::unavailable(format!("http 本文: {e}")))?
-        {
-            if body.len() + chunk.len() > MAX_BODY {
-                body.extend_from_slice(&chunk[..MAX_BODY - body.len()]);
-                break;
-            }
-            body.extend_from_slice(&chunk);
-        }
-        Ok(HttpSendResp { status, body })
+        // 名前解決の後のアドレスを確かめ、そのアドレスに接続を固定して送る（3xx は追わない・環境のプロキシを使わない・
+        // BUG-181・PIT-36 の ③・PIT-48）。`follow_redirects` が来ても追わない。
+        self.http.send(req).await
     }
 
     async fn resolve_secret(

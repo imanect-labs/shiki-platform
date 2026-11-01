@@ -71,6 +71,22 @@ pub const HTTP_ERROR_STATUS: &str = "http_error_status";
 /// （あちらは試す回数を消費しないので、相手の 429 に使うと何度でも送り直してしまう）。
 pub const HTTP_RETRYABLE_STATUS: &str = "http_retryable_status";
 
+/// 送り先の名前が内部のネットワークの IP にもつながるので送らなかったときの code（ポートの送り口が名前解決の後に
+/// 断る・permanent・BUG-181・D-135）。
+///
+/// 管理者がデプロイ設定 `workflow.http_allowlist` にそのホストをそのまま書いたときだけ、内部の IP へ送れる。
+pub const DESTINATION_INTERNAL: &str = "destination_internal";
+
+/// 送り先の名前がリンクローカル・クラウドのメタデータの IP につながるので送らなかったときの code（管理者の許可が
+/// あっても断る・permanent・BUG-181・D-135）。
+pub const DESTINATION_LINK_LOCAL: &str = "destination_link_local";
+
+/// 送り先のアドレスで断った失敗か（エンジンが監査に残す）。
+#[must_use]
+pub fn destination_refused(code: &str) -> bool {
+    code == DESTINATION_INTERNAL || code == DESTINATION_LINK_LOCAL
+}
+
 /// 応答のステータスコードを失敗に分ける（`fail_on_error_status` のときだけ使う）。成功（399 以下）は `None`、
 /// 失敗は（code・やり直せるか）。
 #[must_use]

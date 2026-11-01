@@ -70,6 +70,8 @@ struct FakePorts {
     last_tried_as: Mutex<Option<String>>,
     /// storage.write に渡った要求の並び。
     write_tries: Mutex<Vec<WriteTry>>,
+    /// http_send が返す失敗（送り口が名前解決の後のアドレスで断ったとき・BUG-181）。
+    http_error: Mutex<Option<PortError>>,
 }
 
 /// storage.write に渡った（名前・扱い・冪等キー・op_digest）。
@@ -154,6 +156,9 @@ impl NodePorts for FakePorts {
         Ok(json!({ "text": "ok" }))
     }
     async fn http_send(&self, _ctx: &ExecCtx, req: HttpSendReq) -> Result<HttpSendResp, PortError> {
+        if let Some(e) = self.http_error.lock().unwrap().clone() {
+            return Err(e);
+        }
         let status = *self.http_status.lock().unwrap();
         let body = if *self.http_echo.lock().unwrap() {
             let headers: serde_json::Map<String, Value> = req
@@ -683,6 +688,53 @@ async fn script_http_refuses_headers_it_must_not_send() {
             api == "http.request" && !ok && meta["reason"] == "header_not_allowed"
         });
         assert_eq!(denied, audited, "{args}");
+    }
+}
+
+/// 送り口が名前解決の後のアドレスで断った送信は、ブロックと script のどちらの経路でも、その code で失敗にして監査に
+/// 残す（送り先のホストと理由・BUG-181）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn http_destination_refusals_fail_and_are_audited_on_both_paths() {
+    use workflow_engine::nodes::http::{DESTINATION_INTERNAL, DESTINATION_LINK_LOCAL};
+    let engine = Arc::new(script_runtime::engine::ScriptEngine::new().expect("script engine"));
+    for code in [DESTINATION_INTERNAL, DESTINATION_LINK_LOCAL] {
+        let ports = Arc::new(FakePorts::with_http_status(200));
+        *ports.http_error.lock().unwrap() = Some(PortError::new(code, "送るのをやめました", false));
+        let audit = Arc::new(CapturingAudit::default());
+        let exec = executor(Arc::clone(&ports), Arc::clone(&audit));
+        let res = exec
+            .execute(
+                "http.request",
+                &json!({ "url": "https://api.example.com/v1" }),
+                &ctx(json!({}), vec!["http.egress".into()]),
+            )
+            .await;
+        let err = res.error.unwrap();
+        assert_eq!((err.code.as_str(), err.retryable), (code, false));
+        let script = script_executor(&ports, &audit, &engine);
+        let res = script
+            .execute(
+                "script.run",
+                &json!({ "source": { "inline":
+                    "function main(input) { Shiki.http.request({ url: \"https://api.example.com/v1\" }); return 1; }" } }),
+                &ctx(json!({}), vec!["http.egress".into()]),
+            )
+            .await;
+        assert_eq!(res.error.unwrap().code, code);
+        let recs = audit.records.lock().unwrap();
+        let denied: Vec<&Value> = recs
+            .iter()
+            .filter(|(api, ok, _)| api == "http.request" && !ok)
+            .map(|(_, _, meta)| meta)
+            .collect();
+        assert_eq!(
+            denied,
+            [
+                &json!({ "host": "api.example.com", "reason": code }),
+                &json!({ "host": "api.example.com", "reason": code, "via": "script" }),
+            ],
+            "{code}"
+        );
     }
 }
 

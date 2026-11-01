@@ -358,8 +358,7 @@ impl HostBridge {
     /// `secret.allowed_hosts`（∩ グローバル allowlist）とリテラル照合し、3xx は一律拒否する。
     /// secret 平文・レスポンス本文は監査に載せない（status + host のみ）。
     async fn http_request(&self, a: &Value, call_key: &str) -> Result<Value, PortError> {
-        use super::http::{check_destination, redirect_denied, summarize_response, HttpDenied};
-        use secrets::DestinationBinding;
+        use super::http::{redirect_denied, summarize_response};
 
         let method = a
             .get("method")
@@ -388,48 +387,7 @@ impl HostBridge {
             None => None,
         };
 
-        // 宛先束縛（secret 有り）または global allowlist（無し）で照合し、secret 有りは AND。
-        // 拒否は監査に残す（scripted egress の遮断も監査可能に・レビュー指摘）。
-        let audit_denied = |reason: &str, detail: &str| {
-            self.audit.record(
-                &self.ec.tenant_id,
-                "http.request",
-                false,
-                &json!({ "reason": reason, "detail": detail, "via": "script" }),
-            );
-        };
-        let map_denied = |d: HttpDenied| match d {
-            HttpDenied::HostNotAllowed(h) => {
-                audit_denied("host_not_allowed", &h);
-                PortError::forbidden(format!("宛先束縛外のホスト: {h}"))
-            }
-            HttpDenied::RedirectDenied => {
-                audit_denied("redirect_denied", "");
-                PortError::new("redirect_denied", "リダイレクト拒否", false)
-            }
-            HttpDenied::BadUrl => {
-                audit_denied("bad_url", "");
-                PortError::invalid("URL が解析不能")
-            }
-            HttpDenied::BadScheme => {
-                audit_denied("bad_scheme", "");
-                PortError::invalid("http/https のみ許可")
-            }
-        };
-        let primary = resolved
-            .as_ref()
-            .map_or_else(|| self.http_allowlist.clone(), |s| s.allowed_hosts.clone());
-        let host =
-            check_destination(&url, &DestinationBinding::new(primary)).map_err(map_denied)?;
-        if resolved.is_some() && !self.http_allowlist.is_empty() {
-            let global = DestinationBinding::new(self.http_allowlist.clone());
-            if !global.allows(&host) {
-                audit_denied("egress_allowlist", &host);
-                return Err(PortError::forbidden(format!(
-                    "egress allowlist 外のホスト: {host}"
-                )));
-            }
-        }
+        let host = self.script_destination(&url, resolved.as_ref())?;
 
         let mut headers: Vec<(String, String)> = Vec::new();
         if let Some(sec) = resolved.as_ref() {
@@ -464,7 +422,18 @@ impl HostBridge {
                     timeout_ms: Some(self.http_timeout_ms),
                 },
             )
-            .await?;
+            .await
+            .inspect_err(|e| {
+                // 名前解決の後のアドレスで断った送信も監査に残す（ノードの経路と同じ・BUG-181）。
+                if super::http::destination_refused(&e.code) {
+                    self.audit.record(
+                        &self.ec.tenant_id,
+                        "http.request",
+                        false,
+                        &json!({ "host": host, "reason": e.code, "via": "script" }),
+                    );
+                }
+            })?;
         if redirect_denied(resp.status) {
             self.audit.record(
                 &self.ec.tenant_id,
@@ -485,6 +454,58 @@ impl HostBridge {
         // 外部の応答に反射した secret の平文は、script へ返す前にマスクする（GAP-09 の T0・ノード経路と同じ）。
         let body = super::capability_ai::response_body(&resp.body, resolved.as_ref());
         Ok(json!({ "status": resp.status, "host": host, "body": body }))
+    }
+
+    /// 送り先の照合（宛先束縛 × egress allowlist の AND・URL のホスト部の文字・ノードの経路と同じ）。拒否は監査に残す
+    /// （scripted egress の遮断も監査可能に・レビュー指摘）。照合したホストを返す。
+    fn script_destination(
+        &self,
+        url: &str,
+        resolved: Option<&super::ports::ResolvedSecretView>,
+    ) -> Result<String, PortError> {
+        use super::http::{check_destination, HttpDenied};
+        use secrets::DestinationBinding;
+
+        // 宛先束縛（secret 有り）または global allowlist（無し）で照合し、secret 有りは AND。
+        let audit_denied = |reason: &str, detail: &str| {
+            self.audit.record(
+                &self.ec.tenant_id,
+                "http.request",
+                false,
+                &json!({ "reason": reason, "detail": detail, "via": "script" }),
+            );
+        };
+        let map_denied = |d: HttpDenied| match d {
+            HttpDenied::HostNotAllowed(h) => {
+                audit_denied("host_not_allowed", &h);
+                PortError::forbidden(format!("宛先束縛外のホスト: {h}"))
+            }
+            HttpDenied::RedirectDenied => {
+                audit_denied("redirect_denied", "");
+                PortError::new("redirect_denied", "リダイレクト拒否", false)
+            }
+            HttpDenied::BadUrl => {
+                audit_denied("bad_url", "");
+                PortError::invalid("URL が解析不能")
+            }
+            HttpDenied::BadScheme => {
+                audit_denied("bad_scheme", "");
+                PortError::invalid("http/https のみ許可")
+            }
+        };
+        let primary =
+            resolved.map_or_else(|| self.http_allowlist.clone(), |s| s.allowed_hosts.clone());
+        let host = check_destination(url, &DestinationBinding::new(primary)).map_err(map_denied)?;
+        if resolved.is_some() && !self.http_allowlist.is_empty() {
+            let global = DestinationBinding::new(self.http_allowlist.clone());
+            if !global.allows(&host) {
+                audit_denied("egress_allowlist", &host);
+                return Err(PortError::forbidden(format!(
+                    "egress allowlist 外のホスト: {host}"
+                )));
+            }
+        }
+        Ok(host)
     }
 
     /// `Shiki.http.request` の `headers` と、シークレットを付けるヘッダーの名前を確かめる（BUG-179）。送ってはいけない

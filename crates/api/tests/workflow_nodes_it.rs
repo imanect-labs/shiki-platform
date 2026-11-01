@@ -222,7 +222,7 @@ impl Harness {
             tabular: None,
             skill_artifacts: None,
             launcher: self.launcher.clone(),
-            http: reqwest::Client::new(),
+            http: api::workflow_runtime::HttpEgress::default(),
             db: self.pool.clone(),
             data: None,
             fsms: None,
@@ -230,14 +230,29 @@ impl Harness {
         })
     }
 
-    /// 本番 executor を組む（FakeSandbox＋http allowlist を差し込める）。
+    /// 本番 executor を組む（FakeSandbox＋http allowlist を差し込める）。送り口も本番と同じく、許可のうちそのまま
+    /// 書いたホストだけ内部の IP へ送れる（ループバックの相手は `127.0.0.1` を許可に書く・D-135）。
     fn executor(
         &self,
         sandbox: Option<Arc<dyn sandbox_client::Sandbox>>,
         http_allowlist: Vec<String>,
         search: Option<Arc<rag::SearchService>>,
     ) -> Arc<dyn NodeExecutor> {
-        let ports = self.ports(sandbox, search);
+        let http = api::workflow_runtime::HttpEgress::new(&http_allowlist);
+        self.executor_with_http(sandbox, http_allowlist, search, http)
+    }
+
+    /// [`Self::executor`] の送り口（名前解決）を差し替えられる形（BUG-181）。
+    fn executor_with_http(
+        &self,
+        sandbox: Option<Arc<dyn sandbox_client::Sandbox>>,
+        http_allowlist: Vec<String>,
+        search: Option<Arc<rag::SearchService>>,
+        http: api::workflow_runtime::HttpEgress,
+    ) -> Arc<dyn NodeExecutor> {
+        let mut ports = Arc::into_inner(self.ports(sandbox, search)).expect("ports");
+        ports.http = http;
+        let ports = Arc::new(ports);
         let engine = Arc::new(script_runtime::engine::ScriptEngine::new().expect("script engine"));
         Arc::new(
             CapabilityNodeExecutor::new(
@@ -270,7 +285,7 @@ impl Harness {
             tabular: Some(tabular),
             skill_artifacts: None,
             launcher: self.launcher.clone(),
-            http: reqwest::Client::new(),
+            http: api::workflow_runtime::HttpEgress::default(),
             db: self.pool.clone(),
             data: None,
             fsms: None,
@@ -3296,4 +3311,148 @@ async fn http_error_statuses_through_the_production_port() {
         (code.as_deref(), *retryable),
         (Some("http_retryable_status"), Some(true))
     );
+}
+
+// ------- BUG-181: 外部への送信は名前解決の後のアドレスを確かめる（本番のポート）-----------------------
+
+/// 決めた名前だけを決めたアドレスに解決する（OS の DNS を使わない・引いた名前を数える）。
+struct MapResolver {
+    map: std::collections::HashMap<String, std::net::SocketAddr>,
+    lookups: std::sync::Mutex<Vec<String>>,
+}
+
+#[async_trait::async_trait]
+impl sandbox_client::net_guard::HostResolver for MapResolver {
+    async fn lookup(
+        &self,
+        host: &str,
+        port: u16,
+    ) -> Result<Vec<std::net::SocketAddr>, &'static str> {
+        self.lookups.lock().unwrap().push(host.to_string());
+        self.map
+            .get(host)
+            .map(|a| vec![std::net::SocketAddr::new(a.ip(), port)])
+            .ok_or("ホストを解決できませんでした")
+    }
+}
+
+/// 許可（http_allowlist）と名前解決を決めてワークフローを実行し、実行の状態と、送るブロック（send）の誤りを返す。
+async fn run_with_http(
+    h: &Harness,
+    wf: Uuid,
+    allow: &str,
+    resolver: Arc<MapResolver>,
+) -> (RunStatus, (Option<String>, Option<bool>)) {
+    let allowlist = vec![allow.to_string()];
+    let http = api::workflow_runtime::HttpEgress::new(&allowlist).with_resolver(resolver as _);
+    let executor = h.executor_with_http(None, allowlist, None, http);
+    let (run, status) = h.run(wf, &json!({}), executor).await;
+    let error = sqlx::query_as::<_, (Option<String>, Option<bool>)>(
+        "SELECT error->>'code', (error->>'retryable')::bool FROM step_execution \
+         WHERE tenant_id = $1 AND run_id = $2 AND node_id = 'send'",
+    )
+    .bind(&h.tenant)
+    .bind(run)
+    .fetch_one(&h.pool)
+    .await
+    .unwrap();
+    (status, error)
+}
+
+/// 「外部 API 呼び出し」と script の `Shiki.http.request` は、本番のポートで、名前解決の後のアドレスが内部の
+/// ネットワークなら送らない（BUG-181）。
+/// - 管理者の許可がワイルドカードだけなら、内部の IP に解決される名前へは送らない（シークレットの宛先束縛でも同じ）。
+/// - 管理者がそのホストをそのまま許可に書くと送れる。名前は 1 回だけ引き、確かめたアドレスに送る（`.invalid` は
+///   OS の DNS では引けない）。
+/// - リンクローカル・クラウドのメタデータは、許可に書いても送らない。
+/// 断った失敗は、送り先のアドレスの code で、やり直さない。
+#[tokio::test]
+async fn http_to_internal_addresses_is_refused_through_the_production_port() {
+    let Some(h) = setup().await else { return };
+    let (base, seen) = spawn_http_recorder().await;
+    let port: u16 = base.rsplit(':').next().unwrap().parse().unwrap();
+    let resolver = || {
+        Arc::new(MapResolver {
+            map: [
+                ("intranet.invalid", ([127, 0, 0, 1], port).into()),
+                ("metadata.invalid", ([169, 254, 169, 254], 80).into()),
+            ]
+            .into_iter()
+            .map(|(k, v)| (k.to_string(), v))
+            .collect(),
+            lookups: std::sync::Mutex::new(Vec::new()),
+        })
+    };
+    // ブロックと script の 2 つの経路を、別々のワークフローで送る（片方の失敗で、もう片方が実行されないことがない）。
+    let node = |host: &str| {
+        json!({ "id": "send", "type": "http.request", "params": {
+            "method": "POST", "url": format!("http://{host}:{port}/node"), "body": "x" } })
+    };
+    let script = |host: &str| {
+        json!({ "id": "send", "type": "script.run", "params": { "source": { "inline": format!(
+            "function main(input) {{ return Shiki.http.request({{ method: \"POST\", \
+             url: \"http://{host}:{port}/script\", body: \"y\" }}).status; }}") } } })
+    };
+    let ir = |name: &str, node: Value| {
+        json!({
+            "ir_version": 1, "name": name,
+            "declared_scopes": ["http.egress"],
+            "triggers": [{ "kind": "interactive" }],
+            "nodes": [node],
+            "edges": [],
+        })
+    };
+    let mut workflows = Vec::new();
+    for (name, n) in [
+        ("http-internal-node", node("intranet.invalid")),
+        ("http-internal-script", script("intranet.invalid")),
+        ("http-metadata-node", node("metadata.invalid")),
+        ("http-metadata-script", script("metadata.invalid")),
+    ] {
+        workflows.push(h.save(&ir(name, n)).await);
+    }
+    // ① 許可がワイルドカードだけ: 内部の IP に解決される名前へは送らない。
+    let wildcard_node = run_with_http(&h, workflows[0], "*.invalid", resolver()).await;
+    let wildcard_script = run_with_http(&h, workflows[1], "*.invalid", resolver()).await;
+    let seen_after_refusal = seen.lock().await.len();
+    // ② 管理者がそのホストをそのまま書くと送れる（名前は送るたびに 1 回だけ引く）。
+    let r2 = resolver();
+    let explicit_node = run_with_http(&h, workflows[0], "intranet.invalid", Arc::clone(&r2)).await;
+    let explicit_script =
+        run_with_http(&h, workflows[1], "intranet.invalid", Arc::clone(&r2)).await;
+    let requests = seen.lock().await.clone();
+    // ③ リンクローカル・メタデータは、許可に書いても送らない。
+    let meta_node = run_with_http(&h, workflows[2], "metadata.invalid", resolver()).await;
+    let meta_script = run_with_http(&h, workflows[3], "metadata.invalid", resolver()).await;
+
+    // 片付け（run の履歴・ワークフロー・OpenFGA のストア）。
+    h.runs.purge_tenant_history(&h.tenant).await.unwrap();
+    for id in workflows {
+        h.artifacts.delete(&h.alice, id, None).await.unwrap();
+    }
+    h.delete_fga_store().await;
+
+    let refused = |code: &str| (RunStatus::Failed, (Some(code.to_string()), Some(false)));
+    assert_eq!(wildcard_node, refused("destination_internal"));
+    assert_eq!(wildcard_script, refused("destination_internal"));
+    assert_eq!(seen_after_refusal, 0, "内部へ送っていない");
+
+    assert_eq!(explicit_node, (RunStatus::Succeeded, (None, None)));
+    assert_eq!(explicit_script, (RunStatus::Succeeded, (None, None)));
+    assert!(
+        requests.iter().any(|r| r.starts_with("POST /node ")),
+        "{requests:?}"
+    );
+    assert!(
+        requests.iter().any(|r| r.starts_with("POST /script ")),
+        "{requests:?}"
+    );
+    assert_eq!(
+        *r2.lookups.lock().unwrap(),
+        ["intranet.invalid", "intranet.invalid"],
+        "送るたびに 1 回だけ引く"
+    );
+
+    assert_eq!(meta_node, refused("destination_link_local"));
+    assert_eq!(meta_script, refused("destination_link_local"));
 }

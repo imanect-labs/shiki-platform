@@ -586,7 +586,6 @@ pub(crate) async fn wire_workflow(
         tabular: Some(Arc::clone(tabular)),
         // skill.invoke の実行時解決（実行主体 ReBAC・fail-closed・#344）。
         skill_artifacts: Some(Arc::clone(artifacts)),
-        http: http.clone(),
         redis_url: Some(config.session.redis_url.clone()),
         config: config.workflow.clone(),
         // data ノード・`Shiki.data.*`（Task 15.7）は API と同じ DataStore / FsmStore を共有する。

@@ -243,7 +243,7 @@ async fn setup() -> Option<Env> {
         tabular,
         skill_artifacts: None,
         launcher: launcher.clone(),
-        http: reqwest::Client::new(),
+        http: api::workflow_runtime::HttpEgress::default(),
         db: pool.clone(),
         data: None,
         fsms: None,

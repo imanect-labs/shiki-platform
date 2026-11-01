@@ -181,7 +181,7 @@ impl Harness {
             tabular: None,
             skill_artifacts: None,
             launcher: self.launcher.clone(),
-            http: reqwest::Client::new(),
+            http: api::workflow_runtime::HttpEgress::default(),
             db: self.pool.clone(),
             data: None,
             fsms: None,

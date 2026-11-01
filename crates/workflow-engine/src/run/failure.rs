@@ -74,6 +74,9 @@ pub const KNOWN_CODES: &[(&str, FailureCategory)] = {
         ("unsupported_stage_a", Configuration),
         ("unknown_node", Configuration),
         ("redirect_denied", Configuration),
+        // 送り先の名前が内部のネットワーク・リンクローカル・メタデータの IP につながる（管理者が許すか URL を直す・BUG-181）。
+        (crate::nodes::http::DESTINATION_INTERNAL, Configuration),
+        (crate::nodes::http::DESTINATION_LINK_LOCAL, Configuration),
         // 外部のサービスが誤り（4xx）を返した（送る内容・URL・シークレットを直す・BUG-99）。
         (crate::nodes::http::HTTP_ERROR_STATUS, Configuration),
         ("fanout_limit_exceeded", Configuration),
@@ -184,6 +187,10 @@ fn specific_message(code: &str) -> Option<&'static str> {
             "この環境では社内文書の検索が使えないため、PDF や Word の本文を読めませんでした。\
              管理者に連絡してください。"
         }
+        // 「ワークフローの設定に問題があり」より原因を言う（送り先が内部のネットワークにつながる・BUG-181・D-135）。
+        crate::nodes::http::DESTINATION_INTERNAL | crate::nodes::http::DESTINATION_LINK_LOCAL => {
+            "送り先が内部のネットワークにつながるため、外部のサービスに送れませんでした。作成者に連絡してください。"
+        }
         // 付録 C の §5.2（failure.rs の時間切れの文言の直し）。
         "run_timeout" => {
             "実行の期限までに終わらなかったため、実行を止めました。途中まで進んでいることがあります。\
@@ -289,6 +296,9 @@ pub const SAME_RESULT_CODES: &[&str] = &[
     crate::nodes::decide::DECISION_STATE_TOO_LARGE,
     // 使ってよい操作の天井は、ピンした IR の宣言（`declared_scopes`）で決まる。
     "out_of_scope",
+    // 送り先の URL（ピンした IR）が内部のネットワークにつながる。再開しても同じ送り先に送ろうとする（BUG-181・D-135）。
+    crate::nodes::http::DESTINATION_INTERNAL,
+    crate::nodes::http::DESTINATION_LINK_LOCAL,
     // 作成者の script が投げた誤り。再開は同じ script を同じ入力で動かす（D-121）。script が `Shiki.*` で読んだ値で
     // 投げたものは、値を直せば通ることもあるが、「同じ入力でもう一度実行」で動かし直せる（offer_rerun）。
     script_runtime::SCRIPT_ERROR,
@@ -651,6 +661,23 @@ mod tests {
         assert!(h.offer && h.offer_rerun, "{h:?}");
         // 分類の文言（code ごとの文言が無いとき）も、環境の問題と言う。
         assert!(message(FailureCategory::Environment, None).contains("この環境では使えない"));
+    }
+
+    /// 送り先が内部のネットワークにつながる失敗は設定の誤りで、再開しても同じ送り先に送ろうとする（BUG-181）。
+    #[test]
+    fn internal_destinations_are_configuration_and_same_result() {
+        use crate::nodes::http::{DESTINATION_INTERNAL, DESTINATION_LINK_LOCAL};
+        for code in [DESTINATION_INTERNAL, DESTINATION_LINK_LOCAL] {
+            let f = run_failure(Uuid::nil(), Some(code), None);
+            assert_eq!(f.category, FailureCategory::Configuration, "{code}");
+            assert_eq!(
+                f.message,
+                "送り先が内部のネットワークにつながるため、外部のサービスに送れませんでした。作成者に連絡してください。"
+            );
+            let h = resume_hint(Some(code), None);
+            assert_eq!(h.advice, ResumeAdvice::SameResult, "{code}");
+            assert!(!h.offer && h.offer_rerun, "{h:?}");
+        }
     }
 
     /// 再開の API が断るときの code は、詳細の `resume.advice` と同じ名前（D-116）。
