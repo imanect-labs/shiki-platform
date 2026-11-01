@@ -27,10 +27,10 @@ export type Setup = {
 ///
 /// 途中で落ちたら、それまでに作った分（テーブル・状態の進め方・オンにしたワークフロー）を消してから投げ直す（呼び出し
 /// 側は setup が返ってから片付けを積むので、途中の失敗は拾えない・BUG-126）。
-export async function setup(page: Page, runTimeoutSec = 1209600): Promise<Setup> {
+export async function setup(page: Page, runTimeoutSec = 1209600, opts: SetupOptions = {}): Promise<Setup> {
   const made: Partial<Pick<Setup, "tableId" | "fsmId" | "workflowId">> = {};
   try {
-    return await build(page, runTimeoutSec, made);
+    return await build(page, runTimeoutSec, made, opts);
   } catch (e) {
     await cleanupAll(
       () => (made.workflowId ? removeWorkflowApi(page, made.workflowId) : Promise.resolve()),
@@ -41,11 +41,18 @@ export async function setup(page: Page, runTimeoutSec = 1209600): Promise<Setup>
   }
 }
 
+/// [`setup`] の選び方。
+export type SetupOptions = {
+  /// 承認の担当（省略で承認者の列の人・`{ field: "approver" }`）。部署に出すなら `{ role: "<部署の id>" }`。
+  assignees?: unknown[];
+};
+
 /// [`setup`] の本体。作るたびに `made` へ控える。
 async function build(
   page: Page,
   runTimeoutSec: number,
   made: Partial<Pick<Setup, "tableId" | "fsmId" | "workflowId">>,
+  opts: SetupOptions,
 ): Promise<Setup> {
   const headers = await csrfHeaders(page);
   const me = (await (await page.request.get("/api/me")).json()) as { id: string };
@@ -129,7 +136,7 @@ async function build(
               title: "経費申請の承認",
               instructions: "規程どおりか確認してください。",
               record: { table: table.id, id: { $from: "trigger", path: "/record_id" } },
-              assignees: [{ field: "approver" }],
+              assignees: opts.assignees ?? [{ field: "approver" }],
               approve: { to: "承認" },
               reject: { to: "却下", comment: "required" },
               show_fields: ["title", "amount"],

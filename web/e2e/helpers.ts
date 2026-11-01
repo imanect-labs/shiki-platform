@@ -346,6 +346,35 @@ async function fgaStore(page: Page): Promise<string> {
   return storeId!;
 }
 
+/// OpenFGA のタプル 1 件（名前は authz の Namespace と同じ `<型>:<tenant>|<id>`）。
+export type FgaTuple = { user: string; relation: string; object: string };
+
+/// サーバと同じ OpenFGA の store にタプルを直接書き（Write API は 1 回 100 件まで）、消す関数を返す。画面や API に
+/// 入口の無い量・形のタプル（ListObjects の上限を超える詰め物など）を作るときに使う。
+export async function writeFgaTuples(page: Page, tuples: FgaTuple[]): Promise<() => Promise<void>> {
+  const storeId = await fgaStore(page);
+  const send = async (key: "writes" | "deletes", chunk: FgaTuple[]) => {
+    const res = await page.request.post(`${FGA_URL}/stores/${storeId}/write`, { data: { [key]: { tuple_keys: chunk } } });
+    expect(res.ok(), await res.text()).toBeTruthy();
+  };
+  const written: FgaTuple[] = [];
+  const remove = async () => {
+    for (let i = 0; i < written.length; i += 100) await send("deletes", written.slice(i, i + 100));
+  };
+  try {
+    for (let i = 0; i < tuples.length; i += 100) {
+      const chunk = tuples.slice(i, i + 100);
+      await send("writes", chunk);
+      written.push(...chunk);
+    }
+  } catch (e) {
+    // 途中で落ちたら、書けた分を消してから投げ直す（呼び出し側は消す関数を受け取れない）。
+    await remove().catch(() => undefined);
+    throw e;
+  }
+  return remove;
+}
+
 /// テーブルを `userId` の editor にし、外す関数を返す。テーブルの共有はまだ画面にも API にも無い（作った人だけが
 /// owner になる）ので、サーバと同じ OpenFGA の store にタプルを直接書く（名前は authz の Namespace と同じ
 /// `<型>:<tenant>|<id>`）。
