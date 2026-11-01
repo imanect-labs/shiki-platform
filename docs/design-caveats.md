@@ -18,7 +18,8 @@
     `authz_tags ∩ 可読集合` で pre-filter（`crates/rag/src/authz_filter.rs`）。
   - **カーディナリティ対処**: 可読集合が上限 **500**（ListObjects 応答上限 1000 未満＝切り詰め集合を
     正として使う事故を構造的に防ぐ）を超えたら pre-filter を放棄して tenant-only へ縮退し、
-    post-filter 全依存＋over-fetch 8× で正しさを維持する。
+    post-filter 全依存＋over-fetch 8× で正しさを維持する。folder か file の応答が ListObjects の上限に届いたとき
+    （`authz::visible::list_may_be_cut`）も、上限の設定値によらず同じく縮退する（BUG-190・可読テーブルも同じ）。
   - **タグ再評価のコスト**: 共有変更ではタグ再書込ゼロ（構造タグのため）。再評価が要るのは move のみで、
     Qdrant payload 再書込＋Tantivy 再投入（再パース/再埋め込み不要・Task 2.9）。
 - 旧論点（記録）: (a) ACL展開方式はロール共有でタグ爆発・再共有で大量再書込のため不採用。

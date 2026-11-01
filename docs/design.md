@@ -315,7 +315,8 @@ flowchart LR
     move のみ（祖先再評価・Task 2.9）。
   - **カーディナリティ上限とフォールバック**: 可読集合が **上限 500**（OpenFGA ListObjects の
     応答上限 1000 未満に設定し「切り詰められた不完全集合を正として使う」under-recall 事故を
-    構造的に防ぐ）を超えたら pre-filter を放棄して **tenant-only へ縮退**し、post-filter 全依存
+    構造的に防ぐ）を超えたら、または folder か file の応答が ListObjects の上限に届いたら（設定値によらない・BUG-190）、
+    pre-filter を放棄して **tenant-only へ縮退**し、post-filter 全依存
     ＋ over-fetch 引き上げ（3×→8×）で正しさを維持する。コストモデル: 通常時は
     `fetch_k = max(top_k, rerank_pool) × 3`、縮退時は ×8・不足時バックフィル（fetch_k 倍増・
     最大 3 ラウンド・上限 256）で**最終引用件数が top_k を下回らない**（PIT-2）。
