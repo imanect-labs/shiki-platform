@@ -497,9 +497,13 @@ export function StateFlowEditor({
                           申請と承認に使うなら、ひな形から始められます。「申請中」「承認」「却下」「差し戻し」の状態と、承認する人が判断する進め方、追加した人が直して出し直す進め方が入ります。
                         </Hint>
                         <Hint>
-                          {fields.some((f) => f.type === "created_by")
-                            ? "いまの状態の並びと申請者の列は、ひな形に合わせて替わります。保存する前なら変えられます。"
-                            : "いまの状態の並びは、ひな形に合わせて替わります。保存する前なら変えられます。"}
+                          {/* ひな形は、作成者の列があれば申請者の列をそれに替える（applyTemplate）。替わるときだけ言う。 */}
+                          {(() => {
+                            const creatorKey = draft.creatorField ?? fields.find((f) => f.type === "created_by")?.key;
+                            return creatorKey && draft.applicantField !== creatorKey
+                              ? "いまの状態の並びと申請者の列は、ひな形に合わせて替わります。保存する前なら変えられます。"
+                              : "いまの状態の並びは、ひな形に合わせて替わります。保存する前なら変えられます。";
+                          })()}
                         </Hint>
                         <Button
                           size="sm"
