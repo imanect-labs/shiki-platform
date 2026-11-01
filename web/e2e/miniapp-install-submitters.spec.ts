@@ -107,8 +107,10 @@ test("コードアプリの同意インストールで、テーブルに「追�
       },
       async () => {
         if (!appId) return;
-        // publish 済みのマニフェストは消せないことがある（レジストリが参照する）。消せたら消す。
-        await page.request.delete(`/api/artifacts/${appId}`, { headers: { "x-csrf-token": await csrf(page) } });
+        // マニフェストのアーティファクトは消す。レジストリの登録（/apps の「インストールできるアプリ」）は消す口が
+        // まだ無いので残る（手元で流すたびに 1 行増える。miniapp-b1 も同じ）。
+        const r = await page.request.delete(`/api/artifacts/${appId}`, { headers: { "x-csrf-token": await csrf(page) } });
+        expect([200, 204, 404], `アーティファクトの削除: ${r.status()}`).toContain(r.status());
       },
     );
   }
