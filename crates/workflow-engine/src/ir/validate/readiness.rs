@@ -3,7 +3,7 @@
 //! - **必須の欄が空**（[`REQUIRED_FIELDS`] の表と、業務データ・ファイルを選ぶブロックの [`REQUIRED_VALUES`] の表（項目が
 //!   無いのも空・BUG-151）と、`control.branch` の条件の調べる値と、`ai.decide` の質問ごとの
 //!   「AI に尋ねること」（D-108）と、出口を分ける `ai.decide` のしきい値（既定を置かない・D-88）と、置いたばかりの
-//!   `human.approval` の件名・テーブル・承認者・判断の行き先（D-129））: 書きかけでも保存は
+//!   `human.approval` の件名・テーブル・承認者・判断の行き先（D-129）と、`workflow.reply` の返す値（BUG-168））: 書きかけでも保存は
 //!   できるように、保存時は path つきの警告（[`REQUIRED_TEXT_EMPTY`]）にとどめる。空のまま動かすと、空の依頼で
 //!   AI や検索を呼ぶ・いつも同じ出口へ進む・リストでない値を繰り返そうとして失敗する、などになるので、有効化
 //!   （[`enable_blockers`]）と対話の実行（[`run_blockers`]）の前に止める。置いたばかりのブロックは、選ぶ欄も
@@ -28,6 +28,7 @@
 use serde_json::Value;
 
 use super::{block_name, ValidationError};
+use crate::ir::params::ReplyFormat;
 use crate::ir::{Node, Trigger, WorkflowIr};
 use crate::vocab::NodeType;
 
@@ -255,8 +256,48 @@ pub fn empty_values(ir: &WorkflowIr) -> Vec<ValidationError> {
                 );
             }
         }
+        // 結果を画面に返すの空のリスト（表・ファイルへのリンク）も注意だけにする（BUG-168）。文章の形のリストは保存の
+        // 照合（V7 の ir.reply_type）が止める。
+        let empty_list = node
+            .params
+            .get("value")
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty);
+        let message = match reply_format(node) {
+            Some(ReplyFormat::Table) => {
+                "「表にするリスト」に行がありません。このままでは、行の無い表を返します。"
+            }
+            Some(ReplyFormat::FileLink) => {
+                "「ファイルのリスト」にファイルがありません。このままでは、リンクの無い結果を返します。"
+            }
+            _ => continue,
+        };
+        if nt == NodeType::WorkflowReply && empty_list {
+            out.push(
+                ValidationError::new(EMPTY_VALUES, message)
+                    .at_node(&node.id)
+                    .at_path("/params/value"),
+            );
+        }
     }
     out
+}
+
+/// 結果を画面に返す（`workflow.reply`）の形（読めなければ `None`・V1 が報告する）。
+fn reply_format(node: &Node) -> Option<ReplyFormat> {
+    if NodeType::parse(&node.node_type) != Some(NodeType::WorkflowReply) {
+        return None;
+    }
+    serde_json::from_value(node.params.get("format")?.clone()).ok()
+}
+
+/// 結果を画面に返すの値の欄の見出し（形ごと・エディタの欄の見出しと同じ・BUG-168）。
+fn reply_value_label(node: &Node) -> &'static str {
+    match reply_format(node) {
+        Some(ReplyFormat::Table) => "表にするリスト",
+        Some(ReplyFormat::FileLink) => "ファイルのリスト",
+        _ => "返す内容",
+    }
 }
 
 /// 条件で分ける（`control.branch`）の調べる値の見出し。
@@ -270,7 +311,7 @@ const DECIDE_INSTRUCTIONS_LABEL: &str = "AI に尋ねること";
 ///
 /// 参照（`$from`）は実行時まで分からないので空とみなさない。項目が無いのは V1 の誤り（必須の欠落）で、
 /// ここでは数えない（同じ欄に 2 つ出さない）。
-fn is_blank(v: &Value) -> bool {
+pub(super) fn is_blank(v: &Value) -> bool {
     match v {
         Value::Null => true,
         Value::String(s) => s.trim().is_empty(),
@@ -407,6 +448,15 @@ pub fn required_text_empty(ir: &WorkflowIr) -> Vec<ValidationError> {
         }
         if nt == NodeType::HumanApproval {
             approval_blanks(node, &mut out);
+        }
+        // 返す値が空なら、空の結果を返すだけなので止める（BUG-168）。見出しは形ごとの欄の見出し。
+        if nt == NodeType::WorkflowReply && node.params.get("value").is_some_and(is_blank) {
+            out.push(blank(
+                &node.id,
+                "/params/value".to_string(),
+                reply_value_label(node),
+                Fill::Text,
+            ));
         }
         for (_, key, label, fill) in REQUIRED_VALUES.iter().filter(|(t, ..)| *t == nt) {
             if is_unset(node.params.get(*key)) {

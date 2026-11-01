@@ -3,7 +3,8 @@
 //! - V2: 本体（`parent: null`）にだけ置ける（`ir.reply_in_map`）。要素ごとの結果は map の集約出力を表で返す。
 //! - V7: 1 つの IR に置ける reply は [`MAX_REPLIES`] 個まで（`ir.limit_exceeded`）。
 //! - リテラルの型: `value` がリテラルなら形と合うこと（`ir.reply_type`）。text・markdown は文字（数値・真偽も
-//!   文字にできる）、table は配列、file_link はオブジェクトか配列。
+//!   文字にできる）、table は配列、file_link はオブジェクトか配列。空の値（空の文字・空白だけ・null）は照合せず、
+//!   必須の欄の空（`readiness`・実行と自動実行のオンの前に止める・BUG-168）として扱う。
 //! - 警告: interactive のトリガが無い IR の reply は画面に出ない（ボタン・会話から起動した run だけに出る）。
 
 use super::ValidationError;
@@ -56,6 +57,10 @@ pub(super) fn v7(ir: &WorkflowIr, errors: &mut Vec<ValidationError>) {
         let ValueExpr::Literal(v) = &p.value else {
             continue;
         };
+        // 空の値は形を問わず「空」として実行の前に止める（形を変えた直後の空の欄で保存を止めない・BUG-168）。
+        if super::readiness::is_blank(v) {
+            continue;
+        }
         let ok = match p.format {
             ReplyFormat::Text | ReplyFormat::Markdown => {
                 v.is_string() || v.is_number() || v.is_boolean() || v.is_null()
@@ -179,6 +184,86 @@ mod tests {
                 assert_eq!(e.path.as_deref(), Some("/params/value"));
             }
         }
+    }
+
+    /// BUG-168: 空の値は形を問わず保存を止めない（空の結果を返さないよう、実行と自動実行のオンの前に止める）。
+    /// 見出しは形ごとの欄の見出し。空のリスト（表・ファイルへのリンク）は止めず、保存の注意だけにする。
+    #[test]
+    fn a_blank_value_saves_but_blocks_run_and_enable() {
+        let reply = |id: &str, format: &str, value: serde_json::Value| json!({ "id": id, "type": "workflow.reply", "params": { "format": format, "value": value } });
+        let v = ir(
+            json!([
+                reply("text", "text", json!("")),
+                reply("md", "markdown", json!("  ")),
+                reply("table", "table", json!("")),
+                reply("files", "file_link", json!(null)),
+                reply("tmpl", "text", json!({ "$template": " ", "vars": {} })),
+                reply("rows", "table", json!([])),
+                reply("links", "file_link", json!([])),
+                reply("ok", "text", json!("受け付けました")),
+                reply(
+                    "ok_ref",
+                    "table",
+                    json!({ "$from": "input", "path": "/rows" })
+                )
+            ]),
+            json!([{ "kind": "interactive" }]),
+        );
+        let parsed = validate(&v, &Catalog::default()).unwrap();
+        let blockers = super::super::run_blockers(&parsed);
+        let blank: Vec<(&str, &str)> = blockers
+            .iter()
+            .map(|e| (e.node_id.as_deref().unwrap(), e.message.as_str()))
+            .collect();
+        assert_eq!(
+            blank,
+            [
+                (
+                    "text",
+                    "「返す内容」が空です。入れるまで、実行も自動実行のオンもできません。"
+                ),
+                (
+                    "md",
+                    "「返す内容」が空です。入れるまで、実行も自動実行のオンもできません。"
+                ),
+                (
+                    "table",
+                    "「表にするリスト」が空です。入れるまで、実行も自動実行のオンもできません。"
+                ),
+                (
+                    "files",
+                    "「ファイルのリスト」が空です。入れるまで、実行も自動実行のオンもできません。"
+                ),
+                (
+                    "tmpl",
+                    "「返す内容」が空です。入れるまで、実行も自動実行のオンもできません。"
+                ),
+            ]
+        );
+        let notes: Vec<(String, String)> = super::super::empty_values(&parsed)
+            .into_iter()
+            .map(|e| (e.node_id.unwrap_or_default(), e.message))
+            .collect();
+        assert_eq!(
+            notes,
+            [
+                (
+                    "rows".to_string(),
+                    "「表にするリスト」に行がありません。このままでは、行の無い表を返します。".to_string()
+                ),
+                (
+                    "links".to_string(),
+                    "「ファイルのリスト」にファイルがありません。このままでは、リンクの無い結果を返します。"
+                        .to_string()
+                ),
+            ]
+        );
+        // 値のある形の誤りは今までどおり保存で止める。
+        let bad = ir(
+            json!([reply("table", "table", json!("x"))]),
+            json!([{ "kind": "interactive" }]),
+        );
+        assert!(validate(&bad, &Catalog::default()).is_err());
     }
 
     #[test]

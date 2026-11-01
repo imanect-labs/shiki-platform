@@ -456,6 +456,7 @@ fn pick_fields_list_the_fields_blocked_until_picked() {
         ("data.record.create", "data"),
         ("llm.invoke", "prompt"),
         ("human.approval", "title"),
+        ("workflow.reply", "value"),
     ] {
         assert!(!picks.contains(&text), "{text:?}");
     }

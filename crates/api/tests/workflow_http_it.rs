@@ -1003,6 +1003,106 @@ async fn blank_required_text_and_missing_folder_save_but_block_enable_and_run() 
     assert_eq!(body["blockers"], json!([]), "{body}");
 }
 
+/// BUG-168: 結果を画面に返すの返す値が空なら（どの形でも）、保存は通し（欄の警告つき）、実行の前に欄の名前を
+/// 言って止める（空の結果を返さない）。形を「表」にした直後の空の値も保存を止めない。空のリスト（表）は止めず、
+/// 保存の注意（`ir.empty_values`）だけにする。
+#[tokio::test]
+async fn a_blank_reply_value_saves_but_blocks_the_run() {
+    let Some(env) = setup().await else { return };
+    let suffix = Uuid::new_v4().simple().to_string();
+    let reply = |id: &str, format: &str, value: Value| json!({ "id": id, "type": "workflow.reply", "params": { "format": format, "value": value } });
+    let ir = json!({
+        "ir_version": 1,
+        "name": format!("http-reply-{}", &suffix[..12]),
+        "triggers": [{ "kind": "interactive" }],
+        "nodes": [
+            reply("text", "text", json!("")),
+            reply("table", "table", json!("")),
+            reply("rows", "table", json!([])),
+            reply("ok", "text", json!("受け付けました"))
+        ],
+        "edges": [
+            { "from": "text", "to": "table" }, { "from": "table", "to": "rows" }, { "from": "rows", "to": "ok" }
+        ]
+    });
+    let located = |list: &Value| -> Vec<(String, String, String)> {
+        list.as_array()
+            .unwrap()
+            .iter()
+            .map(|w| {
+                (
+                    w["code"].as_str().unwrap_or_default().to_string(),
+                    w["node_id"].as_str().unwrap_or_default().to_string(),
+                    w["path"].as_str().unwrap_or_default().to_string(),
+                )
+            })
+            .collect()
+    };
+    let (st, body) = req(
+        &env,
+        "POST",
+        "/workflows/validate",
+        Some(json!({ "ir": ir })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(body["errors"], json!([]), "{body}");
+    let blank = |node: &str| {
+        (
+            "ir.required_text_empty".to_string(),
+            node.to_string(),
+            "/params/value".to_string(),
+        )
+    };
+    let warnings = located(&body["warnings"]);
+    assert!(warnings.contains(&blank("text")), "{body}");
+    assert!(warnings.contains(&blank("table")), "{body}");
+    assert!(
+        warnings.contains(&(
+            "ir.empty_values".to_string(),
+            "rows".to_string(),
+            "/params/value".to_string()
+        )),
+        "{body}"
+    );
+    let (st, body) = req(&env, "POST", "/workflows", Some(json!({ "ir": ir }))).await;
+    assert_eq!(st, StatusCode::CREATED, "{body}");
+    let id = body["id"].as_str().unwrap().to_string();
+
+    let (st, body) = req(
+        &env,
+        "POST",
+        &format!("/workflows/{id}/runs"),
+        Some(json!({ "input": {} })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["code"], "not_ready", "{body}");
+    assert_eq!(
+        located(&body["errors"]),
+        [blank("text"), blank("table")],
+        "{body}"
+    );
+    assert_eq!(
+        body["errors"][0]["message"],
+        "「返す内容」が空です。入れるまで、実行も自動実行のオンもできません。"
+    );
+    assert_eq!(
+        body["errors"][1]["message"],
+        "「表にするリスト」が空です。入れるまで、実行も自動実行のオンもできません。"
+    );
+    let runs: i64 = sqlx::query_scalar("SELECT count(*) FROM workflow_run WHERE workflow_id = $1")
+        .bind(Uuid::parse_str(&id).unwrap())
+        .fetch_one(&env.pool)
+        .await
+        .unwrap();
+    assert_eq!(runs, 0);
+
+    // 片付け（ワークフローは artifact として消す）。
+    let (st, _) = req(&env, "DELETE", &format!("/artifacts/{id}"), None).await;
+    assert!(st.is_success(), "{st}");
+}
+
 /// 検証 API は各ノードの出口（`node_ports`）を、保存時検証 V2 と同じ関数で返す（エディタは導出を書き写さない・
 /// H15）。期待値は workflow-engine の V2 の試験と同じ fixture（port_cases.json）。保存できない IR でも返し、
 /// 出口を導けないノード（params の誤り）は載せない。値で振り分ける判定から out へ張ったエッジは
