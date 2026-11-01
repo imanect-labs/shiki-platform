@@ -17,6 +17,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Textarea } from "@/components/ui/textarea";
 import {
   STORAGE_READ_INDEX_WAIT_MAX_MINUTES,
+  STORAGE_LIST_MAX_ITEMS,
   STORAGE_READ_MAX_DOCUMENT_CHARS,
   type NodeParamsByType,
 } from "@/generated/workflow-catalog";
@@ -538,9 +539,9 @@ export function StorageWriteForm(props: FormProps) {
 }
 
 export function StorageListForm(props: FormProps) {
-  return (
-    <FolderField {...props} label="一覧するフォルダ（省略可）" optional hint="有効化のとき、このフォルダの閲覧権限を渡します" />
-  );
+  // 上限で切ったことは結果の truncated で分かる（黙って切らない・BUG-180）。数はカタログの単一定義から出す。
+  const hint = `有効化のとき、このフォルダの閲覧権限を渡します。名前の順で最大 ${STORAGE_LIST_MAX_ITEMS} 件を一覧にし、それより多いときは結果の truncated が true になります。`;
+  return <FolderField {...props} label="一覧するフォルダ（省略可）" optional hint={hint} />;
 }
 
 // ── CSV（csv.*）─────────────────────────────────────────────────────────
