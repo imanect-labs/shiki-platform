@@ -471,11 +471,12 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 - **URL のホスト部は IR 上リテラル必須**（`$from` / `$template` 不可。パス・クエリ・ボディは可）。保存時に egress allowlist・シークレット宛先束縛と照合できるのはこの制約のおかげであり、PIT-36 の動的 URL 迂回を型で殺す（§8 V4）。
 - **`secret`**: `{ "name": "<参照名>", "attach": { "kind": "bearer" | "header", "header"?: "X-Api-Key" } }`。参照名のみを書き、解決・宛先束縛検証・注入はエンジンが実行直前に行う（値がデータフローに乗らない・§3.1）。
 - **`redirect`**: 既定 `deny`。`follow_stripped` は追従時にシークレットを剥がして再検証する（PIT-36）。
-- **実行時の注入はコネクション検証後**: ホスト部リテラル制約は動的 URL 迂回を塞ぐが、DNS rebinding（検証後に解決先 IP が付け替わる）は塞げない。エンジンが名前解決・コネクション確立・検証を行い、**検証済みコネクションにのみ**シークレットを注入する（PIT-36 ③。実行時の正は [engine.md](./engine.md) §7・`Shiki.http.request` と同一実装）。
+- **実行時の注入はコネクション検証後**: ホスト部リテラル制約は動的 URL 迂回を塞ぐが、DNS rebinding（検証後に解決先 IP が付け替わる）は塞げない。エンジンが名前解決・コネクション確立・検証を行い、**検証済みコネクションにのみ**シークレットを注入する（PIT-36 ③。実行時の正は [engine.md](./engine.md) §7.4・`Shiki.http.request` と同一実装）。名前解決の後のアドレスが内部のネットワーク（リンクローカル・クラウドのメタデータを含む）なら、シークレットの有無によらず送らない（BUG-181・D-135）。
 - 応答: `{ "status", "headers": { /* 許可リストのみ */ }, "body": /* JSON なら parse・そうでなければ text・≤ 1MB */ }`。
 - 冪等性は best-effort。`Idempotency-Key: <冪等キー>` ヘッダの注入支援のみ提供する（[engine.md](./engine.md) §7）。
 - **`fail_on_error_status`**（省略は false・BUG-99・D-95）: true なら、相手が 400 以上を返したときブロックを失敗にする。400〜499（408・425・429 を除く）は `http_error_status`（permanent）、500 以上と 408・425・429 は `http_retryable_status`（retryable・`max_attempts` の範囲でやり直す。408 と 425 は同じ要求を後で送り直せば通りうる）。省略・false は誤りの応答も成功として `status` を返す（この項目が無かったころの定義の挙動）。エディタで新しく置くブロックは true で置く。送ったことは失敗にするときも監査に残す。
 - **送れる先**: シークレットを使わない送信は、デプロイ設定 `workflow.http_allowlist` の宛先だけ（既定は空で、空ならシークレットなしの送信はすべて拒否する）。シークレットを使う送信は、そのシークレットの宛先束縛の中だけで、`http_allowlist` を設定していればその中にも限る（`nodes/capability_ai.rs` の `check_http_destination`）。
+  - どちらも、名前解決の後のアドレスがすべて公開の IP のときだけ送る（D-135）。内部の IP へ送れるのは、管理者が `http_allowlist` にそのホストをそのまま（`*.` のワイルドカードでなく）書いたときだけ（オンプレの社内システムを呼ぶ使い方）。リンクローカルとクラウドのメタデータのアドレスは、書いても送らない。断った送信は `destination_internal`・`destination_link_local`（permanent）で失敗する（[engine.md](./engine.md) §7.4）。
 
 ### 7.3 `llm.invoke`
 

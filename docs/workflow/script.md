@@ -369,6 +369,7 @@ Shiki.http.request(req: {
   - 名前が HTTP の token でない・64 字を超える。値が文字でない・制御文字（タブを除く）を含む（改行でヘッダーを差し込ませない）・4 KB を超える。同じ名前が 2 つ（大文字と小文字は区別しない）。20 個を超える。名前と値を合わせて 8 KB を超える。
 - `Idempotency-Key` と `Content-Type` を書いたら、Shiki が付ける値（呼び出しごとの冪等キー・本文があるときの `application/json`）の代わりにそれを送る。書かなければ、これまでどおり Shiki が付ける。
 
+- 送れる先と、名前解決の後のアドレスの確認（内部のネットワークへは送らない。管理者が `workflow.http_allowlist` にそのホストをそのまま書いたときだけ送れ、リンクローカル・メタデータは送らない）は、http.request ノードと同じ（[ir.md](./ir.md) §7.2・[engine.md](./engine.md) §7.4・BUG-181・D-135）。
 - **`Shiki.http.request({ secret: { name } })` は参照名のみを渡す。** シークレットの解決・宛先束縛検証（PIT-36）・注入は**エンジン側で行い、http.request ノードと同一実装を通る**（二重実装しない）。平文がゲストメモリに乗る経路はレスポンス経由を含め存在しない（レスポンスに反射するのは外部サービスの責任範囲外であり、レダクトは run 履歴側で実施する）。
 - リダイレクトは既定 deny。`follow_stripped` 時はシークレットを剥がし再検証する（PIT-36）。
 - exactly-once は**約束しない**（外部副作用・best-effort）。冪等性は `Idempotency-Key` ヘッダ注入支援のみ（[engine.md](./engine.md) §7）。

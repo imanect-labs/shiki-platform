@@ -843,6 +843,12 @@ step の処理順序を固定する: **ノード実行 → checkpoint 書込（o
 
 シークレット付き `http.request` の実行は **名前解決・コネクション確立・検証（allowlist ∩ 宛先束縛）をエンジン側で行い、検証済みコネクションにのみシークレットを注入**する（PIT-36 ③。ホスト名リテラル制約だけでは DNS rebinding — 検証後に解決先 IP が付け替わる — を塞げない）。`http.request` ノードと `Shiki.http.request` は同一実装を通る（script.md §6）。
 
+- 宛先の名前の照合（allowlist ∩ 宛先束縛・URL のホスト部の文字）はエンジン（`nodes/capability_ai.rs`）が、名前解決の後のアドレスの確認と接続の固定は `NodePorts::http_send` の本番の実装（`api/src/workflow_runtime/http_egress.rs`）が行う（BUG-181）。シークレットの有無によらず、すべての送信に当てる。
+  - 名前解決は送り口が 1 回だけ行い、確かめたアドレスにだけ接続する（HTTP の部品に名前を引き直させない）。環境のプロキシは使わない（`no_proxy`）。3xx は追わない。
+  - 解決先に内部の IP が 1 つでもあれば応答ごと断る（公開と内部の混在も断る）。IP の分類は `sandbox_client::net_guard` が単一の正（web.fetch・ミニアプリ・サンドボックスと同じ表・PIT-48）。10 進・8 進の IPv4 や IPv4 を写した IPv6 も、URL を読んだ時点で IP にそろえてから分類する。
+  - 管理者がデプロイ設定 `workflow.http_allowlist` にそのホストをそのまま（ワイルドカードでなく）書いたときだけ、内部の IP へ送れる（オンプレの社内システムを呼ぶ使い方・D-135）。シークレットの宛先束縛だけでは送れない。リンクローカル（169.254.0.0/16・fe80::/10）とクラウドのメタデータのアドレスは、許可にかかわらず断る。
+  - 断った送信は `destination_internal`・`destination_link_local`（permanent・失敗の分類は設定の誤り・再開しても同じ結果）で失敗にし、送り先のホストと理由を監査に残す。解決できない名前は `unavailable`（retryable）。
+
 ### 7.5 リトライ分類
 
 ノード実装はエラーを 3 分類して返す。
