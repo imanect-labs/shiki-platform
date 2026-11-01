@@ -201,3 +201,65 @@ fn resubmit_states_are_where_the_applicant_can_move() {
     };
     assert!(resubmit_states(&f, "status", "made_by").is_empty());
 }
+
+/// 承認する人も進められる状態（審査中）は、作成者に取り下げを許していても出し直す状態にしない。承認する人が見ている
+/// あいだに申請者が書き換えられないようにする（D-115 を緩めない）。作成者でない人が成り立ちうるかを決められない
+/// 進められる人（部署など）がいる状態も数えない。
+#[test]
+fn resubmit_states_skip_states_where_others_also_move() {
+    let creator = cmp("made_by", CmpOp::Eq);
+    let approver = PolicyExpr::All(vec![cmp("approver", CmpOp::Eq), cmp("made_by", CmpOp::Ne)]);
+    let states = ["下書き", "申請中", "承認", "却下", "差し戻し", "取り下げ"];
+    let flow = FsmBody {
+        states: states.iter().map(|s| (*s).to_string()).collect(),
+        transitions: vec![
+            mv("下書き", "申請中", creator.clone()),
+            mv("申請中", "承認", approver.clone()),
+            mv("申請中", "却下", approver.clone()),
+            mv("申請中", "差し戻し", approver),
+            mv("申請中", "取り下げ", creator.clone()),
+            mv("差し戻し", "申請中", creator.clone()),
+            mv("差し戻し", "取り下げ", creator.clone()),
+        ],
+    };
+    assert_eq!(
+        resubmit_states(&flow, "status", "made_by"),
+        vec!["差し戻し".to_string()]
+    );
+    // 差し戻しのあいだ、部署の人も取り下げられるなら、差し戻しも出し直す状態にしない（決められない人は進められると
+    // みなす）。作成者と部署のどちらでも進められる進め方も同じ。
+    for other in [
+        PolicyExpr::HasRole {
+            role: "admin".into(),
+            subtree: false,
+        },
+        PolicyExpr::Any(vec![
+            creator.clone(),
+            PolicyExpr::HasRole {
+                role: "admin".into(),
+                subtree: false,
+            },
+        ]),
+        PolicyExpr::IsOwner,
+    ] {
+        let mut f = flow.clone();
+        f.transitions[6] = mv("差し戻し", "取り下げ", other.clone());
+        assert!(
+            resubmit_states(&f, "status", "made_by").is_empty(),
+            "{other:?}"
+        );
+    }
+    // 作成者を本人で除く進め方（成り立たない）しか作成者に無い状態は、作成者が進められないので数えない。
+    let mut f = flow.clone();
+    f.transitions[5] = mv(
+        "差し戻し",
+        "申請中",
+        PolicyExpr::All(vec![creator.clone(), cmp("made_by", CmpOp::Ne)]),
+    );
+    f.transitions[6] = mv(
+        "差し戻し",
+        "取り下げ",
+        PolicyExpr::All(vec![creator, cmp("made_by", CmpOp::Ne)]),
+    );
+    assert!(resubmit_states(&f, "status", "made_by").is_empty());
+}

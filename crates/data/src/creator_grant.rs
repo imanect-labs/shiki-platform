@@ -26,7 +26,8 @@
 //! - **書き換え**: (1) いまの状態から、作成者に許した進め方のどれかが当該行で真で、(2) 書き込みの決まりから
 //!   取り出した部分が当該行で真のとき（「その状態のあいだ作成者の書き換えを許す」決まり）。行の決まりの無い
 //!   テーブルの書き換えは許さない（状態は進められる）。状態の進め方の画面の決まり（[`crate::fsm_write_guard`]）は、
-//!   作成者が進められる状態のあいだ、作成者の書き換えを許す枝を自動で持つ。
+//!   作成者だけが進められる状態（出し直す状態・[`resubmit_states`]。承認する人も進められる審査中の状態は除く）の
+//!   あいだ、作成者の書き換えを許す枝を自動で持つ。
 //! - 削除・一括取込・作成者の列への書き込み・状態の列の直接の書き換えは、これまでどおり断る。
 //!
 //! どの入口（REST・ワークフロー・ゲートウェイ・チャット・script）も [`crate::DataStore::update_record`] と
@@ -145,23 +146,36 @@ pub(crate) fn may_hold(
     state: &str,
     is_creator: &dyn Fn(&str) -> bool,
 ) -> bool {
-    tri(expr, status_field, state, is_creator) != Some(false)
+    tri(expr, status_field, state, is_creator, true) != Some(false)
 }
 
-/// 3 値（成り立つ・成り立たない・分からない）の評価。
+/// 状態 `state` で、`is_creator` の列が本人ではない人（作成者でない人）について `expr` が成り立ちうるか（[`may_hold`]
+/// の逆の立場）。出し直す状態を、作成者のほかに進められる人がいない状態に限るのに使う（[`resubmit_states`]）。
+fn others_may_hold(
+    expr: &PolicyExpr,
+    status_field: &str,
+    state: &str,
+    is_creator: &dyn Fn(&str) -> bool,
+) -> bool {
+    tri(expr, status_field, state, is_creator, false) != Some(false)
+}
+
+/// 3 値（成り立つ・成り立たない・分からない）の評価。`me` は、`is_creator` の列が本人か（作成者として見るか、
+/// 作成者でない人として見るか）。
 fn tri(
     expr: &PolicyExpr,
     status_field: &str,
     state: &str,
     is_creator: &dyn Fn(&str) -> bool,
+    me: bool,
 ) -> Option<bool> {
     match expr {
         PolicyExpr::Public | PolicyExpr::IsOwner => Some(true),
         PolicyExpr::HasRole { .. } => None,
         PolicyExpr::FieldCmp { field, op, value } => match value {
             PolicyOperand::UserId if is_creator(field) => match op {
-                CmpOp::Eq => Some(true),
-                CmpOp::Ne => Some(false),
+                CmpOp::Eq => Some(me),
+                CmpOp::Ne => Some(!me),
                 CmpOp::In => None,
             },
             PolicyOperand::Lit(v) if field == status_field => match (op, v) {
@@ -175,7 +189,7 @@ fn tri(
         PolicyExpr::Any(children) => {
             let vs: Vec<Option<bool>> = children
                 .iter()
-                .map(|c| tri(c, status_field, state, is_creator))
+                .map(|c| tri(c, status_field, state, is_creator, me))
                 .collect();
             if vs.contains(&Some(true)) {
                 Some(true)
@@ -188,7 +202,7 @@ fn tri(
         PolicyExpr::All(children) => {
             let vs: Vec<Option<bool>> = children
                 .iter()
-                .map(|c| tri(c, status_field, state, is_creator))
+                .map(|c| tri(c, status_field, state, is_creator, me))
                 .collect();
             if vs.is_empty() || vs.contains(&Some(false)) {
                 Some(false)
@@ -211,8 +225,14 @@ fn move_part(
     creator_part(&t.actor, is_creator).filter(|p| may_hold(p, status_field, &t.from, is_creator))
 }
 
-/// 作成者（`applicant` の列 = 本人）が進められる進め方の元の状態のうち、最初の状態を除くもの（状態の進め方の順・
-/// 重複なし）。書き込みの決まり（[`crate::fsm_write_guard`]）が、この状態のあいだ作成者の書き換えを許す。
+/// 出し直す状態: 作成者（`applicant` の列 = 本人）が進められ、作成者のほかに進められる人がいない状態（最初の状態を
+/// 除く・状態の進め方の順・重複なし）。書き込みの決まり（[`crate::fsm_write_guard`]）が、この状態のあいだ作成者の
+/// 書き換えを許す（例: 差し戻し → 申請中 だけを作成者に許した「差し戻し」）。
+///
+/// 承認する人も進められる状態（審査中）は、作成者に取り下げなどの進め方を許していても数えない。数えると、承認する人が
+/// 見ているあいだに申請者が書き換えられ、書き換えた後の値で承認してしまう（D-115 の「最初の状態を過ぎたら申請者は
+/// 書き換えられない」が、作る人の気づかないうちに緩む）。作成者でない人が成り立ちうるかを決められない進められる人
+/// （部署・`is_owner`・ほかの列など）は、進められるとみなして数えない（書き換えを開く側に倒さない）。
 pub(crate) fn resubmit_states(body: &FsmBody, status_field: &str, applicant: &str) -> Vec<String> {
     let is_applicant = |f: &str| f == applicant;
     let initial = body.states.first();
@@ -220,10 +240,11 @@ pub(crate) fn resubmit_states(body: &FsmBody, status_field: &str, applicant: &st
         .iter()
         .filter(|s| Some(*s) != initial)
         .filter(|s| {
-            body.transitions
-                .iter()
-                .filter(|t| &t.from == *s)
-                .any(|t| move_part(t, status_field, &is_applicant).is_some())
+            let mut out = body.transitions.iter().filter(|t| &t.from == *s);
+            let creator_moves = out
+                .clone()
+                .any(|t| move_part(t, status_field, &is_applicant).is_some());
+            creator_moves && !out.any(|t| others_may_hold(&t.actor, status_field, s, &is_applicant))
         })
         .cloned()
         .collect()
