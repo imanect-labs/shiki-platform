@@ -160,8 +160,24 @@ test("「追加だけ」の申請者が、差し戻された自分の申請を�
     await expect(editor.getByRole("combobox", { name: "申請者の列" })).toContainText("作成者（作成者の列）");
     const template = editor.getByTestId("state-flow-template");
     await expect(template).toContainText("承認する人が判断する進め方、追加した人が直して出し直す進め方が入ります。");
-    // ひな形を使うと、いまの状態の並びと申請者の列が替わることを言う（作成者の列がある）。
-    await expect(template).toContainText("いまの状態の並びと申請者の列は、ひな形に合わせて替わります。");
+    // ひな形を使うと、いまの状態の並びが替わることを言う（申請者の列はもう作成者の列なので、替わるとは言わない）。
+    await expect(template).toContainText("いまの状態の並びは、ひな形に合わせて替わります。");
+    if (SHOTS) {
+      await template.scrollIntoViewIfNeeded();
+      await page.screenshot({ path: `${SHOTS}/resubmit-template-pc.png` });
+      const tp = await (await phoneOf(browser, page.context())).newPage();
+      try {
+        await tp.goto(`/data/${tableId}?panel=states`);
+        const t = tp.getByTestId("state-flow-template");
+        await expect(t).toBeVisible({ timeout: 15_000 });
+        await t.scrollIntoViewIfNeeded();
+        const pe = tp.getByTestId("state-flow-editor");
+        expect(await pe.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+        await tp.screenshot({ path: `${SHOTS}/resubmit-template-phone.png` });
+      } finally {
+        await tp.context().close();
+      }
+    }
     await editor.getByTestId("state-flow-use-template").click();
     await expect(editor.getByTestId("state-flow-state")).toHaveCount(4);
     await expect(template).toHaveCount(0);

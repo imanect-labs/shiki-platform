@@ -176,6 +176,7 @@ test("「共有済み」: 0 件のページでも続きをたどり、見つか�
 
 test("「共有済み」: 見つかった後も、何も見つからない読み込みが続いたら自動で読むのをやめ、末尾に「さらに読み込む」を出す（BUG-162）", async ({
   page,
+  browser,
 }) => {
   test.setTimeout(120_000);
   await page.setViewportSize({ width: 1440, height: 900 });
@@ -205,6 +206,27 @@ test("「共有済み」: 見つかった後も、何も見つからない読み
     await expect(page.getByText("見つかったフォルダ 2", { exact: true })).toBeVisible();
     await expect(page.getByTestId("drive-shared-stalled")).toHaveCount(0);
     expect(served.asked.slice(10)).toEqual(["c10"]);
+
+    if (SHOTS) {
+      const phone = await browser.newContext({
+        storageState: await page.context().storageState(),
+        viewport: { width: 390, height: 844 },
+        deviceScaleFactor: 2,
+        isMobile: true,
+        hasTouch: true,
+      });
+      try {
+        const p = await phone.newPage();
+        const phoneServed = await serveList(p, pages);
+        await p.goto("/drive/shared");
+        await expect(p.getByTestId("drive-shared-stalled")).toBeVisible({ timeout: 15_000 });
+        expect(await p.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
+        await p.screenshot({ path: `${SHOTS}/drive-shared-stalled-phone.png` });
+        await phoneServed.stop();
+      } finally {
+        await phone.close();
+      }
+    }
   } finally {
     await served.stop();
   }
