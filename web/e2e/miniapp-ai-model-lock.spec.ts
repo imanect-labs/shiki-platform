@@ -6,23 +6,18 @@
 ///
 /// アプリのバンドルには、SDK のソースを型だけ外して埋め込む（SDK の誤りの読み方をそのまま通す）。
 ///
-/// トークンは、シェルのホスト支援 PKCE（SDK の hostAssistedToken）ではなく、テストが同じアプリのクライアントで取って
-/// アプリに渡す。いまの B1 のクライアントの登録には 2 つの不具合があり（別に起票する）、シェルの経路ではトークンが届かない:
-/// - インストールが登録する戻り先（BFF の /auth/callback）と、シェルのポップアップの戻り先（/apps/oauth/callback）が
-///   食い違い、Keycloak がシェルの要求を「無効なパラメーター: redirect_uri」で断る。
-/// - クライアントに既定のスコープ（basic）も、ログインのクライアント（shiki-web）にある tenant・groups・roles の
-///   マッパーも付かない。トークンに sub と tenant が無いので、ゲートウェイが 401 で断る。
-/// テストは Keycloak の管理 API でこれらを足し（[`prepareB1Client`]）、登録された戻り先でコードを受け取る。ゲートウェイ・
-/// B1 の配信・SDK・誤りの文言は本物を通す。
+/// トークンとゲートウェイの場所は、本物のシェルの経路で受け取る（SDK の hostAssistedGateway → シェルのポップアップの
+/// ホスト支援 PKCE → Keycloak → /apps/oauth/callback）。BUG-172 の間は、Keycloak の管理 API でアプリのクライアントの
+/// 戻り先とスコープを補い、テストがトークンを取って渡していた。インストールが正しく登録するようになったので、補いは
+/// 消した。
 ///
-/// 前提: dev-up のゲートウェイ（第2リスナ）と B1 配信（第3リスナ）・LLM は stub。実 LLM は呼ばない（断られる呼び出しも
-/// 通る呼び出しも stub のモデルを指し、組織の既定はおまかせ（Auto）で stub のモデルへ振る）。
+/// 前提: dev-up のゲートウェイ（第2リスナ）と B1 配信（第3リスナ）・Keycloak・LLM は stub。実 LLM は呼ばない（断られる
+/// 呼び出しも通る呼び出しも stub のモデルを指し、組織の既定はおまかせ（Auto）で stub のモデルへ振る）。
 
-import { createHash, randomBytes } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 
-import { expect, request, test, type Page } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import ts from "typescript";
 
 import { cleanupAll, loginViaKeycloak, stubChatModelId, uniqueName } from "./helpers";
@@ -77,10 +72,11 @@ ${sdkScript()}
 const $ = (id) => document.getElementById(id);
 let gateway = null;
 async function client() {
-  if (gateway) return gateway;
-  // テストが渡したトークンとゲートウェイの場所（シェルのホスト支援 PKCE の代わり・冒頭の注記）。
-  const { token, gatewayOrigin } = window.__shikiTest;
-  gateway = new ShikiGateway({ baseUrl: gatewayOrigin, getToken: () => token });
+  // トークンとゲートウェイの場所は、シェルのホスト支援 PKCE から受け取る（トークンは期限まで使い回す）。
+  gateway ??= hostAssistedGateway(["llm.invoke"]).catch((e) => {
+    gateway = null;
+    throw e;
+  });
   return gateway;
 }
 async function ask(model) {
@@ -111,102 +107,6 @@ $("omit").addEventListener("click", () => ask(null));
 }
 
 type AiSettings = { default_model: string; allow_user_choice: boolean; auto_model: string | null };
-
-const base64url = (b: Buffer) => b.toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
-
-/// Keycloak の realm の URL（BFF のログインの入口が返す行き先から読む・環境で違う）。
-async function realmUrl(page: Page): Promise<string> {
-  const bare = await request.newContext({ baseURL: new URL(page.url()).origin });
-  const login = await bare.get("/auth/login", { maxRedirects: 0 });
-  await bare.dispose();
-  const href = login.headers()["location"] ?? "";
-  expect(href, "BFF のログインの入口が Keycloak へ送らない").toContain("/protocol/openid-connect/auth");
-  return href.slice(0, href.indexOf("/protocol/openid-connect/auth"));
-}
-
-/// B1 のクライアントに、トークンの sub を載せる既定のスコープ（basic）と、ログインのクライアントと同じ tenant・groups・
-/// roles のマッパーを足し、登録された戻り先を返す（冒頭の注記の不具合の回避・既にあれば何もしない）。管理 API は、
-/// インストールがクライアントを登録するのと同じ資格情報で呼ぶ。
-async function prepareB1Client(realm: string, clientId: string): Promise<string> {
-  const adminBase = realm.replace("/realms/", "/admin/realms/");
-  const http = await request.newContext();
-  try {
-    const login = await http.post(`${realm}/protocol/openid-connect/token`, {
-      form: {
-        grant_type: "client_credentials",
-        client_id: process.env.E2E_KC_PROVISIONER_ID ?? "shiki-provisioner",
-        client_secret: process.env.E2E_KC_PROVISIONER_SECRET ?? "shiki-provisioner-dev-secret",
-      },
-    });
-    expect(login.ok(), await login.text()).toBeTruthy();
-    const headers = { authorization: `Bearer ${((await login.json()) as { access_token: string }).access_token}` };
-    const found = (await (
-      await http.get(`${adminBase}/clients?clientId=${encodeURIComponent(clientId)}`, { headers })
-    ).json()) as { id: string; redirectUris: string[]; defaultClientScopes?: string[] }[];
-    expect(found.length, `Keycloak に ${clientId} が無い`).toBe(1);
-    const client = found[0];
-    if (!(client.defaultClientScopes ?? []).includes("basic")) {
-      const scopes = (await (await http.get(`${adminBase}/client-scopes`, { headers })).json()) as {
-        id: string;
-        name: string;
-      }[];
-      const basic = scopes.find((c) => c.name === "basic");
-      expect(basic, "realm に basic のスコープが無い").toBeDefined();
-      const put = await http.put(`${adminBase}/clients/${client.id}/default-client-scopes/${basic!.id}`, { headers });
-      expect(put.ok(), await put.text()).toBeTruthy();
-    }
-    type Mapper = { name: string; protocol: string; protocolMapper: string; config: Record<string, string> };
-    const mappers = async (id: string) =>
-      (await (await http.get(`${adminBase}/clients/${id}/protocol-mappers/models`, { headers })).json()) as Mapper[];
-    const web = (await (await http.get(`${adminBase}/clients?clientId=shiki-web`, { headers })).json()) as {
-      id: string;
-    }[];
-    expect(web.length, "Keycloak に shiki-web が無い").toBe(1);
-    const have = new Set((await mappers(client.id)).map((m) => m.name));
-    for (const m of await mappers(web[0].id)) {
-      if (!["tenant", "groups", "roles"].includes(m.name) || have.has(m.name)) continue;
-      const add = await http.post(`${adminBase}/clients/${client.id}/protocol-mappers/models`, {
-        headers,
-        data: { name: m.name, protocol: m.protocol, protocolMapper: m.protocolMapper, config: m.config },
-      });
-      expect(add.ok(), await add.text()).toBeTruthy();
-    }
-    expect(client.redirectUris.length, "戻り先が登録されていない").toBeGreaterThan(0);
-    return client.redirectUris[0];
-  } finally {
-    await http.dispose();
-  }
-}
-
-/// アプリのクライアント（B1・public＋PKCE）で、ログイン中の利用者のゲートウェイのトークンを取る。
-///
-/// 認可の要求はブラウザーの文脈の Cookie（Keycloak のログイン）で送り、戻り先へは進まずにコードだけを受け取る。
-async function gatewayToken(page: Page, clientId: string): Promise<string> {
-  const issuer = await realmUrl(page);
-  const redirectUri = await prepareB1Client(issuer, clientId);
-  const verifier = base64url(randomBytes(48));
-  const challenge = base64url(createHash("sha256").update(verifier).digest());
-  const auth = new URL(`${issuer}/protocol/openid-connect/auth`);
-  for (const [k, v] of Object.entries({
-    client_id: clientId,
-    response_type: "code",
-    redirect_uri: redirectUri,
-    scope: "openid llm.invoke",
-    state: base64url(randomBytes(16)),
-    code_challenge: challenge,
-    code_challenge_method: "S256",
-  }))
-    auth.searchParams.set(k, v);
-  const authorized = await page.request.get(auth.href, { maxRedirects: 0 });
-  const back = new URL(authorized.headers()["location"] ?? "", redirectUri);
-  const code = back.searchParams.get("code");
-  expect(code, `認可コードが無い: ${authorized.status()} ${back.href}`).toBeTruthy();
-  const token = await page.request.post(`${issuer}/protocol/openid-connect/token`, {
-    form: { grant_type: "authorization_code", client_id: clientId, code: code!, redirect_uri: redirectUri, code_verifier: verifier },
-  });
-  expect(token.ok(), await token.text()).toBeTruthy();
-  return ((await token.json()) as { access_token: string }).access_token;
-}
 
 test("アプリの AI: 組織がモデルの選択を禁じていると、指定したモデルは断られ、SDK で文言と理由が届く（D-117）", async ({
   page,
@@ -260,21 +160,21 @@ test("アプリの AI: 組織がモデルの選択を禁じていると、指定
       items: { app_id: string; client_id_b1: string | null }[];
     }).items.find((i) => i.app_id === appId);
     expect(installation?.client_id_b1, "B1 のクライアントが登録されていない").toBeTruthy();
-    const token = await gatewayToken(page, installation!.client_id_b1!);
 
     await page.goto(`/apps/b1/${appId}`);
     const frame = page.frameLocator(`iframe[title="${name}"]`);
     await expect(frame.getByRole("button", { name: "モデルを指定して要約する" })).toBeVisible({ timeout: 20_000 });
     const app = page.frames().find((f) => f.url().startsWith(B1_ORIGIN));
     expect(app, "B1 の配信オリジンから開いていない").toBeDefined();
-    // ゲートウェイの場所は、配信の CSP が通信を許す先（connect-src）と同じ。
-    const csp = (await page.request.get(app!.url())).headers()["content-security-policy"] ?? "";
-    const gatewayOrigin = /connect-src ([^;\s]+)/.exec(csp)?.[1];
-    expect(gatewayOrigin, csp).toBeTruthy();
-    await app!.evaluate((v) => Object.assign(window, { __shikiTest: v }), { token, gatewayOrigin });
 
-    // モデルを指定すると断られ、アプリには理由（code）と、利用者に見せてよい文言が届く。
+    // モデルを指定すると断られ、アプリには理由（code）と、利用者に見せてよい文言が届く。最初の呼び出しで、シェルが
+    // ポップアップでトークンを取る（Keycloak にログイン済みなので、すぐに /apps/oauth/callback へ戻って閉じる）。
+    const popups: Page[] = [];
+    page.on("popup", (p) => popups.push(p));
+    const popup = page.waitForEvent("popup");
     await frame.getByRole("button", { name: "モデルを指定して要約する" }).click();
+    const login = await popup;
+    await expect.poll(() => login.isClosed(), { timeout: 30_000 }).toBe(true);
     const alert = frame.getByRole("alert");
     await expect(alert).toHaveText(
       `この組織では AI のモデルを選べないため、「${stub}」は使えません。モデルを指定しないで呼び出すと、組織の既定のモデルで動きます。`,
@@ -298,6 +198,8 @@ test("アプリの AI: 組織がモデルの選択を禁じていると、指定
     const box = await alert.boundingBox();
     expect(box && box.x + box.width).toBeLessThanOrEqual(390);
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/miniapp-ai-lock-phone.png`, fullPage: true });
+    // トークンは期限まで使い回す（2 回目からの呼び出しでポップアップを開かない）。
+    expect(popups).toHaveLength(1);
   } finally {
     await cleanupAll(
       () =>
