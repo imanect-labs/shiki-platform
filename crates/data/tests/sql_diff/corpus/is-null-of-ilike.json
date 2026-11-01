@@ -1,0 +1,42 @@
+{
+  "cols": [
+    {
+      "name": "k",
+      "ty": "Number",
+      "indexed": true
+    },
+    {
+      "name": "c0",
+      "ty": "Select",
+      "indexed": true
+    },
+    {
+      "name": "c1",
+      "ty": "Date",
+      "indexed": true
+    }
+  ],
+  "rows": [],
+  "query": {
+    "Rows": {
+      "cols": [
+        "c0"
+      ],
+      "filter": {
+        "Unknown": [
+          {
+            "Like": [
+              "c1",
+              "a%",
+              false,
+              true
+            ]
+          },
+          true
+        ]
+      },
+      "order": [],
+      "limit": null
+    }
+  }
+}
