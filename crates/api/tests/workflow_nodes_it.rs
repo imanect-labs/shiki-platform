@@ -1732,6 +1732,110 @@ async fn script_http_request_sends_the_headers_the_author_wrote() {
     );
 }
 
+/// 「フォルダ一覧」は、上限（100 件）より多いフォルダーでは名前の順の先頭 100 件と `truncated: true` を返す（黙って
+/// 切らない・BUG-180）。ちょうど上限の件数なら `truncated` は false。
+#[tokio::test]
+async fn storage_list_says_when_it_cuts_the_folder() {
+    let Some(h) = setup().await else { return };
+    let max = workflow_engine::vocab::STORAGE_LIST_MAX_ITEMS;
+    let folder = h
+        .storage
+        .create_folder(
+            &h.alice,
+            None,
+            &format!("list-{}", Uuid::new_v4().simple()),
+            None,
+        )
+        .await
+        .unwrap();
+    let mut files = Vec::new();
+    for i in 0..=max {
+        let node = h
+            .storage
+            .write_file_internal(
+                &h.alice,
+                Some(folder.id),
+                &format!("f-{i:03}.txt"),
+                b"x",
+                "text/plain",
+                None,
+            )
+            .await
+            .unwrap();
+        files.push(node.id);
+    }
+    let wf = h
+        .save(&json!({
+            "ir_version": 1, "name": "storage-list-truncated",
+            "declared_scopes": ["storage.read"],
+            "triggers": [{ "kind": "interactive" }],
+            "nodes": [ { "id": "ls", "type": "storage.list", "params": { "folder": folder.id.to_string() } } ],
+            "edges": []
+        }))
+        .await;
+    let output_of = |run: Uuid| {
+        let pool = h.pool.clone();
+        let tenant = h.tenant.clone();
+        async move {
+            sqlx::query_scalar::<_, Option<Value>>(
+                "SELECT output FROM step_execution WHERE tenant_id = $1 AND run_id = $2",
+            )
+            .bind(tenant)
+            .bind(run)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+            .unwrap_or(Value::Null)
+        }
+    };
+    let (over_run, over_status) = h.run(wf, &json!({}), h.executor(None, vec![], None)).await;
+    let over = output_of(over_run).await;
+    // 1 件減らして、ちょうど上限の件数にする。
+    let last = files.pop().unwrap();
+    h.storage
+        .soft_delete_file(&h.alice, last, None)
+        .await
+        .unwrap();
+    let (exact_run, exact_status) = h.run(wf, &json!({}), h.executor(None, vec![], None)).await;
+    let exact = output_of(exact_run).await;
+
+    // 片付け（run の履歴・フォルダーと中のファイル・ワークフロー・OpenFGA のストア）。
+    h.runs.purge_tenant_history(&h.tenant).await.unwrap();
+    for id in &files {
+        h.storage
+            .soft_delete_file(&h.alice, *id, None)
+            .await
+            .unwrap();
+    }
+    h.storage
+        .soft_delete_folder(&h.alice, folder.id, None)
+        .await
+        .unwrap();
+    h.artifacts.delete(&h.alice, wf, None).await.unwrap();
+    h.delete_fga_store().await;
+
+    assert_eq!(over_status, RunStatus::Succeeded, "{over}");
+    let names = |out: &Value| -> Vec<String> {
+        out["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|i| i["name"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let over_names = names(&over);
+    assert_eq!(over_names.len(), max, "{over}");
+    assert_eq!(over_names.first().unwrap(), "f-000.txt");
+    assert_eq!(over_names.last().unwrap(), &format!("f-{:03}.txt", max - 1));
+    assert_eq!(over["truncated"], true, "上限より多いと truncated: {over}");
+    assert_eq!(exact_status, RunStatus::Succeeded, "{exact}");
+    assert_eq!(names(&exact).len(), max);
+    assert_eq!(
+        exact["truncated"], false,
+        "ちょうど上限なら truncated にしない: {exact}"
+    );
+}
+
 // ------- Test 9: llm.invoke の誤りの文言（GAP-41）----------------------------
 
 /// 使えないモデルの誤りは、実行履歴に利用者向けの日本語で残る（gateway の英語の原文は出さない）。
