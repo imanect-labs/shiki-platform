@@ -50,7 +50,8 @@ pub struct CsvWriteParams {
     pub folder: Option<ValueExpr>,
     /// ファイル名（`.csv` は自動付与）。
     pub name: ValueExpr,
-    /// CSV 本文（ヘッダ行＋データ行）。
+    /// CSV 本文（ヘッダ行＋データ行の文字）。表（`csv.query` の結果 `{columns, rows}`）と項目のまとまりのリストは、
+    /// 実行時に CSV に組み立てる（JSON の文字のまま保存しない・BUG-178）。
     pub content: ValueExpr,
     /// 同じ名前のファイルがあるとき（省略時は失敗にする・`storage.write` と同じ）。
     #[serde(default, skip_serializing_if = "Option::is_none")]

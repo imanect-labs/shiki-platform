@@ -161,9 +161,10 @@ impl CapabilityNodeExecutor {
                     .unwrap_or("application/octet-stream")
                     .to_string()
             });
-        // CSV として保存するときだけ、選んだ文字コードで書く（省略は BOM なしの UTF-8・D-120）。
+        // CSV として保存するときだけ、選んだ文字コードで書く（省略は BOM なしの UTF-8・D-120）。表と項目のまとまりの
+        // リストは CSV に組み立てる（JSON の文字のまま .csv にしない・BUG-178）。
         let bytes = if is_csv_type(&content_type) {
-            encode_csv(&content, p.encoding.unwrap_or_default())?
+            encode_csv(&content, p.encoding.unwrap_or_default(), "内容")?
         } else {
             as_bytes(&content)
         };
@@ -424,10 +425,12 @@ impl CapabilityNodeExecutor {
         let parent_id = folder_param(p.folder.as_ref(), r, "csv.write: folder")?;
         let what = "csv.write: name";
         let name = typed(&param(&p.name, r, what)?, what, "文字列", as_string)?;
-        // 選んだ文字コードで書く（省略は BOM なしの UTF-8・この欄が無かったころの定義の挙動・D-120）。
+        // 選んだ文字コードで書く（省略は BOM なしの UTF-8・この欄が無かったころの定義の挙動・D-120）。表（「CSV を集計」の
+        // 結果）と項目のまとまりのリストは CSV に組み立てる（JSON の文字のまま保存しない・BUG-178）。
         let csv_bytes = encode_csv(
             &param(&p.content, r, "csv.write: content")?,
             p.encoding.unwrap_or_default(),
+            "CSV の内容",
         )?;
         let policy = p.on_name_taken.unwrap_or_default();
 

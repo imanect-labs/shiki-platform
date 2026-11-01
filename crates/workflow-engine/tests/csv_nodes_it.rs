@@ -411,3 +411,117 @@ async fn csv_write_numbers_taken_names_once_across_retry() {
             .await;
     }
 }
+
+/// CSV にできない値（数・表でない項目のまとまり・まとまりでないもののリスト）は、JSON の文字のまま保存せずに
+/// `invalid` で断る（保存の前・journal にも触れない・BUG-178）。
+#[tokio::test]
+async fn csv_write_refuses_values_that_cannot_be_csv() {
+    let ports = Arc::new(CsvPorts::default());
+    let exec = CapabilityNodeExecutor::new(ports.clone(), lazy_journal(), Arc::new(SilentAudit));
+    for (content, starts) in [
+        (
+            json!(12),
+            "「CSV の内容」に数が入っているため、CSV にできません。",
+        ),
+        (
+            json!({ "total": 3 }),
+            "「CSV の内容」に表でない項目のまとまりが入っているため、CSV にできません。",
+        ),
+        (
+            json!(["a", "b"]),
+            "「CSV の内容」のリストの 1 件目が項目のまとまりではありません。",
+        ),
+    ] {
+        let mut c = ctx(vec!["csv.write".into()]);
+        c.node_outputs = json!({ "calc": { "value": content } });
+        let res = exec
+            .execute(
+                "csv.write",
+                &json!({ "name": "集計", "content": { "$from": "nodes.calc.output", "path": "/value" } }),
+                &c,
+            )
+            .await;
+        assert!(!res.ok);
+        let err = res.error.unwrap();
+        assert_eq!(err.code, "invalid");
+        assert!(!err.retryable);
+        assert!(err.message.starts_with(starts), "{}", err.message);
+    }
+    assert!(
+        ports.writes.lock().unwrap().is_empty(),
+        "断った内容を保存した"
+    );
+}
+
+/// DB 必須: 「CSV を集計」の結果（表）と項目のまとまりのリストは、CSV に組み立ててから選んだ文字コードで保存する
+/// （JSON の文字のまま .csv にしない・BUG-178）。文字の内容はこれまでどおりそのまま保存する。
+#[tokio::test]
+async fn csv_write_builds_csv_from_tables_and_lists() {
+    let Ok(db) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+        return;
+    };
+    let pool = PgPoolOptions::new()
+        .max_connections(4)
+        .connect(&db)
+        .await
+        .expect("test DB 接続");
+    let ports = Arc::new(CsvPorts::default());
+    let exec = CapabilityNodeExecutor::new(
+        ports.clone(),
+        EffectJournal::new(pool.clone()),
+        Arc::new(SilentAudit),
+    );
+    let outputs = json!({
+        "q": {
+            "columns": ["品目", "金額"], "column_types": ["VARCHAR", "BIGINT"],
+            "rows": [["交通費", "1200"], ["=HYPERLINK(\"x\")", "-300"]],
+            "total_rows": 2, "truncated": false, "version": 1
+        },
+        "s": [{ "name": "佐藤", "amount": 1200 }, { "name": "鈴木, 一郎" }],
+        "t": "a,b\n1,2\n"
+    });
+    let cases = [
+        (
+            "q",
+            "utf8_bom",
+            "\u{FEFF}品目,金額\r\n交通費,1200\r\n\"'=HYPERLINK(\"\"x\"\")\",-300\r\n",
+        ),
+        (
+            "s",
+            "utf8",
+            "amount,name\r\n1200,佐藤\r\n,\"鈴木, 一郎\"\r\n",
+        ),
+        ("t", "utf8", "a,b\n1,2\n"),
+    ];
+    let mut keys = Vec::new();
+    for (source, encoding, want) in cases {
+        let key = format!("wf:csvcompose:{}", Uuid::new_v4());
+        keys.push(key.clone());
+        let mut c = ctx(vec!["csv.write".into()]);
+        c.idempotency_key = key;
+        c.node_outputs = outputs.clone();
+        let res = exec
+            .execute(
+                "csv.write",
+                &json!({
+                    "name": format!("集計-{source}"),
+                    "content": { "$from": format!("nodes.{source}.output") },
+                    "encoding": encoding
+                }),
+                &c,
+            )
+            .await;
+        assert!(res.ok, "{source}: {:?}", res.error);
+        let writes = ports.writes.lock().unwrap().clone();
+        let (name, _, bytes) = writes.last().unwrap();
+        assert_eq!(name, &format!("集計-{source}.csv"));
+        assert_eq!(String::from_utf8(bytes.clone()).unwrap(), want, "{source}");
+    }
+    for key in &keys {
+        let _ = sqlx::query("DELETE FROM effect_journal WHERE idempotency_key = $1")
+            .bind(key)
+            .execute(&pool)
+            .await;
+    }
+}
