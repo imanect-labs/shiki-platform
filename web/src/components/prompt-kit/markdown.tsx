@@ -8,7 +8,7 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import ReactMarkdown, { type Components, type ExtraProps } from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { ImageOff } from "lucide-react";
+import { EyeOff } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { citeNumberFromHref } from "@/lib/citation";
@@ -205,37 +205,51 @@ function AnswerImage({ src, alt }: { src: string; alt: string }) {
   const decision = decideAnswerImage(src, imageSources);
   if (decision.kind === "drop") return alt ? <>{alt}</> : null;
   if (decision.kind === "link") {
+    const label = `出典に無い外部の画像のため読み込んでいません（${decision.host}）。押すと新しいタブで開きます`;
     return (
       <a
         href={decision.href}
         target="_blank"
         rel="noopener noreferrer nofollow"
         referrerPolicy="no-referrer"
-        title={`出典に無い画像のため読み込んでいません: ${decision.href}`}
+        title={`${label}: ${decision.href}`}
+        aria-label={`${alt || "画像"}: ${label}`}
         data-testid="answer-image-blocked"
         className={cn(
-          "inline-flex max-w-full items-baseline gap-1 rounded-md border border-border/70 bg-muted/40 px-1.5 py-0.5",
-          "align-baseline text-[0.85em] text-muted-foreground no-underline hover:bg-muted hover:text-foreground",
+          // 本文の行の高さを変えない（上下の余白を持たせない）。枠は付けず、押せることは下線と hover で見せる。
+          "inline rounded-[5px] bg-muted/60 px-1 text-[0.9em] text-foreground/80 underline decoration-border",
+          "underline-offset-2 hover:bg-muted hover:text-foreground hover:decoration-foreground/40",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
           WRAP_ANYWHERE,
         )}
       >
-        <ImageOff aria-hidden className="size-3.5 shrink-0 translate-y-[0.15em]" />
-        <span className="min-w-0">{alt || "画像"}</span>
-        <span className="shrink-0">({decision.host})</span>
+        <EyeOff aria-hidden className="mr-1 inline size-[0.95em] -translate-y-px align-middle text-muted-foreground" />
+        外部の画像{alt ? `「${alt}」` : ""}
+        <span className="ml-1 text-muted-foreground">{decision.host}</span>
       </a>
     );
   }
+  // 段落（<p>）の中に置かれるので、ブロック要素（figure）ではなく span で組む。
+  const host = decision.src.startsWith("data:") ? null : new URL(decision.src).host;
   return (
-    // eslint-disable-next-line @next/next/no-img-element -- 外部の任意のホストの画像で、next/image の最適化対象外
-    <img
-      src={decision.src}
-      alt={alt}
-      loading="lazy"
-      decoding="async"
-      referrerPolicy="no-referrer"
-      data-testid="answer-image"
-      className="my-2 inline-block h-auto max-h-[28rem] max-w-full rounded-lg border border-border/60"
-    />
+    <span className="my-3 block">
+      {/* eslint-disable-next-line @next/next/no-img-element -- 外部の任意のホストの画像で、next/image の最適化対象外 */}
+      <img
+        src={decision.src}
+        alt={alt}
+        loading="lazy"
+        decoding="async"
+        referrerPolicy="no-referrer"
+        data-testid="answer-image"
+        className="block h-auto max-h-[28rem] max-w-full rounded-lg border border-border/60"
+      />
+      {host ? (
+        <span data-testid="answer-image-caption" className="mt-1.5 block text-[12px] text-muted-foreground">
+          {alt ? `${alt} · ` : ""}
+          {host}
+        </span>
+      ) : null}
+    </span>
   );
 }
 

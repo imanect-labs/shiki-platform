@@ -37,14 +37,15 @@ for (const theme of ["light", "dark"] as const) {
     await expect(shown).toHaveAttribute("referrerpolicy", "no-referrer");
     await expect(shown).toHaveAttribute("alt", "SaaS 市場の分野別シェア");
     await expect.poll(() => shown.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth)).toBe(640);
+    // 描いた画像には出典のホストを添える（どこから来た画像かを読み手が判断できる）。
+    await expect(timeline.getByTestId("answer-image-caption")).toHaveText("SaaS 市場の分野別シェア · images.example.test");
 
     // 出典の URL に何かを足したもの・出典に無いホストは、読み込まずにホストを添えたリンクにする。
     const blocked = timeline.getByTestId("answer-image-blocked");
     await expect(blocked).toHaveCount(2);
-    await expect(blocked.nth(0)).toContainText("補足の図");
-    await expect(blocked.nth(0)).toContainText("(images.example.test)");
-    await expect(blocked.nth(1)).toContainText("画像");
-    await expect(blocked.nth(1)).toContainText("(collector.attacker.test)");
+    await expect(blocked.nth(0)).toContainText("外部の画像「補足の図」");
+    await expect(blocked.nth(0)).toContainText("images.example.test");
+    await expect(blocked.nth(1)).toHaveText(/^外部の画像\s*collector\.attacker\.test$/);
     await expect(blocked.nth(1)).toHaveAttribute("href", "https://collector.attacker.test/p?d=Q3%20revenue%2012.4B");
     await expect(timeline.locator("img")).toHaveCount(1);
 
