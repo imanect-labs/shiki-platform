@@ -2705,3 +2705,187 @@ async fn created_by_column_is_server_filled_and_keeps_creators_from_approving() 
     purge_table(&env, t.id).await;
     assert_eq!(moved, vec![StatusCode::FORBIDDEN, StatusCode::FORBIDDEN]);
 }
+
+/// D-127・GAP-52: 「追加だけ」の申請者（carol）は、差し戻された自分の申請を直して出し直せる（HTTP）。状態の進め方で
+/// 差し戻し → 申請中を作成者の列の人に許し、書き込みの決まり（作成者の列）を付けると、carol は差し戻しのあいだだけ
+/// 自分のレコードを直して申請中へ進められる。申請中・承認の後の書き換え、削除は 403。画面の手がかり
+/// （閲覧者の文脈の `own_records`）と進め先の候補も同じ判定。
+#[tokio::test]
+async fn add_only_applicant_fixes_and_resubmits_a_sent_back_request() {
+    let Some(env) = setup().await else { return };
+    let dir = storage::DirectoryStore::new(env.pool.clone());
+    for u in ["alice", "bob", "carol"] {
+        dir.upsert_user(u, TENANT, "acme", &format!("{u}@acme.example"), u)
+            .await
+            .unwrap();
+    }
+    let t = approval_table(&env, "resubmit").await; // alice: 持ち主／bob: 編集者（承認者）
+    let base = format!("/data/tables/{}", t.id);
+    let rec_url = format!("{base}/records");
+    let fsm_url = format!("{base}/fsm");
+    let body = async {
+        // 作成者の列と「差し戻し」の状態を足す。
+        let (_, now) = send(&env, get("alice", &base)).await;
+        let mut next = now["schema"].clone();
+        let fields = next["fields"].as_array_mut().unwrap();
+        fields.push(json!({ "key": "made_by", "display_name": "作成者", "type": "created_by" }));
+        for f in fields.iter_mut() {
+            if f["key"] == "status" {
+                f["options"] = json!(["申請中", "承認", "却下", "差し戻し"]);
+            }
+        }
+        let (s, saved) = send(
+            &env,
+            put_json(
+                "alice",
+                &format!("{base}/schema"),
+                &json!({ "schema": next, "expected_schema_version": now["schema_version"] }),
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{saved}");
+        // 承認者（作成者は除く）が判断し、差し戻しからは作成者が出し直す。書き込みの決まりは作成者の列。
+        let who = json!({ "all": [
+            { "field_cmp": { "field": "approver", "op": "eq", "value": "user_id" } },
+            { "field_cmp": { "field": "made_by", "op": "ne", "value": "user_id" } }
+        ] });
+        let creator =
+            json!({ "field_cmp": { "field": "made_by", "op": "eq", "value": "user_id" } });
+        let (s, saved) = send(
+            &env,
+            put_json(
+                "alice",
+                &fsm_url,
+                &json!({
+                    "status_field": "status",
+                    "body": {
+                        "states": ["申請中", "承認", "却下", "差し戻し"],
+                        "transitions": [
+                            { "from": "申請中", "to": "承認", "actor": who },
+                            { "from": "申請中", "to": "却下", "actor": who },
+                            { "from": "申請中", "to": "差し戻し", "actor": who },
+                            { "from": "差し戻し", "to": "申請中", "actor": creator }
+                        ],
+                    },
+                    "applicant_write_lock": "made_by",
+                    "expected_schema_version": saved["schema_version"],
+                }),
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::OK, "{saved}");
+        let (s, b) = send(
+            &env,
+            put_json(
+                "alice",
+                &format!("{base}/shares"),
+                &json!({ "target": { "type": "user", "id": "carol" }, "role": "submitter" }),
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::NO_CONTENT, "{b}");
+
+        // carol（追加だけ）が申請する。画面の手がかり: 差し戻しから進め、差し戻しのあいだ直せる。
+        let (s, rec) = send(
+            &env,
+            post_json(
+                "carol",
+                &rec_url,
+                &json!({ "data": { "title": "carol の出張", "approver": "bob" } }),
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::CREATED, "{rec}");
+        let id = rec["id"].as_str().unwrap().to_string();
+        let (_, vc) = send(&env, get("carol", &format!("{base}/viewer-context"))).await;
+        assert_eq!(
+            vc["own_records"],
+            json!({ "move_from": ["差し戻し"], "edit_in": ["差し戻し"] }),
+            "{vc}"
+        );
+        let (_, bob_vc) = send(&env, get("bob", &format!("{base}/viewer-context"))).await;
+        assert!(bob_vc.get("own_records").is_none(), "{bob_vc}");
+        let patch = |rev: &Value| {
+            req(
+                "PATCH",
+                "carol",
+                &format!("{rec_url}/{id}"),
+                "application/json",
+                Body::from(
+                    json!({ "patch": { "title": "carol の出張（直した）" }, "expected_rev": rev })
+                        .to_string(),
+                ),
+            )
+        };
+        let mv = |user: &str, to: &str, rev: &Value| {
+            post_json(
+                user,
+                &format!("{rec_url}/{id}/transition"),
+                &json!({ "to": to, "expected_rev": rev }),
+            )
+        };
+        // 申請中: 直せない・進められない。
+        let (s, e) = send(&env, patch(&rec["rev"])).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "申請中の書き換え: {e}");
+        let (s, cand) = send(&env, get("carol", &format!("{rec_url}/{id}/transitions"))).await;
+        assert_eq!(
+            (s, cand["transitions"].clone()),
+            (StatusCode::OK, json!([])),
+            "{cand}"
+        );
+        // bob が差し戻す → carol は直して出し直せる。
+        let (s, back) = send(&env, mv("bob", "差し戻し", &rec["rev"])).await;
+        assert_eq!(s, StatusCode::OK, "{back}");
+        let (s, cand) = send(&env, get("carol", &format!("{rec_url}/{id}/transitions"))).await;
+        assert_eq!(
+            (s, cand["transitions"].clone()),
+            (StatusCode::OK, json!(["申請中"])),
+            "{cand}"
+        );
+        let (s, e) = send(
+            &env,
+            req(
+                "DELETE",
+                "carol",
+                &format!("{rec_url}/{id}?expected_rev={}", back["rev"]),
+                "application/json",
+                Body::empty(),
+            ),
+        )
+        .await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "削除: {e}");
+        let (s, fixed) = send(&env, patch(&back["rev"])).await;
+        assert_eq!(s, StatusCode::OK, "差し戻しの書き換え: {fixed}");
+        assert_eq!(fixed["data"]["title"], "carol の出張（直した）");
+        assert_eq!(fixed["data"]["made_by"], "carol");
+        let (s, again) = send(&env, mv("carol", "申請中", &fixed["rev"])).await;
+        assert_eq!(s, StatusCode::OK, "出し直し: {again}");
+        assert_eq!(again["data"]["status"], "申請中");
+        let (s, e) = send(&env, patch(&again["rev"])).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "出し直した後: {e}");
+        // bob が承認する。承認の後も carol は何もできない。
+        let (s, done) = send(&env, mv("bob", "承認", &again["rev"])).await;
+        assert_eq!(s, StatusCode::OK, "{done}");
+        let (s, e) = send(&env, patch(&done["rev"])).await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "承認の後: {e}");
+        // 作成の監査・状態を進めた監査は carol で残る。
+        let (n,): (i64,) = sqlx::query_as(
+            "SELECT count(*) FROM audit_log WHERE tenant_id = $1 AND actor = 'carol' \
+               AND action IN ('data.record.update', 'data.record.transition') AND decision = 'allow' \
+               AND object_id = $2",
+        )
+        .bind(TENANT)
+        .bind(&id)
+        .fetch_one(&env.pool)
+        .await
+        .unwrap();
+        assert_eq!(n, 2, "直した・出し直したの監査");
+    };
+    // 落ちても片付けてから結果を返す。
+    let outcome = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(body)).await;
+    purge_fsm_artifacts(&env, t.id).await;
+    purge_table(&env, t.id).await;
+    if let Err(e) = outcome {
+        std::panic::resume_unwind(e);
+    }
+}

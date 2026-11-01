@@ -1249,3 +1249,184 @@ async fn blocks_in_a_map_use_a_query_made_before_the_map() {
         std::panic::resume_unwind(e);
     }
 }
+
+/// D-127・GAP-52: 「追加だけ」の申請者（carol）が手動で実行したワークフローは、本人の権限で、差し戻された自分の
+/// レコードを直して出し直せる（本番のポートの `data.record.update` → `data.transition`）。承認の後に同じ
+/// ワークフローを実行すると、書き換えで断る（作成者に許した状態ではない）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn add_only_applicant_resubmits_through_a_workflow() {
+    let Some(env) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4().simple());
+    let (alice, bob, carol) = (
+        user(&tenant, "alice"),
+        user(&tenant, "bob"),
+        user(&tenant, "carol"),
+    );
+    let body = async {
+        let fsms = FsmStore::new(
+            Arc::new(artifact::ArtifactStore::new(
+                env.pool.clone(),
+                Arc::clone(&env.fga),
+            )),
+            (*env.data).clone(),
+        );
+        let mut title = data::FieldDef::new("title", FieldType::Text);
+        title.indexed = true;
+        let mut approver = data::FieldDef::new("approver", FieldType::UserRef);
+        approver.indexed = true;
+        let made_by = data::FieldDef::new("made_by", FieldType::CreatedBy);
+        let mut status = data::FieldDef::new("status", FieldType::Select);
+        status.indexed = true;
+        status.options = vec!["申請中".into(), "承認".into(), "差し戻し".into()];
+        let t = env
+            .data
+            .create_table(
+                &alice,
+                NewDataTable {
+                    name: "requests".into(),
+                    schema: plain_schema(vec![title, approver, made_by, status]),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let me = |field: &str, op: CmpOp| PolicyExpr::FieldCmp {
+            field: field.into(),
+            op,
+            value: PolicyOperand::UserId,
+        };
+        let who = PolicyExpr::All(vec![me("approver", CmpOp::Eq), me("made_by", CmpOp::Ne)]);
+        let mv = |from: &str, to: &str, actor: PolicyExpr| data::FsmTransition {
+            from: from.into(),
+            to: to.into(),
+            actor,
+        };
+        fsms.save_for_table(
+            &alice,
+            t.id,
+            &data::SaveTableFsm {
+                status_field: "status".into(),
+                body: data::FsmBody {
+                    states: vec!["申請中".into(), "承認".into(), "差し戻し".into()],
+                    transitions: vec![
+                        mv("申請中", "承認", who.clone()),
+                        mv("申請中", "差し戻し", who),
+                        mv("差し戻し", "申請中", me("made_by", CmpOp::Eq)),
+                    ],
+                },
+                applicant_write_lock: Some("made_by".into()),
+                expected_schema_version: t.schema_version,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+        let obj = alice.ns().data_table(&t.id.to_string());
+        env.fga
+            .write_tuple(&carol.subject(), Relation::Submitter, &obj)
+            .await
+            .unwrap();
+        env.fga
+            .write_tuple(&bob.subject(), Relation::Editor, &obj)
+            .await
+            .unwrap();
+        let rec = env
+            .data
+            .create_record(
+                &carol,
+                t.id,
+                json!({ "title": "carol の出張", "approver": "bob" }),
+                None,
+            )
+            .await
+            .unwrap();
+        let back = fsms
+            .transition(&bob, t.id, rec.id, "差し戻し", rec.rev, None)
+            .await
+            .unwrap();
+        let ir = json!({
+            "ir_version": 1, "name": "resubmit",
+            "declared_scopes": ["data.read", "data.write"],
+            "input_schema": { "type": "object", "properties": { "record": { "type": "string" } } },
+            "triggers": [ { "kind": "interactive" } ],
+            "nodes": [
+                { "id": "fix", "type": "data.record.update", "params": {
+                    "table": t.id.to_string(),
+                    "record": { "$from": "input", "path": "/record" },
+                    "patch": { "title": "carol の出張（直した）" } } },
+                { "id": "resubmit", "type": "data.transition", "params": {
+                    "table": t.id.to_string(),
+                    "record": { "$from": "input", "path": "/record" },
+                    "to": "申請中" } }
+            ],
+            "edges": [ { "from": "fix", "to": "resubmit" } ]
+        });
+        let (wf, _) = env
+            .workflows
+            .create(&alice, &ir, &Catalog::default(), None)
+            .await
+            .unwrap();
+        env.fga
+            .write_tuple(
+                &carol.subject(),
+                Relation::Viewer,
+                &alice.ns().artifact(&wf.to_string()),
+            )
+            .await
+            .unwrap();
+        let worker = workflow_engine::WorkflowWorker::new(
+            env.runs.clone(),
+            Arc::clone(&env.executor),
+            WorkerConfig::default(),
+        )
+        .scoped_to_tenant(&tenant);
+        let input = json!({ "record": rec.id.to_string() });
+        let run = env
+            .launcher
+            .start_interactive(&carol, wf, &input)
+            .await
+            .unwrap()
+            .expect("run が作られる");
+        while worker.claim_and_run_once("w1").await.unwrap() {}
+        let fixed = env.data.get_record(&bob, t.id, rec.id, None).await.unwrap();
+        assert_eq!(
+            env.runs.run_status(&tenant, run).await.unwrap(),
+            Some(RunStatus::Succeeded),
+            "{:?}",
+            env.step(&tenant, run, "fix").await
+        );
+        assert_eq!(fixed.data["title"], "carol の出張（直した）");
+        assert_eq!(fixed.data["status"], "申請中");
+        assert!(fixed.rev > back.rev);
+        // 承認の後に同じワークフローを実行すると、書き換え（作成者に許した状態ではない）で断る。
+        fsms.transition(&bob, t.id, rec.id, "承認", fixed.rev, None)
+            .await
+            .unwrap();
+        let again = env
+            .launcher
+            .start_interactive(&carol, wf, &input)
+            .await
+            .unwrap()
+            .expect("run が作られる");
+        while worker.claim_and_run_once("w1").await.unwrap() {}
+        assert_eq!(
+            env.runs.run_status(&tenant, again).await.unwrap(),
+            Some(RunStatus::Failed)
+        );
+        let (status, _, error) = env.step(&tenant, again, "fix").await;
+        assert_eq!(status, "failed", "{error:?}");
+        assert_eq!(
+            error.as_ref().and_then(|e| e["code"].as_str()),
+            Some("forbidden"),
+            "{error:?}"
+        );
+        let kept = env.data.get_record(&bob, t.id, rec.id, None).await.unwrap();
+        assert_eq!(kept.data["status"], "承認");
+    };
+    // 落ちても片付けてから結果を返す。
+    let outcome = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(body)).await;
+    env.cleanup_tenant(&tenant).await;
+    if let Err(e) = outcome {
+        std::panic::resume_unwind(e);
+    }
+}
