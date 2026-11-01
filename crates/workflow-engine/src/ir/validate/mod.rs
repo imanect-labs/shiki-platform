@@ -187,7 +187,7 @@ pub fn save_warnings(ir: &WorkflowIr, catalog: &Catalog) -> Vec<ValidationError>
     out
 }
 
-/// params の契約の誤りの文言（V1b と、V1 が 1 件目しか返さない誤りの続きを言う段が同じ形で書く）。
+/// params の契約の誤りの文言（V1b）。
 fn params_message(message: &str) -> String {
     format!("params が不正です: {message}")
 }

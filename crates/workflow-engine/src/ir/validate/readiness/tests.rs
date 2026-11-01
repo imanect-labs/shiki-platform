@@ -310,6 +310,128 @@ fn blank_file_and_skill_fields_block_run_and_enable() {
     assert_eq!(enable_blockers(&ir).len(), w.len());
 }
 
+/// D-129: 置いたばかりの承認を待つ（件名・テーブル・行き先が空の文字・承認者が 0 件）は、保存の警告にとどめ、
+/// 実行と自動実行のオンの前に止める。並びはエディタの欄の並び（件名・テーブル・承認者・判断の行き先）。文言は
+/// 欄の見出しを名指しし、選ぶ欄は「選ぶまで」、承認者は「追加するまで」と言う。
+#[test]
+fn a_freshly_placed_approval_blocks_run_and_enable() {
+    let placed = json!({ "id": "ok", "type": "human.approval", "params": {
+        "title": "",
+        "record": { "table": "", "id": { "$from": "trigger", "path": "/record_id" } },
+        "assignees": [],
+        "approve": { "to": "" }
+    } });
+    let ir = ir(json!([{ "kind": "interactive" }]), json!([placed]));
+    let w = required_text_empty(&ir);
+    assert_eq!(
+        codes(&w),
+        vec![
+            (REQUIRED_TEXT_EMPTY, Some("ok"), Some("/params/title")),
+            (
+                REQUIRED_TEXT_EMPTY,
+                Some("ok"),
+                Some("/params/record/table")
+            ),
+            (REQUIRED_TEXT_EMPTY, Some("ok"), Some("/params/assignees")),
+            (REQUIRED_TEXT_EMPTY, Some("ok"), Some("/params/approve/to")),
+        ]
+    );
+    let messages: Vec<&str> = w.iter().map(|e| e.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        [
+            "「受信箱の件名」が空です。入れるまで、実行も自動実行のオンもできません。",
+            "「承認するテーブル」が空です。選ぶまで、実行も自動実行のオンもできません。",
+            "「承認者」がいません。追加するまで、実行も自動実行のオンもできません。",
+            "「承認したときに進める状態」が空です。選ぶまで、実行も自動実行のオンもできません。",
+        ]
+    );
+    assert_eq!(codes(&run_blockers(&ir)), codes(&w));
+    assert_eq!(codes(&enable_blockers(&ir)), codes(&w));
+}
+
+/// D-129: 承認者は、列を選んでいない承認者をその承認者として言い（実行すると列を読めずに失敗する）、値のある
+/// 承認者が 1 人もいなければ欄として言う。空の文字のユーザー・部署は、ほかに承認者がいれば止めない（実行は
+/// 数えずに動く）。使う却下・差し戻しの空の行き先も止める。埋めた承認は止めない。
+#[test]
+fn approval_assignees_and_optional_destinations_are_checked_when_blank() {
+    const T: &str = "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1";
+    let node = |id: &str, assignees: Value, extra: Value| {
+        let mut n = json!({ "id": id, "type": "human.approval", "params": {
+            "title": "経費申請の承認",
+            "record": { "table": T, "id": { "$from": "trigger", "path": "/record_id" } },
+            "assignees": assignees,
+            "approve": { "to": "approved" }
+        } });
+        for (k, v) in extra.as_object().unwrap() {
+            n["params"][k] = v.clone();
+        }
+        n
+    };
+    let ir = ir(
+        json!([{ "kind": "interactive" }]),
+        json!([
+            node(
+                "col",
+                json!([{ "role": "keiri" }, { "field": "" }]),
+                json!({})
+            ),
+            node("users", json!([{ "user": "" }, { "role": " " }]), json!({})),
+            node(
+                "exits",
+                json!([{ "field": "approver" }]),
+                json!({ "reject": { "to": "" }, "return": { "to": " " } })
+            ),
+            // 値のある承認者がいれば、空の文字のユーザーは止めない。参照の承認者も止めない。
+            node(
+                "ok",
+                json!([{ "user": "" }, { "user": { "$from": "input", "path": "/boss" } }]),
+                json!({})
+            ),
+            node(
+                "ok_exits",
+                json!([{ "field": "approver" }]),
+                json!({ "reject": { "to": "rejected" } })
+            )
+        ]),
+    );
+    let w = required_text_empty(&ir);
+    assert_eq!(
+        codes(&w),
+        vec![
+            (
+                REQUIRED_TEXT_EMPTY,
+                Some("col"),
+                Some("/params/assignees/1/field")
+            ),
+            (
+                REQUIRED_TEXT_EMPTY,
+                Some("users"),
+                Some("/params/assignees")
+            ),
+            (
+                REQUIRED_TEXT_EMPTY,
+                Some("exits"),
+                Some("/params/reject/to")
+            ),
+            (
+                REQUIRED_TEXT_EMPTY,
+                Some("exits"),
+                Some("/params/return/to")
+            ),
+        ]
+    );
+    assert_eq!(
+        w[0].message,
+        "「承認者 2 の列」が空です。選ぶまで、実行も自動実行のオンもできません。"
+    );
+    assert_eq!(
+        w[3].message,
+        "「差し戻したときに進める状態」が空です。選ぶまで、実行も自動実行のオンもできません。"
+    );
+    assert_eq!(run_blockers(&ir).len(), w.len());
+}
+
 /// 選ぶ欄の表は、止める文言の「選ぶまで」と同じ欄を挙げる（エディタの欄の下の促しの出し分けに使う）。
 #[test]
 fn pick_fields_list_the_fields_blocked_until_picked() {
@@ -320,6 +442,12 @@ fn pick_fields_list_the_fields_blocked_until_picked() {
         ("storage.read", "file"),
         ("skill.invoke", "skill"),
         ("workflow.start", "name"),
+        // 承認を待つは、欄の先頭の項目の名前で挙げる（エディタは誤りの位置の先頭の項目で欄を引く・D-129）。
+        ("human.approval", "record"),
+        ("human.approval", "assignees"),
+        ("human.approval", "approve"),
+        ("human.approval", "reject"),
+        ("human.approval", "return"),
     ] {
         assert!(picks.contains(&want), "{want:?}");
     }
@@ -327,9 +455,15 @@ fn pick_fields_list_the_fields_blocked_until_picked() {
         ("storage.write", "name"),
         ("data.record.create", "data"),
         ("llm.invoke", "prompt"),
+        ("human.approval", "title"),
     ] {
         assert!(!picks.contains(&text), "{text:?}");
     }
+    // 同じ項目を 2 回挙げない。
+    let mut seen = picks.clone();
+    seen.sort_unstable();
+    seen.dedup();
+    assert_eq!(seen.len(), picks.len());
 }
 
 /// 中身の無い入れ物（`data: {}`・`patch: {}`・`rows: []`・`ops: []`）は、実行も自動実行のオンも止めない。

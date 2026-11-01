@@ -9,13 +9,16 @@
 //!   受信箱に出す列に状態の列は選べない（受信箱は状態を別に出し、出すのは状態が停止時のままの行だけなので、
 //!   値はいつも同じ）。状態の列は保存者が読めるときだけ材料に入る（読めなければ上の `ir.unknown_table`）ので、
 //!   この誤りが読めない列の手がかりになることはない。
+//!   照合は値があるときだけ行う。空のテーブル・行き先・担当者の列（置いたばかりの承認）は照合せず、必須の欄の空
+//!   （`readiness`・実行と自動実行のオンの前に止める・D-129）として扱う。空の行き先を「状態「」は…ありません」と
+//!   言わない（BUG-84）。
 //! - V7: 期限は `policies.run_timeout_sec` 未満（run の期限が先に来ると承認は時間切れの出口へ流れず、run ごと
 //!   取り消される）。直列に並ぶ承認の期限の合計が run の期限以上なら警告する。
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 
-use super::{params_message, Catalog, ValidationError};
-use crate::ir::params::{HumanApprovalParams, APPROVAL_TO_REQUIRED};
+use super::{Catalog, ValidationError};
+use crate::ir::params::HumanApprovalParams;
 use crate::ir::WorkflowIr;
 use crate::vocab::{NodeType, Scope};
 
@@ -76,7 +79,8 @@ pub(super) fn v4(ir: &WorkflowIr, catalog: &Catalog, errors: &mut Vec<Validation
     let Some(tables) = catalog.tables.as_ref() else {
         return;
     };
-    for (node, p) in approvals(ir) {
+    // テーブルを選んでいない承認は照合しない（実行の前に止める・D-129）。
+    for (node, p) in approvals(ir).filter(|(_, p)| !p.record.table.trim().is_empty()) {
         let err = |code: &str, msg: String, path: &str| {
             ValidationError::new(code, msg)
                 .at_node(&node.id)
@@ -97,23 +101,8 @@ pub(super) fn v4(ir: &WorkflowIr, catalog: &Catalog, errors: &mut Vec<Validation
         for (kind, choice) in p.choices() {
             // params の項目名は判断の語彙と同じ（approve / reject / return）。
             let path = format!("/params/{}/to", kind.as_str());
-            if choice.to.trim().is_empty() {
-                // 空の行き先は「状態「」は…ありません」ではなく、V1 と同じ文言で選ぶよう促す。V1 は最初の 1 件しか
-                // 返さないので、2 件目以降の空欄はここで言う。V1 が同じ欄に言っていれば重ねない（BUG-84）。
-                let said = errors.iter().any(|e| {
-                    e.node_id.as_deref() == Some(node.id.as_str())
-                        && e.path.as_deref() == Some(path.as_str())
-                });
-                if !said {
-                    errors.push(err(
-                        "ir.schema_violation",
-                        params_message(APPROVAL_TO_REQUIRED),
-                        &path,
-                    ));
-                }
-                continue;
-            }
-            if !states.contains(&choice.to) {
+            // 空の行き先は照合しない（「状態「」は…ありません」と言わない・BUG-84。実行の前に止める・D-129）。
+            if !choice.to.trim().is_empty() && !states.contains(&choice.to) {
                 errors.push(err(
                     "ir.unknown_state",
                     format!(
@@ -143,7 +132,10 @@ pub(super) fn v4(ir: &WorkflowIr, catalog: &Catalog, errors: &mut Vec<Validation
             }
         }
         for (i, a) in p.assignees.iter().enumerate() {
-            let Some(key) = &a.field else { continue };
+            // 空の担当者の列は照合しない（実行の前に止める・D-129）。
+            let Some(key) = a.field.as_ref().filter(|k| !k.trim().is_empty()) else {
+                continue;
+            };
             match table.fields.get(key).map(String::as_str) {
                 Some("user_ref" | "role_ref") => {}
                 Some(_) => errors.push(err(
@@ -396,33 +388,27 @@ mod tests {
         );
     }
 
-    /// 空の行き先（テーブルを選び直した直後など）は「状態「」は…ありません」と言わず、V1 と同じ文言で選ぶよう
-    /// 促す。V1 は最初の 1 件しか返さないので 2 件目以降の空欄もここで言い、同じ欄には重ねない（BUG-84）。
+    /// 空の行き先（テーブルを選び直した直後など）は「状態「」は…ありません」と言わず、保存も止めない（BUG-84）。
+    /// 照合は値があるときだけで、空の行き先・担当者の列・テーブルは、必須の欄の空として実行の前に止める（D-129）。
     #[test]
-    fn empty_destinations_ask_to_choose_a_state() {
+    fn blank_destinations_columns_and_tables_are_not_checked() {
         let catalog = table(Some(&["submitted", "approved", "rejected", "returned"]));
-        let mut both = approval("ok", None);
-        both["params"]["approve"]["to"] = json!("");
-        both["params"]["reject"]["to"] = json!(" ");
-        both["params"]["return"] = json!({ "to": "" });
-        let errs = validate(&ir(json!([both]), json!([])), &catalog).unwrap_err();
-        let at: Vec<(&str, &str)> = errs
-            .iter()
-            .map(|e| (e.path.as_deref().unwrap_or_default(), e.message.as_str()))
-            .collect();
-        let want = format!("params が不正です: {APPROVAL_TO_REQUIRED}");
+        let mut blank = approval("ok", None);
+        blank["params"]["approve"]["to"] = json!("");
+        blank["params"]["reject"]["to"] = json!(" ");
+        blank["params"]["return"] = json!({ "to": "" });
+        blank["params"]["assignees"] = json!([{ "field": "" }]);
+        let parsed = validate(&ir(json!([blank]), json!([])), &catalog).unwrap();
+        let blanks = super::super::required_text_empty(&parsed);
+        let w: Vec<&str> = blanks.iter().filter_map(|e| e.path.as_deref()).collect();
         assert_eq!(
-            at,
+            w,
             [
-                ("/params/approve/to", want.as_str()),
-                ("/params/reject/to", want.as_str()),
-                ("/params/return/to", want.as_str()),
-            ],
-            "{errs:?}"
-        );
-        assert!(
-            errs.iter().all(|e| !e.message.contains("状態「")),
-            "{errs:?}"
+                "/params/assignees/0/field",
+                "/params/approve/to",
+                "/params/reject/to",
+                "/params/return/to"
+            ]
         );
 
         // 空でない行き先は従来どおり状態の一覧と照らす（空欄と並んでも）。
@@ -434,13 +420,17 @@ mod tests {
             .iter()
             .map(|e| (e.code.as_str(), e.path.as_deref().unwrap_or_default()))
             .collect();
-        assert_eq!(
-            codes,
-            [
-                ("ir.schema_violation", "/params/approve/to"),
-                ("ir.unknown_state", "/params/reject/to"),
-            ]
+        assert_eq!(codes, [("ir.unknown_state", "/params/reject/to")]);
+        assert!(
+            errs.iter().all(|e| !e.message.contains("状態「」")),
+            "{errs:?}"
         );
+
+        // テーブルを選んでいなければ、テーブルも状態も列も照合しない（材料に無いテーブルとして止めない）。
+        let mut unbound = approval("ok", None);
+        unbound["params"]["record"]["table"] = json!("");
+        unbound["params"]["show_fields"] = json!(["ghost"]);
+        assert!(validate(&ir(json!([unbound]), json!([])), &catalog).is_ok());
     }
 
     /// 受信箱に出す列に状態の列は選べない（無い列とは別の誤り・BUG-67）。担当者の列の照合とは関係しない。

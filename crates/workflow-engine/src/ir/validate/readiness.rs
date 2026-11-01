@@ -2,7 +2,8 @@
 //!
 //! - **必須の欄が空**（[`REQUIRED_FIELDS`] の表と、業務データ・ファイルを選ぶブロックの [`REQUIRED_VALUES`] の表（項目が
 //!   無いのも空・BUG-151）と、`control.branch` の条件の調べる値と、`ai.decide` の質問ごとの
-//!   「AI に尋ねること」（D-108）と、出口を分ける `ai.decide` のしきい値（既定を置かない・D-88））: 書きかけでも保存は
+//!   「AI に尋ねること」（D-108）と、出口を分ける `ai.decide` のしきい値（既定を置かない・D-88）と、置いたばかりの
+//!   `human.approval` の件名・テーブル・承認者・判断の行き先（D-129））: 書きかけでも保存は
 //!   できるように、保存時は path つきの警告（[`REQUIRED_TEXT_EMPTY`]）にとどめる。空のまま動かすと、空の依頼で
 //!   AI や検索を呼ぶ・いつも同じ出口へ進む・リストでない値を繰り返そうとして失敗する、などになるので、有効化
 //!   （[`enable_blockers`]）と対話の実行（[`run_blockers`]）の前に止める。置いたばかりのブロックは、選ぶ欄も
@@ -27,7 +28,7 @@
 use serde_json::Value;
 
 use super::{block_name, ValidationError};
-use crate::ir::{Trigger, WorkflowIr};
+use crate::ir::{Node, Trigger, WorkflowIr};
 use crate::vocab::NodeType;
 
 /// 警告・止める理由のコード: 必須の欄が空（D-43・D-83）。
@@ -81,6 +82,24 @@ const REQUIRED_FIELDS: &[(NodeType, &str, &str, Fill)] = &[
     // スキルを選ぶまでは保存だけ通す（形とインストールの照合は V4・BUG-151）。
     (NodeType::SkillInvoke, "skill", "実行するスキル", Fill::Pick),
 ];
+
+/// 置いたばかりの承認を待つ（`human.approval`）の必須の欄のうち、承認者より前の欄（params の中の位置・見出し・
+/// 入れ方・D-129）。位置は `/params` の下の JSON Pointer（`record/table` など）で、項目が無いのは数えない（V1 の
+/// 誤り）。並びはエディタの欄の並び（承認者は [`blank_assignees`]、判断の行き先は [`APPROVAL_CHOICES`]）。
+const APPROVAL_HEAD: &[(&str, &str, Fill)] = &[
+    ("title", "受信箱の件名", Fill::Text),
+    ("record/table", "承認するテーブル", Fill::Pick),
+];
+
+/// 承認を待つの判断の行き先（使う判断だけ・D-129）。見出しはエディタの欄の読み上げの名前と同じ。
+const APPROVAL_CHOICES: &[(&str, &str, Fill)] = &[
+    ("approve/to", "承認したときに進める状態", Fill::Pick),
+    ("reject/to", "却下したときに進める状態", Fill::Pick),
+    ("return/to", "差し戻したときに進める状態", Fill::Pick),
+];
+
+/// 承認を待つの承認者の欄の項目（エディタは列が空の承認者も 0 件もこの欄の下で言う）。
+const APPROVAL_ASSIGNEES: &str = "assignees";
 
 /// 業務データのブロックのテーブルの欄の見出し。
 const TABLE_LABEL: &str = "対象のテーブル";
@@ -150,10 +169,16 @@ const REQUIRED_VALUES: &[(NodeType, &str, &str, Fill)] = &[
 
 /// 必須の欄のうち、選ぶ欄（一覧や入力・結果から選ぶ）の（ノード種の名前, params の項目）。エディタは、空の欄の下の
 /// 促しを、この表で「選んでください」と「入力してください」に分ける（web へは `export-workflow-ts` が書き出す・
-/// 手書きの対応物を持たない）。
+/// 手書きの対応物を持たない）。項目は params の最上位の名前（エディタは誤りの位置の先頭の項目で欄を引く）。
 #[must_use]
 pub fn required_pick_fields() -> Vec<(&'static str, &'static str)> {
-    REQUIRED_FIELDS
+    let approval = APPROVAL_HEAD
+        .iter()
+        .chain(APPROVAL_CHOICES)
+        .map(|(key, _, fill)| (NodeType::HumanApproval, *key, *fill))
+        .chain([(NodeType::HumanApproval, APPROVAL_ASSIGNEES, Fill::Pick)]);
+    let mut out: Vec<(&'static str, &'static str)> = Vec::new();
+    for (t, key, _) in REQUIRED_FIELDS
         .iter()
         .map(|(t, key, _, fill)| (*t, *key, *fill))
         .chain(
@@ -161,9 +186,15 @@ pub fn required_pick_fields() -> Vec<(&'static str, &'static str)> {
                 .iter()
                 .map(|(t, key, _, fill)| (*t, *key, *fill)),
         )
+        .chain(approval)
         .filter(|(.., fill)| *fill == Fill::Pick)
-        .map(|(t, key, _)| (t.as_str(), key))
-        .collect()
+    {
+        let top = (t.as_str(), key.split('/').next().unwrap_or(key));
+        if !out.contains(&top) {
+            out.push(top);
+        }
+    }
+    out
 }
 
 /// 必須の値の欄が空か（項目なし・[`is_blank`]）。
@@ -267,6 +298,66 @@ fn blank(node_id: &str, path: String, label: &str, fill: Fill) -> ValidationErro
         .at_path(path)
 }
 
+/// 承認を待つの必須の欄が空のもの（D-129）。件名・テーブル・承認者・判断の行き先の順（エディタの欄の並び）。
+fn approval_blanks(node: &Node, out: &mut Vec<ValidationError>) {
+    let blank_at = |key: &str| {
+        node.params
+            .pointer(&format!("/{key}"))
+            .is_some_and(is_blank)
+    };
+    for (key, label, fill) in APPROVAL_HEAD {
+        if blank_at(key) {
+            out.push(blank(&node.id, format!("/params/{key}"), label, *fill));
+        }
+    }
+    blank_assignees(node, out);
+    for (key, label, fill) in APPROVAL_CHOICES {
+        if blank_at(key) {
+            out.push(blank(&node.id, format!("/params/{key}"), label, *fill));
+        }
+    }
+}
+
+/// 承認を待つの承認者が空のもの（D-129）。
+///
+/// 列を選んでいない承認者（`{"field": ""}`）はその承認者を言う（実行すると「列を読めない」で失敗する）。そのほかに
+/// 値のある承認者が 1 人もいなければ（0 件・ユーザーと部署が空の文字だけ）、承認者の欄を言う（実行すると担当者が
+/// いないので失敗する）。空の文字のユーザー・部署は、ほかに承認者がいれば数えずに動くので止めない。
+fn blank_assignees(node: &Node, out: &mut Vec<ValidationError>) {
+    let list = node
+        .params
+        .get(APPROVAL_ASSIGNEES)
+        .and_then(Value::as_array);
+    let mut filled = false;
+    let before = out.len();
+    for (i, a) in list.into_iter().flatten().enumerate() {
+        match a.get("field") {
+            Some(f) if is_blank(f) => out.push(blank(
+                &node.id,
+                format!("/params/{APPROVAL_ASSIGNEES}/{i}/field"),
+                &format!("承認者 {} の列", i + 1),
+                Fill::Pick,
+            )),
+            Some(_) => filled = true,
+            None => {
+                filled |= ["user", "role"]
+                    .iter()
+                    .any(|k| a.get(*k).is_some_and(|v| !is_blank(v)));
+            }
+        }
+    }
+    if !filled && out.len() == before {
+        out.push(
+            ValidationError::new(
+                REQUIRED_TEXT_EMPTY,
+                "「承認者」がいません。追加するまで、実行も自動実行のオンもできません。",
+            )
+            .at_node(&node.id)
+            .at_path(format!("/params/{APPROVAL_ASSIGNEES}")),
+        );
+    }
+}
+
 /// 条件の木（`{cmp}`・`{all}`・`{any}`・`{not}`）の中の、調べる値が空の比較の path。
 fn blank_lefts(cond: &Value, at: &str, out: &mut Vec<String>) {
     let Some(o) = cond.as_object() else { return };
@@ -313,6 +404,9 @@ pub fn required_text_empty(ir: &WorkflowIr) -> Vec<ValidationError> {
             if node.params.get(*key).is_some_and(is_blank) {
                 out.push(blank(&node.id, format!("/params/{key}"), label, *fill));
             }
+        }
+        if nt == NodeType::HumanApproval {
+            approval_blanks(node, &mut out);
         }
         for (_, key, label, fill) in REQUIRED_VALUES.iter().filter(|(t, ..)| *t == nt) {
             if is_unset(node.params.get(*key)) {

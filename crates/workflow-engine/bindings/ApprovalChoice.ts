@@ -6,7 +6,7 @@ import type { ApprovalComment } from "./ApprovalComment";
  */
 export type ApprovalChoice = { 
 /**
- * 判断したときに行を進める状態（FSM の状態）。
+ * 判断したときに行を進める状態（FSM の状態・空なら実行の前に止める・D-129）。
  */
 to: string, 
 /**

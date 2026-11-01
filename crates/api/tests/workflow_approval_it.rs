@@ -2851,6 +2851,206 @@ async fn transitions_are_checked_for_a_state_flow_on_save() {
     env.cleanup().await;
 }
 
+/// D-129・BUG-167: 置いたばかりの承認を待つ（件名・テーブル・判断の行き先が空・承認者が 0 件）は、検証も保存も
+/// 通り（欄ごとの警告つき）、実行（起動の口の NotReady）と自動実行のオン（同意計画の理由・409 not_ready）の前に、欄の名前を
+/// 言って止まる。保存時の照合（V4）は値があるときだけで、状態の進め方の無いテーブル・無い状態は今までどおり保存で
+/// 止める。埋めた版は実行でき、承認を待つ。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_freshly_placed_approval_saves_and_stops_before_running() {
+    let _serial = SERIAL.lock().await;
+    let Some(env) = setup().await else { return };
+    let table = env.expense_table().await;
+    let plain = env
+        .data
+        .create_table(
+            &env.alice,
+            NewDataTable {
+                name: format!("plain-{}", Uuid::new_v4().simple()),
+                schema: expense_schema(None, &env.keiri),
+            },
+            None,
+        )
+        .await
+        .unwrap()
+        .id;
+    let name = format!("fresh-approval-{}", Uuid::new_v4().simple());
+    let ir = |params: Value| {
+        json!({
+            "ir_version": 1, "name": name,
+            "triggers": [{ "kind": "interactive" }],
+            "nodes": [{ "id": "ok", "type": "human.approval", "params": params }],
+            "edges": []
+        })
+    };
+    // エディターが置く形のまま（ir-state.ts の defaultParams）。
+    let placed = json!({
+        "title": "",
+        "record": { "table": "", "id": { "$from": "trigger", "path": "/record_id" } },
+        "assignees": [],
+        "approve": { "to": "" }
+    });
+    let blank_paths = [
+        "/params/title",
+        "/params/record/table",
+        "/params/assignees",
+        "/params/approve/to",
+    ];
+    let paths_of = |list: &Value, code: &str| -> Vec<String> {
+        list.as_array()
+            .unwrap()
+            .iter()
+            .filter(|w| w["code"] == code)
+            .map(|w| w["path"].as_str().unwrap_or_default().to_string())
+            .collect()
+    };
+    assert_eq!(env.v4_codes(&env.alice, &ir(placed.clone())).await, vec![]);
+    let (st, body) = env
+        .send(req(
+            "POST",
+            &env.alice,
+            "/workflows",
+            Body::from(json!({ "ir": ir(placed.clone()) }).to_string()),
+        ))
+        .await;
+    assert_eq!(st, StatusCode::CREATED, "{body}");
+    assert_eq!(
+        paths_of(&body["warnings"], "ir.required_text_empty"),
+        blank_paths,
+        "{body}"
+    );
+    let wf = body["id"].as_str().unwrap().to_string();
+
+    // 実行は run を作らずに、空の欄を名指しして断る（API は 400 not_ready に写す・起動の全経路が通る口）。
+    let wf_id = Uuid::parse_str(&wf).unwrap();
+    let err = env
+        .launcher
+        .start_interactive(&env.alice, wf_id, &json!({}))
+        .await
+        .unwrap_err();
+    let workflow_engine::run::LauncherError::NotReady(blockers) = err else {
+        panic!("実行の前に止まらない: {err:?}");
+    };
+    let blockers = serde_json::to_value(&blockers).unwrap();
+    assert_eq!(paths_of(&blockers, "ir.required_text_empty"), blank_paths);
+    let messages: Vec<&str> = blockers
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["message"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        messages,
+        [
+            "「受信箱の件名」が空です。入れるまで、実行も自動実行のオンもできません。",
+            "「承認するテーブル」が空です。選ぶまで、実行も自動実行のオンもできません。",
+            "「承認者」がいません。追加するまで、実行も自動実行のオンもできません。",
+            "「承認したときに進める状態」が空です。選ぶまで、実行も自動実行のオンもできません。",
+        ]
+    );
+    let runs: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM workflow_run WHERE tenant_id = $1 AND workflow_id = $2",
+    )
+    .bind(&env.tenant)
+    .bind(wf_id)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(runs, 0);
+    // 自動実行のオンも同じ理由で止まる（同意計画の理由・有効化の 409）。空のテーブルは選ばせる提案になる。
+    let (st, body) = env
+        .get(
+            &env.alice,
+            &format!("/workflows/{wf}/versions/1/consent-plan"),
+        )
+        .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(
+        paths_of(&body["blockers"], "ir.required_text_empty"),
+        blank_paths
+    );
+    let grant = body["grants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|g| g["source"] == "node:ok")
+        .cloned()
+        .unwrap_or_else(|| panic!("承認の提案が無い: {body}"));
+    assert_eq!(grant["needs_user_pick"], true, "{grant}");
+    assert!(grant["object_id"].is_null(), "{grant}");
+    let (st, body) = env
+        .send(req(
+            "POST",
+            &env.alice,
+            &format!("/workflows/{wf}/enable"),
+            Body::from(json!({ "version": 1, "grants": [] }).to_string()),
+        ))
+        .await;
+    assert_eq!(st, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "not_ready", "{body}");
+
+    // 値のある欄は今までどおり照合する（状態の進め方の無いテーブル・無い状態は保存で止める）。空の欄は照合しない。
+    let mut with_plain = placed.clone();
+    with_plain["record"]["table"] = json!(plain.to_string());
+    assert_eq!(
+        env.v4_codes(&env.alice, &ir(with_plain)).await,
+        vec![(
+            "ir.unknown_table".to_string(),
+            "/params/record/table".to_string()
+        )]
+    );
+    let mut ghost = placed.clone();
+    ghost["record"]["table"] = json!(table.to_string());
+    ghost["approve"]["to"] = json!("ghost");
+    ghost["assignees"] = json!([{ "field": "" }, { "field": "nope" }]);
+    assert_eq!(
+        env.v4_codes(&env.alice, &ir(ghost)).await,
+        vec![
+            (
+                "ir.unknown_state".to_string(),
+                "/params/approve/to".to_string()
+            ),
+            (
+                "ir.unknown_field".to_string(),
+                "/params/assignees/1/field".to_string()
+            ),
+        ]
+    );
+    let mut chosen = placed.clone();
+    chosen["record"]["table"] = json!(table.to_string());
+    assert_eq!(env.v4_codes(&env.alice, &ir(chosen)).await, vec![]);
+
+    // 埋めた版は実行でき、承認を待つ。
+    let mut filled = placed;
+    filled["title"] = json!("受付の確認");
+    filled["record"]["table"] = json!(table.to_string());
+    filled["assignees"] = json!([{ "field": "approver" }]);
+    filled["approve"]["to"] = json!("reviewing");
+    let (st, body) = env
+        .send(req(
+            "PUT",
+            &env.alice,
+            &format!("/workflows/{wf}"),
+            Body::from(json!({ "ir": ir(filled), "expected_version": 1 }).to_string()),
+        ))
+        .await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert!(
+        paths_of(&body["warnings"], "ir.required_text_empty").is_empty(),
+        "{body}"
+    );
+    let record = env.submit(table, "出張旅費", &env.bob).await;
+    let run = env
+        .launcher
+        .start_interactive(&env.alice, wf_id, &json!({ "record_id": record }))
+        .await
+        .unwrap()
+        .expect("run を作る");
+    env.settle().await;
+    assert_eq!(env.step(run, "ok").await.0, "waiting_event");
+    env.forget_runs(wf_id).await;
+    env.cleanup().await;
+}
+
 /// 受信箱の一覧・件数は、他人が書いた台帳の候補を本人に見える分へ絞るだけなので、見えないテーブルの承認が
 /// 並んでいても、読み直すたびに Deny の監査を増やさない（件数は 60 秒ごととフォーカス時に読まれる・BUG-43）。
 /// 本人がその承認を開いたときは、従来どおり 404 で断り Deny を残す。見える承認は同じテーブルの行をまとめて

@@ -209,21 +209,18 @@ impl RegistrationService {
                 }
                 // 承認（GAP-08）: 停止時に束縛した行を読み、判断の遷移を実行主体の見え方で受け取るので、
                 // schedule / event の run にはテーブルの閲覧の委譲が要る（判断そのものは承認者本人の権限）。
+                // 置いたばかりの空のテーブルは、ほかのブロックと同じく選ばせる（D-129・空の文字の対象を出さない）。
                 crate::vocab::NodeType::HumanApproval => {
-                    if let Some(table) = node
-                        .params
-                        .get("record")
-                        .and_then(|r| r.get("table"))
-                        .and_then(serde_json::Value::as_str)
-                    {
+                    if let Some(record) = node.params.get("record") {
+                        let table = literal_str(record, "table");
                         push(SuggestedGrant {
                             scope: "data.read".into(),
                             object_kind: "data_table".into(),
-                            object_id: Some(table.to_string()),
+                            object_id: table.clone(),
                             object_name: None,
                             relation: "viewer".into(),
                             source,
-                            needs_user_pick: false,
+                            needs_user_pick: table.is_none(),
                         });
                     }
                 }
@@ -330,9 +327,13 @@ mod tests {
     fn blank_literals_ask_the_user_to_pick() {
         let plan = plan(&json!([
             { "id": "add", "type": "data.record.create", "params": { "table": "", "data": "" } },
-            { "id": "q", "type": "csv.query", "params": { "file": " ", "sql": "SELECT 1" } }
+            { "id": "q", "type": "csv.query", "params": { "file": " ", "sql": "SELECT 1" } },
+            // 置いたばかりの承認を待つも同じ（D-129）。
+            { "id": "ok", "type": "human.approval", "params": {
+                "title": "", "record": { "table": "", "id": { "$from": "trigger", "path": "/record_id" } },
+                "assignees": [], "approve": { "to": "" } } }
         ]));
-        for node in ["add", "q"] {
+        for node in ["add", "q", "ok"] {
             let g = by_source(&plan, node);
             assert_eq!(g.object_id, None, "{g:?}");
             assert!(g.needs_user_pick, "{g:?}");

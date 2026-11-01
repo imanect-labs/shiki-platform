@@ -12,7 +12,7 @@ import type { WaitTimeout } from "./WaitTimeout";
  */
 export type HumanApprovalParams = { 
 /**
- * 受信箱の件名（1〜120 字のリテラル）。
+ * 受信箱の件名（120 字までのリテラル・空なら実行の前に止める・D-129）。
  */
 title: string, 
 /**
@@ -24,7 +24,7 @@ instructions?: string,
  */
 record: ApprovalRecord, 
 /**
- * 受信箱に出す相手（1〜20 件）。
+ * 受信箱に出す相手（20 件まで・0 件なら実行の前に止める・D-129）。
  */
 assignees: Array<ApprovalAssignee>, 
 /**

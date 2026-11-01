@@ -10,6 +10,10 @@
 //! - `record.table` は UUID のリテラル（同意計画・保存時の照合・候補の索引の鍵）。`record.id` は値式で、停止時に
 //!   解決する。
 //! - `timeout_sec` はリテラルの秒数（保存時に `policies.run_timeout_sec` 未満であることを検査する）。
+//! - 件名・テーブル・承認者・判断の行き先は、置いたばかりの空のまま（件名とテーブルと行き先が空の文字・承認者が
+//!   0 件・承認者の列が空の文字）でも契約では誤りにしない（D-129・D-83 と同じ）。空のままなら保存時の警告にとどめ、
+//!   実行と自動実行のオンの前に止める（`validate::readiness`）。値があるときの形の検査（件名の字数・テーブルの ID・
+//!   承認者の件数と形・行き先の重なり）と、保存時の照合（V4）は今のまま行う。
 
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
@@ -27,8 +31,6 @@ pub const MAX_APPROVAL_ASSIGNEES: usize = 20;
 pub const MAX_APPROVAL_SHOW_FIELDS: usize = 30;
 /// 選択肢のラベルの上限（文字数）。
 pub const MAX_APPROVAL_LABEL_CHARS: usize = 40;
-/// 判断の行き先（`to`）が空のときの文言（V1 と、2 件目以降の空欄を言う V4 が同じ文言を使う・BUG-84）。
-pub(crate) const APPROVAL_TO_REQUIRED: &str = "判断したときに進める状態を選んでください";
 
 /// 承認を束縛する行（FSM で管理するテーブルの 1 行）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
@@ -79,7 +81,7 @@ pub enum ApprovalComment {
 #[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct ApprovalChoice {
-    /// 判断したときに行を進める状態（FSM の状態）。
+    /// 判断したときに行を進める状態（FSM の状態・空なら実行の前に止める・D-129）。
     pub to: String,
     /// ボタンの文言（省略時は既定の文言）。受信箱は行き先の状態名も必ず添える。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -99,7 +101,7 @@ pub struct ApprovalChoice {
 #[serde(deny_unknown_fields)]
 #[ts(export)]
 pub struct HumanApprovalParams {
-    /// 受信箱の件名（1〜120 字のリテラル）。
+    /// 受信箱の件名（120 字までのリテラル・空なら実行の前に止める・D-129）。
     pub title: String,
     /// 担当者への説明（2000 字以内のリテラル）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -107,7 +109,7 @@ pub struct HumanApprovalParams {
     pub instructions: Option<String>,
     /// 承認を束縛する行。
     pub record: ApprovalRecord,
-    /// 受信箱に出す相手（1〜20 件）。
+    /// 受信箱に出す相手（20 件まで・0 件なら実行の前に止める・D-129）。
     pub assignees: Vec<ApprovalAssignee>,
     /// 承認（必須）。
     pub approve: ApprovalChoice,
@@ -219,11 +221,11 @@ impl HumanApprovalParams {
                 message,
             })
         };
-        let title = self.title.trim();
-        if title.is_empty() || self.title.chars().count() > MAX_APPROVAL_TITLE_CHARS {
+        // 空の件名・テーブル・承認者・行き先は、ここでは止めない（実行の前に止める・D-129）。
+        if self.title.chars().count() > MAX_APPROVAL_TITLE_CHARS {
             return issue(
                 "title",
-                format!("件名は 1〜{MAX_APPROVAL_TITLE_CHARS} 字で書いてください"),
+                format!("「受信箱の件名」は {MAX_APPROVAL_TITLE_CHARS} 字までにしてください。"),
             );
         }
         if self
@@ -238,16 +240,16 @@ impl HumanApprovalParams {
         }
         let canonical = uuid::Uuid::parse_str(&self.record.table)
             .is_ok_and(|u| u.hyphenated().to_string() == self.record.table);
-        if !canonical {
+        if !self.record.table.trim().is_empty() && !canonical {
             return issue(
                 "record/table",
                 "承認するテーブルを一覧から選んでください（テーブルの ID）".to_string(),
             );
         }
-        if self.assignees.is_empty() || self.assignees.len() > MAX_APPROVAL_ASSIGNEES {
+        if self.assignees.len() > MAX_APPROVAL_ASSIGNEES {
             return issue(
                 "assignees",
-                format!("担当者は 1〜{MAX_APPROVAL_ASSIGNEES} 件で指定してください"),
+                format!("承認者は {MAX_APPROVAL_ASSIGNEES} 件までにしてください。"),
             );
         }
         for (i, a) in self.assignees.iter().enumerate() {
@@ -260,21 +262,12 @@ impl HumanApprovalParams {
                     "担当者は user・role・field のどれか 1 つで指定してください".to_string(),
                 );
             }
-            if a.field.as_ref().is_some_and(|f| f.trim().is_empty()) {
-                return issue(
-                    &format!("assignees/{i}/field"),
-                    "担当者の列を選んでください".to_string(),
-                );
-            }
         }
         let mut tos: Vec<&str> = Vec::new();
         for (kind, c) in self.choices() {
             // params の項目名は判断の語彙と同じ（approve / reject / return）。
             let path = kind.as_str();
-            if c.to.trim().is_empty() {
-                return issue(&format!("{path}/to"), APPROVAL_TO_REQUIRED.to_string());
-            }
-            if tos.contains(&c.to.as_str()) {
+            if !c.to.trim().is_empty() && tos.contains(&c.to.as_str()) {
                 return issue(
                     &format!("{path}/to"),
                     "承認・却下・差し戻しの行き先は別々の状態にしてください".to_string(),
@@ -354,12 +347,15 @@ mod tests {
     #[test]
     fn rejects_bad_shapes_with_paths() {
         let cases = [
-            (json!({ "title": "" }), "/params/title"),
+            (json!({ "title": "承".repeat(121) }), "/params/title"),
             (
                 json!({ "record": { "table": "expense", "id": "x" } }),
                 "/params/record/table",
             ),
-            (json!({ "assignees": [] }), "/params/assignees"),
+            (
+                json!({ "assignees": vec![json!({ "role": "r" }); 21] }),
+                "/params/assignees",
+            ),
             (
                 json!({ "assignees": [{ "field": "approver", "role": "r" }] }),
                 "/params/assignees/0",
@@ -382,5 +378,33 @@ mod tests {
         v.as_object_mut().unwrap().remove("timeout_sec");
         let e = params(v).check_cross_fields().unwrap_err();
         assert_eq!(e.path, "/params/on_timeout");
+    }
+
+    /// D-129: 置いたばかりの承認（件名・テーブル・行き先が空の文字・承認者が 0 件）と、書きかけの空の欄（承認者の列・
+    /// 却下と差し戻しの行き先が空の文字）は、契約では止めない（実行の前に止める）。空の行き先どうしは重なりと数えない。
+    /// 値のある欄の検査は今のまま（120 字を超える件名・ID でないテーブル・同じ行き先）。
+    #[test]
+    fn blank_fields_of_a_freshly_placed_approval_pass_the_contract() {
+        let placed = params(json!({
+            "title": "",
+            "record": { "table": "", "id": { "$from": "trigger", "path": "/record_id" } },
+            "assignees": [],
+            "approve": { "to": "" }
+        }));
+        assert_eq!(placed.check_cross_fields(), Ok(()));
+        let mut v = base();
+        v["title"] = json!("  ");
+        v["assignees"] = json!([{ "field": "" }, { "user": "" }]);
+        v["reject"] = json!({ "to": "" });
+        v["return"] = json!({ "to": "" });
+        assert_eq!(params(v).check_cross_fields(), Ok(()));
+        let mut v = base();
+        v["return"] = json!({ "to": "approved" });
+        let e = params(v).check_cross_fields().unwrap_err();
+        assert_eq!(e.path, "/params/return/to");
+        let mut v = base();
+        v["title"] = json!("承".repeat(121));
+        let e = params(v).check_cross_fields().unwrap_err();
+        assert_eq!(e.message, "「受信箱の件名」は 120 字までにしてください。");
     }
 }
