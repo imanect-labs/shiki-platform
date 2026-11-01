@@ -173,3 +173,39 @@ test("「共有済み」: 0 件のページでも続きをたどり、見つか�
     await served.stop();
   }
 });
+
+test("「共有済み」: 見つかった後も、何も見つからない読み込みが続いたら自動で読むのをやめ、末尾に「さらに読み込む」を出す（BUG-162）", async ({
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await loginViaKeycloak(page);
+  // 先頭に 1 件、そのあと 9 ページは 0 件（見えないものばかり）で、10 ページ目に 1 件、そこで終わる。
+  const pages: Record<string, { items: unknown[]; next_cursor: string | null }> = {
+    "": { items: [node(1)], next_cursor: "c1" },
+  };
+  for (let i = 1; i < 10; i += 1) pages[`c${i}`] = { items: [], next_cursor: `c${i + 1}` };
+  pages.c10 = { items: [node(2)], next_cursor: null };
+  const served = await serveList(page, pages);
+  try {
+    await page.goto("/drive/shared");
+    await expect(page.getByText("見つかったフォルダ 1", { exact: true })).toBeVisible({ timeout: 15_000 });
+    // 1 件目の読み込み（往復 5 回）の後、末尾が見えているので 1 回だけ読み足す（往復 5 回）。そこで何も見つからない
+    // ので、末尾に「さらに読み込む」を出して止める（それ以上は頼まない）。
+    const stalled = page.getByTestId("drive-shared-stalled");
+    await expect(stalled).toContainText("続きはまだ見つかっていません。「さらに読み込む」で続きを探します。", {
+      timeout: 15_000,
+    });
+    await page.waitForTimeout(2_000);
+    expect(served.asked).toEqual(["", "c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8", "c9"]);
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/drive-shared-stalled-pc.png` });
+
+    // 押すと続きを探し、見つかったものが出て、続きが無くなればボタンも消える。
+    await stalled.getByTestId("drive-shared-more").click();
+    await expect(page.getByText("見つかったフォルダ 2", { exact: true })).toBeVisible();
+    await expect(page.getByTestId("drive-shared-stalled")).toHaveCount(0);
+    expect(served.asked.slice(10)).toEqual(["c10"]);
+  } finally {
+    await served.stop();
+  }
+});

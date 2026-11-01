@@ -18,16 +18,20 @@ import { LoadingRow, NodeIcon, nodeKindLabel } from "./primitives";
 ///
 /// 共有されたものが多い人では、サーバーが 1 ページを短いか 0 件のまま続きの位置だけ付けて返すことがある（BUG-162）。
 /// 1 回の読み込みで続きを数回たどり、それでも見つからないあいだは空の状態に見せずに「さらに読み込む」を出す。
+/// 下までスクロールしたときに自動で読み足すのは、直前の読み込みで見つかったときだけにする。何も見つからなかったら
+/// 一覧の末尾に「さらに読み込む」を出して止める（見えないものばかりの組織で、操作なしに背後で読み続けない）。
 export function SharedView() {
   const router = useRouter();
   const fetchPage = React.useCallback((cursor?: string) => sharedWithMeUpTo({ cursor, want: 50 }), []);
   const list = useInfiniteList<NodeResponse>(fetchPage, []);
-  // 0 件のページでも、読み終えたときに sentinel が見えていれば続きを読む（progress は取得の回数）。sentinel は
-  // 1 件目が見つかってから置く（それまでは「さらに読み込む」）ので、見つかったときに監視を始め直す。
+  /// 1 件目は見つかったが、直前の読み込みでは何も見つからなかった（続きは押して探す）。
+  const stalled = list.items.length > 0 && list.hasMore && list.lastAdded === 0;
+  // 読み足して件数が増え、sentinel がまだ見えていれば続きを読む（progress は件数）。sentinel は 1 件目が見つかって
+  // から、見つからなかった読み込みの後は押すまで置かない（置き直すと監視を始め直す）。
   const sentinelRef = useInfiniteSentinel(
     list.loadMore,
-    list.hasMore && !list.loading && list.items.length > 0,
-    list.fetches,
+    list.hasMore && !list.loading && list.items.length > 0 && !stalled,
+    list.items.length,
   );
 
   const open = (node: NodeResponse) => {
@@ -93,7 +97,17 @@ export function SharedView() {
           ) : null}
         </button>
       ))}
-      {list.hasMore ? <div ref={sentinelRef}>{list.loadingMore ? <LoadingRow /> : null}</div> : null}
+      {list.hasMore && stalled ? (
+        <div className="flex flex-col items-center gap-2 py-6 text-center" data-testid="drive-shared-stalled">
+          <p className="text-sm text-muted-foreground">続きはまだ見つかっていません。「さらに読み込む」で続きを探します。</p>
+          <Button variant="outline" size="sm" onClick={list.loadMore} disabled={list.loadingMore} data-testid="drive-shared-more">
+            {list.loadingMore ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}
+            さらに読み込む
+          </Button>
+        </div>
+      ) : list.hasMore ? (
+        <div ref={sentinelRef}>{list.loadingMore ? <LoadingRow /> : null}</div>
+      ) : null}
     </div>
   );
 }
