@@ -6,8 +6,8 @@
 //!   そのもの）を、行述語・フィールドマスクの違う 2 人で実行し、**見えない行・列が返らない**。
 //! - 同じ入力を stub LLM（`calltool:`）からチャットの run として流し、ツールの提示（見えるテーブルが
 //!   無い人には提示しない）→ 実行 → 観測までの実経路でも同じになる。
-//! - description には発話ユーザーが viewer のテーブルだけが載る。`data_schema` は読めない列を載せない。
-//!   `data_record_write` は承認必須で、読めない行は更新できない。
+//! - description には発話ユーザーが viewer か「追加だけ」のテーブルだけが載る（追加だけには印とできること・GAP-53）。
+//!   `data_schema` は読めない列を載せない。`data_record_write` は承認必須で、読めない行は更新できない。
 
 #![allow(
     clippy::pedantic,
@@ -409,6 +409,140 @@ async fn data_query_returns_only_rows_and_columns_the_speaker_can_read() {
         kept.data["amount"].as_f64(),
         Some(200.0),
         "carol の行は書き換わらない"
+    );
+}
+
+/// [`setup`] と同じ環境に、後で消す OpenFGA のストアを添える。
+async fn setup_with_store() -> Option<(PgPool, Arc<dyn AuthzClient>, String, String)> {
+    let db_url = std::env::var("STORAGE_TEST_DATABASE_URL").ok()?;
+    let base_url = std::env::var("OPENFGA_TEST_URL").ok()?;
+    let pool = PgPoolOptions::new()
+        .max_connections(8)
+        .connect(&db_url)
+        .await
+        .expect("Postgres へ接続できること");
+    sqlx::migrate!("../../migrations")
+        .run(&pool)
+        .await
+        .expect("マイグレーション適用");
+    let fga = OpenFgaClient::connect(
+        reqwest::Client::new(),
+        &OpenFgaConfig {
+            base_url: base_url.clone(),
+            store_name: format!("shiki-chat-data-test-{}", Uuid::new_v4()),
+        },
+        &authz::model::default_model(),
+    )
+    .await
+    .expect("OpenFGA 接続");
+    let store_id = fga.store_id().to_string();
+    Some((pool, Arc::new(fga), base_url, store_id))
+}
+
+/// 「追加だけ」のテーブル（D-113・GAP-53）は一覧に印つきで載り、`data_schema` は読める列と、できることを言う。
+/// `data_query` は自分が追加したレコードだけを返し、`data_record_write` は作成ができる。状態の進め方で作成者に何も
+/// 許していないテーブルの更新は断る（D-127）。
+#[tokio::test]
+async fn add_only_tables_are_listed_with_what_the_speaker_can_do() {
+    let Some((pool, fga, base_url, store_id)) = setup_with_store().await else {
+        return;
+    };
+    let f = fixture(pool, fga).await;
+    let erin = ctx(&f.tenant, "erin");
+    f.fga
+        .write_tuple(
+            &erin.subject(),
+            Relation::Submitter,
+            &erin.ns().data_table(&f.table_id.to_string()),
+        )
+        .await
+        .expect("submitter");
+    let catalog = tools_for(&f, &erin).await;
+    assert!(!catalog.is_empty(), "追加だけのテーブルも提示する");
+    let query = DataQueryTool::new(f.data.clone(), Arc::clone(&catalog));
+    let desc = query.description().to_string();
+    let schema = DataSchemaTool::new(f.data.clone(), Arc::clone(&catalog))
+        .call(&erin, json!({ "table": "経費" }), None)
+        .await
+        .expect("schema");
+    let write = DataRecordWriteTool::new(f.data.clone(), Arc::clone(&catalog));
+    let created = write
+        .call(
+            &erin,
+            json!({ "table": "経費", "op": "create", "data": {
+                "applicant": "erin", "amount": 70, "status": "承認待ち", "title": "erin の申請"
+            }}),
+            None,
+        )
+        .await
+        .expect("create");
+    let rows = query.call(&erin, llm_input(), None).await.expect("query");
+    let own = f
+        .data
+        .list_records(
+            &erin,
+            f.table_id,
+            &data::ListRecordsOptions::default(),
+            None,
+        )
+        .await;
+    let own_id = own
+        .as_ref()
+        .ok()
+        .and_then(|p| p.items.first().map(|r| r.id));
+    let updated = match own_id {
+        Some(id) => Some(
+            write
+                .call(
+                    &erin,
+                    json!({ "table": "経費", "op": "update", "record_id": id, "data": { "amount": 1 } }),
+                    None,
+                )
+                .await
+                .expect("update"),
+        ),
+        None => None,
+    };
+    f.data.purge_tenant(&f.tenant).await.expect("purge");
+    let r = reqwest::Client::new()
+        .delete(format!("{base_url}/stores/{store_id}"))
+        .send()
+        .await
+        .expect("OpenFGA delete store");
+    assert!(r.status().is_success(), "delete store: {}", r.status());
+
+    assert!(
+        desc.contains(&format!(
+            "- 経費 / {}（追加だけ: 見えるのは自分が追加したレコードだけ。",
+            f.table_id
+        )),
+        "{desc}"
+    );
+    assert!(!desc.contains("役員報酬"), "{desc}");
+    assert!(!schema.is_error, "{}", schema.content);
+    assert!(
+        schema.content.contains("このテーブルは追加だけ: ")
+            && schema.content.contains("- amount: number — 金額"),
+        "{}",
+        schema.content
+    );
+    assert!(
+        !schema.content.contains("internal_memo"),
+        "{}",
+        schema.content
+    );
+    assert!(!created.is_error, "{}", created.content);
+    assert_eq!(
+        observed_rows(&rows.content),
+        vec![("erin".to_string(), 70, false)],
+        "自分が追加したレコードだけ: {}",
+        rows.content
+    );
+    let updated = updated.expect("自分のレコードが読める");
+    assert!(
+        updated.is_error && updated.content.contains("見つからないか、権限がありません"),
+        "{}",
+        updated.content
     );
 }
 

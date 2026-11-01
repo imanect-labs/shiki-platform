@@ -204,6 +204,28 @@ impl DataStore {
             .await
     }
 
+    /// [`Self::list_tables_listing`] に、追加だけで共有されたテーブルを足した一覧（チャットの AI の一覧・GAP-53）。
+    /// 追加だけのテーブルには `add_only` を立てる。定義は絞らないので、名前と id と `add_only` だけを使うこと
+    /// （列はテーブルごとに [`Self::get_table_for_viewer`] で読む）。
+    pub async fn list_tables_listing_for_reader(
+        &self,
+        ctx: &AuthContext,
+        limit: i64,
+    ) -> Result<TableListing, DataError> {
+        let filter = ListFilter {
+            include_add_only: true,
+            ..ListFilter::default()
+        };
+        let mut listing = self.collect_tables(ctx, filter, limit, 1).await?;
+        let az = self.authz_memo();
+        crate::table_redact::prefetch_table_relations(ctx, &az, &listing.items).await?;
+        for t in &mut listing.items {
+            t.add_only = self.read_scope(ctx, &az, t.id).await?
+                == Some(crate::table_access::ReadScope::OwnRecords);
+        }
+        Ok(listing)
+    }
+
     /// 自分が使えるテーブルの 1 ページ（名前の検索・続きの位置・GAP-42）。並びは [`Self::list_tables`] と同じ
     /// 更新の新しい順で、検索と続きも見えるテーブルの中だけを返す（LIMIT の前に絞る）。
     pub async fn list_tables_page(
