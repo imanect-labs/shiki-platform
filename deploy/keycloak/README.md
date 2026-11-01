@@ -62,7 +62,7 @@ DB）を作り直すか、管理コンソールの「Realm settings → User pro
 provisioner の資格情報で登録する（`crates/app-gateway/src/oauth.rs` の `client_representation`）。
 
 - B1（public・PKCE S256・アクセストークンは 5 分）の戻り先は `{web のオリジン}/apps/oauth/callback`（web シェルの
-  ポップアップ・ホスト支援 PKCE）。web のオリジンは `gateway.web_origin`、無ければ `auth.redirect_uri` のオリジン。
+  ポップアップ・ホスト支援 PKCE）。web のオリジンは `gateway.web_origin`、無ければ `auth.redirect_uri` のオリジン。どちらもブラウザーの `location.origin` の形（既定のポートと末尾の `/` を書かない）にそろえて登録する。
 - 既定のスコープは `basic` だけ（B2 は Keycloak が付ける `service_account` も）。トークンに `sub` を載せる `basic` は、
   Keycloak 25 以降の realm の既定のスコープ。**本番 realm に `basic` が無いと、アプリのトークンに `sub` が無く、
   ゲートウェイが 401 で断る。** 任意のスコープは能力スコープ（`data.read` など・サーバーが作る）。
