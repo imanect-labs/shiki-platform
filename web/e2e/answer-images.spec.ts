@@ -8,11 +8,13 @@ import { test, expect } from "@playwright/test";
 /// `SHOTS_DIR` を渡すとライト/ダークの PNG を保存する。
 const SHOTS = process.env.SHOTS_DIR;
 
-/// 1x1 の PNG（画像のホストは `.test` で実在しないので、ここで応答する）。
-const PNG = Buffer.from(
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
-  "base64",
-);
+/// 出典の画像（ホストは `.test` で実在しないので、ここで応答する）。見た目の確認用に図らしい大きさにする。
+const FIGURE = `<svg xmlns="http://www.w3.org/2000/svg" width="640" height="300" viewBox="0 0 640 300">
+<rect width="640" height="300" fill="#f4f6fb"/>
+<rect x="60" y="60" width="300" height="48" rx="6" fill="#2f6bff"/>
+<rect x="60" y="126" width="200" height="48" rx="6" fill="#41d6f2"/>
+<rect x="60" y="192" width="236" height="48" rx="6" fill="#9aa4b8"/>
+</svg>`;
 
 test.use({ deviceScaleFactor: 2 });
 
@@ -22,7 +24,7 @@ for (const theme of ["light", "dark"] as const) {
     const requested: string[] = [];
     await page.route(/\.test\//, async (route) => {
       requested.push(route.request().url());
-      await route.fulfill({ status: 200, contentType: "image/png", body: PNG });
+      await route.fulfill({ status: 200, contentType: "image/svg+xml", body: FIGURE });
     });
 
     await page.goto("/reference/answer-images");
@@ -34,7 +36,7 @@ for (const theme of ["light", "dark"] as const) {
     await expect(shown).toHaveAttribute("src", "https://images.example.test/market/saas-share-2026.png");
     await expect(shown).toHaveAttribute("referrerpolicy", "no-referrer");
     await expect(shown).toHaveAttribute("alt", "SaaS 市場の分野別シェア");
-    await expect.poll(() => shown.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth)).toBe(1);
+    await expect.poll(() => shown.evaluate((img: HTMLImageElement) => img.complete && img.naturalWidth)).toBe(640);
 
     // 出典の URL に何かを足したもの・出典に無いホストは、読み込まずにホストを添えたリンクにする。
     const blocked = timeline.getByTestId("answer-image-blocked");
