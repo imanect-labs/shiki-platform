@@ -674,6 +674,11 @@ run を推しはからない（利用者の要求の trace_id も run の trace_
 `cause_run_id` に残さない）。
 5. **queued の上限**: 1 ワークフローの queued run が 1,000 件以上なら `dropped_queue_full` で捨てる。
 6. 抑止・破棄は 1 件ずつ監査（`workflow.trigger.suppressed`・reason）に残す。
+7. **再試行の起動の前の確かめ直し**（BUG-75・ファイル保存の BUG-50 と同じ）: 起動に一時失敗して `pending` で待った発火は、
+   ペイロードに relay の時点の見え方を持っている。起動する時点に、3 と同じ主体（委譲元・委譲台帳を先に引く）で変更を
+   作り直し（`change_event_view`）、作り直したペイロードがトリガの filter に合うときだけ、そのペイロードで起動する
+   （読めなくなった列を run 入力に載せない・`record` は起動の時点の行）。見えない・委譲が無い・filter に合わないなら起動
+   せずに `skipped`（再試行しない）、確かめられない一時障害は起動の一時失敗として再試行に回す。
 
 配信の位置: workflow consumer は既存の配送台帳（順序に依存しない作り）のまま使い、data のストリームの `delivery_seq`
 は使わない（delivery_seq はテーブルのストリーム用で保持 600 秒で GC される。トリガは at-least-once と一意キーで足り、
