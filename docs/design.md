@@ -760,6 +760,8 @@ flowchart TB
   ③ **検証済みアドレスへの接続固定**（`resolve_to_addrs`。接続時に再解決させない＝DNS リバインディング遮断）、
   ④ リダイレクト非追従（PIT-36）、⑤ シークレット非添付・プロキシ非経由、⑥ 本文 256KiB 上限・テキストのみ。
   IP 分類は **net_guard が単一の正**で、egress プロキシ（gVisor/FC ティア）とミニアプリ HTTP（app-platform）も同じ表を使う。
+  ミニアプリの関数の外部 HTTP も、②〜⑤（接続固定・リダイレクト非追従・プロキシ非経由）と本文の上限（1 MiB）を同じく
+  守る（BUG-196・[PIT-48](./design-caveats.md)）。
   **前提条件（#346 で充足済み）**: code_interpreter が宣伝する numpy/pandas は、native rootfs へビルド時に同梱する
   （`deploy/sandbox-assets/rootfs-requirements.txt`・digest pin × wheel ハッシュ全固定 `--require-hashes` の二層で再現）。
   同梱物はティアで異なる（native のみ openpyxl・#384）ため、**ツール description はティアから導出**して
