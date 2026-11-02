@@ -340,7 +340,8 @@ async fn bodies_are_cut_at_the_limit() {
     assert_eq!(resp.body, b"aaaaaaaaaa");
 }
 
-/// 解決できない名前は、やり直せる失敗にする（送り先の場所を調べられない）。
+/// 引けない名前（DNS に届かない・一時的な失敗・見分けられない失敗）は、やり直せる失敗にする（送り先の場所を調べ
+/// られない）。
 #[tokio::test]
 async fn unresolvable_names_are_a_retryable_failure() {
     let egress = HttpEgress::default().with_resolver(MapResolver::new(&[]));
@@ -352,8 +353,43 @@ async fn unresolvable_names_are_a_retryable_failure() {
     assert!(err.retryable);
     assert_eq!(
         err.message,
-        "送り先のサービス（nowhere.invalid）の場所を調べられませんでした。URL のドメインを確かめてください。"
+        "送り先のサービス（nowhere.invalid）の場所を調べられませんでした。少し待ってから、もう一度実行してください。\
+         続くときは、URL のドメインを確かめてください。"
     );
+}
+
+/// その名前のアドレスが無いと分かった名前（NXDOMAIN など）は URL の誤りなので、やり直さない（BUG-202）。
+#[tokio::test]
+async fn names_that_do_not_exist_are_not_retried() {
+    struct Missing;
+    #[async_trait::async_trait]
+    impl HostResolver for Missing {
+        async fn lookup(&self, _: &str, _: u16) -> Result<Vec<SocketAddr>, &'static str> {
+            Err(net_guard::NO_SUCH_HOST)
+        }
+    }
+    let egress = HttpEgress::default().with_resolver(Arc::new(Missing));
+    let err = egress
+        .send(get("https://api.exmaple.com/v1"))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, DESTINATION_NOT_FOUND);
+    assert!(!err.retryable);
+    assert_eq!(
+        err.message,
+        "送り先のサービス（api.exmaple.com）が見つかりませんでした。URL のドメインに誤りがないか確かめてください。"
+    );
+    // 名前は OS の DNS で引く（.invalid は名前が無い答えが決まっている）。DNS に届かない環境ではやり直せる失敗の
+    // まま（見分けられないときは今のまま）。
+    let err = HttpEgress::default()
+        .send(get("https://no-such-host.invalid/"))
+        .await
+        .unwrap_err();
+    assert!(
+        err.code == DESTINATION_NOT_FOUND || err.code == "unavailable",
+        "{err:?}"
+    );
+    assert_eq!(err.retryable, err.code == "unavailable");
 }
 
 /// 確かめた名前のほかは引かない（固定の名前解決）。

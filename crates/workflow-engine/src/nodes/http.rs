@@ -82,6 +82,13 @@ pub const DESTINATION_INTERNAL: &str = "destination_internal";
 /// あっても断る・permanent・BUG-181・D-135）。
 pub const DESTINATION_LINK_LOCAL: &str = "destination_link_local";
 
+/// 送り先の名前のアドレスが無い（NXDOMAIN・名前はあるがアドレスが無い）ので送れなかったときの code（URL のドメインの
+/// 誤り・permanent・BUG-202）。
+///
+/// DNS に届かない・一時的に引けないとき（やり直せる `unavailable`）とは分ける。見分けられないときは `unavailable` のまま
+/// （`sandbox_client::net_guard::NO_SUCH_HOST`）。試す回数を増やしたブロックでも、URL の誤りではやり直さない。
+pub const DESTINATION_NOT_FOUND: &str = "destination_not_found";
+
 /// 送り先のアドレスで断った失敗か（エンジンが監査に残す）。
 #[must_use]
 pub fn destination_refused(code: &str) -> bool {

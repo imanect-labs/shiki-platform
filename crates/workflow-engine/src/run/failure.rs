@@ -77,6 +77,8 @@ pub const KNOWN_CODES: &[(&str, FailureCategory)] = {
         // 送り先の名前が内部のネットワーク・リンクローカル・メタデータの IP につながる（管理者が許すか URL を直す・BUG-181）。
         (crate::nodes::http::DESTINATION_INTERNAL, Configuration),
         (crate::nodes::http::DESTINATION_LINK_LOCAL, Configuration),
+        // 送り先の名前のアドレスが無い（URL のドメインの誤り・BUG-202）。
+        (crate::nodes::http::DESTINATION_NOT_FOUND, Configuration),
         // 外部のサービスが誤り（4xx）を返した（送る内容・URL・シークレットを直す・BUG-99）。
         (crate::nodes::http::HTTP_ERROR_STATUS, Configuration),
         ("fanout_limit_exceeded", Configuration),
@@ -193,6 +195,10 @@ fn specific_message(code: &str) -> Option<&'static str> {
         // 「ワークフローの設定に問題があり」より原因を言う（送り先が内部のネットワークにつながる・BUG-181・D-135）。
         crate::nodes::http::DESTINATION_INTERNAL | crate::nodes::http::DESTINATION_LINK_LOCAL => {
             "送り先が内部のネットワークにつながるため、外部のサービスに送れませんでした。作成者に連絡してください。"
+        }
+        // 「ワークフローの設定に問題があり」より原因を言う（送り先の名前が見つからない・BUG-202）。
+        crate::nodes::http::DESTINATION_NOT_FOUND => {
+            "送り先のサービスが見つからなかったため、外部のサービスに送れませんでした。作成者に連絡してください。"
         }
         // 付録 C の §5.2（failure.rs の時間切れの文言の直し）。
         "run_timeout" => {
@@ -725,6 +731,19 @@ mod tests {
             assert_eq!(h.advice, ResumeAdvice::SameResult, "{code}");
             assert!(!h.offer && h.offer_rerun, "{h:?}");
         }
+    }
+
+    /// 送り先の名前が見つからない失敗は設定の誤りで、原因（URL か DNS）を直してから再開する（BUG-202）。
+    #[test]
+    fn missing_destinations_are_configuration_to_fix_first() {
+        let code = crate::nodes::http::DESTINATION_NOT_FOUND;
+        let f = run_failure(Uuid::nil(), Some(code), None);
+        assert_eq!(f.category, FailureCategory::Configuration);
+        assert_eq!(
+            f.message,
+            "送り先のサービスが見つからなかったため、外部のサービスに送れませんでした。作成者に連絡してください。"
+        );
+        assert_eq!(resume_hint(Some(code), None).advice, ResumeAdvice::FixFirst);
     }
 
     /// 再開の API が断るときの code は、詳細の `resume.advice` と同じ名前（D-116）。

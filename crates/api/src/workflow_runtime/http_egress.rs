@@ -20,6 +20,8 @@
 //! 5. 本文は上限（8 MB）まで読み、超えた分は読まない。
 //!
 //! 断ったときは、作成者向けの文で [`DESTINATION_INTERNAL`]・[`DESTINATION_LINK_LOCAL`] の失敗にする（やり直さない）。
+//! 名前のアドレスが無い（NXDOMAIN など）ときは [`DESTINATION_NOT_FOUND`]（URL の誤り・やり直さない）、DNS に届かない・
+//! 一時的に引けないときは `unavailable`（やり直せる）にする（BUG-202）。
 //! 監査はエンジンが code を見て残す（送り先のホストと理由）。
 
 use std::net::SocketAddr;
@@ -27,7 +29,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use sandbox_client::net_guard::{self, AddrRefusal, HostResolver, SystemResolver};
-use workflow_engine::nodes::http::{DESTINATION_INTERNAL, DESTINATION_LINK_LOCAL};
+use workflow_engine::nodes::http::{
+    DESTINATION_INTERNAL, DESTINATION_LINK_LOCAL, DESTINATION_NOT_FOUND,
+};
 use workflow_engine::{HttpSendReq, HttpSendResp, PortError};
 
 /// 応答の本文を読む上限（バイト）。超えた分は読まずに打ち切る（巨大な応答の全量を持たない）。
@@ -170,23 +174,31 @@ impl HttpEgress {
             .port_or_known_default()
             .ok_or_else(|| PortError::invalid("URL は http:// か https:// で始めてください。"))?;
         // IP の書き方（10 進・8 進・16 進の IPv4、IPv4 を写した IPv6）は、URL を読んだ時点で IP にそろう。
-        let (domain, resolved) = match url.host() {
-            Some(url::Host::Domain(d)) => {
-                let found = tokio::time::timeout(RESOLVE_TIMEOUT, self.resolver.lookup(d, port))
-                    .await
-                    .ok()
-                    .and_then(Result::ok)
-                    .unwrap_or_default();
-                (Some(d.to_string()), found)
-            }
-            Some(url::Host::Ipv4(ip)) => (None, vec![SocketAddr::new(ip.into(), port)]),
-            Some(url::Host::Ipv6(ip)) => (None, vec![SocketAddr::new(ip.into(), port)]),
-            None => {
-                return Err(PortError::invalid(
-                    "URL にドメインがありません。例: https://api.example.com",
-                ))
-            }
-        };
+        let (domain, resolved) =
+            match url.host() {
+                Some(url::Host::Domain(d)) => {
+                    let found =
+                        match tokio::time::timeout(RESOLVE_TIMEOUT, self.resolver.lookup(d, port))
+                            .await
+                        {
+                            Ok(Ok(addrs)) => addrs,
+                            // その名前のアドレスが無い（URL のドメインの誤り）。やり直しても直らない（BUG-202）。
+                            Ok(Err(reason)) if reason == net_guard::NO_SUCH_HOST => {
+                                return Err(not_found(shown))
+                            }
+                            // DNS に届かない・一時的に引けない・時間切れ（やり直せる・下の Unresolved）。
+                            Ok(Err(_)) | Err(_) => Vec::new(),
+                        };
+                    (Some(d.to_string()), found)
+                }
+                Some(url::Host::Ipv4(ip)) => (None, vec![SocketAddr::new(ip.into(), port)]),
+                Some(url::Host::Ipv6(ip)) => (None, vec![SocketAddr::new(ip.into(), port)]),
+                None => {
+                    return Err(PortError::invalid(
+                        "URL にドメインがありません。例: https://api.example.com",
+                    ))
+                }
+            };
         let seen = resolved.clone();
         let allow_internal = url
             .host()
@@ -202,11 +214,22 @@ impl HttpEgress {
     }
 }
 
+/// 送り先の名前のアドレスが無いときの作成者向けの文（[`DESTINATION_NOT_FOUND`]・やり直さない・BUG-202）。
+fn not_found(host: &str) -> PortError {
+    PortError::new(
+        DESTINATION_NOT_FOUND,
+        format!("送り先のサービス（{host}）が見つかりませんでした。URL のドメインに誤りがないか確かめてください。"),
+        false,
+    )
+}
+
 /// 断った理由を作成者向けの文にする（どれもやり直さない。解決できないときだけやり直せる）。
 fn refused(host: &str, refusal: AddrRefusal) -> PortError {
     match refusal {
+        // 名前が無いと分かったときは [`not_found`]。ここは DNS に届かない・一時的に引けない・時間切れ。
         AddrRefusal::Unresolved => PortError::unavailable(format!(
-            "送り先のサービス（{host}）の場所を調べられませんでした。URL のドメインを確かめてください。"
+            "送り先のサービス（{host}）の場所を調べられませんでした。少し待ってから、もう一度実行してください。\
+             続くときは、URL のドメインを確かめてください。"
         )),
         AddrRefusal::Internal => PortError::new(
             DESTINATION_INTERNAL,

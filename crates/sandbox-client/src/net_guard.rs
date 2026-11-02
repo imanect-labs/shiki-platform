@@ -199,7 +199,17 @@ pub trait HostResolver: Send + Sync {
     async fn lookup(&self, host: &str, port: u16) -> Result<Vec<SocketAddr>, &'static str>;
 }
 
+/// [`HostResolver::lookup`] の理由: その名前のアドレスが無い（NXDOMAIN・名前はあるがアドレスが無い）。
+///
+/// URL の誤りなので、やり直しても直らない（ワークフローの外部への送信は設定の誤りにする・BUG-202）。
+pub const NO_SUCH_HOST: &str = "その名前のホストはありません";
+
+/// [`HostResolver::lookup`] の理由: 名前を引けなかった（DNS に届かない・一時的な失敗・見分けられない失敗）。
+pub const LOOKUP_FAILED: &str = "ホストを解決できませんでした";
+
 /// ホスト OS の DNS を引く既定リゾルバ。
+///
+/// 引けないときの理由は、その名前のアドレスが無いと分かったときだけ [`NO_SUCH_HOST`]、ほかは [`LOOKUP_FAILED`]。
 pub struct SystemResolver;
 
 #[async_trait::async_trait]
@@ -207,8 +217,38 @@ impl HostResolver for SystemResolver {
     async fn lookup(&self, host: &str, port: u16) -> Result<Vec<SocketAddr>, &'static str> {
         Ok(tokio::net::lookup_host((host, port))
             .await
-            .map_err(|_| "ホストを解決できませんでした")?
+            .map_err(|e| lookup_failure(&e))?
             .collect())
+    }
+}
+
+/// 名前を引けなかった誤りを理由にする（[`NO_SUCH_HOST`] か [`LOOKUP_FAILED`]）。
+///
+/// 標準ライブラリは getaddrinfo の誤りの番号を `io::Error` に残さず、`gai_strerror` の文だけを
+/// `failed to lookup address information: <文>` の形で返す（Rust は setlocale を呼ばないので、文は C ロケールの英語）。
+/// その名前のアドレスが無いことを表す文（EAI_NONAME・EAI_NODATA）を、glibc（サーバーのイメージの Debian）・musl・
+/// macOS の文で見分ける。DNS に届かない・一時的な失敗（EAI_AGAIN・EAI_FAIL）、OS の誤り（EAI_SYSTEM は errno を
+/// 持つ）、見分けられない文は [`LOOKUP_FAILED`] のまま（やり直せる失敗として扱う）。
+fn lookup_failure(e: &std::io::Error) -> &'static str {
+    /// その名前のアドレスが無いことを表す `gai_strerror` の文。
+    const NO_NAME: [&str; 5] = [
+        // glibc の EAI_NONAME（NXDOMAIN）・EAI_NODATA（名前はあるがアドレスが無い）。
+        "Name or service not known",
+        "No address associated with hostname",
+        // musl の EAI_NONAME。
+        "Name does not resolve",
+        // macOS・BSD の EAI_NONAME・EAI_NODATA。
+        "nodename nor servname provided, or not known",
+        "no address associated with nodename",
+    ];
+    if e.raw_os_error().is_some() {
+        return LOOKUP_FAILED;
+    }
+    let text = e.to_string();
+    if NO_NAME.iter().any(|m| text.ends_with(m)) {
+        NO_SUCH_HOST
+    } else {
+        LOOKUP_FAILED
     }
 }
 
@@ -377,6 +417,41 @@ mod tests {
         assert_eq!(
             ensure_all_public(vec![]),
             Err("ホストを解決できませんでした")
+        );
+    }
+
+    /// 引けなかった理由は、その名前のアドレスが無いと分かったときだけ「無い」にする（BUG-202）。標準ライブラリが
+    /// getaddrinfo の誤りを包む形（`failed to lookup address information: <gai_strerror の文>`）で確かめる。
+    #[test]
+    fn lookup_failures_tell_a_missing_name_from_a_temporary_failure() {
+        let gai = |text: &str| {
+            std::io::Error::other(format!("failed to lookup address information: {text}"))
+        };
+        for missing in [
+            "Name or service not known",
+            "No address associated with hostname",
+            "Name does not resolve",
+            "nodename nor servname provided, or not known",
+        ] {
+            assert_eq!(lookup_failure(&gai(missing)), NO_SUCH_HOST, "{missing}");
+        }
+        for temporary in [
+            "Temporary failure in name resolution",
+            "Non-recoverable failure in name resolution",
+            "Try again",
+            "System error",
+            "何かの誤り",
+        ] {
+            assert_eq!(
+                lookup_failure(&gai(temporary)),
+                LOOKUP_FAILED,
+                "{temporary}"
+            );
+        }
+        // OS の誤り（EAI_SYSTEM は errno を返す）は、文が当たっても「無い」にしない。
+        assert_eq!(
+            lookup_failure(&std::io::Error::from_raw_os_error(110)),
+            LOOKUP_FAILED
         );
     }
 
