@@ -29,8 +29,8 @@ export type PageRequest = { before?: OwnedPosition; sharedCursor?: string };
 
 export type FetchPage<T> = (req: PageRequest) => Promise<ListPage<T>>;
 
-/// 続きの頼みのどちらが失敗したか（自分のものが失敗したら `owned`）。
-export type MoreFailed = "owned" | "shared" | null;
+/// 続きの頼みのどれが失敗したか（自分のものだけ `owned`・共有された分だけ `shared`・両方 `both`）。
+export type MoreFailed = "owned" | "shared" | "both" | null;
 
 /// 読めた一覧と、まだ読んでいない続きの位置。
 export type OwnedSharedList<T> = {
@@ -81,7 +81,7 @@ export async function readMore<T extends Listed>(
     items: mergeNewest(owned.items, shared.items),
     ownedNext: owned.next,
     sharedCursor: shared.cursor,
-    failed: owned.failed ? "owned" : shared.failed ? "shared" : null,
+    failed: owned.failed && shared.failed ? "both" : owned.failed ? "owned" : shared.failed ? "shared" : null,
   };
 }
 

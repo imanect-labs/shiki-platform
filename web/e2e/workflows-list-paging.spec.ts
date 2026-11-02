@@ -7,7 +7,8 @@ import { cleanupQueue, loginAs, loginViaKeycloak, removeWorkflowApi, uniqueName 
 ///   続きは自分のものだけを、共有された分の続きは共有された分だけを、重ならずに返す。両方を同時に渡すと 400。
 /// - 画面の「さらに読み込む」は、それぞれの位置から続きを読む。合わせたページの最後の 1 件（共有されたもの）を位置に
 ///   使わないので、それより新しい自分のワークフローを読み飛ばさない（応答は route で差し替える）。
-/// - 読み込みの失敗を「まだワークフローがありません」に見せず、続きの失敗も言う（BUG-189）。
+/// - 読み込みの失敗を「まだワークフローがありません」に見せず、続きの失敗も言う（自分のもの・共有された分・両方を
+///   言い分ける・BUG-189）。
 /// 作ったもの（ワークフロー・ブラウザーの文脈）は最後に片付ける（失敗したテストでも走る）。
 
 const cleanup = cleanupQueue();
@@ -282,6 +283,30 @@ test("一覧の読み込みの失敗を空に見せず、続きの失敗と共�
     await expect(page.getByTestId("list-more")).toHaveCount(0);
   } finally {
     await sharedServed.stop();
+  }
+
+  // 4. 自分のものと共有された分の続きが両方とも失敗した: 両方を読めていないことを言い、押すと両方の位置から読む。
+  const bothPages: Record<string, unknown> = {
+    "": { items: [OWN_NEW], owned_next: ownedNextOf(OWN_NEW), shared_next_cursor: "s1" },
+    [`before:${OWN_NEW.id}`]: { items: [OWN_MID], owned_next: null, shared_next_cursor: null },
+  };
+  // 最初の読み込みは共有された分の続きを 5 回まで（s1〜s5・0 件）たどり、s6 を残す。
+  for (let i = 1; i <= 5; i += 1) bothPages[`shared:s${i}`] = { items: [], owned_next: null, shared_next_cursor: `s${i + 1}` };
+  bothPages["shared:s6"] = { items: [SHARED_OLD], owned_next: null, shared_next_cursor: null };
+  const bothServed = await serveFlows(page, bothPages, new Set([`before:${OWN_NEW.id}`, "shared:s6"]));
+  try {
+    await page.goto("/workflows");
+    await expect(page.getByText(OWN_NEW.display_name)).toBeVisible({ timeout: 20_000 });
+    await page.getByTestId("list-more-button").click();
+    await expect(page.getByTestId("list-more")).toHaveText(
+      /ワークフローと、共有されたワークフローの続きを読み込めませんでした。「さらに読み込む」でもう一度試します。/,
+    );
+    await page.getByTestId("list-more-button").click();
+    await expect(page.getByText(OWN_MID.display_name)).toBeVisible();
+    await expect(page.getByText(SHARED_OLD.display_name)).toBeVisible();
+    await expect(page.getByTestId("list-more")).toHaveCount(0);
+  } finally {
+    await bothServed.stop();
   }
 
   if (process.env.E2E_SHOTS_DIR) {
