@@ -268,10 +268,7 @@ impl HostBridge {
                     .and_then(Value::as_str)
                     .ok_or_else(|| PortError::invalid("storage.write: name がありません"))?
                     .to_string();
-                let parent = a
-                    .get("parent")
-                    .and_then(Value::as_str)
-                    .and_then(|s| uuid::Uuid::parse_str(s).ok());
+                let parent = parent_folder(a, "storage.write", "ドライブのトップに保存します")?;
                 let content = a.get("content").cloned().unwrap_or(Value::Null);
                 let bytes = as_bytes(&content);
                 let content_type = a
@@ -586,17 +583,32 @@ pub(super) fn sha_hex(bytes: &[u8]) -> String {
     format!("{:x}", h.finalize())
 }
 
+/// `Shiki.storage.list`・`Shiki.storage.write` のフォルダー（`parent`）。省略と null はドライブのトップ。
+///
+/// UUID でない値（フォルダーの名前・パス・オブジェクトなど）は、ドライブのトップへ黙って落とさずに `invalid` で断る
+/// （D-131・BUG-198）。トップのファイルは親フォルダーの共有を受け継がないので、落とすと、渡すつもりのフォルダーの人に
+/// 届かないまま成功に見える。
+/// `top` は省いたときに何をするか（誤りの文に添える）。
+fn parent_folder(a: &Value, api: &str, top: &str) -> Result<Option<uuid::Uuid>, PortError> {
+    match a.get("parent") {
+        None | Some(Value::Null) => Ok(None),
+        Some(v) => v
+            .as_str()
+            .and_then(|s| uuid::Uuid::parse_str(s).ok())
+            .map(Some)
+            .ok_or_else(|| {
+                PortError::invalid(format!(
+                    "Shiki.{api} の parent には、フォルダーの id を渡してください（名前やパスでは指定できません）。\
+                     省くか null にすると、{top}。"
+                ))
+            }),
+    }
+}
+
 /// `Shiki.storage.list(parent, cursor)` の引数（D-131）。フォルダーに読めない値を渡したら、ドライブのトップへ黙って
-/// 落とさずに断る（続きの位置はフォルダーに束縛される）。続きの位置の省略・null・空の文字は先頭から。
+/// 落とさずに断る（[`parent_folder`]・続きの位置はフォルダーに束縛される）。続きの位置の省略・null・空の文字は先頭から。
 fn storage_list_req(a: &Value) -> Result<StorageListReq, PortError> {
-    let parent_id = match a.get("parent") {
-        None | Some(Value::Null) => None,
-        Some(v) => Some(
-            v.as_str()
-                .and_then(|s| uuid::Uuid::parse_str(s).ok())
-                .ok_or_else(|| PortError::invalid("storage.list: parent が UUID ではありません"))?,
-        ),
-    };
+    let parent_id = parent_folder(a, "storage.list", "ドライブのトップを読みます")?;
     let cursor = match a.get("cursor") {
         None | Some(Value::Null) => None,
         Some(Value::String(s)) if s.is_empty() => None,

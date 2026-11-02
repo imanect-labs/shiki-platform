@@ -1814,3 +1814,58 @@ async fn script_storage_list_passes_the_cursor() {
         assert!(last().is_none(), "{input}");
     }
 }
+
+/// script の `Shiki.storage.write(parent, ...)` は、省略と null だけをドライブのトップにする。フォルダーの名前・パス・
+/// 数・オブジェクトなど UUID でない値は、トップへ黙って書かずに invalid で断る（BUG-198・`Shiki.storage.list` と同じ）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn script_storage_write_refuses_a_parent_that_is_not_a_folder_id() {
+    const SCRIPT: &str = r#"function main(input) {
+  if (input.mode === "omit") return Shiki.storage.write(undefined, "a.txt", "x");
+  return Shiki.storage.write(input.parent, "a.txt", "x");
+}"#;
+    let ports = Arc::new(FakePorts::default());
+    let audit = Arc::new(CapturingAudit::default());
+    let engine = Arc::new(script_runtime::engine::ScriptEngine::new().expect("script engine"));
+    let exec = script_executor(&ports, &audit, &engine);
+    let folder = Uuid::new_v4();
+    let run = |input: Value| {
+        let exec = &exec;
+        async move {
+            exec.execute(
+                "script.run",
+                &json!({ "source": { "inline": SCRIPT } }),
+                &ctx(input, vec!["storage.write".into()]),
+            )
+            .await
+        }
+    };
+    let last = || ports.last_write.lock().unwrap().take();
+
+    let res = run(json!({ "mode": "parent", "parent": folder.to_string() })).await;
+    assert!(res.ok, "{:?}", res.error);
+    assert_eq!(last().unwrap().parent_id, Some(folder));
+    // 省略と null はドライブのトップ。
+    for input in [
+        json!({ "mode": "omit" }),
+        json!({ "mode": "parent", "parent": null }),
+    ] {
+        let res = run(input.clone()).await;
+        assert!(res.ok, "{input}: {:?}", res.error);
+        assert_eq!(last().unwrap().parent_id, None, "{input}");
+    }
+    // UUID でない値は invalid（ポートを呼ばない・トップへ書かない）。
+    for input in [
+        json!({ "mode": "parent", "parent": "経費" }),
+        json!({ "mode": "parent", "parent": "/共有/経費" }),
+        json!({ "mode": "parent", "parent": "" }),
+        json!({ "mode": "parent", "parent": 3 }),
+        json!({ "mode": "parent", "parent": { "id": folder.to_string() } }),
+    ] {
+        let res = run(input.clone()).await;
+        assert!(!res.ok, "{input}");
+        let err = res.error.as_ref().unwrap();
+        assert_eq!(err.code, "invalid", "{input}: {err:?}");
+        assert!(err.message.contains("フォルダーの id"), "{input}: {err:?}");
+        assert!(last().is_none(), "{input}: トップへ書かない");
+    }
+}
