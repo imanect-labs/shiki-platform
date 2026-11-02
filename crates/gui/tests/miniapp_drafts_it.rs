@@ -785,3 +785,121 @@ async fn saving_checks_the_bundled_skill_body() {
     })
     .await;
 }
+
+/// 画面のボタンは押すたびにミニアプリの解決（`miniapp.resolve`・束ねた skill のバンドル読み）をやり直さない
+/// （BUG-77）。開いたときの解決が 1 回残り、押すたびに残るのは操作（`ui_action.invoke`）だけ。本体の viewer は
+/// 押すたびに確かめ直すので、共有を外した直後の押下から起動しない。
+#[tokio::test]
+async fn pressing_buttons_does_not_resolve_the_app_again() {
+    let Some(pool) = pool().await else { return };
+    let Some(fga) = Fga::connect().await else {
+        return;
+    };
+    let s = stores(pool.clone(), Arc::clone(&fga.client));
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let t = tenant.clone();
+    let db = pool.clone();
+    run_with_cleanup(pool, tenant, Some(fga), async move {
+        let alice = ctx(&t, "alice");
+        let bob = ctx(&t, "bob");
+        let wf = workflow(&s, &alice, "expense-wf").await;
+        let (skill, _) = s
+            .skills
+            .create(
+                &alice,
+                "expense-guide",
+                &json!({ "description": "経費の案内", "instructions": "経費の質問に答える。" }),
+                None,
+            )
+            .await
+            .expect("skill");
+        let mut body = app_body("v1", wf, 1);
+        body["skill"] = json!({ "artifact_id": skill, "version": 1 });
+        let app = s
+            .mini_apps
+            .create(&alice, "press-app", &body, SaveMode::Draft, None)
+            .await
+            .expect("create")
+            .id;
+        s.mini_apps
+            .publish(&alice, app, 1, None)
+            .await
+            .expect("publish");
+        share(&s, &alice, app, "bob", ArtifactRole::Viewer).await;
+
+        // bob が開く（解決は 1 回）。
+        s.mini_apps
+            .resolve(&bob, app, None, None)
+            .await
+            .expect("bob opens");
+        let starter = Arc::new(CountingStarter::default());
+        let mut dispatcher = ActionDispatcher::new(storage::audit::AuditRecorder::new(db.clone()));
+        dispatcher.set_workflow_starter(starter.clone());
+        let action_id = format!(
+            "{}:a1",
+            yui::extract_action_blocks(&screen("v1")).remove(0).hash
+        );
+        let press = |key: String| MiniAppActionRequest {
+            version: 1,
+            action_id: action_id.clone(),
+            params: json!({ "amount": 100 }).as_object().cloned().unwrap(),
+            idempotency_key: Some(key),
+        };
+        for i in 0..3 {
+            s.mini_apps
+                .invoke_yui_action(&bob, &dispatcher, app, press(format!("press-{i:04}")), None)
+                .await
+                .expect("press");
+        }
+        assert_eq!(starter.0.load(std::sync::atomic::Ordering::SeqCst), 3);
+        let count = |action: &'static str, object: Option<Uuid>| {
+            let db = db.clone();
+            let t = t.clone();
+            async move {
+                sqlx::query_scalar::<_, i64>(
+                    "SELECT count(*) FROM audit_log WHERE tenant_id = $1 AND actor = 'bob' \
+                       AND action = $2 AND ($3::text IS NULL OR object_id = $3)",
+                )
+                .bind(&t)
+                .bind(action)
+                .bind(object.map(|id| id.to_string()))
+                .fetch_one(&db)
+                .await
+                .expect("audit")
+            }
+        };
+        assert_eq!(
+            count("miniapp.resolve", None).await,
+            1,
+            "解決は開いたときの 1 回だけ（押すたびに重ねない）"
+        );
+        assert_eq!(
+            count("artifact.read_via_bundle", Some(skill)).await,
+            1,
+            "ボタンは skill を読まない"
+        );
+        assert_eq!(count("ui_action.invoke", None).await, 3, "操作は 1 回ごと");
+
+        // 共有を外すと、直後の押下から起動しない（権限は押すたびに確かめ直す）。
+        s.artifacts
+            .unshare(
+                &alice,
+                app,
+                &storage::ShareTarget::User { id: "bob".into() },
+                ArtifactRole::Viewer,
+                None,
+            )
+            .await
+            .expect("unshare");
+        let after = s
+            .mini_apps
+            .invoke_yui_action(&bob, &dispatcher, app, press("press-9999".into()), None)
+            .await;
+        assert!(
+            matches!(after, Err(ActionError::NotFound | ActionError::Forbidden)),
+            "{after:?}"
+        );
+        assert_eq!(starter.0.load(std::sync::atomic::Ordering::SeqCst), 3);
+    })
+    .await;
+}

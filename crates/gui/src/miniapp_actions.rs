@@ -5,6 +5,11 @@
 //! **押した本人の権限**で起動する（IR はバンドル権限で読む・[`WorkflowStarter::start_pinned_via_bundle`]）。
 //! 画面から送れるのは id と値と冪等キーだけで、実行先は送れない。
 //!
+//! 押すたびにミニアプリの解決（[`MiniAppStore::resolve`]）はやり直さない（BUG-77）。開いたときの解決が
+//! `miniapp.resolve` を 1 回残し、ボタンは skill を使わないので、毎回読むのは本体の viewer と保存済みの版の
+//! 画面・ピンだけ（[`MiniAppStore::load_saved`]・表の描画と同じ・BUG-24）。権限は押すたびに確かめ直すので、
+//! 共有を外した直後の押下から効く。1 回ごとの操作は `ui_action.invoke` が残す。
+//!
 //! 同じ冪等キーは 1 回だけ起動する（`miniapp_action_run`）。起動の記録は押した本人だけが読み、
 //! 終わった状態は run の終端でトリガが写す（表示のときも run を読んで書き戻す）。
 //!
@@ -162,18 +167,19 @@ impl MiniAppStore {
                 .invoke_data_grid(ctx, dispatcher, app_id, &req, &alias, trace_id)
                 .await;
         }
-        // 1. 本体の viewer（解決が認可する）。部品は読まない（ワークフローは起動時にバンドル権限で読む）。
-        let resolved = self
-            .resolve(ctx, app_id, Some(req.version), trace_id)
+        // 1. 本体の viewer と保存済みの版（押すたびに確かめ直す）。部品は読まない（ワークフローは起動時にバンドル
+        //    権限で読む）。skill は読まず、解決の監査も重ねない（BUG-77・表の描画と同じ・BUG-24）。
+        let (_, version, body) = self
+            .load_saved(ctx, app_id, Some(req.version), trace_id)
             .await
             .map_err(map_gui_err)?;
         let source = ActionSource::MiniApp {
-            artifact_id: resolved.id,
-            version: resolved.version,
+            artifact_id: app_id,
+            version,
         };
         let key = req.action_id.as_str();
         // 2. 保存済みの版の画面からボタンを読み直す（画面の図は信用しない）。
-        let Some((block, action)) = yui::find_action([resolved.body.screen.as_str()], key) else {
+        let Some((block, action)) = yui::find_action([body.screen.as_str()], key) else {
             dispatcher
                 .deny(ctx, &source, key, "undeclared_action", trace_id)
                 .await;
@@ -186,7 +192,7 @@ impl MiniAppStore {
                 .await;
             return Err(ActionError::NotFound);
         };
-        let Some(pin) = resolved.body.workflows.iter().find(|w| &w.alias == name) else {
+        let Some(pin) = body.workflows.iter().find(|w| &w.alias == name) else {
             dispatcher
                 .deny(ctx, &source, key, "unbundled_workflow", trace_id)
                 .await;
@@ -228,14 +234,7 @@ impl MiniAppStore {
             .collect();
         // 3. 同じ冪等キーは 1 回だけ起動する。先に確保し、取れなければ前の結果を返す。
         if !self
-            .claim_run(
-                ctx,
-                &run_key,
-                resolved.version,
-                &action.label,
-                &pin.alias,
-                &summary,
-            )
+            .claim_run(ctx, &run_key, version, &action.label, &pin.alias, &summary)
             .await?
         {
             return match self.run_of(ctx, &run_key).await? {
