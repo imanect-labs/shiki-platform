@@ -12,6 +12,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use super::graph::RunGraph;
+use super::launch_skip::{SkipCause, SkipWarnings};
 use super::store::{RunOrigin, RunStore};
 use crate::delegation::{DelegationStore, RunAdmission};
 use crate::scheduler::{LaunchOutcome, RunLauncher, SkipReason};
@@ -26,29 +27,9 @@ pub struct WorkflowRunLauncher {
     delegation: DelegationStore,
     workflows: WorkflowStore,
     runs: RunStore,
-    /// 定義を読めないことを警告した自動実行（テナント・ワークフロー・有効化した版）。発火のたびに警告しない（BUG-146）。
-    unreadable_warned: Arc<WarnOnce>,
-    /// 実行の前に止める設定があることを警告した自動実行（同じく版ごとに 1 回・BUG-51）。
-    not_ready_warned: Arc<WarnOnce>,
-}
-
-/// 同じ相手への警告をプロセスで 1 回にする覚え（BUG-146）。覚える数が上限に届いたら忘れて、また 1 回ずつ警告する。
-#[derive(Debug, Default)]
-struct WarnOnce(std::sync::Mutex<std::collections::HashSet<(String, Uuid, i64)>>);
-
-impl WarnOnce {
-    /// 覚える数の上限。
-    const MAX: usize = 10_000;
-
-    /// はじめての相手なら覚えて `true`（警告する）。覚えていれば `false`。
-    fn first(&self, tenant_id: &str, workflow_id: Uuid, version: i64) -> bool {
-        self.0.lock().is_ok_and(|mut seen| {
-            if seen.len() >= Self::MAX {
-                seen.clear();
-            }
-            seen.insert((tenant_id.to_string(), workflow_id, version))
-        })
-    }
+    /// 見送りを警告した自動実行（理由・テナント・ワークフロー・有効化した版）。発火のたびに警告しない（BUG-146・BUG-51・
+    /// BUG-170）。
+    skip_warnings: Arc<SkipWarnings>,
 }
 
 impl WorkflowRunLauncher {
@@ -57,45 +38,23 @@ impl WorkflowRunLauncher {
             delegation,
             workflows,
             runs,
-            unreadable_warned: Arc::default(),
-            not_ready_warned: Arc::default(),
+            skip_warnings: Arc::default(),
         }
     }
 
-    /// 自動実行の版に実行の前に止める設定があることを、(テナント・ワークフロー・有効化した版) ごとにプロセスで 1 回だけ
-    /// 警告する（BUG-51）。2 回目からは debug に落とす。
-    fn warn_not_ready_once(&self, tenant_id: &str, workflow_id: Uuid, version: i64, reason: &str) {
-        if self.not_ready_warned.first(tenant_id, workflow_id, version) {
-            tracing::warn!(
-                tenant_id,
-                %workflow_id,
-                version,
-                reason,
-                "自動実行の版に、実行の前に止める設定があるため run を開始しません（欄を埋めて自動実行をオンにし直すと\
-                 直ります。以後この版の発火では警告しません）"
-            );
-        } else {
-            tracing::debug!(tenant_id, %workflow_id, version, "実行の前に止める設定があるため run を開始しません");
-        }
-    }
-
-    /// 自動実行で定義を読めないことを、(テナント・ワークフロー・有効化した版) ごとにプロセスで 1 回だけ警告する
-    /// （BUG-146）。2 回目からは debug に落とす（監査の deny は artifact の側で毎回残る）。
-    fn warn_unreadable_once(&self, tenant_id: &str, workflow_id: Uuid, version: i64) {
-        if self
-            .unreadable_warned
-            .first(tenant_id, workflow_id, version)
-        {
-            tracing::warn!(
-                tenant_id,
-                %workflow_id,
-                version,
-                "自動実行の主体がワークフローの定義を読めないため run を開始しません（自動実行をオンにし直すと直ります。\
-                 以後この版の発火では警告しません）"
-            );
-        } else {
-            tracing::debug!(tenant_id, %workflow_id, version, "定義を読めないため run を開始しません");
-        }
+    /// 自動実行の起動を見送る（再試行しない）。警告は (理由・テナント・ワークフロー・有効化した版) ごとにプロセスで
+    /// 1 回（2 回目からは debug）。`reason` は詳しい理由（ログと戻り値の文・作成者には見せない）。
+    fn skip(
+        &self,
+        cause: SkipCause,
+        tenant_id: &str,
+        workflow_id: Uuid,
+        version: i64,
+        reason: String,
+    ) -> LaunchOutcome {
+        self.skip_warnings
+            .warn(cause, tenant_id, workflow_id, version, &reason);
+        LaunchOutcome::Skipped(SkipReason::DelegationInvalid(reason))
     }
 
     /// interactive 起動（本人の AuthContext で・委譲チェックは対話では不要＝本人権限で実行）。
@@ -332,10 +291,13 @@ impl WorkflowRunLauncher {
             // の判定で、OpenFGA の障害は Forbidden にならない）。何度起こしても同じなので、一時障害として再試行しない。
             // 警告は版ごとに 1 回（発火のたびに出さない・BUG-146）。きっかけは止めない（オンにし直せば直る）。
             Err(crate::store::WorkflowStoreError::Artifact(artifact::ArtifactError::Forbidden)) => {
-                self.warn_unreadable_once(tenant_id, workflow_id, enabled_version);
-                return Ok(LaunchOutcome::Skipped(SkipReason::DelegationInvalid(
+                return Ok(self.skip(
+                    SkipCause::DefinitionUnreadable,
+                    tenant_id,
+                    workflow_id,
+                    enabled_version,
                     "自動実行の主体がワークフローの定義を読めません".to_string(),
-                )));
+                ));
             }
             Err(e) => return Err(LauncherError::Ir(format!("{e:?}"))),
         };
@@ -350,16 +312,14 @@ impl WorkflowRunLauncher {
         {
             RunAdmission::Ok => {}
             RunAdmission::DelegationInvalid(reason) => {
-                // 委譲失効・未同意スコープ・未登録などの切り分けができるよう理由を残す。
-                tracing::warn!(
+                // 委譲失効・未同意スコープ・未登録などの切り分けができるよう理由を残す（警告は版ごとに 1 回・BUG-170）。
+                return Ok(self.skip(
+                    SkipCause::DelegationInvalid,
                     tenant_id,
-                    %workflow_id,
+                    workflow_id,
+                    enabled_version,
                     reason,
-                    "委譲チェック不成立のため run を開始しません"
-                );
-                return Ok(LaunchOutcome::Skipped(SkipReason::DelegationInvalid(
-                    reason.clone(),
-                )));
+                ));
             }
         }
 
@@ -375,10 +335,13 @@ impl WorkflowRunLauncher {
                 blockers.len(),
                 first.message
             );
-            self.warn_not_ready_once(tenant_id, workflow_id, enabled_version, &reason);
-            return Ok(LaunchOutcome::Skipped(SkipReason::DelegationInvalid(
+            return Ok(self.skip(
+                SkipCause::NotReady,
+                tenant_id,
+                workflow_id,
+                enabled_version,
                 reason,
-            )));
+            ));
         }
 
         let ir_json = serde_json::to_value(&ir).map_err(|e| LauncherError::Ir(e.to_string()))?;
@@ -536,24 +499,5 @@ mod tests {
         // migration 0022 の check と同じ 2 つ（ワーカーの実行主体の組み方も同じ）。
         let check = include_str!("../../../../migrations/0022_workflow_principal_kind.sql");
         assert!(check.contains("check (principal_kind in ('user', 'workflow'))"));
-    }
-
-    /// 定義を読めない自動実行の警告は、(テナント・ワークフロー・版) ごとに 1 回（BUG-146）。
-    #[test]
-    fn unreadable_definitions_are_warned_once_per_version() {
-        let seen = WarnOnce::default();
-        let wf = Uuid::new_v4();
-        assert!(seen.first("t", wf, 1));
-        assert!(
-            !seen.first("t", wf, 1),
-            "同じ版の 2 回目の発火では警告しない"
-        );
-        assert!(seen.first("t", wf, 2), "オンにし直した別の版は警告する");
-        assert!(seen.first("u", wf, 1), "別のテナント");
-        // 上限に届いたら忘れる（覚えが際限なく増えない）。
-        for i in 0..WarnOnce::MAX {
-            seen.first("x", Uuid::new_v4(), i64::try_from(i).unwrap_or(0));
-        }
-        assert!(seen.0.lock().unwrap().len() <= WarnOnce::MAX);
     }
 }
