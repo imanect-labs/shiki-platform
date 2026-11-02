@@ -1097,7 +1097,7 @@ async fn startup_repair_recreates_a_missing_b1_but_not_a_missing_b2() {
 /// 起動時の照合は、Keycloak で無効にされた B2 を有効に戻さず、印を付けて自動実行の主体を外す（管理者が漏れた
 /// secret を止めるために無効にしたのなら、同じ secret のまま戻さない・BUG-201・D-137）。無効にされた B1 は
 /// これまでどおり有効に戻す。印は起動のたびに試し直しても外れず、管理者が Keycloak で有効に戻すと外れる。
-/// 入れ直し（利用者の明示の操作）は B2 も有効に戻す。
+/// 入れ直し（利用者の明示の操作）は、無効の B2 の secret を作り直してから有効に戻す。
 #[tokio::test]
 async fn startup_repair_keeps_a_disabled_b2_disabled() {
     let Some(pool) = setup().await else { return };
@@ -1205,7 +1205,8 @@ async fn startup_repair_keeps_a_disabled_b2_disabled() {
         assert!(!disabled_mark().await, "印を外す");
         assert_eq!(client_row(&pool, id).await.0, service_sub);
 
-        // 入れ直し（利用者の明示の操作）は、無効の B2 を有効に戻し、印を外す（これまでどおり）。
+        // 入れ直し（利用者の明示の操作）は、無効の B2 の secret を作り直してから有効に戻し、印を外す。持ち主の入れ直しや
+        // 版の更新で、管理者が止めた secret のまま戻さない（BUG-201）。
         oauth
             .set_enabled(&b2, false)
             .await
@@ -1213,11 +1214,7 @@ async fn startup_repair_keeps_a_disabled_b2_disabled() {
         forget_spec().await;
         installs.repair_oauth_clients().await.expect("repair");
         assert!(disabled_mark().await);
-        installs
-            .install(&c, install_req(&name, &["data.read"]), None)
-            .await
-            .expect("reinstall");
-        assert_eq!(realm.client(&b2).await.expect("b2")["enabled"], true);
+        reinstall_rotates_a_disabled_b2(&installs, &c, &name, &realm, &b2, &secret).await;
         assert!(!disabled_mark().await);
     };
     run_then(body, async {
@@ -1236,6 +1233,38 @@ async fn startup_repair_keeps_a_disabled_b2_disabled() {
         }
     })
     .await;
+}
+
+/// 無効の B2 を入れ直すと、secret を作り直してから有効に戻す: 止めた secret ではアプリの主体のトークンを取れず、
+/// 新しい secret では取れる。有効な B2 の入れ直し（版の更新）は secret を変えない。
+async fn reinstall_rotates_a_disabled_b2(
+    installs: &InstallService,
+    c: &AuthContext,
+    name: &str,
+    realm: &app_gateway::test_support::TestRealm,
+    b2: &str,
+    stopped: &str,
+) {
+    let fresh = installs
+        .install(c, install_req(name, &["data.read"]), None)
+        .await
+        .expect("reinstall")
+        .client_secret_b2
+        .expect("new secret");
+    assert_eq!(realm.client(b2).await.expect("b2")["enabled"], true);
+    assert_ne!(fresh, stopped, "無効だった B2 の secret は作り直す");
+    assert!(
+        !token_issued(realm, b2, stopped).await,
+        "止めた secret ではアプリの主体のトークンを取れない"
+    );
+    assert!(token_issued(realm, b2, &fresh).await);
+    let again = installs
+        .install(c, install_req(name, &["data.read"]), None)
+        .await
+        .expect("reinstall an enabled b2")
+        .client_secret_b2
+        .expect("secret");
+    assert_eq!(again, fresh, "有効な B2 の入れ直しは secret を変えない");
 }
 
 /// B2 の client_credentials で、この secret のトークンが取れるか。

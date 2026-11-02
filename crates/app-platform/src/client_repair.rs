@@ -20,7 +20,8 @@
 //! - Keycloak で無効にされた B2 は、有効に戻さない（同じ secret のままアプリの主体が戻るのを避ける・BUG-201・D-137）。
 //!   `oauth_client_disabled` の印を付け、自動実行の主体（`b2_service_sub`）を外して warn に残す（migration 0131）。
 //!   印のある行は起動のたびに試し直し、管理者が Keycloak で有効に戻していたら揃えて印を外す。無効にされた B1 は、
-//!   secret を持たないので、これまでどおり有効に戻す。入れ直し（利用者の明示の操作）は B2 も有効に戻す。
+//!   secret を持たないので、これまでどおり有効に戻す。入れ直し（利用者の明示の操作）は、無効の B2 の secret を作り直して
+//!   から有効に戻す（[`app_gateway::OAuthClient::register`]・止めた secret では戻らない）。
 //! - Keycloak の失敗で揃えられなかったものは印を付けず、この回の残りでは飛ばす（次の回でやり直す）。
 
 use app_gateway::{ClientKind, ClientMarks, ClientsToRepair, OAuthClient};

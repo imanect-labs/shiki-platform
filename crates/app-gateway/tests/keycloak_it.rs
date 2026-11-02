@@ -339,7 +339,7 @@ async fn previous_clients_are_repaired_in_place() {
 }
 
 #[tokio::test]
-async fn confidential_clients_get_the_same_scopes_and_keep_their_secret() {
+async fn confidential_clients_get_the_same_scopes_and_rotate_a_disabled_secret() {
     let Some(realm) = TestRealm::from_env() else {
         eprintln!("KEYCLOAK_TEST_URL 未設定のためスキップ");
         return;
@@ -360,13 +360,21 @@ async fn confidential_clients_get_the_same_scopes_and_keep_their_secret() {
             names(&client["protocolMappers"]),
             ["shiki-gateway-audience", "tenant"]
         );
-        // 再インストール・照合で secret は作り直さない（保管済みの secret のまま使える）。
-        oauth.set_enabled(&client_id, false).await.expect("disable");
-        let again = oauth
+        // 有効なクライアントの再インストール（版の更新）は secret を作り直さない（保管済みの secret のまま使える）。
+        let kept = oauth
             .register(ClientKind::Confidential, &client_id, "経費", &[], None)
             .await
             .expect("register again");
-        assert_eq!(again.client_secret, first.client_secret);
+        assert_eq!(kept.client_secret, first.client_secret);
+        // 無効にされたクライアント（管理者が漏れた secret を止めた・アンインストール）の再インストールは、secret を
+        // 作り直してから有効に戻す（同じ secret のまま戻さない・BUG-201）。
+        oauth.set_enabled(&client_id, false).await.expect("disable");
+        let rotated = oauth
+            .register(ClientKind::Confidential, &client_id, "経費", &[], None)
+            .await
+            .expect("register after disable");
+        assert!(rotated.client_secret.is_some());
+        assert_ne!(rotated.client_secret, first.client_secret);
         let again = realm.client(&client_id).await.unwrap();
         assert_eq!(again["enabled"], true);
         assert_eq!(
@@ -381,16 +389,25 @@ async fn confidential_clients_get_the_same_scopes_and_keep_their_secret() {
         // 登録と照合は、サービスアカウントの利用者（自動実行のトークンの sub）を返す（BUG-183）。
         assert!(first.service_account_sub.is_some());
         assert_eq!(repaired.service_account_sub, first.service_account_sub);
-        let service = reqwest::Client::new()
-            .post(realm.token_endpoint())
-            .form(&[
-                ("grant_type", "client_credentials"),
-                ("client_id", client_id.as_str()),
-                ("client_secret", first.client_secret.as_deref().unwrap()),
-            ])
-            .send()
-            .await
-            .expect("service token");
+        let service_token = |secret: String| {
+            let client_id = client_id.clone();
+            let endpoint = realm.token_endpoint();
+            async move {
+                reqwest::Client::new()
+                    .post(endpoint)
+                    .form(&[
+                        ("grant_type", "client_credentials"),
+                        ("client_id", client_id.as_str()),
+                        ("client_secret", secret.as_str()),
+                    ])
+                    .send()
+                    .await
+                    .expect("service token")
+            }
+        };
+        let stopped = service_token(first.client_secret.clone().unwrap()).await;
+        assert!(!stopped.status().is_success(), "止めた secret では取れない");
+        let service = service_token(rotated.client_secret.clone().unwrap()).await;
         assert!(service.status().is_success(), "{}", service.status());
         let body: serde_json::Value = service.json().await.unwrap();
         let token = body["access_token"].as_str().unwrap();

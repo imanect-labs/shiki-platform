@@ -145,8 +145,10 @@ impl OAuthClient {
     ///
     /// アンインストールはクライアントを無効にする（[`Self::set_enabled`]）。再インストールは同じ client_id を
     /// 登録し直すので、ここで有効に戻す（これまでは 409 を成功として扱い、無効のまま残っていた・BUG-172）。
-    /// confidential は登録後に生成 secret を取得して返す（サーバ側で secrets 保管する前提）。`exchanger` は
-    /// [`client_representation`] のとおり（B1 の利用者のトークンを交換する同じアプリの B2）。
+    /// 無効になっている confidential（B2）は、secret を作り直してから有効に戻す（管理者が漏れた secret を止めるために
+    /// 無効にしたのなら、持ち主の入れ直しや版の更新で同じ secret のまま戻さない・BUG-201・D-137。secret はサーバーだけが
+    /// 持つので、作り直しても困る人はいない）。confidential は登録後に今の secret を取得して返す（サーバ側で secrets
+    /// 保管する前提）。`exchanger` は [`client_representation`] のとおり（B1 の利用者のトークンを交換する同じアプリの B2）。
     pub async fn register(
         &self,
         kind: ClientKind,
@@ -178,8 +180,12 @@ impl OAuthClient {
         let status = resp.status();
         // 201=新規, 409=既存（再インストール・前の版で登録したもの）。それ以外は上流エラー。
         if status.as_u16() == 409 {
-            let internal_id = self.find_internal_id(&token, client_id).await?;
-            self.update_client(&token, &internal_id, &body).await?;
+            let found = self.find_client(&token, client_id).await?;
+            if !kind.is_public() && !found.enabled {
+                // 有効に戻す前に secret を作り直す（無効のあいだに漏れた secret でアプリの主体を取り戻させない）。
+                self.regenerate_secret(&token, &found.id).await?;
+            }
+            self.update_client(&token, &found.id, &body).await?;
         } else if !status.is_success() {
             return Err(GatewayError::Upstream(format!("client 登録応答: {status}")));
         }
@@ -521,6 +527,28 @@ impl OAuthClient {
             .await
             .map_err(|e| GatewayError::Upstream(format!("service account parse: {e}")))?;
         Ok(user.id)
+    }
+
+    /// confidential client の secret を作り直す（前の secret ではトークンを取れなくなる）。新しい secret は
+    /// [`Self::fetch_secret`] で読む。
+    async fn regenerate_secret(&self, token: &str, internal_id: &str) -> Result<(), GatewayError> {
+        let resp = self
+            .http
+            .post(format!(
+                "{}/clients/{internal_id}/client-secret",
+                self.admin_base
+            ))
+            .bearer_auth(token)
+            .send()
+            .await
+            .map_err(|e| GatewayError::Upstream(format!("secret 作り直し: {e}")))?;
+        if !resp.status().is_success() {
+            return Err(GatewayError::Upstream(format!(
+                "secret 作り直し応答: {}",
+                resp.status()
+            )));
+        }
+        Ok(())
     }
 
     /// confidential client の生成 secret を取得する（内部 uuid の secret を GET）。
