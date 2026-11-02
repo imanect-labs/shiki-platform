@@ -26,6 +26,7 @@ import { ConfirmDialog } from "@/components/drive/dialogs";
 import { ListLoadFailed } from "@/components/artifacts/shared-more";
 import { RefPicker } from "@/components/data/ref-picker";
 import { AppTableRolesDialog } from "@/components/miniapp/app-table-roles-dialog";
+import type { CapabilityScope } from "@/generated/authz-vocab";
 import type { FieldDef } from "@/lib/data-api";
 import { cachedRoleName, rememberRoleName } from "@/lib/role-names";
 import {
@@ -39,6 +40,9 @@ import {
 } from "@/lib/miniapp-b1-api";
 
 /// 部署・グループを探して選ぶ（ディレクトリの部署・`role_ref` の列と同じ探し方）。
+/// 使う人の所属を読む権限（ゲートウェイが所属するロールを返すのは、これを付けたときだけ・D-130）。
+const IDENTITY_SCOPE: CapabilityScope = "identity.read";
+
 const ROLE_FIELD: FieldDef = { key: "role", display_name: "部署・グループ", type: "role_ref" } as FieldDef;
 
 export function InstalledAppsSection() {
@@ -303,12 +307,15 @@ export function InstalledAppsSection() {
               </li>
             ))}
           </ul>
-          {/* アプリのトークンはアプリのコードに渡る。載るのは使う人（sub）と契約（tenant）の ID だけで、所属グループは
+          {/* アプリのトークンはアプリのコードに渡る。載るのは使う人（sub）と契約全体（tenant）の ID だけで、所属グループは
               載せない（ゲートウェイは組織をインストールから決める・D-130）。所属するロールは identity.read を付けたときだけ
-              ゲートウェイが返す。 */}
+              ゲートウェイが返す。権限は上の一覧と同じ名前で言う（一覧に表示名が付くまで・FEAT-3 の §9-21）。 */}
           {consent?.runsCode ? (
             <p className="text-[11px] leading-relaxed text-muted-foreground" data-testid="install-identity-note">
-              選んだ権限にかかわらず、使う人と契約を見分ける ID は、このアプリに渡ります。所属する部署・グループは、使う人の情報を読む権限を付けたときだけ渡ります。
+              選んだ権限にかかわらず、使う人を見分ける ID と、契約全体を見分ける ID は、このアプリに渡ります。
+              {consent.requested.includes(IDENTITY_SCOPE)
+                ? `所属する部署・グループは、${IDENTITY_SCOPE} を付けたときだけ渡ります。`
+                : "所属する部署・グループは渡りません。"}
             </p>
           ) : null}
           {consent && consent.tables.length > 0 ? (

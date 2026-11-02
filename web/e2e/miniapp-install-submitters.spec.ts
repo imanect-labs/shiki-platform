@@ -66,10 +66,14 @@ test("コードアプリの同意インストールで、テーブルに「追�
       const p = await phoneCtx.newPage();
       // 画面（B1）を持つアプリとして見せる（バンドルは作らない・マニフェストの応答だけ差し替える）。画面やサーバーの
       // 処理を持つアプリには、トークンでアプリに渡るものを言う。
+      let asksIdentity = false;
       await p.route(`**/api/apps/manifests/${appId}*`, async (route) => {
         const res = await route.fetch();
         const body = (await res.json()) as { manifest: Record<string, unknown> };
         body.manifest.frontend = { bundle_key: "e2e", sha256: "e2e" };
+        if (asksIdentity) {
+          body.manifest.requested_scopes = [...(body.manifest.requested_scopes as string[]), "identity.read"];
+        }
         await route.fulfill({ response: res, json: body });
       });
       await p.goto("/apps");
@@ -77,8 +81,16 @@ test("コードアプリの同意インストールで、テーブルに「追�
       await row.getByRole("button", { name: "インストール" }).click();
       const field = p.getByTestId("install-submitters");
       await expect(field).toContainText(`このアプリのテーブル（「${table}」）`);
+      const passed = "選んだ権限にかかわらず、使う人を見分ける ID と、契約全体を見分ける ID は、このアプリに渡ります。";
+      // 所属を読む権限を求めないアプリには、所属は渡らない。
+      await expect(p.getByTestId("install-identity-note")).toHaveText(`${passed}所属する部署・グループは渡りません。`);
+      await p.getByRole("button", { name: "キャンセル" }).click();
+      // 求めるアプリでは、一覧に出ている名前（identity.read）で、付けたときだけ渡ると言う。
+      asksIdentity = true;
+      await row.getByRole("button", { name: "インストール" }).click();
+      await expect(p.getByRole("dialog").getByText("identity.read", { exact: true })).toBeVisible();
       await expect(p.getByTestId("install-identity-note")).toHaveText(
-        "選んだ権限にかかわらず、使う人と契約を見分ける ID は、このアプリに渡ります。所属する部署・グループは、使う人の情報を読む権限を付けたときだけ渡ります。",
+        `${passed}所属する部署・グループは、identity.read を付けたときだけ渡ります。`,
       );
       expect(await p.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
       if (SHOTS) await p.screenshot({ path: `${SHOTS}/install-submitters-phone.png` });
