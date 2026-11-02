@@ -9,19 +9,19 @@
 //! sub）も、このときインストールへ書く（BUG-183・migration 0126）。
 //!
 //! - 揃えるのは有効なインストールのクライアントだけ（アンインストールしたものは無効のまま残す）。
-//! - Keycloak に無くなったクライアントは作り直す（GAP-70）。B1 はそのまま作り、B2 は保管してある secret（アプリの
-//!   主体の can_use で読む）で作る（新しい secret を作らないので、保管し直さずに済む）。作り直すのは、インストールが
-//!   決めた形の id（`app-<app_id>-b1` / `-b2`）のクライアントだけ。
-//! - 作り直せない（secrets が未構成・secret が無い・決めた形の id でない）ものは、`oauth_client_missing` の印を
-//!   付けて warn に残す（インストールの画面が入れ直しが要ると知らせる・migration 0127）。印のある行は、起動のたびに
-//!   試し直す。
+//! - Keycloak に無くなった B1（資格情報を持たない公開のクライアント）は作り直す（GAP-70）。作り直すのは、
+//!   インストールが決めた形の id（`app-<app_id>-b1`）のクライアントだけ。
+//! - 無くなった B2（secret を持つクライアント）は作り直さない。管理者が漏れた secret を無効にするために消したのなら、
+//!   作り直すとアプリの主体（owner@miniapp）が同じ secret のまま戻る。新しい secret で作り直すには、インストールした
+//!   人が持つ secret を書き換える権限が要る。入れ直せば新しい secret で作り、保管し直す。
+//! - 作り直さない・作り直せない（B2・決めた形の id でない）ものは、`oauth_client_missing` の印を付けて warn に残す
+//!   （インストールの画面が入れ直しが要ると知らせる・migration 0127）。印のある行は、起動のたびに試し直す（B1 だけが
+//!   無かったなら、作り直して印を外す）。
 //! - Keycloak の失敗で揃えられなかったものは印を付けず、この回の残りでは飛ばす（次の回でやり直す）。
 
 use app_gateway::{ClientKind, ClientsToRepair, OAuthClient};
-use authz::AuthContext;
 
 use crate::install::map_gateway;
-use crate::install_ops::b2_secret_name;
 use crate::{AppPlatformError, InstallService};
 
 /// 1 回に引くインストールの数。
@@ -32,9 +32,10 @@ const REPAIR_BATCH: i64 = 50;
 pub struct ClientRepairProgress {
     /// クライアントを今の形に揃えて印を付けたインストールの数（作り直したものを含む）。
     pub repaired: u64,
-    /// Keycloak に無くなったクライアントを作り直したインストールの数（GAP-70）。
+    /// Keycloak に無くなった B1 を作り直したインストールの数（GAP-70）。
     pub recreated: u64,
-    /// Keycloak に無いクライアントを作り直せなかったインストールの数（入れ直しが要る印を付ける）。
+    /// Keycloak に無いクライアントを作り直さなかった・作り直せなかったインストールの数（B2 が無いものを含む・
+    /// 入れ直しが要る印を付ける）。
     pub missing: u64,
     /// 揃えられなかったインストールの数（印を付けず、次の回でやり直す）。
     pub failed: u64,
@@ -45,9 +46,9 @@ pub struct ClientRepairProgress {
 struct RowRepair {
     /// B2 のサービスアカウントの利用者（自動実行のトークンの sub）。
     b2_service_sub: Option<String>,
-    /// 作り直したクライアントがある。
+    /// 作り直したクライアントがある（B1 だけ）。
     recreated: bool,
-    /// 作り直せないクライアントがある（入れ直しが要る）。
+    /// 作り直さない・作り直せないクライアントがある（入れ直しが要る）。
     missing: bool,
 }
 
@@ -110,7 +111,7 @@ impl InstallService {
                 }
                 if repaired.missing {
                     tracing::warn!(app_id = %row.app_id, tenant_id = %row.tenant_id,
-                        "Keycloak にアプリのクライアントが無く、作り直せません（入れ直しが要る）");
+                        "Keycloak にアプリのクライアントが無く、作り直しません（B2 は secret を持つので作り直さない・入れ直しが要る）");
                     progress.missing += 1;
                     skip.push(row.app_id);
                 } else {
@@ -120,7 +121,7 @@ impl InstallService {
         }
     }
 
-    /// 1 件のインストールの B1・B2 のクライアントを揃える。無くなったものは作り直す（作れなければ `missing`）。
+    /// 1 件のインストールの B1・B2 のクライアントを揃える。無くなった B1 は作り直し、無くなった B2 は `missing` にする。
     async fn repair_clients_of(
         &self,
         oauth: &OAuthClient,
@@ -141,13 +142,11 @@ impl InstallService {
             if found.is_none() {
                 if *b1 == format!("app-{}-b1", row.app_id) {
                     oauth
-                        .recreate(
-                            ClientKind::PublicPkce,
+                        .recreate_public(
                             b1,
                             &row.app_name,
                             &self.b1_redirect_uris,
                             row.client_id_b2.as_deref(),
-                            None,
                         )
                         .await
                         .map_err(map_gateway)?;
@@ -162,60 +161,12 @@ impl InstallService {
                 .repair(ClientKind::Confidential, b2, &row.app_name, &[], None)
                 .await
                 .map_err(map_gateway)?;
-            if let Some(repaired) = found {
-                out.b2_service_sub = repaired.service_account_sub;
-                return Ok(out);
-            }
-            let secret = if *b2 == format!("app-{}-b2", row.app_id) {
-                self.stored_b2_secret(row).await
-            } else {
-                None
-            };
-            if let Some(secret) = secret {
-                let recreated = oauth
-                    .recreate(
-                        ClientKind::Confidential,
-                        b2,
-                        &row.app_name,
-                        &[],
-                        None,
-                        Some(&secret),
-                    )
-                    .await
-                    .map_err(map_gateway)?;
-                out.b2_service_sub = recreated.service_account_sub;
-                out.recreated = true;
-            } else {
-                out.missing = true;
+            match found {
+                Some(repaired) => out.b2_service_sub = repaired.service_account_sub,
+                // secret を持つクライアントは作り直さない（モジュールの説明）。
+                None => out.missing = true,
             }
         }
         Ok(out)
-    }
-
-    /// 保管してある B2 の secret（アプリの主体の can_use で読む・宛先は Keycloak のトークンのエンドポイント）。
-    ///
-    /// secrets が未構成・secret が無い・読めないときは `None`（作り直せない）。
-    async fn stored_b2_secret(&self, row: &ClientsToRepair) -> Option<String> {
-        let store = self.secrets.as_ref()?;
-        let app_ctx = AuthContext::for_miniapp(
-            row.tenant_id.clone(),
-            row.org.clone(),
-            &row.app_id.to_string(),
-        );
-        match store
-            .resolve(
-                &app_ctx,
-                &b2_secret_name(row.app_id),
-                self.token_host.as_deref(),
-                None,
-            )
-            .await
-        {
-            Ok(resolved) => String::from_utf8(resolved.plaintext).ok(),
-            Err(e) => {
-                tracing::warn!(error = %e, app_id = %row.app_id, "B2 の secret を読めないので作り直せません");
-                None
-            }
-        }
     }
 }

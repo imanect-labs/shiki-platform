@@ -206,31 +206,25 @@ impl OAuthClient {
         }))
     }
 
-    /// Keycloak に無くなったクライアントを、今の形で作り直す（起動時の照合・GAP-70）。
+    /// Keycloak に無くなった公開のクライアント（B1・PKCE）を、今の形で作り直す（起動時の照合・GAP-70）。
     ///
-    /// confidential は保管してある `secret` で作る（Keycloak は表現の `secret` をそのまま使う）。新しい secret を作ら
-    /// ないので、secrets に保管し直さずに済む。サービスアカウントの利用者は作り直すと変わるので、新しい id を返す
-    /// （BUG-183）。照合と重なって既にあれば、今の形に揃える。confidential で `secret` が無ければ作らない（Invalid）。
-    pub async fn recreate(
+    /// secret を持つクライアント（B2）は作り直さない。管理者が漏れた secret を無効にするために消したのなら、同じ
+    /// secret で作り直すとアプリの主体が戻ってしまう（入れ直せば新しい secret で作る）。照合と重なって既にあれば、
+    /// 今の形に揃える。
+    pub async fn recreate_public(
         &self,
-        kind: ClientKind,
         client_id: &str,
         app_name: &str,
         redirect_uris: &[String],
         exchanger: Option<&str>,
-        secret: Option<&str>,
-    ) -> Result<RepairedClient, GatewayError> {
-        let mut body = client_representation(kind, client_id, app_name, redirect_uris, exchanger);
-        if !kind.is_public() {
-            let Some(secret) = secret else {
-                return Err(GatewayError::Invalid(
-                    "保管してある secret が無いので作り直せません".into(),
-                ));
-            };
-            if let Some(obj) = body.as_object_mut() {
-                obj.insert("secret".into(), serde_json::json!(secret));
-            }
-        }
+    ) -> Result<(), GatewayError> {
+        let body = client_representation(
+            ClientKind::PublicPkce,
+            client_id,
+            app_name,
+            redirect_uris,
+            exchanger,
+        );
         let token = self.admin_token().await?;
         if !self.scopes_ready.load(std::sync::atomic::Ordering::Acquire) {
             self.ensure_capability_scopes(&token).await?;
@@ -246,22 +240,15 @@ impl OAuthClient {
             .await
             .map_err(|e| GatewayError::Upstream(format!("client 作り直し: {e}")))?;
         let status = resp.status();
-        let internal_id = self.find_internal_id(&token, client_id).await?;
         if status.as_u16() == 409 {
+            let internal_id = self.find_internal_id(&token, client_id).await?;
             self.update_client(&token, &internal_id, &body).await?;
         } else if !status.is_success() {
             return Err(GatewayError::Upstream(format!(
                 "client 作り直し応答: {status}"
             )));
         }
-        let service_account_sub = if kind.is_public() {
-            None
-        } else {
-            Some(self.service_account_sub(&token, &internal_id).await?)
-        };
-        Ok(RepairedClient {
-            service_account_sub,
-        })
+        Ok(())
     }
 
     /// 既にあるクライアントを `body`（[`client_representation`]）の形に書き直す（有効・戻り先・属性・マッパー・

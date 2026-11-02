@@ -963,23 +963,17 @@ async fn install_with_server_records_the_service_account_and_exchange_audience()
     .await;
 }
 
-/// 起動時の照合は、Keycloak に無くなったアプリのクライアントを作り直す。B2 は保管してある secret で作るので、保管し
-/// 直さずに自動実行のトークンが取れる（サービスアカウントの利用者は新しいものを書く）。secret を読めないときは
-/// 作らずに入れ直しが要る印を付け、読めるようになった次の照合で作り直して印を外す（GAP-70）。
+/// 起動時の照合は、Keycloak に無くなった B1 を作り直す。B2（secret を持つ）は作り直さず、入れ直しが要る印を付ける
+/// （管理者が漏れた secret を無効にするために消したのなら、同じ secret で戻さない）。印は起動のたびに試し直しても
+/// 外れず、入れ直すと新しい secret の B2 ができて外れる（GAP-70）。
 #[tokio::test]
-async fn startup_repair_recreates_missing_clients_with_the_stored_secret() {
+async fn startup_repair_recreates_a_missing_b1_but_not_a_missing_b2() {
     let Some(pool) = setup().await else { return };
     let Some(realm) = app_gateway::test_support::TestRealm::from_env() else {
         eprintln!("KEYCLOAK_TEST_URL 未設定のためスキップ");
         return;
     };
     let redirects = vec![SHELL_CALLBACK.to_string()];
-    let without_secrets = harness_with_oauth(
-        pool.clone(),
-        false,
-        Some(realm.oauth_client()),
-        redirects.clone(),
-    );
     let Harness { code, installs, .. } = harness_with_oauth(
         pool.clone(),
         false,
@@ -1014,12 +1008,12 @@ async fn startup_repair_recreates_missing_clients_with_the_stored_secret() {
             .install(&c, install_req(&name, &["data.read"]), None)
             .await
             .expect("install");
-        let secret = installed.client_secret_b2.expect("secret");
+        let leaked = installed.client_secret_b2.expect("secret");
         let before = row().await;
-        assert_eq!(before.0, Some(service_sub(secret.clone()).await));
+        assert_eq!(before.0, Some(service_sub(leaked.clone()).await));
 
-        // 2 つとも Keycloak から消える（管理者が消した・realm を作り直したなど）。照合は登録の形が変わった後の起動で
-        // 走るので、前の版のインストールにする（印を消す）。
+        // 2 つとも Keycloak から消える（管理者が漏れた secret を無効にした・realm を作り直したなど）。照合は登録の形が
+        // 変わった後の起動で走るので、前の版のインストールにする（印を消す）。
         realm.delete_client(&b1).await;
         realm.delete_client(&b2).await;
         sqlx::query("UPDATE app_installation SET oauth_client_spec = NULL WHERE tenant_id = $1")
@@ -1028,41 +1022,52 @@ async fn startup_repair_recreates_missing_clients_with_the_stored_secret() {
             .await
             .unwrap();
 
-        // secret を読めない照合（secrets が未構成）は、B1 だけを作り直し、入れ直しが要る印を付ける。
-        let progress = without_secrets
-            .installs
-            .repair_oauth_clients()
-            .await
-            .expect("repair without secrets");
+        // B1 だけを作り直し、B2 は作らずに入れ直しが要る印を付ける（自動実行の主体も外す）。
+        let progress = installs.repair_oauth_clients().await.expect("repair");
         assert_eq!(progress.failed, 0, "{progress:?}");
         assert!(progress.missing >= 1, "{progress:?}");
         assert!(realm.client(&b1).await.is_some(), "B1 は作り直す");
-        assert!(
-            realm.client(&b2).await.is_none(),
-            "B2 は secret を読めないので作らない"
-        );
-        assert!(row().await.1, "入れ直しが要る印");
-        let listed = installs.installations().list(&c).await.expect("list");
-        assert!(listed[0].oauth_client_missing);
-
-        // secret を読める照合は、印のあるインストールを試し直し、保管してある secret で B2 を作り直す。
-        let progress = installs.repair_oauth_clients().await.expect("repair");
-        assert_eq!(progress.failed, 0, "{progress:?}");
-        assert!(progress.recreated >= 1, "{progress:?}");
-        let after = row().await;
-        assert!(!after.1, "印を外す");
-        let sub = service_sub(secret.clone()).await;
-        assert_eq!(after.0, Some(sub.clone()));
-        assert_ne!(
-            after.0, before.0,
-            "サービスアカウントの利用者は作り直すと変わる"
-        );
         let client = realm.client(&b1).await.expect("b1");
         assert!(client["protocolMappers"]
             .as_array()
             .unwrap()
             .iter()
             .any(|m| m["name"] == "shiki-function-audience"));
+        assert!(realm.client(&b2).await.is_none(), "B2 は作り直さない");
+        assert_eq!(
+            row().await,
+            (None, true),
+            "入れ直しが要る印・自動実行の主体を外す"
+        );
+        let listed = installs.installations().list(&c).await.expect("list");
+        assert!(listed[0].oauth_client_missing);
+
+        // 印のある行を試し直しても、B2 は作り直さない。
+        installs.repair_oauth_clients().await.expect("repair again");
+        assert!(
+            realm.client(&b2).await.is_none(),
+            "試し直しても作り直さない"
+        );
+        assert!(row().await.1);
+
+        // 入れ直すと新しい secret の B2 ができ、印が外れる。漏れた secret ではトークンを取れない。
+        let reinstalled = installs
+            .install(&c, install_req(&name, &["data.read"]), None)
+            .await
+            .expect("reinstall");
+        let fresh = reinstalled.client_secret_b2.expect("new secret");
+        assert_ne!(fresh, leaked, "入れ直すと新しい secret になる");
+        let after = row().await;
+        assert!(!after.1, "印を外す");
+        assert_eq!(after.0, Some(service_sub(fresh).await));
+        assert_ne!(
+            after.0, before.0,
+            "サービスアカウントの利用者は作り直すと変わる"
+        );
+        assert!(
+            !token_issued(&realm, &b2, &leaked).await,
+            "漏れた secret ではトークンを取れない"
+        );
     };
     run_then(body, async {
         let _ = installs.uninstall(&c, id, None).await;
@@ -1080,6 +1085,26 @@ async fn startup_repair_recreates_missing_clients_with_the_stored_secret() {
         }
     })
     .await;
+}
+
+/// B2 の client_credentials で、この secret のトークンが取れるか。
+async fn token_issued(
+    realm: &app_gateway::test_support::TestRealm,
+    b2: &str,
+    secret: &str,
+) -> bool {
+    reqwest::Client::new()
+        .post(realm.token_endpoint())
+        .form(&[
+            ("grant_type", "client_credentials"),
+            ("client_id", b2),
+            ("client_secret", secret),
+        ])
+        .send()
+        .await
+        .expect("token endpoint")
+        .status()
+        .is_success()
 }
 
 /// インストールの B2 のサービスアカウントの利用者と、入れ直しが要る印。
