@@ -49,7 +49,9 @@ pub use dispatch::{
 };
 pub use miniapp::{screen_problems, ComponentPin, MiniAppBody, NamedComponentPin};
 pub use miniapp_actions::{MiniAppActionRequest, MiniAppRun, MiniAppRunStatus, MiniAppRunValue};
-pub use miniapp_publish::{diff_bodies, MiniAppChange, PinChange, PublishPreview};
+pub use miniapp_publish::{
+    diff_bodies, problems_block_publish, MiniAppChange, PinChange, PublishPreview,
+};
 pub use miniapp_runs::displayable_reply;
 pub use miniapp_store::{MiniAppStore, ResolvedMiniApp, ResolvedSkill, SaveMode, SavedMiniApp};
 pub use resolver::WorkflowResolver;

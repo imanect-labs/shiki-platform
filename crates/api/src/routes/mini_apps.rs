@@ -93,8 +93,11 @@ pub struct ResolvedMiniAppResponse {
     pub latest_version: Option<i64>,
     /// 前に公開していた版（公開を戻す先・editor にだけ返す）。
     pub previous_published_version: Option<i64>,
-    /// 開いた版の画面の書き損じ（直すまで公開できない・editor にだけ返す・D-16 の (c)）。
+    /// 開いた版の画面の書き損じ（editor にだけ返す・D-16 の (c)）。
     pub warnings: Vec<gui::GuiValidationError>,
+    /// 開いた版を、書き損じがあるため公開できない（editor にだけ true になりうる）。一度も公開していない版だけが止まり、
+    /// いま公開している版と前に公開していた版（公開を戻す先）は `warnings` があっても false（`gui::problems_block_publish`）。
+    pub publish_blocked: bool,
 }
 
 /// 公開のリクエスト。
@@ -266,15 +269,23 @@ pub async fn resolve_mini_app(
     )?;
     // 下書きの番号・前に公開していた版・書き損じは、作る人（editor）にだけ返す（使う人には公開した版だけを出す）。
     let editor_only = |v| if can_edit { v } else { None };
+    let warnings = if can_edit {
+        gui::screen_problems(&resolved.body)
+    } else {
+        Vec::new()
+    };
+    let publish_blocked = !warnings.is_empty()
+        && gui::problems_block_publish(
+            resolved.version,
+            resolved.published_version,
+            resolved.previous_published_version,
+        );
     Ok(Json(ResolvedMiniAppResponse {
         id: resolved.id,
         version: resolved.version,
         unavailable: resolved.unavailable(),
-        warnings: if can_edit {
-            gui::screen_problems(&resolved.body)
-        } else {
-            Vec::new()
-        },
+        warnings,
+        publish_blocked,
         body,
         can_edit,
         can_share,

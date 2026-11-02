@@ -3,6 +3,7 @@
 //! 保存は下書きの版になり（[`MiniAppStore::update`]）、使う人（editor でない viewer）が開く・押すのは公開した版
 //! だけ。公開は editor が版を選んで行う（新しい relation は足さず、保存と同じ editor）。前に公開していた版を公開し
 //! 直すと公開を戻せる。公開の前に、その版の画面の書き損じ（[`screen_problems`]）があれば止める（D-16 の (c)）。
+//! 止めるのは一度も公開していない版だけで、公開を戻すのは止めない（[`problems_block_publish`]）。
 //! 部品のピンは、その版を保存した人が保存のときに確かめてある（版は不変）ので、公開する人の権限で確かめ直さない。
 //!
 //! 公開した版と下書きの差は [`diff_bodies`] が 1 か所で決める（画面は差の種類ごとに言うだけ）。
@@ -62,6 +63,16 @@ pub struct PublishPreview {
     pub changes: Vec<MiniAppChange>,
     /// 公開を止める誤り（画面の書き損じ）。空なら公開できる。
     pub problems: Vec<GuiValidationError>,
+}
+
+/// その版の公開を、画面の書き損じ（[`screen_problems`]）で止めるか（D-16 の (c)・単一定義）。
+///
+/// 止めるのは、一度も公開していない版の公開だけ。いま公開している版（公開し直しても何も変えない）と、前に公開していた
+/// 版（公開を戻す先）は止めない。前に公開していた版は使う人が使っていた版で、新しい版に誤りがあったときの逃げ道を
+/// 塞がない（migration 0134 は、書き損じのある版もそのまま公開した版にしている）。
+#[must_use]
+pub fn problems_block_publish(version: i64, published: Option<i64>, previous: Option<i64>) -> bool {
+    published != Some(version) && previous != Some(version)
 }
 
 /// 公開した版（`from`・無ければ未公開）から `to` へ変わるところ。並びは見出し・画面・スキル・ワークフロー・保存ビュー。
@@ -149,17 +160,27 @@ impl MiniAppStore {
             Some(p) => self.version_body(ctx, id, p, trace_id).await.ok(),
             None => None,
         };
+        let blocks = problems_block_publish(
+            version,
+            meta.published_version,
+            meta.previous_published_version,
+        );
         Ok(PublishPreview {
             version,
             published_version: meta.published_version,
             changes: diff_bodies(from.as_ref(), &target),
-            problems: screen_problems(&target),
+            problems: if blocks {
+                screen_problems(&target)
+            } else {
+                Vec::new()
+            },
         })
     }
 
-    /// `version` を公開する（editor）。画面の書き損じがあれば公開しない（検証の誤り・D-16 の (c)）。
+    /// `version` を公開する（editor）。一度も公開していない版に画面の書き損じがあれば公開しない（検証の誤り・
+    /// D-16 の (c)・[`problems_block_publish`]）。
     ///
-    /// 前に公開していた版を選ぶと公開を戻せる。いま公開している版を選んでも何も変えない。
+    /// 前に公開していた版を選ぶと公開を戻せる（書き損じがあっても戻せる）。いま公開している版を選んでも何も変えない。
     pub async fn publish(
         &self,
         ctx: &AuthContext,
@@ -167,11 +188,17 @@ impl MiniAppStore {
         version: i64,
         trace_id: Option<&str>,
     ) -> Result<Publication, GuiError> {
-        self.require_publisher(ctx, id, trace_id).await?;
+        let meta = self.require_publisher(ctx, id, trace_id).await?;
         let body = self.version_body(ctx, id, version, trace_id).await?;
-        let problems = screen_problems(&body);
-        if !problems.is_empty() {
-            return Err(GuiError::Validation(problems));
+        if problems_block_publish(
+            version,
+            meta.published_version,
+            meta.previous_published_version,
+        ) {
+            let problems = screen_problems(&body);
+            if !problems.is_empty() {
+                return Err(GuiError::Validation(problems));
+            }
         }
         Ok(self.artifacts.publish(ctx, id, version, trace_id).await?)
     }
@@ -307,6 +334,22 @@ mod tests {
         assert_eq!(
             serde_json::to_value(&changes[1]).unwrap(),
             serde_json::json!({ "kind": "screen" })
+        );
+    }
+
+    /// 書き損じで止めるのは、一度も公開していない版だけ（公開を戻す・いまの版の公開し直しは止めない）。
+    #[test]
+    fn problems_block_only_versions_never_published() {
+        assert!(problems_block_publish(3, None, None), "未公開のアプリ");
+        assert!(problems_block_publish(4, Some(3), Some(2)), "新しい版");
+        assert!(
+            problems_block_publish(1, Some(3), Some(2)),
+            "公開したことの分からない版"
+        );
+        assert!(!problems_block_publish(2, Some(3), Some(2)), "公開を戻す");
+        assert!(
+            !problems_block_publish(3, Some(3), Some(2)),
+            "いま公開している版"
         );
     }
 

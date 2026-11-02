@@ -714,6 +714,95 @@ async fn broken_figures_are_saved_as_drafts_but_not_published() {
     .await;
 }
 
+/// 書き損じで止めるのは一度も公開していない版だけ。前に公開していた版（migration 0134 が書き損じごと公開した版にした
+/// ものを含む）へは、書き損じがあっても公開を戻せる（新しい版に誤りがあったときの逃げ道を塞がない）。
+#[tokio::test]
+async fn rolling_back_to_a_broken_published_version_is_allowed() {
+    let Some(pool) = pool().await else { return };
+    let s = stores(pool.clone(), Arc::new(AllowAll));
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let t = tenant.clone();
+    let db = pool.clone();
+    run_with_cleanup(pool, tenant, None, async move {
+        let alice = ctx(&t, "alice");
+        let wf = workflow(&s, &alice, "expense-wf").await;
+        let mut broken = app_body("経費", wf, 1);
+        broken["screen"] = json!(screen("経費").replace("number 必須 円", "numbr 必須 円"));
+        let app = s
+            .mini_apps
+            .create(&alice, "rollback-app", &broken, SaveMode::Draft, None)
+            .await
+            .expect("create");
+        assert_eq!(app.warnings.len(), 1, "{:?}", app.warnings);
+        let app = app.id;
+        // migration 0134 と同じく、書き損じのある v1 をそのまま公開した版にする。
+        sqlx::query(
+            "UPDATE artifact SET published_version = 1, published_at = now() WHERE id = $1",
+        )
+        .bind(app)
+        .execute(&db)
+        .await
+        .unwrap();
+        // 書き損じの無い v2 を公開する（v1 が前に公開していた版になる）。
+        s.mini_apps
+            .update(
+                &alice,
+                app,
+                &app_body("経費", wf, 1),
+                Some(1),
+                SaveMode::Draft,
+                None,
+            )
+            .await
+            .expect("v2");
+        let p2 = s
+            .mini_apps
+            .publish(&alice, app, 2, None)
+            .await
+            .expect("v2 を公開");
+        assert_eq!(p2.previous_published_version, Some(1));
+
+        // v1 へは公開を戻せる（公開の前の確かめも止める誤りを言わない）。
+        let preview = s
+            .mini_apps
+            .publish_preview(&alice, app, Some(1), None)
+            .await
+            .unwrap();
+        assert!(preview.problems.is_empty(), "{:?}", preview.problems);
+        let back = s
+            .mini_apps
+            .publish(&alice, app, 1, None)
+            .await
+            .expect("書き損じがあっても公開を戻せる");
+        assert_eq!(
+            (back.published_version, back.previous_published_version),
+            (1, Some(2))
+        );
+        // いま公開している v1 を公開し直しても止めない（何も変えない）。
+        s.mini_apps
+            .publish(&alice, app, 1, None)
+            .await
+            .expect("いまの版の公開し直し");
+
+        // 一度も公開していない、書き損じのある v3 は止める。
+        s.mini_apps
+            .update(&alice, app, &broken, Some(2), SaveMode::Draft, None)
+            .await
+            .expect("v3");
+        let preview = s
+            .mini_apps
+            .publish_preview(&alice, app, Some(3), None)
+            .await
+            .unwrap();
+        assert_eq!(preview.problems.len(), 1);
+        assert!(matches!(
+            s.mini_apps.publish(&alice, app, 3, None).await,
+            Err(GuiError::Validation(e)) if e.iter().all(|x| x.code == "miniapp.broken_block")
+        ));
+    })
+    .await;
+}
+
 /// 束ねたスキルの本文を保存のときに確かめる（開いた途端に使えないと出るアプリを保存させない・BUG-79）。
 #[tokio::test]
 async fn saving_checks_the_bundled_skill_body() {
