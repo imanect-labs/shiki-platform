@@ -322,7 +322,7 @@ impl EventMapper {
                 let error = v
                     .pointer("/response/error")
                     .filter(|e| e.is_object())
-                    .unwrap_or(&v);
+                    .unwrap_or(v);
                 vec![Err(LlmError::Unavailable(
                     crate::provider::midstream_failure("responses", &error.to_string()),
                 ))]

@@ -517,10 +517,9 @@ mod tests {
             .unwrap()
             .collect()
             .await;
-        let error = events
-            .iter()
-            .find(|e| e.event == "error")
-            .unwrap_or_else(|| panic!("error イベントが出る: {events:?}"));
+        let error = events.iter().find(|e| e.event == "error");
+        assert!(error.is_some(), "error イベントが出る: {events:?}");
+        let error = error.unwrap();
         let shown = error.data.to_string();
         for leaked in ["org-secret", "req_secret_8", "Overloaded for"] {
             assert!(!shown.contains(leaked), "{leaked} が漏れた: {shown}");
