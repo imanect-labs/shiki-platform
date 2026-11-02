@@ -812,6 +812,9 @@ test.describe("ミニアプリ（部品のピン・共同編集）", () => {
       await expect(notice).toContainText("スキル（v1）が見つかりません");
       await expect(notice).toContainText("画面とボタンはそのまま使えます");
       await expect(page.getByText("・スキルは使えません")).toBeVisible();
+      // 「このアプリについて AI に聞く」は押せず、理由をボタンの近くに出す（D-16 の (b)）。
+      await expect(page.getByTestId("miniapp-ask-ai")).toBeDisabled();
+      await expect(page.getByText("スキルを使えないため、AI に聞けません。")).toBeVisible();
       // 画面のボタンはそのまま使える。
       await apply(page, "300");
       await expect(page.getByTestId("yui-runs").locator("li").first()).toHaveAttribute("data-status", "succeeded", {
@@ -830,6 +833,8 @@ test.describe("ミニアプリ（部品のピン・共同編集）", () => {
       await expect(page.getByText("v2 を下書きとして保存しました", { exact: true })).toBeVisible({ timeout: 15_000 });
       await expect(page.getByTestId("miniapp-skill-unavailable")).toHaveCount(0);
       await expect(page.getByText("・スキルは使えません")).toHaveCount(0);
+      // スキルを外したアプリには「AI に聞く」を出さない。
+      await expect(page.getByTestId("miniapp-ask-ai")).toHaveCount(0);
     } finally {
       // テストで作ったアプリ・ワークフロー・スキルを片付ける（スキルは途中で消していることがある）。
       await cleanupArtifacts(page, [app.id, wf.id, skill.id]);

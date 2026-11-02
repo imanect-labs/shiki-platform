@@ -8,11 +8,13 @@
 ///
 /// 下書きと公開（D-16・GAP-36）: 共有した人（使う人）が開くのは公開したバージョンだけ。作る人（editor）は公開の帯で
 /// 下書きを試し、公開する・公開を戻す・前のバージョンの内容を下書きにする。バージョン履歴も作る人にだけ出す。
+/// スキルを束ねたアプリには「このアプリについて AI に聞く」を置き、アプリを付けた会話を始める（D-16 の (b)）。
 
 import * as React from "react";
 import { use } from "react";
-import { AppWindow, History, Loader2, Pencil, Share2, TriangleAlert } from "lucide-react";
+import { AppWindow, History, Loader2, MessageSquare, Pencil, Share2, TriangleAlert } from "lucide-react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 
 import { ChromeIconButton, usePageChrome } from "@/components/shell/page-header-context";
 import { Button } from "@/components/ui/button";
@@ -41,6 +43,7 @@ import {
   type MiniAppVersion,
   type ResolvedMiniApp,
 } from "@/lib/artifact-api";
+import { createThread } from "@/lib/chat-api";
 
 /// 起動の状態のうち、まだ終わっていないもの（起動中・順番待ち・実行中・待機中）。
 const OPEN_RUN_STATUSES: ReadonlySet<MiniAppRun["status"]> = new Set(["starting", "queued", "running", "waiting"]);
@@ -82,6 +85,7 @@ function savedToast(saved: MiniAppVersion): { title: string; description: string
 
 export default function MiniAppRunPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
+  const router = useRouter();
   const [app, setApp] = React.useState<ResolvedMiniApp | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   /// 見つからない・見る権限がない（他のテナントのアプリを含む・存在を区別しない）。
@@ -99,6 +103,7 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
   );
   const [publishing, setPublishing] = React.useState<number | null>(null);
   const [restoring, setRestoring] = React.useState(false);
+  const [asking, setAsking] = React.useState(false);
   // 編集・公開・バージョン履歴はアプリの editor 以上（持ち主と、共有で「編集」にした人・BUG-18）。閲覧の共有は使うだけで、
   // 公開したバージョンだけを開く（D-16）。編集できるかはサーバが返す（保存・公開は API が改めて確かめる）。
   const canEdit = app?.can_edit === true;
@@ -200,6 +205,25 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
       });
     } finally {
       setRestoring(false);
+    }
+  };
+
+  /// アプリを付けた会話を始める（束ねたスキルで答える・D-16 の (b)）。開いているバージョンを付ける。
+  const askAi = async () => {
+    if (!app) return;
+    setAsking(true);
+    try {
+      const thread = await createThread(app.body.description, false, {
+        miniApp: { artifactId: app.id, version: app.version },
+      });
+      router.push(`/c/${thread.id}`);
+    } catch (e) {
+      toast({
+        variant: "destructive",
+        title: "AI との会話を始められませんでした",
+        description: e instanceof Error ? e.message : String(e),
+      });
+      setAsking(false);
     }
   };
 
@@ -319,6 +343,23 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
                   {skillUnavailable.message}。このアプリのスキルだけが使えません。画面とボタンはそのまま使えます。
                 </span>
               </p>
+            ) : null}
+            {app.body.skill ? (
+              <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={asking || skillUnavailable != null}
+                  onClick={() => void askAi()}
+                  data-testid="miniapp-ask-ai"
+                >
+                  {asking ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <MessageSquare className="size-4" aria-hidden />}
+                  このアプリについて AI に聞く
+                </Button>
+                {skillUnavailable ? (
+                  <span className="text-xs text-muted-foreground">スキルを使えないため、AI に聞けません。</span>
+                ) : null}
+              </div>
             ) : null}
             {canEdit ? (
               <MiniAppPublishBar

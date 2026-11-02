@@ -16,6 +16,7 @@ import {
 ///   だけが見え、公開すると使う人の画面が変わる。開いたままの前のバージョンのボタンは、開き直しを促す。
 /// - 公開を戻す（前に公開していたバージョンを公開し直す）と、使う人の画面も戻る。
 /// - まだ公開していないアプリは、共有した人には「まだ公開されていません」と出る。
+/// - スキルを束ねたアプリには「このアプリについて AI に聞く」があり、アプリを付けた会話を始める（D-16 の (b)）。
 /// PC（1440px）とスマホ（390px）で確かめる。作ったもの（アプリ・ワークフロー・スキル・会話）は最後に消す。
 /// `E2E_SHOTS_DIR` を渡すとスクリーンショットを撮る。
 
@@ -168,13 +169,14 @@ test.describe("ミニアプリの下書きと公開（D-16）", () => {
     let bobPhone: Page | null = null;
     let alicePhone: Page | null = null;
     try {
-      // 使う人: 公開した v1 を開く。公開の帯・編集・バージョン履歴は出ない。
+      // 使う人: 公開した v1 を開く。公開の帯・編集・バージョン履歴は出ない。スキルがあるので AI に聞ける。
       await bob.goto(`/apps/${appId}`);
       await heading(bob, "経費の申請");
       await expect(bob.getByText("今の画面です。")).toBeVisible();
       await expect(bob.getByTestId("miniapp-publish-bar")).toHaveCount(0);
       await expect(bob.getByRole("button", { name: "編集" })).toHaveCount(0);
       await expect(bob.getByRole("button", { name: "バージョン" })).toHaveCount(0);
+      await expect(bob.getByTestId("miniapp-ask-ai")).toBeEnabled();
 
       // 作る人: 公開中の v1 を開き、編集して保存すると下書き（v2）になり、そのまま試せる。
       await page.goto(`/apps/${appId}`);
@@ -266,7 +268,22 @@ test.describe("ミニアプリの下書きと公開（D-16）", () => {
       await phoneConfirm.getByRole("button", { name: "キャンセル" }).click();
       await expect(phoneConfirm).toHaveCount(0);
 
+      // 使う人が「このアプリについて AI に聞く」を押すと、アプリを付けた会話が始まる。
+      const created = bob.waitForResponse(
+        (r) => r.request().method() === "POST" && new URL(r.url()).pathname === "/api/threads",
+      );
+      await bob.getByTestId("miniapp-ask-ai").click();
+      const thread = (await (await created).json()) as { id: string; mini_app_id: string | null; mini_app_version: number | null };
+      cleanup.add(async () => {
+        const res = await bob.request.delete(`/api/threads/${thread.id}`, { headers: { "X-CSRF-Token": await csrf(bob) } });
+        expect([200, 204, 404], `DELETE /threads/${thread.id} → ${res.status()}`).toContain(res.status());
+      });
+      expect(thread.mini_app_id).toBe(appId);
+      expect(thread.mini_app_version).toBe(1);
+      await bob.waitForURL(new RegExp(`/c/${thread.id}`), { timeout: 30_000 });
     } finally {
+      // 会話の片付けは bob の画面で送るので、画面を閉じる前に済ませる。
+      await cleanup.run();
       await cleanupAll(
         () => bob.context().close(),
         async () => {
