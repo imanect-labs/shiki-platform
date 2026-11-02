@@ -319,9 +319,12 @@ Shiki.storage.list(folderRef?: string | null, cursor?: string | null): {
   truncated: boolean;          // 続きがあるとき true
   next_cursor: string | null;  // 続きの位置（cursor に渡すと続きを読む・続きが無ければ null）
 };
-Shiki.storage.write(folderRef: string, name: string, bytes: Uint8Array, contentType?: string): { fileRef: string; version: number };
+Shiki.storage.write(folderRef: string | null | undefined, name: string, bytes: Uint8Array, contentType?: string): { fileRef: string; version: number };
 ```
 
+- `write` の `folderRef` を省くか null ならドライブのトップに置き、UUID でない値（フォルダーの名前・パス・数・オブジェクト・空の文字）は
+  `invalid` で断る（ドライブのトップへ黙って書かない。トップのファイルは親フォルダーの共有を受け継がないので、渡すつもりの
+  フォルダーの人に届かないまま成功に見えた・BUG-198。`list` と同じ）。
 - `write` は新しいファイルを作る（engine-dedup）。既存のファイルは書き換えず、新しいバージョンも足さない。同じ名前のファイルがあると `name_taken` で失敗する（ワークフローの `storage.write` の `on_name_taken` に当たる引数は無い・BUG-97・D-112）。読み書きとも StorageService（既存チョークポイント）を経由し、権限・監査・再索引が無改造で効く。
 - `list` はワークフローの `storage.list` と同じ結果を返す（ir.md §7）。`folderRef` を省くか null ならドライブのトップを一覧にし、
   UUID でない値は `invalid` で断る（ドライブのトップへ黙って落とさない）。`cursor` に前の結果の `next_cursor` を渡すと続きを読み、
