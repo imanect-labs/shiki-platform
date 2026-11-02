@@ -2,11 +2,13 @@ import { test, expect, type Browser, type Page } from "@playwright/test";
 
 import { cleanupAll, loginAs, loginViaKeycloak, uniqueName } from "./helpers";
 
-/// ミニアプリの実行画面の共有ボタンと、共同編集者の保存の誤り（BUG-78・BUG-80）の E2E。
+/// ミニアプリの実行画面の共有ボタンと、共同編集者の保存（BUG-78・BUG-80）の E2E。
 /// - 共有（相手の一覧と付与・解除）は owner だけができるので、共有ボタンは owner にだけ出す（解決の応答の `can_share`）。
-///   閲覧・編集の共有を受けた人には出さない。
-/// - 共同編集者が自分の読めない部品を束ねたアプリを保存すると止まる（部品の権限の扱いは D-16 で未決）。そのときの誤りは
-///   部品を別名と版で言い、部品の id も本文の中の位置（`workflows[0]`）も出さない。
+///   閲覧・編集の共有を受けた人には出さない。バージョン履歴は作る人（editor）にだけ出す（使う人には公開した
+///   バージョンだけを出す・D-16）。
+/// - 共同編集者は、自分の読めない部品を束ねたアプリを、その部品に触れなければ保存できる（D-16 の (d)）。部品の版を
+///   変えると保存する人の権限で確かめ、そのときの誤りは部品を別名と版で言い、部品の id も本文の中の位置
+///   （`workflows[0]`）も出さない。
 /// - アプリの一覧（/apps）には共有されたアプリも並ぶ。カードのメニューの「共有」と「削除」は owner のアプリにだけ出す。
 ///   共有の欄が共有中の相手を読めない（403）ときは、空の一覧に見せず「持ち主だけ」と知らせる。
 /// 作ったアプリ・ワークフローは最後に消す。`E2E_SHOTS_DIR` を渡すとスクリーンショットを撮る。
@@ -53,6 +55,11 @@ async function createApp(page: Page, body: Record<string, unknown>): Promise<str
   return ((await res.json()) as { id: string }).id;
 }
 
+/// 使う人に出すバージョンを公開する（D-16）。
+async function publish(page: Page, appId: string, version: number) {
+  await api(page, "POST", `/mini-apps/${appId}/publish`, { version });
+}
+
 async function share(page: Page, appId: string, userId: string, role: "viewer" | "editor") {
   await api(page, "PUT", `/artifacts/${appId}/shares`, { target: { type: "user", id: userId }, role });
 }
@@ -88,6 +95,7 @@ test("ミニアプリの共有ボタンは owner にだけ出し、閲覧・編�
     screen: "備品の置き場所と借り方の案内です。\n",
     workflows: [],
   });
+  await publish(page, appId, 1);
   const bobCtx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const bob = await bobCtx.newPage();
   let phone: Page | null = null;
@@ -107,11 +115,12 @@ test("ミニアプリの共有ボタンは owner にだけ出し、閲覧・編�
     await loginAs(bob, "bob");
     const bobId = ((await (await bob.request.get("/api/me")).json()) as { id: string }).id;
 
-    // 閲覧の共有: 使えるが、編集も共有もできない。ボタンはどちらも出ない（版は出る）。
+    // 閲覧の共有: 使えるが、編集も共有もできない。ボタンはどちらも出ない。使う人には公開したバージョンだけを出すので、
+    // バージョン履歴も出ない（D-16）。
     await share(page, appId, bobId, "viewer");
     await bob.goto(`/apps/${appId}`);
     await expect(bob.getByRole("heading", { name: "備品の貸出の案内", level: 1 })).toBeVisible({ timeout: 15_000 });
-    await expect(bob.getByRole("button", { name: "バージョン" })).toBeVisible();
+    await expect(bob.getByRole("button", { name: "バージョン" })).toHaveCount(0);
     await expect(bob.getByRole("button", { name: "共有" })).toHaveCount(0);
     await expect(bob.getByRole("button", { name: "編集" })).toHaveCount(0);
     const viewer = (await (await bob.request.get(`/api/mini-apps/${appId}/resolved`)).json()) as {
@@ -145,7 +154,7 @@ test("ミニアプリの共有ボタンは owner にだけ出し、閲覧・編�
   }
 });
 
-test("共同編集者が読めないワークフローを束ねたアプリを保存すると、部品を名前と版で言い、id を出さない（BUG-80）", async ({
+test("共同編集者は、読めないワークフローを束ねたアプリを、触れなければ保存できる。版を変えると名前と版で断る（BUG-80）", async ({
   page,
   browser,
 }) => {
@@ -153,54 +162,63 @@ test("共同編集者が読めないワークフローを束ねたアプリを�
   await loginViaKeycloak(page);
   const flow = uniqueName("lend-flow");
   const wfId = await createFlow(page, flow);
+  const screen = `# 貸出の受付\n\n\`\`\`ui\napp 貸出の受付\n備品 = text 必須 as item\nbutton 借りる -> workflow ${flow}\n\`\`\`\n`;
   const appId = await createApp(page, {
     description: "備品の貸出",
-    screen: `# 貸出の受付\n\n\`\`\`ui\napp 貸出の受付\n備品 = text 必須 as item\nbutton 借りる -> workflow ${flow}\n\`\`\`\n`,
+    screen,
     workflows: [{ alias: flow, artifact_id: wfId, version: 1 }],
   });
   const bobCtx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
   const bob = await bobCtx.newPage();
   let phone: Page | null = null;
-  const expected = `ワークフロー「${flow}」（v1）が見つからないか、あなたには読めません`;
   try {
     await loginAs(bob, "bob");
     const bobId = ((await (await bob.request.get("/api/me")).json()) as { id: string }).id;
     // アプリだけを編集で共有する（束ねたワークフローは共有しない）。
     await share(page, appId, bobId, "editor");
 
+    // ワークフローに触れずに見出しだけを直す: 下書きとして保存できる（前は「見つからないか、あなたには読めません」）。
     await bob.goto(`/apps/${appId}`);
     await expect(bob.getByRole("heading", { name: "備品の貸出", level: 1 })).toBeVisible({ timeout: 15_000 });
     await bob.getByRole("button", { name: "編集" }).click();
     const dialog = bob.getByRole("dialog");
     await dialog.getByLabel(/画面の見出し/).fill("備品の貸出（改訂）");
     await dialog.getByRole("button", { name: "保存" }).click();
-    const alert = dialog.getByRole("alert");
-    await expect(alert).toContainText(expected, { timeout: 15_000 });
-    // 部品の id・種類の内部名・本文の中の位置（workflows[0]）を出さない。
-    await expect(alert).toHaveText(expected);
-    await expect(alert).not.toContainText(wfId);
-    await expect(alert).not.toContainText("kind=");
-    await expect(alert).not.toContainText("workflows[0]");
-    await alert.scrollIntoViewIfNeeded();
+    await expect(bob.getByText("v2 を下書きとして保存しました", { exact: true })).toBeVisible({ timeout: 15_000 });
+    await expect(bob.getByRole("heading", { name: "備品の貸出（改訂）", level: 1 })).toBeVisible();
     if (SHOTS) await bob.screenshot({ path: `${SHOTS}/bug80-collaborator-pc.png` });
 
-    // スマホのシートでも同じ文言で、横にはみ出さない。
+    // スマホのシートでも保存でき、横にはみ出さない。
     phone = await phoneOf(browser, bob);
     await phone.goto(`/apps/${appId}`);
-    await expect(phone.getByRole("heading", { name: "備品の貸出", level: 1 })).toBeVisible({ timeout: 15_000 });
+    await expect(phone.getByRole("heading", { name: "備品の貸出（改訂）", level: 1 })).toBeVisible({ timeout: 15_000 });
     await phone.getByRole("button", { name: "編集" }).click();
     const sheet = phone.getByRole("dialog");
-    await sheet.getByRole("button", { name: "保存" }).click();
-    const phoneAlert = sheet.getByRole("alert");
-    await expect(phoneAlert).toContainText(expected, { timeout: 15_000 });
-    await expect(phoneAlert).toHaveText(expected);
-    await phoneAlert.scrollIntoViewIfNeeded();
+    await sheet.getByLabel(/画面の見出し/).fill("備品の貸出（スマホで改訂）");
     expect(await sheet.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+    await sheet.getByRole("button", { name: "保存" }).click();
+    await expect(phone.getByText("v3 を下書きとして保存しました", { exact: true })).toBeVisible({ timeout: 15_000 });
     if (SHOTS) await phone.screenshot({ path: `${SHOTS}/bug80-collaborator-phone.png` });
 
+    // 束ねた版を変えると、保存する人（bob）の権限で確かめる。誤りは部品を別名と版で言い、id も位置も出さない。
+    const csrfToken = await csrf(bob);
+    const bumped = await bob.request.fetch(`/api/mini-apps/${appId}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrfToken },
+      data: {
+        body: { description: "備品の貸出", screen, workflows: [{ alias: flow, artifact_id: wfId, version: 2 }] },
+        expected_version: 3,
+      },
+    });
+    expect(bumped.status()).toBe(400);
+    const errors = ((await bumped.json()) as { errors: { code: string; message: string }[] }).errors;
+    expect(errors.map((e) => e.message)).toEqual([`ワークフロー「${flow}」（v2）が見つからないか、あなたには読めません`]);
+    expect(JSON.stringify(errors)).not.toContain(wfId);
     // 保存は止まったまま（版は増えない）。
-    const resolved = (await (await page.request.get(`/api/mini-apps/${appId}/resolved`)).json()) as { version: number };
-    expect(resolved.version).toBe(1);
+    const resolved = (await (await page.request.get(`/api/mini-apps/${appId}/resolved`)).json()) as {
+      latest_version: number;
+    };
+    expect(resolved.latest_version).toBe(3);
   } finally {
     await cleanup(page, [appId, wfId]);
     await bobCtx.close().catch(() => undefined);

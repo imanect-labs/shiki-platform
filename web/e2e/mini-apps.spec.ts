@@ -121,12 +121,20 @@ test.describe("ミニアプリ（画面の作成・実行・バンドル権限�
       timeout: 60_000,
     });
 
-    // ③ アプリ**本体だけ**を bob に共有する（ワークフローは共有しない）。
+    // ③ アプリ**本体だけ**を bob に共有する（ワークフローは共有しない）。まだ公開していないことを共有の前に言う。
     await page.getByRole("button", { name: "共有" }).click();
+    await expect(page.getByRole("dialog").getByTestId("share-dialog-note")).toContainText("まだ公開していません");
     await page.getByPlaceholder("名前・メールで検索").fill("bob");
     const bobRow = page.getByRole("dialog").locator("li", { hasText: "bob" }).first();
     await bobRow.getByRole("button", { name: "共有" }).click();
     await expect(page.getByRole("dialog").getByText("共有中の相手")).toBeVisible();
+    await page.getByRole("dialog").getByRole("button", { name: "閉じる" }).click();
+    // 共有した人が使えるのは公開したバージョンだけ（D-16）。公開の帯から v1 を公開する。
+    await page.getByTestId("miniapp-publish-bar").getByRole("button", { name: "公開", exact: true }).click();
+    const confirm = page.getByTestId("miniapp-publish-dialog");
+    await expect(confirm.getByTestId("miniapp-publish-changes")).toBeVisible({ timeout: 15_000 });
+    await confirm.getByRole("button", { name: "公開", exact: true }).click();
+    await expect(page.getByTestId("miniapp-publish-state")).toHaveText("公開中", { timeout: 15_000 });
 
     const bobContext = await browser.newContext();
     const bobPage = await bobContext.newPage();
@@ -819,7 +827,7 @@ test.describe("ミニアプリ（部品のピン・共同編集）", () => {
       await skillSelect.selectOption({ label: "なし" });
       await expect(dialog.getByText("束ねているスキルは削除されたか、あなたには読めません")).toHaveCount(0);
       await dialog.getByRole("button", { name: "保存" }).click();
-      await expect(page.getByText("v2 として保存しました", { exact: true })).toBeVisible({ timeout: 15_000 });
+      await expect(page.getByText("v2 を下書きとして保存しました", { exact: true })).toBeVisible({ timeout: 15_000 });
       await expect(page.getByTestId("miniapp-skill-unavailable")).toHaveCount(0);
       await expect(page.getByText("・スキルは使えません")).toHaveCount(0);
     } finally {
@@ -862,7 +870,7 @@ test.describe("ミニアプリ（部品のピン・共同編集）", () => {
       await expect(dialog.getByText("束ねているスキルは削除されたか、あなたには読めません")).toHaveCount(0);
       await dialog.getByLabel(/画面の見出し/).fill("経費の案内（改訂）");
       await dialog.getByRole("button", { name: "保存" }).click();
-      await expect(page.getByText("v2 として保存しました", { exact: true })).toBeVisible({ timeout: 15_000 });
+      await expect(page.getByText("v2 を下書きとして保存しました", { exact: true })).toBeVisible({ timeout: 15_000 });
       // 保存した版もスキルのピンをそのまま持つ。
       const resolved = (await (await page.request.get(`/api/mini-apps/${app.id}/resolved`)).json()) as {
         version: number;
@@ -899,7 +907,7 @@ test.describe("ミニアプリ（部品のピン・共同編集）", () => {
       const dialog = bobPage.getByRole("dialog");
       await dialog.getByLabel(/画面の見出し/).fill("備品の案内（改訂）");
       await dialog.getByRole("button", { name: "保存" }).click();
-      await expect(bobPage.getByText("v2 として保存しました", { exact: true })).toBeVisible({ timeout: 15_000 });
+      await expect(bobPage.getByText("v2 を下書きとして保存しました", { exact: true })).toBeVisible({ timeout: 15_000 });
       await expect(bobPage.getByRole("heading", { name: "備品の案内（改訂）", level: 1 })).toBeVisible();
 
       // 持ち主の画面にも bob が保存した版が出る。

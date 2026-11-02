@@ -26,6 +26,8 @@ export type ArtifactMeta = {
   name: string;
   owner: string;
   currentVersion: number;
+  /// 公開したバージョン（ミニアプリだけ・まだ公開していなければ null・D-16）。
+  publishedVersion: number | null;
   createdAt: string;
   updatedAt: string;
 };
@@ -40,21 +42,31 @@ async function ok<T>(res: Response): Promise<T> {
     // 検証エラー（400 の {errors:[...]}）は本文をそのまま投げて UI が全件表示できるようにする。文言は 1 件 1 行で、
     // 位置（`description`・`workflows[0]` などの path）を添えない（利用者に出す画面向け・ミニアプリのエディターの
     // [`validationMessages`] と同じ扱い・BUG-80・BUG-121）。位置は `errors` に残るので、欄に写す画面はそれを読む。
+    // 構造化した 409（{code, message}・ミニアプリの未公開など）は code を添え、message を文言にする。
     let detail = "";
     let errors: GuiValidationError[] | undefined;
+    let code: string | undefined;
     try {
-      const body = (await res.json()) as { errors?: GuiValidationError[] };
+      const body = (await res.json()) as { errors?: GuiValidationError[]; code?: unknown; message?: unknown };
       if (body.errors?.length) {
         errors = body.errors;
         detail = body.errors.map((e) => e.message).join("\n");
       }
+      if (typeof body.code === "string") code = body.code;
+      if (!detail && typeof body.message === "string") detail = body.message;
     } catch {
       // 本文なし
     }
     // 状態コードを添える（見つからない・権限がない＝403/404 を画面が「見つかりません」として出し分ける）。
-    throw Object.assign(new Error(detail || `API ${res.status}`), { status: res.status, errors });
+    throw Object.assign(new Error(detail || `API ${res.status}`), { status: res.status, errors, code });
   }
   return (await res.json()) as T;
+}
+
+/// 投げられた誤りの code（構造化した誤りのときだけ）。
+export function errorCode(e: unknown): string | null {
+  const code = (e as { code?: unknown } | null)?.code;
+  return typeof code === "string" ? code : null;
 }
 
 /// 投げられた誤りが保存時の検証エラーなら、その文言を 1 件 1 行で返す（無ければ null）。
@@ -82,6 +94,7 @@ type ApiArtifact = {
   name: string;
   owner: string;
   current_version: number;
+  published_version?: number | null;
   created_at: string;
   updated_at: string;
 };
@@ -93,6 +106,7 @@ function toMeta(a: ApiArtifact): ArtifactMeta {
     name: a.name,
     owner: a.owner,
     currentVersion: a.current_version,
+    publishedVersion: a.published_version ?? null,
     createdAt: a.created_at,
     updatedAt: a.updated_at,
   };
@@ -193,7 +207,16 @@ export async function getSkill(id: string, version?: number): Promise<SkillVersi
 
 // ── ミニアプリ（Task 6.10）──────────────────────────────────────────────
 
-export type MiniAppVersion = { id: string; version: number; body: MiniAppBody };
+/// 保存した版（下書き）。`published_version` は公開したバージョン（保存しても変わらない）、`warnings` は画面の
+/// 書き損じ（保存はできた。直すまで公開できない・D-16）。
+export type MiniAppVersion = Omit<components["schemas"]["MiniAppResponse"], "body"> & { body: MiniAppBody };
+
+/// 公開の前の確かめ（公開したバージョンとの差と、公開を止める誤り・codegen）。
+export type PublishPreview = components["schemas"]["PublishPreview"];
+/// 公開したバージョンから変わるところ 1 つ（`kind` で判別・codegen）。
+export type MiniAppChange = components["schemas"]["MiniAppChange"];
+/// 公開の結果（codegen）。
+export type Publication = components["schemas"]["Publication"];
 
 /// 解決済みのミニアプリ（codegen の応答に、検証済みの本文の型を当てたもの）。
 ///
@@ -227,9 +250,21 @@ export async function updateMiniApp(
   );
 }
 
+/// ミニアプリを開く。`version` を省くと公開したバージョン（まだ公開していないアプリを作る人が開くときは最新）。
+/// 使う人がまだ公開していないアプリを開くと、code が `not_published` の誤りになる（D-16）。
 export async function resolveMiniApp(id: string, version?: number): Promise<ResolvedMiniApp> {
   const qs = version != null ? `?version=${version}` : "";
   return ok<ResolvedMiniApp>(await apiFetch(`/mini-apps/${id}/resolved${qs}`));
+}
+
+/// 公開の前の確かめ（作る人だけ）: そのバージョンと公開しているバージョンの差と、公開を止める誤り。
+export async function previewMiniAppPublish(id: string, version: number): Promise<PublishPreview> {
+  return ok<PublishPreview>(await apiFetch(`/mini-apps/${id}/publish-preview?version=${version}`));
+}
+
+/// バージョンを公開する（作る人だけ）。前に公開していたバージョンを選ぶと公開を戻せる。
+export async function publishMiniApp(id: string, version: number): Promise<Publication> {
+  return ok<Publication>(await apiFetch(`/mini-apps/${id}/publish`, json({ version })));
 }
 
 // ── 図のボタンの実行（Task 6.5・#604・action_id + params のみ送れる）─────
@@ -303,7 +338,17 @@ export class UiActionNotFound extends Error {
   }
 }
 
+/// 開いた後に、アプリの公開しているバージョンが変わった（またはまだ公開していない）。画面を開き直すと押せる（D-16）。
+export class UiActionAppChanged extends Error {
+  constructor(message = "このアプリは新しいバージョンに変わりました。画面を開き直してください。") {
+    super(message);
+    this.name = "UiActionAppChanged";
+  }
+}
+
 /// ミニアプリの画面の ```ui のボタンを実行する（#604）。誤りの投げ分けは会話のボタンと同じ。
+/// 409 のうち、開いた後に公開したバージョンが変わったもの（`app_version_changed`・`not_published`）は二重送信と
+/// 分けて投げる。
 export async function invokeMiniAppYuiAction(
   appId: string,
   version: number,
@@ -321,7 +366,13 @@ export async function invokeMiniAppYuiAction(
     throw new UiActionUncertain();
   }
   if (res.status >= 500) throw new UiActionUncertain();
-  if (res.status === 409) throw new UiActionAlreadyInvoked();
+  if (res.status === 409) {
+    const body = (await res.json().catch(() => null)) as { code?: unknown; message?: unknown } | null;
+    if (body?.code === "app_version_changed" || body?.code === "not_published") {
+      throw new UiActionAppChanged(typeof body.message === "string" ? body.message : undefined);
+    }
+    throw new UiActionAlreadyInvoked();
+  }
   if (res.status === 403) throw new UiActionForbidden("このアプリを使う権限がありません");
   if (res.status === 404) throw new UiActionNotFound();
   return ok<UiActionResult>(res);

@@ -27,6 +27,7 @@ export function ArtifactShareDialog({
   artifactId,
   name,
   shareUrl,
+  note,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -35,6 +36,8 @@ export function ArtifactShareDialog({
   /// コピーするリンク（そのアーティファクトのページ URL）。省略時はリンクコピーを出さない
   /// （一覧ページから開いた場合に誤ったリンクを渡さないため）。
   shareUrl?: string;
+  /// 共有の前に知らせること（まだ公開していないアプリなど）。
+  note?: string;
 }) {
   if (!artifactId) return null;
 
@@ -47,6 +50,16 @@ export function ArtifactShareDialog({
             同じ組織のメンバー・部署に権限を付与します。部署に共有するとそのメンバー全員に反映されます。
           </DialogDescription>
         </DialogHeader>
+
+        {note ? (
+          <p
+            role="note"
+            data-testid="share-dialog-note"
+            className="mb-3 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-400"
+          >
+            {note}
+          </p>
+        ) : null}
 
         <SharePeoplePanel
           open={open}

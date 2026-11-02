@@ -307,7 +307,7 @@ export function MiniAppEditorDialog({
         <DialogHeader>
           <DialogTitle>{editing ? "アプリを編集" : "アプリを作成"}</DialogTitle>
           <DialogDescription>
-            画面は「組み立てる」でドラッグして作るか、「書く」で Markdown と ```ui の図で書きます。ボタンの実行先は、下で束ねたワークフローから選べます。
+            画面は「組み立てる」でドラッグして作るか、「書く」で Markdown と ```ui の図で書きます。ボタンの実行先は、下で束ねたワークフローから選べます。保存した内容は、公開するまで共有した人には見えません。
           </DialogDescription>
         </DialogHeader>
 

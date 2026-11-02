@@ -19,6 +19,7 @@ import { ListLoadFailed, ListMore } from "@/components/artifacts/shared-more";
 import { deleteArtifact, type ArtifactMeta } from "@/lib/artifact-api";
 import { useArtifactList } from "@/hooks/use-artifact-list";
 import { InstalledAppsSection } from "@/components/miniapp/installed-apps";
+import { UNPUBLISHED_SHARE_NOTE } from "@/components/miniapp/publish";
 import { useMe } from "@/hooks/use-me";
 
 type DialogState =
@@ -27,6 +28,14 @@ type DialogState =
   | { kind: "share"; meta: ArtifactMeta }
   | { kind: "versions"; meta: ArtifactMeta }
   | { kind: "delete"; meta: ArtifactMeta };
+
+/// カードのバージョンの言い方（D-16）: 共有した人が使うのは公開したバージョン。下書きの番号は持ち主にだけ言う。
+function publishLabel(meta: ArtifactMeta, mine: boolean): string {
+  const published = meta.publishedVersion;
+  if (published == null) return "未公開";
+  if (mine && meta.currentVersion > published) return `公開中 v${published}・下書き v${meta.currentVersion}`;
+  return `公開中 v${published}`;
+}
 
 export default function AppsPage() {
   const list = useArtifactList("mini_app");
@@ -62,7 +71,7 @@ export default function AppsPage() {
   return (
     <PageContainer
       title="アプリ"
-      description="スキル・UI・ワークフローを束ねたミニアプリを共有して実行できます。"
+      description="画面とワークフローを束ねたアプリを作り、公開して共有した人に使ってもらえます。"
       className="max-w-4xl"
       actions={createButton}
     >
@@ -88,7 +97,7 @@ export default function AppsPage() {
             <ArtifactCard
               key={meta.id}
               name={meta.name}
-              meta={`v${meta.currentVersion}・更新 ${new Date(meta.updatedAt).toLocaleDateString("ja-JP")}`}
+              meta={`${publishLabel(meta, meta.owner === myId)}・更新 ${new Date(meta.updatedAt).toLocaleDateString("ja-JP")}`}
               pending={pending === meta.id}
               primary={
                 <Button size="sm" asChild>
@@ -134,7 +143,7 @@ export default function AppsPage() {
         onOpenChange={(open) => !open && setDialog({ kind: "closed" })}
         onSaved={() => {
           reload();
-          toast({ title: "作成しました" });
+          toast({ title: "作成しました", description: "公開すると、共有した人が使えるようになります。" });
         }}
       />
       <ArtifactShareDialog
@@ -142,6 +151,7 @@ export default function AppsPage() {
         onOpenChange={(open) => !open && setDialog({ kind: "closed" })}
         artifactId={dialog.kind === "share" ? dialog.meta.id : null}
         name={dialog.kind === "share" ? dialog.meta.name : ""}
+        note={dialog.kind === "share" && dialog.meta.publishedVersion == null ? UNPUBLISHED_SHARE_NOTE : undefined}
       />
       <VersionsDialog
         open={dialog.kind === "versions"}
