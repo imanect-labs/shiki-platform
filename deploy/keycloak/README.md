@@ -54,15 +54,20 @@ protocol mapper で claim にしたものから来る（`crates/api/src/middlewa
       Keycloak の管理 API（`GET /users/{id}/groups`、部署の候補がある人は `GET /users/{id}` の属性 `roles` も）から読む。
       N 人を 1 周するのに N / 500 分かかる（1,000 人で 2 分、10,000 人で 20 分）。グループから外してから member が外れる
       までの遅れは、最長でこの 1 周（と次の回までの 60 秒）。設定は `membership_reconcile.interval_secs`（下限 10 秒）・
-      `batch_size`（1〜1,000）・`enabled`。サーバーが何台あっても 1 台だけが進める（advisory lock）。
+      `batch_size`（1〜1,000）・`enabled`。サーバーが何台あっても、照合は全体で `interval_secs` に 1 回だけ進める
+      （advisory lock と、最後に照合を始めた時刻で決める）。Keycloak への読みはサーバーの台数で増えない（1 回に最大
+      500〜1,000 回・全体で 1 分に 1 回ほど）。
     - 読む権限は provisioner の `manage-users`（`view-users` を含む）で足りる。この realm の provisioner はすでに持つので、
       **既存の realm に足すものは無い**。provisioner に `manage-users` を付けていない本番の realm では、realm-management の
       `view-users` を provisioner のサービスアカウントに付ける（管理コンソールの「Clients → shiki-provisioner →
-      Service account roles → Assign role」で realm-management の `view-users`）。読めないと照合は誰も外さない（ログに
-      「Keycloak から所属を読めません」が出る）。provisioner を設定しない構成では照合は動かない。
+      Service account roles → Assign role」で realm-management の `view-users`）。読めないと照合は誰も外さない（権限が
+      無いときは、回ごとに 1 行「provisioner に利用者を読む権限がありません」が出る。届かないときは「Keycloak から所属を
+      読めません」）。provisioner を設定しない構成では照合は動かない。
     - 外さないとき: Keycloak を読めない（接続できない・権限が無い）人、Keycloak にいない人（消した人はトークンを
       取れない）、OpenFGA を読めないとき。属性 `roles` 由来のロールと、ログインの同期が部署と記録していないロール
-      （手で書いたタプル）には触れない。admin・audit_viewer にも触れない。
+      （手で書いたタプル）には触れない。admin・audit_viewer にも触れない。既定の組織（`default`）の member も外さない
+      （手で書いたものだけなので、外すのはログインの同期だけ。shiki-web に所属グループのマッパーが無い構成でも、
+      照合が管理 API のグループで既定の組織を外して `/me` を 403 にすることはない・BUG-200）。
   - すぐに止めるには、これまでどおり Keycloak でその人を無効にする（Back-Channel Logout がセッションを切る）。
 - **顧客 IdP / LDAP のマッパーで `tenant` / `roles` を顧客が制御できる値から取り込まない**。
   IdP の Attribute Importer（sync mode FORCE 等）や LDAP の user-attribute mapper はサーバ側で属性を
