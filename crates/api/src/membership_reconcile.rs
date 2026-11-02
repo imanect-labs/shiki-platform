@@ -7,8 +7,8 @@
 //! # 何を外すか（ログインの同期と同じ単一定義を使う）
 //!
 //! - **組織**: 所属グループから決まりうる組織（[`org_member::orgs_kept_by_reconcile`]）のほかの組織の member。
-//!   組織が 1 つも決まらない人は既定の組織の member を残す（BUG-200）。admin・audit_viewer・他テナントのタプルには
-//!   触れない（[`org_member::revoke_stale`]）。
+//!   既定の組織の member は所属グループと照らさずにいつも残す（自動では付けず手で書いたものだけなので、外すのは
+//!   ログインの同期だけ・BUG-200）。admin・audit_viewer・他テナントのタプルには触れない（[`org_member::revoke_stale`]）。
 //! - **部署**: ログインの同期が所属グループ由来と記録したロール（`directory_user_role.source = 'group'`）のうち、
 //!   いま直接タプルがあり、所属グループ（[`authz::org_group::tenant_relative_groups`]）にも、ロールの claim の元の
 //!   属性 `roles` にも無いもの（[`role_member::revoke_roles`]）。属性 `roles` 由来のロールと手で書いたタプルには触れない。

@@ -14,6 +14,7 @@
 //!   （[`crate::membership_reconcile`]・D-136。shiki の web にログインしないままアプリのトークンだけを取る人も外れる）。
 //! - **残す**: 組織が決まらない人の、既定の組織（`AuthContext` が落ちる先・[`DEFAULT_ORG`]）の member。グループを
 //!   使わずに既定の組織の member を手で書いて使わせる構成を壊さない（BUG-200）。ほかの組織の member は外す。
+//!   定期の照合は、既定の組織の member をいつも残す（[`orgs_kept_by_reconcile`]。既定の組織を外すのはここだけ）。
 //! - **触らない**: admin・audit_viewer（組織の管理の側の付与・PIT-65）。他テナントのタプル（名前空間で除く）。
 //! - 書く前に check で確かめる（毎回の書き込みと、OpenFGA の重複の誤りを避ける）。今の直接タプルを読めないときは
 //!   外さない（未知の状態に破壊的な操作をしない・ロールの同期と同じ）。
@@ -153,12 +154,17 @@ pub(crate) async fn current_orgs(
 }
 
 /// 定期の照合（D-136）で member を残す組織: 所属グループから決まりうる組織のすべて
-/// （[`authz::org_group::org_candidates`]）と、ログインの同期が既定の組織を残す人（組織が決まらない人）の既定の組織
-/// （BUG-200）。
+/// （[`authz::org_group::org_candidates`]）と、既定の組織（[`DEFAULT_ORG`]）。
 ///
 /// ログインの同期が残す組織（[`desired_org`]・決まらなければ既定の組織）は必ずこの中にある。照合はログインの同期が
 /// 付けた member を外さず、所属するグループが 1 つも無くなった組織の member だけを外す（複数の組織のグループに
 /// 入っている人を 1 つにそろえるのはログインの同期・GAP-75）。
+///
+/// 既定の組織の member は、所属グループと照らさずに必ず残す。既定の組織には自動で member を付けない（手で書いたものだけ
+/// がある）ので、所属グループで外す理由が無い。照合は Keycloak の管理 API の所属グループで決め、ログインの同期は
+/// トークンの `groups` で決めるので、shiki-web のクライアントに所属グループのマッパーが無い構成では 2 つが食い違う
+/// （ログインの同期は組織が決まらず既定の組織を残すのに、照合は管理 API のグループから組織を決めて既定の組織を外し、
+/// 次のログインでも戻らない）。既定の組織を外すのはログインの同期だけにする（BUG-200）。
 pub(crate) fn orgs_kept_by_reconcile(
     groups: &[String],
     tenant_id: &str,
@@ -168,8 +174,7 @@ pub(crate) fn orgs_kept_by_reconcile(
         .into_iter()
         .filter(|org| authz::validate_local_id(org).is_ok())
         .collect();
-    // ログインの同期が既定の組織を残す人（選ばれる組織が無いか、識別子にできない名前の人）は、照合も残す。
-    if desired_org(groups, tenant_id, layout).is_none() {
+    if !orgs.iter().any(|org| org == DEFAULT_ORG) {
         orgs.push(DEFAULT_ORG.to_string());
     }
     orgs
@@ -407,7 +412,7 @@ mod tests {
         assert_eq!(desired_org(&groups, "t", layout).as_deref(), Some("beta"));
         assert_eq!(
             orgs_kept_by_reconcile(&groups, "t", layout),
-            ["alpha", "beta"]
+            ["alpha", "beta", DEFAULT_ORG]
         );
         // 組織が決まらない人は既定の組織（ログインの同期と同じ・BUG-200）。識別子にできない名前は候補にしない。
         assert_eq!(orgs_kept_by_reconcile(&[], "t", layout), [DEFAULT_ORG]);
@@ -427,6 +432,46 @@ mod tests {
             orgs_kept_by_reconcile(&groups, "t", GroupLayout::TenantScoped),
             ["beta", DEFAULT_ORG]
         );
+        // 既定の組織という名前のグループに入っている人も、既定の組織を 2 回並べない。
+        assert_eq!(
+            orgs_kept_by_reconcile(&v(&["/tenants/t/default"]), "t", GroupLayout::TenantScoped),
+            [DEFAULT_ORG]
+        );
+    }
+
+    /// 管理 API の所属グループから組織が決まっても、照合は既定の組織の member を外さない。ログインの同期はトークンの
+    /// `groups` で決めるので、shiki-web に所属グループのマッパーが無い構成（トークンに groups が無い）では既定の組織を
+    /// 残し、照合と食い違う（照合が外すと、次のログインでも戻らず /me が 403 になる・BUG-200）。
+    #[tokio::test]
+    async fn reconcile_keeps_the_default_org_even_when_admin_groups_decide_an_org() {
+        let fga = Tuples::default();
+        let ns = Namespace::for_tenant("t");
+        let me = ns.user("u1");
+        for org in [DEFAULT_ORG, "old"] {
+            fga.write_tuple(&me, Relation::Member, &ns.organization(org))
+                .await
+                .unwrap();
+        }
+        // single の従来解釈では、共有している realm のどの直下のグループ（/IT）も組織の候補になる。
+        let admin_groups = v(&["/IT"]);
+        let layout = GroupLayout::TenantScopedOrLegacy;
+        assert_eq!(
+            desired_org(&admin_groups, "t", layout).as_deref(),
+            Some("IT")
+        );
+        let current = current_orgs(&fga, &me, &ns).await.unwrap();
+        let keep = orgs_kept_by_reconcile(&admin_groups, "t", layout);
+        let revoked = revoke_stale(&fga, &me, &ns, &current, &keep).await;
+        assert_eq!(
+            revoked,
+            ["old"],
+            "所属グループの無い組織の member だけを外す"
+        );
+        assert_eq!(fga.members(), ["organization:t|default"]);
+        // トークンに groups が無い人のログインの同期も、既定の組織を残す（照合と同じ結果）。
+        let out = sync_org_member(&fga, &user(&[]), "t", layout).await;
+        assert!(out.revoked.is_empty(), "{out:?}");
+        assert_eq!(fga.members(), ["organization:t|default"]);
     }
 
     #[tokio::test]
