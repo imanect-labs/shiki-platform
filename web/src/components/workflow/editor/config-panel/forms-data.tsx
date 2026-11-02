@@ -1,6 +1,6 @@
 "use client";
 
-/// 業務データ（data.*）ノードのフォーム（Task 15.7 のノード・設定画面は Task 15.5）。
+/// 業務データ（data.*）ノードのフォーム（Task 15.7 のノード・設定画面は Task 15.5・キーで追加か更新と足す数は GAP-16）。
 ///
 /// 対象テーブルは一覧から選ぶ（固定値の UUID）。固定値で選ぶと、有効化のときに渡す権限
 /// （data_table の viewer / editor）の対象がそのテーブルに決まる。前の結果から渡す指定も残す。
@@ -17,7 +17,7 @@ import type { ValueExpr } from "@/generated/workflow-ir";
 import type { DataQuery, DataTable } from "@/lib/data-api";
 import { buildFilter, resolveColumns, splitFilter } from "@/lib/data-view";
 import { cn } from "@/lib/utils";
-import { Field, MoreInfo, NumberInput } from "./common";
+import { Field, FieldSelectTrigger, MoreInfo, NumberInput } from "./common";
 import { DataTableSelect, isFsmTable, NoFsmTableNote, useDataTables, type DataTables } from "./data-tables";
 import type { FormProps } from "./forms-basic";
 import { paramsOf, patchParams } from "./params";
@@ -117,6 +117,105 @@ function columnKeys(table: DataTable | null): ComposeKeys | undefined {
         numeric: f.type === "number",
       })),
   };
+}
+
+/// 「足す数」で選ぶ列（数の列のうち書ける列だけ・GAP-16）。
+function numberKeys(table: DataTable | null): ComposeKeys | undefined {
+  const keys = columnKeys(table);
+  if (!keys || !table) return keys;
+  const numeric = new Set(table.schema.fields.filter((f) => f.type === "number").map((f) => f.key));
+  return { options: keys.options.filter((o) => numeric.has(o.key)) };
+}
+
+/// 値の欄が空か（項目なし・空の文字・中身の無いまとまり）。
+function isEmptyValue(v: unknown): boolean {
+  if (v === undefined || v === null) return true;
+  if (typeof v === "string") return v.trim() === "";
+  return typeof v === "object" && !Array.isArray(v) && Object.keys(v as object).length === 0;
+}
+
+/// 「同じレコードを探す列（省略可）」の「選ばない」の値（選択の部品は空の文字を値にできない）。
+const PICK_NONE = "__none__";
+
+/// 同じレコードを探す列（重複を許さない列だけ・キーで追加か更新とまとめて登録・GAP-16）。保存時にもサーバーが同じ
+/// 決まりで照らす（重複を許す列は ir.match_not_unique）。
+function MatchOnField({
+  node,
+  dispatch,
+  fieldErrors,
+  table,
+  optional,
+  hint,
+}: FormProps & { table: DataTable | null; optional?: boolean; hint: string }) {
+  const p = paramsOf<{ match_on?: string }>(node);
+  const value = (p.match_on ?? "").trim();
+  const status = table?.schema.fsm_ref ? table.schema.status_field : null;
+  const options = table
+    ? table.schema.fields.filter((f) => f.unique && !isDerived(f.type) && !isCreatedBy(f.type) && f.key !== status)
+    : [];
+  const label = optional ? "同じレコードを探す列（省略可）" : "同じレコードを探す列";
+  const name = (f: { key: string; display_name?: string | null }) =>
+    f.display_name && f.display_name !== f.key ? `${f.display_name}（${f.key}）` : f.key;
+  const known = options.some((f) => f.key === value);
+  return (
+    <Field label={label} hint={hint} error={fieldErrors.get("match_on")}>
+      {table && options.length === 0 && !value ? (
+        <p className="rounded-md border border-dashed px-2.5 py-1.5 text-[11px] leading-relaxed text-muted-foreground" data-testid="match-on-none">
+          このテーブルには、重複を許さない列がありません。テーブルの列の設定で、探すのに使う列（品番など）の「重複を許さない」をオンにしてください。
+        </p>
+      ) : (
+        <Select
+          value={value || (optional ? PICK_NONE : "")}
+          onValueChange={(v) =>
+            patchParams(dispatch, node, { match_on: v === PICK_NONE ? (optional ? undefined : "") : v })
+          }
+        >
+          <FieldSelectTrigger aria-label={label} className="h-8 text-[13px]" data-testid="match-on-select">
+            <SelectValue placeholder="列を選ぶ" />
+          </FieldSelectTrigger>
+          <SelectContent>
+            {optional ? <SelectItem value={PICK_NONE}>選ばない（ID の無いレコードはすべて追加）</SelectItem> : null}
+            {options.map((f) => (
+              <SelectItem key={f.key} value={f.key}>
+                {name(f)}
+              </SelectItem>
+            ))}
+            {value && !known ? <SelectItem value={value}>{value}</SelectItem> : null}
+          </SelectContent>
+        </Select>
+      )}
+    </Field>
+  );
+}
+
+/// 「足す数」の欄（数の列ごとに足す数・負の数で減らす・GAP-16）。`creates` はキーで追加か更新（追加するときは 0 に足す）。
+function AddField(props: FormProps & { table: DataTable | null; creates?: boolean; onAdd: (v: ValueExpr | undefined) => void }) {
+  const { node, refCandidates, inMapRegion, fieldErrors, table, creates, onAdd } = props;
+  const p = paramsOf<{ add?: ValueExpr }>(node);
+  return (
+    <div className="space-y-1">
+      <ValueExprInput
+        label="足す数（省略可）"
+        value={p.add}
+        onChange={(v) => onAdd(isEmptyValue(v) ? undefined : v)}
+        refCandidates={refCandidates}
+        inMapRegion={inMapRegion}
+        json="object"
+        keys={numberKeys(table)}
+        numericNote={null}
+        hint={
+          creates
+            ? "数の列に、この数を足して書きます。減らすときは負の数（-1 など）を入れます。追加するときは 0 に足します。"
+            : "数の列に、この数を足して書きます。減らすときは負の数（-1 など）を入れます。"
+        }
+        placeholder='例: {"stock": -1}'
+        error={fieldErrors.get("add")}
+      />
+      <MoreInfo testId="add-more">
+        ほかの実行と同時に書き込んでも、足した数は失われません。足した結果が列の最小値・最大値を外れると、書き込まずに失敗します。在庫を 0 未満にしないときは、列の最小値を 0 にしておきます。
+      </MoreInfo>
+    </div>
+  );
 }
 
 function FieldKeysHint({ table }: { table: DataTable | null }) {
@@ -312,6 +411,45 @@ export function DataRecordUpdateForm(props: FormProps) {
         error={fieldErrors.get("patch")}
       />
       <StatusFieldHint table={table} patch={p.patch} />
+      {/* 足す数に列があれば、変更する値は空でよい（サーバーの readiness と index.tsx の optionalBlank）。 */}
+      <AddField {...props} table={table} onAdd={(add) => patchParams(dispatch, node, { add })} />
+      <FieldKeysHint table={table} />
+    </div>
+  );
+}
+
+/// 「レコードを追加か更新」（GAP-16）: 同じレコードを探す列の値が同じレコードがあれば書き換え、なければ追加する。
+export function DataRecordUpsertForm(props: FormProps) {
+  const { node, dispatch, refCandidates, inMapRegion, fieldErrors } = props;
+  const { source, table } = useNodeTable(node);
+  const p = paramsOf<NodeParamsByType["data.record.upsert"]>(node);
+  return (
+    <div className="space-y-4">
+      <TableField {...props} source={source} />
+      <MatchOnField
+        {...props}
+        table={table}
+        hint="この列の値が同じレコードがあれば書き換え、なければ追加します。選べるのは、重複を許さない列だけです。"
+      />
+      <ValueExprInput
+        label="入れる値"
+        value={p.data as ValueExpr | undefined}
+        onChange={(v) => patchParams(dispatch, node, { data: v })}
+        refCandidates={refCandidates}
+        inMapRegion={inMapRegion}
+        multiline
+        json="object"
+        keys={columnKeys(table)}
+        hint="「同じレコードを探す列」の値も入れます。書き換えるときも追加するときも、この値を書きます。"
+        placeholder='例: {"sku": "A-100", "name": "六角ボルト"}'
+        error={fieldErrors.get("data")}
+      />
+      <AddField
+        {...props}
+        table={table}
+        creates
+        onAdd={(add) => patchParams(dispatch, node, { add })}
+      />
       <FieldKeysHint table={table} />
     </div>
   );
@@ -418,11 +556,23 @@ export function DataBulkUpsertForm(props: FormProps) {
   const { node, dispatch, refCandidates, inMapRegion, fieldErrors } = props;
   const { source, table } = useNodeTable(node);
   const p = paramsOf<NodeParamsByType["data.bulk_upsert"]>(node);
+  const matched = Boolean(p.match_on?.trim());
   return (
     <div className="space-y-4">
       <TableField {...props} source={source} />
+      <MatchOnField
+        {...props}
+        table={table}
+        optional
+        hint="選ぶと、ID の無いレコードはこの列の値で探し、あれば更新、なければ追加します。同じ値のレコードが 2 件にならないので、取り込み直しても増えません。"
+      />
       <ValueExprInput
         label="登録する行"
+        hint={
+          matched
+            ? "1 件ずつ {\"data\": {\"列のキー\": 値}} の形にし、「同じレコードを探す列」の値を入れます。同じ値の行が 2 つあると、どれも登録しません。"
+            : undefined
+        }
         value={p.rows as ValueExpr | undefined}
         onChange={(v) => patchParams(dispatch, node, { rows: v })}
         refCandidates={refCandidates}

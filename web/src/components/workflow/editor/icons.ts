@@ -59,6 +59,7 @@ const ICONS: Partial<Record<NodeType, LucideIcon>> = {
   "data.query": Database,
   "data.record.create": Database,
   "data.record.update": Database,
+  "data.record.upsert": Database,
   "data.record.delete": Database,
   "data.bulk_upsert": DatabaseZap,
   "data.transition": CircleCheck,

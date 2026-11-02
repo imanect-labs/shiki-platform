@@ -43,6 +43,7 @@ import {
   DataRecordCreateForm,
   DataRecordDeleteForm,
   DataRecordUpdateForm,
+  DataRecordUpsertForm,
   DataTransitionForm,
 } from "./forms-data";
 import { HttpRequestForm, ScriptRunForm } from "./forms-external";
@@ -80,6 +81,7 @@ const FORMS: Record<string, React.ComponentType<FormProps>> = {
   "data.query": DataQueryForm,
   "data.record.create": DataRecordCreateForm,
   "data.record.update": DataRecordUpdateForm,
+  "data.record.upsert": DataRecordUpsertForm,
   "data.record.delete": DataRecordDeleteForm,
   "data.transition": DataTransitionForm,
   "data.bulk_upsert": DataBulkUpsertForm,
@@ -145,9 +147,19 @@ function blankRequired(node: IrNode): string[] {
   return Object.entries(defaults as Record<string, unknown>)
     .filter(([key, v]) => {
       const cur = params[key];
-      return v === "" && (cur === undefined || (typeof cur === "string" && cur.trim() === ""));
+      return v === "" && (cur === undefined || (typeof cur === "string" && cur.trim() === "")) && !optionalBlank(node, key);
     })
     .map(([key]) => key);
+}
+
+/// 置いたときの空の欄のうち、ほかの欄に値があれば空のままでよいもの。サーバーの readiness と同じ決まりで、レコードの
+/// 更新は「足す数」に列があれば「変更する値」が空でよい（GAP-16・readiness.rs の `adds_numbers`）。
+function optionalBlank(node: IrNode, key: string): boolean {
+  if (node.type !== "data.record.update" || key !== "patch") return false;
+  const add = (node.params as Record<string, unknown> | undefined)?.add;
+  if (add === undefined || add === null) return false;
+  if (typeof add === "string") return add.trim() !== "";
+  return !(typeof add === "object" && !Array.isArray(add) && Object.keys(add as object).length === 0);
 }
 
 /// 祖先ノード（`$from nodes.<id>.output` の参照候補）を逆辺 BFS で求める。ノード種は出力の形から

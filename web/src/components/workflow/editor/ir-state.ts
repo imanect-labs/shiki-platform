@@ -229,6 +229,8 @@ export function defaultParams(nodeType: string): unknown {
       return { table: "", data: "" };
     case "data.record.update":
       return { table: "", record: "", patch: "" };
+    case "data.record.upsert":
+      return { table: "", match_on: "", data: "" };
     case "data.record.delete":
       return { table: "", record: "" };
     case "data.transition":
