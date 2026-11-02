@@ -19,7 +19,7 @@ import { ListLoadFailed, ListMore } from "@/components/artifacts/shared-more";
 import { deleteArtifact, type ArtifactMeta } from "@/lib/artifact-api";
 import { useArtifactList } from "@/hooks/use-artifact-list";
 import { InstalledAppsSection } from "@/components/miniapp/installed-apps";
-import { UNPUBLISHED_SHARE_NOTE } from "@/components/miniapp/publish";
+import { savedToast, UNPUBLISHED_SHARE_NOTE } from "@/components/miniapp/publish";
 import { useMe } from "@/hooks/use-me";
 
 type DialogState =
@@ -109,14 +109,18 @@ export default function AppsPage() {
               }
               menu={[
                 ...(meta.owner === myId
-                  ? [{ key: "share", label: "共有", icon: Share2, onSelect: () => setDialog({ kind: "share", meta }) }]
+                  ? [
+                      { key: "share", label: "共有", icon: Share2, onSelect: () => setDialog({ kind: "share", meta }) },
+                      // バージョン履歴は作る人のもの（使う人は公開したバージョンだけを使う・D-16）。共有で編集にした人は
+                      // アプリの画面の「バージョン」から開ける。
+                      {
+                        key: "versions",
+                        label: "バージョン履歴",
+                        icon: History,
+                        onSelect: () => setDialog({ kind: "versions", meta }),
+                      },
+                    ]
                   : []),
-                {
-                  key: "versions",
-                  label: "バージョン履歴",
-                  icon: History,
-                  onSelect: () => setDialog({ kind: "versions", meta }),
-                },
                 ...(meta.owner === myId
                   ? [
                       {
@@ -141,9 +145,10 @@ export default function AppsPage() {
       <MiniAppEditorDialog
         open={dialog.kind === "create"}
         onOpenChange={(open) => !open && setDialog({ kind: "closed" })}
-        onSaved={() => {
+        onSaved={(saved) => {
           reload();
-          toast({ title: "作成しました", description: "公開すると、共有した人が使えるようになります。" });
+          // 次に起きること（公開すると使える・書き損じがあれば直すまで公開できない）はアプリの画面の保存と同じ文。
+          toast({ ...savedToast(saved), title: "作成しました" });
         }}
       />
       <ArtifactShareDialog

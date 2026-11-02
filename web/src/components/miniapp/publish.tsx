@@ -22,11 +22,27 @@ import {
   previewMiniAppPublish,
   publishMiniApp,
   type MiniAppChange,
+  type MiniAppVersion,
   type Publication,
   type PublishPreview,
   type ResolvedMiniApp,
 } from "@/lib/artifact-api";
 import { cn } from "@/lib/utils";
+
+/// 保存した下書きの知らせ（次に起きることと、公開を止める書き損じ）。作成の知らせも同じ文を使う。
+export function savedToast(saved: MiniAppVersion): { title: string; description: string } {
+  const title = `v${saved.version} を下書きとして保存しました`;
+  if (saved.warnings.length > 0) {
+    return { title, description: `画面に直す箇所が ${saved.warnings.length} 件あります。直すまで公開できません。` };
+  }
+  return {
+    title,
+    description:
+      saved.published_version == null
+        ? "公開すると、共有した人が使えるようになります。"
+        : `公開するまで、共有した人には v${saved.published_version} が見えます。`,
+  };
+}
 
 /// まだ公開していないアプリを共有するときの注記（共有しても、公開するまで相手は使えない）。
 export const UNPUBLISHED_SHARE_NOTE = "まだ公開していません。公開するまで、共有した相手はこのアプリを使えません。";

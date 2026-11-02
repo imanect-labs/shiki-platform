@@ -27,6 +27,7 @@ import {
   MiniAppPublishBar,
   PublishMiniAppDialog,
   publishState,
+  savedToast,
   UNPUBLISHED_SHARE_NOTE,
 } from "@/components/miniapp/publish";
 import { DataGridHostContext, miniAppDataGridHost } from "@/components/data/data-grid-host";
@@ -40,7 +41,6 @@ import {
   resolveMiniApp,
   updateMiniApp,
   type MiniAppRun,
-  type MiniAppVersion,
   type ResolvedMiniApp,
 } from "@/lib/artifact-api";
 import { createThread } from "@/lib/chat-api";
@@ -66,21 +66,6 @@ function runsFinishedSince(
     if (prev && !open && prev.get(key) !== false) finished = true;
   }
   return { seen, finished };
-}
-
-/// 保存した下書きの知らせ（次に起きることと、公開を止める書き損じ）。
-function savedToast(saved: MiniAppVersion): { title: string; description: string } {
-  const title = `v${saved.version} を下書きとして保存しました`;
-  if (saved.warnings.length > 0) {
-    return { title, description: `画面に直す箇所が ${saved.warnings.length} 件あります。直すまで公開できません。` };
-  }
-  return {
-    title,
-    description:
-      saved.published_version == null
-        ? "公開すると、共有した人が使えるようになります。"
-        : `公開するまで、共有した人には v${saved.published_version} が見えます。`,
-  };
 }
 
 export default function MiniAppRunPage({ params }: { params: Promise<{ id: string }> }) {
