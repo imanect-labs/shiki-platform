@@ -409,17 +409,22 @@ impl AppInstallationStore {
         Ok(installation.map(|i| (tenant_id, i)))
     }
 
-    /// テナント内の active インストール一覧（インストール済みアプリ一覧 UI 用・新しい順）。
+    /// 呼ぶ人の組織の active インストール一覧（インストール済みアプリ一覧 UI 用・新しい順）。
     ///
     /// アンインストール（status=revoked）は起動不能なため一覧から除く。撤去済みアプリが
     /// シェル一覧・B1 実行画面に残らないよう active に限定する（失効の即時反映）。
+    ///
+    /// テナントと組織の両方で絞る（組織はテナントの中の隔離の境界・PIT-45 の単一定義・BUG-197）。別の組織が入れた
+    /// アプリの名前・スコープ・クライアント・入れた人・関数の定義は見せない（開いてもゲートウェイが断る・D-130）。
     pub async fn list(&self, ctx: &AuthContext) -> Result<Vec<AppInstallation>, GatewayError> {
         let sql = format!(
             "SELECT {COLS} FROM app_installation \
-             WHERE tenant_id = $1 AND status = 'active' ORDER BY created_at DESC LIMIT 200"
+             WHERE tenant_id = $1 AND org = $2 AND status = 'active' \
+             ORDER BY created_at DESC LIMIT 200"
         );
         let rows: Vec<Row> = sqlx::query_as(&sql)
             .bind(&ctx.tenant_id)
+            .bind(&ctx.org)
             .fetch_all(&self.db)
             .await
             .map_err(map_db)?;

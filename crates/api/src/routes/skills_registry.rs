@@ -146,7 +146,7 @@ pub async fn import_skill(
     Ok(Json(entry))
 }
 
-/// テナントの skill レジストリ一覧（インストール UI 用）。
+/// skill レジストリ一覧（インストール UI 用・呼ぶ人の組織が publish したエントリ・BUG-197）。
 #[utoipa::path(
     get, path = "/skills/registry",
     responses((status = 200, description = "エントリ一覧", body = SkillRegistryResponse)),

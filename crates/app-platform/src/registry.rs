@@ -143,7 +143,11 @@ impl Registry {
         Ok(row)
     }
 
-    /// テナント内のエントリ一覧（新しい順・インストール UI 用）。
+    /// 呼ぶ人の組織が publish したエントリの一覧（新しい順・インストール UI 用）。
+    ///
+    /// テナントと組織の両方で絞る（組織はテナントの中の隔離の境界・PIT-45 の単一定義・BUG-197。skill の掲載
+    /// [`crate::SkillInstallService`] と同じ境界）。名前と版で引く [`Self::latest`]・[`Self::get`] はテナントで
+    /// 絞り、インストールは artifact の owner の確かめを通す。
     pub async fn list(
         &self,
         ctx: &AuthContext,
@@ -154,10 +158,11 @@ impl Registry {
             "SELECT id, artifact_kind, name, version, artifact_id, artifact_version, \
                     manifest_digest, publisher, trust_tier, yanked, created_at \
              FROM registry_entry \
-             WHERE tenant_id = $1 AND artifact_kind = $2 \
-             ORDER BY created_at DESC LIMIT $3",
+             WHERE tenant_id = $1 AND org = $2 AND artifact_kind = $3 \
+             ORDER BY created_at DESC LIMIT $4",
         )
         .bind(&ctx.tenant_id)
+        .bind(&ctx.org)
         .bind(artifact_kind)
         .bind(limit.clamp(1, 200))
         .fetch_all(&self.db)

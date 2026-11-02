@@ -104,7 +104,7 @@ pub async fn install_app(
     Ok(Json(installed.into()))
 }
 
-/// インストール一覧（管理 UI 用）。
+/// インストール一覧（管理 UI 用）。呼ぶ人の組織が入れたアプリだけを返す（PIT-45・BUG-197）。
 ///
 /// 各項目に `table_count`（アプリが持つ、呼ぶ人の組織の生きているテーブルの数）を添える。0 より多いアプリだけ、
 /// 画面がテーブルを使える部署・グループを変える口を出す（GAP-68）。
@@ -237,7 +237,7 @@ pub async fn app_usage(
     Ok(Json(usage))
 }
 
-/// レジストリ一覧（インストール UI 用・publish 済みエントリ）。
+/// レジストリ一覧（インストール UI 用・呼ぶ人の組織が publish したエントリ・BUG-197）。
 #[utoipa::path(
     get,
     path = "/apps/registry",

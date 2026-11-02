@@ -86,7 +86,8 @@ impl UsageRecorder {
         Ok(())
     }
 
-    /// アプリの LLM 利用量集計（user_sub 別・コスト/トークン・GET /apps/{id}/usage 用）。
+    /// アプリの LLM 利用量集計（user_sub 別・コスト/トークン・GET /apps/{id}/usage 用）。テナントと呼ぶ人の組織で絞る
+    /// （組織はテナントの中の隔離の境界・PIT-45・BUG-197）。
     pub async fn app_llm_usage(
         &self,
         ctx: &AuthContext,
@@ -98,10 +99,11 @@ impl UsageRecorder {
                     COALESCE(SUM(prompt_tokens + completion_tokens), 0)::bigint AS tokens, \
                     COALESCE(SUM(cost_usd_micros), 0)::bigint AS cost_usd_micros \
              FROM llm_usage \
-             WHERE tenant_id = $1 AND app_id = $2 \
+             WHERE tenant_id = $1 AND org = $2 AND app_id = $3 \
              GROUP BY user_sub, model ORDER BY cost_usd_micros DESC",
         )
         .bind(&ctx.tenant_id)
+        .bind(&ctx.org)
         .bind(app_id)
         .fetch_all(&self.db)
         .await

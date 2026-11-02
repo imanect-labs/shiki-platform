@@ -488,3 +488,42 @@ async fn cache_tokens_are_recorded_and_priced_separately() {
     assert_eq!(report.totals.cache_write_tokens, 1_000_000);
     assert_eq!(report.totals.cost_usd_micros, 1_250_000 + 1_190_000);
 }
+
+/// アプリの AI の利用量（GET /apps/{id}/usage）は、呼ぶ人の組織の行だけを数える（同じテナントの別の組織の行を
+/// 混ぜない・PIT-45・BUG-197）。
+#[tokio::test]
+async fn app_llm_usage_is_scoped_to_the_callers_org() {
+    let Some(pool) = pool().await else { return };
+    let recorder = llm_gateway::accounting::UsageRecorder::new(pool.clone());
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let app_id = uuid::Uuid::new_v4();
+    let rec = |model: &str| llm_gateway::accounting::UsageRecord {
+        idempotency_key: uuid::Uuid::new_v4().to_string(),
+        provider: "stub".into(),
+        provider_id: "default".into(),
+        model: model.into(),
+        usage: Usage {
+            prompt_tokens: 10,
+            completion_tokens: 5,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
+        },
+        cost_usd_micros: 7,
+        trace_id: None,
+        app_id: Some(app_id),
+        source: UsageSource::MiniApp,
+    };
+    let (acme, beta) = (ctx(&tenant, "acme", "alice"), ctx(&tenant, "beta", "bob"));
+    recorder.record(&acme, &rec("a")).await.expect("acme");
+    recorder.record(&beta, &rec("b")).await.expect("beta");
+    let seen = recorder.app_llm_usage(&acme, app_id).await;
+    sqlx::query("DELETE FROM llm_usage WHERE tenant_id = $1")
+        .bind(&tenant)
+        .execute(&pool)
+        .await
+        .expect("cleanup");
+    let seen = seen.expect("usage");
+    assert_eq!(seen.len(), 1, "{seen:?}");
+    assert_eq!(seen[0].user_sub, "alice");
+    assert_eq!(seen[0].model, "a");
+}

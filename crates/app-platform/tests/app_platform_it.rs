@@ -268,6 +268,58 @@ async fn registry_resolve_and_yank() {
     ));
 }
 
+/// レジストリの一覧は、呼ぶ人の組織が publish したものだけを返す（同じテナントの別の組織のものは出さない・
+/// PIT-45・BUG-197）。
+#[tokio::test]
+async fn registry_list_is_scoped_to_the_callers_org() {
+    let Some(pool) = setup().await else { return };
+    let registry = Registry::new(pool.clone());
+    let s = store(pool.clone());
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let acme = ctx(&tenant, "alice");
+    let beta = AuthContext::new(acme.principal.clone(), "beta".into(), tenant.clone());
+    let kind = ArtifactKind::MiniAppCode.as_str();
+    let body = async {
+        let id = s
+            .create(&acme, &manifest("org-scoped", "1.0.0"), None)
+            .await
+            .expect("create");
+        s.publish(&acme, id, Some(1), None, None)
+            .await
+            .expect("publish");
+        let names = |list: Vec<app_platform::RegistryEntry>| {
+            list.into_iter().map(|e| e.name).collect::<Vec<_>>()
+        };
+        assert_eq!(
+            names(registry.list(&acme, kind, 200).await.expect("acme")),
+            ["org-scoped"]
+        );
+        assert!(
+            registry
+                .list(&beta, kind, 200)
+                .await
+                .expect("beta")
+                .is_empty(),
+            "別の組織の一覧には出さない"
+        );
+    };
+    let outcome = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(body)).await;
+    for sql in [
+        "DELETE FROM registry_entry WHERE tenant_id = $1",
+        "DELETE FROM artifact_version WHERE tenant_id = $1",
+        "DELETE FROM artifact WHERE tenant_id = $1",
+    ] {
+        sqlx::query(sql)
+            .bind(&tenant)
+            .execute(&pool)
+            .await
+            .expect(sql);
+    }
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
+}
+
 /// A（宣言的 mini_app）と B（mini_app_code）が同じ artifact テーブル・list/共有経路に乗る。
 #[tokio::test]
 async fn a_and_b_share_artifact_plane() {

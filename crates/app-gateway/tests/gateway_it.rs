@@ -456,3 +456,56 @@ async fn org_comes_from_the_installation_and_requires_membership() {
 fn token_as_bob(client: &str, tenant: &str) -> String {
     common::token_as(client, "data.read", tenant, "bob")
 }
+
+/// インストールの一覧は、呼ぶ人の組織が入れたアプリだけを返す（同じテナントの別の組織のアプリの名前・スコープ・
+/// クライアントを見せない・PIT-45・BUG-197）。
+#[tokio::test]
+async fn installation_list_is_scoped_to_the_callers_org() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let store = AppInstallationStore::new(pool.clone());
+    let acme = ctx(&tenant);
+    let beta = authz::AuthContext::new(acme.principal.clone(), "beta".into(), tenant.clone());
+    let install = |c: authz::AuthContext, name: &'static str| {
+        let store = store.clone();
+        async move {
+            let client = format!("app-{}", Uuid::new_v4());
+            store
+                .upsert(
+                    &c,
+                    NewAppInstallation {
+                        app_id: Uuid::new_v4(),
+                        app_name: name,
+                        installed_version: "1.0.0",
+                        granted_scopes: &["data.read".to_string()],
+                        client_id_b1: Some(&client),
+                        client_id_b2: None,
+                        ai: AiPin::default(),
+                        frontend_bundle: None,
+                        server_bundle: None,
+                        server_spec: None,
+                    },
+                )
+                .await
+                .expect("install");
+        }
+    };
+    let body = async {
+        install(acme.clone(), "経費").await;
+        install(beta.clone(), "採用").await;
+        let names = |list: Vec<app_gateway::AppInstallation>| {
+            list.into_iter().map(|i| i.app_name).collect::<Vec<_>>()
+        };
+        assert_eq!(names(store.list(&acme).await.expect("acme")), ["経費"]);
+        assert_eq!(names(store.list(&beta).await.expect("beta")), ["採用"]);
+    };
+    let outcome = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(body)).await;
+    sqlx::query("DELETE FROM app_installation WHERE tenant_id = $1")
+        .bind(&tenant)
+        .execute(&pool)
+        .await
+        .expect("cleanup");
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
+}

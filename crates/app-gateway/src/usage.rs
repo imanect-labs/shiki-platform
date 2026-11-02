@@ -50,19 +50,24 @@ pub(crate) async fn record_usage(
 }
 
 /// アプリの利用量を取得する（新しい日から・利用量 API と IT 検証用）。
+///
+/// テナントと組織の両方で絞る（組織はテナントの中の隔離の境界・PIT-45 の単一定義・BUG-197）。記録の組織は
+/// インストールの組織（ゲートウェイが決める・D-130）。
 pub async fn fetch_usage(
     db: &PgPool,
     tenant_id: &str,
+    org: &str,
     app_id: Uuid,
     limit: i64,
 ) -> Result<Vec<CapabilityUsage>, GatewayError> {
     let rows = sqlx::query_as(
         "SELECT app_id, user_sub, capability, day, calls \
          FROM app_capability_usage \
-         WHERE tenant_id = $1 AND app_id = $2 \
-         ORDER BY day DESC, capability, user_sub LIMIT $3",
+         WHERE tenant_id = $1 AND org = $2 AND app_id = $3 \
+         ORDER BY day DESC, capability, user_sub LIMIT $4",
     )
     .bind(tenant_id)
+    .bind(org)
     .bind(app_id)
     .bind(limit.clamp(1, 1000))
     .fetch_all(db)

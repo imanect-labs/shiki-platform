@@ -215,7 +215,7 @@ async fn data_capability_matrix() {
     assert_eq!(schema["id"], owned.to_string());
 
     // 利用量: data.read / data.write / data.schema が (alice×app) で計上されている。
-    let usage = fetch_usage(&pool, &tenant, app_id, 100)
+    let usage = fetch_usage(&pool, &tenant, "acme", app_id, 100)
         .await
         .expect("usage");
     let calls = |cap: &str| {
@@ -556,7 +556,7 @@ async fn storage_rag_identity_notify_matrix() {
     let bob = token_as(&client, ALL_SCOPES, &tenant, "bob");
     let (s, _) = get(&app, "/gw/identity/me", Some(&bob)).await;
     assert_eq!(s, StatusCode::OK);
-    let usage = fetch_usage(&pool, &tenant, app_id, 100)
+    let usage = fetch_usage(&pool, &tenant, "acme", app_id, 100)
         .await
         .expect("usage");
     assert!(
@@ -571,6 +571,9 @@ async fn storage_rag_identity_notify_matrix() {
             .any(|u| u.capability == "identity.read" && u.user_sub == "bob"),
         "{usage:?}"
     );
+    // 別の組織から引いても、この組織のアプリの利用量は出さない（PIT-45・BUG-197）。
+    let beta = fetch_usage(&pool, &tenant, "beta", app_id, 100).await;
+    assert!(beta.unwrap().is_empty(), "別の組織には出さない");
     assert!(
         usage
             .iter()
