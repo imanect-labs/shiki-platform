@@ -5,7 +5,8 @@
 //!
 //! 1. 名前解決はここで 1 回だけ行い（[`RESOLVE_TIMEOUT`] まで）、確かめたアドレスに接続を固定する
 //!    （`resolve_to_addrs`。HTTP の部品には名前を引き直させない）。確かめた後に解決先を付け替える DNS リバインディングで、
-//!    内部のアドレスやメタデータに届かない。
+//!    内部のアドレスやメタデータに届かない。名前が無い（`net_guard::NO_SUCH_HOST`）ならやり直さない `egress_denied`、
+//!    DNS に届かない・一時的に引けない・時間切れならやり直せる `egress_failed` にする（ワークフローの送り口と同じ・BUG-202）。
 //! 2. 解決先に公開でない IP が 1 つでもあれば、応答ごと断る（公開と内部の混在も断る）。IP の分類は
 //!    `sandbox_client::net_guard` が単一の正（web.fetch・ワークフロー・サンドボックスと同じ表）。ミニアプリの関数には、
 //!    ワークフローの `workflow.http_internal_hosts` にあたる内部の送り先の許可は無い。
@@ -40,14 +41,22 @@ pub(crate) async fn resolve_checked(
     let shown = url.host_str().unwrap_or_default();
     let (domain, found_addrs) = match url.host() {
         Some(url::Host::Domain(d)) => {
-            let found = tokio::time::timeout(RESOLVE_TIMEOUT, resolver.lookup(d, port))
-                .await
-                .map_err(|_| {
-                    failed(format!(
+            let found = match tokio::time::timeout(RESOLVE_TIMEOUT, resolver.lookup(d, port)).await {
+                Ok(Ok(addrs)) => addrs,
+                // その名前のアドレスが無い（URL のドメインの誤り）。やり直しても直らない（ワークフローの送り口と同じ・BUG-202）。
+                Ok(Err(reason)) if reason == net_guard::NO_SUCH_HOST => {
+                    return Err(super::functions::deny(format!(
+                        "{shown} が見つかりませんでした。URL のドメインに誤りがないか確かめてください。"
+                    )))
+                }
+                // DNS に届かない・一時的に引けない（やり直せる・下の Unresolved と同じ）。
+                Ok(Err(_)) => Vec::new(),
+                Err(_) => {
+                    return Err(failed(format!(
                         "{shown} の場所を時間内に調べられませんでした。少し待ってから、もう一度試してください。"
-                    ))
-                })?
-                .unwrap_or_default();
+                    )))
+                }
+            };
             (Some(d.to_string()), found)
         }
         Some(url::Host::Ipv4(ip)) => (None, vec![SocketAddr::new(ip.into(), port)]),
@@ -158,11 +167,16 @@ fn trim_partial_utf8(bytes: &mut Vec<u8>) {
     }
 }
 
-/// 断った理由をゲストに返す文にする（どれもやり直さない）。
+/// 断った理由をゲストに返す文にする（どれもやり直さない。解決できないときだけやり直せる）。
 fn refused(host: &str, refusal: AddrRefusal) -> HostResponse {
     let message = match refusal {
+        // 名前が無いと分かったときは [`resolve_checked`] が先に断る。ここは DNS に届かない・一時的に引けない
+        // （ワークフローの送り口と同じくやり直せる失敗・BUG-202）。
         AddrRefusal::Unresolved => {
-            format!("{host} の場所を調べられませんでした。URL のドメインを確かめてください。")
+            return failed(format!(
+                "{host} の場所を調べられませんでした。少し待ってから、もう一度試してください。\
+                 続くときは、URL のドメインを確かめてください。"
+            ))
         }
         AddrRefusal::Internal => {
             format!("{host} は内部のネットワークにつながるため、接続しませんでした。")

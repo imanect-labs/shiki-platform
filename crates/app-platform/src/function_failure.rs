@@ -58,7 +58,7 @@ pub(crate) fn function_failure(
         }
         "egress_failed" => "外部のサービスに接続できませんでした。".to_string(),
         // ホストが日本語で決めた文（引数の誤り・B2 関数で使えない能力・外部への送信を断った理由。断った理由は、許可して
-        // いない先・決まったポート以外・内部のネットワーク・名前を調べられないで、解決したアドレスは含まない・BUG-196）。
+        // いない先・決まったポート以外・内部のネットワーク・その名前のホストが無いで、解決したアドレスは含まない・BUG-196）。
         "invalid" | "unsupported" | "unknown_api" | "egress_denied" if !raw.is_empty() => {
             first_line(&raw)
         }

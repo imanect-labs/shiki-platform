@@ -12,7 +12,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::*;
 
-/// 決めた名前だけを決めたアドレスに解決する（引いた回数を数える）。
+/// 決めた名前だけを決めたアドレスに解決する（引いた回数を数える）。`missing.` で始まる名前はアドレスが無い
+/// （`NO_SUCH_HOST`）、ほかの知らない名前は引けない（`LOOKUP_FAILED`・DNS に届かない・一時的な失敗）。
 struct MapResolver {
     map: HashMap<String, Vec<SocketAddr>>,
     lookups: AtomicUsize,
@@ -49,7 +50,11 @@ impl HostResolver for MapResolver {
                     .map(|a| SocketAddr::new(a.ip(), port))
                     .collect()
             })
-            .ok_or("ホストを解決できませんでした")
+            .ok_or(if host.starts_with("missing.") {
+                net_guard::NO_SUCH_HOST
+            } else {
+                net_guard::LOOKUP_FAILED
+            })
     }
 }
 
@@ -168,9 +173,10 @@ async fn refuses_names_that_resolve_to_internal_addresses() {
     );
 }
 
-/// 公開の IP だけに解決される名前は通し、確かめたアドレスを返す。解決できない名前は断る。
+/// 公開の IP だけに解決される名前は通し、確かめたアドレスを返す。名前が無いと分かった名前はやり直さずに断り、
+/// DNS に届かない・一時的に引けない名前はやり直せる失敗にする（ワークフローの送り口と同じ・BUG-202）。
 #[tokio::test]
-async fn passes_public_names_and_refuses_unknown_ones() {
+async fn passes_public_names_and_tells_missing_names_from_lookup_failures() {
     let resolver = MapResolver::new(&[("api.example", &["93.184.216.34", "2606:4700::1"])]);
     let url = url::Url::parse("https://api.example/v1").unwrap();
     let (domain, addrs) = resolve_checked(&*resolver, &url, 443).await.unwrap();
@@ -178,12 +184,39 @@ async fn passes_public_names_and_refuses_unknown_ones() {
     assert_eq!(addrs.len(), 2);
     assert!(addrs.iter().all(|a| a.port() == 443));
 
+    // 名前が無い（NXDOMAIN）: URL の誤りなので、やり直さない。
+    let missing = url::Url::parse("https://missing.example/").unwrap();
+    let err = resolve_checked(&*resolver, &missing, 443)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        &err,
+        HostResponse::Err { code, retryable: false, .. } if code == "egress_denied"
+    ));
+    assert!(
+        message_of(&err).contains("見つかりませんでした"),
+        "{}",
+        message_of(&err)
+    );
+
+    // DNS に届かない・一時的に引けない（EAI_AGAIN など）: やり直せる。URL の誤りだとは言い切らない。
     let unknown = url::Url::parse("https://nowhere.example/").unwrap();
     let err = resolve_checked(&*resolver, &unknown, 443)
         .await
         .unwrap_err();
-    assert_eq!(code_of(&err), "egress_denied");
-    assert!(message_of(&err).contains("場所を調べられませんでした"));
+    assert!(matches!(
+        &err,
+        HostResponse::Err { code, retryable: true, .. } if code == "egress_failed"
+    ));
+    let message = message_of(&err);
+    assert!(message.contains("場所を調べられませんでした"), "{message}");
+    assert!(message.contains("もう一度試してください"), "{message}");
+
+    // 名前を引けてもアドレスが 1 つも無い答えも、引けなかったのと同じにやり直せる。
+    let empty = MapResolver::new(&[("empty.example", &[])]);
+    let url = url::Url::parse("https://empty.example/").unwrap();
+    let err = resolve_checked(&*empty, &url, 443).await.unwrap_err();
+    assert_eq!(code_of(&err), "egress_failed");
 }
 
 /// 答えない DNS は、上限で打ち切ってやり直せる失敗にする。
