@@ -1,6 +1,7 @@
 //! ワークフロー一覧（所有∪共有・要約射影）とエディタレイアウト（Task 10.12/10.14）。
 //!
-//! 一覧の認可は artifact の list（所有）＋ FGA ListObjects（共有）＝一覧の単一チョークポイント。
+//! 一覧の認可は artifact の list（所有）＋ FGA ListObjects（共有）＝一覧の単一チョークポイント。自分のものと共有された
+//! ものを合わせて続きの位置を返すのは `GET /artifacts` と同じ入口（[`list_page`]）。
 //! 要約（display_name/トリガ種/enabled 状態）は認可済み id 集合への単一 SQL 射影で、
 //! IR 本文・body 全体は運ばない（必要フィールドのみ）。
 
@@ -19,16 +20,20 @@ use crate::{
 };
 
 use super::runs::require_workflow_viewer;
+use crate::routes::artifact_list::{before_of, list_page, ListPageRequest, OwnedNext};
 
-/// 一覧クエリ（artifacts 一覧と同じ keyset 契約）。
+/// 一覧クエリ（`GET /artifacts` と同じ契約・[`list_page`]）。
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct ListWorkflowsQuery {
-    /// keyset カーソル（前ページ末尾の updated_at）。
+    /// 自分のものの続き（前の応答の `owned_next.before_updated_at`）。
     pub before_updated_at: Option<chrono::DateTime<chrono::Utc>>,
-    /// keyset カーソル（前ページ末尾の id）。
+    /// 自分のものの続き（前の応答の `owned_next.before_id`・`before_updated_at` と対で使う）。
     pub before_id: Option<Uuid>,
     /// 最大件数（既定 50・上限 100）。
     pub limit: Option<i64>,
+    /// 共有された分の続き（前の応答の `shared_next_cursor`）。渡すと、共有された分の続きだけを返す（自分のものは
+    /// 返さない・`before_*` と同時には使えない・BUG-185）。
+    pub shared_cursor: Option<String>,
 }
 
 /// 一覧 1 行の要約。
@@ -51,15 +56,24 @@ pub struct WorkflowSummaryDto {
 #[derive(Debug, Serialize, ToSchema)]
 pub struct WorkflowListResponse {
     pub items: Vec<WorkflowSummaryDto>,
+    /// 自分のものに続きがあるときの位置（`before_updated_at`・`before_id` に渡す・無ければ `null`・BUG-185）。
+    pub owned_next: Option<OwnedNext>,
+    /// 共有された分に続きがあるときの位置（`shared_cursor` に渡す・無ければ `null`）。共有された分が多い人では、
+    /// 共有された分が `limit` より少ないか 0 件でも続きがあることがある（BUG-162・BUG-185）。
+    pub shared_next_cursor: Option<String>,
 }
 
 /// ワークフロー一覧（所有∪共有・更新日降順）。
+///
+/// 自分のものの続きは `owned_next` を `before_*` に、共有された分の続きは `shared_next_cursor` を `shared_cursor` に
+/// 渡して読む（`GET /artifacts?kind=workflow` と同じ契約・同じ位置）。
 #[utoipa::path(
     get,
     path = "/workflows",
     params(ListWorkflowsQuery),
     responses(
         (status = 200, description = "一覧", body = WorkflowListResponse),
+        (status = 400, description = "shared_cursor が読めない（cursor_invalid）・before_* と同時に渡した"),
         (status = 401, description = "未認証"),
     ),
     tag = "workflows"
@@ -69,26 +83,19 @@ pub async fn list_workflows(
     AuthContextExt(ctx): AuthContextExt,
     Query(q): Query<ListWorkflowsQuery>,
 ) -> Result<Json<WorkflowListResponse>, ApiError> {
-    let before = match (q.before_updated_at, q.before_id) {
-        (Some(at), Some(id)) => Some((at, id)),
-        _ => None,
-    };
-    let limit = q.limit.unwrap_or(50);
-    // 所有分（keyset）＋初回ページのみ共有分を合流（GET /artifacts と同じ契約）。
-    let mut arts = state
-        .artifacts
-        .list_mine(&ctx, Some(artifact::ArtifactKind::Workflow), before, limit)
-        .await?;
-    if before.is_none() {
-        let shared = state
-            .artifacts
-            .list_shared_with_me(&ctx, Some(artifact::ArtifactKind::Workflow), limit)
-            .await?;
-        arts.extend(shared);
-        arts.sort_by_key(|a| std::cmp::Reverse((a.updated_at, a.id)));
-        arts.dedup_by_key(|a| a.id);
-    }
-    let ids: Vec<Uuid> = arts.iter().map(|a| a.id).collect();
+    let page = list_page(
+        &state.artifacts,
+        &state.data,
+        &ctx,
+        ListPageRequest {
+            kind: Some(artifact::ArtifactKind::Workflow),
+            before: before_of(q.before_updated_at, q.before_id),
+            limit: q.limit.unwrap_or(50),
+            shared_cursor: q.shared_cursor.as_deref(),
+        },
+    )
+    .await?;
+    let ids: Vec<Uuid> = page.items.iter().map(|a| a.id).collect();
     let items = state
         .workflow_summaries
         .list(&ctx.tenant_id, &ids)
@@ -109,6 +116,8 @@ pub async fn list_workflows(
                 updated_at: s.updated_at.to_rfc3339(),
             })
             .collect(),
+        owned_next: page.owned_next,
+        shared_next_cursor: page.shared_next_cursor,
     }))
 }
 

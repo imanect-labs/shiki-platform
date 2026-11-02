@@ -12,43 +12,22 @@
 use std::collections::HashSet;
 
 use authz::{AuthContext, ObjectType, Relation};
-use chrono::{DateTime, Utc};
 use uuid::Uuid;
 
-use crate::model::{Artifact, ArtifactKind};
-use crate::store::{ArtifactRow, ArtifactStore};
+use crate::model::ArtifactKind;
+use crate::store::{ArtifactPage, ArtifactPosition, ArtifactRow, ArtifactStore};
 use crate::visible::{Candidate, CHUNK, MAX_CHECKS};
 use crate::{map_db, ArtifactError};
 
-/// 共有された一覧の続きの位置（並びのキー `(updated_at, id)` の最後の値）。
-pub type SharedPosition = (DateTime<Utc>, Uuid);
-
-/// 共有された一覧の 1 ページ（新しい順）。`next` が `Some` なら続きがある（`items` が空でも続きがあることがある）。
-#[derive(Debug)]
-pub struct SharedArtifacts {
-    pub items: Vec<Artifact>,
-    pub next: Option<SharedPosition>,
-}
-
 impl ArtifactStore {
-    /// 自分に共有されたアーティファクトの先頭のページ（[`Self::list_shared_page`] の `items`）。
-    pub async fn list_shared_with_me(
-        &self,
-        ctx: &AuthContext,
-        kind: Option<ArtifactKind>,
-        limit: i64,
-    ) -> Result<Vec<Artifact>, ArtifactError> {
-        Ok(self.list_shared_page(ctx, kind, None, limit).await?.items)
-    }
-
-    /// 自分に共有されたアーティファクトの 1 ページ（`after` は前のページの [`SharedArtifacts::next`]）。
+    /// 自分に共有されたアーティファクトの 1 ページ（`after` は前のページの [`ArtifactPage::next`]）。
     pub async fn list_shared_page(
         &self,
         ctx: &AuthContext,
         kind: Option<ArtifactKind>,
-        after: Option<SharedPosition>,
+        after: Option<ArtifactPosition>,
         limit: i64,
-    ) -> Result<SharedArtifacts, ArtifactError> {
+    ) -> Result<ArtifactPage, ArtifactError> {
         let limit = usize::try_from(limit.clamp(1, 100)).unwrap_or(1);
         let objs = self
             .authz
@@ -61,7 +40,7 @@ impl ArtifactStore {
             return self.scan_shared_with_me(ctx, kind, after, limit, ids).await;
         }
         if ids.is_empty() {
-            return Ok(SharedArtifacts {
+            return Ok(ArtifactPage {
                 items: Vec::new(),
                 next: None,
             });
@@ -97,7 +76,7 @@ impl ArtifactStore {
         } else {
             None
         };
-        Ok(SharedArtifacts { items, next })
+        Ok(ArtifactPage { items, next })
     }
 
     /// [`Self::list_shared_page`] の、ListObjects が上限に届いたときの経路。自分が持ち主でない候補を新しい順に
@@ -106,10 +85,10 @@ impl ArtifactStore {
         &self,
         ctx: &AuthContext,
         kind: Option<ArtifactKind>,
-        after: Option<SharedPosition>,
+        after: Option<ArtifactPosition>,
         limit: usize,
         known: Vec<Uuid>,
-    ) -> Result<SharedArtifacts, ArtifactError> {
+    ) -> Result<ArtifactPage, ArtifactError> {
         let known: HashSet<Uuid> = known.into_iter().collect();
         let mut picked: Vec<Uuid> = Vec::new();
         let mut at = after;
@@ -162,7 +141,7 @@ impl ArtifactStore {
             }
         };
         if picked.is_empty() {
-            return Ok(SharedArtifacts {
+            return Ok(ArtifactPage {
                 items: Vec::new(),
                 next,
             });
@@ -182,7 +161,7 @@ impl ArtifactStore {
             .into_iter()
             .map(ArtifactRow::into_artifact)
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(SharedArtifacts {
+        Ok(ArtifactPage {
             items: crate::visible::in_order(&picked, items, |a| a.id),
             next,
         })

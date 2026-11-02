@@ -223,7 +223,7 @@ test("スキルの一覧: 最初の読み込みが失敗したら、空の状態
   const served = await serveSkills(page, {}, new Set());
   try {
     await page.goto("/skills");
-    await expect(page.getByTestId("artifacts-load-failed")).toContainText("スキルの一覧を読み込めませんでした。", { timeout: 15_000 });
+    await expect(page.getByTestId("list-load-failed")).toContainText("スキルの一覧を読み込めませんでした。", { timeout: 15_000 });
     await expect(page.getByText("スキルはまだありません")).toHaveCount(0);
   } finally {
     await served.stop();

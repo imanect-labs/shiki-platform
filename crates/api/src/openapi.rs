@@ -415,6 +415,7 @@ use utoipa::{
         crate::routes::artifacts::ShareArtifactRequest,
         crate::routes::artifacts::ArtifactShareEntry,
         crate::routes::artifacts::ArtifactListResponse,
+        crate::routes::artifact_list::OwnedNext,
         crate::routes::artifacts::VersionListResponse,
         artifact::Artifact,
         artifact::ArtifactKind,

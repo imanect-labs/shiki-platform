@@ -639,18 +639,20 @@ async fn live_fga_bundle_authority_and_version_pinning() {
     // 共有された分が一覧（実効 viewer 集合）に出る＝UI から見つけて実行できる（6.11）。
     let shared = s
         .artifacts
-        .list_shared_with_me(&bob, Some(ArtifactKind::MiniApp), 50)
+        .list_shared_page(&bob, Some(ArtifactKind::MiniApp), None, 50)
         .await
-        .expect("shared list");
+        .expect("shared list")
+        .items;
     assert!(
         shared.iter().any(|a| a.id == app_id),
         "共有されたミニアプリが bob の一覧に出る"
     );
     assert!(
         s.artifacts
-            .list_shared_with_me(&alice, Some(ArtifactKind::MiniApp), 50)
+            .list_shared_page(&alice, Some(ArtifactKind::MiniApp), None, 50)
             .await
             .expect("owner shared list")
+            .items
             .iter()
             .all(|a| a.id != app_id),
         "owner 自身の共有一覧には出ない（所有一覧と重複しない）"

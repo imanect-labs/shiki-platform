@@ -29,6 +29,17 @@ pub struct NewArtifact {
     pub body: serde_json::Value,
 }
 
+/// 一覧の続きの位置（並びのキー `(updated_at, id)` の最後の値・keyset）。
+pub type ArtifactPosition = (DateTime<Utc>, Uuid);
+
+/// 一覧の 1 ページ（更新の新しい順）。`next` が `Some` なら続きがある（共有された一覧では `items` が空でも続きが
+/// あることがある・[`ArtifactStore::list_shared_page`]）。
+#[derive(Debug)]
+pub struct ArtifactPage {
+    pub items: Vec<Artifact>,
+    pub next: Option<ArtifactPosition>,
+}
+
 /// skill カタログ用の要約 1 件（name + description のみ・本文は載せない・#344 Task 10.11）。
 ///
 /// skill ツールの動的 description（モデルに見せる一覧）用。instructions 等の本文を
@@ -182,14 +193,17 @@ impl ArtifactStore {
         self.get(ctx, id, trace_id).await
     }
 
-    /// 自分が owner のアーティファクト一覧（kind 絞り込み・更新日降順・keyset ページング）。
-    pub async fn list_mine(
+    /// 自分が owner のアーティファクトの 1 ページ（kind 絞り込み・更新日降順・keyset ページング）。
+    ///
+    /// `before` は前のページの [`ArtifactPage::next`]。1 件多く引いて、後ろにまだあるときだけ続きの位置（返した最後の
+    /// 1 件）を返す（ちょうど `limit` 件で終わる一覧に、空の続きを読ませない・BUG-186）。
+    pub async fn list_mine_page(
         &self,
         ctx: &AuthContext,
         kind: Option<ArtifactKind>,
-        before: Option<(DateTime<Utc>, Uuid)>,
+        before: Option<ArtifactPosition>,
         limit: i64,
-    ) -> Result<Vec<Artifact>, ArtifactError> {
+    ) -> Result<ArtifactPage, ArtifactError> {
         let limit = limit.clamp(1, 100);
         let (before_at, before_id) = match before {
             Some((at, id)) => (Some(at), Some(id)),
@@ -209,11 +223,22 @@ impl ArtifactStore {
         .bind(kind.map(ArtifactKind::as_str))
         .bind(before_at)
         .bind(before_id)
-        .bind(limit)
+        .bind(limit + 1)
         .fetch_all(&self.db)
         .await
         .map_err(map_db)?;
-        rows.into_iter().map(ArtifactRow::into_artifact).collect()
+        let mut items = rows
+            .into_iter()
+            .map(ArtifactRow::into_artifact)
+            .collect::<Result<Vec<_>, _>>()?;
+        let more = items.len() > usize::try_from(limit).unwrap_or(usize::MAX);
+        items.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
+        let next = if more {
+            items.last().map(|a| (a.updated_at, a.id))
+        } else {
+            None
+        };
+        Ok(ArtifactPage { items, next })
     }
 
     /// 自分が owner の skill の要約一覧（name + description のみ・skill ツールのカタログ用・#344）。

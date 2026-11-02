@@ -131,7 +131,7 @@ export default function SkillsPage() {
           読み込み中…
         </div>
       ) : list.error ? (
-        <ListLoadFailed noun="スキル" onRetry={reload} />
+        <ListLoadFailed what="スキルの一覧" onRetry={reload} />
       ) : items.length === 0 && list.sharedCursor ? (
         <SharedMore noun="スキル" found={false} failed={list.sharedFailed} loading={list.loadingMore} onMore={list.loadMore} />
       ) : items.length === 0 ? (

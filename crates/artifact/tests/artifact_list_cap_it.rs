@@ -37,6 +37,20 @@ struct Env {
 }
 
 impl Env {
+    /// 共有された一覧の先頭のページ。
+    async fn shared_first_page(
+        &self,
+        who: &AuthContext,
+        kind: Option<ArtifactKind>,
+        limit: i64,
+    ) -> Vec<Artifact> {
+        self.store
+            .list_shared_page(who, kind, None, limit)
+            .await
+            .unwrap()
+            .items
+    }
+
     /// タプルを直接書く・消す（Write API は 1 回 100 件まで）。
     async fn write(&self, key: &str, tuples: &[(String, String)]) {
         for chunk in tuples.chunks(100) {
@@ -285,19 +299,15 @@ async fn past_the_cap(env: Arc<Env>, tenant: String) {
     .await;
 
     // 共有された一覧（ワークフローの一覧の共有分・アーティファクトの一覧）。
-    let shared = env
-        .store
-        .list_shared_with_me(&bob, Some(wf), 50)
-        .await
-        .unwrap();
+    let shared = env.shared_first_page(&bob, Some(wf), 50).await;
     assert_eq!(names(&shared), vec!["wf-使う-共有", "wf-共有"]);
-    let all = env.store.list_shared_with_me(&bob, None, 50).await.unwrap();
+    let all = env.shared_first_page(&bob, None, 50).await;
     assert_eq!(names(&all), vec!["view-共有", "wf-使う-共有", "wf-共有"]);
     assert!(
         all.iter().all(|a| a.id != v_mine.id),
         "自分のものは共有された一覧に出ない"
     );
-    let one = env.store.list_shared_with_me(&bob, None, 1).await.unwrap();
+    let one = env.shared_first_page(&bob, None, 1).await;
     assert_eq!(names(&one), vec!["view-共有"]);
 
     // テーブルの保存ビュー（自分のものと共有されたもの・新しい順）。
@@ -395,11 +405,4 @@ async fn shared_page_resumes_past_the_check_budget(env: &Env, bob: &AuthContext)
         }
     }
     assert_eq!(names(&seen), vec!["view-共有", "wf-使う-共有", "wf-共有"]);
-    // 先頭のページの一覧（list_shared_with_me）は、これまでどおり先頭のページだけ。
-    assert!(env
-        .store
-        .list_shared_with_me(bob, None, 50)
-        .await
-        .unwrap()
-        .is_empty());
 }

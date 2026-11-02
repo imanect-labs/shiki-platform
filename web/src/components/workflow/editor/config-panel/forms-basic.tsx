@@ -163,7 +163,7 @@ function useWorkflowList(): [WorkflowList, () => void] {
   React.useEffect(() => {
     let active = true;
     listWorkflows({ limit: 100 })
-      .then((items) => active && setList({ state: "ready", items }))
+      .then((page) => active && setList({ state: "ready", items: page.items }))
       .catch(() => active && setList({ state: "error" }));
     return () => {
       active = false;

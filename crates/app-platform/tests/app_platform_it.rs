@@ -296,8 +296,12 @@ async fn a_and_b_share_artifact_plane() {
         .await
         .expect("B");
 
-    // 両者が同じ list_mine（artifact 共通枠）に現れる。
-    let mine = artifacts.list_mine(&c, None, None, 50).await.expect("list");
+    // 両者が同じ list_mine_page（artifact 共通枠）に現れる。
+    let mine = artifacts
+        .list_mine_page(&c, None, None, 50)
+        .await
+        .expect("list")
+        .items;
     assert!(mine
         .iter()
         .any(|x| x.id == a.id && x.kind == ArtifactKind::MiniApp));

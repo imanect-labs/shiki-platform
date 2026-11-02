@@ -71,7 +71,7 @@ export default function AppsPage() {
           読み込み中…
         </div>
       ) : list.error ? (
-        <ListLoadFailed noun="アプリ" onRetry={reload} />
+        <ListLoadFailed what="アプリの一覧" onRetry={reload} />
       ) : items.length === 0 && list.sharedCursor ? (
         <SharedMore noun="アプリ" found={false} failed={list.sharedFailed} loading={list.loadingMore} onMore={list.loadMore} />
       ) : items.length === 0 ? (

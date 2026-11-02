@@ -7,6 +7,7 @@
 "use client";
 
 import { apiFetch } from "@/lib/api";
+import { ownedPosition, type ListPage, type PageRequest } from "@/lib/owned-shared-list";
 import type { components } from "@/generated/api";
 import { WARNING_CODES } from "@/generated/workflow-catalog";
 import type { ValidationError, WorkflowIr } from "@/generated/workflow-ir";
@@ -107,35 +108,39 @@ function json(method: string, body: unknown): RequestInit {
 
 // ── 一覧・取得・保存・検証 ──────────────────────────────────────────
 
-/// keyset ページング（backend の既定 50 件・上限 100 件と同じ契約）。
-export type WorkflowListPage = {
-  before?: { updatedAt: string; id: string };
-  limit?: number;
-};
+/// 一覧の 1 ページの頼み（backend の既定 50 件・上限 100 件）。続きの位置は `owned-shared-list.ts` の契約。
+export type WorkflowListPage = PageRequest & { limit?: number };
 
-export async function listWorkflows(
-  page: WorkflowListPage = {},
-): Promise<WorkflowSummary[]> {
+/// 見られるワークフロー（自分のもの＋共有されたもの・更新の新しい順）の 1 ページ。
+///
+/// 自分のものの続きは `ownedNext` を `before` に、共有された分の続きは `sharedNext` を `sharedCursor` に渡して読む
+/// （合わせたページの最後の 1 件を続きの位置に使わない・BUG-185）。
+export async function listWorkflows(page: WorkflowListPage = {}): Promise<ListPage<WorkflowSummary>> {
   const q = new URLSearchParams();
   if (page.before) {
     q.set("before_updated_at", page.before.updatedAt);
     q.set("before_id", page.before.id);
   }
+  if (page.sharedCursor) q.set("shared_cursor", page.sharedCursor);
   if (page.limit) q.set("limit", String(page.limit));
   const qs = q.toString();
   const res = await apiFetch(`/workflows${qs ? `?${qs}` : ""}`);
-  const body = await ok<{ items: Schemas["WorkflowSummaryDto"][] }>(res);
-  return body.items.map((i) => ({
-    id: i.id,
-    name: i.name,
-    displayName: i.display_name ?? null,
-    description: i.description ?? null,
-    currentVersion: i.current_version,
-    triggerKinds: i.trigger_kinds,
-    enabledStatus: i.enabled_status as WorkflowSummary["enabledStatus"],
-    enabledVersion: i.enabled_version ?? null,
-    updatedAt: i.updated_at,
-  }));
+  const body = await ok<Schemas["WorkflowListResponse"]>(res);
+  return {
+    items: body.items.map((i) => ({
+      id: i.id,
+      name: i.name,
+      displayName: i.display_name ?? null,
+      description: i.description ?? null,
+      currentVersion: i.current_version,
+      triggerKinds: i.trigger_kinds,
+      enabledStatus: i.enabled_status as WorkflowSummary["enabledStatus"],
+      enabledVersion: i.enabled_version ?? null,
+      updatedAt: i.updated_at,
+    })),
+    ownedNext: ownedPosition(body.owned_next),
+    sharedNext: body.shared_next_cursor ?? null,
+  };
 }
 
 export async function getWorkflow(

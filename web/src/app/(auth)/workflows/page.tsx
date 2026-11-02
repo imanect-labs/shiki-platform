@@ -27,7 +27,9 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { EmptyState } from "@/components/ui/empty-state";
+import { ListLoadFailed, ListMore } from "@/components/artifacts/shared-more";
 import { PageContainer } from "@/components/shell/page-container";
+import { useOwnedSharedList } from "@/hooks/use-owned-shared-list";
 import { cn } from "@/lib/utils";
 import { toast } from "@/components/ui/use-toast";
 import { deleteArtifact } from "@/lib/artifact-api";
@@ -36,9 +38,13 @@ import {
   listWorkflows,
   type WorkflowSummary,
 } from "@/lib/workflow-api";
+import type { PageRequest } from "@/lib/owned-shared-list";
+import type { WorkflowIr } from "@/generated/workflow-ir";
 
 const PAGE_SIZE = 50;
-import type { WorkflowIr } from "@/generated/workflow-ir";
+
+/// 一覧の 1 ページ（自分のものと共有されたものの続きは、それぞれの位置から読む・BUG-185）。
+const workflowPages = (req: PageRequest) => listWorkflows({ ...req, limit: PAGE_SIZE });
 
 /// 新規作成時の空フロー（手動トリガのみ・エディタでノードを足していく）。
 function emptyIr(name: string): WorkflowIr {
@@ -86,51 +92,17 @@ function StatusBadge({ status }: { status: WorkflowSummary["enabledStatus"] }) {
 
 export default function WorkflowsPage() {
   const router = useRouter();
-  const [items, setItems] = React.useState<WorkflowSummary[] | null>(null);
+  // 自分のものと共有されたものの続きを別の位置から読む。読み込みの失敗は空の状態に見せない（BUG-185・BUG-189）。
+  const list = useOwnedSharedList(workflowPages);
+  const { items } = list;
   const [creating, setCreating] = React.useState(false);
-  const [exhausted, setExhausted] = React.useState(false);
-  const [loadingMore, setLoadingMore] = React.useState(false);
   const [deleting, setDeleting] = React.useState<WorkflowSummary | null>(null);
-
-  React.useEffect(() => {
-    listWorkflows({ limit: PAGE_SIZE })
-      .then((page) => {
-        setItems(page);
-        setExhausted(page.length < PAGE_SIZE);
-      })
-      .catch((e) => {
-        setItems([]);
-        toast({
-          variant: "destructive",
-          title: "一覧の取得に失敗しました",
-          description: e instanceof Error ? e.message : String(e),
-        });
-      });
-  }, []);
-
-  const loadMore = async () => {
-    if (!items || items.length === 0) return;
-    setLoadingMore(true);
-    try {
-      const last = items[items.length - 1];
-      const page = await listWorkflows({
-        limit: PAGE_SIZE,
-        before: { updatedAt: last.updatedAt, id: last.id },
-      });
-      setItems((prev) => [...(prev ?? []), ...page]);
-      if (page.length < PAGE_SIZE) setExhausted(true);
-    } catch {
-      // 次のクリックで再試行できる。
-    } finally {
-      setLoadingMore(false);
-    }
-  };
 
   const remove = async (wf: WorkflowSummary) => {
     try {
       // workflow は artifact（kind=workflow）なので共通のソフト削除で消す。
       await deleteArtifact(wf.id);
-      setItems((prev) => (prev ?? []).filter((i) => i.id !== wf.id));
+      list.remove(wf.id);
       toast({ title: `「${wf.displayName || wf.name}」を削除しました` });
     } catch (e) {
       toast({
@@ -184,6 +156,10 @@ export default function WorkflowsPage() {
           <Loader2 className="size-4 animate-spin" aria-hidden />
           読み込み中…
         </div>
+      ) : list.error ? (
+        <ListLoadFailed what="ワークフローの一覧" onRetry={list.reload} />
+      ) : items.length === 0 && list.hasMore ? (
+        <ListMore noun="ワークフロー" found={false} list={list} />
       ) : items.length === 0 ? (
         <EmptyState
           seasonal
@@ -202,6 +178,7 @@ export default function WorkflowsPage() {
           {items.map((wf, i) => (
             <li
               key={wf.id}
+              data-testid="workflow-row"
               className={cn(
                 "group/row relative flex items-center",
                 i > 0 && "shiki-dash-top",
@@ -261,14 +238,7 @@ export default function WorkflowsPage() {
           ))}
         </ul>
       )}
-      {items !== null && items.length > 0 && !exhausted ? (
-        <div className="mt-3 text-center">
-          <Button variant="ghost" size="sm" onClick={loadMore} disabled={loadingMore}>
-            {loadingMore ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}
-            さらに読み込む
-          </Button>
-        </div>
-      ) : null}
+      {items !== null && items.length > 0 ? <ListMore noun="ワークフロー" found list={list} /> : null}
 
       <Dialog open={deleting !== null} onOpenChange={(o) => !o && setDeleting(null)}>
         <DialogContent className="max-w-sm">

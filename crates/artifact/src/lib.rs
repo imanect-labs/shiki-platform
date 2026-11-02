@@ -21,8 +21,7 @@ mod versions;
 mod visible;
 
 pub use model::{Artifact, ArtifactKind, ArtifactRole, ArtifactVersion, VersionMeta};
-pub use shared::{SharedArtifacts, SharedPosition};
-pub use store::{ArtifactStore, NewArtifact, SkillSummary};
+pub use store::{ArtifactPage, ArtifactPosition, ArtifactStore, NewArtifact, SkillSummary};
 
 /// アーティファクト操作のエラー。
 #[derive(Debug, thiserror::Error)]

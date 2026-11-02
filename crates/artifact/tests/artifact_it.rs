@@ -228,9 +228,10 @@ async fn soft_delete_frees_name_and_hides_artifact() {
         Err(ArtifactError::NotFound)
     ));
     let mine = store
-        .list_mine(&c, Some(ArtifactKind::Workflow), None, 50)
+        .list_mine_page(&c, Some(ArtifactKind::Workflow), None, 50)
         .await
-        .expect("list");
+        .expect("list")
+        .items;
     assert!(mine.iter().all(|x| x.id != a.id));
 
     // 論理削除後はバージョン本文も読めない（FGA tuple 残存でも body を返さない・Codex P1）。
@@ -287,13 +288,77 @@ async fn list_mine_filters_by_kind_and_owner() {
         .expect("bob wf");
 
     let wfs = store
-        .list_mine(&alice, Some(ArtifactKind::Workflow), None, 50)
+        .list_mine_page(&alice, Some(ArtifactKind::Workflow), None, 50)
         .await
-        .expect("list wf");
+        .expect("list wf")
+        .items;
     assert_eq!(wfs.len(), 1);
     assert_eq!(wfs[0].name, "wf-a");
-    let all = store.list_mine(&alice, None, None, 50).await.expect("all");
+    let all = store
+        .list_mine_page(&alice, None, None, 50)
+        .await
+        .expect("all")
+        .items;
     assert_eq!(all.len(), 2, "kind 未指定は自分の全 kind");
+}
+
+/// 自分のものの一覧は、後ろにまだあるときだけ続きの位置を返し、その位置から重ならずに続きを読める（BUG-186）。
+/// ちょうど `limit` 件で終わる一覧には続きの位置を返さない（空の続きを読ませない）。作った行は最後に片付ける。
+#[tokio::test]
+async fn list_mine_page_returns_next_only_while_more_remain() {
+    let Some(pool) = setup().await else { return };
+    let store = ArtifactStore::new(pool.clone(), Arc::new(AllowAll));
+    let tenant = unique_tenant();
+    let outcome = tokio::spawn(owned_pages(store, tenant.clone())).await;
+    for table in ["artifact_version", "artifact"] {
+        sqlx::query(&format!("DELETE FROM {table} WHERE tenant_id = $1"))
+            .bind(&tenant)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    if let Err(e) = outcome {
+        std::panic::resume_unwind(e.into_panic());
+    }
+}
+
+async fn owned_pages(store: ArtifactStore, tenant: String) {
+    let alice = ctx(&tenant, "alice");
+    let bob = ctx(&tenant, "bob");
+    for name in ["wf-1", "wf-2", "wf-3"] {
+        store
+            .create(&alice, new_wf(name, json!({})), None)
+            .await
+            .expect("alice wf");
+    }
+    store
+        .create(&bob, new_wf("wf-bob", json!({})), None)
+        .await
+        .expect("bob wf");
+    let wf = Some(ArtifactKind::Workflow);
+    let names =
+        |p: &artifact::ArtifactPage| p.items.iter().map(|a| a.name.clone()).collect::<Vec<_>>();
+
+    let first = store.list_mine_page(&alice, wf, None, 2).await.unwrap();
+    assert_eq!(names(&first), vec!["wf-3", "wf-2"]);
+    let last = first.items.last().unwrap();
+    assert_eq!(
+        first.next,
+        Some((last.updated_at, last.id)),
+        "続きの位置は返した最後の 1 件"
+    );
+    let rest = store
+        .list_mine_page(&alice, wf, first.next, 2)
+        .await
+        .unwrap();
+    assert_eq!(names(&rest), vec!["wf-1"]);
+    assert_eq!(rest.next, None, "読み切ったら続きの位置は無い");
+    let exact = store.list_mine_page(&alice, wf, None, 3).await.unwrap();
+    assert_eq!(names(&exact), vec!["wf-3", "wf-2", "wf-1"]);
+    assert_eq!(
+        exact.next, None,
+        "ちょうど limit 件で終わる一覧に続きの位置を返さない"
+    );
 }
 
 /// 実 OpenFGA での ReBAC 共有・解除・拒否の実経路検証（受け入れ条件）。
