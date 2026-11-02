@@ -27,6 +27,8 @@ export type WorkflowSummary = {
   triggerKinds: string[];
   enabledStatus: "enabled" | "disabled" | "suspended_reconsent" | "none";
   enabledVersion: number | null;
+  /// 自動実行の起動を見送り続けているか（理由と直し方は登録の `launchSkip`・GAP-67）。
+  launchSkipped: boolean;
   updatedAt: string;
 };
 
@@ -136,6 +138,7 @@ export async function listWorkflows(page: WorkflowListPage = {}): Promise<ListPa
       triggerKinds: i.trigger_kinds,
       enabledStatus: i.enabled_status as WorkflowSummary["enabledStatus"],
       enabledVersion: i.enabled_version ?? null,
+      launchSkipped: i.launch_skipped,
       updatedAt: i.updated_at,
     })),
     ownedNext: ownedPosition(body.owned_next),

@@ -72,9 +72,19 @@ const TRIGGER_LABELS: Record<string, { label: string; icon: React.ElementType }>
   interactive: { label: "手動", icon: MousePointerClick },
 };
 
-function StatusBadge({ status }: { status: WorkflowSummary["enabledStatus"] }) {
-  switch (status) {
+/// 自動実行の状態。オンのまま起動を見送り続けているもの（GAP-67）は「有効」と言わない。理由と直し方は、行を開いた
+/// ワークフローの画面に出る。
+function StatusBadge({ wf }: { wf: WorkflowSummary }) {
+  switch (wf.enabledStatus) {
     case "enabled":
+      if (wf.launchSkipped) {
+        return (
+          <Badge variant="warning" data-testid="workflow-row-launch-skip">
+            <AlertTriangle className="size-3" aria-hidden />
+            自動実行を見送り中
+          </Badge>
+        );
+      }
       return <Badge variant="success">有効</Badge>;
     case "suspended_reconsent":
       return (
@@ -197,7 +207,7 @@ export default function WorkflowsPage() {
                     <span className="truncate text-sm font-medium">
                       {wf.displayName || wf.name}
                     </span>
-                    <StatusBadge status={wf.enabledStatus} />
+                    <StatusBadge wf={wf} />
                   </span>
                   <span className="mt-0.5 flex items-center gap-3 text-xs text-muted-foreground">
                     {wf.description ? (

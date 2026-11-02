@@ -49,6 +49,9 @@ pub struct WorkflowSummaryDto {
     /// enabled / disabled / suspended_reconsent / none。
     pub enabled_status: String,
     pub enabled_version: Option<i64>,
+    /// 自動実行の起動を見送り続けているか（`GET /workflows/{id}/registration` の `launch_skip` があるか・GAP-67）。
+    /// 理由と直し方は登録の API が返す。
+    pub launch_skipped: bool,
     pub updated_at: String,
 }
 
@@ -113,6 +116,7 @@ pub async fn list_workflows(
                 trigger_kinds: s.trigger_kinds,
                 enabled_status: s.enabled_status,
                 enabled_version: s.enabled_version,
+                launch_skipped: s.launch_skipped,
                 updated_at: s.updated_at.to_rfc3339(),
             })
             .collect(),

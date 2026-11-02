@@ -140,6 +140,16 @@ impl Env {
             .await
     }
 
+    /// ワークフローの一覧の要約が、見送り続けていると言うか（登録の API の `launch_skip` と同じ条件・GAP-67）。
+    async fn listed_as_skipping(&self, wf: Uuid) -> bool {
+        let items = workflow_engine::WorkflowSummaryStore::new(self.pool.clone())
+            .list(&self.tenant, &[wf])
+            .await
+            .unwrap();
+        assert_eq!(items.len(), 1);
+        items[0].launch_skipped
+    }
+
     /// 記録の行の数（版を問わず・消えたかを確かめる）。
     async fn rows(&self, wf: Uuid) -> i64 {
         sqlx::query_scalar(
@@ -249,6 +259,7 @@ async fn skipped_launches_body(env: Arc<Env>) {
         .fix()
         .starts_with("エディターで設定を直して保存してから"));
     assert!(skip.first_at <= skip.last_at);
+    assert!(env.listed_as_skipping(wf).await, "一覧も見送り中と言う");
 
     // 直した v2 を保存しただけでは消えない（オンにしているのは v1）。オンにし直すと消える。
     ir["nodes"][0]["params"]["prompt"] = json!("今日の予定をまとめてください");
@@ -264,6 +275,7 @@ async fn skipped_launches_body(env: Arc<Env>) {
         .await
         .expect("enable v2");
     assert_eq!(env.rows(wf).await, 0, "オンにし直すと消える");
+    assert!(!env.listed_as_skipping(wf).await);
     assert!(env
         .registration
         .launch_skip(&env.tenant, wf)
@@ -291,6 +303,10 @@ async fn skipped_launches_body(env: Arc<Env>) {
             .unwrap()
             .is_none(),
         "別の版の記録は返さない"
+    );
+    assert!(
+        !env.listed_as_skipping(wf).await,
+        "一覧も別の版の記録で見送り中と言わない"
     );
     assert!(matches!(env.fire(wf).await, LaunchOutcome::Started(_)));
     assert_eq!(env.rows(wf).await, 0, "run を作れたら消える");
@@ -324,10 +340,12 @@ async fn skipped_launches_body(env: Arc<Env>) {
         skip.fix(),
         "「自動実行の設定」を開いて、もう一度オンにしてください。"
     );
+    assert!(env.listed_as_skipping(wf).await);
 
     // オフにすると消える。
     env.registration.disable(&env.tenant, wf).await.unwrap();
     assert_eq!(env.rows(wf).await, 0, "オフにすると消える");
+    assert!(!env.listed_as_skipping(wf).await);
 }
 
 /// 委譲の不成立（オンにした人の権限が外れた）で見送ったときは、自動実行が停止中になっても記録を返す。文に委譲元の

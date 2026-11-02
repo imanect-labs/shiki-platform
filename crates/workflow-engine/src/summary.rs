@@ -21,6 +21,8 @@ pub struct WorkflowSummary {
     /// enabled / disabled / suspended_reconsent / none（未登録）。
     pub enabled_status: String,
     pub enabled_version: Option<i64>,
+    /// 自動実行の起動を見送り続けているか（登録の API の `launch_skip` と同じ条件・GAP-67）。
+    pub launch_skipped: bool,
     pub updated_at: DateTime<Utc>,
 }
 
@@ -44,7 +46,7 @@ impl WorkflowSummaryStore {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
-        sqlx::query_as(
+        sqlx::query_as(&format!(
             "SELECT a.id, a.name, \
                     v.body->>'display_name' AS display_name, \
                     v.body->>'description' AS description, \
@@ -52,9 +54,12 @@ impl WorkflowSummaryStore {
                     COALESCE( \
                       (SELECT array_agg(t->>'kind') \
                        FROM jsonb_array_elements(v.body->'triggers') AS t), \
-                      '{}') AS trigger_kinds, \
+                      '{{}}') AS trigger_kinds, \
                     COALESCE(r.status, 'none') AS enabled_status, \
                     r.enabled_version, \
+                    EXISTS (SELECT 1 FROM workflow_launch_skip s \
+                            WHERE s.tenant_id = a.tenant_id AND s.workflow_id = a.id \
+                              AND {current_skip}) AS launch_skipped, \
                     a.updated_at \
              FROM artifact a \
              JOIN artifact_version v \
@@ -64,7 +69,8 @@ impl WorkflowSummaryStore {
                ON r.tenant_id = a.tenant_id AND r.workflow_id = a.id \
              WHERE a.tenant_id = $1 AND a.id = ANY($2) AND a.deleted_at IS NULL \
              ORDER BY a.updated_at DESC, a.id DESC",
-        )
+            current_skip = crate::run::launch_skip::CURRENT_SKIP,
+        ))
         .bind(tenant_id)
         .bind(ids)
         .fetch_all(&self.db)

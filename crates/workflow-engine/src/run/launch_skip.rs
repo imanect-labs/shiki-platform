@@ -170,23 +170,26 @@ where
     Ok(())
 }
 
-/// いま見送り続けている自動実行の記録（無ければ `None`）。
+/// 記録が「いま見送り続けている」ものか（`s` = `workflow_launch_skip`・`r` = 同じワークフローの
+/// `workflow_registration`）。
 ///
-/// 記録した版がいまオンにしている版で、自動実行がオフでないものだけを返す（オフにした後・別の版をオンにした後の
-/// 古い記録は見せない）。
+/// 記録した版がいまオンにしている版で、自動実行がオフでないものだけ（オフにした後・別の版をオンにした後の古い記録は
+/// 見せない）。登録の API（[`current`]）とワークフローの一覧（`summary.rs`）が同じ条件で引く。
+pub(crate) const CURRENT_SKIP: &str = "r.status <> 'disabled' AND r.enabled_version = s.version";
+
+/// いま見送り続けている自動実行の記録（無ければ `None`・[`CURRENT_SKIP`]）。
 pub(crate) async fn current(
     db: &PgPool,
     tenant_id: &str,
     workflow_id: Uuid,
 ) -> Result<Option<LaunchSkip>, sqlx::Error> {
-    sqlx::query_as::<_, LaunchSkip>(
+    sqlx::query_as::<_, LaunchSkip>(&format!(
         "SELECT s.code, s.message, s.version, s.first_at, s.last_at, s.count \
          FROM workflow_launch_skip s \
          JOIN workflow_registration r \
            ON r.tenant_id = s.tenant_id AND r.workflow_id = s.workflow_id \
-         WHERE s.tenant_id = $1 AND s.workflow_id = $2 \
-           AND r.status <> 'disabled' AND r.enabled_version = s.version",
-    )
+         WHERE s.tenant_id = $1 AND s.workflow_id = $2 AND {CURRENT_SKIP}"
+    ))
     .bind(tenant_id)
     .bind(workflow_id)
     .fetch_optional(db)

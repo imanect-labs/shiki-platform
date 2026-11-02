@@ -12,6 +12,7 @@ import {
 /// 自動実行の起動の見送りを作成者に見せる e2e（GAP-67）:
 /// - スケジュールでオンにしたワークフローの、自動実行の主体が自分の定義を読めなくなると（BUG-146）、スケジュールの
 ///   起動を見送る。ワークフローの画面の自動実行の状態に「自動実行を見送っています」と、理由と直し方を出す。
+/// - ワークフローの一覧でも「有効」ではなく「自動実行を見送り中」と出す。
 /// - 自動実行の設定には、理由といつから何回見送ったかを出す。「同意してオンにする」でオンにし直すと消える。
 ///
 /// 見送りを起こすため、毎分のスケジュールでオンにした後、自動実行の主体の閲覧のタプルを OpenFGA から外す（画面や
@@ -100,6 +101,13 @@ test("自動実行: 起動を見送り続けているとき、理由と直し方
     .toBe("definition_unreadable");
   expect((await registration(page, id)).status).toBe("enabled");
 
+  // 一覧: オンのまま見送り続けているワークフローを「有効」と言わない（GAP-67）。
+  await page.goto("/workflows");
+  const row = page.getByTestId("workflow-row").filter({ hasText: name });
+  await expect(row.getByTestId("workflow-row-launch-skip")).toHaveText("自動実行を見送り中");
+  await expect(row.getByText("有効", { exact: true })).toHaveCount(0);
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/launch-skip-pc-list.png` });
+
   // PC: 自動実行の状態に出す。理由と直し方はツールチップにも出し、押すと自動実行の設定を開く。
   await page.goto(`/workflows/${id}`);
   const badge = page.getByTestId("workflow-launch-skip");
@@ -126,8 +134,17 @@ test("自動実行: 起動を見送り続けているとき、理由と直し方
   await dialog.getByRole("button", { name: "閉じる" }).click();
   await expect(dialog).toBeHidden();
 
-  // スマホ: タップできないツールチップの代わりに、理由と直し方をバッジの近くに文字で出す。
+  // スマホ: 一覧のバッジは横にはみ出さない。
   await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/workflows");
+  await expect(row.getByTestId("workflow-row-launch-skip")).toBeVisible();
+  expect(
+    await page.evaluate(() => document.documentElement.scrollWidth),
+    "一覧が横にはみ出さない",
+  ).toBeLessThanOrEqual(390);
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/launch-skip-phone-list.png` });
+
+  // スマホ: タップできないツールチップの代わりに、理由と直し方をバッジの近くに文字で出す。
   await page.goto(`/workflows/${id}`);
   await expect(page.getByTestId("workflow-mobile-flow")).toBeVisible();
   await expect(page.getByTestId("workflow-launch-skip")).toBeVisible();
@@ -147,6 +164,10 @@ test("自動実行: 起動を見送り続けているとき、理由と直し方
   await expect(page.getByTestId("workflow-launch-skip")).toHaveCount(0);
   expect((await registration(page, id)).launch_skip).toBeNull();
   await expect(page.getByText("自動実行 有効（v1）")).toBeVisible();
+  // 一覧も「有効」に戻る。
+  await page.goto("/workflows");
+  await expect(row.getByText("有効", { exact: true })).toBeVisible();
+  await expect(row.getByTestId("workflow-row-launch-skip")).toHaveCount(0);
 });
 
 /// オンにしている版に実行できない設定がある見送り（not_ready）は、オンにし直しても直らないので、自動実行の設定の
