@@ -83,6 +83,8 @@ struct Env {
     delegation: DelegationStore,
     launcher: WorkflowRunLauncher,
     registration: RegistrationService,
+    /// 作ったワークフロー（片付けで消す）。
+    created: std::sync::Mutex<Vec<Uuid>>,
 }
 
 impl Env {
@@ -109,7 +111,19 @@ impl Env {
             delegation,
             launcher,
             registration,
+            created: std::sync::Mutex::new(Vec::new()),
         })
+    }
+
+    /// ワークフローを保存する（片付けの対象に入れる）。
+    async fn create(&self, ir: &Value) -> Uuid {
+        let (wf, _) = self
+            .workflows
+            .create(&self.alice, ir, &Catalog::default(), None)
+            .await
+            .expect("save");
+        self.created.lock().unwrap().push(wf);
+        wf
     }
 
     /// スケジュールの起動（schedule）。
@@ -139,9 +153,10 @@ impl Env {
     }
 
     /// 片付け（run・ワークフロー・登録〔見送りの記録・委譲・トリガは外部キーで消える〕・OpenFGA のストア）。
-    async fn cleanup(&self, workflows: &[Uuid]) {
+    async fn cleanup(&self) {
+        let workflows = self.created.lock().unwrap().clone();
         for wf in workflows {
-            let _ = self.artifacts.delete(&self.alice, *wf, None).await;
+            let _ = self.artifacts.delete(&self.alice, wf, None).await;
         }
         for table in [
             "workflow_run",
@@ -165,6 +180,21 @@ impl Env {
     }
 }
 
+/// テストの本体を走らせ、途中の assert が落ちても片付けてから落とす（行と OpenFGA のストアを残さない）。
+async fn run<F, Fut>(body: F)
+where
+    F: FnOnce(Arc<Env>) -> Fut,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    let Some(env) = Env::new().await else { return };
+    let env = Arc::new(env);
+    let outcome = tokio::spawn(body(Arc::clone(&env))).await;
+    env.cleanup().await;
+    if let Err(e) = outcome {
+        std::panic::resume_unwind(e.into_panic());
+    }
+}
+
 fn ask_ir(prompt: &str) -> Value {
     json!({
         "ir_version": 1,
@@ -179,15 +209,14 @@ fn ask_ir(prompt: &str) -> Value {
 /// 直す・オフにすると消える（GAP-67）。
 #[tokio::test]
 async fn skipped_launches_are_recorded_until_they_run_or_are_switched() {
-    let Some(env) = Env::new().await else { return };
+    run(skipped_launches_body).await;
+}
+
+async fn skipped_launches_body(env: Arc<Env>) {
     // AI に聞くの「AI への指示」が空の v1（保存は警告だけで通る）を、有効化の前の確認を通さずにオンにする（前の版で
     // オンにした定義を模す・BUG-51）。
     let mut ir = ask_ir("");
-    let (wf, _) = env
-        .workflows
-        .create(&env.alice, &ir, &Catalog::default(), None)
-        .await
-        .expect("save");
+    let wf = env.create(&ir).await;
     env.delegation
         .enable(&env.alice, wf, 1, &[], &[])
         .await
@@ -299,14 +328,16 @@ async fn skipped_launches_are_recorded_until_they_run_or_are_switched() {
     // オフにすると消える。
     env.registration.disable(&env.tenant, wf).await.unwrap();
     assert_eq!(env.rows(wf).await, 0, "オフにすると消える");
-    env.cleanup(&[wf]).await;
 }
 
 /// 委譲の不成立（オンにした人の権限が外れた）で見送ったときは、自動実行が停止中になっても記録を返す。文に委譲元の
 /// id や対象を出さない（ほかの人の情報を出さない・GAP-67）。
 #[tokio::test]
 async fn delegation_skips_do_not_name_the_delegator() {
-    let Some(env) = Env::new().await else { return };
+    run(delegation_skips_body).await;
+}
+
+async fn delegation_skips_body(env: Arc<Env>) {
     let ir = json!({
         "ir_version": 1,
         "name": format!("skip-deleg-{}", Uuid::new_v4().simple()),
@@ -315,11 +346,7 @@ async fn delegation_skips_do_not_name_the_delegator() {
         "edges": [],
         "triggers": [ { "kind": "schedule", "cron": "0 9 * * *", "tz": "Asia/Tokyo" } ]
     });
-    let (wf, _) = env
-        .workflows
-        .create(&env.alice, &ir, &Catalog::default(), None)
-        .await
-        .expect("save");
+    let wf = env.create(&ir).await;
     let folder = env.alice.ns().folder("reports");
     env.fga
         .write_tuple(&env.alice.subject(), Relation::Viewer, &folder)
@@ -374,5 +401,4 @@ async fn delegation_skips_do_not_name_the_delegator() {
             "{text}"
         );
     }
-    env.cleanup(&[wf]).await;
 }
