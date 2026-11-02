@@ -12,6 +12,7 @@
 import type { UserSelectableTool } from "@/generated/gui-spec";
 import type { ModelChoice } from "@/lib/model-choice";
 import { apiFetch } from "@/lib/api";
+import { okWithReason } from "@/lib/artifact-api";
 import type { components } from "@/generated/api";
 import { newId } from "@/lib/chat-store";
 import type { SelectionContext } from "@/lib/selection-context";
@@ -255,7 +256,9 @@ export async function createThread(
     ? { mode: pins.workspace.mode, folder_id: pins.workspace.folderId }
     : undefined;
   const skills = pins?.skills?.length ? pins.skills.map((p) => toPin(p)) : undefined;
-  const data = await ok<ApiThread>(
+  // 誤りは本文の code・message を添えて投げる（アプリを付けた会話で、公開したバージョンが変わった 409 や、束ねた
+  // スキルを使えない 400 を画面が言い分ける）。
+  const data = await okWithReason<ApiThread>(
     await apiFetch("/threads", {
       method: "POST",
       headers: { "Content-Type": "application/json" },

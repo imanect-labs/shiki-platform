@@ -63,6 +63,10 @@ async function ok<T>(res: Response): Promise<T> {
   return (await res.json()) as T;
 }
 
+/// 応答を読み、失敗なら本文の code・message・検証エラーを添えて投げる（[`errorCode`]・[`validationMessages`] で読む）。
+/// アプリを付けた会話の作成（`chat-api` の `createThread`）も同じ扱いにする。
+export const okWithReason = ok;
+
 /// 投げられた誤りの code（構造化した誤りのときだけ）。
 export function errorCode(e: unknown): string | null {
   const code = (e as { code?: unknown } | null)?.code;

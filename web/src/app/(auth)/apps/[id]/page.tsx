@@ -40,6 +40,7 @@ import {
   listMiniAppRuns,
   resolveMiniApp,
   updateMiniApp,
+  validationMessages,
   type MiniAppRun,
   type ResolvedMiniApp,
 } from "@/lib/artifact-api";
@@ -203,12 +204,25 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
       });
       router.push(`/c/${thread.id}`);
     } catch (e) {
+      setAsking(false);
+      const code = errorCode(e);
+      if (code === "app_version_changed" || code === "not_published") {
+        // 開いた後に公開したバージョンが変わった（使う人）。公開しているバージョンを開き直し、もう一度押してもらう。
+        toast({
+          title: "公開しているバージョンが変わりました",
+          description: "画面を開き直しました。もう一度「このアプリについて AI に聞く」を押してください。",
+        });
+        setVersion(undefined);
+        setReloadKey((k) => k + 1);
+        return;
+      }
       toast({
         variant: "destructive",
         title: "AI との会話を始められませんでした",
-        description: e instanceof Error ? e.message : String(e),
+        // サーバーが理由を言うとき（束ねたスキルを使えないなど）はその文を、言わないときは状態コードを出さずに案内する。
+        description:
+          validationMessages(e) ?? (code && e instanceof Error ? e.message : "時間をおいて、もう一度試してください。"),
       });
-      setAsking(false);
     }
   };
 
