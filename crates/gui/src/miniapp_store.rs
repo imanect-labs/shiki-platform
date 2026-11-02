@@ -167,6 +167,8 @@ impl MiniAppStore {
     ///
     /// ピンは、`expected_version`（無ければ最新の版）の本文と比べて、足したものと対象か版を変えたものだけを
     /// 保存する人の権限で確かめる（BUG-80）。保存できるのはアプリの editor（追記と同じ）で、前の版を読む前に確かめる。
+    /// 追記は比べた版の上にだけ積む（`expected_version` を省いても、比べた版から後に誰かが保存していたら版の競合で
+    /// 断る。比べていない版の上に積むと、その版で外したピンを確かめずに戻してしまう）。
     pub async fn update(
         &self,
         ctx: &AuthContext,
@@ -205,7 +207,7 @@ impl MiniAppStore {
             .await?;
         let version = self
             .artifacts
-            .append_version(ctx, id, raw_body.clone(), expected_version, trace_id)
+            .append_version(ctx, id, raw_body.clone(), Some(base), trace_id)
             .await?;
         Ok(SavedMiniApp {
             id,
