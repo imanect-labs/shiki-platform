@@ -35,7 +35,7 @@ impl WorkflowStoreError {
 /// ワークフロー IR の保存/取得（artifact kind=workflow）。
 #[derive(Clone)]
 pub struct WorkflowStore {
-    artifacts: Arc<ArtifactStore>,
+    pub(crate) artifacts: Arc<ArtifactStore>,
 }
 
 impl WorkflowStore {

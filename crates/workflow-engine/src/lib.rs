@@ -11,6 +11,7 @@ pub mod capability;
 pub mod concurrency;
 pub mod control;
 pub mod delegation;
+mod find;
 pub mod ir;
 pub mod layout;
 pub mod nodes;
@@ -38,6 +39,7 @@ pub use delegation::{
     active_delegator, delegated_objects, DelegationError, DelegationStore, GrantRequest,
     RevokedDelegation, RunAdmission,
 };
+pub use find::{FindWorkflows, FoundWorkflow, FoundWorkflows};
 pub use ir::scopes::complete_declared_scopes;
 pub use ir::validate::{
     empty_regions, empty_values, enable_blockers, node_ports, pattern_within, required_text_empty,
@@ -88,4 +90,4 @@ pub use scheduler::{
     LaunchOutcome, LeaderLease, RunLauncher, SchedulerStore, SkipReason,
 };
 pub use store::{WorkflowStore, WorkflowStoreError};
-pub use summary::{WorkflowSummary, WorkflowSummaryStore};
+pub use summary::{WorkflowInputs, WorkflowSummary, WorkflowSummaryStore};

@@ -353,3 +353,38 @@ fn tools_with_a_search_text_are_indexed_by_it_not_by_the_long_description() {
         "{content}"
     );
 }
+
+/// 既存のワークフローを直す依頼では、探す道具（list_workflows）が保存・読む道具と一緒に読み込まれる（GAP-31）。
+/// 新しい会話のモデルは id を知らないので、探す道具が上位に無いと直す流れに入れない。
+#[test]
+fn fixing_an_existing_workflow_loads_the_list_tool() {
+    let mut defs = catalog();
+    defs.push(def(
+        "emit_workflow",
+        "ワークフロー（自動化フロー）を JSON IR として保存する。",
+    ));
+    defs.push(def(
+        "read_workflow",
+        "既存ワークフローの最新 IR（JSON）を読む。",
+    ));
+    defs.push(def(
+        "list_workflows",
+        "ユーザーが見られる既存のワークフローを、名前・表示名・説明に含む語で探す。",
+    ));
+    let s = prepare(defs, &enabled()).1.expect("有効になる");
+    for q in [
+        "既存のワークフローを直す",
+        "経費のワークフローを探して修正",
+        "find the existing workflow and fix it",
+    ] {
+        let hits = query(&s, q);
+        assert!(
+            hits.iter().take(5).any(|h| h == "list_workflows"),
+            "{q}: {hits:?}"
+        );
+        assert!(
+            hits.iter().take(5).any(|h| h == "emit_workflow"),
+            "{q}: {hits:?}"
+        );
+    }
+}

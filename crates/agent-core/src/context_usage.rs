@@ -216,6 +216,7 @@ fn reads_material(name: &str) -> bool {
         | ToolName::FsRead
         | ToolName::Grep
         | ToolName::ReadWorkflow
+        | ToolName::ListWorkflows
         | ToolName::DocumentRead
         | ToolName::SlideRead
         | ToolName::OfficeRead

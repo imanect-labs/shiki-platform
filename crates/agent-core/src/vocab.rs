@@ -79,8 +79,10 @@ vocab_enum! {
         EmitUi => "emit_ui",
         /// ワークフロー IR の生成/更新ツール（保存パイプライン検証・Task 10.13）。
         EmitWorkflow => "emit_workflow",
-        /// 既存ワークフロー IR の読み取りツール（AI 編集の前提・Task 10.13）。
+        /// 既存ワークフロー IR の読み取りツール（AI 編集の前提・Task 10.13）。名前でも引ける（GAP-31）。
         ReadWorkflow => "read_workflow",
+        /// 本人に見えるワークフローを名前で探す一覧（新しい会話から既存のワークフローを直す前提・GAP-31）。
+        ListWorkflows => "list_workflows",
         /// ノート（md/Yjs）の共同編集ツール（AI が編集参加者として編集・Task 11P.4）。
         DocumentEdit => "document.edit",
         /// ノート本文の読み取りツール（document.edit の前提・現状の md を得る・Task 11P.4）。
@@ -207,6 +209,7 @@ impl ToolName {
             | Self::Shell
             | Self::EmitWorkflow
             | Self::ReadWorkflow
+            | Self::ListWorkflows
             | Self::DocumentEdit
             | Self::DocumentRead
             | Self::DocumentEmbed
@@ -258,7 +261,11 @@ impl ToolName {
             Self::FsDelete => "delete remove file 削除 消去",
             Self::Shell => "shell bash command terminal run コマンド 実行 端末",
             Self::EmitWorkflow => "workflow automation create update ワークフロー 自動化 作成",
-            Self::ReadWorkflow => "workflow read inspect ワークフロー 読む 確認",
+            Self::ReadWorkflow => "workflow read inspect existing ワークフロー 読む 確認 既存 中身",
+            Self::ListWorkflows => {
+                "workflow list find search existing open fix edit automation \
+                 ワークフロー 一覧 探す 既存 開く 直す 修正 自動化 フロー"
+            }
             Self::DocumentEdit => {
                 "note markdown document edit rewrite append ノート 文書 編集 追記 書き換え"
             }

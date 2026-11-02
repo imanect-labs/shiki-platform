@@ -103,7 +103,8 @@ impl ChatWorker {
         }
     }
 
-    /// AI ワークフロー編集（emit_workflow / read_workflow・Task 10.13）。
+    /// AI ワークフロー編集（emit_workflow / read_workflow・Task 10.13）と、既存のワークフローを探す
+    /// list_workflows（GAP-31）。
     ///
     /// ストアとカタログ源（保存 API と同一実装）が両方配線されている時のみ提示する。emit_workflow の
     /// 説明文には発話ユーザーの組織で使えるモデルと判定用のモデルを載せる（保存時の照合と同じ集合）。引けなければ
@@ -133,6 +134,11 @@ impl ChatWorker {
         tools.push(Arc::new(emit));
         tools.push(Arc::new(crate::workflow_tool::ReadWorkflowTool::new(
             store.clone(),
+        )));
+        // 既存のワークフローを名前で探す（新しい会話から直す・本人に見えるものだけ・GAP-31）。
+        tools.push(Arc::new(crate::workflow_tool::ListWorkflowsTool::new(
+            store.clone(),
+            workflow_engine::WorkflowSummaryStore::new(self.db.clone()),
         )));
     }
 

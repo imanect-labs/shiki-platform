@@ -96,6 +96,85 @@ pub(super) fn generic_tool_call(
     Some(tool_call_stream(t.name.clone(), input, prompt_tokens))
 }
 
+/// 既存のワークフローを直す決定的駆動 `fixwf:<語>`（新しい会話から「〜を直して」と頼む・GAP-31 の e2e）。
+///
+/// 1. `list_workflows` で語を探す → 2. 当たった先頭の id を `read_workflow` で読む → 3. 読んだ IR の説明
+/// （`description`）を書き換え、読んだ版を `expected_version` にして `emit_workflow` で新しい版として保存する →
+/// 4. 本文で返す。段は直前のツールの名前と結果で決める（当たらない・読めない・保存できないときは、その観測を本文で
+/// 返す）。提示に無いツールなら呼ばない。
+pub(super) fn fix_workflow_call(
+    req: &GenerateRequest,
+    user_text: &str,
+    prompt_tokens: u64,
+) -> Option<DeltaStream> {
+    let query = user_text.strip_prefix("fixwf:")?.trim();
+    let call = |tool: &str, input: serde_json::Value| {
+        req.tools
+            .iter()
+            .find(|t| t.name == tool)
+            .map(|t| tool_call_stream(t.name.clone(), input, prompt_tokens))
+    };
+    if req.messages.last()?.role == Role::User {
+        return call("list_workflows", serde_json::json!({ "query": query }));
+    }
+    let (tool, content, is_error) = last_tool_result(req)?;
+    if is_error {
+        return Some(text_stream(
+            &format!("直せませんでした: {content}"),
+            prompt_tokens,
+        ));
+    }
+    match tool {
+        "list_workflows" => match first_listed_id(content) {
+            Some(id) => call("read_workflow", serde_json::json!({ "workflow_id": id })),
+            None => Some(text_stream(content, prompt_tokens)),
+        },
+        "read_workflow" => {
+            let read: serde_json::Value = serde_json::from_str(content).ok()?;
+            let mut ir = read.get("ir")?.clone();
+            ir["description"] = serde_json::json!(format!("AI が直しました（{query}）"));
+            call(
+                "emit_workflow",
+                serde_json::json!({
+                    "workflow_id": read.get("id")?,
+                    "expected_version": read.get("version")?,
+                    "ir": ir,
+                }),
+            )
+        }
+        _ => Some(text_stream("ワークフローを直しました。", prompt_tokens)),
+    }
+}
+
+/// 直前のツールの結果（呼んだツールの名前・本文・誤りか）。
+fn last_tool_result(req: &GenerateRequest) -> Option<(&str, &str, bool)> {
+    let (use_id, content, is_error) = req.messages.iter().rev().find_map(|m| {
+        m.content.iter().rev().find_map(|b| match b {
+            Block::ToolResult {
+                tool_use_id,
+                content,
+                is_error,
+                ..
+            } => Some((tool_use_id.as_str(), content.as_str(), *is_error)),
+            _ => None,
+        })
+    })?;
+    let name = req.messages.iter().rev().find_map(|m| {
+        m.content.iter().find_map(|b| match b {
+            Block::ToolUse { id, name, .. } if id == use_id => Some(name.as_str()),
+            _ => None,
+        })
+    })?;
+    Some((name, content, is_error))
+}
+
+/// `list_workflows` の観測の先頭の `id: <UUID>`。
+fn first_listed_id(content: &str) -> Option<&str> {
+    let at = content.find("id: ")? + "id: ".len();
+    let id = content.get(at..at + 36)?;
+    uuid::Uuid::parse_str(id).ok().map(|_| id)
+}
+
 /// ドキュメント下書き/編集ツールの決定的駆動（issue #282 / Task 11.3 の e2e）。
 /// `savenote:<name>` → save_note（下書き）、`docembed:<node_id>` → document.embed（```ui の bar）、
 /// `saveslide:<name>` → save_slide（下書きスライド・固定 3 枚）、

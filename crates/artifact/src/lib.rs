@@ -15,6 +15,7 @@
 mod by_ref;
 mod model;
 mod publish;
+mod search;
 mod share;
 mod shared;
 mod store;
@@ -23,6 +24,7 @@ mod visible;
 
 pub use model::{Artifact, ArtifactKind, ArtifactRole, ArtifactVersion, VersionMeta};
 pub use publish::Publication;
+pub use search::{SearchPage, SearchRequest, MAX_SEARCH_QUERY_CHARS};
 pub use store::{ArtifactPage, ArtifactPosition, ArtifactStore, NewArtifact, SkillSummary};
 
 /// アーティファクト操作のエラー。

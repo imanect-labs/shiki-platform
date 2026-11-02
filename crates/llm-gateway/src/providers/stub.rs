@@ -14,6 +14,8 @@
 //!     （ループ検出・ステップ/予算上限・長ホライズンの決定的駆動）。
 //! - tool search 検証用の `toolsearch:<query>` … `tool_search` で検索し、読み込んだ先頭の
 //!   遅延ツールを次のターンで呼ぶ（[`super::stub_triggers::tool_search_call`]）。
+//! - 既存のワークフローを直す `fixwf:<語>` … `list_workflows` で探し、先頭を `read_workflow` で読み、説明を書き換えて
+//!   `emit_workflow` で新しい版として保存する（[`super::stub_triggers::fix_workflow_call`]・GAP-31）。
 //! - `echosystem:` … 受け取った system プロンプトをそのまま本文で返す（system の組み立て
 //!   ＝今日の日付などが実際にモデルへ届くことの検証用・#546）。
 //! - `echoeffort:` … 受け取った思考の深さ（無ければ `none`）を `effort: <値>` で返す（ノードの思考の深さの解決が
@@ -34,8 +36,8 @@ use super::stub_stream::{
 };
 use super::stub_structured::structured_call;
 use super::stub_triggers::{
-    conversation_title_call, echo_effort_call, echo_system_call, generic_tool_call,
-    note_suggest_call, note_tool_call, tool_search_call,
+    conversation_title_call, echo_effort_call, echo_system_call, fix_workflow_call,
+    generic_tool_call, note_suggest_call, note_tool_call, tool_search_call,
 };
 use super::timeouts::RequestClock;
 use crate::config::LlmTimeouts;
@@ -340,6 +342,10 @@ fn stub_stream(req: &GenerateRequest) -> DeltaStream {
     }
     // --- tool search 駆動 `toolsearch:`（検索→読み込み→呼び出しを 2 ターンに跨いで進む）。 ---
     if let Some(s) = tool_search_call(req, &user_text, prompt_tokens) {
+        return s;
+    }
+    // --- 既存のワークフローを直す `fixwf:`（探す → 読む → 新しい版を保存する・GAP-31）。 ---
+    if let Some(s) = fix_workflow_call(req, &user_text, prompt_tokens) {
         return s;
     }
     // --- 並行 read 駆動 `parallel:`（#386）。 ---
