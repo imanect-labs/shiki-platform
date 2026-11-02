@@ -858,7 +858,8 @@ async fn broken_optional_skill_pin_keeps_the_app_open() {
         )
         .await
         .expect("壊れた skill");
-    let broken_app = s
+    // 保存のときは本文も確かめるので、今は束ねられない（BUG-79）。
+    let err = s
         .mini_apps
         .create(
             &alice,
@@ -868,7 +869,31 @@ async fn broken_optional_skill_pin_keeps_the_app_open() {
             None,
         )
         .await
-        .expect("本文は保存時に見ないので束ねられる")
+        .expect_err("本文が壊れたスキルは束ねられない");
+    let GuiError::Validation(errors) = err else {
+        panic!("validation error expected");
+    };
+    assert_eq!(
+        errors
+            .iter()
+            .map(|e| (e.code.as_str(), e.path.as_deref()))
+            .collect::<Vec<_>>(),
+        vec![("miniapp.skill_broken", Some("skill"))]
+    );
+    // それより前に保存したアプリ（保存のときに本文を見ていなかった）は、保存の口を通さずに作って確かめる。
+    let broken_app = s
+        .artifacts
+        .create(
+            &alice,
+            NewArtifact {
+                kind: ArtifactKind::MiniApp,
+                name: "broken-skill-app".into(),
+                body: body(broken.id),
+            },
+            None,
+        )
+        .await
+        .expect("前からの保存済みのアプリ")
         .id;
     let resolved = s
         .mini_apps

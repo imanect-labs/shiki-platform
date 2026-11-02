@@ -1,9 +1,11 @@
-//! ミニアプリの下書きと公開・共同編集者の保存・画面の書き損じの結合テスト（D-16・GAP-36・BUG-80）。
+//! ミニアプリの下書きと公開・共同編集者の保存・束ねたスキルの本文・画面の書き損じの結合テスト（D-16・GAP-36・
+//! BUG-79・BUG-80）。
 //!
 //! - 実 Postgres（`STORAGE_TEST_DATABASE_URL`）＋実 OpenFGA（`OPENFGA_TEST_URL`）: 使う人（viewer）には公開した版
 //!   だけを出し、editor は下書きを試せる。公開・公開を戻す・公開の権限・開いた後に公開した版が変わったボタン。
 //!   共同編集者は、自分が読めない部品を束ねたアプリを、その部品に触れなければ保存できる。
-//! - 実 Postgres だけ: 画面の書き損じは下書きには注意つきで保存でき、公開と AI の経路では止める。
+//! - 実 Postgres だけ: 束ねたスキルの本文を保存のときに確かめる。画面の書き損じは下書きには注意つきで保存でき、
+//!   公開と AI の経路では止める。
 //!
 //! テストで作った行（テナントごと）と OpenFGA のストアは、落ちても最後に消す。
 
@@ -707,6 +709,78 @@ async fn broken_figures_are_saved_as_drafts_but_not_published() {
                 .update(&alice, app, &broken, Some(2), SaveMode::Strict, None)
                 .await,
             Err(GuiError::Validation(_))
+        ));
+    })
+    .await;
+}
+
+/// 束ねたスキルの本文を保存のときに確かめる（開いた途端に使えないと出るアプリを保存させない・BUG-79）。
+#[tokio::test]
+async fn saving_checks_the_bundled_skill_body() {
+    let Some(pool) = pool().await else { return };
+    let s = stores(pool.clone(), Arc::new(AllowAll));
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let t = tenant.clone();
+    run_with_cleanup(pool, tenant, None, async move {
+        let alice = ctx(&t, "alice");
+        let wf = workflow(&s, &alice, "expense-wf").await;
+        let broken_skill = s
+            .artifacts
+            .create(
+                &alice,
+                NewArtifact {
+                    kind: ArtifactKind::Skill,
+                    name: "old-format".into(),
+                    body: json!({ "description": "古い形式" }),
+                },
+                None,
+            )
+            .await
+            .expect("壊れた skill")
+            .id;
+        let mut with_skill = app_body("経費", wf, 1);
+        with_skill["skill"] = json!({ "artifact_id": broken_skill, "version": 1 });
+        let err = s
+            .mini_apps
+            .create(&alice, "skill-app", &with_skill, SaveMode::Draft, None)
+            .await
+            .expect_err("壊れたスキル");
+        let GuiError::Validation(errors) = err else {
+            panic!("validation error expected");
+        };
+        assert_eq!(
+            errors
+                .iter()
+                .map(|e| (e.code.as_str(), e.message.as_str(), e.path.as_deref()))
+                .collect::<Vec<_>>(),
+            vec![(
+                "miniapp.skill_broken",
+                "スキル（v1）の本文を読めません（古い形式か、壊れています）",
+                Some("skill")
+            )]
+        );
+        // 読めるスキルなら束ねられ、あとから壊れたスキルに替える保存も断る。
+        let (good_skill, _) = s
+            .skills
+            .create(
+                &alice,
+                "good-skill",
+                &json!({ "description": "経費の案内", "instructions": "経費の質問に答える。" }),
+                None,
+            )
+            .await
+            .expect("skill");
+        let mut good = with_skill.clone();
+        good["skill"] = json!({ "artifact_id": good_skill, "version": 1 });
+        let app = s
+            .mini_apps
+            .create(&alice, "skill-app", &good, SaveMode::Draft, None)
+            .await
+            .expect("読めるスキル")
+            .id;
+        assert!(matches!(
+            s.mini_apps.update(&alice, app, &with_skill, Some(1), SaveMode::Draft, None).await,
+            Err(GuiError::Validation(e)) if e.iter().any(|x| x.code == "miniapp.skill_broken")
         ));
     })
     .await;

@@ -357,13 +357,7 @@ impl MiniAppStore {
                         errors = ?errors,
                         "ミニアプリの skill の本文が検証を通らない（skill だけを使えないとする）"
                     );
-                    GuiValidationError::new(
-                        "miniapp.skill_broken",
-                        format!(
-                            "スキル（v{}）の本文を読めません（古い形式か、壊れています）",
-                            pin.version
-                        ),
-                    )
+                    skill_broken(pin.version)
                 }
             },
             Err(ArtifactError::NotFound) => GuiValidationError::new(
@@ -382,7 +376,8 @@ impl MiniAppStore {
     ///
     /// 確かめるのは、前の版（`previous`）に無いピン（足したもの・対象か版を変えたもの）だけ（D-16 の (d)・
     /// BUG-80）。前の版と同じピンは、その版を保存した人が確かめてあり、版は不変なので確かめ直さない（共同編集者が
-    /// 読めない部品も、触れなければそのまま保存できる）。
+    /// 読めない部品も、触れなければそのまま保存できる）。束ねたスキルは本文も今の検証に通す（BUG-79・保存ビューの
+    /// `data_view_broken` と同じ）。
     async fn validate_pins(
         &self,
         ctx: &AuthContext,
@@ -396,11 +391,16 @@ impl MiniAppStore {
             .filter(|p| previous.and_then(|b| b.skill) != Some(*p))
         {
             let what = format!("スキル（v{}）", pin.version);
-            if let Err(e) = self
+            match self
                 .check_pin(ctx, &pin, ArtifactKind::Skill, &what, trace_id)
                 .await
             {
-                errors.push(e.at("skill"));
+                Ok(raw) => {
+                    if validate_skill_body(&raw).is_err() {
+                        errors.push(skill_broken(pin.version).at("skill"));
+                    }
+                }
+                Err(e) => errors.push(e.at("skill")),
             }
         }
         for (i, wf) in body.workflows.iter().enumerate() {
@@ -505,4 +505,12 @@ fn unchanged(previous: Option<&[NamedComponentPin]>, pin: &NamedComponentPin) ->
         pins.iter()
             .any(|p| p.artifact_id == pin.artifact_id && p.version == pin.version)
     })
+}
+
+/// 束ねたスキルの本文が今の検証を通らない（古い形式か壊れている）ときの理由（保存と解決で同じ文言）。
+fn skill_broken(version: i64) -> GuiValidationError {
+    GuiValidationError::new(
+        "miniapp.skill_broken",
+        format!("スキル（v{version}）の本文を読めません（古い形式か、壊れています）"),
+    )
 }
