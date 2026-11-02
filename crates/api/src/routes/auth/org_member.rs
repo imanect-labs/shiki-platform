@@ -11,6 +11,8 @@
 //! - **外す**: 決まった組織のほかに持っている member（組織を移った人・グループから外れた人）。外し損ねると、組織を
 //!   離れた人がアプリのゲートウェイでその組織に入り続ける。外すのは次のログインかセッションの更新（アクセス
 //!   トークンの寿命ごと・ロールの同期と同じ周期）で、それまでの間は残る。
+//! - **残す**: 組織が決まらない人の、既定の組織（`AuthContext` が落ちる先・[`DEFAULT_ORG`]）の member。グループを
+//!   使わずに既定の組織の member を手で書いて使わせる構成を壊さない（BUG-200）。ほかの組織の member は外す。
 //! - **触らない**: admin・audit_viewer（組織の管理の側の付与・PIT-65）。他テナントのタプル（名前空間で除く）。
 //! - 書く前に check で確かめる（毎回の書き込みと、OpenFGA の重複の誤りを避ける）。今の直接タプルを読めないときは
 //!   外さない（未知の状態に破壊的な操作をしない・ロールの同期と同じ）。
@@ -21,6 +23,8 @@ use authz::{
     AuthzClient, Consistency, GroupLayout, Namespace, ObjectType, Principal, PrincipalKind,
     Relation, Subject,
 };
+
+use crate::extract::DEFAULT_ORG;
 
 /// 1 回の同期で変えたもの（ログ・テスト用）。
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -65,7 +69,9 @@ pub(crate) async fn sync_org_member(
     if let Some(org) = &out.desired {
         out.granted = grant(authz, &subject, &ns, org).await;
     }
-    out.revoked = revoke_others(authz, &subject, &ns, out.desired.as_deref()).await;
+    // 組織が決まらない人は既定の組織に落ちるので、その member は残す（BUG-200）。
+    let keep = out.desired.as_deref().unwrap_or(DEFAULT_ORG);
+    out.revoked = revoke_others(authz, &subject, &ns, keep).await;
     out
 }
 
@@ -108,7 +114,7 @@ async fn revoke_others(
     authz: &dyn AuthzClient,
     subject: &Subject,
     ns: &Namespace<'_>,
-    keep: Option<&str>,
+    keep: &str,
 ) -> Vec<String> {
     let current = match authz
         .read_subject_objects(subject, ObjectType::Organization)
@@ -124,7 +130,7 @@ async fn revoke_others(
         .iter()
         .filter_map(|raw| raw.strip_prefix("organization:"))
         .filter_map(|id_part| ns.strip_object_id(id_part))
-        .filter(|org| keep != Some(*org))
+        .filter(|org| *org != keep)
         .map(str::to_string)
         .collect();
     stale.sort();
@@ -341,6 +347,30 @@ mod tests {
         assert_eq!(left.desired, None);
         assert_eq!(left.revoked, ["acme"]);
         assert_eq!(fga.members(), ["organization:other|acme"]);
+    }
+
+    #[tokio::test]
+    async fn keeps_the_default_org_member_when_groups_decide_no_org() {
+        // グループを使わずに既定の組織の member を手で書いた構成（BUG-200）。
+        let fga = Tuples::default();
+        let ns = Namespace::for_tenant("t");
+        let me = ns.user("u1");
+        for org in [DEFAULT_ORG, "old"] {
+            fga.write_tuple(&me, Relation::Member, &ns.organization(org))
+                .await
+                .unwrap();
+        }
+        let layout = GroupLayout::TenantScoped;
+        let out = sync_org_member(&fga, &user(&[]), "t", layout).await;
+        assert_eq!(out.desired, None);
+        assert!(!out.granted, "既定の組織には書かない");
+        assert_eq!(out.revoked, ["old"], "ほかの組織の member は外す");
+        assert_eq!(fga.members(), ["organization:t|default"]);
+
+        // 所属グループから組織が決まった人は、既定の組織の member も外す（決まった組織だけにそろえる）。
+        let out = sync_org_member(&fga, &user(&["/tenants/t/acme"]), "t", layout).await;
+        assert_eq!(out.revoked, [DEFAULT_ORG]);
+        assert_eq!(fga.members(), ["organization:t|acme"]);
     }
 
     #[tokio::test]

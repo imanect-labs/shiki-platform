@@ -56,8 +56,8 @@ pub(crate) struct TenantId(pub String);
 #[derive(Debug, Clone)]
 pub(crate) struct OrgId(pub String);
 
-/// group を持たない主体の org。
-const DEFAULT_ORG: &str = "default";
+/// group を持たない主体の org（所属グループから組織が決まらない人の既定の組織）。
+pub(crate) const DEFAULT_ORG: &str = "default";
 
 /// 認証主体から所属組織 ID を解決する（解決済み `tenant_id` に閉じる・#811）。
 ///
