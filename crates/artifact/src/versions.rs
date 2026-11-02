@@ -7,7 +7,7 @@ use sqlx::types::Json;
 use storage::audit::AuditAction;
 use uuid::Uuid;
 
-use crate::model::{Artifact, ArtifactVersion, VersionMeta};
+use crate::model::{Artifact, ArtifactKind, ArtifactVersion, VersionMeta};
 use crate::store::{validate_body, ArtifactStore};
 use crate::{map_db, ArtifactError};
 
@@ -125,6 +125,12 @@ impl ArtifactStore {
     }
 
     /// 指定バージョンの本文を取得する（viewer 権限・過去バージョンも不変で取得できる）。
+    ///
+    /// 下書きと公開を分ける種類（[`ArtifactKind::has_drafts`]・ミニアプリ）では、editor でない人は公開した版しか
+    /// 読めない（ほかの版は実在を問わず [`ArtifactError::NotPublished`]・D-16）。editor かの確かめは、公開した版の
+    /// ほかを読むときだけ行う。
+    ///
+    /// [`ArtifactKind::has_drafts`]: crate::ArtifactKind::has_drafts
     pub async fn get_version(
         &self,
         ctx: &AuthContext,
@@ -141,11 +147,19 @@ impl ArtifactStore {
         )
         .await?;
         // 論理削除済みアーティファクトのバージョン本文は読めない（tuple 残存でも body を返さない）。
-        let row: Option<(Json<serde_json::Value>, String, DateTime<Utc>)> = sqlx::query_as(
-            "SELECT v.body, v.created_by, v.created_at FROM artifact_version v \
-             WHERE v.tenant_id = $1 AND v.artifact_id = $2 AND v.version = $3 \
-               AND EXISTS (SELECT 1 FROM artifact a \
-                           WHERE a.tenant_id = $1 AND a.id = $2 AND a.deleted_at IS NULL)",
+        #[allow(clippy::type_complexity)]
+        let row: Option<(
+            String,
+            Option<i64>,
+            Option<Json<serde_json::Value>>,
+            Option<String>,
+            Option<DateTime<Utc>>,
+        )> = sqlx::query_as(
+            "SELECT a.kind, a.published_version, v.body, v.created_by, v.created_at \
+             FROM artifact a \
+             LEFT JOIN artifact_version v \
+               ON v.tenant_id = a.tenant_id AND v.artifact_id = a.id AND v.version = $3 \
+             WHERE a.tenant_id = $1 AND a.id = $2 AND a.deleted_at IS NULL",
         )
         .bind(&ctx.tenant_id)
         .bind(id)
@@ -153,7 +167,15 @@ impl ArtifactStore {
         .fetch_optional(&self.db)
         .await
         .map_err(map_db)?;
-        let (body, created_by, created_at) = row.ok_or(ArtifactError::NotFound)?;
+        let (kind, published, body, created_by, created_at) = row.ok_or(ArtifactError::NotFound)?;
+        let drafts = ArtifactKind::parse(&kind).is_some_and(ArtifactKind::has_drafts);
+        if drafts && published != Some(version) && !self.allows(ctx, id, Relation::Editor).await? {
+            return Err(ArtifactError::NotPublished { published });
+        }
+        let (Some(body), Some(created_by), Some(created_at)) = (body, created_by, created_at)
+        else {
+            return Err(ArtifactError::NotFound);
+        };
         Ok(ArtifactVersion {
             artifact_id: id,
             version,
@@ -268,6 +290,9 @@ impl ArtifactStore {
     }
 
     /// バージョン履歴（メタのみ・新しい順）。viewer 権限。
+    ///
+    /// 下書きと公開を分ける種類（ミニアプリ）では、editor でない人には公開した版だけを返す（まだ公開していなければ
+    /// 空・D-16）。
     pub async fn list_versions(
         &self,
         ctx: &AuthContext,
@@ -294,8 +319,18 @@ impl ArtifactStore {
         .fetch_all(&self.db)
         .await
         .map_err(map_db)?;
+        if rows.is_empty() {
+            return Ok(Vec::new());
+        }
+        let meta = self.fetch_live(ctx, id).await?;
+        let only = if meta.kind.has_drafts() && !self.allows(ctx, id, Relation::Editor).await? {
+            Some(meta.published_version)
+        } else {
+            None
+        };
         Ok(rows
             .into_iter()
+            .filter(|(version, _, _)| only.is_none_or(|p| p == Some(*version)))
             .map(|(version, created_by, created_at)| VersionMeta {
                 version,
                 created_by,

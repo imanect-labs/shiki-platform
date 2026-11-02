@@ -345,16 +345,18 @@ async fn results_reach_only_the_person_who_pressed_the_button() {
         .id;
     let screen = "# 経費\n\n```ui\napp 経費の申請\n金額 = number 必須 円 as amount\n\
                   区分 = choice 交通費 | 交際費 as category\nbutton 申請する -> workflow expense\n```\n";
-    let (app_id, _) = mini_apps
+    let app_id = mini_apps
         .create(
             &alice,
             "results-app",
             &json!({ "description": "経費", "screen": screen,
                      "workflows": [{ "alias": "expense", "artifact_id": wf, "version": 1 }] }),
+            gui::SaveMode::Draft,
             None,
         )
         .await
-        .unwrap();
+        .unwrap()
+        .id;
     let block = yui::extract_action_blocks(screen).remove(0).hash;
     let mut dispatcher = ActionDispatcher::new(storage::audit::AuditRecorder::new(pool.clone()));
     dispatcher.set_workflow_starter(Arc::new(RunStarter(RunStore::new(

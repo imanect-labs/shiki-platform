@@ -1,7 +1,9 @@
 //! ミニアプリ API（Task 6.10・#604）。
 //!
-//! 作成/更新は**作成者の権限**で全ピンを検証し、解決（実行）はミニアプリ本体の viewer のみを
-//! 要求する（部品はバンドル権限チョークポイント経由・部品の個別共有は不要）。
+//! 作成/更新は**保存する人の権限**でピンを検証し（前の版と同じピンは確かめ直さない・BUG-80）、解決（実行）は
+//! ミニアプリ本体の viewer のみを要求する（部品はバンドル権限チョークポイント経由・部品の個別共有は不要）。
+//! 保存は下書きの版になり、使う人（editor でない viewer）が開く・押すのは公開した版だけ。公開は editor が
+//! `POST /mini-apps/{id}/publish` で版を選んで行う（D-16・GAP-36）。
 //! 画面（Yui の ```ui を含む Markdown）のボタンは、保存済みの版の画面から読み直し、束ねた
 //! ワークフローだけを押した本人の権限で起動する（アンビエント権限なし）。
 
@@ -10,7 +12,8 @@ use axum::{
     http::StatusCode,
     Json,
 };
-use gui::{MiniAppActionRequest, MiniAppRun};
+use chrono::{DateTime, Utc};
+use gui::{MiniAppActionRequest, MiniAppRun, PublishPreview, SaveMode, SavedMiniApp};
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
@@ -41,13 +44,29 @@ pub struct UpdateMiniAppRequest {
     pub expected_version: Option<i64>,
 }
 
-/// ミニアプリ本文レスポンス。
+/// ミニアプリ本文レスポンス（保存した版・下書き）。
 #[derive(Debug, Serialize, ToSchema)]
 pub struct MiniAppResponse {
     pub id: Uuid,
     pub version: i64,
     #[schema(value_type = Object)]
     pub body: serde_json::Value,
+    /// 公開した版（保存しても変わらない。新しいアプリは `null`＝まだ公開していない・D-16）。
+    pub published_version: Option<i64>,
+    /// 画面の書き損じ（保存はできた。直すまで公開できない・D-16 の (c)）。`path` は `screen`。
+    pub warnings: Vec<gui::GuiValidationError>,
+}
+
+impl MiniAppResponse {
+    fn saved(saved: SavedMiniApp, body: serde_json::Value) -> Self {
+        MiniAppResponse {
+            id: saved.id,
+            version: saved.version,
+            body,
+            published_version: saved.published_version,
+            warnings: saved.warnings,
+        }
+    }
 }
 
 /// 解決済みミニアプリ（実行画面が使う一式・全て検証済み）。
@@ -66,9 +85,32 @@ pub struct ResolvedMiniAppResponse {
     /// 閲覧者本人がこのアプリを共有できる（アプリの owner。共有相手の一覧と付与・解除は owner が要る・BUG-78）。
     /// 画面の出し分けだけに使う（共有の API が owner を改めて確かめる）。
     pub can_share: bool,
+    /// 公開した版（まだ公開していなければ `null`・D-16）。`version` と違えば、開いたのは下書き（editor だけが開ける）。
+    pub published_version: Option<i64>,
+    /// 公開した時刻。
+    pub published_at: Option<DateTime<Utc>>,
+    /// 最新の版（下書きを含む・editor にだけ返す）。
+    pub latest_version: Option<i64>,
+    /// 前に公開していた版（公開を戻す先・editor にだけ返す）。
+    pub previous_published_version: Option<i64>,
+    /// 開いた版の画面の書き損じ（直すまで公開できない・editor にだけ返す・D-16 の (c)）。
+    pub warnings: Vec<gui::GuiValidationError>,
 }
 
-/// resolve クエリ（version 省略時は current）。
+/// 公開のリクエスト。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct PublishMiniAppRequest {
+    /// 公開する版（前に公開していた版を選ぶと公開を戻せる）。
+    pub version: i64,
+}
+
+/// 公開の前の確かめのクエリ（version 省略時は最新の版）。
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct PublishPreviewQuery {
+    pub version: Option<i64>,
+}
+
+/// resolve クエリ（version 省略時は公開した版。まだ公開していないアプリを editor が開くときは最新の版）。
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct ResolveQuery {
     pub version: Option<i64>,
@@ -111,29 +153,31 @@ pub async fn create_mini_app(
     trace: TraceIdExt,
     Json(req): Json<CreateMiniAppRequest>,
 ) -> Result<(StatusCode, Json<MiniAppResponse>), ApiError> {
-    let (id, _body) = state
+    let saved = state
         .mini_apps
-        .create(&ctx, &req.name, &req.body, trace.as_deref())
+        .create(
+            &ctx,
+            &req.name,
+            &req.body,
+            SaveMode::Draft,
+            trace.as_deref(),
+        )
         .await
         .map_err(map_gui_err)?;
     Ok((
         StatusCode::CREATED,
-        Json(MiniAppResponse {
-            id,
-            version: 1,
-            body: req.body,
-        }),
+        Json(MiniAppResponse::saved(saved, req.body)),
     ))
 }
 
-/// ミニアプリに新バージョンを追記する。
+/// ミニアプリに新バージョン（下書き）を追記する。公開した版は変えない（使う人の画面は公開するまで変わらない・D-16）。
 #[utoipa::path(
     put,
     path = "/mini-apps/{id}",
     params(("id" = Uuid, Path, description = "ミニアプリ ID")),
     request_body = UpdateMiniAppRequest,
     responses(
-        (status = 200, description = "追記した", body = MiniAppResponse),
+        (status = 200, description = "追記した（画面の書き損じは warnings）", body = MiniAppResponse),
         (status = 400, description = "検証エラー（全件）", body = GuiValidationErrorResponse),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限がない"),
@@ -149,22 +193,28 @@ pub async fn update_mini_app(
     Path(id): Path<Uuid>,
     Json(req): Json<UpdateMiniAppRequest>,
 ) -> Result<Json<MiniAppResponse>, ApiError> {
-    let (version, _body) = state
+    let saved = state
         .mini_apps
-        .update(&ctx, id, &req.body, req.expected_version, trace.as_deref())
+        .update(
+            &ctx,
+            id,
+            &req.body,
+            req.expected_version,
+            SaveMode::Draft,
+            trace.as_deref(),
+        )
         .await
         .map_err(map_gui_err)?;
-    Ok(Json(MiniAppResponse {
-        id,
-        version,
-        body: req.body,
-    }))
+    Ok(Json(MiniAppResponse::saved(saved, req.body)))
 }
 
 /// ミニアプリを解決する（実行画面用・部品はバンドル権限で読む）。
 ///
 /// 任意の skill のピンが壊れていても（skill が削除された・本文が壊れている）アプリは開ける。
 /// 200 で返し、使えない部品とその理由を `unavailable` に載せる（BUG-17）。
+///
+/// 使う人（editor でない viewer）が開けるのは公開した版だけ（D-16）。まだ公開していないアプリは 409
+/// `not_published`、公開した版のほかを指定したら 409 `app_version_changed`（どちらも `published_version` つき）。
 #[utoipa::path(
     get,
     path = "/mini-apps/{id}/resolved",
@@ -177,6 +227,7 @@ pub async fn update_mini_app(
         (status = 401, description = "未認証"),
         (status = 403, description = "権限がない"),
         (status = 404, description = "存在しない"),
+        (status = 409, description = "使う人に出していない版（code=not_published・app_version_changed）"),
     ),
     security(("session" = [])),
 )]
@@ -213,14 +264,89 @@ pub async fn resolve_mini_app(
             authz::Consistency::HigherConsistency,
         ),
     )?;
+    // 下書きの番号・前に公開していた版・書き損じは、作る人（editor）にだけ返す（使う人には公開した版だけを出す）。
+    let editor_only = |v| if can_edit { v } else { None };
     Ok(Json(ResolvedMiniAppResponse {
         id: resolved.id,
         version: resolved.version,
-        body,
         unavailable: resolved.unavailable(),
+        warnings: if can_edit {
+            gui::screen_problems(&resolved.body)
+        } else {
+            Vec::new()
+        },
+        body,
         can_edit,
         can_share,
+        published_version: resolved.published_version,
+        published_at: resolved.published_at,
+        latest_version: editor_only(Some(resolved.latest_version)),
+        previous_published_version: editor_only(resolved.previous_published_version),
     }))
+}
+
+/// 公開の前の確かめ（editor）: その版といま公開している版の差と、公開を止める誤り（画面の書き損じ）。
+#[utoipa::path(
+    get,
+    path = "/mini-apps/{id}/publish-preview",
+    params(
+        ("id" = Uuid, Path, description = "ミニアプリ ID"),
+        PublishPreviewQuery,
+    ),
+    responses(
+        (status = 200, description = "公開した版から変わるところと、公開を止める誤り", body = PublishPreview),
+        (status = 400, description = "その版の本文が今の検証を通らない（公開できない）", body = GuiValidationErrorResponse),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限がない（editor でない）"),
+        (status = 404, description = "存在しない"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn preview_mini_app_publish(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    trace: TraceIdExt,
+    Path(id): Path<Uuid>,
+    Query(q): Query<PublishPreviewQuery>,
+) -> Result<Json<PublishPreview>, ApiError> {
+    let preview = state
+        .mini_apps
+        .publish_preview(&ctx, id, q.version, trace.as_deref())
+        .await
+        .map_err(map_gui_err)?;
+    Ok(Json(preview))
+}
+
+/// 版を公開する（editor・D-16）。共有した人の画面とボタンの実行先が、この版に変わる。
+///
+/// 前に公開していた版を選ぶと公開を戻せる。画面に書き損じがある版は公開しない（400・D-16 の (c)）。
+#[utoipa::path(
+    post,
+    path = "/mini-apps/{id}/publish",
+    params(("id" = Uuid, Path, description = "ミニアプリ ID")),
+    request_body = PublishMiniAppRequest,
+    responses(
+        (status = 200, description = "公開した", body = artifact::Publication),
+        (status = 400, description = "画面に書き損じがある・本文が今の検証を通らない（全件）", body = GuiValidationErrorResponse),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限がない（editor でない）"),
+        (status = 404, description = "存在しない・その版が無い"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn publish_mini_app(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    trace: TraceIdExt,
+    Path(id): Path<Uuid>,
+    Json(req): Json<PublishMiniAppRequest>,
+) -> Result<Json<artifact::Publication>, ApiError> {
+    let publication = state
+        .mini_apps
+        .publish(&ctx, id, req.version, trace.as_deref())
+        .await
+        .map_err(map_gui_err)?;
+    Ok(Json(publication))
 }
 
 /// ミニアプリの画面のボタンを実行する（画面から読み直し・値の検証・冪等キー・実行者権限・監査つき）。
@@ -239,7 +365,7 @@ pub async fn resolve_mini_app(
         (status = 401, description = "未認証"),
         (status = 403, description = "権限がない"),
         (status = 404, description = "ボタンが見つからない"),
-        (status = 409, description = "同じ送信が起動の途中・表の列の索引を準備中（code=index_preparing・field・progress）"),
+        (status = 409, description = "同じ送信が起動の途中・表の列の索引を準備中（code=index_preparing・field・progress）・開いた後に公開した版が変わった（code=app_version_changed・not_published）"),
         (status = 503, description = "実行先が無効"),
     ),
     security(("session" = [])),
@@ -327,7 +453,8 @@ pub async fn get_mini_app_run(
 /// 回答の本文の ```ui app を、そのボタンの実行先ごとミニアプリとして保存する。
 ///
 /// 会話を読める人が使える。実行先は回答の確定時に解決した束縛で、保存する人の権限で
-/// ピンを検証し直す（見えないワークフローは束ねられない）。
+/// ピンを検証し直す（見えないワークフローは束ねられない）。AI が書いた画面なので、書き損じた図も誤りとして
+/// 止める（[`SaveMode::Strict`]・D-16 の (c)）。保存したアプリはまだ公開していない（D-16）。
 #[utoipa::path(
     post,
     path = "/threads/{thread_id}/messages/{message_id}/save-as-app",
@@ -377,17 +504,19 @@ pub async fn save_yui_app(
             "version": version,
         })).collect::<Vec<_>>(),
     });
-    let (id, _) = state
+    let saved = state
         .mini_apps
-        .create(&ctx, req.name.trim(), &body, trace.as_deref())
+        .create(
+            &ctx,
+            req.name.trim(),
+            &body,
+            SaveMode::Strict,
+            trace.as_deref(),
+        )
         .await
         .map_err(map_gui_err)?;
     Ok((
         StatusCode::CREATED,
-        Json(MiniAppResponse {
-            id,
-            version: 1,
-            body,
-        }),
+        Json(MiniAppResponse::saved(saved, body)),
     ))
 }

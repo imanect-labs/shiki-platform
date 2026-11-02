@@ -165,6 +165,7 @@ audit_actions! {
     ArtifactCreate = "artifact.create", "アーティファクトを作成", App;
     ArtifactDelete = "artifact.delete", "アーティファクトを削除", App;
     ArtifactGet = "artifact.get", "アーティファクトを参照", App;
+    ArtifactPublish = "artifact.publish", "アプリのバージョンを公開", App;
     ArtifactReadViaBundle = "artifact.read_via_bundle", "バンドル経由で部品を参照", App;
     ArtifactReadViaReference = "artifact.read_via_reference", "参照元にピンされた版を参照", App;
     ArtifactShare = "artifact.share", "アーティファクトを共有", Share;

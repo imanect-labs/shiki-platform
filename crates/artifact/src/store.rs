@@ -56,6 +56,40 @@ pub struct SkillSummary {
     pub command: Option<serde_json::Value>,
 }
 
+/// artifact 行の列（[`ArtifactRow`] が読む列・一覧と取得の SELECT はすべてこれを使い、列を足すときはここだけを直す）。
+/// 引数に表の別名（`"a"`）を渡すと、列に別名を付ける。
+macro_rules! artifact_columns {
+    () => {
+        "id, kind, name, owner, current_version, published_version, previous_published_version, \
+         published_at, created_at, updated_at"
+    };
+    ($a:literal) => {
+        concat!(
+            $a,
+            ".id, ",
+            $a,
+            ".kind, ",
+            $a,
+            ".name, ",
+            $a,
+            ".owner, ",
+            $a,
+            ".current_version, ",
+            $a,
+            ".published_version, ",
+            $a,
+            ".previous_published_version, ",
+            $a,
+            ".published_at, ",
+            $a,
+            ".created_at, ",
+            $a,
+            ".updated_at"
+        )
+    };
+}
+pub(crate) use artifact_columns;
+
 /// artifact 行。
 #[derive(sqlx::FromRow)]
 pub(crate) struct ArtifactRow {
@@ -64,6 +98,9 @@ pub(crate) struct ArtifactRow {
     name: String,
     owner: String,
     current_version: i64,
+    published_version: Option<i64>,
+    previous_published_version: Option<i64>,
+    published_at: Option<DateTime<Utc>>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
 }
@@ -77,6 +114,9 @@ impl ArtifactRow {
             name: self.name,
             owner: self.owner,
             current_version: self.current_version,
+            published_version: self.published_version,
+            previous_published_version: self.previous_published_version,
+            published_at: self.published_at,
             created_at: self.created_at,
             updated_at: self.updated_at,
         })
@@ -108,11 +148,12 @@ impl ArtifactStore {
         validate_body(&input.body)?;
 
         let mut tx = self.db.begin().await.map_err(map_db)?;
-        let row: ArtifactRow = sqlx::query_as(
+        // 下書きと公開を分ける種類は、まだ公開していない（published_version は null・D-16）。
+        let row: ArtifactRow = sqlx::query_as(concat!(
             "INSERT INTO artifact (tenant_id, org, kind, name, owner, current_version) \
-             VALUES ($1, $2, $3, $4, $5, 1) \
-             RETURNING id, kind, name, owner, current_version, created_at, updated_at",
-        )
+             VALUES ($1, $2, $3, $4, $5, 1) RETURNING ",
+            artifact_columns!()
+        ))
         .bind(&ctx.tenant_id)
         .bind(&ctx.org)
         .bind(input.kind.as_str())
@@ -209,14 +250,15 @@ impl ArtifactStore {
             Some((at, id)) => (Some(at), Some(id)),
             None => (None, None),
         };
-        let rows: Vec<ArtifactRow> = sqlx::query_as(
-            "SELECT id, kind, name, owner, current_version, created_at, updated_at \
-             FROM artifact \
+        let rows: Vec<ArtifactRow> = sqlx::query_as(concat!(
+            "SELECT ",
+            artifact_columns!(),
+            " FROM artifact \
              WHERE tenant_id = $1 AND org = $2 AND owner = $3 AND deleted_at IS NULL \
                AND ($4::text IS NULL OR kind = $4) \
                AND ($5::timestamptz IS NULL OR (updated_at, id) < ($5::timestamptz, $6)) \
-             ORDER BY updated_at DESC, id DESC LIMIT $7",
-        )
+             ORDER BY updated_at DESC, id DESC LIMIT $7"
+        ))
         .bind(&ctx.tenant_id)
         .bind(&ctx.org)
         .bind(&ctx.principal.id)
@@ -320,16 +362,52 @@ impl ArtifactStore {
         ctx: &AuthContext,
         id: Uuid,
     ) -> Result<Artifact, ArtifactError> {
-        let row: Option<ArtifactRow> = sqlx::query_as(
-            "SELECT id, kind, name, owner, current_version, created_at, updated_at \
-             FROM artifact WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL",
-        )
+        let row: Option<ArtifactRow> = sqlx::query_as(concat!(
+            "SELECT ",
+            artifact_columns!(),
+            " FROM artifact WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL"
+        ))
         .bind(&ctx.tenant_id)
         .bind(id)
         .fetch_optional(&self.db)
         .await
         .map_err(map_db)?;
         row.ok_or(ArtifactError::NotFound)?.into_artifact()
+    }
+
+    /// アーティファクトへの relation を確かめる（不足は監査 deny＋Forbidden）。保存の前に前の版を読んで比べる
+    /// 呼び出し側（ミニアプリの保存・BUG-80）が、読む前に保存できる人かを確かめるのに使う。
+    pub async fn require_relation(
+        &self,
+        ctx: &AuthContext,
+        id: Uuid,
+        relation: Relation,
+        action: AuditAction,
+        trace_id: Option<&str>,
+    ) -> Result<(), ArtifactError> {
+        self.require(ctx, id, relation, action, trace_id)
+            .await
+            .map(|_| ())
+    }
+
+    /// アーティファクトへの relation があるか（監査に残さない・判定だけ）。下書きを読める人（editor）かを
+    /// 決めるのに使う（D-16）。
+    pub(crate) async fn allows(
+        &self,
+        ctx: &AuthContext,
+        id: Uuid,
+        relation: Relation,
+    ) -> Result<bool, ArtifactError> {
+        let obj = ctx.ns().artifact(&id.to_string());
+        self.authz
+            .check(
+                &ctx.subject(),
+                relation,
+                &obj,
+                Consistency::HigherConsistency,
+            )
+            .await
+            .map_err(|e| ArtifactError::Internal(e.to_string()))
     }
 
     /// アーティファクトへの relation を要求する（不足は監査 deny＋Forbidden・剥奪即時反映）。

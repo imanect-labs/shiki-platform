@@ -303,6 +303,12 @@ pub fn route_table() -> Vec<RouteDecl> {
         r("/mini-apps/{id}/resolved", &["GET"], Session, || {
             get(routes::mini_apps::resolve_mini_app)
         }),
+        r("/mini-apps/{id}/publish", &["POST"], Session, || {
+            post(routes::mini_apps::publish_mini_app)
+        }),
+        r("/mini-apps/{id}/publish-preview", &["GET"], Session, || {
+            get(routes::mini_apps::preview_mini_app_publish)
+        }),
         r("/mini-apps/{id}/ui-actions", &["POST"], Session, || {
             post(routes::mini_apps::invoke_mini_app_action)
         }),

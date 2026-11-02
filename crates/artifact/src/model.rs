@@ -39,6 +39,17 @@ impl ArtifactKind {
         }
     }
 
+    /// 下書きと公開を分ける種類か（D-16・GAP-36）。保存は下書きの版になり、使う人（editor でない viewer）には
+    /// 公開した版（`artifact.published_version`）だけを出す（[`ArtifactStore::get_version`]・
+    /// [`ArtifactStore::list_versions`]）。公開は editor が行う（[`ArtifactStore::publish`]）。
+    ///
+    /// [`ArtifactStore::get_version`]: crate::ArtifactStore::get_version
+    /// [`ArtifactStore::list_versions`]: crate::ArtifactStore::list_versions
+    /// [`ArtifactStore::publish`]: crate::ArtifactStore::publish
+    pub const fn has_drafts(self) -> bool {
+        matches!(self, ArtifactKind::MiniApp)
+    }
+
     /// DB から読み戻した文字列を閉じた集合へ写す（未知はフェイルクローズで `None`）。
     pub fn parse(s: &str) -> Option<Self> {
         match s {
@@ -71,6 +82,12 @@ pub struct Artifact {
     pub owner: String,
     /// 最新バージョン番号（0 = バージョン未追記は存在しない。作成時に 1 が入る）。
     pub current_version: i64,
+    /// 公開した版（下書きと公開を分ける種類だけ・まだ公開していなければ `null`・D-16）。使う人に出すのはこの版。
+    pub published_version: Option<i64>,
+    /// 前に公開していた版（公開を戻す先・無ければ `null`）。
+    pub previous_published_version: Option<i64>,
+    /// 公開した時刻（`published_version` を決めた時刻）。
+    pub published_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -137,6 +154,22 @@ mod tests {
         ] {
             assert_eq!(ArtifactKind::parse(k.as_str()), Some(k));
             assert_eq!(k.to_string(), k.as_str());
+        }
+    }
+
+    /// 下書きと公開を分けるのはミニアプリだけ（ほかの種類は今のまま、最新の版を使う）。
+    #[test]
+    fn only_mini_apps_have_drafts() {
+        assert!(ArtifactKind::MiniApp.has_drafts());
+        for k in [
+            ArtifactKind::Workflow,
+            ArtifactKind::DataView,
+            ArtifactKind::Fsm,
+            ArtifactKind::MiniAppCode,
+            ArtifactKind::Skill,
+            ArtifactKind::Script,
+        ] {
+            assert!(!k.has_drafts(), "{k}");
         }
     }
 

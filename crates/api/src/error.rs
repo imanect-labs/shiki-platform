@@ -202,7 +202,9 @@ impl From<artifact::ArtifactError> for ApiError {
     fn from(err: artifact::ArtifactError) -> Self {
         use artifact::ArtifactError as AE;
         match err {
-            AE::NotFound => ApiError::NotFound,
+            // 公開していない版（ミニアプリの下書きを使う人が読もうとした・D-16）は、汎用の口では見つからないのと同じ
+            // （ミニアプリの口は、開き直しを促す 409 に写す・`routes::gui_errors`）。
+            AE::NotFound | AE::NotPublished { .. } => ApiError::NotFound,
             AE::Forbidden => ApiError::Forbidden,
             AE::Invalid(msg) => ApiError::BadRequest(msg),
             AE::Conflict(_) => ApiError::Conflict,

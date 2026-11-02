@@ -15,7 +15,7 @@ use authz::{AuthContext, ObjectType, Relation};
 use uuid::Uuid;
 
 use crate::model::ArtifactKind;
-use crate::store::{ArtifactPage, ArtifactPosition, ArtifactRow, ArtifactStore};
+use crate::store::{artifact_columns, ArtifactPage, ArtifactPosition, ArtifactRow, ArtifactStore};
 use crate::visible::{Candidate, CHUNK, MAX_CHECKS};
 use crate::{map_db, ArtifactError};
 
@@ -46,14 +46,15 @@ impl ArtifactStore {
             });
         }
         // 1 件多く引いて、続きがあるかを決める（続きの位置は返した最後の 1 件）。
-        let rows: Vec<ArtifactRow> = sqlx::query_as(
-            "SELECT id, kind, name, owner, current_version, created_at, updated_at \
-             FROM artifact \
+        let rows: Vec<ArtifactRow> = sqlx::query_as(concat!(
+            "SELECT ",
+            artifact_columns!(),
+            " FROM artifact \
              WHERE tenant_id = $1 AND org = $2 AND id = ANY($3) AND owner <> $4 \
                AND deleted_at IS NULL AND ($5::text IS NULL OR kind = $5) \
                AND ($6::timestamptz IS NULL OR (updated_at, id) < ($6, $7::uuid)) \
-             ORDER BY updated_at DESC, id DESC LIMIT $8",
-        )
+             ORDER BY updated_at DESC, id DESC LIMIT $8"
+        ))
         .bind(&ctx.tenant_id)
         .bind(&ctx.org)
         .bind(&ids)
@@ -146,11 +147,12 @@ impl ArtifactStore {
                 next,
             });
         }
-        let rows: Vec<ArtifactRow> = sqlx::query_as(
-            "SELECT id, kind, name, owner, current_version, created_at, updated_at \
-             FROM artifact \
-             WHERE tenant_id = $1 AND org = $2 AND id = ANY($3) AND deleted_at IS NULL",
-        )
+        let rows: Vec<ArtifactRow> = sqlx::query_as(concat!(
+            "SELECT ",
+            artifact_columns!(),
+            " FROM artifact \
+             WHERE tenant_id = $1 AND org = $2 AND id = ANY($3) AND deleted_at IS NULL"
+        ))
         .bind(&ctx.tenant_id)
         .bind(&ctx.org)
         .bind(&picked)

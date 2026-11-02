@@ -105,6 +105,10 @@ pub(crate) fn map_action_err(e: ActionError) -> ApiError {
                 "progress": progress,
             }))
         }
+        // ミニアプリの、使う人に出していない版のボタン・表（開いた後に公開した版が変わった・D-16）。
+        ActionError::AppVersionChanged { published } => {
+            super::gui_errors::app_version_conflict(published)
+        }
         ActionError::Internal(m) => ApiError::Internal(m),
     }
 }
@@ -250,6 +254,32 @@ mod tests {
         };
         assert_eq!(body["code"], "index_preparing");
         assert_eq!(body["field"], "dept");
+        // 開いた後に公開した版が変わったミニアプリのボタンは、二重送信（素の 409）と見分けられる構造化した 409
+        // （画面は開き直しを促す・D-16）。まだ公開していなければ not_published。
+        let ApiError::ConflictJson(body) =
+            map_yui_action_err(ActionError::AppVersionChanged { published: Some(3) })
+        else {
+            unreachable!("公開した版の変化は構造化した 409")
+        };
+        assert_eq!(body["code"], "app_version_changed");
+        assert_eq!(body["published_version"], 3);
+        let ApiError::ConflictJson(body) =
+            map_yui_action_err(ActionError::AppVersionChanged { published: None })
+        else {
+            unreachable!("未公開も構造化した 409")
+        };
+        assert_eq!(body["code"], "not_published");
+        // 解決（開く）の誤りも同じ形にする。汎用の版の口は、見つからないのと同じ 404。
+        let ApiError::ConflictJson(body) = super::super::gui_errors::map_gui_err(
+            gui::GuiError::Artifact(artifact::ArtifactError::NotPublished { published: Some(2) }),
+        ) else {
+            unreachable!("ミニアプリの口は構造化した 409")
+        };
+        assert_eq!(body["code"], "app_version_changed");
+        assert!(matches!(
+            ApiError::from(artifact::ArtifactError::NotPublished { published: Some(2) }),
+            ApiError::NotFound
+        ));
     }
 
     /// OpenAPI の [`UiActionResult`] が `gui::ActionDispatcher` の組む JSON と同じ形であること

@@ -278,7 +278,7 @@ async fn data_grid_is_evaluated_with_each_viewers_own_permissions() {
     });
     // bob はビューを読めない → 保存者の権限で解決できず拒否（見えないビューは束ねられない）。
     let err = mini_apps
-        .create(&bob, "bob-app", &body, None)
+        .create(&bob, "bob-app", &body, gui::SaveMode::Draft, None)
         .await
         .expect_err("読めないビューは束ねられない");
     let codes: Vec<(String, Option<String>)> = err
@@ -308,17 +308,23 @@ async fn data_grid_is_evaluated_with_each_viewers_own_permissions() {
         "data_views": [{ "alias": "承認待ち", "artifact_id": view_id, "version": 1 }],
     });
     let err = mini_apps
-        .create(&alice, "bad-app", &unbundled, None)
+        .create(&alice, "bad-app", &unbundled, gui::SaveMode::Draft, None)
         .await
         .expect_err("束ねていない別名");
     assert!(
         matches!(&err, GuiError::Validation(v) if v[0].code == "miniapp.data_view_not_bundled")
     );
 
-    let (app_id, _) = mini_apps
-        .create(&alice, "経費アプリ", &body, None)
+    let app_id = mini_apps
+        .create(&alice, "経費アプリ", &body, gui::SaveMode::Draft, None)
         .await
-        .expect("mini app");
+        .expect("mini app")
+        .id;
+    // 使う人（viewer）に出すのは公開した版だけ（D-16）。
+    mini_apps
+        .publish(&alice, app_id, 1, None)
+        .await
+        .expect("publish");
     // ミニアプリ**本体だけ**を共有する（ビューは個別共有しない＝バンドル権限で定義を読む）。
     for who in ["bob", "carol", "dave"] {
         artifacts
@@ -529,7 +535,7 @@ async fn paging_does_not_resolve_the_app_again() {
         )
         .await
         .expect("skill");
-    let (app_id, _) = mini_apps
+    let app_id = mini_apps
         .create(
             &alice,
             "備品アプリ",
@@ -539,10 +545,16 @@ async fn paging_does_not_resolve_the_app_again() {
                 "skill": { "artifact_id": skill_id, "version": 1 },
                 "data_views": [{ "alias": "一覧", "artifact_id": view_id, "version": 1 }],
             }),
+            gui::SaveMode::Draft,
             None,
         )
         .await
-        .expect("mini app");
+        .expect("mini app")
+        .id;
+    mini_apps
+        .publish(&alice, app_id, 1, None)
+        .await
+        .expect("publish");
     artifacts
         .share(
             &alice,

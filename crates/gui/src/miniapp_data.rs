@@ -36,7 +36,7 @@ impl MiniAppStore {
         trace_id: Option<&str>,
     ) -> Result<Value, ActionError> {
         // 1. 本体の viewer と保存済みの版（毎回確かめ直す）。skill は読まず、解決の監査も重ねない（BUG-24）。
-        let (version, body) = self
+        let (_, version, body) = self
             .load_saved(ctx, app_id, Some(req.version), trace_id)
             .await
             .map_err(map_gui_err)?;

@@ -293,11 +293,12 @@ async fn miniapp_pins_validated_and_resolve_rechecks() {
         "skill": { "artifact_id": skill_id, "version": 1 },
         "workflows": [ { "alias": "expense", "artifact_id": wf, "version": 1 } ]
     });
-    let (app_id, _) = s
+    let app_id = s
         .mini_apps
-        .create(&c, "expense-app", &body, None)
+        .create(&c, "expense-app", &body, gui::SaveMode::Draft, None)
         .await
-        .expect("create");
+        .expect("create")
+        .id;
     let resolved = s
         .mini_apps
         .resolve(&c, app_id, None, None)
@@ -316,7 +317,7 @@ async fn miniapp_pins_validated_and_resolve_rechecks() {
     });
     let err = s
         .mini_apps
-        .create(&c, "bad-app", &bad, None)
+        .create(&c, "bad-app", &bad, gui::SaveMode::Draft, None)
         .await
         .expect_err("unresolved pin");
     let GuiError::Validation(errors) = err else {
@@ -345,7 +346,7 @@ async fn miniapp_pins_validated_and_resolve_rechecks() {
     });
     let err = s
         .mini_apps
-        .create(&c, "kind-app", &wrong_kind, None)
+        .create(&c, "kind-app", &wrong_kind, gui::SaveMode::Draft, None)
         .await
         .expect_err("kind 不一致のピン");
     let GuiError::Validation(errors) = err else {
@@ -372,7 +373,13 @@ async fn miniapp_pins_validated_and_resolve_rechecks() {
     });
     let err = s
         .mini_apps
-        .create(&c, "skill-missing-app", &bad_skill, None)
+        .create(
+            &c,
+            "skill-missing-app",
+            &bad_skill,
+            gui::SaveMode::Draft,
+            None,
+        )
         .await
         .expect_err("無いスキルのピン");
     let GuiError::Validation(errors) = err else {
@@ -399,7 +406,7 @@ async fn miniapp_pins_validated_and_resolve_rechecks() {
     });
     let err = s
         .mini_apps
-        .create(&c, "unbundled-app", &unbundled, None)
+        .create(&c, "unbundled-app", &unbundled, gui::SaveMode::Draft, None)
         .await
         .expect_err("binding not bundled");
     let GuiError::Validation(errors) = err else {
@@ -455,11 +462,12 @@ async fn miniapp_buttons_run_once_and_record() {
         "screen": expense_screen("経費"),
         "workflows": [ { "alias": "expense", "artifact_id": wf, "version": 1 } ]
     });
-    let (app_id, _) = s
+    let app_id = s
         .mini_apps
-        .create(&alice, "buttons-app", &body, None)
+        .create(&alice, "buttons-app", &body, gui::SaveMode::Draft, None)
         .await
-        .expect("create");
+        .expect("create")
+        .id;
     let screen = expense_screen("経費");
     let block = yui::extract_action_blocks(&screen).remove(0).hash;
     let starter = Arc::new(CountingStarter::default());
@@ -600,11 +608,12 @@ async fn live_fga_bundle_authority_and_version_pinning() {
         "skill": { "artifact_id": skill_id, "version": 1 },
         "workflows": []
     });
-    let (app_id, _) = s
+    let app_id = s
         .mini_apps
-        .create(&alice, "share-app", &body_v1, None)
+        .create(&alice, "share-app", &body_v1, gui::SaveMode::Draft, None)
         .await
-        .expect("create");
+        .expect("create")
+        .id;
     let body_v2 = json!({
         "description": "v2 アプリ",
         "screen": "# 感想\n",
@@ -612,7 +621,14 @@ async fn live_fga_bundle_authority_and_version_pinning() {
         "workflows": []
     });
     s.mini_apps
-        .update(&alice, app_id, &body_v2, Some(1), None)
+        .update(
+            &alice,
+            app_id,
+            &body_v2,
+            Some(1),
+            gui::SaveMode::Draft,
+            None,
+        )
         .await
         .expect("app v2");
 
@@ -658,29 +674,41 @@ async fn live_fga_bundle_authority_and_version_pinning() {
         "owner 自身の共有一覧には出ない（所有一覧と重複しない）"
     );
 
-    // 共有相手が resolve できる（6.10 受け入れ条件②・部品はバンドル権限で読む）。
+    // 共有相手が resolve できる（6.10 受け入れ条件②・部品はバンドル権限で読む）。使う人に出すのは公開した版
+    // （D-16）なので、alice が v2 を公開してから。
+    s.mini_apps
+        .publish(&alice, app_id, 2, None)
+        .await
+        .expect("publish v2");
     let resolved = s
         .mini_apps
         .resolve(&bob, app_id, None, None)
         .await
         .expect("bob resolve");
     assert_eq!(resolved.version, 2);
-    assert_eq!(resolved.body.screen, "# 感想\n", "current は v2 の画面");
+    assert_eq!(resolved.body.screen, "# 感想\n", "公開した v2 の画面");
     assert!(
         resolved.skill.ready().is_some(),
         "skill もバンドル権限で読める"
     );
 
-    // 旧版ピンの resolve は旧画面を返す（再現性・6.10 受け入れ条件①）。
+    // 旧版ピンの resolve は旧画面を返す（再現性・6.10 受け入れ条件①）。旧版を開けるのは editor だけで、使う人は
+    // 公開した版のほかを開けない（D-16）。
     let resolved_v1 = s
         .mini_apps
-        .resolve(&bob, app_id, Some(1), None)
+        .resolve(&alice, app_id, Some(1), None)
         .await
-        .expect("bob resolve v1");
+        .expect("alice resolve v1");
     assert_eq!(
         resolved_v1.body.screen, "# 項目\n",
         "旧版ピンは旧画面のまま"
     );
+    assert!(matches!(
+        s.mini_apps.resolve(&bob, app_id, Some(1), None).await,
+        Err(GuiError::Artifact(ArtifactError::NotPublished {
+            published: Some(2)
+        }))
+    ));
 
     // 部品への**直接**アクセスは依然 403（バンドル越しのみ・アンビエント権限なし）。
     assert!(matches!(
@@ -733,11 +761,18 @@ async fn broken_optional_skill_pin_keeps_the_app_open() {
             "workflows": [ { "alias": "expense", "artifact_id": wf, "version": 1 } ]
         })
     };
-    let (app_id, _) = s
+    let app_id = s
         .mini_apps
-        .create(&alice, "skill-app", &body(skill_id), None)
+        .create(
+            &alice,
+            "skill-app",
+            &body(skill_id),
+            gui::SaveMode::Draft,
+            None,
+        )
         .await
-        .expect("create");
+        .expect("create")
+        .id;
     assert!(s
         .mini_apps
         .resolve(&alice, app_id, None, None)
@@ -823,11 +858,18 @@ async fn broken_optional_skill_pin_keeps_the_app_open() {
         )
         .await
         .expect("壊れた skill");
-    let (broken_app, _) = s
+    let broken_app = s
         .mini_apps
-        .create(&alice, "broken-skill-app", &body(broken.id), None)
+        .create(
+            &alice,
+            "broken-skill-app",
+            &body(broken.id),
+            gui::SaveMode::Draft,
+            None,
+        )
         .await
-        .expect("本文は保存時に見ないので束ねられる");
+        .expect("本文は保存時に見ないので束ねられる")
+        .id;
     let resolved = s
         .mini_apps
         .resolve(&alice, broken_app, None, None)
@@ -839,16 +881,18 @@ async fn broken_optional_skill_pin_keeps_the_app_open() {
     assert_eq!(reasons[0].path.as_deref(), Some("skill"));
 
     // ピンの無いアプリは「無い」で、使えない部品も無い。
-    let (plain, _) = s
+    let plain = s
         .mini_apps
         .create(
             &alice,
             "plain-app",
             &json!({ "description": "x", "screen": "# 説明だけ\n", "workflows": [] }),
+            gui::SaveMode::Draft,
             None,
         )
         .await
-        .expect("plain");
+        .expect("plain")
+        .id;
     let resolved = s
         .mini_apps
         .resolve(&alice, plain, None, None)

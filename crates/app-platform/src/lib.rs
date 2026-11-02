@@ -101,7 +101,8 @@ impl From<data::DataError> for AppPlatformError {
 pub(crate) fn map_artifact(e: artifact::ArtifactError) -> AppPlatformError {
     use artifact::ArtifactError as AE;
     match e {
-        AE::NotFound => AppPlatformError::NotFound,
+        // 公開していない版（ミニアプリの下書き・D-16）は、コードのアプリの面からは見つからないのと同じ。
+        AE::NotFound | AE::NotPublished { .. } => AppPlatformError::NotFound,
         AE::Forbidden => AppPlatformError::Forbidden,
         AE::Invalid(m) => AppPlatformError::Invalid(m),
         AE::Conflict(m) => AppPlatformError::Conflict(m),

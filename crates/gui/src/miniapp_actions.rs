@@ -30,7 +30,8 @@ pub const MAX_RUNS: i64 = 20;
 #[derive(Debug, Clone, Deserialize, ToSchema)]
 pub struct MiniAppActionRequest {
     /// 実行対象のミニアプリ版（**必須**・解決済み画面の版と一致させる。current 暗黙参照だと
-    /// 画面を開いたまま新版が保存されたとき、別の実行先へ同じ id で到達し得る）。
+    /// 画面を開いたまま新版が保存されたとき、別の実行先へ同じ id で到達し得る）。使う人（editor でない viewer）が
+    /// 押せるのは公開した版だけで、開いた後に公開した版が変わったら 409 `app_version_changed`（D-16）。
     pub version: i64,
     /// ボタンの id（`{ブロックの識別子}:{a1}`）か、画面の表の id（`data_grid:{別名}`・Task 15.7）。
     pub action_id: String,
@@ -126,6 +127,9 @@ pub(crate) fn map_gui_err(e: GuiError) -> ActionError {
     match e {
         GuiError::Artifact(artifact::ArtifactError::NotFound) => ActionError::NotFound,
         GuiError::Artifact(artifact::ArtifactError::Forbidden) => ActionError::Forbidden,
+        GuiError::Artifact(artifact::ArtifactError::NotPublished { published }) => {
+            ActionError::AppVersionChanged { published }
+        }
         GuiError::Validation(errors) => ActionError::Invalid(
             errors
                 .into_iter()

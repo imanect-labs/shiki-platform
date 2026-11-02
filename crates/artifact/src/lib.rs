@@ -14,6 +14,7 @@
 
 mod by_ref;
 mod model;
+mod publish;
 mod share;
 mod shared;
 mod store;
@@ -21,6 +22,7 @@ mod versions;
 mod visible;
 
 pub use model::{Artifact, ArtifactKind, ArtifactRole, ArtifactVersion, VersionMeta};
+pub use publish::Publication;
 pub use store::{ArtifactPage, ArtifactPosition, ArtifactStore, NewArtifact, SkillSummary};
 
 /// アーティファクト操作のエラー。
@@ -35,6 +37,10 @@ pub enum ArtifactError {
     /// 名前重複・バージョン競合（楽観ロック不一致）。
     #[error("競合しています: {0}")]
     Conflict(String),
+    /// 下書きと公開を分ける種類（[`ArtifactKind::has_drafts`]）で、editor でない人が公開した版のほかを読もうとした
+    /// （D-16）。`published` は今の公開した版（まだ公開していなければ `None`）。その版が実在するかは区別しない。
+    #[error("公開していないバージョンです")]
+    NotPublished { published: Option<i64> },
     #[error("内部エラー: {0}")]
     Internal(String),
 }

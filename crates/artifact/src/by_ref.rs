@@ -9,7 +9,7 @@ use authz::AuthContext;
 use uuid::Uuid;
 
 use crate::model::{Artifact, ArtifactKind};
-use crate::store::{ArtifactRow, ArtifactStore};
+use crate::store::{artifact_columns, ArtifactRow, ArtifactStore};
 use crate::visible::{in_order, Candidate};
 use crate::{map_db, ArtifactError};
 
@@ -54,11 +54,12 @@ impl ArtifactStore {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
-        let rows: Vec<ArtifactRow> = sqlx::query_as(
-            "SELECT id, kind, name, owner, current_version, created_at, updated_at \
-             FROM artifact \
-             WHERE tenant_id = $1 AND org = $2 AND id = ANY($3) AND deleted_at IS NULL",
-        )
+        let rows: Vec<ArtifactRow> = sqlx::query_as(concat!(
+            "SELECT ",
+            artifact_columns!(),
+            " FROM artifact \
+             WHERE tenant_id = $1 AND org = $2 AND id = ANY($3) AND deleted_at IS NULL"
+        ))
         .bind(&ctx.tenant_id)
         .bind(&ctx.org)
         .bind(&ids)
@@ -116,14 +117,15 @@ impl ArtifactStore {
             meta: ArtifactRow,
             body: sqlx::types::Json<serde_json::Value>,
         }
-        let rows: Vec<MentionRow> = sqlx::query_as(
-            "SELECT a.id, a.kind, a.name, a.owner, a.current_version, a.created_at, a.updated_at, \
-                    v.body \
+        let rows: Vec<MentionRow> = sqlx::query_as(concat!(
+            "SELECT ",
+            artifact_columns!("a"),
+            ", v.body \
              FROM artifact a \
              JOIN artifact_version v \
                ON v.tenant_id = a.tenant_id AND v.artifact_id = a.id AND v.version = a.current_version \
-             WHERE a.tenant_id = $1 AND a.org = $2 AND a.id = ANY($3) AND a.deleted_at IS NULL",
-        )
+             WHERE a.tenant_id = $1 AND a.org = $2 AND a.id = ANY($3) AND a.deleted_at IS NULL"
+        ))
         .bind(&ctx.tenant_id)
         .bind(&ctx.org)
         .bind(&ids)
