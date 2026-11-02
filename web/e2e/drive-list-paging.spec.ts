@@ -7,6 +7,7 @@ import { cleanupQueue, createFolderApi, loginViaKeycloak, trashFolderApi, unique
 ///   （cursor_invalid）。たどると重ならず漏れなく出る（本物の API）。
 /// - サーバーが 0 件のページに続きの位置だけを付けて返しても、画面は空の状態に見せずに続きをたどり、往復の上限で
 ///   止まったら「さらに読み込む」を出す（応答は route で差し替える・見えないものばかりの大きな組織を手元に作らない）。
+/// - ⌘K のパレットの名前一致も続きをたどり、探しきれなければ名前一致が無いように見せず「ドライブで続きを探す」を出す。
 /// - 検索の語を打ち直したら、前の語の読み込みは残りの往復を続けない（サーバーに問う数を無駄にしない）。
 /// 作ったもの（フォルダー・ブラウザーの文脈）は最後に片付ける（失敗したテストでも走る）。
 /// `E2E_SHOTS_DIR` があれば、PC（1440px）とスマホ（390px）の画面を撮る。
@@ -174,6 +175,50 @@ for (const where of [
     }
   });
 }
+
+test("⌘K のパレット: 名前一致の続きをたどり、探しきれなければ「ドライブで続きを探す」を出す（BUG-187）", async ({ page }) => {
+  test.setTimeout(90_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await loginViaKeycloak(page);
+  // 3 ページ目に 1 件見つかり、往復の上限（5 回）でも続きが残る（見えるものが上限を超える人の名前の検索）。
+  const pages: Record<string, Body> = {};
+  for (let i = 0; i < 5; i += 1) pages[i === 0 ? "" : `c${i}`] = { items: [], next_cursor: `c${i + 1}` };
+  pages.c2 = { items: [folderNode(7)], next_cursor: "c3" };
+  const served = await serveNodes(page, pages);
+  try {
+    // ドライブの一覧を読まない画面から開く（頼んだ位置をパレットの分だけにする）。
+    await page.goto("/");
+    await page.keyboard.press("ControlOrMeta+k");
+    const input = page.getByRole("textbox", { name: "文書・チャットを検索" });
+    await expect(input).toBeVisible();
+    await input.fill("見積");
+    const results = page.getByLabel("ドライブの検索結果");
+    await expect(results.getByText("見つかったフォルダー 7", { exact: true })).toBeVisible({ timeout: 20_000 });
+    const more = results.getByTestId("palette-drive-more");
+    await expect(more).toHaveText("ドライブで続きを探す");
+    expect(served.asked.slice(0, 5)).toEqual(["", "c1", "c2", "c3", "c4"]);
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/palette-drive-more-pc.png` });
+    await more.click();
+    await page.waitForURL(/\/drive\?q=%E8%A6%8B%E7%A9%8D/);
+  } finally {
+    await served.stop();
+  }
+
+  // 1 件も見つからないまま続きが残っても、ドライブの欄を消さずに続きを探せることを言う。
+  const hidden: Record<string, Body> = {};
+  for (let i = 0; i < 5; i += 1) hidden[i === 0 ? "" : `c${i}`] = { items: [], next_cursor: `c${i + 1}` };
+  const servedHidden = await serveNodes(page, hidden);
+  try {
+    await page.goto("/");
+    await page.keyboard.press("ControlOrMeta+k");
+    await page.getByRole("textbox", { name: "文書・チャットを検索" }).fill("請求");
+    const results = page.getByLabel("ドライブの検索結果");
+    await expect(results).toContainText("まだ見つかっていません。", { timeout: 20_000 });
+    await expect(results.getByTestId("palette-drive-more")).toBeVisible();
+  } finally {
+    await servedHidden.stop();
+  }
+});
 
 test("ドライブの名前の検索: 語を打ち直したら、前の語の読み込みは残りの往復を続けない（BUG-187）", async ({ page }) => {
   test.setTimeout(90_000);
