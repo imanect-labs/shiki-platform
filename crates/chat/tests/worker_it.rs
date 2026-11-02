@@ -866,11 +866,14 @@ async fn rejected_generation_fails_once_without_retrying() {
     };
     assert_eq!(status, "failed");
     assert_eq!(attempt, 1, "再試行していないこと");
+    // 記録に残るのは誤りの種類の語まで。プロバイダの本文（文・要求の ID など）はサーバのログにだけ残る（BUG-87）。
     assert!(
         last_error
             .as_deref()
-            .is_some_and(|e| e.contains("llm rejected") && e.contains("not supported")),
-        "詳細はサーバ側にだけ残る: {last_error:?}"
+            .is_some_and(|e| e.contains("llm rejected")
+                && e.contains("invalid_request_error")
+                && !e.contains("Codex with a ChatGPT account")),
+        "詳細はサーバのログにだけ残る: {last_error:?}"
     );
     // ジョブは再試行の待ち行列に戻らず DLQ へ移る。
     assert_eq!(dead, 1, "DLQ へ移ること");
