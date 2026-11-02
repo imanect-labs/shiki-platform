@@ -33,7 +33,7 @@ fn error_helpers_carry_stable_codes() {
         matches!(internal("x"), HostResponse::Err { code, retryable, .. } if code == "internal" && !retryable)
     );
     assert!(
-        matches!(deny("h", "r"), HostResponse::Err { code, retryable, .. } if code == "egress_denied" && !retryable)
+        matches!(deny("r".into()), HostResponse::Err { code, retryable, .. } if code == "egress_denied" && !retryable)
     );
 }
 
@@ -61,6 +61,7 @@ fn handler(allow: Vec<String>) -> GatewayHostCallHandler {
         http: reqwest::Client::new(),
         // 到達不能な origin: ネットワークに出る分岐はこのテストでは踏まない。
         gateway_origin: "http://127.0.0.1:1".into(),
+        resolver: Arc::new(SystemResolver),
         bearer: "test-bearer".into(),
         egress_allowlist: allow,
         app_id: Uuid::nil(),
@@ -149,4 +150,62 @@ async fn external_http_guards_reject_before_send() {
             HostResponse::Ok(v) => panic!("expected Err for {args}: got Ok({v})"),
         }
     }
+}
+
+/// 決めた名前だけを決めたアドレスに解決する（引いた回数を数える）。
+struct FixedResolver {
+    addrs: Vec<std::net::SocketAddr>,
+    lookups: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl HostResolver for FixedResolver {
+    async fn lookup(
+        &self,
+        _host: &str,
+        port: u16,
+    ) -> Result<Vec<std::net::SocketAddr>, &'static str> {
+        self.lookups
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(self
+            .addrs
+            .iter()
+            .map(|a| std::net::SocketAddr::new(a.ip(), port))
+            .collect())
+    }
+}
+
+/// 許可したホストでも、内部の IP に解決されるなら送らない（BUG-196）。許可していないホストは名前を引く前に断る。
+#[tokio::test]
+async fn external_http_refuses_allowed_hosts_that_resolve_inside() {
+    let resolver = Arc::new(FixedResolver {
+        addrs: vec!["10.1.2.3:0".parse().unwrap()],
+        lookups: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let mut h = handler(vec!["api.allowed.com".to_string()]);
+    h.resolver = resolver.clone();
+    let out = h
+        .external_http(&serde_json::json!({ "url": "https://api.allowed.com/v1" }))
+        .await;
+    match out {
+        HostResponse::Err { code, message, .. } => {
+            assert_eq!(code, "egress_denied");
+            assert!(message.contains("内部のネットワーク"), "{message}");
+            assert!(!message.contains("10.1.2.3"), "{message}");
+        }
+        HostResponse::Ok(v) => panic!("送らないこと: {v}"),
+    }
+    assert_eq!(
+        resolver.lookups.load(std::sync::atomic::Ordering::SeqCst),
+        1
+    );
+    let out = h
+        .external_http(&serde_json::json!({ "url": "https://evil.example/x" }))
+        .await;
+    assert!(matches!(out, HostResponse::Err { code, .. } if code == "egress_denied"));
+    assert_eq!(
+        resolver.lookups.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "許可していないホストは引かない"
+    );
 }

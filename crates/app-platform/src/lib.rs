@@ -7,8 +7,8 @@
 
 mod bundle;
 mod client_repair;
-mod egress_guard;
 mod function_failure;
+mod function_http;
 mod functions;
 mod install;
 mod install_ops;
