@@ -607,6 +607,12 @@ flowchart LR
     のような識別子）は拾わない。呼び出し側が文言で見分ける語（ChatGPT プランの対象外 `subscription_sharing_user_not_eligible`）は、
     本文のどこにあっても 3 つの上限より先に載せる（本文の並びで落とさない）。本文はログにだけ残す。すべてのアダプタが
     `provider::rejection` の 1 か所を通る（BUG-87）。
+  - 5xx（Anthropic の 529 を含む）も同じく本文を誤りの文言に入れない。文言は `{プロバイダ} {状態}: プロバイダが一時的に
+    応答できませんでした（誤りの種類）`（`LlmError::Unavailable`・誤りの種類の選び方は 4xx と同じ）で、すべてのアダプタが
+    `provider::unavailable` の 1 か所を通る。流し始めた後にプロバイダが返した誤り（Responses API の `error`・
+    `response.failed` のイベント、OpenAI 互換の素の誤りの JSON）も `{プロバイダ}: プロバイダが応答の途中で失敗しました
+    （誤りの種類）` にする（`provider::midstream_failure`）。ミニアプリの AI の能力（応答の本文・SSE の error イベント）と
+    agent.invoke の誤りへ、そのまま運ばれるため（BUG-210）。
 - **決定モデル（FEAT-1・D-6）**: 文章を生成せず、質問ごとに決められた選択肢（choice）・段階（score）・
   はい/いいえ（boolean）で答え、確からしさ（0〜1）を付けて返すモデル。生成と入出力の形が違うので、
   `LlmProvider` とは別の差し替えトレイト `DecisionProvider`（`decide(&DecideRequest) -> Result<DecideResponse,
