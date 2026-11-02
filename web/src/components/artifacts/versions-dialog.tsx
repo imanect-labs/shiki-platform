@@ -13,6 +13,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+import { ListLoadFailed } from "@/components/artifacts/shared-more";
 import { listArtifactVersions, type VersionMeta } from "@/lib/artifact-api";
 
 export function VersionsDialog({
@@ -32,14 +33,26 @@ export function VersionsDialog({
   currentVersion?: number;
 }) {
   const [versions, setVersions] = React.useState<VersionMeta[] | null>(null);
+  // 読み込みの失敗を「履歴がありません」に見せない（付録 C の P5・BUG-189）。
+  const [failed, setFailed] = React.useState(false);
+  const [attempt, setAttempt] = React.useState(0);
 
   React.useEffect(() => {
     if (!open || !artifactId) return;
+    let active = true;
     setVersions(null);
+    setFailed(false);
     listArtifactVersions(artifactId)
-      .then(setVersions)
-      .catch(() => setVersions([]));
-  }, [open, artifactId]);
+      .then((v) => active && setVersions(v))
+      .catch(() => {
+        if (!active) return;
+        setVersions([]);
+        setFailed(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, [open, artifactId, attempt]);
 
   if (!artifactId) return null;
 
@@ -55,6 +68,8 @@ export function VersionsDialog({
             <Loader2 className="size-4 animate-spin" aria-hidden />
             読み込み中…
           </div>
+        ) : failed ? (
+          <ListLoadFailed what="バージョン履歴" className="py-8" onRetry={() => setAttempt((n) => n + 1)} />
         ) : versions.length === 0 ? (
           <p className="py-6 text-center text-sm text-muted-foreground">履歴がありません。</p>
         ) : (

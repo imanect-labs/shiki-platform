@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/dialog";
 import { toast } from "@/components/ui/use-toast";
 import { ConfirmDialog } from "@/components/drive/dialogs";
+import { ListLoadFailed } from "@/components/artifacts/shared-more";
 import { RefPicker } from "@/components/data/ref-picker";
 import { AppTableRolesDialog } from "@/components/miniapp/app-table-roles-dialog";
 import type { FieldDef } from "@/lib/data-api";
@@ -43,6 +44,9 @@ const ROLE_FIELD: FieldDef = { key: "role", display_name: "部署・グループ
 export function InstalledAppsSection() {
   const [installed, setInstalled] = React.useState<AppInstallation[] | null>(null);
   const [registry, setRegistry] = React.useState<RegistryEntry[]>([]);
+  // 読み込みの失敗を「ありません」や欄が無いことに見せない（付録 C の P5・BUG-189）。
+  const [installedFailed, setInstalledFailed] = React.useState(false);
+  const [registryFailed, setRegistryFailed] = React.useState(false);
   const [consent, setConsent] = React.useState<{
     entry: RegistryEntry;
     requested: string[];
@@ -62,11 +66,23 @@ export function InstalledAppsSection() {
 
   const reload = React.useCallback(() => {
     listInstallations()
-      .then(setInstalled)
-      .catch(() => setInstalled([]));
+      .then((items) => {
+        setInstalled(items);
+        setInstalledFailed(false);
+      })
+      .catch(() => {
+        setInstalled([]);
+        setInstalledFailed(true);
+      });
     listRegistry()
-      .then(setRegistry)
-      .catch(() => setRegistry([]));
+      .then((items) => {
+        setRegistry(items);
+        setRegistryFailed(false);
+      })
+      .catch(() => {
+        setRegistry([]);
+        setRegistryFailed(true);
+      });
   }, []);
   React.useEffect(reload, [reload]);
 
@@ -148,6 +164,12 @@ export function InstalledAppsSection() {
           <Loader2 className="size-4 animate-spin" aria-hidden />
           読み込み中…
         </div>
+      ) : installedFailed ? (
+        <ListLoadFailed
+          what="インストール済みのアプリ"
+          className="rounded-lg border border-dashed py-6"
+          onRetry={reload}
+        />
       ) : installed.length === 0 ? (
         <p className="rounded-lg border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">
           インストール済みのコードアプリはありません。
@@ -217,6 +239,9 @@ export function InstalledAppsSection() {
         </ul>
       )}
 
+      {registryFailed ? (
+        <ListLoadFailed what="インストールできるアプリの一覧" compact className="mt-6" onRetry={reload} />
+      ) : null}
       {installable.length > 0 ? (
         <div className="mt-6">
           <h3 className="mb-2 text-sm font-semibold text-muted-foreground">

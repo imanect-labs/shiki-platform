@@ -15,6 +15,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { toast } from "@/components/ui/use-toast";
 import { ConfirmDialog } from "@/components/drive/dialogs";
+import { ListLoadFailed } from "@/components/artifacts/shared-more";
 import {
   installSkill,
   listSkillInstallations,
@@ -29,14 +30,20 @@ export function SkillStoreSection() {
   const [installed, setInstalled] = React.useState<SkillInstallation[]>([]);
   const [pending, setPending] = React.useState<string | null>(null);
   const [removing, setRemoving] = React.useState<string | null>(null);
+  // 読み込みの失敗で欄ごと消さない（公開されたスキルが無いのと見分けられない・付録 C の P5・BUG-189）。
+  const [failed, setFailed] = React.useState(false);
 
   const reload = React.useCallback(() => {
     Promise.all([listSkillRegistry(), listSkillInstallations()])
       .then(([e, i]) => {
         setEntries(e);
         setInstalled(i);
+        setFailed(false);
       })
-      .catch(() => setEntries([]));
+      .catch(() => {
+        setEntries([]);
+        setFailed(true);
+      });
   }, []);
   React.useEffect(reload, [reload]);
 
@@ -91,7 +98,7 @@ export function SkillStoreSection() {
     }
   };
 
-  if (entries === null || latest.length === 0) return null;
+  if (entries === null || (latest.length === 0 && !failed)) return null;
 
   return (
     <section id="skill-store" className="mt-8 scroll-mt-20">
@@ -104,6 +111,7 @@ export function SkillStoreSection() {
           インストールすると自分のチャット/ワークフローから使えます。
         </p>
       </div>
+      {failed ? <ListLoadFailed what="スキルストア" className="rounded-xl border border-dashed py-8" onRetry={reload} /> : null}
       <ul className="grid gap-2 sm:grid-cols-2">
         {latest.map((entry) => {
           const current = installedByName.get(entry.name);
