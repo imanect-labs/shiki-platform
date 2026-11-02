@@ -70,7 +70,14 @@ export function MiniAppPublishBar({
   const published = app.published_version ?? null;
   const latest = app.latest_version ?? app.version;
   const previous = app.previous_published_version ?? null;
-  const blocked = app.warnings.length > 0;
+  // 公開を止めるかはサーバーが決める（止めるのは一度も公開していない版だけ・公開を戻すのは止めない）。
+  const blocked = app.publish_blocked;
+  const problemsNote =
+    state === "published"
+      ? "この画面には直す箇所があります。直すまで、次のバージョンを公開できません。"
+      : blocked
+        ? "直す箇所があるため、このバージョンは公開できません。"
+        : "この画面には直す箇所があります。前に公開していたバージョンなので、公開を戻すことはできます。";
 
   const message = (() => {
     switch (state) {
@@ -108,11 +115,11 @@ export function MiniAppPublishBar({
         </span>
         <p className="min-w-0 flex-1 basis-56 text-foreground/80 [overflow-wrap:anywhere]">{message}</p>
       </div>
-      {blocked ? (
+      {app.warnings.length > 0 ? (
         <div role="note" className="mt-2 space-y-1 text-xs text-amber-700 dark:text-amber-400" data-testid="miniapp-publish-problems">
           <p className="flex items-start gap-1.5 font-medium">
             <TriangleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden />
-            直す箇所があるため、このバージョンは公開できません。
+            {problemsNote}
           </p>
           <ul className="space-y-0.5 pl-5">
             {app.warnings.map((w, i) => (
