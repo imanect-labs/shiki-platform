@@ -443,7 +443,7 @@ async fn approval_reads_follow_row_and_field_visibility() {
         )
         .await
         .unwrap();
-    let m = store
+    let hidden_rec = store
         .create_record(
             &alice,
             masked.id,
@@ -453,7 +453,7 @@ async fn approval_reads_follow_row_and_field_visibility() {
         .await
         .unwrap();
     let rows = store
-        .filter_visible_records(&bob, masked.id, &[m.id])
+        .filter_visible_records(&bob, masked.id, &[hidden_rec.id])
         .await
         .unwrap()
         .unwrap();
@@ -465,7 +465,7 @@ async fn approval_reads_follow_row_and_field_visibility() {
         .is_none());
     assert_eq!(
         store
-            .filter_visible_states(&bob, masked.id, &[m.id])
+            .filter_visible_states(&bob, masked.id, &[hidden_rec.id])
             .await
             .unwrap()
             .unwrap(),
@@ -473,7 +473,7 @@ async fn approval_reads_follow_row_and_field_visibility() {
     );
     assert_eq!(
         store
-            .filter_visible_states(&alice, masked.id, &[m.id])
+            .filter_visible_states(&alice, masked.id, &[hidden_rec.id])
             .await
             .unwrap()
             .unwrap(),

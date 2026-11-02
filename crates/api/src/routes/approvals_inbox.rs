@@ -34,6 +34,7 @@ fn internal(e: impl std::fmt::Display) -> ApiError {
     ApiError::Internal(format!("approvals: {e}"))
 }
 
+#[allow(clippy::needless_pass_by_value)] // map_err に渡す。
 fn unavailable(e: authz::AuthzError) -> ApiError {
     ApiError::ServiceUnavailable(format!("authz: {e}"))
 }
