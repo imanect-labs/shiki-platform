@@ -81,6 +81,9 @@ pub struct AppInstallation {
     pub server_spec: Option<serde_json::Value>,
     /// Keycloak にアプリのクライアントが無く、起動時の照合が作り直せなかった（入れ直しが要る・GAP-70・migration 0127）。
     pub oauth_client_missing: bool,
+    /// Keycloak で B2 のクライアントが無効にされていて、起動時の照合が有効に戻さなかった（BUG-201・D-137・
+    /// migration 0131）。
+    pub oauth_client_disabled: bool,
 }
 
 /// インストール作成の入力（PR9 の同意フロー・本 PR はデブ用 fixture）。
@@ -123,6 +126,7 @@ struct Row {
     server_bundle: Option<String>,
     server_spec: Option<serde_json::Value>,
     oauth_client_missing: bool,
+    oauth_client_disabled: bool,
 }
 
 impl From<Row> for AppInstallation {
@@ -148,6 +152,7 @@ impl From<Row> for AppInstallation {
             server_bundle: r.server_bundle,
             server_spec: r.server_spec,
             oauth_client_missing: r.oauth_client_missing,
+            oauth_client_disabled: r.oauth_client_disabled,
         }
     }
 }
@@ -156,7 +161,8 @@ impl From<Row> for AppInstallation {
 const COLS: &str = "id, app_id, app_name, installed_version, granted_scopes, \
                     client_id_b1, client_id_b2, status, installed_by, created_at, \
                     budget_models, budget_daily_usd_micros, budget_max_tokens, agent_tools, \
-                    frontend_bundle, server_bundle, server_spec, oauth_client_missing";
+                    frontend_bundle, server_bundle, server_spec, oauth_client_missing, \
+                    oauth_client_disabled";
 
 /// active な app_id の大域一意索引（migration 0081・B1 配信のテナント跨ぎ解決の前提）。
 const ACTIVE_APP_ID_UIDX: &str = "app_installation_active_app_id_uidx";
@@ -450,8 +456,9 @@ impl AppInstallationStore {
     }
 
     /// 有効なインストールのうち、クライアントを `fingerprint` の登録の形で揃えていないものと、前の照合でクライアントを
-    /// 作り直せなかったもの（`oauth_client_missing`・GAP-70）を、古い順に最大 `limit` 件引く（起動時の照合・BUG-172・
-    /// migration 0124）。`skip`（この照合で揃えた・揃えられなかったアプリ）は外す。
+    /// 作り直せなかったもの（`oauth_client_missing`・GAP-70）・無効の B2 を有効に戻さなかったもの
+    /// （`oauth_client_disabled`・BUG-201）を、古い順に最大 `limit` 件引く（起動時の照合・BUG-172・migration 0124）。
+    /// `skip`（この照合で揃えた・揃えられなかったアプリ）は外す。
     ///
     /// **テナントで絞らない理由**: 起動時の保守の走査で、呼び出す人がいない（[`Self::resolve_active_by_app_global`]
     /// と同じく文脈にテナントが無い）。読むのはクライアントを揃えるための列だけで、利用者のデータは読まない。
@@ -465,7 +472,8 @@ impl AppInstallationStore {
             "SELECT tenant_id, org, app_id, app_name, client_id_b1, client_id_b2 FROM app_installation \
              WHERE status = 'active' \
                AND (client_id_b1 IS NOT NULL OR client_id_b2 IS NOT NULL) \
-               AND (oauth_client_spec IS DISTINCT FROM $1 OR oauth_client_missing) \
+               AND (oauth_client_spec IS DISTINCT FROM $1 OR oauth_client_missing \
+                    OR oauth_client_disabled) \
                AND NOT (app_id = ANY($2)) \
              ORDER BY created_at, id LIMIT $3",
         )
@@ -479,31 +487,42 @@ impl AppInstallationStore {
 
     /// インストールのクライアントを `fingerprint` の登録の形で揃えた印を付ける（インストールと起動時の照合）。
     ///
-    /// あわせて、B2 のサービスアカウントの利用者（`b2_service_sub`・B2 が無ければ `None`・BUG-183）と、作り直せない
-    /// クライアントがあったか（`client_missing`・GAP-70）を書く。
+    /// あわせて、B2 のサービスアカウントの利用者（`b2_service_sub`・B2 が無い・使えなければ `None`・BUG-183）と、
+    /// 使えないクライアントの印（[`ClientMarks`]・GAP-70・BUG-201）を書く。
     pub async fn mark_clients_repaired(
         &self,
         tenant_id: &str,
         app_id: Uuid,
         fingerprint: &str,
         b2_service_sub: Option<&str>,
-        client_missing: bool,
+        marks: ClientMarks,
     ) -> Result<(), GatewayError> {
         sqlx::query(
             "UPDATE app_installation \
-             SET oauth_client_spec = $3, b2_service_sub = $4, oauth_client_missing = $5 \
+             SET oauth_client_spec = $3, b2_service_sub = $4, oauth_client_missing = $5, \
+                 oauth_client_disabled = $6 \
              WHERE tenant_id = $1 AND app_id = $2",
         )
         .bind(tenant_id)
         .bind(app_id)
         .bind(fingerprint)
         .bind(b2_service_sub)
-        .bind(client_missing)
+        .bind(marks.missing)
+        .bind(marks.disabled)
         .execute(&self.db)
         .await
         .map_err(map_db)?;
         Ok(())
     }
+}
+
+/// アプリのクライアントが使えない印（[`AppInstallationStore::mark_clients_repaired`]・インストールの画面が知らせる）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ClientMarks {
+    /// Keycloak にクライアントが無く、作り直さなかった・作り直せなかった（入れ直しが要る・GAP-70）。
+    pub missing: bool,
+    /// Keycloak で B2 のクライアントが無効にされていて、有効に戻さなかった（BUG-201・D-137）。
+    pub disabled: bool,
 }
 
 /// トークンが指すインストールと、それを入れたテナント・組織（[`AppInstallationStore::resolve_active_by_client`]・

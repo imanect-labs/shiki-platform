@@ -52,8 +52,11 @@ pub struct RegisteredClient {
 /// 揃えたクライアント（[`OAuthClient::repair`]）。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RepairedClient {
-    /// confidential のサービスアカウントの利用者の id（[`RegisteredClient::service_account_sub`]）。public は None。
+    /// confidential のサービスアカウントの利用者の id（[`RegisteredClient::service_account_sub`]）。public・
+    /// 無効のまま残した confidential は None。
     pub service_account_sub: Option<String>,
+    /// Keycloak で無効にされていた confidential（B2）を、有効に戻さず、形も揃えずに残した（BUG-201・D-137）。
+    pub disabled: bool,
 }
 
 /// Keycloak admin REST 越しにクライアントを登録する OAuth 配線。
@@ -198,10 +201,14 @@ impl OAuthClient {
 
     /// 既にあるクライアントを今の登録の形に揃える（前の版で登録したクライアントを直す・起動時の照合）。
     ///
-    /// 有効なインストールのクライアントに使うので、有効に戻す。クライアントが無ければ作らずに `Ok(None)` を
-    /// 返す（confidential の secret を保管し直す経路がここに無いため。作り直しは再インストールが行う）。secret は
-    /// 取得しない・作り直さない。confidential はサービスアカウントの利用者の id を返す（BUG-183）。能力スコープの用意は、この [`OAuthClient`] で 1 回だけ試す（多くのクライアントを
-    /// 続けて揃えるとき、クライアントごとに realm へ作り直しを送らない）。`exchanger` は [`Self::register`] と同じ。
+    /// 有効なインストールのクライアントに使うので、public（B1）は有効に戻す。confidential（B2）が Keycloak で
+    /// 無効にされていたら、有効に戻さず、形も揃えずに `disabled` を返す（管理者が漏れた secret を止めるために無効に
+    /// したのなら、同じ secret のまま戻さない・BUG-201・D-137。有効に戻すのは再インストールか、管理者が Keycloak で
+    /// 戻したとき）。クライアントが無ければ作らずに `Ok(None)` を返す（confidential の secret を保管し直す経路が
+    /// ここに無いため。作り直しは再インストールが行う）。secret は取得しない・作り直さない。confidential は
+    /// サービスアカウントの利用者の id を返す（BUG-183）。能力スコープの用意は、この [`OAuthClient`] で 1 回だけ試す
+    /// （多くのクライアントを続けて揃えるとき、クライアントごとに realm へ作り直しを送らない）。`exchanger` は
+    /// [`Self::register`] と同じ。
     pub async fn repair(
         &self,
         kind: ClientKind,
@@ -216,11 +223,18 @@ impl OAuthClient {
             self.scopes_ready
                 .store(true, std::sync::atomic::Ordering::Release);
         }
-        let internal_id = match self.find_internal_id(&token, client_id).await {
-            Ok(id) => id,
+        let found = match self.find_client(&token, client_id).await {
+            Ok(found) => found,
             Err(GatewayError::NotFound) => return Ok(None),
             Err(e) => return Err(e),
         };
+        if !kind.is_public() && !found.enabled {
+            return Ok(Some(RepairedClient {
+                service_account_sub: None,
+                disabled: true,
+            }));
+        }
+        let internal_id = found.id;
         let body = client_representation(
             kind,
             client_id,
@@ -237,6 +251,7 @@ impl OAuthClient {
         };
         Ok(Some(RepairedClient {
             service_account_sub,
+            disabled: false,
         }))
     }
 
@@ -454,6 +469,11 @@ impl OAuthClient {
 
     /// client_id → Keycloak 内部 uuid。
     async fn find_internal_id(&self, token: &str, client_id: &str) -> Result<String, GatewayError> {
+        self.find_client(token, client_id).await.map(|c| c.id)
+    }
+
+    /// client_id → Keycloak のクライアント（内部 uuid と、有効か）。無ければ [`GatewayError::NotFound`]。
+    async fn find_client(&self, token: &str, client_id: &str) -> Result<KcClient, GatewayError> {
         let list: Vec<KcClient> = self
             .http
             .get(format!("{}/clients", self.admin_base))
@@ -465,10 +485,7 @@ impl OAuthClient {
             .json()
             .await
             .map_err(|e| GatewayError::Upstream(format!("client 検索 parse: {e}")))?;
-        list.into_iter()
-            .next()
-            .map(|c| c.id)
-            .ok_or(GatewayError::NotFound)
+        list.into_iter().next().ok_or(GatewayError::NotFound)
     }
 
     /// confidential client のサービスアカウントの利用者の id（client_credentials のトークンの `sub`・BUG-183）。
@@ -532,6 +549,13 @@ impl OAuthClient {
 #[derive(Deserialize)]
 struct KcClient {
     id: String,
+    /// 有効か（表現に無ければ有効として読む・Keycloak の既定）。
+    #[serde(default = "enabled_by_default")]
+    enabled: bool,
+}
+
+fn enabled_by_default() -> bool {
+    true
 }
 
 #[derive(Deserialize)]

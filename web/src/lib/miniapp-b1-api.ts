@@ -48,6 +48,8 @@ export type AppInstallation = {
   frontend_bundle: string | null;
   /// Keycloak にアプリの登録が無く、サーバーが作り直せなかった（入れ直しが要る・GAP-70）。前の版のサーバーは返さない。
   oauth_client_missing?: boolean;
+  /// 管理者が Keycloak で B2（サーバーで動く処理）の登録を止めていて、サーバーが戻さなかった（BUG-201）。前の版のサーバーは返さない。
+  oauth_client_disabled?: boolean;
   /// アプリが持つテーブルの数（テーブルを使える部署・グループを変える口を出すか・GAP-68）。前の版のサーバーは返さない。
   table_count?: number;
 };

@@ -245,7 +245,7 @@ impl InstallService {
                     app_id,
                     &self.client_spec(),
                     b2_service_sub.as_deref(),
-                    false,
+                    app_gateway::ClientMarks::default(),
                 )
                 .await
             {

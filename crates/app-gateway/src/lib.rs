@@ -32,7 +32,7 @@ mod usage;
 pub use b1::{build_b1_router, bundle_csp, B1State};
 pub use builtin::{build_builtin_router, builtin_csp, BuiltinState};
 pub use installation::{
-    AiPin, AppInstallation, AppInstallationStore, ClientsToRepair, InstallStatus,
+    AiPin, AppInstallation, AppInstallationStore, ClientMarks, ClientsToRepair, InstallStatus,
     NewAppInstallation, ResolvedInstallation,
 };
 pub use notification::{AppNotification, NotificationStore};

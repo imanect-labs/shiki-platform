@@ -1094,6 +1094,150 @@ async fn startup_repair_recreates_a_missing_b1_but_not_a_missing_b2() {
     .await;
 }
 
+/// 起動時の照合は、Keycloak で無効にされた B2 を有効に戻さず、印を付けて自動実行の主体を外す（管理者が漏れた
+/// secret を止めるために無効にしたのなら、同じ secret のまま戻さない・BUG-201・D-137）。無効にされた B1 は
+/// これまでどおり有効に戻す。印は起動のたびに試し直しても外れず、管理者が Keycloak で有効に戻すと外れる。
+/// 入れ直し（利用者の明示の操作）は B2 も有効に戻す。
+#[tokio::test]
+async fn startup_repair_keeps_a_disabled_b2_disabled() {
+    let Some(pool) = setup().await else { return };
+    let Some(realm) = app_gateway::test_support::TestRealm::from_env() else {
+        eprintln!("KEYCLOAK_TEST_URL 未設定のためスキップ");
+        return;
+    };
+    let Harness { code, installs, .. } = harness_with_oauth(
+        pool.clone(),
+        false,
+        Some(realm.oauth_client()),
+        vec![SHELL_CALLBACK.to_string()],
+    );
+    let authz: Arc<dyn AuthzClient> = Arc::new(RecordingAuthz::default());
+    let secrets = Arc::new(secrets::SecretStore::new(
+        pool.clone(),
+        authz,
+        Arc::new(secrets::LocalKeyFileProvider::from_bytes([9u8; 32])),
+    ));
+    let installs = installs.with_secrets(Some(secrets), Some("localhost".into()));
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let c = ctx(&tenant, "admin");
+    let name = format!("b2-{}", Uuid::new_v4().simple());
+    let mut m = manifest(&name, TrustTier::InHouse, vec![]);
+    m.requested_scopes = vec!["data.read".into()];
+    m.server = Some(app_platform::ServerSpec {
+        functions: vec!["remind".into()],
+        ..app_platform::ServerSpec::default()
+    });
+    let id = code.create(&c, &m, None).await.expect("create");
+    code.publish(&c, id, None, None, None)
+        .await
+        .expect("publish");
+    let (b1, b2) = (format!("app-{id}-b1"), format!("app-{id}-b2"));
+    let oauth = realm.oauth_client();
+    let disabled_mark = || async {
+        sqlx::query_scalar::<_, bool>(
+            "SELECT oauth_client_disabled FROM app_installation WHERE app_id = $1",
+        )
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap()
+    };
+    let forget_spec = || async {
+        sqlx::query("UPDATE app_installation SET oauth_client_spec = NULL WHERE tenant_id = $1")
+            .bind(&tenant)
+            .execute(&pool)
+            .await
+            .unwrap();
+    };
+    let body = async {
+        let installed = installs
+            .install(&c, install_req(&name, &["data.read"]), None)
+            .await
+            .expect("install");
+        let secret = installed.client_secret_b2.expect("secret");
+        let service_sub = client_row(&pool, id).await.0;
+        assert!(service_sub.is_some());
+
+        // 管理者が B2（と B1）を Keycloak で無効にする。照合は登録の形が変わった後の起動で走るので、印を消す。
+        oauth.set_enabled(&b2, false).await.expect("disable b2");
+        oauth.set_enabled(&b1, false).await.expect("disable b1");
+        assert!(!token_issued(&realm, &b2, &secret).await);
+        forget_spec().await;
+
+        let progress = installs.repair_oauth_clients().await.expect("repair");
+        assert_eq!(progress.failed, 0, "{progress:?}");
+        assert!(progress.disabled >= 1, "{progress:?}");
+        assert_eq!(
+            realm.client(&b2).await.expect("b2")["enabled"],
+            false,
+            "B2 は有効に戻さない"
+        );
+        assert!(
+            !token_issued(&realm, &b2, &secret).await,
+            "同じ secret でアプリの主体のトークンを取れない"
+        );
+        assert_eq!(
+            realm.client(&b1).await.expect("b1")["enabled"],
+            true,
+            "B1 はこれまでどおり有効に戻す"
+        );
+        assert!(disabled_mark().await, "印を付ける");
+        assert_eq!(
+            client_row(&pool, id).await,
+            (None, false),
+            "自動実行の主体を外す"
+        );
+        let listed = installs.installations().list(&c).await.expect("list");
+        assert!(listed[0].oauth_client_disabled);
+        assert!(!listed[0].oauth_client_missing);
+
+        // 印のある行を試し直しても、有効に戻さない。
+        installs.repair_oauth_clients().await.expect("repair again");
+        assert_eq!(realm.client(&b2).await.expect("b2")["enabled"], false);
+        assert!(disabled_mark().await);
+
+        // 管理者が Keycloak で有効に戻すと、次の照合で揃えて印を外し、自動実行の主体を書き戻す。
+        oauth.set_enabled(&b2, true).await.expect("enable b2");
+        installs
+            .repair_oauth_clients()
+            .await
+            .expect("repair after enable");
+        assert!(!disabled_mark().await, "印を外す");
+        assert_eq!(client_row(&pool, id).await.0, service_sub);
+
+        // 入れ直し（利用者の明示の操作）は、無効の B2 を有効に戻し、印を外す（これまでどおり）。
+        oauth
+            .set_enabled(&b2, false)
+            .await
+            .expect("disable b2 again");
+        forget_spec().await;
+        installs.repair_oauth_clients().await.expect("repair");
+        assert!(disabled_mark().await);
+        installs
+            .install(&c, install_req(&name, &["data.read"]), None)
+            .await
+            .expect("reinstall");
+        assert_eq!(realm.client(&b2).await.expect("b2")["enabled"], true);
+        assert!(!disabled_mark().await);
+    };
+    run_then(body, async {
+        let _ = installs.uninstall(&c, id, None).await;
+        realm.delete_client(&b1).await;
+        realm.delete_client(&b2).await;
+        for sql in [
+            "DELETE FROM app_installation WHERE tenant_id = $1",
+            "DELETE FROM secret WHERE tenant_id = $1",
+        ] {
+            sqlx::query(sql)
+                .bind(&tenant)
+                .execute(&pool)
+                .await
+                .expect(sql);
+        }
+    })
+    .await;
+}
+
 /// B2 の client_credentials で、この secret のトークンが取れるか。
 async fn token_issued(
     realm: &app_gateway::test_support::TestRealm,

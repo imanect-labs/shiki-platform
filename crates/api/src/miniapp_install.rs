@@ -75,11 +75,12 @@ pub fn spawn_client_repair(installs: Arc<app_platform::InstallService>) {
         for attempt in 1u32.. {
             match installs.repair_oauth_clients().await {
                 Ok(p) if p.failed == 0 => {
-                    if p.repaired + p.missing > 0 {
+                    if p.repaired + p.missing + p.disabled > 0 {
                         tracing::info!(
                             repaired = p.repaired,
                             recreated = p.recreated,
                             missing = p.missing,
+                            disabled = p.disabled,
                             "アプリのクライアントを今の登録の形に揃えました"
                         );
                     }
@@ -90,6 +91,7 @@ pub fn spawn_client_repair(installs: Arc<app_platform::InstallService>) {
                         repaired = p.repaired,
                         recreated = p.recreated,
                         missing = p.missing,
+                        disabled = p.disabled,
                         failed = p.failed,
                         attempt,
                         "アプリのクライアントの一部を揃えられません（試し直す）"

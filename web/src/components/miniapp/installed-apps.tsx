@@ -202,6 +202,22 @@ export function InstalledAppsSection() {
                     </p>
                   </div>
                 </div>
+              ) : app.oauth_client_disabled ? (
+                // 管理者が Keycloak で B2 を無効にしていて、起動時の照合が有効に戻さなかった（漏れた secret を止めたのかもしれ
+                // ないので、同じ secret のまま戻さない・BUG-201）。入れ直すと同じ secret で戻るので、入れ直しは勧めない。
+                <div
+                  role="status"
+                  data-testid="app-client-disabled"
+                  className="flex gap-2 rounded-md border border-destructive/40 bg-destructive/5 p-2.5 text-xs"
+                >
+                  <AlertTriangle className="mt-0.5 size-4 shrink-0 text-destructive" aria-hidden />
+                  <div className="min-w-0">
+                    <p className="font-medium text-destructive">このアプリのサーバーで動く処理が止まっています</p>
+                    <p className="mt-0.5 text-muted-foreground">
+                      管理者がアプリの登録を止めています。動かすには、管理者に確かめてください。
+                    </p>
+                  </div>
+                </div>
               ) : null}
               <div className="mt-auto flex flex-wrap items-center gap-1 pt-1">
                 <Button size="sm" asChild disabled={!app.frontend_bundle}>
