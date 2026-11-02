@@ -453,7 +453,22 @@ async fn save_cursor(db: &PgPool, last: &DirectoryEntry) -> Result<(), sqlx::Err
 
 #[cfg(test)]
 mod tests {
-    use super::{cursor_move, CursorMove};
+    #![allow(clippy::unwrap_used)]
+
+    use super::{cursor_move, CursorMove, MembershipReconcileConfig};
+
+    #[test]
+    fn config_defaults_to_every_minute_500_users() {
+        // 設定を書かない構成（既存のデプロイ）でも、既定で動く。
+        let c: MembershipReconcileConfig = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(c.enabled);
+        assert_eq!((c.interval_secs, c.batch_size), (60, 500));
+        let c: MembershipReconcileConfig =
+            serde_json::from_value(serde_json::json!({ "enabled": false, "batch_size": 50 }))
+                .unwrap();
+        assert!(!c.enabled);
+        assert_eq!((c.interval_secs, c.batch_size), (60, 50));
+    }
 
     #[test]
     fn cursor_moves_past_finished_users_and_rewinds_at_the_end() {

@@ -153,7 +153,8 @@ pub(crate) async fn current_orgs(
 }
 
 /// 定期の照合（D-136）で member を残す組織: 所属グループから決まりうる組織のすべて
-/// （[`authz::org_group::org_candidates`]）。1 つも無ければ既定の組織（ログインの同期と同じ・BUG-200）。
+/// （[`authz::org_group::org_candidates`]）と、ログインの同期が既定の組織を残す人（組織が決まらない人）の既定の組織
+/// （BUG-200）。
 ///
 /// ログインの同期が残す組織（[`desired_org`]・決まらなければ既定の組織）は必ずこの中にある。照合はログインの同期が
 /// 付けた member を外さず、所属するグループが 1 つも無くなった組織の member だけを外す（複数の組織のグループに
@@ -163,15 +164,15 @@ pub(crate) fn orgs_kept_by_reconcile(
     tenant_id: &str,
     layout: GroupLayout,
 ) -> Vec<String> {
-    let orgs: Vec<String> = authz::org_group::org_candidates(groups, tenant_id, layout)
+    let mut orgs: Vec<String> = authz::org_group::org_candidates(groups, tenant_id, layout)
         .into_iter()
         .filter(|org| authz::validate_local_id(org).is_ok())
         .collect();
-    if orgs.is_empty() {
-        vec![DEFAULT_ORG.to_string()]
-    } else {
-        orgs
+    // ログインの同期が既定の組織を残す人（選ばれる組織が無いか、識別子にできない名前の人）は、照合も残す。
+    if desired_org(groups, tenant_id, layout).is_none() {
+        orgs.push(DEFAULT_ORG.to_string());
     }
+    orgs
 }
 
 /// `current` のうち `keep` にない組織の member を外し、外した組織を返す（ログインの同期と定期の照合で共用）。
@@ -418,6 +419,13 @@ mod tests {
             orgs_kept_by_reconcile(&v(&["/tenants/u/acme"]), "t", GroupLayout::TenantScoped),
             [DEFAULT_ORG],
             "他テナント配下のグループは候補にしない"
+        );
+        // 選ばれる組織（名前の順で最小）が識別子にできない名前なら、ログインの同期は既定の組織を残すので照合も残す。
+        let groups = v(&["/tenants/t/a#b", "/tenants/t/beta"]);
+        assert_eq!(desired_org(&groups, "t", GroupLayout::TenantScoped), None);
+        assert_eq!(
+            orgs_kept_by_reconcile(&groups, "t", GroupLayout::TenantScoped),
+            ["beta", DEFAULT_ORG]
         );
     }
 
