@@ -154,13 +154,13 @@ test("スキルの一覧: 共有された分を往復の上限で読み切れな
   try {
     await page.goto("/skills");
     await expect(page.getByText("自分のスキル")).toBeVisible({ timeout: 15_000 });
-    const more = page.getByTestId("artifacts-shared-more");
+    const more = page.getByTestId("list-more");
     await expect(more).toHaveText(/共有されたスキルの続きは、まだ見つかっていません。「さらに読み込む」で続きを探します。/);
     const start = served.asked.lastIndexOf("");
     expect(served.asked.slice(start)).toEqual(["", "s1", "s2", "s3", "s4", "s5"]);
-    await more.getByTestId("artifacts-shared-more-button").click();
+    await more.getByTestId("list-more-button").click();
     await expect(page.getByText("続きで見つかったスキル")).toBeVisible();
-    await expect(page.getByTestId("artifacts-shared-more")).toHaveCount(0);
+    await expect(page.getByTestId("list-more")).toHaveCount(0);
     expect(served.asked.slice(start + 6)).toEqual(["s6"]);
   } finally {
     await served.stop();
@@ -183,13 +183,13 @@ test("スキルの一覧: 共有された分の続きの頼みが失敗しても
     await page.goto("/skills");
     await expect(page.getByText("自分のスキル")).toBeVisible({ timeout: 15_000 });
     await expect(page.getByText("スキルはまだありません")).toHaveCount(0);
-    const more = page.getByTestId("artifacts-shared-more");
+    const more = page.getByTestId("list-more");
     await expect(more).toHaveText(/共有されたスキルの続きを読み込めませんでした。「さらに読み込む」でもう一度試します。/);
     if (process.env.E2E_SHOTS_DIR) await page.screenshot({ path: `${process.env.E2E_SHOTS_DIR}/skills-shared-failed-pc.png` });
     // 押すと、失敗した位置から頼み直す。
-    await more.getByTestId("artifacts-shared-more-button").click();
+    await more.getByTestId("list-more-button").click();
     await expect(page.getByText("続きで見つかったスキル")).toBeVisible();
-    await expect(page.getByTestId("artifacts-shared-more")).toHaveCount(0);
+    await expect(page.getByTestId("list-more")).toHaveCount(0);
     // ログインの後のホームの画面（スキルの選択）も同じ一覧を頼むので、最後の読み込みからの頼みを見る。
     expect(served.asked.slice(served.asked.lastIndexOf(""))).toEqual(["", "s1", "s1"]);
   } finally {
@@ -207,7 +207,7 @@ test("スキルの一覧: 共有された分の続きの頼みが失敗しても
       const p = await phone.newPage();
       const phoneServed = await serveSkills(p, pages, new Set(["s1"]));
       await p.goto("/skills");
-      await expect(p.getByTestId("artifacts-shared-more")).toBeVisible({ timeout: 15_000 });
+      await expect(p.getByTestId("list-more")).toBeVisible({ timeout: 15_000 });
       expect(await p.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
       await p.screenshot({ path: `${process.env.E2E_SHOTS_DIR}/skills-shared-failed-phone.png` });
       await phoneServed.stop();

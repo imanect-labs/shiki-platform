@@ -28,15 +28,15 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { ListLoadFailed, ListMore } from "@/components/artifacts/shared-more";
+import { useArtifactList } from "@/hooks/use-artifact-list";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import {
   createMiniApp,
   getArtifact,
   getSkill,
-  listArtifacts,
   updateMiniApp,
   validationMessages,
-  type ArtifactMeta,
   type MiniAppVersion,
 } from "@/lib/artifact-api";
 import { inputHints } from "@/lib/miniapp/workflow-inputs";
@@ -45,7 +45,7 @@ import { getWorkflowVersion } from "@/lib/workflow-api";
 
 type Pin = MiniAppBody["workflows"][number];
 
-/// 束ねているスキルのピンを読めるか（スキルの一覧は先頭のページしか返さないので、一覧に無いことでは決めない・
+/// 束ねているスキルのピンを読めるか（スキルの一覧は読み込んだページの分しか無いので、一覧に無いことでは決めない・
 /// ピンの版を直に読んで、404・403 のときだけ読めないとする・BUG-17）。
 type PinnedSkill =
   | { state: "checking" }
@@ -131,9 +131,13 @@ export function MiniAppEditorDialog({
   // 書くタブで記述を直したか（組み立てるの段は、次に開くときに分け直す）
   const sourceEdited = React.useRef(false);
   const [inputs, setInputs] = React.useState<Record<string, PinnedInputs>>({});
-  const [skills, setSkills] = React.useState<ArtifactMeta[]>([]);
+  // 選択肢は開くたびに読み直す。50 件より古い自分のものと、共有された分の続きは「さらに読み込む」で足す。読み込みの
+  // 失敗は「なし」だけの選択肢に見せない（BUG-186・BUG-189）。
+  const skillList = useArtifactList("skill", { enabled: open });
+  const workflowList = useArtifactList("workflow", { enabled: open });
+  const skills = React.useMemo(() => skillList.items ?? [], [skillList.items]);
+  const workflows = React.useMemo(() => workflowList.items ?? [], [workflowList.items]);
   const [pinnedSkill, setPinnedSkill] = React.useState<PinnedSkill>({ state: "checking" });
-  const [workflows, setWorkflows] = React.useState<ArtifactMeta[]>([]);
   const [skillId, setSkillId] = React.useState("");
   const [pins, setPins] = React.useState<Pin[]>([]);
   const [workflowToAdd, setWorkflowToAdd] = React.useState("");
@@ -155,10 +159,7 @@ export function MiniAppEditorDialog({
     setBuilderKey((k) => k + 1);
     setInputs({});
     setError(null);
-    // 共有された分を読み切れなくても、読めた分を選択肢に出す（自分のものまで捨てない・BUG-162）。
-    void listArtifacts("skill").then((l) => setSkills(l.items)).catch(() => setSkills([]));
-    void listArtifacts("workflow").then((l) => setWorkflows(l.items)).catch(() => setWorkflows([]));
-    // 束ねているスキルは一覧（先頭のページだけ）に有るかでなく、ピンの版を直に読んで確かめる。
+    // 束ねているスキルは一覧（読み込んだページの分だけ）に有るかでなく、ピンの版を直に読んで確かめる。
     setPinnedSkill({ state: "checking" });
     const pin = app?.body.skill;
     if (!pin) return;
@@ -247,7 +248,7 @@ export function MiniAppEditorDialog({
     setTab(next);
   };
 
-  // 束ねているスキルが一覧に無いとき（一覧の先頭のページの外・削除された・自分には読めない）も選択欄に残して見せる
+  // 束ねているスキルが一覧に無いとき（まだ読み込んでいないページ・削除された・自分には読めない）も選択欄に残して見せる
   // （一覧に無いと選択欄は「なし」に見えてしまう）。読めないと確かめられたときだけ、選び直しを促す（BUG-17）。
   const pin = app?.body.skill ?? null;
   const pinOutsideList = pin != null && !skills.some((s) => s.id === pin.artifact_id) ? pin : null;
@@ -395,6 +396,11 @@ export function MiniAppEditorDialog({
                 追加
               </Button>
             </div>
+            {workflowList.error ? (
+              <ListLoadFailed what="ワークフローの一覧" compact onRetry={workflowList.reload} />
+            ) : (
+              <ListMore noun="ワークフロー" found={workflows.length > 0} list={workflowList} compact />
+            )}
             <p className="text-xs text-muted-foreground">
               ボタンでは <code className="font-mono">button 申請する -&gt; workflow 名前</code> のように名前で指定します。
             </p>
@@ -479,6 +485,11 @@ export function MiniAppEditorDialog({
                 </option>
               ))}
             </select>
+            {skillList.error ? (
+              <ListLoadFailed what="スキルの一覧" compact onRetry={skillList.reload} />
+            ) : (
+              <ListMore noun="スキル" found={skills.length > 0} list={skillList} compact />
+            )}
             {missingSkill ? (
               <p id="app-skill-missing" className="text-xs text-amber-700 dark:text-amber-400" role="note">
                 束ねているスキルは削除されたか、あなたには読めません。このままでは保存できないので、別のスキルか「なし」を選んでください。

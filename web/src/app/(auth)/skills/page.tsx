@@ -15,7 +15,7 @@ import { toast } from "@/components/ui/use-toast";
 import { ArtifactShareDialog } from "@/components/artifacts/share-dialog";
 import { SkillEditorDialog } from "@/components/artifacts/skill-editor";
 import { VersionsDialog } from "@/components/artifacts/versions-dialog";
-import { ListLoadFailed, SharedMore } from "@/components/artifacts/shared-more";
+import { ListLoadFailed, ListMore } from "@/components/artifacts/shared-more";
 import { deleteArtifact, getSkill, type ArtifactMeta, type SkillVersion } from "@/lib/artifact-api";
 import { useArtifactList } from "@/hooks/use-artifact-list";
 import { createThread } from "@/lib/chat-api";
@@ -100,7 +100,8 @@ export default function SkillsPage() {
     setPending(meta.id);
     try {
       await deleteArtifact(meta.id);
-      reload();
+      // 読み込んだ続きを捨てないよう、一覧から外すだけにする（読み直すと先頭のページに戻る）。
+      list.remove(meta.id);
       toast({ title: `「${meta.name}」を削除しました` });
     } finally {
       setPending(null);
@@ -132,8 +133,8 @@ export default function SkillsPage() {
         </div>
       ) : list.error ? (
         <ListLoadFailed what="スキルの一覧" onRetry={reload} />
-      ) : items.length === 0 && list.sharedCursor ? (
-        <SharedMore noun="スキル" found={false} failed={list.sharedFailed} loading={list.loadingMore} onMore={list.loadMore} />
+      ) : items.length === 0 && list.hasMore ? (
+        <ListMore noun="スキル" found={false} list={list} />
       ) : items.length === 0 ? (
         <EmptyState
           icon={Sparkles}
@@ -204,9 +205,7 @@ export default function SkillsPage() {
           })}
         </ul>
       )}
-      {items && items.length > 0 && list.sharedCursor ? (
-        <SharedMore noun="スキル" found failed={list.sharedFailed} loading={list.loadingMore} onMore={list.loadMore} />
-      ) : null}
+      {items && items.length > 0 ? <ListMore noun="スキル" found list={list} /> : null}
 
       <SkillStoreSection />
 
