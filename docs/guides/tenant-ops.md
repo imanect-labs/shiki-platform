@@ -12,6 +12,9 @@ SaaS のテナント作成・削除・名前空間移行の運用手順。実装
   single＋provisioner 設定時は起動ログに warn が出る。
 - provisioner は Keycloak の confidential client（service account 有効・realm-management ロール
   `manage-users` / `manage-realm` / `query-*` 付与・audience `shiki-api`）。dev は realm import 済み。
+  shiki-server はこの資格情報で、組織の member と部署を利用者の所属グループと定期に照合する（D-136・
+  `deploy/keycloak/README.md`）。照合が読むのは利用者の所属グループと属性 `roles` で、`manage-users` に含まれる
+  `view-users` で足りる。
 - realm の User Profile で `tenant` / `roles` を**宣言済み・管理者のみ閲覧/編集**であること
   （`deploy/keycloak/README.md`「User Profile」・#809）。宣言が無いと Keycloak 26 は admin REST 経由の
   `tenant` も保存せず、作成したテナントの初期 admin がログインできない（プロビジョニングが黙って効かない）。

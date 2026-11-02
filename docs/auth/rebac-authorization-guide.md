@@ -853,14 +853,41 @@ flowchart TB
   決まる 1 つの組織。決まらない人（既定の組織 `default` に落ちる人）と、FGA の識別子にできない名前には書かない。
 - **current**: `read_subject_objects(user, organization)`（relation を問わず直接タプルのある組織）。desired でない組織の
   `member` だけを外す（`admin`・`audit_viewer` は管理の側の付与なので触らない・PIT-65）。READ 失敗時は外さない。
+  組織が決まらない人は、既定の組織（`default`）の `member` を残す（手で書いた既定の組織の member を使う構成・BUG-200）。
 - 付ける前に `check`（HigherConsistency）で確かめ、無いときだけ書く。ログインはリダイレクトの前に待つ（3 秒まで）。
   戻った直後の `/me` と、アプリのゲートウェイがこのタプルで組織のメンバーかを判定するため。
 - アプリのゲートウェイは利用者の組織をトークンではなくインストールから決め、このタプルで確かめる（member でなければ
-  403）。グループから外した人の member は、次のログインかセッションの更新で外れる（それまでは残る）。
-- **外れる機会は shiki の web のログインとセッションの更新だけ**。アプリのトークン（B1）は Keycloak から直接取れる
-  （認可コードは利用者のブラウザーに届く）ので、shiki の web を使わずにアプリだけを使い続ける人の member は外れない
-  （以前はトークンの `groups` から毎回組織を決めていたので、トークンの寿命で追従していた）。外す機会を足すか
-  （所属グループと member の直接タプルの定期の照合・Keycloak の管理イベント・ゲートウェイでの確かめ）は判断待ち。
+  403）。アプリのトークン（B1）は Keycloak から直接取れる（認可コードは利用者のブラウザーに届く）ので、shiki の web を
+  使わずにアプリだけを使い続ける人もいる。その人の member は、次の定期の照合で外れる。
+
+### 定期の照合（D-136）
+
+組織の `member` と部署の `role#member` の直接タプルを、Keycloak の管理 API で読んだ所属グループと定期に照合して
+**外す**（`membership_reconcile.rs`）。付けるのはログインとセッションの更新だけ。
+
+```mermaid
+flowchart LR
+  dir["directory_user<br/>(tenant_id, user_id) の順に 500 人"] --> fga["read_subject_objects<br/>(organization・role)"]
+  fga --> kc["Keycloak 管理 API<br/>GET /users/{id}/groups<br/>（部署の候補があれば属性 roles）"]
+  kc --> keep{"残す集合"}
+  keep -->|"current − 残す"| revoke["delete_tuple(user, member, …)"]
+```
+
+- **組織**: 残すのは所属グループから決まりうる組織のすべて（`org_group::org_candidates`。ログインの同期が選ぶ組織は必ず
+  この中にある）。1 つも無ければ既定の組織。複数の組織のグループに入っている人を 1 つにそろえるのはログインの同期（GAP-75）。
+- **部署**: 候補は、ログインの同期が所属グループ由来と記録したロール（`directory_user_role.source = 'group'`）のうち直接
+  タプルがあるもの。所属グループ（`tenant_relative_groups`）にも属性 `roles` にも無いものを外し、写しからも消す。
+  属性 `roles` 由来のロールと、記録の無いロール（手で書いたタプル）には触れない。
+- **読む順**: OpenFGA の今のタプル → Keycloak。ログインの同期が付けたばかりのタプルを、それより前に読んだ所属で外さない。
+- **外さない（fail-safe）**: Keycloak を読めない（接続できない・権限が無い・5xx）人、Keycloak にいない（404）人、
+  OpenFGA を読めないとき。Keycloak の失敗が 3 人続いたらトークンを取り直して届くかを確かめ、届かなければその回を止めて
+  位置を進めない。
+- **回し方**: `membership_reconcile.interval_secs`（既定 60 秒・下限 10 秒）ごとに、続きの位置（`membership_reconcile_cursor`）
+  から `batch_size`（既定 500・1〜1,000）人。N 人を 1 周するのに ceil(N / batch_size) 回。1 人につき OpenFGA の読み
+  1〜2 回と Keycloak の読み 1〜2 回（直接タプルの無い人は Keycloak を読まない）。advisory lock で 1 台だけが進める。
+  provisioner が無い構成では動かない。
+- 外れる遅れ: グループから外してから、最長で 1 周＋1 回の間隔（既定で 1,000 人なら 3 分ほど、10,000 人なら 21 分ほど）。
+  アプリのゲートウェイは強い整合で確かめるので、外れた次の要求から 403。
 
 ---
 

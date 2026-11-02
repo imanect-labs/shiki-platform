@@ -43,16 +43,27 @@ protocol mapper で claim にしたものから来る（`crates/api/src/middlewa
 - `groups` claim（org 解決）の元はグループ所属で、Account API からは変更できない（admin のみ）。
   ログインとセッションの更新（アクセストークンの寿命ごと）で、そこから決まる組織の `organization#member` を
   OpenFGA に書き、ほかの組織の member を外す（D-130・`crates/api/src/routes/auth/org_member.rs`）。グループから組織が
-  決まらない人（既定の組織 `default` に落ちる人）には書かない。**グループから外した人の member は、その人が次に
-  ログインするかセッションを更新するまで残る**（ロールの同期と同じ）。すぐに止めるには Keycloak でその人を無効にする
-  （Back-Channel Logout がセッションを切る）。
+  決まらない人（既定の組織 `default` に落ちる人）には書かず、既定の組織の member（手で書いたもの）は残す（BUG-200）。
   - アプリのゲートウェイはこの member で組織を確かめる（D-130）。shiki の画面の中でアプリを使っている人は、画面の
     読み込み（承認の件数は 60 秒ごと）がセッションの更新を起こすので、shiki のアクセストークンの寿命の後に外れる。
-  - **shiki の web にログインしないままアプリのトークンだけを取る人は、外れない。** B1 のトークンの戻り先は shiki の web
-    だが、認可コードは利用者のブラウザーの URL に載るので、利用者が自分でトークンを取り換えられる。グループから外した
-    人がそうしてアプリを使い続けると、shiki にログインするまで、元の組織に入れたアプリのテーブルを読み書きできる。
-    外す機会を足すか（定期の照合・Keycloak の管理イベント・ゲートウェイでの確かめ）は判断待ち。それまでは、組織を
-    離れた人のアクセスを止めるときは Keycloak でその人を無効にする。
+  - **グループから外した人の member と部署（`role#member`）は、ログインしなくても定期の照合で外れる**（D-136・
+    `crates/api/src/membership_reconcile.rs`）。shiki の web にログインしないまま B1 のトークンだけを取る人（認可コードは
+    利用者のブラウザーの URL に載るので、利用者が自分でトークンを取り換えられる）も、照合で member が外れた時点から
+    ゲートウェイが 403 で断る。照合は外すだけで、付けるのはログインとセッションの更新だけ。
+    - 照合は shiki-server が 60 秒ごとに、一度でもログインした人（ディレクトリ）を 500 人ずつ、provisioner の資格情報で
+      Keycloak の管理 API（`GET /users/{id}/groups`、部署の候補がある人は `GET /users/{id}` の属性 `roles` も）から読む。
+      N 人を 1 周するのに N / 500 分かかる（1,000 人で 2 分、10,000 人で 20 分）。グループから外してから member が外れる
+      までの遅れは、最長でこの 1 周（と次の回までの 60 秒）。設定は `membership_reconcile.interval_secs`（下限 10 秒）・
+      `batch_size`（1〜1,000）・`enabled`。サーバーが何台あっても 1 台だけが進める（advisory lock）。
+    - 読む権限は provisioner の `manage-users`（`view-users` を含む）で足りる。この realm の provisioner はすでに持つので、
+      **既存の realm に足すものは無い**。provisioner に `manage-users` を付けていない本番の realm では、realm-management の
+      `view-users` を provisioner のサービスアカウントに付ける（管理コンソールの「Clients → shiki-provisioner →
+      Service account roles → Assign role」で realm-management の `view-users`）。読めないと照合は誰も外さない（ログに
+      「Keycloak から所属を読めません」が出る）。provisioner を設定しない構成では照合は動かない。
+    - 外さないとき: Keycloak を読めない（接続できない・権限が無い）人、Keycloak にいない人（消した人はトークンを
+      取れない）、OpenFGA を読めないとき。属性 `roles` 由来のロールと、ログインの同期が部署と記録していないロール
+      （手で書いたタプル）には触れない。admin・audit_viewer にも触れない。
+  - すぐに止めるには、これまでどおり Keycloak でその人を無効にする（Back-Channel Logout がセッションを切る）。
 - **顧客 IdP / LDAP のマッパーで `tenant` / `roles` を顧客が制御できる値から取り込まない**。
   IdP の Attribute Importer（sync mode FORCE 等）や LDAP の user-attribute mapper はサーバ側で属性を
   直接書くため、上の `edit: ["admin"]` をすり抜ける（顧客 IdP が `tenant=<他社>` を出せば越境する）。
