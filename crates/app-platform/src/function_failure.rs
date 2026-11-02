@@ -7,7 +7,7 @@
 //! - 下位の通信の誤りの原文（ゲートウェイのループバックの URL・外部の URL）
 //!
 //! 文を返すのは、作成者が書いた誤り（`script_error`）と、ホストが日本語で決めた文（ゲートウェイの 4xx の断り・
-//! 引数の誤り・使えない能力）だけで、どちらも最初の行を最大 [`MAX_MESSAGE_CHARS`] 文字にする。ほかは code ごとに
+//! 引数の誤り・使えない能力・外部への送信を断った理由）だけで、どちらも最初の行を最大 [`MAX_MESSAGE_CHARS`] 文字にする。ほかは code ごとに
 //! 決まった文にする。
 
 use script_runtime::engine::Termination;
@@ -56,13 +56,16 @@ pub(crate) fn function_failure(
         "gateway_unreachable" => {
             "ゲートウェイに届きませんでした。しばらくしてからもう一度試してください。".to_string()
         }
+        "egress_failed" => "外部のサービスに接続できませんでした。".to_string(),
+        // ホストが日本語で決めた文（引数の誤り・B2 関数で使えない能力・外部への送信を断った理由。断った理由は、許可して
+        // いない先・決まったポート以外・内部のネットワーク・名前を調べられないで、解決したアドレスは含まない・BUG-196）。
+        "invalid" | "unsupported" | "unknown_api" | "egress_denied" if !raw.is_empty() => {
+            first_line(&raw)
+        }
         "egress_denied" => {
             "このアプリが通信してよい先に含まれていないため、外部のサービスに接続しませんでした。"
                 .to_string()
         }
-        "egress_failed" => "外部のサービスに接続できませんでした。".to_string(),
-        // ホストが日本語で決めた文（引数の誤り・B2 関数で使えない能力）。
-        "invalid" | "unsupported" | "unknown_api" if !raw.is_empty() => first_line(&raw),
         c if is_gateway_rejection(c) && !raw.is_empty() => first_line(&raw),
         c if c.starts_with("http_") => {
             "ゲートウェイで問題が起きました。しばらくしてからもう一度試してください。".to_string()
@@ -202,6 +205,19 @@ mod tests {
                 .message
                 .contains("メモリー")
         );
+        // 外部への送信を断った理由（内部のネットワークにつながる・許可していない先）は、ホストの文のまま返す（BUG-196）。
+        assert_eq!(
+            fail(
+                "api.example.com は内部のネットワークにつながるため、接続しませんでした。",
+                "egress_denied",
+                Termination::Completed
+            )
+            .message,
+            "api.example.com は内部のネットワークにつながるため、接続しませんでした。"
+        );
+        assert!(fail("", "egress_denied", Termination::Completed)
+            .message
+            .contains("通信してよい先"));
         // http_4 の後が 2 桁の数でないものは、ゲートウェイの断りとして扱わない。
         assert!(!is_gateway_rejection("http_4"));
         assert!(!is_gateway_rejection("http_40x"));
