@@ -10,6 +10,9 @@ import * as React from "react";
 import type { NodeParamsByType } from "@/generated/workflow-catalog";
 import type { LlmEffort, Node as IrNode, ValidationError, ValueExpr } from "@/generated/workflow-ir";
 import { Select, SelectContent, SelectItem, SelectValue } from "@/components/ui/select";
+import { ListLoadFailed, ListMore } from "@/components/artifacts/shared-more";
+import { useOwnedSharedList } from "@/hooks/use-owned-shared-list";
+import type { PageRequest } from "@/lib/owned-shared-list";
 import { getWorkflow, listWorkflows, type WorkflowSummary } from "@/lib/workflow-api";
 import { orderedProperties } from "@/lib/workflow-input-schema";
 import type { EditorAction } from "../ir-state";
@@ -154,27 +157,9 @@ export function LlmInvokeForm({
   );
 }
 
-/// 実行するワークフローの一覧の読み込み（見られるワークフローの最近の 100 件・GET /workflows）。
-type WorkflowList = { state: "loading" } | { state: "error" } | { state: "ready"; items: WorkflowSummary[] };
-
-function useWorkflowList(): [WorkflowList, () => void] {
-  const [list, setList] = React.useState<WorkflowList>({ state: "loading" });
-  const [attempt, setAttempt] = React.useState(0);
-  React.useEffect(() => {
-    let active = true;
-    listWorkflows({ limit: 100 })
-      .then((page) => active && setList({ state: "ready", items: page.items }))
-      .catch(() => active && setList({ state: "error" }));
-    return () => {
-      active = false;
-    };
-  }, [attempt]);
-  const reload = React.useCallback(() => {
-    setList({ state: "loading" });
-    setAttempt((n) => n + 1);
-  }, []);
-  return [list, reload];
-}
+/// 実行するワークフローの一覧の 1 ページ（見られるワークフロー・GET /workflows の上限の 100 件ずつ）。自分のものと
+/// 共有されたものの続きは「さらに読み込む」で読む（BUG-185・BUG-186）。
+const workflowPickerPages = (req: PageRequest) => listWorkflows({ ...req, limit: 100 });
 
 /// 実行するワークフローの入力項目の並び（相手の入力項目の x-order の順・D-128・BUG-156）。渡す入力の「項目を並べる」の
 /// 行をこの順で出す（保存した値のキーは名前の順に並び直る）。相手を読めない・入力項目が無いときは並べない。
@@ -208,9 +193,10 @@ export function WorkflowStartForm({ node, dispatch, refCandidates, inMapRegion, 
   const value = p.name as ValueExpr | undefined;
   const literal = typeof value === "string" ? value : null;
   const [mode, setMode] = React.useState<"pick" | "expr">(value !== undefined && literal === null ? "expr" : "pick");
-  const [list, reload] = useWorkflowList();
+  const list = useOwnedSharedList(workflowPickerPages);
   const error = fieldErrors.get("name");
-  const items = list.state === "ready" ? list.items : [];
+  const items = list.items ?? [];
+  const loading = list.items === null;
   const listed = literal !== null && items.some((w) => w.name === literal);
   const inputOrder = useTargetInputOrder(items.find((w) => w.name === literal)?.id ?? null);
   return (
@@ -224,11 +210,11 @@ export function WorkflowStartForm({ node, dispatch, refCandidates, inMapRegion, 
           >
             <Select
               value={literal ?? ""}
-              disabled={list.state === "loading"}
+              disabled={loading}
               onValueChange={(v) => patchParams(dispatch, node, { name: v })}
             >
               <FieldSelectTrigger className="h-8 text-[13px]" data-testid="workflow-start-select">
-                <SelectValue placeholder={list.state === "loading" ? "読み込み中…" : "ワークフローを選んでください"} />
+                <SelectValue placeholder={loading ? "読み込み中…" : "ワークフローを選んでください"} />
               </FieldSelectTrigger>
               <SelectContent>
                 {items.map((w) => (
@@ -236,7 +222,7 @@ export function WorkflowStartForm({ node, dispatch, refCandidates, inMapRegion, 
                     {workflowOptionLabel(w, items)}
                   </SelectItem>
                 ))}
-                {/* 一覧（最近の 100 件）に無い保存済みの名前も選んだまま見せる（見えるかは保存時にサーバーが確かめる）。 */}
+                {/* 読み込んだ一覧に無い保存済みの名前も選んだまま見せる（見えるかは保存時にサーバーが確かめる）。 */}
                 {literal && !listed ? <SelectItem value={literal}>{literal}</SelectItem> : null}
               </SelectContent>
             </Select>
@@ -252,15 +238,15 @@ export function WorkflowStartForm({ node, dispatch, refCandidates, inMapRegion, 
             error={error}
           />
         )}
-        {mode === "pick" && list.state === "error" ? (
-          <p role="alert" className="flex flex-wrap items-center gap-x-2 text-[11px] text-destructive">
-            ワークフローの一覧を読み込めませんでした。
-            <button type="button" className="text-primary underline-offset-2 hover:underline" onClick={reload}>
-              もう一度読み込む
-            </button>
-          </p>
+        {mode === "pick" && list.error ? (
+          <ListLoadFailed what="ワークフローの一覧" compact onRetry={list.reload} />
         ) : null}
-        {mode === "pick" && list.state === "ready" && items.length === 0 ? (
+        {mode === "pick" && !loading && !list.error ? (
+          // 読み込んだ分より後ろのワークフローも選べるよう、続きを選択肢に足す（共有された分の続きが 0 件のまま
+          // 位置だけ付いて返るときも、空に見せない）。
+          <ListMore noun="ワークフロー" found={items.length > 0} list={list} compact />
+        ) : null}
+        {mode === "pick" && !loading && !list.error && items.length === 0 && !list.hasMore ? (
           <p className="text-[11px] text-muted-foreground">
             選べるワークフローがありません。先に実行するワークフローを作るか、作成した人に共有を頼んでください。
           </p>

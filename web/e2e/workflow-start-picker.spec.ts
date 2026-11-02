@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Page, type Route } from "@playwright/test";
 
 import { cleanupAll, loginViaKeycloak, uniqueName } from "./helpers";
 
@@ -7,6 +7,8 @@ import { cleanupAll, loginViaKeycloak, uniqueName } from "./helpers";
 /// - 無い名前を入れると、保存の前の検証が欄の下に「見つかりません。削除されたか、見る権限がありません。」と出す
 ///   （無いと見えないを言い分けない）。
 /// - 相手の最新の保存内容が、このワークフローの権限で動くことを注記で言う。
+/// - 一覧の 1 ページより後ろのワークフローも「さらに読み込む」で選択肢に足せる（一覧の応答は route で差し替える・
+///   BUG-186 と同じ種類の欠け）。
 
 const SHOTS = process.env.E2E_SHOTS_DIR;
 
@@ -118,5 +120,86 @@ test("別のフローを開始: 相手を一覧から表示名で選び、無い
         expect(del.status(), await del.text()).toBeLessThan(300);
       }),
     );
+  }
+});
+
+function summary(n: number, label: string, day: number) {
+  return {
+    id: `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`,
+    name: `picker-flow-${n}`,
+    display_name: label,
+    description: null,
+    current_version: 1,
+    trigger_kinds: ["interactive"],
+    enabled_status: "none",
+    enabled_version: null,
+    updated_at: `2026-10-${String(day).padStart(2, "0")}T00:00:00Z`,
+  };
+}
+
+test("別のフローを開始: 一覧の 1 ページより後ろのワークフローも「さらに読み込む」で選べる（BUG-186）", async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await loginViaKeycloak(page);
+  page.on("dialog", (d) => void d.accept());
+  let parent = "";
+  const newest = summary(1, "最近のワークフロー", 20);
+  const older = summary(2, "101 件目より古いワークフロー", 10);
+  const LIST = /\/api\/workflows(\?.*)?$/;
+  const asked: string[] = [];
+  const handler = async (route: Route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    const before = new URL(route.request().url()).searchParams.get("before_id");
+    asked.push(before ?? "");
+    const body = before
+      ? { items: [older], owned_next: null, shared_next_cursor: null }
+      : {
+          items: [newest],
+          owned_next: { before_updated_at: newest.updated_at, before_id: newest.id },
+          shared_next_cursor: null,
+        };
+    return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+  };
+  try {
+    const name = uniqueName("picker-parent");
+    const res = await page.request.post("/api/workflows", {
+      headers: await csrfHeaders(page),
+      data: {
+        ir: {
+          ir_version: 1,
+          name,
+          display_name: name,
+          triggers: [{ kind: "interactive" }],
+          nodes: [{ id: "start", type: "workflow.start", label: "集計を実行", params: { name: "" } }],
+          edges: [],
+        },
+      },
+    });
+    expect(res.ok(), await res.text()).toBeTruthy();
+    parent = ((await res.json()) as { id: string }).id;
+    await page.route(LIST, handler);
+
+    await page.goto(`/workflows/${parent}`);
+    await page.getByTestId("rf__node-start").click();
+    const panel = page.getByRole("complementary", { name: "ブロックの設定" });
+    const more = panel.getByTestId("list-more");
+    await expect(more).toHaveText(/ほかにもワークフローがあります。「さらに読み込む」で選択肢に足します。/, {
+      timeout: 15_000,
+    });
+    if (SHOTS) await panel.screenshot({ path: `${SHOTS}/workflow-start-more-pc.png` });
+    await more.getByTestId("list-more-button").click();
+    await expect(panel.getByTestId("list-more")).toHaveCount(0);
+    expect(asked).toContain(newest.id);
+    await panel.getByTestId("workflow-start-select").click();
+    await expect(page.getByRole("option", { name: older.display_name, exact: true })).toBeVisible();
+    await expect(page.getByRole("option", { name: newest.display_name, exact: true })).toBeVisible();
+    await page.keyboard.press("Escape");
+  } finally {
+    await page.unroute(LIST, handler);
+    await cleanupAll(async () => {
+      if (!parent) return;
+      const del = await page.request.delete(`/api/artifacts/${parent}`, { headers: await csrfHeaders(page) });
+      expect(del.status(), await del.text()).toBeLessThan(300);
+    });
   }
 });
