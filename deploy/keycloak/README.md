@@ -46,12 +46,13 @@ protocol mapper で claim にしたものから来る（`crates/api/src/middlewa
   決まらない人（既定の組織 `default` に落ちる人）には書かず、既定の組織の member（手で書いたもの）は残す（BUG-200）。
   - アプリのゲートウェイはこの member で組織を確かめる（D-130）。shiki の画面の中でアプリを使っている人は、画面の
     読み込み（承認の件数は 60 秒ごと）がセッションの更新を起こすので、shiki のアクセストークンの寿命の後に外れる。
-  - **グループから外した人の member と部署（`role#member`）は、ログインしなくても定期の照合で外れる**（D-136・
+  - **グループ・属性 `roles` から外した人の member と部署・ロール（`role#member`）は、ログインしなくても定期の照合で外れる**（D-136・D-140・
     `crates/api/src/membership_reconcile.rs`）。shiki の web にログインしないまま B1 のトークンだけを取る人（認可コードは
     利用者のブラウザーの URL に載るので、利用者が自分でトークンを取り換えられる）も、照合で member が外れた時点から
     ゲートウェイが 403 で断る。照合は外すだけで、付けるのはログインとセッションの更新だけ。
     - 照合は shiki-server が 60 秒ごとに、一度でもログインした人（ディレクトリ）を 500 人ずつ、provisioner の資格情報で
-      Keycloak の管理 API（`GET /users/{id}/groups`、部署の候補がある人は `GET /users/{id}` の属性 `roles` も）から読む。
+      Keycloak の管理 API（`GET /users/{id}/groups`、所属グループで決まらないロールの候補がある人は `GET /users/{id}` の
+      属性 `roles` も）から読む。
       N 人を 1 周するのに N / 500 分かかる（1,000 人で 2 分、10,000 人で 20 分）。グループから外してから member が外れる
       までの遅れは、最長でこの 1 周（と次の回までの 60 秒）。設定は `membership_reconcile.interval_secs`（下限 10 秒）・
       `batch_size`（1〜1,000）・`enabled`。サーバーが何台あっても、照合は全体で `interval_secs` に 1 回だけ進める
@@ -64,8 +65,8 @@ protocol mapper で claim にしたものから来る（`crates/api/src/middlewa
       無いときは、回ごとに 1 行「provisioner に利用者を読む権限がありません」が出る。届かないときは「Keycloak から所属を
       読めません」）。provisioner を設定しない構成では照合は動かない。
     - 外さないとき: Keycloak を読めない（接続できない・権限が無い）人、Keycloak にいない人（消した人はトークンを
-      取れない）、OpenFGA を読めないとき。属性 `roles` 由来のロールと、ログインの同期が部署と記録していないロール
-      （手で書いたタプル）には触れない。admin・audit_viewer にも触れない。既定の組織（`default`）の member も外さない
+      取れない）、OpenFGA を読めないとき。ログインの同期が記録していないロール（手で書いたタプル）には触れない。
+      属性 `roles` から外したロールは、所属グループの部署にも無ければ外れる（ログインの同期と同じ決め方・D-140）。admin・audit_viewer にも触れない。既定の組織（`default`）の member も外さない
       （手で書いたものだけなので、外すのはログインの同期だけ。shiki-web に所属グループのマッパーが無い構成でも、
       照合が管理 API のグループで既定の組織を外して `/me` を 403 にすることはない・BUG-200）。
   - すぐに止めるには、これまでどおり Keycloak でその人を無効にする（Back-Channel Logout がセッションを切る）。

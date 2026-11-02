@@ -868,7 +868,7 @@ flowchart TB
 ```mermaid
 flowchart LR
   dir["directory_user<br/>(tenant_id, user_id) の順に 500 人"] --> fga["read_subject_objects<br/>(organization・role)"]
-  fga --> kc["Keycloak 管理 API<br/>GET /users/{id}/groups<br/>（部署の候補があれば属性 roles）"]
+  fga --> kc["Keycloak 管理 API<br/>GET /users/{id}/groups<br/>（所属グループで決まらない候補があれば属性 roles）"]
   kc --> keep{"残す集合"}
   keep -->|"current − 残す"| revoke["delete_tuple(user, member, …)"]
 ```
@@ -879,9 +879,10 @@ flowchart LR
   で決めるので、shiki-web のクライアントに所属グループのマッパーが無い構成では 2 つが食い違う（照合が外すと次のログインでも
   戻らない）。既定の組織を外すのはログインの同期だけ（BUG-200）。複数の組織のグループに入っている人を 1 つにそろえるのも
   ログインの同期（GAP-75）。
-- **部署**: 候補は、ログインの同期が所属グループ由来と記録したロール（`directory_user_role.source = 'group'`）のうち直接
-  タプルがあるもの。所属グループ（`tenant_relative_groups`）にも属性 `roles` にも無いものを外し、写しからも消す。
-  属性 `roles` 由来のロールと、記録の無いロール（手で書いたタプル）には触れない。
+- **ロールと部署**: 候補は、ログインの同期が記録したロール（`directory_user_role`・所属グループ由来も属性 `roles` 由来も）
+  のうち直接タプルがあるもの。member であるべきロールはログインの同期と同じ決め方（`role_member::desired_roles`・所属
+  グループの部署と属性 `roles`・D-140）で決め、それに無いものを外し、写しからも消す。記録の無いロール（手で書いた
+  タプル）には触れない。
 - **読む順**: OpenFGA の今のタプル → Keycloak。ログインの同期が付けたばかりのタプルを、それより前に読んだ所属で外さない。
 - **外さない（fail-safe）**: Keycloak を読めない（接続できない・権限が無い・5xx）人、Keycloak にいない（404）人、
   OpenFGA を読めないとき。Keycloak の失敗が 3 人続いたらトークンを取り直して届くかを確かめ、届かなければその回を止めて
