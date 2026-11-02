@@ -32,6 +32,8 @@ pub enum MiniAppChange {
     Skill {
         from_version: Option<i64>,
         to_version: Option<i64>,
+        /// 別のスキルに替える（付ける・外す・同じスキルの版を変えるときは `false`）。
+        replaced: bool,
     },
     /// 束ねたワークフロー（ボタンの実行先）が変わる。
     Workflow(PinChange),
@@ -93,6 +95,7 @@ pub fn diff_bodies(from: Option<&MiniAppBody>, to: &MiniAppBody) -> Vec<MiniAppC
         out.push(MiniAppChange::Skill {
             from_version: from_skill.map(|p| p.version),
             to_version: to.skill.map(|p| p.version),
+            replaced: matches!((from_skill, to.skill), (Some(a), Some(b)) if a.artifact_id != b.artifact_id),
         });
     }
     let empty: &[NamedComponentPin] = &[];
@@ -299,7 +302,8 @@ mod tests {
                 MiniAppChange::Screen,
                 MiniAppChange::Skill {
                     from_version: Some(1),
-                    to_version: None
+                    to_version: None,
+                    replaced: false,
                 },
                 MiniAppChange::Workflow(PinChange {
                     alias: "申請".into(),
@@ -351,6 +355,39 @@ mod tests {
             !problems_block_publish(3, Some(3), Some(2)),
             "いま公開している版"
         );
+    }
+
+    /// 別のスキルに替えたことと、同じスキルの版を変えたことを言い分ける（版の番号だけでは見分けられない）。
+    #[test]
+    fn a_replaced_skill_is_told_from_a_new_version() {
+        let skill = |n: u128, version: i64| ComponentPin {
+            artifact_id: Uuid::from_u128(n),
+            version,
+        };
+        let mut from = body("経費", "# 画面", vec![]);
+        from.skill = Some(skill(9, 1));
+        let mut to = from.clone();
+        to.skill = Some(skill(8, 2));
+        assert_eq!(
+            diff_bodies(Some(&from), &to),
+            vec![MiniAppChange::Skill {
+                from_version: Some(1),
+                to_version: Some(2),
+                replaced: true,
+            }]
+        );
+        to.skill = Some(skill(9, 2));
+        assert_eq!(
+            diff_bodies(Some(&from), &to),
+            vec![MiniAppChange::Skill {
+                from_version: Some(1),
+                to_version: Some(2),
+                replaced: false,
+            }]
+        );
+        let json = serde_json::to_value(&diff_bodies(None, &to)[2]).unwrap();
+        assert_eq!(json["kind"], "skill");
+        assert_eq!(json["replaced"], false, "付けるのは替えるではない");
     }
 
     /// まだ公開していないアプリは、新しい版の中身をすべて足すものとして並べる。
