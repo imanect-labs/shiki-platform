@@ -82,6 +82,20 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS generation_run_thread_idx
 停止時間を取れる環境なら、事前作成せずにそのまま migration に任せてもよい（通常の
 `CREATE INDEX` なので、構築の間だけ対象表への書込が止まる）。
 
+**ドライブの `node` の索引（migration 0125 `node_shared_scan_idx`・0128 `node_name_scan_idx`・BUG-162・BUG-187）は、
+まだ事前作成できない。** どちらも `IF NOT EXISTS` の無い `create index` なので、先に同じ名前で作ると migration が
+失敗する。構築の間は `node` への書込（ドライブのアップロード・保存・移動・削除・名前の変更）が待たされるので、`node` が
+大きな環境では停止時間を取って当てる（読むのは止まらない）。事前作成できるようにするには、main に載せる前に
+2 つの migration を `create index if not exists` に直してから、下と同じ手順に足す（提案）。
+
+```sql
+-- migration 0125 / 0128 が `if not exists` になってから使う。
+CREATE INDEX CONCURRENTLY IF NOT EXISTS node_shared_scan_idx
+    ON node (tenant_id, org, updated_at, id) WHERE deleted_at IS NULL;
+CREATE INDEX CONCURRENTLY IF NOT EXISTS node_name_scan_idx
+    ON node (tenant_id, org, name, id) WHERE deleted_at IS NULL;
+```
+
 途中で失敗すると**無効な index が残り、プランナに使われないまま書込コストだけ増える**。
 必ず確認して落としてからやり直す。
 
