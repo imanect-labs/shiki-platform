@@ -18,7 +18,11 @@ function launchSkipWhen(skip: LaunchSkip): string {
   return `${formatDateTime(skip.firstAt)} から ${skip.count.toLocaleString("ja-JP")} 回見送りました。最後は ${formatDateTime(skip.lastAt)} です。`;
 }
 
-/// 自動実行の設定のダイアログの先頭に出す枠（理由といつから何回か。直し方はダイアログの操作そのものなので言わない）。
+/// 自動実行の設定のダイアログの先頭に出す枠（理由といつから何回か）。
+///
+/// 直し方は、ダイアログの操作（オンにし直す）で直るものでは言わない。オンにしている版に実行できない設定がある
+/// （`not_ready`）ときは、エディターで直して保存しないと直らないので、サーバーの直し方の文をそのまま出す（PC では
+/// バッジのツールチップを読まずにダイアログを開ける）。
 export function LaunchSkipNotice({ skip, className }: { skip: LaunchSkip; className?: string }) {
   return (
     <div
@@ -34,6 +38,7 @@ export function LaunchSkipNotice({ skip, className }: { skip: LaunchSkip; classN
       <div className="min-w-0 space-y-0.5 leading-relaxed">
         <p className="font-medium text-foreground">自動実行を見送っています</p>
         <p>{skip.message}</p>
+        {skip.code === "not_ready" ? <p data-testid="launch-skip-fix">{skip.fix}</p> : null}
         <p className="text-muted-foreground">{launchSkipWhen(skip)}</p>
       </div>
     </div>

@@ -116,6 +116,8 @@ test("自動実行: 起動を見送り続けているとき、理由と直し方
   await expect(notice).toContainText("自動実行を見送っています");
   await expect(notice).toContainText("自動実行のとき、このワークフローを読み込めませんでした。");
   await expect(notice).toContainText(/\d{4}\/\d{2}\/\d{2} \d{2}:\d{2} (に|から)/);
+  // オンにし直せば直るので、ダイアログの中では直し方を言わない。
+  await expect(notice.getByTestId("launch-skip-fix")).toHaveCount(0);
   // 内部の言葉・code を出さない。
   await expect(notice).not.toContainText("definition_unreadable");
   await expect(notice).not.toContainText("委譲");
@@ -145,4 +147,74 @@ test("自動実行: 起動を見送り続けているとき、理由と直し方
   await expect(page.getByTestId("workflow-launch-skip")).toHaveCount(0);
   expect((await registration(page, id)).launch_skip).toBeNull();
   await expect(page.getByText("自動実行 有効（v1）")).toBeVisible();
+});
+
+/// オンにしている版に実行できない設定がある見送り（not_ready）は、オンにし直しても直らないので、自動実行の設定の
+/// ダイアログの中でもサーバーの直し方の文を出す（PC はツールチップを読まずにバッジを押せる）。見送りの記録は
+/// 登録の応答を差し替えて作る（保存の確かめを通らない版を作る入口が画面と API に無い）。
+test("自動実行: 実行できない設定で見送っているときは、ダイアログにも直し方を出す（GAP-67）", async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await loginViaKeycloak(page);
+  const name = uniqueName("launch-skip-not-ready");
+  const created = await page.request.post("/api/workflows", {
+    headers: await csrfHeaders(page),
+    data: {
+      ir: {
+        ir_version: 1,
+        name,
+        display_name: name,
+        declared_scopes: [],
+        triggers: [{ kind: "schedule", cron: "0 9 * * *", tz: "Asia/Tokyo", catchup: "skip" }],
+        nodes: [
+          {
+            id: "calc",
+            type: "script.run",
+            label: "計算する",
+            params: { source: { inline: "function main(i){ return {}; }" } },
+          },
+        ],
+        edges: [],
+      },
+    },
+  });
+  expect(created.ok(), await created.text()).toBeTruthy();
+  const id = ((await created.json()) as { id: string }).id;
+  cleanup.add(() => removeWorkflowApi(page, id));
+  cleanup.add(async () => {
+    const off = await page.request.post(`/api/workflows/${id}/disable`, {
+      headers: await csrfHeaders(page),
+      data: { revoke_delegations: true },
+    });
+    expect([200, 404], await off.text()).toContain(off.status());
+  });
+  const on = await page.request.post(`/api/workflows/${id}/enable`, {
+    headers: await csrfHeaders(page),
+    data: { version: 1, consent: true, grants: [] },
+  });
+  expect(on.ok(), await on.text()).toBeTruthy();
+
+  const fix = "エディターで設定を直して保存してから、「自動実行の設定」でもう一度オンにしてください。";
+  await page.route(`**/api/workflows/${id}/registration`, async (route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    const res = await route.fetch();
+    const body = (await res.json()) as Record<string, unknown>;
+    body.launch_skip = {
+      code: "not_ready",
+      message: "オンにしている v1 に、空の欄など実行できない設定があります。",
+      fix,
+      version: 1,
+      first_at: "2026-11-02T00:00:00Z",
+      last_at: "2026-11-02T01:00:00Z",
+      count: 2,
+    };
+    await route.fulfill({ response: res, json: body });
+  });
+  await page.goto(`/workflows/${id}`);
+  await page.getByTestId("workflow-launch-skip").click();
+  const notice = page.getByRole("dialog").getByTestId("launch-skip-notice");
+  await expect(notice).toContainText("オンにしている v1 に、空の欄など実行できない設定があります。");
+  await expect(notice.getByTestId("launch-skip-fix")).toHaveText(fix);
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/launch-skip-not-ready-pc-dialog.png` });
+  await page.getByRole("dialog").getByRole("button", { name: "閉じる" }).click();
 });
