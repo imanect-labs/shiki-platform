@@ -21,15 +21,24 @@ use crate::{DataError, InvalidCode};
 pub enum ListPositionKind {
     /// ドライブの「共有されたもの」（`GET /shares/shared-with-me`）。
     DriveShared,
-    /// アーティファクトの一覧の共有分（`GET /artifacts` の `shared_cursor`）。
-    ArtifactsShared,
+    /// アーティファクトの一覧の共有分（`GET /artifacts`・`GET /workflows` の `shared_cursor`）。`kind` は絞った
+    /// 種類（`workflow`・`skill` など。絞らない一覧は `None`）で、別の種類の一覧の位置を読ませない（読み飛ばしを防ぐ）。
+    ArtifactsShared { kind: Option<&'static str> },
 }
 
 impl ListPositionKind {
-    fn label(self) -> &'static [u8] {
+    /// AAD の一覧の種類の欄。絞らないアーティファクトの一覧は前と同じ値（種類で絞る一覧は NUL の後に種類を足す。種類の
+    /// 名前は NUL を含まないので、境目は 1 通りに決まる）。
+    fn label(self) -> Vec<u8> {
         match self {
-            ListPositionKind::DriveShared => b"drive-shared",
-            ListPositionKind::ArtifactsShared => b"artifacts-shared",
+            ListPositionKind::DriveShared => b"drive-shared".to_vec(),
+            ListPositionKind::ArtifactsShared { kind: None } => b"artifacts-shared".to_vec(),
+            ListPositionKind::ArtifactsShared { kind: Some(k) } => {
+                let mut b = b"artifacts-shared".to_vec();
+                b.push(0);
+                b.extend_from_slice(k.as_bytes());
+                b
+            }
         }
     }
 }
@@ -142,7 +151,7 @@ fn seal(
     pos: ListPosition,
 ) -> Result<String, DataError> {
     let raw = format!("{}.{}", pos.updated_at.timestamp_micros(), pos.id);
-    codec.seal_list_position(kind.label(), tenant_id, raw.as_bytes())
+    codec.seal_list_position(&kind.label(), tenant_id, raw.as_bytes())
 }
 
 fn open(
@@ -155,7 +164,7 @@ fn open(
     if token.len() > MAX_POSITION_LEN {
         return Err(bad());
     }
-    let raw = codec.open_list_position(kind.label(), tenant_id, token)?;
+    let raw = codec.open_list_position(&kind.label(), tenant_id, token)?;
     let raw = String::from_utf8(raw).map_err(|_| bad())?;
     let (micros, id) = raw.split_once('.').ok_or_else(bad)?;
     let updated_at = micros
@@ -192,11 +201,29 @@ mod tests {
         assert!(invalid(open(&c, drive, "t-b", &token)));
         assert!(invalid(open(
             &c,
-            ListPositionKind::ArtifactsShared,
+            ListPositionKind::ArtifactsShared { kind: None },
             "t-a",
             &token
         )));
         assert!(invalid(open(&codec(8), drive, "t-a", &token)));
+        // アーティファクトの一覧は、絞った種類にも束縛する（スキルの一覧の位置をワークフローの一覧に渡すと断る）。
+        let skills = ListPositionKind::ArtifactsShared {
+            kind: Some("skill"),
+        };
+        let skill_token = seal(&c, skills, "t-a", pos).unwrap();
+        assert_eq!(open(&c, skills, "t-a", &skill_token).unwrap(), pos);
+        for other in [
+            ListPositionKind::ArtifactsShared {
+                kind: Some("workflow"),
+            },
+            ListPositionKind::ArtifactsShared { kind: None },
+        ] {
+            assert!(invalid(open(&c, other, "t-a", &skill_token)), "{other:?}");
+        }
+        let all = ListPositionKind::ArtifactsShared { kind: None };
+        let all_token = seal(&c, all, "t-a", pos).unwrap();
+        assert!(invalid(open(&c, skills, "t-a", &all_token)));
+        assert_eq!(open(&c, all, "t-a", &all_token).unwrap(), pos);
         // 改竄・空・前の版の平文の位置（hex）・長すぎる位置は読めない。
         let mut tampered = token.clone().into_bytes();
         let last = tampered.len() - 1;

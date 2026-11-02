@@ -66,15 +66,14 @@ pub(crate) async fn list_page(
                 "shared_cursor と before_updated_at・before_id は同時に使えません".into(),
             ));
         }
-        let p =
-            data.open_list_position(data::ListPositionKind::ArtifactsShared, &ctx.tenant_id, c)?;
+        let p = data.open_list_position(shared_position_kind(kind), &ctx.tenant_id, c)?;
         let page = artifacts
             .list_shared_page(ctx, kind, Some((p.updated_at, p.id)), limit)
             .await?;
         return Ok(ListPage {
             items: page.items,
             owned_next: None,
-            shared_next_cursor: seal_shared(data, ctx, page.next)?,
+            shared_next_cursor: seal_shared(data, ctx, kind, page.next)?,
         });
     }
     let owned = artifacts.list_mine_page(ctx, kind, before, limit).await?;
@@ -90,7 +89,7 @@ pub(crate) async fn list_page(
         items.extend(shared.items);
         items.sort_by_key(|a| std::cmp::Reverse((a.updated_at, a.id)));
         items.dedup_by_key(|a| a.id);
-        shared_next_cursor = seal_shared(data, ctx, shared.next)?;
+        shared_next_cursor = seal_shared(data, ctx, kind, shared.next)?;
     }
     Ok(ListPage {
         items,
@@ -107,15 +106,24 @@ pub(crate) fn before_of(at: Option<DateTime<Utc>>, id: Option<Uuid>) -> Option<A
     }
 }
 
-/// 共有された分の続きの位置を、テナントに束縛して暗号化する（見えないものを指しうる・BUG-162）。
+/// 共有された分の続きの位置の束縛（絞った種類も入れる。スキルの一覧の位置をワークフローの一覧に渡すと、その位置より
+/// 新しい共有されたワークフローを黙って読み飛ばすので断る）。
+fn shared_position_kind(kind: Option<ArtifactKind>) -> data::ListPositionKind {
+    data::ListPositionKind::ArtifactsShared {
+        kind: kind.map(ArtifactKind::as_str),
+    }
+}
+
+/// 共有された分の続きの位置を、テナントと一覧の種類に束縛して暗号化する（見えないものを指しうる・BUG-162）。
 fn seal_shared(
     data: &DataStore,
     ctx: &AuthContext,
+    kind: Option<ArtifactKind>,
     next: Option<ArtifactPosition>,
 ) -> Result<Option<String>, ApiError> {
     next.map(|(updated_at, id)| {
         data.seal_list_position(
-            data::ListPositionKind::ArtifactsShared,
+            shared_position_kind(kind),
             &ctx.tenant_id,
             data::ListPosition { updated_at, id },
         )

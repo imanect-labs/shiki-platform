@@ -279,6 +279,22 @@ async fn scenario(artifacts: &ArtifactStore, data: &DataStore, tenant: &str) {
     )
     .await;
     assert!(broken.is_err());
+    // 別の種類の一覧（スキル・絞らない一覧）には、同じ位置を渡せない（その位置より新しいものを読み飛ばさない）。
+    for other_kind in [Some(ArtifactKind::Skill), None] {
+        let crossed = list_page(
+            artifacts,
+            data,
+            &alice,
+            ListPageRequest {
+                kind: other_kind,
+                before: None,
+                limit: 2,
+                shared_cursor: Some(&shared_cursor),
+            },
+        )
+        .await;
+        assert!(crossed.is_err(), "{other_kind:?}");
+    }
     // 別のテナントでは、同じ位置を読めない。
     let other = ctx(&format!("{tenant}-other"), &alice.principal.id);
     let elsewhere = list_page(
