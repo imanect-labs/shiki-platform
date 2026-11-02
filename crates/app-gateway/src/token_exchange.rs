@@ -10,8 +10,8 @@
 //!   入っていないと 403 `access_denied`「Client is not within the token audience」。B1 のクライアントが同じアプリの
 //!   B2 を `aud` に足す（[`crate::client_representation`] の `exchanger`）。別のアプリの B2 は交換できない。
 //! - `audience` は realm のクライアントの client_id で、トークンの `aud` を**絞る**だけ（足さない）。ゲートウェイの
-//!   `aud`（`shiki-gateway`）はクライアントではなくマッパーが足す値なので、渡すと 400 `invalid_client`
-//!   「Audience not found」になる。ここでは渡さない（新しいトークンの `aud` は B2 のマッパーが足す `shiki-gateway`）。
+//!   `aud`（`gateway.audience`・既定 `shiki-gateway`）はクライアントではなくマッパーが足す値なので、渡すと 400 `invalid_client`
+//!   「Audience not found」になる。ここでは渡さない（新しいトークンの `aud` は B2 のマッパーが足す）。
 //! - `scope` を渡すと、B2 の既定のスコープに**任意のスコープを足す**（元のトークンに無い能力スコープでも足せる）。
 //!   なので、元のトークンの能力スコープだけを求め、返ったトークンの能力スコープがその内にあることを確かめる
 //!   （交換で得た権限が元より広がらない）。

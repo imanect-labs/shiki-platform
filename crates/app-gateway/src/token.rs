@@ -1,6 +1,6 @@
 //! ゲートウェイ・アクセストークンの検証（Task 9.6/9.7・JWKS ローカル検証）。
 //!
-//! ミニアプリが提示する Bearer JWT を**署名（JWKS）＋ iss ＋ exp ＋ aud=`shiki-gateway`**で
+//! ミニアプリが提示する Bearer JWT を**署名（JWKS）＋ iss ＋ exp ＋ aud（`gateway.audience`・既定 `shiki-gateway`）**で
 //! 検証し、`azp`（=登録 client_id）・`sub`（呼出ユーザー）・`scope`（トークン付与スコープ）を
 //! 取り出す。実効スコープは後段で `granted_scopes` と突合される（token scope だけには依存しない）。
 //!
@@ -25,7 +25,8 @@ pub trait KeyResolver: Send + Sync {
 /// ゲートウェイトークン検証の設定（aud / iss）。
 #[derive(Debug, Clone)]
 pub struct GatewayTokenConfig {
-    /// 期待する audience（ミニアプリ client に付与される・既定 `shiki-gateway`）。
+    /// 期待する audience（デプロイ設定 `gateway.audience`・既定 [`crate::DEFAULT_GATEWAY_AUDIENCE`]）。インストールが
+    /// 同じ値をアプリのクライアントのマッパーに書く（[`crate::OAuthClient::with_audience`]・BUG-206）。
     pub audience: String,
     /// 期待する issuer（Keycloak realm URL）。
     pub issuer: String,

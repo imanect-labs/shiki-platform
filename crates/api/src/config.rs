@@ -125,7 +125,10 @@ pub struct GatewayConfig {
     /// バインドポート（内部 API とは別ポート＝別オリジン）。既定 8090。
     #[serde(default = "default_gateway_port")]
     pub port: u16,
-    /// ゲートウェイトークンの `aud` 検証値（ミニアプリ client に付与される）。既定 `shiki-gateway`。
+    /// ゲートウェイトークンの `aud` 検証値。既定 `shiki-gateway`（[`app_gateway::DEFAULT_GATEWAY_AUDIENCE`]）。
+    ///
+    /// インストールはこの値をアプリのクライアントのマッパーに書く（トークンの `aud` に入る・BUG-206）。変えると次の
+    /// 起動の照合が、すべての有効なインストールのクライアントを新しい値に揃え直す。
     #[serde(default = "default_gateway_audience")]
     pub audience: String,
     /// ミニアプリ AI（llm/agent.invoke）の日次予算・管理者キャップ（マイクロ USD・Task 9.9）。
@@ -154,7 +157,7 @@ fn default_gateway_port() -> u16 {
 }
 
 fn default_gateway_audience() -> String {
-    "shiki-gateway".to_string()
+    app_gateway::DEFAULT_GATEWAY_AUDIENCE.to_string()
 }
 
 fn default_ai_daily_cap() -> i64 {

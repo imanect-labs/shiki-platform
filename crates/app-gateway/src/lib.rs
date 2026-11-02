@@ -38,7 +38,7 @@ pub use installation::{
 pub use notification::{AppNotification, NotificationStore};
 pub use oauth::{
     client_representation, client_spec_fingerprint, default_client_scopes, ClientKind, OAuthClient,
-    RegisteredClient, RepairedClient,
+    RegisteredClient, RepairedClient, DEFAULT_GATEWAY_AUDIENCE,
 };
 pub use ports::{
     AgentInvokeSpec, AgentPort, AiEvent, AiEventStream, FunctionInvokeSpec, FunctionPort, NoAgent,

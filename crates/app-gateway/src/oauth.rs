@@ -68,6 +68,9 @@ pub struct OAuthClient {
     provisioner_secret: String,
     /// 能力スコープを realm に用意し終えたか（起動時の照合は、クライアントごとに作り直しを試さない）。
     scopes_ready: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// アプリのトークンの `aud` に入れるゲートウェイの audience（デプロイ設定 `gateway.audience`・既定
+    /// [`DEFAULT_GATEWAY_AUDIENCE`]）。ゲートウェイが確かめる値と同じものを渡す（BUG-206）。
+    audience: String,
 }
 
 impl OAuthClient {
@@ -85,7 +88,24 @@ impl OAuthClient {
             provisioner_id,
             provisioner_secret,
             scopes_ready: std::sync::Arc::default(),
+            audience: DEFAULT_GATEWAY_AUDIENCE.to_string(),
         }
+    }
+
+    /// アプリのトークンの `aud` に入れるゲートウェイの audience を決める（デプロイ設定 `gateway.audience`・BUG-206）。
+    ///
+    /// ゲートウェイが確かめる値（[`crate::GatewayTokenConfig::audience`]）と同じ値を渡す。値を変えると登録の形の指紋
+    /// （[`client_spec_fingerprint`]）が変わり、次の起動の照合がすべての有効なインストールのクライアントを揃え直す。
+    #[must_use]
+    pub fn with_audience(mut self, audience: impl Into<String>) -> Self {
+        self.audience = audience.into();
+        self
+    }
+
+    /// アプリのトークンの `aud` に入れるゲートウェイの audience。
+    #[must_use]
+    pub fn audience(&self) -> &str {
+        &self.audience
     }
 
     /// service account の access token（client_credentials）。
@@ -136,7 +156,14 @@ impl OAuthClient {
         // 能力スコープの realm client-scope を冪等作成する（optionalClientScopes 名前解決の前提）。
         // realm JSON のビルトインを汚さないため動的に用意する（Task 9.11/9.12）。
         self.ensure_capability_scopes(&token).await?;
-        let body = client_representation(kind, client_id, app_name, redirect_uris, exchanger);
+        let body = client_representation(
+            kind,
+            client_id,
+            app_name,
+            redirect_uris,
+            exchanger,
+            &self.audience,
+        );
         let resp = self
             .http
             .post(format!("{}/clients", self.admin_base))
@@ -194,7 +221,14 @@ impl OAuthClient {
             Err(GatewayError::NotFound) => return Ok(None),
             Err(e) => return Err(e),
         };
-        let body = client_representation(kind, client_id, app_name, redirect_uris, exchanger);
+        let body = client_representation(
+            kind,
+            client_id,
+            app_name,
+            redirect_uris,
+            exchanger,
+            &self.audience,
+        );
         self.update_client(&token, &internal_id, &body).await?;
         let service_account_sub = if kind.is_public() {
             None
@@ -224,6 +258,7 @@ impl OAuthClient {
             app_name,
             redirect_uris,
             exchanger,
+            &self.audience,
         );
         let token = self.admin_token().await?;
         if !self.scopes_ready.load(std::sync::atomic::Ordering::Acquire) {
@@ -566,12 +601,16 @@ fn identity_mappers() -> [serde_json::Value; 1] {
 /// サーバーの関数・BUG-182）。B1 のアクセストークンの `aud` に足す。Keycloak 26.2 の標準の交換は、交換を頼む
 /// クライアントが元のトークンの `aud` に無いと 403「Client is not within the token audience」で断る。B2 を持たない
 /// アプリと B2 自身は `None`（B2 では使わない）。
+///
+/// `audience` はゲートウェイが確かめるトークンの `aud`（デプロイ設定 `gateway.audience`・[`OAuthClient::audience`]・
+/// BUG-206）。
 pub fn client_representation(
     kind: ClientKind,
     client_id: &str,
     app_name: &str,
     redirect_uris: &[String],
     exchanger: Option<&str>,
+    audience: &str,
 ) -> serde_json::Value {
     let public = kind.is_public();
     let mut attributes = serde_json::Map::new();
@@ -596,14 +635,14 @@ pub fn client_representation(
     // アプリは authorize の `scope=` で必要分だけ要求し、ゲートウェイが granted ∩ token を
     // 強制する（realm 側の clientScopes 定義は deploy/keycloak/shiki-realm.json）。
     let capability_scopes: Vec<&str> = CapabilityScope::ALL.iter().map(|s| s.as_str()).collect();
-    // ゲートウェイ audience を access token の aud に注入する（verify_gateway_token の
-    // aud=shiki-gateway 検証を満たす）。これが無いとトークンが aud 不一致で弾かれる。
+    // ゲートウェイ audience を access token の aud に注入する（verify_gateway_token の aud 検証を満たす）。
+    // これが無いとトークンが aud 不一致で弾かれる。
     let mut mappers = vec![serde_json::json!({
         "name": "shiki-gateway-audience",
         "protocol": "openid-connect",
         "protocolMapper": "oidc-audience-mapper",
         "config": {
-            "included.custom.audience": GATEWAY_AUDIENCE,
+            "included.custom.audience": audience,
             "access.token.claim": "true",
             "id.token.claim": "false",
         }
@@ -643,26 +682,36 @@ pub fn client_representation(
 
 /// 登録の形の指紋（起動時の照合で、今の形に揃え直すクライアントを選ぶ・BUG-172）。
 ///
-/// B1・B2 の登録の形（アプリごとの名前と client_id を除く）と、B1 の戻り先から求める。登録の形を変えた版を
-/// 出したとき・戻り先（web のオリジン）を変えたときに変わり、その後の最初の起動で、すべての有効なインストールの
-/// クライアントを揃え直す。
-pub fn client_spec_fingerprint(b1_redirect_uris: &[String]) -> String {
+/// B1・B2 の登録の形（アプリごとの名前と client_id を除く）と、B1 の戻り先・ゲートウェイの audience から求める。
+/// 登録の形を変えた版を出したとき・戻り先（web のオリジン）や audience（`gateway.audience`）を変えたときに変わり、
+/// その後の最初の起動で、すべての有効なインストールのクライアントを揃え直す。
+pub fn client_spec_fingerprint(b1_redirect_uris: &[String], audience: &str) -> String {
     let b1 = |exchanger| {
-        client_representation(ClientKind::PublicPkce, "", "", b1_redirect_uris, exchanger)
+        client_representation(
+            ClientKind::PublicPkce,
+            "",
+            "",
+            b1_redirect_uris,
+            exchanger,
+            audience,
+        )
     };
     let spec = serde_json::json!({
         "b1": b1(None),
         // B2 を持つアプリの B1（交換の相手の aud を足す・BUG-182）。
         "b1_with_b2": b1(Some("")),
-        "b2": client_representation(ClientKind::Confidential, "", "", &[], None),
+        "b2": client_representation(ClientKind::Confidential, "", "", &[], None, audience),
         // 揃えるときにインストールへ書き戻すもの（B2 のサービスアカウントの利用者・BUG-183）。
         "records": ["b2_service_sub"],
     });
     storage::content_address::sha256_hex(spec.to_string().as_bytes())
 }
 
-/// ゲートウェイトークンの audience（verify_gateway_token の既定 aud と一致させる）。
-const GATEWAY_AUDIENCE: &str = "shiki-gateway";
+/// ゲートウェイのトークンの audience の既定（デプロイ設定 `gateway.audience` の既定・BUG-206）。
+///
+/// 登録（アプリのクライアントのマッパー）とゲートウェイの確かめは、どちらも設定の値を使う。この定数は既定の値を
+/// 決める 1 か所。
+pub const DEFAULT_GATEWAY_AUDIENCE: &str = "shiki-gateway";
 
 /// B1 のトークンの `aud` に交換の相手（同じアプリの B2）を足すマッパーの名前（BUG-182）。
 const EXCHANGER_AUDIENCE_MAPPER: &str = "shiki-function-audience";
@@ -679,6 +728,7 @@ mod tests {
             "経費",
             &["https://apps.example/cb".into()],
             None,
+            DEFAULT_GATEWAY_AUDIENCE,
         );
         assert_eq!(rep["publicClient"], true);
         assert_eq!(rep["standardFlowEnabled"], true);
@@ -702,7 +752,8 @@ mod tests {
     #[test]
     fn both_kinds_carry_sub_and_tenant_only() {
         for kind in [ClientKind::PublicPkce, ClientKind::Confidential] {
-            let rep = client_representation(kind, "app-x", "経費", &[], None);
+            let rep =
+                client_representation(kind, "app-x", "経費", &[], None, DEFAULT_GATEWAY_AUDIENCE);
             let defaults = rep["defaultClientScopes"].as_array().unwrap();
             assert_eq!(defaults[0], "basic");
             assert!(defaults
@@ -731,19 +782,43 @@ mod tests {
         }
     }
 
-    /// 指紋は登録の形と戻り先で変わり、アプリの名前と client_id では変わらない。
+    /// 指紋は登録の形と戻り先・audience で変わり、アプリの名前と client_id では変わらない。
     #[test]
-    fn fingerprint_follows_shape_and_redirects() {
-        let a = client_spec_fingerprint(&["http://localhost:3000/apps/oauth/callback".into()]);
-        assert_eq!(
-            a,
-            client_spec_fingerprint(&["http://localhost:3000/apps/oauth/callback".into()])
-        );
+    fn fingerprint_follows_shape_redirects_and_audience() {
+        let local = ["http://localhost:3000/apps/oauth/callback".to_string()];
+        let a = client_spec_fingerprint(&local, DEFAULT_GATEWAY_AUDIENCE);
+        assert_eq!(a, client_spec_fingerprint(&local, DEFAULT_GATEWAY_AUDIENCE));
         assert_ne!(
             a,
-            client_spec_fingerprint(&["https://shiki.example/apps/oauth/callback".into()])
+            client_spec_fingerprint(
+                &["https://shiki.example/apps/oauth/callback".into()],
+                DEFAULT_GATEWAY_AUDIENCE
+            )
         );
+        assert_ne!(a, client_spec_fingerprint(&local, "shiki-gateway-staging"));
         assert_eq!(a.len(), 64);
+    }
+
+    /// トークンの aud に入れる値は、渡した audience（デプロイ設定 `gateway.audience`）にそろう（BUG-206）。
+    #[test]
+    fn audience_mapper_carries_the_configured_audience() {
+        for kind in [ClientKind::PublicPkce, ClientKind::Confidential] {
+            let rep =
+                client_representation(kind, "app-x", "経費", &[], None, "shiki-gateway-staging");
+            assert_eq!(
+                rep["protocolMappers"][0]["config"]["included.custom.audience"],
+                "shiki-gateway-staging"
+            );
+        }
+        let oauth = OAuthClient::new(
+            reqwest::Client::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+            String::new(),
+        );
+        assert_eq!(oauth.audience(), DEFAULT_GATEWAY_AUDIENCE);
+        assert_eq!(oauth.with_audience("x").audience(), "x");
     }
 
     /// B2 を持つアプリの B1 は、同じアプリの B2 をトークンの aud に足す（Keycloak 26.2 の標準の交換は、交換を頼む
@@ -756,6 +831,7 @@ mod tests {
             "経費",
             &[],
             Some("app-1-b2"),
+            DEFAULT_GATEWAY_AUDIENCE,
         );
         let mappers = with["protocolMappers"].as_array().unwrap();
         let names: Vec<&str> = mappers.iter().filter_map(|m| m["name"].as_str()).collect();
@@ -771,13 +847,21 @@ mod tests {
         assert_eq!(mappers[2]["config"]["included.custom.audience"], "app-1-b2");
         assert_eq!(mappers[2]["config"]["access.token.claim"], "true");
         assert_eq!(mappers[2]["config"]["id.token.claim"], "false");
-        let without = client_representation(ClientKind::PublicPkce, "app-1-b1", "経費", &[], None);
+        let without = client_representation(
+            ClientKind::PublicPkce,
+            "app-1-b1",
+            "経費",
+            &[],
+            None,
+            DEFAULT_GATEWAY_AUDIENCE,
+        );
         let b2 = client_representation(
             ClientKind::Confidential,
             "app-1-b2",
             "経費",
             &[],
             Some("app-1-b2"),
+            DEFAULT_GATEWAY_AUDIENCE,
         );
         for rep in [without, b2] {
             assert!(rep["protocolMappers"]
@@ -790,7 +874,14 @@ mod tests {
 
     #[test]
     fn b2_confidential_token_exchange_representation() {
-        let rep = client_representation(ClientKind::Confidential, "app-b2", "経費", &[], None);
+        let rep = client_representation(
+            ClientKind::Confidential,
+            "app-b2",
+            "経費",
+            &[],
+            None,
+            DEFAULT_GATEWAY_AUDIENCE,
+        );
         assert_eq!(rep["publicClient"], false);
         assert_eq!(rep["serviceAccountsEnabled"], true);
         assert_eq!(rep["standardFlowEnabled"], false);

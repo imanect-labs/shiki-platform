@@ -1174,6 +1174,9 @@ async fn b1_install_tokens_reach_the_gateway_in_multi_tenancy() {
     config.auth.provisioner_client_secret = Some(secret.into());
     // web のオリジンは BFF のログインの戻り先（既定 http://localhost:3000/auth/callback）から求める。
     config.gateway.web_origin = None;
+    // ゲートウェイの audience を既定から変えても、インストールが登録するクライアントのトークンは同じ値を aud に持ち、
+    // ゲートウェイを呼べる（以前は登録が定数の shiki-gateway を書き、どのトークンも 401 だった・BUG-206）。
+    config.gateway.audience = "shiki-gateway-r7f".into();
     let shell_callback = "http://localhost:3000/apps/oauth/callback";
     assert_eq!(config.miniapp_b1_redirect_uris(), [shell_callback]);
     state.installs = Arc::new(api::miniapp_install::build_install_service(

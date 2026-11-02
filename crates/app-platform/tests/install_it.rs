@@ -661,7 +661,13 @@ async fn install_registers_b1_client_and_reinstall_enables_it() {
         // インストールは、今の形で揃えた印を付ける（起動時の照合が揃え直さない）。
         assert_eq!(
             spec_of(&pool, &tenant, id).await.as_deref(),
-            Some(app_gateway::client_spec_fingerprint(&[SHELL_CALLBACK.into()]).as_str())
+            Some(
+                app_gateway::client_spec_fingerprint(
+                    &[SHELL_CALLBACK.into()],
+                    app_gateway::DEFAULT_GATEWAY_AUDIENCE
+                )
+                .as_str()
+            )
         );
         realm
             .user_token(&client_id, SHELL_CALLBACK, "alice", "openid llm.invoke")
@@ -796,7 +802,8 @@ async fn startup_repair_fixes_previous_clients_once() {
             claims.get("groups").is_none(),
             "所属グループは載らない: {claims}"
         );
-        let spec = app_gateway::client_spec_fingerprint(&redirects);
+        let spec =
+            app_gateway::client_spec_fingerprint(&redirects, app_gateway::DEFAULT_GATEWAY_AUDIENCE);
         assert_eq!(
             spec_of(&pool, &tenant, active).await.as_deref(),
             Some(spec.as_str())

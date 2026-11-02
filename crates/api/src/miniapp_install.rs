@@ -28,13 +28,17 @@ pub fn build_install_service(
         config.auth.admin_base(),
         config.auth.provisioner_credentials(),
     ) {
-        Some(app_gateway::OAuthClient::new(
-            http.clone(),
-            base,
-            config.auth.token_endpoint(),
-            id.to_string(),
-            secret.to_string(),
-        ))
+        // アプリのトークンの aud は、ゲートウェイが確かめる値（gateway.audience）と同じにする（BUG-206）。
+        Some(
+            app_gateway::OAuthClient::new(
+                http.clone(),
+                base,
+                config.auth.token_endpoint(),
+                id.to_string(),
+                secret.to_string(),
+            )
+            .with_audience(config.gateway.audience.clone()),
+        )
     } else {
         tracing::info!("Keycloak admin 未構成: インストール時の client 登録は無効（dev）");
         None

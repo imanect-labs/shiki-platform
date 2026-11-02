@@ -39,7 +39,7 @@ impl GatewayFunctionPort {
     /// 能力スコープは client の optional client scope なので、`scopes`（＝インストールの
     /// granted_scopes）を `scope` パラメタで明示要求する。これが無いと service token に
     /// data.* / notify.send 等が乗らず、関数内の能力呼び出しが二重ゲートで 403 になる。
-    /// トークンの `aud`（`shiki-gateway`）は B2 のクライアントのマッパーが足す（Keycloak 26.2 の
+    /// トークンの `aud`（`gateway.audience`）は B2 のクライアントのマッパーが足す（Keycloak 26.2 の
     /// client_credentials は `audience` を読まないので送らない）。
     pub(crate) async fn client_credentials_token(
         &self,

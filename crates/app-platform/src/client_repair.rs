@@ -53,9 +53,13 @@ struct RowRepair {
 }
 
 impl InstallService {
-    /// 今の登録の形の指紋（このサーバーの B1 の戻り先で求める）。
+    /// 今の登録の形の指紋（このサーバーの B1 の戻り先と、ゲートウェイの audience で求める）。
     pub(crate) fn client_spec(&self) -> String {
-        app_gateway::client_spec_fingerprint(&self.b1_redirect_uris)
+        let audience = self
+            .oauth
+            .as_ref()
+            .map_or(app_gateway::DEFAULT_GATEWAY_AUDIENCE, OAuthClient::audience);
+        app_gateway::client_spec_fingerprint(&self.b1_redirect_uris, audience)
     }
 
     /// 有効なインストールのうち、クライアントを今の形で揃えていないものと、前の照合で作り直せなかったものを揃える
