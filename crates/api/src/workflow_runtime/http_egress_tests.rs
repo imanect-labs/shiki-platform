@@ -263,6 +263,7 @@ async fn link_local_and_metadata_are_refused_even_when_allowed() {
         "169.254.169.254",
         "[::ffff:a9fe:a9fe]",
         "[fd00:ec2::254]",
+        "[fd20:ce::254]",
     ])
     .with_resolver(resolver);
     for url in [
@@ -273,6 +274,7 @@ async fn link_local_and_metadata_are_refused_even_when_allowed() {
         "http://0xa9.0xfe.0xa9.0xfe/", // 16 進
         "http://[::ffff:169.254.169.254]/",
         "http://[fd00:ec2::254]/",
+        "http://[fd20:ce::254]/computeMetadata/v1/", // GCP（IPv6 だけのインスタンス）
         "http://[fe80::1]/",
     ] {
         let err = egress.send(get(url)).await.unwrap_err();

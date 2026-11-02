@@ -35,8 +35,14 @@ pub const METADATA_V4: &[Ipv4Addr] = &[
     Ipv4Addr::new(192, 0, 0, 192),
 ];
 
-/// クラウドのメタデータの IPv6（fd00:ec2::254 は AWS の IMDS・ULA の帯の中）。
-pub const METADATA_V6: &[Ipv6Addr] = &[Ipv6Addr::new(0xfd00, 0x0ec2, 0, 0, 0, 0, 0, 0x0254)];
+/// クラウドのメタデータの IPv6（どれも ULA の帯の中）。
+///
+/// - fd00:ec2::254: AWS の IMDS。
+/// - fd20:ce::254: GCP のメタデータ（IPv6 だけのインスタンス）。
+pub const METADATA_V6: &[Ipv6Addr] = &[
+    Ipv6Addr::new(0xfd00, 0x0ec2, 0, 0, 0, 0, 0, 0x0254),
+    Ipv6Addr::new(0xfd20, 0x00ce, 0, 0, 0, 0, 0, 0x0254),
+];
 
 /// 宛先の IP を分類する（SSRF 防御の単一の正・web_fetch・ミニアプリ・サンドボックス・ワークフローが共有する）。
 ///
@@ -63,7 +69,7 @@ pub fn classify_ip(ip: IpAddr) -> IpClass {
             }
             let s = v6.segments();
             if (s[0] & 0xffc0) == 0xfe80 || METADATA_V6.contains(&v6) {
-                // link-local fe80::/10・AWS の IMDS（IPv6）。
+                // link-local fe80::/10・クラウドのメタデータ（IPv6）。
                 return IpClass::LinkLocalOrMetadata;
             }
             if is_public_v6(v6) {
@@ -299,6 +305,7 @@ mod tests {
             "fe80::1",
             "febf::1",
             "fd00:ec2::254", // AWS の IMDS（IPv6）
+            "fd20:ce::254",  // GCP のメタデータ（IPv6）
             "::ffff:169.254.169.254",
             "::ffff:a9fe:a9fe",
             "64:ff9b::a9fe:a9fe",
