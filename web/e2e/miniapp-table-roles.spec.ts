@@ -87,7 +87,7 @@ test("インストールしたアプリのテーブルを使える部署・グ�
     await expect(dialog.getByTestId("app-table-roles-note")).toHaveText(
       `選んだ部署・グループの人が、このアプリのテーブル（「${table}」）を使えるようになります。外した部署・グループの人は、すぐに使えなくなります。見られるレコードと列は、開いた人の権限で決まります。`,
     );
-    await expect(dialog.getByText("まだ誰にも共有していません。")).toBeVisible();
+    await expect(dialog.getByText("まだどの部署・グループも使えません。")).toBeVisible();
     // 相手は部署・グループだけ（メンバーへの切り替えは出さない）。
     await expect(dialog.getByTestId("share-kind-user")).toHaveCount(0);
 
@@ -95,7 +95,10 @@ test("インストールしたアプリのテーブルを使える部署・グ�
     await dialog.getByPlaceholder("部署・ロール名で検索").fill("営業");
     const salesRow = dialog.locator("li", { hasText: "営業部" });
     await expect(salesRow).toBeVisible({ timeout: 10_000 });
-    await salesRow.getByRole("button", { name: "共有", exact: true }).click();
+    // 操作は「共有」と言わない（テーブルの共有では渡せないもの・付録 C の P2）。
+    await expect(salesRow.getByRole("button", { name: "共有", exact: true })).toHaveCount(0);
+    await salesRow.getByRole("button", { name: "追加", exact: true }).click();
+    await expect(page.getByText("「営業部」を追加しました", { exact: true })).toBeVisible();
     const entry = dialog.getByTestId("share-entry").filter({ hasText: "営業部" });
     await expect(entry).toBeVisible({ timeout: 10_000 });
     expect(await rolesOf(page, appId)).toEqual({ viewer_roles: ["sales"], editor_roles: [], submitter_roles: [] });
@@ -143,8 +146,8 @@ test("インストールしたアプリのテーブルを使える部署・グ�
       .toEqual({ viewer_roles: [], editor_roles: [], submitter_roles: ["sales"] });
 
     // 外す。bob はまた開けなくなる。
-    await entry.getByRole("button", { name: "営業部 の共有を解除" }).click();
-    await expect(dialog.getByText("まだ誰にも共有していません。")).toBeVisible();
+    await entry.getByRole("button", { name: "営業部 を外す" }).click();
+    await expect(dialog.getByText("まだどの部署・グループも使えません。")).toBeVisible();
     expect(await rolesOf(page, appId)).toEqual({ viewer_roles: [], editor_roles: [], submitter_roles: [] });
     expect((await bob.request.get(`/api/data/tables/${tableIds[0]}`)).status()).toBe(404);
     await dialog.getByRole("button", { name: "閉じる" }).click();

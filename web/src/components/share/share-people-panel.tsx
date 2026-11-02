@@ -85,6 +85,40 @@ const DEFAULT_OWNER_ONLY = {
   body: "共有する相手を変えたいときは、持ち主に頼んでください。",
 };
 
+/// 相手を足す・外す操作の呼び名。共有でない画面（アプリのテーブルを使える部署・グループ・GAP-68）は、共有と
+/// 言わずに足す・外すと言う（テーブルの共有の画面では渡せないものを「共有した」と言わない・付録 C の P2）。
+export type SharePeopleWording = {
+  /// 候補の行のボタン（足す前・足した後）。
+  grant: string;
+  granted: string;
+  /// 候補の行の権限の選び方の読み上げ。
+  grantRoleLabel: (name: string) => string;
+  /// 足したときと、足せなかったときの知らせの題。
+  grantedToast: (name: string) => string;
+  grantFailed: string;
+  /// 相手の一覧の見出し・読めなかったときの題・空のとき。
+  listTitle: string;
+  listFailed: string;
+  empty: string;
+  /// 一覧の行の外すボタンの読み上げと、外せなかったときの知らせの題。
+  revokeLabel: (name: string) => string;
+  revokeFailed: string;
+};
+
+/// 共有の画面の呼び名（既定）。
+const SHARE_WORDING: SharePeopleWording = {
+  grant: "共有",
+  granted: "共有済み",
+  grantRoleLabel: (name) => `${name} と共有する権限`,
+  grantedToast: (name) => `「${name}」と共有しました`,
+  grantFailed: "共有に失敗しました",
+  listTitle: "共有中の相手",
+  listFailed: "共有している相手を読み込めませんでした",
+  empty: "まだ誰にも共有していません。",
+  revokeLabel: (name) => `${name} の共有を解除`,
+  revokeFailed: "解除に失敗しました",
+};
+
 export function SharePeoplePanel<R extends PeopleRole = BasicPeopleRole>({
   open,
   resourceId,
@@ -94,6 +128,7 @@ export function SharePeoplePanel<R extends PeopleRole = BasicPeopleRole>({
   roles = DEFAULT_ROLES as PeopleRoleOption<R>[],
   kinds = ["user", "role"],
   ownerOnly = DEFAULT_OWNER_ONLY,
+  wording = SHARE_WORDING,
 }: {
   /// 開いた時に状態を戻して共有中の相手を読み直す。
   open: boolean;
@@ -107,6 +142,8 @@ export function SharePeoplePanel<R extends PeopleRole = BasicPeopleRole>({
   kinds?: PrincipalKind[];
   /// 共有を管理できない人に出す文。
   ownerOnly?: { title: string; body: string };
+  /// 足す・外す操作の呼び名（省略時は共有の言い方）。
+  wording?: SharePeopleWording;
 }) {
   const defaultRole = (roles[0]?.value ?? "viewer") as R;
   const roleLabel = (r: R) => roles.find((o) => o.value === r)?.label ?? r;
@@ -212,13 +249,13 @@ export function SharePeoplePanel<R extends PeopleRole = BasicPeopleRole>({
       await grant(target, role);
       await refresh();
       toast({
-        title: `「${candidate.primary}」と共有しました`,
+        title: wording.grantedToast(candidate.primary),
         description: `権限: ${roleLabel(role)}`,
       });
     } catch (e) {
       toast({
         variant: "destructive",
-        title: "共有に失敗しました",
+        title: wording.grantFailed,
         description: e instanceof Error ? e.message : String(e),
       });
     } finally {
@@ -237,7 +274,7 @@ export function SharePeoplePanel<R extends PeopleRole = BasicPeopleRole>({
     } catch (e) {
       toast({
         variant: "destructive",
-        title: "解除に失敗しました",
+        title: wording.revokeFailed,
         description: e instanceof Error ? e.message : String(e),
       });
     } finally {
@@ -352,7 +389,7 @@ export function SharePeoplePanel<R extends PeopleRole = BasicPeopleRole>({
                     value={role}
                     roles={roles}
                     onChange={(r) => setRowRole((prev) => ({ ...prev, [c.id]: r }))}
-                    label={`${c.primary} と共有する権限`}
+                    label={wording.grantRoleLabel(c.primary)}
                   />
                   <Button
                     type="button"
@@ -363,7 +400,7 @@ export function SharePeoplePanel<R extends PeopleRole = BasicPeopleRole>({
                     className="shrink-0 pointer-coarse:h-9"
                   >
                     {pendingKey === k ? <Loader2 className="size-4 animate-spin" aria-hidden /> : null}
-                    {already ? "共有済み" : "共有"}
+                    {already ? wording.granted : wording.grant}
                   </Button>
                 </li>
               );
@@ -374,7 +411,7 @@ export function SharePeoplePanel<R extends PeopleRole = BasicPeopleRole>({
 
       {/* 共有中の相手 */}
       <div className="flex flex-col gap-1.5">
-        <p className="text-sm font-medium">共有中の相手</p>
+        <p className="text-sm font-medium">{wording.listTitle}</p>
         {loadingShares ? (
           <div className="flex items-center gap-2 py-2 text-sm text-muted-foreground">
             <Loader2 className="size-4 animate-spin" aria-hidden />
@@ -388,7 +425,7 @@ export function SharePeoplePanel<R extends PeopleRole = BasicPeopleRole>({
           >
             <p className="flex items-start gap-2 font-medium text-destructive">
               <AlertCircle className="mt-0.5 size-4 shrink-0" aria-hidden />
-              共有している相手を読み込めませんでした
+              {wording.listFailed}
             </p>
             <p className="text-muted-foreground">少し待ってから、もう一度読み込んでください。</p>
             <Button type="button" size="sm" variant="outline" onClick={() => setLoadKey((k) => k + 1)}>
@@ -397,7 +434,7 @@ export function SharePeoplePanel<R extends PeopleRole = BasicPeopleRole>({
             </Button>
           </div>
         ) : shares.length === 0 ? (
-          <p className="py-1 text-sm text-muted-foreground">まだ誰にも共有していません。</p>
+          <p className="py-1 text-sm text-muted-foreground">{wording.empty}</p>
         ) : (
           <ul className="flex flex-col divide-y divide-border rounded-lg border border-border">
             {shares.map((s) => {
@@ -429,7 +466,7 @@ export function SharePeoplePanel<R extends PeopleRole = BasicPeopleRole>({
                   />
                   <button
                     type="button"
-                    aria-label={`${a11yName} の共有を解除`}
+                    aria-label={wording.revokeLabel(a11yName)}
                     disabled={pendingKey === k}
                     onClick={() => void remove(s)}
                     className="flex size-9 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none transition-colors hover:bg-destructive/10 hover:text-destructive focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 pointer-coarse:size-11"

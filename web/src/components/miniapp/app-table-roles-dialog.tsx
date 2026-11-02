@@ -4,14 +4,20 @@
 /// 閲覧・編集・追加だけを足す・外す。意味はインストールの要求（viewer_roles・editor_roles・submitter_roles）と同じ。
 /// 変えられるのはインストールできる人（アプリの持ち主）だけで、サーバーもほかの人を 403 にする。変えた内容は監査ログに残る。
 ///
-/// 部品はテーブルの共有と同じ SharePeoplePanel（呼び名もテーブルの共有と同じ・相手は部署・グループだけ）。足す・外すは
+/// 部品はテーブルの共有と同じ SharePeoplePanel（権限の名前はテーブルの共有と同じ・相手は部署・グループだけ）。アプリの
+/// テーブルはテーブルの共有では渡せないので、操作は「共有」と言わずに追加・外すと言う（付録 C の P2）。足す・外すは
 /// その場でサーバーへ送る（`PATCH /apps/installations/{app_id}/roles`）。
 
 import * as React from "react";
 
 import { TABLE_ROLES } from "@/components/data/table-share-dialog";
 import { SHARE_DIALOG_CONTENT } from "@/components/share/share-dialog-layout";
-import { SharePeoplePanel, type PeopleEntry, type PeopleTarget } from "@/components/share/share-people-panel";
+import {
+  SharePeoplePanel,
+  type PeopleEntry,
+  type PeopleTarget,
+  type SharePeopleWording,
+} from "@/components/share/share-people-panel";
 import {
   Dialog,
   DialogContent,
@@ -39,6 +45,20 @@ const FIELD: Record<TableShareRole, keyof AppTableAccess["roles"]> = {
 const OWNER_ONLY = {
   title: "変えられるのは、このアプリの持ち主だけです",
   body: "使える部署・グループを変えたいときは、持ち主に頼んでください。",
+};
+
+/// 足す・外す操作の呼び名（共有ではない）。
+const WORDING: SharePeopleWording = {
+  grant: "追加",
+  granted: "追加済み",
+  grantRoleLabel: (name) => `${name} を追加するときの権限`,
+  grantedToast: (name) => `「${name}」を追加しました`,
+  grantFailed: "追加できませんでした",
+  listTitle: "使える部署・グループ",
+  listFailed: "使える部署・グループを読み込めませんでした",
+  empty: "まだどの部署・グループも使えません。",
+  revokeLabel: (name) => `${name} を外す`,
+  revokeFailed: "外せませんでした",
 };
 
 function entriesOf(access: AppTableAccess): PeopleEntry<TableShareRole>[] {
@@ -119,6 +139,7 @@ export function AppTableRolesDialog({
           roles={TABLE_ROLES}
           kinds={["role"]}
           ownerOnly={OWNER_ONLY}
+          wording={WORDING}
         />
       </DialogContent>
     </Dialog>
