@@ -65,7 +65,13 @@ pub(crate) const DEFAULT_ORG: &str = "default";
 /// [`authz::org_group::resolve_org`]（公開 API ゲートウェイと単一定義）で、ここは
 /// テナンシーモード → [`GroupLayout`] の写しと、該当無しの既定 org（`default`）だけを持つ。
 pub(crate) fn resolve_org(principal: &Principal, tenant_id: &str, auth: &AuthConfig) -> String {
-    authz::org_group::resolve_org(&principal.groups, tenant_id, group_layout(auth))
+    org_of_groups(&principal.groups, tenant_id, group_layout(auth))
+}
+
+/// 所属グループから組織を決める（[`resolve_org`] の本体。決まらなければ既定の組織）。トークンの無い経路
+/// （Keycloak の管理 API で読んだ所属グループと照合する定期の照合・D-136）も同じ規則で決める。
+pub(crate) fn org_of_groups(groups: &[String], tenant_id: &str, layout: GroupLayout) -> String {
+    authz::org_group::resolve_org(groups, tenant_id, layout)
         .unwrap_or_else(|| DEFAULT_ORG.to_string())
 }
 

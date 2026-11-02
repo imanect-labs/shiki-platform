@@ -21,7 +21,7 @@ const ORG_MEMBER_WAIT: Duration = Duration::from_secs(3);
 use crate::{
     config::AuthConfig,
     error::ApiError,
-    extract::{group_layout, resolve_org, resolve_tenant_id},
+    extract::{group_layout, resolve_tenant_id},
     middleware::{auth::verify_access_token, claims},
     oidc,
     session::{
@@ -364,57 +364,29 @@ pub(crate) async fn provision_roles(state: AppState, principal: Principal, tenan
 
 /// claims から org と「あるべき role（部署由来か）」を求める（[`provision_roles`] の純粋部分）。
 ///
-/// 部署は自テナント配下の group だけ（`/tenants/<tenant>/<org>/<dept>` → `<org>/<dept>`・#811）。
-/// 他テナント配下・（multi では）テナント無修飾の group は role にしない。
+/// 決め方は定期の照合（D-136・D-140）と同じ [`role_member::desired_roles`]（単一定義）。org は `AuthContext` と
+/// 同じ [`crate::extract::resolve_org`] の規則で決まる。
 fn desired_from_claims(
     principal: &Principal,
     tenant_id: &str,
     auth: &AuthConfig,
 ) -> (String, Vec<(String, bool)>) {
-    let org = resolve_org(principal, tenant_id, auth);
-    let departments =
-        authz::org_group::tenant_relative_groups(&principal.groups, tenant_id, group_layout(auth));
-    let sourced = desired_role_sources(&principal.roles, &departments, &org);
-    (org, sourced)
+    let desired = role_member::desired_roles(
+        &principal.roles,
+        &principal.groups,
+        tenant_id,
+        group_layout(auth),
+    );
+    (desired.org, desired.roles)
 }
 
-/// claims（roles ＋ groups）から「あるべき role id 集合」を作る（純粋関数・テスト対象）。
-///
-/// - `departments` はテナントルートからの相対パス（`acme/eng`）。**org そのもの（`acme`）だけを除外**する
-///   （org は organization タプルの責務）。roles claim に org と同名のロールがあっても
-///   それは正当なロールなので除外しない（除外すると diff 同期が誤剥奪する）。
-/// - 識別子を壊す値（空・FGA 構造文字・制御文字）は [`authz::validate_local_id`]
-///   （文字ポリシーの単一定義・#91 M-3）で除外する。
+/// claims（roles ＋ groups）から「あるべき role id 集合」を作る（[`role_member::role_sources`] の id だけ・テスト用）。
 #[cfg(test)]
 fn desired_role_ids(roles: &[String], departments: &[String], org: &str) -> Vec<String> {
-    desired_role_sources(roles, departments, org)
+    role_member::role_sources(roles, departments, org)
         .into_iter()
         .map(|(id, _)| id)
         .collect()
-}
-
-/// [`desired_role_ids`] と同じ集合を、groups claim 由来か（部署か）と一緒に返す（#751）。
-/// 同じ id が roles と groups の両方にあれば先に出た方（roles）を採る。
-fn desired_role_sources(
-    roles: &[String],
-    departments: &[String],
-    org: &str,
-) -> Vec<(String, bool)> {
-    let mut out: Vec<(String, bool)> = Vec::new();
-    let candidates = roles
-        .iter()
-        .map(|r| (r.trim().to_string(), false))
-        .chain(departments.iter().map(|d| (d.clone(), true)));
-    for (id, from_group) in candidates {
-        let id = id.trim();
-        if (from_group && id == org) || authz::validate_local_id(id).is_err() {
-            continue;
-        }
-        if !out.iter().any(|(existing, _)| existing == id) {
-            out.push((id.to_string(), from_group));
-        }
-    }
-    out
 }
 
 #[cfg(test)]

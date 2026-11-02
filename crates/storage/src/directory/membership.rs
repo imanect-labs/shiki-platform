@@ -1,9 +1,9 @@
 //! 組織の member と部署の定期の照合（D-136）が読むディレクトリの行。
 //!
 //! 照合の相手は、ログインの同期が載せた人（`directory_user`）。テナントをまたいで（tenant_id, user_id）の順に
-//! 少しずつ読む（主キーの索引の範囲読み・全件を一度に引かない）。部署は、ログインの同期が所属グループ由来と
-//! 記録したロール（`directory_user_role.source = 'group'`）だけを照合の候補にする（属性 `roles` 由来のロールや
-//! 手で書いたタプルを、所属グループに無いからと外さない）。
+//! 少しずつ読む（主キーの索引の範囲読み・全件を一度に引かない）。ロールと部署は、ログインの同期が記録したもの
+//! （`directory_user_role`・所属グループ由来も属性 `roles` 由来も）だけを照合の候補にする（記録の無いロール＝手で
+//! 書いたタプルを、所属グループにも属性 `roles` にも無いからと外さない・D-140）。
 
 use std::collections::HashMap;
 
@@ -41,8 +41,9 @@ impl DirectoryStore {
         .map_err(StorageError::Db)
     }
 
-    /// ログインの同期が所属グループ由来（部署）と記録したロールを、人ごとに（1 クエリ）。記録の無い人は入らない。
-    pub async fn group_roles_of(
+    /// ログインの同期が記録したロール（所属グループ由来の部署も、属性 `roles` 由来のロールも）を、人ごとに
+    /// （1 クエリ）。記録の無い人は入らない。
+    pub async fn recorded_roles_of(
         &self,
         users: &[DirectoryEntry],
     ) -> Result<HashMap<DirectoryEntry, Vec<String>>, StorageError> {
@@ -55,7 +56,7 @@ impl DirectoryStore {
             "SELECT r.tenant_id, r.user_id, r.role_id FROM directory_user_role r \
              JOIN unnest($1::text[], $2::text[]) AS u(tenant_id, user_id) \
                ON r.tenant_id = u.tenant_id AND r.user_id = u.user_id \
-             WHERE r.source = 'group' ORDER BY r.tenant_id, r.user_id, r.role_id",
+             ORDER BY r.tenant_id, r.user_id, r.role_id",
         )
         .bind(&tenants)
         .bind(&ids)
@@ -71,7 +72,7 @@ impl DirectoryStore {
         Ok(out)
     }
 
-    /// 部署の写し（`directory_user_role`）から、照合で member を外したロールを消す（AI 活用分析の部署集計を合わせる）。
+    /// ロールの写し（`directory_user_role`）から、照合で member を外したロールを消す（AI 活用分析の部署集計を合わせる）。
     pub async fn remove_user_roles(
         &self,
         tenant_id: &str,

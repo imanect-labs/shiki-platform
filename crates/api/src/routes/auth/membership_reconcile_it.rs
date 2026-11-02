@@ -9,7 +9,8 @@
 //!    ログインの同期も既定の組織の member を残す。
 //! 3. Keycloak にいない人は外さない。Keycloak を読めない（資格情報の誤り）ときは、照合が失敗して何も外さない。
 //! 4. グループから外した人は、ログインしなくても照合で組織の member と部署が外れ、同じトークンでゲートウェイが 403 になる。
-//!    属性 roles にあるロールと、ログインの同期が部署と記録していないロールは残る。
+//!    属性 roles から外したロールも、ログインしなくても外れる（ログインの同期と同じ決め方・D-140）。属性 roles にある
+//!    ロールと、ログインの同期が記録していないロール（手で書いたタプル）は残る。
 //! 5. 照合は、どのサーバーの回でも前の回から間隔が経つまで進めない（サーバーの台数で Keycloak への読みを増やさない）。
 //!
 //! もう 1 本は、試しの Keycloak（token と所属グループだけを返す）で、Keycloak の失敗が照合を止めないこと・外さない
@@ -101,6 +102,30 @@ async fn admin_token(realm: &TestRealm) -> String {
     body["access_token"].as_str().expect("access_token").into()
 }
 
+/// 利用者の属性 roles を置き換える（Keycloak の user PUT は置き換えなので、読んでから roles だけを差し替える）。
+async fn set_roles_attribute(realm: &TestRealm, user_id: &str, roles: &[&str]) {
+    let token = admin_token(realm).await;
+    let url = format!("{}/users/{user_id}", realm.admin_base());
+    let mut user: serde_json::Value = reqwest::Client::new()
+        .get(&url)
+        .bearer_auth(&token)
+        .send()
+        .await
+        .expect("get user")
+        .json()
+        .await
+        .expect("user json");
+    user["attributes"]["roles"] = json!(roles);
+    let resp = reqwest::Client::new()
+        .put(&url)
+        .bearer_auth(&token)
+        .json(&user)
+        .send()
+        .await
+        .expect("put user");
+    assert!(resp.status().is_success(), "put user: {}", resp.status());
+}
+
 /// パスワードでログインできる試しの利用者を作り、id を返す。
 async fn create_user(
     realm: &TestRealm,
@@ -181,6 +206,7 @@ async fn reconcile_revokes_members_who_left_their_groups_without_logging_in() {
     let dept = format!("d136-{tag}");
     let dept_role = format!("{TENANT}/{dept}");
     let manual_role = format!("d136-manual-{tag}");
+    let attr_role = format!("d140-attr-{tag}");
     let ghost = Uuid::new_v4().to_string();
     let directory = Arc::new(DirectoryStore::new(fx.pool.clone()));
     let authz = fx.authz.clone();
@@ -218,13 +244,13 @@ async fn reconcile_revokes_members_who_left_their_groups_without_logging_in() {
             .expect("org group")
             .id;
 
-        // 組織と部署のグループに入り、属性 roles に engineering を持つ人（あとでグループから外す）。
+        // 組織と部署のグループに入り、属性 roles に engineering と attr_role を持つ人（あとでグループと attr_role から外す）。
         let leaver = create_user(
             &realm,
             &admin,
             &leaver_name,
             &[org_path.clone(), dept_path.clone()],
-            &["engineering"],
+            &["engineering", &attr_role],
         )
         .await;
         kc_users.lock().unwrap().push(leaver.clone());
@@ -236,6 +262,7 @@ async fn reconcile_revokes_members_who_left_their_groups_without_logging_in() {
 
         // leaver のログインの同期（Keycloak の所属グループ）。部署はログインの同期と同じく台帳と写しに記録する。
         // engineering は属性 roles のロールだが、写しには部署と記録しておく（dev の seed と同じ形・属性で守られる）。
+        // attr_role は属性 roles 由来と記録する（ログインの同期が属性 roles から付けたもの）。
         let groups = realm.user_group_paths(&leaver_name).await;
         assert!(groups.contains(&dept_path), "{groups:?}");
         let principal = Principal {
@@ -243,7 +270,7 @@ async fn reconcile_revokes_members_who_left_their_groups_without_logging_in() {
             id: leaver.clone(),
             email: None,
             groups,
-            roles: vec!["engineering".into()],
+            roles: vec!["engineering".into(), attr_role.clone()],
             tenant_id: Some(TENANT.into()),
         };
         assert!(
@@ -260,11 +287,20 @@ async fn reconcile_revokes_members_who_left_their_groups_without_logging_in() {
                 TENANT,
                 TENANT,
                 &leaver,
-                &[(dept_role.clone(), true), ("engineering".into(), true)],
+                &[
+                    (dept_role.clone(), true),
+                    ("engineering".into(), true),
+                    (attr_role.clone(), false),
+                ],
             )
             .await
             .unwrap();
-        for role in [dept_role.as_str(), "engineering", manual_role.as_str()] {
+        for role in [
+            dept_role.as_str(),
+            "engineering",
+            manual_role.as_str(),
+            attr_role.as_str(),
+        ] {
             authz
                 .write_tuple(&ns.user(&leaver), Relation::Member, &ns.role(role))
                 .await
@@ -322,6 +358,17 @@ async fn reconcile_revokes_members_who_left_their_groups_without_logging_in() {
             has(
                 &*authz,
                 &ns,
+                &leaver,
+                Relation::Member,
+                &ns.role(&attr_role)
+            )
+            .await,
+            "属性 roles にあるロールは、所属グループに無くても残す"
+        );
+        assert!(
+            has(
+                &*authz,
+                &ns,
                 &loner,
                 Relation::Member,
                 &ns.organization(DEFAULT_ORG)
@@ -366,7 +413,7 @@ async fn reconcile_revokes_members_who_left_their_groups_without_logging_in() {
             .await
         );
 
-        // 4. leaver を組織と部署のグループから外す（shiki にはログインしない）。
+        // 4. leaver を組織と部署のグループから外し、属性 roles から attr_role を外す（shiki にはログインしない）。
         admin
             .remove_user_from_group(&leaver, &org_id)
             .await
@@ -375,6 +422,7 @@ async fn reconcile_revokes_members_who_left_their_groups_without_logging_in() {
             .remove_user_from_group(&leaver, &dept_id)
             .await
             .unwrap();
+        set_roles_attribute(&realm, &leaver, &["engineering"]).await;
         // Keycloak を読めない（provisioner の資格情報の誤り）ときは、照合が失敗して何も外さない。
         let broken = ReconcileDeps {
             auth: auth_config(&realm, "wrong-secret"),
@@ -391,8 +439,19 @@ async fn reconcile_revokes_members_who_left_their_groups_without_logging_in() {
         // 照合で外れる。同じトークンでもゲートウェイは 403。
         let report = sweep(&deps).await;
         assert!(
-            report.revoked_orgs >= 1 && report.revoked_roles >= 1,
+            report.revoked_orgs >= 1 && report.revoked_roles >= 2,
             "{report:?}"
+        );
+        assert!(
+            !has(
+                &*authz,
+                &ns,
+                &leaver,
+                Relation::Member,
+                &ns.role(&attr_role)
+            )
+            .await,
+            "属性 roles から外したロールは、ログインしなくても外れる（D-140）"
         );
         assert!(!has(&*authz, &ns, &leaver, Relation::Member, &org).await);
         assert!(
@@ -425,7 +484,7 @@ async fn reconcile_revokes_members_who_left_their_groups_without_logging_in() {
                 &ns.role(&manual_role)
             )
             .await,
-            "部署と記録していないロールは残す"
+            "記録の無いロール（手で書いたタプル）は残す"
         );
         let recorded: Vec<String> = sqlx::query_scalar(
             "SELECT role_id FROM directory_user_role WHERE tenant_id = $1 AND user_id = $2 ORDER BY role_id",

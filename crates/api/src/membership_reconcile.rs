@@ -9,9 +9,10 @@
 //! - **組織**: 所属グループから決まりうる組織（[`org_member::orgs_kept_by_reconcile`]）のほかの組織の member。
 //!   既定の組織の member は所属グループと照らさずにいつも残す（自動では付けず手で書いたものだけなので、外すのは
 //!   ログインの同期だけ・BUG-200）。admin・audit_viewer・他テナントのタプルには触れない（[`org_member::revoke_stale`]）。
-//! - **部署**: ログインの同期が所属グループ由来と記録したロール（`directory_user_role.source = 'group'`）のうち、
-//!   いま直接タプルがあり、所属グループ（[`authz::org_group::tenant_relative_groups`]）にも、ロールの claim の元の
-//!   属性 `roles` にも無いもの（[`role_member::revoke_roles`]）。属性 `roles` 由来のロールと手で書いたタプルには触れない。
+//! - **ロールと部署**: ログインの同期が記録したロール（`directory_user_role`・所属グループ由来も属性 `roles` 由来も）の
+//!   うち、いま直接タプルがあり、member であるべきロールに無いもの（[`role_member::revoke_roles`]）。member であるべき
+//!   ロールはログインの同期と同じ決め方（[`role_member::desired_roles`]・所属グループとロールの claim の元の属性
+//!   `roles`・D-140）。記録の無いロール（手で書いたタプル）には触れない。
 //!
 //! # 外さないとき（fail-safe）
 //!
@@ -26,8 +27,8 @@
 //! - `membership_reconcile.interval_secs`（既定 60 秒・下限 10 秒）ごとに、続きの位置（migration 0130・0135 の
 //!   `membership_reconcile_cursor`）から `batch_size` 人（既定 500・1〜1,000）を照合する。最後まで読んだら頭に戻る。
 //!   ディレクトリの N 人を 1 周するのに ceil(N / batch_size) 回かかる（既定では 1,000 人で 2 分、10,000 人で 20 分）。
-//! - 1 人につき OpenFGA の読みが 1〜2 回と、Keycloak の読みが 1 回（部署の候補がある人は 2 回）。直接タプルの無い人は
-//!   Keycloak を読まない。Keycloak のトークンは 1 回に 1 つ取る。
+//! - 1 人につき OpenFGA の読みが 1〜2 回と、Keycloak の読みが 1 回（所属グループで決まらないロールの候補がある人は
+//!   2 回）。直接タプルの無い人は Keycloak を読まない。Keycloak のトークンは 1 回に 1 つ取る。
 //! - サーバーが何台あっても、照合は全体で間隔に 1 回だけ進める。advisory lock を取れた 1 台が、最後に照合を始めた時刻
 //!   （`last_run_at`・DB の時刻）を読み、間隔の 9 割（[`INTERVAL_SLACK`]・各サーバーのタイマーのずれで 1 回ずつ飛ばさない
 //!   ため）が経っていなければ何もしない。ロックを取れない回も何もしない。Keycloak と OpenFGA への読みは台数で増えない。
@@ -50,7 +51,7 @@ use storage::{DirectoryEntry, DirectoryStore, StorageError};
 
 use crate::{
     config::AuthConfig,
-    extract::{group_layout, DEFAULT_ORG},
+    extract::{group_layout, org_of_groups},
     keycloak_admin::{AdminSession, KeycloakAdmin, KeycloakAdminError},
     routes::auth::{org_member, role_member},
 };
@@ -290,13 +291,13 @@ pub(crate) async fn reconcile_page(
     page: &[DirectoryEntry],
     report: &mut ReconcileReport,
 ) -> Result<usize, ReconcileError> {
-    let recorded = deps.directory.group_roles_of(page).await?;
+    let recorded = deps.directory.recorded_roles_of(page).await?;
     let layout = group_layout(&deps.auth);
     let mut done = 0;
     let mut streak = 0;
     for (i, entry) in page.iter().enumerate() {
-        let departments = recorded.get(entry).map_or(&[][..], Vec::as_slice);
-        match reconcile_user(deps, kc, entry, departments, layout).await {
+        let roles = recorded.get(entry).map_or(&[][..], Vec::as_slice);
+        match reconcile_user(deps, kc, entry, roles, layout).await {
             UserOutcome::Untouched => {}
             UserOutcome::Checked { orgs, roles } => {
                 report.checked += 1;
@@ -350,7 +351,7 @@ async fn reconcile_user(
     deps: &ReconcileDeps,
     kc: &mut AdminSession<'_>,
     entry: &DirectoryEntry,
-    recorded_departments: &[String],
+    recorded_roles: &[String],
     layout: GroupLayout,
 ) -> UserOutcome {
     let tenant_id = entry.tenant_id.as_str();
@@ -367,51 +368,50 @@ async fn reconcile_user(
     let orgs = org_member::current_orgs(authz, &subject, &ns)
         .await
         .unwrap_or_default();
-    let departments: Vec<String> = if recorded_departments.is_empty() {
+    let candidates: Vec<String> = if recorded_roles.is_empty() {
         Vec::new()
     } else {
         role_member::current_roles(authz, &subject, &ns)
             .await
             .unwrap_or_default()
             .into_iter()
-            .filter(|role| recorded_departments.contains(role))
+            .filter(|role| recorded_roles.contains(role))
             .collect()
     };
-    if orgs.is_empty() && departments.is_empty() {
+    if orgs.is_empty() && candidates.is_empty() {
         return UserOutcome::Untouched;
     }
 
-    // 2. Keycloak の所属（部署の候補が所属グループに無ければ、属性 roles も読む）。外す前にすべて読む。
+    // 2. Keycloak の所属。外す前にすべて読む。member であるべきロールはログインの同期と同じ決め方
+    //    （role_member::desired_roles・D-140）。まず所属グループだけで決め、それで残らない候補があるときだけ属性 roles を
+    //    読んで決め直す（属性 roles を足して決めた集合は、所属グループだけで決めた集合を含む）。
     let groups = match kc.user_group_paths(&entry.user_id).await {
         Ok(Some(groups)) => groups,
         Ok(None) => return UserOutcome::NotFound,
         Err(e) => return UserOutcome::Failed(e),
     };
-    let in_groups: Vec<String> =
-        authz::org_group::tenant_relative_groups(&groups, tenant_id, layout)
-            .iter()
-            .map(|d| d.trim().to_string())
-            .collect();
-    let mut stale_departments: Vec<String> = departments
+    let by_groups = role_member::desired_roles(&[], &groups, tenant_id, layout);
+    let mut stale_roles: Vec<String> = candidates
         .into_iter()
-        .filter(|d| !in_groups.contains(d))
+        .filter(|role| !by_groups.contains(role))
         .collect();
-    if !stale_departments.is_empty() {
+    if !stale_roles.is_empty() {
         let roles = match kc.user_attribute(&entry.user_id, ROLES_ATTRIBUTE).await {
             Ok(Some(roles)) => roles,
             Ok(None) => return UserOutcome::NotFound,
             Err(e) => return UserOutcome::Failed(e),
         };
-        stale_departments.retain(|d| !roles.iter().any(|r| r.trim() == d.as_str()));
+        let desired = role_member::desired_roles(&roles, &groups, tenant_id, layout);
+        stale_roles.retain(|role| !desired.contains(role));
     }
 
     // 3. 外す（ログインの同期と同じ手順）。
     let keep = org_member::orgs_kept_by_reconcile(&groups, tenant_id, layout);
     let revoked_orgs = org_member::revoke_stale(authz, &subject, &ns, &orgs, &keep).await;
-    let revoked_roles = role_member::revoke_roles(authz, &subject, &ns, &stale_departments).await;
+    let revoked_roles = role_member::revoke_roles(authz, &subject, &ns, &stale_roles).await;
     if !revoked_orgs.is_empty() || !revoked_roles.is_empty() {
         tracing::info!(%tenant_id, user = %entry.user_id, orgs = ?revoked_orgs, roles = ?revoked_roles,
-            "照合: 所属グループから外れた人の member を外した");
+            "照合: 所属グループ・属性 roles から外れた人の member を外した");
     }
     if !revoked_roles.is_empty() {
         after_roles_revoked(deps, entry, &groups, layout, &revoked_roles).await;
@@ -422,7 +422,7 @@ async fn reconcile_user(
     }
 }
 
-/// 部署を外した後: 写し（AI 活用分析の部署集計）から消し、構造化データの購読へ知らせる（ログインの同期と同じ）。
+/// ロールを外した後: 写し（AI 活用分析の部署集計）から消し、構造化データの購読へ知らせる（ログインの同期と同じ）。
 async fn after_roles_revoked(
     deps: &ReconcileDeps,
     entry: &DirectoryEntry,
@@ -437,8 +437,8 @@ async fn after_roles_revoked(
     {
         tracing::warn!(error = %e, "照合: directory_user_role から外せません（次のログインで置き換わる）");
     }
-    let org = org_member::desired_org(groups, &entry.tenant_id, layout)
-        .unwrap_or_else(|| DEFAULT_ORG.to_string());
+    // ログインの同期と同じ組織（`AuthContext` と同じ規則）。
+    let org = org_of_groups(groups, &entry.tenant_id, layout);
     let ctx = AuthContext::new(
         Principal {
             kind: PrincipalKind::User,
