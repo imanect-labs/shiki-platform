@@ -33,7 +33,7 @@ use workflow_engine::{
     SchedulerStore, TokenBucket, WorkerConfig, WorkflowRunLauncher, WorkflowWorker,
 };
 
-pub use http_egress::HttpEgress;
+pub use http_egress::{check_internal_hosts, HttpEgress};
 pub use ports::ProdNodePorts;
 pub use relay::{relay_events, retry_event_firings, RelayDeps};
 pub use relay_approval::{
@@ -65,8 +65,19 @@ pub struct WorkflowConfig {
     #[serde(default = "default_lease_secs")]
     pub lease_secs: i64,
     /// http.request の egress allowlist（secret 宛先束縛と AND・空なら secret 必須）。
+    ///
+    /// ここに書いたホストも、名前解決の後のアドレスがすべて公開の IP のときだけ送る（内部の IP は
+    /// `http_internal_hosts` に書いたホストだけ・D-135）。
     #[serde(default)]
     pub http_allowlist: Vec<String>,
+    /// 内部のネットワーク（private・ループバックなど）の IP へ送ってよいホスト（`host` か `host:port`。ワイルドカードは
+    /// 書けない・オンプレの社内システムを呼ぶ使い方・D-135）。
+    ///
+    /// 送れる先は `http_allowlist` とシークレットの宛先束縛で決まり、ここは名前解決の後のアドレスの確かめだけを緩める。
+    /// 名前解決の結果をそのまま信じるので、DNS を管理者が管理するホストだけを書く。リンクローカルとクラウドの
+    /// メタデータのアドレスは、書いても送らない。
+    #[serde(default)]
+    pub http_internal_hosts: Vec<String>,
     /// http.request のタイムアウト（ミリ秒）。
     #[serde(default = "default_http_timeout_ms")]
     pub http_timeout_ms: u64,
@@ -163,6 +174,7 @@ impl Default for WorkflowConfig {
             node_kind_step_limit: default_node_kind_steps(),
             lease_secs: default_lease_secs(),
             http_allowlist: Vec::new(),
+            http_internal_hosts: Vec::new(),
             http_timeout_ms: default_http_timeout_ms(),
             rate_capacity: default_rate_capacity(),
             rate_refill_per_sec: default_rate_refill(),
@@ -311,8 +323,8 @@ async fn build_prod_executor(
         tabular: deps.tabular.clone(),
         skill_artifacts: deps.skill_artifacts.clone(),
         launcher: launcher.clone(),
-        // 管理者の許可（http_allowlist）のうちそのまま書いたホストだけ、内部の IP へ送れる（D-135）。
-        http: HttpEgress::new(&deps.config.http_allowlist),
+        // 内部の IP へ送れるのは、管理者が内部の送り先として書いたホストだけ（送れる先の許可とは分ける・D-135）。
+        http: HttpEgress::new(&deps.config.http_internal_hosts),
         db: deps.db.clone(),
         data: Some(Arc::clone(&deps.data)),
         fsms: Some(Arc::clone(&deps.fsms)),

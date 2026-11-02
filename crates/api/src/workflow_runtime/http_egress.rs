@@ -9,9 +9,11 @@
 //!    名前を引き直させない。検証と接続のあいだに解決先を付け替える DNS リバインディングを塞ぐ）。
 //! 2. 解決先に内部の IP が 1 つでもあれば、応答ごと断る（公開と内部の混在も断る）。IP の分類は
 //!    `sandbox_client::net_guard` が単一の正（web.fetch・ミニアプリ・サンドボックスと同じ表）。
-//!    - 管理者が `workflow.http_allowlist` にそのホストをそのまま書いた（`*.` のワイルドカードでない）ときだけ、内部の
-//!      IP への送信を許す（オンプレの社内システムを呼ぶ使い方・D-135）。シークレットの宛先束縛だけでは許さない
-//!      （宛先束縛はシークレットを作る人が決められる）。
+//!    - 管理者がデプロイ設定 `workflow.http_internal_hosts` に書いたホスト（ポートを書けばそのポートだけ）にだけ、
+//!      内部の IP への送信を許す（オンプレの社内システムを呼ぶ使い方・D-135）。送れる先の許可（`http_allowlist`）とは
+//!      分ける: 許可は公開の SaaS を書く場所でもあり、そこに書いたホストまで内部へつながると、DNS を持つ人が解決先を
+//!      内部へ向けるだけで内部の任意のポートへ届く（PIT-48 の ②が効かなくなる）。ワイルドカードは書けない。
+//!      シークレットの宛先束縛だけでも許さない（宛先束縛はシークレットを作る人が決められる）。
 //!    - リンクローカル（169.254.0.0/16・fe80::/10）とクラウドのメタデータのアドレスは、許可にかかわらず断る。
 //! 3. 3xx は追わない（`redirect::Policy::none`。エンジンが `redirect_denied` で失敗にする）。
 //! 4. 環境のプロキシを使わない（`no_proxy`。プロキシ経由だと接続の固定が効かない）。
@@ -34,10 +36,19 @@ const MAX_BODY: usize = 8 * 1024 * 1024;
 /// 名前解決の上限（HTTP の時間の上限は接続の後にしか効かないので、解決にも別に掛ける）。
 const RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// 内部のネットワークの送り先として管理者が許したホスト（`workflow.http_internal_hosts` の 1 項目）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InternalHost {
+    /// [`canonical_host`] でそろえた名前か IP。
+    host: String,
+    /// 書いたときは、そのポートにだけ送れる。
+    port: Option<u16>,
+}
+
 /// ワークフローの外部への送り口（管理者が内部の宛先を許したホストと、名前解決の注入点を持つ）。
 pub struct HttpEgress {
-    /// 内部の IP への送信を許すホスト（`workflow.http_allowlist` のうちワイルドカードでない項目・[`normalize_host`] 済み）。
-    internal_hosts: Vec<String>,
+    /// 内部の IP への送信を許すホスト（`workflow.http_internal_hosts`。読めない項目は除く）。
+    internal_hosts: Vec<InternalHost>,
     /// 名前解決（既定は OS の DNS。テストで解決先を決める）。
     resolver: Arc<dyn HostResolver>,
     /// 本文を読む上限（既定 [`MAX_BODY`]）。
@@ -51,14 +62,16 @@ impl Default for HttpEgress {
 }
 
 impl HttpEgress {
-    /// 管理者の許可（`workflow.http_allowlist`）から組む。ワイルドカード（`*.example.com`）は内部の宛先を許さない。
+    /// 管理者が内部の送り先として許したホスト（`workflow.http_internal_hosts`）から組む。
+    ///
+    /// 読めない項目（ワイルドカードなど）は内部の宛先を許さない（起動時の設定の確かめ [`check_internal_hosts`] が
+    /// 先に断る）。
     #[must_use]
-    pub fn new(http_allowlist: &[String]) -> Self {
+    pub fn new(internal_hosts: &[String]) -> Self {
         HttpEgress {
-            internal_hosts: http_allowlist
+            internal_hosts: internal_hosts
                 .iter()
-                .map(|h| normalize_host(h))
-                .filter(|h| !h.is_empty() && !h.starts_with("*."))
+                .filter_map(|h| parse_internal_host(h).ok())
                 .collect(),
             resolver: Arc::new(SystemResolver),
             max_body: MAX_BODY,
@@ -78,10 +91,12 @@ impl HttpEgress {
         self
     }
 
-    /// 管理者がこのホストをそのまま許したか（内部の IP への送信を許すか）。
-    fn allows_internal(&self, host: &str) -> bool {
-        let host = normalize_host(host);
-        self.internal_hosts.contains(&host)
+    /// 管理者がこのホスト（とポート）を内部の送り先として許したか。
+    fn allows_internal(&self, host: &url::Host<&str>, port: u16) -> bool {
+        let host = canonical_host(host);
+        self.internal_hosts
+            .iter()
+            .any(|h| h.host == host && h.port.is_none_or(|p| p == port))
     }
 
     /// 送り先を確かめて送り、応答を本文の上限まで読む。
@@ -173,7 +188,10 @@ impl HttpEgress {
             }
         };
         let seen = resolved.clone();
-        match net_guard::check_addrs(resolved, self.allows_internal(shown)) {
+        let allow_internal = url
+            .host()
+            .is_some_and(|host| self.allows_internal(&host, port));
+        match net_guard::check_addrs(resolved, allow_internal) {
             Ok(addrs) => Ok((domain, addrs)),
             Err(refusal) => {
                 // 管理者向けのログ（作成者向けの文と監査にはアドレスを載せない・内部の名前とアドレスの対応を漏らさない）。
@@ -194,7 +212,7 @@ fn refused(host: &str, refusal: AddrRefusal) -> PortError {
             DESTINATION_INTERNAL,
             format!(
                 "送り先 {host} は内部のネットワークにつながるため、送るのをやめました。社内のサービスに送るには、\
-                 管理者にこの送り先の許可を頼んでください。"
+                 管理者に、この送り先を社内の送り先として登録するよう頼んでください。"
             ),
             false,
         ),
@@ -209,13 +227,74 @@ fn refused(host: &str, refusal: AddrRefusal) -> PortError {
     }
 }
 
-/// 許可と照らすホストの形（小文字・末尾の . と IPv6 の [] を外す）。
-fn normalize_host(host: &str) -> String {
-    host.trim()
-        .trim_end_matches('.')
-        .trim_start_matches('[')
-        .trim_end_matches(']')
-        .to_ascii_lowercase()
+/// 内部の送り先と照らすホストの形（名前は小文字で末尾の . を外す。IP は 1 つの書き方にそろえる）。
+fn canonical_host<S: AsRef<str>>(host: &url::Host<S>) -> String {
+    match host {
+        url::Host::Domain(d) => d.as_ref().trim_end_matches('.').to_ascii_lowercase(),
+        url::Host::Ipv4(ip) => ip.to_string(),
+        url::Host::Ipv6(ip) => ip.to_string(),
+    }
+}
+
+/// `workflow.http_internal_hosts` の 1 項目を読む（`host`・`host:port`・`[IPv6]`・`[IPv6]:port`・括弧の無い IPv6）。
+///
+/// 名前は URL と同じ規則で読む（大文字・小文字を区別しない。IP は 10 進・8 進・16 進の IPv4 も同じ IP にそろう）。
+/// ワイルドカード・スキーム・パスは書けない（誤りの文は管理者向け）。
+fn parse_internal_host(entry: &str) -> Result<InternalHost, String> {
+    let unreadable = || {
+        format!(
+            "workflow.http_internal_hosts の「{entry}」を読めません。ホスト名か IP を、ワイルドカードを使わずに書いて\
+             ください（ポートを限るなら host:port。例: erp.corp.example、10.0.0.5:8443、[fd00::5]:8443）。"
+        )
+    };
+    let entry_t = entry.trim();
+    if entry_t.is_empty() || entry_t.contains('*') || entry_t.contains('/') || entry_t.contains('@')
+    {
+        return Err(unreadable());
+    }
+    let (host, port) = if let Some(rest) = entry_t.strip_prefix('[') {
+        let (inner, after) = rest.split_once(']').ok_or_else(unreadable)?;
+        let port = match after {
+            "" => None,
+            p => Some(p.strip_prefix(':').ok_or_else(unreadable)?),
+        };
+        (format!("[{inner}]"), port)
+    } else {
+        match entry_t.matches(':').count() {
+            0 => (entry_t.to_string(), None),
+            1 => {
+                let (h, p) = entry_t.split_once(':').ok_or_else(unreadable)?;
+                (h.to_string(), Some(p))
+            }
+            // 括弧の無い IPv6（ポートは書けない）。
+            _ => (format!("[{entry_t}]"), None),
+        }
+    };
+    let port = port
+        .map(|p| {
+            p.parse::<u16>()
+                .ok()
+                .filter(|p| *p > 0)
+                .ok_or_else(unreadable)
+        })
+        .transpose()?;
+    let canonical = canonical_host(&url::Host::parse(&host).map_err(|_| unreadable())?);
+    if canonical.is_empty() {
+        return Err(unreadable());
+    }
+    Ok(InternalHost {
+        host: canonical,
+        port,
+    })
+}
+
+/// 起動時に `workflow.http_internal_hosts` を確かめる（読めない項目があれば、その文を返して起動を止める）。
+///
+/// 黙って外すと、管理者は社内の送り先を書いたつもりで、実行のときに断られる理由が分からない。
+pub fn check_internal_hosts(entries: &[String]) -> Result<(), String> {
+    entries
+        .iter()
+        .try_for_each(|e| parse_internal_host(e).map(|_| ()))
 }
 
 /// 確かめたアドレスだけを返す名前解決（ほかの名前は引かない）。

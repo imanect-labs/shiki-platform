@@ -322,7 +322,7 @@ pub(super) fn emit_description(
          - storage.list は名前の順に {list_max} 件までを返し、続きがあると truncated が true で next_cursor に続きの位置が入る。続きは、同じ folder の storage.list の cursor に {{\"$from\":\"nodes.<id>.output\",\"path\":\"/next_cursor\"}} を書いて読む（別のフォルダーの続きの位置は失敗する。省略・null は先頭から）。\n\
          - llm.invoke の prompt・agent.invoke の instruction・rag.search の query・csv.query の sql は空にしない（空のままでは有効化も実行もできない）。\n\
          - http.request は fail_on_error_status: true で、相手が 400 以上を返したときブロックを失敗にする（省略は成功として status を返す）。\n\
-         - http.request の headers は {{\"ヘッダーの名前\": 値}}（名前はリテラル・値は差し込みや参照も書ける・{max_headers} 個まで・値は {max_value_kb} KB まで）。{reserved} と、シークレットを付けるヘッダー（既定は Authorization）は書けない（保存できない）。Idempotency-Key・Content-Type を書くと、Shiki が付ける値の代わりにそれを送る。送り先が内部のネットワークのアドレスにつながる URL には送れない（管理者がそのホストを許可したときだけ送れる）。\n\
+         - http.request の headers は {{\"ヘッダーの名前\": 値}}（名前はリテラル・値は差し込みや参照も書ける・{max_headers} 個まで・値は {max_value_kb} KB まで）。{reserved} と、シークレットを付けるヘッダー（既定は Authorization）は書けない（保存できない）。Idempotency-Key・Content-Type を書くと、Shiki が付ける値の代わりにそれを送る。送り先が内部のネットワークのアドレスにつながる URL には送れない（管理者がそのホストを社内の送り先として登録したときだけ送れる）。\n\
          - workflow.start の name は、保存する人が見られる既存のワークフローの name（無い・見えない name は保存できない）。\n\
          - 条件（control.branch の condition・トリガと control.wait の filter）: {{\"cmp\":{{\"left\":値,\"op\":CmpOp,\"right\":値}}}}・{{\"all\":[条件…]}}・{{\"any\":[条件…]}}・{{\"not\":条件}}。CmpOp = {ops}（exists・is_null は right を書かない）。例: {cond}\n\
          - data.query の filter は形が違う: {{\"cmp\":{{\"field\":\"<列の参照名>\",\"op\":CmpOp,\"value\":値}}}}（all / any / not は同じ）。query.limit は 1〜{max_limit}（省略は 50。範囲の外は保存できない）。集計は query の group_by と aggregate（[{{\"metric\":\"count\"}}] や {{\"metric\":\"sum\",\"field\":\"<数値の列>\"}}）で書け、結果は groups に入る（エディタの画面では作れない）。\n",

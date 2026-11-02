@@ -1,5 +1,8 @@
 //! 外部への送り口の単体テスト（BUG-181・PIT-48 の受け入れ条件・D-135）。
 //!
+//! 内部の送り先（`workflow.http_internal_hosts`）は [`internal`] で決める。送れる先の許可（`http_allowlist`）は
+//! エンジンが名前で照らすので、ここには来ない（送り口は許可を知らない）。
+//!
 //! 名前解決は差し替え（[`MapResolver`]）で決め、相手はループバックの小さなサーバー（[`serve`]）にする。
 
 use std::collections::HashMap;
@@ -88,7 +91,8 @@ fn loopback(port: u16) -> SocketAddr {
     SocketAddr::from(([127, 0, 0, 1], port))
 }
 
-fn allow(hosts: &[&str]) -> HttpEgress {
+/// 管理者が内部の送り先として書いたホスト（`workflow.http_internal_hosts`）で組む。
+fn internal(hosts: &[&str]) -> HttpEgress {
     HttpEgress::new(&hosts.iter().map(|h| (*h).to_string()).collect::<Vec<_>>())
 }
 
@@ -107,7 +111,7 @@ async fn names_resolving_to_internal_ips_are_refused() {
     assert_eq!(
         err.message,
         "送り先 evil.test は内部のネットワークにつながるため、送るのをやめました。社内のサービスに送るには、\
-         管理者にこの送り先の許可を頼んでください。"
+         管理者に、この送り先を社内の送り先として登録するよう頼んでください。"
     );
     assert_eq!(hits.load(Ordering::SeqCst), 0, "内部へ接続していない");
 }
@@ -127,13 +131,13 @@ async fn mixed_public_and_internal_answers_are_refused() {
     assert_eq!(hits.load(Ordering::SeqCst), 0);
 }
 
-/// 管理者がそのホストをそのまま許すと、内部の IP にも送れる。名前は 1 回だけ引き、確かめたアドレスに接続する
+/// 管理者が内部の送り先として書いたホストは、内部の IP にも送れる。名前は 1 回だけ引き、確かめたアドレスに接続する
 /// （`.invalid` は OS の DNS では引けない名前なので、届いたことが引き直していない証明になる）。
 #[tokio::test]
-async fn explicitly_allowed_hosts_connect_to_the_checked_address_without_a_second_lookup() {
+async fn internal_hosts_connect_to_the_checked_address_without_a_second_lookup() {
     let (port, hits) = serve(ok_response("hello")).await;
     let resolver = MapResolver::new(&[("intranet.invalid", &[loopback(port)])]);
-    let egress = allow(&["Intranet.invalid"]).with_resolver(Arc::clone(&resolver) as _);
+    let egress = internal(&["Intranet.invalid."]).with_resolver(Arc::clone(&resolver) as _);
     let resp = egress
         .send(get(&format!("http://intranet.invalid:{port}/x")))
         .await
@@ -148,12 +152,12 @@ async fn explicitly_allowed_hosts_connect_to_the_checked_address_without_a_secon
     );
 }
 
-/// ワイルドカードの許可は、内部の IP への送信を許さない（そのホストをそのまま書いたときだけ）。
+/// ワイルドカードは内部の送り先として読まない（起動時の確かめが断る。組んだ送り口でも内部へ送らない）。
 #[tokio::test]
-async fn wildcard_allowlist_entries_do_not_allow_internal_ips() {
+async fn wildcard_internal_hosts_do_not_allow_internal_ips() {
     let (port, hits) = serve(ok_response("x")).await;
     let resolver = MapResolver::new(&[("a.corp.invalid", &[loopback(port)])]);
-    let egress = allow(&["*.corp.invalid", "corp.invalid"]).with_resolver(resolver);
+    let egress = internal(&["*.corp.invalid", "corp.invalid"]).with_resolver(resolver);
     let err = egress
         .send(get(&format!("http://a.corp.invalid:{port}/")))
         .await
@@ -162,12 +166,99 @@ async fn wildcard_allowlist_entries_do_not_allow_internal_ips() {
     assert_eq!(hits.load(Ordering::SeqCst), 0);
 }
 
+/// ポートを書いた内部の送り先は、そのポートにだけ送れる（同じホストのほかのポートの内部のサービスへは届かない）。
+#[tokio::test]
+async fn internal_hosts_with_a_port_allow_only_that_port() {
+    let (port, hits) = serve(ok_response("ok")).await;
+    let (other, other_hits) = serve(ok_response("other")).await;
+    let resolver = MapResolver::new(&[("erp.invalid", &[loopback(port)])]);
+    let egress = internal(&[&format!("erp.invalid:{port}")]).with_resolver(resolver);
+    let resp = egress
+        .send(get(&format!("http://erp.invalid:{port}/")))
+        .await
+        .unwrap();
+    assert_eq!(resp.body, b"ok");
+    let err = egress
+        .send(get(&format!("http://erp.invalid:{other}/")))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, DESTINATION_INTERNAL);
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        other_hits.load(Ordering::SeqCst),
+        0,
+        "書いていないポートへは送らない"
+    );
+}
+
+/// 内部の送り先の書き方: 名前は大文字・小文字と末尾の . を問わず、IP は書き方によらず同じ IP にそろえる。読めない
+/// 項目（ワイルドカード・スキーム・パス・ポートの誤り）は、起動時の確かめが管理者向けの文で断る。
+#[test]
+fn internal_host_entries_are_read_like_urls_and_unreadable_ones_are_reported() {
+    let read = |e: &str| parse_internal_host(e).map(|h| (h.host, h.port));
+    assert_eq!(
+        read(" ERP.Corp.Example. "),
+        Ok(("erp.corp.example".into(), None))
+    );
+    assert_eq!(
+        read("erp.corp.example:8443"),
+        Ok(("erp.corp.example".into(), Some(8443)))
+    );
+    assert_eq!(read("0x0a.0.0.5"), Ok(("10.0.0.5".into(), None)));
+    assert_eq!(read("10.0.0.5:80"), Ok(("10.0.0.5".into(), Some(80))));
+    assert_eq!(read("[FD00:0::5]:8443"), Ok(("fd00::5".into(), Some(8443))));
+    assert_eq!(read("fd00::5"), Ok(("fd00::5".into(), None)));
+    for bad in [
+        "",
+        "*.corp.example",
+        "erp.*.example",
+        "https://erp.corp.example",
+        "erp.corp.example/api",
+        "erp.corp.example:0",
+        "erp.corp.example:http",
+        "[fd00::5",
+        "[fd00::5]8443",
+        "user@erp.corp.example",
+    ] {
+        let err = read(bad).unwrap_err();
+        assert!(
+            err.starts_with(&format!(
+                "workflow.http_internal_hosts の「{bad}」を読めません。"
+            )),
+            "{bad}: {err}"
+        );
+    }
+    assert!(check_internal_hosts(&["erp.corp.example".into(), "10.0.0.5:8443".into()]).is_ok());
+    assert!(check_internal_hosts(&["erp.corp.example".into(), "*.corp.example".into()]).is_err());
+}
+
+/// URL の IP の書き方が違っても、内部の送り先に書いた IP と同じなら送れる（10 進の IPv4・省略した IPv6）。
+#[tokio::test]
+async fn internal_ip_entries_match_any_notation_of_the_same_ip() {
+    let (port, hits) = serve(ok_response("ok")).await;
+    let egress = internal(&["127.0.0.1"]);
+    for url in [
+        format!("http://2130706433:{port}/"),
+        format!("http://127.0.0.1:{port}/"),
+    ] {
+        let resp = egress.send(get(&url)).await.unwrap();
+        assert_eq!(resp.status, 200, "{url}");
+    }
+    assert_eq!(hits.load(Ordering::SeqCst), 2);
+    // ほかの内部の IP には送らない。
+    let err = egress
+        .send(get(&format!("http://[::1]:{port}/")))
+        .await
+        .unwrap_err();
+    assert_eq!(err.code, DESTINATION_INTERNAL);
+}
+
 /// リンクローカルとクラウドのメタデータは、管理者が許していても断る（名前・IP の書き方によらない）。
 #[tokio::test]
 async fn link_local_and_metadata_are_refused_even_when_allowed() {
     let meta: SocketAddr = "169.254.169.254:80".parse().unwrap();
     let resolver = MapResolver::new(&[("metadata.invalid", &[meta])]);
-    let egress = allow(&[
+    let egress = internal(&[
         "metadata.invalid",
         "169.254.169.254",
         "[::ffff:a9fe:a9fe]",
@@ -225,7 +316,7 @@ async fn redirects_are_not_followed() {
         "HTTP/1.1 302 Found\r\nlocation: http://127.0.0.1:{target}/\r\ncontent-length: 0\r\nconnection: close\r\n\r\n"
     ))
     .await;
-    let egress = allow(&["127.0.0.1"]);
+    let egress = internal(&["127.0.0.1"]);
     let resp = egress
         .send(get(&format!("http://127.0.0.1:{port}/")))
         .await
@@ -239,7 +330,7 @@ async fn redirects_are_not_followed() {
 #[tokio::test]
 async fn bodies_are_cut_at_the_limit() {
     let (port, _) = serve(ok_response(&"a".repeat(100))).await;
-    let egress = allow(&["127.0.0.1"]).with_max_body(10);
+    let egress = internal(&["127.0.0.1"]).with_max_body(10);
     let resp = egress
         .send(get(&format!("http://127.0.0.1:{port}/")))
         .await

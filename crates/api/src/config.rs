@@ -393,6 +393,9 @@ impl AppConfig {
         Self::check_llm_limits(&self.llm)?;
         self.data.stream.to_stream_config()?;
         Self::check_llm_chatgpt(&self.llm)?;
+        // 内部の送り先は読めない項目を黙って外さない（社内の送り先を書いたつもりで、実行のときに断られる・D-135）。
+        crate::workflow_runtime::check_internal_hosts(&self.workflow.http_internal_hosts)
+            .map_err(ConfigError::Invalid)?;
         // 必須 URL。
         let mut urls: Vec<(&str, &str)> = vec![
             ("auth.issuer", self.auth.issuer.as_str()),

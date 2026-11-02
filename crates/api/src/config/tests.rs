@@ -4,6 +4,8 @@ use super::*;
 
 // RAG の設定（`SHIKI__RAG__*`）の読み込み。
 mod rag_config;
+// ワークフローの設定（`workflow.*`）の確かめ。
+mod workflow_config;
 
 #[test]
 fn both_tenancies_supported() {

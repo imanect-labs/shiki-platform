@@ -74,7 +74,8 @@ pub const HTTP_RETRYABLE_STATUS: &str = "http_retryable_status";
 /// 送り先の名前が内部のネットワークの IP にもつながるので送らなかったときの code（ポートの送り口が名前解決の後に
 /// 断る・permanent・BUG-181・D-135）。
 ///
-/// 管理者がデプロイ設定 `workflow.http_allowlist` にそのホストをそのまま書いたときだけ、内部の IP へ送れる。
+/// 管理者がデプロイ設定 `workflow.http_internal_hosts`（内部の送り先・送れる先の許可 `http_allowlist` とは別）に
+/// そのホストを書いたときだけ、内部の IP へ送れる。
 pub const DESTINATION_INTERNAL: &str = "destination_internal";
 
 /// 送り先の名前がリンクローカル・クラウドのメタデータの IP につながるので送らなかったときの code（管理者の許可が
