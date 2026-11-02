@@ -339,3 +339,54 @@ test("「レコードをまとめて登録」で同じレコードを探す列�
   await save(page);
   expect(await savedParams(page, id, "load")).not.toHaveProperty("match_on");
 });
+
+test("前の結果から指定するテーブルでも、同じレコードを探す列をキーで打って実行できる（GAP-16）", async ({ page, browser }) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await loginViaKeycloak(page);
+  const items = await itemsTable(page);
+  const id = await createWorkflow(
+    page,
+    [
+      {
+        id: "restock",
+        type: "data.record.upsert",
+        label: "入庫を記録",
+        params: {
+          table: { $from: "input", path: "/table" },
+          match_on: "",
+          data: { sku: { $from: "input", path: "/sku" } },
+          add: { stock: { $from: "input", path: "/qty" } },
+        },
+      },
+    ],
+    { type: "object", properties: { table: { type: "string" }, sku: { type: "string" }, qty: { type: "number" } } },
+  );
+
+  // テーブルが前の結果で決まるので列を読めない。選ぶ代わりにキーを打つ欄が出る。
+  await page.goto(`/workflows/${id}`);
+  const panel = page.getByRole("complementary", { name: "ブロックの設定" });
+  await page.getByTestId("rf__node-restock").click({ position: { x: 60, y: 24 } });
+  const typed = panel.getByTestId("match-on-input");
+  await expect(typed).toBeVisible({ timeout: 30_000 });
+  await expect(panel.getByTestId("match-on-select")).toHaveCount(0);
+  await expect(panel.getByText("重複を許さない列のキーを入れます。", { exact: false })).toBeVisible();
+  await typed.fill("sku");
+  await save(page);
+  expect((await savedParams(page, id, "restock")).match_on).toBe("sku");
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/upsert-typed-match-on-pc.png` });
+
+  // 打った列で探す: 同じ品番で 2 回実行しても 1 件のまま在庫に足す。
+  expect(await runToEnd(page, id, { table: items.id, sku: "E-1", qty: 2 })).toBe("succeeded");
+  expect(await runToEnd(page, id, { table: items.id, sku: "E-1", qty: 3 })).toBe("succeeded");
+  const rows = await records(page, items.id);
+  expect(rows.map((r) => `${r.data.sku}:${r.data.stock}`)).toEqual(["E-1:5"]);
+
+  // スマホ幅の一覧から開いた設定でも、キーを打つ欄が出て横にはみ出さない。
+  const phone = await phonePage(browser, page);
+  const sheet = await openOnPhone(phone, id, "入庫を記録");
+  await expect(sheet.getByTestId("match-on-input")).toHaveValue("sku", { timeout: 30_000 });
+  expect(await sheet.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+  await sheet.getByTestId("match-on-input").scrollIntoViewIfNeeded();
+  if (SHOTS) await phone.screenshot({ path: `${SHOTS}/upsert-typed-match-on-phone.png` });
+});

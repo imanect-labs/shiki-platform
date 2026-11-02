@@ -17,7 +17,7 @@ import type { ValueExpr } from "@/generated/workflow-ir";
 import type { DataQuery, DataTable } from "@/lib/data-api";
 import { buildFilter, resolveColumns, splitFilter } from "@/lib/data-view";
 import { cn } from "@/lib/utils";
-import { Field, FieldSelectTrigger, MoreInfo, NumberInput } from "./common";
+import { Field, FieldInput, FieldSelectTrigger, MoreInfo, NumberInput } from "./common";
 import { DataTableSelect, isFsmTable, NoFsmTableNote, useDataTables, type DataTables } from "./data-tables";
 import type { FormProps } from "./forms-basic";
 import { paramsOf, patchParams } from "./params";
@@ -92,13 +92,19 @@ function TableField({
 }
 
 /// ブロックの対象テーブル（固定値で束縛したもの）と、選ぶ欄に渡すテーブルの一覧（束縛済みのテーブルが一覧の
-/// 200 件に入らなくても、1 件ずつ取って足す・BUG-68）。
-function useNodeTable(node: FormProps["node"]): { source: DataTables; table: DataTable | null } {
+/// 200 件に入らなくても、1 件ずつ取って足す・BUG-68）。`unknown` は、テーブルが決まっているのに列を読めないとき
+/// （前の結果から指定する・見えない・読み込みの失敗）。列から選ぶ欄は、代わりにキーを打つ欄にする。
+function useNodeTable(node: FormProps["node"]): { source: DataTables; table: DataTable | null; unknown: boolean } {
   const p = paramsOf<{ table: ValueExpr }>(node);
   const literal = typeof p.table === "string" ? p.table : null;
   const source = useDataTables({ bound: [literal] });
   const found = source.lookup(literal);
-  return { source, table: found.state === "ok" ? found.table : null };
+  const dynamic = p.table !== undefined && p.table !== null && literal === null;
+  return {
+    source,
+    table: found.state === "ok" ? found.table : null,
+    unknown: dynamic || found.state === "unreadable" || found.state === "failed",
+  };
 }
 
 /// 「項目を並べる」で選ぶ列（書ける列だけ・BUG-118）。状態の進め方のあるテーブルの状態の列も出さない（追加では
@@ -138,22 +144,41 @@ function isEmptyValue(v: unknown): boolean {
 const PICK_NONE = "__none__";
 
 /// 同じレコードを探す列（重複を許さない列だけ・キーで追加か更新とまとめて登録・GAP-16）。保存時にもサーバーが同じ
-/// 決まりで照らす（重複を許す列は ir.match_not_unique）。
+/// 決まりで照らす（重複を許す列は ir.match_not_unique）。テーブルの列を読めないとき（`unknown`・前の結果から指定する
+/// テーブルなど）は、選ぶ代わりに列のキーを打つ（`typedHint` を添える）。
 function MatchOnField({
   node,
   dispatch,
   fieldErrors,
   table,
+  unknown,
   optional,
   hint,
-}: FormProps & { table: DataTable | null; optional?: boolean; hint: string }) {
+  typedHint,
+}: FormProps & { table: DataTable | null; unknown: boolean; optional?: boolean; hint: string; typedHint: string }) {
   const p = paramsOf<{ match_on?: string }>(node);
   const value = (p.match_on ?? "").trim();
+  const label = optional ? "同じレコードを探す列（省略可）" : "同じレコードを探す列";
+  if (unknown) {
+    return (
+      <Field label={label} hint={typedHint} error={fieldErrors.get("match_on")}>
+        <FieldInput
+          value={p.match_on ?? ""}
+          onChange={(e) => {
+            const v = e.target.value;
+            patchParams(dispatch, node, { match_on: v.trim() === "" && optional ? undefined : v });
+          }}
+          placeholder="例: sku"
+          className="h-8 font-mono text-[13px]"
+          data-testid="match-on-input"
+        />
+      </Field>
+    );
+  }
   const status = table?.schema.fsm_ref ? table.schema.status_field : null;
   const options = table
     ? table.schema.fields.filter((f) => f.unique && !isDerived(f.type) && !isCreatedBy(f.type) && f.key !== status)
     : [];
-  const label = optional ? "同じレコードを探す列（省略可）" : "同じレコードを探す列";
   const name = (f: { key: string; display_name?: string | null }) =>
     f.display_name && f.display_name !== f.key ? `${f.display_name}（${f.key}）` : f.key;
   const known = options.some((f) => f.key === value);
@@ -421,7 +446,7 @@ export function DataRecordUpdateForm(props: FormProps) {
 /// 「レコードを追加か更新」（GAP-16）: 同じレコードを探す列の値が同じレコードがあれば書き換え、なければ追加する。
 export function DataRecordUpsertForm(props: FormProps) {
   const { node, dispatch, refCandidates, inMapRegion, fieldErrors } = props;
-  const { source, table } = useNodeTable(node);
+  const { source, table, unknown } = useNodeTable(node);
   const p = paramsOf<NodeParamsByType["data.record.upsert"]>(node);
   return (
     <div className="space-y-4">
@@ -429,7 +454,9 @@ export function DataRecordUpsertForm(props: FormProps) {
       <MatchOnField
         {...props}
         table={table}
+        unknown={unknown}
         hint="この列の値が同じレコードがあれば書き換え、なければ追加します。選べるのは、重複を許さない列だけです。"
+        typedHint="重複を許さない列のキーを入れます。この列の値が同じレコードがあれば書き換え、なければ追加します。"
       />
       <ValueExprInput
         label="入れる値"
@@ -554,7 +581,7 @@ const ABORT_ON_INVALID_LABEL = "1 件でも合わなければ、どれも登録�
 
 export function DataBulkUpsertForm(props: FormProps) {
   const { node, dispatch, refCandidates, inMapRegion, fieldErrors } = props;
-  const { source, table } = useNodeTable(node);
+  const { source, table, unknown } = useNodeTable(node);
   const p = paramsOf<NodeParamsByType["data.bulk_upsert"]>(node);
   const matched = Boolean(p.match_on?.trim());
   return (
@@ -563,8 +590,10 @@ export function DataBulkUpsertForm(props: FormProps) {
       <MatchOnField
         {...props}
         table={table}
+        unknown={unknown}
         optional
         hint="選ぶと、ID の無いレコードはこの列の値で探し、あれば更新、なければ追加します。同じ値のレコードが 2 件にならないので、取り込み直しても増えません。"
+        typedHint="重複を許さない列のキーを入れると、ID の無いレコードはこの列の値で探し、あれば更新、なければ追加します。"
       />
       <ValueExprInput
         label="登録する行"
