@@ -287,6 +287,15 @@ const TOOL_DISPLAY: Record<ToolName, ToolDisplay> = {
     verb: "読み込み",
     failed: "読み込めませんでした",
   },
+  // 既存のワークフローを名前で探す（GAP-31）。語があれば「「経費」でワークフローを検索中」。
+  list_workflows: {
+    icon: Workflow,
+    category: "search",
+    lead: (t) => (t ? `${t}でワークフローを` : "ワークフローを"),
+    verb: "検索",
+    suru: true,
+    target: quoted("query"),
+  },
 
   // ノート（md ドキュメント）。
   "document.read": {
