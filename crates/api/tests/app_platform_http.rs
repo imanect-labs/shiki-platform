@@ -91,6 +91,66 @@ impl AuthzClient for AllowAll {
     }
 }
 
+/// check だけが失敗する認可（OpenFGA の一時的な障害・BatchCheck も check を通る）。
+struct CheckFails;
+
+#[async_trait]
+impl AuthzClient for CheckFails {
+    async fn check(
+        &self,
+        _s: &Subject,
+        _r: Relation,
+        _o: &FgaObject,
+        _c: Consistency,
+    ) -> Result<bool, AuthzError> {
+        Err(AuthzError::Unexpected {
+            status: 503,
+            body: "unavailable".into(),
+        })
+    }
+    async fn write_tuple(
+        &self,
+        s: &Subject,
+        r: Relation,
+        o: &FgaObject,
+    ) -> Result<bool, AuthzError> {
+        AllowAll.write_tuple(s, r, o).await
+    }
+    async fn delete_tuple(
+        &self,
+        s: &Subject,
+        r: Relation,
+        o: &FgaObject,
+    ) -> Result<bool, AuthzError> {
+        AllowAll.delete_tuple(s, r, o).await
+    }
+    async fn read_tuples(
+        &self,
+        o: &FgaObject,
+        r: Option<Relation>,
+    ) -> Result<Vec<ReadTupleKey>, AuthzError> {
+        AllowAll.read_tuples(o, r).await
+    }
+    async fn list_objects(
+        &self,
+        s: &Subject,
+        r: Relation,
+        o: ObjectType,
+    ) -> Result<Vec<String>, AuthzError> {
+        AllowAll.list_objects(s, r, o).await
+    }
+    async fn delete_object_tuples(&self, o: &FgaObject) -> Result<u32, AuthzError> {
+        AllowAll.delete_object_tuples(o).await
+    }
+    async fn read_subject_objects(
+        &self,
+        s: &Subject,
+        o: ObjectType,
+    ) -> Result<Vec<String>, AuthzError> {
+        AllowAll.read_subject_objects(s, o).await
+    }
+}
+
 struct FakeStore;
 
 #[async_trait]
@@ -570,7 +630,22 @@ async fn install_import_uninstall_over_http() {
         )
         .await
         .unwrap();
-    let app = build_router(state_with(pool.clone(), sessions));
+    let state = state_with(pool.clone(), sessions);
+    let app = build_router(state.clone());
+    // 自動実行の失敗の持ち主の確かめ（OpenFGA）だけが失敗する同じサーバー。
+    let fga_down = {
+        let mut s = state.clone();
+        s.installs = Arc::new(app_platform::InstallService::new(
+            pool.clone(),
+            app_platform::Registry::new(pool.clone()),
+            Arc::clone(&s.mini_app_code),
+            Arc::clone(&s.data),
+            Arc::new(CheckFails),
+            None,
+            vec![],
+        ));
+        build_router(s)
+    };
     let cookie = "shiki_session=sid-inst.default; shiki_csrf=csrf";
     let post = |uri: String, body: serde_json::Value| {
         Request::builder()
@@ -668,7 +743,7 @@ async fn install_import_uninstall_over_http() {
     assert_eq!(listed["table_count"], 1, "{listed}");
     // 自動実行の失敗が無いアプリには function_failures を付けない（GAP-60）。
     assert!(listed.get("function_failures").is_none(), "{listed}");
-    assert_function_failures_are_listed(&app, cookie, &pool, &id).await;
+    assert_function_failures_are_listed(&app, &fga_down, cookie, &pool, &id).await;
 
     // アプリのテーブルを使える部署・グループ（GAP-68）: 読める・足せる。ディレクトリに居ない部署は 400。
     let roles = |method: &str, body: Option<serde_json::Value>| {
@@ -1331,9 +1406,11 @@ async fn b1_install_tokens_reach_the_gateway_in_multi_tenancy() {
 }
 
 /// 自動実行の直近の失敗は、インストールの一覧の `function_failures` に添えて返す（持ち主にだけ・GAP-60。持ち主で
-/// ない人に返さないことは、実 OpenFGA の miniapp_b2_tests が確かめる）。
+/// ない人に返さないことは、実 OpenFGA の miniapp_b2_tests が確かめる）。持ち主かを確かめられない（OpenFGA の一時的な
+/// 障害・`fga_down`）ときも一覧は返し、失敗を添えない（持ち主でないときと同じ見え方）。
 async fn assert_function_failures_are_listed(
     app: &axum::Router,
+    fga_down: &axum::Router,
     cookie: &str,
     pool: &PgPool,
     app_id: &str,
@@ -1361,19 +1438,22 @@ async fn assert_function_failures_are_listed(
         )
         .await
         .unwrap();
-    let resp = app
-        .clone()
-        .oneshot(
+    let list = |router: &axum::Router| {
+        router.clone().oneshot(
             Request::builder()
                 .uri("/apps/installations")
                 .header(COOKIE, cookie)
                 .body(Body::empty())
                 .unwrap(),
         )
-        .await
-        .unwrap();
+    };
+    let resp = list(app).await.unwrap();
     let body: serde_json::Value =
         serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let down = list(fga_down).await.unwrap();
+    let down_status = down.status();
+    let down_body: serde_json::Value =
+        serde_json::from_slice(&down.into_body().collect().await.unwrap().to_bytes()).unwrap();
     sqlx::query("DELETE FROM app_function_failure WHERE tenant_id = $1 AND app_id = $2")
         .bind(&tenant)
         .bind(app_uuid)
@@ -1392,6 +1472,15 @@ async fn assert_function_failures_are_listed(
     assert_eq!(failures[0]["trigger"], "cron");
     assert_eq!(failures[0]["message"], "金額が空です");
     assert_eq!(failures[0]["failures"], 1);
+
+    assert_eq!(down_status, StatusCode::OK, "{down_body}");
+    let listed = down_body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["app_id"] == app_id)
+        .expect("OpenFGA が一時的に落ちていても一覧は返す");
+    assert!(listed.get("function_failures").is_none(), "{listed}");
 }
 
 /// 本体の panic を捕まえる（片付けをしてから落とすため）。

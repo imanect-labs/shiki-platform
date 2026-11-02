@@ -129,7 +129,15 @@ pub async fn list_installations(
         .map_err(|e| ApiError::Internal(format!("installations: {e}")))?;
     let ids: Vec<Uuid> = items.iter().map(|i| i.app_id).collect();
     let counts = state.data.app_table_counts(&ctx, &ids).await?;
-    let failures = state.installs.function_failures(&ctx, &ids).await?;
+    // 失敗の添え物を読めない（OpenFGA の一時的な障害など）ときも、一覧は返す（添えないのは持ち主でないときと同じ
+    // 見え方なので、明かすことは増えない）。
+    let failures = match state.installs.function_failures(&ctx, &ids).await {
+        Ok(failures) => failures,
+        Err(e) => {
+            tracing::warn!(error = %e, "自動実行の関数の失敗を読めません（一覧には添えません）");
+            std::collections::HashMap::new()
+        }
+    };
     let items: Vec<serde_json::Value> = items
         .into_iter()
         .map(|i| {
