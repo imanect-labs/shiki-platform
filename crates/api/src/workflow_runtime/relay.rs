@@ -7,7 +7,8 @@
 //! 保存されたファイルを読めるか（[`SavedFileGate`]・D-50）④因果の鎖（自分の保存で自分を起こさない・
 //! workflow.start の子も同じ・D-26）を通して発火する。新しい版の保存（op = update）は同じファイルの続く
 //! 保存を 1 回にまとめてから起動する（`SchedulerStore::defer_event_trigger`・D-38）。まとめて待たせた発火と
-//! 起動に一時失敗した発火は、起動する時点にも③を確かめ直す（[`retry_event_firings`]・BUG-50）。
+//! 起動に一時失敗した発火は、起動する時点にも③を確かめ直す（[`retry_event_firings`]・BUG-50）。データ変更トリガの
+//! 再試行も、起動する時点の委譲元の見え方で変更を作り直す（BUG-75）。
 
 use std::sync::Arc;
 
@@ -100,14 +101,15 @@ fn tick_result<const N: usize>(
 /// ものを監査に残す（D-21）。relay の tick と、結合テストが本番と同じ経路で起こすのに使う。
 ///
 /// ファイル保存トリガの発火は、起動する時点にも workflow プリンシパルが保存されたファイルを読めるかを確かめ
-/// 直す（[`FileGatedLauncher`]・BUG-50）。待たせていた間（最長 10 分）・再試行を待つ間に委譲やフォルダの共有が
-/// 外れていたら起動しない（読めないファイルの id・書いた人を run の入力に載せない）。
+/// 直す（[`GatedLauncher`]・BUG-50）。待たせていた間（最長 10 分）・再試行を待つ間に委譲やフォルダの共有が
+/// 外れていたら起動しない（読めないファイルの id・書いた人を run の入力に載せない）。データ変更トリガの発火は、
+/// 起動する時点の委譲元の見え方で変更を作り直して起動する（見えなければ起動しない・BUG-75）。
 pub async fn retry_event_firings(
     deps: &RelayDeps<'_>,
     now: chrono::DateTime<chrono::Utc>,
     tenant_scope: Option<&str>,
 ) -> Result<(), anyhow::Error> {
-    let launcher = FileGatedLauncher { deps };
+    let launcher = GatedLauncher { deps };
     let report = deps
         .sched
         .retry_pending_firings(now, tenant_scope, &launcher)
@@ -134,54 +136,77 @@ pub async fn retry_event_firings(
     Ok(())
 }
 
-/// 待たせた発火・再試行の起動の前に、ファイル保存トリガなら workflow プリンシパルの閲覧を確かめ直す起動口
-/// （relay の起動口を包む・[`retry_event_firings`]・BUG-50）。
+/// 待たせた発火・再試行の起動の前に、workflow プリンシパル（委譲）がきっかけの対象をまだ見られるかを確かめ直す起動口
+/// （relay の起動口を包む・[`retry_event_firings`]・BUG-50・BUG-75）。
 ///
-/// 確かめるのは relay の発火の前と同じ [`SavedFileGate::admits_trigger`]（D-50）。読めなければ起動を見送り
-/// （再試行しない・`skipped`）、確かめられない一時障害は起動の一時失敗として再試行に回す。ファイル保存
-/// トリガでない発火（データ変更）はそのまま起動する。
-struct FileGatedLauncher<'d, 'a> {
+/// - ファイル保存トリガ: relay の発火の前と同じ [`SavedFileGate::admits_trigger`]（D-50）で閲覧を確かめる。
+/// - データ変更トリガ: 起動の時点の委譲元の見え方で変更を作り直し、トリガの filter に合うときだけ、作り直したペイロード
+///   で起動する（[`super::relay_data::recheck_data_firing`]・読めなくなった行・列を run の入力に載せない）。
+///
+/// 見られなければ起動を見送り（再試行しない・`skipped`）、確かめられない一時障害は起動の一時失敗として再試行に回す。
+struct GatedLauncher<'d, 'a> {
     deps: &'d RelayDeps<'a>,
 }
 
-/// 待たせた発火を起動する前の確かめ方（[`FileGatedLauncher::admits`]）。
+/// 待たせた発火を起動する前の確かめ方（[`GatedLauncher::admits`]）。
 #[derive(Debug, PartialEq, Eq)]
 enum LaunchGate {
-    /// ファイル保存トリガでない（データ変更）。そのまま起動する。
+    /// ファイル保存・データ変更のトリガでない。そのまま起動する。
     Launch,
     /// トリガか登録が消えた（新しい版の有効化でトリガが外れた・登録が消えたなど）。閲覧を確かめないまま起動せず、
     /// 有効化されていないものとして見送る（fail-closed）。
     Gone,
     /// ファイル保存トリガ。登録の org で、workflow プリンシパルの閲覧を確かめる。
     CheckFile { org: String },
+    /// データ変更トリガ。登録の org で、委譲元の見え方で変更を作り直す（`table_id` は購読するテーブル）。
+    CheckData {
+        org: String,
+        source: EventSource,
+        table_id: Option<Uuid>,
+        filter: Option<Value>,
+    },
+}
+
+/// 確かめ方を決めるトリガの行（`source`・登録の `org`・購読するテーブル・filter）。
+#[derive(Debug, sqlx::FromRow)]
+struct GateTrigger {
+    source: Option<String>,
+    org: String,
+    table_id: Option<String>,
+    filter: Option<sqlx::types::Json<Value>>,
 }
 
 impl LaunchGate {
-    /// トリガの行（`source`・登録の `org`）から確かめ方を決める。source は語彙の単一定義と比べる。
-    fn of(trigger: Option<(Option<String>, String)>) -> Self {
-        match trigger {
-            None => LaunchGate::Gone,
-            Some((source, org))
-                if source.as_deref() == Some(EventSource::StorageWrite.as_str()) =>
-            {
-                LaunchGate::CheckFile { org }
-            }
-            Some(_) => LaunchGate::Launch,
+    /// トリガの行から確かめ方を決める。source は語彙の単一定義と比べる。
+    fn of(trigger: Option<GateTrigger>) -> Self {
+        let Some(t) = trigger else {
+            return LaunchGate::Gone;
+        };
+        match t.source.as_deref().and_then(EventSource::parse) {
+            Some(EventSource::StorageWrite) => LaunchGate::CheckFile { org: t.org },
+            Some(source) if source.is_data() => LaunchGate::CheckData {
+                org: t.org,
+                source,
+                table_id: t.table_id.as_deref().and_then(|s| Uuid::parse_str(s).ok()),
+                filter: t.filter.map(|j| j.0).filter(|v| !v.is_null()),
+            },
+            _ => LaunchGate::Launch,
         }
     }
 }
 
-impl FileGatedLauncher<'_, '_> {
-    /// 起動してよいか（`None` = 起動する・`Some` = その理由で見送る）。
+impl GatedLauncher<'_, '_> {
+    /// 起動してよいか（`Ok` = そのペイロードで起動する・`Err` = その理由で見送る）。
     async fn admits(
         &self,
         tenant_id: &str,
         workflow_id: Uuid,
         trigger_id: &str,
         payload: &Value,
-    ) -> Result<Option<SkipReason>, anyhow::Error> {
-        let trigger: Option<(Option<String>, String)> = sqlx::query_as(
-            "SELECT t.source, r.org FROM workflow_trigger t \
+    ) -> Result<Result<Option<Value>, SkipReason>, anyhow::Error> {
+        let trigger: Option<GateTrigger> = sqlx::query_as(
+            "SELECT t.source, r.org, t.spec->'scope'->>'table' AS table_id, t.spec->'filter' AS filter \
+             FROM workflow_trigger t \
              JOIN workflow_registration r \
                ON r.tenant_id = t.tenant_id AND r.workflow_id = t.workflow_id \
              WHERE t.tenant_id = $1 AND t.trigger_id = $2 AND t.workflow_id = $3",
@@ -191,16 +216,39 @@ impl FileGatedLauncher<'_, '_> {
         .bind(workflow_id)
         .fetch_optional(self.deps.db)
         .await?;
-        let unreadable = || {
-            Some(SkipReason::DelegationInvalid(
-                "ワークフローが保存されたファイルを読めなくなりました".into(),
-            ))
+        let t = EventTriggerRef {
+            tenant_id: tenant_id.to_string(),
+            trigger_id: trigger_id.to_string(),
+            workflow_id,
         };
         let org = match LaunchGate::of(trigger) {
-            LaunchGate::Launch => return Ok(None),
+            LaunchGate::Launch => return Ok(Ok(None)),
             // 再試行は消えたトリガを先に見送るが、その確かめと起動の間に消えたものもここで止める。
-            LaunchGate::Gone => return Ok(Some(SkipReason::NotEnabled)),
+            LaunchGate::Gone => return Ok(Err(SkipReason::NotEnabled)),
+            LaunchGate::CheckData {
+                org,
+                source,
+                table_id,
+                filter,
+            } => {
+                let spec = super::relay_data::DataTriggerSpec {
+                    org,
+                    source,
+                    table_id,
+                    filter,
+                };
+                return Ok(
+                    super::relay_data::recheck_data_firing(self.deps, &t, spec, payload)
+                        .await?
+                        .map(Some),
+                );
+            }
             LaunchGate::CheckFile { org } => org,
+        };
+        let unreadable = || {
+            Err(SkipReason::DelegationInvalid(
+                "ワークフローが保存されたファイルを読めなくなりました".into(),
+            ))
         };
         // ペイロードにファイルが無ければ確かめようがないので起動しない（fail-closed）。
         let Some(file_id) = payload
@@ -215,13 +263,8 @@ impl FileGatedLauncher<'_, '_> {
             file_id,
             trace_id: None,
         };
-        let t = EventTriggerRef {
-            tenant_id: tenant_id.to_string(),
-            trigger_id: trigger_id.to_string(),
-            workflow_id,
-        };
         Ok(if gate.admits_trigger(&t, &org).await? {
-            None
+            Ok(None)
         } else {
             unreadable()
         })
@@ -229,7 +272,7 @@ impl FileGatedLauncher<'_, '_> {
 }
 
 #[async_trait]
-impl RunLauncher for FileGatedLauncher<'_, '_> {
+impl RunLauncher for GatedLauncher<'_, '_> {
     async fn launch(
         &self,
         tenant_id: &str,
@@ -243,7 +286,8 @@ impl RunLauncher for FileGatedLauncher<'_, '_> {
             .admits(tenant_id, workflow_id, trigger_id, payload)
             .await
         {
-            Ok(None) => {
+            // 作り直したペイロードがあれば、それで起動する（データ変更・BUG-75）。
+            Ok(Ok(fresh)) => {
                 self.deps
                     .launcher
                     .launch(
@@ -251,12 +295,12 @@ impl RunLauncher for FileGatedLauncher<'_, '_> {
                         workflow_id,
                         trigger_kind,
                         trigger_id,
-                        payload,
+                        fresh.as_ref().unwrap_or(payload),
                         event_id,
                     )
                     .await
             }
-            Ok(Some(reason)) => LaunchOutcome::Skipped(reason),
+            Ok(Err(reason)) => LaunchOutcome::Skipped(reason),
             Err(e) => LaunchOutcome::Failed(format!("{e}")),
         }
     }
@@ -453,7 +497,7 @@ impl SavedFileGate<'_> {
 
     /// ファイル保存トリガを発火してよいか（workflow プリンシパルが委譲でファイルを読めるか・D-50）。
     ///
-    /// relay の発火の前（[`relay_file_triggers`]）と、待たせた発火・再試行の起動の前（[`FileGatedLauncher`]・
+    /// relay の発火の前（[`relay_file_triggers`]）と、待たせた発火・再試行の起動の前（[`GatedLauncher`]・
     /// BUG-50）の両方がこれで確かめる。
     async fn admits_trigger(&self, t: &EventTriggerRef, org: &str) -> Result<bool, anyhow::Error> {
         let ctx = authz::AuthContext::for_workflow(
@@ -571,20 +615,55 @@ mod tests {
     }
 
     /// 待たせた発火の起動の前の確かめ方: トリガか登録が消えていたら閲覧を確かめないまま起動せず見送り、ファイル保存
-    /// トリガ（語彙の `storage.write`）だけ閲覧を確かめ、ほかのトリガはそのまま起動する（BUG-50）。
+    /// トリガ（語彙の `storage.write`）は閲覧を確かめ（BUG-50）、データ変更トリガは委譲元の見え方で変更を作り直す
+    /// （購読するテーブルと filter を渡す・BUG-75）。ほかのトリガはそのまま起動する。
     #[test]
     fn launch_gate_fails_closed_when_the_trigger_is_gone() {
+        let row = |source: Option<&str>, table: Option<&str>, filter: Option<Value>| GateTrigger {
+            source: source.map(str::to_string),
+            org: "acme".into(),
+            table_id: table.map(str::to_string),
+            filter: filter.map(sqlx::types::Json),
+        };
         assert_eq!(LaunchGate::of(None), LaunchGate::Gone);
         assert_eq!(
-            LaunchGate::of(Some((Some("storage.write".into()), "acme".into()))),
+            LaunchGate::of(Some(row(Some("storage.write"), None, None))),
             LaunchGate::CheckFile { org: "acme".into() }
         );
+        let table = "66666666-7777-8888-9999-aaaaaaaaaaaa";
+        let filter = json!({ "cmp": { "left": { "$from": "trigger", "path": "/to" }, "op": "eq", "right": "done" } });
+        for (source, kind) in [
+            ("data.record.created", EventSource::DataRecordCreated),
+            ("data.record.updated", EventSource::DataRecordUpdated),
+            ("data.transition", EventSource::DataTransition),
+        ] {
+            assert_eq!(
+                LaunchGate::of(Some(row(Some(source), Some(table), Some(filter.clone())))),
+                LaunchGate::CheckData {
+                    org: "acme".into(),
+                    source: kind,
+                    table_id: Some(Uuid::parse_str(table).unwrap()),
+                    filter: Some(filter.clone()),
+                },
+                "{source}"
+            );
+        }
+        // 読めないテーブル・filter の null は、テーブル無し・filter 無しとして渡す（起動の前に断る）。
         assert_eq!(
-            LaunchGate::of(Some((Some("data.record.created".into()), "acme".into()))),
-            LaunchGate::Launch
+            LaunchGate::of(Some(row(
+                Some("data.record.created"),
+                Some("x"),
+                Some(Value::Null)
+            ))),
+            LaunchGate::CheckData {
+                org: "acme".into(),
+                source: EventSource::DataRecordCreated,
+                table_id: None,
+                filter: None,
+            }
         );
         assert_eq!(
-            LaunchGate::of(Some((None, "acme".into()))),
+            LaunchGate::of(Some(row(None, None, None))),
             LaunchGate::Launch
         );
     }

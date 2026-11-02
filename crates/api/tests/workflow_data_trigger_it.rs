@@ -66,6 +66,8 @@ impl workflow_engine::CapabilityAudit for NoopAudit {
 struct Env {
     pool: sqlx::PgPool,
     fga: Arc<dyn AuthzClient>,
+    /// このテストの OpenFGA のストア（base_url・store id・[`Env::delete_store`]）。
+    fga_store: (String, String),
     storage: Arc<storage::StorageService>,
     data: Arc<DataStore>,
     fsms: Arc<FsmStore>,
@@ -114,18 +116,18 @@ async fn setup() -> Option<Env> {
         .await
         .expect("migrate");
     let http = reqwest::Client::new();
-    let fga = Arc::new(
-        OpenFgaClient::connect(
-            http.clone(),
-            &OpenFgaConfig {
-                base_url: fga_url,
-                store_name: format!("shiki-wf-data-trigger-{}", Uuid::new_v4()),
-            },
-            &authz::model::default_model(),
-        )
-        .await
-        .expect("fga"),
-    ) as Arc<dyn AuthzClient>;
+    let client = OpenFgaClient::connect(
+        http.clone(),
+        &OpenFgaConfig {
+            base_url: fga_url.clone(),
+            store_name: format!("shiki-wf-data-trigger-{}", Uuid::new_v4()),
+        },
+        &authz::model::default_model(),
+    )
+    .await
+    .expect("fga");
+    let fga_store = (fga_url, client.store_id().to_string());
+    let fga = Arc::new(client) as Arc<dyn AuthzClient>;
     let s3 = storage::S3Config {
         internal_endpoint: s3_endpoint.clone(),
         public_endpoint: s3_endpoint,
@@ -216,6 +218,7 @@ async fn setup() -> Option<Env> {
     Some(Env {
         pool,
         fga,
+        fga_store,
         storage,
         data,
         fsms,
@@ -457,6 +460,92 @@ impl Env {
                 .await
                 .unwrap();
         }
+    }
+
+    /// このテストの OpenFGA のストアを消す（書いたタプルも消える・[`Self::cleanup`] の後に呼ぶ）。
+    async fn delete_store(&self) {
+        let (url, id) = &self.fga_store;
+        let resp = reqwest::Client::new()
+            .delete(format!("{url}/stores/{id}"))
+            .send()
+            .await
+            .expect("OpenFGA delete store");
+        assert!(
+            resp.status().is_success(),
+            "delete store: {}",
+            resp.status()
+        );
+    }
+
+    /// 起動口を差し替えて、テナントのデータ変更がすべて workflow へ配送されるまで relay を回す（ワーカーは回さない）。
+    async fn relay_with(&self, launcher: &dyn workflow_engine::RunLauncher) {
+        let sched = SchedulerStore::new(self.pool.clone());
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            api::workflow_runtime::relay_events(&api::workflow_runtime::RelayDeps {
+                db: &self.pool,
+                hints: &storage::event::ClaimHints::default(),
+                sched: &sched,
+                runs: &self.runs,
+                launcher,
+                storage: &self.storage,
+                data: &self.data,
+                fsms: &self.fsms,
+            })
+            .await
+            .expect("relay");
+            let pending: bool = sqlx::query_scalar(
+                "SELECT EXISTS (SELECT 1 FROM storage_event_outbox o \
+                   WHERE o.tenant_id = $1 AND o.payload ? 'event_type' \
+                     AND NOT EXISTS (SELECT 1 FROM outbox_delivery d \
+                                     WHERE d.event_id = o.id AND d.consumer = 'workflow'))",
+            )
+            .bind(&self.tenant)
+            .fetch_one(&self.pool)
+            .await
+            .unwrap();
+            if !pending {
+                return;
+            }
+            assert!(std::time::Instant::now() < deadline, "配送が終わらない");
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
+    /// 起動に一時失敗して待っている発火を、時刻を進めて本番と同じ口（`retry_event_firings`）で起動する。
+    async fn retry_firings(&self) {
+        let sched = SchedulerStore::new(self.pool.clone());
+        api::workflow_runtime::retry_event_firings(
+            &api::workflow_runtime::RelayDeps {
+                db: &self.pool,
+                hints: &storage::event::ClaimHints::default(),
+                sched: &sched,
+                runs: &self.runs,
+                launcher: &self.launcher,
+                storage: &self.storage,
+                data: &self.data,
+                fsms: &self.fsms,
+            },
+            chrono::Utc::now() + chrono::Duration::hours(1),
+            Some(&self.tenant),
+        )
+        .await
+        .expect("retry");
+    }
+
+    /// ワークフローの発火の結果（行の id → outcome）。
+    async fn firing_outcomes(&self, wf: Uuid) -> Vec<(String, String)> {
+        sqlx::query_as(
+            "SELECT o.node_id::text, f.outcome FROM trigger_firing f \
+             JOIN workflow_trigger t ON t.tenant_id = f.tenant_id AND t.trigger_id = f.trigger_id \
+             JOIN storage_event_outbox o ON o.id = f.event_id \
+             WHERE f.tenant_id = $1 AND t.workflow_id = $2 ORDER BY f.event_id",
+        )
+        .bind(&self.tenant)
+        .bind(wf)
+        .fetch_all(&self.pool)
+        .await
+        .unwrap()
     }
 
     /// run の wait の購読を relay から隠す・戻す（購読の commit の前に配送される窓を作る・BUG-42）。
@@ -1394,4 +1483,179 @@ async fn table_wait_catches_a_change_relayed_before_its_subscription_commits() {
     .unwrap();
     assert!(reconciled, "突合は 1 回だけ（済んだ印が付く）");
     env.cleanup().await;
+}
+
+/// 起動に一時失敗する起動口（relay の時点の起動を失敗させ、発火を再試行の待ちにする・BUG-75）。
+struct FailingLauncher;
+
+#[async_trait]
+impl workflow_engine::RunLauncher for FailingLauncher {
+    async fn launch(
+        &self,
+        _tenant_id: &str,
+        _workflow_id: Uuid,
+        _trigger_kind: &str,
+        _trigger_id: &str,
+        _payload: &Value,
+        _event_id: Option<i64>,
+    ) -> workflow_engine::LaunchOutcome {
+        workflow_engine::LaunchOutcome::Failed("起動の一時的な失敗（テスト）".into())
+    }
+}
+
+/// 起動に一時失敗したデータ変更トリガの発火は、再試行で起動する時点の委譲元の見え方で変更を作り直す（BUG-75）。
+///
+/// - 待つ間に委譲元が読めなくなった列は、run の入力に載らない（relay の時点の見え方のままにしない）。
+/// - 待つ間に委譲元が行を見られなくなったら、起動せずに見送る（`skipped`）。
+/// - 作り直した変更がトリガの filter に合わなくなったら、起動せずに見送る（run の入力はいつも filter に合う）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn retried_data_firings_use_the_delegators_view_at_launch() {
+    let _serial = SERIAL.lock().await;
+    let Some(env) = setup().await else { return };
+    let table = env.requests_table().await;
+    let t = table.to_string();
+    // 委譲元の alice は、relay の時点では経理（メモを読める）。行を作る bob も経理（メモを書ける）。
+    let keiri = env.alice.ns().role("keiri");
+    for who in [&env.alice, &env.bob] {
+        env.fga
+            .write_tuple(&who.subject(), Relation::Member, &keiri)
+            .await
+            .unwrap();
+    }
+    let any = env
+        .enable(
+            &json!({
+                "ir_version": 1, "name": "on-created-any",
+                "triggers": [{ "kind": "event", "source": "data.record.created", "scope": { "table": t } }],
+                "nodes": passthrough(), "edges": []
+            }),
+            table,
+            vec![],
+        )
+        .await;
+    let large = env
+        .enable(
+            &json!({
+                "ir_version": 1, "name": "on-created-large",
+                "triggers": [{ "kind": "event", "source": "data.record.created", "scope": { "table": t },
+                    "filter": { "cmp": { "left": { "$from": "trigger", "path": "/record/data/amount" }, "op": "gte", "right": 1000 } } }],
+                "nodes": passthrough(), "edges": []
+            }),
+            table,
+            vec![],
+        )
+        .await;
+    let create = |title: &str, amount: i64| {
+        let (env, title) = (&env, title.to_string());
+        async move {
+            env.data
+                .create_record(
+                    &env.bob,
+                    table,
+                    json!({ "title": title, "amount": amount, "memo": "社外秘", "applicant": "alice", "status": "draft" }),
+                    None,
+                )
+                .await
+                .unwrap()
+        }
+    };
+    let kept = create("備品", 1200).await;
+    let hidden = create("私用に変わる", 1200).await;
+    let shrunk = create("減額", 1500).await;
+    // relay の時点の起動は一時的に失敗する（発火は relay の時点の見え方のペイロードで再試行を待つ）。
+    env.relay_with(&FailingLauncher).await;
+    let waiting: Vec<Value> = sqlx::query_scalar(
+        "SELECT payload FROM trigger_firing WHERE tenant_id = $1 AND outcome = 'pending'",
+    )
+    .bind(&env.tenant)
+    .fetch_all(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        waiting.len(),
+        6,
+        "3 行 × 2 つのトリガが再試行を待つ: {waiting:?}"
+    );
+    assert!(
+        waiting
+            .iter()
+            .all(|p| p["record"]["data"]["memo"] == "社外秘"),
+        "relay の時点の見え方にはメモがある: {waiting:?}"
+    );
+
+    // 待つ間に: alice は経理を外れる（メモを読めない）。1 行は alice に見えなくなり、1 行は金額が減る。
+    env.fga
+        .delete_tuple(&env.alice.subject(), Relation::Member, &keiri)
+        .await
+        .unwrap();
+    env.data
+        .update_record(
+            &env.bob,
+            table,
+            hidden.id,
+            json!({ "applicant": "bob" }),
+            1,
+            None,
+        )
+        .await
+        .unwrap();
+    env.data
+        .update_record(&env.bob, table, shrunk.id, json!({ "amount": 5 }), 1, None)
+        .await
+        .unwrap();
+    env.retry_firings().await;
+
+    let inputs = env.run_inputs(any).await;
+    let ids: Vec<&str> = inputs
+        .iter()
+        .map(|i| i["record_id"].as_str().unwrap())
+        .collect();
+    let (kept_id, hidden_id, shrunk_id) = (
+        kept.id.to_string(),
+        hidden.id.to_string(),
+        shrunk.id.to_string(),
+    );
+    assert_eq!(ids.len(), 2, "見えなくなった行では起動しない: {inputs:?}");
+    assert!(
+        ids.contains(&kept_id.as_str()) && ids.contains(&shrunk_id.as_str()),
+        "{ids:?}"
+    );
+    for input in &inputs {
+        assert!(
+            input["record"]["data"].get("memo").is_none(),
+            "読めなくなった列は載らない: {input}"
+        );
+    }
+    let shrunk_input = inputs
+        .iter()
+        .find(|i| i["record_id"] == shrunk_id.as_str())
+        .unwrap();
+    assert_eq!(
+        shrunk_input["record"]["data"]["amount"], 5,
+        "起動の時点の見え方: {shrunk_input}"
+    );
+    let large_inputs = env.run_inputs(large).await;
+    assert_eq!(
+        large_inputs.len(),
+        1,
+        "filter に合わなくなった行では起動しない: {large_inputs:?}"
+    );
+    assert_eq!(large_inputs[0]["record_id"], kept_id.as_str());
+
+    // 起動しなかった発火は見送り（skipped）で、再試行しない。
+    let outcome = |rows: &[(String, String)], id: &str| {
+        rows.iter()
+            .find(|(r, _)| r == id)
+            .map(|(_, o)| o.clone())
+            .unwrap()
+    };
+    let any_rows = env.firing_outcomes(any).await;
+    assert_eq!(outcome(&any_rows, &hidden_id), "skipped");
+    assert_eq!(outcome(&any_rows, &kept_id), "fired");
+    let large_rows = env.firing_outcomes(large).await;
+    assert_eq!(outcome(&large_rows, &shrunk_id), "skipped");
+    assert_eq!(outcome(&large_rows, &hidden_id), "skipped");
+
+    env.cleanup().await;
+    env.delete_store().await;
 }

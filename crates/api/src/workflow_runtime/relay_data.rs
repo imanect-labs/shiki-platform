@@ -212,51 +212,13 @@ impl<'d, 'a> BatchCtx<'d, 'a> {
         Ok(())
     }
 
-    /// 主体（[`DataPort::actor`]）。ワークフロー主体は、委譲台帳で委譲元を先に確かめ（無ければ OpenFGA を
-    /// 呼ばない・剥奪の後に Deny の監査を溢れさせない）、委譲元の権限と天井で読む。
+    /// 主体（[`principal_actor`]）。
     async fn actor(
         &self,
         who: &PrincipalKey,
         table_id: Uuid,
     ) -> Result<Option<Actor>, anyhow::Error> {
-        if who.kind == "workflow" {
-            let Ok(workflow_id) = Uuid::parse_str(&who.id) else {
-                return Ok(None);
-            };
-            let ctx = AuthContext::for_workflow(self.tenant_id.clone(), who.org.clone(), &who.id);
-            let object = ctx.ns().data_table(&table_id.to_string());
-            let delegator = workflow_engine::active_delegator(
-                self.deps.db,
-                &self.tenant_id,
-                workflow_id,
-                &object,
-                Relation::Viewer,
-            )
-            .await?;
-            if delegator.is_none() {
-                return Ok(None);
-            }
-        }
-        let ec = ExecCtx {
-            tenant_id: self.tenant_id.clone(),
-            org: who.org.clone(),
-            principal: who.id.clone(),
-            principal_kind: who.kind.clone(),
-            trace_id: None,
-            run_id: None,
-            step_path: None,
-        };
-        let port = DataPort {
-            data: self.deps.data.as_ref(),
-            fsms: self.deps.fsms.as_ref(),
-            db: self.deps.db,
-        };
-        match port.actor(&ec, table_id, Relation::Viewer).await {
-            Ok(a) => Ok(Some(a)),
-            // 権限が無い・委譲が無いのは「発火しない」。一時的な障害だけ配り直す。
-            Err(e) if !e.retryable => Ok(None),
-            Err(e) => Err(anyhow::anyhow!("{}: {}", e.code, e.message)),
-        }
+        principal_actor(self.deps, &self.tenant_id, who, table_id).await
     }
 
     /// 主体がテーブルを読めない（委譲が無い・テーブルの権限が無い）と分かったか（[`Self::prefetch`] の後だけ
@@ -271,29 +233,184 @@ impl<'d, 'a> BatchCtx<'d, 'a> {
         self.causes.get(&ev.event.id).copied().flatten()
     }
 
-    /// run 入力・wait の出力になるペイロード（形はワークフローの語彙のカタログが正・D-47）。
+    /// run 入力・wait の出力になるペイロード（[`change_payload`]）。
     ///
     /// `by_workflow` は変更が run の書込によるものか（outbox の非公開部の印・run id 自体は載せない）。
     fn payload(&self, source: EventSource, ev: &DataEvent<'_>, view: ChangeEventView) -> Value {
-        let by_workflow = self.cause(ev).is_some();
-        DataChangePayload {
-            source: source.as_str().to_string(),
-            table_id: view.table_id.to_string(),
-            record_id: view.record_id.to_string(),
-            rev: view.rev,
-            change: view.change,
-            from: view.from,
-            to: view.to,
-            changed: view.changed,
-            changes: view.changes,
-            actor: view.actor,
-            by_workflow,
-            occurred_at: view.occurred_at.to_rfc3339(),
-            record: serde_json::to_value(&view.record).ok(),
-            truncated: false,
-        }
-        .into_value()
+        change_payload(source, self.cause(ev).is_some(), view)
     }
+}
+
+/// 主体（[`DataPort::actor`]）。ワークフロー主体は、委譲台帳で委譲元を先に確かめ（無ければ OpenFGA を呼ばない・
+/// 剥奪の後に Deny の監査を溢れさせない）、委譲元の権限と天井で読む。委譲が無い・権限が無いなら `None`
+/// （一時的な障害だけ `Err`）。relay の発火・wait の起床と、再試行の起動の前の確かめ直し（[`recheck_data_firing`]）が使う。
+async fn principal_actor(
+    deps: &RelayDeps<'_>,
+    tenant_id: &str,
+    who: &PrincipalKey,
+    table_id: Uuid,
+) -> Result<Option<Actor>, anyhow::Error> {
+    if who.kind == "workflow" {
+        let Ok(workflow_id) = Uuid::parse_str(&who.id) else {
+            return Ok(None);
+        };
+        let ctx = AuthContext::for_workflow(tenant_id.to_string(), who.org.clone(), &who.id);
+        let object = ctx.ns().data_table(&table_id.to_string());
+        let delegator = workflow_engine::active_delegator(
+            deps.db,
+            tenant_id,
+            workflow_id,
+            &object,
+            Relation::Viewer,
+        )
+        .await?;
+        if delegator.is_none() {
+            return Ok(None);
+        }
+    }
+    let ec = ExecCtx {
+        tenant_id: tenant_id.to_string(),
+        org: who.org.clone(),
+        principal: who.id.clone(),
+        principal_kind: who.kind.clone(),
+        trace_id: None,
+        run_id: None,
+        step_path: None,
+    };
+    let port = DataPort {
+        data: deps.data.as_ref(),
+        fsms: deps.fsms.as_ref(),
+        db: deps.db,
+    };
+    match port.actor(&ec, table_id, Relation::Viewer).await {
+        Ok(a) => Ok(Some(a)),
+        // 権限が無い・委譲が無いのは「発火しない」。一時的な障害だけ配り直す。
+        Err(e) if !e.retryable => Ok(None),
+        Err(e) => Err(anyhow::anyhow!("{}: {}", e.code, e.message)),
+    }
+}
+
+/// run 入力・wait の出力になるペイロード（形はワークフローの語彙のカタログが正・D-47）。
+///
+/// `by_workflow` は変更が run の書込によるものか（outbox の非公開部の印・run id 自体は載せない）。
+fn change_payload(source: EventSource, by_workflow: bool, view: ChangeEventView) -> Value {
+    DataChangePayload {
+        source: source.as_str().to_string(),
+        table_id: view.table_id.to_string(),
+        record_id: view.record_id.to_string(),
+        rev: view.rev,
+        change: view.change,
+        from: view.from,
+        to: view.to,
+        changed: view.changed,
+        changes: view.changes,
+        actor: view.actor,
+        by_workflow,
+        occurred_at: view.occurred_at.to_rfc3339(),
+        record: serde_json::to_value(&view.record).ok(),
+        truncated: false,
+    }
+    .into_value()
+}
+
+/// データ変更トリガの発火を、再試行で起動する前に確かめ直すための、トリガの中身（[`recheck_data_firing`]）。
+pub(super) struct DataTriggerSpec {
+    pub org: String,
+    pub source: EventSource,
+    /// トリガが購読するテーブル（読めなければ `None`・起動しない）。
+    pub table_id: Option<Uuid>,
+    /// トリガの filter（条件木の JSON）。
+    pub filter: Option<Value>,
+}
+
+/// データ変更トリガの発火を、再試行で起動する直前に確かめ直す（BUG-75・ファイル保存トリガの BUG-50 と同じ考え方）。
+///
+/// 起動に一時失敗した発火は、relay の時点で作った見え方をペイロードに持って再試行を待つ（最長 20 分ほど）。その間に
+/// 委譲元が委譲・テーブル・行・列を見られなくなったら、それを run の入力に載せない。起動の時点の委譲元の見え方で
+/// 変更を作り直し（relay と同じ [`principal_actor`]・data の `change_event_view`）、作り直したペイロードがトリガの
+/// filter に合うときだけ、そのペイロードで起動する（読めなくなった列は載らない）。見えない・合わないなら見送る
+/// （`Err` は確かめられない一時的な障害だけ・再試行に回す）。
+pub(super) async fn recheck_data_firing(
+    deps: &RelayDeps<'_>,
+    t: &workflow_engine::EventTriggerRef,
+    spec: DataTriggerSpec,
+    payload: &Value,
+) -> Result<Result<Value, workflow_engine::SkipReason>, anyhow::Error> {
+    let unreadable = || {
+        Ok(Err(workflow_engine::SkipReason::DelegationInvalid(
+            "ワークフローが変更されたデータを読めなくなりました".into(),
+        )))
+    };
+    let id = |k: &str| {
+        payload
+            .get(k)
+            .and_then(Value::as_str)
+            .and_then(|s| Uuid::parse_str(s).ok())
+    };
+    let kind = match spec.source {
+        EventSource::DataRecordCreated => ChangeEventKind::Create,
+        EventSource::DataRecordUpdated => ChangeEventKind::Update,
+        EventSource::DataTransition => ChangeEventKind::Transition,
+        _ => return unreadable(),
+    };
+    // ペイロードの行とトリガのテーブルが確かめられなければ起動しない（fail-closed）。
+    let (Some(table_id), Some(record_id), Some(rev)) = (
+        spec.table_id.filter(|t| Some(*t) == id("table_id")),
+        id("record_id"),
+        payload.get("rev").and_then(Value::as_i64),
+    ) else {
+        return unreadable();
+    };
+    let who = PrincipalKey {
+        kind: "workflow".into(),
+        id: t.workflow_id.to_string(),
+        org: spec.org.clone(),
+    };
+    let Some(actor) = principal_actor(deps, &t.tenant_id, &who, table_id).await? else {
+        return unreadable();
+    };
+    let refs = [ChangeEventRef {
+        table_id,
+        record_id,
+        rev,
+        kind,
+    }];
+    let view = match actor
+        .data
+        .change_event_views(&actor.ctx, table_id, &refs, None)
+        .await
+    {
+        Ok(mut v) => v.pop().flatten(),
+        Err(DataError::NotFound | DataError::Forbidden) => None,
+        Err(e) if e.is_transient() => {
+            return Err(anyhow::anyhow!("データ変更の見え方の作り直しに失敗: {e}"))
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, %table_id, "データ変更の見え方を作り直せないので起動しない");
+            None
+        }
+    };
+    let Some(view) = view else {
+        return unreadable();
+    };
+    let by_workflow = payload
+        .get("by_workflow")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let fresh = change_payload(spec.source, by_workflow, view);
+    let candidate = workflow_engine::DataTriggerCandidate {
+        trigger: t.clone(),
+        org: spec.org,
+        source: spec.source,
+        table_id,
+        filter: spec.filter,
+    };
+    if !candidate.admits(&fresh) {
+        return Ok(Err(workflow_engine::SkipReason::DelegationInvalid(
+            "変更されたデータが、きっかけの条件に合わなくなりました".into(),
+        )));
+    }
+    Ok(Ok(fresh))
 }
 
 /// バッチの中のデータ変更をトリガと wait(event) へ配る（`relay_events_batch` から呼ぶ）。
