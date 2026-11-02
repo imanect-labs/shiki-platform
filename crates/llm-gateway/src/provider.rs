@@ -65,8 +65,18 @@ pub(crate) fn rate_limit_message(body: &str) -> String {
 /// プロバイダが要求を受け付けなかったことを表す [`LlmError::BadRequest`] の定型文（本文の代わりに入れる）。
 pub(crate) const REJECTED_BY_PROVIDER: &str = "プロバイダが要求を受け付けませんでした";
 
-/// 本文から拾う誤りの種類の語の数の上限。
+/// 文言に載せる誤りの種類の語の数の上限。
 const MAX_ERROR_KINDS: usize = 3;
+
+/// 本文から誤りの種類の語を探す数の上限（見分ける語を探す範囲。文言に載せるのは [`MAX_ERROR_KINDS`] 個まで）。
+const MAX_SCANNED_KINDS: usize = 32;
+
+/// ChatGPT プランの対象外のアカウント（`chatgpt::provider` が文言で見分ける）。
+pub(crate) const PLAN_NOT_ELIGIBLE: &str = "subscription_sharing_user_not_eligible";
+
+/// 呼ぶ側が文言で見分ける誤りの種類の語。本文のどこにあっても、ほかの語より先に文言へ載せる（本文の並びと
+/// [`MAX_ERROR_KINDS`] で落とさない）。
+const DISTINGUISHED_KINDS: &[&str] = &[PLAN_NOT_ELIGIBLE];
 
 /// プロバイダの 4xx（429 を除く）を [`LlmError::BadRequest`] にする（構造化出力のスキーマの拒否は
 /// [`crate::structured`] が先に定型文にする・BUG-87）。
@@ -75,7 +85,8 @@ const MAX_ERROR_KINDS: usize = 3;
 /// この文言はアプリのゲートウェイの応答・会話の記録・実行の誤りへそのまま運ばれる（[`rate_limit_message`] と同じ
 /// 理由）。本文はログにだけ残し、文言は `{provider} {status}: 定型文（誤りの種類）` にする。誤りの種類は本文の
 /// `type`・`code`・`status`・`error`・`detail` にある英数字だけの語（`invalid_request_error` など）で、空白を含む
-/// 文や数は拾わない（ChatGPT プランの対象外の判定などが、この語で見分ける）。
+/// 文や数、数字を含む識別子（`org-abc123`・`req_011…`）は拾わない。呼ぶ側が見分ける語（[`DISTINGUISHED_KINDS`]・
+/// ChatGPT プランの対象外の判定など）は、本文のどこにあっても先に載せる。
 pub(crate) fn rejection(provider: &str, status: reqwest::StatusCode, body: &str) -> LlmError {
     let kinds = error_kinds(body);
     tracing::warn!(provider, %status, kinds = ?kinds, body = %body, "プロバイダが要求を受け付けなかった");
@@ -87,13 +98,13 @@ pub(crate) fn rejection(provider: &str, status: reqwest::StatusCode, body: &str)
     LlmError::BadRequest(format!("{provider} {status}: {REJECTED_BY_PROVIDER}{tail}"))
 }
 
-/// 本文（JSON）から誤りの種類の語を拾う（上から順に・重ねない・[`MAX_ERROR_KINDS`] 個まで）。
+/// 本文（JSON）から誤りの種類の語を拾う（見分ける語を先に、ほかは上から順に・重ねない・[`MAX_ERROR_KINDS`] 個まで）。
 fn error_kinds(body: &str) -> Vec<String> {
     fn is_kind(s: &str) -> bool {
         let mut chars = s.chars();
         chars.next().is_some_and(|c| c.is_ascii_alphabetic())
             && s.len() <= 64
-            && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+            && chars.all(|c| c.is_ascii_alphabetic() || matches!(c, '_' | '.' | '-'))
             // Anthropic の封筒（`{"type":"error",…}`）は種類ではない。
             && s != "error"
     }
@@ -102,7 +113,7 @@ fn error_kinds(body: &str) -> Vec<String> {
             return;
         };
         for (k, v) in map {
-            if out.len() >= MAX_ERROR_KINDS {
+            if out.len() >= MAX_SCANNED_KINDS {
                 return;
             }
             match v {
@@ -118,10 +129,15 @@ fn error_kinds(body: &str) -> Vec<String> {
             }
         }
     }
-    let mut out = Vec::new();
+    let mut found = Vec::new();
     if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
-        walk(&v, 0, &mut out);
+        walk(&v, 0, &mut found);
     }
+    let (mut out, rest): (Vec<String>, Vec<String>) = found
+        .into_iter()
+        .partition(|k| DISTINGUISHED_KINDS.contains(&k.as_str()));
+    out.extend(rest);
+    out.truncate(MAX_ERROR_KINDS);
     out
 }
 
@@ -200,5 +216,21 @@ mod tests {
             error_kinds(body),
             ["subscription_sharing_user_not_eligible", "INVALID_ARGUMENT"]
         );
+        // 数字を含む識別子（組織・要求の ID）は、種類の語の形でも拾わない。
+        let body = r#"{"error":{"code":"org-abc123","type":"invalid_request_error","status":"req_011CUabc"}}"#;
+        assert_eq!(error_kinds(body), ["invalid_request_error"]);
+    }
+
+    /// 呼ぶ側が見分ける語は、ほかの種類の語が先に 3 つ並んでいても文言に残す（本文の並びと上限で落とさない）。
+    #[test]
+    fn distinguished_kinds_survive_the_limit() {
+        let body = r#"{"code":"a_kind","detail":"b_kind","error":{"code":"c_kind","type":"subscription_sharing_user_not_eligible"}}"#;
+        assert_eq!(error_kinds(body), [PLAN_NOT_ELIGIBLE, "a_kind", "b_kind"]);
+        let LlmError::BadRequest(msg) =
+            rejection("responses", reqwest::StatusCode::FORBIDDEN, body)
+        else {
+            panic!("BadRequest になる");
+        };
+        assert!(msg.contains(PLAN_NOT_ELIGIBLE), "{msg}");
     }
 }

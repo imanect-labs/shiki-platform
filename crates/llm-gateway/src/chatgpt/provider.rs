@@ -14,7 +14,7 @@ use authz::AuthContext;
 use super::ChatGptAccount;
 use crate::config::LlmTimeouts;
 use crate::model::GenerateRequest;
-use crate::provider::{DeltaStream, LlmError, LlmProvider};
+use crate::provider::{DeltaStream, LlmError, LlmProvider, PLAN_NOT_ELIGIBLE};
 use crate::providers::openai_responses::OpenAiResponsesProvider;
 
 /// ChatGPT プランのアダプタ。
@@ -43,7 +43,7 @@ impl ChatGptPlanProvider {
                 "ChatGPT プランの利用上限に達しました。ChatGPT の設定 → Usage で上限を確認してください。"
                     .into(),
             ),
-            LlmError::BadRequest(m) if m.contains("subscription_sharing_user_not_eligible") => {
+            LlmError::BadRequest(m) if m.contains(PLAN_NOT_ELIGIBLE) => {
                 LlmError::BadRequest(
                     "この ChatGPT アカウントはプランでの利用対象外です（Plus / Pro が必要です）。"
                         .into(),
