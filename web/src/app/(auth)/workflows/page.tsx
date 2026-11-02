@@ -203,7 +203,8 @@ export default function WorkflowsPage() {
                   <Workflow className="size-4.5" aria-hidden />
                 </span>
                 <span className="min-w-0 flex-1">
-                  <span className="flex items-center gap-2">
+                  {/* 名前と状態が 1 行に収まらないときは、状態を次の行へ送る（スマホで名前を数文字に縮めない）。 */}
+                  <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
                     <span className="truncate text-sm font-medium">
                       {wf.displayName || wf.name}
                     </span>
