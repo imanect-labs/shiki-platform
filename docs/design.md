@@ -600,6 +600,11 @@ flowchart LR
   - プロバイダがスキーマを拒んだ 4xx（Anthropic の上限は、1 回の要求の全スキーマの合計で任意項目 24・
     union 型〔`anyOf`・型の配列〕16・strict ツール 20、文法のコンパイル 180 秒）は、プロバイダの本文を
     利用者に出さない定型文の誤りにし（本文はログにだけ残す）、呼び出し側が出力の形の誤りとして扱えるようにする。
+  - それ以外の 4xx（429 を除く）も、プロバイダの本文（要求の ID・組織やワークスペースの ID・URL が入りうる）を
+    誤りの文言に入れない。文言は `{プロバイダ} {状態}: プロバイダが要求を受け付けませんでした（誤りの種類）` で、
+    誤りの種類は本文の `type`・`code`・`status`・`error`・`detail` にある英数字だけの語（`invalid_request_error`・
+    `context_length_exceeded` など・3 つまで）に限る。本文はログにだけ残す。すべてのアダプタが
+    `provider::rejection` の 1 か所を通る（BUG-87）。
 - **決定モデル（FEAT-1・D-6）**: 文章を生成せず、質問ごとに決められた選択肢（choice）・段階（score）・
   はい/いいえ（boolean）で答え、確からしさ（0〜1）を付けて返すモデル。生成と入出力の形が違うので、
   `LlmProvider` とは別の差し替えトレイト `DecisionProvider`（`decide(&DecideRequest) -> Result<DecideResponse,
