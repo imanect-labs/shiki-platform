@@ -395,6 +395,45 @@ pub(super) fn graph_from_snapshot(ir_json: Value) -> Option<RunGraph> {
         .map(|ir| RunGraph::build(&ir))
 }
 
+/// 期限の来た待ち（承認・timer・timeout）の回収で、1 回に読む件数と 1 回の回収で読む回数の上限（超えた分は次の tick）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DueSweepLimits {
+    /// 1 回に読む件数。
+    pub batch: i64,
+    /// 1 回の回収で読む回数。
+    pub pages: usize,
+}
+
+impl DueSweepLimits {
+    /// scheduler の tick の上限（256 件 × 16 回）。
+    pub const DEFAULT: DueSweepLimits = DueSweepLimits {
+        batch: 256,
+        pages: 16,
+    };
+}
+
+/// 期限の来た待ちの走査の続きの位置（期限・テナント・run・step の昇順で、ここより後ろを読む・BUG-76）。
+///
+/// 起こせずに残った待ち（ピンした IR を読めない run）を、同じ回収の次のページで読み直さないために使う（承認の
+/// 回収の [`super::DueApprovalCursor`] と同じ形）。
+#[derive(Debug, Clone)]
+struct DueWaitCursor {
+    due_at: DateTime<Utc>,
+    tenant_id: String,
+    run_id: Uuid,
+    step_path: String,
+}
+
+/// 走査の 1 ページの続きの位置（ページが埋まったときだけ・起こせなかった行も数える）。
+fn next_due_cursor<T>(
+    rows: &[T],
+    limit: i64,
+    key: impl Fn(&T) -> DueWaitCursor,
+) -> Option<DueWaitCursor> {
+    let full = i64::try_from(rows.len()).is_ok_and(|n| n >= limit);
+    rows.last().filter(|_| full).map(key)
+}
+
 impl RunStore {
     /// due な `waiting_timer` step を起床する（out で terminal 化して前進・engine.md §9.1）。起床数を返す。
     pub async fn wake_due_timers(
@@ -402,36 +441,73 @@ impl RunStore {
         now: DateTime<Utc>,
         tenant_scope: Option<&str>,
     ) -> Result<usize, RunStoreError> {
-        let rows: Vec<(String, Uuid, String, Json<Value>)> = sqlx::query_as(
-            "SELECT s.tenant_id, s.run_id, s.step_path, r.ir_snapshot \
-             FROM step_execution s \
-             JOIN workflow_run r ON r.tenant_id = s.tenant_id AND r.run_id = s.run_id \
-             WHERE s.status = 'waiting_timer' AND s.wake_at <= $1 AND r.status = 'running' \
-               AND (($2::text IS NULL) OR (s.tenant_id = $2)) \
-             ORDER BY s.wake_at LIMIT 256",
-        )
-        .bind(now)
-        .bind(tenant_scope)
-        .fetch_all(&self.db)
-        .await
-        .map_err(map_db)?;
+        self.wake_due_timers_within(now, tenant_scope, DueSweepLimits::DEFAULT)
+            .await
+    }
+
+    /// [`Self::wake_due_timers`] を、1 回に読む件数と回数の上限を決めて呼ぶ（結合テストが小さなページで呼ぶ）。
+    ///
+    /// 起こせずに残った timer（ピンした IR を読めない run）は、同じ回収の次のページで読み直さない（起床の時刻・
+    /// テナント・run・step の位置から続きを読む・BUG-76）。先頭に居座っても、後ろの timer の起床を止めない。
+    #[doc(hidden)]
+    pub async fn wake_due_timers_within(
+        &self,
+        now: DateTime<Utc>,
+        tenant_scope: Option<&str>,
+        limits: DueSweepLimits,
+    ) -> Result<usize, RunStoreError> {
+        type TimerRow = (String, Uuid, String, Json<Value>, DateTime<Utc>);
         let mut woke = 0;
-        for (tenant, run_id, step_path, ir_json) in rows {
-            let Some(graph) = graph_from_snapshot(ir_json.0) else {
-                continue;
-            };
-            if wake_step_and_advance(
-                &self.db,
-                &tenant,
-                run_id,
-                &step_path,
-                Some("out"),
-                Value::Null,
-                &graph,
+        let mut after: Option<DueWaitCursor> = None;
+        for _ in 0..limits.pages {
+            let rows: Vec<TimerRow> = sqlx::query_as(
+                "SELECT s.tenant_id, s.run_id, s.step_path, r.ir_snapshot, s.wake_at \
+                 FROM step_execution s \
+                 JOIN workflow_run r ON r.tenant_id = s.tenant_id AND r.run_id = s.run_id \
+                 WHERE s.status = 'waiting_timer' AND s.wake_at <= $1 AND r.status = 'running' \
+                   AND (($2::text IS NULL) OR (s.tenant_id = $2)) \
+                   AND (($3::timestamptz IS NULL) \
+                        OR (s.wake_at, s.tenant_id, s.run_id, s.step_path) > ($3, $4, $5, $6)) \
+                 ORDER BY s.wake_at, s.tenant_id, s.run_id, s.step_path LIMIT $7",
             )
-            .await?
-            {
-                woke += 1;
+            .bind(now)
+            .bind(tenant_scope)
+            .bind(after.as_ref().map(|c| c.due_at))
+            .bind(after.as_ref().map_or("", |c| c.tenant_id.as_str()))
+            .bind(after.as_ref().map_or(Uuid::nil(), |c| c.run_id))
+            .bind(after.as_ref().map_or("", |c| c.step_path.as_str()))
+            .bind(limits.batch)
+            .fetch_all(&self.db)
+            .await
+            .map_err(map_db)?;
+            let next = next_due_cursor(&rows, limits.batch, |r| DueWaitCursor {
+                due_at: r.4,
+                tenant_id: r.0.clone(),
+                run_id: r.1,
+                step_path: r.2.clone(),
+            });
+            for (tenant, run_id, step_path, ir_json, _) in rows {
+                // 固定した IR を読めない run は起こせない（続きの位置で飛ばし、後ろの timer は起こす）。
+                let Some(graph) = graph_from_snapshot(ir_json.0) else {
+                    continue;
+                };
+                if wake_step_and_advance(
+                    &self.db,
+                    &tenant,
+                    run_id,
+                    &step_path,
+                    Some("out"),
+                    Value::Null,
+                    &graph,
+                )
+                .await?
+                {
+                    woke += 1;
+                }
+            }
+            match next {
+                Some(n) => after = Some(n),
+                None => break,
             }
         }
         Ok(woke)
@@ -447,43 +523,87 @@ impl RunStore {
         now: DateTime<Utc>,
         tenant_scope: Option<&str>,
     ) -> Result<usize, RunStoreError> {
-        type TimeoutRow = (String, Uuid, String, Json<Value>, Json<Value>);
-        let rows: Vec<TimeoutRow> = sqlx::query_as(
-            "SELECT w.tenant_id, w.run_id, w.step_path, w.spec, r.ir_snapshot \
-             FROM wait_subscription w \
-             JOIN workflow_run r ON r.tenant_id = w.tenant_id AND r.run_id = w.run_id \
-             WHERE w.timeout_at <= $1 AND NOT w.fired AND r.status = 'running' \
-               AND NOT (w.spec ? 'approval') \
-               AND (($2::text IS NULL) OR (w.tenant_id = $2)) \
-             ORDER BY w.timeout_at LIMIT 256",
-        )
-        .bind(now)
-        .bind(tenant_scope)
-        .fetch_all(&self.db)
-        .await
-        .map_err(map_db)?;
+        self.expire_due_waits_within(now, tenant_scope, DueSweepLimits::DEFAULT)
+            .await
+    }
+
+    /// [`Self::expire_due_waits`] を、1 回に読む件数と回数の上限を決めて呼ぶ（結合テストが小さなページで呼ぶ）。
+    ///
+    /// 決められずに残った購読（ピンした IR を読めない run）は、同じ回収の次のページで読み直さない（期限・テナント・
+    /// run・step の位置から続きを読む・BUG-76）。先頭に居座っても、後ろの timeout の回収を止めない。
+    #[doc(hidden)]
+    pub async fn expire_due_waits_within(
+        &self,
+        now: DateTime<Utc>,
+        tenant_scope: Option<&str>,
+        limits: DueSweepLimits,
+    ) -> Result<usize, RunStoreError> {
+        type TimeoutRow = (
+            String,
+            Uuid,
+            String,
+            Json<Value>,
+            Json<Value>,
+            DateTime<Utc>,
+        );
         let mut woke = 0;
-        for (tenant, run_id, step_path, spec, ir_json) in rows {
-            let Some(graph) = graph_from_snapshot(ir_json.0) else {
-                continue;
-            };
-            // on_timeout=continue → timeout ポート、fail → 時間切れの理由（WAIT_TIMEOUT）で run を失敗させる。
-            let woken = if spec.0.get("on_timeout").and_then(Value::as_str) == Some("continue") {
-                wake_step_and_advance(
-                    &self.db,
-                    &tenant,
-                    run_id,
-                    &step_path,
-                    Some("timeout"),
-                    Value::Null,
-                    &graph,
-                )
-                .await?
-            } else {
-                fail_waiting_step(&self.db, &tenant, run_id, &step_path, &graph).await?
-            };
-            if woken {
-                woke += 1;
+        let mut after: Option<DueWaitCursor> = None;
+        for _ in 0..limits.pages {
+            let rows: Vec<TimeoutRow> = sqlx::query_as(
+                "SELECT w.tenant_id, w.run_id, w.step_path, w.spec, r.ir_snapshot, w.timeout_at \
+                 FROM wait_subscription w \
+                 JOIN workflow_run r ON r.tenant_id = w.tenant_id AND r.run_id = w.run_id \
+                 WHERE w.timeout_at <= $1 AND NOT w.fired AND r.status = 'running' \
+                   AND NOT (w.spec ? 'approval') \
+                   AND (($2::text IS NULL) OR (w.tenant_id = $2)) \
+                   AND (($3::timestamptz IS NULL) \
+                        OR (w.timeout_at, w.tenant_id, w.run_id, w.step_path) > ($3, $4, $5, $6)) \
+                 ORDER BY w.timeout_at, w.tenant_id, w.run_id, w.step_path LIMIT $7",
+            )
+            .bind(now)
+            .bind(tenant_scope)
+            .bind(after.as_ref().map(|c| c.due_at))
+            .bind(after.as_ref().map_or("", |c| c.tenant_id.as_str()))
+            .bind(after.as_ref().map_or(Uuid::nil(), |c| c.run_id))
+            .bind(after.as_ref().map_or("", |c| c.step_path.as_str()))
+            .bind(limits.batch)
+            .fetch_all(&self.db)
+            .await
+            .map_err(map_db)?;
+            let next = next_due_cursor(&rows, limits.batch, |r| DueWaitCursor {
+                due_at: r.5,
+                tenant_id: r.0.clone(),
+                run_id: r.1,
+                step_path: r.2.clone(),
+            });
+            for (tenant, run_id, step_path, spec, ir_json, _) in rows {
+                // 固定した IR を読めない run は決められない（続きの位置で飛ばし、後ろの timeout は回収する）。
+                let Some(graph) = graph_from_snapshot(ir_json.0) else {
+                    continue;
+                };
+                // on_timeout=continue → timeout ポート、fail → 時間切れの理由（WAIT_TIMEOUT）で run を失敗させる。
+                let woken = if spec.0.get("on_timeout").and_then(Value::as_str) == Some("continue")
+                {
+                    wake_step_and_advance(
+                        &self.db,
+                        &tenant,
+                        run_id,
+                        &step_path,
+                        Some("timeout"),
+                        Value::Null,
+                        &graph,
+                    )
+                    .await?
+                } else {
+                    fail_waiting_step(&self.db, &tenant, run_id, &step_path, &graph).await?
+                };
+                if woken {
+                    woke += 1;
+                }
+            }
+            match next {
+                Some(n) => after = Some(n),
+                None => break,
             }
         }
         Ok(woke)

@@ -263,20 +263,8 @@ pub(super) async fn fail_unavailable(
     resolve(deps, subscriber, wait, &res, Some(ACTOR_UNAVAILABLE)).await
 }
 
-/// 期限の来た承認を 1 回に読む件数と、1 tick に読む回数の上限（超えた分は次の tick）。
-const DUE_LIMITS: DueSweepLimits = DueSweepLimits {
-    batch: 256,
-    pages: 16,
-};
-
-/// 期限の回収の 1 回に読む件数と回数の上限（[`expire_due_approvals_within`]）。
-#[derive(Debug, Clone, Copy)]
-pub struct DueSweepLimits {
-    /// 1 回に読む件数。
-    pub batch: i64,
-    /// 1 回の回収で読む回数。
-    pub pages: usize,
-}
+/// 期限の回収の 1 回に読む件数と回数の上限（[`expire_due_approvals_within`]・timer と timeout の回収と同じ・BUG-76）。
+pub use workflow_engine::DueSweepLimits;
 
 /// 期限の回収の結果（tick が警告に残す）。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -308,7 +296,16 @@ pub async fn expire_due_approvals(
     now: chrono::DateTime<chrono::Utc>,
     tenant_scope: Option<&str>,
 ) -> Result<DueApprovalSweep, anyhow::Error> {
-    expire_due_approvals_within(db, runs, data, fsms, now, tenant_scope, DUE_LIMITS).await
+    expire_due_approvals_within(
+        db,
+        runs,
+        data,
+        fsms,
+        now,
+        tenant_scope,
+        DueSweepLimits::DEFAULT,
+    )
+    .await
 }
 
 /// [`expire_due_approvals`] を、1 回に読む件数と回数の上限を決めて呼ぶ（結合テストが小さなページで呼ぶ）。

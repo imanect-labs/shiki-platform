@@ -37,7 +37,7 @@ pub use limits::PromoteReport;
 pub(crate) use ops::cancel_runs_within;
 pub use ops::{CancelOutcome, ResumeOutcome};
 pub use outcome::{LiveState, OwnOutcome, RunOutcomeReader, MAX_REPLY_BYTES, MAX_REPLY_SECTIONS};
-pub use wait::{EventWaitGate, EventWaitSubscriber};
+pub use wait::{DueSweepLimits, EventWaitGate, EventWaitSubscriber};
 pub use wait_data::DataWaitCandidate;
 
 /// step の durable テーブル記述子（複合キー・engine.md §9.5）。

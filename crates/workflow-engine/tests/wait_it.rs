@@ -709,3 +709,150 @@ async fn only_data_waits_await_one_reconcile_after_the_suspend() {
         .await
         .unwrap();
 }
+
+/// 固定した IR を読めない run の待ちを先頭に並べ、期限を `due` の順に置き直す（BUG-76）。
+///
+/// `bad` の run の IR を読めない形に書き換え、期限を `good` より前にする（`bad` が先頭に居座る並び）。
+async fn put_unreadable_first(
+    pool: &PgPool,
+    tenant: &str,
+    bad: &[uuid::Uuid],
+    good: &[uuid::Uuid],
+    column: &str,
+) {
+    let table = if column == "wake_at" {
+        "step_execution"
+    } else {
+        "wait_subscription"
+    };
+    for (i, run) in bad.iter().chain(good).enumerate() {
+        let at = Utc::now() - Duration::minutes(30) + Duration::seconds(i as i64);
+        sqlx::query(&format!(
+            "UPDATE {table} SET {column} = $3 WHERE tenant_id = $1 AND run_id = $2 AND step_path = 'w'"
+        ))
+        .bind(tenant)
+        .bind(run)
+        .bind(at)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+    sqlx::query(
+        "UPDATE workflow_run SET ir_snapshot = '{\"broken\": true}'::jsonb \
+         WHERE tenant_id = $1 AND run_id = ANY($2)",
+    )
+    .bind(tenant)
+    .bind(bad)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
+/// このテストのテナントに作った run を消す（step・wait_subscription・run_event は FK で消える）。
+async fn delete_runs(pool: &PgPool, tenant: &str) {
+    sqlx::query("DELETE FROM workflow_run WHERE tenant_id = $1")
+        .bind(tenant)
+        .execute(pool)
+        .await
+        .unwrap();
+}
+
+async fn w_status(store: &RunStore, tenant: &str, run: uuid::Uuid) -> StepStatus {
+    store
+        .step_statuses(tenant, run)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|(p, _)| p == "w")
+        .unwrap()
+        .1
+}
+
+/// 固定した IR を読めない run の timer が先頭に並んでも、後ろの timer を起こす（続きの位置で読み直さない・BUG-76）。
+#[tokio::test]
+async fn due_timers_behind_unreadable_runs_are_woken() {
+    let Some(pool) = setup().await else { return };
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let ir = wait_ir(json!({ "kind": "duration", "duration_sec": 3600 }));
+    let mut runs = Vec::new();
+    for _ in 0..5 {
+        runs.push(create_run(&store, &tenant, &ir).await);
+    }
+    let w = worker(pool.clone(), &tenant);
+    while w.claim_and_run_once("w1").await.unwrap() {}
+    let (bad, good) = runs.split_at(3);
+    put_unreadable_first(&pool, &tenant, bad, good, "wake_at").await;
+
+    // 1 回に 2 件ずつ読む: 先頭の 2 ページは読めない run が占める。
+    let small = workflow_engine::DueSweepLimits {
+        batch: 2,
+        pages: 16,
+    };
+    let woke = store
+        .wake_due_timers_within(Utc::now(), Some(&tenant), small)
+        .await
+        .unwrap();
+    assert_eq!(woke, 2, "後ろの timer を起こす");
+    for run in good {
+        assert_eq!(w_status(&store, &tenant, *run).await, StepStatus::Succeeded);
+    }
+    for run in bad {
+        assert_eq!(
+            w_status(&store, &tenant, *run).await,
+            StepStatus::WaitingTimer,
+            "読めない run は待ちのまま"
+        );
+    }
+    delete_runs(&pool, &tenant).await;
+}
+
+/// 固定した IR を読めない run の timeout が先頭に並んでも、後ろの timeout を回収する（続きの位置で読み直さない・
+/// BUG-76）。
+#[tokio::test]
+async fn due_timeouts_behind_unreadable_runs_are_expired() {
+    let Some(pool) = setup().await else { return };
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let ir = wait_ir(json!({
+        "kind": "event", "source": "storage.write", "timeout_sec": 3600, "on_timeout": "continue"
+    }));
+    let mut runs = Vec::new();
+    for _ in 0..5 {
+        runs.push(create_run(&store, &tenant, &ir).await);
+    }
+    let w = worker(pool.clone(), &tenant);
+    while w.claim_and_run_once("w1").await.unwrap() {}
+    let (bad, good) = runs.split_at(3);
+    put_unreadable_first(&pool, &tenant, bad, good, "timeout_at").await;
+
+    let small = workflow_engine::DueSweepLimits {
+        batch: 2,
+        pages: 16,
+    };
+    let woke = store
+        .expire_due_waits_within(Utc::now(), Some(&tenant), small)
+        .await
+        .unwrap();
+    assert_eq!(woke, 2, "後ろの timeout を回収する");
+    for run in good {
+        assert_eq!(w_status(&store, &tenant, *run).await, StepStatus::Succeeded);
+    }
+    for run in bad {
+        assert_eq!(
+            w_status(&store, &tenant, *run).await,
+            StepStatus::WaitingEvent,
+            "読めない run は待ちのまま"
+        );
+    }
+    // 上限の回数で止まる（1 回に 2 件・1 回だけ読むと、読めない run だけを見て終わる）。残りは次の tick。
+    let one_page = workflow_engine::DueSweepLimits { batch: 2, pages: 1 };
+    assert_eq!(
+        store
+            .expire_due_waits_within(Utc::now(), Some(&tenant), one_page)
+            .await
+            .unwrap(),
+        0
+    );
+    delete_runs(&pool, &tenant).await;
+}
