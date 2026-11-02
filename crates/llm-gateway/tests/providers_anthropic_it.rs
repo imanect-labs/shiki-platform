@@ -141,6 +141,29 @@ async fn anthropic_server_error_maps_to_unavailable() {
     assert!(matches!(res, Err(LlmError::Unavailable(_))));
 }
 
+/// 5xx（529 の overloaded を含む）の本文（要求の ID・組織の ID）も誤りの文言に入れない（BUG-210）。
+#[tokio::test]
+async fn anthropic_server_error_does_not_carry_the_provider_body() {
+    let base = spawn_mock(
+        StatusCode::from_u16(529).unwrap(),
+        r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded for org-secret"},"request_id":"req_secret_9"}"#,
+    )
+    .await;
+    let provider = AnthropicProvider::new(reqwest::Client::new(), base, "k", "claude-x");
+    let req = GenerateRequest::new(vec![Message::text(Role::User, "hi")]);
+    let Err(err) = provider.stream(&req).await else {
+        panic!("5xx は誤り");
+    };
+    let shown = err.to_string();
+    for leaked in ["org-secret", "req_secret_9", "Overloaded for"] {
+        assert!(!shown.contains(leaked), "{leaked} が漏れた: {shown}");
+    }
+    assert!(
+        matches!(&err, LlmError::Unavailable(m) if m.starts_with("anthropic 529") && m.contains("overloaded_error")),
+        "{shown}"
+    );
+}
+
 type Seen = Arc<Mutex<Option<HeaderMap>>>;
 
 /// 固定ステータス＋固定ボディを返し、受けたヘッダを記録するモックを立てる。

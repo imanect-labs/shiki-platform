@@ -432,6 +432,109 @@ mod tests {
         }
     }
 
+    /// プロバイダの 5xx（529 を含む）の本文（要求の ID・組織の ID）は、ミニアプリの agent.invoke の error イベントにも
+    /// 載せない（誤りの種類の語だけ・BUG-210）。`STORAGE_TEST_DATABASE_URL` が無ければスキップ。
+    #[tokio::test]
+    #[allow(clippy::print_stderr)]
+    async fn agent_errors_do_not_carry_the_provider_body() {
+        use axum::response::IntoResponse;
+        use futures::StreamExt;
+        let Ok(url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+            eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .unwrap();
+        sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
+        let app = axum::Router::new().fallback(|| async {
+            (
+                axum::http::StatusCode::from_u16(529).unwrap(),
+                r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded for org-secret"},"request_id":"req_secret_8"}"#,
+            )
+                .into_response()
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let llm = LlmGateway::build(
+            pool.clone(),
+            reqwest::Client::new(),
+            llm_gateway::GatewayConfig {
+                provider: llm_gateway::ProviderConfig {
+                    kind: llm_gateway::ProviderKind::Openai,
+                    base_url: Some(base),
+                    api_key: Some("k".into()),
+                    ..Default::default()
+                },
+                catalog: llm_gateway::ModelCatalog {
+                    default_model: "m1".into(),
+                    models: vec![llm_gateway::ModelEntry {
+                        id: "m1".into(),
+                        ..Default::default()
+                    }],
+                },
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let tenant = format!("t-{}", uuid::Uuid::new_v4().simple());
+        let ctx = AuthContext::new(
+            authz::Principal {
+                kind: authz::PrincipalKind::User,
+                id: "alice".into(),
+                email: None,
+                groups: vec![],
+                roles: vec![],
+                tenant_id: Some(tenant.clone()),
+            },
+            "acme".into(),
+            tenant.clone(),
+        );
+        let port = GatewayAgentPort {
+            llm: Arc::new(llm),
+            search: None,
+            storage: None,
+        };
+        let events: Vec<AiEvent> = port
+            .invoke(
+                &ctx,
+                AgentInvokeSpec {
+                    app_id: uuid::Uuid::new_v4(),
+                    prompt: "こんにちは".into(),
+                    model: None,
+                    declared_tools: vec![],
+                    scopes: vec![],
+                    max_tokens: None,
+                    max_steps: Some(1),
+                    max_cost_usd_micros: 1_000_000,
+                    trace_id: None,
+                },
+            )
+            .await
+            .unwrap()
+            .collect()
+            .await;
+        let error = events
+            .iter()
+            .find(|e| e.event == "error")
+            .unwrap_or_else(|| panic!("error イベントが出る: {events:?}"));
+        let shown = error.data.to_string();
+        for leaked in ["org-secret", "req_secret_8", "Overloaded for"] {
+            assert!(!shown.contains(leaked), "{leaked} が漏れた: {shown}");
+        }
+        assert!(shown.contains("overloaded_error"), "{shown}");
+        for table in ["llm_usage", "tenant_llm_model", "tenant_llm_settings"] {
+            sqlx::query(&format!("DELETE FROM {table} WHERE tenant_id = $1"))
+                .bind(&tenant)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+    }
+
     #[test]
     fn read_tools_need_the_same_scope_as_their_apis() {
         assert_eq!(

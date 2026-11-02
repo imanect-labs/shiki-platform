@@ -316,7 +316,7 @@ impl LlmProvider for AnthropicProvider {
                 }
                 return Err(crate::provider::rejection("anthropic", status, &text));
             }
-            return Err(LlmError::Unavailable(format!("anthropic {status}: {text}")));
+            return Err(crate::provider::unavailable("anthropic", status, &text));
         }
 
         let (tx, rx) = mpsc::unbounded::<Result<StreamDelta, LlmError>>();

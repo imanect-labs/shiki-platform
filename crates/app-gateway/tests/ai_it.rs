@@ -636,3 +636,99 @@ async fn apps_with_a_model_list_follow_the_organization_default_when_it_is_liste
             .unwrap();
     }
 }
+
+/// プロバイダ（OpenAI 互換）を試しのサーバーに向けた実 LlmGateway。`body` を `status` で返す。
+async fn provider_llm(
+    pool: PgPool,
+    status: StatusCode,
+    body: &'static str,
+) -> std::sync::Arc<llm_gateway::LlmGateway> {
+    use axum::response::IntoResponse;
+    use llm_gateway::{GatewayConfig, ModelCatalog, ModelEntry, ProviderConfig, ProviderKind};
+    let app = axum::Router::new().fallback(move || async move {
+        (status, [("content-type", "text/event-stream")], body).into_response()
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    let cfg = GatewayConfig {
+        provider: ProviderConfig {
+            kind: ProviderKind::Openai,
+            base_url: Some(base),
+            api_key: Some("k".into()),
+            ..Default::default()
+        },
+        catalog: ModelCatalog {
+            default_model: "m1".into(),
+            models: vec![ModelEntry {
+                id: "m1".into(),
+                ..Default::default()
+            }],
+        },
+        langfuse: None,
+        ..Default::default()
+    };
+    std::sync::Arc::new(
+        llm_gateway::LlmGateway::build(pool, reqwest::Client::new(), cfg).expect("llm"),
+    )
+}
+
+/// プロバイダの 5xx（529 を含む）の本文（要求の ID・組織の ID）は、AI の能力の応答（502）にも、流し始めた後の
+/// SSE の error イベントにも載せない（誤りの種類の語だけ・BUG-210）。
+#[tokio::test]
+async fn provider_failures_do_not_reach_the_app_with_their_bodies() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let (_app_id, client) = install(&pool, &tenant, AiPin::default()).await;
+    let tok = token(&client, AI_SCOPES, &tenant);
+    let msg = json!({ "messages": [{ "role": "user", "content": [ { "type": "text", "text": "hi" } ] }] });
+    const SECRETS: [&str; 3] = ["org-secret", "req_secret_5", "project-secret"];
+
+    // 1. 529（接続の前の失敗・送り直しても 529）: 502 の本文に載せない。
+    let mut st = state(pool.clone(), &tenant);
+    st.caps.llm = Some(
+        provider_llm(
+            pool.clone(),
+            StatusCode::from_u16(529).unwrap(),
+            r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded for org-secret"},"request_id":"req_secret_5"}"#,
+        )
+        .await,
+    );
+    let app = build_gateway_router(st);
+    let (s, body) = post_sse(&app, "/gw/ai/llm/invoke", &tok, &msg).await;
+    assert_eq!(s, StatusCode::BAD_GATEWAY, "{body}");
+    for leaked in SECRETS {
+        assert!(!body.contains(leaked), "{leaked} が漏れた: {body}");
+    }
+    assert!(body.contains("overloaded_error"), "{body}");
+
+    // 2. 流し始めた後に素の誤りの JSON で切れた（Gemini API で実測）: SSE の error イベントに本文を載せない。
+    let mut st = state(pool.clone(), &tenant);
+    st.caps.llm = Some(
+        provider_llm(
+            pool.clone(),
+            StatusCode::OK,
+            concat!(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"途中\"}}]}\n\n",
+                "[{\"error\":{\"code\":500,\"message\":\"Internal error for project-secret\",\"status\":\"INTERNAL\"}}]\n",
+            ),
+        )
+        .await,
+    );
+    let app = build_gateway_router(st);
+    let (s, sse) = post_sse(&app, "/gw/ai/llm/invoke", &tok, &msg).await;
+    assert_eq!(s, StatusCode::OK, "{sse}");
+    assert!(sse.contains("event: error"), "{sse}");
+    for leaked in SECRETS {
+        assert!(!sse.contains(leaked), "{leaked} が漏れた: {sse}");
+    }
+    assert!(sse.contains("INTERNAL"), "{sse}");
+
+    for table in ["llm_usage", "app_capability_usage", "app_installation"] {
+        sqlx::query(&format!("DELETE FROM {table} WHERE tenant_id = $1"))
+            .bind(&tenant)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+}

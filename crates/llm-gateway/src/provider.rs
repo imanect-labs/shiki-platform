@@ -90,12 +90,58 @@ const DISTINGUISHED_KINDS: &[&str] = &[PLAN_NOT_ELIGIBLE];
 pub(crate) fn rejection(provider: &str, status: reqwest::StatusCode, body: &str) -> LlmError {
     let kinds = error_kinds(body);
     tracing::warn!(provider, %status, kinds = ?kinds, body = %body, "プロバイダが要求を受け付けなかった");
-    let tail = if kinds.is_empty() {
+    LlmError::BadRequest(format!(
+        "{provider} {}: {REJECTED_BY_PROVIDER}{}",
+        status_line(status),
+        kinds_tail(&kinds)
+    ))
+}
+
+/// プロバイダが一時的に応答できなかったことを表す [`LlmError::Unavailable`] の定型文（本文の代わりに入れる）。
+pub(crate) const UNAVAILABLE_AT_PROVIDER: &str = "プロバイダが一時的に応答できませんでした";
+
+/// プロバイダが流し始めた後に誤りを返したことを表す [`LlmError::Unavailable`] の定型文（本文の代わりに入れる）。
+pub(crate) const FAILED_MIDSTREAM: &str = "プロバイダが応答の途中で失敗しました";
+
+/// プロバイダの 5xx（Anthropic の 529 を含む）を [`LlmError::Unavailable`] にする（BUG-210）。
+///
+/// 本文は [`rejection`] と同じ理由で**利用者へ出さない**（5xx の本文にも要求の ID・組織の ID・URL が入りうり、
+/// ミニアプリの AI の能力の応答・ストリームの error イベントへそのまま運ばれる）。本文はログにだけ残し、文言は
+/// `{provider} {status}: 定型文（誤りの種類）` にする（誤りの種類の語は [`rejection`] と同じ選び方・`overloaded_error`
+/// など）。状態の行は残すので、呼ぶ側の見分け（504 の `Gateway Timeout` をタイムアウトの文言にするなど）は変わらない。
+pub(crate) fn unavailable(provider: &str, status: reqwest::StatusCode, body: &str) -> LlmError {
+    let kinds = error_kinds(body);
+    tracing::warn!(provider, %status, kinds = ?kinds, body = %body, "プロバイダが一時的に応答できなかった");
+    LlmError::Unavailable(format!(
+        "{provider} {}: {UNAVAILABLE_AT_PROVIDER}{}",
+        status_line(status),
+        kinds_tail(&kinds)
+    ))
+}
+
+/// プロバイダが流し始めた後に返した誤りの本文（SSE の error イベント・素の誤りの JSON）を、利用者へ出せる 1 行に
+/// する（`{provider}: 定型文（誤りの種類）`。本文はログにだけ残す・[`unavailable`] と同じ理由・BUG-210）。
+pub(crate) fn midstream_failure(provider: &str, body: &str) -> String {
+    let kinds = error_kinds(body);
+    tracing::warn!(provider, kinds = ?kinds, body = %body, "プロバイダが応答の途中で誤りを返した");
+    format!("{provider}: {FAILED_MIDSTREAM}{}", kinds_tail(&kinds))
+}
+
+/// 状態の行（`503 Service Unavailable`。名前の無い状態（529 など）は数だけ）。
+fn status_line(status: reqwest::StatusCode) -> String {
+    match status.canonical_reason() {
+        Some(reason) => format!("{} {reason}", status.as_u16()),
+        None => status.as_u16().to_string(),
+    }
+}
+
+/// 誤りの種類の語を文言の後ろに付ける形（`（a, b）`。無ければ空）。
+fn kinds_tail(kinds: &[String]) -> String {
+    if kinds.is_empty() {
         String::new()
     } else {
         format!("（{}）", kinds.join(", "))
-    };
-    LlmError::BadRequest(format!("{provider} {status}: {REJECTED_BY_PROVIDER}{tail}"))
+    }
 }
 
 /// 本文（JSON）から誤りの種類の語を拾う（見分ける語を先に、ほかは上から順に・重ねない・[`MAX_ERROR_KINDS`] 個まで）。
@@ -109,8 +155,16 @@ fn error_kinds(body: &str) -> Vec<String> {
             && s != "error"
     }
     fn walk(v: &serde_json::Value, depth: usize, out: &mut Vec<String>) {
-        let serde_json::Value::Object(map) = v else {
-            return;
+        let map = match v {
+            serde_json::Value::Object(map) => map,
+            // Gemini API は誤りを配列（`[{"error": {…}}]`）で返す。
+            serde_json::Value::Array(items) if depth < 4 => {
+                for item in items {
+                    walk(item, depth + 1, out);
+                }
+                return;
+            }
+            _ => return,
         };
         for (k, v) in map {
             if out.len() >= MAX_SCANNED_KINDS {
@@ -124,7 +178,9 @@ fn error_kinds(body: &str) -> Vec<String> {
                 {
                     out.push(s.clone());
                 }
-                serde_json::Value::Object(_) if depth < 4 => walk(v, depth + 1, out),
+                serde_json::Value::Object(_) | serde_json::Value::Array(_) if depth < 4 => {
+                    walk(v, depth + 1, out);
+                }
                 _ => {}
             }
         }
@@ -219,6 +275,55 @@ mod tests {
         // 数字を含む識別子（組織・要求の ID）は、種類の語の形でも拾わない。
         let body = r#"{"error":{"code":"org-abc123","type":"invalid_request_error","status":"req_011CUabc"}}"#;
         assert_eq!(error_kinds(body), ["invalid_request_error"]);
+    }
+
+    /// 5xx（529 を含む）の本文（要求の ID・組織の ID・URL）は文言に入れず、誤りの種類の語だけを残す（BUG-210）。
+    #[test]
+    fn unavailable_does_not_expose_the_provider_body() {
+        let overloaded = r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded for org-abc123, see https://status.example.com"},"request_id":"req_011CUabc"}"#;
+        let status = reqwest::StatusCode::from_u16(529).unwrap();
+        let LlmError::Unavailable(msg) = unavailable("anthropic", status, overloaded) else {
+            panic!("Unavailable になる");
+        };
+        for leaked in [
+            "org-abc123",
+            "https://",
+            "req_011CUabc",
+            "Overloaded for",
+            "{",
+        ] {
+            assert!(!msg.contains(leaked), "{leaked} が漏れた: {msg}");
+        }
+        assert_eq!(
+            msg,
+            "anthropic 529: プロバイダが一時的に応答できませんでした（overloaded_error）"
+        );
+        // HTML の本文は定型文だけ。状態の行は残す（504 はタイムアウトの文言に見分けられる）。
+        let LlmError::Unavailable(msg) = unavailable(
+            "openai",
+            reqwest::StatusCode::GATEWAY_TIMEOUT,
+            "<html>upstream 10.0.0.1 timed out</html>",
+        ) else {
+            panic!("Unavailable になる");
+        };
+        assert_eq!(
+            msg,
+            "openai 504 Gateway Timeout: プロバイダが一時的に応答できませんでした"
+        );
+    }
+
+    /// 流し始めた後の誤りの本文（Gemini API の配列の誤り・Responses API の error イベント）も同じく本文を出さない。
+    #[test]
+    fn midstream_failure_keeps_only_kinds() {
+        let gemini = r#"[{"error":{"code":500,"message":"Internal error for project 1234567 (req abc)","status":"INTERNAL"}}]"#;
+        assert_eq!(
+            midstream_failure("openai", gemini),
+            "openai: プロバイダが応答の途中で失敗しました（INTERNAL）"
+        );
+        assert_eq!(
+            midstream_failure("responses", "not json"),
+            "responses: プロバイダが応答の途中で失敗しました"
+        );
     }
 
     /// 呼ぶ側が見分ける語は、ほかの種類の語が先に 3 つ並んでいても文言に残す（本文の並びと上限で落とさない）。

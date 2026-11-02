@@ -160,6 +160,18 @@ async fn http_errors_map_to_bad_request_and_rate_limited() {
         err,
         LlmError::RateLimited(m) if m.starts_with("利用上限に達しました") && !m.contains("usage limit")
     ));
+
+    // 5xx の本文も出さない（誤りの種類の語だけ・BUG-210）。
+    let (base, _) = spawn_mock(
+        StatusCode::BAD_GATEWAY,
+        "{\"error\":{\"code\":\"server_error\",\"message\":\"upstream failed for org-secret\"}}",
+    )
+    .await;
+    let err = provider(&base).stream(&req).await.err().unwrap();
+    assert!(
+        matches!(&err, LlmError::Unavailable(m) if m.contains("server_error") && !m.contains("org-secret")),
+        "{err}"
+    );
 }
 
 /// 実エンドポイント向けのプロバイダ（`OPENAI_RESPONSES_TEST_*` から組む）。

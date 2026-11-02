@@ -318,12 +318,14 @@ impl EventMapper {
             }
             "response.failed" | "error" => {
                 self.finished = true;
-                let msg = v["response"]["error"]["message"]
-                    .as_str()
-                    .or_else(|| v["error"]["message"].as_str())
-                    .or_else(|| v["message"].as_str())
-                    .unwrap_or("response failed");
-                vec![Err(LlmError::Unavailable(format!("responses: {msg}")))]
+                // 誤りの本文（message には要求の ID などが入る）は文言に入れず、誤りの種類の語だけを載せる（BUG-210）。
+                let error = v
+                    .pointer("/response/error")
+                    .filter(|e| e.is_object())
+                    .unwrap_or(&v);
+                vec![Err(LlmError::Unavailable(
+                    crate::provider::midstream_failure("responses", &error.to_string()),
+                ))]
             }
             _ => Vec::new(),
         }
@@ -476,7 +478,7 @@ impl OpenAiResponsesProvider {
             if status.is_client_error() {
                 return Err(crate::provider::rejection("responses", status, &text));
             }
-            return Err(LlmError::Unavailable(format!("responses {status}: {text}")));
+            return Err(crate::provider::unavailable("responses", status, &text));
         }
 
         let (tx, rx) = mpsc::unbounded::<Result<StreamDelta, LlmError>>();
@@ -942,11 +944,25 @@ mod tests {
                 ..
             })
         ));
+        // 失敗の本文（message の要求の ID など）は文言に入れず、誤りの種類の語だけを載せる（BUG-210）。
         let out = feed_all(&[
-            json!({"type": "response.failed", "response": {"error": {"message": "boom"}}}),
+            json!({"type": "response.failed", "response": {"error": {"code": "server_error", "message": "boom req_abc123"}}}),
         ]);
         match &out[0] {
-            Err(LlmError::Unavailable(m)) => assert!(m.contains("boom")),
+            Err(LlmError::Unavailable(m)) => assert_eq!(
+                m,
+                "responses: プロバイダが応答の途中で失敗しました（server_error）"
+            ),
+            other => panic!("expected Unavailable, got {other:?}"),
+        }
+        let out = feed_all(&[
+            json!({"type": "error", "code": "rate_limit_exceeded", "message": "slow down org-xyz"}),
+        ]);
+        match &out[0] {
+            Err(LlmError::Unavailable(m)) => {
+                assert!(!m.contains("org-xyz") && !m.contains("slow down"), "{m}");
+                assert!(m.contains("rate_limit_exceeded"), "{m}");
+            }
             other => panic!("expected Unavailable, got {other:?}"),
         }
     }

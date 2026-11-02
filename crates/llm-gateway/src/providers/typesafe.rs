@@ -387,7 +387,7 @@ impl DecisionProvider for TypesafeDecider {
                     LlmError::Config(format!("typesafe {status}: authentication failed"))
                 }
                 _ if status.is_client_error() => crate::provider::rejection(NAME, status, &text),
-                _ => LlmError::Unavailable(format!("typesafe {status}: {text}")),
+                _ => crate::provider::unavailable(NAME, status, &text),
             };
             return Err(fail(error));
         }

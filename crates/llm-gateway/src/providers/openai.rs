@@ -544,7 +544,7 @@ fn status_error(status: reqwest::StatusCode, text: &str, structured: bool) -> Ll
         }
         return crate::provider::rejection("openai", status, text);
     }
-    LlmError::Unavailable(format!("openai {status}: {text}"))
+    crate::provider::unavailable("openai", status, text)
 }
 
 /// モデルの拒否（`delta.refusal`）を本文の差分にする。通常の応答でも `"refusal": null`
@@ -625,13 +625,14 @@ fn cut_short(completed: bool, stray: &str) -> Option<LlmError> {
     if completed {
         return None;
     }
+    // SSE でない行はプロバイダの誤りの本文なので、文言には誤りの種類の語だけを載せる（本文はログだけ・BUG-210）。
     let why = if stray.is_empty() {
-        "stream ended before completion".to_string()
+        "openai stream ended before completion".to_string()
     } else {
-        format!("stream ended with: {stray}")
+        crate::provider::midstream_failure("openai", stray)
     };
     Some(LlmError::Unavailable(format!(
-        "{}openai {why}",
+        "{}{why}",
         crate::provider::CUT_BY_PROVIDER
     )))
 }
