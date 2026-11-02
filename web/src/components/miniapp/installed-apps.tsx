@@ -67,11 +67,14 @@ function FunctionFailures({ failures }: { failures: AppFunctionFailure[] }) {
         <ul className="space-y-1.5">
           {failures.map((f) => (
             <li key={f.function} className="min-w-0">
-              <p className="break-words text-foreground">
-                「{f.function}」（{TRIGGER_LABEL[f.trigger] ?? "自動実行"}）・{formatDateTime(f.failed_at)}
-                {f.failures > 1 ? `・${f.failures} 回続けて失敗` : ""}
+              <p className="break-words font-medium text-foreground">
+                「{f.function}」（{TRIGGER_LABEL[f.trigger] ?? "自動実行"}）
               </p>
               <p className="break-words text-muted-foreground">{f.message}</p>
+              <p className="text-muted-foreground">
+                <span className="whitespace-nowrap">{formatDateTime(f.failed_at)}</span>
+                {f.failures > 1 ? <span className="whitespace-nowrap">・{f.failures} 回続けて失敗</span> : null}
+              </p>
             </li>
           ))}
         </ul>
