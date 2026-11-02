@@ -1753,7 +1753,7 @@ absent  ──promote──▶  building  ──収束──▶  active  ──d
 | **app-gateway**（B1/B2 ミニアプリ） | ✅ 9 ルート実装済み | クエリ IR 刷新に追従。`transition` を script からも使えるようにする。レコード変更の SSE は `GET /gw/data/tables/{table_id}/stream`（§9.3 の配信をアプリ所有束縛で公開・`events.subscribe` には流さない） |
 | **shiki script（B2 関数）** | ✅ `Shiki.data.*`（gateway 経由） | 同上（`Shiki.data.transition` を追加・前置きは `script_runtime::prelude` で共通） |
 | **shiki script（ワークフロー/skill）** | ❌ `HostBridge` が `data.*` を受けない | **`nodes/script.rs` の dispatch に data アームを追加**。api 名は `ALLOWED_APIS` に既存（`data.transition` は追加） |
-| **ワークフローノード** | ❌ 語彙予約のみ・`available_stage_a` false | **`data.query` / `data.record.create` / `data.record.update` / `data.record.delete` / `data.transition` / `data.bulk_upsert` を解禁**。IR `Condition` と `DataQuery.filter` が同語彙なので変換層が不要。書込は `effect_journal`（EngineDedup）経由。schedule / event run は委譲元ユーザーの権限（workflow engine.md §6.8） |
+| **ワークフローノード** | ❌ 語彙予約のみ・`available_stage_a` false | **`data.query` / `data.record.create` / `data.record.update` / `data.record.delete` / `data.transition` / `data.bulk_upsert` を解禁**（後に `data.record.upsert`〔重複を許さない列で探して追加か更新〕と、数を足す `add` を足した・GAP-16）。IR `Condition` と `DataQuery.filter` が同語彙なので変換層が不要。書込は `effect_journal`（EngineDedup）経由。schedule / event run は委譲元ユーザーの権限（workflow engine.md §6.8） |
 | **ワークフローのトリガ・wait** | ❌ 語彙予約のみ | **データ変更トリガ（`data.record.created` / `data.record.updated` / `data.transition`・`scope: { table }`）と wait(event) のデータ版**（GAP-07）。発火・起床の判定と run 入力は §9.2 の `change_event_view`（委譲元・実行主体の見え方）。一括取込では発火しない・自分の書込で自分を起こさない（workflow engine.md §5.4） |
 | **ワークフローの承認待ち** | ❌ 語彙予約のみ | **`human.approval`**（GAP-08）。FSM で管理するテーブルの 1 行に束縛し、判断は承認者本人の `FsmStore::transition`（actor 述語・行の可視性・editor・rev は data が判定）。停止時の行の状態は `FsmStore::approval_target`（viewer・遷移の定義だけ・actor 述語は返さない）、受信箱は担当の行を承認者本人の権限で `DataStore::get_records` で読み直す（workflow engine.md §9.6） |
 | **generative UI** | ❌ `TableProps` は静的データ埋め込み | **`ActionBinding` に `DataView { view_id, pinned_version }` を追加**し、`data_grid` コンポーネントを束縛で描画。クライアントが送れるのは `action_id + params` のみ（`ActionDispatcher` の不変条件を維持）。実装（Task 15.7）: ミニアプリの画面の `` ```data_grid ``（中身は束ねた保存ビューの別名）。ピンは `MiniAppBody.data_views` で、保存時に保存者の権限で解決する（`MiniAppStore`・ワークフローのピンと同じ流儀）。描画は `POST /mini-apps/{id}/ui-actions`（`action_id = data_grid:{別名}`・params は `DataViewPage` の `cursor` / `limit` だけ）で、定義はバンドル権限で読み、**行・列は閲覧者本人の権限で毎回評価**する（`DataViewStore::run_via_bundle`）。#604 で tool 束縛を撤去したので束縛は 3 種 |
@@ -2396,7 +2396,9 @@ covering read へ切り替える**。判定には平均行幅の統計が要る�
 >   主体はジョブで `AuthContext` を組み直し、**チャンクごとに editor を問い直す**（昇格しない）
 > - **適用は 1 件の書込と同じ入口**（作成は `record_effects`、更新は `record_update` の行ロックつきの入口）を通るので、
 >   本体・索引行・revision・**outbox（SSE の発火）**・材料化・監査が通常経路と同じ規則で出る。取込そのものは**新規作成**で、
->   既存レコードの更新を混ぜるのはワークフローの `data.bulk_upsert`（行ごとの `op` と任意の `expected_rev`）
+>   既存レコードの更新を混ぜるのはワークフローの `data.bulk_upsert`（行ごとの `op` と任意の `expected_rev`。同じレコードを
+>   探す列 `match_on` を書くと、`id` の無い行を重複を許さない列の値で既存のレコードに当ててから取り込む・GAP-16・
+>   [workflow/ir.md](./workflow/ir.md) §7.12）
 > - 検証を通った後に並行書込と競合した行（unique・リンクのカーディナリティ）は拒否として数え、行エラーに残す。
 >   `abort_on_invalid` なら 1 行でも不合格があれば何も適用しない。適用中にスキーマの版が変わったら未適用の行を検証し直す
 > - 索引の構築は `index_mode`（`auto` / `immediate` / `deferred`）。`deferred` は**取込の作成行が値を書く列の**値索引を `building` に保持して

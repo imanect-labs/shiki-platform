@@ -387,9 +387,10 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 | `csv.query` | 能力 | CSV に読み取り専用の SQL を実行して集計・抽出する（隔離ランナー。CSV の文字コードは `storage.read` と同じ判定で決めて UTF-8 にしてからランナーへ渡し、決められなければ `not_text_file`・GAP-45。結果に集計した中身のバージョン `version` を載せ、後ろの `csv.patch` の `base_rev` にできる・D-96） | pure | 30s / 120s |
 | `csv.patch` / `csv.write` | 能力 | CSV のセル・行・列を書き換えて新しいバージョンを保存する／新しい CSV を保存する（同じ名前があるときは `storage.write` と同じ `on_name_taken`。`csv.patch` は元の文字コードと BOM のまま書き戻し、元の文字コードに無い文字は書かずに `invalid` で失敗する・GAP-45。`csv.patch` の区切りと改行は `csv.query` の読み込みと同じ推定〔隔離ランナーの `sniff_csv`〕で決め、同じ区切りと改行で書き戻す〔Excel の「Unicode テキスト」のタブ区切り・推定できなければカンマ区切り・BUG-144〕。`csv.write` は `encoding`〔`utf8_bom`・`utf8`・`shift_jis`〕の文字コードで書き、省略は BOM なしの UTF-8〔この項目が無かったころの定義の挙動〕、エディタで新しく置くブロックは `utf8_bom`。`shift_jis` で書けない文字は書かずに `invalid` で失敗する・D-120。`csv.write` の `content` と、種類が `text/csv` の `storage.write` の `content` は、文字ならそのまま書き、表〔`csv.query` の結果 `{columns, rows}`。行は値のリストか、列の名前で引く項目のまとまり〕と項目のまとまりのリスト〔列はすべての項目の名前を合わせたもの・名前の順〕は CSV に組み立てる。区切りはカンマ・行の終わりは CRLF・カンマ／二重引用符／改行を含むセルは二重引用符で囲む〔RFC 4180〕。先頭が `=` `+` `-` `@` タブ CR の 2 字以上の文字で数の表記でないセルは、先頭に `'` を付けて表計算ソフトの式にしない〔監査ログの書き出しと同じ打ち消し方〕。数・真偽・空の値・表でない項目のまとまり・まとまりでないもののリスト・入れ子の値・`csv.query` が打ち切った表〔`truncated: true`〕は、JSON の文字のまま保存せずに `invalid` で失敗する・BUG-178） | engine-dedup | 30s / 120s |
 | `data.query` | 能力 | 宣言的クエリ（**data の `DataQuery` をそのまま使う**・比較値に `$from` 可・`query.limit` は 1〜200 で範囲の外は保存時に `ir.schema_violation`・BUG-108） | pure | 30s / 120s |
-| `data.record.create` / `data.record.update` / `data.record.delete` | 能力 | レコード書込（rev 楽観ロック・rev 省略時は実行時点の rev） | engine-dedup | 30s / 120s |
+| `data.record.create` / `data.record.update` / `data.record.delete` | 能力 | レコード書込（rev 楽観ロック・rev 省略時は実行時点の rev。`data.record.update` は省略できる `add`〔数の列 → 足す数〕で、いまの値に足して書く・§7.12・GAP-16） | engine-dedup | 30s / 120s |
+| `data.record.upsert` | 能力 | 同じレコードを探す列（`match_on`・重複を許さない列）の値が同じレコードがあれば書き換え、なければ追加する（`add` で数を足せる・出力はレコードと `created`・§7.12・GAP-16） | engine-dedup | 30s / 120s |
 | `data.transition` | 能力 | **FSM 遷移 API を叩く**（直接 status 書込は構造的に不可能） | engine-dedup | 30s / 120s |
-| `data.bulk_upsert` | 能力 | 一括の作成・更新（data の一括書込パス・最大 5,000 行・誤りは行ごとに拒否） | engine-dedup | 600s / 600s（切れると途中まで登録したまま失敗するので、既定でも最大まで待つ・D-106） |
+| `data.bulk_upsert` | 能力 | 一括の作成・更新（data の一括書込パス・最大 5,000 行・誤りは行ごとに拒否。省略できる `match_on` で、`id` の無い行を同じ値のレコードに当てて更新にする・§7.12・GAP-16） | engine-dedup | 600s / 600s（切れると途中まで登録したまま失敗するので、既定でも最大まで待つ・D-106） |
 | `rag.search` | 能力 | permission-aware 検索（必要スコープは既存語彙 `rag.query`。結果の各件に関連の強さ `relevance`〔high・medium・low。reranker の値を設定のしきい値で段階に落としたもの〕を載せる。`score` は順位から決めた値〔1/(順位+1)〕で関連の強さではない・D-96） | pure | 60s / 120s |
 | `notify.send` | 能力 | アプリ内通知 | engine-dedup | 30s / 60s |
 | `workflow.start` | 能力 | 別ワークフロー起動（fire-and-forget・run_id 返し。相手は保存時に V4 で照合し、実行時に無い・見えない相手は同じ `not_found`〔permanent〕で失敗する・BUG-107。相手の最新の保存内容を、親の実行主体の権限で動かす・D-91） | engine-dedup（起動 1 回保証） | 10s / 30s |
@@ -767,6 +768,61 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 - **要求スコープ**: 無い（scope 天井の対象外。llm.invoke と同じ内部推論で、データへの到達は材料を読んだ前のノードの data / storage のスコープで縛られる・D-52 の H14）。
 - **保存を止めない警告**: しきい値が 0.6 未満（`ir.decide_low_confidence`）、値で振り分ける選択肢が 10 件以上（`ir.decide_many_ports`・確からしさで分けて後ろの振り分けで `/answers/<key>/value` を使う方が読みやすい）、モデルの名前が `-latest` / `-preview` を含む（`ir.decide_unpinned_model`）。
 
+### 7.12 同じレコードを探す列と足す数（`data.record.upsert`・`add`・`match_on`・GAP-16）
+
+同じものを 2 件にしない書き込み（同じ品番・同じ回答 ID・同じ週の集計を、再実行や取り込み直しで増やさない）と、数の足し引き（在庫を
+1 減らす・合計に足す）を、探してから書き分ける組み方（`data.query` → `control.branch` → `data.record.create` / `update`）なしに書く。
+探してから書き分けると、同時に動いた 2 つの実行が両方とも「無い」と見て 2 件追加し、読んだ値に足して書くと、間にほかの実行が
+足した分が消える。
+
+```jsonc
+{ "id": "restock", "type": "data.record.upsert",
+  "params": {
+    "table": "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1",
+    "match_on": "sku",                                        // 同じレコードを探す列（重複を許さない列の参照名・リテラル）
+    "data": { "sku": { "$from": "input", "path": "/sku" },    // 入れる値（探す列の値を含む）
+              "name": { "$from": "input", "path": "/name" } },
+    "add": { "stock": { "$from": "input", "path": "/qty" } }  // 足す数（省略可・負の数で減らす）
+  } }
+```
+
+- **`data.record.upsert`**: 実行主体に見えるレコードのうち、`match_on` の列の値が `data` の同じ列の値と等しいもの（`data.query` と同じ
+  比べ方）を探す。あれば `data` から探す列を除いた値で書き換え（1 件の更新と同じ入口・書き換えの権限）、なければ `data` で追加する
+  （1 件の作成と同じ入口・追加の権限・追加だけの人も追加できる）。`add` の数の列は、書き換えならいまの値に、追加なら 0 に足す。
+  出力は書いたレコード（`data.record.create` と同じ項目）と `created`（追加したら true）。
+  - 同じ値で並行に追加しても 2 件にならないのは、探す列の一意（`data_unique`）に頼る。追加が `unique_violation` で断られたら、先に
+    追加されたレコードを探し直して書き換えに回る。探し直しても見えなければ（見えない行に同じ値がある・ほかの重複を許さない列が
+    重なる）、その `unique_violation` を返す（1 件の追加と同じ応答・存在について明かすことは増えない・data-platform §16.1）。
+  - 書き換えは、読んだ rev を前提に書く（`expected_rev`）。間に書き換えられた・消えたら探し直す（40 回・
+    10 秒まで。重なり続けたら `conflict`〔やり直せる〕）。
+  - 探す列の値は文字か数（空白だけの文字・null・リストは `invalid`）。2 件以上当たったら（探す列が重複を許していない）どれも
+    書かずに `invalid`。状態の列は書けない（状態を進めるで変える・FSM の不変条件）。
+- **足す数（`add`）**: `data.record.update` と `data.record.upsert` に書ける `{ "<数の列>": 足す数 }`（ValueExpr・解決した値は数）。
+  いまの値（値が無ければ 0）に 10 進で正確に足した値を書く（`data::add_numbers`・数式の和と同じ演算）。
+  - いまの値は**書き込む主体の見え方**で読む（書き換えの入口に何も変えない更新を渡し、data がいまのレコードを書き手のマスクで返す。
+    リビジョン・outbox・監査は作らない）。schedule / event の run で、読取と書込を委譲した人が別々でも、読取の委譲元に読めない
+    列を 0 から足して上書きしない（[engine.md](./engine.md) §6.8）。書き換えの権限が無ければ、足す前に断る。
+  - 読んだ rev を前提に書き、間にほかの書込があれば読み直して足し直す（上と同じ回数まで）。並行に足しても足した分は失われない。
+    `expected_rev` を書いたときは読み直さず、その版でなければ `conflict` で失敗する。
+  - 足した結果は列の検証（`NumericSpec` の `scale`・`min`・`max`）を通る。在庫を 0 未満にしないなら列の最小値を 0 にする
+    （外れたら書かずに `invalid`。並行の出庫でも、検証は書く値そのものに掛かるので 0 未満にならない）。
+  - 値の欄（`patch` / `data`）と同じ列・探す列には書けない（保存時に `ir.schema_violation`・実行時に `invalid`）。
+    `data.record.update` は `add` に列があれば `patch` を省ける（`ir.required_text_empty` にしない）。
+- **まとめて登録の `match_on`**: 書くと、`id` の無い行は行の `data` の `match_on` の列の値で実行主体に見えるレコードを探し
+  （200 件ずつ `in` で問い合わせる）、当たった行はそのレコードの更新（`id` を書いた行と同じ・`rev` は書いたときだけ照らす）、
+  当たらない行は追加になる。取り込み直しても同じ値の行は増えない。行の `data` に探す列の値が無い・文字か数でない・同じ値の行が 2 つ
+  あると、どれも登録せずに `invalid`。照合は効果の予約の内側で行い（記録済みの step は探し直さない）、取込 ID は冪等キーから
+  決まるので、やり直しても二重に取り込まない。結果に当てた行の数 `rows_matched` が加わる。一括取込なので editor が要り
+  （追加だけの人は使えない）、データ変更トリガは発火しない（§6.2）。省略・空の文字は従来どおり（`id` の無い行はすべて追加）。
+- **保存時の照合**（§8 V4）: `match_on` はテーブルで重複を許さない列（`unique`）であること（`ir.match_not_unique`。重複を許す列だと
+  同時に動いた 2 つの実行が両方とも追加するため）。`add` の列は数の列であること（`ir.add_not_number`）。読めない列・無い列は
+  `ir.unknown_field`（承認と同じ文言・区別しない）。材料は保存者の見え方（`Catalog::tables`）で、テーブルを `$from` で決める
+  ブロックは照合しない（実行時に data が断る）。
+- **要るスコープ**: `data.write`（探すのも書き込みの一部・1 件の更新が rev を読むのと同じ）。委譲は書き込みと同じ editor。
+- **冪等**: 1 回の実行で成功する書込は高々 1 回で、ほかの誤りは何も書かずに返るので、効果の予約は 1 回の書込と同じ扱い
+  （[engine.md](./engine.md) §7.3）。回収窓の at-least-once（予約を取ったワーカーが落ちた後の再実行）では、足す数が二重に
+  足されることがある（`data.record.create` が二重に追加されうるのと同じ）。
+
 ---
 
 ## 8. 保存時検証パイプライン（確定・順序固定）
@@ -789,7 +845,7 @@ AI 編集も dnd 保存も**同一エンドポイント・同一パイプライ�
 - **V2 グラフ**: `id` 一意、`parent` の連鎖が自分へ戻らないこと（自分を親にした map・互いを親にした map は `ir.bad_region`）、エッジの `from` / `to` が実在ノード、`from_port` が §5.2 のポートカタログに存在（出口はカタログの `port_rule` から導く。検証 API はノードごとの出口を `node_ports` で返す）、DAG（閉路なし）、join 以外の入エッジ ≤ 1、map 領域の閉包（領域跨ぎエッジなし）・出口ちょうど 1（中にノードのある領域だけ。空の領域は保存を止めない注意 `ir.empty_region`・§5.3）、全ノードのエントリからの到達可能性を検証する。孤立ノードは保存を止めない注意（`ir.unconnected_node`・§5.1）。`workflow.reply` は map 領域に置けない（`ir.reply_in_map`・§7.10）。
 - **V3 語彙照合**: ノード `type`・`declared_scopes`・ツール名（`allowed_tools`）・モデル名を codegen が生成した閉じた語彙と、テナントの登録カタログ（モデルは組織が許可したモデル・本人専用を除く）へ照合する。**ハルシネーション境界**であり、実在しない語彙を参照する IR（特に AI 生成）を保存前に拒否する。`llm.invoke` の `model` は省略可で、省略（空文字を含む）は照合しない（実行時に組織の既定で解決する・§7.3）。組織がモデルの選択を禁じていれば、既定と異なるモデルを `ir.model_choice_disabled` で拒否する。
 - **V3 のモデルの種類**: カタログのモデルは文章を生成する chat と判定用の decision に分かれる（[design.md](../design.md) §4.5）。`llm.invoke`・`agent.invoke` の `model` は組織が許可した chat モデル、`ai.decide` の `model` は組織が許可した判定用のモデル（LLM に判定させるなら元にする chat モデルも許可されているもの）へ照合する。種類を取り違えたもの（`llm.invoke` に判定用のモデル・`ai.decide` に chat モデル）は `ir.model_modality_mismatch`（path は `/params/model`・使えるモデルを添える）、どちらにも無いものは `ir.unknown_model`。判定用のモデルが 0 件の組織では `ai.decide` をすべて拒否する。照合の材料（組織の許可リスト）は保存 API・検証 API・AI の `emit_workflow` が同じ関数（`build_catalog_from`）で組み、種類の振り分けもその中だけで行う（保存と AI 編集で結果を変えない）。
-- **V4 参照存在**: skill（レジストリ＋インストール済み）・secret（存在＋宛先束縛がノードの `http.request` URL ホストを許容する）・テーブル/フォルダ id の実在を検証する。`workflow.start` の `name`（リテラル）は、保存者に見える既存のワークフローであること（無い名前と見えない相手は同じ `ir.unknown_workflow`・同じ文言で、path は `/params/name`。存在を明かさない・BUG-107）。保存中の IR 自身の `name` は見えるものとして扱う（自分を呼ぶ新しいワークフローを最初の保存で止めない。互いに呼び合う 2 つは、片方を相手なしで保存してから相手を足す）。材料は保存 API・検証 API・AI の `emit_workflow` が IR の名前だけを保存者の権限で引く（`workflow_start_targets`）。空の名前は照合せず、必須の欄の空（`ir.required_text_empty`）として扱う。`human.approval` は、テーブルが保存者に見えて FSM で管理され、状態の列を保存者が読めること（見えないテーブル・FSM でないテーブル・状態の列が読めないテーブルは同じ文言 `ir.unknown_table`。状態の一覧は出さない）、判断の行き先が FSM の状態であること（`ir.unknown_state`）、`show_fields` と担当者の列がテーブルの列（担当者はユーザー・部署の列）であること、`show_fields` に状態の列が無いこと（`ir.bad_show_field`。状態の列は保存者が読めるときだけ材料に入るので、読めない列の手がかりにならない）を照合する。`data.transition` のテーブル（リテラル）と、`data.transition` のイベントトリガの `scope.table` も、保存者に見えて FSM で管理され、状態の列を保存者が読めること（FSM の無いテーブルでは、ノードは実行のたびに失敗し、トリガはいつまでも起きない。見えないテーブルと同じ `ir.unknown_table` で、path はノードなら `/params/table`、トリガなら `/triggers/<i>/scope/table`。テーブルを `$from` で決めるノードは照合しない・BUG-105）。材料は保存 API（検証 API・AI の `emit_workflow` も同じ）が**保存者の見え方**（`DataStore::get_table_for_viewer`・テーブルの owner でなければ読める列だけ）で引く。読めない列は無い列と同じ `ir.unknown_field`（code・path・message が同じ。文言も「このテーブルに無いか、読めない列です」とどちらとも言わない）になり、種別の違い（`ir.bad_assignee`）も返さない（無い列と読めない列を区別させない・data-platform §16.1）。
+- **V4 参照存在**: skill（レジストリ＋インストール済み）・secret（存在＋宛先束縛がノードの `http.request` URL ホストを許容する）・テーブル/フォルダ id の実在を検証する。`workflow.start` の `name`（リテラル）は、保存者に見える既存のワークフローであること（無い名前と見えない相手は同じ `ir.unknown_workflow`・同じ文言で、path は `/params/name`。存在を明かさない・BUG-107）。保存中の IR 自身の `name` は見えるものとして扱う（自分を呼ぶ新しいワークフローを最初の保存で止めない。互いに呼び合う 2 つは、片方を相手なしで保存してから相手を足す）。材料は保存 API・検証 API・AI の `emit_workflow` が IR の名前だけを保存者の権限で引く（`workflow_start_targets`）。空の名前は照合せず、必須の欄の空（`ir.required_text_empty`）として扱う。`human.approval` は、テーブルが保存者に見えて FSM で管理され、状態の列を保存者が読めること（見えないテーブル・FSM でないテーブル・状態の列が読めないテーブルは同じ文言 `ir.unknown_table`。状態の一覧は出さない）、判断の行き先が FSM の状態であること（`ir.unknown_state`）、`show_fields` と担当者の列がテーブルの列（担当者はユーザー・部署の列）であること、`show_fields` に状態の列が無いこと（`ir.bad_show_field`。状態の列は保存者が読めるときだけ材料に入るので、読めない列の手がかりにならない）を照合する。`data.transition` のテーブル（リテラル）と、`data.transition` のイベントトリガの `scope.table` も、保存者に見えて FSM で管理され、状態の列を保存者が読めること（FSM の無いテーブルでは、ノードは実行のたびに失敗し、トリガはいつまでも起きない。見えないテーブルと同じ `ir.unknown_table` で、path はノードなら `/params/table`、トリガなら `/triggers/<i>/scope/table`。テーブルを `$from` で決めるノードは照合しない・BUG-105）。材料は保存 API（検証 API・AI の `emit_workflow` も同じ）が**保存者の見え方**（`DataStore::get_table_for_viewer`・テーブルの owner でなければ読める列だけ）で引く。読めない列は無い列と同じ `ir.unknown_field`（code・path・message が同じ。文言も「このテーブルに無いか、読めない列です」とどちらとも言わない）になり、種別の違い（`ir.bad_assignee`）も返さない（無い列と読めない列を区別させない・data-platform §16.1）。`data.record.upsert` と `data.bulk_upsert` の `match_on`（リテラルのテーブル）は、保存者に読めて重複を許さない列であること（`ir.match_not_unique`）、`data.record.update` と `data.record.upsert` の `add` の列は数の列であること（`ir.add_not_number`）。無い列・読めない列は同じ `ir.unknown_field`（§7.12・GAP-16）。
 - **V3 の承認**: `human.approval` は `data.read` と `notify.send` の宣言が要る（保存時の scope 補完が足す）。
 - **V3 の AI エージェント**: `allowed_tools` の未知の名前は V1（選択肢にない値）、予約の道具は `ir.unknown_tool`、要求スコープの宣言漏れは `ir.missing_scope`（path は `/params/allowed_tools/<i>`・保存時の scope 補完が足す）。`model` は `llm.invoke` と同じ照合（path は `/params/model`）。web.fetch を選んだときだけ、`egress_allowlist` を照合する（空は `ir.missing_egress`、形は `ir.bad_host`、管理者の天井の外は `ir.host_outside_ceiling`・path は `/params/egress_allowlist/<i>`）。
 - **V5 の AI エージェント**: 依頼（`instruction`）をリテラルで書くなら文字（`ir.expr_type_error`・参照と差し込みは実行時に文字かを確かめる）。
@@ -798,11 +854,11 @@ AI 編集も dnd 保存も**同一エンドポイント・同一パイプライ�
 - **V6 script コンパイル**: inline script を swc でパースし、禁止構文を弾く（[script.md](./script.md) §3）。artifact 参照は version 固定なので存在確認のみ。
 - **V7 上限**: サイズ・数量の上限を検証する（すべて初期値・設定で調整可）。`workflow.reply` の `value` がリテラルなら形と合うこと（text・markdown は文字・table は配列・file_link はオブジェクトか配列。`ir.reply_type`・path は `/params/value`）。
 - **保存を止めない警告**（`workflow.reply`）: interactive のトリガが無い IR の reply は画面に出ない（`ir.reply_without_interactive`）。
-- **保存を止めない警告**（中身の無い値）: 値を書く欄が中身の無いオブジェクト・配列（`data.record.create` の `data: {}`・`data.record.update` の `patch: {}`・`data.bulk_upsert` の `rows: []`・`csv.patch` の `ops: []`・表かファイルへのリンクの `workflow.reply` の `value: []` とファイルへのリンクの `value: {}`・BUG-168）なら `ir.empty_values`（path は `/params/<項目>`）。保存・有効化・実行のどれも止めない。状態の進め方のあるテーブルに最初の状態だけのレコードを作る `data: {}` は正しい使い方で、前から保存されている定義にもある（子の実行〔`workflow.start`〕・ミニアプリが版を固定して起こす実行も同じ起動の道を通るので、止めると動かなくなる）。文言は、そのままだと何が起きるかを言う（例: 「レコードの値」に列がありません。このままでは、どの列にも値を入れずにレコードを追加します。）。
+- **保存を止めない警告**（中身の無い値）: 値を書く欄が中身の無いオブジェクト・配列（`data.record.create` の `data: {}`・`data.record.update` の `patch: {}`〔`add` に列があるときは除く〕・`data.bulk_upsert` の `rows: []`・`csv.patch` の `ops: []`・表かファイルへのリンクの `workflow.reply` の `value: []` とファイルへのリンクの `value: {}`・BUG-168）なら `ir.empty_values`（path は `/params/<項目>`）。保存・有効化・実行のどれも止めない。状態の進め方のあるテーブルに最初の状態だけのレコードを作る `data: {}` は正しい使い方で、前から保存されている定義にもある（子の実行〔`workflow.start`〕・ミニアプリが版を固定して起こす実行も同じ起動の道を通るので、止めると動かなくなる）。文言は、そのままだと何が起きるかを言う（例: 「レコードの値」に列がありません。このままでは、どの列にも値を入れずにレコードを追加します。）。
 - **保存を止めない警告**（中の無い map）: 中にノードの無い `control.map`（`ir.empty_region`・node は map・path なし・D-85）。書きかけでも保存はできるが、有効化と実行の前に止める（§9）。文言は map のブロック名を名指しし、どの場面でも通る形（「{ブロック名}」の中にブロックがありません。1 件ごとに行う処理を中に置くまで、実行も自動実行のオンもできません。）にする。
 - **保存を止めない警告**（`ai.decide`）: しきい値が低い（`ir.decide_low_confidence`）・値で振り分ける出口が多い（`ir.decide_many_ports`）・版の固定されていないモデル名（`ir.decide_unpinned_model`）（§7.11）。
 - **保存を止めない警告**（テンプレート）: vars のキーを `{{key}}` と書いた（`ir.template_escaped_var`）・閉じの無い `{`（`ir.template_unclosed_brace`・§3.2・D-37）。
-- **保存を止めない警告**（必須の欄）: `llm.invoke` の `prompt`・`agent.invoke` の `instruction`・`rag.search` の `query`・`csv.query` の `sql`・`workflow.start` の `name`、置いたばかりのブロックの選ぶ欄と文字の欄（`control.branch` の条件の調べる値 `cmp.left`・`control.switch` の `value`・`control.map` の `items`・`ai.decide` の `model` と `state`・`storage.write` と `csv.write` の `name` と `content`・`http.request` の `url`・D-83）と、`ai.decide` の質問ごとの `instructions`（D-108）と、出口を分ける `ai.decide` のしきい値 `route.min_confidence`（既定を置かない・項目なしと null・D-88）と、`skill.invoke` の `skill` と、業務データ・ファイルを選ぶブロックの値の欄（`data.*` の `table`・`data.record.create` の `data`・`data.record.update` / `data.record.delete` / `data.transition` の `record`・`data.record.update` の `patch`・`data.transition` の `to`・`data.bulk_upsert` の `rows`・`storage.read` と `csv.query` と `csv.patch` の `file`・`csv.patch` の `base_rev` と `ops`・BUG-151）と、置いたばかりの `human.approval` の `title`・`record.table`・`assignees`（0 件・値のある担当者がいない・担当者の `field` が空）・使う判断の `to`（D-129・§7.9）と、`workflow.reply` の `value`（BUG-168・§7.10）が空（空文字・空白だけ・null・中身の無い `$template` を含む。参照は実行時まで分からないので対象外。業務データ・ファイルを選ぶブロックの値の欄は、項目が無いのも空で、V1 は項目の欠落で止めない。値を書く欄〔`data`・`patch`・`rows`・`ops`〕の中身の無いオブジェクト・配列は空と数えない〔次の `ir.empty_values`〕）なら `ir.required_text_empty`（path は `/params/<項目>`、調べる値は条件の中の位置 `/params/condition/…/cmp/left`、判定の問いは `/params/questions/<i>/instructions`、しきい値は `/params/route/min_confidence`、承認は `/params/record/table`・`/params/assignees`・`/params/assignees/<i>/field`・`/params/<approve|reject|return>/to`）。書きかけでも保存はできるが、有効化と実行の前に止める（§9・D-43）。エディタは置いたばかりのこれらの欄を `""` で置く（入力全体を黙って入れない）。`ai.decide` の `model` と `http.request` の `url` は、空なら V1 の照合（モデルの必須・URL の形）もしない（値を入れた後の保存で照合する）。`skill.invoke` の空の `skill` も V4 の照合（形・インストール済み）をしない。`human.approval` の空の欄も V1（字数・件数・ID の形）と V4（テーブル・状態・列）の照合をしない。文言は欄の見出しを名指しし、どの場面でも通る形（「{見出し}」が空です。入れるまで（選ぶ欄は選ぶまで）、実行も自動実行のオンもできません。）にする。
+- **保存を止めない警告**（必須の欄）: `llm.invoke` の `prompt`・`agent.invoke` の `instruction`・`rag.search` の `query`・`csv.query` の `sql`・`workflow.start` の `name`、置いたばかりのブロックの選ぶ欄と文字の欄（`control.branch` の条件の調べる値 `cmp.left`・`control.switch` の `value`・`control.map` の `items`・`ai.decide` の `model` と `state`・`storage.write` と `csv.write` の `name` と `content`・`http.request` の `url`・D-83）と、`ai.decide` の質問ごとの `instructions`（D-108）と、出口を分ける `ai.decide` のしきい値 `route.min_confidence`（既定を置かない・項目なしと null・D-88）と、`skill.invoke` の `skill` と、業務データ・ファイルを選ぶブロックの値の欄（`data.*` の `table`・`data.record.create` の `data`・`data.record.update` / `data.record.delete` / `data.transition` の `record`・`data.record.update` の `patch`〔`add` に列があるときは除く・GAP-16〕・`data.record.upsert` の `match_on` と `data`・`data.transition` の `to`・`data.bulk_upsert` の `rows`・`storage.read` と `csv.query` と `csv.patch` の `file`・`csv.patch` の `base_rev` と `ops`・BUG-151）と、置いたばかりの `human.approval` の `title`・`record.table`・`assignees`（0 件・値のある担当者がいない・担当者の `field` が空）・使う判断の `to`（D-129・§7.9）と、`workflow.reply` の `value`（BUG-168・§7.10）が空（空文字・空白だけ・null・中身の無い `$template` を含む。参照は実行時まで分からないので対象外。業務データ・ファイルを選ぶブロックの値の欄は、項目が無いのも空で、V1 は項目の欠落で止めない。値を書く欄〔`data`・`patch`・`rows`・`ops`〕の中身の無いオブジェクト・配列は空と数えない〔次の `ir.empty_values`〕）なら `ir.required_text_empty`（path は `/params/<項目>`、調べる値は条件の中の位置 `/params/condition/…/cmp/left`、判定の問いは `/params/questions/<i>/instructions`、しきい値は `/params/route/min_confidence`、承認は `/params/record/table`・`/params/assignees`・`/params/assignees/<i>/field`・`/params/<approve|reject|return>/to`）。書きかけでも保存はできるが、有効化と実行の前に止める（§9・D-43）。エディタは置いたばかりのこれらの欄を `""` で置く（入力全体を黙って入れない）。`ai.decide` の `model` と `http.request` の `url` は、空なら V1 の照合（モデルの必須・URL の形）もしない（値を入れた後の保存で照合する）。`skill.invoke` の空の `skill` も V4 の照合（形・インストール済み）をしない。`human.approval` の空の欄も V1（字数・件数・ID の形）と V4（テーブル・状態・列）の照合をしない。文言は欄の見出しを名指しし、どの場面でも通る形（「{見出し}」が空です。入れるまで（選ぶ欄は選ぶまで）、実行も自動実行のオンもできません。）にする。
 
 **エラー形式**: 最初の 1 件で止めず、全件を配列で返す（dnd がノード上に表示するため）。
 
