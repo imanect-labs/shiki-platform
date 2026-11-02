@@ -594,7 +594,9 @@ let revoked = self.authz
 - アーティファクトの一覧（`GET /artifacts`）とワークフローの一覧（`GET /workflows`）の共有分も同じ形で絞る
   （`crates/artifact/src/shared.rs`）。どちらも同じ入口（`crates/api/src/routes/artifact_list.rs`）で、先頭のページは所有分と
   共有分を合わせて返し、続きの位置はそれぞれ別に返す。共有分に続きがあれば `shared_next_cursor` を返し、`shared_cursor` に
-  渡すと共有分の続きだけを返す（所有分の `before_*` とは同時に使えない・BUG-162・BUG-185）。所有分に続きがあれば `owned_next`
+  渡すと共有分の続きだけを返す（所有分の `before_*` とは同時に使えない・BUG-162・BUG-185）。共有分の位置は、テナントに加えて
+  一覧の種類（`kind`。`GET /workflows` は `workflow`・絞らない `GET /artifacts` は無し）にも束縛し、別の種類の一覧に渡すと
+  `cursor_invalid`（その位置より新しい共有分を黙って読み飛ばさない）。所有分に続きがあれば `owned_next`
   （`before_updated_at`・`before_id`）を返し、`before_*` に渡すと所有分の続きだけを返す。所有分の位置は自分のものを指すだけ
   なので封をしない。合わせたページの最後の 1 件を所有分の位置に使うと、最後が共有分だったときに、それより新しい所有分を
   読み飛ばす（BUG-185・BUG-186）。
