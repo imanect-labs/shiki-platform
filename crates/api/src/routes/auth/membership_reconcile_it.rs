@@ -517,7 +517,8 @@ async fn reconcile_revokes_members_who_left_their_groups_without_logging_in() {
     }
 }
 
-/// 試しの Keycloak（token と所属グループだけ）。`bad-` で始まる人は 500、`gone-` は 404、ほかはグループ無し。
+/// 試しの Keycloak（token と所属グループだけ）。`bad-` で始まる人は 500、`forbidden-` は 403、`gone-` は 404、ほかは
+/// グループ無し。
 /// token は `token_ok` が false のあいだ 503。base の URL を返す。
 async fn mock_keycloak(token_ok: Arc<AtomicBool>) -> String {
     use axum::{extract::Path, http::StatusCode, routing, Json, Router};
@@ -540,6 +541,8 @@ async fn mock_keycloak(token_ok: Arc<AtomicBool>) -> String {
             routing::get(|Path(id): Path<String>| async move {
                 if id.starts_with("bad-") {
                     (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({})))
+                } else if id.starts_with("forbidden-") {
+                    (StatusCode::FORBIDDEN, Json(json!({})))
                 } else if id.starts_with("gone-") {
                     (StatusCode::NOT_FOUND, Json(json!({})))
                 } else {
@@ -656,6 +659,30 @@ async fn keycloak_failures_neither_revoke_nor_stall_the_sweep() {
             .unwrap();
         assert_eq!(done, 2, "{report:?}");
         assert!(!has(&*authz, &ns, "good-1", Relation::Member, &org).await);
+
+        // 2b. 403（provisioner に利用者を読む権限が無い）は、1 人目でその回を止める（位置を進めない・誰も外さない）。
+        for user in ["forbidden-1", "good-1"] {
+            authz
+                .write_tuple(&ns.user(user), Relation::Member, &org)
+                .await
+                .unwrap();
+        }
+        let mut report = ReconcileReport::default();
+        let done = reconcile_page(
+            &deps,
+            &mut kc,
+            &page(&["forbidden-1", "good-1"]),
+            &mut report,
+        )
+        .await
+        .unwrap();
+        assert_eq!((done, report.failed), (0, 1), "{report:?}");
+        for user in ["forbidden-1", "good-1"] {
+            assert!(
+                has(&*authz, &ns, user, Relation::Member, &org).await,
+                "{user}"
+            );
+        }
 
         // 3. Keycloak に届かなくなったら（トークンも取れない）その回を止め、1 人も終えたことにしない。後ろの人も外さない。
         authz

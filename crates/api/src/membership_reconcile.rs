@@ -34,6 +34,8 @@
 //! - Keycloak の失敗が [`MAX_FAILURE_STREAK`] 人続いたら（かページの終わりで失敗したら）、トークンを取り直して Keycloak に
 //!   届くか確かめる。届かなければその回を止め、失敗した人から次の回に読み直す。届けば、その人たちは次の 1 周まで
 //!   読み直さない（その人だけの失敗で照合が進まなくならない）。
+//! - Keycloak が 403 を返したら（provisioner に利用者を読む権限が無い）、1 行の warn でその回を止める（位置は進めない）。
+//!   権限の誤りはどの人でも同じなので、人ごとの warn を出し続けない。
 //! - provisioner（`auth.provisioner_client_id`・`provisioner_client_secret`）が無ければ動かない（ログインとセッションの
 //!   更新でだけ外れる）。
 
@@ -304,6 +306,13 @@ pub(crate) async fn reconcile_page(
             UserOutcome::NotFound => report.not_found += 1,
             UserOutcome::Failed(e) => {
                 report.failed += 1;
+                if matches!(e, KeycloakAdminError::Status { status: 403, .. }) {
+                    // 権限の誤り（provisioner に利用者を読む権限が無い）は、どの人でも同じに断られる。1 人ずつ warn を
+                    // 出し続けずに、1 行で言ってこの回を止める（位置は進めない・誰も外さない）。
+                    tracing::warn!(error = %e,
+                        "照合: provisioner に利用者を読む権限がありません（realm-management の view-users を付けてください）。この回を止めます");
+                    return Ok(done);
+                }
                 streak += 1;
                 tracing::warn!(tenant_id = %entry.tenant_id, user = %entry.user_id, error = %e,
                     "照合: Keycloak から所属を読めません（この人は外さない）");
