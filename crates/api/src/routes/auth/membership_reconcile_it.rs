@@ -10,6 +10,7 @@
 //! 3. Keycloak にいない人は外さない。Keycloak を読めない（資格情報の誤り）ときは、照合が失敗して何も外さない。
 //! 4. グループから外した人は、ログインしなくても照合で組織の member と部署が外れ、同じトークンでゲートウェイが 403 になる。
 //!    属性 roles にあるロールと、ログインの同期が部署と記録していないロールは残る。
+//! 5. 照合は、どのサーバーの回でも前の回から間隔が経つまで進めない（サーバーの台数で Keycloak への読みを増やさない）。
 //!
 //! もう 1 本は、試しの Keycloak（token と所属グループだけを返す）で、Keycloak の失敗が照合を止めないこと・外さない
 //! ことを確かめる（`STORAGE_TEST_DATABASE_URL`・`OPENFGA_TEST_URL` が要る）。
@@ -26,6 +27,7 @@
 use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use app_gateway::test_support::TestRealm;
 use authz::{
@@ -192,6 +194,8 @@ async fn reconcile_revokes_members_who_left_their_groups_without_logging_in() {
         http: http.clone(),
         auth: auth.clone(),
         batch_size: 1_000,
+        // 試しでは続けて回す（間隔の決まりは別に確かめる）。
+        interval: Duration::ZERO,
     };
     // 片付けるもの（作ったときに足す）。
     let kc_users: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -438,6 +442,39 @@ async fn reconcile_revokes_members_who_left_their_groups_without_logging_in() {
             body["error"],
             "権限がありません: このアプリを使えるのは、アプリをインストールした組織のメンバーだけです"
         );
+
+        // 5. サーバーが何台あっても、照合は全体で間隔に 1 回だけ進める。最後まで読んだ後も行は残り（位置だけ外す）、
+        //    前の回（どのサーバーの回でも）から間隔が経つまでは何もしない・位置も動かさない。
+        let position = || async {
+            sqlx::query_as::<_, (Option<String>, Option<String>)>(
+                "SELECT cursor_tenant_id, cursor_user_id FROM membership_reconcile_cursor WHERE id = 1",
+            )
+            .fetch_one(&fx.pool)
+            .await
+            .expect("最後まで読んでも行は残る")
+        };
+        assert_eq!(position().await, (None, None), "最後まで読んだら頭から");
+        let hourly = ReconcileDeps {
+            interval: Duration::from_secs(3_600),
+            ..deps.clone()
+        };
+        assert!(
+            run_once(&hourly).await.expect("run_once").is_none(),
+            "前の回のすぐ後は進めない"
+        );
+        assert_eq!(position().await, (None, None));
+        sqlx::query(
+            "UPDATE membership_reconcile_cursor SET last_run_at = now() - interval '2 hours'",
+        )
+        .execute(&fx.pool)
+        .await
+        .unwrap();
+        let report = run_once(&hourly).await.expect("run_once");
+        assert!(report.is_some_and(|r| r.read > 0), "間隔が経ったら進める");
+        assert!(
+            run_once(&hourly).await.expect("run_once").is_none(),
+            "進めた回から、また間隔を待つ"
+        );
     };
     let outcome = AssertUnwindSafe(body).catch_unwind().await;
 
@@ -565,6 +602,7 @@ async fn keycloak_failures_neither_revoke_nor_stall_the_sweep() {
             "s",
         ),
         batch_size: 10,
+        interval: Duration::ZERO,
     };
     let ns = Namespace::for_tenant(TENANT);
     let org = ns.organization("x");

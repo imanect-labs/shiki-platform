@@ -347,6 +347,7 @@ async fn run() -> anyhow::Result<()> {
             http: keycloak_http.clone(),
             auth: config.auth.clone(),
             batch_size: config.membership_reconcile.batch_size,
+            interval: std::time::Duration::from_secs(config.membership_reconcile.interval_secs),
         },
         &config.membership_reconcile,
     );

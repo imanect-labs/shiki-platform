@@ -23,12 +23,14 @@
 //!
 //! # 回し方
 //!
-//! - `membership_reconcile.interval_secs`（既定 60 秒・下限 10 秒）ごとに、続きの位置（migration 0130 の
+//! - `membership_reconcile.interval_secs`（既定 60 秒・下限 10 秒）ごとに、続きの位置（migration 0130・0135 の
 //!   `membership_reconcile_cursor`）から `batch_size` 人（既定 500・1〜1,000）を照合する。最後まで読んだら頭に戻る。
 //!   ディレクトリの N 人を 1 周するのに ceil(N / batch_size) 回かかる（既定では 1,000 人で 2 分、10,000 人で 20 分）。
 //! - 1 人につき OpenFGA の読みが 1〜2 回と、Keycloak の読みが 1 回（部署の候補がある人は 2 回）。直接タプルの無い人は
 //!   Keycloak を読まない。Keycloak のトークンは 1 回に 1 つ取る。
-//! - サーバーが何台あっても、advisory lock を取れた 1 台だけがその回を進める（取れなければその回は何もしない）。
+//! - サーバーが何台あっても、照合は全体で間隔に 1 回だけ進める。advisory lock を取れた 1 台が、最後に照合を始めた時刻
+//!   （`last_run_at`・DB の時刻）を読み、間隔の 9 割（[`INTERVAL_SLACK`]・各サーバーのタイマーのずれで 1 回ずつ飛ばさない
+//!   ため）が経っていなければ何もしない。ロックを取れない回も何もしない。Keycloak と OpenFGA への読みは台数で増えない。
 //! - Keycloak の失敗が [`MAX_FAILURE_STREAK`] 人続いたら（かページの終わりで失敗したら）、トークンを取り直して Keycloak に
 //!   届くか確かめる。届かなければその回を止め、失敗した人から次の回に読み直す。届けば、その人たちは次の 1 周まで
 //!   読み直さない（その人だけの失敗で照合が進まなくならない）。
@@ -57,6 +59,9 @@ const LOCK_KEY: i64 = 136_000_136;
 const MIN_INTERVAL: Duration = Duration::from_secs(10);
 /// 1 回に照合する人数の上限。
 const MAX_BATCH: usize = 1_000;
+/// 前の回から間隔のこの割合が経っていれば、その回を進める（各サーバーのタイマーは前の回の始まりより少し遅れて
+/// 鳴るので、間隔ちょうどで比べると 1 台のサーバーでも 1 回おきに飛ばしてしまう）。
+pub const INTERVAL_SLACK: f64 = 0.9;
 /// Keycloak に届くかを確かめ直す、続いた失敗の人数。
 pub const MAX_FAILURE_STREAK: usize = 3;
 /// ロールの claim の元になる利用者の属性（`deploy/keycloak/README.md` の User Profile・shiki-web のマッパー）。
@@ -112,6 +117,8 @@ pub struct ReconcileDeps {
     pub auth: AuthConfig,
     /// 1 回に照合する人数（1〜1,000）。
     pub batch_size: usize,
+    /// 照合の間隔（サーバーが何台あっても、全体でこの間隔に 1 回だけ進める・[`spawn`] が設定で上書きする）。
+    pub interval: Duration,
 }
 
 /// 1 回の照合の結果（ログ・テスト用）。
@@ -157,6 +164,7 @@ pub fn spawn(mut deps: ReconcileDeps, config: &MembershipReconcileConfig) {
     }
     deps.batch_size = config.batch_size.clamp(1, MAX_BATCH);
     let interval = Duration::from_secs(config.interval_secs).max(MIN_INTERVAL);
+    deps.interval = interval;
     tokio::spawn(async move {
         // 起動直後の負荷を避けて少し待つ。
         tokio::time::sleep(Duration::from_secs(30)).await;
@@ -179,7 +187,9 @@ pub fn spawn(mut deps: ReconcileDeps, config: &MembershipReconcileConfig) {
                     checked = r.checked,
                     "照合: 外すものはありません"
                 ),
-                Ok(None) => tracing::debug!("照合: 他のサーバーが照合中"),
+                Ok(None) => {
+                    tracing::debug!("照合: 他のサーバーが照合中か、前の回から間隔が経っていない");
+                }
                 Err(e) => {
                     tracing::warn!(error = %e, "組織の member の照合に失敗（次の回に読み直す）");
                 }
@@ -188,7 +198,7 @@ pub fn spawn(mut deps: ReconcileDeps, config: &MembershipReconcileConfig) {
     });
 }
 
-/// 1 回分を照合する（ほかのサーバーが照合中なら `Ok(None)`）。
+/// 1 回分を照合する（ほかのサーバーが照合中か、前の回（どのサーバーの回でも）から間隔が経っていなければ `Ok(None)`）。
 pub async fn run_once(deps: &ReconcileDeps) -> Result<Option<ReconcileReport>, ReconcileError> {
     // ロックとアンロックを同じ接続で行う（セッションロックは接続に紐づく）。
     let mut conn = deps.db.acquire().await?;
@@ -206,14 +216,16 @@ pub async fn run_once(deps: &ReconcileDeps) -> Result<Option<ReconcileReport>, R
         .execute(&mut *conn)
         .await;
     match result {
-        Ok(r) => r.map(Some),
+        Ok(r) => r,
         Err(panic) => std::panic::resume_unwind(panic),
     }
 }
 
-async fn run_locked(deps: &ReconcileDeps) -> Result<ReconcileReport, ReconcileError> {
+async fn run_locked(deps: &ReconcileDeps) -> Result<Option<ReconcileReport>, ReconcileError> {
     let batch = deps.batch_size.clamp(1, MAX_BATCH);
-    let after = load_cursor(&deps.db).await?;
+    let Turn::Go { after } = claim_turn(&deps.db, deps.interval).await? else {
+        return Ok(None);
+    };
     let page = deps.directory.users_after(after.as_ref(), batch).await?;
     let mut report = ReconcileReport {
         read: page.len(),
@@ -228,9 +240,13 @@ async fn run_locked(deps: &ReconcileDeps) -> Result<ReconcileReport, ReconcileEr
     }
     match cursor_move(page.len(), batch, done) {
         CursorMove::Rewind => {
-            sqlx::query("DELETE FROM membership_reconcile_cursor")
-                .execute(&deps.db)
-                .await?;
+            // 行は消さない（最後に照合を始めた時刻を残す）。位置だけを外す。
+            sqlx::query(
+                "UPDATE membership_reconcile_cursor SET cursor_tenant_id = NULL, \
+                   cursor_user_id = NULL, updated_at = now() WHERE id = 1",
+            )
+            .execute(&deps.db)
+            .await?;
             report.wrapped = true;
         }
         CursorMove::After(i) => {
@@ -240,7 +256,7 @@ async fn run_locked(deps: &ReconcileDeps) -> Result<ReconcileReport, ReconcileEr
         }
         CursorMove::Stay => {}
     }
-    Ok(report)
+    Ok(Some(report))
 }
 
 /// 次の回の続きの位置の動かし方。
@@ -431,18 +447,50 @@ async fn after_roles_revoked(
     }
 }
 
-/// 続きの位置（最後に照合を終えた人）。無ければ頭から。
-async fn load_cursor(db: &PgPool) -> Result<Option<DirectoryEntry>, sqlx::Error> {
-    sqlx::query_as("SELECT tenant_id, user_id FROM membership_reconcile_cursor WHERE id = 1")
-        .fetch_optional(db)
-        .await
+/// この回を進めるか（[`claim_turn`]）。
+enum Turn {
+    /// 前の回（どのサーバーの回でも）から間隔の [`INTERVAL_SLACK`] が経っていない。
+    TooSoon,
+    /// 進める。`after` は続きの位置（最後に照合を終えた人・無ければ頭から）。
+    Go { after: Option<DirectoryEntry> },
+}
+
+/// この回を進めてよいかを決め、進めるなら最後に照合を始めた時刻を今にして、続きの位置を返す。
+///
+/// ロックを持って呼ぶ（読むのと始めた時刻を書くのが、ほかのサーバーと重ならない）。時刻は DB の時刻で比べる
+/// （サーバーの時計のずれに左右されない）。
+async fn claim_turn(db: &PgPool, interval: Duration) -> Result<Turn, sqlx::Error> {
+    let row: Option<(Option<String>, Option<String>, bool)> = sqlx::query_as(
+        "SELECT cursor_tenant_id, cursor_user_id, \
+                coalesce(last_run_at > now() - make_interval(secs => $1), false) \
+         FROM membership_reconcile_cursor WHERE id = 1",
+    )
+    .bind(interval.as_secs_f64() * INTERVAL_SLACK)
+    .fetch_optional(db)
+    .await?;
+    let (tenant_id, user_id, too_soon) = row.unwrap_or((None, None, false));
+    if too_soon {
+        return Ok(Turn::TooSoon);
+    }
+    sqlx::query(
+        "INSERT INTO membership_reconcile_cursor (id, last_run_at) VALUES (1, now()) \
+         ON CONFLICT (id) DO UPDATE SET last_run_at = now()",
+    )
+    .execute(db)
+    .await?;
+    let after = match (tenant_id, user_id) {
+        (Some(tenant_id), Some(user_id)) => Some(DirectoryEntry { tenant_id, user_id }),
+        _ => None,
+    };
+    Ok(Turn::Go { after })
 }
 
 async fn save_cursor(db: &PgPool, last: &DirectoryEntry) -> Result<(), sqlx::Error> {
     sqlx::query(
-        "INSERT INTO membership_reconcile_cursor (id, tenant_id, user_id) VALUES (1, $1, $2) \
-         ON CONFLICT (id) DO UPDATE SET tenant_id = excluded.tenant_id, \
-           user_id = excluded.user_id, updated_at = now()",
+        "INSERT INTO membership_reconcile_cursor (id, cursor_tenant_id, cursor_user_id) \
+         VALUES (1, $1, $2) \
+         ON CONFLICT (id) DO UPDATE SET cursor_tenant_id = excluded.cursor_tenant_id, \
+           cursor_user_id = excluded.cursor_user_id, updated_at = now()",
     )
     .bind(&last.tenant_id)
     .bind(&last.user_id)
