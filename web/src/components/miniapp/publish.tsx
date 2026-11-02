@@ -293,7 +293,11 @@ export function PublishMiniAppDialog({
                 </ul>
               </div>
             ) : (
-              <p className="text-xs text-muted-foreground">前に公開していたバージョンには、あとから戻せます。</p>
+              <p className="text-xs text-muted-foreground" data-testid="miniapp-publish-undo-note">
+                {publishedVersion == null
+                  ? "公開した後は、公開をやめられません。別のバージョンに切り替えることはできます。"
+                  : "前に公開していたバージョンには、あとから戻せます。"}
+              </p>
             )}
           </div>
         ) : null}
