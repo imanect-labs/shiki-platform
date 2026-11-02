@@ -173,7 +173,9 @@ export function describeChange(c: MiniAppChange): string {
     case "skill":
       if (c.from_version == null) return `スキルを束ねる（v${c.to_version}）`;
       if (c.to_version == null) return "スキルを外す";
-      return c.from_version === c.to_version ? "スキルを替える" : `スキル: v${c.from_version} から v${c.to_version} へ`;
+      // 別のスキルに替えたかはサーバーが決める（版の番号だけでは見分けられない）。
+      if (c.replaced) return `スキルを替える（v${c.to_version}）`;
+      return `スキル: v${c.from_version} から v${c.to_version} へ`;
     case "workflow":
     case "data_view": {
       const noun = c.kind === "workflow" ? "ワークフロー" : "保存ビュー";
