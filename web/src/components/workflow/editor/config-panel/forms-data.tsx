@@ -17,7 +17,15 @@ import type { ValueExpr } from "@/generated/workflow-ir";
 import type { DataQuery, DataTable } from "@/lib/data-api";
 import { buildFilter, resolveColumns, splitFilter } from "@/lib/data-view";
 import { cn } from "@/lib/utils";
-import { Field, FieldInput, FieldSelectTrigger, MoreInfo, NumberInput } from "./common";
+import {
+  BLANK_PICK_MESSAGE,
+  BLANK_REQUIRED_MESSAGE,
+  Field,
+  FieldInput,
+  FieldSelectTrigger,
+  MoreInfo,
+  NumberInput,
+} from "./common";
 import { DataTableSelect, isFsmTable, NoFsmTableNote, useDataTables, type DataTables } from "./data-tables";
 import type { FormProps } from "./forms-basic";
 import { paramsOf, patchParams } from "./params";
@@ -160,8 +168,10 @@ function MatchOnField({
   const value = (p.match_on ?? "").trim();
   const label = optional ? "同じレコードを探す列（省略可）" : "同じレコードを探す列";
   if (unknown) {
+    // 空の欄の促しは、選ぶ欄の「選んでください」ではなく打つ欄の「入力してください」にする。
+    const error = fieldErrors.get("match_on");
     return (
-      <Field label={label} hint={typedHint} error={fieldErrors.get("match_on")}>
+      <Field label={label} hint={typedHint} error={error === BLANK_PICK_MESSAGE ? BLANK_REQUIRED_MESSAGE : error}>
         <FieldInput
           value={p.match_on ?? ""}
           onChange={(e) => {

@@ -370,8 +370,11 @@ test("前の結果から指定するテーブルでも、同じレコードを�
   const typed = panel.getByTestId("match-on-input");
   await expect(typed).toBeVisible({ timeout: 30_000 });
   await expect(panel.getByTestId("match-on-select")).toHaveCount(0);
-  await expect(panel.getByText("重複を許さない列のキーを入れます。", { exact: false })).toBeVisible();
+  // 空のうちは、打つ欄の促し（「選んでください」ではない）。入れると、キーを入れる欄だと言う。
+  await expect(panel.getByText("入力してください", { exact: true })).toBeVisible();
+  await expect(panel.getByText("選んでください", { exact: true })).toHaveCount(0);
   await typed.fill("sku");
+  await expect(panel.getByText("重複を許さない列のキーを入れます。", { exact: false })).toBeVisible({ timeout: 15_000 });
   await save(page);
   expect((await savedParams(page, id, "restock")).match_on).toBe("sku");
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/upsert-typed-match-on-pc.png` });
