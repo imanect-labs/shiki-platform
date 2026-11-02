@@ -10,7 +10,8 @@
 //!   オブジェクト・配列は短い JSON。列を省略したときのキーは行の順に集め、1 行の中は名前順になる
 //!   （serde_json のオブジェクトの順・見せたい順があれば列を指定する）。
 //! - file_link: オブジェクトか配列で 20 件まで。ID が UUID でなければ誤り。同じ ID は 1 件にまとめる
-//!   （社内検索の同じファイルの複数の抜粋）。名前は 200 字まで（無ければ「ファイル」）。
+//!   （社内検索の同じファイルの複数の抜粋）。名前は 200 字まで（無ければ「ファイル」）。中身の無いオブジェクト（`{}`）は
+//!   空の配列と同じく 0 件。
 //!
 //! 1 節は 16KB（UTF-8）まで。text・markdown は文字の境界で切り、table・file_link は末尾から落とし、
 //! どちらも `truncated` を立てる。
@@ -193,6 +194,9 @@ fn files_of(v: &Value, p: &WorkflowReplyParams) -> Result<(ReplyBody, bool), Str
     let id_path = id_paths.join(" か ");
     let items: Vec<&Value> = match v {
         Value::Array(a) => a.iter().collect(),
+        // 中身の無いまとまり（「項目を並べる」で 0 行のとき）は、空のリストと同じく 0 件にする（1 件目の ID が無いと
+        // 失敗にしない・保存の注意 ir.empty_values で言う・BUG-168）。
+        Value::Object(m) if m.is_empty() => Vec::new(),
         Value::Object(_) => vec![v],
         _ => {
             return Err(
@@ -508,6 +512,26 @@ mod tests {
         };
         assert_eq!(files.len(), MAX_FILES);
         assert!(s.truncated);
+    }
+
+    /// ファイルへのリンクの値が中身の無いまとまり（`{}`・「項目を並べる」で 0 行のとき）なら、空のリストと同じく 0 件で
+    /// 返す（1 件目のファイルの ID が無いと失敗にしない・BUG-168）。参照が `{}` に解けたときも同じ。
+    #[test]
+    fn empty_objects_are_no_file_links() {
+        for value in [json!({}), json!([]), json!({ "$from": "nodes.s.output" })] {
+            let s = section(&run(
+                json!({ "format": "file_link", "value": value }),
+                json!({ "s": {} }),
+            ));
+            assert_eq!(s.body, ReplyBody::FileLink { files: Vec::new() }, "{value}");
+            assert!(!s.truncated);
+        }
+        // 中身のあるまとまりは 1 件として読む（ID が無ければ誤り・前と同じ）。
+        let res = run(
+            json!({ "format": "file_link", "value": { "name": "x" } }),
+            Value::Null,
+        );
+        assert_eq!(res.error.unwrap().code, "invalid");
     }
 
     #[test]

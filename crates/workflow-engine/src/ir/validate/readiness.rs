@@ -259,23 +259,26 @@ pub fn empty_values(ir: &WorkflowIr) -> Vec<ValidationError> {
                 );
             }
         }
-        // 結果を画面に返すの空のリスト（表・ファイルへのリンク）も注意だけにする（BUG-168）。文章の形のリストは保存の
-        // 照合（V7 の ir.reply_type）が止める。
-        let empty_list = node
-            .params
-            .get("value")
-            .and_then(Value::as_array)
-            .is_some_and(Vec::is_empty);
-        let message = match reply_format(node) {
-            Some(ReplyFormat::Table) => {
-                "「表にするリスト」に行がありません。このままでは、行の無い表を返します。"
-            }
-            Some(ReplyFormat::FileLink) => {
-                "「ファイルのリスト」にファイルがありません。このままでは、リンクの無い結果を返します。"
-            }
+        // 結果を画面に返すの空のリスト（表・ファイルへのリンク）も注意だけにする（BUG-168）。ファイルへのリンクは中身の
+        // 無いまとまり（`{}`・「項目を並べる」で 0 行のとき）も 0 件で返すので同じに言う。文章の形のリストと表の形の
+        // まとまりは保存の照合（V7 の ir.reply_type）が止める。
+        let value = node.params.get("value");
+        let empty_list = value.and_then(Value::as_array).is_some_and(Vec::is_empty);
+        let empty_object = value
+            .and_then(Value::as_object)
+            .is_some_and(serde_json::Map::is_empty);
+        let (message, empty) = match reply_format(node) {
+            Some(ReplyFormat::Table) => (
+                "「表にするリスト」に行がありません。このままでは、行の無い表を返します。",
+                empty_list,
+            ),
+            Some(ReplyFormat::FileLink) => (
+                "「ファイルのリスト」にファイルがありません。このままでは、リンクの無い結果を返します。",
+                empty_list || empty_object,
+            ),
             _ => continue,
         };
-        if nt == NodeType::WorkflowReply && empty_list {
+        if nt == NodeType::WorkflowReply && empty {
             out.push(
                 ValidationError::new(EMPTY_VALUES, message)
                     .at_node(&node.id)
