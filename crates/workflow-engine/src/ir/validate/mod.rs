@@ -9,6 +9,8 @@ mod approval;
 pub use approval::{CatalogTable, APPROVAL_STATUS_FIELD_SHOWN, APPROVAL_TIMEOUTS_EXCEED_RUN};
 mod cache;
 pub use cache::CACHE_UNSUPPORTED;
+mod data_keys;
+pub use data_keys::{ADD_NOT_NUMBER, MATCH_NOT_UNIQUE};
 mod decide;
 pub use decide::{DECIDE_LOW_CONFIDENCE, DECIDE_MANY_PORTS, DECIDE_UNPINNED_MODEL};
 mod llm;
@@ -133,10 +135,10 @@ pub struct Catalog {
     /// #344 Task 10.1b）。インストールはユーザー単位のため保存者基準で照合し、実行時は
     /// 実行主体の ReBAC で再検証する（fail-closed が最終防衛線・ir.md §8）。
     pub skills: BTreeMap<String, std::collections::BTreeSet<String>>,
-    /// 承認（human.approval）・状態を進める（data.transition）・状態のきっかけが束縛するテーブル（UUID →
-    /// 保存者に見える列と FSM の状態・V4・GAP-08・BUG-105）。API 層が IR のテーブルを保存者の権限で引いて
-    /// 詰める（見えないテーブルは入れない）。`None` は照合しない（テーブルを引けない構成・AI 編集の説明文の
-    /// 検査など）。
+    /// 承認（human.approval）・状態を進める（data.transition）・状態のきっかけ・同じレコードを探す列と足す数
+    /// （GAP-16）が束縛するテーブル（UUID → 保存者に見える列・重複を許さない列と FSM の状態・V4・GAP-08・
+    /// BUG-105）。API 層が IR のテーブルを保存者の権限で引いて詰める（見えないテーブルは入れない）。`None` は
+    /// 照合しない（テーブルを引けない構成・AI 編集の説明文の検査など）。
     pub tables: Option<BTreeMap<String, CatalogTable>>,
     /// AI エージェントの web.fetch が読んでよいサイトの天井（管理者が決める `workflow.agent.web_allowlist`・
     /// BUG-6・D-29）。ノードの `egress_allowlist` はこの部分集合に限る。`None` は照合しない（設定を引けない
@@ -269,6 +271,8 @@ pub fn validate(
     refs::v4_refs(&ir, catalog, &mut errors);
     approval::v4(&ir, catalog, &mut errors);
     transition::v4(&ir, catalog, &mut errors);
+    // 同じレコードを探す列は重複を許さない列・足す数は数の列（GAP-16）。
+    data_keys::v4(&ir, catalog, &mut errors);
     // V5: データフロー（$from 祖先性・default 要否・条件木型整合・regex）。
     v5_dataflow::check(&ir, &mut errors);
     agent::v5(&ir, &mut errors);

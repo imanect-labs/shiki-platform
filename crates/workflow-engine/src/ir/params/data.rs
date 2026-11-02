@@ -15,6 +15,7 @@
 
 use data::DataQuery;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use ts_rs::TS;
 
 use super::ParamsIssue;
@@ -87,6 +88,124 @@ pub struct DataRecordUpdateParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub expected_rev: Option<ValueExpr>,
+    /// 足す数（数の列の参照名 → 足す数・負の数で減らす）。いまの値に足した値を書く（GAP-16）。読んだ rev を前提に
+    /// 書き、間にほかの書込があれば読み直して足し直すので、足した数は失われない（`expected_rev` を書いたときは
+    /// 読み直さず、その版でなければ失敗する）。`patch` と同じ列は書けない。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub add: Option<ValueExpr>,
+}
+
+impl DataRecordUpdateParams {
+    /// 「足す数」と「変更する値」に同じ列を書いていないこと（リテラルで書いた分だけ・参照は実行時に確かめる）。
+    pub(crate) fn check_cross_fields(&self) -> Result<(), ParamsIssue> {
+        check_add(self.add.as_ref(), Some(&self.patch), "変更する値", None)
+    }
+}
+
+/// `data.record.upsert` — 選んだ列の値が同じレコードがあれば書き換え、なければ追加する（GAP-16・EngineDedup）。
+///
+/// 探すのは `match_on` の列（重複を許さない列・保存時に照合する）の値が、`data` の同じ列の値と等しいレコード
+/// （実行主体に見えるものだけ）。見つかれば `data` から探す列を除いた値で書き換え（1 件の更新と同じ入口・書き換えの
+/// 権限・読んだ rev を前提に書く）、無ければ `data` で追加する（1 件の作成と同じ入口・追加の権限）。同じ値で並行に
+/// 追加しても、列の一意が 2 件目を断るので、断られた側は読み直して書き換えに回る（2 件にならない）。`add` の数の列は、
+/// いまの値（追加なら 0）に足して書く。出力は書いたレコードと `created`（追加したら true）。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
+#[serde(deny_unknown_fields)]
+#[ts(export)]
+pub struct DataRecordUpsertParams {
+    /// 対象テーブル id。
+    #[serde(default = "super::unset")]
+    pub table: ValueExpr,
+    /// 同じレコードを探す列の参照名（重複を許さない列）。置いたばかりのブロックは空。
+    #[serde(default)]
+    pub match_on: String,
+    /// 入れる値（参照名 → 値のオブジェクトに解決される値・探す列の値を含む）。
+    #[serde(default = "super::unset")]
+    pub data: ValueExpr,
+    /// 足す数（数の列の参照名 → 足す数）。書き換えるときはいまの値に、追加するときは 0 に足す。`data` と同じ列・
+    /// 探す列は書けない。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub add: Option<ValueExpr>,
+}
+
+impl DataRecordUpsertParams {
+    /// リテラルで書いた「入れる値」に探す列があること、「足す数」が「入れる値」・探す列と重ならないこと。
+    pub(crate) fn check_cross_fields(&self) -> Result<(), ParamsIssue> {
+        let key = self.match_on.trim();
+        if !key.is_empty() {
+            if let ValueExpr::Literal(Value::Object(m)) = &self.data {
+                if !m.contains_key(key) {
+                    return Err(ParamsIssue {
+                        path: "/params/data".to_string(),
+                        message: format!(
+                            "「入れる値」に、同じレコードを探す列「{key}」の値を入れてください。"
+                        ),
+                    });
+                }
+            }
+        }
+        check_add(
+            self.add.as_ref(),
+            Some(&self.data),
+            "入れる値",
+            (!key.is_empty()).then_some(key),
+        )
+    }
+}
+
+/// 「足す数」（`add`）の静的な照合（リテラルで書いた分だけ）: 数でない値・値の欄と同じ列・探す列を断る。
+fn check_add(
+    add: Option<&ValueExpr>,
+    values: Option<&ValueExpr>,
+    values_label: &str,
+    match_on: Option<&str>,
+) -> Result<(), ParamsIssue> {
+    let Some(ValueExpr::Literal(add)) = add else {
+        return Ok(());
+    };
+    let Some(add) = add.as_object() else {
+        if add.is_null() {
+            return Ok(());
+        }
+        return Err(ParamsIssue {
+            path: "/params/add".to_string(),
+            message: "「足す数」は、列ごとに数を並べてください。".to_string(),
+        });
+    };
+    let written = match values {
+        Some(ValueExpr::Literal(Value::Object(m))) => Some(m),
+        _ => None,
+    };
+    for (k, v) in add {
+        let at = format!("/params/add/{k}");
+        if match_on == Some(k.as_str()) {
+            return Err(ParamsIssue {
+                path: at,
+                message: format!("同じレコードを探す列「{k}」には足せません。"),
+            });
+        }
+        if written.is_some_and(|m| m.contains_key(k)) {
+            return Err(ParamsIssue {
+                path: at,
+                message: format!(
+                    "「{k}」が「{values_label}」と「足す数」の両方にあります。どちらか一方にしてください。"
+                ),
+            });
+        }
+        // 参照（$from / $template）は実行時に数か確かめる。
+        let is_expr = v
+            .as_object()
+            .is_some_and(|o| o.contains_key("$from") || o.contains_key("$template"));
+        if !v.is_number() && !is_expr {
+            return Err(ParamsIssue {
+                path: at,
+                message: format!("「足す数」の「{k}」には数を入れてください。"),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// `data.record.delete` — レコードを削除する（editor ＋書込述語・EngineDedup）。
@@ -149,6 +268,24 @@ pub struct DataBulkUpsertParams {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub abort_on_invalid: Option<bool>,
+    /// 同じレコードを探す列の参照名（重複を許さない列・GAP-16）。書くと、`id` の無い行はこの列の値が同じレコード
+    /// （実行主体に見えるもの）を探し、あれば更新、なければ追加する（再実行しても同じ値の行が 2 件にならない）。
+    /// 行の `data` にこの列の値が要り、同じ値の行が 2 つあると何も登録しない。省略・空は従来どおり（`id` の無い行は
+    /// すべて追加）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub match_on: Option<String>,
+}
+
+impl DataBulkUpsertParams {
+    /// 照合に使う列（空白だけは書いていないのと同じ）。
+    #[must_use]
+    pub fn match_on(&self) -> Option<&str> {
+        self.match_on
+            .as_deref()
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+    }
 }
 
 #[cfg(test)]
@@ -166,6 +303,7 @@ mod tests {
             NodeType::DataQuery,
             NodeType::DataRecordCreate,
             NodeType::DataRecordUpdate,
+            NodeType::DataRecordUpsert,
             NodeType::DataRecordDelete,
             NodeType::DataTransition,
             NodeType::DataBulkUpsert,
@@ -202,5 +340,71 @@ mod tests {
                 "「読む件数の上限」は 1〜200 件にしてください。"
             );
         }
+    }
+
+    /// キーで追加か更新（GAP-16）: リテラルで書いた「入れる値」に探す列が要り、「足す数」は数で、値の欄・探す列と
+    /// 重ならない。参照（$from）の値は実行時に確かめる。置いたばかりのブロック（項目なし）は通す。
+    #[test]
+    fn upsert_and_add_are_checked_where_written_literally() {
+        let table = "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1";
+        let ok = json!({ "table": table, "match_on": "sku",
+                         "data": { "sku": { "$from": "input", "path": "/sku" }, "name": "ねじ" },
+                         "add": { "stock": { "$from": "input", "path": "/qty" }, "sold": 1 } });
+        assert!(check_params(NodeType::DataRecordUpsert, &ok).is_ok());
+        assert!(check_params(NodeType::DataRecordUpsert, &json!({})).is_ok());
+        // 入れる値を参照で渡すときは、探す列の有無は実行時に確かめる。
+        assert!(check_params(
+            NodeType::DataRecordUpsert,
+            &json!({ "table": table, "match_on": "sku", "data": { "$from": "input" } })
+        )
+        .is_ok());
+        let missing = check_params(
+            NodeType::DataRecordUpsert,
+            &json!({ "table": table, "match_on": "sku", "data": { "name": "ねじ" } }),
+        )
+        .unwrap_err();
+        assert_eq!(missing.path, "/params/data");
+        assert!(missing.message.contains("「sku」"), "{}", missing.message);
+        let on_key = check_params(
+            NodeType::DataRecordUpsert,
+            &json!({ "table": table, "match_on": "sku", "data": { "sku": "A" }, "add": { "sku": 1 } }),
+        )
+        .unwrap_err();
+        assert_eq!(on_key.path, "/params/add/sku");
+        let both = check_params(
+            NodeType::DataRecordUpsert,
+            &json!({ "table": table, "match_on": "sku", "data": { "sku": "A", "stock": 3 }, "add": { "stock": 1 } }),
+        )
+        .unwrap_err();
+        assert_eq!(both.path, "/params/add/stock");
+        let not_number = check_params(
+            NodeType::DataRecordUpdate,
+            &json!({ "table": table, "record": table, "add": { "stock": "1" } }),
+        )
+        .unwrap_err();
+        assert_eq!(not_number.path, "/params/add/stock");
+        assert_eq!(
+            not_number.message,
+            "「足す数」の「stock」には数を入れてください。"
+        );
+        let overlap = check_params(
+            NodeType::DataRecordUpdate,
+            &json!({ "table": table, "record": table, "patch": { "stock": 1 }, "add": { "stock": -1 } }),
+        )
+        .unwrap_err();
+        assert_eq!(overlap.path, "/params/add/stock");
+        assert!(check_params(
+            NodeType::DataRecordUpdate,
+            &json!({ "table": table, "record": table, "add": { "stock": -1 } })
+        )
+        .is_ok());
+        // まとめて登録の照合する列は、空白だけなら書いていないのと同じ。
+        let p: super::DataBulkUpsertParams =
+            serde_json::from_value(json!({ "table": table, "rows": [], "match_on": " " })).unwrap();
+        assert_eq!(p.match_on(), None);
+        let p: super::DataBulkUpsertParams =
+            serde_json::from_value(json!({ "table": table, "rows": [], "match_on": "id_no" }))
+                .unwrap();
+        assert_eq!(p.match_on(), Some("id_no"));
     }
 }

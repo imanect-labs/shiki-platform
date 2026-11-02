@@ -418,6 +418,10 @@ fn format_schema(table: &data::DataTable, masked: &std::collections::HashSet<Str
         if f.required {
             out.push_str("（必須）");
         }
+        // 重複を許さない列は、ワークフローの同じレコードを探す列（match_on）に選べる（GAP-16）。
+        if f.unique {
+            out.push_str("（重複を許さない）");
+        }
         if !f.options.is_empty() {
             let _ = write!(out, " 選択肢: [{}]", f.options.join(", "));
         }

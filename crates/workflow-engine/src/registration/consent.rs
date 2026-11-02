@@ -156,6 +156,7 @@ impl RegistrationService {
                 crate::vocab::NodeType::DataQuery
                 | crate::vocab::NodeType::DataRecordCreate
                 | crate::vocab::NodeType::DataRecordUpdate
+                | crate::vocab::NodeType::DataRecordUpsert
                 | crate::vocab::NodeType::DataRecordDelete
                 | crate::vocab::NodeType::DataTransition
                 | crate::vocab::NodeType::DataBulkUpsert => {

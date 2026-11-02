@@ -37,6 +37,8 @@ pub struct CatalogTable {
     pub status_field: Option<String>,
     /// 保存者に読める列の参照名 → 種別（data の `FieldType` の serde 名。例: `user_ref`）。
     pub fields: BTreeMap<String, String>,
+    /// 保存者に読める列のうち、重複を許さない列（unique）の参照名（同じレコードを探す列の照合・GAP-16）。
+    pub unique: std::collections::BTreeSet<String>,
 }
 
 /// 承認ノードと、その params（契約に合わないものは V1b が報告するので飛ばす）。
@@ -290,6 +292,7 @@ mod tests {
                         .iter()
                         .map(|(k, t)| ((*k).to_string(), (*t).to_string()))
                         .collect(),
+                    unique: BTreeSet::new(),
                 },
             )])),
             ..Catalog::default()

@@ -128,6 +128,7 @@ fn catalog(s: &Value) -> Catalog {
                 states,
                 status_field,
                 fields,
+                unique: std::collections::BTreeSet::new(),
             };
             (table_id(t["ref"].as_str().unwrap()), table)
         })

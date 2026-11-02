@@ -374,6 +374,20 @@ pub(super) fn output_shape(nt: NodeType) -> Shape {
             ],
             "",
         ),
+        N::DataRecordUpsert => Fields(
+            "レコード ",
+            &[
+                field!("id", "string"),
+                field!("table_id", "string"),
+                field!("data", "{ [列の参照名]: unknown }"),
+                field!("rev", "number"),
+                field!("owner", "string"),
+                field!("created_at", "string"),
+                field!("updated_at", "string"),
+                field!("created", "boolean", "追加したら true、書き換えたら false"),
+            ],
+            "",
+        ),
         N::DataRecordDelete => Fields(
             "",
             &[field!("id", "string"), field!("deleted", "true")],
@@ -393,6 +407,12 @@ pub(super) fn output_shape(nt: NodeType) -> Shape {
                     "Array<{ row: number, key: string | null, message: string }>"
                 ),
                 field!("last_error", "string | null"),
+                opt!(
+                    "rows_matched",
+                    "number",
+                    "同じレコードを探す列で、あるレコードに当たって更新に回した件数",
+                    present_if = "/match_on"
+                ),
             ],
             "",
         ),

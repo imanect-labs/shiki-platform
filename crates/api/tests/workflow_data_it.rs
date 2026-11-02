@@ -1430,3 +1430,139 @@ async fn add_only_applicant_resubmits_through_a_workflow() {
         std::panic::resume_unwind(e);
     }
 }
+
+/// GAP-16: スケジュールで動く「足す数」と「レコードを追加か更新」は、いまの値を書込を委譲した人の見え方で読む。
+///
+/// 書込を委譲した bob は在庫の列を読める（経理）。後から読取だけを委譲した carol は在庫の列を読めない（置き換える前の
+/// 台帳・R3-2 と同じ組み）。読取の口は最新の読取の委譲元（carol）で読むので、それで足すと在庫を 0 から足して
+/// 上書きしてしまう。書き込む人（bob）の見え方で読んで足すので、40 → 41 → 42 になる。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn scheduled_adds_read_the_current_value_as_the_write_delegator() {
+    let Some(env) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4().simple());
+    let (alice, bob, carol) = (
+        user(&tenant, "alice"),
+        user(&tenant, "bob"),
+        user(&tenant, "carol"),
+    );
+    let body = async {
+        let mut sku = data::FieldDef::new("sku", FieldType::Text);
+        sku.unique = true;
+        let stock = data::FieldDef::new("stock", FieldType::Number);
+        let mut schema = plain_schema(vec![sku, stock]);
+        schema.field_policy = vec![data::FieldPolicy {
+            field: "stock".into(),
+            readable_by: PolicyExpr::HasRole {
+                role: "keiri".into(),
+                subtree: true,
+            },
+        }];
+        let table = env
+            .data
+            .create_table(
+                &alice,
+                NewDataTable {
+                    name: "items".into(),
+                    schema,
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        let ns = alice.ns();
+        let table_obj = ns.data_table(&table.id.to_string());
+        for (who, rel) in [(&bob, Relation::Editor), (&carol, Relation::Viewer)] {
+            env.fga
+                .write_tuple(&who.subject(), rel, &table_obj)
+                .await
+                .unwrap();
+        }
+        // 読めない列へは書けない（PIT-19）ので、在庫を入れる alice も経理にする。
+        for who in [&alice, &bob] {
+            env.fga
+                .write_tuple(&who.subject(), Relation::Member, &ns.role("keiri"))
+                .await
+                .unwrap();
+        }
+        let rec = env
+            .data
+            .create_record(&alice, table.id, json!({ "sku": "A-1", "stock": 40 }), None)
+            .await
+            .unwrap();
+        let t = table.id.to_string();
+        let ir = json!({
+            "ir_version": 1, "name": "restock",
+            "declared_scopes": ["data.read", "data.write"],
+            "triggers": [ { "kind": "schedule", "cron": "* * * * *", "tz": "UTC" } ],
+            "nodes": [
+                { "id": "add", "type": "data.record.update", "params": {
+                    "table": t, "record": rec.id.to_string(), "add": { "stock": 1 } } },
+                { "id": "up", "type": "data.record.upsert", "params": {
+                    "table": t, "match_on": "sku", "data": { "sku": "A-1" }, "add": { "stock": 1 } } }
+            ],
+            "edges": [ { "from": "add", "to": "up" } ]
+        });
+        let (wf, _) = env
+            .workflows
+            .create(&alice, &ir, &Catalog::default(), None)
+            .await
+            .unwrap();
+        let parsed = WorkflowIr::from_json(&ir).unwrap();
+        env.registration
+            .enable(
+                &bob,
+                wf,
+                1,
+                &parsed,
+                &[GrantRequest {
+                    scope: "data.write".into(),
+                    object: table_obj.clone(),
+                    relation: Relation::Editor,
+                }],
+            )
+            .await
+            .expect("bob の有効化");
+        env.registration
+            .enable(
+                &carol,
+                wf,
+                1,
+                &parsed,
+                &[GrantRequest {
+                    scope: "data.read".into(),
+                    object: table_obj.clone(),
+                    relation: Relation::Viewer,
+                }],
+            )
+            .await
+            .expect("carol の再有効化");
+        env.legacy_delegation(
+            &tenant,
+            wf,
+            "bob",
+            "data.write",
+            &table_obj,
+            Relation::Editor,
+        )
+        .await;
+
+        let run = env.fire_schedule_and_run(&tenant, wf, 61).await;
+        for node in ["add", "up"] {
+            let (status, _, err) = env.step(&tenant, run, node).await;
+            assert_eq!(status, "succeeded", "{node}: {err:?}");
+        }
+        let (_, out, _) = env.step(&tenant, run, "up").await;
+        assert_eq!(out.unwrap()["created"], false);
+        let now = env
+            .data
+            .get_record(&alice, table.id, rec.id, None)
+            .await
+            .unwrap();
+        assert_eq!(now.data["stock"], 42, "書き込む人の見え方の 40 に足す");
+    };
+    let outcome = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(body)).await;
+    env.cleanup_tenant(&tenant).await;
+    if let Err(e) = outcome {
+        std::panic::resume_unwind(e);
+    }
+}

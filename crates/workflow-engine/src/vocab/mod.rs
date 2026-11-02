@@ -212,6 +212,7 @@ mod tests {
         for nt in [
             NodeType::DataRecordCreate,
             NodeType::DataRecordUpdate,
+            NodeType::DataRecordUpsert,
             NodeType::DataRecordDelete,
             NodeType::DataTransition,
             NodeType::DataBulkUpsert,

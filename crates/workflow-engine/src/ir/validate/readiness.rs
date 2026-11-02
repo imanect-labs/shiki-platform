@@ -157,6 +157,14 @@ const REQUIRED_VALUES: &[(NodeType, &str, &str, Fill)] = &[
         "変更する値",
         Fill::Text,
     ),
+    (NodeType::DataRecordUpsert, "table", TABLE_LABEL, Fill::Pick),
+    (
+        NodeType::DataRecordUpsert,
+        "match_on",
+        "同じレコードを探す列",
+        Fill::Pick,
+    ),
+    (NodeType::DataRecordUpsert, "data", "入れる値", Fill::Text),
     (NodeType::DataRecordDelete, "table", TABLE_LABEL, Fill::Pick),
     (
         NodeType::DataRecordDelete,
@@ -206,6 +214,15 @@ fn is_unset(v: Option<&Value>) -> bool {
     v.is_none_or(is_blank)
 }
 
+/// 「足す数」（`add`）に列があるか（中身の無いまとまりと空は無いのと同じ・参照は実行時まで分からないのであるとみなす）。
+fn adds_numbers(node: &Node) -> bool {
+    match node.params.get("add") {
+        None | Some(Value::Null) => false,
+        Some(Value::Object(m)) => !m.is_empty(),
+        Some(v) => !is_blank(v),
+    }
+}
+
 /// 注意のコード: 値を書く欄が中身の無い項目のまとまり・リスト（保存も実行も止めない）。
 pub const EMPTY_VALUES: &str = "ir.empty_values";
 
@@ -246,6 +263,10 @@ pub fn empty_values(ir: &WorkflowIr) -> Vec<ValidationError> {
             continue;
         };
         for (_, key, message) in EMPTY_CONTAINERS.iter().filter(|(t, ..)| *t == nt) {
+            // 足す数で書き換えるなら、変更する値が空でも何かを書く（GAP-16）。
+            if nt == NodeType::DataRecordUpdate && *key == "patch" && adds_numbers(node) {
+                continue;
+            }
             let empty = match node.params.get(*key) {
                 Some(Value::Object(m)) => m.is_empty(),
                 Some(Value::Array(a)) => a.is_empty(),
@@ -483,6 +504,10 @@ fn blank_fields(ir: &WorkflowIr, with_reply: bool) -> Vec<ValidationError> {
             );
         }
         for (_, key, label, fill) in REQUIRED_VALUES.iter().filter(|(t, ..)| *t == nt) {
+            // 「足す数」だけで書き換えるレコードの更新は、変更する値が空でよい（GAP-16）。
+            if nt == NodeType::DataRecordUpdate && *key == "patch" && adds_numbers(node) {
+                continue;
+            }
             if is_unset(node.params.get(*key)) {
                 out.push(blank(&node.id, format!("/params/{key}"), label, *fill));
             }

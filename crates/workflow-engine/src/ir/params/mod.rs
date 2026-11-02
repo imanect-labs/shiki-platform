@@ -31,7 +31,7 @@ pub use control::{
 };
 pub use data::{
     DataBulkUpsertParams, DataQueryParams, DataRecordCreateParams, DataRecordDeleteParams,
-    DataRecordUpdateParams, DataTransitionParams, MAX_WORKFLOW_BULK_ROWS,
+    DataRecordUpdateParams, DataRecordUpsertParams, DataTransitionParams, MAX_WORKFLOW_BULK_ROWS,
 };
 pub use decide::{
     AiDecideParams, DecideOption, DecideQuestion, DecideQuestionType, DecideRoute, DecideRouteBy,
@@ -239,7 +239,22 @@ pub fn check_params(nt: NodeType, raw: &Value) -> Result<(), ParamsIssue> {
             parsed.check_cross_fields()
         }
         NodeType::DataRecordCreate => check_as::<DataRecordCreateParams>(raw),
-        NodeType::DataRecordUpdate => check_as::<DataRecordUpdateParams>(raw),
+        NodeType::DataRecordUpdate => {
+            check_as::<DataRecordUpdateParams>(raw)?;
+            let parsed: DataRecordUpdateParams = parse(raw).map_err(|message| ParamsIssue {
+                path: "/params".to_string(),
+                message,
+            })?;
+            parsed.check_cross_fields()
+        }
+        NodeType::DataRecordUpsert => {
+            check_as::<DataRecordUpsertParams>(raw)?;
+            let parsed: DataRecordUpsertParams = parse(raw).map_err(|message| ParamsIssue {
+                path: "/params".to_string(),
+                message,
+            })?;
+            parsed.check_cross_fields()
+        }
         NodeType::DataRecordDelete => check_as::<DataRecordDeleteParams>(raw),
         NodeType::DataTransition => check_as::<DataTransitionParams>(raw),
         NodeType::DataBulkUpsert => check_as::<DataBulkUpsertParams>(raw),
@@ -466,6 +481,18 @@ mod tests {
                         "expected_rev": { "$from": "nodes.q.output", "path": "/items/0/rev" } }),
             ),
             (
+                NodeType::DataRecordUpdate,
+                json!({ "table": "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1",
+                        "record": { "$from": "nodes.q.output", "path": "/items/0/id" },
+                        "add": { "stock": { "$from": "input", "path": "/delta" } } }),
+            ),
+            (
+                NodeType::DataRecordUpsert,
+                json!({ "table": "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1", "match_on": "month",
+                        "data": { "month": { "$from": "input", "path": "/month" } },
+                        "add": { "total": { "$from": "input", "path": "/amount" } } }),
+            ),
+            (
                 NodeType::DataRecordDelete,
                 json!({ "table": "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1", "record": { "$from": "input", "path": "/id" } }),
             ),
@@ -477,6 +504,11 @@ mod tests {
             (
                 NodeType::DataBulkUpsert,
                 json!({ "table": "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1",
+                        "rows": { "$from": "nodes.gen.output", "path": "/rows" } }),
+            ),
+            (
+                NodeType::DataBulkUpsert,
+                json!({ "table": "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1", "match_on": "response_id",
                         "rows": { "$from": "nodes.gen.output", "path": "/rows" } }),
             ),
         ];

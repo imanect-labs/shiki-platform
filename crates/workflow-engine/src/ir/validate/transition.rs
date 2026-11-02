@@ -104,6 +104,7 @@ mod tests {
                 states: Some(vec!["申請中".into(), "承認済み".into()]),
                 status_field: Some("status".into()),
                 fields: BTreeMap::new(),
+                unique: std::collections::BTreeSet::new(),
             },
         );
         // 見えるが FSM で管理していない（状態の列を読めないテーブルも states が None）。

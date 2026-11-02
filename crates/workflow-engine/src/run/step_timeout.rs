@@ -76,6 +76,7 @@ fn holds_effect_reservation(nt: NodeType) -> bool {
         nt,
         NodeType::DataRecordCreate
             | NodeType::DataRecordUpdate
+            | NodeType::DataRecordUpsert
             | NodeType::DataRecordDelete
             | NodeType::DataTransition
             | NodeType::DataBulkUpsert

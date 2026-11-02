@@ -288,6 +288,12 @@ fn labels(nt: NodeType) -> (NodeCategory, &'static str, &'static str) {
             "業務データに新しいレコードを追加する",
         ),
         NodeType::DataRecordUpdate => (C::Data, "データを更新", "業務データのレコードを書き換える"),
+        // 名前と説明は付録 D の新しい呼び名（レコードを〜）にそろえる（ほかのブロックは FEAT-3 の書き直しで合わせる）。
+        NodeType::DataRecordUpsert => (
+            C::Data,
+            "レコードを追加か更新",
+            "選んだ列の値が同じレコードがあれば書き換え、なければ追加します。",
+        ),
         NodeType::DataTransition => (C::Data, "状態を進める", "申請・承認などの状態を次へ進める"),
         NodeType::DataRecordDelete => (C::Data, "データを削除", "業務データのレコードを削除する"),
         NodeType::DataBulkUpsert => (
@@ -460,6 +466,7 @@ fn entry(nt: NodeType) -> NodeCatalogEntry {
         NodeType::StorageWrite
         | NodeType::DataRecordCreate
         | NodeType::DataRecordUpdate
+        | NodeType::DataRecordUpsert
         | NodeType::DataTransition
         | NodeType::DataRecordDelete
         | NodeType::DataBulkUpsert
@@ -526,6 +533,7 @@ pub fn step_timeout_limits(nt: NodeType) -> (Option<u32>, Option<u32>) {
         | NodeType::DataQuery
         | NodeType::DataRecordCreate
         | NodeType::DataRecordUpdate
+        | NodeType::DataRecordUpsert
         | NodeType::DataRecordDelete
         | NodeType::DataTransition
         | NodeType::HttpRequest

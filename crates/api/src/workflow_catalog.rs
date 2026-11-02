@@ -189,8 +189,9 @@ pub async fn build_catalog_from(
     Ok(catalog)
 }
 
-/// 承認（human.approval）・状態を進める（data.transition）・状態の変化のきっかけが束縛するテーブルを保存者の
-/// 見え方で引いて、V4 の材料にする（GAP-08・BUG-105）。
+/// 承認（human.approval）・状態を進める（data.transition）・状態の変化のきっかけ・同じレコードを探す列と足す数
+/// （キーで追加か更新・まとめて登録の照合・レコードの更新の足す数・GAP-16）が束縛するテーブルを保存者の見え方で
+/// 引いて、V4 の材料にする（GAP-08・BUG-105）。
 ///
 /// IR にそのどれも無ければ `None`（照合しない）。見えないテーブルは入れない（V4 が「見つからないか状態の進め方が
 /// ない」と同じ文言で止める）。FSM の状態は状態の列の選択肢（FSM の保存時にこれと一致することを data が
@@ -229,9 +230,22 @@ pub async fn fsm_tables(
         })
         .filter_map(|t| t.pointer("/scope/table")?.as_str())
         .collect();
-    let uses = nodes()
-        .any(|n| of_type(n, NodeType::HumanApproval) || of_type(n, NodeType::DataTransition))
-        || !trigger_tables.is_empty();
+    // 同じレコードを探す列（重複を許さない列）と足す数（数の列）を照らすブロック（GAP-16）。
+    let keyed = |n: &serde_json::Value| {
+        let has = |at: &str| {
+            n.pointer(at).is_some_and(|v| match v {
+                serde_json::Value::String(s) => !s.trim().is_empty(),
+                serde_json::Value::Object(m) => !m.is_empty(),
+                _ => false,
+            })
+        };
+        of_type(n, NodeType::DataRecordUpsert)
+            || (of_type(n, NodeType::DataBulkUpsert) && has("/params/match_on"))
+            || (of_type(n, NodeType::DataRecordUpdate) && has("/params/add"))
+    };
+    let uses = nodes().any(|n| {
+        of_type(n, NodeType::HumanApproval) || of_type(n, NodeType::DataTransition) || keyed(n)
+    }) || !trigger_tables.is_empty();
     if !uses {
         return Ok(None);
     }
@@ -239,7 +253,7 @@ pub async fn fsm_tables(
         .filter_map(|n| {
             if of_type(n, NodeType::HumanApproval) {
                 n.pointer("/params/record/table")?.as_str()
-            } else if of_type(n, NodeType::DataTransition) {
+            } else if of_type(n, NodeType::DataTransition) || keyed(n) {
                 n.pointer("/params/table")?.as_str()
             } else {
                 None
@@ -275,12 +289,20 @@ pub async fn fsm_tables(
                 (f.key.clone(), ty)
             })
             .collect();
+        // 重複を許さない列（読める列だけ・同じレコードを探す列の照合・GAP-16）。
+        let unique = schema
+            .fields
+            .iter()
+            .filter(|f| f.unique)
+            .map(|f| f.key.clone())
+            .collect();
         out.insert(
             id.hyphenated().to_string(),
             workflow_engine::CatalogTable {
                 states,
                 status_field,
                 fields,
+                unique,
             },
         );
     }

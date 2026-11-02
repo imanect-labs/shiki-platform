@@ -23,6 +23,8 @@ use crate::ir::params::{
 use crate::run::NodeContext;
 
 use super::capability::{journaled, parse_params};
+use super::capability_data_keyed::{AddingUpdate, MatchedBulk};
+use super::data_upsert;
 use super::exec::CapabilityNodeExecutor;
 use super::ports::{DataWriteOp, DataWriteReq, ExecCtx, NodePorts, PortError};
 use super::resolver::{as_string, as_uuid, opt_param, param, typed, ParamResolver};
@@ -108,14 +110,58 @@ pub(crate) async fn journaled_data_write(
     digest_body: &Value,
     via: &str,
 ) -> Result<Value, PortError> {
-    let api = req.op.api();
-    let table_id = req.table_id;
-    let key = req.idempotency_key.clone();
+    let effect = DataEffect {
+        api: req.op.api(),
+        table_id: req.table_id,
+        key: req.idempotency_key.clone(),
+        via,
+    };
+    journaled_data_effect(
+        journal,
+        audit,
+        ec,
+        &effect,
+        digest_body,
+        ports.data_write(ec, req),
+    )
+    .await
+}
+
+/// 1 つの step の data の書込（監査の操作名・テーブル・冪等キー・経路）。
+pub(crate) struct DataEffect<'a> {
+    pub api: &'a str,
+    pub table_id: Uuid,
+    pub key: String,
+    pub via: &'a str,
+}
+
+/// data の書込（`apply`）を effect_journal で高々 1 回にし、監査を残す。
+///
+/// `apply` は 1 回の書込か、探してから書く組み立て（キーで追加か更新・足す数・同じレコードを探す列・GAP-16）。
+/// 組み立ても、成功する書込は高々 1 回で、ほかの誤りは何も書かずに返る（[`super::data_upsert`]）ので、予約を外す
+/// 決まりは 1 回の書込と同じ。
+pub(crate) async fn journaled_data_effect<F>(
+    journal: &EffectJournal,
+    audit: &dyn CapabilityAudit,
+    ec: &ExecCtx,
+    effect: &DataEffect<'_>,
+    digest_body: &Value,
+    apply: F,
+) -> Result<Value, PortError>
+where
+    F: std::future::Future<Output = Result<Value, PortError>>,
+{
+    let DataEffect {
+        api,
+        table_id,
+        ref key,
+        via,
+    } = *effect;
     let digest = op_digest(api, digest_body);
     // data の書込は 1 Tx（拒否・検証エラーなら何も書かれていない）。予約を外す決まりは csv・workflow.start と同じ
     // （[`journaled`]・副作用の有無が不明な一時障害は外さない。一括 upsert は取込 ID が冪等なので外しても二重にならない）。
     let apply = async {
-        ports.data_write(ec, req).await.inspect_err(|e| {
+        apply.await.inspect_err(|e| {
             audit.record(
                 &ec.tenant_id,
                 api,
@@ -124,8 +170,7 @@ pub(crate) async fn journaled_data_write(
             );
         })
     };
-    let (out, wrote) =
-        journaled(journal, &ec.tenant_id, &key, &digest, "データ書込", apply).await?;
+    let (out, wrote) = journaled(journal, &ec.tenant_id, key, &digest, "データ書込", apply).await?;
     if wrote {
         // 値・行の中身は監査に載せない（PII）。テーブルと対象の外部 ID だけ。
         audit.record(
@@ -176,7 +221,7 @@ impl CapabilityNodeExecutor {
         Ok(out)
     }
 
-    /// data の書込ノード（create / update / delete / transition / bulk_upsert）。
+    /// data の書込ノード（create / update / upsert / delete / transition / bulk_upsert）。
     pub(super) async fn node_data_write(
         &self,
         api: &str,
@@ -197,12 +242,32 @@ impl CapabilityNodeExecutor {
                 let p: DataRecordUpdateParams = parse_params(params)?;
                 let table = resolve_uuid(&p.table, r, "data.record.update: table")?;
                 let record_id = resolve_uuid(&p.record, r, "data.record.update: record")?;
-                let patch = param(&p.patch, r, "data.record.update: patch")?;
                 let expected_rev = resolve_rev(
                     p.expected_rev.as_ref(),
                     r,
                     "data.record.update: expected_rev",
                 )?;
+                let add = data_upsert::parse_add(opt_param(
+                    p.add.as_ref(),
+                    r,
+                    "data.record.update: add",
+                )?)?;
+                if !add.is_empty() {
+                    // 足す数（GAP-16）: 読んだ rev を前提に書き、重なったら読み直して足し直す。
+                    let patch = data_upsert::parse_values(
+                        param(&p.patch, r, "data.record.update: patch")?,
+                        "変更する値",
+                    )?;
+                    let target = AddingUpdate {
+                        table,
+                        record_id,
+                        patch,
+                        add,
+                        expected_rev,
+                    };
+                    return self.node_data_update_adding(api, target, ctx, ec).await;
+                }
+                let patch = param(&p.patch, r, "data.record.update: patch")?;
                 let digest = json!({ "table": table, "record": record_id, "patch": patch,
                                      "rev": expected_rev });
                 let op = DataWriteOp::Update {
@@ -212,6 +277,7 @@ impl CapabilityNodeExecutor {
                 };
                 (table, op, digest)
             }
+            "data.record.upsert" => return self.node_data_upsert(api, params, ctx, ec, r).await,
             "data.record.delete" => {
                 let p: DataRecordDeleteParams = parse_params(params)?;
                 let table = resolve_uuid(&p.table, r, "data.record.delete: table")?;
@@ -252,6 +318,21 @@ impl CapabilityNodeExecutor {
                 let rows_raw = param(&p.rows, r, "data.bulk_upsert: rows")?;
                 let rows = parse_bulk_rows(&rows_raw)?;
                 let abort_on_invalid = p.abort_on_invalid.unwrap_or(false);
+                if let Some(match_on) = p.match_on() {
+                    // 同じレコードを探す列（GAP-16）: id の無い行を、同じ値のレコードに当ててから取り込む。
+                    let digest = json!({ "table": table, "rows": rows_raw,
+                                         "abort_on_invalid": abort_on_invalid,
+                                         "match_on": match_on });
+                    let bulk = MatchedBulk {
+                        table,
+                        match_on,
+                        rows,
+                        abort_on_invalid,
+                    };
+                    return self
+                        .node_data_bulk_matched(api, bulk, &digest, ctx, ec)
+                        .await;
+                }
                 let digest = json!({ "table": table, "rows": rows_raw,
                                      "abort_on_invalid": abort_on_invalid });
                 let op = DataWriteOp::BulkUpsert {

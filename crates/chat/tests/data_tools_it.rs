@@ -108,6 +108,10 @@ fn expense_schema() -> TableSchema {
     let mut status = FieldDef::new("status", FieldType::Select);
     status.options = vec!["承認待ち".into(), "承認済み".into()];
     status.indexed = true;
+    // 重複を許さない列（data_schema が印を付ける・ワークフローの同じレコードを探す列に選べる・GAP-16）。
+    let mut claim_no = FieldDef::new("claim_no", FieldType::Text);
+    claim_no.display_name = "申請番号".into();
+    claim_no.unique = true;
     TableSchema {
         fields: vec![
             applicant,
@@ -115,6 +119,7 @@ fn expense_schema() -> TableSchema {
             status,
             FieldDef::new("title", FieldType::Text),
             FieldDef::new("internal_memo", FieldType::Text),
+            claim_no,
         ],
         status_field: None,
         row_policy: Some(RowPolicy {
@@ -362,6 +367,17 @@ async fn data_query_returns_only_rows_and_columns_the_speaker_can_read() {
     );
     assert!(out.content.contains("承認待ち, 承認済み"));
     assert!(!out.content.contains("internal_memo"), "{}", out.content);
+    assert!(
+        out.content
+            .contains("- claim_no: text — 申請番号（重複を許さない）"),
+        "{}",
+        out.content
+    );
+    assert!(
+        !out.content.contains("金額（重複を許さない）"),
+        "{}",
+        out.content
+    );
     let out = DataSchemaTool::new(f.data.clone(), tools_for(&f, &carol).await)
         .call(&carol, json!({ "table": "経費" }), None)
         .await

@@ -492,6 +492,7 @@ impl NodeExecutor for CapabilityNodeExecutor {
             NodeType::DataQuery => self.node_data_query(params, &ec, &r).await,
             NodeType::DataRecordCreate
             | NodeType::DataRecordUpdate
+            | NodeType::DataRecordUpsert
             | NodeType::DataRecordDelete
             | NodeType::DataTransition
             | NodeType::DataBulkUpsert => {

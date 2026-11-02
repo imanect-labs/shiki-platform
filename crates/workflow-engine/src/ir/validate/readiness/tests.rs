@@ -270,6 +270,45 @@ fn blank_data_block_fields_block_run_and_enable() {
     assert_eq!(enable_blockers(&ir).len(), w.len());
 }
 
+/// キーで追加か更新（GAP-16）の置いたばかりの欄（テーブル・探す列・入れる値）は、実行と自動実行のオンの前に止める。
+/// 足す数だけで書き換えるレコードの更新は、変更する値が空でも止めない（何も書き換えないとも言わない）。
+#[test]
+fn upsert_and_add_only_updates_are_ready_when_filled() {
+    const T: &str = "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1";
+    let r = json!({ "$from": "input", "path": "/id" });
+    let ir = ir(
+        json!([{ "kind": "interactive" }]),
+        json!([
+            { "id": "up", "type": "data.record.upsert",
+              "params": { "table": "", "match_on": "", "data": "" } },
+            { "id": "ok_up", "type": "data.record.upsert",
+              "params": { "table": T, "match_on": "sku", "data": { "sku": "A" } } },
+            { "id": "add_only", "type": "data.record.update",
+              "params": { "table": T, "record": r, "add": { "stock": -1 } } },
+            { "id": "add_empty_patch", "type": "data.record.update",
+              "params": { "table": T, "record": r, "patch": {}, "add": { "stock": -1 } } },
+            { "id": "no_add", "type": "data.record.update",
+              "params": { "table": T, "record": r, "add": {} } }
+        ]),
+    );
+    let w = required_text_empty(&ir);
+    assert_eq!(
+        codes(&w),
+        vec![
+            (REQUIRED_TEXT_EMPTY, Some("up"), Some("/params/table")),
+            (REQUIRED_TEXT_EMPTY, Some("up"), Some("/params/match_on")),
+            (REQUIRED_TEXT_EMPTY, Some("up"), Some("/params/data")),
+            (REQUIRED_TEXT_EMPTY, Some("no_add"), Some("/params/patch")),
+        ]
+    );
+    assert_eq!(
+        w[1].message,
+        "「同じレコードを探す列」が空です。選ぶまで、実行も自動実行のオンもできません。"
+    );
+    assert!(empty_values(&ir).is_empty(), "{:?}", empty_values(&ir));
+    assert!(required_pick_fields().contains(&("data.record.upsert", "match_on")));
+}
+
 /// BUG-151: ファイルを選ぶブロック（読むファイル・集計と編集の CSV ファイル・編集前の版・編集の内容）と、実行する
 /// スキルも、置いたばかりの空のまま保存でき、実行と自動実行のオンの前に止める。選んだファイル・参照は止めない。
 #[test]

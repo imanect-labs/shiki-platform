@@ -148,6 +148,7 @@ pub use model::{
     FIRST_USER_FIELD_ID, MAX_FIELD_ID, SYSTEM_FIELD_CREATED_AT, SYSTEM_FIELD_OWNER,
     SYSTEM_FIELD_UPDATED_AT,
 };
+pub use numeric::{add_numbers, number_key};
 pub use policy::{CmpOp, PolicyExpr, PolicyOperand, RowPolicy, TableReach};
 pub use query::admission::{QuerySuggestion, DEFAULT_READ_BUDGET_MS, DEFAULT_TENANT_READ_TOKENS};
 pub use query::ir::{

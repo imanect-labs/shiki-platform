@@ -20,4 +20,10 @@ patch: ValueExpr,
 /**
  * 楽観ロックの rev（省略時は実行時点の rev を読んでから書く）。
  */
-expected_rev?: ValueExpr, };
+expected_rev?: ValueExpr, 
+/**
+ * 足す数（数の列の参照名 → 足す数・負の数で減らす）。いまの値に足した値を書く（GAP-16）。読んだ rev を前提に
+ * 書き、間にほかの書込があれば読み直して足し直すので、足した数は失われない（`expected_rev` を書いたときは
+ * 読み直さず、その版でなければ失敗する）。`patch` と同じ列は書けない。
+ */
+add?: ValueExpr, };

@@ -339,6 +339,7 @@ mod tests {
             "data.query",
             "data.record.create",
             "data.record.update",
+            "data.record.upsert",
             "data.record.delete",
             "data.transition",
             "data.bulk_upsert",

@@ -13,10 +13,10 @@ use ts_rs::{TypeVisitor, TS};
 use super::{
     AgentInvokeParams, AiDecideParams, BranchParams, CsvPatchParams, CsvQueryParams,
     CsvWriteParams, DataBulkUpsertParams, DataQueryParams, DataRecordCreateParams,
-    DataRecordDeleteParams, DataRecordUpdateParams, DataTransitionParams, HttpRequestParams,
-    HumanApprovalParams, JoinParams, LlmInvokeParams, MapParams, RagSearchParams, ScriptRunParams,
-    SkillInvokeParams, StorageListParams, StorageReadParams, StorageWriteParams, SwitchParams,
-    WaitParams, WorkflowReplyParams, WorkflowStartParams,
+    DataRecordDeleteParams, DataRecordUpdateParams, DataRecordUpsertParams, DataTransitionParams,
+    HttpRequestParams, HumanApprovalParams, JoinParams, LlmInvokeParams, MapParams,
+    RagSearchParams, ScriptRunParams, SkillInvokeParams, StorageListParams, StorageReadParams,
+    StorageWriteParams, SwitchParams, WaitParams, WorkflowReplyParams, WorkflowStartParams,
 };
 use crate::vocab::NodeType;
 
@@ -125,6 +125,7 @@ fn visit_params_type<V: ParamsTypeVisitor>(nt: NodeType, v: V) -> Option<V::Out>
         N::DataQuery => v.visit::<DataQueryParams>(),
         N::DataRecordCreate => v.visit::<DataRecordCreateParams>(),
         N::DataRecordUpdate => v.visit::<DataRecordUpdateParams>(),
+        N::DataRecordUpsert => v.visit::<DataRecordUpsertParams>(),
         N::DataRecordDelete => v.visit::<DataRecordDeleteParams>(),
         N::DataTransition => v.visit::<DataTransitionParams>(),
         N::DataBulkUpsert => v.visit::<DataBulkUpsertParams>(),

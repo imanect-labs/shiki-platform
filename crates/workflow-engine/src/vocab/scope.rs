@@ -53,10 +53,11 @@ impl Scope {
             "csv.patch" | "csv.write" => Scope::CsvWrite,
             // data ノード（Task 15.7）と script の `Shiki.data.*`（HostCall api 名）を同じ表で引く。
             "data.query" | "data.get" | "data.list_tables" => Scope::DataRead,
-            "data.record.create" | "data.record.update" | "data.record.delete"
-            | "data.bulk_upsert" | "data.transition" | "data.create" | "data.update" => {
-                Scope::DataWrite
-            }
+            // キーで追加か更新（data.record.upsert）は同じ列の値のレコードを探してから書く（探すのも書込の一部・
+            // 1 件の更新が rev を読むのと同じ・GAP-16）。
+            "data.record.create" | "data.record.update" | "data.record.upsert"
+            | "data.record.delete" | "data.bulk_upsert" | "data.transition" | "data.create"
+            | "data.update" => Scope::DataWrite,
             "notify.send" | "human.approval" => Scope::NotifySend,
             "sheet.read" => Scope::SheetRead,
             "sheet.write" | "sheet.append" => Scope::SheetWrite,

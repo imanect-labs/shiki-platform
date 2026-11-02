@@ -41,6 +41,8 @@ vocab_enum! {
         DataQuery => "data.query",
         DataRecordCreate => "data.record.create",
         DataRecordUpdate => "data.record.update",
+        /// 選んだ列（重複を許さない列）の値が同じレコードがあれば書き換え、なければ追加する（GAP-16・EngineDedup）。
+        DataRecordUpsert => "data.record.upsert",
         DataTransition => "data.transition",
         /// レコードの削除（rev 楽観ロック・EngineDedup）。
         DataRecordDelete => "data.record.delete",
@@ -143,6 +145,7 @@ impl NodeType {
                 | NodeType::DataQuery
                 | NodeType::DataRecordCreate
                 | NodeType::DataRecordUpdate
+                | NodeType::DataRecordUpsert
                 | NodeType::DataRecordDelete
                 | NodeType::DataTransition
                 | NodeType::DataBulkUpsert
@@ -187,6 +190,7 @@ mod tests {
                 "data.query",
                 "data.record.create",
                 "data.record.update",
+                "data.record.upsert",
                 "data.transition",
                 "data.record.delete",
                 "data.bulk_upsert",
