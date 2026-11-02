@@ -293,7 +293,7 @@ pub(super) fn emit_description(
     decision_models: Option<&[super::DecisionModel]>,
 ) -> String {
     let mut d = String::from(
-        "ワークフロー（自動化フロー）を JSON IR として保存する。新規作成は ir だけを渡し、既存の編集は workflow_id と expected_version も渡す（編集の前に必ず read_workflow で今の IR を読む。id が分からなければ list_workflows で探す）。保存しただけでは実行されない。検証に失敗するとエラーが全件返るので、全部直して再実行する。成功するとユーザーにカードが表示され、エディタで開ける。\n",
+        "ワークフロー（自動化フロー）を JSON IR として保存する。新規作成は ir だけを渡し、既存の編集は workflow_id と、read_workflow が返した version を expected_version に必ず渡す（無いと保存しない。編集の前に必ず read_workflow で今の IR を読む。id が分からなければ list_workflows で探す）。保存しただけでは実行されない。検証に失敗するとエラーが全件返るので、全部直して再実行する。成功するとユーザーにカードが表示され、エディタで開ける。\n",
     );
     let _ = write!(
         d,

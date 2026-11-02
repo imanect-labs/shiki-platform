@@ -114,6 +114,11 @@ const SAVE_CONFLICT: &str = "ワークフローを保存できませんでした
      read_workflow で今の IR と version を読み直し、変更を当て直してから、返った version を expected_version に渡して\
      保存し直してください（読み直さずに保存し直すと、ほかの人の変更が消えます）。";
 
+/// 既存のワークフローを直すのに、読んだ版（expected_version）を渡さなかったときの観測（保存しない・BUG-211）。
+const VERSION_REQUIRED: &str = "ワークフローを保存していません。既存のワークフローを直すときは、read_workflow で今の IR と\
+     version を読み、変更を当ててから、返った version を expected_version（数）に渡して保存してください（読んだ版を\
+     渡さずに保存すると、読んだ後にほかの人が保存した変更が消えます）。";
+
 /// 既存のワークフローの新しい版を保存する権限が無い（無い・見えないを含む）ときの観測。
 const SAVE_FORBIDDEN: &str = "ワークフローを保存できませんでした。このワークフローが無いか、新しい版を保存する権限が\
      ありません（閲覧だけ共有されたものは直せません）。ユーザーに、持ち主に編集の権限を頼むか、別の名前の新しい\
@@ -192,7 +197,7 @@ impl Tool for EmitWorkflowTool {
                 },
                 "expected_version": {
                     "type": "integer",
-                    "description": "更新時の楽観ロック。read_workflow が返した version をそのまま渡す（他者の編集と競合したら失敗が返る）"
+                    "description": "workflow_id を渡すときは必須。read_workflow が返した version をそのまま渡す（無ければ保存しない。他者の編集と競合したら失敗が返る）"
                 }
             },
             "required": ["ir"]
@@ -221,12 +226,23 @@ impl Tool for EmitWorkflowTool {
                     "workflow_id が UUID ではありません: {raw_id}"
                 )));
             };
-            // read_workflow で読んだ version を楽観ロックに使う（他編集者の保存を黙って潰さない）。
-            let expected_version = input
+            // read_workflow で読んだ version を楽観ロックに使う（他編集者の保存を黙って潰さない）。版を渡さない（数で
+            // ない）ときは、版を照らさずに積まないよう保存せずに読み直しを求める（BUG-211）。
+            let Some(expected_version) = input
                 .get("expected_version")
-                .and_then(serde_json::Value::as_i64);
+                .and_then(serde_json::Value::as_i64)
+            else {
+                return Ok(ToolOutcome::error(VERSION_REQUIRED));
+            };
             self.store
-                .update(ctx, id, &ir_json, &catalog, expected_version, trace_id)
+                .update(
+                    ctx,
+                    id,
+                    &ir_json,
+                    &catalog,
+                    Some(expected_version),
+                    trace_id,
+                )
                 .await
                 .map(|(version, ir)| (id, version, ir))
         } else {

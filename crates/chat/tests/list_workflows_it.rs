@@ -302,6 +302,17 @@ async fn the_ai_finds_reads_and_fixes_only_workflows_the_user_can_see() {
         .unwrap_err();
         assert!(stale.contains("read_workflow で今の IR と version を読み直し"), "{stale}");
         assert_eq!(store.get_latest(&alice, expense, None).await.unwrap().0, 2);
+        // 読んだ版を渡さない（数でない）ときも、版を照らさずに積まず、読み直しを求める（BUG-211）。
+        for missing in [
+            json!({ "workflow_id": expense, "ir": got["ir"] }),
+            json!({ "workflow_id": expense, "expected_version": "2", "ir": got["ir"] }),
+            json!({ "workflow_id": expense, "expected_version": null, "ir": got["ir"] }),
+        ] {
+            let refused = call(&emit, &alice, missing).await.unwrap_err();
+            assert!(refused.contains("ワークフローを保存していません"), "{refused}");
+            assert!(refused.contains("read_workflow で今の IR と"), "{refused}");
+        }
+        assert_eq!(store.get_latest(&alice, expense, None).await.unwrap().0, 2, "版は増えない");
         let count: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM artifact WHERE tenant_id = $1 AND kind = 'workflow' AND deleted_at IS NULL",
         )
