@@ -102,13 +102,13 @@ where
             let out = match write.await {
                 Ok(out) => out,
                 Err(e) => {
+                    // 外せなくても元の誤りを返す（本当の原因の代わりに「一時的な問題」を見せない）。予約は残るので、
+                    // 回収の猶予の内に再開すると effect_in_progress で待つが、猶予の後は通る。
                     if leaves_no_effect(&e) {
-                        journal
-                            .release(tenant_id, key, digest)
-                            .await
-                            .map_err(|je| {
-                                PortError::unavailable(format!("journal release: {je}"))
-                            })?;
+                        if let Err(je) = journal.release(tenant_id, key, digest).await {
+                            tracing::warn!(error = %je, code = %e.code,
+                                "副作用の無い誤りの後に冪等の予約を外せません（回収の猶予の後に再開できる）");
+                        }
                     }
                     return Err(e);
                 }
@@ -562,3 +562,7 @@ impl CapabilityNodeExecutor {
         Ok(with_file_id(out, "node_id"))
     }
 }
+
+#[cfg(test)]
+#[path = "capability_tests.rs"]
+mod tests;
