@@ -146,6 +146,9 @@ pub async fn create_artifact(
 
 /// 自分が使えるアーティファクト一覧（所有＋共有された・kind 絞り込み・更新日降順）。
 ///
+/// 共有されたミニアプリ（editor でないもの）は、公開した版だけを見せる（[`get_artifact`] と同じ・BUG-213）。並びと
+/// 続きの位置は、保存した時刻（下書きの保存を含む）で決まる。
+///
 /// 共有された分（ReBAC viewer の実効集合）が無いと、共有相手が skill/ミニアプリを
 /// UI から見つけて実行できない（Task 6.11「共有相手の実行」）。keyset カーソル（`before_*`）は
 /// 所有分にのみ適用し、共有分は初回ページに合流する。所有分の続きは `owned_next` を `before_*` に渡して読む
@@ -187,6 +190,10 @@ pub async fn list_artifacts(
 }
 
 /// メタデータを取得する（viewer）。
+///
+/// 下書きと公開を分ける種類（ミニアプリ）で editor でない人には、公開した版だけを見せる（`current_version` は公開した
+/// 版・`previous_published_version` は `null`・`updated_at` は公開した時刻・BUG-213・`GET /mini-apps/{id}/resolved` と
+/// 同じ決まり）。
 #[utoipa::path(
     get,
     path = "/artifacts/{id}",
@@ -205,7 +212,12 @@ pub async fn get_artifact(
     trace: TraceIdExt,
     Path(id): Path<Uuid>,
 ) -> Result<Json<Artifact>, ApiError> {
-    Ok(Json(state.artifacts.get(&ctx, id, trace.as_deref()).await?))
+    Ok(Json(
+        state
+            .artifacts
+            .get_as_seen(&ctx, id, trace.as_deref())
+            .await?,
+    ))
 }
 
 /// 論理削除する（owner・バージョン履歴は保持）。ワークフローなら、自動実行と動いている実行も止める（BUG-128）。

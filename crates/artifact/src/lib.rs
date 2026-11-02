@@ -13,6 +13,7 @@
 //!   同じ共有 API・同じ監査経路に乗る。
 
 mod by_ref;
+mod drafts;
 mod model;
 mod publish;
 mod search;

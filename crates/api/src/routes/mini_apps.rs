@@ -268,8 +268,10 @@ pub async fn resolve_mini_app(
         ),
     )?;
     // 下書きの番号・前に公開していた版・書き損じは、作る人（editor）にだけ返す（使う人には公開した版だけを出す）。
-    let editor_only = |v| if can_edit { v } else { None };
-    let warnings = if can_edit {
+    // 決まりは汎用の GET /artifacts と同じ 1 か所（ArtifactKind::shows_drafts・BUG-213）。
+    let shows_drafts = artifact::ArtifactKind::MiniApp.shows_drafts(can_edit);
+    let editor_only = |v| if shows_drafts { v } else { None };
+    let warnings = if shows_drafts {
         gui::screen_problems(&resolved.body)
     } else {
         Vec::new()

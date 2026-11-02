@@ -50,6 +50,16 @@ impl ArtifactKind {
         matches!(self, ArtifactKind::MiniApp)
     }
 
+    /// 下書きの情報（最新の版の番号・前に公開していた版・下書きの保存で進んだ更新の時刻・下書きの書き損じ）を、この
+    /// 種類のアーティファクトで呼ぶ人に見せてよいか（D-16・BUG-213）。下書きと公開を分ける種類では作る人（editor
+    /// 以上・`can_edit`）にだけ見せ、使う人（editor でない viewer）には公開した版だけを見せる。
+    ///
+    /// `GET /mini-apps/{id}/resolved` と汎用の `GET /artifacts`・`GET /artifacts/{id}`（[`Artifact::as_seen_by_user`]）
+    /// が、この 1 つの決まりで出し分ける。
+    pub const fn shows_drafts(self, can_edit: bool) -> bool {
+        !self.has_drafts() || can_edit
+    }
+
     /// DB から読み戻した文字列を閉じた集合へ写す（未知はフェイルクローズで `None`）。
     pub fn parse(s: &str) -> Option<Self> {
         match s {
@@ -90,6 +100,21 @@ pub struct Artifact {
     pub published_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+impl Artifact {
+    /// 使う人（下書きを見せない人・[`ArtifactKind::shows_drafts`] が偽）に見せる形にする（BUG-213）。
+    ///
+    /// - `current_version`（下書きを含む最新の版）は、公開した版にする（まだ公開していなければ 0）。
+    /// - `previous_published_version`（公開を戻す先）は出さない。
+    /// - `updated_at` は、公開した時刻にする（まだ公開していなければ作った時刻）。下書きの保存では進まない。
+    #[must_use]
+    pub fn as_seen_by_user(mut self) -> Self {
+        self.current_version = self.published_version.unwrap_or(0);
+        self.previous_published_version = None;
+        self.updated_at = self.published_at.unwrap_or(self.created_at);
+        self
+    }
 }
 
 /// アーティファクトの 1 バージョン（本文付き・不変）。
@@ -171,6 +196,47 @@ mod tests {
         ] {
             assert!(!k.has_drafts(), "{k}");
         }
+    }
+
+    /// 使う人には下書きの番号・前に公開していた版・下書きの保存の時刻を見せない（BUG-213）。作る人とほかの種類はそのまま。
+    #[test]
+    fn users_see_only_the_published_version() {
+        let at = |s: &str| s.parse::<DateTime<Utc>>().unwrap();
+        let app = Artifact {
+            id: Uuid::nil(),
+            kind: ArtifactKind::MiniApp,
+            name: "経費".into(),
+            owner: "alice".into(),
+            current_version: 5,
+            published_version: Some(3),
+            previous_published_version: Some(2),
+            published_at: Some(at("2026-10-01T00:00:00Z")),
+            created_at: at("2026-09-01T00:00:00Z"),
+            updated_at: at("2026-10-20T00:00:00Z"),
+        };
+        assert!(!ArtifactKind::MiniApp.shows_drafts(false));
+        assert!(ArtifactKind::MiniApp.shows_drafts(true));
+        assert!(ArtifactKind::Workflow.shows_drafts(false));
+        let seen = app.clone().as_seen_by_user();
+        assert_eq!(
+            (
+                seen.current_version,
+                seen.published_version,
+                seen.previous_published_version
+            ),
+            (3, Some(3), None)
+        );
+        assert_eq!(seen.updated_at, at("2026-10-01T00:00:00Z"));
+        // まだ公開していなければ、版は 0・時刻は作った時刻。
+        let draft = Artifact {
+            published_version: None,
+            previous_published_version: None,
+            published_at: None,
+            ..app
+        }
+        .as_seen_by_user();
+        assert_eq!(draft.current_version, 0);
+        assert_eq!(draft.updated_at, at("2026-09-01T00:00:00Z"));
     }
 
     #[test]

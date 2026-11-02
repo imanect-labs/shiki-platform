@@ -48,6 +48,8 @@ pub(crate) struct ListPage {
 /// - `before`（自分のものの続き）は自分のものの続きだけを、`shared_cursor`（共有された分の続き）は共有された分の
 ///   続きだけを返す（両方は同時に使えない）。どちらの続きの位置も、後ろにまだあるときだけ返す。
 /// - 共有された分の続きの位置は見えないものを指しうるので、テナントに束縛して暗号化する（BUG-162）。
+/// - 下書きと公開を分ける種類で editor でないものは、公開した版だけを見せる形にする（[`ArtifactStore::as_seen_by`]・
+///   BUG-213）。並べ替えと続きの位置は、その前の保存した時刻で決める。
 pub(crate) async fn list_page(
     artifacts: &ArtifactStore,
     data: &DataStore,
@@ -71,7 +73,7 @@ pub(crate) async fn list_page(
             .list_shared_page(ctx, kind, Some((p.updated_at, p.id)), limit)
             .await?;
         return Ok(ListPage {
-            items: page.items,
+            items: artifacts.as_seen_by(ctx, page.items).await?,
             owned_next: None,
             shared_next_cursor: seal_shared(data, ctx, kind, page.next)?,
         });
@@ -92,7 +94,7 @@ pub(crate) async fn list_page(
         shared_next_cursor = seal_shared(data, ctx, kind, shared.next)?;
     }
     Ok(ListPage {
-        items,
+        items: artifacts.as_seen_by(ctx, items).await?,
         owned_next,
         shared_next_cursor,
     })

@@ -63,8 +63,12 @@ fn ctx(tenant: &str, user: &str) -> AuthContext {
     )
 }
 
-#[tokio::test]
-async fn owned_and_shared_continuations_are_read_separately() {
+/// 1 つの筋書き（作った行は呼ぶ側が消す）。
+type Scenario =
+    for<'a> fn(&'a ArtifactStore, &'a DataStore, &'a str) -> futures::future::BoxFuture<'a, ()>;
+
+/// テナントと OpenFGA のストアを作って筋書きを走らせ、落ちても作った行とストアを消す。
+async fn run(scenario: Scenario) {
     let (Ok(db_url), Ok(fga_url)) = (
         std::env::var("STORAGE_TEST_DATABASE_URL"),
         std::env::var("OPENFGA_TEST_URL"),
@@ -117,6 +121,135 @@ async fn owned_and_shared_continuations_are_read_separately() {
     assert!(deleted.status().is_success(), "{}", deleted.status());
     if let Err(panic) = outcome {
         std::panic::resume_unwind(panic);
+    }
+}
+
+#[tokio::test]
+async fn owned_and_shared_continuations_are_read_separately() {
+    run(|artifacts, data, tenant| Box::pin(scenario(artifacts, data, tenant))).await;
+}
+
+/// 共有されたミニアプリを使う人（editor でない viewer）には、一覧でも取得でも公開した版だけを見せる（下書きの番号・
+/// 前に公開していた版・下書きの保存の時刻を見せない・BUG-213）。作る人（持ち主・editor）には今までどおり見せる。
+#[tokio::test]
+async fn users_of_a_shared_app_see_only_the_published_version() {
+    run(|artifacts, data, tenant| Box::pin(drafts_scenario(artifacts, data, tenant))).await;
+}
+
+async fn drafts_scenario(artifacts: &ArtifactStore, data: &DataStore, tenant: &str) {
+    let alice = ctx(tenant, &format!("alice-{}", Uuid::new_v4().simple()));
+    let bob = ctx(tenant, &format!("bob-{}", Uuid::new_v4().simple()));
+    let carol = ctx(tenant, &format!("carol-{}", Uuid::new_v4().simple()));
+    let app = artifacts
+        .create(
+            &alice,
+            NewArtifact {
+                kind: ArtifactKind::MiniApp,
+                name: "expense-app".into(),
+                body: serde_json::json!({ "v": 1 }),
+            },
+            None,
+        )
+        .await
+        .expect("create");
+    for (who, role) in [(&bob, ArtifactRole::Viewer), (&carol, ArtifactRole::Editor)] {
+        let to = ShareTarget::User {
+            id: who.principal.id.clone(),
+        };
+        artifacts
+            .share(&alice, app.id, &to, role, None)
+            .await
+            .expect("share");
+    }
+    let alice_ref = &alice;
+    let save = |v: i64| async move {
+        artifacts
+            .append_version(
+                alice_ref,
+                app.id,
+                serde_json::json!({ "v": v }),
+                Some(v - 1),
+                None,
+            )
+            .await
+            .expect("save");
+    };
+    let listed = |who: AuthContext| async move {
+        let page = list_page(
+            artifacts,
+            data,
+            &who,
+            ListPageRequest {
+                kind: Some(ArtifactKind::MiniApp),
+                before: None,
+                limit: 10,
+                shared_cursor: None,
+            },
+        )
+        .await
+        .unwrap_or_else(|e| panic!("list_page: {e:?}"));
+        let got = artifacts
+            .get_as_seen(&who, app.id, None)
+            .await
+            .expect("get");
+        assert_eq!(page.items.len(), 1);
+        let item = page.items.into_iter().next().unwrap();
+        // 一覧と取得は同じ見え方。
+        assert_eq!(
+            (
+                item.current_version,
+                item.previous_published_version,
+                item.updated_at
+            ),
+            (
+                got.current_version,
+                got.previous_published_version,
+                got.updated_at
+            )
+        );
+        got
+    };
+
+    // まだ公開していない: 使う人には版 0・作った時刻。
+    let seen = listed(bob.clone()).await;
+    assert_eq!((seen.current_version, seen.published_version), (0, None));
+    assert_eq!(seen.updated_at, app.created_at);
+
+    // v1 を公開し、v2・v3 を下書きで保存した後に v2 を公開し、v3 を下書きで保存する。
+    artifacts
+        .publish(&alice, app.id, 1, None)
+        .await
+        .expect("publish v1");
+    save(2).await;
+    artifacts
+        .publish(&alice, app.id, 2, None)
+        .await
+        .expect("publish v2");
+    save(3).await;
+
+    let seen = listed(bob.clone()).await;
+    assert_eq!(
+        (
+            seen.current_version,
+            seen.published_version,
+            seen.previous_published_version
+        ),
+        (2, Some(2), None),
+        "使う人には下書きの番号と前に公開していた版を見せない"
+    );
+    assert_eq!(
+        Some(seen.updated_at),
+        seen.published_at,
+        "使う人の更新の時刻は公開した時刻（下書きの保存で進まない）"
+    );
+    for maker in [carol.clone(), alice.clone()] {
+        let seen = listed(maker).await;
+        assert_eq!(
+            (seen.current_version, seen.previous_published_version),
+            (3, Some(1)),
+            "作る人には今までどおり見せる"
+        );
+        assert!(seen.updated_at > seen.published_at.unwrap());
     }
 }
 
