@@ -602,8 +602,10 @@ flowchart LR
     利用者に出さない定型文の誤りにし（本文はログにだけ残す）、呼び出し側が出力の形の誤りとして扱えるようにする。
   - それ以外の 4xx（429 を除く）も、プロバイダの本文（要求の ID・組織やワークスペースの ID・URL が入りうる）を
     誤りの文言に入れない。文言は `{プロバイダ} {状態}: プロバイダが要求を受け付けませんでした（誤りの種類）` で、
-    誤りの種類は本文の `type`・`code`・`status`・`error`・`detail` にある英数字だけの語（`invalid_request_error`・
-    `context_length_exceeded` など・3 つまで）に限る。本文はログにだけ残す。すべてのアダプタが
+    誤りの種類は本文の `type`・`code`・`status`・`error`・`detail` にある英字と `_`・`.`・`-` だけの語
+    （`invalid_request_error`・`context_length_exceeded` など・3 つまで）に限る。数字を含む値（`org-abc123`・`req_011…`
+    のような識別子）は拾わない。呼び出し側が文言で見分ける語（ChatGPT プランの対象外 `subscription_sharing_user_not_eligible`）は、
+    本文のどこにあっても 3 つの上限より先に載せる（本文の並びで落とさない）。本文はログにだけ残す。すべてのアダプタが
     `provider::rejection` の 1 か所を通る（BUG-87）。
 - **決定モデル（FEAT-1・D-6）**: 文章を生成せず、質問ごとに決められた選択肢（choice）・段階（score）・
   はい/いいえ（boolean）で答え、確からしさ（0〜1）を付けて返すモデル。生成と入出力の形が違うので、
