@@ -52,8 +52,13 @@ test("ドライブ: 名前の検索の先頭のページに出なくても、送
   await page.goto(`/drive?folder=${work}`);
   const fileName = `${uniqueName("報告書")}.txt`;
   const input = page.locator('input[type="file"][multiple]');
+  // 送り切るまで待つ（送っている間も一覧の進み具合に名前が出るので、名前では待たない）。
+  const finalized = page.waitForResponse(
+    (res) => /\/api\/files\/[^/]+\/finalize$/.test(new URL(res.url()).pathname) && res.ok(),
+  );
   await input.setInputFiles({ name: fileName, mimeType: "text/plain", buffer: Buffer.from("version one\n") });
-  await expect(page.getByText(fileName, { exact: true })).toBeVisible({ timeout: 20_000 });
+  await finalized;
+  await expect(page.getByText("アップロードが完了しました").first()).toBeVisible({ timeout: 20_000 });
 
   const searched = await emptySearchPages(page);
   const rejected = rejectedFinalizes(page);
