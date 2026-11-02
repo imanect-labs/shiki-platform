@@ -62,6 +62,69 @@ pub(crate) fn rate_limit_message(body: &str) -> String {
     "利用上限に達しました。しばらく待ってからもう一度お試しください。".to_string()
 }
 
+/// プロバイダが要求を受け付けなかったことを表す [`LlmError::BadRequest`] の定型文（本文の代わりに入れる）。
+pub(crate) const REJECTED_BY_PROVIDER: &str = "プロバイダが要求を受け付けませんでした";
+
+/// 本文から拾う誤りの種類の語の数の上限。
+const MAX_ERROR_KINDS: usize = 3;
+
+/// プロバイダの 4xx（429 を除く）を [`LlmError::BadRequest`] にする（構造化出力のスキーマの拒否は
+/// [`crate::structured`] が先に定型文にする・BUG-87）。
+///
+/// プロバイダの本文は**利用者へ出さない**。`message` には要求の ID・組織やワークスペースの ID・URL が入りうり、
+/// この文言はアプリのゲートウェイの応答・会話の記録・実行の誤りへそのまま運ばれる（[`rate_limit_message`] と同じ
+/// 理由）。本文はログにだけ残し、文言は `{provider} {status}: 定型文（誤りの種類）` にする。誤りの種類は本文の
+/// `type`・`code`・`status`・`error`・`detail` にある英数字だけの語（`invalid_request_error` など）で、空白を含む
+/// 文や数は拾わない（ChatGPT プランの対象外の判定などが、この語で見分ける）。
+pub(crate) fn rejection(provider: &str, status: reqwest::StatusCode, body: &str) -> LlmError {
+    let kinds = error_kinds(body);
+    tracing::warn!(provider, %status, kinds = ?kinds, body = %body, "プロバイダが要求を受け付けなかった");
+    let tail = if kinds.is_empty() {
+        String::new()
+    } else {
+        format!("（{}）", kinds.join(", "))
+    };
+    LlmError::BadRequest(format!("{provider} {status}: {REJECTED_BY_PROVIDER}{tail}"))
+}
+
+/// 本文（JSON）から誤りの種類の語を拾う（上から順に・重ねない・[`MAX_ERROR_KINDS`] 個まで）。
+fn error_kinds(body: &str) -> Vec<String> {
+    fn is_kind(s: &str) -> bool {
+        let mut chars = s.chars();
+        chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+            && s.len() <= 64
+            && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+            // Anthropic の封筒（`{"type":"error",…}`）は種類ではない。
+            && s != "error"
+    }
+    fn walk(v: &serde_json::Value, depth: usize, out: &mut Vec<String>) {
+        let serde_json::Value::Object(map) = v else {
+            return;
+        };
+        for (k, v) in map {
+            if out.len() >= MAX_ERROR_KINDS {
+                return;
+            }
+            match v {
+                serde_json::Value::String(s)
+                    if matches!(k.as_str(), "type" | "code" | "status" | "error" | "detail")
+                        && is_kind(s)
+                        && !out.iter().any(|o| o == s) =>
+                {
+                    out.push(s.clone());
+                }
+                serde_json::Value::Object(_) if depth < 4 => walk(v, depth + 1, out),
+                _ => {}
+            }
+        }
+    }
+    let mut out = Vec::new();
+    if let Ok(v) = serde_json::from_str::<serde_json::Value>(body) {
+        walk(&v, 0, &mut out);
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -81,5 +144,61 @@ mod tests {
     fn rate_limit_message_falls_back_on_unknown_shape() {
         assert!(!rate_limit_message("<html>429</html>").is_empty());
         assert!(!rate_limit_message(r#"{"foo":1}"#).is_empty());
+    }
+
+    /// 4xx の本文（要求の ID・組織の ID・URL を含む message）は文言に入れず、誤りの種類の語だけを残す（BUG-87）。
+    #[test]
+    fn rejection_does_not_expose_the_provider_body() {
+        let anthropic = r#"{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long for org-abc123: see https://console.example.com/settings"},"request_id":"req_011CUabc"}"#;
+        let LlmError::BadRequest(msg) =
+            rejection("anthropic", reqwest::StatusCode::BAD_REQUEST, anthropic)
+        else {
+            panic!("BadRequest になる");
+        };
+        for leaked in [
+            "org-abc123",
+            "https://",
+            "req_011CUabc",
+            "prompt is too long",
+            "{",
+        ] {
+            assert!(!msg.contains(leaked), "{leaked} が漏れた: {msg}");
+        }
+        assert_eq!(
+            msg,
+            "anthropic 400 Bad Request: プロバイダが要求を受け付けませんでした（invalid_request_error）"
+        );
+
+        let openai = r#"{"error":{"message":"This model's maximum context length is 8192 tokens (org org-xyz)","type":"invalid_request_error","param":"messages","code":"context_length_exceeded"}}"#;
+        let LlmError::BadRequest(msg) =
+            rejection("openai", reqwest::StatusCode::BAD_REQUEST, openai)
+        else {
+            panic!("BadRequest になる");
+        };
+        assert!(!msg.contains("org-xyz"), "{msg}");
+        assert!(!msg.contains("8192"), "{msg}");
+        assert!(msg.contains("context_length_exceeded"), "{msg}");
+        assert!(msg.contains("invalid_request_error"), "{msg}");
+    }
+
+    /// 本文が JSON でない・種類の語が無いときは定型文だけ。語は空白を含む文や数を拾わない。
+    #[test]
+    fn rejection_keeps_only_word_like_kinds() {
+        let LlmError::BadRequest(msg) = rejection(
+            "openai",
+            reqwest::StatusCode::UNPROCESSABLE_ENTITY,
+            "<html>bad request from 10.0.0.1</html>",
+        ) else {
+            panic!("BadRequest になる");
+        };
+        assert_eq!(
+            msg,
+            "openai 422 Unprocessable Entity: プロバイダが要求を受け付けませんでした"
+        );
+        let body = r#"{"error":{"code":400,"status":"INVALID_ARGUMENT","message":"x"},"detail":"subscription_sharing_user_not_eligible","type":"has space in it"}"#;
+        assert_eq!(
+            error_kinds(body),
+            ["subscription_sharing_user_not_eligible", "INVALID_ARGUMENT"]
+        );
     }
 }

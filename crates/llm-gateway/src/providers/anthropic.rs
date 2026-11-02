@@ -314,7 +314,7 @@ impl LlmProvider for AnthropicProvider {
                 {
                     return Err(e);
                 }
-                return Err(LlmError::BadRequest(format!("anthropic {status}: {text}")));
+                return Err(crate::provider::rejection("anthropic", status, &text));
             }
             return Err(LlmError::Unavailable(format!("anthropic {status}: {text}")));
         }

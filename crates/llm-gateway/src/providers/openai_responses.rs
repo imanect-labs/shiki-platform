@@ -474,7 +474,7 @@ impl OpenAiResponsesProvider {
                 )));
             }
             if status.is_client_error() {
-                return Err(LlmError::BadRequest(format!("responses {status}: {text}")));
+                return Err(crate::provider::rejection("responses", status, &text));
             }
             return Err(LlmError::Unavailable(format!("responses {status}: {text}")));
         }

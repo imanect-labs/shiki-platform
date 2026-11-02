@@ -542,7 +542,7 @@ fn status_error(status: reqwest::StatusCode, text: &str, structured: bool) -> Ll
         {
             return e;
         }
-        return LlmError::BadRequest(format!("openai {status}: {text}"));
+        return crate::provider::rejection("openai", status, text);
     }
     LlmError::Unavailable(format!("openai {status}: {text}"))
 }

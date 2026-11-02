@@ -108,6 +108,29 @@ async fn anthropic_client_error_maps_to_bad_request() {
     assert!(matches!(res, Err(LlmError::BadRequest(_))));
 }
 
+/// 4xx の本文（要求の ID・組織の ID）を誤りの文言に入れない（BUG-87）。誤りの種類の語だけを残す。
+#[tokio::test]
+async fn anthropic_client_error_does_not_carry_the_provider_body() {
+    let base = spawn_mock(
+        StatusCode::BAD_REQUEST,
+        r#"{"type":"error","error":{"type":"invalid_request_error","message":"messages: too long for org-secret"},"request_id":"req_secret_7"}"#,
+    )
+    .await;
+    let provider = AnthropicProvider::new(reqwest::Client::new(), base, "k", "claude-x");
+    let req = GenerateRequest::new(vec![Message::text(Role::User, "hi")]);
+    let Err(err) = provider.stream(&req).await else {
+        panic!("4xx は誤り");
+    };
+    let shown = err.to_string();
+    for leaked in ["org-secret", "req_secret_7", "too long"] {
+        assert!(!shown.contains(leaked), "{leaked} が漏れた: {shown}");
+    }
+    assert!(
+        matches!(&err, LlmError::BadRequest(m) if m.contains("invalid_request_error")),
+        "{shown}"
+    );
+}
+
 #[tokio::test]
 async fn anthropic_server_error_maps_to_unavailable() {
     let base = spawn_mock(StatusCode::SERVICE_UNAVAILABLE, "down").await;

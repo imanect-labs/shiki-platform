@@ -103,6 +103,29 @@ async fn openai_client_error_maps_to_bad_request() {
     assert!(matches!(res, Err(LlmError::BadRequest(_))));
 }
 
+/// 4xx の本文（要求の ID・組織の ID）を誤りの文言に入れない（BUG-87）。誤りの種類の語だけを残す。
+#[tokio::test]
+async fn openai_client_error_does_not_carry_the_provider_body() {
+    let base = spawn_mock(
+        StatusCode::BAD_REQUEST,
+        r#"{"error":{"message":"Invalid value for org-secret (request req_secret_9)","type":"invalid_request_error","code":"invalid_value"}}"#,
+    )
+    .await;
+    let provider = OpenAiProvider::new(reqwest::Client::new(), base, None, "gpt-x");
+    let req = GenerateRequest::new(vec![Message::text(Role::User, "hi")]);
+    let Err(err) = provider.stream(&req).await else {
+        panic!("4xx は誤り");
+    };
+    let shown = err.to_string();
+    for leaked in ["org-secret", "req_secret_9", "Invalid value"] {
+        assert!(!shown.contains(leaked), "{leaked} が漏れた: {shown}");
+    }
+    assert!(
+        matches!(&err, LlmError::BadRequest(m) if m.contains("invalid_value")),
+        "{shown}"
+    );
+}
+
 #[tokio::test]
 async fn openai_server_error_maps_to_unavailable() {
     let base = spawn_mock(StatusCode::SERVICE_UNAVAILABLE, "down").await;

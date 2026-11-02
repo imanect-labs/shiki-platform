@@ -386,9 +386,7 @@ impl DecisionProvider for TypesafeDecider {
                     tracing::warn!(%status, body = %text, "TypeSafe が認証を拒んだ");
                     LlmError::Config(format!("typesafe {status}: authentication failed"))
                 }
-                _ if status.is_client_error() => {
-                    LlmError::BadRequest(format!("typesafe {status}: {text}"))
-                }
+                _ if status.is_client_error() => crate::provider::rejection(NAME, status, &text),
                 _ => LlmError::Unavailable(format!("typesafe {status}: {text}")),
             };
             return Err(fail(error));
