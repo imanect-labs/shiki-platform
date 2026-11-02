@@ -6,7 +6,7 @@
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use crate::capability::{op_digest, JournalDecision};
+use crate::capability::{op_digest, EffectJournal, JournalDecision};
 use crate::ir::params::{
     content_type_from_name, CsvPatchParams, CsvQueryParams, CsvWriteParams, NameTakenPolicy,
     RagSearchParams, StorageListParams, StorageReadParams, StorageWriteParams, WorkflowStartParams,
@@ -17,7 +17,7 @@ use crate::vocab::STORAGE_READ_MAX_DOCUMENT_CHARS;
 use super::csv_encoding::{csv_bytes as encode_csv, is_csv_type};
 use super::exec::CapabilityNodeExecutor;
 use super::ports::{
-    name_taken_error, CsvPatchReq, CsvWriteReq, ExecCtx, PortError, StorageListReq,
+    name_taken_error, CsvPatchReq, CsvWriteReq, ExecCtx, NodePorts, PortError, StorageListReq,
     StorageWriteReq, NAME_TAKEN,
 };
 use super::resolver::{
@@ -61,6 +61,75 @@ fn explain_name_taken(e: PortError, name: &str, policy: NameTakenPolicy) -> Port
         name_taken_error(name, None)
     } else {
         e
+    }
+}
+
+/// 副作用の無い誤りか（予約を外してよいか・BUG-188）。
+///
+/// 内部能力のポート（data・csv・workflow.start）の書込は 1 つの TX で、`unavailable` 以外の誤り（拒否・検証・名前の
+/// 衝突・見つからない・競合）は書込の前か、TX を巻き戻した後に返る（何も書かれていない）。`unavailable` は書込が
+/// 済んだか分からない（commit の応答が届かない・DB の障害）ので外さない。
+fn leaves_no_effect(e: &PortError) -> bool {
+    e.code != "unavailable"
+}
+
+/// 内部能力の書込を effect_journal で高々 1 回にする（予約 → 書込 → 結果の記録・cross-TX・PIT-31）。
+///
+/// node と script の `Shiki.*`、data・csv.patch・csv.write・workflow.start が同じ手順を通る（予約を外す決まりを
+/// 1 か所に置く）。書込が副作用の無い誤り（[`leaves_no_effect`]）を返したら予約を外す。外さないと、原因を直して
+/// 回収の猶予（[`crate::capability::journal::RESERVATION_RECLAIM_SECS`]）の内に再開した同じステップが
+/// `effect_in_progress` で待たされ、既定の試す回数ではすぐに失敗になる（BUG-188）。
+///
+/// 返すのは結果と、いま書いたか（`false` は記録済みの結果を返した。監査はいま書いたときだけ残す）。`what` は誤りの
+/// 文で何をしていたかを言う語（「起動」「編集」「保存」など）。
+pub(crate) async fn journaled<F>(
+    journal: &EffectJournal,
+    tenant_id: &str,
+    key: &str,
+    digest: &str,
+    what: &str,
+    write: F,
+) -> Result<(Value, bool), PortError>
+where
+    F: std::future::Future<Output = Result<Value, PortError>>,
+{
+    match journal
+        .check(tenant_id, key, digest)
+        .await
+        .map_err(|e| PortError::unavailable(format!("journal: {e}")))?
+    {
+        JournalDecision::Proceed => {
+            let out = match write.await {
+                Ok(out) => out,
+                Err(e) => {
+                    if leaves_no_effect(&e) {
+                        journal
+                            .release(tenant_id, key, digest)
+                            .await
+                            .map_err(|je| {
+                                PortError::unavailable(format!("journal release: {je}"))
+                            })?;
+                    }
+                    return Err(e);
+                }
+            };
+            journal
+                .record(tenant_id, key, digest, &out)
+                .await
+                .map_err(|e| PortError::unavailable(format!("journal record: {e}")))?;
+            Ok((out, true))
+        }
+        JournalDecision::AlreadyDone(v) => Ok((v, false)),
+        JournalDecision::InProgress => Err(PortError::new(
+            "effect_in_progress",
+            format!("別ワーカーが{what}処理中"),
+            true,
+        )),
+        JournalDecision::DigestMismatch => Err(PortError::new(
+            "effect_conflict",
+            format!("同一冪等キーで別の{what}要求"),
+            false,
+        )),
     }
 }
 
@@ -276,6 +345,27 @@ impl CapabilityNodeExecutor {
 
     // --- workflow.start（cross-TX effect_journal で start-once） ----------
 
+    /// workflow.start（cross-TX effect_journal で start-once・node と script の `Shiki.workflow.start` の共用）。
+    pub(crate) async fn workflow_start_once(
+        ports: &dyn NodePorts,
+        journal: &EffectJournal,
+        ec: &ExecCtx,
+        idempotency_key: &str,
+        name: &str,
+        input: &Value,
+    ) -> Result<(Value, bool), PortError> {
+        let digest = op_digest("workflow.start", &json!({ "name": name, "input": input }));
+        journaled(
+            journal,
+            &ec.tenant_id,
+            idempotency_key,
+            &digest,
+            "起動",
+            ports.workflow_start(ec, name, input),
+        )
+        .await
+    }
+
     pub(super) async fn do_workflow_start(
         &self,
         ec: &ExecCtx,
@@ -283,39 +373,24 @@ impl CapabilityNodeExecutor {
         name: &str,
         input: &Value,
     ) -> Result<Value, PortError> {
-        let digest = op_digest("workflow.start", &json!({ "name": name, "input": input }));
-        match self
-            .journal
-            .check(&ec.tenant_id, idempotency_key, &digest)
-            .await
-            .map_err(|e| PortError::unavailable(format!("journal: {e}")))?
-        {
-            JournalDecision::Proceed => {
-                let out = self.ports.workflow_start(ec, name, input).await?;
-                self.journal
-                    .record(&ec.tenant_id, idempotency_key, &digest, &out)
-                    .await
-                    .map_err(|e| PortError::unavailable(format!("journal record: {e}")))?;
-                self.audit(
-                    &ec.tenant_id,
-                    "workflow.start",
-                    true,
-                    &json!({ "name": name }),
-                );
-                Ok(out)
-            }
-            JournalDecision::AlreadyDone(v) => Ok(v),
-            JournalDecision::InProgress => Err(PortError::new(
-                "effect_in_progress",
-                "別ワーカーが起動処理中",
+        let (out, started) = Self::workflow_start_once(
+            self.ports.as_ref(),
+            &self.journal,
+            ec,
+            idempotency_key,
+            name,
+            input,
+        )
+        .await?;
+        if started {
+            self.audit(
+                &ec.tenant_id,
+                "workflow.start",
                 true,
-            )),
-            JournalDecision::DigestMismatch => Err(PortError::new(
-                "effect_conflict",
-                "同一冪等キーで別の起動要求",
-                false,
-            )),
+                &json!({ "name": name }),
+            );
         }
+        Ok(out)
     }
 
     pub(super) async fn node_workflow_start(
@@ -390,49 +465,31 @@ impl CapabilityNodeExecutor {
             "csv.patch",
             &json!({ "file": file_id.to_string(), "base_rev": base_rev, "ops": ops }),
         );
-        let key = &ctx.idempotency_key;
-        match self
-            .journal
-            .check(&ec.tenant_id, key, &digest)
-            .await
-            .map_err(|e| PortError::unavailable(format!("journal: {e}")))?
-        {
-            JournalDecision::Proceed => {
-                let out = self
-                    .ports
-                    .csv_patch(
-                        ec,
-                        CsvPatchReq {
-                            file_id,
-                            base_rev,
-                            ops,
-                        },
-                    )
-                    .await?;
-                self.journal
-                    .record(&ec.tenant_id, key, &digest, &out)
-                    .await
-                    .map_err(|e| PortError::unavailable(format!("journal record: {e}")))?;
-                self.audit(
-                    &ec.tenant_id,
-                    "csv.patch",
-                    true,
-                    &json!({ "file_id": file_id.to_string() }),
-                );
-                Ok(with_file_id(out, "node_id"))
-            }
-            JournalDecision::AlreadyDone(v) => Ok(with_file_id(v, "node_id")),
-            JournalDecision::InProgress => Err(PortError::new(
-                "effect_in_progress",
-                "別ワーカーが編集処理中",
+        let (out, applied) = journaled(
+            &self.journal,
+            &ec.tenant_id,
+            &ctx.idempotency_key,
+            &digest,
+            "編集",
+            self.ports.csv_patch(
+                ec,
+                CsvPatchReq {
+                    file_id,
+                    base_rev,
+                    ops,
+                },
+            ),
+        )
+        .await?;
+        if applied {
+            self.audit(
+                &ec.tenant_id,
+                "csv.patch",
                 true,
-            )),
-            JournalDecision::DigestMismatch => Err(PortError::new(
-                "effect_conflict",
-                "同一冪等キーで別の編集要求",
-                false,
-            )),
+                &json!({ "file_id": file_id.to_string() }),
+            );
         }
+        Ok(with_file_id(out, "node_id"))
     }
 
     /// csv.write（作成権限・EngineDedup）。cross-TX effect_journal で重複保存を防ぐ。
@@ -464,57 +521,44 @@ impl CapabilityNodeExecutor {
                 "content_sha256": sha256_hex(&csv_bytes),
             }),
         );
-        let key = &ctx.idempotency_key;
-        match self
-            .journal
-            .check(&ec.tenant_id, key, &digest)
-            .await
-            .map_err(|e| PortError::unavailable(format!("journal: {e}")))?
-        {
-            JournalDecision::Proceed => {
-                // 番号は StorageService が書込の 1 つの TX の中で付ける（D-124）。journal の予約は頼まれた書込
-                // 1 つ（digest は頼まれた名前）で、試し直しは前に付けた名前の結果を返す。
-                let file_name = csv_file_name(&name);
-                let out = self
-                    .ports
-                    .csv_write(
-                        ec,
-                        CsvWriteReq {
-                            parent_id,
-                            name: file_name.clone(),
-                            csv_bytes,
-                            on_name_taken: policy,
-                        },
-                    )
-                    .await
-                    .map_err(|e| explain_name_taken(e, &file_name, policy))?;
-                self.journal
-                    .record(&ec.tenant_id, key, &digest, &out)
-                    .await
-                    .map_err(|e| PortError::unavailable(format!("journal record: {e}")))?;
-                let saved = out
-                    .get("name")
-                    .and_then(Value::as_str)
-                    .unwrap_or(&file_name);
-                self.audit(
-                    &ec.tenant_id,
-                    "csv.write",
-                    true,
-                    &json!({ "name": saved, "parent": parent_id.map(|p| p.to_string()) }),
-                );
-                Ok(with_file_id(out, "node_id"))
-            }
-            JournalDecision::AlreadyDone(v) => Ok(with_file_id(v, "node_id")),
-            JournalDecision::InProgress => Err(PortError::new(
-                "effect_in_progress",
-                "別ワーカーが保存処理中",
+        // 番号は StorageService が書込の 1 つの TX の中で付ける（D-124）。journal の予約は頼まれた書込 1 つ（digest は
+        // 頼まれた名前）で、試し直しは前に付けた名前の結果を返す。
+        let file_name = csv_file_name(&name);
+        let write = async {
+            self.ports
+                .csv_write(
+                    ec,
+                    CsvWriteReq {
+                        parent_id,
+                        name: file_name.clone(),
+                        csv_bytes,
+                        on_name_taken: policy,
+                    },
+                )
+                .await
+                .map_err(|e| explain_name_taken(e, &file_name, policy))
+        };
+        let (out, saved_now) = journaled(
+            &self.journal,
+            &ec.tenant_id,
+            &ctx.idempotency_key,
+            &digest,
+            "保存",
+            write,
+        )
+        .await?;
+        if saved_now {
+            let saved = out
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or(&file_name);
+            self.audit(
+                &ec.tenant_id,
+                "csv.write",
                 true,
-            )),
-            JournalDecision::DigestMismatch => Err(PortError::new(
-                "effect_conflict",
-                "同一冪等キーで別の保存要求",
-                false,
-            )),
+                &json!({ "name": saved, "parent": parent_id.map(|p| p.to_string()) }),
+            );
         }
+        Ok(with_file_id(out, "node_id"))
     }
 }

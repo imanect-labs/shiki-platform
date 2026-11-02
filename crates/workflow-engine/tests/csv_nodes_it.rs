@@ -42,6 +42,20 @@ struct CsvPorts {
     last_tried_as: Mutex<Option<String>>,
     /// csv.write に渡った要求の並び。
     writes: Mutex<Vec<CsvWriteTry>>,
+    /// 次の書込（csv.patch・csv.write・workflow.start）が返す誤り（返したら消える・BUG-188）。
+    refuse_next: Mutex<Option<PortError>>,
+    /// workflow.start が子を起動した回数。
+    start_calls: Mutex<u32>,
+}
+
+impl CsvPorts {
+    /// 仕込んだ誤りがあれば返す（1 回きり）。
+    fn refused(&self) -> Result<(), PortError> {
+        match self.refuse_next.lock().unwrap().take() {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
 }
 
 /// csv.write に渡った（名前・扱い・文字コードを含む中身）。
@@ -103,7 +117,9 @@ impl NodePorts for CsvPorts {
     }
 
     async fn workflow_start(&self, _c: &ExecCtx, _n: &str, _i: &Value) -> Result<Value, PortError> {
-        unreachable!()
+        self.refused()?;
+        *self.start_calls.lock().unwrap() += 1;
+        Ok(json!({ "run_id": Uuid::new_v4().to_string() }))
     }
     async fn csv_query(&self, _c: &ExecCtx, file_id: Uuid, _sql: &str) -> Result<Value, PortError> {
         Ok(json!({
@@ -114,12 +130,14 @@ impl NodePorts for CsvPorts {
         }))
     }
     async fn csv_patch(&self, _c: &ExecCtx, req: CsvPatchReq) -> Result<Value, PortError> {
+        self.refused()?;
         *self.patch_calls.lock().unwrap() += 1;
         Ok(
             json!({ "node_id": req.file_id.to_string(), "version": req.base_rev + 1, "rows": 3, "cols": 1 }),
         )
     }
     async fn csv_write(&self, _c: &ExecCtx, req: CsvWriteReq) -> Result<Value, PortError> {
+        self.refused()?;
         self.writes.lock().unwrap().push((
             req.name.clone(),
             req.on_name_taken,
@@ -527,5 +545,109 @@ async fn csv_write_builds_csv_from_tables_and_lists() {
             .bind(key)
             .execute(&pool)
             .await;
+    }
+}
+
+/// DB 必須: 書込のポートが副作用の無い誤り（unavailable 以外）を返したら、effect_journal の予約を外す（data.* と同じ・
+/// BUG-188）。原因を直して同じステップを再開すると、回収の猶予（5 分）を待たずにすぐ書ける。書込が済んだか分からない
+/// 一時障害（unavailable）では予約を残し、同じステップの再実行は二重に書かずに待つ。csv.patch・csv.write・
+/// workflow.start と、script の `Shiki.workflow.start` を確かめる。
+#[tokio::test]
+async fn refused_writes_release_the_journal_reservation() {
+    let Ok(db) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+        return;
+    };
+    let pool = PgPoolOptions::new()
+        .max_connections(4)
+        .connect(&db)
+        .await
+        .expect("test DB 接続");
+    let ports = Arc::new(CsvPorts::default());
+    let engine = Arc::new(script_runtime::engine::ScriptEngine::new().expect("script engine"));
+    let exec = CapabilityNodeExecutor::new(
+        ports.clone(),
+        EffectJournal::new(pool.clone()),
+        Arc::new(SilentAudit),
+    )
+    .with_script_engine(engine, script_runtime::engine::Limits::default());
+    let script = json!({ "source": { "inline":
+        "function main(input) { return Shiki.workflow.start(\"子\", { n: 1 }); }" } });
+    let cases: [(&str, Value, &str); 4] = [
+        (
+            "csv.patch",
+            json!({ "file": Uuid::nil().to_string(), "base_rev": 0,
+                    "ops": [{ "op": "cell_update", "row": 0, "col": "n", "value": "9" }] }),
+            "csv.write",
+        ),
+        (
+            "csv.write",
+            json!({ "name": "集計", "content": "a\n1" }),
+            "csv.write",
+        ),
+        (
+            "workflow.start",
+            json!({ "name": "子", "input": { "n": 1 } }),
+            "workflow.start",
+        ),
+        ("script.run", script, "workflow.start"),
+    ];
+    let calls = |ports: &CsvPorts| {
+        *ports.patch_calls.lock().unwrap()
+            + *ports.write_calls.lock().unwrap()
+            + *ports.start_calls.lock().unwrap()
+    };
+    let mut keys = Vec::new();
+    for (node_type, params, scope) in &cases {
+        // 副作用の無い誤り: 権限・名前の衝突・見つからない・入力の誤り。
+        for refusal in [
+            PortError::forbidden("権限なし"),
+            PortError::new(workflow_engine::nodes::ports::NAME_TAKEN, "同じ名前", false),
+            PortError::new("not_found", "見つかりません", false),
+            PortError::invalid("入力が正しくありません"),
+        ] {
+            let key = format!("wf:release:{}", Uuid::new_v4());
+            keys.push(key.clone());
+            let mut c = ctx(vec![(*scope).into()]);
+            c.idempotency_key = key.clone();
+            let code = refusal.code.clone();
+            *ports.refuse_next.lock().unwrap() = Some(refusal);
+            let first = exec.execute(node_type, params, &c).await;
+            assert!(!first.ok, "{node_type}: {code}");
+            assert_eq!(first.error.unwrap().code, code, "{node_type}");
+            let before = calls(&ports);
+            let again = exec.execute(node_type, params, &c).await;
+            assert!(
+                again.ok,
+                "{node_type}: {code} の後の再開が待たされた: {:?}",
+                again.error
+            );
+            assert_eq!(calls(&ports), before + 1, "{node_type}: {code}");
+        }
+        // 書込が済んだか分からない一時障害は予約を残す（同じステップの再実行は書かずに待つ）。
+        let key = format!("wf:release:{}", Uuid::new_v4());
+        keys.push(key.clone());
+        let mut c = ctx(vec![(*scope).into()]);
+        c.idempotency_key = key.clone();
+        *ports.refuse_next.lock().unwrap() = Some(PortError::unavailable("db"));
+        let first = exec.execute(node_type, params, &c).await;
+        assert_eq!(first.error.unwrap().code, "unavailable", "{node_type}");
+        let before = calls(&ports);
+        let again = exec.execute(node_type, params, &c).await;
+        assert_eq!(
+            again.error.map(|e| e.code),
+            Some("effect_in_progress".to_string()),
+            "{node_type}: 一時障害の後に二重に書いた"
+        );
+        assert_eq!(calls(&ports), before, "{node_type}");
+    }
+    // script の書込はホスト呼び出しごとの冪等キー（ステップのキー + #c<seq>）。
+    for key in &keys {
+        let _ = sqlx::query(
+            "DELETE FROM effect_journal WHERE idempotency_key = $1 OR idempotency_key LIKE $1 || '#%'",
+        )
+        .bind(key)
+        .execute(&pool)
+        .await;
     }
 }

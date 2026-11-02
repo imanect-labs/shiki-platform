@@ -14,7 +14,7 @@ use script_runtime::host::{HostCall, HostResponse};
 use serde_json::{json, Value};
 
 use crate::capability::{
-    check_scope_ceiling, op_digest, CapabilityAudit, EffectJournal, JournalDecision, ScopeCeiling,
+    check_scope_ceiling, op_digest, CapabilityAudit, EffectJournal, ScopeCeiling,
 };
 use crate::run::{CancelSignal, NodeContext};
 
@@ -534,46 +534,31 @@ impl HostBridge {
         })
     }
 
-    /// workflow.start（cross-TX effect_journal で start-once）。
+    /// workflow.start（cross-TX effect_journal で start-once・ノードと同じ手順・BUG-188）。
     async fn workflow_start_journaled(
         &self,
         key: &str,
         name: &str,
         input: &Value,
     ) -> Result<Value, PortError> {
-        let digest = op_digest("workflow.start", &json!({ "name": name, "input": input }));
-        match self
-            .journal
-            .check(&self.ec.tenant_id, key, &digest)
-            .await
-            .map_err(|e| PortError::unavailable(format!("journal: {e}")))?
-        {
-            JournalDecision::Proceed => {
-                let out = self.ports.workflow_start(&self.ec, name, input).await?;
-                self.journal
-                    .record(&self.ec.tenant_id, key, &digest, &out)
-                    .await
-                    .map_err(|e| PortError::unavailable(format!("journal record: {e}")))?;
-                self.audit.record(
-                    &self.ec.tenant_id,
-                    "workflow.start",
-                    true,
-                    &json!({ "via": "script", "name": name }),
-                );
-                Ok(out)
-            }
-            JournalDecision::AlreadyDone(v) => Ok(v),
-            JournalDecision::InProgress => Err(PortError::new(
-                "effect_in_progress",
-                "別ワーカーが起動処理中",
+        let (out, started) = CapabilityNodeExecutor::workflow_start_once(
+            self.ports.as_ref(),
+            &self.journal,
+            &self.ec,
+            key,
+            name,
+            input,
+        )
+        .await?;
+        if started {
+            self.audit.record(
+                &self.ec.tenant_id,
+                "workflow.start",
                 true,
-            )),
-            JournalDecision::DigestMismatch => Err(PortError::new(
-                "effect_conflict",
-                "同一冪等キーで別の起動要求",
-                false,
-            )),
+                &json!({ "via": "script", "name": name }),
+            );
         }
+        Ok(out)
     }
 }
 

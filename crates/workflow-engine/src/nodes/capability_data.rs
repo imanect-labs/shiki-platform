@@ -13,7 +13,7 @@ use data::{BulkUpsertRow, DataQuery};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use crate::capability::{op_digest, CapabilityAudit, EffectJournal, JournalDecision};
+use crate::capability::{op_digest, CapabilityAudit, EffectJournal};
 use crate::control::eval::{resolve_deep_json, ValueResolver};
 use crate::ir::expr::ValueExpr;
 use crate::ir::params::{
@@ -22,7 +22,7 @@ use crate::ir::params::{
 };
 use crate::run::NodeContext;
 
-use super::capability::parse_params;
+use super::capability::{journaled, parse_params};
 use super::exec::CapabilityNodeExecutor;
 use super::ports::{DataWriteOp, DataWriteReq, ExecCtx, NodePorts, PortError};
 use super::resolver::{as_string, as_uuid, opt_param, param, typed, ParamResolver};
@@ -112,60 +112,30 @@ pub(crate) async fn journaled_data_write(
     let table_id = req.table_id;
     let key = req.idempotency_key.clone();
     let digest = op_digest(api, digest_body);
-    match journal
-        .check(&ec.tenant_id, &key, &digest)
-        .await
-        .map_err(|e| PortError::unavailable(format!("journal: {e}")))?
-    {
-        JournalDecision::Proceed => {
-            let out = match ports.data_write(ec, req).await {
-                Ok(v) => v,
-                Err(e) => {
-                    audit.record(
-                        &ec.tenant_id,
-                        api,
-                        false,
-                        &json!({ "table_id": table_id, "code": e.code, "via": via }),
-                    );
-                    // data の書込は 1 Tx（拒否・検証エラーなら何も書かれていない）。予約を外して同じ
-                    // ステップの再実行を待たせない。副作用の有無が不明な一時障害（unavailable）は外さない
-                    // （一括 upsert は取込 ID が冪等なので外しても二重にならない）。
-                    if e.code != "unavailable" {
-                        journal
-                            .release(&ec.tenant_id, &key, &digest)
-                            .await
-                            .map_err(|je| {
-                                PortError::unavailable(format!("journal release: {je}"))
-                            })?;
-                    }
-                    return Err(e);
-                }
-            };
-            journal
-                .record(&ec.tenant_id, &key, &digest, &out)
-                .await
-                .map_err(|e| PortError::unavailable(format!("journal record: {e}")))?;
-            // 値・行の中身は監査に載せない（PII）。テーブルと対象の外部 ID だけ。
+    // data の書込は 1 Tx（拒否・検証エラーなら何も書かれていない）。予約を外す決まりは csv・workflow.start と同じ
+    // （[`journaled`]・副作用の有無が不明な一時障害は外さない。一括 upsert は取込 ID が冪等なので外しても二重にならない）。
+    let apply = async {
+        ports.data_write(ec, req).await.inspect_err(|e| {
             audit.record(
                 &ec.tenant_id,
                 api,
-                true,
-                &json!({ "table_id": table_id, "record_id": out.get("id"), "via": via }),
+                false,
+                &json!({ "table_id": table_id, "code": e.code, "via": via }),
             );
-            Ok(out)
-        }
-        JournalDecision::AlreadyDone(v) => Ok(v),
-        JournalDecision::InProgress => Err(PortError::new(
-            "effect_in_progress",
-            "別ワーカーがデータを書込中",
+        })
+    };
+    let (out, wrote) =
+        journaled(journal, &ec.tenant_id, &key, &digest, "データ書込", apply).await?;
+    if wrote {
+        // 値・行の中身は監査に載せない（PII）。テーブルと対象の外部 ID だけ。
+        audit.record(
+            &ec.tenant_id,
+            api,
             true,
-        )),
-        JournalDecision::DigestMismatch => Err(PortError::new(
-            "effect_conflict",
-            "同一冪等キーで別のデータ書込要求",
-            false,
-        )),
+            &json!({ "table_id": table_id, "record_id": out.get("id"), "via": via }),
+        );
     }
+    Ok(out)
 }
 
 /// 件数の要約（監査用・値は載せない）。
