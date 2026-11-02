@@ -339,8 +339,10 @@ export class UiActionNotFound extends Error {
 }
 
 /// 開いた後に、アプリの公開しているバージョンが変わった（またはまだ公開していない）。画面を開き直すと押せる（D-16）。
+/// 開いた後に公開したバージョンが変わった（`app_version_changed`・`not_published`）。文言はサーバーの `message`
+/// （新しいバージョンへ変えたのか戻したのかを決めつけない・`gui_errors.rs`）。
 export class UiActionAppChanged extends Error {
-  constructor(message = "このアプリは新しいバージョンに変わりました。画面を開き直してください。") {
+  constructor(message: string) {
     super(message);
     this.name = "UiActionAppChanged";
   }
@@ -369,7 +371,7 @@ export async function invokeMiniAppYuiAction(
   if (res.status === 409) {
     const body = (await res.json().catch(() => null)) as { code?: unknown; message?: unknown } | null;
     if (body?.code === "app_version_changed" || body?.code === "not_published") {
-      throw new UiActionAppChanged(typeof body.message === "string" ? body.message : undefined);
+      throw new UiActionAppChanged(typeof body.message === "string" ? body.message : "画面を開き直してください。");
     }
     throw new UiActionAlreadyInvoked();
   }

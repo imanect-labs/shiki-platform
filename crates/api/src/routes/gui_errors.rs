@@ -38,7 +38,7 @@ pub(crate) fn app_version_conflict(published: Option<i64>) -> ApiError {
         ),
         Some(_) => (
             "app_version_changed",
-            "このアプリは新しいバージョンに変わりました。画面を開き直してください。",
+            "公開しているバージョンが変わりました。画面を開き直してください。",
         ),
     };
     ApiError::ConflictJson(serde_json::json!({
