@@ -863,7 +863,8 @@ step の処理順序を固定する: **ノード実行 → checkpoint 書込（o
   - 名前解決は送り口が 1 回だけ行い、確かめたアドレスにだけ接続する（HTTP の部品に名前を引き直させない）。環境のプロキシは使わない（`no_proxy`）。3xx は追わない。
   - 解決先に内部の IP が 1 つでもあれば応答ごと断る（公開と内部の混在も断る）。IP の分類は `sandbox_client::net_guard` が単一の正（web.fetch・ミニアプリ・サンドボックスと同じ表・PIT-48）。10 進・8 進の IPv4 や IPv4 を写した IPv6 も、URL を読んだ時点で IP にそろえてから分類する。
   - 管理者がデプロイ設定 `workflow.http_internal_hosts`（内部の送り先）にそのホストを書いたときだけ、内部の IP へ送れる（オンプレの社内システムを呼ぶ使い方・D-135）。書き方は `host` か `host:port`（ポートを書けばそのポートだけ）・`[IPv6]`・IP で、ワイルドカード・スキーム・パスは書けない（読めない項目があれば起動を止める）。送れる先の許可（`workflow.http_allowlist`）とは分ける: 許可は公開の SaaS を書く場所でもあり、そこに書いたホストまで内部へつながると、DNS を持つ人が解決先を内部へ向けるだけで内部の任意のポートへ届く（DNS リバインディング・PIT-48 の ②）。シークレットの宛先束縛だけでも送れない。内部の送り先に書いたホストは、公開と内部の混在した応答も通す（名前解決を信じる）ので、DNS を管理者が管理するホストだけを書く。リンクローカル（169.254.0.0/16・fe80::/10）とクラウドのメタデータのアドレスは、内部の送り先に書いても断る。
-  - 断った送信は `destination_internal`・`destination_link_local`（permanent・失敗の分類は設定の誤り・再開しても同じ結果）で失敗にし、送り先のホストと理由を監査に残す。解決できない名前は `unavailable`（retryable）。
+  - 断った送信は `destination_internal`・`destination_link_local`（permanent・失敗の分類は設定の誤り・再開しても同じ結果）で失敗にし、送り先のホストと理由を監査に残す。
+  - その名前のアドレスが無い（NXDOMAIN・名前はあるがアドレスが無い）と分かった名前は `destination_not_found`（permanent・失敗の分類は設定の誤り・URL か DNS を直してから再開する）で失敗にし、試す回数を増やしたブロックでもやり直さない（BUG-202）。DNS に届かない・一時的に引けない・時間切れ・見分けられない失敗は、これまでどおり `unavailable`（retryable）。見分けは `sandbox_client::net_guard::SystemResolver` が、OS の名前解決（getaddrinfo）の誤りの文（標準ライブラリは誤りの番号を残さず、`gai_strerror` の C ロケールの文だけを返す）で行う（glibc・musl・macOS の EAI_NONAME・EAI_NODATA の文。ほかの文は見分けられないものとして `unavailable` のまま）。
 
 ### 7.5 リトライ分類
 

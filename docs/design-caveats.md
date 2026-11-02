@@ -677,6 +677,9 @@ skillex 境界（§4.1.1, PIT-26〜29。2026-09-29 に共有プレーン廃止�
   （許可は公開の SaaS を書く場所でもあり、そこに書いたホストまで内部を許すと、DNS を持つ人が解決先を内部へ向けるだけで
   ②が効かなくなる）。内部の送り先は名前解決を信じるので、DNS を管理者が管理するホストだけを書く。リンクローカルと
   クラウドのメタデータ（`net_guard::IpClass::LinkLocalOrMetadata`）は、その場合も拒否する。シークレットの宛先束縛だけでは内部 IP へ送れない（束縛はシークレットを作る人が決められる）。
+  名前のアドレスが無い（NXDOMAIN など）と分かった名前は、やり直さない設定の誤り（`destination_not_found`）にする。見分けは
+  `net_guard::SystemResolver` が `HostResolver::lookup` の理由を `NO_SUCH_HOST` にして伝える（トレイトの形は変えない・getaddrinfo の
+  誤りの文で見分け、見分けられなければ `LOOKUP_FAILED` のまま・BUG-202）。名前を引き直すことはしない（①はそのまま）。
 - **ミニアプリの関数の外部 HTTP**（B2 の `Shiki.http.request`・BUG-196）も同じ決めごとに従う
   （`app-platform/src/function_http.rs`）。manifest の `egress_allowlist` で名前を照らした後、名前を 1 回だけ引き
   （5 秒まで）、公開でない IP が 1 つでもあれば断り、確かめたアドレスに接続を固定する（`resolve_to_addrs`）。
