@@ -65,6 +65,7 @@ chat run と workflow run は「同じ run 抽象」（design §4.4.1・miniapp-
 | `concurrency_counter` | 3 階層同時実行カウンタ | PK(tenant_id, scope_kind, scope_key) |
 | `scheduler_lease` | リーダーリース | 単一行 CAS |
 | `effect_journal` | チョークポイント側の冪等記録 | UNIQUE(tenant_id, idempotency_key) |
+| `workflow_launch_skip` | 自動実行の起動を見送り続けていることの記録（作成者に見せる・GAP-67） | PK(tenant_id, workflow_id)・§10.6 |
 
 ### 2.2 DDL 風スケッチ
 
@@ -633,7 +634,10 @@ content_update・提案の採用・ワークスペースへの上書き）から
 （BUG-146。きっかけは止めない。自動実行をオンにし直せば直る）。有効化した版に実行の前に止める設定（必須の欄が空・
 中にノードの無い繰り返し・`unattended_run_blockers`・D-43・D-83・D-85。結果を画面に返す `workflow.reply` の返す値の空は、
 自動実行の結果がどの画面にも出ないので数えない・BUG-168）があるときも、委譲の確認の後で同じく理由の文を添えた
-委譲の不成立として見送り、警告は版ごとに 1 回（確認より前に有効化した版を空のまま動かさない・BUG-51）。一時失敗（IR の取得・DB・OpenFGA）は `pending` にして指数で間隔を延ばして再試行し（10 秒〜最大 10 分・
+委譲の不成立として見送り、警告は版ごとに 1 回（確認より前に有効化した版を空のまま動かさない・BUG-51）。委譲の確認が
+成り立たない見送り（オンにした人の権限が外れた・使ってよい操作が増えた）の警告も、同じく（理由・テナント・ワークフロー・版）
+ごとに 1 回にする（BUG-170）。この 3 つの見送りは、起動口が理由を型で持っているところで記録し、作成者に見せる（§10.6・
+GAP-67）。一時失敗（IR の取得・DB・OpenFGA）は `pending` にして指数で間隔を延ばして再試行し（10 秒〜最大 10 分・
 5 回まで）、超えたら `gave_up` にして監査（`workflow.trigger.suppressed`・reason=gave_up）に残す。再試行で起動する
 run も同じ `trigger_event_id` を持つので二重にならない。
 
@@ -832,6 +836,14 @@ step の処理順序を固定する: **ノード実行 → checkpoint 書込（o
   `on_name_taken` で運ぶ）。予約と結果の記録は頼まれた書込 1 つ（`op_digest` は頼まれた名前で作る）で、再実行は前に
   付けた名前の記録済み結果を返す。`csv.write` の予約は step の外の TX のまま（§9.4 の回収窓）。上限まで埋まっていた
   ときの `name_taken` の文は、最後に試した名前を言うので、規則を持つポートの実装が組む。
+
+- **予約を外す決まり**（BUG-188）: 予約を step の外の TX で取る種（data の書き込み・`csv.patch`・`csv.write`・
+  `workflow.start`。script の `Shiki.workflow.start`・`Shiki.data.*` も）は、予約 → 書込 → 結果の記録を 1 つの手順
+  （`nodes::capability::journaled`）で行う。ポートが副作用の無い誤り（`unavailable` 以外。拒否・検証・名前の衝突・
+  見つからない・競合）を返したら予約を外す。これらのポートの書込は 1 つの TX で、`unavailable` 以外の誤りは書込の前か
+  TX を巻き戻した後に返るので、外しても二重にならない。外さないと、原因を直して回収の猶予の内に再開した同じステップが
+  `effect_in_progress` で待たされる。書込が済んだか分からない `unavailable`（commit の応答が届かない・DB の障害）は
+  外さない。
 
 これにより「ワーカー kill を挟むリトライで内部能力ノードの副作用が高々 1 回」という受け入れ条件を **構造的に**満たす。個別ノード実装に dedupe を書かせない（能力ゲートウェイの一点で効く）。
 
@@ -1139,6 +1151,29 @@ cancel 要求済み run の失効リースは sweeper の対象外とする。cl
 4. 定義が消えたワークフローへの発火（削除と重なった発火）は、一時障害として再試行せず見送る（`skipped`）。
 5. 消したワークフローを戻す経路はいまは無い。戻すときも自動実行はオフのままで、オンにするには同意し直す（同意が空のため）。
 
+### 10.6 自動実行の見送りを作成者に見せる（GAP-67）
+
+自動実行（スケジュール・ファイルやテーブルの変更）の起動を、何度起こしても同じ結果になる理由で見送ったとき、登録は
+`enabled` のまま残る。サーバーのログ（版ごとに 1 回）だけでは、作成者は自動化が止まったことに気づけず、変更をきっかけに
+するものはその間の処理が欠ける。そこで見送りを記録し、ワークフローの画面に出す。
+
+- 記録する理由（code）は 3 つ: 自動実行の主体が定義を読めない（`definition_unreadable`・BUG-146）、委譲の確認が成り立たない
+  （`delegation_invalid`・BUG-170）、有効化した版に実行の前に止める設定がある（`not_ready`・BUG-51）。多重度あふれ
+  （`on_trigger_overflow = skip`）と、有効化されていない・定義が消えた見送りは記録しない（作成者が選んだ扱いか、自動実行が
+  オフ）。
+- 起動口（`WorkflowRunLauncher`）が、ワークフローごとに 1 行（`workflow_launch_skip`・migration 0129）に、理由の code・
+  作成者向けの文・見送った版・続けて見送った回数・最初と最後の時刻を書く。版か理由が変わったら数え直す。発火の行
+  （`trigger_firing`・`schedule_occurrence`）には書かない（スケジューラが行ロックを持ったまま起動口を呼び、
+  `RunLauncher::launch` の戻り値は理由を文でしか持たない）。記録できなくても見送りは変えない（一時障害にしない）。
+- 消すとき: 自動実行が run を作れたとき、オンにし直したとき（§10.1・§10.3）、オフにしたとき（§10.2）。
+- `GET /workflows/{id}/registration` は `launch_skip`（`code`・`message`・`fix`・`version`・`first_at`・`last_at`・`count`）を
+  返す。いまオンにしている版の記録で、自動実行がオフでないものだけを返す（無ければ null）。読めるのはワークフローを
+  見られる人だけ（同じ口の閲覧の確かめ）。`message`（理由）と `fix`（直し方）は作成者向けの決まった文で、委譲元の id・
+  対象・内部の理由の文を含まない。`fix` は code から読むときに組む。
+- 画面: 自動実行の状態に「自動実行を見送っています」を出す（押すと自動実行の設定を開く。PC はツールチップ、スマホは
+  バッジの下に理由と直し方の文字）。自動実行の設定の先頭に、理由といつから何回見送ったかを出す。委譲の確認が成り立たない
+  見送りは登録を `suspended_reconsent` にするので、自動実行の状態は「再同意が必要」のまま出る。
+
 ---
 
 ## 11. Observability・実行履歴
@@ -1179,7 +1214,8 @@ v1 は次の 2 つだけを提供する。step 単位の入力編集リプレイ
   保存し直せば通る。PDF・Office の本文の取り込みに失敗したもの・取り込みが届いていないもの（`index_failed`）と、取り込めない
   種類・取り込まない場所のもの（`not_indexable`）もここに入る（`index_failed` は、ファイルを編集できる人がドライブのメニューで
   取り込み直してから再開すると、取り込みが終わるまで待って読む・D-126。`not_indexable` は取り込み直しても変わらないと言う）。
-  社内文書の検索が使えない環境の失敗（`search_disabled`・失敗の分類は environment）も、管理者が有効にしてから再開する（BUG-158）。取り込みが終わっていないもの（`index_pending`）は、§7.5 の
+  社内文書の検索が使えない環境の失敗（`search_disabled`・失敗の分類は environment）も、管理者が有効にしてから再開する（BUG-158）。
+  この環境で構成されていない機能の失敗（`not_configured`・BUG-175）も同じ（管理者が構成してから再開する）。取り込みが終わっていないもの（`index_pending`）は、§7.5 の
   `wait` で上限（30 分）まで待っても終わらなかったときだけ失敗になる。一時的な問題で、そのまま再開できる（再開は待ち始め直して、同じファイルを
   読み直す・D-111・D-125）。一時障害・時間切れ（ブロック・承認・変更を待つ期限）・AI の答え・分類できない失敗はそのまま再開
   できる（`resume`）。
@@ -1215,7 +1251,7 @@ queue 滞留・step 実行時間・リトライ率・リース失効率・スケ
   - `live_states(ctx, run_ids)`: 状態と `waiting_for`（§3.1）。`RunStatusReader` と同じく「状態だけ」で、呼び出し側が自分の境界で認可した run だけを渡す。
   - `own_outcomes(ctx, run_ids, with_reply)`: SQL で `principal = 本人 ∧ principal_kind = 'user' ∧ org = ctx.org ∧ trigger_kind = 'interactive'` の run だけを返す（呼び出し側が他人の run_id を渡しても空）。返すのは reply の節（実行順・10 節・32KB まで・超えた分は `omitted`）と失敗の理由だけで、他の step の出力・run の入力・IR は返さない。
 - **二重の関門**: 呼び出し側（gui・chat）が「アプリの viewer（会話は閲覧者）∧ 押した本人（`invoked_by`）∧ org」を確かめ、読取口が上の条件で絞る。ワークフローの viewer は求めない（interactive の run の値は本人の ReBAC ∩ declared_scopes・secret は本人の can_use で読んだもので、作成者に由来するのは固定の文言だけ）。schedule・event の run、`workflow.start` の子、ワークフロー画面から起動した run の結果は出ない。
-- **失敗の理由**: 読取のときに最初の未処理の失敗 step（`failed` ∧ `taken_ports` が空 ∧ map の要素ではない・`updated_at` の順）の `error.code` と run の `fail_reason`（`run_timeout` を優先）から、利用者向けの分類（permission・conflict・not_found・temporary・quota・timeout・configuration・environment・unknown）と文言を決め、参照番号（run_id の先頭 8 桁）を添える。map の要素の失敗で落ちた run は要素の側の code で分類する。生の `message` は返さない。終端で書き込まないので、再開した run に古い理由は残らない。一時障害・時間切れ・分類できない失敗の文言は押し直しを勧めない（押し直すと新しい冪等キーで別の run になる・PIT-31）。分類の表は `run/failure.rs` の 1 か所。environment は、この環境で使えない機能を使おうとした失敗（社内文書の検索が使えない環境で PDF・Office の本文を読もうとした `search_disabled` など）で、作成者でなく管理者に連絡するよう言う（BUG-158）。run 単位の理由（`run_timeout`・`approval_timeout`・`wait_timeout`・`actor_unavailable`）と、同じ値・同じ名前のファイルの失敗は、分類の文言より詳しい文言を同じ表に持つ。実行履歴の詳細（`GET /workflows/{id}/runs/{run_id}`）も、同じ code の決め方（`FAILURE_CODE_COLUMNS`・`failure_code`）と同じ表で組んだ `failure` を返し、画面はそれを出す（web に `fail_reason` の対応表を持たない・BUG-113）。`fail_reason` は古い画面の互換のために残す。
+- **失敗の理由**: 読取のときに最初の未処理の失敗 step（`failed` ∧ `taken_ports` が空 ∧ map の要素ではない・`updated_at` の順）の `error.code` と run の `fail_reason`（`run_timeout` を優先）から、利用者向けの分類（permission・conflict・not_found・temporary・quota・timeout・configuration・environment・unknown）と文言を決め、参照番号（run_id の先頭 8 桁）を添える。map の要素の失敗で落ちた run は要素の側の code で分類する。生の `message` は返さない。終端で書き込まないので、再開した run に古い理由は残らない。一時障害・時間切れ・分類できない失敗の文言は押し直しを勧めない（押し直すと新しい冪等キーで別の run になる・PIT-31）。分類の表は `run/failure.rs` の 1 か所。environment は、この環境で使えない機能を使おうとした失敗（社内文書の検索が使えない環境で PDF・Office の本文を読もうとした `search_disabled`、この環境で構成されていない機能〔「AI で判定」・AI エージェントのツール・テーブル・社内文書の検索・CSV のブロック・シークレット・スクリプト〕の `not_configured`〔BUG-175〕）で、作成者でなく管理者に連絡するよう言う（BUG-158）。`not_configured` の step の文は、使えない機能を画面の名前で言う（例: この環境ではツール「Web 検索」を使えません。管理者に連絡してください。）。run 単位の理由（`run_timeout`・`approval_timeout`・`wait_timeout`・`actor_unavailable`）と、同じ値・同じ名前のファイルの失敗は、分類の文言より詳しい文言を同じ表に持つ。実行履歴の詳細（`GET /workflows/{id}/runs/{run_id}`）も、同じ code の決め方（`FAILURE_CODE_COLUMNS`・`failure_code`）と同じ表で組んだ `failure` を返し、画面はそれを出す（web に `fail_reason` の対応表を持たない・BUG-113）。`fail_reason` は古い画面の互換のために残す。
 - **表示の無害化**: 結果の Markdown の中の ` ```ui `・` ```yui `・` ```data_grid ` は読取のとき（gui・chat）にすべて ` ```text ` へ書き換える（`yui::neutralize_fences`）。
 - **会話**: 結果と失敗の理由は `invoked_by = 閲覧者` の行にだけ付け、次の回答の履歴（モデル）には状態の語だけを渡す。
 - **応答の大きさ**: 一覧（`GET /mini-apps/{id}/runs`・スレッドのメッセージ）が結果を付けるのは、未確定の run と最新の終わった 1 件だけ（会話はメッセージごと）。他は `has_reply` を見て `GET /mini-apps/{id}/runs/{run_id}`・`GET /threads/{thread_id}/ui-runs/{run_id}` で読む（同じ関門）。
