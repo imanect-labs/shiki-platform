@@ -214,9 +214,34 @@ fn is_unset(v: Option<&Value>) -> bool {
     v.is_none_or(is_blank)
 }
 
-/// 「足す数」（`add`）に列があるか（中身の無いまとまりと空は無いのと同じ・参照は実行時まで分からないのであるとみなす）。
-fn adds_numbers(node: &Node) -> bool {
-    match node.params.get("add") {
+/// 必須の欄のうち、ほかの欄に値があれば空のままでよいもの（ノード種・空でよい欄・値があればよい欄）。
+///
+/// エディタの「入力してください」も、この表から書き出した `BLANK_OK_WHEN_SET` で同じ決まりに従う（`export-workflow-ts`・
+/// 手書きの対応物を持たない）。
+pub const BLANK_OK_WHEN_SET: &[(NodeType, &str, &str)] = &[
+    // 「足す数」だけで書き換えるレコードの更新は、変更する値が空でよい（GAP-16）。
+    (NodeType::DataRecordUpdate, "patch", "add"),
+];
+
+/// [`BLANK_OK_WHEN_SET`] を（ノード種の名前, 空でよい欄, 値があればよい欄）で返す（web へ書き出す）。
+#[must_use]
+pub fn blank_ok_when_set() -> Vec<(&'static str, &'static str, &'static str)> {
+    BLANK_OK_WHEN_SET
+        .iter()
+        .map(|(t, key, other)| (t.as_str(), *key, *other))
+        .collect()
+}
+
+/// `key` の欄が、[`BLANK_OK_WHEN_SET`] のとおりほかの欄に値があるので空でよいか。
+fn blank_allowed(nt: NodeType, node: &Node, key: &str) -> bool {
+    BLANK_OK_WHEN_SET
+        .iter()
+        .any(|(t, k, other)| *t == nt && *k == key && has_value(node.params.get(*other)))
+}
+
+/// 欄に値があるか（中身の無いまとまりと空は無いのと同じ・参照は実行時まで分からないのであるとみなす）。
+fn has_value(v: Option<&Value>) -> bool {
+    match v {
         None | Some(Value::Null) => false,
         Some(Value::Object(m)) => !m.is_empty(),
         Some(v) => !is_blank(v),
@@ -263,8 +288,8 @@ pub fn empty_values(ir: &WorkflowIr) -> Vec<ValidationError> {
             continue;
         };
         for (_, key, message) in EMPTY_CONTAINERS.iter().filter(|(t, ..)| *t == nt) {
-            // 足す数で書き換えるなら、変更する値が空でも何かを書く（GAP-16）。
-            if nt == NodeType::DataRecordUpdate && *key == "patch" && adds_numbers(node) {
+            // 足す数で書き換えるなら、変更する値が空でも何かを書く（GAP-16・[`BLANK_OK_WHEN_SET`]）。
+            if blank_allowed(nt, node, key) {
                 continue;
             }
             let empty = match node.params.get(*key) {
@@ -504,8 +529,8 @@ fn blank_fields(ir: &WorkflowIr, with_reply: bool) -> Vec<ValidationError> {
             );
         }
         for (_, key, label, fill) in REQUIRED_VALUES.iter().filter(|(t, ..)| *t == nt) {
-            // 「足す数」だけで書き換えるレコードの更新は、変更する値が空でよい（GAP-16）。
-            if nt == NodeType::DataRecordUpdate && *key == "patch" && adds_numbers(node) {
+            // 「足す数」だけで書き換えるレコードの更新は、変更する値が空でよい（GAP-16・[`BLANK_OK_WHEN_SET`]）。
+            if blank_allowed(nt, node, key) {
                 continue;
             }
             if is_unset(node.params.get(*key)) {

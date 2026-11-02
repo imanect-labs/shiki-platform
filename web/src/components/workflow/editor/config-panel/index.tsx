@@ -18,7 +18,7 @@ import { useMediaQuery } from "@/hooks/use-media-query";
 import { WARNING_CODES } from "@/lib/workflow-api";
 import { inputFieldsOf } from "@/lib/workflow-input-schema";
 import type { Node as IrNode, Trigger } from "@/generated/workflow-ir";
-import { NODE_CATALOG, REQUIRED_PICK_FIELDS } from "@/generated/workflow-catalog";
+import { BLANK_OK_WHEN_SET, NODE_CATALOG, REQUIRED_PICK_FIELDS } from "@/generated/workflow-catalog";
 import type { EditorContext } from "../workflow-editor";
 import { nodeIcon } from "../icons";
 import { defaultParams } from "../ir-state";
@@ -152,14 +152,16 @@ function blankRequired(node: IrNode): string[] {
     .map(([key]) => key);
 }
 
-/// 置いたときの空の欄のうち、ほかの欄に値があれば空のままでよいもの。サーバーの readiness と同じ決まりで、レコードの
-/// 更新は「足す数」に列があれば「変更する値」が空でよい（GAP-16・readiness.rs の `adds_numbers`）。
+/// 置いたときの空の欄のうち、ほかの欄に値があれば空のままでよいもの（どの欄かは Rust の readiness の表から生成した
+/// `BLANK_OK_WHEN_SET`。例: レコードの更新は「足す数」に列があれば「変更する値」が空でよい・GAP-16）。
 function optionalBlank(node: IrNode, key: string): boolean {
-  if (node.type !== "data.record.update" || key !== "patch") return false;
-  const add = (node.params as Record<string, unknown> | undefined)?.add;
-  if (add === undefined || add === null) return false;
-  if (typeof add === "string") return add.trim() !== "";
-  return !(typeof add === "object" && !Array.isArray(add) && Object.keys(add as object).length === 0);
+  const other = BLANK_OK_WHEN_SET[node.type]?.[key];
+  if (!other) return false;
+  const v = (node.params as Record<string, unknown> | undefined)?.[other];
+  // 値があるか（中身の無いまとまりと空の文字は無いのと同じ・readiness の has_value）。
+  if (v === undefined || v === null) return false;
+  if (typeof v === "string") return v.trim() !== "";
+  return !(typeof v === "object" && !Array.isArray(v) && Object.keys(v as object).length === 0);
 }
 
 /// 祖先ノード（`$from nodes.<id>.output` の参照候補）を逆辺 BFS で求める。ノード種は出力の形から

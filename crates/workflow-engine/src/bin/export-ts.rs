@@ -29,7 +29,9 @@ use workflow_engine::ir::params::{
 use workflow_engine::ir::trigger::{
     Catchup, EventTrigger, InteractiveTrigger, ScheduleTrigger, Trigger, TriggerKind,
 };
-use workflow_engine::ir::validate::{required_pick_fields, ValidationError, SAVE_WARNING_CODES};
+use workflow_engine::ir::validate::{
+    blank_ok_when_set, required_pick_fields, ValidationError, SAVE_WARNING_CODES,
+};
 use workflow_engine::ir::{Policies, TriggerOverflow, WorkflowIr};
 use workflow_engine::vocab::{
     agent_tool_catalog, event_catalog, node_catalog, AgentTool, AgentToolCatalogEntry,
@@ -80,6 +82,36 @@ fn required_picks_ts() -> String {
     format!(
         "\n/// 必須の欄のうち、選ぶ欄（ノード種 → params の項目・Rust の readiness の表から生成）。\n\
          export const REQUIRED_PICK_FIELDS: Readonly<Record<string, readonly string[]>> = {{\n{}\n}};\n",
+        rows.join("\n")
+    )
+}
+
+/// 必須の欄のうち、ほかの欄に値があれば空のままでよいもの（ノード種 → 空でよい欄 → 値があればよい欄・Rust の
+/// readiness の表から引く）。エディタは、この欄が空でも「入力してください」を出さない。
+fn blank_ok_ts() -> String {
+    let mut by_type: std::collections::BTreeMap<&str, Vec<String>> =
+        std::collections::BTreeMap::new();
+    for (node_type, key, other) in blank_ok_when_set() {
+        by_type.entry(node_type).or_default().push(format!(
+            "{}: {}",
+            serde_json::to_string(key).expect("項目の直列化"),
+            serde_json::to_string(other).expect("項目の直列化")
+        ));
+    }
+    let rows: Vec<String> = by_type
+        .iter()
+        .map(|(t, pairs)| {
+            format!(
+                "  {}: {{ {} }},",
+                serde_json::to_string(t).expect("ノード種の直列化"),
+                pairs.join(", ")
+            )
+        })
+        .collect();
+    format!(
+        "\n/// 必須の欄のうち、ほかの欄に値があれば空のままでよいもの（ノード種 → 空でよい欄 → 値があればよい欄・Rust の\n\
+         /// readiness の BLANK_OK_WHEN_SET から生成）。\n\
+         export const BLANK_OK_WHEN_SET: Readonly<Record<string, Readonly<Record<string, string>>>> = {{\n{}\n}};\n",
         rows.join("\n")
     )
 }
@@ -276,6 +308,7 @@ fn main() {
         params_map.join("\n"),
     ) + warning_codes_ts().as_str()
         + required_picks_ts().as_str()
+        + blank_ok_ts().as_str()
         + limits_ts().as_str();
     std::fs::write(&catalog_path, catalog_contents).expect("カタログ TS 書き出し");
     println!(
