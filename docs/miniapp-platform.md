@@ -277,6 +277,11 @@ web ページを読む道具の宛先）を設定できる。宛先は管理者�
 - **下書きと公開**（D-16 の (a)・GAP-36）: 保存は下書きの版になる。使う人（editor でない viewer）が開く・ボタンを押す・
   画面の表を描く・会話に付けるのは公開した版（`artifact.published_version`）だけで、ほかの版は `ArtifactStore::get_version`
   が断る（ミニアプリの口は 409 の `not_published`・`app_version_changed`、汎用の版の口は 404・版の一覧は公開した版だけ）。
+  下書きの番号・前に公開していた版・下書きの保存の時刻も使う人には見せない（決まりは `ArtifactKind::shows_drafts` の 1 か所）。
+  `GET /mini-apps/{id}/resolved` は `latest_version`・`previous_published_version`・`warnings` を editor にだけ返し、汎用の
+  `GET /artifacts`・`GET /artifacts/{id}` は使う人に `current_version` を公開した版（未公開なら 0）・
+  `previous_published_version` を `null`・`updated_at` を公開した時刻（未公開なら作った時刻）にして返す（下書きの保存で
+  使う人のカードの「更新」が変わらない・BUG-213）。一覧の並びと続きの位置は保存した時刻のまま。
   editor は下書きを試せる（下書きのボタンも束ねたワークフローを本当に起動する）。公開は editor が版を選んで行い
   （`POST /mini-apps/{id}/publish`・監査 `artifact.publish`）、前に公開していた版を公開し直すと公開を戻せる
   （`previous_published_version`）。公開をやめる口は無い（初めての公開の確認はそう言う）。
