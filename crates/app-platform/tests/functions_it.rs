@@ -19,77 +19,11 @@ use axum::{
 };
 use script_runtime::ScriptEngine;
 use storage::content_address::{miniapp_bundle_key, sha256_hex};
-use storage::{ObjectStore, ObjectStoreError};
 use uuid::Uuid;
 
-/// メモリ ObjectStore（コード置き場）。
-#[derive(Default)]
-struct MemStore(Mutex<std::collections::HashMap<String, Vec<u8>>>);
-
-#[async_trait::async_trait]
-impl ObjectStore for MemStore {
-    async fn ensure_bucket(&self) -> Result<(), ObjectStoreError> {
-        Ok(())
-    }
-    async fn presign_put(
-        &self,
-        _: &str,
-        _: std::time::Duration,
-        _: i64,
-    ) -> Result<String, ObjectStoreError> {
-        Ok(String::new())
-    }
-    async fn presign_get(
-        &self,
-        _: &str,
-        _: std::time::Duration,
-        _: Option<&str>,
-        _: Option<&str>,
-    ) -> Result<String, ObjectStoreError> {
-        Ok(String::new())
-    }
-    async fn presign_get_internal(
-        &self,
-        _: &str,
-        _: std::time::Duration,
-    ) -> Result<String, ObjectStoreError> {
-        Ok(String::new())
-    }
-    async fn read_and_hash(&self, k: &str) -> Result<(String, u64), ObjectStoreError> {
-        Err(ObjectStoreError::NotFound(k.into()))
-    }
-    async fn put_object(&self, k: &str, b: Vec<u8>, _: &str) -> Result<(), ObjectStoreError> {
-        self.0.lock().unwrap().insert(k.into(), b);
-        Ok(())
-    }
-    async fn get_object(&self, k: &str) -> Result<Vec<u8>, ObjectStoreError> {
-        self.0
-            .lock()
-            .unwrap()
-            .get(k)
-            .cloned()
-            .ok_or_else(|| ObjectStoreError::NotFound(k.into()))
-    }
-    async fn exists(&self, _: &str) -> Result<bool, ObjectStoreError> {
-        Ok(false)
-    }
-    async fn copy(&self, _: &str, _: &str) -> Result<(), ObjectStoreError> {
-        Ok(())
-    }
-    async fn delete(&self, _: &str) -> Result<(), ObjectStoreError> {
-        Ok(())
-    }
-    async fn list_prefix(
-        &self,
-        _: &str,
-        _: Option<&str>,
-    ) -> Result<(Vec<String>, Option<String>), ObjectStoreError> {
-        Ok((vec![], None))
-    }
-    async fn delete_batch(&self, _: &[String]) -> Result<(), ObjectStoreError> {
-        Ok(())
-    }
-}
+#[path = "support/mem_store.rs"]
+mod mem_store;
+use mem_store::MemStore;
 
 /// モックゲートウェイ: /gw/data/tables を返し、受信 Authorization を記録する。
 #[derive(Clone, Default)]

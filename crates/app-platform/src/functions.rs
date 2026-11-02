@@ -98,7 +98,7 @@ pub struct FunctionRunner {
     /// 共有エンジンなら、コンパイルの完了は関数を実行するときに待つ（起動の経路で待たない）。
     engine: EngineHandle,
     store: Arc<dyn ObjectStore>,
-    /// ゲートウェイへの委譲の HTTP（外部への送信は [`crate::function_http`] が 1 回ごとに組む）。
+    /// ゲートウェイへの委譲の HTTP（環境のプロキシを使わない・外部への送信は [`crate::function_http`] が 1 回ごとに組む）。
     http: reqwest::Client,
     /// サーバ内から到達するゲートウェイの origin（例 `http://127.0.0.1:8090`）。
     gateway_origin: String,
@@ -112,8 +112,11 @@ impl FunctionRunner {
         store: Arc<dyn ObjectStore>,
         gateway_origin: String,
     ) -> Result<Self, AppPlatformError> {
-        // ゲートウェイ委譲の HTTP。リダイレクト自動追従なし（PIT-36）。
+        // ゲートウェイ委譲の HTTP。リダイレクト自動追従なし（PIT-36）。送り先はサーバ内のゲートウェイ（ループバック）
+        // なので環境のプロキシを使わない（`NO_PROXY` にループバックの無い環境で、利用者の Bearer と本文をプロキシへ
+        // 渡さない・BUG-209。外部への送信は function_http が同じく no_proxy で組む）。
         let http = reqwest::Client::builder()
+            .no_proxy()
             .redirect(reqwest::redirect::Policy::none())
             .timeout(std::time::Duration::from_secs(15))
             .build()
