@@ -259,12 +259,26 @@ export function InstalledAppsSection() {
                 <FunctionFailures failures={app.function_failures} />
               ) : null}
               <div className="mt-auto flex flex-wrap items-center gap-1 pt-1">
-                <Button size="sm" asChild disabled={!app.frontend_bundle}>
-                  <Link href={`/apps/b1/${app.app_id}`}>
-                    <Play className="size-4" aria-hidden />
-                    開く
-                  </Link>
-                </Button>
+                {app.frontend_bundle ? (
+                  <Button size="sm" asChild>
+                    <Link href={`/apps/b1/${app.app_id}`}>
+                      <Play className="size-4" aria-hidden />
+                      開く
+                    </Link>
+                  </Button>
+                ) : (
+                  // 画面を持たないアプリ（サーバーで動く処理だけ）は開けない。asChild の Link には disabled が効かない
+                  // ので、押せないボタンにして理由を添える（BUG-203）。
+                  <>
+                    <Button size="sm" disabled aria-describedby={`no-screen-${app.id}`}>
+                      <Play className="size-4" aria-hidden />
+                      開く
+                    </Button>
+                    <span id={`no-screen-${app.id}`} className="px-1 text-xs text-muted-foreground">
+                      画面のないアプリです
+                    </span>
+                  </>
+                )}
                 {(app.table_count ?? 0) > 0 ? (
                   <Button
                     size="sm"
