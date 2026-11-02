@@ -585,6 +585,15 @@ async fn keycloak_failures_neither_revoke_nor_stall_the_sweep() {
     .await
     .expect("OpenFGA");
     let store_id = fga.store_id().to_string();
+    // 続きの位置はテナントの持ち物ではない（tenant_id の列を持たない）。テナントの撤去と移行が集めると、照合が
+    // そのテナントの人を読んでいる間は retenant が移行を断ってしまう（migration 0135）。
+    let scoped = storage::tenant_scope::tenant_scoped_tables(&pool)
+        .await
+        .expect("テナントの表");
+    assert!(
+        !scoped.iter().any(|t| t == "membership_reconcile_cursor"),
+        "{scoped:?}"
+    );
     let authz: Arc<dyn AuthzClient> = Arc::new(fga);
     let token_ok = Arc::new(AtomicBool::new(true));
     let base = mock_keycloak(Arc::clone(&token_ok)).await;
