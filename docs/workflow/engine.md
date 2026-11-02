@@ -542,6 +542,10 @@ join の再発火防止と「初回 live」の判定は §4.1 手順 3 の readi
 1. **due な cron の評価**: enable 中の schedule トリガについて、前回発火〜現在の間に来た論理発火時刻を cron から算出し、各 `scheduled_at` について占有 TX（§5.3）を実行する。
 2. **due な waiting_timer の起床**: `wake_at <= now()` の `waiting_timer` step を **terminal 化（out）して前進 TX を実行**する（§9.1・ready に戻して wait を再実行させない）。
 3. **waiting_event の期限処理**: `timeout_at <= now()` の `wait_subscription` を消し込み、`on_timeout` に従い terminal 化（timeout ポート）or failed にして前進する（§9.2）。
+
+   2 と 3 は、承認の期限の回収（§9.6）と同じく、（期限, テナント, run, step）の順に続きの位置から読む（1 回 256 件・1 tick に
+   16 回まで・残りは次の tick）。ピンした IR を読めない run の待ちは起こせずに残るが、続きの位置で飛ばすので、先頭に並んでも
+   後ろの timer・timeout の回収を止めない（BUG-76。前は続きの位置が無く、先頭の 256 件が読めない run だと後ろが回収されなかった）。
 4. **失効リースの回収（sweeper）**: `step_lease_idx` で `lease_expires_at < now()` の running step を拾い、`ready` へ戻す（§9.5）。ワーカーの claim は ready 専用なのでここが唯一の takeover 経路。
 5. **concurrency カウンタの突合**: running の実数からカウンタを再計算する（§8.1）。**必ず sweeper の後**に置く——回収で running から外れた分をこの突合が回収するため、順序が逆だと 1 tick ぶん古い値が残る。
 6. **リース heartbeat**: `scheduler_lease.expires_at` を延長。失効すれば別インスタンスが CAS で引き継ぐ。
