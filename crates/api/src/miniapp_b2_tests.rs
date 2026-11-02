@@ -437,6 +437,18 @@ async fn b2_functions_run_as_the_app_on_schedule_and_as_the_user_on_request() {
                 .await
                 .unwrap();
         assert_eq!(owners, [app_id.to_string()], "アプリの主体として 1 行足す");
+        // 利用量はアプリの主体の分として記録する（サービスアカウントの id を利用者として記録しない・BUG-204）。
+        let usage: Vec<(String, String)> = sqlx::query_as(
+            "SELECT principal, user_sub FROM app_capability_usage WHERE tenant_id = $1",
+        )
+        .bind(&env.tenant)
+        .fetch_all(&env.pool)
+        .await
+        .unwrap();
+        assert!(
+            !usage.is_empty() && usage.iter().all(|(p, s)| p == "app" && s.is_empty()),
+            "{usage:?}"
+        );
 
         // 利用者が起点（single テナント）: alice の B1 のトークンを B2 が交換し、関数は alice としてテーブルを読む。
         let (single, _, _) =

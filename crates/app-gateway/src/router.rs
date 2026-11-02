@@ -236,13 +236,20 @@ async fn dual_gate(
             let usage_key = required_scope_for(&method, matched.as_str());
             let (tenant, org) = (ctx.auth.tenant_id.clone(), ctx.auth.org.clone());
             let (app_id, user_sub) = (ctx.installation.app_id, ctx.identity.user_sub.clone());
+            // アプリの主体（自動実行）の分は、利用者と分けて記録する（サービスアカウントの id は記録しない・BUG-204）。
+            let is_app = ctx.auth.principal.kind == PrincipalKind::MiniApp;
             req.extensions_mut().insert(ctx);
             let resp = next.run(req).await;
             if resp.status().is_success() {
                 if let Some(RouteScope::Scoped(cap)) = usage_key {
+                    let principal = if is_app {
+                        usage::UsagePrincipal::App
+                    } else {
+                        usage::UsagePrincipal::User(&user_sub)
+                    };
                     // 計上失敗はリクエストを止めない（best-effort・欠落は tracing に残す）。
                     if let Err(e) =
-                        usage::record_usage(&state.caps.db, &tenant, &org, app_id, &user_sub, cap)
+                        usage::record_usage(&state.caps.db, &tenant, &org, app_id, principal, cap)
                             .await
                     {
                         tracing::warn!(error = %e, capability = cap.as_str(), "利用量計上に失敗");

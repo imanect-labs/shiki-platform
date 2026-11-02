@@ -332,6 +332,21 @@ async fn service_body(f: &Fixture) {
             "{body}"
         );
     }
+
+    // 利用量は、アプリの主体の分として記録する（サービスアカウントの id を利用者として記録しない・BUG-204）。
+    let usage = app_gateway::fetch_usage(&pool, &f.tenant, "acme", f.app_id, 100)
+        .await
+        .expect("usage");
+    assert!(
+        usage.iter().any(|u| u.capability == "data.write"),
+        "{usage:?}"
+    );
+    assert!(
+        usage
+            .iter()
+            .all(|u| u.principal == "app" && u.user_sub.is_empty()),
+        "{usage:?}"
+    );
 }
 
 #[tokio::test]
@@ -372,6 +387,16 @@ async fn others_body(f: &Fixture) {
         authz.seen().iter().all(|s| *s == user_subject),
         "{:?}",
         authz.seen()
+    );
+    // 利用者のトークンの分は、利用者の分として記録する（BUG-204）。
+    let usage = app_gateway::fetch_usage(&pool, &f.tenant, "acme", f.app_id, 100)
+        .await
+        .expect("usage");
+    assert!(
+        usage
+            .iter()
+            .any(|u| u.principal == "user" && u.user_sub == "alice"),
+        "{usage:?}"
     );
 
     // サービスアカウントの利用者でも、別のクライアントのトークンはアプリの主体にならない（multi は tenant が無く 401）。
