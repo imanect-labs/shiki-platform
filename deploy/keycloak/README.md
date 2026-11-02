@@ -89,7 +89,9 @@ provisioner の資格情報で登録する（`crates/app-gateway/src/oauth.rs` �
 - 既定のスコープは `basic` だけ（B2 は Keycloak が付ける `service_account` も）。トークンに `sub` を載せる `basic` は、
   Keycloak 25 以降の realm の既定のスコープ。**本番 realm に `basic` が無いと、アプリのトークンに `sub` が無く、
   ゲートウェイが 401 で断る。** 任意のスコープは能力スコープ（`data.read` など・サーバーが作る）。
-- マッパーは aud（`shiki-gateway`）と `tenant`（利用者の属性 `tenant`・上の User Profile の保護がそのまま効く）で、
+- マッパーは aud（デプロイ設定 `gateway.audience`・既定 `shiki-gateway`。ゲートウェイが確かめる値と同じものを書く。
+  値を変えると、次の起動の照合がすべての有効なインストールのクライアントを新しい値に揃え直す・BUG-206）と
+  `tenant`（利用者の属性 `tenant`・上の User Profile の保護がそのまま効く）で、
   アクセストークンにだけ載せる。名前・メールアドレス・ロール・所属グループ（`groups`）は載せない（B1 では
   トークンがアプリのコードに渡る）。ゲートウェイは利用者の組織をトークンではなくインストールの組織で決め、その組織の
   `organization#member`（上のログインの同期が書く）を OpenFGA で確かめる。member でなければ 403（D-130）。
@@ -100,8 +102,8 @@ provisioner の資格情報で登録する（`crates/app-gateway/src/oauth.rs` �
   B2 が Keycloak 26.2 の標準のトークンの交換（RFC 8693）で交換する。実 Keycloak で確かめた決まりは次のとおり。
   - 交換を頼むクライアント（B2）が元のトークンの `aud` に入っていないと 403「Client is not within the token
     audience」で断る（自分に発行されたトークンを除く）。別のアプリの B2 は `aud` に入らないので交換できない。
-  - `audience` はクライアントの id で、トークンの `aud` を絞るだけ（足さない）。`shiki-gateway` はクライアントでは
-    なくマッパーが足す値なので、渡すと 400「Audience not found」になる。サーバーは `audience` を送らない。
+  - `audience` はクライアントの id で、トークンの `aud` を絞るだけ（足さない）。ゲートウェイの aud（`gateway.audience`）は
+    クライアントではなくマッパーが足す値なので、渡すと 400「Audience not found」になる。サーバーは `audience` を送らない。
   - `scope` は B2 の任意のスコープを足せる（元のトークンに無い能力スコープでも足せる）。サーバーは元のトークンの
     能力スコープだけを求め、返ったトークンの能力スコープがその内にあることを確かめる。
   - アンインストールで B1 を無効にすると、発行済みの B1 のトークンも交換できない。
