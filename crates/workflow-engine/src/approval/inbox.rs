@@ -152,6 +152,35 @@ const ASSIGNED: &str = "EXISTS (SELECT 1 FROM workflow_approval_assignee x \
      WHERE x.tenant_id = a.tenant_id AND x.approval_id = a.approval_id \
        AND ((x.kind = 'user' AND x.subject = $3) OR (x.kind = 'role' AND x.subject = ANY($4))))";
 
+/// 受信箱に出す承認の FROM 以降（[`ApprovalStore::inbox`] と [`ApprovalStore::inbox_keys`] で同じ条件・新しい順）。
+/// $1 = テナント・$2 = 組織・$3 = 本人・$4 = 所属ロール・$5/$6 = 続きの位置・$7 = 件数。
+fn inbox_from() -> String {
+    format!(
+        "FROM workflow_approval a \
+         JOIN workflow_run r ON r.tenant_id = a.tenant_id AND r.run_id = a.run_id \
+         JOIN step_execution s ON s.tenant_id = a.tenant_id AND s.run_id = a.run_id \
+                              AND s.step_path = a.step_path \
+         WHERE a.tenant_id = $1 AND a.org = $2 AND a.status = 'pending' \
+           AND r.status = 'running' AND NOT r.cancel_requested AND s.status = 'waiting_event' \
+           AND (a.deadline IS NULL OR a.deadline > now()) \
+           AND (r.timeout_at IS NULL OR r.timeout_at > now()) \
+           AND {ASSIGNED} \
+           AND ($5::timestamptz IS NULL OR (a.created_at, a.approval_id) < ($5, $6)) \
+         ORDER BY a.created_at DESC, a.approval_id DESC LIMIT $7"
+    )
+}
+
+/// 受信箱の件数を数える台帳の 1 件（[`ApprovalStore::inbox_keys`]・行の値も台帳の中身も持たない）。
+#[derive(Debug, Clone, sqlx::FromRow)]
+pub struct ApprovalKey {
+    pub approval_id: Uuid,
+    pub table_id: Uuid,
+    pub record_id: Uuid,
+    /// 承認を始めたときのレコードの状態（今の状態がこれのときだけ数える）。
+    pub from_state: String,
+    pub created_at: DateTime<Utc>,
+}
+
 /// 受信箱の台帳（API が承認者本人の権限で行を読み直して出す・[`super`]）。
 #[derive(Clone)]
 pub struct ApprovalStore {
@@ -185,19 +214,7 @@ impl ApprovalStore {
         after: Option<InboxCursor>,
         limit: i64,
     ) -> Result<Vec<ApprovalRow>, RunStoreError> {
-        let sql = format!(
-            "SELECT {COLUMNS} FROM workflow_approval a \
-             JOIN workflow_run r ON r.tenant_id = a.tenant_id AND r.run_id = a.run_id \
-             JOIN step_execution s ON s.tenant_id = a.tenant_id AND s.run_id = a.run_id \
-                                  AND s.step_path = a.step_path \
-             WHERE a.tenant_id = $1 AND a.org = $2 AND a.status = 'pending' \
-               AND r.status = 'running' AND NOT r.cancel_requested AND s.status = 'waiting_event' \
-               AND (a.deadline IS NULL OR a.deadline > now()) \
-               AND (r.timeout_at IS NULL OR r.timeout_at > now()) \
-               AND {ASSIGNED} \
-               AND ($5::timestamptz IS NULL OR (a.created_at, a.approval_id) < ($5, $6)) \
-             ORDER BY a.created_at DESC, a.approval_id DESC LIMIT $7"
-        );
+        let sql = format!("SELECT {COLUMNS} {}", inbox_from());
         let rows: Vec<Row> = sqlx::query_as(&sql)
             .bind(tenant_id)
             .bind(org)
@@ -210,6 +227,34 @@ impl ApprovalStore {
             .await
             .map_err(map_db)?;
         Ok(rows.into_iter().map(ApprovalRow::from).collect())
+    }
+
+    /// [`Self::inbox`] と同じ承認の、数えるのに要る列だけ（受信箱の件数・BUG-43）。題・選択肢・出す列などの
+    /// 台帳の中身は運ばない。
+    pub async fn inbox_keys(
+        &self,
+        tenant_id: &str,
+        org: &str,
+        user: &str,
+        roles: &[String],
+        after: Option<InboxCursor>,
+        limit: i64,
+    ) -> Result<Vec<ApprovalKey>, RunStoreError> {
+        let sql = format!(
+            "SELECT a.approval_id, a.table_id, a.record_id, a.from_state, a.created_at {}",
+            inbox_from()
+        );
+        sqlx::query_as(&sql)
+            .bind(tenant_id)
+            .bind(org)
+            .bind(user)
+            .bind(roles)
+            .bind(after.map(|c| c.created_at))
+            .bind(after.map_or(Uuid::nil(), |c| c.approval_id))
+            .bind(limit)
+            .fetch_all(&self.db)
+            .await
+            .map_err(map_db)
     }
 
     /// 本人か所属ロール宛ての承認 1 件（保留中でなくても返す・担当者でなければ None）。

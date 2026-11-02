@@ -5,6 +5,8 @@
 //!   ない主体は 404、状態の列が読めなければ field_unavailable
 //! - `DataStore::get_records`: `ids` と同じ順で、見えない・無い行は `None`。マスク列は落とす
 //! - `DataStore::filter_visible_records`: 同じ判定で、テーブルが見えなければ `None`（Deny の監査を残さない）
+//! - `DataStore::filter_visible_states`: 同じ判定で、行の中身の代わりに今の状態だけを返す（状態の列が読めなければ
+//!   状態なし・受信箱の件数・BUG-43）
 
 #![allow(
     clippy::unwrap_used,
@@ -348,8 +350,55 @@ async fn approval_reads_follow_row_and_field_visibility() {
             .unwrap()
         }
     };
+    // 件数の口（BUG-43）: 見え方は filter_visible_records と同じで、行の中身の代わりに今の状態だけを返す。
+    let state = |s: &str| {
+        Some(data::RecordState {
+            status: Some(s.into()),
+        })
+    };
+    let states = store
+        .filter_visible_states(&bob, table.id, &[other.id, r.id, missing, r.id])
+        .await
+        .unwrap()
+        .expect("bob にはテーブルが見える");
+    assert_eq!(
+        states,
+        vec![None, state("submitted"), None, state("submitted")]
+    );
+    for who in [&alice, &bob, &carol] {
+        let ids = [other.id, r.id, missing];
+        let rows = store
+            .filter_visible_records(who, table.id, &ids)
+            .await
+            .unwrap()
+            .unwrap();
+        let states = store
+            .filter_visible_states(who, table.id, &ids)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            states.iter().map(Option::is_some).collect::<Vec<_>>(),
+            rows.records.iter().map(Option::is_some).collect::<Vec<_>>(),
+            "{}",
+            who.principal.id
+        );
+    }
+    assert_eq!(
+        store
+            .filter_visible_states(&alice, table.id, &[other.id])
+            .await
+            .unwrap()
+            .unwrap(),
+        vec![state("draft")]
+    );
     let before = denials(dave.principal.id.clone()).await;
     for _ in 0..3 {
+        assert!(store
+            .filter_visible_states(&dave, table.id, &[r.id])
+            .await
+            .unwrap()
+            .is_none());
         assert!(store
             .filter_visible_records(&dave, table.id, &[r.id])
             .await
@@ -365,4 +414,69 @@ async fn approval_reads_follow_row_and_field_visibility() {
     // 本人が求めた読取（get_records）は従来どおり Deny を残す。
     let _ = store.get_records(&dave, table.id, &[r.id], None).await;
     assert_eq!(denials(dave.principal.id.clone()).await, before + 1);
+
+    // 状態の列が読めない人には、見える行でも状態を返さない（件数に数えない・一覧で出ないのと同じ）。
+    let mut hidden_status = schema(None);
+    hidden_status.field_policy.push(FieldPolicy {
+        field: "status".into(),
+        readable_by: PolicyExpr::HasRole {
+            role: "keiri".into(),
+            subtree: true,
+        },
+    });
+    let masked = store
+        .create_table(
+            &alice,
+            NewDataTable {
+                name: "requests-masked".into(),
+                schema: hidden_status,
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    authz
+        .write_tuple(
+            &bob.subject(),
+            Relation::Viewer,
+            &alice.ns().data_table(&masked.id.to_string()),
+        )
+        .await
+        .unwrap();
+    let m = store
+        .create_record(
+            &alice,
+            masked.id,
+            json!({ "title": "備品", "approver": "bob", "status": "submitted" }),
+            None,
+        )
+        .await
+        .unwrap();
+    let rows = store
+        .filter_visible_records(&bob, masked.id, &[m.id])
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(rows.records[0]
+        .as_ref()
+        .unwrap()
+        .data
+        .get("status")
+        .is_none());
+    assert_eq!(
+        store
+            .filter_visible_states(&bob, masked.id, &[m.id])
+            .await
+            .unwrap()
+            .unwrap(),
+        vec![Some(data::RecordState { status: None })]
+    );
+    assert_eq!(
+        store
+            .filter_visible_states(&alice, masked.id, &[m.id])
+            .await
+            .unwrap()
+            .unwrap(),
+        vec![state("submitted")]
+    );
 }

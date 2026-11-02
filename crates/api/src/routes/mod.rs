@@ -4,6 +4,7 @@ pub mod admin;
 pub mod app_install;
 pub mod app_platform;
 pub mod approvals;
+mod approvals_inbox;
 pub mod artifact_list;
 pub mod artifacts;
 pub mod auth;

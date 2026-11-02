@@ -26,6 +26,13 @@ use crate::stream::outbox::{emit_record_changes, Before, ChangeKind, RecordChang
 use crate::validate::validate_record_data;
 use crate::{map_db, DataError};
 
+/// [`DataStore::filter_visible_states`] の 1 行（見える行の今の状態）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordState {
+    /// 状態の列の値（状態の列が無い・閲覧者に読めない・値が文字でないときは `None`）。
+    pub status: Option<String>,
+}
+
 /// [`DataStore::filter_visible_records`] の結果（開いたテーブルと、候補と同じ順の見える行）。
 #[derive(Debug, Clone)]
 pub struct FilteredRecords {
@@ -292,6 +299,76 @@ impl DataStore {
         };
         let records = self.visible_records_in(ctx, &az, &table, ids).await?;
         Ok(Some(FilteredRecords { table, records }))
+    }
+
+    /// 他人が書いた候補を、閲覧者に見える行と、その行の今の状態（状態の列の値）だけにする（`ids` と同じ順・
+    /// 不可視・不在は `None`）。承認の受信箱の件数が使う（BUG-43）。
+    ///
+    /// 見え方は [`Self::filter_visible_records`] と同じ（テーブルの viewer・追加だけの人は自分の行・行述語・
+    /// 個別共有・見えないテーブルは `Ok(None)` で Deny の監査を残さない）。違うのは、行の中身を運ばず、派生値・
+    /// リンクの表示名を計算しないこと（状態の列だけを 1 本のクエリで引く）。状態の列が閲覧者に読めない（マスク）・
+    /// テーブルに状態の列が無い・値が文字でないときは、見える行でも [`RecordState::status`] は `None`。
+    pub async fn filter_visible_states(
+        &self,
+        ctx: &AuthContext,
+        table_id: Uuid,
+        ids: &[Uuid],
+    ) -> Result<Option<Vec<Option<RecordState>>>, DataError> {
+        let az = self.authz_memo();
+        let Some(table) = self.open_for_filter(ctx, &az, table_id).await? else {
+            return Ok(None);
+        };
+        if ids.is_empty() {
+            return Ok(Some(Vec::new()));
+        }
+        let status = table
+            .schema
+            .status_field
+            .as_deref()
+            .and_then(|k| table.schema.field(k));
+        // 状態の列が保存したそのままの値で読めない（派生・作成者の列・保存形のキーが読めない）ときは、読取と同じ
+        // 投影で値を決める（状態の列は選択肢の列なので、ふつうは通らない）。
+        if status.is_some_and(|f| {
+            f.field_type.is_derived()
+                || f.is_created_by()
+                || !crate::field_key::is_json_key(&f.json_key())
+        }) {
+            let records = self.visible_records_in(ctx, &az, &table, ids).await?;
+            let key = table.schema.status_field.clone().unwrap_or_default();
+            return Ok(Some(
+                records
+                    .into_iter()
+                    .map(|r| {
+                        r.map(|r| RecordState {
+                            status: r.data.get(&key).and_then(Value::as_str).map(str::to_string),
+                        })
+                    })
+                    .collect(),
+            ));
+        }
+        let masked = self.masked_fields(ctx, &az, &table).await?;
+        let stored = status
+            .filter(|f| !masked.contains(&f.key))
+            .map(crate::model::FieldDef::json_key);
+        let mut unique = ids.to_vec();
+        unique.sort_unstable();
+        unique.dedup();
+        let keys: Vec<String> = stored.iter().cloned().collect();
+        let rows = self
+            .select_visible_projection(ctx, &az, &table, &unique, &keys)
+            .await?;
+        let by_id: std::collections::HashMap<Uuid, RecordState> = rows
+            .into_iter()
+            .map(|(id, _, values)| {
+                let status = stored
+                    .as_deref()
+                    .and_then(|k| values.0.get(k))
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                (id, RecordState { status })
+            })
+            .collect();
+        Ok(Some(ids.iter().map(|id| by_id.get(id).cloned()).collect()))
     }
 
     /// 開いたテーブルの候補の行を 1 本のクエリで引き、閲覧者の見え方（派生値・マスク）にして `ids` の順に並べる。

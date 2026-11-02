@@ -75,6 +75,102 @@ impl RefResolver for Users {
     }
 }
 
+/// OpenFGA に問うた回数（受信箱の件数が所属ロールの実効集合を引かないことを確かめる・BUG-43）。
+#[derive(Default)]
+struct FgaCalls {
+    /// 所属ロールの実効集合（`ListObjects(member, role)`）を引いた回数。
+    roles_listed: std::sync::atomic::AtomicUsize,
+    /// OpenFGA に問うた回数（ListObjects・BatchCheck・Check の合計）。
+    asked: std::sync::atomic::AtomicUsize,
+}
+
+impl FgaCalls {
+    /// （所属ロールの実効集合を引いた回数, OpenFGA に問うた回数）。
+    fn snapshot(&self) -> (usize, usize) {
+        use std::sync::atomic::Ordering::SeqCst;
+        (self.roles_listed.load(SeqCst), self.asked.load(SeqCst))
+    }
+
+    fn ask(&self) {
+        self.asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// 実 OpenFGA に問いを流し、ListObjects と BatchCheck の回数を数える。
+struct CountingFga {
+    inner: OpenFgaClient,
+    calls: Arc<FgaCalls>,
+}
+
+#[async_trait]
+impl AuthzClient for CountingFga {
+    async fn check(
+        &self,
+        s: &authz::Subject,
+        r: Relation,
+        o: &authz::FgaObject,
+        c: authz::Consistency,
+    ) -> Result<bool, authz::AuthzError> {
+        self.calls.ask();
+        self.inner.check(s, r, o, c).await
+    }
+    async fn batch_check(
+        &self,
+        items: &[authz::CheckTuple],
+        c: authz::Consistency,
+    ) -> Result<Vec<bool>, authz::AuthzError> {
+        self.calls.ask();
+        self.inner.batch_check(items, c).await
+    }
+    async fn write_tuple(
+        &self,
+        s: &authz::Subject,
+        r: Relation,
+        o: &authz::FgaObject,
+    ) -> Result<bool, authz::AuthzError> {
+        self.inner.write_tuple(s, r, o).await
+    }
+    async fn delete_tuple(
+        &self,
+        s: &authz::Subject,
+        r: Relation,
+        o: &authz::FgaObject,
+    ) -> Result<bool, authz::AuthzError> {
+        self.inner.delete_tuple(s, r, o).await
+    }
+    async fn read_tuples(
+        &self,
+        o: &authz::FgaObject,
+        r: Option<Relation>,
+    ) -> Result<Vec<authz::ReadTupleKey>, authz::AuthzError> {
+        self.inner.read_tuples(o, r).await
+    }
+    async fn list_objects(
+        &self,
+        s: &authz::Subject,
+        r: Relation,
+        t: authz::ObjectType,
+    ) -> Result<Vec<String>, authz::AuthzError> {
+        self.calls.ask();
+        if r == Relation::Member && t == authz::ObjectType::Role {
+            self.calls
+                .roles_listed
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        self.inner.list_objects(s, r, t).await
+    }
+    async fn delete_object_tuples(&self, o: &authz::FgaObject) -> Result<u32, authz::AuthzError> {
+        self.inner.delete_object_tuples(o).await
+    }
+    async fn read_subject_objects(
+        &self,
+        s: &authz::Subject,
+        t: authz::ObjectType,
+    ) -> Result<Vec<String>, authz::AuthzError> {
+        self.inner.read_subject_objects(s, t).await
+    }
+}
+
 struct NoopAudit;
 impl workflow_engine::CapabilityAudit for NoopAudit {
     fn record(&self, _t: &str, _a: &str, _ok: bool, _m: &Value) {}
@@ -236,6 +332,8 @@ struct Env {
     app: axum::Router,
     pool: sqlx::PgPool,
     fga: Arc<dyn AuthzClient>,
+    /// OpenFGA に問うた回数（[`CountingFga`]）。
+    fga_calls: Arc<FgaCalls>,
     storage: Arc<storage::StorageService>,
     data: Arc<DataStore>,
     fsms: Arc<FsmStore>,
@@ -291,7 +389,11 @@ async fn setup() -> Option<Env> {
     .await
     .expect("fga");
     let fga_store = (fga_url, client.store_id().to_string());
-    let fga: Arc<dyn AuthzClient> = Arc::new(client);
+    let fga_calls = Arc::new(FgaCalls::default());
+    let fga: Arc<dyn AuthzClient> = Arc::new(CountingFga {
+        inner: client,
+        calls: Arc::clone(&fga_calls),
+    });
     let s3 = storage::S3Config {
         internal_endpoint: s3_endpoint.clone(),
         public_endpoint: s3_endpoint,
@@ -414,6 +516,7 @@ async fn setup() -> Option<Env> {
         app,
         pool,
         fga,
+        fga_calls,
         storage,
         data,
         fsms,
@@ -606,6 +709,25 @@ fn expense_schema(fsm: Option<FsmRef>, keiri: &str) -> TableSchema {
     }
 }
 
+/// [`expense_schema`] から、ロールで読める決まり（行の決まりの経理・メモの列）を外した表（行は作成者と承認者の列の
+/// 人だけが読める）。行を読み直すときに data が所属ロールの実効集合を引かないので、受信箱が引くかを数えられる。
+fn expense_schema_without_roles(fsm: Option<FsmRef>, keiri: &str) -> TableSchema {
+    let mut schema = expense_schema(fsm, keiri);
+    schema.row_policy = Some(RowPolicy {
+        read: PolicyExpr::Any(vec![
+            PolicyExpr::IsOwner,
+            PolicyExpr::FieldCmp {
+                field: "approver".into(),
+                op: CmpOp::Eq,
+                value: PolicyOperand::UserId,
+            },
+        ]),
+        write: None,
+    });
+    schema.field_policy.clear();
+    schema
+}
+
 impl Env {
     /// alice の申請の表（下書き → 申請 → 受付 は作成者、受付 → 承認・却下 は承認者の列の人）。
     /// bob・carol・dave はテーブルの editor。carol は経理のロール。
@@ -615,13 +737,22 @@ impl Env {
 
     /// [`Self::expense_table`] に、承認者の列の人が進められる遷移（`extra`）を足した表。
     async fn expense_table_with(&self, extra: &[(&str, &str)]) -> Uuid {
+        self.expense_table_of(extra, expense_schema).await
+    }
+
+    /// [`Self::expense_table_with`] の表の定義を `schema` にした表。
+    async fn expense_table_of(
+        &self,
+        extra: &[(&str, &str)],
+        schema: fn(Option<FsmRef>, &str) -> TableSchema,
+    ) -> Uuid {
         let table = self
             .data
             .create_table(
                 &self.alice,
                 NewDataTable {
                     name: format!("expense-{}", Uuid::new_v4().simple()),
-                    schema: expense_schema(None, &self.keiri),
+                    schema: schema(None, &self.keiri),
                 },
                 None,
             )
@@ -667,7 +798,7 @@ impl Env {
             .update_table_schema(
                 &self.alice,
                 table.id,
-                expense_schema(
+                schema(
                     Some(FsmRef {
                         artifact_id: fsm_id,
                         version: 1,
@@ -3901,4 +4032,84 @@ async fn roles_beyond_the_cap(env: Arc<Env>) {
         .await;
     assert_eq!(st, StatusCode::ACCEPTED, "{body}");
     env.settle().await;
+}
+
+/// 件数（web が 60 秒ごとに読み直す）は、所属ロールの実効集合（ListObjects）を引かず、台帳の担当のロールだけを
+/// OpenFGA に確かめる（BUG-43）。担当の承認が台帳に無ければ OpenFGA に問わない。見えない承認は数えず、見える承認は
+/// 数え漏れない（一覧と同じ数）。一覧も所属ロールの実効集合を引かない。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_count_does_not_list_every_role_of_the_user() {
+    let _serial = SERIAL.lock().await;
+    let Some(env) = setup().await else { return };
+    let env = Arc::new(env);
+    let outcome = tokio::spawn(count_without_listing_roles(Arc::clone(&env))).await;
+    env.cleanup().await;
+    env.delete_store().await;
+    if let Err(e) = outcome {
+        std::panic::resume_unwind(e.into_panic());
+    }
+}
+
+async fn count_without_listing_roles(env: Arc<Env>) {
+    // 担当の承認がまだ無い: OpenFGA に何も問わない。
+    let before = env.fga_calls.snapshot();
+    let (st, count) = env.get(&env.bob, "/approvals/count").await;
+    assert_eq!(st, StatusCode::OK, "{count}");
+    assert_eq!(count, json!({ "count": 0, "more": false }));
+    assert_eq!(
+        env.fga_calls.snapshot(),
+        before,
+        "担当の承認が無ければ OpenFGA に問わない"
+    );
+
+    // 担当は承認者の列の人と経理のロール。行は作成者と承認者の列の人だけが読める。
+    let table = env
+        .expense_table_of(&[], expense_schema_without_roles)
+        .await;
+    let wf = env.enable(table, None).await;
+    let r = env
+        .data
+        .create_record(
+            &env.alice,
+            table,
+            json!({ "title": "出張旅費", "amount": 12000, "approver": env.bob.principal.id,
+                    "status": "draft" }),
+            None,
+        )
+        .await
+        .unwrap();
+    env.fsms
+        .transition(&env.alice, table, r.id, "submitted", r.rev, None)
+        .await
+        .unwrap();
+    env.settle().await;
+    let run = env.run_of(wf, r.id).await;
+    assert_eq!(env.step(run, "ok").await.0, "waiting_event");
+
+    // bob（承認者の列）は数える。carol（経理のロールで担当・行は読めない）と dave（担当でない）は数えない。
+    for (who, want) in [(&env.bob, 1), (&env.carol, 0), (&env.dave, 0)] {
+        let (listed, _) = env.fga_calls.snapshot();
+        let (st, count) = env.get(who, "/approvals/count").await;
+        assert_eq!(st, StatusCode::OK, "{count}");
+        assert_eq!(
+            count,
+            json!({ "count": want, "more": false }),
+            "{}",
+            who.principal.id
+        );
+        let (st, body) = env.get(who, "/approvals").await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        assert_eq!(
+            body["items"].as_array().map(Vec::len),
+            Some(want),
+            "一覧と同じ数: {}",
+            who.principal.id
+        );
+        assert_eq!(
+            env.fga_calls.snapshot().0,
+            listed,
+            "所属ロールの実効集合を引かない: {}",
+            who.principal.id
+        );
+    }
 }

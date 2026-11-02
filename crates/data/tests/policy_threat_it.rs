@@ -4118,7 +4118,7 @@ async fn sales_answers(store: &DataStore, bob: &AuthContext) -> Vec<String> {
 
 /// ⑬ まとめ取り（承認の受信箱の読み直し・BUG-43）も、1 件の読取と同じ合成（行述語・ロール・個別共有・剥奪の
 /// 即時反映）で 1 本のクエリに載せる。不可視と不存在は区別しない（どちらも `None`）。テーブルが見えない主体には、
-/// 読取の口（`get_records`）は 404、候補の絞り込みの口（`filter_visible_records`）は `None`。
+/// 読取の口（`get_records`）は 404、候補の絞り込みの口（`filter_visible_records`・件数の `filter_visible_states`）は `None`。
 #[tokio::test]
 async fn batch_reads_follow_the_same_row_visibility_as_single_reads() {
     let Some((pool, authz)) = setup().await else {
@@ -4149,6 +4149,24 @@ async fn batch_reads_follow_the_same_row_visibility_as_single_reads() {
             out
         }
     };
+    // 件数の口（状態だけ・BUG-43）も同じ行が見える。
+    let states_seen = |who: &AuthContext| {
+        let who = who.clone();
+        let store = f.store.clone();
+        let table = f.table_id;
+        async move {
+            store
+                .filter_visible_states(&who, table, &ids)
+                .await
+                .unwrap()
+                .map(|s| {
+                    ids.iter()
+                        .zip(s)
+                        .map(|(id, s)| s.map(|_| *id))
+                        .collect::<Vec<_>>()
+                })
+        }
+    };
     for who in [&f.alice, &f.bob] {
         let got = f
             .store
@@ -4163,6 +4181,12 @@ async fn batch_reads_follow_the_same_row_visibility_as_single_reads() {
             .unwrap()
             .expect("テーブルは見える");
         assert_eq!(seen(&filtered.records), seen(&got));
+        assert_eq!(
+            states_seen(who).await,
+            Some(seen(&got)),
+            "{}",
+            who.principal.id
+        );
     }
     let got = f
         .store
@@ -4180,6 +4204,7 @@ async fn batch_reads_follow_the_same_row_visibility_as_single_reads() {
         .await
         .unwrap();
     assert_eq!(seen(&got), [Some(f.alice_rec), Some(f.bob_rec), None]);
+    assert_eq!(states_seen(&keiri).await, Some(seen(&got)));
     f.authz
         .delete_tuple(
             &f.bob.subject(),
@@ -4188,6 +4213,11 @@ async fn batch_reads_follow_the_same_row_visibility_as_single_reads() {
         )
         .await
         .unwrap();
+    assert_eq!(
+        states_seen(&keiri).await,
+        Some(vec![None, Some(f.bob_rec), None]),
+        "ロールを外すと直ちに見えない"
+    );
 
     // 個別共有: 共有した行が追加で見え、解除で直ちに見えなくなる。
     let carol = ctx(&f.bob.tenant_id, "carol");
@@ -4211,6 +4241,7 @@ async fn batch_reads_follow_the_same_row_visibility_as_single_reads() {
         .unwrap()
         .unwrap();
     assert_eq!(seen(&got.records), [Some(f.alice_rec), None, None]);
+    assert_eq!(states_seen(&carol).await, Some(seen(&got.records)));
     f.store
         .unshare_record(
             &f.alice,
@@ -4228,6 +4259,7 @@ async fn batch_reads_follow_the_same_row_visibility_as_single_reads() {
         .await
         .unwrap();
     assert_eq!(seen(&got), [None, None, None]);
+    assert_eq!(states_seen(&carol).await, Some(vec![None, None, None]));
 
     // テーブルが見えない主体: 読取の口は 404（不在と同形）、絞り込みの口は None。
     let dave = ctx(&f.bob.tenant_id, "dave");
@@ -4241,4 +4273,5 @@ async fn batch_reads_follow_the_same_row_visibility_as_single_reads() {
         .await
         .unwrap()
         .is_none());
+    assert_eq!(states_seen(&dave).await, None);
 }

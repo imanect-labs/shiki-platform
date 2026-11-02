@@ -4,7 +4,8 @@
 //!   本人の `AuthContext` で data のチョークポイントを通して読み直して**、見える行で今の状態が停止時の状態の
 //!   ものだけを出す（二段 authz・見えない行は数えない）。出す列は担当者に読める列だけ（マスク後）。行は
 //!   テーブルごとに候補の id を 1 本のクエリで引く。一覧・件数は台帳の候補を絞るだけなので、見えないテーブルを
-//!   Deny の監査に残さない（本人が開いた 1 件は残す・BUG-43）。
+//!   Deny の監査に残さない（本人が開いた 1 件は残す・BUG-43）。所属ロールと件数の数え方は
+//!   [`super::approvals_inbox`]（件数は行の中身を運ばず、見えるかと今の状態だけを確かめる）。
 //! - 判断は、承認者本人の `AuthContext` で `FsmStore::transition(expected_rev)` を呼ぶ（ワークフローの権限で
 //!   遷移しない）。actor 述語・行の可視性・テーブルの editor・rev はすべて data が判定する（判定の正は 1 か所・
 //!   テーブル画面から遷移しても同じ承認が決まる）。run を進めるのは、遷移の outbox を受けた relay。
@@ -17,7 +18,7 @@
 
 use std::collections::BTreeMap;
 
-use authz::{AuthContext, ObjectType, Relation};
+use authz::AuthContext;
 use axum::{
     extract::{Path, Query, State},
     http::StatusCode,
@@ -32,6 +33,7 @@ use uuid::Uuid;
 use workflow_engine::ir::params::{ApprovalComment, ApprovalDecisionKind};
 use workflow_engine::{AcceptedDecision, ApprovalRow, DecisionStart, InboxCursor};
 
+use super::approvals_inbox::{self, my_roles, SCAN_LIMIT};
 use crate::{
     error::ApiError,
     extract::{AuthContextExt, TraceIdExt},
@@ -40,15 +42,6 @@ use crate::{
 
 /// 1 ページの件数。
 const PAGE: i64 = 50;
-/// 件数の打ち切り（バッジは 99+）。
-const COUNT_CAP: usize = 99;
-/// 一覧の 1 回・件数の 1 回で読み直す台帳の行の上限（見えない行ばかりでも際限なく読まない）。
-const SCAN_LIMIT: usize = 500;
-/// 所属ロールの実効集合が ListObjects の上限で切れたときに、OpenFGA に確かめる担当のロールの数の上限
-/// （[`my_roles`]・BUG-161）。
-const MAX_ROLE_CHECKS: i64 = 1_000;
-/// OpenFGA の object 識別子の最大長（`^[^\s]{2,256}$`）。
-const MAX_FGA_OBJECT_LEN: usize = 256;
 /// コメントの上限（文字数・台帳の check と同じ）。
 const MAX_COMMENT_CHARS: usize = 2000;
 
@@ -210,78 +203,6 @@ fn store(state: &AppState) -> &workflow_engine::ApprovalStore {
 
 fn internal(e: impl std::fmt::Display) -> ApiError {
     ApiError::Internal(format!("approvals: {e}"))
-}
-
-/// 本人の所属ロール（ローカル id・配下ロール込み）。
-///
-/// 実効集合（ListObjects）は応答の上限で黙って切れる（BUG-161）。上限に届いたら、承認の担当のロール（`approval`
-/// があればその承認の、無ければ保留中の承認の）のうち集合に無いものを、本人が所属するか OpenFGA に確かめて足す
-/// （台帳の候補が pre-filter、OpenFGA の判定が post-filter）。確かめるのは [`MAX_ROLE_CHECKS`] 件まで。
-async fn my_roles(
-    state: &AppState,
-    ctx: &AuthContext,
-    approval: Option<Uuid>,
-) -> Result<Vec<String>, ApiError> {
-    let unavailable = |e: authz::AuthzError| ApiError::ServiceUnavailable(format!("authz: {e}"));
-    let raw = state
-        .authz
-        .list_objects(&ctx.subject(), Relation::Member, ObjectType::Role)
-        .await
-        .map_err(unavailable)?;
-    let ns = ctx.ns();
-    let mut roles: Vec<String> = raw
-        .iter()
-        .filter_map(|o| o.split_once(':').map(|(_, id)| id))
-        .filter_map(|id| ns.strip_object_id(id))
-        .map(str::to_string)
-        .collect();
-    if !authz::visible::list_may_be_cut(raw.len()) {
-        return Ok(roles);
-    }
-    let known: std::collections::HashSet<&str> = roles.iter().map(String::as_str).collect();
-    // 台帳の値は作者が書いたもの。OpenFGA が object として受け付けない形は問わない（誰も所属できない・
-    // BatchCheck は 1 問の形式違反で全体を拒否する）。
-    let candidates = store(state)
-        .assignee_roles(&ctx.tenant_id, &ctx.org, approval, MAX_ROLE_CHECKS)
-        .await
-        .map_err(internal)?;
-    // 候補は名前の順で上限まで。届いたら、後ろのロール宛ての承認はこの人の受信箱に出ない（件数にも数えない）ので、
-    // 黙って切らずに残す（応答には印を足さない・BUG-161 の残り）。
-    if i64::try_from(candidates.len()).unwrap_or(i64::MAX) >= MAX_ROLE_CHECKS {
-        tracing::warn!(
-            tenant_id = %ctx.tenant_id,
-            org = %ctx.org,
-            approval = ?approval,
-            limit = MAX_ROLE_CHECKS,
-            "所属ロールが上限に届いた人の承認の担当のロールの候補が上限に届きました。名前の順で後ろのロール宛ての承認は、\
-             この人の受信箱に出ません"
-        );
-    }
-    let ask: Vec<(String, authz::FgaObject)> = candidates
-        .into_iter()
-        .filter(|r| !known.contains(r.as_str()) && authz::validate_local_id(r).is_ok())
-        .map(|r| {
-            let object = ns.role(&r);
-            (r, object)
-        })
-        .filter(|(_, o)| o.as_str().len() <= MAX_FGA_OBJECT_LEN)
-        .collect();
-    let objects: Vec<authz::FgaObject> = ask.iter().map(|(_, o)| o.clone()).collect();
-    let held = authz::visible::holds_any(
-        state.authz.as_ref(),
-        &ctx.subject(),
-        &[Relation::Member],
-        &objects,
-        authz::Consistency::HigherConsistency,
-    )
-    .await
-    .map_err(unavailable)?;
-    roles.extend(
-        ask.into_iter()
-            .zip(held)
-            .filter_map(|((r, _), member)| member.then_some(r)),
-    );
-    Ok(roles)
 }
 
 /// 台帳の行の読み方（見えないテーブルを Deny の監査に残すか）。
@@ -526,44 +447,8 @@ pub async fn list_approvals(
 pub async fn count_approvals(
     State(state): State<AppState>,
     AuthContextExt(ctx): AuthContextExt,
-    trace: TraceIdExt,
 ) -> Result<Json<ApprovalCountResponse>, ApiError> {
-    let roles = my_roles(&state, &ctx, None).await?;
-    let mut count = 0usize;
-    let mut scanned = 0usize;
-    let mut truncated = false;
-    let mut after: Option<InboxCursor> = None;
-    loop {
-        let rows = store(&state)
-            .inbox(
-                &ctx.tenant_id,
-                &ctx.org,
-                &ctx.principal.id,
-                &roles,
-                after,
-                PAGE * 2,
-            )
-            .await
-            .map_err(internal)?;
-        let n = rows.len();
-        scanned += n;
-        after = rows.last().map(|r| cursor_of(r.created_at, r.approval_id));
-        count += visible_items(&state, &ctx, rows, Reading::Inbox, trace.as_deref())
-            .await?
-            .len();
-        if count > COUNT_CAP || (n as i64) < PAGE * 2 {
-            break;
-        }
-        if scanned >= SCAN_LIMIT {
-            // 見えない承認が多く数え切れなかった（数えた分より多いかもしれない）。
-            truncated = true;
-            break;
-        }
-    }
-    Ok(Json(ApprovalCountResponse {
-        count: u32::try_from(count.min(COUNT_CAP)).unwrap_or(99),
-        more: count > COUNT_CAP || truncated,
-    }))
+    Ok(Json(approvals_inbox::count(&state, &ctx).await?))
 }
 
 /// 承認待ち 1 件（判断ごとに本人がいま実行できるかを添える）。担当者でない・存在しない・行が見えない・

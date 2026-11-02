@@ -180,7 +180,7 @@ pub use rag::{
     MAX_RAG_BODY_FIELDS, MAX_RAG_CHUNK_CHARS, MAX_RAG_POST_FILTER_IDS, RAG_INDEX_BATCH,
     RAG_INDEX_CONSUMER,
 };
-pub use record::FilteredRecords;
+pub use record::{FilteredRecords, RecordState};
 pub use record_list::{ListRecordsOptions, ListRecordsPage, RecordFilter, RecordSort};
 pub use record_share::RecordShareRole;
 pub use schema::validate_table_schema_public;
