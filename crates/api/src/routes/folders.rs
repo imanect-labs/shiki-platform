@@ -78,6 +78,22 @@ pub struct ChildrenQuery {
     pub q: Option<String>,
 }
 
+/// 名前の完全一致の引き当てのクエリ（親・名前・BUG-199）。
+#[derive(Debug, Deserialize, IntoParams)]
+pub struct ChildByNameQuery {
+    /// 親フォルダ。未指定は org ルート直下。
+    pub parent_id: Option<Uuid>,
+    /// 名前（完全一致・大文字と小文字を区別する）。
+    pub name: String,
+}
+
+/// 名前の完全一致の引き当ての結果。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ChildByNameResponse {
+    /// 同じフォルダにある、その名前の見えるノード（無い・見えなければ `null`）。
+    pub node: Option<NodeResponse>,
+}
+
 /// ゴミ箱一覧のクエリ（カーソル・件数）。
 #[derive(Debug, Deserialize, IntoParams)]
 pub struct PageQuery {
@@ -236,6 +252,40 @@ pub async fn list_children(
     let mut items: Vec<NodeResponse> = page.items.into_iter().map(Into::into).collect();
     resolve_updated_by_names(&state, &ctx, &mut items).await;
     Ok(Json(ChildrenResponse { items, next_cursor }))
+}
+
+/// フォルダ（未指定はルート）の中の、名前が完全に一致するノードを 1 件返す（アップロードの前の同じ名前の確かめ・
+/// BUG-199）。
+///
+/// 名前の検索（`GET /nodes?q=`）の先頭のページは、見えるものが多い人では 0 件で `next_cursor` だけを返すことがあるので、
+/// 同じ名前の確かめには使えない。同じフォルダの名前は一意なので、ここは高々 1 件を引き、OpenFGA に問うのも高々 1 回。
+/// 見えないノードは `null`（その名前で保存すると、確定の 409 で同じ名前があると分かる）。
+#[utoipa::path(
+    get,
+    path = "/nodes/by-name",
+    params(ChildByNameQuery),
+    responses(
+        (status = 200, description = "その名前の見えるノード（無ければ node が null）", body = ChildByNameResponse),
+        (status = 400, description = "name が無い"),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "認可されていない"),
+        (status = 404, description = "親フォルダが無い"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn find_child_by_name(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    trace: TraceIdExt,
+    Query(q): Query<ChildByNameQuery>,
+) -> Result<Json<ChildByNameResponse>, ApiError> {
+    let node = state
+        .storage
+        .find_child_by_name(&ctx, q.parent_id, &q.name, trace.as_deref())
+        .await?;
+    let mut items: Vec<NodeResponse> = node.into_iter().map(Into::into).collect();
+    resolve_updated_by_names(&state, &ctx, &mut items).await;
+    Ok(Json(ChildByNameResponse { node: items.pop() }))
 }
 
 /// ノードのパンくず（root→自身。読める接頭辞のみ）。

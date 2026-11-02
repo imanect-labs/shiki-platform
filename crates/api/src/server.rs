@@ -160,6 +160,9 @@ pub fn route_table() -> Vec<RouteDecl> {
         r("/nodes", &["GET"], Session, || {
             get(routes::folders::list_children)
         }),
+        r("/nodes/by-name", &["GET"], Session, || {
+            get(routes::folders::find_child_by_name)
+        }),
         r("/nodes/{id}/breadcrumb", &["GET"], Session, || {
             get(routes::folders::breadcrumb)
         }),

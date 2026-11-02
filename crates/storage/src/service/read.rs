@@ -90,7 +90,50 @@ impl StorageService {
         include_system: bool,
         trace_id: Option<&str>,
     ) -> Result<ChildPage, StorageError> {
-        // 親の閲覧可否を先に確認（ルートは org メンバー）。読めない親は存在秘匿で空扱い。
+        self.authorize_children(ctx, parent_id, trace_id).await?;
+
+        // `include_system=false`（ドライブ UI 等）はシステム領域（#392）を除外する。
+        // true はエージェント自身のワークスペース列挙だけが使う（chat::StorageWorkspaceStore）。
+        let (items, next_cursor) = self
+            .scan_nodes(
+                ctx,
+                &ScanWhere::Children {
+                    parent_id,
+                    include_system,
+                },
+                sort,
+                cursor,
+                limit,
+                &HashSet::new(),
+            )
+            .await?;
+        // 成功した一覧（ディレクトリ列挙）も監査に残す（NFR-6・読取系なので未チェーン）。
+        self.audit
+            .record(
+                ctx,
+                AuditEntry {
+                    action: AuditAction::FolderChildrenList,
+                    object_type: "folder",
+                    object_id: &parent_id.map_or_else(|| "root".into(), |p| p.to_string()),
+                    decision: Decision::Allow,
+                    trace_id,
+                    metadata: json!({ "returned": items.len() }),
+                },
+            )
+            .await?;
+        Ok(ChildPage { items, next_cursor })
+    }
+
+    /// フォルダー（`None` は組織の最上位）の中身を見てよいか（中身の一覧と、名前の完全一致の引き当ての前段）。
+    ///
+    /// 親の閲覧可否を先に確認する（最上位は org メンバー）。読めない親は存在秘匿で `NotFound`、最上位で org メンバー
+    /// でなければ `Forbidden`。
+    async fn authorize_children(
+        &self,
+        ctx: &AuthContext,
+        parent_id: Option<Uuid>,
+        trace_id: Option<&str>,
+    ) -> Result<(), StorageError> {
         match parent_id {
             Some(p) => {
                 self.ensure_folder(ctx, p).await?;
@@ -123,23 +166,54 @@ impl StorageService {
                 .await?;
             }
         }
+        Ok(())
+    }
 
-        // `include_system=false`（ドライブ UI 等）はシステム領域（#392）を除外する。
-        // true はエージェント自身のワークスペース列挙だけが使う（chat::StorageWorkspaceStore）。
-        let (items, next_cursor) = self
-            .scan_nodes(
-                ctx,
-                &ScanWhere::Children {
-                    parent_id,
-                    include_system,
-                },
-                sort,
-                cursor,
-                limit,
-                &HashSet::new(),
-            )
-            .await?;
-        // 成功した一覧（ディレクトリ列挙）も監査に残す（NFR-6・読取系なので未チェーン）。
+    /// フォルダー（`None` は組織の最上位）の中の、名前が完全に一致する生きているノードを 1 件引く（見えなければ `None`）。
+    ///
+    /// アップロードの前の同じ名前の確かめに使う（BUG-199）。名前の検索（[`Self::search_nodes_by_name`]）の先頭の
+    /// ページは、見えるものが多い人では 0 件で続きの位置だけを返すので、同じ名前があっても見つからなかった。同じ
+    /// フォルダーの生きているノードの名前は一意（`node_sibling_name_uidx`・大文字と小文字を区別する）なので、候補は
+    /// 高々 1 件で、OpenFGA に問うのも高々 1 回。システム領域（#392）は返さない。
+    ///
+    /// 認可は中身の一覧と同じ（親の viewer・最上位は org メンバー）で、当たったノードは viewer を確かめる。見えない
+    /// ノードは返さない（その名前で保存しようとすると、確定の 409 で同じ名前があると分かる。それより多くは明かさない）。
+    pub async fn find_child_by_name(
+        &self,
+        ctx: &AuthContext,
+        parent_id: Option<Uuid>,
+        name: &str,
+        trace_id: Option<&str>,
+    ) -> Result<Option<Node>, StorageError> {
+        self.authorize_children(ctx, parent_id, trace_id).await?;
+        let row: Option<NodeRow> = sqlx::query_as(&format!(
+            "SELECT {NODE_COLS} FROM node \
+             WHERE org = $1 AND tenant_id = $2 AND parent_id IS NOT DISTINCT FROM $3 AND name = $4 \
+               AND deleted_at IS NULL AND system = false"
+        ))
+        .bind(&ctx.org)
+        .bind(&ctx.tenant_id)
+        .bind(parent_id)
+        .bind(name)
+        .fetch_optional(&self.db)
+        .await?;
+        let found = match row.map(row_to_node).transpose()? {
+            Some(node) => {
+                // 即時剥奪の反映のため強整合（中身の一覧と同じ）。
+                let visible = self
+                    .authz
+                    .check(
+                        &ctx.subject(),
+                        Relation::Viewer,
+                        &node_fga_object(&ctx.ns(), node.kind, node.id),
+                        Consistency::HigherConsistency,
+                    )
+                    .await?;
+                visible.then_some(node)
+            }
+            None => None,
+        };
+        // 中身の一覧と同じく監査に残す（名前は載せない: 低エントロピー語の露出回避）。
         self.audit
             .record(
                 ctx,
@@ -149,11 +223,11 @@ impl StorageService {
                     object_id: &parent_id.map_or_else(|| "root".into(), |p| p.to_string()),
                     decision: Decision::Allow,
                     trace_id,
-                    metadata: json!({ "returned": items.len() }),
+                    metadata: json!({ "returned": usize::from(found.is_some()), "by_name": true }),
                 },
             )
             .await?;
-        Ok(ChildPage { items, next_cursor })
+        Ok(found)
     }
 
     /// フォルダ横断の**名前検索**（権限フィルタ済み・keyset ページング）。

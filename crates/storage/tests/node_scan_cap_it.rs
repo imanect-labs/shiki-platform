@@ -709,6 +709,91 @@ async fn name_search_full_of_hidden_hits_stops_at_the_budget_and_the_rest_follow
     .await;
 }
 
+/// アップロードの前の同じ名前の確かめ（名前の完全一致の引き当て・BUG-199）は、名前の検索の先頭のページが空でも、
+/// 同じフォルダーの同じ名前を見つける。OpenFGA に問うのは、親の確認と当たったノードの確かめの 1 回ずつ。見えない
+/// 同じ名前・ほかのフォルダーの同じ名前・大文字と小文字の違う名前は返さない。
+#[tokio::test]
+async fn exact_name_lookup_finds_the_sibling_a_search_page_misses() {
+    run(|env| async move {
+        env.fga
+            .write(&file_fillers(&env, LIST_OBJECTS_MAX_RESULTS + 10))
+            .await;
+        hidden(&env, None, "報告書", NODE_SCAN_MAX_CHECKS + 100).await;
+        let name = "zzz-報告書.pdf";
+        let mine = env
+            .service
+            .create_folder(&env.bob, None, name, None)
+            .await
+            .unwrap();
+        // 画面がこれまで使っていた確かめ（名前の検索の先頭のページ）は、0 件で続きの位置だけを返す。
+        let first = env
+            .service
+            .search_nodes_by_name(&env.bob, name, ChildSort::default(), None, 100, None)
+            .await
+            .unwrap();
+        assert!(first.items.is_empty(), "先頭のページには出ない");
+        assert!(first.next_cursor.is_some());
+        env.counting.take();
+
+        let find = |who: AuthContext, parent: Option<Uuid>, name: &'static str| {
+            let env = Arc::clone(&env);
+            async move {
+                env.service
+                    .find_child_by_name(&who, parent, name, None)
+                    .await
+            }
+        };
+        let found = find(env.bob.clone(), None, name).await.unwrap();
+        assert_eq!(found.map(|n| n.id), Some(mine.id), "同じ名前を見つける");
+        assert_eq!(
+            env.counting.take(),
+            (2, 0),
+            "親（組織の member）と当たったノードの 1 回ずつ"
+        );
+        assert!(find(env.bob.clone(), None, "ZZZ-報告書.PDF")
+            .await
+            .unwrap()
+            .is_none());
+        assert!(find(env.bob.clone(), None, "どこにも無い名前")
+            .await
+            .unwrap()
+            .is_none());
+        assert_eq!(env.counting.take(), (2, 0), "当たらなければ親の確認だけ");
+        // 見えない同じ名前（ほかの人の非公開のもの）は返さない。
+        assert!(find(env.bob.clone(), None, "aaa-見えない-報告書-00001")
+            .await
+            .unwrap()
+            .is_none());
+        // フォルダーの中: ほかのフォルダーの同じ名前とは分ける。親を読めない人には存在を明かさない。
+        let top = env
+            .service
+            .create_folder(&env.bob, None, "zzz-受付", None)
+            .await
+            .unwrap();
+        assert!(find(env.bob.clone(), Some(top.id), name)
+            .await
+            .unwrap()
+            .is_none());
+        let inner = env
+            .service
+            .create_folder(&env.bob, Some(top.id), name, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            find(env.bob.clone(), Some(top.id), name)
+                .await
+                .unwrap()
+                .map(|n| n.id),
+            Some(inner.id)
+        );
+        assert!(matches!(
+            find(env.alice.clone(), Some(top.id), name).await,
+            Err(storage::StorageError::NotFound)
+        ));
+    })
+    .await;
+}
+
 /// 上限に届いた名前の検索で候補を引く文（`storage::named_scan_sql`）は、名前の順の索引（migration 0128 の
 /// `node_name_scan_idx`）をたどって件数で打ち切る。索引が無いと、引くたびに組織の生きているノードをすべて読んで
 /// 並べ直す計画になる。小さな表でも索引を選べるかだけを見るため、走査と並べ直しを抑えて計画を立てさせる（索引で

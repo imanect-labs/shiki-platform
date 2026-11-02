@@ -9,6 +9,7 @@ import { sha256Hex } from "./sha256";
 export type NodeResponse = components["schemas"]["NodeResponse"];
 export type ChildrenResponse = components["schemas"]["ChildrenResponse"];
 export type CrumbResponse = components["schemas"]["CrumbResponse"];
+type ChildByNameResponse = components["schemas"]["ChildByNameResponse"];
 export type UploadTicketResponse = components["schemas"]["UploadTicketResponse"];
 export type DownloadUrlResponse = components["schemas"]["DownloadUrlResponse"];
 export type FileVersionResponse = components["schemas"]["FileVersionResponse"];
@@ -171,18 +172,19 @@ export function breadcrumb(nodeId: string): Promise<CrumbResponse[]> {
   return apiFetch(`/nodes/${nodeId}/breadcrumb`).then((r) => okJson<CrumbResponse[]>(r));
 }
 
-/// 同じフォルダにある同名ノードを探す（アップロード前の衝突確認）。名前検索の先頭 1 ページから
-/// 親と名前が完全一致するものだけを拾う（フォルダの子を全件読まない）。名前の一意制約は
+/// 同じフォルダにある同名ノードを探す（アップロード前の衝突確認）。サーバーが名前の完全一致で 1 件を引く
+/// （`GET /nodes/by-name`・フォルダの子を全件読まない・OpenFGA に問うのは高々 1 回）。名前の一意制約は
 /// 大文字小文字を区別するため比較も完全一致。見つからなければ null（読めない同名は見えないので、
 /// その場合は finalize の 409 で気付く）。
+///
+/// 名前の検索（`GET /nodes?q=`）の先頭のページは使わない。見えるものが多い人では 0 件で続きの位置だけが返り、
+/// 同じ名前があっても見つからなかった（BUG-199）。
 export async function findSiblingByName(
   parentId: string | null,
   name: string,
 ): Promise<NodeResponse | null> {
-  const page = await listChildren({ q: name, limit: 100 });
-  return (
-    page.items.find((n) => (n.parent_id ?? null) === parentId && n.name === name) ?? null
-  );
+  const res = await apiFetch(`/nodes/by-name${qs({ parent_id: parentId ?? undefined, name })}`);
+  return (await okJson<ChildByNameResponse>(res)).node ?? null;
 }
 
 // --- フォルダ操作 ---------------------------------------------------------
