@@ -88,7 +88,7 @@ function SaveState({
   );
 }
 
-/// 自動実行の状態バッジ（有効・再同意が必要）。再同意はタップで設定を開く。
+/// 自動実行の状態バッジ（有効・見送り中・再同意が必要）。見送り中と再同意はタップで設定を開く。
 function RegistrationBadge({
   registration,
   onOpen,
@@ -125,6 +125,45 @@ function RegistrationBadge({
       <Tooltip>
         <TooltipTrigger asChild>{badge}</TooltipTrigger>
         <TooltipContent>権限の変更で自動実行が停止しています。クリックして再同意</TooltipContent>
+      </Tooltip>
+    );
+  }
+  // オンのまま、スケジュールや変更での起動を見送り続けている（GAP-67）。タップで自動実行の設定を開き、スマホは理由と
+  // 直し方を文字で添える（ツールチップはタッチで読めない）。
+  const skip = registration?.launchSkip ?? null;
+  if (status === "enabled" && skip) {
+    const badge = (
+      <button
+        type="button"
+        onClick={onOpen}
+        data-testid="workflow-launch-skip"
+        className="rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      >
+        <Badge variant="warning">
+          <AlertTriangle className="size-3" aria-hidden />
+          自動実行を見送っています
+        </Badge>
+      </button>
+    );
+    // 理由と直し方は、それぞれ折り返さない塊にして文の切れ目で折る（「自動実行の設定」の途中で割らない）。
+    const reason = (
+      <>
+        <span className="inline-block">{skip.message}</span>
+        <span className="inline-block">{skip.fix}</span>
+      </>
+    );
+    if (!desktop) {
+      return (
+        <span className="flex flex-col items-start gap-1 text-xs leading-relaxed text-muted-foreground">
+          {badge}
+          <span data-testid="workflow-launch-skip-reason">{reason}</span>
+        </span>
+      );
+    }
+    return (
+      <Tooltip>
+        <TooltipTrigger asChild>{badge}</TooltipTrigger>
+        <TooltipContent className="max-w-sm">{reason}</TooltipContent>
       </Tooltip>
     );
   }

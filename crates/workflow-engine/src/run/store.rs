@@ -163,6 +163,11 @@ impl RunStore {
         RunStore { db, lease_secs }
     }
 
+    /// run の DB（起動口が自動実行の見送りを同じ DB に記録する・GAP-67）。
+    pub(crate) fn db(&self) -> &PgPool {
+        &self.db
+    }
+
     /// `resume_failed` が claim 済み step を `ready` へ戻すときに置く猶予（秒）。
     ///
     /// 旧 worker が有効リースを保持したまま別 worker が再 claim すると、checkpoint は fencing が

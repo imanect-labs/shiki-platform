@@ -375,6 +375,20 @@ export async function writeFgaTuples(page: Page, tuples: FgaTuple[]): Promise<()
   return remove;
 }
 
+/// サーバと同じ OpenFGA の store からタプルを消す（無いタプルは消えているものとして扱う・片付けにも使える）。画面や
+/// API に入口の無い権限の食い違い（自動実行の主体が自分の定義を読めない・BUG-146）を作るときに使う。
+export async function deleteFgaTuples(page: Page, tuples: FgaTuple[]): Promise<void> {
+  const storeId = await fgaStore(page);
+  for (const tuple of tuples) {
+    const res = await page.request.post(`${FGA_URL}/stores/${storeId}/write`, {
+      data: { deletes: { tuple_keys: [tuple] } },
+    });
+    if (res.ok()) continue;
+    const text = await res.text();
+    expect(text, `${tuple.user} ${tuple.relation} ${tuple.object}`).toContain("which does not exist");
+  }
+}
+
 /// テーブルを `userId` の editor にし、外す関数を返す。テーブルの共有はまだ画面にも API にも無い（作った人だけが
 /// owner になる）ので、サーバと同じ OpenFGA の store にタプルを直接書く（名前は authz の Namespace と同じ
 /// `<型>:<tenant>|<id>`）。

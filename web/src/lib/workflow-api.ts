@@ -260,12 +260,26 @@ export type DelegationEntry = {
   grantedAt: string;
 };
 
+/// いま見送り続けている自動実行（GAP-67）。文はサーバーが作る作成者向けのもの（理由と直し方）。
+export type LaunchSkip = {
+  /// 理由の code（definition_unreadable / delegation_invalid / not_ready）。
+  code: string;
+  message: string;
+  fix: string;
+  version: number;
+  firstAt: string;
+  lastAt: string;
+  count: number;
+};
+
 export type Registration = {
   status: "enabled" | "disabled" | "suspended_reconsent" | "none";
   enabledVersion: number | null;
   consentedScopes: string[];
   enabledBy: string | null;
   delegations: DelegationEntry[];
+  /// 自動実行の起動を見送り続けていれば、その理由と回数（無ければ null）。
+  launchSkip: LaunchSkip | null;
 };
 
 export type SuggestedGrant = {
@@ -302,6 +316,17 @@ export async function getRegistration(id: string): Promise<Registration> {
       relation: d.relation,
       grantedAt: d.granted_at,
     })),
+    launchSkip: body.launch_skip
+      ? {
+          code: body.launch_skip.code,
+          message: body.launch_skip.message,
+          fix: body.launch_skip.fix,
+          version: body.launch_skip.version,
+          firstAt: body.launch_skip.first_at,
+          lastAt: body.launch_skip.last_at,
+          count: body.launch_skip.count,
+        }
+      : null,
   };
 }
 

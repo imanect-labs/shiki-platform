@@ -455,6 +455,7 @@ use utoipa::{
         crate::routes::workflows::RetryResponse,
         crate::routes::workflows::run_ops::RetryMode,
         crate::routes::workflows::RegistrationResponse,
+        crate::routes::workflows::LaunchSkipItem,
         crate::routes::workflows::DelegationItem,
         crate::routes::workflows::ConsentPlanResponse,
         crate::routes::workflows::SuggestedGrantItem,

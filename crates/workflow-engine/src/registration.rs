@@ -247,6 +247,7 @@ impl RegistrationService {
             .await
             .map_err(map_db)?;
             materialize_triggers(&mut tx, tenant, workflow_id, version, ir).await?;
+            forget_launch_skip(&mut tx, tenant, workflow_id).await?;
             tx.commit().await.map_err(map_db)?;
             return Ok(Vec::new());
         }
@@ -265,8 +266,23 @@ impl RegistrationService {
             )
             .await?;
         materialize_triggers(&mut tx, tenant, workflow_id, version, ir).await?;
+        forget_launch_skip(&mut tx, tenant, workflow_id).await?;
         tx.commit().await.map_err(map_db)?;
         Ok(revoked)
+    }
+
+    /// いま見送り続けている自動実行の記録（オンにしている版で、自動実行がオフでないもの・GAP-67）。
+    ///
+    /// 呼び出し側（登録の API）がワークフローを見られることを確かめてから呼ぶ。返す文は作成者向けで、内部の文や
+    /// ほかの人の情報を含まない。
+    pub async fn launch_skip(
+        &self,
+        tenant_id: &str,
+        workflow_id: Uuid,
+    ) -> Result<Option<crate::run::launch_skip::LaunchSkip>, EnableError> {
+        crate::run::launch_skip::current(&self.db, tenant_id, workflow_id)
+            .await
+            .map_err(map_db)
     }
 
     /// run 開始/再開の委譲チェック（[`DelegationStore::check_run_start`] の合流点・fail-closed）。
@@ -490,7 +506,18 @@ async fn stop_within(
     .execute(&mut **tx)
     .await
     .map_err(map_db)?;
-    Ok(())
+    forget_launch_skip(tx, tenant_id, workflow_id).await
+}
+
+/// 自動実行の見送りの記録を消す（オンにし直した・オフにした・呼び出し側 TX・GAP-67）。
+async fn forget_launch_skip(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant_id: &str,
+    workflow_id: Uuid,
+) -> Result<(), EnableError> {
+    crate::run::launch_skip::clear(&mut **tx, tenant_id, workflow_id)
+        .await
+        .map_err(map_db)
 }
 
 /// IR の triggers[] を `workflow_trigger` 行へ実体化する（既存行は全削除→挿入・呼び出し側 TX）。

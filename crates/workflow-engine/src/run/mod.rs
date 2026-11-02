@@ -26,7 +26,7 @@ use chrono::{DateTime, Utc};
 use serde_json::Value;
 use uuid::Uuid;
 
-pub use launch_skip::SkipCause;
+pub use launch_skip::{LaunchSkip, SkipCause};
 pub use launcher::{LauncherError, WorkflowRunLauncher};
 pub use model::{idempotency_key, RunStatus, StepStatus};
 pub use outcome::{

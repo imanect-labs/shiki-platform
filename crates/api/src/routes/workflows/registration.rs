@@ -1,6 +1,6 @@
 //! 有効化・同意・トリガ実体化 API（Task 10.4a 残・engine.md §10）。
 //!
-//! - GET registration — 有効化状態＋委譲一覧（再同意バナー用）
+//! - GET registration — 有効化状態＋委譲一覧（再同意バナー用）＋いま見送り続けている自動実行（GAP-67）
 //! - GET consent-plan — 同意画面の提案 grants（IR 静的分析＋secret 名→id 解決）
 //! - POST enable — 明示委譲付き有効化（scope 拡大で grants 不足なら 409 missing_scopes。同意の画面は
 //!   `consent: true` で送り、grants が空でも同意し直す・BUG-102）
@@ -44,6 +44,28 @@ pub struct DelegationItem {
     pub granted_at: String,
 }
 
+/// いま見送り続けている自動実行（GAP-67）。
+///
+/// 自動実行（スケジュール・ファイルやテーブルの変更）の起動を、定義を読めない・オンにした人の権限が外れた・実行の
+/// 前に止める設定がある、のどれかで見送ったとき。自動実行が動くか、オンにし直す・オフにすると消える。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct LaunchSkipItem {
+    /// 理由の code（definition_unreadable / delegation_invalid / not_ready）。
+    pub code: String,
+    /// 作成者向けの理由の文（内部の文・ほかの人の情報を含まない）。
+    pub message: String,
+    /// 直し方の文。
+    pub fix: String,
+    /// 見送った版（いまオンにしている版）。
+    pub version: i64,
+    /// 続く見送りの最初の時刻（RFC 3339）。
+    pub first_at: String,
+    /// 最後に見送った時刻（RFC 3339）。
+    pub last_at: String,
+    /// 続けて見送った回数。
+    pub count: i64,
+}
+
 /// registration の現況。
 #[derive(Debug, Serialize, ToSchema)]
 pub struct RegistrationResponse {
@@ -53,6 +75,8 @@ pub struct RegistrationResponse {
     pub consented_scopes: Vec<String>,
     pub enabled_by: Option<String>,
     pub delegations: Vec<DelegationItem>,
+    /// いま見送り続けている自動実行（無ければ null・GAP-67）。
+    pub launch_skip: Option<LaunchSkipItem>,
 }
 
 /// 同意画面の提案 grant。
@@ -205,8 +229,24 @@ pub async fn get_registration(
         .view(&ctx.tenant_id, id)
         .await
         .map_err(map_enable_err)?;
+    // 見送りの記録はワークフローを見られる人にだけ返す（上の viewer の確かめの後）。
+    let launch_skip = state
+        .workflow_registration
+        .launch_skip(&ctx.tenant_id, id)
+        .await
+        .map_err(map_enable_err)?
+        .map(|s| LaunchSkipItem {
+            fix: s.fix().to_string(),
+            code: s.code,
+            message: s.message,
+            version: s.version,
+            first_at: s.first_at.to_rfc3339(),
+            last_at: s.last_at.to_rfc3339(),
+            count: s.count,
+        });
     let ns = ctx.ns();
     Ok(Json(RegistrationResponse {
+        launch_skip,
         status: view.status,
         enabled_version: view.enabled_version,
         consented_scopes: view.consented_scopes,

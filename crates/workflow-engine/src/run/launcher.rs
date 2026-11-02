@@ -12,7 +12,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use super::graph::RunGraph;
-use super::launch_skip::{SkipCause, SkipWarnings};
+use super::launch_skip::{self, SkipCause, SkipWarnings};
 use super::store::{RunOrigin, RunStore};
 use crate::delegation::{DelegationStore, RunAdmission};
 use crate::scheduler::{LaunchOutcome, RunLauncher, SkipReason};
@@ -44,7 +44,10 @@ impl WorkflowRunLauncher {
 
     /// 自動実行の起動を見送る（再試行しない）。警告は (理由・テナント・ワークフロー・有効化した版) ごとにプロセスで
     /// 1 回（2 回目からは debug）。`reason` は詳しい理由（ログと戻り値の文・作成者には見せない）。
-    fn skip(
+    ///
+    /// 見送ったことを、理由の code と作成者向けの文で記録する（ワークフローの画面が出す・GAP-67）。記録できなくても
+    /// 見送りは変えない（一時障害として再試行に回すと、同じ見送りを試す回数だけ繰り返す）。
+    async fn skip(
         &self,
         cause: SkipCause,
         tenant_id: &str,
@@ -54,6 +57,11 @@ impl WorkflowRunLauncher {
     ) -> LaunchOutcome {
         self.skip_warnings
             .warn(cause, tenant_id, workflow_id, version, &reason);
+        if let Err(e) =
+            launch_skip::record(self.runs.db(), tenant_id, workflow_id, version, cause).await
+        {
+            tracing::warn!(tenant_id, %workflow_id, version, code = cause.code(), error = %e, "自動実行の見送りを記録できない");
+        }
         LaunchOutcome::Skipped(SkipReason::DelegationInvalid(reason))
     }
 
@@ -291,13 +299,15 @@ impl WorkflowRunLauncher {
             // の判定で、OpenFGA の障害は Forbidden にならない）。何度起こしても同じなので、一時障害として再試行しない。
             // 警告は版ごとに 1 回（発火のたびに出さない・BUG-146）。きっかけは止めない（オンにし直せば直る）。
             Err(crate::store::WorkflowStoreError::Artifact(artifact::ArtifactError::Forbidden)) => {
-                return Ok(self.skip(
-                    SkipCause::DefinitionUnreadable,
-                    tenant_id,
-                    workflow_id,
-                    enabled_version,
-                    "自動実行の主体がワークフローの定義を読めません".to_string(),
-                ));
+                return Ok(self
+                    .skip(
+                        SkipCause::DefinitionUnreadable,
+                        tenant_id,
+                        workflow_id,
+                        enabled_version,
+                        "自動実行の主体がワークフローの定義を読めません".to_string(),
+                    )
+                    .await);
             }
             Err(e) => return Err(LauncherError::Ir(format!("{e:?}"))),
         };
@@ -313,13 +323,15 @@ impl WorkflowRunLauncher {
             RunAdmission::Ok => {}
             RunAdmission::DelegationInvalid(reason) => {
                 // 委譲失効・未同意スコープ・未登録などの切り分けができるよう理由を残す（警告は版ごとに 1 回・BUG-170）。
-                return Ok(self.skip(
-                    SkipCause::DelegationInvalid,
-                    tenant_id,
-                    workflow_id,
-                    enabled_version,
-                    reason,
-                ));
+                return Ok(self
+                    .skip(
+                        SkipCause::DelegationInvalid,
+                        tenant_id,
+                        workflow_id,
+                        enabled_version,
+                        reason,
+                    )
+                    .await);
             }
         }
 
@@ -335,13 +347,15 @@ impl WorkflowRunLauncher {
                 blockers.len(),
                 first.message
             );
-            return Ok(self.skip(
-                SkipCause::NotReady,
-                tenant_id,
-                workflow_id,
-                enabled_version,
-                reason,
-            ));
+            return Ok(self
+                .skip(
+                    SkipCause::NotReady,
+                    tenant_id,
+                    workflow_id,
+                    enabled_version,
+                    reason,
+                )
+                .await);
         }
 
         let ir_json = serde_json::to_value(&ir).map_err(|e| LauncherError::Ir(e.to_string()))?;
@@ -369,10 +383,15 @@ impl WorkflowRunLauncher {
             .await
             .map_err(|e| LauncherError::Run(e.to_string()))?;
         // None = policies.on_trigger_overflow=skip による多重度あふれ（再試行しても同じ）。
-        Ok(run_id.map_or(
-            LaunchOutcome::Skipped(SkipReason::Overflow),
-            LaunchOutcome::Started,
-        ))
+        let Some(run_id) = run_id else {
+            return Ok(LaunchOutcome::Skipped(SkipReason::Overflow));
+        };
+        // 自動実行が動いたので、見送りの記録を消す（画面は見送り続けているものだけを出す・GAP-67）。消せなくても起動は
+        // 済んでいる（次に起動できたときか、オンにし直したときに消える）。
+        if let Err(e) = launch_skip::clear(self.runs.db(), tenant_id, workflow_id).await {
+            tracing::warn!(tenant_id, %workflow_id, error = %e, "自動実行の見送りの記録を消せない");
+        }
+        Ok(LaunchOutcome::Started(run_id))
     }
 }
 

@@ -1714,3 +1714,96 @@ async fn manual_run_takes_trial_trigger() {
     );
     delete_flow_and_runs(&env, &id).await;
 }
+
+/// GAP-67: 自動実行の起動を見送り続けているワークフローの登録の口（GET registration）は、理由・直し方・見送った版・
+/// 回数・時刻を返す。オフにすると返さない（null）。理由の文は作成者向けで、内部の理由の文を出さない。
+#[tokio::test]
+async fn registration_reports_skipped_automatic_runs() {
+    let Some(env) = setup().await else { return };
+    let suffix = Uuid::new_v4().simple().to_string();
+    let ir = json!({
+        "ir_version": 1,
+        "name": format!("http-skip-{}", &suffix[..12]),
+        "triggers": [{ "kind": "schedule", "cron": "0 9 * * *", "tz": "Asia/Tokyo" }],
+        "nodes": [{ "id": "ask", "type": "llm.invoke", "params": { "prompt": "" } }],
+        "edges": []
+    });
+    let (st, body) = req(&env, "POST", "/workflows", Some(json!({ "ir": ir }))).await;
+    assert_eq!(st, StatusCode::CREATED, "{body}");
+    let id = body["id"].as_str().unwrap().to_string();
+    let wf = Uuid::parse_str(&id).unwrap();
+    let (_, reg) = req(&env, "GET", &format!("/workflows/{id}/registration"), None).await;
+    assert_eq!(reg["launch_skip"], Value::Null, "{reg}");
+
+    // 空の欄のある v1 を、有効化の前の確認を通さずにオンにした状態（前の版でオンにした定義・BUG-51）で、スケジュールが
+    // 2 回起動を見送る。
+    let authz: Arc<dyn AuthzClient> = Arc::new(AllowAll);
+    let artifacts = Arc::new(artifact::ArtifactStore::new(
+        env.pool.clone(),
+        Arc::clone(&authz),
+    ));
+    let delegation = workflow_engine::DelegationStore::new(env.pool.clone(), Arc::clone(&authz));
+    let launcher = workflow_engine::WorkflowRunLauncher::new(
+        delegation.clone(),
+        workflow_engine::WorkflowStore::new(artifacts),
+        RunStore::new(env.pool.clone(), workflow_engine::DEFAULT_LEASE_SECS),
+    );
+    let alice = authz::AuthContext::new(test_principal(), "acme".into(), "default".into());
+    delegation.enable(&alice, wf, 1, &[], &[]).await.unwrap();
+    for _ in 0..2 {
+        let out = <workflow_engine::WorkflowRunLauncher as workflow_engine::RunLauncher>::launch(
+            &launcher,
+            "default",
+            wf,
+            "schedule",
+            &format!("{wf}:0"),
+            &Value::Null,
+            None,
+        )
+        .await;
+        assert!(
+            matches!(out, workflow_engine::LaunchOutcome::Skipped(_)),
+            "{out:?}"
+        );
+    }
+    let (st, reg) = req(&env, "GET", &format!("/workflows/{id}/registration"), None).await;
+    assert_eq!(st, StatusCode::OK, "{reg}");
+    let skip = &reg["launch_skip"];
+    assert_eq!(skip["code"], "not_ready", "{reg}");
+    assert_eq!(skip["version"], 1, "{reg}");
+    assert_eq!(skip["count"], 2, "{reg}");
+    assert_eq!(
+        skip["message"], "オンにしている v1 に、空の欄など実行できない設定があります。",
+        "{reg}"
+    );
+    assert_eq!(
+        skip["fix"],
+        "エディターで設定を直して保存してから、「自動実行の設定」でもう一度オンにしてください。",
+        "{reg}"
+    );
+    for at in ["first_at", "last_at"] {
+        assert!(
+            chrono::DateTime::parse_from_rfc3339(skip[at].as_str().unwrap()).is_ok(),
+            "{reg}"
+        );
+    }
+    // 内部の理由の文（ログ用）は返さない。
+    assert!(
+        !reg.to_string().contains("実行の前に止める設定があります"),
+        "{reg}"
+    );
+
+    // オフにすると見送りは消える。
+    let (st, body) = req(&env, "POST", &format!("/workflows/{id}/disable"), None).await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    let (_, reg) = req(&env, "GET", &format!("/workflows/{id}/registration"), None).await;
+    assert_eq!(reg["launch_skip"], Value::Null, "{reg}");
+    sqlx::query(
+        "DELETE FROM workflow_registration WHERE tenant_id = 'default' AND workflow_id = $1",
+    )
+    .bind(wf)
+    .execute(&env.pool)
+    .await
+    .unwrap();
+    delete_flow_and_runs(&env, &id).await;
+}

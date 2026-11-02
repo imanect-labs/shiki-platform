@@ -34,6 +34,7 @@ import { useMe } from "@/hooks/use-me";
 import type { Node as IrNode } from "@/generated/workflow-ir";
 import { AiProvidersNote, hasAiNodes } from "./ai-providers-note";
 import { DelegationList } from "./enable-delegations";
+import { LaunchSkipNotice } from "./launch-skip";
 import {
   disableWorkflow,
   enableWorkflow,
@@ -305,6 +306,8 @@ export function EnableDialog({
             {`スケジュールやできごとで動かすには、あなたの権限の範囲でこのワークフローに権限を渡します（v${version} を有効化）。`}
           </DialogDescription>
         </DialogHeader>
+
+        {registration?.launchSkip ? <LaunchSkipNotice skip={registration.launchSkip} /> : null}
 
         {reconsent ? (
           <p className="flex items-start gap-2 rounded-md border p-2.5 text-xs text-foreground/80" style={{ borderColor: "color-mix(in oklab, var(--season-autumn) 45%, transparent)", backgroundColor: "color-mix(in oklab, var(--season-autumn) 10%, transparent)" }}>
