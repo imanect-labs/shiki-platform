@@ -9,7 +9,8 @@ import { cleanupAll, loginAs, loginViaKeycloak, uniqueName } from "./helpers";
 /// - 共同編集者は、自分の読めない部品を束ねたアプリを、その部品に触れなければ保存できる（D-16 の (d)）。部品の版を
 ///   変えると保存する人の権限で確かめ、そのときの誤りは部品を別名と版で言い、部品の id も本文の中の位置
 ///   （`workflows[0]`）も出さない。
-/// - アプリの一覧（/apps）には共有されたアプリも並ぶ。カードのメニューの「共有」と「削除」は owner のアプリにだけ出す。
+/// - アプリの一覧（/apps）には共有されたアプリも並ぶ。カードのメニュー（共有・バージョン履歴・削除）は owner のアプリにだけ
+///   出す。
 ///   共有の欄が共有中の相手を読めない（403）ときは、空の一覧に見せず「持ち主だけ」と知らせる。
 /// 作ったアプリ・ワークフローは最後に消す。`E2E_SHOTS_DIR` を渡すとスクリーンショットを撮る。
 
@@ -302,24 +303,18 @@ test("アプリの一覧のメニューの共有・削除は owner のアプリ�
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/bug78-list-owner-pc.png` });
     await page.keyboard.press("Escape");
 
-    // 共有を受けた人（編集の共有でも）のメニューには、バージョン履歴だけが出る（共有・削除は owner が要る）。
+    // 共有を受けた人（編集の共有でも）のカードにはメニューを出さない（共有・削除は owner が要り、バージョン履歴は
+    // 作る人のもので、編集の共有を受けた人はアプリの画面の「バージョン」から開く・D-16）。
     await bob.goto("/apps");
-    await bob.getByRole("button", { name: `${name} のその他の操作` }).click();
-    const bobMenu = bob.getByRole("menu");
-    await expect(bobMenu.getByRole("menuitem", { name: "バージョン履歴" })).toBeVisible();
-    await expect(bobMenu.getByRole("menuitem", { name: "共有" })).toHaveCount(0);
-    await expect(bobMenu.getByRole("menuitem", { name: "削除" })).toHaveCount(0);
+    await expect(bob.getByRole("heading", { name })).toBeVisible({ timeout: 15_000 });
+    await expect(bob.getByRole("button", { name: `${name} のその他の操作` })).toHaveCount(0);
     if (SHOTS) await bob.screenshot({ path: `${SHOTS}/bug78-list-editor-pc.png` });
-    await bob.keyboard.press("Escape");
 
     // スマホでも同じ（横にはみ出さない）。
     phone = await phoneOf(browser, bob);
     await phone.goto("/apps");
-    await phone.getByRole("button", { name: `${name} のその他の操作` }).click();
-    const phoneMenu = phone.getByRole("menu");
-    await expect(phoneMenu.getByRole("menuitem", { name: "バージョン履歴" })).toBeVisible();
-    await expect(phoneMenu.getByRole("menuitem", { name: "共有" })).toHaveCount(0);
-    await expect(phoneMenu.getByRole("menuitem", { name: "削除" })).toHaveCount(0);
+    await expect(phone.getByRole("heading", { name })).toBeVisible({ timeout: 15_000 });
+    await expect(phone.getByRole("button", { name: `${name} のその他の操作` })).toHaveCount(0);
     expect(await phone.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
     if (SHOTS) await phone.screenshot({ path: `${SHOTS}/bug78-list-editor-phone.png` });
 
