@@ -15,6 +15,7 @@ import {
 } from "@/components/ui/select";
 import {
   HTTP_MAX_HEADERS,
+  HTTP_MAX_HEADER_TOTAL_BYTES,
   HTTP_MAX_HEADER_VALUE_BYTES,
   type NodeParamsByType,
 } from "@/generated/workflow-catalog";
@@ -74,7 +75,6 @@ function HttpHeadersField({ node, dispatch, refCandidates, inMapRegion, fieldErr
               text
               refCandidates={refCandidates}
               inMapRegion={inMapRegion}
-              placeholder="例: application/json"
             />
           )}
         />
@@ -84,8 +84,14 @@ function HttpHeadersField({ node, dispatch, refCandidates, inMapRegion, fieldErr
           Host や Content-Length など、Shiki が決めるヘッダーは書けません。シークレットを付けるヘッダーと同じ名前も書けません。
         </p>
         <p>
-          {HTTP_MAX_HEADERS} 個まで、値は 1 つ {HTTP_MAX_HEADER_VALUE_BYTES / 1024} KB
+          {HTTP_MAX_HEADERS} 個まで、値は 1 つ {HTTP_MAX_HEADER_VALUE_BYTES / 1024} KB まで、名前と値を合わせて{" "}
+          {HTTP_MAX_HEADER_TOTAL_BYTES / 1024} KB
           までです。Idempotency-Key や Content-Type を書くと、Shiki が付ける値の代わりに、書いた値を送ります。
+        </p>
+        {/* 値は IR（バージョン履歴を含む）にそのまま残り、ワークフローを見られる人に見える。応答に映り返っても隠さない
+            （隠すのはシークレットの値だけ）。 */}
+        <p>
+          API キーなどの鍵は、ここに書かずにシークレットに入れて、「使用するシークレット」で付けてください。ここに書いた値は、このワークフローを見られる人に見えます。
         </p>
       </MoreInfo>
     </div>

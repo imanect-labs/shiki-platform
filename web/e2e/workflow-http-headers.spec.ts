@@ -65,7 +65,13 @@ test("外部 API 呼び出し: ヘッダーを名前と値で足し、書けな�
     await expect(panel.getByText("ヘッダー（省略可）", { exact: true })).toBeVisible();
     await expect(panel.getByText("「ヘッダーを追加」で、ヘッダーの名前と値の組を足します。", { exact: true })).toBeVisible();
     await panel.getByTestId("http-headers-rule").getByRole("button", { name: "詳しく" }).click();
-    await expect(panel.getByText(/20 個まで、値は 1 つ 4 KB までです。/)).toBeVisible();
+    await expect(panel.getByText(/20 個まで、値は 1 つ 4 KB まで、名前と値を合わせて 8 KB までです。/)).toBeVisible();
+    await expect(
+      panel.getByText(
+        "API キーなどの鍵は、ここに書かずにシークレットに入れて、「使用するシークレット」で付けてください。ここに書いた値は、このワークフローを見られる人に見えます。",
+        { exact: true },
+      ),
+    ).toBeVisible();
 
     // 1 行目: X-Request-Id（打った値のまま入る）。
     await panel.getByRole("button", { name: "ヘッダーを追加" }).click();

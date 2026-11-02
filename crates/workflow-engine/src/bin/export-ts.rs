@@ -96,14 +96,17 @@ fn limits_ts() -> String {
     ) + http_headers_ts().as_str()
 }
 
-/// 「外部 API 呼び出し」の「ヘッダー」の上限（数と値の長さ・`nodes::http_headers`・注記に数を手で書かない・GAP-19）。
+/// 「外部 API 呼び出し」の「ヘッダー」の上限（数と値の長さ・名前と値の合計・`nodes::http_headers`・注記に数を手で
+/// 書かない・GAP-19）。
 fn http_headers_ts() -> String {
-    use workflow_engine::nodes::http_headers::{MAX_HEADERS, MAX_VALUE_BYTES};
+    use workflow_engine::nodes::http_headers::{MAX_HEADERS, MAX_TOTAL_BYTES, MAX_VALUE_BYTES};
     format!(
         "\n/// 「外部 API 呼び出し」の「ヘッダー」に書ける数の上限（script の Shiki.http.request と同じ・GAP-19）。\n\
          export const HTTP_MAX_HEADERS = {MAX_HEADERS};\n\
          \n/// ヘッダーの値の長さの上限（バイト）。\n\
-         export const HTTP_MAX_HEADER_VALUE_BYTES = {MAX_VALUE_BYTES};\n"
+         export const HTTP_MAX_HEADER_VALUE_BYTES = {MAX_VALUE_BYTES};\n\
+         \n/// ヘッダーの名前と値を合わせた長さの上限（バイト）。\n\
+         export const HTTP_MAX_HEADER_TOTAL_BYTES = {MAX_TOTAL_BYTES};\n"
     )
 }
 
