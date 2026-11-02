@@ -187,14 +187,20 @@ fn info_kind(info: &str) -> (bool, Option<Kind>) {
     (true, kind)
 }
 
-/// Markdown から、閉じた ```ui ブロックのうち操作を持つ種類（app・ask・plan）を取り出す。
+/// 本文の中の ```ui ブロック 1 つ（閉じているか・解析の結果・本文の何行目からか）。
+struct ScannedBlock {
+    source: String,
+    parsed: Parsed,
+    closed: bool,
+    /// 中身の 1 行目が本文の何行目か（1 始まり）。
+    first_line: usize,
+}
+
+/// Markdown のトップレベルの ```ui ブロックを、閉じていないものも含めて読む（[`extract_action_blocks`]・
+/// [`broken_action_blocks`] の共通の段）。
 /// CommonMark のフェンス規則（3 文字以上の ``` か ~~~、行頭の空白 3 つまで、閉じは同じ文字で同じ長さ以上、
 /// 本文は開きの字下げの分だけ外す）に従い、他の言語のコードブロックの中は見ない。
-/// 閉じていないブロック（生成の途中）・エラーのある図は読まない。
-///
-/// 引用（`>`）や箇条書きの中のブロックは読まない（**操作を持つ図はトップレベルだけ**）。画面も
-/// 同じ規則で、入れ子の中の操作を持つ図はボタンを出さない（表示だけ）。
-pub fn extract_action_blocks(markdown: &str) -> Vec<ActionBlock> {
+fn scan_ui_blocks(markdown: &str) -> Vec<ScannedBlock> {
     let lines: Vec<&str> = markdown
         .split('\n')
         .map(|l| l.strip_suffix('\r').unwrap_or(l))
@@ -229,7 +235,7 @@ pub fn extract_action_blocks(markdown: &str) -> Vec<ActionBlock> {
         }
         let closed = j < lines.len();
         let (is_ui, hint) = info_kind(&info);
-        if is_ui && closed {
+        if is_ui {
             // 開きのフェンスの字下げ（0〜3）の分だけ、本文の各行の先頭の空白を外す
             // （CommonMark の規則。画面のレンダラーが渡すソースと同じにし、識別子を揃える）。
             let indent = cap(&open, 1).len();
@@ -247,20 +253,90 @@ pub fn extract_action_blocks(markdown: &str) -> Vec<ActionBlock> {
                 format!("{body}\n")
             };
             let parsed = parse_block(&source, hint);
-            // エラーのある図は画面でボタンを出さない（コードとして見せる）ので、操作も持たせない。
-            let broken = parsed.diagnostics.iter().any(|d| d.severity == "error");
-            if let Some(figure) = parsed.figure.filter(|_| !broken) {
-                out.push(ActionBlock {
-                    hash: block_hash(&source),
-                    source,
-                    figure,
-                    diagnostics: parsed.diagnostics,
-                });
-            }
+            out.push(ScannedBlock {
+                source,
+                parsed,
+                closed,
+                first_line: i + 2,
+            });
         }
         i = if closed { j + 1 } else { j };
     }
     out
+}
+
+/// Markdown から、閉じた ```ui ブロックのうち操作を持つ種類（app・ask・plan）を取り出す。
+/// フェンスの読み方は [`scan_ui_blocks`] と同じ。
+/// 閉じていないブロック（生成の途中）・エラーのある図は読まない（書き損じた図は [`broken_action_blocks`]）。
+///
+/// 引用（`>`）や箇条書きの中のブロックは読まない（**操作を持つ図はトップレベルだけ**）。画面も
+/// 同じ規則で、入れ子の中の操作を持つ図はボタンを出さない（表示だけ）。
+pub fn extract_action_blocks(markdown: &str) -> Vec<ActionBlock> {
+    scan_ui_blocks(markdown)
+        .into_iter()
+        .filter(|b| b.closed)
+        .filter_map(|b| {
+            // エラーのある図は画面でボタンを出さない（コードとして見せる）ので、操作も持たせない。
+            let broken = b.parsed.diagnostics.iter().any(|d| d.severity == "error");
+            let figure = b.parsed.figure.filter(|_| !broken)?;
+            Some(ActionBlock {
+                hash: block_hash(&b.source),
+                source: b.source,
+                figure,
+                diagnostics: b.parsed.diagnostics,
+            })
+        })
+        .collect()
+}
+
+/// 書き損じた、操作を持つ図（app・ask・plan）1 つ（D-16 の (c)）。
+///
+/// 書き損じは 2 通りある。エラーのある図と閉じていない図は、画面がボタンを出さずにコードとして見せる
+/// （[`extract_action_blocks`] も読まない）。警告のある図はボタンを出すが、読めない行・上限を超えた入力を
+/// 黙って落とし、長すぎる文を切る（書いたものと画面が違う）。
+#[derive(Debug, Clone)]
+pub struct BrokenBlock {
+    pub kind: Kind,
+    /// 図の見出し（無ければ空）。
+    pub title: String,
+    /// 中身の 1 行目が本文の何行目か（1 始まり）。診断の `line` は中身の中の行（0 は行を持たない診断）なので、
+    /// 本文の行は `first_line + line - 1`。
+    pub first_line: usize,
+    /// 閉じの ``` があるか（閉じていないブロックは、本文の終わりまでを飲み込む）。
+    pub closed: bool,
+    /// 画面がこの図のボタンを出すか（閉じていて、エラーが無い）。
+    pub actionable: bool,
+    /// 診断（エラーと警告）。閉じていないだけのブロックでは空のことがある。
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// Markdown のトップレベルの、書き損じた操作を持つ図（閉じていない図と、診断のある図）を取り出す。
+/// ホストが保存のときに知らせ、公開の前に止めるために使う。種類の分からないブロック（表示だけの図）は含めない。
+pub fn broken_action_blocks(markdown: &str) -> Vec<BrokenBlock> {
+    scan_ui_blocks(markdown)
+        .into_iter()
+        .filter_map(|b| {
+            let figure = b.parsed.figure?;
+            let diagnostics = b.parsed.diagnostics;
+            if b.closed && diagnostics.is_empty() {
+                return None;
+            }
+            let (kind, base) = match &figure {
+                Figure::App { base, .. } => (Kind::App, base),
+                Figure::Ask { base, .. } => (Kind::Ask, base),
+                Figure::Plan { base, .. } => (Kind::Plan, base),
+            };
+            let actionable = b.closed && !diagnostics.iter().any(|d| d.severity == "error");
+            Some(BrokenBlock {
+                kind,
+                title: base.title.clone(),
+                first_line: b.first_line,
+                closed: b.closed,
+                actionable,
+                diagnostics,
+            })
+        })
+        .collect()
 }
 
 /// 表示だけにする Markdown（外から来た文章）の中の図・表のフェンス（` ```ui `・` ```yui `・` ```data_grid `）を、
@@ -520,6 +596,35 @@ mod tests {
             blocks[0].hash,
             block_hash("app 申請\n  件名 = text\nbutton 送る -> chat")
         );
+    }
+
+    /// 書き損じた図（エラーのある図・閉じていない図）は、ボタンを持たない代わりに一覧で分かる（D-16 の (c)）。
+    #[test]
+    fn broken_action_blocks_lists_what_extract_skips() {
+        let md = "前置き\n\n```ui\nbar x\na | 1\n```\n\n```ui:app\napp 申請\n件名 = text\nbutton 送る -> workflow 申請\n```\n\n```ui\nplan 計画\n```\n\n> ```ui\n> plan 引用の中\n> ```\n\n```ui:app\napp 書きかけ\n件名 = text\n";
+        let broken = broken_action_blocks(md);
+        assert_eq!(broken.len(), 2, "{broken:?}");
+        // 手順の無い plan（エラー）。行は本文の行で数える（中身の 1 行目が 15 行目）。
+        assert_eq!(broken[0].kind, Kind::Plan);
+        assert_eq!(broken[0].title, "計画");
+        assert_eq!(broken[0].first_line, 15);
+        assert!(broken[0].closed && !broken[0].actionable);
+        assert!(broken[0].diagnostics.iter().any(|d| d.code == "empty"));
+        // 閉じていない app は、誤りが無くても書き損じとして挙がる。
+        assert_eq!(broken[1].kind, Kind::App);
+        assert_eq!(broken[1].title, "書きかけ");
+        assert!(!broken[1].closed && !broken[1].actionable);
+        // 正しい app・表示だけの図・引用の中の図は挙がらず、正しい app だけがボタンを持つ。
+        assert_eq!(extract_action_blocks(md).len(), 1);
+        assert!(broken_action_blocks("```ui:app\napp 申請\n件名 = text\n```").is_empty());
+        // 読めない行（種類の誤り）は、ボタンは出るが黙って落ちるので、書き損じとして挙がる。
+        let typo = broken_action_blocks(
+            "```ui:app\napp 申請\n金額 = numbr\nbutton 送る -> workflow 申請\n```",
+        );
+        assert_eq!(typo.len(), 1);
+        assert!(typo[0].actionable);
+        assert_eq!(typo[0].diagnostics[0].code, "unrecognized_line");
+        assert_eq!(typo[0].diagnostics[0].line, 2);
     }
 
     #[test]
