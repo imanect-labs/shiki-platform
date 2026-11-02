@@ -359,6 +359,7 @@ fn config_with(idp_base: &str, cors: Vec<String>) -> AppConfig {
         tabular: api::config::TabularConfig::default(),
         office: api::config::OfficeConfig::default(),
         insights: api::insights::InsightsConfig::default(),
+        membership_reconcile: api::membership_reconcile::MembershipReconcileConfig::default(),
     }
 }
 

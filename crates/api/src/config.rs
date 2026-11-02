@@ -58,6 +58,9 @@ pub struct AppConfig {
     /// AI 活用分析の定期集計（#751）。既定は有効・1 時間ごと。
     #[serde(default)]
     pub insights: crate::insights::InsightsConfig,
+    /// 組織の member と部署を Keycloak の所属グループと定期に照合して外す（D-136）。既定は有効・60 秒ごとに 500 人。
+    #[serde(default)]
+    pub membership_reconcile: crate::membership_reconcile::MembershipReconcileConfig,
 }
 
 /// Office 統合（Collabora＋WOPI ホスト）の設定（`SHIKI__OFFICE__*`）。

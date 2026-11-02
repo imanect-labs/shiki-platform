@@ -7,11 +7,16 @@
 pub mod action;
 pub mod backchannel_logout;
 pub mod callback;
+#[cfg(test)]
+mod gateway_fixture;
 pub mod login;
 pub mod logout;
+#[cfg(test)]
+mod membership_reconcile_it;
 pub(crate) mod org_member;
 #[cfg(test)]
 mod org_member_it;
+pub(crate) mod role_member;
 pub mod session;
 
 use axum_extra::extract::cookie::{Cookie, SameSite};

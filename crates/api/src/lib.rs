@@ -26,6 +26,7 @@ pub mod health;
 pub mod insights;
 pub mod keycloak_account;
 pub mod keycloak_admin;
+pub mod membership_reconcile;
 pub mod middleware;
 pub mod miniapp_install;
 pub mod oidc;

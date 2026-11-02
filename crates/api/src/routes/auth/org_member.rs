@@ -10,7 +10,8 @@
 //!   権限を作らない（fail-safe）。組織の名前が FGA の識別子にできない文字を含むときも書かない。
 //! - **外す**: 決まった組織のほかに持っている member（組織を移った人・グループから外れた人）。外し損ねると、組織を
 //!   離れた人がアプリのゲートウェイでその組織に入り続ける。外すのは次のログインかセッションの更新（アクセス
-//!   トークンの寿命ごと・ロールの同期と同じ周期）で、それまでの間は残る。
+//!   トークンの寿命ごと・ロールの同期と同じ周期）と、Keycloak の所属グループとの定期の照合
+//!   （[`crate::membership_reconcile`]・D-136。shiki の web にログインしないままアプリのトークンだけを取る人も外れる）。
 //! - **残す**: 組織が決まらない人の、既定の組織（`AuthContext` が落ちる先・[`DEFAULT_ORG`]）の member。グループを
 //!   使わずに既定の組織の member を手で書いて使わせる構成を壊さない（BUG-200）。ほかの組織の member は外す。
 //! - **触らない**: admin・audit_viewer（組織の管理の側の付与・PIT-65）。他テナントのタプル（名前空間で除く）。
@@ -116,38 +117,86 @@ async fn revoke_others(
     ns: &Namespace<'_>,
     keep: &str,
 ) -> Vec<String> {
-    let current = match authz
+    match current_orgs(authz, subject, ns).await {
+        Some(current) => revoke_stale(authz, subject, ns, &current, &[keep.to_string()]).await,
+        None => Vec::new(),
+    }
+}
+
+/// 利用者が直接タプルを持つこのテナントの組織（relation は問わない・名前の順・重複なし）。
+///
+/// 読めないときは `None`（呼ぶ側は何も外さない）。ログインの同期と定期の照合（D-136）が使う。
+pub(crate) async fn current_orgs(
+    authz: &dyn AuthzClient,
+    subject: &Subject,
+    ns: &Namespace<'_>,
+) -> Option<Vec<String>> {
+    let objects = match authz
         .read_subject_objects(subject, ObjectType::Organization)
         .await
     {
         Ok(objects) => objects,
         Err(e) => {
             tracing::warn!(error = %e, "組織の直接タプルを読めません（外すのは次の同期に回す）");
-            return Vec::new();
+            return None;
         }
     };
-    let mut stale: Vec<String> = current
+    let mut orgs: Vec<String> = objects
         .iter()
         .filter_map(|raw| raw.strip_prefix("organization:"))
         .filter_map(|id_part| ns.strip_object_id(id_part))
-        .filter(|org| *org != keep)
         .map(str::to_string)
         .collect();
-    stale.sort();
-    stale.dedup();
+    orgs.sort();
+    orgs.dedup();
+    Some(orgs)
+}
+
+/// 定期の照合（D-136）で member を残す組織: 所属グループから決まりうる組織のすべて
+/// （[`authz::org_group::org_candidates`]）。1 つも無ければ既定の組織（ログインの同期と同じ・BUG-200）。
+///
+/// ログインの同期が残す組織（[`desired_org`]・決まらなければ既定の組織）は必ずこの中にある。照合はログインの同期が
+/// 付けた member を外さず、所属するグループが 1 つも無くなった組織の member だけを外す（複数の組織のグループに
+/// 入っている人を 1 つにそろえるのはログインの同期・GAP-75）。
+pub(crate) fn orgs_kept_by_reconcile(
+    groups: &[String],
+    tenant_id: &str,
+    layout: GroupLayout,
+) -> Vec<String> {
+    let orgs: Vec<String> = authz::org_group::org_candidates(groups, tenant_id, layout)
+        .into_iter()
+        .filter(|org| authz::validate_local_id(org).is_ok())
+        .collect();
+    if orgs.is_empty() {
+        vec![DEFAULT_ORG.to_string()]
+    } else {
+        orgs
+    }
+}
+
+/// `current` のうち `keep` にない組織の member を外し、外した組織を返す（ログインの同期と定期の照合で共用）。
+///
+/// 外すのは member だけ（admin・audit_viewer には触れない・PIT-65）。member が無い組織は no-op。
+pub(crate) async fn revoke_stale(
+    authz: &dyn AuthzClient,
+    subject: &Subject,
+    ns: &Namespace<'_>,
+    current: &[String],
+    keep: &[String],
+) -> Vec<String> {
     let mut revoked = Vec::new();
-    for org in stale {
+    for org in current.iter().filter(|org| !keep.contains(org)) {
         match authz
-            .delete_tuple(subject, Relation::Member, &ns.organization(&org))
+            .delete_tuple(subject, Relation::Member, &ns.organization(org))
             .await
         {
             Ok(true) => {
                 tracing::info!(%org, "所属グループから外れた組織の member を外した");
-                revoked.push(org);
+                revoked.push(org.clone());
             }
             Ok(false) => {}
             Err(e) => {
-                tracing::warn!(%org, error = %e, "組織の member を外せません（次のログイン・更新で外し直す）");
+                tracing::warn!(%org, error = %e, "組織の member を外せません（次の同期で外し直す）");
             }
         }
     }
@@ -347,6 +396,29 @@ mod tests {
         assert_eq!(left.desired, None);
         assert_eq!(left.revoked, ["acme"]);
         assert_eq!(fga.members(), ["organization:other|acme"]);
+    }
+
+    #[test]
+    fn reconcile_keeps_every_org_the_login_sync_could_keep() {
+        let layout = GroupLayout::TenantScopedOrLegacy;
+        // 従来解釈は claim の先頭の組織を採る。照合は並びに依存せず、どちらも残す（並びの違いで外さない）。
+        let groups = v(&["/beta/x", "/alpha"]);
+        assert_eq!(desired_org(&groups, "t", layout).as_deref(), Some("beta"));
+        assert_eq!(
+            orgs_kept_by_reconcile(&groups, "t", layout),
+            ["alpha", "beta"]
+        );
+        // 組織が決まらない人は既定の組織（ログインの同期と同じ・BUG-200）。識別子にできない名前は候補にしない。
+        assert_eq!(orgs_kept_by_reconcile(&[], "t", layout), [DEFAULT_ORG]);
+        assert_eq!(
+            orgs_kept_by_reconcile(&v(&["/tenants/t/a#b"]), "t", GroupLayout::TenantScoped),
+            [DEFAULT_ORG]
+        );
+        assert_eq!(
+            orgs_kept_by_reconcile(&v(&["/tenants/u/acme"]), "t", GroupLayout::TenantScoped),
+            [DEFAULT_ORG],
+            "他テナント配下のグループは候補にしない"
+        );
     }
 
     #[tokio::test]

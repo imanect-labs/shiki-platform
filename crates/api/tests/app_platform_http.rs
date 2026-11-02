@@ -245,6 +245,7 @@ fn base_config(db_url: &str) -> AppConfig {
         tabular: api::config::TabularConfig::default(),
         office: api::config::OfficeConfig::default(),
         insights: api::insights::InsightsConfig::default(),
+        membership_reconcile: api::membership_reconcile::MembershipReconcileConfig::default(),
     }
 }
 

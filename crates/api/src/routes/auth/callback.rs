@@ -13,7 +13,7 @@ use authz::{AuthContext, Principal, Relation};
 
 use super::{
     action::{normalize_action_status, AccountAction},
-    build_cookie, org_member, parse_flow, removal_cookie, FLOW_COOKIE,
+    build_cookie, org_member, parse_flow, removal_cookie, role_member, FLOW_COOKIE,
 };
 
 /// ログインの往復で、組織の member の同期を待つ長さ（[`org_member`]・過ぎたら裏で続ける）。
@@ -304,24 +304,11 @@ pub(crate) async fn provision_roles(state: AppState, principal: Principal, tenan
         tracing::warn!(error = %e, "directory_user_role の更新に失敗（分析の部署集計のみに影響）");
     }
 
-    // 現在の直接 role タプル（自テナント名前空間のみ・継承展開なし）。
-    let current: Vec<String> = match state
-        .authz
-        .read_subject_objects(&subject, authz::ObjectType::Role)
+    // 現在の直接 role タプル（自テナント名前空間のみ・継承展開なし）。現状が読めない時は**剥奪をスキップ**し
+    // 付与のみ行う（誤剥奪を避ける fail-safe）。読む・外す手順は定期の照合（D-136）と共用する（role_member）。
+    let current: Vec<String> = role_member::current_roles(&*state.authz, &subject, &ns)
         .await
-    {
-        Ok(objects) => objects
-            .iter()
-            .filter_map(|raw| raw.strip_prefix("role:"))
-            .filter_map(|id_part| ns.strip_object_id(id_part))
-            .map(str::to_string)
-            .collect(),
-        Err(e) => {
-            // 現状が読めない時は**剥奪をスキップ**し付与のみ行う（誤剥奪を避ける fail-safe）。
-            tracing::warn!(error = %e, "role 現在集合の取得に失敗（付与のみ実施）");
-            Vec::new()
-        }
-    };
+        .unwrap_or_default();
 
     // 剥奪: 現在 − あるべき（自テナント分のみ）。
     // **claims を正本とする**（callback.rs 冒頭の設計）ため、claims が空＝ロール無しと解釈し
@@ -331,23 +318,15 @@ pub(crate) async fn provision_roles(state: AppState, principal: Principal, tenan
     // 一過性の IdP 不調そのものは、**現在集合の READ が失敗した時のみ**剥奪をスキップする
     // 上のガード（unknown state に対して破壊的操作をしない）で扱い、READ 成功時の空 claims は
     // 正当な「ロール無し」として扱う。
-    let mut changed = false;
-    for stale in current.iter().filter(|c| !desired.contains(*c)) {
-        match state
-            .authz
-            .delete_tuple(&subject, Relation::Member, &ns.role(stale))
+    let removed_from_claims: Vec<String> = current
+        .iter()
+        .filter(|c| !desired.contains(*c))
+        .cloned()
+        .collect();
+    let mut changed =
+        !role_member::revoke_roles(&*state.authz, &subject, &ns, &removed_from_claims)
             .await
-        {
-            Ok(true) => {
-                changed = true;
-                tracing::info!(role = %stale, "role メンバーシップを剥奪（claims から消失）");
-            }
-            Ok(false) => {}
-            Err(e) => {
-                tracing::warn!(role = %stale, error = %e, "role 剥奪に失敗（次回同期で再収束）");
-            }
-        }
-    }
+            .is_empty();
 
     // 付与: あるべき − 現在（冪等 write なので差分に限らず流しても安全だが、無駄打ちを避ける）。
     for role_id in desired.iter().filter(|d| !current.contains(*d)) {

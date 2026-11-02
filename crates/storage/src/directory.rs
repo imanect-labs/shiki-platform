@@ -12,8 +12,10 @@ use sqlx::PgPool;
 
 use crate::{error::StorageError, model::ShareTarget};
 
+mod membership;
 mod share_profiles;
 
+pub use membership::DirectoryEntry;
 pub(crate) use share_profiles::resolve_share_profiles;
 pub use share_profiles::{PrincipalProfile, ShareProfiles};
 

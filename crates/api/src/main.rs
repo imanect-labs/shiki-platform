@@ -337,6 +337,19 @@ async fn run() -> anyhow::Result<()> {
     };
     // AI 活用分析（#751）: 利用者×日のロールアップと用途分類を定期実行する。
     api::insights::timer::spawn(db.clone(), llm.clone(), config.insights.clone());
+    // 組織の member と部署を Keycloak の所属グループと定期に照合して外す（D-136・provisioner があるときだけ）。
+    api::membership_reconcile::spawn(
+        api::membership_reconcile::ReconcileDeps {
+            db: db.clone(),
+            authz: authz.clone(),
+            directory: Arc::clone(&directory),
+            data: Arc::clone(&data_store),
+            http: keycloak_http.clone(),
+            auth: config.auth.clone(),
+            batch_size: config.membership_reconcile.batch_size,
+        },
+        &config.membership_reconcile,
+    );
     let state = AppState {
         insights: Arc::new(api::insights::InsightsService::new(db.clone())),
         config: Arc::new(config),

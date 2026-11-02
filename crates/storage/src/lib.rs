@@ -43,8 +43,8 @@ pub mod tenant_scope;
 pub mod upload_gc_timer;
 
 pub use directory::{
-    escape_like, DirectoryPage, DirectoryRole, DirectoryRolePage, DirectoryStore, DirectoryUser,
-    PrincipalProfile, ShareProfiles, DEFAULT_SEARCH_LIMIT,
+    escape_like, DirectoryEntry, DirectoryPage, DirectoryRole, DirectoryRolePage, DirectoryStore,
+    DirectoryUser, PrincipalProfile, ShareProfiles, DEFAULT_SEARCH_LIMIT,
 };
 pub use error::StorageError;
 pub use event::{OutboxEvent, WriteOp};
