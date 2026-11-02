@@ -108,6 +108,9 @@ pub async fn install_app(
 ///
 /// 各項目に `table_count`（アプリが持つ、呼ぶ人の組織の生きているテーブルの数）を添える。0 より多いアプリだけ、
 /// 画面がテーブルを使える部署・グループを変える口を出す（GAP-68）。
+///
+/// 呼ぶ人がアプリの持ち主なら、自動実行（event・cron）の関数の直近の失敗を `function_failures`
+/// （[`app_platform::AppFunctionFailure`] の配列・新しい順）に添える（失敗が無いときと、持ち主でないときは付けない・GAP-60）。
 #[utoipa::path(
     get,
     path = "/apps/installations",
@@ -126,13 +129,21 @@ pub async fn list_installations(
         .map_err(|e| ApiError::Internal(format!("installations: {e}")))?;
     let ids: Vec<Uuid> = items.iter().map(|i| i.app_id).collect();
     let counts = state.data.app_table_counts(&ctx, &ids).await?;
+    let failures = state.installs.function_failures(&ctx, &ids).await?;
     let items: Vec<serde_json::Value> = items
         .into_iter()
         .map(|i| {
             let count = counts.get(&i.app_id).copied().unwrap_or(0);
+            let failed = failures.get(&i.app_id).cloned();
             let mut v = serde_json::to_value(i).unwrap_or_default();
             if let Some(obj) = v.as_object_mut() {
                 obj.insert("table_count".into(), count.into());
+                if let Some(failed) = failed {
+                    obj.insert(
+                        "function_failures".into(),
+                        serde_json::to_value(failed).unwrap_or_default(),
+                    );
+                }
             }
             v
         })

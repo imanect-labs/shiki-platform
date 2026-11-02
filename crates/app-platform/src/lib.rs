@@ -9,6 +9,7 @@ mod bundle;
 mod client_repair;
 mod function_failure;
 mod function_http;
+mod function_status;
 mod functions;
 mod install;
 mod install_ops;
@@ -27,6 +28,7 @@ mod validate;
 pub use bundle::{BundleStore, MAX_BUNDLE_BYTES};
 pub use client_repair::ClientRepairProgress;
 pub use function_failure::FunctionFailure;
+pub use function_status::{AppFunctionFailure, FunctionFailureStore, FunctionTrigger};
 pub use functions::{
     egress_allowed, FunctionActor, FunctionInvocation, FunctionOutcome, FunctionRunner,
 };

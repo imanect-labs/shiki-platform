@@ -9,10 +9,16 @@
 //!
 //! いずれも **service identity（B2 client_credentials）** で実行する（ユーザー文脈なし・
 //! 所有テーブルの owner@miniapp ReBAC で能力が絞られる）。
+//!
+//! 自動実行の失敗（シークレット・トークン・実行の誤り・関数の失敗）は、作成者に見せてよい文で関数ごとに残し、
+//! 次に成功したら消す（[`app_platform::FunctionFailureStore`]・GAP-60 の残り）。内部の文はサーバーのログにだけ書く。
 
 use std::sync::Arc;
 
-use app_platform::{FunctionActor, FunctionInvocation, FunctionRunner};
+use app_platform::{
+    FunctionActor, FunctionFailure, FunctionFailureStore, FunctionInvocation, FunctionRunner,
+    FunctionTrigger,
+};
 use authz::{AuthContext, Principal, PrincipalKind};
 use sqlx::PgPool;
 use uuid::Uuid;
@@ -136,10 +142,8 @@ async fn event_tick(deps: &TriggerDeps) -> anyhow::Result<usize> {
     tx.commit().await?;
 
     for (sub, payload, event_type) in dispatches {
-        if let Err(e) = invoke_service(deps, &sub, payload).await {
-            tracing::warn!(error = %e, app_id = %sub.app_id, function = %sub.function,
-                event_type, "event 起動の関数実行に失敗");
-        }
+        tracing::debug!(app_id = %sub.app_id, function = %sub.function, event_type, "event で関数を起動");
+        run_service(deps, &sub, payload, FunctionTrigger::Event).await;
     }
     Ok(claimed)
 }
@@ -265,10 +269,13 @@ async fn cron_tick(deps: &TriggerDeps) -> anyhow::Result<()> {
             app_id: s.app_id,
             function: s.function,
         };
-        if let Err(e) = invoke_service(deps, &sub, serde_json::json!({ "trigger": "cron" })).await {
-            tracing::warn!(error = %e, app_id = %sub.app_id, function = %sub.function,
-                "cron 起動の関数実行に失敗");
-        }
+        run_service(
+            deps,
+            &sub,
+            serde_json::json!({ "trigger": "cron" }),
+            FunctionTrigger::Cron,
+        )
+        .await;
     }
     Ok(())
 }
@@ -310,26 +317,107 @@ async fn realign_schedules(db: &PgPool, now: chrono::DateTime<chrono::Utc>) -> a
     Ok(changed)
 }
 
+/// 自動実行 1 回の結果（[`invoke_service`]）。
+#[derive(Debug)]
+enum ServiceRun {
+    /// インストールが無い・アンインストールした（記録しない）。
+    NotInstalled,
+    /// 関数が成功した。
+    Succeeded,
+    /// 失敗した（作成者に見せてよい理由と文。内部の文はログにだけ書いた）。
+    Failed(FunctionFailure),
+}
+
+/// 自動実行 1 回を動かし、結果を残す（失敗は関数ごとに直近の 1 件・成功したら消す・GAP-60）。
+///
+/// 記録の失敗は自動実行を止めない（ログに残す）。
+async fn run_service(
+    deps: &TriggerDeps,
+    sub: &Subscription,
+    payload: serde_json::Value,
+    trigger: FunctionTrigger,
+) {
+    let store = FunctionFailureStore::new(deps.db.clone());
+    let recorded = match invoke_service(deps, sub, payload).await {
+        Ok(ServiceRun::Succeeded) => {
+            store
+                .record_success(&sub.tenant_id, sub.app_id, &sub.function)
+                .await
+        }
+        Ok(ServiceRun::Failed(failure)) => {
+            tracing::warn!(app_id = %sub.app_id, function = %sub.function, trigger = trigger.as_str(),
+                code = %failure.code, message = %failure.message, "自動実行の関数が失敗");
+            store
+                .record_failure(
+                    &sub.tenant_id,
+                    &sub.org,
+                    sub.app_id,
+                    &sub.function,
+                    trigger,
+                    &failure,
+                )
+                .await
+        }
+        Ok(ServiceRun::NotInstalled) => {
+            tracing::info!(app_id = %sub.app_id, function = %sub.function,
+                "インストールが無いため、自動実行しません");
+            Ok(())
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, app_id = %sub.app_id, function = %sub.function,
+                trigger = trigger.as_str(), "自動実行の準備に失敗");
+            Ok(())
+        }
+    };
+    if let Err(e) = recorded {
+        tracing::warn!(error = %e, app_id = %sub.app_id, function = %sub.function,
+            "自動実行の結果を残せません");
+    }
+}
+
+/// 自動実行の失敗（作成者に見せてよい文・やり直しても通らないものは `retryable` を立てない）。
+fn failed(code: &str, message: &str, retryable: bool) -> ServiceRun {
+    ServiceRun::Failed(FunctionFailure {
+        code: code.into(),
+        message: message.into(),
+        retryable,
+    })
+}
+
 /// service identity（B2 client_credentials）で関数を実行する。
+///
+/// `Err` はインストールを引けないとき（DB の失敗）だけ。そのほかの失敗は、作成者に見せてよい文の
+/// [`ServiceRun::Failed`] にし、内部の文はここでログに書く。
 async fn invoke_service(
     deps: &TriggerDeps,
     sub: &Subscription,
     payload: serde_json::Value,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<ServiceRun> {
     // インストール時ピン（server_bundle/spec/client）を解決する（失効済みは起動しない）。
     let installation = deps
         .port
         .runner_installation(&sub.tenant_id, sub.app_id)
         .await?;
     let Some(installation) = installation else {
-        anyhow::bail!("インストールが失効しています");
+        return Ok(ServiceRun::NotInstalled);
     };
     let (Some(server_bundle), Some(client_id_b2)) = (
         installation.server_bundle.clone(),
         installation.client_id_b2.clone(),
     ) else {
-        anyhow::bail!("B2 構成（server_bundle/client）がありません");
+        return Ok(failed(
+            "not_configured",
+            "このアプリには、サーバーで動く処理の登録がないため、自動実行できませんでした。アプリを入れ直してください。",
+            false,
+        ));
     };
+    if deps.port.secrets.is_none() {
+        return Ok(failed(
+            "not_configured",
+            "この環境では、アプリを自動で動かすためのシークレットを保管していません。管理者に確かめてください。",
+            false,
+        ));
+    }
     // service ctx（監査 actor 用・org/tenant は購読行から）。
     let ctx = AuthContext::new(
         Principal {
@@ -343,17 +431,40 @@ async fn invoke_service(
         sub.org.clone(),
         sub.tenant_id.clone(),
     );
-    let secret = deps
-        .port
-        .resolve_b2_secret(&ctx, sub.app_id)
-        .await
-        .map_err(|e| anyhow::anyhow!("secret: {e}"))?;
+    let secret = match deps.port.resolve_b2_secret(&ctx, sub.app_id).await {
+        Ok(secret) => secret,
+        Err(e) => {
+            tracing::warn!(error = %e, app_id = %sub.app_id, "自動実行の B2 secret を読めない");
+            return Ok(failed(
+                "secret_unavailable",
+                "アプリが自動で動くためのシークレット（API キーなどの秘密の値）を読めませんでした。アプリを入れ直してください。",
+                false,
+            ));
+        }
+    };
     // 同意付与スコープを service token に明示要求する（optional client scope のため）。
-    let token = deps
+    let token = match deps
         .port
         .client_credentials_token(&client_id_b2, &secret, &installation.granted_scopes)
         .await
-        .map_err(|e| anyhow::anyhow!("token: {e}"))?;
+    {
+        Ok(token) => token,
+        Err(e) => {
+            tracing::warn!(error = %e, app_id = %sub.app_id, "自動実行のトークンを取れない");
+            return Ok(match e {
+                app_gateway::GatewayError::Forbidden(_) => failed(
+                    "token_rejected",
+                    "アプリの登録が止められているか見つからないため、自動実行できませんでした。管理者に確かめてください。",
+                    false,
+                ),
+                _ => failed(
+                    "token_unavailable",
+                    "ログインを確かめる仕組みにつながらないため、自動実行できませんでした。続くときは管理者に確かめてください。",
+                    true,
+                ),
+            });
+        }
+    };
     let egress = installation
         .server_spec
         .as_ref()
@@ -374,13 +485,36 @@ async fn invoke_service(
                 egress_allowlist: egress,
             },
         )
-        .await
-        .map_err(|e| anyhow::anyhow!("run: {e}"))?;
-    if let Some(error) = &outcome.error {
-        tracing::warn!(app_id = %sub.app_id, function = %sub.function,
-            code = %error.code, message = %error.message, "関数がエラー終了");
-    }
-    Ok(())
+        .await;
+    let outcome = match outcome {
+        Ok(outcome) => outcome,
+        Err(e) => {
+            tracing::warn!(error = %e, app_id = %sub.app_id, function = %sub.function,
+                "自動実行の関数を動かせない");
+            return Ok(match e {
+                app_platform::AppPlatformError::NotFound => failed(
+                    "code_missing",
+                    "アプリのサーバーで動く処理のコードが見つからないため、自動実行できませんでした。アプリを入れ直してください。",
+                    false,
+                ),
+                app_platform::AppPlatformError::Invalid(_) => failed(
+                    "code_invalid",
+                    "アプリのサーバーで動く処理のコードを読み込めないため、自動実行できませんでした。直した版を出して、入れ直してください。",
+                    false,
+                ),
+                _ => failed(
+                    "internal",
+                    "サーバーで問題が起きたため、自動実行できませんでした。続くときは管理者に確かめてください。",
+                    true,
+                ),
+            });
+        }
+    };
+    Ok(match outcome.error {
+        Some(error) if !outcome.ok => ServiceRun::Failed(error),
+        _ if !outcome.ok => failed("internal", "関数の実行中に問題が起きました。", false),
+        _ => ServiceRun::Succeeded,
+    })
 }
 
 #[cfg(test)]

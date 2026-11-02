@@ -455,3 +455,89 @@ async fn event_targets_app_scopes_to_owned_resources() {
     .await
     .unwrap());
 }
+
+/// 自動実行の失敗は、作成者に見せてよい文で関数ごとに 1 行残し、続けて失敗した回数を足す。成功したら消す。
+/// インストールが無いアプリは記録しない（GAP-60 の残り）。
+#[tokio::test]
+async fn run_service_keeps_the_latest_failure_per_function() {
+    let Some(pool) = pool().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let app_id = Uuid::new_v4();
+    let deps = deps(pool.clone());
+    let sub = Subscription {
+        tenant_id: tenant.clone(),
+        org: "acme".into(),
+        app_id,
+        function: "remind".into(),
+    };
+    let rows = || async {
+        sqlx::query_as::<_, (String, String, String, i32)>(
+            "SELECT trigger, code, message, failures FROM app_function_failure \
+             WHERE tenant_id = $1 AND app_id = $2",
+        )
+        .bind(&tenant)
+        .bind(app_id)
+        .fetch_all(&pool)
+        .await
+        .unwrap()
+    };
+    let body = async {
+        // インストールが無い: 記録しない。
+        run_service(&deps, &sub, serde_json::json!({}), FunctionTrigger::Event).await;
+        assert!(rows().await.is_empty());
+
+        // B2 の登録が無いインストール: 理由を残し、2 回目は回数を足す（内部の言葉を出さない）。
+        app_gateway::AppInstallationStore::new(pool.clone())
+            .upsert(
+                &ctx(&tenant),
+                app_gateway::NewAppInstallation {
+                    app_id,
+                    app_name: "経費",
+                    installed_version: "1.0.0",
+                    granted_scopes: &["data.read".to_string()],
+                    client_id_b1: None,
+                    client_id_b2: None,
+                    ai: app_gateway::AiPin::default(),
+                    frontend_bundle: None,
+                    server_bundle: None,
+                    server_spec: None,
+                },
+            )
+            .await
+            .expect("install");
+        run_service(&deps, &sub, serde_json::json!({}), FunctionTrigger::Event).await;
+        run_service(&deps, &sub, serde_json::json!({}), FunctionTrigger::Cron).await;
+        let got = rows().await;
+        assert_eq!(got.len(), 1, "{got:?}");
+        let (trigger, code, message, failures) = &got[0];
+        assert_eq!(
+            (trigger.as_str(), code.as_str(), *failures),
+            ("cron", "not_configured", 2)
+        );
+        assert!(message.contains("入れ直して"), "{message}");
+        for word in ["B2", "secret", "server_bundle", "client"] {
+            assert!(!message.contains(word), "{message}");
+        }
+
+        // 成功したら消す。
+        app_platform::FunctionFailureStore::new(pool.clone())
+            .record_success(&tenant, app_id, "remind")
+            .await
+            .expect("success");
+        assert!(rows().await.is_empty());
+    };
+    let outcome = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(body)).await;
+    for sql in [
+        "DELETE FROM app_function_failure WHERE tenant_id = $1",
+        "DELETE FROM app_installation WHERE tenant_id = $1",
+    ] {
+        sqlx::query(sql)
+            .bind(&tenant)
+            .execute(&pool)
+            .await
+            .expect(sql);
+    }
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
+}

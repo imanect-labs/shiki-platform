@@ -650,6 +650,7 @@ use utoipa::{
         crate::routes::app_install::InstallAppRequest,
         crate::routes::app_install::InstallAppResponse,
         app_platform::AppTableAccess,
+        app_platform::AppFunctionFailure,
         app_platform::AppTable,
         app_platform::AppTableRoles,
         app_platform::AppTableRolesChange,

@@ -14,6 +14,8 @@ type MiniAppManifest = components["schemas"]["MiniAppManifest"];
 export type AppTableAccess = components["schemas"]["AppTableAccess"];
 /// 足す・外す部署・グループ（インストールの要求の viewer_roles・editor_roles・submitter_roles と同じ意味）。
 export type AppTableRolesChange = components["schemas"]["AppTableRolesChange"];
+/// 自動実行（event・cron）の関数の直近の失敗（アプリの持ち主にだけ返る・GAP-60）。
+export type AppFunctionFailure = components["schemas"]["AppFunctionFailure"];
 
 export type RegistryEntry = {
   id: string;
@@ -52,6 +54,8 @@ export type AppInstallation = {
   oauth_client_disabled?: boolean;
   /// アプリが持つテーブルの数（テーブルを使える部署・グループを変える口を出すか・GAP-68）。前の版のサーバーは返さない。
   table_count?: number;
+  /// 自動実行の関数の直近の失敗（新しい順）。アプリの持ち主にだけ、失敗があるときだけ返る（GAP-60）。
+  function_failures?: AppFunctionFailure[];
 };
 
 async function ok<T>(res: Response): Promise<T> {

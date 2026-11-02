@@ -40,7 +40,8 @@ impl GatewayFunctionPort {
     /// granted_scopes）を `scope` パラメタで明示要求する。これが無いと service token に
     /// data.* / notify.send 等が乗らず、関数内の能力呼び出しが二重ゲートで 403 になる。
     /// トークンの `aud`（`gateway.audience`）は B2 のクライアントのマッパーが足す（Keycloak 26.2 の
-    /// client_credentials は `audience` を読まないので送らない）。
+    /// client_credentials は `audience` を読まないので送らない）。資格情報を断られた（400・401）ときは
+    /// [`GatewayError::Forbidden`]、届かない・ほかの失敗は [`GatewayError::Upstream`]。
     pub(crate) async fn client_credentials_token(
         &self,
         client_id: &str,
@@ -67,10 +68,16 @@ impl GatewayFunctionPort {
             .send()
             .await
             .map_err(|e| GatewayError::Upstream(format!("service token 取得: {e}")))?;
-        if !resp.status().is_success() {
+        let status = resp.status();
+        // 資格情報を断られた（クライアントが無効・無い・secret が違う）ものは、やり直しても通らない（GAP-60）。
+        if matches!(status.as_u16(), 400 | 401) {
+            return Err(GatewayError::Forbidden(format!(
+                "service token を断られました: {status}"
+            )));
+        }
+        if !status.is_success() {
             return Err(GatewayError::Upstream(format!(
-                "service token 応答: {}",
-                resp.status()
+                "service token 応答: {status}"
             )));
         }
         let tok: Tok = resp

@@ -39,7 +39,7 @@ use storage::content_address::{miniapp_bundle_key, sha256_hex};
 use storage::{ObjectStore, ObjectStoreError};
 use uuid::Uuid;
 
-use super::{invoke_service, Subscription, TriggerDeps};
+use super::{invoke_service, run_service, ServiceRun, Subscription, TriggerDeps};
 use crate::gateway_functions::GatewayFunctionPort;
 
 /// web シェルのホスト支援 PKCE の戻り先（web/src/lib/miniapp-oauth.ts と同じ）。
@@ -47,7 +47,8 @@ const SHELL_CALLBACK: &str = "http://localhost:3000/apps/oauth/callback";
 /// realm の試しの利用者 alice の sub（deploy/keycloak/shiki-realm.json）。
 const ALICE: &str = "00000000-0000-0000-0000-000000000001";
 
-/// 関数: count はアプリのテーブルの行を数え、remind は行を足す。どちらも呼び出す主体（actor）を返す。
+/// 関数: count はアプリのテーブルの行を数え、remind は行を足す（payload の boom があれば誤りを投げる）。どちらも
+/// 呼び出す主体（actor）を返す。
 const SCRIPT: &str = r#"
 function main(input) {
   var tables = Shiki.data.listTables();
@@ -55,6 +56,9 @@ function main(input) {
   if (input.function === "count") {
     var q = Shiki.data.query(t, {});
     return { actor: input.actor, tables: tables.length, rows: q.items.length };
+  }
+  if (input.payload && input.payload.boom) {
+    throw new Error("金額が空です");
   }
   var r = Shiki.data.create(t, { title: "自動で足した行" });
   return { actor: input.actor, owner: r.owner };
@@ -350,6 +354,7 @@ async fn cleanup(env: &Env, clients: &[String]) {
         "DELETE FROM app_capability_usage WHERE tenant_id = $1",
         "DELETE FROM app_event_subscription WHERE tenant_id = $1",
         "DELETE FROM app_function_schedule WHERE tenant_id = $1",
+        "DELETE FROM app_function_failure WHERE tenant_id = $1",
         "DELETE FROM secret WHERE tenant_id = $1",
         "DELETE FROM registry_entry WHERE tenant_id = $1",
         "DELETE FROM artifact_version WHERE tenant_id = $1",
@@ -418,18 +423,16 @@ async fn b2_functions_run_as_the_app_on_schedule_and_as_the_user_on_request() {
             port: multi_port,
             claim_hints: storage::event::ClaimHints::default(),
         };
-        invoke_service(
-            &deps,
-            &Subscription {
-                tenant_id: env.tenant.clone(),
-                org: "acme".into(),
-                app_id,
-                function: "remind".into(),
-            },
-            serde_json::json!({ "trigger": "cron" }),
-        )
-        .await
-        .expect("service run");
+        let remind = Subscription {
+            tenant_id: env.tenant.clone(),
+            org: "acme".into(),
+            app_id,
+            function: "remind".into(),
+        };
+        let run = invoke_service(&deps, &remind, serde_json::json!({ "trigger": "cron" }))
+            .await
+            .expect("service run");
+        assert!(matches!(run, ServiceRun::Succeeded), "{run:?}");
         let owners: Vec<String> =
             sqlx::query_scalar("SELECT owner FROM data_record WHERE tenant_id = $1")
                 .bind(&env.tenant)
@@ -437,18 +440,8 @@ async fn b2_functions_run_as_the_app_on_schedule_and_as_the_user_on_request() {
                 .await
                 .unwrap();
         assert_eq!(owners, [app_id.to_string()], "アプリの主体として 1 行足す");
-        // 利用量はアプリの主体の分として記録する（サービスアカウントの id を利用者として記録しない・BUG-204）。
-        let usage: Vec<(String, String)> = sqlx::query_as(
-            "SELECT principal, user_sub FROM app_capability_usage WHERE tenant_id = $1",
-        )
-        .bind(&env.tenant)
-        .fetch_all(&env.pool)
-        .await
-        .unwrap();
-        assert!(
-            !usage.is_empty() && usage.iter().all(|(p, s)| p == "app" && s.is_empty()),
-            "{usage:?}"
-        );
+        app_usage_is_recorded_as_the_app(&env).await;
+        failures_are_kept_for_owners(&env, &installs, &deps, &remind).await;
 
         // 利用者が起点（single テナント）: alice の B1 のトークンを B2 が交換し、関数は alice としてテーブルを読む。
         let (single, _, _) =
@@ -471,7 +464,8 @@ async fn b2_functions_run_as_the_app_on_schedule_and_as_the_user_on_request() {
         assert_eq!(outcome["ok"], true, "{outcome}");
         assert_eq!(outcome["value"]["actor"], "user", "{outcome}");
         assert_eq!(outcome["value"]["tables"], 1, "{outcome}");
-        assert_eq!(outcome["value"]["rows"], 1, "{outcome}");
+        // 自動実行が足した 2 行（最初の実行と、失敗の後に成功した実行）。
+        assert_eq!(outcome["value"]["rows"], 2, "{outcome}");
 
         // alice を役割から外すと、交換しても alice の権限なので読めない（アプリの権限に昇格しない）。
         env.authz
@@ -487,9 +481,8 @@ async fn b2_functions_run_as_the_app_on_schedule_and_as_the_user_on_request() {
             .expect("invoke");
         let outcome: serde_json::Value = resp.json().await.unwrap_or_default();
         assert_eq!(outcome["ok"], false, "{outcome}");
-        let _ = installs
-            .uninstall(&user_ctx(&env.tenant, "installer"), app_id, None)
-            .await;
+
+        disabled_b2_failure_is_kept_until_uninstall(&env, &installs, &deps, &remind).await;
     };
     let outcome = AssertUnwindSafe(body).catch_unwind().await;
     let clients = clients.into_inner().unwrap();
@@ -497,4 +490,95 @@ async fn b2_functions_run_as_the_app_on_schedule_and_as_the_user_on_request() {
     if let Err(panic) = outcome {
         std::panic::resume_unwind(panic);
     }
+}
+
+/// 自動実行の能力の利用量は、アプリの主体の分として記録する（サービスアカウントの id を利用者として記録しない・BUG-204）。
+async fn app_usage_is_recorded_as_the_app(env: &Env) {
+    let usage: Vec<(String, String)> =
+        sqlx::query_as("SELECT principal, user_sub FROM app_capability_usage WHERE tenant_id = $1")
+            .bind(&env.tenant)
+            .fetch_all(&env.pool)
+            .await
+            .unwrap();
+    assert!(
+        !usage.is_empty() && usage.iter().all(|(p, s)| p == "app" && s.is_empty()),
+        "{usage:?}"
+    );
+}
+
+/// 自動実行の関数が誤りを投げたら、作成者に見せてよい文で残し、持ち主にだけ返す。成功したら消す（GAP-60）。
+async fn failures_are_kept_for_owners(
+    env: &Env,
+    installs: &InstallService,
+    deps: &TriggerDeps,
+    remind: &Subscription,
+) {
+    let app_id = remind.app_id;
+    let installer = user_ctx(&env.tenant, "installer");
+    let boom = serde_json::json!({ "boom": true });
+    run_service(deps, remind, boom, app_platform::FunctionTrigger::Cron).await;
+    let failures = installs
+        .function_failures(&installer, &[app_id])
+        .await
+        .expect("failures");
+    let failure = &failures[&app_id][0];
+    assert_eq!(
+        (failure.function.as_str(), failure.trigger.as_str()),
+        ("remind", "cron")
+    );
+    assert_eq!(failure.code, "script_error");
+    assert_eq!(failure.message, "金額が空です", "スタックの行を残さない");
+    assert!(
+        installs
+            .function_failures(&user_ctx(&env.tenant, ALICE), &[app_id])
+            .await
+            .expect("failures of a non-owner")
+            .is_empty(),
+        "持ち主でない人には返さない"
+    );
+    let ok = serde_json::json!({});
+    run_service(deps, remind, ok, app_platform::FunctionTrigger::Cron).await;
+    assert!(installs
+        .function_failures(&installer, &[app_id])
+        .await
+        .expect("failures")
+        .is_empty());
+}
+
+/// 管理者が B2 を Keycloak で無効にすると、自動実行はトークンを取れず、理由を残す。アンインストールで消す
+/// （GAP-60・BUG-201）。
+async fn disabled_b2_failure_is_kept_until_uninstall(
+    env: &Env,
+    installs: &InstallService,
+    deps: &TriggerDeps,
+    remind: &Subscription,
+) {
+    let app_id = remind.app_id;
+    let installer = user_ctx(&env.tenant, "installer");
+    env.realm
+        .oauth_client()
+        .set_enabled(&format!("app-{app_id}-b2"), false)
+        .await
+        .expect("disable b2");
+    run_service(
+        deps,
+        remind,
+        serde_json::json!({}),
+        app_platform::FunctionTrigger::Cron,
+    )
+    .await;
+    let failures = installs
+        .function_failures(&installer, &[app_id])
+        .await
+        .expect("failures");
+    assert_eq!(failures[&app_id][0].code, "token_rejected");
+    assert!(failures[&app_id][0].message.contains("管理者に確かめて"));
+    let _ = installs.uninstall(&installer, app_id, None).await;
+    let left: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM app_function_failure WHERE tenant_id = $1")
+            .bind(&env.tenant)
+            .fetch_one(&env.pool)
+            .await
+            .unwrap();
+    assert_eq!(left, 0, "アンインストールで消す");
 }

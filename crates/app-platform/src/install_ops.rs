@@ -161,9 +161,13 @@ impl InstallService {
         Ok(())
     }
 
-    /// 購読/スケジュールを撤去する（アンインストール・再インストール前の掃除）。
+    /// 購読/スケジュールと、自動実行の直近の失敗（GAP-60）を撤去する（アンインストール・再インストール前の掃除）。
     pub(crate) async fn remove_triggers(&self, ctx: &AuthContext, app_id: Uuid) {
-        for table in ["app_event_subscription", "app_function_schedule"] {
+        for table in [
+            "app_event_subscription",
+            "app_function_schedule",
+            "app_function_failure",
+        ] {
             if let Err(e) = sqlx::query(&format!(
                 "DELETE FROM {table} WHERE tenant_id = $1 AND app_id = $2"
             ))
@@ -218,6 +222,9 @@ impl InstallService {
             )
             .await;
         }
+        // 購読・スケジュールと自動実行の直近の失敗を消す（migration 0046 の決まり。これまでは残り、自動実行が
+        // 失効したインストールを引いて空振りしていた・GAP-60）。
+        self.remove_triggers(ctx, app_id).await;
         self.record_audit(
             ctx,
             app_id,

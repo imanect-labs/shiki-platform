@@ -666,6 +666,9 @@ async fn install_import_uninstall_over_http() {
         .expect("listed");
     // テーブルの数を添える（画面がテーブルを使える部署・グループを変える口を出すか決める・GAP-68）。
     assert_eq!(listed["table_count"], 1, "{listed}");
+    // 自動実行の失敗が無いアプリには function_failures を付けない（GAP-60）。
+    assert!(listed.get("function_failures").is_none(), "{listed}");
+    assert_function_failures_are_listed(&app, cookie, &pool, &id).await;
 
     // アプリのテーブルを使える部署・グループ（GAP-68）: 読める・足せる。ディレクトリに居ない部署は 400。
     let roles = |method: &str, body: Option<serde_json::Value>| {
@@ -1325,6 +1328,70 @@ async fn b1_install_tokens_reach_the_gateway_in_multi_tenancy() {
     if let Err(panic) = outcome {
         std::panic::resume_unwind(panic);
     }
+}
+
+/// 自動実行の直近の失敗は、インストールの一覧の `function_failures` に添えて返す（持ち主にだけ・GAP-60。持ち主で
+/// ない人に返さないことは、実 OpenFGA の miniapp_b2_tests が確かめる）。
+async fn assert_function_failures_are_listed(
+    app: &axum::Router,
+    cookie: &str,
+    pool: &PgPool,
+    app_id: &str,
+) {
+    let app_uuid = uuid::Uuid::parse_str(app_id).unwrap();
+    let (tenant, org): (String, String) =
+        sqlx::query_as("SELECT tenant_id, org FROM app_installation WHERE app_id = $1")
+            .bind(app_uuid)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    let failure = app_platform::FunctionFailure {
+        code: "script_error".into(),
+        message: "金額が空です".into(),
+        retryable: false,
+    };
+    app_platform::FunctionFailureStore::new(pool.clone())
+        .record_failure(
+            &tenant,
+            &org,
+            app_uuid,
+            "remind",
+            app_platform::FunctionTrigger::Cron,
+            &failure,
+        )
+        .await
+        .unwrap();
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/apps/installations")
+                .header(COOKIE, cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let body: serde_json::Value =
+        serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    sqlx::query("DELETE FROM app_function_failure WHERE tenant_id = $1 AND app_id = $2")
+        .bind(&tenant)
+        .bind(app_uuid)
+        .execute(pool)
+        .await
+        .unwrap();
+    let listed = body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["app_id"] == app_id)
+        .expect("listed");
+    let failures = listed["function_failures"].as_array().expect("failures");
+    assert_eq!(failures.len(), 1, "{listed}");
+    assert_eq!(failures[0]["function"], "remind");
+    assert_eq!(failures[0]["trigger"], "cron");
+    assert_eq!(failures[0]["message"], "金額が空です");
+    assert_eq!(failures[0]["failures"], 1);
 }
 
 /// 本体の panic を捕まえる（片付けをしてから落とすため）。

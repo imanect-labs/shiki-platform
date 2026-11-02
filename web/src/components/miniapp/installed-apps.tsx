@@ -29,12 +29,14 @@ import { AppTableRolesDialog } from "@/components/miniapp/app-table-roles-dialog
 import type { CapabilityScope } from "@/generated/authz-vocab";
 import type { FieldDef } from "@/lib/data-api";
 import { cachedRoleName, rememberRoleName } from "@/lib/role-names";
+import { formatDateTime } from "@/lib/format";
 import {
   fetchManifest,
   installApp,
   listInstallations,
   listRegistry,
   uninstallApp,
+  type AppFunctionFailure,
   type AppInstallation,
   type RegistryEntry,
 } from "@/lib/miniapp-b1-api";
@@ -44,6 +46,40 @@ import {
 const IDENTITY_SCOPE: CapabilityScope = "identity.read";
 
 const ROLE_FIELD: FieldDef = { key: "role", display_name: "部署・グループ", type: "role_ref" } as FieldDef;
+
+/// 自動実行のきっかけの呼び名（サーバーの `trigger`）。
+const TRIGGER_LABEL: Record<string, string> = {
+  event: "テーブルの変更など",
+  cron: "スケジュール",
+};
+
+/// 自動実行の関数の直近の失敗（アプリの持ち主にだけ届く・GAP-60）。次に成功すると消える。
+function FunctionFailures({ failures }: { failures: AppFunctionFailure[] }) {
+  return (
+    <div
+      role="status"
+      data-testid="app-function-failures"
+      className="flex gap-2 rounded-md border border-destructive/40 bg-destructive/5 p-2.5 text-xs"
+    >
+      <AlertTriangle className="mt-0.5 size-4 shrink-0 text-destructive" aria-hidden />
+      <div className="min-w-0 space-y-1.5">
+        <p className="font-medium text-destructive">自動実行が失敗しています</p>
+        <ul className="space-y-1.5">
+          {failures.map((f) => (
+            <li key={f.function} className="min-w-0">
+              <p className="break-words text-foreground">
+                「{f.function}」（{TRIGGER_LABEL[f.trigger] ?? "自動実行"}）・{formatDateTime(f.failed_at)}
+                {f.failures > 1 ? `・${f.failures} 回続けて失敗` : ""}
+              </p>
+              <p className="break-words text-muted-foreground">{f.message}</p>
+            </li>
+          ))}
+        </ul>
+        <p className="text-muted-foreground">次に成功すると、この表示は消えます。</p>
+      </div>
+    </div>
+  );
+}
 
 export function InstalledAppsSection() {
   const [installed, setInstalled] = React.useState<AppInstallation[] | null>(null);
@@ -218,6 +254,9 @@ export function InstalledAppsSection() {
                     </p>
                   </div>
                 </div>
+              ) : null}
+              {app.function_failures && app.function_failures.length > 0 ? (
+                <FunctionFailures failures={app.function_failures} />
               ) : null}
               <div className="mt-auto flex flex-wrap items-center gap-1 pt-1">
                 <Button size="sm" asChild disabled={!app.frontend_bundle}>
