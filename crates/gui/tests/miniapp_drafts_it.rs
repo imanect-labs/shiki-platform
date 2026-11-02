@@ -1,7 +1,8 @@
-//! ミニアプリの下書きと公開・画面の書き損じの結合テスト（D-16・GAP-36）。
+//! ミニアプリの下書きと公開・共同編集者の保存・画面の書き損じの結合テスト（D-16・GAP-36・BUG-80）。
 //!
 //! - 実 Postgres（`STORAGE_TEST_DATABASE_URL`）＋実 OpenFGA（`OPENFGA_TEST_URL`）: 使う人（viewer）には公開した版
 //!   だけを出し、editor は下書きを試せる。公開・公開を戻す・公開の権限・開いた後に公開した版が変わったボタン。
+//!   共同編集者は、自分が読めない部品を束ねたアプリを、その部品に触れなければ保存できる。
 //! - 実 Postgres だけ: 画面の書き損じは下書きには注意つきで保存でき、公開と AI の経路では止める。
 //!
 //! テストで作った行（テナントごと）と OpenFGA のストアは、落ちても最後に消す。
@@ -539,6 +540,106 @@ async fn viewers_get_only_the_published_version() {
                 json!({ "version": 1, "previous_version": 2 }),
             ]
         );
+    })
+    .await;
+}
+
+/// 共同編集者は、自分が読めない部品を束ねたアプリを、その部品に触れなければ保存できる。足した部品・版を変えた
+/// 部品は、保存する人の権限で確かめる（D-16 の (d)・BUG-80）。
+#[tokio::test]
+async fn co_editors_keep_components_they_cannot_read() {
+    let Some(pool) = pool().await else { return };
+    let Some(fga) = Fga::connect().await else {
+        return;
+    };
+    let s = stores(pool.clone(), Arc::clone(&fga.client));
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let t = tenant.clone();
+    run_with_cleanup(pool, tenant, Some(fga), async move {
+        let alice = ctx(&t, "alice");
+        let carol = ctx(&t, "carol");
+        // alice のワークフロー（carol には共有しない）を束ねたアプリを、carol に編集で共有する。
+        let wf = workflow(&s, &alice, "secret-wf").await;
+        s.artifacts
+            .append_version(&alice, wf, json!({ "rev": 2 }), Some(1), None)
+            .await
+            .expect("wf v2");
+        let app = s
+            .mini_apps
+            .create(&alice, "shared-app", &app_body("v1", wf, 1), SaveMode::Draft, None)
+            .await
+            .expect("create")
+            .id;
+        share(&s, &alice, app, "carol", ArtifactRole::Editor).await;
+
+        // ワークフローに触れずに画面だけを直す: 保存できる（前は「見つからないか、あなたには読めません」）。
+        let mut edited = app_body("v1", wf, 1);
+        edited["description"] = json!("経費の申請（直した）");
+        let saved = s
+            .mini_apps
+            .update(&carol, app, &edited, Some(1), SaveMode::Draft, None)
+            .await
+            .expect("触れない部品は確かめ直さない");
+        assert_eq!(saved.version, 2);
+        // 別名だけを変えても、同じ部品の同じ版なので確かめ直さない。
+        let mut renamed = edited.clone();
+        renamed["workflows"][0]["alias"] = json!("経費");
+        renamed["screen"] = json!(screen("v1").replace("workflow expense", "workflow 経費"));
+        s.mini_apps
+            .update(&carol, app, &renamed, Some(2), SaveMode::Draft, None)
+            .await
+            .expect("別名の変更");
+
+        // 版を変えると、carol の権限で確かめる（読めないので断る・文言は別名と版で言う）。
+        let mut bumped = renamed.clone();
+        bumped["workflows"][0]["version"] = json!(2);
+        let err = s
+            .mini_apps
+            .update(&carol, app, &bumped, Some(3), SaveMode::Draft, None)
+            .await
+            .expect_err("版を変えたピンは確かめる");
+        let GuiError::Validation(errors) = err else {
+            panic!("validation error expected");
+        };
+        assert_eq!(
+            errors
+                .iter()
+                .map(|e| (e.code.as_str(), e.message.as_str(), e.path.as_deref()))
+                .collect::<Vec<_>>(),
+            vec![(
+                "miniapp.pin_unresolved",
+                "ワークフロー「経費」（v2）が見つからないか、あなたには読めません",
+                Some("workflows[0]")
+            )]
+        );
+        // 足した部品も確かめる（carol が読めるワークフローなら足せる）。
+        let own = workflow(&s, &carol, "carol-wf").await;
+        let mut added = renamed.clone();
+        added["workflows"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({ "alias": "control", "artifact_id": own, "version": 1 }));
+        s.mini_apps
+            .update(&carol, app, &added, Some(3), SaveMode::Draft, None)
+            .await
+            .expect("読める部品は足せる");
+        let mut foreign = added.clone();
+        let other = workflow(&s, &alice, "other-wf").await;
+        foreign["workflows"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({ "alias": "other", "artifact_id": other, "version": 1 }));
+        assert!(matches!(
+            s.mini_apps.update(&carol, app, &foreign, Some(4), SaveMode::Draft, None).await,
+            Err(GuiError::Validation(e)) if e.iter().any(|x| x.path.as_deref() == Some("workflows[2]"))
+        ));
+        // 使う人（viewer）は保存できない（前の版を読む前に断る）。
+        let dave = ctx(&t, "dave");
+        share(&s, &alice, app, "dave", ArtifactRole::Viewer).await;
+        assert!(matches!(
+            s.mini_apps.update(&dave, app, &added, Some(4), SaveMode::Draft, None).await,
+            Err(GuiError::Artifact(ArtifactError::Forbidden))
+        ));
     })
     .await;
 }

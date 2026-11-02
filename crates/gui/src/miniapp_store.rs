@@ -1,6 +1,8 @@
 //! ミニアプリの保存・解決（Task 6.10）。
 //!
-//! 保存時は**保存する人の権限**で全ピン（skill/workflow/data_view）の存在・kind・viewer を検証する。画面のボタンの実行先がバンドルの別名に
+//! 保存時は**保存する人の権限**でピン（skill/workflow/data_view）の存在・kind・viewer を検証する。確かめるのは
+//! 足したピンと、対象か版を変えたピンだけで、前の版と同じピンは確かめ直さない（共同編集者が、自分の読めない部品を
+//! 束ねたアプリを、その部品に触れずに保存できる・D-16 の (d)・BUG-80）。画面のボタンの実行先がバンドルの別名に
 //! 限られることは body の検証（[`validate_miniapp_body`]）が見る。
 //!
 //! 保存は**下書きの版**になる（D-16 の (a)・GAP-36）。使う人（editor でない viewer）が開く・押すのは公開した版
@@ -19,14 +21,16 @@ use std::sync::Arc;
 use storage::audit::AuditAction;
 
 use artifact::{Artifact, ArtifactError, ArtifactKind, ArtifactStore, NewArtifact};
-use authz::AuthContext;
+use authz::{AuthContext, Relation};
 use chrono::{DateTime, Utc};
 use serde_json::json;
 use sqlx::PgPool;
 use storage::audit::{AuditEntry, AuditRecorder, Decision};
 use uuid::Uuid;
 
-use crate::miniapp::{screen_problems, validate_miniapp_body, ComponentPin, MiniAppBody};
+use crate::miniapp::{
+    screen_problems, validate_miniapp_body, ComponentPin, MiniAppBody, NamedComponentPin,
+};
 use crate::skill::{validate_skill_body, SkillBody};
 use crate::store::GuiError;
 use crate::validate::GuiValidationError;
@@ -137,7 +141,7 @@ impl MiniAppStore {
         mode: SaveMode,
         trace_id: Option<&str>,
     ) -> Result<SavedMiniApp, GuiError> {
-        let (body, warnings) = self.check_body(ctx, raw_body, mode, trace_id).await?;
+        let (body, warnings) = self.check_body(ctx, raw_body, None, mode, trace_id).await?;
         let artifact = self
             .artifacts
             .create(
@@ -160,6 +164,9 @@ impl MiniAppStore {
     }
 
     /// 既存ミニアプリに新バージョン（下書き）を追記する。公開した版は変えない（D-16）。
+    ///
+    /// ピンは、`expected_version`（無ければ最新の版）の本文と比べて、足したものと対象か版を変えたものだけを
+    /// 保存する人の権限で確かめる（BUG-80）。保存できるのはアプリの editor（追記と同じ）で、前の版を読む前に確かめる。
     pub async fn update(
         &self,
         ctx: &AuthContext,
@@ -176,7 +183,26 @@ impl MiniAppStore {
                 "このアーティファクトは mini_app ではありません",
             )]));
         }
-        let (body, warnings) = self.check_body(ctx, raw_body, mode, trace_id).await?;
+        self.artifacts
+            .require_relation(
+                ctx,
+                id,
+                Relation::Editor,
+                AuditAction::ArtifactVersionAppend,
+                trace_id,
+            )
+            .await?;
+        let base = expected_version.unwrap_or(meta.current_version);
+        // 比べる前の版。無い版（expected_version の誤り）や今の検証を通らない版なら、すべてのピンを確かめる
+        // （追記は版の競合で断る）。
+        let previous = match self.artifacts.get_version(ctx, id, base, trace_id).await {
+            Ok(v) => validate_miniapp_body(&v.body).ok(),
+            Err(ArtifactError::NotFound) => None,
+            Err(e) => return Err(e.into()),
+        };
+        let (body, warnings) = self
+            .check_body(ctx, raw_body, previous.as_ref(), mode, trace_id)
+            .await?;
         let version = self
             .artifacts
             .append_version(ctx, id, raw_body.clone(), expected_version, trace_id)
@@ -196,12 +222,13 @@ impl MiniAppStore {
         &self,
         ctx: &AuthContext,
         raw_body: &serde_json::Value,
+        previous: Option<&MiniAppBody>,
         mode: SaveMode,
         trace_id: Option<&str>,
     ) -> Result<(MiniAppBody, Vec<GuiValidationError>), GuiError> {
         let body = validate_miniapp_body(raw_body).map_err(GuiError::Validation)?;
         let problems = screen_problems(&body);
-        let mut errors = self.validate_pins(ctx, &body, trace_id).await;
+        let mut errors = self.validate_pins(ctx, &body, previous, trace_id).await;
         let warnings = match mode {
             SaveMode::Draft => problems,
             SaveMode::Strict => {
@@ -352,14 +379,22 @@ impl MiniAppStore {
     }
 
     /// 保存時のピン解決（**保存する人の権限**で存在・kind・viewer を検証する）。誤りの一覧を返す（無ければ空）。
+    ///
+    /// 確かめるのは、前の版（`previous`）に無いピン（足したもの・対象か版を変えたもの）だけ（D-16 の (d)・
+    /// BUG-80）。前の版と同じピンは、その版を保存した人が確かめてあり、版は不変なので確かめ直さない（共同編集者が
+    /// 読めない部品も、触れなければそのまま保存できる）。
     async fn validate_pins(
         &self,
         ctx: &AuthContext,
         body: &MiniAppBody,
+        previous: Option<&MiniAppBody>,
         trace_id: Option<&str>,
     ) -> Vec<GuiValidationError> {
         let mut errors = Vec::new();
-        if let Some(pin) = body.skill {
+        if let Some(pin) = body
+            .skill
+            .filter(|p| previous.and_then(|b| b.skill) != Some(*p))
+        {
             let what = format!("スキル（v{}）", pin.version);
             if let Err(e) = self
                 .check_pin(ctx, &pin, ArtifactKind::Skill, &what, trace_id)
@@ -369,6 +404,9 @@ impl MiniAppStore {
             }
         }
         for (i, wf) in body.workflows.iter().enumerate() {
+            if unchanged(previous.map(|b| b.workflows.as_slice()), wf) {
+                continue;
+            }
             let pin = ComponentPin {
                 artifact_id: wf.artifact_id,
                 version: wf.version,
@@ -384,6 +422,9 @@ impl MiniAppStore {
         // 保存ビュー（Task 15.7）: 保存する人が**その版を読める**こと（viewer・kind・版の実在）を
         // 確かめて版に固定する。データの権限はここでは広げない（実行時に閲覧者本人で毎回評価する）。
         for (i, view) in body.data_views.iter().enumerate() {
+            if unchanged(previous.map(|b| b.data_views.as_slice()), view) {
+                continue;
+            }
             let pin = ComponentPin {
                 artifact_id: view.artifact_id,
                 version: view.version,
@@ -456,4 +497,12 @@ impl MiniAppStore {
             })?;
         Ok(v.body)
     }
+}
+
+/// 前の版にも同じ部品の同じ版のピンがあるか（別名は問わない。別名だけを変えたピンも確かめ直さない・BUG-80）。
+fn unchanged(previous: Option<&[NamedComponentPin]>, pin: &NamedComponentPin) -> bool {
+    previous.is_some_and(|pins| {
+        pins.iter()
+            .any(|p| p.artifact_id == pin.artifact_id && p.version == pin.version)
+    })
 }
