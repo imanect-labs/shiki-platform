@@ -90,7 +90,7 @@ export function MiniAppPublishBar({
           ? `共有した人が使っているバージョンです。下書きの v${latest} はまだ公開していません。`
           : "共有した人が使っているバージョンです。保存した変更は、公開するまで共有した人に見えません。";
       case "draft":
-        return `下書きを試しています。共有した人には公開中の v${published} が見えます。`;
+        return `下書きを試しています。共有した人には公開中の v${published} が見えます。ボタンを押すと、ワークフローは実際に動きます。`;
       case "older":
         return `v${app.version} を表示しています。共有した人には公開中の v${published} が見えます。`;
     }
