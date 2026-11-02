@@ -223,7 +223,8 @@ async fn the_ai_finds_reads_and_fixes_only_workflows_the_user_can_see() {
 
         // 1. 自分のものだけ: 語で絞る（名前・表示名・説明）。共有されたもの・見えないものは出ない。
         let mine = call(&list, &alice, json!({ "query": "経費" })).await.unwrap();
-        assert!(mine.contains(&format!("id: {expense} / v1")), "{mine}");
+        assert!(mine.contains("- 経費精算（v1・編集できる）/ 自動実行: オフ / きっかけ: 手動"), "{mine}");
+        assert!(mine.contains(&format!("id: {expense}\n  name: expense-approval")), "{mine}");
         assert!(mine.contains("入力（* は必須）: title, amount*"), "{mine}");
         assert!(mine.contains("編集できる"), "{mine}");
         for absent in ["daily-report", "bob-expense", "carol-expense"] {
@@ -239,8 +240,12 @@ async fn the_ai_finds_reads_and_fixes_only_workflows_the_user_can_see() {
         let with_shared = call(&list, &alice, json!({ "query": "経費", "include_shared": true }))
             .await
             .unwrap();
-        assert!(with_shared.contains(&format!("id: {shared} / v1")), "{with_shared}");
-        assert!(with_shared.contains("閲覧のみ（直せない） / 共有されたもの"), "{with_shared}");
+        assert!(
+            with_shared.contains(&format!(
+                "- 共有されたもの（v1・閲覧のみで直せない・持ち主はほかの人）/ 自動実行: オフ / きっかけ: 手動 / id: {shared}"
+            )),
+            "{with_shared}"
+        );
         assert_eq!(with_shared.matches("</shared_artifact>").count(), 1, "{with_shared}");
         assert!(with_shared.contains("&lt;/shared_artifact>経費の集計"), "{with_shared}");
         assert!(!with_shared.contains("carol-expense") && !with_shared.contains(&hidden.to_string()));
@@ -345,7 +350,7 @@ async fn the_ai_finds_reads_and_fixes_only_workflows_the_user_can_see() {
         let editable = call(&list, &alice, json!({ "query": "bob", "include_shared": true }))
             .await
             .unwrap();
-        assert!(editable.contains("編集できる / 共有されたもの"), "{editable}");
+        assert!(editable.contains("- 共有されたもの（v1・編集できる・持ち主はほかの人）"), "{editable}");
         call(
             &emit,
             &alice,
