@@ -98,10 +98,10 @@ pub(super) fn generic_tool_call(
 
 /// 既存のワークフローを直す決定的駆動 `fixwf:<語>`（新しい会話から「〜を直して」と頼む・GAP-31 の e2e）。
 ///
-/// 1. `list_workflows` で語を探す → 2. 当たった先頭の id を `read_workflow` で読む → 3. 読んだ IR の説明
-/// （`description`）を書き換え、読んだ版を `expected_version` にして `emit_workflow` で新しい版として保存する →
-/// 4. 本文で返す。段は直前のツールの名前と結果で決める（当たらない・読めない・保存できないときは、その観測を本文で
-/// 返す）。提示に無いツールなら呼ばない。
+/// `list_workflows` で語を探し、当たった先頭の id を `read_workflow` で読み、読んだ IR の説明（`description`）を
+/// 書き換えて、読んだ版を `expected_version` にして `emit_workflow` で新しい版として保存し、最後に本文で返す。段は
+/// 直前のツールの名前と結果で決める（当たらない・読めない・保存できないときは、その観測を本文で返す）。提示に無い
+/// ツールなら呼ばない。
 pub(super) fn fix_workflow_call(
     req: &GenerateRequest,
     user_text: &str,
