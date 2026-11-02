@@ -122,6 +122,8 @@ export function listChildren(opts: {
   limit?: number;
   /// 名前の部分一致検索。指定時はフォルダ階層を跨いで横断検索する。
   q?: string;
+  /// 読み込みを止める合図（検索の語が変わった・画面を離れた）。
+  signal?: AbortSignal;
 }): Promise<ChildrenResponse> {
   return apiFetch(
     `/nodes${qs({
@@ -132,6 +134,7 @@ export function listChildren(opts: {
       limit: opts.limit,
       q: opts.q,
     })}`,
+    { signal: opts.signal },
   ).then((r) => okJson<ChildrenResponse>(r));
 }
 
@@ -143,6 +146,9 @@ const CHILDREN_MAX_PAGES = 5;
 /// 見えないものが多い場所（ドライブのトップ・名前の検索）では、1 ページが `limit` より少ないか 0 件のまま、続きの
 /// 位置だけが付いて返ることがある（サーバーが OpenFGA に問う数を抑えるため・BUG-187）。往復の上限で止まったら
 /// `next_cursor` を返す（画面は「さらに読み込む」で続きを読む）。
+///
+/// `signal` が止まったら次の往復に進まない（打ち直す前の語の頼みが、残りの往復でサーバーに 1 回あたり最大 1,000 問を
+/// 投げ続けない）。止まった読み込みは AbortError で失敗する（呼び出し側は結果を捨てる）。
 export async function listChildrenUpTo(
   opts: Parameters<typeof listChildren>[0] & { want?: number },
 ): Promise<ChildrenResponse> {
@@ -151,6 +157,7 @@ export async function listChildrenUpTo(
   const items: NodeResponse[] = [];
   let cursor = rest.cursor;
   for (let page = 0; page < CHILDREN_MAX_PAGES; page += 1) {
+    rest.signal?.throwIfAborted();
     const p = await listChildren({ ...rest, cursor, limit: Math.min(100, Math.max(1, want - items.length)) });
     items.push(...p.items);
     cursor = p.next_cursor ?? undefined;

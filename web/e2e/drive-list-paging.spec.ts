@@ -7,6 +7,7 @@ import { cleanupQueue, createFolderApi, loginViaKeycloak, trashFolderApi, unique
 ///   （cursor_invalid）。たどると重ならず漏れなく出る（本物の API）。
 /// - サーバーが 0 件のページに続きの位置だけを付けて返しても、画面は空の状態に見せずに続きをたどり、往復の上限で
 ///   止まったら「さらに読み込む」を出す（応答は route で差し替える・見えないものばかりの大きな組織を手元に作らない）。
+/// - 検索の語を打ち直したら、前の語の読み込みは残りの往復を続けない（サーバーに問う数を無駄にしない）。
 /// 作ったもの（フォルダー・ブラウザーの文脈）は最後に片付ける（失敗したテストでも走る）。
 /// `E2E_SHOTS_DIR` があれば、PC（1440px）とスマホ（390px）の画面を撮る。
 
@@ -173,3 +174,39 @@ for (const where of [
     }
   });
 }
+
+test("ドライブの名前の検索: 語を打ち直したら、前の語の読み込みは残りの往復を続けない（BUG-187）", async ({ page }) => {
+  test.setTimeout(90_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await loginViaKeycloak(page);
+  // 前の語（見）は 0 件のページを遅く返し続ける。今の語（見積）はすぐ見つかる。
+  const asked: string[] = [];
+  const handler = async (route: Route) => {
+    if (route.request().method() !== "GET") return route.fallback();
+    const q = new URL(route.request().url()).searchParams.get("q") ?? "";
+    asked.push(q);
+    const cursor = new URL(route.request().url()).searchParams.get("cursor") ?? "c0";
+    const body: Body =
+      q === "見"
+        ? { items: [], next_cursor: `c${Number(cursor.slice(1)) + 1}` }
+        : { items: q === "見積" ? [folderNode(3)] : [], next_cursor: null };
+    if (q === "見") await new Promise((r) => setTimeout(r, 1_000));
+    try {
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+    } catch {
+      // 画面が頼みを止めた後の応答は届けられない（止まったことの確かめは頼みの数で行う）。
+    }
+  };
+  await page.route(LIST, handler);
+  try {
+    await page.goto(`/drive?q=${encodeURIComponent("見")}`);
+    await expect.poll(() => asked.filter((q) => q === "見").length).toBeGreaterThanOrEqual(1);
+    await page.getByRole("searchbox", { name: "ドライブを検索" }).fill("見積");
+    await expect(page.getByText("見つかったフォルダー 3", { exact: true }).first()).toBeVisible({ timeout: 20_000 });
+    // 前の語の読み込みは、止めなければ 1 秒ごとに往復を続けて 5 回になる。
+    await page.waitForTimeout(5_000);
+    expect(asked.filter((q) => q === "見").length).toBeLessThanOrEqual(2);
+  } finally {
+    await page.unroute(LIST, handler);
+  }
+});

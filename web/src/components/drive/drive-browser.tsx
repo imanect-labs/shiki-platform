@@ -205,7 +205,7 @@ export function DriveBrowser() {
   // 見えないものが多い場所（トップ・名前の検索）では、サーバーが短いか 0 件のページに続きの位置だけを付けて返すことが
   // ある（BUG-187）。1 回の読み込みで続きを数回たどり、それでも見つからなければ末尾に「さらに読み込む」を出す。
   const fetchPage = React.useCallback(
-    (cursor?: string) =>
+    (cursor?: string, signal?: AbortSignal) =>
       listChildrenUpTo({
         // 検索中はフォルダを跨いで横断検索（parent を渡さない）。
         parentId: searching ? undefined : (folderId ?? undefined),
@@ -214,6 +214,8 @@ export function DriveBrowser() {
         cursor,
         want: 50,
         q: searching ? query : undefined,
+        // 打ち直した語・移ったフォルダーでは、前の読み込みの残りの往復を止める。
+        signal,
       }),
     [folderId, sort, desc, searching, query],
   );
