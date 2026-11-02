@@ -53,6 +53,8 @@ type PinnedSkill =
   | { state: "unreadable" }
   /// 通信・サーバの誤りで決められない（読めないと決めつけない）。
   | { state: "unknown" };
+// 読めない部品も、変えなければそのまま保存できる（保存のときに確かめるのは足した部品と、対象か版を変えた部品だけ・
+// D-16 の (d)・BUG-80）。
 
 /// 束ねたワークフローの入力の定義を読めたか（読めないときは「入力はありません」と扱わない・BUG-122）。
 type PinnedInputs =
@@ -492,7 +494,7 @@ export function MiniAppEditorDialog({
             )}
             {missingSkill ? (
               <p id="app-skill-missing" className="text-xs text-amber-700 dark:text-amber-400" role="note">
-                束ねているスキルは削除されたか、あなたには読めません。このままでは保存できないので、別のスキルか「なし」を選んでください。
+                束ねているスキルは、削除されたか、あなたに見る権限がありません。変えなければ、このまま保存できます。
               </p>
             ) : null}
           </div>

@@ -826,9 +826,11 @@ test.describe("ミニアプリ（部品のピン・共同編集）", () => {
       const dialog = page.getByRole("dialog");
       const skillSelect = dialog.getByLabel("スキル（任意）");
       await expect(skillSelect.locator("option:checked")).toHaveText("読めないスキル（v1）");
-      await expect(dialog.getByText("束ねているスキルは削除されたか、あなたには読めません")).toBeVisible();
+      // 変えなければそのまま保存できる（保存で確かめるのは足した部品・版を変えた部品だけ・BUG-80）。
+      const unreadable = "束ねているスキルは、削除されたか、あなたに見る権限がありません。変えなければ、このまま保存できます。";
+      await expect(dialog.getByText(unreadable)).toBeVisible();
       await skillSelect.selectOption({ label: "なし" });
-      await expect(dialog.getByText("束ねているスキルは削除されたか、あなたには読めません")).toHaveCount(0);
+      await expect(dialog.getByText(unreadable)).toHaveCount(0);
       await dialog.getByRole("button", { name: "保存" }).click();
       await expect(page.getByText("v2 を下書きとして保存しました", { exact: true })).toBeVisible({ timeout: 15_000 });
       await expect(page.getByTestId("miniapp-skill-unavailable")).toHaveCount(0);
@@ -872,7 +874,7 @@ test.describe("ミニアプリ（部品のピン・共同編集）", () => {
       const skillSelect = dialog.getByLabel("スキル（任意）");
       // ピンの版を直に読めたので、名前つきで選んだまま。「読めない」とは言わない。
       await expect(skillSelect.locator("option:checked")).toHaveText(`${skillName}（v1）`);
-      await expect(dialog.getByText("束ねているスキルは削除されたか、あなたには読めません")).toHaveCount(0);
+      await expect(dialog.getByText("束ねているスキルは、削除されたか、あなたに見る権限がありません")).toHaveCount(0);
       await dialog.getByLabel(/画面の見出し/).fill("経費の案内（改訂）");
       await dialog.getByRole("button", { name: "保存" }).click();
       await expect(page.getByText("v2 を下書きとして保存しました", { exact: true })).toBeVisible({ timeout: 15_000 });
