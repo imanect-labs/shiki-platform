@@ -496,13 +496,24 @@ async fn invalid_params_are_rejected_before_the_port() {
     assert!(ports.reqs().is_empty());
 }
 
-/// llm_decide を結線しないポート（既定の実装）は「未構成」で permanent に失敗する（H1）。
+/// llm_decide を結線しないポート（既定の実装）は「この環境で構成されていない」で permanent に失敗する（H1）。失敗の
+/// 分類はこの環境で使えない機能で、ブロックは画面の名前で言う（BUG-175）。
 #[tokio::test]
-async fn the_default_port_is_unsupported() {
+async fn the_default_port_is_not_configured() {
     let audit = Arc::new(Audit::default());
     let res = run(Arc::new(NoDecider), &audit, &params(Value::Null)).await;
-    assert_eq!(code(&res), ("unsupported".into(), false));
-    assert!(res.error.unwrap().message.contains("ai.decide"));
+    assert_eq!(
+        code(&res),
+        (workflow_engine::nodes::ports::NOT_CONFIGURED.into(), false)
+    );
+    assert_eq!(
+        res.error.unwrap().message,
+        "この環境では「AI で判定」を使えません。管理者に連絡してください。"
+    );
+    assert_eq!(
+        workflow_engine::run::failure::category_of(workflow_engine::nodes::ports::NOT_CONFIGURED),
+        workflow_engine::FailureCategory::Environment
+    );
 }
 
 /// 出口を分ける判定のしきい値が空なら、AI を呼ばずにやり直さない誤りで失敗する（実行の前に readiness が止める

@@ -114,7 +114,7 @@ impl NodePorts for DataPorts {
         query: &DataQuery,
     ) -> Result<Value, PortError> {
         if self.unconfigured {
-            return Err(PortError::new("unsupported", "未構成", false));
+            return Err(workflow_engine::nodes::ports::data_not_configured());
         }
         self.queries.lock().unwrap().push((table_id, query.clone()));
         Ok(json!({
@@ -290,7 +290,11 @@ async fn unconfigured_data_port_fails_closed() {
         )
         .await;
     assert!(!res.ok);
-    assert_eq!(res.error.unwrap().code, "unsupported");
+    // テーブルの無い構成は、この環境で使えない機能の誤り（管理者に連絡する・BUG-175）。
+    assert_eq!(
+        res.error.unwrap().code,
+        workflow_engine::nodes::ports::NOT_CONFIGURED
+    );
 }
 
 #[tokio::test]

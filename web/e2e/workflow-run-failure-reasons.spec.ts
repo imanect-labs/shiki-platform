@@ -9,6 +9,8 @@ import { cleanupQueue, loginViaKeycloak, removeWorkflowApi, uniqueName } from ".
 ///   分類できない失敗で「そのまま再開できる」と言っていた）。
 /// - 作成者の script が投げた誤りは、設定の問題として言い、再開を勧めない（BUG-137）。再開の API も 409 で断る
 ///   （BUG-138）。
+/// - この環境で構成されていない機能（社内文書の検索の無い環境の「社内検索」）の失敗は、この環境で使えない機能と言い、
+///   作成者でなく管理者に連絡するよう言う（BUG-175。以前は権限が足りないと言っていた）。
 /// - 「ファイルを読む」で PDF の取り込みを待っている間、ブロックは「ファイルの取り込みを待っています」と言い、次に
 ///   読む時刻と待つ上限を出す（D-125・GAP-50）。手元の検証のスタックには取り込みの worker が無いので、詳細の答えの
 ///   ブロックだけを、取り込みを待っている形に差し替えて画面を確かめる（待ち方そのものは api の結合テスト
@@ -212,6 +214,72 @@ test("PDF の取り込みを待っているブロックは、取り込みを待�
     await expect(phoneSheet.getByTestId("step-retry-at")).toBeVisible();
     expect(await phone.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
     if (SHOTS) await phone.screenshot({ path: `${SHOTS}/run-index-wait-phone.png` });
+  } finally {
+    await ctx.close();
+  }
+});
+
+test("社内文書の検索の無い環境の失敗は、この環境で使えない機能と言い、管理者に連絡するよう言う（BUG-175）", async ({
+  browser,
+  page,
+}) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await loginViaKeycloak(page);
+  // 手元の検証のスタックは社内文書の検索を構成しない（RAG なし）。「社内検索」を置いて実行する。
+  const name = uniqueName("rag-not-configured");
+  const created = await page.request.post("/api/workflows", {
+    headers: await csrfHeaders(page),
+    data: {
+      ir: {
+        ir_version: 1,
+        name,
+        display_name: name,
+        declared_scopes: ["rag.query"],
+        triggers: [{ kind: "interactive" }],
+        nodes: [{ id: "sc", type: "rag.search", label: "規程を探す", params: { query: "就業規則" } }],
+        edges: [],
+      },
+    },
+  });
+  expect(created.ok(), await created.text()).toBeTruthy();
+  const id = ((await created.json()) as { id: string }).id;
+  cleanup.add(() => removeWorkflowApi(page, id));
+  const started = await page.request.post(`/api/workflows/${id}/runs`, {
+    headers: await csrfHeaders(page),
+    data: { input: {} },
+  });
+  expect(started.ok(), await started.text()).toBeTruthy();
+  const runId = ((await started.json()) as { run_id: string }).run_id;
+  const get = async () => (await (await page.request.get(`/api/workflows/${id}/runs/${runId}`)).json()) as RunDetail;
+  await expect
+    .poll(async () => (await get()).status, { timeout: 60_000, intervals: [1_000] })
+    .toBe("failed");
+  const detail = await get();
+  expect(detail.steps.find((s) => s.node_id === "sc")?.error?.code).toBe("not_configured");
+  expect(detail.failure).toEqual({
+    category: "environment",
+    message: "この環境では使えない機能を使おうとしたため、処理を完了できませんでした。管理者に連絡してください。",
+    reference: runId.replace(/-/g, "").slice(0, 8),
+  });
+  // 管理者が構成した後なら再開で通るので、原因を直してから再開するよう言う。
+  expect(detail.resume).toMatchObject({ advice: "fix_first", offer: true });
+
+  const url = `/workflows/${id}/runs?run=${runId}`;
+  await page.goto(url);
+  const sheet = page.getByRole("dialog");
+  await expect(sheet.getByTestId("run-failure")).toContainText(detail.failure!.message, { timeout: 30_000 });
+  await expect(sheet.getByTestId("run-failure")).not.toContainText("作成者");
+  await expect(sheet.getByText("この環境では社内文書の検索を使えません。管理者に連絡してください。").first()).toBeVisible();
+  await expect(sheet.getByTestId("step-error-code")).toHaveText("（not_configured）");
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/run-failure-not-configured-pc.png` });
+
+  const { ctx, phone } = await openOnPhone(browser, page, url);
+  try {
+    const phoneSheet = phone.getByRole("dialog");
+    await expect(phoneSheet.getByTestId("run-failure")).toContainText("管理者に連絡してください", { timeout: 30_000 });
+    expect(await phone.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+    if (SHOTS) await phone.screenshot({ path: `${SHOTS}/run-failure-not-configured-phone.png` });
   } finally {
     await ctx.close();
   }

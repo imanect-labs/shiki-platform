@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use uuid::Uuid;
 
-use crate::vocab::AgentTool;
+use crate::vocab::{AgentTool, NodeType};
 
 /// ノード実行時の認可・トレース文脈（ポート実装が `AuthContext` を組む素材）。
 #[derive(Debug, Clone)]
@@ -304,6 +304,42 @@ pub const INDEX_FAILED: &str = "index_failed";
 /// 詳細の 1 行目が「ワークフローの設定に問題があり…」になっていた。
 pub const SEARCH_DISABLED: &str = "search_disabled";
 
+/// この環境で構成されていない機能（判定のチョークポイント・AI エージェントのツール・テーブル・社内文書の検索・CSV・
+/// シークレット・スクリプト）を使おうとしたときの code（BUG-175・permanent・失敗の分類はこの環境で使えない機能）。
+///
+/// 以前は `unsupported`（設定の誤り）か `forbidden`（権限）か `unavailable`（一時的な問題）で、実行の詳細の 1 行目が
+/// 作成者やアプリを共有した人に連絡するよう言うか、やり直しを待たせていた。作成者には直せないので、管理者に連絡する
+/// よう言う（社内文書の検索が使えない環境で PDF を読んだ `search_disabled`・BUG-158 と同じ形）。
+pub const NOT_CONFIGURED: &str = "not_configured";
+
+/// [`NOT_CONFIGURED`] の誤り。`what` は使えない機能を画面の名前で言う語（ブロックは「」で囲む）。
+#[must_use]
+pub fn not_configured(what: &str) -> PortError {
+    PortError::new(
+        NOT_CONFIGURED,
+        format!("この環境では{what}を使えません。管理者に連絡してください。"),
+        false,
+    )
+}
+
+/// ブロックを動かすチョークポイントが構成されていない（名前はカタログの表示名・[`NOT_CONFIGURED`]）。
+#[must_use]
+pub fn block_not_configured(nt: NodeType) -> PortError {
+    not_configured(&format!("「{}」", crate::vocab::label_ja(nt)))
+}
+
+/// AI エージェントのツールが構成されていない（名前はツールの表示名・[`NOT_CONFIGURED`]）。
+#[must_use]
+pub fn tool_not_configured(tool: AgentTool) -> PortError {
+    not_configured(&format!("ツール「{}」", tool.label_ja()))
+}
+
+/// テーブル（構造化データ）が構成されていない（[`NOT_CONFIGURED`]）。
+#[must_use]
+pub fn data_not_configured() -> PortError {
+    not_configured("テーブル")
+}
+
 /// 存在を明かさない「見つからない」の文（付録 C の §3.6・付録 D の N1.11）。`target` は「実行するワークフロー」など。
 ///
 /// 無いときと見る権限が無いときを言い分けない（名前の存在が分かってしまうため）。補いたい事実は呼び出し側が
@@ -420,11 +456,7 @@ pub trait NodePorts: Send + Sync {
     /// みなす）。エンジンが型付きで読み、質問と突き合わせてから出力を組む。
     /// 既定は「未構成」（判定のチョークポイントを結線しない実装・テスト用・H1）。
     async fn llm_decide(&self, _ctx: &ExecCtx, _req: LlmDecideReq) -> Result<Value, PortError> {
-        Err(PortError::new(
-            "unsupported",
-            "AI の判定（ai.decide）はこの環境では使えません",
-            false,
-        ))
+        Err(block_not_configured(NodeType::AiDecide))
     }
 
     /// agent.invoke（agent-core のツールループを 1 回走らせる・LLM は llm-gateway を通す・BUG-6）。
@@ -477,7 +509,7 @@ pub trait NodePorts: Send + Sync {
     /// csv.write（`TabularService.save_new`・作成権限）。冪等化は capability 層が担保する。
     async fn csv_write(&self, ctx: &ExecCtx, req: CsvWriteReq) -> Result<Value, PortError>;
 
-    // --- 構造化データ（Task 15.7）。既定は「未構成」（data を結線しない実装・テスト用）。---
+    // --- 構造化データ（Task 15.7）。既定は「未構成」（data を結線しない実装・テスト用・[`data_not_configured`]）。---
     //
     // 実装は data の DataStore（行述語・フィールドマスク・OpenFGA の認可込み）を呼ぶ。schedule / event の
     // run（実行主体 = workflow）は、①ワークフロー主体にテーブルが委譲されていること（タプル）を確かめ、
@@ -485,7 +517,7 @@ pub trait NodePorts: Send + Sync {
 
     /// data.list_tables（実行主体が viewer のテーブル一覧）。
     async fn data_list_tables(&self, _ctx: &ExecCtx) -> Result<Value, PortError> {
-        Err(data_unconfigured())
+        Err(data_not_configured())
     }
 
     /// data.query（`DataStore::run_query`・data の `DataQuery` をそのまま渡す）。返り値は `QueryResult`。
@@ -495,7 +527,7 @@ pub trait NodePorts: Send + Sync {
         _table_id: Uuid,
         _query: &data::DataQuery,
     ) -> Result<Value, PortError> {
-        Err(data_unconfigured())
+        Err(data_not_configured())
     }
 
     /// data.get（`DataStore::get_record`）。返り値はマスク済みのレコード。
@@ -505,13 +537,13 @@ pub trait NodePorts: Send + Sync {
         _table_id: Uuid,
         _record_id: Uuid,
     ) -> Result<Value, PortError> {
-        Err(data_unconfigured())
+        Err(data_not_configured())
     }
 
     /// data の書込（作成・更新・削除・遷移・一括 upsert）。冪等化は capability 層の effect_journal が
     /// 担保し、ポートは適用のみを行う（一括 upsert は `idempotency_key` から取込 ID を決めて二重取込を防ぐ）。
     async fn data_write(&self, _ctx: &ExecCtx, _req: DataWriteReq) -> Result<Value, PortError> {
-        Err(data_unconfigured())
+        Err(data_not_configured())
     }
 
     /// 承認（human.approval）の停止時に、束縛した行のいまの状態・rev・FSM でその状態から進める状態
@@ -524,7 +556,7 @@ pub trait NodePorts: Send + Sync {
         _table_id: Uuid,
         _record_id: Uuid,
     ) -> Result<ApprovalTarget, PortError> {
-        Err(data_unconfigured())
+        Err(data_not_configured())
     }
 
     // --- agent.invoke の道具（BUG-6・D-22）。既定は「未構成」（結線しない実装・テスト用）。---
@@ -534,22 +566,22 @@ pub trait NodePorts: Send + Sync {
 
     /// web.search（`SearchProvider`・検索語が検索サービスへ出る）。返り値は `{ results: [{title, url, snippet}] }`。
     async fn web_search(&self, _ctx: &ExecCtx, _query: &str) -> Result<Value, PortError> {
-        Err(tool_unconfigured("web.search"))
+        Err(tool_not_configured(AgentTool::WebSearch))
     }
 
     /// web.fetch（解決後の IP の検証・リダイレクト非追従）。返り値は `{ url, text, citations? }`。
     async fn web_fetch(&self, _ctx: &ExecCtx, _req: WebFetchReq) -> Result<Value, PortError> {
-        Err(tool_unconfigured("web.fetch"))
+        Err(tool_not_configured(AgentTool::WebFetch))
     }
 
     /// code.run（`Sandbox`・egress 全遮断・成果物は保存しない）。返り値は `{ stdout, exit_code }`。
     async fn code_run(&self, _ctx: &ExecCtx, _req: CodeRunReq) -> Result<Value, PortError> {
-        Err(tool_unconfigured("code.run"))
+        Err(tool_not_configured(AgentTool::CodeRun))
     }
 
     /// doc.read（`SearchService::read_document`＋viewer 判定・権限なしと不在は同じ応答）。返り値は `{ text }`。
     async fn doc_read(&self, _ctx: &ExecCtx, _req: DocReadReq) -> Result<Value, PortError> {
-        Err(tool_unconfigured("doc.read"))
+        Err(tool_not_configured(AgentTool::DocRead))
     }
 
     /// storage.read の窓読み（テキストだけ・`offset` 字目から `max_chars` 字）。
@@ -561,17 +593,8 @@ pub trait NodePorts: Send + Sync {
         _offset: u64,
         _max_chars: u32,
     ) -> Result<Value, PortError> {
-        Err(tool_unconfigured("storage.read"))
+        Err(tool_not_configured(AgentTool::StorageRead))
     }
-}
-
-/// 道具のポートが未構成のエラー（permanent・モデルには失敗として返る）。
-fn tool_unconfigured(tool: &str) -> PortError {
-    PortError::new(
-        "unsupported",
-        format!("道具 {tool} はこの環境では使えません"),
-        false,
-    )
 }
 
 /// 承認の停止時に読む行の状態（[`NodePorts::data_approval_target`]）。
@@ -585,15 +608,6 @@ pub struct ApprovalTarget {
     pub targets: Vec<String>,
     /// ユーザー・ロールの列のうち実行主体に読めるもの（参照名 → 種別と値）。読めない列は入らない。
     pub refs: std::collections::BTreeMap<String, (crate::approval::AssigneeKind, Option<String>)>,
-}
-
-/// data ポート未構成のエラー（permanent・黙って成功扱いにしない）。
-fn data_unconfigured() -> PortError {
-    PortError::new(
-        "unsupported",
-        "構造化データ（data）が構成されていません",
-        false,
-    )
 }
 
 /// data 書込の要求。

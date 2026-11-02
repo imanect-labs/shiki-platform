@@ -11,7 +11,8 @@ use futures::StreamExt;
 use sandbox_client::{ExecEvent, ExecRequest, SandboxSpec};
 use serde_json::{json, Value};
 use uuid::Uuid;
-use workflow_engine::vocab::{MAX_CODE_STDOUT_BYTES, MAX_WEB_RESULTS};
+use workflow_engine::nodes::ports::tool_not_configured;
+use workflow_engine::vocab::{AgentTool, MAX_CODE_STDOUT_BYTES, MAX_WEB_RESULTS};
 use workflow_engine::{CodeRunReq, DocReadReq, ExecCtx, PortError, WebFetchReq};
 
 use super::auth::auth_ctx;
@@ -108,7 +109,7 @@ pub(super) async fn doc_read(
     let search = ports
         .search
         .as_ref()
-        .ok_or_else(|| PortError::new("unsupported", "社内検索が構成されていません", false))?;
+        .ok_or_else(|| tool_not_configured(AgentTool::DocRead))?;
     let tool =
         chat::doc_read_tool::DocReadTool::new(Arc::clone(search), Arc::clone(&ports.storage));
     let mut input = json!({ "file_id": req.file_id.to_string(), "max_chars": req.max_chars });
@@ -149,7 +150,7 @@ pub(super) async fn web_search(
     let provider = ports
         .web_search
         .as_ref()
-        .ok_or_else(|| PortError::new("unsupported", "Web 検索が構成されていません", false))?;
+        .ok_or_else(|| tool_not_configured(AgentTool::WebSearch))?;
     let hits = provider
         .search(&auth_ctx(ec), query, MAX_WEB_RESULTS)
         .await
@@ -201,13 +202,10 @@ pub(super) async fn code_run(
     ec: &ExecCtx,
     req: CodeRunReq,
 ) -> Result<Value, PortError> {
-    let sandbox = ports.sandbox.as_ref().ok_or_else(|| {
-        PortError::new(
-            "unsupported",
-            "プログラムを動かす環境が構成されていません",
-            false,
-        )
-    })?;
+    let sandbox = ports
+        .sandbox
+        .as_ref()
+        .ok_or_else(|| tool_not_configured(AgentTool::CodeRun))?;
     // capability 縮小のみ: egress 全遮断の code_interpreter spec（ノード設定で egress/権限は拡大不能）。
     // 隔離ティアだけは admin ポリシーに従う（wasm→gVisor は縮小方向＝より強い隔離なので不変条件を破らない）。
     let spec = SandboxSpec::code_interpreter(

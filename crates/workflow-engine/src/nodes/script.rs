@@ -46,7 +46,8 @@ impl CapabilityNodeExecutor {
         let engine = self
             .script_engine
             .as_ref()
-            .ok_or_else(|| PortError::unavailable("script engine が未設定です"))?
+            // スクリプトを動かす仕組みの無い構成（作成者には直せない・やり直しても同じ・BUG-175）。
+            .ok_or_else(|| super::ports::block_not_configured(crate::vocab::NodeType::ScriptRun))?
             .get()
             .await
             .map_err(|e| PortError::unavailable(format!("script engine を準備できません: {e}")))?;

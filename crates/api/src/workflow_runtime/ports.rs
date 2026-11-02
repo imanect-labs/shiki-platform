@@ -20,7 +20,8 @@ use storage::model::ChildSort;
 use super::auth::auth_ctx;
 use storage::StorageService;
 use uuid::Uuid;
-use workflow_engine::nodes::ports::{name_taken_error, NAME_TAKEN};
+use workflow_engine::nodes::ports::{block_not_configured, name_taken_error, NAME_TAKEN};
+use workflow_engine::vocab::NodeType;
 use workflow_engine::{
     CsvPatchReq, CsvWriteReq, DataWriteReq, ExecCtx, HttpSendReq, HttpSendResp, LlmDecideReq,
     LlmInvokeReq, NodePorts, PortError, ResolvedSecretView, ResolvedSkillView, StorageListReq,
@@ -62,11 +63,7 @@ impl ProdNodePorts {
                 fsms,
                 db: &self.db,
             }),
-            _ => Err(PortError::new(
-                "unsupported",
-                "構造化データ（data）が構成されていません",
-                false,
-            )),
+            _ => Err(workflow_engine::nodes::ports::data_not_configured()),
         }
     }
 }
@@ -220,7 +217,7 @@ impl NodePorts for ProdNodePorts {
             None => None,
             Some(token) => {
                 let data = self.data.as_ref().ok_or_else(|| {
-                    PortError::new("unsupported", "この環境では続きの位置を使えません", false)
+                    workflow_engine::nodes::ports::not_configured("フォルダ一覧の続きの位置")
                 })?;
                 Some(
                     data.open_list_cursor(kind, &ctx.tenant_id, &scope, token)
@@ -278,7 +275,8 @@ impl NodePorts for ProdNodePorts {
         let search = self
             .search
             .as_ref()
-            .ok_or_else(|| PortError::forbidden("rag が未構成です"))?;
+            // 社内文書の検索の無い構成（権限の誤りではない・管理者に連絡する・BUG-175・付録 D の N3.2.5）。
+            .ok_or_else(|| workflow_engine::nodes::ports::not_configured("社内文書の検索"))?;
         let out = search
             .search(
                 &ctx,
@@ -364,7 +362,7 @@ impl NodePorts for ProdNodePorts {
         let secrets = self
             .secrets
             .as_ref()
-            .ok_or_else(|| PortError::forbidden("secrets が未構成です"))?;
+            .ok_or_else(|| workflow_engine::nodes::ports::not_configured("シークレット"))?;
         // 宛先束縛の host 照合は executor が allowed_hosts で行うため、ここでは None（can_use 認可＋監査は実施）。
         let resolved = secrets
             .resolve(&ctx, name, None, ec.trace_id.as_deref())
@@ -449,7 +447,7 @@ impl NodePorts for ProdNodePorts {
         let tabular = self
             .tabular
             .as_ref()
-            .ok_or_else(|| PortError::forbidden("tabular が未構成です"))?;
+            .ok_or_else(|| block_not_configured(NodeType::CsvQuery))?;
         let (resp, version) = tabular
             .query_with_version(&ctx, file_id, sql, ec.trace_id.as_deref())
             .await
@@ -475,7 +473,7 @@ impl NodePorts for ProdNodePorts {
         let tabular = self
             .tabular
             .as_ref()
-            .ok_or_else(|| PortError::forbidden("tabular が未構成です"))?;
+            .ok_or_else(|| block_not_configured(NodeType::CsvPatch))?;
         // ops（JSON 配列）を tabular の PatchOp へ型変換する（不正は permanent の invalid）。
         let ops: Vec<tabular::PatchOp> = serde_json::from_value(req.ops)
             .map_err(|e| PortError::invalid(format!("csv.patch: ops が不正: {e}")))?;
@@ -502,7 +500,7 @@ impl NodePorts for ProdNodePorts {
         let tabular = self
             .tabular
             .as_ref()
-            .ok_or_else(|| PortError::forbidden("tabular が未構成です"))?;
+            .ok_or_else(|| block_not_configured(NodeType::CsvWrite))?;
         // 番号は StorageService が書込の 1 つの TX の中で付ける（ファイルを保存・ドライブの新規作成と同じ規則・D-124）。
         let policy = on_name_taken(req.on_name_taken);
         let saved = tabular

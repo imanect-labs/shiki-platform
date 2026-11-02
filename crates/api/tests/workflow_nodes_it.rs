@@ -693,7 +693,8 @@ async fn script_shiki_hostcalls_and_workflow_start_child() {
 // ------- Test 4: rag.search の dispatch＋未構成ゲート -------------------------
 
 /// rag.search は executor が rag ポートへ dispatch する（happy path の SearchService 本体は
-/// rag クレートの結合テストが担保）。ここでは rag 未構成時に fail-closed（forbidden）することを確認。
+/// rag クレートの結合テストが担保）。ここでは rag 未構成時に fail-closed することを確認。権限の誤り（forbidden）では
+/// なく、この環境で使えない機能の誤り（not_configured・管理者に連絡する・BUG-175）にする。
 #[tokio::test]
 async fn rag_search_dispatch_denied_when_unconfigured() {
     let Some(h) = setup().await else { return };
@@ -711,7 +712,31 @@ async fn rag_search_dispatch_denied_when_unconfigured() {
     assert_eq!(
         steps.get("q"),
         Some(&StepStatus::Failed),
-        "rag.search が forbidden で失敗"
+        "rag.search が構成されていない誤りで失敗"
+    );
+    let (code, message, retryable): (Option<String>, Option<String>, Option<bool>) =
+        sqlx::query_as(
+            "SELECT error->>'code', error->>'message', (error->>'retryable')::bool \
+             FROM step_execution WHERE run_id = $1 AND node_id = 'q'",
+        )
+        .bind(run_id)
+        .fetch_one(&h.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        (code.as_deref(), retryable),
+        (
+            Some(workflow_engine::nodes::ports::NOT_CONFIGURED),
+            Some(false)
+        )
+    );
+    assert_eq!(
+        message.as_deref(),
+        Some("この環境では社内文書の検索を使えません。管理者に連絡してください。")
+    );
+    assert_eq!(
+        workflow_engine::run::failure::category_of(workflow_engine::nodes::ports::NOT_CONFIGURED),
+        workflow_engine::FailureCategory::Environment
     );
 }
 

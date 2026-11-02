@@ -111,6 +111,9 @@ pub const KNOWN_CODES: &[(&str, FailureCategory)] = {
         (crate::nodes::ports::INDEX_FAILED, Configuration),
         // この環境では使えない機能（社内文書の検索が無効な環境で PDF・Office の本文を読もうとした・BUG-158）。
         (crate::nodes::ports::SEARCH_DISABLED, Environment),
+        // この環境で構成されていない機能（AI で判定・AI エージェントのツール・テーブル・社内文書の検索・CSV・シークレット・
+        // スクリプト・BUG-175）。
+        (crate::nodes::ports::NOT_CONFIGURED, Environment),
         // 作成者の script が投げた誤り（throw・Shiki.fail・書き誤り）。捕まえていないホスト呼び出しの誤りは、元の
         // code で失敗にする（D-121）。
         (script_runtime::SCRIPT_ERROR, Configuration),
@@ -661,6 +664,50 @@ mod tests {
         assert!(h.offer && h.offer_rerun, "{h:?}");
         // 分類の文言（code ごとの文言が無いとき）も、環境の問題と言う。
         assert!(message(FailureCategory::Environment, None).contains("この環境では使えない"));
+    }
+
+    /// この環境で構成されていない機能の失敗は、この環境で使えない機能の分類で、1 行目は管理者に連絡するよう言う
+    /// （BUG-158 と同じ形・BUG-175）。管理者が構成した後は、再開で通る。
+    #[test]
+    fn unconfigured_features_are_environment_problems() {
+        use crate::nodes::ports::{
+            block_not_configured, data_not_configured, tool_not_configured, NOT_CONFIGURED,
+        };
+        let f = run_failure(Uuid::nil(), Some(NOT_CONFIGURED), None);
+        assert_eq!(f.category, FailureCategory::Environment);
+        assert!(
+            f.message.starts_with("この環境では使えない機能"),
+            "{}",
+            f.message
+        );
+        assert!(f.message.contains("管理者に連絡"), "{}", f.message);
+        assert!(
+            !f.message.contains("設定に問題") && !f.message.contains("作成者"),
+            "{}",
+            f.message
+        );
+        let h = resume_hint(Some(NOT_CONFIGURED), None);
+        assert_eq!(h.advice, ResumeAdvice::FixFirst);
+        assert!(h.offer && h.offer_rerun, "{h:?}");
+        // 機能は画面の名前で言う（内部の名前・英語のキーを出さない・付録 C の P1）。
+        for (e, want) in [
+            (
+                block_not_configured(crate::vocab::NodeType::AiDecide),
+                "この環境では「AI で判定」を使えません。管理者に連絡してください。",
+            ),
+            (
+                tool_not_configured(crate::vocab::AgentTool::WebSearch),
+                "この環境ではツール「Web 検索」を使えません。管理者に連絡してください。",
+            ),
+            (
+                data_not_configured(),
+                "この環境ではテーブルを使えません。管理者に連絡してください。",
+            ),
+        ] {
+            assert_eq!(e.code, NOT_CONFIGURED);
+            assert!(!e.retryable);
+            assert_eq!(e.message, want);
+        }
     }
 
     /// 送り先が内部のネットワークにつながる失敗は設定の誤りで、再開しても同じ送り先に送ろうとする（BUG-181）。

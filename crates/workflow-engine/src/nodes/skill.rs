@@ -48,7 +48,8 @@ impl CapabilityNodeExecutor {
             let engine = self
                 .script_engine
                 .as_ref()
-                .ok_or_else(|| PortError::unavailable("script engine が未設定です"))?
+                // スクリプトを動かす仕組みの無い構成（作成者には直せない・やり直しても同じ・BUG-175・付録 D）。
+                .ok_or_else(|| super::ports::not_configured("スクリプトを持つスキル"))?
                 .get()
                 .await
                 .map_err(|e| {

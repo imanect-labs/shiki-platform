@@ -1131,7 +1131,8 @@ async fn skill_invoke_fails_closed_when_unresolvable() {
 
 #[tokio::test]
 async fn skill_invoke_shiki_script_requires_engine() {
-    // `.shiki` script 持ちの skill は script-runtime 経路（engine 未設定なら unavailable で fail）。
+    // `.shiki` script 持ちの skill は script-runtime 経路。engine の無い構成は、やり直さない「この環境で使えない機能」の
+    // 誤り（not_configured・管理者に連絡する・BUG-175。以前は一時的な問題の unavailable でやり直しを待たせた）。
     let ports = Arc::new(FakePorts::default());
     *ports.skill.lock().unwrap() = Some(workflow_engine::nodes::ResolvedSkillView {
         name: "notify".into(),
@@ -1148,7 +1149,15 @@ async fn skill_invoke_shiki_script_requires_engine() {
         )
         .await;
     assert!(!res.ok);
-    assert_eq!(res.error.as_ref().unwrap().code, "unavailable");
+    let err = res.error.as_ref().unwrap();
+    assert_eq!(
+        (err.code.as_str(), err.retryable),
+        (workflow_engine::nodes::ports::NOT_CONFIGURED, false)
+    );
+    assert_eq!(
+        err.message,
+        "この環境ではスクリプトを持つスキルを使えません。管理者に連絡してください。"
+    );
 }
 
 /// slack-notify 型 skill の e2e: `.shiki` script → Shiki.http.request →
