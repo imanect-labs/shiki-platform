@@ -159,6 +159,11 @@ impl InstallService {
 
         // インストール認可: mini_app_code アーティファクトの owner（human 確定判断）。
         self.require_artifact_owner(ctx, app_id).await?;
+        // ほかの組織の有効なインストールは、この組織から書き換えない（テーブルとクライアントを作る前に断る・BUG-212）。
+        self.installations
+            .ensure_not_in_other_org(ctx, app_id)
+            .await
+            .map_err(map_gateway)?;
 
         // マニフェスト取得（owner なので viewer も満たす）。
         let (_, manifest) = self

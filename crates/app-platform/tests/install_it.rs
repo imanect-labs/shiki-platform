@@ -34,6 +34,9 @@ use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 use uuid::Uuid;
 
+#[path = "../../gui/tests/common/mod.rs"]
+mod common;
+
 /// 記録スタブ: check は `deny` で切替・write/delete を捕捉する。
 #[derive(Default)]
 struct RecordingAuthz {
@@ -549,6 +552,68 @@ async fn partial_failure_compensates_created_tables() {
     .await
     .unwrap();
     assert_eq!(rows, 0);
+}
+
+/// ほかの組織の有効なインストールは、この組織から入れ直せず（テーブルとクライアントを作る前に断る）、アンインストール
+/// もできない（理由を言って 409・PIT-45・BUG-212）。入れた組織のアプリはそのまま動き続ける。
+#[tokio::test]
+async fn another_orgs_installation_is_left_alone() {
+    let Some(pool) = setup().await else { return };
+    let h = harness(pool.clone(), false);
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let acme = ctx(&tenant, "admin");
+    let beta = AuthContext::new(acme.principal.clone(), "beta".into(), tenant.clone());
+    let body = async {
+        let m = manifest("org-app", TrustTier::InHouse, vec!["records"]);
+        let id = h.code.create(&acme, &m, None).await.unwrap();
+        h.code.publish(&acme, id, None, None, None).await.unwrap();
+        h.installs
+            .install(&acme, install_req("org-app", &["data.read"]), None)
+            .await
+            .expect("acme のインストール");
+
+        let other_org = |r: Result<(), app_platform::AppPlatformError>| matches!(r, Err(app_platform::AppPlatformError::Conflict(m)) if m.contains("ほかの組織でインストールされています"));
+        let refused = h
+            .installs
+            .install(
+                &beta,
+                install_req("org-app", &["data.read", "data.write"]),
+                None,
+            )
+            .await
+            .map(|_| ());
+        assert!(other_org(refused), "ほかの組織からの入れ直しは断る");
+        let refused = h.installs.uninstall(&beta, id, None).await;
+        assert!(other_org(refused), "ほかの組織からのアンインストールも断る");
+
+        // テーブルは acme の 1 つだけ（beta の分を作っていない）。インストールは acme のまま有効で、同意も変わらない。
+        let tables: Vec<String> = sqlx::query_scalar(
+            "SELECT org FROM data_table WHERE tenant_id = $1 AND app_id = $2 AND deleted_at IS NULL",
+        )
+        .bind(&tenant)
+        .bind(id)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(tables, ["acme"]);
+        let (org, status, scopes): (String, String, Vec<String>) = sqlx::query_as(
+            "SELECT org, status, granted_scopes FROM app_installation WHERE tenant_id = $1 AND app_id = $2",
+        )
+        .bind(&tenant)
+        .bind(id)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(
+            (org.as_str(), status.as_str(), scopes),
+            ("acme", "active", vec!["data.read".to_string()])
+        );
+    };
+    let outcome = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(body)).await;
+    common::purge_tenant_rows(&pool, &tenant).await;
+    if let Err(panic) = outcome {
+        std::panic::resume_unwind(panic);
+    }
 }
 
 fn ed25519_public(secret: &[u8; 32]) -> Vec<u8> {

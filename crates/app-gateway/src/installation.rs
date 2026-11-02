@@ -178,6 +178,17 @@ fn active_app_id_conflict() -> GatewayError {
     GatewayError::Conflict("同じ app_id の有効なインストールが別テナントに存在します".into())
 }
 
+/// 同じテナントのほかの組織に、このアプリの有効なインストールがある（入れ直し・アンインストールを断る・BUG-212）。
+///
+/// インストールはテナントに 1 アプリ 1 行で、入れた組織のもの（組織はテナントの中の隔離の境界・PIT-45）。ほかの組織の
+/// 同意（スコープ・クライアント・予算）をこの組織の操作で書き換えない・外さない。
+fn installed_in_other_org() -> GatewayError {
+    GatewayError::Conflict(
+        "このアプリはほかの組織でインストールされています。インストールとアンインストールは、インストールした組織で行ってください。"
+            .into(),
+    )
+}
+
 /// インストール台帳ストア（Postgres・tenant スコープ）。
 #[derive(Clone)]
 pub struct AppInstallationStore {
@@ -192,6 +203,10 @@ impl AppInstallationStore {
     /// インストールを作成/更新する（tenant 内 1 アプリ 1 行・再インストールは upsert）。
     ///
     /// 本 PR ではデブ用の直接作成。PR9 の同意フローが単一 Tx＋補償で置き換える。
+    ///
+    /// 組織で絞る（PIT-45・BUG-212）: 同じ組織の行だけを書き換える。ほかの組織の行が有効なら書き換えずに 409
+    /// （[`installed_in_other_org`]）。ほかの組織の行がアンインストール済み（revoked）なら、この組織のインストールとして
+    /// 入れ直す（組織と入れた人も書き換える。アンインストールでテーブル・購読・スケジュール・クライアントは片付いている）。
     ///
     /// ON CONFLICT の arbiter は `(tenant_id, app_id)` だけで、active な app_id の大域一意索引
     /// （migration 0081 [`ACTIVE_APP_ID_UIDX`]）は arbiter ではない。そのため同一テナントの初回
@@ -219,7 +234,42 @@ impl AppInstallationStore {
             }
             Err(e) => return Err(map_db(e)),
         };
+        // 行を返さない＝ほかの組織の有効なインストール（DO UPDATE の WHERE で書き換えなかった）。
+        let row = row.ok_or_else(installed_in_other_org)?;
         Ok(row.into())
+    }
+
+    /// 同じテナントのほかの組織に、このアプリの有効なインストールがあれば 409（[`installed_in_other_org`]）。
+    ///
+    /// インストールの前に、テーブルやクライアントを作る前に断るための確かめ（書き込みの守りは [`Self::upsert`] が行う）。
+    pub async fn ensure_not_in_other_org(
+        &self,
+        ctx: &AuthContext,
+        app_id: Uuid,
+    ) -> Result<(), GatewayError> {
+        if self.active_in_other_org(ctx, app_id).await? {
+            return Err(installed_in_other_org());
+        }
+        Ok(())
+    }
+
+    /// 同じテナントのほかの組織に、このアプリの有効なインストールがあるか。
+    async fn active_in_other_org(
+        &self,
+        ctx: &AuthContext,
+        app_id: Uuid,
+    ) -> Result<bool, GatewayError> {
+        let (exists,): (bool,) = sqlx::query_as(
+            "SELECT EXISTS (SELECT 1 FROM app_installation \
+             WHERE tenant_id = $1 AND app_id = $2 AND org <> $3 AND status = 'active')",
+        )
+        .bind(&ctx.tenant_id)
+        .bind(app_id)
+        .bind(&ctx.org)
+        .fetch_one(&self.db)
+        .await
+        .map_err(map_db)?;
+        Ok(exists)
     }
 
     /// upsert の 1 回分（エラーの解釈は呼び出し側）。
@@ -227,7 +277,7 @@ impl AppInstallationStore {
         &self,
         ctx: &AuthContext,
         new: &NewAppInstallation<'_>,
-    ) -> Result<Row, sqlx::Error> {
+    ) -> Result<Option<Row>, sqlx::Error> {
         let sql = format!(
             "INSERT INTO app_installation \
                  (tenant_id, org, app_id, app_name, installed_version, granted_scopes, \
@@ -236,6 +286,9 @@ impl AppInstallationStore {
                   frontend_bundle, server_bundle, server_spec) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'active', $9, $10, $11, $12, $13, $14, $15, $16) \
              ON CONFLICT (tenant_id, app_id) DO UPDATE SET \
+                 org = EXCLUDED.org, \
+                 installed_by = CASE WHEN app_installation.org = EXCLUDED.org \
+                     THEN app_installation.installed_by ELSE EXCLUDED.installed_by END, \
                  app_name = EXCLUDED.app_name, \
                  installed_version = EXCLUDED.installed_version, \
                  granted_scopes = EXCLUDED.granted_scopes, \
@@ -250,6 +303,7 @@ impl AppInstallationStore {
                  server_spec = EXCLUDED.server_spec, \
                  status = 'active', \
                  updated_at = now() \
+             WHERE app_installation.org = EXCLUDED.org OR app_installation.status <> 'active' \
              RETURNING {COLS}"
         );
         sqlx::query_as(&sql)
@@ -269,7 +323,7 @@ impl AppInstallationStore {
             .bind(new.frontend_bundle)
             .bind(new.server_bundle)
             .bind(&new.server_spec)
-            .fetch_one(&self.db)
+            .fetch_optional(&self.db)
             .await
     }
 
@@ -438,18 +492,25 @@ impl AppInstallationStore {
     }
 
     /// インストールを失効させる（アンインストール・即時反映）。
+    ///
+    /// 呼ぶ人の組織のインストールだけ（PIT-45・BUG-212）。この組織に無く、ほかの組織に有効なインストールがあれば 409
+    /// （[`installed_in_other_org`]）、どこにも無ければ 404。
     pub async fn revoke(&self, ctx: &AuthContext, app_id: Uuid) -> Result<(), GatewayError> {
         let updated = sqlx::query(&format!(
             "UPDATE app_installation SET status = '{}', updated_at = now() \
-             WHERE tenant_id = $1 AND app_id = $2",
+             WHERE tenant_id = $1 AND app_id = $2 AND org = $3",
             InstallStatus::Revoked.as_str()
         ))
         .bind(&ctx.tenant_id)
         .bind(app_id)
+        .bind(&ctx.org)
         .execute(&self.db)
         .await
         .map_err(map_db)?;
         if updated.rows_affected() == 0 {
+            if self.active_in_other_org(ctx, app_id).await? {
+                return Err(installed_in_other_org());
+            }
             return Err(GatewayError::NotFound);
         }
         Ok(())
