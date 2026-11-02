@@ -20,9 +20,15 @@ async function csrfHeaders(page: Page): Promise<Record<string, string>> {
   return { "x-csrf-token": csrf, "content-type": "application/json" };
 }
 
-/// 次のライブの確かめ（保存の前の検証）の応答を待つ。
-function nextValidation(page: Page) {
-  return page.waitForResponse((r) => r.url().endsWith("/api/workflows/validate") && r.request().method() === "POST");
+/// 次のライブの確かめ（保存の前の検証）のうち、送った定義が `sent` に当たるものの応答を待つ。確かめは打鍵の 600ms 後に
+/// 送るので、前の編集の分が待ち受けの後に届くことがある（その応答では解決しない）。
+function nextValidation(page: Page, sent: (body: string) => boolean) {
+  return page.waitForResponse(
+    (r) =>
+      r.url().endsWith("/api/workflows/validate") &&
+      r.request().method() === "POST" &&
+      sent(r.request().postData() ?? ""),
+  );
 }
 
 test("外部 API 呼び出し: ヘッダーを名前と値で足し、書けないヘッダーは欄の下で理由を言う（GAP-19・BUG-184）", async ({
@@ -84,7 +90,7 @@ test("外部 API 呼び出し: ヘッダーを名前と値で足し、書けな�
     // 2 行目: Host は Shiki が決めるので書けない（サーバーの確かめで欄の下に出る）。
     await panel.getByRole("button", { name: "ヘッダーを追加" }).click();
     await rows.nth(1).getByRole("textbox", { name: "ヘッダーの名前" }).fill("Host");
-    const refused = nextValidation(page);
+    const refused = nextValidation(page, (body) => body.includes("internal.example.com"));
     await rows.nth(1).getByRole("textbox", { name: "「Host」の値" }).fill("internal.example.com");
     expect(JSON.stringify(await (await refused).json())).toContain("ヘッダー「Host」は Shiki が決めるため");
     const hostError = panel.getByText("ヘッダー「Host」は Shiki が決めるため、指定できません。", { exact: true });
@@ -92,7 +98,7 @@ test("外部 API 呼び出し: ヘッダーを名前と値で足し、書けな�
     if (SHOTS) await panel.screenshot({ path: `${SHOTS}/http-headers-host-pc.png` });
 
     // Host の行を外すと理由が消え、保存すると IR に入る。
-    const cleared = nextValidation(page);
+    const cleared = nextValidation(page, (body) => !body.includes("internal.example.com"));
     await rows.nth(1).getByRole("button", { name: "「Host」を外す" }).click();
     await cleared;
     await expect(hostError).toHaveCount(0);
@@ -110,7 +116,7 @@ test("外部 API 呼び出し: ヘッダーを名前と値で足し、書けな�
     await page.getByRole("option", { name: "決めたヘッダーに付ける" }).click();
     const secretHeader = panel.getByRole("textbox", { name: "シークレットを付けるヘッダーの名前" });
     await expect(secretHeader).toHaveValue("X-Api-Key");
-    const secretRefused = nextValidation(page);
+    const secretRefused = nextValidation(page, (body) => body.includes('"header":"Host"'));
     await secretHeader.fill("Host");
     expect(JSON.stringify(await (await secretRefused).json())).toContain(
       "シークレットを付けるヘッダー「Host」は Shiki が決めるため、指定できません。",
