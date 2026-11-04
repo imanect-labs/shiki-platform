@@ -12,10 +12,17 @@
 //!
 //! `x-order` は画面に並べる項目のキーの順（D-60・BUG-34）。IR は jsonb の列に保存されるので、`properties` の
 //! キーの順は保存して読み直すと変わる。形の誤りは起動ではなく保存で止める（[`order_errors`]）。
+//!
+//! 起動のときに確かめられない形（使えないキーワード・型の名前の誤り・読めない pattern など）は、保存のときにも
+//! 止める（[`schema_errors`]・GAP-35）。起動の検査は値が通る位置のキーワードしか見ないので、保存で全体を見ないと、
+//! 値が入ったときに初めて起動できなくなる。
 
 use std::collections::HashSet;
 
 use serde_json::{Map, Value};
+
+mod check;
+pub use check::schema_errors;
 
 /// 返す誤りの上限（巨大な入力で応答を膨らませない）。
 const MAX_ERRORS: usize = 20;
@@ -38,6 +45,21 @@ pub(crate) const ASSERTIONS: &[&str] = &[
     "minLength",
     "maxLength",
     "pattern",
+    "minItems",
+    "maxItems",
+];
+/// JSON Schema の型の名前（`type` に書ける値・`output_schema` も同じ）。
+pub(crate) const TYPES: &[&str] = &[
+    "string", "number", "integer", "boolean", "object", "array", "null",
+];
+/// 数で書くキーワード（範囲・文字数・個数）。
+const NUMBER_KEYWORDS: &[&str] = &[
+    "minimum",
+    "maximum",
+    "exclusiveMinimum",
+    "exclusiveMaximum",
+    "minLength",
+    "maxLength",
     "minItems",
     "maxItems",
 ];
@@ -335,9 +357,7 @@ impl Checker<'_> {
         }
         if let Some(p) = s.get("pattern") {
             // ワークフローの作者が書いたパターン。regex crate は線形時間なので入力で暴走しない。
-            let re = p
-                .as_str()
-                .and_then(|p| regex::RegexBuilder::new(p).size_limit(1 << 20).build().ok());
+            let re = p.as_str().and_then(compile_pattern);
             match re {
                 Some(re) if re.is_match(text) => {}
                 Some(_) => issue(errs, path, "形式が違います".into()),
@@ -442,6 +462,11 @@ impl Checker<'_> {
             }
         }
     }
+}
+
+/// 作者が書いた `pattern` を読む（起動の検査と保存の検査で同じ読み方・regex crate は線形時間なので入力で暴走しない）。
+fn compile_pattern(p: &str) -> Option<regex::Regex> {
+    regex::RegexBuilder::new(p).size_limit(1 << 20).build().ok()
 }
 
 /// RFC 3339 の full-date（`YYYY-MM-DD`・桁は固定）で、暦に実在する日付か。

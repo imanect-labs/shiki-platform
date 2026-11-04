@@ -253,6 +253,50 @@ mod tests {
         );
     }
 
+    /// 入力項目の起動の検査が断る形（`$ref`・`oneOf`）は、値の入らない項目の下でも保存で止める（GAP-35）。
+    #[test]
+    fn input_schema_shapes_that_cannot_be_checked_are_refused_on_save() {
+        let ir = |extra: Value| {
+            let mut ir = json!({
+                "ir_version": 1, "name": "wf", "triggers": [{ "kind": "interactive" }],
+                "input_schema": { "type": "object", "properties": {
+                    "title": { "type": "string" },
+                    "memo": { "oneOf": [{ "type": "string" }, { "type": "null" }] },
+                    "who": { "$ref": "#/defs/user" }
+                } },
+                "nodes": [], "edges": []
+            });
+            ir.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            ir
+        };
+        let s = |x: &str| Some(x.to_string());
+        let message = |k: &str| {
+            format!("入力項目の形に「{k}」は書けません。使えるのは type・properties・required・items・additionalProperties・enum・const と、範囲・文字数・個数・pattern です")
+        };
+        let want = vec![
+            (
+                None,
+                None,
+                s("/input_schema/properties/memo/oneOf"),
+                message("oneOf"),
+            ),
+            (
+                None,
+                None,
+                s("/input_schema/properties/who/$ref"),
+                message("$ref"),
+            ),
+        ];
+        assert_eq!(found(&ir(json!({}))), want);
+        // 型どおりに読めない IR でも、同じ回に返す。
+        let mut with_bogus = want.clone();
+        with_bogus.push((None, None, s("/bogus"), "項目 'bogus' は使えません".into()));
+        with_bogus.sort();
+        assert_eq!(found(&ir(json!({ "bogus": 1 }))), with_bogus);
+    }
+
     /// 誤りの無い IR の読み方は変わらない（V1 を通った値はそのまま後段へ）。
     #[test]
     fn a_valid_ir_is_read_as_before() {

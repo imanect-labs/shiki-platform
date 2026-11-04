@@ -190,11 +190,15 @@ pub fn save_warnings(ir: &WorkflowIr, catalog: &Catalog) -> Vec<ValidationError>
     out
 }
 
-/// V1c: 入力項目（input_schema）の項目の並び `x-order` の形（properties のキーの文字列の配列・重なりなし・D-60）。
-/// 起動の検証は注記として読み飛ばすので、保存で止める。
+/// V1c: 入力項目（input_schema）の形の誤り。起動の検査が確かめられない形（`$ref`・`oneOf` など・GAP-35）と、
+/// 起動の検証は注記として読み飛ばす項目の並び `x-order` の形（properties のキーの文字列の配列・重なりなし・D-60）を、
+/// 保存で止める。
 fn input_schema_errors(schema: &serde_json::Value) -> Vec<ValidationError> {
-    crate::ir::input_schema::order_errors(schema)
+    let shape = crate::ir::input_schema::schema_errors(schema);
+    let order = crate::ir::input_schema::order_errors(schema);
+    shape
         .into_iter()
+        .chain(order)
         .map(|(at, message)| {
             ValidationError::new(v1_schema::SCHEMA_VIOLATION, message)
                 .at_path(format!("/input_schema{at}"))
@@ -250,7 +254,7 @@ pub fn validate(
     }
     // V1d: step 属性 `cache`（付けられる種・期限の範囲・T10）。
     cache::v1(&ir, &mut errors);
-    // V1c: input_schema の項目の並びの注記 `x-order`（D-60）。
+    // V1c: input_schema の形（起動の検査が断る形・GAP-35）と項目の並びの注記 `x-order`（D-60）。
     if let Some(schema) = &ir.input_schema {
         errors.extend(input_schema_errors(schema));
     }

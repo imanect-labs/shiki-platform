@@ -22,7 +22,7 @@
 
 use serde_json::{Map, Value};
 
-use super::input_schema::{order_errors, validate_value, ANNOTATIONS, ASSERTIONS};
+use super::input_schema::{order_errors, validate_value, ANNOTATIONS, ASSERTIONS, TYPES};
 
 /// 入れ子の深さの上限（根から `properties` / `items` をたどる段数）。
 pub const MAX_DEPTH: usize = 5;
@@ -39,11 +39,6 @@ pub const MAX_UNIONS: usize = 16;
 
 /// 出力の検証の誤りの文で、根を指す呼び名。
 const ROOT_LABEL: &str = "出力";
-
-/// JSON Schema の型名。
-const TYPES: &[&str] = &[
-    "string", "number", "integer", "boolean", "object", "array", "null",
-];
 
 /// 保存時のスキーマの検査の誤り（スキーマの中の位置の JSON Pointer と文言）。
 #[derive(Debug, Clone, PartialEq, Eq)]
