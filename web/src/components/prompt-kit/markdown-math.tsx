@@ -10,10 +10,9 @@ type PluggableList = NonNullable<Options["remarkPlugins"]>;
 
 /// 行頭から始まるフェンスとその中身。閉じ行は CommonMark どおり、最大 3 文字の字下げを許し、
 /// 開始と同じ文字で同じ長さ以上・後ろは空白だけ（`` ` `` と `~` を取り違えない）。閉じが無ければ末尾まで。
-const TOP_LEVEL_FENCES = [
-  /^(`{3,})[^`\n]*\n[\s\S]*?(?:^ {0,3}\1`*[ \t]*$|(?![\s\S]))/gm,
-  /^(~{3,})[^\n]*\n[\s\S]*?(?:^ {0,3}\1~*[ \t]*$|(?![\s\S]))/gm,
-];
+/// `` ` `` と `~` を 1 つの正規表現で文書の順に見る（別々に見ると、`~~~` の中の `` ``` `` 行を開始と取り違える）。
+const TOP_LEVEL_FENCE =
+  /^(?:(`{3,})[^`\n]*\n[\s\S]*?(?:^ {0,3}\1`*[ \t]*$|(?![\s\S]))|(~{3,})[^\n]*\n[\s\S]*?(?:^ {0,3}\2~*[ \t]*$|(?![\s\S])))/gm;
 
 /// 本文に数式の候補（`$$`・`\(`・`\[`）があるか。読み込むかどうかにだけ使う判定なので、
 /// 迷う所は「ある」に倒す（見落とすと数式が描かれない。多めに読み込んでも遅くなるだけ）。
@@ -23,7 +22,7 @@ const TOP_LEVEL_FENCES = [
 export function mayHaveMath(text: string): boolean {
   const candidate = /\$\$|\\\(|\\\[/;
   if (!candidate.test(text)) return false;
-  const prose = TOP_LEVEL_FENCES.reduce((s, re) => s.replace(re, ""), text);
+  const prose = text.replace(TOP_LEVEL_FENCE, "");
   return candidate.test(prose);
 }
 

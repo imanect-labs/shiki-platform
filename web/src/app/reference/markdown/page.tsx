@@ -114,6 +114,15 @@ const x = 1;
 
 字下げした閉じ行の後の \\(z^2\\)`;
 
+/// 数式が、中に `` ``` `` 行を含む `~~~` のフェンスの後ろにだけある場合。
+const MATH_AFTER_TILDE_FENCE = `~~~~text
+~~~markdown
+\`\`\`
+~~~
+~~~~
+
+チルダのフェンスの後の \\(w^2\\)`;
+
 function Cell({ id, title, children }: { id: string; title: string; children: React.ReactNode }) {
   return (
     <section data-testid={`markdown-${id}`} className="min-w-0">
@@ -141,6 +150,9 @@ export default function MarkdownGalleryPage() {
         </Cell>
         <Cell id="math-after-indented-close" title="閉じ行を字下げしたフェンスの後ろの数式">
           <Markdown>{MATH_AFTER_INDENTED_CLOSE}</Markdown>
+        </Cell>
+        <Cell id="math-after-tilde-fence" title="中に ``` 行を含むチルダのフェンスの後ろの数式">
+          <Markdown>{MATH_AFTER_TILDE_FENCE}</Markdown>
         </Cell>
         <Cell id="math-edge" title="数式の区切りが構造の中にある場合">
           <Markdown>{MATH_EDGE}</Markdown>
