@@ -41,6 +41,9 @@ export type YuiActionHost = {
   loadRun?: (runId: string) => Promise<YuiRun>;
   /// `app` の図を「アプリとして保存」する（会話の回答の図だけ）。
   saveAsApp?: (block: string, title: string) => void;
+  /// 押す前に分かる、ワークフローのボタンを使えない理由（使う人に足りない権限・GAP-37）。使えるなら null。
+  /// 判定はサーバー（`GET /mini-apps/{id}/access`）が決め、押されたときもサーバーが本人の権限で改めて確かめる。
+  blockedReason?: (workflowName: string) => string | null;
 };
 
 export const YuiActionContext = React.createContext<YuiActionHost | null>(null);
@@ -72,6 +75,9 @@ export type YuiActionProps = {
   runs: readonly YuiRun[];
   /// 「アプリとして保存」（会話の回答の `app` の図だけ）。
   saveAsApp?: () => void;
+  /// 図の一部のボタンだけを使えないときの、ボタンの文言と理由（図の下に出す・GAP-37）。図のボタンがすべて使えない
+  /// ときは `actionDisabledReason` で図ごと止める。
+  blockedNotes?: { label: string; reason: string }[];
 };
 
 /// 図に渡すボタンの props。操作を持たない種類は `null`。
@@ -106,6 +112,9 @@ export function useYuiActions(
       if (!host || host.unsaved || !hash) return { ok: false, message: "いまは実行できません" };
       const key = `${hash}:${e.actionId}`;
       const target = e.action.target;
+      // 使う人に足りない権限があるボタンは送らない（理由はボタンの近くにも出している・GAP-37）。
+      const blocked = target.kind === "workflow" ? (host.blockedReason?.(target.name) ?? null) : null;
+      if (blocked) return { ok: false, message: blocked };
       if (target.kind === "workflow" && !host.isBound(key)) {
         return { ok: false, message: `ワークフロー「${target.name}」が見つからないか、使う権限がありません` };
       }
@@ -148,8 +157,24 @@ export function useYuiActions(
   if (host.unsaved || !hash) return { actionDisabledReason: "準備しています…", runs: [] };
   const prefix = `${hash}:`;
   const save = host.saveAsApp;
+  // 使う人に足りない権限があるボタン（GAP-37）。図のボタンがすべて使えなければ図ごと止め、一部なら図の下に言う。
+  const actions = figure ? figureActions(figure) : [];
+  const blocked = host.blockedReason
+    ? actions.flatMap((a) => {
+        const reason = a.target.kind === "workflow" ? host.blockedReason?.(a.target.name) : null;
+        return reason ? [{ label: a.label, reason }] : [];
+      })
+    : [];
+  if (blocked.length > 0 && blocked.length === actions.length) {
+    const reasons = [...new Set(blocked.map((b) => b.reason))];
+    return {
+      actionDisabledReason: reasons.join(" "),
+      runs: host.uiRuns.filter((r) => r.action_id.startsWith(prefix)),
+    };
+  }
   return {
     onAction,
+    ...(blocked.length > 0 ? { blockedNotes: blocked } : {}),
     invokedActions: host.invokedActions.filter((a) => a.startsWith(prefix)).map((a) => a.slice(prefix.length)),
     runs: host.uiRuns.filter((r) => r.action_id.startsWith(prefix)),
     // 会話に送るボタン（-> chat）を持つ図は、会話の無いアプリにできない（保存時に弾かれる）。

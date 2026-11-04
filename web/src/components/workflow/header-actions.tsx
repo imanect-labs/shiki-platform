@@ -42,7 +42,7 @@ import {
   type ChromeMenuItem,
 } from "@/components/shell/page-header-context";
 import { useMe } from "@/hooks/use-me";
-import { getArtifact } from "@/lib/artifact-api";
+import { checkWorkflowAccess, getArtifact } from "@/lib/artifact-api";
 import { cn } from "@/lib/utils";
 import { getRegistration, type Registration } from "@/lib/workflow-api";
 import type { EditorChromeContext } from "@/components/workflow/editor/workflow-editor";
@@ -485,6 +485,7 @@ export function WorkflowChrome({ ctx }: { ctx: EditorChromeContext }) {
         onOpenChange={setShareOpen}
         artifactId={workflowId}
         name={name}
+        access={{ load: () => checkWorkflowAccess(workflowId), subject: "workflow" }}
         shareUrl={
           typeof window !== "undefined"
             ? `${window.location.origin}/workflows/${workflowId}`

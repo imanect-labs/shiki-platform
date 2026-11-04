@@ -129,6 +129,7 @@ export function SharePeoplePanel<R extends PeopleRole = BasicPeopleRole>({
   kinds = ["user", "role"],
   ownerOnly = DEFAULT_OWNER_ONLY,
   wording = SHARE_WORDING,
+  onChanged,
 }: {
   /// 開いた時に状態を戻して共有中の相手を読み直す。
   open: boolean;
@@ -144,6 +145,8 @@ export function SharePeoplePanel<R extends PeopleRole = BasicPeopleRole>({
   ownerOnly?: { title: string; body: string };
   /// 足す・外す操作の呼び名（省略時は共有の言い方）。
   wording?: SharePeopleWording;
+  /// 相手を足した・外した・権限を変えた後（使う人の権限の確かめを読み直す・GAP-37）。
+  onChanged?: () => void;
 }) {
   const defaultRole = (roles[0]?.value ?? "viewer") as R;
   const roleLabel = (r: R) => roles.find((o) => o.value === r)?.label ?? r;
@@ -248,6 +251,7 @@ export function SharePeoplePanel<R extends PeopleRole = BasicPeopleRole>({
     try {
       await grant(target, role);
       await refresh();
+      onChanged?.();
       toast({
         title: wording.grantedToast(candidate.primary),
         description: `権限: ${roleLabel(role)}`,
@@ -271,6 +275,7 @@ export function SharePeoplePanel<R extends PeopleRole = BasicPeopleRole>({
       // 解除した (type, id, role) の行だけを消す。同相手の別ロール共有はサーバ側に残るため、
       // id だけで filter すると画面から消えて「完全に外せた」と誤認する（実際は残存）。
       setShares((prev) => prev.filter((s) => entryKey(s) !== k));
+      onChanged?.();
     } catch (e) {
       toast({
         variant: "destructive",
@@ -292,6 +297,7 @@ export function SharePeoplePanel<R extends PeopleRole = BasicPeopleRole>({
       if (!sharedKeys.has(entryKey({ target: entry.target, role }))) await grant(entry.target, role);
       await revoke(entry.target, entry.role);
       await refresh();
+      onChanged?.();
     } catch (e) {
       toast({
         variant: "destructive",

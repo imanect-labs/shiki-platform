@@ -271,6 +271,45 @@ export async function publishMiniApp(id: string, version: number): Promise<Publi
   return ok<Publication>(await apiFetch(`/mini-apps/${id}/publish`, json({ version })));
 }
 
+// ── 使う人の権限の確かめ（GAP-37・codegen）──────────────────────────────
+
+/// 作る人向けの確かめの結果（部品が要る権限と、共有の相手ごとの結果）。
+export type AccessReport = components["schemas"]["AccessReport"];
+/// 部品が要る権限 1 つ。
+export type AccessNeedView = components["schemas"]["AccessNeedView"];
+/// 足りるか（ok・limited・unchecked・missing）。
+export type AccessStatus = components["schemas"]["AccessStatus"];
+/// 権限を確かめた部品（ワークフロー・保存ビュー・スキル）。
+export type AccessPart = components["schemas"]["AccessPart"];
+/// 相手 1 件の結果。
+export type SubjectAccess = components["schemas"]["SubjectAccess"];
+/// 使う人向けの確かめの結果（足りない・範囲が狭い・使えない部品だけ）。
+export type MyAppAccess = components["schemas"]["MyAppAccess"];
+export type MyPartAccess = components["schemas"]["MyPartAccess"];
+export type MyAccessItem = components["schemas"]["MyAccessItem"];
+
+/// アプリを使う人の権限を確かめる（作る人だけ）。`version` を省くと公開しているバージョン（まだ公開していなければ
+/// 最新）、`subjects` を省くと共有している相手（相手ごとの結果は持ち主にだけ返る）。
+export async function checkMiniAppAccess(
+  id: string,
+  opts: { version?: number; subjects?: ShareTarget[] } = {},
+): Promise<AccessReport> {
+  return ok<AccessReport>(await apiFetch(`/mini-apps/${id}/access-check`, json(opts)));
+}
+
+/// ワークフローを使う人の権限を確かめる（作る人だけ・最新のバージョン）。
+export async function checkWorkflowAccess(
+  id: string,
+  opts: { subjects?: ShareTarget[] } = {},
+): Promise<AccessReport> {
+  return ok<AccessReport>(await apiFetch(`/workflows/${id}/access-check`, json(opts)));
+}
+
+/// アプリを使う人自身に足りない権限（開いているバージョン）。
+export async function getMyMiniAppAccess(id: string, version: number): Promise<MyAppAccess> {
+  return ok<MyAppAccess>(await apiFetch(`/mini-apps/${id}/access?version=${version}`));
+}
+
 // ── 図のボタンの実行（Task 6.5・#604・action_id + params のみ送れる）─────
 
 export type UiActionResult = { result: Record<string, unknown> };

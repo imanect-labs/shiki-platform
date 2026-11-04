@@ -46,6 +46,9 @@ function waitingOf(e: unknown): Waiting | null {
 
 export function MiniAppDataGrid({ alias }: { alias: string }) {
   const host = React.useContext(DataGridHostContext);
+  // 使う人に足りない権限があれば、読みに行かずに理由を出す（GAP-37）。
+  const blocked = host?.blockedReason?.(alias) ?? null;
+  const ownOnly = host?.ownRecordsOnly?.(alias) ?? false;
   const [first, setFirst] = React.useState<DataViewRun | null>(null);
   const [table, setTable] = React.useState<DataTable | null>(null);
   const [masked, setMasked] = React.useState<ReadonlySet<string>>(new Set());
@@ -73,7 +76,7 @@ export function MiniAppDataGrid({ alias }: { alias: string }) {
   }, []);
 
   React.useEffect(() => {
-    if (!host) return;
+    if (!host || blocked) return;
     let active = true;
     setError(null);
     // 先頭ページで表示設定と対象テーブルを知り、スキーマ（列の型・表示名）を閲覧者本人の権限で読む。
@@ -91,7 +94,7 @@ export function MiniAppDataGrid({ alias }: { alias: string }) {
     return () => {
       active = false;
     };
-  }, [host, alias, attempt, onFailure]);
+  }, [host, alias, attempt, onFailure, blocked]);
 
   React.useEffect(() => {
     if (!waiting) return;
@@ -113,6 +116,20 @@ export function MiniAppDataGrid({ alias }: { alias: string }) {
       <p className="my-3 rounded-lg border border-dashed px-3 py-2 text-xs text-muted-foreground">
         表「{alias}」はミニアプリの画面でだけ表示できます
       </p>
+    );
+  }
+  if (blocked) {
+    return (
+      <div
+        className="my-3 flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2.5 text-xs text-amber-700 dark:text-amber-400"
+        role="note"
+        data-testid={`miniapp-data-grid-blocked-${alias}`}
+      >
+        <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />
+        <span className="min-w-0 [overflow-wrap:anywhere]">
+          表「{alias}」を表示できません。{blocked}
+        </span>
+      </div>
     );
   }
   if (error) {
@@ -146,6 +163,11 @@ export function MiniAppDataGrid({ alias }: { alias: string }) {
           {empty ? "0 件" : status ? `${status.loaded.toLocaleString("ja-JP")}${status.done ? "" : "+"} 件` : ""}
         </span>
       </figcaption>
+      {ownOnly ? (
+        <p className="border-b px-3 py-1.5 text-[11px] text-muted-foreground" data-testid="miniapp-data-grid-own-only">
+          あなたが追加したレコードだけを表示しています。
+        </p>
+      ) : null}
       {waiting ? (
         <div className="flex flex-col items-center justify-center gap-2 px-4 py-8 text-sm text-muted-foreground" role="status" data-testid="miniapp-data-grid-waiting">
           <span className="inline-flex items-center gap-2 text-foreground">

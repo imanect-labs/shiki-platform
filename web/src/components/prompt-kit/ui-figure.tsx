@@ -189,6 +189,15 @@ export const UiFigure = React.memo(function UiFigure({
           {...(actions_?.invokedActions ? { invokedActions: actions_.invokedActions } : {})}
         />
       )}
+      {actions_?.blockedNotes?.length ? (
+        <ul className="mt-1 space-y-0.5 text-xs text-amber-700 dark:text-amber-400" data-testid="ui-figure-blocked">
+          {actions_.blockedNotes.map((n, i) => (
+            <li key={i} className="[overflow-wrap:anywhere]">
+              「{n.label}」は押せません。{n.reason}
+            </li>
+          ))}
+        </ul>
+      ) : null}
       {actions_ ? <YuiRunList runs={actions_.runs} /> : null}
       <figcaption
         className={cn(

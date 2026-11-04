@@ -5,6 +5,8 @@
 /// 解除・変更）で、部品（SharePeoplePanel）も共有する。対象が artifact（/artifacts/{id}/shares）で
 /// ある点だけが異なる。スマホでは Dialog が下からのシートになる。
 
+import * as React from "react";
+
 import {
   Dialog,
   DialogContent,
@@ -17,6 +19,8 @@ import {
   shareArtifact,
   unshareArtifact,
 } from "@/lib/artifact-api";
+import type { AccessReport } from "@/lib/artifact-api";
+import { AccessReportView } from "@/components/share/access-report";
 import { CopyLinkButton } from "@/components/share/copy-link-button";
 import { SharePeoplePanel } from "@/components/share/share-people-panel";
 import { SHARE_DIALOG_CONTENT, ShareDialogFooter } from "@/components/share/share-dialog-layout";
@@ -28,6 +32,7 @@ export function ArtifactShareDialog({
   name,
   shareUrl,
   note,
+  access,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -38,7 +43,11 @@ export function ArtifactShareDialog({
   shareUrl?: string;
   /// 共有の前に知らせること（まだ公開していないアプリなど）。
   note?: string;
+  /// 使う人の権限の確かめ（アプリ・ワークフロー・GAP-37）。共有している相手ごとに、足りない権限と直し方を出す。
+  access?: { load: () => Promise<AccessReport>; subject: "app" | "workflow" };
 }) {
+  // 相手を足した・外したら、使う人の権限を確かめ直す。
+  const [changes, setChanges] = React.useState(0);
   if (!artifactId) return null;
 
   return (
@@ -67,7 +76,12 @@ export function ArtifactShareDialog({
           load={() => listArtifactShares(artifactId)}
           grant={(target, role) => shareArtifact(artifactId, target, role)}
           revoke={(target, role) => unshareArtifact(artifactId, target, role)}
+          onChanged={() => setChanges((n) => n + 1)}
         />
+
+        {access && open ? (
+          <AccessReportView load={access.load} reloadKey={changes} mode="share" subject={access.subject} />
+        ) : null}
 
         {shareUrl ? (
           <ShareDialogFooter>

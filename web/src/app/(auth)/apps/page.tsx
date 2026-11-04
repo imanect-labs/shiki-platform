@@ -16,7 +16,7 @@ import { ArtifactShareDialog } from "@/components/artifacts/share-dialog";
 import { MiniAppEditorDialog } from "@/components/artifacts/miniapp-editor";
 import { VersionsDialog } from "@/components/artifacts/versions-dialog";
 import { ListLoadFailed, ListMore } from "@/components/artifacts/shared-more";
-import { deleteArtifact, type ArtifactMeta } from "@/lib/artifact-api";
+import { checkMiniAppAccess, deleteArtifact, type ArtifactMeta } from "@/lib/artifact-api";
 import { useArtifactList } from "@/hooks/use-artifact-list";
 import { InstalledAppsSection } from "@/components/miniapp/installed-apps";
 import { savedToast, UNPUBLISHED_SHARE_NOTE } from "@/components/miniapp/publish";
@@ -157,6 +157,11 @@ export default function AppsPage() {
         artifactId={dialog.kind === "share" ? dialog.meta.id : null}
         name={dialog.kind === "share" ? dialog.meta.name : ""}
         note={dialog.kind === "share" && dialog.meta.publishedVersion == null ? UNPUBLISHED_SHARE_NOTE : undefined}
+        access={
+          dialog.kind === "share"
+            ? { load: () => checkMiniAppAccess(dialog.meta.id), subject: "app" }
+            : undefined
+        }
       />
       <VersionsDialog
         open={dialog.kind === "versions"}

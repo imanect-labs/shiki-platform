@@ -34,16 +34,20 @@ import { DataGridHostContext, miniAppDataGridHost } from "@/components/data/data
 import { Markdown } from "@/components/prompt-kit/markdown";
 import { useRunsRefresh, YuiActionContext, type YuiActionHost } from "@/components/prompt-kit/yui-actions";
 import {
+  checkMiniAppAccess,
   errorCode,
   getMiniAppRun,
+  getMyMiniAppAccess,
   invokeMiniAppYuiAction,
   listMiniAppRuns,
   resolveMiniApp,
   updateMiniApp,
   validationMessages,
   type MiniAppRun,
+  type MyAppAccess,
   type ResolvedMiniApp,
 } from "@/lib/artifact-api";
+import { myBlockedReason } from "@/lib/access-wording";
 import { createThread } from "@/lib/chat-api";
 
 /// 起動の状態のうち、まだ終わっていないもの（起動中・順番待ち・実行中・待機中）。
@@ -260,6 +264,29 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
   // 使えない部品（壊れた任意のピン）のうちスキルの分。画面とボタンはそのまま使える（BUG-17）。
   const skillUnavailable = app?.unavailable.find((u) => u.path === "skill");
 
+  // 自分に足りない権限（GAP-37）。開いたバージョンごとに 1 回確かめ、押す前にボタンと表を止めて理由を出す。
+  // 読めなかったときは止めない（押したときにサーバーが本人の権限で確かめる）。
+  const [access, setAccess] = React.useState<MyAppAccess | null>(null);
+  React.useEffect(() => {
+    if (!app) return;
+    let live = true;
+    setAccess(null);
+    getMyMiniAppAccess(app.id, app.version)
+      .then((a) => live && setAccess(a))
+      .catch(() => {
+        /* 確かめられなくても画面は使える */
+      });
+    return () => {
+      live = false;
+    };
+  }, [app]);
+  const partAccess = React.useCallback(
+    (kind: "workflow" | "data_view", alias: string) =>
+      access?.parts.find((p) => p.part.kind === kind && "alias" in p.part && p.part.alias === alias) ?? null,
+    [access],
+  );
+  const skillAccess = access?.parts.find((p) => p.part.kind === "skill") ?? null;
+
   const host = React.useMemo<YuiActionHost | null>(
     () =>
       app
@@ -275,16 +302,30 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
             onChanged: refreshRuns,
             // 結果が付いていない古い記録は、開いたときに 1 件だけ読む（本人の分だけ返る・GAP-09）。
             loadRun: (runId) => getMiniAppRun(app.id, runId),
+            // 自分に足りない権限があるボタンは押す前に止める（GAP-37）。
+            blockedReason: (name) => {
+              const p = partAccess("workflow", name);
+              return p ? myBlockedReason(p) : null;
+            },
           }
         : null,
-    [app, runs, refreshRuns],
+    [app, runs, refreshRuns, partAccess],
   );
 
   // 画面の表（```data_grid）は束ねた保存ビューを閲覧者本人の権限でページごとに実行する（Task 15.5）。
   // 起動が終わるたびに作り直し、表を読み直させる（BUG-19）。
   const gridHost = React.useMemo(
-    () => (app ? miniAppDataGridHost(app.id, app.version, gridRevision) : null),
-    [app, gridRevision],
+    () =>
+      app
+        ? miniAppDataGridHost(app.id, app.version, gridRevision, {
+            blockedReason: (alias) => {
+              const p = partAccess("data_view", alias);
+              return p ? myBlockedReason(p) : null;
+            },
+            ownRecordsOnly: (alias) => partAccess("data_view", alias)?.status === "limited",
+          })
+        : null,
+    [app, gridRevision, partAccess],
   );
 
   return (
@@ -357,6 +398,10 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
                 </Button>
                 {skillUnavailable ? (
                   <span className="text-xs text-muted-foreground">スキルを使えないため、AI に聞けません。</span>
+                ) : skillAccess ? (
+                  <span className="text-xs text-muted-foreground" data-testid="miniapp-skill-limited">
+                    参照するフォルダーやファイルのうち、あなたが見られないものは、AI の答えに使われません。
+                  </span>
                 ) : null}
               </div>
             ) : null}
@@ -384,6 +429,7 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
               artifactId={app.id}
               name={app.body.description}
               note={app.published_version == null ? UNPUBLISHED_SHARE_NOTE : undefined}
+              access={{ load: () => checkMiniAppAccess(app.id), subject: "app" }}
               shareUrl={
                 typeof window !== "undefined"
                   ? `${window.location.origin}/apps/${app.id}`

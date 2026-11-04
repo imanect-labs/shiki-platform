@@ -4,7 +4,8 @@
 ///
 /// 保存は下書きのバージョンになり、共有した人（使う人）が開く・押すのは公開したバージョンだけ。作る人（editor）は
 /// 下書きを試し、版を選んで公開する。前に公開していたバージョンを公開し直すと公開を戻せる。公開の前に、公開した
-/// バージョンとの差（サーバーの `publish-preview` が決める）と、公開を止める誤り（画面の書き損じ）を見せる。
+/// バージョンとの差（サーバーの `publish-preview` が決める）と、公開を止める誤り（画面の書き損じ）を見せる。共有している
+/// 相手に、そのバージョンの部品に要る権限が足りなければ知らせる（公開は止めない・GAP-37）。
 
 import * as React from "react";
 import { History, Loader2, TriangleAlert, Undo2 } from "lucide-react";
@@ -18,7 +19,9 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { AccessReportView } from "@/components/share/access-report";
 import {
+  checkMiniAppAccess,
   previewMiniAppPublish,
   publishMiniApp,
   type MiniAppChange,
@@ -299,6 +302,13 @@ export function PublishMiniAppDialog({
                 </ul>
               )}
             </div>
+            {/* 共有している相手が、このバージョンの部品に要る権限を持っているか（持ち主だけ・GAP-37）。 */}
+            <AccessReportView
+              load={() => checkMiniAppAccess(appId, { version })}
+              reloadKey={attempt}
+              mode="publish"
+              subject="app"
+            />
             {problems.length > 0 ? (
               <div role="note" className="space-y-1 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
                 <p className="font-medium">直す箇所があるため、公開できません。</p>
