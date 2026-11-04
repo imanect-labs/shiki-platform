@@ -66,6 +66,10 @@ test.describe("回答本文の Markdown ギャラリー", () => {
     const cell = page.getByTestId("markdown-math-after-quoted-fence");
     await expect(cell.locator("blockquote pre code")).toHaveText("code");
     await expect(cell.locator("p", { hasText: "引用の後の" }).locator(".katex")).toHaveCount(1);
+    // 閉じ行を字下げしたフェンス（CommonMark では最大 3 文字まで閉じ行になる）の後ろにだけある式も描く。
+    const indented = page.getByTestId("markdown-math-after-indented-close");
+    await expect(indented.locator("pre code", { hasText: "const x = 1;" })).toHaveCount(1);
+    await expect(indented.locator("p", { hasText: "字下げした閉じ行の後の" }).locator(".katex")).toHaveCount(1);
   });
 
   test("式の大きさに上限があり、行内の式は自分の箱の外に描かない", async ({ page }) => {

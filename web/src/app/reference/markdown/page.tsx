@@ -107,6 +107,13 @@ const MATH_AFTER_QUOTED_FENCE = `> \`\`\`
 
 引用の後の \\(y^2\\)`;
 
+/// 数式が、閉じ行を字下げしたフェンス（CommonMark では最大 3 文字まで閉じ行になる）の後ろにだけある場合。
+const MATH_AFTER_INDENTED_CLOSE = `\`\`\`js
+const x = 1;
+ \`\`\`
+
+字下げした閉じ行の後の \\(z^2\\)`;
+
 function Cell({ id, title, children }: { id: string; title: string; children: React.ReactNode }) {
   return (
     <section data-testid={`markdown-${id}`} className="min-w-0">
@@ -131,6 +138,9 @@ export default function MarkdownGalleryPage() {
         </Cell>
         <Cell id="math-after-quoted-fence" title="引用の中で暗黙に閉じたフェンスの後ろの数式">
           <Markdown>{MATH_AFTER_QUOTED_FENCE}</Markdown>
+        </Cell>
+        <Cell id="math-after-indented-close" title="閉じ行を字下げしたフェンスの後ろの数式">
+          <Markdown>{MATH_AFTER_INDENTED_CLOSE}</Markdown>
         </Cell>
         <Cell id="math-edge" title="数式の区切りが構造の中にある場合">
           <Markdown>{MATH_EDGE}</Markdown>

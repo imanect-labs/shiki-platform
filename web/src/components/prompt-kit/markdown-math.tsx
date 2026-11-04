@@ -8,6 +8,13 @@ import "katex/dist/katex.min.css";
 
 type PluggableList = NonNullable<Options["remarkPlugins"]>;
 
+/// 行頭から始まるフェンスとその中身。閉じ行は CommonMark どおり、最大 3 文字の字下げを許し、
+/// 開始と同じ文字で同じ長さ以上・後ろは空白だけ（`` ` `` と `~` を取り違えない）。閉じが無ければ末尾まで。
+const TOP_LEVEL_FENCES = [
+  /^(`{3,})[^`\n]*\n[\s\S]*?(?:^ {0,3}\1`*[ \t]*$|(?![\s\S]))/gm,
+  /^(~{3,})[^\n]*\n[\s\S]*?(?:^ {0,3}\1~*[ \t]*$|(?![\s\S]))/gm,
+];
+
 /// 本文に数式の候補（`$$`・`\(`・`\[`）があるか。読み込むかどうかにだけ使う判定なので、
 /// 迷う所は「ある」に倒す（見落とすと数式が描かれない。多めに読み込んでも遅くなるだけ）。
 /// 除くのは行頭から始まるフェンス（トップレベルのコードブロック）の中だけ（シェルの `$$` などで
@@ -16,7 +23,7 @@ type PluggableList = NonNullable<Options["remarkPlugins"]>;
 export function mayHaveMath(text: string): boolean {
   const candidate = /\$\$|\\\(|\\\[/;
   if (!candidate.test(text)) return false;
-  const prose = text.replace(/^(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:^\1[`~]*[ \t]*$|(?![\s\S]))/gm, "");
+  const prose = TOP_LEVEL_FENCES.reduce((s, re) => s.replace(re, ""), text);
   return candidate.test(prose);
 }
 
