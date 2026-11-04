@@ -1,5 +1,6 @@
 //! HTTP ルートハンドラ群。
 
+pub mod access_check;
 pub mod admin;
 pub mod app_install;
 pub mod app_platform;

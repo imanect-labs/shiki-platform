@@ -318,6 +318,13 @@ pub fn route_table() -> Vec<RouteDecl> {
         r("/mini-apps/{id}/runs/{run_id}", &["GET"], Session, || {
             get(routes::mini_apps::get_mini_app_run)
         }),
+        // 使う人の権限の確かめ（GAP-37・作る人は相手ごと、使う人は自分）。
+        r("/mini-apps/{id}/access-check", &["POST"], Session, || {
+            post(routes::access_check::check_mini_app_access)
+        }),
+        r("/mini-apps/{id}/access", &["GET"], Session, || {
+            get(routes::access_check::my_mini_app_access)
+        }),
         r(
             "/threads/{thread_id}/messages/{message_id}/save-as-app",
             &["POST"],
@@ -348,6 +355,10 @@ pub fn route_table() -> Vec<RouteDecl> {
             Session,
             || get(routes::workflows::get_workflow_version),
         ),
+        // 使う人の権限の確かめ（GAP-37・手動の実行で要る権限を共有の相手ごとに）。
+        r("/workflows/{id}/access-check", &["POST"], Session, || {
+            post(routes::access_check::check_workflow_access)
+        }),
         // 対話トリガの run 起動＋実行履歴（Stage A W3）。
         r("/workflows/{id}/registration", &["GET"], Session, || {
             get(routes::workflows::get_registration)
