@@ -488,3 +488,95 @@ async fn cache_tokens_are_recorded_and_priced_separately() {
     assert_eq!(report.totals.cache_write_tokens, 1_000_000);
     assert_eq!(report.totals.cost_usd_micros, 1_250_000 + 1_190_000);
 }
+
+#[tokio::test]
+async fn user_provider_rules_intersect_org_settings_and_constrain_auto() {
+    let Some(pool) = pool().await else {
+        return;
+    };
+    let tenant = format!("provider-rule-{}", uuid::Uuid::new_v4());
+    let mut config = GatewayConfig {
+        extra_providers: vec![llm_gateway::ProviderConfig {
+            id: "allowed".into(),
+            ..Default::default()
+        }],
+        user_provider_rules: vec![llm_gateway::config::UserProviderRule {
+            tenant_id: tenant.clone(),
+            user_sub: "restricted".into(),
+            providers: vec!["allowed".into()],
+        }],
+        catalog: ModelCatalog {
+            default_model: "hidden".into(),
+            models: vec![
+                ModelEntry {
+                    id: "hidden".into(),
+                    ..Default::default()
+                },
+                ModelEntry {
+                    id: "visible".into(),
+                    provider: Some("allowed".into()),
+                    ..Default::default()
+                },
+            ],
+        },
+        ..Default::default()
+    };
+    config.auto.model = "hidden".into();
+    let gw = LlmGateway::build(pool, reqwest::Client::new(), config).unwrap();
+    let restricted = ctx(&tenant, "org", "restricted");
+    let other = ctx(&tenant, "org", "other");
+    let settings = gw.settings_for(&restricted).await.unwrap();
+    assert_eq!(
+        settings
+            .enabled_models(gw.catalog())
+            .iter()
+            .map(|m| m.id.as_str())
+            .collect::<Vec<_>>(),
+        ["visible"]
+    );
+    assert_eq!(
+        gw.settings_for(&other)
+            .await
+            .unwrap()
+            .enabled_models(gw.catalog())
+            .len(),
+        2
+    );
+    let auto = gw
+        .resolve_choice(&restricted, &ModelChoice::default())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(auto.model, "visible");
+    let explicit = ModelChoice {
+        model: Some("hidden".into()),
+        ..Default::default()
+    };
+    assert!(matches!(
+        gw.resolve_choice(&restricted, &explicit).await.unwrap(),
+        Err(ChoiceError::ModelNotAllowed(_))
+    ));
+    // 組織が許可していないモデルを個人の許可リストで復活させない。
+    gw.update_tenant_settings(
+        &other,
+        &SettingsPatch {
+            models: vec![("hidden".into(), true), ("visible".into(), false)],
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(gw
+        .settings_for(&restricted)
+        .await
+        .unwrap()
+        .enabled_models(gw.catalog())
+        .is_empty());
+    assert!(matches!(
+        gw.resolve_choice(&restricted, &ModelChoice::default())
+            .await
+            .unwrap(),
+        Err(ChoiceError::NoModel)
+    ));
+}
