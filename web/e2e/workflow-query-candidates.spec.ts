@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { cleanupQueue, loginViaKeycloak, removeWorkflowApi, stubChatModelId, uniqueName } from "./helpers";
+import { cleanupQueue, deleteTableApi, loginViaKeycloak, removeWorkflowApi, stubChatModelId, uniqueName } from "./helpers";
 
 /// 「データを調べる」（data.query）の結果の候補の e2e（BUG-108 の残り）:
 /// 件数（count）と集計の結果（groups）は、件数を数える設定（with_count）と集計（aggregate）を決めたときだけ値が入る。
@@ -17,7 +17,22 @@ async function csrfHeaders(page: Page): Promise<Record<string, string>> {
   return { "x-csrf-token": csrf, "content-type": "application/json" };
 }
 
-function ir(name: string, model: string, query: Record<string, unknown>) {
+/// 探すテーブル（保存する人に見えるテーブルだけを保存できる・GAP-35）。最後に消す。
+async function createTable(page: Page): Promise<string> {
+  const res = await page.request.post("/api/data/tables", {
+    headers: await csrfHeaders(page),
+    data: {
+      name: uniqueName("query-candidates-table"),
+      schema: { fields: [{ key: "title", display_name: "件名", type: "text" }] },
+    },
+  });
+  expect(res.ok(), await res.text()).toBeTruthy();
+  const id = ((await res.json()) as { id: string }).id;
+  cleanup.add(() => deleteTableApi(page, id));
+  return id;
+}
+
+function ir(name: string, model: string, table: string, query: Record<string, unknown>) {
   return {
     ir_version: 1,
     name,
@@ -28,7 +43,7 @@ function ir(name: string, model: string, query: Record<string, unknown>) {
         id: "find",
         type: "data.query",
         label: "申請を探す",
-        params: { table: "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1", query },
+        params: { table, query },
       },
       { id: "note", type: "llm.invoke", label: "まとめる", params: { model, prompt: "件数を書き出してください" } },
     ],
@@ -55,9 +70,10 @@ test("データを調べる: 件数と集計の結果は、決めたときだけ
   await loginViaKeycloak(page);
   const model = await stubChatModelId(page);
   const name = uniqueName("query-candidates");
+  const table = await createTable(page);
   const res = await page.request.post("/api/workflows", {
     headers: await csrfHeaders(page),
-    data: { ir: ir(name, model, { limit: 50 }) },
+    data: { ir: ir(name, model, table, { limit: 50 }) },
   });
   expect(res.ok(), await res.text()).toBeTruthy();
   const id = ((await res.json()) as { id: string }).id;
@@ -73,7 +89,10 @@ test("データを調べる: 件数と集計の結果は、決めたときだけ
   // 件数を数え、集計を決めた版: 件数と集計の結果も出る。
   const put = await page.request.put(`/api/workflows/${id}`, {
     headers: await csrfHeaders(page),
-    data: { expected_version: 1, ir: ir(name, model, { limit: 50, with_count: true, aggregate: [{ metric: "count" }] }) },
+    data: {
+      expected_version: 1,
+      ir: ir(name, model, table, { limit: 50, with_count: true, aggregate: [{ metric: "count" }] }),
+    },
   });
   expect(put.ok(), await put.text()).toBeTruthy();
   const counted = await insertCandidates(page, id);

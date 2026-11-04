@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { cleanupAll, loginViaKeycloak, uniqueName } from "./helpers";
+import { cleanupAll, deleteTableApi, loginViaKeycloak, uniqueName } from "./helpers";
 
 /// 「データを調べる」（data.query）の読む件数の上限の e2e（BUG-108）:
 /// 201 以上（と 0）は保存時の誤りになり、誤りは「読む件数の上限」の欄の下に出る（探す条件の下に重ねない）。
@@ -18,6 +18,16 @@ test("データを調べる: 読む件数の上限は 1〜200 件で、範囲の
   await loginViaKeycloak(page);
   const name = uniqueName("data-query-limit");
   let id = "";
+  // 探すテーブル（保存する人に見えるテーブルだけを保存できる・GAP-35）。最後に消す。
+  const made = await page.request.post("/api/data/tables", {
+    headers: { "x-csrf-token": await csrf(page), "content-type": "application/json" },
+    data: {
+      name: uniqueName("data-query-limit-table"),
+      schema: { fields: [{ key: "title", display_name: "件名", type: "text" }] },
+    },
+  });
+  expect(made.ok(), await made.text()).toBeTruthy();
+  const table = ((await made.json()) as { id: string }).id;
   try {
     const res = await page.request.post("/api/workflows", {
       headers: { "x-csrf-token": await csrf(page), "content-type": "application/json" },
@@ -32,7 +42,7 @@ test("データを調べる: 読む件数の上限は 1〜200 件で、範囲の
               id: "find",
               type: "data.query",
               label: "申請を探す",
-              params: { table: "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1", query: { limit: 50 } },
+              params: { table, query: { limit: 50 } },
             },
           ],
           edges: [],
@@ -56,7 +66,7 @@ test("データを調べる: 読む件数の上限は 1〜200 件で、範囲の
             {
               id: "find",
               type: "data.query",
-              params: { table: "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1", query: { limit: 500 } },
+              params: { table, query: { limit: 500 } },
             },
           ],
           edges: [],
@@ -92,10 +102,13 @@ test("データを調べる: 読む件数の上限は 1〜200 件で、範囲の
     };
     expect(saved.ir.nodes.find((n) => n.id === "find")?.params.query?.limit).toBe(200);
   } finally {
-    await cleanupAll(async () => {
-      if (!id) return;
-      const del = await page.request.delete(`/api/artifacts/${id}`, { headers: { "x-csrf-token": await csrf(page) } });
-      expect(del.status(), await del.text()).toBeLessThan(300);
-    });
+    await cleanupAll(
+      async () => {
+        if (!id) return;
+        const del = await page.request.delete(`/api/artifacts/${id}`, { headers: { "x-csrf-token": await csrf(page) } });
+        expect(del.status(), await del.text()).toBeLessThan(300);
+      },
+      () => deleteTableApi(page, table),
+    );
   }
 });
