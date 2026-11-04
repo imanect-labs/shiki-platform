@@ -28,6 +28,42 @@ test.describe("回答本文の Markdown ギャラリー", () => {
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/markdown-gallery.png`, fullPage: true });
   });
 
+  test("区切りがリスト・引用・表・コードの中にあっても構造を壊さない", async ({ page }) => {
+    const cell = page.getByTestId("markdown-math-edge");
+    await expect(cell.locator(".katex").first()).toBeVisible();
+    // リストは途中で切れない（箇条書き 2 項目・番号付き 3 項目のまま）。
+    await expect(cell.locator("ul > li")).toHaveCount(2);
+    await expect(cell.locator("ol > li")).toHaveCount(3);
+    await expect(cell.locator("ol")).toHaveCount(1);
+    // 引用の中の式（1 行・複数行）は引用の中に描く。
+    await expect(cell.locator("blockquote").nth(0).locator(".katex")).toHaveCount(1);
+    await expect(cell.locator("blockquote").nth(1).locator(".katex")).toHaveCount(1);
+    // 表の行はセルを失わない。
+    await expect(cell.locator("tr")).toHaveCount(3);
+    await expect(cell.locator("table .katex")).toHaveCount(1);
+    // コード（バッククォート 2 つのインラインコード・フェンス）は原文のまま。
+    await expect(cell.locator("code", { hasText: "`\\(x\\)`" })).toHaveCount(1);
+    await expect(cell).toContainText("echo \\(z\\) $$");
+    // 隣り合う式は 2 つの式になり、角括弧のエスケープは式にしない。書き損じ（赤字）も出ない。
+    await expect(cell).toContainText("[注1]");
+    await expect(cell.locator("p", { hasText: "隣り合う式" }).locator(".katex")).toHaveCount(2);
+    await expect(page.locator(".katex-error")).toHaveCount(0);
+    // 暗黙に閉じたフェンスの後ろの式も描く。
+    await expect(cell.locator("p", { hasText: "引用の後の" }).locator(".katex")).toHaveCount(1);
+  });
+
+  test("式の大きさに上限があり、行内の式は自分の箱の外に描かない", async ({ page }) => {
+    const cell = page.getByTestId("markdown-math-edge");
+    const p = cell.locator("p", { hasText: "大きさの上限" });
+    await expect(p.locator(".katex")).toHaveCount(2);
+    const [cellBox, ruleBox] = await Promise.all([cell.boundingBox(), p.locator(".katex").first().boundingBox()]);
+    // \rule{500em} は maxSize（10em）で切り詰められ、本文の幅を押し広げない。
+    expect(ruleBox!.width).toBeLessThan(cellBox!.width);
+    // \rlap の中身は式の箱（幅 0）の外に出るので、clip-path で切り取られる。
+    const clip = await p.locator(".katex").nth(1).evaluate((el) => getComputedStyle(el.parentElement!).clipPath);
+    expect(clip).toContain("inset");
+  });
+
   test("引用番号の直後の「。」を番号と同じ行に置く", async ({ page }) => {
     // 幅を少しずつ変え、番号がちょうど行末に来る幅でも、直後の約物だけが次の行頭に落ちないこと
     // （番号と約物を折り返さない塊にする）。落ちた幅の一覧を返す。

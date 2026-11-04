@@ -61,6 +61,38 @@ $$
 
 金額の $5 と $10 は数式にしない。コードの中の \`\\(x\\)\` もそのまま。`;
 
+/// 数式の区切りが構造（リスト・引用・表・コード）の中にある場合。構造を壊さず、コードは原文のまま。
+const MATH_EDGE = `- 式は \\[a^2+b^2\\] です
+- 次の項目
+
+1. 一
+2. 式 \\(x^2\\)
+3. 三
+
+> 注: \\[E=mc^2\\] とする
+
+> \\[
+> x = 1
+> \\]
+
+| 式 | 値 |
+| --- | --- |
+| \\(x^2\\) | y |
+| z | w |
+
+隣り合う式 \\(a\\)\\(b\\) と、\`\` \`\\(x\\)\` \`\` と、角括弧の \\[注1\\]。
+
+> \`\`\`
+> code
+
+引用の後の \\(y^2\\)
+
+\`\`\`bash
+echo \\(z\\) $$
+\`\`\`
+
+大きさの上限 \\(\\rule{500em}{1em}\\) と、箱の外への重ね描き \\(\\rlap{\\text{はみ出す文字はみ出す文字はみ出す文字}}\\)。`;
+
 function Cell({ id, title, children }: { id: string; title: string; children: React.ReactNode }) {
   return (
     <section data-testid={`markdown-${id}`} className="min-w-0">
@@ -82,6 +114,9 @@ export default function MarkdownGalleryPage() {
         </Cell>
         <Cell id="math" title="数式">
           <Markdown>{MATH}</Markdown>
+        </Cell>
+        <Cell id="math-edge" title="数式の区切りが構造の中にある場合">
+          <Markdown>{MATH_EDGE}</Markdown>
         </Cell>
       </div>
     </div>

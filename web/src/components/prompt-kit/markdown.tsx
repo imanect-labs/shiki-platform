@@ -17,7 +17,7 @@ import { resolveKind } from "@imanect/yui";
 import { isYuiLanguage } from "@imanect/yui/react";
 
 import { CodeBlock } from "./code-block";
-import { hasMath, normalizeMathDelimiters, useMathPlugins } from "./markdown-math";
+import { MathTex, markMathDelimiters, mathKind, mayHaveMath, useMathPlugins } from "./markdown-math";
 // 引用・箇条書きの中の図はボタンを出さない（重い図の描画部とは別に、軽いコンテキストだけ読む）。
 import { YuiNestedContext } from "./yui-actions";
 import { DataGridHostContext } from "@/components/data/data-grid-host";
@@ -165,6 +165,11 @@ function extractCode(child: React.ReactNode): {
   };
 }
 
+/// pre 直下の code 要素のクラス名。
+function codeClassName(child: React.ReactNode): string | undefined {
+  return React.isValidElement(child) ? (child.props as { className?: string }).className : undefined;
+}
+
 /// 描画中の本文と、生成中かどうか（```ui の図が書きかけの行を描かないようにする）。
 /// `untrusted` は利用者が書いた本文（発話の吹き出し）。図・表・引用番号にせず、リンク先を見せる。
 const SourceContext = React.createContext<{ text: string; streaming: boolean; untrusted: boolean }>({
@@ -246,6 +251,8 @@ function FencedCode({ node, children }: { node: ExtraProps["node"]; children: Re
   const gridHost = React.useContext(DataGridHostContext);
   // 利用者が書いたフェンスは図・表にせず、コードとして見せる（図と操作は AI の回答だけのもの）。
   if (untrusted) return <CodeBlock code={code} lang={lang} />;
+  // 別行立ての数式（remark-math が pre > code.math-display にする・数式を読み込んだときだけ現れる）。
+  if (mathKind(codeClassName(children)) === "display") return <MathTex tex={code} display />;
   // ```data_grid はミニアプリの画面の表（トップレベルだけ・サーバーと同じ規則）。中身の 1 行目が別名。
   if (dataGrid && gridHost && !nested && closed) {
     const alias = code.split(/\r?\n/)[0]?.trim() ?? "";
@@ -288,6 +295,9 @@ const components: Components = {
     return <FencedCode node={node}>{children}</FencedCode>;
   },
   code({ className, children }) {
+    // 行内の数式（remark-math が code.math-inline にする）。`\[ \]` が文中にあれば math-display。
+    const math = mathKind(className);
+    if (math) return <MathTex tex={String(children ?? "")} display={math === "display"} />;
     // インラインコード（pre 配下は上で処理済み）。
     return (
       <code
@@ -442,15 +452,17 @@ export function Markdown({
   untrusted?: boolean;
 }) {
   // 数式は AI の回答だけ（利用者の発話は打ったとおりに見せる）。
-  const text = React.useMemo(() => (untrusted ? children : normalizeMathDelimiters(children)), [children, untrusted]);
-  const math = useMathPlugins(!untrusted && hasMath(text));
+  const mathPlugins = useMathPlugins(!untrusted && mayHaveMath(children));
+  // 区切りの置き換えは数式を描けるときだけ（読み込み前・失敗時は原文のまま描く）。
+  const text = React.useMemo(
+    () => (mathPlugins ? markMathDelimiters(children) : children),
+    [children, mathPlugins],
+  );
   return (
     <div
       className={cn(
         // 本文はわずかに色を落とし、見出し・太字（foreground）を浮かせる（#1015）。
         "min-w-0 text-[15px] leading-[1.8] text-foreground/85",
-        // 別行立ての長い式は式だけ横スクロールにする（本文の幅を押し広げない）。
-        "[&_.katex-display]:overflow-x-auto [&_.katex-display]:overflow-y-hidden [&_.katex-display]:py-1",
         WRAP_ANYWHERE,
         className,
       )}
@@ -463,9 +475,9 @@ export function Markdown({
             remarkCjkFriendly,
             remarkBrTags,
             ...(breaks ? [remarkSoftBreaks] : []),
-            ...(math?.remark ?? []),
+            ...(mathPlugins ?? []),
           ]}
-          rehypePlugins={untrusted ? undefined : [rehypeCiteNowrap, ...(math?.rehype ?? [])]}
+          rehypePlugins={untrusted ? undefined : [rehypeCiteNowrap]}
           components={components}
           disallowedElements={untrusted ? ["img"] : undefined}
         >
