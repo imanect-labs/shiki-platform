@@ -173,6 +173,7 @@ fn ctx(record: Uuid) -> NodeContext {
         org: "acme".into(),
         run_id: Uuid::nil(),
         run_started_at: chrono::Utc::now(),
+        run_scheduled_at: None,
         step_path: "ok".into(),
         idempotency_key: "wf:t1:r:ok".into(),
         attempt: 1,

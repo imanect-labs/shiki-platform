@@ -197,6 +197,7 @@ impl Env {
             org: tenant.into(),
             run_id: Uuid::new_v4(),
             run_started_at: chrono::Utc::now(),
+            run_scheduled_at: None,
             step_path: "n1".into(),
             idempotency_key: format!("wf:{tenant}:{}:n1", Uuid::new_v4()),
             attempt: 1,

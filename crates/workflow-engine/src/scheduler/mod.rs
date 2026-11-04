@@ -15,7 +15,8 @@ pub mod leader;
 pub mod store;
 
 use async_trait::async_trait;
-use serde_json::Value;
+use chrono::{DateTime, Utc};
+use serde_json::{json, Value};
 use uuid::Uuid;
 
 pub use coalesce::{Coalesce, COALESCE_MAX_SECS, COALESCE_QUIET_SECS};
@@ -73,8 +74,10 @@ impl LaunchOutcome {
 pub trait RunLauncher: Send + Sync {
     /// 指定ワークフローの run を起動する。
     ///
-    /// `payload` はトリガペイロード（event はイベントペイロード・schedule は `Null`）。run の入力に載せ、
-    /// `$from trigger`/`$from input` で参照できるようにする（engine.md §6.1）。
+    /// `payload` はトリガペイロード。event はイベントペイロードで、run の入力に載せ、`$from trigger`/`$from input`
+    /// で参照できるようにする（engine.md §6.1）。schedule は予定の時刻だけを持つ [`schedule_payload`] で、run の入力
+    /// には載せず（`$from trigger`/`$from input` は今までどおり null）、実行情報の予定の日時（`$from run` の
+    /// `scheduled_at`）にする（[`scheduled_at_of`] で読む・GAP-15）。
     ///
     /// `event_id` は発火元の outbox イベント（schedule は `None`）。`(trigger_id, event_id)` で run を
     /// 一意にするので、クラッシュ後の再配送・再試行で同じイベントから run を二重に作らない。
@@ -87,4 +90,39 @@ pub trait RunLauncher: Send + Sync {
         payload: &Value,
         event_id: Option<i64>,
     ) -> LaunchOutcome;
+}
+
+/// スケジュールの発火が起動口（[`RunLauncher::launch`] の `payload`）へ渡す値（予定の時刻だけ・GAP-15）。
+///
+/// 起動口は [`scheduled_at_of`] で読み、run の行の予定の時刻にする（run の入力には載せない）。形はここだけで決める。
+#[must_use]
+pub fn schedule_payload(scheduled_at: DateTime<Utc>) -> Value {
+    json!({ "scheduled_at": scheduled_at.to_rfc3339() })
+}
+
+/// [`schedule_payload`] の予定の時刻（無い・読めなければ `None`。そのときの実行情報の予定の日時は始めた時刻）。
+#[must_use]
+pub fn scheduled_at_of(payload: &Value) -> Option<DateTime<Utc>> {
+    let at = payload.get("scheduled_at")?.as_str()?;
+    DateTime::parse_from_rfc3339(at)
+        .ok()
+        .map(|t| t.with_timezone(&Utc))
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+    use super::*;
+
+    /// 予定の時刻は、渡した値と読んだ値が同じ（秒より細かい部分も落とさない）。形の違う値は読まない。
+    #[test]
+    fn schedule_payload_roundtrips() {
+        let at = DateTime::parse_from_rfc3339("2026-11-09T00:00:00.123Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert_eq!(scheduled_at_of(&schedule_payload(at)), Some(at));
+        assert_eq!(scheduled_at_of(&Value::Null), None);
+        assert_eq!(scheduled_at_of(&json!({ "scheduled_at": "monday" })), None);
+        assert_eq!(scheduled_at_of(&json!({ "scheduled_at": 1 })), None);
+    }
 }

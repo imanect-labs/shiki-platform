@@ -53,6 +53,8 @@ pub struct NodeContext {
     pub run_id: Uuid,
     /// 実行を始めた時刻（`$from run` の日時の源・やり直しても同じ値・D-97）。
     pub run_started_at: chrono::DateTime<chrono::Utc>,
+    /// スケジュールの予定の時刻（スケジュールの run だけ。`None` なら実行情報の `scheduled_at` は始めた時刻・GAP-15）。
+    pub run_scheduled_at: Option<chrono::DateTime<chrono::Utc>>,
     pub step_path: String,
     /// 冪等キー（attempt 非依存）。
     pub idempotency_key: String,

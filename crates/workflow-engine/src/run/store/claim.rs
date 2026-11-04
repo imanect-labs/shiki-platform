@@ -36,7 +36,7 @@ use super::{map_db, ClaimedStep, RunStore, RunStoreError};
 /// step が先頭に居座っている間 claim が空振りし、他の run の実行待ちが進まなくなる。`OR` を外した
 /// 後は index 順の nested loop で流れるため、内側に置いても評価は 1 件で止まる（実測 22 バッファ）。
 ///
-/// run 側の列（workflow_id/org/principal/input/きっかけの内容/ir_snapshot/始めた時刻）は副問い合わせで一緒に取り出し、
+/// run 側の列（workflow_id/org/principal/input/きっかけの内容/ir_snapshot/始めた時刻/予定の時刻）は副問い合わせで一緒に取り出し、
 /// `RETURNING` から `picked.*` として参照する（`workflow_run` への join を 1 本に保つ）。
 macro_rules! claim_ready_sql {
     ($tenant_pred:literal) => {
@@ -50,7 +50,8 @@ macro_rules! claim_ready_sql {
                         r2.workflow_id, r2.org, r2.principal, r2.principal_kind, \
                         r2.input, r2.trigger_payload AS trigger, \
                         r2.ir_snapshot, \
-                        coalesce(r2.started_at, r2.created_at) AS run_started_at \
+                        coalesce(r2.started_at, r2.created_at) AS run_started_at, \
+                        r2.scheduled_at AS run_scheduled_at \
                    FROM step_execution s2 \
                    JOIN workflow_run r2 \
                      ON r2.tenant_id = s2.tenant_id AND r2.run_id = s2.run_id \
@@ -62,7 +63,8 @@ macro_rules! claim_ready_sql {
              ) picked \
              WHERE s.tenant_id = picked.tenant_id AND s.run_id = picked.run_id \
                AND s.step_path = picked.step_path \
-             RETURNING s.run_id, picked.run_started_at, picked.workflow_id, s.step_path, \
+             RETURNING s.run_id, picked.run_started_at, picked.run_scheduled_at, \
+                       picked.workflow_id, s.step_path, \
                        s.node_id, s.tenant_id, \
                        picked.org, picked.principal, picked.principal_kind, \
                        s.attempt, s.fencing_token, s.idempotency_key, \

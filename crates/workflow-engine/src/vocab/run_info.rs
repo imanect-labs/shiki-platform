@@ -7,6 +7,11 @@
 //! 日時は実行を始めた時刻で決める（同じ実行の中では、どのブロックが何度やり直しても同じ値）。
 //! ファイル名に差し込んでも、やり直しで別の名前にならない（冪等キーの照合が崩れない）。
 //!
+//! 予定の日時（`scheduled_at`）は、スケジュールで動いた run ではスケジュールの予定の時刻（止まっていたあとの発火や、
+//! 多重度で待たされた run でも予定の時刻のまま）、ほかの run では実行を始めた日時（`started_at` と同じ）。「先週」
+//! 「前日」のような日付を、どの実行でも同じ項目から数えられるようにする（「日付を計算」の基準の既定・GAP-15）。
+//! スケジュールの run の入力ときっかけの内容は今までどおり null のまま（保存済みの定義の値を変えない）。
+//!
 //! 実行した人（`started_by`）は、人が手動で実行した run の実行主体（ユーザーの ID）。申請者を承認者の表から
 //! 引くような組み方に使う（GAP-17・D-101）。入力項目で申請者を受け取ると、実行する人が別の人の ID を入れて
 //! 偽れるが、これは実行主体から決まるので偽れない。スケジュール・きっかけ（ワークフロー主体）やミニアプリの
@@ -64,6 +69,14 @@ pub const RUN_INFO_FIELDS: &[RunInfoField] = &[
         note_ja: "",
     },
     RunInfoField {
+        name: "scheduled_at",
+        ty: "string",
+        description_ja: "予定の日時",
+        example: "2026-11-09T09:00:00+09:00",
+        suggested: true,
+        note_ja: "スケジュールで動いた実行では予定の時刻（遅れて動いても変わらない）。手動の実行やきっかけで動いた実行では、実行した日時と同じ",
+    },
+    RunInfoField {
         name: "started_by",
         ty: "string",
         description_ja: "実行した人",
@@ -89,19 +102,25 @@ pub const RUN_INFO_FIELDS: &[RunInfoField] = &[
     },
 ];
 
-/// 実行情報の値（`$from run` の源）。`started_at` は実行を始めた時刻（UTC）。`started_by` は人が手動で
-/// 実行した run のユーザーの ID（人のいない run は `None` で、項目ごと入れない）。
+/// 実行情報の値（`$from run` の源）。`started_at` は実行を始めた時刻（UTC）。`scheduled_at` はスケジュールの予定の
+/// 時刻（スケジュールの run だけ・`None` なら始めた時刻）。`started_by` は人が手動で実行した run のユーザーの ID
+/// （人のいない run は `None` で、項目ごと入れない）。
 #[must_use]
 pub fn run_info(
     run_id: Uuid,
     tenant_id: &str,
     started_at: DateTime<Utc>,
+    scheduled_at: Option<DateTime<Utc>>,
     started_by: Option<&str>,
 ) -> Value {
     let local = started_at.with_timezone(&RUN_INFO_TIMEZONE);
+    let scheduled = scheduled_at
+        .unwrap_or(started_at)
+        .with_timezone(&RUN_INFO_TIMEZONE);
     let mut v = json!({
         "date": local.format("%Y-%m-%d").to_string(),
         "started_at": local.to_rfc3339_opts(chrono::SecondsFormat::Secs, false),
+        "scheduled_at": scheduled.to_rfc3339_opts(chrono::SecondsFormat::Secs, false),
         "run_id": run_id.to_string(),
         "tenant_id": tenant_id,
     });
@@ -126,7 +145,7 @@ mod tests {
     /// 値の項目と表の項目は同じ（片方だけを変えると落ちる）。
     #[test]
     fn fields_match_the_values() {
-        let v = run_info(Uuid::nil(), "t", Utc::now(), Some("alice"));
+        let v = run_info(Uuid::nil(), "t", Utc::now(), None, Some("alice"));
         let mut keys: Vec<&str> = v.as_object().unwrap().keys().map(String::as_str).collect();
         keys.sort_unstable();
         let mut names: Vec<&str> = RUN_INFO_FIELDS.iter().map(|f| f.name).collect();
@@ -140,9 +159,29 @@ mod tests {
         let at = DateTime::parse_from_rfc3339("2026-10-27T15:30:05Z")
             .unwrap()
             .with_timezone(&Utc);
-        let v = run_info(Uuid::nil(), "t", at, None);
+        let v = run_info(Uuid::nil(), "t", at, None, None);
         assert_eq!(v["date"], "2026-10-28");
         assert_eq!(v["started_at"], "2026-10-28T00:30:05+09:00");
+    }
+
+    /// 予定の日時は、スケジュールの run では予定の時刻（遅れて始めても変わらない）、ほかの run では始めた日時
+    /// （GAP-15）。どちらも日本時間で言う。
+    #[test]
+    fn scheduled_at_is_the_planned_time_or_the_start() {
+        let planned = DateTime::parse_from_rfc3339("2026-11-09T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        // 止まっていたあとの発火で、翌日に始めた。
+        let started = DateTime::parse_from_rfc3339("2026-11-10T01:15:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let v = run_info(Uuid::nil(), "t", started, Some(planned), None);
+        assert_eq!(v["scheduled_at"], "2026-11-09T09:00:00+09:00");
+        assert_eq!(v["started_at"], "2026-11-10T10:15:00+09:00");
+        assert_eq!(v["date"], "2026-11-10");
+        // 手動の実行・きっかけの実行（予定の時刻が無い）は始めた日時。
+        let v = run_info(Uuid::nil(), "t", started, None, Some("alice"));
+        assert_eq!(v["scheduled_at"], v["started_at"]);
     }
 
     /// 実行した人は、人が実行した run（ユーザーの主体）だけに入る。人のいない run には項目ごと入れない
@@ -153,9 +192,21 @@ mod tests {
         assert_eq!(started_by("wf-1", "workflow"), None);
         assert_eq!(started_by("app-1", "miniapp"), None);
         assert_eq!(started_by("", "user"), None);
-        let v = run_info(Uuid::nil(), "t", Utc::now(), started_by("alice", "user"));
+        let v = run_info(
+            Uuid::nil(),
+            "t",
+            Utc::now(),
+            None,
+            started_by("alice", "user"),
+        );
         assert_eq!(v["started_by"], "alice");
-        let v = run_info(Uuid::nil(), "t", Utc::now(), started_by("wf-1", "workflow"));
+        let v = run_info(
+            Uuid::nil(),
+            "t",
+            Utc::now(),
+            None,
+            started_by("wf-1", "workflow"),
+        );
         assert!(v.get("started_by").is_none(), "{v}");
     }
 }

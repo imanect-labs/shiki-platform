@@ -220,6 +220,7 @@ impl WorkflowWorker {
             org: claimed.org.clone(),
             run_id: claimed.run_id,
             run_started_at: claimed.run_started_at,
+            run_scheduled_at: claimed.run_scheduled_at,
             step_path: claimed.step_path.clone(),
             idempotency_key: claimed.idempotency_key.clone(),
             attempt: claimed.attempt,

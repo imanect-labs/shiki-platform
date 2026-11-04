@@ -138,6 +138,7 @@ fn ctx() -> NodeContext {
         org: "acme".into(),
         run_id: Uuid::nil(),
         run_started_at: chrono::Utc::now(),
+        run_scheduled_at: None,
         step_path: "ai".into(),
         idempotency_key: "wf:t1:0:ai".into(),
         attempt: 1,

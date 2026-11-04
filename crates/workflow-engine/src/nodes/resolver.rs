@@ -30,12 +30,13 @@ impl<'a> ParamResolver<'a> {
         match name {
             "input" => Some(self.ctx.input.clone()),
             "trigger" => Some(self.ctx.trigger.clone()),
-            // 実行情報（項目は vocab の単一定義・実行した日時は日本時間・D-97。実行した人は人が実行した run
-            // だけ・D-101）。
+            // 実行情報（項目は vocab の単一定義・実行した日時は日本時間・D-97。予定の日時はスケジュールの予定の時刻か
+            // 始めた時刻・GAP-15。実行した人は人が実行した run だけ・D-101）。
             "run" => Some(crate::vocab::run_info(
                 self.ctx.run_id,
                 &self.ctx.tenant_id,
                 self.ctx.run_started_at,
+                self.ctx.run_scheduled_at,
                 crate::vocab::started_by(&self.ctx.principal, &self.ctx.principal_kind),
             )),
             // `nodes.<id>.output` → 先行成功 step の出力。
@@ -178,6 +179,7 @@ mod tests {
             org: "acme".into(),
             run_id: Uuid::nil(),
             run_started_at: chrono::Utc::now(),
+            run_scheduled_at: None,
             step_path: "n1".into(),
             idempotency_key: "wf:t1:0:n1".into(),
             attempt: 1,

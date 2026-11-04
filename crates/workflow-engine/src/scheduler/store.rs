@@ -338,13 +338,14 @@ impl SchedulerStore {
         }
         // run_id が NULL（新規占有 or クラッシュ残り）→ ロック保持中に launch して記録する。
         // 見送り・一時失敗は run_id NULL のまま（occurrence は 1 回きり・再試行はしない）。
+        // 予定の時刻を渡し、run の実行情報の予定の日時にする（入力ときっかけの内容は null のまま・GAP-15）。
         let run_id = launcher
             .launch(
                 &t.tenant_id,
                 t.workflow_id,
                 "schedule",
                 &t.trigger_id,
-                &serde_json::Value::Null,
+                &super::schedule_payload(scheduled_at),
                 None,
             )
             .await

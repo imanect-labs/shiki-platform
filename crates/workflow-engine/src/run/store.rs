@@ -81,6 +81,8 @@ pub struct ClaimedStep {
     pub run_id: Uuid,
     /// run を始めた時刻（`started_at`・まだ無ければ作った時刻。`$from run` の日時の源・D-97）。
     pub run_started_at: chrono::DateTime<chrono::Utc>,
+    /// スケジュールの予定の時刻（スケジュールの run だけ・ほかは `None`・`$from run` の `scheduled_at` の源・GAP-15）。
+    pub run_scheduled_at: Option<chrono::DateTime<chrono::Utc>>,
     pub workflow_id: Uuid,
     pub step_path: String,
     pub node_id: String,
@@ -127,6 +129,9 @@ pub struct RunOrigin<'a> {
     /// 手動の実行で試すきっかけの内容（`$from trigger` の源・D-93）。`None` なら、きっかけの内容は入力と同じ
     /// （今までどおり）。
     pub trigger_payload: Option<&'a Value>,
+    /// スケジュールの予定の時刻（スケジュールの run だけ・実行情報の `scheduled_at` の源・GAP-15）。`None` の run は
+    /// 始めた時刻を予定の時刻として返す。
+    pub scheduled_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 /// running の run が多重度（`max_parallel_runs`）に数える条件（SQL の述語・別名 `r`）。
@@ -314,12 +319,12 @@ impl RunStore {
              (tenant_id, org, workflow_id, version, trigger_kind, trigger_id, principal, \
               principal_kind, input, ir_snapshot, status, started_at, timeout_at, \
               trigger_event_id, trigger_chain, cause_run_id, reply_nodes, trigger_payload, \
-              step_order) \
+              step_order, scheduled_at) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, \
                      CASE WHEN $11 = 'running' THEN now() END, \
                      CASE WHEN $11 = 'running' \
                           THEN now() + ($12 || ' seconds')::interval END, \
-                     $13, $14, $15, $16, $17, $18) \
+                     $13, $14, $15, $16, $17, $18, $19) \
              RETURNING run_id",
         )
         .bind(tenant_id)
@@ -342,6 +347,9 @@ impl RunStore {
         .bind(origin.trigger_payload.map(Json))
         // 実行の詳細で同じ時刻の step を並べる順（ir_snapshot を開かない・BUG-117）。
         .bind(graph.step_order())
+        // スケジュールの予定の時刻（run を作る Tx で書く。発火の記録の run_id は後から書くので、ワーカーが最初の step を
+        // 取る時点では読めないことがある・GAP-15）。
+        .bind(origin.scheduled_at)
         .fetch_one(&mut *tx)
         .await
         .map_err(map_db)?;

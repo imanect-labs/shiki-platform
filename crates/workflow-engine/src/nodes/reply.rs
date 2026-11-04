@@ -325,6 +325,7 @@ mod tests {
             org: "acme".into(),
             run_id: Uuid::nil(),
             run_started_at: chrono::Utc::now(),
+            run_scheduled_at: None,
             step_path: "reply".into(),
             idempotency_key: "k".into(),
             attempt: 1,

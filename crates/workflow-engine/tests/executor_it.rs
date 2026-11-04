@@ -253,6 +253,7 @@ fn ctx(input: Value, scopes: Vec<String>) -> NodeContext {
         org: "acme".into(),
         run_id: Uuid::nil(),
         run_started_at: chrono::Utc::now(),
+        run_scheduled_at: None,
         step_path: "n1".into(),
         idempotency_key: "wf:t1:0:n1".into(),
         attempt: 1,
@@ -1664,6 +1665,33 @@ async fn run_info_dates_can_be_inserted_into_file_names() {
     let w = ports.last_write.lock().unwrap().clone().unwrap();
     assert_eq!(w.name, "日報-2026-10-28.md");
     assert_eq!(w.bytes, b"2026-10-28T08:30:00+09:00");
+}
+
+/// 実行情報の「予定の日時」（`$from run /scheduled_at`）は、スケジュールの run では予定の時刻（遅れて始めても変わら
+/// ない）、ほかの run では始めた日時（GAP-15）。
+#[tokio::test]
+async fn run_info_scheduled_at_is_the_planned_time() {
+    let params =
+        json!({ "name": "予定.txt", "content": { "$from": "run", "path": "/scheduled_at" } });
+    let at = |s: &str| {
+        chrono::DateTime::parse_from_rfc3339(s)
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+    };
+    for (scheduled, want) in [
+        (Some("2026-11-09T00:00:00Z"), "2026-11-09T09:00:00+09:00"),
+        (None, "2026-11-10T12:00:00+09:00"),
+    ] {
+        let ports = Arc::new(FakePorts::default());
+        let exec = executor(ports.clone(), Arc::new(CapturingAudit::default()));
+        let mut c = ctx(json!({}), vec!["storage.write".into()]);
+        c.run_started_at = at("2026-11-10T03:00:00Z");
+        c.run_scheduled_at = scheduled.map(at);
+        let res = exec.execute("storage.write", &params, &c).await;
+        assert!(res.ok, "{:?}", res.error);
+        let w = ports.last_write.lock().unwrap().clone().unwrap();
+        assert_eq!(w.bytes, want.as_bytes(), "{scheduled:?}");
+    }
 }
 
 /// 実行情報の「実行した人」（`$from run /started_by`）は、人が手動で実行した run のユーザーの ID。人のいない
