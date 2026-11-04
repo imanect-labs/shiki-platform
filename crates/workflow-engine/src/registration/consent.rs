@@ -5,11 +5,12 @@ use crate::ir::{Trigger, WorkflowIr};
 
 impl RegistrationService {
     /// 同意画面の提案 grants を IR から静的に列挙する（純関数・最終選択は有効化者）。
+    ///
+    /// 同じ操作・対象・relation の提案は 1 つにまとめる（最初の根拠を残す）。
     #[must_use]
-    #[allow(clippy::too_many_lines)] // ノード種ごとの提案の表（exhaustive に並べる方が漏れを見つけやすい）。
     pub fn consent_plan(ir: &WorkflowIr) -> Vec<SuggestedGrant> {
         let mut out: Vec<SuggestedGrant> = Vec::new();
-        let mut push = |g: SuggestedGrant| {
+        for g in suggested_grants(ir) {
             if !out.iter().any(|e| {
                 e.scope == g.scope
                     && e.object_kind == g.object_kind
@@ -19,245 +20,256 @@ impl RegistrationService {
             }) {
                 out.push(g);
             }
-        };
+        }
+        out
+    }
+}
 
-        // イベントトリガの束縛: トリガ元コンテキストの読取提案（典型パターン）。データ変更のトリガは、
-        // 委譲元（テーブルの viewer を委譲した人）の見え方で変更を読むので、テーブルの閲覧を提案する（GAP-07）。
-        for (i, t) in ir.triggers.iter().enumerate() {
-            if let Trigger::Event(ev) = t {
-                if let Some(folder) = ev.scope.get("folder").and_then(|v| v.as_str()) {
-                    push(SuggestedGrant {
-                        scope: "storage.read".into(),
-                        object_kind: "folder".into(),
-                        object_id: Some(folder.to_string()),
-                        object_name: None,
-                        relation: "viewer".into(),
-                        source: format!("trigger:{i}"),
-                        needs_user_pick: false,
-                    });
-                }
-                if let Some(table) = ev.scope.get("table").and_then(|v| v.as_str()) {
-                    push(SuggestedGrant {
-                        scope: "data.read".into(),
-                        object_kind: "data_table".into(),
-                        object_id: Some(table.to_string()),
-                        object_name: None,
-                        relation: "viewer".into(),
-                        source: format!("trigger:{i}"),
+/// ブロック・きっかけごとの提案を、まとめずにすべて挙げる（根拠ごと・並びは IR の順）。
+///
+/// どのブロックがどの対象を読む・書くかの単一の定義。同意の提案（[`RegistrationService::consent_plan`]）はこれを
+/// まとめたもので、手動の実行で本人に要る権限（[`RegistrationService::access_needs`]・GAP-37）はブロックの種類ごとに
+/// 読み替えるので、まとめる前のものを使う（同じテーブルへの追加と書き換えを 1 つにすると、書き換えに要る編集を落とす）。
+#[allow(clippy::too_many_lines)] // ノード種ごとの提案の表（exhaustive に並べる方が漏れを見つけやすい）。
+pub(super) fn suggested_grants(ir: &WorkflowIr) -> Vec<SuggestedGrant> {
+    let mut out: Vec<SuggestedGrant> = Vec::new();
+
+    // イベントトリガの束縛: トリガ元コンテキストの読取提案（典型パターン）。データ変更のトリガは、
+    // 委譲元（テーブルの viewer を委譲した人）の見え方で変更を読むので、テーブルの閲覧を提案する（GAP-07）。
+    for (i, t) in ir.triggers.iter().enumerate() {
+        if let Trigger::Event(ev) = t {
+            if let Some(folder) = ev.scope.get("folder").and_then(|v| v.as_str()) {
+                out.push(SuggestedGrant {
+                    scope: "storage.read".into(),
+                    object_kind: "folder".into(),
+                    object_id: Some(folder.to_string()),
+                    object_name: None,
+                    relation: "viewer".into(),
+                    source: format!("trigger:{i}"),
+                    needs_user_pick: false,
+                });
+            }
+            if let Some(table) = ev.scope.get("table").and_then(|v| v.as_str()) {
+                out.push(SuggestedGrant {
+                    scope: "data.read".into(),
+                    object_kind: "data_table".into(),
+                    object_id: Some(table.to_string()),
+                    object_name: None,
+                    relation: "viewer".into(),
+                    source: format!("trigger:{i}"),
+                    needs_user_pick: false,
+                });
+            }
+        }
+    }
+
+    for node in &ir.nodes {
+        let source = format!("node:{}", node.id);
+        let Some(nt) = crate::vocab::NodeType::parse(&node.node_type) else {
+            continue;
+        };
+        match nt {
+            crate::vocab::NodeType::StorageRead => {
+                let file = literal_str(&node.params, "file");
+                out.push(SuggestedGrant {
+                    scope: "storage.read".into(),
+                    object_kind: "file".into(),
+                    object_id: file.clone(),
+                    object_name: None,
+                    relation: "viewer".into(),
+                    source,
+                    needs_user_pick: file.is_none(),
+                });
+            }
+            crate::vocab::NodeType::StorageList => {
+                let folder = literal_str(&node.params, "folder");
+                out.push(SuggestedGrant {
+                    scope: "storage.read".into(),
+                    object_kind: "folder".into(),
+                    object_id: folder.clone(),
+                    object_name: None,
+                    relation: "viewer".into(),
+                    source,
+                    needs_user_pick: folder.is_none(),
+                });
+            }
+            crate::vocab::NodeType::StorageWrite => {
+                let folder = literal_str(&node.params, "folder");
+                out.push(SuggestedGrant {
+                    scope: "storage.write".into(),
+                    object_kind: "folder".into(),
+                    object_id: folder.clone(),
+                    object_name: None,
+                    relation: "editor".into(),
+                    source,
+                    needs_user_pick: folder.is_none(),
+                });
+            }
+            // CSV 表データ（Task 11P.9）: 実行は TabularService のファイル ReBAC で決まる
+            // （query = viewer@file・patch = editor@file・write = 保存先フォルダの作成権限）。
+            // schedule / event の run は委譲が無いと「csv 権限なし」で落ちるので、storage.* と
+            // 同じ形で対象を提案する（BUG-10）。
+            crate::vocab::NodeType::CsvQuery | crate::vocab::NodeType::CsvPatch => {
+                let file = literal_str(&node.params, "file");
+                let read = nt == crate::vocab::NodeType::CsvQuery;
+                out.push(SuggestedGrant {
+                    scope: if read { "csv.read" } else { "csv.write" }.into(),
+                    object_kind: "file".into(),
+                    object_id: file.clone(),
+                    object_name: None,
+                    relation: if read { "viewer" } else { "editor" }.into(),
+                    source,
+                    needs_user_pick: file.is_none(),
+                });
+            }
+            crate::vocab::NodeType::CsvWrite => {
+                let folder = literal_str(&node.params, "folder");
+                out.push(SuggestedGrant {
+                    scope: "csv.write".into(),
+                    object_kind: "folder".into(),
+                    object_id: folder.clone(),
+                    object_name: None,
+                    relation: "editor".into(),
+                    source,
+                    needs_user_pick: folder.is_none(),
+                });
+            }
+            crate::vocab::NodeType::RagSearch => {
+                // 検索範囲はユーザーが選ぶ（実効 = 委譲 ∩ pre/post filter）。
+                out.push(SuggestedGrant {
+                    scope: "rag.query".into(),
+                    object_kind: "folder".into(),
+                    object_id: None,
+                    object_name: None,
+                    relation: "viewer".into(),
+                    source,
+                    needs_user_pick: true,
+                });
+            }
+            crate::vocab::NodeType::HttpRequest => {
+                if let Some(name) = node
+                    .params
+                    .get("secret")
+                    .and_then(|s| s.get("name"))
+                    .and_then(|v| v.as_str())
+                {
+                    out.push(SuggestedGrant {
+                        scope: "http.egress".into(),
+                        object_kind: "secret".into(),
+                        object_id: None,
+                        object_name: Some(name.to_string()),
+                        relation: "can_use".into(),
+                        source,
                         needs_user_pick: false,
                     });
                 }
             }
-        }
-
-        for node in &ir.nodes {
-            let source = format!("node:{}", node.id);
-            let Some(nt) = crate::vocab::NodeType::parse(&node.node_type) else {
-                continue;
-            };
-            match nt {
-                crate::vocab::NodeType::StorageRead => {
-                    let file = literal_str(&node.params, "file");
-                    push(SuggestedGrant {
-                        scope: "storage.read".into(),
-                        object_kind: "file".into(),
-                        object_id: file.clone(),
-                        object_name: None,
-                        relation: "viewer".into(),
-                        source,
-                        needs_user_pick: file.is_none(),
-                    });
-                }
-                crate::vocab::NodeType::StorageList => {
-                    let folder = literal_str(&node.params, "folder");
-                    push(SuggestedGrant {
-                        scope: "storage.read".into(),
-                        object_kind: "folder".into(),
-                        object_id: folder.clone(),
-                        object_name: None,
-                        relation: "viewer".into(),
-                        source,
-                        needs_user_pick: folder.is_none(),
-                    });
-                }
-                crate::vocab::NodeType::StorageWrite => {
-                    let folder = literal_str(&node.params, "folder");
-                    push(SuggestedGrant {
-                        scope: "storage.write".into(),
-                        object_kind: "folder".into(),
-                        object_id: folder.clone(),
-                        object_name: None,
-                        relation: "editor".into(),
-                        source,
-                        needs_user_pick: folder.is_none(),
-                    });
-                }
-                // CSV 表データ（Task 11P.9）: 実行は TabularService のファイル ReBAC で決まる
-                // （query = viewer@file・patch = editor@file・write = 保存先フォルダの作成権限）。
-                // schedule / event の run は委譲が無いと「csv 権限なし」で落ちるので、storage.* と
-                // 同じ形で対象を提案する（BUG-10）。
-                crate::vocab::NodeType::CsvQuery | crate::vocab::NodeType::CsvPatch => {
-                    let file = literal_str(&node.params, "file");
-                    let read = nt == crate::vocab::NodeType::CsvQuery;
-                    push(SuggestedGrant {
-                        scope: if read { "csv.read" } else { "csv.write" }.into(),
-                        object_kind: "file".into(),
-                        object_id: file.clone(),
-                        object_name: None,
-                        relation: if read { "viewer" } else { "editor" }.into(),
-                        source,
-                        needs_user_pick: file.is_none(),
-                    });
-                }
-                crate::vocab::NodeType::CsvWrite => {
-                    let folder = literal_str(&node.params, "folder");
-                    push(SuggestedGrant {
-                        scope: "csv.write".into(),
-                        object_kind: "folder".into(),
-                        object_id: folder.clone(),
-                        object_name: None,
-                        relation: "editor".into(),
-                        source,
-                        needs_user_pick: folder.is_none(),
-                    });
-                }
-                crate::vocab::NodeType::RagSearch => {
-                    // 検索範囲はユーザーが選ぶ（実効 = 委譲 ∩ pre/post filter）。
-                    push(SuggestedGrant {
-                        scope: "rag.query".into(),
-                        object_kind: "folder".into(),
-                        object_id: None,
-                        object_name: None,
-                        relation: "viewer".into(),
-                        source,
-                        needs_user_pick: true,
-                    });
-                }
-                crate::vocab::NodeType::HttpRequest => {
-                    if let Some(name) = node
-                        .params
-                        .get("secret")
-                        .and_then(|s| s.get("name"))
-                        .and_then(|v| v.as_str())
-                    {
-                        push(SuggestedGrant {
-                            scope: "http.egress".into(),
-                            object_kind: "secret".into(),
-                            object_id: None,
-                            object_name: Some(name.to_string()),
-                            relation: "can_use".into(),
+            // 構造化データ（Task 15.7）: テーブル単位で委譲する（読取 = viewer・書込 = editor）。
+            // schedule / event の run は委譲元ユーザーの権限で行が絞られる（ポート実装）。
+            crate::vocab::NodeType::DataQuery
+            | crate::vocab::NodeType::DataRecordCreate
+            | crate::vocab::NodeType::DataRecordUpdate
+            | crate::vocab::NodeType::DataRecordUpsert
+            | crate::vocab::NodeType::DataRecordDelete
+            | crate::vocab::NodeType::DataTransition
+            | crate::vocab::NodeType::DataBulkUpsert => {
+                let table = literal_str(&node.params, "table");
+                let read = nt == crate::vocab::NodeType::DataQuery;
+                out.push(SuggestedGrant {
+                    scope: if read { "data.read" } else { "data.write" }.into(),
+                    object_kind: "data_table".into(),
+                    object_id: table.clone(),
+                    object_name: None,
+                    relation: if read { "viewer" } else { "editor" }.into(),
+                    source,
+                    needs_user_pick: table.is_none(),
+                });
+            }
+            // wait(event) のフォルダ束縛: 起床は実行主体が保存されたファイルを読めるときだけ
+            // （relay の閲覧確認）なので、schedule / event の run にはフォルダの閲覧の委譲が要る。
+            // データ変更の wait はテーブルの閲覧（変更は実行主体の見え方で受け取る・GAP-07）。
+            // scope の無い購読は委譲したものの中でしか起きないので、提案しない。
+            crate::vocab::NodeType::ControlWait => {
+                let scope = node.params.get("scope");
+                let key = |k: &str| {
+                    scope
+                        .and_then(|s| s.get(k))
+                        .and_then(serde_json::Value::as_str)
+                };
+                if node.params.get("kind").and_then(|k| k.as_str()) == Some("event") {
+                    if let Some(folder) = key("folder") {
+                        out.push(SuggestedGrant {
+                            scope: "storage.read".into(),
+                            object_kind: "folder".into(),
+                            object_id: Some(folder.to_string()),
+                            object_name: None,
+                            relation: "viewer".into(),
+                            source: source.clone(),
+                            needs_user_pick: false,
+                        });
+                    }
+                    if let Some(table) = key("table") {
+                        out.push(SuggestedGrant {
+                            scope: "data.read".into(),
+                            object_kind: "data_table".into(),
+                            object_id: Some(table.to_string()),
+                            object_name: None,
+                            relation: "viewer".into(),
                             source,
                             needs_user_pick: false,
                         });
                     }
                 }
-                // 構造化データ（Task 15.7）: テーブル単位で委譲する（読取 = viewer・書込 = editor）。
-                // schedule / event の run は委譲元ユーザーの権限で行が絞られる（ポート実装）。
-                crate::vocab::NodeType::DataQuery
-                | crate::vocab::NodeType::DataRecordCreate
-                | crate::vocab::NodeType::DataRecordUpdate
-                | crate::vocab::NodeType::DataRecordUpsert
-                | crate::vocab::NodeType::DataRecordDelete
-                | crate::vocab::NodeType::DataTransition
-                | crate::vocab::NodeType::DataBulkUpsert => {
-                    let table = literal_str(&node.params, "table");
-                    let read = nt == crate::vocab::NodeType::DataQuery;
-                    push(SuggestedGrant {
-                        scope: if read { "data.read" } else { "data.write" }.into(),
+            }
+            // 承認（GAP-08）: 停止時に束縛した行を読み、判断の遷移を実行主体の見え方で受け取るので、
+            // schedule / event の run にはテーブルの閲覧の委譲が要る（判断そのものは承認者本人の権限）。
+            // 置いたばかりの空のテーブルは、ほかのブロックと同じく選ばせる（D-129・空の文字の対象を出さない）。
+            crate::vocab::NodeType::HumanApproval => {
+                if let Some(record) = node.params.get("record") {
+                    let table = literal_str(record, "table");
+                    out.push(SuggestedGrant {
+                        scope: "data.read".into(),
                         object_kind: "data_table".into(),
                         object_id: table.clone(),
                         object_name: None,
-                        relation: if read { "viewer" } else { "editor" }.into(),
+                        relation: "viewer".into(),
                         source,
                         needs_user_pick: table.is_none(),
                     });
                 }
-                // wait(event) のフォルダ束縛: 起床は実行主体が保存されたファイルを読めるときだけ
-                // （relay の閲覧確認）なので、schedule / event の run にはフォルダの閲覧の委譲が要る。
-                // データ変更の wait はテーブルの閲覧（変更は実行主体の見え方で受け取る・GAP-07）。
-                // scope の無い購読は委譲したものの中でしか起きないので、提案しない。
-                crate::vocab::NodeType::ControlWait => {
-                    let scope = node.params.get("scope");
-                    let key = |k: &str| {
-                        scope
-                            .and_then(|s| s.get(k))
-                            .and_then(serde_json::Value::as_str)
-                    };
-                    if node.params.get("kind").and_then(|k| k.as_str()) == Some("event") {
-                        if let Some(folder) = key("folder") {
-                            push(SuggestedGrant {
-                                scope: "storage.read".into(),
-                                object_kind: "folder".into(),
-                                object_id: Some(folder.to_string()),
-                                object_name: None,
-                                relation: "viewer".into(),
-                                source: source.clone(),
-                                needs_user_pick: false,
-                            });
-                        }
-                        if let Some(table) = key("table") {
-                            push(SuggestedGrant {
-                                scope: "data.read".into(),
-                                object_kind: "data_table".into(),
-                                object_id: Some(table.to_string()),
-                                object_name: None,
-                                relation: "viewer".into(),
-                                source,
-                                needs_user_pick: false,
-                            });
-                        }
-                    }
-                }
-                // 承認（GAP-08）: 停止時に束縛した行を読み、判断の遷移を実行主体の見え方で受け取るので、
-                // schedule / event の run にはテーブルの閲覧の委譲が要る（判断そのものは承認者本人の権限）。
-                // 置いたばかりの空のテーブルは、ほかのブロックと同じく選ばせる（D-129・空の文字の対象を出さない）。
-                crate::vocab::NodeType::HumanApproval => {
-                    if let Some(record) = node.params.get("record") {
-                        let table = literal_str(record, "table");
-                        push(SuggestedGrant {
-                            scope: "data.read".into(),
-                            object_kind: "data_table".into(),
-                            object_id: table.clone(),
-                            object_name: None,
-                            relation: "viewer".into(),
-                            source,
-                            needs_user_pick: table.is_none(),
-                        });
-                    }
-                }
-                // AI エージェント（BUG-6）: 社内を読む道具は、schedule / event の run が委譲したフォルダの中で
-                // 読む（実効 = 委譲 ∩ 実行時の ReBAC）。範囲は有効化者が選ぶ。web・コードの実行は対象を
-                // 持たない（スコープの同意だけ・宛先は管理者の天井）。
-                crate::vocab::NodeType::AgentInvoke => {
-                    for scope in agent_folder_scopes(&node.params) {
-                        push(SuggestedGrant {
-                            scope: scope.into(),
-                            object_kind: "folder".into(),
-                            object_id: None,
-                            object_name: None,
-                            relation: "viewer".into(),
-                            source: source.clone(),
-                            needs_user_pick: true,
-                        });
-                    }
-                }
-                crate::vocab::NodeType::WorkflowStart => {
-                    let name = literal_str(&node.params, "name");
-                    push(SuggestedGrant {
-                        scope: "workflow.start".into(),
-                        object_kind: "workflow".into(),
+            }
+            // AI エージェント（BUG-6）: 社内を読む道具は、schedule / event の run が委譲したフォルダの中で
+            // 読む（実効 = 委譲 ∩ 実行時の ReBAC）。範囲は有効化者が選ぶ。web・コードの実行は対象を
+            // 持たない（スコープの同意だけ・宛先は管理者の天井）。
+            crate::vocab::NodeType::AgentInvoke => {
+                for scope in agent_folder_scopes(&node.params) {
+                    out.push(SuggestedGrant {
+                        scope: scope.into(),
+                        object_kind: "folder".into(),
                         object_id: None,
-                        object_name: name.clone(),
+                        object_name: None,
                         relation: "viewer".into(),
-                        source,
-                        needs_user_pick: name.is_none(),
+                        source: source.clone(),
+                        needs_user_pick: true,
                     });
                 }
-                _ => {}
             }
+            crate::vocab::NodeType::WorkflowStart => {
+                let name = literal_str(&node.params, "name");
+                out.push(SuggestedGrant {
+                    scope: "workflow.start".into(),
+                    object_kind: "workflow".into(),
+                    object_id: None,
+                    object_name: name.clone(),
+                    relation: "viewer".into(),
+                    source,
+                    needs_user_pick: name.is_none(),
+                });
+            }
+            _ => {}
         }
-        out
     }
+    out
 }
 
 /// agent.invoke の道具のうち、フォルダの閲覧の委譲が要るもののスコープ（重複なし・道具の順）。
