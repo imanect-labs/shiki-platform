@@ -327,7 +327,8 @@ pub(super) fn emit_description(
          - 条件（control.branch の condition・トリガと control.wait の filter）: {{\"cmp\":{{\"left\":値,\"op\":CmpOp,\"right\":値}}}}・{{\"all\":[条件…]}}・{{\"any\":[条件…]}}・{{\"not\":条件}}。CmpOp = {ops}（exists・is_null は right を書かない）。例: {cond}\n\
          - data.query の filter は形が違う: {{\"cmp\":{{\"field\":\"<列の参照名>\",\"op\":CmpOp,\"value\":値}}}}（all / any / not は同じ）。query.limit は 1〜{max_limit}（省略は 50。範囲の外は保存できない）。集計は query の group_by と aggregate（[{{\"metric\":\"count\"}}] や {{\"metric\":\"sum\",\"field\":\"<数値の列>\"}}）で書け、結果は groups に入る（エディタの画面では作れない）。\n\
          - 同じものを 2 件にしない書き込み（同じ日・同じ ID の行を再実行や取り込み直しで増やさない）は、data.record.upsert（match_on に重複を許さない〔unique〕列の参照名、data にその列の値と書く値。あれば書き換え、なければ追加。出力の created で分かる）か、data.bulk_upsert の match_on（id の無い行をその列の値で探して更新）を使う。data.query で探してから data.record.create と data.record.update に分けて書かない（同時に動くと 2 件できる）。match_on に選べるのは、data_schema で（重複を許さない）と出る列だけ（ほかの列は保存できない。無ければ、そういう列を足すよう利用者に頼む）。\n\
-         - 在庫を減らす・合計に足すような数の書き換えは add（{{\"<数の列>\": 足す数}}・負の数で減らす）を使う（data.record.update と data.record.upsert）。読んだ値に足した値を patch に書くと、同時に動いたときに足し分が消える。足した結果が列の最小値・最大値を外れると書かずに失敗するので、在庫を 0 未満にしないなら列の最小値を 0 にしておく。\n",
+         - 在庫を減らす・合計に足すような数の書き換えは add（{{\"<数の列>\": 足す数}}・負の数で減らす）を使う（data.record.update と data.record.upsert）。読んだ値に足した値を patch に書くと、同時に動いたときに足し分が消える。足した結果が列の最小値・最大値を外れると書かずに失敗するので、在庫を 0 未満にしないなら列の最小値を 0 にしておく。\n\
+         - 前日・先週・先月・月末・週の初めなどの日付は transform.date で求める（script で計算しない）。base を省くと実行情報の scheduled_at（schedule では予定の時刻で、遅れて動いても変わらない）から数える。shift でずらし（{{\"amount\":-1,\"unit\":\"week\"}} で先週）、period（day・week・month・year）を書くと、その日を含む期間の最初の日 start・最後の日 end（YYYY-MM-DD。テーブルの日付の列は start 以上・end 以下で絞る）と、始まりの日時 start_at・次の期間の始まりの日時 next_start_at（日時の列は start_at 以上・next_start_at より前で絞る）が出る。週の初めは week_starts_on（既定 monday）、時間帯は tz（既定 Asia/Tokyo）。月をずらした先にその日が無ければ月末になる。\n",
         max_limit = data::MAX_QUERY_LIMIT,
         list_max = workflow_engine::vocab::STORAGE_LIST_MAX_ITEMS,
         max_headers = workflow_engine::nodes::http_headers::MAX_HEADERS,
@@ -663,6 +664,12 @@ mod tests {
             "{d}"
         );
         assert!(d.contains("add（{\"<数の列>\": 足す数}"), "{d}");
+        // 前日・先週・月末などは script ではなく日付を計算で求め、予定の日時から数える（GAP-15）。
+        assert!(
+            d.contains("transform.date で求める（script で計算しない）"),
+            "{d}"
+        );
+        assert!(d.contains("- transform.date（日付を計算）"), "{d}");
         // 新しい CSV は Excel で開ける文字コードで保存する（D-120）。
         assert!(d.contains("encoding に \"utf8_bom\" を書く"), "{d}");
         // CSV を保存に表や項目のまとまりのリストをそのまま渡せる（BUG-178）。
