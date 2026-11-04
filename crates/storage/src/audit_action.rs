@@ -162,6 +162,7 @@ audit_actions! {
     AppInstallSignature = "app.install.signature", "アプリの署名を検証", App;
     AppTableRolesUpdate = "app.table_roles.update", "アプリのテーブルを使える部署・グループを変更", App;
     AppUninstall = "app.uninstall", "アプリをアンインストール", App;
+    ArtifactAccessCheck = "artifact.access_check", "使う人の権限を確かめる", Share;
     ArtifactCreate = "artifact.create", "アーティファクトを作成", App;
     ArtifactDelete = "artifact.delete", "アーティファクトを削除", App;
     ArtifactGet = "artifact.get", "アーティファクトを参照", App;
