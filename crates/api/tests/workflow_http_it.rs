@@ -853,7 +853,7 @@ async fn saving_completes_declared_scopes_from_nodes() {
             { "id": "a", "type": "storage.read",
               "params": { "file": "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1" } },
             { "id": "q", "type": "data.query",
-              "params": { "table": "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a2" } }
+              "params": { "table": { "$from": "input", "path": "/table" } } }
         ],
         "edges": [{ "from": "a", "to": "q" }]
     });
@@ -982,9 +982,19 @@ async fn blank_required_text_and_missing_folder_save_but_block_enable_and_run() 
         "{body}"
     );
 
-    // 直した版（指示を書き、保存先を決める）は理由が消え、有効化できる。
+    // 直した版（指示を書き、保存先を決める）は理由が消え、有効化できる。保存先は保存する人に見えるフォルダー
+    // （見えない・無いフォルダーは保存で止まる・GAP-35）。
+    let (st, folder) = req(
+        &env,
+        "POST",
+        "/folders",
+        Some(json!({ "name": format!("http-ready-{}", &suffix[..12]) })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{folder}");
+    let folder_id = folder["id"].as_str().unwrap().to_string();
     ir["nodes"][0]["params"]["prompt"] = json!("今日の予定をまとめてください");
-    ir["nodes"][1]["params"]["folder"] = json!("8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a3");
+    ir["nodes"][1]["params"]["folder"] = json!(folder_id);
     let (st, body) = req(
         &env,
         "PUT",
@@ -1002,6 +1012,8 @@ async fn blank_required_text_and_missing_folder_save_but_block_enable_and_run() 
     .await;
     assert_eq!(st, StatusCode::OK, "{body}");
     assert_eq!(body["blockers"], json!([]), "{body}");
+    let (st, body) = req(&env, "DELETE", &format!("/folders/{folder_id}"), None).await;
+    assert!(st.is_success(), "{st} {body}");
 }
 
 /// BUG-168: 結果を画面に返すの返す値が空なら（どの形でも）、保存は通し（欄の警告つき）、実行の前に欄の名前を

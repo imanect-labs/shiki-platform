@@ -309,6 +309,73 @@ pub async fn fsm_tables(
     Ok(Some(out))
 }
 
+/// IR が名指しするテーブル・フォルダーのうち、保存者に見えるものを引いて V4 の材料にする（GAP-35）。
+///
+/// 何を引くかは workflow-engine の [`workflow_engine::referenced_tables`]・[`workflow_engine::referenced_folders`]
+/// （照合と同じ位置の表）が決める。テーブルは閲覧か追加だけ（[`data::DataStore::table_labels`]）、フォルダーは閲覧
+/// （[`storage::StorageService::node_labels`]）で見えるものを、まとめて引く（1 回に引ける数ずつ）。見えない・無い・
+/// 種類の違うものは入れない（V4 が同じ誤りで止める・存在を明かさない）。IR が型どおりに読めなければ引かない（V1 が
+/// 止める）。名指しが無い・引く口が無い構成は `None`（照合しない）。
+pub async fn visible_refs(
+    data: Option<&data::DataStore>,
+    storage: Option<&storage::StorageService>,
+    ctx: &authz::AuthContext,
+    ir: &serde_json::Value,
+) -> Result<VisibleRefs, String> {
+    let Ok(parsed) = workflow_engine::WorkflowIr::from_json(ir) else {
+        return Ok(VisibleRefs::default());
+    };
+    let tables: Vec<uuid::Uuid> = workflow_engine::referenced_tables(&parsed)
+        .into_iter()
+        .collect();
+    let folders: Vec<uuid::Uuid> = workflow_engine::referenced_folders(&parsed)
+        .into_iter()
+        .collect();
+    let mut out = VisibleRefs::default();
+    if let (Some(data), false) = (data, tables.is_empty()) {
+        let mut seen = std::collections::BTreeSet::new();
+        for chunk in tables.chunks(data::MAX_TABLE_LABELS) {
+            let labels = data
+                .table_labels(ctx, chunk)
+                .await
+                .map_err(|e| format!("ワークフローが使うテーブル: {e}"))?;
+            seen.extend(labels.into_keys().map(|id| id.hyphenated().to_string()));
+        }
+        out.tables = Some(seen);
+    }
+    if let (Some(storage), false) = (storage, folders.is_empty()) {
+        let mut seen = std::collections::BTreeSet::new();
+        for chunk in folders.chunks(storage::MAX_NODE_LABELS) {
+            let ids: Vec<(uuid::Uuid, storage::NodeKind)> = chunk
+                .iter()
+                .map(|id| (*id, storage::NodeKind::Folder))
+                .collect();
+            let labels = storage
+                .node_labels(ctx, &ids)
+                .await
+                .map_err(|e| format!("ワークフローが使うフォルダー: {e}"))?;
+            seen.extend(labels.into_keys().map(|id| id.hyphenated().to_string()));
+        }
+        out.folders = Some(seen);
+    }
+    Ok(out)
+}
+
+/// 保存者に見える、IR が名指しするテーブル・フォルダー（[`visible_refs`]・`None` は照合しない）。
+#[derive(Debug, Default)]
+pub struct VisibleRefs {
+    pub tables: Option<std::collections::BTreeSet<String>>,
+    pub folders: Option<std::collections::BTreeSet<String>>,
+}
+
+impl VisibleRefs {
+    /// カタログに詰める（[`Catalog::table_ids`]・[`Catalog::folder_ids`]）。
+    pub fn fill(self, catalog: &mut Catalog) {
+        catalog.table_ids = self.tables;
+        catalog.folder_ids = self.folders;
+    }
+}
+
 /// 別のワークフローを実行（workflow.start）が名前で指す相手のうち、保存者に見えるものを引いて V4 の材料にする
 /// （BUG-107）。
 ///
@@ -364,6 +431,8 @@ pub struct ApiWorkflowCatalogSource {
     data: Option<Arc<data::DataStore>>,
     /// workflow.start の相手を引く（保存 API の `build_catalog_for` と同じ・BUG-107）。
     artifacts: Option<Arc<artifact::ArtifactStore>>,
+    /// IR が名指しするフォルダーを引く（保存 API の `build_catalog_for` と同じ・V4・GAP-35）。
+    storage: Option<Arc<storage::StorageService>>,
 }
 
 impl ApiWorkflowCatalogSource {
@@ -380,7 +449,15 @@ impl ApiWorkflowCatalogSource {
             web_ceiling: None,
             data: None,
             artifacts: None,
+            storage: None,
         }
+    }
+
+    /// IR が名指しするフォルダーを照合する（保存 API と同じ StorageService を渡す・V4・GAP-35）。
+    #[must_use]
+    pub fn with_storage(mut self, storage: Arc<storage::StorageService>) -> Self {
+        self.storage = Some(storage);
+        self
     }
 
     /// workflow.start の相手を照合する（保存 API と同じ ArtifactStore を渡す・V4・BUG-107）。
@@ -433,8 +510,8 @@ impl chat::WorkflowCatalogSource for ApiWorkflowCatalogSource {
         self.models.decision_models(ctx).await
     }
 
-    /// 保存 API（`build_catalog_for`）と同じく、IR の承認が束縛するテーブルと workflow.start の相手を保存者の
-    /// 権限で引いて足す。
+    /// 保存 API（`build_catalog_for`）と同じく、IR の承認が束縛するテーブル・workflow.start の相手・名指しする
+    /// テーブルとフォルダーを保存者の権限で引いて足す。
     async fn catalog_for(
         &self,
         ctx: &authz::AuthContext,
@@ -447,6 +524,9 @@ impl chat::WorkflowCatalogSource for ApiWorkflowCatalogSource {
         if let Some(artifacts) = &self.artifacts {
             catalog.workflows = workflow_start_targets(artifacts, ctx, ir).await?;
         }
+        visible_refs(self.data.as_deref(), self.storage.as_deref(), ctx, ir)
+            .await?
+            .fill(&mut catalog);
         Ok(catalog)
     }
 }

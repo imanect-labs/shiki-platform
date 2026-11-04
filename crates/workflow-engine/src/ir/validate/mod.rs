@@ -13,6 +13,8 @@ mod data_keys;
 pub use data_keys::{ADD_NOT_NUMBER, MATCH_NOT_UNIQUE};
 mod decide;
 pub use decide::{DECIDE_LOW_CONFIDENCE, DECIDE_MANY_PORTS, DECIDE_UNPINNED_MODEL};
+mod exists;
+pub use exists::{referenced_folders, referenced_tables, UNKNOWN_FOLDER};
 mod input_refs;
 pub use input_refs::UNKNOWN_INPUT;
 mod llm;
@@ -147,6 +149,15 @@ pub struct Catalog {
     /// BUG-6・D-29）。ノードの `egress_allowlist` はこの部分集合に限る。`None` は照合しない（設定を引けない
     /// 構成・AI 編集の説明文の検査など）。`Some(空)` は外部サイトを許可しない。
     pub web_ceiling: Option<Vec<String>>,
+    /// IR が名指しするテーブルのうち、保存者に見えるもの（閲覧か追加だけ・小文字のハイフンつきの UUID・V4・GAP-35）。
+    ///
+    /// API 層が [`referenced_tables`] のテーブルを保存者の権限で引いて詰める（見えない・無いテーブルは入れない＝
+    /// どちらも同じ誤り）。業務データのブロック・データ変更のきっかけ・データを待つブロックの実在の照合に使う。
+    /// `None` は照合しない（引けない構成・AI 編集の説明文の検査など）。
+    pub table_ids: Option<std::collections::BTreeSet<String>>,
+    /// IR が名指しするフォルダーのうち、保存者に見えるもの（閲覧・V4・GAP-35）。API 層が [`referenced_folders`] を
+    /// 保存者の権限で引いて詰める。`None` は照合しない。
+    pub folder_ids: Option<std::collections::BTreeSet<String>>,
     /// 別のワークフローを実行（workflow.start）が名前で指す相手のうち、保存者に見えるもの（V4・BUG-107）。
     ///
     /// API 層が IR の workflow.start の名前（リテラル）だけを保存者の権限で引いて詰める（見えない・無い名前は
@@ -283,6 +294,8 @@ pub fn validate(
     transition::v4(&ir, catalog, &mut errors);
     // 同じレコードを探す列は重複を許さない列・足す数は数の列（GAP-16）。
     data_keys::v4(&ir, catalog, &mut errors);
+    // 業務データのブロック・データ変更のきっかけのテーブルと、フォルダーの実在（GAP-35）。
+    exists::v4(&ir, catalog, &mut errors);
     // V5: データフロー（$from 祖先性・default 要否・条件木型整合・regex）。
     v5_dataflow::check(&ir, &mut errors);
     agent::v5(&ir, &mut errors);

@@ -7,7 +7,7 @@
 //!
 //! 材料は承認と同じ [`Catalog::tables`]（API 層が保存者の見え方で引く・読めない列は材料に入らない）。読めない列は
 //! 無い列と同じ `ir.unknown_field`（同じ文言・data-platform §16.1）。テーブルを参照で決めるノードと、材料に無い
-//! （見えない）テーブルは照合しない（実行時に data が断る）。
+//! （見えない）テーブルは照合しない（見えないテーブルは [`super::exists`] が `ir.unknown_table` で止める）。
 
 use serde_json::Value;
 

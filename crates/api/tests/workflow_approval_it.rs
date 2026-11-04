@@ -4113,3 +4113,170 @@ async fn count_without_listing_roles(env: Arc<Env>) {
         );
     }
 }
+
+/// GAP-35: 業務データのブロック・データ変更のきっかけのテーブルと、ファイルを保存のブロック・ファイル保存のきっかけの
+/// フォルダーは、保存する人に見えるものだけを保存できる（V4）。見えないもの（共有されていない）・無いもの（消した・
+/// 無い id）・書き損じた id は、同じ誤り（code・path・message）で止まる（存在を明かさない）。検証 API・保存 API・
+/// AI の emit_workflow（`catalog_for`）のどれでも同じ。参照で決めるものは照合しない。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn tables_and_folders_named_by_blocks_must_be_visible_on_save() {
+    let _serial = SERIAL.lock().await;
+    let Some(env) = setup().await else { return };
+    let new_table = |prefix: &'static str| {
+        let env = &env;
+        async move {
+            env.data
+                .create_table(
+                    &env.alice,
+                    NewDataTable {
+                        name: format!("{prefix}-{}", Uuid::new_v4().simple()),
+                        schema: expense_schema(None, &env.keiri),
+                    },
+                    None,
+                )
+                .await
+                .unwrap()
+                .id
+        }
+    };
+    // alice のテーブルとフォルダー（dave には共有していない）。
+    let table = new_table("refs").await;
+    let folder = env
+        .storage
+        .create_folder(
+            &env.alice,
+            None,
+            &format!("refs-{}", Uuid::new_v4().simple()),
+            None,
+        )
+        .await
+        .unwrap()
+        .id;
+    // 消したテーブルと、無いフォルダー。
+    let deleted = new_table("deleted").await;
+    env.data
+        .delete_table(&env.alice, deleted, None)
+        .await
+        .unwrap();
+    let missing_folder = Uuid::new_v4();
+
+    let ir = |table: &Value, folder: &Value| {
+        json!({
+            "ir_version": 1, "name": "refs-check",
+            "triggers": [
+                { "kind": "event", "source": "data.record.created", "scope": { "table": table } },
+                { "kind": "event", "source": "storage.write", "scope": { "folder": folder } }
+            ],
+            "nodes": [
+                { "id": "find", "type": "data.query", "params": { "table": table } },
+                { "id": "save", "type": "storage.write", "params": {
+                    "folder": folder, "name": "a.txt", "content": "b" } }
+            ],
+            "edges": [{ "from": "find", "to": "save" }]
+        })
+    };
+    let lit = |id: Uuid| json!(id.to_string());
+    let refused = vec![
+        ("ir.unknown_table".to_string(), "/params/table".to_string()),
+        (
+            "ir.unknown_folder".to_string(),
+            "/params/folder".to_string(),
+        ),
+        (
+            "ir.unknown_table".to_string(),
+            "/triggers/0/scope/table".to_string(),
+        ),
+        (
+            "ir.unknown_folder".to_string(),
+            "/triggers/1/scope/folder".to_string(),
+        ),
+    ];
+    // 見える人には通る。
+    assert_eq!(
+        env.v4_codes(&env.alice, &ir(&lit(table), &lit(folder)))
+            .await,
+        vec![]
+    );
+    // 見えない人・消したテーブルと無いフォルダー・書き損じた id は、同じところで止まる。
+    assert_eq!(
+        env.v4_codes(&env.dave, &ir(&lit(table), &lit(folder)))
+            .await,
+        refused
+    );
+    assert_eq!(
+        env.v4_codes(&env.alice, &ir(&lit(deleted), &lit(missing_folder)))
+            .await,
+        refused
+    );
+    // 書き損じた id（ブロックの欄。きっかけの id の形の誤りは別の誤り ir.bad_event_scope が言う）。
+    let mut garbage = ir(&lit(table), &lit(folder));
+    garbage["nodes"][0]["params"]["table"] = json!("経費");
+    garbage["nodes"][1]["params"]["folder"] = json!("共有/経費");
+    assert_eq!(
+        env.v4_codes(&env.alice, &garbage).await,
+        refused[..2].to_vec()
+    );
+    // テーブルの欄に置いたフォルダーの id、フォルダーの欄に置いたテーブルの id も見つからない。
+    assert_eq!(
+        env.v4_codes(&env.alice, &ir(&lit(folder), &lit(table)))
+            .await,
+        refused
+    );
+    // ブロックの参照で決めるテーブル・フォルダーは照合しない（きっかけはリテラルだけ）。
+    let by_ref = ir(&lit(table), &lit(folder));
+    let mut by_ref = by_ref;
+    by_ref["nodes"][0]["params"]["table"] = json!({ "$from": "input", "path": "/table" });
+    by_ref["nodes"][1]["params"]["folder"] = json!({ "$from": "input", "path": "/folder" });
+    assert_eq!(
+        env.v4_codes(&env.dave, &by_ref).await,
+        refused[2..].to_vec()
+    );
+
+    // 検証 API・保存 API・AI の emit_workflow の答え（code・path・message）は、見えないものと無いもので同じ。
+    let source = api::workflow_catalog::ApiWorkflowCatalogSource::new(
+        None,
+        None,
+        api::workflow_catalog::WorkflowModels::new(None, Vec::new()),
+    )
+    .with_data(Arc::clone(&env.data))
+    .with_storage(Arc::clone(&env.storage));
+    let tool = chat::EmitWorkflowTool::new(Arc::new(env.workflows.clone()), Arc::new(source));
+    let hidden = env
+        .v4_answers(&tool, &env.dave, &ir(&lit(table), &lit(folder)), "")
+        .await;
+    let gone = env
+        .v4_answers(
+            &tool,
+            &env.alice,
+            &ir(&lit(deleted), &lit(missing_folder)),
+            "",
+        )
+        .await;
+    assert_eq!(hidden, gone);
+    assert!(
+        hidden[0].contains("選んだテーブルが見つかりません。削除されたか、見る権限がありません。"),
+        "{}",
+        hidden[0]
+    );
+    assert!(hidden[1].starts_with("400 "), "{}", hidden[1]);
+    assert!(
+        hidden[2].starts_with("true ") && hidden[2].contains("ir.unknown_folder"),
+        "{}",
+        hidden[2]
+    );
+    // 見える人は AI の経路でも保存できる。
+    {
+        use agent_core::Tool;
+        let out = tool
+            .call(
+                &env.alice,
+                json!({ "ir": ir(&lit(table), &lit(folder)) }),
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(!out.is_error, "{}", out.content);
+    }
+    env.cleanup().await;
+    env.delete_store().await;
+}

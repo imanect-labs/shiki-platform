@@ -83,7 +83,7 @@ pub struct ValidationErrorResponse {
 /// モデルは gateway があれば呼び出し主体から見た組織の許可リスト（BUG-11）、無ければデプロイ設定。
 ///
 /// IR の承認・状態を進める・状態のきっかけが束縛するテーブル（保存者の見え方・V4・GAP-08・BUG-105）と、
-/// workflow.start の相手（BUG-107）も引いて足す。
+/// workflow.start の相手（BUG-107）と、名指しするテーブル・フォルダーの実在（GAP-35）も引いて足す。
 pub(crate) async fn build_catalog_for(
     state: &AppState,
     ctx: &authz::AuthContext,
@@ -97,6 +97,11 @@ pub(crate) async fn build_catalog_for(
     catalog.workflows = crate::workflow_catalog::workflow_start_targets(&state.artifacts, ctx, ir)
         .await
         .map_err(ApiError::Internal)?;
+    // 名指しするテーブル・フォルダーが保存者に見えるか（無いと見えないは同じ誤り・GAP-35）。
+    crate::workflow_catalog::visible_refs(Some(&state.data), Some(&state.storage), ctx, ir)
+        .await
+        .map_err(ApiError::Internal)?
+        .fill(&mut catalog);
     Ok(catalog)
 }
 
