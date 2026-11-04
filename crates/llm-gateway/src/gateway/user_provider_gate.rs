@@ -140,4 +140,24 @@ mod tests {
         config.user_provider_rules[0].user_sub.clear();
         assert!(LlmGateway::build(db, reqwest::Client::new(), config).is_err());
     }
+    #[tokio::test]
+    async fn invalid_identifiers_are_rejected_instead_of_silently_unrestricting() {
+        let gw = gateway();
+        for (tenant, subject) in [
+            ("tenant ", "restricted"),
+            ("tenant/name", "restricted"),
+            ("te nant", "restricted"),
+            (" tenant", "restricted"),
+            ("tenant", "restricted "),
+            ("tenant", " restricted"),
+        ] {
+            let mut config = gw.inner.config.clone();
+            config.user_provider_rules[0].tenant_id = tenant.into();
+            config.user_provider_rules[0].user_sub = subject.into();
+            let db = PgPoolOptions::new()
+                .connect_lazy("postgres://unused:unused@127.0.0.1:1/unused")
+                .unwrap();
+            assert!(LlmGateway::build(db, reqwest::Client::new(), config).is_err());
+        }
+    }
 }

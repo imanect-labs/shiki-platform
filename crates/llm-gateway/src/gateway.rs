@@ -178,9 +178,13 @@ impl LlmGateway {
         }
         let mut user_providers = user_provider_gate::UserProviders::new();
         for rule in &config.user_provider_rules {
-            if rule.tenant_id.trim().is_empty() || rule.user_sub.trim().is_empty() {
+            if authz::validate_tenant_id(&rule.tenant_id).is_err()
+                || rule.user_sub.trim().is_empty()
+                || rule.user_sub.trim() != rule.user_sub
+            {
                 return Err(LlmError::Config(
-                    "user provider rule requires tenant_id and user_sub".into(),
+                    "user provider rule requires a valid tenant_id and nonempty, unpadded user_sub"
+                        .into(),
                 ));
             }
             if let Some(id) = rule
