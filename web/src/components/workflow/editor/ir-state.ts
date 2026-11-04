@@ -201,6 +201,9 @@ export function defaultParams(nodeType: string): unknown {
     case "workflow.reply":
       // 返す内容は利用者が書く（空のままなら欄の下で入力を促す）。
       return { format: "text", value: "" };
+    case "transform.date":
+      // 何も書かなければ予定の日（その日だけ）。ずらす数と期間は利用者が選ぶ（GAP-15）。
+      return {};
     case "csv.query":
       return { file: "", sql: "SELECT * FROM data LIMIT 100" };
     case "csv.patch":

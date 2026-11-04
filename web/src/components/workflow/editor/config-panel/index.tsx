@@ -46,6 +46,7 @@ import {
   DataRecordUpsertForm,
   DataTransitionForm,
 } from "./forms-data";
+import { TransformDateForm } from "./forms-date";
 import { HttpRequestForm, ScriptRunForm } from "./forms-external";
 import {
   CsvPatchForm,
@@ -90,6 +91,7 @@ const FORMS: Record<string, React.ComponentType<FormProps>> = {
   "csv.write": CsvWriteForm,
   "human.approval": HumanApprovalForm,
   "workflow.reply": WorkflowReplyForm,
+  "transform.date": TransformDateForm,
 };
 
 /// 承認を待つブロックを置いたときに勧める実行の期限（14 日・承認は数日かかる・GAP-08）。

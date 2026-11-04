@@ -193,6 +193,9 @@ type Props = {
   autoFocus?: boolean;
   /// `numeric` で数になった値の注記。null なら出さない（テーブルの数値の列など、比べる欄でないとき）。
   numericNote?: string | null;
+  /// 固定値を文字か数だけで書く欄（日付・ずらす数など・GAP-15）。「JSON で入れる」を出さない（JSON の値が入って
+  /// いて、オンで見せているときは出す）。
+  noJson?: boolean;
 };
 
 /// 比べる欄の数の注記（条件の比べる値・BUG-31）。
@@ -221,6 +224,7 @@ export function ValueExprInput({
   actions,
   autoFocus,
   numericNote = COMPARE_NUMBER_NOTE,
+  noJson,
 }: Props) {
   const inputFields = React.useContext(InputFieldsContext);
   const triggerSources = React.useContext(TriggerSourcesContext);
@@ -539,7 +543,7 @@ export function ValueExprInput({
             </div>
           ) : null}
           {/* 組み立ての行の文章の列には出さない（オンにすると文章が別の種類の値に変わるだけ・付録 D の N1.5.7）。 */}
-          {depth > 0 && text && !jsonMode ? null : (
+          {(depth > 0 && text && !jsonMode) || (noJson && !jsonMode) ? null : (
             <label className="flex items-start gap-1.5 text-[11px] text-muted-foreground">
               <Switch
                 aria-label="JSON で入れる"
