@@ -55,6 +55,18 @@ pub struct SavedMiniApp {
     pub published_version: Option<i64>,
     /// 画面の書き損じ（保存はできた。直すまで公開できない・[`screen_problems`]）。
     pub warnings: Vec<GuiValidationError>,
+    /// 画面の入力と、束ねたワークフローの入力項目の食い違い（保存も公開も止めない・GAP-12・
+    /// [`crate::miniapp_inputs::input_warnings`]）。保存する人に読めないワークフローは突き合わせない（BUG-122）。
+    pub input_warnings: Vec<GuiValidationError>,
+}
+
+/// 束ねるワークフローの入力の手がかり（[`MiniAppStore::workflow_inputs`]・ピンの順）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct PinnedInputs {
+    /// 呼んだ人がその版を読めたか（削除された・見る権限がない・種類の違うものは false）。
+    pub readable: bool,
+    /// 入力の手がかり（読めない・入力項目を決めていないワークフローは `None`＝突き合わせない）。
+    pub inputs: Option<Vec<crate::miniapp_inputs::WorkflowInputHint>>,
 }
 
 /// 解決済みミニアプリ（実行面が使う一式・全て検証済み）。
@@ -142,6 +154,7 @@ impl MiniAppStore {
         trace_id: Option<&str>,
     ) -> Result<SavedMiniApp, GuiError> {
         let (body, warnings) = self.check_body(ctx, raw_body, None, mode, trace_id).await?;
+        let input_warnings = self.input_warnings(ctx, &body, trace_id).await;
         let artifact = self
             .artifacts
             .create(
@@ -160,6 +173,7 @@ impl MiniAppStore {
             body,
             published_version: artifact.published_version,
             warnings,
+            input_warnings,
         })
     }
 
@@ -205,6 +219,7 @@ impl MiniAppStore {
         let (body, warnings) = self
             .check_body(ctx, raw_body, previous.as_ref(), mode, trace_id)
             .await?;
+        let input_warnings = self.input_warnings(ctx, &body, trace_id).await;
         let version = self
             .artifacts
             .append_version(ctx, id, raw_body.clone(), Some(base), trace_id)
@@ -215,6 +230,7 @@ impl MiniAppStore {
             body,
             published_version: meta.published_version,
             warnings,
+            input_warnings,
         })
     }
 
@@ -454,6 +470,90 @@ impl MiniAppStore {
         errors
     }
 
+    /// 束ねるワークフローの版の入力の手がかりを、呼んだ人の権限で読む（GAP-12・ピンの順）。
+    ///
+    /// 読めない版（削除された・見る権限がない・ワークフローでない）は `readable: false` で返し、ほかの誤りは返す
+    /// （読めないと決めつけない・BUG-122）。画面のエディタの部品の候補と、保存のときの突き合わせが使う。
+    pub async fn workflow_inputs(
+        &self,
+        ctx: &AuthContext,
+        pins: &[ComponentPin],
+        trace_id: Option<&str>,
+    ) -> Result<Vec<PinnedInputs>, GuiError> {
+        let mut out = Vec::with_capacity(pins.len());
+        for pin in pins {
+            let body = self
+                .read_pin(ctx, pin, ArtifactKind::Workflow, trace_id)
+                .await?;
+            out.push(PinnedInputs {
+                readable: body.is_some(),
+                inputs: body
+                    .and_then(|b| crate::miniapp_inputs::input_hints(b.get("input_schema"))),
+            });
+        }
+        Ok(out)
+    }
+
+    /// 保存のときの、画面の入力と束ねたワークフローの入力項目の突き合わせ（注意だけ・保存を止めない）。
+    ///
+    /// 保存する人の権限で読めるワークフローだけを突き合わせる（共同編集者が読めない部品は言わない・BUG-122）。
+    /// 読めなかったときの誤りは保存を止めず、そのワークフローを突き合わせない。
+    async fn input_warnings(
+        &self,
+        ctx: &AuthContext,
+        body: &MiniAppBody,
+        trace_id: Option<&str>,
+    ) -> Vec<GuiValidationError> {
+        let mut inputs = std::collections::BTreeMap::new();
+        for wf in &body.workflows {
+            let pin = ComponentPin {
+                artifact_id: wf.artifact_id,
+                version: wf.version,
+            };
+            let hints = match self
+                .read_pin(ctx, &pin, ArtifactKind::Workflow, trace_id)
+                .await
+            {
+                Ok(body) => {
+                    body.and_then(|b| crate::miniapp_inputs::input_hints(b.get("input_schema")))
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, workflow = %wf.artifact_id, "入力項目の突き合わせのために版を読めない（突き合わせない）");
+                    None
+                }
+            };
+            inputs.insert(wf.alias.clone(), hints);
+        }
+        crate::miniapp_inputs::input_warnings(body, &inputs)
+    }
+
+    /// 1 ピンの版の本文を、呼んだ人の権限で読む。無い・読めない・種類の違うものは `None`（存在を区別しない）。
+    async fn read_pin(
+        &self,
+        ctx: &AuthContext,
+        pin: &ComponentPin,
+        kind: ArtifactKind,
+        trace_id: Option<&str>,
+    ) -> Result<Option<serde_json::Value>, ArtifactError> {
+        let meta = match self.artifacts.get(ctx, pin.artifact_id, trace_id).await {
+            Ok(m) => m,
+            Err(ArtifactError::NotFound | ArtifactError::Forbidden) => return Ok(None),
+            Err(e) => return Err(e),
+        };
+        if meta.kind != kind {
+            return Ok(None);
+        }
+        match self
+            .artifacts
+            .get_version(ctx, pin.artifact_id, pin.version, trace_id)
+            .await
+        {
+            Ok(v) => Ok(Some(v.body)),
+            Err(ArtifactError::NotFound | ArtifactError::Forbidden) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
     /// 1 ピンの存在・kind・viewer 検証（作成者権限・存在秘匿の同一メッセージ）。
     ///
     /// `what` は誤りの文言で部品を指す言い方（例: `ワークフロー「expense」（v1）`）。文言は利用者に出るので、
@@ -466,38 +566,17 @@ impl MiniAppStore {
         what: &str,
         trace_id: Option<&str>,
     ) -> Result<serde_json::Value, GuiValidationError> {
-        let unresolved = || {
-            GuiValidationError::new(
+        match self.read_pin(ctx, pin, kind, trace_id).await {
+            Ok(Some(body)) => Ok(body),
+            Ok(None) => Err(GuiValidationError::new(
                 "miniapp.pin_unresolved",
                 format!("{what}が見つからないか、あなたには読めません"),
-            )
-        };
-        let meta = self
-            .artifacts
-            .get(ctx, pin.artifact_id, trace_id)
-            .await
-            .map_err(|e| match e {
-                ArtifactError::NotFound | ArtifactError::Forbidden => unresolved(),
-                other => GuiValidationError::new(
-                    "miniapp.pin_resolve_error",
-                    format!("参照解決に失敗しました: {other}"),
-                ),
-            })?;
-        if meta.kind != kind {
-            return Err(unresolved());
+            )),
+            Err(other) => Err(GuiValidationError::new(
+                "miniapp.pin_resolve_error",
+                format!("参照解決に失敗しました: {other}"),
+            )),
         }
-        let v = self
-            .artifacts
-            .get_version(ctx, pin.artifact_id, pin.version, trace_id)
-            .await
-            .map_err(|e| match e {
-                ArtifactError::NotFound | ArtifactError::Forbidden => unresolved(),
-                other => GuiValidationError::new(
-                    "miniapp.pin_resolve_error",
-                    format!("参照解決に失敗しました: {other}"),
-                ),
-            })?;
-        Ok(v.body)
     }
 }
 

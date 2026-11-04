@@ -2,17 +2,21 @@
 //!
 //! - ボタン（id・文言・実行先）を取り出し、ホストが束縛（ワークフローの版の固定など）を宣言する材料にする。
 //! - ボタンが送る値を、画面（TS 版の `validateActionValues`）と同じ規則で検証し直す（画面の検証は信用しない）。
+//! - 画面の部品とボタンの実行先のワークフローの入力を、画面のエディタ（TS 版の `checkApp`）と同じ規則で突き合わせる
+//!   （[`check_inputs`]・保存のときのサーバーの検証に使う）。
 //!
 //! 表示だけの種類（bar など）はここでは読まない（本文と一緒に文字のまま保存・再送する）。
 //! TS 版と同じ結果になることを `tests/fixtures/app.json`（y-ui の `spec-tests/app.json`）で確かめる。
 
 mod app;
 mod ask;
+mod inputs;
 mod ir;
 mod shown;
 mod text;
 mod values;
 
+pub use inputs::{check_inputs, InputHint, InputProblem, WorkflowInputs};
 pub use ir::{
     ActionTarget, AppAction, AppField, AppSection, AskOption, AskQuestion, Base, ChoiceOption,
     FieldKind, Figure, Kind, Step,

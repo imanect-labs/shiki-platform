@@ -78,6 +78,39 @@ pub(crate) const ANNOTATIONS: &[&str] = &[
 /// 項目の並びの注記（`properties` のキーの配列・D-60）。
 pub const ORDER: &str = "x-order";
 
+/// `properties` の項目を画面に並べる順で返す（D-60）。`x-order` に書かれたキーをその順に先に置き（properties に無い
+/// キー・重なりは飛ばす）、書かれていないキーをその後ろに今の順で置く。properties が無ければ空。
+///
+/// web の入力項目の表と実行のダイアログ（`orderedProperties`）と同じ決まり。ミニアプリの部品の候補（入力の手がかり）
+/// はサーバーがこの順で返す。
+#[must_use]
+pub fn ordered_properties(schema: &Value) -> Vec<(&str, &Value)> {
+    let Some(props) = schema.get("properties").and_then(Value::as_object) else {
+        return Vec::new();
+    };
+    let mut out: Vec<(&str, &Value)> = Vec::with_capacity(props.len());
+    for key in schema
+        .get(ORDER)
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+    {
+        if let Some((k, v)) = props.get_key_value(key) {
+            if !out.iter().any(|(placed, _)| *placed == key) {
+                out.push((k.as_str(), v));
+            }
+        }
+    }
+    let rest: Vec<(&str, &Value)> = props
+        .iter()
+        .filter(|(k, _)| !out.iter().any(|(placed, _)| *placed == k.as_str()))
+        .map(|(k, v)| (k.as_str(), v))
+        .collect();
+    out.extend(rest);
+    out
+}
+
 /// `x-order` の形の誤り（保存時検証が `ir.schema_violation` にする）。スキーマの全階層を見る。
 ///
 /// 返すのは（スキーマの中の位置の JSON Pointer, 文言）の一覧。`x-order` は文字列の配列で、同じオブジェクトの
@@ -558,6 +591,27 @@ fn json_eq(a: &Value, b: &Value) -> bool {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// 並びは x-order のキーが先（無いキー・重なりは飛ばす）、残りは今の順（D-60）。
+    #[test]
+    fn properties_are_ordered_by_the_order_note() {
+        let keys = |s: Value| -> Vec<String> {
+            ordered_properties(&s)
+                .into_iter()
+                .map(|(k, _)| k.to_string())
+                .collect()
+        };
+        let props = json!({ "a": {}, "b": {}, "c": {}, "d": {} });
+        assert_eq!(
+            keys(json!({ "properties": props, "x-order": ["c", "zz", "a", "c"] })),
+            vec!["c", "a", "b", "d"]
+        );
+        assert_eq!(
+            keys(json!({ "properties": props, "x-order": 5 })),
+            vec!["a", "b", "c", "d"]
+        );
+        assert!(keys(json!({ "type": "object" })).is_empty());
+    }
 
     fn schema() -> Value {
         json!({

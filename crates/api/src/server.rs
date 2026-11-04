@@ -300,6 +300,10 @@ pub fn route_table() -> Vec<RouteDecl> {
         r("/mini-apps/{id}", &["PUT"], Session, || {
             put(routes::mini_apps::update_mini_app)
         }),
+        // 束ねるワークフローの入力の手がかり（画面のエディタの部品の候補と突き合わせ・GAP-12）。
+        r("/mini-apps/workflow-inputs", &["POST"], Session, || {
+            post(routes::mini_apps::mini_app_workflow_inputs)
+        }),
         r("/mini-apps/{id}/resolved", &["GET"], Session, || {
             get(routes::mini_apps::resolve_mini_app)
         }),

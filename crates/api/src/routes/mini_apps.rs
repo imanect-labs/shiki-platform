@@ -55,6 +55,9 @@ pub struct MiniAppResponse {
     pub published_version: Option<i64>,
     /// 画面の書き損じ（保存はできた。直すまで公開できない・D-16 の (c)）。`path` は `screen`。
     pub warnings: Vec<gui::GuiValidationError>,
+    /// 画面の入力と、束ねたワークフローの入力項目の食い違い（保存も公開も止めない・GAP-12）。`path` は `screen`。
+    /// 保存する人に読めないワークフローは突き合わせない（BUG-122）。
+    pub input_warnings: Vec<gui::GuiValidationError>,
 }
 
 impl MiniAppResponse {
@@ -65,8 +68,40 @@ impl MiniAppResponse {
             body,
             published_version: saved.published_version,
             warnings: saved.warnings,
+            input_warnings: saved.input_warnings,
         }
     }
+}
+
+/// 束ねるワークフローの版（入力の手がかりを読む対象）。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct WorkflowPinRef {
+    pub artifact_id: Uuid,
+    pub version: i64,
+}
+
+/// 束ねるワークフローの入力の手がかりのリクエスト（画面のエディタが部品の候補と突き合わせに使う）。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct WorkflowInputsRequest {
+    /// 束ねるワークフローの版（20 個まで）。
+    pub workflows: Vec<WorkflowPinRef>,
+}
+
+/// 1 つのワークフローの版の入力の手がかり（リクエストの順）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PinnedWorkflowInputs {
+    pub artifact_id: Uuid,
+    pub version: i64,
+    /// 呼んだ人がその版を読めたか（削除された・見る権限がないものは false）。
+    pub readable: bool,
+    /// 入力の手がかり（入力項目の並びの順）。読めない・入力項目を決めていないワークフローは `null`（突き合わせない）。
+    pub inputs: Option<Vec<gui::WorkflowInputHint>>,
+}
+
+/// 入力の手がかりのレスポンス。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct WorkflowInputsResponse {
+    pub items: Vec<PinnedWorkflowInputs>,
 }
 
 /// 解決済みミニアプリ（実行画面が使う一式・全て検証済み）。
@@ -209,6 +244,60 @@ pub async fn update_mini_app(
         .await
         .map_err(map_gui_err)?;
     Ok(Json(MiniAppResponse::saved(saved, req.body)))
+}
+
+/// 束ねるワークフローの版の入力の手がかりを読む（画面のエディタの部品の候補と、画面の入力との突き合わせ・GAP-12）。
+///
+/// 呼んだ人の権限で版を読む（アプリを作る前にも使う）。読めない版は `readable: false` で返す（入力が無いのではなく
+/// 分からない・BUG-122）。手がかりの決まりはサーバーにだけ置く（保存のときの突き合わせと同じもの）。
+#[utoipa::path(
+    post,
+    path = "/mini-apps/workflow-inputs",
+    request_body = WorkflowInputsRequest,
+    responses(
+        (status = 200, description = "入力の手がかり（リクエストの順）", body = WorkflowInputsResponse),
+        (status = 400, description = "ワークフローが多すぎる"),
+        (status = 401, description = "未認証"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn mini_app_workflow_inputs(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    trace: TraceIdExt,
+    Json(req): Json<WorkflowInputsRequest>,
+) -> Result<Json<WorkflowInputsResponse>, ApiError> {
+    if req.workflows.len() > gui::miniapp::MAX_WORKFLOWS {
+        return Err(ApiError::BadRequest(format!(
+            "ワークフローは {} 個までです",
+            gui::miniapp::MAX_WORKFLOWS
+        )));
+    }
+    let pins: Vec<gui::ComponentPin> = req
+        .workflows
+        .iter()
+        .map(|w| gui::ComponentPin {
+            artifact_id: w.artifact_id,
+            version: w.version,
+        })
+        .collect();
+    let read = state
+        .mini_apps
+        .workflow_inputs(&ctx, &pins, trace.as_deref())
+        .await
+        .map_err(map_gui_err)?;
+    Ok(Json(WorkflowInputsResponse {
+        items: pins
+            .iter()
+            .zip(read)
+            .map(|(pin, r)| PinnedWorkflowInputs {
+                artifact_id: pin.artifact_id,
+                version: pin.version,
+                readable: r.readable,
+                inputs: r.inputs,
+            })
+            .collect(),
+    }))
 }
 
 /// ミニアプリを解決する（実行画面用・部品はバンドル権限で読む）。

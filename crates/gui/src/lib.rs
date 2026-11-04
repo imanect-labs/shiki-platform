@@ -9,6 +9,8 @@
 //! - **下書きと公開**（[`miniapp_publish`]・D-16）: ミニアプリの保存は下書きの版になり、使う人には公開した版だけを
 //!   出す。公開は editor が版を選んで行う。
 //! - **ワークフロー名の解決**（[`resolver`]）: ボタンの `-> workflow 名前` を版に固定する。
+//! - **画面の入力とワークフローの入力項目の突き合わせ**（[`miniapp_inputs`]・GAP-12）: 部品の候補の手がかりを作り、
+//!   保存のときに食い違いを注意として返す。
 //! - **使う人の権限の確かめ**（[`access`]・GAP-37）: アプリの部品とワークフローが要る権限を、共有の相手ごと
 //!   （作る人）と自分（使う人）について前もって確かめる。判定は OpenFGA の BatchCheck だけで、実際の読み書きの認可は変えない。
 //! - **表のデータ束縛**（[`data_grid`]・Task 15.7）: 画面の ```data_grid は束ねた保存ビューの
@@ -35,6 +37,7 @@ pub mod dispatch;
 pub mod miniapp;
 pub mod miniapp_actions;
 mod miniapp_data;
+pub mod miniapp_inputs;
 pub mod miniapp_publish;
 pub mod miniapp_runs;
 pub mod miniapp_store;
@@ -59,11 +62,14 @@ pub use dispatch::{
 };
 pub use miniapp::{screen_problems, ComponentPin, MiniAppBody, NamedComponentPin};
 pub use miniapp_actions::{MiniAppActionRequest, MiniAppRun, MiniAppRunStatus, MiniAppRunValue};
+pub use miniapp_inputs::{input_hints, input_warnings, InputHintType, WorkflowInputHint};
 pub use miniapp_publish::{
     diff_bodies, problems_block_publish, MiniAppChange, PinChange, PublishPreview,
 };
 pub use miniapp_runs::displayable_reply;
-pub use miniapp_store::{MiniAppStore, ResolvedMiniApp, ResolvedSkill, SaveMode, SavedMiniApp};
+pub use miniapp_store::{
+    MiniAppStore, PinnedInputs, ResolvedMiniApp, ResolvedSkill, SaveMode, SavedMiniApp,
+};
 pub use resolver::WorkflowResolver;
 pub use skill::{
     validate_skill_body, FewShotExample, KnowledgeScope, ModelDefaults, ScriptKind, SkillBody,
