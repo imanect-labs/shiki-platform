@@ -8,6 +8,7 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import ReactMarkdown, { type Components, type ExtraProps } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkCjkFriendly from "remark-cjk-friendly";
 
 import { cn } from "@/lib/utils";
 import { citeNumberFromHref } from "@/lib/citation";
@@ -16,6 +17,7 @@ import { resolveKind } from "@imanect/yui";
 import { isYuiLanguage } from "@imanect/yui/react";
 
 import { CodeBlock } from "./code-block";
+import { hasMath, normalizeMathDelimiters, useMathPlugins } from "./markdown-math";
 // 引用・箇条書きの中の図はボタンを出さない（重い図の描画部とは別に、軽いコンテキストだけ読む）。
 import { YuiNestedContext } from "./yui-actions";
 import { DataGridHostContext } from "@/components/data/data-grid-host";
@@ -69,6 +71,41 @@ function remarkBrTags() {
       } else {
         walk(child);
       }
+    }
+  };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (tree: any) => walk(tree);
+}
+
+/// 引用番号の直後に続く閉じの約物（。、）」など）。
+const CLOSING_PUNCT = /^[。、，．）」』】〕〉》！？!?,.:;：；…]+/;
+
+/// 引用番号チップと直後の約物を、折り返さない 1 つの塊にする（#1015）。
+///
+/// チップは行内の箱（inline-flex）なので前後で改行でき、番号が行末に来ると直後の「。」だけが
+/// 次の行頭に落ちる。単語結合子（U+2060）は Chrome では箱の後ろの改行を止めないため、
+/// hast の段階で `<span class="whitespace-nowrap">` に包む。
+function rehypeCiteNowrap() {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const walk = (node: any) => {
+    if (!node || !Array.isArray(node.children)) return;
+    for (let i = 0; i < node.children.length; i++) {
+      const child = node.children[i];
+      const next = node.children[i + 1];
+      const href = child?.type === "element" && child.tagName === "a" ? String(child.properties?.href ?? "") : "";
+      const punct = next?.type === "text" ? CLOSING_PUNCT.exec(next.value)?.[0] : undefined;
+      if (punct && citeNumberFromHref(href) != null) {
+        next.value = next.value.slice(punct.length);
+        const glued = {
+          type: "element",
+          tagName: "span",
+          properties: { className: ["whitespace-nowrap"] },
+          children: [child, { type: "text", value: punct }],
+        };
+        node.children.splice(i, next.value ? 1 : 2, glued);
+        continue;
+      }
+      walk(child);
     }
   };
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -301,48 +338,66 @@ const components: Components = {
       </a>
     );
   },
+  // 組版（#1015・案 B）: 日本語に合わせて行間を 1.8 にし、段落・リスト・見出しの前後に余白をとって
+  // まとまりを分ける。本文の色はわずかに落とし（ルート）、見出し・太字を foreground で浮かせる。
   p({ children }) {
-    return <p className="my-2.5 leading-relaxed first:mt-0 last:mb-0">{children}</p>;
+    return <p className="my-3.5 leading-[1.8] first:mt-0 last:mb-0">{children}</p>;
   },
   ul({ children }) {
-    return <ul className="my-2.5 ml-5 list-disc space-y-1 marker:text-muted-foreground">{children}</ul>;
+    return <ul className="my-3.5 ml-5 list-disc space-y-1.5 marker:text-primary/60">{children}</ul>;
   },
   ol({ children }) {
-    return <ol className="my-2.5 ml-5 list-decimal space-y-1 marker:text-muted-foreground">{children}</ol>;
+    return <ol className="my-3.5 ml-5 list-decimal space-y-1.5 marker:text-primary/60">{children}</ol>;
   },
   li({ children }) {
     // 箇条書きの中の図はボタンを出さない（操作を持つ図はトップレベルだけ・サーバーと同じ規則）。
     return (
-      <li className="leading-relaxed">
+      <li className="leading-[1.8]">
         <YuiNestedContext.Provider value={true}>{children}</YuiNestedContext.Provider>
       </li>
     );
   },
+  // 見出しは段の区切りなので上を大きく空ける。h1/h2 は下線、h3 は色の縦線で本文と階層を分ける。
   h1({ children }) {
-    return <h1 className="mb-2 mt-4 text-xl font-semibold first:mt-0">{children}</h1>;
+    return (
+      <h1 className="mb-3 mt-9 border-b border-border pb-2 text-xl font-bold text-foreground first:mt-0">
+        {children}
+      </h1>
+    );
   },
   h2({ children }) {
-    return <h2 className="mb-2 mt-4 text-lg font-semibold first:mt-0">{children}</h2>;
+    return (
+      <h2 className="mb-3 mt-9 border-b border-border pb-2 text-[18px] font-bold text-foreground first:mt-0">
+        {children}
+      </h2>
+    );
   },
   h3({ children }) {
-    return <h3 className="mb-1.5 mt-3 text-base font-semibold first:mt-0">{children}</h3>;
+    return (
+      <h3 className="mb-2 mt-7 border-l-[3px] border-primary pl-2.5 text-[15px] font-semibold leading-snug text-foreground first:mt-0">
+        {children}
+      </h3>
+    );
+  },
+  h4({ children }) {
+    return <h4 className="mb-1.5 mt-5 text-[15px] font-semibold text-foreground first:mt-0">{children}</h4>;
   },
   blockquote({ children }) {
     return (
-      <blockquote className="my-3 border-l-2 border-border pl-4 text-muted-foreground">
+      <blockquote className="my-5 rounded-r-lg border-l-[3px] border-primary/30 bg-muted/50 py-2 pl-4 pr-3">
         <YuiNestedContext.Provider value={true}>{children}</YuiNestedContext.Provider>
       </blockquote>
     );
   },
   hr() {
-    return <hr className="my-4 border-border" />;
+    return <hr className="my-6 border-border" />;
   },
   // 表は横スクロールの箱に収める（本文の幅を押し広げない）。見出しは折り返さず、セルは
   // 最小幅を持たせて 1 文字ずつの縦長にならないようにする。箱の端まで来た横スクロールが
   // ページ（戻るジェスチャ）へ抜けないよう overscroll-x-contain。
   table({ children }) {
     return (
-      <div className="my-3 max-w-full overflow-x-auto overscroll-x-contain rounded-lg border border-border">
+      <div className="my-5 max-w-full overflow-x-auto overscroll-x-contain rounded-lg border border-border">
         <table className="w-full border-collapse text-[13px]">{children}</table>
       </div>
     );
@@ -386,15 +441,35 @@ export function Markdown({
   /// リンクには行き先のホストを添える。
   untrusted?: boolean;
 }) {
+  // 数式は AI の回答だけ（利用者の発話は打ったとおりに見せる）。
+  const text = React.useMemo(() => (untrusted ? children : normalizeMathDelimiters(children)), [children, untrusted]);
+  const math = useMathPlugins(!untrusted && hasMath(text));
   return (
-    <div className={cn("min-w-0 text-[15px] leading-relaxed text-foreground", WRAP_ANYWHERE, className)}>
-      <SourceContext.Provider value={{ text: children, streaming, untrusted }}>
+    <div
+      className={cn(
+        // 本文はわずかに色を落とし、見出し・太字（foreground）を浮かせる（#1015）。
+        "min-w-0 text-[15px] leading-[1.8] text-foreground/85",
+        // 別行立ての長い式は式だけ横スクロールにする（本文の幅を押し広げない）。
+        "[&_.katex-display]:overflow-x-auto [&_.katex-display]:overflow-y-hidden [&_.katex-display]:py-1",
+        WRAP_ANYWHERE,
+        className,
+      )}
+    >
+      <SourceContext.Provider value={{ text, streaming, untrusted }}>
         <ReactMarkdown
-          remarkPlugins={breaks ? [remarkGfm, remarkBrTags, remarkSoftBreaks] : [remarkGfm, remarkBrTags]}
+          remarkPlugins={[
+            remarkGfm,
+            // 日本語の約物に隣接する `**` を強調として閉じる（`**「結論」**について` が太字にならない問題）。
+            remarkCjkFriendly,
+            remarkBrTags,
+            ...(breaks ? [remarkSoftBreaks] : []),
+            ...(math?.remark ?? []),
+          ]}
+          rehypePlugins={untrusted ? undefined : [rehypeCiteNowrap, ...(math?.rehype ?? [])]}
           components={components}
           disallowedElements={untrusted ? ["img"] : undefined}
         >
-          {children}
+          {text}
         </ReactMarkdown>
       </SourceContext.Provider>
     </div>
