@@ -23,6 +23,7 @@ mod reply;
 mod shape;
 mod storage;
 mod tabular;
+mod transform;
 
 pub use ai::{AgentInvokeParams, LlmEffort, LlmInvokeParams, SkillInvokeParams};
 pub use control::{
@@ -60,6 +61,10 @@ pub use storage::{
     StorageReadParams, StorageWriteParams,
 };
 pub use tabular::{CsvPatchParams, CsvQueryParams, CsvWriteParams};
+pub use transform::{
+    parse_tz, shift_amount, DateShift, DateUnit, TransformDateParams, WeekStart, DEFAULT_DATE_TZ,
+    MAX_DATE_SHIFT,
+};
 
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -269,6 +274,14 @@ pub fn check_params(nt: NodeType, raw: &Value) -> Result<(), ParamsIssue> {
         NodeType::HumanApproval => {
             check_as::<HumanApprovalParams>(raw)?;
             let parsed: HumanApprovalParams = parse(raw).map_err(|message| ParamsIssue {
+                path: "/params".to_string(),
+                message,
+            })?;
+            parsed.check_cross_fields()
+        }
+        NodeType::TransformDate => {
+            check_as::<TransformDateParams>(raw)?;
+            let parsed: TransformDateParams = parse(raw).map_err(|message| ParamsIssue {
                 path: "/params".to_string(),
                 message,
             })?;
@@ -511,6 +524,18 @@ mod tests {
                 json!({ "table": "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1", "match_on": "response_id",
                         "rows": { "$from": "nodes.gen.output", "path": "/rows" } }),
             ),
+            (NodeType::TransformDate, json!({})),
+            (
+                NodeType::TransformDate,
+                json!({ "base": { "$from": "run", "path": "/scheduled_at" },
+                        "shift": { "amount": -1, "unit": "week" }, "period": "week",
+                        "week_starts_on": "sunday", "tz": "America/New_York" }),
+            ),
+            (
+                NodeType::TransformDate,
+                json!({ "base": "2026-01-31", "shift": { "amount": { "$from": "input", "path": "/n" }, "unit": "month" },
+                        "period": "month" }),
+            ),
         ];
         for (nt, raw) in cases {
             assert!(
@@ -578,6 +603,60 @@ mod tests {
         .unwrap_err();
         assert_eq!(err.path, "/params/output_schema/$from");
         assert!(err.message.contains("$from"), "{}", err.message);
+    }
+
+    /// 日付を計算: 時間帯の名前・リテラルのずらす数・リテラルの基準の日時は保存時に照らす（GAP-15）。
+    #[test]
+    fn transform_date_literals_are_checked() {
+        let path = |raw: serde_json::Value| {
+            check_params(NodeType::TransformDate, &raw)
+                .unwrap_err()
+                .path
+        };
+        assert_eq!(path(json!({ "tz": "Japan/Tokyo" })), "/params/tz");
+        assert_eq!(path(json!({ "tz": "" })), "/params/tz");
+        assert_eq!(
+            path(json!({ "shift": { "amount": 1.5, "unit": "day" } })),
+            "/params/shift/amount"
+        );
+        assert_eq!(
+            path(json!({ "shift": { "amount": "-1", "unit": "day" } })),
+            "/params/shift/amount"
+        );
+        assert_eq!(
+            path(json!({ "shift": { "amount": 10_001, "unit": "day" } })),
+            "/params/shift/amount"
+        );
+        assert_eq!(
+            path(json!({ "shift": { "amount": 1, "unit": "hour" } })),
+            "/params/shift/unit"
+        );
+        assert_eq!(path(json!({ "period": "quarter" })), "/params/period");
+        assert_eq!(
+            path(json!({ "week_starts_on": "saturday" })),
+            "/params/week_starts_on"
+        );
+        // 時差の無い日時は、どの時間帯の時刻か分からないので書けない。
+        assert_eq!(
+            path(json!({ "base": "2026-11-02T09:00:00" })),
+            "/params/base"
+        );
+        assert_eq!(path(json!({ "base": 20_261_102 })), "/params/base");
+        assert!(check_params(
+            NodeType::TransformDate,
+            &json!({ "base": "2026-11-02T09:00:00Z" })
+        )
+        .is_ok());
+        assert!(check_params(
+            NodeType::TransformDate,
+            &json!({ "shift": { "amount": -10_000, "unit": "day" } })
+        )
+        .is_ok());
+        // 項目の書き間違いは契約が拒む。
+        assert_eq!(
+            path(json!({ "shift": { "amount": 1, "unit": "day", "n": 2 } })),
+            "/params/shift/n"
+        );
     }
 
     #[test]

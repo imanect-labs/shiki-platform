@@ -82,6 +82,8 @@ const SCOPE_FREE_APIS: &[&str] = &[
     "skill.invoke",
     // 結果を画面に返すだけ（値を整形する pure ノード・外部にもデータにも届かない・GAP-09）。
     "workflow.reply",
+    // 日付を計算するだけ（pure・外部にもデータにも届かない・GAP-15）。
+    "transform.date",
 ];
 
 /// 能力 API に必要なスコープが実効スコープに含まれるか判定する（scope 天井）。

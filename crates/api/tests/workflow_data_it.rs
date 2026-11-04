@@ -1566,3 +1566,111 @@ async fn scheduled_adds_read_the_current_value_as_the_write_delegator() {
         std::panic::resume_unwind(e);
     }
 }
+
+/// GAP-15: スケジュールの run は、予定の時刻を実行情報の予定の日時（`$from run` の `scheduled_at`）として持ち、
+/// 「日付を計算」は基準を省くとそこから数える。入力ときっかけの内容は今までどおり null。本番のスケジューラ →
+/// 起動口 → run の行 → ワーカーの順に通す（発火の記録の run_id は run を作った後に書くので、ワーカーが最初の
+/// step を取る時点でも予定の時刻が読めることを、run の行に書いた値で確かめる）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn scheduled_runs_count_dates_from_the_scheduled_time() {
+    let Some(env) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4().simple());
+    let alice = user(&tenant, "alice");
+    let body = async {
+        let ir = json!({
+            "ir_version": 1, "name": "weekly-dates",
+            "triggers": [ { "kind": "schedule", "cron": "* * * * *", "tz": "Asia/Tokyo" } ],
+            "nodes": [
+                { "id": "today", "type": "transform.date", "params": {} },
+                { "id": "last_week", "type": "transform.date", "params": {
+                    "shift": { "amount": -1, "unit": "week" }, "period": "week" } },
+                { "id": "seen", "type": "script.run", "params": {
+                    "source": { "inline": "function main(input) { return input; }" },
+                    "input": { "run": { "$from": "run" },
+                               "input": { "$from": "input" },
+                               "trigger": { "$from": "trigger" } } } }
+            ],
+            "edges": [ { "from": "today", "to": "last_week" }, { "from": "last_week", "to": "seen" } ]
+        });
+        let (wf, _) = env
+            .workflows
+            .create(&alice, &ir, &Catalog::default(), None)
+            .await
+            .expect("保存（日付を計算はスコープが要らない）");
+        let parsed = WorkflowIr::from_json(&ir).unwrap();
+        env.registration
+            .enable(&alice, wf, 1, &parsed, &[])
+            .await
+            .expect("有効化");
+
+        let run = env.fire_schedule_and_run(&tenant, wf, 61).await;
+        let (planned, started, input): (chrono::DateTime<Utc>, chrono::DateTime<Utc>, Value) =
+            sqlx::query_as(
+                "SELECT o.scheduled_at, r.started_at, r.input FROM schedule_occurrence o \
+                 JOIN workflow_run r ON r.tenant_id = o.tenant_id AND r.run_id = o.run_id \
+                 WHERE o.tenant_id = $1 AND o.run_id = $2",
+            )
+            .bind(&tenant)
+            .bind(run)
+            .fetch_one(&env.pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            input,
+            Value::Null,
+            "スケジュールの run の入力は null のまま"
+        );
+        // 予定の時刻は、tick に渡した先の時刻までの分の境目（実行を始めた時刻より後）。
+        assert!(planned > started, "予定 {planned} / 始めた {started}");
+        // 日本時間（夏時間が無いので +09:00 の固定の時差と同じ）。
+        let jst = |t: chrono::DateTime<Utc>| {
+            t.with_timezone(&chrono::FixedOffset::east_opt(9 * 3600).unwrap())
+        };
+
+        for node in ["today", "last_week", "seen"] {
+            let (status, _, err) = env.step(&tenant, run, node).await;
+            assert_eq!(status, "succeeded", "{node}: {err:?}");
+        }
+        let (_, seen, _) = env.step(&tenant, run, "seen").await;
+        let seen = seen.unwrap();
+        assert_eq!(
+            seen["run"]["scheduled_at"],
+            jst(planned).to_rfc3339_opts(chrono::SecondsFormat::Secs, false),
+            "予定の日時はスケジュールの予定の時刻（日本時間）: {seen}"
+        );
+        assert_ne!(seen["run"]["scheduled_at"], seen["run"]["started_at"]);
+        assert_eq!(seen["input"], Value::Null);
+        assert_eq!(seen["trigger"], Value::Null);
+
+        let (_, today, _) = env.step(&tenant, run, "today").await;
+        let today = today.unwrap();
+        let planned_day = jst(planned).date_naive();
+        assert_eq!(today["date"], planned_day.format("%Y-%m-%d").to_string());
+        let (_, last_week, _) = env.step(&tenant, run, "last_week").await;
+        let last_week = last_week.unwrap();
+        let monday = planned_day
+            - chrono::Duration::days(i64::from(
+                chrono::Datelike::weekday(&planned_day).num_days_from_monday(),
+            ))
+            - chrono::Duration::days(7);
+        assert_eq!(last_week["start"], monday.format("%Y-%m-%d").to_string());
+        assert_eq!(
+            last_week["end"],
+            (monday + chrono::Duration::days(6))
+                .format("%Y-%m-%d")
+                .to_string()
+        );
+    };
+    let outcome = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(body)).await;
+    for table in ["schedule_occurrence", "workflow_registration"] {
+        sqlx::query(&format!("DELETE FROM {table} WHERE tenant_id = $1"))
+            .bind(&tenant)
+            .execute(&env.pool)
+            .await
+            .unwrap();
+    }
+    env.cleanup_tenant(&tenant).await;
+    if let Err(e) = outcome {
+        std::panic::resume_unwind(e);
+    }
+}

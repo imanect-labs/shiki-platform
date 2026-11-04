@@ -945,6 +945,60 @@ async fn reply_runs_without_declared_scopes() {
     );
 }
 
+/// 「日付を計算」は、宣言したスコープが空でも実行できる（能力を呼ばない・監査も残らない）。基準を省くとスケジュールの
+/// 予定の時刻から数え、結果はファイル名に差し込める（GAP-15）。
+#[tokio::test]
+async fn date_block_runs_without_declared_scopes_and_counts_from_the_schedule() {
+    let audit = Arc::new(CapturingAudit::default());
+    let exec = executor(Arc::new(FakePorts::default()), Arc::clone(&audit));
+    let at = |s: &str| {
+        chrono::DateTime::parse_from_rfc3339(s)
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+    };
+    // 月曜 9:00（日本時間）の予定を、止まっていたあとで火曜に始めた。
+    let mut c = ctx(json!({}), Vec::new());
+    c.run_started_at = at("2026-11-10T03:00:00Z");
+    c.run_scheduled_at = Some(at("2026-11-09T00:00:00Z"));
+    let res = exec
+        .execute(
+            "transform.date",
+            &json!({ "shift": { "amount": -1, "unit": "week" }, "period": "week" }),
+            &c,
+        )
+        .await;
+    assert!(res.ok, "{:?}", res.error);
+    assert_eq!(res.taken_ports, ["out"]);
+    assert_eq!(
+        res.output,
+        json!({ "date": "2026-11-02", "start": "2026-11-02", "end": "2026-11-08",
+                "start_at": "2026-11-02T00:00:00+09:00", "next_start_at": "2026-11-09T00:00:00+09:00",
+                "year": 2026, "month": 11, "day": 2, "weekday": 1 })
+    );
+    assert!(
+        audit.records.lock().unwrap().is_empty(),
+        "能力を呼ばない（監査も残らない）"
+    );
+
+    // 結果をファイル名に差し込む（週報-<週の初めの日>.md）。予定の日時も実行情報から読める。
+    let ports = Arc::new(FakePorts::default());
+    let exec = executor(ports.clone(), Arc::new(CapturingAudit::default()));
+    let mut w = ctx(json!({}), vec!["storage.write".into()]);
+    w.run_started_at = c.run_started_at;
+    w.run_scheduled_at = c.run_scheduled_at;
+    w.node_outputs = json!({ "last_week": res.output });
+    let params = json!({
+        "name": { "$template": "週報-{d}.md",
+                  "vars": { "d": { "$from": "nodes.last_week.output", "path": "/start" } } },
+        "content": { "$from": "run", "path": "/scheduled_at" }
+    });
+    let res = exec.execute("storage.write", &params, &w).await;
+    assert!(res.ok, "{:?}", res.error);
+    let saved = ports.last_write.lock().unwrap().clone().unwrap();
+    assert_eq!(saved.name, "週報-2026-11-02.md");
+    assert_eq!(saved.bytes, b"2026-11-09T09:00:00+09:00");
+}
+
 #[tokio::test]
 async fn wait_returns_suspend_directive() {
     let exec = executor(

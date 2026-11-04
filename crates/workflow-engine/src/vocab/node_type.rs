@@ -59,6 +59,9 @@ vocab_enum! {
         ControlAssert => "control.assert",
         /// 実行履歴への構造化ログ出力。
         DebugLog => "debug.log",
+        // ---- 宣言的データ加工（pure・ノーコード向け）----
+        /// 基準の日時から、前日・先週・先月などの日付と、週・月の最初と最後の日を求める（GAP-15・pure）。
+        TransformDate => "transform.date",
         // ---- 将来予約: 宣言的データ加工（pure・ノーコード向け）----
         TransformTemplate => "transform.template",
         TransformParse => "transform.parse",
@@ -149,6 +152,7 @@ impl NodeType {
                 | NodeType::DataRecordDelete
                 | NodeType::DataTransition
                 | NodeType::DataBulkUpsert
+                | NodeType::TransformDate
                 | NodeType::HumanApproval
         )
     }
@@ -195,6 +199,7 @@ mod tests {
                 "data.record.delete",
                 "data.bulk_upsert",
                 "skill.invoke",
+                "transform.date",
                 "human.approval",
             ]
         );

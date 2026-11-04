@@ -433,6 +433,26 @@ pub(super) fn output_shape(nt: NodeType) -> Shape {
             ],
             "（行の値は載せない。必要なら後で「データを調べる」で読む）",
         ),
+        // 日付は YYYY-MM-DD（テーブルの日付の列と比べられる）、日時は時差つき（日時の列と比べられる）・GAP-15。
+        N::TransformDate => Fields(
+            "",
+            &[
+                field!("date", "string", "ずらした日・YYYY-MM-DD"),
+                field!("start", "string", "期間の最初の日（週の初め・月初など）"),
+                field!("end", "string", "期間の最後の日（週の終わり・月末など）"),
+                field!("start_at", "string", "期間の始まりの日時・時差つき"),
+                field!(
+                    "next_start_at",
+                    "string",
+                    "次の期間の始まりの日時・期間はこれより前まで"
+                ),
+                field!("year", "number", "ずらした日の年"),
+                field!("month", "number", "ずらした日の月"),
+                field!("day", "number", "ずらした日の日"),
+                field!("weekday", "number", "ずらした日の曜日・1＝月曜〜7＝日曜"),
+            ],
+            "",
+        ),
         N::NotifySend
         | N::ControlLoop
         | N::ControlAssert

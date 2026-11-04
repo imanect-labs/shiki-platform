@@ -314,6 +314,12 @@ fn labels(nt: NodeType) -> (NodeCategory, &'static str, &'static str) {
             "条件を満たさなければフローを失敗として止める",
         ),
         NodeType::DebugLog => (C::Developer, "ログ出力", "実行履歴にメモ（ログ）を残す"),
+        // 前日・先週・先月・月末を script なしで作る（GAP-15）。
+        NodeType::TransformDate => (
+            C::Transform,
+            "日付を計算",
+            "基準の日から、前日・先週・先月などの日付と、週や月の最初と最後の日を求めます。",
+        ),
         NodeType::TransformTemplate => (
             C::Transform,
             "文章の組み立て",
@@ -544,8 +550,8 @@ pub fn step_timeout_limits(nt: NodeType) -> (Option<u32>, Option<u32>) {
         NodeType::AiDecide => (Some(60), Some(300)),
         NodeType::NotifySend => (Some(30), Some(60)),
         NodeType::WorkflowStart => (Some(10), Some(30)),
-        // 値を整形するだけ（能力を呼ばない）。
-        NodeType::WorkflowReply => (Some(5), Some(10)),
+        // 値を整形するだけ・日付を計算するだけ（能力を呼ばない）。
+        NodeType::WorkflowReply | NodeType::TransformDate => (Some(5), Some(10)),
         NodeType::ScriptRun => (Some(30), Some(360)),
         NodeType::SkillInvoke => (Some(60), Some(360)),
         NodeType::LlmInvoke => (Some(120), Some(600)),

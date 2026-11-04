@@ -1,11 +1,13 @@
 //! 制御ノード（branch/switch/join/map/wait・Task 10.5・engine.md §4）。
 //!
 //! - `eval`: 条件・値式の**純関数**評価（`$from`/`$template`/条件木）。
+//! - `date`: 日付の計算（「日付を計算」・`transform.date` の本体・純関数・GAP-15）。
 //! - branch/switch の出力ポート決定も純関数（[`branch_port`]/[`switch_port`]）。
 //! - join の待ち合わせ・skip 伝播は [`run::readiness`](crate::run::readiness)（前進 TX が使う）。
 //! - map（動的 fan-out）・wait（タイマ/イベント）の永続化は [`run::store`](crate::run::store)（checkpoint/
 //!   scheduler 起床）で結線する。[`event_filter_matches`] はトリガ/wait のイベント filter 評価。
 
+pub mod date;
 pub mod eval;
 #[cfg(test)]
 mod eval_semantics_tests;

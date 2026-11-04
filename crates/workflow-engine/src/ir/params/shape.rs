@@ -16,7 +16,8 @@ use super::{
     DataRecordDeleteParams, DataRecordUpdateParams, DataRecordUpsertParams, DataTransitionParams,
     HttpRequestParams, HumanApprovalParams, JoinParams, LlmInvokeParams, MapParams,
     RagSearchParams, ScriptRunParams, SkillInvokeParams, StorageListParams, StorageReadParams,
-    StorageWriteParams, SwitchParams, WaitParams, WorkflowReplyParams, WorkflowStartParams,
+    StorageWriteParams, SwitchParams, TransformDateParams, WaitParams, WorkflowReplyParams,
+    WorkflowStartParams,
 };
 use crate::vocab::NodeType;
 
@@ -130,6 +131,7 @@ fn visit_params_type<V: ParamsTypeVisitor>(nt: NodeType, v: V) -> Option<V::Out>
         N::DataTransition => v.visit::<DataTransitionParams>(),
         N::DataBulkUpsert => v.visit::<DataBulkUpsertParams>(),
         N::HumanApproval => v.visit::<HumanApprovalParams>(),
+        N::TransformDate => v.visit::<TransformDateParams>(),
         // 予約語彙（params 契約は実装フェーズで追加する・ir.md §7.8）。
         N::NotifySend
         | N::ControlLoop

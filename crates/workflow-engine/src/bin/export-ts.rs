@@ -26,6 +26,9 @@ use workflow_engine::ir::params::{
     StorageWriteParams, SwitchCase, SwitchParams, WaitKind, WaitParams, WaitTimeout,
     WorkflowReplyParams, WorkflowStartParams,
 };
+use workflow_engine::ir::params::{
+    DateShift, DateUnit, TransformDateParams, WeekStart, DEFAULT_DATE_TZ, MAX_DATE_SHIFT,
+};
 use workflow_engine::ir::trigger::{
     Catchup, EventTrigger, InteractiveTrigger, ScheduleTrigger, Trigger, TriggerKind,
 };
@@ -124,7 +127,12 @@ fn limits_ts() -> String {
          \n/// 「ファイルを読む」が PDF・Office の本文の取り込みを待つ上限（分・過ぎたら index_pending で失敗・D-125）。\n\
          export const STORAGE_READ_INDEX_WAIT_MAX_MINUTES = {INDEX_WAIT_MAX_MINUTES};\n\
          \n/// 「フォルダ一覧」が一度に返す件数の上限（多いと先頭のこの件数だけで truncated が true・BUG-180）。\n\
-         export const STORAGE_LIST_MAX_ITEMS = {STORAGE_LIST_MAX_ITEMS};\n"
+         export const STORAGE_LIST_MAX_ITEMS = {STORAGE_LIST_MAX_ITEMS};\n\
+         \n/// 「日付を計算」のずらす数の上限（絶対値・GAP-15）。\n\
+         export const DATE_MAX_SHIFT = {MAX_DATE_SHIFT};\n\
+         \n/// 「日付を計算」の時間帯の既定（日本時間・GAP-15）。\n\
+         export const DATE_DEFAULT_TZ = {tz};\n",
+        tz = serde_json::to_string(DEFAULT_DATE_TZ).expect("時間帯の既定の直列化"),
     ) + http_headers_ts().as_str()
 }
 
@@ -235,6 +243,10 @@ fn ir_decls() -> Vec<String> {
         ReplyColumn,
         ReplyFileSpec,
         WorkflowReplyParams,
+        DateUnit,
+        WeekStart,
+        DateShift,
+        TransformDateParams,
         // ---- カタログ ----
         NodeCategory,
         IdempotencyClass,
