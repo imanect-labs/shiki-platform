@@ -103,6 +103,9 @@ IR のトップレベルは以下の形を取る。
 
 却下案: CEL（構文が TS 系と乖離・依存追加）/ JS ミニ式（結局 QuickJS が要る → script ノードと二重化）。
 
+日付の計算（前日・先週・先月・月末・週の初め）も値の式に足さず、ブロック `transform.date`（日付を計算・§7.13）で行う（GAP-15）。
+値の種類を 3 つのまま保ち、保存時検証・エディタの値の欄・codegen の型を増やさない。
+
 パラメータ値として使える構造は 3 種——参照（`$from`）・テンプレート（`$template`）・構造化条件（`condition`）——である。以下順に定義する。
 
 ### 3.1 参照（`$from`）
@@ -115,9 +118,10 @@ IR のトップレベルは以下の形を取る。
 
 - **source（`$from` の元）**:
   - `input` — run 入力（対話トリガの `input_schema` に沿う値）
-  - `trigger` — トリガイベントのペイロード。手動の実行（`interactive`）では run の入力と同じ値になる（schedule のペイロードは `null`）。実行のダイアログ（`POST /workflows/{id}/runs` の `trigger`）では、ファイルやテーブルの変更をきっかけにするワークフローを試すために、きっかけの内容を入力と別に渡せる（項目のまとまりだけ・本人の権限で動くので、入力と同じく利用者が書いた値として扱う・D-93）
+  - `trigger` — トリガイベントのペイロード。手動の実行（`interactive`）では run の入力と同じ値になる（schedule のペイロードは `null`。予定の時刻は実行情報の `scheduled_at` で読む・GAP-15）。実行のダイアログ（`POST /workflows/{id}/runs` の `trigger`）では、ファイルやテーブルの変更をきっかけにするワークフローを試すために、きっかけの内容を入力と別に渡せる（項目のまとまりだけ・本人の権限で動くので、入力と同じく利用者が書いた値として扱う・D-93）
   - `nodes.<node_id>.output` — 他ノードの出力
-  - `run` — 実行情報（読み取り専用・項目は vocab の `RUN_INFO_FIELDS` が正）: `date`（実行を始めた日・日本時間の `YYYY-MM-DD`）・`started_at`（実行を始めた日時・日本時間の RFC 3339）・`started_by`（実行した人）・`run_id`・`tenant_id`。日時は run を始めた時刻で決まり、同じ run の中ではやり直しても変わらない（ファイル名に差し込んでも冪等キーの照合が崩れない・D-97）。組織ごとのタイムゾーンの設定はまだ無いので日本時間で言う
+  - `run` — 実行情報（読み取り専用・項目は vocab の `RUN_INFO_FIELDS` が正）: `date`（実行を始めた日・日本時間の `YYYY-MM-DD`）・`started_at`（実行を始めた日時・日本時間の RFC 3339）・`scheduled_at`（予定の日時・日本時間の RFC 3339）・`started_by`（実行した人）・`run_id`・`tenant_id`。日時は run を始めた時刻で決まり、同じ run の中ではやり直しても変わらない（ファイル名に差し込んでも冪等キーの照合が崩れない・D-97）。組織ごとのタイムゾーンの設定はまだ無いので日本時間で言う
+    - `scheduled_at` は、schedule の run ではスケジュールの予定の時刻（`schedule_occurrence.scheduled_at` と同じ時刻。停止中の穴を埋める発火〔catchup〕や、多重度で待たされた run でも予定の時刻のまま）、ほかの run（手動の実行・event・`workflow.start` の子・この項目が入る前に作った run）では `started_at` と同じ値（GAP-15）。「先週」「前日」を、どの実行でも同じ項目から数えられるようにする（`transform.date` の基準の既定・§7.13）。schedule の run の入力ときっかけの内容は今までどおり `null`（保存済みの定義の `$from input` / `$from trigger` の値を変えない）
     - `started_by` は、人が手動で実行した run（実行主体がユーザー。その run から `workflow.start` で始めた子の run を含む）の実行主体のユーザー ID で、テーブルのユーザーの列（`user_ref`）と比べられる（申請者の上長を承認者の表から引くなど・GAP-17・D-101）。schedule / event の run（ワークフロー主体）とミニアプリの自動化（サービスの主体）には人がいないので項目ごと入らず、参照すると `default` が無ければ `expr_resolve_error` で失敗する（黙って空の値で探さない）。入力項目で申請者を受け取る組み方は、実行する人が別の人の ID を入れて名乗れるので勧めない
   - `each` — **map 領域内のみ**。現在要素（`each.item` と `each.index`。§5.3）
 - **`path`**: RFC 6901 JSON Pointer。省略時は source 全体を指す。
@@ -333,6 +337,7 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 - **曜日は標準の読み方**: 0 と 7 が日曜、1 が月曜〜6 が土曜。名前（`SUN`〜`SAT`・大小文字は問わない）も書け、数・範囲（`1-5`・`MON-FRI`）・列挙・刻み（`*/2`・`1-5/2`。始まりだけの `1/2` は 7 まで）を混ぜてよい。範囲の逆転（`5-1`・`SAT-SUN`）・8 以上・`L` や `#` は保存時に `ir.bad_schedule`（BUG-95）。日と曜日の両方を指定したときは**両方に合う日**だけに動く（標準の cron の「どちらか」とは違う）。
 - 保存時の検証・発火・エディタの「次の実行」（`POST /workflows/schedule-preview`）は同じ関数（`workflow_engine::scheduler::cron`）で読む。エディタは曜日を名前で書く。
 - **DST**: 「存在しない時刻はスキップ・二重時刻は先勝ち」。
+- **予定の時刻**: 発火した run は、その occurrence の時刻を予定の日時として持つ（`$from run` の `scheduled_at`・§3.1）。ペイロード（`$from trigger`）と run の入力は `null` のまま（GAP-15）。
 - **`catchup`**:
   - `skip`（既定）: 停止中の未発火は直近 1 回だけ発火する。
   - `none`: 停止中の未発火は捨てる（稼働中の時刻どおりの発火はする。判定は engine.md §5.2）。
@@ -403,6 +408,7 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 | `http.request` | 外部 | 外部 HTTP | **best-effort**（Idempotency-Key 注入支援のみ） | 30s / 120s |
 | `human.approval` | 人間参加 | テーブルの 1 行について担当者の承認・却下・差し戻しを待って分岐する（判断は承認者本人の FSM 遷移・§7.9） | engine-dedup（台帳は step で 1 件） | 30s / 120s（停止まで。判断を待つ時間は `timeout_sec` と `run_timeout_sec`） |
 | `workflow.reply` | フロー連携 | 結果を画面に返す（ボタン・会話から起動した本人の画面に出す・スコープ不要・§7.10） | pure | 5s / 10s |
+| `transform.date` | データ加工 | 日付を計算する（基準の日をずらし、その日を含む日・週・月・年の最初と最後の日を返す・スコープ不要・§7.13・GAP-15） | pure | 5s / 10s |
 
 以下、設計上の要点を持つノード種を個別に規定する。params の網羅的スキーマは codegen 型が正であり、本節は制約と出力形を示す。
 
@@ -630,7 +636,7 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 | `graphql.query` | 外部 | GraphQL 呼び出し（クエリ・変数の型付き UX）。gRPC はユースケースが薄く予約しない | `http.egress`（流用） |
 | `sandbox.exec` | 実行 | サンドボックス内の単発コマンド/Python 実行（secure-exec 基盤を転用。サンドボックス由来出力は敵対的として扱う・PIT-23） | `sandbox.exec`（危険度が高く独立スコープ） |
 
-`human.approval` は GAP-08 で実装した（§7.9）。`doc.read` と `sandbox.exec` の**スコープ**は agent.invoke の道具（`doc.read`・`code.run`）のために解禁した（同意画面では「文書の本文を読む」「隔離された環境でプログラムを動かす」と出す）。ノードは予約のまま。
+`human.approval` は GAP-08 で実装した（§7.9）。データ加工の系には `transform.date`（日付を計算）を GAP-15 で足して実装した（§7.13・予約の表のほかの `transform.*` は予約のまま）。`doc.read` と `sandbox.exec` の**スコープ**は agent.invoke の道具（`doc.read`・`code.run`）のために解禁した（同意画面では「文書の本文を読む」「隔離された環境でプログラムを動かす」と出す）。ノードは予約のまま。
 
 **ノードにしない**と確定したもの（予約対象外・理由の明文化）:
 
@@ -823,6 +829,39 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 - **冪等**: 1 回の実行で成功する書込は高々 1 回で、ほかの誤りは何も書かずに返るので、効果の予約は 1 回の書込と同じ扱い
   （[engine.md](./engine.md) §7.3）。回収窓の at-least-once（予約を取ったワーカーが落ちた後の再実行）では、足す数が二重に
   足されることがある（`data.record.create` が二重に追加されうるのと同じ）。
+
+### 7.13 日付を計算（`transform.date`・GAP-15）
+
+前日・先週・先月・月末・週の初めを、script を書かずに求める（APP-03 の週報・APP-08 の週次 KPI・APP-11 の延滞など）。値の式には
+計算を足さない（§3）。
+
+```jsonc
+{ "id": "last_week", "type": "transform.date",
+  "params": {
+    "base": { "$from": "run", "path": "/scheduled_at" },   // 基準の日（省略可・省略すると同じ）
+    "shift": { "amount": -1, "unit": "week" },             // ずらす（省略可・amount は ValueExpr の整数）
+    "period": "week",                                      // 期間（省略は day）
+    "week_starts_on": "monday",                            // 週の初め（省略は monday）
+    "tz": "Asia/Tokyo"                                     // 時間帯（IANA の名前・省略は日本時間）
+  } }
+// 出力: { "date": "2026-11-02", "start": "2026-11-02", "end": "2026-11-08",
+//         "start_at": "2026-11-02T00:00:00+09:00", "next_start_at": "2026-11-09T00:00:00+09:00",
+//         "year": 2026, "month": 11, "day": 2, "weekday": 1 }
+```
+
+- **基準の日**（`base`）: 日付（`YYYY-MM-DD`）か時差つきの日時（RFC 3339）。時差つきの日時は `tz` の日付として読む。時差の無い日時・
+  ほかの形は読まない（保存時はリテラルを `ir.schema_violation`、実行時は `invalid`）。省略すると実行情報の `scheduled_at`（§3.1）。
+- **ずらす**（`shift`）: `unit` は `day`・`week`（7 日）・`month`・`year`。`amount` は -10,000〜10,000 の整数（`MAX_DATE_SHIFT`。
+  小数点つきの整数〔2.0〕は読む）。月・年でずらした先にその日が無ければ、その月の末日にする（1 月 31 日の 1 か月後は 2 月 28 日か
+  29 日、5 月 31 日の 1 か月後は 6 月 30 日）。
+- **期間**（`period`）: ずらした日を含む `day`・`week`（`week_starts_on` の曜日から 7 日）・`month`・`year`。
+- **出力**: `date`（ずらした日）・`start`・`end`（期間の最初と最後の日・`YYYY-MM-DD`。テーブルの日付の列は `start` 以上・`end` 以下で
+  絞る）・`start_at`・`next_start_at`（期間の始まりと次の期間の始まりの日時・`tz` の時差つき。日時の列は `start_at` 以上・
+  `next_start_at` より前で絞る）・`year`・`month`・`day`・`weekday`（`date` の曜日・1＝月曜〜7＝日曜）。出力の形の正はカタログ。
+- **時間帯と夏時間**: 計算は `tz` の暦の日付で行い、時刻を足し引きしない（夏時間で 23・25 時間の日をまたいでも日付がずれない）。
+  `start_at`・`next_start_at` はその日の最初の時刻（ふつうは 0 時。0 時が無い日はその日の最初にある時刻、0 時が 2 回ある日は早い方）。
+  組織の時間帯の設定はまだ無いので既定は日本時間（実行情報と同じ）。
+- 日付は 1〜9999 年に収める（外れたら `invalid`）。能力を呼ばない pure なブロックで、スコープは要らない（scope 天井の対象外）。
 
 ---
 
