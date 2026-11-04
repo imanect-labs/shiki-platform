@@ -12,6 +12,7 @@
 //! - **kind は閉じた集合**（[`ArtifactKind`]）: Task 6.7/6.10/10.1/10.11 が同じテーブル・
 //!   同じ共有 API・同じ監査経路に乗る。
 
+mod bundle;
 mod by_ref;
 mod drafts;
 mod model;
@@ -23,6 +24,7 @@ mod store;
 mod versions;
 mod visible;
 
+pub use bundle::MAX_BUNDLE_COMPONENTS;
 pub use model::{Artifact, ArtifactKind, ArtifactRole, ArtifactVersion, VersionMeta};
 pub use publish::Publication;
 pub use search::{SearchPage, SearchRequest, MAX_SEARCH_QUERY_CHARS};
