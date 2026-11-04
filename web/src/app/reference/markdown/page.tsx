@@ -123,6 +123,7 @@ const MATH_AFTER_TILDE_FENCE = `~~~~text
 
 チルダのフェンスの後の \\(w^2\\)`;
 
+/// ギャラリーの 1 区画（見出しと、E2E が参照する data-testid）。
 function Cell({ id, title, children }: { id: string; title: string; children: React.ReactNode }) {
   return (
     <section data-testid={`markdown-${id}`} className="min-w-0">
@@ -132,6 +133,7 @@ function Cell({ id, title, children }: { id: string; title: string; children: Re
   );
 }
 
+/// 固定の本文を実際の `Markdown` で描いて並べる（認証・LLM 不要）。
 export default function MarkdownGalleryPage() {
   return (
     <div className="min-h-screen bg-background">

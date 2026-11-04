@@ -8,22 +8,14 @@ import "katex/dist/katex.min.css";
 
 type PluggableList = NonNullable<Options["remarkPlugins"]>;
 
-/// 行頭から始まるフェンスとその中身。閉じ行は CommonMark どおり、最大 3 文字の字下げを許し、
-/// 開始と同じ文字で同じ長さ以上・後ろは空白だけ（`` ` `` と `~` を取り違えない）。閉じが無ければ末尾まで。
-/// `` ` `` と `~` を 1 つの正規表現で文書の順に見る（別々に見ると、`~~~` の中の `` ``` `` 行を開始と取り違える）。
-const TOP_LEVEL_FENCE =
-  /^(?:(`{3,})[^`\n]*\n[\s\S]*?(?:^ {0,3}\1`*[ \t]*$|(?![\s\S]))|(~{3,})[^\n]*\n[\s\S]*?(?:^ {0,3}\2~*[ \t]*$|(?![\s\S])))/gm;
-
-/// 本文に数式の候補（`$$`・`\(`・`\[`）があるか。読み込むかどうかにだけ使う判定なので、
-/// 迷う所は「ある」に倒す（見落とすと数式が描かれない。多めに読み込んでも遅くなるだけ）。
-/// 除くのは行頭から始まるフェンス（トップレベルのコードブロック）の中だけ（シェルの `$$` などで
-/// KaTeX を読み込まない）。引用・リストの中のフェンスは暗黙に閉じることがあり、どこまでがコードかを
-/// 正規表現では決められないので除かない。インラインコードも、閉じの対応を誤ると本文ごと消すので除かない。
+/// 本文に数式の候補（`$$`・`\(`・`\[`）があるか。KaTeX を読み込むかどうかにだけ使う判定。
+///
+/// コードの中かどうかは見ない（正規表現でフェンスやコードの範囲を決めようとすると、暗黙に閉じる・
+/// 字下げ・文字の種類などで取り違え、本文の数式を見落として描かなくなるため）。コードの中の `$$`
+/// などで余分に読み込んでも、遅れて 1 回読み込むだけで（以後はキャッシュ）、表示は変わらない。
+/// 何を数式とするかは、読み込んだ後に解析器（remark-math-extended）が決める。
 export function mayHaveMath(text: string): boolean {
-  const candidate = /\$\$|\\\(|\\\[/;
-  if (!candidate.test(text)) return false;
-  const prose = text.replace(TOP_LEVEL_FENCE, "");
-  return candidate.test(prose);
+  return /\$\$|\\\(|\\\[/.test(text);
 }
 
 type Katex = typeof import("katex").default;
@@ -32,6 +24,7 @@ type MathKit = { remark: PluggableList; katex: Katex };
 let kit: MathKit | null = null;
 let loading: Promise<MathKit> | null = null;
 
+/// 数式の解析拡張と KaTeX を 1 回だけ読み込む（同時に呼ばれても読み込みは 1 つ）。
 function loadMath(): Promise<MathKit> {
   loading ??= Promise.all([import("remark-math-extended"), import("katex")]).then(
     ([remarkMath, katex]) => {

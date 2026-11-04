@@ -292,6 +292,7 @@ function FencedCode({ node, children }: { node: ExtraProps["node"]; children: Re
 const components: Components = {
   // ブロックコードは pre をフックして CodeBlock に差し替える。
   pre({ node, children }) {
+    // 数式（math-display）・図・表・コードのどれで描くかは FencedCode が決める。
     return <FencedCode node={node}>{children}</FencedCode>;
   },
   code({ className, children }) {
@@ -434,6 +435,8 @@ const components: Components = {
   },
 };
 
+/// LLM の回答・利用者の発話・ノートなどの Markdown を描く。AI の回答では、数式を含むときだけ
+/// 数式の解析と KaTeX を読み込み、引用番号と直後の約物を折り返さない塊にする（#1015）。
 export function Markdown({
   children,
   className,
