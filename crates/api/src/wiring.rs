@@ -289,6 +289,7 @@ pub(crate) fn build_gateway(
     let gateway_config = GatewayConfig {
         provider: primary,
         extra_providers,
+        user_provider_rules: llm.user_provider_rules.clone(),
         catalog: llm.model_catalog(),
         auto,
         langfuse: llm.langfuse.as_ref().map(|l| LangfuseConfig {

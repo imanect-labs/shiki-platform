@@ -34,6 +34,7 @@ use std::sync::Arc;
 
 /// ChatGPT プランの照合・モデルの見え方（gateway.rs の行数上限のため分割）。
 mod chatgpt_gate;
+mod user_provider_gate;
 
 /// 会計の「利用元」（管理画面の利用元別集計・`llm_usage.source`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -114,6 +115,7 @@ struct Inner {
     /// プロバイダ ID → アダプタ。モデルの `provider` で振り分ける。
     providers: HashMap<String, ProviderSlot>,
     config: GatewayConfig,
+    user_providers: user_provider_gate::UserProviders,
     accounting: UsageRecorder,
     tenants: TenantLlmStore,
     usage: UsageReporter,
@@ -174,9 +176,36 @@ impl LlmGateway {
                 m.provider_id()
             )));
         }
+        let mut user_providers = user_provider_gate::UserProviders::new();
+        for rule in &config.user_provider_rules {
+            if rule.tenant_id.trim().is_empty() || rule.user_sub.trim().is_empty() {
+                return Err(LlmError::Config(
+                    "user provider rule requires tenant_id and user_sub".into(),
+                ));
+            }
+            if let Some(id) = rule
+                .providers
+                .iter()
+                .find(|id| !providers.contains_key(*id))
+            {
+                return Err(LlmError::Config(format!(
+                    "user provider rule refers to unknown provider: {id}"
+                )));
+            }
+            let users = user_providers.entry(rule.tenant_id.clone()).or_default();
+            if let Some(allowed) = users.get_mut(&rule.user_sub) {
+                allowed.retain(|id| rule.providers.contains(id));
+            } else {
+                users.insert(
+                    rule.user_sub.clone(),
+                    rule.providers.iter().cloned().collect(),
+                );
+            }
+        }
         Ok(LlmGateway {
             inner: Arc::new(Inner {
                 providers,
+                user_providers,
                 accounting: UsageRecorder::new(db.clone()),
                 tenants: TenantLlmStore::new(db.clone()),
                 usage: UsageReporter::new(db.clone()),
@@ -383,6 +412,11 @@ impl LlmGateway {
             .providers
             .get(entry.provider_id())
             .ok_or_else(|| LlmError::Config(format!("unknown provider for model: {logical}")))?;
+        if !self.provider_allowed_for(ctx, entry.provider_id()) {
+            return Err(LlmError::Config(
+                "provider is not enabled for this user".into(),
+            ));
+        }
         if slot.config.kind == ProviderKind::ChatgptPlan {
             // 連携者のプラン枠。本人以外（他の利用者・ワークフロー等）には使わせない。
             self.ensure_chatgpt_owner(ctx)?;

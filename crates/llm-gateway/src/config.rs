@@ -380,6 +380,15 @@ impl UsageLimitsConfig {
     }
 }
 
+/// 運営が指定するユーザー別プロバイダ許可リスト。組織の許可範囲を追加で狭める。
+/// tenant_id と OIDC sub の組で照合する。同じ組への複数指定は積集合になる。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserProviderRule {
+    pub tenant_id: String,
+    pub user_sub: String,
+    pub providers: Vec<String>,
+}
+
 /// gateway 全体の設定。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GatewayConfig {
@@ -388,6 +397,8 @@ pub struct GatewayConfig {
     /// 追加プロバイダ（複数同時利用）。モデルの `provider` で振り分ける。
     #[serde(default)]
     pub extra_providers: Vec<ProviderConfig>,
+    #[serde(default)]
+    pub user_provider_rules: Vec<UserProviderRule>,
     pub catalog: ModelCatalog,
     /// Auto の振り先。
     #[serde(default)]
