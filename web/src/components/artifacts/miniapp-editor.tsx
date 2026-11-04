@@ -11,7 +11,7 @@
 
 import * as React from "react";
 import dynamic from "next/dynamic";
-import { Loader2, Plus, X } from "lucide-react";
+import { Loader2, Plus, TriangleAlert, X } from "lucide-react";
 
 import type { WorkflowChoice, WorkflowInputHint } from "@imanect/yui/editor";
 
@@ -34,14 +34,14 @@ import { useMediaQuery } from "@/hooks/use-media-query";
 import {
   createMiniApp,
   getArtifact,
+  getMiniAppWorkflowInputs,
   getSkill,
   updateMiniApp,
   validationMessages,
   type MiniAppVersion,
 } from "@/lib/artifact-api";
-import { inputHints } from "@/lib/miniapp/workflow-inputs";
+import { inputNotes, toYuiHints } from "@/lib/miniapp/workflow-inputs";
 import { cn } from "@/lib/utils";
-import { getWorkflowVersion } from "@/lib/workflow-api";
 
 type Pin = MiniAppBody["workflows"][number];
 
@@ -56,9 +56,10 @@ type PinnedSkill =
 // 読めない部品も、変えなければそのまま保存できる（保存のときに確かめるのは足した部品と、対象か版を変えた部品だけ・
 // D-16 の (d)・BUG-80）。
 
-/// 束ねたワークフローの入力の定義を読めたか（読めないときは「入力はありません」と扱わない・BUG-122）。
+/// 束ねたワークフローの入力の定義を読めたか（読めないときは「入力はありません」と扱わない・BUG-122）。`hints` が
+/// `undefined` は、入力項目を決めていないワークフロー（突き合わせない）。
 type PinnedInputs =
-  | { state: "readable"; hints: WorkflowInputHint[] }
+  | { state: "readable"; hints: WorkflowInputHint[] | undefined }
   /// 403・404（削除されたか、見る権限がない。共同編集者がワークフローを見られないときなど）。
   | { state: "unreadable" }
   /// 通信・サーバの誤りで決められない。
@@ -197,28 +198,35 @@ export function MiniAppEditorDialog({
     setWorkflowToAdd("");
   };
 
-  // 束ねたワークフローの入力の定義（組み立てるで部品の候補と、足りない必須の入力を出すため）。
-  // 版ごとに 1 回だけ読む（読めなくても組み立ては使える。候補が出ないだけ）。
+  // 束ねたワークフローの入力の手がかり（組み立てるの部品の候補と、画面の入力との突き合わせのため）。手がかりは
+  // サーバーが入力項目から作る（保存のときの突き合わせと同じもの）。版ごとに 1 回だけ読む（読めなくても組み立ては
+  // 使える。候補が出ないだけ）。
   const requested = React.useRef(new Set<string>());
   React.useEffect(() => {
     if (!open) requested.current.clear();
   }, [open]);
   React.useEffect(() => {
     if (!open) return;
-    for (const p of pins) {
-      const key = `${p.artifact_id}@${p.version}`;
-      if (requested.current.has(key)) continue;
-      requested.current.add(key);
-      void getWorkflowVersion(p.artifact_id, p.version)
-        .then((w) =>
-          setInputs((m) => ({ ...m, [key]: { state: "readable", hints: inputHints(w.ir.input_schema) } })),
-        )
-        .catch((e: unknown) => {
-          const status = statusOf(e);
-          const state = status === 403 || status === 404 ? "unreadable" : "unknown";
-          setInputs((m) => ({ ...m, [key]: { state } }));
-        });
-    }
+    const wanted = pins.filter((p) => !requested.current.has(`${p.artifact_id}@${p.version}`));
+    if (wanted.length === 0) return;
+    const keys = wanted.map((p) => `${p.artifact_id}@${p.version}`);
+    for (const key of keys) requested.current.add(key);
+    void getMiniAppWorkflowInputs(wanted.map((p) => ({ artifact_id: p.artifact_id, version: p.version })))
+      .then((items) =>
+        setInputs((m) => {
+          const next = { ...m };
+          items.forEach((item, i) => {
+            next[keys[i]!] = item.readable
+              ? { state: "readable", hints: item.inputs ? toYuiHints(item.inputs) : undefined }
+              : { state: "unreadable" };
+          });
+          return next;
+        }),
+      )
+      .catch(() =>
+        // 通信・サーバの誤りで決められない（読めないと決めつけない）。
+        setInputs((m) => ({ ...m, ...Object.fromEntries(keys.map((k) => [k, { state: "unknown" } as const])) })),
+      );
   }, [pins, open]);
   // 読めなかったワークフローは入力を渡さない（空の入力を渡すと、組み立てるが画面のどの入力にも「という入力は
   // ありません」と言う。入力が無いのではなく、読めないだけ・BUG-122）。
@@ -234,6 +242,12 @@ export function MiniAppEditorDialog({
     const s = inputs[`${p.artifact_id}@${p.version}`];
     return s && s.state !== "readable" ? [{ alias: p.alias, state: s.state }] : [];
   });
+  // 書くタブの記述の、画面の入力とワークフローの入力項目の食い違い（組み立てると同じ突き合わせ・保存は止めない）。
+  const deferredScreen = React.useDeferredValue(screen);
+  const writeNotes = React.useMemo(
+    () => (tab === "write" ? inputNotes(deferredScreen, choices) : []),
+    [tab, deferredScreen, choices],
+  );
   // 書くタブで直した後は、隠れている組み立てる（直す前の段）の数え直しを使わない（ワークフローを外したときなど）
   const onValidity = React.useCallback((v: ScreenValidity) => {
     if (!sourceEdited.current) setValidity(v);
@@ -463,9 +477,30 @@ export function MiniAppEditorDialog({
                 rows={14}
                 spellCheck={false}
                 placeholder={"# 画面の見出し\n\n```ui\napp …\n```"}
+                aria-describedby={writeNotes.length > 0 ? "app-screen-inputs" : undefined}
                 className="block w-full resize-y rounded-lg border border-input bg-background px-3 py-2 font-mono text-[13px] leading-relaxed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               />
             )}
+            {tab === "write" && writeNotes.length > 0 ? (
+              <div
+                id="app-screen-inputs"
+                role="note"
+                data-testid="miniapp-write-input-notes"
+                className="space-y-1 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-800 dark:text-amber-300"
+              >
+                <p className="flex items-start gap-1.5 font-medium">
+                  <TriangleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+                  画面の入力が、ワークフローの入力項目と合っていません。保存はできます。
+                </p>
+                <ul className="list-disc space-y-0.5 pl-5">
+                  {writeNotes.map((n, i) => (
+                    <li key={i} className="[overflow-wrap:anywhere]">
+                      {n}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
           </div>
 
           <div className="space-y-1.5">

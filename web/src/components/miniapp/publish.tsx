@@ -38,6 +38,13 @@ export function savedToast(saved: MiniAppVersion): { title: string; description:
   if (saved.warnings.length > 0) {
     return { title, description: `画面に直す箇所が ${saved.warnings.length} 件あります。直すまで公開できません。` };
   }
+  // 画面の入力とワークフローの入力項目の食い違いは、公開を止めない（入力の画面で必須の値が欠けると実行が止まる）。
+  if (saved.input_warnings.length > 0) {
+    return {
+      title,
+      description: `画面の入力が、ワークフローの入力項目と ${saved.input_warnings.length} か所合っていません。「書く」か「組み立てる」で確かめてください。`,
+    };
+  }
   return {
     title,
     description:

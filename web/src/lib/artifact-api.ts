@@ -212,7 +212,8 @@ export async function getSkill(id: string, version?: number): Promise<SkillVersi
 // ── ミニアプリ（Task 6.10）──────────────────────────────────────────────
 
 /// 保存した版（下書き）。`published_version` は公開したバージョン（保存しても変わらない）、`warnings` は画面の
-/// 書き損じ（保存はできた。直すまで公開できない・D-16）。
+/// 書き損じ（保存はできた。直すまで公開できない・D-16）、`input_warnings` は画面の入力とワークフローの入力項目の
+/// 食い違い（保存も公開も止めない・GAP-12）。
 export type MiniAppVersion = Omit<components["schemas"]["MiniAppResponse"], "body"> & { body: MiniAppBody };
 
 /// 公開の前の確かめ（公開したバージョンとの差と、公開を止める誤り・codegen）。
@@ -252,6 +253,20 @@ export async function updateMiniApp(
       method: "PUT",
     }),
   );
+}
+
+/// 束ねるワークフローの版の入力の手がかり（読めたか・入力項目の並びの順・codegen）。
+export type PinnedWorkflowInputs = components["schemas"]["PinnedWorkflowInputs"];
+
+/// 束ねるワークフローの版ごとの入力の手がかりを読む（あなたの権限で読む・リクエストの順・GAP-12）。手がかりの決まりは
+/// サーバーにだけ置く（保存のときの突き合わせと同じもの）。読めない版は `readable: false`。
+export async function getMiniAppWorkflowInputs(
+  workflows: { artifact_id: string; version: number }[],
+): Promise<PinnedWorkflowInputs[]> {
+  const res = await ok<components["schemas"]["WorkflowInputsResponse"]>(
+    await apiFetch("/mini-apps/workflow-inputs", json({ workflows })),
+  );
+  return res.items;
 }
 
 /// ミニアプリを開く。`version` を省くと公開したバージョン（まだ公開していないアプリを作る人が開くときは最新）。
