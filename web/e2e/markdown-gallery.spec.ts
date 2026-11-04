@@ -61,6 +61,13 @@ test.describe("回答本文の Markdown ギャラリー", () => {
     await expect(page.locator(".katex-error")).toHaveCount(0);
   });
 
+  test("引用の中で暗黙に閉じたフェンスの後ろにだけある数式も描く", async ({ page }) => {
+    // この本文だけで数式の有無を判定する（ほかの本文の数式で読み込まれた KaTeX に頼らない）。
+    const cell = page.getByTestId("markdown-math-after-quoted-fence");
+    await expect(cell.locator("blockquote pre code")).toHaveText("code");
+    await expect(cell.locator("p", { hasText: "引用の後の" }).locator(".katex")).toHaveCount(1);
+  });
+
   test("式の大きさに上限があり、行内の式は自分の箱の外に描かない", async ({ page }) => {
     const cell = page.getByTestId("markdown-math-edge");
     const p = cell.locator("p", { hasText: "大きさの上限" });

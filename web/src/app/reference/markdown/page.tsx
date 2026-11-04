@@ -101,6 +101,12 @@ echo \\(z\\) $$
 
 大きさの上限 \\(\\rule{500em}{1em}\\) と、箱の外への重ね描き \\(\\rlap{\\text{はみ出す文字はみ出す文字はみ出す文字}}\\)。`;
 
+/// 数式が、引用の中で暗黙に閉じたフェンスの後ろにだけある場合（数式の有無の判定が見落とさない）。
+const MATH_AFTER_QUOTED_FENCE = `> \`\`\`
+> code
+
+引用の後の \\(y^2\\)`;
+
 function Cell({ id, title, children }: { id: string; title: string; children: React.ReactNode }) {
   return (
     <section data-testid={`markdown-${id}`} className="min-w-0">
@@ -122,6 +128,9 @@ export default function MarkdownGalleryPage() {
         </Cell>
         <Cell id="math" title="数式">
           <Markdown>{MATH}</Markdown>
+        </Cell>
+        <Cell id="math-after-quoted-fence" title="引用の中で暗黙に閉じたフェンスの後ろの数式">
+          <Markdown>{MATH_AFTER_QUOTED_FENCE}</Markdown>
         </Cell>
         <Cell id="math-edge" title="数式の区切りが構造の中にある場合">
           <Markdown>{MATH_EDGE}</Markdown>

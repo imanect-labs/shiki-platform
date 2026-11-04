@@ -8,12 +8,16 @@ import "katex/dist/katex.min.css";
 
 type PluggableList = NonNullable<Options["remarkPlugins"]>;
 
-/// 本文に数式の候補（`$$`・`\(`・`\[`）があるか。フェンスとインラインコードの中は数えない
-/// （シェルの `$$` などで KaTeX を読み込まない）。判定は読み込むかどうかにだけ使うので近似でよい。
+/// 本文に数式の候補（`$$`・`\(`・`\[`）があるか。読み込むかどうかにだけ使う判定なので、
+/// 迷う所は「ある」に倒す（見落とすと数式が描かれない。多めに読み込んでも遅くなるだけ）。
+/// 除くのは行頭から始まるフェンス（トップレベルのコードブロック）の中だけ（シェルの `$$` などで
+/// KaTeX を読み込まない）。引用・リストの中のフェンスは暗黙に閉じることがあり、どこまでがコードかを
+/// 正規表現では決められないので除かない。インラインコードも、閉じの対応を誤ると本文ごと消すので除かない。
 export function mayHaveMath(text: string): boolean {
-  if (!/\$\$|\\\(|\\\[/.test(text)) return false;
-  const prose = text.replace(/(`{3,}|~{3,})[\s\S]*?(?:\1|$)/g, "").replace(/(`+)[\s\S]*?\1/g, "");
-  return /\$\$|\\\(|\\\[/.test(prose);
+  const candidate = /\$\$|\\\(|\\\[/;
+  if (!candidate.test(text)) return false;
+  const prose = text.replace(/^(`{3,}|~{3,})[^\n]*\n[\s\S]*?(?:^\1[`~]*[ \t]*$|(?![\s\S]))/gm, "");
+  return candidate.test(prose);
 }
 
 type Katex = typeof import("katex").default;
