@@ -31,8 +31,9 @@ test.describe("回答本文の Markdown ギャラリー", () => {
   test("区切りがリスト・引用・表・コードの中にあっても構造を壊さない", async ({ page }) => {
     const cell = page.getByTestId("markdown-math-edge");
     await expect(cell.locator(".katex").first()).toBeVisible();
-    // リストは途中で切れない（箇条書き 2 項目・番号付き 3 項目のまま）。
+    // リストは途中で切れない（箇条書き 2 項目・番号付き 3 項目のまま）。項目の中の \\[ \\] も式にする。
     await expect(cell.locator("ul > li")).toHaveCount(2);
+    await expect(cell.locator("ul > li").first().locator(".katex-display")).toHaveCount(1);
     await expect(cell.locator("ol > li")).toHaveCount(3);
     await expect(cell.locator("ol")).toHaveCount(1);
     // 引用の中の式（1 行・複数行）は引用の中に描く。
@@ -41,15 +42,23 @@ test.describe("回答本文の Markdown ギャラリー", () => {
     // 表の行はセルを失わない。
     await expect(cell.locator("tr")).toHaveCount(3);
     await expect(cell.locator("table .katex")).toHaveCount(1);
-    // コード（バッククォート 2 つのインラインコード・フェンス）は原文のまま。
-    await expect(cell.locator("code", { hasText: "`\\(x\\)`" })).toHaveCount(1);
-    await expect(cell).toContainText("echo \\(z\\) $$");
-    // 隣り合う式は 2 つの式になり、角括弧のエスケープは式にしない。書き損じ（赤字）も出ない。
-    await expect(cell).toContainText("[注1]");
+    // 隣り合う式は 2 つの式になる。文中の角括弧のエスケープは式にしない。
     await expect(cell.locator("p", { hasText: "隣り合う式" }).locator(".katex")).toHaveCount(2);
-    await expect(page.locator(".katex-error")).toHaveCount(0);
-    // 暗黙に閉じたフェンスの後ろの式も描く。
+    await expect(cell).toContainText("[注1]・[config_file]");
+    // コードの中の \\( は式の区切りにならず、後ろの式とも組にならない。本文の $$ も式を壊さない。
+    const bre = cell.locator("p", { hasText: "BRE のグループ" });
+    await expect(bre.locator("code")).toHaveText("\\(");
+    await expect(bre.locator(".katex")).toHaveCount(2);
+    await expect(bre).toContainText("PID は $$ で取れる");
+    // コード（バッククォート 2 つのインラインコード・フェンス）は原文のまま（幅 0 の空白なども足さない）。
+    await expect(cell.locator("code", { hasText: "`\\(x\\)`" })).toHaveCount(1);
+    const fence = await cell.locator("pre code", { hasText: "find ." }).innerText();
+    expect(fence).toContain("  \\( -name '*.log' -o -name '*.tmp' \\) -delete");
+    expect(fence).toContain("echo \\(z\\) $$");
+    expect(fence).not.toMatch(/[\u200B\uE000-\uF8FF]/);
+    // 暗黙に閉じたフェンスの後ろの式も描く。書き損じ（赤字）は出ない。
     await expect(cell.locator("p", { hasText: "引用の後の" }).locator(".katex")).toHaveCount(1);
+    await expect(page.locator(".katex-error")).toHaveCount(0);
   });
 
   test("式の大きさに上限があり、行内の式は自分の箱の外に描かない", async ({ page }) => {
@@ -59,9 +68,12 @@ test.describe("回答本文の Markdown ギャラリー", () => {
     const [cellBox, ruleBox] = await Promise.all([cell.boundingBox(), p.locator(".katex").first().boundingBox()]);
     // \rule{500em} は maxSize（10em）で切り詰められ、本文の幅を押し広げない。
     expect(ruleBox!.width).toBeLessThan(cellBox!.width);
-    // \rlap の中身は式の箱（幅 0）の外に出るので、clip-path で切り取られる。
-    const clip = await p.locator(".katex").nth(1).evaluate((el) => getComputedStyle(el.parentElement!).clipPath);
-    expect(clip).toContain("inset");
+    // \\rlap の中身は式の箱（幅 0）の外に出るので、clip-path か横スクロールの箱で切り取られる。
+    const clipped = await p.locator(".katex").nth(1).evaluate((el) => {
+      const s = getComputedStyle(el.parentElement!);
+      return s.clipPath.includes("inset") || s.overflowX !== "visible";
+    });
+    expect(clipped).toBe(true);
   });
 
   test("引用番号の直後の「。」を番号と同じ行に置く", async ({ page }) => {

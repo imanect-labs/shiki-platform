@@ -17,7 +17,7 @@ import { resolveKind } from "@imanect/yui";
 import { isYuiLanguage } from "@imanect/yui/react";
 
 import { CodeBlock } from "./code-block";
-import { MathTex, markMathDelimiters, mathKind, mayHaveMath, useMathPlugins } from "./markdown-math";
+import { MathTex, mathKind, mayHaveMath, useMathPlugins } from "./markdown-math";
 // 引用・箇条書きの中の図はボタンを出さない（重い図の描画部とは別に、軽いコンテキストだけ読む）。
 import { YuiNestedContext } from "./yui-actions";
 import { DataGridHostContext } from "@/components/data/data-grid-host";
@@ -453,11 +453,7 @@ export function Markdown({
 }) {
   // 数式は AI の回答だけ（利用者の発話は打ったとおりに見せる）。
   const mathPlugins = useMathPlugins(!untrusted && mayHaveMath(children));
-  // 区切りの置き換えは数式を描けるときだけ（読み込み前・失敗時は原文のまま描く）。
-  const text = React.useMemo(
-    () => (mathPlugins ? markMathDelimiters(children) : children),
-    [children, mathPlugins],
-  );
+  const text = children;
   return (
     <div
       className={cn(
