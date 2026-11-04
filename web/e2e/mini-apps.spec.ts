@@ -449,8 +449,13 @@ test.describe("ミニアプリ（画面に返す結果）", () => {
           type: "workflow.reply",
           params: { format: "text", tone: "success", value: "受け付けました" },
         },
-        // 存在しないファイルを読む（実行主体の権限で読めず失敗する）。
-        { id: "read", type: "storage.read", params: { file: "00000000-0000-4000-8000-000000000000" } },
+        // 存在しないファイルを読む（実行主体の権限で読めず失敗する）。ファイルを文字の組み立てで決めるので、押す前の
+        // 権限の確かめ（GAP-37・書き先が決まっているボタンは押す前に止める）は掛からず、押した後に失敗する。
+        {
+          id: "read",
+          type: "storage.read",
+          params: { file: { $template: "00000000-0000-4000-8000-000000000000" } },
+        },
       ],
       [{ from: "accepted", to: "read" }],
       ["storage.read"],
