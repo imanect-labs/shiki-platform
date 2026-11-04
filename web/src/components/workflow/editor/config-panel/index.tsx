@@ -17,7 +17,7 @@ import { Sheet, SheetContent, SheetDescription, SheetTitle } from "@/components/
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { WARNING_CODES } from "@/lib/workflow-api";
 import { inputFieldsOf } from "@/lib/workflow-input-schema";
-import type { Node as IrNode, Trigger } from "@/generated/workflow-ir";
+import type { Node as IrNode, Trigger, ValidationError } from "@/generated/workflow-ir";
 import { BLANK_OK_WHEN_SET, NODE_CATALOG, REQUIRED_PICK_FIELDS } from "@/generated/workflow-catalog";
 import type { EditorContext } from "../workflow-editor";
 import { nodeIcon } from "../icons";
@@ -59,8 +59,14 @@ import {
 import { patchParams } from "./params";
 import type { InputRefUsage } from "./input-schema-editor";
 import { TriggerPanel } from "./trigger-panel";
-import { InputFieldsContext, MapRegionContext, TriggerSourcesContext, type RefCandidate } from "./value-expr-input";
-import { inputRefKeys } from "./value-refs";
+import {
+  InputFieldsContext,
+  InputRefWarningsContext,
+  MapRegionContext,
+  TriggerSourcesContext,
+  type RefCandidate,
+} from "./value-expr-input";
+import { inputKeyOfRef, inputWarningKey, isFromRef, valueAtParamsPath } from "./value-refs";
 
 const FORMS: Record<string, React.ComponentType<FormProps>> = {
   "storage.read": StorageReadForm,
@@ -283,10 +289,25 @@ function NodePanel({ ctx, node, sheet }: { ctx: EditorContext; node: IrNode; she
     }
     return map;
   }, [allWarnings]);
+  // 入力項目に無い項目を指す参照の注意（`ir.unknown_input`）は、その参照の欄の下に出す（参照ごとの鍵で引く）。
+  const inputRefWarnings = React.useMemo(() => {
+    const map = new Map<string, string>();
+    for (const w of allWarnings) {
+      if (w.code !== WARNING_CODES.UNKNOWN_INPUT) continue;
+      const ref = valueAtParamsPath(node.params, w.path);
+      if (isFromRef(ref) && !map.has(inputWarningKey(ref))) map.set(inputWarningKey(ref), w.message);
+    }
+    return map;
+  }, [allWarnings, node.params]);
   const params = (node.params ?? {}) as Record<string, unknown>;
   const nodeWarnings = allWarnings.filter(
     (w) =>
-      !((w.code === WARNING_CODES.REQUIRED_TEXT_EMPTY || FIELD_WARNING_CODES.has(w.code)) && paramField(w.path)),
+      !(
+        (w.code === WARNING_CODES.REQUIRED_TEXT_EMPTY ||
+          FIELD_WARNING_CODES.has(w.code) ||
+          w.code === WARNING_CODES.UNKNOWN_INPUT) &&
+        paramField(w.path)
+      ),
   );
   // このノードから出るエッジの出口（中身が同じなら同じ配列を渡す）。
   const edgePortsKey = JSON.stringify(edgePortsOf(node.id, ctx.state.ir.edges));
@@ -369,24 +390,26 @@ function NodePanel({ ctx, node, sheet }: { ctx: EditorContext; node: IrNode; she
         {Form ? (
           // ノードを選び直したらフォームの手元の状態（入力方法の切り替えなど）を持ち越さない。
           <InputFieldsContext.Provider value={inputFields}>
-            <TriggerSourcesContext.Provider value={triggerSources}>
-              <MapRegionContext.Provider value={mapLabel}>
-                <Form
-                  key={node.id}
-                  node={node}
-                  dispatch={ctx.dispatch}
-                  refCandidates={refCandidates}
-                  inMapRegion={inMapRegion}
-                  fieldErrors={fieldErrors}
-                  fieldWarnings={fieldWarnings}
-                  serverCheck={serverCheck}
-                  serverPorts={ctx.state.serverPorts[node.id]}
-                  serverPortsFresh={ctx.state.serverPortsParams[node.id] === node.params}
-                  edgePorts={edgePorts}
-                  insideTypes={insideTypes}
-                />
-              </MapRegionContext.Provider>
-            </TriggerSourcesContext.Provider>
+            <InputRefWarningsContext.Provider value={inputRefWarnings}>
+              <TriggerSourcesContext.Provider value={triggerSources}>
+                <MapRegionContext.Provider value={mapLabel}>
+                  <Form
+                    key={node.id}
+                    node={node}
+                    dispatch={ctx.dispatch}
+                    refCandidates={refCandidates}
+                    inMapRegion={inMapRegion}
+                    fieldErrors={fieldErrors}
+                    fieldWarnings={fieldWarnings}
+                    serverCheck={serverCheck}
+                    serverPorts={ctx.state.serverPorts[node.id]}
+                    serverPortsFresh={ctx.state.serverPortsParams[node.id] === node.params}
+                    edgePorts={edgePorts}
+                    insideTypes={insideTypes}
+                  />
+                </MapRegionContext.Provider>
+              </TriggerSourcesContext.Provider>
+            </InputRefWarningsContext.Provider>
           </InputFieldsContext.Provider>
         ) : (
           <p className="text-xs text-muted-foreground">このブロックに設定はありません</p>
@@ -408,19 +431,28 @@ function NodePanel({ ctx, node, sheet }: { ctx: EditorContext; node: IrNode; she
   );
 }
 
-/// ブロックが参照している入力項目のキー（`$from: "input"` の path の先頭の段）と、そのブロックの表示名。
-function inputUsagesOf(nodes: IrNode[]): InputRefUsage[] {
+/// 入力項目に無い項目を指す参照があるブロック（保存時の検証の注意 `ir.unknown_input` から・決まりはサーバー）。キーは
+/// 参照の path の先頭の段（入力項目の表で足せる項目）と、そのブロックの表示名。
+function danglingInputsOf(nodes: IrNode[], warnings: ValidationError[]): InputRefUsage[] {
   const byKey = new Map<string, string[]>();
-  for (const n of nodes) {
+  for (const w of warnings) {
+    if (w.code !== WARNING_CODES.UNKNOWN_INPUT || !w.node_id) continue;
+    const n = nodes.find((x) => x.id === w.node_id);
+    const key = n ? inputKeyOfRef(valueAtParamsPath(n.params, w.path)) : null;
+    if (!n || key === null) continue;
     const label = n.label || NODE_CATALOG.find((c) => c.type === n.type)?.label_ja || n.id;
-    for (const key of inputRefKeys(n.params)) byKey.set(key, [...(byKey.get(key) ?? []), label]);
+    const blocks = byKey.get(key) ?? [];
+    if (!blocks.includes(label)) byKey.set(key, [...blocks, label]);
   }
   return [...byKey].map(([key, blocks]) => ({ key, blocks }));
 }
 
 export function ConfigPanel({ ctx }: { ctx: EditorContext }) {
   const { selection, ir } = ctx.state;
-  const inputUsages = React.useMemo(() => inputUsagesOf(ir.nodes), [ir.nodes]);
+  const inputUsages = React.useMemo(
+    () => danglingInputsOf(ir.nodes, ctx.state.serverWarnings),
+    [ir.nodes, ctx.state.serverWarnings],
+  );
   const desktop = useMediaQuery("(min-width: 768px)");
   const sheet = !desktop;
   const close = () => ctx.dispatch({ type: "select", selection: { kind: "none" } });

@@ -30,8 +30,9 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { InputRefWarningsContext } from "./value-expr-input";
 import {
-  missingInputKey,
+  inputWarningKey,
   pathHints,
   refKey,
   refOptions,
@@ -76,7 +77,9 @@ export function RefPicker({
   const listId = React.useId();
   const keepDefault = value?.default !== undefined ? { default: value.default } : {};
   const hints = custom ? pathHints(value?.$from ?? "input", ctx) : [];
-  const missing = missingInputKey(value, ctx);
+  // 入力項目に無い項目を指す参照（保存時の検証の注意を写す・決まりはサーバー）。
+  const inputWarnings = React.useContext(InputRefWarningsContext);
+  const missing = value ? (inputWarnings.get(inputWarningKey(value)) ?? null) : null;
 
   return (
     <div className="space-y-1.5">
@@ -155,9 +158,7 @@ export function RefPicker({
       {missing !== null ? (
         <p className="flex items-start gap-1.5 text-[11px] leading-relaxed text-muted-foreground" role="note" data-testid="ref-missing-input">
           <TriangleAlert className="mt-0.5 size-3.5 shrink-0 text-[var(--season-autumn)]" aria-hidden />
-          <span>
-            入力項目に「{missing}」がありません（このままでは実行で失敗します）。きっかけの設定で項目を足すか、参照先を選び直してください
-          </span>
+          <span>{missing}</span>
         </p>
       ) : null}
     </div>

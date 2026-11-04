@@ -203,25 +203,28 @@ function inputKeyOf(v: Record<string, unknown>): { key: string; rest: string } |
   return { key: unpointerSegment(head), rest: rest.length > 0 ? `/${rest.join("/")}` : "" };
 }
 
-/// 入力項目の定義に無いキーを指す参照なら、そのキー（項目を消した・キーを書き換えた後に残った参照）。
-/// 入力項目を 1 つも定義していないワークフローでは判定しない（入力の形が決まっていない）。
-export function missingInputKey(ref: RefValue | null, ctx: RefContext): string | null {
-  if (!ref || ctx.inputFields.length === 0) return null;
-  const hit = inputKeyOf(ref as Record<string, unknown>);
-  return hit && !ctx.inputFields.some((f) => f.key === hit.key) ? hit.key : null;
+/// 入力項目に無い項目を指す参照の注意（保存時の注意 `ir.unknown_input`）を引く鍵。参照元・場所・既定値の有無で
+/// 決める（同じ参照なら同じ注意。既定値の有無で文言が違う）。
+export function inputWarningKey(ref: { $from: string; path?: string | null; default?: unknown }): string {
+  return `${refKey(ref)}|${ref.default !== undefined ? "default" : ""}`;
 }
 
-/// params の中（差し込みの vars を含む）で参照している入力項目のキー。
-export function inputRefKeys(value: unknown, out: Set<string> = new Set()): Set<string> {
-  if (Array.isArray(value)) {
-    for (const v of value) inputRefKeys(v, out);
-  } else if (value !== null && typeof value === "object") {
-    const obj = value as Record<string, unknown>;
-    const hit = inputKeyOf(obj);
-    if (hit) out.add(hit.key);
-    for (const v of Object.values(obj)) inputRefKeys(v, out);
+/// params の中の、`/params/...` の位置にある値（無ければ undefined）。
+export function valueAtParamsPath(params: unknown, path: string | null | undefined): unknown {
+  if (!path?.startsWith("/params")) return undefined;
+  let cur: unknown = params;
+  for (const raw of path.slice("/params".length).split("/").slice(1)) {
+    const seg = unpointerSegment(raw);
+    if (Array.isArray(cur)) cur = cur[Number(seg)];
+    else if (cur !== null && typeof cur === "object") cur = (cur as Record<string, unknown>)[seg];
+    else return undefined;
   }
-  return out;
+  return cur;
+}
+
+/// 入力の参照の、入力項目のキー（path の先頭の段・入力全体を指すなら null）。
+export function inputKeyOfRef(ref: unknown): string | null {
+  return ref !== null && typeof ref === "object" ? (inputKeyOf(ref as Record<string, unknown>)?.key ?? null) : null;
 }
 
 /// 入力項目のキーの変更（旧キー → 新キー）に合わせて、params の中の `$from: "input"` の path の先頭の段を

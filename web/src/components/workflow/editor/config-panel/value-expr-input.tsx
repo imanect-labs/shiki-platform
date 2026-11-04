@@ -68,6 +68,9 @@ export type { ComposeKeys, ComposeShape, RefCandidate };
 
 /// この実行の入力項目（ワークフローの input_schema の properties）。設定パネルが渡す。
 export const InputFieldsContext = React.createContext<InputFieldInfo[]>([]);
+/// 入力項目に無い項目を指す参照の注意（保存時の注意 `ir.unknown_input`・`inputWarningKey` → 文言）。決まりはサーバーに
+/// だけ置き、ここでは検証の結果を参照の欄の下に写す（GAP-35）。設定パネルが渡す。
+export const InputRefWarningsContext = React.createContext<ReadonlyMap<string, string>>(new Map());
 /// 中にいる繰り返しのブロック名（繰り返しの中のブロックの設定だけ・繰り返し中の 1 件の候補に添える）。
 export const MapRegionContext = React.createContext<string | null>(null);
 

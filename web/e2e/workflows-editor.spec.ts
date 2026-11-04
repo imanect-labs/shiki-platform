@@ -791,7 +791,7 @@ test("入力項目: キーを変えるとブロックの参照も新しいキー
   await expect(dangling).toContainText("subject");
   await expect(dangling).toContainText("「要約する」");
   await canvas.getByText("要約する").first().click();
-  await expect(panel.getByTestId("ref-missing-input")).toContainText("入力項目に「subject」がありません");
+  await expect(panel.getByTestId("ref-missing-input")).toContainText("「subject」は入力項目にありません。");
 
   // 「項目に足す」で同じキーの項目を戻すと、注意は消える。
   await canvas.getByText("手動で実行").first().click();
