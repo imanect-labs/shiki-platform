@@ -89,45 +89,41 @@ pub struct ParamsIssue {
     pub message: String,
 }
 
-/// serde_path_to_error の track を `/params/...` path へ変換する。
-fn pointer_path(track: &serde_path_to_error::Path) -> String {
-    use serde_path_to_error::Segment;
-    let mut out = String::from("/params");
-    for seg in track {
-        match seg {
-            Segment::Map { key } => {
-                out.push('/');
-                out.push_str(key);
-            }
-            Segment::Seq { index } => {
-                out.push('/');
-                out.push_str(&index.to_string());
-            }
-            Segment::Enum { variant } => {
-                out.push('/');
-                out.push_str(variant);
-            }
-            Segment::Unknown => out.push_str("/?"),
-        }
+/// ノードの params の誤りの上限（1 つのブロックあたり・応答を膨らませない）。
+const MAX_PARAMS_ISSUES: usize = 10;
+
+/// params JSON を型 `T` として読み、誤りをできるだけまとめて `/params/...` の位置つきで返す（V1b・GAP-35）。
+/// 型どおりに読めたら `cross`（項目どうしの検査・最初の 1 件）を掛ける。
+fn issues_as<T: DeserializeOwned>(
+    raw: &Value,
+    cross: impl FnOnce(T) -> Result<(), ParamsIssue>,
+) -> Vec<ParamsIssue> {
+    let faults = crate::ir::schema_faults::faults::<T>(raw, MAX_PARAMS_ISSUES);
+    if !faults.is_empty() {
+        return faults
+            .into_iter()
+            .map(|f| ParamsIssue {
+                path: format!("/params{}", crate::ir::schema_faults::pointer(&f.at)),
+                message: humanize(&f.raw),
+            })
+            .collect();
     }
-    out
+    match parse::<T>(raw) {
+        Ok(parsed) => cross(parsed).err().into_iter().collect(),
+        Err(message) => vec![ParamsIssue {
+            path: "/params".to_string(),
+            message,
+        }],
+    }
 }
 
-/// params JSON を型 `T` として検査する（値は捨てる・エラーは path 付き）。
-fn check_as<T: DeserializeOwned>(raw: &Value) -> Result<(), ParamsIssue> {
-    let mut track = serde_path_to_error::Track::new();
-    let de = serde_path_to_error::Deserializer::new(raw, &mut track);
-    match T::deserialize(de) {
-        Ok(_) => Ok(()),
-        Err(e) => Err(ParamsIssue {
-            path: pointer_path(&track.path()),
-            message: humanize(&e.to_string()),
-        }),
-    }
+/// 項目どうしの検査の無い型。
+fn issues_of<T: DeserializeOwned>(raw: &Value) -> Vec<ParamsIssue> {
+    issues_as::<T>(raw, |_| Ok(()))
 }
 
 /// serde の英語の文言を利用者向けの日本語へ（項目名だけを拾い、型名・英語の文言を出さない・検証 N11）。
-fn humanize(raw: &str) -> String {
+pub(crate) fn humanize(raw: &str) -> String {
     let msg = raw.split(" at line ").next().unwrap_or(raw);
     let quoted = |s: &str| -> Option<String> {
         let start = s.find('`')? + 1;
@@ -166,129 +162,76 @@ fn humanize(raw: &str) -> String {
     }
 }
 
-/// ノード種ごとの typed 契約へ params を照合する（保存時検証 V1 の入口）。
+/// ノード種ごとの typed 契約へ params を照合する（最初の誤りだけ・[`params_issues`] の先頭）。
 ///
 /// 予約語彙（`available_stage_a() == false`）は V3 が保存を拒否するため対象外（`Ok`）。
 pub fn check_params(nt: NodeType, raw: &Value) -> Result<(), ParamsIssue> {
+    params_issues(nt, raw)
+        .into_iter()
+        .next()
+        .map_or(Ok(()), Err)
+}
+
+/// ノード種ごとの typed 契約へ params を照合し、誤りをできるだけまとめて返す（保存時検証 V1b の入口・GAP-35）。
+///
+/// 型の誤り（deny-unknown・必須・型）は項目ごとに位置つきで集める。型どおりに読めたときだけ項目どうしの検査
+/// （kind と供給する項目の整合など）を掛け、その最初の 1 件を返す（型の誤りを直す前の組み合わせを言わない）。
+/// 予約語彙（`available_stage_a() == false`）は V3 が保存を拒否するため対象外（空）。
+pub fn params_issues(nt: NodeType, raw: &Value) -> Vec<ParamsIssue> {
     match nt {
-        NodeType::ControlBranch => check_as::<BranchParams>(raw),
-        NodeType::ControlSwitch => check_as::<SwitchParams>(raw),
-        NodeType::ControlJoin => check_as::<JoinParams>(raw),
-        NodeType::ControlMap => check_as::<MapParams>(raw),
-        NodeType::ControlWait => {
-            check_as::<WaitParams>(raw)?;
-            // kind と供給フィールドの整合（tag 付き enum は deny_unknown_fields 不可のため
-            // フラット struct ＋ cross-field 検査で厳密性を保つ）。
-            let parsed: WaitParams = parse(raw).map_err(|message| ParamsIssue {
-                path: "/params".to_string(),
-                message,
-            })?;
-            parsed.check_cross_fields()
-        }
-        NodeType::StorageRead => check_as::<StorageReadParams>(raw),
-        NodeType::StorageWrite => check_as::<StorageWriteParams>(raw),
-        NodeType::StorageList => check_as::<StorageListParams>(raw),
-        NodeType::RagSearch => check_as::<RagSearchParams>(raw),
-        NodeType::LlmInvoke => {
-            check_as::<LlmInvokeParams>(raw)?;
-            let parsed: LlmInvokeParams = parse(raw).map_err(|message| ParamsIssue {
-                path: "/params".to_string(),
-                message,
-            })?;
-            parsed.check_cross_fields()
-        }
-        NodeType::AgentInvoke => check_as::<AgentInvokeParams>(raw),
-        NodeType::AiDecide => {
-            check_as::<AiDecideParams>(raw)?;
-            let parsed: AiDecideParams = parse(raw).map_err(|message| ParamsIssue {
-                path: "/params".to_string(),
-                message,
-            })?;
-            parsed.check_cross_fields()
-        }
-        NodeType::HttpRequest => {
-            check_as::<HttpRequestParams>(raw)?;
-            let parsed: HttpRequestParams = parse(raw).map_err(|message| ParamsIssue {
-                path: "/params".to_string(),
-                message,
-            })?;
-            parsed.check_cross_fields()
-        }
-        NodeType::ScriptRun => {
-            check_as::<ScriptRunParams>(raw)?;
-            let parsed: ScriptRunParams = parse(raw).map_err(|message| ParamsIssue {
-                path: "/params".to_string(),
-                message,
-            })?;
-            parsed.source.check_exactly_one()?;
+        NodeType::ControlBranch => issues_of::<BranchParams>(raw),
+        NodeType::ControlSwitch => issues_of::<SwitchParams>(raw),
+        NodeType::ControlJoin => issues_of::<JoinParams>(raw),
+        NodeType::ControlMap => issues_of::<MapParams>(raw),
+        // kind と供給フィールドの整合（tag 付き enum は deny_unknown_fields 不可のため
+        // フラット struct ＋ cross-field 検査で厳密性を保つ）。
+        NodeType::ControlWait => issues_as::<WaitParams>(raw, |p| p.check_cross_fields()),
+        NodeType::StorageRead => issues_of::<StorageReadParams>(raw),
+        NodeType::StorageWrite => issues_of::<StorageWriteParams>(raw),
+        NodeType::StorageList => issues_of::<StorageListParams>(raw),
+        NodeType::RagSearch => issues_of::<RagSearchParams>(raw),
+        NodeType::LlmInvoke => issues_as::<LlmInvokeParams>(raw, |p| p.check_cross_fields()),
+        NodeType::AgentInvoke => issues_of::<AgentInvokeParams>(raw),
+        NodeType::AiDecide => issues_as::<AiDecideParams>(raw, |p| p.check_cross_fields()),
+        NodeType::HttpRequest => issues_as::<HttpRequestParams>(raw, |p| p.check_cross_fields()),
+        NodeType::ScriptRun => issues_as::<ScriptRunParams>(raw, |p| {
+            p.source.check_exactly_one()?;
             // Stage A は inline のみ（実行時 unsupported を保存時に前倒しで弾く・偽装しない）。
-            if parsed.source.artifact.is_some() {
+            if p.source.artifact.is_some() {
                 return Err(ParamsIssue {
                     path: "/params/source/artifact".to_string(),
                     message: "script.run の artifact 参照は Stage A では未対応です".to_string(),
                 });
             }
             Ok(())
-        }
-        NodeType::SkillInvoke => check_as::<SkillInvokeParams>(raw),
-        NodeType::WorkflowStart => check_as::<WorkflowStartParams>(raw),
-        NodeType::CsvQuery => check_as::<CsvQueryParams>(raw),
-        NodeType::CsvPatch => check_as::<CsvPatchParams>(raw),
-        NodeType::CsvWrite => check_as::<CsvWriteParams>(raw),
-        NodeType::DataQuery => {
-            check_as::<DataQueryParams>(raw)?;
-            let parsed: DataQueryParams = parse(raw).map_err(|message| ParamsIssue {
-                path: "/params".to_string(),
-                message,
-            })?;
-            parsed.check_cross_fields()
-        }
-        NodeType::DataRecordCreate => check_as::<DataRecordCreateParams>(raw),
+        }),
+        NodeType::SkillInvoke => issues_of::<SkillInvokeParams>(raw),
+        NodeType::WorkflowStart => issues_of::<WorkflowStartParams>(raw),
+        NodeType::CsvQuery => issues_of::<CsvQueryParams>(raw),
+        NodeType::CsvPatch => issues_of::<CsvPatchParams>(raw),
+        NodeType::CsvWrite => issues_of::<CsvWriteParams>(raw),
+        NodeType::DataQuery => issues_as::<DataQueryParams>(raw, |p| p.check_cross_fields()),
+        NodeType::DataRecordCreate => issues_of::<DataRecordCreateParams>(raw),
         NodeType::DataRecordUpdate => {
-            check_as::<DataRecordUpdateParams>(raw)?;
-            let parsed: DataRecordUpdateParams = parse(raw).map_err(|message| ParamsIssue {
-                path: "/params".to_string(),
-                message,
-            })?;
-            parsed.check_cross_fields()
+            issues_as::<DataRecordUpdateParams>(raw, |p| p.check_cross_fields())
         }
         NodeType::DataRecordUpsert => {
-            check_as::<DataRecordUpsertParams>(raw)?;
-            let parsed: DataRecordUpsertParams = parse(raw).map_err(|message| ParamsIssue {
-                path: "/params".to_string(),
-                message,
-            })?;
-            parsed.check_cross_fields()
+            issues_as::<DataRecordUpsertParams>(raw, |p| p.check_cross_fields())
         }
-        NodeType::DataRecordDelete => check_as::<DataRecordDeleteParams>(raw),
-        NodeType::DataTransition => check_as::<DataTransitionParams>(raw),
-        NodeType::DataBulkUpsert => check_as::<DataBulkUpsertParams>(raw),
+        NodeType::DataRecordDelete => issues_of::<DataRecordDeleteParams>(raw),
+        NodeType::DataTransition => issues_of::<DataTransitionParams>(raw),
+        NodeType::DataBulkUpsert => issues_of::<DataBulkUpsertParams>(raw),
         NodeType::WorkflowReply => {
-            check_as::<WorkflowReplyParams>(raw)?;
-            let parsed: WorkflowReplyParams = parse(raw).map_err(|message| ParamsIssue {
-                path: "/params".to_string(),
-                message,
-            })?;
-            parsed.check_cross_fields()
+            issues_as::<WorkflowReplyParams>(raw, |p| p.check_cross_fields())
         }
         NodeType::HumanApproval => {
-            check_as::<HumanApprovalParams>(raw)?;
-            let parsed: HumanApprovalParams = parse(raw).map_err(|message| ParamsIssue {
-                path: "/params".to_string(),
-                message,
-            })?;
-            parsed.check_cross_fields()
+            issues_as::<HumanApprovalParams>(raw, |p| p.check_cross_fields())
         }
         NodeType::TransformDate => {
-            check_as::<TransformDateParams>(raw)?;
-            let parsed: TransformDateParams = parse(raw).map_err(|message| ParamsIssue {
-                path: "/params".to_string(),
-                message,
-            })?;
-            parsed.check_cross_fields()
+            issues_as::<TransformDateParams>(raw, |p| p.check_cross_fields())
         }
         // 予約語彙は V3 が「Stage A では未対応」で拒否する（params 契約は実装フェーズで追加）。
-        _ => Ok(()),
+        _ => Vec::new(),
     }
 }
 
@@ -311,6 +254,50 @@ mod tests {
         assert_eq!(err.path, "/params/bogus");
         assert!(err.message.contains("bogus"), "{}", err.message);
         assert!(!err.message.contains("unknown field"), "{}", err.message);
+    }
+
+    /// 型の誤りは 1 件で止めず、項目ごとに位置つきで返す（GAP-35）。最初の 1 件は前と同じ。
+    #[test]
+    fn params_issues_are_all_reported_with_positions() {
+        let raw = json!({
+            "url": "https://api.example.com", "method": "FETCH", "bogus": 1,
+            "secret": { "name": "tok", "attach": { "kind": "cookie" } }
+        });
+        let issues = params_issues(NodeType::HttpRequest, &raw);
+        let mut at: Vec<&str> = issues.iter().map(|i| i.path.as_str()).collect();
+        at.sort_unstable();
+        assert_eq!(
+            at,
+            vec![
+                "/params/bogus",
+                "/params/method",
+                "/params/secret/attach/kind"
+            ],
+            "{issues:?}"
+        );
+        assert_eq!(
+            check_params(NodeType::HttpRequest, &raw).unwrap_err(),
+            issues[0]
+        );
+        // 型の誤りがある間は項目どうしの検査を掛けない（kind の誤りだけを言い、kind と項目の組み合わせは言わない）。
+        let wait = json!({ "kind": "nap", "duration_sec": 60, "source": "storage.write" });
+        let issues = params_issues(NodeType::ControlWait, &wait);
+        assert_eq!(issues.len(), 1, "{issues:?}");
+        assert_eq!(issues[0].path, "/params/kind");
+        // 必須の項目が無いときは、入れ物の位置と項目の名前（前と同じ形）。
+        let issues = params_issues(NodeType::StorageWrite, &json!({ "name": "a.txt", "x": 1 }));
+        let mut got: Vec<(&str, &str)> = issues
+            .iter()
+            .map(|i| (i.path.as_str(), i.message.as_str()))
+            .collect();
+        got.sort_unstable();
+        assert_eq!(
+            got,
+            vec![
+                ("/params", "項目 'content' がありません"),
+                ("/params/x", "項目 'x' は使えません")
+            ]
+        );
     }
 
     #[test]

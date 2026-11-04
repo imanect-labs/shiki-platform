@@ -11,6 +11,8 @@ pub mod node;
 /// llm.invoke の出力の形（`output_schema`・保存時の検査・閉じる正規化・出力の検証）。
 pub mod output_schema;
 pub mod params;
+/// serde で読む型の誤りを、まとめて位置つきで集める（V1・V1b・GAP-35）。
+pub(crate) mod schema_faults;
 pub mod scopes;
 pub mod trigger;
 pub mod validate;

@@ -33,6 +33,7 @@ pub use semantics::{semantics_warnings, SEMANTICS_CHANGED};
 mod template;
 pub use template::{TEMPLATE_ESCAPED_VAR, TEMPLATE_UNCLOSED_BRACE};
 mod timeout;
+mod v1_schema;
 mod v2_graph;
 pub use v2_graph::UNCONNECTED_NODE;
 mod v3_vocab;
@@ -189,6 +190,18 @@ pub fn save_warnings(ir: &WorkflowIr, catalog: &Catalog) -> Vec<ValidationError>
     out
 }
 
+/// V1c: 入力項目（input_schema）の項目の並び `x-order` の形（properties のキーの文字列の配列・重なりなし・D-60）。
+/// 起動の検証は注記として読み飛ばすので、保存で止める。
+fn input_schema_errors(schema: &serde_json::Value) -> Vec<ValidationError> {
+    crate::ir::input_schema::order_errors(schema)
+        .into_iter()
+        .map(|(at, message)| {
+            ValidationError::new(v1_schema::SCHEMA_VIOLATION, message)
+                .at_path(format!("/input_schema{at}"))
+        })
+        .collect()
+}
+
 /// params の契約の誤りの文言（V1b）。
 fn params_message(message: &str) -> String {
     format!("params が不正です: {message}")
@@ -201,15 +214,10 @@ pub fn validate(
     value: &serde_json::Value,
     catalog: &Catalog,
 ) -> Result<WorkflowIr, Vec<ValidationError>> {
-    // V1: スキーマ（deny-unknown・型・必須）。パース失敗はここで打ち切る（後段が構造に依存）。
-    let ir = match WorkflowIr::from_json(value) {
-        Ok(ir) => ir,
-        Err(e) => {
-            return Err(vec![ValidationError::new(
-                "ir.schema_violation",
-                format!("スキーマ検証に失敗しました: {e}"),
-            )]);
-        }
+    // V1: スキーマ（deny-unknown・型・必須）。読めなければ後段（構造に依存）へは進まず、全体・ブロック・線・
+    // きっかけ・ブロックの設定・入力項目の誤りを、まとめて位置つきで返す（GAP-35）。
+    let Ok(ir) = WorkflowIr::from_json(value) else {
+        return Err(v1_schema::errors(value));
     };
 
     let mut errors = Vec::new();
@@ -232,9 +240,9 @@ pub fn validate(
         if !nt.available_stage_a() {
             continue;
         }
-        if let Err(issue) = crate::ir::params::check_params(nt, &node.params) {
+        for issue in crate::ir::params::params_issues(nt, &node.params) {
             errors.push(
-                ValidationError::new("ir.schema_violation", params_message(&issue.message))
+                ValidationError::new(v1_schema::SCHEMA_VIOLATION, params_message(&issue.message))
                     .at_node(&node.id)
                     .at_path(issue.path),
             );
@@ -242,15 +250,9 @@ pub fn validate(
     }
     // V1d: step 属性 `cache`（付けられる種・期限の範囲・T10）。
     cache::v1(&ir, &mut errors);
-    // V1c: input_schema の項目の並びの注記 `x-order`（D-60）。起動の検証は注記として読み飛ばすので、
-    // 形（properties のキーの文字列の配列・重なりなし）は保存で止める。
+    // V1c: input_schema の項目の並びの注記 `x-order`（D-60）。
     if let Some(schema) = &ir.input_schema {
-        for (at, message) in crate::ir::input_schema::order_errors(schema) {
-            errors.push(
-                ValidationError::new("ir.schema_violation", message)
-                    .at_path(format!("/input_schema{at}")),
-            );
-        }
+        errors.extend(input_schema_errors(schema));
     }
     // V7: 上限（他段より先に軽く弾く）。
     v7_limits(value, &ir, &mut errors);
