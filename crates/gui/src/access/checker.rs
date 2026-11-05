@@ -358,6 +358,7 @@ impl AccessChecker<'_> {
                 dynamic: r.id.is_none(),
                 manageable: r.id.is_some_and(|id| manageable.contains(&(r.object, id))),
                 conditional: r.conditional,
+                over_limit: r.id.is_some_and(|id| !objects.contains(&(r.object, id))),
             })
             .collect();
         let unavailable = parts

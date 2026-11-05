@@ -139,6 +139,9 @@ pub struct AccessNeedView {
     pub manageable: bool,
     /// 場合によって要る（道によって通るブロックだけが要る・BUG-216）。足りなくても使う人のボタンは止めない。
     pub conditional: bool,
+    /// 対象が上限（[`MAX_ACCESS_OBJECTS`]）より多く、この対象は確かめていない（名前も引かない）。見えない・削除された
+    /// 対象と言い分ける（GAP-37）。
+    pub over_limit: bool,
 }
 
 /// 足りるか。

@@ -859,3 +859,38 @@ async fn blocks_beyond_the_check_are_reported_to_makers() {
     })
     .await;
 }
+
+/// 対象が上限より多いときは、上限の外の対象を「確かめていない」と印を付け、見えない・削除された対象と言い分ける
+/// （GAP-37）。使う人の結果も、切ったことを返す。
+#[tokio::test]
+async fn objects_over_the_limit_are_told_apart() {
+    let Some(pool) = pool().await else { return };
+    let Some(fga) = Fga::connect().await else {
+        return;
+    };
+    let client = Arc::clone(&fga.client);
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let t = tenant.clone();
+    let db = pool.clone();
+    run_with_cleanup(pool, tenant, fga, async move {
+        let e = Env::new(&db, &client);
+        let alice = ctx(&t, "alice");
+        let nodes: Vec<serde_json::Value> = (0..=gui::MAX_ACCESS_OBJECTS)
+            .map(|i| json!({ "id": format!("q{i}"), "type": "data.query", "params": { "table": Uuid::new_v4().to_string() } }))
+            .collect();
+        let ir = json!({ "ir_version": 1, "name": "多い", "declared_scopes": ["data.read"], "nodes": nodes, "edges": [] });
+        let parts = [gui::workflow_needs(&workflow_engine::WorkflowIr::from_json(&ir).unwrap())];
+        let report = e.checker().report(&alice, 1, &parts, None).await.unwrap();
+        assert!(report.truncated);
+        let over: Vec<bool> = report.needs.iter().map(|n| n.over_limit).collect();
+        assert_eq!(over.iter().filter(|o| **o).count(), 1, "上限の外は 1 件");
+        assert!(over[gui::MAX_ACCESS_OBJECTS], "最後の対象が上限の外");
+        assert!(report.needs.iter().all(|n| n.target.is_none()), "どれも見えない");
+        let mine = e.checker().mine(&alice, 1, &[gui::PartNeeds {
+            part: Some(AccessPart::Workflow { alias: "多い".into() }),
+            ..parts[0].clone()
+        }]).await.unwrap();
+        assert!(mine.truncated, "使う人の結果も切ったことを返す");
+    })
+    .await;
+}
