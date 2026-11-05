@@ -322,6 +322,52 @@ async fn the_ai_finds_reads_and_fixes_only_workflows_the_user_can_see() {
         .unwrap();
         assert_eq!(count, 4, "直しても新しいワークフローは増えない");
 
+        // 4b. workflow_id が文字列でない（数・真偽）なら、新しく作らずに断る。省いた・null は新しく作るので、同じ name が
+        // あれば作成の文（読んで直すか、別の名前にする）を返し、版の競合の手順（読み直し）は返さない（BUG-219）。
+        for bad in [json!(12), json!(true)] {
+            let refused = emit
+                .call(
+                    &alice,
+                    json!({ "workflow_id": bad, "expected_version": 2, "ir": got["ir"] }),
+                    None,
+                )
+                .await;
+            let Err(agent_core::ToolError::Invalid(msg)) = refused else {
+                panic!("{bad}: 断る: {refused:?}");
+            };
+            assert!(msg.contains("文字列で渡してください"), "{msg}");
+        }
+        for omitted in [
+            json!({ "ir": got["ir"] }),
+            json!({ "workflow_id": null, "ir": got["ir"] }),
+        ] {
+            let taken = call(&emit, &alice, omitted).await.unwrap_err();
+            assert!(taken.starts_with("ワークフローを作れませんでした。"), "{taken}");
+            assert!(taken.contains("「expense-approval」"), "{taken}");
+            assert!(!taken.contains("読み直し"), "{taken}");
+        }
+        let count_now = || async {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT count(*) FROM artifact WHERE tenant_id = $1 AND kind = 'workflow' AND deleted_at IS NULL",
+            )
+            .bind(&t)
+            .fetch_one(&db)
+            .await
+            .unwrap()
+        };
+        assert_eq!(count_now().await, 4, "断ったものは作らない");
+        assert_eq!(store.get_latest(&alice, expense, None).await.unwrap().0, 2, "版も増えない");
+        // null で別の name なら新しく作る。
+        let created = call(
+            &emit,
+            &alice,
+            json!({ "workflow_id": null, "ir": ir("expense-approval-2", "経費精算（部長）", "x") }),
+        )
+        .await
+        .unwrap();
+        assert!(created.contains("v1"), "{created}");
+        assert_eq!(count_now().await, 5);
+
         // 5. 閲覧だけ共有されたもの・見えないものは直せない（同じ答え・保存しない）。
         let shared_got: Value = {
             let (v, ir) = store.get_latest(&alice, shared, None).await.unwrap();

@@ -124,6 +124,73 @@ const SAVE_FORBIDDEN: &str = "ワークフローを保存できませんでし�
      ありません（閲覧だけ共有されたものは直せません）。ユーザーに、持ち主に編集の権限を頼むか、別の名前の新しい\
      ワークフローとして作るかを確かめてください。";
 
+/// workflow_id が文字列でない（数・真偽・配列・オブジェクト）ときの誤り（保存しない・BUG-219）。
+const WORKFLOW_ID_NOT_STRING: &str =
+    "workflow_id は read_workflow が返した id（UUID）を文字列で渡してください。\
+     新しいワークフローを作るときは workflow_id を省いてください（保存していません）。";
+
+/// 新しいワークフローを作れなかった（作る権限が無い）ときの観測。
+const CREATE_FORBIDDEN: &str =
+    "ワークフローを作れませんでした。このユーザーには新しいワークフローを作る権限が\
+     ありません。ユーザーに、管理者に権限を頼むよう伝えてください。";
+
+/// 新しいワークフローを作ろうとして、同じ name のものがすでにあったときの観測（名前はテナントで一意・BUG-219）。
+fn create_name_taken(name: &str) -> String {
+    format!(
+        "ワークフローを作れませんでした。name が「{name}」のワークフローがすでにあります（このユーザーに見えないものを\
+         含みます）。既存のものを直すなら、read_workflow に name を渡して読み、返った id と version を workflow_id と\
+         expected_version に渡して保存してください。read_workflow で見つからないときや、別のワークフローとして作る\
+         ときは、IR の name を別の名前にしてください。"
+    )
+}
+
+/// 直す対象（workflow_id）を読む。省いた・null は新しく作る（`None`）。文字列の UUID だけを受け、ほかは断る
+/// （数や null を黙って「新しく作る」にしない・BUG-219）。
+fn target_of(input: &serde_json::Value) -> Result<Option<Uuid>, ToolError> {
+    match input.get("workflow_id") {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::String(raw)) => Uuid::parse_str(raw)
+            .map(Some)
+            .map_err(|_| ToolError::Invalid(format!("workflow_id が UUID ではありません: {raw}"))),
+        Some(_) => Err(ToolError::Invalid(WORKFLOW_ID_NOT_STRING.into())),
+    }
+}
+
+/// 保存の失敗をモデルへの観測にする。`updating` は既存のワークフローの新しい版を保存しようとしたか（作成と直す
+/// ときで、誤りの言い方と次の手順が違う）。
+fn save_failure(e: WorkflowStoreError, updating: bool, ir_json: &serde_json::Value) -> ToolOutcome {
+    use artifact::{ArtifactError as AE, ConflictReason};
+    match e {
+        WorkflowStoreError::Validation(errors) => {
+            ToolOutcome::error(format_validation_errors(&errors, ir_json))
+        }
+        // 版の競合は、読み直して当て直す手順を返す（他の人の保存を黙って潰さない・GAP-31）。
+        WorkflowStoreError::Artifact(AE::Conflict(ConflictReason::VersionChanged { .. }))
+            if updating =>
+        {
+            ToolOutcome::error(SAVE_CONFLICT)
+        }
+        // 名前の重なりは作るときだけ起きる（直すときは名前が既存のものと同じでなければ保存の前に断る）。
+        WorkflowStoreError::Artifact(AE::Conflict(ConflictReason::NameTaken { .. })) => {
+            let name = ir_json
+                .get("name")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default();
+            ToolOutcome::error(create_name_taken(name))
+        }
+        // 見えない・無い・編集の権限が無いは区別しない（存在を明かさない）。
+        WorkflowStoreError::Artifact(AE::NotFound | AE::Forbidden) if updating => {
+            ToolOutcome::error(SAVE_FORBIDDEN)
+        }
+        WorkflowStoreError::Artifact(AE::NotFound | AE::Forbidden) => {
+            ToolOutcome::error(CREATE_FORBIDDEN)
+        }
+        WorkflowStoreError::Artifact(e) => {
+            ToolOutcome::error(format!("ワークフローの保存に失敗しました: {e}"))
+        }
+    }
+}
+
 /// ワークフロー IR の生成/更新ツール。
 pub struct EmitWorkflowTool {
     store: Arc<WorkflowStore>,
@@ -193,7 +260,7 @@ impl Tool for EmitWorkflowTool {
                 },
                 "workflow_id": {
                     "type": "string",
-                    "description": "更新対象の既存ワークフロー ID（UUID）。新規作成なら省略"
+                    "description": "更新対象の既存ワークフロー ID（UUID の文字列）。新規作成なら省略"
                 },
                 "expected_version": {
                     "type": "integer",
@@ -213,6 +280,7 @@ impl Tool for EmitWorkflowTool {
         let Some(ir_json) = input.get("ir").filter(|v| v.is_object()).cloned() else {
             return Err(ToolError::Invalid("ir（object）は必須です".into()));
         };
+        let target = target_of(&input)?;
         let catalog = self
             .catalog
             .catalog_for(ctx, &ir_json)
@@ -220,12 +288,7 @@ impl Tool for EmitWorkflowTool {
             .map_err(ToolError::Unavailable)?;
 
         // 保存 API と同一パイプライン（V1〜V7）。検証エラーはモデルへの観測として返す。
-        let saved = if let Some(raw_id) = input.get("workflow_id").and_then(|v| v.as_str()) {
-            let Ok(id) = Uuid::parse_str(raw_id) else {
-                return Err(ToolError::Invalid(format!(
-                    "workflow_id が UUID ではありません: {raw_id}"
-                )));
-            };
+        let saved = if let Some(id) = target {
             // read_workflow で読んだ version を楽観ロックに使う（他編集者の保存を黙って潰さない）。版を渡さない（数で
             // ない）ときは、版を照らさずに積まないよう保存せずに読み直しを求める（BUG-211）。
             let Some(expected_version) = input
@@ -282,23 +345,8 @@ impl Tool for EmitWorkflowTool {
                 }));
                 Ok(outcome)
             }
-            Err(WorkflowStoreError::Validation(errors)) => Ok(ToolOutcome::error(
-                format_validation_errors(&errors, &ir_json),
-            )),
-            // 権限不足・競合等もモデルに観測させ、ユーザーへ言語化させる（run は失敗させない）。
-            // 版の競合は、読み直して当て直す手順を返す（他の人の保存を黙って潰さない・GAP-31）。
-            Err(WorkflowStoreError::Artifact(artifact::ArtifactError::Conflict(_)))
-                if input.get("workflow_id").is_some() =>
-            {
-                Ok(ToolOutcome::error(SAVE_CONFLICT))
-            }
-            // 見えない・無い・編集の権限が無いは区別しない（存在を明かさない）。
-            Err(WorkflowStoreError::Artifact(
-                artifact::ArtifactError::NotFound | artifact::ArtifactError::Forbidden,
-            )) if input.get("workflow_id").is_some() => Ok(ToolOutcome::error(SAVE_FORBIDDEN)),
-            Err(WorkflowStoreError::Artifact(e)) => Ok(ToolOutcome::error(format!(
-                "ワークフローの保存に失敗しました: {e}"
-            ))),
+            // 検証の誤り・権限不足・競合等もモデルに観測させ、ユーザーへ言語化させる（run は失敗させない）。
+            Err(e) => Ok(save_failure(e, target.is_some(), &ir_json)),
         }
     }
 }
@@ -469,6 +517,101 @@ mod tests {
         assert!(
             without.contains("使えるものは検証エラーの候補に出る"),
             "{without}"
+        );
+    }
+
+    /// workflow_id は文字列の UUID だけを受ける。省いた・null は新しく作る。数・真偽・配列・オブジェクトは、黙って
+    /// 新しく作らずに断る（BUG-219）。
+    #[test]
+    fn workflow_id_must_be_a_uuid_string() {
+        let id = Uuid::new_v4();
+        let ir = serde_json::json!({});
+        assert_eq!(target_of(&serde_json::json!({ "ir": ir })).unwrap(), None);
+        assert_eq!(
+            target_of(&serde_json::json!({ "workflow_id": null })).unwrap(),
+            None
+        );
+        assert_eq!(
+            target_of(&serde_json::json!({ "workflow_id": id.to_string() })).unwrap(),
+            Some(id)
+        );
+        for bad in [
+            serde_json::json!(12),
+            serde_json::json!(true),
+            serde_json::json!([id.to_string()]),
+            serde_json::json!({ "id": id.to_string() }),
+        ] {
+            let Err(ToolError::Invalid(msg)) =
+                target_of(&serde_json::json!({ "workflow_id": bad }))
+            else {
+                panic!("{bad} は断る");
+            };
+            assert!(msg.contains("文字列で渡してください"), "{msg}");
+        }
+        let Err(ToolError::Invalid(msg)) =
+            target_of(&serde_json::json!({ "workflow_id": "not-a-uuid" }))
+        else {
+            panic!("UUID でない文字列は断る");
+        };
+        assert!(msg.contains("UUID ではありません"), "{msg}");
+    }
+
+    /// 保存の失敗は、作るときと直すときで言い分ける。名前の重なりは作成の文（read_workflow で読んで直すか、別の名前に
+    /// する）、権限の無さも作成の文で、版の競合の手順（読み直し）を作成に返さない（BUG-219）。
+    #[test]
+    fn save_failures_are_worded_for_create_and_update() {
+        use artifact::{ArtifactError as AE, ArtifactKind, ConflictReason};
+        let ir = serde_json::json!({ "name": "expense-approval" });
+        let taken = || {
+            WorkflowStoreError::Artifact(AE::Conflict(ConflictReason::NameTaken {
+                kind: ArtifactKind::Workflow,
+            }))
+        };
+        let changed = || {
+            WorkflowStoreError::Artifact(AE::Conflict(ConflictReason::VersionChanged {
+                kind: ArtifactKind::Workflow,
+                current: 3,
+            }))
+        };
+        let text = |o: ToolOutcome| {
+            assert!(o.is_error);
+            o.content
+        };
+        let created = text(save_failure(taken(), false, &ir));
+        assert!(
+            created.starts_with("ワークフローを作れませんでした。"),
+            "{created}"
+        );
+        assert!(created.contains("「expense-approval」"), "{created}");
+        assert!(
+            created.contains("read_workflow に name を渡して読み"),
+            "{created}"
+        );
+        assert_ne!(created, SAVE_CONFLICT);
+        assert_eq!(text(save_failure(changed(), true, &ir)), SAVE_CONFLICT);
+        assert_eq!(
+            text(save_failure(
+                WorkflowStoreError::Artifact(AE::Forbidden),
+                false,
+                &ir
+            )),
+            CREATE_FORBIDDEN
+        );
+        assert_eq!(
+            text(save_failure(
+                WorkflowStoreError::Artifact(AE::Forbidden),
+                true,
+                &ir
+            )),
+            SAVE_FORBIDDEN
+        );
+        assert_eq!(
+            text(save_failure(
+                WorkflowStoreError::Artifact(AE::NotFound),
+                true,
+                &ir
+            )),
+            SAVE_FORBIDDEN
         );
     }
 
