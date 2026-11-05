@@ -7,7 +7,8 @@ import { cleanupQueue, loginViaKeycloak, removeWorkflowApi, uniqueName } from ".
 ///   実行した日から数えた先週（日曜始まり）の最初の日と最後の日が結果に入る。
 /// - 後のブロックの差し込みの候補に、このブロックの結果（start・end）と、実行情報の「予定の日時」が出る。
 /// - 日付として読めない「基準の日」は、欄の下に理由を出して保存を止める。
-/// - スケジュールで動いた実行では、予定の日時は分の境目の予定の時刻で、「日付を計算」はそこから数える。
+/// - スケジュールで動いた実行では、予定の日時は分の境目の予定の時刻で、「日付を計算」はそこから数える。実行履歴の一覧と
+///   詳細にも、その予定の日時を出す（GAP-89）。
 /// - スマホ幅の一覧から開いた設定でも同じ欄が出て、横にはみ出さない。
 /// 前提: shiki-server が SHIKI__WORKFLOW__ENABLED=true（AI のブロックは使わない）。作ったワークフローは最後に消す。
 
@@ -248,4 +249,24 @@ test("スケジュールの実行: 予定の日時は分の境目の予定の時
   expect(seen.trigger).toBeNull();
   const today = await stepOutput(page, id, runId, "today");
   expect(today.date).toBe(seen.run.scheduled_at.slice(0, 10));
+
+  // 実行履歴は、スケジュールの予定の時刻を予定の日時として一覧と詳細に出す（どの回の分か分かる・GAP-89）。
+  const item = (
+    (await (await page.request.get(`/api/workflows/${id}/runs`)).json()) as {
+      items: { run_id: string; scheduled_at: string | null; scheduled_at_source: string | null }[];
+    }
+  ).items.find((r) => r.run_id === runId);
+  expect(item?.scheduled_at_source).toBe("schedule");
+  expect(Date.parse(item?.scheduled_at ?? "")).toBe(Date.parse(seen.run.scheduled_at));
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto(`/workflows/${id}/runs?run=${runId}`);
+  const sheet = page.getByRole("dialog").filter({ hasText: "実行の詳細" });
+  await expect(sheet.getByText("予定の日時", { exact: true })).toBeVisible({ timeout: 30_000 });
+  await expect(sheet.getByTestId("run-detail-scheduled-note")).toHaveCount(0);
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/scheduled-at-schedule-detail-pc.png` });
+  await sheet.getByRole("button", { name: "閉じる" }).click();
+  await expect(page.locator("table").getByTestId("run-scheduled-at").first()).toHaveAttribute(
+    "data-source",
+    "schedule",
+  );
 });
