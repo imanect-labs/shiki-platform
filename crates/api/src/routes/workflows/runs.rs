@@ -135,6 +135,11 @@ fn waiting_for(raw: Option<&str>) -> Option<workflow_engine::WaitingFor> {
     raw.and_then(workflow_engine::WaitingFor::parse)
 }
 
+/// 履歴の読取口が返す予定の日時の由来を API の型へ（知らない値は null・GAP-89）。
+fn scheduled_from(raw: Option<&str>) -> Option<workflow_engine::ScheduledAtSource> {
+    raw.and_then(workflow_engine::ScheduledAtSource::parse)
+}
+
 /// run 一覧クエリ（faceted filter・keyset）。
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct ListRunsQuery {
@@ -167,6 +172,12 @@ pub struct RunListItemDto {
     pub created_at: String,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
+    /// 予定の日時（`$from run` の `scheduled_at` の源・GAP-89）。スケジュールで動いた実行はその回の予定の時刻
+    /// （止まっていた後の発火や、多重度で待たされた実行でも変わらない）、手動の実行で指定した日時、「別のワークフローを
+    /// 実行」で始めた実行が引き継いだ日時のどれか。ほかの実行（実行情報では始めた日時と同じ値）は null。
+    pub scheduled_at: Option<String>,
+    /// 予定の日時の由来（予定の日時が null なら null）。
+    pub scheduled_at_source: Option<workflow_engine::ScheduledAtSource>,
 }
 
 /// run 一覧レスポンス（次ページは末尾行の (created_at, run_id) をカーソルに）。
@@ -232,6 +243,8 @@ pub async fn list_workflow_runs(
                 created_at: r.created_at.to_rfc3339(),
                 started_at: r.started_at.map(|t| t.to_rfc3339()),
                 finished_at: r.finished_at.map(|t| t.to_rfc3339()),
+                scheduled_at: r.scheduled_at.map(|t| t.to_rfc3339()),
+                scheduled_at_source: scheduled_from(r.scheduled_from.as_deref()),
             })
             .collect(),
     }))
@@ -284,6 +297,10 @@ pub struct RunDetailResponse {
     pub created_at: String,
     pub started_at: Option<String>,
     pub finished_at: Option<String>,
+    /// 予定の日時（[`RunListItemDto::scheduled_at`] と同じ）。
+    pub scheduled_at: Option<String>,
+    /// 予定の日時の由来（[`RunListItemDto::scheduled_at_source`] と同じ）。
+    pub scheduled_at_source: Option<workflow_engine::ScheduledAtSource>,
     pub steps: Vec<StepOverviewDto>,
 }
 
@@ -331,6 +348,8 @@ pub async fn get_workflow_run(
         created_at: d.created_at.to_rfc3339(),
         started_at: d.started_at.map(|t| t.to_rfc3339()),
         finished_at: d.finished_at.map(|t| t.to_rfc3339()),
+        scheduled_at: d.scheduled_at.map(|t| t.to_rfc3339()),
+        scheduled_at_source: scheduled_from(d.scheduled_from.as_deref()),
         steps: d
             .steps
             .into_iter()

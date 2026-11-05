@@ -7,6 +7,7 @@
 //! - [`worker`]: ready step を claim して実行し前進させるワーカーループ。
 //! - [`step_timeout`]: step の時間の上限（ノード種の既定と上限・打ち切りはやり直せる失敗）。
 //! - [`node_panic`]: ブロックの実行中の panic（捕まえて step を失敗にし、ワーカーを止めない・BUG-215）。
+//! - [`planned`]: run の予定の日時の由来と、手動の実行で試す値の読み方（GAP-88・GAP-89・GAP-90）。
 //!
 //! ノード種ごとの実処理は [`NodeExecutor`] トレイト裏（能力ノードは Task 10.6a/10.8/10.10）。
 //! 制御ノード（branch/join 等）は [`store`] の前進ロジックが直接扱う（能力を呼ばない・pure）。
@@ -18,6 +19,7 @@ pub mod launcher;
 pub mod model;
 pub mod node_panic;
 pub mod outcome;
+pub mod planned;
 pub mod readiness;
 pub mod step_timeout;
 pub mod store;
@@ -35,6 +37,7 @@ pub use outcome::{
     FailureCategory, ReplyBody, ReplyFile, ReplySection, ReplyTone, ResumeAdvice, ResumeHint,
     RunFailure, RunReply, WaitingFor,
 };
+pub use planned::ScheduledAtSource;
 pub use store::{
     ApprovalWait, CancelOutcome, DataWaitCandidate, DueApprovalCursor, DueApprovalPage,
     DueSweepLimits, EventWaitGate, EventWaitSubscriber, GcReport, HistoryGcWorker, LiveState,

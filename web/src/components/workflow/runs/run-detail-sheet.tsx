@@ -30,6 +30,8 @@ import {
   formatDuration,
   isTerminalRunStatus,
   RunStatusBadge,
+  SCHEDULED_AT_LABELS,
+  SCHEDULED_AT_NOTES,
   TRIGGER_KIND_LABELS,
 } from "./status";
 import { useRunStream } from "./use-run-stream";
@@ -241,10 +243,22 @@ export function RunDetailSheet({
                   label="所要時間"
                   value={formatDuration(detail.startedAt, detail.finishedAt)}
                 />
+                {/* どの予定の分の実行か（止まっていた後や、順番待ちで遅れて始めた実行でも予定の時刻のまま・GAP-89）。 */}
+                {detail.scheduled ? (
+                  <MetaItem
+                    label={SCHEDULED_AT_LABELS[detail.scheduled.source]}
+                    value={<span data-testid="run-detail-scheduled-at">{formatDateTime(detail.scheduled.at)}</span>}
+                  />
+                ) : null}
                 <MetaItem label="受付" value={formatDateTime(detail.createdAt)} />
                 <MetaItem label="開始" value={formatDateTime(detail.startedAt)} />
                 <MetaItem label="終了" value={formatDateTime(detail.finishedAt)} />
               </dl>
+              {detail.scheduled && SCHEDULED_AT_NOTES[detail.scheduled.source] ? (
+                <p className="-mt-2 text-[11px] leading-relaxed text-muted-foreground" data-testid="run-detail-scheduled-note">
+                  {SCHEDULED_AT_NOTES[detail.scheduled.source]}
+                </p>
+              ) : null}
 
               <div className="space-y-1.5">
                 <div className="flex flex-wrap items-center gap-2">

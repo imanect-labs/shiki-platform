@@ -31,6 +31,8 @@ import {
   formatDuration,
   RUN_STATUS_OPTIONS,
   RunStatusBadge,
+  SCHEDULED_AT_LABELS,
+  SCHEDULED_AT_MARKS,
   TRIGGER_KIND_LABELS,
   TRIGGER_KIND_OPTIONS,
 } from "./status";
@@ -123,6 +125,22 @@ const COLUMNS: ColumnDef<RunListItem>[] = [
         {TRIGGER_KIND_LABELS[row.original.triggerKind] ?? row.original.triggerKind}
       </span>
     ),
+  },
+  {
+    // 予定の日時（スケジュールのどの回の分か・指定して試した日時・GAP-89）。予定の日時のある実行が無ければ列を出さない。
+    id: "scheduled",
+    header: "予定の日時",
+    cell: ({ row }) => {
+      const scheduled = row.original.scheduled;
+      if (!scheduled) return <span className="text-xs text-muted-foreground">—</span>;
+      const mark = SCHEDULED_AT_MARKS[scheduled.source];
+      return (
+        <span className="flex flex-col" data-testid="run-scheduled-at" data-source={scheduled.source}>
+          <span className="text-xs tabular-nums">{formatDateTime(scheduled.at)}</span>
+          {mark ? <span className="text-[11px] text-muted-foreground">{mark}</span> : null}
+        </span>
+      );
+    },
   },
   {
     id: "version",
@@ -266,9 +284,14 @@ export function RunsTable({
     }
   };
 
+  const showScheduled = (items ?? []).some((i) => i.scheduled !== null);
+  const columns = React.useMemo(
+    () => (showScheduled ? COLUMNS : COLUMNS.filter((c) => c.id !== "scheduled")),
+    [showScheduled],
+  );
   const table = useReactTable({
     data: items ?? [],
-    columns: COLUMNS,
+    columns,
     getCoreRowModel: getCoreRowModel(),
     getRowId: (row) => row.runId,
   });
@@ -360,7 +383,8 @@ export function RunsTable({
         </div>
       ) : (
         <div className="overflow-hidden rounded-xl border bg-card">
-          {/* PC: 7 列の表。スマホ: 1 行 1 カード（状態・日時・所要時間・きっかけ）。 */}
+          {/* PC: 7 列の表（予定の日時のある実行があれば 8 列）。スマホ: 1 行 1 カード（状態・日時・所要時間・きっかけ・
+              予定の日時）。 */}
           <div className="hidden overflow-x-auto md:block">
             <table className="w-full text-left">
               <thead>
@@ -423,6 +447,16 @@ export function RunsTable({
                         {formatDuration(run.startedAt, run.finishedAt)}
                       </span>
                     </span>
+                    {run.scheduled ? (
+                      <span
+                        className="text-xs text-muted-foreground"
+                        data-testid="run-scheduled-at"
+                        data-source={run.scheduled.source}
+                      >
+                        {SCHEDULED_AT_LABELS[run.scheduled.source]}:{" "}
+                        <span className="tabular-nums">{formatDateTime(run.scheduled.at)}</span>
+                      </span>
+                    ) : null}
                   </span>
                   <ChevronRight className="size-4 shrink-0 text-muted-foreground" aria-hidden />
                 </button>

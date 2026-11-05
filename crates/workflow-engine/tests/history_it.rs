@@ -5,6 +5,7 @@
 //!   同じ前進の Tx で書いた step の並び（線の前のブロックが先・BUG-117）
 //! - step_detail: output 本体の遅延取得・workflow_id 束縛
 //! - list_events: after_seq・seq 昇順
+//! - 予定の日時と由来（スケジュール・手動で指定・親から引き継ぎ・GAP-89）
 //! - EditorLayoutStore: 既定 `{}`・upsert・256KB 上限
 
 #![allow(
@@ -24,8 +25,8 @@ use sqlx::PgPool;
 use uuid::Uuid;
 use workflow_engine::run::graph::RunGraph;
 use workflow_engine::{
-    EditorLayoutStore, LayoutError, NodeContext, NodeExecutor, NodeResult, RunListFilter, RunStore,
-    WorkerConfig, WorkflowWorker,
+    EditorLayoutStore, LayoutError, NodeContext, NodeExecutor, NodeResult, RunListFilter,
+    RunOrigin, RunStore, ScheduledAtSource, WorkerConfig, WorkflowWorker,
 };
 
 /// pass-through executor（`fail` param のあるノードだけ permanent 失敗・`port` param のあるノードはその出口へ進む）。
@@ -287,6 +288,124 @@ async fn run_detail_orders_steps_of_the_same_tx_by_the_graph() {
             ("y_yes", "succeeded")
         ]
     );
+}
+
+/// GAP-89: 実行履歴の一覧と詳細は、予定の日時とその由来を返す。スケジュールの run はその回の予定の時刻
+/// （`schedule`）、手動の実行で指定した日時は `specified`、親の run を持つ子の日時は `parent`。予定の日時の無い
+/// run（ふつうの手動の実行・イベント）は、どちらも返さない。
+#[tokio::test]
+async fn history_reports_the_scheduled_time_and_where_it_came_from() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let wf = Uuid::new_v4();
+    let store = RunStore::new(pool.clone(), workflow_engine::DEFAULT_LEASE_SECS);
+    let ir = two_step_ir(false);
+    let graph = RunGraph::build(&workflow_engine::WorkflowIr::from_json(&ir).unwrap());
+    let at = |s: &str| {
+        chrono::DateTime::parse_from_rfc3339(s)
+            .unwrap()
+            .with_timezone(&chrono::Utc)
+    };
+    let planned = at("2026-11-09T00:00:00Z");
+    let trial = at("2026-11-16T00:00:00Z");
+    let create = |kind: &'static str, origin: RunOrigin<'static>| {
+        let (store, tenant, ir, graph) = (&store, &tenant, &ir, &graph);
+        async move {
+            store
+                .create_run_from(
+                    tenant,
+                    "acme",
+                    wf,
+                    1,
+                    kind,
+                    None,
+                    "alice",
+                    "user",
+                    &Value::Null,
+                    ir,
+                    graph,
+                    origin,
+                )
+                .await
+                .unwrap()
+                .unwrap()
+        }
+    };
+    let scheduled = create(
+        "schedule",
+        RunOrigin {
+            scheduled_at: Some(planned),
+            ..RunOrigin::default()
+        },
+    )
+    .await;
+    let specified = create(
+        "interactive",
+        RunOrigin {
+            scheduled_at: Some(trial),
+            ..RunOrigin::default()
+        },
+    )
+    .await;
+    let child = create(
+        "interactive",
+        RunOrigin {
+            parent_run_id: Some(scheduled),
+            scheduled_at: Some(planned),
+            ..RunOrigin::default()
+        },
+    )
+    .await;
+    let plain = create("interactive", RunOrigin::default()).await;
+    let event = create(
+        "event",
+        RunOrigin {
+            parent_run_id: Some(plain),
+            ..RunOrigin::default()
+        },
+    )
+    .await;
+    let items = store
+        .list_runs(&tenant, wf, &RunListFilter::default(), None, 10)
+        .await
+        .unwrap();
+    let mut details = Vec::new();
+    for run in [scheduled, specified, child, plain, event] {
+        details.push(store.run_detail(&tenant, wf, run).await.unwrap().unwrap());
+    }
+    // 片付けを先に済ませてから確かめる（落ちても行を残さない）。
+    sqlx::query("DELETE FROM workflow_run WHERE tenant_id = $1")
+        .bind(&tenant)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let expected = [
+        (scheduled, Some(planned), Some("schedule")),
+        (specified, Some(trial), Some("specified")),
+        (child, Some(planned), Some("parent")),
+        (plain, None, None),
+        (event, None, None),
+    ];
+    for ((run, at, from), detail) in expected.iter().zip(&details) {
+        let item = items.iter().find(|i| i.run_id == *run).expect("一覧に出る");
+        assert_eq!(
+            (item.scheduled_at, item.scheduled_from.as_deref()),
+            (*at, *from),
+            "{run}"
+        );
+        assert_eq!(
+            (detail.scheduled_at, detail.scheduled_from.as_deref()),
+            (*at, *from),
+            "{run}"
+        );
+        assert_eq!(
+            from.and_then(ScheduledAtSource::parse)
+                .map(ScheduledAtSource::as_str),
+            *from,
+            "由来は API の型に読める"
+        );
+    }
 }
 
 #[tokio::test]

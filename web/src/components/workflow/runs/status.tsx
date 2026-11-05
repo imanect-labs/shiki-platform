@@ -8,7 +8,7 @@
 import { Clock, Loader2 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
-import type { WaitingFor } from "@/lib/workflow-run-api";
+import type { ScheduledAtSource, WaitingFor } from "@/lib/workflow-run-api";
 
 type BadgeVariant = "success" | "warning" | "destructive" | "muted" | "secondary";
 
@@ -36,6 +36,27 @@ export const TRIGGER_KIND_LABELS: Record<string, string> = {
 export const TRIGGER_KIND_OPTIONS = Object.entries(TRIGGER_KIND_LABELS).map(
   ([value, label]) => ({ value, label }),
 );
+
+/// 予定の日時の見出し（実行の詳細とスマホの一覧・由来はサーバーが run の行から導く・GAP-89）。
+export const SCHEDULED_AT_LABELS: Record<ScheduledAtSource, string> = {
+  schedule: "予定の日時",
+  specified: "指定した予定の日時",
+  parent: "引き継いだ予定の日時",
+};
+
+/// PC の一覧の「予定の日時」の列で、日時に添える由来（スケジュールの予定の時刻には添えない）。
+export const SCHEDULED_AT_MARKS: Record<ScheduledAtSource, string | null> = {
+  schedule: null,
+  specified: "指定した日時",
+  parent: "引き継いだ日時",
+};
+
+/// 実行の詳細で、予定の日時の由来を言う文（スケジュールの予定の時刻は見出しで足りるので言わない）。
+export const SCHEDULED_AT_NOTES: Record<ScheduledAtSource, string | null> = {
+  schedule: null,
+  specified: "手動で実行するときに指定した日時を、予定の日時として使いました。",
+  parent: "「別のワークフローを実行」で始めた実行です。始めた実行の予定の日時を引き継いでいます。",
+};
 
 export function isTerminalRunStatus(status: string): boolean {
   return status === "succeeded" || status === "failed" || status === "cancelled";

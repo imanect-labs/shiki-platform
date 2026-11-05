@@ -122,6 +122,16 @@ export async function startRun(
 /// 待機中の run・step が待っているもの（サーバーの run の状態から導いた値・engine.md §3.1・BUG-119）。
 export type WaitingFor = Schemas["WaitingFor"];
 
+/// 実行の予定の日時の由来（スケジュールの予定の時刻・手動の実行で指定した日時・始めた実行から引き継いだ日時・GAP-89）。
+export type ScheduledAtSource = Schemas["ScheduledAtSource"];
+
+/// 実行の予定の日時（予定の日時の無い実行は null）。
+export type RunScheduledAt = { at: string; source: ScheduledAtSource };
+
+function scheduledOf(at: string | null | undefined, source: ScheduledAtSource | null | undefined): RunScheduledAt | null {
+  return at && source ? { at, source } : null;
+}
+
 export type RunListItem = {
   runId: string;
   status: string;
@@ -132,6 +142,8 @@ export type RunListItem = {
   createdAt: string;
   startedAt: string | null;
   finishedAt: string | null;
+  /// 予定の日時（スケジュールの予定の時刻など。無い実行は null）。
+  scheduled: RunScheduledAt | null;
 };
 
 export type RunListFilter = {
@@ -164,6 +176,7 @@ export async function listRuns(
     createdAt: i.created_at,
     startedAt: i.started_at ?? null,
     finishedAt: i.finished_at ?? null,
+    scheduled: scheduledOf(i.scheduled_at, i.scheduled_at_source),
   }));
 }
 
@@ -207,6 +220,8 @@ export type RunDetail = {
   createdAt: string;
   startedAt: string | null;
   finishedAt: string | null;
+  /// 予定の日時（[`RunListItem.scheduled`] と同じ）。
+  scheduled: RunScheduledAt | null;
   steps: StepOverview[];
 };
 
@@ -228,6 +243,7 @@ export async function getRun(workflowId: string, runId: string): Promise<RunDeta
     createdAt: d.created_at,
     startedAt: d.started_at ?? null,
     finishedAt: d.finished_at ?? null,
+    scheduled: scheduledOf(d.scheduled_at, d.scheduled_at_source),
     steps: d.steps.map((s) => ({
       stepPath: s.step_path,
       nodeId: s.node_id,

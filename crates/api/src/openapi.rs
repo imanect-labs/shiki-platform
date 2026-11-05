@@ -527,6 +527,8 @@ use utoipa::{
         gui::MiniAppRunValue,
         // 画面に返す結果（GAP-09・gui と chat が共有するエンジンの型）。
         workflow_engine::WaitingFor,
+        // 実行履歴の予定の日時の由来（GAP-89）。
+        workflow_engine::ScheduledAtSource,
         workflow_engine::FailureCategory,
         workflow_engine::RunFailure,
         // 実行履歴の詳細の再開の勧め（BUG-132）。

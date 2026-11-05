@@ -12,6 +12,7 @@ use super::outcome::{FAILURE_CODE_COLUMNS, WAITING_FOR};
 use super::{map_db, RunStore, RunStoreError};
 use crate::run::failure::{failure_code, resume_hint, run_failure};
 use crate::run::outcome::{ResumeHint, RunFailure};
+use crate::run::planned::SCHEDULED_FROM;
 
 /// run 一覧の 1 行（一覧に必要な列のみ）。
 #[derive(Debug, Clone, sqlx::FromRow)]
@@ -26,6 +27,10 @@ pub struct RunListItem {
     pub created_at: DateTime<Utc>,
     pub started_at: Option<DateTime<Utc>>,
     pub finished_at: Option<DateTime<Utc>>,
+    /// 予定の日時（スケジュールの予定の時刻・手動の実行で指定した日時・親から引き継いだ日時。ほかは `None`・GAP-89）。
+    pub scheduled_at: Option<DateTime<Utc>>,
+    /// 予定の日時の由来（[`crate::ScheduledAtSource`] の名前・予定の日時が無ければ `None`）。
+    pub scheduled_from: Option<String>,
 }
 
 /// run 一覧のフィルタ（UI の faceted filter に対応）。
@@ -87,6 +92,10 @@ pub struct RunDetail {
     /// 手動の実行で試したきっかけの内容（`trigger_payload`・D-93）。無ければ `None`（きっかけの内容は入力と同じ）。
     /// 「新しく実行し直す」がこれも引き継ぐ。
     pub trigger_payload: Option<Value>,
+    /// 予定の日時（[`RunListItem::scheduled_at`] と同じ）。「新しく実行し直す」がこれも引き継ぐ（GAP-88）。
+    pub scheduled_at: Option<DateTime<Utc>>,
+    /// 予定の日時の由来（[`RunListItem::scheduled_from`] と同じ）。
+    pub scheduled_from: Option<String>,
     pub fail_reason: Option<String>,
     /// 失敗した run の理由（利用者向けの分類と文言・参照番号）。画面に返す結果（GAP-09）と同じ決め方で、
     /// 失敗していなければ `None`（BUG-113）。
@@ -148,7 +157,8 @@ impl RunStore {
         let kinds = (!filter.trigger_kinds.is_empty()).then_some(&filter.trigger_kinds);
         sqlx::query_as(&format!(
             "SELECT r.run_id, r.status, {WAITING_FOR} AS waiting_for, r.trigger_kind, r.version, \
-                    r.created_at, r.started_at, r.finished_at \
+                    r.created_at, r.started_at, r.finished_at, r.scheduled_at, \
+                    {SCHEDULED_FROM} AS scheduled_from \
              FROM workflow_run r \
              WHERE r.tenant_id = $1 AND r.workflow_id = $2 \
                AND ($3::text[] IS NULL OR r.status = ANY($3)) \
@@ -194,12 +204,14 @@ impl RunStore {
             Option<DateTime<Utc>>,
             Option<String>,
             Option<String>,
+            Option<DateTime<Utc>>,
+            Option<String>,
         );
         let row: Option<RunRow> = sqlx::query_as(&format!(
             "SELECT r.status, {WAITING_FOR}, r.trigger_kind, r.version, r.input, r.trigger_payload, \
                     r.fail_reason, \
                     r.trace_id, r.cancel_requested, r.created_at, r.started_at, r.finished_at, \
-                    {FAILURE_CODE_COLUMNS} \
+                    {FAILURE_CODE_COLUMNS}, r.scheduled_at, {SCHEDULED_FROM} \
              FROM workflow_run r \
              WHERE r.tenant_id = $1 AND r.workflow_id = $2 AND r.run_id = $3"
         ))
@@ -224,6 +236,8 @@ impl RunStore {
             finished_at,
             step_code,
             item_code,
+            scheduled_at,
+            scheduled_from,
         )) = row
         else {
             return Ok(None);
@@ -261,6 +275,8 @@ impl RunStore {
             version,
             input: input.0,
             trigger_payload: trigger_payload.map(|t| t.0),
+            scheduled_at,
+            scheduled_from,
             fail_reason,
             failure,
             resume,
