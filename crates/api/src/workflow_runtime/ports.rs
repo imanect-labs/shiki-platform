@@ -585,6 +585,20 @@ fn llm_port_error(e: &llm_gateway::LlmError) -> PortError {
 mod tests {
     use super::*;
 
+    /// tabular の入力起因のエラー（テーブル指定・SQL・パッチ・クエリ実行）は再試行しない。
+    #[test]
+    fn tabular_input_errors_are_not_retried() {
+        for e in [
+            tabular::TabularError::InvalidTables("dup".into()),
+            tabular::TabularError::SqlRejected("ddl".into()),
+            tabular::TabularError::QueryFailed("no column".into()),
+        ] {
+            let p = map_tabular(e);
+            assert_eq!(p.code, "invalid");
+            assert!(!p.retryable, "{p:?}");
+        }
+    }
+
     #[test]
     fn llm_config_errors_are_not_retried() {
         use llm_gateway::LlmError;
