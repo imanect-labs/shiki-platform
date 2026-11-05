@@ -457,7 +457,10 @@ export const Composer = React.memo(function Composer({
   const [textScroll, setTextScroll] = React.useState(0);
 
   return (
-    <div className={cn("flex flex-col gap-2", className)}>
+    // @container: 操作の段の並べ方はビューポートではなく**コンポーザ自身の幅**で決める。
+    // 文書のアシスタントパネル（PC でも幅 28rem）ではビューポート基準の md: だと PC 用の
+    // 横並びになり、エージェントモードとモデル選択が重なる。
+    <div className={cn("@container flex flex-col gap-2", className)}>
       {/* 選択コンテキストチップ（選択→AI 指示・Task 11.10） */}
       {selection ? (
         <div
@@ -563,8 +566,9 @@ export const Composer = React.memo(function Composer({
           // 本文の上に重ねるので面を少し透かし、背後はぼかす。
           "relative rounded-[26px] border-border bg-card/85 shadow-sm backdrop-blur-xl transition-shadow",
           "focus-within:border-ring/25 focus-within:shadow-md focus-within:ring-4 focus-within:ring-ring/10",
-          // 入力欄 → 操作の段 の 2 段（左に +、右にモデルと送信）。
-          "grid grid-cols-[minmax(0,1fr)_auto] items-end gap-x-2 gap-y-1 p-2",
+          // 入力欄 → 操作の段 の 2 段（左に +、右にモデルと送信）。左（+・モード）を優先し、
+          // 入らないときは右のモデル名を省略して縮める（右の列は最小 0・モデルボタンは min-w-0）。
+          "grid grid-cols-[auto_minmax(0,1fr)] items-end gap-x-2 gap-y-1 p-2",
           // スマホで既定のモデルのときは 1 行の丸いバー（+・入力欄・送信）。伸びてもボタンは下端に揃える。
           oneLine && "max-md:grid-cols-[auto_minmax(0,1fr)_auto] max-md:gap-x-1 max-md:p-1.5",
         )}
@@ -655,7 +659,8 @@ export const Composer = React.memo(function Composer({
           )}
         </div>
 
-        {/* 左: 「+」（PC はエージェントモード等も同じ段に並べる）。 */}
+        {/* 左: 「+」（PC で幅に余裕があればエージェントモード等も同じ段に並べる。狭い
+            アシスタントパネルではスマホと同じく右の実行モードボタン 1 つにまとめる）。 */}
         <div
           className={cn(
             "col-start-1 row-start-2 flex min-w-0 items-center gap-1.5 pb-0.5 pl-0.5",
@@ -676,7 +681,7 @@ export const Composer = React.memo(function Composer({
             onOpenModel={oneLine ? () => setModelOpen(true) : undefined}
           />
           {onAutonomousChange ? (
-            <div className="hidden min-w-0 items-center gap-1.5 md:flex">
+            <div className="hidden min-w-0 items-center gap-1.5 md:@xl:flex">
               <button
                 type="button"
                 role="switch"
@@ -743,7 +748,7 @@ export const Composer = React.memo(function Composer({
           />
           {onAutonomousChange ? (
             <ComposerModeButton
-              className="md:hidden"
+              className="md:size-9 md:@xl:hidden"
               autonomous={autonomous}
               onAutonomousChange={onAutonomousChange}
               approvalMode={approvalMode}
