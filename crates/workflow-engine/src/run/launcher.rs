@@ -126,7 +126,8 @@ impl WorkflowRunLauncher {
     ///
     /// 権限・入力の検査は [`Self::start_interactive`] と同じ。子の run は親の run の因果の鎖
     /// （親の鎖 ∪ {親のワークフロー}）を引き継ぐ。子の書込が起こすイベントで親（祖先）のトリガが
-    /// 起きる循環を、子が別の run でも見つけられるようにする（D-26）。
+    /// 起きる循環を、子が別の run でも見つけられるようにする（D-26）。親の予定の日時も引き継ぐ（スケジュールの
+    /// run から始めた子が、同じ週・月を数える・GAP-90）。どちらも run を作る Tx で親の行から読む（[`RunOrigin`]）。
     pub async fn start_child(
         &self,
         ctx: &AuthContext,

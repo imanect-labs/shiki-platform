@@ -81,7 +81,8 @@ pub struct ClaimedStep {
     pub run_id: Uuid,
     /// run を始めた時刻（`started_at`・まだ無ければ作った時刻。`$from run` の日時の源・D-97）。
     pub run_started_at: chrono::DateTime<chrono::Utc>,
-    /// スケジュールの予定の時刻（スケジュールの run だけ・ほかは `None`・`$from run` の `scheduled_at` の源・GAP-15）。
+    /// 予定の日時（スケジュールの予定の時刻・手動の実行で指定した日時・親の run から引き継いだ日時。ほかは `None`・
+    /// `$from run` の `scheduled_at` の源・GAP-15・[`super::planned`]）。
     pub run_scheduled_at: Option<chrono::DateTime<chrono::Utc>>,
     pub workflow_id: Uuid,
     pub step_path: String,
@@ -129,8 +130,9 @@ pub struct RunOrigin<'a> {
     /// 手動の実行で試すきっかけの内容（`$from trigger` の源・D-93）。`None` なら、きっかけの内容は入力と同じ
     /// （今までどおり）。
     pub trigger_payload: Option<&'a Value>,
-    /// スケジュールの予定の時刻（スケジュールの run だけ・実行情報の `scheduled_at` の源・GAP-15）。`None` の run は
-    /// 始めた時刻を予定の時刻として返す。
+    /// 予定の日時（実行情報の `scheduled_at` の源・GAP-15）。スケジュールの発火はその回の予定の時刻、手動の実行は
+    /// 指定した日時（試す値・GAP-88）を渡す。`None` なら、親の run（`parent_run_id`）の予定の日時を引き継ぎ
+    /// （GAP-90）、親も無ければ空のまま（実行情報は始めた時刻を予定の日時として返す）。
     pub scheduled_at: Option<chrono::DateTime<chrono::Utc>>,
 }
 
@@ -228,7 +230,8 @@ impl RunStore {
     /// - `origin.trigger_event_id`: 発火元の outbox イベント。`(trigger_id, trigger_event_id)` で一意にし、
     ///   同じイベントで作った run が既にあればそれを返す（再配送・再試行で二重に作らない・PIT-31）。
     /// - `origin.parent_run_id`: 親の run（workflow.start の子）。子は親の鎖 ∪ {親のワークフロー} を
-    ///   同じ Tx で引き継ぐ（子の書込が親を起こす循環を見つける・D-26）。
+    ///   同じ Tx で引き継ぐ（子の書込が親を起こす循環を見つける・D-26）。`origin.scheduled_at` が無ければ、親の
+    ///   予定の日時も同じ読みで引き継ぐ（スケジュールの run から始めた子が、同じ週・月を数える・GAP-90）。
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)]
     pub async fn create_run_from(
         &self,
@@ -292,26 +295,33 @@ impl RunStore {
             return Ok(None);
         }
         let queued = overflow; // queue（既定）: 滞留させ tick が promote する。
-                               // 親の鎖（workflow.start の子）。親が見つからなければ鎖は空（由来だけ残す）。
-        let chain: Vec<Uuid> = match origin.parent_run_id {
-            Some(parent) => sqlx::query_as::<_, (Uuid, Vec<Uuid>)>(
-                "SELECT workflow_id, trigger_chain FROM workflow_run \
-                 WHERE tenant_id = $1 AND run_id = $2",
-            )
-            .bind(tenant_id)
-            .bind(parent)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(map_db)?
-            .map(|(wf, mut chain)| {
-                if !chain.contains(&wf) {
-                    chain.push(wf);
+
+        // 親の鎖と予定の日時（workflow.start の子）。親が見つからなければ鎖は空で、予定の日時も引き継がない（由来だけ
+        // 残す）。
+        let (chain, parent_scheduled_at): (Vec<Uuid>, Option<chrono::DateTime<chrono::Utc>>) =
+            match origin.parent_run_id {
+                Some(parent) => {
+                    sqlx::query_as::<_, (Uuid, Vec<Uuid>, Option<chrono::DateTime<chrono::Utc>>)>(
+                        "SELECT workflow_id, trigger_chain, scheduled_at FROM workflow_run \
+                     WHERE tenant_id = $1 AND run_id = $2",
+                    )
+                    .bind(tenant_id)
+                    .bind(parent)
+                    .fetch_optional(&mut *tx)
+                    .await
+                    .map_err(map_db)?
+                    .map(|(wf, mut chain, at)| {
+                        if !chain.contains(&wf) {
+                            chain.push(wf);
+                        }
+                        (chain, at)
+                    })
+                    .unwrap_or_default()
                 }
-                chain
-            })
-            .unwrap_or_default(),
-            None => Vec::new(),
-        };
+                None => (Vec::new(), None),
+            };
+        // 渡された予定の日時（スケジュールの発火・手動の実行で指定した値）が先。無ければ親から引き継ぐ（GAP-90）。
+        let scheduled_at = origin.scheduled_at.or(parent_scheduled_at);
 
         let status = if queued { "queued" } else { "running" };
         let run_id: Uuid = sqlx::query_scalar(
@@ -347,9 +357,9 @@ impl RunStore {
         .bind(origin.trigger_payload.map(Json))
         // 実行の詳細で同じ時刻の step を並べる順（ir_snapshot を開かない・BUG-117）。
         .bind(graph.step_order())
-        // スケジュールの予定の時刻（run を作る Tx で書く。発火の記録の run_id は後から書くので、ワーカーが最初の step を
-        // 取る時点では読めないことがある・GAP-15）。
-        .bind(origin.scheduled_at)
+        // 予定の日時（run を作る Tx で書く。発火の記録の run_id は後から書くので、ワーカーが最初の step を取る時点では
+        // 発火の記録から読めないことがある・GAP-15）。
+        .bind(scheduled_at)
         .fetch_one(&mut *tx)
         .await
         .map_err(map_db)?;

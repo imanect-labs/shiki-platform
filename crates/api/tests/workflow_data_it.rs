@@ -1674,3 +1674,221 @@ async fn scheduled_runs_count_dates_from_the_scheduled_time() {
         std::panic::resume_unwind(e);
     }
 }
+
+/// GAP-90・GAP-88: 「別のワークフローを実行」で始めた子の run は、始めた run の予定の日時を引き継ぐ。スケジュールの
+/// run から始めた子はその回の予定の時刻、予定の日時を指定して手動で試した run から始めた子はその日時で、子の「日付を
+/// 計算」も同じ日を数える。予定の日時の無い run（ふつうの手動の実行）から始めた子は引き継がない（子が始めた日時）。
+/// 本番のスケジューラ → 起動口 → workflow.start の口（`ProdNodePorts::workflow_start` → `start_child`）→ ワーカーの
+/// 順に通す。実行履歴の読み口は、由来を schedule・specified・parent と言い分ける。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn child_runs_inherit_the_parents_scheduled_time() {
+    let Some(env) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4().simple());
+    let alice = user(&tenant, "alice");
+    let body = async {
+        let child_ir = json!({
+            "ir_version": 1, "name": "child-dates",
+            "triggers": [ { "kind": "interactive" } ],
+            "nodes": [
+                { "id": "today", "type": "transform.date", "params": {} },
+                { "id": "seen", "type": "script.run", "params": {
+                    "source": { "inline": "function main(input) { return input; }" },
+                    "input": { "run": { "$from": "run" } } } }
+            ],
+            "edges": [ { "from": "today", "to": "seen" } ]
+        });
+        let (child, _) = env
+            .workflows
+            .create(&alice, &child_ir, &Catalog::default(), None)
+            .await
+            .expect("子の保存");
+        let parent_ir = json!({
+            "ir_version": 1, "name": "parent-dates",
+            "declared_scopes": ["workflow.start"],
+            "triggers": [ { "kind": "schedule", "cron": "* * * * *", "tz": "Asia/Tokyo" } ],
+            "nodes": [ { "id": "start", "type": "workflow.start", "params": { "name": "child-dates" } } ],
+            "edges": []
+        });
+        let (parent, _) = env
+            .workflows
+            .create(&alice, &parent_ir, &Catalog::default(), None)
+            .await
+            .expect("親の保存");
+        let parsed = WorkflowIr::from_json(&parent_ir).unwrap();
+        // 自動実行では、子を見る権限を有効化で委譲する（有効化の確認が勧める形・workflow.start の viewer）。
+        let grants = [GrantRequest {
+            scope: "workflow.start".into(),
+            object: alice.ns().artifact(&child.to_string()),
+            relation: Relation::Viewer,
+        }];
+        env.registration
+            .enable(&alice, parent, 1, &parsed, &grants)
+            .await
+            .expect("有効化");
+        let jst = |t: chrono::DateTime<Utc>| {
+            t.with_timezone(&chrono::FixedOffset::east_opt(9 * 3600).unwrap())
+                .to_rfc3339_opts(chrono::SecondsFormat::Secs, false)
+        };
+        let worker = workflow_engine::WorkflowWorker::new(
+            env.runs.clone(),
+            Arc::clone(&env.executor),
+            WorkerConfig::default(),
+        )
+        .scoped_to_tenant(&tenant);
+        // 子の run（親ごとに 1 つ）の予定の日時と、子の「日付を計算」と実行情報の結果。
+        let child_of = |parent_run: Uuid| {
+            let env = &env;
+            let tenant = tenant.clone();
+            async move {
+                let (run, at): (Uuid, Option<chrono::DateTime<Utc>>) = sqlx::query_as(
+                    "SELECT run_id, scheduled_at FROM workflow_run \
+                     WHERE tenant_id = $1 AND cause_run_id = $2",
+                )
+                .bind(&tenant)
+                .bind(parent_run)
+                .fetch_one(&env.pool)
+                .await
+                .unwrap();
+                for node in ["today", "seen"] {
+                    let (status, _, err) = env.step(&tenant, run, node).await;
+                    assert_eq!(status, "succeeded", "{node}: {err:?}");
+                }
+                let (_, today, _) = env.step(&tenant, run, "today").await;
+                let (_, seen, _) = env.step(&tenant, run, "seen").await;
+                (run, at, today.unwrap(), seen.unwrap())
+            }
+        };
+        let scheduled_of = |run: Uuid| {
+            let env = &env;
+            let tenant = tenant.clone();
+            async move {
+                let at: Option<chrono::DateTime<Utc>> = sqlx::query_scalar(
+                    "SELECT scheduled_at FROM workflow_run WHERE tenant_id = $1 AND run_id = $2",
+                )
+                .bind(&tenant)
+                .bind(run)
+                .fetch_one(&env.pool)
+                .await
+                .unwrap();
+                at
+            }
+        };
+
+        // --- スケジュールの run から始めた子は、その回の予定の時刻を引き継ぐ。
+        let scheduled_parent = env.fire_schedule_and_run(&tenant, parent, 61).await;
+        let (status, _, err) = env.step(&tenant, scheduled_parent, "start").await;
+        assert_eq!(status, "succeeded", "workflow.start: {err:?}");
+        let planned = scheduled_of(scheduled_parent).await.expect("予定の時刻");
+        let (scheduled_child, at, today, seen) = child_of(scheduled_parent).await;
+        assert_eq!(at, Some(planned), "子の行に親の予定の時刻を書く");
+        assert_eq!(seen["run"]["scheduled_at"], jst(planned), "{seen}");
+        assert_ne!(seen["run"]["scheduled_at"], seen["run"]["started_at"]);
+        assert_eq!(today["date"], &jst(planned)[..10], "{today}");
+
+        // --- 予定の日時を指定して手動で試した run から始めた子は、その日時を引き継ぐ。
+        let trial_at = chrono::DateTime::parse_from_rfc3339("2026-11-09T09:00:00+09:00")
+            .unwrap()
+            .with_timezone(&Utc);
+        let trial_parent = env
+            .launcher
+            .start_interactive_trial(
+                &alice,
+                parent,
+                &json!({}),
+                workflow_engine::RunTrial {
+                    trigger: None,
+                    scheduled_at: Some(trial_at),
+                },
+            )
+            .await
+            .expect("手動で試す")
+            .expect("run を作る");
+        // --- 予定の日時の無い run から始めた子は引き継がない。
+        let plain_parent = env
+            .launcher
+            .start_interactive(&alice, parent, &json!({}))
+            .await
+            .expect("手動の実行")
+            .expect("run を作る");
+        while worker.claim_and_run_once("w1").await.unwrap() {}
+        let (trial_child, at, today, seen) = child_of(trial_parent).await;
+        assert_eq!(at, Some(trial_at));
+        assert_eq!(seen["run"]["scheduled_at"], "2026-11-09T09:00:00+09:00");
+        assert_eq!(today["date"], "2026-11-09");
+        let (plain_child, at, _, seen) = child_of(plain_parent).await;
+        assert_eq!(at, None, "予定の日時の無い親からは引き継がない");
+        assert_eq!(seen["run"]["scheduled_at"], seen["run"]["started_at"]);
+
+        // --- 実行履歴の読み口は、予定の日時と由来を返す（一覧と詳細で同じ）。
+        let parents = env
+            .runs
+            .list_runs(
+                &tenant,
+                parent,
+                &workflow_engine::RunListFilter::default(),
+                None,
+                10,
+            )
+            .await
+            .unwrap();
+        let from_of = |items: &[workflow_engine::RunListItem], run: Uuid| {
+            let item = items.iter().find(|i| i.run_id == run).expect("一覧に出る");
+            (item.scheduled_at, item.scheduled_from.clone())
+        };
+        assert_eq!(
+            from_of(&parents, scheduled_parent),
+            (Some(planned), Some("schedule".into()))
+        );
+        assert_eq!(
+            from_of(&parents, trial_parent),
+            (Some(trial_at), Some("specified".into()))
+        );
+        assert_eq!(from_of(&parents, plain_parent), (None, None));
+        let children = env
+            .runs
+            .list_runs(
+                &tenant,
+                child,
+                &workflow_engine::RunListFilter::default(),
+                None,
+                10,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            from_of(&children, scheduled_child),
+            (Some(planned), Some("parent".into()))
+        );
+        assert_eq!(
+            from_of(&children, trial_child),
+            (Some(trial_at), Some("parent".into()))
+        );
+        assert_eq!(from_of(&children, plain_child), (None, None));
+        let detail = env
+            .runs
+            .run_detail(&tenant, child, scheduled_child)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (detail.scheduled_at, detail.scheduled_from.as_deref()),
+            (Some(planned), Some("parent"))
+        );
+    };
+    let outcome = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(body)).await;
+    for table in [
+        "schedule_occurrence",
+        "workflow_registration",
+        "workflow_delegation",
+    ] {
+        sqlx::query(&format!("DELETE FROM {table} WHERE tenant_id = $1"))
+            .bind(&tenant)
+            .execute(&env.pool)
+            .await
+            .unwrap();
+    }
+    env.cleanup_tenant(&tenant).await;
+    if let Err(e) = outcome {
+        std::panic::resume_unwind(e);
+    }
+}

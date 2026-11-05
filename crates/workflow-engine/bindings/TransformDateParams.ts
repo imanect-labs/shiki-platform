@@ -10,7 +10,8 @@ import type { WeekStart } from "./WeekStart";
 export type TransformDateParams = { 
 /**
  * 基準の日時（日付 `YYYY-MM-DD` か、時差つきの日時 RFC 3339）。省略すると実行情報の予定の日時（スケジュールでは
- * 予定の時刻、手動の実行やきっかけでは実行した日時）。
+ * 予定の時刻、手動の実行では指定した日時か実行した日時、「別のワークフローを実行」で動いた実行では元の実行の
+ * 予定の日時、きっかけでは実行した日時）。
  */
 base?: ValueExpr, 
 /**
