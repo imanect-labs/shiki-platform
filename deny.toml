@@ -23,6 +23,23 @@ ignore = [
     # unmaintained 通知で、既知脆弱性は無い（安全な更新先も無い）。lindera 上流が置換するまで
     # cargo update では到達できない。上流更新で外す（要追跡）。
     { id = "RUSTSEC-2024-0449", reason = "lindera 推移依存の unsafe-libyaml unmaintained 通知。脆弱性ではなく lindera 上流の置換待ち。" },
+    # pin-utils は aws-sdk-s3 → aws-smithy-{http,runtime,types} の推移依存。上流リポジトリの
+    # アーカイブによる unmaintained 通知で、既知脆弱性は無い。aws-smithy 上流が `core::pin::pin!`
+    # 等へ置換するまで cargo update では外せない。上流更新で外す（要追跡）。
+    { id = "RUSTSEC-2026-0441", reason = "aws-smithy 推移依存の pin-utils unmaintained 通知。脆弱性ではなく aws-smithy 上流の置換待ち。" },
+    # zip 6.0.0 は隔離ランナー（crates/tabular/runner・別の Cargo.lock）の libduckdb-sys の
+    # build-dependencies。libduckdb-sys は zip を「bundled でないとき」の配布物の展開
+    # （ZipArchive::extract）にだけ使い、ランナーは bundled で DuckDB を自前でビルドするので、
+    # ビルドの中でも呼ばれない。ランナーの実行ファイルにも入らない。4 件とも extract
+    # （展開先へのファイル・シンボリックリンク・権限の書き出し）の不具合で、修正は zip 9（semver
+    # 非互換）。libduckdb-sys が `zip = "6"` を固定しているため cargo update では上げられない。
+    # ランナー自身が Excel を読む zip は 9.3（修正済み・deflate だけ・extract は使わない）。
+    # ID でしか外せないので、ランナーの zip を 9 未満に戻すとここでは止まらない（Cargo.toml で見る）。
+    # libduckdb-sys が zip 9 以上に上がったら外す（GAP-85）。
+    { id = "RUSTSEC-2026-0367", reason = "zip 6.0 は libduckdb-sys の build 依存で、bundled では使わない extract の不具合。ランナーの zip は修正済みの 9.3。" },
+    { id = "RUSTSEC-2026-0368", reason = "zip 6.0 は libduckdb-sys の build 依存で、bundled では使わない extract の不具合。ランナーの zip は修正済みの 9.3。" },
+    { id = "RUSTSEC-2026-0369", reason = "zip 6.0 は libduckdb-sys の build 依存で、bundled では使わない extract の不具合。ランナーの zip は修正済みの 9.3。" },
+    { id = "RUSTSEC-2026-0429", reason = "zip 6.0 は libduckdb-sys の build 依存で、bundled では使わない extract の不具合。ランナーの zip は修正済みの 9.3。" },
     # webpki-roots 0.26.11 は sqlx-core・tokio-tungstenite の推移依存で、自前の証明書を持たず
     # webpki-roots v1 を再エクスポートするだけの互換用クレート（semver trick）。0.26 系に修正版は
     # 出ないため advisory 上は残るが、実体の v1 は 1.0.10（emSign ルートを外した版）に上げてある。

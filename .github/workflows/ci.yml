@@ -160,6 +160,12 @@ jobs:
           tool: cargo-deny
       - name: cargo deny check (advisories / licenses / bans / sources)
         run: cargo deny --all-features check
+      # shiki script のゲスト（crates/script-runtime/guest）はワークスペースの外で、自分の Cargo.lock を持つ（CI では
+      # ビルドしない）。サンドボックスで動く JS エンジン（javy）の依存も、ルートの deny.toml で検査する（GAP-85）。
+      # ワークスペースの検査が落ちても、こちらの結果も出す。
+      - name: cargo deny check (script-runtime guest の Cargo.lock)
+        if: ${{ !cancelled() }}
+        run: cargo deny --manifest-path crates/script-runtime/guest/Cargo.toml --all-features check --config deny.toml
 
   # CSV クエリサービスの隔離 DuckDB ランナー（Task 11P.7・PIT-39）。DuckDB（bundled C++）を
   # 含む workspace 除外クレートを専用ジョブでビルドし、外部パス/URL 参照・DML/DDL・
@@ -184,6 +190,13 @@ jobs:
           workspaces: |
             .
             crates/tabular/runner
+      # ランナーは自分の Cargo.lock を持ち、ワークスペースの cargo-deny ジョブは検査しない。敵対的なファイルを読む依存
+      # （DuckDB・calamine・zip・quick-xml）も、ルートの deny.toml で検査する（GAP-85）。ビルドしないので先に流す。
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-deny
+      - name: cargo deny check (runner の Cargo.lock)
+        run: cargo deny --manifest-path crates/tabular/runner/Cargo.toml --all-features check --config deny.toml
       - name: fmt / clippy (runner)
         run: |
           cargo fmt --manifest-path crates/tabular/runner/Cargo.toml --check
