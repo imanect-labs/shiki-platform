@@ -25,7 +25,7 @@ import { nodePortLabel } from "../port-labels";
 import { defaultOutPort, drawnPorts, edgePortsOf, exitsPending, type ServerPorts } from "./ports";
 import { isMap, typeLabel } from "./regions";
 import { triggerSeasonIndex, triggerView } from "./trigger-node";
-import { mapErrors } from "./validation";
+import { mapErrors, triggerErrorsOf } from "./validation";
 
 type Props = {
   ir: WorkflowIr;
@@ -448,6 +448,7 @@ export function MobileFlow({
                 name={view.label}
                 detail={view.detail}
                 selected={selection.kind === "trigger" && selection.index === i}
+                errorCount={triggerErrorsOf(errors, t, i).length}
                 onClick={() => select({ kind: "trigger", index: i })}
               />
             </li>

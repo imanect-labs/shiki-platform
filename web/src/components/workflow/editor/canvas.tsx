@@ -34,11 +34,11 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 
-import type { Edge as IrEdge, Node as IrNode, ValidationError, WorkflowIr } from "@/generated/workflow-ir";
+import type { Edge as IrEdge, Node as IrNode, Trigger, ValidationError, WorkflowIr } from "@/generated/workflow-ir";
 import { toast } from "@/components/ui/use-toast";
 import type { EditorLayout } from "@/lib/workflow-api";
 import { edgeKey, type EditorAction, type Selection } from "./ir-state";
-import { mapErrors } from "./validation";
+import { mapErrors, triggerErrorsOf } from "./validation";
 import { resolvePositions, nextPosition, triggerKeys, NODE_W } from "./auto-layout";
 import { addAction, regionEndTarget } from "./add-target";
 import { contentMinSize, frameAt, frameRects, insideOrigin, NODE_H, type Point, type Rect } from "./frames";
@@ -279,7 +279,7 @@ export function Canvas({
         selected: selection.kind === "trigger" && selection.index === i,
         // きっかけは IR の triggers[] で、キャンバスからは消さない（設定パネルの「このきっかけを削除」）。
         deletable: false,
-        data: { trigger: t, index: i } satisfies TriggerNodeData,
+        data: { trigger: t, index: i, errors: triggerErrorsOf(errors, t as Trigger, i) } satisfies TriggerNodeData,
       });
     });
     return nodes;

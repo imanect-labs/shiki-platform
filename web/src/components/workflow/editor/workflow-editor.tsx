@@ -38,10 +38,12 @@ import { AddNodeSheet } from "./add-node-sheet";
 import { addAction, endTarget, targetLabel, targetPlace, targetRegion, type AddTarget } from "./add-target";
 import { layoutForSave } from "./auto-layout";
 import { Canvas } from "./canvas";
+import { ErrorsSummary } from "./errors-summary";
 import { useEditorState } from "./ir-state";
 import { MobileFlow } from "./mobile-flow";
 import { Palette } from "./palette";
 import { refusedTypesIn } from "./regions";
+import { saveErrorHint } from "./validation";
 
 type Props = {
   workflowId: string;
@@ -219,10 +221,11 @@ export function WorkflowEditor({
     } catch (e) {
       if (e instanceof WorkflowValidationError) {
         dispatch({ type: "set_errors", errors: e.errors, ir: irToSave });
+        // ブロックの外（きっかけ・入力項目・全体）の誤りは、ブロックの赤い印に出ないので場所を言う（GAP-35）。
         toast({
           variant: "destructive",
-          title: "保存できません（検証エラー）",
-          description: "赤いバッジのブロックを確認してください。",
+          title: "保存できません",
+          description: saveErrorHint(e.errors),
         });
       } else if ((e as { status?: unknown } | null)?.status === 409) {
         // 比べたバージョンの後にほかの人が保存した（本文の code は version_conflict・付録 C の §3.5）。文言で状態コードを
@@ -330,13 +333,20 @@ export function WorkflowEditor({
                 dispatch={dispatch}
               />
             </ReactFlowProvider>
-            {desktop && state.serverWarnings.length > 0 ? (
-              <div className="absolute left-1/2 top-3 z-10 -translate-x-1/2">
-                <WarningsSummary
-                  warnings={state.serverWarnings}
+            {desktop && (state.serverWarnings.length > 0 || state.serverErrors.length > 0) ? (
+              <div className="absolute left-1/2 top-3 z-10 flex -translate-x-1/2 flex-wrap justify-center gap-2">
+                <ErrorsSummary
+                  errors={state.serverErrors}
                   ir={state.ir}
-                  onSelect={(id) => dispatch({ type: "select", selection: { kind: "node", id } })}
+                  onSelect={(selection) => dispatch({ type: "select", selection })}
                 />
+                {state.serverWarnings.length > 0 ? (
+                  <WarningsSummary
+                    warnings={state.serverWarnings}
+                    ir={state.ir}
+                    onSelect={(id) => dispatch({ type: "select", selection: { kind: "node", id } })}
+                  />
+                ) : null}
               </div>
             ) : null}
             {desktop ? <ScopesPill scopes={scopes} className="absolute bottom-3 left-1/2 z-10 -translate-x-1/2" /> : null}
@@ -367,13 +377,20 @@ export function WorkflowEditor({
           <div className="px-4 pb-3 pt-3">
             <ScopesPill scopes={scopes} />
           </div>
-          {state.serverWarnings.length > 0 ? (
-            <div className="px-4 pt-3">
-              <WarningsSummary
-                warnings={state.serverWarnings}
+          {state.serverWarnings.length > 0 || state.serverErrors.length > 0 ? (
+            <div className="flex flex-wrap gap-2 px-4 pb-3">
+              <ErrorsSummary
+                errors={state.serverErrors}
                 ir={state.ir}
-                onSelect={(id) => dispatch({ type: "select", selection: { kind: "node", id } })}
+                onSelect={(selection) => dispatch({ type: "select", selection })}
               />
+              {state.serverWarnings.length > 0 ? (
+                <WarningsSummary
+                  warnings={state.serverWarnings}
+                  ir={state.ir}
+                  onSelect={(id) => dispatch({ type: "select", selection: { kind: "node", id } })}
+                />
+              ) : null}
             </div>
           ) : null}
           <MobileFlow

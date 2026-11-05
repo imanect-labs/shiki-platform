@@ -453,6 +453,8 @@ export function ConfigPanel({ ctx }: { ctx: EditorContext }) {
     () => danglingInputsOf(ir.nodes, ctx.state.serverWarnings),
     [ir.nodes, ctx.state.serverWarnings],
   );
+  // ブロックの外の保存時の誤り（きっかけ・入力項目）は、きっかけの設定の欄の下に出す（GAP-35）。
+  const globalErrors = React.useMemo(() => mapErrors(ctx.state.serverErrors), [ctx.state.serverErrors]);
   const desktop = useMediaQuery("(min-width: 768px)");
   const sheet = !desktop;
   const close = () => ctx.dispatch({ type: "select", selection: { kind: "none" } });
@@ -497,6 +499,8 @@ export function ConfigPanel({ ctx }: { ctx: EditorContext }) {
               ctx.dispatch({ type: "update_meta", patch: { input_schema }, inputRenames })
             }
             inputUsages={inputUsages}
+            errors={globalErrors.byTrigger.get(selection.index)}
+            inputSchemaErrors={globalErrors.inputSchema}
           />
         </div>
       </>

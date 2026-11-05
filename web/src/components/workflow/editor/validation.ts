@@ -3,32 +3,112 @@
 /// backend は `{ code, message, node_id?, edge?("from -> to"), path?("/params/...") }` を
 /// 全件返す（ir.md §8）。dnd は該当ノード上にバッジ表示し、右パネルはフィールドへ写像する。
 
-import type { ValidationError } from "@/generated/workflow-ir";
+import type { Trigger, ValidationError } from "@/generated/workflow-ir";
 
 export type ErrorMap = {
   byNode: Map<string, ValidationError[]>;
   byEdge: Map<string, ValidationError[]>;
+  /// ブロックにも線にも紐付かない誤り（下の 3 つを合わせたもの）。
   global: ValidationError[];
+  /// きっかけの誤り（path が `/triggers/<i>/…`・添字ごと）。きっかけの設定の欄の下に出す。
+  byTrigger: Map<number, ValidationError[]>;
+  /// 入力項目の誤り（path が `/input_schema…`）。入力項目の編集の下に出す。
+  inputSchema: ValidationError[];
+  /// どこにも写せない誤り（ワークフロー全体）。誤りの一覧にだけ出す。
+  other: ValidationError[];
 };
+
+const TRIGGER_PATH = /^\/triggers\/(\d+)(?:\/|$)/;
 
 export function mapErrors(errors: ValidationError[]): ErrorMap {
   const byNode = new Map<string, ValidationError[]>();
   const byEdge = new Map<string, ValidationError[]>();
+  const byTrigger = new Map<number, ValidationError[]>();
   const global: ValidationError[] = [];
+  const inputSchema: ValidationError[] = [];
+  const other: ValidationError[] = [];
   for (const e of errors) {
     if (e.node_id) {
       const list = byNode.get(e.node_id) ?? [];
       list.push(e);
       byNode.set(e.node_id, list);
-    } else if (e.edge) {
+      continue;
+    }
+    if (e.edge) {
       const list = byEdge.get(e.edge) ?? [];
       list.push(e);
       byEdge.set(e.edge, list);
+      continue;
+    }
+    global.push(e);
+    const trigger = TRIGGER_PATH.exec(e.path ?? "");
+    if (trigger) {
+      const index = Number(trigger[1]);
+      const list = byTrigger.get(index) ?? [];
+      list.push(e);
+      byTrigger.set(index, list);
+    } else if (e.path === "/input_schema" || e.path?.startsWith("/input_schema/")) {
+      inputSchema.push(e);
     } else {
-      global.push(e);
+      other.push(e);
     }
   }
-  return { byNode, byEdge, global };
+  return { byNode, byEdge, global, byTrigger, inputSchema, other };
+}
+
+/// きっかけ 1 つの保存時の誤り（入力項目の誤りは「手動で実行」のきっかけの設定で直すので、そこにも数える）。
+export function triggerErrorsOf(map: ErrorMap, trigger: Trigger, index: number): ValidationError[] {
+  const own = map.byTrigger.get(index) ?? [];
+  if (trigger.kind !== "interactive" || map.inputSchema.length === 0) return own;
+  return [...own, ...map.inputSchema];
+}
+
+/// きっかけの設定にある欄（誤りを欄の下に出せる位置）。
+const FIELD_KEYS = new Set(["scope/folder", "scope/table", "cron", "tz"]);
+
+/// きっかけの誤りの文言の頭（どのきっかけかは場所の名前で別に言うので、画面では外す）。
+const TRIGGER_PREFIX = "きっかけ: ";
+
+/// きっかけの誤りの文言から、頭の「きっかけ: 」を外す（場所はきっかけの設定・一覧の場所の名前が言う）。
+export function withoutTriggerPrefix(message: string): string {
+  return message.startsWith(TRIGGER_PREFIX) ? message.slice(TRIGGER_PREFIX.length) : message;
+}
+
+/// きっかけ 1 つの誤りを、欄の下に出すもの（`scope/folder`・`scope/table`・`cron`・`tz` など、きっかけの中の
+/// 位置 → 文言）と、上の帯に出すもの（欄に写せないもの）に分ける。
+export function triggerErrorView(errors: ValidationError[]): {
+  fields: Map<string, string>;
+  banner: string[];
+} {
+  const fields = new Map<string, string>();
+  const banner: string[] = [];
+  for (const e of errors) {
+    const message = withoutTriggerPrefix(e.message);
+    const rest = (e.path ?? "").replace(TRIGGER_PATH, "");
+    const [head, sub] = rest.split("/");
+    const field = head === "scope" && sub ? `scope/${sub}` : head || null;
+    if (field && FIELD_KEYS.has(field)) {
+      if (!fields.has(field)) fields.set(field, message);
+    } else if (!banner.includes(message)) {
+      banner.push(message);
+    }
+  }
+  return { fields, banner };
+}
+
+/// 保存の失敗の知らせで、直すところを言う文（ブロックの誤りが無いときは場所を言う・付録 C の P5）。
+export function saveErrorHint(errors: ValidationError[]): string {
+  const map = mapErrors(errors);
+  const places: string[] = [];
+  if (map.byNode.size > 0 || map.byEdge.size > 0) places.push("赤い印のブロックや線");
+  if (map.byTrigger.size > 0) places.push("きっかけの設定");
+  if (map.inputSchema.length > 0) places.push("入力項目");
+  if (map.other.length > 0) places.push("ワークフロー全体の設定");
+  if (places.length === 0) return "入力した内容を確認してください。";
+  if (places.length === 1 && places[0] === "赤い印のブロックや線") {
+    return "赤い印のブロックや線を確認してください。";
+  }
+  return `${places.join("・")}に直すところがあります。上の「直すところ」から開けます。`;
 }
 
 /// サーバの params の読み取りの誤り（`params が不正です: 項目 'data' がありません` など）から、

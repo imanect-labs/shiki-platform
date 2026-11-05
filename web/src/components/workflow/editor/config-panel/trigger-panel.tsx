@@ -11,7 +11,7 @@
 ///   （input_schema はワークフローに 1 つで、手動の実行・ミニアプリのボタン・チャットからの実行で共通）。
 
 import * as React from "react";
-import { FolderOpen, Plus, Trash2 } from "lucide-react";
+import { AlertCircle, FolderOpen, Plus, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -24,11 +24,17 @@ import {
 } from "@/components/ui/select";
 import { FolderPicker, type FolderChoice } from "@/components/artifacts/folder-picker";
 import { EVENT_CATALOG } from "@/generated/workflow-catalog";
-import type { Condition, Trigger } from "@/generated/workflow-ir";
+import type { Condition, Trigger, ValidationError } from "@/generated/workflow-ir";
 import { Field, FieldInput, FieldSelectTrigger } from "./common";
 import { previewSchedule } from "@/lib/workflow-api";
 import { DataTableSelect, isFsmTable, NoFsmTableNote, useDataTables } from "./data-tables";
+import { useDriveItem } from "./forms-files";
 import { InputSchemaEditor, type InputRefUsage } from "./input-schema-editor";
+import { triggerErrorView } from "../validation";
+
+/// きっかけの中の位置（`scope/folder`・`cron` など）→ 保存時の誤りの文言。
+type FieldErrors = Map<string, string>;
+const NO_FIELD_ERRORS: FieldErrors = new Map();
 
 /// 曜日（cron に書く名前と画面の名前・月曜から）。cron には数でなく名前で書く（曜日の番号の読み方の違いで
 /// 1 日ずれないように・BUG-95。サーバーは 0 と 7 を日曜、1 を月曜として読む）。
@@ -190,9 +196,11 @@ function FirePreviewLine({ preview, tz }: { preview: FirePreview | null; tz: str
 function ScheduleEditor({
   trigger,
   onChange,
+  fieldErrors = NO_FIELD_ERRORS,
 }: {
   trigger: Extract<Trigger, { kind: "schedule" }>;
   onChange: (next: Trigger) => void;
+  fieldErrors?: FieldErrors;
 }) {
   const preset = cronToPreset(trigger.cron);
   const tz = trigger.tz || "Asia/Tokyo";
@@ -313,6 +321,7 @@ function ScheduleEditor({
       <Field
         label="cron 式（上級者向け）"
         hint="分 時 日 月 曜日 の 5 つを半角スペースで区切って書きます。曜日は MON〜SUN の名前で書けます。"
+        error={fieldErrors.get("cron")}
       >
         <FieldInput
           value={trigger.cron}
@@ -321,7 +330,7 @@ function ScheduleEditor({
           className="h-8 font-mono text-xs max-md:text-base"
         />
       </Field>
-      <Field label="タイムゾーン">
+      <Field label="タイムゾーン" error={fieldErrors.get("tz")}>
         <Select value={tz} onValueChange={(v) => onChange({ ...trigger, tz: v })}>
           <FieldSelectTrigger className="h-8">
             <SelectValue />
@@ -353,7 +362,15 @@ function transitionTarget(filter: Condition | undefined): string | null {
   return null;
 }
 
-function EventEditor({ trigger, onChange }: { trigger: EventTrigger; onChange: (next: Trigger) => void }) {
+function EventEditor({
+  trigger,
+  onChange,
+  fieldErrors,
+}: {
+  trigger: EventTrigger;
+  onChange: (next: Trigger) => void;
+  fieldErrors: FieldErrors;
+}) {
   const source = EVENT_SOURCES.find((e) => e.source === trigger.source);
   const isTable = source?.scope_key === "table";
   return (
@@ -379,26 +396,42 @@ function EventEditor({ trigger, onChange }: { trigger: EventTrigger; onChange: (
           </SelectContent>
         </Select>
       </Field>
-      {isTable ? <TableEventFields trigger={trigger} onChange={onChange} /> : <FolderEventFields trigger={trigger} onChange={onChange} />}
+      {isTable ? (
+        <TableEventFields trigger={trigger} onChange={onChange} error={fieldErrors.get("scope/table")} />
+      ) : (
+        <FolderEventFields trigger={trigger} onChange={onChange} error={fieldErrors.get("scope/folder")} />
+      )}
     </div>
   );
 }
 
-function FolderEventFields({ trigger, onChange }: { trigger: EventTrigger; onChange: (next: Trigger) => void }) {
+function FolderEventFields({
+  trigger,
+  onChange,
+  error,
+}: {
+  trigger: EventTrigger;
+  onChange: (next: Trigger) => void;
+  /// 保存時の誤り（選んだフォルダーが見つからないなど）。
+  error?: string;
+}) {
   const [pickerOpen, setPickerOpen] = React.useState(false);
   const [folderName, setFolderName] = React.useState<string | null>(null);
   const folder = (trigger.scope as { folder?: string } | null)?.folder ?? "";
+  // 保存した定義を開き直したときも名前で出す（id は出さない）。引けなければ選び直しを促す。
+  const saved = useDriveItem(folder || null);
   return (
     <>
       <Field
         label="対象フォルダ"
         hint="このフォルダ（配下含む）にファイルが保存されたとき（新しい版を含む）に動きます。同じファイルの続く保存は 1 回にまとめ、このワークフロー自身の保存では動きません。必須です"
+        error={error}
       >
         <div className="flex items-center gap-1.5">
           <FieldInput
-            value={folderName ?? folder}
+            value={folderName ?? saved.item?.name ?? ""}
             readOnly
-            placeholder="フォルダを選択…"
+            placeholder={folder && saved.missing ? "見つからないフォルダーです。選び直してください" : "フォルダを選択…"}
             className="h-8 flex-1 text-xs max-md:text-base"
           />
           <Button
@@ -428,7 +461,16 @@ function FolderEventFields({ trigger, onChange }: { trigger: EventTrigger; onCha
 /// 状態を絞らないときの選択肢の値（Select は空文字を値にできない）。
 const ANY_STATE = "__any__";
 
-function TableEventFields({ trigger, onChange }: { trigger: EventTrigger; onChange: (next: Trigger) => void }) {
+function TableEventFields({
+  trigger,
+  onChange,
+  error,
+}: {
+  trigger: EventTrigger;
+  onChange: (next: Trigger) => void;
+  /// 保存時の誤り（選んだテーブルが見つからないなど）。
+  error?: string;
+}) {
   const tableId = (trigger.scope as { table?: string } | null)?.table ?? null;
   // 束縛済みのテーブルが一覧（200 件で打ち切る）に無くても、1 件取って足す（BUG-68）。
   const source = useDataTables({ bound: [tableId] });
@@ -447,7 +489,7 @@ function TableEventFields({ trigger, onChange }: { trigger: EventTrigger; onChan
       <Field
         label="対象のテーブル"
         hint="有効化した人に見える行・列の変更だけで動きます。一括取込と、このワークフロー自身の書込では動きません。必須です"
-        error={source.error ? "テーブルの一覧を読み込めませんでした" : null}
+        error={error ?? (source.error ? "テーブルの一覧を読み込めませんでした" : null)}
       >
         <DataTableSelect
           value={tableId}
@@ -521,6 +563,8 @@ export function TriggerPanel({
   inputSchema,
   onInputSchemaChange,
   inputUsages,
+  errors = [],
+  inputSchemaErrors = [],
 }: {
   triggers: Trigger[];
   index: number;
@@ -530,7 +574,12 @@ export function TriggerPanel({
   onInputSchemaChange: (next: unknown, renames?: Record<string, string>) => void;
   /// ブロックが参照している入力項目のキー（定義に無いキーを知らせる）。
   inputUsages?: InputRefUsage[];
+  /// このきっかけの保存時の誤り（欄に写せるものは欄の下、ほかは上の帯に出す）。
+  errors?: ValidationError[];
+  /// 入力項目の保存時の誤り（入力項目の編集の下に出す）。
+  inputSchemaErrors?: ValidationError[];
 }) {
+  const view = React.useMemo(() => triggerErrorView(errors), [errors]);
   const trigger = triggers[index];
   if (!trigger) return null;
   const replace = (next: Trigger) =>
@@ -538,6 +587,20 @@ export function TriggerPanel({
 
   return (
     <div className="space-y-3">
+      {view.banner.length > 0 ? (
+        <div
+          role="alert"
+          className="space-y-1 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive"
+          data-testid="trigger-errors"
+        >
+          {view.banner.map((m, i) => (
+            <p key={i} className="flex items-start gap-1.5 [overflow-wrap:anywhere]">
+              <AlertCircle className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+              {m}
+            </p>
+          ))}
+        </div>
+      ) : null}
       <Field label="きっかけの種類">
         <Select
           value={trigger.kind}
@@ -561,9 +624,11 @@ export function TriggerPanel({
         </Select>
       </Field>
       {trigger.kind === "schedule" ? (
-        <ScheduleEditor trigger={trigger} onChange={replace} />
+        <ScheduleEditor trigger={trigger} onChange={replace} fieldErrors={view.fields} />
       ) : null}
-      {trigger.kind === "event" ? <EventEditor trigger={trigger} onChange={replace} /> : null}
+      {trigger.kind === "event" ? (
+        <EventEditor trigger={trigger} onChange={replace} fieldErrors={view.fields} />
+      ) : null}
       {trigger.kind === "interactive" ? (
         <>
           <p className="text-[11px] text-muted-foreground">
@@ -571,6 +636,21 @@ export function TriggerPanel({
           </p>
           <div className="border-t pt-3">
             <InputSchemaEditor schema={inputSchema} onChange={onInputSchemaChange} usages={inputUsages} />
+            {inputSchemaErrors.length > 0 ? (
+              <div
+                role="alert"
+                className="mt-2 space-y-1 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive"
+                data-testid="input-schema-errors"
+              >
+                <p className="font-medium">入力項目を直すまで保存できません</p>
+                {inputSchemaErrors.map((e, i) => (
+                  <p key={i} className="flex items-start gap-1.5 [overflow-wrap:anywhere]">
+                    <AlertCircle className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+                    {e.message}
+                  </p>
+                ))}
+              </div>
+            ) : null}
           </div>
         </>
       ) : null}
