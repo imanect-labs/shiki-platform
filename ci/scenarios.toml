@@ -104,6 +104,7 @@ e2e = [
     "composer-create.spec.ts",
     "csv-editor.spec.ts",
     "drive-crud.spec.ts",
+    "drive-dnd-move.spec.ts",
     "drive-html-preview.spec.ts",
     "drive-mobile-new.spec.ts",
     "drive-mobile-tabs.spec.ts",

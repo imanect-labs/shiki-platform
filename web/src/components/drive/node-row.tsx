@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils";
 
 import { NodeActionsMenu, useLongPress, type NodeAction } from "./node-menu";
 import { LIST_GRID, NodeIcon, isShared, nodeMetaParts } from "./primitives";
+import { DROP_OVER, nodeDragSource, useDropTarget, type DropHandlers } from "./use-drive-dnd";
 
 export type { NodeAction };
 
@@ -30,13 +31,18 @@ export function NodeRow({
   node,
   onAction,
   meId,
+  dnd,
 }: {
   node: NodeResponse;
   onAction: (action: NodeAction, node: NodeResponse) => void;
   /// 現在ユーザー id（更新者列の「自分」判定用・親で 1 回だけ解決して渡す）。
   meId?: string;
+  /// D&D（マウス端末のみ）。渡すと行をドラッグでき、フォルダ行はドロップ先になる。
+  dnd?: DropHandlers;
 }) {
   const isFolder = node.kind === "folder";
+  const drop = useDropTarget(node.id, dnd, { disabled: !isFolder });
+  const [dragging, setDragging] = React.useState(false);
   const shared = isShared(node);
   const [menuOpen, setMenuOpen] = React.useState(false);
   const longPress = useLongPress(() => setMenuOpen(true));
@@ -50,9 +56,13 @@ export function NodeRow({
         // 狭い幅は 2 行（名前＋メタ）で 68px。長押しで iOS の文字選択・吹き出しを出さない。
         "@max-xl:min-h-[68px] pointer-coarse:select-none pointer-coarse:[-webkit-touch-callout:none]",
         menuOpen && "bg-accent",
+        dragging && "opacity-50",
+        drop.over && DROP_OVER,
         LIST_GRID,
       )}
       {...longPress}
+      {...(dnd ? dragProps(node, setDragging) : {})}
+      {...drop.props}
     >
       <button
         type="button"
@@ -110,4 +120,16 @@ export function NodeRow({
       />
     </div>
   );
+}
+
+/// ドラッグ元の props（ドラッグ中は元の行を薄くする）。行・カード共通。
+export function dragProps(node: NodeResponse, setDragging: (v: boolean) => void) {
+  const src = nodeDragSource(node, () => setDragging(false));
+  return {
+    ...src,
+    onDragStart: (e: React.DragEvent) => {
+      src.onDragStart(e);
+      setDragging(true);
+    },
+  };
 }

@@ -8,7 +8,8 @@ import { formatBytes, formatDateTime } from "@/lib/format";
 import { cn } from "@/lib/utils";
 
 import { NodeActionsMenu, useLongPress, type NodeAction } from "./node-menu";
-import { ROW_MENU_TRIGGER } from "./node-row";
+import { ROW_MENU_TRIGGER, dragProps } from "./node-row";
+import { DROP_OVER, useDropTarget, type DropHandlers } from "./use-drive-dnd";
 import { NodeIcon, formatShortDate, isShared } from "./primitives";
 
 /// グリッド表示の 1 枚。アイコンを大きく見せるカード。フォルダは開く、ファイルはビューアへ。
@@ -17,11 +18,16 @@ import { NodeIcon, formatShortDate, isShared } from "./primitives";
 export function NodeCard({
   node,
   onAction,
+  dnd,
 }: {
   node: NodeResponse;
   onAction: (action: NodeAction, node: NodeResponse) => void;
+  /// D&D（マウス端末のみ）。渡すとカードをドラッグでき、フォルダはドロップ先になる。
+  dnd?: DropHandlers;
 }) {
   const isFolder = node.kind === "folder";
+  const drop = useDropTarget(node.id, dnd, { disabled: !isFolder });
+  const [dragging, setDragging] = React.useState(false);
   const [menuOpen, setMenuOpen] = React.useState(false);
   const longPress = useLongPress(() => setMenuOpen(true));
   return (
@@ -30,8 +36,12 @@ export function NodeCard({
         "group relative min-w-0 overflow-hidden rounded-xl border border-border/60 bg-card/40 transition-[transform,box-shadow,border-color,background-color] duration-[var(--duration-fast)] ease-[var(--ease-standard)] hover:-translate-y-0.5 hover:border-border hover:bg-accent hover:shadow-md",
         "pointer-coarse:select-none pointer-coarse:[-webkit-touch-callout:none]",
         menuOpen && "border-border bg-accent",
+        dragging && "opacity-50",
+        drop.over && cn("border-primary/50", DROP_OVER),
       )}
       {...longPress}
+      {...(dnd ? dragProps(node, setDragging) : {})}
+      {...drop.props}
     >
       <div className="absolute right-1 top-1 z-10">
         <NodeActionsMenu
