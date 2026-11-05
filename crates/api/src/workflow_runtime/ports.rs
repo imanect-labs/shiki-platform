@@ -457,10 +457,13 @@ impl NodePorts for ProdNodePorts {
             .iter()
             .map(|row| Value::Array(row.iter().map(|c| cell_to_json(c.as_deref())).collect()))
             .collect();
+        let items = csv_items(&resp.columns, &resp.values);
         Ok(json!({
             "columns": resp.columns,
             "column_types": resp.column_types,
             "rows": rows,
+            // 1 行ずつ列の名前で引ける形（数・真偽・空は値の種類のまま・GAP-40）。rows は以前からの文字の形のまま。
+            "items": items,
             "total_rows": resp.total_rows,
             "truncated": resp.truncated,
             // 集計した中身のバージョン（後ろの「CSV を編集」の前提にできる・D-96）。
@@ -596,10 +599,38 @@ fn cell_to_json(cell: Option<&str>) -> Value {
     cell.map_or(Value::Null, |s| Value::String(s.to_string()))
 }
 
+/// 「CSV を集計」の結果の行を、列の名前で引ける項目のまとまりにする（値は隔離ランナーが決めた種類のまま）。
+///
+/// 列の名前は DuckDB が重ならないように付け直したもの（`a`・`a_1`）なので、行の値は抜けない。
+fn csv_items(columns: &[String], values: &[Vec<Value>]) -> Vec<Value> {
+    values
+        .iter()
+        .map(|row| Value::Object(columns.iter().cloned().zip(row.iter().cloned()).collect()))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    /// 集計の結果の行を、列の名前で引ける項目のまとまりにし、値の種類を保つ（GAP-40）。
+    #[test]
+    fn csv_items_keep_value_kinds_by_column_name() {
+        let columns = vec!["品目".to_string(), "合計".to_string(), "済".to_string()];
+        let values = vec![
+            vec![json!("交通費"), json!(2000), json!(true)],
+            vec![json!("会議費"), json!(0.5), Value::Null],
+        ];
+        assert_eq!(
+            csv_items(&columns, &values),
+            vec![
+                json!({ "品目": "交通費", "合計": 2000, "済": true }),
+                json!({ "品目": "会議費", "合計": 0.5, "済": null }),
+            ]
+        );
+        assert!(csv_items(&columns, &[]).is_empty());
+    }
 
     /// 検索の結果に関連の強さ（段階）を載せ、生の reranker の値は載せない（D-96）。
     #[test]

@@ -308,10 +308,23 @@ pub(super) fn output_shape(nt: NodeType) -> Shape {
         N::CsvQuery => Fields(
             "",
             &[
-                field!("columns", "Array<string>"),
-                field!("column_types", "Array<string>"),
-                field!("rows", "Array<Array<string | null>>", "値は列の種類にかかわらず文字・空は null"),
-                field!("total_rows", "number"),
+                field!("columns", "Array<string>", "列の名前・同じ名前の 2 つ目からは a_1 のように付け直す"),
+                field!(
+                    "column_types",
+                    "Array<string>",
+                    "列の型の名前・BIGINT（整数）・DOUBLE（数値）・BOOLEAN（はい／いいえ）・VARCHAR（テキスト）・DATE（日付）など"
+                ),
+                field!(
+                    "rows",
+                    "Array<Array<string | null>>",
+                    "値は列の種類にかかわらずテキスト・空は null・日付は 2024-01-31 の形"
+                ),
+                field!(
+                    "items",
+                    "Array<{ [列の名前]: string | number | boolean | null }>",
+                    "1 行ずつ列の名前で値を引く・数値とはい／いいえと空は種類のまま・日付と時刻は rows と同じテキスト・項目の並びは列の順とは限らない"
+                ),
+                field!("total_rows", "number | null", "結果の行の数・打ち切ったときは null"),
                 field!("truncated", "boolean", "10,000 行で打ち切ったとき true"),
                 field!("version", "number", "集計した CSV のバージョン・CSV を編集の前提にできる"),
             ],

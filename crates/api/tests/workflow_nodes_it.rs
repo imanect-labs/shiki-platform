@@ -1254,6 +1254,110 @@ async fn csv_nodes_read_excel_encodings_and_keep_the_encoding_when_patching() {
     assert_eq!(after_refusal, after_patch);
 }
 
+/// 「CSV を集計」の結果の items は、1 行ずつ列の名前で値を引け、数・真偽・空を種類のまま渡す。rows は以前からの
+/// テキストのまま（日付は以前のデバッグ表示ではなく 2024-04-01 の形）。結果の全体を「CSV を保存」に渡すと、rows の
+/// 表から CSV を組み立てる。SQL の末尾のセミコロンでも失敗しない（GAP-40）。
+#[tokio::test]
+async fn csv_query_items_keep_value_kinds() {
+    let Some(runner) = runner_path() else {
+        eprintln!("shiki-tabular-runner 未ビルドのためスキップ（SHIKI_TABULAR_RUNNER 参照）");
+        return;
+    };
+    let Some(h) = setup().await else { return };
+    let tag = Uuid::new_v4().simple().to_string()[..8].to_string();
+    let src = h
+        .storage
+        .write_file_internal(
+            &h.alice,
+            None,
+            &format!("items-{tag}.csv"),
+            "品目,金額,日付\n交通費,1200,2024-04-01\n会議費,,2024-04-02\n".as_bytes(),
+            "text/csv",
+            None,
+        )
+        .await
+        .expect("csv アップロード");
+    let wf = h
+        .save(&json!({
+            "ir_version": 1, "name": format!("csv-items-{tag}"),
+            "declared_scopes": ["csv.read", "csv.write"],
+            "triggers": [{ "kind": "interactive" }],
+            "nodes": [
+                { "id": "q", "type": "csv.query", "params": {
+                    "file": src.id.to_string(),
+                    "sql": "SELECT 品目, 金額, 金額 > 1000 AS 高い, 日付 FROM data ORDER BY 日付;" } },
+                { "id": "save", "type": "csv.write", "params": {
+                    "name": format!("items-out-{tag}"),
+                    "content": { "$from": "nodes.q.output" } } }
+            ],
+            "edges": [ { "from": "q", "to": "save" } ]
+        }))
+        .await;
+    let (run_id, status) = h
+        .run(wf, &json!({}), h.executor_with_tabular(&runner))
+        .await;
+    let outputs: Vec<(String, Option<Value>, Option<Value>)> = sqlx::query_as(
+        "SELECT node_id, output, error FROM step_execution WHERE tenant_id = $1 AND run_id = $2 ORDER BY node_id",
+    )
+    .bind(&h.tenant)
+    .bind(run_id)
+    .fetch_all(&h.pool)
+    .await
+    .unwrap();
+    let saved = h.read_file_by_name(&format!("items-out-{tag}.csv")).await;
+    let saved_id: Option<Uuid> = sqlx::query_scalar(
+        "SELECT id FROM node WHERE tenant_id = $1 AND name = $2 AND deleted_at IS NULL",
+    )
+    .bind(&h.tenant)
+    .bind(format!("items-out-{tag}.csv"))
+    .fetch_optional(&h.pool)
+    .await
+    .unwrap();
+
+    // 片付け（run の履歴・ファイル・ワークフロー・OpenFGA のストア）。
+    h.runs.purge_tenant_history(&h.tenant).await.unwrap();
+    for id in saved_id.into_iter().chain([src.id]) {
+        h.storage
+            .soft_delete_file(&h.alice, id, None)
+            .await
+            .unwrap();
+    }
+    h.artifacts.delete(&h.alice, wf, None).await.unwrap();
+    h.delete_fga_store().await;
+
+    assert_eq!(status, RunStatus::Succeeded, "{outputs:?}");
+    let q = outputs
+        .iter()
+        .find(|(id, _, _)| id == "q")
+        .and_then(|(_, out, _)| out.clone())
+        .expect("q の結果");
+    assert_eq!(
+        q["items"],
+        json!([
+            { "品目": "交通費", "金額": 1200, "高い": true, "日付": "2024-04-01" },
+            { "品目": "会議費", "金額": null, "高い": null, "日付": "2024-04-02" }
+        ]),
+        "{q}"
+    );
+    assert_eq!(
+        q["rows"],
+        json!([
+            ["交通費", "1200", "true", "2024-04-01"],
+            ["会議費", null, null, "2024-04-02"]
+        ]),
+        "{q}"
+    );
+    assert_eq!(
+        q["column_types"],
+        json!(["VARCHAR", "BIGINT", "BOOLEAN", "DATE"])
+    );
+    assert_eq!(q["total_rows"], 2);
+    assert_eq!(
+        saved.as_deref(),
+        Some("品目,金額,高い,日付\r\n交通費,1200,true,2024-04-01\r\n会議費,,,2024-04-02\r\n")
+    );
+}
+
 /// 新しく保存する CSV の文字コード（GAP-47・D-120）。「新しい CSV を保存」と、CSV として保存する「新しいファイルを
 /// 保存」は、選んだ文字コード（UTF-8〔BOM 付き〕・UTF-8・Shift_JIS）で書く。欄の無い保存済みの定義は、これまでどおり
 /// BOM の無い UTF-8 で書く。CSV でない種類には使わない。Shift_JIS に無い文字は書かずに失敗する。
