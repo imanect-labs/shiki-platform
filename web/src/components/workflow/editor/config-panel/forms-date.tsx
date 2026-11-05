@@ -67,7 +67,7 @@ export function TransformDateForm({ node, dispatch, refCandidates, inMapRegion, 
         inMapRegion={inMapRegion}
         placeholder="空欄なら予定の日時"
         noJson
-        hint="空欄なら、この実行の予定の日時から数えます（スケジュールでは予定の時刻、手動の実行では実行した日時）。日付（2026-11-02）か、時差つきの日時を入れられます。"
+        hint="空欄なら、この実行の予定の日時から数えます（スケジュールでは予定の時刻、手動では指定した日時か実行した日時）。日付（2026-11-02）か、時差つきの日時を入れられます。"
         error={fieldErrors.get("base")}
       />
       <ValueExprInput
