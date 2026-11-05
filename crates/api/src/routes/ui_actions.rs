@@ -85,8 +85,6 @@ pub(crate) fn map_yui_action_err(e: ActionError) -> ApiError {
     };
     match e {
         ActionError::Invalid(m) => invalid(&m),
-        // 図のボタンの口は部品の名前で言い直してから返す（ここに来たら、キーを出さない最後の手段の文）。
-        ActionError::InvalidInput(_) => invalid(gui::INPUT_MISMATCH_FALLBACK),
         other => map_action_err(other),
     }
 }
@@ -99,8 +97,6 @@ pub(crate) fn map_action_err(e: ActionError) -> ApiError {
         ActionError::AlreadyInvoked => ApiError::Conflict,
         ActionError::Forbidden => ApiError::Forbidden,
         ActionError::Invalid(m) => ApiError::BadRequest(m),
-        // 図のボタンの口は部品の名前で言い直してから返す。ここに来るのは図を持たない口だけ（キーは出さない）。
-        ActionError::InvalidInput(_) => ApiError::BadRequest(gui::INPUT_MISMATCH_FALLBACK.into()),
         ActionError::Unavailable(m) => ApiError::ServiceUnavailable(m),
         // 表の索引の準備中は失敗ではない待ち。data の API と同じ構造化した 409（画面が進捗を出して読み直す）。
         ActionError::IndexPreparing { field, progress } => {

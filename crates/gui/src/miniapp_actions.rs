@@ -260,15 +260,16 @@ impl MiniAppStore {
                 version: Some(pin.version),
             },
         });
-        let result = dispatcher
-            .dispatch_binding(
+        // 入力項目に合わない入力のキーと理由も受け取る（部品の名前で言い直す・GAP-41）。
+        let (result, problems) =
+            crate::input_problems::collect_input_problems(dispatcher.dispatch_binding(
                 ctx,
                 &source,
                 &binding,
                 key,
                 Value::Object(check.values),
                 trace_id,
-            )
+            ))
             .await;
         match &result {
             Ok(out) => {
@@ -292,6 +293,7 @@ impl MiniAppStore {
         result.map_err(|e| {
             crate::input_problems::with_field_labels(
                 e,
+                problems.as_deref(),
                 &block.figure,
                 crate::input_problems::ButtonSurface::MiniApp,
             )

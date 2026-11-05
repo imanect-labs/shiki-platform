@@ -59,10 +59,6 @@ pub enum ActionError {
     Forbidden,
     #[error("不正なリクエスト: {0}")]
     Invalid(String),
-    /// 起動の入力が、ワークフローの入力項目（`input_schema`）に合わない（キーと理由）。図のボタンの口は、キーを部品の
-    /// 表示名に直した [`ActionError::Invalid`] にしてから返す（[`crate::input_problems::with_field_labels`]・GAP-41）。
-    #[error("入力が、ワークフローの入力項目と合っていません")]
-    InvalidInput(Vec<crate::input_problems::InputProblem>),
     #[error("利用できません: {0}")]
     Unavailable(String),
     /// 表（保存ビュー）の並べ替え・絞り込みに使う列の索引を準備中（失敗ではない待ち・Task 15.5）。

@@ -64,7 +64,8 @@ pub use dispatch::{
     ActionDispatcher, ActionError, ActionHandler, ActionLedger, ActionSource, WorkflowStarter,
 };
 pub use input_problems::{
-    from_launcher_error, with_field_labels, ButtonSurface, InputProblem, INPUT_MISMATCH_FALLBACK,
+    collect_input_problems, from_launcher_error, with_field_labels, ButtonSurface, InputProblem,
+    INPUT_MISMATCH_FALLBACK,
 };
 pub use miniapp::{screen_problems, ComponentPin, MiniAppBody, NamedComponentPin};
 pub use miniapp_actions::{MiniAppActionRequest, MiniAppRun, MiniAppRunStatus, MiniAppRunValue};
