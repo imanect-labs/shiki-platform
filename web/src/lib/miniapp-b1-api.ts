@@ -62,8 +62,9 @@ async function ok<T>(res: Response): Promise<T> {
   if (!res.ok) {
     let message = `HTTP ${res.status}`;
     try {
-      const body = (await res.json()) as { error?: string; title?: string; detail?: string };
-      message = body.error ?? body.detail ?? body.title ?? message;
+      // 構造化した誤り（409 の installed_in_other_org など）は、利用者に見せる文言を message に載せる。
+      const body = (await res.json()) as { error?: string; message?: string; title?: string; detail?: string };
+      message = body.error ?? body.message ?? body.detail ?? body.title ?? message;
     } catch {
       // 本文なし（204 等）はステータスのみ。
     }
