@@ -437,16 +437,29 @@ async fn resolve_run_model(
         .await
         .map_err(|e| ApiError::Internal(format!("tenant llm settings: {e}")))?
     {
-        Ok(r) => Ok(Some(chat::RunModel {
-            model: r.model,
-            effort: r.effort,
-            auto: r.auto,
+        Ok(r) => {
             // 解決前の選択（組織の既定に置き換わる前）を残す（別の端末での入力欄の初期値・#1050）。
-            requested: Some(chat::LastModelChoice {
-                model: choice.model.clone().filter(|m| !m.is_empty()),
-                effort: choice.effort.map(|e| e.as_str().to_string()),
-            }),
-        })),
+            // モデルを指定して思考の深さを省いた発話は、実際に使った深さ（組織の既定）を残す
+            // （省略を「深さ指定なし」として復元すると、次の送信で別の深さになる）。
+            let model = choice
+                .model
+                .clone()
+                .filter(|m| !m.is_empty() && m != llm_gateway::AUTO_MODEL);
+            let effort = match (&model, choice.effort) {
+                (_, Some(e)) => Some(e),
+                (Some(_), None) => r.effort,
+                (None, None) => None,
+            };
+            Ok(Some(chat::RunModel {
+                requested: Some(chat::LastModelChoice {
+                    model,
+                    effort: effort.map(|e| e.as_str().to_string()),
+                }),
+                model: r.model,
+                effort: r.effort,
+                auto: r.auto,
+            }))
+        }
         Err(e) => Err(ApiError::UnprocessableJson(serde_json::json!({
             "status": 400,
             "title": "Bad Request",
