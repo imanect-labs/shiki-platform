@@ -96,6 +96,25 @@ fn is_ident_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_'
 }
 
+/// SQL が表として読む名前（`FROM`・`JOIN` の位置の名前の最後の部分・小文字）。`main."集計"` は `集計`。
+///
+/// Excel のシートのうち、SQL が名前で指すものだけを表にするために使う（GAP-84）。`WITH` で付けた名前を指すところも
+/// 入る（同じ名前のシートを多めに読むだけで、足りなくはならない）。読めない SQL は `None`（呼ぶ側は
+/// [`validate_read_only`] を通した SQL を渡す）。
+#[must_use]
+pub fn table_names(sql: &str) -> Option<std::collections::HashSet<String>> {
+    use sqlparser::ast::{visit_relations, ObjectNamePart};
+    let statements = Parser::parse_sql(&GenericDialect {}, sql.trim()).ok()?;
+    let mut names = std::collections::HashSet::new();
+    let _ = visit_relations(&statements, |name| {
+        if let Some(ident) = name.0.last().and_then(ObjectNamePart::as_ident) {
+            names.insert(ident.value.to_lowercase());
+        }
+        std::ops::ControlFlow::<()>::Continue(())
+    });
+    Some(names)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,6 +172,25 @@ mod tests {
         ] {
             assert!(validate_read_only(sql).is_err(), "should reject: {sql}");
         }
+    }
+
+    #[test]
+    fn table_names_are_the_relations_the_sql_reads() {
+        let names = table_names(
+            r#"WITH t AS (SELECT * FROM "集計 2024") SELECT 品目, sum("金額") FROM t JOIN Data d ON d.x = 'マスタ'
+               WHERE 1 IN (SELECT 1 FROM main."マスタ表") -- 注釈 FROM 注釈表"#,
+        )
+        .unwrap();
+        let mut sorted: Vec<_> = names.iter().map(String::as_str).collect();
+        sorted.sort_unstable();
+        assert_eq!(sorted, ["data", "t", "マスタ表", "集計 2024"]);
+        // 列の名前・文字列の値・注釈は表の名前ではない。
+        assert_eq!(
+            table_names("SELECT 1").unwrap(),
+            std::collections::HashSet::new()
+        );
+        // 読めない SQL は None。
+        assert!(table_names("SELECT \"閉じない").is_none());
     }
 
     #[test]

@@ -10,10 +10,11 @@
 //! 2. `SET enable_external_access=false` — 以降 SQL からの任意パス/URL 到達を封じる。
 //! 3. `SET lock_configuration=true` — 設定変更（外部アクセス再有効化等）を封じる。
 //! 4. autoload/autoinstall 無効化。
-//! 5. ユーザーの**検証済み**読み取り専用 SQL を `data` に対して実行。
+//! 5. ユーザーの**検証済み**読み取り専用 SQL を `data`（Excel はシートの名前の表も）に対して実行。
 //!
 //! Excel（.xlsx・[`InputFormat::Xlsx`]）は 1 の代わりに [`xlsx`] が展開して左端のシートを `data` に入れる
-//! （CSV を集計の読み取りだけ・D-17）。読めない Excel は利用者が直す誤り（`input_error`）として返す。
+//! （CSV を集計の読み取りだけ・D-17）。集計は、SQL が名前で読むほかのシートも、その名前の表にする（GAP-84）。
+//! 読めない Excel は利用者が直す誤り（`input_error`）として返す。
 //!
 //! 集計の結果は、行の数（`max_rows`）と大きさ（`max_result_bytes`）の上限の手前で打ち切る（GAP-92・[`query`]）。
 //!
@@ -86,20 +87,24 @@ fn execute(req: &RunnerRequest) -> Result<RunnerResponse, String> {
         set_quotas(&conn, req)?;
         return dialect(&conn, &req.csv_path);
     }
-    let (query_types, header_row) = match req.format {
+    let (query_types, book) = match req.format {
         InputFormat::Csv => (lockdown_load(&conn, req)?, None),
         InputFormat::Xlsx => {
             set_quotas(&conn, req)?;
-            let typed = matches!(req.op, RunnerOp::Query { .. });
-            let (types, header_row) = match xlsx::load(&conn, &req.csv_path, typed) {
+            let want = match &req.op {
+                RunnerOp::Query { sql } => xlsx::Want::Query(sql),
+                _ => xlsx::Want::Data,
+            };
+            let mut loaded = match xlsx::load(&conn, &req.csv_path, want) {
                 Ok(loaded) => loaded,
                 Err(xlsx::LoadError::Input(e)) => return Ok(RunnerResponse::input_failure(e.0)),
                 Err(xlsx::LoadError::Internal(e)) => return Err(e),
             };
             lockdown(&conn)?;
+            let types = std::mem::take(&mut loaded.types);
             (
                 matches!(req.op, RunnerOp::Schema).then_some(types),
-                header_row,
+                Some(loaded),
             )
         }
     };
@@ -109,8 +114,11 @@ fn execute(req: &RunnerRequest) -> Result<RunnerResponse, String> {
         RunnerOp::Query { sql } => query::query(&conn, sql, req.max_rows, req.max_result_bytes),
         RunnerOp::Dialect => Err("unreachable: dialect".into()),
     }?;
-    // Excel の data の見出しにした行（表の上の表題の行を飛ばしたとき・GAP-83）。
-    response.header_row = header_row;
+    // Excel のシートの一覧と、data の見出しにした行（GAP-84・GAP-83）。
+    if let Some(book) = book {
+        response.sheets = book.sheets;
+        response.header_row = book.header_row;
+    }
     Ok(response)
 }
 

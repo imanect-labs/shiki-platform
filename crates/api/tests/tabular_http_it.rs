@@ -841,6 +841,92 @@ async fn tabular_explains_what_it_cannot_do_with_excel_files() {
     assert_eq!(after.version, broken.version, "書き換えない");
 }
 
+/// zip の終わりの印（EOCD）に注釈を付ける（中身を実行ごとに変える。中身の同じ blob は前の実行のバケットを指す）。
+fn with_zip_comment(bytes: &[u8], comment: &str) -> Vec<u8> {
+    let eocd = bytes
+        .windows(4)
+        .rposition(|w| w == b"PK\x05\x06")
+        .expect("zip の終わりの印");
+    let mut out = bytes[..eocd + 20].to_vec();
+    out.extend((comment.len() as u16).to_le_bytes());
+    out.extend(comment.as_bytes());
+    out
+}
+
+/// Excel の列の案内（GAP-83・GAP-84）: 表の上の表題の行を飛ばして見出しの行を返し、シートの一覧（data のシート・
+/// 隠したシート・名前で読めないシート）を返す。ほかのシートは SQL に名前を書いて読める。CSV はシートの一覧が空。
+#[tokio::test]
+async fn tabular_lists_excel_sheets_and_the_header_row() {
+    let Some(env) = setup().await else { return };
+    let tag = Uuid::new_v4().simple().to_string();
+    let xlsx = env
+        .storage
+        .write_file_internal(
+            &env.ctx,
+            None,
+            &format!("売上-{tag}.xlsx"),
+            &with_zip_comment(
+                include_bytes!("../../tabular/tests/fixtures/sales.xlsx"),
+                &tag,
+            ),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            None,
+        )
+        .await
+        .expect("create xlsx");
+    let csv = env
+        .storage
+        .write_file_internal(
+            &env.ctx,
+            None,
+            &format!("売上-{tag}.csv"),
+            format!("品目,番号\n交通費,{tag}\n").as_bytes(),
+            "text/csv",
+            None,
+        )
+        .await
+        .expect("create csv");
+    let call = |req: Request<Body>| {
+        let app = env.app.clone();
+        async move { json_body(app.oneshot(req).await.unwrap()).await }
+    };
+    let schema = call(get(&env.app, &format!("/files/{}/tabular/schema", xlsx.id))).await;
+    let budget = call(post(
+        &format!("/files/{}/tabular/query", xlsx.id),
+        json!({ "sql": "SELECT 区分, 予算 FROM \"予算\" ORDER BY 予算" }),
+    ))
+    .await;
+    let csv_schema = call(get(&env.app, &format!("/files/{}/tabular/schema", csv.id))).await;
+    // 片付け（作ったファイル）。
+    for id in [xlsx.id, csv.id] {
+        env.storage
+            .soft_delete_file(&env.ctx, id, None)
+            .await
+            .unwrap();
+    }
+
+    assert_eq!(schema.0, StatusCode::OK, "{:?}", schema.1);
+    assert_eq!(schema.1["columns"], json!(["日付", "品目", "金額"]));
+    assert_eq!(schema.1["header_row"], json!(4));
+    assert_eq!(
+        schema.1["sheets"],
+        json!([
+            { "name": "売上", "hidden": false, "data": true, "usable": true },
+            { "name": "マスタ", "hidden": true, "data": false, "usable": true },
+            { "name": "Data", "hidden": false, "data": false, "usable": false },
+            { "name": "予算", "hidden": false, "data": false, "usable": true },
+        ])
+    );
+    assert_eq!(budget.0, StatusCode::OK, "{:?}", budget.1);
+    assert_eq!(
+        budget.1["rows"],
+        json!([["経費", "5000"], ["出張", "10000"]])
+    );
+    assert_eq!(csv_schema.0, StatusCode::OK, "{:?}", csv_schema.1);
+    assert_eq!(csv_schema.1["sheets"], json!([]));
+    assert_eq!(csv_schema.1["header_row"], json!(null));
+}
+
 /// 集計の結果の大きさの上限（GAP-92・既定 8 MB）: 行の数の上限（10,000 行）より先に大きさの上限に当たる結果は、
 /// 上限を超える行の手前で打ち切り、truncated を立てる（total_rows は null）。グリッドのページは打ち切らない。
 #[tokio::test]

@@ -92,6 +92,25 @@ pub fn runner_address_space_bytes(memory_limit_mb: u32) -> u64 {
     (u64::from(memory_limit_mb) + RUNNER_ADDRESS_SPACE_HEADROOM_MB) << 20
 }
 
+/// Excel のブックのシート（表のシートだけ・ブックの順・GAP-84）。
+///
+/// `data` は表示している左端のシート（D-148）。ほかのシートは、SQL に `FROM "シート名"` と書くと、その名前の表として
+/// 読める（`data` のシートも名前で読める）。DuckDB の名前は大文字と小文字を区別しないので、`data` と同じ名前のほかの
+/// シートと、前のシートと大文字と小文字だけが違う名前のシート、名前の無いシートは名前で読めない（[`SheetInfo::usable`]）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SheetInfo {
+    /// シートの名前。
+    pub name: String,
+    /// 隠したシート（名前で読める・`data` にはならない。見えるシートが無いブックだけは左端のシートを `data` にする）。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub hidden: bool,
+    /// `data` として読むシート。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub data: bool,
+    /// SQL で名前を書いて読めるか。
+    pub usable: bool,
+}
+
 /// ランナーへ渡す入力の形式（api は先頭のバイトだけで決め、中身は解釈しない・PIT-39）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -111,7 +130,8 @@ pub enum RunnerOp {
     Schema,
     /// ページ取得（安定行番号順・offset/limit）。
     Rows { offset: u64 },
-    /// 読み取り専用 SQL（**検証済み**・単一 SELECT/WITH）。テーブル名は `data`。
+    /// 読み取り専用 SQL（**検証済み**・単一 SELECT/WITH）。テーブル名は `data`（Excel はほかのシートもシートの名前で
+    /// 読める・[`SheetInfo`]）。
     Query { sql: String },
     /// 区切り文字と改行を推定して返す（[`RunnerResponse::dialect`]）。集計の読み込み（`read_csv_auto`）と同じ推定器
     /// （DuckDB の `sniff_csv`）を同じ引数で使い、CSV の編集が集計と同じ区切りで読み書きする（BUG-144）。
@@ -173,6 +193,9 @@ pub struct RunnerResponse {
     /// 推定した区切りと改行（[`RunnerOp::Dialect`] のときだけ）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dialect: Option<CsvDialect>,
+    /// Excel のシート（Excel のときだけ・GAP-84）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub sheets: Vec<SheetInfo>,
     /// `data` の見出し（列の名前）にした行の番号（Excel の行の番号・1 から）。表の上の表題の行を飛ばしたときだけ
     /// （GAP-83）。
     #[serde(default, skip_serializing_if = "Option::is_none")]

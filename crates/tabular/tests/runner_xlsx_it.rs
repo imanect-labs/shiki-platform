@@ -28,7 +28,7 @@ use tabular::input::{
     MAX_CELLS, MAX_COLUMNS, MAX_ENTRIES, MAX_ENTRY_UNPACKED_BYTES, MAX_FILE_BYTES, MAX_GRID_CELLS,
     MAX_TEXT_BYTES, MAX_UNPACKED_BYTES,
 };
-use tabular::{InputFormat, RunnerConfig, RunnerOp, RunnerRequest, RunnerResponse};
+use tabular::{InputFormat, RunnerConfig, RunnerOp, RunnerRequest, RunnerResponse, SheetInfo};
 
 const MAIN: &str = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
 const REL: &str = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
@@ -262,8 +262,8 @@ fn assert_refused(resp: &RunnerResponse, needle: &str) {
     assert!(message.contains(needle), "{message}");
 }
 
-/// 共通の材料（左端のシート「明細」と「集計」・make_expenses_xlsx.py）: 左端のシートを表として読み、いちばん上の
-/// 行を列の名前にする。列の型はセルの種類から決め、日付・真偽・文字の 007 を種類のまま返す。ふりがなは読まず、
+/// 共通の材料（左端のシート「明細」と「集計」・make_expenses_xlsx.py）: 左端のシートを data として読み、いちばん上の
+/// 行を列の名前にする（表題の行は無い）。列の型はセルの種類から決め、日付・真偽・文字の 007 を種類のまま返す。ふりがなは読まず、
 /// 数式は保存された値を読み、空の行は飛ばす。グリッド（Rows）は文字の形だけ。
 #[tokio::test]
 async fn reads_the_leftmost_sheet_with_types() {
@@ -468,6 +468,15 @@ async fn names_columns_and_decides_types_like_the_csv_reader() {
     );
 }
 
+fn sheet(name: &str, hidden: bool, data: bool, usable: bool) -> SheetInfo {
+    SheetInfo {
+        name: name.into(),
+        hidden,
+        data,
+        usable,
+    }
+}
+
 /// 見出しの決め方の例（名前・シートの行・列の名前・見出しにした行・表の行の数）。
 type HeaderCase<'a> = (&'a str, Vec<String>, Vec<&'a str>, Option<u32>, u64);
 
@@ -603,6 +612,162 @@ async fn skips_title_rows_above_the_header() {
             "{case}"
         );
     }
+}
+
+/// ほかのシートを名前で読む（GAP-84）。材料（sales.xlsx）の左端のシート「売上」が data で、隠したシート「マスタ」と
+/// 「予算」も名前で読める（JOIN できる）。data と同じ名前のシート「Data」は名前で読めない（FROM "Data" は data を
+/// 読む・DuckDB は名前の大文字と小文字を区別しない）。シートの一覧は列の案内にも集計の結果にも付く。
+#[tokio::test]
+async fn reads_other_sheets_by_name() {
+    let Some(_) = runner_path() else {
+        return;
+    };
+    let file = write_file(include_bytes!("fixtures/sales.xlsx"));
+    let sheets = vec![
+        sheet("売上", false, true, true),
+        sheet("マスタ", true, false, true),
+        sheet("Data", false, false, false),
+        sheet("予算", false, false, true),
+    ];
+    let schema = run(&file, RunnerOp::Schema).await;
+    assert!(schema.ok, "{:?}", schema.error);
+    assert_eq!(schema.sheets, sheets);
+    let resp = run(
+        &file,
+        query(
+            r#"SELECT m.区分, SUM(d.金額) AS 合計, MAX(b.予算) AS 予算 FROM data d
+               JOIN "マスタ" m ON m.品目 = d.品目 JOIN 予算 b ON b.区分 = m.区分
+               GROUP BY m.区分 ORDER BY m.区分"#,
+        ),
+    )
+    .await;
+    assert!(resp.ok, "{:?}", resp.error);
+    assert_eq!(
+        resp.values,
+        [
+            [json!("出張"), json!(9800), json!(10000)],
+            [json!("経費"), json!(4200), json!(5000)]
+        ]
+    );
+    assert_eq!(resp.sheets, sheets);
+    // data のシートは名前でも読める。FROM "Data" は data を読む（「Data」のシートの 1 行ではない）。
+    for sql in [
+        r#"SELECT count(*) FROM "売上""#,
+        r#"SELECT count(*) FROM "Data""#,
+    ] {
+        let resp = run(&file, query(sql)).await;
+        assert!(resp.ok, "{sql}: {:?}", resp.error);
+        assert_eq!(resp.values, [[json!(3)]], "{sql}");
+    }
+    // 無いシートの名前は SQL の誤り（ファイルを読めない誤りではない）。
+    let missing = run(&file, query(r#"SELECT * FROM "無いシート""#)).await;
+    assert!(!missing.ok && !missing.input_error, "{:?}", missing.error);
+}
+
+/// SQL が読むシートだけを読む（GAP-84）。読まないシートが上限を超えていても、data の集計と列の案内は通る。読む
+/// シートの値の文字は合わせて数える（1 枚ずつは上限の内でも、2 枚で上限を超えたら断る）。左端のシートが空なら、ほかの
+/// シートを名前で読めることを言い、名前で読めば左端のシートは読まない。値の無いシートを名前で読むと、行の無い表になる。
+/// 大文字と小文字だけが違う名前の 2 枚目は、名前で読めない。
+#[tokio::test]
+async fn reads_only_the_sheets_the_sql_names_and_counts_them_together() {
+    let Some(_) = runner_path() else {
+        return;
+    };
+    let small = [row(1, &[t("A1", "値")]), row(2, &[n("A2", "1", 0)])].concat();
+    let far = [row(1, &[t("A1", "値")]), row(2, &[t("XFD2", "遠い")])].concat();
+    let file = write_file(&zip(&book(
+        &[("表", "", small.clone()), ("広い", "", far)],
+        &["値"],
+    )));
+    let resp = run(&file, query("SELECT * FROM data")).await;
+    assert!(resp.ok, "{:?}", resp.error);
+    assert_eq!(resp.values, [[json!(1)]]);
+    assert!(run(&file, RunnerOp::Schema).await.ok);
+    let wide = run(&file, query(r#"SELECT * FROM "広い""#)).await;
+    assert_refused(&wide, "Excel のシート「広い」の列が多すぎます");
+
+    // 値の文字の合計（64 MB）は、読むシートを合わせて数える。
+    let long = "あ".repeat(1 << 18); // 768 KiB
+    let half = (MAX_TEXT_BYTES / long.len()) * 3 / 5;
+    let tall = |count: usize| -> String {
+        std::iter::once(row(1, &[s("A1", 1)]))
+            .chain((2..=count as u32 + 1).map(|r| row(r, &[s(&format!("A{r}"), 0)])))
+            .collect()
+    };
+    let file = write_file(&zip(&book(
+        &[
+            ("表", "", small.clone()),
+            ("前", "", tall(half)),
+            ("後", "", tall(half)),
+        ],
+        &[&long, "値"],
+    )));
+    for one in [
+        r#"SELECT count(*) FROM "前""#,
+        r#"SELECT count(*) FROM "後""#,
+    ] {
+        let resp = run(&file, query(one)).await;
+        assert!(resp.ok, "{one}: {:?}", resp.error);
+        assert_eq!(resp.values, [[json!(half)]], "{one}");
+    }
+    let both = run(&file, query(r#"SELECT count(*) FROM "前", "後""#)).await;
+    assert_refused(
+        &both,
+        &format!(
+            "（SQL で読むシートを合わせて、{} MB まで）",
+            MAX_TEXT_BYTES >> 20
+        ),
+    );
+
+    // 左端のシートが空。列の案内はほかのシートを名前で読めることを言い、名前で読めば左端のシートは読まない。
+    // 値の無いシートは行の無い表。大文字と小文字だけが違う名前の 2 枚目は名前で読めない（1 枚目を読む）。
+    let file = write_file(&zip(&book(
+        &[
+            ("空", "", String::new()),
+            ("集計", "", small.clone()),
+            ("空き", "", String::new()),
+            (
+                "Sales",
+                "",
+                [row(1, &[t("A1", "先")]), row(2, &[n("A2", "1", 0)])].concat(),
+            ),
+            (
+                "SALES",
+                "",
+                [row(1, &[t("A1", "後")]), row(2, &[n("A2", "2", 0)])].concat(),
+            ),
+        ],
+        &["値"],
+    )));
+    let schema = run(&file, RunnerOp::Schema).await;
+    assert_refused(
+        &schema,
+        r#"Excel の左端のシート「空」に値がありません。ほかのシートは、SQL に FROM "集計" のように名前を書いて読めます。"#,
+    );
+    let resp = run(&file, query(r#"SELECT * FROM "集計""#)).await;
+    assert!(resp.ok, "{:?}", resp.error);
+    assert_eq!(resp.values, [[json!(1)]]);
+    assert_eq!(
+        resp.sheets,
+        [
+            sheet("空", false, true, true),
+            sheet("集計", false, false, true),
+            sheet("空き", false, false, true),
+            sheet("Sales", false, false, true),
+            sheet("SALES", false, false, false),
+        ]
+    );
+    let empty = run(&file, query(r#"SELECT count(*) FROM "空き""#)).await;
+    assert!(empty.ok, "{:?}", empty.error);
+    assert_eq!(empty.values, [[json!(0)]]);
+    let upper = run(&file, query(r#"SELECT * FROM "SALES""#)).await;
+    assert!(upper.ok, "{:?}", upper.error);
+    assert_eq!(
+        (upper.columns.as_slice(), upper.values.as_slice()),
+        (&["先".to_string()][..], &[vec![json!(1)]][..])
+    );
+    let data = run(&file, query("SELECT * FROM data")).await;
+    assert_refused(&data, "「空」に値がありません");
 }
 
 /// 外部のブックへの参照を持つ数式は、保存された値を読む（参照はたどらない）。XML の外部の実体（DOCTYPE）は

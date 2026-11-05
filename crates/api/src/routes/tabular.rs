@@ -106,16 +106,42 @@ impl TableResponse {
     }
 }
 
-/// スキーマ（列名・総行数）。Excel は、表の上の表題の行を飛ばしたときの見出しの行も返す。
+/// スキーマ（列名・総行数）。Excel はシートの一覧と、表題の行を飛ばしたときの見出しの行も返す。
 #[derive(Debug, Serialize, ToSchema)]
 pub struct SchemaResponse {
     pub columns: Vec<String>,
     pub column_types: Vec<String>,
     #[schema(value_type = Option<u64>)]
     pub total_rows: Option<u64>,
+    /// Excel のシート（表のシートだけ・ブックの順・CSV は空・GAP-84）。`data` のシートが列の案内の表。
+    pub sheets: Vec<SheetResponse>,
     /// 列の名前にした行（Excel の行の番号・1 から）。表の上の表題の行を飛ばしたときだけ（GAP-83）。
     #[schema(value_type = Option<u32>)]
     pub header_row: Option<u32>,
+}
+
+/// Excel のシート（[`tabular::SheetInfo`]）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct SheetResponse {
+    /// シートの名前。
+    pub name: String,
+    /// 隠したシート。
+    pub hidden: bool,
+    /// SQL の `data` として読むシート（表示している左端のシート）。
+    pub data: bool,
+    /// SQL に `FROM "シート名"` と書いて読めるか（`data` と同じ名前のほかのシートなどは読めない）。
+    pub usable: bool,
+}
+
+impl From<tabular::SheetInfo> for SheetResponse {
+    fn from(s: tabular::SheetInfo) -> Self {
+        SheetResponse {
+            name: s.name,
+            hidden: s.hidden,
+            data: s.data,
+            usable: s.usable,
+        }
+    }
 }
 
 /// CSV スキーマを返す（viewer 認可）。
@@ -140,6 +166,7 @@ pub async fn get_schema(
         columns: resp.columns,
         column_types: resp.column_types,
         total_rows: resp.total_rows,
+        sheets: resp.sheets.into_iter().map(SheetResponse::from).collect(),
         header_row: resp.header_row,
     }))
 }

@@ -670,9 +670,42 @@ function CsvColumnsHint({ fileId }: { fileId: string | null }) {
               {current.schema.header_row} 行目を列の名前にしています。それより上の行は表題とみなして読みません。
             </p>
           ) : null}
+          <ExcelSheets sheets={current.schema.sheets} />
         </>
       )}
       <p data-testid="csv-result-values-hint">{RESULT_VALUES_HINT}</p>
+    </div>
+  );
+}
+
+/// SQL に書くシートの名前（二重引用符で囲み、中の二重引用符は重ねる）。
+function sheetIdent(name: string): string {
+  return `"${name.replaceAll('"', '""')}"`;
+}
+
+/// Excel のシートの一覧と、ほかのシートの読み方（GAP-84）。CSV は出さない。
+function ExcelSheets({ sheets }: { sheets: SchemaResponse["sheets"] }) {
+  if (sheets.length === 0) return null;
+  const example = sheets.find((s) => !s.data && s.usable);
+  return (
+    <div data-testid="csv-sheets">
+      <p>
+        シート:{" "}
+        {sheets.map((s, i) => (
+          // シートごとにまとめて折り返す（呼び名の途中で行を変えない）。
+          <span key={`${s.name}-${i}`} className="inline-block">
+            <code className="font-mono text-foreground">{sheetIdent(s.name)}</code>
+            {s.data ? "（data）" : !s.usable ? "（名前が重なるため、名前では読めません）" : s.hidden ? "（隠したシート）" : ""}
+            {i < sheets.length - 1 ? "、" : ""}
+          </span>
+        ))}
+      </p>
+      {example ? (
+        <p>
+          ほかのシートは <code className="font-mono text-foreground">FROM {sheetIdent(example.name)}</code>{" "}
+          のように、シートの名前で読めます。
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -776,7 +809,7 @@ export function CsvQueryForm(props: FormProps) {
         {...props}
         {...CSV_QUERY_PICKER}
         label="集計する CSV か Excel のファイル"
-        hint="有効化のとき、このファイルの閲覧権限を渡します。Excel のファイルは、表示しているシートのうち左端のシートを読みます。表の上にある表題の行は、列の名前にしません。"
+        hint="有効化のとき、このファイルの閲覧権限を渡します。Excel のファイルは、表示している左端のシートを data として読み、ほかのシートは名前で読めます。表の上にある表題の行は、列の名前にしません。"
       />
       {sql !== null ? (
         <Field label="SQL（読み取りだけの SELECT）" error={fieldErrors.get("sql")}>

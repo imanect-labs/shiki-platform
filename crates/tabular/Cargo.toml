@@ -17,8 +17,9 @@ name = "tabular"
 shiki-authz.workspace = true
 shiki-storage.workspace = true
 
-# SQL の読み取り専用検証（単一 SELECT/WITH のみ許可・DDL/DML/ATTACH/PRAGMA 等を拒否）。
-sqlparser.workspace = true
+# SQL の読み取り専用検証（単一 SELECT/WITH のみ許可・DDL/DML/ATTACH/PRAGMA 等を拒否）。visitor は SQL が読む表の
+# 名前を取る（Excel のシートを名前で読む・GAP-84）。
+sqlparser = { workspace = true, features = ["visitor"] }
 # CSV 読み書き（パッチ書換）。
 csv.workspace = true
 # CSV の文字コード（Shift_JIS・BOM 付きの UTF-8・UTF-16）を決めて UTF-8 にする・編集後に元の文字コードで書く（GAP-45）。

@@ -48,10 +48,28 @@ fn denied(err: &tabular::TabularError) -> ToolOutcome {
     ToolOutcome::error(msg)
 }
 
-/// 結果テーブルをモデル向けに整形（列＋先頭 N 行）。
+/// 結果テーブルをモデル向けに整形（列＋先頭 N 行）。Excel はシートの一覧も添える（ほかのシートを名前で読める・GAP-84）。
 fn format_table(resp: &tabular::RunnerResponse, max_preview: usize) -> String {
     use std::fmt::Write as _;
     let mut out = String::new();
+    if !resp.sheets.is_empty() {
+        let sheets: Vec<String> = resp
+            .sheets
+            .iter()
+            .map(|s| {
+                let mut name = format!("\"{}\"", s.name.replace('"', "\"\""));
+                if s.data {
+                    name.push_str("（data）");
+                } else if !s.usable {
+                    name.push_str("（名前で読めない）");
+                } else if s.hidden {
+                    name.push_str("（隠したシート）");
+                }
+                name
+            })
+            .collect();
+        let _ = writeln!(out, "シート: {}", sheets.join(", "));
+    }
     if let Some(row) = resp.header_row {
         let _ = writeln!(
             out,
@@ -97,7 +115,8 @@ impl Tool for CsvQueryTool {
     fn description(&self) -> &'static str {
         "CSV ファイルに読み取り専用 SQL（SELECT のみ）を実行して分析する。テーブル名は `data`。\
          例: SELECT category, count(*) FROM data GROUP BY category。ファイルの閲覧権限が要る。\
-         Excel（.xlsx）も読める（左端のシートを表として読む。表の上の表題の行は飛ばし、値の多い最初の行が列の名前）。"
+         Excel（.xlsx）も読める。表示している左端のシートが `data` で、ほかのシートは FROM \"集計\" のように\
+         シートの名前で読める（結果にシートの一覧が出る）。表の上の表題の行は飛ばし、値の多い最初の行が列の名前。"
     }
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
@@ -494,6 +513,35 @@ mod tests {
             out.starts_with("data の列の名前: 3 行目（上の行は表題として読まない）\n列: a, b\n"),
             "{out}"
         );
+    }
+
+    /// Excel は、シートの一覧（data・名前で読めないシート・隠したシート）と、表題を飛ばした見出しの行を添える（GAP-84・
+    /// GAP-83）。CSV は添えない。
+    #[test]
+    fn format_table_lists_excel_sheets_and_the_header_row() {
+        let sheet = |name: &str, hidden: bool, data: bool, usable: bool| tabular::SheetInfo {
+            name: name.into(),
+            hidden,
+            data,
+            usable,
+        };
+        let mut r = resp(vec![vec![Some("1".into()), None]], Some(1), false);
+        assert!(!format_table(&r, 50).contains("シート"));
+        r.sheets = vec![
+            sheet("明細", false, true, true),
+            sheet("集計 \"年\"", false, false, true),
+            sheet("Data", false, false, false),
+            sheet("マスタ", true, false, true),
+        ];
+        r.header_row = Some(3);
+        let out = format_table(&r, 50);
+        assert!(
+            out.starts_with(
+                "シート: \"明細\"（data）, \"集計 \"\"年\"\"\", \"Data\"（名前で読めない）, \"マスタ\"（隠したシート）\n"
+            ),
+            "{out}"
+        );
+        assert!(out.contains("data の列の名前: 3 行目"), "{out}");
     }
 
     /// save_csv: 下書きが csv_drafts に載り（保存はしない）、.csv は表示名から落ちる。
