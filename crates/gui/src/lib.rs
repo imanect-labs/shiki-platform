@@ -71,7 +71,7 @@ pub use input_problems::{
 pub use miniapp::{screen_problems, ComponentPin, MiniAppBody, NamedComponentPin};
 pub use miniapp_actions::{MiniAppActionRequest, MiniAppRun, MiniAppRunStatus, MiniAppRunValue};
 pub use miniapp_inputs::{input_hints, input_warnings, InputHintType, WorkflowInputHint};
-pub use miniapp_pins::{diff_versions, PinDiff, PinUpdate};
+pub use miniapp_pins::{diff_versions, PinDiff, PinUpdate, SkillPart, VersionDiff};
 pub use miniapp_publish::{
     diff_bodies, problems_block_publish, MiniAppChange, PinChange, PublishPreview,
 };

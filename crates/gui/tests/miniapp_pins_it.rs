@@ -4,6 +4,7 @@
 //!
 //! - ワークフローを改訂すると、固定した版より新しい版と、入力項目の変化（増える・必須になる）を返す。
 //! - 保存ビューを改訂すると、変わる部分（絞り込みと並べ替え）だけを返す。
+//! - スキルを改訂すると、変わる設定（AI への指示・参照するフォルダー）だけを返す（GAP-86）。
 //! - 最新の版を固定していれば、差は空。
 //! - 呼んだ人が読めない部品・種類の違う部品は `readable: false` で、最新の版も差も返さない（存在を区別しない）。
 //!
@@ -23,7 +24,7 @@ use std::sync::Arc;
 
 use artifact::{ArtifactKind, ArtifactStore, NewArtifact};
 use authz::{AuthContext, AuthzClient, Principal};
-use gui::{ComponentPin, MiniAppStore, PinDiff};
+use gui::{ComponentPin, MiniAppStore, PinDiff, SkillPart};
 use serde_json::json;
 use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
@@ -214,6 +215,65 @@ async fn body(pool: PgPool, fga: Arc<dyn AuthzClient>, tenant: String) {
         .expect("view updates");
     assert_eq!(view_updates[0].latest_version, Some(2));
     assert_eq!(view_updates[0].changes, vec![PinDiff::ViewQuery]);
+
+    // スキル: v2 で AI への指示と参照するフォルダーを変える（中身は返さない・GAP-86）。
+    let skill = artifacts
+        .create(
+            &alice,
+            NewArtifact {
+                kind: ArtifactKind::Skill,
+                name: "expense-guide".into(),
+                body: json!({ "description": "経費の手引き", "instructions": "経費の規程に沿って答えます。" }),
+            },
+            None,
+        )
+        .await
+        .expect("skill")
+        .id;
+    artifacts
+        .append_version(
+            &alice,
+            skill,
+            json!({
+                "description": "経費の手引き",
+                "instructions": "経費の規程に沿って、根拠の条文を添えて答えます。",
+                "knowledge_scope": { "folders": [Uuid::new_v4()] }
+            }),
+            Some(1),
+            None,
+        )
+        .await
+        .expect("skill v2");
+    let skill_updates = apps
+        .pin_updates(
+            &alice,
+            ArtifactKind::Skill,
+            &[pin(skill, 1), pin(skill, 2)],
+            None,
+        )
+        .await
+        .expect("skill updates");
+    assert!(skill_updates[0].readable);
+    assert_eq!(skill_updates[0].latest_version, Some(2));
+    assert_eq!(
+        skill_updates[0].changes,
+        vec![
+            PinDiff::Skill {
+                part: SkillPart::Instructions
+            },
+            PinDiff::Skill {
+                part: SkillPart::KnowledgeScope
+            },
+        ]
+    );
+    assert!(!skill_updates[0].diff_unknown);
+    assert!(skill_updates[1].changes.is_empty());
+    let hidden_skill = apps
+        .pin_updates(&bob, ArtifactKind::Skill, &[pin(skill, 1)], None)
+        .await
+        .expect("bob skill");
+    assert!(!hidden_skill[0].readable);
+    assert_eq!(hidden_skill[0].latest_version, None);
 
     // 読めない人には、最新の版も差も返さない。種類の違う部品も読めないと同じ扱い。
     let hidden = apps

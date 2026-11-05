@@ -1,4 +1,4 @@
-//! 束ねた部品（ワークフロー・保存ビュー）の新しいバージョンと、上げると変わるところ（GAP-11）。
+//! 束ねた部品（ワークフロー・保存ビュー・スキル）の新しいバージョンと、上げると変わるところ（GAP-11・GAP-86）。
 //!
 //! アプリは部品を版で固定して束ねる（再現性）。部品が改訂されても、アプリの画面とボタンは固定した版のまま動く。
 //! 作る人がアプリのエディターで固定した版を最新に上げるときに、上げると何が変わるかを見せる（公開の前の差・
@@ -10,6 +10,10 @@
 //!   処理の中身の差は言わない（ワークフローのエディターで見る）。
 //! - 保存ビューの差は、対象のテーブル・絞り込みと並べ替え（クエリ）・表示の設定のどれが変わるか。列の名前や条件の
 //!   値は返さない。
+//! - スキルの差は、設定（説明・AI への指示・参照するフォルダー・使ってよいツール・モデル・お手本の対話・スクリプト・
+//!   参考資料・コマンド）のどれが変わるか。中身は返さない（GAP-86）。
+//!
+//! 差の種類を決めるのは [`diff`]（純関数）の 1 か所。
 
 use artifact::{ArtifactError, ArtifactKind};
 use authz::AuthContext;
@@ -19,9 +23,12 @@ use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::miniapp::ComponentPin;
-use crate::miniapp_inputs::{input_hints, InputHintType, WorkflowInputHint};
+use crate::miniapp_inputs::InputHintType;
 use crate::miniapp_store::MiniAppStore;
 use crate::store::GuiError;
+
+mod diff;
+pub use diff::{diff_versions, VersionDiff};
 
 /// 部品を最新のバージョンに上げると変わるところ 1 つ（`kind` で判別）。
 #[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
@@ -56,6 +63,32 @@ pub enum PinDiff {
     ViewQuery,
     /// 列の並び・見出し・書式などの表示の設定が変わる（保存ビュー）。
     ViewDisplay,
+    /// スキルの設定のうち 1 つが変わる（中身は返さない・GAP-86）。
+    Skill { part: SkillPart },
+}
+
+/// スキルの設定（変わるところを言う単位・[`PinDiff::Skill`]）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillPart {
+    /// 説明。
+    Description,
+    /// AI への指示（指示文）。
+    Instructions,
+    /// 参照するフォルダーとファイル。
+    KnowledgeScope,
+    /// 使ってよいツール。
+    AllowedTools,
+    /// 使うモデルとその設定。
+    Model,
+    /// お手本の対話。
+    FewShot,
+    /// スクリプト。
+    Scripts,
+    /// 参考資料。
+    References,
+    /// チャットで呼ぶコマンド。
+    Command,
 }
 
 /// 束ねた部品 1 つの、新しいバージョンの有無と差（ピンの順）。
@@ -76,8 +109,8 @@ pub struct PinUpdate {
 }
 
 impl MiniAppStore {
-    /// 束ねる部品（`kind` はワークフローか保存ビュー）ごとに、呼んだ人が読める最新の版と、上げると変わるところを返す
-    /// （ピンの順・GAP-11）。読めない部品は `readable: false`。ほかの誤りは返す（読めないと決めつけない）。
+    /// 束ねる部品（`kind` はワークフロー・保存ビュー・スキル）ごとに、呼んだ人が読める最新の版と、上げると変わるところを
+    /// 返す（ピンの順・GAP-11・GAP-86）。読めない部品は `readable: false`。ほかの誤りは返す（読めないと決めつけない）。
     pub async fn pin_updates(
         &self,
         ctx: &AuthContext,
@@ -124,7 +157,10 @@ impl MiniAppStore {
                 .pinned_body(ctx, pin.artifact_id, latest, trace_id)
                 .await?;
             match (from, to) {
-                (Some(from), Some(to)) => (diff_versions(kind, &from, &to), false),
+                (Some(from), Some(to)) => {
+                    let d = diff_versions(kind, &from, &to);
+                    (d.changes, d.unknown)
+                }
                 // 固定している版が無い（壊れたピン）など。差は言えない（最新の版は返し、調べられなかったと言う）。
                 _ => (Vec::new(), true),
             }
@@ -156,170 +192,5 @@ impl MiniAppStore {
             Err(ArtifactError::NotFound | ArtifactError::Forbidden) => Ok(None),
             Err(e) => Err(e.into()),
         }
-    }
-}
-
-/// 2 つの版の本文の差（種類ごと）。
-#[must_use]
-pub fn diff_versions(kind: ArtifactKind, from: &Value, to: &Value) -> Vec<PinDiff> {
-    match kind {
-        ArtifactKind::Workflow => input_changes(
-            &input_hints(from.get("input_schema")).unwrap_or_default(),
-            &input_hints(to.get("input_schema")).unwrap_or_default(),
-        ),
-        ArtifactKind::DataView => {
-            let mut out = Vec::new();
-            for (field, diff) in [
-                ("table_id", PinDiff::ViewTable),
-                ("query", PinDiff::ViewQuery),
-                ("display", PinDiff::ViewDisplay),
-            ] {
-                if from.get(field) != to.get(field) {
-                    out.push(diff);
-                }
-            }
-            out
-        }
-        _ => Vec::new(),
-    }
-}
-
-/// 入力項目の手がかりの差（新しい版の並び、なくなったものは最後）。
-fn input_changes(from: &[WorkflowInputHint], to: &[WorkflowInputHint]) -> Vec<PinDiff> {
-    let mut out = Vec::new();
-    for new in to {
-        let label = new.label.clone();
-        let Some(old) = from.iter().find(|h| h.key == new.key) else {
-            out.push(PinDiff::InputAdded {
-                key: new.key.clone(),
-                label,
-                required: new.required,
-            });
-            continue;
-        };
-        if old.kind != new.kind {
-            out.push(PinDiff::InputType {
-                key: new.key.clone(),
-                label: label.clone(),
-                from: old.kind,
-                to: new.kind,
-            });
-        } else if old.options != new.options || old.multi != new.multi {
-            out.push(PinDiff::InputOptions {
-                key: new.key.clone(),
-                label: label.clone(),
-            });
-        }
-        if old.required != new.required {
-            out.push(PinDiff::InputRequired {
-                key: new.key.clone(),
-                label,
-                required: new.required,
-            });
-        }
-    }
-    for old in from {
-        if !to.iter().any(|h| h.key == old.key) {
-            out.push(PinDiff::InputRemoved {
-                key: old.key.clone(),
-                label: old.label.clone(),
-            });
-        }
-    }
-    out
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use serde_json::json;
-
-    fn wf(schema: Value) -> Value {
-        json!({ "ir_version": 1, "name": "expense", "input_schema": schema })
-    }
-
-    /// 入力項目の増減・必須・種類・選択肢の変化を、新しい版の並びで返す。
-    #[test]
-    fn workflow_diff_lists_input_changes() {
-        let from = wf(json!({
-            "type": "object", "required": ["amount"],
-            "properties": {
-                "amount": { "type": "integer", "title": "金額" },
-                "category": { "type": "string", "enum": ["交通費", "交際費"] },
-                "memo": { "type": "string", "title": "メモ" }
-            }
-        }));
-        let to = wf(json!({
-            "type": "object", "required": ["title", "memo"],
-            "x-order": ["title", "amount", "category", "memo"],
-            "properties": {
-                "title": { "type": "string", "title": "件名" },
-                "amount": { "type": "string", "title": "金額" },
-                "category": { "type": "string", "enum": ["交通費", "交際費", "会議費"] },
-                "memo": { "type": "string", "title": "メモ" }
-            }
-        }));
-        let diff = diff_versions(ArtifactKind::Workflow, &from, &to);
-        assert_eq!(
-            diff,
-            vec![
-                PinDiff::InputAdded {
-                    key: "title".into(),
-                    label: Some("件名".into()),
-                    required: true
-                },
-                PinDiff::InputType {
-                    key: "amount".into(),
-                    label: Some("金額".into()),
-                    from: InputHintType::Number,
-                    to: InputHintType::Text
-                },
-                PinDiff::InputRequired {
-                    key: "amount".into(),
-                    label: Some("金額".into()),
-                    required: false
-                },
-                PinDiff::InputOptions {
-                    key: "category".into(),
-                    label: None
-                },
-                PinDiff::InputRequired {
-                    key: "memo".into(),
-                    label: Some("メモ".into()),
-                    required: true
-                },
-            ]
-        );
-        // なくなった入力項目は最後。入力項目を決めていない版は、空として比べる。
-        let gone = diff_versions(
-            ArtifactKind::Workflow,
-            &from,
-            &json!({ "ir_version": 1, "name": "expense" }),
-        );
-        assert_eq!(gone.len(), 3);
-        assert!(gone
-            .iter()
-            .all(|d| matches!(d, PinDiff::InputRemoved { .. })));
-        // 同じ入力項目なら差は無い。
-        assert!(diff_versions(ArtifactKind::Workflow, &from, &from.clone()).is_empty());
-    }
-
-    /// 保存ビューは、テーブル・クエリ・表示の設定のどれが変わるかだけを言う（列の名前や値は返さない）。
-    #[test]
-    fn view_diff_names_only_the_parts_that_change() {
-        let table = Uuid::from_u128(1);
-        let from =
-            json!({ "table_id": table, "query": { "limit": 10 }, "display": { "kind": "table" } });
-        let to =
-            json!({ "table_id": table, "query": { "limit": 20 }, "display": { "kind": "table" } });
-        assert_eq!(
-            diff_versions(ArtifactKind::DataView, &from, &to),
-            vec![PinDiff::ViewQuery]
-        );
-        let moved = json!({ "table_id": Uuid::from_u128(2), "query": { "limit": 10 } });
-        assert_eq!(
-            diff_versions(ArtifactKind::DataView, &from, &moved),
-            vec![PinDiff::ViewTable, PinDiff::ViewDisplay]
-        );
     }
 }

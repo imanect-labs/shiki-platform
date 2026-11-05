@@ -498,6 +498,7 @@ use utoipa::{
         gui::InputHintType,
         gui::PinUpdate,
         gui::PinDiff,
+        gui::SkillPart,
         crate::routes::mini_apps::ResolvedMiniAppResponse,
         crate::routes::mini_apps::PublishMiniAppRequest,
         artifact::Publication,

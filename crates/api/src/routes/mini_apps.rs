@@ -113,6 +113,9 @@ pub struct PinUpdatesRequest {
     /// 束ねる保存ビューの版（20 個まで）。
     #[serde(default)]
     pub data_views: Vec<WorkflowPinRef>,
+    /// 束ねるスキルの版（省けば確かめない・GAP-86）。
+    #[serde(default)]
+    pub skill: Option<WorkflowPinRef>,
 }
 
 /// 束ねる部品ごとの新しいバージョンと、上げると変わるところ（リクエストの順）。
@@ -120,6 +123,8 @@ pub struct PinUpdatesRequest {
 pub struct PinUpdatesResponse {
     pub workflows: Vec<gui::PinUpdate>,
     pub data_views: Vec<gui::PinUpdate>,
+    /// 束ねるスキル（リクエストで省いたときは `null`・GAP-86）。
+    pub skill: Option<gui::PinUpdate>,
 }
 
 /// 解決済みミニアプリ（実行画面が使う一式・全て検証済み）。
@@ -318,7 +323,8 @@ pub async fn mini_app_workflow_inputs(
     }))
 }
 
-/// 束ねる部品（ワークフロー・保存ビュー）ごとに、呼んだ人が読める最新の版と、上げると変わるところを返す（GAP-11）。
+/// 束ねる部品（ワークフロー・保存ビュー・スキル）ごとに、呼んだ人が読める最新の版と、上げると変わるところを返す
+/// （GAP-11・GAP-86）。
 ///
 /// アプリのエディターが、固定した版を最新に上げる操作と、その差を出すのに使う。呼んだ人の権限で読み、読めない部品は
 /// `readable: false`（最新の版も差も返さない・存在を区別しない）。差の種類はサーバーが決める（`gui::diff_versions`）。
@@ -375,9 +381,24 @@ pub async fn mini_app_pin_updates(
         )
         .await
         .map_err(map_gui_err)?;
+    let skill = match &req.skill {
+        Some(pin) => state
+            .mini_apps
+            .pin_updates(
+                &ctx,
+                artifact::ArtifactKind::Skill,
+                &pins(std::slice::from_ref(pin)),
+                trace.as_deref(),
+            )
+            .await
+            .map_err(map_gui_err)?
+            .pop(),
+        None => None,
+    };
     Ok(Json(PinUpdatesResponse {
         workflows,
         data_views,
+        skill,
     }))
 }
 
