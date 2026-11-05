@@ -99,6 +99,9 @@ impl PinSet {
     };
 }
 
+/// 束ねた部品の別名（`alias`）の文字数の上限（画面は生成した定数で同じ値を使う・codegen が正）。
+pub const MAX_ALIAS_CHARS: usize = 64;
+
 /// 名前付きピン（別名・重複・版）の構造検証。
 fn check_named_pins(
     pins: &[NamedComponentPin],
@@ -118,13 +121,15 @@ fn check_named_pins(
         // ボタンの `-> workflow 名前` と同じく途中の空白は許す（前後の空白・制御文字は不可）。
         if pin.alias.trim().is_empty()
             || pin.alias.trim() != pin.alias
-            || pin.alias.chars().count() > 64
+            || pin.alias.chars().count() > MAX_ALIAS_CHARS
             || pin.alias.chars().any(char::is_control)
         {
             errors.push(
                 GuiValidationError::new(
                     "miniapp.invalid_alias",
-                    "alias は前後に空白の無い 1〜64 文字（改行などの制御文字は不可）",
+                    format!(
+                        "alias は前後に空白の無い 1〜{MAX_ALIAS_CHARS} 文字（改行などの制御文字は不可）"
+                    ),
                 )
                 .at(&path),
             );

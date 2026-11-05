@@ -16,7 +16,8 @@ import { Loader2, Plus, TriangleAlert } from "lucide-react";
 
 import type { WorkflowChoice, WorkflowInputHint } from "@imanect/yui/editor";
 
-import type { MiniAppBody } from "@/generated/gui-spec";
+// 別名の長さの上限は、サーバーの検証と同じ定義から生成する（`crates/gui/src/miniapp.rs`）。
+import { MAX_ALIAS_CHARS, type MiniAppBody } from "@/generated/gui-spec";
 import type { ScreenValidity } from "@/components/artifacts/screen-builder";
 import { Markdown } from "@/components/prompt-kit/markdown";
 import { Button } from "@/components/ui/button";
@@ -49,9 +50,6 @@ import { inputNotes, toYuiHints } from "@/lib/miniapp/workflow-inputs";
 import { cn } from "@/lib/utils";
 
 type Pin = MiniAppBody["workflows"][number];
-
-/// 別名の長さの上限（サーバーの検証と同じ・`crates/gui/src/miniapp.rs`）。
-const MAX_ALIAS_CHARS = 64;
 
 /// ビューの名前から、束ねた別名と重ならない別名を作る（画面の表が 1 行目に書く名前）。
 function viewAlias(name: string, taken: readonly Pin[]): string {
