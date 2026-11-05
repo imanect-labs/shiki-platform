@@ -174,6 +174,10 @@ export function MiniAppEditorDialog({
   const [checks, setChecks] = React.useState<Record<string, PinCheck>>({});
   /// 組み立てるに、表の段を足してもらう頼み（ビューを追加したとき・番号が変わるたびに 1 回）。
   const [gridRequest, setGridRequest] = React.useState<{ alias: string; n: number } | null>(null);
+  /// 読みに行った部品の版（新しいバージョンの確かめ・入力の手がかり）。開き直すたびと、編集するアプリが替わるたび
+  /// （ほかの人が先に保存して最新の内容を読み込んだとき）に空にする（結果を空にしたのに読み直さない、を作らない）。
+  const checked = React.useRef(new Set<string>());
+  const requested = React.useRef(new Set<string>());
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   /// 比べたバージョンの後に、ほかの人が保存した（付録 C の §3.5・GAP-41）。
@@ -191,6 +195,8 @@ export function MiniAppEditorDialog({
     setViewToAdd("");
     setChecks({});
     setGridRequest(null);
+    checked.current.clear();
+    requested.current.clear();
     setTab("build");
     setValidity({ errors: 0 });
     sourceEdited.current = false;
@@ -250,10 +256,6 @@ export function MiniAppEditorDialog({
 
   // 束ねた部品（ワークフロー・ビュー）の新しいバージョンと、上げると変わるところ。版ごとに 1 回だけ読む（読めなくても
   // 保存はできる。新しいバージョンが出ないだけ）。
-  const checked = React.useRef(new Set<string>());
-  React.useEffect(() => {
-    if (!open) checked.current.clear();
-  }, [open]);
   React.useEffect(() => {
     if (!open) return;
     const want = (kind: PartKind, list: readonly Pin[]) => list.filter((p) => !checked.current.has(pinKey(kind, p)));
@@ -288,10 +290,6 @@ export function MiniAppEditorDialog({
   // 束ねたワークフローの入力の手がかり（組み立てるの部品の候補と、画面の入力との突き合わせのため）。手がかりは
   // サーバーが入力項目から作る（保存のときの突き合わせと同じもの）。版ごとに 1 回だけ読む（読めなくても組み立ては
   // 使える。候補が出ないだけ）。
-  const requested = React.useRef(new Set<string>());
-  React.useEffect(() => {
-    if (!open) requested.current.clear();
-  }, [open]);
   React.useEffect(() => {
     if (!open) return;
     const wanted = pins.filter((p) => !requested.current.has(`${p.artifact_id}@${p.version}`));

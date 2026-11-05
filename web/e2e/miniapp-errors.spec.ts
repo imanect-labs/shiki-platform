@@ -43,31 +43,34 @@ async function api<T = Record<string, unknown>>(
   return (await res.json()) as T;
 }
 
+/// 金額（必須・整数）を入力項目に持つワークフローの IR（`label` はブロックの名前）。
+function flowIr(name: string, label = "計算する") {
+  return {
+    ir_version: 1,
+    name,
+    display_name: name,
+    triggers: [{ kind: "interactive" }],
+    input_schema: {
+      type: "object",
+      required: ["amount"],
+      properties: { amount: { type: "integer", title: "金額", minimum: 1 } },
+    },
+    nodes: [
+      {
+        id: "compute",
+        type: "script.run",
+        label,
+        params: { source: { inline: "function main(i){ return { ok: true }; }" } },
+      },
+    ],
+    edges: [],
+  };
+}
+
 /// 金額（必須・整数）を入力項目に持つワークフロー（最後に消す）。
 async function createFlow(page: Page): Promise<{ id: string; name: string }> {
   const name = uniqueName("errors-flow");
-  const wf = await api<{ id: string }>(page, "POST", "/workflows", {
-    ir: {
-      ir_version: 1,
-      name,
-      display_name: name,
-      triggers: [{ kind: "interactive" }],
-      input_schema: {
-        type: "object",
-        required: ["amount"],
-        properties: { amount: { type: "integer", title: "金額", minimum: 1 } },
-      },
-      nodes: [
-        {
-          id: "compute",
-          type: "script.run",
-          label: "計算する",
-          params: { source: { inline: "function main(i){ return { ok: true }; }" } },
-        },
-      ],
-      edges: [],
-    },
-  });
+  const wf = await api<{ id: string }>(page, "POST", "/workflows", { ir: flowIr(name) });
   cleanup.add(() => removeWorkflowApi(page, wf.id));
   return { id: wf.id, name };
 }
@@ -96,9 +99,14 @@ test.describe("アプリの誤りの文言（GAP-41）", () => {
     await loginViaKeycloak(page);
     const flow = await createFlow(page);
     const app = await createApp(page, flow);
+    // 束ねたワークフローに新しいバージョンがある（最新の内容を読み込んだ後も、エディターがそれを言い続ける）。
+    await api(page, "PUT", `/workflows/${flow.id}`, { ir: flowIr(flow.name, "改訂"), expected_version: 1 });
     await page.goto(`/apps/${app.id}`);
     await page.getByRole("button", { name: "編集" }).click();
     const dialog = page.getByRole("dialog");
+    await expect(dialog.getByTestId("miniapp-pin-update")).toContainText("新しいバージョン v2 があります", {
+      timeout: 15_000,
+    });
     await dialog.getByLabel(/画面の見出し/).fill("私が直した見出し");
     // 開いた後に、ほかの人が保存する（v2）。
     await api(page, "PUT", `/mini-apps/${app.id}`, {
@@ -117,6 +125,10 @@ test.describe("アプリの誤りの文言（GAP-41）", () => {
     await conflict.getByRole("button", { name: "最新の内容を読み込む（変更は消えます）" }).click();
     await expect(dialog.getByLabel(/画面の見出し/)).toHaveValue("ほかの人が直した見出し", { timeout: 15_000 });
     await expect(dialog.getByTestId("miniapp-save-conflict")).toHaveCount(0);
+    // 読み込み直した内容でも、束ねた部品の新しいバージョンを確かめ直す。
+    await expect(dialog.getByTestId("miniapp-pin-update")).toContainText("新しいバージョン v2 があります", {
+      timeout: 15_000,
+    });
     await dialog.getByLabel(/画面の見出し/).fill("最新から直した見出し");
     await dialog.getByRole("button", { name: "保存", exact: true }).click();
     await expect(page.getByText("v3 を下書きとして保存しました", { exact: true })).toBeVisible({ timeout: 15_000 });
