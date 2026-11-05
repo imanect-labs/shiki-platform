@@ -20,8 +20,7 @@ class TenantTablesTest(unittest.TestCase):
             "CREATE TABLE p (tenant_id text) PARTITION BY HASH (tenant_id);",
             "ALTER TABLE plain2 ADD COLUMN tenant_id text;",
         ]
-        # data_* は crates/data の S3 が見るので対象外。
-        self.assertEqual(lint.tenant_tables(migrations), {"node", "p", "plain2"})
+        self.assertEqual(lint.tenant_tables(migrations), {"node", "data_record", "p", "plain2"})
 
 
 class LiteralsTest(unittest.TestCase):
@@ -68,6 +67,19 @@ class ViolationsTest(unittest.TestCase):
     def test_test_modules_are_skipped(self):
         src = 'fn a() {}\n#[cfg(test)]\nmod tests {\n    const Q: &str = "SELECT * FROM node";\n}\n'
         self.assertEqual(self.check(src), [])
+
+    def test_code_after_a_test_module_is_checked_again(self):
+        src = (
+            "fn a() {}\n#[cfg(test)]\nmod tests {\n    fn t() { let s = \"}\"; }\n}\n"
+            'fn b() { let q = "SELECT * FROM node"; }\n'
+        )
+        self.assertEqual(self.check(src), ["x.rs:6: node"])
+
+    def test_data_tables_are_left_to_s3_only_inside_crates_data(self):
+        tables = TABLES | {"data_table"}
+        src = 'let q = "SELECT * FROM data_table WHERE id = $1";\n'
+        self.assertEqual(lint.violations("crates/api/src/x.rs", src, tables), ["crates/api/src/x.rs:1: data_table"])
+        self.assertEqual(lint.violations("crates/data/src/x.rs", src, tables), [])
 
     def test_test_paths(self):
         for p in ["crates/a/tests/x.rs", "crates/a/src/tests.rs", "crates/a/src/b_tests.rs", "crates/a/src/x/tests_y.rs"]:

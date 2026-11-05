@@ -7,7 +7,8 @@
   T1: テナント表（migrations で tenant_id / tenant_int 列を持つ表）を FROM / JOIN / UPDATE / INTO で
       参照する SQL の文字列リテラルは、`tenant_id` か `tenant_int` を含む。
 
-data_* 表は crates/data の S3 が同じ規則で見るので、ここでは対象外にする（二重に注記させない）。
+data_* 表は crates/data/src の中では S3 が同じ規則で見るので、そこでだけ対象外にする（二重に注記させない）。
+crates/data の外から data_* 表を触る SQL はこのゲートが見る。
 
 正当な例外（全テナントを横断する保守ジョブ・主キーが大域一意で tenant を引く前の照会など）は、リテラルの
 開始行かその直前 3 行に `tenant-sql: allow(<理由>)` のコメントを書いて外す。理由は必須。
@@ -38,7 +39,7 @@ ADD_TENANT = re.compile(
 
 
 def tenant_tables(migrations: list[str]) -> set[str]:
-    """migrations のうち tenant_id / tenant_int 列を持つ表（data_* を除く）。"""
+    """migrations のうち tenant_id / tenant_int 列を持つ表。"""
     out: set[str] = set()
     for sql in migrations:
         for m in CREATE_TABLE.finditer(sql):
@@ -46,7 +47,7 @@ def tenant_tables(migrations: list[str]) -> set[str]:
                 out.add(m.group(1).lower())
         for m in ADD_TENANT.finditer(sql):
             out.add(m.group(1).lower())
-    return {t for t in out if not t.startswith("data_")}
+    return out
 
 
 def string_literals(src: str) -> list[tuple[int, str]]:
@@ -107,21 +108,86 @@ def string_literals(src: str) -> list[tuple[int, str]]:
     return out
 
 
-def test_code_start(src: str) -> int | None:
-    """`#[cfg(test)]` の直後に `mod` が来る最初の行（それ以降はテストコードとして見ない）。"""
-    lines = src.split("\n")
-    for k in range(len(lines) - 1):
-        if lines[k].strip() == "#[cfg(test)]" and lines[k + 1].lstrip().startswith("mod "):
-            return k + 1
-    return None
+TEST_MOD = re.compile(r"#\[cfg\(test\)\]\s*(?:pub(?:\([a-z]+\))?\s+)?mod\s+\w+\s*\{")
+
+
+def test_ranges(src: str) -> list[tuple[int, int]]:
+    """`#[cfg(test)] mod x { … }` の範囲（開始行・終了行）。中括弧を数え、文字列・コメント・char は飛ばす。
+
+    ファイルの途中にあるテストモジュールの後ろの本番コードは、検査の対象に戻す。
+    """
+    ranges: list[tuple[int, int]] = []
+    i, line, n, depth = 0, 1, len(src), 0
+    open_at: list[tuple[int, int]] = []  # (テストモジュールが開いた深さ, 開始行)
+    while i < n:
+        c = src[i]
+        if c == "\n":
+            line += 1
+            i += 1
+        elif src.startswith("//", i):
+            while i < n and src[i] != "\n":
+                i += 1
+        elif src.startswith("/*", i):
+            end = src.find("*/", i + 2)
+            end = n if end < 0 else end + 2
+            line += src.count("\n", i, end)
+            i = end
+        elif c == "#" and (m := TEST_MOD.match(src, i)):
+            line_start = line
+            line += src.count("\n", i, m.end())
+            depth += 1
+            open_at.append((depth, line_start))
+            i = m.end()
+        elif c == "'" or c == '"' or (c in "rb" and re.match(r"b?r#*\"", src[i:])):
+            # 文字列と char は string_literals と同じ規則で読み飛ばす（中の中括弧を数えない）。
+            j = _skip_literal(src, i)
+            line += src.count("\n", i, j)
+            i = j
+        elif c == "{":
+            depth += 1
+            i += 1
+        elif c == "}":
+            if open_at and open_at[-1][0] == depth:
+                ranges.append((open_at.pop()[1], line))
+            depth -= 1
+            i += 1
+        else:
+            i += 1
+    return ranges
+
+
+def _skip_literal(src: str, i: int) -> int:
+    """i から始まる文字列・char リテラル（またはライフタイム）の直後の位置。"""
+    n = len(src)
+    c = src[i]
+    if c == "'":
+        if src.startswith("\\", i + 1):
+            end = src.find("'", i + 2)
+            return n if end < 0 else end + 1
+        if i + 2 < n and src[i + 2] == "'":
+            return i + 3
+        return i + 1
+    m = re.match(r"b?r(#*)\"", src[i:])
+    if m and (i == 0 or not (src[i - 1].isalnum() or src[i - 1] == "_")):
+        end = src.find('"' + m.group(1), i + m.end())
+        return n if end < 0 else end + 1 + len(m.group(1))
+    if c == '"':
+        j = i + 1
+        while j < n and src[j] != '"':
+            j += 2 if src[j] == "\\" else 1
+        return j + 1
+    return i + 1
 
 
 def violations(path: str, src: str, tables: set[str]) -> list[str]:
     lines = src.split("\n")
-    test_from = test_code_start(src)
+    tests = test_ranges(src)
+    # crates/data/src の data_* は S3（shard_safety_lint.rs）が見る。
+    if path.startswith("crates/data/src/"):
+        tables = {t for t in tables if not t.startswith("data_")}
     out = []
     for line, text in string_literals(src):
-        if test_from is not None and line > test_from:
+        if any(a <= line <= b for a, b in tests):
             continue
         if not SQL_VERB.search(text):
             continue
