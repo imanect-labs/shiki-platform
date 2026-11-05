@@ -699,3 +699,97 @@ async fn unavailable_parts_and_shared_workflows() {
     })
     .await;
 }
+
+/// 道によって通るブロックだけが要る権限では、使う人のボタンを止めない（BUG-216）。分かれた流れの片方・「エラー時」の
+/// 出口の先だけが書くテーブルに権限が無くても、保存済みのアプリのボタンは押せる（7g の前と同じ）。必ず通るブロックが
+/// 要る権限が足りなければ止める。作る人には、どちらも挙げて「場合によって要る」と言い分ける。
+#[tokio::test]
+async fn needs_on_some_paths_do_not_block_buttons() {
+    let Some(pool) = pool().await else { return };
+    let Some(fga) = Fga::connect().await else {
+        return;
+    };
+    let client = Arc::clone(&fga.client);
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let t = tenant.clone();
+    let db = pool.clone();
+    run_with_cleanup(pool, tenant, fga, async move {
+        let e = Env::new(&db, &client);
+        let alice = ctx(&t, "alice");
+        let bob = ctx(&t, "bob");
+        let ns = alice.ns();
+        let claims = e.table(&alice, "経費の申請").await;
+        let big = e.table(&alice, "高額の確認").await;
+        let errors = e.table(&alice, "失敗の記録").await;
+        e.grant(&user("bob"), Relation::Submitter, ns.data_table(&claims.to_string()), &alice).await;
+        // 申請を足し、金額が大きいときだけ高額の確認に足す。足せなかったら失敗の記録に足す（bob はどちらも持たない）。
+        let ir = json!({
+            "ir_version": 1, "name": "申請",
+            "declared_scopes": ["data.write"],
+            "nodes": [
+                { "id": "add", "type": "data.record.create", "on_error": "continue",
+                  "params": { "table": claims.to_string(), "data": {} } },
+                { "id": "check", "type": "control.branch",
+                  "params": { "condition": { "op": "gt", "left": { "$from": "input", "path": "/amount" }, "right": 100000 } } },
+                { "id": "big", "type": "data.record.create", "params": { "table": big.to_string(), "data": {} } },
+                { "id": "log", "type": "data.record.create", "params": { "table": errors.to_string(), "data": {} } }
+            ],
+            "edges": [
+                { "from": "add", "to": "check" },
+                { "from": "check", "from_port": "true", "to": "big" },
+                { "from": "add", "from_port": "error", "to": "log" }
+            ]
+        });
+        let wf = e
+            .artifacts
+            .create(&alice, NewArtifact { kind: ArtifactKind::Workflow, name: "申請".into(), body: ir }, None)
+            .await
+            .unwrap()
+            .id;
+        let screen = "```ui\napp 申請\n金額 = number 必須 円 as amount\nbutton 申請する -> workflow 申請\n```\n";
+        let body = json!({
+            "description": "経費", "screen": screen,
+            "workflows": [{ "alias": "申請", "artifact_id": wf, "version": 1 }],
+        });
+        let app = e.mini_apps.create(&alice, "経費", &body, SaveMode::Draft, None).await.unwrap().id;
+        e.mini_apps.publish(&alice, app, 1, None).await.unwrap();
+        e.artifacts.share(&alice, app, &user("bob"), ArtifactRole::Viewer, None).await.unwrap();
+
+        // 使う人: 必ず通る追加は足りるので、ボタンは止まらない（高額の確認・失敗の記録の権限は問わない）。
+        let (v, parts) = e.mini_apps.part_needs(&bob, app, None, "my_access", None).await.unwrap();
+        let mine = e.checker().mine(&bob, v, &parts).await.unwrap();
+        assert!(mine.parts.is_empty(), "道によって通るブロックの権限でボタンを止めない: {mine:?}");
+
+        // 作る人: 3 つとも挙げ、道によって通るものに印を付ける。bob に足りないのは場合によって要るものだけ。
+        let subjects = e.checker().subjects_for(&alice, app, None, None).await.unwrap().unwrap();
+        let report = e.checker().report(&alice, v, &parts, Some(&subjects.0)).await.unwrap();
+        let flags: Vec<(String, bool)> = report
+            .needs
+            .iter()
+            .map(|n| (n.target.as_ref().unwrap().name.clone(), n.conditional))
+            .collect();
+        assert_eq!(
+            flags,
+            vec![
+                ("経費の申請".to_string(), false),
+                ("高額の確認".to_string(), true),
+                ("失敗の記録".to_string(), true),
+            ]
+        );
+        assert_eq!(
+            report.subjects.unwrap()[0].statuses,
+            vec![AccessStatus::Ok, AccessStatus::Missing, AccessStatus::Missing]
+        );
+
+        // 必ず通る追加の権限を外すと、ボタンを止める。
+        e.fga
+            .delete_tuple(&user("bob").subject(&ns), Relation::Submitter, &ns.data_table(&claims.to_string()))
+            .await
+            .unwrap();
+        let mine = e.checker().mine(&bob, v, &parts).await.unwrap();
+        let wf_mine = mine.parts.iter().find(|p| p.part == AccessPart::Workflow { alias: "申請".into() }).unwrap();
+        assert_eq!(wf_mine.items.len(), 1, "必ず通る追加だけを言う: {wf_mine:?}");
+        assert_eq!(wf_mine.items[0].need, AccessKind::Add);
+    })
+    .await;
+}

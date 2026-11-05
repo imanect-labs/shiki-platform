@@ -13,7 +13,7 @@ use authz::AuthContext;
 use uuid::Uuid;
 use workflow_engine::{AccessKind, AccessObject, RegistrationService, WorkflowIr};
 
-use crate::access::{AccessPart, PartNeeds};
+use crate::access::{AccessPart, PartNeed, PartNeeds};
 use crate::miniapp_store::MiniAppStore;
 use crate::skill::validate_skill_body;
 use crate::store::GuiError;
@@ -28,10 +28,15 @@ pub fn workflow_needs(ir: &WorkflowIr) -> PartNeeds {
     }
 }
 
-fn ir_needs(ir: &WorkflowIr) -> Vec<(AccessObject, Option<Uuid>, AccessKind)> {
+fn ir_needs(ir: &WorkflowIr) -> Vec<PartNeed> {
     RegistrationService::access_needs(ir)
         .into_iter()
-        .map(|n| (n.object, n.object_id, n.kind))
+        .map(|n| PartNeed {
+            object: n.object,
+            id: n.object_id,
+            kind: n.kind,
+            conditional: n.conditional,
+        })
         .collect()
 }
 
@@ -96,7 +101,11 @@ impl MiniAppStore {
             out.push(match view {
                 Some(view) => PartNeeds {
                     part: Some(part),
-                    needs: vec![(AccessObject::Table, Some(view.table_id), AccessKind::Read)],
+                    needs: vec![PartNeed::always(
+                        AccessObject::Table,
+                        Some(view.table_id),
+                        AccessKind::Read,
+                    )],
                     unavailable: false,
                 },
                 None => unavailable(part),
@@ -109,25 +118,16 @@ impl MiniAppStore {
                 Some(skill) => {
                     let mut needs = Vec::new();
                     if let Some(scope) = &skill.knowledge_scope {
-                        needs.extend(
-                            scope
-                                .folders
-                                .iter()
-                                .map(|id| (AccessObject::Folder, Some(*id), AccessKind::Read)),
-                        );
-                        needs.extend(
-                            scope
-                                .files
-                                .iter()
-                                .map(|id| (AccessObject::File, Some(*id), AccessKind::Read)),
-                        );
+                        needs.extend(scope.folders.iter().map(|id| {
+                            PartNeed::always(AccessObject::Folder, Some(*id), AccessKind::Read)
+                        }));
+                        needs.extend(scope.files.iter().map(|id| {
+                            PartNeed::always(AccessObject::File, Some(*id), AccessKind::Read)
+                        }));
                     }
-                    needs.extend(
-                        skill
-                            .references
-                            .iter()
-                            .map(|id| (AccessObject::File, Some(*id), AccessKind::Read)),
-                    );
+                    needs.extend(skill.references.iter().map(|id| {
+                        PartNeed::always(AccessObject::File, Some(*id), AccessKind::Read)
+                    }));
                     PartNeeds {
                         part: Some(AccessPart::Skill),
                         needs,
