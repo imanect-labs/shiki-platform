@@ -612,7 +612,8 @@ flowchart LR
     `provider::unavailable` の 1 か所を通る。流し始めた後にプロバイダが返した誤り（Responses API の `error`・
     `response.failed` のイベント、OpenAI 互換の素の誤りの JSON）も `{プロバイダ}: プロバイダが応答の途中で失敗しました
     （誤りの種類）` にする（`provider::midstream_failure`）。ミニアプリの AI の能力（応答の本文・SSE の error イベント）と
-    agent.invoke の誤りへ、そのまま運ばれるため（BUG-210）。
+    agent.invoke の誤りへ、そのまま運ばれるため（BUG-210）。呼ぶ側は状態の行の「Timeout」「timed out」でタイムアウトを
+    見分けるので、標準に名前の無い中継の時間切れ（522・524・598）にも時間切れと分かる名前を付ける。
 - **決定モデル（FEAT-1・D-6）**: 文章を生成せず、質問ごとに決められた選択肢（choice）・段階（score）・
   はい/いいえ（boolean）で答え、確からしさ（0〜1）を付けて返すモデル。生成と入出力の形が違うので、
   `LlmProvider` とは別の差し替えトレイト `DecisionProvider`（`decide(&DecideRequest) -> Result<DecideResponse,
