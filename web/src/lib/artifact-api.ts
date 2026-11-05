@@ -386,11 +386,24 @@ export async function invokeChatYuiAction(
   } catch {
     throw new UiActionUncertain();
   }
-  if (res.status >= 500) throw new UiActionUncertain();
+  throwIfServerError(res.status);
   if (res.status === 409) throw new UiActionAlreadyInvoked();
   if (res.status === 403) throw new UiActionForbidden();
   if (res.status === 404) throw new UiActionNotFound();
   return ok<UiActionResult>(res);
+}
+
+/// ボタンの送信のサーバーの誤り（5xx）を、起きたことごとに分けて投げる（GAP-41）。
+///
+/// - 502・504（間の中継が応答を待てなかった）: サーバーは受け付けたかもしれない（[`UiActionUncertain`]）。
+/// - 503（この環境でボタンの実行先が使えない）: 受け付けていない（[`UiActionUnavailable`]）。
+/// - そのほか（500 など）: サーバーで問題が起きた（[`UiActionServerError`]）。
+///
+/// どれも押し直しは同じ冪等キーで送る（受け付けていた場合に二つ目の run を起動しない）。
+function throwIfServerError(status: number): void {
+  if (status === 502 || status === 504) throw new UiActionUncertain();
+  if (status === 503) throw new UiActionUnavailable();
+  if (status >= 500) throw new UiActionServerError();
 }
 
 /// 送信の結果が分からない（通信が途中で切れた・サーバーの障害）。受け付けられたかもしれないので、
@@ -399,6 +412,22 @@ export class UiActionUncertain extends Error {
   constructor() {
     super("送信の結果を確かめられませんでした。もう一度押すと、同じ送信として扱います");
     this.name = "UiActionUncertain";
+  }
+}
+
+/// ボタンの実行先が、いまこの環境で使えない（503・受け付けていない）。
+export class UiActionUnavailable extends Error {
+  constructor() {
+    super("このボタンはいま使えません。少し待ってから、もう一度押してください。");
+    this.name = "UiActionUnavailable";
+  }
+}
+
+/// サーバーで問題が起きた（500 など）。押し直すときは同じ冪等キーで送る（受け付けていても二重には起動しない）。
+export class UiActionServerError extends Error {
+  constructor() {
+    super("サーバーで問題が起きました。もう一度押しても続くときは、管理者に連絡してください。");
+    this.name = "UiActionServerError";
   }
 }
 
@@ -447,7 +476,7 @@ export async function invokeMiniAppYuiAction(
   } catch {
     throw new UiActionUncertain();
   }
-  if (res.status >= 500) throw new UiActionUncertain();
+  throwIfServerError(res.status);
   if (res.status === 409) {
     const body = (await res.json().catch(() => null)) as { code?: unknown; message?: unknown } | null;
     if (body?.code === "app_version_changed" || body?.code === "not_published") {

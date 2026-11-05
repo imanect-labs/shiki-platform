@@ -10,7 +10,12 @@ import * as React from "react";
 import type { AppActionEvent, AppActionResult } from "@imanect/yui/react";
 import { figureActions, type Figure } from "@imanect/yui";
 
-import { UiActionAlreadyInvoked, UiActionUncertain } from "@/lib/artifact-api";
+import {
+  UiActionAlreadyInvoked,
+  UiActionServerError,
+  UiActionUncertain,
+  UiActionUnavailable,
+} from "@/lib/artifact-api";
 import type { UiActionRun } from "@/lib/chat-api";
 
 /// 起動したワークフローの記録 1 件（会話の記録・ミニアプリの記録の共通の形）。
@@ -130,7 +135,9 @@ export function useYuiActions(
           message: target.kind === "workflow" ? `ワークフロー「${target.name}」を起動しました` : "送信しました",
         };
       } catch (err) {
-        if (err instanceof UiActionUncertain) {
+        // 受け付けたか分からない・サーバーの誤り・いま使えない（5xx と通信の切れ）。押し直しは同じキーで送る
+        // （受け付けていた場合に二つ目の run を起動しない）。文言は起きたことごとに分ける（GAP-41）。
+        if (err instanceof UiActionUncertain || err instanceof UiActionServerError || err instanceof UiActionUnavailable) {
           if (idempotencyKey) pendingKeys.current.set(sent, idempotencyKey);
           return { ok: false, message: err.message };
         }
