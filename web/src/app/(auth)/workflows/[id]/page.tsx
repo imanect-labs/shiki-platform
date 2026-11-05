@@ -12,6 +12,7 @@ import { usePageChrome } from "@/components/shell/page-header-context";
 import { ConfigPanel } from "@/components/workflow/editor/config-panel";
 import { WorkflowEditor } from "@/components/workflow/editor/workflow-editor";
 import { WorkflowChrome } from "@/components/workflow/header-actions";
+import { workflowDraftStore } from "@/components/workflow/editor/draft-store";
 import { getLayout, getWorkflow, type EditorLayout } from "@/lib/workflow-api";
 import type { WorkflowIr } from "@/generated/workflow-ir";
 
@@ -24,7 +25,10 @@ export default function WorkflowEditorPage() {
 
   React.useEffect(() => {
     let cancelled = false;
-    Promise.all([getWorkflow(id), getLayout(id)])
+    // 前に開いていたエディタの保存が続いていれば、終わってから読む（下書きの版を保存の結果に合わせてから）。
+    workflowDraftStore
+      .settled(id)
+      .then(() => Promise.all([getWorkflow(id), getLayout(id)]))
       .then(([wf, layout]) => {
         if (!cancelled) setLoaded({ ir: wf.ir, version: wf.version, layout });
       })
