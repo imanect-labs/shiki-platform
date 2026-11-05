@@ -271,4 +271,19 @@ test("アシスタントパネルは左端のつまみで幅を変えられ、�
   await expect(handle).toHaveAttribute("aria-valuenow", String(Number(saved) - 16));
   await handle.dblclick();
   await expect(handle).toHaveAttribute("aria-valuenow", "420");
+  await expect(handle).toHaveAttribute("aria-controls", /.+/);
+
+  // 画面が狭いと最大まで広げても本文に 352px を残す（最大幅は画面に合わせて縮む）。
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await expect(handle).not.toHaveAttribute("aria-valuemax", "960");
+  await handle.focus();
+  await page.keyboard.press("End");
+  const max = Number(await handle.getAttribute("aria-valuemax"));
+  expect(max).toBeLessThan(960);
+  await expect(handle).toHaveAttribute("aria-valuenow", String(max));
+  const bodyWidth = await page.getByTestId("assistant-body").evaluate((el) => {
+    const style = getComputedStyle(el);
+    return el.getBoundingClientRect().width - parseFloat(style.paddingRight);
+  });
+  expect(bodyWidth).toBeGreaterThanOrEqual(352);
 });

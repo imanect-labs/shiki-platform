@@ -87,6 +87,7 @@ export function AssistantLayout({
       className={cn("group/assistant relative flex min-h-0 flex-1", className)}
     >
       <div
+        data-testid="assistant-body"
         className={cn(
           "flex min-h-0 min-w-0 flex-1 flex-col transition-[padding] duration-[var(--duration-normal)] ease-[var(--ease-standard)]",
           "group-data-[resizing]/assistant:transition-none",
@@ -144,6 +145,8 @@ function AssistantSheet({
   children: React.ReactNode;
 }) {
   const [mode, setMode] = React.useState<SheetMode>("half");
+  // 幅つまみ（separator）の aria-controls が指すパネルの id。
+  const paneId = React.useId();
   const sheetRef = React.useRef<HTMLDivElement>(null);
   // ドラッグ中の状態（再描画を起こさないよう ref で持ち、高さは style を直接書く）。
   const drag = React.useRef<{ id: number; startY: number; startH: number; maxH: number } | null>(
@@ -207,6 +210,7 @@ function AssistantSheet({
       ref={sheetRef}
       role="complementary"
       aria-label={label}
+      id={paneId}
       data-sheet-mode={mode}
       style={{ "--assistant-sheet-base": height } as React.CSSProperties}
       className={cn(
@@ -223,6 +227,7 @@ function AssistantSheet({
     >
       {desktop ? (
         <WidthHandle
+          controls={paneId}
           width={width}
           maxWidth={maxWidth}
           rootRef={rootRef}
@@ -274,11 +279,14 @@ function AssistantSheet({
 /// ドラッグ中は再描画せず、ルートの `--assistant-w` を直接書き換える（本文の右余白とパネル幅が
 /// 同じ変数で追従する）。離したときに保存する。←/→ キーで 16px ずつ、ダブルクリックで既定幅。
 function WidthHandle({
+  controls,
   width,
   maxWidth,
   rootRef,
   onWidthChange,
 }: {
+  /// 幅を変えるパネルの id（aria-controls）。
+  controls: string;
   /// 表示中の幅（画面に入るよう丸めた値）。
   width: number;
   maxWidth: number;
@@ -340,6 +348,7 @@ function WidthHandle({
       aria-valuemin={Math.min(MIN_WIDTH, maxWidth)}
       aria-valuemax={maxWidth}
       aria-valuenow={width}
+      aria-controls={controls}
       tabIndex={0}
       title="ドラッグで幅を変更（ダブルクリックで元の幅）"
       data-testid="assistant-width-handle"
