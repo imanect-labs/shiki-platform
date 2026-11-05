@@ -182,3 +182,41 @@ test("エディタ: 未保存のまま実行履歴へ移って戻っても編集
   await expect(canvas.getByText("スクリプト").first()).toBeVisible({ timeout: 15_000 });
   await expect(page.getByRole("button", { name: "保存", exact: true })).toBeDisabled();
 });
+
+/// 保存の完了を待たずに離れて戻っても、保存の後に続けた編集が残り、版も保存の結果に合う（次の保存が競合しない）。
+test("エディタ: 保存中に実行履歴へ移って戻っても、続けた編集が残り次の保存が通る", async ({ page }) => {
+  test.setTimeout(120_000);
+  await loginViaKeycloak(page);
+  await page.goto("/workflows");
+  await expect(page.getByText("読み込み中…")).toHaveCount(0);
+  await page.getByRole("button", { name: "新しいワークフロー", exact: true }).click();
+  await page.waitForURL(/\/workflows\/[0-9a-f-]+$/i, { timeout: 20_000 });
+  const editorUrl = page.url();
+
+  await page.getByRole("button", { name: "最初のブロック" }).click();
+  await page.getByRole("button", { name: /^スクリプト/ }).click();
+  const canvas = page.locator(".react-flow");
+  await expect(canvas.getByText("スクリプト").first()).toBeVisible();
+
+  // 保存の PUT を遅らせ、その間に編集を続けて離れる。
+  await page.route("**/api/workflows/*", async (route) => {
+    if (route.request().method() === "PUT") await new Promise((r) => setTimeout(r, 8_000));
+    await route.continue();
+  });
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await canvas.getByLabel("次のブロックを追加").first().click();
+  await page.getByRole("button", { name: /^ファイルを保存/ }).click();
+  await expect(canvas.getByText("ファイルを保存").first()).toBeVisible();
+  await page.getByRole("button", { name: "実行履歴" }).click();
+  await page.waitForURL(/\/runs$/, { timeout: 20_000 });
+  await page.getByRole("link", { name: "エディタへ戻る" }).click();
+  await page.waitForURL(editorUrl, { timeout: 20_000 });
+
+  // 保存の後に足したブロックが未保存として残り、保存の結果の版（v2）から編集が続く。
+  await expect(canvas.getByText("ファイルを保存").first()).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByText(/v2・未保存/).first()).toBeVisible();
+  await expect(page.getByText(/復元できませんでした/)).toHaveCount(0);
+  await page.unroute("**/api/workflows/*");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(page.getByText(/保存しました（v3）/).first()).toBeVisible({ timeout: 15_000 });
+});

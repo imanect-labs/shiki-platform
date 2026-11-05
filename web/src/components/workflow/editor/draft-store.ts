@@ -25,6 +25,10 @@ export type WorkflowDraft = {
 const MAX_DRAFTS = 10;
 
 const drafts = new Map<string, WorkflowDraft>();
+/// 進行中の保存（エディタを離れた後も続く）。開き直す前にこれを待ち、保存の結果を下書きに反映してから
+/// サーバの版を読む（待たないと、自分の保存で進んだ版を「他の人の保存」と取り違えて下書きを捨てたり、
+/// 保存前の版で開いて次の保存が競合したりする）。
+const pendingSaves = new Map<string, Promise<unknown>>();
 
 // スコープ（ログイン中のユーザー）が変わったら捨てる。未確定（null）との行き来も変化として扱う
 // （未確定のうちに作った下書きの持ち主は分からないため。/me は開いてすぐ確定するので実害は無い）。
@@ -45,6 +49,21 @@ export const workflowDraftStore = {
       if (oldest === undefined) break;
       drafts.delete(oldest);
     }
+  },
+  /// 保存の要求を登録する（終われば外す）。
+  trackSave(workflowId: string, request: Promise<unknown>): void {
+    const settled = request.then(
+      () => undefined,
+      () => undefined,
+    );
+    pendingSaves.set(workflowId, settled);
+    void settled.then(() => {
+      if (pendingSaves.get(workflowId) === settled) pendingSaves.delete(workflowId);
+    });
+  },
+  /// 進行中の保存が終わる（成否は問わない）のを待つ。無ければすぐ終わる。
+  settled(workflowId: string): Promise<unknown> {
+    return pendingSaves.get(workflowId) ?? Promise.resolve();
   },
   clear(workflowId: string): void {
     drafts.delete(workflowId);

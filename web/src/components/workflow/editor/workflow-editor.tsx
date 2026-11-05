@@ -204,11 +204,16 @@ export function WorkflowEditor({
     // 送るスナップショットを固定し、保存中に続いた編集を「保存済み」と誤表示しない。
     const irToSave = state.ir;
     try {
-      const saved = await updateWorkflow(workflowId, irToSave, state.savedVersion);
+      const fromVersion = state.savedVersion;
+      // 保存の完了を待たずに画面を離れていても、完了時に下書きを新しい版に合わせる。開き直す側は
+      // この完了を待ってからサーバの版を読む（`workflowDraftStore.settled`）。
+      const request = updateWorkflow(workflowId, irToSave, fromVersion).then((res) => {
+        workflowDraftStore.saved(workflowId, fromVersion, irToSave, res.version);
+        return res;
+      });
+      workflowDraftStore.trackSave(workflowId, request);
+      const saved = await request;
       savedIrJson.current = JSON.stringify(irToSave);
-      // 保存の完了を待たずに画面を離れていても、下書きを新しい版に合わせる（離れた後に届く完了で、
-      // 自分の保存を「他の人の保存」と取り違えて下書きを捨てない）。
-      workflowDraftStore.saved(workflowId, state.savedVersion, irToSave, saved.version);
       // サーバが補完した宣言（保存した版の declared_scopes）を手元の IR にも入れる（保存中に続けた編集が
       // 無いときだけ・reducer が判断する。あれば次の保存でまた補完される）。
       dispatch({ type: "saved", version: saved.version, savedIr: irToSave, declaredScopes: saved.declared_scopes });
