@@ -431,16 +431,17 @@ export function useEditorState(initial: {
   version: number;
   layout: EditorLayout;
   /// 画面移動の前に残した未保存の編集（同じ版から始めたもの）。あれば未保存の状態で開く。
-  draft?: { ir: WorkflowIr; undoStack: WorkflowIr[]; redoStack: WorkflowIr[] } | null;
+  draft?: { ir: WorkflowIr; layout: EditorLayout; undoStack: WorkflowIr[]; redoStack: WorkflowIr[] } | null;
 }) {
   const draft = initial.draft ?? null;
   return React.useReducer(editorReducer, {
     ir: draft?.ir ?? initial.ir,
     savedVersion: initial.version,
-    layout: initial.layout,
+    // 下書きの座標は自動保存が終わる前に離れた分を含み得るので、復元したら保存し直す。
+    layout: draft?.layout ?? initial.layout,
     selection: { kind: "none" },
     dirty: draft !== null,
-    layoutDirty: false,
+    layoutDirty: draft !== null,
     undoStack: draft?.undoStack ?? [],
     redoStack: draft?.redoStack ?? [],
     serverErrors: [],

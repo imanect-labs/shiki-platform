@@ -117,19 +117,22 @@ export function WorkflowEditor({
     return () => clearTimeout(timer);
   }, [state.ir, state.dirty, dispatch]);
 
-  // ── 未保存の編集を画面移動の間も残す（保存・元に戻して変更が無くなったら消す）──────────
+  // ── 未保存の編集を画面移動の間も残す（保存・元に戻して保存済みと同じになったら消す）──────────
+  // 保存済みの内容（元に戻して同じになったかの比較用。`dirty` は undo では下りないため）。
+  const savedIrJson = React.useRef(JSON.stringify(initialIr));
   React.useEffect(() => {
-    if (state.dirty) {
+    if (state.dirty && JSON.stringify(state.ir) !== savedIrJson.current) {
       workflowDraftStore.set(workflowId, {
         baseVersion: state.savedVersion,
         ir: state.ir,
+        layout: state.layout,
         undoStack: state.undoStack,
         redoStack: state.redoStack,
       });
     } else {
       workflowDraftStore.clear(workflowId);
     }
-  }, [workflowId, state.dirty, state.savedVersion, state.ir, state.undoStack, state.redoStack]);
+  }, [workflowId, state.dirty, state.savedVersion, state.ir, state.layout, state.undoStack, state.redoStack]);
 
   const restoreNotified = React.useRef(false);
   React.useEffect(() => {
@@ -202,6 +205,10 @@ export function WorkflowEditor({
     const irToSave = state.ir;
     try {
       const saved = await updateWorkflow(workflowId, irToSave, state.savedVersion);
+      savedIrJson.current = JSON.stringify(irToSave);
+      // 保存の完了を待たずに画面を離れていても、下書きを新しい版に合わせる（離れた後に届く完了で、
+      // 自分の保存を「他の人の保存」と取り違えて下書きを捨てない）。
+      workflowDraftStore.saved(workflowId, state.savedVersion, irToSave, saved.version);
       // サーバが補完した宣言（保存した版の declared_scopes）を手元の IR にも入れる（保存中に続けた編集が
       // 無いときだけ・reducer が判断する。あれば次の保存でまた補完される）。
       dispatch({ type: "saved", version: saved.version, savedIr: irToSave, declaredScopes: saved.declared_scopes });
