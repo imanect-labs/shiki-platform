@@ -215,8 +215,8 @@ test.describe("アプリのエディターのビューと版を上げる操作�
     await expect(changes).toContainText(`ビュー「${f.viewB}」を追加する（v1）`);
     await confirm.getByRole("button", { name: "キャンセル" }).click();
 
-    // スマホ幅のエディター（部品の一覧と表の段・横にはみ出さない）。
-    if (SHOTS) {
+    // スマホ幅のエディター（部品の一覧と表の段・横にはみ出さない）。確かめはいつも走らせ、撮るのは SHOTS のときだけ。
+    {
       const ctx = await browser.newContext({
         storageState: await page.context().storageState(),
         viewport: { width: 390, height: 844 },
@@ -232,9 +232,9 @@ test.describe("アプリのエディターのビューと版を上げる操作�
         const d = phone.getByRole("dialog");
         await expect(d.getByTestId("miniapp-views")).toBeVisible({ timeout: 15_000 });
         await d.getByTestId("miniapp-views").scrollIntoViewIfNeeded();
-        await phone.screenshot({ path: `${SHOTS}/miniapp-views-editor-phone.png` });
+        if (SHOTS) await phone.screenshot({ path: `${SHOTS}/miniapp-views-editor-phone.png` });
         await d.getByTestId("screen-builder-grid").first().scrollIntoViewIfNeeded();
-        await phone.screenshot({ path: `${SHOTS}/miniapp-views-grid-phone.png` });
+        if (SHOTS) await phone.screenshot({ path: `${SHOTS}/miniapp-views-grid-phone.png` });
         const overflow = await phone.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
         expect(overflow).toBeLessThanOrEqual(0);
       } finally {
