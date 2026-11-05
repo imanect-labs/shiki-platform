@@ -80,16 +80,26 @@ pub fn file_too_large() -> String {
 #[must_use]
 pub fn not_csv_name(name: &str) -> Option<String> {
     let trimmed = name.trim();
-    let lower = trimmed.to_lowercase();
-    let base_len = lower.strip_suffix(".csv").map_or(lower.len(), str::len);
-    let base = &lower[..base_len];
+    // 拡張子は ASCII なので、末尾のバイトを ASCII の大小を無視して比べ、切る位置は元の名前から決める。
+    // 名前全体を to_lowercase すると長さが変わる文字（「İ」・ケルビン記号など）で位置がずれる。
+    let base = strip_ascii_suffix(trimmed, ".csv").unwrap_or(trimmed);
     let ext = [".xlsx", ".xlsm", ".xls"]
         .into_iter()
-        .find(|ext| base.ends_with(ext))?;
+        .find(|ext| strip_ascii_suffix(base, ext).is_some())?;
     Some(format!(
-        "「{}」は Excel のファイルの名前（{ext}）です。保存できるのは CSV のファイルだけなので、名前の {ext} を外すか .csv にしてください。",
-        &trimmed[..base_len]
+        "「{base}」は Excel のファイルの名前（{ext}）です。保存できるのは CSV のファイルだけなので、名前の {ext} を外すか .csv にしてください。"
     ))
+}
+
+/// 末尾の ASCII の `suffix` を、大小を無視して外した残り。末尾が一致しなければ `None`。
+fn strip_ascii_suffix<'a>(s: &'a str, suffix: &str) -> Option<&'a str> {
+    let cut = s.len().checked_sub(suffix.len())?;
+    // 一致した末尾は ASCII なので、cut は文字の境目になる。境目でなければ一致しない（ASCII と比べられない）。
+    if !s.is_char_boundary(cut) {
+        return None;
+    }
+    let (base, tail) = s.split_at(cut);
+    tail.eq_ignore_ascii_case(suffix).then_some(base)
 }
 
 #[cfg(test)]
@@ -123,5 +133,21 @@ mod tests {
         assert!(not_csv_name("売上.csv").is_none());
         assert!(not_csv_name("売上").is_none());
         assert!(not_csv_name("xlsx の一覧.csv").is_none());
+    }
+
+    #[test]
+    fn names_whose_lowercase_changes_length_do_not_panic() {
+        // 「İ」（2 バイト）は小文字で 3 バイトに、ケルビン記号「K」（3 バイト）は 1 バイトになる。
+        let m = not_csv_name("İ.xlsx").unwrap();
+        assert!(m.contains("「İ.xlsx」"), "{m}");
+        let m = not_csv_name("İİİİİ.xlsx.csv").unwrap();
+        assert!(m.contains("「İİİİİ.xlsx」"), "{m}");
+        let m = not_csv_name("\u{212A}\u{212A}.XLS").unwrap();
+        assert!(m.contains("「\u{212A}\u{212A}.XLS」"), "{m}");
+        assert!(not_csv_name("İİİİİ.csv").is_none());
+        assert!(not_csv_name("\u{212A}\u{212A}\u{212A}\u{212A}.csv").is_none());
+        // 末尾が多バイトの文字でも、拡張子と比べる位置が文字の途中にならない。
+        assert!(not_csv_name("売").is_none());
+        assert!(not_csv_name("あいう").is_none());
     }
 }
