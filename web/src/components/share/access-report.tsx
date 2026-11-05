@@ -144,7 +144,8 @@ export function AccessReportView({
   // 1 つも確かめられなかった（どれもほかの人が持ち主の対象など）ときは、「全員使える」と言わない。
   const anyChecked = (subjects ?? []).some((s) => s.statuses.some((st) => st !== "unchecked"));
   const hasDynamic = report.needs.some((n) => n.dynamic);
-  const hasHidden = report.needs.some((n) => !n.dynamic && !n.target);
+  // 上限の外で確かめていない対象は、見えない・削除された対象と分けて言う（GAP-37）。
+  const hasHidden = report.needs.some((n) => !n.dynamic && !n.target && !n.over_limit);
   // 見えるが持ち主でない対象は、相手の権限を確かめていない（相手ごとの結果があるときだけ言う）。
   const hasUnmanaged = subjects !== null && report.needs.some((n) => n.target && !n.manageable);
 
@@ -309,7 +310,7 @@ export function AccessReportView({
           {hasUnmanaged ? (
             <li>ほかの人が持ち主のテーブルやファイルは、相手の権限を確かめていません。その持ち主に確かめてもらってください。</li>
           ) : null}
-          {report.truncated ? <li>対象が多いため、一部だけ確かめました。</li> : null}
+          {report.truncated ? <li>対象が多いため、一部の対象は確かめていません。</li> : null}
           {report.more_subjects ? (
             <li>共有している相手が多いため、最初の {subjects?.length ?? 0} 件だけ確かめました。</li>
           ) : null}

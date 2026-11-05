@@ -72,7 +72,9 @@ export function needLine(n: AccessNeedView): string {
     ? `実行のときに決まる${needPhrase(n.object, n.need)}`
     : n.target
       ? needPhrase(n.object, n.need, n.target.name)
-      : `あなたが見られないか、削除された${needPhrase(n.object, n.need)}`;
+      : n.over_limit
+        ? `${needPhrase(n.object, n.need)}（対象が多いため確かめていません）`
+        : `あなたが見られないか、削除された${needPhrase(n.object, n.need)}`;
   return part ? `${part}: ${what}` : what;
 }
 
