@@ -333,21 +333,26 @@ impl StorageService {
             let node = self.load_node(ctx, file_id, false).await?;
             return Ok(RevertOutcome::AlreadyReverted(node));
         }
-        // 直前の版より後の内容版のうち、取り消す編集でないもの＝後から入った他の編集。
-        let later: Vec<i64> = sqlx::query_scalar(
-            "SELECT version FROM node_version \
-             WHERE node_id = $1 AND org = $2 AND tenant_id = $3 AND version > $4 AND NOT is_proposal \
-             ORDER BY version",
-        )
-        .bind(file_id)
-        .bind(&ctx.org)
-        .bind(&ctx.tenant_id)
-        .bind(target_version)
-        .fetch_all(&mut *tx)
-        .await?;
-        let latest = later.last().copied().unwrap_or(target_version);
-        if !force && later.iter().any(|v| distinct.binary_search(v).is_err()) {
-            return Err(StorageError::VersionConflict { current: latest });
+        // 直前の版より後の内容版のうち、取り消す編集でないもの＝後から入った他の編集があるか。
+        // 履歴の件数に比例する取得をしないよう、有無と最新の版番号だけを 1 行で集計する（行ロック中）。
+        if !force {
+            let (foreign, latest): (bool, Option<i64>) = sqlx::query_as(
+                "SELECT COALESCE(bool_or(NOT (version = ANY($5))), false), max(version) \
+                 FROM node_version \
+                 WHERE node_id = $1 AND org = $2 AND tenant_id = $3 AND version > $4 AND NOT is_proposal",
+            )
+            .bind(file_id)
+            .bind(&ctx.org)
+            .bind(&ctx.tenant_id)
+            .bind(target_version)
+            .bind(&distinct)
+            .fetch_one(&mut *tx)
+            .await?;
+            if foreign {
+                return Err(StorageError::VersionConflict {
+                    current: latest.unwrap_or(target_version),
+                });
+            }
         }
         let restored = self
             .restore_version_in_tx(

@@ -45,11 +45,31 @@ type RevertState =
 // --- 画面内ストア（行の再マウントをまたいで状態を保つ） -----------------------------------------
 
 const revertStates = new Map<string, RevertState>();
+/// 実行中のキー。行の再マウント（生成中→確定）をまたいで二重送信を防ぐため、状態と同じストアに置く。
+const inflight = new Set<string>();
 const listeners = new Set<() => void>();
+
+function notify() {
+  for (const l of listeners) l();
+}
+
+function useInflight(key: string): boolean {
+  const subscribe = React.useCallback((cb: () => void) => {
+    listeners.add(cb);
+    return () => {
+      listeners.delete(cb);
+    };
+  }, []);
+  return React.useSyncExternalStore(
+    subscribe,
+    () => inflight.has(key),
+    () => false,
+  );
+}
 
 function setRevertState(key: string, state: RevertState) {
   revertStates.set(key, state);
-  for (const l of listeners) l();
+  notify();
 }
 
 function useRevertState(key: string): RevertState {
@@ -103,27 +123,41 @@ function targetVersions(group: FileGroup, st: RevertState, mode: "undo" | "redo"
 }
 
 /// 1 ファイル分の取り消し/やり直しを実行して状態を進める。競合はそのまま投げる（呼び出し側が扱う）。
+/// 同じキーの実行中は何もしない（画面内ストアで判定＝行が再マウントされても二重に送らない）。
 async function runRevert(group: FileGroup, mode: "undo" | "redo", force: boolean) {
+  if (inflight.has(group.key)) return;
   const st = revertStates.get(group.key) ?? EDITED;
   const versions = targetVersions(group, st, mode);
   if (versions.length === 0) return;
-  const res = await revertEdit(group.fileId, versions, { force });
-  setRevertState(
-    group.key,
-    mode === "undo"
-      ? {
-          phase: "reverted",
-          undoVersion: res.node.version,
-          restoredFrom: res.reverted ? (res.restored_from_version ?? null) : null,
-        }
-      : { phase: "redone", version: res.node.version },
-  );
+  inflight.add(group.key);
+  notify();
+  try {
+    const res = await revertEdit(group.fileId, versions, { force });
+    if (mode === "redo") {
+      setRevertState(group.key, { phase: "redone", version: res.node.version });
+    } else if (res.reverted) {
+      setRevertState(group.key, {
+        phase: "reverted",
+        undoVersion: res.node.version,
+        restoredFrom: res.restored_from_version ?? null,
+      });
+    } else {
+      // 既に戻っていた（何もしていない）。この画面で戻した記録があればそれを保つ
+      // （「やり直す」の対象＝取り消しで作った版を失わない）。
+      const prev = revertStates.get(group.key);
+      if (prev?.phase !== "reverted") {
+        setRevertState(group.key, { phase: "reverted", undoVersion: res.node.version, restoredFrom: null });
+      }
+    }
+  } finally {
+    inflight.delete(group.key);
+    notify();
+  }
 }
 
 export function DocumentRefList({ raws }: { raws: unknown[] }) {
   const docs = React.useMemo(() => raws.map(parseDocumentRef), [raws]);
   const groups = React.useMemo(() => groupByFile(docs), [docs]);
-  const [busy, setBusy] = React.useState<Set<string>>(new Set());
   const [batchBusy, setBatchBusy] = React.useState(false);
   /// 後続の版がある取り消しの確認（どのファイルの、どの操作か）。
   const [conflict, setConflict] = React.useState<{
@@ -132,17 +166,7 @@ export function DocumentRefList({ raws }: { raws: unknown[] }) {
     current: number;
   } | null>(null);
 
-  const setBusyFor = (key: string, on: boolean) =>
-    setBusy((cur) => {
-      const next = new Set(cur);
-      if (on) next.add(key);
-      else next.delete(key);
-      return next;
-    });
-
   const run = async (group: FileGroup, mode: "undo" | "redo", force = false) => {
-    if (busy.has(group.key)) return;
-    setBusyFor(group.key, true);
     try {
       await runRevert(group, mode, force);
     } catch (e) {
@@ -151,8 +175,6 @@ export function DocumentRefList({ raws }: { raws: unknown[] }) {
       } else {
         toast({ variant: "destructive", title: "元に戻せませんでした", description: failureMessage(e) });
       }
-    } finally {
-      setBusyFor(group.key, false);
     }
   };
 
@@ -199,12 +221,12 @@ export function DocumentRefList({ raws }: { raws: unknown[] }) {
             doc={doc}
             group={group}
             isLast={group.lastIndex === i}
-            busy={busy.has(group.key) || batchBusy}
+            batchBusy={batchBusy}
             onRun={(mode) => void run(group, mode)}
           />
         );
       })}
-      <UndoAllButton groups={groups} busy={batchBusy || busy.size > 0} onClick={() => void undoAll()} />
+      <UndoAllButton groups={groups} busy={batchBusy} onClick={() => void undoAll()} />
 
       <Dialog open={conflict !== null} onOpenChange={(o) => !o && setConflict(null)}>
         <DialogContent data-testid="document-ref-revert-conflict">
@@ -246,17 +268,18 @@ function FileRefCard({
   doc,
   group,
   isLast,
-  busy,
+  batchBusy,
   onRun,
 }: {
   raw: unknown;
   doc: DocumentRef;
   group: FileGroup;
   isLast: boolean;
-  busy: boolean;
+  batchBusy: boolean;
   onRun: (mode: "undo" | "redo") => void;
 }) {
   const st = useRevertState(group.key);
+  const busy = useInflight(group.key) || batchBusy;
   const status =
     st.phase === "reverted"
       ? st.restoredFrom === null
