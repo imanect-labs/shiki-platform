@@ -94,17 +94,26 @@ function useRevertState(key: string): RevertState {
 const EDITED: RevertState = { phase: "edited" };
 
 // --- 編集権限（ファイルごとに引き、短時間だけ使い回す） -----------------------------------------
+//
+// 結果は CAN_EDIT_TTL_MS の間だけ有効。期限を過ぎた結果は**表示に使わない**（引き直しが終わるまで
+// 操作を出さない＝fail-closed）。表示中も同じ間隔とタブの再表示で引き直すので、開いたままの画面でも
+// 共有の変更（editor → viewer）は期限内に反映される。ログインし直す（利用者が変わる）経路は Keycloak を
+// 経由した全体の再読込なので、このモジュールの状態ごと消える（利用者をまたいで結果が残らない）。
 
-/// 権限の結果を使い回す時間。スレッドを開き直す（カードが再マウントされる）とこれより古い結果は
-/// 引き直すので、共有の変更（editor → viewer など）はページを再読込しなくても反映される。
+/// 権限の結果を使い回す時間（引き直しの間隔も兼ねる）。
 const CAN_EDIT_TTL_MS = 30_000;
 
 /// fileId → 編集できるか（と取得時刻）。取得前は未登録。
 const canEditCache = new Map<string, { value: boolean; at: number }>();
 const canEditPending = new Set<string>();
 
-/// 編集権限を引く（未取得・古いときだけ）。失敗したら出さない（押せるか分からないボタンを
-/// 見せない・fail-closed）が、失敗も TTL で切れるので次の表示で引き直す。
+/// 期限内の結果で編集できると分かっているか（期限切れ・未取得・失敗は false）。
+function isEditable(fileId: string): boolean {
+  const c = canEditCache.get(fileId);
+  return !!c && c.value && Date.now() - c.at < CAN_EDIT_TTL_MS;
+}
+
+/// 編集権限を引く（未取得・期限切れのときだけ）。失敗は「出さない」として記録し、期限で切れたら引き直す。
 function loadCanEdit(fileId: string) {
   const cached = canEditCache.get(fileId);
   if (canEditPending.has(fileId)) return;
@@ -119,9 +128,32 @@ function loadCanEdit(fileId: string) {
     });
 }
 
-/// 編集できるか（分かるまでは false）。
+/// 表示中のファイルの権限を、マウント時・一定間隔・タブの再表示で引き直す。
+function useKeepCanEditFresh(fileIds: string[]) {
+  const key = fileIds.join(",");
+  React.useEffect(() => {
+    const ids = key ? key.split(",") : [];
+    const refresh = () => {
+      for (const id of ids) loadCanEdit(id);
+      // 期限切れで表示が変わる（操作を隠す）ことを購読者に知らせる。
+      notify();
+    };
+    refresh();
+    const timer = window.setInterval(refresh, CAN_EDIT_TTL_MS);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, [key]);
+}
+
+/// 編集できるか（期限内の結果で editor と分かっているときだけ true）。
 function useCanEdit(fileId: string): boolean {
-  React.useEffect(() => loadCanEdit(fileId), [fileId]);
+  useKeepCanEditFresh([fileId]);
   const subscribe = React.useCallback((cb: () => void) => {
     listeners.add(cb);
     return () => {
@@ -130,7 +162,7 @@ function useCanEdit(fileId: string): boolean {
   }, []);
   return React.useSyncExternalStore(
     subscribe,
-    () => canEditCache.get(fileId)?.value === true,
+    () => isEditable(fileId),
     () => false,
   );
 }
@@ -238,7 +270,7 @@ export function DocumentRefList({ raws }: { raws: unknown[] }) {
     let ok = 0;
     const skipped: string[] = [];
     for (const g of groups) {
-      if (canEditCache.get(g.fileId)?.value !== true) continue;
+      if (!isEditable(g.fileId)) continue;
       if ((revertStates.get(g.key) ?? EDITED).phase === "reverted") continue;
       try {
         // 個別の操作が実行中のファイルは送らない（成功として数えない・結果はそのカードに出る）。
@@ -404,15 +436,13 @@ function UndoAllButton({
     };
   }, []);
   const noteId = React.useId();
-  React.useEffect(() => {
-    for (const g of groups) loadCanEdit(g.fileId);
-  }, [groups]);
+  useKeepCanEditFresh(groups.map((g) => g.fileId));
   const pending = React.useSyncExternalStore(
     subscribe,
     () =>
       groups.filter(
         (g) =>
-          canEditCache.get(g.fileId)?.value === true &&
+          isEditable(g.fileId) &&
           (revertStates.get(g.key) ?? EDITED).phase !== "reverted",
       ).length,
     () => 0,
