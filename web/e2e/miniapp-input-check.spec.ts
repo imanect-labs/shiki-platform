@@ -69,7 +69,7 @@ for (const width of [1440, 390] as const) {
     await dialog.getByLabel("名前").fill(uniqueName("input-check-app"));
     await dialog.getByLabel("画面の見出し").fill("経費の申請");
     await dialog.getByLabel("追加するワークフロー").selectOption({ label: `${flow}（v1）` });
-    await dialog.getByRole("button", { name: "追加" }).click();
+    await dialog.getByRole("button", { name: "ワークフローを追加" }).click();
 
     // 雛形（金額・区分・申請する）を書くタブで見る。件名の部品が無く、区分は入力項目に無い。
     await dialog.getByRole("tab", { name: "書く" }).click();

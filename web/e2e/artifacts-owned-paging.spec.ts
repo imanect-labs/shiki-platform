@@ -232,7 +232,7 @@ test("ミニアプリのエディター: スキルとワークフローの選択
     await skillSelect.selectOption({ label: "古いスキル（v1）" });
     await failed.getByRole("button", { name: "もう一度読み込む" }).click();
     await expect(dialog.getByLabel("追加するワークフロー").locator("option")).toHaveText([
-      "ワークフローを選択",
+      "ワークフローを選ぶ",
       "expense-flow（v1）",
     ]);
     await expect(dialog.getByTestId("list-load-failed")).toHaveCount(0);

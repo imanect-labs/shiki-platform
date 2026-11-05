@@ -93,7 +93,7 @@ test.describe("ミニアプリ（画面の作成・実行・バンドル権限�
     await dialog.getByLabel(/名前/).fill(appName);
     await dialog.getByLabel(/画面の見出し/).fill("経費の申請");
     await dialog.getByLabel("追加するワークフロー").selectOption({ label: `${flow}（v1）` });
-    await dialog.getByRole("button", { name: "追加" }).click();
+    await dialog.getByRole("button", { name: "ワークフローを追加" }).click();
     // 既定は「組み立てる」。記法は「書く」タブで見る。
     await dialog.getByRole("tab", { name: "書く" }).click();
     await expect(dialog.getByRole("textbox", { name: /^画面\*?$/ })).toHaveValue(new RegExp(`-> workflow ${flow}`));
@@ -168,7 +168,7 @@ test.describe("ミニアプリ（画面の作成・実行・バンドル権限�
     await dialog.getByLabel(/名前/).fill(appName);
     await dialog.getByLabel(/画面の見出し/).fill("備品の申請");
     await dialog.getByLabel("追加するワークフロー").selectOption({ label: `${flow}（v1）` });
-    await dialog.getByRole("button", { name: "追加" }).click();
+    await dialog.getByRole("button", { name: "ワークフローを追加" }).click();
 
     // 雛形（金額・区分・申請する）が組み立てるに出る。パレットから「1 行の文字」を足し、ラベルを直す。
     const builder = dialog.getByTestId("screen-builder");
@@ -255,7 +255,7 @@ test.describe("ミニアプリ（画面の作成・実行・バンドル権限�
       await page.getByRole("button", { name: "アプリを作成" }).first().click();
       const dialog = page.getByRole("dialog");
       await dialog.getByLabel("追加するワークフロー").selectOption({ label: `${flow}（v1）` });
-      await dialog.getByRole("button", { name: "追加" }).click();
+      await dialog.getByRole("button", { name: "ワークフローを追加" }).click();
       // 雛形（金額・区分・申請する）の機能を選んだまま、まだ部品の無い入力が x-order の順に並ぶ。
       const editor = dialog.getByTestId("screen-builder").locator("[data-yui=app-editor]");
       const hints = editor
