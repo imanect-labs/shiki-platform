@@ -13,17 +13,22 @@ import {
   uniqueName,
 } from "./helpers";
 
-/// 「CSV を集計」で Excel（.xlsx）を読み、結果を「CSV を保存」に渡す e2e（D-17・GAP-40）:
-/// - Excel は左端のシートを表として読み、いちばん上の行を列の名前にする（2 つ目のシートは読まない）。
+/// 「CSV を集計」で Excel（.xlsx）を読み、結果を「CSV を保存」に渡す e2e（D-17・GAP-40・GAP-83・GAP-84）:
+/// - Excel は表示している左端のシートを data として読み、いちばん上の行を列の名前にする（ほかのシートは SQL が名前で
+///   読むときだけ読む）。表の上の表題の行は飛ばし、列の案内が見出しにした行の番号とシートの一覧を言う。
 /// - 列の案内に、集計で読むときの列の型（日付・テキスト・整数・はい／いいえ）が出る。
 /// - 結果の行の値（items）は数値を種類のまま渡し、rows はテキストのまま。結果の全体を「CSV を保存」に渡すと CSV になる。
 /// - 設定の画面（PC とスマホ）と、試しに実行した結果を目で確かめる。
 ///
-/// 材料は crates/tabular/tests/fixtures/expenses.xlsx（make_expenses_xlsx.py）。作ったもの（フォルダー・Excel・保存した
-/// CSV・ワークフロー）は finally で片付ける（互いに独立に）。
+/// 材料は crates/tabular/tests/fixtures/expenses.xlsx（make_expenses_xlsx.py）と sales.xlsx（make_sales_xlsx.py）。作った
+/// もの（フォルダー・Excel・保存した CSV・ワークフロー）は finally で片付ける（互いに独立に）。
 
 const SHOTS = process.env.E2E_SHOTS_DIR;
 const FIXTURE = path.join(__dirname, "..", "..", "crates", "tabular", "tests", "fixtures", "expenses.xlsx");
+const SALES_FIXTURE = path.join(__dirname, "..", "..", "crates", "tabular", "tests", "fixtures", "sales.xlsx");
+const SALES_SQL = `SELECT m.区分, SUM(d.金額) AS 合計, MAX(b.予算) AS 予算 FROM data d
+JOIN "マスタ" m ON m.品目 = d.品目 JOIN "予算" b ON b.区分 = m.区分
+GROUP BY m.区分 ORDER BY m.区分`;
 const XLSX_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 const SQL = "SELECT 品目, SUM(金額) AS 合計, COUNT(*) AS 件数 FROM data GROUP BY 品目 ORDER BY 合計 DESC";
 const SAVED = "品目,合計,件数\r\n宿泊費,9800,1\r\n会議費,3000,1\r\n交通費,2000,2\r\n";
@@ -151,6 +156,9 @@ test("CSV を集計: Excel の左端のシートを読み、結果を CSV を保
     await expect(columns).toContainText("精算済み（はい／いいえ）");
     await expect(columns).toContainText("社員番号（テキスト）");
     await expect(columns).toContainText("・4 行");
+    // 表題の行は無い。シートの一覧に data のシートとほかのシートが出る。
+    await expect(columns.getByTestId("csv-header-row")).toHaveCount(0);
+    await expect(columns.getByTestId("csv-sheets")).toContainText('シート: "明細"（data）、"集計"');
     await expect(panel.getByTestId("csv-result-values-hint")).toHaveText(VALUES_HINT);
     // ブロックの説明も Excel を読むと言う。
     await expect(panel.getByText("CSV か Excel のファイルを SQL で集計したり", { exact: false }).first()).toBeVisible();
@@ -239,6 +247,110 @@ test("CSV を集計: Excel の左端のシートを読み、結果を CSV を保
         if (workflowId) await removeWorkflowApi(page, workflowId);
       },
       ...[...savedIds].map((fileId) => () => trashFileApi(page, fileId)),
+      async () => {
+        if (sourceId) await trashFileApi(page, sourceId);
+      },
+      async () => {
+        if (folderId) await trashFolderApi(page, folderId);
+      },
+    );
+  }
+});
+
+/// 表の上に表題の行がある Excel と、ほかのシート（GAP-83・GAP-84）: 列の案内は、表題を飛ばして 4 行目を列の名前に
+/// したことと、シートの一覧（data のシート・隠したシート・名前で読めないシート）と読み方を言う。SQL にシートの名前を
+/// 書くと、ほかのシートを表として読める（試しに実行・ワークフローの実行の両方）。
+test("CSV を集計: Excel の表題の行を飛ばし、ほかのシートを名前で読める（GAP-83・GAP-84）", async ({ browser, page }) => {
+  test.setTimeout(240_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await loginViaKeycloak(page);
+  let folderId = "";
+  let sourceId = "";
+  let workflowId = "";
+  try {
+    folderId = await createFolderApi(page, firstInDriveName("e2e-Excel のシート"));
+    const xlsxName = `${uniqueName("売上")}.xlsx`;
+    sourceId = await upload(page, folderId, xlsxName, readFileSync(SALES_FIXTURE));
+    const tag = uniqueName("csv-xlsx-sheets");
+    const created = await page.request.post("/api/workflows", {
+      headers: await csrfHeaders(page),
+      data: {
+        ir: {
+          ir_version: 1,
+          name: tag,
+          display_name: tag,
+          triggers: [{ kind: "interactive" }],
+          nodes: [{ id: "q", type: "csv.query", label: "区分ごとに集計", params: { file: sourceId, sql: SALES_SQL } }],
+          edges: [],
+        },
+      },
+    });
+    expect(created.ok(), await created.text()).toBeTruthy();
+    workflowId = ((await created.json()) as { id: string }).id;
+
+    // 列の案内: 表題を飛ばした見出し、シートの一覧、ほかのシートの読み方。
+    await page.goto(`/workflows/${workflowId}`);
+    const panel = page.getByRole("complementary", { name: "ブロックの設定" });
+    await page.getByTestId("rf__node-q").click();
+    await expect(panel.getByText(xlsxName)).toBeVisible({ timeout: 15_000 });
+    const columns = panel.getByTestId("csv-columns");
+    await expect(columns).toContainText("列: 日付（日付）、品目（テキスト）、金額（整数）・3 行", { timeout: 20_000 });
+    await expect(columns.getByTestId("csv-header-row")).toHaveText(
+      "4 行目を列の名前にしています。それより上の行は表題とみなして読みません。",
+    );
+    const sheets = columns.getByTestId("csv-sheets");
+    await expect(sheets).toContainText(
+      'シート: "売上"（data）、"マスタ"（隠したシート）、"Data"（名前が重なるため、名前では読めません）、"予算"',
+    );
+    await expect(sheets).toContainText('ほかのシートは FROM "マスタ" のように、シートの名前で読めます。');
+
+    // 試しに実行すると、ほかのシートとつないだ集計が見える。
+    await panel.getByRole("button", { name: "試しに実行" }).click();
+    const preview = panel.getByTestId("csv-preview");
+    await expect(preview).toContainText("予算", { timeout: 20_000 });
+    await expect(preview).toContainText("出張");
+    await expect(preview).toContainText("10000");
+    await columns.scrollIntoViewIfNeeded();
+    if (SHOTS) await panel.screenshot({ path: `${SHOTS}/csv-query-xlsx-sheets-pc.png` });
+
+    // ワークフローの実行でも、ほかのシートを名前で読む。
+    await page.getByRole("button", { name: "実行", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "いま実行する" });
+    await dialog.getByRole("button", { name: "実行する" }).click();
+    await page.waitForURL(/\/runs\?run=/, { timeout: 30_000 });
+    const runId = new URL(page.url()).searchParams.get("run") ?? "";
+    expect((await finishedRun(page, workflowId, runId)).status).toBe("succeeded");
+    const out = await stepOutput<{ items: unknown[]; truncated: boolean }>(page, workflowId, runId, "q");
+    expect(out.items).toEqual([
+      { 区分: "出張", 合計: 9800, 予算: 10000 },
+      { 区分: "経費", 合計: 4200, 予算: 5000 },
+    ]);
+    expect(out.truncated).toBe(false);
+
+    // スマホ: シートの一覧が横にはみ出さない。
+    const phoneCtx = await phoneContext(browser, page);
+    try {
+      const phone = await phoneCtx.newPage();
+      await phone.goto(`/workflows/${workflowId}`);
+      const flow = phone.getByTestId("workflow-mobile-flow");
+      await expect(flow).toBeVisible({ timeout: 15_000 });
+      await flow.getByRole("button", { name: /区分ごとに集計/ }).filter({ hasText: "区分ごとに集計" }).first().click();
+      const settings = phone.getByRole("dialog");
+      const phoneSheets = settings.getByTestId("csv-sheets");
+      await expect(phoneSheets).toContainText('"予算"', { timeout: 20_000 });
+      await phoneSheets.evaluate((el) => el.scrollIntoView({ block: "center" }));
+      expect(await settings.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+      expect(await phone.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+      if (SHOTS) await phone.screenshot({ path: `${SHOTS}/csv-query-xlsx-sheets-phone.png` });
+      await settings.getByRole("button", { name: "閉じる" }).first().click();
+    } finally {
+      await phoneCtx.close();
+    }
+  } finally {
+    await cleanupAll(
+      async () => {
+        if (workflowId) await removeWorkflowApi(page, workflowId);
+      },
       async () => {
         if (sourceId) await trashFileApi(page, sourceId);
       },
