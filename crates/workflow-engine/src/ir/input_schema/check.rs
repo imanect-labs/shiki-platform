@@ -7,6 +7,10 @@
 //!
 //! 見るキーワードと意味は起動の検査と同じ集合（[`super::ASSERTIONS`]・[`super::ANNOTATIONS`]）。`x-order` の形は
 //! [`super::order_errors`] が見る。
+//!
+//! `pattern` は 1 つ [`MAX_PATTERN_CHARS`] 文字まで・入力項目の全体で [`MAX_PATTERNS`] 個までにし、それより多いものは
+//! コンパイルしない（だれでも呼べる検証の口で、何万個もの pattern をコンパイルさせない・BUG-222）。長さの上限は条件の
+//! 「正規表現に一致」と同じ（[`crate::ir::expr::MAX_REGEX_LEN`]）。保存のときだけの上限で、保存済みの版の起動は変えない。
 
 use serde_json::{Map, Value};
 
@@ -15,11 +19,17 @@ use super::{
     NUMBER_KEYWORDS, TYPES,
 };
 
+/// 1 つの `pattern` の長さの上限（文字数・条件の正規表現と同じ数）。
+pub const MAX_PATTERN_CHARS: usize = crate::ir::expr::MAX_REGEX_LEN;
+/// 入力項目の全体に書ける `pattern` の数の上限（コンパイルするのはこの数まで）。
+pub const MAX_PATTERNS: usize = 50;
+
 /// 入力項目の形の誤り（入力項目の中の位置の JSON Pointer, 文言）。根は空文字。最大 [`MAX_ERRORS`] 件。
 #[must_use]
 pub fn schema_errors(schema: &Value) -> Vec<(String, String)> {
     let mut out = Vec::new();
-    walk(schema, "", 0, &mut out);
+    let mut patterns = 0;
+    walk(schema, "", 0, &mut out, &mut patterns);
     out.truncate(MAX_ERRORS);
     out
 }
@@ -30,7 +40,14 @@ fn push(out: &mut Vec<(String, String)>, at: String, message: impl Into<String>)
     }
 }
 
-fn walk(schema: &Value, ptr: &str, depth: usize, out: &mut Vec<(String, String)>) {
+/// `patterns` は、ここまでに見た `pattern` の数（[`MAX_PATTERNS`]）。
+fn walk(
+    schema: &Value,
+    ptr: &str,
+    depth: usize,
+    out: &mut Vec<(String, String)>,
+    patterns: &mut usize,
+) {
     if out.len() >= MAX_ERRORS {
         return;
     }
@@ -67,7 +84,7 @@ fn walk(schema: &Value, ptr: &str, depth: usize, out: &mut Vec<(String, String)>
             ),
         );
     }
-    check_keywords(s, ptr, out);
+    check_keywords(s, ptr, out, patterns);
     if let Some(props) = s.get("properties") {
         match props {
             Value::Object(props) => {
@@ -77,6 +94,7 @@ fn walk(schema: &Value, ptr: &str, depth: usize, out: &mut Vec<(String, String)>
                         &format!("{ptr}/properties/{}", pointer_token(k)),
                         depth + 1,
                         out,
+                        patterns,
                     );
                 }
             }
@@ -89,13 +107,18 @@ fn walk(schema: &Value, ptr: &str, depth: usize, out: &mut Vec<(String, String)>
     }
     for key in ["items", "additionalProperties"] {
         if let Some(sub) = s.get(key) {
-            walk(sub, &format!("{ptr}/{key}"), depth + 1, out);
+            walk(sub, &format!("{ptr}/{key}"), depth + 1, out, patterns);
         }
     }
 }
 
 /// 値を縛るキーワードの形（type・enum・数の範囲・pattern・required）。
-fn check_keywords(s: &Map<String, Value>, ptr: &str, out: &mut Vec<(String, String)>) {
+fn check_keywords(
+    s: &Map<String, Value>,
+    ptr: &str,
+    out: &mut Vec<(String, String)>,
+    patterns: &mut usize,
+) {
     if let Some(t) = s.get("type") {
         let ok = match t {
             Value::String(name) => TYPES.contains(&name.as_str()),
@@ -134,13 +157,7 @@ fn check_keywords(s: &Map<String, Value>, ptr: &str, out: &mut Vec<(String, Stri
         }
     }
     if let Some(p) = s.get("pattern") {
-        if p.as_str().and_then(compile_pattern).is_none() {
-            push(
-                out,
-                format!("{ptr}/pattern"),
-                "pattern を正規表現として読めません",
-            );
-        }
+        check_pattern(p, &format!("{ptr}/pattern"), out, patterns);
     }
     if let Some(req) = s.get("required") {
         if !req
@@ -154,6 +171,29 @@ fn check_keywords(s: &Map<String, Value>, ptr: &str, out: &mut Vec<(String, Stri
             );
         }
     }
+}
+
+/// `pattern` の形。数と長さの上限の内のものだけをコンパイルする（BUG-222）。数の上限は、超えた最初の位置で 1 回だけ言う。
+fn check_pattern(p: &Value, at: &str, out: &mut Vec<(String, String)>, patterns: &mut usize) {
+    *patterns += 1;
+    if *patterns > MAX_PATTERNS {
+        if *patterns == MAX_PATTERNS + 1 {
+            push(
+                out,
+                at.to_string(),
+                format!("pattern は入力項目の全体で {MAX_PATTERNS} 個までです"),
+            );
+        }
+        return;
+    }
+    let message = match p.as_str() {
+        Some(text) if text.chars().count() > MAX_PATTERN_CHARS => {
+            format!("pattern は {MAX_PATTERN_CHARS} 文字までです")
+        }
+        Some(text) if compile_pattern(text).is_some() => return,
+        _ => "pattern を正規表現として読めません".to_string(),
+    };
+    push(out, at.to_string(), message);
 }
 
 #[cfg(test)]
@@ -227,6 +267,51 @@ mod tests {
         // 根がオブジェクトでない・properties がオブジェクトでない。
         assert_eq!(at(&json!("object")), vec![""]);
         assert_eq!(at(&json!({ "properties": [] })), vec!["/properties"]);
+    }
+
+    /// pattern は長さと数に上限があり、数の上限を超えた分はコンパイルせずに 1 回だけ言う（BUG-222）。上限の内の
+    /// pattern は今までどおり。
+    #[test]
+    fn patterns_are_capped_in_length_and_count() {
+        let long = "a".repeat(MAX_PATTERN_CHARS + 1);
+        let at_limit = "あ".repeat(MAX_PATTERN_CHARS);
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "long": { "type": "string", "pattern": long },
+                "fits": { "type": "string", "pattern": at_limit }
+            }
+        });
+        assert_eq!(
+            schema_errors(&schema),
+            vec![(
+                "/properties/long/pattern".to_string(),
+                format!("pattern は {MAX_PATTERN_CHARS} 文字までです")
+            )]
+        );
+
+        // 上限の数までは通り、超えた最初の位置で 1 回だけ言う。超えた分は読めない pattern でも言わない（コンパイルしない）。
+        let many = |n: usize| {
+            let props: Map<String, Value> = (0..n)
+                .map(|i| {
+                    let p = if i < MAX_PATTERNS { "^[a-z]+$" } else { "(" };
+                    (
+                        format!("p{i:05}"),
+                        json!({ "type": "string", "pattern": p }),
+                    )
+                })
+                .collect();
+            json!({ "type": "object", "properties": props })
+        };
+        assert!(schema_errors(&many(MAX_PATTERNS)).is_empty());
+        let over = schema_errors(&many(30_000));
+        assert_eq!(
+            over,
+            vec![(
+                format!("/properties/p{MAX_PATTERNS:05}/pattern"),
+                format!("pattern は入力項目の全体で {MAX_PATTERNS} 個までです")
+            )]
+        );
     }
 
     /// 誤りは上限で止める。

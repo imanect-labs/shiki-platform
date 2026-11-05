@@ -238,6 +238,12 @@ pub fn validate(
     let Ok(ir) = WorkflowIr::from_json(value) else {
         return Err(v1_schema::errors(value));
     };
+    // V7 のうちブロック・線の数と大きさの上限は、ほかの段より先に確かめ、超えたら上限の誤りだけを返す（読めない IR と
+    // 同じ・D-147）。大きな IR のブロックの設定や入力項目の pattern を、上限で止める前に読み切らない（BUG-222）。
+    let limits = size_limit_errors(ir.nodes.len(), ir.edges.len(), value);
+    if !limits.is_empty() {
+        return Err(limits);
+    }
 
     let mut errors = Vec::new();
     // ワークフロー名は安定参照名の契約 `^[a-z][a-z0-9-]{0,63}$`（workflow.start の名前解決に使う）。
@@ -273,8 +279,8 @@ pub fn validate(
     if let Some(schema) = &ir.input_schema {
         errors.extend(input_schema_errors(schema));
     }
-    // V7: 上限（他段より先に軽く弾く）。
-    v7_limits(value, &ir, &mut errors);
+    // V7: 上限（ブロック・線の数と大きさは最初に確かめた）。
+    v7_limits(&ir, &mut errors);
     // V2: グラフ（id 一意・エッジ参照・DAG・入エッジ制約・領域閉包・到達性・reply は本体だけ）。
     v2_graph::check(&ir, &mut errors);
     reply::v2(&ir, &mut errors);
@@ -316,7 +322,8 @@ const MAX_EDGES: usize = 500;
 /// IR の大きさの上限（V7・JSON のバイト数）。
 const MAX_IR_BYTES: usize = 1024 * 1024;
 
-/// V7 のうち、ブロック・線の数と IR の大きさの上限の誤り。読めない IR でも V1 が先に使う（同じ数・同じ文言）。
+/// V7 のうち、ブロック・線の数と IR の大きさの上限の誤り。読める IR は [`validate`] が、読めない IR は V1 が、ほかの段より
+/// 先に確かめる（同じ数・同じ文言・超えたら上限の誤りだけを返す）。
 fn size_limit_errors(
     nodes: usize,
     edges: usize,
@@ -347,8 +354,8 @@ fn size_limit_errors(
     errors
 }
 
-/// V7: 上限（ir.md §8）。
-fn v7_limits(value: &serde_json::Value, ir: &WorkflowIr, errors: &mut Vec<ValidationError>) {
+/// V7: 上限（ir.md §8）。ブロック・線の数と大きさは [`size_limit_errors`] が先に見る。
+fn v7_limits(ir: &WorkflowIr, errors: &mut Vec<ValidationError>) {
     use crate::ir::expr::MAX_CONDITION_DEPTH;
 
     if ir.ir_version == 0 || ir.ir_version > crate::ir::MAX_IR_VERSION {
@@ -357,7 +364,6 @@ fn v7_limits(value: &serde_json::Value, ir: &WorkflowIr, errors: &mut Vec<Valida
             format!("未知の ir_version: {}", ir.ir_version),
         ));
     }
-    errors.extend(size_limit_errors(ir.nodes.len(), ir.edges.len(), value));
     // policies の run_timeout 上限。
     if ir.policies.run_timeout_sec > crate::ir::MAX_RUN_TIMEOUT_SEC {
         errors.push(ValidationError::new(
@@ -760,6 +766,24 @@ mod tests {
         let ir = json!({ "ir_version": 1, "name": "wf", "declared_scopes": ["storage.read"], "nodes": nodes, "edges": [] });
         let errs = validate(&ir, &catalog()).unwrap_err();
         assert!(errs.iter().any(|e| e.code == "ir.limit_exceeded"));
+    }
+
+    /// 大きさの上限を超える読める IR は、ほかの段より先に上限の誤りだけを返す（読めない IR と同じ・入力項目の pattern や
+    /// ブロックの設定を読み切らない・BUG-222）。
+    #[test]
+    fn readable_irs_over_the_size_limit_return_only_the_limit() {
+        let props: serde_json::Map<String, serde_json::Value> = (0..40_000)
+            .map(|i| (format!("p{i}"), json!({ "type": "string", "pattern": "(" })))
+            .collect();
+        let ir = json!({
+            "ir_version": 1, "name": "wf",
+            "input_schema": { "type": "object", "properties": props },
+            "nodes": [], "edges": []
+        });
+        let errs = validate(&ir, &catalog()).unwrap_err();
+        assert_eq!(errs.len(), 1, "{:?}", &errs[..errs.len().min(3)]);
+        assert_eq!(errs[0].code, "ir.limit_exceeded");
+        assert!(errs[0].message.contains("1MB"), "{}", errs[0].message);
     }
 
     #[test]
