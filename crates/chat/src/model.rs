@@ -247,6 +247,9 @@ pub struct RunModel {
     pub effort: Option<llm_gateway::Effort>,
     /// ユーザーが選ばなかった（Auto）か。Auto のときだけ skill のピンがモデルを上書きできる。
     pub auto: bool,
+    /// 利用者が送った解決前の選択（別の端末で開いたときの入力欄の初期値・#1050）。
+    /// `None` は記録が無い（この列以前の run）。
+    pub requested: Option<LastModelChoice>,
 }
 
 /// skill のバージョンピン 1 件（thread の「最初からロード済み」スキル・#344 Task 10.11）。

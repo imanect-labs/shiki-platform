@@ -254,6 +254,14 @@ test.describe("スマホのチャット", () => {
     const model = phone.getByTestId("model-button");
     await expect(model).toBeVisible({ timeout: 20_000 });
     await expect(model).toContainText(label);
+
+    // このタブで Auto に戻したら、読み直してもサーバの記録で上書きしない。
+    await model.click();
+    await phone.getByTestId("model-picker").getByRole("option", { name: /Auto|組織の既定/ }).click();
+    await expect(model).toBeHidden();
+    await phone.reload();
+    await expect(phone.getByLabel("メッセージを入力")).toBeVisible();
+    await expect(model).toBeHidden();
     await phone.context().close();
   });
 });

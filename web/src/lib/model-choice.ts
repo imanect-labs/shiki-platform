@@ -59,17 +59,28 @@ function hasModelChoice(scope: string): boolean {
   }
 }
 
-/// スレッドを開いたとき、このタブにまだ選択が無ければ、自分が最後に送った発話のモデルを入れる
-/// （PC で選んで送った会話をスマホで開いても同じモデルのまま続けられる）。
-export function useRestoreModelChoice(threadId: string): void {
+/// サーバの記録（自分が最後に送った発話のモデル）を、このタブにまだ選択が無いときだけ入れる
+/// （PC で選んで送った会話をスマホで開いても同じモデルのまま続けられる・#1050）。
+/// `undefined` はまだ送っていない（何もしない）。
+export function restoreModelChoice(threadId: string, last: ModelChoice | undefined): void {
+  if (last === undefined || hasModelChoice(threadId)) return;
+  writeModelChoice(threadId, last);
+}
+
+/// 送った選択をこのタブに確定させる（記録の取得を待つ間に送ったとき、届いた古い記録で
+/// 今送った選択を上書きしない）。
+export function pinModelChoice(threadId: string, choice: ModelChoice): void {
+  if (!hasModelChoice(threadId)) writeModelChoice(threadId, choice);
+}
+
+/// [`restoreModelChoice`] のためにスレッドを読む（スレッドを別に読まない画面＝文書の横のパネル用）。
+export function useRestoreModelChoice(threadId: string | null): void {
   React.useEffect(() => {
-    if (hasModelChoice(threadId)) return;
+    if (!threadId || hasModelChoice(threadId)) return;
     let active = true;
     getThread(threadId)
       .then((t) => {
-        // 待つ間にこのタブで選んだら、そちらが勝つ。
-        if (!active || t.lastModelChoice === undefined || hasModelChoice(threadId)) return;
-        writeModelChoice(threadId, t.lastModelChoice);
+        if (active) restoreModelChoice(threadId, t.lastModelChoice);
       })
       .catch(() => {
         /* 読めなければ既定のまま */

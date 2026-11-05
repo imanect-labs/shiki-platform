@@ -221,15 +221,16 @@ function toThread(t: ApiThread): Thread {
 
 const EFFORTS: readonly EffortLevel[] = ["low", "medium", "high"];
 
-/// サーバの記録を入力欄の選択の形にする。思考の深さが無い（モデルが対応しない）ときは
-/// 送っても使われないので中間を入れておく。
+/// サーバの記録を入力欄の選択の形にする。モデルも思考の深さも無ければ Auto、モデルが無く
+/// 思考の深さだけあれば「既定のまま思考の深さだけ変える」。モデルがあって思考の深さが無い
+/// （モデルが対応しない）ときは送っても使われないので中間を入れておく。
 function toModelChoice(
   c: components["schemas"]["LastModelChoice"] | null | undefined,
 ): ModelChoice | undefined {
   if (!c) return undefined;
-  if (!c.model) return null;
-  const effort = EFFORTS.find((e) => e === c.effort) ?? "medium";
-  return { model: c.model, effort };
+  const effort = EFFORTS.find((e) => e === c.effort);
+  if (!c.model) return effort ? { model: null, effort } : null;
+  return { model: c.model, effort: effort ?? "medium" };
 }
 
 async function ok<T>(res: Response): Promise<T> {

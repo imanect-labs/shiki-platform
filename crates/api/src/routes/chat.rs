@@ -282,7 +282,7 @@ pub async fn get_thread(
 ) -> Result<Json<Thread>, ApiError> {
     Ok(Json(
         chat_store(&state)?
-            .get_thread(&ctx, id, trace.as_deref())
+            .get_thread_for_view(&ctx, id, trace.as_deref())
             .await?,
     ))
 }
@@ -441,6 +441,11 @@ async fn resolve_run_model(
             model: r.model,
             effort: r.effort,
             auto: r.auto,
+            // 解決前の選択（組織の既定に置き換わる前）を残す（別の端末での入力欄の初期値・#1050）。
+            requested: Some(chat::LastModelChoice {
+                model: choice.model.clone().filter(|m| !m.is_empty()),
+                effort: choice.effort.map(|e| e.as_str().to_string()),
+            }),
         })),
         Err(e) => Err(ApiError::UnprocessableJson(serde_json::json!({
             "status": 400,

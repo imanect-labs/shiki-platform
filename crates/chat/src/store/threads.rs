@@ -67,13 +67,30 @@ impl ThreadRow {
     }
 }
 
-/// run の列からモデル選択を組み立てる。Auto の run は解決後の振り先が `model` に入っているが、
-/// 利用者の選択としては Auto なのでモデル・思考の深さを載せない。
+/// run の列からモデル選択を組み立てる。
+///
+/// 利用者が送った解決前の選択（`requested`）があればそれを返す。組織の既定が特定のモデルだと
+/// Auto や「既定のまま思考の深さだけ変える」も解決後は既定のモデルになり、明示の選択と
+/// 区別できないため。記録の無い（この列以前の）run は解決後の値から推定する（Auto の run は
+/// 振り先のモデルではなく Auto として返す）。
 fn last_choice_of(
+    requested: Option<LastModelChoice>,
     model: Option<String>,
     effort: Option<&str>,
     auto: bool,
 ) -> Option<LastModelChoice> {
+    let normalize_effort = |e: Option<&str>| {
+        e.and_then(llm_gateway::Effort::parse)
+            .map(|e| e.as_str().to_string())
+    };
+    if let Some(r) = requested {
+        return Some(LastModelChoice {
+            model: r
+                .model
+                .filter(|m| !m.is_empty() && m != llm_gateway::AUTO_MODEL),
+            effort: normalize_effort(r.effort.as_deref()),
+        });
+    }
     let model = model?;
     if auto {
         return Some(LastModelChoice {
@@ -83,9 +100,7 @@ fn last_choice_of(
     }
     Some(LastModelChoice {
         model: Some(model),
-        effort: effort
-            .and_then(llm_gateway::Effort::parse)
-            .map(|e| e.as_str().to_string()),
+        effort: normalize_effort(effort),
     })
 }
 
@@ -318,7 +333,18 @@ impl ChatStore {
         .fetch_optional(&self.db)
         .await
         .map_err(map_db)?;
-        let mut thread = row.map(ThreadRow::into_thread).ok_or(ChatError::NotFound)?;
+        row.map(ThreadRow::into_thread).ok_or(ChatError::NotFound)
+    }
+
+    /// 会話画面向けの単体取得（[`Self::get_thread`] ＋ 自分が最後に送った発話のモデル選択・#1050）。
+    /// run を引く分のクエリが増えるので、SSE の購読など選択を使わない経路は `get_thread` を使う。
+    pub async fn get_thread_for_view(
+        &self,
+        ctx: &AuthContext,
+        thread_id: Uuid,
+        trace_id: Option<&str>,
+    ) -> Result<Thread, ChatError> {
+        let mut thread = self.get_thread(ctx, thread_id, trace_id).await?;
         thread.last_model_choice = self.last_model_choice(ctx, thread_id).await?;
         Ok(thread)
     }
@@ -330,8 +356,14 @@ impl ChatStore {
         ctx: &AuthContext,
         thread_id: Uuid,
     ) -> Result<Option<LastModelChoice>, ChatError> {
-        let row: Option<(Option<String>, Option<String>, bool)> = sqlx::query_as(
-            "SELECT model, effort, model_auto FROM generation_run \
+        type Row = (
+            Option<Json<LastModelChoice>>,
+            Option<String>,
+            Option<String>,
+            bool,
+        );
+        let row: Option<Row> = sqlx::query_as(
+            "SELECT requested_choice, model, effort, model_auto FROM generation_run \
              WHERE tenant_id = $1 AND thread_id = $2 AND actor = $3 \
              ORDER BY created_at DESC LIMIT 1",
         )
@@ -341,7 +373,9 @@ impl ChatStore {
         .fetch_optional(&self.db)
         .await
         .map_err(map_db)?;
-        Ok(row.and_then(|(model, effort, auto)| last_choice_of(model, effort.as_deref(), auto)))
+        Ok(row.and_then(|(requested, model, effort, auto)| {
+            last_choice_of(requested.map(|r| r.0), model, effort.as_deref(), auto)
+        }))
     }
 
     /// スレッドのメッセージを線形取得する（viewer 認可・作成順）。
