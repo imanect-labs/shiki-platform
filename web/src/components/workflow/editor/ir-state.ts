@@ -430,16 +430,19 @@ export function useEditorState(initial: {
   ir: WorkflowIr;
   version: number;
   layout: EditorLayout;
+  /// 画面移動の前に残した未保存の編集（同じ版から始めたもの）。あれば未保存の状態で開く。
+  draft?: { ir: WorkflowIr; undoStack: WorkflowIr[]; redoStack: WorkflowIr[] } | null;
 }) {
+  const draft = initial.draft ?? null;
   return React.useReducer(editorReducer, {
-    ir: initial.ir,
+    ir: draft?.ir ?? initial.ir,
     savedVersion: initial.version,
     layout: initial.layout,
     selection: { kind: "none" },
-    dirty: false,
+    dirty: draft !== null,
     layoutDirty: false,
-    undoStack: [],
-    redoStack: [],
+    undoStack: draft?.undoStack ?? [],
+    redoStack: draft?.redoStack ?? [],
     serverErrors: [],
     serverWarnings: [],
   } satisfies EditorState);

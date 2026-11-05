@@ -146,3 +146,39 @@ test("データを追加のレコードの値は JSON のオブジェクトに�
   };
   expect(saved.ir.nodes[0].params.data).toEqual({ name: "出張" });
 });
+
+/// 未保存のまま実行履歴を見て戻っても、編集が消えない（アプリ内の画面移動では下書きを残して復元する）。
+test("エディタ: 未保存のまま実行履歴へ移って戻っても編集が残る", async ({ page }) => {
+  test.setTimeout(120_000);
+  await loginViaKeycloak(page);
+  await page.goto("/workflows");
+  await expect(page.getByText("読み込み中…")).toHaveCount(0);
+  await page.getByRole("button", { name: "新しいワークフロー", exact: true }).click();
+  await page.waitForURL(/\/workflows\/[0-9a-f-]+$/i, { timeout: 20_000 });
+  const editorUrl = page.url();
+
+  await page.getByRole("button", { name: "最初のブロック" }).click();
+  await page.getByRole("button", { name: /^スクリプト/ }).click();
+  const canvas = page.locator(".react-flow");
+  await expect(canvas.getByText("スクリプト").first()).toBeVisible();
+
+  // 保存せずに実行履歴へ → エディタへ戻る。
+  await page.getByRole("button", { name: "実行履歴" }).click();
+  await page.waitForURL(/\/runs$/, { timeout: 20_000 });
+  await page.getByRole("link", { name: "エディタへ戻る" }).click();
+  await page.waitForURL(editorUrl, { timeout: 20_000 });
+
+  await expect(canvas.getByText("スクリプト").first()).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText(/保存していない編集を復元しました/).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "保存", exact: true })).toBeEnabled();
+
+  // 保存すれば下書きは消え、もう一度往復しても「復元」は出ない。
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(page.getByText(/保存しました/).first()).toBeVisible({ timeout: 15_000 });
+  await page.getByRole("button", { name: "実行履歴" }).click();
+  await page.waitForURL(/\/runs$/, { timeout: 20_000 });
+  await page.getByRole("link", { name: "エディタへ戻る" }).click();
+  await page.waitForURL(editorUrl, { timeout: 20_000 });
+  await expect(canvas.getByText("スクリプト").first()).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole("button", { name: "保存", exact: true })).toBeDisabled();
+});

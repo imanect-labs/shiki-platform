@@ -3,7 +3,9 @@
 /// エディタ本体（PC: パレット / キャンバス / 設定の 3 ペイン、スマホ: 縦のステップ一覧）。
 ///
 /// - 保存は**明示**（PUT + expected_version・409 は競合通知→再読込）。autosave しない
-///   （版が無限に増える＋検証必須のため）。dirty は離脱ガード。
+///   （版が無限に増える＋検証必須のため）。dirty は離脱ガード（再読み込み・タブを閉じる）。
+///   アプリ内の画面移動（実行履歴を見て戻る等）では未保存の編集をメモリに残し、戻ったら復元する
+///   （`draft-store.ts`）。
 /// - ライブ検証: IR 変更を 600ms debounce で `POST /workflows/validate` に流し、
 ///   エラーを該当ノード上へ表示（保存前に気づける）。保存を止めない警告（`warnings`・条件の意味論の
 ///   切替で分岐の結果が変わり得る条件など）も開いた時点・編集中・保存時に受け、注意の印と一覧で見せる。
@@ -32,6 +34,7 @@ import {
   type EditorLayout,
 } from "@/lib/workflow-api";
 import { AddNodeSheet } from "./add-node-sheet";
+import { takeDraft, workflowDraftStore } from "./draft-store";
 import { addAction, endTarget, type AddTarget } from "./add-target";
 import { Canvas } from "./canvas";
 import { useEditorState } from "./ir-state";
@@ -77,10 +80,13 @@ export function WorkflowEditor({
   renderSidePanel,
   renderChrome,
 }: Props) {
+  // 実行履歴などへ移って戻ったとき、未保存の編集を引き継ぐ（同じ版から始めた下書きだけ）。
+  const [restored] = React.useState(() => takeDraft(workflowId, initialVersion));
   const [state, dispatch] = useEditorState({
     ir: initialIr,
     version: initialVersion,
     layout: initialLayout,
+    draft: restored.draft,
   });
   const [saving, setSaving] = React.useState(false);
   // ブロックパレットは既定で隠す（視界を奪わない）。トグルで表示、追加は主にノード尻尾の＋から。
@@ -111,10 +117,41 @@ export function WorkflowEditor({
     return () => clearTimeout(timer);
   }, [state.ir, state.dirty, dispatch]);
 
+  // ── 未保存の編集を画面移動の間も残す（保存・元に戻して変更が無くなったら消す）──────────
+  React.useEffect(() => {
+    if (state.dirty) {
+      workflowDraftStore.set(workflowId, {
+        baseVersion: state.savedVersion,
+        ir: state.ir,
+        undoStack: state.undoStack,
+        redoStack: state.redoStack,
+      });
+    } else {
+      workflowDraftStore.clear(workflowId);
+    }
+  }, [workflowId, state.dirty, state.savedVersion, state.ir, state.undoStack, state.redoStack]);
+
+  const restoreNotified = React.useRef(false);
+  React.useEffect(() => {
+    // 開発時の StrictMode の二重実行で 2 回出さない。
+    if (restoreNotified.current) return;
+    restoreNotified.current = true;
+    if (restored.draft) {
+      toast({ title: "保存していない編集を復元しました", description: "保存するまで反映されません。" });
+    } else if (restored.discarded) {
+      toast({
+        variant: "destructive",
+        title: "保存していない編集を復元できませんでした",
+        description: "離れている間に新しい版が保存されたため、最新版を開いています。",
+      });
+    }
+  }, [restored]);
+
   // ── 開いた時点の警告（保存済みの定義が意味論の切替で振る舞いを変え得るか）──────────
   React.useEffect(() => {
     let active = true;
-    validateWorkflow(initialIr)
+    // 下書きを復元したときは、その内容で受ける（保存済みの版の警告で上書きしない）。
+    validateWorkflow(restored.draft?.ir ?? initialIr)
       .then(({ warnings, declaredScopes }) => {
         if (!active) return;
         dispatch({ type: "set_warnings", warnings });
