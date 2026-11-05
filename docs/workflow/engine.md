@@ -1042,6 +1042,8 @@ step の `timeout_sec`（ノード種ごとに既定・上限あり・ir.md §7�
 
 sweeper はスケジューラリーダーの tick が回し、`step_lease_idx` で失効 running を拾う。**ワーカーの claim は ready 専用**であり失効 running を拾わない（§2.2 の index コメント・#438）。concurrency カウンタの減分リークは同一 tick の `reconcile` が running の実数から再計算して回収するため、sweeper は reconcile より前に走らせる（§8.1）。
 
+**ブロックの実行中の panic**（BUG-215）: ノード実装の panic はワーカーが捕まえ、step を `internal`（やり直さない・失敗の分類は「分類できない失敗」）で失敗にする。step の誤りの文は決まった文（「サーバーで問題が起きたため、このブロックを実行できませんでした。続くときは管理者に連絡してください。」）で、panic の文（内部の値やソースの位置を含みうる）はログにだけ残す。止める合図（`NodeContext.cancel`）も立てる。`script.run`・`skill.invoke` の実行スレッドの panic も同じ失敗にする。heartbeat は落とすと止まる形で持ち、早く戻る道と panic の巻き戻しでも止める（`JoinHandle` を落としても tokio のタスクは止まらない）。ワーカーのループは 1 回ごとの処理の panic も捕まえて続ける。ノードの実行より外の panic で claim した step は、heartbeat が止まるのでリースが切れ、本節の sweeper が `ready` へ戻す（ワーカーが落ちたときと同じ）。api はワーカーのタスクの `JoinHandle` を見張り、終わったら誤りとして記録する。
+
 cancel 要求済み run の失効リースは sweeper の対象外とする。claim が cancel 要求済み run を除外する以上 ready に戻しても誰も拾えないため、`drain_cancel_requested`（§9.3）が `cancelled` へ回収する担当になる。
 
 **`attempt` の会計**（実行履歴 UI が「N 回目」としてそのまま表示するため、running 中も現在値であること）:
