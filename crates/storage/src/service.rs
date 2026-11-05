@@ -179,6 +179,7 @@ mod upload_gc;
 mod versions;
 mod workspace_io;
 
+pub use restore::RevertOutcome;
 pub use workspace_io::WriteAtOutcome;
 
 fn row_to_node(row: NodeRow) -> Result<Node, StorageError> {

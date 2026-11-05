@@ -231,18 +231,115 @@ impl StorageService {
         .await?;
 
         let mut tx = self.db.begin().await?;
-        // 対象ファイルを行ロックして並行更新と直列化する。
-        sqlx::query(
-            "SELECT id FROM node \
-             WHERE id = $1 AND org = $2 AND tenant_id = $3 AND kind = 'file' AND deleted_at IS NULL \
-             FOR UPDATE",
+        lock_file_row(&mut tx, ctx, file_id).await?;
+        let restored = self
+            .restore_version_in_tx(&mut tx, ctx, file_id, version, trace_id, json!({}))
+            .await?;
+        tx.commit().await?;
+        Ok(restored)
+    }
+
+    /// AI 等による 1 回の編集を**取り消す**（#1049・editor 権限）。
+    ///
+    /// `edited_version` を作った編集の直前の版（`edited_version` 未満で最新の、提案でない内容版）を
+    /// [`restore_version`](Self::restore_version) と同じく**新しい版として**復元する（履歴は残る＝取り消しの
+    /// 取り消しもできる）。
+    ///
+    /// - 現在の内容が既に直前の版と同じ → 何もしない（[`RevertOutcome::AlreadyReverted`]）。二度押し・
+    ///   再読込後の再実行で版を無駄に積まない。
+    /// - 編集の後に別の版が作られている（現在の版 ≠ `edited_version`）→ `force` でなければ
+    ///   [`StorageError::VersionConflict`]。後から入った他の編集を黙って消さない。
+    /// - `edited_version` が無い／提案版／その前に内容版が無い（新規作成の版）→ [`StorageError::NotFound`]。
+    pub async fn revert_edit(
+        &self,
+        ctx: &AuthContext,
+        file_id: Uuid,
+        edited_version: i64,
+        force: bool,
+        trace_id: Option<&str>,
+    ) -> Result<RevertOutcome, StorageError> {
+        let node = self.load_node(ctx, file_id, false).await?;
+        if node.kind != NodeKind::File {
+            return Err(StorageError::NotFound);
+        }
+        self.require(
+            ctx,
+            Relation::Editor,
+            &ctx.ns().file(&file_id.to_string()),
+            AuditAction::FileVersionRestore,
+            "file",
+            &file_id.to_string(),
+            trace_id,
+        )
+        .await?;
+
+        let mut tx = self.db.begin().await?;
+        // 行ロックの後に現在の版を読み直す（load_node との間に入った編集を見落とさない）。
+        let (current_version, current_sha) = lock_file_row(&mut tx, ctx, file_id).await?;
+        // 取り消す編集の版（提案でない内容版）が実在すること。
+        let edited: Option<i64> = sqlx::query_scalar(
+            "SELECT version FROM node_version \
+             WHERE node_id = $1 AND org = $2 AND tenant_id = $3 AND version = $4 AND NOT is_proposal",
         )
         .bind(file_id)
         .bind(&ctx.org)
         .bind(&ctx.tenant_id)
+        .bind(edited_version)
         .fetch_optional(&mut *tx)
-        .await?
-        .ok_or(StorageError::NotFound)?;
+        .await?;
+        edited.ok_or(StorageError::NotFound)?;
+        // 直前の内容版（node_version_node_idx (node_id, version desc) で 1 行だけ引く）。
+        let target: Option<(i64, String)> = sqlx::query_as(
+            "SELECT version, blob_sha256 FROM node_version \
+             WHERE node_id = $1 AND org = $2 AND tenant_id = $3 AND version < $4 AND NOT is_proposal \
+             ORDER BY version DESC LIMIT 1",
+        )
+        .bind(file_id)
+        .bind(&ctx.org)
+        .bind(&ctx.tenant_id)
+        .bind(edited_version)
+        .fetch_optional(&mut *tx)
+        .await?;
+        let (target_version, target_sha) = target.ok_or(StorageError::NotFound)?;
+        if current_sha.as_deref() == Some(target_sha.as_str()) {
+            // 既に編集前の内容（取り消し済み・手で戻した等）。版は積まない。
+            tx.rollback().await?;
+            let node = self.load_node(ctx, file_id, false).await?;
+            return Ok(RevertOutcome::AlreadyReverted(node));
+        }
+        if current_version != edited_version && !force {
+            return Err(StorageError::VersionConflict {
+                current: current_version,
+            });
+        }
+        let restored = self
+            .restore_version_in_tx(
+                &mut tx,
+                ctx,
+                file_id,
+                target_version,
+                trace_id,
+                json!({ "reverted_edit_version": edited_version, "forced": force }),
+            )
+            .await?;
+        tx.commit().await?;
+        Ok(RevertOutcome::Reverted {
+            node: restored,
+            restored_from_version: target_version,
+        })
+    }
+
+    /// 行ロック済みの tx 内で、`version` の内容を新しい版として復元する（restore / revert 共通）。
+    /// `extra` は監査メタデータに足す項目（取り消しの由来など）。
+    async fn restore_version_in_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+        ctx: &AuthContext,
+        file_id: Uuid,
+        version: i64,
+        trace_id: Option<&str>,
+        extra: serde_json::Value,
+    ) -> Result<Node, StorageError> {
         // 復元元の版の内容（blob/size/content_type）を取得する。
         // 提案バージョン（is_proposal）は復元経路の対象外（採用は adopt_proposal_version 経由）。
         let src: Option<(String, i64, String)> = sqlx::query_as(
@@ -254,13 +351,13 @@ impl StorageService {
         .bind(&ctx.org)
         .bind(&ctx.tenant_id)
         .bind(version)
-        .fetch_optional(&mut *tx)
+        .fetch_optional(&mut **tx)
         .await?;
         let (sha, size, content_type) = src.ok_or(StorageError::NotFound)?;
         // 復元先の blob を refcount +1（新版が参照するため）。実体はオブジェクトストアに既存。
         let final_key = blob_object_key(&ctx.tenant_id, &ctx.org, &sha);
         self.bump_blob(
-            &mut tx,
+            tx,
             &ctx.tenant_id,
             &ctx.org,
             &sha,
@@ -284,12 +381,12 @@ impl StorageService {
             .bind(&ctx.org)
             .bind(&ctx.tenant_id)
             .bind(&ctx.principal.id)
-            .fetch_optional(&mut *tx)
+            .fetch_optional(&mut **tx)
             .await?
             .ok_or(StorageError::NotFound)?;
         let restored = row_to_node(row)?;
         self.record_version(
-            &mut tx,
+            tx,
             ctx,
             restored.id,
             restored.version,
@@ -299,7 +396,7 @@ impl StorageService {
         )
         .await?;
         audit::record_on(
-            &mut tx,
+            tx,
             ctx,
             AuditEntry {
                 action: AuditAction::FileVersionRestore,
@@ -307,13 +404,19 @@ impl StorageService {
                 object_id: &file_id.to_string(),
                 decision: Decision::Allow,
                 trace_id,
-                metadata: json!({ "restored_from_version": version, "new_version": restored.version }),
+                metadata: {
+                    let mut m = json!({ "restored_from_version": version, "new_version": restored.version });
+                    if let (Some(m), serde_json::Value::Object(extra)) = (m.as_object_mut(), extra) {
+                        m.extend(extra);
+                    }
+                    m
+                },
             },
             Chain::Yes,
         )
         .await?;
         event::emit_on(
-            &mut tx,
+            tx,
             ctx,
             WriteEvent {
                 node_id: file_id,
@@ -328,9 +431,40 @@ impl StorageService {
             trace_id,
         )
         .await?;
-        tx.commit().await?;
         Ok(restored)
     }
 
     // --- 共有（ReBAC: Task 1.6） ---
+}
+
+/// [`StorageService::revert_edit`] の結果。
+#[derive(Debug, Clone)]
+pub enum RevertOutcome {
+    /// 編集前の版を新しい版として復元した。
+    Reverted {
+        node: Node,
+        /// 内容の復元元（取り消した編集の直前の版）。
+        restored_from_version: i64,
+    },
+    /// 現在の内容が既に編集前と同じだった（版は積んでいない）。
+    AlreadyReverted(Node),
+}
+
+/// 対象ファイルの行を `FOR UPDATE` でロックし、ロック後の（版, blob）を返す（並行更新と直列化）。
+async fn lock_file_row(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    ctx: &AuthContext,
+    file_id: Uuid,
+) -> Result<(i64, Option<String>), StorageError> {
+    sqlx::query_as(
+        "SELECT version, blob_sha256 FROM node \
+         WHERE id = $1 AND org = $2 AND tenant_id = $3 AND kind = 'file' AND deleted_at IS NULL \
+         FOR UPDATE",
+    )
+    .bind(file_id)
+    .bind(&ctx.org)
+    .bind(&ctx.tenant_id)
+    .fetch_optional(&mut **tx)
+    .await?
+    .ok_or(StorageError::NotFound)
 }
