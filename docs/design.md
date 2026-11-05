@@ -614,6 +614,16 @@ flowchart LR
     （誤りの種類）` にする（`provider::midstream_failure`）。ミニアプリの AI の能力（応答の本文・SSE の error イベント）と
     agent.invoke の誤りへ、そのまま運ばれるため（BUG-210）。呼ぶ側は状態の行の「Timeout」「timed out」でタイムアウトを
     見分けるので、標準に名前の無い中継の時間切れ（522・524・598）にも時間切れと分かる名前を付ける。
+  - Anthropic の SSE では、流し始めた後の `event: error`（`overloaded_error` など）も `{プロバイダ}: プロバイダが応答の
+    途中で失敗しました（誤りの種類）` にし、終わりの合図（`message_stop`、または `message_delta` の `stop_reason`。
+    OpenAI 互換の `[DONE]`・`finish_reason` にあたる）が無いまま閉じたストリームと、書きかけの `tool_use` で閉じた
+    ストリームも完了にしない。どちらも OpenAI 互換の終わりの合図の無いストリームと同じく、プロバイダが切った印
+    （`CUT_BY_PROVIDER`）付きの一時障害にし、まだ何も確定していなければ gateway が送り直す（BUG-214）。
+  - プロバイダへ要求を送れなかった誤り（接続を断られた・名前を引けない・TLS・時間切れ）は、送り先の URL（ホスト・IP・
+    ポート・パス・userinfo）を文言に入れず、`{プロバイダ}: プロバイダに接続できませんでした（送り先の名前を引けません）`
+    のように種類だけを言う（`providers::send_failure`。URL は userinfo とクエリを伏せてログにだけ残す）。オンプレの
+    vLLM などの内部のホスト名が、ミニアプリの AI の能力の応答と agent.invoke の誤りに出ないようにするため。時間切れは
+    呼ぶ側がタイムアウトを見分けられるよう `timeout` の語を残す（BUG-218）。
 - **決定モデル（FEAT-1・D-6）**: 文章を生成せず、質問ごとに決められた選択肢（choice）・段階（score）・
   はい/いいえ（boolean）で答え、確からしさ（0〜1）を付けて返すモデル。生成と入出力の形が違うので、
   `LlmProvider` とは別の差し替えトレイト `DecisionProvider`（`decide(&DecideRequest) -> Result<DecideResponse,
