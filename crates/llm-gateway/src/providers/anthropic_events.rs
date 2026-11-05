@@ -1,12 +1,14 @@
 //! Anthropic Messages API の SSE の読み取り（anthropic.rs から分割・BUG-214）。
 //!
-//! 1 行ずつ受け取り、中立形の差分にして返す。終わりは `message_stop` だけで、次の 2 つは正常な終わりにしない
-//! （OpenAI 互換の `cut_short` と同じ扱い）:
+//! 1 行ずつ受け取り、中立形の差分にして返す。終わりの合図は `message_stop` と、`message_delta` の `stop_reason`
+//! （OpenAI 互換の `[DONE]` と `finish_reason` にあたる）で、次の 2 つは正常な終わりにしない（OpenAI 互換の
+//! `cut_short` と同じ扱い）:
 //!
 //! - 流し始めた後の `event: error`（`overloaded_error` など）。本文（`message` には要求の ID などが入る）は文言に
 //!   入れず、誤りの種類の語だけを載せる（BUG-210 と同じ）。
-//! - `message_stop` が来ないまま閉じたストリーム（書きかけの `tool_use` を含む）。途中までの回答やツール呼び出しを
-//!   完了として渡さない。
+//! - 終わりの合図が無いまま閉じたストリームと、書きかけの `tool_use`（`content_block_stop` の前）で閉じたストリーム。
+//!   途中までの回答やツール呼び出しを完了として渡さない。`stop_reason` の後に `message_stop` だけが欠けたものは、
+//!   中身が揃っているので完了にする（`stop_reason` は全部のブロックを閉じた後に来る）。
 //!
 //! どちらも [`CUT_BY_PROVIDER`] の付いた [`LlmError::Unavailable`] にする。送り直すかは gateway が決める
 //! （まだ何も確定していないときだけ・`retry::resume_unsettled`）。
@@ -20,7 +22,7 @@ use super::usage::AnthropicUsage;
 use crate::model::{StopReason, StreamDelta};
 use crate::provider::{LlmError, CUT_BY_PROVIDER};
 
-/// `message_stop` が来ないまま閉じたストリームの理由（本文の代わりに入れる）。
+/// 終わりの合図が来ないまま閉じたストリームの理由（本文の代わりに入れる）。
 const ENDED_BEFORE_STOP: &str = "anthropic: プロバイダが応答を最後まで返さずに接続を切りました";
 
 /// 送る差分か誤り。
@@ -33,6 +35,8 @@ pub(super) struct EventReader {
     tools: BTreeMap<i64, (String, String, String)>,
     usage: AnthropicUsage,
     stop: StopReason,
+    /// `message_delta` の `stop_reason` を受け取った（応答の中身は揃った）。
+    stop_seen: bool,
     /// `message_stop` か `error` まで読んだ（以後の行は読まない）。
     finished: bool,
 }
@@ -44,6 +48,7 @@ impl EventReader {
             tools: BTreeMap::new(),
             usage: AnthropicUsage::default(),
             stop: StopReason::EndTurn,
+            stop_seen: false,
             finished: false,
         }
     }
@@ -85,6 +90,7 @@ impl EventReader {
             Some("message_delta") => {
                 if let Some(sr) = v.pointer("/delta/stop_reason").and_then(Value::as_str) {
                     self.stop = map_stop_reason(Some(sr));
+                    self.stop_seen = true;
                 }
                 if let Some(u) = v.get("usage") {
                     self.usage.absorb(u);
@@ -109,17 +115,26 @@ impl EventReader {
         }
     }
 
-    /// 本文が尽きた（接続が閉じた）ときに送るもの。`message_stop` まで読んでいなければ誤り。
+    /// 本文が尽きた（接続が閉じた）ときに送るもの。終わりの合図（`message_stop`・`stop_reason`）を読んでいないか、
+    /// 書きかけの `tool_use` があれば誤り。
     pub(super) fn end(&self) -> Option<Item> {
-        (!self.finished).then(|| {
-            tracing::warn!(
-                open_tool_uses = self.tools.len(),
-                "anthropic のストリームが message_stop の前に閉じた"
-            );
-            Err(LlmError::Unavailable(format!(
-                "{CUT_BY_PROVIDER}{ENDED_BEFORE_STOP}"
-            )))
-        })
+        if self.finished {
+            return None;
+        }
+        if self.stop_seen && self.tools.is_empty() {
+            return Some(Ok(StreamDelta::Done {
+                stop_reason: self.stop,
+                usage: self.usage.to_usage(),
+            }));
+        }
+        tracing::warn!(
+            open_tool_uses = self.tools.len(),
+            stop_seen = self.stop_seen,
+            "anthropic のストリームが終わりの合図の前に閉じた"
+        );
+        Some(Err(LlmError::Unavailable(format!(
+            "{CUT_BY_PROVIDER}{ENDED_BEFORE_STOP}"
+        ))))
     }
 
     fn block_start(&mut self, v: &Value) -> Vec<Item> {
@@ -236,6 +251,21 @@ mod tests {
         assert_eq!(
             read(&[]),
             [format!("unavailable:{CUT_BY_PROVIDER}{ENDED_BEFORE_STOP}")]
+        );
+    }
+
+    /// stop_reason の後に message_stop だけが欠けたものは完了にする（中身は揃っている・OpenAI 互換の finish_reason と
+    /// 同じ）。stop_reason が来ても書きかけの tool_use があれば完了にしない。
+    #[test]
+    fn a_stop_reason_without_message_stop_is_complete_only_with_every_block_closed() {
+        let end_turn = r#"data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}"#;
+        assert_eq!(read(&[TEXT, end_turn]), ["text:途中", "done:EndTurn"]);
+        let tool_use = r#"data: {"type":"message_delta","delta":{"stop_reason":"tool_use"}}"#;
+        let out = read(&[TOOL_START, TOOL_ARGS, tool_use]);
+        assert_eq!(
+            out.last().unwrap(),
+            &format!("unavailable:{CUT_BY_PROVIDER}{ENDED_BEFORE_STOP}"),
+            "{out:?}"
         );
     }
 
