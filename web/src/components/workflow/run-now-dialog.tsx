@@ -12,6 +12,9 @@
 ///   ほかの理由（実行できない設定・見つからない・使えない）はダイアログの中の帯に出す（本文を捨てない・BUG-109）。
 /// - きっかけがファイルやテーブルの変更のワークフローは、「詳しい設定」できっかけの内容（JSON）を入れて試せる
 ///   （D-93。空欄なら、きっかけの内容は入力と同じ）。
+/// - 開いたときに、実行するのに自分に足りない権限を確かめ（`GET /workflows/{id}/access`・アプリのボタンと同じ決まり・
+///   GAP-37）、足りなければ理由を出す。押したときに確かめ直し、まだ足りなければ送らない（共有してもらっていれば、
+///   開き直さずに実行できる・BUG-217 と同じ考え方）。確かめられなかったときは止めない（サーバーが本人の権限で確かめる）。
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
@@ -38,6 +41,8 @@ import { toast } from "@/components/ui/use-toast";
 import { cn } from "@/lib/utils";
 import { getWorkflow } from "@/lib/workflow-api";
 import { RunStartError, startRun } from "@/lib/workflow-run-api";
+import { getMyWorkflowAccess, type MyWorkflowAccess } from "@/lib/artifact-api";
+import { myRunBlockedReason } from "@/lib/access-wording";
 import { blockDisplayName } from "@/lib/workflow-block-name";
 import { inputFieldsOf, type InputFieldInfo } from "@/lib/workflow-input-schema";
 import { EVENT_CATALOG } from "@/generated/workflow-catalog";
@@ -218,12 +223,25 @@ export function RunNowDialog({
   const [failure, setFailure] = React.useState<{ message: string; lines: string[] } | null>(null);
   /// ブロックの名前（名前を付けていなければカタログのブロック名。ブロックの ID は出さない・付録 C の P1）。
   const labels = React.useMemo(() => new Map(ir.nodes.map((n) => [n.id, blockDisplayName(n)])), [ir.nodes]);
+  /// 実行するのに自分に足りない権限（開いたときに確かめる・読めなかったときは null で止めない）。
+  const [access, setAccess] = React.useState<MyWorkflowAccess | null>(null);
+  const blockedReason = access ? myRunBlockedReason(access.items) : null;
 
   React.useEffect(() => {
     if (!open) return;
     setFieldErrors({});
     setFailure(null);
-  }, [open]);
+    setAccess(null);
+    let live = true;
+    getMyWorkflowAccess(workflowId)
+      .then((a) => live && setAccess(a))
+      .catch(() => {
+        /* 確かめられなくても実行はできる（サーバーが本人の権限で確かめる） */
+      });
+    return () => {
+      live = false;
+    };
+  }, [open, workflowId]);
 
   const run = async () => {
     const errors: Record<string, string> = {};
@@ -260,6 +278,16 @@ export function RunNowDialog({
     if (Object.keys(errors).length > 0) return;
     setBusy(true);
     try {
+      // 足りない権限があると分かっていれば、確かめ直してから送る（共有してもらっていれば、そのまま実行する）。
+      if (blockedReason) {
+        const fresh = await getMyWorkflowAccess(workflowId).catch(() => null);
+        if (fresh) setAccess(fresh);
+        const still = fresh ? myRunBlockedReason(fresh.items) : null;
+        if (still) {
+          setFailure({ message: still, lines: [] });
+          return;
+        }
+      }
       // 実行は常に最新保存版で走る（backend 仕様）。別の編集者が保存していた場合、
       // このフォームは古いスキーマなので実行せず再読込を促す。
       const latest = await getWorkflow(workflowId);
@@ -360,6 +388,22 @@ export function RunNowDialog({
               </ul>
             ) : null}
           </div>
+        ) : null}
+        {blockedReason ? (
+          <p
+            role="note"
+            className="flex items-start gap-1.5 rounded-md border border-amber-500/30 bg-amber-500/5 p-2.5 text-xs text-amber-700 dark:text-amber-400"
+            data-testid="run-now-access"
+          >
+            <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />
+            <span className="min-w-0 [overflow-wrap:anywhere]">
+              {blockedReason}共有してもらった後は、そのまま実行できます。
+            </span>
+          </p>
+        ) : access?.truncated ? (
+          <p className="text-[11px] text-muted-foreground" role="note" data-testid="run-now-access-truncated">
+            このワークフローは使うテーブルやファイルが多いため、一部は前もって権限を確かめていません。
+          </p>
         ) : null}
         {props ? (
           <div className="space-y-3">

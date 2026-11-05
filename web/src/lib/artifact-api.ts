@@ -341,6 +341,8 @@ export type MyPartAccess = components["schemas"]["MyPartAccess"];
 export type MyAccessItem = components["schemas"]["MyAccessItem"];
 /// 前もって確かめられないブロック（GAP-82）。
 export type UncheckedBlock = components["schemas"]["UncheckedBlock"];
+/// 共有されたワークフローを手動で実行する人自身に足りない権限（GAP-37）。
+export type MyWorkflowAccess = components["schemas"]["MyWorkflowAccess"];
 
 /// アプリを使う人の権限を確かめる（作る人だけ）。`version` を省くと公開しているバージョン（まだ公開していなければ
 /// 最新）、`subjects` を省くと共有している相手（相手ごとの結果は持ち主にだけ返る）。
@@ -362,6 +364,11 @@ export async function checkWorkflowAccess(
 /// アプリを使う人自身に足りない権限（開いているバージョン）。
 export async function getMyMiniAppAccess(id: string, version: number): Promise<MyAppAccess> {
   return ok<MyAppAccess>(await apiFetch(`/mini-apps/${id}/access?version=${version}`));
+}
+
+/// ワークフローを手動で実行する人自身に足りない権限（最新のバージョン・必ず要る権限だけ）。
+export async function getMyWorkflowAccess(id: string): Promise<MyWorkflowAccess> {
+  return ok<MyWorkflowAccess>(await apiFetch(`/workflows/${id}/access`));
 }
 
 // ── 図のボタンの実行（Task 6.5・#604・action_id + params のみ送れる）─────

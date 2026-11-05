@@ -145,6 +145,16 @@ function myItem(i: MyAccessItem, where: string): string {
   return `${where}${NOUN[i.object]}が見つからないか、${verbOf(i.object, i.need).verb}権限がありません。`;
 }
 
+/// 共有されたワークフローを手動で実行する人に、実行できない理由を言う（アプリのボタンと同じ決まり・GAP-37）。足りて
+/// いれば null。
+export function myRunBlockedReason(items: readonly MyAccessItem[]): string | null {
+  const missing = items.filter((i) => i.status === "missing");
+  if (missing.length === 0) return null;
+  const first = myItem(missing[0], "このワークフローが使う");
+  const more = missing.length > 1 ? `ほかに ${missing.length - 1} 件、足りない権限があります。` : "";
+  return `${first}${more}ワークフローを作成した人に頼んでください。`;
+}
+
 /// 使う人に、部品を使えない理由を言う（ボタン・表）。足りていれば null。
 export function myBlockedReason(p: MyPartAccess): string | null {
   const where = p.part.kind === "data_view" ? "この表が使う" : "このボタンが使う";
