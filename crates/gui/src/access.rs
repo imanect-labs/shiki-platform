@@ -14,8 +14,12 @@
 //!   前もって言うだけで、実際の読み書きは今までどおり本人の権限で二段の認可を通る（この確かめが誤っても権限は広がらない）。
 //! - **見えない部品の名前を出さない。** 対象の名前は、求めた人に見える（テーブルは閲覧か追加だけ、ファイル・フォルダーは
 //!   閲覧）ものだけを返す（[`DataStore::table_labels`]・[`StorageService::node_labels`]）。作る人にも、自分に見えない対象は
-//!   名前を出さず、相手の権限も確かめない（見えない対象について他人の権限を問う口にしない）。使う人には自分に見えるもの
-//!   だけを名前で言い、id は返さない。
+//!   名前を出さない。使う人には自分に見えるものだけを名前で言い、id は返さない。
+//! - **他人の権限は、求めた人が共有を管理している対象についてだけ問う。** 相手ごとの結果を返すのは、求めた人がその
+//!   対象の持ち主（テーブル・ファイル・フォルダーの owner。共有の一覧を読めるのも持ち主だけ・`list_table_shares`・
+//!   `authorize_share_admin`）のときだけで、ほかの対象は `unchecked`（[`AccessNeedView::manageable`] が偽）。見えるだけ・
+//!   追加だけの人が、この口で他人の共有を問えないようにする。相手も、アーティファクトを今共有している相手だけ
+//!   （[`AccessChecker::subjects_for`]）。
 //! - **問う数に上限を置く。** 相手は [`MAX_ACCESS_SUBJECTS`]、対象は [`MAX_ACCESS_OBJECTS`]、相手ごとの問いの合計は
 //!   [`MAX_ACCESS_CHECKS`] まで。超えた分は確かめずに `unchecked` と `truncated` で返す（黙って「足りる」と言わない）。
 //!
@@ -91,6 +95,9 @@ pub struct AccessNeedView {
     pub target: Option<AccessTarget>,
     /// 対象が実行のときに決まる（入力や前の結果で決まる・まだ選んでいない）。確かめない。
     pub dynamic: bool,
+    /// 求めた人がこの対象の共有を管理している（持ち主）。相手ごとの権限は、これが真の対象だけ確かめる
+    /// （ほかは `unchecked`。対象の持ち主に確かめてもらう）。
+    pub manageable: bool,
 }
 
 /// 足りるか。
@@ -319,6 +326,7 @@ impl AccessChecker<'_> {
     ///
     /// 相手ごとの結果は、共有を管理する持ち主（owner）だけが求められる。`asked` を書いたのが持ち主でなければ権限なし、
     /// 省いたのが持ち主なら共有している相手（直接の共有・[`MAX_ACCESS_SUBJECTS`] まで）、持ち主でなければ `None`。
+    /// `asked` に書けるのは、今共有している相手だけ（ほかの人の権限を問う口にしない・共有していない相手は 400）。
     pub async fn subjects_for(
         &self,
         ctx: &AuthContext,
@@ -353,8 +361,22 @@ impl AccessChecker<'_> {
                     trace_id,
                 )
                 .await?;
+            let shared: Vec<ShareTarget> = self
+                .artifacts
+                .list_shares(ctx, id, trace_id)
+                .await?
+                .into_iter()
+                .map(|(target, _)| target)
+                .collect();
             let mut unique: Vec<ShareTarget> = Vec::new();
             for s in asked {
+                if !shared.contains(&s) {
+                    return Err(GuiError::Validation(vec![GuiValidationError::new(
+                        "access.subject_not_shared",
+                        "確かめられるのは、共有している相手だけです",
+                    )
+                    .at("subjects")]));
+                }
                 if !unique.contains(&s) {
                     unique.push(s);
                 }
@@ -496,10 +518,66 @@ impl AccessChecker<'_> {
         Ok(out)
     }
 
+    /// 部署の相手に、組織全体（organization#member）へ付けたファイル・フォルダーの共有を足す。
+    ///
+    /// OpenFGA は部署の userset（role#member）を相手にすると、組織全体に付けた閲覧・編集を一致させない。部署の人は
+    /// 組織の人なので、組織全体に共有したファイル・フォルダーは部署も使える（要らない共有を勧めない）。テーブルには
+    /// 組織全体の共有が無い。
+    async fn add_org_wide_to_roles(
+        &self,
+        ctx: &AuthContext,
+        subjects: &[ShareTarget],
+        objects: &[(AccessObject, Uuid)],
+        asks: &[Vec<Relation>],
+        held: &mut [Vec<Vec<Relation>>],
+    ) -> Result<(), GuiError> {
+        let roles: Vec<usize> = subjects
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| matches!(s, ShareTarget::Role { .. }))
+            .map(|(i, _)| i)
+            .collect();
+        let nodes: Vec<usize> = objects
+            .iter()
+            .enumerate()
+            .filter(|(_, (o, _))| *o != AccessObject::Table)
+            .map(|(i, _)| i)
+            .collect();
+        if roles.is_empty() || nodes.is_empty() {
+            return Ok(());
+        }
+        let fga: Vec<FgaObject> = nodes
+            .iter()
+            .map(|&i| fga_object(ctx, objects[i].0, objects[i].1))
+            .collect();
+        let node_asks: Vec<Vec<Relation>> = nodes.iter().map(|&i| asks[i].clone()).collect();
+        let org = ctx.ns().organization_member(&ctx.org);
+        let org_held = self
+            .held(&[org], &fga, &node_asks)
+            .await?
+            .into_iter()
+            .next()
+            .unwrap_or_default();
+        for i in roles {
+            let Some(per_object) = held.get_mut(i) else {
+                continue;
+            };
+            for (at, extra) in nodes.iter().zip(&org_held) {
+                for rel in extra {
+                    if !per_object[*at].contains(rel) {
+                        per_object[*at].push(*rel);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// 作る人の確かめ: 部品が要る権限と、`subjects`（共有の相手）ごとに足りるか。
     ///
     /// `subjects` が `None` なら相手ごとには確かめない（共有を管理できない人）。相手が [`MAX_ACCESS_SUBJECTS`] を
-    /// 超えるときは呼び出し側が切って `more_subjects` を立てる。相手の権限を確かめるのは、`ctx` に見える対象だけ。
+    /// 超えるときは呼び出し側が切って `more_subjects` を立てる。相手の権限を確かめるのは、`ctx` に見えて、`ctx` が
+    /// 持ち主の対象だけ（[`AccessNeedView::manageable`]）。
     pub async fn report(
         &self,
         ctx: &AuthContext,
@@ -510,6 +588,29 @@ impl AccessChecker<'_> {
         let rows = rows_of(parts);
         let (objects, mut truncated) = objects_of(&rows);
         let labels = self.labels(ctx, &objects).await?;
+        // 相手の権限を問うのは、求めた人に見えて、共有を管理している（持ち主の）対象だけ。
+        let visible: Vec<(AccessObject, Uuid)> = objects
+            .iter()
+            .copied()
+            .filter(|k| labels.targets.contains_key(k))
+            .collect();
+        let owner_asks = vec![vec![Relation::Owner]; visible.len()];
+        let visible_fga: Vec<FgaObject> = visible
+            .iter()
+            .map(|(o, id)| fga_object(ctx, *o, *id))
+            .collect();
+        let owned = self
+            .held(&[ctx.subject()], &visible_fga, &owner_asks)
+            .await?
+            .into_iter()
+            .next()
+            .unwrap_or_default();
+        let manageable: Vec<(AccessObject, Uuid)> = visible
+            .iter()
+            .zip(&owned)
+            .filter(|(_, held)| held.contains(&Relation::Owner))
+            .map(|(k, _)| *k)
+            .collect();
         let needs: Vec<AccessNeedView> = rows
             .iter()
             .map(|r| AccessNeedView {
@@ -520,6 +621,7 @@ impl AccessChecker<'_> {
                     .id
                     .and_then(|id| labels.targets.get(&(r.object, id)).cloned()),
                 dynamic: r.id.is_none(),
+                manageable: r.id.is_some_and(|id| manageable.contains(&(r.object, id))),
             })
             .collect();
         let unavailable = parts
@@ -537,13 +639,7 @@ impl AccessChecker<'_> {
                 unavailable,
             });
         };
-        // 相手の権限を問うのは、求めた人に見える対象だけ。
-        let visible: Vec<(AccessObject, Uuid)> = objects
-            .iter()
-            .copied()
-            .filter(|k| labels.targets.contains_key(k))
-            .collect();
-        let asks = relations_per_object(&rows, &visible);
+        let asks = relations_per_object(&rows, &manageable);
         let per_subject: usize = asks.iter().map(Vec::len).sum();
         let checked = MAX_ACCESS_CHECKS
             .checked_div(per_subject)
@@ -551,14 +647,16 @@ impl AccessChecker<'_> {
         if checked < subjects.len() {
             truncated = true;
         }
-        let fga: Vec<FgaObject> = visible
+        let fga: Vec<FgaObject> = manageable
             .iter()
             .map(|(o, id)| fga_object(ctx, *o, *id))
             .collect();
         let ns = ctx.ns();
         let fga_subjects: Vec<Subject> =
             subjects[..checked].iter().map(|s| s.subject(&ns)).collect();
-        let held = self.held(&fga_subjects, &fga, &asks).await?;
+        let mut held = self.held(&fga_subjects, &fga, &asks).await?;
+        self.add_org_wide_to_roles(ctx, &subjects[..checked], &manageable, &asks, &mut held)
+            .await?;
         let results = subjects
             .iter()
             .enumerate()
@@ -568,8 +666,9 @@ impl AccessChecker<'_> {
                 statuses: rows
                     .iter()
                     .map(|r| {
-                        let at =
-                            r.id.and_then(|id| visible.iter().position(|k| *k == (r.object, id)));
+                        let at = r
+                            .id
+                            .and_then(|id| manageable.iter().position(|k| *k == (r.object, id)));
                         match (held.get(i), at) {
                             (Some(h), Some(at)) => status_of(r.object, r.kind, &h[at]),
                             _ => AccessStatus::Unchecked,

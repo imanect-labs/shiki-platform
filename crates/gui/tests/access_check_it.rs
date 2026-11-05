@@ -5,6 +5,8 @@
 //! - 作る人（持ち主）は、部品が要る権限と、共有の相手（人・部署）ごとに足りるかを受け取る。追加だけの相手は、追加には
 //!   足り、書き換えは範囲が狭い。自分に見えない対象は名前を出さず、相手の権限も確かめない。値で決まる対象は確かめない。
 //! - 相手を省くと共有している相手を確かめる。持ち主でない editor は相手ごとの結果を受け取れず、相手を書くと権限なし。
+//!   相手を書けるのは共有している相手だけ。相手の権限は、求めた人が持ち主の対象だけ確かめる（見えるだけ・追加だけの
+//!   対象は確かめない）。部署の相手は、組織全体に共有したファイル・フォルダーを使える。
 //! - 使う人は、自分に足りない権限を部品ごとに受け取り、見えない対象は名前を出さない。足りている部品は返さない。
 //!   使う人は公開した版だけを確かめられる。共有を足すと、次の確かめから足りると言う。
 //!
@@ -432,6 +434,8 @@ async fn makers_see_each_recipient_and_users_see_their_own_gaps() {
             .expect("見えないテーブルへの追加");
         let dynamic = report.needs.iter().position(|n| n.dynamic).expect("値で決まる対象");
         assert_eq!(report.needs[add].target.as_ref().unwrap().name, "経費の申請");
+        assert!(report.needs[add].manageable && report.needs[save].manageable, "持ち主の対象は相手を確かめる");
+        assert!(!report.needs[hr].manageable && !report.needs[dynamic].manageable);
         assert!(!serde_json::to_string(&report).unwrap().contains(&hidden.to_string()), "見えない対象の id を出さない");
         let results = report.subjects.as_ref().expect("持ち主は相手ごと");
         let bob_s = results.iter().find(|r| r.subject == user("bob")).expect("bob");
@@ -448,6 +452,32 @@ async fn makers_see_each_recipient_and_users_see_their_own_gaps() {
         assert_eq!(bob_s.statuses[dynamic], AccessStatus::Unchecked);
         assert_eq!(keiri.statuses[read_ledger], AccessStatus::Ok, "部署に共有した台帳は部署として読める");
         assert_eq!(keiri.statuses[add], AccessStatus::Missing);
+        assert_eq!(keiri.statuses[save], AccessStatus::Missing);
+
+        // 組織全体に編集で共有したフォルダーは、部署の人も書ける（部署の userset では一致しないので、組織全体も問う）。
+        e.fga
+            .write_tuple(&ns.organization_member("acme"), Relation::Editor, &ns.folder(&folder.to_string()))
+            .await
+            .unwrap();
+        let report = c.report(&alice, version, &parts, Some(&subjects.0)).await.expect("report");
+        let results = report.subjects.as_ref().unwrap();
+        let keiri = results.iter().find(|r| matches!(r.subject, ShareTarget::Role { .. })).unwrap();
+        assert_eq!(keiri.statuses[save], AccessStatus::Ok, "組織全体の共有は部署にも効く");
+        assert_eq!(keiri.statuses[skill_folder], AccessStatus::Ok);
+        let bob_s = results.iter().find(|r| r.subject == user("bob")).unwrap();
+        assert_eq!(bob_s.statuses[save], AccessStatus::Missing, "組織の member でない人には足さない");
+        e.fga
+            .delete_tuple(&ns.organization_member("acme"), Relation::Editor, &ns.folder(&folder.to_string()))
+            .await
+            .unwrap();
+
+        // 書ける相手は、今共有している相手だけ（ほかの人の権限を問う口にしない）。
+        let picked = c.subjects_for(&alice, app, Some(vec![user("bob")]), None).await.unwrap().unwrap();
+        assert_eq!(picked.0, vec![user("bob")]);
+        match c.subjects_for(&alice, app, Some(vec![user("bob"), user("dave")]), None).await {
+            Err(GuiError::Validation(errs)) => assert_eq!(errs[0].code, "access.subject_not_shared"),
+            other => panic!("共有していない相手は断る: {other:?}"),
+        }
 
         // 相手を書けるのは持ち主だけ。共同編集者（editor）は相手ごとの結果を受け取れない。
         let ed = ctx(&t, "ed");
@@ -511,6 +541,76 @@ async fn makers_see_each_recipient_and_users_see_their_own_gaps() {
             Err(GuiError::Artifact(artifact::ArtifactError::NotPublished { published: Some(1) }))
         ));
         assert!(e.mini_apps.part_needs(&dave, app, None, "my_access", None).await.is_err());
+    })
+    .await;
+}
+
+/// 相手の権限は、求めた人が持ち主の対象だけ確かめる。テーブルを閲覧できるだけの人が、そのテーブルを読むワークフローを
+/// 作って共有しても、相手がそのテーブルに持つ権限は返さない（共有の一覧を持ち主にだけ見せる決まりを迂回させない）。
+#[tokio::test]
+async fn makers_learn_others_access_only_to_what_they_own() {
+    let Some(pool) = pool().await else { return };
+    let Some(fga) = Fga::connect().await else {
+        return;
+    };
+    let client = Arc::clone(&fga.client);
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let t = tenant.clone();
+    let db = pool.clone();
+    run_with_cleanup(pool, tenant, fga, async move {
+        let e = Env::new(&db, &client);
+        let alice = ctx(&t, "alice"); // 人事の表の持ち主
+        let bob = ctx(&t, "bob"); // 人事の表を閲覧できるだけの人
+        let ns = alice.ns();
+        let hr = e.table(&alice, "人事の記録").await;
+        let own = e.table(&bob, "bob の表").await;
+        e.grant(&user("bob"), Relation::Viewer, ns.data_table(&hr.to_string()), &alice).await;
+        e.grant(&user("carol"), Relation::Editor, ns.data_table(&hr.to_string()), &alice).await;
+        e.grant(&ShareTarget::Role { id: "jinji".into() }, Relation::Viewer, ns.data_table(&hr.to_string()), &alice)
+            .await;
+        let ir = json!({
+            "ir_version": 1, "name": "読む",
+            "declared_scopes": ["data.read", "data.write"],
+            "nodes": [
+                { "id": "q", "type": "data.query", "params": { "table": hr.to_string() } },
+                { "id": "add", "type": "data.record.create", "params": { "table": own.to_string(), "data": {} } }
+            ],
+            "edges": []
+        });
+        let wf = e
+            .artifacts
+            .create(&bob, NewArtifact { kind: ArtifactKind::Workflow, name: "読む".into(), body: ir.clone() }, None)
+            .await
+            .unwrap()
+            .id;
+        e.artifacts.share(&bob, wf, &user("carol"), ArtifactRole::Viewer, None).await.unwrap();
+        e.artifacts
+            .share(&bob, wf, &ShareTarget::Role { id: "jinji".into() }, ArtifactRole::Viewer, None)
+            .await
+            .unwrap();
+        let parts = [gui::workflow_needs(&workflow_engine::WorkflowIr::from_json(&ir).unwrap())];
+        let subjects = e.checker().subjects_for(&bob, wf, None, None).await.unwrap().unwrap();
+        assert_eq!(subjects.0.len(), 2);
+        let report = e.checker().report(&bob, 1, &parts, Some(&subjects.0)).await.unwrap();
+        let read_hr = report
+            .needs
+            .iter()
+            .position(|n| n.need == AccessKind::Read)
+            .expect("人事の表を読む");
+        let add_own = report.needs.iter().position(|n| n.need == AccessKind::Add).expect("自分の表に追加");
+        // 見える表なので名前は出すが、持ち主でないので相手の権限は問わない。
+        assert_eq!(report.needs[read_hr].target.as_ref().unwrap().name, "人事の記録");
+        assert!(!report.needs[read_hr].manageable);
+        assert!(report.needs[add_own].manageable);
+        for r in report.subjects.as_ref().unwrap() {
+            assert_eq!(r.statuses[read_hr], AccessStatus::Unchecked, "{:?} の人事の表の権限を返さない", r.subject);
+            assert_eq!(r.statuses[add_own], AccessStatus::Missing);
+        }
+        // 共有していない人を書いても問えない。
+        match e.checker().subjects_for(&bob, wf, Some(vec![user("dave")]), None).await {
+            Err(GuiError::Validation(errs)) => assert_eq!(errs[0].code, "access.subject_not_shared"),
+            other => panic!("共有していない相手は断る: {other:?}"),
+        }
     })
     .await;
 }
