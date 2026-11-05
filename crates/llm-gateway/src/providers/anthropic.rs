@@ -13,11 +13,12 @@ use futures::channel::mpsc;
 use futures::stream::StreamExt;
 use serde_json::{json, Value};
 
+use super::anthropic_events::EventReader;
 use super::identity::IdentityHeaders;
 use super::timeouts::RequestClock;
 use super::tool_names::ToolNameMap;
 use crate::config::LlmTimeouts;
-use crate::model::{Block, GenerateRequest, Message, Role, StopReason, StreamDelta, ToolDef};
+use crate::model::{Block, GenerateRequest, Message, Role, StreamDelta, ToolDef};
 use crate::provider::{DeltaStream, LlmError, LlmProvider};
 use crate::structured::{anthropic_format, schema_rejection, with_json_body, ANTHROPIC_SCHEMA_AT};
 use crate::tool_loading::{context_tools, with_loaded_note};
@@ -266,23 +267,12 @@ fn to_anthropic_block(b: &Block, refs: &RefRendering<'_>) -> Option<(Value, Opti
     }
 }
 
-fn map_stop_reason(sr: Option<&str>) -> StopReason {
-    match sr {
-        Some("tool_use") => StopReason::ToolUse,
-        Some("max_tokens") => StopReason::MaxTokens,
-        Some("refusal") => StopReason::Refusal,
-        Some("end_turn" | "stop_sequence") => StopReason::EndTurn,
-        _ => StopReason::Other,
-    }
-}
-
 #[async_trait::async_trait]
 impl LlmProvider for AnthropicProvider {
     fn name(&self) -> &'static str {
         "anthropic"
     }
 
-    #[allow(clippy::too_many_lines)] // SSE イベント種別ごとの分岐で行数が伸びる（分割は可読性を損なう）。
     async fn stream(&self, req: &GenerateRequest) -> Result<DeltaStream, LlmError> {
         let url = format!("{}/v1/messages", self.base_url);
         let names = ToolNameMap::for_request(req);
@@ -323,12 +313,7 @@ impl LlmProvider for AnthropicProvider {
         tokio::spawn(async move {
             let mut byte_stream = resp.bytes_stream();
             let mut buf: Vec<u8> = Vec::new();
-            // index → (id, name, accumulated json)
-            let mut tools: std::collections::BTreeMap<i64, (String, String, String)> =
-                std::collections::BTreeMap::new();
-            let mut usage = super::usage::AnthropicUsage::default();
-            let mut stop = StopReason::EndTurn;
-
+            let mut reader = EventReader::new(names);
             while let Some(chunk) = clock.next_chunk(&mut byte_stream, &tx).await {
                 let chunk = match chunk {
                     Ok(c) => c,
@@ -340,109 +325,26 @@ impl LlmProvider for AnthropicProvider {
                 buf.extend_from_slice(&chunk);
                 while let Some(pos) = buf.iter().position(|&b| b == b'\n') {
                     let line: Vec<u8> = buf.drain(..=pos).collect();
-                    let line = String::from_utf8_lossy(&line);
-                    let line = line.trim();
-                    let Some(data) = line.strip_prefix("data:") else {
-                        continue;
-                    };
-                    let Ok(v): Result<Value, _> = serde_json::from_str(data.trim()) else {
-                        continue;
-                    };
-                    match v.get("type").and_then(Value::as_str) {
-                        Some("message_start") => {
-                            if let Some(u) = v.pointer("/message/usage") {
-                                usage.absorb(u);
-                            }
-                        }
-                        Some("content_block_start") => {
-                            let idx = v.get("index").and_then(Value::as_i64).unwrap_or(0);
-                            if let Some(cb) = v.get("content_block") {
-                                if cb.get("type").and_then(Value::as_str) == Some("tool_use") {
-                                    let id = cb
-                                        .get("id")
-                                        .and_then(Value::as_str)
-                                        .unwrap_or_default()
-                                        .to_string();
-                                    let name = cb
-                                        .get("name")
-                                        .and_then(Value::as_str)
-                                        .unwrap_or_default()
-                                        .to_string();
-                                    let name = names.local(&name);
-                                    tools.insert(idx, (id.clone(), name.clone(), String::new()));
-                                    let _ = tx
-                                        .unbounded_send(Ok(StreamDelta::ToolUseStart { id, name }));
-                                }
-                            }
-                        }
-                        Some("content_block_delta") => {
-                            let idx = v.get("index").and_then(Value::as_i64).unwrap_or(0);
-                            if let Some(delta) = v.get("delta") {
-                                match delta.get("type").and_then(Value::as_str) {
-                                    Some("text_delta") => {
-                                        if let Some(t) = delta.get("text").and_then(Value::as_str) {
-                                            let _ = tx.unbounded_send(Ok(StreamDelta::TextDelta {
-                                                text: t.to_string(),
-                                            }));
-                                        }
-                                    }
-                                    Some("thinking_delta") => {
-                                        if let Some(t) =
-                                            delta.get("thinking").and_then(Value::as_str)
-                                        {
-                                            let _ =
-                                                tx.unbounded_send(Ok(StreamDelta::ThinkingDelta {
-                                                    text: t.to_string(),
-                                                }));
-                                        }
-                                    }
-                                    Some("input_json_delta") => {
-                                        if let Some(pj) =
-                                            delta.get("partial_json").and_then(Value::as_str)
-                                        {
-                                            if let Some(e) = tools.get_mut(&idx) {
-                                                e.2.push_str(pj);
-                                            }
-                                        }
-                                    }
-                                    _ => {}
-                                }
-                            }
-                        }
-                        Some("content_block_stop") => {
-                            let idx = v.get("index").and_then(Value::as_i64).unwrap_or(0);
-                            if let Some((id, _name, args)) = tools.remove(&idx) {
-                                let input: Value =
-                                    serde_json::from_str(args.trim()).unwrap_or(json!({}));
-                                let _ =
-                                    tx.unbounded_send(Ok(StreamDelta::ToolUseStop { id, input }));
-                            }
-                        }
-                        Some("message_delta") => {
-                            if let Some(sr) =
-                                v.pointer("/delta/stop_reason").and_then(Value::as_str)
-                            {
-                                stop = map_stop_reason(Some(sr));
-                            }
-                            if let Some(u) = v.get("usage") {
-                                usage.absorb(u);
-                            }
-                        }
-                        Some("message_stop") => {
-                            let _ = tx.unbounded_send(Ok(StreamDelta::Done {
-                                stop_reason: stop,
-                                usage: usage.to_usage(),
-                            }));
-                            return;
-                        }
-                        _ => {}
+                    for out in reader.line(&String::from_utf8_lossy(&line)) {
+                        let _ = tx.unbounded_send(out);
+                    }
+                    if reader.finished() {
+                        return;
                     }
                 }
             }
-            let _ = tx.unbounded_send(Ok(StreamDelta::Done {
-                stop_reason: stop,
-                usage: usage.to_usage(),
-            }));
+            // 受け手がストリームを捨てた（読むのをやめた）なら、何も送らずに終える。
+            if tx.is_closed() {
+                return;
+            }
+            // 末尾の改行が無いまま閉じた最後の行も読む。message_stop まで来ていなければ、途中までの応答を完了に
+            // せず誤りにする（BUG-214）。
+            for out in reader.line(&String::from_utf8_lossy(&buf)) {
+                let _ = tx.unbounded_send(out);
+            }
+            if let Some(out) = reader.end() {
+                let _ = tx.unbounded_send(out);
+            }
         });
 
         Ok(rx.boxed())
@@ -545,12 +447,6 @@ mod tests {
         for key in ["temperature", "top_p", "top_k"] {
             assert!(body.get(key).is_none(), "{key}: {body}");
         }
-    }
-
-    #[test]
-    fn refusal_stop_reason_is_kept() {
-        assert_eq!(map_stop_reason(Some("refusal")), StopReason::Refusal);
-        assert_eq!(map_stop_reason(Some("pause_turn")), StopReason::Other);
     }
 
     fn provider() -> AnthropicProvider {
@@ -772,6 +668,89 @@ mod tests {
             "claude-opus-5-5",
         ] {
             assert!(supports_tool_search(m), "{m}");
+        }
+    }
+
+    /// 呼ばれるたびに用意した本文を順に返すモック（尽きたら最後の本文）。呼ばれた回数を数える。
+    async fn scripted(
+        bodies: Vec<&'static str>,
+    ) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let counter = std::sync::Arc::clone(&calls);
+        let app = axum::Router::new().fallback(move || {
+            let n = counter.fetch_add(1, Ordering::SeqCst);
+            let body = bodies[n.min(bodies.len() - 1)];
+            async move { ([("content-type", "text/event-stream")], body) }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (base, calls)
+    }
+
+    /// gateway の送り直し（まだ何も確定していないときだけ）に通した結果（差分は短い名前、誤りは文言）。
+    async fn through_resume(base: String) -> Vec<String> {
+        let provider: std::sync::Arc<dyn LlmProvider> = std::sync::Arc::new(
+            AnthropicProvider::new(reqwest::Client::new(), base, "k", "m"),
+        );
+        let req = GenerateRequest::new(vec![Message::text(Role::User, "hi")]);
+        let first = provider.stream(&req).await.unwrap();
+        crate::retry::resume_unsettled(provider, req, first, crate::retry::MIDSTREAM_RETRIES)
+            .map(|d| match d {
+                Ok(StreamDelta::TextDelta { text }) => format!("text:{text}"),
+                Ok(StreamDelta::ThinkingDelta { text }) => format!("think:{text}"),
+                Ok(StreamDelta::ToolUseStart { id, .. }) => format!("start:{id}"),
+                Ok(StreamDelta::Done { .. }) => "done".into(),
+                Ok(other) => format!("{other:?}"),
+                Err(e) => format!("err:{e}"),
+            })
+            .collect()
+            .await
+    }
+
+    /// 思考だけを流して切れた（message_stop の無い・error イベントの）応答は送り直し、本文・ツール呼び出しを
+    /// 出した後に切れた応答は送り直さずに誤りにする（BUG-214・二重に渡さない）。
+    #[tokio::test]
+    async fn cut_streams_are_sent_again_only_while_nothing_is_settled() {
+        use std::sync::atomic::Ordering;
+        const THINK: &str = "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"thinking_delta\",\"thinking\":\"考え中\"}}\n\n";
+        const OVERLOADED: &str = "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}\n\n";
+        const ANSWER: &str = concat!(
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"答え\"}}\n\n",
+            "data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n",
+            "data: {\"type\":\"message_stop\"}\n\n",
+        );
+        const TEXT_THEN_CLOSE: &str = "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"途中\"}}\n\n";
+        const TOOL_THEN_CLOSE: &str = concat!(
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"doc_search\"}}\n\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"q\\\":\"}}\n\n",
+        );
+        let think_then_error: &'static str =
+            Box::leak(format!("{THINK}{OVERLOADED}").into_boxed_str());
+
+        // 思考だけで閉じた・思考だけで error イベント → 送り直して答えを流す。
+        for cut in [THINK, think_then_error] {
+            let (base, calls) = scripted(vec![cut, ANSWER]).await;
+            let out = through_resume(base).await;
+            assert_eq!(calls.load(Ordering::SeqCst), 2, "{out:?}");
+            assert_eq!(out.last().map(String::as_str), Some("done"), "{out:?}");
+            assert!(out.contains(&"text:答え".to_string()), "{out:?}");
+        }
+
+        // 本文を出した後・書きかけのツール呼び出しで閉じた・本文の後の error イベント → 送り直さずに誤り。
+        let text_then_error: &'static str =
+            Box::leak(format!("{TEXT_THEN_CLOSE}{OVERLOADED}").into_boxed_str());
+        for cut in [TEXT_THEN_CLOSE, TOOL_THEN_CLOSE, text_then_error] {
+            let (base, calls) = scripted(vec![cut, ANSWER]).await;
+            let out = through_resume(base).await;
+            assert_eq!(calls.load(Ordering::SeqCst), 1, "{cut}: {out:?}");
+            let last = out.last().unwrap();
+            assert!(
+                last.starts_with("err:llm provider unavailable: cut by provider: anthropic: "),
+                "{cut}: {out:?}"
+            );
+            assert!(!out.iter().any(|o| o == "done"), "{cut}: {out:?}");
         }
     }
 }

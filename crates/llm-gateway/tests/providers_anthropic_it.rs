@@ -164,6 +164,53 @@ async fn anthropic_server_error_does_not_carry_the_provider_body() {
     );
 }
 
+/// 流し始めた後の error イベント・message_stop の無いまま閉じたストリーム・書きかけの tool_use で閉じたストリームは、
+/// 正常な終わり（Done）にせず一時障害にする（BUG-214）。error イベントの本文（message・要求の ID）は文言に入れない。
+#[tokio::test]
+async fn anthropic_stream_cut_midway_is_unavailable_not_a_clean_end() {
+    let bodies: [&'static str; 3] = [
+        concat!(
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"途中\"}}\n\n",
+            "event: error\n",
+            "data: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"Overloaded for org-secret\"},\"request_id\":\"req_secret_4\"}\n\n",
+        ),
+        "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"text_delta\",\"text\":\"途中\"}}\n\n",
+        concat!(
+            "data: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_1\",\"name\":\"doc_search\"}}\n\n",
+            "data: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"q\\\":\"}}\n\n",
+        ),
+    ];
+    for body in bodies {
+        let base = spawn_mock(StatusCode::OK, body).await;
+        let provider = AnthropicProvider::new(reqwest::Client::new(), base, "k", "claude-x");
+        let req = GenerateRequest::new(vec![Message::text(Role::User, "hi")]);
+        let mut stream = provider.stream(&req).await.expect("stream should start");
+        let mut items = Vec::new();
+        while let Some(item) = stream.next().await {
+            items.push(item);
+        }
+        assert!(
+            !items.iter().any(|i| matches!(
+                i,
+                Ok(StreamDelta::Done { .. } | StreamDelta::ToolUseStop { .. })
+            )),
+            "{body}: {items:?}"
+        );
+        match items.last() {
+            Some(Err(LlmError::Unavailable(msg))) => {
+                assert!(msg.starts_with("cut by provider: anthropic: "), "{msg}");
+                if body.contains("event: error") {
+                    assert!(msg.contains("overloaded_error"), "{msg}");
+                    for leaked in ["org-secret", "req_secret_4", "Overloaded for"] {
+                        assert!(!msg.contains(leaked), "{leaked} が漏れた: {msg}");
+                    }
+                }
+            }
+            other => panic!("{body}: {other:?}"),
+        }
+    }
+}
+
 type Seen = Arc<Mutex<Option<HeaderMap>>>;
 
 /// 固定ステータス＋固定ボディを返し、受けたヘッダを記録するモックを立てる。
