@@ -813,3 +813,39 @@ async fn tabular_query_rejects_inputs_over_budget() {
     .expect("予算内");
     assert_eq!(ok.rows.len(), 1);
 }
+
+/// #1037: 確認したサイズを上限にした取得は、確認後に大きい版へ差し替わったらダウンロード前に拒否する
+/// （複数 CSV クエリの入力予算を、メタデータ確認と取得の間の差し替えでも破らせない）。
+#[tokio::test]
+async fn bounded_read_rejects_file_grown_after_check() {
+    let Some(env) = setup().await else { return };
+    let id = create_csv(&env, b"k\n1\n").await;
+    let checked = env
+        .storage
+        .get_metadata(&env.ctx, id, None)
+        .await
+        .expect("meta")
+        .size_bytes
+        .expect("size");
+    // 確認したサイズ以内なら読める。
+    let (_, bytes) = env
+        .storage
+        .read_file_internal_bounded(&env.ctx, id, checked, None)
+        .await
+        .expect("bounded read");
+    assert_eq!(bytes.len() as i64, checked);
+    // 確認後に大きい版へ差し替わる → 同じ上限では拒否される。
+    let grown = format!("k\n{}\n", "9".repeat(4096));
+    env.storage
+        .update_file_content_internal(&env.ctx, id, grown.as_bytes(), "text/csv", None)
+        .await
+        .expect("grow");
+    let res = env
+        .storage
+        .read_file_internal_bounded(&env.ctx, id, checked, None)
+        .await;
+    assert!(
+        matches!(res, Err(storage::StorageError::Invalid(_))),
+        "差し替え後の大きい版は上限で拒否: {res:?}"
+    );
+}

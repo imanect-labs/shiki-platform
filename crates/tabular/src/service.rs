@@ -90,7 +90,7 @@ impl TabularService {
         file_id: Uuid,
         trace_id: Option<&str>,
     ) -> Result<RunnerResponse, TabularError> {
-        let path = self.fetch_csv(ctx, file_id, trace_id).await?;
+        let path = self.fetch_csv(ctx, file_id, None, trace_id).await?;
         self.run(RunnerOp::Schema, path.path(), Vec::new(), 0).await
     }
 
@@ -102,7 +102,7 @@ impl TabularService {
         offset: u64,
         trace_id: Option<&str>,
     ) -> Result<RunnerResponse, TabularError> {
-        let path = self.fetch_csv(ctx, file_id, trace_id).await?;
+        let path = self.fetch_csv(ctx, file_id, None, trace_id).await?;
         self.run(
             RunnerOp::Rows { offset },
             path.path(),
@@ -157,22 +157,25 @@ impl TabularService {
         )
         .await?;
         let mut total: u64 = 0;
+        let mut sizes = Vec::with_capacity(metas.len());
         for (id, node) in ids.iter().zip(&metas) {
             if node.kind != NodeKind::File {
                 return Err(TabularError::NotFound(format!("file {id}")));
             }
-            total = total.saturating_add(u64::try_from(node.size_bytes.unwrap_or(0)).unwrap_or(0));
+            let size = node.size_bytes.unwrap_or(0).max(0);
+            sizes.push(size);
+            total = total.saturating_add(u64::try_from(size).unwrap_or(u64::MAX));
         }
         self.check_input_budget(total)?;
-        // 2) 並行に取得する（各取得も viewer を要求する＝メタデータ確認後の剥奪も拾う）。
-        //    try_join_all は最初の失敗で残りの取得を破棄する。
-        let fetched = try_join_all(ids.iter().map(|id| self.fetch_csv(ctx, *id, trace_id))).await?;
-        // メタデータ確認と取得の間に内容が差し替わって大きくなった場合も、ランナーへ渡さない。
-        let fetched_total = fetched
-            .iter()
-            .map(|f| f.as_file().metadata().map_or(u64::MAX, |m| m.len()))
-            .fold(0u64, u64::saturating_add);
-        self.check_input_budget(fetched_total)?;
+        // 2) 並行に取得する（各取得も viewer を要求する＝メタデータ確認後の剥奪も拾う）。各ファイルは
+        //    確認したサイズを上限に取得する＝確認後に大きい版へ差し替わっても、全体をメモリへ載せる
+        //    前に拒否される（合計は予算内に収まる）。try_join_all は最初の失敗で残りを破棄する。
+        let fetched = try_join_all(
+            ids.iter()
+                .zip(&sizes)
+                .map(|(id, size)| self.fetch_csv(ctx, *id, Some(*size), trace_id)),
+        )
+        .await?;
         let path_of: HashMap<Uuid, &std::path::Path> = ids
             .iter()
             .copied()
@@ -275,16 +278,28 @@ impl TabularService {
     }
 
     /// viewer 認可で CSV を取得し、隔離ランナー用の私有一時ファイルへ書く。
+    ///
+    /// `max_bytes` を渡すと、取得する版がそれより大きければダウンロード前に拒否する
+    /// （事前に確認したサイズに取得を固定する・複数 CSV クエリの入力予算）。
     async fn fetch_csv(
         &self,
         ctx: &AuthContext,
         file_id: Uuid,
+        max_bytes: Option<i64>,
         trace_id: Option<&str>,
     ) -> Result<tempfile::NamedTempFile, TabularError> {
-        let (node, bytes) = self
-            .storage
-            .read_file_internal(ctx, file_id, trace_id)
-            .await?;
+        let (node, bytes) = match max_bytes {
+            Some(max) => {
+                self.storage
+                    .read_file_internal_bounded(ctx, file_id, max, trace_id)
+                    .await?
+            }
+            None => {
+                self.storage
+                    .read_file_internal(ctx, file_id, trace_id)
+                    .await?
+            }
+        };
         if node.kind != NodeKind::File {
             return Err(TabularError::NotFound(format!("file {file_id}")));
         }
