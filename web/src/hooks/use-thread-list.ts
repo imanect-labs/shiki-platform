@@ -146,7 +146,9 @@ export function useThreadList(query = "", enabled = true): ThreadList {
             loadFirst();
             return;
           }
-          if (initial) setLoading(false);
+          // 待っている取り直しが無くなった時点で読み込み中を終える（初回の成功の直後に束ねた
+          // 取り直しが走った場合、その取り直しは初回ではないので initial では判定しない）。
+          setLoading(false);
         });
     };
 
