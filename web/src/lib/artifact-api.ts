@@ -50,30 +50,36 @@ function statusMessage(status: number): string {
   return "内容に誤りがあるため、受け付けられませんでした。入力した値を見直してください。";
 }
 
-async function ok<T>(res: Response): Promise<T> {
-  if (!res.ok) {
-    // 検証エラー（400 の {errors:[...]}）は本文をそのまま投げて UI が全件表示できるようにする。文言は 1 件 1 行で、
-    // 位置（`description`・`workflows[0]` などの path）を添えない（利用者に出す画面向け・ミニアプリのエディターの
-    // [`validationMessages`] と同じ扱い・BUG-80・BUG-121）。位置は `errors` に残るので、欄に写す画面はそれを読む。
-    // 構造化した 409（{code, message}・ミニアプリの未公開・版の競合・名前の重複など）は code を添え、message を文言に
-    // する。文言の無い誤りは状態コードの既定の文言にする（「API 409」のように番号だけを出さない・GAP-41）。
-    let detail = "";
-    let errors: GuiValidationError[] | undefined;
-    let code: string | undefined;
-    try {
-      const body = (await res.json()) as { errors?: GuiValidationError[]; code?: unknown; message?: unknown };
-      if (body.errors?.length) {
-        errors = body.errors;
-        detail = body.errors.map((e) => e.message).join("\n");
-      }
-      if (typeof body.code === "string") code = body.code;
-      if (!detail && typeof body.message === "string") detail = body.message;
-    } catch {
-      // 本文なし
+/// 失敗した応答を、本文の code・message・検証エラーを添えた誤りにして投げる（[`ok`] と、本文の無い応答の口が使う）。
+///
+/// `byStatus` は、その操作で状態コードごとに言い分ける文言（サーバーが文言を返さないときに使う・付録 C の §3.4.3）。
+async function throwFailure(res: Response, byStatus: Partial<Record<number, string>> = {}): Promise<never> {
+  // 検証エラー（400 の {errors:[...]}）は本文をそのまま投げて UI が全件表示できるようにする。文言は 1 件 1 行で、
+  // 位置（`description`・`workflows[0]` などの path）を添えない（利用者に出す画面向け・ミニアプリのエディターの
+  // [`validationMessages`] と同じ扱い・BUG-80・BUG-121）。位置は `errors` に残るので、欄に写す画面はそれを読む。
+  // 構造化した 409（{code, message}・ミニアプリの未公開・版の競合・名前の重複など）は code を添え、message を文言に
+  // する。文言の無い誤りは状態コードの既定の文言にする（「API 409」のように番号だけを出さない・GAP-41）。
+  let detail = "";
+  let errors: GuiValidationError[] | undefined;
+  let code: string | undefined;
+  try {
+    const body = (await res.json()) as { errors?: GuiValidationError[]; code?: unknown; message?: unknown };
+    if (body.errors?.length) {
+      errors = body.errors;
+      detail = body.errors.map((e) => e.message).join("\n");
     }
-    // 状態コードを添える（見つからない・権限がない＝403/404 を画面が「見つかりません」として出し分ける）。
-    throw Object.assign(new Error(detail || statusMessage(res.status)), { status: res.status, errors, code });
+    if (typeof body.code === "string") code = body.code;
+    if (!detail && typeof body.message === "string") detail = body.message;
+  } catch {
+    // 本文なし
   }
+  // 状態コードを添える（見つからない・権限がない＝403/404 を画面が「見つかりません」として出し分ける）。
+  const message = detail || byStatus[res.status] || statusMessage(res.status);
+  throw Object.assign(new Error(message), { status: res.status, errors, code });
+}
+
+async function ok<T>(res: Response): Promise<T> {
+  if (!res.ok) await throwFailure(res);
   return (await res.json()) as T;
 }
 
@@ -165,9 +171,21 @@ export async function getArtifact(id: string): Promise<ArtifactMeta> {
   return toMeta(await ok<ApiArtifact>(await apiFetch(`/artifacts/${id}`)));
 }
 
+/// 削除と共有の失敗の言い分け（どちらも持ち主だけができる・状態コードの番号は出さない・GAP-41）。
+const OWNER_ONLY: Record<"delete" | "share", Partial<Record<number, string>>> = {
+  delete: {
+    403: "削除できるのは持ち主だけです。必要なら、持ち主に頼んでください。",
+    404: "見つかりません。すでに削除されたか、見る権限がありません。",
+  },
+  share: {
+    403: "共有を変えられるのは持ち主だけです。必要なら、持ち主に頼んでください。",
+    404: "見つかりません。削除されたか、見る権限がありません。",
+  },
+};
+
 export async function deleteArtifact(id: string): Promise<void> {
   const res = await apiFetch(`/artifacts/${id}`, { method: "DELETE" });
-  if (!res.ok) throw new Error(`削除に失敗しました (${res.status})`);
+  if (!res.ok) await throwFailure(res, OWNER_ONLY.delete);
 }
 
 export async function listArtifactVersions(id: string): Promise<VersionMeta[]> {
@@ -187,7 +205,7 @@ export async function shareArtifact(
   role: ArtifactRole,
 ): Promise<void> {
   const res = await apiFetch(`/artifacts/${id}/shares`, { ...json({ target, role }), method: "PUT" });
-  if (!res.ok) throw new Error(`共有に失敗しました (${res.status})`);
+  if (!res.ok) await throwFailure(res, OWNER_ONLY.share);
 }
 
 export async function unshareArtifact(
@@ -199,7 +217,7 @@ export async function unshareArtifact(
     ...json({ target, role }),
     method: "DELETE",
   });
-  if (!res.ok) throw new Error(`共有解除に失敗しました (${res.status})`);
+  if (!res.ok) await throwFailure(res, OWNER_ONLY.share);
 }
 
 export async function listArtifactShares(id: string): Promise<ArtifactShareEntry[]> {

@@ -1,8 +1,9 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect, type Browser, type Page } from "@playwright/test";
 
 import {
   cleanupQueue,
   deleteArtifactApi,
+  loginAs,
   loginViaKeycloak,
   removeWorkflowApi,
   trackCreatedResources,
@@ -16,6 +17,8 @@ import {
 /// - ボタンの入力の誤り: 入力のキー（amount）でなく画面の部品の名前（金額）で言う。
 /// - ボタンの 5xx: 503 は「いま使えません」、500 は「サーバーで問題が起きました」と言い、「送信の結果を確かめられません
 ///   でした」にしない。
+/// - アプリの削除・共有・共有の解除に失敗したとき: 「削除に失敗しました (403)」のように状態コードの番号を出さず、
+///   理由とすることを言う（サーバーの応答を差し替えて確かめる）。
 /// 作ったもの（アプリ・ワークフロー）は最後に消す。`E2E_SHOTS_DIR` を渡すとスクリーンショットを撮る。
 
 const SHOTS = process.env.E2E_SHOTS_DIR;
@@ -250,4 +253,91 @@ test.describe("アプリの誤りの文言（GAP-41）", () => {
     await expect(status).toHaveText("サーバーで問題が起きました。もう一度押しても続くときは、管理者に連絡してください。");
     await expect(figure.getByText("送信の結果を確かめられませんでした")).toHaveCount(0);
   });
+});
+
+/// bob の利用者の id（共有の相手にする）。
+async function bobId(browser: Browser): Promise<string> {
+  const ctx = await browser.newContext();
+  try {
+    const p = await ctx.newPage();
+    await loginAs(p, "bob");
+    return ((await (await p.request.get("/api/me")).json()) as { id: string }).id;
+  } finally {
+    await ctx.close();
+  }
+}
+
+test("アプリの削除と共有に失敗したときは、状態コードの番号でなく理由を言う（GAP-41）", async ({ page, browser }) => {
+  test.setTimeout(150_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await loginViaKeycloak(page);
+  const bob = await bobId(browser);
+  const name = uniqueName("errors-app");
+  const app = await api<{ id: string }>(page, "POST", "/mini-apps", {
+    name,
+    body: { description: "会議室の予約の案内", screen: "会議室の予約の仕方です。\n", workflows: [] },
+  });
+  cleanup.add(() => deleteArtifactApi(page, app.id));
+  await page.goto("/apps");
+  await expect(page.getByRole("heading", { name })).toBeVisible({ timeout: 15_000 });
+
+  // 削除が 403 になったら、削除できるのは持ち主だけと言う（「(403)」を出さない）。
+  const failWith = (status: number) => ({
+    status,
+    contentType: "application/json",
+    body: JSON.stringify({ status, title: "Error" }),
+  });
+  await page.route(`**/api/artifacts/${app.id}`, (route) =>
+    route.request().method() === "DELETE" ? route.fulfill(failWith(403)) : route.continue(),
+  );
+  await page.getByRole("button", { name: `${name} のその他の操作` }).click();
+  await page.getByRole("menu").getByRole("menuitem", { name: "削除" }).click();
+  const confirm = page.getByRole("dialog");
+  await confirm.getByRole("button", { name: "削除する" }).click();
+  await expect(confirm.getByText("削除できるのは持ち主だけです。必要なら、持ち主に頼んでください。", { exact: true })).toBeVisible();
+  await expect(confirm).not.toContainText("403");
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/miniapp-delete-error-pc.png` });
+  await confirm.getByRole("button", { name: "キャンセル" }).click();
+  await expect(confirm).toHaveCount(0);
+  await page.unroute(`**/api/artifacts/${app.id}`);
+
+  // 共有が 409 になったら、いまの状態ではできないと言う。
+  await page.route(`**/api/artifacts/${app.id}/shares`, (route) =>
+    route.request().method() === "PUT" ? route.fulfill(failWith(409)) : route.continue(),
+  );
+  await page.getByRole("button", { name: `${name} のその他の操作` }).click();
+  await page.getByRole("menu").getByRole("menuitem", { name: "共有" }).click();
+  const share = page.getByRole("dialog");
+  await share.getByRole("searchbox").fill("bob");
+  await share.getByRole("listitem").filter({ hasText: /bob/i }).first().getByRole("button", { name: "共有", exact: true }).click();
+  const conflict = page.getByText("いまの状態では、この操作はできません。画面を開き直してから、もう一度操作してください。", {
+    exact: true,
+  });
+  await expect(conflict).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("(409)")).toHaveCount(0);
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/miniapp-share-error-pc.png` });
+  // 知らせが出ている間は Escape が知らせを先に閉じるので、「閉じる」ボタンで閉じる（BUG-177）。
+  await share.getByRole("button", { name: "閉じる" }).first().click();
+  await expect(share).toHaveCount(0);
+  await page.unroute(`**/api/artifacts/${app.id}/shares`);
+
+  // 共有の解除が 500 になったら、サーバーで問題が起きたと言う。
+  const shared = await page.request.put(`/api/artifacts/${app.id}/shares`, {
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": await csrf(page) },
+    data: { target: { type: "user", id: bob }, role: "viewer" },
+  });
+  expect(shared.status(), await shared.text()).toBe(204);
+  await page.route(`**/api/artifacts/${app.id}/shares`, (route) =>
+    route.request().method() === "DELETE" ? route.fulfill(failWith(500)) : route.continue(),
+  );
+  await page.getByRole("button", { name: `${name} のその他の操作` }).click();
+  await page.getByRole("menu").getByRole("menuitem", { name: "共有" }).click();
+  await expect(share.getByTestId("share-entry")).toHaveCount(1, { timeout: 15_000 });
+  await share.getByRole("button", { name: /の共有を解除$/ }).click();
+  await expect(
+    page.getByText("サーバーで問題が起きました。続くときは管理者に連絡してください。", { exact: true }),
+  ).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("(500)")).toHaveCount(0);
+  await share.getByRole("button", { name: "閉じる" }).first().click();
+  await page.unroute(`**/api/artifacts/${app.id}/shares`);
 });
