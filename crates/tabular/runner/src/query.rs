@@ -8,10 +8,15 @@
 //! - `rows`: 文字の形（以前からの形・空は None）。数は Rust の表記（`1200`・`0.5`）、真偽は `true`／`false`。
 //! - `values`: 値の種類を保った形（Query のときだけ）。数・真偽・空はそのまま、ほかは `rows` と同じ文字。
 //!   JavaScript で正確に扱えない大きな整数（±(2^53-1) を超える）と、無限大・非数は文字にする。
+//!
+//! 集計の結果は、行の数の上限（`max_rows`）に加えて、大きさの上限（`max_result_bytes`・ワークフローの結果に入れる形で
+//! 数える・[`tabular::protocol::result_row_bytes`]）の手前で打ち切り、`truncated` を立てる（GAP-92）。上限を超える行は
+//! 入れない（1 行目が超えるときは行の無い結果になる）。
 
 use duckdb::types::ValueRef;
 use duckdb::{Connection, Row};
 use serde_json::{Number, Value};
+use tabular::protocol::result_row_bytes;
 use tabular::RunnerResponse;
 
 /// JavaScript で正確に扱える最大の整数（`Number.MAX_SAFE_INTEGER`）。
@@ -46,11 +51,17 @@ fn without_trailing_semicolons(sql: &str) -> &str {
     s
 }
 
-/// 利用者の SQL（api で検証済みの 1 つの SELECT）を流し、結果を `max_rows` 行まで返す。
+/// 利用者の SQL（api で検証済みの 1 つの SELECT）を流し、結果を `max_rows` 行まで、大きさが `max_result_bytes` を
+/// 超えない行まで返す。
 ///
 /// SQL は改行で挟んで包む（末尾の `--` の注釈が包みの閉じ括弧を消さないように）。列は位置で名前を付け直して
 /// 読む（同じ名前の列があっても混ざらない）。応答の列の名前と型は、包む前の結果のもの。
-pub fn query(conn: &Connection, sql: &str, max_rows: u32) -> Result<RunnerResponse, String> {
+pub fn query(
+    conn: &Connection,
+    sql: &str,
+    max_rows: u32,
+    max_result_bytes: Option<u64>,
+) -> Result<RunnerResponse, String> {
     let sql = without_trailing_semicolons(sql);
     let (columns, types) = describe(conn, &format!("DESCRIBE SELECT * FROM (\n{sql}\n) AS q"))?;
     let aliases: Vec<String> = (0..columns.len()).map(|i| format!("c{i}")).collect();
@@ -71,7 +82,11 @@ pub fn query(conn: &Connection, sql: &str, max_rows: u32) -> Result<RunnerRespon
         aliases.join(", "),
         u64::from(max_rows).saturating_add(1)
     );
-    let mut resp = read_rows(conn, &wrapped, max_rows, true)?;
+    let typed = Typed {
+        columns: &columns,
+        max_bytes: max_result_bytes,
+    };
+    let mut resp = read_rows(conn, &wrapped, max_rows, Some(&typed))?;
     resp.columns = columns;
     resp.column_types = types;
     if !resp.truncated {
@@ -94,12 +109,21 @@ pub fn describe(conn: &Connection, sql: &str) -> Result<(Vec<String>, Vec<String
     Ok((names, types))
 }
 
-/// SELECT を流し、`max_rows` 行まで読む（超えたら `truncated`）。`typed` なら `values` も作る。
+/// 値の種類を保った行（`values`）も作るときの、結果の列の名前と大きさの上限。
+pub struct Typed<'a> {
+    /// 結果の列の名前（大きさを数える・`items` の項目の名前）。
+    pub columns: &'a [String],
+    /// 結果の大きさの上限（バイト・None は上限なし）。
+    pub max_bytes: Option<u64>,
+}
+
+/// SELECT を流し、`max_rows` 行まで読む（超えたら `truncated`）。`typed` なら `values` も作り、大きさの上限の手前で
+/// 打ち切る（超えたら `truncated`）。
 pub fn read_rows(
     conn: &Connection,
     sql: &str,
     max_rows: u32,
-    typed: bool,
+    typed: Option<&Typed<'_>>,
 ) -> Result<RunnerResponse, String> {
     let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
     let mut r = stmt.query([]).map_err(|e| e.to_string())?;
@@ -112,22 +136,34 @@ pub fn read_rows(
     let mut rows: Vec<Vec<Option<String>>> = Vec::new();
     let mut values: Vec<Vec<Value>> = Vec::new();
     let mut truncated = false;
+    let mut bytes: u64 = 0;
     while let Some(row) = r.next().map_err(|e| e.to_string())? {
         if rows.len() as u32 >= max_rows {
             truncated = true;
             break;
         }
         let mut texts = Vec::with_capacity(ncols);
-        let mut typed_cells = Vec::with_capacity(if typed { ncols } else { 0 });
+        let mut typed_cells = Vec::with_capacity(if typed.is_some() { ncols } else { 0 });
         for i in 0..ncols {
             let (text, value) = cell(row, i);
             texts.push(text);
-            if typed {
+            if typed.is_some() {
                 typed_cells.push(value);
             }
         }
+        if let Some(Typed {
+            columns,
+            max_bytes: Some(max),
+        }) = typed
+        {
+            bytes = bytes.saturating_add(result_row_bytes(columns, &texts, &typed_cells));
+            if bytes > *max {
+                truncated = true;
+                break;
+            }
+        }
         rows.push(texts);
-        if typed {
+        if typed.is_some() {
             values.push(typed_cells);
         }
     }

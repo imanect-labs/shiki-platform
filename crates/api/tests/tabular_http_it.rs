@@ -841,6 +841,78 @@ async fn tabular_explains_what_it_cannot_do_with_excel_files() {
     assert_eq!(after.version, broken.version, "書き換えない");
 }
 
+/// 集計の結果の大きさの上限（GAP-92・既定 8 MB）: 行の数の上限（10,000 行）より先に大きさの上限に当たる結果は、
+/// 上限を超える行の手前で打ち切り、truncated を立てる（total_rows は null）。グリッドのページは打ち切らない。
+#[tokio::test]
+async fn tabular_query_stops_before_the_result_size_limit() {
+    let Some(env) = setup().await else { return };
+    let tag = Uuid::new_v4().simple().to_string();
+    // 1 行が約 1 KB（rows と items で 2 倍）の 10,000 行。合わせて 10 MB ほどで、8 MB の上限に先に当たる。
+    let filler = "あ".repeat(160);
+    let body: String = (0..10_000)
+        .map(|i| format!("{tag}-{i:05}-{filler}\n"))
+        .collect();
+    let node = env
+        .storage
+        .write_file_internal(
+            &env.ctx,
+            None,
+            &format!("大きい-{tag}.csv"),
+            format!("メモ\n{body}").as_bytes(),
+            "text/csv",
+            None,
+        )
+        .await
+        .expect("create csv");
+    let call = |req: Request<Body>| {
+        let app = env.app.clone();
+        async move { json_body(app.oneshot(req).await.unwrap()).await }
+    };
+    let query = call(post(
+        &format!("/files/{}/tabular/query", node.id),
+        json!({ "sql": "SELECT * FROM data ORDER BY 1" }),
+    ))
+    .await;
+    let page = call(get(
+        &env.app,
+        &format!("/files/{}/tabular/rows?offset=0", node.id),
+    ))
+    .await;
+    env.storage
+        .soft_delete_file(&env.ctx, node.id, None)
+        .await
+        .unwrap();
+
+    assert_eq!(query.0, StatusCode::OK, "{:?}", query.1);
+    assert_eq!(query.1["truncated"], json!(true));
+    assert_eq!(query.1["total_rows"], json!(null));
+    let rows = query.1["rows"].as_array().unwrap();
+    let columns = vec!["メモ".to_string()];
+    let size: u64 = rows
+        .iter()
+        .map(|r| {
+            let text: Vec<Option<String>> = vec![r[0].as_str().map(str::to_string)];
+            tabular::protocol::result_row_bytes(&columns, &text, &[r[0].clone()])
+        })
+        .sum();
+    let one = size / rows.len() as u64;
+    assert!(
+        rows.len() < 10_000 && size <= tabular::protocol::DEFAULT_MAX_RESULT_BYTES,
+        "{} 行・{size} バイト",
+        rows.len()
+    );
+    assert!(
+        size + one > tabular::protocol::DEFAULT_MAX_RESULT_BYTES,
+        "上限の手前まで返す: {size}"
+    );
+    assert_eq!(page.0, StatusCode::OK, "{:?}", page.1);
+    assert_eq!(
+        page.1["rows"].as_array().unwrap().len(),
+        1000,
+        "グリッドのページは打ち切らない"
+    );
+}
+
 /// Excel の「Unicode テキスト」（UTF-16LE・BOM 付き・タブ区切り・CRLF）の編集（BUG-144）。集計はタブで列を分けて
 /// 読む。編集も集計と同じ判定（隔離ランナーの区切りの推定）で区切りを決め、タブ区切り・CRLF・UTF-16LE と BOM の
 /// まま書き戻す。以前は区切りが「,」で決まっていたので、1 行が 1 列になり、2 列目の編集は範囲外で断られていた。

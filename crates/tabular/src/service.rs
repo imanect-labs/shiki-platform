@@ -36,6 +36,9 @@ pub struct Quotas {
     pub memory_limit_mb: u32,
     pub max_rows: u32,
     pub page_size: u32,
+    /// 集計の結果の大きさの上限（バイト・[`crate::protocol::result_row_bytes`] で数える）。超える行の手前で打ち切り、
+    /// `truncated` を立てる（GAP-92）。グリッドのページ（rows）には使わない（ページの大きさは `page_size`）。
+    pub max_result_bytes: u64,
 }
 
 impl Default for Quotas {
@@ -44,6 +47,7 @@ impl Default for Quotas {
             memory_limit_mb: 512,
             max_rows: 10_000,
             page_size: 1_000,
+            max_result_bytes: crate::protocol::DEFAULT_MAX_RESULT_BYTES,
         }
     }
 }
@@ -317,6 +321,7 @@ impl TabularService {
             format: input.format,
             memory_limit_mb: self.quotas.memory_limit_mb,
             max_rows,
+            max_result_bytes: is_user_query.then_some(self.quotas.max_result_bytes),
         };
         let response = run_isolated(&self.runner, &request).await?;
         if !response.ok {

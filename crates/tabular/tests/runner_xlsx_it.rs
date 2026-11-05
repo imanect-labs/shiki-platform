@@ -240,6 +240,7 @@ async fn run(file: &tempfile::NamedTempFile, op: RunnerOp) -> RunnerResponse {
         format: InputFormat::Xlsx,
         memory_limit_mb: 512,
         max_rows: 1000,
+        max_result_bytes: None,
     };
     tabular::runner::run_isolated(&config, &req).await.unwrap()
 }

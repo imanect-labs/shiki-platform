@@ -325,7 +325,7 @@ pub(super) fn output_shape(nt: NodeType) -> Shape {
                     "1 行ずつ列の名前で値を引く・数値とはい／いいえと空は種類のまま・日付と時刻は rows と同じテキスト・項目の並びは列の順とは限らない"
                 ),
                 field!("total_rows", "number | null", "結果の行の数・打ち切ったときは null"),
-                field!("truncated", "boolean", "10,000 行で打ち切ったとき true"),
+                field!("truncated", "boolean", "10,000 行か、結果の大きさの上限で打ち切ったとき true"),
                 field!("version", "number", "集計した CSV のバージョン・CSV を編集の前提にできる"),
             ],
             "",

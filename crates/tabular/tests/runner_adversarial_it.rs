@@ -63,6 +63,7 @@ async fn run(csv: &tempfile::NamedTempFile, op: RunnerOp) -> tabular::RunnerResp
         format: InputFormat::Csv,
         memory_limit_mb: 256,
         max_rows: 1000,
+        max_result_bytes: None,
     };
     tabular::runner::run_isolated(&config, &req).await.unwrap()
 }
@@ -268,12 +269,85 @@ async fn query_tolerates_trailing_semicolons_comments_and_duplicate_names() {
         format: InputFormat::Csv,
         memory_limit_mb: 256,
         max_rows: 1,
+        max_result_bytes: None,
     };
     let cut = tabular::runner::run_isolated(&config, &req).await.unwrap();
     assert!(cut.truncated);
     assert_eq!(
         (cut.rows.len(), cut.values.len(), cut.total_rows),
         (1, 1, None)
+    );
+}
+
+/// 集計の結果の大きさの上限（GAP-92）: 上限を超える行の手前で打ち切り、truncated を立てる（total_rows は null）。
+/// 大きさはワークフローの結果に入れる形（rows の 1 行と items の 1 行を JSON にした大きさと区切り）で数える。上限に
+/// ちょうど収まる結果は打ち切らず、1 行目が収まらなければ行の無い結果になる。上限が無ければ（グリッドなど）全部返す。
+#[tokio::test]
+async fn query_results_stop_before_the_size_limit() {
+    let Some(path) = runner_path() else {
+        return;
+    };
+    // 引用符・改行・制御文字・日本語を含む値（JSON にすると大きさが変わる）と、数・空。
+    let body: String = (0..50)
+        .map(|i| format!("n{i:02},\"本文 \"\"{i}\"\"\n\\改行\t\u{1}\",{i},\n"))
+        .collect();
+    let csv = write_csv(&format!("名前,メモ,数,空\n{body}"));
+    let config = RunnerConfig::new(path.to_string_lossy().to_string(), Duration::from_secs(20));
+    let run_with = |max_result_bytes: Option<u64>| {
+        let req = RunnerRequest {
+            op: RunnerOp::Query {
+                sql: "SELECT * FROM data ORDER BY 1".into(),
+            },
+            csv_path: csv.path().to_string_lossy().into_owned(),
+            format: InputFormat::Csv,
+            memory_limit_mb: 256,
+            max_rows: 1000,
+            max_result_bytes,
+        };
+        let config = config.clone();
+        async move { tabular::runner::run_isolated(&config, &req).await.unwrap() }
+    };
+    let full = run_with(None).await;
+    assert!(full.ok, "{:?}", full.error);
+    assert_eq!((full.rows.len(), full.truncated), (50, false));
+    // 1 行の大きさは、api がワークフローの結果に入れる rows と items の 1 行を JSON にした大きさと区切りの和。
+    let sizes: Vec<u64> = full
+        .rows
+        .iter()
+        .zip(&full.values)
+        .map(|(texts, values)| {
+            let item: serde_json::Map<String, serde_json::Value> = full
+                .columns
+                .iter()
+                .cloned()
+                .zip(values.iter().cloned())
+                .collect();
+            let json_len = serde_json::to_string(texts).unwrap().len()
+                + serde_json::to_string(&item).unwrap().len()
+                + 2;
+            let counted = tabular::protocol::result_row_bytes(&full.columns, texts, values);
+            assert_eq!(counted, json_len as u64, "{texts:?}");
+            counted
+        })
+        .collect();
+    let ten: u64 = sizes[..10].iter().sum();
+    let cut = run_with(Some(ten + sizes[10] - 1)).await;
+    assert!(cut.ok, "{:?}", cut.error);
+    assert!(cut.truncated);
+    assert_eq!(
+        (cut.rows.len(), cut.values.len(), cut.total_rows),
+        (10, 10, None)
+    );
+    assert_eq!(cut.rows[..], full.rows[..10]);
+    let exact = run_with(Some(sizes.iter().sum())).await;
+    assert_eq!(
+        (exact.rows.len(), exact.truncated, exact.total_rows),
+        (50, false, Some(50))
+    );
+    let none = run_with(Some(1)).await;
+    assert!(
+        none.ok && none.truncated && none.rows.is_empty(),
+        "{none:?}"
     );
 }
 
@@ -415,6 +489,7 @@ async fn quota_timeout_kills_runner_not_caller() {
         format: InputFormat::Csv,
         memory_limit_mb: 256,
         max_rows: 1000,
+        max_result_bytes: None,
     };
     let result = tabular::runner::run_isolated(&config, &req).await;
     assert!(

@@ -15,6 +15,8 @@
 //! Excel（.xlsx・[`InputFormat::Xlsx`]）は 1 の代わりに [`xlsx`] が展開して左端のシートを `data` に入れる
 //! （CSV を集計の読み取りだけ・D-17）。読めない Excel は利用者が直す誤り（`input_error`）として返す。
 //!
+//! 集計の結果は、行の数（`max_rows`）と大きさ（`max_result_bytes`）の上限の手前で打ち切る（GAP-92・[`query`]）。
+//!
 //! 入力を読む前に、プロセスのアドレス空間に上限（RLIMIT_AS・[`tabular::protocol::runner_address_space_bytes`]）を
 //! 付ける。DuckDB の memory_limit は Rust 側（Excel の読み取り）の確保に効かないため。超えると確保に失敗して
 //! 落ち、api はメモリの超過として返す（PIT-39）。
@@ -101,7 +103,7 @@ fn execute(req: &RunnerRequest) -> Result<RunnerResponse, String> {
     match &req.op {
         RunnerOp::Schema => schema(&conn, query_types),
         RunnerOp::Rows { offset } => rows(&conn, *offset, req.max_rows),
-        RunnerOp::Query { sql } => query::query(&conn, sql, req.max_rows),
+        RunnerOp::Query { sql } => query::query(&conn, sql, req.max_rows, req.max_result_bytes),
         RunnerOp::Dialect => Err("unreachable: dialect".into()),
     }
 }
@@ -223,7 +225,7 @@ fn rows(conn: &Connection, offset: u64, max_rows: u32) -> Result<RunnerResponse,
         u64::from(max_rows).saturating_add(1),
         offset
     );
-    let mut resp = query::read_rows(conn, &sql, max_rows, false)?;
+    let mut resp = query::read_rows(conn, &sql, max_rows, None)?;
     resp.total_rows = Some(total);
     Ok(resp)
 }

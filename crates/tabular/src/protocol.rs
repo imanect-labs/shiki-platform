@@ -22,6 +22,62 @@ pub struct RunnerRequest {
     pub memory_limit_mb: u32,
     /// 結果の最大行数（これを超える行は返さない・ページングで取得）。
     pub max_rows: u32,
+    /// 集計（[`RunnerOp::Query`]）の結果の大きさの上限（バイト・[`result_row_bytes`] で数える・GAP-92）。超える行は
+    /// 返さず、[`RunnerResponse::truncated`] を立てる。省略は上限なし（この項目が無かったころの api と同じ）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_result_bytes: Option<u64>,
+}
+
+/// 集計の結果の大きさの上限の既定（8 MiB）。ワークフローの「CSV を集計」の結果（rows と items）がこれを超えないように、
+/// 超える行の手前で打ち切る（GAP-92）。外部への送信の本文の上限（`http.request`）と同じ大きさ。
+pub const DEFAULT_MAX_RESULT_BYTES: u64 = 8 << 20;
+
+/// 集計の結果の 1 行の大きさ（バイト）。ワークフローの結果に入れる形で数える: 文字の形の行（`rows` の 1 行・
+/// `["…", null]`）と、列の名前つきの行（`items` の 1 行・`{"列の名前": 値}`）を JSON にした大きさと、それぞれの
+/// 並びの区切りの `,` の和。
+#[must_use]
+pub fn result_row_bytes(
+    columns: &[String],
+    texts: &[Option<String>],
+    values: &[serde_json::Value],
+) -> u64 {
+    let separators = |n: usize| n.saturating_sub(1);
+    let row = 2
+        + texts
+            .iter()
+            .map(|t| t.as_deref().map_or(4, json_string_bytes))
+            .sum::<usize>()
+        + separators(texts.len());
+    let item = 2
+        + columns
+            .iter()
+            .zip(values)
+            .map(|(name, value)| json_string_bytes(name) + 1 + json_value_bytes(value))
+            .sum::<usize>()
+        + separators(columns.len().min(values.len()));
+    (row + item + 2) as u64
+}
+
+/// 文字を JSON の文字列にした大きさ（引用符と、`"`・`\`・制御文字のエスケープを含む）。
+fn json_string_bytes(s: &str) -> usize {
+    2 + s
+        .chars()
+        .map(|c| match c {
+            '"' | '\\' | '\n' | '\r' | '\t' | '\u{8}' | '\u{c}' => 2,
+            c if (c as u32) < 0x20 => 6,
+            c => c.len_utf8(),
+        })
+        .sum::<usize>()
+}
+
+/// 値を JSON にした大きさ。
+fn json_value_bytes(value: &serde_json::Value) -> usize {
+    match value {
+        serde_json::Value::String(s) => json_string_bytes(s),
+        serde_json::Value::Null | serde_json::Value::Bool(true) => 4,
+        serde_json::Value::Bool(false) => 5,
+        other => other.to_string().len(),
+    }
 }
 
 /// ランナーのプロセスのアドレス空間に、DuckDB の memory_limit へ足す余裕（MiB）。実行ファイル・Excel の読み取り
