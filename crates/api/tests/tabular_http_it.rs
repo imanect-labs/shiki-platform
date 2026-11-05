@@ -849,3 +849,82 @@ async fn bounded_read_rejects_file_grown_after_check() {
         "差し替え後の大きい版は上限で拒否: {res:?}"
     );
 }
+
+/// #1049: `POST /files/{id}/versions/{v}/revert` は編集の直前の版を新しい版として戻し、
+/// 二度目は何もしない。編集の後に別の版があれば force なしでは 409（`current_version` 付き）。
+#[tokio::test]
+async fn revert_edit_route_restores_and_detects_conflicts() {
+    let Some(env) = setup().await else { return };
+    let tag = Uuid::new_v4();
+    let id = create_csv(&env, format!("k,v\n1,{tag}\n").as_bytes()).await;
+    let base = env
+        .storage
+        .get_metadata(&env.ctx, id, None)
+        .await
+        .unwrap()
+        .version;
+    let edited = env
+        .storage
+        .update_file_content_internal(
+            &env.ctx,
+            id,
+            format!("k,v\n1,{tag}\n2,ai\n").as_bytes(),
+            "text/csv",
+            None,
+        )
+        .await
+        .unwrap();
+
+    let revert = |v: i64, body: Value| {
+        env.app
+            .clone()
+            .oneshot(post(&format!("/files/{id}/versions/{v}/revert"), body))
+    };
+    let (st, body) = json_body(revert(edited.version, json!({})).await.unwrap()).await;
+    assert_eq!(st, StatusCode::OK, "{body:?}");
+    assert_eq!(body["reverted"], json!(true));
+    assert_eq!(body["restored_from_version"], json!(base));
+    let after = body["node"]["version"].as_i64().unwrap();
+    assert_eq!(after, edited.version + 1);
+
+    // 二度目は何もしない（版を積まない）。
+    let (st, body) = json_body(revert(edited.version, json!({})).await.unwrap()).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(body["reverted"], json!(false));
+    assert_eq!(body["node"]["version"], json!(after));
+
+    // 取り消しを取り消す（=やり直し）→ 後から別の版を作る → 元の編集の取り消しは 409。
+    let (st, _) = json_body(revert(after, json!({})).await.unwrap()).await;
+    assert_eq!(st, StatusCode::OK);
+    env.storage
+        .update_file_content_internal(
+            &env.ctx,
+            id,
+            format!("k,v\n1,{tag}\n2,ai\n3,human\n").as_bytes(),
+            "text/csv",
+            None,
+        )
+        .await
+        .unwrap();
+    let (st, body) = json_body(revert(edited.version, json!({})).await.unwrap()).await;
+    assert_eq!(st, StatusCode::CONFLICT, "{body:?}");
+    assert_eq!(body["code"], json!("version_conflict"));
+    // force なら戻せる。未知のフィールドは 400/422 で弾く（タイプミスで force が効かない事故を防ぐ）。
+    let (st, _) = json_body(
+        revert(edited.version, json!({ "force": true }))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let (st, _) = json_body(
+        revert(edited.version, json!({ "forse": true }))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(st.is_client_error(), "未知フィールドは拒否: {st}");
+    // 作成時の版（その前の内容版が無い）は 404。
+    let (st, _) = json_body(revert(base, json!({})).await.unwrap()).await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+}
