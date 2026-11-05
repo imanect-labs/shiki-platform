@@ -344,7 +344,8 @@ test("使うモデルは公開されているモデルから選び、保存す�
   await expect(page.getByTestId("skill-model-hint")).toContainText("Auto のとき");
 
   await page.getByTestId("skill-save-button").click();
-  await expect(page.getByTestId("skill-save-button")).toBeDisabled();
+  // ボタンは保存中も無効になるので、保存が終わった印（版の表示）を待つ。
+  await expect(page.getByText("保存済み v2").first()).toBeVisible();
   const body = (await (await page.request.get(`/api/skills/${id}`)).json()) as {
     body: { model: { model: string | null } | null };
   };
@@ -354,14 +355,14 @@ test("使うモデルは公開されているモデルから選び、保存す�
   await select.click();
   await page.getByRole("option", { name: "指定しない（システム既定）" }).click();
   await page.getByTestId("skill-save-button").click();
-  await expect(page.getByTestId("skill-save-button")).toBeDisabled();
+  await expect(page.getByText("保存済み v3").first()).toBeVisible();
   const after = (await (await page.request.get(`/api/skills/${id}`)).json()) as {
     body: { model: { model: string | null } | null };
   };
   expect(after.body.model?.model ?? null).toBeNull();
 });
 
-test("公開されていないモデルの指定も消さずに見せ、使えないことを伝える", async ({ page }) => {
+test("選べないモデルの指定も消さずに見せ、そのことを伝える", async ({ page }) => {
   await loginViaKeycloak(page);
   const id = await createSkill(page, uniqueName("retired-model"), {
     model: { model: "retired-model-x", temperature: 0.3 },
@@ -371,7 +372,7 @@ test("公開されていないモデルの指定も消さずに見せ、使え�
   await expect(page.getByTestId("skill-settings-summary")).toContainText("モデル: retired-model-x");
   await page.getByTestId("skill-settings-toggle").click();
   await expect(page.getByTestId("skill-model-select")).toContainText("retired-model-x");
-  await expect(page.getByTestId("skill-model-hint")).toContainText("使われません");
+  await expect(page.getByTestId("skill-model-hint")).toContainText("選べるモデルにありません");
   // 値のある詳細パラメータは開いて見せる。
   await expect(page.locator("#skill-temperature")).toHaveValue("0.3");
 });

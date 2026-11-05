@@ -46,15 +46,20 @@ function groupByProvider(models: LlmModelOption[]): ProviderGroup[] {
 }
 
 /// 選んだモデルの下に出す説明（効く条件・効かない理由）。
+///
+/// 一覧（`GET /llm/models`）は**編集している本人**から見たもので、実行時の判定は**使う人**の
+/// 設定で行う（本人専用・ユーザー単位で許可されたモデルがある）。なので「必ず効く／効かない」
+/// とは言い切らず、使う人によって変わることを添える。
 function modelHint(data: LlmModelsResponse | null, model: string, known: boolean): string {
+  if (!data) return "選べるモデルの一覧を取得できていません。";
   if (!model) return "チャットで選ばれているモデル（Auto なら組織の振り先）で動きます。";
-  if (data && !known) {
-    return "このモデルは今は公開されていないため使われません。別のモデルを選んでください。";
+  if (!known) {
+    return "このモデルはあなたが選べるモデルにありません。使えない人が使うときは、この指定は効きません。";
   }
-  if (data && !data.allow_user_choice && model !== data.default_model) {
+  if (!data.allow_user_choice && model !== data.default_model) {
     return "組織の設定でモデルの選択が許可されていないため、この指定は使われません。";
   }
-  return "チャットのモデルが Auto のときにこのモデルで動きます（利用者が選んだモデルが優先されます）。";
+  return "チャットのモデルが Auto のときにこのモデルで動きます（利用者が選んだモデルが優先され、このモデルを使えない人には効きません）。";
 }
 
 export function SkillModelField({ draft, update }: { draft: SkillDraft; update: Update }) {
@@ -63,8 +68,12 @@ export function SkillModelField({ draft, update }: { draft: SkillDraft; update: 
   const groups = React.useMemo(() => groupByProvider(data?.models ?? []), [data]);
   const known = data?.models.some((m) => m.id === model) ?? false;
   const paramsSet = Boolean(draft.temperature.trim() || draft.maxTokens.trim());
-  // 値があれば常に開く（AI の下書きで後から入った値も見せる）。
-  const [paramsOpen, setParamsOpen] = React.useState(false);
+  // 値があれば開く（AI の下書きで後から入った値も見せる）。一度開いたら閉じない
+  // （値を消し切った途端に入力欄が消えると、打ち直そうとした文字が行き場を失う）。
+  const [paramsOpen, setParamsOpen] = React.useState(paramsSet);
+  React.useEffect(() => {
+    if (paramsSet) setParamsOpen(true);
+  }, [paramsSet]);
   const showParams = paramsOpen || paramsSet;
 
   return (
@@ -86,7 +95,7 @@ export function SkillModelField({ draft, update }: { draft: SkillDraft; update: 
             // 公開から外れた・まだ一覧を取れていない値も、選択中として見せる（黙って消さない）。
             <SelectItem value={model}>
               <span className="font-mono text-[12px]">{model}</span>
-              {data ? <span className="text-muted-foreground">（使えません）</span> : null}
+              {data ? <span className="text-muted-foreground">（選べません）</span> : null}
             </SelectItem>
           ) : null}
           {groups.map((g) => (
