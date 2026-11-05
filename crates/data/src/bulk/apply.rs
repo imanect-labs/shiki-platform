@@ -737,7 +737,12 @@ async fn analyze_table_partitions(
                 continue;
             }
         };
-        if let Err(e) = sqlx::query(&format!("ANALYZE {rel}")).execute(pool).await {
+        // 実行時ロールはテーブル所有者でないので、data_* に絞った SECURITY DEFINER 関数を通す（#1030）。
+        if let Err(e) = sqlx::query("SELECT shiki_analyze($1::regclass, false)")
+            .bind(&rel)
+            .execute(pool)
+            .await
+        {
             tracing::warn!(error = %e, rel, "取込の後の統計の取り直しに失敗（自動 ANALYZE に任せる）");
         }
     }

@@ -168,7 +168,9 @@ pub async fn analyze_index_partitions_without_stats(
             continue;
         }
         tracing::info!(rel, "列統計の無いパーティションを ANALYZE します（#986）");
-        if let Err(e) = sqlx::query(&format!("ANALYZE (SKIP_LOCKED) {rel}"))
+        // 実行時ロールはテーブル所有者でないので、data_* に絞った SECURITY DEFINER 関数を通す（#1030）。
+        if let Err(e) = sqlx::query("SELECT shiki_analyze($1::regclass, true)")
+            .bind(&rel)
             .execute(pools.for_tenant(tenant_id))
             .await
         {

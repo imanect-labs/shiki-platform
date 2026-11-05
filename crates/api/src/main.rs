@@ -73,10 +73,7 @@ async fn run() -> anyhow::Result<()> {
 
     // スキーマ・マイグレーションを適用（起動時 fail-fast）。
     // ここで初めて実接続が張られる。compose は depends_on で postgres healthy を待つ。
-    sqlx::migrate!("../../migrations")
-        .run(&db)
-        .await
-        .context("DB マイグレーションの適用に失敗")?;
+    run_migrations(&config.database, &db).await?;
     tracing::info!("DB マイグレーション適用完了");
 
     // 汎用 HTTP クライアント（LLM gateway・Office editor・その他 AppState 経由の外部呼び出し）。
@@ -402,6 +399,37 @@ type DataStores = (
     std::sync::Arc<data::DataViewStore>,
     std::sync::Arc<data::FsmStore>,
 );
+
+/// migration を流す。`database.migrate_url` があれば所有者の接続（短命・1 本）で、無ければ実行時の
+/// 接続で流す（#1030）。実行時ロールは DDL の権限を持たないので、分けた構成で `url` に流すと落ちる。
+async fn run_migrations(
+    database: &api::config::DatabaseConfig,
+    runtime: &sqlx::PgPool,
+) -> anyhow::Result<()> {
+    let Some(url) = database
+        .migrate_url
+        .as_deref()
+        .filter(|u| !u.trim().is_empty())
+    else {
+        return sqlx::migrate!("../../migrations")
+            .run(runtime)
+            .await
+            .context("DB マイグレーションの適用に失敗");
+    };
+    let options: sqlx::postgres::PgConnectOptions =
+        url.parse().context("database.migrate_url の解析に失敗")?;
+    let owner = PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(options.application_name("shiki-server-migrate"))
+        .await
+        .context("migration 用の DB 接続に失敗")?;
+    let result = sqlx::migrate!("../../migrations")
+        .run(&owner)
+        .await
+        .context("DB マイグレーションの適用に失敗");
+    owner.close().await;
+    result
+}
 
 /// keyset カーソルの鍵を決める（設定ファイル → マスターキーからの導出 → 開発用の乱数 → 起動エラー）。
 fn cursor_key(config: &AppConfig) -> anyhow::Result<data::CursorKey> {
