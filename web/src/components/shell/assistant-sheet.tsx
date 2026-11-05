@@ -36,8 +36,14 @@ const MIN_BODY = 352;
 const GUTTER = 28;
 const WIDTH_KEY = "shiki.assistant-panel-width";
 
+/// 画面に入る最大幅。本文に MIN_BODY を残す（CSS の `calc(100%-380px)` と同じ式）。
+/// 画面が狭いときは MIN_WIDTH を下回る（そのときは幅を変えられない）。
+function maxWidthFor(rootWidth: number): number {
+  return Math.max(0, Math.min(MAX_WIDTH, rootWidth - MIN_BODY - GUTTER));
+}
+
 function clampWidth(w: number, rootWidth: number): number {
-  const max = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, rootWidth - MIN_BODY - GUTTER));
+  const max = maxWidthFor(rootWidth);
   return Math.round(Math.min(max, Math.max(MIN_WIDTH, w)));
 }
 
@@ -71,7 +77,7 @@ export function AssistantLayout({
   // 画面に入る幅（本文に MIN_BODY を残す）へ丸めた、実際に表示する幅。
   const rootWidth = useElementWidth(rootRef);
   const width = clampWidth(saved, rootWidth ?? Number.POSITIVE_INFINITY);
-  const maxWidth = clampWidth(MAX_WIDTH, rootWidth ?? Number.POSITIVE_INFINITY);
+  const maxWidth = Math.round(maxWidthFor(rootWidth ?? Number.POSITIVE_INFINITY));
   return (
     <div
       ref={rootRef}
@@ -331,7 +337,7 @@ function WidthHandle({
       role="separator"
       aria-orientation="vertical"
       aria-label="アシスタントの幅を変更"
-      aria-valuemin={MIN_WIDTH}
+      aria-valuemin={Math.min(MIN_WIDTH, maxWidth)}
       aria-valuemax={maxWidth}
       aria-valuenow={width}
       tabIndex={0}
@@ -343,14 +349,17 @@ function WidthHandle({
       onPointerCancel={endDrag}
       onDoubleClick={() => onWidthChange(clampWidth(DEFAULT_WIDTH, rootWidth()))}
       onKeyDown={onKeyDown}
-      className="group/handle absolute inset-y-0 left-0 z-10 flex w-2 cursor-col-resize touch-none select-none justify-center focus-visible:outline-none"
+      // つまみは枠の内側 8px。目印の線は枠に重ねて 1 本だけ出す（グローバルのフォーカスリングは
+      // 細長い箱になって線が二重に見えるので打ち消し、フォーカス時は線を濃くして示す）。
+      className="group/handle absolute inset-y-0 left-0 z-10 flex w-2 cursor-col-resize touch-none select-none justify-start focus-visible:outline-none focus-visible:ring-0 focus-visible:ring-offset-0"
     >
       <span
         aria-hidden
         className={cn(
-          "my-4 w-0.5 rounded-full bg-primary/50 opacity-0 transition-opacity duration-[var(--duration-fast)]",
-          "group-hover/handle:opacity-100 group-focus-visible/handle:opacity-100",
-          active && "opacity-100",
+          "my-6 w-0.5 rounded-full bg-foreground/25 opacity-0 transition-opacity duration-[var(--duration-fast)]",
+          "group-hover/handle:opacity-100",
+          "group-focus-visible/handle:w-[3px] group-focus-visible/handle:bg-ring group-focus-visible/handle:opacity-100",
+          active && "bg-foreground/40 opacity-100",
         )}
       />
     </div>

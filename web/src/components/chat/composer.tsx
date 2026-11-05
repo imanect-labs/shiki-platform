@@ -567,8 +567,8 @@ export const Composer = React.memo(function Composer({
           "relative rounded-[26px] border-border bg-card/85 shadow-sm backdrop-blur-xl transition-shadow",
           "focus-within:border-ring/25 focus-within:shadow-md focus-within:ring-4 focus-within:ring-ring/10",
           // 入力欄 → 操作の段 の 2 段（左に +、右にモデルと送信）。左（+・モード）を優先し、
-          // 入らないときは右のモデル名を省略して縮める（ボタン同士を重ねない）。
-          "grid grid-cols-[minmax(0,auto)_minmax(min-content,1fr)] items-end gap-x-2 gap-y-1 p-2",
+          // 入らないときは右のモデル名を省略して縮める（右の列は最小 0・モデルボタンは min-w-0）。
+          "grid grid-cols-[auto_minmax(0,1fr)] items-end gap-x-2 gap-y-1 p-2",
           // スマホで既定のモデルのときは 1 行の丸いバー（+・入力欄・送信）。伸びてもボタンは下端に揃える。
           oneLine && "max-md:grid-cols-[auto_minmax(0,1fr)_auto] max-md:gap-x-1 max-md:p-1.5",
         )}
