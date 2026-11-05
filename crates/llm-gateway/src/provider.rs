@@ -128,10 +128,26 @@ pub(crate) fn midstream_failure(provider: &str, body: &str) -> String {
 }
 
 /// 状態の行（`503 Service Unavailable`。名前の無い状態（529 など）は数だけ）。
+///
+/// 標準に名前の無い中継の時間切れ（Cloudflare の 522・524 など）は、時間切れと分かる名前を付ける。本文を文言に
+/// 入れないので、呼ぶ側はこの行の「Timeout」でタイムアウトを見分ける（504・408 は標準の名前に入っている）。
 fn status_line(status: reqwest::StatusCode) -> String {
-    match status.canonical_reason() {
+    match status
+        .canonical_reason()
+        .or_else(|| proxy_timeout_reason(status.as_u16()))
+    {
         Some(reason) => format!("{} {reason}", status.as_u16()),
         None => status.as_u16().to_string(),
+    }
+}
+
+/// 標準に名前の無い、中継（CDN・プロキシ）の時間切れの状態の名前。
+fn proxy_timeout_reason(code: u16) -> Option<&'static str> {
+    match code {
+        522 => Some("Connection Timed Out"),
+        524 => Some("A Timeout Occurred"),
+        598 => Some("Network Read Timeout"),
+        _ => None,
     }
 }
 
@@ -275,6 +291,28 @@ mod tests {
         // 数字を含む識別子（組織・要求の ID）は、種類の語の形でも拾わない。
         let body = r#"{"error":{"code":"org-abc123","type":"invalid_request_error","status":"req_011CUabc"}}"#;
         assert_eq!(error_kinds(body), ["invalid_request_error"]);
+    }
+
+    /// 本文を文言に入れなくても、中継の時間切れ（524 など）は状態の行で時間切れと分かる。
+    #[test]
+    fn proxy_timeouts_are_named_in_the_status_line() {
+        for code in [524u16, 522, 504, 408] {
+            let status = reqwest::StatusCode::from_u16(code).unwrap();
+            let LlmError::Unavailable(msg) = unavailable("openai", status, "A timeout occurred")
+            else {
+                panic!("unavailable");
+            };
+            let lower = msg.to_ascii_lowercase();
+            assert!(
+                lower.contains("timeout") || lower.contains("timed out"),
+                "{code}: {msg}"
+            );
+        }
+        let status = reqwest::StatusCode::from_u16(529).unwrap();
+        let LlmError::Unavailable(msg) = unavailable("anthropic", status, "") else {
+            panic!("unavailable");
+        };
+        assert!(!msg.to_ascii_lowercase().contains("timeout"), "{msg}");
     }
 
     /// 5xx（529 を含む）の本文（要求の ID・組織の ID・URL）は文言に入れず、誤りの種類の語だけを残す（BUG-210）。
