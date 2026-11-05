@@ -53,10 +53,12 @@ const revertStates = new Map<string, RevertState>();
 const inflight = new Set<string>();
 const listeners = new Set<() => void>();
 
+/// ストアの購読者（各カード・一括ボタン）に変化を知らせる。
 function notify() {
   for (const l of listeners) l();
 }
 
+/// そのファイルの取り消し/やり直しが実行中か（再マウントをまたいで共有）。
 function useInflight(key: string): boolean {
   const subscribe = React.useCallback((cb: () => void) => {
     listeners.add(cb);
@@ -71,11 +73,13 @@ function useInflight(key: string): boolean {
   );
 }
 
+/// 取り消し状態を更新して購読者に知らせる。
 function setRevertState(key: string, state: RevertState) {
   revertStates.set(key, state);
   notify();
 }
 
+/// そのファイルの取り消し状態（未操作なら編集済み）。
 function useRevertState(key: string): RevertState {
   const subscribe = React.useCallback((cb: () => void) => {
     listeners.add(cb);
@@ -129,6 +133,7 @@ function useCanEdit(fileId: string): boolean {
 /// 回答内の 1 ファイル分（この回答で作った版と、操作を出すカードの位置）。
 type FileGroup = { fileId: string; name: string; versions: number[]; lastIndex: number; key: string };
 
+/// 取り消せるカードをファイルごとにまとめる（この回答で作った版の昇順と、最後のカードの位置）。
 function groupByFile(docs: (DocumentRef | null)[]): FileGroup[] {
   const groups = new Map<string, FileGroup>();
   docs.forEach((doc, i) => {
@@ -162,12 +167,13 @@ function targetVersions(group: FileGroup, st: RevertState, mode: "undo" | "redo"
 }
 
 /// 1 ファイル分の取り消し/やり直しを実行して状態を進める。競合はそのまま投げる（呼び出し側が扱う）。
-/// 同じキーの実行中は何もしない（画面内ストアで判定＝行が再マウントされても二重に送らない）。
-async function runRevert(group: FileGroup, mode: "undo" | "redo", force: boolean) {
-  if (inflight.has(group.key)) return;
+/// 同じキーの実行中・対象の版が無いときは何も送らず `false` を返す（画面内ストアで判定＝行が
+/// 再マウントされても二重に送らない）。実際に送って成功したら `true`。
+async function runRevert(group: FileGroup, mode: "undo" | "redo", force: boolean): Promise<boolean> {
+  if (inflight.has(group.key)) return false;
   const st = revertStates.get(group.key) ?? EDITED;
   const versions = targetVersions(group, st, mode);
-  if (versions.length === 0) return;
+  if (versions.length === 0) return false;
   inflight.add(group.key);
   notify();
   try {
@@ -188,12 +194,14 @@ async function runRevert(group: FileGroup, mode: "undo" | "redo", force: boolean
         setRevertState(group.key, { phase: "reverted", undoVersion: res.node.version, restoredFrom: null });
       }
     }
+    return true;
   } finally {
     inflight.delete(group.key);
     notify();
   }
 }
 
+/// 回答 1 つ分のカードを並べ、ファイル単位の取り消し・一括取り消し・競合の確認ダイアログを持つ。
 export function DocumentRefList({ raws }: { raws: unknown[] }) {
   const docs = React.useMemo(() => raws.map(parseDocumentRef), [raws]);
   const groups = React.useMemo(() => groupByFile(docs), [docs]);
@@ -226,8 +234,8 @@ export function DocumentRefList({ raws }: { raws: unknown[] }) {
       if (canEditCache.get(g.fileId) !== true) continue;
       if ((revertStates.get(g.key) ?? EDITED).phase === "reverted") continue;
       try {
-        await runRevert(g, "undo", false);
-        ok += 1;
+        // 個別の操作が実行中のファイルは送らない（成功として数えない・結果はそのカードに出る）。
+        if (await runRevert(g, "undo", false)) ok += 1;
       } catch (e) {
         skipped.push(
           e instanceof RevertConflict
@@ -238,7 +246,9 @@ export function DocumentRefList({ raws }: { raws: unknown[] }) {
     }
     setBatchBusy(false);
     if (skipped.length === 0) {
-      toast({ title: "元に戻しました", description: `${ok} 件のファイルを編集前に戻しました。` });
+      if (ok > 0) {
+        toast({ title: "元に戻しました", description: `${ok} 件のファイルを編集前に戻しました。` });
+      }
     } else {
       toast({
         variant: "destructive",
@@ -410,6 +420,8 @@ function UndoAllButton({
         loading={busy}
         disabled={busy}
         onClick={onClick}
+        // ファイルをまたいだ一括の原子性は無い（ファイルごとに戻し、戻せなかったものは理由を出す）。
+        title="ファイルごとに編集前へ戻します。後から更新されたファイルなどは戻さず、理由を表示します。"
         data-testid="document-ref-undo-all"
       >
         {!busy ? <Undo2 className="size-3.5" aria-hidden /> : null}
@@ -419,6 +431,7 @@ function UndoAllButton({
   );
 }
 
+/// カード右側の小さな操作ボタン（狭幅ではアイコンだけ）。
 function RevertButton({
   label,
   ariaLabel,

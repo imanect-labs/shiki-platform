@@ -89,9 +89,15 @@ test("AI の編集をカードから元に戻し、やり直せる", async ({ pa
   await expect.poll(() => firstValue(page, csv.node_id)).toBe("original");
 });
 
-/// 共有を editor にする/戻す（alice → bob）。PUT は同じ相手の役割を置き換える。
-async function shareWithBob(page: Page, nodeId: string, role: "viewer" | "editor") {
-  const res = await page.request.put(`/api/nodes/${nodeId}/shares`, {
+/// alice → bob の共有を付ける（PUT）/外す（DELETE）。PUT は役割を足すだけで置き換えないので、
+/// editor から viewer へ下げるときは editor を外してから viewer を付ける。
+async function shareWithBob(
+  page: Page,
+  nodeId: string,
+  role: "viewer" | "editor",
+  method: "put" | "delete" = "put",
+) {
+  const res = await page.request[method](`/api/nodes/${nodeId}/shares`, {
     headers: { "X-CSRF-Token": await csrf(page) },
     data: { target: { type: "user", id: "00000000-0000-0000-0000-000000000002" }, role },
   });
@@ -120,18 +126,21 @@ test("編集権限の無い人には「元に戻す」を出さない", async ({
   await expect(card.getByTestId("document-ref-undo")).toBeVisible({ timeout: 15_000 });
   const threadUrl = bob.url();
 
-  // alice が bob を閲覧のみに戻す → bob が開き直すと「元に戻す」は出ない（カード自体は残る）。
+  // alice が bob を閲覧のみに下げる → bob が開き直すと「元に戻す」は出ない（カード自体は残る）。
+  await shareWithBob(page, csv.node_id, "editor", "delete");
   await shareWithBob(page, csv.node_id, "viewer");
   const bob2Ctx = await browser.newContext();
   const bob2 = await bob2Ctx.newPage();
   await loginAs(bob2, "bob");
+  // 権限の問い合わせ（viewer が返る）を確実に捕まえるため、遷移の前に待ち受けを張る。
+  const access = bob2.waitForResponse(
+    (r) => r.url().includes(`/collab/docs/${csv.node_id}/access`),
+    { timeout: 30_000 },
+  );
   await bob2.goto(threadUrl);
   const card2 = bob2.getByTestId("document-ref-card").last();
   await expect(card2).toContainText("編集しました", { timeout: 30_000 });
-  // 権限の取得が終わるのを待ってから、ボタンが無いことを確かめる。
-  await bob2.waitForResponse((r) => r.url().includes(`/collab/docs/${csv.node_id}/access`), {
-    timeout: 15_000,
-  }).catch(() => {});
+  expect(((await (await access).json()) as { mode: string }).mode).toBe("viewer");
   await expect(card2.getByTestId("document-ref-undo")).toHaveCount(0);
   await bobCtx.close();
   await bob2Ctx.close();
