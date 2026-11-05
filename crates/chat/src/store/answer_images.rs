@@ -5,8 +5,10 @@
 //!   監査に書かず、取得の失敗だけを `answer_image` のログに残す）。
 //! - ツール結果は **run の実行者本人にだけ**数える（`get_messages` が他の閲覧者に伏せるのと同じ規則・
 //!   #386）。他の閲覧者は Web の引用の抜粋に現れた画像だけ。
-//! - 生成中はメッセージ本体がまだ空なので、**進行中の run に限り**そのイベント（ツール呼び出し・結果・引用）も見る。
-//!   確定後は本体に同じものが写っているので、イベントは読まない（出所に無い URL の問い合わせで重い読み取りをさせない）。
+//! - 生成中はメッセージ本体がまだ空なので、進行中の run のイベント（ツール呼び出し・結果・引用）も見る。
+//!   確定後は本体に同じものが写っているのでイベントは読まない（出所に無い URL の問い合わせで重い読み取りをさせない）。
+//!   ただし**サブエージェントのツール実行は本体に写らない**（子のイベントは sink を通らず run のイベントへ直接書かれる・
+//!   `worker/toolset.rs`）。本体にサブエージェントの呼び出しがある回答だけは、確定後もイベントを見る。
 
 use uuid::Uuid;
 
@@ -19,7 +21,7 @@ use crate::answer_images::{
     collect_image_sources, page_texts_from_blocks, page_texts_from_events, resolve_source,
 };
 use crate::error::ChatError;
-use crate::model::{Role, RunStatus, StreamEventKind};
+use crate::model::{ContentBlock, Role, RunStatus, StreamEventKind};
 
 /// 出所を探すときに読むイベントの上限（1 回答のツール呼び出し・結果・引用）。
 /// 極端に長い run でも 1 リクエストの読み取りを有界にする。
@@ -65,10 +67,17 @@ impl ChatStore {
         if let Some(found) = resolve_source(&sources, requested) {
             return Ok(Some(found));
         }
-        // 生成中の run だけイベントを見る（確定後は本体に写っている）。状態が読めない行も進行中とはみなさない。
+        // イベントを見るのは、生成中の run と、本体に写らないサブエージェントの実行を含む回答だけ。
+        // 状態が読めない行は進行中とはみなさない。
+        let delegated = message.content.iter().any(|b| {
+            matches!(b, ContentBlock::ToolCall { name, .. }
+                if name == agent_core::ToolName::Subagent.as_str())
+        });
         let run_ids: Vec<Uuid> = runs
             .iter()
-            .filter(|(_, _, status)| RunStatus::parse(status).is_some_and(|s| !s.is_terminal()))
+            .filter(|(_, _, status)| {
+                delegated || RunStatus::parse(status).is_some_and(|s| !s.is_terminal())
+            })
             .map(|(id, _, _)| *id)
             .collect();
         if run_ids.is_empty() {

@@ -333,6 +333,67 @@ async fn in_progress_answer_uses_run_events() {
     assert!(r.is_none(), "生成中でも実行者以外にはツール結果を数えない");
 }
 
+/// サブエージェントのツール実行は確定後の本体に写らない（子のイベントは run のイベントへ直接書かれる）。
+/// 確定後も、本体にサブエージェントの呼び出しがあればイベントから判定する。
+#[tokio::test]
+async fn finalized_answer_with_subagent_uses_child_events() {
+    let Some(pool) = setup().await else { return };
+    let f = fixture(pool).await;
+    let claimed = f.store.claim_run(f.run, "w1", 30).await.unwrap().unwrap();
+    for ev in [
+        StreamEventKind::ToolCall {
+            id: "c1".into(),
+            name: "web_fetch".into(),
+            input: serde_json::json!({ "url": "https://news.example.com/a" }),
+            step: Some(0),
+            via_subagent: true,
+        },
+        StreamEventKind::ToolResult {
+            tool_call_id: "c1".into(),
+            ok: true,
+            content: fetched(&format!("![図]({PAGE_IMG})")),
+        },
+    ] {
+        f.store
+            .append_stream_event(f.run, claimed.fencing_token, &ev)
+            .await
+            .unwrap();
+    }
+    // 親の本体には委譲の呼び出しと結果（要約）だけが残る。
+    let content = vec![
+        ContentBlock::ToolCall {
+            id: "s1".into(),
+            name: "subagent".into(),
+            input: serde_json::json!({ "task": "調べて" }),
+            step: Some(0),
+        },
+        ContentBlock::ToolResult {
+            tool_call_id: "s1".into(),
+            content: "要約".into(),
+            ok: true,
+        },
+    ];
+    sqlx::query("UPDATE message SET content = $2 WHERE id = $1")
+        .bind(f.answer)
+        .bind(sqlx::types::Json(&content))
+        .execute(&f.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE generation_run SET status = 'done' WHERE run_id = $1")
+        .bind(f.run)
+        .execute(&f.pool)
+        .await
+        .unwrap();
+
+    let owner = ctx(&f.tenant, "alice");
+    let r = f
+        .store
+        .answer_image_source(&owner, f.thread, f.answer, PAGE_IMG, None)
+        .await
+        .unwrap();
+    assert_eq!(r.as_deref(), Some(PAGE_IMG));
+}
+
 #[tokio::test]
 async fn viewer_without_thread_access_is_forbidden() {
     let Some(pool) = setup().await else { return };

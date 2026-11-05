@@ -18,8 +18,13 @@ use tokio::sync::{Semaphore, SemaphorePermit};
 
 /// キャッシュに持つ時間（ブラウザ側の `max-age` と揃える）。
 pub(crate) const TTL: Duration = Duration::from_hours(1);
-/// キャッシュ全体の上限（バイト）。超えたら古いものから捨てる。
+/// キャッシュ全体の上限（バイト）。画像本体に加え、鍵（テナント・URL）と 1 件あたりの管理領域も数える
+/// （小さな画像を長い URL で大量に入れられても、上限がメモリの上限として効くように）。超えたら古いものから捨てる。
 pub(crate) const MAX_CACHE_BYTES: usize = 64 * 1024 * 1024;
+/// 持つ件数の上限。
+pub(crate) const MAX_CACHE_ENTRIES: usize = 4096;
+/// 1 件あたりの管理領域の見積もり（HashMap の枠・Entry・Bytes の参照など）。
+const ENTRY_OVERHEAD: usize = 128;
 /// 外部への取得の同時実行数。
 pub(crate) const MAX_CONCURRENT_FETCHES: usize = 16;
 /// 空きを待つ時間。
@@ -38,20 +43,29 @@ pub(crate) struct CachedImage {
 struct Entry {
     image: CachedImage,
     at: Instant,
+    /// この 1 件が使うメモリの見積もり（画像本体＋鍵＋管理領域）。
+    cost: usize,
+}
+
+/// 1 件が使うメモリの見積もり。
+fn cost_of(tenant: &str, url: &str, image: &CachedImage) -> usize {
+    image.bytes.len() + tenant.len() + url.len() + ENTRY_OVERHEAD
 }
 
 /// プロセス内の画像キャッシュ（1 プロセスで完結。複数台構成でも各台が独立に持つだけで、正しさには影響しない）。
 pub(crate) struct ImageCache {
     inner: Mutex<(HashMap<Key, Entry>, usize)>,
     max_bytes: usize,
+    max_entries: usize,
     ttl: Duration,
 }
 
 impl ImageCache {
-    pub(crate) fn new(max_bytes: usize, ttl: Duration) -> Self {
+    pub(crate) fn new(max_bytes: usize, max_entries: usize, ttl: Duration) -> Self {
         Self {
             inner: Mutex::new((HashMap::new(), 0)),
             max_bytes,
+            max_entries,
             ttl,
         }
     }
@@ -68,14 +82,14 @@ impl ImageCache {
             return map.get(&key).map(|e| e.image.clone());
         }
         if let Some(stale) = map.remove(&key) {
-            *total -= stale.image.bytes.len();
+            *total -= stale.cost;
         }
         None
     }
 
     pub(crate) fn put(&self, tenant: &str, url: &str, image: CachedImage) {
-        let size = image.bytes.len();
-        if size > self.max_bytes {
+        let size = cost_of(tenant, url, &image);
+        if size > self.max_bytes || self.max_entries == 0 {
             return;
         }
         let mut guard = self
@@ -84,23 +98,23 @@ impl ImageCache {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         let (map, total) = &mut *guard;
         if let Some(old) = map.remove(&(tenant.to_owned(), url.to_owned())) {
-            *total -= old.image.bytes.len();
+            *total -= old.cost;
         }
         // 期限切れを先に捨て、それでも入らなければ古い順に捨てる（件数は多くても数千で、走査で足りる）。
         let ttl = self.ttl;
         map.retain(|_, e| {
             let keep = e.at.elapsed() < ttl;
             if !keep {
-                *total -= e.image.bytes.len();
+                *total -= e.cost;
             }
             keep
         });
-        while *total + size > self.max_bytes {
+        while *total + size > self.max_bytes || map.len() >= self.max_entries {
             let Some(oldest) = map.iter().min_by_key(|(_, e)| e.at).map(|(k, _)| k.clone()) else {
                 break;
             };
             if let Some(e) = map.remove(&oldest) {
-                *total -= e.image.bytes.len();
+                *total -= e.cost;
             }
         }
         map.insert(
@@ -108,6 +122,7 @@ impl ImageCache {
             Entry {
                 image,
                 at: Instant::now(),
+                cost: size,
             },
         );
         *total += size;
@@ -116,7 +131,7 @@ impl ImageCache {
 
 /// プロセス全体で共有するキャッシュ。
 pub(crate) static CACHE: LazyLock<ImageCache> =
-    LazyLock::new(|| ImageCache::new(MAX_CACHE_BYTES, TTL));
+    LazyLock::new(|| ImageCache::new(MAX_CACHE_BYTES, MAX_CACHE_ENTRIES, TTL));
 
 static FETCH_SLOTS: Semaphore = Semaphore::const_new(MAX_CONCURRENT_FETCHES);
 
@@ -141,7 +156,7 @@ mod tests {
 
     #[test]
     fn hit_is_per_tenant() {
-        let c = ImageCache::new(1024, TTL);
+        let c = ImageCache::new(4096, 100, TTL);
         c.put("t1", "https://img.example.com/a.png", img(10));
         assert!(c.get("t1", "https://img.example.com/a.png").is_some());
         assert!(
@@ -152,7 +167,7 @@ mod tests {
 
     #[test]
     fn expired_entries_are_dropped() {
-        let c = ImageCache::new(1024, Duration::from_millis(0));
+        let c = ImageCache::new(4096, 100, Duration::from_millis(0));
         c.put("t", "u", img(10));
         assert!(c.get("t", "u").is_none());
         assert_eq!(c.inner.lock().unwrap().1, 0, "期限切れの分は合計から引く");
@@ -160,7 +175,9 @@ mod tests {
 
     #[test]
     fn evicts_oldest_to_stay_within_the_byte_limit() {
-        let c = ImageCache::new(100, TTL);
+        // 1 件の見積もり = 本体 + "t" + 鍵 1 文字 + 管理領域。
+        let per = |n: usize| n + 2 + ENTRY_OVERHEAD;
+        let c = ImageCache::new(per(60) + per(30) + 10, 100, TTL);
         c.put("t", "a", img(60));
         std::thread::sleep(Duration::from_millis(2));
         c.put("t", "b", img(30));
@@ -169,10 +186,32 @@ mod tests {
         assert!(c.get("t", "a").is_none(), "古いものから捨てる");
         assert!(c.get("t", "b").is_some());
         assert!(c.get("t", "c").is_some());
-        assert!(c.inner.lock().unwrap().1 <= 100);
+        assert!(c.inner.lock().unwrap().1 <= per(60) + per(30) + 10);
         // 上限より大きいものは持たない。
-        c.put("t", "huge", img(101));
+        c.put("t", "huge", img(per(60) + per(30)));
         assert!(c.get("t", "huge").is_none());
+    }
+
+    #[test]
+    fn long_keys_with_tiny_images_are_bounded() {
+        // 8 バイトの画像を 2 KiB の URL で大量に入れても、鍵の分まで含めて上限に収まる。
+        let c = ImageCache::new(64 * 1024, 10_000, TTL);
+        for i in 0..1_000 {
+            let url = format!("https://img.example.com/{i}/{}", "x".repeat(2048));
+            c.put("t", &url, img(8));
+        }
+        let (map, total) = &*c.inner.lock().unwrap();
+        assert!(*total <= 64 * 1024, "{total}");
+        assert!(map.len() < 1_000, "古いものから捨てている");
+    }
+
+    #[test]
+    fn entry_count_is_bounded() {
+        let c = ImageCache::new(usize::MAX / 2, 3, TTL);
+        for i in 0..10 {
+            c.put("t", &i.to_string(), img(1));
+        }
+        assert_eq!(c.inner.lock().unwrap().0.len(), 3);
     }
 
     #[tokio::test]
