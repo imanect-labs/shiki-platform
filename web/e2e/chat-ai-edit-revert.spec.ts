@@ -126,22 +126,27 @@ test("編集権限の無い人には「元に戻す」を出さない", async ({
   await expect(card.getByTestId("document-ref-undo")).toBeVisible({ timeout: 15_000 });
   const threadUrl = bob.url();
 
-  // alice が bob を閲覧のみに下げる → bob が開き直すと「元に戻す」は出ない（カード自体は残る）。
+  // alice が bob を閲覧のみに下げる。bob は**同じ画面のまま**（再読込せず・画面内の権限キャッシュが
+  // 残ったまま）スレッドを開き直す → 古い結果は引き直され、「元に戻す」は出ない（カード自体は残る）。
   await shareWithBob(page, csv.node_id, "editor", "delete");
   await shareWithBob(page, csv.node_id, "viewer");
-  const bob2Ctx = await browser.newContext();
-  const bob2 = await bob2Ctx.newPage();
-  await loginAs(bob2, "bob");
+  // 権限の結果の有効期限（30 秒）を待つ代わりに、ページの時計だけ進める。
+  await bob.clock.install();
+  await bob.clock.fastForward(31_000);
   // 権限の問い合わせ（viewer が返る）を確実に捕まえるため、遷移の前に待ち受けを張る。
-  const access = bob2.waitForResponse(
+  const access = bob.waitForResponse(
     (r) => r.url().includes(`/collab/docs/${csv.node_id}/access`),
     { timeout: 30_000 },
   );
-  await bob2.goto(threadUrl);
-  const card2 = bob2.getByTestId("document-ref-card").last();
+  // クライアント側の遷移で離れて戻る（page.goto だと全体が読み直されキャッシュが消えてしまう）。
+  await bob.getByRole("button", { name: "新しいチャット" }).first().click();
+  await bob.waitForURL((u) => !u.pathname.startsWith("/c/"), { timeout: 15_000 });
+  // ブラウザの「戻る」はクライアント側の遷移（Next の履歴）で、画面内の状態は残る。
+  await bob.goBack();
+  await bob.waitForURL((u) => u.pathname === new URL(threadUrl).pathname, { timeout: 15_000 });
+  const card2 = bob.getByTestId("document-ref-card").last();
   await expect(card2).toContainText("編集しました", { timeout: 30_000 });
   expect(((await (await access).json()) as { mode: string }).mode).toBe("viewer");
   await expect(card2.getByTestId("document-ref-undo")).toHaveCount(0);
   await bobCtx.close();
-  await bob2Ctx.close();
 });
