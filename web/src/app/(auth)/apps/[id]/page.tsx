@@ -39,6 +39,7 @@ import {
   getMiniAppRun,
   getMyMiniAppAccess,
   invokeMiniAppYuiAction,
+  isVersionConflict,
   listMiniAppRuns,
   resolveMiniApp,
   updateMiniApp,
@@ -121,6 +122,27 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
     }
   }, [app, latest]);
 
+  /// ほかの人が先に保存したとき、最新のバージョン（下書き）を読み直してエディターに入れ直す（付録 C の §3.5）。
+  const reloadLatestIntoEditor = React.useCallback(async () => {
+    if (!app) return;
+    try {
+      // バージョンを省くと公開しているバージョンと、作る人には最新のバージョンの番号が返る。
+      const now = await resolveMiniApp(app.id);
+      const head =
+        now.latest_version != null && now.latest_version !== now.version
+          ? await resolveMiniApp(app.id, now.latest_version)
+          : now;
+      setEditTarget({ id: head.id, version: head.version, body: head.body });
+      setReloadKey((k) => k + 1);
+    } catch (e) {
+      toast({
+        variant: "destructive",
+        title: "最新の内容を読み込めませんでした",
+        description: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }, [app]);
+
   // 版・共有・編集はシェルのクローム（PC はバー右・スマホは右上）に置く。
   const appName = app?.body.description;
   const subtitle = app ? (canEdit && publishState(app) === "draft" ? `v${app.version}（下書き）` : `v${app.version}`) : undefined;
@@ -188,6 +210,16 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
       setVersion(saved.version);
       setReloadKey((k) => k + 1);
     } catch (e) {
+      if (isVersionConflict(e)) {
+        // 比べた最新のバージョンの後に、ほかの人が保存した。最新の番号を読み直して、もう一度押してもらう（GAP-41）。
+        toast({
+          variant: "destructive",
+          title: "ほかの人が先にアプリを保存しました",
+          description: "最新の内容を読み込みました。もう一度「この内容を下書きにする」を押してください。",
+        });
+        setReloadKey((k) => k + 1);
+        return;
+      }
       toast({
         variant: "destructive",
         title: "下書きを保存できませんでした",
@@ -456,6 +488,7 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
                 open={editTarget != null}
                 onOpenChange={(open) => !open && setEditTarget(null)}
                 app={editTarget ?? undefined}
+                onReloadLatest={() => void reloadLatestIntoEditor()}
                 onSaved={(saved) => {
                   toast(savedToast(saved));
                   // 保存した下書きを開いて試せるようにする（使う人の画面は公開するまで変わらない）。

@@ -224,11 +224,23 @@ export function WorkflowEditor({
           title: "保存できません（検証エラー）",
           description: "赤いバッジのブロックを確認してください。",
         });
-      } else if (e instanceof Error && e.message.includes("409")) {
+      } else if ((e as { status?: unknown } | null)?.status === 409) {
+        // 比べたバージョンの後にほかの人が保存した（本文の code は version_conflict・付録 C の §3.5）。文言で状態コードを
+        // 探さない（409 の本文に文言が載るようになった・GAP-41）。
         toast({
           variant: "destructive",
-          title: "他の人が更新しました",
-          description: "ページを再読み込みして最新版から編集し直してください。",
+          title: "ほかの人が先にワークフローを保存しました",
+          description: (
+            <span className="block space-y-2">
+              <span className="block">
+                あなたの変更は保存されていません。最新の内容を読み込むと、保存していない変更は消えます。残したい内容は先に控えてください。
+              </span>
+              <Button size="sm" variant="outline" onClick={() => window.location.reload()}>
+                最新の内容を読み込む（変更は消えます）
+              </Button>
+            </span>
+          ),
+          duration: 20_000,
         });
       } else {
         toast({

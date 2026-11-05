@@ -37,12 +37,25 @@ export type VersionMeta = { version: number; createdBy: string; createdAt: strin
 /// 保存時の検証エラー 1 件（codegen）。
 type GuiValidationError = components["schemas"]["GuiValidationError"];
 
+/// 状態コードの既定の文言（サーバーが文言を返さないときの最後の手段・付録 C の §3.4.3）。状態コードの番号は出さない。
+function statusMessage(status: number): string {
+  if (status === 401) return "ログインが切れました。もう一度ログインしてください。";
+  if (status === 403) return "この操作をする権限がありません。必要なら、持ち主か管理者に頼んでください。";
+  if (status === 404) return "見つかりません。削除されたか、見る権限がありません。";
+  if (status === 409) return "いまの状態では、この操作はできません。画面を開き直してから、もう一度操作してください。";
+  if (status === 429) return "利用の上限か、操作の集中のため受け付けられませんでした。少し待ってから、もう一度操作してください。";
+  if (status === 503) return "いまは使えません。少し待ってから、もう一度操作してください。";
+  if (status >= 500) return "サーバーで問題が起きました。続くときは管理者に連絡してください。";
+  return "内容に誤りがあるため、受け付けられませんでした。入力した値を見直してください。";
+}
+
 async function ok<T>(res: Response): Promise<T> {
   if (!res.ok) {
     // 検証エラー（400 の {errors:[...]}）は本文をそのまま投げて UI が全件表示できるようにする。文言は 1 件 1 行で、
     // 位置（`description`・`workflows[0]` などの path）を添えない（利用者に出す画面向け・ミニアプリのエディターの
     // [`validationMessages`] と同じ扱い・BUG-80・BUG-121）。位置は `errors` に残るので、欄に写す画面はそれを読む。
-    // 構造化した 409（{code, message}・ミニアプリの未公開など）は code を添え、message を文言にする。
+    // 構造化した 409（{code, message}・ミニアプリの未公開・版の競合・名前の重複など）は code を添え、message を文言に
+    // する。文言の無い誤りは状態コードの既定の文言にする（「API 409」のように番号だけを出さない・GAP-41）。
     let detail = "";
     let errors: GuiValidationError[] | undefined;
     let code: string | undefined;
@@ -58,7 +71,7 @@ async function ok<T>(res: Response): Promise<T> {
       // 本文なし
     }
     // 状態コードを添える（見つからない・権限がない＝403/404 を画面が「見つかりません」として出し分ける）。
-    throw Object.assign(new Error(detail || `API ${res.status}`), { status: res.status, errors, code });
+    throw Object.assign(new Error(detail || statusMessage(res.status)), { status: res.status, errors, code });
   }
   return (await res.json()) as T;
 }
@@ -71,6 +84,15 @@ export const okWithReason = ok;
 export function errorCode(e: unknown): string | null {
   const code = (e as { code?: unknown } | null)?.code;
   return typeof code === "string" ? code : null;
+}
+
+/// アーティファクトの 409 の code（版の競合・名前の重複・codegen）。
+export type ArtifactConflictCode = components["schemas"]["ArtifactConflictCode"];
+
+/// 投げられた誤りが、比べたバージョンの後にほかの人が保存した 409 か（付録 C の §3.5 の出し方にする・GAP-41）。
+export function isVersionConflict(e: unknown): boolean {
+  const code: ArtifactConflictCode = "version_conflict";
+  return (e as { status?: unknown } | null)?.status === 409 && errorCode(e) === code;
 }
 
 /// 投げられた誤りが保存時の検証エラーなら、その文言を 1 件 1 行で返す（無ければ null）。

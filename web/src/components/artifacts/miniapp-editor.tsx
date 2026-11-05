@@ -36,6 +36,7 @@ import {
   getArtifact,
   getMiniAppWorkflowInputs,
   getSkill,
+  isVersionConflict,
   updateMiniApp,
   validationMessages,
   type MiniAppVersion,
@@ -113,11 +114,14 @@ export function MiniAppEditorDialog({
   open,
   onOpenChange,
   onSaved,
+  onReloadLatest,
   app,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSaved: (saved: MiniAppVersion) => void;
+  /// ほかの人が先に保存したとき、最新の内容をエディターに読み込み直す（保存していない変更は消える）。
+  onReloadLatest?: () => void;
   /// 編集するアプリ（無ければ新規作成）。
   app?: { id: string; version: number; body: MiniAppBody };
 }) {
@@ -146,6 +150,8 @@ export function MiniAppEditorDialog({
   const [workflowToAdd, setWorkflowToAdd] = React.useState("");
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  /// 比べたバージョンの後に、ほかの人が保存した（付録 C の §3.5・GAP-41）。
+  const [conflict, setConflict] = React.useState(false);
 
   React.useEffect(() => {
     if (!open) return;
@@ -162,6 +168,7 @@ export function MiniAppEditorDialog({
     setBuilderKey((k) => k + 1);
     setInputs({});
     setError(null);
+    setConflict(false);
     // 束ねているスキルは一覧（読み込んだページの分だけ）に有るかでなく、ピンの版を直に読んで確かめる。
     setPinnedSkill({ state: "checking" });
     const pin = app?.body.skill;
@@ -303,6 +310,7 @@ export function MiniAppEditorDialog({
     };
     setBusy(true);
     setError(null);
+    setConflict(false);
     try {
       const saved = editing
         ? await updateMiniApp(app.id, body, app.version)
@@ -310,8 +318,14 @@ export function MiniAppEditorDialog({
       onSaved(saved);
       onOpenChange(false);
     } catch (err) {
-      // 検証エラーは 1 件 1 行で、位置（workflows[0] など）を添えずに出す（BUG-80）。
-      setError(validationMessages(err) ?? (err instanceof Error ? err.message : "保存に失敗しました"));
+      // ほかの人が先に保存した: 変更は残したまま、最新の内容を読み込むかを選んでもらう（§3.5）。
+      if (isVersionConflict(err)) {
+        setConflict(true);
+        return;
+      }
+      // 検証エラーは 1 件 1 行で、位置（workflows[0] など）を添えずに出す（BUG-80）。名前の重複などの 409 は
+      // サーバーの文言（何が起きたかと直し方）を出す（GAP-41）。
+      setError(validationMessages(err) ?? (err instanceof Error ? err.message : "保存できませんでした。"));
     } finally {
       setBusy(false);
     }
@@ -541,6 +555,28 @@ export function MiniAppEditorDialog({
             >
               {error}
             </p>
+          ) : null}
+          {conflict ? (
+            <div
+              role="alert"
+              data-testid="miniapp-save-conflict"
+              className="space-y-2 rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm"
+            >
+              <p className="font-medium text-destructive">ほかの人が先にアプリを保存しました</p>
+              <p className="text-foreground/80">
+                あなたの変更は保存されていません。最新の内容を読み込むと、保存していない変更は消えます。残したい内容は先に控えてください。
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {onReloadLatest ? (
+                  <Button type="button" size="sm" variant="outline" onClick={onReloadLatest}>
+                    最新の内容を読み込む（変更は消えます）
+                  </Button>
+                ) : null}
+                <Button type="button" size="sm" variant="ghost" onClick={() => setConflict(false)}>
+                  閉じる
+                </Button>
+              </div>
+            </div>
           ) : null}
 
           <DialogFooter>
