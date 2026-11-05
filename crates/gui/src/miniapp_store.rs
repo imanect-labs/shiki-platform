@@ -528,7 +528,7 @@ impl MiniAppStore {
     }
 
     /// 1 ピンの版の本文を、呼んだ人の権限で読む。無い・読めない・種類の違うものは `None`（存在を区別しない）。
-    pub(crate) async fn read_pin(
+    async fn read_pin(
         &self,
         ctx: &AuthContext,
         pin: &ComponentPin,

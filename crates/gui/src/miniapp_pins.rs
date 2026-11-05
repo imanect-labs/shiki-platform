@@ -112,17 +112,12 @@ impl MiniAppStore {
         };
         let latest = meta.current_version;
         let changes = if latest > pin.version {
-            let from = self.read_pin(ctx, pin, kind, trace_id).await?;
+            // 本体の viewer と種類は確かめたので、2 つの版の本文だけを読む。
+            let from = self
+                .pinned_body(ctx, pin.artifact_id, pin.version, trace_id)
+                .await?;
             let to = self
-                .read_pin(
-                    ctx,
-                    &ComponentPin {
-                        artifact_id: pin.artifact_id,
-                        version: latest,
-                    },
-                    kind,
-                    trace_id,
-                )
+                .pinned_body(ctx, pin.artifact_id, latest, trace_id)
                 .await?;
             match (from, to) {
                 (Some(from), Some(to)) => diff_versions(kind, &from, &to),
@@ -139,6 +134,23 @@ impl MiniAppStore {
             latest_version: Some(latest),
             changes,
         })
+    }
+}
+
+impl MiniAppStore {
+    /// 版の本文を呼んだ人の権限で読む。無い・読めない版は `None`（存在を区別しない）。
+    async fn pinned_body(
+        &self,
+        ctx: &AuthContext,
+        id: Uuid,
+        version: i64,
+        trace_id: Option<&str>,
+    ) -> Result<Option<Value>, GuiError> {
+        match self.artifacts.get_version(ctx, id, version, trace_id).await {
+            Ok(v) => Ok(Some(v.body)),
+            Err(ArtifactError::NotFound | ArtifactError::Forbidden) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
     }
 }
 
