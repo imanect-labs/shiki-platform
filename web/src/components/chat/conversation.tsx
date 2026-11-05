@@ -107,6 +107,7 @@ import { ChatPageHeaderSlot } from "./chat-header-actions";
 import { ContextUsageDialog } from "./context-meter";
 import { ApprovalCard, BudgetBanner, PlanPanel } from "./agent-progress";
 import { cn } from "@/lib/utils";
+import { answerImageProxy } from "@/lib/answer-images";
 
 /// ストリーミング中のアシスタント応答の蓄積状態。
 type StreamState = {
@@ -1309,6 +1310,11 @@ const AssistantRow = React.memo(function AssistantRow({
   }, [openRuns, uiRuns, onChanged]);
   // 本文と操作のまとまりを起きた順に（生成中と同じ配置）。
   const segments = React.useMemo(() => segmentsFromBlocks(blocks), [blocks]);
+  // 出典の画像は shiki-server 経由で読む（#1044）。サーバ上の回答 ID がまだ無い間は読まない。
+  const imageProxy = React.useMemo(
+    () => (savedMessageId ? answerImageProxy(threadId, savedMessageId) : null),
+    [threadId, savedMessageId],
+  );
   // コピー・引用の対応付け用の本文全体。区切りは段落として繋ぐ（ライブ表示と揃える）。
   const text = segments
     .flatMap((seg) => (seg.kind === "text" ? [seg.text] : []))
@@ -1357,6 +1363,7 @@ const AssistantRow = React.memo(function AssistantRow({
                 segments={segments}
                 citations={citations}
                 memoryKey={savedMessageId ?? messageId}
+                imageProxy={imageProxy}
               />
             </div>
           </YuiActionContext.Provider>
@@ -1444,6 +1451,10 @@ function StreamingRow({
     stream.plan.length === 0 &&
     !stream.approval;
   const segments = resolveStreamSegments(stream.segments, stream.tools);
+  const streamImageProxy = React.useMemo(
+    () => (stream.assistantMessageId ? answerImageProxy(threadId, stream.assistantMessageId) : null),
+    [threadId, stream.assistantMessageId],
+  );
   const last = segments[segments.length - 1];
   const waiting = useStreamWaiting({
     text: stream.text,
@@ -1464,6 +1475,7 @@ function StreamingRow({
             citations={stream.citations}
             streaming
             memoryKey={stream.assistantMessageId}
+            imageProxy={streamImageProxy}
             phase={runningSubtask(stream.plan)}
             waitingLabel={waiting.label}
           />

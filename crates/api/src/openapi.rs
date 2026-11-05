@@ -67,6 +67,7 @@ use utoipa::{
         crate::routes::chat_feedback::get_thread_feedback,
         crate::routes::chat_feedback::set_message_feedback,
         crate::routes::chat_feedback::clear_message_feedback,
+        crate::routes::chat_images::get_answer_image,
         crate::routes::skills_catalog::list_skill_catalog,
         crate::routes::skills_registry::publish_skill,
         crate::routes::skills_registry::import_skill,

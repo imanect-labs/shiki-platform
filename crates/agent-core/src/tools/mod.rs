@@ -9,6 +9,7 @@ pub mod fs;
 pub mod fs_append;
 pub mod fs_write;
 mod mime;
+pub mod public_fetch;
 pub mod quote_check;
 mod sandbox_exec;
 pub mod shell;
