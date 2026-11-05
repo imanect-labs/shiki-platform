@@ -853,20 +853,54 @@ async fn install_import_uninstall_over_http() {
         .unwrap();
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 
+    // 同じテナントのほかの組織のインストールは、入れ直し・アンインストールとも、理由と直し方つきの 409（BUG-212）。
+    let delete = || {
+        Request::builder()
+            .method("DELETE")
+            .uri(format!("/apps/installations/{id}"))
+            .header(COOKIE, cookie)
+            .header("x-csrf-token", "csrf")
+            .body(Body::empty())
+            .unwrap()
+    };
+    let set_org = |org: &'static str| {
+        let pool = pool.clone();
+        let id = id.clone();
+        async move {
+            sqlx::query(
+                "UPDATE app_installation SET org = $1 WHERE tenant_id = 'default' AND app_id = $2::uuid",
+            )
+            .bind(org)
+            .bind(&id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+    };
+    set_org("beta").await;
+    let reinstall = post(
+        "/apps/installations".into(),
+        serde_json::json!({
+            "name": "http-install", "version": "1.0.0",
+            "granted_scopes": ["data.read"],
+        }),
+    );
+    for req in [reinstall, delete()] {
+        let resp = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CONFLICT);
+        let body: serde_json::Value =
+            serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        assert_eq!(body["code"], "installed_in_other_org", "{body}");
+        assert_eq!(
+            body["message"],
+            app_gateway::INSTALLED_IN_OTHER_ORG,
+            "{body}"
+        );
+    }
+    set_org("acme").await;
+
     // アンインストール → 204。
-    let resp = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("DELETE")
-                .uri(format!("/apps/installations/{id}"))
-                .header(COOKIE, cookie)
-                .header("x-csrf-token", "csrf")
-                .body(Body::empty())
-                .unwrap(),
-        )
-        .await
-        .unwrap();
+    let resp = app.clone().oneshot(delete()).await.unwrap();
     assert_eq!(resp.status(), StatusCode::NO_CONTENT);
 }
 

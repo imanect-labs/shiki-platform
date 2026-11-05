@@ -340,6 +340,14 @@ impl From<app_platform::AppPlatformError> for ApiError {
             E::NotFound => ApiError::NotFound,
             E::Forbidden => ApiError::Forbidden,
             E::Invalid(msg) => ApiError::BadRequest(msg),
+            // ほかの組織のインストール（BUG-212）だけは、理由と直し方を返す。ほかの 409 の文言は内部の詳細を含みうる。
+            E::Conflict(msg) if msg == app_gateway::INSTALLED_IN_OTHER_ORG => {
+                use crate::error_body::{to_body, ConflictBody, ConflictCode};
+                ApiError::ConflictJson(to_body(&ConflictBody {
+                    message: Some(msg),
+                    ..ConflictBody::new(ConflictCode::InstalledInOtherOrg)
+                }))
+            }
             E::Conflict(_) => ApiError::Conflict,
             E::Internal(msg) => ApiError::Internal(format!("app-platform: {msg}")),
         }

@@ -178,15 +178,18 @@ fn active_app_id_conflict() -> GatewayError {
     GatewayError::Conflict("同じ app_id の有効なインストールが別テナントに存在します".into())
 }
 
+/// 同じテナントのほかの組織に、このアプリの有効なインストールがあるときの文言（利用者に見せる・BUG-212）。
+///
+/// api はこの文言の 409 だけを、`installed_in_other_org` の code と文言つきで返す（ほかの 409 の文言は内部の詳細を
+/// 含みうるので返さない）。文言はここだけに書く。
+pub const INSTALLED_IN_OTHER_ORG: &str = "このアプリはほかの組織でインストールされています。インストールとアンインストールは、インストールした組織で行ってください。";
+
 /// 同じテナントのほかの組織に、このアプリの有効なインストールがある（入れ直し・アンインストールを断る・BUG-212）。
 ///
 /// インストールはテナントに 1 アプリ 1 行で、入れた組織のもの（組織はテナントの中の隔離の境界・PIT-45）。ほかの組織の
 /// 同意（スコープ・クライアント・予算）をこの組織の操作で書き換えない・外さない。
 fn installed_in_other_org() -> GatewayError {
-    GatewayError::Conflict(
-        "このアプリはほかの組織でインストールされています。インストールとアンインストールは、インストールした組織で行ってください。"
-            .into(),
-    )
+    GatewayError::Conflict(INSTALLED_IN_OTHER_ORG.into())
 }
 
 /// インストール台帳ストア（Postgres・tenant スコープ）。

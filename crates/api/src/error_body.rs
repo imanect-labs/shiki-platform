@@ -49,6 +49,9 @@ pub enum ConflictCode {
     /// 同じ名前のテーブルが既にある。CSV の新規保存（`POST /tabular/save`）では、保存先に同じ名前のファイルが
     /// ある（番号を付けるときは ` (50)` まで埋まっている・BUG-150）。
     NameTaken,
+    /// アプリのインストール・アンインストールで、同じテナントのほかの組織にこのアプリの有効なインストールがある
+    /// （`message` に理由と直し方・BUG-212）。
+    InstalledInOtherOrg,
     /// その他の競合（取込 ID の再利用・並行のスキーマ切替など）。
     Conflict,
 }
@@ -64,7 +67,7 @@ pub struct ConflictBody {
     pub current_rev: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub field: Option<String>,
-    /// 利用者に見せてよい文言（`unique_violation` だけ・読める列なら表示名つき・値は含まない）。
+    /// 利用者に見せてよい文言（`unique_violation`〔読める列なら表示名つき・値は含まない〕と `installed_in_other_org`）。
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
     /// 索引の準備の進捗（0〜1・不明なら null）。`index_preparing` のときだけ項目を持つ。

@@ -72,7 +72,7 @@ impl From<Installed> for InstallAppResponse {
         (status = 400, description = "granted ⊄ requested・未知スコープ・信頼ティア不許可"),
         (status = 403, description = "アーティファクト owner でない・署名検証失敗"),
         (status = 404, description = "レジストリに存在しない"),
-        (status = 409, description = "yank 済み・テーブル名衝突"),
+        (status = 409, description = "yank 済み・テーブル名衝突。同じテナントのほかの組織にインストールがあれば code=installed_in_other_org と理由の message", body = crate::error_body::ConflictBody),
     ),
     security(("session" = [])),
 )]
@@ -168,6 +168,7 @@ pub async fn list_installations(
         (status = 204, description = "アンインストール完了"),
         (status = 403, description = "アーティファクト owner でない"),
         (status = 404, description = "インストールが存在しない"),
+        (status = 409, description = "同じテナントのほかの組織のインストール（code=installed_in_other_org と理由の message）", body = crate::error_body::ConflictBody),
     ),
     security(("session" = [])),
 )]
