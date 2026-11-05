@@ -221,6 +221,17 @@ pub struct MyAppAccess {
     pub truncated: bool,
 }
 
+/// 共有されたワークフローを手動で実行する人向けの確かめの結果（GAP-37）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct MyWorkflowAccess {
+    /// 確かめた版（いまの最新の版・手動の実行と同じ）。
+    pub version: i64,
+    /// 自分に足りない・範囲が狭い権限（必ず要るものだけ。すべて足りていれば空）。
+    pub items: Vec<MyAccessItem>,
+    /// 対象が上限より多く、確かめていないものがある。
+    pub truncated: bool,
+}
+
 /// 要る操作ごとの、足りる relation と、範囲が狭くなる relation（[モジュールの説明](self)）。
 #[must_use]
 pub fn relations_for(

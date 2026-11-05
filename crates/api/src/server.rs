@@ -367,6 +367,9 @@ pub fn route_table() -> Vec<RouteDecl> {
         r("/workflows/{id}/access-check", &["POST"], Session, || {
             post(routes::access_check::check_workflow_access)
         }),
+        r("/workflows/{id}/access", &["GET"], Session, || {
+            get(routes::access_check::my_workflow_access)
+        }),
         // 対話トリガの run 起動＋実行履歴（Stage A W3）。
         r("/workflows/{id}/registration", &["GET"], Session, || {
             get(routes::workflows::get_registration)

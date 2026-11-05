@@ -11,8 +11,9 @@ use uuid::Uuid;
 
 use super::{
     fga_object, objects_of, relations_per_object, rows_of, status_of, AccessNeedView, AccessObject,
-    AccessReport, AccessStatus, AccessTarget, MyAccessItem, MyAppAccess, MyPartAccess, NeedRow,
-    PartNeeds, SubjectAccess, UncheckedBlock, MAX_ACCESS_CHECKS, MAX_ACCESS_SUBJECTS,
+    AccessReport, AccessStatus, AccessTarget, MyAccessItem, MyAppAccess, MyPartAccess,
+    MyWorkflowAccess, NeedRow, PartNeeds, SubjectAccess, UncheckedBlock, MAX_ACCESS_CHECKS,
+    MAX_ACCESS_SUBJECTS,
 };
 use crate::store::GuiError;
 use crate::validate::GuiValidationError;
@@ -436,39 +437,9 @@ impl AccessChecker<'_> {
         version: i64,
         parts: &[PartNeeds],
     ) -> Result<MyAppAccess, GuiError> {
-        let mut rows = rows_of(parts);
-        rows.retain(|r| !r.conditional);
-        let (objects, truncated) = objects_of(&rows);
-        let asks = relations_per_object(&rows, &objects);
-        let fga: Vec<FgaObject> = objects
-            .iter()
-            .map(|(o, id)| fga_object(ctx, *o, *id))
-            .collect();
-        let held = self.held(&[ctx.subject()], &fga, &asks).await?;
-        let held = held.into_iter().next().unwrap_or_default();
-        let status = |r: &NeedRow| {
-            r.id.and_then(|id| objects.iter().position(|k| *k == (r.object, id)))
-                .and_then(|at| held.get(at))
-                .map(|h| status_of(r.object, r.kind, h))
-        };
-        // 名前は足りない・範囲が狭い対象のうち、自分に見えるものだけ（見えるかは名前を引く口が決める）。
-        let named: Vec<(AccessObject, Uuid)> = objects
-            .iter()
-            .copied()
-            .filter(|(o, id)| {
-                rows.iter().any(|r| {
-                    r.object == *o
-                        && r.id == Some(*id)
-                        && matches!(
-                            status(r),
-                            Some(AccessStatus::Missing | AccessStatus::Limited)
-                        )
-                })
-            })
-            .collect();
-        let labels = self.labels(ctx, &named).await?;
+        let (per_part, truncated) = self.my_items(ctx, parts).await?;
         let mut out: Vec<MyPartAccess> = Vec::new();
-        for p in parts {
+        for (p, items) in parts.iter().zip(per_part) {
             let Some(part) = p.part.clone() else { continue };
             if p.unavailable {
                 out.push(MyPartAccess {
@@ -478,24 +449,6 @@ impl AccessChecker<'_> {
                     items: Vec::new(),
                 });
                 continue;
-            }
-            let mut items: Vec<MyAccessItem> = Vec::new();
-            for r in rows.iter().filter(|r| r.part.as_ref() == Some(&part)) {
-                let Some(s @ (AccessStatus::Missing | AccessStatus::Limited)) = status(r) else {
-                    continue;
-                };
-                let item = MyAccessItem {
-                    object: r.object,
-                    need: r.kind,
-                    status: s,
-                    name: r
-                        .id
-                        .and_then(|id| labels.targets.get(&(r.object, id)))
-                        .map(|t| t.name.clone()),
-                };
-                if !items.contains(&item) {
-                    items.push(item);
-                }
             }
             if let Some(worst) = items.iter().map(|i| i.status).max() {
                 out.push(MyPartAccess {
@@ -511,6 +464,90 @@ impl AccessChecker<'_> {
             parts: out,
             truncated,
         })
+    }
+
+    /// 共有されたワークフローを手動で実行する人の確かめ: 自分に足りない権限（アプリのボタンと同じ決まり・GAP-37）。
+    pub async fn mine_workflow(
+        &self,
+        ctx: &AuthContext,
+        version: i64,
+        needs: &PartNeeds,
+    ) -> Result<MyWorkflowAccess, GuiError> {
+        let (mut per_part, truncated) = self.my_items(ctx, std::slice::from_ref(needs)).await?;
+        Ok(MyWorkflowAccess {
+            version,
+            items: per_part.pop().unwrap_or_default(),
+            truncated,
+        })
+    }
+
+    /// 部品ごとの、自分に足りない・範囲が狭い権限（`parts` と同じ並び）と、対象を上限で切ったか。
+    ///
+    /// 問うのは必ず要る権限だけ（BUG-216）。名前は自分に見える対象だけ（見えるかは名前を引く口が決める）。
+    async fn my_items(
+        &self,
+        ctx: &AuthContext,
+        parts: &[PartNeeds],
+    ) -> Result<(Vec<Vec<MyAccessItem>>, bool), GuiError> {
+        let mut rows = rows_of(parts);
+        rows.retain(|r| !r.conditional);
+        let (objects, truncated) = objects_of(&rows);
+        let asks = relations_per_object(&rows, &objects);
+        let fga: Vec<FgaObject> = objects
+            .iter()
+            .map(|(o, id)| fga_object(ctx, *o, *id))
+            .collect();
+        let held = self.held(&[ctx.subject()], &fga, &asks).await?;
+        let held = held.into_iter().next().unwrap_or_default();
+        let status = |r: &NeedRow| {
+            r.id.and_then(|id| objects.iter().position(|k| *k == (r.object, id)))
+                .and_then(|at| held.get(at))
+                .map(|h| status_of(r.object, r.kind, h))
+        };
+        let short = |r: &NeedRow| {
+            matches!(
+                status(r),
+                Some(AccessStatus::Missing | AccessStatus::Limited)
+            )
+        };
+        let named: Vec<(AccessObject, Uuid)> = objects
+            .iter()
+            .copied()
+            .filter(|(o, id)| {
+                rows.iter()
+                    .any(|r| r.object == *o && r.id == Some(*id) && short(r))
+            })
+            .collect();
+        let labels = self.labels(ctx, &named).await?;
+        let per_part = parts
+            .iter()
+            .map(|p| {
+                let mut items: Vec<MyAccessItem> = Vec::new();
+                if p.unavailable {
+                    return items;
+                }
+                for r in rows.iter().filter(|r| r.part == p.part) {
+                    let Some(s @ (AccessStatus::Missing | AccessStatus::Limited)) = status(r)
+                    else {
+                        continue;
+                    };
+                    let item = MyAccessItem {
+                        object: r.object,
+                        need: r.kind,
+                        status: s,
+                        name: r
+                            .id
+                            .and_then(|id| labels.targets.get(&(r.object, id)))
+                            .map(|t| t.name.clone()),
+                    };
+                    if !items.contains(&item) {
+                        items.push(item);
+                    }
+                }
+                items
+            })
+            .collect();
+        Ok((per_part, truncated))
     }
 }
 

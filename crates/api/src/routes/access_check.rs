@@ -3,6 +3,8 @@
 //! - `POST /mini-apps/{id}/access-check`・`POST /workflows/{id}/access-check`（作る人・editor）: 部品が要る権限の一覧と、
 //!   共有の相手ごとに足りるか。相手ごとの結果は、共有を管理する持ち主だけが求められる（相手を省けば共有している相手）。
 //! - `GET /mini-apps/{id}/access`（使う人・viewer）: 自分に足りない権限を部品ごとに返す（画面は押す前にボタンを止める）。
+//! - `GET /workflows/{id}/access`（実行する人・viewer）: 手動で実行するのに自分に足りない権限（「いま実行する」の
+//!   ダイアログが押す前に言う。決まりはアプリのボタンと同じ）。
 //!
 //! 判定は OpenFGA の BatchCheck だけ（[`gui::AccessChecker`]）で、実際の読み書きの認可は変えない。見えない対象の名前は
 //! 出さず、問う数に上限を置く。作る人の確かめは監査（`artifact.access_check`）に残す（誰が誰の権限を確かめたか）。
@@ -221,6 +223,43 @@ pub async fn my_mini_app_access(
         .map_err(map_gui_err)?;
     let mine = checker(&state)
         .mine(&ctx, version, &parts)
+        .await
+        .map_err(map_gui_err)?;
+    Ok(Json(mine))
+}
+
+/// 共有されたワークフローを手動で実行する人自身に足りない権限（実行する人・viewer・最新の版）。必ず要る権限だけを
+/// 確かめる（アプリのボタンと同じ決まり・GAP-37）。
+#[utoipa::path(
+    get,
+    path = "/workflows/{id}/access",
+    params(("id" = Uuid, Path, description = "ワークフロー ID")),
+    responses(
+        (status = 200, description = "自分に足りない権限", body = gui::MyWorkflowAccess),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "権限がない"),
+        (status = 404, description = "存在しない"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn my_workflow_access(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    trace: TraceIdExt,
+    Path(id): Path<Uuid>,
+) -> Result<Json<gui::MyWorkflowAccess>, ApiError> {
+    let trace = trace.as_deref();
+    let meta = state.artifacts.get(&ctx, id, trace).await?;
+    if meta.kind != artifact::ArtifactKind::Workflow {
+        return Err(artifact::ArtifactError::NotFound.into());
+    }
+    let (version, ir) = state
+        .workflows
+        .get_latest(&ctx, id, trace)
+        .await
+        .map_err(super::workflows::save::map_store_err)?;
+    let mine = checker(&state)
+        .mine_workflow(&ctx, version, &gui::workflow_needs(&ir))
         .await
         .map_err(map_gui_err)?;
     Ok(Json(mine))
