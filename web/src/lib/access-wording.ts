@@ -64,17 +64,23 @@ export function partPhrase(part?: AccessPart | null): string | null {
   }
 }
 
-/// 作る人向けに、要る権限 1 つを言う（部品と、対象に要る操作）。場合によって要るかは、呼ぶ側が
-/// [`CONDITIONAL_MARK`] の印で添える。
-export function needLine(n: AccessNeedView): string {
-  const part = partPhrase(n.part);
-  const what = n.dynamic
+/// 要る権限 1 つの、対象と操作（名前はサーバーが返したもの・あなたに見える対象だけ）。作る人の確かめと、部品の版を
+/// 上げる差（GAP-11）で同じ言い方にする。
+export function needWhat(n: Pick<AccessNeedView, "object" | "need" | "target" | "dynamic" | "over_limit">): string {
+  return n.dynamic
     ? `実行のときに決まる${needPhrase(n.object, n.need)}`
     : n.target
       ? needPhrase(n.object, n.need, n.target.name)
       : n.over_limit
         ? `${needPhrase(n.object, n.need)}（対象が多いため確かめていません）`
         : `あなたが見られないか、削除された${needPhrase(n.object, n.need)}`;
+}
+
+/// 作る人向けに、要る権限 1 つを言う（部品と、対象に要る操作）。場合によって要るかは、呼ぶ側が
+/// [`CONDITIONAL_MARK`] の印で添える。
+export function needLine(n: AccessNeedView): string {
+  const part = partPhrase(n.part);
+  const what = needWhat(n);
   return part ? `${part}: ${what}` : what;
 }
 

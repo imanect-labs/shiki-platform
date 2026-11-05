@@ -14,7 +14,7 @@ import {
 
 /// アプリのエディターでビューを束ね、束ねた部品の版を上げる（GAP-11）の E2E。
 /// - 束ねたワークフローとビューが改訂されていると、新しいバージョンと、上げると変わるところ（入力項目の増減・必須、
-///   ビューの絞り込み）が出る。「v2 にする」で上げ、保存の前なら元に戻せる。
+///   使ってよい操作と使う人に要る権限の増減、ビューの絞り込み）が出る。「v2 にする」で上げ、保存の前なら元に戻せる。
 /// - ビューを追加すると、組み立てるに表の段が足され、表に出すビューを選べる。保存した下書きでは表が描かれ、公開の確認は
 ///   エディターと同じ呼び名で差を言う。
 /// - ビューを読めない共同編集者も、そのビューに触れなければ保存できる（BUG-80 と同じ扱い）。
@@ -46,8 +46,9 @@ async function api<T = Record<string, unknown>>(
   return (res.status() === 204 ? {} : await res.json()) as T;
 }
 
-/// 入力項目を持つワークフローの IR（`title` を足すと件名が必須の入力になる）。
-function flowIr(name: string, withTitle: boolean) {
+/// 入力項目を持つワークフローの IR（`title` を足すと件名が必須の入力になる）。`table` を渡すと、そのテーブルにレコードを
+/// 追加するブロックを足す（使ってよい操作にテーブルへの書き込みが増え、使う人に追加の権限が要るようになる・GAP-11）。
+function flowIr(name: string, withTitle: boolean, table?: string) {
   return {
     ir_version: 1,
     name,
@@ -64,6 +65,7 @@ function flowIr(name: string, withTitle: boolean) {
           },
         }
       : { type: "object", required: ["amount"], properties: { amount: { type: "integer", title: "金額" } } },
+    ...(table ? { declared_scopes: ["data.write"] } : {}),
     nodes: [
       {
         id: "compute",
@@ -71,21 +73,23 @@ function flowIr(name: string, withTitle: boolean) {
         label: "計算する",
         params: { source: { inline: "function main(i){ return { ok: true }; }" } },
       },
+      ...(table ? [{ id: "add", type: "data.record.create", label: "申請を記録", params: { table, data: {} } }] : []),
     ],
-    edges: [],
+    edges: table ? [{ from: "compute", to: "add" }] : [],
   };
 }
 
-type Fixture = { appId: string; flow: string; viewA: string; viewB: string };
+type Fixture = { appId: string; flow: string; viewA: string; viewB: string; tableName: string };
 
 /// テーブル・ビュー 2 つ・ワークフローと、ワークフローとビュー A（どちらも v1）を束ねたアプリを作って v1 を公開する。
 /// その後でワークフローとビュー A を v2 に改訂する（最後に消す）。
 async function setup(page: Page): Promise<Fixture> {
+  const tableName = uniqueName("e2e-申請台帳");
   const table = await api<{ id: string; schema?: { fields: { key: string; display_name: string }[] } }>(
     page,
     "POST",
     "/data/tables",
-    { name: uniqueName("e2e-申請台帳"), schema: { fields: [{ key: "title", display_name: "件名", type: "text" }] } },
+    { name: tableName, schema: { fields: [{ key: "title", display_name: "件名", type: "text" }] } },
   );
   cleanup.add(() => deleteTableApi(page, table.id));
   const titleKey = table.schema?.fields.find((f) => f.display_name === "件名")?.key ?? "title";
@@ -112,9 +116,9 @@ async function setup(page: Page): Promise<Fixture> {
   // v1 を公開しておく（公開の確認が、公開した版との差を言う）。
   await api(page, "POST", `/mini-apps/${app.id}/publish`, { version: 1 });
   // 束ねた後に、ワークフローとビュー A を改訂する（アプリは v1 を固定したまま）。
-  await api(page, "PUT", `/workflows/${wf.id}`, { ir: flowIr(flow, true), expected_version: 1 });
+  await api(page, "PUT", `/workflows/${wf.id}`, { ir: flowIr(flow, true, table.id), expected_version: 1 });
   await api(page, "PUT", `/data/views/${a.id}`, { table_id: table.id, query: { limit: 20 }, expected_version: 1 });
-  return { appId: app.id, flow, viewA, viewB };
+  return { appId: app.id, flow, viewA, viewB, tableName };
 }
 
 /// 別の人の画面（PC かスマホ）。ログインに失敗したら、作った画面を閉じてから落とす。
@@ -151,6 +155,12 @@ test.describe("アプリのエディターのビューと版を上げる操作�
     await expect(wfUpdate).toContainText("新しいバージョン v2 があります", { timeout: 15_000 });
     await expect(wfUpdate.getByTestId("miniapp-pin-changes")).toContainText("入力項目「件名」（title）が増えます（必須）");
     await expect(wfUpdate.getByTestId("miniapp-pin-changes")).toContainText("入力項目「金額」（amount）が必須でなくなります");
+    // 使ってよい操作と、使う人に要る権限の増減（対象の名前は、あなたに見えるテーブルだけ・GAP-11）。
+    await expect(wfUpdate.getByTestId("miniapp-pin-changes")).toContainText("使ってよい操作に「業務データを書く」が増えます");
+    await expect(wfUpdate.getByTestId("miniapp-pin-changes")).toContainText(
+      `使う人に、テーブル「${f.tableName}」にレコードを追加する権限が要るようになります`,
+    );
+    await expect(wfUpdate.getByTestId("miniapp-pin-access-note")).toBeVisible();
     // ビュー A: v2 があり、絞り込みが変わると言う（列の名前や値は出さない）。
     const viewPins = dialog.getByTestId("miniapp-data_view-pins");
     const viewUpdate = viewPins.getByTestId("miniapp-pin-update");
