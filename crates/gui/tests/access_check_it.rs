@@ -793,3 +793,69 @@ async fn needs_on_some_paths_do_not_block_buttons() {
     })
     .await;
 }
+
+/// 前もって確かめられないブロック（スクリプト・シークレット・別のワークフローを実行・ドライブのトップへの保存）は、
+/// 要る権限には挙げず、作る人の結果にブロックの名前つきで返す（GAP-82）。部品ごとにまとめ、使う人には返さない。
+#[tokio::test]
+async fn blocks_beyond_the_check_are_reported_to_makers() {
+    let Some(pool) = pool().await else { return };
+    let Some(fga) = Fga::connect().await else {
+        return;
+    };
+    let client = Arc::clone(&fga.client);
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let t = tenant.clone();
+    let db = pool.clone();
+    run_with_cleanup(pool, tenant, fga, async move {
+        let e = Env::new(&db, &client);
+        let alice = ctx(&t, "alice");
+        let bob = ctx(&t, "bob");
+        let ir = json!({
+            "ir_version": 1, "name": "集計",
+            "declared_scopes": ["data.write", "http.egress", "workflow.start", "storage.write"],
+            "nodes": [
+                { "id": "calc", "type": "script.run", "label": "金額を足す", "params": { "source": { "inline": "export function main(){}" } } },
+                { "id": "post", "type": "http.request", "params": { "url": "https://example.com", "secret": { "name": "k" } } },
+                { "id": "next", "type": "workflow.start", "params": { "name": "child" } },
+                { "id": "top", "type": "storage.write", "label": "控えを保存", "params": { "name": "a.txt", "content": "x" } }
+            ],
+            "edges": []
+        });
+        let wf = e
+            .artifacts
+            .create(&alice, NewArtifact { kind: ArtifactKind::Workflow, name: "集計".into(), body: ir.clone() }, None)
+            .await
+            .unwrap()
+            .id;
+        let screen = "```ui\napp 集計\nbutton 集計する -> workflow 集計\n```\n";
+        let body = json!({
+            "description": "集計", "screen": screen,
+            "workflows": [{ "alias": "集計", "artifact_id": wf, "version": 1 }],
+        });
+        let app = e.mini_apps.create(&alice, "集計", &body, SaveMode::Draft, None).await.unwrap().id;
+        e.mini_apps.publish(&alice, app, 1, None).await.unwrap();
+        e.artifacts.share(&alice, app, &user("bob"), ArtifactRole::Viewer, None).await.unwrap();
+
+        let (v, parts) = e.mini_apps.part_needs(&alice, app, None, "access_check", None).await.unwrap();
+        let subjects = e.checker().subjects_for(&alice, app, None, None).await.unwrap().unwrap();
+        let report = e.checker().report(&alice, v, &parts, Some(&subjects.0)).await.unwrap();
+        assert!(report.needs.is_empty(), "確かめられるものは無い: {:?}", report.needs);
+        let part = Some(AccessPart::Workflow { alias: "集計".into() });
+        let got: Vec<(Option<AccessPart>, String, gui::AccessUnchecked)> =
+            report.unchecked.iter().map(|u| (u.part.clone(), u.block.clone(), u.kind)).collect();
+        assert_eq!(got.len(), 4, "{got:?}");
+        assert_eq!(got[0], (part.clone(), "金額を足す".to_string(), gui::AccessUnchecked::Script));
+        assert_eq!(got[1].2, gui::AccessUnchecked::Secret);
+        assert_eq!(got[2].2, gui::AccessUnchecked::StartWorkflow);
+        assert_eq!(got[3], (part, "控えを保存".to_string(), gui::AccessUnchecked::DriveTop));
+        // ワークフローそのもの（共有されたワークフロー）でも同じ。部品の名前は持たない。
+        let wf_parts = [gui::workflow_needs(&workflow_engine::WorkflowIr::from_json(&ir).unwrap())];
+        let report = e.checker().report(&alice, 1, &wf_parts, None).await.unwrap();
+        assert_eq!(report.unchecked.len(), 4);
+        assert!(report.unchecked.iter().all(|u| u.part.is_none()));
+        // 使う人のボタンは止めない（確かめられないものでは止めない）。
+        let (v, parts) = e.mini_apps.part_needs(&bob, app, None, "my_access", None).await.unwrap();
+        assert!(e.checker().mine(&bob, v, &parts).await.unwrap().parts.is_empty());
+    })
+    .await;
+}

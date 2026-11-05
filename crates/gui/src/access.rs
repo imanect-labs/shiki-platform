@@ -41,7 +41,7 @@ use serde::Serialize;
 use storage::ShareTarget;
 use utoipa::ToSchema;
 use uuid::Uuid;
-pub use workflow_engine::{AccessKind, AccessObject};
+pub use workflow_engine::{AccessKind, AccessObject, AccessUnchecked};
 
 mod checker;
 pub use checker::AccessChecker;
@@ -91,13 +91,25 @@ impl PartNeed {
 }
 
 /// 部品 1 つが要る権限（読めなかった部品は `unavailable`）。ワークフローそのものを確かめるときは `part` が `None`。
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct PartNeeds {
     pub part: Option<AccessPart>,
     /// 要る権限（並びはブロックの順）。
     pub needs: Vec<PartNeed>,
+    /// 前もって確かめられないブロック（ブロックの名前と種類・GAP-82）。
+    pub unchecked: Vec<(String, AccessUnchecked)>,
     /// 部品を読めなかった（消えた・本文が壊れている）。
     pub unavailable: bool,
+}
+
+/// 前もって確かめられないブロック 1 つ（作る人向け・GAP-82）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct UncheckedBlock {
+    /// 部品（ワークフローそのものを確かめたときは `null`）。
+    pub part: Option<AccessPart>,
+    /// ブロックの名前（付けた名前、無ければブロックの種類の名前）。
+    pub block: String,
+    pub kind: AccessUnchecked,
 }
 
 /// 確かめた対象（求めた人に見えるときだけ返す）。
@@ -168,6 +180,9 @@ pub struct AccessReport {
     pub truncated: bool,
     /// 読めなかった部品（消えた・本文が壊れている）。
     pub unavailable: Vec<AccessPart>,
+    /// 前もって確かめられないブロック（部品の順・GAP-82）。空でなければ「要る権限はありません」「全員持っています」と
+    /// 言い切らない。
+    pub unchecked: Vec<UncheckedBlock>,
 }
 
 /// 使う人に足りないもの 1 つ。
@@ -372,12 +387,12 @@ mod tests {
                     need(AccessObject::Table, Some(id(1)), AccessKind::Change),
                     need(AccessObject::Table, None, AccessKind::Read),
                 ],
-                unavailable: false,
+                ..Default::default()
             },
             PartNeeds {
                 part: Some(AccessPart::DataView { alias: "v".into() }),
                 needs: vec![need(AccessObject::Table, Some(id(1)), AccessKind::Read)],
-                unavailable: false,
+                ..Default::default()
             },
         ];
         let rows = rows_of(&parts);
@@ -398,7 +413,7 @@ mod tests {
             needs: (0..=MAX_ACCESS_OBJECTS as u128)
                 .map(|n| need(AccessObject::File, Some(id(n + 10)), AccessKind::Read))
                 .collect(),
-            unavailable: false,
+            ..Default::default()
         };
         let (objects, cut) = objects_of(&rows_of(&[many]));
         assert_eq!(objects.len(), MAX_ACCESS_OBJECTS);
@@ -421,7 +436,7 @@ mod tests {
                 PartNeed::always(AccessObject::Table, Some(id(1)), AccessKind::Add),
                 maybe(AccessObject::Table, 2, AccessKind::Edit),
             ],
-            unavailable: false,
+            ..Default::default()
         }]);
         let flags: Vec<bool> = rows.iter().map(|r| r.conditional).collect();
         assert_eq!(flags, vec![false, true]);
@@ -436,7 +451,7 @@ mod tests {
         let (objects, cut) = objects_of(&rows_of(&[PartNeeds {
             part: wf,
             needs,
-            unavailable: false,
+            ..Default::default()
         }]));
         assert!(cut);
         assert_eq!(

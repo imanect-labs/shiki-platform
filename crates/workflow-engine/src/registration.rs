@@ -479,7 +479,7 @@ pub struct Revocation {
 mod access;
 mod consent;
 
-pub use access::{AccessKind, AccessNeed, AccessObject};
+pub use access::{AccessGap, AccessKind, AccessNeed, AccessObject, AccessUnchecked};
 
 /// registration を disabled にしてトリガを止める（呼び出し側 TX）。`forget_consent` は同意（consented_scopes）も
 /// 空にするか（委譲を取り消したとき）。

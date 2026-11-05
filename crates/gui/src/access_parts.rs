@@ -11,7 +11,7 @@
 use artifact::ArtifactKind;
 use authz::AuthContext;
 use uuid::Uuid;
-use workflow_engine::{AccessKind, AccessObject, RegistrationService, WorkflowIr};
+use workflow_engine::{AccessKind, AccessObject, AccessUnchecked, RegistrationService, WorkflowIr};
 
 use crate::access::{AccessPart, PartNeed, PartNeeds};
 use crate::miniapp_store::MiniAppStore;
@@ -24,6 +24,7 @@ pub fn workflow_needs(ir: &WorkflowIr) -> PartNeeds {
     PartNeeds {
         part: None,
         needs: ir_needs(ir),
+        unchecked: ir_gaps(ir),
         unavailable: false,
     }
 }
@@ -40,12 +41,20 @@ fn ir_needs(ir: &WorkflowIr) -> Vec<PartNeed> {
         .collect()
 }
 
+/// 前もって確かめられないブロック（GAP-82・[`RegistrationService::access_gaps`]）。
+fn ir_gaps(ir: &WorkflowIr) -> Vec<(String, AccessUnchecked)> {
+    RegistrationService::access_gaps(ir)
+        .into_iter()
+        .map(|g| (g.block, g.kind))
+        .collect()
+}
+
 /// 読めなかった部品（消えた・本文が壊れている）。
 fn unavailable(part: AccessPart) -> PartNeeds {
     PartNeeds {
         part: Some(part),
-        needs: Vec::new(),
         unavailable: true,
+        ..PartNeeds::default()
     }
 }
 
@@ -87,6 +96,7 @@ impl MiniAppStore {
                 Some(ir) => PartNeeds {
                     part: Some(part),
                     needs: ir_needs(&ir),
+                    unchecked: ir_gaps(&ir),
                     unavailable: false,
                 },
                 None => unavailable(part),
@@ -106,7 +116,7 @@ impl MiniAppStore {
                         Some(view.table_id),
                         AccessKind::Read,
                     )],
-                    unavailable: false,
+                    ..PartNeeds::default()
                 },
                 None => unavailable(part),
             });
@@ -131,7 +141,7 @@ impl MiniAppStore {
                     PartNeeds {
                         part: Some(AccessPart::Skill),
                         needs,
-                        unavailable: false,
+                        ..PartNeeds::default()
                     }
                 }
                 None => unavailable(AccessPart::Skill),

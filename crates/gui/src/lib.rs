@@ -54,8 +54,9 @@ pub mod vocab;
 
 pub use access::{
     AccessChecker, AccessKind, AccessNeedView, AccessObject, AccessPart, AccessReport,
-    AccessStatus, AccessTarget, MyAccessItem, MyAppAccess, MyPartAccess, PartNeed, PartNeeds,
-    SubjectAccess, MAX_ACCESS_CHECKS, MAX_ACCESS_OBJECTS, MAX_ACCESS_SUBJECTS,
+    AccessStatus, AccessTarget, AccessUnchecked, MyAccessItem, MyAppAccess, MyPartAccess, PartNeed,
+    PartNeeds, SubjectAccess, UncheckedBlock, MAX_ACCESS_CHECKS, MAX_ACCESS_OBJECTS,
+    MAX_ACCESS_SUBJECTS,
 };
 pub use access_parts::workflow_needs;
 pub use action::{ActionBinding, DataViewBinding, HandlerBinding, WorkflowBinding, WorkflowPin};

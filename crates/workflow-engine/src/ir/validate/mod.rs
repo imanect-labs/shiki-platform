@@ -52,7 +52,7 @@ use crate::ir::{Node, WorkflowIr};
 use crate::vocab::NodeType;
 
 /// 誤りの文言でブロックを名指しする名前（付けた名前・無ければブロックの種類の名前・それも無ければ id）。
-pub(super) fn block_name(node: &Node) -> String {
+pub(crate) fn block_name(node: &Node) -> String {
     match node.label.as_deref().map(str::trim) {
         Some(label) if !label.is_empty() => label.to_string(),
         _ => NodeType::parse(&node.node_type).map_or_else(

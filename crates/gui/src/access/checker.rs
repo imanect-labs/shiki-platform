@@ -12,7 +12,7 @@ use uuid::Uuid;
 use super::{
     fga_object, objects_of, relations_per_object, rows_of, status_of, AccessNeedView, AccessObject,
     AccessReport, AccessStatus, AccessTarget, MyAccessItem, MyAppAccess, MyPartAccess, NeedRow,
-    PartNeeds, SubjectAccess, MAX_ACCESS_CHECKS, MAX_ACCESS_SUBJECTS,
+    PartNeeds, SubjectAccess, UncheckedBlock, MAX_ACCESS_CHECKS, MAX_ACCESS_SUBJECTS,
 };
 use crate::store::GuiError;
 use crate::validate::GuiValidationError;
@@ -365,6 +365,7 @@ impl AccessChecker<'_> {
             .filter(|p| p.unavailable)
             .filter_map(|p| p.part.clone())
             .collect();
+        let unchecked = unchecked_blocks(parts);
         let Some(subjects) = subjects else {
             return Ok(AccessReport {
                 version,
@@ -373,6 +374,7 @@ impl AccessChecker<'_> {
                 more_subjects: false,
                 truncated,
                 unavailable,
+                unchecked,
             });
         };
         let asks = relations_per_object(&rows, &manageable);
@@ -420,6 +422,7 @@ impl AccessChecker<'_> {
             more_subjects: false,
             truncated,
             unavailable,
+            unchecked,
         })
     }
 
@@ -508,4 +511,22 @@ impl AccessChecker<'_> {
             truncated,
         })
     }
+}
+
+/// 部品をまたいで、前もって確かめられないブロック（部品の順・同じものは 1 つ・GAP-82）。
+fn unchecked_blocks(parts: &[PartNeeds]) -> Vec<UncheckedBlock> {
+    let mut out: Vec<UncheckedBlock> = Vec::new();
+    for p in parts {
+        for (block, kind) in &p.unchecked {
+            let item = UncheckedBlock {
+                part: p.part.clone(),
+                block: block.clone(),
+                kind: *kind,
+            };
+            if !out.contains(&item) {
+                out.push(item);
+            }
+        }
+    }
+    out
 }

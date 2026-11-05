@@ -64,8 +64,8 @@ pub use nodes::{
 };
 pub use ratelimit::{BucketConfig, TokenBucket};
 pub use registration::{
-    AccessKind, AccessNeed, AccessObject, DelegationView, EnableError, RegistrationService,
-    RegistrationView, RetiredWorkflow, Revocation, SuggestedGrant,
+    AccessGap, AccessKind, AccessNeed, AccessObject, AccessUnchecked, DelegationView, EnableError,
+    RegistrationService, RegistrationView, RetiredWorkflow, Revocation, SuggestedGrant,
 };
 pub use retry::{
     backoff_with_jitter, classify, wait_policy, RetryClass, WaitPolicy, INDEX_WAIT,

@@ -21,7 +21,20 @@
 //!    フォルダーを省いた保存・一覧はドライブのトップで、組織のメンバーなら誰でも書ける・読める。
 //!
 //! 対象が入力や前の結果で決まるとき（値の式）・まだ選んでいないときは、対象を決めずに挙げる（`object_id = None`。
-//! 呼び出し側は確かめずに「実行のときに決まる」と言う）。シークレット・別のワークフローは名前で引くので、ここでは挙げない。
+//! 呼び出し側は確かめずに「実行のときに決まる」と言う）。
+//!
+//! # 前もって確かめられないブロック（GAP-82）
+//!
+//! 次のブロックが使う権限は、ブロックが動くまで対象が決まらないか、テーブル・ファイル・フォルダーの共有では決まらない
+//! ので、要る権限としては挙げない。代わりに [`RegistrationService::access_gaps`] が挙げ、作る人の画面が「前もって
+//! 確かめられないブロック」として名前を出す（「要る権限はありません」「全員持っています」と言い切らないため）。
+//!
+//! - スクリプトを実行（使ってよい操作にテーブル・ファイル・外部のサービス・別のワークフローがあるとき。中の
+//!   `Shiki.data`・`Shiki.storage` などが何を読み書きするかは、スクリプトが動くまで決まらない）。
+//! - AI エージェントの、社内の文書やファイルを読むツール（使う人が見られるものだけを読む）。
+//! - シークレットを使う外部への送信（使う人がそのシークレットを使えるか）。
+//! - 別のワークフローを実行（名前で引くワークフローと、そのワークフローが要る権限）。
+//! - ドライブのトップへの保存（保存先のフォルダーを省いた保存。保存できるのは組織のメンバーだけ）。
 //!
 //! # 必ず通るブロックと、道によって通るブロック（BUG-216）
 //!
@@ -29,17 +42,18 @@
 //! 1 か所）。分かれた流れ・「エラー時」の出口の先・繰り返しの中のブロックは、入力や結果によって動かないので、使う人の
 //! ボタンはそれだけでは止めない（通らない入力でも押せなくすると、前は動いていたボタンを止める）。
 
+use std::collections::HashSet;
+
 use serde::Serialize;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use std::collections::HashSet;
-
 use super::consent::suggested_grants;
 use super::{RegistrationService, SuggestedGrant};
 use crate::ir::paths::always_run;
+use crate::ir::validate::block_name;
 use crate::ir::WorkflowIr;
-use crate::vocab::NodeType;
+use crate::vocab::{NodeType, Scope};
 
 /// 権限を確かめる対象の種類。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, ToSchema)]
@@ -95,6 +109,43 @@ pub struct AccessNeed {
     pub conditional: bool,
 }
 
+/// 前もって確かめられないブロックの種類（GAP-82・[モジュールの説明](self)）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AccessUnchecked {
+    /// スクリプトを実行（中で読み書きするテーブル・ファイルなどは、スクリプトが動くまで決まらない）。
+    Script,
+    /// AI エージェントの、社内の文書やファイルを読むツール（使う人が見られるものだけを読む）。
+    AgentTools,
+    /// シークレットを使う外部への送信（使う人がそのシークレットを使えるか）。
+    Secret,
+    /// 別のワークフローを実行（名前で引くワークフローと、そのワークフローが要る権限）。
+    StartWorkflow,
+    /// ドライブのトップへの保存（保存できるのは組織のメンバーだけ）。
+    DriveTop,
+}
+
+/// 前もって確かめられないブロック 1 つ。
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct AccessGap {
+    /// ブロックの id。
+    pub node_id: String,
+    /// ブロックの名前（付けた名前、無ければブロックの種類の名前・保存時の誤りと同じ呼び方）。
+    pub block: String,
+    pub kind: AccessUnchecked,
+}
+
+/// スクリプトの中から使えると、前もって確かめられない操作（`Shiki.data`・`Shiki.storage`・`Shiki.http`・
+/// `Shiki.workflow`）。使ってよい操作にこのどれかがあれば、スクリプトを実行を挙げる。
+const SCRIPT_REACH: [Scope; 6] = [
+    Scope::DataRead,
+    Scope::DataWrite,
+    Scope::StorageRead,
+    Scope::StorageWrite,
+    Scope::HttpEgress,
+    Scope::WorkflowStart,
+];
+
 impl RegistrationService {
     /// 手動の実行で本人に要る権限を IR から挙げる（純関数・並びはブロックの順・同じものは 1 つ）。
     ///
@@ -104,7 +155,7 @@ impl RegistrationService {
         let always = always_run(ir);
         let mut out: Vec<AccessNeed> = Vec::new();
         for grant in suggested_grants(ir) {
-            let Some(need) = need_of(ir, &grant, &always) else {
+            let Some(Reading::Need(need)) = read_grant(ir, &grant, &always) else {
                 continue;
             };
             if !out.contains(&need) {
@@ -113,24 +164,83 @@ impl RegistrationService {
         }
         out
     }
+
+    /// 手動の実行で、前もって確かめられないブロックを IR から挙げる（純関数・並びはブロックの順・同じものは 1 つ・
+    /// GAP-82）。
+    #[must_use]
+    pub fn access_gaps(ir: &WorkflowIr) -> Vec<AccessGap> {
+        let always = always_run(ir);
+        let mut found: Vec<(String, AccessUnchecked)> = Vec::new();
+        for grant in suggested_grants(ir) {
+            if let Some(Reading::Unchecked(kind)) = read_grant(ir, &grant, &always) {
+                let node_id = grant.source.trim_start_matches("node:").to_string();
+                if !found.contains(&(node_id.clone(), kind)) {
+                    found.push((node_id, kind));
+                }
+            }
+        }
+        let script_reaches = ir
+            .declared_scopes
+            .iter()
+            .any(|s| SCRIPT_REACH.iter().any(|r| r.as_str() == s));
+        if script_reaches {
+            for n in &ir.nodes {
+                if NodeType::parse(&n.node_type) == Some(NodeType::ScriptRun) {
+                    found.push((n.id.clone(), AccessUnchecked::Script));
+                }
+            }
+        }
+        // ブロックの順に並べる（同じブロックの中は見つけた順）。
+        let mut out = Vec::new();
+        for n in &ir.nodes {
+            for (id, kind) in &found {
+                if *id == n.id {
+                    out.push(AccessGap {
+                        node_id: id.clone(),
+                        block: block_name(n),
+                        kind: *kind,
+                    });
+                }
+            }
+        }
+        out
+    }
 }
 
-/// 同意の提案 1 つを、手動の実行で本人に要る権限に読み替える（読み替えない提案は `None`）。
-fn need_of(ir: &WorkflowIr, grant: &SuggestedGrant, always: &HashSet<&str>) -> Option<AccessNeed> {
+/// 同意の提案 1 つの、手動の実行での読み替え。
+enum Reading {
+    /// 本人に要る権限。
+    Need(AccessNeed),
+    /// 前もって確かめられない（GAP-82）。
+    Unchecked(AccessUnchecked),
+}
+
+/// 同意の提案 1 つを、手動の実行で本人に要る権限か、前もって確かめられないブロックに読み替える（どちらでもない提案は
+/// `None`）。
+fn read_grant(ir: &WorkflowIr, grant: &SuggestedGrant, always: &HashSet<&str>) -> Option<Reading> {
     // きっかけ（trigger:i）は自動実行の委譲で読むもの（手動の実行では使わない）。
     let node_id = grant.source.strip_prefix("node:")?;
     let node = ir.nodes.iter().find(|n| n.id == node_id)?;
     let node_type = NodeType::parse(&node.node_type)?;
-    // AI エージェント・文書検索の範囲は、使う人が見られる文書だけを使う（足りなくても失敗しない）。
-    if matches!(node_type, NodeType::AgentInvoke | NodeType::RagSearch) {
-        return None;
+    match node_type {
+        // 文書検索の範囲は、使う人が見られる文書だけを使う（足りなくても失敗しない）。
+        NodeType::RagSearch => return None,
+        // AI エージェントのツールは、使う人が見られる文書やファイルだけを読む（前もって確かめられない）。
+        NodeType::AgentInvoke => return Some(Reading::Unchecked(AccessUnchecked::AgentTools)),
+        _ => {}
+    }
+    match grant.object_kind.as_str() {
+        "secret" => return Some(Reading::Unchecked(AccessUnchecked::Secret)),
+        "workflow" => return Some(Reading::Unchecked(AccessUnchecked::StartWorkflow)),
+        _ => {}
     }
     let object = AccessObject::from_object_kind(&grant.object_kind)?;
     let object_id = grant
         .object_id
         .as_deref()
         .and_then(|s| Uuid::parse_str(s.trim()).ok());
-    // フォルダーを省いた保存・一覧はドライブのトップ（組織のメンバーなら誰でも書ける・読める）。
+    // フォルダーを省いた保存・一覧はドライブのトップ。一覧は組織のメンバーなら誰でも読め、見られるものだけを返す。
+    // 保存は組織のメンバーだけができる（前もって確かめられない）。
     if object == AccessObject::Folder
         && object_id.is_none()
         && node
@@ -138,7 +248,8 @@ fn need_of(ir: &WorkflowIr, grant: &SuggestedGrant, always: &HashSet<&str>) -> O
             .get("folder")
             .is_none_or(serde_json::Value::is_null)
     {
-        return None;
+        return (grant.relation == "editor")
+            .then_some(Reading::Unchecked(AccessUnchecked::DriveTop));
     }
     let kind = match (grant.relation.as_str(), object, node_type) {
         ("viewer", _, _) => AccessKind::Read,
@@ -149,13 +260,13 @@ fn need_of(ir: &WorkflowIr, grant: &SuggestedGrant, always: &HashSet<&str>) -> O
         ("editor", _, _) => AccessKind::Edit,
         _ => return None,
     };
-    Some(AccessNeed {
+    Some(Reading::Need(AccessNeed {
         node_id: node_id.to_string(),
         object,
         object_id,
         kind,
         conditional: !always.contains(node_id),
-    })
+    }))
 }
 
 #[cfg(test)]
@@ -304,6 +415,62 @@ mod tests {
             .map(|n| (n.node_id.as_str(), n.conditional))
             .collect();
         assert_eq!(got, vec![("add", false), ("big", true), ("fix", true)]);
+    }
+
+    /// スクリプト（使ってよい操作にテーブルなどがあるとき）・AI エージェントの読むツール・シークレット・別のワークフローを
+    /// 実行・ドライブのトップへの保存は、前もって確かめられないブロックとして名前つきで挙げる（GAP-82）。文書検索・
+    /// ドライブのトップの一覧・外へ届かないスクリプトは挙げない。
+    #[test]
+    fn blocks_beyond_the_check_are_listed_by_name() {
+        let ir = |scopes: serde_json::Value| {
+            WorkflowIr::from_json(&json!({
+                "ir_version": 1, "name": "wf", "declared_scopes": scopes,
+                "nodes": [
+                    { "id": "s", "type": "script.run", "label": "金額を計算", "params": { "source": { "inline": "x" } } },
+                    { "id": "ag", "type": "agent.invoke", "params": { "instruction": "x", "allowed_tools": ["storage.read", "doc.read"] } },
+                    { "id": "web", "type": "agent.invoke", "params": { "instruction": "x", "allowed_tools": ["web.search"] } },
+                    { "id": "rs", "type": "rag.search", "params": { "query": "x" } },
+                    { "id": "h", "type": "http.request", "params": { "url": "https://example.com", "secret": { "name": "k" } } },
+                    { "id": "st", "type": "workflow.start", "params": { "name": "child" } },
+                    { "id": "top", "type": "storage.write", "params": { "name": "a.txt", "content": "x" } },
+                    { "id": "ls", "type": "storage.list", "params": {} }
+                ],
+                "edges": []
+            }))
+            .expect("test IR")
+        };
+        let kinds = |ir: &WorkflowIr| -> Vec<(String, String, AccessUnchecked)> {
+            RegistrationService::access_gaps(ir)
+                .into_iter()
+                .map(|g| (g.node_id, g.block, g.kind))
+                .collect()
+        };
+        use AccessUnchecked::*;
+        let got = kinds(&ir(json!([
+            "data.write",
+            "http.egress",
+            "workflow.start",
+            "storage.write",
+            "rag.query"
+        ])));
+        let ids: Vec<(&str, AccessUnchecked)> = got.iter().map(|g| (g.0.as_str(), g.2)).collect();
+        assert_eq!(
+            ids,
+            vec![
+                ("s", Script),
+                ("ag", AgentTools),
+                ("h", Secret),
+                ("st", StartWorkflow),
+                ("top", DriveTop)
+            ]
+        );
+        assert_eq!(got[0].1, "金額を計算", "付けた名前で言う");
+        // 外へ届く操作が無いスクリプトは挙げない。
+        let got = kinds(&ir(json!(["rag.query"])));
+        assert!(got.iter().all(|g| g.2 != Script), "{got:?}");
+        // 要る権限には挙げない（確かめない）。
+        let needs = RegistrationService::access_needs(&ir(json!(["data.write", "storage.write"])));
+        assert!(needs.is_empty(), "{needs:?}");
     }
 
     /// UUID でないリテラル（壊れた欄）は対象を決めずに挙げる（存在しない対象を確かめない）。
