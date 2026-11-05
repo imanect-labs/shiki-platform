@@ -10,8 +10,11 @@
 //!
 //! 由来は列に持たず、run の行のきっかけの種類と親の run の有無から導く（[`SCHEDULED_FROM`]）。
 
+use chrono::{DateTime, Datelike, NaiveDateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
+
+use crate::vocab::RUN_INFO_TIMEZONE;
 
 /// run の予定の日時の由来（実行履歴の一覧と詳細が、どの予定の分の実行か・試した値かを言い分ける・GAP-89）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
@@ -57,10 +60,85 @@ pub(crate) const SCHEDULED_FROM: &str = "CASE \
      WHEN r.cause_run_id IS NOT NULL THEN 'parent' \
      ELSE 'specified' END";
 
+/// 試す予定の日時が読めないときの文（実行のダイアログが欄の下に出す・API の 400 の message）。
+pub const TRIAL_SCHEDULED_AT_INVALID: &str =
+    "予定の日時は、2026-11-09T09:00 のような日時で入れてください。時差を書かなければ日本時間として読みます。";
+
+/// 手動の実行で試す予定の日時を読む（実行のダイアログの「予定の日時」・GAP-88）。
+///
+/// 時差つきの日時（RFC 3339）か、時差の無い日時（`YYYY-MM-DDTHH:MM` か `YYYY-MM-DDTHH:MM:SS`・実行情報の時間帯
+/// [`RUN_INFO_TIMEZONE`] で読む）を受ける。実行情報は予定の日時をその時間帯の RFC 3339 で言うので、その時間帯で
+/// 1〜9999 年に入らない日時は受けない（「日付を計算」が読める範囲と同じ）。時間帯の上で無い時刻（夏時間の飛び）も
+/// 受けない。
+#[must_use]
+pub fn parse_trial_scheduled_at(raw: &str) -> Option<DateTime<Utc>> {
+    let raw = raw.trim();
+    let at = if let Ok(t) = DateTime::parse_from_rfc3339(raw) {
+        t.with_timezone(&Utc)
+    } else {
+        let naive = NaiveDateTime::parse_from_str(raw, "%Y-%m-%dT%H:%M:%S")
+            .or_else(|_| NaiveDateTime::parse_from_str(raw, "%Y-%m-%dT%H:%M"))
+            .ok()?;
+        RUN_INFO_TIMEZONE
+            .from_local_datetime(&naive)
+            .earliest()?
+            .with_timezone(&Utc)
+    };
+    let year = at.with_timezone(&RUN_INFO_TIMEZONE).year();
+    (1..=9999).contains(&year).then_some(at)
+}
+
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    fn utc(s: &str) -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
+    }
+
+    /// 時差つきはそのまま、時差の無い日時は日本時間で読む（実行のダイアログは時差を付けずに送る）。
+    #[test]
+    fn trial_scheduled_at_reads_offsets_and_local_times() {
+        assert_eq!(
+            parse_trial_scheduled_at("2026-11-09T09:00:00+09:00"),
+            Some(utc("2026-11-09T00:00:00Z"))
+        );
+        assert_eq!(
+            parse_trial_scheduled_at("2026-11-09T00:00:00Z"),
+            Some(utc("2026-11-09T00:00:00Z"))
+        );
+        assert_eq!(
+            parse_trial_scheduled_at(" 2026-11-09T09:00 "),
+            Some(utc("2026-11-09T00:00:00Z")),
+            "時差の無い日時は日本時間"
+        );
+        assert_eq!(
+            parse_trial_scheduled_at("2026-11-09T09:00:30"),
+            Some(utc("2026-11-09T00:00:30Z"))
+        );
+    }
+
+    /// 日時でないもの・日付だけ・実行情報で言えない年は受けない。
+    #[test]
+    fn trial_scheduled_at_rejects_what_the_run_info_cannot_say() {
+        for bad in [
+            "",
+            "来週の月曜",
+            "2026-11-09",
+            "2026/11/09 09:00",
+            "2026-13-01T09:00",
+            "2026-11-09T25:00",
+            // 日本時間で 0 年になる（実行情報の RFC 3339 で言えない）。
+            "0000-12-31T00:00:00Z",
+            // 日本時間で 10000 年になる。
+            "9999-12-31T20:00:00Z",
+        ] {
+            assert_eq!(parse_trial_scheduled_at(bad), None, "{bad:?}");
+        }
+        assert!(parse_trial_scheduled_at("0001-01-01T00:00").is_some());
+        assert!(parse_trial_scheduled_at("9999-12-31T23:59").is_some());
+    }
 
     /// 由来の式は、名前の決まりを Rust の定義から外さない。
     #[test]

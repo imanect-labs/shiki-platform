@@ -31,13 +31,13 @@ use serde_json::Value;
 use uuid::Uuid;
 
 pub use launch_skip::{LaunchSkip, SkipCause};
-pub use launcher::{LauncherError, WorkflowRunLauncher};
+pub use launcher::{LauncherError, RunTrial, WorkflowRunLauncher};
 pub use model::{idempotency_key, RunStatus, StepStatus};
 pub use outcome::{
     FailureCategory, ReplyBody, ReplyFile, ReplySection, ReplyTone, ResumeAdvice, ResumeHint,
     RunFailure, RunReply, WaitingFor,
 };
-pub use planned::ScheduledAtSource;
+pub use planned::{parse_trial_scheduled_at, ScheduledAtSource};
 pub use store::{
     ApprovalWait, CancelOutcome, DataWaitCandidate, DueApprovalCursor, DueApprovalPage,
     DueSweepLimits, EventWaitGate, EventWaitSubscriber, GcReport, HistoryGcWorker, LiveState,

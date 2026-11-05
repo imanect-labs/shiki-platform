@@ -1629,14 +1629,40 @@ async fn manual_run_reports_input_errors_by_field() {
     delete_flow_and_runs(&env, &id).await;
 }
 
-/// きっかけの内容と入力を、ブロックの結果としてそのまま返す（`$from trigger` の源を確かめる・D-93）。
+/// きっかけの内容と入力と予定の日時を、ブロックの結果としてそのまま返す（`$from trigger` と `$from run` の
+/// `scheduled_at` の源を確かめる・D-93・GAP-88）。同じテナントで並んで走る試験のワーカーが互いの step を取っても
+/// 同じ結果になるよう、試す値の試験はこの 1 つを使う。
 struct ContextEcho;
 
 #[async_trait]
 impl NodeExecutor for ContextEcho {
     async fn execute(&self, _t: &str, _p: &Value, ctx: &NodeContext) -> NodeResult {
-        NodeResult::ok(json!({ "input": ctx.input, "trigger": ctx.trigger }))
+        NodeResult::ok(json!({
+            "input": ctx.input,
+            "trigger": ctx.trigger,
+            "scheduled_at": ctx.run_scheduled_at.map(|t| t.to_rfc3339()),
+        }))
     }
+}
+
+/// 終わった step の結果。試す値の試験は同じテナントで並んで走り、ほかの試験のワーカーが自分の step を取ることがある
+/// ので、自分のワーカーの手が空いた後も、step が終わるまで待ってから読む（取ったワーカーが書き終える前に読まない）。
+async fn settled_output(env: &Env, id: &str, run: &str, path: &str) -> Value {
+    for _ in 0..200 {
+        let (st, body) = req(
+            env,
+            "GET",
+            &format!("/workflows/{id}/runs/{run}/steps?path={path}"),
+            None,
+        )
+        .await;
+        assert_eq!(st, StatusCode::OK, "{body}");
+        if body["status"] == "succeeded" || body["status"] == "failed" {
+            return body["output"].clone();
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!("step {path} of run {run} did not finish");
 }
 
 /// D-93: 実行のダイアログは、手動の実行にきっかけの内容を入力と別に渡せる（`$from trigger` の源）。渡さなければ
@@ -1677,25 +1703,15 @@ async fn manual_run_takes_trial_trigger() {
     let output = |run: String| {
         let env = &env;
         let id = id.clone();
-        async move {
-            let (st, body) = req(
-                env,
-                "GET",
-                &format!("/workflows/{id}/runs/{run}/steps?path=echo"),
-                None,
-            )
-            .await;
-            assert_eq!(st, StatusCode::OK, "{body}");
-            body["output"].clone()
-        }
+        async move { settled_output(env, &id, &run, "echo").await.clone() }
     };
     assert_eq!(
         output(with_trial.clone()).await,
-        json!({ "input": { "amount": 3 }, "trigger": trial })
+        json!({ "input": { "amount": 3 }, "trigger": trial, "scheduled_at": null })
     );
     assert_eq!(
         output(without.clone()).await,
-        json!({ "input": { "amount": 4 }, "trigger": { "amount": 4 } })
+        json!({ "input": { "amount": 4 }, "trigger": { "amount": 4 }, "scheduled_at": null })
     );
 
     // --- 「新しく実行し直す」は、元の run で試したきっかけの内容も引き継ぐ（入力だけを引き継ぐと、新しい run の
@@ -1721,12 +1737,128 @@ async fn manual_run_takes_trial_trigger() {
     while worker.claim_and_run_once("w-trial").await.unwrap() {}
     assert_eq!(
         output(again_trial).await,
-        json!({ "input": { "amount": 3 }, "trigger": trial })
+        json!({ "input": { "amount": 3 }, "trigger": trial, "scheduled_at": null })
     );
     assert_eq!(
         output(again_without).await,
-        json!({ "input": { "amount": 4 }, "trigger": { "amount": 4 } })
+        json!({ "input": { "amount": 4 }, "trigger": { "amount": 4 }, "scheduled_at": null })
     );
+    delete_flow_and_runs(&env, &id).await;
+}
+
+/// GAP-88・GAP-89: 実行のダイアログは、手動の実行に試す予定の日時を渡せる（時差つきか、時差の無い日時を日本時間で
+/// 読む）。読めない値は 400（field = scheduled_at）で run を作らない。実行履歴の一覧と詳細は予定の日時と由来
+/// （specified）を返し、渡さない run は null。「新しく実行し直す」は試した予定の日時も引き継ぐ。
+#[tokio::test]
+async fn manual_run_takes_trial_scheduled_at() {
+    let Some(env) = setup().await else { return };
+    let worker = WorkflowWorker::new(
+        RunStore::new(env.pool.clone(), workflow_engine::DEFAULT_LEASE_SECS),
+        Arc::new(ContextEcho),
+        WorkerConfig::default(),
+    )
+    .scoped_to_tenant("default");
+    let id = create_amount_flow(&env, "trial-scheduled").await;
+    let start = |body: Value| {
+        let env = &env;
+        let id = id.clone();
+        async move { req(env, "POST", &format!("/workflows/{id}/runs"), Some(body)).await }
+    };
+
+    // --- 日時として読めない値は、欄を名指しして断る（黙って始めた日時で動かさない）。
+    for bad in [json!("来週の月曜"), json!("2026-11-09")] {
+        let (st, body) = start(json!({ "input": { "amount": 3 }, "scheduled_at": bad })).await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "{body}");
+        assert_eq!(body["code"], "invalid_input", "{body}");
+        assert_eq!(body["field"], "scheduled_at", "{body}");
+        assert_eq!(
+            body["message"],
+            workflow_engine::run::planned::TRIAL_SCHEDULED_AT_INVALID
+        );
+    }
+    let (st, body) = start(json!({ "input": { "amount": 3 }, "scheduled_at": 20261109 })).await;
+    assert!(st.is_client_error(), "数は日時の文字でない: {st} {body}");
+    let made: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM workflow_run WHERE tenant_id = 'default' AND workflow_id = $1::uuid",
+    )
+    .bind(&id)
+    .fetch_one(&env.pool)
+    .await
+    .unwrap();
+    assert_eq!(made, 0, "読めない予定の日時では run を作らない");
+
+    // --- 時差の無い日時は日本時間で読む。渡さなければ予定の日時は無い（始めた日時と同じ）。
+    let (st, body) =
+        start(json!({ "input": { "amount": 3 }, "scheduled_at": "2026-11-09T09:00" })).await;
+    assert_eq!(st, StatusCode::ACCEPTED, "{body}");
+    let with_trial = body["run_id"].as_str().unwrap().to_string();
+    let (st, body) = start(json!({ "input": { "amount": 4 } })).await;
+    assert_eq!(st, StatusCode::ACCEPTED, "{body}");
+    let without = body["run_id"].as_str().unwrap().to_string();
+    while worker.claim_and_run_once("w-trial-at").await.unwrap() {}
+    let output = |run: String| {
+        let env = &env;
+        let id = id.clone();
+        async move { settled_output(env, &id, &run, "echo").await["scheduled_at"].clone() }
+    };
+    assert_eq!(
+        output(with_trial.clone()).await,
+        json!("2026-11-09T00:00:00+00:00")
+    );
+    assert_eq!(output(without.clone()).await, Value::Null);
+
+    // --- 実行履歴の一覧と詳細は、予定の日時と由来（手動の実行で指定した日時）を返す。
+    let (st, list) = req(&env, "GET", &format!("/workflows/{id}/runs"), None).await;
+    assert_eq!(st, StatusCode::OK, "{list}");
+    let item = |run: &str| {
+        list["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["run_id"] == run)
+            .cloned()
+            .unwrap()
+    };
+    assert_eq!(
+        item(&with_trial)["scheduled_at"],
+        "2026-11-09T00:00:00+00:00"
+    );
+    assert_eq!(item(&with_trial)["scheduled_at_source"], "specified");
+    assert_eq!(item(&without)["scheduled_at"], Value::Null);
+    assert_eq!(item(&without)["scheduled_at_source"], Value::Null);
+    let (st, detail) = req(
+        &env,
+        "GET",
+        &format!("/workflows/{id}/runs/{with_trial}"),
+        None,
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{detail}");
+    assert_eq!(detail["scheduled_at"], "2026-11-09T00:00:00+00:00");
+    assert_eq!(detail["scheduled_at_source"], "specified");
+
+    // --- 「新しく実行し直す」は、試した予定の日時も引き継ぐ（同じ予定の分をやり直す）。
+    let (st, body) = req(
+        &env,
+        "POST",
+        &format!("/workflows/{id}/runs/{with_trial}/retry"),
+        Some(json!({ "mode": "new" })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::ACCEPTED, "{body}");
+    let again = body["run_id"].as_str().unwrap().to_string();
+    let (st, body) = req(
+        &env,
+        "POST",
+        &format!("/workflows/{id}/runs/{without}/retry"),
+        Some(json!({ "mode": "new" })),
+    )
+    .await;
+    assert_eq!(st, StatusCode::ACCEPTED, "{body}");
+    let again_without = body["run_id"].as_str().unwrap().to_string();
+    while worker.claim_and_run_once("w-trial-at").await.unwrap() {}
+    assert_eq!(output(again).await, json!("2026-11-09T00:00:00+00:00"));
+    assert_eq!(output(again_without).await, Value::Null);
     delete_flow_and_runs(&env, &id).await;
 }
 

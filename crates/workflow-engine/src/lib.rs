@@ -75,7 +75,7 @@ pub use run::{
     ApprovalWait, CancelSignal, ConcurrencyLimits, DataWaitCandidate, DueApprovalCursor,
     DueApprovalPage, DueSweepLimits, EventWaitGate, EventWaitSubscriber, NodeContext, NodeExecutor,
     NodeResult, PendingApproval, ResolvedApproval, RunOrigin, RunStatus, RunStore, RunStoreError,
-    ScheduledAtSource, StepStatus, WorkerConfig, WorkflowRunLauncher, WorkflowWorker,
+    RunTrial, ScheduledAtSource, StepStatus, WorkerConfig, WorkflowRunLauncher, WorkflowWorker,
     DEFAULT_LEASE_SECS, WORKFLOW_GC_QUEUE,
 };
 pub use run::{

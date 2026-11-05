@@ -31,6 +31,13 @@ pub struct StartRunRequest {
     #[serde(default)]
     #[schema(value_type = Option<Object>)]
     pub trigger: Option<serde_json::Value>,
+    /// 試す予定の日時（`$from run` の `scheduled_at` の源・「日付を計算」の基準の既定）。スケジュールをきっかけに
+    /// するワークフローを、その予定の時刻に動いたものとして手動で試すときに渡す（GAP-88）。時差つきの日時
+    /// （RFC 3339）か、時差の無い日時（`2026-11-09T09:00`・日本時間で読む）。省略すると、予定の日時は実行を始めた
+    /// 日時と同じ。実行履歴では、手動の実行で指定した予定の日時として出る。
+    #[serde(default)]
+    #[schema(value_type = Option<String>, example = "2026-11-09T09:00")]
+    pub scheduled_at: Option<String>,
 }
 
 /// run 起動レスポンス。
@@ -48,7 +55,7 @@ pub struct StartRunResponse {
     request_body = StartRunRequest,
     responses(
         (status = 202, description = "起動した", body = StartRunResponse),
-        (status = 400, description = "入力が input_schema に合わない（invalid_input・項目ごとの errors 付き）か、きっかけの内容が項目のまとまりでない（invalid_input・field = trigger）か、実行できない設定がある（not_ready・errors 付き）", body = crate::error_body::InvalidRunInputBody),
+        (status = 400, description = "入力が input_schema に合わない（invalid_input・項目ごとの errors 付き）か、きっかけの内容が項目のまとまりでない（invalid_input・field = trigger）か、予定の日時が日時として読めない（invalid_input・field = scheduled_at）か、実行できない設定がある（not_ready・errors 付き）", body = crate::error_body::InvalidRunInputBody),
         (status = 401, description = "未認証"),
         (status = 403, description = "権限がない"),
         (status = 404, description = "存在しない"),
@@ -76,10 +83,29 @@ pub async fn start_workflow_run(
             ),
         )));
     }
+    // 試す予定の日時は、実行情報で言える日時だけを受ける（読めない値を黙って捨てて、始めた日時で動かさない・GAP-88）。
+    let scheduled_at = match req.scheduled_at.as_deref() {
+        None => None,
+        Some(raw) => Some(
+            workflow_engine::run::parse_trial_scheduled_at(raw).ok_or_else(|| {
+                ApiError::UnprocessableJson(crate::error_body::to_body(
+                    &crate::error_body::BadRequestBody::new(
+                        data::InvalidCode::InvalidInput,
+                        workflow_engine::run::planned::TRIAL_SCHEDULED_AT_INVALID,
+                        Some("scheduled_at"),
+                    ),
+                ))
+            })?,
+        ),
+    };
+    let trial = workflow_engine::RunTrial {
+        trigger: req.trigger.as_ref(),
+        scheduled_at,
+    };
     // start_interactive 内で workflows.get_latest の OpenFGA 認可を通る。IR 取得失敗（権限なし/不在）は
     // 存在秘匿のため 404 に写す（500 にしない）。
     let run_id = launcher
-        .start_interactive_trial(&ctx, id, &req.input, req.trigger.as_ref())
+        .start_interactive_trial(&ctx, id, &req.input, trial)
         .await
         .map_err(|e| match e {
             workflow_engine::run::LauncherError::Ir(_) => ApiError::NotFound,

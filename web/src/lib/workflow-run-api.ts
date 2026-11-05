@@ -66,19 +66,28 @@ function runStatusMessage(status: number): string {
   return "内容に誤りがあるため、受け付けられませんでした。入力した値を見直してください。";
 }
 
-/// 対話トリガで実行する（実行主体 = 自分）。`trigger` は試すきっかけの内容（省略すると入力と同じ・D-93）。
+/// 手動の実行で試す値（どれも省けば今までどおり）。
+export type RunTrial = {
+  /// 試すきっかけの内容（省略すると入力と同じ・D-93）。
+  trigger?: Record<string, unknown>;
+  /// 試す予定の日時（`2026-11-09T09:00` のような時差の無い日時は日本時間で読む。省略すると実行した日時・GAP-88）。
+  scheduledAt?: string;
+};
+
+/// 対話トリガで実行する（実行主体 = 自分）。`trial` は試す値（きっかけの内容と予定の日時）。
 /// 始められなければ [`RunStartError`] を投げる（本文の理由を捨てない・BUG-109）。
 export async function startRun(
   workflowId: string,
   input: unknown,
-  trigger?: Record<string, unknown>,
+  trial: RunTrial = {},
 ): Promise<string | null> {
+  // 項目の名前は生成した型（`StartRunRequest`）で縛る。省いた試す値は送らない（サーバーは今までどおりに動く）。
+  const request: { [K in keyof Schemas["StartRunRequest"]]?: unknown } = { input };
+  if (trial.trigger !== undefined) request.trigger = trial.trigger;
+  if (trial.scheduledAt !== undefined) request.scheduled_at = trial.scheduledAt;
   let res: Response;
   try {
-    res = await apiFetch(
-      `/workflows/${workflowId}/runs`,
-      json("POST", trigger === undefined ? { input } : { input, trigger }),
-    );
+    res = await apiFetch(`/workflows/${workflowId}/runs`, json("POST", request));
   } catch {
     throw new RunStartError(
       0,

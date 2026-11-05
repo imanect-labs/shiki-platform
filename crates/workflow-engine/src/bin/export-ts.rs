@@ -40,7 +40,7 @@ use workflow_engine::vocab::{
     agent_tool_catalog, event_catalog, node_catalog, AgentTool, AgentToolCatalogEntry,
     EventCatalogEntry, EventPayloadField, EventSource, IdempotencyClass, NodeCatalogEntry,
     NodeCategory, NodeType, OutputField, PortRule, RunEventKind, RunInfoField, Scope,
-    RUN_INFO_FIELDS, STORAGE_LIST_MAX_ITEMS, STORAGE_READ_MAX_DOCUMENT_CHARS,
+    RUN_INFO_FIELDS, RUN_INFO_TIMEZONE, STORAGE_LIST_MAX_ITEMS, STORAGE_READ_MAX_DOCUMENT_CHARS,
 };
 use workflow_engine::INDEX_WAIT_MAX_MINUTES;
 
@@ -289,6 +289,8 @@ fn main() {
         .expect("エージェントの道具のカタログ JSON 直列化");
     let run_info_json =
         serde_json::to_string_pretty(RUN_INFO_FIELDS).expect("実行情報の項目の JSON 直列化");
+    let run_info_tz =
+        serde_json::to_string(RUN_INFO_TIMEZONE.name()).expect("実行情報の時間帯の直列化");
     // Stage A 実装済みノード種 → params 型名（対応は params の単一定義から引く・手書きの表を持たない）。
     let params_by_type: Vec<(NodeType, String)> = NodeType::ALL
         .iter()
@@ -310,6 +312,8 @@ fn main() {
          export const AGENT_TOOL_CATALOG: readonly AgentToolCatalogEntry[] = {agent_tool_json} as const;\n\n\
          /// 実行情報（`$from run`）の項目（値の欄の候補・日時は日本時間・D-97・Rust 単一定義から生成）。\n\
          export const RUN_INFO_CATALOG: readonly RunInfoField[] = {run_info_json} as const;\n\n\
+         /// 実行情報の日時を言い表す時間帯（実行のダイアログで、時差の無い予定の日時をこの時間帯で読む・GAP-88）。\n\
+         export const RUN_INFO_TZ = {run_info_tz};\n\n\
          /// Stage A 実装済みノード種 → params 型（右パネルのフォーム契約）。\n\
          export type NodeParamsByType = {{\n{}\n}};\n",
         params_by_type

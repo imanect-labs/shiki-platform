@@ -27,6 +27,7 @@ import { EVENT_CATALOG } from "@/generated/workflow-catalog";
 import type { Condition, Trigger, ValidationError } from "@/generated/workflow-ir";
 import { Field, FieldInput, FieldSelectTrigger } from "./common";
 import { previewSchedule } from "@/lib/workflow-api";
+import { zoneLabel } from "@/lib/time-zone";
 import { DataTableSelect, isFsmTable, NoFsmTableNote, useDataTables } from "./data-tables";
 import { useDriveItem } from "./forms-files";
 import type { InputRefUsage } from "./input-schema-editor";
@@ -120,12 +121,6 @@ function formatFire(iso: string, tz: string): string {
   }).formatToParts(new Date(iso));
   const get = (t: Intl.DateTimeFormatPartTypes) => parts.find((p) => p.type === t)?.value ?? "";
   return `${get("month")}/${get("day")}（${get("weekday")}）${get("hour")}:${get("minute")}`;
-}
-
-/// 時間帯の呼び名（次の実行の見出しの括弧に入れる）。
-function zoneLabel(tz: string): string {
-  if (tz === "Asia/Tokyo") return "日本時間";
-  return tz;
 }
 
 /// 次の実行の見通し（サーバーの発火と同じ読み方で数える・式と時間帯が変わるたびに少し待って取り直す）。

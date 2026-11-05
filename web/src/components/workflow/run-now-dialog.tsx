@@ -12,6 +12,8 @@
 ///   ほかの理由（実行できない設定・見つからない・使えない）はダイアログの中の帯に出す（本文を捨てない・BUG-109）。
 /// - きっかけがファイルやテーブルの変更のワークフローは、「詳しい設定」できっかけの内容（JSON）を入れて試せる
 ///   （D-93。空欄なら、きっかけの内容は入力と同じ）。
+/// - スケジュールのきっかけがあるワークフローは、「詳しい設定」で予定の日時を変えて試せる（GAP-88）。欄は開いたときの
+///   日時（実行情報の時間帯）で始め、変えたときだけ送る（変えなければ、予定の日時は実行した日時のまま）。
 /// - 開いたときに、実行するのに自分に足りない権限を確かめ（`GET /workflows/{id}/access`・アプリのボタンと同じ決まり・
 ///   GAP-37）、足りなければ理由を出す。押したときに確かめ直し、まだ足りなければ送らない（共有してもらっていれば、
 ///   開き直さずに実行できる・BUG-217 と同じ考え方）。確かめられなかったときは止めない（サーバーが本人の権限で確かめる）。
@@ -45,7 +47,8 @@ import { getMyWorkflowAccess, type MyWorkflowAccess } from "@/lib/artifact-api";
 import { myRunBlockedReason } from "@/lib/access-wording";
 import { blockDisplayName } from "@/lib/workflow-block-name";
 import { inputFieldsOf, type InputFieldInfo } from "@/lib/workflow-input-schema";
-import { EVENT_CATALOG } from "@/generated/workflow-catalog";
+import { localDateTimeIn, zoneLabel } from "@/lib/time-zone";
+import { EVENT_CATALOG, RUN_INFO_TZ } from "@/generated/workflow-catalog";
 import type { WorkflowIr } from "@/generated/workflow-ir";
 
 /// 付録 C の §3.6 の決まった文（手動の実行のダイアログ）。
@@ -94,6 +97,11 @@ function nonManualTrigger(ir: WorkflowIr): string | null {
 function eventTrigger(ir: WorkflowIr): { label: string; source: string } | null {
   const t = ir.triggers.find((x) => x.kind === "event");
   return t && t.kind === "event" ? { label: triggerLabel(t) ?? "", source: String(t.source) } : null;
+}
+
+/// スケジュールのきっかけがあるか（予定の日時の欄を出す・GAP-88）。
+function hasSchedule(ir: WorkflowIr): boolean {
+  return ir.triggers.some((t) => t.kind === "schedule");
 }
 
 /// ファイルやテーブルの変更のきっかけの内容の項目（カタログの単一定義から・D-47）。
@@ -211,13 +219,17 @@ export function RunNowDialog({
   const props = schemaFields(ir);
   const manualOnlyFor = nonManualTrigger(ir);
   const trigger = eventTrigger(ir);
+  const schedule = hasSchedule(ir);
   const idBase = React.useId();
   const [fields, setFields] = React.useState<Record<string, string>>({});
   const [jsonText, setJsonText] = React.useState("{}");
   const [triggerText, setTriggerText] = React.useState("");
+  /// 予定の日時の欄（`YYYY-MM-DDTHH:mm`・実行情報の時間帯）と、開いたときの値（変えたときだけ送る）。
+  const [scheduledText, setScheduledText] = React.useState("");
+  const [scheduledInitial, setScheduledInitial] = React.useState("");
   const [advanced, setAdvanced] = React.useState(false);
   const [busy, setBusy] = React.useState(false);
-  /// 欄の下の誤り（項目のキー → 文・`$input` は入力の JSON・`$trigger` はきっかけの内容）。
+  /// 欄の下の誤り（項目のキー → 文・`$input` は入力の JSON・`$trigger` はきっかけの内容・`$scheduled` は予定の日時）。
   const [fieldErrors, setFieldErrors] = React.useState<Record<string, string>>({});
   /// 欄に写せない誤り（ダイアログの中の帯）。
   const [failure, setFailure] = React.useState<{ message: string; lines: string[] } | null>(null);
@@ -232,6 +244,9 @@ export function RunNowDialog({
     setFieldErrors({});
     setFailure(null);
     setAccess(null);
+    const now = localDateTimeIn(RUN_INFO_TZ);
+    setScheduledText(now);
+    setScheduledInitial(now);
     let live = true;
     getMyWorkflowAccess(workflowId)
       .then((a) => live && setAccess(a))
@@ -273,6 +288,8 @@ export function RunNowDialog({
         setAdvanced(true);
       }
     }
+    // 予定の日時は変えたときだけ送る（空にしたときも送らない＝実行した日時）。
+    const scheduledAt = schedule && scheduledText && scheduledText !== scheduledInitial ? scheduledText : undefined;
     setFieldErrors(errors);
     setFailure(null);
     if (Object.keys(errors).length > 0) return;
@@ -301,7 +318,7 @@ export function RunNowDialog({
         });
         return;
       }
-      const runId = await startRun(workflowId, input, triggerValue);
+      const runId = await startRun(workflowId, input, { trigger: triggerValue, scheduledAt });
       if (runId) {
         onOpenChange(false);
         toast({ title: "実行を始めました", description: "実行履歴で進み具合を見られます。" });
@@ -339,12 +356,17 @@ export function RunNowDialog({
         shown.$trigger = e.message;
         setAdvanced(true);
       }
+      if (e.field === "scheduled_at") {
+        shown.$scheduled = e.message;
+        setAdvanced(true);
+      }
       setFieldErrors(shown);
       const lines = [
         ...rest,
         ...e.reasons.map((r) => (r.nodeId ? `「${labels.get(r.nodeId) ?? r.nodeId}」: ${r.message}` : r.message)),
       ];
-      if (lines.length > 0 || (e.issues.length === 0 && e.field !== "trigger")) {
+      const fieldShown = e.field === "trigger" || e.field === "scheduled_at";
+      if (lines.length > 0 || (e.issues.length === 0 && !fieldShown)) {
         setFailure({ message: e.message, lines });
       }
     } finally {
@@ -466,7 +488,7 @@ export function RunNowDialog({
             ) : null}
           </div>
         )}
-        {trigger ? (
+        {trigger || schedule ? (
           <div className="space-y-2">
             <button
               type="button"
@@ -479,39 +501,68 @@ export function RunNowDialog({
               詳しい設定
             </button>
             {advanced ? (
-              <div id={`${idBase}-advanced`} className="space-y-1" data-testid="run-now-trigger">
-                <div className="flex items-end justify-between gap-2">
-                  <label className="text-xs font-medium" htmlFor={`${idBase}-trigger`}>
-                    きっかけの内容（JSON・省略可）
-                  </label>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-7 text-xs"
-                    onClick={() => setTriggerText(payloadSkeleton(trigger.source))}
-                  >
-                    項目を並べる
-                  </Button>
-                </div>
-                <Textarea
-                  id={`${idBase}-trigger`}
-                  value={triggerText}
-                  rows={5}
-                  placeholder={'例: {"record_id": "…"}'}
-                  onChange={(e) => setTriggerText(e.target.value)}
-                  aria-invalid={fieldErrors.$trigger ? true : undefined}
-                  aria-describedby={`${fieldErrors.$trigger ? `${errorId("trigger")} ` : ""}${idBase}-trigger-note`}
-                  className={cn("font-mono text-xs", fieldErrors.$trigger && "border-destructive")}
-                />
-                {fieldErrors.$trigger ? (
-                  <p id={errorId("trigger")} className="text-[11px] text-destructive">
-                    {fieldErrors.$trigger}
-                  </p>
+              <div id={`${idBase}-advanced`} className="space-y-3">
+                {schedule ? (
+                  <div className="space-y-1" data-testid="run-now-scheduled">
+                    <label className="text-xs font-medium" htmlFor={`${idBase}-scheduled`}>
+                      {`予定の日時（${zoneLabel(RUN_INFO_TZ)}）`}
+                    </label>
+                    <Input
+                      id={`${idBase}-scheduled`}
+                      type="datetime-local"
+                      step={60}
+                      value={scheduledText}
+                      onChange={(e) => setScheduledText(e.target.value)}
+                      aria-invalid={fieldErrors.$scheduled ? true : undefined}
+                      aria-describedby={`${fieldErrors.$scheduled ? `${errorId("scheduled")} ` : ""}${idBase}-scheduled-note`}
+                      className={cn("h-8 w-full min-w-0 tabular-nums", fieldErrors.$scheduled && "border-destructive")}
+                    />
+                    {fieldErrors.$scheduled ? (
+                      <p id={errorId("scheduled")} className="text-[11px] text-destructive">
+                        {fieldErrors.$scheduled}
+                      </p>
+                    ) : null}
+                    <p id={`${idBase}-scheduled-note`} className="text-[11px] leading-relaxed text-muted-foreground">
+                      スケジュールがこの日時に動いたものとして実行し、「日付を計算」はこの日時から数えます。変えなければ、実行した日時を使います。
+                    </p>
+                  </div>
                 ) : null}
-                <p id={`${idBase}-trigger-note`} className="text-[11px] leading-relaxed text-muted-foreground">
-                  {`ここに書いた値を、「${trigger.label}」のきっかけの内容として使います。空欄なら、入力の値をきっかけの内容として使います。`}
-                </p>
+                {trigger ? (
+                  <div className="space-y-1" data-testid="run-now-trigger">
+                    <div className="flex items-end justify-between gap-2">
+                      <label className="text-xs font-medium" htmlFor={`${idBase}-trigger`}>
+                        きっかけの内容（JSON・省略可）
+                      </label>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-7 text-xs"
+                        onClick={() => setTriggerText(payloadSkeleton(trigger.source))}
+                      >
+                        項目を並べる
+                      </Button>
+                    </div>
+                    <Textarea
+                      id={`${idBase}-trigger`}
+                      value={triggerText}
+                      rows={5}
+                      placeholder={'例: {"record_id": "…"}'}
+                      onChange={(e) => setTriggerText(e.target.value)}
+                      aria-invalid={fieldErrors.$trigger ? true : undefined}
+                      aria-describedby={`${fieldErrors.$trigger ? `${errorId("trigger")} ` : ""}${idBase}-trigger-note`}
+                      className={cn("font-mono text-xs", fieldErrors.$trigger && "border-destructive")}
+                    />
+                    {fieldErrors.$trigger ? (
+                      <p id={errorId("trigger")} className="text-[11px] text-destructive">
+                        {fieldErrors.$trigger}
+                      </p>
+                    ) : null}
+                    <p id={`${idBase}-trigger-note`} className="text-[11px] leading-relaxed text-muted-foreground">
+                      {`ここに書いた値を、「${trigger.label}」のきっかけの内容として使います。空欄なら、入力の値をきっかけの内容として使います。`}
+                    </p>
+                  </div>
+                ) : null}
               </div>
             ) : null}
           </div>

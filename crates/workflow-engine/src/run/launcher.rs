@@ -19,6 +19,28 @@ use crate::scheduler::{LaunchOutcome, RunLauncher, SkipReason};
 use crate::store::WorkflowStore;
 use crate::WorkflowIr;
 
+/// 手動の実行で試す値（実行のダイアログ・実行履歴の「同じ入力でもう一度実行」）。どれも省けば今までどおり。
+///
+/// 利用者が書いた値で、入力と同じく本人の権限で使う（本人が読めないものには触れない）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct RunTrial<'a> {
+    /// 試すきっかけの内容（`$from trigger` の源・D-93）。`None` なら、きっかけの内容は入力と同じ。
+    pub trigger: Option<&'a Value>,
+    /// 試す予定の日時（`$from run` の `scheduled_at` の源・GAP-88）。`None` なら、予定の日時は始めた日時と同じ。
+    pub scheduled_at: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl<'a> RunTrial<'a> {
+    /// run の由来（試す値だけを載せる・親の run やイベントは無い）。
+    fn origin(self) -> RunOrigin<'a> {
+        RunOrigin {
+            trigger_payload: self.trigger,
+            scheduled_at: self.scheduled_at,
+            ..RunOrigin::default()
+        }
+    }
+}
+
 /// 委譲チェック付き run 起動。DelegationStore + WorkflowStore + RunStore を束ねる。
 ///
 /// schedule/event では run の org は **registration.org** を使う（enable 時に固定した org）。
@@ -74,31 +96,27 @@ impl WorkflowRunLauncher {
         workflow_id: Uuid,
         input: &Value,
     ) -> Result<Option<Uuid>, LauncherError> {
-        self.start_interactive_trial(ctx, workflow_id, input, None)
+        self.start_interactive_trial(ctx, workflow_id, input, RunTrial::default())
             .await
     }
 
-    /// interactive 起動で、きっかけの内容を入力と別に渡す（実行のダイアログの「きっかけの内容」・D-93）。
+    /// interactive 起動で、試す値を渡す（実行のダイアログの「きっかけの内容」・D-93 と「予定の日時」・GAP-88）。
     ///
-    /// スケジュールやファイル・テーブルの変更をきっかけにするワークフローを、手動で試すためのもの。きっかけの
-    /// 内容は利用者が書いた値で、入力と同じく本人の権限で使う（本人が読めないものには触れない）。
-    /// `trigger` が `None` なら [`Self::start_interactive`] と同じ（きっかけの内容は入力と同じ）。
+    /// スケジュールやファイル・テーブルの変更をきっかけにするワークフローを、手動で試すためのもの（[`RunTrial`]）。
+    /// 試す値を省けば [`Self::start_interactive`] と同じ。
     pub async fn start_interactive_trial(
         &self,
         ctx: &AuthContext,
         workflow_id: Uuid,
         input: &Value,
-        trigger: Option<&Value>,
+        trial: RunTrial<'_>,
     ) -> Result<Option<Uuid>, LauncherError> {
         let (version, ir) = self
             .workflows
             .get_latest(ctx, workflow_id, None)
             .await
             .map_err(|e| LauncherError::Ir(format!("{e:?}")))?;
-        let origin = RunOrigin {
-            trigger_payload: trigger,
-            ..RunOrigin::default()
-        };
+        let origin = trial.origin();
         let blockers = crate::run_blockers(&ir);
         self.create_interactive_run(ctx, workflow_id, version, &ir, input, origin, blockers)
             .await
@@ -198,29 +216,26 @@ impl WorkflowRunLauncher {
         version: i64,
         input: &Value,
     ) -> Result<Option<Uuid>, LauncherError> {
-        self.start_interactive_version_trial(ctx, workflow_id, version, input, None)
+        self.start_interactive_version_trial(ctx, workflow_id, version, input, RunTrial::default())
             .await
     }
 
-    /// [`Self::start_interactive_version`] で、きっかけの内容も渡す（実行履歴の「新しく実行し直す」が、元の run で
-    /// 試したきっかけの内容を引き継ぐ・D-93）。`trigger` が `None` なら、きっかけの内容は入力と同じ。
+    /// [`Self::start_interactive_version`] で、試す値も渡す（実行履歴の「新しく実行し直す」が、元の run で試した
+    /// きっかけの内容と予定の日時を引き継ぐ・D-93・GAP-88）。試す値を省けば今までどおり。
     pub async fn start_interactive_version_trial(
         &self,
         ctx: &AuthContext,
         workflow_id: Uuid,
         version: i64,
         input: &Value,
-        trigger: Option<&Value>,
+        trial: RunTrial<'_>,
     ) -> Result<Option<Uuid>, LauncherError> {
         let (version, ir) = self
             .workflows
             .get_version(ctx, workflow_id, version, None)
             .await
             .map_err(|e| LauncherError::Ir(format!("{e:?}")))?;
-        let origin = RunOrigin {
-            trigger_payload: trigger,
-            ..RunOrigin::default()
-        };
+        let origin = trial.origin();
         let blockers = crate::run_blockers(&ir);
         self.create_interactive_run(ctx, workflow_id, version, &ir, input, origin, blockers)
             .await
