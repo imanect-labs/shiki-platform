@@ -13,11 +13,26 @@ pub struct RunnerRequest {
     /// 実行種別。
     pub op: RunnerOp,
     /// 対象 CSV の**信頼できる**ローカルパス（api が StorageService から取得して置いた一時ファイル）。
+    /// [`InputFormat::Xlsx`] のときは Excel のファイル（そのままのバイト列）。
     pub csv_path: String,
+    /// 入力の形式（省略は CSV・この項目が無かったころのランナーと同じ）。
+    #[serde(default)]
+    pub format: InputFormat,
     /// メモリ上限（MB）。DuckDB の memory_limit に設定する。
     pub memory_limit_mb: u32,
     /// 結果の最大行数（これを超える行は返さない・ページングで取得）。
     pub max_rows: u32,
+}
+
+/// ランナーへ渡す入力の形式（api は先頭のバイトだけで決め、中身は解釈しない・PIT-39）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InputFormat {
+    /// UTF-8 にした CSV（文字コードは api が決めて直す・GAP-45）。
+    #[default]
+    Csv,
+    /// Excel のブック（.xlsx）。ランナーが展開し、左端のシートを表として読む（CSV を集計の読み取りだけ・D-17）。
+    Xlsx,
 }
 
 /// ランナーの実行種別。
@@ -62,8 +77,8 @@ pub struct RunnerResponse {
     /// 列名（順序どおり）。
     #[serde(default)]
     pub columns: Vec<String>,
-    /// 列の型名（DuckDB 型・columns と同順）。Schema は集計（Query）で読むときの型（DuckDB の推定）、
-    /// Query は結果の列の型。Rows は空。
+    /// 列の型名（DuckDB 型・columns と同順）。Schema は集計（Query）で読むときの型（CSV は DuckDB の推定・
+    /// Excel はセルの種類から決めた型）、Query は結果の列の型。Rows は空。
     #[serde(default)]
     pub column_types: Vec<String>,
     /// 行（各行はセル文字列の配列・NULL は None）。日付・時刻・小数（DECIMAL）などは DuckDB の文字の形
@@ -83,6 +98,10 @@ pub struct RunnerResponse {
     /// エラー理由（ok=false のとき）。
     #[serde(default)]
     pub error: Option<String>,
+    /// 渡したファイルを表として読めなかった（壊れた・上限を超える Excel など）。`error` は利用者向けの文言で、
+    /// 利用者が直す誤り（ランナーの異常ではない）。
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub input_error: bool,
     /// 推定した区切りと改行（[`RunnerOp::Dialect`] のときだけ）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dialect: Option<CsvDialect>,
@@ -94,6 +113,14 @@ impl RunnerResponse {
             ok: false,
             error: Some(msg.into()),
             ..RunnerResponse::default()
+        }
+    }
+
+    /// 渡したファイルを読めなかった失敗（[`RunnerResponse::input_error`]・文言は利用者向け）。
+    pub fn input_failure(msg: impl Into<String>) -> Self {
+        RunnerResponse {
+            input_error: true,
+            ..RunnerResponse::failure(msg)
         }
     }
 }

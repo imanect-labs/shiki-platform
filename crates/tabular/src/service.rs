@@ -11,6 +11,10 @@
 //! CSV の文字コードは、読むときに `textenc` の判定（BOM → UTF-8 → 日本の文字コードの推定）で決めて UTF-8 にする
 //! （ランナーと編集は UTF-8 だけを扱う）。日本語の Windows の Excel が保存する CSV の既定は Shift_JIS。編集は、
 //! 元の文字コードと BOM のまま書き戻す（Excel や取り込む先の仕組みが読めなくならないように・GAP-45）。
+//!
+//! 集計（schema・rows・query）は Excel（.xlsx）も読む（D-17）。形式は先頭のバイトだけで決め（[`crate::input`]）、
+//! 中身はそのままランナーへ渡す（展開と読み取りはランナーの中・PIT-39）。古い形式の Excel（.xls）とパスワードを
+//! 付けたファイルは読まない。
 
 use std::io::Write as _;
 use std::sync::Arc;
@@ -20,8 +24,9 @@ use storage::{NodeKind, OnNameTaken, StorageService};
 use uuid::Uuid;
 
 use crate::error::TabularError;
+use crate::input::{self, Sniffed};
 use crate::patch::{apply_patches_with, PatchOp};
-use crate::protocol::{CsvDialect, RunnerOp, RunnerRequest, RunnerResponse};
+use crate::protocol::{CsvDialect, InputFormat, RunnerOp, RunnerRequest, RunnerResponse};
 use crate::runner::{run_isolated, RunnerConfig};
 use crate::sql_guard::validate_read_only;
 
@@ -86,8 +91,8 @@ impl TabularService {
         file_id: Uuid,
         trace_id: Option<&str>,
     ) -> Result<RunnerResponse, TabularError> {
-        let path = self.fetch_csv(ctx, file_id, trace_id).await?;
-        self.run(RunnerOp::Schema, path.path(), 0).await
+        let input = self.fetch_input(ctx, file_id, trace_id).await?;
+        self.run(RunnerOp::Schema, &input, 0).await
     }
 
     /// CSV の 1 ページ（安定行番号順・offset から page_size）を返す（viewer 認可）。
@@ -98,13 +103,9 @@ impl TabularService {
         offset: u64,
         trace_id: Option<&str>,
     ) -> Result<RunnerResponse, TabularError> {
-        let path = self.fetch_csv(ctx, file_id, trace_id).await?;
-        self.run(
-            RunnerOp::Rows { offset },
-            path.path(),
-            self.quotas.page_size,
-        )
-        .await
+        let input = self.fetch_input(ctx, file_id, trace_id).await?;
+        self.run(RunnerOp::Rows { offset }, &input, self.quotas.page_size)
+            .await
     }
 
     /// 読み取り専用 SQL を実行して結果ページを返す（viewer 認可・SQL は検証必須）。
@@ -134,17 +135,17 @@ impl TabularService {
     ) -> Result<(RunnerResponse, i64), TabularError> {
         // まず SQL を検証（api 側で拒否＝敵対的 SQL を隔離プロセスへ渡す前に弾く多層防御）。
         validate_read_only(sql)?;
-        let (path, version) = self.fetch_csv_versioned(ctx, file_id, trace_id).await?;
+        let input = self.fetch_input(ctx, file_id, trace_id).await?;
         let response = self
             .run(
                 RunnerOp::Query {
                     sql: sql.to_string(),
                 },
-                path.path(),
+                &input,
                 self.quotas.max_rows,
             )
             .await?;
-        Ok((response, version))
+        Ok((response, input.version))
     }
 
     /// パッチ列を適用して新バージョンを保存する（editor 認可・rev 楽観ロック）。
@@ -221,23 +222,16 @@ impl TabularService {
         })
     }
 
-    /// viewer 認可で CSV を取得し、UTF-8 にして隔離ランナー用の私有一時ファイルへ書く。
-    async fn fetch_csv(
+    /// viewer 認可でファイルを取得し、隔離ランナー用の私有一時ファイルへ書く（読んだ中身のバージョンも返す）。
+    ///
+    /// CSV は文字コードを決めて UTF-8 にしてから書く（BOM は含めない・ランナーは UTF-8 だけを読む）。Excel（zip）は
+    /// 大きさだけを確かめて、そのままのバイト列を書く（中身はランナーが読む）。
+    async fn fetch_input(
         &self,
         ctx: &AuthContext,
         file_id: Uuid,
         trace_id: Option<&str>,
-    ) -> Result<tempfile::NamedTempFile, TabularError> {
-        Ok(self.fetch_csv_versioned(ctx, file_id, trace_id).await?.0)
-    }
-
-    /// [`Self::fetch_csv`] と同じく一時ファイルへ書き、読んだ中身のバージョンも返す。
-    async fn fetch_csv_versioned(
-        &self,
-        ctx: &AuthContext,
-        file_id: Uuid,
-        trace_id: Option<&str>,
-    ) -> Result<(tempfile::NamedTempFile, i64), TabularError> {
+    ) -> Result<RunnerInput, TabularError> {
         let (node, bytes) = self
             .storage
             .read_file_internal(ctx, file_id, trace_id)
@@ -245,9 +239,24 @@ impl TabularService {
         if node.kind != NodeKind::File {
             return Err(TabularError::NotFound(format!("file {file_id}")));
         }
-        // ランナー（DuckDB）は UTF-8 だけを読むので、文字コードを決めて UTF-8 にしてから渡す（BOM は含めない）。
-        let text = decode_csv(&bytes)?.text;
-        Ok((runner_input(&text)?, node.version))
+        let (file, format) = match input::sniff(&bytes) {
+            Sniffed::Zip => {
+                if bytes.len() as u64 > input::MAX_FILE_BYTES {
+                    return Err(TabularError::NotText(input::file_too_large()));
+                }
+                (runner_file(&bytes, ".xlsx")?, InputFormat::Xlsx)
+            }
+            Sniffed::OldOffice => return Err(TabularError::NotText(input::OLD_OFFICE.into())),
+            Sniffed::Text => (
+                runner_file(decode_csv(&bytes)?.text.as_bytes(), ".csv")?,
+                InputFormat::Csv,
+            ),
+        };
+        Ok(RunnerInput {
+            file,
+            format,
+            version: node.version,
+        })
     }
 
     /// CSV の区切りと改行を、集計の読み込みと同じ推定（隔離ランナーの [`RunnerOp::Dialect`]）で決める（BUG-144）。
@@ -258,8 +267,15 @@ impl TabularService {
         if text.trim().is_empty() {
             return CsvDialect::default();
         }
-        let sniffed = match runner_input(text) {
-            Ok(tmp) => self.run(RunnerOp::Dialect, tmp.path(), 0).await,
+        let sniffed = match runner_file(text.as_bytes(), ".csv") {
+            Ok(file) => {
+                let input = RunnerInput {
+                    file,
+                    format: InputFormat::Csv,
+                    version: 0,
+                };
+                self.run(RunnerOp::Dialect, &input, 0).await
+            }
             Err(e) => Err(e),
         };
         match sniffed {
@@ -279,7 +295,7 @@ impl TabularService {
     async fn run(
         &self,
         op: RunnerOp,
-        csv_path: &std::path::Path,
+        input: &RunnerInput,
         max_rows: u32,
     ) -> Result<RunnerResponse, TabularError> {
         // ユーザー SQL（Query）の実行失敗は利用者起因（400）、それ以外の op はこちらの
@@ -287,13 +303,18 @@ impl TabularService {
         let is_user_query = matches!(op, RunnerOp::Query { .. });
         let request = RunnerRequest {
             op,
-            csv_path: csv_path.to_string_lossy().into_owned(),
+            csv_path: input.file.path().to_string_lossy().into_owned(),
+            format: input.format,
             memory_limit_mb: self.quotas.memory_limit_mb,
             max_rows,
         };
         let response = run_isolated(&self.runner, &request).await?;
         if !response.ok {
             let msg = response.error.unwrap_or_else(|| "unknown".into());
+            // 渡したファイルを表として読めなかった（壊れた・上限を超える Excel など）。文言は利用者向け（D-17）。
+            if response.input_error {
+                return Err(TabularError::NotText(msg));
+            }
             return Err(if is_user_query {
                 TabularError::QueryFailed(msg)
             } else {
@@ -308,14 +329,21 @@ impl TabularService {
     }
 }
 
-/// UTF-8 にした CSV を、隔離ランナー用の私有一時ファイルへ書く。
-fn runner_input(text: &str) -> Result<tempfile::NamedTempFile, TabularError> {
+/// 隔離ランナーへ渡す入力（私有の一時ファイル・形式・読んだ中身のバージョン）。
+struct RunnerInput {
+    file: tempfile::NamedTempFile,
+    format: InputFormat,
+    version: i64,
+}
+
+/// UTF-8 にした CSV か Excel のバイト列を、隔離ランナー用の私有一時ファイルへ書く。
+fn runner_file(bytes: &[u8], suffix: &str) -> Result<tempfile::NamedTempFile, TabularError> {
     let mut tmp = tempfile::Builder::new()
         .prefix("shiki-tabular-")
-        .suffix(".csv")
+        .suffix(suffix)
         .tempfile()
         .map_err(|e| TabularError::Internal(format!("一時ファイル作成に失敗: {e}")))?;
-    tmp.write_all(text.as_bytes())
+    tmp.write_all(bytes)
         .map_err(|e| TabularError::Internal(format!("一時ファイル書込に失敗: {e}")))?;
     tmp.flush()
         .map_err(|e| TabularError::Internal(format!("一時ファイル flush に失敗: {e}")))?;

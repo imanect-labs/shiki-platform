@@ -16,6 +16,7 @@
 //! features で使い DuckDB をリンクしない＝敵対的 CSV を api プロセスに一切食わせない。
 
 pub mod error;
+pub mod input;
 pub mod patch;
 pub mod protocol;
 pub mod runner;
@@ -24,7 +25,7 @@ pub mod sql_guard;
 
 pub use error::TabularError;
 pub use patch::{apply_patches, apply_patches_with, PatchOp, PatchResult};
-pub use protocol::{CsvDialect, RunnerOp, RunnerRequest, RunnerResponse};
+pub use protocol::{CsvDialect, InputFormat, RunnerOp, RunnerRequest, RunnerResponse};
 pub use runner::RunnerConfig;
 pub use service::{PatchApplied, Quotas, SavedCsv, TabularService};
 pub use sql_guard::validate_read_only;

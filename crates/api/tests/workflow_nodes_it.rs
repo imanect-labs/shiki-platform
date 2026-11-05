@@ -1358,6 +1358,134 @@ async fn csv_query_items_keep_value_kinds() {
     );
 }
 
+/// 「CSV を集計」は Excel（.xlsx）も読む（D-17）。左端のシートを表として読み、いちばん上の行を列の名前にする。
+/// 列の型はセルの種類から決め（日付・はい／いいえ・整数・文字の 007）、数式は保存された値を読み、空の行は飛ばす。
+/// 古い形式の Excel（.xls など）は理由を言って断る（not_text_file）。
+#[tokio::test]
+async fn csv_query_reads_the_leftmost_sheet_of_an_excel_file() {
+    let Some(runner) = runner_path() else {
+        eprintln!("shiki-tabular-runner 未ビルドのためスキップ（SHIKI_TABULAR_RUNNER 参照）");
+        return;
+    };
+    let Some(h) = setup().await else { return };
+    let tag = Uuid::new_v4().simple().to_string()[..8].to_string();
+    let xlsx = h
+        .storage
+        .write_file_internal(
+            &h.alice,
+            None,
+            &format!("経費-{tag}.xlsx"),
+            include_bytes!("../../tabular/tests/fixtures/expenses.xlsx"),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            None,
+        )
+        .await
+        .expect("xlsx アップロード");
+    // 古い形式の Excel（OLE2 の複合ファイルの先頭）。
+    let xls = h
+        .storage
+        .write_file_internal(
+            &h.alice,
+            None,
+            &format!("経費-{tag}.xls"),
+            &[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1, 0, 0],
+            "application/vnd.ms-excel",
+            None,
+        )
+        .await
+        .expect("xls アップロード");
+    let wf = h
+        .save(&json!({
+            "ir_version": 1, "name": format!("csv-xlsx-{tag}"),
+            "declared_scopes": ["csv.read"],
+            "triggers": [{ "kind": "interactive" }],
+            "nodes": [ { "id": "q", "type": "csv.query", "params": {
+                "file": { "$from": "input", "path": "/file" },
+                "sql": "SELECT * FROM data ORDER BY 日付" } } ],
+            "edges": []
+        }))
+        .await;
+    let step = |run_id: Uuid| {
+        let pool = h.pool.clone();
+        let tenant = h.tenant.clone();
+        async move {
+            let row: (Option<Value>, Option<Value>) = sqlx::query_as(
+                "SELECT output, error FROM step_execution WHERE tenant_id = $1 AND run_id = $2",
+            )
+            .bind(&tenant)
+            .bind(run_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+            row
+        }
+    };
+    let read = h
+        .run(
+            wf,
+            &json!({ "file": xlsx.id.to_string() }),
+            h.executor_with_tabular(&runner),
+        )
+        .await;
+    let read_step = step(read.0).await;
+    let old = h
+        .run(
+            wf,
+            &json!({ "file": xls.id.to_string() }),
+            h.executor_with_tabular(&runner),
+        )
+        .await;
+    let old_step = step(old.0).await;
+
+    // 片付け（run の履歴・ファイル・ワークフロー・OpenFGA のストア）。
+    h.runs.purge_tenant_history(&h.tenant).await.unwrap();
+    for id in [xlsx.id, xls.id] {
+        h.storage
+            .soft_delete_file(&h.alice, id, None)
+            .await
+            .unwrap();
+    }
+    h.artifacts.delete(&h.alice, wf, None).await.unwrap();
+    h.delete_fga_store().await;
+
+    assert_eq!(read.1, RunStatus::Succeeded, "{read_step:?}");
+    let out = read_step.0.unwrap();
+    assert_eq!(
+        out["columns"],
+        json!(["日付", "品目", "金額", "精算済み", "社員番号"])
+    );
+    assert_eq!(
+        out["column_types"],
+        json!(["DATE", "VARCHAR", "BIGINT", "BOOLEAN", "VARCHAR"])
+    );
+    assert_eq!(
+        out["items"][0],
+        json!({ "日付": "2024-04-01", "品目": "交通費", "金額": 1200, "精算済み": true, "社員番号": "007" }),
+        "{out}"
+    );
+    assert_eq!(
+        out["items"][2]["金額"], 800,
+        "数式は保存された値を読む: {out}"
+    );
+    assert_eq!(
+        out["rows"][0],
+        json!(["2024-04-01", "交通費", "1200", "true", "007"])
+    );
+    assert_eq!(out["total_rows"], 4, "空の行は飛ばす: {out}");
+    assert_eq!(out["version"], xlsx.version);
+
+    assert_eq!(old.1, RunStatus::Failed);
+    let error = old_step.1.unwrap();
+    assert_eq!(error["code"], "not_text_file", "{error}");
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains("古い形式の Excel（.xls）"),
+        "{error}"
+    );
+}
+
 /// 新しく保存する CSV の文字コード（GAP-47・D-120）。「新しい CSV を保存」と、CSV として保存する「新しいファイルを
 /// 保存」は、選んだ文字コード（UTF-8〔BOM 付き〕・UTF-8・Shift_JIS）で書く。欄の無い保存済みの定義は、これまでどおり
 /// BOM の無い UTF-8 で書く。CSV でない種類には使わない。Shift_JIS に無い文字は書かずに失敗する。

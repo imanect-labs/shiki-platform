@@ -5794,7 +5794,9 @@ dependencies = [
 name = "shiki-tabular"
 version = "0.0.0"
 dependencies = [
+ "crc32fast",
  "csv",
+ "flate2",
  "serde",
  "serde_json",
  "shiki-authz",

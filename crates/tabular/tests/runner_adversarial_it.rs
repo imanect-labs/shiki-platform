@@ -23,7 +23,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use serde_json::json;
-use tabular::{validate_read_only, RunnerConfig, RunnerOp, RunnerRequest};
+use tabular::{validate_read_only, InputFormat, RunnerConfig, RunnerOp, RunnerRequest};
 
 /// ランナーバイナリのパス。`SHIKI_TABULAR_RUNNER` 優先、無ければ除外クレートの既定 target。
 fn runner_path() -> Option<PathBuf> {
@@ -60,6 +60,7 @@ async fn run(csv: &tempfile::NamedTempFile, op: RunnerOp) -> tabular::RunnerResp
     let req = RunnerRequest {
         op,
         csv_path: csv.path().to_string_lossy().into_owned(),
+        format: InputFormat::Csv,
         memory_limit_mb: 256,
         max_rows: 1000,
     };
@@ -264,6 +265,7 @@ async fn query_tolerates_trailing_semicolons_comments_and_duplicate_names() {
             sql: "SELECT a FROM data".into(),
         },
         csv_path: csv.path().to_string_lossy().into_owned(),
+        format: InputFormat::Csv,
         memory_limit_mb: 256,
         max_rows: 1,
     };
@@ -410,6 +412,7 @@ async fn quota_timeout_kills_runner_not_caller() {
             sql: "SELECT count(*) FROM range(100000000) t1, range(1000) t2".into(),
         },
         csv_path: csv.path().to_string_lossy().into_owned(),
+        format: InputFormat::Csv,
         memory_limit_mb: 256,
         max_rows: 1000,
     };

@@ -191,11 +191,12 @@ jobs:
       # 隔離ランナー（DuckDB bundled）を release ビルドする。
       - name: build isolated runner (bundled DuckDB)
         run: cargo build --manifest-path crates/tabular/runner/Cargo.toml --release
-      # adversarial テスト（PIT-39 の 4 系統）を実行する。ランナーは SHIKI_TABULAR_RUNNER で指す。
-      - name: adversarial tests (外部参照/DML/DDL/クォータ超過の拒否)
+      # adversarial テスト（PIT-39 の 4 系統）と、Excel の読み取り（zip 爆弾などの上限・D-17）を実行する。
+      # ランナーは SHIKI_TABULAR_RUNNER で指す。
+      - name: adversarial tests (外部参照/DML/DDL/クォータ超過の拒否・Excel の上限)
         env:
           SHIKI_TABULAR_RUNNER: crates/tabular/runner/target/release/shiki-tabular-runner
-        run: cargo test -p shiki-tabular --test runner_adversarial_it
+        run: cargo test -p shiki-tabular --test runner_adversarial_it --test runner_xlsx_it
       # E2E の runtime-only イメージへ焼くため、ビルド済みランナーを artifact 共有する。
       - name: upload runner binary (web-e2e 用)
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

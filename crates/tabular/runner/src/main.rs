@@ -11,13 +11,17 @@
 //! 3. `SET lock_configuration=true` — 設定変更（外部アクセス再有効化等）を封じる。
 //! 4. autoload/autoinstall 無効化。
 //! 5. ユーザーの**検証済み**読み取り専用 SQL を `data` に対して実行。
+//!
+//! Excel（.xlsx・[`InputFormat::Xlsx`]）は 1 の代わりに [`xlsx`] が展開して左端のシートを `data` に入れる
+//! （CSV を集計の読み取りだけ・D-17）。読めない Excel は利用者が直す誤り（`input_error`）として返す。
 
 mod query;
+mod xlsx;
 
 use std::io::{Read, Write};
 
 use duckdb::Connection;
-use tabular::{CsvDialect, RunnerOp, RunnerRequest, RunnerResponse};
+use tabular::{CsvDialect, InputFormat, RunnerOp, RunnerRequest, RunnerResponse};
 
 fn main() {
     let mut input = Vec::new();
@@ -52,7 +56,20 @@ fn execute(req: &RunnerRequest) -> Result<RunnerResponse, String> {
         set_quotas(&conn, req)?;
         return dialect(&conn, &req.csv_path);
     }
-    let query_types = lockdown_load(&conn, req)?;
+    let query_types = match req.format {
+        InputFormat::Csv => lockdown_load(&conn, req)?,
+        InputFormat::Xlsx => {
+            set_quotas(&conn, req)?;
+            let typed = matches!(req.op, RunnerOp::Query { .. });
+            let types = match xlsx::load(&conn, &req.csv_path, typed) {
+                Ok(types) => types,
+                Err(xlsx::LoadError::Input(e)) => return Ok(RunnerResponse::input_failure(e.0)),
+                Err(xlsx::LoadError::Internal(e)) => return Err(e),
+            };
+            lockdown(&conn)?;
+            matches!(req.op, RunnerOp::Schema).then_some(types)
+        }
+    };
     match &req.op {
         RunnerOp::Schema => schema(&conn, query_types),
         RunnerOp::Rows { offset } => rows(&conn, *offset, req.max_rows),
@@ -133,16 +150,20 @@ fn lockdown_load(conn: &Connection, req: &RunnerRequest) -> Result<Option<Vec<St
         None
     };
 
-    // 以降、SQL からの外部到達を封じる（PIT-39 の核）。lock_configuration で
-    // enable_external_access を戻せないようにする。
+    lockdown(conn)?;
+    Ok(query_types)
+}
+
+/// 以降、SQL からの外部到達を封じる（PIT-39 の核）。lock_configuration で enable_external_access を戻せないように
+/// する。表を作った後に呼ぶ。
+fn lockdown(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         "SET autoinstall_known_extensions=false; \
          SET autoload_known_extensions=false; \
          SET enable_external_access=false; \
          SET lock_configuration=true;",
     )
-    .map_err(|e| format!("ロックダウン設定に失敗: {e}"))?;
-    Ok(query_types)
+    .map_err(|e| format!("ロックダウン設定に失敗: {e}"))
 }
 
 fn total_rows(conn: &Connection) -> Result<u64, String> {

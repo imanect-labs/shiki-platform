@@ -20,6 +20,10 @@ shiki-tabular = { path = ".." }
 # 隔離 DuckDB（bundled C++）。このクレートだけがリンクする。
 duckdb = { version = "1", features = ["bundled"] }
 serde_json = "1"
+# Excel（.xlsx）の読み取り（CSV を集計だけ・D-17）。数式は計算せず、保存されている値を読む。展開の前に zip の中身の
+# 大きさと数を確かめる（zip 爆弾）。zip は calamine と同じ版を使い、deflate だけを有効にする。
+calamine = { version = "0.38", default-features = false }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 
 # lib 名 tabular で参照するため machete（名前一致）が誤検出する。
 [package.metadata.cargo-machete]
