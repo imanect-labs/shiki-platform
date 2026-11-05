@@ -12,10 +12,11 @@
 //! 4. autoload/autoinstall 無効化。
 //! 5. ユーザーの**検証済み**読み取り専用 SQL を `data` に対して実行。
 
+mod query;
+
 use std::io::{Read, Write};
 
-use duckdb::types::ValueRef;
-use duckdb::{Connection, Row};
+use duckdb::Connection;
 use tabular::{CsvDialect, RunnerOp, RunnerRequest, RunnerResponse};
 
 fn main() {
@@ -51,11 +52,11 @@ fn execute(req: &RunnerRequest) -> Result<RunnerResponse, String> {
         set_quotas(&conn, req)?;
         return dialect(&conn, &req.csv_path);
     }
-    lockdown_load(&conn, req)?;
+    let query_types = lockdown_load(&conn, req)?;
     match &req.op {
-        RunnerOp::Schema => schema(&conn),
+        RunnerOp::Schema => schema(&conn, query_types),
         RunnerOp::Rows { offset } => rows(&conn, *offset, req.max_rows),
-        RunnerOp::Query { sql } => query(&conn, sql, req.max_rows),
+        RunnerOp::Query { sql } => query::query(&conn, sql, req.max_rows),
         RunnerOp::Dialect => Err("unreachable: dialect".into()),
     }
 }
@@ -82,16 +83,11 @@ fn dialect(conn: &Connection, csv_path: &str) -> Result<RunnerResponse, String> 
     let crlf = newline.contains('\r') || newline.contains("\\r");
     Ok(RunnerResponse {
         ok: true,
-        columns: Vec::new(),
-        column_types: Vec::new(),
-        rows: Vec::new(),
-        total_rows: None,
-        truncated: false,
-        error: None,
         dialect: Some(CsvDialect {
             delimiter: unescape_delimiter(&delimiter),
             newline: if crlf { "\r\n" } else { "\n" }.into(),
         }),
+        ..RunnerResponse::default()
     })
 }
 
@@ -104,7 +100,10 @@ fn unescape_delimiter(delimiter: &str) -> String {
 }
 
 /// CSV をロードしてから外部アクセスを封鎖する（順序が要）。
-fn lockdown_load(conn: &Connection, req: &RunnerRequest) -> Result<(), String> {
+///
+/// Schema のときは、集計（Query）で読むときの列の型も返す（グリッドは全列を文字で読むが、ワークフローの列の案内は
+/// 集計の結果の値の種類を言う）。
+fn lockdown_load(conn: &Connection, req: &RunnerRequest) -> Result<Option<Vec<String>>, String> {
     set_quotas(conn, req)?;
 
     // 唯一のファイル読取: 我々が渡した信頼パスから data テーブルへ。
@@ -122,6 +121,17 @@ fn lockdown_load(conn: &Connection, req: &RunnerRequest) -> Result<(), String> {
     stmt.execute([req.csv_path.as_str()])
         .map_err(|e| format!("CSV ロードに失敗: {e}"))?;
     drop(stmt);
+    let query_types = if matches!(req.op, RunnerOp::Schema) {
+        // 集計と同じ推定（型推論あり・同じ引数）。パスは api が置いた一時ファイル（引用符は重ねて打ち消す）。
+        let sql = format!(
+            "DESCRIBE SELECT * FROM read_csv_auto('{}', header=true)",
+            req.csv_path.replace('\'', "''")
+        );
+        // 推定できなくてもグリッドは読める（型は文字のまま返す）。
+        query::describe(conn, &sql).ok().map(|(_, types)| types)
+    } else {
+        None
+    };
 
     // 以降、SQL からの外部到達を封じる（PIT-39 の核）。lock_configuration で
     // enable_external_access を戻せないようにする。
@@ -132,7 +142,7 @@ fn lockdown_load(conn: &Connection, req: &RunnerRequest) -> Result<(), String> {
          SET lock_configuration=true;",
     )
     .map_err(|e| format!("ロックダウン設定に失敗: {e}"))?;
-    Ok(())
+    Ok(query_types)
 }
 
 fn total_rows(conn: &Connection) -> Result<u64, String> {
@@ -141,31 +151,20 @@ fn total_rows(conn: &Connection) -> Result<u64, String> {
         .map_err(|e| e.to_string())
 }
 
-fn schema(conn: &Connection) -> Result<RunnerResponse, String> {
-    let (columns, types) = describe(conn, "DESCRIBE SELECT * FROM data")?;
+/// 列の名前と型と総行数。型は集計で読むときの型（分かれば・列の数が合うときだけ）。
+fn schema(conn: &Connection, query_types: Option<Vec<String>>) -> Result<RunnerResponse, String> {
+    let (columns, types) = query::describe(conn, "DESCRIBE SELECT * FROM data")?;
+    let column_types = match query_types {
+        Some(t) if t.len() == columns.len() => t,
+        _ => types,
+    };
     Ok(RunnerResponse {
         ok: true,
         columns,
-        column_types: types,
-        rows: Vec::new(),
+        column_types,
         total_rows: Some(total_rows(conn)?),
-        truncated: false,
-        error: None,
-        dialect: None,
+        ..RunnerResponse::default()
     })
-}
-
-fn describe(conn: &Connection, sql: &str) -> Result<(Vec<String>, Vec<String>), String> {
-    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
-    let mut names = Vec::new();
-    let mut types = Vec::new();
-    let mut r = stmt.query([]).map_err(|e| e.to_string())?;
-    while let Some(row) = r.next().map_err(|e| e.to_string())? {
-        // DESCRIBE: column_name, column_type, ...
-        names.push(row.get::<_, String>(0).map_err(|e| e.to_string())?);
-        types.push(row.get::<_, String>(1).unwrap_or_default());
-    }
-    Ok((names, types))
 }
 
 fn rows(conn: &Connection, offset: u64, max_rows: u32) -> Result<RunnerResponse, String> {
@@ -175,73 +174,7 @@ fn rows(conn: &Connection, offset: u64, max_rows: u32) -> Result<RunnerResponse,
         u64::from(max_rows).saturating_add(1),
         offset
     );
-    let mut resp = select(conn, &sql, max_rows)?;
+    let mut resp = query::read_rows(conn, &sql, max_rows, false)?;
     resp.total_rows = Some(total);
     Ok(resp)
-}
-
-fn query(conn: &Connection, sql: &str, max_rows: u32) -> Result<RunnerResponse, String> {
-    // ユーザー SQL は api 側で検証済み（単一 SELECT）。ラップして結果サイズを打ち切る。
-    let wrapped = format!(
-        "SELECT * FROM ({sql}) AS q LIMIT {}",
-        u64::from(max_rows).saturating_add(1)
-    );
-    select(conn, &wrapped, max_rows)
-}
-
-/// SELECT を実行し、全セルを文字列化して返す（max_rows で打ち切り）。
-fn select(conn: &Connection, sql: &str, max_rows: u32) -> Result<RunnerResponse, String> {
-    let mut stmt = conn.prepare(sql).map_err(|e| e.to_string())?;
-    let mut r = stmt.query([]).map_err(|e| e.to_string())?;
-    // 列名は**実行後**に取れる（query() 前だと DuckDB が None を返す）。Rows 経由で取得。
-    let columns: Vec<String> = r
-        .as_ref()
-        .map(|s| s.column_names().iter().map(ToString::to_string).collect())
-        .unwrap_or_default();
-    let ncols = columns.len();
-    let mut out_rows: Vec<Vec<Option<String>>> = Vec::new();
-    let mut truncated = false;
-    while let Some(row) = r.next().map_err(|e| e.to_string())? {
-        if out_rows.len() as u32 >= max_rows {
-            truncated = true;
-            break;
-        }
-        let mut cells = Vec::with_capacity(ncols);
-        for i in 0..ncols {
-            cells.push(cell_to_string(row, i));
-        }
-        out_rows.push(cells);
-    }
-    Ok(RunnerResponse {
-        ok: true,
-        columns,
-        column_types: Vec::new(),
-        rows: out_rows,
-        total_rows: None,
-        truncated,
-        error: None,
-        dialect: None,
-    })
-}
-
-/// セルを文字列へ（NULL は None）。all_varchar ロードなので基本 Text。
-fn cell_to_string(row: &Row<'_>, i: usize) -> Option<String> {
-    match row.get_ref(i) {
-        Ok(ValueRef::Null) => None,
-        Ok(ValueRef::Text(bytes)) => Some(String::from_utf8_lossy(bytes).into_owned()),
-        Ok(ValueRef::Boolean(b)) => Some(b.to_string()),
-        Ok(ValueRef::TinyInt(n)) => Some(n.to_string()),
-        Ok(ValueRef::SmallInt(n)) => Some(n.to_string()),
-        Ok(ValueRef::Int(n)) => Some(n.to_string()),
-        Ok(ValueRef::BigInt(n)) => Some(n.to_string()),
-        Ok(ValueRef::HugeInt(n)) => Some(n.to_string()),
-        Ok(ValueRef::UTinyInt(n)) => Some(n.to_string()),
-        Ok(ValueRef::USmallInt(n)) => Some(n.to_string()),
-        Ok(ValueRef::UInt(n)) => Some(n.to_string()),
-        Ok(ValueRef::UBigInt(n)) => Some(n.to_string()),
-        Ok(ValueRef::Float(f)) => Some(f.to_string()),
-        Ok(ValueRef::Double(f)) => Some(f.to_string()),
-        Ok(other) => Some(format!("{other:?}")),
-        Err(_) => None,
-    }
 }

@@ -434,12 +434,10 @@ mod tests {
         RunnerResponse {
             ok: true,
             columns: vec!["a".into(), "b".into()],
-            column_types: vec![],
             rows,
             total_rows: total,
             truncated,
-            error: None,
-            dialect: None,
+            ..RunnerResponse::default()
         }
     }
 

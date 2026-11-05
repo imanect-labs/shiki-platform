@@ -55,20 +55,26 @@ impl Default for CsvDialect {
 }
 
 /// ランナーの応答。
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RunnerResponse {
     /// 成功可否。false のとき `error` に理由。
     pub ok: bool,
     /// 列名（順序どおり）。
     #[serde(default)]
     pub columns: Vec<String>,
-    /// 列の型名（DuckDB 型・columns と同順）。
+    /// 列の型名（DuckDB 型・columns と同順）。Schema は集計（Query）で読むときの型（DuckDB の推定）、
+    /// Query は結果の列の型。Rows は空。
     #[serde(default)]
     pub column_types: Vec<String>,
-    /// 行（各行はセル文字列の配列・NULL は None）。
+    /// 行（各行はセル文字列の配列・NULL は None）。日付・時刻・小数（DECIMAL）などは DuckDB の文字の形
+    /// （`2024-01-31`・`1.50` など）。
     #[serde(default)]
     pub rows: Vec<Vec<Option<String>>>,
-    /// テーブル総行数（Schema/Rows で返す・ページング UI 用）。
+    /// 値の種類を保った行（Query のときだけ・`rows` と同じ並び）。数・真偽・空はそのまま、日付と時刻は `rows` と
+    /// 同じ文字。JavaScript で正確に扱えない大きな整数（±2^53 を超える）と、無限大・非数も文字。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub values: Vec<Vec<serde_json::Value>>,
+    /// テーブル総行数（Schema/Rows で返す・ページング UI 用）。Query は打ち切らなかったときの結果の行の数。
     #[serde(default)]
     pub total_rows: Option<u64>,
     /// max_rows で打ち切ったか。
@@ -86,13 +92,8 @@ impl RunnerResponse {
     pub fn failure(msg: impl Into<String>) -> Self {
         RunnerResponse {
             ok: false,
-            columns: Vec::new(),
-            column_types: Vec::new(),
-            rows: Vec::new(),
-            total_rows: None,
-            truncated: false,
             error: Some(msg.into()),
-            dialect: None,
+            ..RunnerResponse::default()
         }
     }
 }
