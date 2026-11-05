@@ -35,7 +35,12 @@ use sqlx::postgres::PgPoolOptions;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-struct AllowAll;
+/// 既定は全許可。`denied` に入れた id を含む object の check だけ拒否する（複数 CSV クエリで
+/// 「片方だけ読めない」を再現する・#1037）。
+#[derive(Default)]
+struct AllowAll {
+    denied: std::sync::Mutex<Vec<String>>,
+}
 
 #[async_trait]
 impl AuthzClient for AllowAll {
@@ -43,10 +48,16 @@ impl AuthzClient for AllowAll {
         &self,
         _: &Subject,
         _: Relation,
-        _: &FgaObject,
+        object: &FgaObject,
         _: Consistency,
     ) -> Result<bool, AuthzError> {
-        Ok(true)
+        let object = object.to_string();
+        Ok(!self
+            .denied
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|id| object.contains(id.as_str())))
     }
     async fn write_tuple(
         &self,
@@ -264,6 +275,7 @@ struct Env {
     app: axum::Router,
     storage: Arc<storage::StorageService>,
     ctx: authz::AuthContext,
+    authz: Arc<AllowAll>,
 }
 
 async fn setup() -> Option<Env> {
@@ -292,7 +304,8 @@ async fn setup() -> Option<Env> {
         .await
         .expect("migrate");
 
-    let authz: Arc<dyn AuthzClient> = Arc::new(AllowAll);
+    let allow = Arc::new(AllowAll::default());
+    let authz: Arc<dyn AuthzClient> = allow.clone();
     let s3 = storage::object_store::S3Config {
         internal_endpoint: s3_endpoint.clone(),
         public_endpoint: s3_endpoint,
@@ -355,6 +368,7 @@ async fn setup() -> Option<Env> {
         app,
         storage,
         ctx: authz::AuthContext::new(principal(), "acme".into(), "default".into()),
+        authz: allow,
     })
 }
 
@@ -635,4 +649,108 @@ async fn tabular_schema_rows_query_patch_flow() {
     .await;
     assert_eq!(st, StatusCode::OK, "{body:?}");
     assert!(body["node_id"].is_string());
+}
+
+async fn create_csv(env: &Env, body: &[u8]) -> Uuid {
+    let name = format!("join-{}.csv", Uuid::new_v4());
+    env.storage
+        .write_file_internal(&env.ctx, None, &name, body, "text/csv", None)
+        .await
+        .expect("create csv")
+        .id
+}
+
+async fn query(env: &Env, id: Uuid, body: Value) -> (StatusCode, Value) {
+    json_body(
+        env.app
+            .clone()
+            .oneshot(post(&format!("/files/{id}/tabular/query"), body))
+            .await
+            .unwrap(),
+    )
+    .await
+}
+
+/// #1037: `tables` で追加した CSV と JOIN できる。不正なテーブル名は 400、追加ファイルの片方でも
+/// 読めなければ拒否して部分結果を返さない（fail-closed）。閲覧権限の無いファイルは StorageService が
+/// 存在秘匿で 404 にする（無いファイルと区別させない）。
+#[tokio::test]
+async fn tabular_query_joins_multiple_csv() {
+    let Some(env) = setup().await else { return };
+    let orders = create_csv(
+        &env,
+        b"order_id,customer_id,amount\n1,10,100\n2,20,50\n3,10,30\n",
+    )
+    .await;
+    let customers = create_csv(&env, b"customer_id,name\n10,alice\n20,bob\n").await;
+    let regions = create_csv(&env, b"name,region\nalice,tokyo\nbob,osaka\n").await;
+    let sql = "SELECT c.name, r.region, sum(o.amount) AS total FROM data o \
+               JOIN customers c ON o.customer_id = c.customer_id \
+               JOIN regions r ON r.name = c.name \
+               GROUP BY c.name, r.region ORDER BY total DESC";
+
+    let (st, body) = query(
+        &env,
+        orders,
+        json!({"sql": sql, "tables": [
+            {"name": "customers", "file_id": customers},
+            {"name": "regions", "file_id": regions},
+        ]}),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body:?}");
+    assert_eq!(body["columns"], json!(["name", "region", "total"]));
+    assert_eq!(
+        body["rows"],
+        json!([["alice", "tokyo", "130"], ["bob", "osaka", "50"]])
+    );
+
+    // tables 省略は従来どおり（data のみ）。追加テーブルを参照すると DuckDB の理由付き 400。
+    let (st, body) = query(&env, orders, json!({"sql": "SELECT * FROM customers"})).await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{body:?}");
+
+    // 不正なテーブル名（予約名 data・大文字・重複）は 400。
+    for tables in [
+        json!([{"name": "data", "file_id": customers}]),
+        json!([{"name": "Customers", "file_id": customers}]),
+        json!([{"name": "c", "file_id": customers}, {"name": "c", "file_id": regions}]),
+    ] {
+        let (st, body) = query(&env, orders, json!({"sql": "SELECT 1", "tables": tables})).await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "tables={tables} body={body:?}");
+    }
+
+    // 存在しない追加ファイルは 404。
+    let (st, _b) = query(
+        &env,
+        orders,
+        json!({"sql": "SELECT 1", "tables": [{"name": "ghost", "file_id": Uuid::new_v4()}]}),
+    )
+    .await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+
+    // 追加ファイルの 1 つだけ閲覧権限が無い → 404（存在秘匿・他が読めても部分結果を返さない）。
+    env.authz.denied.lock().unwrap().push(regions.to_string());
+    let (st, body) = query(
+        &env,
+        orders,
+        json!({"sql": sql, "tables": [
+            {"name": "customers", "file_id": customers},
+            {"name": "regions", "file_id": regions},
+        ]}),
+    )
+    .await;
+    assert_eq!(st, StatusCode::NOT_FOUND, "{body:?}");
+    assert!(body.get("rows").is_none(), "部分結果を返さない: {body:?}");
+
+    // 主ファイル側が読めない場合も同様（追加ファイルが読めても通らない）。
+    env.authz.denied.lock().unwrap().clear();
+    env.authz.denied.lock().unwrap().push(orders.to_string());
+    let (st, body) = query(
+        &env,
+        orders,
+        json!({"sql": "SELECT * FROM customers", "tables": [{"name": "customers", "file_id": customers}]}),
+    )
+    .await;
+    assert_eq!(st, StatusCode::NOT_FOUND, "{body:?}");
+    assert!(body.get("rows").is_none(), "部分結果を返さない: {body:?}");
 }

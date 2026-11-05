@@ -15,12 +15,49 @@ use crate::ir::params::{
 use crate::run::NodeContext;
 
 use super::exec::CapabilityNodeExecutor;
-use super::ports::{CsvPatchReq, CsvWriteReq, ExecCtx, PortError, StorageWriteReq};
-use super::resolver::{as_bytes, as_string, as_u32, as_uuid, ParamResolver};
+use super::ports::{
+    CsvPatchReq, CsvQueryReq, CsvQueryTable, CsvWriteReq, ExecCtx, PortError, StorageWriteReq,
+};
+use super::resolver::{as_bytes, as_string, as_u32, as_uuid, resolve_field, ParamResolver};
 
 /// params を typed struct として取り出す（保存済み IR は V1 済み・失敗は permanent 扱い）。
 pub(super) fn parse_params<T: serde::de::DeserializeOwned>(raw: &Value) -> Result<T, PortError> {
     crate::ir::params::parse(raw).map_err(|e| PortError::invalid(format!("params が不正: {e}")))
+}
+
+/// csv.query の `tables`（解決後の値）を追加テーブル列へ。
+///
+/// 形は `[{ "name": "<テーブル名>", "file": "<UUID>" }, ...]`。各要素の `name` / `file` も値式
+/// （リテラル / `$from` / `$template`）として解決する（前段ノードが返したファイル id を使える）。
+/// 名前の形・重複・上限の検証は tabular（単一チョークポイント）が行うため、ここでは型だけを
+/// 確かめる（不正は permanent）。
+fn parse_csv_tables(
+    v: Option<Value>,
+    r: &ParamResolver<'_>,
+) -> Result<Vec<CsvQueryTable>, PortError> {
+    let invalid = |m: &str| PortError::invalid(format!("csv.query: tables {m}"));
+    let items = match v {
+        // 指定したのに参照が解決できない＝配線ミス。黙って単一 CSV に落とさない。
+        None => return Err(invalid("が解決できません")),
+        // 明示の null は追加テーブルなし＝単一 CSV クエリ。
+        Some(Value::Null) => return Ok(Vec::new()),
+        Some(Value::Array(items)) => items,
+        Some(_) => return Err(invalid("は配列に解決される必要があります")),
+    };
+    items
+        .iter()
+        .map(|item| {
+            let name = resolve_field(item, "name", r)
+                .as_ref()
+                .and_then(as_string)
+                .ok_or_else(|| invalid("の各要素に name（文字列）が要ります"))?;
+            let file_id = resolve_field(item, "file", r)
+                .as_ref()
+                .and_then(as_uuid)
+                .ok_or_else(|| invalid("の各要素に file（UUID）が要ります"))?;
+            Ok(CsvQueryTable { name, file_id })
+        })
+        .collect()
 }
 
 /// バイト列の sha256（16 進）。storage.write の op_digest 素材。
@@ -267,18 +304,32 @@ impl CapabilityNodeExecutor {
         let sql = resolve_value(&p.sql, r)
             .and_then(|v| as_string(&v))
             .ok_or_else(|| PortError::invalid("csv.query: sql が解決できません"))?;
-        let out = self.ports.csv_query(ec, file_id, &sql).await?;
-        // SQL 本文は監査に載せない（PII/秘匿クエリ回避）。件数のみ。
+        let tables = match &p.tables {
+            Some(expr) => parse_csv_tables(resolve_value(expr, r), r)?,
+            None => Vec::new(),
+        };
+        let table_files: Vec<String> = tables.iter().map(|t| t.file_id.to_string()).collect();
+        let out = self
+            .ports
+            .csv_query(
+                ec,
+                CsvQueryReq {
+                    file_id,
+                    sql,
+                    tables,
+                },
+            )
+            .await?;
+        // SQL 本文は監査に載せない（PII/秘匿クエリ回避）。対象ファイルと件数のみ。
         let rows = out
             .get("rows")
             .and_then(Value::as_array)
             .map_or(0, Vec::len);
-        self.audit(
-            &ec.tenant_id,
-            "csv.query",
-            true,
-            &json!({ "file_id": file_id.to_string(), "rows": rows }),
-        );
+        let mut detail = json!({ "file_id": file_id.to_string(), "rows": rows });
+        if !table_files.is_empty() {
+            detail["table_file_ids"] = json!(table_files);
+        }
+        self.audit(&ec.tenant_id, "csv.query", true, &detail);
         Ok(out)
     }
 

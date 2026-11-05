@@ -6,7 +6,8 @@
 //!
 //! # ロックダウン手順（順序が重要）
 //! 1. 信頼できるパス（api が渡した一時ファイル）から `read_csv_auto` で `data` テーブルへロード。
-//!    これが**唯一のファイルシステム読取**（我々が実行）。
+//!    追加テーブル（複数 CSV の JOIN）も同様に各信頼パスからロードする。これらが**唯一の
+//!    ファイルシステム読取**（我々が実行）。
 //! 2. `SET enable_external_access=false` — 以降 SQL からの任意パス/URL 到達を封じる。
 //! 3. `SET lock_configuration=true` — 設定変更（外部アクセス再有効化等）を封じる。
 //! 4. autoload/autoinstall 無効化。
@@ -78,6 +79,32 @@ fn lockdown_load(conn: &Connection, req: &RunnerRequest) -> Result<(), String> {
     stmt.execute([req.csv_path.as_str()])
         .map_err(|e| format!("CSV ロードに失敗: {e}"))?;
     drop(stmt);
+
+    // 追加テーブル（複数 CSV の JOIN・#1037）。Query 経路だけで許す（グリッドは単一ファイル）。
+    // 名前は api 側でも検証済みだが、ここでも同じ規則で再検証してから識別子へ埋め込む
+    // （英小文字/数字/_ のみ＝引用符の外へ出られない・多層防御）。ロックダウン前にすべて読む。
+    if !req.extra_tables.is_empty() {
+        if !matches!(req.op, RunnerOp::Query { .. }) {
+            return Err("追加テーブルはクエリでのみ使えます".into());
+        }
+        if req.extra_tables.len() > tabular::MAX_EXTRA_TABLES {
+            return Err("追加テーブルが多すぎます".into());
+        }
+        for t in &req.extra_tables {
+            if !tabular::is_valid_table_name(&t.name) || t.name == tabular::PRIMARY_TABLE {
+                return Err(format!("テーブル名 `{}` は使えません", t.name));
+            }
+            let sql = format!(
+                "CREATE TABLE \"{}\" AS SELECT * FROM read_csv_auto(?, all_varchar={all_varchar}, header=true)",
+                t.name
+            );
+            let mut stmt = conn
+                .prepare(&sql)
+                .map_err(|e| format!("テーブル `{}` のロード準備に失敗: {e}", t.name))?;
+            stmt.execute([t.csv_path.as_str()])
+                .map_err(|e| format!("テーブル `{}` の CSV ロードに失敗: {e}", t.name))?;
+        }
+    }
 
     // 以降、SQL からの外部到達を封じる（PIT-39 の核）。lock_configuration で
     // enable_external_access を戻せないようにする。

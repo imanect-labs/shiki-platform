@@ -21,10 +21,12 @@ pub mod protocol;
 pub mod runner;
 pub mod service;
 pub mod sql_guard;
+pub mod tables;
 
 pub use error::TabularError;
 pub use patch::{apply_patches, PatchOp, PatchResult};
-pub use protocol::{RunnerOp, RunnerRequest, RunnerResponse};
+pub use protocol::{RunnerOp, RunnerRequest, RunnerResponse, RunnerTable};
 pub use runner::RunnerConfig;
 pub use service::{PatchApplied, Quotas, SavedCsv, TabularService};
 pub use sql_guard::validate_read_only;
+pub use tables::{is_valid_table_name, validate_tables, TableRef, MAX_EXTRA_TABLES, PRIMARY_TABLE};

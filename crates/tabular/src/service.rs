@@ -2,12 +2,15 @@
 //!
 //! UI・エージェントツール・ワークフローステップは**すべてここを通る**（AuthContext 必須）。
 //! 認可は操作別に StorageService の内部 API が強制する（**実行主体交差則**・昇格しない）:
-//! - query/rows/schema … `read_file_internal`（viewer@file）
+//! - query/rows/schema … `read_file_internal`（viewer@file）。複数 CSV クエリは対象の**全ファイル**で
+//!   viewer を個別に要求する（1 つでも欠ければ全体を拒否・#1037）
 //! - patch … `update_file_content_internal`（editor@file）
 //! - save（新規） … `write_file_internal`（member@org / editor@folder＝作成権限）
 //!
 //! DuckDB 実行は [`crate::runner`] の非特権別プロセスに隔離し、api には CSV を食わせない。
 
+use std::collections::hash_map::Entry;
+use std::collections::HashMap;
 use std::io::Write as _;
 use std::sync::Arc;
 
@@ -17,9 +20,10 @@ use uuid::Uuid;
 
 use crate::error::TabularError;
 use crate::patch::{apply_patches, PatchOp};
-use crate::protocol::{RunnerOp, RunnerRequest, RunnerResponse};
+use crate::protocol::{RunnerOp, RunnerRequest, RunnerResponse, RunnerTable};
 use crate::runner::{run_isolated, RunnerConfig};
 use crate::sql_guard::validate_read_only;
+use crate::tables::{validate_tables, TableRef};
 
 /// クォータ既定値（design §4.8.2「メモリ/時間/結果サイズのクォータ強制」）。
 #[derive(Debug, Clone)]
@@ -83,7 +87,7 @@ impl TabularService {
         trace_id: Option<&str>,
     ) -> Result<RunnerResponse, TabularError> {
         let path = self.fetch_csv(ctx, file_id, trace_id).await?;
-        self.run(RunnerOp::Schema, path.path(), 0).await
+        self.run(RunnerOp::Schema, path.path(), Vec::new(), 0).await
     }
 
     /// CSV の 1 ページ（安定行番号順・offset から page_size）を返す（viewer 認可）。
@@ -98,6 +102,7 @@ impl TabularService {
         self.run(
             RunnerOp::Rows { offset },
             path.path(),
+            Vec::new(),
             self.quotas.page_size,
         )
         .await
@@ -111,17 +116,59 @@ impl TabularService {
         sql: &str,
         trace_id: Option<&str>,
     ) -> Result<RunnerResponse, TabularError> {
-        // まず SQL を検証（api 側で拒否＝敵対的 SQL を隔離プロセスへ渡す前に弾く多層防御）。
+        self.query_tables(ctx, file_id, &[], sql, trace_id).await
+    }
+
+    /// 複数 CSV に対する読み取り専用 SQL（#1037）。主ファイルは `data`、`tables` の各ファイルは
+    /// 指定名のテーブルとして同じ隔離ランナーにロードされ、JOIN できる。
+    ///
+    /// **全ファイルを個別に viewer 認可**する（実行主体交差則・昇格しない）。1 つでも読めなければ
+    /// 全体を失敗させ、部分的な結果は返さない（fail-closed）。
+    pub async fn query_tables(
+        &self,
+        ctx: &AuthContext,
+        file_id: Uuid,
+        tables: &[TableRef],
+        sql: &str,
+        trace_id: Option<&str>,
+    ) -> Result<RunnerResponse, TabularError> {
+        // まず SQL とテーブル指定を検証（敵対的入力を隔離プロセスへ渡す前に弾く多層防御）。
+        // ストレージ読取より前に置き、不正な指定でファイル取得を発生させない。
         validate_read_only(sql)?;
-        let path = self.fetch_csv(ctx, file_id, trace_id).await?;
-        self.run(
-            RunnerOp::Query {
-                sql: sql.to_string(),
-            },
-            path.path(),
-            self.quotas.max_rows,
-        )
-        .await
+        validate_tables(tables)?;
+        let primary = self.fetch_csv(ctx, file_id, trace_id).await?;
+        // 同じファイルを複数名で参照しても取得/一時ファイルは 1 回に畳む（認可結果は同一）。
+        let mut fetched: HashMap<Uuid, tempfile::NamedTempFile> = HashMap::new();
+        let mut extra = Vec::with_capacity(tables.len());
+        for t in tables {
+            let path = if t.file_id == file_id {
+                primary.path().to_path_buf()
+            } else {
+                let tmp = match fetched.entry(t.file_id) {
+                    Entry::Occupied(e) => e.into_mut(),
+                    Entry::Vacant(e) => e.insert(self.fetch_csv(ctx, t.file_id, trace_id).await?),
+                };
+                tmp.path().to_path_buf()
+            };
+            extra.push(RunnerTable {
+                name: t.name.clone(),
+                csv_path: path.to_string_lossy().into_owned(),
+            });
+        }
+        // 一時ファイル（primary / fetched）はランナー終了まで生かす（drop で削除される）。
+        let resp = self
+            .run(
+                RunnerOp::Query {
+                    sql: sql.to_string(),
+                },
+                primary.path(),
+                extra,
+                self.quotas.max_rows,
+            )
+            .await;
+        drop(fetched);
+        drop(primary);
+        resp
     }
 
     /// パッチ列を適用して新バージョンを保存する（editor 認可・rev 楽観ロック）。
@@ -220,6 +267,7 @@ impl TabularService {
         &self,
         op: RunnerOp,
         csv_path: &std::path::Path,
+        extra_tables: Vec<RunnerTable>,
         max_rows: u32,
     ) -> Result<RunnerResponse, TabularError> {
         // ユーザー SQL（Query）の実行失敗は利用者起因（400）、それ以外の op はこちらの
@@ -230,6 +278,7 @@ impl TabularService {
             csv_path: csv_path.to_string_lossy().into_owned(),
             memory_limit_mb: self.quotas.memory_limit_mb,
             max_rows,
+            extra_tables,
         };
         let response = run_isolated(&self.runner, &request).await?;
         if !response.ok {
