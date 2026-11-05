@@ -5774,6 +5774,7 @@ name = "shiki-tabular"
 version = "0.0.0"
 dependencies = [
  "csv",
+ "futures",
  "serde",
  "serde_json",
  "shiki-authz",
