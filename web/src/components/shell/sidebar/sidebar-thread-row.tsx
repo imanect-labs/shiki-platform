@@ -55,11 +55,11 @@ function OriginTile({ kind }: { kind: Exclude<ThreadOriginKind, null> }) {
 const ACTIVITY_LABEL: Record<Exclude<ThreadActivity, null>, string> = {
   running: "回答を生成中",
   waiting: "承認待ち",
-  done: "回答が完了（未読）",
+  done: "生成が終了（未読）",
 };
 
 /// 行の右端（時刻の位置）に出す生成の状態。生成中は回る印、承認待ちは山吹の点、
-/// 開いていない間に終わった回答は藍の点（未読）。
+/// 開いていない間に終わった生成（完了・失敗・停止）は藍の点（未読）。
 function ActivityMark({ activity }: { activity: Exclude<ThreadActivity, null> }) {
   return (
     <span className="flex size-4 items-center justify-center">

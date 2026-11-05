@@ -6,7 +6,7 @@ import type { Thread } from "@/lib/chat-api";
 import { scopedStorageKey, subscribeStorageScope } from "@/lib/user-storage";
 
 /// 履歴の行の右端に出す、裏で動いている（動いていた）生成の状態。
-/// `running`＝順番待ち・生成中、`waiting`＝承認待ち、`done`＝開いていない間に回答が終わった（未読）。
+/// `running`＝順番待ち・生成中、`waiting`＝承認待ち、`done`＝開いていない間に生成が終わった（完了・失敗・停止のいずれも・未読）。
 export type ThreadActivity = "running" | "waiting" | "done" | null;
 
 /// 既読の記録（会話 id を含むユーザーのデータなので、ユーザー単位のキーに置きログアウトで消す・#817）。
@@ -32,27 +32,38 @@ function parse(raw: string | null): SeenMap {
   }
 }
 
-function trim(seen: SeenMap): SeenMap {
+/// 上限を超えた分を、古い既読から捨てる。今回記録した会話（`fresh`）は捨てない
+/// （捨てると次の描画でまた記録し直し、記録と描画が止まらなくなる）。
+function trim(seen: SeenMap, fresh: ReadonlySet<string>): SeenMap {
   const ids = Object.keys(seen);
   if (ids.length <= MAX_SEEN) return seen;
-  const keep = ids
+  const rest = ids
+    .filter((id) => !fresh.has(id))
     .sort((a, b) => Date.parse(seen[b]) - Date.parse(seen[a]))
-    .slice(0, MAX_SEEN);
-  return Object.fromEntries(keep.map((id) => [id, seen[id]]));
+    .slice(0, Math.max(0, MAX_SEEN - fresh.size));
+  return Object.fromEntries([...fresh, ...rest].map((id) => [id, seen[id]]));
 }
 
 /// 次の既読の記録（変わらなければ `prev` をそのまま返す）。
+///
+/// 記録は前へしか進めない（手元の一覧が古いタブが、別のタブの新しい既読を古い値で書き戻さない。
+/// 書き戻すと storage イベントで互いに読み直し・書き直しを繰り返す）。
 function nextSeen(prev: SeenMap, viewing: Thread | undefined, rows: readonly Thread[]): SeenMap {
-  let next: SeenMap | null = null;
-  if (viewing && prev[viewing.id] !== viewing.updatedAt) {
-    next = { ...prev, [viewing.id]: viewing.updatedAt };
+  const fresh = new Set<string>();
+  const next: SeenMap = { ...prev };
+  if (viewing) {
+    const last = prev[viewing.id];
+    if (last === undefined || Date.parse(viewing.updatedAt) > Date.parse(last)) {
+      next[viewing.id] = viewing.updatedAt;
+      fresh.add(viewing.id);
+    }
   }
   for (const t of rows) {
-    if (t.runStatus === null || t.id === viewing?.id) continue;
-    if ((next ?? prev)[t.id] !== undefined) continue;
-    next = { ...(next ?? prev), [t.id]: t.updatedAt };
+    if (t.runStatus === null || t.id === viewing?.id || prev[t.id] !== undefined) continue;
+    next[t.id] = t.updatedAt;
+    fresh.add(t.id);
   }
-  return next ? trim(next) : prev;
+  return fresh.size > 0 ? trim(next, fresh) : prev;
 }
 
 /// 履歴の各行の生成状態を返す。
