@@ -618,3 +618,7 @@ impl AppConfig {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "config/user_provider_tests.rs"]
+mod user_provider_tests;

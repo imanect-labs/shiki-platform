@@ -182,6 +182,9 @@ pub struct LlmConfig {
     /// 既定プロバイダ（`backend` 等の単一設定）と併用できる。
     #[serde(default)]
     pub providers: Vec<LlmProviderEntry>,
+    /// 運営側のユーザー別プロバイダ制限（tenant_id + OIDC sub）。
+    #[serde(default)]
+    pub user_provider_rules: Vec<llm_gateway::config::UserProviderRule>,
     /// 「Auto」の振り先（既定 `gpt-6-luna`・思考強度 `low`）。カタログに無ければ既定モデルへ落ちる。
     #[serde(default)]
     pub auto: Option<LlmAutoConfig>,
@@ -310,6 +313,7 @@ impl Default for LlmConfig {
             session_header: None,
             display_name: None,
             providers: Vec::new(),
+            user_provider_rules: Vec::new(),
             auto: None,
             first_response_timeout_secs: default_llm_first_response_timeout_secs(),
             idle_timeout_secs: default_llm_idle_timeout_secs(),

@@ -213,6 +213,7 @@ export default function HomePage() {
       {/* スマホは要素を絞る（説明文・候補の注記・最近の共有・ショートカットは出さない。ナビはサイドバーにある）。 */}
       <div className="flex flex-col items-center gap-6 sm:gap-8">
         <div className="text-center">
+          <TodayLine />
           {loading ? (
             <Skeleton className="mx-auto h-9 w-72" />
           ) : (
@@ -281,36 +282,77 @@ function timeGreeting(now: Date): string {
   return "こんばんは";
 }
 
-/// 荒い破線の区切り（中央に四季の葉を一つ・差し色＝今の季節・太枠のみ）。軽やかな「間」。
-/// 葉の横に七十二候と「〜の日」を小さく添える（上の入力まわりを詰めないよう、季節の話はここに集める）。
+/// あいさつの上に添える今日の 1 行（日付・七十二候・「〜の日」）。
 /// 日付はサーバと端末でずれるので、文字は端末で描いてから出す（hydration の食い違いを作らない）。
-function SeasonDivider() {
-  const [label, setLabel] = React.useState<{ kou: string; term: string; day: string | null } | null>(
-    null,
-  );
+/// 描くまでも 1 行分の高さは取っておく（あいさつが後から下へずれない）。折り返したら伸びる。
+/// 開いたまま日付をまたいでも、午前 0 時とタブに戻ったときに描き直す。
+function TodayLine() {
+  const [label, setLabel] = React.useState<{
+    date: string;
+    kou: string;
+    term: string;
+    day: string | null;
+  } | null>(null);
   React.useEffect(() => {
-    const now = new Date();
-    const kou = microSeasonOf(now);
-    setLabel({ kou: kou.name, term: kou.term, day: notableDayOf(now) });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const render = () => {
+      const now = new Date();
+      const kou = microSeasonOf(now);
+      setLabel({ date: dateLabel(now), kou: kou.name, term: kou.term, day: notableDayOf(now) });
+      // 次の午前 0 時に描き直す（数秒遅らせて日付の境目をまたいでから描く）。
+      const next = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1, 0, 0, 5);
+      clearTimeout(timer);
+      timer = setTimeout(render, next.getTime() - now.getTime());
+    };
+    const onVisible = () => {
+      if (document.visibilityState === "visible") render();
+    };
+    render();
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, []);
 
   return (
+    <p className="mb-2 min-h-5 text-sm text-muted-foreground" data-testid="home-today-line">
+      {label ? (
+        <>
+          <span className="tabular-nums">{label.date}</span>
+          <span aria-hidden>・</span>
+          <span title={`二十四節気「${label.term}」の候`}>{label.kou}</span>
+          {label.day ? (
+            <>
+              <span aria-hidden>・</span>
+              <span>{label.day}</span>
+            </>
+          ) : null}
+        </>
+      ) : null}
+    </p>
+  );
+}
+
+const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"] as const;
+
+/// 「10月31日（金）」（端末の日付）。
+function dateLabel(now: Date): string {
+  return `${now.getMonth() + 1}月${now.getDate()}日（${WEEKDAYS[now.getDay()]}）`;
+}
+
+/// 荒い破線の区切り（中央に四季の葉を一つ・差し色＝今の季節・太枠のみ）。軽やかな「間」。
+/// 季節の言葉はあいさつの上（[`TodayLine`]）に出すので、ここは葉だけにする。
+function SeasonDivider() {
+  return (
     <div className="flex w-full max-w-2xl items-center gap-3 px-2">
       <span className="shiki-dash-x h-4 flex-1" aria-hidden />
-      <span className="inline-flex shrink-0 items-center gap-2 text-xs text-muted-foreground">
-        <Leaf
-          className="size-5 shrink-0"
-          style={{ color: seasonVar(currentSeasonIndex()) }}
-          strokeWidth={2.5}
-          aria-hidden
-        />
-        {label ? (
-          <span>
-            <span title={`二十四節気「${label.term}」の候`}>{label.kou}</span>
-            {label.day ? `・${label.day}` : null}
-          </span>
-        ) : null}
-      </span>
+      <Leaf
+        className="size-5 shrink-0"
+        style={{ color: seasonVar(currentSeasonIndex()) }}
+        strokeWidth={2.5}
+        aria-hidden
+      />
       <span className="shiki-dash-x h-4 flex-1" aria-hidden />
     </div>
   );
