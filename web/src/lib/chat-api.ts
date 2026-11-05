@@ -78,6 +78,9 @@ export type Thread = {
   /// このフォルダの配下に絞る。名前は作成時点のもの。
   searchFolderId?: string | null;
   searchFolderName?: string | null;
+  /// 進行中の run の状態（queued / running / waiting_approval）。無ければ null。
+  /// 別の画面へ移った後も裏で生成が続いている会話を、サイドバー履歴で「実行中」と示すのに使う。
+  runStatus: RunStatus | null;
   /// 自分がこのスレッドで最後に送った発話のモデル選択（単体取得でだけ載る・別端末で開いたときの
   /// 入力欄の初期値）。`undefined` はまだ送っていない、`null` は Auto。
   lastModelChoice?: ModelChoice;
@@ -213,6 +216,7 @@ function toThread(t: ApiThread): Thread {
     pinnedAt: t.pinned_at ?? null,
     searchFolderId: t.search_folder_id ?? null,
     searchFolderName: t.search_folder_name ?? null,
+    runStatus: t.run_status ?? null,
     lastModelChoice: toModelChoice(t.last_model_choice),
     createdAt: t.created_at,
     updatedAt: t.updated_at,
@@ -820,6 +824,9 @@ export async function postMessage(
     user_message_id: string;
     assistant_message_id: string;
   };
+  // 投稿で更新日が進み run が積まれた。履歴を読み直して先頭へ上げ、「実行中」を出す
+  // （このまま別の画面へ移っても、サイドバーが裏の生成を追える）。
+  notifyThreadsChanged();
   return {
     runId: body.run_id,
     userMessageId: body.user_message_id,

@@ -309,6 +309,10 @@ pub struct Thread {
     /// 検索フォルダの表示名（作成時点の非正規化・改名には追随しない）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub search_folder_name: Option<String>,
+    /// 進行中（非端末: queued / running / waiting_approval）の run の状態。無ければ None。
+    /// サイドバー履歴で、別の画面へ移った後も生成が続いている会話に「実行中」を出すのに使う。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_status: Option<RunStatus>,
     /// 呼び出しユーザーがこのスレッドで最後に送った発話のモデル選択（#553 の端末間引き継ぎ）。
     /// 入力欄の選択はタブ内にしか残らないため、別の端末で開いたときの初期値に使う。
     /// 単体取得（`GET /threads/{id}`）でだけ載せる。この利用者がまだ送っていなければ無い。

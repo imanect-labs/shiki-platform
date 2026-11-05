@@ -12,18 +12,24 @@ use storage::audit::{AuditEntry, Decision};
 use uuid::Uuid;
 
 use crate::model::{
-    AutonomousMode, ContentBlock, LastModelChoice, Message, Role, SkillPin, Thread,
+    AutonomousMode, ContentBlock, LastModelChoice, Message, Role, RunStatus, SkillPin, Thread,
 };
 
 /// thread の SELECT 列（skill ピンは正規化テーブルから jsonb で集約・#344。
-/// 承認モードは thread 列・#350）。
+/// 承認モードは thread 列・#350）。`run_status` は進行中（非端末）の run の状態で、サイドバー履歴の
+/// 「実行中」表示に使う（非端末 run の部分索引 `generation_run_live_thread_idx` で引く）。承認待ちの
+/// run の後ろで別の run が生成中になり得る（承認待ちは後続を待たせない）ので、生成中を優先する。
 pub(super) const THREAD_COLUMNS: &str = "id, title, agent_mode, autonomous_mode, \
     (SELECT coalesce(jsonb_agg(jsonb_build_object( \
         'skill_id', p.skill_id, 'skill_version', p.skill_version) \
         ORDER BY p.position, p.skill_id), '[]'::jsonb) \
      FROM thread_skill_pin p WHERE p.thread_id = thread.id) AS skill_pins, \
     mini_app_id, mini_app_version, origin_note_id, origin_note_name, pinned_at, \
-    search_folder_id, search_folder_name, created_at, updated_at";
+    search_folder_id, search_folder_name, created_at, updated_at, \
+    (SELECT r.status FROM generation_run r \
+     WHERE r.tenant_id = thread.tenant_id AND r.thread_id = thread.id \
+       AND r.status IN ('queued', 'running', 'waiting_approval') \
+     ORDER BY (r.status = 'waiting_approval'), r.created_at LIMIT 1) AS run_status";
 
 /// thread 行。
 #[derive(sqlx::FromRow)]
@@ -42,6 +48,7 @@ pub(super) struct ThreadRow {
     search_folder_name: Option<String>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+    run_status: Option<String>,
 }
 
 impl ThreadRow {
@@ -60,6 +67,8 @@ impl ThreadRow {
             pinned_at: self.pinned_at,
             search_folder_id: self.search_folder_id,
             search_folder_name: self.search_folder_name,
+            // CHECK 制約で閉じている（未知の値は「実行中でない」扱い）。
+            run_status: self.run_status.as_deref().and_then(RunStatus::parse),
             last_model_choice: None,
             created_at: self.created_at,
             updated_at: self.updated_at,
@@ -170,7 +179,7 @@ impl ChatStore {
             // 作成直後のピンは常に空（set_thread_pins が後から入れる）。
             "INSERT INTO thread (id, org, tenant_id, owner, title, agent_mode, origin_note_id, origin_note_name, title_pending) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true) \
-             RETURNING id, title, agent_mode, autonomous_mode, '[]'::jsonb AS skill_pins, mini_app_id, mini_app_version, origin_note_id, origin_note_name, pinned_at, search_folder_id, search_folder_name, created_at, updated_at",
+             RETURNING id, title, agent_mode, autonomous_mode, '[]'::jsonb AS skill_pins, mini_app_id, mini_app_version, origin_note_id, origin_note_name, pinned_at, search_folder_id, search_folder_name, created_at, updated_at, NULL::text AS run_status",
         )
         .bind(id)
         .bind(&ctx.org)

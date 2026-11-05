@@ -288,6 +288,19 @@ impl ChatStore {
         ui_bindings: &[crate::yui_actions::UiWorkflowBinding],
     ) -> Result<bool, ChatError> {
         let mut tx = self.db.begin().await.map_err(map_db)?;
+        // 回答が確定したらスレッドの更新日を進める（サイドバー履歴の先頭へ上げる。別の画面に
+        // 移った後に終わった会話も「いま終わった」位置に来る）。行ロックは **thread → run の順**に
+        // 取る（削除・投稿と同じ順。逆順だと削除との間でデッドロックし得る）。fencing 不一致なら
+        // 下で rollback するので、ゾンビの確定で更新日は動かない。
+        sqlx::query(
+            "UPDATE thread t SET updated_at = now() FROM generation_run r \
+             WHERE r.run_id = $1 AND t.id = r.thread_id AND t.tenant_id = r.tenant_id \
+               AND t.deleted_at IS NULL",
+        )
+        .bind(run_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_db)?;
         let kv = [KeyValue::Uuid(run_id)];
         let message_id: Option<Uuid> = durable::fenced_finalize(
             &mut *tx,
