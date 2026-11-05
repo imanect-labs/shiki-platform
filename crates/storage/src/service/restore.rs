@@ -239,28 +239,32 @@ impl StorageService {
         Ok(restored)
     }
 
-    /// AI 等による 1 回の編集を**取り消す**（#1049・editor 権限）。
+    /// AI 等による編集を**取り消す**（#1049・editor 権限）。
     ///
-    /// `edited_version` を作った編集の直前の版（`edited_version` 未満で最新の、提案でない内容版）を
-    /// [`restore_version`](Self::restore_version) と同じく**新しい版として**復元する（履歴は残る＝取り消しの
-    /// 取り消しもできる）。
+    /// `edit_versions`（取り消す編集が作った内容版の集合・空でないこと）のうち最も古い版の**直前の
+    /// 内容版**を、[`restore_version`](Self::restore_version) と同じく**新しい版として**復元する（履歴は
+    /// 残る＝取り消しの取り消しもできる）。同じ回答で同じファイルを複数回編集した場合は、その全版を渡すと
+    /// まとめて取り消せる。
     ///
     /// - 現在の内容が既に直前の版と同じ → 何もしない（[`RevertOutcome::AlreadyReverted`]）。二度押し・
     ///   再読込後の再実行で版を無駄に積まない。
-    /// - 現在の版が期待値（`expected_current`・省略時は `edited_version`）と違う＝編集の後に別の版が
-    ///   作られている → `force` でなければ [`StorageError::VersionConflict`]。後から入った他の編集を
-    ///   黙って消さない。同じ回答で同じファイルを複数回編集した場合は、最初の編集の版を
-    ///   `edited_version`、最後の編集の版を `expected_current` に渡すとまとめて取り消せる。
-    /// - `edited_version` が無い／提案版／その前に内容版が無い（新規作成の版）→ [`StorageError::NotFound`]。
+    /// - 直前の版より後に、`edit_versions` に含まれない**内容版**がある（他の人・後の編集）→ `force` で
+    ///   なければ [`StorageError::VersionConflict`]（`current` は最新の内容版）。後から入った他の編集を
+    ///   黙って消さない。判定は内容版（`node_version`）で行うので、名前変更・移動のような内容の変わらない
+    ///   版上げでは競合にならない。
+    /// - `edit_versions` のいずれかが無い／提案版／その前に内容版が無い（新規作成の版）→
+    ///   [`StorageError::NotFound`]。
     pub async fn revert_edit(
         &self,
         ctx: &AuthContext,
         file_id: Uuid,
-        edited_version: i64,
-        expected_current: Option<i64>,
+        edit_versions: &[i64],
         force: bool,
         trace_id: Option<&str>,
     ) -> Result<RevertOutcome, StorageError> {
+        let Some(&earliest) = edit_versions.iter().min() else {
+            return Err(StorageError::Invalid("取り消す版を指定してください".into()));
+        };
         let node = self.load_node(ctx, file_id, false).await?;
         if node.kind != NodeKind::File {
             return Err(StorageError::NotFound);
@@ -277,21 +281,40 @@ impl StorageService {
         .await?;
 
         let mut tx = self.db.begin().await?;
-        // 行ロックの後に現在の版を読み直す（load_node との間に入った編集を見落とさない）。
-        let (current_version, current_sha) = lock_file_row(&mut tx, ctx, file_id).await?;
-        // 取り消す編集の版（提案でない内容版）が実在すること。
-        let edited: Option<i64> = sqlx::query_scalar(
-            "SELECT version FROM node_version \
-             WHERE node_id = $1 AND org = $2 AND tenant_id = $3 AND version = $4 AND NOT is_proposal",
+        // 行ロックの後に読む（load_node との間に入った編集を見落とさない）。
+        let (_, current_sha) = lock_file_row(&mut tx, ctx, file_id).await?;
+        // ブラウザの Office エディタで開かれている間は戻さない。WOPI の PutFile は版を検査しないので、
+        // ここで差し替えてもエディタの次の自動保存がメモリ上の（AI の編集を含む）内容で書き戻し、
+        // 取り消しが黙って消える。ロックは助言的（期限切れは無視）で、判定は office と同じ条件。
+        let locked: bool = sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM office_lock \
+             WHERE file_id = $1 AND tenant_id = $2 AND expires_at > now())",
+        )
+        .bind(file_id)
+        .bind(&ctx.tenant_id)
+        .fetch_one(&mut *tx)
+        .await?;
+        if locked {
+            return Err(StorageError::Locked);
+        }
+        // 取り消す編集の版がすべて実在する（提案でない内容版）こと。
+        let found: i64 = sqlx::query_scalar(
+            "SELECT count(*) FROM node_version \
+             WHERE node_id = $1 AND org = $2 AND tenant_id = $3 AND version = ANY($4) AND NOT is_proposal",
         )
         .bind(file_id)
         .bind(&ctx.org)
         .bind(&ctx.tenant_id)
-        .bind(edited_version)
-        .fetch_optional(&mut *tx)
+        .bind(edit_versions)
+        .fetch_one(&mut *tx)
         .await?;
-        edited.ok_or(StorageError::NotFound)?;
-        // 直前の内容版（node_version_node_idx (node_id, version desc) で 1 行だけ引く）。
+        let mut distinct = edit_versions.to_vec();
+        distinct.sort_unstable();
+        distinct.dedup();
+        if usize::try_from(found).unwrap_or(0) != distinct.len() {
+            return Err(StorageError::NotFound);
+        }
+        // 最も古い編集の直前の内容版（node_version_node_idx (node_id, version desc) で 1 行だけ引く）。
         let target: Option<(i64, String)> = sqlx::query_as(
             "SELECT version, blob_sha256 FROM node_version \
              WHERE node_id = $1 AND org = $2 AND tenant_id = $3 AND version < $4 AND NOT is_proposal \
@@ -300,7 +323,7 @@ impl StorageService {
         .bind(file_id)
         .bind(&ctx.org)
         .bind(&ctx.tenant_id)
-        .bind(edited_version)
+        .bind(earliest)
         .fetch_optional(&mut *tx)
         .await?;
         let (target_version, target_sha) = target.ok_or(StorageError::NotFound)?;
@@ -310,10 +333,21 @@ impl StorageService {
             let node = self.load_node(ctx, file_id, false).await?;
             return Ok(RevertOutcome::AlreadyReverted(node));
         }
-        if current_version != expected_current.unwrap_or(edited_version) && !force {
-            return Err(StorageError::VersionConflict {
-                current: current_version,
-            });
+        // 直前の版より後の内容版のうち、取り消す編集でないもの＝後から入った他の編集。
+        let later: Vec<i64> = sqlx::query_scalar(
+            "SELECT version FROM node_version \
+             WHERE node_id = $1 AND org = $2 AND tenant_id = $3 AND version > $4 AND NOT is_proposal \
+             ORDER BY version",
+        )
+        .bind(file_id)
+        .bind(&ctx.org)
+        .bind(&ctx.tenant_id)
+        .bind(target_version)
+        .fetch_all(&mut *tx)
+        .await?;
+        let latest = later.last().copied().unwrap_or(target_version);
+        if !force && later.iter().any(|v| distinct.binary_search(v).is_err()) {
+            return Err(StorageError::VersionConflict { current: latest });
         }
         let restored = self
             .restore_version_in_tx(
@@ -322,7 +356,7 @@ impl StorageService {
                 file_id,
                 target_version,
                 trace_id,
-                json!({ "reverted_edit_version": edited_version, "forced": force }),
+                json!({ "reverted_edit_versions": distinct, "forced": force }),
             )
             .await?;
         tx.commit().await?;

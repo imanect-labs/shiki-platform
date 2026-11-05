@@ -178,11 +178,10 @@ pub struct RevertEditRequest {
     /// 取り消す編集の後に別の版が作られていても戻す（後の変更も失われる）。既定 false。
     #[serde(default)]
     pub force: bool,
-    /// 現在の版がこれであることを要求する（省略時は `version` そのもの）。同じファイルへの連続した
-    /// 編集をまとめて取り消すとき、最後の編集の版を渡す。
+    /// 一緒に取り消す編集の版（パスの `version` に加える・同じ回答で同じファイルを複数回編集した場合）。
+    /// これらに含まれない内容版が後から入っていれば 409。
     #[serde(default)]
-    #[schema(value_type = Option<i64>)]
-    pub expected_current_version: Option<i64>,
+    pub also_versions: Vec<i64>,
 }
 
 /// 編集の取り消し結果。
@@ -200,8 +199,8 @@ pub struct RevertEditResponse {
 
 /// `version` を作った編集を取り消す（#1049・editor 権限）。
 ///
-/// 直前の内容版を**新しい版として**復元する（履歴は残る）。編集の後に別の版がある場合は
-/// `force` が無い限り 409（`code: version_conflict`・`current_version`）。既に編集前の内容なら
+/// 直前の内容版を**新しい版として**復元する（履歴は残る）。編集の後に別の内容版（他の編集）がある
+/// 場合は `force` が無い限り 409（`code: version_conflict`・`current_version`）。名前変更・移動では競合しない。既に編集前の内容なら
 /// 何もせず `reverted: false`。チャットの「AI の編集を元に戻す」が使う。
 #[utoipa::path(
     post,
@@ -234,8 +233,9 @@ pub async fn revert_edit(
         .revert_edit(
             &ctx,
             id,
-            version,
-            req.expected_current_version,
+            &std::iter::once(version)
+                .chain(req.also_versions.iter().copied())
+                .collect::<Vec<_>>(),
             req.force,
             trace.as_deref(),
         )

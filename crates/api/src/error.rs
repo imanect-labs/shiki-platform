@@ -157,6 +157,11 @@ impl From<storage::StorageError> for ApiError {
                 "code": "version_conflict",
                 "current_version": current,
             })),
+            SE::Locked => ApiError::ConflictJson(json!({
+                "status": 409,
+                "title": "ファイルが Office エディタで開かれています",
+                "code": "locked",
+            })),
             // Invalid と整合性エラー（宣言ハッシュ不一致・staging 未完了等）はどちらも
             // クライアント起因の 400。
             SE::Invalid(msg) | SE::Integrity(msg) => ApiError::BadRequest(msg),

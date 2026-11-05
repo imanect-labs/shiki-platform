@@ -350,7 +350,7 @@ export function restoreVersion(fileId: string, version: number): Promise<NodeRes
 /// 編集の取り消し結果（#1049）。型は OpenAPI 生成。
 export type RevertEditResponse = components["schemas"]["RevertEditResponse"];
 
-/// 取り消す編集の後に別の版がある（409）。`force` で上書きできる。
+/// 取り消す編集の後に別の内容版がある（409 `version_conflict`）。`force` で上書きできる。
 export class RevertConflict extends Error {
   constructor(public currentVersion: number) {
     super("このファイルは編集の後に更新されています");
@@ -358,26 +358,34 @@ export class RevertConflict extends Error {
   }
 }
 
-/// `version` を作った編集を取り消す（直前の版を新しい版として復元・editor のみ・#1049）。
-/// 既に編集前の内容なら `reverted: false` で何もしない。
+/// ブラウザの Office エディタで開かれているため戻せない（409 `locked`）。閉じてからやり直す。
+export class RevertLocked extends Error {
+  constructor() {
+    super("このファイルは Office エディタで開かれています。エディタを閉じてから元に戻してください。");
+    this.name = "RevertLocked";
+  }
+}
+
+/// `versions`（取り消す編集が作った版・同じファイルへの複数回の編集はまとめて渡す）を取り消す。
+/// 最も古い編集の直前の版を新しい版として復元する（editor のみ・#1049）。既に編集前の内容なら
+/// `reverted: false` で何もしない。
 export async function revertEdit(
   fileId: string,
-  version: number,
-  opts: { force?: boolean; expectedCurrentVersion?: number } = {},
+  versions: number[],
+  opts: { force?: boolean } = {},
 ): Promise<RevertEditResponse> {
-  const res = await apiFetch(`/files/${fileId}/versions/${version}/revert`, {
+  const [first, ...also] = [...versions].sort((a, b) => a - b);
+  const res = await apiFetch(`/files/${fileId}/versions/${first}/revert`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      force: opts.force ?? false,
-      ...(opts.expectedCurrentVersion !== undefined
-        ? { expected_current_version: opts.expectedCurrentVersion }
-        : {}),
-    }),
+    body: JSON.stringify({ force: opts.force ?? false, also_versions: also }),
   });
   if (res.status === 409) {
-    const body = (await res.json().catch(() => null)) as { current_version?: number } | null;
-    throw new RevertConflict(body?.current_version ?? version);
+    const body = (await res.json().catch(() => null)) as
+      | { code?: string; current_version?: number }
+      | null;
+    if (body?.code === "locked") throw new RevertLocked();
+    throw new RevertConflict(body?.current_version ?? first);
   }
   return okJson<RevertEditResponse>(res);
 }
