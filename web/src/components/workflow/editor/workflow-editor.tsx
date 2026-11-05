@@ -121,7 +121,9 @@ export function WorkflowEditor({
   // 保存済みの内容（元に戻して同じになったかの比較用。`dirty` は undo では下りないため）。
   const savedIrJson = React.useRef(JSON.stringify(initialIr));
   React.useEffect(() => {
-    if (state.dirty && JSON.stringify(state.ir) !== savedIrJson.current) {
+    // 保存中は、保存済みの内容と同じに戻っていても残す（保存が通ると保存済みの内容が変わるため。
+    // 消すかどうかは保存の結果を反映してから決める・`workflowDraftStore.saved`）。
+    if (state.dirty && (saving || JSON.stringify(state.ir) !== savedIrJson.current)) {
       workflowDraftStore.set(workflowId, {
         baseVersion: state.savedVersion,
         ir: state.ir,
@@ -132,7 +134,7 @@ export function WorkflowEditor({
     } else {
       workflowDraftStore.clear(workflowId);
     }
-  }, [workflowId, state.dirty, state.savedVersion, state.ir, state.layout, state.undoStack, state.redoStack]);
+  }, [workflowId, saving, state.dirty, state.savedVersion, state.ir, state.layout, state.undoStack, state.redoStack]);
 
   const restoreNotified = React.useRef(false);
   React.useEffect(() => {
