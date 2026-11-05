@@ -82,6 +82,9 @@ export async function runQuery(nodeId: string, sql: string): Promise<TableRespon
     body: JSON.stringify({ sql }),
   });
   if (res.status === 400) {
+    // 読めないファイル（文字コードを決められない CSV・読めない Excel など）は、サーバーの理由と直し方を出す。
+    const invalid = await invalidInputMessage(res);
+    if (invalid) throw new Error(invalid);
     const body = (await res.json().catch(() => null)) as { title?: string } | null;
     throw new Error(body?.title ?? "SQL が拒否されました（読み取り専用の SELECT のみ）");
   }

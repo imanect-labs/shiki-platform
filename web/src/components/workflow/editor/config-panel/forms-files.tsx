@@ -23,7 +23,7 @@ import {
 } from "@/generated/workflow-catalog";
 import type { CsvEncoding, NameTakenPolicy, ValueExpr } from "@/generated/workflow-ir";
 import { breadcrumb, getNode, type NodeResponse } from "@/lib/storage";
-import { getSchema, runQuery, type SchemaResponse, type TableResponse } from "@/lib/tabular-api";
+import { getSchema, runQuery, TabularLoadError, type SchemaResponse, type TableResponse } from "@/lib/tabular-api";
 import { cn } from "@/lib/utils";
 import { Field, FieldSelectTrigger, MoreInfo, NumberInput } from "./common";
 import type { FormProps } from "./forms-basic";
@@ -79,6 +79,23 @@ export function DriveItemName({ id, fallback }: { id: string; fallback: string }
 
 export function isCsvFile(n: Pick<NodeResponse, "name" | "content_type">): boolean {
   return n.name.toLowerCase().endsWith(".csv") || (n.content_type ?? "").startsWith("text/csv");
+}
+
+/// Excel のブック（.xlsx・マクロ付きの .xlsm）。「CSV を集計」だけが読める（D-17）。
+export function isExcelFile(n: Pick<NodeResponse, "name" | "content_type">): boolean {
+  const name = n.name.toLowerCase();
+  const type = (n.content_type ?? "").toLowerCase();
+  return (
+    name.endsWith(".xlsx") ||
+    name.endsWith(".xlsm") ||
+    type.startsWith("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet") ||
+    type.startsWith("application/vnd.ms-excel.sheet.macroenabled.12")
+  );
+}
+
+/// 「CSV を集計」が読めるファイル（CSV と Excel）。CSV を編集・CSV を保存は CSV だけ（D-17）。
+export function isQueryableFile(n: Pick<NodeResponse, "name" | "content_type">): boolean {
+  return isCsvFile(n) || isExcelFile(n);
 }
 
 /// 「一覧から選ぶ ／ 前の結果から指定する」の切り替え（forms-data の TableField と同じ見た目）。
@@ -576,24 +593,48 @@ const CSV_PICKER = {
   pickerDescription: "使う CSV ファイルを選んでください（.csv のファイルだけを表示しています）。",
 };
 
-/// 列の型（DuckDB の型名）の利用者向けの呼び名。
+/// 「CSV を集計」のファイルの選び方（CSV と Excel・D-17）。
+const CSV_QUERY_PICKER = {
+  accept: (n: NodeResponse) => isQueryableFile(n),
+  pickerTitle: "CSV か Excel のファイルを選ぶ",
+  pickerDescription: "集計するファイルを選んでください（.csv と .xlsx のファイルだけを表示しています）。",
+};
+
+/// 列の型（集計で読むときの DuckDB の型名）の呼び名（値の種類の呼び名にそろえる）。
 function typeLabel(t: string): string {
   const u = t.toUpperCase();
+  if (/^(TINYINT|SMALLINT|INTEGER|BIGINT|HUGEINT|UTINYINT|USMALLINT|UINTEGER|UBIGINT)$/.test(u)) return "整数";
   if (/INT|DOUBLE|FLOAT|DECIMAL|NUMERIC|REAL/.test(u)) return "数値";
-  if (/TIMESTAMP|DATE|TIME/.test(u)) return "日付";
-  if (u.startsWith("BOOL")) return "真偽";
-  return "文字";
+  if (u.startsWith("TIMESTAMP")) return "日時";
+  if (u === "DATE") return "日付";
+  if (u.startsWith("TIME")) return "時刻";
+  if (u.startsWith("BOOL")) return "はい／いいえ";
+  return "テキスト";
 }
 
-/// CSV の列（本人の権限でスキーマを読む）とテーブル名の案内。
+/// 集計の結果の値の渡り方（rows はテキスト・items は種類のまま・GAP-40）。
+const RESULT_VALUES_HINT =
+  "結果の行（rows）は、値をすべてテキストで渡します。数値やはい／いいえを種類のまま使うときは、行の値（items）を選び、列の名前で引きます。";
+
+/// CSV の列（本人の権限でスキーマを読む）とテーブル名の案内。読めないときはサーバーの理由（直し方つき）を出す。
 function CsvColumnsHint({ fileId }: { fileId: string | null }) {
-  const [state, setState] = React.useState<{ id: string; schema: SchemaResponse | null } | null>(null);
+  const [state, setState] = React.useState<{ id: string; schema: SchemaResponse | null; reason: string | null } | null>(
+    null,
+  );
   React.useEffect(() => {
     if (!fileId) return;
     let active = true;
     getSchema(fileId)
-      .then((schema) => active && setState({ id: fileId, schema }))
-      .catch(() => active && setState({ id: fileId, schema: null }));
+      .then((schema) => active && setState({ id: fileId, schema, reason: null }))
+      .catch(
+        (e) =>
+          active &&
+          setState({
+            id: fileId,
+            schema: null,
+            reason: e instanceof TabularLoadError && e.unreadable ? e.message : null,
+          }),
+      );
     return () => {
       active = false;
     };
@@ -608,7 +649,9 @@ function CsvColumnsHint({ fileId }: { fileId: string | null }) {
       {!fileId ? null : !current ? (
         <p>列を読み込み中…</p>
       ) : current.schema === null ? (
-        <p className="text-destructive">列を読み取れませんでした（CSV として読めないか、閲覧の権限がありません）</p>
+        <p className="text-destructive">
+          {current.reason ?? "列を読み取れませんでした。CSV か Excel として読めないか、見る権限がありません。"}
+        </p>
       ) : (
         <p>
           列:{" "}
@@ -622,6 +665,7 @@ function CsvColumnsHint({ fileId }: { fileId: string | null }) {
           {typeof current.schema.total_rows === "number" ? `・${current.schema.total_rows} 行` : ""}
         </p>
       )}
+      <p data-testid="csv-result-values-hint">{RESULT_VALUES_HINT}</p>
     </div>
   );
 }
@@ -721,7 +765,12 @@ export function CsvQueryForm(props: FormProps) {
   const sql = p.sql === undefined || typeof p.sql === "string" ? ((p.sql as string | undefined) ?? "") : null;
   return (
     <div className="space-y-4">
-      <FileField {...props} {...CSV_PICKER} label="集計する CSV ファイル" hint="有効化のとき、このファイルの閲覧権限を渡します" />
+      <FileField
+        {...props}
+        {...CSV_QUERY_PICKER}
+        label="集計する CSV か Excel のファイル"
+        hint="有効化のとき、このファイルの閲覧権限を渡します。Excel のファイルは、左端のシートの表を読みます（いちばん上の行が列の名前）。"
+      />
       {sql !== null ? (
         <Field label="SQL（読み取りだけの SELECT）" error={fieldErrors.get("sql")}>
           <Textarea

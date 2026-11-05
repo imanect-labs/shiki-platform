@@ -429,8 +429,8 @@ test("CSV を集計: ドライブから CSV を選び、SQL を書いて保存�
   await expect(panel.getByText(/項目 'file'/)).toHaveCount(0);
 
   // ドライブから CSV を選ぶと、ファイル名と列の案内が出る（誤りも消える）。
-  await panel.getByRole("button", { name: "集計する CSV ファイルを選ぶ" }).click();
-  const picker = page.getByRole("dialog", { name: "CSV ファイルを選ぶ" });
+  await panel.getByRole("button", { name: "集計する CSV か Excel のファイルを選ぶ" }).click();
+  const picker = page.getByRole("dialog", { name: "CSV か Excel のファイルを選ぶ" });
   await picker.getByRole("button", { name: fileName }).click();
   await expect(picker).toHaveCount(0);
   await expect(panel.getByText(fileName)).toBeVisible();

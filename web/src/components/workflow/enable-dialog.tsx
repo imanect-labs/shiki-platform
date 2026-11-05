@@ -29,7 +29,7 @@ import { SCOPE_LABELS } from "@/lib/workflow-scopes";
 import { FolderPicker } from "@/components/artifacts/folder-picker";
 import { DrivePicker } from "@/components/chat/drive-picker";
 import { DataTableSelect, UNREADABLE_TABLE, useDataTables } from "@/components/workflow/editor/config-panel/data-tables";
-import { DriveItemName, isCsvFile } from "@/components/workflow/editor/config-panel/forms-files";
+import { DriveItemName, isCsvFile, isQueryableFile } from "@/components/workflow/editor/config-panel/forms-files";
 import { useMe } from "@/hooks/use-me";
 import type { Node as IrNode } from "@/generated/workflow-ir";
 import { AiProvidersNote, hasAiNodes } from "./ai-providers-note";
@@ -578,7 +578,13 @@ export function EnableDialog({
           title="渡すファイルを選ぶ"
           description="このワークフローに権限を渡すファイルを選んでください。"
           accept={
-            filePickerFor !== null && plan?.grants[filePickerFor]?.scope.startsWith("csv.") ? isCsvFile : undefined
+            filePickerFor === null
+              ? undefined
+              : plan?.grants[filePickerFor]?.scope === "csv.read"
+                ? isQueryableFile
+                : plan?.grants[filePickerFor]?.scope.startsWith("csv.")
+                  ? isCsvFile
+                  : undefined
           }
           onSelect={(n) => {
             if (filePickerFor !== null) pick(filePickerFor, { id: n.id, name: n.name });
