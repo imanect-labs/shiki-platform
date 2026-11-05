@@ -30,6 +30,33 @@ pub(crate) struct Fault {
 /// 読み直しの回数の上限（1 つの値あたり）。
 const MAX_ROUNDS: usize = 64;
 
+/// serde を通す回数の残り（読み直しと、仮の値を試すたびに 1 つ使う）。尽きたら集めるのを止める。
+///
+/// 1 つの値の中では [`MAX_ROUNDS`] が上限だが、値がたくさんある（ブロックを何十万個も並べた IR）と合計が膨らむ。
+/// 呼ぶ側が全体で 1 つの残りを渡し、合計を抑える（保存時検証 V1・GAP-35）。
+#[derive(Debug)]
+pub(crate) struct Budget(usize);
+
+impl Budget {
+    pub(crate) fn new(parses: usize) -> Self {
+        Budget(parses)
+    }
+
+    /// 1 回使う（残りが無ければ false）。
+    fn take(&mut self) -> bool {
+        if self.0 == 0 {
+            return false;
+        }
+        self.0 -= 1;
+        true
+    }
+
+    /// 残りが無い。
+    pub(crate) fn exhausted(&self) -> bool {
+        self.0 == 0
+    }
+}
+
 /// 仮の値（項目が無い誤りのあと読み続けるため・型の合うものを前から試す）。
 fn placeholders() -> [Value; 6] {
     [
@@ -57,11 +84,25 @@ pub(crate) fn pointer(at: &[Seg]) -> String {
 
 /// `value` を `T` として読み、誤りを最大 `max` 件集める（読めれば空）。
 pub(crate) fn faults<T: DeserializeOwned>(value: &Value, max: usize) -> Vec<Fault> {
+    // 1 回の読み直しで、読むのに 1 回と仮の値を試すのに最大 placeholders の数だけ使う。
+    let mut budget = Budget::new(MAX_ROUNDS * (1 + placeholders().len()));
+    faults_within::<T>(value, max, &mut budget)
+}
+
+/// [`faults`] と同じだが、serde を通す回数を `budget` から使う（尽きたらそこまでの誤りを返す）。
+pub(crate) fn faults_within<T: DeserializeOwned>(
+    value: &Value,
+    max: usize,
+    budget: &mut Budget,
+) -> Vec<Fault> {
     let mut doc = value.clone();
     let mut out: Vec<Fault> = Vec::new();
     // 外した項目の位置（外したことで起きる「項目が無い」誤りを数えないため）。
     let mut removed: Vec<Vec<Seg>> = Vec::new();
     for _ in 0..MAX_ROUNDS {
+        if !budget.take() {
+            break;
+        }
         let Some(f) = first::<T>(&doc) else { break };
         if let Some(name) = field_of(&f.raw, "missing field ") {
             let mut full = f.at.clone();
@@ -75,7 +116,7 @@ pub(crate) fn faults<T: DeserializeOwned>(value: &Value, max: usize) -> Vec<Faul
             }
             // 仮の値で埋めて読み続ける（仮の値は、その項目の誤りが消えるものだけを使う）。仮の値の入らない項目は
             // 入れ物ごと外して、後ろの項目を読み続ける。
-            if !fill::<T>(&mut doc, &f.at, &name) {
+            if !fill::<T>(&mut doc, &f.at, &name, budget) {
                 match remove(&mut doc, &f.at) {
                     Some(r) => removed.push(r),
                     None => break,
@@ -166,11 +207,19 @@ fn remove(doc: &mut Value, at: &[Seg]) -> Option<Vec<Seg>> {
     None
 }
 
-/// 無い項目に仮の値を入れる（その項目の誤りが消える仮の値が見つかれば true）。
-fn fill<T: DeserializeOwned>(doc: &mut Value, container: &[Seg], name: &str) -> bool {
+/// 無い項目に仮の値を入れる（その項目の誤りが消える仮の値が見つかれば true）。`budget` が尽きたら false。
+fn fill<T: DeserializeOwned>(
+    doc: &mut Value,
+    container: &[Seg],
+    name: &str,
+    budget: &mut Budget,
+) -> bool {
     let mut full = container.to_vec();
     full.push(Seg::Key(name.to_string()));
     for candidate in placeholders() {
+        if !budget.take() {
+            break;
+        }
         let Some(Value::Object(m)) = get_mut(doc, container) else {
             return false;
         };
@@ -274,6 +323,22 @@ mod tests {
     fn the_limit_is_kept() {
         let v = json!({ "a": 1, "b": 2, "c": 3, "d": 4, "name": "x" });
         assert_eq!(faults::<Outer>(&v, 2).len(), 2);
+    }
+
+    /// 呼ぶ側が渡した回数の残りが尽きたら、そこまでの誤りで止める（値がたくさんあっても合計を抑える）。
+    #[test]
+    fn the_shared_budget_stops_collecting() {
+        let v = json!({ "a": 1, "b": 2, "c": 3, "d": 4, "name": "x" });
+        let mut budget = Budget::new(3);
+        assert_eq!(faults_within::<Outer>(&v, 20, &mut budget).len(), 3);
+        assert!(budget.exhausted());
+        // 尽きた残りでは 1 回も読まない。
+        assert!(faults_within::<Outer>(&v, 20, &mut budget).is_empty());
+        // 無い項目に仮の値を試す回数も数える（読む 1 回・name に "" を試す 1 回・読み直す 1 回）。
+        let mut budget = Budget::new(100);
+        let got = faults_within::<Outer>(&json!({}), 20, &mut budget);
+        assert_eq!(got.len(), 1, "{got:?}");
+        assert_eq!(budget.0, 97);
     }
 
     #[test]

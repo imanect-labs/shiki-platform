@@ -309,6 +309,44 @@ pub fn validate(
     }
 }
 
+/// ブロックの数の上限（V7）。
+const MAX_NODES: usize = 200;
+/// 線の数の上限（V7）。
+const MAX_EDGES: usize = 500;
+/// IR の大きさの上限（V7・JSON のバイト数）。
+const MAX_IR_BYTES: usize = 1024 * 1024;
+
+/// V7 のうち、ブロック・線の数と IR の大きさの上限の誤り。読めない IR でも V1 が先に使う（同じ数・同じ文言）。
+fn size_limit_errors(
+    nodes: usize,
+    edges: usize,
+    value: &serde_json::Value,
+) -> Vec<ValidationError> {
+    let mut errors = Vec::new();
+    if nodes > MAX_NODES {
+        errors.push(ValidationError::new(
+            "ir.limit_exceeded",
+            format!("ノード数が上限 {MAX_NODES} を超過しています: {nodes}"),
+        ));
+    }
+    if edges > MAX_EDGES {
+        errors.push(ValidationError::new(
+            "ir.limit_exceeded",
+            format!("エッジ数が上限 {MAX_EDGES} を超過しています: {edges}"),
+        ));
+    }
+    // IR サイズ（1MB）。
+    if let Ok(bytes) = serde_json::to_vec(value) {
+        if bytes.len() > MAX_IR_BYTES {
+            errors.push(ValidationError::new(
+                "ir.limit_exceeded",
+                format!("IR が上限 1MB を超過しています: {} bytes", bytes.len()),
+            ));
+        }
+    }
+    errors
+}
+
 /// V7: 上限（ir.md §8）。
 fn v7_limits(value: &serde_json::Value, ir: &WorkflowIr, errors: &mut Vec<ValidationError>) {
     use crate::ir::expr::MAX_CONDITION_DEPTH;
@@ -319,27 +357,7 @@ fn v7_limits(value: &serde_json::Value, ir: &WorkflowIr, errors: &mut Vec<Valida
             format!("未知の ir_version: {}", ir.ir_version),
         ));
     }
-    if ir.nodes.len() > 200 {
-        errors.push(ValidationError::new(
-            "ir.limit_exceeded",
-            format!("ノード数が上限 200 を超過しています: {}", ir.nodes.len()),
-        ));
-    }
-    if ir.edges.len() > 500 {
-        errors.push(ValidationError::new(
-            "ir.limit_exceeded",
-            format!("エッジ数が上限 500 を超過しています: {}", ir.edges.len()),
-        ));
-    }
-    // IR サイズ（1MB）。
-    if let Ok(bytes) = serde_json::to_vec(value) {
-        if bytes.len() > 1024 * 1024 {
-            errors.push(ValidationError::new(
-                "ir.limit_exceeded",
-                format!("IR が上限 1MB を超過しています: {} bytes", bytes.len()),
-            ));
-        }
-    }
+    errors.extend(size_limit_errors(ir.nodes.len(), ir.edges.len(), value));
     // policies の run_timeout 上限。
     if ir.policies.run_timeout_sec > crate::ir::MAX_RUN_TIMEOUT_SEC {
         errors.push(ValidationError::new(

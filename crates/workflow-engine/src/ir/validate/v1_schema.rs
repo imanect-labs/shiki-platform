@@ -7,12 +7,16 @@
 //! 位置の書き方は後段と同じ: ブロックの誤りは `node_id` とブロックの中の位置（`/params/...`・`/retry/...`）、
 //! 線の誤りは `edge`（`from -> to`）と `/edges/<i>/...`、きっかけは `/triggers/<i>/...`、全体は `/<項目>`。
 //! 項目が無い誤りは、その項目を入れる入れ物の位置で、項目の名前は文言が言う（ブロックの設定と同じ）。
+//!
+//! 読めない IR は V7 の上限（ブロック・線の数・大きさ）を通らないので、ここで先に生の値で確かめ、超えたら上限の
+//! 誤りだけを返す（何十万個の空のブロックを 1 つずつ読み直さない）。集めるのも、誤りが上限の数に達するか、serde を
+//! 通す回数の合計（[`MAX_PARSES`]）が尽きたら止める。
 
 use serde_json::Value;
 
 use super::{params_message, ValidationError};
 use crate::ir::params::{humanize, params_issues};
-use crate::ir::schema_faults::{faults, pointer, Fault};
+use crate::ir::schema_faults::{faults_within, pointer, Budget, Fault};
 use crate::ir::{Edge, Node, Trigger, WorkflowIr};
 use crate::vocab::NodeType;
 
@@ -22,9 +26,26 @@ pub(super) const SCHEMA_VIOLATION: &str = "ir.schema_violation";
 const MAX_PER_PART: usize = 10;
 /// V1 の誤りの全体の上限（応答を膨らませない。直せば次の保存で続きが出る）。
 const MAX_TOTAL: usize = 50;
+/// 全体・ブロック・線・きっかけを合わせて serde を通す回数の上限（1 回の検証で CPU を使い切らない）。
+const MAX_PARSES: usize = 2_000;
 
 /// 型どおりに読めない IR の誤り（空にはならない）。
 pub(super) fn errors(value: &Value) -> Vec<ValidationError> {
+    // 上限（V7 と同じ数）を超える IR は、部分ごとに読まずに上限の誤りだけを返す。
+    let limits = super::size_limit_errors(
+        value
+            .get("nodes")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len),
+        value
+            .get("edges")
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len),
+        value,
+    );
+    if !limits.is_empty() {
+        return limits;
+    }
     let mut out = collect(value);
     if out.is_empty() {
         // 部分ごとに読めて全体で読めないことは無いはずだが、黙って通さない。
@@ -46,6 +67,7 @@ fn collect(value: &Value) -> Vec<ValidationError> {
         )];
     };
     let mut out = Vec::new();
+    let mut budget = Budget::new(MAX_PARSES);
     // 全体（ブロック・線・きっかけの配列は要素ごとに下で読むので、ここでは空にして読む）。
     let mut top = obj.clone();
     for key in ["nodes", "edges", "triggers"] {
@@ -53,14 +75,22 @@ fn collect(value: &Value) -> Vec<ValidationError> {
             top.insert(key.into(), Value::Array(Vec::new()));
         }
     }
-    for f in faults::<WorkflowIr>(&Value::Object(top), MAX_PER_PART) {
+    for f in faults_within::<WorkflowIr>(&Value::Object(top), MAX_PER_PART, &mut budget) {
         out.push(at_absolute(&f, ""));
     }
+    let full =
+        |out: &Vec<ValidationError>, budget: &Budget| out.len() >= MAX_TOTAL || budget.exhausted();
     let items = |key: &str| obj.get(key).and_then(Value::as_array).into_iter().flatten();
     for (i, n) in items("nodes").enumerate() {
-        node_errors(i, n, &mut out);
+        if full(&out, &budget) {
+            return out;
+        }
+        node_errors(i, n, &mut out, &mut budget);
     }
     for (i, e) in items("edges").enumerate() {
+        if full(&out, &budget) {
+            return out;
+        }
         let label = match (
             e.get("from").and_then(Value::as_str),
             e.get("to").and_then(Value::as_str),
@@ -68,7 +98,7 @@ fn collect(value: &Value) -> Vec<ValidationError> {
             (Some(from), Some(to)) => Some(format!("{from} -> {to}")),
             _ => None,
         };
-        for f in faults::<Edge>(e, MAX_PER_PART) {
+        for f in faults_within::<Edge>(e, MAX_PER_PART, &mut budget) {
             let err = at_absolute(&f, &format!("/edges/{i}"));
             out.push(match &label {
                 Some(l) => err.at_edge(l),
@@ -77,7 +107,10 @@ fn collect(value: &Value) -> Vec<ValidationError> {
         }
     }
     for (i, t) in items("triggers").enumerate() {
-        for f in faults::<Trigger>(t, MAX_PER_PART) {
+        if full(&out, &budget) {
+            return out;
+        }
+        for f in faults_within::<Trigger>(t, MAX_PER_PART, &mut budget) {
             out.push(at_absolute(&f, &format!("/triggers/{i}")));
         }
     }
@@ -90,7 +123,7 @@ fn collect(value: &Value) -> Vec<ValidationError> {
 
 /// 1 つのブロックの誤り（ブロックの項目と、読める種類なら設定 V1b）。id が読めればブロックに紐づけ、位置は
 /// ブロックの中で言う（後段の誤りと同じ）。読めなければ `/nodes/<i>/...` で言う。
-fn node_errors(i: usize, n: &Value, out: &mut Vec<ValidationError>) {
+fn node_errors(i: usize, n: &Value, out: &mut Vec<ValidationError>, budget: &mut Budget) {
     let id = n.get("id").and_then(Value::as_str);
     let place = |err: ValidationError, inner: &str| match id {
         Some(id) => {
@@ -103,7 +136,7 @@ fn node_errors(i: usize, n: &Value, out: &mut Vec<ValidationError>) {
         }
         None => err.at_path(format!("/nodes/{i}{inner}")),
     };
-    for f in faults::<Node>(n, MAX_PER_PART) {
+    for f in faults_within::<Node>(n, MAX_PER_PART, budget) {
         out.push(place(
             ValidationError::new(SCHEMA_VIOLATION, humanize(&f.raw)),
             &pointer(&f.at),
@@ -307,6 +340,43 @@ mod tests {
         });
         let parsed = validate(&ir, &Catalog::default()).unwrap();
         assert_eq!(parsed, WorkflowIr::from_json(&ir).unwrap());
+    }
+
+    /// 上限を超える読めない IR は、ブロックを 1 つずつ読み直さずに上限の誤りだけを返す（何十万個の空のブロック）。
+    #[test]
+    fn unreadable_irs_over_the_limits_are_not_read_part_by_part() {
+        let nodes: Vec<Value> = (0..300_000).map(|_| json!({})).collect();
+        let errs = validate(
+            &json!({ "ir_version": 1, "name": "wf", "nodes": nodes, "edges": [] }),
+            &Catalog::default(),
+        )
+        .unwrap_err();
+        assert_eq!(errs.len(), 1, "{:?}", &errs[..errs.len().min(3)]);
+        assert_eq!(errs[0].code, "ir.limit_exceeded");
+        assert!(errs[0].message.contains("200"), "{}", errs[0].message);
+
+        let edges: Vec<Value> = (0..600).map(|_| json!({ "from": 1 })).collect();
+        let errs = validate(
+            &json!({ "ir_version": 1, "name": "wf", "nodes": [], "edges": edges }),
+            &Catalog::default(),
+        )
+        .unwrap_err();
+        assert_eq!(errs.len(), 1);
+        assert!(errs[0].message.contains("500"), "{}", errs[0].message);
+
+        // 上限の内でも、誤りは上限の数で止める（読めないきっかけを何万個も並べる）。
+        let triggers: Vec<Value> = (0..50_000).map(|_| json!({})).collect();
+        let errs = validate(
+            &json!({ "ir_version": 1, "name": "wf", "nodes": [], "edges": [], "triggers": triggers }),
+            &Catalog::default(),
+        )
+        .unwrap_err();
+        assert!(
+            !errs.is_empty() && errs.len() <= MAX_TOTAL,
+            "{}",
+            errs.len()
+        );
+        assert!(errs.iter().all(|e| e.code == SCHEMA_VIOLATION));
     }
 
     #[test]
