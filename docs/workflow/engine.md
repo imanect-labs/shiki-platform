@@ -589,6 +589,8 @@ cron の評価区間は `workflow_trigger.last_planned_at`（watermark）→ 現
 2. `max_parallel_runs` 溢れ時は `on_trigger_overflow` に従い、`queue` なら run を `queued` のまま作成、`skip` なら run を作らず occurrence 記録のみ残す（再発火防止・§8）。
 3. `workflow_run` を作成し、jobq へ enqueue。occurrence の時刻は run の行の `scheduled_at` に同じ Tx で書く（実行情報の予定の日時・
    ir.md §3.1・GAP-15。occurrence の `run_id` は run を作った後に書くので、ワーカーが最初の step を取る時点でも読めるよう run の行に持たせる）。
+   起動口（`RunLauncher::launch`）へ渡す schedule の payload は `null` のまま（トレイトの約束を変えない）。予定の時刻は、発火が起動口を
+   呼んでいる間だけ `scheduler::current_scheduled_at` で読め、起動口がそれを run の行に書く。
 
 クラッシュ再起動時、UNIQUE により同一 `scheduled_at` は二度と投入されない（enqueue 直後に死んでも再起動で occurrence 衝突＝スキップ。Task 10.3 受け入れ条件）。
 
