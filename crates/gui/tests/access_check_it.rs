@@ -736,7 +736,7 @@ async fn needs_on_some_paths_do_not_block_buttons() {
                 { "id": "add", "type": "data.record.create", "on_error": "continue",
                   "params": { "table": claims.to_string(), "data": {} } },
                 { "id": "check", "type": "control.branch",
-                  "params": { "condition": { "op": "gt", "left": { "$from": "input", "path": "/amount" }, "right": 100000 } } },
+                  "params": { "condition": { "cmp": { "left": { "$from": "input", "path": "/amount" }, "op": "gt", "right": 100000 } } } },
                 { "id": "big", "type": "data.record.create", "params": { "table": big.to_string(), "data": {} } },
                 { "id": "log", "type": "data.record.create", "params": { "table": errors.to_string(), "data": {} } }
             ],

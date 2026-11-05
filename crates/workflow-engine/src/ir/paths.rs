@@ -103,7 +103,7 @@ mod tests {
         let ir = ir(
             &json!([
                 { "id": "a", "type": "transform.date", "params": {}, "on_error": "continue" },
-                { "id": "b", "type": "control.branch", "params": { "condition": { "op": "eq", "left": 1, "right": 1 } } },
+                { "id": "b", "type": "control.branch", "params": { "condition": { "cmp": { "left": 1, "op": "eq", "right": 1 } } } },
                 { "id": "yes", "type": "data.query", "params": {} },
                 { "id": "yes2", "type": "data.query", "params": {} },
                 { "id": "no", "type": "data.query", "params": {} },
@@ -126,7 +126,7 @@ mod tests {
     fn joins_follow_any_sure_input() {
         let ir = ir(
             &json!([
-                { "id": "b", "type": "control.branch", "params": { "condition": { "op": "eq", "left": 1, "right": 1 } } },
+                { "id": "b", "type": "control.branch", "params": { "condition": { "cmp": { "left": 1, "op": "eq", "right": 1 } } } },
                 { "id": "yes", "type": "data.query", "params": {} },
                 { "id": "no", "type": "data.query", "params": {} },
                 { "id": "j1", "type": "control.join", "params": { "mode": "any" } },

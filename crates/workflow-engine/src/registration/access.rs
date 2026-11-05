@@ -398,7 +398,7 @@ mod tests {
             "ir_version": 1, "name": "wf", "declared_scopes": ["data.read", "data.write"],
             "nodes": [
                 { "id": "add", "type": "data.record.create", "params": { "table": TABLE, "data": {} }, "on_error": "continue" },
-                { "id": "b", "type": "control.branch", "params": { "condition": { "op": "eq", "left": 1, "right": 1 } } },
+                { "id": "b", "type": "control.branch", "params": { "condition": { "cmp": { "left": 1, "op": "eq", "right": 1 } } } },
                 { "id": "big", "type": "data.record.delete", "params": { "table": FOLDER } },
                 { "id": "fix", "type": "data.record.update", "params": { "table": FILE } }
             ],

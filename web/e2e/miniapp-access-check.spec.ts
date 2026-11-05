@@ -14,7 +14,8 @@ import {
 /// 使う人の権限の確かめ（GAP-37）の E2E。
 /// - 作る人（持ち主）は、共有の画面で、アプリの部品が要る権限と、共有している相手ごとに足りない権限と直し方を見る。
 ///   テーブルを共有すると、次に開いたときから足りると言う。
-/// - 使う人は、アプリを開いたとき、足りない権限のあるボタンと表が押す前に止まり、理由を読める。共有されると使える。
+/// - 使う人は、アプリを開いたとき、足りない権限のあるボタンと表が押す前に止まり、理由を読める。止まったボタンを押しても
+///   送らない。共有されると、開き直さずに、押したときの確かめ直しで送れ、表も出る（BUG-217）。
 /// - 公開の確認は、共有している相手に、公開するバージョンの部品に要る権限が足りなければ知らせる（公開は止めない）。
 /// - ワークフローの共有の画面も、手動で実行するのに要る権限を相手ごとに言う。
 /// PC（1440px）とスマホ（390px）で確かめる。作ったもの（アプリ・ワークフロー・ビュー・テーブル）は最後に消す。
@@ -184,21 +185,36 @@ test.describe("使う人の権限の確かめ（GAP-37）", () => {
       await dialog.getByRole("button", { name: "閉じる" }).click();
 
       // 使う人: ボタンは押す前に止まり、理由が出る。表も読みに行かずに理由を出す。
+      let sent = 0;
+      bob.on("request", (req) => {
+        if (req.method() !== "POST" || !req.url().includes(`/api/mini-apps/${app.id}/ui-actions`)) return;
+        const action = (req.postDataJSON() as { action_id?: string } | null)?.action_id ?? "";
+        if (!action.startsWith("data_grid:")) sent += 1;
+      });
       await bob.goto(`/apps/${app.id}`);
       await expect(bob.getByRole("heading", { name: "経費の申請", level: 1 })).toBeVisible({ timeout: 20_000 });
       const figure = bob.getByTestId("ui-figure");
-      await expect(figure).toContainText(
-        "このボタンが使うテーブルが見つからないか、レコードを追加する権限がありません。アプリを作成した人に頼んでください。",
+      await expect(figure.getByTestId("ui-figure-blocked")).toContainText(
+        "「申請する」はいまは使えません。このボタンが使うテーブルが見つからないか、レコードを追加する権限がありません。アプリを作成した人に頼んでください。",
         { timeout: 20_000 },
       );
-      await expect(figure.getByRole("button", { name: "申請する" })).toBeDisabled();
+      await expect(figure.getByTestId("ui-figure-blocked")).toContainText("共有してもらった後は、開き直さずに押せます。");
       const blockedGrid = bob.getByTestId("miniapp-data-grid-blocked-ledger");
       await expect(blockedGrid).toContainText("表「ledger」を表示できません。この表が使うテーブルが見つからないか、見る権限がありません。");
+      // 止まったボタンも押せる形で描くが、押しても確かめ直して足りなければ送らない（BUG-217）。
+      await figure.getByLabel("件名").fill("出張");
+      await figure.getByRole("button", { name: "申請する" }).click();
+      await figure.getByRole("group", { name: "実行の確認" }).getByRole("button", { name: "実行する" }).click();
+      await expect(figure.getByRole("status").filter({ hasText: "権限がありません" })).toBeVisible({ timeout: 10_000 });
+      expect(sent).toBe(0);
       if (SHOTS) await bob.screenshot({ path: `${SHOTS}/access-user-blocked-pc.png` });
       bobPhone = await phoneOf(browser, bob);
       await bobPhone.goto(`/apps/${app.id}`);
-      await expect(bobPhone.getByTestId("ui-figure").getByRole("button", { name: "申請する" })).toBeDisabled({ timeout: 20_000 });
+      await expect(bobPhone.getByTestId("ui-figure").getByTestId("ui-figure-blocked")).toContainText("「申請する」はいまは使えません。", {
+        timeout: 20_000,
+      });
       await expect(bobPhone.getByTestId("miniapp-data-grid-blocked-ledger")).toBeVisible();
+      await expect(bobPhone.getByTestId("miniapp-data-grid-blocked-ledger").getByRole("button", { name: "もう一度確かめる" })).toBeVisible();
       await noSideScroll(bobPhone);
       if (SHOTS) await bobPhone.screenshot({ path: `${SHOTS}/access-user-blocked-phone.png` });
 
@@ -210,11 +226,17 @@ test.describe("使う人の権限の確かめ（GAP-37）", () => {
       await expect(dialog.getByTestId("access-report-subject")).toHaveCount(0);
       await dialog.getByRole("button", { name: "閉じる" }).click();
 
-      // 使う人: 開き直すとボタンを押せ、表も出る。
-      await bob.reload();
-      await expect(bob.getByTestId("ui-figure").getByRole("button", { name: "申請する" })).toBeEnabled({ timeout: 20_000 });
+      // 使う人: 開き直さずに、止まっていたボタンをもう一度押すと、確かめ直して送る。表も出る（BUG-217）。
+      await figure.getByRole("button", { name: "申請する" }).click();
+      await figure.getByRole("group", { name: "実行の確認" }).getByRole("button", { name: "実行する" }).click();
+      await expect(figure.getByRole("status").filter({ hasText: "起動しました" })).toBeVisible({ timeout: 15_000 });
+      expect(sent).toBe(1);
       await expect(bob.getByTestId("miniapp-data-grid-ledger")).toBeVisible({ timeout: 20_000 });
-      await expect(bob.getByTestId("ui-figure")).not.toContainText("権限がありません");
+      await expect(figure.getByTestId("ui-figure-blocked")).toHaveCount(0);
+      // スマホの画面（開いたまま）は、止まった表の「もう一度確かめる」で表を出す。
+      await bobPhone.getByTestId("miniapp-data-grid-blocked-ledger").getByRole("button", { name: "もう一度確かめる" }).click();
+      await expect(bobPhone.getByTestId("miniapp-data-grid-ledger")).toBeVisible({ timeout: 20_000 });
+      await expect(bobPhone.getByTestId("ui-figure").getByTestId("ui-figure-blocked")).toHaveCount(0);
 
       // 公開の確認: 経理のテーブルに書くボタンを足した v2 は、bob には一部を使えないと知らせる（公開は止めない）。
       const hidden = await createTable(page, uniqueName("e2e-経理"));
@@ -316,7 +338,7 @@ test.describe("使う人の権限の確かめ（GAP-37）", () => {
       const figure = bob.getByTestId("ui-figure");
       const notes = figure.getByTestId("ui-figure-blocked");
       await expect(notes).toContainText(
-        "「経理に回す」は押せません。このボタンが使うテーブルが見つからないか、レコードを追加する権限がありません。",
+        "「経理に回す」はいまは使えません。このボタンが使うテーブルが見つからないか、レコードを追加する権限がありません。",
         { timeout: 20_000 },
       );
       await expect(notes).not.toContainText("申請する");
