@@ -61,6 +61,9 @@ export const YuiNestedContext = React.createContext(false);
 
 const ACTION_KINDS = new Set(["app", "ask", "plan"]);
 
+/// 止めたボタンの理由に添える一言（押されたら確かめ直す・BUG-217）。
+const BLOCKED_HINT = "共有してもらった後は、開き直さずに押せます。";
+
 /// ブロックの識別子（CRLF を LF にし、末尾の空白を落としたソースの SHA-256 の先頭 16 桁）。
 export async function blockHash(source: string): Promise<string> {
   const normalized = source.replace(/\r\n/g, "\n").trimEnd();
@@ -86,6 +89,8 @@ export type YuiActionProps = {
   /// 図の一部のボタンだけを使えないときの、ボタンの文言と理由（図の下に出す・GAP-37）。図のボタンがすべて使えない
   /// ときは `actionDisabledReason` で図ごと止める。
   blockedNotes?: { label: string; reason: string }[];
+  /// 止めたボタンの理由の後に添える一言（押されたら確かめ直せる置き場所だけ・BUG-217）。
+  blockedHint?: string;
 };
 
 /// 図に渡すボタンの props。操作を持たない種類は `null`。
@@ -190,6 +195,7 @@ export function useYuiActions(
   return {
     onAction,
     ...(blocked.length > 0 ? { blockedNotes: blocked } : {}),
+    ...(blocked.length > 0 && host.recheckBlocked ? { blockedHint: BLOCKED_HINT } : {}),
     invokedActions: host.invokedActions.filter((a) => a.startsWith(prefix)).map((a) => a.slice(prefix.length)),
     runs: host.uiRuns.filter((r) => r.action_id.startsWith(prefix)),
     // 会話に送るボタン（-> chat）を持つ図は、会話の無いアプリにできない（保存時に弾かれる）。

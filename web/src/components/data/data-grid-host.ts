@@ -18,6 +18,8 @@ export type DataGridHost = {
   blockedReason?: (alias: string) => string | null;
   /// 追加だけの共有で、自分が追加したレコードだけを表示している（GAP-37）。
   ownRecordsOnly?: (alias: string) => boolean;
+  /// 表を描けない理由が権限のときに、確かめ直す（共有してもらった後に、開き直さずに表を出す・BUG-217）。
+  recheck?: () => Promise<void>;
 };
 
 /// 表の別名ごとの、使う人の権限の確かめの結果（[`miniAppDataGridHost`] に渡す）。

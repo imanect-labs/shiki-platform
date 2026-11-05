@@ -7,9 +7,10 @@
 /// （条件・並べ替えはピンした版のビュー）。行・列は**閲覧者本人の権限**で評価される。列の型・表示名は
 /// テーブルのスキーマ（閲覧者本人の viewer）から、列の順・見出し・幅・非表示はビューの表示設定から決める。
 
-import { AlertTriangle, Inbox, Loader2, MoveHorizontal, Table2 } from "lucide-react";
+import { AlertTriangle, Inbox, Loader2, MoveHorizontal, RotateCcw, Table2 } from "lucide-react";
 import * as React from "react";
 
+import { Button } from "@/components/ui/button";
 import { DataGrid, type DataGridStatus } from "@/components/data/data-grid";
 import { DataGridHostContext } from "@/components/data/data-grid-host";
 import {
@@ -59,6 +60,8 @@ export function MiniAppDataGrid({ alias }: { alias: string }) {
   const [waiting, setWaiting] = React.useState<Waiting | null>(null);
   const [attempt, setAttempt] = React.useState(0);
   const [status, setStatus] = React.useState<DataGridStatus | null>(null);
+  // 権限を確かめ直している（BUG-217）。
+  const [rechecking, setRechecking] = React.useState(false);
   // 枠の幅（列が収まるか・横に続くかの判定）。
   const frameRef = React.useRef<HTMLElement>(null);
   const [frameWidth, setFrameWidth] = React.useState(0);
@@ -127,9 +130,27 @@ export function MiniAppDataGrid({ alias }: { alias: string }) {
         data-testid={`miniapp-data-grid-blocked-${alias}`}
       >
         <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />
-        <span className="min-w-0 [overflow-wrap:anywhere]">
-          表「{alias}」を表示できません。{blocked}
-        </span>
+        <div className="flex min-w-0 flex-col items-start gap-1.5">
+          <span className="[overflow-wrap:anywhere]">表「{alias}」を表示できません。{blocked}</span>
+          {host.recheck ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs"
+              disabled={rechecking}
+              onClick={() => {
+                const recheck = host.recheck;
+                if (!recheck) return;
+                setRechecking(true);
+                void recheck().finally(() => setRechecking(false));
+              }}
+            >
+              {rechecking ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : <RotateCcw className="size-3.5" aria-hidden />}
+              もう一度確かめる
+            </Button>
+          ) : null}
+        </div>
       </div>
     );
   }

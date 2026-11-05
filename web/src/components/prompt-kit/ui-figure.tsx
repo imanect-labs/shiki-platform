@@ -196,6 +196,7 @@ export const UiFigure = React.memo(function UiFigure({
               「{n.label}」はいまは使えません。{n.reason}
             </li>
           ))}
+          {actions_.blockedHint ? <li className="text-muted-foreground">{actions_.blockedHint}</li> : null}
         </ul>
       ) : null}
       {actions_ ? <YuiRunList runs={actions_.runs} /> : null}

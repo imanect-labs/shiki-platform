@@ -378,9 +378,13 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
               return p ? myBlockedReason(p) : null;
             },
             ownRecordsOnly: (alias: string) => partAccess("data_view", alias)?.status === "limited",
+            // 共有してもらった後に確かめ直す（BUG-217）。
+            recheck: async () => {
+              await checkAccess(RECHECK_ON_PRESS_MS);
+            },
           }
         : null,
-    [gridRun, partAccess],
+    [gridRun, partAccess, checkAccess],
   );
 
   return (
