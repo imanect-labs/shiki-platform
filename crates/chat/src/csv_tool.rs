@@ -89,7 +89,8 @@ impl Tool for CsvQueryTool {
     }
     fn description(&self) -> &'static str {
         "CSV ファイルに読み取り専用 SQL（SELECT のみ）を実行して分析する。テーブル名は `data`。\
-         例: SELECT category, count(*) FROM data GROUP BY category。ファイルの閲覧権限が要る。"
+         例: SELECT category, count(*) FROM data GROUP BY category。ファイルの閲覧権限が要る。\
+         Excel（.xlsx）も読める（左端のシートを表として読み、いちばん上の行が列の名前）。"
     }
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
