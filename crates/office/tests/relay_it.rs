@@ -206,7 +206,7 @@ async fn http_allowlist_is_enforced() {
 #[tokio::test]
 async fn relay_live_collabora() {
     let (Ok(base), Ok(wopi_src)) = (
-        std::env::var("OFFICE_RELAY_TEST_COLLABORA"),
+        shiki_testenv::var("OFFICE_RELAY_TEST_COLLABORA"),
         std::env::var("OFFICE_RELAY_TEST_WOPI_SRC"),
     ) else {
         eprintln!("skip: OFFICE_RELAY_TEST_COLLABORA / OFFICE_RELAY_TEST_WOPI_SRC 未設定");
