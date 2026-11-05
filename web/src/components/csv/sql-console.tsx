@@ -190,7 +190,7 @@ export function SqlConsole({
                 data-testid="sql-table-name"
                 // 名前の長さに合わせて伸縮（短い名前の後ろに空白を作らない・長い名前は 20ch で頭打ち）。
                 style={{ width: `${Math.min(Math.max(t.name.length, 4), 20) + 1}ch` }}
-                className="h-6 min-w-0 rounded-sm bg-transparent px-1 font-mono text-base font-semibold transition-colors hover:bg-accent/60 focus-visible:bg-accent focus-visible:outline-none md:h-5 md:text-xs"
+                className="h-6 min-w-0 rounded-sm bg-transparent px-1 font-mono text-base font-semibold transition-colors hover:bg-accent/60 focus-visible:bg-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring/40 focus-visible:ring-offset-0 md:h-5 md:text-xs"
               />
               <span className="max-w-40 truncate text-muted-foreground" title={t.fileName}>
                 {t.fileName}
