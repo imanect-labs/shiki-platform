@@ -360,13 +360,12 @@ impl WorkflowRunLauncher {
 
         let ir_json = serde_json::to_value(&ir).map_err(|e| LauncherError::Ir(e.to_string()))?;
         let graph = RunGraph::build(&ir);
-        // event ペイロードを run 入力に載せる（$from trigger/$from input で参照可能）。schedule は予定の時刻だけを
-        // 受け取り、入力ときっかけの内容は今までどおり null にして、予定の時刻は run の行に書く（実行情報の予定の
-        // 日時・GAP-15）。
-        let (input, scheduled_at) = if trigger_kind == "schedule" {
-            (&Value::Null, crate::scheduler::scheduled_at_of(payload))
+        // event ペイロードを run 入力に載せる（$from trigger/$from input で参照可能・schedule は Null）。schedule の
+        // 予定の時刻は、発火が起動の間だけ持たせたものを run の行に書く（実行情報の予定の日時・GAP-15）。
+        let scheduled_at = if trigger_kind == "schedule" {
+            crate::scheduler::current_scheduled_at()
         } else {
-            (payload, None)
+            None
         };
         let run_id = self
             .runs
@@ -379,7 +378,7 @@ impl WorkflowRunLauncher {
                 Some(trigger_id),
                 &workflow_id.to_string(),
                 "workflow",
-                input,
+                payload,
                 &ir_json,
                 &graph,
                 RunOrigin {

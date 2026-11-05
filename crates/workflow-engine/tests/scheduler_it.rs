@@ -175,6 +175,84 @@ async fn schedule_fires_once_even_with_concurrent_ticks() {
     assert_eq!(launcher.launches.load(Ordering::SeqCst), 1);
 }
 
+/// 受け取った payload と、起動の間に読める予定の時刻を記録する launcher。
+#[derive(Default)]
+struct RecordingLauncher {
+    seen: std::sync::Mutex<Vec<(serde_json::Value, Option<chrono::DateTime<Utc>>)>>,
+}
+
+#[async_trait]
+impl RunLauncher for RecordingLauncher {
+    async fn launch(
+        &self,
+        _t: &str,
+        _w: Uuid,
+        _k: &str,
+        _tid: &str,
+        payload: &serde_json::Value,
+        _event_id: Option<i64>,
+    ) -> workflow_engine::LaunchOutcome {
+        let at = workflow_engine::scheduler::current_scheduled_at();
+        self.seen.lock().unwrap().push((payload.clone(), at));
+        workflow_engine::LaunchOutcome::Started(Uuid::new_v4())
+    }
+}
+
+/// スケジュールの発火は、起動口の payload を今までどおり null で渡し（トレイトの約束を変えない）、予定の時刻は
+/// 起動の間だけ読める（実行情報の予定の日時・GAP-15）。起動の外では読めない。
+#[tokio::test]
+async fn schedule_launch_keeps_a_null_payload_and_exposes_the_planned_time() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let wf = Uuid::new_v4();
+    register(
+        &pool,
+        &tenant,
+        wf,
+        "enabled",
+        "trg-at",
+        "schedule",
+        None,
+        json!({ "cron": "* * * * *", "tz": "UTC", "catchup": "skip" }),
+    )
+    .await;
+    sqlx::query("UPDATE workflow_trigger SET last_planned_at = $2 WHERE tenant_id = $1")
+        .bind(&tenant)
+        .bind(Utc.with_ymd_and_hms(2026, 7, 7, 0, 0, 0).unwrap())
+        .execute(&pool)
+        .await
+        .unwrap();
+    let launcher = RecordingLauncher::default();
+    let fired = SchedulerStore::new(pool.clone())
+        .tick_schedules(
+            Utc.with_ymd_and_hms(2026, 7, 7, 0, 3, 30).unwrap(),
+            Some(&tenant),
+            &launcher,
+        )
+        .await;
+    for table in [
+        "schedule_occurrence",
+        "workflow_trigger",
+        "workflow_registration",
+    ] {
+        sqlx::query(&format!("DELETE FROM {table} WHERE tenant_id = $1"))
+            .bind(&tenant)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+    assert_eq!(fired.unwrap(), 1);
+    let seen = launcher.seen.lock().unwrap().clone();
+    assert_eq!(
+        seen,
+        vec![(
+            serde_json::Value::Null,
+            Some(Utc.with_ymd_and_hms(2026, 7, 7, 0, 3, 0).unwrap())
+        )]
+    );
+    assert_eq!(workflow_engine::scheduler::current_scheduled_at(), None);
+}
+
 #[tokio::test]
 async fn disabled_workflow_does_not_fire() {
     let Some(pool) = setup().await else { return };

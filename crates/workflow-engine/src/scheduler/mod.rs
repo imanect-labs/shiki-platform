@@ -16,7 +16,7 @@ pub mod store;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use serde_json::{json, Value};
+use serde_json::Value;
 use uuid::Uuid;
 
 pub use coalesce::{Coalesce, COALESCE_MAX_SECS, COALESCE_QUIET_SECS};
@@ -74,10 +74,11 @@ impl LaunchOutcome {
 pub trait RunLauncher: Send + Sync {
     /// 指定ワークフローの run を起動する。
     ///
-    /// `payload` はトリガペイロード。event はイベントペイロードで、run の入力に載せ、`$from trigger`/`$from input`
-    /// で参照できるようにする（engine.md §6.1）。schedule は予定の時刻だけを持つ [`schedule_payload`] で、run の入力
-    /// には載せず（`$from trigger`/`$from input` は今までどおり null）、実行情報の予定の日時（`$from run` の
-    /// `scheduled_at`）にする（[`scheduled_at_of`] で読む・GAP-15）。
+    /// `payload` はトリガペイロード（event はイベントペイロード・schedule は `Null`）。run の入力に載せ、
+    /// `$from trigger`/`$from input` で参照できるようにする（engine.md §6.1）。
+    ///
+    /// schedule の予定の時刻は `payload` に載せず、発火が起動口を呼んでいる間だけ [`current_scheduled_at`] で読める
+    /// （実行情報の予定の日時・GAP-15。トレイトの形と `payload` の約束は変えない）。
     ///
     /// `event_id` は発火元の outbox イベント（schedule は `None`）。`(trigger_id, event_id)` で run を
     /// 一意にするので、クラッシュ後の再配送・再試行で同じイベントから run を二重に作らない。
@@ -92,21 +93,24 @@ pub trait RunLauncher: Send + Sync {
     ) -> LaunchOutcome;
 }
 
-/// スケジュールの発火が起動口（[`RunLauncher::launch`] の `payload`）へ渡す値（予定の時刻だけ・GAP-15）。
-///
-/// 起動口は [`scheduled_at_of`] で読み、run の行の予定の時刻にする（run の入力には載せない）。形はここだけで決める。
-#[must_use]
-pub fn schedule_payload(scheduled_at: DateTime<Utc>) -> Value {
-    json!({ "scheduled_at": scheduled_at.to_rfc3339() })
+tokio::task_local! {
+    /// スケジュールの発火が起動口を呼んでいる間の、予定の時刻（GAP-15）。
+    static SCHEDULED_AT: DateTime<Utc>;
 }
 
-/// [`schedule_payload`] の予定の時刻（無い・読めなければ `None`。そのときの実行情報の予定の日時は始めた時刻）。
+/// 予定の時刻を持たせて、スケジュールの発火の起動（`launch`）を走らせる（[`current_scheduled_at`] で読める）。
+pub(crate) async fn with_scheduled_at<F: std::future::Future>(
+    scheduled_at: DateTime<Utc>,
+    launch: F,
+) -> F::Output {
+    SCHEDULED_AT.scope(scheduled_at, launch).await
+}
+
+/// いま起動しているスケジュールの発火の予定の時刻（[`RunLauncher::launch`] の中で読む）。スケジュールの発火の外
+/// （event・手動の実行）では `None`。起動口はこれを run の行の予定の時刻にする（run の入力には載せない）。
 #[must_use]
-pub fn scheduled_at_of(payload: &Value) -> Option<DateTime<Utc>> {
-    let at = payload.get("scheduled_at")?.as_str()?;
-    DateTime::parse_from_rfc3339(at)
-        .ok()
-        .map(|t| t.with_timezone(&Utc))
+pub fn current_scheduled_at() -> Option<DateTime<Utc>> {
+    SCHEDULED_AT.try_with(|at| *at).ok()
 }
 
 #[cfg(test)]
@@ -114,15 +118,15 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
 
-    /// 予定の時刻は、渡した値と読んだ値が同じ（秒より細かい部分も落とさない）。形の違う値は読まない。
-    #[test]
-    fn schedule_payload_roundtrips() {
+    /// 予定の時刻は、発火が起動口を呼んでいる間だけ読める（外では None・秒より細かい部分も落とさない）。
+    #[tokio::test]
+    async fn scheduled_at_is_visible_only_while_launching() {
         let at = DateTime::parse_from_rfc3339("2026-11-09T00:00:00.123Z")
             .unwrap()
             .with_timezone(&Utc);
-        assert_eq!(scheduled_at_of(&schedule_payload(at)), Some(at));
-        assert_eq!(scheduled_at_of(&Value::Null), None);
-        assert_eq!(scheduled_at_of(&json!({ "scheduled_at": "monday" })), None);
-        assert_eq!(scheduled_at_of(&json!({ "scheduled_at": 1 })), None);
+        assert_eq!(current_scheduled_at(), None);
+        let seen = with_scheduled_at(at, async { current_scheduled_at() }).await;
+        assert_eq!(seen, Some(at));
+        assert_eq!(current_scheduled_at(), None);
     }
 }

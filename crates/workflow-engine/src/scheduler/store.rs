@@ -338,18 +338,21 @@ impl SchedulerStore {
         }
         // run_id が NULL（新規占有 or クラッシュ残り）→ ロック保持中に launch して記録する。
         // 見送り・一時失敗は run_id NULL のまま（occurrence は 1 回きり・再試行はしない）。
-        // 予定の時刻を渡し、run の実行情報の予定の日時にする（入力ときっかけの内容は null のまま・GAP-15）。
-        let run_id = launcher
-            .launch(
+        // 予定の時刻は payload に載せず（schedule の payload は null の約束のまま）、起動の間だけ持たせる。起動口は
+        // run の実行情報の予定の日時にする（GAP-15）。
+        let run_id = super::with_scheduled_at(
+            scheduled_at,
+            launcher.launch(
                 &t.tenant_id,
                 t.workflow_id,
                 "schedule",
                 &t.trigger_id,
-                &super::schedule_payload(scheduled_at),
+                &serde_json::Value::Null,
                 None,
-            )
-            .await
-            .run_id();
+            ),
+        )
+        .await
+        .run_id();
         sqlx::query(
             "UPDATE schedule_occurrence SET run_id = $5 \
              WHERE tenant_id = $1 AND workflow_id = $2 AND trigger_id = $3 AND scheduled_at = $4",
