@@ -266,7 +266,7 @@ pub fn page_texts_from_blocks(blocks: &[ContentBlock], tool_results_visible: boo
                     }
                 }
             }
-            ContentBlock::Citation(c) if c.web.is_some() => out.push(c.snippet.clone()),
+            ContentBlock::Citation(c) if c.is_web() => out.push(c.snippet.clone()),
             _ => {}
         }
     }
@@ -297,7 +297,7 @@ pub fn page_texts_from_events(
                     }
                 }
             }
-            StreamEventKind::Citation(c) if c.web.is_some() => out.push(c.snippet.clone()),
+            StreamEventKind::Citation(c) if c.is_web() => out.push(c.snippet.clone()),
             _ => {}
         }
     }
@@ -464,6 +464,25 @@ mod tests {
                 .map(String::as_str),
         );
         assert!(resolve_source(&s, "https://img.example.com/a.png").is_some());
+
+        // ファイルを指す引用（node_id を持つ）は、web が付いていても Web の出所に数えない（is_web と同じ規則）。
+        let mut doc: crate::model::Citation = (&web).into();
+        doc.node_id = "node-1".into();
+        doc.snippet = "![b](https://img.example.com/b.png)".into();
+        let blocks = vec![ContentBlock::Citation(doc.clone())];
+        let s = collect_image_sources(
+            page_texts_from_blocks(&blocks, true)
+                .iter()
+                .map(String::as_str),
+        );
+        assert!(resolve_source(&s, "https://img.example.com/b.png").is_none());
+        let events = vec![StreamEventKind::Citation(doc)];
+        let s = collect_image_sources(
+            page_texts_from_events(&events, true)
+                .iter()
+                .map(String::as_str),
+        );
+        assert!(resolve_source(&s, "https://img.example.com/b.png").is_none());
     }
 
     #[test]

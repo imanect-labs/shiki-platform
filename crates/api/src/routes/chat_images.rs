@@ -6,7 +6,8 @@
 //!   抜粋で、判定はサーバ側で行う（`chat::answer_images`）。フロントの判定は見た目だけ。
 //! - 取得するのは出典に書かれていた字句の URL（回答側の書き分けを通信に効かせない）。
 //! - 取得は `web_fetch` と同じ関門（URL 検証・解決後 IP の検証とアドレス固定）を通る。
-//! - 取得した画像はテナント単位で 1 時間キャッシュし、外部への取得は同時実行数を絞る（`chat_images_cache`）。
+//! - 取得した画像はテナント単位で 1 時間、取得の失敗は 5 分キャッシュし、外部への取得は同時実行数を絞る
+//!   （`chat_images_cache`）。
 //!   1 回の要求の取得（リダイレクトを含む）は [`FETCH_DEADLINE`] で打ち切る。
 //!
 //! 失敗の理由はログにだけ残す。クライアントには 404 / 502 だけを返し、フロントは「外部の画像」の
@@ -30,7 +31,7 @@ use crate::{
 };
 
 use super::chat::chat_store;
-use super::chat_images_cache::{acquire_fetch_slot, CachedImage, CACHE};
+use super::chat_images_cache::{acquire_fetch_slot, Cached, CachedImage, CACHE, FAILURE_TTL, TTL};
 use super::chat_images_fetch::{fetch_image, ImageFetchError};
 use agent_core::tools::public_fetch::public_only;
 
@@ -83,8 +84,10 @@ pub async fn get_answer_image(
     };
 
     // 認可と出所の判定は毎回通したうえで、取得の結果だけをキャッシュから返す。
-    if let Some(hit) = CACHE.get(&ctx.tenant_id, &source) {
-        return Ok(image_response(hit));
+    match CACHE.get(&ctx.tenant_id, &source) {
+        Some(Cached::Image(hit)) => return Ok(image_response(hit)),
+        Some(Cached::Failed(status)) => return Ok(status.into_response()),
+        None => {}
     }
     let Some(_slot) = acquire_fetch_slot().await else {
         tracing::info!(target: "answer_image", %thread_id, %message_id, "取得の同時実行数が上限のため断りました");
@@ -102,12 +105,15 @@ pub async fn get_answer_image(
                 mime: image.mime,
                 bytes: image.bytes.into(),
             };
-            CACHE.put(&ctx.tenant_id, &source, cached.clone());
+            CACHE.put(&ctx.tenant_id, &source, Cached::Image(cached.clone()), TTL);
             Ok(image_response(cached))
         }
         Err(e) => {
             tracing::info!(target: "answer_image", %thread_id, %message_id, reason = e.reason(), "画像を代理取得できませんでした");
-            Ok(failure_status(&e).into_response())
+            // 失敗も短く持つ（会話を開くたびに配信元や配信元の DNS へ問い合わせさせない）。
+            let status = failure_status(&e);
+            CACHE.put(&ctx.tenant_id, &source, Cached::Failed(status), FAILURE_TTL);
+            Ok(status.into_response())
         }
     }
 }
