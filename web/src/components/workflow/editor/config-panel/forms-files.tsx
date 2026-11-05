@@ -769,7 +769,7 @@ export function CsvQueryForm(props: FormProps) {
         {...props}
         {...CSV_QUERY_PICKER}
         label="集計する CSV か Excel のファイル"
-        hint="有効化のとき、このファイルの閲覧権限を渡します。Excel のファイルは、左端のシートの表を読みます（いちばん上の行が列の名前）。"
+        hint="有効化のとき、このファイルの閲覧権限を渡します。Excel のファイルは、表示しているシートのうち左端のシートを読み、値のある最初の行を列の名前にします。"
       />
       {sql !== null ? (
         <Field label="SQL（読み取りだけの SELECT）" error={fieldErrors.get("sql")}>
