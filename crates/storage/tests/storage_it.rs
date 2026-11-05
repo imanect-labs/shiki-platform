@@ -1965,6 +1965,8 @@ async fn list_all_names(
     }
 }
 
+/// 子一覧・名前検索が、フォルダ優先 → 選んだキー → 名前の自然順で並び、
+/// ページ境界をまたいでも欠落・重複しないこと（#1040）。
 #[tokio::test]
 async fn children_list_folders_first_and_natural_name_order() {
     let Some(cx) = setup().await else {

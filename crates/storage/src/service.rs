@@ -254,6 +254,15 @@ fn child_sort_tag(key: ChildSortKey) -> char {
     }
 }
 
+/// ソート方向 1 文字タグ（カーソルに置き、昇順で得たカーソルの降順での誤用を弾く）。
+fn child_sort_dir_tag(sort: ChildSort) -> char {
+    if sort.desc {
+        'D'
+    } else {
+        'A'
+    }
+}
+
 /// 子一覧・名前検索の並び（**フォルダ優先** → ソートキー → 名前 → id）を SQL 断片にしたもの（#1040）。
 ///
 /// プレースホルダは呼び出し側と共通: `$4` = カーソルのソート値（text）、`$5` = カーソルの id、
@@ -331,12 +340,13 @@ struct ChildCursor {
     kind: NodeKind,
 }
 
-/// 子一覧 keyset カーソルの不透明エンコード。`tag(1)`＋`種別(1)`＋`id`(36桁)＋`value` を連結し
+/// 子一覧 keyset カーソルの不透明エンコード。`tag(1)`＋`方向(1)`＋`種別(1)`＋`id`(36桁)＋`value` を連結し
 /// hex 化する（uuid は固定長・value は最後尾なので区切り不要）。クライアントには不透明。
 /// 名前順以外は value の後ろに `\n`＋名前を足す（同値の行を名前で並べるため）。value
 /// （RFC3339・整数）は改行を含まないので最初の `\n` で一意に分けられる。
 fn encode_child_cursor(sort: ChildSort, c: &ChildCursor) -> String {
     let tag = child_sort_tag(sort.key);
+    let dir = child_sort_dir_tag(sort);
     let k = match c.kind {
         NodeKind::Folder => 'd',
         NodeKind::File => 'f',
@@ -346,26 +356,28 @@ fn encode_child_cursor(sort: ChildSort, c: &ChildCursor) -> String {
         ChildSortKey::Name => c.name.clone(),
         ChildSortKey::Updated | ChildSortKey::Size => format!("{}\n{}", c.value, c.name),
     };
-    hex::encode(format!("{tag}{k}{id}{body}").as_bytes())
+    hex::encode(format!("{tag}{dir}{k}{id}{body}").as_bytes())
 }
 
 /// [`encode_child_cursor`] の逆。壊れた/別ソートのカーソルは `Invalid`（panic しない）。
 fn decode_child_cursor(sort: ChildSort, cursor: &str) -> Result<ChildCursor, StorageError> {
     let invalid = || StorageError::Invalid("カーソルが不正です".into());
     let bytes = hex::decode(cursor).map_err(|_| invalid())?;
-    // 先頭 1 バイトがソートタグ、次の 1 バイトが種別、続く 36 **バイト**が uuid（ASCII 固定長）、
-    // 残りが本体。バイト境界で分割してから UTF-8 検証する（マルチバイト境界外の split は panic）。
-    if bytes.len() < 2 + 36 {
+    // 先頭 1 バイトがソートタグ、次の 1 バイトが方向、次の 1 バイトが種別、続く 36 **バイト**が
+    // uuid（ASCII 固定長）、残りが本体。バイト境界で分割してから UTF-8 検証する
+    // （マルチバイト境界外の split は panic）。
+    if bytes.len() < 3 + 36 {
         return Err(invalid());
     }
-    let (head, rest) = bytes.split_at(2);
-    if head[0] != child_sort_tag(sort.key) as u8 {
+    let (head, rest) = bytes.split_at(3);
+    // キーか方向が違うカーソルは keyset の比較の向き・列が合わず、欠落・重複し得るので拒否する。
+    if head[0] != child_sort_tag(sort.key) as u8 || head[1] != child_sort_dir_tag(sort) as u8 {
         // ソート条件を変えたのに古いカーソルを使い回した等。誤った keyset 比較を避けて拒否する。
         return Err(StorageError::Invalid(
             "カーソルが現在のソート条件と一致しません".into(),
         ));
     }
-    let kind = match head[1] {
+    let kind = match head[2] {
         b'd' => NodeKind::Folder,
         b'f' => NodeKind::File,
         _ => return Err(invalid()),
@@ -523,6 +535,7 @@ mod tests {
         assert!(ensure_same_extension("a.tar.gz", "a.tar").is_err());
     }
 
+    /// テスト用のカーソル位置（id は毎回ランダム）。
     fn cursor(value: &str, name: &str, kind: NodeKind) -> ChildCursor {
         ChildCursor {
             value: value.into(),
@@ -562,7 +575,7 @@ mod tests {
     #[test]
     fn child_cursor_rejects_missing_name_part() {
         // 名前順以外で `\n`＋名前が欠けたカーソルは不正（keyset の比較値が揃わない）。
-        let raw = format!("Sf{}4096", Uuid::new_v4());
+        let raw = format!("SAf{}4096", Uuid::new_v4());
         let sort = ChildSort {
             key: ChildSortKey::Size,
             desc: false,
@@ -591,6 +604,19 @@ mod tests {
     }
 
     #[test]
+    fn child_cursor_rejects_cursor_from_other_direction() {
+        // 昇順で得たカーソルを降順に渡すと、逆向きの keyset 比較で欠落・重複するので拒否する。
+        let asc = ChildSort::default();
+        let desc = ChildSort {
+            key: ChildSortKey::Name,
+            desc: true,
+        };
+        let c = encode_child_cursor(asc, &cursor("a", "a", NodeKind::File));
+        assert!(decode_child_cursor(desc, &c).is_err());
+        assert!(decode_child_cursor(asc, &c).is_ok());
+    }
+
+    #[test]
     fn child_cursor_rejects_legacy_format() {
         // フォルダ優先以前（小文字タグ・種別なし）のカーソルは keyset の列が違うので拒否する。
         let legacy = hex::encode(format!("n{}a", Uuid::new_v4()));
@@ -601,12 +627,12 @@ mod tests {
     fn child_cursor_rejects_garbage() {
         let sort = ChildSort::default();
         assert!(decode_child_cursor(sort, "zzz").is_err()); // 非 hex
-        assert!(decode_child_cursor(sort, &hex::encode("short")).is_err()); // 2+36 バイト未満
-        let mut bad_kind = vec![b'N', b'x'];
+        assert!(decode_child_cursor(sort, &hex::encode("short")).is_err()); // 3+36 バイト未満
+        let mut bad_kind = vec![b'N', b'A', b'x'];
         bad_kind.extend(Uuid::new_v4().to_string().bytes());
         assert!(decode_child_cursor(sort, &hex::encode(bad_kind)).is_err()); // 未知の種別
                                                                              // 境界がマルチバイト文字の途中でも **panic せず** Invalid を返す（split_at 回帰）。
-        let mut raw = vec![b'N', b'f']; // 正しいタグと種別
+        let mut raw = vec![b'N', b'A', b'f']; // 正しいタグ・方向・種別
         raw.extend(std::iter::repeat_n(b'a', 35));
         raw.extend_from_slice("あ".as_bytes()); // 3 バイト → uuid 境界が文字途中
         assert!(decode_child_cursor(sort, &hex::encode(raw)).is_err());
