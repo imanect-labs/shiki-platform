@@ -136,9 +136,9 @@ export function WorkflowEditor({
     // 開発時の StrictMode の二重実行で 2 回出さない。
     if (restoreNotified.current) return;
     restoreNotified.current = true;
-    if (restored.draft) {
-      toast({ title: "保存していない編集を復元しました", description: "保存するまで反映されません。" });
-    } else if (restored.discarded) {
+    // 復元できたときは知らせない（保存状態の「未保存」で分かる・往復のたびに通知が積もるため）。
+    // 黙って消えるのは困るので、捨てたときだけ知らせる。
+    if (restored.discarded) {
       toast({
         variant: "destructive",
         title: "保存していない編集を復元できませんでした",

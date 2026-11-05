@@ -169,7 +169,7 @@ test("エディタ: 未保存のまま実行履歴へ移って戻っても編集
   await page.waitForURL(editorUrl, { timeout: 20_000 });
 
   await expect(canvas.getByText("スクリプト").first()).toBeVisible({ timeout: 15_000 });
-  await expect(page.getByText(/保存していない編集を復元しました/).first()).toBeVisible();
+  await expect(page.getByText(/v1・未保存/).first()).toBeVisible();
   await expect(page.getByRole("button", { name: "保存", exact: true })).toBeEnabled();
 
   // 保存すれば下書きは消え、もう一度往復しても「復元」は出ない。
