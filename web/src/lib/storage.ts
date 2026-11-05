@@ -347,6 +347,41 @@ export function restoreVersion(fileId: string, version: number): Promise<NodeRes
   );
 }
 
+/// 編集の取り消し結果（#1049）。型は OpenAPI 生成。
+export type RevertEditResponse = components["schemas"]["RevertEditResponse"];
+
+/// 取り消す編集の後に別の版がある（409）。`force` で上書きできる。
+export class RevertConflict extends Error {
+  constructor(public currentVersion: number) {
+    super("このファイルは編集の後に更新されています");
+    this.name = "RevertConflict";
+  }
+}
+
+/// `version` を作った編集を取り消す（直前の版を新しい版として復元・editor のみ・#1049）。
+/// 既に編集前の内容なら `reverted: false` で何もしない。
+export async function revertEdit(
+  fileId: string,
+  version: number,
+  opts: { force?: boolean; expectedCurrentVersion?: number } = {},
+): Promise<RevertEditResponse> {
+  const res = await apiFetch(`/files/${fileId}/versions/${version}/revert`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      force: opts.force ?? false,
+      ...(opts.expectedCurrentVersion !== undefined
+        ? { expected_current_version: opts.expectedCurrentVersion }
+        : {}),
+    }),
+  });
+  if (res.status === 409) {
+    const body = (await res.json().catch(() => null)) as { current_version?: number } | null;
+    throw new RevertConflict(body?.current_version ?? version);
+  }
+  return okJson<RevertEditResponse>(res);
+}
+
 /// AI 提案バージョンを採用して通常の新バージョンへ昇格する（Task 11.8・editor のみ）。
 export function adoptVersion(fileId: string, version: number): Promise<NodeResponse> {
   return apiFetch(`/files/${fileId}/versions/${version}/adopt`, { method: "POST" }).then((r) =>

@@ -247,14 +247,17 @@ impl StorageService {
     ///
     /// - 現在の内容が既に直前の版と同じ → 何もしない（[`RevertOutcome::AlreadyReverted`]）。二度押し・
     ///   再読込後の再実行で版を無駄に積まない。
-    /// - 編集の後に別の版が作られている（現在の版 ≠ `edited_version`）→ `force` でなければ
-    ///   [`StorageError::VersionConflict`]。後から入った他の編集を黙って消さない。
+    /// - 現在の版が期待値（`expected_current`・省略時は `edited_version`）と違う＝編集の後に別の版が
+    ///   作られている → `force` でなければ [`StorageError::VersionConflict`]。後から入った他の編集を
+    ///   黙って消さない。同じ回答で同じファイルを複数回編集した場合は、最初の編集の版を
+    ///   `edited_version`、最後の編集の版を `expected_current` に渡すとまとめて取り消せる。
     /// - `edited_version` が無い／提案版／その前に内容版が無い（新規作成の版）→ [`StorageError::NotFound`]。
     pub async fn revert_edit(
         &self,
         ctx: &AuthContext,
         file_id: Uuid,
         edited_version: i64,
+        expected_current: Option<i64>,
         force: bool,
         trace_id: Option<&str>,
     ) -> Result<RevertOutcome, StorageError> {
@@ -307,7 +310,7 @@ impl StorageService {
             let node = self.load_node(ctx, file_id, false).await?;
             return Ok(RevertOutcome::AlreadyReverted(node));
         }
-        if current_version != edited_version && !force {
+        if current_version != expected_current.unwrap_or(edited_version) && !force {
             return Err(StorageError::VersionConflict {
                 current: current_version,
             });

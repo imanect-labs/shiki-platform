@@ -151,7 +151,7 @@ async fn revert_edit_restores_previous_version_as_new_version() {
     // 取り消し → 直前の版（v1）の内容が新しい版として入る。
     let out = env
         .service
-        .revert_edit(&alice, file.id, edited.version, false, None)
+        .revert_edit(&alice, file.id, edited.version, None, false, None)
         .await
         .expect("revert");
     let RevertOutcome::Reverted {
@@ -168,7 +168,7 @@ async fn revert_edit_restores_previous_version_as_new_version() {
     // 二度目は何もしない（版を積まない）。
     let again = env
         .service
-        .revert_edit(&alice, file.id, edited.version, false, None)
+        .revert_edit(&alice, file.id, edited.version, None, false, None)
         .await
         .expect("revert again");
     match again {
@@ -181,7 +181,7 @@ async fn revert_edit_restores_previous_version_as_new_version() {
         assert!(
             matches!(
                 env.service
-                    .revert_edit(&alice, file.id, v, false, None)
+                    .revert_edit(&alice, file.id, v, None, false, None)
                     .await,
                 Err(StorageError::NotFound)
             ),
@@ -233,7 +233,7 @@ async fn revert_edit_refuses_to_drop_later_edits_without_force() {
     // AI の編集の後に別の版がある → force なしでは拒否し、内容は変えない。
     match env
         .service
-        .revert_edit(&alice, file.id, ai_edit.version, false, None)
+        .revert_edit(&alice, file.id, ai_edit.version, None, false, None)
         .await
     {
         Err(StorageError::VersionConflict { current }) => assert_eq!(current, later.version),
@@ -244,7 +244,7 @@ async fn revert_edit_refuses_to_drop_later_edits_without_force() {
     // force なら AI の編集前（base）まで戻す（後の変更も失われる）。
     match env
         .service
-        .revert_edit(&alice, file.id, ai_edit.version, true, None)
+        .revert_edit(&alice, file.id, ai_edit.version, None, true, None)
         .await
         .expect("force revert")
     {
@@ -306,7 +306,7 @@ async fn revert_edit_requires_editor() {
         .expect("viewer");
     let res = env
         .service
-        .revert_edit(&bob, file.id, edited.version, false, None)
+        .revert_edit(&bob, file.id, edited.version, None, false, None)
         .await;
     assert!(
         matches!(res, Err(StorageError::Forbidden)),
@@ -317,4 +317,82 @@ async fn revert_edit_requires_editor() {
         format!("a\n{tag}\n2\n").as_bytes(),
         "内容は変わらない"
     );
+}
+
+/// 同じファイルへの連続した編集（v2, v3）は、最初の版＋期待する現在版（v3）でまとめて取り消せる。
+/// その後に別の編集が入っていれば競合する。
+#[tokio::test]
+async fn revert_edit_can_undo_consecutive_edits_with_expected_current() {
+    let Some(env) = setup().await else { return };
+    let org = format!("org-{}", Uuid::new_v4().simple());
+    let alice = user(&org, "alice");
+    env.authz
+        .write_tuple(
+            &alice.subject(),
+            Relation::Member,
+            &alice.ns().organization(&org),
+        )
+        .await
+        .expect("member");
+    let tag = Uuid::new_v4();
+    let base = format!("x\n{tag}\n");
+    let file = env
+        .service
+        .write_file_internal(
+            &alice,
+            None,
+            &format!("m-{tag}.csv"),
+            base.as_bytes(),
+            "text/csv",
+            None,
+        )
+        .await
+        .expect("create");
+    let first = env
+        .service
+        .update_file_content_internal(
+            &alice,
+            file.id,
+            format!("{base}1\n").as_bytes(),
+            "text/csv",
+            None,
+        )
+        .await
+        .expect("edit 1");
+    let second = env
+        .service
+        .update_file_content_internal(
+            &alice,
+            file.id,
+            format!("{base}1\n2\n").as_bytes(),
+            "text/csv",
+            None,
+        )
+        .await
+        .expect("edit 2");
+
+    // 期待する現在版が違う（古い）なら競合。
+    assert!(matches!(
+        env.service
+            .revert_edit(&alice, file.id, first.version, Some(first.version), false, None)
+            .await,
+        Err(StorageError::VersionConflict { current }) if current == second.version
+    ));
+    // 最初の編集の版＋現在版＝最後の編集の版 → 最初の編集の前まで戻る。
+    let out = env
+        .service
+        .revert_edit(
+            &alice,
+            file.id,
+            first.version,
+            Some(second.version),
+            false,
+            None,
+        )
+        .await
+        .expect("revert both");
+    assert!(
+        matches!(out, RevertOutcome::Reverted { restored_from_version, .. } if restored_from_version == file.version)
+    );
+    assert_eq!(content(&env, &alice, file.id).await, base.as_bytes());
 }

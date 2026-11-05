@@ -173,10 +173,16 @@ pub async fn restore_version(
 
 /// 編集の取り消しリクエスト（#1049）。
 #[derive(Debug, Default, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct RevertEditRequest {
     /// 取り消す編集の後に別の版が作られていても戻す（後の変更も失われる）。既定 false。
     #[serde(default)]
     pub force: bool,
+    /// 現在の版がこれであることを要求する（省略時は `version` そのもの）。同じファイルへの連続した
+    /// 編集をまとめて取り消すとき、最後の編集の版を渡す。
+    #[serde(default)]
+    #[schema(value_type = Option<i64>)]
+    pub expected_current_version: Option<i64>,
 }
 
 /// 編集の取り消し結果。
@@ -222,10 +228,17 @@ pub async fn revert_edit(
     Path((id, version)): Path<(Uuid, i64)>,
     body: Option<Json<RevertEditRequest>>,
 ) -> Result<Json<RevertEditResponse>, ApiError> {
-    let force = body.map(|Json(b)| b.force).unwrap_or_default();
+    let req = body.map(|Json(b)| b).unwrap_or_default();
     let outcome = state
         .storage
-        .revert_edit(&ctx, id, version, force, trace.as_deref())
+        .revert_edit(
+            &ctx,
+            id,
+            version,
+            req.expected_current_version,
+            req.force,
+            trace.as_deref(),
+        )
         .await?;
     Ok(Json(match outcome {
         storage::RevertOutcome::Reverted {
