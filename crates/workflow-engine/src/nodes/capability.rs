@@ -8,6 +8,7 @@ use sha2::{Digest, Sha256};
 
 use crate::capability::{op_digest, JournalDecision};
 use crate::control::eval::resolve_value;
+use crate::ir::expr::ValueExpr;
 use crate::ir::params::{
     CsvPatchParams, CsvQueryParams, CsvWriteParams, RagSearchParams, StorageListParams,
     StorageReadParams, StorageWriteParams, WorkflowStartParams,
@@ -25,33 +26,65 @@ pub(super) fn parse_params<T: serde::de::DeserializeOwned>(raw: &Value) -> Resul
     crate::ir::params::parse(raw).map_err(|e| PortError::invalid(format!("params が不正: {e}")))
 }
 
-/// csv.query の `tables`（解決後の値）を追加テーブル列へ。
+/// csv.query の `tables` を追加テーブル列へ。
 ///
-/// 形は `[{ "name": "<テーブル名>", "file": "<UUID>" }, ...]`。各要素の `name` / `file` も値式
-/// （リテラル / `$from` / `$template`）として解決する（前段ノードが返したファイル id を使える）。
+/// 形は `[{ "name": "<テーブル名>", "file": "<UUID>" }, ...]`。
+///
+/// - **IR に書かれたリテラル配列**なら、各要素の `name` / `file` を値式（`$from` / `$template` /
+///   リテラル）として解決する（前段ノードが返したファイル id を使える）。リテラル内の値式は保存時
+///   検証（V5）が生 JSON を走査して検査済み。
+/// - `tables` 自体が `$from` 等で**実行時に解決される値**なら、その中身はデータとして扱い、
+///   **値式として再評価しない**（トリガ payload 等に仕込まれた `$from` で、配線されていない
+///   ノードの出力を引き込ませないため）。
+///
+/// 解決できない（null を含む）値式は `expr_resolve_error` で失敗させる（ir.md: 黙って null を流さない）。
 /// 名前の形・重複・上限の検証は tabular（単一チョークポイント）が行うため、ここでは型だけを
 /// 確かめる（不正は permanent）。
 fn parse_csv_tables(
-    v: Option<Value>,
+    expr: &ValueExpr,
     r: &ParamResolver<'_>,
 ) -> Result<Vec<CsvQueryTable>, PortError> {
     let invalid = |m: &str| PortError::invalid(format!("csv.query: tables {m}"));
-    let items = match v {
-        // 指定したのに参照が解決できない＝配線ミス。黙って単一 CSV に落とさない。
-        None => return Err(invalid("が解決できません")),
-        // 明示の null は追加テーブルなし＝単一 CSV クエリ。
-        Some(Value::Null) => return Ok(Vec::new()),
-        Some(Value::Array(items)) => items,
-        Some(_) => return Err(invalid("は配列に解決される必要があります")),
+    let unresolved = || {
+        PortError::new(
+            "expr_resolve_error",
+            "csv.query: tables の値式が解決できません",
+            false,
+        )
+    };
+    // リテラルは要素ごとに値式を解く。それ以外は 1 回だけ解き、結果はデータとして読む。
+    let (items, nested_exprs) = match expr {
+        ValueExpr::Literal(v) => (v.clone(), true),
+        other => (
+            resolve_value(other, r)
+                .filter(|v| !v.is_null())
+                .ok_or_else(unresolved)?,
+            false,
+        ),
+    };
+    let Value::Array(items) = items else {
+        return Err(invalid("は配列である必要があります"));
+    };
+    let field = |item: &Value, key: &str| -> Result<Option<Value>, PortError> {
+        let Some(raw) = item.get(key) else {
+            return Ok(None);
+        };
+        if !nested_exprs {
+            return Ok(Some(raw.clone()));
+        }
+        resolve_field(item, key, r)
+            .filter(|v| !v.is_null())
+            .map(Some)
+            .ok_or_else(unresolved)
     };
     items
         .iter()
         .map(|item| {
-            let name = resolve_field(item, "name", r)
+            let name = field(item, "name")?
                 .as_ref()
                 .and_then(as_string)
                 .ok_or_else(|| invalid("の各要素に name（文字列）が要ります"))?;
-            let file_id = resolve_field(item, "file", r)
+            let file_id = field(item, "file")?
                 .as_ref()
                 .and_then(as_uuid)
                 .ok_or_else(|| invalid("の各要素に file（UUID）が要ります"))?;
@@ -305,7 +338,7 @@ impl CapabilityNodeExecutor {
             .and_then(|v| as_string(&v))
             .ok_or_else(|| PortError::invalid("csv.query: sql が解決できません"))?;
         let tables = match &p.tables {
-            Some(expr) => parse_csv_tables(resolve_value(expr, r), r)?,
+            Some(expr) => parse_csv_tables(expr, r)?,
             None => Vec::new(),
         };
         let table_files: Vec<String> = tables.iter().map(|t| t.file_id.to_string()).collect();

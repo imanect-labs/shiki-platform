@@ -26,6 +26,9 @@ pub const MAX_EXTRA_TABLES: usize = 8;
 /// テーブル名の最大長（DuckDB の識別子としても十分短い）。
 const MAX_NAME_LEN: usize = 63;
 
+/// [`is_valid_table_name`] と同じ規則の正規表現（JSON Schema 等へ出す用・単一定義）。
+pub const TABLE_NAME_PATTERN: &str = "^[a-z_][a-z0-9_]{0,62}$";
+
 /// 追加テーブル（利用者が付けた名前 → CSV ファイル）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TableRef {
@@ -91,6 +94,14 @@ mod tests {
             name: name.into(),
             file_id: Uuid::nil(),
         }
+    }
+
+    /// 正規表現の定数と判定関数が同じ規則であること（片方だけ変えて食い違わせない）。
+    #[test]
+    fn pattern_matches_validator_rules() {
+        // 長さの上限は MAX_NAME_LEN と同じ（先頭 1 文字＋残り MAX_NAME_LEN-1 文字）。
+        assert!(TABLE_NAME_PATTERN.contains(&format!("{{0,{}}}", MAX_NAME_LEN - 1)));
+        assert!(TABLE_NAME_PATTERN.starts_with("^[a-z_][a-z0-9_]"));
     }
 
     #[test]

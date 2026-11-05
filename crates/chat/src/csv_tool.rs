@@ -130,7 +130,7 @@ impl Tool for CsvQueryTool {
                     "items": {
                         "type": "object",
                         "properties": {
-                            "name": { "type": "string", "pattern": "^[a-z_][a-z0-9_]{0,62}$", "description": "SQL で使うテーブル名（英小文字・数字・_。data 以外）" },
+                            "name": { "type": "string", "pattern": tabular::TABLE_NAME_PATTERN, "description": "SQL で使うテーブル名（英小文字・数字・_。data 以外）" },
                             "node_id": { "type": "string", "format": "uuid", "description": "追加する CSV のノード ID" }
                         },
                         "required": ["name", "node_id"]

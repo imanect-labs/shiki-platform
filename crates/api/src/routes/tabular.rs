@@ -180,7 +180,7 @@ pub struct QueryTable {
 /// 読み取り専用 SQL を実行する（viewer 認可・SQL 検証必須）。
 ///
 /// `tables` を渡すと複数 CSV を JOIN できる。対象の**全ファイル**に閲覧権限が要り、1 つでも
-/// 欠ければ 403（部分結果は返さない）。
+/// 欠ければ 404（存在秘匿＝無いファイルと区別しない・部分結果は返さない）。
 #[utoipa::path(
     post, path = "/files/{id}/tabular/query", request_body = QueryRequest,
     params(("id" = Uuid, Path, description = "CSV ファイル ID")),

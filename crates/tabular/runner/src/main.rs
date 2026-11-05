@@ -94,6 +94,22 @@ fn lockdown_load(conn: &Connection, req: &RunnerRequest) -> Result<(), String> {
             if !tabular::is_valid_table_name(&t.name) || t.name == tabular::PRIMARY_TABLE {
                 return Err(format!("テーブル名 `{}` は使えません", t.name));
             }
+            // SQL の予約語（order / group / select など）は引用符なしでは参照できず、JOIN が必ず
+            // 構文エラーになる。語彙は DuckDB 自身の duckdb_keywords() を正とする（手書きしない）。
+            let reserved: i64 = conn
+                .query_row(
+                    "SELECT count(*) FROM duckdb_keywords() \
+                     WHERE keyword_name = ? AND keyword_category = 'reserved'",
+                    [t.name.as_str()],
+                    |r| r.get(0),
+                )
+                .map_err(|e| format!("予約語の確認に失敗: {e}"))?;
+            if reserved > 0 {
+                return Err(format!(
+                    "テーブル名 `{}` は SQL の予約語なので使えません（別の名前にしてください）",
+                    t.name
+                ));
+            }
             let sql = format!(
                 "CREATE TABLE \"{}\" AS SELECT * FROM read_csv_auto(?, all_varchar={all_varchar}, header=true)",
                 t.name

@@ -9,12 +9,12 @@
 //!
 //! DuckDB 実行は [`crate::runner`] の非特権別プロセスに隔離し、api には CSV を食わせない。
 
-use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::io::Write as _;
 use std::sync::Arc;
 
 use authz::AuthContext;
+use futures::future::try_join_all;
 use storage::{NodeKind, StorageService};
 use uuid::Uuid;
 
@@ -136,38 +136,51 @@ impl TabularService {
         // ストレージ読取より前に置き、不正な指定でファイル取得を発生させない。
         validate_read_only(sql)?;
         validate_tables(tables)?;
-        let primary = self.fetch_csv(ctx, file_id, trace_id).await?;
-        // 同じファイルを複数名で参照しても取得/一時ファイルは 1 回に畳む（認可結果は同一）。
-        let mut fetched: HashMap<Uuid, tempfile::NamedTempFile> = HashMap::new();
-        let mut extra = Vec::with_capacity(tables.len());
+        // 取得対象（主ファイル＋追加ファイル）を重複なしで並べる。同じファイルを複数名で参照しても
+        // 取得/一時ファイルは 1 回に畳む（認可結果は同一）。
+        let mut ids = vec![file_id];
         for t in tables {
-            let path = if t.file_id == file_id {
-                primary.path().to_path_buf()
-            } else {
-                let tmp = match fetched.entry(t.file_id) {
-                    Entry::Occupied(e) => e.into_mut(),
-                    Entry::Vacant(e) => e.insert(self.fetch_csv(ctx, t.file_id, trace_id).await?),
-                };
-                tmp.path().to_path_buf()
-            };
-            extra.push(RunnerTable {
-                name: t.name.clone(),
-                csv_path: path.to_string_lossy().into_owned(),
-            });
+            if !ids.contains(&t.file_id) {
+                ids.push(t.file_id);
+            }
         }
-        // 一時ファイル（primary / fetched）はランナー終了まで生かす（drop で削除される）。
+        // 全ファイルを並行に取得する（各取得が viewer を個別に要求する）。件数は validate_tables で
+        // 上限済み（主ファイル込み 1 + MAX_EXTRA_TABLES）＝並列度は有界。try_join_all は最初の
+        // 失敗で残りの取得を破棄するので、読めないファイルがあれば他の CSV をダウンロードし切らない。
+        let fetched = try_join_all(ids.iter().map(|id| self.fetch_csv(ctx, *id, trace_id))).await?;
+        let path_of: HashMap<Uuid, &std::path::Path> = ids
+            .iter()
+            .copied()
+            .zip(fetched.iter().map(tempfile::NamedTempFile::path))
+            .collect();
+        let path = |id: &Uuid| {
+            path_of
+                .get(id)
+                .copied()
+                .ok_or_else(|| TabularError::Internal("一時ファイルが見つかりません".into()))
+        };
+        let primary = path(&file_id)?;
+        let extra = tables
+            .iter()
+            .map(|t| {
+                Ok(RunnerTable {
+                    name: t.name.clone(),
+                    csv_path: path(&t.file_id)?.to_string_lossy().into_owned(),
+                })
+            })
+            .collect::<Result<Vec<_>, TabularError>>()?;
+        // 一時ファイル（fetched）はランナー終了まで生かす（drop で削除される）。
         let resp = self
             .run(
                 RunnerOp::Query {
                     sql: sql.to_string(),
                 },
-                primary.path(),
+                primary,
                 extra,
                 self.quotas.max_rows,
             )
             .await;
         drop(fetched);
-        drop(primary);
         resp
     }
 

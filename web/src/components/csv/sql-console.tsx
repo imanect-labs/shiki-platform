@@ -158,10 +158,10 @@ export function SqlConsole({
       <div className="flex flex-wrap items-center gap-1.5" data-testid="sql-tables">
         <span className="text-xs font-medium text-muted-foreground">テーブル</span>
         <span
-          className="inline-flex h-7 items-center gap-1.5 rounded-md border bg-muted/40 px-2 text-xs"
+          className="inline-flex h-8 items-center gap-1.5 rounded-md border border-border/60 bg-card/40 px-2 text-xs md:h-7"
           title="この CSV"
         >
-          <code className="font-mono font-semibold">{PRIMARY_TABLE}</code>
+          <code className="font-mono text-base font-semibold md:text-xs">{PRIMARY_TABLE}</code>
           <span className="text-muted-foreground">この CSV</span>
         </span>
         {tables.map((t) => {
@@ -170,7 +170,7 @@ export function SqlConsole({
             <span
               key={t.key}
               className={cn(
-                "inline-flex h-7 max-w-full items-center gap-1 rounded-md border bg-background pr-0.5 pl-1 text-xs",
+                "inline-flex h-8 max-w-full items-center gap-1.5 rounded-md border border-border/60 bg-card/40 pr-0.5 pl-1 text-xs md:h-7",
                 err && "border-destructive/60",
               )}
               data-testid="sql-table"
@@ -190,7 +190,7 @@ export function SqlConsole({
                 data-testid="sql-table-name"
                 // 名前の長さに合わせて伸縮（短い名前の後ろに空白を作らない・長い名前は 20ch で頭打ち）。
                 style={{ width: `${Math.min(Math.max(t.name.length, 4), 20) + 1}ch` }}
-                className="h-5 min-w-0 rounded-sm bg-transparent px-1 font-mono text-base font-semibold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring md:text-xs"
+                className="h-6 min-w-0 rounded-sm bg-transparent px-1 font-mono text-base font-semibold transition-colors hover:bg-accent/60 focus-visible:bg-accent focus-visible:outline-none md:h-5 md:text-xs"
               />
               <span className="max-w-40 truncate text-muted-foreground" title={t.fileName}>
                 {t.fileName}

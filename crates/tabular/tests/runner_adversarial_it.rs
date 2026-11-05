@@ -336,6 +336,43 @@ async fn runner_rejects_unsafe_extra_table_names() {
     }
 }
 
+/// #1037: SQL の予約語は引用符なしで参照できないため、テーブル名として拒否する（DuckDB の語彙が正）。
+#[tokio::test]
+async fn runner_rejects_reserved_word_table_names() {
+    let Some(_) = runner_path() else {
+        return;
+    };
+    let csv = write_csv("a\n1\n");
+    let other = write_csv("b\n2\n");
+    for name in ["order", "select", "group", "table"] {
+        let resp = run_with_tables(
+            &csv,
+            RunnerOp::Query {
+                sql: "SELECT 1".into(),
+            },
+            &[(name, &other)],
+        )
+        .await;
+        assert!(!resp.ok, "予約語は拒否: {name}");
+        assert!(
+            resp.error.unwrap_or_default().contains("予約語"),
+            "理由が予約語であること: {name}"
+        );
+    }
+    // 予約語でない一般的な名前（DuckDB では非予約のキーワード含む）は通る。
+    for name in ["orders", "customers", "name", "status"] {
+        let resp = run_with_tables(
+            &csv,
+            RunnerOp::Query {
+                sql: format!("SELECT count(*) FROM {name}"),
+            },
+            &[(name, &other)],
+        )
+        .await;
+        assert!(resp.ok, "{name}: {:?}", resp.error);
+    }
+}
+
 /// #1037: 追加テーブルはクエリ専用（グリッドの Schema/Rows に紛れ込ませない）。
 #[tokio::test]
 async fn runner_rejects_extra_tables_outside_query() {

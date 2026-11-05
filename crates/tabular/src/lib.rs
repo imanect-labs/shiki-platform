@@ -29,4 +29,7 @@ pub use protocol::{RunnerOp, RunnerRequest, RunnerResponse, RunnerTable};
 pub use runner::RunnerConfig;
 pub use service::{PatchApplied, Quotas, SavedCsv, TabularService};
 pub use sql_guard::validate_read_only;
-pub use tables::{is_valid_table_name, validate_tables, TableRef, MAX_EXTRA_TABLES, PRIMARY_TABLE};
+pub use tables::{
+    is_valid_table_name, validate_tables, TableRef, MAX_EXTRA_TABLES, PRIMARY_TABLE,
+    TABLE_NAME_PATTERN,
+};
