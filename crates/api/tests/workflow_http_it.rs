@@ -493,6 +493,8 @@ async fn req(env: &Env, method: &str, uri: &str, body: Option<Value>) -> (Status
     (status, json)
 }
 
+/// 2 つの storage.read のワークフロー。読むファイルは実行の入力で決める（このテストの環境のドライブにはファイルが無く、
+/// 保存は名指しした id のファイルの実在を確かめる・GAP-91。executor は params を読まない）。
 fn simple_ir(name: &str, second_node: &str) -> Value {
     json!({
         "ir_version": 1,
@@ -502,7 +504,7 @@ fn simple_ir(name: &str, second_node: &str) -> Value {
         "triggers": [{ "kind": "interactive" }],
         "nodes": [
             { "id": "a", "type": "storage.read",
-              "params": { "file": "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1" } },
+              "params": { "file": { "$from": "input", "path": "/file" } } },
             { "id": second_node, "type": "storage.read",
               "params": { "file": { "$from": "nodes.a.output", "path": "/from" } } }
         ],
@@ -851,7 +853,7 @@ async fn saving_completes_declared_scopes_from_nodes() {
         "triggers": [{ "kind": "interactive" }],
         "nodes": [
             { "id": "a", "type": "storage.read",
-              "params": { "file": "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1" } },
+              "params": { "file": { "$from": "input", "path": "/file" } } },
             { "id": "q", "type": "data.query",
               "params": { "table": { "$from": "input", "path": "/table" } } }
         ],

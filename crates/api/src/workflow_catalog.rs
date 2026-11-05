@@ -309,13 +309,15 @@ pub async fn fsm_tables(
     Ok(Some(out))
 }
 
-/// IR が名指しするテーブル・フォルダーのうち、保存者に見えるものを引いて V4 の材料にする（GAP-35）。
+/// IR が名指しするテーブル・フォルダー・ファイルのうち、保存者に見えるものを引いて V4 の材料にする（GAP-35・GAP-91）。
 ///
-/// 何を引くかは workflow-engine の [`workflow_engine::referenced_tables`]・[`workflow_engine::referenced_folders`]
-/// （照合と同じ位置の表）が決める。テーブルは閲覧か追加だけ（[`data::DataStore::table_labels`]）、フォルダーは閲覧
-/// （[`storage::StorageService::node_labels`]）で見えるものを、まとめて引く（1 回に引ける数ずつ）。見えない・無い・
-/// 種類の違うものは入れない（V4 が同じ誤りで止める・存在を明かさない）。IR が型どおりに読めなければ引かない（V1 が
-/// 止める）。名指しが無い・引く口が無い構成は `None`（照合しない）。
+/// 何を引くかは workflow-engine の [`workflow_engine::referenced_tables`]・[`workflow_engine::referenced_folders`]・
+/// [`workflow_engine::referenced_files`]（照合と同じ位置の表）が決める。テーブルは閲覧か追加だけ
+/// （[`data::DataStore::table_labels`]）、フォルダーとファイルは閲覧（[`storage::StorageService::node_labels`]・
+/// 種類つきで一緒に引く）で見えるものを、まとめて引く（1 回に引ける数ずつ）。見えない・無い・消した・種類の違うものは
+/// 入れない（V4 が同じ誤りで止める・存在を明かさない）。IR が型どおりに読めなければ引かない（V1 が止める）。引く口が
+/// 無い構成は `None`（照合しない）。UUID の名指しが無くても、引く口があれば空の集合にする（UUID でない書き損じだけの
+/// IR も V4 が止める）。
 pub async fn visible_refs(
     data: Option<&data::DataStore>,
     storage: Option<&storage::StorageService>,
@@ -328,11 +330,10 @@ pub async fn visible_refs(
     let tables: Vec<uuid::Uuid> = workflow_engine::referenced_tables(&parsed)
         .into_iter()
         .collect();
-    let folders: Vec<uuid::Uuid> = workflow_engine::referenced_folders(&parsed)
-        .into_iter()
-        .collect();
+    let folders = workflow_engine::referenced_folders(&parsed);
+    let files = workflow_engine::referenced_files(&parsed);
     let mut out = VisibleRefs::default();
-    if let (Some(data), false) = (data, tables.is_empty()) {
+    if let Some(data) = data {
         let mut seen = std::collections::BTreeSet::new();
         for chunk in tables.chunks(data::MAX_TABLE_LABELS) {
             let labels = data
@@ -343,36 +344,47 @@ pub async fn visible_refs(
         }
         out.tables = Some(seen);
     }
-    if let (Some(storage), false) = (storage, folders.is_empty()) {
-        let mut seen = std::collections::BTreeSet::new();
-        for chunk in folders.chunks(storage::MAX_NODE_LABELS) {
-            let ids: Vec<(uuid::Uuid, storage::NodeKind)> = chunk
-                .iter()
-                .map(|id| (*id, storage::NodeKind::Folder))
-                .collect();
+    if let Some(storage) = storage {
+        let wanted: Vec<(uuid::Uuid, storage::NodeKind)> = folders
+            .iter()
+            .map(|id| (*id, storage::NodeKind::Folder))
+            .chain(files.iter().map(|id| (*id, storage::NodeKind::File)))
+            .collect();
+        let mut seen_folders = std::collections::BTreeSet::new();
+        let mut seen_files = std::collections::BTreeSet::new();
+        for chunk in wanted.chunks(storage::MAX_NODE_LABELS) {
             let labels = storage
-                .node_labels(ctx, &ids)
+                .node_labels(ctx, chunk)
                 .await
-                .map_err(|e| format!("ワークフローが使うフォルダー: {e}"))?;
-            seen.extend(labels.into_keys().map(|id| id.hyphenated().to_string()));
+                .map_err(|e| format!("ワークフローが使うフォルダー・ファイル: {e}"))?;
+            for (id, label) in labels {
+                let key = id.hyphenated().to_string();
+                match label.kind {
+                    storage::NodeKind::Folder => seen_folders.insert(key),
+                    storage::NodeKind::File => seen_files.insert(key),
+                };
+            }
         }
-        out.folders = Some(seen);
+        out.folders = Some(seen_folders);
+        out.files = Some(seen_files);
     }
     Ok(out)
 }
 
-/// 保存者に見える、IR が名指しするテーブル・フォルダー（[`visible_refs`]・`None` は照合しない）。
+/// 保存者に見える、IR が名指しするテーブル・フォルダー・ファイル（[`visible_refs`]・`None` は照合しない）。
 #[derive(Debug, Default)]
 pub struct VisibleRefs {
     pub tables: Option<std::collections::BTreeSet<String>>,
     pub folders: Option<std::collections::BTreeSet<String>>,
+    pub files: Option<std::collections::BTreeSet<String>>,
 }
 
 impl VisibleRefs {
-    /// カタログに詰める（[`Catalog::table_ids`]・[`Catalog::folder_ids`]）。
+    /// カタログに詰める（[`Catalog::table_ids`]・[`Catalog::folder_ids`]・[`Catalog::file_ids`]）。
     pub fn fill(self, catalog: &mut Catalog) {
         catalog.table_ids = self.tables;
         catalog.folder_ids = self.folders;
+        catalog.file_ids = self.files;
     }
 }
 

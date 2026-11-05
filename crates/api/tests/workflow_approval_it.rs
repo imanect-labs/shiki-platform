@@ -4114,10 +4114,10 @@ async fn count_without_listing_roles(env: Arc<Env>) {
     }
 }
 
-/// GAP-35: 業務データのブロック・データ変更のきっかけのテーブルと、ファイルを保存のブロック・ファイル保存のきっかけの
-/// フォルダーは、保存する人に見えるものだけを保存できる（V4）。見えないもの（共有されていない）・無いもの（消した・
-/// 無い id）・書き損じた id は、同じ誤り（code・path・message）で止まる（存在を明かさない）。検証 API・保存 API・
-/// AI の emit_workflow（`catalog_for`）のどれでも同じ。参照で決めるものは照合しない。
+/// GAP-35・GAP-91: 業務データのブロック・データ変更のきっかけのテーブルと、ファイルを保存のブロック・ファイル保存の
+/// きっかけのフォルダーと、ファイルを読むブロックのファイルは、保存する人に見えるものだけを保存できる（V4）。見えないもの
+/// （共有されていない）・無いもの（消した・無い id）・書き損じた id は、同じ誤り（code・path・message）で止まる（存在を
+/// 明かさない）。検証 API・保存 API・AI の emit_workflow（`catalog_for`）のどれでも同じ。参照で決めるものは照合しない。
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn tables_and_folders_named_by_blocks_must_be_visible_on_save() {
     let _serial = SERIAL.lock().await;
@@ -4139,7 +4139,24 @@ async fn tables_and_folders_named_by_blocks_must_be_visible_on_save() {
                 .id
         }
     };
-    // alice のテーブルとフォルダー（dave には共有していない）。
+    let new_file = |prefix: &'static str| {
+        let env = &env;
+        async move {
+            env.storage
+                .write_file_internal(
+                    &env.alice,
+                    None,
+                    &format!("{prefix}-{}.csv", Uuid::new_v4().simple()),
+                    b"a,b\n1,2\n",
+                    "text/csv",
+                    None,
+                )
+                .await
+                .unwrap()
+                .id
+        }
+    };
+    // alice のテーブル・フォルダー・ファイル（dave には共有していない）。
     let table = new_table("refs").await;
     let folder = env
         .storage
@@ -4152,15 +4169,21 @@ async fn tables_and_folders_named_by_blocks_must_be_visible_on_save() {
         .await
         .unwrap()
         .id;
-    // 消したテーブルと、無いフォルダー。
+    let file = new_file("refs").await;
+    // 消したテーブルと、無いフォルダーと、ごみ箱に入れたファイル。
     let deleted = new_table("deleted").await;
     env.data
         .delete_table(&env.alice, deleted, None)
         .await
         .unwrap();
     let missing_folder = Uuid::new_v4();
+    let trashed = new_file("trashed").await;
+    env.storage
+        .soft_delete_file(&env.alice, trashed, None)
+        .await
+        .unwrap();
 
-    let ir = |table: &Value, folder: &Value| {
+    let ir3 = |table: &Value, folder: &Value, file: &Value| {
         json!({
             "ir_version": 1, "name": "refs-check",
             "triggers": [
@@ -4170,18 +4193,21 @@ async fn tables_and_folders_named_by_blocks_must_be_visible_on_save() {
             "nodes": [
                 { "id": "find", "type": "data.query", "params": { "table": table } },
                 { "id": "save", "type": "storage.write", "params": {
-                    "folder": folder, "name": "a.txt", "content": "b" } }
+                    "folder": folder, "name": "a.txt", "content": "b" } },
+                { "id": "read", "type": "storage.read", "params": { "file": file } }
             ],
-            "edges": [{ "from": "find", "to": "save" }]
+            "edges": [{ "from": "find", "to": "save" }, { "from": "save", "to": "read" }]
         })
     };
     let lit = |id: Uuid| json!(id.to_string());
+    let ir = |table: &Value, folder: &Value| ir3(table, folder, &lit(file));
     let refused = vec![
         ("ir.unknown_table".to_string(), "/params/table".to_string()),
         (
             "ir.unknown_folder".to_string(),
             "/params/folder".to_string(),
         ),
+        ("ir.unknown_file".to_string(), "/params/file".to_string()),
         (
             "ir.unknown_table".to_string(),
             "/triggers/0/scope/table".to_string(),
@@ -4197,39 +4223,45 @@ async fn tables_and_folders_named_by_blocks_must_be_visible_on_save() {
             .await,
         vec![]
     );
-    // 見えない人・消したテーブルと無いフォルダー・書き損じた id は、同じところで止まる。
+    // 見えない人・消したテーブルと無いフォルダーとごみ箱のファイル・書き損じた id は、同じところで止まる。
     assert_eq!(
         env.v4_codes(&env.dave, &ir(&lit(table), &lit(folder)))
             .await,
         refused
     );
     assert_eq!(
-        env.v4_codes(&env.alice, &ir(&lit(deleted), &lit(missing_folder)))
-            .await,
+        env.v4_codes(
+            &env.alice,
+            &ir3(&lit(deleted), &lit(missing_folder), &lit(trashed))
+        )
+        .await,
         refused
     );
     // 書き損じた id（ブロックの欄。きっかけの id の形の誤りは別の誤り ir.bad_event_scope が言う）。
     let mut garbage = ir(&lit(table), &lit(folder));
     garbage["nodes"][0]["params"]["table"] = json!("経費");
     garbage["nodes"][1]["params"]["folder"] = json!("共有/経費");
+    garbage["nodes"][2]["params"]["file"] = json!("請求.csv");
     assert_eq!(
         env.v4_codes(&env.alice, &garbage).await,
-        refused[..2].to_vec()
+        refused[..3].to_vec()
     );
-    // テーブルの欄に置いたフォルダーの id、フォルダーの欄に置いたテーブルの id も見つからない。
+    // テーブルの欄に置いたフォルダーの id、フォルダーの欄に置いたテーブルの id、ファイルの欄に置いたフォルダーの id も
+    // 見つからない。
     assert_eq!(
-        env.v4_codes(&env.alice, &ir(&lit(folder), &lit(table)))
+        env.v4_codes(&env.alice, &ir3(&lit(folder), &lit(table), &lit(folder)))
             .await,
         refused
     );
-    // ブロックの参照で決めるテーブル・フォルダーは照合しない（きっかけはリテラルだけ）。
+    // ブロックの参照で決めるテーブル・フォルダー・ファイルは照合しない（きっかけはリテラルだけ）。
     let by_ref = ir(&lit(table), &lit(folder));
     let mut by_ref = by_ref;
     by_ref["nodes"][0]["params"]["table"] = json!({ "$from": "input", "path": "/table" });
     by_ref["nodes"][1]["params"]["folder"] = json!({ "$from": "input", "path": "/folder" });
+    by_ref["nodes"][2]["params"]["file"] = json!({ "$from": "input", "path": "/file" });
     assert_eq!(
         env.v4_codes(&env.dave, &by_ref).await,
-        refused[2..].to_vec()
+        refused[3..].to_vec()
     );
 
     // 検証 API・保存 API・AI の emit_workflow の答え（code・path・message）は、見えないものと無いもので同じ。
@@ -4248,7 +4280,7 @@ async fn tables_and_folders_named_by_blocks_must_be_visible_on_save() {
         .v4_answers(
             &tool,
             &env.alice,
-            &ir(&lit(deleted), &lit(missing_folder)),
+            &ir3(&lit(deleted), &lit(missing_folder), &lit(trashed)),
             "",
         )
         .await;
@@ -4260,7 +4292,14 @@ async fn tables_and_folders_named_by_blocks_must_be_visible_on_save() {
     );
     assert!(hidden[1].starts_with("400 "), "{}", hidden[1]);
     assert!(
-        hidden[2].starts_with("true ") && hidden[2].contains("ir.unknown_folder"),
+        hidden[0].contains("選んだファイルが見つかりません。削除されたか、見る権限がありません。"),
+        "{}",
+        hidden[0]
+    );
+    assert!(
+        hidden[2].starts_with("true ")
+            && hidden[2].contains("ir.unknown_folder")
+            && hidden[2].contains("ir.unknown_file"),
         "{}",
         hidden[2]
     );

@@ -42,14 +42,14 @@ pub use delegation::{
 pub use find::{FindWorkflows, FoundWorkflow, FoundWorkflows};
 pub use ir::scopes::complete_declared_scopes;
 pub use ir::validate::{
-    empty_regions, empty_values, enable_blockers, node_ports, pattern_within, referenced_folders,
-    referenced_tables, required_text_empty, run_blockers, save_warnings, semantics_warnings,
-    unattended_run_blockers, valid_host_pattern, validate, Catalog, CatalogTable, ValidationError,
-    APPROVAL_STATUS_FIELD_SHOWN, APPROVAL_TIMEOUTS_EXCEED_RUN, DECIDE_LOW_CONFIDENCE,
-    DECIDE_MANY_PORTS, DECIDE_UNPINNED_MODEL, EFFORT_IGNORED, EMPTY_REGION, EMPTY_VALUES,
-    LIST_FOLDER_REQUIRED, OUTPUT_SCHEMA_FEW_TOKENS, REPLY_WITHOUT_INTERACTIVE, REQUIRED_TEXT_EMPTY,
-    SAVE_WARNING_CODES, SEMANTICS_CHANGED, TEMPLATE_ESCAPED_VAR, TEMPLATE_UNCLOSED_BRACE,
-    UNKNOWN_FOLDER, UNKNOWN_INPUT, WRITE_FOLDER_REQUIRED,
+    empty_regions, empty_values, enable_blockers, node_ports, pattern_within, referenced_files,
+    referenced_folders, referenced_tables, required_text_empty, run_blockers, save_warnings,
+    semantics_warnings, unattended_run_blockers, valid_host_pattern, validate, Catalog,
+    CatalogTable, ValidationError, APPROVAL_STATUS_FIELD_SHOWN, APPROVAL_TIMEOUTS_EXCEED_RUN,
+    DECIDE_LOW_CONFIDENCE, DECIDE_MANY_PORTS, DECIDE_UNPINNED_MODEL, EFFORT_IGNORED, EMPTY_REGION,
+    EMPTY_VALUES, LIST_FOLDER_REQUIRED, OUTPUT_SCHEMA_FEW_TOKENS, REPLY_WITHOUT_INTERACTIVE,
+    REQUIRED_TEXT_EMPTY, SAVE_WARNING_CODES, SEMANTICS_CHANGED, TEMPLATE_ESCAPED_VAR,
+    TEMPLATE_UNCLOSED_BRACE, UNKNOWN_FILE, UNKNOWN_FOLDER, UNKNOWN_INPUT, WRITE_FOLDER_REQUIRED,
 };
 pub use ir::WorkflowIr;
 pub use layout::{EditorLayoutStore, LayoutError};
