@@ -283,6 +283,8 @@ function RevertButton({
       onClick={onClick}
       disabled={busy}
       aria-label={ariaLabel}
+      // 狭幅ではアイコンだけになるので、ホバー/長押しで何のボタンか分かるようにする。
+      title={label}
       aria-busy={busy || undefined}
       data-testid={testId}
       className="inline-flex shrink-0 items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-colors duration-fast hover:border-primary/40 hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
