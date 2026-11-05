@@ -21,6 +21,7 @@ import { ThreadShareDialog } from "@/components/chat/share-dialog";
 import { ConfirmDialog } from "@/components/drive/dialogs";
 import { ThreadRow, type ThreadRowActions } from "./sidebar-thread-row";
 import { useThreadActivity } from "./use-thread-activity";
+import { useViewingThreadIds } from "@/lib/thread-viewing";
 
 /// 履歴の種類フィルタ（通常のチャット / 文書の横で始めた会話）。
 type HistoryFilter = "all" | "chat" | "doc";
@@ -217,11 +218,11 @@ function SidebarChatHistoryInner({
   const groups = groupThreadsByDate(shown);
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
   // 裏で動いている生成の状態（実行中・承認待ち・開いていない間に終わった）。ピン留めの行も含める。
-  // 既読にするのは、今その会話の画面を開いているときだけ（行の active 判定と揃える）。
+  // 既読にするのは、その会話を実際に表示しているとき（URL ではなく表示している本体が登録する。
+  // 文書の横のパネルは URL を変えずに会話を切り替え・閉じるため）。
   const allRows = React.useMemo(() => [...pinned, ...threads], [pinned, threads]);
-  const viewingId =
-    allRows.find((t) => isActiveThread(t, pathname, activeThreadId))?.id ?? null;
-  const activityOf = useThreadActivity(viewingId, allRows);
+  const viewing = useViewingThreadIds();
+  const activityOf = useThreadActivity(viewing, allRows);
   useRevealActiveThread({
     containerRef: scrollRef,
     activeId: activeThreadIdOf(pathname, activeThreadId),

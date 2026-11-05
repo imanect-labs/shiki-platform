@@ -32,45 +32,44 @@ function parse(raw: string | null): SeenMap {
   }
 }
 
-/// 上限を超えた分を、古い既読から捨てる。今回記録した会話（`fresh`）は捨てない
-/// （捨てると次の描画でまた記録し直し、記録と描画が止まらなくなる）。
-function trim(seen: SeenMap, fresh: ReadonlySet<string>): SeenMap {
-  const ids = Object.keys(seen);
-  if (ids.length <= MAX_SEEN) return seen;
-  const rest = ids
-    .filter((id) => !fresh.has(id))
-    .sort((a, b) => Date.parse(seen[b]) - Date.parse(seen[a]))
-    .slice(0, Math.max(0, MAX_SEEN - fresh.size));
-  return Object.fromEntries([...fresh, ...rest].map((id) => [id, seen[id]]));
-}
-
 /// 次の既読の記録（変わらなければ `prev` をそのまま返す）。
 ///
-/// 記録は前へしか進めない（手元の一覧が古いタブが、別のタブの新しい既読を古い値で書き戻さない。
-/// 書き戻すと storage イベントで互いに読み直し・書き直しを繰り返す）。
-function nextSeen(prev: SeenMap, viewing: Thread | undefined, rows: readonly Thread[]): SeenMap {
-  const fresh = new Set<string>();
-  const next: SeenMap = { ...prev };
-  if (viewing) {
-    const last = prev[viewing.id];
-    if (last === undefined || Date.parse(viewing.updatedAt) > Date.parse(last)) {
-      next[viewing.id] = viewing.updatedAt;
-      fresh.add(viewing.id);
+/// - 記録は前へしか進めない（手元の一覧が古いタブが、別のタブの新しい既読を古い値で書き戻さない。
+///   書き戻すと storage イベントで互いに読み直し・書き直しを繰り返す）。
+/// - 上限を超えたら**記録した順で古いもの**から捨てる（記録し直した会話は末尾へ移す）。会話の
+///   更新日の順で捨てると、古い会話を記録した直後にそれ自身や別のタブが記録した会話を捨て、
+///   互いに記録し直し続ける。記録順なら今回・直前に記録した会話は捨てない。
+///   （会話 id は UUID なので、オブジェクトのキー順＝挿入順が保たれる。）
+function nextSeen(
+  prev: SeenMap,
+  viewing: readonly Thread[],
+  rows: readonly Thread[],
+): SeenMap {
+  const fresh: [string, string][] = [];
+  const viewingIds = new Set(viewing.map((t) => t.id));
+  for (const t of viewing) {
+    const last = prev[t.id];
+    if (last === undefined || Date.parse(t.updatedAt) > Date.parse(last)) {
+      fresh.push([t.id, t.updatedAt]);
     }
   }
   for (const t of rows) {
-    if (t.runStatus === null || t.id === viewing?.id || prev[t.id] !== undefined) continue;
-    next[t.id] = t.updatedAt;
-    fresh.add(t.id);
+    if (t.runStatus === null || viewingIds.has(t.id) || prev[t.id] !== undefined) continue;
+    fresh.push([t.id, t.updatedAt]);
   }
-  return fresh.size > 0 ? trim(next, fresh) : prev;
+  if (fresh.length === 0) return prev;
+  const freshIds = new Set(fresh.map(([id]) => id));
+  const kept = Object.entries(prev).filter(([id]) => !freshIds.has(id));
+  const all = [...kept, ...fresh];
+  return Object.fromEntries(all.slice(Math.max(0, all.length - MAX_SEEN)));
 }
 
 /// 履歴の各行の生成状態を返す。
 ///
 /// 実行中・承認待ちはサーバの `runStatus` が正。「終わった（未読）」はこのブラウザで最後に見た
 /// 更新日より、サーバの更新日が新しい会話（回答の確定で更新日が進む）:
-/// - 今開いている会話は、更新日が変わるたびに既読にする（見ている間に終わった回答は未読にしない）。
+/// - いま表示している会話（`viewing`）は、更新日が進むたびに既読にする（見ている間に終わった回答は
+///   未読にしない）。
 /// - 実行中に見かけた会話で記録が無いものは、その時点の更新日を記録する（別の端末・別のタブで
 ///   始めた生成も、終わったら未読になる）。
 ///
@@ -78,7 +77,7 @@ function nextSeen(prev: SeenMap, viewing: Thread | undefined, rows: readonly Thr
 /// 時刻はサーバの値どうしで比べる（端末の時計のずれに左右されない）。
 /// ユーザーが確定する前（/me の応答前）は読まず書かず、未読も出さない。
 export function useThreadActivity(
-  viewingId: string | null,
+  viewing: ReadonlySet<string>,
   rows: readonly Thread[],
 ): (thread: Thread) => ThreadActivity {
   const storageKey = React.useSyncExternalStore(
@@ -114,8 +113,8 @@ export function useThreadActivity(
 
   React.useEffect(() => {
     if (!state || state.key !== storageKey) return;
-    const viewing = viewingId ? rows.find((t) => t.id === viewingId) : undefined;
-    const seen = nextSeen(state.seen, viewing, rows);
+    const shown = rows.filter((t) => viewing.has(t.id));
+    const seen = nextSeen(state.seen, shown, rows);
     if (seen === state.seen) return;
     try {
       window.localStorage.setItem(state.key, JSON.stringify(seen));
@@ -123,18 +122,18 @@ export function useThreadActivity(
       // 容量超過等は無視する（表示はメモリ上の記録で続ける）。
     }
     setState({ key: state.key, seen });
-  }, [state, storageKey, viewingId, rows]);
+  }, [state, storageKey, viewing, rows]);
 
   const seen = state && state.key === storageKey ? state.seen : null;
   return React.useCallback(
     (thread: Thread): ThreadActivity => {
       if (thread.runStatus === "queued" || thread.runStatus === "running") return "running";
       if (thread.runStatus === "waiting_approval") return "waiting";
-      if (!seen || thread.id === viewingId) return null;
+      if (!seen || viewing.has(thread.id)) return null;
       const last = seen[thread.id];
       if (last === undefined) return null;
       return Date.parse(thread.updatedAt) > Date.parse(last) ? "done" : null;
     },
-    [seen, viewingId],
+    [seen, viewing],
   );
 }

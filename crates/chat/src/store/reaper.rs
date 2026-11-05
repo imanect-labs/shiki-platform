@@ -61,6 +61,21 @@ impl ChatStore {
         .fetch_optional(&self.db)
         .await
         .map_err(map_db)?;
+        // 確定（[`Self::finalize_run_with_ui`]）と同じく、終わった会話を履歴の先頭へ上げる
+        // （サイドバーの「生成が終了（未読）」の根拠）。run の更新とは別の文にして、thread → run の
+        // 行ロック順（削除・投稿）と逆順に握らない。
+        if let Some(thread_id) = thread_id {
+            sqlx::query(
+                "UPDATE thread SET updated_at = now() \
+                 WHERE id = $1 AND tenant_id = (SELECT tenant_id FROM generation_run WHERE run_id = $2) \
+                   AND deleted_at IS NULL",
+            )
+            .bind(thread_id)
+            .bind(run_id)
+            .execute(&self.db)
+            .await
+            .map_err(map_db)?;
+        }
         tracing::error!(
             run_id = %run_id,
             thread_id = ?thread_id,

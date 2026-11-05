@@ -107,6 +107,7 @@ import { ChatPageHeaderSlot } from "./chat-header-actions";
 import { ContextUsageDialog } from "./context-meter";
 import { ApprovalCard, BudgetBanner, PlanPanel } from "./agent-progress";
 import { cn } from "@/lib/utils";
+import { useMarkThreadViewing } from "@/lib/thread-viewing";
 
 /// ストリーミング中のアシスタント応答の蓄積状態。
 type StreamState = {
@@ -278,6 +279,8 @@ export function Conversation({
   const [saveTarget, setSaveTarget] = React.useState<SaveAsAppTarget | null>(null);
   // スレッド名（クロームのタイトル・⋯ メニューの見出し）と検索フォルダ（#965）。page のときだけ引く。
   const { title: threadTitle, searchFolderName } = useThreadMeta(isPanel ? null : threadId);
+  // 表示中の会話として登録する（サイドバー履歴が、見ている間に終わった回答を未読にしない）。
+  useMarkThreadViewing(threadId);
   // 追従スクロール（下端付近にいる間だけ追う・離れたら「最新へ」）。
   const {
     scrollerRef,
