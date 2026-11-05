@@ -254,3 +254,29 @@ test("エディタ: 保存中に元に戻して離れて戻っても、取り消
   await expect(canvas.getByText("スクリプト")).toHaveCount(0);
   await page.unroute("**/api/workflows/*");
 });
+
+/// 元に戻して保存済みと同じ内容になっても、やり直せる編集は往復の後もやり直せる。
+test("エディタ: 元に戻してから実行履歴へ移って戻っても、やり直せる", async ({ page }) => {
+  test.setTimeout(120_000);
+  await loginViaKeycloak(page);
+  await page.goto("/workflows");
+  await expect(page.getByText("読み込み中…")).toHaveCount(0);
+  await page.getByRole("button", { name: "新しいワークフロー", exact: true }).click();
+  await page.waitForURL(/\/workflows\/[0-9a-f-]+$/i, { timeout: 20_000 });
+  const editorUrl = page.url();
+  const canvas = page.locator(".react-flow");
+
+  await page.getByRole("button", { name: "最初のブロック" }).click();
+  await page.getByRole("button", { name: /^スクリプト/ }).click();
+  await expect(canvas.getByText("スクリプト").first()).toBeVisible();
+  await page.getByRole("button", { name: "元に戻す" }).click();
+  await expect(canvas.getByText("スクリプト")).toHaveCount(0);
+
+  await page.getByRole("button", { name: "実行履歴" }).click();
+  await page.waitForURL(/\/runs$/, { timeout: 20_000 });
+  await page.getByRole("link", { name: "エディタへ戻る" }).click();
+  await page.waitForURL(editorUrl, { timeout: 20_000 });
+
+  await page.getByRole("button", { name: "やり直す" }).click();
+  await expect(canvas.getByText("スクリプト").first()).toBeVisible();
+});

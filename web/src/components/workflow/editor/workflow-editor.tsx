@@ -121,20 +121,38 @@ export function WorkflowEditor({
   // 保存済みの内容（元に戻して同じになったかの比較用。`dirty` は undo では下りないため）。
   const savedIrJson = React.useRef(JSON.stringify(initialIr));
   React.useEffect(() => {
-    // 保存中は、保存済みの内容と同じに戻っていても残す（保存が通ると保存済みの内容が変わるため。
-    // 消すかどうかは保存の結果を反映してから決める・`workflowDraftStore.saved`）。
-    if (state.dirty && (saving || JSON.stringify(state.ir) !== savedIrJson.current)) {
+    // IR の下書きを残す条件:
+    // - 保存中は、保存済みの内容と同じに戻っていても残す（保存が通ると保存済みの内容が変わるため。
+    //   消すかどうかは保存の結果を反映してから決める・`workflowDraftStore.saved`）。
+    // - やり直せる編集（redo）があるなら、保存済みと同じ内容でも残す（戻ってからやり直せるように）。
+    const irDirty =
+      state.dirty &&
+      (saving || state.redoStack.length > 0 || JSON.stringify(state.ir) !== savedIrJson.current);
+    // 座標だけの変更（自動保存の前に離れた分）も残す。
+    if (irDirty || state.layoutDirty) {
       workflowDraftStore.set(workflowId, {
         baseVersion: state.savedVersion,
         ir: state.ir,
+        irDirty,
         layout: state.layout,
+        layoutDirty: state.layoutDirty,
         undoStack: state.undoStack,
         redoStack: state.redoStack,
       });
     } else {
       workflowDraftStore.clear(workflowId);
     }
-  }, [workflowId, saving, state.dirty, state.savedVersion, state.ir, state.layout, state.undoStack, state.redoStack]);
+  }, [
+    workflowId,
+    saving,
+    state.dirty,
+    state.savedVersion,
+    state.ir,
+    state.layout,
+    state.layoutDirty,
+    state.undoStack,
+    state.redoStack,
+  ]);
 
   const restoreNotified = React.useRef(false);
   React.useEffect(() => {
@@ -156,7 +174,7 @@ export function WorkflowEditor({
   React.useEffect(() => {
     let active = true;
     // 下書きを復元したときは、その内容で受ける（保存済みの版の警告で上書きしない）。
-    validateWorkflow(restored.draft?.ir ?? initialIr)
+    validateWorkflow(restored.draft?.irDirty ? restored.draft.ir : initialIr)
       .then(({ warnings, declaredScopes }) => {
         if (!active) return;
         dispatch({ type: "set_warnings", warnings });

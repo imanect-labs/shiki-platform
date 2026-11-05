@@ -15,8 +15,12 @@ import { scopedStorageKey, subscribeStorageScope } from "@/lib/user-storage";
 export type WorkflowDraft = {
   baseVersion: number;
   ir: WorkflowIr;
+  /// IR に未保存の編集があるか（座標だけの下書きでは false・IR は復元しない）。
+  irDirty: boolean;
   /// 移動の直前に動かした座標（自動保存の debounce 中に離れても失わない）。
   layout: EditorLayout;
+  /// 座標が未保存か（false なら復元せず、保存済みの配置を使う）。
+  layoutDirty: boolean;
   undoStack: WorkflowIr[];
   redoStack: WorkflowIr[];
 };
@@ -73,8 +77,10 @@ export const workflowDraftStore = {
   saved(workflowId: string, fromVersion: number, savedIr: WorkflowIr, version: number): void {
     const draft = drafts.get(workflowId);
     if (!draft || draft.baseVersion !== fromVersion) return;
-    if (draft.ir === savedIr) drafts.delete(workflowId);
-    else drafts.set(workflowId, { ...draft, baseVersion: version });
+    // 送った内容のままなら IR は保存済み。座標が未保存なら、座標だけの下書きとして残す。
+    const irDirty = draft.ir !== savedIr;
+    if (!irDirty && !draft.layoutDirty) drafts.delete(workflowId);
+    else drafts.set(workflowId, { ...draft, baseVersion: version, irDirty });
   },
 };
 

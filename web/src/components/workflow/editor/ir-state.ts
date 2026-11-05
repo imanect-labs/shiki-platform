@@ -431,19 +431,28 @@ export function useEditorState(initial: {
   version: number;
   layout: EditorLayout;
   /// 画面移動の前に残した未保存の編集（同じ版から始めたもの）。あれば未保存の状態で開く。
-  draft?: { ir: WorkflowIr; layout: EditorLayout; undoStack: WorkflowIr[]; redoStack: WorkflowIr[] } | null;
+  /// IR と座標は、それぞれ未保存のものだけを復元する（動かしていない座標で保存済みの配置を上書きしない）。
+  draft?: {
+    ir: WorkflowIr;
+    irDirty: boolean;
+    layout: EditorLayout;
+    layoutDirty: boolean;
+    undoStack: WorkflowIr[];
+    redoStack: WorkflowIr[];
+  } | null;
 }) {
-  const draft = initial.draft ?? null;
+  const irDraft = initial.draft?.irDirty ? initial.draft : null;
+  const layoutDraft = initial.draft?.layoutDirty ? initial.draft : null;
   return React.useReducer(editorReducer, {
-    ir: draft?.ir ?? initial.ir,
+    ir: irDraft?.ir ?? initial.ir,
     savedVersion: initial.version,
-    // 下書きの座標は自動保存が終わる前に離れた分を含み得るので、復元したら保存し直す。
-    layout: draft?.layout ?? initial.layout,
+    // 自動保存が終わる前に離れた座標は、復元して保存し直す。
+    layout: layoutDraft?.layout ?? initial.layout,
     selection: { kind: "none" },
-    dirty: draft !== null,
-    layoutDirty: draft !== null,
-    undoStack: draft?.undoStack ?? [],
-    redoStack: draft?.redoStack ?? [],
+    dirty: irDraft !== null,
+    layoutDirty: layoutDraft !== null,
+    undoStack: irDraft?.undoStack ?? [],
+    redoStack: irDraft?.redoStack ?? [],
     serverErrors: [],
     serverWarnings: [],
   } satisfies EditorState);
