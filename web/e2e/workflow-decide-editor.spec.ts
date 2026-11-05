@@ -222,7 +222,7 @@ test.describe("AI で判定（エディタ）", () => {
       await expect(panel.getByTestId("decide-exits")).toContainText("次へ");
       // 保存は無い出口のエッジで止まる（ir.unknown_port）。
       await page.getByRole("button", { name: "保存", exact: true }).click();
-      await expect(page.getByText("保存できません（検証エラー）").first()).toBeVisible({ timeout: 15_000 });
+      await expect(page.getByText("保存できません", { exact: true }).first()).toBeVisible({ timeout: 15_000 });
       await page.screenshot({ path: "test-results/decide-ports-confidence-pc.png" });
 
       // 答えで分けるに戻すと、元の出口に戻り、無い出口は消える。

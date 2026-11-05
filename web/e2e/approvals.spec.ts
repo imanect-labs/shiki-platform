@@ -457,7 +457,7 @@ test("承認を待つブロック: テーブルに無い受信箱の列・担当
   const refused = await saving;
   expect(refused.status()).toBe(400);
   expect(await refused.text()).toContain("ir.unknown_field");
-  await expect(page.getByText("保存できません（検証エラー）").first()).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText("保存できません", { exact: true }).first()).toBeVisible({ timeout: 15_000 });
   await expect(stray).toContainText("このテーブルに無い列: ghost");
   await expect(panel.getByText("列 ghost はこのテーブルに無いか、読めない列です")).toHaveCount(0);
 

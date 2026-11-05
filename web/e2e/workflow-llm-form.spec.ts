@@ -225,7 +225,7 @@ test("AI に聞く: JSON で書いた出力の形の誤りが欄の下に出て�
 
     // 保存しようとしても止まり、誤りは同じ欄に出たまま。
     await page.getByRole("button", { name: "保存", exact: true }).click();
-    await expect(page.getByText("保存できません（検証エラー）").first()).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText("保存できません", { exact: true }).first()).toBeVisible({ timeout: 15_000 });
     await expect(errors).toContainText("「category」");
 
     // 直すと誤りが消え、表で書ける形なら表に戻せる。
