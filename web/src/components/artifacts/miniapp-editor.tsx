@@ -35,6 +35,7 @@ import { PartPins, pinKey, type PartKind, type PinCheck } from "@/components/art
 import { useArtifactList } from "@/hooks/use-artifact-list";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import {
+  checkScreenInputs,
   createMiniApp,
   getArtifact,
   getMiniAppPinUpdates,
@@ -44,9 +45,10 @@ import {
   updateMiniApp,
   validationMessages,
   type MiniAppVersion,
+  type WorkflowInputHint as ServerHint,
 } from "@/lib/artifact-api";
 import { appendDataGrid, dataGridAliases } from "@/lib/miniapp/screen-blocks";
-import { inputNotes, toYuiHints } from "@/lib/miniapp/workflow-inputs";
+import { toYuiHints } from "@/lib/miniapp/workflow-inputs";
 import { cn } from "@/lib/utils";
 
 type Pin = MiniAppBody["workflows"][number];
@@ -73,9 +75,10 @@ type PinnedSkill =
 // D-16 の (d)・BUG-80）。
 
 /// 束ねたワークフローの入力の定義を読めたか（読めないときは「入力はありません」と扱わない・BUG-122）。`hints` が
-/// `undefined` は、入力項目を決めていないワークフロー（突き合わせない）。
+/// `undefined` は、入力項目を決めていないワークフロー（突き合わせない）。`server` はサーバーの手がかりのまま（「書く」
+/// タブの突き合わせに送り返す・BUG-221）。
 type PinnedInputs =
-  | { state: "readable"; hints: WorkflowInputHint[] | undefined }
+  | { state: "readable"; hints: WorkflowInputHint[] | undefined; server: ServerHint[] | undefined }
   /// 403・404（削除されたか、見る権限がない。共同編集者がワークフローを見られないときなど）。
   | { state: "unreadable" }
   /// 通信・サーバの誤りで決められない。
@@ -300,7 +303,11 @@ export function MiniAppEditorDialog({
           const next = { ...m };
           items.forEach((item, i) => {
             next[keys[i]!] = item.readable
-              ? { state: "readable", hints: item.inputs ? toYuiHints(item.inputs) : undefined }
+              ? {
+                  state: "readable",
+                  hints: item.inputs ? toYuiHints(item.inputs) : undefined,
+                  server: item.inputs ?? undefined,
+                }
               : { state: "unreadable" };
           });
           return next;
@@ -325,12 +332,42 @@ export function MiniAppEditorDialog({
     const s = inputs[`${p.artifact_id}@${p.version}`];
     return s && s.state !== "readable" ? [{ alias: p.alias, state: s.state }] : [];
   });
-  // 書くタブの記述の、画面の入力とワークフローの入力項目の食い違い（組み立てると同じ突き合わせ・保存は止めない）。
+  // 書くタブの記述の、画面の入力とワークフローの入力項目の食い違い（保存は止めない）。保存のときと同じ関数をサーバーが
+  // 掛ける（読む図も同じ・警告だけの図も突き合わせる・BUG-221）。打つたびには送らず、手が止まってから送る。
   const deferredScreen = React.useDeferredValue(screen);
-  const writeNotes = React.useMemo(
-    () => (tab === "write" ? inputNotes(deferredScreen, choices) : []),
-    [tab, deferredScreen, choices],
+  const checkTargets = React.useMemo(
+    () =>
+      pins.map((p) => {
+        const s = inputs[`${p.artifact_id}@${p.version}`];
+        return { alias: p.alias, inputs: s?.state === "readable" ? (s.server ?? null) : null };
+      }),
+    [pins, inputs],
   );
+  const [writeCheck, setWriteCheck] = React.useState<{ notes: string[]; failed: boolean }>({
+    notes: [],
+    failed: false,
+  });
+  React.useEffect(() => {
+    if (!open || tab !== "write") return;
+    if (!checkTargets.some((w) => w.inputs)) {
+      setWriteCheck({ notes: [], failed: false });
+      return;
+    }
+    const ctrl = new AbortController();
+    const timer = window.setTimeout(() => {
+      void checkScreenInputs(deferredScreen, checkTargets, ctrl.signal)
+        .then((notes) => setWriteCheck({ notes, failed: false }))
+        .catch(() => {
+          // 確かめられなかったときは、古い注意を残さずにそう言う（合っているとは言わない・付録 C の P7）。
+          if (!ctrl.signal.aborted) setWriteCheck({ notes: [], failed: true });
+        });
+    }, 300);
+    return () => {
+      window.clearTimeout(timer);
+      ctrl.abort();
+    };
+  }, [open, tab, deferredScreen, checkTargets]);
+  const writeNotes = tab === "write" ? writeCheck.notes : [];
   // 画面の表が出しているのに、束ねていないビュー（保存すると、サーバーの検証で止まる）。
   const viewAliases = React.useMemo(() => views.map((v) => v.alias), [views]);
   const missingViews = React.useMemo(
@@ -565,7 +602,9 @@ export function MiniAppEditorDialog({
                 rows={14}
                 spellCheck={false}
                 placeholder={"# 画面の見出し\n\n```ui\napp …\n```"}
-                aria-describedby={writeNotes.length > 0 ? "app-screen-inputs" : undefined}
+                aria-describedby={
+                  writeNotes.length > 0 || (tab === "write" && writeCheck.failed) ? "app-screen-inputs" : undefined
+                }
                 className="block w-full resize-y rounded-lg border border-input bg-background px-3 py-2 font-mono text-[13px] leading-relaxed focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               />
             )}
@@ -588,6 +627,15 @@ export function MiniAppEditorDialog({
                   ))}
                 </ul>
               </div>
+            ) : tab === "write" && writeCheck.failed ? (
+              <p
+                id="app-screen-inputs"
+                role="note"
+                data-testid="miniapp-write-input-check-failed"
+                className="text-xs text-amber-700 dark:text-amber-400"
+              >
+                画面の入力がワークフローの入力項目と合うかを、確かめられませんでした。保存のときにもう一度確かめます。
+              </p>
             ) : null}
           </div>
 

@@ -306,6 +306,23 @@ export async function getMiniAppWorkflowInputs(
   return res.items;
 }
 
+/// 入力の手がかり 1 つ（サーバーが入力項目から作る・codegen）。
+export type WorkflowInputHint = components["schemas"]["WorkflowInputHint"];
+
+/// 画面の入力と、束ねたワークフローの入力項目を突き合わせる（保存の前の「書く」タブ・BUG-221）。保存のときの
+/// `input_warnings` と同じ関数がサーバーで決める（読む図・文言を画面に持たない）。`inputs` は
+/// [`getMiniAppWorkflowInputs`] が返した手がかり（読めない・入力項目を決めていないワークフローは null）。
+export async function checkScreenInputs(
+  screen: string,
+  workflows: { alias: string; inputs: WorkflowInputHint[] | null }[],
+  signal?: AbortSignal,
+): Promise<string[]> {
+  const res = await ok<components["schemas"]["ScreenInputCheckResponse"]>(
+    await apiFetch("/mini-apps/input-check", { ...json({ screen, workflows }), signal }),
+  );
+  return res.input_warnings.map((w) => w.message);
+}
+
 /// ミニアプリを開く。`version` を省くと公開したバージョン（まだ公開していないアプリを作る人が開くときは最新）。
 /// 使う人がまだ公開していないアプリを開くと、code が `not_published` の誤りになる（D-16）。
 export async function resolveMiniApp(id: string, version?: number): Promise<ResolvedMiniApp> {

@@ -1,11 +1,20 @@
 import { test, expect, type Page } from "@playwright/test";
 
-import { cleanupQueue, loginViaKeycloak, removeWorkflowApi, trackCreatedResources, uniqueName } from "./helpers";
+import {
+  cleanupQueue,
+  deleteArtifactApi,
+  loginViaKeycloak,
+  removeWorkflowApi,
+  trackCreatedResources,
+  uniqueName,
+} from "./helpers";
 
 /// 画面の入力と、束ねたワークフローの入力項目の突き合わせ（GAP-12）の E2E。
 /// - 「書く」タブでも、組み立てると同じ突き合わせ（必須の入力に当たる部品が無い・種類が違う・必須でない・無い入力）を、
 ///   図と部品の名前つきで知らせる。保存は止めない。
 /// - 保存すると、サーバーが同じ規則で確かめ直し、応答の input_warnings と知らせで伝える（公開は止めない）。
+/// - 警告だけの図（読めない行がある図）も、「書く」タブで保存と同じく突き合わせる（BUG-221）。確かめられなかったときは、
+///   合っているとは言わずにそう言う。
 /// PC（1440px）とスマホ（390px）で確かめる。作ったもの（アプリ・ワークフロー）は最後に消す。
 /// `E2E_SHOTS_DIR` を渡すとスクリーンショットを撮る。
 
@@ -20,7 +29,7 @@ async function csrf(page: Page): Promise<string> {
 }
 
 /// 入力項目（件名・金額）を決めたワークフローを作る（最後に消す）。
-async function createFlow(page: Page, name: string): Promise<void> {
+async function createFlow(page: Page, name: string): Promise<string> {
   const res = await page.request.post("/api/workflows", {
     headers: { "Content-Type": "application/json", "X-CSRF-Token": await csrf(page) },
     data: {
@@ -53,6 +62,7 @@ async function createFlow(page: Page, name: string): Promise<void> {
   expect(res.ok(), `POST /workflows → ${res.status()} ${await res.text()}`).toBeTruthy();
   const { id } = (await res.json()) as { id: string };
   cleanup.add(() => removeWorkflowApi(page, id));
+  return id;
 }
 
 for (const width of [1440, 390] as const) {
@@ -115,3 +125,60 @@ for (const width of [1440, 390] as const) {
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/miniapp-input-warnings-toast-${width}.png` });
   });
 }
+
+test("警告だけの図も、書くタブで保存と同じく突き合わせる（BUG-221）", async ({ page }) => {
+  test.setTimeout(150_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await loginViaKeycloak(page);
+  const flow = uniqueName("input-check-flow");
+  const flowId = await createFlow(page, flow);
+  // 読めない行（警告）がある図。画面はボタンを出すので、保存の突き合わせ（input_warnings）も読む。
+  const screen = [
+    "```ui",
+    "app 経費の申請",
+    "金額 = number 必須 円 as amount",
+    "メモの欄はあとで足す",
+    `button 申請する -> workflow ${flow}`,
+    "```",
+    "",
+  ].join("\n");
+  const created = await page.request.post("/api/mini-apps", {
+    headers: { "Content-Type": "application/json", "X-CSRF-Token": await csrf(page) },
+    data: {
+      name: uniqueName("input-check-app"),
+      body: { description: "経費の申請", screen, workflows: [{ alias: flow, artifact_id: flowId, version: 1 }] },
+    },
+  });
+  expect(created.status(), await created.text()).toBe(201);
+  const app = (await created.json()) as { id: string; warnings: unknown[]; input_warnings: { message: string }[] };
+  cleanup.add(() => deleteArtifactApi(page, app.id));
+  expect(app.warnings.length, "読めない行の書き損じ").toBeGreaterThan(0);
+  const missing = `画面の図「経費の申請」のボタン「申請する」: 「${flow}」の必須の入力「件名」（title）に当たる部品がありません`;
+  expect(app.input_warnings.map((w) => w.message)).toEqual([missing]);
+
+  await page.goto(`/apps/${app.id}`);
+  await page.getByRole("button", { name: "編集" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("tab", { name: "書く" }).click();
+  const notes = dialog.getByTestId("miniapp-write-input-notes");
+  await expect(notes.getByRole("listitem")).toHaveText([missing], { timeout: 15_000 });
+  await notes.scrollIntoViewIfNeeded();
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/miniapp-write-input-notes-warned-pc.png` });
+
+  // 確かめられなかったときは、古い注意を残さず、確かめられなかったと言う（合っているとは言わない）。
+  await page.route("**/api/mini-apps/input-check", (route) =>
+    route.fulfill({ status: 500, contentType: "application/json", body: JSON.stringify({ status: 500, title: "Error" }) }),
+  );
+  const source = dialog.locator("#app-screen");
+  await source.fill((await source.inputValue()).replace("メモの欄はあとで足す", "メモの欄は来月に足す"));
+  await expect(dialog.getByTestId("miniapp-write-input-check-failed")).toHaveText(
+    "画面の入力がワークフローの入力項目と合うかを、確かめられませんでした。保存のときにもう一度確かめます。",
+  );
+  await expect(notes).toHaveCount(0);
+  await page.unroute("**/api/mini-apps/input-check");
+  // 件名の部品を足すと、知らせが消える。
+  await source.fill((await source.inputValue()).replace("app 経費の申請\n", "app 経費の申請\n件名 = text 必須 as title\n"));
+  await expect(dialog.getByTestId("miniapp-write-input-check-failed")).toHaveCount(0);
+  await expect(notes).toHaveCount(0);
+  await dialog.getByRole("button", { name: "キャンセル" }).click();
+});
