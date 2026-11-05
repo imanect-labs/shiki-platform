@@ -93,19 +93,26 @@ function useRevertState(key: string): RevertState {
 
 const EDITED: RevertState = { phase: "edited" };
 
-// --- 編集権限（ファイルごとに 1 回だけ引く） ---------------------------------------------------
+// --- 編集権限（ファイルごとに引き、短時間だけ使い回す） -----------------------------------------
 
-/// fileId → 編集できるか（取得前は未登録）。
-const canEditCache = new Map<string, boolean>();
+/// 権限の結果を使い回す時間。スレッドを開き直す（カードが再マウントされる）とこれより古い結果は
+/// 引き直すので、共有の変更（editor → viewer など）はページを再読込しなくても反映される。
+const CAN_EDIT_TTL_MS = 30_000;
+
+/// fileId → 編集できるか（と取得時刻）。取得前は未登録。
+const canEditCache = new Map<string, { value: boolean; at: number }>();
 const canEditPending = new Set<string>();
 
+/// 編集権限を引く（未取得・古いときだけ）。失敗したら出さない（押せるか分からないボタンを
+/// 見せない・fail-closed）が、失敗も TTL で切れるので次の表示で引き直す。
 function loadCanEdit(fileId: string) {
-  if (canEditCache.has(fileId) || canEditPending.has(fileId)) return;
+  const cached = canEditCache.get(fileId);
+  if (canEditPending.has(fileId)) return;
+  if (cached && Date.now() - cached.at < CAN_EDIT_TTL_MS) return;
   canEditPending.add(fileId);
   void getCollabAccess(fileId)
-    .then((a) => canEditCache.set(fileId, a?.mode === "editor"))
-    // 取得に失敗したら出さない（押せるか分からないボタンを見せない・fail-closed）。
-    .catch(() => canEditCache.set(fileId, false))
+    .then((a) => canEditCache.set(fileId, { value: a?.mode === "editor", at: Date.now() }))
+    .catch(() => canEditCache.set(fileId, { value: false, at: Date.now() }))
     .finally(() => {
       canEditPending.delete(fileId);
       notify();
@@ -123,7 +130,7 @@ function useCanEdit(fileId: string): boolean {
   }, []);
   return React.useSyncExternalStore(
     subscribe,
-    () => canEditCache.get(fileId) === true,
+    () => canEditCache.get(fileId)?.value === true,
     () => false,
   );
 }
@@ -231,7 +238,7 @@ export function DocumentRefList({ raws }: { raws: unknown[] }) {
     let ok = 0;
     const skipped: string[] = [];
     for (const g of groups) {
-      if (canEditCache.get(g.fileId) !== true) continue;
+      if (canEditCache.get(g.fileId)?.value !== true) continue;
       if ((revertStates.get(g.key) ?? EDITED).phase === "reverted") continue;
       try {
         // 個別の操作が実行中のファイルは送らない（成功として数えない・結果はそのカードに出る）。
@@ -405,7 +412,7 @@ function UndoAllButton({
     () =>
       groups.filter(
         (g) =>
-          canEditCache.get(g.fileId) === true &&
+          canEditCache.get(g.fileId)?.value === true &&
           (revertStates.get(g.key) ?? EDITED).phase !== "reverted",
       ).length,
     () => 0,
