@@ -63,7 +63,8 @@ export function partPhrase(part?: AccessPart | null): string | null {
   }
 }
 
-/// 作る人向けに、要る権限 1 つを言う（部品と、対象に要る操作）。
+/// 作る人向けに、要る権限 1 つを言う（部品と、対象に要る操作）。場合によって要るかは、呼ぶ側が
+/// [`CONDITIONAL_MARK`] の印で添える。
 export function needLine(n: AccessNeedView): string {
   const part = partPhrase(n.part);
   const what = n.dynamic
@@ -72,6 +73,15 @@ export function needLine(n: AccessNeedView): string {
       ? needPhrase(n.object, n.need, n.target.name)
       : `あなたが見られないか、削除された${needPhrase(n.object, n.need)}`;
   return part ? `${part}: ${what}` : what;
+}
+
+/// 道によって通るブロックだけが要る権限に添える印（BUG-216）。
+export const CONDITIONAL_MARK = "場合によって要る";
+
+/// 場合によって要る権限の説明（作る人の共有の画面・BUG-216）。
+export function conditionalNote(subject: "app" | "workflow"): string {
+  const then = subject === "app" ? "足りなくてもボタンは押せますが" : "足りなくても実行できますが";
+  return `${CONDITIONAL_MARK}権限は、分かれた流れや「エラー時」の出口の先、繰り返しの中のブロックが使います。${then}、そのブロックまで進むと失敗します。`;
 }
 
 /// 追加だけの共有で範囲が狭くなるときの補足。

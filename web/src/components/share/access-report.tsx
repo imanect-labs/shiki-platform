@@ -7,13 +7,22 @@
 /// 判定はサーバー（`POST /mini-apps/{id}/access-check`・`POST /workflows/{id}/access-check`）が決め、ここは言葉にするだけ。
 /// 相手ごとの結果は持ち主にだけ返る。自分に見えない対象は名前を出さない。相手の権限は、自分が持ち主の対象だけ確かめる
 /// （ほかの人のテーブルやファイルは、その持ち主に確かめてもらう）。
+/// 分かれた流れなど、道によって通るブロックだけが要る権限には「場合によって要る」と印を付け、足りない相手も
+/// 「場合によって一部を使えません」と言い分ける（使う人のボタンは止まらない・BUG-216）。
 
 import * as React from "react";
 import { AlertCircle, CheckCircle2, Loader2, RotateCcw, TriangleAlert } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import type { AccessReport, AccessStatus, SubjectAccess } from "@/lib/artifact-api";
-import { fixHint, limitedNote, needLine, partPhrase } from "@/lib/access-wording";
+import {
+  CONDITIONAL_MARK,
+  conditionalNote,
+  fixHint,
+  limitedNote,
+  needLine,
+  partPhrase,
+} from "@/lib/access-wording";
 import { cn } from "@/lib/utils";
 
 /// 相手の呼び名（表示名が引けなければ種類で言う）。
@@ -26,6 +35,29 @@ function subjectName(s: SubjectAccess): string {
 function problems(s: SubjectAccess): { index: number; status: AccessStatus }[] {
   return s.statuses.flatMap((status, index) =>
     status === "missing" || status === "limited" ? [{ index, status }] : [],
+  );
+}
+
+/// 相手に足りない権限の添字（必ず要るものを先に・BUG-216）。
+function missingOf(s: SubjectAccess, report: AccessReport): { sure: number[]; maybe: number[] } {
+  const sure: number[] = [];
+  const maybe: number[] = [];
+  s.statuses.forEach((status, i) => {
+    if (status !== "missing") return;
+    (report.needs[i]?.conditional ? maybe : sure).push(i);
+  });
+  return { sure, maybe };
+}
+
+/// 場合によって要る権限の印（BUG-216）。
+function ConditionalMark() {
+  return (
+    <span
+      className="ml-1.5 inline-block whitespace-nowrap rounded border border-border px-1 py-px align-[1px] text-[10px] text-muted-foreground"
+      data-testid="access-conditional"
+    >
+      {CONDITIONAL_MARK}
+    </span>
   );
 }
 
@@ -94,7 +126,13 @@ export function AccessReportView({
 
   const subjects = report.subjects ?? null;
   const withProblems = (subjects ?? []).filter((s) => problems(s).length > 0);
-  const missingCount = (subjects ?? []).filter((s) => s.statuses.includes("missing")).length;
+  // 足りない相手は、必ず要る権限が足りない相手と、場合によって要る権限だけが足りない相手に分ける（BUG-216）。
+  const sureMissing = (subjects ?? []).filter((s) => missingOf(s, report).sure.length > 0);
+  const maybeMissing = (subjects ?? []).filter((s) => {
+    const m = missingOf(s, report);
+    return m.sure.length === 0 && m.maybe.length > 0;
+  });
+  const hasConditional = report.needs.some((n) => n.conditional);
   // 確かめられなかったもの（実行のときに決まる・見えない・上限）があれば、「全員使える」と言い切らない（付録 C の P7）。
   const anyUnchecked = (subjects ?? []).some((s) => s.statuses.includes("unchecked"));
   const scope = anyUnchecked ? "確かめられた範囲では、" : "";
@@ -115,7 +153,7 @@ export function AccessReportView({
           <p className="text-muted-foreground" data-testid="access-report-none-checked">
             共有している相手の権限は、ここでは確かめられません。理由は共有の画面で見られます。
           </p>
-        ) : missingCount === 0 ? (
+        ) : sureMissing.length === 0 && maybeMissing.length === 0 ? (
           <p className="flex items-start gap-1.5 text-muted-foreground" data-testid="access-report-all-ok">
             <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-primary" aria-hidden />
             {scope}共有している相手は全員、このバージョンのボタンと表を使えます。
@@ -125,18 +163,25 @@ export function AccessReportView({
             role="note"
             className="space-y-1 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-400"
           >
-            <p className="font-medium">共有している相手のうち {missingCount} 件は、このバージョンの一部を使えません。</p>
+            {sureMissing.length > 0 ? (
+              <p className="font-medium">共有している相手のうち {sureMissing.length} 件は、このバージョンの一部を使えません。</p>
+            ) : null}
+            {maybeMissing.length > 0 ? (
+              <p className="font-medium" data-testid="access-report-maybe">
+                共有している相手のうち {maybeMissing.length} 件は、場合によって一部を使えません。
+              </p>
+            ) : null}
             <ul className="list-disc space-y-0.5 pl-4" data-testid="access-report-missing">
-              {subjects
-                .filter((s) => s.statuses.includes("missing"))
-                .map((s) => {
-                  const first = s.statuses.indexOf("missing");
-                  return (
-                    <li key={`${s.subject.type}:${s.subject.id}`} className="[overflow-wrap:anywhere]">
-                      {subjectName(s)}: {needLine(report.needs[first])}
-                    </li>
-                  );
-                })}
+              {[...sureMissing, ...maybeMissing].map((s) => {
+                const m = missingOf(s, report);
+                const first = m.sure[0] ?? m.maybe[0];
+                return (
+                  <li key={`${s.subject.type}:${s.subject.id}`} className="[overflow-wrap:anywhere]">
+                    {subjectName(s)}: {needLine(report.needs[first])}
+                    {m.sure.length === 0 ? <ConditionalMark /> : null}
+                  </li>
+                );
+              })}
             </ul>
             <p>公開はできます。相手ごとの直し方は、共有の画面で見られます。</p>
           </div>
@@ -163,6 +208,7 @@ export function AccessReportView({
           {report.needs.map((n, i) => (
             <li key={i} className="[overflow-wrap:anywhere]">
               {needLine(n)}
+              {n.conditional ? <ConditionalMark /> : null}
             </li>
           ))}
         </ul>
@@ -182,7 +228,14 @@ export function AccessReportView({
         ) : (
           <ul className="flex flex-col gap-2" data-testid="access-report-subjects">
             {withProblems.map((s) => {
-              const missing = s.statuses.includes("missing");
+              const m = missingOf(s, report);
+              const missing = m.sure.length > 0 || m.maybe.length > 0;
+              const headline =
+                m.sure.length > 0
+                  ? " は一部を使えません"
+                  : m.maybe.length > 0
+                    ? " は場合によって一部を使えません"
+                    : " は一部の範囲が狭くなります";
               return (
                 <li
                   key={`${s.subject.type}:${s.subject.id}`}
@@ -200,7 +253,7 @@ export function AccessReportView({
                     ) : null}
                     <span className="min-w-0 [overflow-wrap:anywhere]">
                       {subjectName(s)}
-                      {missing ? " は一部を使えません" : " は一部の範囲が狭くなります"}
+                      {headline}
                     </span>
                   </p>
                   <ul className="mt-1 space-y-1 pl-5">
@@ -209,6 +262,7 @@ export function AccessReportView({
                       return (
                         <li key={index} className="list-disc [overflow-wrap:anywhere]">
                           {needLine(n)}
+                          {n.conditional ? <ConditionalMark /> : null}
                           <span className="block text-muted-foreground">
                             {status === "missing" ? fixHint(n, s.subject.type) : limitedNote(n.need)}
                           </span>
@@ -222,8 +276,9 @@ export function AccessReportView({
           </ul>
         )
       ) : null}
-      {hasDynamic || hasHidden || hasUnmanaged || report.truncated || report.more_subjects ? (
+      {hasDynamic || hasHidden || hasUnmanaged || hasConditional || report.truncated || report.more_subjects ? (
         <ul className="space-y-0.5 text-[11px] text-muted-foreground" data-testid="access-report-notes">
+          {hasConditional ? <li data-testid="access-report-conditional-note">{conditionalNote(subject)}</li> : null}
           {hasDynamic ? <li>実行のときに決まる対象は、前もって確かめられません。</li> : null}
           {hasHidden ? (
             <li>あなたが見られないか、削除された対象は確かめていません。必要なら、対象の持ち主に共有を頼んでください。</li>
