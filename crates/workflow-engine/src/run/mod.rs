@@ -6,6 +6,7 @@
 //! - [`store`]: run/step の永続化（durable の claim/リース/fencing に載る）＋前進 TX。
 //! - [`worker`]: ready step を claim して実行し前進させるワーカーループ。
 //! - [`step_timeout`]: step の時間の上限（ノード種の既定と上限・打ち切りはやり直せる失敗）。
+//! - [`node_panic`]: ブロックの実行中の panic（捕まえて step を失敗にし、ワーカーを止めない・BUG-215）。
 //!
 //! ノード種ごとの実処理は [`NodeExecutor`] トレイト裏（能力ノードは Task 10.6a/10.8/10.10）。
 //! 制御ノード（branch/join 等）は [`store`] の前進ロジックが直接扱う（能力を呼ばない・pure）。
@@ -15,6 +16,7 @@ pub mod graph;
 pub mod launch_skip;
 pub mod launcher;
 pub mod model;
+pub mod node_panic;
 pub mod outcome;
 pub mod readiness;
 pub mod step_timeout;

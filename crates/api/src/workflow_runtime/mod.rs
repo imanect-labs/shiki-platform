@@ -372,6 +372,28 @@ async fn build_prod_executor(
     executor
 }
 
+/// run ワーカーのタスクを見張る（`JoinHandle` を捨てない・BUG-215）。
+///
+/// ワーカーのタスクは step の処理の panic を捕まえて戻らない（`WorkflowWorker::spawn`）。それでも 1 つが終わったら、
+/// 黙って並行数が減らないよう、誤りとして記録する（プロセスの終わりの取り消しは記録しない）。
+async fn watch_workers(mut workers: Vec<tokio::task::JoinHandle<()>>) {
+    while !workers.is_empty() {
+        let (done, _, rest) = futures::future::select_all(workers).await;
+        workers = rest;
+        match done {
+            Err(e) if e.is_cancelled() => {}
+            Err(e) => tracing::error!(
+                error = %e, left = workers.len(),
+                "ワークフローの run ワーカーのタスクが止まりました"
+            ),
+            Ok(()) => tracing::error!(
+                left = workers.len(),
+                "ワークフローの run ワーカーのタスクが終わりました"
+            ),
+        }
+    }
+}
+
 /// worker/scheduler/event-relay を起動する（`enabled=false` なら何もしない）。
 pub async fn spawn_workflow_runtime(deps: RuntimeDeps) {
     if !deps.config.enabled {
@@ -396,11 +418,12 @@ pub async fn spawn_workflow_runtime(deps: RuntimeDeps) {
             },
         );
     let worker_id = format!("wf-worker-{}", std::process::id());
-    worker.spawn(deps.config.worker_concurrency, &worker_id);
+    let workers = worker.spawn(deps.config.worker_concurrency, &worker_id);
     tracing::info!(
         concurrency = deps.config.worker_concurrency,
         "ワークフロー run ワーカーを起動しました"
     );
+    tokio::spawn(watch_workers(workers));
 
     // 実行履歴 GC（engine.md §12.2）はここでは起動しない。`workflow.enabled` と独立した保守
     // ランタイムとして `wiring::wire_workflow` が enabled ゲートの外で起動する（#448）。

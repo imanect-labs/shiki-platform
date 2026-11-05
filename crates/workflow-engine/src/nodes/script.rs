@@ -135,7 +135,22 @@ impl CapabilityNodeExecutor {
             engine.run(&exec_id, &compiled_js, &input_json, limits, host_fn)
         })
         .await
-        .map_err(|e| PortError::unavailable(format!("script 実行スレッド: {e}")))?;
+        .map_err(|e| {
+            if e.is_panic() {
+                // スレッドの中の panic は、ほかのブロックの panic と同じ失敗にする（文はログにだけ残す・BUG-215）。
+                tracing::error!(
+                    run_id = %ctx.run_id, step = %ctx.step_path,
+                    panic = crate::run::node_panic::panic_text(e.into_panic().as_ref()),
+                    "script の実行スレッドが panic した"
+                );
+                return PortError::new(
+                    crate::run::node_panic::NODE_PANIC_CODE,
+                    crate::run::node_panic::NODE_PANIC_MESSAGE,
+                    false,
+                );
+            }
+            PortError::unavailable(format!("script 実行スレッド: {e}"))
+        })?;
 
         self.audit(
             &ec.tenant_id,

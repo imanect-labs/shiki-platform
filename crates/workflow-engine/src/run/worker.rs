@@ -3,13 +3,19 @@
 //! 複数インスタンス・複数タスクで同時に走り、`FOR UPDATE SKIP LOCKED` で step を分け合う。
 //! リース失効した running step は別ワーカーが再 claim して未完のみ再実行する（at-least-once・
 //! terminal step は checkpoint が正のため再実行しない）。
+//!
+//! ブロックの実行中の panic は捕まえて step を失敗にする（[`super::node_panic`]・BUG-215）。それより外の panic
+//! （store の処理など）も 1 回ごとに捕まえてループを続ける。どちらの場合も heartbeat は止まる（落とすと止まる形で持つ）。
 
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::time::Duration;
 
+use futures::FutureExt;
 use serde_json::Value;
 
 use super::graph::RunGraph;
+use super::node_panic::{node_panic_result, panic_text, AbortOnDrop};
 use super::store::{ClaimedStep, RunStore};
 use super::{NodeContext, NodeExecutor, NodeResult};
 use crate::concurrency::{ConcurrencyStore, Slot};
@@ -95,7 +101,8 @@ impl WorkflowWorker {
         self
     }
 
-    /// 並行ワーカータスクを起動する（プロセス生存中は走り続ける・detach）。
+    /// 並行ワーカータスクを起動する（プロセス生存中は走り続ける）。タスクは panic でも終わらない（[`Self::run_loop`]）。
+    /// 返した `JoinHandle` を `abort` すると止まる（呼び出し側は捨てずに持ち、終わったら知らせる）。
     pub fn spawn(&self, concurrency: usize, worker_id: &str) -> Vec<tokio::task::JoinHandle<()>> {
         (0..concurrency.max(1))
             .map(|i| {
@@ -106,13 +113,29 @@ impl WorkflowWorker {
             .collect()
     }
 
+    /// claim と実行をくり返す（戻らない）。1 回の処理の panic は捕まえて記録し、次を試す（BUG-215）。
+    ///
+    /// ブロックの実行の panic は [`Self::execute_and_advance`] が step の失敗にする。ここで捕まえるのはそれより外の
+    /// panic で、claim した step は heartbeat が止まるのでリースが切れ、sweeper が ready に戻す（ワーカーが落ちた
+    /// ときと同じ・engine.md §9.5）。
     async fn run_loop(&self, worker_id: &str) {
         loop {
-            match self.claim_and_run_once(worker_id).await {
-                Ok(true) => {} // 1 件処理した。すぐ次を試す。
-                Ok(false) => tokio::time::sleep(self.config.idle_poll).await,
-                Err(e) => {
+            let once = AssertUnwindSafe(self.claim_and_run_once(worker_id))
+                .catch_unwind()
+                .await;
+            match once {
+                Ok(Ok(true)) => {} // 1 件処理した。すぐ次を試す。
+                Ok(Ok(false)) => tokio::time::sleep(self.config.idle_poll).await,
+                Ok(Err(e)) => {
                     tracing::warn!(error = %e, "worker step 処理でエラー");
+                    tokio::time::sleep(self.config.idle_poll).await;
+                }
+                Err(panic) => {
+                    tracing::error!(
+                        worker_id,
+                        panic = panic_text(panic.as_ref()),
+                        "ワークフローのワーカーが step の処理中に panic した（ループは続ける）"
+                    );
                     tokio::time::sleep(self.config.idle_poll).await;
                 }
             }
@@ -186,6 +209,30 @@ impl WorkflowWorker {
         )
     }
 
+    /// ノードを実行し、panic したら step の失敗にする（BUG-215）。panic の文はログにだけ残し、利用者には決まった文を
+    /// 返す（[`super::node_panic`]）。止める合図も立てる（ノードが別のタスクやスレッドに渡した仕事を止める）。
+    async fn execute_catching_panics(
+        &self,
+        node: &crate::ir::node::Node,
+        ctx: &NodeContext,
+    ) -> NodeResult {
+        match AssertUnwindSafe(self.execute_within_limit(node, ctx))
+            .catch_unwind()
+            .await
+        {
+            Ok(result) => result,
+            Err(panic) => {
+                ctx.cancel.cancel();
+                tracing::error!(
+                    run_id = %ctx.run_id, step = %ctx.step_path, node_type = %node.node_type,
+                    panic = panic_text(panic.as_ref()),
+                    "ブロックの実行中に panic したので、step を失敗にした"
+                );
+                node_panic_result()
+            }
+        }
+    }
+
     async fn execute_and_advance(&self, claimed: &ClaimedStep) -> Result<(), String> {
         // IR スナップショットからグラフとノード情報を得る。
         let ir: WorkflowIr =
@@ -253,7 +300,8 @@ impl WorkflowWorker {
         // リース期間の 1/3 間隔で延長（最低 1 秒）。
         let hb_interval =
             std::time::Duration::from_secs(u64::try_from(hb_lease.max(3) / 3).unwrap_or(1));
-        let heartbeat = tokio::spawn(async move {
+        // 早く戻る道（並行上限の予約の失敗など）と panic の巻き戻しでも止まるよう、落とすと止まる形で持つ（BUG-215）。
+        let heartbeat = AbortOnDrop(tokio::spawn(async move {
             let mut ticker = tokio::time::interval(hb_interval);
             ticker.tick().await; // 初回即時分を消費。
             loop {
@@ -274,7 +322,7 @@ impl WorkflowWorker {
                     Err(_) => break,
                 }
             }
-        });
+        }));
 
         // 3 階層並行制御（engine.md §8.2）: 全スロット予約に成功して初めて実行する。取れなければ
         // `concurrency_limited`（RateLimited 分類 = attempt 非消費・backoff ready 戻し）で**順番待ち**。
@@ -291,7 +339,7 @@ impl WorkflowWorker {
                 .await
                 .map_err(|e| e.to_string())?;
             if !acquired {
-                heartbeat.abort();
+                drop(heartbeat);
                 let result = NodeResult::fail(
                     "concurrency_limited",
                     "並行上限に達しました（順番待ち）",
@@ -305,8 +353,8 @@ impl WorkflowWorker {
             }
         }
 
-        let result = self.execute_within_limit(node, &ctx).await;
-        heartbeat.abort();
+        let result = self.execute_catching_panics(node, &ctx).await;
+        drop(heartbeat);
 
         let advanced = self
             .store

@@ -55,6 +55,8 @@ chrono = { workspace = true }
 # 実行情報の時刻の時間帯（vocab/run_info.rs）。
 chrono-tz = "0.10"
 tokio = { workspace = true, features = ["rt", "time", "macros"] }
+# ブロックの実行中の panic を捕まえる（`FutureExt::catch_unwind`・ワーカーを止めない・BUG-215）。
+futures.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true
