@@ -1942,6 +1942,122 @@ async fn name_search_filters_by_permission_and_neutralizes_wildcards() {
     );
 }
 
+/// 子一覧を limit 件ずつ最後まで辿り、名前の列を返す（keyset のページ境界をまたぐ検証用）。
+async fn list_all_names(
+    service: &StorageService,
+    ctx: &AuthContext,
+    parent: Option<Uuid>,
+    sort: storage::ChildSort,
+    limit: usize,
+) -> Vec<String> {
+    let mut names = vec![];
+    let mut cursor: Option<String> = None;
+    loop {
+        let page = service
+            .list_children(ctx, parent, sort, cursor.as_deref(), limit, false, None)
+            .await
+            .unwrap();
+        names.extend(page.items.into_iter().map(|n| n.name));
+        match page.next_cursor {
+            Some(c) => cursor = Some(c),
+            None => return names,
+        }
+    }
+}
+
+#[tokio::test]
+async fn children_list_folders_first_and_natural_name_order() {
+    let Some(cx) = setup().await else {
+        return;
+    };
+    let org = format!("org-{}", Uuid::new_v4().simple());
+    seed_org_member(&cx.authz, &org, "alice").await;
+    let alice = make_ctx(&org, "alice");
+    let root = cx
+        .service
+        .create_folder(&alice, None, "並び順", None)
+        .await
+        .unwrap();
+    for name in ["資料10", "b", "資料2"] {
+        cx.service
+            .create_folder(&alice, Some(root.id), name, None)
+            .await
+            .unwrap();
+    }
+    // サイズは名前順と逆にしておく（サイズ順が名前に引きずられていないことを見る）。
+    for (name, body) in [
+        ("File10.txt", &b"x"[..]),
+        ("A.txt", &b"xxx"[..]),
+        ("file2.txt", &b"xx"[..]),
+    ] {
+        upload(&cx.service, &cx.http, &alice, Some(root.id), name, body)
+            .await
+            .unwrap();
+    }
+    let sort = |key, desc| storage::ChildSort { key, desc };
+    use storage::ChildSortKey::{Name, Size};
+
+    // 名前昇順: フォルダ → ファイル、各塊は自然順（2 < 10・大文字小文字は同列・ラテン → 漢字）。
+    // limit=2 でフォルダ/ファイル境界をまたいでも欠落・重複しない。
+    let asc = ["b", "資料2", "資料10", "A.txt", "file2.txt", "File10.txt"];
+    for limit in [1, 2, 4, 50] {
+        assert_eq!(
+            list_all_names(&cx.service, &alice, Some(root.id), sort(Name, false), limit).await,
+            asc,
+            "limit={limit}"
+        );
+    }
+    // 名前降順: フォルダは先頭のまま、各塊の中だけ逆順。
+    assert_eq!(
+        list_all_names(&cx.service, &alice, Some(root.id), sort(Name, true), 2).await,
+        ["資料10", "資料2", "b", "File10.txt", "file2.txt", "A.txt"]
+    );
+    // サイズ: フォルダ（0 扱い）は昇降どちらでも先頭、ファイルはサイズ順。
+    let size_asc = list_all_names(&cx.service, &alice, Some(root.id), sort(Size, false), 2).await;
+    assert_eq!(size_asc[3..], ["File10.txt", "file2.txt", "A.txt"]);
+    let size_desc = list_all_names(&cx.service, &alice, Some(root.id), sort(Size, true), 2).await;
+    assert_eq!(size_desc[3..], ["A.txt", "file2.txt", "File10.txt"]);
+    for names in [&size_asc, &size_desc] {
+        let mut folders = names[..3].to_vec();
+        folders.sort();
+        assert_eq!(folders, ["b", "資料10", "資料2"], "フォルダが先頭 3 件");
+    }
+
+    // 名前検索も同じ並び（フォルダ優先 → 自然順）で、ページ境界をまたいで辿れる。
+    upload(
+        &cx.service,
+        &cx.http,
+        &alice,
+        Some(root.id),
+        "資料1.txt",
+        b"y",
+    )
+    .await
+    .unwrap();
+    let mut found = vec![];
+    let mut cursor: Option<String> = None;
+    loop {
+        let page = cx
+            .service
+            .search_nodes_by_name(
+                &alice,
+                "資料",
+                sort(Name, false),
+                cursor.as_deref(),
+                1,
+                None,
+            )
+            .await
+            .unwrap();
+        found.extend(page.items.into_iter().map(|n| n.name));
+        match page.next_cursor {
+            Some(c) => cursor = Some(c),
+            None => break,
+        }
+    }
+    assert_eq!(found, ["資料2", "資料10", "資料1.txt"]);
+}
+
 /// tenant_id ＋ org でスコープした AuthContext を作る（テナント分離検証用）。
 fn make_ctx_tenant(org: &str, tenant: &str, uid: &str) -> AuthContext {
     AuthContext::new(

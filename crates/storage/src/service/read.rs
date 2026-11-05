@@ -65,6 +65,7 @@ impl StorageService {
     ///
     /// `parent_id` が `None` なら org ルート直下。`limit` は 1..=100 にクランプ。
     /// `sort`（name/updated/size×方向）を **keyset カーソルに織り込んで**サーバ側で並べる。
+    /// どのキー・方向でも**フォルダを先頭**にまとめ、名前は自然順で比べる（#1040）。
     /// `next_cursor` が `Some` なら続きがある（末尾ちょうどで空ページが 1 回返ることはあるが、
     /// 欠落や重複は起きない）。クライアント側の全件ソートは採らない（全件取得の禁止）。
     ///
@@ -120,25 +121,9 @@ impl StorageService {
         let limit = limit.clamp(1, 100);
         // 1 ラウンドのフェッチ歩幅（フィルタ落ちを見越して多めに引く）。
         let batch: i64 = (limit as i64 * 2).clamp(16, 200);
-        // ソートキーごとの列式・型キャスト・方向。keyset 比較とカーソルをこれに合わせる。
-        let (sort_col, sort_cast) = match sort.key {
-            ChildSortKey::Name => ("name", "text"),
-            ChildSortKey::Updated => ("updated_at", "timestamptz"),
-            // フォルダは size_bytes が NULL のため 0 とみなす（NULL を keyset から排除）。
-            ChildSortKey::Size => ("coalesce(size_bytes, 0)", "bigint"),
-        };
-        let (order_dir, keyset_cmp) = if sort.desc {
-            ("DESC", "<")
-        } else {
-            ("ASC", ">")
-        };
-        let (mut after_val, mut after_id) = match cursor {
-            Some(c) => {
-                let (val, id) = decode_child_cursor(sort, c)?;
-                (Some(val), Some(id))
-            }
-            None => (None, None),
-        };
+        // フォルダ優先 → ソートキー → id の並び（#1040）。keyset とカーソルもこれに合わせる。
+        let ChildOrderSql { order_by, keyset } = child_order_sql(sort);
+        let mut after = cursor.map(|c| decode_child_cursor(sort, c)).transpose()?;
 
         let mut items: Vec<Node> = Vec::with_capacity(limit);
         let mut exhausted = false;
@@ -152,17 +137,18 @@ impl StorageService {
                  WHERE org = $1 AND tenant_id = $2 AND deleted_at IS NULL \
                    AND ($7 OR system = false) \
                    AND parent_id IS NOT DISTINCT FROM $3 \
-                   AND ($4::text IS NULL OR ({sort_col}, id) {keyset_cmp} ($4::{sort_cast}, $5)) \
-                 ORDER BY {sort_col} {order_dir}, id {order_dir} LIMIT $6"
+                   AND {keyset} \
+                 ORDER BY {order_by} LIMIT $6"
             );
             let rows: Vec<NodeRow> = sqlx::query_as(&sql)
                 .bind(&ctx.org)
                 .bind(&ctx.tenant_id)
                 .bind(parent_id)
-                .bind(after_val.as_deref())
-                .bind(after_id)
+                .bind(after.as_ref().map(|c| c.value.as_str()))
+                .bind(after.as_ref().map(|c| c.id))
                 .bind(batch)
                 .bind(include_system)
+                .bind(after.as_ref().map(|c| c.kind.as_str()))
                 .fetch_all(&self.db)
                 .await?;
             if (rows.len() as i64) < batch {
@@ -172,10 +158,13 @@ impl StorageService {
                 break;
             }
             for row in rows {
-                after_val = Some(child_sort_value(sort.key, &row));
-                after_id = Some(row.id);
                 // 子ごとに viewer を確認（FGA を真実とする post-filter）。即時剥奪反映のため強整合。
                 let kind = NodeKind::parse(&row.kind).unwrap_or(NodeKind::File);
+                after = Some(ChildCursor {
+                    value: child_sort_value(sort.key, &row),
+                    id: row.id,
+                    kind,
+                });
                 let allowed = self
                     .authz
                     .check(
@@ -196,10 +185,7 @@ impl StorageService {
         }
         // limit 充足で止めたなら続きがあり得る → カーソルを返す。尽きたなら None。
         let next_cursor = if items.len() == limit {
-            match (after_val, after_id) {
-                (Some(v), Some(i)) => Some(encode_child_cursor(sort, &v, i)),
-                _ => None,
-            }
+            after.map(|c| encode_child_cursor(sort, &c.value, c.id, c.kind))
         } else {
             None
         };
@@ -280,23 +266,9 @@ impl StorageService {
 
         let limit = limit.clamp(1, 100);
         let batch: i64 = (limit as i64 * 2).clamp(16, 200);
-        let (sort_col, sort_cast) = match sort.key {
-            ChildSortKey::Name => ("name", "text"),
-            ChildSortKey::Updated => ("updated_at", "timestamptz"),
-            ChildSortKey::Size => ("coalesce(size_bytes, 0)", "bigint"),
-        };
-        let (order_dir, keyset_cmp) = if sort.desc {
-            ("DESC", "<")
-        } else {
-            ("ASC", ">")
-        };
-        let (mut after_val, mut after_id) = match cursor {
-            Some(c) => {
-                let (val, id) = decode_child_cursor(sort, c)?;
-                (Some(val), Some(id))
-            }
-            None => (None, None),
-        };
+        // フォルダ優先 → ソートキー → id の並び（#1040）。keyset とカーソルもこれに合わせる。
+        let ChildOrderSql { order_by, keyset } = child_order_sql(sort);
+        let mut after = cursor.map(|c| decode_child_cursor(sort, c)).transpose()?;
 
         let mut items: Vec<Node> = Vec::with_capacity(limit);
         let mut exhausted = false;
@@ -307,18 +279,19 @@ impl StorageService {
                 "SELECT {NODE_COLS} FROM node \
                  WHERE org = $1 AND tenant_id = $2 AND deleted_at IS NULL AND system = false \
                    AND name ILIKE ALL($3) \
-                   AND ($4::text IS NULL OR ({sort_col}, id) {keyset_cmp} ($4::{sort_cast}, $5)) \
+                   AND {keyset} \
                    AND ($7::text IS NULL OR kind = $7) \
-                 ORDER BY {sort_col} {order_dir}, id {order_dir} LIMIT $6"
+                 ORDER BY {order_by} LIMIT $6"
             );
             let rows: Vec<NodeRow> = sqlx::query_as(&sql)
                 .bind(&ctx.org)
                 .bind(&ctx.tenant_id)
                 .bind(&terms)
-                .bind(after_val.as_deref())
-                .bind(after_id)
+                .bind(after.as_ref().map(|c| c.value.as_str()))
+                .bind(after.as_ref().map(|c| c.id))
                 .bind(batch)
                 .bind(kind.map(NodeKind::as_str))
+                .bind(after.as_ref().map(|c| c.kind.as_str()))
                 .fetch_all(&self.db)
                 .await?;
             if (rows.len() as i64) < batch {
@@ -328,9 +301,12 @@ impl StorageService {
                 break;
             }
             for row in rows {
-                after_val = Some(child_sort_value(sort.key, &row));
-                after_id = Some(row.id);
                 let kind = NodeKind::parse(&row.kind).unwrap_or(NodeKind::File);
+                after = Some(ChildCursor {
+                    value: child_sort_value(sort.key, &row),
+                    id: row.id,
+                    kind,
+                });
                 let allowed = self
                     .authz
                     .check(
@@ -350,10 +326,7 @@ impl StorageService {
             }
         }
         let next_cursor = if items.len() == limit {
-            match (after_val, after_id) {
-                (Some(v), Some(i)) => Some(encode_child_cursor(sort, &v, i)),
-                _ => None,
-            }
+            after.map(|c| encode_child_cursor(sort, &c.value, c.id, c.kind))
         } else {
             None
         };
