@@ -49,6 +49,8 @@ export function MiniAppDataGrid({ alias }: { alias: string }) {
   // 使う人に足りない権限があれば、読みに行かずに理由を出す（GAP-37）。
   const blocked = host?.blockedReason?.(alias) ?? null;
   const ownOnly = host?.ownRecordsOnly?.(alias) ?? false;
+  // 読みに行くのは実行先（run）が変わったときだけ。権限の確かめの結果が届いて host が作り直されても、読み直さない。
+  const run = host?.run;
   const [first, setFirst] = React.useState<DataViewRun | null>(null);
   const [table, setTable] = React.useState<DataTable | null>(null);
   const [masked, setMasked] = React.useState<ReadonlySet<string>>(new Set());
@@ -76,12 +78,11 @@ export function MiniAppDataGrid({ alias }: { alias: string }) {
   }, []);
 
   React.useEffect(() => {
-    if (!host || blocked) return;
+    if (!run || blocked) return;
     let active = true;
     setError(null);
     // 先頭ページで表示設定と対象テーブルを知り、スキーマ（列の型・表示名）を閲覧者本人の権限で読む。
-    host
-      .run(alias, { limit: 1 })
+    run(alias, { limit: 1 })
       .then(async (run) => {
         const [t, v] = await Promise.all([getTable(run.table_id), getViewerContext(run.table_id)]);
         if (!active) return;
@@ -94,7 +95,7 @@ export function MiniAppDataGrid({ alias }: { alias: string }) {
     return () => {
       active = false;
     };
-  }, [host, alias, attempt, onFailure, blocked]);
+  }, [run, alias, attempt, onFailure, blocked]);
 
   React.useEffect(() => {
     if (!waiting) return;
@@ -104,11 +105,11 @@ export function MiniAppDataGrid({ alias }: { alias: string }) {
 
   const fetchPage = React.useCallback(
     async (cursor: string | null, limit: number): Promise<QueryResult> => {
-      if (!host) throw new Error("この画面では表を描けません");
-      const run = await host.run(alias, { ...(cursor ? { cursor } : {}), limit });
-      return run.result;
+      if (!run) throw new Error("この画面では表を描けません");
+      const page = await run(alias, { ...(cursor ? { cursor } : {}), limit });
+      return page.result;
     },
-    [host, alias],
+    [run, alias],
   );
 
   if (!host) {

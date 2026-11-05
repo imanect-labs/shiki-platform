@@ -288,12 +288,30 @@ test.describe("使う人の権限の確かめ（GAP-37）", () => {
       await shareTable(page, ledger.id, bobId, "viewer");
 
       let sent = 0;
+      // 表が先頭のページ（1 件）を読んだ回数を、権限の確かめの結果が届く前と後で数える。結果は、表が先頭のページを
+      // 読みに行ってから返す。結果が届いて画面の部品が作り直されても、表は先頭のページを読み直さない。
+      let accessReleased = false;
+      let gridBeforeAccess = 0;
+      let gridAfterAccess = 0;
       bob.on("request", (req) => {
         if (req.method() === "POST" && req.url().includes(`/api/mini-apps/${app.id}/ui-actions`)) {
-          const action = (req.postDataJSON() as { action_id?: string } | null)?.action_id ?? "";
+          const body = req.postDataJSON() as { action_id?: string; params?: { limit?: number } } | null;
+          const action = body?.action_id ?? "";
           if (!action.startsWith("data_grid:")) sent += 1;
+          else if (body?.params?.limit === 1) {
+            if (accessReleased) gridAfterAccess += 1;
+            else gridBeforeAccess += 1;
+          }
         }
       });
+      await bob.route(
+        (url) => url.pathname === `/api/mini-apps/${app.id}/access`,
+        async (route) => {
+          await expect.poll(() => gridBeforeAccess, { timeout: 20_000 }).toBeGreaterThan(0);
+          accessReleased = true;
+          await route.continue();
+        },
+      );
       await bob.goto(`/apps/${app.id}`);
       const figure = bob.getByTestId("ui-figure");
       const notes = figure.getByTestId("ui-figure-blocked");
@@ -302,6 +320,7 @@ test.describe("使う人の権限の確かめ（GAP-37）", () => {
         { timeout: 20_000 },
       );
       await expect(notes).not.toContainText("申請する");
+      await expect(bob.getByTestId("miniapp-data-grid-ledger")).toBeVisible({ timeout: 20_000 });
       // 使えるボタンは押せる。押せないボタンは押しても送らず、理由を出す。
       await figure.getByLabel("件名").fill("出張");
       await expect(figure.getByRole("button", { name: "申請する" })).toBeEnabled();
@@ -310,9 +329,67 @@ test.describe("使う人の権限の確かめ（GAP-37）", () => {
       await figure.getByRole("group", { name: "実行の確認" }).getByRole("button", { name: "実行する" }).click();
       await expect(figure.getByRole("status").filter({ hasText: "権限がありません" })).toBeVisible({ timeout: 10_000 });
       expect(sent).toBe(0);
+      expect(gridAfterAccess).toBe(0);
       if (SHOTS) await bob.screenshot({ path: `${SHOTS}/access-user-partial-pc.png` });
     } finally {
       await bob.context().close();
+    }
+  });
+
+  test("相手の権限は自分が持ち主の対象だけ確かめ、ほかの人のテーブルは確かめていないと言う", async ({ page, browser }) => {
+    test.setTimeout(180_000);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const bob = await personOn(browser, "bob", false);
+    let bobTable: string | null = null;
+    let alicePhone: Page | null = null;
+    try {
+      await loginViaKeycloak(page);
+      const aliceId = ((await (await page.request.get("/api/me")).json()) as { id: string }).id;
+      const bobId = ((await (await bob.request.get("/api/me")).json()) as { id: string }).id;
+      // bob のテーブルに、alice は追加だけで共有されている（共有の一覧は bob にしか見えない）。
+      const tableName = uniqueName("e2e-bob の表");
+      const t = (await api(bob, "POST", "/data/tables", {
+        name: tableName,
+        schema: { fields: [{ key: "title", display_name: "件名", type: "text" }] },
+      })) as { id: string; schema?: { fields: { key: string; display_name: string }[] } };
+      bobTable = t.id;
+      const titleKey = t.schema?.fields.find((f) => f.display_name === "件名")?.key ?? "title";
+      await api(bob, "PUT", `/data/tables/${t.id}/shares`, { target: { type: "user", id: aliceId }, role: "submitter" });
+      const flowId = await createAddFlow(page, uniqueName("access-others"), { id: t.id, titleKey });
+      await api(page, "PUT", `/artifacts/${flowId}/shares`, { target: { type: "user", id: bobId }, role: "viewer" });
+
+      await page.goto(`/workflows/${flowId}`);
+      await page.getByTestId("workflow-share").click();
+      const dialog = page.getByRole("dialog");
+      await expect(dialog.getByTestId("access-report-needs")).toContainText(`テーブル「${tableName}」にレコードを追加する`, {
+        timeout: 20_000,
+      });
+      await expect(dialog.getByTestId("access-report-notes")).toContainText(
+        "ほかの人が持ち主のテーブルやファイルは、相手の権限を確かめていません。その持ち主に確かめてもらってください。",
+      );
+      // 何も確かめていないので、「全員使える」とも「足りない」とも言わない。
+      await expect(dialog.getByTestId("access-report-all-ok")).toHaveCount(0);
+      await expect(dialog.getByTestId("access-report-subject")).toHaveCount(0);
+      if (SHOTS) await page.screenshot({ path: `${SHOTS}/access-others-table-pc.png` });
+      await dialog.getByRole("button", { name: "閉じる" }).click();
+
+      // スマホでも同じ注記が出て、横にはみ出さない。
+      alicePhone = await phoneOf(browser, page);
+      await alicePhone.goto(`/workflows/${flowId}`);
+      await alicePhone.getByTestId("chrome-menu").click();
+      await alicePhone.getByRole("menuitem", { name: "共有" }).click();
+      await expect(alicePhone.getByRole("dialog").getByTestId("access-report-notes")).toContainText(
+        "ほかの人が持ち主のテーブルやファイル",
+        { timeout: 20_000 },
+      );
+      await noSideScroll(alicePhone);
+      if (SHOTS) await alicePhone.screenshot({ path: `${SHOTS}/access-others-table-phone.png` });
+    } finally {
+      await cleanupAll(
+        async () => alicePhone?.context().close(),
+        async () => (bobTable ? deleteTableApi(bob, bobTable) : undefined),
+        () => bob.context().close(),
+      );
     }
   });
 

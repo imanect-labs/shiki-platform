@@ -345,19 +345,25 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
   );
 
   // 画面の表（```data_grid）は束ねた保存ビューを閲覧者本人の権限でページごとに実行する（Task 15.5）。
-  // 起動が終わるたびに作り直し、表を読み直させる（BUG-19）。
+  // 起動が終わるたびに実行先を作り直し、表を読み直させる（BUG-19）。権限の確かめの結果は実行先と分けて足し、
+  // 結果が届いても実行先（run）は変えない（表が先頭のページを読み直さない）。
+  const gridRun = React.useMemo(
+    () => (app ? miniAppDataGridHost(app.id, app.version, gridRevision) : null),
+    [app, gridRevision],
+  );
   const gridHost = React.useMemo(
     () =>
-      app
-        ? miniAppDataGridHost(app.id, app.version, gridRevision, {
-            blockedReason: (alias) => {
+      gridRun
+        ? {
+            ...gridRun,
+            blockedReason: (alias: string) => {
               const p = partAccess("data_view", alias);
               return p ? myBlockedReason(p) : null;
             },
-            ownRecordsOnly: (alias) => partAccess("data_view", alias)?.status === "limited",
-          })
+            ownRecordsOnly: (alias: string) => partAccess("data_view", alias)?.status === "limited",
+          }
         : null,
-    [app, gridRevision, partAccess],
+    [gridRun, partAccess],
   );
 
   return (
