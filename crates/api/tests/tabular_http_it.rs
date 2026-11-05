@@ -752,6 +752,95 @@ async fn tabular_reads_shift_jis_and_explains_what_it_cannot_read_or_write() {
     );
 }
 
+/// Excel（D-17）: 集計の画面は読めない Excel・古い形式の Excel の理由を言う（400 invalid_input）。編集は CSV だけで、
+/// Excel などのファイルは書き換えない。新しい CSV は Excel の名前で作らない。
+#[tokio::test]
+async fn tabular_explains_what_it_cannot_do_with_excel_files() {
+    let Some(env) = setup().await else { return };
+    // 中身は実行ごとに変える（中身の同じ blob は前の実行のバケットを指すので、同じ DB で流し直すと読めない）。
+    let tag = Uuid::new_v4().simple().to_string();
+    let mut created = Vec::new();
+    for (name, head) in [
+        ("壊れた.xlsx", b"PK\x03\x04".as_slice()),
+        (
+            "古い.xls",
+            [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1].as_slice(),
+        ),
+    ] {
+        let node = env
+            .storage
+            .write_file_internal(
+                &env.ctx,
+                None,
+                &format!("{tag}-{name}"),
+                &[head, tag.as_bytes()].concat(),
+                "application/octet-stream",
+                None,
+            )
+            .await
+            .expect("create file");
+        created.push(node);
+    }
+    let call = |req: Request<Body>| {
+        let app = env.app.clone();
+        async move { json_body(app.oneshot(req).await.unwrap()).await }
+    };
+    let (broken, old) = (&created[0], &created[1]);
+    let broken_schema = call(get(
+        &env.app,
+        &format!("/files/{}/tabular/schema", broken.id),
+    ))
+    .await;
+    let old_query = call(post(
+        &format!("/files/{}/tabular/query", old.id),
+        json!({ "sql": "SELECT * FROM data" }),
+    ))
+    .await;
+    let patched = call(post(
+        &format!("/files/{}/tabular/patch", broken.id),
+        json!({"base_rev": broken.version, "ops": [
+            {"op": "cell_update", "row": 0, "col": 0, "value": "x"}
+        ]}),
+    ))
+    .await;
+    let saved = call(post(
+        "/tabular/save",
+        json!({ "name": format!("{tag}.xlsx"), "csv": "a,b\n1,2\n" }),
+    ))
+    .await;
+    let (after, _) = env
+        .storage
+        .read_file_internal(&env.ctx, broken.id, None)
+        .await
+        .unwrap();
+    // 片付け（作ったファイル）。
+    for node in &created {
+        env.storage
+            .soft_delete_file(&env.ctx, node.id, None)
+            .await
+            .unwrap();
+    }
+
+    for (resp, needle) in [
+        (
+            &broken_schema,
+            "Excel のファイル（.xlsx）として読めませんでした",
+        ),
+        (&old_query, "古い形式の Excel（.xls）"),
+        (&patched, tabular::input::NOT_EDITABLE),
+        (&saved, "保存できるのは CSV のファイルだけ"),
+    ] {
+        assert_eq!(resp.0, StatusCode::BAD_REQUEST, "{needle}: {:?}", resp.1);
+        assert_eq!(resp.1["code"], "invalid_input", "{:?}", resp.1);
+        assert!(
+            resp.1["message"].as_str().unwrap().contains(needle),
+            "{needle}: {:?}",
+            resp.1
+        );
+    }
+    assert_eq!(after.version, broken.version, "書き換えない");
+}
+
 /// Excel の「Unicode テキスト」（UTF-16LE・BOM 付き・タブ区切り・CRLF）の編集（BUG-144）。集計はタブで列を分けて
 /// 読む。編集も集計と同じ判定（隔離ランナーの区切りの推定）で区切りを決め、タブ区切り・CRLF・UTF-16LE と BOM の
 /// まま書き戻す。以前は区切りが「,」で決まっていたので、1 行が 1 列になり、2 列目の編集は範囲外で断られていた。

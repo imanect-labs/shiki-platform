@@ -24,6 +24,10 @@ pub enum TabularError {
     /// Excel〔D-17〕）。文言は利用者向け。
     #[error("{0}")]
     NotText(String),
+    /// CSV の編集・新しい CSV の保存で、CSV でないもの（Excel などのファイル・Excel の名前）を扱おうとした
+    /// （編集と保存は CSV だけ・D-17）。文言は利用者向け。
+    #[error("{0}")]
+    Unsupported(String),
     /// パッチ入力が不正（範囲外の行/列・型不一致・元の文字コードで書けない文字等）。
     #[error("不正なパッチ: {0}")]
     InvalidPatch(String),

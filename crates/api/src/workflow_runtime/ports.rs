@@ -129,6 +129,8 @@ fn map_tabular(e: tabular::TabularError) -> PortError {
         T::NotFound(m) => PortError::new("not_found", format!("csv: {m}"), false),
         T::SqlRejected(m) => PortError::invalid(format!("csv SQL 拒否: {m}")),
         T::InvalidPatch(m) => PortError::invalid(format!("csv パッチ不正: {m}")),
+        // CSV の編集・保存で Excel などを扱おうとした（文言は利用者向け・やり直さない・D-17）。
+        T::Unsupported(m) => PortError::invalid(m),
         // 文字コードを決められない・文章でない CSV（「ファイルを読む」と同じ分類・やり直さない・GAP-45）。
         T::NotText(m) => PortError::new(workflow_engine::nodes::ports::NOT_TEXT_FILE, m, false),
         T::RevConflict { base, current } => PortError::new(

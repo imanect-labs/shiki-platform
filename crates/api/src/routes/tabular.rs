@@ -44,9 +44,9 @@ fn to_api_error(err: tabular::TabularError) -> ApiError {
         TE::NotFound(_) => ApiError::NotFound,
         TE::Storage(e) => ApiError::from(e),
         TE::SqlRejected(m) => ApiError::BadRequest(m),
-        // 編集の誤り（元の文字コードで書けない文字など）と、文字コードを決められない・文章でない CSV は、文言つきの
-        // 構造化 400（画面がそのまま出す・GAP-45）。
-        TE::InvalidPatch(m) | TE::NotText(m) => ApiError::invalid_input(&m),
+        // 編集の誤り（元の文字コードで書けない文字など）と、文字コードを決められない・文章でない CSV、読めない Excel、
+        // CSV の編集・保存に渡した Excel は、文言つきの構造化 400（画面がそのまま出す・GAP-45・D-17）。
+        TE::InvalidPatch(m) | TE::NotText(m) | TE::Unsupported(m) => ApiError::invalid_input(&m),
         TE::QuotaExceeded(m) => ApiError::BadRequest(format!("クォータ超過: {m}")),
         TE::RevConflict { base, current } => ApiError::ConflictJson(serde_json::json!({
             "status": 409,

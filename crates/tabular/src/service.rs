@@ -148,7 +148,8 @@ impl TabularService {
         Ok((response, input.version))
     }
 
-    /// パッチ列を適用して新バージョンを保存する（editor 認可・rev 楽観ロック）。
+    /// パッチ列を適用して新バージョンを保存する（editor 認可・rev 楽観ロック）。CSV でないファイル（Excel など）は
+    /// 編集しない（[`TabularError::Unsupported`]）。
     pub async fn patch(
         &self,
         ctx: &AuthContext,
@@ -174,6 +175,10 @@ impl TabularService {
             .storage
             .read_file_internal(ctx, file_id, trace_id)
             .await?;
+        // 編集は CSV だけ（Excel などは読めても書き戻せない・D-17）。
+        if input::sniff(&bytes) != Sniffed::Text {
+            return Err(TabularError::Unsupported(input::NOT_EDITABLE.into()));
+        }
         let original = decode_csv(&bytes)?;
         // 区切りと改行は、集計と同じ推定（隔離ランナー）で決め、書き戻しも同じ形にする（BUG-144）。
         let dialect = self.dialect(&original.text).await;
@@ -194,7 +199,8 @@ impl TabularService {
 
     /// 新規 CSV を保存する（作成権限＝write_file_named が member@org/editor@folder を強制）。
     ///
-    /// 同じ名前のファイルがあるときは `on_taken` に従う（番号は StorageService が付ける・D-112）。
+    /// 同じ名前のファイルがあるときは `on_taken` に従う（番号は StorageService が付ける・D-112）。名前が Excel の
+    /// 拡張子（.xlsx・.xlsm・.xls）で終わるときは保存しない（[`TabularError::Unsupported`]）。
     pub async fn save_new(
         &self,
         ctx: &AuthContext,
@@ -204,6 +210,10 @@ impl TabularService {
         on_taken: OnNameTaken,
         trace_id: Option<&str>,
     ) -> Result<SavedCsv, TabularError> {
+        // Excel の名前で CSV を作らない（「売上.xlsx.csv」を黙って作らない・D-17）。
+        if let Some(message) = input::not_csv_name(name) {
+            return Err(TabularError::Unsupported(message));
+        }
         let file_name = if name.to_lowercase().ends_with(".csv") {
             name.to_string()
         } else {

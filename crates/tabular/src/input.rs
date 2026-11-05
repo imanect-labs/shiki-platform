@@ -60,6 +60,10 @@ pub fn sniff(bytes: &[u8]) -> Sniffed {
 /// 古い形式の Office・パスワードを付けたファイルを集計に渡したとき。
 pub const OLD_OFFICE: &str = "古い形式の Excel（.xls）と、パスワードを付けたファイルは読めません。Excel で .xlsx か CSV に保存し直してください。";
 
+/// CSV の編集に Excel などを渡したとき（編集は CSV だけ・D-17）。
+pub const NOT_EDITABLE: &str =
+    "編集できるのは CSV のファイルだけです。Excel（.xlsx）などのファイルは編集できません。";
+
 /// Excel のファイルが大きすぎるとき。
 #[must_use]
 pub fn file_too_large() -> String {
@@ -67,6 +71,25 @@ pub fn file_too_large() -> String {
         "Excel のファイルが大きすぎます（{} MB まで）。使う行と列だけを CSV に保存して選んでください。",
         MAX_FILE_BYTES >> 20
     )
+}
+
+/// 新しい CSV の名前が Excel の拡張子で終わるときの文言（保存は CSV だけで、Excel のファイルは作らない・D-17）。
+///
+/// ワークフローの「CSV を保存」は名前に `.csv` を足してから渡すので、末尾の `.csv` を 1 つ外した名前で見る
+/// （「売上.xlsx」を「売上.xlsx.csv」として黙って作らない）。
+#[must_use]
+pub fn not_csv_name(name: &str) -> Option<String> {
+    let trimmed = name.trim();
+    let lower = trimmed.to_lowercase();
+    let base_len = lower.strip_suffix(".csv").map_or(lower.len(), str::len);
+    let base = &lower[..base_len];
+    let ext = [".xlsx", ".xlsm", ".xls"]
+        .into_iter()
+        .find(|ext| base.ends_with(ext))?;
+    Some(format!(
+        "「{}」は Excel のファイルの名前（{ext}）です。保存できるのは CSV のファイルだけなので、名前の {ext} を外すか .csv にしてください。",
+        &trimmed[..base_len]
+    ))
 }
 
 #[cfg(test)]
@@ -83,5 +106,22 @@ mod tests {
         // 「PK」で始まる CSV は文章のまま（4 バイトの印がそろったときだけ zip）。
         assert_eq!(sniff(b"PK,amount\n1,2\n"), Sniffed::Text);
         assert_eq!(sniff(b""), Sniffed::Text);
+    }
+
+    #[test]
+    fn refuses_excel_names_for_new_csv() {
+        let m = not_csv_name("売上.XLSX").unwrap();
+        assert!(
+            m.contains("「売上.XLSX」") && m.contains("名前の .xlsx を外すか .csv にして"),
+            "{m}"
+        );
+        // ワークフローは .csv を足してから渡す。
+        let m = not_csv_name("売上.xlsx.csv").unwrap();
+        assert!(m.contains("「売上.xlsx」"), "{m}");
+        assert!(not_csv_name("売上.xls").is_some());
+        assert!(not_csv_name("売上.xlsm ").is_some());
+        assert!(not_csv_name("売上.csv").is_none());
+        assert!(not_csv_name("売上").is_none());
+        assert!(not_csv_name("xlsx の一覧.csv").is_none());
     }
 }

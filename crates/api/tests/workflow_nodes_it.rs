@@ -1360,7 +1360,8 @@ async fn csv_query_items_keep_value_kinds() {
 
 /// 「CSV を集計」は Excel（.xlsx）も読む（D-17）。左端のシートを表として読み、いちばん上の行を列の名前にする。
 /// 列の型はセルの種類から決め（日付・はい／いいえ・整数・文字の 007）、数式は保存された値を読み、空の行は飛ばす。
-/// 古い形式の Excel（.xls など）は理由を言って断る（not_text_file）。
+/// 古い形式の Excel（.xls など）は理由を言って断る（not_text_file）。「CSV を編集」は Excel を書き換えず、
+/// 「CSV を保存」は Excel の名前で CSV を作らない（invalid）。
 #[tokio::test]
 async fn csv_query_reads_the_leftmost_sheet_of_an_excel_file() {
     let Some(runner) = runner_path() else {
@@ -1436,6 +1437,50 @@ async fn csv_query_reads_the_leftmost_sheet_of_an_excel_file() {
         )
         .await;
     let old_step = step(old.0).await;
+    // 「CSV を編集」は Excel を書き換えない。「CSV を保存」は Excel の名前で CSV を作らない（D-17）。
+    let refuse = h
+        .save(&json!({
+            "ir_version": 1, "name": format!("csv-xlsx-refuse-{tag}"),
+            "declared_scopes": ["csv.write"],
+            "triggers": [{ "kind": "interactive" }],
+            "nodes": [
+                { "id": "p", "type": "csv.patch", "params": {
+                    "file": xlsx.id.to_string(), "base_rev": xlsx.version,
+                    "ops": [ { "op": "cell_update", "row": 0, "col": 1, "value": "x" } ] } }
+            ],
+            "edges": []
+        }))
+        .await;
+    let patched = h
+        .run(refuse, &json!({}), h.executor_with_tabular(&runner))
+        .await;
+    let patched_step = step(patched.0).await;
+    let (after, after_bytes) = h
+        .storage
+        .read_file_internal(&h.alice, xlsx.id, None)
+        .await
+        .unwrap();
+    let write = h
+        .save(&json!({
+            "ir_version": 1, "name": format!("csv-xlsx-write-{tag}"),
+            "declared_scopes": ["csv.write"],
+            "triggers": [{ "kind": "interactive" }],
+            "nodes": [ { "id": "w", "type": "csv.write", "params": {
+                "name": format!("集計-{tag}.xlsx"), "content": "a,b\n1,2\n" } } ],
+            "edges": []
+        }))
+        .await;
+    let written = h
+        .run(write, &json!({}), h.executor_with_tabular(&runner))
+        .await;
+    let written_step = step(written.0).await;
+    let made: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM node WHERE tenant_id = $1 AND name LIKE $2")
+            .bind(&h.tenant)
+            .bind(format!("集計-{tag}%"))
+            .fetch_one(&h.pool)
+            .await
+            .unwrap();
 
     // 片付け（run の履歴・ファイル・ワークフロー・OpenFGA のストア）。
     h.runs.purge_tenant_history(&h.tenant).await.unwrap();
@@ -1445,7 +1490,9 @@ async fn csv_query_reads_the_leftmost_sheet_of_an_excel_file() {
             .await
             .unwrap();
     }
-    h.artifacts.delete(&h.alice, wf, None).await.unwrap();
+    for id in [wf, refuse, write] {
+        h.artifacts.delete(&h.alice, id, None).await.unwrap();
+    }
     h.delete_fga_store().await;
 
     assert_eq!(read.1, RunStatus::Succeeded, "{read_step:?}");
@@ -1484,6 +1531,27 @@ async fn csv_query_reads_the_leftmost_sheet_of_an_excel_file() {
             .contains("古い形式の Excel（.xls）"),
         "{error}"
     );
+
+    assert_eq!(patched.1, RunStatus::Failed);
+    let error = patched_step.1.unwrap();
+    assert_eq!(error["code"], "invalid", "{error}");
+    assert_eq!(error["message"], tabular::input::NOT_EDITABLE, "{error}");
+    assert_eq!(after.version, xlsx.version, "書き換えない");
+    assert_eq!(
+        after_bytes,
+        include_bytes!("../../tabular/tests/fixtures/expenses.xlsx").as_slice()
+    );
+    assert_eq!(written.1, RunStatus::Failed);
+    let error = written_step.1.unwrap();
+    assert_eq!(error["code"], "invalid", "{error}");
+    assert!(
+        error["message"]
+            .as_str()
+            .unwrap()
+            .contains(&format!("「集計-{tag}.xlsx」は Excel のファイルの名前（.xlsx）です。保存できるのは CSV のファイルだけ")),
+        "{error}"
+    );
+    assert_eq!(made, 0, "「集計.xlsx.csv」を作らない");
 }
 
 /// 新しく保存する CSV の文字コード（GAP-47・D-120）。「新しい CSV を保存」と、CSV として保存する「新しいファイルを
