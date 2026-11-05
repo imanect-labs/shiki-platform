@@ -369,7 +369,8 @@ export function SkillEditorPage({ target }: { target: SkillEditorTarget }) {
         }
       >
         <div className="min-h-0 min-w-0 flex-1 overflow-y-auto overscroll-y-contain">
-          <div className="mx-auto max-w-3xl px-4 pb-24 pt-6 max-md:pt-1">
+          {/* @container: 設定欄の段組みを本文欄の幅で決める（アシスタントを開くと細くなる）。 */}
+          <div className="@container mx-auto max-w-3xl px-4 pb-24 pt-6 max-md:pt-1">
             <EditorMobileHeading className="px-0 pb-2 pt-0" status={status} />
             {loaded.state === "loading" ? (
               <div className="flex items-center justify-center gap-2 py-24 text-sm text-muted-foreground">

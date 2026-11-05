@@ -385,6 +385,7 @@ use utoipa::{
         crate::routes::chat::ThreadShareEntry,
         crate::routes::chat::ThreadSharesResponse,
         chat::Thread,
+        chat::LastModelChoice,
         chat::Message,
         chat::UiActionRun,
         chat::UiActionRunStatus,
