@@ -9,6 +9,12 @@
 //!   信じず、実際に展開したバイト数で数える（zip 爆弾）。
 //! - 読むシートの値の数（[`MAX_CELLS`]）・列の幅（[`MAX_COLUMNS`]）・値の文字の合計（[`MAX_TEXT_BYTES`]。同じ共有の
 //!   文字を何度も指すシートで、メモリを使い切らない）
+//! - 表の大きさ（値のある行の数 × 列の幅・[`MAX_GRID_CELLS`]）。値の数と幅がそれぞれ上限の内でも、右端に離れた
+//!   値が 1 つあるだけで、行ごとに幅の分の表を作る（100 万行 × 1,000 列）。ランナーは値を疎のまま持つが、表に
+//!   入れるときは全部のセルを書くので、積も抑える。
+//!
+//! ランナーのプロセスには、DuckDB の memory_limit に加えてアドレス空間の上限も付ける（読み取りは Rust 側で確保し、
+//! memory_limit が効かない・[`crate::protocol::runner_address_space_bytes`]）。
 //!
 //! 数式は計算しない（Excel が保存したときの値を読む・値の無い数式のセルは空）。外部のブックへの参照はたどらず、
 //! XML の外部の実体も読まない。
@@ -33,6 +39,8 @@ pub const MAX_CELLS: usize = 1_000_000;
 pub const MAX_COLUMNS: u32 = 1_000;
 /// 読むシートの値の文字を合わせた大きさの上限（64 MiB）。
 pub const MAX_TEXT_BYTES: usize = 64 << 20;
+/// 読むシートの表の大きさ（値のある行の数 × 列の幅）の上限。
+pub const MAX_GRID_CELLS: usize = 10_000_000;
 
 /// 先頭のバイトで決めた形式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

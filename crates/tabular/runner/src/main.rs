@@ -14,6 +14,10 @@
 //!
 //! Excel（.xlsx・[`InputFormat::Xlsx`]）は 1 の代わりに [`xlsx`] が展開して左端のシートを `data` に入れる
 //! （CSV を集計の読み取りだけ・D-17）。読めない Excel は利用者が直す誤り（`input_error`）として返す。
+//!
+//! 入力を読む前に、プロセスのアドレス空間に上限（RLIMIT_AS・[`tabular::protocol::runner_address_space_bytes`]）を
+//! 付ける。DuckDB の memory_limit は Rust 側（Excel の読み取り）の確保に効かないため。超えると確保に失敗して
+//! 落ち、api はメモリの超過として返す（PIT-39）。
 
 mod query;
 mod xlsx;
@@ -21,6 +25,8 @@ mod xlsx;
 use std::io::{Read, Write};
 
 use duckdb::Connection;
+use rustix::process::{getrlimit, setrlimit, Resource, Rlimit};
+use tabular::protocol::runner_address_space_bytes;
 use tabular::{CsvDialect, InputFormat, RunnerOp, RunnerRequest, RunnerResponse};
 
 fn main() {
@@ -38,9 +44,31 @@ fn main() {
             std::process::exit(1);
         }
     };
+    if let Err(e) = limit_address_space(request.memory_limit_mb) {
+        emit(&RunnerResponse::failure(format!(
+            "メモリの上限の設定に失敗: {e}"
+        )));
+        std::process::exit(1);
+    }
     let response = execute(&request).unwrap_or_else(RunnerResponse::failure);
     emit(&response);
     let _ = std::io::stdout().flush();
+}
+
+/// プロセスのアドレス空間に上限を付ける（下げるだけ。すでにもっと低い上限があればそれを使う）。
+fn limit_address_space(memory_limit_mb: u32) -> std::io::Result<()> {
+    let wanted = runner_address_space_bytes(memory_limit_mb);
+    let limit = getrlimit(Resource::As)
+        .maximum
+        .map_or(wanted, |max| max.min(wanted));
+    setrlimit(
+        Resource::As,
+        Rlimit {
+            current: Some(limit),
+            maximum: Some(limit),
+        },
+    )
+    .map_err(std::io::Error::from)
 }
 
 fn emit(resp: &RunnerResponse) {

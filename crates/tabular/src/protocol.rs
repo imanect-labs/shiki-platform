@@ -24,6 +24,18 @@ pub struct RunnerRequest {
     pub max_rows: u32,
 }
 
+/// ランナーのプロセスのアドレス空間に、DuckDB の memory_limit へ足す余裕（MiB）。実行ファイル・Excel の読み取り
+/// （`crate::input` の上限の内）・DuckDB の外の確保に使う。
+const RUNNER_ADDRESS_SPACE_HEADROOM_MB: u64 = 1536;
+
+/// ランナーのプロセスのアドレス空間の上限（バイト）。[`RunnerRequest::memory_limit_mb`] に余裕を足す。ランナーは
+/// 入力を読む前に自分にこの上限を付け（RLIMIT_AS）、超えると確保に失敗して落ちる。api はメモリの超過として返す
+/// （DuckDB の memory_limit は Rust 側の確保に効かないため・PIT-39）。
+#[must_use]
+pub fn runner_address_space_bytes(memory_limit_mb: u32) -> u64 {
+    (u64::from(memory_limit_mb) + RUNNER_ADDRESS_SPACE_HEADROOM_MB) << 20
+}
+
 /// ランナーへ渡す入力の形式（api は先頭のバイトだけで決め、中身は解釈しない・PIT-39）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

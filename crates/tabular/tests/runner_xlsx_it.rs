@@ -25,8 +25,8 @@ use flate2::write::DeflateEncoder;
 use flate2::Compression;
 use serde_json::json;
 use tabular::input::{
-    MAX_CELLS, MAX_COLUMNS, MAX_ENTRIES, MAX_ENTRY_UNPACKED_BYTES, MAX_FILE_BYTES, MAX_TEXT_BYTES,
-    MAX_UNPACKED_BYTES,
+    MAX_CELLS, MAX_COLUMNS, MAX_ENTRIES, MAX_ENTRY_UNPACKED_BYTES, MAX_FILE_BYTES, MAX_GRID_CELLS,
+    MAX_TEXT_BYTES, MAX_UNPACKED_BYTES,
 };
 use tabular::{InputFormat, RunnerConfig, RunnerOp, RunnerRequest, RunnerResponse};
 
@@ -593,6 +593,69 @@ async fn refuses_far_apart_cells_without_allocating_the_range() {
     let resp = run(&write_file(&zip(&parts)), query("SELECT * FROM data")).await;
     assert!(resp.ok, "{:?}", resp.error);
     assert_eq!(resp.values, [[json!("値")]]);
+}
+
+/// 値の数と列の幅はそれぞれ上限の内でも、右端に離れた値が 1 つあるだけで表は行の数 × 幅になる（幅 1,000・行 100 万・
+/// 値 100 万）。表の大きさの上限で、表を確保する前に理由つきで断る。上限の内の疎な表は、空のセルを補って読む。
+#[tokio::test]
+async fn refuses_wide_and_tall_sheets_by_the_table_size() {
+    let Some(_) = runner_path() else {
+        return;
+    };
+    let width_end = "ALL"; // 1,000 列目
+    let mut cells = String::with_capacity(MAX_CELLS * 40);
+    let _ = write!(
+        cells,
+        r#"<row r="1"><c r="A1"><v>1</v></c><c r="{width_end}1"><v>2</v></c></row>"#
+    );
+    // 見出しの 2 つと合わせて、値はちょうど上限の数。
+    for r in 2..=(MAX_CELLS as u32 - 1) {
+        let _ = write!(cells, r#"<row r="{r}"><c r="A{r}"><v>1</v></c></row>"#);
+    }
+    let parts = book(&[("表", "", cells)], &["値"]);
+    let resp = run(
+        &write_file(&zip(&parts)),
+        query("SELECT count(*) FROM data"),
+    )
+    .await;
+    assert_refused(&resp, &format!("{} セルまで", group(MAX_GRID_CELLS)));
+
+    // 上限の内の疎な表（幅 1,000・5,000 行）は読める。右端の列は空、左端の列は数のまま。
+    let rows = 5_000u32;
+    let mut cells = String::new();
+    let _ = write!(
+        cells,
+        r#"<row r="1">{}{}</row>"#,
+        s("A1", 0),
+        s(&format!("{width_end}1"), 1)
+    );
+    for r in 2..=rows + 1 {
+        let _ = write!(cells, r#"<row r="{r}"><c r="A{r}"><v>{r}</v></c></row>"#);
+    }
+    let parts = book(&[("表", "", cells)], &["左", "右"]);
+    let file = write_file(&zip(&parts));
+    let resp = run(
+        &file,
+        query(r#"SELECT count(*), count("右"), sum("左") FROM data"#),
+    )
+    .await;
+    assert!(resp.ok, "{:?}", resp.error);
+    let total: u64 = (2..=u64::from(rows) + 1).sum();
+    assert_eq!(
+        resp.values,
+        [[json!(rows), json!(0), json!(total)]],
+        "{:?}",
+        resp.values
+    );
+    let resp = run(&file, RunnerOp::Schema).await;
+    assert!(resp.ok, "{:?}", resp.error);
+    assert_eq!(resp.columns.len(), MAX_COLUMNS as usize);
+    assert_eq!(resp.columns.first().map(String::as_str), Some("左"));
+    assert_eq!(resp.columns.last().map(String::as_str), Some("右"));
+    assert_eq!(
+        resp.column_types.first().map(String::as_str),
+        Some("BIGINT")
+    );
 }
 
 /// 同じ共有の文字（1 MiB）を何度も指すシートは、値の文字の合計の上限で断る（メモリを使い切らない）。値の数の上限も

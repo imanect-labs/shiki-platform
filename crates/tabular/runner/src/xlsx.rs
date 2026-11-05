@@ -5,7 +5,10 @@
 //! 1. ファイルの大きさ・zip の中の数。中のファイルを 1 つずつ実際に展開して数え、1 つずつと合わせた大きさの上限を
 //!    超えたら読まない（zip が書く大きさは信じない・zip 爆弾）。展開は deflate だけ（ほかの圧縮・暗号は読まない）。
 //! 2. calamine でブックを開き、左端のシート（隠したシートは飛ばす）を 1 セルずつ読む。値の数・列の幅・値の文字の
-//!    合計を数え、上限を超えたら止める（シートの「範囲」の宣言は使わない。離れた 2 つのセルで巨大な表を確保しない）。
+//!    合計・表の大きさ（値のある行の数 × 列の幅）を数え、上限を超えたら止める（シートの「範囲」の宣言は使わない。
+//!    離れた 2 つのセルで巨大な表を確保しない）。
+//! 3. 値は疎のまま（行ごとに値のある列だけ）持ち、表に入れるときに 1 行ずつ幅の分に広げる（行の数 × 幅の表を
+//!    まとめて確保しない）。ランナーのプロセスにはアドレス空間の上限も付いている（`main.rs`）。
 //!
 //! 読み方:
 //! - 先頭の値のある行を見出し（列の名前）にする。名前の決め方は DuckDB の CSV の読み込みと同じ（前後の空白を
@@ -18,7 +21,7 @@
 //!   BOOLEAN、日付だけなら DATE、時刻だけなら TIME、日付と日時なら TIMESTAMP、ほかは VARCHAR。グリッド（Schema・
 //!   Rows）は全列を文字で入れる（CSV と同じ）。
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufReader, Read};
 
@@ -26,7 +29,7 @@ use calamine::{DataRef, Reader, SheetType, SheetVisible, Xlsx, XlsxError};
 use duckdb::{appender_params_from_iter, Connection};
 use tabular::input::{
     file_too_large, MAX_CELLS, MAX_COLUMNS, MAX_ENTRIES, MAX_ENTRY_UNPACKED_BYTES, MAX_FILE_BYTES,
-    MAX_TEXT_BYTES, MAX_UNPACKED_BYTES,
+    MAX_GRID_CELLS, MAX_TEXT_BYTES, MAX_UNPACKED_BYTES,
 };
 
 /// Excel を読めなかった理由（利用者向けの文言・ランナーは `input_error` で返す）。
@@ -74,8 +77,8 @@ struct Sheet {
     columns: Vec<String>,
     /// 集計で読むときの列の型（DuckDB の型の名前）。
     types: Vec<&'static str>,
-    /// 行（列の数だけの文字の形・空は None）。
-    rows: Vec<Vec<Option<String>>>,
+    /// 行（値のある列だけの、列の位置と文字の形。列の位置の順）。
+    rows: Vec<Vec<(usize, String)>>,
 }
 
 /// Excel の左端のシートを読み、`data` を作る（`typed` なら列に型を付ける）。返り値は集計で読むときの列の型。
@@ -155,6 +158,7 @@ fn read_first_sheet(path: &str) -> Result<Sheet, Unreadable> {
         .worksheet_cells_reader(&name)
         .map_err(|_| Unreadable(BROKEN.into()))?;
     let mut cells: Vec<(u32, u32, Value)> = Vec::new();
+    let mut rows: HashSet<u32> = HashSet::new();
     let mut text_bytes = 0usize;
     let (mut min_col, mut max_col) = (u32::MAX, 0u32);
     while let Some(cell) = reader.next_cell().map_err(|_| Unreadable(BROKEN.into()))? {
@@ -184,6 +188,14 @@ fn read_first_sheet(path: &str) -> Result<Sheet, Unreadable> {
             return Err(Unreadable(format!(
                 "Excel のシート「{name}」の列が多すぎます（{} 列まで）。表から離れた右の列に値が無いか確かめてください。",
                 group_digits(MAX_COLUMNS as usize)
+            )));
+        }
+        rows.insert(row);
+        // 表に入れるときは、値のある行ごとに幅の分のセルを書く（右端に離れた値が 1 つあるだけで行の数 × 幅になる）。
+        if rows.len().saturating_mul((max_col - min_col + 1) as usize) > MAX_GRID_CELLS {
+            return Err(Unreadable(format!(
+                "Excel のシート「{name}」の表が大きすぎます（行の数 × 列の数で {} セルまで）。表から離れた右の列に値が無いか確かめるか、使う行と列だけを CSV に保存して選んでください。",
+                group_digits(MAX_GRID_CELLS)
             )));
         }
         cells.push((row, col, value));
@@ -255,32 +267,47 @@ fn text_of(value: &Value) -> String {
     }
 }
 
-/// 読んだセル（行と列の位置つき）を、見出しと行にする。
+/// 読んだセル（行と列の位置つき）を、見出しと行にする。行は疎のまま（値のある列だけ）持つ。
 fn sheet_of(mut cells: Vec<(u32, u32, Value)>, min_col: u32, max_col: u32) -> Sheet {
-    // 行と列の順にそろえる（壊れた順のファイルでも同じ表になる）。同じ位置は後のセルを使う。
+    // 行と列の順にそろえる（壊れた順のファイルでも同じ表になる）。同じ位置は後のセルを使う（安定な並べ替え）。
     cells.sort_by_key(|(r, c, _)| (*r, *c));
     let width = (max_col - min_col + 1) as usize;
-    let mut by_row: BTreeMap<u32, Vec<Option<Value>>> = BTreeMap::new();
+    let mut by_row: Vec<Vec<(usize, Value)>> = Vec::new();
+    let mut current_row = None;
     for (r, c, v) in cells {
-        by_row.entry(r).or_insert_with(|| vec![None; width])[(c - min_col) as usize] = Some(v);
+        let col = (c - min_col) as usize;
+        if current_row != Some(r) {
+            current_row = Some(r);
+            by_row.push(Vec::new());
+        }
+        let Some(row) = by_row.last_mut() else {
+            continue;
+        };
+        match row.last_mut() {
+            Some((last, value)) if *last == col => *value = v,
+            _ => row.push((col, v)),
+        }
     }
-    let mut rows = by_row.into_values();
-    let header = rows.next().unwrap_or_default();
-    let columns = column_names(
-        &header
-            .iter()
-            .map(|v| v.as_ref().map(text_of).unwrap_or_default())
-            .collect::<Vec<_>>(),
-    );
-    let data: Vec<Vec<Option<Value>>> = rows.collect();
-    let types = (0..width).map(|i| column_type(&data, i)).collect();
-    let rows = data
-        .iter()
-        .map(|row| row.iter().map(|v| v.as_ref().map(text_of)).collect())
+    let mut rows = by_row.into_iter();
+    let mut header = vec![String::new(); width];
+    for (col, value) in rows.next().unwrap_or_default() {
+        header[col] = text_of(&value);
+    }
+    let columns = column_names(&header);
+    let mut kinds = vec![ColumnKinds::default(); width];
+    let rows = rows
+        .map(|row| {
+            row.into_iter()
+                .map(|(col, value)| {
+                    kinds[col].count(&value);
+                    (col, text_of(&value))
+                })
+                .collect()
+        })
         .collect();
     Sheet {
         columns,
-        types,
+        types: kinds.iter().map(ColumnKinds::column_type).collect(),
         rows,
     }
 }
@@ -311,36 +338,50 @@ fn column_names(header: &[String]) -> Vec<String> {
         .collect()
 }
 
-/// 列のセルの種類から、集計で読むときの型を決める。
-fn column_type(rows: &[Vec<Option<Value>>], col: usize) -> &'static str {
-    let (mut numbers, mut integers, mut bools, mut texts) = (0usize, 0usize, 0usize, 0usize);
-    let (mut dates, mut times, mut datetimes) = (0usize, 0usize, 0usize);
-    for value in rows.iter().filter_map(|r| r[col].as_ref()) {
+/// 列のセルの種類の数（集計で読むときの型を決める）。
+#[derive(Debug, Clone, Copy, Default)]
+struct ColumnKinds {
+    numbers: usize,
+    integers: usize,
+    bools: usize,
+    texts: usize,
+    dates: usize,
+    times: usize,
+    datetimes: usize,
+}
+
+impl ColumnKinds {
+    fn count(&mut self, value: &Value) {
         match value {
             Value::Number(f) => {
-                numbers += 1;
+                self.numbers += 1;
                 let f = excel_number(*f);
                 if f.fract() == 0.0 && f.abs() < 9_007_199_254_740_992.0 {
-                    integers += 1;
+                    self.integers += 1;
                 }
             }
-            Value::Bool(_) => bools += 1,
-            Value::Date(_, DateKind::Date) => dates += 1,
-            Value::Date(_, DateKind::Time) => times += 1,
-            Value::Date(_, DateKind::DateTime) => datetimes += 1,
-            Value::Text(_) => texts += 1,
+            Value::Bool(_) => self.bools += 1,
+            Value::Date(_, DateKind::Date) => self.dates += 1,
+            Value::Date(_, DateKind::Time) => self.times += 1,
+            Value::Date(_, DateKind::DateTime) => self.datetimes += 1,
+            Value::Text(_) => self.texts += 1,
         }
     }
-    let total = numbers + bools + texts + dates + times + datetimes;
-    match () {
-        _ if total == 0 => "VARCHAR",
-        _ if numbers == total && integers == total => "BIGINT",
-        _ if numbers == total => "DOUBLE",
-        _ if bools == total => "BOOLEAN",
-        _ if dates == total => "DATE",
-        _ if times == total => "TIME",
-        _ if dates + datetimes == total => "TIMESTAMP",
-        _ => "VARCHAR",
+
+    /// 列のセルの種類から、集計で読むときの型を決める。
+    fn column_type(&self) -> &'static str {
+        let total =
+            self.numbers + self.bools + self.texts + self.dates + self.times + self.datetimes;
+        match () {
+            _ if total == 0 => "VARCHAR",
+            _ if self.numbers == total && self.integers == total => "BIGINT",
+            _ if self.numbers == total => "DOUBLE",
+            _ if self.bools == total => "BOOLEAN",
+            _ if self.dates == total => "DATE",
+            _ if self.times == total => "TIME",
+            _ if self.dates + self.datetimes == total => "TIMESTAMP",
+            _ => "VARCHAR",
+        }
     }
 }
 
@@ -360,8 +401,14 @@ fn create_table(conn: &Connection, sheet: &Sheet, typed: bool) -> Result<(), Str
         let mut app = conn
             .appender("raw")
             .map_err(|e| format!("Excel の表の準備に失敗: {e}"))?;
+        // 1 行ずつ幅の分に広げて書く（表全体を密に確保しない）。
+        let mut dense: Vec<Option<&str>> = vec![None; sheet.columns.len()];
         for row in &sheet.rows {
-            app.append_row(appender_params_from_iter(row.iter().map(Option::as_deref)))
+            dense.fill(None);
+            for (col, text) in row {
+                dense[*col] = Some(text.as_str());
+            }
+            app.append_row(appender_params_from_iter(dense.iter().copied()))
                 .map_err(|e| format!("Excel の表の書き込みに失敗: {e}"))?;
         }
         app.flush()
