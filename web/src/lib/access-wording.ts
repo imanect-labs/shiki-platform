@@ -8,6 +8,7 @@ import type {
   AccessPart,
   MyAccessItem,
   MyPartAccess,
+  UncheckedBlock,
 } from "@/lib/artifact-api";
 
 type AccessObject = AccessNeedView["object"];
@@ -82,6 +83,28 @@ export const CONDITIONAL_MARK = "場合によって要る";
 export function conditionalNote(subject: "app" | "workflow"): string {
   const then = subject === "app" ? "足りなくてもボタンは押せますが" : "足りなくても実行できますが";
   return `${CONDITIONAL_MARK}権限は、分かれた流れや「エラー時」の出口の先、繰り返しの中のブロックが使います。${then}、そのブロックまで進むと失敗します。`;
+}
+
+/// 前もって確かめられないブロックの理由（GAP-82）。
+function uncheckedReason(kind: UncheckedBlock["kind"]): string {
+  switch (kind) {
+    case "script":
+      return "スクリプトの中で使うテーブルやファイルは、動くまで決まりません。";
+    case "agent_tools":
+      return "AI エージェントは、使う人が見られる文書やファイルだけを読みます。";
+    case "secret":
+      return "使う人がシークレットを使えるかは、確かめていません。";
+    case "start_workflow":
+      return "実行する別のワークフローと、それに要る権限は確かめていません。";
+    case "drive_top":
+      return "ドライブのトップに保存できるのは、組織のメンバーだけです。";
+  }
+}
+
+/// 作る人向けに、前もって確かめられないブロック 1 つを言う（部品とブロックの名前と理由・GAP-82）。
+export function uncheckedLine(u: UncheckedBlock): string {
+  const part = partPhrase(u.part);
+  return `${part ? `${part}の` : ""}「${u.block}」: ${uncheckedReason(u.kind)}`;
 }
 
 /// 追加だけの共有で範囲が狭くなるときの補足。

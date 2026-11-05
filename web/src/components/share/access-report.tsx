@@ -9,6 +9,8 @@
 /// （ほかの人のテーブルやファイルは、その持ち主に確かめてもらう）。
 /// 分かれた流れなど、道によって通るブロックだけが要る権限には「場合によって要る」と印を付け、足りない相手も
 /// 「場合によって一部を使えません」と言い分ける（使う人のボタンは止まらない・BUG-216）。
+/// スクリプト・シークレット・別のワークフローを実行など、前もって確かめられないブロックがあれば、名前を挙げて
+/// 「要る権限はありません」「全員持っています」と言い切らない（GAP-82）。
 
 import * as React from "react";
 import { AlertCircle, CheckCircle2, Loader2, RotateCcw, TriangleAlert } from "lucide-react";
@@ -22,6 +24,7 @@ import {
   limitedNote,
   needLine,
   partPhrase,
+  uncheckedLine,
 } from "@/lib/access-wording";
 import { cn } from "@/lib/utils";
 
@@ -133,8 +136,10 @@ export function AccessReportView({
     return m.sure.length === 0 && m.maybe.length > 0;
   });
   const hasConditional = report.needs.some((n) => n.conditional);
-  // 確かめられなかったもの（実行のときに決まる・見えない・上限）があれば、「全員使える」と言い切らない（付録 C の P7）。
-  const anyUnchecked = (subjects ?? []).some((s) => s.statuses.includes("unchecked"));
+  // 確かめられなかったもの（実行のときに決まる・見えない・上限・前もって確かめられないブロック）があれば、「全員使える」と
+  // 言い切らない（付録 C の P7・GAP-82）。
+  const hasGaps = report.unchecked.length > 0;
+  const anyUnchecked = hasGaps || (subjects ?? []).some((s) => s.statuses.includes("unchecked"));
   const scope = anyUnchecked ? "確かめられた範囲では、" : "";
   // 1 つも確かめられなかった（どれもほかの人が持ち主の対象など）ときは、「全員使える」と言わない。
   const anyChecked = (subjects ?? []).some((s) => s.statuses.some((st) => st !== "unchecked"));
@@ -157,6 +162,7 @@ export function AccessReportView({
           <p className="flex items-start gap-1.5 text-muted-foreground" data-testid="access-report-all-ok">
             <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-primary" aria-hidden />
             {scope}共有している相手は全員、このバージョンのボタンと表を使えます。
+            {hasGaps ? "前もって確かめられないブロックは、共有の画面で見られます。" : ""}
           </p>
         ) : (
           <div
@@ -202,7 +208,9 @@ export function AccessReportView({
         </p>
       </div>
       {report.needs.length === 0 ? (
-        <p className="text-xs text-muted-foreground">この{thing}には、相手の権限が要る部品はありません。</p>
+        hasGaps ? null : (
+          <p className="text-xs text-muted-foreground">この{thing}には、相手の権限が要る部品はありません。</p>
+        )
       ) : (
         <ul className="list-disc space-y-0.5 pl-5 text-xs" data-testid="access-report-needs">
           {report.needs.map((n, i) => (
@@ -213,6 +221,21 @@ export function AccessReportView({
           ))}
         </ul>
       )}
+      {hasGaps ? (
+        <div className="text-xs" data-testid="access-report-unchecked">
+          <p className="flex items-start gap-1.5 text-amber-700 dark:text-amber-400">
+            <TriangleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden />
+            前もって確かめられないブロックがあります。足りるかは、実行したときに分かります。
+          </p>
+          <ul className="mt-0.5 list-disc space-y-0.5 pl-5">
+            {report.unchecked.map((u, i) => (
+              <li key={i} className="[overflow-wrap:anywhere]">
+                {uncheckedLine(u)}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
       {report.unavailable.length > 0 ? (
         <p className="flex items-start gap-1.5 text-xs text-amber-700 dark:text-amber-400" role="note">
           <TriangleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden />

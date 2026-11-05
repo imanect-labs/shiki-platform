@@ -339,6 +339,8 @@ export type SubjectAccess = components["schemas"]["SubjectAccess"];
 export type MyAppAccess = components["schemas"]["MyAppAccess"];
 export type MyPartAccess = components["schemas"]["MyPartAccess"];
 export type MyAccessItem = components["schemas"]["MyAccessItem"];
+/// 前もって確かめられないブロック（GAP-82）。
+export type UncheckedBlock = components["schemas"]["UncheckedBlock"];
 
 /// アプリを使う人の権限を確かめる（作る人だけ）。`version` を省くと公開しているバージョン（まだ公開していなければ
 /// 最新）、`subjects` を省くと共有している相手（相手ごとの結果は持ち主にだけ返る）。
