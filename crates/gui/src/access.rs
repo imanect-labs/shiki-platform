@@ -125,6 +125,7 @@ pub struct AccessTarget {
 
 /// 部品が要る権限 1 つ（作る人向け）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+#[allow(clippy::struct_excessive_bools)] // 応答の独立した事実（値で決まる・持ち主・場合によって・上限の外）をそのまま写す。
 pub struct AccessNeedView {
     /// 部品（ワークフローそのものを確かめたときは `null`）。
     pub part: Option<AccessPart>,
