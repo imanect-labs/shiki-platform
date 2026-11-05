@@ -49,6 +49,9 @@ export type YuiActionHost = {
   /// 押す前に分かる、ワークフローのボタンを使えない理由（使う人に足りない権限・GAP-37）。使えるなら null。
   /// 判定はサーバー（`GET /mini-apps/{id}/access`）が決め、押されたときもサーバーが本人の権限で改めて確かめる。
   blockedReason?: (workflowName: string) => string | null;
+  /// 止めたボタンが押されたときに確かめ直し、使えない理由を返す（使えるなら null・確かめられなかったときも null にして
+  /// サーバーに任せる）。渡すと、止めたボタンも押せる形で描く（共有してもらった後に、開き直さずに押せる・BUG-217）。
+  recheckBlocked?: (workflowName: string) => Promise<string | null>;
 };
 
 export const YuiActionContext = React.createContext<YuiActionHost | null>(null);
@@ -117,8 +120,12 @@ export function useYuiActions(
       if (!host || host.unsaved || !hash) return { ok: false, message: "いまは実行できません" };
       const key = `${hash}:${e.actionId}`;
       const target = e.action.target;
-      // 使う人に足りない権限があるボタンは送らない（理由はボタンの近くにも出している・GAP-37）。
-      const blocked = target.kind === "workflow" ? (host.blockedReason?.(target.name) ?? null) : null;
+      // 使う人に足りない権限があるボタンは送らない（理由はボタンの近くにも出している・GAP-37）。押されたら確かめ直し、
+      // 共有してもらっていれば、そのまま送る（BUG-217）。
+      let blocked = target.kind === "workflow" ? (host.blockedReason?.(target.name) ?? null) : null;
+      if (blocked && target.kind === "workflow" && host.recheckBlocked) {
+        blocked = await host.recheckBlocked(target.name);
+      }
       if (blocked) return { ok: false, message: blocked };
       if (target.kind === "workflow" && !host.isBound(key)) {
         return { ok: false, message: `ワークフロー「${target.name}」が見つからないか、使う権限がありません` };
@@ -164,7 +171,8 @@ export function useYuiActions(
   if (host.unsaved || !hash) return { actionDisabledReason: "準備しています…", runs: [] };
   const prefix = `${hash}:`;
   const save = host.saveAsApp;
-  // 使う人に足りない権限があるボタン（GAP-37）。図のボタンがすべて使えなければ図ごと止め、一部なら図の下に言う。
+  // 使う人に足りない権限があるボタン（GAP-37）。理由は図の下に言う。押されたら確かめ直せる置き場所（BUG-217）では
+  // ボタンを押せるままにし、確かめ直せない置き場所では、図のボタンがすべて使えなければ図ごと止める。
   const actions = figure ? figureActions(figure) : [];
   const blocked = host.blockedReason
     ? actions.flatMap((a) => {
@@ -172,7 +180,7 @@ export function useYuiActions(
         return reason ? [{ label: a.label, reason }] : [];
       })
     : [];
-  if (blocked.length > 0 && blocked.length === actions.length) {
+  if (blocked.length > 0 && blocked.length === actions.length && !host.recheckBlocked) {
     const reasons = [...new Set(blocked.map((b) => b.reason))];
     return {
       actionDisabledReason: reasons.join(" "),

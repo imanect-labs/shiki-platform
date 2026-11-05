@@ -31,13 +31,13 @@ import {
   UNPUBLISHED_SHARE_NOTE,
 } from "@/components/miniapp/publish";
 import { DataGridHostContext, miniAppDataGridHost } from "@/components/data/data-grid-host";
+import { RECHECK_ON_PRESS_MS, useMyAppAccess } from "@/components/miniapp/use-my-access";
 import { Markdown } from "@/components/prompt-kit/markdown";
 import { useRunsRefresh, YuiActionContext, type YuiActionHost } from "@/components/prompt-kit/yui-actions";
 import {
   checkMiniAppAccess,
   errorCode,
   getMiniAppRun,
-  getMyMiniAppAccess,
   invokeMiniAppYuiAction,
   isVersionConflict,
   listMiniAppRuns,
@@ -45,7 +45,7 @@ import {
   updateMiniApp,
   validationMessages,
   type MiniAppRun,
-  type MyAppAccess,
+  type MyPartAccess,
   type ResolvedMiniApp,
 } from "@/lib/artifact-api";
 import { myBlockedReason } from "@/lib/access-wording";
@@ -72,6 +72,15 @@ function runsFinishedSince(
     if (prev && !open && prev.get(key) !== false) finished = true;
   }
   return { seen, finished };
+}
+
+/// 部品（ボタンの実行先・画面の表）の、自分に足りない権限。
+function findPart(
+  parts: readonly MyPartAccess[] | undefined,
+  kind: "workflow" | "data_view",
+  alias: string,
+): MyPartAccess | null {
+  return parts?.find((p) => p.part.kind === kind && "alias" in p.part && p.part.alias === alias) ?? null;
 }
 
 export default function MiniAppRunPage({ params }: { params: Promise<{ id: string }> }) {
@@ -296,25 +305,12 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
   // 使えない部品（壊れた任意のピン）のうちスキルの分。画面とボタンはそのまま使える（BUG-17）。
   const skillUnavailable = app?.unavailable.find((u) => u.path === "skill");
 
-  // 自分に足りない権限（GAP-37）。開いたバージョンごとに 1 回確かめ、押す前にボタンと表を止めて理由を出す。
+  // 自分に足りない権限（GAP-37）。開いたバージョンごとに確かめ、押す前にボタンと表を止めて理由を出す。止めたボタンを
+  // 押したとき・画面に戻ったときに確かめ直し、共有してもらえば開き直さずに使える（BUG-217・use-my-access）。
   // 読めなかったときは止めない（押したときにサーバーが本人の権限で確かめる）。
-  const [access, setAccess] = React.useState<MyAppAccess | null>(null);
-  React.useEffect(() => {
-    if (!app) return;
-    let live = true;
-    setAccess(null);
-    getMyMiniAppAccess(app.id, app.version)
-      .then((a) => live && setAccess(a))
-      .catch(() => {
-        /* 確かめられなくても画面は使える */
-      });
-    return () => {
-      live = false;
-    };
-  }, [app]);
+  const { access, check: checkAccess } = useMyAppAccess(app?.id ?? null, app?.version ?? null);
   const partAccess = React.useCallback(
-    (kind: "workflow" | "data_view", alias: string) =>
-      access?.parts.find((p) => p.part.kind === kind && "alias" in p.part && p.part.alias === alias) ?? null,
+    (kind: "workflow" | "data_view", alias: string) => findPart(access?.parts, kind, alias),
     [access],
   );
   const skillAccess = access?.parts.find((p) => p.part.kind === "skill") ?? null;
@@ -334,15 +330,36 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
             onChanged: refreshRuns,
             // 結果が付いていない古い記録は、開いたときに 1 件だけ読む（本人の分だけ返る・GAP-09）。
             loadRun: (runId) => getMiniAppRun(app.id, runId),
-            // 自分に足りない権限があるボタンは押す前に止める（GAP-37）。
+            // 自分に足りない権限があるボタンは押す前に止める（GAP-37）。押されたら確かめ直す（BUG-217）。
             blockedReason: (name) => {
               const p = partAccess("workflow", name);
               return p ? myBlockedReason(p) : null;
             },
+            recheckBlocked: async (name) => {
+              const fresh = await checkAccess(RECHECK_ON_PRESS_MS);
+              // 確かめられなければ止めない（サーバーが本人の権限で確かめる）。
+              const p = fresh ? findPart(fresh.parts, "workflow", name) : null;
+              return p ? myBlockedReason(p) : null;
+            },
           }
         : null,
-    [app, runs, refreshRuns, partAccess],
+    [app, runs, refreshRuns, partAccess, checkAccess],
   );
+
+  // 確かめ直して表の見え方（見られない・自分が追加したものだけ・すべて）が変わったら、表を先頭から読み直す（BUG-217）。
+  // 最初の確かめの結果では読み直さない（表が先頭のページを読み直さない・GAP-37）。
+  const gridAccessSeen = React.useRef<{ version: number; sig: string } | null>(null);
+  React.useEffect(() => {
+    if (!access) return;
+    const sig = access.parts
+      .filter((p) => p.part.kind === "data_view")
+      .map((p) => `${"alias" in p.part ? p.part.alias : ""}:${p.status}`)
+      .sort()
+      .join("|");
+    const before = gridAccessSeen.current;
+    gridAccessSeen.current = { version: access.version, sig };
+    if (before && before.version === access.version && before.sig !== sig) setGridRevision((n) => n + 1);
+  }, [access]);
 
   // 画面の表（```data_grid）は束ねた保存ビューを閲覧者本人の権限でページごとに実行する（Task 15.5）。
   // 起動が終わるたびに実行先を作り直し、表を読み直させる（BUG-19）。権限の確かめの結果は実行先と分けて足し、
