@@ -104,6 +104,24 @@ pub struct WorkflowInputsResponse {
     pub items: Vec<PinnedWorkflowInputs>,
 }
 
+/// 束ねる部品の新しいバージョンを確かめるリクエスト（アプリのエディターが、固定した版を最新に上げる操作に使う・GAP-11）。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct PinUpdatesRequest {
+    /// 束ねるワークフローの版（20 個まで）。
+    #[serde(default)]
+    pub workflows: Vec<WorkflowPinRef>,
+    /// 束ねる保存ビューの版（20 個まで）。
+    #[serde(default)]
+    pub data_views: Vec<WorkflowPinRef>,
+}
+
+/// 束ねる部品ごとの新しいバージョンと、上げると変わるところ（リクエストの順）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct PinUpdatesResponse {
+    pub workflows: Vec<gui::PinUpdate>,
+    pub data_views: Vec<gui::PinUpdate>,
+}
+
 /// 解決済みミニアプリ（実行画面が使う一式・全て検証済み）。
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ResolvedMiniAppResponse {
@@ -297,6 +315,69 @@ pub async fn mini_app_workflow_inputs(
                 inputs: r.inputs,
             })
             .collect(),
+    }))
+}
+
+/// 束ねる部品（ワークフロー・保存ビュー）ごとに、呼んだ人が読める最新の版と、上げると変わるところを返す（GAP-11）。
+///
+/// アプリのエディターが、固定した版を最新に上げる操作と、その差を出すのに使う。呼んだ人の権限で読み、読めない部品は
+/// `readable: false`（最新の版も差も返さない・存在を区別しない）。差の種類はサーバーが決める（`gui::diff_versions`）。
+#[utoipa::path(
+    post,
+    path = "/mini-apps/pin-updates",
+    request_body = PinUpdatesRequest,
+    responses(
+        (status = 200, description = "部品ごとの新しいバージョンと差（リクエストの順）", body = PinUpdatesResponse),
+        (status = 400, description = "部品が多すぎる"),
+        (status = 401, description = "未認証"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn mini_app_pin_updates(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    trace: TraceIdExt,
+    Json(req): Json<PinUpdatesRequest>,
+) -> Result<Json<PinUpdatesResponse>, ApiError> {
+    if req.workflows.len() > gui::miniapp::MAX_WORKFLOWS
+        || req.data_views.len() > gui::miniapp::MAX_DATA_VIEWS
+    {
+        return Err(ApiError::invalid_input(&format!(
+            "束ねられるワークフローとビューは、それぞれ {} 個までです。",
+            gui::miniapp::MAX_WORKFLOWS
+        )));
+    }
+    let pins = |refs: &[WorkflowPinRef]| -> Vec<gui::ComponentPin> {
+        refs.iter()
+            .map(|w| gui::ComponentPin {
+                artifact_id: w.artifact_id,
+                version: w.version,
+            })
+            .collect()
+    };
+    let workflows = state
+        .mini_apps
+        .pin_updates(
+            &ctx,
+            artifact::ArtifactKind::Workflow,
+            &pins(&req.workflows),
+            trace.as_deref(),
+        )
+        .await
+        .map_err(map_gui_err)?;
+    let data_views = state
+        .mini_apps
+        .pin_updates(
+            &ctx,
+            artifact::ArtifactKind::DataView,
+            &pins(&req.data_views),
+            trace.as_deref(),
+        )
+        .await
+        .map_err(map_gui_err)?;
+    Ok(Json(PinUpdatesResponse {
+        workflows,
+        data_views,
     }))
 }
 

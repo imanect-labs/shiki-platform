@@ -304,6 +304,10 @@ pub fn route_table() -> Vec<RouteDecl> {
         r("/mini-apps/workflow-inputs", &["POST"], Session, || {
             post(routes::mini_apps::mini_app_workflow_inputs)
         }),
+        // 束ねる部品の新しいバージョンと、上げると変わるところ（画面のエディタの版を上げる操作・GAP-11）。
+        r("/mini-apps/pin-updates", &["POST"], Session, || {
+            post(routes::mini_apps::mini_app_pin_updates)
+        }),
         r("/mini-apps/{id}/resolved", &["GET"], Session, || {
             get(routes::mini_apps::resolve_mini_app)
         }),
