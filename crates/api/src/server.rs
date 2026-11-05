@@ -304,6 +304,10 @@ pub fn route_table() -> Vec<RouteDecl> {
         r("/mini-apps/workflow-inputs", &["POST"], Session, || {
             post(routes::mini_apps::mini_app_workflow_inputs)
         }),
+        // 保存の前の、画面の入力と入力項目の突き合わせ（「書く」タブ・保存と同じ関数・BUG-221）。
+        r("/mini-apps/input-check", &["POST"], Session, || {
+            post(routes::mini_apps::mini_app_input_check)
+        }),
         // 束ねる部品の新しいバージョンと、上げると変わるところ（画面のエディタの版を上げる操作・GAP-11）。
         r("/mini-apps/pin-updates", &["POST"], Session, || {
             post(routes::mini_apps::mini_app_pin_updates)

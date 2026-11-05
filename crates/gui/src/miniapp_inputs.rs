@@ -4,13 +4,15 @@
 //!   手がかりを作る。決まりはここだけに置く（web のエディタは `POST /mini-apps/workflow-inputs` で受け取る）。
 //! - [`input_warnings`] は、保存のときに、画面の app の図のボタンの実行先の入力と部品を突き合わせる。規則は画面の
 //!   エディタ（Yui の `checkApp`）と同じ（[`yui::check_inputs`]）。注意だけを返し、保存も公開も止めない。
+//! - [`screen_input_warnings`] は、保存の前の「書く」タブの突き合わせ（`POST /mini-apps/input-check`）。保存のときと
+//!   同じ関数で、同じ図（エラーの無い図・[`yui::extract_action_blocks`]）を読む。警告だけの図も突き合わせる（BUG-221）。
 //!
 //! 入力項目が読めないワークフロー（削除された・見る権限がない）と、入力項目を決めていない（`properties` が無い）
 //! ワークフローは突き合わせない（入力が無いのではなく、分からない・BUG-122）。
 
 use std::collections::BTreeMap;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use utoipa::ToSchema;
 
@@ -24,8 +26,11 @@ const MAX_OPTIONS: usize = 20;
 /// 文章の部品（textarea）にする文字数の下限（`maxLength` がこれを超える項目）。
 const TEXTAREA_OVER: f64 = 200.0;
 
+/// 「書く」タブの突き合わせ（[`screen_input_warnings`]）で受ける手がかりの数の上限（束ねたワークフローの合計）。
+pub const MAX_CHECK_HINTS: usize = crate::miniapp::MAX_WORKFLOWS * 200;
+
 /// 入力を受ける部品の種類（Yui の app の部品の種類のうち、入力項目から決まるもの）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum InputHintType {
     Text,
@@ -50,7 +55,9 @@ impl InputHintType {
 }
 
 /// ワークフローの入力 1 つの手がかり（Yui のエディタの `WorkflowInputHint` と同じ形・web は OpenAPI の型で受ける）。
-#[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
+///
+/// 「書く」タブの突き合わせでは、`POST /mini-apps/workflow-inputs` が返したものを web がそのまま送り返す。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, ToSchema)]
 pub struct WorkflowInputHint {
     /// 入力のキー（画面の部品の `as` 名）。
     pub key: String,
@@ -175,12 +182,29 @@ pub fn input_warnings(
     body: &MiniAppBody,
     inputs: &BTreeMap<String, Option<Vec<WorkflowInputHint>>>,
 ) -> Vec<GuiValidationError> {
-    let workflows: Vec<yui::WorkflowInputs> = body
-        .workflows
-        .iter()
-        .map(|w| yui::WorkflowInputs {
-            name: w.alias.clone(),
-            inputs: inputs.get(&w.alias).cloned().flatten().map(|hints| {
+    screen_input_warnings(
+        &body.screen,
+        body.workflows
+            .iter()
+            .map(|w| (w.alias.as_str(), inputs.get(&w.alias).cloned().flatten())),
+    )
+}
+
+/// 画面（Markdown）の app の図ごとの突き合わせの注意（保存の前の「書く」タブと、保存のときの 1 か所・BUG-221）。
+///
+/// `workflows` はボタンの実行先に選べるワークフローの別名と手がかり（読めない・入力項目を決めていないものは `None`・
+/// 突き合わせない）。読む図は、画面がボタンを出す図（閉じていて、エラーの無いトップレベルの図）だけ。警告だけの図も
+/// ボタンを出すので突き合わせる。
+#[must_use]
+pub fn screen_input_warnings<'a>(
+    screen: &str,
+    workflows: impl IntoIterator<Item = (&'a str, Option<Vec<WorkflowInputHint>>)>,
+) -> Vec<GuiValidationError> {
+    let workflows: Vec<yui::WorkflowInputs> = workflows
+        .into_iter()
+        .map(|(alias, hints)| yui::WorkflowInputs {
+            name: alias.to_string(),
+            inputs: hints.map(|hints| {
                 hints
                     .into_iter()
                     .map(|h| yui::InputHint {
@@ -194,7 +218,7 @@ pub fn input_warnings(
         })
         .collect();
     let mut out = Vec::new();
-    for block in yui::extract_action_blocks(&body.screen) {
+    for block in yui::extract_action_blocks(screen) {
         let yui::Figure::App { base, sections } = &block.figure else {
             continue;
         };
@@ -302,5 +326,39 @@ mod tests {
                 ("miniapp.unknown_input".to_string(), "画面の図「経費の申請」の「メモ」: 「expense」に「memo」という入力はありません（送っても使われないか、断られます）".to_string()),
             ]
         );
+    }
+
+    /// 警告だけの図（読めない行がある）もボタンを出すので、保存の前の「書く」タブと同じ関数で突き合わせる（BUG-221）。
+    /// エラーのある図と閉じていない図はボタンを出さないので、突き合わせない。
+    #[test]
+    fn warning_only_figures_are_checked_like_on_save() {
+        let schema = json!({ "type": "object", "required": ["title"], "properties": {
+            "title": { "type": "string", "title": "件名" } } });
+        let hints = input_hints(Some(&schema));
+        let check = |screen: &str| -> Vec<String> {
+            screen_input_warnings(screen, [("expense", hints.clone())])
+                .into_iter()
+                .map(|e| e.code)
+                .collect()
+        };
+        let warned = "```ui\napp 経費の申請\n金額 = number as amount\nこれは読めない行\nbutton 申請する -> workflow expense\n```\n";
+        let parsed = yui::extract_action_blocks(warned);
+        assert!(
+            !parsed[0].diagnostics.is_empty(),
+            "警告のある図: {:?}",
+            parsed[0].diagnostics
+        );
+        assert_eq!(
+            check(warned),
+            vec!["miniapp.missing_input", "miniapp.unknown_input"]
+        );
+        let unclosed =
+            "```ui\napp 経費の申請\n金額 = number as amount\nbutton 申請する -> workflow expense\n";
+        assert!(
+            check(unclosed).is_empty(),
+            "閉じていない図はボタンを出さない"
+        );
+        // 読めないワークフロー（手がかりが無い）は突き合わせない。
+        assert!(screen_input_warnings(warned, [("expense", None)]).is_empty());
     }
 }

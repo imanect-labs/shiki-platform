@@ -70,7 +70,10 @@ pub use input_problems::{
 };
 pub use miniapp::{screen_problems, ComponentPin, MiniAppBody, NamedComponentPin};
 pub use miniapp_actions::{MiniAppActionRequest, MiniAppRun, MiniAppRunStatus, MiniAppRunValue};
-pub use miniapp_inputs::{input_hints, input_warnings, InputHintType, WorkflowInputHint};
+pub use miniapp_inputs::{
+    input_hints, input_warnings, screen_input_warnings, InputHintType, WorkflowInputHint,
+    MAX_CHECK_HINTS,
+};
 pub use miniapp_pins::{
     diff_versions, AccessChange, AccessChangeKind, PinAccess, PinDiff, PinUpdate, SkillPart,
     VersionDiff,

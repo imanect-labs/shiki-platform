@@ -104,6 +104,33 @@ pub struct WorkflowInputsResponse {
     pub items: Vec<PinnedWorkflowInputs>,
 }
 
+/// 画面の突き合わせを受けるワークフロー 1 つ（ボタンの実行先の別名と、入力の手がかり）。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ScreenWorkflowInputs {
+    /// ボタンが指す別名。
+    pub alias: String,
+    /// 入力の手がかり（`POST /mini-apps/workflow-inputs` が返したもの）。読めない・入力項目を決めていないワークフローは
+    /// `null`（突き合わせない）。
+    #[serde(default)]
+    pub inputs: Option<Vec<gui::WorkflowInputHint>>,
+}
+
+/// 保存の前に、画面の入力とワークフローの入力項目を突き合わせるリクエスト（「書く」タブ・BUG-221）。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ScreenInputCheckRequest {
+    /// 画面（Yui の ```ui を含む Markdown・64 KB まで）。
+    pub screen: String,
+    /// 束ねるワークフロー（20 個まで・手がかりは合わせて 4,000 個まで）。
+    #[serde(default)]
+    pub workflows: Vec<ScreenWorkflowInputs>,
+}
+
+/// 突き合わせの注意（保存の応答の `input_warnings` と同じもの）。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ScreenInputCheckResponse {
+    pub input_warnings: Vec<gui::GuiValidationError>,
+}
+
 /// 束ねる部品の新しいバージョンを確かめるリクエスト（アプリのエディターが、固定した版を最新に上げる操作に使う・GAP-11）。
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct PinUpdatesRequest {
@@ -321,6 +348,53 @@ pub async fn mini_app_workflow_inputs(
             })
             .collect(),
     }))
+}
+
+/// 保存の前に、画面の入力と束ねたワークフローの入力項目を突き合わせる（アプリのエディターの「書く」タブ・BUG-221）。
+///
+/// 保存のときの突き合わせ（応答の `input_warnings`）と同じ関数（`gui::screen_input_warnings`）で、同じ図（画面がボタンを
+/// 出す、エラーの無い図）を読む。手がかりは web が `POST /mini-apps/workflow-inputs` で受け取ったものを送り返す（ここでは
+/// 何も読まない）。注意だけを返し、保存は止めない。
+#[utoipa::path(
+    post,
+    path = "/mini-apps/input-check",
+    request_body = ScreenInputCheckRequest,
+    responses(
+        (status = 200, description = "突き合わせの注意（保存のときと同じ）", body = ScreenInputCheckResponse),
+        (status = 400, description = "画面が大きすぎる・ワークフローか手がかりが多すぎる"),
+        (status = 401, description = "未認証"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn mini_app_input_check(
+    AuthContextExt(_ctx): AuthContextExt,
+    Json(req): Json<ScreenInputCheckRequest>,
+) -> Result<Json<ScreenInputCheckResponse>, ApiError> {
+    if req.screen.len() > gui::miniapp::MAX_SCREEN_BYTES {
+        return Err(ApiError::invalid_input(&format!(
+            "画面は {} KB までです。",
+            gui::miniapp::MAX_SCREEN_BYTES / 1024
+        )));
+    }
+    let hints: usize = req
+        .workflows
+        .iter()
+        .map(|w| w.inputs.as_ref().map_or(0, Vec::len))
+        .sum();
+    if req.workflows.len() > gui::miniapp::MAX_WORKFLOWS || hints > gui::MAX_CHECK_HINTS {
+        return Err(ApiError::invalid_input(&format!(
+            "突き合わせられるワークフローは {} 個まで、入力項目は合わせて {} 個までです。",
+            gui::miniapp::MAX_WORKFLOWS,
+            gui::MAX_CHECK_HINTS
+        )));
+    }
+    let input_warnings = gui::screen_input_warnings(
+        &req.screen,
+        req.workflows
+            .iter()
+            .map(|w| (w.alias.as_str(), w.inputs.clone())),
+    );
+    Ok(Json(ScreenInputCheckResponse { input_warnings }))
 }
 
 /// 束ねる部品（ワークフロー・保存ビュー・スキル）ごとに、呼んだ人が読める最新の版と、上げると変わるところを返す
