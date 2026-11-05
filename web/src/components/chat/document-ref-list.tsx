@@ -96,16 +96,34 @@ const EDITED: RevertState = { phase: "edited" };
 // --- 編集権限（ファイルごとに引き、短時間だけ使い回す） -----------------------------------------
 //
 // 結果は CAN_EDIT_TTL_MS の間だけ有効。期限を過ぎた結果は**表示に使わない**（引き直しが終わるまで
-// 操作を出さない＝fail-closed）。表示中も同じ間隔とタブの再表示で引き直すので、開いたままの画面でも
+// 操作を出さない＝fail-closed）。結果ごとに期限ちょうどのタイマーを張り、期限が来たら表示を更新して
+// （操作を隠して）、表示中のファイルなら引き直す。タブの再表示でも引き直すので、開いたままの画面でも
 // 共有の変更（editor → viewer）は期限内に反映される。ログインし直す（利用者が変わる）経路は Keycloak を
 // 経由した全体の再読込なので、このモジュールの状態ごと消える（利用者をまたいで結果が残らない）。
 
-/// 権限の結果を使い回す時間（引き直しの間隔も兼ねる）。
+/// 権限の結果を使い回す時間。
 const CAN_EDIT_TTL_MS = 30_000;
 
 /// fileId → 編集できるか（と取得時刻）。取得前は未登録。
 const canEditCache = new Map<string, { value: boolean; at: number }>();
 const canEditPending = new Set<string>();
+/// fileId → 表示中のカードの数（期限が来たときに引き直すかの判断に使う）。
+const canEditWatchers = new Map<string, number>();
+/// fileId → 結果の期限タイマー。
+const canEditExpiry = new Map<string, number>();
+
+/// 結果の期限ちょうどに表示を更新し、表示中なら引き直す。
+function scheduleCanEditExpiry(fileId: string) {
+  const prev = canEditExpiry.get(fileId);
+  if (prev !== undefined) window.clearTimeout(prev);
+  const timer = window.setTimeout(() => {
+    canEditExpiry.delete(fileId);
+    // 期限切れで操作を隠す（引き直しの結果が来るまで出さない）。
+    notify();
+    if ((canEditWatchers.get(fileId) ?? 0) > 0) loadCanEdit(fileId);
+  }, CAN_EDIT_TTL_MS);
+  canEditExpiry.set(fileId, timer);
+}
 
 /// 期限内の結果で編集できると分かっているか（期限切れ・未取得・失敗は false）。
 function isEditable(fileId: string): boolean {
@@ -124,29 +142,34 @@ function loadCanEdit(fileId: string) {
     .catch(() => canEditCache.set(fileId, { value: false, at: Date.now() }))
     .finally(() => {
       canEditPending.delete(fileId);
+      scheduleCanEditExpiry(fileId);
       notify();
     });
 }
 
-/// 表示中のファイルの権限を、マウント時・一定間隔・タブの再表示で引き直す。
+/// 表示中のファイルの権限を、マウント時・結果の期限・タブの再表示で引き直す。
 function useKeepCanEditFresh(fileIds: string[]) {
   const key = fileIds.join(",");
   React.useEffect(() => {
     const ids = key ? key.split(",") : [];
+    for (const id of ids) canEditWatchers.set(id, (canEditWatchers.get(id) ?? 0) + 1);
     const refresh = () => {
       for (const id of ids) loadCanEdit(id);
       // 期限切れで表示が変わる（操作を隠す）ことを購読者に知らせる。
       notify();
     };
     refresh();
-    const timer = window.setInterval(refresh, CAN_EDIT_TTL_MS);
     const onVisible = () => {
       if (document.visibilityState === "visible") refresh();
     };
     document.addEventListener("visibilitychange", onVisible);
     return () => {
-      window.clearInterval(timer);
       document.removeEventListener("visibilitychange", onVisible);
+      for (const id of ids) {
+        const n = (canEditWatchers.get(id) ?? 1) - 1;
+        if (n > 0) canEditWatchers.set(id, n);
+        else canEditWatchers.delete(id);
+      }
     };
   }, [key]);
 }

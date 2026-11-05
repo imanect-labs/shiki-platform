@@ -113,6 +113,16 @@ test("編集権限の無い人には「元に戻す」を出さない", async ({
   const bobCtx = await browser.newContext();
   const bob = await bobCtx.newPage();
   await loginAs(bob, "bob");
+  // ページの時計を差し替える（普段は実時間で進む）。後で期限の前後を決定的に作るため、画面を開く前に入れる。
+  await bob.clock.install();
+  // 権限の問い合わせは、こちらが離すまで止めておく（最初の応答・権限を下げた後の引き直しとも）。
+  const isAccess = (url: URL | string) =>
+    new URL(url.toString()).pathname.endsWith(`/collab/docs/${csv.node_id}/access`);
+  let gate = held();
+  await bob.route(isAccess, async (route) => {
+    await gate.released;
+    await route.continue();
+  });
   await bob.goto("/");
   await bob
     .getByLabel("メッセージを入力")
@@ -123,22 +133,37 @@ test("編集権限の無い人には「元に戻す」を出さない", async ({
   await bob.getByRole("button", { name: "承認して続行" }).click({ timeout: 30_000 });
   const card = bob.getByTestId("document-ref-card").last();
   await expect(card).toContainText("編集しました", { timeout: 30_000 });
+  await expect(bob.getByRole("button", { name: "生成を停止" })).toHaveCount(0, { timeout: 30_000 });
+  // 権限が分かるまでは出さない。最初の応答はカードの表示から 15 秒（ページの時計）遅らせ、
+  // 結果の期限をカードの表示時刻からずらす（表示時刻起点の一定間隔では期限に追いつけないことを見分ける）。
+  await expect(card.getByTestId("document-ref-undo")).toHaveCount(0);
+  await bob.clock.fastForward(15_000);
+  gate.release();
   await expect(card.getByTestId("document-ref-undo")).toBeVisible({ timeout: 15_000 });
 
   // alice が bob を閲覧のみに下げる。bob は**画面を開いたまま**（再読込も遷移もしない）。
-  // 権限の結果の有効期限が切れると、表示中のまま引き直されて「元に戻す」が消える（カード自体は残る）。
   await shareWithBob(page, csv.node_id, "editor", "delete");
   await shareWithBob(page, csv.node_id, "viewer");
-  // 権限の問い合わせ（viewer が返る）を確実に捕まえるため、時計を進める前に待ち受けを張る。
-  const access = bob.waitForResponse(
-    (r) => r.url().includes(`/collab/docs/${csv.node_id}/access`),
-    { timeout: 30_000 },
-  );
-  // 30 秒待つ代わりに、ページの時計だけ有効期限の先へ進める（引き直しのタイマーも発火する）。
-  await bob.clock.install();
-  await bob.clock.fastForward(31_000);
-  expect(((await (await access).json()) as { mode: string }).mode).toBe("viewer");
+  gate = held();
+  const refetch = bob.waitForRequest((r) => isAccess(r.url()), { timeout: 15_000 });
+  // ページの時計を止め、結果の期限の直後まで（31 秒）だけ進める。期限ちょうどに引き直しが出ること。
+  const now = await bob.evaluate(() => Date.now());
+  await bob.clock.pauseAt(now + 500);
+  await bob.clock.runFor(31_000);
+  await refetch;
+  // 期限が切れた結果は使わない: 引き直しの結果が来る前から「元に戻す」は出ない。
   await expect(card.getByTestId("document-ref-undo")).toHaveCount(0, { timeout: 15_000 });
+  const access = bob.waitForResponse((r) => isAccess(r.url()), { timeout: 15_000 });
+  gate.release();
+  expect(((await (await access).json()) as { mode: string }).mode).toBe("viewer");
+  await expect(card.getByTestId("document-ref-undo")).toHaveCount(0);
   await expect(card).toContainText("編集しました");
   await bobCtx.close();
 });
+
+/// 離すまで待たせる門（`released` は `release()` で解決する）。
+function held(): { released: Promise<void>; release: () => void } {
+  let release = () => {};
+  const released = new Promise<void>((r) => (release = r));
+  return { released, release };
+}
