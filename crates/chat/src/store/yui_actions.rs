@@ -201,17 +201,18 @@ impl ChatStore {
             }
             ActionTarget::Workflow { .. } => {
                 let summary = ya::summary(&block.figure, &action.id, &check.values);
-                let (result, problems) = gui::collect_input_problems(self.invoke_yui_workflow(
-                    ctx,
-                    dispatcher,
-                    &source,
-                    (thread_id, message_id),
-                    &req,
-                    (&action.label, summary),
-                    check.values,
-                    trace_id,
-                ))
-                .await;
+                let (result, problems) =
+                    gui::collect_input_problems(Box::pin(self.invoke_yui_workflow(
+                        ctx,
+                        dispatcher,
+                        &source,
+                        (thread_id, message_id),
+                        &req,
+                        (&action.label, summary),
+                        check.values,
+                        trace_id,
+                    )))
+                    .await;
                 // 入力項目に合わない入力は、キーでなく図の部品の名前で言う（GAP-41）。
                 result.map_err(|e| {
                     gui::with_field_labels(

@@ -262,14 +262,14 @@ impl MiniAppStore {
         });
         // 入力項目に合わない入力のキーと理由も受け取る（部品の名前で言い直す・GAP-41）。
         let (result, problems) =
-            crate::input_problems::collect_input_problems(dispatcher.dispatch_binding(
+            crate::input_problems::collect_input_problems(Box::pin(dispatcher.dispatch_binding(
                 ctx,
                 &source,
                 &binding,
                 key,
                 Value::Object(check.values),
                 trace_id,
-            ))
+            )))
             .await;
         match &result {
             Ok(out) => {

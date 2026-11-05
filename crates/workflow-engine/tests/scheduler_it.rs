@@ -175,10 +175,13 @@ async fn schedule_fires_once_even_with_concurrent_ticks() {
     assert_eq!(launcher.launches.load(Ordering::SeqCst), 1);
 }
 
+/// 起動口が受け取った payload と、起動の間に読めた予定の時刻。
+type Seen = (serde_json::Value, Option<chrono::DateTime<Utc>>);
+
 /// 受け取った payload と、起動の間に読める予定の時刻を記録する launcher。
 #[derive(Default)]
 struct RecordingLauncher {
-    seen: std::sync::Mutex<Vec<(serde_json::Value, Option<chrono::DateTime<Utc>>)>>,
+    seen: std::sync::Mutex<Vec<Seen>>,
 }
 
 #[async_trait]
