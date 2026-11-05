@@ -41,7 +41,7 @@ import {
   type UiActionRun,
 } from "@/lib/chat-api";
 import { popPending } from "@/lib/pending-message";
-import { readModelChoice } from "@/lib/model-choice";
+import { readModelChoice, useRestoreModelChoice } from "@/lib/model-choice";
 import { readToolChoice, settleToolChoice } from "@/lib/tool-choice";
 import { triggerDownload } from "@/lib/storage";
 import { newId } from "@/lib/chat-store";
@@ -278,6 +278,8 @@ export function Conversation({
   const [saveTarget, setSaveTarget] = React.useState<SaveAsAppTarget | null>(null);
   // スレッド名（クロームのタイトル・⋯ メニューの見出し）と検索フォルダ（#965）。page のときだけ引く。
   const { title: threadTitle, searchFolderName } = useThreadMeta(isPanel ? null : threadId);
+  // 別の端末で選んで送ったモデルを、このタブの入力欄の初期値にする（#553）。
+  useRestoreModelChoice(threadId);
   // 追従スクロール（下端付近にいる間だけ追う・離れたら「最新へ」）。
   const {
     scrollerRef,

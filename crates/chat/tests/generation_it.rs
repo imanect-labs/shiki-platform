@@ -436,3 +436,84 @@ async fn requested_tools_are_snapshotted_on_the_run_row() {
             .unwrap();
     assert_eq!(stored, serde_json::json!([]));
 }
+
+/// 自分が最後に送った発話のモデル選択がスレッドの単体取得に載る（別端末で開いたときの初期値）。
+/// Auto の run は振り先のモデルではなく Auto（`model: None`）として返す。
+#[tokio::test]
+async fn get_thread_returns_callers_last_model_choice() {
+    use chat::{LastModelChoice, RunModel};
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let store = store(&pool).await;
+    let c = ctx(&tenant);
+    let thread = store
+        .create_thread(&c, "t", false, None, None)
+        .await
+        .unwrap();
+    let got = store.get_thread(&c, thread.id, None).await.unwrap();
+    assert_eq!(got.last_model_choice, None, "まだ送っていなければ無い");
+
+    let post = |model: RunModel| {
+        let store = store.clone();
+        let c = c.clone();
+        async move {
+            store
+                .post_message_with_model(
+                    &c,
+                    thread.id,
+                    "こんにちは",
+                    &[],
+                    None,
+                    None,
+                    false,
+                    &[],
+                    Some(&model),
+                    &[],
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+    };
+    post(RunModel {
+        model: "model-a".into(),
+        effort: Some(llm_gateway::Effort::High),
+        auto: false,
+    })
+    .await;
+    let got = store.get_thread(&c, thread.id, None).await.unwrap();
+    assert_eq!(
+        got.last_model_choice,
+        Some(LastModelChoice {
+            model: Some("model-a".into()),
+            effort: Some("high".into()),
+        })
+    );
+
+    post(RunModel {
+        model: "auto-target".into(),
+        effort: Some(llm_gateway::Effort::Medium),
+        auto: true,
+    })
+    .await;
+    let got = store.get_thread(&c, thread.id, None).await.unwrap();
+    assert_eq!(
+        got.last_model_choice,
+        Some(LastModelChoice {
+            model: None,
+            effort: None,
+        }),
+        "最新の run が Auto なら Auto"
+    );
+    // 共有先の他人には引き継がない（自分の run だけを見る）。
+    let mut bob = ctx(&tenant);
+    bob.principal.id = "bob".into();
+    let got = store.get_thread(&bob, thread.id, None).await.unwrap();
+    assert_eq!(got.last_model_choice, None);
+    // 一覧には載せない（行ごとに run を引かない）。
+    let listed = store
+        .list_threads(&c, None, None, None, None, 50)
+        .await
+        .unwrap();
+    assert!(listed.iter().all(|t| t.last_model_choice.is_none()));
+}

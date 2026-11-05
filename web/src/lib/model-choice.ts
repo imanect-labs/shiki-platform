@@ -1,12 +1,14 @@
 /// チャットのモデル選択（#553）。既定は Auto（= `null`・ピルを出さない）。
 ///
-/// 選択はスレッドごとに sessionStorage に置く（タブを閉じれば Auto に戻る）。ホームの入力欄は
+/// 選択はスレッドごとに sessionStorage に置く。タブに選択が無いスレッド（別の端末で送った・タブを
+/// 閉じた）は、自分が最後に送った発話のモデル（サーバの記録）を初期値にする。ホームの入力欄は
 /// `home` スコープで持ち、チャットを始めたら新しいスレッドへ移す。送信時は呼び出し側が
 /// `readModelChoice(threadId)` で読んで API に載せる（入力欄と送信経路を疎結合に保つ）。
 
 import * as React from "react";
 
 import { fetchLlmModels, type EffortLevel, type LlmModelsResponse } from "@/lib/admin-ai-api";
+import { getThread } from "@/lib/chat-api";
 
 /// `model` が `null` の選択は「組織の既定のモデルのまま、思考の深さだけ変える」（既定が
 /// 特定のモデルのときだけ作る。Auto は思考の深さも振り先で決まり、指定は効かない）。
@@ -33,8 +35,8 @@ export function readModelChoice(scope: string): ModelChoice {
 export function writeModelChoice(scope: string, choice: ModelChoice): void {
   if (typeof sessionStorage === "undefined") return;
   try {
-    if (choice) sessionStorage.setItem(KEY + scope, JSON.stringify(choice));
-    else sessionStorage.removeItem(KEY + scope);
+    // Auto も "null" として残す（タブで選び直した Auto を、サーバの記録で上書きしない）。
+    sessionStorage.setItem(KEY + scope, JSON.stringify(choice));
   } catch {
     /* 容量超過等は無視（Auto のまま） */
   }
@@ -47,6 +49,35 @@ export function moveModelChoice(from: string, to: string): void {
   if (!choice) return;
   writeModelChoice(to, choice);
   writeModelChoice(from, null);
+}
+
+function hasModelChoice(scope: string): boolean {
+  try {
+    return sessionStorage.getItem(KEY + scope) !== null;
+  } catch {
+    return true; // 読めない環境では何もしない
+  }
+}
+
+/// スレッドを開いたとき、このタブにまだ選択が無ければ、自分が最後に送った発話のモデルを入れる
+/// （PC で選んで送った会話をスマホで開いても同じモデルのまま続けられる）。
+export function useRestoreModelChoice(threadId: string): void {
+  React.useEffect(() => {
+    if (hasModelChoice(threadId)) return;
+    let active = true;
+    getThread(threadId)
+      .then((t) => {
+        // 待つ間にこのタブで選んだら、そちらが勝つ。
+        if (!active || t.lastModelChoice === undefined || hasModelChoice(threadId)) return;
+        writeModelChoice(threadId, t.lastModelChoice);
+      })
+      .catch(() => {
+        /* 読めなければ既定のまま */
+      });
+    return () => {
+      active = false;
+    };
+  }, [threadId]);
 }
 
 /// スコープのモデル選択を購読する。

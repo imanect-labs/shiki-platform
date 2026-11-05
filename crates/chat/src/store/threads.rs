@@ -11,7 +11,9 @@ use sqlx::types::Json;
 use storage::audit::{AuditEntry, Decision};
 use uuid::Uuid;
 
-use crate::model::{AutonomousMode, ContentBlock, Message, Role, SkillPin, Thread};
+use crate::model::{
+    AutonomousMode, ContentBlock, LastModelChoice, Message, Role, SkillPin, Thread,
+};
 
 /// thread の SELECT 列（skill ピンは正規化テーブルから jsonb で集約・#344。
 /// 承認モードは thread 列・#350）。
@@ -58,10 +60,33 @@ impl ThreadRow {
             pinned_at: self.pinned_at,
             search_folder_id: self.search_folder_id,
             search_folder_name: self.search_folder_name,
+            last_model_choice: None,
             created_at: self.created_at,
             updated_at: self.updated_at,
         }
     }
+}
+
+/// run の列からモデル選択を組み立てる。Auto の run は解決後の振り先が `model` に入っているが、
+/// 利用者の選択としては Auto なのでモデル・思考の深さを載せない。
+fn last_choice_of(
+    model: Option<String>,
+    effort: Option<&str>,
+    auto: bool,
+) -> Option<LastModelChoice> {
+    let model = model?;
+    if auto {
+        return Some(LastModelChoice {
+            model: None,
+            effort: None,
+        });
+    }
+    Some(LastModelChoice {
+        model: Some(model),
+        effort: effort
+            .and_then(llm_gateway::Effort::parse)
+            .map(|e| e.as_str().to_string()),
+    })
 }
 
 /// スレッドの由来ノート（ノートの分割ビューから作られたスレッド・issue #282）。
@@ -293,7 +318,30 @@ impl ChatStore {
         .fetch_optional(&self.db)
         .await
         .map_err(map_db)?;
-        row.map(ThreadRow::into_thread).ok_or(ChatError::NotFound)
+        let mut thread = row.map(ThreadRow::into_thread).ok_or(ChatError::NotFound)?;
+        thread.last_model_choice = self.last_model_choice(ctx, thread_id).await?;
+        Ok(thread)
+    }
+
+    /// 呼び出しユーザーがこのスレッドで最後に投入した run のモデル選択（共有先の他人の選択は
+    /// 引き継がない）。run にモデルが無い（列以前・gateway 未構成）なら `None`。
+    async fn last_model_choice(
+        &self,
+        ctx: &AuthContext,
+        thread_id: Uuid,
+    ) -> Result<Option<LastModelChoice>, ChatError> {
+        let row: Option<(Option<String>, Option<String>, bool)> = sqlx::query_as(
+            "SELECT model, effort, model_auto FROM generation_run \
+             WHERE tenant_id = $1 AND thread_id = $2 AND actor = $3 \
+             ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(&ctx.tenant_id)
+        .bind(thread_id)
+        .bind(&ctx.principal.id)
+        .fetch_optional(&self.db)
+        .await
+        .map_err(map_db)?;
+        Ok(row.and_then(|(model, effort, auto)| last_choice_of(model, effort.as_deref(), auto)))
     }
 
     /// スレッドのメッセージを線形取得する（viewer 認可・作成順）。
