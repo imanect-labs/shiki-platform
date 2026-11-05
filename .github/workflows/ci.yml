@@ -207,6 +207,10 @@ jobs:
       # SQL リテラル単位の検査は crates/data/tests/shard_safety_lint.rs（cargo test）が担う。
       - name: shard-safety gate (PgPool 直参照・シーケンス直呼びの禁止)
         run: bash scripts/check-shard-safety.sh
+      # テナント表を読み書きする SQL に tenant 条件があるかを全クレートで見る（T1・crates/data の S3 を全体へ）。
+      # 全テナント横断の保守処理などの例外は `tenant-sql: allow(<理由>)` の注記で明示する。
+      - name: tenant-sql gate (テナント表の SQL は tenant 条件つき)
+        run: python3 scripts/check-tenant-sql.py
       # 同じく CI で拾えない構造的バグ（#453）。CI は全サービスをまとめて起動せず必要な
       # ものだけ名指しで起動するため、ホストポートの二重 publish が衝突する組み合わせは
       # 一度も同時に立ち上がらない。ローカルの `docker compose up` だけが壊れる。

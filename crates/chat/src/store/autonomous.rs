@@ -123,6 +123,7 @@ impl ChatStore {
         checkpoint: &serde_json::Value,
     ) -> Result<bool, ChatError> {
         let updated = sqlx::query(
+            // tenant-sql: allow(fencing 付きの内部 run_id で保存)
             "UPDATE generation_run SET checkpoint = $3, updated_at = now() \
              WHERE run_id = $1 AND fencing_token = $2 \
                AND status IN ('running', 'waiting_approval')",

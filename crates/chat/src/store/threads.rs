@@ -15,6 +15,7 @@ use crate::model::{AutonomousMode, ContentBlock, Message, Role, SkillPin, Thread
 
 /// thread の SELECT 列（skill ピンは正規化テーブルから jsonb で集約・#344。
 /// 承認モードは thread 列・#350）。
+// tenant-sql: allow(相関サブクエリ・外側のクエリが tenant_id で絞る)
 pub(super) const THREAD_COLUMNS: &str = "id, title, agent_mode, autonomous_mode, \
     (SELECT coalesce(jsonb_agg(jsonb_build_object( \
         'skill_id', p.skill_id, 'skill_version', p.skill_version) \

@@ -52,6 +52,7 @@ impl ChatStore {
             return Ok(false); // 既に端末状態
         };
         let thread_id: Option<Uuid> = sqlx::query_scalar(
+            // tenant-sql: allow(ワーカーや reaper の内部 run_id で強制失敗)
             "UPDATE generation_run SET status = 'failed', last_error = $2, \
              lease_until = NULL, pending_approval = NULL, updated_at = now() \
              WHERE run_id = $1 RETURNING thread_id",
@@ -86,6 +87,7 @@ impl ChatStore {
     ///   再起動後の再配信と同じ経路）。
     pub async fn reap_orphaned_runs(&self, grace_secs: i64) -> Result<u64, ChatError> {
         let ids: Vec<Uuid> = sqlx::query_scalar(
+            // tenant-sql: allow(全テナント横断の孤児 run 回収)
             "SELECT r.run_id FROM generation_run r \
              WHERE r.status = 'running' AND r.lease_until IS NOT NULL \
                AND r.lease_until < now() - ($1 || ' seconds')::interval \
@@ -119,6 +121,7 @@ impl ChatStore {
     async fn recover_orphaned_approvals(&self, grace_secs: i64) -> Result<u64, ChatError> {
         let max_wait = i64::try_from(APPROVAL_MAX_WAIT.as_secs()).unwrap_or(i64::MAX);
         let rows: Vec<(Uuid, bool)> = sqlx::query_as(
+            // tenant-sql: allow(全テナント横断の承認待ち孤児回収)
             "SELECT r.run_id, r.lease_until < now() - ($2 || ' seconds')::interval \
              FROM generation_run r \
              WHERE r.status = 'waiting_approval' \

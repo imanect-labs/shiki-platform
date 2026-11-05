@@ -237,6 +237,7 @@ pub async fn claim(
 
 /// 処理成功。ジョブを削除する（存在しなくても成功＝冪等）。
 pub async fn ack(conn: &mut PgConnection, id: i64) -> Result<(), JobqError> {
+    // tenant-sql: allow(claim 済みジョブ id で ack)
     sqlx::query("delete from job_queue where id = $1")
         .bind(id)
         .execute(conn)
@@ -251,6 +252,7 @@ pub async fn ack(conn: &mut PgConnection, id: i64) -> Result<(), JobqError> {
 /// （ack 済み・DLQ へ移送済み）なら `false`。
 pub async fn extend(conn: &mut PgConnection, id: i64, vt: Duration) -> Result<bool, JobqError> {
     let n = sqlx::query(
+        // tenant-sql: allow(claim 済みジョブ id で可視期限延長)
         "update job_queue set visible_at = now() + $2 * interval '1 second' where id = $1",
     )
     .bind(id)
@@ -291,6 +293,7 @@ pub async fn fail(
 
     // fair_seq は据え置く（仮想時刻は保持しているので巻き戻らない・モジュール冒頭）。
     let attempts = sqlx::query_scalar::<_, i32>(
+        // tenant-sql: allow(claim 済みジョブ id で再試行設定)
         "update job_queue set visible_at = now() + $2 * interval '1 second' \
          where id = $1 returning attempts",
     )
@@ -315,6 +318,7 @@ pub async fn defer(conn: &mut PgConnection, id: i64, delay: Duration) -> Result<
     // fair_seq は据え置く: 振り直すと先送りのたびにテナント末尾へ回り、テナント内の投入順と
     // 取り分を崩す（chat は数秒ごとに先送りする）。
     sqlx::query(
+        // tenant-sql: allow(claim 済みジョブ id で先送り)
         "update job_queue \
          set visible_at = now() + $2 * interval '1 second', \
              attempts = greatest(attempts - 1, 0) \
@@ -399,6 +403,7 @@ pub async fn delete_tenant(conn: &mut PgConnection, tenant_id: &str) -> Result<u
 /// 判定と投入を原子的にしたい場合は、呼び出し側が同じトランザクションで advisory lock を取ること。
 pub async fn has_pending(conn: &mut PgConnection, queue: &str) -> Result<bool, JobqError> {
     let exists: bool =
+        // tenant-sql: allow(キュー全体の待機有無判定（保守ジョブの二重投入防止）)
         sqlx::query_scalar("select exists(select 1 from job_queue where queue = $1)")
             .bind(queue)
             .fetch_one(conn)

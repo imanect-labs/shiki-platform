@@ -99,6 +99,7 @@ pub(crate) async fn run(args: &[String]) -> anyhow::Result<()> {
         .await
         .context("group 一覧の読み取りに失敗")?;
     let registry_orgs: BTreeSet<String> =
+        // tenant-sql: allow(運用 CLI が全テナントの org を列挙)
         sqlx::query_scalar("SELECT DISTINCT org FROM tenant WHERE status <> 'deleted'")
             .fetch_all(&db)
             .await

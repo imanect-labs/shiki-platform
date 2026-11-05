@@ -207,6 +207,7 @@ pub async fn mark_processed(conn: &mut PgConnection, ids: &[i64]) -> Result<(), 
     if ids.is_empty() {
         return Ok(());
     }
+    // tenant-sql: allow(outbox リレーの処理済み ack（claim と同じ txn）)
     sqlx::query("UPDATE storage_event_outbox SET processed_at = now() WHERE id = ANY($1)")
         .bind(ids)
         .execute(conn)

@@ -123,6 +123,7 @@ impl UsageReporter {
 
     async fn totals(&self, ctx: &AuthContext, f: &UsageFilter) -> Result<UsageTotals, sqlx::Error> {
         sqlx::query_as(&format!(
+            // tenant-sql: allow(SCOPE 定数（format! で差し込み）が tenant_id を付ける)
             "SELECT COALESCE(SUM(cost_usd_micros), 0)::bigint AS cost_usd_micros, \
                     COALESCE(SUM(prompt_tokens), 0)::bigint AS prompt_tokens, \
                     COALESCE(SUM(completion_tokens), 0)::bigint AS completion_tokens, \
@@ -148,6 +149,7 @@ impl UsageReporter {
         f: &UsageFilter,
     ) -> Result<Vec<UsageDay>, sqlx::Error> {
         sqlx::query_as(&format!(
+            // tenant-sql: allow(SCOPE 定数（format! で差し込み）が tenant_id を付ける)
             "SELECT (created_at AT TIME ZONE 'Asia/Tokyo')::date AS day, \
                     COALESCE(SUM(cost_usd_micros), 0)::bigint AS cost_usd_micros, \
                     COALESCE(SUM(prompt_tokens + completion_tokens), 0)::bigint AS tokens, \
@@ -172,6 +174,7 @@ impl UsageReporter {
     ) -> Result<Vec<UsageBreakdown>, sqlx::Error> {
         let col = dim.column();
         sqlx::query_as(&format!(
+            // tenant-sql: allow(SCOPE 定数（format! で差し込み）が tenant_id を付ける)
             "SELECT {col} AS key, \
                     COALESCE(SUM(cost_usd_micros), 0)::bigint AS cost_usd_micros, \
                     COALESCE(SUM(prompt_tokens + completion_tokens), 0)::bigint AS tokens, \
