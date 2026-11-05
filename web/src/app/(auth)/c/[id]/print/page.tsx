@@ -96,7 +96,9 @@ function PrintSources({ text, citations }: { text: string; citations: Citation[]
     const t = window.setTimeout(() => setTimedOut(true), NAME_WAIT_MS);
     return () => {
       window.clearTimeout(t);
+      // 外し直し（StrictMode の二度目の実行など）で印刷を取り消したら、次の実行で掛け直せるよう戻す。
       if (printTimer.current !== null) window.clearTimeout(printTimer.current);
+      printTimer.current = null;
     };
   }, []);
   React.useEffect(() => {

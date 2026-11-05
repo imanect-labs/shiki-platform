@@ -66,7 +66,8 @@ export function MessageExportMenu({
   const name = React.useMemo(() => answerFileName(text, threadTitle), [text, threadTitle]);
   // 出典の名前は、押した時点で解決できているものを使う（一覧の表示と同じ）。
   const markdown = () => answerMarkdown(text, citations, cited?.nameOf ?? (() => "出典"));
-  const hasSources = (cited?.groups.docs.length ?? 0) > 0;
+  // 共有の注意は社内文書を出典に持つときだけ（Web ページは誰でも読めるので注意しない）。
+  const hasDocSources = cited?.groups.docs.some((d) => !d.web) ?? false;
 
   const openAsNote = () => {
     // 同じ会話で同じ名前の下書きがあれば、上書きせず連番の名前で開く。
@@ -203,7 +204,7 @@ export function MessageExportMenu({
         description="回答を Word 文書（.docx）にしてドライブに保存します。"
         defaultFolder={defaultFolder}
         notice={
-          hasSources
+          hasDocSources
             ? "この回答には出典の文書の内容が含まれます。共有するときは、出典の文書を読めない人に見せてよいか確かめてください。"
             : undefined
         }
