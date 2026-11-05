@@ -10,6 +10,7 @@
 "use client";
 
 import type { UserSelectableTool } from "@/generated/gui-spec";
+import type { EffortLevel } from "@/lib/admin-ai-api";
 import type { ModelChoice } from "@/lib/model-choice";
 import { apiFetch } from "@/lib/api";
 import type { components } from "@/generated/api";
@@ -77,6 +78,9 @@ export type Thread = {
   /// このフォルダの配下に絞る。名前は作成時点のもの。
   searchFolderId?: string | null;
   searchFolderName?: string | null;
+  /// 自分がこのスレッドで最後に送った発話のモデル選択（単体取得でだけ載る・別端末で開いたときの
+  /// 入力欄の初期値）。`undefined` はまだ送っていない、`null` は Auto。
+  lastModelChoice?: ModelChoice;
   createdAt: string;
   updatedAt: string;
 };
@@ -209,9 +213,24 @@ function toThread(t: ApiThread): Thread {
     pinnedAt: t.pinned_at ?? null,
     searchFolderId: t.search_folder_id ?? null,
     searchFolderName: t.search_folder_name ?? null,
+    lastModelChoice: toModelChoice(t.last_model_choice),
     createdAt: t.created_at,
     updatedAt: t.updated_at,
   };
+}
+
+const EFFORTS: readonly EffortLevel[] = ["low", "medium", "high"];
+
+/// サーバの記録を入力欄の選択の形にする。モデルも思考の深さも無ければ Auto、モデルが無く
+/// 思考の深さだけあれば「既定のまま思考の深さだけ変える」。モデルがあって思考の深さが無い
+/// （モデルが対応しない）ときは送っても使われないので中間を入れておく。
+function toModelChoice(
+  c: components["schemas"]["LastModelChoice"] | null | undefined,
+): ModelChoice | undefined {
+  if (!c) return undefined;
+  const effort = EFFORTS.find((e) => e === c.effort);
+  if (!c.model) return effort ? { model: null, effort } : null;
+  return { model: c.model, effort: effort ?? "medium" };
 }
 
 async function ok<T>(res: Response): Promise<T> {

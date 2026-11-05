@@ -541,9 +541,11 @@ impl ChatStore {
             Option<String>,
             bool,
             Json<Vec<String>>,
+            Option<Json<crate::model::LastModelChoice>>,
         );
         let row: Option<Row> = sqlx::query_as(
-            "SELECT run_id, autonomous, skill_pins, model, effort, model_auto, requested_tools \
+            "SELECT run_id, autonomous, skill_pins, model, effort, model_auto, requested_tools, \
+                    requested_choice \
              FROM generation_run \
              WHERE message_id = $1 AND thread_id = $2 AND tenant_id = $3 \
              ORDER BY created_at DESC, run_id DESC LIMIT 1",
@@ -555,13 +557,14 @@ impl ChatStore {
         .await
         .map_err(map_db)?;
         Ok(row.map(
-            |(run_id, autonomous, pins, model, effort, model_auto, tools)| RunContext {
+            |(run_id, autonomous, pins, model, effort, model_auto, tools, requested)| RunContext {
                 autonomous,
                 skill_pins: pins.0,
                 model: model.map(|model| crate::model::RunModel {
                     model,
                     effort: effort.as_deref().and_then(llm_gateway::Effort::parse),
                     auto: model_auto,
+                    requested: requested.map(|r| r.0),
                 }),
                 requested_tools: known_tool_names(run_id, &tools.0),
             },
