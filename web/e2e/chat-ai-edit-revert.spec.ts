@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { loginViaKeycloak, uniqueName } from "./helpers";
+import { loginAs, loginViaKeycloak, uniqueName } from "./helpers";
 
 /// AI による編集をチャットから取り消す（#1049）の E2E（前提: LLM=stub）。
 ///
@@ -87,4 +87,52 @@ test("AI の編集をカードから元に戻し、やり直せる", async ({ pa
   await page.getByTestId("document-ref-revert-force").click();
   await expect(card).toContainText("元に戻しました", { timeout: 15_000 });
   await expect.poll(() => firstValue(page, csv.node_id)).toBe("original");
+});
+
+/// 共有を editor にする/戻す（alice → bob）。PUT は同じ相手の役割を置き換える。
+async function shareWithBob(page: Page, nodeId: string, role: "viewer" | "editor") {
+  const res = await page.request.put(`/api/nodes/${nodeId}/shares`, {
+    headers: { "X-CSRF-Token": await csrf(page) },
+    data: { target: { type: "user", id: "00000000-0000-0000-0000-000000000002" }, role },
+  });
+  expect(res.status(), await res.text()).toBeLessThan(300);
+}
+
+test("編集権限の無い人には「元に戻す」を出さない", async ({ page, browser }) => {
+  await loginViaKeycloak(page); // alice（ファイルの持ち主）
+  const csv = await createCsv(page, `${uniqueName("shared")}.csv`, "key,value\na,original\n");
+  await shareWithBob(page, csv.node_id, "editor");
+
+  // bob（editor）が AI に編集させる → カードに「元に戻す」が出る。
+  const bobCtx = await browser.newContext();
+  const bob = await bobCtx.newPage();
+  await loginAs(bob, "bob");
+  await bob.goto("/");
+  await bob
+    .getByLabel("メッセージを入力")
+    .fill(
+      `calltool:csv.patch {"node_id":"${csv.node_id}","base_rev":${csv.version},"ops":[{"op":"cell_update","row":0,"col":1,"value":"bob-ai"}]}`,
+    );
+  await bob.getByRole("button", { name: "送信" }).click();
+  await bob.getByRole("button", { name: "承認して続行" }).click({ timeout: 30_000 });
+  const card = bob.getByTestId("document-ref-card").last();
+  await expect(card).toContainText("編集しました", { timeout: 30_000 });
+  await expect(card.getByTestId("document-ref-undo")).toBeVisible({ timeout: 15_000 });
+  const threadUrl = bob.url();
+
+  // alice が bob を閲覧のみに戻す → bob が開き直すと「元に戻す」は出ない（カード自体は残る）。
+  await shareWithBob(page, csv.node_id, "viewer");
+  const bob2Ctx = await browser.newContext();
+  const bob2 = await bob2Ctx.newPage();
+  await loginAs(bob2, "bob");
+  await bob2.goto(threadUrl);
+  const card2 = bob2.getByTestId("document-ref-card").last();
+  await expect(card2).toContainText("編集しました", { timeout: 30_000 });
+  // 権限の取得が終わるのを待ってから、ボタンが無いことを確かめる。
+  await bob2.waitForResponse((r) => r.url().includes(`/collab/docs/${csv.node_id}/access`), {
+    timeout: 15_000,
+  }).catch(() => {});
+  await expect(card2.getByTestId("document-ref-undo")).toHaveCount(0);
+  await bobCtx.close();
+  await bob2Ctx.close();
 });

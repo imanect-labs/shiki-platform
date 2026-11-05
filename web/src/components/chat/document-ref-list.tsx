@@ -11,6 +11,9 @@
 ///   持つと、片方だけ戻した／やり直した表示と実データが食い違うため）。
 /// - 編集の後に別の内容版（他の人・後の編集）があると、黙って巻き戻さず確認ダイアログを出す
 ///   （判定はサーバが内容版で行う＝名前変更・移動では止めない）。Office エディタで開かれている間は戻さない。
+/// - 操作は**編集権限のある人にだけ**出す（`/collab/docs/{id}/access` の editor＝取り消し API と同じ
+///   editor@file 判定。分かるまでは出さない）。閲覧のみ・権限を外された人が押しても API は拒否するが、
+///   押せないボタンは見せない。
 /// - 2 ファイル以上なら「まとめて元に戻す」。ファイルごとに戻し、ファイルをまたいだ原子性は無い
 ///   （戻せなかったものは理由を出す）。
 /// - 状態は**ファイル×この回答で作った版**をキーにした画面内ストアに置く。回答の生成中の行と確定後の行は
@@ -30,6 +33,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { toast } from "@/components/ui/use-toast";
+import { getCollabAccess } from "@/lib/notes-api";
 import { RevertConflict, RevertLocked, revertEdit, StorageApiError } from "@/lib/storage";
 
 import { DocumentRefCard, isRevertable, parseDocumentRef, type DocumentRef } from "./document-ref-card";
@@ -84,6 +88,41 @@ function useRevertState(key: string): RevertState {
 }
 
 const EDITED: RevertState = { phase: "edited" };
+
+// --- 編集権限（ファイルごとに 1 回だけ引く） ---------------------------------------------------
+
+/// fileId → 編集できるか（取得前は未登録）。
+const canEditCache = new Map<string, boolean>();
+const canEditPending = new Set<string>();
+
+function loadCanEdit(fileId: string) {
+  if (canEditCache.has(fileId) || canEditPending.has(fileId)) return;
+  canEditPending.add(fileId);
+  void getCollabAccess(fileId)
+    .then((a) => canEditCache.set(fileId, a?.mode === "editor"))
+    // 取得に失敗したら出さない（押せるか分からないボタンを見せない・fail-closed）。
+    .catch(() => canEditCache.set(fileId, false))
+    .finally(() => {
+      canEditPending.delete(fileId);
+      notify();
+    });
+}
+
+/// 編集できるか（分かるまでは false）。
+function useCanEdit(fileId: string): boolean {
+  React.useEffect(() => loadCanEdit(fileId), [fileId]);
+  const subscribe = React.useCallback((cb: () => void) => {
+    listeners.add(cb);
+    return () => {
+      listeners.delete(cb);
+    };
+  }, []);
+  return React.useSyncExternalStore(
+    subscribe,
+    () => canEditCache.get(fileId) === true,
+    () => false,
+  );
+}
 
 // --- グルーピング -------------------------------------------------------------------------------
 
@@ -184,6 +223,7 @@ export function DocumentRefList({ raws }: { raws: unknown[] }) {
     let ok = 0;
     const skipped: string[] = [];
     for (const g of groups) {
+      if (canEditCache.get(g.fileId) !== true) continue;
       if ((revertStates.get(g.key) ?? EDITED).phase === "reverted") continue;
       try {
         await runRevert(g, "undo", false);
@@ -280,6 +320,7 @@ function FileRefCard({
 }) {
   const st = useRevertState(group.key);
   const busy = useInflight(group.key) || batchBusy;
+  const canEdit = useCanEdit(group.fileId);
   const status =
     st.phase === "reverted"
       ? st.restoredFrom === null
@@ -288,8 +329,9 @@ function FileRefCard({
       : st.phase === "redone"
         ? `やり直しました（v${st.version}）`
         : undefined;
-  if (!isLast) {
+  if (!isLast || !canEdit) {
     // 同じファイルの前のカード: 状態だけ揃え、操作は最後のカードに集める。
+    // 編集権限が無い（または未確認）なら操作は出さない。
     return <DocumentRefCard raw={raw} status={status} />;
   }
   const multi = group.versions.length > 1;
@@ -344,10 +386,18 @@ function UndoAllButton({
       listeners.delete(cb);
     };
   }, []);
+  React.useEffect(() => {
+    for (const g of groups) loadCanEdit(g.fileId);
+  }, [groups]);
   const pending = React.useSyncExternalStore(
     subscribe,
-    () => groups.filter((g) => (revertStates.get(g.key) ?? EDITED).phase !== "reverted").length,
-    () => groups.length,
+    () =>
+      groups.filter(
+        (g) =>
+          canEditCache.get(g.fileId) === true &&
+          (revertStates.get(g.key) ?? EDITED).phase !== "reverted",
+      ).length,
+    () => 0,
   );
   if (pending < 2) return null;
   return (
