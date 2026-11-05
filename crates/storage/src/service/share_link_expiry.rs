@@ -230,11 +230,20 @@ impl StorageService {
     }
 }
 
-/// 失効の監査文脈。tenant_id が文字ポリシーに反すれば警告して `None`（そのノードは失敗として数える）。
+/// 失効の監査文脈。tenant_id が文字ポリシーに反すれば `None`（そのノードは失敗として数える）。
+///
+/// 失効（アクセスを止める側）は文脈に依らず先に済ませる。監査だけが残せないので、失効した事実を
+/// error ログに残す（失効を止めると期限切れのリンクが使え続ける＝fail-open になるため）。
 fn expiry_audit_ctx(tenant_id: &str, org: &str, node_id: Uuid) -> Option<AuthContext> {
     system_ctx(tenant_id, org, "system")
-        .inspect_err(
-            |e| tracing::warn!(error = %e, %node_id, "失効の監査文脈を組めない（次ノードへ）"),
-        )
+        .inspect_err(|e| {
+            tracing::error!(
+                error = %e,
+                %node_id,
+                %tenant_id,
+                %org,
+                "共有リンクは失効させたが、監査文脈を組めず監査を残せない"
+            );
+        })
         .ok()
 }

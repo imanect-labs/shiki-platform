@@ -442,9 +442,14 @@ fn to_chunks(
     gen: &str,
     rows: Vec<ProjectedRow>,
 ) -> Vec<RecordChunk> {
+    // tenant_id は outbox（DB）の値でも文字ポリシーを通す。違反なら何も索引しない（fail-closed）。
+    let Ok(tenant) = authz::TenantId::parse(tenant_id) else {
+        tracing::error!(%tenant_id, table_id = %table.id, "tenant_id が文字ポリシーに反するため、レコードを索引しません");
+        return Vec::new();
+    };
     let cols = projected(&table.schema).unwrap_or_default();
     // タグは名前空間化のまま（`data_table:<tenant>|<table_id>`・folder/file タグと同型）。
-    let authz_tag = authz::Namespace::for_tenant(tenant_id)
+    let authz_tag = authz::Namespace::for_tenant(tenant.as_str())
         .data_table(&table.id.to_string())
         .as_str()
         .to_string();

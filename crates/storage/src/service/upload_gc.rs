@@ -196,6 +196,16 @@ impl StorageService {
         let mut keys = Vec::with_capacity(rows.len() * 2);
         let mut by_org: HashMap<(String, String), Vec<Uuid>> = HashMap::new();
         for row in rows {
+            // 監査を残せない（tenant_id が文字ポリシー違反の）行のオブジェクトは消さない。
+            // 証跡の無い破壊的操作をしない（fail-closed・行は回収済みなのでログに残す）。
+            if authz::TenantId::parse(row.tenant_id.as_str()).is_err() {
+                tracing::error!(
+                    tenant_id = %row.tenant_id,
+                    upload_id = %row.upload_id,
+                    "tenant_id が文字ポリシーに反するため、期限切れアップロードのオブジェクトを消しません"
+                );
+                continue;
+            }
             keys.push(incoming_object_key(
                 &row.tenant_id,
                 &row.org,
@@ -270,6 +280,12 @@ impl StorageService {
         let mut deleted = 0usize;
         let mut failures = 0u32;
         for pair in pairs {
+            // 監査を残せない（tenant_id が文字ポリシー違反の）組は走査しない。証跡の無い削除をしない。
+            if let Err(e) = system_ctx(&pair.tenant_id, &pair.org, "system") {
+                tracing::error!(error = %e, tenant_id = %pair.tenant_id, "孤児 sweep の監査文脈を組めないため、この組を飛ばします");
+                failures += 1;
+                continue;
+            }
             for kind in ["staging", "incoming"] {
                 if budget.exhausted() {
                     tracing::info!(
