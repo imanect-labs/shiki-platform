@@ -3,15 +3,16 @@
 /// ミニアプリの作成・編集ダイアログ（Task 6.11・#604）。
 ///
 /// 画面は Yui の ```ui ブロックを含む Markdown。ボタンの実行先（`-> workflow 名前`）は、ここで
-/// 束ねたワークフローの名前からだけ選べる（保存時にサーバーが確かめる）。ワークフローとスキルは
-/// 選んだ時点の版で固定する。
+/// 束ねたワークフローの名前からだけ選べる（保存時にサーバーが確かめる）。画面の表（```data_grid）は、ここで束ねた
+/// ビューから選ぶ（GAP-11）。ワークフロー・ビュー・スキルは選んだ時点の版で固定し、新しいバージョンがあれば差を見て
+/// 上げられる（`miniapp-parts.tsx`）。
 ///
 /// 画面は「組み立てる」（ドラッグ＆ドロップ・screen-builder.tsx）・「書く」（記法）・「プレビュー」の
 /// どれでも直せる。正本はどれも同じ Markdown で、組み立てるのチェッカーにエラーがある間は保存しない。
 
 import * as React from "react";
 import dynamic from "next/dynamic";
-import { Loader2, Plus, TriangleAlert, X } from "lucide-react";
+import { Loader2, Plus, TriangleAlert } from "lucide-react";
 
 import type { WorkflowChoice, WorkflowInputHint } from "@imanect/yui/editor";
 
@@ -29,11 +30,13 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { ListLoadFailed, ListMore } from "@/components/artifacts/shared-more";
+import { PartPins, pinKey, type PartKind, type PinCheck } from "@/components/artifacts/miniapp-parts";
 import { useArtifactList } from "@/hooks/use-artifact-list";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import {
   createMiniApp,
   getArtifact,
+  getMiniAppPinUpdates,
   getMiniAppWorkflowInputs,
   getSkill,
   isVersionConflict,
@@ -41,10 +44,24 @@ import {
   validationMessages,
   type MiniAppVersion,
 } from "@/lib/artifact-api";
+import { appendDataGrid, dataGridAliases } from "@/lib/miniapp/screen-blocks";
 import { inputNotes, toYuiHints } from "@/lib/miniapp/workflow-inputs";
 import { cn } from "@/lib/utils";
 
 type Pin = MiniAppBody["workflows"][number];
+
+/// 別名の長さの上限（サーバーの検証と同じ・`crates/gui/src/miniapp.rs`）。
+const MAX_ALIAS_CHARS = 64;
+
+/// ビューの名前から、束ねた別名と重ならない別名を作る（画面の表が 1 行目に書く名前）。
+function viewAlias(name: string, taken: readonly Pin[]): string {
+  const base = [...name.trim()].slice(0, MAX_ALIAS_CHARS).join("").trim() || "ビュー";
+  let alias = base;
+  for (let n = 2; taken.some((p) => p.alias === alias); n++) {
+    alias = `${[...base].slice(0, MAX_ALIAS_CHARS - 4).join("").trim()} ${n}`;
+  }
+  return alias;
+}
 
 /// 束ねているスキルのピンを読めるか（スキルの一覧は読み込んだページの分しか無いので、一覧に無いことでは決めない・
 /// ピンの版を直に読んで、404・403 のときだけ読めないとする・BUG-17）。
@@ -142,12 +159,21 @@ export function MiniAppEditorDialog({
   // 失敗は「なし」だけの選択肢に見せない（BUG-186・BUG-189）。
   const skillList = useArtifactList("skill", { enabled: open });
   const workflowList = useArtifactList("workflow", { enabled: open });
+  const viewList = useArtifactList("data_view", { enabled: open });
   const skills = React.useMemo(() => skillList.items ?? [], [skillList.items]);
   const workflows = React.useMemo(() => workflowList.items ?? [], [workflowList.items]);
+  const viewChoices = React.useMemo(() => viewList.items ?? [], [viewList.items]);
   const [pinnedSkill, setPinnedSkill] = React.useState<PinnedSkill>({ state: "checking" });
   const [skillId, setSkillId] = React.useState("");
   const [pins, setPins] = React.useState<Pin[]>([]);
   const [workflowToAdd, setWorkflowToAdd] = React.useState("");
+  /// 束ねたビュー（画面の表 ```data_grid が出すもの・GAP-11）。
+  const [views, setViews] = React.useState<Pin[]>([]);
+  const [viewToAdd, setViewToAdd] = React.useState("");
+  /// 部品の版ごとの、新しいバージョンの確かめの結果（`pinKey`）。
+  const [checks, setChecks] = React.useState<Record<string, PinCheck>>({});
+  /// 組み立てるに、表の段を足してもらう頼み（ビューを追加したとき・番号が変わるたびに 1 回）。
+  const [gridRequest, setGridRequest] = React.useState<{ alias: string; n: number } | null>(null);
   const [busy, setBusy] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   /// 比べたバージョンの後に、ほかの人が保存した（付録 C の §3.5・GAP-41）。
@@ -161,6 +187,10 @@ export function MiniAppEditorDialog({
     setSkillId(app?.body.skill?.artifact_id ?? "");
     setPins(app?.body.workflows ?? []);
     setWorkflowToAdd("");
+    setViews(app?.body.data_views ?? []);
+    setViewToAdd("");
+    setChecks({});
+    setGridRequest(null);
     setTab("build");
     setValidity({ errors: 0 });
     sourceEdited.current = false;
@@ -204,6 +234,56 @@ export function MiniAppEditorDialog({
     });
     setWorkflowToAdd("");
   };
+
+  /// ビューを束ねる。画面に、そのビューを出す表がまだ無ければ最後に置く（束ねたビューを画面で使える形にする）。
+  const addView = () => {
+    const v = viewChoices.find((x) => x.id === viewToAdd);
+    if (!v) return;
+    const alias = viewAlias(v.name, views);
+    setViews((prev) => [...prev, { alias, artifact_id: v.id, version: v.currentVersion }]);
+    setViewToAdd("");
+    if (dataGridAliases(screen).includes(alias)) return;
+    // 書くタブで直した記述は組み立てるの段より新しいので、記述に足す（組み立てるは次に開くときに分け直す）。
+    if (sourceEdited.current) setScreen((s) => appendDataGrid(s, alias));
+    else setGridRequest((r) => ({ alias, n: (r?.n ?? 0) + 1 }));
+  };
+
+  // 束ねた部品（ワークフロー・ビュー）の新しいバージョンと、上げると変わるところ。版ごとに 1 回だけ読む（読めなくても
+  // 保存はできる。新しいバージョンが出ないだけ）。
+  const checked = React.useRef(new Set<string>());
+  React.useEffect(() => {
+    if (!open) checked.current.clear();
+  }, [open]);
+  React.useEffect(() => {
+    if (!open) return;
+    const want = (kind: PartKind, list: readonly Pin[]) => list.filter((p) => !checked.current.has(pinKey(kind, p)));
+    const wantWorkflows = want("workflow", pins);
+    const wantViews = want("data_view", views);
+    if (wantWorkflows.length === 0 && wantViews.length === 0) return;
+    const keys = [
+      ...wantWorkflows.map((p) => pinKey("workflow", p)),
+      ...wantViews.map((p) => pinKey("data_view", p)),
+    ];
+    for (const key of keys) checked.current.add(key);
+    const ref = (p: Pin) => ({ artifact_id: p.artifact_id, version: p.version });
+    void getMiniAppPinUpdates({ workflows: wantWorkflows.map(ref), data_views: wantViews.map(ref) })
+      .then((res) =>
+        setChecks((m) => {
+          const next = { ...m };
+          [...res.workflows, ...res.data_views].forEach((u, i) => {
+            next[keys[i]!] = u.readable ? { state: "readable", update: u } : { state: "unreadable" };
+          });
+          return next;
+        }),
+      )
+      .catch(() =>
+        setChecks((m) => ({ ...m, ...Object.fromEntries(keys.map((k) => [k, { state: "unknown" } as const])) })),
+      );
+  }, [pins, views, open]);
+  const setVersion = (kind: PartKind) => (artifactId: string, version: number) =>
+    (kind === "workflow" ? setPins : setViews)((prev) =>
+      prev.map((p) => (p.artifact_id === artifactId ? { ...p, version } : p)),
+    );
 
   // 束ねたワークフローの入力の手がかり（組み立てるの部品の候補と、画面の入力との突き合わせのため）。手がかりは
   // サーバーが入力項目から作る（保存のときの突き合わせと同じもの）。版ごとに 1 回だけ読む（読めなくても組み立ては
@@ -255,6 +335,12 @@ export function MiniAppEditorDialog({
     () => (tab === "write" ? inputNotes(deferredScreen, choices) : []),
     [tab, deferredScreen, choices],
   );
+  // 画面の表が出しているのに、束ねていないビュー（保存すると、サーバーの検証で止まる）。
+  const viewAliases = React.useMemo(() => views.map((v) => v.alias), [views]);
+  const missingViews = React.useMemo(
+    () => [...new Set(dataGridAliases(deferredScreen))].filter((a) => a && !viewAliases.includes(a)),
+    [deferredScreen, viewAliases],
+  );
   // 書くタブで直した後は、隠れている組み立てる（直す前の段）の数え直しを使わない（ワークフローを外したときなど）
   const onValidity = React.useCallback((v: ScreenValidity) => {
     if (!sourceEdited.current) setValidity(v);
@@ -304,9 +390,8 @@ export function MiniAppEditorDialog({
               ? { artifact_id: skill.id, version: skill.currentVersion }
               : null,
       workflows: pins,
-      // 画面の表（```data_grid）が参照する保存ビューのピンは、この画面では編集しないので
-      // 版も含めてそのまま引き継ぐ（保存で落とすと表が描けなくなる・Task 15.7）。
-      ...(app?.body.data_views?.length ? { data_views: app.body.data_views } : {}),
+      // 画面の表（```data_grid）が出すビュー（読めないビューも、変えなければそのまま保存できる・BUG-80）。
+      ...(views.length ? { data_views: views } : {}),
     };
     setBusy(true);
     setError(null);
@@ -337,7 +422,7 @@ export function MiniAppEditorDialog({
         <DialogHeader>
           <DialogTitle>{editing ? "アプリを編集" : "アプリを作成"}</DialogTitle>
           <DialogDescription>
-            画面は「組み立てる」でドラッグして作るか、「書く」で Markdown と ```ui の図で書きます。ボタンの実行先は、下で束ねたワークフローから選べます。保存した内容は、公開するまで共有した人には見えません。
+            画面は「組み立てる」でドラッグして作るか、「書く」で Markdown と ```ui の図で書きます。ボタンの実行先は下で追加したワークフローから、表は下で追加したビューから選べます。保存した内容は、公開するまで共有した人には見えません。
           </DialogDescription>
         </DialogHeader>
 
@@ -375,24 +460,15 @@ export function MiniAppEditorDialog({
 
           <div className="space-y-1.5">
             <span className={FIELD}>ワークフロー</span>
-            <div className="flex flex-wrap items-center gap-1.5">
-              {pins.map((p) => (
-                <span
-                  key={p.artifact_id}
-                  className="inline-flex items-center gap-1 rounded-full border border-border bg-secondary/60 px-2.5 py-1 text-xs"
-                >
-                  <code className="font-mono">{p.alias}</code>（v{p.version}）
-                  <button
-                    type="button"
-                    aria-label={`${p.alias} を外す`}
-                    onClick={() => setPins((prev) => prev.filter((x) => x.artifact_id !== p.artifact_id))}
-                    className="relative -mr-1 flex size-5 items-center justify-center rounded-full text-muted-foreground hover:text-destructive pointer-coarse:after:absolute pointer-coarse:after:-inset-3 pointer-coarse:after:content-['']"
-                  >
-                    <X className="size-3" aria-hidden />
-                  </button>
-                </span>
-              ))}
-            </div>
+            <PartPins
+              kind="workflow"
+              pins={pins}
+              saved={app?.body.workflows ?? []}
+              checks={checks}
+              onUpgrade={setVersion("workflow")}
+              onRevert={setVersion("workflow")}
+              onRemove={(id) => setPins((prev) => prev.filter((x) => x.artifact_id !== id))}
+            />
             {unreadablePins.map((u) => (
               <p
                 key={u.alias}
@@ -412,7 +488,7 @@ export function MiniAppEditorDialog({
                 onChange={(e) => setWorkflowToAdd(e.target.value)}
                 className={cn(SELECT, "min-w-0 flex-1")}
               >
-                <option value="">ワークフローを選択</option>
+                <option value="">ワークフローを選ぶ</option>
                 {workflows
                   .filter((w) => !pins.some((p) => p.artifact_id === w.id))
                   .map((w) => (
@@ -423,7 +499,7 @@ export function MiniAppEditorDialog({
               </select>
               <Button type="button" size="sm" variant="outline" disabled={!workflowToAdd} onClick={addWorkflow}>
                 <Plus className="size-4" aria-hidden />
-                追加
+                ワークフローを追加
               </Button>
             </div>
             {workflowList.error ? (
@@ -466,6 +542,8 @@ export function MiniAppEditorDialog({
                 screen={screen}
                 onScreenChange={setScreen}
                 workflows={choices}
+                views={viewAliases}
+                appendGrid={gridRequest}
                 onValidity={onValidity}
                 onOpenSource={() => selectTab("write")}
               />
@@ -515,6 +593,53 @@ export function MiniAppEditorDialog({
                 </ul>
               </div>
             ) : null}
+          </div>
+
+          <div className="space-y-1.5" data-testid="miniapp-views">
+            <span className={FIELD}>表に出すビュー</span>
+            <PartPins
+              kind="data_view"
+              pins={views}
+              saved={app?.body.data_views ?? []}
+              checks={checks}
+              onUpgrade={setVersion("data_view")}
+              onRevert={setVersion("data_view")}
+              onRemove={(id) => setViews((prev) => prev.filter((x) => x.artifact_id !== id))}
+            />
+            {missingViews.map((alias) => (
+              <p key={alias} role="note" className="text-xs text-amber-700 dark:text-amber-400" data-testid="miniapp-view-missing">
+                画面の表「{alias}」のビューを追加していません。このままでは保存できないので、ビューを追加するか、画面から表を消してください。
+              </p>
+            ))}
+            <div className="flex items-center gap-2">
+              <select
+                aria-label="追加するビュー"
+                value={viewToAdd}
+                onChange={(e) => setViewToAdd(e.target.value)}
+                className={cn(SELECT, "min-w-0 flex-1")}
+              >
+                <option value="">ビューを選ぶ</option>
+                {viewChoices
+                  .filter((v) => !views.some((p) => p.artifact_id === v.id))
+                  .map((v) => (
+                    <option key={v.id} value={v.id}>
+                      {v.name}（v{v.currentVersion}）
+                    </option>
+                  ))}
+              </select>
+              <Button type="button" size="sm" variant="outline" disabled={!viewToAdd} onClick={addView}>
+                <Plus className="size-4" aria-hidden />
+                ビューを追加
+              </Button>
+            </div>
+            {viewList.error ? (
+              <ListLoadFailed what="ビューの一覧" compact onRetry={viewList.reload} />
+            ) : (
+              <ListMore noun="ビュー" found={viewChoices.length > 0} list={viewList} compact />
+            )}
+            <p className="text-xs text-muted-foreground">
+              ビュー（テーブルの見え方）は、テーブルの絞り込みや並べ替えを保存したものです。追加すると、画面の最後に表を置きます。表のレコードは、アプリを使う人の権限で読み込みます。
+            </p>
           </div>
 
           <div className="space-y-1.5">

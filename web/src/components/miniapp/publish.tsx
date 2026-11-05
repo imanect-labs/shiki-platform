@@ -197,15 +197,16 @@ export function describeChange(c: MiniAppChange): string {
     case "screen":
       return "画面の説明・図・ボタン";
     case "skill":
-      if (c.from_version == null) return `スキルを束ねる（v${c.to_version}）`;
+      if (c.from_version == null) return `スキルを追加する（v${c.to_version}）`;
       if (c.to_version == null) return "スキルを外す";
       // 別のスキルに替えたかはサーバーが決める（版の番号だけでは見分けられない）。
       if (c.replaced) return `スキルを替える（v${c.to_version}）`;
       return `スキル: v${c.from_version} から v${c.to_version} へ`;
     case "workflow":
     case "data_view": {
-      const noun = c.kind === "workflow" ? "ワークフロー" : "保存ビュー";
-      if (c.from_version == null) return `${noun}「${c.alias}」を束ねる（v${c.to_version}）`;
+      // 呼び名はエディターの「ワークフロー」「表に出すビュー」とそろえる（GAP-11）。
+      const noun = c.kind === "workflow" ? "ワークフロー" : "ビュー";
+      if (c.from_version == null) return `${noun}「${c.alias}」を追加する（v${c.to_version}）`;
       if (c.to_version == null) return `${noun}「${c.alias}」を外す`;
       const renamed = c.from_alias != null && c.from_alias !== c.alias;
       if (c.from_version === c.to_version) return `${noun}「${c.from_alias}」の名前を「${c.alias}」にする`;

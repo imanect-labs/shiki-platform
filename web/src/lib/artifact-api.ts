@@ -18,7 +18,8 @@ export type ShareTarget = { type: "user"; id: string } | { type: "role"; id: str
 /// 共有一覧の 1 件（表示名・email はサーバがテナント内ディレクトリから解決・#741）。
 export type ArtifactShareEntry = components["schemas"]["ArtifactShareEntry"];
 
-export type ArtifactKind = "workflow" | "mini_app" | "skill" | "script";
+/// アーティファクトの種類（codegen・ワークフロー・アプリ・ビュー・スキルなど）。
+export type ArtifactKind = components["schemas"]["ArtifactKind"];
 
 export type ArtifactMeta = {
   id: string;
@@ -275,6 +276,20 @@ export async function updateMiniApp(
       method: "PUT",
     }),
   );
+}
+
+/// 束ねた部品 1 つの、呼んだ人が読める最新のバージョンと、上げると変わるところ（codegen・GAP-11）。
+export type PinUpdate = components["schemas"]["PinUpdate"];
+/// 部品を最新のバージョンに上げると変わるところ 1 つ（`kind` で判別・codegen）。
+export type PinDiff = components["schemas"]["PinDiff"];
+
+/// 束ねるワークフローと保存ビューごとに、新しいバージョンと上げると変わるところを読む（あなたの権限で読む・リクエストの
+/// 順・GAP-11）。差の種類はサーバーが決める。読めない部品は `readable: false`。
+export async function getMiniAppPinUpdates(pins: {
+  workflows: { artifact_id: string; version: number }[];
+  data_views: { artifact_id: string; version: number }[];
+}): Promise<components["schemas"]["PinUpdatesResponse"]> {
+  return ok<components["schemas"]["PinUpdatesResponse"]>(await apiFetch("/mini-apps/pin-updates", json(pins)));
 }
 
 /// 束ねるワークフローの版の入力の手がかり（読めたか・入力項目の並びの順・codegen）。
