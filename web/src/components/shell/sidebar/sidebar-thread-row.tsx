@@ -5,6 +5,7 @@ import Link from "next/link";
 import {
   FileText,
   Link2,
+  Loader2,
   MoreHorizontal,
   NotebookPen,
   Pencil,
@@ -27,6 +28,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { useLongPress } from "./use-long-press";
+import type { ThreadActivity } from "./use-thread-activity";
 
 /// 行メニューから親へ渡す操作（ダイアログ・一覧の書き換えは親が持つ）。
 export type ThreadRowActions = {
@@ -45,6 +47,37 @@ function OriginTile({ kind }: { kind: Exclude<ThreadOriginKind, null> }) {
       className="flex size-5 shrink-0 items-center justify-center rounded-[6px] bg-sidebar-foreground/[0.07] text-sidebar-foreground/60 max-md:size-8 max-md:rounded-lg"
     >
       <Icon className="size-3 max-md:size-4" />
+    </span>
+  );
+}
+
+/// 行の状態の読み上げ・ツールチップの文言。
+const ACTIVITY_LABEL: Record<Exclude<ThreadActivity, null>, string> = {
+  running: "回答を生成中",
+  waiting: "承認待ち",
+  done: "回答が完了（未読）",
+};
+
+/// 行の右端（時刻の位置）に出す生成の状態。生成中は回る印、承認待ちは山吹の点、
+/// 開いていない間に終わった回答は藍の点（未読）。
+function ActivityMark({ activity }: { activity: Exclude<ThreadActivity, null> }) {
+  return (
+    <span className="flex size-4 items-center justify-center">
+      {activity === "running" ? (
+        <Loader2
+          className="size-3.5 animate-spin text-sidebar-foreground/55 motion-reduce:animate-none"
+          aria-hidden
+        />
+      ) : (
+        <span
+          aria-hidden
+          className={cn(
+            "size-2 rounded-full",
+            activity === "waiting" ? "bg-amber-500" : "bg-sidebar-ring",
+          )}
+        />
+      )}
+      <span className="sr-only">{ACTIVITY_LABEL[activity]}</span>
     </span>
   );
 }
@@ -140,6 +173,7 @@ export function ThreadRow({
   active,
   mobile,
   pinned,
+  activity = null,
   actions,
   onNavigate,
 }: {
@@ -148,6 +182,8 @@ export function ThreadRow({
   mobile: boolean;
   /// ピン留めの欄に出している行か（メニューの文言と、時刻の代わりのピンの印に使う）。
   pinned: boolean;
+  /// 裏で動いている（動いていた）生成の状態。時刻・ピンの印に代えて右端に出す。
+  activity?: ThreadActivity;
   actions: ThreadRowActions;
   onNavigate?: () => void;
 }) {
@@ -236,7 +272,12 @@ export function ThreadRow({
         }}
         {...longPress.handlers}
         aria-current={active ? "page" : undefined}
-        title={detail ? `${shownTitle}（${detail}）` : shownTitle}
+        title={[
+          detail ? `${shownTitle}（${detail}）` : shownTitle,
+          activity ? ACTIVITY_LABEL[activity] : null,
+        ]
+          .filter(Boolean)
+          .join(" · ")}
         className={cn(
           // 長押しで OS のリンクプレビュー・文字選択を出さない（行メニューを出すため）。
           "flex select-none items-center gap-2 rounded-[9px] pl-2.5 pr-2 outline-none [-webkit-touch-callout:none]",
@@ -246,6 +287,8 @@ export function ThreadRow({
           active
             ? "font-medium text-sidebar-foreground"
             : "text-sidebar-foreground/75 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground active:bg-sidebar-accent/60",
+          // 未読の完了は題名を濃くして、点と合わせて目に留まるようにする。
+          !active && activity === "done" && "font-medium text-sidebar-foreground",
         )}
       >
         {kind ? <OriginTile kind={kind} /> : null}
@@ -284,7 +327,9 @@ export function ThreadRow({
             menuOpen && "opacity-0",
           )}
         >
-          {pinned ? (
+          {activity ? (
+            <ActivityMark activity={activity} />
+          ) : pinned ? (
             <>
               <Pin className="size-3" aria-hidden />
               <span className="sr-only">ピン留め</span>

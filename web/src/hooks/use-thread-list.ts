@@ -24,6 +24,33 @@ export type ThreadList = {
   upsertLocal: (thread: Thread) => void;
 };
 
+/// 生成中（順番待ち・生成中）の会話があるときの読み直し間隔。終わったらすぐ「完了」に変えたい。
+const LIVE_POLL_MS = 4_000;
+/// 承認待ちだけのときの読み直し間隔（承認は別の画面から返ることもあるが、急がない）。
+const WAITING_POLL_MS = 20_000;
+
+/// 裏で生成が続いている会話があれば、先頭ページを定期的に読み直す（実行中→完了の切り替え・
+/// 終わった会話の先頭への移動を、その会話を開いていなくても拾う）。
+///
+/// 終わりを知らせる通知はその会話の画面（SSE）にしか届かないため、ここは読み直しで追う。
+/// 実行中の会話が無ければ何もしない。タブが裏にある間は叩かず、表に戻ったら 1 度読む。
+function useLiveRefresh(threads: Thread[], refresh: React.RefObject<(() => void) | null>) {
+  const live = threads.some((t) => t.runStatus === "queued" || t.runStatus === "running");
+  const waiting = !live && threads.some((t) => t.runStatus === "waiting_approval");
+  React.useEffect(() => {
+    if (!live && !waiting) return;
+    const tick = () => {
+      if (document.visibilityState === "visible") refresh.current?.();
+    };
+    const id = window.setInterval(tick, live ? LIVE_POLL_MS : WAITING_POLL_MS);
+    document.addEventListener("visibilitychange", tick);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", tick);
+    };
+  }, [live, waiting, refresh]);
+}
+
 /// `(updated_at, id)` の降順で a が b より後ろ（古い）か。サーバの keyset 順と一致させる。
 function isOlder(a: Thread, b: Thread): boolean {
   if (a.updatedAt !== b.updatedAt) return a.updatedAt < b.updatedAt;
@@ -51,6 +78,8 @@ export function useThreadList(query = "", enabled = true): ThreadList {
   // 検索語の切り替えで古い応答が後から届いても反映しない世代カウンタ。
   const generation = React.useRef(0);
   const fetchingMore = React.useRef(false);
+  const refresh = React.useRef<(() => void) | null>(null);
+  useLiveRefresh(threads, refresh);
 
   React.useEffect(() => {
     if (!enabled) return;
@@ -101,9 +130,11 @@ export function useThreadList(query = "", enabled = true): ThreadList {
     };
 
     loadFirst(true);
+    refresh.current = () => loadFirst(false);
     const unsubscribe = subscribeThreadsChanged(() => loadFirst(false));
     return () => {
       unsubscribe();
+      refresh.current = null;
       active = false;
     };
   }, [query, enabled]);
@@ -164,6 +195,8 @@ export function usePinnedThreads(enabled = true): {
   patchLocal: (id: string, patch: Partial<Thread>) => void;
 } {
   const [threads, setThreads] = React.useState<Thread[]>([]);
+  const refresh = React.useRef<(() => void) | null>(null);
+  useLiveRefresh(threads, refresh);
   React.useEffect(() => {
     if (!enabled) return;
     let active = true;
@@ -180,9 +213,11 @@ export function usePinnedThreads(enabled = true): {
         });
     };
     load();
+    refresh.current = load;
     const unsubscribe = subscribeThreadsChanged(load);
     return () => {
       active = false;
+      refresh.current = null;
       unsubscribe();
     };
   }, [enabled]);
