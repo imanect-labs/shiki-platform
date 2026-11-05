@@ -70,6 +70,9 @@ pub struct PinUpdate {
     pub latest_version: Option<i64>,
     /// 最新の版に上げると変わるところ（最新の版が固定している版より新しいときだけ）。
     pub changes: Vec<PinDiff>,
+    /// 新しい版はあるが、変わるところを調べられなかった（固定している版の本文が無いなど）。`changes` が空でも
+    /// 「変わらない」とは言わない。
+    pub diff_unknown: bool,
 }
 
 impl MiniAppStore {
@@ -102,6 +105,7 @@ impl MiniAppStore {
             readable: false,
             latest_version: None,
             changes: Vec::new(),
+            diff_unknown: false,
         };
         let meta = match self.artifacts.get(ctx, pin.artifact_id, trace_id).await {
             Ok(m) if m.kind == kind => m,
@@ -111,7 +115,7 @@ impl MiniAppStore {
             Err(e) => return Err(e.into()),
         };
         let latest = meta.current_version;
-        let changes = if latest > pin.version {
+        let (changes, diff_unknown) = if latest > pin.version {
             // 本体の viewer と種類は確かめたので、2 つの版の本文だけを読む。
             let from = self
                 .pinned_body(ctx, pin.artifact_id, pin.version, trace_id)
@@ -120,12 +124,12 @@ impl MiniAppStore {
                 .pinned_body(ctx, pin.artifact_id, latest, trace_id)
                 .await?;
             match (from, to) {
-                (Some(from), Some(to)) => diff_versions(kind, &from, &to),
-                // 固定している版が無い（壊れたピン）など。差は言えない（最新の版は返す）。
-                _ => Vec::new(),
+                (Some(from), Some(to)) => (diff_versions(kind, &from, &to), false),
+                // 固定している版が無い（壊れたピン）など。差は言えない（最新の版は返し、調べられなかったと言う）。
+                _ => (Vec::new(), true),
             }
         } else {
-            Vec::new()
+            (Vec::new(), false)
         };
         Ok(PinUpdate {
             artifact_id: pin.artifact_id,
@@ -133,6 +137,7 @@ impl MiniAppStore {
             readable: true,
             latest_version: Some(latest),
             changes,
+            diff_unknown,
         })
     }
 }

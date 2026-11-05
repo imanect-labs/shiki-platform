@@ -193,9 +193,20 @@ async fn body(pool: PgPool, fga: Arc<dyn AuthzClient>, tenant: String) {
             },
         ]
     );
+    assert!(!wf_updates[0].diff_unknown);
     // 最新の版を固定していれば差は無い。
     assert_eq!(wf_updates[1].latest_version, Some(2));
     assert!(wf_updates[1].changes.is_empty());
+    assert!(!wf_updates[1].diff_unknown);
+    // 固定している版の本文が無い（壊れたピン）ときは、差が空でも「変わらない」とは言わない。
+    let broken = apps
+        .pin_updates(&alice, ArtifactKind::Workflow, &[pin(wf, 0)], None)
+        .await
+        .expect("broken pin");
+    assert!(broken[0].readable);
+    assert_eq!(broken[0].latest_version, Some(2));
+    assert!(broken[0].changes.is_empty());
+    assert!(broken[0].diff_unknown);
 
     let view_updates = apps
         .pin_updates(&alice, ArtifactKind::DataView, &[pin(view, 1)], None)
