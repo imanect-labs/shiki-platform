@@ -207,6 +207,10 @@ jobs:
       # SQL リテラル単位の検査は crates/data/tests/shard_safety_lint.rs（cargo test）が担う。
       - name: shard-safety gate (PgPool 直参照・シーケンス直呼びの禁止)
         run: bash scripts/check-shard-safety.sh
+      # 単一チョークポイント（LLM = llm-gateway・認可 = authz・ベクタ索引 = rag）を reqwest 直叩きで迂回する
+      # 書き方を字句で止める。依存グラフで縛れるもの（aws-sdk-s3・tantivy）は cargo-deny の [bans] wrappers が担う。
+      - name: chokepoint gate (LLM・OpenFGA・Qdrant の API は所定のクレート経由)
+        run: bash scripts/check-chokepoints.sh
       # 同じく CI で拾えない構造的バグ（#453）。CI は全サービスをまとめて起動せず必要な
       # ものだけ名指しで起動するため、ホストポートの二重 publish が衝突する組み合わせは
       # 一度も同時に立ち上がらない。ローカルの `docker compose up` だけが壊れる。

@@ -127,7 +127,7 @@ mod tests {
     /// 実測で会話に出ていた形（プロバイダの生 JSON と URL を含む）。
     const RAW: &str = "agent: llm error: llm provider unavailable: openai 502 Bad Gateway: \
         {\"error\":{\"message\":\"upstream connect error\",\"workspace\":\"wrk_01\"}} \
-        https://api.example.com/v1/chat/completions";
+        https://api.example.com/v1/chat/completions"; // chokepoint-ok: エラー文言を整形するテストの入力
 
     #[test]
     fn provider_failure_maps_to_fixed_message_without_details() {
