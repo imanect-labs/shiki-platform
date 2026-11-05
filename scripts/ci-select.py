@@ -449,7 +449,7 @@ def cmd_select(args: argparse.Namespace) -> int:
     root = Path(args.root)
     members = workspace_packages(root)
     files = [] if args.full else changed_files(args.base, args.head)
-    if args.full_if_changed:
+    if args.full_if_changed and not args.full:
         args.full, files = full_if_changed(files)
     lock = None
     if "Cargo.lock" in files:

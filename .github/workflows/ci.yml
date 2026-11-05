@@ -3,7 +3,7 @@ name: CI
 on:
   # PR には paths-ignore を付けない。required check（下の ci-ok）は、ワークフローが起動しないと pending のまま
   # 固着して docs だけの PR がマージできなくなるため。docs だけの変更で重量ジョブを回さない判定は
-  # changes ジョブ（scripts/ci-select.py の無視規則）が担い、そのとき動くのは changes と ci-ok だけ。
+  # changes ジョブ（scripts/ci-select.py の無視規則）が担い、そのとき動くのは changes・quality・ci-ok だけ。
   pull_request:
   # マージキュー（下の ci-ok を required check にして使う）。PR は変更から選んだテストだけを回して速くし、選択の取りこぼしはマージ前の全量で止める
   # （以前は main に入ってから selection-gap が事後に検知していた）。docs だけの変更はここでも何も回さない。
@@ -80,6 +80,10 @@ jobs:
             # docs 以外の変更があれば全量。base を取れなければ迷わず全量に倒す。
             if git cat-file -e "$MERGE_GROUP_BASE^{commit}" 2>/dev/null; then
               python3 scripts/ci-select.py select --base "$MERGE_GROUP_BASE" --head HEAD --full-if-changed
+              # キューで落ちたテストが PR で選ばれていたかを selection-gap で突き合わせるため、PR としての選択を残す。
+              python3 scripts/ci-select.py select --base "$MERGE_GROUP_BASE" --head HEAD --github-output "" --summary "" \
+                --json pr-selection.json \
+                || echo "::warning::PR としての選択を出せなかった（selection-gap は突き合わせない）"
             else
               python3 scripts/ci-select.py select --full
             fi
@@ -93,8 +97,8 @@ jobs:
               --json pr-selection.json \
               || echo "::warning::PR としての選択を出せなかった（selection-gap は突き合わせない）"
           fi
-      - name: upload PR-equivalent selection (main)
-        if: github.event_name == 'push'
+      - name: upload PR-equivalent selection (main・マージキュー)
+        if: github.event_name != 'pull_request'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: pr-selection
@@ -146,7 +150,7 @@ jobs:
         run: cargo nextest run --workspace --all-features --no-tests=warn --no-fail-fast -E "$FILTER"
       # main で落ちたテストを selection-gap ジョブへ渡す（JUnit は .config/nextest.toml で出す）。
       - name: upload failed tests (main)
-        if: failure() && github.event_name == 'push'
+        if: failure() && github.event_name != 'pull_request'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ci-failures-rust
@@ -488,7 +492,7 @@ jobs:
           }
           run_tests 2>&1 | tee cargo-test.log
       - name: upload failed tests (main)
-        if: failure() && github.event_name == 'push'
+        if: failure() && github.event_name != 'pull_request'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ci-failures-coverage
@@ -917,7 +921,7 @@ jobs:
           # shellcheck disable=SC2086
           pnpm exec playwright test --reporter=github,list,json $E2E_ARGS
       - name: upload failed specs (main)
-        if: failure() && github.event_name == 'push'
+        if: failure() && github.event_name != 'pull_request'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: ci-failures-e2e
@@ -964,14 +968,15 @@ jobs:
             exit 1
           fi
 
-  # main の全量 run で落ちたテストが、その変更を PR として選んだときに選ばれていたかを突き合わせる（#922）。
+  # main・マージキューの全量 run で落ちたテストが、その変更を PR として選んだときに選ばれていたかを突き合わせる（#922）。
+  # マージキューで止まるようになってからは、ここが選択規則の漏れを拾う主な経路になる。
   # 選ばれていなければ、PR では見逃す変更（選択規則・対応表の漏れ）か flaky なので Issue にする
   # （同じテストの Issue が開いていればコメントを足す）。main は止めない（全量なので落ちたこと自体は見えている）。
   selection-gap:
     name: 選択漏れの検知（main）
     needs: [changes, rust, coverage, data-strategies, cargo-deny, build-server, compose-smoke, web-e2e,
             tabular-runner, gen-api, web, python]
-    if: always() && github.event_name == 'push' && contains(needs.*.result, 'failure')
+    if: always() && github.event_name != 'pull_request' && contains(needs.*.result, 'failure')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
