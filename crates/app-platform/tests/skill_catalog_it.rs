@@ -41,13 +41,13 @@ struct Env {
 }
 
 async fn setup() -> Option<Env> {
-    let db_url = std::env::var("STORAGE_TEST_DATABASE_URL")
+    let db_url = shiki_testenv::var("STORAGE_TEST_DATABASE_URL")
         .ok()
         .or_else(|| {
             eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
             None
         })?;
-    let fga_url = std::env::var("OPENFGA_TEST_URL").ok().or_else(|| {
+    let fga_url = shiki_testenv::var("OPENFGA_TEST_URL").ok().or_else(|| {
         eprintln!("OPENFGA_TEST_URL 未設定のためスキップ");
         None
     })?;

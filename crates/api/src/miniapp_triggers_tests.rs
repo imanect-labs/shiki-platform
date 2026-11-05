@@ -61,7 +61,7 @@ impl ObjectStore for NoStore {
 }
 
 async fn pool() -> Option<PgPool> {
-    let url = std::env::var("STORAGE_TEST_DATABASE_URL").ok()?;
+    let url = shiki_testenv::var("STORAGE_TEST_DATABASE_URL").ok()?;
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(4)
         .connect(&url)

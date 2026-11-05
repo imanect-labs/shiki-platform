@@ -217,7 +217,7 @@ async fn csv_patch_rejects_non_array_ops() {
 /// DB 必須: 同一冪等キーでの再試行が csv.patch を高々 1 回しか適用しない（PIT-31）。
 #[tokio::test]
 async fn csv_patch_is_idempotent_across_retry() {
-    let Ok(db) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return;
     };

@@ -669,7 +669,7 @@ async fn rollup_small_cell_suppression_inherits_reference_threshold() {
 }
 
 async fn fga_store(pool: PgPool) -> Option<(DataStore, Arc<dyn AuthzClient>)> {
-    let Ok(base_url) = std::env::var("OPENFGA_TEST_URL") else {
+    let Ok(base_url) = shiki_testenv::var("OPENFGA_TEST_URL") else {
         eprintln!("OPENFGA_TEST_URL 未設定のためスキップ");
         return None;
     };

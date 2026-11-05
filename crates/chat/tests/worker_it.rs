@@ -83,7 +83,7 @@ impl AuthzClient for AllowAll {
 }
 
 async fn setup() -> Option<PgPool> {
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return None;
     };
@@ -725,7 +725,7 @@ async fn earlier_unfinished_run_blocks_later_ones_until_it_ends() {
 /// 生成ジョブの待ち行列は全テストで共有なので、同じ DB では他のテスト（並列に走る別プロセス）の
 /// ワーカーがジョブを拾い、自分の gateway（stub）で生成を成功させてしまう。
 async fn isolated_setup(prefix: &str) -> Option<PgPool> {
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return None;
     };

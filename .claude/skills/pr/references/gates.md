@@ -74,6 +74,10 @@ export RAG_TEST_QDRANT_URL=http://localhost:6333
 export RAG_TEST_QDRANT_API_KEY=shiki-qdrant-dev-key  # compose の Qdrant は API キー付き（#812）
 ```
 
+- **`SHIKI_REQUIRE_IT=1` を付けて回す。** 接続先が未設定の結合テストはスキップして pass に数えられるので、
+  env を 1 つ渡し忘れても緑に見える。これを付けると未設定が失敗になる（`crates/testenv`・CI の coverage ジョブと同じ）。
+  CI が用意しない依存（実 Keycloak・実 LLM 等）は ci.yml の `SHIKI_REQUIRE_IT_EXCEPT` と同じ値を `SHIKI_REQUIRE_IT_EXCEPT` に渡す。
+  新しい結合テストの接続先は `shiki_testenv::var("…")` で読む（`std::env::var` 直読みは quality ジョブの it-env gate が落とす）。
 - migration checksum 不一致（`VersionMismatch(n)`）は別ブランチの残骸。使い捨てなのでリセットしてよい:
   `docker exec pg-test psql -U postgres -c "DROP DATABASE shiki WITH (FORCE);" -c "CREATE DATABASE shiki;"`
 - **jobq の `chat_generation` は 1 テストバイナリ内で共有される。** ワーカー能力（`WorkerDeps`）の異なるテストを同一バイナリに同居させない（他テストの run を横取りし、偽陽性/偽陰性になる）。chat 系 IT のイベント待ちがタイムアウトする時はまずこれを疑う。

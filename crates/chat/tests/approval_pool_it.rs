@@ -59,11 +59,11 @@ impl RefResolver for AllowRefs {
 /// テスト専用 DB（生成ジョブの待ち行列を他のテストのワーカーと共有しない）と、
 /// 小さいプール（ワーカー用）・観測用プールを返す。
 async fn setup() -> Option<(PgPool, PgPool, Arc<dyn AuthzClient>)> {
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return None;
     };
-    let Ok(fga_url) = std::env::var("OPENFGA_TEST_URL") else {
+    let Ok(fga_url) = shiki_testenv::var("OPENFGA_TEST_URL") else {
         eprintln!("OPENFGA_TEST_URL 未設定のためスキップ");
         return None;
     };

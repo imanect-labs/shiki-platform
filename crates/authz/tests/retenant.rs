@@ -43,7 +43,7 @@ fn ctx_for(tenant: &str, user: &str) -> AuthContext {
 }
 
 async fn connect() -> Option<(OpenFgaClient, FgaHttp)> {
-    let Ok(base_url) = std::env::var("OPENFGA_TEST_URL") else {
+    let Ok(base_url) = shiki_testenv::var("OPENFGA_TEST_URL") else {
         eprintln!("OPENFGA_TEST_URL 未設定のためスキップ");
         return None;
     };

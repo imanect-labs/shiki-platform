@@ -17,7 +17,7 @@ use sandbox_client::{Egress, EgressRule};
 use sandbox_orchestrator::backend::egress::{EgressAudit, EgressStack};
 
 fn gated() -> Option<PathBuf> {
-    if std::env::var("SANDBOX_NETNS_IT").as_deref() != Ok("1") {
+    if shiki_testenv::var("SANDBOX_NETNS_IT").as_deref() != Ok("1") {
         eprintln!("skip: set SANDBOX_NETNS_IT=1");
         return None;
     }

@@ -146,7 +146,7 @@ fn ctx(tenant: &str, user: &str) -> AuthContext {
 
 #[tokio::test]
 async fn thousand_subscribers_three_roles_evaluate_the_predicate_three_times() {
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return;
     };
