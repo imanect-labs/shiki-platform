@@ -284,7 +284,8 @@ export function RunNowDialog({
         if (fresh) setAccess(fresh);
         const still = fresh ? myRunBlockedReason(fresh.items) : null;
         if (still) {
-          setFailure({ message: still, lines: [] });
+          // 理由はすぐ下の注意に出ているので、ここではまだ足りないことだけを言う。
+          setFailure({ message: "足りない権限が、まだ共有されていません。", lines: [] });
           return;
         }
       }
