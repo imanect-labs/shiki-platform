@@ -597,7 +597,7 @@ const CSV_PICKER = {
 const CSV_QUERY_PICKER = {
   accept: (n: NodeResponse) => isQueryableFile(n),
   pickerTitle: "CSV か Excel のファイルを選ぶ",
-  pickerDescription: "集計するファイルを選んでください（.csv と .xlsx のファイルだけを表示しています）。",
+  pickerDescription: "集計するファイルを選んでください（CSV と Excel のファイルだけを表示しています）。",
 };
 
 /// 列の型（集計で読むときの DuckDB の型名）の呼び名（値の種類の呼び名にそろえる）。
