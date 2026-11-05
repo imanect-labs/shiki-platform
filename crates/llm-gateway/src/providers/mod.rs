@@ -13,6 +13,8 @@ mod llm_decider_prompt;
 mod llm_decider_vote;
 pub mod openai;
 pub mod openai_responses;
+/// 送れなかった誤りの文言（送り先の URL を出さない・全アダプタ共通・BUG-218）。
+mod send_failure;
 pub mod stub;
 /// stub の決定器（FEAT-1）。
 pub mod stub_decider;

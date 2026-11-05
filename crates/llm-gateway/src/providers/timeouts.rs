@@ -96,7 +96,8 @@ impl RequestClock {
         })
     }
 
-    /// 送信して応答ヘッダを待つ（最初の応答のタイムアウト）。
+    /// 送信して応答ヘッダを待つ（最初の応答のタイムアウト）。送れなかった誤りの文言には送り先の URL を入れない
+    /// （[`super::send_failure`]）。
     pub(crate) async fn send(
         &self,
         builder: reqwest::RequestBuilder,
@@ -110,7 +111,8 @@ impl RequestClock {
             builder.send(),
         )
         .await?
-        .map_err(|e| LlmError::Unavailable(format!("{} request failed: {e}", self.label)))
+        // reqwest の文には送り先の URL が入るので、文言は誤りの種類だけにする（BUG-218）。
+        .map_err(|e| super::send_failure::send_failure(self.label, e))
     }
 
     /// `fut` を `limit`（全体の残りで頭打ち）以内に待つ。

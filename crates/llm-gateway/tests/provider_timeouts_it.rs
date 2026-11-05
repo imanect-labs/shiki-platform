@@ -6,7 +6,8 @@
 //! - 少しずつ流し続けて全体の上限を超える → 全体のタイムアウト
 //! - 受け手がストリームを捨てる → 黙っている上流もタイムアウトを待たずに手放す
 //!
-//! スタブの `slow:<秒>` の待ちにも同じ上限が掛かることも確かめる。
+//! スタブの `slow:<秒>` の待ちにも同じ上限が掛かることも確かめる。接続できない送り先の誤りに送り先の URL が
+//! 入らないことも、同じ 3 アダプタで確かめる（BUG-218）。
 //!
 //! どれも `LlmError::Unavailable` で、メッセージにどのタイムアウトかが入る。時間は短く取る。
 
@@ -159,6 +160,29 @@ async fn no_response_headers_hits_first_response_timeout() {
         };
         assert!(msg.contains("first-response timeout"), "{msg}");
         assert!(started.elapsed() < Duration::from_secs(3), "{}", p.name());
+    }
+}
+
+/// 接続できない送り先の誤りは、送り先の URL（ホスト・ポート・パス・base_url の userinfo）を入れず、誤りの種類だけを
+/// 言う（BUG-218。reqwest の文は `error sending request for url (…)`）。
+#[tokio::test]
+async fn unreachable_providers_are_not_named_in_the_error() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    drop(listener);
+    for adapter in Adapter::ALL {
+        let p = adapter.provider(
+            format!("http://user:pw-secret@{addr}/base"),
+            ms(5_000, 5_000, 10_000),
+        );
+        let Err(LlmError::Unavailable(msg)) = p.stream(&req()).await.map(|_| ()) else {
+            panic!("{}: expected Unavailable", p.name());
+        };
+        let port = addr.port().to_string();
+        for leaked in ["127.0.0.1", port.as_str(), "pw-secret", "/base", "http"] {
+            assert!(!msg.contains(leaked), "{leaked} が漏れた: {msg}");
+        }
+        assert!(msg.ends_with(": プロバイダに接続できませんでした"), "{msg}");
     }
 }
 

@@ -72,8 +72,9 @@ async fn post_sse(
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         return (status, String::from_utf8_lossy(&bytes).to_string());
     }
+    // 送り直しの待ち（合わせて 7.5 秒）を挟む応答もあるので、余裕を取る。
     let bytes = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
+        std::time::Duration::from_secs(30),
         resp.into_body().collect(),
     )
     .await
@@ -644,13 +645,18 @@ async fn provider_llm(
     body: &'static str,
 ) -> std::sync::Arc<llm_gateway::LlmGateway> {
     use axum::response::IntoResponse;
-    use llm_gateway::{GatewayConfig, ModelCatalog, ModelEntry, ProviderConfig, ProviderKind};
     let app = axum::Router::new().fallback(move || async move {
         (status, [("content-type", "text/event-stream")], body).into_response()
     });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());
     tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    llm_at(pool, base)
+}
+
+/// プロバイダ（OpenAI 互換）を `base` に向けた実 LlmGateway。
+fn llm_at(pool: PgPool, base: String) -> std::sync::Arc<llm_gateway::LlmGateway> {
+    use llm_gateway::{GatewayConfig, ModelCatalog, ModelEntry, ProviderConfig, ProviderKind};
     let cfg = GatewayConfig {
         provider: ProviderConfig {
             kind: ProviderKind::Openai,
@@ -723,6 +729,105 @@ async fn provider_failures_do_not_reach_the_app_with_their_bodies() {
         assert!(!sse.contains(leaked), "{leaked} が漏れた: {sse}");
     }
     assert!(sse.contains("INTERNAL"), "{sse}");
+
+    for table in ["llm_usage", "app_capability_usage", "app_installation"] {
+        sqlx::query(&format!("DELETE FROM {table} WHERE tenant_id = $1"))
+            .bind(&tenant)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+}
+
+/// 最初の 1 回だけ要求を受けて、流し始めてから終わりの合図の無いまま閉じ（gateway が送り直す）、その後は接続を
+/// 受け付けない送り先。返すのは base_url（userinfo 付き）と、送り先のポート。
+async fn cut_once_then_gone() -> (String, String) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let Ok((mut sock, _)) = listener.accept().await else {
+            return;
+        };
+        // 以後の接続（送り直し）は断られる。
+        drop(listener);
+        // 要求をヘッダと content-length の本文まで読み切ってから答える。
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            let n = sock.read(&mut chunk).await.unwrap_or(0);
+            if n == 0 {
+                return;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
+                continue;
+            };
+            let head = String::from_utf8_lossy(&buf[..end]).to_ascii_lowercase();
+            let len: usize = head
+                .lines()
+                .find_map(|l| l.strip_prefix("content-length:"))
+                .and_then(|v| v.trim().parse().ok())
+                .unwrap_or(0);
+            if buf.len() >= end + 4 + len {
+                break;
+            }
+        }
+        let _ = sock
+            .write_all(
+                b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n",
+            )
+            .await;
+        let _ = sock.shutdown().await;
+    });
+    (
+        format!("http://user:pw-secret@{addr}/llm-base"),
+        addr.port().to_string(),
+    )
+}
+
+/// プロバイダに接続できないときの誤り（接続の前の失敗の 502 の本文・送り直しに失敗した SSE の error イベント）に、
+/// 送り先の URL（ホスト・ポート・パス・base_url の userinfo）を載せない（誤りの種類だけ・BUG-218）。
+#[tokio::test]
+async fn unreachable_providers_are_not_named_to_the_app() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let (_app_id, client) = install(&pool, &tenant, AiPin::default()).await;
+    let tok = token(&client, AI_SCOPES, &tenant);
+    let msg = json!({ "messages": [{ "role": "user", "content": [ { "type": "text", "text": "hi" } ] }] });
+    let assert_hidden = |shown: &str, port: &str| {
+        for leaked in ["127.0.0.1", port, "pw-secret", "/llm-base", "http://"] {
+            assert!(!shown.contains(leaked), "{leaked} が漏れた: {shown}");
+        }
+        assert!(
+            shown.contains("プロバイダに接続できませんでした"),
+            "{shown}"
+        );
+    };
+
+    // 1. 接続を断られる（送り直しても断られる）: 502 の本文に載せない。
+    let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = closed.local_addr().unwrap();
+    drop(closed);
+    let mut st = state(pool.clone(), &tenant);
+    st.caps.llm = Some(llm_at(
+        pool.clone(),
+        format!("http://user:pw-secret@{addr}/llm-base"),
+    ));
+    let app = build_gateway_router(st);
+    let (s, body) = post_sse(&app, "/gw/ai/llm/invoke", &tok, &msg).await;
+    assert_eq!(s, StatusCode::BAD_GATEWAY, "{body}");
+    assert_hidden(&body, &addr.port().to_string());
+
+    // 2. 流し始めてから切れ、送り直しで接続を断られる: SSE の error イベントに載せない。
+    let (base, port) = cut_once_then_gone().await;
+    let mut st = state(pool.clone(), &tenant);
+    st.caps.llm = Some(llm_at(pool.clone(), base));
+    let app = build_gateway_router(st);
+    let (s, sse) = post_sse(&app, "/gw/ai/llm/invoke", &tok, &msg).await;
+    assert_eq!(s, StatusCode::OK, "{sse}");
+    assert!(sse.contains("event: error"), "{sse}");
+    assert_hidden(&sse, &port);
 
     for table in ["llm_usage", "app_capability_usage", "app_installation"] {
         sqlx::query(&format!("DELETE FROM {table} WHERE tenant_id = $1"))

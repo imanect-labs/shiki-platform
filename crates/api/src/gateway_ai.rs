@@ -432,16 +432,14 @@ mod tests {
         }
     }
 
-    /// プロバイダの 5xx（529 を含む）の本文（要求の ID・組織の ID）は、ミニアプリの agent.invoke の error イベントにも
-    /// 載せない（誤りの種類の語だけ・BUG-210）。`STORAGE_TEST_DATABASE_URL` が無ければスキップ。
-    #[tokio::test]
+    /// プロバイダ（OpenAI 互換）を `base` に向けて agent.invoke を 1 回動かし、error イベントの中身を返す（作った行は
+    /// 消す）。`STORAGE_TEST_DATABASE_URL` が無ければ `None`（スキップ）。
     #[allow(clippy::print_stderr)]
-    async fn agent_errors_do_not_carry_the_provider_body() {
-        use axum::response::IntoResponse;
+    async fn agent_error_at(base: String) -> Option<String> {
         use futures::StreamExt;
         let Ok(url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
             eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
-            return;
+            return None;
         };
         let pool = sqlx::postgres::PgPoolOptions::new()
             .max_connections(2)
@@ -449,16 +447,6 @@ mod tests {
             .await
             .unwrap();
         sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
-        let app = axum::Router::new().fallback(|| async {
-            (
-                axum::http::StatusCode::from_u16(529).unwrap(),
-                r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded for org-secret"},"request_id":"req_secret_8"}"#,
-            )
-                .into_response()
-        });
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let base = format!("http://{}", listener.local_addr().unwrap());
-        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let llm = LlmGateway::build(
             pool.clone(),
             reqwest::Client::new(),
@@ -517,14 +505,6 @@ mod tests {
             .unwrap()
             .collect()
             .await;
-        let error = events.iter().find(|e| e.event == "error");
-        assert!(error.is_some(), "error イベントが出る: {events:?}");
-        let error = error.unwrap();
-        let shown = error.data.to_string();
-        for leaked in ["org-secret", "req_secret_8", "Overloaded for"] {
-            assert!(!shown.contains(leaked), "{leaked} が漏れた: {shown}");
-        }
-        assert!(shown.contains("overloaded_error"), "{shown}");
         for table in ["llm_usage", "tenant_llm_model", "tenant_llm_settings"] {
             sqlx::query(&format!("DELETE FROM {table} WHERE tenant_id = $1"))
                 .bind(&tenant)
@@ -532,6 +512,60 @@ mod tests {
                 .await
                 .unwrap();
         }
+        let error = events.iter().find(|e| e.event == "error");
+        assert!(error.is_some(), "error イベントが出る: {events:?}");
+        Some(error.unwrap().data.to_string())
+    }
+
+    /// プロバイダの 5xx（529 を含む）の本文（要求の ID・組織の ID）は、ミニアプリの agent.invoke の error イベントにも
+    /// 載せない（誤りの種類の語だけ・BUG-210）。`STORAGE_TEST_DATABASE_URL` が無ければスキップ。
+    #[tokio::test]
+    async fn agent_errors_do_not_carry_the_provider_body() {
+        use axum::response::IntoResponse;
+        let app = axum::Router::new().fallback(|| async {
+            (
+                axum::http::StatusCode::from_u16(529).unwrap(),
+                r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded for org-secret"},"request_id":"req_secret_8"}"#,
+            )
+                .into_response()
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let Some(shown) = agent_error_at(base).await else {
+            return;
+        };
+        for leaked in ["org-secret", "req_secret_8", "Overloaded for"] {
+            assert!(!shown.contains(leaked), "{leaked} が漏れた: {shown}");
+        }
+        assert!(shown.contains("overloaded_error"), "{shown}");
+    }
+
+    /// プロバイダに接続できないときの agent.invoke の error イベントに、送り先の URL（ホスト・ポート・パス・base_url の
+    /// userinfo）を載せない（誤りの種類だけ・BUG-218）。`STORAGE_TEST_DATABASE_URL` が無ければスキップ。
+    #[tokio::test]
+    async fn agent_errors_do_not_name_an_unreachable_provider() {
+        let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = closed.local_addr().unwrap();
+        drop(closed);
+        let Some(shown) = agent_error_at(format!("http://user:pw-secret@{addr}/llm-base")).await
+        else {
+            return;
+        };
+        let port = addr.port().to_string();
+        for leaked in [
+            "127.0.0.1",
+            port.as_str(),
+            "pw-secret",
+            "/llm-base",
+            "http://",
+        ] {
+            assert!(!shown.contains(leaked), "{leaked} が漏れた: {shown}");
+        }
+        assert!(
+            shown.contains("プロバイダに接続できませんでした"),
+            "{shown}"
+        );
     }
 
     #[test]
