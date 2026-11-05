@@ -11,9 +11,16 @@
 //!    まとめて確保しない）。ランナーのプロセスにはアドレス空間の上限も付いている（`main.rs`）。
 //!
 //! 読み方:
-//! - 先頭の値のある行を見出し（列の名前）にする。名前の決め方は DuckDB の CSV の読み込みと同じ（前後の空白を
-//!   外す・空は `column{位置}`・大文字小文字を区別せずに重なれば `_1` から番号を付ける）。
-//! - 列は値のある左端から右端まで。値の無い行は飛ばす。
+//! - 見出し（列の名前）は、表の上の表題の行を飛ばして決める（GAP-83）。値のある先頭の行から順に、値の数が、すぐ下の
+//!   [`HEADER_SAMPLE_ROWS`] 行の値の数のなかほど（中央の値）の半分以下なら表題として飛ばし、最初に残った行を見出しに
+//!   する。CSV の DuckDB の推定器が、列の数のそろわない先頭の行を飛ばすのと同じ考え方（Excel は空のセルを持たないので、
+//!   列の数でなく値の数で比べる）。見出しが 1 つ 2 つ空でも、半分を超えて値があれば見出しのまま。中央の値で比べるので、
+//!   右に備考などを書いた幅の広い行が表の中にあっても、見出しを飛ばさない。下に行の無い行（最後の行）は飛ばさない。
+//!   2 列の表で見出しの 1 つが空のときは、表題と見分けられず飛ばす（列の案内が見出しにした行の番号を言う）。
+//! - 名前の決め方は DuckDB の CSV の読み込みと同じ（前後の空白を外す・空は `column{位置}`・大文字小文字を区別せずに
+//!   重なれば `_1` から番号を付ける）。
+//! - 列は、見出しと表の本体の値のある左端から右端まで（飛ばした表題の列は入れない）。値の無い行は飛ばす。
+
 //! - 数式は計算しない。Excel が保存したときの値を読む（値の無い数式のセルは空）。外部のブックへの参照はたどらない。
 //! - 数は Excel と同じ 15 桁に丸める（0.1+0.2 を 0.3 にする）。日付は `2024-01-31`、日時は `2024-01-31 09:30:00`、
 //!   時刻（1 日に満たない値）は `09:30:00`。真偽は `TRUE`／`FALSE`、誤りの値は `#DIV/0!` のような文字。
@@ -79,14 +86,24 @@ struct Sheet {
     types: Vec<&'static str>,
     /// 行（値のある列だけの、列の位置と文字の形。列の位置の順）。
     rows: Vec<Vec<(usize, String)>>,
+    /// 見出しにした行の番号（Excel の行の番号・1 から）。表の上の表題の行を飛ばしたときだけ。
+    header_row: Option<u32>,
 }
 
-/// Excel の左端のシートを読み、`data` を作る（`typed` なら列に型を付ける）。返り値は集計で読むときの列の型。
-pub fn load(conn: &Connection, path: &str, typed: bool) -> Result<Vec<String>, LoadError> {
+/// Excel の左端のシートを読み、`data` を作る（`typed` なら列に型を付ける）。返り値は集計で読むときの列の型と、
+/// 見出しにした行（表の上の表題の行を飛ばしたときだけ・GAP-83）。
+pub fn load(
+    conn: &Connection,
+    path: &str,
+    typed: bool,
+) -> Result<(Vec<String>, Option<u32>), LoadError> {
     check_archive(path)?;
     let sheet = read_first_sheet(path)?;
     create_table(conn, &sheet, typed).map_err(LoadError::Internal)?;
-    Ok(sheet.types.iter().map(|t| (*t).to_string()).collect())
+    Ok((
+        sheet.types.iter().map(|t| (*t).to_string()).collect(),
+        sheet.header_row,
+    ))
 }
 
 /// 読み込みの失敗（利用者が直す誤りと、ランナーの異常）。
@@ -205,7 +222,7 @@ fn read_first_sheet(path: &str) -> Result<Sheet, Unreadable> {
             "Excel の左端のシート「{name}」に値がありません。表を左端のシートに置いてください。"
         )));
     }
-    Ok(sheet_of(cells, min_col, max_col))
+    Ok(sheet_of(cells))
 }
 
 /// セルの値（空・空の文字は None）。
@@ -267,38 +284,70 @@ fn text_of(value: &Value) -> String {
     }
 }
 
+/// 見出しを探すときに比べる下の行の数（表題は表の本体のすぐ上にある。遠く離れた行の値の数では決めない）。
+const HEADER_SAMPLE_ROWS: usize = 20;
+
+/// 見出しの行の位置（値のある行の並びの中の位置）。値の数が、すぐ下の [`HEADER_SAMPLE_ROWS`] 行の値の数の中央の値
+/// （偶数のときは大きいほう）の半分以下の行は、表の上の表題として飛ばす。
+fn header_index(counts: &[usize]) -> usize {
+    (0..counts.len())
+        .find(|&h| {
+            let mut below: Vec<usize> = counts[h + 1..]
+                .iter()
+                .take(HEADER_SAMPLE_ROWS)
+                .copied()
+                .collect();
+            below.sort_unstable();
+            below
+                .get(below.len() / 2)
+                .is_none_or(|&body| counts[h] * 2 > body)
+        })
+        .unwrap_or(0)
+}
+
+/// 値のある 1 行（行の位置と、列の位置つきの値・列の位置の順）。
+type SheetRow = (u32, Vec<(u32, Value)>);
+
 /// 読んだセル（行と列の位置つき）を、見出しと行にする。行は疎のまま（値のある列だけ）持つ。
-fn sheet_of(mut cells: Vec<(u32, u32, Value)>, min_col: u32, max_col: u32) -> Sheet {
+fn sheet_of(mut cells: Vec<(u32, u32, Value)>) -> Sheet {
     // 行と列の順にそろえる（壊れた順のファイルでも同じ表になる）。同じ位置は後のセルを使う（安定な並べ替え）。
     cells.sort_by_key(|(r, c, _)| (*r, *c));
-    let width = (max_col - min_col + 1) as usize;
-    let mut by_row: Vec<Vec<(usize, Value)>> = Vec::new();
-    let mut current_row = None;
+    let mut by_row: Vec<SheetRow> = Vec::new();
     for (r, c, v) in cells {
-        let col = (c - min_col) as usize;
-        if current_row != Some(r) {
-            current_row = Some(r);
-            by_row.push(Vec::new());
+        if by_row.last().is_none_or(|(row, _)| *row != r) {
+            by_row.push((r, Vec::new()));
         }
-        let Some(row) = by_row.last_mut() else {
+        let Some((_, row)) = by_row.last_mut() else {
             continue;
         };
         match row.last_mut() {
-            Some((last, value)) if *last == col => *value = v,
-            _ => row.push((col, v)),
+            Some((last, value)) if *last == c => *value = v,
+            _ => row.push((c, v)),
         }
     }
-    let mut rows = by_row.into_iter();
+    let counts: Vec<usize> = by_row.iter().map(|(_, row)| row.len()).collect();
+    let h = header_index(&counts);
+    let header_row = by_row.get(h).filter(|_| h > 0).map(|(r, _)| r + 1);
+    let body = by_row.split_off(h);
+    // 列は見出しと本体の値のある左端から右端まで（飛ばした表題の列は入れない）。
+    let cols = body.iter().flat_map(|(_, row)| row.iter().map(|(c, _)| *c));
+    let (min_col, max_col) = cols.fold((u32::MAX, 0), |(lo, hi), c| (lo.min(c), hi.max(c)));
+    if min_col > max_col {
+        return Sheet::default();
+    }
+    let width = (max_col - min_col + 1) as usize;
+    let mut rows = body.into_iter();
     let mut header = vec![String::new(); width];
-    for (col, value) in rows.next().unwrap_or_default() {
-        header[col] = text_of(&value);
+    for (col, value) in rows.next().map(|(_, row)| row).unwrap_or_default() {
+        header[(col - min_col) as usize] = text_of(&value);
     }
     let columns = column_names(&header);
     let mut kinds = vec![ColumnKinds::default(); width];
     let rows = rows
-        .map(|row| {
+        .map(|(_, row)| {
             row.into_iter()
                 .map(|(col, value)| {
+                    let col = (col - min_col) as usize;
                     kinds[col].count(&value);
                     (col, text_of(&value))
                 })
@@ -309,6 +358,7 @@ fn sheet_of(mut cells: Vec<(u32, u32, Value)>, min_col: u32, max_col: u32) -> Sh
         columns,
         types: kinds.iter().map(ColumnKinds::column_type).collect(),
         rows,
+        header_row,
     }
 }
 

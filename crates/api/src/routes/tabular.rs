@@ -106,13 +106,16 @@ impl TableResponse {
     }
 }
 
-/// スキーマ（列名・総行数）。
+/// スキーマ（列名・総行数）。Excel は、表の上の表題の行を飛ばしたときの見出しの行も返す。
 #[derive(Debug, Serialize, ToSchema)]
 pub struct SchemaResponse {
     pub columns: Vec<String>,
     pub column_types: Vec<String>,
     #[schema(value_type = Option<u64>)]
     pub total_rows: Option<u64>,
+    /// 列の名前にした行（Excel の行の番号・1 から）。表の上の表題の行を飛ばしたときだけ（GAP-83）。
+    #[schema(value_type = Option<u32>)]
+    pub header_row: Option<u32>,
 }
 
 /// CSV スキーマを返す（viewer 認可）。
@@ -137,6 +140,7 @@ pub async fn get_schema(
         columns: resp.columns,
         column_types: resp.column_types,
         total_rows: resp.total_rows,
+        header_row: resp.header_row,
     }))
 }
 

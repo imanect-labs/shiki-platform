@@ -653,17 +653,24 @@ function CsvColumnsHint({ fileId }: { fileId: string | null }) {
           {current.reason ?? "列を読み取れませんでした。CSV か Excel として読めないか、見る権限がありません。"}
         </p>
       ) : (
-        <p>
-          列:{" "}
-          {current.schema.columns.map((c, i) => (
-            <span key={`${c}-${i}`}>
-              {i > 0 ? "、" : ""}
-              <code className="font-mono text-foreground">{c}</code>
-              {current.schema!.column_types[i] ? `（${typeLabel(current.schema!.column_types[i])}）` : ""}
-            </span>
-          ))}
-          {typeof current.schema.total_rows === "number" ? `・${current.schema.total_rows} 行` : ""}
-        </p>
+        <>
+          <p>
+            列:{" "}
+            {current.schema.columns.map((c, i) => (
+              <span key={`${c}-${i}`}>
+                {i > 0 ? "、" : ""}
+                <code className="font-mono text-foreground">{c}</code>
+                {current.schema!.column_types[i] ? `（${typeLabel(current.schema!.column_types[i])}）` : ""}
+              </span>
+            ))}
+            {typeof current.schema.total_rows === "number" ? `・${current.schema.total_rows} 行` : ""}
+          </p>
+          {typeof current.schema.header_row === "number" ? (
+            <p data-testid="csv-header-row">
+              {current.schema.header_row} 行目を列の名前にしています。それより上の行は表題とみなして読みません。
+            </p>
+          ) : null}
+        </>
       )}
       <p data-testid="csv-result-values-hint">{RESULT_VALUES_HINT}</p>
     </div>
@@ -769,7 +776,7 @@ export function CsvQueryForm(props: FormProps) {
         {...props}
         {...CSV_QUERY_PICKER}
         label="集計する CSV か Excel のファイル"
-        hint="有効化のとき、このファイルの閲覧権限を渡します。Excel のファイルは、表示しているシートのうち左端のシートを読み、値のある最初の行を列の名前にします。"
+        hint="有効化のとき、このファイルの閲覧権限を渡します。Excel のファイルは、表示しているシートのうち左端のシートを読みます。表の上にある表題の行は、列の名前にしません。"
       />
       {sql !== null ? (
         <Field label="SQL（読み取りだけの SELECT）" error={fieldErrors.get("sql")}>

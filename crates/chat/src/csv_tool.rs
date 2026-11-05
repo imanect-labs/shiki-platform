@@ -51,7 +51,14 @@ fn denied(err: &tabular::TabularError) -> ToolOutcome {
 /// 結果テーブルをモデル向けに整形（列＋先頭 N 行）。
 fn format_table(resp: &tabular::RunnerResponse, max_preview: usize) -> String {
     use std::fmt::Write as _;
-    let mut out = format!("列: {}\n", resp.columns.join(", "));
+    let mut out = String::new();
+    if let Some(row) = resp.header_row {
+        let _ = writeln!(
+            out,
+            "data の列の名前: {row} 行目（上の行は表題として読まない）"
+        );
+    }
+    let _ = writeln!(out, "列: {}", resp.columns.join(", "));
     if let Some(total) = resp.total_rows {
         let _ = writeln!(out, "総行数: {total}");
     }
@@ -90,7 +97,7 @@ impl Tool for CsvQueryTool {
     fn description(&self) -> &'static str {
         "CSV ファイルに読み取り専用 SQL（SELECT のみ）を実行して分析する。テーブル名は `data`。\
          例: SELECT category, count(*) FROM data GROUP BY category。ファイルの閲覧権限が要る。\
-         Excel（.xlsx）も読める（左端のシートを表として読み、いちばん上の行が列の名前）。"
+         Excel（.xlsx）も読める（左端のシートを表として読む。表の上の表題の行は飛ばし、値の多い最初の行が列の名前）。"
     }
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
@@ -474,6 +481,19 @@ mod tests {
 
         let trunc = resp(vec![vec![Some("x".into()), Some("y".into())]], None, true);
         assert!(format_table(&trunc, 50).contains("一部のみ表示"));
+    }
+
+    /// Excel の表の上の表題の行を飛ばしたときは、見出しにした行を添える（GAP-83）。
+    #[test]
+    fn format_table_reports_the_header_row_after_title_rows() {
+        let mut r = resp(vec![vec![Some("1".into()), None]], Some(1), false);
+        assert!(!format_table(&r, 50).contains("行目"));
+        r.header_row = Some(3);
+        let out = format_table(&r, 50);
+        assert!(
+            out.starts_with("data の列の名前: 3 行目（上の行は表題として読まない）\n列: a, b\n"),
+            "{out}"
+        );
     }
 
     /// save_csv: 下書きが csv_drafts に載り（保存はしない）、.csv は表示名から落ちる。

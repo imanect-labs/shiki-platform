@@ -140,7 +140,8 @@ test("CSV を集計: Excel の左端のシートを読み、結果を CSV を保
     const panel = page.getByRole("complementary", { name: "ブロックの設定" });
     await page.getByTestId("rf__node-q").click();
     await expect(panel.getByText(xlsxName)).toBeVisible({ timeout: 15_000 });
-    await expect(panel.getByText("Excel のファイルは、表示しているシートのうち左端のシートを読み、値のある最初の行を列の名前にします。", { exact: false })).toBeVisible();
+    await expect(panel.getByText("Excel のファイルは、表示しているシートのうち左端のシートを読みます。", { exact: false })).toBeVisible();
+    await expect(panel.getByText("表の上にある表題の行は、列の名前にしません。", { exact: false })).toBeVisible();
     const columns = panel.getByTestId("csv-columns");
     await expect(columns).toContainText("日付（日付）", { timeout: 20_000 });
     await expect(columns).toContainText("品目（テキスト）");

@@ -173,6 +173,10 @@ pub struct RunnerResponse {
     /// 推定した区切りと改行（[`RunnerOp::Dialect`] のときだけ）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dialect: Option<CsvDialect>,
+    /// `data` の見出し（列の名前）にした行の番号（Excel の行の番号・1 から）。表の上の表題の行を飛ばしたときだけ
+    /// （GAP-83）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header_row: Option<u32>,
 }
 
 impl RunnerResponse {

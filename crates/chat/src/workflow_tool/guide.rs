@@ -319,7 +319,7 @@ pub(super) fn emit_description(
          - 文章の組み立て {{\"$template\":\"件名: {{title}}（{{count}} 件）\",\"vars\":{{\"title\":{{\"$from\":\"input\",\"path\":\"/title\"}},\"count\":…}}}}。差し込みは {{名前}} で、名前は vars のキー（vars に無い名前はエラー）。{{{{ と }}}} は差し込みではなく波括弧そのものを出す書き方（{{{{title}}}} と書くと「{{title}}」という文字が出る）。\n\
          - url・secret・skill・model など型が string の項目はリテラルの文字列だけ（参照は書けない）。テーブル・フォルダ・ファイルの id は実在する uuid を書く（data_schema・doc_search などで調べる。推測しない）。\n\
          - schedule・event で動かすワークフローの storage.write・csv.write には folder を必ず書く（省略はルートへの保存で、自動の実行はルートに書けないので有効化できない）。storage.write・csv.write は既存のファイルを上書きしない。同じ名前のファイルがあると失敗するので、毎回動くワークフローは on_name_taken に \"add_number\" を書く（「名前 (2).md」のように番号を付けて保存する）か、名前に {{\"$from\":\"run\",\"path\":\"/date\"}} を差し込む。content_type を省くとファイル名の拡張子（.md・.txt・.csv・.json・.html）から決まる。CSV（csv.write と、種類が text/csv の storage.write）は encoding に \"utf8_bom\" を書く（日本語の Windows の Excel で文字化けしない。省略は BOM なしの UTF-8。Shift_JIS だけを読む仕組みへ渡すなら \"shift_jis\"）。CSV の content には、CSV の文字のほか、csv.query の結果（{{\"$from\":\"nodes.<id>.output\"}}・{{columns, rows}} の表）や、項目のまとまりのリスト（列は項目の名前を合わせたもので名前の順）をそのまま渡せる（CSV に組み立てる。数・入れ子の値・csv.query が打ち切った表〔truncated〕は失敗する）。\n\
-         - csv.query は CSV と Excel（.xlsx。左端のシートを読み、いちばん上の行が列の名前。数式は計算せず保存された値を読む）を集計する。Excel を読めるのは csv.query だけ（csv.patch・csv.write は CSV だけ）。結果の rows は値をすべて文字で返す。数・真偽を種類のまま使う（control.branch で大小を比べる・合計を出す・列の名前がテーブルの列の参照名と同じなら data.bulk_upsert の rows に渡す）ときは items（1 行ずつ {{列の名前: 値}}。{{\"$from\":\"nodes.<id>.output\",\"path\":\"/items\"}}、1 件目の列は /items/0/<列の名前>）を使う。csv.write の content には結果の全体（{{columns, rows}} の表）を渡す。\n\
+         - csv.query は CSV と Excel（.xlsx。左端のシートを読み、表の上の表題の行は飛ばし、値の多い最初の行が列の名前。数式は計算せず保存された値を読む）を集計する。Excel を読めるのは csv.query だけ（csv.patch・csv.write は CSV だけ）。結果の rows は値をすべて文字で返す。数・真偽を種類のまま使う（control.branch で大小を比べる・合計を出す・列の名前がテーブルの列の参照名と同じなら data.bulk_upsert の rows に渡す）ときは items（1 行ずつ {{列の名前: 値}}。{{\"$from\":\"nodes.<id>.output\",\"path\":\"/items\"}}、1 件目の列は /items/0/<列の名前>）を使う。csv.write の content には結果の全体（{{columns, rows}} の表）を渡す。\n\
          - storage.list は名前の順に {list_max} 件までを返し、続きがあると truncated が true で next_cursor に続きの位置が入る。続きは、同じ folder の storage.list の cursor に {{\"$from\":\"nodes.<id>.output\",\"path\":\"/next_cursor\"}} を書いて読む（別のフォルダーの続きの位置は失敗する。省略・null は先頭から）。\n\
          - llm.invoke の prompt・agent.invoke の instruction・rag.search の query・csv.query の sql は空にしない（空のままでは有効化も実行もできない）。\n\
          - http.request は fail_on_error_status: true で、相手が 400 以上を返したときブロックを失敗にする（省略は成功として status を返す）。\n\
@@ -629,6 +629,11 @@ mod tests {
         // CSV を集計は Excel も読み、数・真偽を種類のまま使うなら items を使う（GAP-40・D-17）。
         assert!(
             d.contains("Excel を読めるのは csv.query だけ") && d.contains("\"path\":\"/items\"}"),
+            "{d}"
+        );
+        // Excel の表の上の表題の行は飛ばす（GAP-83）。
+        assert!(
+            d.contains("表の上の表題の行は飛ばし、値の多い最初の行が列の名前"),
             "{d}"
         );
         // CSV を保存に表や項目のまとまりのリストをそのまま渡せる（BUG-178）。

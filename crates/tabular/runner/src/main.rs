@@ -86,26 +86,32 @@ fn execute(req: &RunnerRequest) -> Result<RunnerResponse, String> {
         set_quotas(&conn, req)?;
         return dialect(&conn, &req.csv_path);
     }
-    let query_types = match req.format {
-        InputFormat::Csv => lockdown_load(&conn, req)?,
+    let (query_types, header_row) = match req.format {
+        InputFormat::Csv => (lockdown_load(&conn, req)?, None),
         InputFormat::Xlsx => {
             set_quotas(&conn, req)?;
             let typed = matches!(req.op, RunnerOp::Query { .. });
-            let types = match xlsx::load(&conn, &req.csv_path, typed) {
-                Ok(types) => types,
+            let (types, header_row) = match xlsx::load(&conn, &req.csv_path, typed) {
+                Ok(loaded) => loaded,
                 Err(xlsx::LoadError::Input(e)) => return Ok(RunnerResponse::input_failure(e.0)),
                 Err(xlsx::LoadError::Internal(e)) => return Err(e),
             };
             lockdown(&conn)?;
-            matches!(req.op, RunnerOp::Schema).then_some(types)
+            (
+                matches!(req.op, RunnerOp::Schema).then_some(types),
+                header_row,
+            )
         }
     };
-    match &req.op {
+    let mut response = match &req.op {
         RunnerOp::Schema => schema(&conn, query_types),
         RunnerOp::Rows { offset } => rows(&conn, *offset, req.max_rows),
         RunnerOp::Query { sql } => query::query(&conn, sql, req.max_rows, req.max_result_bytes),
         RunnerOp::Dialect => Err("unreachable: dialect".into()),
-    }
+    }?;
+    // Excel の data の見出しにした行（表の上の表題の行を飛ばしたとき・GAP-83）。
+    response.header_row = header_row;
+    Ok(response)
 }
 
 /// メモリ/スレッド/一時領域のクォータ。

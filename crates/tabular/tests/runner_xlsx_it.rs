@@ -220,6 +220,11 @@ fn n(cell: &str, v: &str, style: u32) -> String {
     format!(r#"<c r="{cell}" s="{style}"><v>{v}</v></c>"#)
 }
 
+/// 文字のセル（セルの中に書いた文字）。
+fn t(cell: &str, text: &str) -> String {
+    format!(r#"<c r="{cell}" t="inlineStr"><is><t>{text}</t></is></c>"#)
+}
+
 fn row(r: u32, cells: &[String]) -> String {
     format!(r#"<row r="{r}">{}</row>"#, cells.concat())
 }
@@ -345,6 +350,7 @@ async fn reads_the_leftmost_sheet_with_types() {
     assert_eq!(schema.columns, resp.columns);
     assert_eq!(schema.column_types, resp.column_types);
     assert_eq!(schema.total_rows, Some(4));
+    assert_eq!(schema.header_row, None, "表題の行は無い");
     let grid = run(&file, RunnerOp::Rows { offset: 0 }).await;
     assert!(grid.ok, "{:?}", grid.error);
     assert_eq!(grid.rows[0][2].as_deref(), Some("1200"));
@@ -460,6 +466,143 @@ async fn names_columns_and_decides_types_like_the_csv_reader() {
             json!("2024-04-02")
         ]
     );
+}
+
+/// 見出しの決め方の例（名前・シートの行・列の名前・見出しにした行・表の行の数）。
+type HeaderCase<'a> = (&'a str, Vec<String>, Vec<&'a str>, Option<u32>, u64);
+
+/// 表の上の表題の行（GAP-83）。材料（sales.xlsx・make_sales_xlsx.py）の左端のシートは、1 行目に表題、2 行目の右に
+/// 注記、4 行目に見出しがある。表題と注記を飛ばして 4 行目を列の名前にし、数と日付の列は種類のまま読む。列の案内は
+/// 見出しにした行の番号を返す。
+#[tokio::test]
+async fn skips_title_rows_above_the_header() {
+    let Some(_) = runner_path() else {
+        return;
+    };
+    let file = write_file(include_bytes!("fixtures/sales.xlsx"));
+    let schema = run(&file, RunnerOp::Schema).await;
+    assert!(schema.ok, "{:?}", schema.error);
+    assert_eq!(schema.columns, ["日付", "品目", "金額"]);
+    assert_eq!(schema.column_types, ["DATE", "VARCHAR", "BIGINT"]);
+    assert_eq!((schema.total_rows, schema.header_row), (Some(3), Some(4)));
+    let resp = run(&file, query("SELECT 品目, 金額 FROM data ORDER BY 日付")).await;
+    assert!(resp.ok, "{:?}", resp.error);
+    assert_eq!(
+        resp.values,
+        [
+            [json!("交通費"), json!(1200)],
+            [json!("会議費"), json!(3000)],
+            [json!("宿泊費"), json!(9800)]
+        ]
+    );
+    assert_eq!(resp.header_row, Some(4));
+
+    // 見出しの決め方。表題の行と表題だけの列は表に入れない。見出しの 1 つが空でも見出しのまま（空は column{位置}）。
+    // 表題の無い表は先頭の行が見出し。表の中に右へ備考を書いた幅の広い行があっても、見出しを飛ばさない。
+    let wide: Vec<String> = ["C4", "D4", "E4", "F4", "G4", "H4"]
+        .iter()
+        .map(|c| t(c, "備考"))
+        .collect();
+    let cases: Vec<HeaderCase<'_>> = vec![
+        (
+            "表より左の表題",
+            vec![
+                row(1, &[t("A1", "売上一覧")]),
+                row(3, &[t("B3", "品目"), t("C3", "金額"), t("D3", "備考")]),
+                row(4, &[t("B4", "交通費"), n("C4", "1200", 0), t("D4", "電車")]),
+                row(5, &[t("B5", "会議費"), n("C5", "3000", 0)]),
+            ],
+            vec!["品目", "金額", "備考"],
+            Some(3),
+            2,
+        ),
+        (
+            "2 列の表の表題",
+            vec![
+                row(1, &[t("A1", "売上")]),
+                row(3, &[t("A3", "品目"), t("B3", "金額")]),
+                row(4, &[t("A4", "交通費"), n("B4", "1200", 0)]),
+                row(5, &[t("A5", "会議費"), n("B5", "3000", 0)]),
+            ],
+            vec!["品目", "金額"],
+            Some(3),
+            2,
+        ),
+        (
+            "見出しの中ほどが空",
+            vec![
+                row(1, &[t("A1", "品目"), t("C1", "金額")]),
+                row(2, &[t("A2", "交通費"), t("B2", "電車"), n("C2", "1200", 0)]),
+                row(3, &[t("A3", "会議費"), t("B3", "社内"), n("C3", "3000", 0)]),
+            ],
+            vec!["品目", "column1", "金額"],
+            None,
+            2,
+        ),
+        (
+            "見出しの右端が空",
+            vec![
+                row(1, &[t("A1", "品目"), t("B1", "金額")]),
+                row(2, &[t("A2", "交通費"), n("B2", "1200", 0), t("C2", "電車")]),
+                row(3, &[t("A3", "会議費"), n("B3", "3000", 0), t("C3", "社内")]),
+            ],
+            vec!["品目", "金額", "column2"],
+            None,
+            2,
+        ),
+        (
+            "表題の無い疎な表",
+            vec![
+                row(1, &[t("A1", "品目"), t("B1", "金額"), t("C1", "備考")]),
+                row(2, &[t("A2", "交通費"), n("B2", "1200", 0)]),
+                row(3, &[t("A3", "会議費")]),
+                row(4, &[t("A4", "宿泊費"), n("B4", "9800", 0), t("C4", "出張")]),
+            ],
+            vec!["品目", "金額", "備考"],
+            None,
+            3,
+        ),
+        (
+            "表の中の幅の広い行",
+            vec![
+                row(1, &[t("A1", "品目"), t("B1", "金額")]),
+                row(2, &[t("A2", "交通費"), n("B2", "1200", 0)]),
+                row(3, &[t("A3", "会議費"), n("B3", "3000", 0)]),
+                row(
+                    4,
+                    &[&[t("A4", "宿泊費"), n("B4", "9800", 0)][..], &wide[..]].concat(),
+                ),
+                row(5, &[t("A5", "交通費"), n("B5", "800", 0)]),
+            ],
+            vec![
+                "品目", "金額", "column2", "column3", "column4", "column5", "column6", "column7",
+            ],
+            None,
+            4,
+        ),
+        (
+            "1 列の表",
+            vec![
+                row(1, &[t("A1", "名前")]),
+                row(2, &[t("A2", "あ")]),
+                row(3, &[t("A3", "い")]),
+            ],
+            vec!["名前"],
+            None,
+            2,
+        ),
+    ];
+    for (case, rows, columns, header_row, total) in cases {
+        let file = write_file(&zip(&book(&[("表", "", rows.concat())], &["値"])));
+        let schema = run(&file, RunnerOp::Schema).await;
+        assert!(schema.ok, "{case}: {:?}", schema.error);
+        assert_eq!(schema.columns, columns, "{case}");
+        assert_eq!(
+            (schema.header_row, schema.total_rows),
+            (header_row, Some(total)),
+            "{case}"
+        );
+    }
 }
 
 /// 外部のブックへの参照を持つ数式は、保存された値を読む（参照はたどらない）。XML の外部の実体（DOCTYPE）は
