@@ -590,7 +590,9 @@ cron の評価区間は `workflow_trigger.last_planned_at`（watermark）→ 現
 3. `workflow_run` を作成し、jobq へ enqueue。occurrence の時刻は run の行の `scheduled_at` に同じ Tx で書く（実行情報の予定の日時・
    ir.md §3.1・GAP-15。occurrence の `run_id` は run を作った後に書くので、ワーカーが最初の step を取る時点でも読めるよう run の行に持たせる）。
    起動口（`RunLauncher::launch`）へ渡す schedule の payload は `null` のまま（トレイトの約束を変えない）。予定の時刻は、発火が起動口を
-   呼んでいる間だけ `scheduler::current_scheduled_at` で読め、起動口がそれを run の行に書く。
+   呼んでいる間だけ `scheduler::current_scheduled_at` で読め、起動口がそれを run の行に書く。手動の実行で試す予定の日時
+   （GAP-88）は起動口の `RunTrial` で、`workflow.start` の子の予定の日時（GAP-90）は run を作る Tx で親の行から読む
+   （親の鎖を引き継ぐのと同じ読み・`RunOrigin` と `start_child` の形は変えない）。
 
 クラッシュ再起動時、UNIQUE により同一 `scheduled_at` は二度と投入されない（enqueue 直後に死んでも再起動で occurrence 衝突＝スキップ。Task 10.3 受け入れ条件）。
 
@@ -1218,6 +1220,11 @@ agent.invoke の会計の利用元は `workflow`（自律版のループでも `
 
 実行履歴 UI の正 = `workflow_run`/`step_execution` テーブル ＋ `run_event`。入出力プレビューは `output`（spill 時は blob 参照・§12）を **シークレットレダクト済み**で表示する。**レダクトは記録時（保存前）に実施**し、表示時レダクトに頼らない（secrets の write-only 原則・miniapp-platform §5）。
 
+一覧と詳細は、run の予定の日時（`scheduled_at`）と由来（`scheduled_at_source`）を返す。由来は列に持たず、run の行から
+導く（`run::planned::SCHEDULED_FROM`）: きっかけが `schedule` なら `schedule`（その回の予定の時刻。止まっていた後の発火や、
+多重度で待たされた run でも変わらない）、親の run（`cause_run_id`）があれば `parent`（`workflow.start` の子が引き継いだ日時）、
+ほかは `specified`（手動の実行で指定した日時）。予定の日時の無い run はどちらも null（GAP-89）。
+
 実行の詳細の step は**実行の順**に並べる: 状態が変わった時刻（`updated_at`）の順にし、まだ実行していない step（`pending`・`ready`）は末尾に置く。1 つの前進の Tx（§4.1。ブロックの完了と、通らなかった後続の skip）で書いた step は同じ時刻になるので、その中は run の `step_order`（本体のトポロジカル順・同じ段なら IR 順・`control.map` の後ろに領域の中の順）で並べる。`step_order` は run の作成時に IR から決めて run に持たせ、読取口は ir_snapshot を開かない。`step_order` を持たない古い run は step_path の順になる（BUG-117）。
 
 外部の応答に反射した secret の平文（GAP-09 の T0）は、`http.request` ノードと `Shiki.http.request` が step の出力・script へ返す前に `[REDACTED]` に置き換える（その呼び出しで解決した平文だけ）。**マスクは完全一致**で、平文のほかに登録するのは反射しやすい変形だけ: 前後の空白を落とした形・JSON の文字列としてエスケープした形（標準・`\/`・`\uXXXX`）・%エンコードした形（RFC 3986・`encodeURIComponent`・フォーム）。JSON の本文はキーも置き換え、テキストにする本文（JSON として読めない・1MB 超）は全体をマスクしてから 1MB に切る。ほかの符号化（base64・HTML の文字参照など）・平文の一部・4 文字未満の平文はマスクできない。
@@ -1228,7 +1235,9 @@ v1 は次の 2 つだけを提供する。step 単位の入力編集リプレイ
 
 - **失敗 step からの再開**: 同一 run 内で failed step を `ready` に戻す。成功済み checkpoint は再利用する（再実行しない）。
 - **run の再実行**: 新規 run（同一 input）を作成する。手動の実行で試したきっかけの内容（`trigger_payload`・D-93）も
-  引き継ぐ（引き継がないと、新しい run の `$from trigger` が入力の値になる）。
+  引き継ぐ（引き継がないと、新しい run の `$from trigger` が入力の値になる）。run の予定の日時（`scheduled_at`・スケジュールの
+  予定の時刻・指定した日時・親から引き継いだ日時）も引き継ぎ、同じ予定の分をやり直す（新しい run は手動の実行で指定した
+  日時として履歴に出る・GAP-88）。
 - **再開を勧めるか**（BUG-132）: 実行履歴の詳細は、失敗した run に `resume`（`advice`・`offer`・`note`）を返す。再開は
   ピンした IR・run の入力・きっかけの内容・完了した step の結果をそのまま使うので、それだけで決まる失敗（`run/failure.rs`
   の `SAME_RESULT_CODES`: params の誤り・参照の解決・型・使ってよい操作の天井など）は再開しても同じ結果
