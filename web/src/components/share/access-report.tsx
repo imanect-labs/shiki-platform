@@ -5,7 +5,8 @@
 /// 共有した相手は、相手自身の権限でボタンを押し、表を見る。アプリやワークフローを共有しても、書き先のテーブルなどの
 /// 権限が足りなければ使えないので、作る人に、部品が要る権限と、共有している相手ごとに足りない権限と直し方を見せる。
 /// 判定はサーバー（`POST /mini-apps/{id}/access-check`・`POST /workflows/{id}/access-check`）が決め、ここは言葉にするだけ。
-/// 相手ごとの結果は持ち主にだけ返る。自分に見えない対象は名前を出さず、相手の権限も確かめない。
+/// 相手ごとの結果は持ち主にだけ返る。自分に見えない対象は名前を出さない。相手の権限は、自分が持ち主の対象だけ確かめる
+/// （ほかの人のテーブルやファイルは、その持ち主に確かめてもらう）。
 
 import * as React from "react";
 import { AlertCircle, CheckCircle2, Loader2, RotateCcw, TriangleAlert } from "lucide-react";
@@ -97,8 +98,12 @@ export function AccessReportView({
   // 確かめられなかったもの（実行のときに決まる・見えない・上限）があれば、「全員使える」と言い切らない（付録 C の P7）。
   const anyUnchecked = (subjects ?? []).some((s) => s.statuses.includes("unchecked"));
   const scope = anyUnchecked ? "確かめられた範囲では、" : "";
+  // 1 つも確かめられなかった（どれもほかの人が持ち主の対象など）ときは、「全員使える」と言わない。
+  const anyChecked = (subjects ?? []).some((s) => s.statuses.some((st) => st !== "unchecked"));
   const hasDynamic = report.needs.some((n) => n.dynamic);
   const hasHidden = report.needs.some((n) => !n.dynamic && !n.target);
+  // 見えるが持ち主でない対象は、相手の権限を確かめていない（相手ごとの結果があるときだけ言う）。
+  const hasUnmanaged = subjects !== null && report.needs.some((n) => n.target && !n.manageable);
 
   // 公開の確認: 相手ごとの結果があるとき（持ち主）だけ、足りない相手を短く出す。
   if (mode === "publish") {
@@ -106,7 +111,11 @@ export function AccessReportView({
     return (
       <section aria-label={title} data-testid="access-report" className="space-y-1">
         <h3 className="text-xs font-medium text-foreground/70">{title}</h3>
-        {missingCount === 0 ? (
+        {!anyChecked ? (
+          <p className="text-muted-foreground" data-testid="access-report-none-checked">
+            共有している相手の権限は、ここでは確かめられません。理由は共有の画面で見られます。
+          </p>
+        ) : missingCount === 0 ? (
           <p className="flex items-start gap-1.5 text-muted-foreground" data-testid="access-report-all-ok">
             <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-primary" aria-hidden />
             {scope}共有している相手は全員、このバージョンのボタンと表を使えます。
@@ -164,7 +173,7 @@ export function AccessReportView({
           {report.unavailable.map((p) => partPhrase(p)).join("、")}が見つかりません。{thing}を編集して直してください。
         </p>
       ) : null}
-      {subjects && subjects.length > 0 ? (
+      {subjects && subjects.length > 0 && anyChecked ? (
         withProblems.length === 0 ? (
           <p className="flex items-start gap-1.5 text-xs text-muted-foreground" data-testid="access-report-all-ok">
             <CheckCircle2 className="mt-0.5 size-3.5 shrink-0 text-primary" aria-hidden />
@@ -213,14 +222,19 @@ export function AccessReportView({
           </ul>
         )
       ) : null}
-      {hasDynamic || hasHidden || report.truncated || report.more_subjects ? (
+      {hasDynamic || hasHidden || hasUnmanaged || report.truncated || report.more_subjects ? (
         <ul className="space-y-0.5 text-[11px] text-muted-foreground" data-testid="access-report-notes">
           {hasDynamic ? <li>実行のときに決まる対象は、前もって確かめられません。</li> : null}
           {hasHidden ? (
             <li>あなたが見られないか、削除された対象は確かめていません。必要なら、対象の持ち主に共有を頼んでください。</li>
           ) : null}
+          {hasUnmanaged ? (
+            <li>ほかの人が持ち主のテーブルやファイルは、相手の権限を確かめていません。その持ち主に確かめてもらってください。</li>
+          ) : null}
           {report.truncated ? <li>対象が多いため、一部だけ確かめました。</li> : null}
-          {report.more_subjects ? <li>共有している相手が多いため、最初の 20 件だけ確かめました。</li> : null}
+          {report.more_subjects ? (
+            <li>共有している相手が多いため、最初の {subjects?.length ?? 0} 件だけ確かめました。</li>
+          ) : null}
         </ul>
       ) : null}
     </section>
