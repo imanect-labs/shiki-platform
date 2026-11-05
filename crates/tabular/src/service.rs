@@ -31,6 +31,9 @@ pub struct Quotas {
     pub memory_limit_mb: u32,
     pub max_rows: u32,
     pub page_size: u32,
+    /// 1 クエリで読み込む CSV の合計バイト数の上限（主ファイル＋追加ファイル）。api プロセスは
+    /// 取得した CSV を一時ファイルへ書くまでメモリに持つため、複数 CSV の同時取得で使う量を抑える。
+    pub max_query_input_bytes: u64,
 }
 
 impl Default for Quotas {
@@ -39,6 +42,7 @@ impl Default for Quotas {
             memory_limit_mb: 512,
             max_rows: 10_000,
             page_size: 1_000,
+            max_query_input_bytes: 1024 * 1024 * 1024,
         }
     }
 }
@@ -144,10 +148,31 @@ impl TabularService {
                 ids.push(t.file_id);
             }
         }
-        // 全ファイルを並行に取得する（各取得が viewer を個別に要求する）。件数は validate_tables で
-        // 上限済み（主ファイル込み 1 + MAX_EXTRA_TABLES）＝並列度は有界。try_join_all は最初の
-        // 失敗で残りの取得を破棄するので、読めないファイルがあれば他の CSV をダウンロードし切らない。
+        // 1) ダウンロードの前に、全ファイルの viewer をメタデータで確認し（読めないファイルが 1 つでも
+        //    あれば何も取得しない）、入力の合計サイズを予算内に収める。件数は validate_tables で上限済み
+        //    （主ファイル込み 1 + MAX_EXTRA_TABLES）＝並列度は有界。
+        let metas = try_join_all(
+            ids.iter()
+                .map(|id| self.storage.get_metadata(ctx, *id, trace_id)),
+        )
+        .await?;
+        let mut total: u64 = 0;
+        for (id, node) in ids.iter().zip(&metas) {
+            if node.kind != NodeKind::File {
+                return Err(TabularError::NotFound(format!("file {id}")));
+            }
+            total = total.saturating_add(u64::try_from(node.size_bytes.unwrap_or(0)).unwrap_or(0));
+        }
+        self.check_input_budget(total)?;
+        // 2) 並行に取得する（各取得も viewer を要求する＝メタデータ確認後の剥奪も拾う）。
+        //    try_join_all は最初の失敗で残りの取得を破棄する。
         let fetched = try_join_all(ids.iter().map(|id| self.fetch_csv(ctx, *id, trace_id))).await?;
+        // メタデータ確認と取得の間に内容が差し替わって大きくなった場合も、ランナーへ渡さない。
+        let fetched_total = fetched
+            .iter()
+            .map(|f| f.as_file().metadata().map_or(u64::MAX, |m| m.len()))
+            .fold(0u64, u64::saturating_add);
+        self.check_input_budget(fetched_total)?;
         let path_of: HashMap<Uuid, &std::path::Path> = ids
             .iter()
             .copied()
@@ -303,6 +328,18 @@ impl TabularService {
             });
         }
         Ok(response)
+    }
+
+    /// 1 クエリの入力合計（バイト）が予算内か。超過は [`TabularError::QuotaExceeded`]。
+    fn check_input_budget(&self, total: u64) -> Result<(), TabularError> {
+        if total > self.quotas.max_query_input_bytes {
+            return Err(TabularError::QuotaExceeded(format!(
+                "読み込む CSV の合計サイズが上限を超えています（{} MiB / 上限 {} MiB）",
+                total / (1024 * 1024),
+                self.quotas.max_query_input_bytes / (1024 * 1024)
+            )));
+        }
+        Ok(())
     }
 
     pub fn page_size(&self) -> u32 {

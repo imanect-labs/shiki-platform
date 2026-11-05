@@ -273,6 +273,8 @@ fn config(db_url: &str) -> AppConfig {
 
 struct Env {
     app: axum::Router,
+    /// 隔離ランナーのパス（クォータを変えた TabularService を別に組む用）。
+    runner: PathBuf,
     storage: Arc<storage::StorageService>,
     ctx: authz::AuthContext,
     authz: Arc<AllowAll>,
@@ -366,6 +368,7 @@ async fn setup() -> Option<Env> {
     );
     Some(Env {
         app,
+        runner: runner.clone(),
         storage,
         ctx: authz::AuthContext::new(principal(), "acme".into(), "default".into()),
         authz: allow,
@@ -753,4 +756,60 @@ async fn tabular_query_joins_multiple_csv() {
     .await;
     assert_eq!(st, StatusCode::NOT_FOUND, "{body:?}");
     assert!(body.get("rows").is_none(), "部分結果を返さない: {body:?}");
+}
+
+/// #1037: 入力の合計サイズが予算を超えるクエリは、ランナーへ渡さずクォータ超過で拒否する
+/// （api プロセスが複数 CSV を同時に抱え込まないための上限）。
+#[tokio::test]
+async fn tabular_query_rejects_inputs_over_budget() {
+    let Some(env) = setup().await else { return };
+    let a = create_csv(&env, b"k,v\n1,aaaaaaaaaa\n").await;
+    let b = create_csv(&env, b"k,w\n1,bbbbbbbbbb\n").await;
+    let small = tabular::TabularService::new(
+        Arc::clone(&env.storage),
+        tabular::RunnerConfig::new(
+            env.runner.to_string_lossy().to_string(),
+            Duration::from_secs(20),
+        ),
+        tabular::Quotas {
+            max_query_input_bytes: 20,
+            ..tabular::Quotas::default()
+        },
+    );
+    let tables = [tabular::TableRef {
+        name: "other".into(),
+        file_id: b,
+    }];
+    let res = small
+        .query_tables(
+            &env.ctx,
+            a,
+            &tables,
+            "SELECT * FROM data JOIN other USING (k)",
+            None,
+        )
+        .await;
+    assert!(
+        matches!(res, Err(tabular::TabularError::QuotaExceeded(_))),
+        "合計が予算超過なら拒否: {res:?}"
+    );
+    // 予算内なら同じクエリが通る（拒否は予算のせいであること）。
+    let ok = tabular::TabularService::new(
+        Arc::clone(&env.storage),
+        tabular::RunnerConfig::new(
+            env.runner.to_string_lossy().to_string(),
+            Duration::from_secs(20),
+        ),
+        tabular::Quotas::default(),
+    )
+    .query_tables(
+        &env.ctx,
+        a,
+        &tables,
+        "SELECT * FROM data JOIN other USING (k)",
+        None,
+    )
+    .await
+    .expect("予算内");
+    assert_eq!(ok.rows.len(), 1);
 }

@@ -212,6 +212,7 @@ async fn run() -> anyhow::Result<()> {
             memory_limit_mb: config.tabular.memory_limit_mb,
             max_rows: config.tabular.max_rows,
             page_size: config.tabular.page_size,
+            ..tabular::Quotas::default()
         },
     ));
 
