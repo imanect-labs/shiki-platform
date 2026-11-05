@@ -1,11 +1,13 @@
 //! 回答の画像の代理取得ルート（#1044・PIT-77）。
 //!
 //! 回答の Markdown 画像をブラウザから外部へ直接読ませない。shiki-server が代わりに取得して返す。
-//! - 認可はスレッドの viewer（`ChatStore::answer_image_source` が判定し、監査も残る）。
+//! - 認可はスレッドの viewer（`ChatStore::answer_image_source` が判定する。拒否は監査に残る）。
 //! - **出所に無い URL は取得しない**（404）。出所はその回答で取得した Web ページの本文と Web の引用の
 //!   抜粋で、判定はサーバ側で行う（`chat::answer_images`）。フロントの判定は見た目だけ。
 //! - 取得するのは出典に書かれていた字句の URL（回答側の書き分けを通信に効かせない）。
 //! - 取得は `web_fetch` と同じ関門（URL 検証・解決後 IP の検証とアドレス固定）を通る。
+//! - 取得した画像はテナント単位で 1 時間キャッシュし、外部への取得は同時実行数を絞る（`chat_images_cache`）。
+//!   1 回の要求の取得（リダイレクトを含む）は [`FETCH_DEADLINE`] で打ち切る。
 //!
 //! 失敗の理由はログにだけ残す。クライアントには 404 / 502 だけを返し、フロントは「外部の画像」の
 //! リンクに落とす。
@@ -28,7 +30,8 @@ use crate::{
 };
 
 use super::chat::chat_store;
-use super::chat_images_fetch::{fetch_image, FetchedImage, ImageFetchError};
+use super::chat_images_cache::{acquire_fetch_slot, CachedImage, CACHE};
+use super::chat_images_fetch::{fetch_image, ImageFetchError};
 use agent_core::tools::public_fetch::public_only;
 
 /// 画像の URL（回答の Markdown に書かれていたもの）。
@@ -38,8 +41,12 @@ pub struct AnswerImageQuery {
     pub u: String,
 }
 
-/// 受け付ける URL の長さの上限（出所側の上限と揃える）。
-const MAX_URL_LEN: usize = 2048;
+/// 受け付ける URL の長さの上限。出所側は出典の字句を 2048 文字までにしており、フロントが送るのはその
+/// パーセントエンコード後の形なので、少し広く取る（濫用の入口を塞ぐための上限で、照合は出所側で行う）。
+const MAX_URL_LEN: usize = 8192;
+
+/// 1 回の要求で外部へ取得する時間の上限（名前解決・リダイレクトを含む全体）。
+const FETCH_DEADLINE: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// 回答に描く Web の画像を、shiki-server が代わりに取得して返す。
 #[utoipa::path(
@@ -54,7 +61,7 @@ const MAX_URL_LEN: usize = 2048;
         (status = 403, description = "認可されていない"),
         (status = 404, description = "出所に無い・取得できない形式"),
         (status = 502, description = "取得先が失敗した"),
-        (status = 503, description = "chat 無効"),
+        (status = 503, description = "chat 無効・取得の同時実行数が上限"),
     ),
     security(("session" = [])),
 )]
@@ -75,8 +82,29 @@ pub async fn get_answer_image(
         return Err(ApiError::NotFound);
     };
 
-    match fetch_image(&SystemResolver, &source, public_only).await {
-        Ok(image) => Ok(image_response(image)),
+    // 認可と出所の判定は毎回通したうえで、取得の結果だけをキャッシュから返す。
+    if let Some(hit) = CACHE.get(&ctx.tenant_id, &source) {
+        return Ok(image_response(hit));
+    }
+    let Some(_slot) = acquire_fetch_slot().await else {
+        tracing::info!(target: "answer_image", %thread_id, %message_id, "取得の同時実行数が上限のため断りました");
+        return Ok(StatusCode::SERVICE_UNAVAILABLE.into_response());
+    };
+    let fetched = tokio::time::timeout(
+        FETCH_DEADLINE,
+        fetch_image(&SystemResolver, &source, public_only),
+    )
+    .await
+    .unwrap_or_else(|_| Err(ImageFetchError::Upstream("取得の期限を過ぎた".into())));
+    match fetched {
+        Ok(image) => {
+            let cached = CachedImage {
+                mime: image.mime,
+                bytes: image.bytes.into(),
+            };
+            CACHE.put(&ctx.tenant_id, &source, cached.clone());
+            Ok(image_response(cached))
+        }
         Err(e) => {
             tracing::info!(target: "answer_image", %thread_id, %message_id, reason = e.reason(), "画像を代理取得できませんでした");
             Ok(failure_status(&e).into_response())
@@ -96,7 +124,7 @@ fn failure_status(e: &ImageFetchError) -> StatusCode {
 }
 
 /// 取得した画像の応答。型は中身から判定したもの。
-fn image_response(image: FetchedImage) -> Response {
+fn image_response(image: CachedImage) -> Response {
     let headers = [
         (header::CONTENT_TYPE, HeaderValue::from_static(image.mime)),
         // 判定した型以外として解釈させない・取得した中身にスクリプトや取得を許さない。
@@ -150,8 +178,8 @@ mod tests {
 
     #[test]
     fn image_response_is_locked_down() {
-        let res = image_response(FetchedImage {
-            bytes: vec![0x89, b'P', b'N', b'G'],
+        let res = image_response(CachedImage {
+            bytes: vec![0x89, b'P', b'N', b'G'].into(),
             mime: "image/png",
         });
         assert_eq!(res.status(), StatusCode::OK);

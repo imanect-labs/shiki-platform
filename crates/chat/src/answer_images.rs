@@ -15,12 +15,11 @@ use url::Url;
 
 use crate::model::{ContentBlock, StreamEventKind};
 
-/// ページの本文を返すツール（封筒の内側がページ由来）。
-const WEB_PAGE_TOOL: &str = "web_fetch";
-/// web_fetch の封筒（`crates/agent-core/src/tools/web_fetch/envelope.rs`）。ページ由来の本文の
-/// `<web_page` / `</web_page` はサーバが実体参照に潰すので、**最初の**閉じタグが本物。
-const PAGE_OPEN: &str = "<web_page>";
-const PAGE_CLOSE: &str = "</web_page>";
+/// ページの本文を返すツール（封筒の内側がページ由来）。語彙は codegen の単一定義から引く。
+const WEB_PAGE_TOOL: &str = agent_core::ToolName::WebFetch.as_str();
+/// web_fetch の封筒（正本は agent-core）。ページ由来の本文の `<web_page` / `</web_page` は
+/// サーバが実体参照に潰すので、**最初の**閉じタグが本物。
+use agent_core::tools::web_fetch::{PAGE_CLOSE, PAGE_OPEN};
 
 /// 画像の代替テキスト・`<img` の属性・URL の長さの上限（フロントの正規表現と同じ。敵対的な本文で
 /// 二次時間にならないよう、各部分を有界にする）。
@@ -136,22 +135,28 @@ fn markdown_image_urls(text: &str, out: &mut Vec<String>) {
         if i < b.len() && b[i] == b'<' {
             i += 1;
         }
-        let start = i;
+        // URL: 空白・`<` `>` `(` `)` `\` 以外の文字、または `\` で始まる 2 文字（フロントの正規表現と同じ）。
+        // 非 ASCII（`グラフ.png` のような URL）もそのまま拾う。MAX_URL 文字を超えたものは捨てる。
         let mut url = String::new();
-        while i < b.len() && i - start < MAX_URL * 2 {
-            let c = b[i];
-            if c == b'\\' && i + 1 < b.len() && b[i + 1] < 0x80 {
-                url.push(b[i + 1] as char);
-                i += 2;
-                continue;
-            }
-            if c.is_ascii_whitespace() || matches!(c, b'<' | b'>' | b'(' | b')') || c >= 0x80 {
+        let mut count = 0usize;
+        let mut chars = text[i..].chars();
+        while let Some(c) = chars.next() {
+            if count > MAX_URL {
                 break;
             }
-            url.push(c as char);
-            i += 1;
+            if c == '\\' {
+                match chars.next() {
+                    Some(next) => url.push(next),
+                    None => break,
+                }
+            } else if c.is_whitespace() || matches!(c, '<' | '>' | '(' | ')') {
+                break;
+            } else {
+                url.push(c);
+            }
+            count += 1;
         }
-        if !url.is_empty() && url.len() <= MAX_URL {
+        if !url.is_empty() && count <= MAX_URL {
             out.push(url);
         }
     }
@@ -417,6 +422,22 @@ mod tests {
             resolve_source(&s, "https://img.example.com/abc.png#frag").as_deref(),
             Some("https://img.example.com/abc.png")
         );
+    }
+
+    #[test]
+    fn non_ascii_urls_are_collected_whole() {
+        let s = collect_image_sources(["![図](https://img.example.com/グラフ.png) の説明"]);
+        // フロントは react-markdown がパーセントエンコードした src で問い合わせる。
+        assert_eq!(
+            resolve_source(
+                &s,
+                "https://img.example.com/%E3%82%B0%E3%83%A9%E3%83%95.png"
+            )
+            .as_deref(),
+            Some("https://img.example.com/%E3%82%B0%E3%83%A9%E3%83%95.png")
+        );
+        // 途中で切った URL（ホストだけ）を出所にしない。
+        assert!(resolve_source(&s, "https://img.example.com/").is_none());
     }
 
     #[test]

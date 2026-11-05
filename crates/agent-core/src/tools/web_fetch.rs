@@ -41,6 +41,11 @@ use crate::tool::{Tool, ToolError, ToolOutcome};
 mod decode;
 mod doc;
 mod envelope;
+
+/// 封筒の開き・閉じタグ（ページ由来の本文の境界）。出所の判定（回答の画像・#1044）が参照する正本。
+pub const PAGE_OPEN: &str = envelope::OPEN;
+/// 封筒の閉じタグ。ページ由来の本文の同じ文字列は実体参照に潰すので、最初のものが本物。
+pub const PAGE_CLOSE: &str = envelope::CLOSE;
 mod extract;
 mod input;
 mod render;

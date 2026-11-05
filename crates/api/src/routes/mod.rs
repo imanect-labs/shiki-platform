@@ -11,6 +11,7 @@ pub mod chat_autonomous;
 pub mod chat_dto;
 pub mod chat_feedback;
 pub mod chat_images;
+mod chat_images_cache;
 mod chat_images_fetch;
 pub mod chat_manage;
 pub(crate) mod chat_selection;

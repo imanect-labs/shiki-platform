@@ -54,11 +54,13 @@ pub fn validate_url(input: &str) -> Result<FetchTarget, String> {
         }
         None => return Err("ホストがありません".into()),
     };
-    // 内部/ローカル名を拒否（SSRF・confused-deputy の素地を断つ）。
+    // 内部/ローカル名を拒否（SSRF・confused-deputy の素地を断つ）。末尾のドット（`localhost.`・
+    // `metadata.google.internal.` のような完全修飾の書き方）を落としてから比べる。
+    let bare = host.trim_end_matches('.');
     let forbidden_suffixes = [".local", ".internal", ".localhost", ".lan", ".home.arpa"];
-    if !host.contains('.')
-        || host == "localhost"
-        || forbidden_suffixes.iter().any(|s| host.ends_with(s))
+    if !bare.contains('.')
+        || bare == "localhost"
+        || forbidden_suffixes.iter().any(|s| bare.ends_with(s))
     {
         return Err("内部/ローカルホストは取得できません".into());
     }
@@ -165,6 +167,9 @@ mod tests {
             "http://localhost/",
             "http://svc.internal/",
             "http://printer.local/",
+            "http://localhost./",
+            "http://rustfs./",
+            "http://metadata.google.internal./",
         ] {
             assert!(validate_url(bad).is_err(), "should reject {bad:?}");
         }

@@ -1,10 +1,12 @@
 //! 回答の画像プロキシの出所判定（`ChatStore` の一部・#1044）。
 //!
 //! 規則は [`crate::answer_images`]。ここは「どの本文を出所として数えるか」を、閲覧者の権限で決める:
-//! - スレッドの viewer 認可（[`ChatStore::get_message`] が掛ける・監査も残る）。
+//! - スレッドの viewer 認可（[`ChatStore::get_message`] が掛ける。拒否は監査に残る。許可された代理取得は
+//!   監査に書かず、取得の失敗だけを `answer_image` のログに残す）。
 //! - ツール結果は **run の実行者本人にだけ**数える（`get_messages` が他の閲覧者に伏せるのと同じ規則・
 //!   #386）。他の閲覧者は Web の引用の抜粋に現れた画像だけ。
-//! - 生成中はメッセージ本体がまだ空なので、その run のイベント（ツール呼び出し・結果・引用）も見る。
+//! - 生成中はメッセージ本体がまだ空なので、**進行中の run に限り**そのイベント（ツール呼び出し・結果・引用）も見る。
+//!   確定後は本体に同じものが写っているので、イベントは読まない（出所に無い URL の問い合わせで重い読み取りをさせない）。
 
 use uuid::Uuid;
 
@@ -17,7 +19,7 @@ use crate::answer_images::{
     collect_image_sources, page_texts_from_blocks, page_texts_from_events, resolve_source,
 };
 use crate::error::ChatError;
-use crate::model::{Role, StreamEventKind};
+use crate::model::{Role, RunStatus, StreamEventKind};
 
 /// 出所を探すときに読むイベントの上限（1 回答のツール呼び出し・結果・引用）。
 /// 極端に長い run でも 1 リクエストの読み取りを有界にする。
@@ -47,15 +49,15 @@ impl ChatStore {
 
         // この回答を生成した run と実行者。actor が一意に定まらなければ「本人と確定できない」側に倒す
         // （`redact_tool_results_for_viewer` と同じ fail-closed）。
-        let runs: Vec<(Uuid, String)> = sqlx::query_as(
-            "SELECT run_id, actor FROM generation_run WHERE message_id = $1 AND tenant_id = $2",
+        let runs: Vec<(Uuid, String, String)> = sqlx::query_as(
+            "SELECT run_id, actor, status FROM generation_run WHERE message_id = $1 AND tenant_id = $2",
         )
         .bind(message_id)
         .bind(&ctx.tenant_id)
         .fetch_all(&self.db)
         .await
         .map_err(map_db)?;
-        let is_actor = !runs.is_empty() && runs.iter().all(|(_, a)| *a == ctx.principal.id);
+        let is_actor = !runs.is_empty() && runs.iter().all(|(_, a, _)| *a == ctx.principal.id);
 
         // 保存済みの本体（確定後）。見つかればイベントは読まない。
         let texts = page_texts_from_blocks(&message.content, is_actor);
@@ -63,17 +65,22 @@ impl ChatStore {
         if let Some(found) = resolve_source(&sources, requested) {
             return Ok(Some(found));
         }
-        if runs.is_empty() {
+        // 生成中の run だけイベントを見る（確定後は本体に写っている）。状態が読めない行も進行中とはみなさない。
+        let run_ids: Vec<Uuid> = runs
+            .iter()
+            .filter(|(_, _, status)| RunStatus::parse(status).is_some_and(|s| !s.is_terminal()))
+            .map(|(id, _, _)| *id)
+            .collect();
+        if run_ids.is_empty() {
             return Ok(None);
         }
 
-        // 生成中（または本体に残らない分）は run のイベントを見る。種別で絞り、件数を有界にする。
-        let run_ids: Vec<Uuid> = runs.iter().map(|(id, _)| *id).collect();
+        // 種別で絞り、件数を有界にする。
         let rows: Vec<(Json<StreamEventKind>,)> = sqlx::query_as(
             "SELECT payload FROM generation_event \
              WHERE tenant_id = $1 AND run_id = ANY($2) \
                AND type IN ('tool_call', 'tool_result', 'citation') \
-             ORDER BY run_id, seq LIMIT $3",
+             ORDER BY seq LIMIT $3",
         )
         .bind(&ctx.tenant_id)
         .bind(&run_ids)

@@ -77,7 +77,7 @@ pub(crate) async fn fetch_image(
             .header(reqwest::header::ACCEPT, ACCEPT)
             .send()
             .await
-            .map_err(|e| ImageFetchError::Upstream(e.to_string()))?;
+            .map_err(upstream)?;
         let status = response.status();
         if status.is_redirection() {
             let location = response
@@ -102,9 +102,10 @@ pub(crate) async fn fetch_image(
         {
             return Err(ImageFetchError::TooLarge);
         }
-        let (bytes, capped) = public_fetch::read_capped(response, MAX_IMAGE_BYTES)
+        // 上限ちょうどの画像は通す（1 バイト多く読めたら超えている）。
+        let (bytes, capped) = public_fetch::read_capped(response, MAX_IMAGE_BYTES + 1)
             .await
-            .map_err(|e| ImageFetchError::Upstream(e.to_string()))?;
+            .map_err(upstream)?;
         if capped {
             return Err(ImageFetchError::TooLarge);
         }
@@ -112,6 +113,11 @@ pub(crate) async fn fetch_image(
         return Ok(FetchedImage { bytes, mime });
     }
     Err(ImageFetchError::TooManyRedirects)
+}
+
+/// reqwest のエラーから URL を落として文言にする（リダイレクト先の署名付き URL をログに残さない）。
+fn upstream(e: reqwest::Error) -> ImageFetchError {
+    ImageFetchError::Upstream(e.without_url().to_string())
 }
 
 /// 中身の先頭から画像形式を判定する。許可するのはラスタ画像だけ（SVG は通さない）。
@@ -283,6 +289,18 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, ImageFetchError::Rejected(_)), "{err:?}");
+    }
+
+    #[tokio::test]
+    async fn accepts_an_image_exactly_at_the_limit() {
+        let mut body = PNG.to_vec();
+        body.resize(MAX_IMAGE_BYTES, 0);
+        let (addr, _) = stub(vec![http("200 OK", "", &body)]).await;
+        let url = format!("http://img.example.com:{}/exact.png", addr.port());
+        let img = fetch_image(&ToStub(addr), &url, allow_loopback)
+            .await
+            .unwrap();
+        assert_eq!(img.bytes.len(), MAX_IMAGE_BYTES);
     }
 
     #[tokio::test]
