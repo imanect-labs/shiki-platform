@@ -22,13 +22,22 @@
 //!
 //! 対象が入力や前の結果で決まるとき（値の式）・まだ選んでいないときは、対象を決めずに挙げる（`object_id = None`。
 //! 呼び出し側は確かめずに「実行のときに決まる」と言う）。シークレット・別のワークフローは名前で引くので、ここでは挙げない。
+//!
+//! # 必ず通るブロックと、道によって通るブロック（BUG-216）
+//!
+//! 要る権限には、そのブロックが毎回動くかを添える（[`AccessNeed::conditional`]・決まりは [`crate::ir::paths`] の
+//! 1 か所）。分かれた流れ・「エラー時」の出口の先・繰り返しの中のブロックは、入力や結果によって動かないので、使う人の
+//! ボタンはそれだけでは止めない（通らない入力でも押せなくすると、前は動いていたボタンを止める）。
 
 use serde::Serialize;
 use utoipa::ToSchema;
 use uuid::Uuid;
 
+use std::collections::HashSet;
+
 use super::consent::suggested_grants;
 use super::{RegistrationService, SuggestedGrant};
+use crate::ir::paths::always_run;
 use crate::ir::WorkflowIr;
 use crate::vocab::NodeType;
 
@@ -81,6 +90,9 @@ pub struct AccessNeed {
     /// 対象（UUID を直接入れた欄のとき）。入力や前の結果で決まる・まだ選んでいないときは `None`。
     pub object_id: Option<Uuid>,
     pub kind: AccessKind,
+    /// 道によって通るブロックだけが要る（分かれた流れ・「エラー時」の出口の先・繰り返しの中・[`crate::ir::paths`]）。
+    /// 偽なら、前のブロックがうまくいったとき毎回要る。
+    pub conditional: bool,
 }
 
 impl RegistrationService {
@@ -89,9 +101,10 @@ impl RegistrationService {
     /// 読む・書くの区別と対象は、同意の提案と同じ定義から読み替える（[モジュールの説明](self)）。
     #[must_use]
     pub fn access_needs(ir: &WorkflowIr) -> Vec<AccessNeed> {
+        let always = always_run(ir);
         let mut out: Vec<AccessNeed> = Vec::new();
         for grant in suggested_grants(ir) {
-            let Some(need) = need_of(ir, &grant) else {
+            let Some(need) = need_of(ir, &grant, &always) else {
                 continue;
             };
             if !out.contains(&need) {
@@ -103,7 +116,7 @@ impl RegistrationService {
 }
 
 /// 同意の提案 1 つを、手動の実行で本人に要る権限に読み替える（読み替えない提案は `None`）。
-fn need_of(ir: &WorkflowIr, grant: &SuggestedGrant) -> Option<AccessNeed> {
+fn need_of(ir: &WorkflowIr, grant: &SuggestedGrant, always: &HashSet<&str>) -> Option<AccessNeed> {
     // きっかけ（trigger:i）は自動実行の委譲で読むもの（手動の実行では使わない）。
     let node_id = grant.source.strip_prefix("node:")?;
     let node = ir.nodes.iter().find(|n| n.id == node_id)?;
@@ -141,6 +154,7 @@ fn need_of(ir: &WorkflowIr, grant: &SuggestedGrant) -> Option<AccessNeed> {
         object,
         object_id,
         kind,
+        conditional: !always.contains(node_id),
     })
 }
 
@@ -170,6 +184,7 @@ mod tests {
             object,
             object_id: id.map(|s| Uuid::parse_str(s).unwrap()),
             kind,
+            conditional: false,
         }
     }
 
@@ -262,6 +277,33 @@ mod tests {
                 need("wt", Table, Some(TABLE), Read),
             ]
         );
+    }
+
+    /// 分かれた流れの片方・「エラー時」の出口の先だけが使う対象は、道によって要ると印を付ける。毎回通るブロックの
+    /// 対象は印を付けない（BUG-216: 通らない入力でも使う人のボタンを止めない）。
+    #[test]
+    fn needs_on_branches_and_error_paths_are_conditional() {
+        let ir = WorkflowIr::from_json(&json!({
+            "ir_version": 1, "name": "wf", "declared_scopes": ["data.read", "data.write"],
+            "nodes": [
+                { "id": "add", "type": "data.record.create", "params": { "table": TABLE, "data": {} }, "on_error": "continue" },
+                { "id": "b", "type": "control.branch", "params": { "condition": { "op": "eq", "left": 1, "right": 1 } } },
+                { "id": "big", "type": "data.record.delete", "params": { "table": FOLDER } },
+                { "id": "fix", "type": "data.record.update", "params": { "table": FILE } }
+            ],
+            "edges": [
+                { "from": "add", "to": "b" },
+                { "from": "b", "from_port": "true", "to": "big" },
+                { "from": "add", "from_port": "error", "to": "fix" }
+            ]
+        }))
+        .expect("test IR");
+        let needs = RegistrationService::access_needs(&ir);
+        let got: Vec<(&str, bool)> = needs
+            .iter()
+            .map(|n| (n.node_id.as_str(), n.conditional))
+            .collect();
+        assert_eq!(got, vec![("add", false), ("big", true), ("fix", true)]);
     }
 
     /// UUID でないリテラル（壊れた欄）は対象を決めずに挙げる（存在しない対象を確かめない）。
