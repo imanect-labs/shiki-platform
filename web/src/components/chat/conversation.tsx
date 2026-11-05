@@ -68,6 +68,7 @@ import { useMediaQuery } from "@/hooks/use-media-query";
 import { useStickToBottom } from "@/hooks/use-stick-to-bottom";
 import { useTurnJump } from "@/hooks/use-turn-jump";
 import { MessageFeedbackButtons, ThreadFeedbackProvider } from "./message-feedback";
+import { MessageExportMenu } from "./message-export-menu";
 import { MessageFooter } from "./message-footer";
 import { MessageCitationsProvider, SourcePanelProvider } from "./citations/citation-context";
 import { DisclosureMemoryProvider } from "./disclosure-memory";
@@ -900,6 +901,7 @@ export function Conversation({
                       onSaveAsApp={setSaveTarget}
                       latest={m.id === latestAssistantId}
                       compactDisclaimer={isPanel}
+                      threadTitle={threadTitle}
                     />
                   ),
                 )}
@@ -1277,6 +1279,7 @@ const AssistantRow = React.memo(function AssistantRow({
   onSaveAsApp,
   latest = false,
   compactDisclaimer = false,
+  threadTitle = null,
 }: {
   threadId: string;
   messageId: string;
@@ -1297,6 +1300,8 @@ const AssistantRow = React.memo(function AssistantRow({
   latest?: boolean;
   /// 免責文を短くする（分割ビューのパネル）。
   compactDisclaimer?: boolean;
+  /// 会話の題名（書き出すファイル名の候補・回答に見出しが無いとき）。
+  threadTitle?: string | null;
 }) {
   // コールバックが変わっても図・タイマーを作り直さないよう、ref で最新を呼ぶ。
   const reload = React.useRef(onUiAction);
@@ -1402,6 +1407,13 @@ const AssistantRow = React.memo(function AssistantRow({
           {evidenceOpen ? <EvidenceTable /> : null}
           {text ? (
             <MessageFooter text={text} pinned={latest}>
+              <MessageExportMenu
+                threadId={threadId}
+                messageId={savedMessageId}
+                threadTitle={threadTitle}
+                text={text}
+                citations={citations}
+              />
               {savedMessageId ? <MessageFeedbackButtons messageId={savedMessageId} /> : null}
               <EvidenceToggle open={evidenceOpen} onToggle={() => setEvidenceOpen((v) => !v)} />
             </MessageFooter>

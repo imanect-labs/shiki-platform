@@ -16,7 +16,7 @@
 import { Fragment } from "@tiptap/pm/model";
 import type { Editor } from "@tiptap/react";
 
-import { apiFetch } from "@/lib/api";
+import { markdownToDocx } from "@/lib/documents-api";
 import { parseEmbedPayload } from "@/components/notes/embed/types";
 import { serializeFragment } from "./markdown-serialize";
 
@@ -104,16 +104,5 @@ function staticizeEmbedFences(md: string): string {
 /// docx をサーバ変換（POST /documents/export）してダウンロードする。
 export async function exportNoteDocx(editor: Editor, name: string): Promise<void> {
   const markdown = buildDocxMarkdown(editor);
-  const res = await apiFetch("/documents/export", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ name, markdown }),
-  });
-  if (res.status === 503) {
-    throw new Error("文書変換サービスに接続できません。時間をおいて再試行してください (503)");
-  }
-  if (!res.ok) {
-    throw new Error(`docx への変換に失敗しました (${res.status})`);
-  }
-  downloadBlob(await res.blob(), `${name}.docx`);
+  downloadBlob(await markdownToDocx({ name, markdown }), `${name}.docx`);
 }

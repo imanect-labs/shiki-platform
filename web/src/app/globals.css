@@ -763,9 +763,21 @@
     overflow: visible !important;
     height: auto !important;
   }
-  .note-print {
+  .note-print,
+  .answer-print {
     max-width: 100% !important;
     padding: 0 !important;
+  }
+  /* 回答の印刷ビュー（/c/[id]/print・#1048）: 見出しの直後で改ページせず、図は途中で割らない。
+     図のコピー・保存などの操作ボタンは紙面に載せない。 */
+  .answer-print :is(h1, h2, h3) {
+    break-after: avoid;
+  }
+  .answer-print :is(img, svg, figure, pre, table) {
+    break-inside: avoid;
+  }
+  .answer-print [data-yui-chrome] button {
+    display: none !important;
   }
   /* 見出し直後の改ページを避ける（読みやすさ）。 */
   .note-prose h1,
