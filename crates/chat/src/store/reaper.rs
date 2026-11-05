@@ -51,6 +51,19 @@ impl ChatStore {
         let Some(seq) = seq else {
             return Ok(false); // 既に端末状態
         };
+        // run の failed 化と、終わった会話を履歴の先頭へ上げる更新（[`Self::finalize_run_with_ui`]
+        // と同じ・サイドバーの「生成が終了（未読）」の根拠）を 1 つのトランザクションで確定する。
+        // 行ロックは thread → run の順に取る（削除・投稿と同じ。逆順だと削除との間でデッドロックし得る）。
+        let mut tx = self.db.begin().await.map_err(map_db)?;
+        sqlx::query(
+            "UPDATE thread t SET updated_at = now() FROM generation_run r \
+             WHERE r.run_id = $1 AND t.id = r.thread_id AND t.tenant_id = r.tenant_id \
+               AND t.deleted_at IS NULL",
+        )
+        .bind(run_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_db)?;
         let thread_id: Option<Uuid> = sqlx::query_scalar(
             "UPDATE generation_run SET status = 'failed', last_error = $2, \
              lease_until = NULL, pending_approval = NULL, updated_at = now() \
@@ -58,24 +71,10 @@ impl ChatStore {
         )
         .bind(run_id)
         .bind(detail)
-        .fetch_optional(&self.db)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(map_db)?;
-        // 確定（[`Self::finalize_run_with_ui`]）と同じく、終わった会話を履歴の先頭へ上げる
-        // （サイドバーの「生成が終了（未読）」の根拠）。run の更新とは別の文にして、thread → run の
-        // 行ロック順（削除・投稿）と逆順に握らない。
-        if let Some(thread_id) = thread_id {
-            sqlx::query(
-                "UPDATE thread SET updated_at = now() \
-                 WHERE id = $1 AND tenant_id = (SELECT tenant_id FROM generation_run WHERE run_id = $2) \
-                   AND deleted_at IS NULL",
-            )
-            .bind(thread_id)
-            .bind(run_id)
-            .execute(&self.db)
-            .await
-            .map_err(map_db)?;
-        }
+        tx.commit().await.map_err(map_db)?;
         tracing::error!(
             run_id = %run_id,
             thread_id = ?thread_id,

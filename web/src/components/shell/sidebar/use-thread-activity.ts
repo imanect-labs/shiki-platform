@@ -113,7 +113,14 @@ export function useThreadActivity(
 
   React.useEffect(() => {
     if (!state || state.key !== storageKey) return;
-    const shown = rows.filter((t) => viewing.has(t.id));
+    // 同じ会話が別々に取り直す一覧（ピン留め・通常）に違う更新日で載ることがある。新しい方で既読にする。
+    const latestShown = new Map<string, Thread>();
+    for (const t of rows) {
+      if (!viewing.has(t.id)) continue;
+      const prev = latestShown.get(t.id);
+      if (!prev || Date.parse(t.updatedAt) > Date.parse(prev.updatedAt)) latestShown.set(t.id, t);
+    }
+    const shown = [...latestShown.values()];
     const seen = nextSeen(state.seen, shown, rows);
     if (seen === state.seen) return;
     try {
