@@ -20,9 +20,9 @@ use super::{
 };
 
 /// 1 つの `pattern` の長さの上限（文字数・条件の正規表現と同じ数）。
-pub const MAX_PATTERN_CHARS: usize = crate::ir::expr::MAX_REGEX_LEN;
+pub(super) const MAX_PATTERN_CHARS: usize = crate::ir::expr::MAX_REGEX_LEN;
 /// 入力項目の全体に書ける `pattern` の数の上限（コンパイルするのはこの数まで）。
-pub const MAX_PATTERNS: usize = 50;
+pub(super) const MAX_PATTERNS: usize = 50;
 
 /// 入力項目の形の誤り（入力項目の中の位置の JSON Pointer, 文言）。根は空文字。最大 [`MAX_ERRORS`] 件。
 #[must_use]
