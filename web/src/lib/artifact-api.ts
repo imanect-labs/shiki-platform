@@ -301,11 +301,12 @@ export type PinUpdate = components["schemas"]["PinUpdate"];
 /// 部品を最新のバージョンに上げると変わるところ 1 つ（`kind` で判別・codegen）。
 export type PinDiff = components["schemas"]["PinDiff"];
 
-/// 束ねるワークフローと保存ビューごとに、新しいバージョンと上げると変わるところを読む（あなたの権限で読む・リクエストの
-/// 順・GAP-11）。差の種類はサーバーが決める。読めない部品は `readable: false`。
+/// 束ねるワークフロー・保存ビュー・スキルごとに、新しいバージョンと上げると変わるところを読む（あなたの権限で読む・
+/// リクエストの順・GAP-11・GAP-86）。差の種類はサーバーが決める。読めない部品は `readable: false`。
 export async function getMiniAppPinUpdates(pins: {
   workflows: { artifact_id: string; version: number }[];
   data_views: { artifact_id: string; version: number }[];
+  skill?: { artifact_id: string; version: number } | null;
 }): Promise<components["schemas"]["PinUpdatesResponse"]> {
   return ok<components["schemas"]["PinUpdatesResponse"]>(await apiFetch("/mini-apps/pin-updates", json(pins)));
 }

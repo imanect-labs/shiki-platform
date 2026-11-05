@@ -31,7 +31,14 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { ListLoadFailed, ListMore } from "@/components/artifacts/shared-more";
-import { PartPins, pinKey, type PartKind, type PinCheck } from "@/components/artifacts/miniapp-parts";
+import {
+  PartPins,
+  PinChangedNote,
+  PinUpdateNote,
+  pinKey,
+  type PartKind,
+  type PinCheck,
+} from "@/components/artifacts/miniapp-parts";
 import { useArtifactList } from "@/hooks/use-artifact-list";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import {
@@ -52,6 +59,7 @@ import { toYuiHints } from "@/lib/miniapp/workflow-inputs";
 import { cn } from "@/lib/utils";
 
 type Pin = MiniAppBody["workflows"][number];
+type SkillPin = NonNullable<MiniAppBody["skill"]>;
 
 /// ビューの名前から、束ねた別名と重ならない別名を作る（画面の表が 1 行目に書く名前）。
 function viewAlias(name: string, taken: readonly Pin[]): string {
@@ -165,7 +173,8 @@ export function MiniAppEditorDialog({
   const workflows = React.useMemo(() => workflowList.items ?? [], [workflowList.items]);
   const viewChoices = React.useMemo(() => viewList.items ?? [], [viewList.items]);
   const [pinnedSkill, setPinnedSkill] = React.useState<PinnedSkill>({ state: "checking" });
-  const [skillId, setSkillId] = React.useState("");
+  /// 束ねるスキルと版（同じスキルのままなら保存してある版を据え置き、新しいバージョンは差を見て上げる・GAP-86）。
+  const [skillPin, setSkillPin] = React.useState<SkillPin | null>(null);
   const [pins, setPins] = React.useState<Pin[]>([]);
   const [workflowToAdd, setWorkflowToAdd] = React.useState("");
   /// 束ねたビュー（画面の表 ```data_grid が出すもの・GAP-11）。
@@ -189,7 +198,7 @@ export function MiniAppEditorDialog({
     setName("");
     setDescription(app?.body.description ?? "");
     setScreen(app?.body.screen ?? "");
-    setSkillId(app?.body.skill?.artifact_id ?? "");
+    setSkillPin(app?.body.skill ?? null);
     setPins(app?.body.workflows ?? []);
     setWorkflowToAdd("");
     setViews(app?.body.data_views ?? []);
@@ -262,18 +271,24 @@ export function MiniAppEditorDialog({
     const want = (kind: PartKind, list: readonly Pin[]) => list.filter((p) => !checked.current.has(pinKey(kind, p)));
     const wantWorkflows = want("workflow", pins);
     const wantViews = want("data_view", views);
-    if (wantWorkflows.length === 0 && wantViews.length === 0) return;
+    const wantSkill = skillPin && !checked.current.has(pinKey("skill", skillPin)) ? skillPin : null;
+    if (wantWorkflows.length === 0 && wantViews.length === 0 && !wantSkill) return;
     const keys = [
       ...wantWorkflows.map((p) => pinKey("workflow", p)),
       ...wantViews.map((p) => pinKey("data_view", p)),
+      ...(wantSkill ? [pinKey("skill", wantSkill)] : []),
     ];
     for (const key of keys) checked.current.add(key);
-    const ref = (p: Pin) => ({ artifact_id: p.artifact_id, version: p.version });
-    void getMiniAppPinUpdates({ workflows: wantWorkflows.map(ref), data_views: wantViews.map(ref) })
+    const ref = (p: SkillPin) => ({ artifact_id: p.artifact_id, version: p.version });
+    void getMiniAppPinUpdates({
+      workflows: wantWorkflows.map(ref),
+      data_views: wantViews.map(ref),
+      skill: wantSkill ? ref(wantSkill) : null,
+    })
       .then((res) =>
         setChecks((m) => {
           const next = { ...m };
-          [...res.workflows, ...res.data_views].forEach((u, i) => {
+          [...res.workflows, ...res.data_views, ...(wantSkill && res.skill ? [res.skill] : [])].forEach((u, i) => {
             next[keys[i]!] = u.readable ? { state: "readable", update: u } : { state: "unreadable" };
           });
           return next;
@@ -282,7 +297,7 @@ export function MiniAppEditorDialog({
       .catch(() =>
         setChecks((m) => ({ ...m, ...Object.fromEntries(keys.map((k) => [k, { state: "unknown" } as const])) })),
       );
-  }, [pins, views, open]);
+  }, [pins, views, skillPin, open]);
   const setVersion = (kind: PartKind) => (artifactId: string, version: number) =>
     (kind === "workflow" ? setPins : setViews)((prev) =>
       prev.map((p) => (p.artifact_id === artifactId ? { ...p, version } : p)),
@@ -395,33 +410,37 @@ export function MiniAppEditorDialog({
   const pin = app?.body.skill ?? null;
   const pinOutsideList = pin != null && !skills.some((s) => s.id === pin.artifact_id) ? pin : null;
   const missingSkill =
-    pinOutsideList != null && skillId === pinOutsideList.artifact_id && pinnedSkill.state === "unreadable"
+    pinOutsideList != null && skillPin?.artifact_id === pinOutsideList.artifact_id && pinnedSkill.state === "unreadable"
       ? pinOutsideList
       : null;
-  const pinLabel = (p: NonNullable<MiniAppBody["skill"]>) =>
-    pinnedSkill.state === "unreadable"
-      ? `読めないスキル（v${p.version}）`
+  // 選択欄に出す版は、選んだら束ねる版（選んでいるスキルはいまの版、保存してあるスキルは保存してある版、ほかは最新の版・
+  // 「最新の版の番号で見せるのに古い版を据え置く」を作らない・GAP-86）。
+  const shownVersion = (id: string, latest: number): number =>
+    skillPin?.artifact_id === id ? skillPin.version : pin?.artifact_id === id ? pin.version : latest;
+  const pinLabel = (p: SkillPin) => {
+    const v = shownVersion(p.artifact_id, p.version);
+    return pinnedSkill.state === "unreadable"
+      ? `読めないスキル（v${v}）`
       : pinnedSkill.state === "readable" && pinnedSkill.name
-        ? `${pinnedSkill.name}（v${p.version}）`
-        : `束ねているスキル（v${p.version}）`;
+        ? `${pinnedSkill.name}（v${v}）`
+        : `束ねているスキル（v${v}）`;
+  };
+  /// 選んだスキルを束ねる版。保存してあるスキルに戻したら、保存してある版に据え置く（勝手に最新へ上げない）。
+  const chooseSkill = (id: string) => {
+    if (id === "") return setSkillPin(null);
+    if (pin && pin.artifact_id === id) return setSkillPin(pin);
+    const s = skills.find((x) => x.id === id);
+    if (s) setSkillPin({ artifact_id: s.id, version: s.currentVersion });
+  };
 
   const save = async (e: React.FormEvent) => {
     e.preventDefault();
     if (busy || blocked) return;
-    const current = app?.body.skill;
-    const skill = skills.find((s) => s.id === skillId);
     const body: MiniAppBody = {
       description: description.trim(),
       screen,
-      // 編集で同じスキルのままなら版も据え置く（勝手に最新へ上げない）。
-      skill:
-        skillId === ""
-          ? null
-          : current && current.artifact_id === skillId
-            ? current
-            : skill
-              ? { artifact_id: skill.id, version: skill.currentVersion }
-              : null,
+      // 編集で同じスキルのままなら版も据え置く（勝手に最新へ上げない。上げるのは「vN にする」だけ・GAP-86）。
+      skill: skillPin,
       workflows: pins,
       // 画面の表（```data_grid）が出すビュー（読めないビューも、変えなければそのまま保存できる・BUG-80）。
       ...(views.length ? { data_views: views } : {}),
@@ -692,8 +711,8 @@ export function MiniAppEditorDialog({
             </label>
             <select
               id="app-skill"
-              value={skillId}
-              onChange={(e) => setSkillId(e.target.value)}
+              value={skillPin?.artifact_id ?? ""}
+              onChange={(e) => chooseSkill(e.target.value)}
               className={SELECT}
               aria-describedby={missingSkill ? "app-skill-missing" : undefined}
             >
@@ -701,10 +720,27 @@ export function MiniAppEditorDialog({
               {pinOutsideList ? <option value={pinOutsideList.artifact_id}>{pinLabel(pinOutsideList)}</option> : null}
               {skills.map((s) => (
                 <option key={s.id} value={s.id}>
-                  {s.name}（v{s.currentVersion}）
+                  {s.name}（v{shownVersion(s.id, s.currentVersion)}）
                 </option>
               ))}
             </select>
+            {skillPin ? (
+              <div data-testid="miniapp-skill-pin">
+                <PinUpdateNote
+                  kind="skill"
+                  artifactId={skillPin.artifact_id}
+                  version={skillPin.version}
+                  check={checks[pinKey("skill", skillPin)]}
+                  onUpgrade={(id, version) => setSkillPin({ artifact_id: id, version })}
+                />
+                <PinChangedNote
+                  artifactId={skillPin.artifact_id}
+                  version={skillPin.version}
+                  savedVersion={pin?.artifact_id === skillPin.artifact_id ? pin.version : null}
+                  onRevert={(id, version) => setSkillPin({ artifact_id: id, version })}
+                />
+              </div>
+            ) : null}
             {skillList.error ? (
               <ListLoadFailed what="スキルの一覧" compact onRetry={skillList.reload} />
             ) : (
