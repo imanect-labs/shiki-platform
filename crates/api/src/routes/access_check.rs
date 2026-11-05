@@ -53,7 +53,7 @@ pub struct MyAccessQuery {
     pub version: Option<i64>,
 }
 
-fn checker(state: &AppState) -> gui::AccessChecker<'_> {
+pub(crate) fn checker(state: &AppState) -> gui::AccessChecker<'_> {
     gui::AccessChecker {
         authz: state.authz.as_ref(),
         artifacts: &state.artifacts,

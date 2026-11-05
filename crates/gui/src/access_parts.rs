@@ -10,12 +10,13 @@
 
 use artifact::ArtifactKind;
 use authz::AuthContext;
+use serde_json::Value;
 use uuid::Uuid;
 use workflow_engine::{AccessKind, AccessObject, AccessUnchecked, RegistrationService, WorkflowIr};
 
 use crate::access::{AccessPart, PartNeed, PartNeeds};
 use crate::miniapp_store::MiniAppStore;
-use crate::skill::validate_skill_body;
+use crate::skill::{validate_skill_body, SkillBody};
 use crate::store::GuiError;
 
 /// ワークフローそのものが要る権限（共有されたワークフローを手動で実行する人・部品の名前は持たない）。
@@ -47,6 +48,54 @@ fn ir_gaps(ir: &WorkflowIr) -> Vec<(String, AccessUnchecked)> {
         .into_iter()
         .map(|g| (g.block, g.kind))
         .collect()
+}
+
+/// 保存ビューが要る権限（ビューのテーブルを読む）。
+fn view_needs(view: &data::DataViewBody) -> Vec<PartNeed> {
+    vec![PartNeed::always(
+        AccessObject::Table,
+        Some(view.table_id),
+        AccessKind::Read,
+    )]
+}
+
+/// スキルが要る権限（参照するフォルダー・ファイルと参考資料を読む）。
+fn skill_needs(skill: &SkillBody) -> Vec<PartNeed> {
+    let mut needs = Vec::new();
+    if let Some(scope) = &skill.knowledge_scope {
+        needs.extend(
+            scope
+                .folders
+                .iter()
+                .map(|id| PartNeed::always(AccessObject::Folder, Some(*id), AccessKind::Read)),
+        );
+        needs.extend(
+            scope
+                .files
+                .iter()
+                .map(|id| PartNeed::always(AccessObject::File, Some(*id), AccessKind::Read)),
+        );
+    }
+    needs.extend(
+        skill
+            .references
+            .iter()
+            .map(|id| PartNeed::always(AccessObject::File, Some(*id), AccessKind::Read)),
+    );
+    needs
+}
+
+/// 部品の版の本文が要る権限（ワークフロー・保存ビュー・スキル・アプリの確かめと同じ定義）。本文を読めない・ほかの
+/// 種類なら `None`（部品の版を上げる差・GAP-11）。
+pub(crate) fn body_needs(kind: ArtifactKind, body: &Value) -> Option<Vec<PartNeed>> {
+    match kind {
+        ArtifactKind::Workflow => WorkflowIr::from_json(body).ok().map(|ir| ir_needs(&ir)),
+        ArtifactKind::DataView => data::DataViewBody::from_stored(body.clone())
+            .ok()
+            .map(|v| view_needs(&v)),
+        ArtifactKind::Skill => validate_skill_body(body).ok().map(|s| skill_needs(&s)),
+        _ => None,
+    }
 }
 
 /// 読めなかった部品（消えた・本文が壊れている）。
@@ -111,11 +160,7 @@ impl MiniAppStore {
             out.push(match view {
                 Some(view) => PartNeeds {
                     part: Some(part),
-                    needs: vec![PartNeed::always(
-                        AccessObject::Table,
-                        Some(view.table_id),
-                        AccessKind::Read,
-                    )],
+                    needs: view_needs(&view),
                     ..PartNeeds::default()
                 },
                 None => unavailable(part),
@@ -125,25 +170,11 @@ impl MiniAppStore {
             let skill = body_of(pin.artifact_id, pin.version, ArtifactKind::Skill)
                 .and_then(|b| validate_skill_body(b).ok());
             out.push(match skill {
-                Some(skill) => {
-                    let mut needs = Vec::new();
-                    if let Some(scope) = &skill.knowledge_scope {
-                        needs.extend(scope.folders.iter().map(|id| {
-                            PartNeed::always(AccessObject::Folder, Some(*id), AccessKind::Read)
-                        }));
-                        needs.extend(scope.files.iter().map(|id| {
-                            PartNeed::always(AccessObject::File, Some(*id), AccessKind::Read)
-                        }));
-                    }
-                    needs.extend(skill.references.iter().map(|id| {
-                        PartNeed::always(AccessObject::File, Some(*id), AccessKind::Read)
-                    }));
-                    PartNeeds {
-                        part: Some(AccessPart::Skill),
-                        needs,
-                        ..PartNeeds::default()
-                    }
-                }
+                Some(skill) => PartNeeds {
+                    part: Some(AccessPart::Skill),
+                    needs: skill_needs(&skill),
+                    ..PartNeeds::default()
+                },
                 None => unavailable(AccessPart::Skill),
             });
         }

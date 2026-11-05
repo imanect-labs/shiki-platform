@@ -143,6 +143,18 @@ impl AccessChecker<'_> {
         Ok(Some((unique, more)))
     }
 
+    /// `objects` のうち、`ctx` に見える対象（名前つき）。見えない・無い・消したものは入れない（存在を区別しない）。
+    ///
+    /// 部品の版を上げる差が、使う人に要る権限の増える・減る対象を名前で言うのに使う（GAP-11）。だれの権限も問わず、
+    /// 求めた人に見えるかだけを確かめる。数は [`super::MAX_ACCESS_OBJECTS`] まで（呼び出し側が切る）。
+    pub async fn visible_targets(
+        &self,
+        ctx: &AuthContext,
+        objects: &[(AccessObject, Uuid)],
+    ) -> Result<HashMap<(AccessObject, Uuid), AccessTarget>, GuiError> {
+        Ok(self.labels(ctx, objects).await?.targets)
+    }
+
     /// `objects` のうち、`ctx` に見えるものの名前（テーブルは閲覧か追加だけ、ファイル・フォルダーは閲覧）。
     async fn labels(
         &self,

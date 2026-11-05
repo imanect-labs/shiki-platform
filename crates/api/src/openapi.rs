@@ -499,6 +499,7 @@ use utoipa::{
         gui::PinUpdate,
         gui::PinDiff,
         gui::SkillPart,
+        gui::PinAccess,
         crate::routes::mini_apps::ResolvedMiniAppResponse,
         crate::routes::mini_apps::PublishMiniAppRequest,
         artifact::Publication,

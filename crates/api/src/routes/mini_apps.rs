@@ -328,6 +328,7 @@ pub async fn mini_app_workflow_inputs(
 ///
 /// アプリのエディターが、固定した版を最新に上げる操作と、その差を出すのに使う。呼んだ人の権限で読み、読めない部品は
 /// `readable: false`（最新の版も差も返さない・存在を区別しない）。差の種類はサーバーが決める（`gui::diff_versions`）。
+/// 差には、使ってよい操作と、使う人に要る権限の増減を含む（対象の名前は呼んだ人に見えるものだけ・GAP-11）。
 #[utoipa::path(
     post,
     path = "/mini-apps/pin-updates",
@@ -361,12 +362,15 @@ pub async fn mini_app_pin_updates(
             })
             .collect()
     };
+    // 要る権限の増減の対象の名前は、呼んだ人に見えるものだけを引く（だれの権限も問わない・D-146）。
+    let names = super::access_check::checker(&state);
     let workflows = state
         .mini_apps
         .pin_updates(
             &ctx,
             artifact::ArtifactKind::Workflow,
             &pins(&req.workflows),
+            &names,
             trace.as_deref(),
         )
         .await
@@ -377,6 +381,7 @@ pub async fn mini_app_pin_updates(
             &ctx,
             artifact::ArtifactKind::DataView,
             &pins(&req.data_views),
+            &names,
             trace.as_deref(),
         )
         .await
@@ -388,6 +393,7 @@ pub async fn mini_app_pin_updates(
                 &ctx,
                 artifact::ArtifactKind::Skill,
                 &pins(std::slice::from_ref(pin)),
+                &names,
                 trace.as_deref(),
             )
             .await

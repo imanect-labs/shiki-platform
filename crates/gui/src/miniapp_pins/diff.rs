@@ -2,31 +2,72 @@
 
 use artifact::ArtifactKind;
 use serde_json::Value;
+use uuid::Uuid;
 
 use super::{PinDiff, SkillPart};
+use crate::access::{AccessKind, AccessObject, PartNeed};
+use crate::access_parts::body_needs;
 use crate::miniapp_inputs::{input_hints, WorkflowInputHint};
 use crate::skill::{validate_skill_body, SkillBody};
 
-/// 2 つの版の差。
+/// 2 つの版の差（要る権限の増減の対象には、まだ名前が無い）。
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct VersionDiff {
-    /// 変わるところ（部品の種類ごと）。
+    /// 変わるところ（部品の種類ごと・使ってよい操作の増減を含む）。
     pub changes: Vec<PinDiff>,
+    /// 使う人に要る権限の増減（増えるもの・毎回要るようになるものは新しい版の並び、要らなくなるものは最後）。
+    pub access: Vec<AccessChange>,
     /// 本文を読めず、調べられなかった差がある（`changes` が空でも「変わらない」とは言わない）。
     pub unknown: bool,
+}
+
+/// 使う人に要る権限の増減 1 つ（対象・操作・増え方）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AccessChange {
+    pub change: AccessChangeKind,
+    pub object: AccessObject,
+    pub need: AccessKind,
+    /// 対象（`None` は実行のときに決まる）。
+    pub id: Option<Uuid>,
+}
+
+/// 要る権限の増え方。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccessChangeKind {
+    /// 増える（`conditional` は道によって通るブロックだけが要る）。
+    Added { conditional: bool },
+    /// 道によって通るブロックだけが要っていたものが、毎回要るようになる。
+    Always,
+    /// 要らなくなる。
+    Removed,
 }
 
 /// 2 つの版の本文の差（種類ごと）。
 #[must_use]
 pub fn diff_versions(kind: ArtifactKind, from: &Value, to: &Value) -> VersionDiff {
+    let mut d = kind_changes(kind, from, to);
+    match (body_needs(kind, from), body_needs(kind, to)) {
+        (Some(from), Some(to)) => d.access = access_changes(&from, &to),
+        // 読めない版（壊れた本文）。要る権限の増減は言えない。
+        _ => d.unknown = true,
+    }
+    d
+}
+
+/// 部品の種類ごとの差（要る権限の増減のほか）。
+fn kind_changes(kind: ArtifactKind, from: &Value, to: &Value) -> VersionDiff {
     match kind {
-        ArtifactKind::Workflow => VersionDiff {
-            changes: input_changes(
+        ArtifactKind::Workflow => {
+            let mut changes = input_changes(
                 &input_hints(from.get("input_schema")).unwrap_or_default(),
                 &input_hints(to.get("input_schema")).unwrap_or_default(),
-            ),
-            unknown: false,
-        },
+            );
+            changes.extend(scope_changes(from, to));
+            VersionDiff {
+                changes,
+                ..VersionDiff::default()
+            }
+        }
         ArtifactKind::DataView => {
             let mut changes = Vec::new();
             for (field, diff) in [
@@ -40,22 +81,102 @@ pub fn diff_versions(kind: ArtifactKind, from: &Value, to: &Value) -> VersionDif
             }
             VersionDiff {
                 changes,
-                unknown: false,
+                ..VersionDiff::default()
             }
         }
         ArtifactKind::Skill => match (validate_skill_body(from), validate_skill_body(to)) {
             (Ok(from), Ok(to)) => VersionDiff {
                 changes: skill_changes(&from, &to),
-                unknown: false,
+                ..VersionDiff::default()
             },
             // 読めない版（壊れた本文）。どこが変わるかは言えない。
             _ => VersionDiff {
-                changes: Vec::new(),
                 unknown: true,
+                ..VersionDiff::default()
             },
         },
         _ => VersionDiff::default(),
     }
+}
+
+/// 使ってよい操作（`declared_scopes`）の増減（増えるものは新しい版の並び、なくなるものは最後）。
+fn scope_changes(from: &Value, to: &Value) -> Vec<PinDiff> {
+    let scopes = |v: &Value| -> Vec<String> {
+        v.get("declared_scopes")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect()
+    };
+    let (from, to) = (scopes(from), scopes(to));
+    let mut out = Vec::new();
+    for s in &to {
+        let added = PinDiff::ScopeAdded { scope: s.clone() };
+        if !from.contains(s) && !out.contains(&added) {
+            out.push(added);
+        }
+    }
+    for s in &from {
+        let removed = PinDiff::ScopeRemoved { scope: s.clone() };
+        if !to.contains(s) && !out.contains(&removed) {
+            out.push(removed);
+        }
+    }
+    out
+}
+
+/// 要る権限 1 つ（対象・操作）と、道によって通るブロックだけが要るか（同じものは 1 つにし、1 つでも毎回要れば毎回要る）。
+fn merged(needs: &[PartNeed]) -> Vec<(AccessObject, Option<Uuid>, AccessKind, bool)> {
+    let mut out: Vec<(AccessObject, Option<Uuid>, AccessKind, bool)> = Vec::new();
+    for n in needs {
+        if let Some(row) = out
+            .iter_mut()
+            .find(|(o, id, k, _)| *o == n.object && *id == n.id && *k == n.kind)
+        {
+            row.3 &= n.conditional;
+        } else {
+            out.push((n.object, n.id, n.kind, n.conditional));
+        }
+    }
+    out
+}
+
+/// 使う人に要る権限の増減（[`crate::access`] と同じ定義から読んだ、2 つの版の要る権限の差）。
+fn access_changes(from: &[PartNeed], to: &[PartNeed]) -> Vec<AccessChange> {
+    let (from, to) = (merged(from), merged(to));
+    let mut out = Vec::new();
+    for &(object, id, need, conditional) in &to {
+        let change = match from
+            .iter()
+            .find(|(o, i, k, _)| *o == object && *i == id && *k == need)
+        {
+            None => AccessChangeKind::Added { conditional },
+            Some(&(_, _, _, was)) if was && !conditional => AccessChangeKind::Always,
+            Some(_) => continue,
+        };
+        out.push(AccessChange {
+            change,
+            object,
+            need,
+            id,
+        });
+    }
+    for &(object, id, need, _) in &from {
+        if !to
+            .iter()
+            .any(|(o, i, k, _)| *o == object && *i == id && *k == need)
+        {
+            out.push(AccessChange {
+                change: AccessChangeKind::Removed,
+                object,
+                need,
+                id,
+            });
+        }
+    }
+    out
 }
 
 /// スキルの設定のうち、変わるところ（設定の並び・中身は返さない・GAP-86）。
@@ -284,5 +405,131 @@ mod tests {
         let broken = diff_versions(ArtifactKind::Skill, &from, &json!({ "description": 1 }));
         assert!(broken.unknown);
         assert!(broken.changes.is_empty());
+    }
+
+    const TABLE: &str = "11111111-2222-3333-4444-555555555555";
+    const OTHER: &str = "66666666-7777-8888-9999-aaaaaaaaaaaa";
+
+    fn ir(scopes: Value, nodes: Value, edges: Value) -> Value {
+        json!({ "ir_version": 1, "name": "expense", "declared_scopes": scopes, "nodes": nodes, "edges": edges })
+    }
+
+    fn change(
+        change: AccessChangeKind,
+        object: AccessObject,
+        id: Option<&str>,
+        need: AccessKind,
+    ) -> AccessChange {
+        AccessChange {
+            change,
+            object,
+            need,
+            id: id.map(|s| Uuid::parse_str(s).unwrap()),
+        }
+    }
+
+    /// ワークフローは、使ってよい操作の増減と、使う人に要る権限の増減を言う（GAP-11）。増えるものは新しい版の並び、
+    /// 要らなくなるものは最後。道によって通るブロックだけが要っていた権限が毎回要るようになったら、それも言う。
+    #[test]
+    fn workflow_diff_lists_scope_and_access_changes() {
+        let from = ir(
+            json!(["data.read", "data.write"]),
+            json!([
+                { "id": "q", "type": "data.query", "params": { "table": TABLE } },
+                { "id": "b", "type": "control.branch", "params": { "condition": { "cmp": { "left": 1, "op": "eq", "right": 1 } } } },
+                { "id": "add", "type": "data.record.create", "params": { "table": TABLE, "data": {} } },
+                { "id": "del", "type": "data.record.delete", "params": { "table": OTHER } }
+            ]),
+            json!([
+                { "from": "q", "to": "b" },
+                { "from": "b", "from_port": "true", "to": "add" },
+                { "from": "b", "from_port": "false", "to": "del" }
+            ]),
+        );
+        let to = ir(
+            json!(["data.write", "http.egress"]),
+            json!([
+                { "id": "add", "type": "data.record.create", "params": { "table": TABLE, "data": {} } },
+                { "id": "mv", "type": "data.transition", "params": { "table": OTHER } },
+                { "id": "up", "type": "data.record.update", "params": { "table": { "$from": "input", "path": "/t" } } }
+            ]),
+            json!([{ "from": "add", "to": "mv" }, { "from": "mv", "to": "up" }]),
+        );
+        let d = diff_versions(ArtifactKind::Workflow, &from, &to);
+        assert!(!d.unknown);
+        assert_eq!(
+            d.changes,
+            vec![
+                PinDiff::ScopeAdded {
+                    scope: "http.egress".into()
+                },
+                PinDiff::ScopeRemoved {
+                    scope: "data.read".into()
+                },
+            ]
+        );
+        use AccessChangeKind::*;
+        use AccessKind::*;
+        use AccessObject::Table as T;
+        assert_eq!(
+            d.access,
+            vec![
+                change(Always, T, Some(TABLE), Add),
+                change(Added { conditional: false }, T, Some(OTHER), Change),
+                change(Added { conditional: false }, T, None, Change),
+                change(Removed, T, Some(TABLE), Read),
+                change(Removed, T, Some(OTHER), Edit),
+            ]
+        );
+        // 同じ版どうしは差が無い。
+        let same = diff_versions(ArtifactKind::Workflow, &to, &to.clone());
+        assert!(same.changes.is_empty() && same.access.is_empty() && !same.unknown);
+    }
+
+    /// 保存ビューのテーブルが変われば、読むテーブルが入れ替わる。スキルの参照するフォルダーと参考資料も同じ定義で言う。
+    #[test]
+    fn view_and_skill_access_changes_follow_the_access_check() {
+        let from = json!({ "table_id": TABLE, "query": {} });
+        let to = json!({ "table_id": OTHER, "query": {} });
+        use AccessChangeKind::*;
+        use AccessKind::Read;
+        use AccessObject::*;
+        assert_eq!(
+            diff_versions(ArtifactKind::DataView, &from, &to).access,
+            vec![
+                change(Added { conditional: false }, Table, Some(OTHER), Read),
+                change(Removed, Table, Some(TABLE), Read),
+            ]
+        );
+        let s = diff_versions(
+            ArtifactKind::Skill,
+            &skill(json!({ "knowledge_scope": { "folders": [TABLE] } })),
+            &skill(json!({ "knowledge_scope": { "folders": [TABLE] }, "references": [OTHER] })),
+        );
+        assert_eq!(
+            s.access,
+            vec![change(
+                Added { conditional: false },
+                File,
+                Some(OTHER),
+                Read
+            )]
+        );
+    }
+
+    /// 読めない版（型どおりに読めない IR）は、要る権限の増減を言わずに調べられなかったとする（入力項目の差は言う）。
+    #[test]
+    fn unreadable_ir_marks_the_access_diff_unknown() {
+        let from = wf(json!({ "type": "object", "properties": {} }));
+        let mut to =
+            wf(json!({ "type": "object", "properties": { "memo": { "type": "string" } } }));
+        to["nodes"] = json!("壊れた本文");
+        let d = diff_versions(ArtifactKind::Workflow, &from, &to);
+        assert!(
+            d.unknown,
+            "ブロックの並びが読めない IR は、要る権限を言えない"
+        );
+        assert!(d.access.is_empty());
+        assert_eq!(d.changes.len(), 1);
     }
 }
