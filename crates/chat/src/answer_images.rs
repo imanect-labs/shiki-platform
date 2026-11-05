@@ -487,9 +487,11 @@ mod tests {
 
     #[test]
     fn adversarial_input_stays_linear() {
+        // 35 万文字。線形なら手元の debug ビルドで 0.3 秒程度、CI の混んだランナーで数秒かかる。
+        // 2 乗なら 10^11 回規模の処理になり、この上限を大きく超える（混雑による揺れで落とさない幅を取る）。
         let body = "![".repeat(50_000) + "<img ".repeat(50_000).as_str();
         let start = std::time::Instant::now();
         let _ = collect_image_sources([body.as_str()]);
-        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+        assert!(start.elapsed() < std::time::Duration::from_secs(30));
     }
 }
