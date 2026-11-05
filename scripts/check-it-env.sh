@@ -16,9 +16,19 @@ set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
 # `env::var("…")` に加え、`use std::env::var;` の後の素の `var("…")` も拾う（`::var(` は shiki_testenv 等なので除く）。
-pattern='((^|[^_[:alnum:]])env::|(^|[^_[:alnum:]:.]))var(_os)?\([[:space:]]*"([A-Z0-9_]*_TEST_([A-Z0-9_]*_)?(URL|WS|COLLABORA)|SANDBOX_[A-Z0-9_]*IT)"'
+# rustfmt が引数を改行することもあるので、ファイル全体を 1 つの文字列として複数行にまたがって照合する。
+pattern='(?:(?<![_[:alnum:]])env::|(?<![_[:alnum:]:.]))var(?:_os)?\(\s*"((?:[A-Z0-9_]*_TEST_(?:[A-Z0-9_]*_)?(?:URL|WS|COLLABORA))|SANDBOX_[A-Z0-9_]*IT)"'
 
-if hits=$(git grep -n -E "$pattern" -- 'crates/*.rs' ':!crates/testenv/**' || true) && [ -n "$hits" ]; then
+export IT_ENV_PATTERN="$pattern"
+hits=$(git ls-files -z -- 'crates/*.rs' ':!crates/testenv/**' \
+  | xargs -0 perl -0777 -ne '
+      my $pat = $ENV{IT_ENV_PATTERN};
+      while (/$pat/g) {
+        my ($name, $at) = ($1, $-[0]);
+        my $line = 1 + (() = substr($_, 0, $at) =~ /\n/g);
+        print "$ARGV:$line: $name\n";
+      }' || true)
+if [ -n "$hits" ]; then
   echo "❌ 結合テストの接続先を std::env::var で直接読んでいます（shiki_testenv::var を使うこと）:" >&2
   echo "$hits" >&2
   echo >&2

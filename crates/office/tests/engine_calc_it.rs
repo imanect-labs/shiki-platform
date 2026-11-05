@@ -29,8 +29,8 @@ struct Env {
 fn env() -> Option<Env> {
     Some(Env {
         ws: shiki_testenv::var("OFFICE_ENGINE_TEST_WS").ok()?,
-        wopi: std::env::var("OFFICE_ENGINE_TEST_WOPI").ok()?,
-        files: std::env::var("OFFICE_ENGINE_TEST_FILES").ok()?,
+        wopi: shiki_testenv::var("OFFICE_ENGINE_TEST_WOPI").ok()?,
+        files: shiki_testenv::var("OFFICE_ENGINE_TEST_FILES").ok()?,
     })
 }
 
