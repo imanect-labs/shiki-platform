@@ -460,6 +460,11 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
                 ) : null}
               </div>
             ) : null}
+            {access?.truncated ? (
+              <p className="mt-2 text-xs text-muted-foreground" role="note" data-testid="miniapp-access-truncated">
+                このアプリは使うテーブルやファイルが多いため、一部のボタンと表は押す前に権限を確かめていません。
+              </p>
+            ) : null}
             {canEdit ? (
               <MiniAppPublishBar
                 app={app}
