@@ -1,12 +1,21 @@
 import { expect, test, type Page } from "@playwright/test";
 
-import { cleanupAll, cleanupQueue, loginViaKeycloak, removeWorkflowApi, trashFolderApi, uniqueName } from "./helpers";
+import {
+  cleanupAll,
+  cleanupQueue,
+  loginViaKeycloak,
+  removeWorkflowApi,
+  trashFileApi,
+  trashFolderApi,
+  uniqueName,
+} from "./helpers";
 
 /// ブロックの外の保存時の誤り（GAP-35）の E2E。
 /// - きっかけのフォルダーが消えた定義を保存すると、知らせが「きっかけの設定」に直すところがあると言い、
 ///   きっかけの設定の「対象フォルダ」の下に理由が出る。キャンバスのきっかけには赤い印、上には「直すところ」の一覧が出る。
 /// - スマホ幅の一覧でも、きっかけのカードに「要修正」と「直すところ」の一覧が出て、横にはみ出さない。
-/// 作ったもの（ワークフロー・フォルダー）は最後に消す。`E2E_SHOTS_DIR` を渡すとスクリーンショットを撮る。
+/// - ドライブから選んだファイルを消した定義を保存すると、ファイルの欄の下に理由が出て保存が止まる（GAP-91）。
+/// 作ったもの（ワークフロー・フォルダー・ファイル）は最後に消す。`E2E_SHOTS_DIR` を渡すとスクリーンショットを撮る。
 
 const SHOTS = process.env.E2E_SHOTS_DIR;
 
@@ -19,6 +28,7 @@ async function csrfHeaders(page: Page): Promise<Record<string, string>> {
 }
 
 const MISSING_FOLDER = "選んだフォルダーが見つかりません。削除されたか、見る権限がありません。フォルダーを選び直してください。";
+const MISSING_FILE = "選んだファイルが見つかりません。削除されたか、見る権限がありません。ファイルを選び直してください。";
 
 test("消えたフォルダーをきっかけにした定義は、きっかけの設定の欄の下に理由を出して保存を止める（GAP-35）", async ({
   page,
@@ -132,4 +142,62 @@ test("消えたフォルダーをきっかけにした定義は、きっかけ�
   } finally {
     await cleanupAll(() => ctx.close());
   }
+});
+
+test("ドライブから選んだファイルを消した定義は、ファイルの欄の下に理由を出して保存を止める（GAP-91）", async ({ page }) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await loginViaKeycloak(page);
+  const file = await page.request.post("/api/tabular/save", {
+    headers: { "x-csrf-token": (await csrfHeaders(page))["x-csrf-token"] },
+    data: { parent_id: null, name: `${uniqueName("e2e-台帳")}.csv`, csv: "item,amount\n交通費,1200\n" },
+  });
+  expect(file.ok(), await file.text()).toBeTruthy();
+  const fileId = ((await file.json()) as { node_id: string }).node_id;
+  cleanup.add(() => trashFileApi(page, fileId));
+
+  // 選んだファイルが見える間は保存できる。
+  const name = uniqueName("read-file-gone");
+  const res = await page.request.post("/api/workflows", {
+    headers: await csrfHeaders(page),
+    data: {
+      ir: {
+        ir_version: 1,
+        name,
+        display_name: name,
+        triggers: [{ kind: "interactive" }],
+        nodes: [{ id: "read", type: "storage.read", label: "台帳を読む", params: { file: fileId } }],
+        edges: [],
+      },
+    },
+  });
+  expect(res.ok(), await res.text()).toBeTruthy();
+  const id = ((await res.json()) as { id: string }).id;
+  cleanup.add(() => removeWorkflowApi(page, id));
+
+  // 選んだファイルを消す（保存した後に消された・見られなくなった）。保存済みの版はそのまま残る。
+  await trashFileApi(page, fileId);
+
+  await page.goto(`/workflows/${id}`);
+  const canvas = page.locator(".react-flow");
+  await canvas.getByText("台帳を読む").first().click();
+  const panel = page.getByRole("complementary", { name: "ブロックの設定" });
+  // 変更を入れると、ライブの確かめがファイルの欄の下に理由を出す（内部の位置や code は出さない）。
+  await panel.getByLabel("ブロック名").fill("台帳を読む（月次）");
+  await expect(panel.getByText(MISSING_FILE)).toBeVisible({ timeout: 15_000 });
+  await expect(panel).not.toContainText("/params/file");
+  await expect(panel).not.toContainText("ir.unknown_file");
+  await expect(canvas.locator('[aria-label="検証エラー 1 件"]')).toBeVisible();
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/workflow-file-gone-pc.png` });
+
+  // 保存は止まる（保存済みの版は変わらない）。
+  const saved = page.waitForResponse((r) => r.request().method() === "PUT" && r.url().endsWith(`/workflows/${id}`));
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  expect((await saved).status()).toBe(400);
+  await expect(page.getByText("保存できません", { exact: true }).first()).toBeVisible({ timeout: 15_000 });
+  const wf = (await (await page.request.get(`/api/workflows/${id}`)).json()) as {
+    version: number;
+    ir: { nodes: { label?: string }[] };
+  };
+  expect(wf.ir.nodes[0].label).toBe("台帳を読む");
 });

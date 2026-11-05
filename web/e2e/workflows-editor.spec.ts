@@ -1086,6 +1086,19 @@ async function openIr(page: Page, ir: Record<string, unknown>): Promise<string> 
   return id;
 }
 
+/// ドライブに CSV を作る（保存はリテラルで選んだファイルの実在を確かめる・GAP-91）。テストの後に片付ける。
+async function newCsv(page: Page, prefix: string): Promise<string> {
+  const csrf = (await page.context().cookies()).find((c) => c.name === "shiki_csrf")?.value ?? "";
+  const res = await page.request.post("/api/tabular/save", {
+    headers: { "x-csrf-token": csrf },
+    data: { parent_id: null, name: `${uniqueName(prefix)}.csv`, csv: "item,amount\n交通費,1200\n" },
+  });
+  expect(res.ok(), await res.text()).toBeTruthy();
+  const id = ((await res.json()) as { node_id: string }).node_id;
+  cleanup.add(() => trashFileApi(page, id));
+  return id;
+}
+
 const scriptNode = (id: string, label: string) => ({
   id,
   type: "script.run",
@@ -1269,9 +1282,10 @@ test("ファイルを読む: 置いた直後はファイルが未選択で、前
 test("参照の候補: 前のブロックの出力の項目をカタログの項目から出す（D-42）", async ({ page }) => {
   test.setTimeout(120_000);
   await loginViaKeycloak(page);
+  const ledger = await newCsv(page, "wf-ref-ledger");
   await openIr(page, {
     nodes: [
-      { id: "r", type: "storage.read", label: "台帳を読む", params: { file: "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1" } },
+      { id: "r", type: "storage.read", label: "台帳を読む", params: { file: ledger } },
       scriptNode("s", "整える"),
       { id: "ask", type: "llm.invoke", label: "要約する", params: { prompt: "要約: " } },
     ],
@@ -1294,6 +1308,7 @@ test("参照の候補: 前のブロックの出力の項目をカタログの項
 test("保存時の警告: 閉じの無い { と、空の SQL を知らせる（D-37・D-43）", async ({ page }) => {
   test.setTimeout(120_000);
   await loginViaKeycloak(page);
+  const csv = await newCsv(page, "wf-warn-sql");
   await openIr(page, {
     nodes: [
       {
@@ -1304,7 +1319,7 @@ test("保存時の警告: 閉じの無い { と、空の SQL を知らせる（D
           prompt: { $template: "件名: {title の内容を要約してください", vars: { title: { $from: "input", path: "/title" } } },
         },
       },
-      { id: "q", type: "csv.query", label: "集計する", params: { file: "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1", sql: "" } },
+      { id: "q", type: "csv.query", label: "集計する", params: { file: csv, sql: "" } },
     ],
     edges: [{ from: "ask", from_port: "out", to: "q" }],
   });
