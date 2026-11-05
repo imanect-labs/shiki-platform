@@ -396,6 +396,7 @@ function UndoAllButton({
       listeners.delete(cb);
     };
   }, []);
+  const noteId = React.useId();
   React.useEffect(() => {
     for (const g of groups) loadCanEdit(g.fileId);
   }, [groups]);
@@ -411,7 +412,7 @@ function UndoAllButton({
   );
   if (pending < 2) return null;
   return (
-    <div className="-mt-1 mb-2 flex justify-end">
+    <div className="-mt-1 mb-2 flex flex-col items-end gap-0.5">
       <Button
         type="button"
         variant="ghost"
@@ -420,13 +421,16 @@ function UndoAllButton({
         loading={busy}
         disabled={busy}
         onClick={onClick}
-        // ファイルをまたいだ一括の原子性は無い（ファイルごとに戻し、戻せなかったものは理由を出す）。
-        title="ファイルごとに編集前へ戻します。後から更新されたファイルなどは戻さず、理由を表示します。"
+        aria-describedby={noteId}
         data-testid="document-ref-undo-all"
       >
         {!busy ? <Undo2 className="size-3.5" aria-hidden /> : null}
         この回答の編集をまとめて元に戻す
       </Button>
+      {/* ファイルをまたいだ一括の原子性は無い。押す前に分かるようにする。 */}
+      <p id={noteId} className="px-2 text-[11px] text-muted-foreground/80">
+        ファイルごとに戻します。後から更新されたファイルなどは戻さず、理由を表示します。
+      </p>
     </div>
   );
 }
