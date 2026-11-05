@@ -159,7 +159,8 @@ function PartPinRow({
       {newer != null ? (
         <div className="mt-1.5 space-y-1.5 text-xs" data-testid="miniapp-pin-update">
           <p className="text-foreground/80">
-            新しいバージョン v{newer} があります。v{newer} にすると、次のように変わります。
+            新しいバージョン v{newer} があります。
+            {update!.diff_unknown && update!.changes.length === 0 ? "" : `v${newer} にすると、次のように変わります。`}
           </p>
           <ul className="list-disc space-y-0.5 pl-5 text-foreground/80" data-testid="miniapp-pin-changes">
             {update!.changes.length > 0 ? (
@@ -168,6 +169,9 @@ function PartPinRow({
                   {describePinDiff(c)}
                 </li>
               ))
+            ) : update!.diff_unknown ? (
+              // 差を調べられなかった（固定している版が無いなど）。「変わらない」とは言わない（付録 C の P7）。
+              <li>変わるところを確かめられませんでした</li>
             ) : (
               <li>{kind === "workflow" ? "入力項目は変わりません" : "表の設定は変わりません"}</li>
             )}
