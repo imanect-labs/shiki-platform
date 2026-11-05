@@ -101,7 +101,7 @@ services:
     environment:
       PGHOST: postgres
       PGUSER: ${POSTGRES_USER:-postgres}
-      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD を .env に設定してください}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
       SHIKI_APP_DB_PASSWORD: ${SHIKI_APP_DB_PASSWORD:-${POSTGRES_PASSWORD}}
     volumes:
       - ./postgres/runtime-role.sh:/runtime-role.sh:ro
@@ -543,7 +543,7 @@ services:
       SHIKI__SERVER__PORT: "8080"
       # 実行時は DML だけの shiki_app（非 superuser・RLS を迂回しない）、migration だけ所有者で流す（#1030）。
       SHIKI__DATABASE__URL: postgres://shiki_app:${SHIKI_APP_DB_PASSWORD:-${POSTGRES_PASSWORD}}@postgres:5432/shiki
-      SHIKI__DATABASE__MIGRATE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD を .env に設定してください}@postgres:5432/shiki
+      SHIKI__DATABASE__MIGRATE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/shiki
       SHIKI__AUTH__ISSUER: ${SHIKI__AUTH__ISSUER:-http://localhost:8081/realms/shiki}
       # サーバ側 OIDC 呼び出し（token 交換・JWKS）はコンテナ内部 URL を使う。
       # authorize/end-session は公開 issuer（ブラウザ向け）を使う。
