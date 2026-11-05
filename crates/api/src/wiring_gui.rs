@@ -40,19 +40,11 @@ impl gui::WorkflowStarter for LauncherWorkflowStarter {
         version: i64,
         input: &serde_json::Value,
     ) -> Result<Option<uuid::Uuid>, gui::ActionError> {
+        // 入力の誤りはキーと理由のまま返す（図のボタンの口が部品の名前で言い直す・GAP-41）。
         self.0
             .start_interactive_version(ctx, workflow_id, version, input)
             .await
-            .map_err(|e| match e {
-                workflow_engine::run::LauncherError::Ir(_) => gui::ActionError::NotFound,
-                workflow_engine::run::LauncherError::Input(issues) => gui::ActionError::Invalid(
-                    workflow_engine::run::LauncherError::input_message(&issues),
-                ),
-                workflow_engine::run::LauncherError::NotReady(errors) => gui::ActionError::Invalid(
-                    workflow_engine::run::LauncherError::messages(&errors),
-                ),
-                other => gui::ActionError::Internal(format!("run 起動: {other}")),
-            })
+            .map_err(gui::from_launcher_error)
     }
 
     async fn start_pinned_via_bundle(
@@ -66,16 +58,7 @@ impl gui::WorkflowStarter for LauncherWorkflowStarter {
         self.0
             .start_interactive_via_bundle(ctx, bundle_id, workflow_id, version, input)
             .await
-            .map_err(|e| match e {
-                workflow_engine::run::LauncherError::Ir(_) => gui::ActionError::NotFound,
-                workflow_engine::run::LauncherError::Input(issues) => gui::ActionError::Invalid(
-                    workflow_engine::run::LauncherError::input_message(&issues),
-                ),
-                workflow_engine::run::LauncherError::NotReady(errors) => gui::ActionError::Invalid(
-                    workflow_engine::run::LauncherError::messages(&errors),
-                ),
-                other => gui::ActionError::Internal(format!("run 起動: {other}")),
-            })
+            .map_err(gui::from_launcher_error)
     }
 }
 

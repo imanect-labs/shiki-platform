@@ -288,7 +288,14 @@ impl MiniAppStore {
                 }
             }
         }
-        result
+        // 入力項目に合わない入力は、キー（amount）でなく画面の部品の名前で言う（GAP-41）。
+        result.map_err(|e| {
+            crate::input_problems::with_field_labels(
+                e,
+                &block.figure,
+                crate::input_problems::ButtonSurface::MiniApp,
+            )
+        })
     }
 
     async fn claim_run(

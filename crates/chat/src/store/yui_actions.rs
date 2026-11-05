@@ -212,6 +212,8 @@ impl ChatStore {
                     trace_id,
                 )
                 .await
+                // 入力項目に合わない入力は、キーでなく図の部品の名前で言う（GAP-41）。
+                .map_err(|e| gui::with_field_labels(e, &block.figure, gui::ButtonSurface::Chat))
             }
         }
     }

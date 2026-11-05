@@ -76,12 +76,17 @@ pub enum UiActionResult {
 /// 部品の横に出せるよう文言を `errors` に載せて返す（`BadRequest` は本文が `{status,title}` に潰れる）。
 /// 文言は利用者が入れた値の検証結果で、内部の情報は含まない。
 pub(crate) fn map_yui_action_err(e: ActionError) -> ApiError {
-    match e {
-        ActionError::Invalid(m) => ApiError::UnprocessableJson(serde_json::json!({
+    let invalid = |m: &str| {
+        ApiError::UnprocessableJson(serde_json::json!({
             "status": 400,
             "title": "Bad Request",
             "errors": [{ "code": "ui_action.invalid", "message": m }],
-        })),
+        }))
+    };
+    match e {
+        ActionError::Invalid(m) => invalid(&m),
+        // 図のボタンの口は部品の名前で言い直してから返す（ここに来たら、キーを出さない最後の手段の文）。
+        ActionError::InvalidInput(_) => invalid(gui::INPUT_MISMATCH_FALLBACK),
         other => map_action_err(other),
     }
 }
@@ -94,6 +99,8 @@ pub(crate) fn map_action_err(e: ActionError) -> ApiError {
         ActionError::AlreadyInvoked => ApiError::Conflict,
         ActionError::Forbidden => ApiError::Forbidden,
         ActionError::Invalid(m) => ApiError::BadRequest(m),
+        // 図のボタンの口は部品の名前で言い直してから返す。ここに来るのは図を持たない口だけ（キーは出さない）。
+        ActionError::InvalidInput(_) => ApiError::BadRequest(gui::INPUT_MISMATCH_FALLBACK.into()),
         ActionError::Unavailable(m) => ApiError::ServiceUnavailable(m),
         // 表の索引の準備中は失敗ではない待ち。data の API と同じ構造化した 409（画面が進捗を出して読み直す）。
         ActionError::IndexPreparing { field, progress } => {

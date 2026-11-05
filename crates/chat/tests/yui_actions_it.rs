@@ -164,13 +164,7 @@ impl gui::WorkflowStarter for TestStarter {
         self.0
             .start_interactive_version(ctx, workflow_id, version, input)
             .await
-            .map_err(|e| match e {
-                workflow_engine::run::LauncherError::Ir(_) => gui::ActionError::NotFound,
-                workflow_engine::run::LauncherError::Input(issues) => gui::ActionError::Invalid(
-                    workflow_engine::run::LauncherError::input_message(&issues),
-                ),
-                other => gui::ActionError::Internal(format!("run 起動: {other}")),
-            })
+            .map_err(gui::from_launcher_error)
     }
 
     async fn start_pinned_via_bundle(
@@ -431,7 +425,9 @@ async fn workflow_buttons_are_bound_validated_deduplicated_and_recorded() {
     let gui::ActionError::Invalid(msg) = err else {
         panic!("{err:?}")
     };
-    assert!(msg.contains("amount"), "{msg}");
+    // 入力のキー（amount）でなく、図の部品の名前で言う（GAP-41）。
+    assert!(msg.starts_with("金額: "), "{msg}");
+    assert!(!msg.contains("amount"), "{msg}");
     assert_eq!(
         run_count(&e.pool, &tenant).await,
         0,

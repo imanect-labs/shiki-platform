@@ -34,6 +34,7 @@ mod access_parts;
 pub mod action;
 pub mod data_grid;
 pub mod dispatch;
+pub mod input_problems;
 pub mod miniapp;
 pub mod miniapp_actions;
 mod miniapp_data;
@@ -59,6 +60,9 @@ pub use action::{ActionBinding, DataViewBinding, HandlerBinding, WorkflowBinding
 pub use data_grid::{data_grid_action_id, data_grid_alias, data_grid_blocks, DataGridBlock};
 pub use dispatch::{
     ActionDispatcher, ActionError, ActionHandler, ActionLedger, ActionSource, WorkflowStarter,
+};
+pub use input_problems::{
+    from_launcher_error, with_field_labels, ButtonSurface, InputProblem, INPUT_MISMATCH_FALLBACK,
 };
 pub use miniapp::{screen_problems, ComponentPin, MiniAppBody, NamedComponentPin};
 pub use miniapp_actions::{MiniAppActionRequest, MiniAppRun, MiniAppRunStatus, MiniAppRunValue};
