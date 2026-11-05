@@ -2012,15 +2012,19 @@ async fn children_list_folders_first_and_natural_name_order() {
         list_all_names(&cx.service, &alice, Some(root.id), sort(Name, true), 2).await,
         ["資料10", "資料2", "b", "File10.txt", "file2.txt", "A.txt"]
     );
-    // サイズ: フォルダ（0 扱い）は昇降どちらでも先頭、ファイルはサイズ順。
-    let size_asc = list_all_names(&cx.service, &alice, Some(root.id), sort(Size, false), 2).await;
-    assert_eq!(size_asc[3..], ["File10.txt", "file2.txt", "A.txt"]);
-    let size_desc = list_all_names(&cx.service, &alice, Some(root.id), sort(Size, true), 2).await;
-    assert_eq!(size_desc[3..], ["A.txt", "file2.txt", "File10.txt"]);
-    for names in [&size_asc, &size_desc] {
-        let mut folders = names[..3].to_vec();
-        folders.sort();
-        assert_eq!(folders, ["b", "資料10", "資料2"], "フォルダが先頭 3 件");
+    // サイズ: フォルダ（0 扱い）は昇降どちらでも先頭、ファイルはサイズ順。サイズが同じ
+    // フォルダ同士は名前の自然順で並ぶ（limit=1/2 で同値の塊がページ境界をまたいでも崩れない）。
+    for limit in [1, 2] {
+        assert_eq!(
+            list_all_names(&cx.service, &alice, Some(root.id), sort(Size, false), limit).await,
+            ["b", "資料2", "資料10", "File10.txt", "file2.txt", "A.txt"],
+            "limit={limit}"
+        );
+        assert_eq!(
+            list_all_names(&cx.service, &alice, Some(root.id), sort(Size, true), limit).await,
+            ["資料10", "資料2", "b", "A.txt", "file2.txt", "File10.txt"],
+            "limit={limit}"
+        );
     }
 
     // 名前検索も同じ並び（フォルダ優先 → 自然順）で、ページ境界をまたいで辿れる。

@@ -254,10 +254,10 @@ fn child_sort_tag(key: ChildSortKey) -> char {
     }
 }
 
-/// 子一覧・名前検索の並び（**フォルダ優先** → ソートキー → id）を SQL 断片にしたもの（#1040）。
+/// 子一覧・名前検索の並び（**フォルダ優先** → ソートキー → 名前 → id）を SQL 断片にしたもの（#1040）。
 ///
 /// プレースホルダは呼び出し側と共通: `$4` = カーソルのソート値（text）、`$5` = カーソルの id、
-/// `$8` = カーソル行の種別（`folder`/`file`）。
+/// `$8` = カーソル行の種別（`folder`/`file`）、`$9` = カーソル行の名前。
 struct ChildOrderSql {
     /// `ORDER BY` の中身。
     order_by: String,
@@ -265,33 +265,48 @@ struct ChildOrderSql {
     keyset: String,
 }
 
+/// 名前の自然順照合（migration 0110）。ORDER BY と keyset の両方に同じ照合を付けて順序を一致させる。
+const NAME_COLLATED: &str = "name COLLATE node_name_natural";
+
 /// [`ChildOrderSql`] を組む。
 ///
 /// フォルダを昇降どちらでも先頭に置きつつ keyset を 1 本の行比較に保つため、種別の順位式を
 /// 方向に合わせて反転する（昇順は `kind <> 'folder'`＝フォルダが false で先、降順は
-/// `kind = 'folder'`＝フォルダが true で先）。名前は自然順照合（`node_name_natural`・
-/// migration 0110）で比べ、ORDER BY と keyset の両方に同じ照合を付けて順序を一致させる。
+/// `kind = 'folder'`＝フォルダが true で先）。更新日時・サイズが同値の行（サイズ順のフォルダは
+/// 全て 0）は名前の自然順で並べ、最後に id で一意に決める（id だけだと見た目が無作為になる）。
 fn child_order_sql(sort: ChildSort) -> ChildOrderSql {
     let (dir, cmp, rank_op) = if sort.desc {
         ("DESC", "<", "=")
     } else {
         ("ASC", ">", "<>")
     };
-    let (col, param) = match sort.key {
-        ChildSortKey::Name => (
-            "name COLLATE node_name_natural",
-            "$4::text COLLATE node_name_natural",
+    let name_param = "$9::text COLLATE node_name_natural";
+    let (cols, params) = match sort.key {
+        ChildSortKey::Name => (vec![NAME_COLLATED], vec![name_param]),
+        ChildSortKey::Updated => (
+            vec!["updated_at", NAME_COLLATED],
+            vec!["$4::timestamptz", name_param],
         ),
-        ChildSortKey::Updated => ("updated_at", "$4::timestamptz"),
         // フォルダは size_bytes が NULL のため 0 とみなす（NULL を keyset から排除）。
-        ChildSortKey::Size => ("coalesce(size_bytes, 0)", "$4::bigint"),
+        ChildSortKey::Size => (
+            vec!["coalesce(size_bytes, 0)", NAME_COLLATED],
+            vec!["$4::bigint", name_param],
+        ),
     };
     let rank = format!("(kind {rank_op} 'folder')");
     let rank_param = format!("($8::text {rank_op} 'folder')");
+    let order_by = std::iter::once(rank.as_str())
+        .chain(cols.iter().copied())
+        .chain(std::iter::once("id"))
+        .map(|c| format!("{c} {dir}"))
+        .collect::<Vec<_>>()
+        .join(", ");
     ChildOrderSql {
-        order_by: format!("{rank} {dir}, {col} {dir}, id {dir}"),
+        order_by,
         keyset: format!(
-            "($4::text IS NULL OR ({rank}, {col}, id) {cmp} ({rank_param}, {param}, $5))"
+            "($4::text IS NULL OR ({rank}, {}, id) {cmp} ({rank_param}, {}, $5))",
+            cols.join(", "),
+            params.join(", ")
         ),
     }
 }
@@ -307,23 +322,31 @@ fn child_sort_value(key: ChildSortKey, row: &NodeRow) -> String {
     }
 }
 
-/// 子一覧 keyset カーソルの位置（カーソル行のソート値・id・種別）。
+/// 子一覧 keyset カーソルの位置（カーソル行のソート値・名前・id・種別）。
 #[derive(Debug, PartialEq, Eq)]
 struct ChildCursor {
     value: String,
+    name: String,
     id: Uuid,
     kind: NodeKind,
 }
 
 /// 子一覧 keyset カーソルの不透明エンコード。`tag(1)`＋`種別(1)`＋`id`(36桁)＋`value` を連結し
 /// hex 化する（uuid は固定長・value は最後尾なので区切り不要）。クライアントには不透明。
-fn encode_child_cursor(sort: ChildSort, value: &str, id: Uuid, kind: NodeKind) -> String {
+/// 名前順以外は value の後ろに `\n`＋名前を足す（同値の行を名前で並べるため）。value
+/// （RFC3339・整数）は改行を含まないので最初の `\n` で一意に分けられる。
+fn encode_child_cursor(sort: ChildSort, c: &ChildCursor) -> String {
     let tag = child_sort_tag(sort.key);
-    let k = match kind {
+    let k = match c.kind {
         NodeKind::Folder => 'd',
         NodeKind::File => 'f',
     };
-    hex::encode(format!("{tag}{k}{id}{value}").as_bytes())
+    let id = c.id;
+    let body = match sort.key {
+        ChildSortKey::Name => c.name.clone(),
+        ChildSortKey::Updated | ChildSortKey::Size => format!("{}\n{}", c.value, c.name),
+    };
+    hex::encode(format!("{tag}{k}{id}{body}").as_bytes())
 }
 
 /// [`encode_child_cursor`] の逆。壊れた/別ソートのカーソルは `Invalid`（panic しない）。
@@ -331,7 +354,7 @@ fn decode_child_cursor(sort: ChildSort, cursor: &str) -> Result<ChildCursor, Sto
     let invalid = || StorageError::Invalid("カーソルが不正です".into());
     let bytes = hex::decode(cursor).map_err(|_| invalid())?;
     // 先頭 1 バイトがソートタグ、次の 1 バイトが種別、続く 36 **バイト**が uuid（ASCII 固定長）、
-    // 残りが value。バイト境界で分割してから UTF-8 検証する（マルチバイト境界外の split は panic）。
+    // 残りが本体。バイト境界で分割してから UTF-8 検証する（マルチバイト境界外の split は panic）。
     if bytes.len() < 2 + 36 {
         return Err(invalid());
     }
@@ -347,11 +370,23 @@ fn decode_child_cursor(sort: ChildSort, cursor: &str) -> Result<ChildCursor, Sto
         b'f' => NodeKind::File,
         _ => return Err(invalid()),
     };
-    let (id_bytes, value_bytes) = rest.split_at(36);
+    let (id_bytes, body_bytes) = rest.split_at(36);
     let id_part = std::str::from_utf8(id_bytes).map_err(|_| invalid())?;
     let id = Uuid::parse_str(id_part).map_err(|_| invalid())?;
-    let value = String::from_utf8(value_bytes.to_vec()).map_err(|_| invalid())?;
-    Ok(ChildCursor { value, id, kind })
+    let body = String::from_utf8(body_bytes.to_vec()).map_err(|_| invalid())?;
+    let (value, name) = match sort.key {
+        ChildSortKey::Name => (body.clone(), body),
+        ChildSortKey::Updated | ChildSortKey::Size => {
+            let (v, n) = body.split_once('\n').ok_or_else(invalid)?;
+            (v.to_string(), n.to_string())
+        }
+    };
+    Ok(ChildCursor {
+        value,
+        name,
+        id,
+        kind,
+    })
 }
 
 /// タイムスタンプ keyset カーソルの不透明エンコード。`(ts(rfc3339), id)` を連結し hex 化する
@@ -488,56 +523,62 @@ mod tests {
         assert!(ensure_same_extension("a.tar.gz", "a.tar").is_err());
     }
 
+    fn cursor(value: &str, name: &str, kind: NodeKind) -> ChildCursor {
+        ChildCursor {
+            value: value.into(),
+            name: name.into(),
+            id: Uuid::new_v4(),
+            kind,
+        }
+    }
+
     #[test]
     fn child_cursor_roundtrips() {
-        let id = Uuid::new_v4();
         let sort = ChildSort::default();
         for kind in [NodeKind::Folder, NodeKind::File] {
-            for value in ["report.pdf", "日本語フォルダ", "a", &"x".repeat(255)] {
-                let c = encode_child_cursor(sort, value, id, kind);
-                let got = decode_child_cursor(sort, &c).expect("decode");
-                assert_eq!(
-                    got,
-                    ChildCursor {
-                        value: value.to_string(),
-                        id,
-                        kind
-                    }
-                );
+            for name in ["report.pdf", "日本語フォルダ", "a", &"x".repeat(255)] {
+                let c = cursor(name, name, kind);
+                let got =
+                    decode_child_cursor(sort, &encode_child_cursor(sort, &c)).expect("decode");
+                assert_eq!(got, c);
             }
         }
     }
 
     #[test]
     fn child_cursor_roundtrips_each_sort_key() {
-        // 各ソートキーで往復し、値（rfc3339 / 数値文字列 / 名前）を保てること。
-        let id = Uuid::new_v4();
+        // 各ソートキーで往復し、値（rfc3339 / 数値文字列）と同値時の並びに使う名前を保てること。
         for (key, value) in [
-            (ChildSortKey::Name, "report.pdf"),
             (ChildSortKey::Updated, "2026-06-25T10:00:00+00:00"),
             (ChildSortKey::Size, "4096"),
         ] {
             let sort = ChildSort { key, desc: true };
-            let c = encode_child_cursor(sort, value, id, NodeKind::File);
-            let got = decode_child_cursor(sort, &c).expect("decode");
-            assert_eq!(got.value, value);
-            assert_eq!(got.id, id);
-            assert_eq!(got.kind, NodeKind::File);
+            let c = cursor(value, "資料 2.txt", NodeKind::File);
+            let got = decode_child_cursor(sort, &encode_child_cursor(sort, &c)).expect("decode");
+            assert_eq!(got, c);
         }
+    }
+
+    #[test]
+    fn child_cursor_rejects_missing_name_part() {
+        // 名前順以外で `\n`＋名前が欠けたカーソルは不正（keyset の比較値が揃わない）。
+        let raw = format!("Sf{}4096", Uuid::new_v4());
+        let sort = ChildSort {
+            key: ChildSortKey::Size,
+            desc: false,
+        };
+        assert!(decode_child_cursor(sort, &hex::encode(raw)).is_err());
     }
 
     #[test]
     fn child_cursor_rejects_cursor_from_other_sort() {
         // ソートを変えたのに古いカーソルを使い回すと拒否（誤った keyset 比較を防ぐ）。
-        let id = Uuid::new_v4();
         let c = encode_child_cursor(
             ChildSort {
                 key: ChildSortKey::Name,
                 desc: false,
             },
-            "a",
-            id,
-            NodeKind::Folder,
+            &cursor("a", "a", NodeKind::Folder),
         );
         assert!(decode_child_cursor(
             ChildSort {
@@ -575,20 +616,26 @@ mod tests {
     fn child_order_keeps_folders_first_both_directions() {
         // 昇順は `kind <> 'folder'` ASC、降順は `kind = 'folder'` DESC → どちらもフォルダが先頭。
         let asc = child_order_sql(ChildSort::default());
+        assert_eq!(
+            asc.order_by,
+            "(kind <> 'folder') ASC, name COLLATE node_name_natural ASC, id ASC"
+        );
         assert!(asc
-            .order_by
-            .starts_with("(kind <> 'folder') ASC, name COLLATE node_name_natural ASC"));
-        assert!(asc.keyset.contains(") > (($8::text <> 'folder')"));
+            .keyset
+            .contains(") > (($8::text <> 'folder'), $9::text COLLATE node_name_natural, $5)"));
+        // 同値（サイズ順のフォルダは全て 0）は名前の自然順 → id で並べる。
         let desc = child_order_sql(ChildSort {
             key: ChildSortKey::Size,
             desc: true,
         });
-        assert!(desc
-            .order_by
-            .starts_with("(kind = 'folder') DESC, coalesce(size_bytes, 0) DESC"));
-        assert!(desc
-            .keyset
-            .contains(") < (($8::text = 'folder'), $4::bigint, $5)"));
+        assert_eq!(
+            desc.order_by,
+            "(kind = 'folder') DESC, coalesce(size_bytes, 0) DESC, \
+             name COLLATE node_name_natural DESC, id DESC"
+        );
+        assert!(desc.keyset.contains(
+            ") < (($8::text = 'folder'), $4::bigint, $9::text COLLATE node_name_natural, $5)"
+        ));
     }
 
     #[test]

@@ -121,7 +121,7 @@ impl StorageService {
         let limit = limit.clamp(1, 100);
         // 1 ラウンドのフェッチ歩幅（フィルタ落ちを見越して多めに引く）。
         let batch: i64 = (limit as i64 * 2).clamp(16, 200);
-        // フォルダ優先 → ソートキー → id の並び（#1040）。keyset とカーソルもこれに合わせる。
+        // フォルダ優先 → ソートキー → 名前 → id の並び（#1040）。keyset とカーソルもこれに合わせる。
         let ChildOrderSql { order_by, keyset } = child_order_sql(sort);
         let mut after = cursor.map(|c| decode_child_cursor(sort, c)).transpose()?;
 
@@ -149,6 +149,7 @@ impl StorageService {
                 .bind(batch)
                 .bind(include_system)
                 .bind(after.as_ref().map(|c| c.kind.as_str()))
+                .bind(after.as_ref().map(|c| c.name.as_str()))
                 .fetch_all(&self.db)
                 .await?;
             if (rows.len() as i64) < batch {
@@ -162,6 +163,7 @@ impl StorageService {
                 let kind = NodeKind::parse(&row.kind).unwrap_or(NodeKind::File);
                 after = Some(ChildCursor {
                     value: child_sort_value(sort.key, &row),
+                    name: row.name.clone(),
                     id: row.id,
                     kind,
                 });
@@ -185,7 +187,7 @@ impl StorageService {
         }
         // limit 充足で止めたなら続きがあり得る → カーソルを返す。尽きたなら None。
         let next_cursor = if items.len() == limit {
-            after.map(|c| encode_child_cursor(sort, &c.value, c.id, c.kind))
+            after.map(|c| encode_child_cursor(sort, &c))
         } else {
             None
         };
@@ -266,7 +268,7 @@ impl StorageService {
 
         let limit = limit.clamp(1, 100);
         let batch: i64 = (limit as i64 * 2).clamp(16, 200);
-        // フォルダ優先 → ソートキー → id の並び（#1040）。keyset とカーソルもこれに合わせる。
+        // フォルダ優先 → ソートキー → 名前 → id の並び（#1040）。keyset とカーソルもこれに合わせる。
         let ChildOrderSql { order_by, keyset } = child_order_sql(sort);
         let mut after = cursor.map(|c| decode_child_cursor(sort, c)).transpose()?;
 
@@ -292,6 +294,7 @@ impl StorageService {
                 .bind(batch)
                 .bind(kind.map(NodeKind::as_str))
                 .bind(after.as_ref().map(|c| c.kind.as_str()))
+                .bind(after.as_ref().map(|c| c.name.as_str()))
                 .fetch_all(&self.db)
                 .await?;
             if (rows.len() as i64) < batch {
@@ -304,6 +307,7 @@ impl StorageService {
                 let kind = NodeKind::parse(&row.kind).unwrap_or(NodeKind::File);
                 after = Some(ChildCursor {
                     value: child_sort_value(sort.key, &row),
+                    name: row.name.clone(),
                     id: row.id,
                     kind,
                 });
@@ -326,7 +330,7 @@ impl StorageService {
             }
         }
         let next_cursor = if items.len() == limit {
-            after.map(|c| encode_child_cursor(sort, &c.value, c.id, c.kind))
+            after.map(|c| encode_child_cursor(sort, &c))
         } else {
             None
         };
