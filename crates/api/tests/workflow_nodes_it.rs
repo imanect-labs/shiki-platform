@@ -782,7 +782,7 @@ fn runner_path() -> Option<PathBuf> {
 async fn csv_query_node_reads_uploaded_csv() {
     let Some(h) = setup().await else { return };
     let Some(runner) = runner_path() else {
-        eprintln!("shiki-tabular-runner 未ビルドのためスキップ（SHIKI_TABULAR_RUNNER 参照）");
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "shiki-tabular-runner 未ビルド");
         return;
     };
     // alice が CSV をアップロード（作成者＝owner なので viewer で読める）。
@@ -834,7 +834,7 @@ async fn csv_query_node_reads_uploaded_csv() {
 async fn csv_query_denied_without_declared_scope() {
     let Some(h) = setup().await else { return };
     let Some(runner) = runner_path() else {
-        eprintln!("shiki-tabular-runner 未ビルドのためスキップ");
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "shiki-tabular-runner 未ビルド");
         return;
     };
     let executor = h.executor_with_tabular(&runner);

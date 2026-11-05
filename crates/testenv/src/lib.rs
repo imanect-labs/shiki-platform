@@ -65,6 +65,25 @@ fn missing_message(
     ))
 }
 
+/// 接続先の環境変数ではなく「ビルド済みバイナリ」などが無くてスキップするときに呼ぶ。
+///
+/// `name` はその依存を指す環境変数名（例 `SHIKI_TABULAR_RUNNER`）。[`var`] と同じく、
+/// `SHIKI_REQUIRE_IT=1` で `SHIKI_REQUIRE_IT_EXCEPT` に無ければ panic し、それ以外はスキップを告げる。
+///
+/// # Panics
+///
+/// `SHIKI_REQUIRE_IT=1` の下で、許可リストに無い依存が見つからないとき。
+#[allow(clippy::print_stderr)]
+pub fn missing(name: &str, what: &str) {
+    let require = std::env::var(REQUIRE_ENV).ok();
+    let except = std::env::var(EXCEPT_ENV).ok();
+    let unset: Result<String, VarError> = Err(VarError::NotPresent);
+    if let Some(message) = missing_message(name, &unset, require.as_deref(), except.as_deref()) {
+        fail(&format!("{what}: {message}"));
+    }
+    eprintln!("{what}のためスキップ（{name}）");
+}
+
 // 結合テストを「失敗」にする唯一の手段が panic なので、ここだけ許す。
 #[allow(clippy::panic)]
 fn fail(message: &str) -> ! {
@@ -110,6 +129,14 @@ mod tests {
         // 前方一致で他の変数まで許してしまわない。
         let except = Some("OPENFGA_TEST");
         assert!(missing_message(NAME, &unset(), Some("1"), except).is_some());
+    }
+
+    #[test]
+    fn missing_skips_when_not_required() {
+        // 既定（SHIKI_REQUIRE_IT 未設定）では panic せずにスキップを告げるだけ。
+        if std::env::var(REQUIRE_ENV).as_deref() != Ok("1") {
+            missing("SHIKI_TESTENV_PROBE", "テスト用の依存が無い");
+        }
     }
 
     #[test]

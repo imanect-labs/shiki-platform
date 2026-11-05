@@ -10,13 +10,13 @@
 # サンドボックスの実走フラグ）。接続先に付随する任意の値（*_TEST_KEY・*_TEST_MODEL・STORAGE_TEST_S3_ENDPOINT 等）は
 # 門番ではないので対象外。toolchain 不要（bash+git+grep）なので quality ジョブで回す。
 #
-# 字句で判定するので、定数経由（env::var(NAME)）や `use std::env::var;` 後の素の var("…") は拾えない。
-# 門番の変数名は文字列リテラルで直接書くこと。
+# 字句で判定するので、定数経由（env::var(NAME)）は拾えない。門番の変数名は文字列リテラルで直接書くこと。
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
 
-pattern='(^|[^_[:alnum:]])env::var(_os)?\([[:space:]]*"([A-Z0-9_]*_TEST_([A-Z0-9_]*_)?(URL|WS|COLLABORA)|SANDBOX_[A-Z0-9_]*IT)"'
+# `env::var("…")` に加え、`use std::env::var;` の後の素の `var("…")` も拾う（`::var(` は shiki_testenv 等なので除く）。
+pattern='((^|[^_[:alnum:]])env::|(^|[^_[:alnum:]:.]))var(_os)?\([[:space:]]*"([A-Z0-9_]*_TEST_([A-Z0-9_]*_)?(URL|WS|COLLABORA)|SANDBOX_[A-Z0-9_]*IT)"'
 
 if hits=$(git grep -n -E "$pattern" -- 'crates/*.rs' ':!crates/testenv/**' || true) && [ -n "$hits" ]; then
   echo "❌ 結合テストの接続先を std::env::var で直接読んでいます（shiki_testenv::var を使うこと）:" >&2

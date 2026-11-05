@@ -43,12 +43,13 @@ env:
   CARGO_INCREMENTAL: "0"
   # 結合テストの接続先のうち、coverage ジョブが用意しない依存（実 Keycloak・実 LLM・Office エンジン/Collabora・
   # VM 系サンドボックス）。結合テストのジョブは SHIKI_REQUIRE_IT=1 で「接続先が未設定ならスキップ」を失敗に変える
-  # （crates/testenv）。ここに挙げた変数だけは未設定でもスキップを許す。SANDBOX_GVISOR_IT だけは非ブロッキングの
-  # sandbox-gvisor ジョブで走り、それ以外は **CI で一度も走らない結合テスト**なので、減らせるものは減らす
+  # （crates/testenv）。ここに挙げた変数だけは未設定でもスキップを許す。SANDBOX_GVISOR_IT は非ブロッキングの
+  # sandbox-gvisor ジョブで、SHIKI_TABULAR_RUNNER（隔離ランナーのバイナリ）は tabular-runner ジョブの adversarial
+  # テストだけで走る。それ以外は **CI で一度も走らない結合テスト**なので、減らせるものは減らす
   # （coverage ジョブの Job Summary にも出す）。手動で回す計測・実地評価のフラグ（DATA_BENCH・WEB_FETCH_LIVE・
   # SHIKI_SQL_EVAL_URL 等）は結合テストの門番ではないので対象外。
   SHIKI_REQUIRE_IT_EXCEPT: >-
-    KEYCLOAK_TEST_URL,OPENAI_TEST_URL,ANTHROPIC_TEST_URL,OPENAI_RESPONSES_TEST_URL,OFFICE_ENGINE_TEST_WS,OFFICE_RELAY_TEST_COLLABORA,SANDBOX_IT,SANDBOX_NETNS_IT,SANDBOX_FC_IT,SANDBOX_GVISOR_IT
+    KEYCLOAK_TEST_URL,OPENAI_TEST_URL,ANTHROPIC_TEST_URL,OPENAI_RESPONSES_TEST_URL,OFFICE_ENGINE_TEST_WS,OFFICE_RELAY_TEST_COLLABORA,SHIKI_TABULAR_RUNNER,SANDBOX_IT,SANDBOX_NETNS_IT,SANDBOX_FC_IT,SANDBOX_GVISOR_IT
 
 jobs:
   # PR の変更ファイルから、回すジョブと Rust テストの対象を選ぶ（#921・scripts/ci-select.py）。

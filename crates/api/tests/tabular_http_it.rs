@@ -272,7 +272,7 @@ async fn setup() -> Option<Env> {
         return None;
     };
     let Some(runner) = runner_path() else {
-        eprintln!("隔離ランナー未ビルドのためスキップ");
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "隔離ランナー未ビルド");
         return None;
     };
     let s3_endpoint = std::env::var("STORAGE_TEST_S3_ENDPOINT")
