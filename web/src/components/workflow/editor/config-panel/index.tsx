@@ -58,6 +58,7 @@ import {
 } from "./forms-files";
 import { patchParams } from "./params";
 import type { InputRefUsage } from "./input-schema-editor";
+import { InputsSection } from "./inputs-section";
 import { TriggerPanel } from "./trigger-panel";
 import {
   InputFieldsContext,
@@ -471,24 +472,7 @@ export function ConfigPanel({ ctx }: { ctx: EditorContext }) {
     label = "きっかけの設定";
     content = (
       <>
-        <div className={cn("flex items-center justify-between shiki-dash-bottom px-4 py-3", sheet && "min-h-14 pr-14")}>
-          <PanelTitle sheet={sheet}>きっかけ</PanelTitle>
-          {sheet ? (
-            <PanelDescription sheet className="sr-only">
-              いつ・何をきっかけに動かすかを設定します。
-            </PanelDescription>
-          ) : (
-            <Button
-              variant="ghost"
-              size="icon"
-              className="size-7"
-              aria-label="パネルを閉じる"
-              onClick={close}
-            >
-              <X className="size-4" aria-hidden />
-            </Button>
-          )}
-        </div>
+        <PlainHeader sheet={sheet} title="きっかけ" description="いつ・何をきっかけに動かすかを設定します。" onClose={close} />
         <div className={cn("flex-1 overflow-y-auto overscroll-y-contain px-4 py-4 scrollbar-subtle", sheet && SHEET_BOTTOM_SPACE)}>
           <TriggerPanel
             triggers={ir.triggers as Trigger[]}
@@ -501,6 +485,25 @@ export function ConfigPanel({ ctx }: { ctx: EditorContext }) {
             inputUsages={inputUsages}
             errors={globalErrors.byTrigger.get(selection.index)}
             inputSchemaErrors={globalErrors.inputSchema}
+          />
+        </div>
+      </>
+    );
+  } else if (selection.kind === "inputs") {
+    // 入力項目はきっかけと別にも開く（「手動で実行」のきっかけが無いワークフローでも直せる・GAP-35）。
+    label = "入力項目の設定";
+    content = (
+      <>
+        <PlainHeader sheet={sheet} title="入力項目" description="実行するときに受け取る値を決めます。" onClose={close} />
+        <div className={cn("flex-1 overflow-y-auto overscroll-y-contain px-4 py-4 scrollbar-subtle", sheet && SHEET_BOTTOM_SPACE)}>
+          <InputsSection
+            title={false}
+            schema={ir.input_schema}
+            onChange={(input_schema, inputRenames) =>
+              ctx.dispatch({ type: "update_meta", patch: { input_schema }, inputRenames })
+            }
+            usages={inputUsages}
+            errors={globalErrors.inputSchema}
           />
         </div>
       </>
@@ -525,6 +528,34 @@ export function ConfigPanel({ ctx }: { ctx: EditorContext }) {
   }
   if (!content || !label) return null;
   return <PanelShell label={label}>{content}</PanelShell>;
+}
+
+/// きっかけ・入力項目の設定の見出し（シートでは説明を読み上げにだけ渡し、閉じるボタンはシートの共通のものを使う）。
+function PlainHeader({
+  sheet,
+  title,
+  description,
+  onClose,
+}: {
+  sheet: boolean;
+  title: string;
+  description: string;
+  onClose: () => void;
+}) {
+  return (
+    <div className={cn("flex items-center justify-between shiki-dash-bottom px-4 py-3", sheet && "min-h-14 pr-14")}>
+      <PanelTitle sheet={sheet}>{title}</PanelTitle>
+      {sheet ? (
+        <PanelDescription sheet className="sr-only">
+          {description}
+        </PanelDescription>
+      ) : (
+        <Button variant="ghost" size="icon" className="size-7" aria-label="パネルを閉じる" onClick={onClose}>
+          <X className="size-4" aria-hidden />
+        </Button>
+      )}
+    </div>
+  );
 }
 
 /// シートでは Radix の Title/Description（読み上げの見出し）、パネルでは素の見出し。

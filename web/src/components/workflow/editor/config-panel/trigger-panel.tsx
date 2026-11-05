@@ -29,7 +29,8 @@ import { Field, FieldInput, FieldSelectTrigger } from "./common";
 import { previewSchedule } from "@/lib/workflow-api";
 import { DataTableSelect, isFsmTable, NoFsmTableNote, useDataTables } from "./data-tables";
 import { useDriveItem } from "./forms-files";
-import { InputSchemaEditor, type InputRefUsage } from "./input-schema-editor";
+import type { InputRefUsage } from "./input-schema-editor";
+import { InputsSection } from "./inputs-section";
 import { triggerErrorView } from "../validation";
 
 /// きっかけの中の位置（`scope/folder`・`cron` など）→ 保存時の誤りの文言。
@@ -635,22 +636,12 @@ export function TriggerPanel({
             「実行」ボタンや AI チャットから手動で開始できます
           </p>
           <div className="border-t pt-3">
-            <InputSchemaEditor schema={inputSchema} onChange={onInputSchemaChange} usages={inputUsages} />
-            {inputSchemaErrors.length > 0 ? (
-              <div
-                role="alert"
-                className="mt-2 space-y-1 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2 text-xs text-destructive"
-                data-testid="input-schema-errors"
-              >
-                <p className="font-medium">入力項目を直すまで保存できません</p>
-                {inputSchemaErrors.map((e, i) => (
-                  <p key={i} className="flex items-start gap-1.5 [overflow-wrap:anywhere]">
-                    <AlertCircle className="mt-0.5 size-3.5 shrink-0" aria-hidden />
-                    {e.message}
-                  </p>
-                ))}
-              </div>
-            ) : null}
+            <InputsSection
+              schema={inputSchema}
+              onChange={onInputSchemaChange}
+              usages={inputUsages}
+              errors={inputSchemaErrors}
+            />
           </div>
         </>
       ) : null}

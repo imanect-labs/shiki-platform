@@ -19,6 +19,8 @@ export type Selection =
   | { kind: "none" }
   | { kind: "node"; id: string }
   | { kind: "trigger"; index: number }
+  /// 入力項目の設定（きっかけと別に開く。「手動で実行」のきっかけが無いワークフローでも開ける・GAP-35）。
+  | { kind: "inputs" }
   /// つながり（`edgeKey` の `from|from_port|to`）。選ぶとノードの選択は外れる（選択は常に 1 つ）。
   | { kind: "edge"; key: string };
 
@@ -35,6 +37,8 @@ function sameSelection(a: Selection, b: Selection): boolean {
       return b.kind === "node" && b.id === a.id;
     case "trigger":
       return b.kind === "trigger" && b.index === a.index;
+    case "inputs":
+      return b.kind === "inputs";
     case "edge":
       return b.kind === "edge" && b.key === a.key;
   }

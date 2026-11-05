@@ -48,11 +48,14 @@ export function InputSchemaEditor({
   schema,
   onChange,
   usages = [],
+  title = true,
 }: {
   schema: unknown;
   /// `renames` は表でキーを変えた項目（旧キー → 新キー）。
   onChange: (next: unknown, renames?: Record<string, string>) => void;
   usages?: InputRefUsage[];
+  /// 見出し「入力項目」を出すか（見出しのある入力項目の設定の中では出さない）。
+  title?: boolean;
 }) {
   const parsed = React.useMemo(() => parseInputSchema(schema), [schema]);
   // 表で書けない形は必ず JSON で見せる（Undo などで外から変わったときも、表で上書きして壊さない）。
@@ -122,8 +125,8 @@ export function InputSchemaEditor({
 
   return (
     <div className="space-y-2.5" data-testid="input-schema-editor">
-      <div className="flex items-center justify-between gap-2">
-        <p className="text-xs font-medium text-foreground">入力項目</p>
+      <div className={cn("flex items-center gap-2", title ? "justify-between" : "justify-end")}>
+        {title ? <p className="text-xs font-medium text-foreground">入力項目</p> : null}
         <button
           type="button"
           className="text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"

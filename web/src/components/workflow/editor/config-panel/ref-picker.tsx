@@ -216,7 +216,7 @@ export function InsertMenu({
         ))}
         {ctx.inputFields.length === 0 ? (
           <p className="px-2 pb-1.5 pt-1 text-[11px] leading-relaxed text-muted-foreground">
-            実行するときに入れてもらう値（入力項目）は、「きっかけ」の設定で追加できます
+            実行するときに入れてもらう値（入力項目）は、画面の上の「入力項目」で追加できます
           </p>
         ) : null}
       </DropdownMenuContent>

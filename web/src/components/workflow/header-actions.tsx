@@ -2,10 +2,11 @@
 
 /// ワークフローエディタのページクローム（実行・保存・⋯）と、スマホ本文先頭の見出し。
 ///
-/// - 右側: 主操作「▶ 実行」→ ⋯（スマホ: ブロックを追加・元に戻す・やり直す・実行履歴・版・
+/// - 右側: 主操作「▶ 実行」→ ⋯（スマホ: ブロックを追加・入力項目・元に戻す・やり直す・実行履歴・版・
 ///   共有・自動実行・保存）。戻るは一覧へ。
-/// - PC のバーには従来どおり、ブロック一覧・元に戻す/やり直す・状態バッジ・実行履歴・版・共有・
+/// - PC のバーには従来どおり、ブロック一覧・入力項目・元に戻す/やり直す・状態バッジ・実行履歴・版・共有・
 ///   自動実行・保存を並べる（幅に余裕があるため ⋯ に畳まない）。
+/// - 「入力項目」はきっかけと別に入力項目の設定を開く（「手動で実行」のきっかけが無いワークフローでも開ける・GAP-35）。
 /// - スマホの本文先頭: 「✓ v1・保存済み」と名前、状態バッジ、「フロー｜実行履歴」タブ。
 /// - 未保存のまま「実行」を押すと、保存してから実行ダイアログを開く（実行は保存済みの版で動く）。
 
@@ -26,6 +27,7 @@ import {
   Redo2,
   RotateCcw,
   Share2,
+  TextCursorInput,
   Undo2,
 } from "lucide-react";
 
@@ -47,6 +49,7 @@ import { cn } from "@/lib/utils";
 import { getRegistration, type Registration } from "@/lib/workflow-api";
 import type { EditorChromeContext } from "@/components/workflow/editor/workflow-editor";
 import { AddNodeMenu } from "@/components/workflow/editor/add-node-menu";
+import { mapErrors } from "@/components/workflow/editor/validation";
 import { EnableDialog } from "./enable-dialog";
 import { RunNowDialog } from "./run-now-dialog";
 import { WorkflowTabs } from "./workflow-tabs";
@@ -208,6 +211,16 @@ export function WorkflowChrome({ ctx }: { ctx: EditorChromeContext }) {
   const { state, dispatch, save, saving, desktop, workflowId } = ctx;
   const name = state.ir.display_name || state.ir.name;
   const errorCount = state.serverErrors.length;
+  // 入力項目の設定を開いているか・入力項目に直すところがあるか（ボタンに印を付ける）。
+  const inputsOpen = state.selection.kind === "inputs";
+  const inputErrorCount = React.useMemo(
+    () => mapErrors(state.serverErrors).inputSchema.length,
+    [state.serverErrors],
+  );
+  const toggleInputs = React.useCallback(
+    () => dispatch({ type: "select", selection: inputsOpen ? { kind: "none" } : { kind: "inputs" } }),
+    [dispatch, inputsOpen],
+  );
   const status = registration?.status ?? "none";
   const hasAutomaticTrigger = state.ir.triggers.some(
     (t) => t.kind === "schedule" || t.kind === "event",
@@ -230,6 +243,13 @@ export function WorkflowChrome({ ctx }: { ctx: EditorChromeContext }) {
         ? []
         : [
             { key: "add", label: "ブロックを追加", icon: Plus, onSelect: ctx.requestAddAtEnd },
+            {
+              key: "inputs",
+              label: inputErrorCount > 0 ? `入力項目（直すところ ${inputErrorCount} 件）` : "入力項目",
+              icon: TextCursorInput,
+              onSelect: () => dispatch({ type: "select", selection: { kind: "inputs" } }),
+              testId: "workflow-inputs-menu",
+            },
             {
               key: "undo",
               label: "元に戻す",
@@ -294,15 +314,35 @@ export function WorkflowChrome({ ctx }: { ctx: EditorChromeContext }) {
         ),
         desktopExtra: (
           <div className="mr-1 flex items-center gap-1.5">
+            {/* 幅の狭い PC（xl 未満）では、ブロックと入力項目は名前を隠してアイコンだけにする（右端の実行を押し出さない）。 */}
             <Button
               variant={ctx.paletteOpen ? "secondary" : "ghost"}
               size="sm"
               aria-pressed={ctx.paletteOpen}
+              aria-label="ブロック"
               onClick={ctx.togglePalette}
               title="ブロック一覧の表示切替"
+              className="max-xl:px-2"
             >
               <Blocks className="size-4" aria-hidden />
-              ブロック
+              <span className="hidden xl:inline">ブロック</span>
+            </Button>
+            <Button
+              variant={inputsOpen ? "secondary" : "ghost"}
+              size="sm"
+              aria-pressed={inputsOpen}
+              onClick={toggleInputs}
+              title="実行するときに受け取る値を決めます"
+              data-testid="workflow-inputs"
+              className={cn("max-xl:px-2", inputErrorCount > 0 && "text-destructive hover:text-destructive")}
+            >
+              {inputErrorCount > 0 ? (
+                <AlertCircle className="size-4" aria-hidden />
+              ) : (
+                <TextCursorInput className="size-4" aria-hidden />
+              )}
+              <span className="max-xl:sr-only">入力項目</span>
+              {inputErrorCount > 0 ? <span className="sr-only">（直すところ {inputErrorCount} 件）</span> : null}
             </Button>
             <Button
               variant="ghost"
@@ -416,6 +456,9 @@ export function WorkflowChrome({ ctx }: { ctx: EditorChromeContext }) {
       ctx.paletteOpen,
       ctx.togglePalette,
       ctx.requestAddAtEnd,
+      inputsOpen,
+      inputErrorCount,
+      toggleInputs,
       saving,
       desktop,
       registration,

@@ -3,7 +3,8 @@
 /// 保存を止める誤りのうち、ブロックにも線にも紐付かないもの（きっかけ・入力項目・ワークフロー全体）の一覧（GAP-35）。
 ///
 /// きっかけのテーブル・フォルダーが見つからない、入力項目の形が確かめられない、などはブロックの赤い印に出ない。
-/// ここに場所と理由を並べ、きっかけ・入力項目の誤りは押すとその設定を開く（欄の下にも同じ理由が出る）。
+/// ここに場所と理由を並べ、きっかけ・入力項目の誤りは押すとその設定を開く（欄の下にも同じ理由が出る）。入力項目は
+/// きっかけと別の入力項目の設定で開く（「手動で実行」のきっかけが無いワークフローでも開ける）。
 
 import * as React from "react";
 import { AlertCircle } from "lucide-react";
@@ -27,9 +28,8 @@ function placeOf(
     return { label, select: t ? { kind: "trigger", index: triggerIndex } : null };
   }
   if (e.path === "/input_schema" || e.path?.startsWith("/input_schema/")) {
-    // 入力項目は「手動で実行」のきっかけの設定で直す。
-    const manual = triggers.findIndex((t) => t.kind === "interactive");
-    return { label: "入力項目", select: manual >= 0 ? { kind: "trigger", index: manual } : null };
+    // 入力項目は、きっかけと別に開く入力項目の設定で直す（「手動で実行」のきっかけが無くても開ける）。
+    return { label: "入力項目", select: { kind: "inputs" } };
   }
   return { label: "ワークフロー全体", select: null };
 }
