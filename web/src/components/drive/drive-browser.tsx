@@ -13,6 +13,7 @@ import { MobilePageTitle } from "@/components/shell/page-header-context";
 import { useInfiniteList, useInfiniteSentinel } from "@/hooks/use-infinite-list";
 import { useCreateContent } from "@/hooks/use-create-content";
 import { useMe } from "@/hooks/use-me";
+import { useMediaQuery } from "@/hooks/use-media-query";
 import { createOfficeSession, OfficeSessionError } from "@/lib/office-api";
 import { useContentSearch, type ContentHit } from "@/lib/drive-search";
 import { extensionChangeError, stemRange } from "@/lib/file-name";
@@ -42,6 +43,7 @@ import { Breadcrumbs, ListHeader, LoadingRow, MobileBreadcrumbs } from "./primit
 import { ShareDialog } from "./share-dialog";
 import { SortMenu, ViewToggle, type ViewMode } from "./toolbar";
 import { UploadConflictDialog } from "./upload-conflict-dialog";
+import { isFileDrag, type DraggedNode, type DropHandlers } from "./use-drive-dnd";
 import { useDriveUploads } from "./use-drive-uploads";
 import { VersionsDialog } from "./versions-dialog";
 
@@ -53,7 +55,7 @@ type DialogKind = "newfolder" | "rename" | "move" | "share" | "versions" | "dele
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /// Drive 本体。フォルダブラウズ（無限スクロール・パンくず・ソート）＋ D&D アップロード
-/// ＋ 移動/リネーム/削除/共有/版履歴を提供する。現在フォルダは `?folder=<id>` で表す。
+/// ＋ D&D 移動（項目をフォルダ行・カード・パンくずへ）＋ 移動/リネーム/削除/共有/版履歴を提供する。現在フォルダは `?folder=<id>` で表す。
 ///
 /// スマホ（md 未満）はタイトルバーが無いので、本文の先頭に見出し（パンくず＋フォルダ名）を
 /// 置き、その右に並べ替えと表示切替を 1 段で並べる。新規作成・アップロードは右下の
@@ -229,11 +231,45 @@ export function DriveBrowser() {
     [folderId, goParent],
   );
 
+  // 一覧の地（フォルダ行の外）への OS ファイルのドロップ＝現在フォルダへアップロード。
+  // ドライブ内の項目のドラッグはここでは受けない（今いるフォルダへの移動は何も起きない）。
   const onDrop = (e: React.DragEvent) => {
+    if (!isFileDrag(e)) return;
     e.preventDefault();
     setDragging(false);
     void uploader.uploadFiles(Array.from(e.dataTransfer.files));
   };
+
+  // --- D&D で移動（マウス端末のみ。タッチは長押しメニューの「移動」） ---
+  const fine = useMediaQuery("(pointer: fine)");
+  const moveNode = async (node: DraggedNode, dest: string | null) => {
+    const destName =
+      dest === null
+        ? "ドライブ"
+        : (list.items.find((n) => n.id === dest)?.name ?? crumbs.find((c) => c.id === dest)?.name ?? "フォルダ");
+    try {
+      if (node.kind === "folder") await updateFolder(node.id, { move: dest });
+      else await updateFile(node.id, { move: dest });
+      toast({ title: `「${node.name}」を「${destName}」へ移動しました` });
+    } catch (e) {
+      toast({
+        variant: "destructive",
+        title: `「${node.name}」を移動できませんでした`,
+        // 409=移動先に同名。自身の配下への移動・権限不足はサーバの文言をそのまま出す。
+        description: isConflict(e) ? "移動先に同じ名前のファイルまたはフォルダがあります" : errorText(e),
+      });
+    }
+    list.reload();
+  };
+  const dnd: DropHandlers | undefined = fine
+    ? {
+        onMoveNode: (node, dest) => void moveNode(node, dest),
+        onDropFiles: (files, dest) => {
+          setDragging(false);
+          void uploader.uploadFiles(files, dest);
+        },
+      }
+    : undefined;
 
   const openUpload = () => {
     afterPickRef.current = null;
@@ -442,7 +478,7 @@ export function DriveBrowser() {
                 </a>
               </p>
             ) : crumbs.length > 0 ? (
-              <Breadcrumbs crumbs={crumbs} onNavigate={navigateTo} />
+              <Breadcrumbs crumbs={crumbs} onNavigate={navigateTo} dnd={dnd} />
             ) : null}
           </div>
           {searching ? (
@@ -480,6 +516,7 @@ export function DriveBrowser() {
       {/* ドロップ領域＋一覧（カード枠なし・背景に直接） */}
       <div
         onDragOver={(e) => {
+          if (!isFileDrag(e)) return;
           e.preventDefault();
           if (!dragging) setDragging(true);
         }}
@@ -501,6 +538,7 @@ export function DriveBrowser() {
           <div className="pointer-events-none absolute inset-0 z-10 flex flex-col items-center justify-center gap-2 rounded-xl bg-primary/5 text-primary">
             <UploadCloud className="size-8" aria-hidden />
             <p className="text-sm font-medium">ここにドロップしてアップロード</p>
+            <p className="text-xs text-primary/80">フォルダの上で離すと、そのフォルダへ入れます</p>
           </div>
         ) : null}
 
@@ -532,7 +570,7 @@ export function DriveBrowser() {
         ) : view === "grid" ? (
           <div className="grid grid-cols-2 gap-3 p-1 max-md:px-3 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
             {list.items.map((node) => (
-              <NodeCard key={node.id} node={node} onAction={handleAction} />
+              <NodeCard key={node.id} node={node} onAction={handleAction} dnd={dnd} />
             ))}
             {list.hasMore ? (
               <div ref={sentinelRef} className="col-span-full">
@@ -543,7 +581,7 @@ export function DriveBrowser() {
         ) : (
           <div className="flex flex-col">
             {list.items.map((node) => (
-              <NodeRow key={node.id} node={node} onAction={handleAction} meId={me.data?.id} />
+              <NodeRow key={node.id} node={node} onAction={handleAction} meId={me.data?.id} dnd={dnd} />
             ))}
             {list.hasMore ? <div ref={sentinelRef}>{list.loadingMore ? <LoadingRow /> : null}</div> : null}
           </div>

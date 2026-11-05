@@ -31,6 +31,8 @@ import { formatBytes } from "@/lib/format";
 import type { CrumbResponse, NodeResponse, SortField } from "@/lib/storage";
 import { cn } from "@/lib/utils";
 
+import { DROP_OVER, useDropTarget, type DropHandlers } from "./use-drive-dnd";
+
 /// 一覧の列レイアウト（ヘッダーと各行で共有）。OneDrive 風に
 /// 名前（可変）｜更新日時｜更新者｜サイズ｜共有｜操作。
 /// 段階的に列を出す: 最小=名前+操作 / `@xl`=更新日時+サイズ追加 / `@4xl`=更新者+共有も。
@@ -150,41 +152,65 @@ export function nodeMetaParts(node: NodeResponse): string[] {
 export function Breadcrumbs({
   crumbs,
   onNavigate,
+  dnd,
 }: {
   crumbs: CrumbResponse[];
   /// `null` でルートへ。
   onNavigate: (id: string | null) => void;
+  /// 渡すと祖先（ドライブ直下を含む・現在フォルダは除く）がドロップ先になる。
+  dnd?: DropHandlers;
 }) {
   return (
     <nav aria-label="パンくず" className="flex min-w-0 items-center gap-1 text-sm">
-      <button
-        type="button"
+      <CrumbButton
+        dest={null}
+        dnd={dnd}
         onClick={() => onNavigate(null)}
-        className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+        className="flex shrink-0 items-center gap-1 text-muted-foreground hover:text-foreground"
       >
         <Home className="size-4" aria-hidden />
         <span>ドライブ</span>
-      </button>
+      </CrumbButton>
       {crumbs.map((c, i) => {
         const last = i === crumbs.length - 1;
         return (
           <React.Fragment key={c.id}>
             <ChevronRight className="size-4 shrink-0 text-muted-foreground/60" aria-hidden />
-            <button
-              type="button"
+            <CrumbButton
+              dest={c.id}
+              // 現在フォルダへの移動は何も起きないので受けない。
+              dnd={last ? undefined : dnd}
               onClick={() => onNavigate(c.id)}
               aria-current={last ? "page" : undefined}
               className={cn(
-                "truncate rounded-md px-1.5 py-1 transition-colors hover:bg-accent",
+                "truncate",
                 last ? "font-medium text-foreground" : "text-muted-foreground hover:text-foreground",
               )}
             >
               {c.name}
-            </button>
+            </CrumbButton>
           </React.Fragment>
         );
       })}
     </nav>
+  );
+}
+
+/// パンくずの 1 段。D&D の移動先にもなる（項目を祖先フォルダへ戻す）。
+function CrumbButton({
+  dest,
+  dnd,
+  className,
+  ...rest
+}: React.ComponentProps<"button"> & { dest: string | null; dnd?: DropHandlers }) {
+  const drop = useDropTarget(dest, dnd);
+  return (
+    <button
+      type="button"
+      {...rest}
+      {...drop.props}
+      className={cn("rounded-md px-1.5 py-1 transition-colors hover:bg-accent", className, drop.over && DROP_OVER)}
+    />
   );
 }
 

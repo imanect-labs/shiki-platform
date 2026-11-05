@@ -125,10 +125,11 @@ export function useDriveUploads({
   };
 
   /// 選ばれたファイル群を送る。衝突したものは `conflicts` に積み、問い合わせを待つ。
+  /// `dest` 指定時はそのフォルダへ（一覧のフォルダ行へ D&D した時）、省略時は現在フォルダへ。
   const uploadFiles = React.useCallback(
-    async (files: File[]) => {
+    async (files: File[], dest?: string | null) => {
       if (files.length === 0) return;
-      const parentId = folderId;
+      const parentId = dest === undefined ? folderId : dest;
       // 同じ選択の中で名前が重なるものは 2 件目以降を連番名にする（聞かない）。
       const seen = new Map<string, number>();
       const jobs = files.map((file) => {
