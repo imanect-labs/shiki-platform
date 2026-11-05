@@ -196,7 +196,7 @@ fn labels(nt: NodeType) -> (NodeCategory, &'static str, &'static str) {
         NodeType::CsvQuery => (
             C::Storage,
             "CSV を集計",
-            "CSV ファイルに読み取り専用の SQL を実行して集計・抽出する",
+            "CSV ファイルに読み取り専用の SQL を実行して集計・抽出する（複数の CSV を JOIN できる）",
         ),
         NodeType::CsvPatch => (
             C::Storage,

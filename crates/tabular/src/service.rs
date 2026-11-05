@@ -2,24 +2,28 @@
 //!
 //! UI・エージェントツール・ワークフローステップは**すべてここを通る**（AuthContext 必須）。
 //! 認可は操作別に StorageService の内部 API が強制する（**実行主体交差則**・昇格しない）:
-//! - query/rows/schema … `read_file_internal`（viewer@file）
+//! - query/rows/schema … `read_file_internal`（viewer@file）。複数 CSV クエリは対象の**全ファイル**で
+//!   viewer を個別に要求する（1 つでも欠ければ全体を拒否・#1037）
 //! - patch … `update_file_content_internal`（editor@file）
 //! - save（新規） … `write_file_internal`（member@org / editor@folder＝作成権限）
 //!
 //! DuckDB 実行は [`crate::runner`] の非特権別プロセスに隔離し、api には CSV を食わせない。
 
+use std::collections::HashMap;
 use std::io::Write as _;
 use std::sync::Arc;
 
 use authz::AuthContext;
+use futures::future::try_join_all;
 use storage::{NodeKind, StorageService};
 use uuid::Uuid;
 
 use crate::error::TabularError;
 use crate::patch::{apply_patches, PatchOp};
-use crate::protocol::{RunnerOp, RunnerRequest, RunnerResponse};
+use crate::protocol::{RunnerOp, RunnerRequest, RunnerResponse, RunnerTable};
 use crate::runner::{run_isolated, RunnerConfig};
 use crate::sql_guard::validate_read_only;
+use crate::tables::{validate_tables, TableRef};
 
 /// クォータ既定値（design §4.8.2「メモリ/時間/結果サイズのクォータ強制」）。
 #[derive(Debug, Clone)]
@@ -27,6 +31,9 @@ pub struct Quotas {
     pub memory_limit_mb: u32,
     pub max_rows: u32,
     pub page_size: u32,
+    /// 1 クエリで読み込む CSV の合計バイト数の上限（主ファイル＋追加ファイル）。api プロセスは
+    /// 取得した CSV を一時ファイルへ書くまでメモリに持つため、複数 CSV の同時取得で使う量を抑える。
+    pub max_query_input_bytes: u64,
 }
 
 impl Default for Quotas {
@@ -35,6 +42,7 @@ impl Default for Quotas {
             memory_limit_mb: 512,
             max_rows: 10_000,
             page_size: 1_000,
+            max_query_input_bytes: 1024 * 1024 * 1024,
         }
     }
 }
@@ -82,8 +90,8 @@ impl TabularService {
         file_id: Uuid,
         trace_id: Option<&str>,
     ) -> Result<RunnerResponse, TabularError> {
-        let path = self.fetch_csv(ctx, file_id, trace_id).await?;
-        self.run(RunnerOp::Schema, path.path(), 0).await
+        let path = self.fetch_csv(ctx, file_id, None, trace_id).await?;
+        self.run(RunnerOp::Schema, path.path(), Vec::new(), 0).await
     }
 
     /// CSV の 1 ページ（安定行番号順・offset から page_size）を返す（viewer 認可）。
@@ -94,10 +102,11 @@ impl TabularService {
         offset: u64,
         trace_id: Option<&str>,
     ) -> Result<RunnerResponse, TabularError> {
-        let path = self.fetch_csv(ctx, file_id, trace_id).await?;
+        let path = self.fetch_csv(ctx, file_id, None, trace_id).await?;
         self.run(
             RunnerOp::Rows { offset },
             path.path(),
+            Vec::new(),
             self.quotas.page_size,
         )
         .await
@@ -111,17 +120,96 @@ impl TabularService {
         sql: &str,
         trace_id: Option<&str>,
     ) -> Result<RunnerResponse, TabularError> {
-        // まず SQL を検証（api 側で拒否＝敵対的 SQL を隔離プロセスへ渡す前に弾く多層防御）。
+        self.query_tables(ctx, file_id, &[], sql, trace_id).await
+    }
+
+    /// 複数 CSV に対する読み取り専用 SQL（#1037）。主ファイルは `data`、`tables` の各ファイルは
+    /// 指定名のテーブルとして同じ隔離ランナーにロードされ、JOIN できる。
+    ///
+    /// **全ファイルを個別に viewer 認可**する（実行主体交差則・昇格しない）。1 つでも読めなければ
+    /// 全体を失敗させ、部分的な結果は返さない（fail-closed）。
+    pub async fn query_tables(
+        &self,
+        ctx: &AuthContext,
+        file_id: Uuid,
+        tables: &[TableRef],
+        sql: &str,
+        trace_id: Option<&str>,
+    ) -> Result<RunnerResponse, TabularError> {
+        // まず SQL とテーブル指定を検証（敵対的入力を隔離プロセスへ渡す前に弾く多層防御）。
+        // ストレージ読取より前に置き、不正な指定でファイル取得を発生させない。
         validate_read_only(sql)?;
-        let path = self.fetch_csv(ctx, file_id, trace_id).await?;
-        self.run(
-            RunnerOp::Query {
-                sql: sql.to_string(),
-            },
-            path.path(),
-            self.quotas.max_rows,
+        validate_tables(tables)?;
+        // 取得対象（主ファイル＋追加ファイル）を重複なしで並べる。同じファイルを複数名で参照しても
+        // 取得/一時ファイルは 1 回に畳む（認可結果は同一）。
+        let mut ids = vec![file_id];
+        for t in tables {
+            if !ids.contains(&t.file_id) {
+                ids.push(t.file_id);
+            }
+        }
+        // 1) ダウンロードの前に、全ファイルの viewer をメタデータで確認し（読めないファイルが 1 つでも
+        //    あれば何も取得しない）、入力の合計サイズを予算内に収める。件数は validate_tables で上限済み
+        //    （主ファイル込み 1 + MAX_EXTRA_TABLES）＝並列度は有界。
+        let metas = try_join_all(
+            ids.iter()
+                .map(|id| self.storage.get_metadata(ctx, *id, trace_id)),
         )
-        .await
+        .await?;
+        let mut total: u64 = 0;
+        let mut sizes = Vec::with_capacity(metas.len());
+        for (id, node) in ids.iter().zip(&metas) {
+            if node.kind != NodeKind::File {
+                return Err(TabularError::NotFound(format!("file {id}")));
+            }
+            let size = node.size_bytes.unwrap_or(0).max(0);
+            sizes.push(size);
+            total = total.saturating_add(u64::try_from(size).unwrap_or(u64::MAX));
+        }
+        self.check_input_budget(total)?;
+        // 2) 並行に取得する（各取得も viewer を要求する＝メタデータ確認後の剥奪も拾う）。各ファイルは
+        //    確認したサイズを上限に取得する＝確認後に大きい版へ差し替わっても、全体をメモリへ載せる
+        //    前に拒否される（合計は予算内に収まる）。try_join_all は最初の失敗で残りを破棄する。
+        let fetched = try_join_all(
+            ids.iter()
+                .zip(&sizes)
+                .map(|(id, size)| self.fetch_csv(ctx, *id, Some(*size), trace_id)),
+        )
+        .await?;
+        let path_of: HashMap<Uuid, &std::path::Path> = ids
+            .iter()
+            .copied()
+            .zip(fetched.iter().map(tempfile::NamedTempFile::path))
+            .collect();
+        let path = |id: &Uuid| {
+            path_of
+                .get(id)
+                .copied()
+                .ok_or_else(|| TabularError::Internal("一時ファイルが見つかりません".into()))
+        };
+        let primary = path(&file_id)?;
+        let extra = tables
+            .iter()
+            .map(|t| {
+                Ok(RunnerTable {
+                    name: t.name.clone(),
+                    csv_path: path(&t.file_id)?.to_string_lossy().into_owned(),
+                })
+            })
+            .collect::<Result<Vec<_>, TabularError>>()?;
+        // 一時ファイル（fetched）はランナー終了まで生かす（drop で削除される）。
+        let resp = self
+            .run(
+                RunnerOp::Query {
+                    sql: sql.to_string(),
+                },
+                primary,
+                extra,
+                self.quotas.max_rows,
+            )
+            .await;
+        drop(fetched);
+        resp
     }
 
     /// パッチ列を適用して新バージョンを保存する（editor 認可・rev 楽観ロック）。
@@ -190,16 +278,28 @@ impl TabularService {
     }
 
     /// viewer 認可で CSV を取得し、隔離ランナー用の私有一時ファイルへ書く。
+    ///
+    /// `max_bytes` を渡すと、取得する版がそれより大きければダウンロード前に拒否する
+    /// （事前に確認したサイズに取得を固定する・複数 CSV クエリの入力予算）。
     async fn fetch_csv(
         &self,
         ctx: &AuthContext,
         file_id: Uuid,
+        max_bytes: Option<i64>,
         trace_id: Option<&str>,
     ) -> Result<tempfile::NamedTempFile, TabularError> {
-        let (node, bytes) = self
-            .storage
-            .read_file_internal(ctx, file_id, trace_id)
-            .await?;
+        let (node, bytes) = match max_bytes {
+            Some(max) => {
+                self.storage
+                    .read_file_internal_bounded(ctx, file_id, max, trace_id)
+                    .await?
+            }
+            None => {
+                self.storage
+                    .read_file_internal(ctx, file_id, trace_id)
+                    .await?
+            }
+        };
         if node.kind != NodeKind::File {
             return Err(TabularError::NotFound(format!("file {file_id}")));
         }
@@ -220,6 +320,7 @@ impl TabularService {
         &self,
         op: RunnerOp,
         csv_path: &std::path::Path,
+        extra_tables: Vec<RunnerTable>,
         max_rows: u32,
     ) -> Result<RunnerResponse, TabularError> {
         // ユーザー SQL（Query）の実行失敗は利用者起因（400）、それ以外の op はこちらの
@@ -230,6 +331,7 @@ impl TabularService {
             csv_path: csv_path.to_string_lossy().into_owned(),
             memory_limit_mb: self.quotas.memory_limit_mb,
             max_rows,
+            extra_tables,
         };
         let response = run_isolated(&self.runner, &request).await?;
         if !response.ok {
@@ -241,6 +343,18 @@ impl TabularService {
             });
         }
         Ok(response)
+    }
+
+    /// 1 クエリの入力合計（バイト）が予算内か。超過は [`TabularError::QuotaExceeded`]。
+    fn check_input_budget(&self, total: u64) -> Result<(), TabularError> {
+        if total > self.quotas.max_query_input_bytes {
+            return Err(TabularError::QuotaExceeded(format!(
+                "読み込む CSV の合計サイズが上限を超えています（{} MiB / 上限 {} MiB）",
+                total / (1024 * 1024),
+                self.quotas.max_query_input_bytes / (1024 * 1024)
+            )));
+        }
+        Ok(())
     }
 
     pub fn page_size(&self) -> u32 {

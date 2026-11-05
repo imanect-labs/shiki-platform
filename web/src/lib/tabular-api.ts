@@ -40,15 +40,31 @@ export async function getRows(nodeId: string, offset: number): Promise<TableResp
   return (await res.json()) as TableResponse;
 }
 
-export async function runQuery(nodeId: string, sql: string): Promise<TableResponse> {
+export type QueryTable = components["schemas"]["QueryTable"];
+
+/// 読み取り専用 SQL。`tables` を渡すと各 CSV が指定名のテーブルになり JOIN できる（#1037）。
+export async function runQuery(
+  nodeId: string,
+  sql: string,
+  tables: QueryTable[] = [],
+): Promise<TableResponse> {
   const res = await apiFetch(`/files/${nodeId}/tabular/query`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ sql }),
+    body: JSON.stringify(tables.length > 0 ? { sql, tables } : { sql }),
   });
   if (res.status === 400) {
     const body = (await res.json().catch(() => null)) as { title?: string } | null;
     throw new Error(body?.title ?? "SQL が拒否されました（読み取り専用の SELECT のみ）");
+  }
+  // 閲覧権限の無いファイルは存在秘匿で 404 になる（403 と区別しない）。JOIN では追加した CSV の
+  // どれか 1 つでも読めなければこうなるので、どちらの可能性も伝える。
+  if (res.status === 403 || res.status === 404) {
+    throw new Error(
+      tables.length > 0
+        ? "見つからないか閲覧権限のない CSV が含まれています（追加した CSV もすべて閲覧できる必要があります）"
+        : "CSV が見つからないか、閲覧する権限がありません",
+    );
   }
   if (!res.ok) throw new Error(`クエリに失敗しました (${res.status})`);
   return (await res.json()) as TableResponse;
