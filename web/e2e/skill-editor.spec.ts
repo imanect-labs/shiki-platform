@@ -87,6 +87,9 @@ test("アシスタントに頼むと下書きが流し込まれ、そのまま�
     "経費精算の質問に社内規程を根拠に答える",
   );
   await expect(page.getByTestId("skill-body-editor")).toContainText("経費精算アシスタント");
+  // 詳細設定は畳んであるが、AI が入れた値は見出しの横の要約で分かる。
+  await expect(page.getByTestId("skill-settings-summary")).toContainText("ツール: 2 件");
+  await page.getByTestId("skill-settings-toggle").click();
   await expect(page.getByRole("button", { name: "社内文書検索" })).toHaveAttribute("aria-pressed", "true");
   // 会話にも下書きカードが残り、パネル内では「エディタに反映」になる。
   await expect(assistant.getByTestId("skill-draft-apply")).toBeVisible();
@@ -129,6 +132,7 @@ test("ドライブのフォルダをパスのラベルで参照し、保存後�
   await page.keyboard.type("を参照して答える。");
 
   // 知識スコープもパスで出る（フォルダピッカーから追加）。
+  await page.getByTestId("skill-settings-toggle").click();
   await page.getByTestId("skill-scope-add").click();
   const scopePicker = page.getByRole("dialog", { name: "フォルダを選択" });
   await scopePicker.getByTestId("drive-ref-search").fill(parent);
@@ -319,4 +323,74 @@ test("行頭の記号は、保存しても箇条書き・水平線・コード�
   await expect(body).toContainText("***");
   await expect(body).toContainText("```");
   await expect(body.locator("ul, hr, pre")).toHaveCount(0);
+});
+
+test("使うモデルは公開されているモデルから選び、保存すると既定に入る", async ({ page }) => {
+  await loginViaKeycloak(page);
+  const models = (await (await page.request.get("/api/llm/models")).json()) as {
+    models: { id: string; label: string }[];
+  };
+  test.skip(models.models.length === 0, "公開モデルが無い構成");
+  const target = models.models[0];
+  const id = await createSkill(page, uniqueName("model-skill"), {});
+  await page.goto(`/skills/${id}`);
+  await page.getByTestId("skill-settings-toggle").click();
+
+  const select = page.getByTestId("skill-model-select");
+  await expect(select).toContainText("指定しない");
+  await select.click();
+  await page.getByRole("option", { name: target.label }).first().click();
+  await expect(select).toContainText(target.label);
+  await expect(page.getByTestId("skill-model-hint")).toContainText("Auto のとき");
+
+  await page.getByTestId("skill-save-button").click();
+  await expect(page.getByTestId("skill-save-button")).toBeDisabled();
+  const body = (await (await page.request.get(`/api/skills/${id}`)).json()) as {
+    body: { model: { model: string | null } | null };
+  };
+  expect(body.body.model?.model).toBe(target.id);
+
+  // 「指定しない」に戻すとモデルの指定は外れる。
+  await select.click();
+  await page.getByRole("option", { name: "指定しない（システム既定）" }).click();
+  await page.getByTestId("skill-save-button").click();
+  await expect(page.getByTestId("skill-save-button")).toBeDisabled();
+  const after = (await (await page.request.get(`/api/skills/${id}`)).json()) as {
+    body: { model: { model: string | null } | null };
+  };
+  expect(after.body.model?.model ?? null).toBeNull();
+});
+
+test("公開されていないモデルの指定も消さずに見せ、使えないことを伝える", async ({ page }) => {
+  await loginViaKeycloak(page);
+  const id = await createSkill(page, uniqueName("retired-model"), {
+    model: { model: "retired-model-x", temperature: 0.3 },
+  });
+  await page.goto(`/skills/${id}`);
+  // 畳んでいても要約にモデルが出る。
+  await expect(page.getByTestId("skill-settings-summary")).toContainText("モデル: retired-model-x");
+  await page.getByTestId("skill-settings-toggle").click();
+  await expect(page.getByTestId("skill-model-select")).toContainText("retired-model-x");
+  await expect(page.getByTestId("skill-model-hint")).toContainText("使われません");
+  // 値のある詳細パラメータは開いて見せる。
+  await expect(page.locator("#skill-temperature")).toHaveValue("0.3");
+});
+
+test("アシスタントを開いて本文欄が細くなっても、詳細設定の見出しと値を縦に積む", async ({ page }) => {
+  await page.setViewportSize({ width: 1100, height: 900 });
+  await loginViaKeycloak(page);
+  await page.goto("/skills/new");
+  await expect(page.getByTestId("skill-assistant")).toBeVisible();
+  await page.getByTestId("skill-settings-toggle").click();
+  // ビューポートは広くても本文欄は細いので、値（ツールのピル）は見出しの下に来る。
+  const label = page.getByRole("region", { name: "スキルの設定" }).getByText("使うツール", { exact: true });
+  const tools = page.getByRole("group", { name: "使うツール" });
+  const lb = await label.boundingBox();
+  const tb = await tools.boundingBox();
+  expect(lb && tb).toBeTruthy();
+  expect(tb!.y).toBeGreaterThanOrEqual(lb!.y + lb!.height - 1);
+  // ピルが値の列で潰れず、横に並ぶ（「すべて」と次のピルが同じ行）。
+  const all = await page.getByTestId("skill-tools-all").boundingBox();
+  const next = await page.getByRole("button", { name: "社内文書検索" }).boundingBox();
+  expect(Math.abs(all!.y - next!.y)).toBeLessThan(2);
 });
