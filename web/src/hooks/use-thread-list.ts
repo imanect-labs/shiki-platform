@@ -94,10 +94,14 @@ export function useThreadList(query = "", enabled = true): ThreadList {
     setThreads([]);
     setCursor(null);
 
+    // 重なった取り直し（実行中の読み直しと変更通知）は、最後に出した要求の応答だけを反映する
+    // （古い「実行中なし」が新しい「実行中」を後から上書きすると、読み直しが止まる）。
+    let latest = 0;
     const loadFirst = (initial: boolean) => {
+      const seq = ++latest;
       listThreads(undefined, { q: query })
         .then(({ threads: first, nextCursor }) => {
-          if (!current()) return;
+          if (!current() || seq !== latest) return;
           if (initial) {
             setError(false);
             setThreads(first);
@@ -116,7 +120,7 @@ export function useThreadList(query = "", enabled = true): ThreadList {
           if (tail.length === 0) setCursor(nextCursor);
         })
         .catch(() => {
-          if (!current()) return;
+          if (!current() || seq !== latest) return;
           // 通知での取り直しの失敗は、表示中の一覧をそのまま残す。
           if (initial) {
             setThreads([]);

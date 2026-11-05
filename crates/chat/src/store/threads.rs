@@ -15,7 +15,8 @@ use crate::model::{AutonomousMode, ContentBlock, Message, Role, RunStatus, Skill
 
 /// thread の SELECT 列（skill ピンは正規化テーブルから jsonb で集約・#344。
 /// 承認モードは thread 列・#350）。`run_status` は進行中（非端末）の run の状態で、サイドバー履歴の
-/// 「実行中」表示に使う（`generation_run_thread_idx` で 1 スレッドあたり索引 1 回）。
+/// 「実行中」表示に使う（非端末 run の部分索引 `generation_run_live_thread_idx` で引く）。承認待ちの
+/// run の後ろで別の run が生成中になり得る（承認待ちは後続を待たせない）ので、生成中を優先する。
 pub(super) const THREAD_COLUMNS: &str = "id, title, agent_mode, autonomous_mode, \
     (SELECT coalesce(jsonb_agg(jsonb_build_object( \
         'skill_id', p.skill_id, 'skill_version', p.skill_version) \
@@ -26,7 +27,7 @@ pub(super) const THREAD_COLUMNS: &str = "id, title, agent_mode, autonomous_mode,
     (SELECT r.status FROM generation_run r \
      WHERE r.tenant_id = thread.tenant_id AND r.thread_id = thread.id \
        AND r.status IN ('queued', 'running', 'waiting_approval') \
-     ORDER BY r.created_at LIMIT 1) AS run_status";
+     ORDER BY (r.status = 'waiting_approval'), r.created_at LIMIT 1) AS run_status";
 
 /// thread 行。
 #[derive(sqlx::FromRow)]

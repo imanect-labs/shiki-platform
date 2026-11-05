@@ -545,6 +545,23 @@ async fn run_status_is_listed_and_finalize_bumps_updated_at() {
             .run_status,
         Some(RunStatus::WaitingApproval)
     );
+    // 承認待ちは後続を待たせないので、その後ろの run が生成中になり得る。生成中を優先して出す。
+    let later = post(&store, &c, thread.id, "その間に別の質問").await;
+    sqlx::query("UPDATE generation_run SET status = 'running' WHERE run_id = $1")
+        .bind(later)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        listed(store.clone(), c.clone()).await.run_status,
+        Some(RunStatus::Running),
+        "承認待ちより生成中を優先する"
+    );
+    sqlx::query("UPDATE generation_run SET status = 'done' WHERE run_id = $1")
+        .bind(later)
+        .execute(&pool)
+        .await
+        .unwrap();
     set_status("running").await;
     let before = listed(store.clone(), c.clone()).await;
     assert_eq!(before.run_status, Some(RunStatus::Running));
