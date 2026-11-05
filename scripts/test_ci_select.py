@@ -151,6 +151,11 @@ class SelectTest(unittest.TestCase):
         sel = ci.select(self.members, ["docs/design.md", "README.md", ".claude/skills/pr/SKILL.md"])
         self.assertFalse(sel["full"] or sel["rust"] or sel["web"] or sel["python"] or sel["compose"])
 
+    def test_merge_queue_runs_everything_unless_docs_only(self):
+        self.assertEqual(ci.full_if_changed(["docs/design.md", "README.md"]), (False, ["docs/design.md", "README.md"]))
+        self.assertEqual(ci.full_if_changed(["docs/design.md", "web/src/app/page.tsx"]), (True, []))
+        self.assertEqual(ci.full_if_changed([]), (False, []))
+
     def test_markdown_inside_a_crate_is_that_crates_change(self):
         # include_str! でコンパイルに入る .md がある（crates/chat/src/worker/yui_guide.md）。
         sel = ci.select(self.members, ["crates/data/src/guide.md"])

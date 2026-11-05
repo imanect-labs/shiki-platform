@@ -191,7 +191,7 @@ def select(members: dict[str, dict], files: list[str], full_run: bool = False,
     reasons: list[str] = []
     full = full_run
     if full_run:
-        reasons.append("全量（main への push）")
+        reasons.append("全量（main への push・マージキュー）")
     seeds: set[str] = set()
     lock_crates: set[str] = set()
     web = python = False
@@ -434,10 +434,23 @@ def tracked_files(root: Path) -> list[str]:
     return [f for f in out.split("\0") if f]
 
 
+def full_if_changed(files: list[str]) -> tuple[bool, list[str]]:
+    """マージキュー用: 選択規則の対象になる変更が 1 つでもあれば全量、docs だけなら何も回さない。
+
+    PR では変更から選んで速く回し、取りこぼしはマージ前（マージキュー）の全量で止める。docs だけの変更まで
+    全量にすると、キューの待ち時間が CI 1 回分（約 30 分）伸びるだけなので、選択と同じ無視規則で外す。
+    """
+    if any(not is_ignored(f) for f in files):
+        return True, []
+    return False, files
+
+
 def cmd_select(args: argparse.Namespace) -> int:
     root = Path(args.root)
     members = workspace_packages(root)
     files = [] if args.full else changed_files(args.base, args.head)
+    if args.full_if_changed:
+        args.full, files = full_if_changed(files)
     lock = None
     if "Cargo.lock" in files:
         try:
@@ -693,6 +706,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--base", default="HEAD^1")
     p.add_argument("--head", default="HEAD")
     p.add_argument("--full", action="store_true", help="変更に関係なく全量（main への push）")
+    p.add_argument("--full-if-changed", action="store_true",
+                   help="docs 以外の変更があれば全量、docs だけなら何も回さない（マージキュー）")
     p.add_argument("--root", default=".")
     p.add_argument("--github-output", default=os.environ.get("GITHUB_OUTPUT"))
     p.add_argument("--summary", default=os.environ.get("GITHUB_STEP_SUMMARY"))

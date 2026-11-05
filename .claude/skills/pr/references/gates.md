@@ -17,7 +17,13 @@ sed -n '/^jobs:/,$p' .github/workflows/ci.yml | grep -E '^  [a-z-]+:$'
 sed -n '/^  <ジョブ ID>:/,/^  [a-z-]*:$/p' .github/workflows/ci.yml | grep -E '^\s+(- name|run):'
 ```
 
-**`docs/**` / `**.md` / `.claude/**` のみの変更では CI が丸ごとスキップされる**（`paths-ignore`）ため、docs のみの PR で「チェックなし」は正常。
+PR の CI に `paths-ignore` は無い。`docs/**` / `**.md` / `.claude/**` のみの変更では changes ジョブが重量ジョブを
+すべて skip し、`changes`・`quality`・`ci-ok` だけが走る（required check の `ci-ok` が pending のまま固着しないため）。
+**チェックが 0 件なら CI は起動していない**（コンフリクトか未登録）。
+
+**マージは `ci-ok` が緑になってからマージキューに入れる。** PR は変更から選んだテストだけを回し、マージキュー
+（`merge_group`）が docs 以外の変更を含む限り全量を回す。キューで落ちたら、PR では選ばれなかったテストが
+壊れている（選択規則の漏れか flaky）ので、PR に戻って直す。
 
 ## CI ジョブ ↔ ローカルコマンド 対応表
 

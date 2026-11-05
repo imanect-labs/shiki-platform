@@ -1,16 +1,14 @@
 name: CI
 
 on:
+  # PR には paths-ignore を付けない。required check（下の ci-ok）は、ワークフローが起動しないと pending のまま
+  # 固着して docs だけの PR がマージできなくなるため。docs だけの変更で重量ジョブを回さない判定は
+  # changes ジョブ（scripts/ci-select.py の無視規則）が担い、そのとき動くのは changes と ci-ok だけ。
   pull_request:
-    # docs のみの変更で重量 CI（Rust フルビルド×複数ジョブ・compose）を回さない。
-    # file-size ゲートは *.rs のみ対象（scripts/check-file-size.sh）のため取りこぼしは無い。
-    # .md を外すのは最上位だけ。crates/ の下の .md は include_str! でコンパイルに入るものがある
-    # （crates/chat/src/worker/yui_guide.md）ので回す（どのテストを回すかは changes ジョブが選ぶ）。
-    # ブランチ保護の required checks は未設定なので pending 固着も起きない。
-    paths-ignore:
-      - "docs/**"
-      - "*.md"
-      - ".claude/**"
+  # マージキュー（下の ci-ok を required check にして使う）。PR は変更から選んだテストだけを回して速くし、選択の取りこぼしはマージ前の全量で止める
+  # （以前は main に入ってから selection-gap が事後に検知していた）。docs だけの変更はここでも何も回さない。
+  merge_group:
+    types: [checks_requested]
   push:
     branches: [main]
     paths-ignore:
@@ -68,14 +66,23 @@ jobs:
           persist-credentials: false
           # PR はマージコミット（HEAD^1 = base の先端・HEAD^2 = PR の先端）と比べるので親まで取る。
           # main への push は、まとめて push されたコミットの前（github.event.before）まで遡れるよう深めに取る。
-          fetch-depth: ${{ github.event_name == 'push' && 20 || 2 }}
+          # マージキューは base の先端に、キューで前に並ぶ PR を積んだ先で走るので、base まで遡れる深さを取る。
+          fetch-depth: ${{ (github.event_name == 'push' && 20) || (github.event_name == 'merge_group' && 50) || 2 }}
       - id: select
         env:
           EVENT: ${{ github.event_name }}
           BEFORE: ${{ github.event.before }}
+          MERGE_GROUP_BASE: ${{ github.event.merge_group.base_sha }}
         run: |
           if [ "$EVENT" = "pull_request" ]; then
             python3 scripts/ci-select.py select --base HEAD^1 --head HEAD
+          elif [ "$EVENT" = "merge_group" ]; then
+            # docs 以外の変更があれば全量。base を取れなければ迷わず全量に倒す。
+            if git cat-file -e "$MERGE_GROUP_BASE^{commit}" 2>/dev/null; then
+              python3 scripts/ci-select.py select --base "$MERGE_GROUP_BASE" --head HEAD --full-if-changed
+            else
+              python3 scripts/ci-select.py select --full
+            fi
           else
             python3 scripts/ci-select.py select --full
             # main で落ちたテストが PR で選ばれていたかを selection-gap ジョブで突き合わせるため、この変更を
@@ -934,6 +941,28 @@ jobs:
         if: failure()
         working-directory: deploy/compose
         run: docker compose logs --no-color | tail -200
+
+  # ブランチ保護の required check に指定する唯一のジョブ。ジョブを足しても保護設定を触らずに済むよう、
+  # ここで全ジョブの結果を束ねる。skipped（変更から選ばれなかった）は通し、failure / cancelled で落とす。
+  # 非ブロッキングの sandbox-gvisor と、main 専用の selection-gap は含めない。
+  ci-ok:
+    name: ci-ok
+    needs: [changes, rust, build-server, quality, cargo-deny, tabular-runner, python, coverage, data-strategies,
+            gen-api, web, compose-smoke, web-e2e]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 全ジョブの結果を確かめる
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          bad=$(echo "$NEEDS" | jq -r '[to_entries[] | select(.value.result != "success" and .value.result != "skipped") | "\(.key)=\(.value.result)"] | join(", ")')
+          if [ -n "$bad" ]; then
+            echo "::error::失敗・中断したジョブ: $bad"
+            exit 1
+          fi
 
   # main の全量 run で落ちたテストが、その変更を PR として選んだときに選ばれていたかを突き合わせる（#922）。
   # 選ばれていなければ、PR では見逃す変更（選択規則・対応表の漏れ）か flaky なので Issue にする
