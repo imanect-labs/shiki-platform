@@ -7,16 +7,16 @@
 //! - 使えるモデルは発話ユーザーのカタログ（保存 API と同じ実装）から run ごとに載せる。
 
 mod decide;
+/// 検証エラーの補足（guide.rs の行数上限のため分割）。
+mod hints;
+
+pub(super) use hints::validation_hints;
 
 use std::fmt::Write as _;
 
-use serde_json::Value;
 use workflow_engine::ir::expr::CmpOp;
 use workflow_engine::ir::params::{compact_ts, params_shape};
-use workflow_engine::vocab::{
-    agent_tool_catalog, event_catalog, node_catalog, EventSource, NodeType,
-};
-use workflow_engine::ValidationError;
+use workflow_engine::vocab::{agent_tool_catalog, event_catalog, node_catalog, EventSource};
 
 /// 説明文に載せる使えるモデルの件数の上限（説明文を膨らませない・検証エラーにも候補が出る）。
 pub(super) const MAX_LISTED_MODELS: usize = 30;
@@ -408,57 +408,10 @@ const REPLY_GUIDE: &str = "【画面に返す結果】workflow.reply は、ボ�
 - format は text（文章）・markdown・table（配列の各要素が 1 行・columns で列を選ぶ）・file_link（社内検索の /results なら file: {\"id_path\":\"/file_id\",\"name_path\":\"/file_name\"}）。\n\
 - label・columns の見出しなど固定の文言は、アプリを使う人全員に見える（秘密を書かない）。値は押した本人の権限で読んだものだけが入る。\n";
 
-/// 検証エラーの補足（LLM が自分で直すための材料）。
-///
-/// - params の誤り（`ir.schema_violation` でノードに紐づくもの）: そのノード種の params の形。
-/// - IR 全体の形の誤り（ノードに紐づかない `ir.schema_violation`）: ノードとエッジの形。
-pub(super) fn validation_hints(errors: &[ValidationError], ir: &Value) -> String {
-    let node_type_of = |id: &str| -> Option<NodeType> {
-        ir.get("nodes")?
-            .as_array()?
-            .iter()
-            .find(|n| n.get("id").and_then(Value::as_str) == Some(id))?
-            .get("type")?
-            .as_str()
-            .and_then(NodeType::parse)
-    };
-    let mut types: Vec<NodeType> = Vec::new();
-    let mut whole_ir = false;
-    for e in errors.iter().filter(|e| e.code == "ir.schema_violation") {
-        match e.node_id.as_deref() {
-            Some(id) => {
-                if let Some(nt) = node_type_of(id) {
-                    if !types.contains(&nt) {
-                        types.push(nt);
-                    }
-                }
-            }
-            None => whole_ir = true,
-        }
-    }
-    let mut out = String::new();
-    if whole_ir {
-        let _ = writeln!(
-            out,
-            "IR の形: nodes の要素 = {NODE_SHAPE}（? は省略可）、edges の要素 = {EDGE_SHAPE}（それ以外のキーは書けない）。"
-        );
-    }
-    for nt in types {
-        if let Some(shape) = params_shape(nt) {
-            let _ = writeln!(
-                out,
-                "{} の params の形（? は省略可）: {}",
-                nt.as_str(),
-                shape.render()
-            );
-        }
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
     use workflow_engine::ir::edge::Edge;
     use workflow_engine::ir::node::Node;
     use workflow_engine::{validate, Catalog, WorkflowIr};
@@ -911,37 +864,6 @@ mod tests {
             );
             assert!(d.contains(&decide::guide(None)));
         }
-    }
-
-    #[test]
-    fn hints_add_the_params_shape_of_the_failing_node_type() {
-        let ir = embedded(EXAMPLE_SUMMARIZE);
-        let errors = vec![
-            ValidationError::new(
-                "ir.schema_violation",
-                "params が不正です: 項目 'prompt' がありません",
-            )
-            .at_node("summarize")
-            .at_path("/params"),
-            ValidationError::new("ir.bad_ref", "x").at_node("save_summary"),
-        ];
-        let h = validation_hints(&errors, &ir);
-        assert!(
-            h.contains(
-                "llm.invoke の params の形（? は省略可）: { model?: string, prompt: ValueExpr"
-            ),
-            "{h}"
-        );
-        assert!(
-            !h.contains("storage.write"),
-            "schema_violation 以外は補足しない: {h}"
-        );
-        let whole = vec![ValidationError::new(
-            "ir.schema_violation",
-            "unknown field `port`",
-        )];
-        let h = validation_hints(&whole, &ir);
-        assert!(h.contains(&format!("edges の要素 = {EDGE_SHAPE}")), "{h}");
     }
 
     /// 説明文と例のスケジュール（0 9 * * 1-5）は、サーバーの発火で平日（月〜金）の 9 時に動く（BUG-95。曜日を
