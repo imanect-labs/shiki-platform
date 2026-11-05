@@ -249,13 +249,14 @@ pub async fn my_workflow_access(
     Path(id): Path<Uuid>,
 ) -> Result<Json<gui::MyWorkflowAccess>, ApiError> {
     let trace = trace.as_deref();
+    // 種類を確かめてから、いまの版を 1 回だけ読む（手動の実行と同じ最新の版）。
     let meta = state.artifacts.get(&ctx, id, trace).await?;
     if meta.kind != artifact::ArtifactKind::Workflow {
         return Err(artifact::ArtifactError::NotFound.into());
     }
     let (version, ir) = state
         .workflows
-        .get_latest(&ctx, id, trace)
+        .get_version(&ctx, id, meta.current_version, trace)
         .await
         .map_err(super::workflows::save::map_store_err)?;
     let mine = checker(&state)
