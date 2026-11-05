@@ -7,7 +7,7 @@ use sqlx::types::Json;
 use storage::audit::AuditAction;
 use uuid::Uuid;
 
-use crate::model::{Artifact, ArtifactKind, ArtifactVersion, VersionMeta};
+use crate::model::{Artifact, ArtifactKind, ArtifactVersion, ConflictReason, VersionMeta};
 use crate::store::{validate_body, ArtifactStore};
 use crate::{map_db, ArtifactError};
 
@@ -50,20 +50,24 @@ impl ArtifactStore {
         .map_err(map_db)?;
         let Some(new_version) = new_version else {
             tx.rollback().await.map_err(map_db)?;
-            // 行が無い（削除済み）か expected_version 不一致かを区別して返す。
-            let exists: bool = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM artifact \
-                 WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL)",
+            // 行が無い（削除済み）か expected_version 不一致かを区別して返す。不一致なら種類と今の最新の版を添える
+            // （呼ぶ人は editor を確かめてある・API は「ほかの人が先に保存した」の 409 にする・GAP-41）。
+            let current: Option<(String, i64)> = sqlx::query_as(
+                "SELECT kind, current_version FROM artifact \
+                 WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL",
             )
             .bind(&ctx.tenant_id)
             .bind(id)
-            .fetch_one(&self.db)
+            .fetch_optional(&self.db)
             .await
             .map_err(map_db)?;
-            return Err(if exists {
-                ArtifactError::Conflict("バージョンが競合しました（再取得して下さい）".into())
-            } else {
-                ArtifactError::NotFound
+            return Err(match current {
+                Some((kind, current)) => {
+                    let kind = ArtifactKind::parse(&kind)
+                        .ok_or_else(|| ArtifactError::Internal(format!("未知の kind: {kind}")))?;
+                    ArtifactError::Conflict(ConflictReason::VersionChanged { kind, current })
+                }
+                None => ArtifactError::NotFound,
             });
         };
         let created_at: DateTime<Utc> = sqlx::query_scalar(

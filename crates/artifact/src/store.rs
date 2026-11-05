@@ -13,7 +13,7 @@ use sqlx::PgPool;
 use storage::audit::{AuditEntry, AuditRecorder, Decision};
 use uuid::Uuid;
 
-use crate::model::{Artifact, ArtifactKind};
+use crate::model::{Artifact, ArtifactKind, ConflictReason};
 use crate::{map_db, ArtifactError};
 
 /// 本文 JSON の上限（防御的上限。IR の 1MB 上限（ir.md V7）は保存時検証側が別途課す）。
@@ -163,7 +163,7 @@ impl ArtifactStore {
         .await
         .map_err(|e| match &e {
             sqlx::Error::Database(db) if db.is_unique_violation() => {
-                ArtifactError::Conflict(format!("name '{name}' は既に存在します"))
+                ArtifactError::Conflict(ConflictReason::NameTaken { kind: input.kind })
             }
             _ => map_db(e),
         })?;

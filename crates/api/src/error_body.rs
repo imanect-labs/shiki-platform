@@ -92,6 +92,61 @@ impl ConflictBody {
     }
 }
 
+/// アーティファクト（ワークフロー・アプリ・スキルなど）の 409 の構造化コード（GAP-41）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactConflictCode {
+    /// 比べた版（`expected_version`）の後に、ほかの人が保存した。`current_version` に今の最新の版。
+    VersionConflict,
+    /// 同じ種類・同じ名前のものがすでにある（名前はテナントで一意なので、呼んだ人に見えないものを含む）。
+    NameTaken,
+}
+
+/// アーティファクトの構造化 409（版の競合・名前の重複・GAP-41）。`message` は利用者に見せてよい日本語で、対象の id や
+/// 呼んだ人に見えないものの名前を含まない。
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ArtifactConflictBody {
+    /// 常に 409。
+    pub status: u16,
+    pub title: String,
+    pub code: ArtifactConflictCode,
+    pub message: String,
+    /// 今の最新の版（`version_conflict` のときだけ。呼んだ人は editor を確かめてある）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub current_version: Option<i64>,
+}
+
+impl ArtifactConflictBody {
+    pub fn new(reason: artifact::ConflictReason) -> Self {
+        use artifact::ConflictReason as R;
+        let (code, message, current_version) = match reason {
+            R::VersionChanged { kind, current } => (
+                ArtifactConflictCode::VersionConflict,
+                format!(
+                    "ほかの人が先にこの{}を保存しました。あなたの変更は保存されていません。",
+                    kind.noun()
+                ),
+                Some(current),
+            ),
+            R::NameTaken { kind } => (
+                ArtifactConflictCode::NameTaken,
+                format!(
+                    "同じ名前の{}がすでにあります（あなたが見られないものを含みます）。別の名前にしてください。",
+                    kind.noun()
+                ),
+                None,
+            ),
+        };
+        ArtifactConflictBody {
+            status: 409,
+            title: "Conflict".into(),
+            code,
+            message,
+            current_version,
+        }
+    }
+}
+
 /// 構造化 413（本文が上限を超えた・一括取込の `import_too_large`）。
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct PayloadTooLargeBody {

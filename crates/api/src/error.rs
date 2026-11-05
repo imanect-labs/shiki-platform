@@ -207,7 +207,10 @@ impl From<artifact::ArtifactError> for ApiError {
             AE::NotFound | AE::NotPublished { .. } => ApiError::NotFound,
             AE::Forbidden => ApiError::Forbidden,
             AE::Invalid(msg) => ApiError::BadRequest(msg),
-            AE::Conflict(_) => ApiError::Conflict,
+            // 版の競合と名前の重複は、code と利用者向けの文言を持つ 409（本文の無い 409 にしない・GAP-41）。
+            AE::Conflict(reason) => ApiError::ConflictJson(crate::error_body::to_body(
+                &crate::error_body::ArtifactConflictBody::new(reason),
+            )),
             AE::Internal(msg) => ApiError::Internal(format!("artifact: {msg}")),
         }
     }
@@ -680,6 +683,39 @@ mod tests {
         let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(v["status"], 429);
         assert_eq!(v["detail"], MSG);
+    }
+
+    /// アーティファクトの版の競合と名前の重複は、code と利用者向けの文言を持つ 409（本文の無い 409 にしない・GAP-41）。
+    #[tokio::test]
+    async fn artifact_conflicts_are_structured_409s() {
+        use artifact::{ArtifactKind, ConflictReason};
+        let (status, body) = body_json(ApiError::from(artifact::ArtifactError::Conflict(
+            ConflictReason::VersionChanged {
+                kind: ArtifactKind::MiniApp,
+                current: 7,
+            },
+        )))
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["code"], "version_conflict");
+        assert_eq!(body["current_version"], 7);
+        assert_eq!(
+            body["message"],
+            "ほかの人が先にこのアプリを保存しました。あなたの変更は保存されていません。"
+        );
+        let (status, body) = body_json(ApiError::from(artifact::ArtifactError::Conflict(
+            ConflictReason::NameTaken {
+                kind: ArtifactKind::Workflow,
+            },
+        )))
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT);
+        assert_eq!(body["code"], "name_taken");
+        assert!(body.get("current_version").is_none(), "{body}");
+        assert_eq!(
+            body["message"],
+            "同じ名前のワークフローがすでにあります（あなたが見られないものを含みます）。別の名前にしてください。"
+        );
     }
 
     #[tokio::test]

@@ -248,6 +248,8 @@ use utoipa::{
         crate::error_body::BadRequestBody,
         crate::error_body::ConflictBody,
         crate::error_body::ConflictCode,
+        crate::error_body::ArtifactConflictBody,
+        crate::error_body::ArtifactConflictCode,
         crate::error_body::PayloadTooLargeBody,
         crate::error_body::RetryLaterBody,
         crate::error_body::ImportInvalidBody,

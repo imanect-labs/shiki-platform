@@ -277,7 +277,7 @@ pub(crate) fn map_artifact(e: ArtifactError) -> DataError {
         ArtifactError::NotFound | ArtifactError::NotPublished { .. } => DataError::NotFound,
         ArtifactError::Forbidden => DataError::Forbidden,
         ArtifactError::Invalid(m) => DataError::Invalid(m),
-        ArtifactError::Conflict(m) => DataError::Conflict(m),
+        ArtifactError::Conflict(r) => DataError::Conflict(r.to_string()),
         ArtifactError::Internal(m) => DataError::Internal(format!("artifact: {m}")),
     }
 }

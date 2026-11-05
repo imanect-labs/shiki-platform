@@ -81,6 +81,42 @@ impl std::fmt::Display for ArtifactKind {
     }
 }
 
+impl ArtifactKind {
+    /// 利用者に見せる呼び名（UI の文言の指針の用語集・誤りの文言で種類を言うとき）。
+    pub const fn noun(self) -> &'static str {
+        match self {
+            ArtifactKind::Workflow => "ワークフロー",
+            ArtifactKind::MiniApp | ArtifactKind::MiniAppCode => "アプリ",
+            ArtifactKind::DataView => "ビュー",
+            ArtifactKind::Fsm => "状態の進め方",
+            ArtifactKind::Skill => "スキル",
+            ArtifactKind::Script => "スクリプト",
+        }
+    }
+}
+
+/// 競合の種類（[`ArtifactError::Conflict`](crate::ArtifactError::Conflict)・GAP-41）。
+///
+/// API はこれを `code` と利用者向けの文言を持つ 409 にする（本文の無い 409 にしない）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictReason {
+    /// 比べた版（`expected_version`）の後に、ほかの保存があった（楽観ロックの不一致）。`current` は今の最新の版。
+    VersionChanged { kind: ArtifactKind, current: i64 },
+    /// 同じ種類・同じ名前のものが、テナントにすでにある（名前はテナントで一意なので、呼ぶ人に見えないものを含む）。
+    NameTaken { kind: ArtifactKind },
+}
+
+impl std::fmt::Display for ConflictReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ConflictReason::VersionChanged { kind, current } => {
+                write!(f, "{kind} のバージョンが競合しました（今は v{current}）")
+            }
+            ConflictReason::NameTaken { kind } => write!(f, "同じ名前の {kind} がすでにあります"),
+        }
+    }
+}
+
 /// アーティファクトのメタデータ（本文はバージョン側）。
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct Artifact {

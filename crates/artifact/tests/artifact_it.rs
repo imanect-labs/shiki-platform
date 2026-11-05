@@ -14,7 +14,9 @@
 
 use std::sync::Arc;
 
-use artifact::{ArtifactError, ArtifactKind, ArtifactRole, ArtifactStore, NewArtifact};
+use artifact::{
+    ArtifactError, ArtifactKind, ArtifactRole, ArtifactStore, ConflictReason, NewArtifact,
+};
 use async_trait::async_trait;
 use authz::{
     AuthContext, AuthzClient, AuthzError, Consistency, FgaObject, ObjectType, Principal,
@@ -182,18 +184,32 @@ async fn optimistic_lock_and_name_conflicts() {
         .await
         .expect("create");
 
-    // expected_version 不一致は Conflict（lost-update 防止）。
+    // expected_version 不一致は Conflict（lost-update 防止）。種類と今の最新の版を添える（API の 409 の本文・GAP-41）。
     let stale = store
         .append_version(&c, a.id, json!({ "rev": 2 }), Some(99), None)
         .await;
     assert!(
-        matches!(stale, Err(ArtifactError::Conflict(_))),
+        matches!(
+            stale,
+            Err(ArtifactError::Conflict(ConflictReason::VersionChanged {
+                kind: ArtifactKind::Workflow,
+                current: 1
+            }))
+        ),
         "{stale:?}"
     );
 
-    // 同名 kind の再作成は Conflict。
+    // 同名 kind の再作成は Conflict（名前の重複・種類つき）。
     let dup = store.create(&c, new_wf("wf-lock", json!({})), None).await;
-    assert!(matches!(dup, Err(ArtifactError::Conflict(_))), "{dup:?}");
+    assert!(
+        matches!(
+            dup,
+            Err(ArtifactError::Conflict(ConflictReason::NameTaken {
+                kind: ArtifactKind::Workflow
+            }))
+        ),
+        "{dup:?}"
+    );
 
     // 別テナントでは同名を作成できる（tenant スコープの一意性）。
     let other = ctx(&unique_tenant(), "bob");

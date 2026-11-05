@@ -234,7 +234,7 @@ pub(crate) fn map_store_err(err: WorkflowStoreError) -> ApiError {
         (status = 201, description = "保存した", body = SaveWorkflowResponse),
         (status = 400, description = "IR 検証エラー（全件）", body = ValidationErrorResponse),
         (status = 401, description = "未認証"),
-        (status = 409, description = "同名ワークフローが既に存在する"),
+        (status = 409, description = "同じ名前のワークフローがすでにある（code=name_taken・見えないものを含む）", body = crate::error_body::ArtifactConflictBody),
     ),
     security(("session" = [])),
 )]
@@ -275,7 +275,7 @@ pub async fn create_workflow(
         (status = 401, description = "未認証"),
         (status = 403, description = "権限がない"),
         (status = 404, description = "存在しない"),
-        (status = 409, description = "バージョン競合"),
+        (status = 409, description = "比べた版の後にほかの保存があった（code=version_conflict・current_version）", body = crate::error_body::ArtifactConflictBody),
     ),
     security(("session" = [])),
 )]

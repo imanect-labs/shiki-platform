@@ -105,7 +105,7 @@ pub(crate) fn map_artifact(e: artifact::ArtifactError) -> AppPlatformError {
         AE::NotFound | AE::NotPublished { .. } => AppPlatformError::NotFound,
         AE::Forbidden => AppPlatformError::Forbidden,
         AE::Invalid(m) => AppPlatformError::Invalid(m),
-        AE::Conflict(m) => AppPlatformError::Conflict(m),
+        AE::Conflict(r) => AppPlatformError::Conflict(r.to_string()),
         AE::Internal(m) => AppPlatformError::Internal(format!("artifact: {m}")),
     }
 }
@@ -130,7 +130,9 @@ mod tests {
             AppPlatformError::Invalid(_)
         ));
         assert!(matches!(
-            map_artifact(AE::Conflict("x".into())),
+            map_artifact(AE::Conflict(artifact::ConflictReason::NameTaken {
+                kind: artifact::ArtifactKind::MiniAppCode
+            })),
             AppPlatformError::Conflict(_)
         ));
         // Internal は原文脈を残してラップする。
