@@ -77,10 +77,10 @@ async fn seed_chunk(env: &Env, name: &str, query: &str, weight: f32, folder_id: 
         "insert into blob (tenant_id, org, sha256, size_bytes, content_type, object_key, refcount) \
          values ($1, $2, $3, 10, 'text/plain', $4, 1)",
     )
-    .bind(&ctx.tenant_id)
-    .bind(&ctx.org)
+    .bind(ctx.tenant_id())
+    .bind(ctx.org())
     .bind(&sha)
-    .bind(format!("{}/{}/{}", ctx.tenant_id, ctx.org, sha))
+    .bind(format!("{}/{}/{}", ctx.tenant_id(), ctx.org(), sha))
     .execute(&env.pool)
     .await
     .unwrap();
@@ -90,11 +90,11 @@ async fn seed_chunk(env: &Env, name: &str, query: &str, weight: f32, folder_id: 
                            created_by, updated_by) \
          values ($1, $2, 'file', $3, $4, 10, 'text/plain', $5, $5) returning id",
     )
-    .bind(&ctx.org)
-    .bind(&ctx.tenant_id)
+    .bind(ctx.org())
+    .bind(ctx.tenant_id())
     .bind(name)
     .bind(&sha)
-    .bind(&ctx.principal.id)
+    .bind(&ctx.principal().id)
     .fetch_one(&env.pool)
     .await
     .unwrap();
@@ -130,8 +130,8 @@ async fn seed_chunk_on(
          values ($1, $2, $3, $4, 1, null, 'leaf', 0, 1, '{}', $5, 10, $6, 'fake-model')",
     )
     .bind(chunk_id)
-    .bind(&ctx.tenant_id)
-    .bind(&ctx.org)
+    .bind(ctx.tenant_id())
+    .bind(ctx.org())
     .bind(node_id)
     .bind(format!("{name} の本文"))
     .bind(&tags)
@@ -285,7 +285,7 @@ async fn scope_never_widens_post_filter_still_applies() {
         "SELECT count(*) FROM audit_log \
          WHERE tenant_id = $1 AND action = 'rag.search' AND metadata ? 'scope'",
     )
-    .bind(&env.ctx.tenant_id)
+    .bind(env.ctx.tenant_id())
     .fetch_one(&env.pool)
     .await
     .unwrap();
@@ -340,11 +340,11 @@ async fn make_node(env: &Env, kind: &str, parent: Option<Uuid>) -> Uuid {
             "insert into node (org, tenant_id, kind, name, parent_id, created_by, updated_by) \
              values ($1, $2, 'folder', $3, $4, $5, $5) returning id",
         )
-        .bind(&ctx.org)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.org())
+        .bind(ctx.tenant_id())
         .bind(&name)
         .bind(parent)
-        .bind(&ctx.principal.id)
+        .bind(&ctx.principal().id)
         .fetch_one(&env.pool)
         .await
         .unwrap()
@@ -354,10 +354,10 @@ async fn make_node(env: &Env, kind: &str, parent: Option<Uuid>) -> Uuid {
             "insert into blob (tenant_id, org, sha256, size_bytes, content_type, object_key, refcount) \
              values ($1, $2, $3, 10, 'text/plain', $4, 1)",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(&sha)
-        .bind(format!("{}/{}/{}", ctx.tenant_id, ctx.org, sha))
+        .bind(format!("{}/{}/{}", ctx.tenant_id(), ctx.org(), sha))
         .execute(&env.pool)
         .await
         .unwrap();
@@ -366,12 +366,12 @@ async fn make_node(env: &Env, kind: &str, parent: Option<Uuid>) -> Uuid {
                                content_type, created_by, updated_by) \
              values ($1, $2, 'file', $3, $4, $5, 10, 'text/plain', $6, $6) returning id",
         )
-        .bind(&ctx.org)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.org())
+        .bind(ctx.tenant_id())
         .bind(&name)
         .bind(parent)
         .bind(&sha)
-        .bind(&ctx.principal.id)
+        .bind(&ctx.principal().id)
         .fetch_one(&env.pool)
         .await
         .unwrap()
@@ -382,8 +382,8 @@ async fn make_node(env: &Env, kind: &str, parent: Option<Uuid>) -> Uuid {
           where tenant_id = $2 and descendant = $4 \
          union all select $1, $2, $3, $3, 0",
     )
-    .bind(&ctx.org)
-    .bind(&ctx.tenant_id)
+    .bind(ctx.org())
+    .bind(ctx.tenant_id())
     .bind(id)
     .bind(parent)
     .execute(&env.pool)
@@ -555,7 +555,7 @@ async fn search_narrowed_rechecks_base_and_audits_empty_intersection() {
     let before: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM audit_log WHERE tenant_id = $1 AND action = 'rag.search'",
     )
-    .bind(&ctx.tenant_id)
+    .bind(ctx.tenant_id())
     .fetch_one(&env.pool)
     .await
     .unwrap();
@@ -575,7 +575,7 @@ async fn search_narrowed_rechecks_base_and_audits_empty_intersection() {
     let after: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM audit_log WHERE tenant_id = $1 AND action = 'rag.search'",
     )
-    .bind(&ctx.tenant_id)
+    .bind(ctx.tenant_id())
     .fetch_one(&env.pool)
     .await
     .unwrap();

@@ -140,7 +140,7 @@ async fn hold_lock(env: &Env, ctx: &AuthContext, file_id: Uuid) {
     )
     .bind(file_id)
     .bind(ctx.subject().as_str())
-    .bind(&ctx.tenant_id)
+    .bind(ctx.tenant_id())
     .execute(&env.pool)
     .await
     .expect("hold lock");

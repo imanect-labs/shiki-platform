@@ -481,7 +481,11 @@ async fn body_json(resp: axum::response::Response) -> serde_json::Value {
 
 /// セッション主体と同一の AuthContext（テスト用のファイル作成に使う）。
 fn test_ctx() -> AuthContext {
-    AuthContext::new(test_principal(), "acme".into(), "default".into())
+    AuthContext::new(
+        test_principal(),
+        "acme".into(),
+        authz::TenantId::parse("default").unwrap(),
+    )
 }
 
 fn session_post(uri: &str, cookie: &str, csrf: &str, body: serde_json::Value) -> Request<Body> {

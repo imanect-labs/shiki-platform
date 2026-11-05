@@ -355,7 +355,7 @@ impl ChatStore {
              WHERE tenant_id = $1 AND thread_id = $2 AND message_id = $3 AND action_id LIKE $4 \
              ORDER BY action_id",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(thread_id)
         .bind(message_id)
         .bind(format!("{block_hash}:%"))
@@ -405,7 +405,7 @@ impl ChatStore {
             "SELECT workflow_id, workflow_version, workflow_name FROM ui_action_binding \
              WHERE tenant_id = $1 AND thread_id = $2 AND message_id = $3 AND action_id = $4",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(thread_id)
         .bind(message_id)
         .bind(action_id)
@@ -431,13 +431,13 @@ impl ChatStore {
              WHERE m.id = $3 AND m.thread_id = $2 AND m.tenant_id = $1 \
              ON CONFLICT DO NOTHING",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(thread_id)
         .bind(message_id)
         .bind(action_id)
         .bind(key)
-        .bind(&ctx.org)
-        .bind(&ctx.principal.id)
+        .bind(ctx.org())
+        .bind(&ctx.principal().id)
         .bind(label)
         .bind(workflow_name)
         .bind(Json(summary))
@@ -458,7 +458,7 @@ impl ChatStore {
              WHERE tenant_id = $1 AND thread_id = $2 AND message_id = $3 AND action_id = $4 \
                AND idempotency_key = $5",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(thread_id)
         .bind(message_id)
         .bind(action_id)
@@ -482,7 +482,7 @@ impl ChatStore {
              WHERE tenant_id = $1 AND thread_id = $2 AND message_id = $3 AND action_id = $4 \
                AND idempotency_key = $5",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(thread_id)
         .bind(message_id)
         .bind(action_id)
@@ -504,7 +504,7 @@ impl ChatStore {
              WHERE tenant_id = $1 AND thread_id = $2 AND message_id = $3 AND action_id = $4 \
                AND idempotency_key = $5 AND run_id IS NULL AND status IS NULL",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(thread_id)
         .bind(message_id)
         .bind(action_id)
@@ -528,7 +528,7 @@ impl ChatStore {
             "SELECT message_id, action_id FROM ui_action_binding \
              WHERE tenant_id = $1 AND thread_id = $2 ORDER BY message_id, action_id",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(thread_id)
         .fetch_all(&self.db)
         .await
@@ -544,7 +544,7 @@ impl ChatStore {
              ) r WHERE rn <= $3 \
              ORDER BY invoked_at, idempotency_key",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(thread_id)
         .bind(MAX_RUNS_PER_MESSAGE)
         .fetch_all(&self.db)
@@ -635,7 +635,7 @@ impl ChatStore {
                  WHERE r.tenant_id = $1 AND r.thread_id = $2 AND r.run_id = x.run_id \
                    AND r.status IS NULL",
             )
-            .bind(&ctx.tenant_id)
+            .bind(ctx.tenant_id())
             .bind(thread_id)
             .bind(&ids)
             .bind(&sts)

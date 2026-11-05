@@ -108,7 +108,7 @@ fn map_tabular(e: tabular::TabularError) -> PortError {
 #[async_trait]
 impl NodePorts for ProdNodePorts {
     async fn storage_write(&self, ec: &ExecCtx, req: StorageWriteReq) -> Result<Value, PortError> {
-        let ctx = auth_ctx(ec);
+        let ctx = auth_ctx(ec)?;
         self.storage
             .write_file_internal_idempotent(
                 &ctx,
@@ -125,7 +125,7 @@ impl NodePorts for ProdNodePorts {
     }
 
     async fn storage_read(&self, ec: &ExecCtx, file_id: Uuid) -> Result<Value, PortError> {
-        let ctx = auth_ctx(ec);
+        let ctx = auth_ctx(ec)?;
         let (node, bytes) = self
             .storage
             .read_file_internal(&ctx, file_id, ec.trace_id.as_deref())
@@ -145,7 +145,7 @@ impl NodePorts for ProdNodePorts {
         ec: &ExecCtx,
         parent_id: Option<Uuid>,
     ) -> Result<Value, PortError> {
-        let ctx = auth_ctx(ec);
+        let ctx = auth_ctx(ec)?;
         let page = self
             .storage
             .list_children(
@@ -181,7 +181,7 @@ impl NodePorts for ProdNodePorts {
         query: &str,
         top_k: Option<u32>,
     ) -> Result<Value, PortError> {
-        let ctx = auth_ctx(ec);
+        let ctx = auth_ctx(ec)?;
         let search = self
             .search
             .as_ref()
@@ -213,7 +213,7 @@ impl NodePorts for ProdNodePorts {
     }
 
     async fn llm_invoke(&self, ec: &ExecCtx, req: LlmInvokeReq) -> Result<Value, PortError> {
-        let ctx = auth_ctx(ec);
+        let ctx = auth_ctx(ec)?;
         let mut greq = GenerateRequest::new(vec![Message::text(Role::User, req.prompt.clone())]);
         greq.model = req.model.clone();
         greq.system = req.system.clone();
@@ -373,7 +373,7 @@ impl NodePorts for ProdNodePorts {
         ec: &ExecCtx,
         name: &str,
     ) -> Result<ResolvedSecretView, PortError> {
-        let ctx = auth_ctx(ec);
+        let ctx = auth_ctx(ec)?;
         let secrets = self
             .secrets
             .as_ref()
@@ -398,7 +398,7 @@ impl NodePorts for ProdNodePorts {
         let Some(artifacts) = &self.skill_artifacts else {
             return Err(PortError::unavailable("skill 解決が未配線です"));
         };
-        let ctx = auth_ctx(ec);
+        let ctx = auth_ctx(ec)?;
         super::skill_port::resolve_skill(
             &self.db,
             artifacts,
@@ -416,7 +416,7 @@ impl NodePorts for ProdNodePorts {
         name: &str,
         input: &Value,
     ) -> Result<Value, PortError> {
-        let ctx = auth_ctx(ec);
+        let ctx = auth_ctx(ec)?;
         // 名前 → workflow_id（artifact 名の一意性・tenant×kind 内）。
         let id: Option<Uuid> = sqlx::query_scalar(
             "SELECT id FROM artifact \
@@ -448,7 +448,7 @@ impl NodePorts for ProdNodePorts {
     }
 
     async fn csv_query(&self, ec: &ExecCtx, file_id: Uuid, sql: &str) -> Result<Value, PortError> {
-        let ctx = auth_ctx(ec);
+        let ctx = auth_ctx(ec)?;
         let tabular = self
             .tabular
             .as_ref()
@@ -472,7 +472,7 @@ impl NodePorts for ProdNodePorts {
     }
 
     async fn csv_patch(&self, ec: &ExecCtx, req: CsvPatchReq) -> Result<Value, PortError> {
-        let ctx = auth_ctx(ec);
+        let ctx = auth_ctx(ec)?;
         let tabular = self
             .tabular
             .as_ref()
@@ -499,7 +499,7 @@ impl NodePorts for ProdNodePorts {
     }
 
     async fn csv_write(&self, ec: &ExecCtx, req: CsvWriteReq) -> Result<Value, PortError> {
-        let ctx = auth_ctx(ec);
+        let ctx = auth_ctx(ec)?;
         let tabular = self
             .tabular
             .as_ref()

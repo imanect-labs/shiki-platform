@@ -80,7 +80,7 @@ impl chat::WorkflowDirectory for ApiWorkflowDirectory {
             .map_err(|e| format!("ワークフロー一覧: {e}"))?;
         self.summaries
             .search(
-                &ctx.tenant_id,
+                ctx.tenant_id(),
                 &ids,
                 &owned,
                 query,

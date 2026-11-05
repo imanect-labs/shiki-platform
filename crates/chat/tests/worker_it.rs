@@ -110,7 +110,7 @@ fn ctx(tenant: &str) -> AuthContext {
             tenant_id: Some(tenant.into()),
         },
         "acme".into(),
-        tenant.into(),
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 
@@ -232,7 +232,7 @@ async fn worker_generates_streams_and_persists_projection() {
         .unwrap();
 
     // SSE 相当の event_stream を drain し、トークン→done を受け取る。
-    let mut rx = store.event_stream(&c.tenant_id, res.run_id, 0);
+    let mut rx = store.event_stream(c.tenant_id(), res.run_id, 0);
     let mut text = String::new();
     let mut done = false;
     let mut title_event = None;
@@ -361,7 +361,7 @@ async fn system_prompt_carries_todays_date_from_run_creation() {
         .await
         .unwrap();
 
-    let mut rx = store.event_stream(&c.tenant_id, res.run_id, 0);
+    let mut rx = store.event_stream(c.tenant_id(), res.run_id, 0);
     let mut text = String::new();
     for _ in 0..500 {
         let next = tokio::time::timeout(Duration::from_secs(15), rx.next())
@@ -458,7 +458,7 @@ async fn custom_instructions_reach_the_model_in_system_prompt() {
             )
             .await
             .unwrap();
-        let mut rx = store.event_stream(&c.tenant_id, res.run_id, 0);
+        let mut rx = store.event_stream(c.tenant_id(), res.run_id, 0);
         let mut text = String::new();
         for _ in 0..500 {
             let next = tokio::time::timeout(Duration::from_secs(15), rx.next())
@@ -822,7 +822,7 @@ async fn rejected_generation_fails_once_without_retrying() {
         .unwrap();
 
     // 再試行していれば backoff（数十秒）を挟むので、ここで待つ間に Error は届かない。
-    let mut rx = store.event_stream(&c.tenant_id, res.run_id, 0);
+    let mut rx = store.event_stream(c.tenant_id(), res.run_id, 0);
     let mut error = None;
     for _ in 0..200 {
         let next = tokio::time::timeout(Duration::from_secs(20), rx.next())
@@ -895,7 +895,7 @@ async fn ui_reference_is_offered_only_when_yui_is_enabled() {
             .post_message(c, thread.id, text, &[], None, Some(true), false, &[], None)
             .await
             .unwrap();
-        let mut rx = store.event_stream(&c.tenant_id, res.run_id, 0);
+        let mut rx = store.event_stream(c.tenant_id(), res.run_id, 0);
         let (mut body, mut call_id, mut observed) = (String::new(), None, None);
         for _ in 0..500 {
             let next = tokio::time::timeout(Duration::from_mins(1), rx.next())

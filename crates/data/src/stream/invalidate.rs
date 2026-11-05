@@ -30,7 +30,7 @@ impl DataStore {
         ctx: &AuthContext,
         table_id: Option<Uuid>,
     ) -> Result<(), DataError> {
-        self.bump_authz_epoch(&ctx.tenant_id, table_id).await
+        self.bump_authz_epoch(ctx.tenant_id(), table_id).await
     }
 
     /// テーブルの ReBAC（タプル）を本 crate の外で付け外しした後に呼ぶ入口（best-effort）。
@@ -49,11 +49,11 @@ impl DataStore {
         }
         // この表を参照する表の購読にも取り直させる（参照先の viewer の変化でルックアップ・リンク値の
         // 見え方が変わる・B-P2-1）。
-        if let Err(e) = self.refresh_referrers(&ctx.tenant_id, table_id).await {
+        if let Err(e) = self.refresh_referrers(ctx.tenant_id(), table_id).await {
             tracing::warn!(error = %e, %table_id, "テーブル ReBAC 変更後の参照元の取り直しの発行に失敗");
         }
         let dependents = match self
-            .materialization_dependents(&ctx.tenant_id, table_id)
+            .materialization_dependents(ctx.tenant_id(), table_id)
             .await
         {
             Ok(v) => v,

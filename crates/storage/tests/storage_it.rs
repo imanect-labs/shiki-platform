@@ -121,7 +121,7 @@ fn make_ctx(org: &str, uid: &str) -> AuthContext {
             tenant_id: None,
         },
         org.into(),
-        "default".into(),
+        authz::TenantId::parse("default").unwrap(),
     )
 }
 
@@ -1954,7 +1954,7 @@ fn make_ctx_tenant(org: &str, tenant: &str, uid: &str) -> AuthContext {
             tenant_id: None,
         },
         org.into(),
-        tenant.into(),
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 
@@ -3061,7 +3061,7 @@ async fn write_file_internal_idempotent_dedups_by_key() {
     let summary: serde_json::Value = sqlx::query_scalar(
         "SELECT result_summary FROM effect_journal WHERE tenant_id = $1 AND idempotency_key = $2",
     )
-    .bind(&actx.tenant_id)
+    .bind(actx.tenant_id())
     .bind(&key)
     .fetch_one(&pool)
     .await
@@ -4244,7 +4244,7 @@ async fn share_link_grant_revoke_is_durable() {
     // 台帳行は残り、ソフト失効している（deny 台帳の実体）。
     assert!(
         matches!(
-            grant_revoked_at(&pool, l.link_id, &bob, &octx.tenant_id).await,
+            grant_revoked_at(&pool, l.link_id, &bob, octx.tenant_id()).await,
             Some(Some(_))
         ),
         "grant 行は消さずソフト失効させる"
@@ -4519,7 +4519,7 @@ async fn share_link_revoke_clears_grants_but_keeps_deny_on_active_link() {
         .expect("revoke grant on a");
     assert!(
         matches!(
-            grant_revoked_at(&pool, a.link_id, &bob, &octx.tenant_id).await,
+            grant_revoked_at(&pool, a.link_id, &bob, octx.tenant_id()).await,
             Some(Some(_))
         ),
         "active リンクの個別取消は deny 行を残す"
@@ -4531,7 +4531,7 @@ async fn share_link_revoke_clears_grants_but_keeps_deny_on_active_link() {
         .await
         .expect("revoke link b");
     assert!(
-        grant_revoked_at(&pool, b.link_id, &bob, &octx.tenant_id)
+        grant_revoked_at(&pool, b.link_id, &bob, octx.tenant_id())
             .await
             .is_none(),
         "失効したリンクの台帳行は削除される（再 redeem が構造的に不可能なので deny 行は不要）"
@@ -4539,7 +4539,7 @@ async fn share_link_revoke_clears_grants_but_keeps_deny_on_active_link() {
     // A の deny 行は無傷で、A からの再解錠は依然として拒否される。
     assert!(
         matches!(
-            grant_revoked_at(&pool, a.link_id, &bob, &octx.tenant_id).await,
+            grant_revoked_at(&pool, a.link_id, &bob, octx.tenant_id()).await,
             Some(Some(_))
         ),
         "B の失効掃除が A の deny 行を巻き込まない"
@@ -4603,7 +4603,7 @@ async fn share_link_revoke_deletes_grants() {
         .await
         .expect("redeem");
     assert!(matches!(
-        grant_revoked_at(&pool, l.link_id, &bob, &octx.tenant_id).await,
+        grant_revoked_at(&pool, l.link_id, &bob, octx.tenant_id()).await,
         Some(None)
     ));
 
@@ -4612,7 +4612,7 @@ async fn share_link_revoke_deletes_grants() {
         .await
         .expect("revoke link");
     assert!(
-        grant_revoked_at(&pool, l.link_id, &bob, &octx.tenant_id)
+        grant_revoked_at(&pool, l.link_id, &bob, octx.tenant_id())
             .await
             .is_none(),
         "リンク失効で台帳行は削除される（墓石を溜めない）"
@@ -4709,7 +4709,7 @@ async fn share_link_redeem_denied_after_concurrent_revoke() {
         "UPDATE node_share_link SET revoked_at = now() WHERE link_id = $1 AND tenant_id = $2",
     )
     .bind(l.link_id)
-    .bind(&octx.tenant_id)
+    .bind(octx.tenant_id())
     .execute(&mut *hold)
     .await
     .expect("revoke while holding lock");
@@ -4743,7 +4743,7 @@ async fn share_link_redeem_denied_after_concurrent_revoke() {
         "孤児 via_link タプルが残っていない"
     );
     assert!(
-        grant_revoked_at(&pool, l.link_id, &bob, &octx.tenant_id)
+        grant_revoked_at(&pool, l.link_id, &bob, octx.tenant_id())
             .await
             .is_none(),
         "拒否された redeem は台帳行を作らない"
@@ -4822,7 +4822,7 @@ async fn share_link_concurrent_redeem_two_links_refcount() {
     )
     .bind(file.id)
     .bind(&bob)
-    .bind(&octx.tenant_id)
+    .bind(octx.tenant_id())
     .fetch_one(&pool)
     .await
     .expect("count live grants");
@@ -4919,7 +4919,7 @@ async fn share_link_expire_race_with_extend_keeps_grants() {
     sqlx::query("UPDATE node_share_link SET expires_at = $2 WHERE link_id = $1 AND tenant_id = $3")
         .bind(l.link_id)
         .bind(sweep_now + chrono::Duration::hours(1))
-        .bind(&octx.tenant_id)
+        .bind(octx.tenant_id())
         .execute(&mut *hold)
         .await
         .expect("extend while holding lock");
@@ -4941,7 +4941,7 @@ async fn share_link_expire_race_with_extend_keeps_grants() {
     );
     assert!(
         matches!(
-            grant_revoked_at(&pool, l.link_id, &bob, &octx.tenant_id).await,
+            grant_revoked_at(&pool, l.link_id, &bob, octx.tenant_id()).await,
             Some(None)
         ),
         "延長されたリンクの grant は deny 台帳へ載らない（永久追放を作らない）"
@@ -5000,7 +5000,7 @@ async fn share_link_grant_revoke_rejects_corrupt_role() {
          WHERE link_id = $1 AND tenant_id = $2",
     )
     .bind(l.link_id)
-    .bind(&octx.tenant_id)
+    .bind(octx.tenant_id())
     .execute(&pool)
     .await
     .expect("corrupt role");
@@ -5064,7 +5064,7 @@ async fn share_link_revoke_keeps_corrupt_grant_row() {
          WHERE link_id = $1 AND tenant_id = $2",
     )
     .bind(l.link_id)
-    .bind(&octx.tenant_id)
+    .bind(octx.tenant_id())
     .execute(&pool)
     .await
     .expect("corrupt role");
@@ -5079,7 +5079,7 @@ async fn share_link_revoke_keeps_corrupt_grant_row() {
         "SELECT COUNT(*) FROM node_share_link_grant WHERE link_id = $1 AND tenant_id = $2",
     )
     .bind(l.link_id)
-    .bind(&octx.tenant_id)
+    .bind(octx.tenant_id())
     .fetch_one(&pool)
     .await
     .expect("count");
@@ -5771,7 +5771,7 @@ async fn provision_tenant_admin_grants_admin_and_upgrades_existing_member() {
             tenant_id: Some(tenant.clone()),
         },
         org.into(),
-        tenant.clone(),
+        authz::TenantId::parse(tenant.clone()).unwrap(),
     );
     let subject = ctx.subject();
     let org_obj = ctx.ns().organization(org);
@@ -5907,12 +5907,18 @@ async fn purge_tenant_strips_tuples_of_every_org_in_the_tenant() {
     let b_sub = make_ctx_tenant(&org_sub, &tb, "ub-sub");
     let dir = DirectoryStore::new(pool.clone());
     for c in [&a_main, &a_sub, &b_sub] {
-        dir.upsert_user(&c.principal.id, &c.tenant_id, &c.org, "x@example.com", "x")
-            .await
-            .expect("directory");
+        dir.upsert_user(
+            &c.principal().id,
+            c.tenant_id(),
+            c.org(),
+            "x@example.com",
+            "x",
+        )
+        .await
+        .expect("directory");
         for rel in [Relation::Member, Relation::Admin] {
             authz
-                .write_tuple(&c.subject(), rel, &c.ns().organization(&c.org))
+                .write_tuple(&c.subject(), rel, &c.ns().organization(c.org()))
                 .await
                 .expect("org タプル");
         }
@@ -5924,7 +5930,7 @@ async fn purge_tenant_strips_tuples_of_every_org_in_the_tenant() {
                 .check(
                     &c.subject(),
                     rel,
-                    &c.ns().organization(&c.org),
+                    &c.ns().organization(c.org()),
                     Consistency::HigherConsistency,
                 )
                 .await
@@ -5946,7 +5952,7 @@ async fn purge_tenant_strips_tuples_of_every_org_in_the_tenant() {
             assert!(
                 !has(c.clone(), rel).await,
                 "A の org {} の {} タプルが剥がれる",
-                c.org,
+                c.org(),
                 rel.as_str()
             );
         }

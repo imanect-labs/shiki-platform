@@ -221,7 +221,13 @@ impl StorageService {
         // 設定ミスや時計 skew で進行中アップロードを巻き添えにした場合、どのテナントのどの
         // upload_id を消したかをログ保持期間に依らず追跡できるようにする。
         for ((tenant_id, org), upload_ids) in by_org {
-            let sctx = system_ctx(&tenant_id, &org, "system");
+            let sctx = match system_ctx(&tenant_id, &org, "system") {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(error = %e, tenant_id = %tenant_id, "削除の監査文脈を組めない（監査を残せない）");
+                    continue;
+                }
+            };
             if let Err(e) = self
                 .audit
                 .record(
@@ -381,7 +387,13 @@ impl StorageService {
 
     /// 孤児削除の監査（system ctx・非チェーン。TTL sweep と同じく削除証跡として残す）。
     async fn record_orphan_audit(&self, pair: &TenantOrg, prefix: &str, count: usize) {
-        let sctx = system_ctx(&pair.tenant_id, &pair.org, "system");
+        let sctx = match system_ctx(&pair.tenant_id, &pair.org, "system") {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(error = %e, tenant_id = %pair.tenant_id, "孤児削除の監査文脈を組めない（監査を残せない）");
+                return;
+            }
+        };
         if let Err(e) = self
             .audit
             .record(

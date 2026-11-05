@@ -224,10 +224,10 @@ impl DataStore {
              ORDER BY (name = $3) DESC, id LIMIT {}",
             MAX_CANDIDATES + 1
         ))
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(&t.name)
-        .fetch_all(self.pools.for_tenant(&ctx.tenant_id))
+        .fetch_all(self.pools.for_tenant(ctx.tenant_id()))
         .await
         .map_err(map_db)?;
         let truncated = rows.len() > MAX_CANDIDATES;

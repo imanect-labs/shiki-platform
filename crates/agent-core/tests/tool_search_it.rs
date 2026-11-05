@@ -130,7 +130,7 @@ fn ctx() -> AuthContext {
             tenant_id: Some(tenant.clone()),
         },
         "acme".into(),
-        tenant,
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 

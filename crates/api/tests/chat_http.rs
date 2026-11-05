@@ -883,7 +883,11 @@ async fn share_lists_include_directory_names_tenant_scoped() {
         .upsert_role("share741-eng", "default", "acme", "技術部 741")
         .await
         .expect("seed role");
-    let ctx = authz::AuthContext::new(test_principal(), "acme".into(), "default".into());
+    let ctx = authz::AuthContext::new(
+        test_principal(),
+        "acme".into(),
+        authz::TenantId::parse("default").unwrap(),
+    );
     let art = state
         .artifacts
         .create(

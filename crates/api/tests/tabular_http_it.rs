@@ -354,7 +354,11 @@ async fn setup() -> Option<Env> {
     Some(Env {
         app,
         storage,
-        ctx: authz::AuthContext::new(principal(), "acme".into(), "default".into()),
+        ctx: authz::AuthContext::new(
+            principal(),
+            "acme".into(),
+            authz::TenantId::parse("default").unwrap(),
+        ),
     })
 }
 

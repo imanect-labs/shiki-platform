@@ -182,12 +182,12 @@ pub async fn create_thread(
     }
     if let Some((folder, parent)) = workspace {
         store
-            .set_thread_workspace(thread.id, &ctx.tenant_id, folder, parent)
+            .set_thread_workspace(thread.id, ctx.tenant_id(), folder, parent)
             .await?;
     }
     if let Some((folder_id, name)) = search_folder {
         store
-            .set_thread_search_folder(thread.id, &ctx.tenant_id, folder_id, &name)
+            .set_thread_search_folder(thread.id, ctx.tenant_id(), folder_id, &name)
             .await?;
         thread.search_folder_id = Some(folder_id);
         thread.search_folder_name = Some(name);
@@ -310,14 +310,14 @@ pub async fn get_messages(
     // 進行中（非端末）の run があれば id と自律フラグを返す（再訪時の承認送信・進捗復元・
     // 自律 UI（モードセレクタ）の復元に使う・#350）。
     let active = store
-        .current_run(id, &ctx.tenant_id)
+        .current_run(id, ctx.tenant_id())
         .await?
         .filter(|r| !r.status.is_terminal());
     // 順番待ちの発話（生成が始まっていない run の発話）。認可は上の get_messages が済ませている。
     // 進行中 run が無ければ順番待ちも存在し得ない（先頭が走り出しているはず）ので引かない。
     let queued_runs = if let Some(current) = active {
         store
-            .queued_user_messages(id, &ctx.tenant_id, current.run_id)
+            .queued_user_messages(id, ctx.tenant_id(), current.run_id)
             .await?
             .into_iter()
             .map(|(user_message_id, run_id)| super::chat_dto::QueuedRun {
@@ -328,7 +328,7 @@ pub async fn get_messages(
     } else {
         Vec::new()
     };
-    let context_usage = store.latest_context_usage(id, &ctx.tenant_id).await?;
+    let context_usage = store.latest_context_usage(id, ctx.tenant_id()).await?;
     Ok(Json(MessagesResponse {
         context_usage,
         messages,
@@ -480,7 +480,7 @@ pub async fn stream_thread(
     let from_seq = last_event_id(&headers, &q);
     // いま映すべき run（＝最も古い未完了 run）を購読する。run が無ければ即終了の空ストリーム。
     // 順番待ちの run を購読した場合はイベント 0 件で待機し、ワーカーが着手した時点で流れ出す。
-    let stream: SseEventStream = match chat.current_run(id, &ctx.tenant_id).await? {
+    let stream: SseEventStream = match chat.current_run(id, ctx.tenant_id()).await? {
         Some(current) => chat
             .viewer_event_stream(&ctx, id, current.run_id, from_seq, trace.as_deref())
             .await?

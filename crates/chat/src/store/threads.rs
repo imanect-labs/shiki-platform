@@ -133,9 +133,9 @@ impl ChatStore {
              RETURNING id, title, agent_mode, autonomous_mode, '[]'::jsonb AS skill_pins, mini_app_id, mini_app_version, origin_note_id, origin_note_name, pinned_at, search_folder_id, search_folder_name, created_at, updated_at",
         )
         .bind(id)
-        .bind(&ctx.org)
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.principal.id)
+        .bind(ctx.org())
+        .bind(ctx.tenant_id())
+        .bind(&ctx.principal().id)
         .bind(title)
         .bind(agent_mode)
         .bind(origin_note_id)
@@ -153,7 +153,7 @@ impl ChatStore {
         {
             let _ = sqlx::query("DELETE FROM thread WHERE id = $1 AND tenant_id = $2")
                 .bind(id)
-                .bind(&ctx.tenant_id)
+                .bind(ctx.tenant_id())
                 .execute(&self.db)
                 .await;
             return Err(ChatError::Internal(format!("owner tuple: {e}")));
@@ -201,7 +201,7 @@ impl ChatStore {
              WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL",
         )
         .bind(thread_id)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(note_id)
         .bind(note_name)
         .execute(&self.db)
@@ -255,9 +255,9 @@ impl ChatStore {
                AND ($8::text IS NULL OR title ILIKE $8 ESCAPE '\\') \
              ORDER BY updated_at DESC, id DESC LIMIT $6",
         ))
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
-        .bind(&ctx.principal.id)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
+        .bind(&ctx.principal().id)
         .bind(before_updated_at)
         .bind(before_id)
         .bind(limit)
@@ -289,7 +289,7 @@ impl ChatStore {
              WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL",
         ))
         .bind(thread_id)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .fetch_optional(&self.db)
         .await
         .map_err(map_db)?;
@@ -321,7 +321,7 @@ impl ChatStore {
              ORDER BY created_at, (parent_id IS NOT NULL), id",
         )
         .bind(thread_id)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .fetch_all(&self.db)
         .await
         .map_err(map_db)?;
@@ -385,7 +385,7 @@ impl ChatStore {
         )
         .bind(message_id)
         .bind(thread_id)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .fetch_optional(&self.db)
         .await
         .map_err(map_db)?;
@@ -425,7 +425,7 @@ impl ChatStore {
                  WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL)",
             )
             .bind(thread_id)
-            .bind(&ctx.tenant_id)
+            .bind(ctx.tenant_id())
             .fetch_one(&self.db)
             .await
             .map_err(map_db)

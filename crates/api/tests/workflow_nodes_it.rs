@@ -148,7 +148,7 @@ async fn setup() -> Option<Harness> {
             tenant_id: Some(tenant.clone()),
         },
         org.clone(),
-        tenant.clone(),
+        authz::TenantId::parse(tenant.clone()).unwrap(),
     );
     // storage.write を org 直下に許可（member@org）。
     fga.write_tuple(

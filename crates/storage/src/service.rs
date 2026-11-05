@@ -10,7 +10,7 @@ use std::{sync::Arc, time::Duration};
 
 use authz::{
     AuthContext, AuthzClient, Consistency, FgaObject, Namespace, ObjectType, Principal, Relation,
-    Subject,
+    Subject, TenantId,
 };
 use chrono::{DateTime, Utc};
 use serde_json::json;
@@ -209,8 +209,12 @@ fn row_to_node(row: NodeRow) -> Result<Node, StorageError> {
 /// 監査記録を実行時と同じ経路に通すための継ぎ目。`actor` は呼び出し主体
 /// （provisioner の `azp` 等）を監査ログの actor 列に刻む（#91 M-7: 固定 `"system"` だと
 /// provisioner 資格情報の不正使用をどのクライアントか追えない）。
-fn system_ctx(tenant_id: &str, org: &str, actor: &str) -> AuthContext {
-    AuthContext::new(
+///
+/// `tenant_id` は管理 API の入力でも DB の値でも、文字ポリシー（[`TenantId::parse`]）を通す。
+fn system_ctx(tenant_id: &str, org: &str, actor: &str) -> Result<AuthContext, StorageError> {
+    let tenant = TenantId::parse(tenant_id)
+        .map_err(|e| StorageError::Invalid(format!("tenant_id が不正です: {e}")))?;
+    Ok(AuthContext::new(
         Principal {
             kind: authz::PrincipalKind::User,
             id: actor.to_string(),
@@ -220,8 +224,8 @@ fn system_ctx(tenant_id: &str, org: &str, actor: &str) -> AuthContext {
             tenant_id: Some(tenant_id.to_string()),
         },
         org.to_string(),
-        tenant_id.to_string(),
-    )
+        tenant,
+    ))
 }
 
 /// ノード種別に対応する OpenFGA オブジェクト識別子（tenant 名前空間化済み・SAAS.1）。
@@ -386,7 +390,7 @@ mod tests {
                 tenant_id: Some(tenant_id.into()),
             },
             "org1".into(),
-            tenant_id.into(),
+            authz::TenantId::parse(tenant_id).unwrap(),
         )
     }
 

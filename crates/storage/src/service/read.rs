@@ -107,10 +107,10 @@ impl StorageService {
                 self.require(
                     ctx,
                     Relation::Member,
-                    &ctx.ns().organization(&ctx.org),
+                    &ctx.ns().organization(ctx.org()),
                     AuditAction::FolderChildrenList,
                     "organization",
-                    &ctx.org,
+                    ctx.org(),
                     trace_id,
                 )
                 .await?;
@@ -156,8 +156,8 @@ impl StorageService {
                  ORDER BY {sort_col} {order_dir}, id {order_dir} LIMIT $6"
             );
             let rows: Vec<NodeRow> = sqlx::query_as(&sql)
-                .bind(&ctx.org)
-                .bind(&ctx.tenant_id)
+                .bind(ctx.org())
+                .bind(ctx.tenant_id())
                 .bind(parent_id)
                 .bind(after_val.as_deref())
                 .bind(after_id)
@@ -259,10 +259,10 @@ impl StorageService {
         self.require(
             ctx,
             Relation::Member,
-            &ctx.ns().organization(&ctx.org),
+            &ctx.ns().organization(ctx.org()),
             AuditAction::NodeSearch,
             "organization",
-            &ctx.org,
+            ctx.org(),
             trace_id,
         )
         .await?;
@@ -312,8 +312,8 @@ impl StorageService {
                  ORDER BY {sort_col} {order_dir}, id {order_dir} LIMIT $6"
             );
             let rows: Vec<NodeRow> = sqlx::query_as(&sql)
-                .bind(&ctx.org)
-                .bind(&ctx.tenant_id)
+                .bind(ctx.org())
+                .bind(ctx.tenant_id())
                 .bind(&terms)
                 .bind(after_val.as_deref())
                 .bind(after_id)
@@ -364,7 +364,7 @@ impl StorageService {
                 AuditEntry {
                     action: AuditAction::NodeSearch,
                     object_type: "organization",
-                    object_id: &ctx.org,
+                    object_id: ctx.org(),
                     decision: Decision::Allow,
                     trace_id,
                     metadata: json!({ "returned": items.len() }),
@@ -404,8 +404,8 @@ impl StorageService {
              ORDER BY c.depth ASC",
         )
         .bind(node_id)
-        .bind(&ctx.org)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.org())
+        .bind(ctx.tenant_id())
         .fetch_all(&self.db)
         .await?;
 
@@ -466,8 +466,8 @@ impl StorageService {
         };
         let row: Option<NodeRow> = sqlx::query_as(&sql)
             .bind(id)
-            .bind(&ctx.org)
-            .bind(&ctx.tenant_id)
+            .bind(ctx.org())
+            .bind(ctx.tenant_id())
             .fetch_optional(&self.db)
             .await?;
         row.map(row_to_node)

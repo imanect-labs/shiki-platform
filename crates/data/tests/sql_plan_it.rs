@@ -367,7 +367,7 @@ async fn same_shape_is_byte_identical_across_principals_and_prepared_statements_
             .create_record(
                 who,
                 table.id,
-                json!({"applicant": who.principal.id, "dept": if i % 2 == 0 { "sales" } else { "dev" },
+                json!({"applicant": who.principal().id, "dept": if i % 2 == 0 { "sales" } else { "dev" },
                        "amount": i * 100, "status": if i < 3 { "draft" } else { "submitted" }}),
                 None,
             )

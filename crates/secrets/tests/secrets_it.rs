@@ -190,7 +190,7 @@ fn ctx(tenant: &str, user: &str) -> AuthContext {
             tenant_id: Some(tenant.into()),
         },
         "acme".into(),
-        tenant.into(),
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 
@@ -439,7 +439,11 @@ async fn grant_can_use_lets_miniapp_resolve() {
         .expect("create");
 
     // 付与前: アプリ（miniapp）identity は can_use を持たず解決不可。
-    let app_ctx = AuthContext::for_miniapp(t.clone(), "acme".into(), "app-1");
+    let app_ctx = AuthContext::for_miniapp(
+        authz::TenantId::parse(t.as_str()).unwrap(),
+        "acme".into(),
+        "app-1",
+    );
     assert!(matches!(
         s.resolve(&app_ctx, "miniapp-b2-x", None, None).await,
         Err(SecretError::Forbidden)
@@ -599,9 +603,9 @@ async fn ciphertext_moved_to_other_org_fails_to_decrypt() {
         .await
         .expect("move org");
     let evil = AuthContext::new(
-        ctx(&t, "mallory").principal.clone(),
+        ctx(&t, "mallory").principal().clone(),
         "evil-org".into(),
-        t.clone(),
+        authz::TenantId::parse(t).unwrap(),
     );
     assert_decrypt_failed(s.resolve(&evil, "org-tok", None, None).await);
 }

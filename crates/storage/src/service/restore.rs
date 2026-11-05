@@ -38,7 +38,7 @@ impl StorageService {
              WHERE c.tenant_id = $2 AND c.descendant = $1 AND c.ancestor <> $1 AND n.deleted_at IS NOT NULL)",
         )
         .bind(file_id)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .fetch_one(&mut *tx)
         .await?;
         if ancestor_deleted {
@@ -57,9 +57,9 @@ impl StorageService {
         );
         let row: NodeRow = sqlx::query_as(&sql)
             .bind(file_id)
-            .bind(&ctx.org)
-            .bind(&ctx.tenant_id)
-            .bind(&ctx.principal.id)
+            .bind(ctx.org())
+            .bind(ctx.tenant_id())
+            .bind(&ctx.principal().id)
             .fetch_optional(&mut *tx)
             .await?
             .ok_or(StorageError::NotFound)?;
@@ -128,7 +128,7 @@ impl StorageService {
              WHERE c.tenant_id = $2 AND c.descendant = $1 AND c.ancestor <> $1 AND n.deleted_at IS NOT NULL)",
         )
         .bind(folder_id)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .fetch_one(&mut *tx)
         .await?;
         if ancestor_deleted {
@@ -143,8 +143,8 @@ impl StorageService {
              WHERE id = $1 AND org = $2 AND tenant_id = $3 AND deleted_at IS NOT NULL",
         )
         .bind(folder_id)
-        .bind(&ctx.org)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.org())
+        .bind(ctx.tenant_id())
         .fetch_optional(&mut *tx)
         .await?
         .flatten();
@@ -160,11 +160,11 @@ impl StorageService {
                AND id IN (SELECT descendant FROM node_closure WHERE tenant_id = $2 AND ancestor = $4) \
              RETURNING id, version",
         )
-        .bind(&ctx.org)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.org())
+        .bind(ctx.tenant_id())
         .bind(batch)
         .bind(folder_id)
-        .bind(&ctx.principal.id)
+        .bind(&ctx.principal().id)
         .fetch_all(&mut *tx)
         .await?;
         let folder_version = affected
@@ -238,8 +238,8 @@ impl StorageService {
              FOR UPDATE",
         )
         .bind(file_id)
-        .bind(&ctx.org)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.org())
+        .bind(ctx.tenant_id())
         .fetch_optional(&mut *tx)
         .await?
         .ok_or(StorageError::NotFound)?;
@@ -251,18 +251,18 @@ impl StorageService {
                AND NOT is_proposal",
         )
         .bind(file_id)
-        .bind(&ctx.org)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.org())
+        .bind(ctx.tenant_id())
         .bind(version)
         .fetch_optional(&mut *tx)
         .await?;
         let (sha, size, content_type) = src.ok_or(StorageError::NotFound)?;
         // 復元先の blob を refcount +1（新版が参照するため）。実体はオブジェクトストアに既存。
-        let final_key = blob_object_key(&ctx.tenant_id, &ctx.org, &sha);
+        let final_key = blob_object_key(ctx.tenant_id(), ctx.org(), &sha);
         self.bump_blob(
             &mut tx,
-            &ctx.tenant_id,
-            &ctx.org,
+            ctx.tenant_id(),
+            ctx.org(),
             &sha,
             size,
             &content_type,
@@ -281,9 +281,9 @@ impl StorageService {
             .bind(size)
             .bind(&content_type)
             .bind(file_id)
-            .bind(&ctx.org)
-            .bind(&ctx.tenant_id)
-            .bind(&ctx.principal.id)
+            .bind(ctx.org())
+            .bind(ctx.tenant_id())
+            .bind(&ctx.principal().id)
             .fetch_optional(&mut *tx)
             .await?
             .ok_or(StorageError::NotFound)?;

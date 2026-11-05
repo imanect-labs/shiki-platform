@@ -389,7 +389,7 @@ async fn v1_record_ref_values_migrate_to_arrays_online_and_idempotently() {
     .unwrap();
     let first = f
         .store
-        .link_value_migration_step(&f.c.tenant_id, f.orders, 2)
+        .link_value_migration_step(f.c.tenant_id(), f.orders, 2)
         .await
         .unwrap();
     let legacy_in_first = by_int[..2].iter().filter(|id| **id != o6).count() as u64;
@@ -405,7 +405,7 @@ async fn v1_record_ref_values_migrate_to_arrays_online_and_idempotently() {
     loop {
         let s = f
             .store
-            .link_value_migration_step(&f.c.tenant_id, f.orders, 2)
+            .link_value_migration_step(f.c.tenant_id(), f.orders, 2)
             .await
             .unwrap();
         steps += 1;
@@ -416,7 +416,7 @@ async fn v1_record_ref_values_migrate_to_arrays_online_and_idempotently() {
     }
     let status = f
         .store
-        .link_value_migration_status(&f.c.tenant_id, f.orders)
+        .link_value_migration_status(f.c.tenant_id(), f.orders)
         .await
         .unwrap()
         .unwrap();
@@ -446,7 +446,7 @@ async fn v1_record_ref_values_migrate_to_arrays_online_and_idempotently() {
     assert_eq!(revs(&pool, ti, tb).await, before_revs);
     let report = f
         .store
-        .verify_index_parity(&f.c.tenant_id, f.orders)
+        .verify_index_parity(f.c.tenant_id(), f.orders)
         .await
         .unwrap();
     assert!(report.is_consistent(), "{report:?}");
@@ -455,13 +455,13 @@ async fn v1_record_ref_values_migrate_to_arrays_online_and_idempotently() {
     // ⑤ 冪等: もう一度流しても何も変わらない。
     let again = f
         .store
-        .link_value_migration_step(&f.c.tenant_id, f.orders, 2)
+        .link_value_migration_step(f.c.tenant_id(), f.orders, 2)
         .await
         .unwrap();
     assert!(again.done && again.converted == 0);
     assert_eq!(
         f.store
-            .migrate_table_link_values(&f.c.tenant_id, f.orders)
+            .migrate_table_link_values(f.c.tenant_id(), f.orders)
             .await
             .unwrap(),
         0
@@ -543,7 +543,7 @@ async fn link_value_migration_runs_from_the_index_job_queue() {
     f.store.enqueue_index_backfills_if_needed().await.unwrap();
     assert!(
         f.store
-            .link_value_migration_status(&f.c.tenant_id, f.orders)
+            .link_value_migration_status(f.c.tenant_id(), f.orders)
             .await
             .unwrap()
             .is_some(),

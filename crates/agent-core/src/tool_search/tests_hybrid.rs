@@ -81,7 +81,7 @@ fn ctx_of(tenant: &str) -> AuthContext {
             tenant_id: Some(tenant.into()),
         },
         "org1".into(),
-        tenant.into(),
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 

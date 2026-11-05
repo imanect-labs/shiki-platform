@@ -679,7 +679,7 @@ async fn install_import_uninstall_over_http() {
             tenant_id: Some("default".into()),
         },
         "acme".into(),
-        "default".into(),
+        authz::TenantId::parse("default").unwrap(),
     );
     keys.add(&kctx, "http-key", &public, None).await.unwrap();
     let import_manifest: app_platform::MiniAppManifest =
@@ -992,7 +992,7 @@ async fn first_party_skill_import_and_install_over_http() {
             tenant_id: Some("default".into()),
         },
         "acme".into(),
-        "default".into(),
+        authz::TenantId::parse("default").unwrap(),
     );
     keys.add(&kctx, "skill-key", &public, None).await.unwrap();
     let body: serde_json::Value = serde_json::from_str(include_str!(

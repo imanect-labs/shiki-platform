@@ -56,7 +56,7 @@ pub async fn seed(
     pending_all: bool,
 ) -> data::DataTable {
     let table = create_table(store, c, name, bench_schema(policy)).await;
-    let (ti, tb) = keys_of(pool, &c.tenant_id, table.id).await;
+    let (ti, tb) = keys_of(pool, c.tenant_id(), table.id).await;
     let id = |k: &str| i16::try_from(table.schema.field(k).unwrap().id).unwrap();
     let (fs, fa, fu) = (id("status"), id("amount"), id("assignee"));
     let mut tx = pool.begin().await.unwrap();
@@ -77,7 +77,7 @@ pub async fn seed(
     .bind(table.id)
     .bind(tb)
     .bind(ti)
-    .bind(&c.tenant_id)
+    .bind(c.tenant_id())
     .bind(n)
     .bind(i32::from(fs))
     .bind(i32::from(fa))

@@ -50,7 +50,7 @@ impl StorageService {
         // content-addressing: 所持バイトをハッシュし、新規 blob のみオブジェクトストアへ。
         // 全文置換は既存内容を読む必要が無いので、txn の**外**で put まで済ませる（ロックを短く保つ）。
         let sha256 = sha256_hex(bytes);
-        let final_key = blob_object_key(&ctx.tenant_id, &ctx.org, &sha256);
+        let final_key = blob_object_key(ctx.tenant_id(), ctx.org(), &sha256);
         // txn の外なのでプールから 1 本借りて確認する（占有を跨がない）。
         let mut probe = self.db.acquire().await?;
         let known = Self::blob_exists(&mut probe, &sha256, ctx).await?;
@@ -107,7 +107,7 @@ impl StorageService {
         let mut content = match &existing {
             Some(e) => match &e.blob_sha256 {
                 Some(sha) => {
-                    let key = blob_object_key(&ctx.tenant_id, &ctx.org, sha);
+                    let key = blob_object_key(ctx.tenant_id(), ctx.org(), sha);
                     self.store.get_object(&key).await?
                 }
                 None => Vec::new(),
@@ -118,7 +118,7 @@ impl StorageService {
         let size = self.checked_size(content.len())?;
 
         let sha256 = sha256_hex(&content);
-        let final_key = blob_object_key(&ctx.tenant_id, &ctx.org, &sha256);
+        let final_key = blob_object_key(ctx.tenant_id(), ctx.org(), &sha256);
         // 追記は「既存を読んでから」ハッシュが決まるため、put は txn 内になる（ロックを跨ぐ）。
         // rollback すると参照されない blob オブジェクトが残るが、content-addressed なので
         // 同一内容の再試行で再利用され、実害は容量のみ（blob 行は commit されない）。
@@ -195,8 +195,8 @@ impl StorageService {
         let exists: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM blob WHERE tenant_id = $1 AND org = $2 AND sha256 = $3)",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(sha256)
         .fetch_one(conn)
         .await?;
@@ -216,7 +216,11 @@ impl StorageService {
         name: &str,
     ) -> Result<Option<ExistingFile>, StorageError> {
         sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))")
-            .bind(format!("{}|{}|{parent_id}|{name}", ctx.tenant_id, ctx.org))
+            .bind(format!(
+                "{}|{}|{parent_id}|{name}",
+                ctx.tenant_id(),
+                ctx.org()
+            ))
             .execute(&mut **tx)
             .await?;
         let row: Option<(Uuid, Option<String>)> = sqlx::query_as(
@@ -226,8 +230,8 @@ impl StorageService {
              FOR UPDATE",
         )
         .bind(parent_id)
-        .bind(&ctx.org)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.org())
+        .bind(ctx.tenant_id())
         .bind(name)
         .fetch_optional(&mut **tx)
         .await?;
@@ -252,8 +256,8 @@ impl StorageService {
     ) -> Result<(Node, bool), StorageError> {
         self.bump_blob(
             tx,
-            &ctx.tenant_id,
-            &ctx.org,
+            ctx.tenant_id(),
+            ctx.org(),
             blob.sha256,
             blob.size,
             blob.content_type,
@@ -275,9 +279,9 @@ impl StorageService {
                 .bind(blob.size)
                 .bind(blob.content_type)
                 .bind(target)
-                .bind(&ctx.org)
-                .bind(&ctx.tenant_id)
-                .bind(&ctx.principal.id)
+                .bind(ctx.org())
+                .bind(ctx.tenant_id())
+                .bind(&ctx.principal().id)
                 .fetch_optional(&mut **tx)
                 .await?
                 .ok_or(StorageError::NotFound)?;
@@ -428,8 +432,8 @@ impl StorageService {
                AND kind = 'file' AND deleted_at IS NULL",
         )
         .bind(parent_id)
-        .bind(&ctx.org)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.org())
+        .bind(ctx.tenant_id())
         .bind(name)
         .fetch_optional(&self.db)
         .await?;

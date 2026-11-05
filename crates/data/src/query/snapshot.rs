@@ -126,15 +126,15 @@ impl DataStore {
             )));
         }
         let changed = self
-            .changed_since(conn, &ctx.tenant_id, table.id, &stream, snapshot_seq)
+            .changed_since(conn, ctx.tenant_id(), table.id, &stream, snapshot_seq)
             .await?;
         let changed_ids: Vec<Uuid> = changed.keys().copied().collect();
         let limit = i64::from(bq.limit);
 
         // ① 基準位置の後に変わっていない行（現在の本体＝S 時点の値）。
         let mut sql = SqlBuf::scoped(table.keys.tenant_int, table.keys.table_int);
-        let policy = compile_read_predicate(&table.schema, m, &ctx.principal.id, "r", &mut sql)?;
-        let w = super::v1::where_sql(&body_lowerer(bq), &ctx.tenant_id, &policy, &mut sql)?;
+        let policy = compile_read_predicate(&table.schema, m, &ctx.principal().id, "r", &mut sql)?;
+        let w = super::v1::where_sql(&body_lowerer(bq), ctx.tenant_id(), &policy, &mut sql)?;
         let aph = sql.typed(Bind::I64(after));
         let cph = sql.typed(Bind::UuidArray(changed_ids.clone()));
         let lph = sql.typed(Bind::I64(limit + 1));
@@ -197,7 +197,7 @@ impl DataStore {
         let env = PolicyEnv {
             schema: &table.schema,
             material: m,
-            user: &ctx.principal.id,
+            user: &ctx.principal().id,
             shared: &shared,
         };
         let mut rows: Vec<RowOut> = page.into_iter().map(|(_, r)| r).collect();
@@ -328,7 +328,7 @@ impl DataStore {
         ))
         .bind(table.keys.tenant_int)
         .bind(table.keys.table_int)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(&ids)
         .fetch_all(&mut *conn)
         .await
@@ -341,7 +341,7 @@ impl DataStore {
              WHERE v.tenant_id = $1 AND v.table_id = $2 AND (v.rev >= u.from_rev OR v.rev = 1) \
              ORDER BY v.record_id, v.rev DESC",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(table.id)
         .bind(&ids)
         .bind(&from)
@@ -428,7 +428,7 @@ impl DataStore {
             .map(|r| {
                 json!({
                     "record_int": r.record_int,
-                    "tenant_id": ctx.tenant_id,
+                    "tenant_id": ctx.tenant_id(),
                     "id": r.id,
                     "owner": r.owner,
                     "data": r.stored,
@@ -443,8 +443,8 @@ impl DataStore {
             aliases: 0,
             skip_text: false,
         };
-        let policy = compile_read_predicate(&table.schema, m, &ctx.principal.id, "r", &mut sql)?;
-        let w = super::v1::where_sql(&body_lowerer(bq), &ctx.tenant_id, &policy, &mut sql)?;
+        let policy = compile_read_predicate(&table.schema, m, &ctx.principal().id, "r", &mut sql)?;
+        let w = super::v1::where_sql(&body_lowerer(bq), ctx.tenant_id(), &policy, &mut sql)?;
         let text = format!(
             "SELECT r.record_int FROM jsonb_to_recordset($1::jsonb) AS r(record_int int8, \
                tenant_id text, id uuid, owner text, data jsonb, created_at timestamptz, \

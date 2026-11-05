@@ -188,7 +188,7 @@ pub async fn generate(
     namer: Namer<'_>,
 ) -> data::DataTable {
     let table = create_table(store, c, name, schema_of(shape, policy, namer)).await;
-    let (ti, tb) = keys_of(pool, &c.tenant_id, table.id).await;
+    let (ti, tb) = keys_of(pool, c.tenant_id(), table.id).await;
     let dists: Vec<Dist> = shape.columns.iter().map(Dist::from_shape).collect();
     let owner_dist = shape.owner.as_ref().map(Dist::from_shape);
     let ids: Vec<i16> = (0..shape.columns.len())
@@ -238,7 +238,7 @@ pub async fn generate(
         .bind(table.id)
         .bind(tb)
         .bind(ti)
-        .bind(&c.tenant_id)
+        .bind(c.tenant_id())
         .bind(&owners)
         .bind(&datas)
         .bind(&seqs)

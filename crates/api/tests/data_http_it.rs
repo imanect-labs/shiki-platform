@@ -207,7 +207,11 @@ fn principal(id: &str) -> Principal {
 }
 
 fn ctx(id: &str) -> AuthContext {
-    AuthContext::new(principal(id), "acme".into(), TENANT.into())
+    AuthContext::new(
+        principal(id),
+        "acme".into(),
+        authz::TenantId::parse(TENANT).unwrap(),
+    )
 }
 
 /// 利用者（セッション ID = 利用者 ID）。alice: owner／bob: viewer／carol: 権限なし／admin: 組織管理者。

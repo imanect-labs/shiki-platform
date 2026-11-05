@@ -78,7 +78,7 @@ impl SkillCatalogSource for OwnedSkillCatalog {
             .map_err(crate::skill::map_skill_err)?;
         if summaries.len() >= 200 {
             tracing::warn!(
-                principal = %ctx.principal.id,
+                principal = %ctx.principal().id,
                 "所有 skill が取得上限 200 に到達（超過分はカタログに載らない。ピンで利用可能）"
             );
         }

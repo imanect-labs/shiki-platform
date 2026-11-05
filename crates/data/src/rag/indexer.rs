@@ -444,8 +444,7 @@ fn to_chunks(
 ) -> Vec<RecordChunk> {
     let cols = projected(&table.schema).unwrap_or_default();
     // タグは名前空間化のまま（`data_table:<tenant>|<table_id>`・folder/file タグと同型）。
-    let authz_tag = crate::stream::relay::system_ctx(tenant_id, org)
-        .ns()
+    let authz_tag = authz::Namespace::for_tenant(tenant_id)
         .data_table(&table.id.to_string())
         .as_str()
         .to_string();

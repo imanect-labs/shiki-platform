@@ -151,7 +151,7 @@ pub async fn get_registration(
     }
     let view = state
         .workflow_registration
-        .view(&ctx.tenant_id, id)
+        .view(ctx.tenant_id(), id)
         .await
         .map_err(map_enable_err)?;
     Ok(Json(RegistrationResponse {
@@ -280,7 +280,7 @@ pub async fn enable_workflow(
     // 外れた委譲を撤去する）。前の委譲先も控えておき、後でまとめて data へ知らせる。
     let before = state
         .workflow_registration
-        .view(&ctx.tenant_id, id)
+        .view(ctx.tenant_id(), id)
         .await
         .map_err(map_enable_err)?;
     state
@@ -354,7 +354,7 @@ pub async fn disable_workflow(
     require_editor(&state, &ctx, id).await?;
     state
         .workflow_registration
-        .disable(&ctx.tenant_id, id)
+        .disable(ctx.tenant_id(), id)
         .await
         .map_err(map_enable_err)?;
     if let Err(e) = state

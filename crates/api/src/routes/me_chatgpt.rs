@@ -166,7 +166,7 @@ async fn audit(
     action: AuditAction,
     metadata: serde_json::Value,
 ) {
-    let object_id = format!("{}|{}|{}", ctx.tenant_id, ctx.org, ctx.principal.id);
+    let object_id = format!("{}|{}|{}", ctx.tenant_id(), ctx.org(), ctx.principal().id);
     if let Err(e) = state
         .audit
         .record(

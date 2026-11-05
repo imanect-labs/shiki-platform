@@ -129,13 +129,13 @@ pub async fn record_on(
     // ロックは `lock_chain`（64bit キー・#816）。保持期間の削除（#831）も同じキーで直列化する。
     let prev_hash: Option<String> =
         if chained {
-            lock_chain(&mut *conn, &ctx.tenant_id, &ctx.org).await?;
+            lock_chain(&mut *conn, ctx.tenant_id(), ctx.org()).await?;
             let last: Option<Option<String>> = sqlx::query_scalar(
                 "SELECT entry_hash FROM audit_log \
              WHERE tenant_id = $1 AND org = $2 AND chained ORDER BY id DESC LIMIT 1",
             )
-            .bind(&ctx.tenant_id)
-            .bind(&ctx.org)
+            .bind(ctx.tenant_id())
+            .bind(ctx.org())
             .fetch_optional(&mut *conn)
             .await?;
             match last {
@@ -145,8 +145,8 @@ pub async fn record_on(
                 None => sqlx::query_scalar(
                     "SELECT anchor_hash FROM audit_chain_anchor WHERE tenant_id = $1 AND org = $2",
                 )
-                .bind(&ctx.tenant_id)
-                .bind(&ctx.org)
+                .bind(ctx.tenant_id())
+                .bind(ctx.org())
                 .fetch_optional(&mut *conn)
                 .await?,
             }
@@ -173,9 +173,9 @@ pub async fn record_on(
     let entry_hash = entry_hash(&HashInput {
         version: HASH_VERSION,
         prev_hash: prev_hash.as_deref(),
-        tenant_id: &ctx.tenant_id,
-        org: &ctx.org,
-        actor: &ctx.principal.id,
+        tenant_id: ctx.tenant_id(),
+        org: ctx.org(),
+        actor: &ctx.principal().id,
         action: entry.action.as_str(),
         object_type: entry.object_type,
         object_id: entry.object_id,
@@ -190,9 +190,9 @@ pub async fn record_on(
          (tenant_id, org, actor, action, object_type, object_id, decision, trace_id, metadata, chained, prev_hash, entry_hash, created_at, hash_version) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13, $14)",
     )
-    .bind(&ctx.tenant_id)
-    .bind(&ctx.org)
-    .bind(&ctx.principal.id)
+    .bind(ctx.tenant_id())
+    .bind(ctx.org())
+    .bind(&ctx.principal().id)
     .bind(entry.action.as_str())
     .bind(entry.object_type)
     .bind(entry.object_id)

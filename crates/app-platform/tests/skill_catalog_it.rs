@@ -99,7 +99,7 @@ fn ctx(tenant: &str, org: &str, user: &str) -> AuthContext {
             tenant_id: Some(tenant.into()),
         },
         org.into(),
-        tenant.into(),
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 
@@ -118,7 +118,11 @@ fn skill_body(command: &str) -> serde_json::Value {
 /// org メンバーシップを張る（`organization#member` が効く前提を作る）。
 async fn seed_member(env: &Env, c: &AuthContext) {
     env.authz
-        .write_tuple(&c.subject(), Relation::Member, &c.ns().organization(&c.org))
+        .write_tuple(
+            &c.subject(),
+            Relation::Member,
+            &c.ns().organization(c.org()),
+        )
         .await
         .expect("org member tuple");
 }

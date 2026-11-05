@@ -30,7 +30,7 @@ impl WorkflowDirectory for FakeDirectory {
         limit: usize,
     ) -> Result<Vec<WorkflowSearchHit>, String> {
         self.calls.lock().unwrap().push((
-            ctx.principal.id.clone(),
+            ctx.principal().id.clone(),
             query.to_string(),
             interactive_only,
             limit,
@@ -53,7 +53,7 @@ fn ctx() -> AuthContext {
             tenant_id: Some("t1".into()),
         },
         "acme".into(),
-        "t1".into(),
+        authz::TenantId::parse("t1").unwrap(),
     )
 }
 

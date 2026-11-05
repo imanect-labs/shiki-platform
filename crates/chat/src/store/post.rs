@@ -106,7 +106,7 @@ impl ChatStore {
              FROM thread WHERE id = $1 AND tenant_id = $2",
         )
         .bind(thread_id)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .fetch_optional(&self.db)
         .await
         .map_err(map_db)?;
@@ -150,14 +150,14 @@ impl ChatStore {
         }
 
         let mut tx = self.db.begin().await.map_err(map_db)?;
-        touch_live_thread(&mut tx, thread_id, &ctx.tenant_id).await?;
+        touch_live_thread(&mut tx, thread_id, ctx.tenant_id()).await?;
         let user_id: Uuid = sqlx::query_scalar(
             "INSERT INTO message (thread_id, org, tenant_id, role, content, agent_mode) \
              VALUES ($1, $2, $3, 'user', $4, $5) RETURNING id",
         )
         .bind(thread_id)
-        .bind(&ctx.org)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.org())
+        .bind(ctx.tenant_id())
         .bind(Json(&user_content))
         .bind(agent_mode)
         .fetch_one(&mut *tx)
@@ -169,8 +169,8 @@ impl ChatStore {
              VALUES ($1, $2, $3, 'assistant', '[]'::jsonb, $4, $5) RETURNING id",
         )
         .bind(thread_id)
-        .bind(&ctx.org)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.org())
+        .bind(ctx.tenant_id())
         .bind(agent_mode)
         .bind(user_id)
         .fetch_one(&mut *tx)
@@ -187,9 +187,9 @@ impl ChatStore {
         )
         .bind(asst_id)
         .bind(thread_id)
-        .bind(&ctx.org)
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.principal.id)
+        .bind(ctx.org())
+        .bind(ctx.tenant_id())
+        .bind(&ctx.principal().id)
         .bind(agent_mode)
         .bind(trace_id)
         .bind(autonomous)
@@ -210,7 +210,7 @@ impl ChatStore {
             &mut tx,
             jobq::NewJob {
                 queue: CHAT_GENERATION_QUEUE,
-                tenant_id: &ctx.tenant_id,
+                tenant_id: ctx.tenant_id(),
                 payload: &json!({ "run_id": run_id }),
                 trace_id,
                 max_attempts: 3,

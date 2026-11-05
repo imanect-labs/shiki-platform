@@ -71,7 +71,7 @@ impl BundleStore {
             return Err(AppPlatformError::Forbidden);
         }
         let sha = sha256_hex(bytes);
-        let key = miniapp_bundle_key(&ctx.tenant_id, &sha);
+        let key = miniapp_bundle_key(ctx.tenant_id(), &sha);
         self.store
             .put_object(&key, bytes.to_vec(), "text/html; charset=utf-8")
             .await
