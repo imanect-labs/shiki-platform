@@ -7,8 +7,9 @@
 ///
 /// - 問い合わせは同時に 1 つだけ（確かめている間に頼まれたら、同じ答えを待つ）。
 /// - 前の確かめから決まった間隔より短ければ、前の答えを使う（押したとき 2 秒・画面に戻ったとき 10 秒）。
-/// - 止めているもの（[`holdsBack`]）が無ければ、画面に戻っても確かめ直さない（確かめるたびに監査の行と OpenFGA への
-///   問いが増えるので、共有してもらっても何も変わらない部品のためには問わない）。
+/// - 画面に戻ったときに確かめ直すのは、共有を待っている部品（[`awaitsSharing`]）があるときだけ（確かめるたびに監査の
+///   行と OpenFGA への問いが増えるので、共有してもらっても何も変わらない部品や、作った人がそう決めた落ち着いた状態の
+///   部品のためには問わない・BUG-232）。
 ///
 /// 判定はサーバー（`GET /mini-apps/{id}/access`）が決める。読めなかったときは止めない（押したときにサーバーが本人の権限で
 /// 確かめる）。
@@ -17,8 +18,8 @@ import * as React from "react";
 
 import { getMyMiniAppAccess, type MyAppAccess, type MyPartAccess } from "@/lib/artifact-api";
 
-/// 部品を止めているか（共有してもらえば変わるもの）。画面に戻ったときに確かめ直すか、止めた理由に「開き直さずに
-/// 押せます」と添えるかを決める。
+/// 部品を止めているか（共有してもらえば変わるもの）。止めた理由に「開き直さずに押せます」と添えるか・「もう一度
+/// 確かめる」を置くかを決める（画面に戻ったときに確かめ直すかは [`awaitsSharing`]）。
 ///
 /// - ワークフロー（ボタン）は、足りない権限があるときだけ止める（範囲が狭いだけ〔追加だけの共有〕では押せる）。
 /// - 表は、見られないときと、自分が追加したレコードだけを出しているときに数える（共有されれば全部が出る）。
@@ -34,6 +35,15 @@ export function holdsBack(p: MyPartAccess): boolean {
     case "skill":
       return false;
   }
+}
+
+/// 画面に戻ったときに確かめ直す部品か（共有を待っている部品・BUG-232）。止めている部品（[`holdsBack`]）のうち、
+/// 自分が追加したレコードだけを出す表（追加だけの共有・`limited`）は外す。追加だけの共有は、申請の表のように作った人が
+/// そう決めて使う形で、共有が変わることはまれなので、タブに戻るたびに問わない。表の「あなたが追加したレコードだけを
+/// 表示しています」は今までどおり出し、共有が広がったら、開き直したときか、ほかの部品の確かめ直しのときに全部を出す。
+export function awaitsSharing(p: MyPartAccess): boolean {
+  if (p.part.kind === "data_view" && p.status === "limited") return false;
+  return holdsBack(p);
 }
 
 /// 止めたボタンを押したときに、前の確かめを使い回す間隔（二度押しで 2 回問わない）。
@@ -94,8 +104,8 @@ export function useMyAppAccess(
     if (key) void check(0);
   }, [key, check]);
 
-  // 止めているものがあるときだけ、画面に戻ったら確かめ直す。
-  const blocking = access?.parts.some(holdsBack) ?? false;
+  // 共有を待っている部品があるときだけ、画面に戻ったら確かめ直す（BUG-232）。
+  const blocking = access?.parts.some(awaitsSharing) ?? false;
   React.useEffect(() => {
     if (!blocking) return;
     const again = () => void check(RECHECK_ON_RETURN_MS);

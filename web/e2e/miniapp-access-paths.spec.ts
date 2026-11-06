@@ -20,7 +20,8 @@ import {
 ///   （GAP-37）。
 /// - 失敗を「エラー時」の出口で扱うブロックの権限が無くても、ボタンと「いま実行する」は止めず、作った人が用意した
 ///   誤りの返答で終わる（7g の前と同じ）。
-/// - 範囲が狭いだけの部品（追加だけの共有で読むワークフロー）では、画面に戻っても確かめ直さない（止めているものが無い）。
+/// - 範囲が狭いだけの部品（追加だけの共有で読むワークフロー）と、自分が追加したレコードだけを出す表（作った人がそう決めた
+///   落ち着いた状態）では、画面に戻っても確かめ直さない（BUG-232）。
 /// - 持ち主の「いま実行する」は、持ち主かを確かめの答えと一緒に受け、別の問い合わせに失敗しても、作成した人に頼めとは
 ///   言わない（BUG-230）。
 /// - 毎回動く繰り返しの中で 1 件ずつテーブルに足すワークフローは、追加の権限が無い使う人のボタンを押す前に止め、作る人
@@ -655,7 +656,10 @@ test.describe("使う人の権限の確かめの続き（BUG-216・BUG-217・GAP
     }
   });
 
-  test("範囲が狭いだけの部品では、画面に戻っても確かめ直さない", async ({ page, browser }) => {
+  test("範囲が狭いだけの部品と、自分が追加したレコードだけを出す表では、画面に戻っても確かめ直さない（BUG-232）", async ({
+    page,
+    browser,
+  }) => {
     test.setTimeout(180_000);
     await page.setViewportSize({ width: 1440, height: 900 });
     const bob = await personOn(browser, "bob");
@@ -675,10 +679,18 @@ test.describe("使う人の権限の確かめの続き（BUG-216・BUG-217・GAP
         nodes: [{ id: "q", type: "data.query", label: "台帳を読む", params: { table: ledger.id } }],
         edges: [],
       });
-      const screen = `\`\`\`ui\napp 台帳\nbutton 読む -> workflow ${flow}\n\`\`\`\n`;
+      // 表も、自分が追加したレコードだけを出す（作った人がそう決めた落ち着いた状態・BUG-232）。
+      const view = await api(page, "POST", "/data/views", { name: uniqueName("e2e-台帳の一覧"), table_id: ledger.id, query: {} });
+      cleanup.add(() => deleteArtifactApi(page, view.id));
+      const screen = `\`\`\`ui\napp 台帳\nbutton 読む -> workflow ${flow}\n\`\`\`\n\n\`\`\`data_grid\nledger\n\`\`\`\n`;
       const app = await api(page, "POST", "/mini-apps", {
         name: uniqueName("limited-app"),
-        body: { description: "台帳", screen, workflows: [{ alias: flow, artifact_id: flowId, version: 1 }] },
+        body: {
+          description: "台帳",
+          screen,
+          workflows: [{ alias: flow, artifact_id: flowId, version: 1 }],
+          data_views: [{ alias: "ledger", artifact_id: view.id, version: view.version ?? 1 }],
+        },
       });
       cleanup.add(() => deleteArtifactApi(page, app.id));
       await api(page, "POST", `/mini-apps/${app.id}/publish`, { version: 1 });
@@ -696,9 +708,11 @@ test.describe("使う人の権限の確かめの続き（BUG-216・BUG-217・GAP
       const figure = bob.getByTestId("ui-figure");
       await expect(figure.getByRole("button", { name: "読む" })).toBeEnabled({ timeout: 20_000 });
       await bob.waitForLoadState("networkidle");
-      // 前提: 確かめの答えに、範囲が狭いだけのワークフローの部品がある（止めてはいない）。
-      expect(seen.some((t) => t.includes('"status":"limited"'))).toBeTruthy();
+      // 前提: 確かめの答えに、範囲が狭いだけのワークフローの部品と、自分が追加したレコードだけを出す表がある。
+      const answer = JSON.parse(seen[seen.length - 1] ?? "{}") as { parts?: { part: { kind: string }; status: string }[] };
+      expect(answer.parts?.map((p) => `${p.part.kind}:${p.status}`).sort()).toEqual(["data_view:limited", "workflow:limited"]);
       await expect(figure.getByTestId("ui-figure-blocked")).toHaveCount(0);
+      await expect(bob.getByTestId("miniapp-data-grid-own-only")).toHaveText("あなたが追加したレコードだけを表示しています。");
       const first = checks;
       expect(first).toBeGreaterThan(0);
       // 間隔を過ぎてから画面に戻っても、止めているものが無いので問わない。
