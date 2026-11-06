@@ -525,6 +525,12 @@ pub fn route_table() -> Vec<RouteDecl> {
             || post(routes::file_versions::restore_version),
         ),
         r(
+            "/files/{id}/versions/{version}/revert",
+            &["POST"],
+            SessionLongRunning,
+            || post(routes::file_versions::revert_edit),
+        ),
+        r(
             "/files/{id}/versions/{version}/adopt",
             &["POST"],
             SessionLongRunning,

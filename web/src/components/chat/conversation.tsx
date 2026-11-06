@@ -94,7 +94,8 @@ import { NoteDraftCard } from "./note-draft-card";
 import { SlideDraftCard } from "./slide-draft-card";
 import { CsvDraftCard } from "./csv-draft-card";
 import { SkillDraftCard } from "./skill-draft-card";
-import { DocumentRefCard, LegacyDocumentDraftCard, parseDocumentRef, documentRefHref } from "./document-ref-card";
+import { LegacyDocumentDraftCard, parseDocumentRef, documentRefHref } from "./document-ref-card";
+import { DocumentRefList } from "./document-ref-list";
 import { upsertDraft, parseNoteDraft } from "@/lib/notes/draft-store";
 import { draftHref } from "@/lib/notes/draft-nav";
 import { parseSlideDraft, slideDraftHref, slideDraftStore } from "@/lib/slides/draft";
@@ -1392,9 +1393,7 @@ const AssistantRow = React.memo(function AssistantRow({
           {skillDrafts.map((b, i) => (
             <SkillDraftCard key={i} raw={b.draft} threadId={threadId} />
           ))}
-          {documentRefs.map((b, i) => (
-            <DocumentRefCard key={i} raw={b.document} />
-          ))}
+          <DocumentRefList raws={documentRefs.map((b) => b.document)} />
           {legacyDocumentDrafts.map((b, i) => (
             <LegacyDocumentDraftCard key={i} raw={b.draft} />
           ))}
@@ -1510,9 +1509,7 @@ function StreamingRow({
           {stream.skillDrafts.map((draft, i) => (
             <SkillDraftCard key={i} raw={draft} threadId={threadId} />
           ))}
-          {stream.documentRefs.map((document, i) => (
-            <DocumentRefCard key={i} raw={document} />
-          ))}
+          <DocumentRefList raws={stream.documentRefs} />
           <ArtifactFiles files={stream.files} />
         </div>
       </Message>
