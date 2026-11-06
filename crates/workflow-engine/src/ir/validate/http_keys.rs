@@ -81,7 +81,7 @@ fn has_written_value(value: &Value) -> bool {
 
 #[cfg(test)]
 mod tests {
-    #![allow(clippy::unwrap_used)]
+    #![allow(clippy::unwrap_used, clippy::needless_pass_by_value)]
     use serde_json::json;
 
     use super::*;

@@ -123,6 +123,17 @@ mod tests {
             Catalog::default(),
         ));
         out.push((
+            PLAIN_KEY_HEADER,
+            ir(
+                interactive(),
+                json!([{ "id": "call", "type": "http.request", "params": {
+                    "url": "https://api.example.com",
+                    "headers": { "Authorization": "Bearer sk-1" } } }]),
+                json!([]),
+            ),
+            Catalog::default(),
+        ));
+        out.push((
             UNKNOWN_INPUT,
             WorkflowIr::from_json(&json!({
                 "ir_version": 1, "name": "wf", "triggers": interactive(),
@@ -251,16 +262,6 @@ mod tests {
                         { "id": "a", "type": "storage.read", "params": {} },
                         { "id": "dropped", "type": "storage.read", "params": {} }
                     ]),
-                    json!([]),
-                ),
-            ),
-            (
-                PLAIN_KEY_HEADER,
-                ir(
-                    interactive(),
-                    json!([{ "id": "call", "type": "http.request", "params": {
-                        "url": "https://api.example.com",
-                        "headers": { "Authorization": "Bearer sk-1" } } }]),
                     json!([]),
                 ),
             ),
