@@ -179,14 +179,24 @@ fn byline(s: &str) -> Option<String> {
 fn normalize(markdown: &str) -> String {
     let mut out = String::with_capacity(markdown.len());
     let mut blank_run = 0usize;
-    let mut in_fence = false;
+    // 開いているフェンスの記号と長さ。htmd はコードの中のバッククォートより長いフェンスで囲むので、
+    // 同じ記号が同じ長さ以上並んだ行（後ろは空白だけ）でしか閉じない。
+    let mut open_fence: Option<(char, usize)> = None;
     // 表の中で何行目か（0 = 表の外）。区切り行は見出しの直後（2 行目）にしか無い。
     let mut table_row = 0usize;
     for line in markdown.lines() {
-        let fence = line.trim_start().starts_with("```") || line.trim_start().starts_with("~~~");
-        if fence {
-            in_fence = !in_fence;
-        }
+        let fence = match (open_fence, fence_marker(line)) {
+            (None, Some(marker)) => {
+                open_fence = Some(marker);
+                true
+            }
+            (Some((ch, len)), Some((c, n))) if c == ch && n >= len && is_bare_fence(line) => {
+                open_fence = None;
+                true
+            }
+            _ => false,
+        };
+        let in_fence = open_fence.is_some();
         // コードの中の `a[0]()` をリンクとして畳まない（`<pre>` がフェンスになるぶん、コードは増えた）。
         let line = if in_fence || fence {
             line.to_string()
@@ -216,6 +226,20 @@ fn normalize(markdown: &str) -> String {
         out.push('\n');
     }
     out.trim().to_string()
+}
+
+/// 行頭のフェンス（3 個以上の `` ` `` か `~`）の記号と長さ。
+fn fence_marker(line: &str) -> Option<(char, usize)> {
+    let t = line.trim_start();
+    let ch = t.chars().next().filter(|c| *c == '`' || *c == '~')?;
+    let n = t.chars().take_while(|c| *c == ch).count();
+    (n >= 3).then_some((ch, n))
+}
+
+/// 閉じのフェンスになれる行か（フェンスの記号の後ろが空白だけ。言語名などは開きにしか付かない）。
+fn is_bare_fence(line: &str) -> bool {
+    let t = line.trim();
+    t.chars().next().is_some_and(|c| t.chars().all(|x| x == c))
 }
 
 /// 見出しの区切り行（`| --- | :---: |`）か。`|` `-` `:` と空白だけでできている。
@@ -515,6 +539,16 @@ mod tests {
         assert_eq!(byline("山田 太郎").as_deref(), Some("山田 太郎"));
         assert_eq!(byline("典拠管理データベース ".repeat(8).as_str()), None);
         assert_eq!(byline("編集部\n2026-08-01"), None);
+    }
+
+    #[test]
+    fn longer_fences_are_not_closed_by_shorter_inner_runs() {
+        // htmd はコードの中の ````` より長い `````` で囲む。内側の行でフェンスを閉じない。
+        let md = normalize("``````\n`````\ncallbacks[0]()\n``````\n[x](#a)");
+        assert_eq!(md, "``````\n`````\ncallbacks[0]()\n``````\n[x]");
+        // 言語名の付いた行は閉じのフェンスにならない。
+        let md = normalize("```\n```rust\nf[0]()\n```\n[y](#b)");
+        assert_eq!(md, "```\n```rust\nf[0]()\n```\n[y]");
     }
 
     #[test]
