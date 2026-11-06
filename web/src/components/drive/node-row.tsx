@@ -41,7 +41,7 @@ export function NodeRow({
   dnd?: DropHandlers;
 }) {
   const isFolder = node.kind === "folder";
-  const drop = useDropTarget(node.id, dnd, { disabled: !isFolder });
+  const drop = useDropTarget(node.id, node.name, dnd, { disabled: !isFolder });
   const [dragging, setDragging] = React.useState(false);
   const shared = isShared(node);
   const [menuOpen, setMenuOpen] = React.useState(false);

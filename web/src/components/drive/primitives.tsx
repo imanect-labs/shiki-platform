@@ -164,6 +164,7 @@ export function Breadcrumbs({
     <nav aria-label="パンくず" className="flex min-w-0 items-center gap-1 text-sm">
       <CrumbButton
         dest={null}
+        dropName="ドライブ"
         dnd={dnd}
         onClick={() => onNavigate(null)}
         className="flex shrink-0 items-center gap-1 text-muted-foreground hover:text-foreground"
@@ -178,6 +179,7 @@ export function Breadcrumbs({
             <ChevronRight className="size-4 shrink-0 text-muted-foreground/60" aria-hidden />
             <CrumbButton
               dest={c.id}
+              dropName={c.name}
               // 現在フォルダへの移動は何も起きないので受けない。
               dnd={last ? undefined : dnd}
               onClick={() => onNavigate(c.id)}
@@ -199,11 +201,12 @@ export function Breadcrumbs({
 /// パンくずの 1 段。D&D の移動先にもなる（項目を祖先フォルダへ戻す）。
 function CrumbButton({
   dest,
+  dropName,
   dnd,
   className,
   ...rest
-}: React.ComponentProps<"button"> & { dest: string | null; dnd?: DropHandlers }) {
-  const drop = useDropTarget(dest, dnd);
+}: React.ComponentProps<"button"> & { dest: string | null; dropName: string; dnd?: DropHandlers }) {
+  const drop = useDropTarget(dest, dropName, dnd);
   return (
     <button
       type="button"
