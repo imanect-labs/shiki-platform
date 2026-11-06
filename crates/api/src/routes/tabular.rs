@@ -33,7 +33,37 @@ pub(crate) fn tabular_route_decls() -> Vec<RouteDecl> {
             post(post_patch)
         }),
         r("/tabular/save", &["POST"], Session, || post(post_save)),
+        r("/tabular/reserved-words", &["GET"], Session, || {
+            get(get_reserved_words)
+        }),
     ]
+}
+
+/// SQL の予約語の一覧。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ReservedWordsResponse {
+    /// 予約語（小文字・昇順）。追加テーブルの名前にはこれらを使えない。
+    pub words: Vec<String>,
+}
+
+/// SQL の予約語の一覧を返す（#1061）。
+///
+/// 複数 CSV クエリの追加テーブル名に予約語（`order` など）は使えない。画面側の名前の補完と
+/// 事前検証のために、判定と同じ語彙（DuckDB 自身の `duckdb_keywords()`）を返す。ファイルは
+/// 読まない（公開情報）が、ログイン中の利用者に限る。
+#[utoipa::path(
+    get, path = "/tabular/reserved-words",
+    responses((status = 200, body = ReservedWordsResponse)),
+    security(("session" = [])),
+)]
+pub async fn get_reserved_words(
+    State(state): State<AppState>,
+    AuthContextExt(_ctx): AuthContextExt,
+) -> Result<Json<ReservedWordsResponse>, ApiError> {
+    let words = state.tabular.reserved_words().await.map_err(to_api_error)?;
+    Ok(Json(ReservedWordsResponse {
+        words: words.to_vec(),
+    }))
 }
 
 /// tabular のエラーを HTTP へ写す（fail-closed・存在秘匿）。
