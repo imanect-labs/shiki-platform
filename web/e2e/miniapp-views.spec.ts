@@ -79,7 +79,7 @@ function flowIr(name: string, withTitle: boolean, table?: string) {
   };
 }
 
-type Fixture = { appId: string; flow: string; viewA: string; viewB: string; tableName: string };
+type Fixture = { appId: string; flow: string; flowId: string; viewA: string; viewB: string; tableName: string };
 
 /// テーブル・ビュー 2 つ・ワークフローと、ワークフローとビュー A（どちらも v1）を束ねたアプリを作って v1 を公開する。
 /// その後でワークフローとビュー A を v2 に改訂する（最後に消す）。
@@ -118,7 +118,7 @@ async function setup(page: Page): Promise<Fixture> {
   // 束ねた後に、ワークフローとビュー A を改訂する（アプリは v1 を固定したまま）。
   await api(page, "PUT", `/workflows/${wf.id}`, { ir: flowIr(flow, true, table.id), expected_version: 1 });
   await api(page, "PUT", `/data/views/${a.id}`, { table_id: table.id, query: { limit: 20 }, expected_version: 1 });
-  return { appId: app.id, flow, viewA, viewB, tableName };
+  return { appId: app.id, flow, flowId: wf.id, viewA, viewB, tableName };
 }
 
 /// 別の人の画面（PC かスマホ）。ログインに失敗したら、作った画面を閉じてから落とす。
@@ -161,6 +161,10 @@ test.describe("アプリのエディターのビューと版を上げる操作�
       `使う人に、テーブル「${f.tableName}」にレコードを追加する権限が要るようになります`,
     );
     await expect(wfUpdate.getByTestId("miniapp-pin-access-note")).toBeVisible();
+    // v2 のスクリプトはテーブルに書けるので、前もって確かめられないブロックがあると言う（GAP-82 と同じ言い方）。
+    await expect(wfUpdate.getByTestId("miniapp-pin-unchecked")).toHaveText(
+      "v2 には、前もって確かめられないブロックがあります。使う人に足りるかは、実行したときに分かります。",
+    );
     // ビュー A: v2 があり、絞り込みが変わると言う（列の名前や値は出さない）。
     const viewPins = dialog.getByTestId("miniapp-data_view-pins");
     const viewUpdate = viewPins.getByTestId("miniapp-pin-update");
@@ -257,11 +261,12 @@ test.describe("アプリのエディターのビューと版を上げる操作�
     test.setTimeout(180_000);
     await loginViaKeycloak(page);
     const f = await setup(page);
-    // bob をアプリの編集者にする（ワークフローとビューは共有しない）。
+    // bob をアプリの編集者にする（ワークフローは閲覧で共有し、ビューは共有しない）。
     const bob = await personOn(browser, "bob");
     try {
       const bobId = (await api<{ id: string }>(bob, "GET", "/me")).id;
       await api(page, "PUT", `/artifacts/${f.appId}/shares`, { target: { type: "user", id: bobId }, role: "editor" });
+      await api(page, "PUT", `/artifacts/${f.flowId}/shares`, { target: { type: "user", id: bobId }, role: "viewer" });
       const dialog = await openEditor(bob, f.appId);
       const viewPins = dialog.getByTestId("miniapp-data_view-pins");
       await expect(viewPins.getByTestId("miniapp-pin-unreadable")).toContainText(
@@ -269,7 +274,16 @@ test.describe("アプリのエディターのビューと版を上げる操作�
         { timeout: 15_000 },
       );
       // 読めない部品には、新しいバージョンも差も出さない。
-      await expect(dialog.getByTestId("miniapp-pin-update")).toHaveCount(0);
+      await expect(viewPins.getByTestId("miniapp-pin-update")).toHaveCount(0);
+      // 読めるワークフローには差を出すが、相手ごとの権限を確かめられるのは持ち主だけなので、公開の確認で確かめられる
+      // とは言わない（D-146）。
+      const wfUpdate = dialog.getByTestId("miniapp-workflow-pins").getByTestId("miniapp-pin-update");
+      // テーブルは bob に見えないので、名前を出さない。
+      await expect(wfUpdate.getByTestId("miniapp-pin-changes")).toContainText(
+        "使う人に、あなたが見られないか、削除されたテーブルにレコードを追加する権限が要るようになります",
+        { timeout: 15_000 },
+      );
+      await expect(wfUpdate.getByTestId("miniapp-pin-access-note")).toHaveCount(0);
       await viewPins.scrollIntoViewIfNeeded();
       if (SHOTS) await bob.screenshot({ path: `${SHOTS}/miniapp-views-unreadable-pc.png` });
       await dialog.getByLabel(/画面の見出し/).fill("経費の申請（直した）");
@@ -283,6 +297,55 @@ test.describe("アプリのエディターのビューと版を上げる操作�
       expect(saved.body.data_views).toEqual([expect.objectContaining({ alias: f.viewA, version: 1 })]);
     } finally {
       await cleanupAll(() => bob.context().close());
+    }
+  });
+
+  test("入力項目・使ってよい操作・要る権限の差が無い版でも、確かめられないブロックがあれば言い切らない", async ({ page }) => {
+    test.setTimeout(180_000);
+    await loginViaKeycloak(page);
+    const flow = uniqueName("unchecked-flow");
+    const ir = (label: string) => ({
+      ir_version: 1,
+      name: flow,
+      display_name: flow,
+      triggers: [{ kind: "interactive" }],
+      input_schema: { type: "object", properties: { amount: { type: "integer", title: "金額" } } },
+      declared_scopes: ["data.write"],
+      nodes: [{ id: "compute", type: "script.run", label, params: { source: { inline: "function main(i){ return i; }" } } }],
+      edges: [],
+    });
+    const wf = await api<{ id: string }>(page, "POST", "/workflows", { ir: ir("計算する") });
+    cleanup.add(() => removeWorkflowApi(page, wf.id));
+    const app = await api<{ id: string }>(page, "POST", "/mini-apps", {
+      name: uniqueName("unchecked-app"),
+      body: {
+        description: "計算",
+        screen: `\`\`\`ui\napp 計算\n金額 = number 円 as amount\nbutton 計算する -> workflow ${flow}\n\`\`\`\n`,
+        workflows: [{ alias: flow, artifact_id: wf.id, version: 1 }],
+      },
+    });
+    cleanup.add(() => deleteArtifactApi(page, app.id));
+    // ブロックの名前だけを変えた v2（入力項目・使ってよい操作・要る権限は同じ）。
+    await api(page, "PUT", `/workflows/${wf.id}`, { ir: ir("金額を計算する"), expected_version: 1 });
+
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: width > 400 ? 900 : 844 });
+      const dialog = await openEditor(page, app.id);
+      const update = dialog.getByTestId("miniapp-workflow-pins").getByTestId("miniapp-pin-update");
+      await expect(update.getByTestId("miniapp-pin-changes").getByRole("listitem")).toHaveText(
+        ["入力項目と使ってよい操作は変わりません", "確かめられた範囲では、使う人に要る権限も変わりません"],
+        { timeout: 15_000 },
+      );
+      await expect(update.getByTestId("miniapp-pin-unchecked")).toHaveText(
+        "v2 には、前もって確かめられないブロックがあります。使う人に足りるかは、実行したときに分かります。",
+      );
+      // 要る権限が増えないので、公開の確認を勧めない。
+      await expect(update.getByTestId("miniapp-pin-access-note")).toHaveCount(0);
+      await update.scrollIntoViewIfNeeded();
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width);
+      if (SHOTS) await page.screenshot({ path: `${SHOTS}/miniapp-pin-unchecked-${width > 400 ? "pc" : "phone"}.png` });
+      await dialog.getByRole("button", { name: "キャンセル" }).click();
+      await expect(dialog.getByRole("heading", { name: "アプリを編集" })).toHaveCount(0);
     }
   });
 });
