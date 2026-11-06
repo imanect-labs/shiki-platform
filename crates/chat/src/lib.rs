@@ -23,6 +23,7 @@
     )
 )]
 
+pub mod answer_images;
 pub mod approver;
 pub mod artifacts;
 pub mod attachments;
