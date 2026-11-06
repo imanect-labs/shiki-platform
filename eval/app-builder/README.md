@@ -69,6 +69,56 @@ target/debug/examples/ir_lint --catalog   # ノードのカタログ（出力の
   転送した要求の本文も同じ場所に保存する（鍵はヘッダーにあり、本文には入らない）。
 - 手元の中継の台帳で用途を分けられるよう、`x-campaign-tag: abeval/<exp>/<run>/<trial>` を付ける。
 
+## 版（ビルドと起動・§4.1・§4.2）
+
+版は「きれいな commit から別の worktree でビルドしたバイナリ」（H1 (a)・D-54）。ビルドは 1 版 7 分程度（sccache）・
+ピークのメモリが大きいので、ほかのビルド・E2E・スタックの起動と重ねない（台帳 §9.4）。
+
+```bash
+# 版をビルドして退避する（~/orca/workspaces/shiki-platform/abeval-<label> に worktree を作り、終わったら消す）
+eval/app-builder/scripts/build-version.sh --dry-run v0 81a9899b   # 手順だけを表示
+eval/app-builder/scripts/build-version.sh v0 81a9899b
+#  → ~/.local/share/shiki-eval/bin/shiki-server-v0 と data/versions/v0.json（commit・tree_clean・binary_sha256・built_at・rustc）
+```
+
+- label は英小文字で始まり英小文字か数字で終わる 21 文字まで（DB・store・バケットの名前に使う）。
+- worktree・バイナリ・版の記録が既にあれば拒む。`git status --porcelain` が空でない（汚れた）worktree と、
+  ビルドが作業ツリーを書き換えた場合は止める（素性を確かめられない版は測らない）。worktree は失敗しても消す。
+
+版のサーバーは、dev-up.sh の版のサーバー向けの引数（H3 (a)）で、API だけを専用の DB・store・バケット・Redis の
+番号・ポートで起動する（Web とゲートウェイの外部の起動はしない）。
+
+```bash
+# LLM の設定（鍵は入れない。base_url は abeval.proxy・api_key はダミー・session_header は x-abeval-session）
+install -m 600 eval/app-builder/config/llm-eval.example.toml ~/.config/shiki-dev/llm-eval.toml
+
+cd eval/app-builder
+uv run python -m abeval serve --label v0 --dry-run      # dev-up.sh の呼び出しを表示するだけ
+uv run python -m abeval serve --label v0 [--max-steps 12] [--budget-micros 150000]
+uv run python -m abeval serve --label v0 --down
+```
+
+| 分けるもの | 値 |
+| --- | --- |
+| DB | `shiki_eval_<label の - を _ に>`（無ければ dev-up が作る。migration と dev seed はサーバーが流す） |
+| OpenFGA の store・S3 のバケット | `shiki-eval-<label>`（サーバーが作る） |
+| Redis の DB 番号 | label から決まる 4〜15 |
+| API・ゲートウェイ | `:10067`（Keycloak が許すリダイレクト先）・`18190`/`18191` |
+| PID ファイル・ログ | dev-up の `--run-label abeval-<label>` の置き場（同じバイナリで動く別のサーバーを pgrep で止めない） |
+| LLM の設定 | `SHIKI_CONFIG=~/.config/shiki-dev/llm-eval.toml`（権限 600 でなければ起動しない） |
+
+- 起動の前に、版の記録の `tree_clean` と、バイナリの sha256 が記録と同じことを確かめる（違えば起動しない）。
+- 呼び出し側のシェルに残った `SHIKI__*`・`SHIKI_CONFIG` は渡さない。条件は手数の上限（`--max-steps` →
+  `SHIKI__CHAT__MAX_STEPS`・省けば製品の値）と 1 発話の予算（`--budget-micros` →
+  `SHIKI__CHAT__BUDGET_MAX_COST_USD_MICROS`・既定 $0.15）だけをここで決める。
+- dev-up.sh の引数は `dev-up.sh --help` を参照（`--server-bin`・`--db-name`・`--store-name`・`--bucket`・
+  `--redis-db`・`--port`・`--gateway-ports`・`--api-only`・`--run-label`）。引数を省いた起動は前と同じ
+  （`tests/test_dev_up_args.py` が HEAD の dev-up.sh と比べて確かめる）。
+- 引数を省いた dev-up.sh（:8080 のスタック）は、起動のときに `pgrep -f ^<repo>/target/debug/shiki-server$` で
+  残りのサーバーを止める（前からの動き）。版のサーバーを `--server-bin <repo>/target/debug/shiki-server` で
+  動かしている間に既定のスタックを起動すると、版のサーバーも止まる。版のサーバーは退避したバイナリ
+  （`~/.local/share/shiki-eval/bin/`）で動かす。
+
 ## 上限と台帳
 
 | 項目 | 既定 | 強制する場所 |
@@ -101,7 +151,7 @@ Mode B で承認待ち（`approval_requested`）が来たら、既定で却下�
 | 置き場 | コミット |
 | --- | --- |
 | `results/<exp>.json`・`results/errors-<exp>.jsonl`・`results/summary.md` | する |
-| `data/tasks/`・`data/versions/`・`data/captures/` | する（製品の文面はコードと同じ文字列・IR は架空のデータ） |
+| `data/tasks/`・`data/versions/`・`data/captures/` | する（製品の文面はコードと同じ文字列・IR は架空のデータ・版の記録は commit と sha だけ） |
 | `data/cache/`（会話の全文・要求の本文・試行の記録） | しない（.gitignore） |
 | `results/spend.jsonl`（評価の台帳）・`results/*.tmp` | しない（.gitignore） |
 
@@ -112,6 +162,9 @@ Mode B で承認待ち（`approval_requested`）が来たら、既定で却下�
 - `tests/conftest.py` は、置き場（台帳・キャッシュ・`ABEVAL_HOME`）をテストごとの一時の場所に向け、socket の
   接続を見張る。手元の中継（`127.0.0.1:8787`）とループバック以外への接続は例外になる（実 LLM を呼ばない）。
 - 印: `server`（評価の版のサーバーが要る）・`lint_bin`（ir_lint のバイナリが要る）・`shell`（bash と git が要る）。
+- `shell` のテストは docker・cargo・curl などを shim（`tests/shellkit.py`）にして流す（本物は動かさない）。
+  `test_dev_up_args.py` は、引数を省いた dev-up.sh が HEAD の版と同じ run-server.sh を作り、同じ shim を同じ順に
+  呼ぶことを確かめる。`test_build_version.py` は一時の git リポジトリと偽の cargo で流す。
 - 一時の置き場は `.pytest_tmp/`（/tmp は tmpfs なので使わない）。
 
 ## 限界

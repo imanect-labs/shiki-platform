@@ -1,0 +1,53 @@
+# 評価の版のサーバー（eval/app-builder・GAP-30 §4.2）の LLM の設定の見本。**鍵は入れない。**
+#
+# 使い方: ~/.config/shiki-dev/llm-eval.toml に写して chmod 600 する（README の「版のサーバー」）。
+#   install -m 600 eval/app-builder/config/llm-eval.example.toml ~/.config/shiki-dev/llm-eval.toml
+#
+# Anthropic への要求はすべて abeval.proxy（127.0.0.1:18200・記録と上限）を通る。その先の手元の中継
+# （127.0.0.1:8787）だけが本物の鍵を付ける。ここの api_key はダミーで、abeval.proxy もクライアントの鍵を捨てて
+# ダミーを送る（中継を通らない要求は 401 で落ちる）。
+[llm]
+backend = "stub"
+default_model = "claude-haiku-5-5"
+
+[llm.auto]
+model = "claude-haiku-5-5"
+effort = "low"
+
+[[llm.providers]]
+id = "anthropic"
+display_name = "Anthropic"
+backend = "anthropic"
+base_url = "http://127.0.0.1:18200"
+api_key = "abeval-dummy"
+# 会話 ID（チャットは thread_id）。abeval.proxy が試行の割り当てに使い、上流へは送らない。
+session_header = "x-abeval-session"
+
+# 二段目の歯止め（DB の llm_usage で数える・JST の月で戻る）。総額の歯止めは abeval.proxy（評価の累計 $35）と
+# 手元の中継（累計 $95）。
+[llm.limits]
+enabled = true
+
+[[llm.limits.providers]]
+providers = ["anthropic"]
+usd_micros = 36000000
+
+# 単価は ~/.config/shiki-dev/llm-stub.toml と同じ（入力 $0.10・出力 $0.50／100 万トークン）。
+[[llm.models]]
+id = "claude-haiku-5-5"
+provider = "anthropic"
+display_name = "Claude Haiku 5.5"
+description = "速くて安い Claude（評価用）"
+prompt_price_micros_per_mtok = 100000
+completion_price_micros_per_mtok = 500000
+cache_read_price_micros_per_mtok = 10000
+cache_write_price_micros_per_mtok = 125000
+# 100K トークンを超えるプロンプトは単価が 5 倍になるので、窓を 100K に抑える。
+context_window_tokens = 100000
+processed_abroad = true
+supports_effort = true
+
+[[llm.models]]
+id = "default"
+display_name = "テスト用（stub）"
+description = "決まった応答を返すテスト用のモデル（スタブの配管の確かめに使う）"

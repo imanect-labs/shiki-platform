@@ -46,6 +46,25 @@
 #   （:8080 にすると callback 後に backend ルートへ 303 して落ちる）。
 #
 #   プロセスは detach して起動し、ログのパスを表示して終了する。
+#
+#   版のサーバー（評価ハーネス eval/app-builder・GAP-30）向けの引数（native のみ。省けば今までどおり）:
+#     --server-bin PATH    cargo build を飛ばし、このバイナリ（絶対パス）で起動する
+#     --db-name NAME       DB の名前（既定 shiki）。無ければ CREATE DATABASE する。保存先の印の
+#                          コメントと --reset-db もこの DB に向ける
+#     --store-name NAME    OpenFGA の store の名前（既定 shiki）。無ければサーバーが作る
+#     --bucket NAME        S3 のバケット（既定 shiki-blobs）。無ければサーバーが作る（--rag-remote とは併用しない）
+#     --redis-db N         セッションの Redis の DB 番号（0〜15。既定は番号を付けない）
+#     --port N             API のポート（--api-only と併用。8080 か 10067＝Keycloak が許すリダイレクト先）
+#     --gateway-ports A,B  ゲートウェイと B1 のポート（既定 18090,18091）
+#     --api-only           web（:3000）・pnpm install・砂箱のビルドをしない。ログインの戻り先は
+#                          http://localhost:<port>/auth/callback（API を直接叩く）
+#     --run-label L        PID ファイルとログの置き場を L ごとに分ける。止めるときは --down --run-label L。
+#                          L か --server-bin を付けると、同じバイナリで動く別のサーバーを pgrep で止めない
+#                          （止めるのは L の PID ファイルのものと、自分のポートを握る自分のバイナリだけ）
+#   例: dev-up.sh --server-bin ~/.local/share/shiki-eval/bin/shiki-server-v0 --db-name shiki_eval_v0 \
+#         --store-name shiki-eval-v0 --bucket shiki-eval-v0 --redis-db 5 --port 10067 \
+#         --gateway-ports 18190,18191 --api-only --run-label abeval-v0
+#       dev-up.sh --down --run-label abeval-v0
 set -euo pipefail
 
 err() { printf '%s\n' "$*" >&2; }
@@ -71,9 +90,38 @@ RAG_REMOTE=0
 WITH_SANDBOX=0
 WITH_OFFICE=0
 ACTION=up
+# 版のサーバー向け（GAP-30）。既定は今までの固定の値。
+SERVER_BIN=""
+DB_NAME=shiki
+STORE_NAME=shiki
+BUCKET=""
+REDIS_DB=""
+API_PORT=8080
+PORT_SET=0
+GATEWAY_PORTS=""
+API_ONLY=0
+RUN_LABEL=""
+EVAL_ARGS=0
+
+# 値を取る引数（値が無い・空なら終了コード 2）。
+need_val() {
+  if [ $# -lt 2 ] || [ -z "$2" ]; then
+    printf '%s には値が要ります\n' "$1" >&2
+    exit 2
+  fi
+}
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    --server-bin)    need_val "$@"; SERVER_BIN=$2; EVAL_ARGS=1; shift ;;
+    --db-name)       need_val "$@"; DB_NAME=$2; EVAL_ARGS=1; shift ;;
+    --store-name)    need_val "$@"; STORE_NAME=$2; EVAL_ARGS=1; shift ;;
+    --bucket)        need_val "$@"; BUCKET=$2; EVAL_ARGS=1; shift ;;
+    --redis-db)      need_val "$@"; REDIS_DB=$2; EVAL_ARGS=1; shift ;;
+    --port)          need_val "$@"; API_PORT=$2; PORT_SET=1; EVAL_ARGS=1; shift ;;
+    --gateway-ports) need_val "$@"; GATEWAY_PORTS=$2; EVAL_ARGS=1; shift ;;
+    --api-only)      API_ONLY=1; EVAL_ARGS=1 ;;
+    --run-label)     need_val "$@"; RUN_LABEL=$2; EVAL_ARGS=1; shift ;;
     --compose) MODE=compose ;;
     --reset-db) RESET_DB=1 ;;
     --rag)     WITH_RAG=1 ;;
@@ -88,6 +136,47 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+
+# --- 版のサーバー向けの引数を確かめる（何かを起動・変更する前に止める） ---
+bad_arg() { err "$1"; exit 2; }
+[[ "$DB_NAME" =~ ^[a-z_][a-z0-9_]{0,62}$ ]] || bad_arg "--db-name は英小文字・数字・_ の 63 文字までです: $DB_NAME"
+[[ "$STORE_NAME" =~ ^[a-z][a-z0-9_-]{0,62}$ ]] || bad_arg "--store-name は英小文字で始まる英小文字・数字・_・- の 63 文字までです: $STORE_NAME"
+if [ -n "$BUCKET" ]; then
+  [[ "$BUCKET" =~ ^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$ ]] || bad_arg "--bucket は英小文字・数字・- の 3〜63 文字です（S3 のバケット名）: $BUCKET"
+fi
+if [ -n "$REDIS_DB" ]; then
+  { [[ "$REDIS_DB" =~ ^[0-9]{1,2}$ ]] && [ "$((10#$REDIS_DB))" -le 15 ]; } || bad_arg "--redis-db は 0〜15 です: $REDIS_DB"
+  REDIS_DB=$((10#$REDIS_DB))
+fi
+if [ "$PORT_SET" = 1 ]; then
+  [ "$API_ONLY" = 1 ] || bad_arg "--port は --api-only と併用してください（web は :8080 の API に繋ぐ）。"
+  case "$API_PORT" in
+    8080|10067) : ;;
+    *) bad_arg "--port は 8080 か 10067 です（Keycloak が許すリダイレクト先）: $API_PORT" ;;
+  esac
+fi
+if [ -n "$GATEWAY_PORTS" ]; then
+  [[ "$GATEWAY_PORTS" =~ ^([0-9]{4,5}),([0-9]{4,5})$ ]] || bad_arg "--gateway-ports は A,B（ポート 2 つ）です: $GATEWAY_PORTS"
+  for p in "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"; do
+    { [ "$p" -ge 1024 ] && [ "$p" -le 65535 ]; } || bad_arg "--gateway-ports のポートは 1024〜65535 です: $p"
+  done
+  [ "${BASH_REMATCH[1]}" != "${BASH_REMATCH[2]}" ] || bad_arg "--gateway-ports の 2 つは別のポートにしてください: $GATEWAY_PORTS"
+fi
+if [ -n "$RUN_LABEL" ]; then
+  [[ "$RUN_LABEL" =~ ^[a-z][a-z0-9-]{0,40}$ ]] || bad_arg "--run-label は英小文字で始まる英小文字・数字・- の 41 文字までです: $RUN_LABEL"
+fi
+if [ -n "$SERVER_BIN" ]; then
+  [[ "$SERVER_BIN" == /* ]] || bad_arg "--server-bin は絶対パスです: $SERVER_BIN"
+  [ -f "$SERVER_BIN" ] && [ -x "$SERVER_BIN" ] || bad_arg "--server-bin が実行できるファイルではありません: $SERVER_BIN"
+  SERVER_BIN=$(readlink -f "$SERVER_BIN")
+  [[ "$SERVER_BIN" =~ ^[A-Za-z0-9._/+-]+$ ]] || bad_arg "--server-bin のパスに使えない文字があります: $SERVER_BIN"
+fi
+if [ "$EVAL_ARGS" = 1 ] && [ "$MODE" = compose ]; then
+  bad_arg "--server-bin・--db-name・--store-name・--bucket・--redis-db・--port・--gateway-ports・--api-only・--run-label は native 専用です（--compose とは併用しない）。"
+fi
+if [ -n "$BUCKET" ] && [ "$RAG_REMOTE" = 1 ]; then
+  bad_arg "--bucket は --rag-remote と併用しません（外部のバケットは SHIKI_DEV_S3_BUCKET で渡す）。"
+fi
 
 ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || { err "git リポジトリ内で実行してください。"; exit 2; }
 cd "$ROOT"
@@ -114,8 +203,13 @@ command -v curl >/dev/null 2>&1 || { err "curl が見つかりません。"; exi
 
 # worktree ごとに分ける。UID だけで共有すると、別 worktree の --down が
 # こちらの PID ファイルを読んで無関係なプロセスを止めてしまう。
-RUNDIR="${TMPDIR:-/tmp}/shiki-dev-up-$(id -u)-$(printf '%s' "$ROOT" | cksum | cut -d' ' -f1)"
+# --run-label を付けたときは、さらにラベルごとに分ける（版のサーバーを同じ worktree から並べて起動するため）。
+RUNDIR="${TMPDIR:-/tmp}/shiki-dev-up-$(id -u)-$(printf '%s' "$ROOT" | cksum | cut -d' ' -f1)${RUN_LABEL:+-$RUN_LABEL}"
 mkdir -p "$RUNDIR"
+# 起動するサーバーのバイナリ（--server-bin が無ければ cargo build したもの）。
+SERVER_EXE=${SERVER_BIN:-$ROOT/target/debug/shiki-server}
+# --run-label のサーバーのポートとバイナリ（--down が読む）。
+SERVER_ENV="$RUNDIR/server.env"
 SERVER_LOG="$RUNDIR/shiki-server.log"
 WEB_LOG="$RUNDIR/web.log"
 SERVER_PID="$RUNDIR/shiki-server.pid"
@@ -132,7 +226,14 @@ http_code() {
 
 check_status() {
   local api web kc
-  api=$(http_code http://localhost:8080/healthz)
+  api=$(http_code "http://localhost:${API_PORT}/healthz")
+  if [ "$API_ONLY" = 1 ]; then
+    kc=$(http_code http://localhost:8081/realms/shiki)
+    say "shiki-server (:${API_PORT}/healthz): $api"
+    say "keycloak     (:8081):         $kc"
+    [ "$api" = "200" ]
+    return
+  fi
   web=$(http_code http://localhost:3000/)
   kc=$(http_code http://localhost:8081/realms/shiki)
   say "shiki-server (:8080/healthz): $api"
@@ -172,8 +273,60 @@ sandbox_needs_build() {
   [ -n "$(find web/editor-sandbox/src web/editor-sandbox/build.mjs -newer "$out" 2>/dev/null | head -1)" ]
 }
 
+# --- ラベルのサーバーの停止 ---
+# PID ファイルのものと、「自分のポートを握り、exe が自分のバイナリのプロセス」だけを止める。
+# pgrep -f で同じパスのバイナリを探して止めると、同じバイナリで動く別のサーバー（stub のスタックなど）まで止める。
+stop_own_server() {  # stop_own_server <port> <exe>
+  local port=$1 exe=$2 pid pids
+  if [ -f "$SERVER_PID" ]; then
+    pid=$(cat "$SERVER_PID" 2>/dev/null || true)
+    if [ -n "$pid" ]; then
+      kill -TERM "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true
+    fi
+    rm -f "$SERVER_PID"
+  fi
+  command -v fuser >/dev/null 2>&1 || return 0
+  for _ in $(seq 1 20); do
+    pids=""
+    for pid in $(fuser "$port/tcp" 2>/dev/null | tr -s ' ' '\n' | grep -E '^[0-9]+$' || true); do
+      [ "$(readlink -f "/proc/$pid/exe" 2>/dev/null || echo "?")" = "$exe" ] && pids="$pids $pid"
+    done
+    [ -n "$pids" ] || return 0
+    # shellcheck disable=SC2086
+    kill -TERM $pids 2>/dev/null || true
+    sleep 1
+  done
+  return 0
+}
+
+stop_labeled() {
+  local port="" exe=""
+  if [ -f "$SERVER_ENV" ]; then
+    port=$(sed -n 's/^port=//p' "$SERVER_ENV")
+    exe=$(sed -n 's/^exe=//p' "$SERVER_ENV")
+  fi
+  if [ -f "$WEB_PID" ]; then
+    pid=$(cat "$WEB_PID" 2>/dev/null || true)
+    [ -n "$pid" ] && { kill -TERM "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true; }
+    rm -f "$WEB_PID"
+  fi
+  if [ -n "$port" ] && [ -n "$exe" ]; then
+    stop_own_server "$port" "$exe"
+  elif [ -f "$SERVER_PID" ]; then
+    pid=$(cat "$SERVER_PID" 2>/dev/null || true)
+    [ -n "$pid" ] && { kill -TERM "-$pid" 2>/dev/null || kill -TERM "$pid" 2>/dev/null || true; }
+    rm -f "$SERVER_PID"
+  fi
+  rm -f "$SERVER_ENV"
+  say "停止しました（--run-label $RUN_LABEL・compose の依存サービスは残しています）。"
+}
+
 # --- 停止 ---
 stop_all() {
+  if [ -n "$RUN_LABEL" ]; then
+    stop_labeled
+    return 0
+  fi
   # native 起動時のみ SERVER_PID を書いている（compose 起動なら :8080 は docker-proxy）。
   local had_native=0
   [ -f "$SERVER_PID" ] && had_native=1
@@ -283,7 +436,7 @@ say "   $DEPS"
 # web の依存導入は compose 起動にも cargo ビルドにも依存しないので、先に背後で始めておく
 # （直列だと初回の実時間が「compose 待ち ＋ cold build ＋ install」の総和になる）。
 WEB_INSTALL_PID=""
-if [ ! -d web/node_modules ]; then
+if [ "$API_ONLY" = 0 ] && [ ! -d web/node_modules ]; then
   say "   （pnpm install を背後で先行実行します）"
   ( cd web && pnpm install --frozen-lockfile ) > "$RUNDIR/pnpm-install.log" 2>&1 &
   WEB_INSTALL_PID=$!
@@ -324,30 +477,50 @@ pg_user() {
   printf '%s' "${u:-postgres}"
 }
 reset_dev_db() {
-  err "⚠️  compose の dev DB 'shiki' を DROP して作り直します（データは失われます）。"
+  err "⚠️  compose の dev DB '$DB_NAME' を DROP して作り直します（データは失われます）。"
   docker compose -f deploy/compose/docker-compose.yml exec -T postgres \
-    psql -U "$(pg_user)" -c "DROP DATABASE IF EXISTS shiki WITH (FORCE);" -c "CREATE DATABASE shiki;"
+    psql -U "$(pg_user)" -c "DROP DATABASE IF EXISTS $DB_NAME WITH (FORCE);" -c "CREATE DATABASE $DB_NAME;"
   say "   [ok] dev DB をリセットしました（SHIKI_DEV_SEED=true が再投入します）"
 }
 [ "$RESET_DB" = 1 ] && reset_dev_db
+# --db-name の DB が無ければ作る（migration と dev seed はサーバーが流す）。既定の 'shiki' は compose が作る。
+ensure_db() {
+  local out
+  if ! out=$(docker compose -f deploy/compose/docker-compose.yml exec -T postgres \
+    psql -v ON_ERROR_STOP=1 -U "$(pg_user)" -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname = '$DB_NAME'" 2>&1); then
+    err "DB の有無を確かめられません: $out"
+    exit 1
+  fi
+  if [ "${out%%$'\n'*}" != 1 ]; then
+    if ! out=$(docker compose -f deploy/compose/docker-compose.yml exec -T postgres \
+      psql -v ON_ERROR_STOP=1 -U "$(pg_user)" -d postgres -c "CREATE DATABASE $DB_NAME;" 2>&1); then
+      err "DB '$DB_NAME' を作れません: $out"
+      exit 1
+    fi
+    say "   [ok] DB '$DB_NAME' を作りました（migration と dev seed はサーバーが流します）"
+  fi
+}
+if [ "$DB_NAME" != shiki ]; then
+  ensure_db
+fi
 
 # --- 1.6 DB と保存先の組を確かめる ---
 # blob の行は保存先を記録しないので、DB を残したまま保存先だけ変えると既存の blob が読めず、
 # 同じ内容を上げ直しても重複扱いで実体が作られない。どの保存先と組で使った DB かを
 # DB のコメントに残し、食い違えば止める（DB を作り直すとコメントも消える）。
-STORE_TAG=$([ "$RAG_REMOTE" = 1 ] && printf 'shiki-dev-store=%s/%s' "$SHIKI_DEV_S3_ENDPOINT" "$SHIKI_DEV_S3_BUCKET" || printf 'shiki-dev-store=local')
+STORE_TAG=$([ "$RAG_REMOTE" = 1 ] && printf 'shiki-dev-store=%s/%s' "$SHIKI_DEV_S3_ENDPOINT" "$SHIKI_DEV_S3_BUCKET" || printf 'shiki-dev-store=local%s' "${BUCKET:+/$BUCKET}")
 dev_psql() {  # dev_psql <sql>  → 1 行目の値だけ返す
   # **接続や SQL の失敗を握り潰さない。** 空として扱うと、印も blob も無い DB と見なして
   # 別の保存先へ切り替えを通してしまう。
   local out
   if ! out=$(docker compose -f deploy/compose/docker-compose.yml exec -T postgres \
-    psql -v ON_ERROR_STOP=1 -U "$(pg_user)" -d shiki -tAc "$1" 2>&1); then
+    psql -v ON_ERROR_STOP=1 -U "$(pg_user)" -d "$DB_NAME" -tAc "$1" 2>&1); then
     err "dev DB への問い合わせに失敗しました: $out"
     exit 1
   fi
   printf '%s' "${out%%$'\n'*}"
 }
-cur_tag=$(dev_psql "SELECT shobj_description(oid, 'pg_database') FROM pg_database WHERE datname = 'shiki'")
+cur_tag=$(dev_psql "SELECT shobj_description(oid, 'pg_database') FROM pg_database WHERE datname = '$DB_NAME'")
 if [ -z "$cur_tag" ]; then
   # 印の無い DB は、この仕組みより前に作られたもの（＝ローカルの RustFS と組）か、まだ空のもの。
   # blob 表が無い（migration 前の）DB で FROM blob を書くとエラーになるので、先に有無を見る。
@@ -370,7 +543,7 @@ compose_up $DEPS
 # 印の付け替えと不要なサービスの停止。**起動前の検査をすべて通した後に呼ぶ。**
 # 先にやると、後の検査（:8080 の取り合いなど）で止まった時に今の環境を壊してしまう。
 apply_store_switch() {
-  dev_psql "COMMENT ON DATABASE shiki IS '${STORE_TAG//\'/\'\'}'" >/dev/null
+  dev_psql "COMMENT ON DATABASE $DB_NAME IS '${STORE_TAG//\'/\'\'}'" >/dev/null
   # --rag から切り替えた時、前に立てたローカルの worker（常駐 2〜3GB）と RustFS は
   # DEPS から外しても動き続ける（restart: unless-stopped）。外部を使うなら止める。
   if [ "$RAG_REMOTE" = 1 ]; then
@@ -412,7 +585,7 @@ if [ "$MODE" = compose ]; then
   )
   say "   [ok] shiki-server (compose)"
 else
-  say "== 2. shiki-server を cargo run で起動（:8080・native） =="
+  say "== 2. shiki-server を cargo run で起動（:${API_PORT}・native） =="
 
   # 依存の接続先は compose から導出する（ポート番号をこのスクリプトに焼き込むと、
   # compose 側の変更で静かに壊れる）。取れなければ compose の既定値へフォールバックする。
@@ -453,6 +626,11 @@ else
   # ため、別 worktree で compose 版が動いていると衝突する。native は常に 18090/18091 に逃がす。
   GW_PORT=18090
   B1_PORT=18091
+  # 版のサーバーは --gateway-ports で分ける（runner はループバックで委譲するので、同じだと別のサーバーへ届く）。
+  if [ -n "$GATEWAY_PORTS" ]; then
+    GW_PORT=${GATEWAY_PORTS%%,*}
+    B1_PORT=${GATEWAY_PORTS##*,}
+  fi
   GW_ORIGIN=http://localhost:$GW_PORT
   B1_ORIGIN=http://localhost:$B1_PORT
 
@@ -460,7 +638,7 @@ else
   # フォールバックに落ち、変更が反映されない画面をスクショすることになる。
   # 成果物がソースより古ければ作り直す。存在チェックだけだと、砂箱のソースを変更しても
   # 古い成果物が /builtin から配信され続け、変更前の UI をスクショして成功扱いにしてしまう。
-  if sandbox_needs_build; then
+  if [ "$API_ONLY" = 0 ] && sandbox_needs_build; then
     if [ -d web/node_modules ]; then
       say "   スライドエディタ砂箱をビルドします（/builtin 配信用）…"
       ( cd web && pnpm build:editor-sandbox ) || err "   ⚠️  砂箱のビルドに失敗（/builtin は 404 のまま）"
@@ -486,7 +664,7 @@ else
   else
     EFF_S3_INTERNAL=http://localhost:${RUSTFS_PORT}
     EFF_S3_PUBLIC=http://localhost:${RUSTFS_PORT}
-    EFF_S3_BUCKET=shiki-blobs
+    EFF_S3_BUCKET=${BUCKET:-shiki-blobs}
     EFF_S3_AK=$RUSTFS_AK
     EFF_S3_SK=$RUSTFS_SK
     EFF_WORKER_URL=http://localhost:${WORKER_PORT}
@@ -497,6 +675,10 @@ else
   fi
   # CSV の集計の隔離ランナー（csv.* のブロックと CSV の画面の SQL が使う・BUG-22）。呼び出し側の env にあればそれを使う。
   TABULAR_RUNNER=${SHIKI__TABULAR__RUNNER_PATH:-$ROOT/crates/tabular/runner/target/debug/shiki-tabular-runner}
+  # ログインの戻り先（web と同じオリジン）。--api-only では API を直接叩くので API のオリジンにする。
+  LOGIN_ORIGIN=http://localhost:3000
+  [ "$API_ONLY" = 1 ] && LOGIN_ORIGIN=http://localhost:${API_PORT}
+  REDIS_SUFFIX=${REDIS_DB:+/$REDIS_DB}
   # 生成するスクリプトへ値を埋め込むので、シェルの構文としてクォートする（& などを含んでも壊れない）。
   Q_TABULAR_RUNNER=$(printf '%q' "$TABULAR_RUNNER")
   Q_S3_INTERNAL=$(printf '%q' "$EFF_S3_INTERNAL")
@@ -517,8 +699,8 @@ else
 set -euo pipefail
 cd "$ROOT"
 export SHIKI__SERVER__HOST=0.0.0.0
-export SHIKI__SERVER__PORT=8080
-export SHIKI__DATABASE__URL=postgres://postgres:postgres@localhost:${PG_PORT}/shiki
+export SHIKI__SERVER__PORT=${API_PORT}
+export SHIKI__DATABASE__URL=postgres://postgres:postgres@localhost:${PG_PORT}/${DB_NAME}
 export SHIKI__AUTH__ISSUER=http://localhost:${KC_PORT}/realms/shiki
 export SHIKI__AUTH__INTERNAL_BASE_URL=http://localhost:${KC_PORT}/realms/shiki
 export SHIKI__AUTH__AUDIENCE=shiki-api
@@ -529,12 +711,12 @@ export SHIKI__AUTH__CLIENT_SECRET=shiki-web-dev-secret
 export SHIKI__AUTH__PROVISIONER_CLIENT_ID=shiki-provisioner
 export SHIKI__AUTH__PROVISIONER_CLIENT_SECRET=shiki-provisioner-dev-secret
 # web と同一オリジンの callback。:8080 にすると callback 後に backend ルートへ 303 して落ちる。
-export SHIKI__AUTH__REDIRECT_URI=http://localhost:3000/auth/callback
-export SHIKI__AUTH__POST_LOGOUT_REDIRECT_URI=http://localhost:3000/
-export SHIKI__SESSION__REDIS_URL=redis://localhost:${REDIS_PORT}
+export SHIKI__AUTH__REDIRECT_URI=${LOGIN_ORIGIN}/auth/callback
+export SHIKI__AUTH__POST_LOGOUT_REDIRECT_URI=${LOGIN_ORIGIN}/
+export SHIKI__SESSION__REDIS_URL=redis://localhost:${REDIS_PORT}${REDIS_SUFFIX}
 export SHIKI__SESSION__SECURE=false
 export SHIKI__AUTHZ__BASE_URL=http://localhost:${FGA_PORT}
-export SHIKI__AUTHZ__STORE_NAME=shiki
+export SHIKI__AUTHZ__STORE_NAME=${STORE_NAME}
 export SHIKI__STORAGE__BACKEND=s3
 export SHIKI__STORAGE__S3__INTERNAL_ENDPOINT=${Q_S3_INTERNAL}
 export SHIKI__STORAGE__S3__PUBLIC_ENDPOINT=${Q_S3_PUBLIC}
@@ -589,7 +771,7 @@ export SHIKI__OFFICE__WEB_ORIGIN=http://localhost:3000
 # dev シードが無いとログイン後に何も無い。
 export SHIKI_DEV_SEED=true
 export RUST_LOG=info,shiki_api=debug,authz=debug
-exec "$ROOT/target/debug/shiki-server"
+exec "${SERVER_EXE}"
 EOF
   chmod +x "$RUNDIR/run-server.sh"
   mkdir -p "$RUNDIR/index"
@@ -606,12 +788,12 @@ EOF
   # 別 worktree / 別クローンのサーバが :8080 を握っている場合、下の pgrep（このリポジトリの
   # パスにアンカー）では検出できない。bind 失敗を「別プロセスの 200」で成功と誤認しないよう、
   # 自分のものでないリスナがいたら先に止めてもらう。
-  if command -v fuser >/dev/null 2>&1 && fuser 8080/tcp >/dev/null 2>&1; then
-    holder=$(fuser 8080/tcp 2>/dev/null | tr -d ' ')
+  if command -v fuser >/dev/null 2>&1 && fuser "${API_PORT}/tcp" >/dev/null 2>&1; then
+    holder=$(fuser "${API_PORT}/tcp" 2>/dev/null | tr -d ' ')
     holder_exe=$(readlink -f "/proc/${holder%% *}/exe" 2>/dev/null || echo "?")
     case "$holder_exe" in
-      "$ROOT/target/debug/shiki-server") : ;;   # 自分のもの。下で停止する。
-      *) err "既に :8080 を使用中のプロセスがあります（$holder_exe）。停止してから再実行してください。"
+      "$SERVER_EXE") : ;;   # 自分のもの。下で停止する。
+      *) err "既に :${API_PORT} を使用中のプロセスがあります（$holder_exe）。停止してから再実行してください。"
          exit 1 ;;
     esac
   fi
@@ -619,7 +801,14 @@ EOF
   # 既存の native サーバが残っていると、新しいプロセスは bind に失敗するのに終了せず、
   # chat/workflow ワーカーだけが二重に走って同じジョブキューを取り合う。さらに古い方が
   # /healthz に応答するため「起動成功」と誤判定される。先に確実に止める。
-  OLD_PIDS=$(pgrep -f "^$ROOT/target/debug/shiki-server$" 2>/dev/null || true)
+  # --run-label・--server-bin のときは pgrep を使わない（同じバイナリで動く別のサーバーまで止めるため）。
+  # 止めるのは、自分の PID ファイルのものと、自分のポートを握る自分のバイナリだけ。
+  OLD_PIDS=""
+  if [ -n "$RUN_LABEL" ] || [ -n "$SERVER_BIN" ]; then
+    stop_own_server "$API_PORT" "$SERVER_EXE"
+  else
+    OLD_PIDS=$(pgrep -f "^$ROOT/target/debug/shiki-server$" 2>/dev/null || true)
+  fi
   if [ -n "$OLD_PIDS" ]; then
     say "   既存の shiki-server を停止します: $(printf '%s' "$OLD_PIDS" | tr '\n' ' ')"
     # shellcheck disable=SC2086
@@ -634,10 +823,14 @@ EOF
 
   # ビルドは前景で回す。cargo run に含めると「ビルド中」と「起動失敗」が
   # ヘルスチェックのタイムアウトとして区別できなくなる（cold build は 10 分超える）。
-  say "   ビルド中（cold なら数分〜十数分かかります）…"
-  if ! cargo build -p shiki-api --bin shiki-server; then
-    err "shiki-server のビルドに失敗しました。"
-    exit 1
+  if [ -n "$SERVER_BIN" ]; then
+    say "   ビルドを飛ばします（--server-bin $SERVER_BIN）"
+  else
+    say "   ビルド中（cold なら数分〜十数分かかります）…"
+    if ! cargo build -p shiki-api --bin shiki-server; then
+      err "shiki-server のビルドに失敗しました。"
+      exit 1
+    fi
   fi
 
   if [ ! -x "$TABULAR_RUNNER" ]; then
@@ -652,6 +845,9 @@ EOF
     setsid nohup "$RUNDIR/run-server.sh" > "$SERVER_LOG" 2>&1 < /dev/null &
   echo $! > "$SERVER_PID"
   disown || true
+  if [ -n "$RUN_LABEL" ]; then
+    printf 'port=%s\nexe=%s\n' "$API_PORT" "$SERVER_EXE" > "$SERVER_ENV"
+  fi
   say "   起動中… ログ: $SERVER_LOG"
   ok=""
   for _ in $(seq 1 40); do
@@ -664,7 +860,7 @@ EOF
       tail -20 "$SERVER_LOG" >&2
       exit 1
     fi
-    curl -fsS --max-time 2 http://localhost:8080/healthz >/dev/null 2>&1 && { ok=1; break; }
+    curl -fsS --max-time 2 "http://localhost:${API_PORT}/healthz" >/dev/null 2>&1 && { ok=1; break; }
     sleep 3
   done
   if [ -z "$ok" ]; then
@@ -679,11 +875,26 @@ EOF
       grep -A3 "Caused by" "$SERVER_LOG" | head -8 >&2
       exit 1
     fi
-    err "shiki-server が :8080 で応答しません。tail -50 $SERVER_LOG"
+    err "shiki-server が :${API_PORT} で応答しません。tail -50 $SERVER_LOG"
     tail -30 "$SERVER_LOG" >&2
     exit 1
   fi
   say "   [ok] shiki-server (native)"
+fi
+
+# --- --api-only: web を起動しない（API を直接叩く・版のサーバー） ---
+if [ "$API_ONLY" = 1 ]; then
+  say ""
+  say "================================"
+  say "  api        http://localhost:${API_PORT}   （/healthz・web は起動していません）"
+  say "  keycloak   http://localhost:8081   （ログインの戻り先: ${LOGIN_ORIGIN}/auth/callback）"
+  say "  DB=${DB_NAME}  store=${STORE_NAME}  bucket=${EFF_S3_BUCKET}  redis=${REDIS_DB:-（番号なし）}  gateway=${GW_PORT},${B1_PORT}"
+  say "  ログ       $SERVER_LOG"
+  LLM_BACKEND=${SHIKI__LLM__BACKEND:-stub}
+  say "  LLM=${LLM_BACKEND}$([ "$LLM_BACKEND" = stub ] || echo "  ⚠️ stub ではない（実プロバイダへ課金される）")  SHIKI_CONFIG=${SHIKI_CONFIG:-（無し）}"
+  say "  停止:  $0 --down${RUN_LABEL:+ --run-label $RUN_LABEL}"
+  say "================================"
+  exit 0
 fi
 
 # --- 3. web (:3000) ---
