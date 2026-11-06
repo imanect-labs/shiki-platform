@@ -225,8 +225,14 @@ pub(crate) fn wire_functions(
     let loopback = format!("http://127.0.0.1:{}", config.gateway.port);
     let runner = match app_platform::FunctionRunner::new(engine, Arc::clone(object_store), loopback)
     {
-        // 外部 HTTP は、外へ出るのに中継が要る環境では運用者が設定した中継だけを通す（GAP-72）。
-        Ok(r) => Arc::new(r.with_egress_proxy(egress_proxy.cloned())),
+        // 外部 HTTP は、外へ出るのに中継が要る環境では運用者が設定した中継だけを通す。内部の IP へは、管理者が
+        // ミニアプリの関数の内部の送り先に書いたホストだけ送る（GAP-72・D-135）。
+        Ok(r) => Arc::new(
+            r.with_egress_proxy(egress_proxy.cloned())
+                .with_internal_hosts(sandbox_client::internal_hosts::InternalHosts::lenient(
+                    &config.gateway.function_http_internal_hosts,
+                )),
+        ),
         Err(e) => {
             tracing::warn!(error = %e, "FunctionRunner 構築に失敗（B2 関数は無効）");
             return None;

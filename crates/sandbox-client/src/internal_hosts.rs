@@ -1,7 +1,8 @@
 //! 管理者が内部のネットワークの送り先として許したホストの表（D-135）。
 //!
 //! 外への送信は、名前解決の後のアドレスに内部の IP が 1 つでもあれば断る（[`crate::net_guard`]・PIT-48 の ②）。
-//! 例外は、管理者がデプロイ設定（ワークフローの `workflow.http_internal_hosts` など）に書いたホストだけで、
+//! 例外は、管理者がデプロイ設定（ワークフローの `workflow.http_internal_hosts`・ミニアプリの関数の
+//! `gateway.function_http_internal_hosts`）に書いたホストだけで、
 //! そのホスト（ポートを書けばそのポートだけ）には内部の IP へも送る（オンプレの社内システムを呼ぶ使い方）。
 //! 書き方の読み方と照らし方は、この 1 か所に置く（送り口ごとに写さない）。
 //!
@@ -57,6 +58,16 @@ impl InternalHosts {
         self.entries
             .iter()
             .any(|e| e.host == host && e.port.is_none_or(|p| p == port))
+    }
+
+    /// このホストのこのポートを、ポートを書いた項目で許したか（ポートを決めて許す送り口が、決まったポートの外を
+    /// 開けるかを見る）。
+    #[must_use]
+    pub fn names_port(&self, host: &url::Host<&str>, port: u16) -> bool {
+        let host = canonical_host(host);
+        self.entries
+            .iter()
+            .any(|e| e.host == host && e.port == Some(port))
     }
 
     /// 1 つも書いていないか。
@@ -175,5 +186,25 @@ mod tests {
         let lenient = InternalHosts::lenient(&bad);
         assert!(lenient.allows(&url::Host::Domain("erp.corp.example"), 443));
         assert!(!lenient.allows(&url::Host::Domain("x.corp.example"), 443));
+    }
+
+    /// ポートを書いた項目はそのポートだけ。書かない項目はどのポートも許すが、ポートを名指ししたことにはならない。
+    #[test]
+    fn ports_are_matched_only_when_written() {
+        let hosts = InternalHosts::parse(
+            SETTING,
+            &["erp.corp.example:8443".to_string(), "10.0.0.5".to_string()],
+        )
+        .unwrap();
+        let erp = url::Host::Domain("ERP.corp.example.");
+        assert!(hosts.allows(&erp, 8443));
+        assert!(!hosts.allows(&erp, 443));
+        assert!(hosts.names_port(&erp, 8443));
+        assert!(!hosts.names_port(&erp, 443));
+        let ip = url::Host::Ipv4("10.0.0.5".parse().unwrap());
+        assert!(hosts.allows(&ip, 22));
+        assert!(!hosts.names_port(&ip, 22));
+        assert!(!hosts.is_empty());
+        assert!(InternalHosts::default().is_empty());
     }
 }

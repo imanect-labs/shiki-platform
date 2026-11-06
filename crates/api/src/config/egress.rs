@@ -176,4 +176,27 @@ mod tests {
         let err = invalid(cfg(None, Some("shiki"), Some("/run/secrets/p")).check());
         assert!(err.contains("egress.proxy_url を書いたときだけ"), "{err}");
     }
+
+    /// 起動の確かめ（`AppConfig::validate`）が、中継の書き方と、ミニアプリの関数の内部の送り先を確かめる。
+    #[test]
+    fn the_start_checks_the_proxy_and_the_function_internal_hosts() {
+        let mut cfg = super::super::tests::valid_config();
+        cfg.egress.proxy_url = Some("http://shiki:s3cret@proxy:8080".into());
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("利用者名やパスワード") && !err.contains("s3cret"),
+            "{err}"
+        );
+        cfg.egress.proxy_url = Some("http://proxy:8080".into());
+        cfg.gateway.function_http_internal_hosts = vec!["erp.corp.example:8443".into()];
+        assert!(cfg.validate().is_ok());
+        cfg.gateway
+            .function_http_internal_hosts
+            .push("*.corp.example".into());
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("gateway.function_http_internal_hosts の「*.corp.example」を読めません。"),
+            "{err}"
+        );
+    }
 }
