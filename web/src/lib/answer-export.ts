@@ -29,27 +29,26 @@ export function answerMarkdown(text: string, citations: readonly Citation[], nam
   return `${closeTrailingFence(text.trimEnd())}\n\n${sources}\n`;
 }
 
-/// 本文の最後のコードブロックが閉じていなければ、開きと同じフェンスで閉じる（入れ物の記号も付ける）。
+/// 本文の後ろに足す文字がコードブロックに入ってしまう（フェンスが閉じていない）なら、開きと同じ
+/// フェンスで閉じる。閉じているかは解析に決めさせる（試しの段落を足して、コードに吸われるかを見る）。
+/// 引用・リストの中なら、空行で入れ物ごと終わるので閉じは要らない。
 function closeTrailingFence(body: string): string {
-  let last: Code | null = null;
-  walk(parse(body), (node) => {
-    if (node.type === "code" && node.position?.end.offset === body.length) last = node;
+  const probe = `${body}\n\n${PROBE}`;
+  let swallowing: Code | null = null;
+  walk(parse(probe), (node) => {
+    if (node.type === "code" && (node.position?.end.offset ?? 0) > body.length) swallowing = node;
   });
-  const code = last as Code | null;
-  const start = code?.position?.start.offset;
-  if (!code || start === undefined) return body;
-  const lineStart = body.lastIndexOf("\n", start - 1) + 1;
-  const prefix = body.slice(lineStart, start);
+  const start = (swallowing as Code | null)?.position?.start.offset;
+  if (start === undefined) return body;
   const open = /^(`{3,}|~{3,})/.exec(body.slice(start));
-  if (!open) return body; // 字下げのコードブロック（閉じが無い）
-  const lines = body.slice(start).split("\n");
-  const tail = lines[lines.length - 1].replace(/^[ \t>]*/, "");
-  const closed =
-    lines.length > 1 && new RegExp(`^${open[1][0] === "`" ? "`" : "~"}{${open[1].length},}[ \\t]*$`).test(tail);
-  if (closed) return body;
-  // 引用の中なら `>` を、リストの中なら記号の分の字下げを付けて閉じる。
-  return `${body}\n${prefix.replace(/[^>\s]/g, " ")}${open[1]}`;
+  if (!open) return body; // 字下げのコードブロックは空行と字下げの無い段落で終わる（吸われない）
+  const lineStart = body.lastIndexOf("\n", start - 1) + 1;
+  // 開きの行の入れ物（`>`・リストの記号）の分だけ、閉じの行にも付ける。
+  const prefix = body.slice(lineStart, start).replace(/[^>\s]/g, " ");
+  return `${body}\n${prefix}${open[1]}`;
 }
+
+const PROBE = "閉じの確認";
 
 /// 「出典」の節（見出しと箇条書き）。本文で使った出所だけを、本文で最初に引いた順に並べる。
 export function sourcesMarkdown(
