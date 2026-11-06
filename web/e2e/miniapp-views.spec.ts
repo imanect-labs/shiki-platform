@@ -163,7 +163,7 @@ test.describe("アプリのエディターのビューと版を上げる操作�
     await expect(wfUpdate.getByTestId("miniapp-pin-access-note")).toBeVisible();
     // v2 のスクリプトはテーブルに書けるので、前もって確かめられないブロックがあると言う（GAP-82 と同じ言い方）。
     await expect(wfUpdate.getByTestId("miniapp-pin-unchecked")).toHaveText(
-      "v2 には、前もって確かめられないブロックがあります。使う人に足りるかは、実行したときに分かります。",
+      "v2 には、前もって確かめられないブロックがあります。使う人によって、失敗したり、使える文書やファイルが変わったりすることがあります。",
     );
     // ビュー A: v2 があり、絞り込みが変わると言う（列の名前や値は出さない）。
     const viewPins = dialog.getByTestId("miniapp-data_view-pins");
@@ -337,7 +337,7 @@ test.describe("アプリのエディターのビューと版を上げる操作�
         { timeout: 15_000 },
       );
       await expect(update.getByTestId("miniapp-pin-unchecked")).toHaveText(
-        "v2 には、前もって確かめられないブロックがあります。使う人に足りるかは、実行したときに分かります。",
+        "v2 には、前もって確かめられないブロックがあります。使う人によって、失敗したり、使える文書やファイルが変わったりすることがあります。",
       );
       // 要る権限が増えないので、公開の確認を勧めない。
       await expect(update.getByTestId("miniapp-pin-access-note")).toHaveCount(0);

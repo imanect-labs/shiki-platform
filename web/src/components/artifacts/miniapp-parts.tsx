@@ -15,7 +15,7 @@ import Link from "next/link";
 import { ArrowUpCircle, Undo2, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { needWhat } from "@/lib/access-wording";
+import { needWhat, UNCHECKED_EFFECT } from "@/lib/access-wording";
 import type { PinDiff, PinUpdate } from "@/lib/artifact-api";
 import { scopeLabel } from "@/lib/workflow-scopes";
 import type { components } from "@/generated/api";
@@ -192,7 +192,7 @@ export function PinUpdateNote({
       {update.unchecked_blocks ? (
         // 共有の画面と同じ言い方（前もって確かめられないブロックがあれば、要る権限の増減を言い切らない・GAP-82）。
         <p className="text-amber-700 dark:text-amber-400" data-testid="miniapp-pin-unchecked">
-          v{latest} には、前もって確かめられないブロックがあります。使う人に足りるかは、実行したときに分かります。
+          v{latest} には、前もって確かめられないブロックがあります。{UNCHECKED_EFFECT}
         </p>
       ) : null}
       {owner && needsMore(changes) ? (

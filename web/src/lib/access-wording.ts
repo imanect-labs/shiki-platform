@@ -118,6 +118,14 @@ function uncheckedReason(kind: UncheckedBlock["kind"]): string {
   }
 }
 
+/// 前もって確かめられないブロックがあるときに、その後ろに続けて言うこと（共有の画面と部品の版の差で同じ文）。
+///
+/// 種類によって、足りないと失敗するもの（スクリプト・シークレットなど）と、失敗せずに使える文書やファイルが変わるだけの
+/// もの（文書検索・フォルダーを選ばない一覧・AI エージェント）があるので、どちらにも言える文にする（「実行したときに
+/// 分かる」とは言わない・付録 C の P7）。
+export const UNCHECKED_EFFECT =
+  "使う人によって、失敗したり、使える文書やファイルが変わったりすることがあります。";
+
 /// 作る人向けに、前もって確かめられないブロック 1 つを言う（部品とブロックの名前と理由・GAP-82）。
 export function uncheckedLine(u: UncheckedBlock): string {
   const part = partPhrase(u.part);

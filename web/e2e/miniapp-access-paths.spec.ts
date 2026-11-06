@@ -424,7 +424,7 @@ test.describe("使う人の権限の確かめの続き（BUG-216・BUG-217・GAP
       await page.getByTestId("workflow-share").click();
       const dialog = page.getByRole("dialog");
       const gaps = dialog.getByTestId("access-report-unchecked");
-      await expect(gaps).toContainText("前もって確かめられないブロックがあります。足りるかは、実行したときに分かります。", {
+      await expect(gaps).toContainText("前もって確かめられないブロックがあります。使う人によって、失敗したり、使える文書やファイルが変わったりすることがあります。", {
         timeout: 20_000,
       });
       await expect(gaps).toContainText("「金額を足す」: スクリプトがテーブルやファイルなどを使うかは、動くまで分かりません。");

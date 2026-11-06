@@ -25,6 +25,7 @@ import {
   limitedNote,
   needLine,
   partPhrase,
+  UNCHECKED_EFFECT,
   uncheckedLine,
 } from "@/lib/access-wording";
 import { cn } from "@/lib/utils";
@@ -234,7 +235,7 @@ export function AccessReportView({
         <div className="text-xs" data-testid="access-report-unchecked">
           <p className="flex items-start gap-1.5 text-amber-700 dark:text-amber-400">
             <TriangleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden />
-            前もって確かめられないブロックがあります。足りるかは、実行したときに分かります。
+            前もって確かめられないブロックがあります。{UNCHECKED_EFFECT}
           </p>
           <ul className="mt-0.5 list-disc space-y-0.5 pl-5">
             {report.unchecked.map((u, i) => (
