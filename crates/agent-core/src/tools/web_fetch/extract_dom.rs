@@ -49,6 +49,25 @@ impl MathStash {
         Some(marker)
     }
 
+    /// 別行立ての式をまとめて退避する。1 本でも退避できなければ何も退避せず `None`（途中まで退避しない）。
+    fn push_all<'a>(&mut self, latexes: impl Iterator<Item = &'a str>) -> Option<Vec<String>> {
+        let tidied: Option<Vec<String>> = latexes.map(tidy_latex).collect();
+        let tidied = tidied?;
+        if self.formulas.len() + tidied.len() > MAX_FORMULAS {
+            return None;
+        }
+        Some(
+            tidied
+                .into_iter()
+                .map(|latex| {
+                    let marker = format!("{}{}X", self.prefix, self.formulas.len());
+                    self.formulas.push((latex, true));
+                    marker
+                })
+                .collect(),
+        )
+    }
+
     /// Markdown の中の目印を式に戻す。
     pub(super) fn restore(&self, markdown: &str) -> String {
         if self.formulas.is_empty() || !markdown.contains(&self.prefix) {
@@ -128,33 +147,48 @@ fn stash_equation_tables(doc: &Document, stash: &mut MathStash) {
     for table in doc.select("table.ltx_eqn_table").nodes() {
         let table = Selection::from(*table);
         let mut paragraphs = String::new();
+        let mut convertible = true;
+        let mut rows: Vec<(String, String)> = Vec::new();
         for row in table.select("tr").nodes() {
             let row = Selection::from(*row);
-            let pieces: Vec<String> = row
-                .select("math")
+            let maths = row.select("math");
+            if maths.length() == 0 {
+                // 式の無い行（空の詰め物）は捨ててよいが、文字のある行は落とせない。
+                if row.text().trim().is_empty() {
+                    continue;
+                }
+                convertible = false;
+                break;
+            }
+            let pieces: Vec<String> = maths
                 .nodes()
                 .iter()
                 .filter_map(|m| latex_of(&Selection::from(*m)))
                 .collect();
-            if pieces.is_empty() {
-                continue;
+            if pieces.len() != maths.length() {
+                convertible = false;
+                break;
             }
-            let Some(marker) = stash.push(&pieces.join(" "), true) else {
-                continue;
-            };
-            let number = row.select(".ltx_eqn_eqno").text();
+            let number = row.select(".ltx_eqn_eqno").text().trim().to_string();
+            rows.push((pieces.join(" "), number));
+        }
+        // 1 行でも変換できなければ表ごと元のまま残す（変換できた行だけにすると、残りの行の文字が消える）。
+        if !convertible || rows.is_empty() {
+            continue;
+        }
+        let Some(markers) = stash.push_all(rows.iter().map(|(latex, _)| latex.as_str())) else {
+            continue;
+        };
+        for (marker, (_, number)) in markers.into_iter().zip(&rows) {
             paragraphs.push_str("<p>");
             paragraphs.push_str(&marker);
-            let number = number.trim();
             if !number.is_empty() {
                 paragraphs.push(' ');
                 paragraphs.push_str(&escape_text(number));
             }
             paragraphs.push_str("</p>");
         }
-        if !paragraphs.is_empty() {
-            table.replace_with_html(paragraphs);
-        }
+        table.replace_with_html(paragraphs);
     }
 }
 
@@ -209,10 +243,24 @@ fn fix_lazy_images(doc: &Document) {
         let placeholder = src
             .as_deref()
             .is_none_or(|s| s.is_empty() || s.starts_with("data:"));
-        if placeholder {
-            if let Some(real) = lazy_source(&img) {
-                img.set_attr("src", &real);
-            }
+        let lazy_marked = img
+            .attr("loading")
+            .is_some_and(|l| l.eq_ignore_ascii_case("lazy"))
+            || img
+                .attr("class")
+                .is_some_and(|c| c.to_ascii_lowercase().contains("lazy"));
+        // src が空・data: のプレースホルダーなら srcset まで見る。遅延読み込みの目印があるのに src が
+        // 普通の URL（`/placeholder.gif` など）なら、data-src 系にある本当の画像を優先する
+        // （srcset は使わない: 正しい src を小さな版で上書きしない）。
+        let real = if placeholder {
+            lazy_source(&img, true)
+        } else if lazy_marked {
+            lazy_source(&img, false)
+        } else {
+            None
+        };
+        if let Some(real) = real {
+            img.set_attr("src", &real);
         }
         img.remove_attr("loading");
     }
@@ -233,8 +281,8 @@ fn fix_lazy_images(doc: &Document) {
     }
 }
 
-/// 遅延読み込みの本当の画像 URL。`data-src` 系を優先し、無ければ srcset の先頭。
-fn lazy_source(img: &Selection<'_>) -> Option<String> {
+/// 遅延読み込みの本当の画像 URL。`data-src` 系を優先し、`with_srcset` なら次に srcset の先頭。
+fn lazy_source(img: &Selection<'_>, with_srcset: bool) -> Option<String> {
     for attr in LAZY_SRC_ATTRS {
         if let Some(v) = img.attr(attr) {
             let v = v.trim();
@@ -242,6 +290,9 @@ fn lazy_source(img: &Selection<'_>) -> Option<String> {
                 return Some(v.to_string());
             }
         }
+    }
+    if !with_srcset {
+        return None;
     }
     for attr in LAZY_SRCSET_ATTRS {
         if let Some(v) = img.attr(attr) {
@@ -360,6 +411,39 @@ mod tests {
         assert_eq!(img.attr("src").as_deref(), Some("/img/a.png"));
         assert!(!img.has_attr("loading"));
         assert_eq!(img.attr("class").as_deref(), Some("thumb"));
+    }
+
+    #[test]
+    fn lazy_image_with_a_url_placeholder_uses_data_src() {
+        let doc = Document::from(
+            r#"<img class="lazyload" src="/placeholder.gif" data-src="/photo.jpg"><img loading="lazy" src="/real.png" srcset="/real-200.png 200w">"#,
+        );
+        fix_lazy_images(&doc);
+        let imgs = doc.select("img");
+        let srcs: Vec<String> = imgs
+            .nodes()
+            .iter()
+            .map(|n| Selection::from(*n).attr("src").unwrap().to_string())
+            .collect();
+        assert_eq!(
+            srcs,
+            ["/photo.jpg", "/real.png"],
+            "正しい src は srcset で上書きしない"
+        );
+    }
+
+    #[test]
+    fn equation_table_with_an_unconvertible_row_is_kept() {
+        let doc = Document::from(
+            r#"<table class="ltx_eqn_table"><tr><td><math alttext="a=b"><mi>a</mi></math></td></tr><tr><td><math><mi>x</mi></math></td></tr></table>"#,
+        );
+        let mut stash = MathStash::new();
+        stash_equation_tables(&doc, &mut stash);
+        assert!(
+            doc.select("table").exists(),
+            "変換できない行があれば表を残す"
+        );
+        assert!(stash.formulas.is_empty(), "途中まで退避しない");
     }
 
     #[test]
@@ -497,6 +581,16 @@ mod tests {
             "{out}"
         );
         assert!(!out.contains("  |"), "列幅合わせの空白を詰める: {out}");
+    }
+
+    #[test]
+    fn dashes_in_table_data_are_kept() {
+        let out = md(
+            r#"<table><tr><th>Doc</th></tr><tr><td><a href="https://example.com/a----b">資料</a> x----y</td></tr></table>"#,
+        );
+        assert!(out.contains("(https://example.com/a----b)"), "{out}");
+        assert!(out.contains("x----y"), "{out}");
+        assert!(out.contains("| --- |"), "{out}");
     }
 
     #[test]

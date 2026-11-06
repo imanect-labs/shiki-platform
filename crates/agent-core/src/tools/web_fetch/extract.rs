@@ -180,7 +180,7 @@ fn normalize(markdown: &str) -> String {
         }
         let line = slim_links(line);
         let line = if !in_fence && !fence && line.trim_start().starts_with('|') {
-            squeeze_table_row(&line)
+            squeeze_table_row(&line, is_table_separator(&line))
         } else {
             line
         };
@@ -200,8 +200,17 @@ fn normalize(markdown: &str) -> String {
     out.trim().to_string()
 }
 
-/// 表の 1 行の、列幅合わせの空白と長い罫線を詰める（`|  a   |` → `| a |`、`| ---- |` → `| --- |`）。
-fn squeeze_table_row(line: &str) -> String {
+/// 見出しの区切り行（`| --- | :---: |`）か。`|` `-` `:` と空白だけでできている。
+fn is_table_separator(line: &str) -> bool {
+    line.contains('-')
+        && line
+            .chars()
+            .all(|c| matches!(c, '|' | '-' | ':' | ' ' | '\t'))
+}
+
+/// 表の 1 行の、列幅合わせの空白を詰める（`|  a   |` → `| a |`）。長い罫線（`| ---- |` → `| --- |`）を
+/// 詰めるのは区切り行だけ（データ行の `a----b` のような値や URL は変えない）。
+fn squeeze_table_row(line: &str, separator: bool) -> String {
     let mut out = String::with_capacity(line.len());
     let mut prev_space = false;
     let mut dashes = 0usize;
@@ -215,7 +224,7 @@ fn squeeze_table_row(line: &str) -> String {
             continue;
         }
         prev_space = false;
-        if c == '-' {
+        if c == '-' && separator {
             dashes += 1;
             if dashes > 3 {
                 continue;
