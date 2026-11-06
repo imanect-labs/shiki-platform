@@ -47,6 +47,7 @@ pub const PAGE_OPEN: &str = envelope::OPEN;
 /// 封筒の閉じタグ。ページ由来の本文の同じ文字列は実体参照に潰すので、最初のものが本物。
 pub const PAGE_CLOSE: &str = envelope::CLOSE;
 mod extract;
+mod extract_dom;
 mod input;
 mod render;
 mod sections;

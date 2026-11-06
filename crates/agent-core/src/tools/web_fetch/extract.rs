@@ -15,8 +15,13 @@
 //!
 //! 本文特定が空振り（アプリ的なページ・一覧ページ）なら、掃除済み DOM 全体を Markdown 化する
 //! フォールバックへ落ちる。**何も返さないより、掃除しただけでも返す方が良い**。
+//!
+//! 抽出器が取りこぼす形（数式・遅延読み込みの画像・`<code>` の無い `<pre>`・見出し行の無い表）は、
+//! 1 と 2 の間・2 と 3 の間で DOM を正規化して救う（[`super::extract_dom`]・#1046）。
 
 use dom_smoothie::{Config, Readability};
+
+use super::extract_dom::{self, MathStash};
 
 /// 抽出結果。
 pub(super) struct Article {
@@ -61,12 +66,14 @@ const HEADING_AFFORDANCES: &str = "[class*='editsection'], .headerlink, .hash-li
 pub(super) fn html_to_markdown(html: &str, url: &str) -> Article {
     let doc = dom_query::Document::from(html);
     clean(&doc);
+    // 隠し要素を落とした後に正規化する（隠した数式の注釈を本文へ昇格させない）。
+    let math = extract_dom::prepare(&doc);
     // フォールバック用に掃除済み HTML を退避する（Readability は Document を消費する）。
     let cleaned = doc.html().to_string();
 
     let article = readability_article(doc, url);
     if let Some(article) = article {
-        let markdown = normalize(&to_markdown(&article.content));
+        let markdown = finish(&article.content, &math);
         if markdown.chars().count() >= MIN_EXTRACTED_CHARS {
             return Article {
                 title: non_empty(&article.title),
@@ -84,9 +91,16 @@ pub(super) fn html_to_markdown(html: &str, url: &str) -> Article {
         byline: None,
         site_name: None,
         published: None,
-        markdown: normalize(&to_markdown(&cleaned)),
+        markdown: finish(&cleaned, &math),
         extractor: "fallback",
     }
+}
+
+/// HTML 断片を整形済みの Markdown にし、退避した数式を戻す。
+fn finish(html: &str, math: &MathStash) -> String {
+    math.restore(&normalize(&to_markdown(
+        &extract_dom::promote_table_headers(html),
+    )))
 }
 
 /// ノイズ要素と隠し要素を DOM から落とす。
@@ -153,12 +167,23 @@ fn byline(s: &str) -> Option<String> {
 ///
 /// - 画像は `data:` URI を含むと数千トークンになり得るため、alt テキストだけ残す。
 /// - リンク URL が本文より長いことは珍しくない。テキストとして意味のないリンクは畳む。
+/// - 表のセルは htmd が列幅まで空白で埋める（MDN の属性一覧は 23 万字の 97% が表の空白だった）ので詰める。
 /// - 空行の連続・行末空白は素直に潰す。
 fn normalize(markdown: &str) -> String {
     let mut out = String::with_capacity(markdown.len());
     let mut blank_run = 0usize;
+    let mut in_fence = false;
     for line in markdown.lines() {
+        let fence = line.trim_start().starts_with("```") || line.trim_start().starts_with("~~~");
+        if fence {
+            in_fence = !in_fence;
+        }
         let line = slim_links(line);
+        let line = if !in_fence && !fence && line.trim_start().starts_with('|') {
+            squeeze_table_row(&line)
+        } else {
+            line
+        };
         let line = line.trim_end();
         if line.trim().is_empty() {
             blank_run += 1;
@@ -173,6 +198,34 @@ fn normalize(markdown: &str) -> String {
         out.push('\n');
     }
     out.trim().to_string()
+}
+
+/// 表の 1 行の、列幅合わせの空白と長い罫線を詰める（`|  a   |` → `| a |`、`| ---- |` → `| --- |`）。
+fn squeeze_table_row(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut prev_space = false;
+    let mut dashes = 0usize;
+    for c in line.trim().chars() {
+        if c == ' ' {
+            if !prev_space {
+                out.push(' ');
+            }
+            prev_space = true;
+            dashes = 0;
+            continue;
+        }
+        prev_space = false;
+        if c == '-' {
+            dashes += 1;
+            if dashes > 3 {
+                continue;
+            }
+        } else {
+            dashes = 0;
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// 1 行のリンク先から**モデルに何も与えない部分**を落とす。
@@ -197,8 +250,12 @@ fn slim_links(line: &str) -> String {
         };
         let dest = &rest[dest_start..dest_start + close_rel];
         let url = url_part(dest);
+        // 直前の `[` が `![` なら画像。画像の URL は CDN の署名やサイズ指定で長くなるので別の上限にする。
+        let is_image = rest[..open]
+            .rfind('[')
+            .is_some_and(|i| i > 0 && rest.as_bytes()[i - 1] == b'!');
         out.push_str(&rest[..open]);
-        if drop_destination(url) {
+        if drop_destination(url, is_image) {
             out.push(']');
         } else {
             // `title` は落とし、URL だけ残す（`dest` をそのまま書き戻さない）。
@@ -213,11 +270,16 @@ fn slim_links(line: &str) -> String {
 }
 
 /// 行き先を捨てるか。
-fn drop_destination(url: &str) -> bool {
+fn drop_destination(url: &str, is_image: bool) -> bool {
+    let limit = if is_image {
+        MAX_IMAGE_URL_CHARS
+    } else {
+        MAX_LINK_URL_CHARS
+    };
     url.is_empty()
         || url.starts_with("data:")
         || url.starts_with('#')
-        || url.chars().count() > MAX_LINK_URL_CHARS
+        || url.chars().count() > limit
 }
 
 /// `](dest)` の閉じ括弧をバイト位置で返す。
@@ -256,6 +318,9 @@ fn url_part(dest: &str) -> &str {
 
 /// リンク先を残す上限。トラッキングパラメータ塗れの URL は本文より長くなる。
 const MAX_LINK_URL_CHARS: usize = 160;
+/// 画像の URL を残す上限。回答の画像の出所判定（`chat::answer_images`）が扱う長さと揃える。
+/// Wikipedia のサムネイルは約 190 文字あり、リンクの上限では URL が落ちて画像を出せない。
+const MAX_IMAGE_URL_CHARS: usize = 2_048;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
