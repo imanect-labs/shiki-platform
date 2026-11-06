@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use std::io::{Read, Seek};
 
 use calamine::Xlsx;
-use tabular::input::{MAX_CELLS, MAX_COLUMNS, MAX_GRID_CELLS, MAX_TEXT_BYTES};
+use tabular_protocol::input::{MAX_CELLS, MAX_COLUMNS, MAX_GRID_CELLS, MAX_TEXT_BYTES};
 
 use super::shape::{sheet_of, value_of, Sheet, Value};
 use super::{Unreadable, BROKEN};

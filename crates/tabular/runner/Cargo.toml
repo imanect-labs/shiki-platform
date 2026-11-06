@@ -15,8 +15,9 @@ name = "shiki-tabular-runner"
 path = "src/main.rs"
 
 [dependencies]
-# プロトコル型（RunnerRequest/RunnerResponse）を lib と共有する。
-shiki-tabular = { path = ".." }
+# プロトコルの型（RunnerRequest/RunnerResponse）・Excel の入力の上限・SQL が読む表の名前を api 側の lib と共有する。
+# api 側の lib（shiki-tabular）には依存しない（ストレージ・認可・HTTP・DB のクレートをランナーに組まない・GAP-95）。
+shiki-tabular-protocol = { path = "../protocol" }
 # 隔離 DuckDB（bundled C++）。このクレートだけがリンクする。
 duckdb = { version = "1", features = ["bundled"] }
 serde_json = "1"
@@ -27,6 +28,6 @@ zip = { version = "9", default-features = false, features = ["deflate"] }
 # プロセスのアドレス空間の上限（RLIMIT_AS・PIT-39）。DuckDB の memory_limit は Rust 側の確保に効かない。
 rustix = { version = "1", default-features = false, features = ["std", "process"] }
 
-# lib 名 tabular で参照するため machete（名前一致）が誤検出する。
+# lib 名 tabular_protocol で参照するため machete（名前一致）が誤検出する。
 [package.metadata.cargo-machete]
-ignored = ["shiki-tabular"]
+ignored = ["shiki-tabular-protocol"]

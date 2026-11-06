@@ -5805,13 +5805,22 @@ dependencies = [
  "serde_json",
  "shiki-authz",
  "shiki-storage",
+ "shiki-tabular-protocol",
  "shiki-textenc",
- "sqlparser",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "shiki-tabular-protocol"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sqlparser",
 ]
 
 [[package]]

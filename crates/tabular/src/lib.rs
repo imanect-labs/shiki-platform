@@ -12,13 +12,15 @@
 //! - メモリ/時間/結果サイズの**クォータをプロセス境界で強制**（超過はプロセスごと kill）。
 //! - 失敗は常に fail-closed。
 //!
-//! **DuckDB（重い C++）は `runner` feature でのみリンクされる**。api（lib 利用者）は default
-//! features で使い DuckDB をリンクしない＝敵対的 CSV を api プロセスに一切食わせない。
+//! **DuckDB（重い C++）は隔離ランナーだけがリンクする**。api（lib 利用者）は DuckDB をリンクしない＝敵対的 CSV を
+//! api プロセスに一切食わせない。ランナーとの JSON プロトコルの型・Excel の入力の上限・SQL の検証は、ランナーと
+//! 共有する小さなクレート（`shiki-tabular-protocol`）にあり、ここで再エクスポートする。ランナーはこの lib ではなく
+//! そのクレートだけに依存する（ストレージ・認可などをランナーに組まない・GAP-95）。
 
 pub mod error;
 pub mod input;
 pub mod patch;
-pub mod protocol;
+pub use tabular_protocol::protocol;
 pub mod runner;
 pub mod service;
 pub mod sql_guard;

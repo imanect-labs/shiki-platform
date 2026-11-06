@@ -1,7 +1,7 @@
 //! 隔離 DuckDB ランナー（Phase 11-pre Task 11P.7・PIT-39）。
 //!
-//! 非特権プロセスとして stdin から [`tabular::RunnerRequest`] を 1 件読み、ロックダウンした
-//! DuckDB で実行し、[`tabular::RunnerResponse`] を stdout へ書く。**資格情報を持たない**
+//! 非特権プロセスとして stdin から [`tabular_protocol::RunnerRequest`] を 1 件読み、ロックダウンした
+//! DuckDB で実行し、[`tabular_protocol::RunnerResponse`] を stdout へ書く。**資格情報を持たない**
 //! （認可は api 側で完了済み）。CSV の解釈はこのプロセス内でのみ行う。
 //!
 //! # ロックダウン手順（順序が重要）
@@ -18,7 +18,7 @@
 //!
 //! 集計の結果は、行の数（`max_rows`）と大きさ（`max_result_bytes`）の上限の手前で打ち切る（GAP-92・[`query`]）。
 //!
-//! 入力を読む前に、プロセスのアドレス空間に上限（RLIMIT_AS・[`tabular::protocol::runner_address_space_bytes`]）を
+//! 入力を読む前に、プロセスのアドレス空間に上限（RLIMIT_AS・[`tabular_protocol::protocol::runner_address_space_bytes`]）を
 //! 付ける。DuckDB の memory_limit は Rust 側（Excel の読み取り）の確保に効かないため。超えると確保に失敗して
 //! 落ち、api はメモリの超過として返す（PIT-39）。
 
@@ -29,8 +29,8 @@ use std::io::{Read, Write};
 
 use duckdb::Connection;
 use rustix::process::{getrlimit, setrlimit, Resource, Rlimit};
-use tabular::protocol::runner_address_space_bytes;
-use tabular::{CsvDialect, InputFormat, RunnerOp, RunnerRequest, RunnerResponse};
+use tabular_protocol::protocol::runner_address_space_bytes;
+use tabular_protocol::{CsvDialect, InputFormat, RunnerOp, RunnerRequest, RunnerResponse};
 
 fn main() {
     let mut input = Vec::new();

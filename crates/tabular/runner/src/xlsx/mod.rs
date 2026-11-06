@@ -1,6 +1,6 @@
 //! Excel（.xlsx）を表として読み、DuckDB に入れる（CSV を集計の読み取りだけ・D-17）。
 //!
-//! アップロードされた Excel は敵対的な入力として扱う。上限（`tabular::input` の定数）は次の順に確かめる。
+//! アップロードされた Excel は敵対的な入力として扱う。上限（`tabular_protocol::input` の定数）は次の順に確かめる。
 //!
 //! 1. ファイルの大きさ・zip の中の数。中のファイルを 1 つずつ実際に展開して数え、1 つずつと合わせた大きさの上限を
 //!    超えたら読まない（zip が書く大きさは信じない・zip 爆弾）。展開は deflate だけ（ほかの圧縮・暗号は読まない）。
@@ -29,10 +29,10 @@ use std::io::{BufReader, Read};
 
 use calamine::{Reader, SheetType, SheetVisible, Xlsx, XlsxError};
 use duckdb::{appender_params_from_iter, Connection};
-use tabular::input::{
+use tabular_protocol::input::{
     file_too_large, MAX_ENTRIES, MAX_ENTRY_UNPACKED_BYTES, MAX_FILE_BYTES, MAX_UNPACKED_BYTES,
 };
-use tabular::SheetInfo;
+use tabular_protocol::SheetInfo;
 
 use shape::Sheet;
 
@@ -106,7 +106,7 @@ pub fn load(conn: &Connection, path: &str, want: Want<'_>) -> Result<Loaded, Loa
     // 集計は SQL が表として読む名前だけ（読めない SQL は data だけ。api が検証した SQL なので来ない）。
     let (typed, names) = match want {
         Want::Data => (false, None),
-        Want::Query(sql) => (true, tabular::sql_guard::table_names(sql)),
+        Want::Query(sql) => (true, tabular_protocol::sql_guard::table_names(sql)),
     };
     let reads = |info: &SheetInfo| {
         names

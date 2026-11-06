@@ -10,14 +10,14 @@
 //!   JavaScript で正確に扱えない大きな整数（±(2^53-1) を超える）と、無限大・非数は文字にする。
 //!
 //! 集計の結果は、行の数の上限（`max_rows`）に加えて、大きさの上限（`max_result_bytes`・ワークフローの結果に入れる形で
-//! 数える・[`tabular::protocol::result_row_bytes`]）の手前で打ち切り、`truncated` を立てる（GAP-92）。上限を超える行は
+//! 数える・[`tabular_protocol::protocol::result_row_bytes`]）の手前で打ち切り、`truncated` を立てる（GAP-92）。上限を超える行は
 //! 入れない（1 行目が超えるときは行の無い結果になる）。
 
 use duckdb::types::ValueRef;
 use duckdb::{Connection, Row};
 use serde_json::{Number, Value};
-use tabular::protocol::result_row_bytes;
-use tabular::RunnerResponse;
+use tabular_protocol::protocol::result_row_bytes;
+use tabular_protocol::RunnerResponse;
 
 /// JavaScript で正確に扱える最大の整数（`Number.MAX_SAFE_INTEGER`）。
 const MAX_SAFE_INTEGER: i128 = (1 << 53) - 1;

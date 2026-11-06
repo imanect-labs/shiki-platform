@@ -197,6 +197,14 @@ jobs:
           tool: cargo-deny
       - name: cargo deny check (runner の Cargo.lock)
         run: cargo deny --manifest-path crates/tabular/runner/Cargo.toml --all-features check --config deny.toml
+      # ランナーが組むワークスペースのクレートは、共有のプロトコルのクレート（crates/tabular/protocol）だけにする。api 側の
+      # lib（shiki-tabular）を依存に戻すと、ストレージ・認可・HTTP・DB のクレートがランナーの lock とビルドに入る（GAP-95）。
+      - name: runner の依存にワークスペースのサービスのクレートが無いこと
+        run: |
+          deps=$(cargo tree --manifest-path crates/tabular/runner/Cargo.toml --locked -e normal,build --prefix none \
+            | awk '/^shiki-/ { print $1 }' | sort -u | tr '\n' ' ')
+          echo "runner が組む shiki-* のクレート: ${deps}"
+          test "${deps}" = "shiki-tabular-protocol shiki-tabular-runner "
       - name: fmt / clippy (runner)
         run: |
           cargo fmt --manifest-path crates/tabular/runner/Cargo.toml --check

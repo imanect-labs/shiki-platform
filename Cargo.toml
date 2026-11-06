@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/*"]
+members = ["crates/*", "crates/tabular/protocol"]
 # vendor/secure-exec は我々が所有するフォーク（独自 workspace）。shiki の workspace には入れず、
 # path 依存で参照する。clippy/test/llvm-cov/machete/file-size は自作コードのみに当たり、
 # cargo deny だけが依存グラフ全体（V8 等）を検査する。docs/sandbox/fork-policy.md 参照。
@@ -183,7 +183,7 @@ dom_query = "0.28"
 # 判定は crates/textenc の 1 か所に置き、web_fetch・ファイルを読む・CSV・データの取り込みが共有する（GAP-45）。
 encoding_rs = "0.8"
 chardetng = "0.1"
-# CSV クエリサービス（Task 11P.7）: SQL RO 検証（sqlparser）。DuckDB（重い C++）は
+# CSV クエリサービス（Task 11P.7）: SQL RO 検証（sqlparser・ランナーと共有する crates/tabular/protocol が使う）。DuckDB（重い C++）は
 # 隔離ランナー専用クレート `crates/tabular/runner`（workspace 除外）だけが依存する
 # ＝メイン workspace の --all-features clippy/build に DuckDB を混ぜない（CI 高速化・
 # api プロセスに DuckDB をリンクしない）。
@@ -195,6 +195,7 @@ csv = "1"
 shiki-authz = { path = "crates/authz" }
 shiki-collab = { path = "crates/collab" }
 shiki-tabular = { path = "crates/tabular" }
+shiki-tabular-protocol = { path = "crates/tabular/protocol" }
 shiki-data = { path = "crates/data" }
 shiki-app-platform = { path = "crates/app-platform" }
 shiki-app-gateway = { path = "crates/app-gateway" }
