@@ -34,9 +34,9 @@ pub struct AccessChange {
 /// 要る権限の増え方。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AccessChangeKind {
-    /// 増える（`conditional` は道によって通るブロックだけが要る）。
+    /// 増える（`conditional` は場合によって要る・[`PartNeed::conditional`]）。
     Added { conditional: bool },
-    /// 道によって通るブロックだけが要っていたものが、毎回要るようになる。
+    /// 場合によって要っていたものが、毎回要るようになる。
     Always,
     /// 要らなくなる。
     Removed,
@@ -127,7 +127,7 @@ fn scope_changes(from: &Value, to: &Value) -> Vec<PinDiff> {
     out
 }
 
-/// 要る権限 1 つ（対象・操作）と、道によって通るブロックだけが要るか（同じものは 1 つにし、1 つでも毎回要れば毎回要る）。
+/// 要る権限 1 つ（対象・操作）と、場合によって要るか（同じものは 1 つにし、1 つでも毎回要れば毎回要る）。
 fn merged(needs: &[PartNeed]) -> Vec<(AccessObject, Option<Uuid>, AccessKind, bool)> {
     let mut out: Vec<(AccessObject, Option<Uuid>, AccessKind, bool)> = Vec::new();
     for n in needs {

@@ -76,13 +76,13 @@ pub enum PinDiff {
     ViewDisplay,
     /// スキルの設定のうち 1 つが変わる（中身は返さない・GAP-86）。
     Skill { part: SkillPart },
-    /// 使う人に要る権限が増える（GAP-11）。`conditional` は、道によって通るブロックだけが要る（BUG-216・足りなくても
-    /// 使う人のボタンは止めない）。
+    /// 使う人に要る権限が増える（GAP-11）。`conditional` は場合によって要る（道によって通るブロックか、失敗を
+    /// 「エラー時」の出口で扱うブロックだけが要る・BUG-216・足りなくても使う人のボタンは止めない）。
     AccessAdded {
         access: PinAccess,
         conditional: bool,
     },
-    /// 道によって通るブロックだけが要っていた権限が、毎回要るようになる（足りない人のボタンは止まる・GAP-11）。
+    /// 場合によって要っていた権限が、毎回要るようになる（足りない人のボタンは止まる・GAP-11）。
     AccessAlways { access: PinAccess },
     /// 使う人に要る権限が要らなくなる（GAP-11）。
     AccessRemoved { access: PinAccess },

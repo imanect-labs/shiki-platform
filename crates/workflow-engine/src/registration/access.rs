@@ -41,6 +41,11 @@
 //! 要る権限には、そのブロックが毎回動くかを添える（[`AccessNeed::conditional`]・決まりは [`crate::ir::paths`] の
 //! 1 か所）。分かれた流れ・「エラー時」の出口の先・繰り返しの中のブロックは、入力や結果によって動かないので、使う人の
 //! ボタンはそれだけでは止めない（通らない入力でも押せなくすると、前は動いていたボタンを止める）。
+//!
+//! 毎回動くブロックでも、失敗を「エラー時」の出口で扱うブロック（`on_error: continue` で `error` の出口から線が出て
+//! いるもの・[`crate::ir::paths::failure_handled`]）が要る権限は、場合によって要るものとする。権限が足りなければ
+//! そのブロックが失敗し、作った人が決めた道（誤りの返答など）で終わるので、使う人のボタンと「いま実行する」は止めない
+//! （ir.md §7.10 が業務上の失敗をこの形で扱うよう勧めている）。
 
 use std::collections::HashSet;
 
@@ -50,7 +55,7 @@ use uuid::Uuid;
 
 use super::consent::suggested_grants;
 use super::{RegistrationService, SuggestedGrant};
-use crate::ir::paths::always_run;
+use crate::ir::paths::{always_run, failure_handled};
 use crate::ir::validate::block_name;
 use crate::ir::WorkflowIr;
 use crate::vocab::{NodeType, Scope};
@@ -104,8 +109,9 @@ pub struct AccessNeed {
     /// 対象（UUID を直接入れた欄のとき）。入力や前の結果で決まる・まだ選んでいないときは `None`。
     pub object_id: Option<Uuid>,
     pub kind: AccessKind,
-    /// 道によって通るブロックだけが要る（分かれた流れ・「エラー時」の出口の先・繰り返しの中・[`crate::ir::paths`]）。
-    /// 偽なら、前のブロックがうまくいったとき毎回要る。
+    /// 場合によって要る: 道によって通るブロック（分かれた流れ・「エラー時」の出口の先・繰り返しの中・
+    /// [`crate::ir::paths`]）か、失敗を「エラー時」の出口で扱うブロックだけが要る。偽なら、前のブロックがうまく
+    /// いったとき毎回要り、足りなければ実行が失敗する。
     pub conditional: bool,
 }
 
@@ -152,10 +158,10 @@ impl RegistrationService {
     /// 読む・書くの区別と対象は、同意の提案と同じ定義から読み替える（[モジュールの説明](self)）。
     #[must_use]
     pub fn access_needs(ir: &WorkflowIr) -> Vec<AccessNeed> {
-        let always = always_run(ir);
+        let sure = sure_nodes(ir);
         let mut out: Vec<AccessNeed> = Vec::new();
         for grant in suggested_grants(ir) {
-            let Some(Reading::Need(need)) = read_grant(ir, &grant, &always) else {
+            let Some(Reading::Need(need)) = read_grant(ir, &grant, &sure) else {
                 continue;
             };
             if !out.contains(&need) {
@@ -169,10 +175,10 @@ impl RegistrationService {
     /// GAP-82）。
     #[must_use]
     pub fn access_gaps(ir: &WorkflowIr) -> Vec<AccessGap> {
-        let always = always_run(ir);
+        let sure = sure_nodes(ir);
         let mut found: Vec<(String, AccessUnchecked)> = Vec::new();
         for grant in suggested_grants(ir) {
-            if let Some(Reading::Unchecked(kind)) = read_grant(ir, &grant, &always) {
+            if let Some(Reading::Unchecked(kind)) = read_grant(ir, &grant, &sure) {
                 let node_id = grant.source.trim_start_matches("node:").to_string();
                 if !found.contains(&(node_id.clone(), kind)) {
                     found.push((node_id, kind));
@@ -207,6 +213,16 @@ impl RegistrationService {
     }
 }
 
+/// 要る権限が足りないと使う人のボタンを止めるブロック（前のブロックがうまくいったとき毎回動き、失敗を「エラー時」の
+/// 出口で扱わないもの・[モジュールの説明](self)）。
+fn sure_nodes(ir: &WorkflowIr) -> HashSet<&str> {
+    let handled = failure_handled(ir);
+    always_run(ir)
+        .into_iter()
+        .filter(|id| !handled.contains(id))
+        .collect()
+}
+
 /// 同意の提案 1 つの、手動の実行での読み替え。
 enum Reading {
     /// 本人に要る権限。
@@ -217,7 +233,7 @@ enum Reading {
 
 /// 同意の提案 1 つを、手動の実行で本人に要る権限か、前もって確かめられないブロックに読み替える（どちらでもない提案は
 /// `None`）。
-fn read_grant(ir: &WorkflowIr, grant: &SuggestedGrant, always: &HashSet<&str>) -> Option<Reading> {
+fn read_grant(ir: &WorkflowIr, grant: &SuggestedGrant, sure: &HashSet<&str>) -> Option<Reading> {
     // きっかけ（trigger:i）は自動実行の委譲で読むもの（手動の実行では使わない）。
     let node_id = grant.source.strip_prefix("node:")?;
     let node = ir.nodes.iter().find(|n| n.id == node_id)?;
@@ -265,7 +281,7 @@ fn read_grant(ir: &WorkflowIr, grant: &SuggestedGrant, always: &HashSet<&str>) -
         object,
         object_id,
         kind,
-        conditional: !always.contains(node_id),
+        conditional: !sure.contains(node_id),
     }))
 }
 
@@ -390,31 +406,69 @@ mod tests {
         );
     }
 
+    fn conditional_of(ir: &serde_json::Value) -> Vec<(String, bool)> {
+        let ir = WorkflowIr::from_json(ir).expect("test IR");
+        RegistrationService::access_needs(&ir)
+            .into_iter()
+            .map(|n| (n.node_id, n.conditional))
+            .collect()
+    }
+
     /// 分かれた流れの片方・「エラー時」の出口の先だけが使う対象は、道によって要ると印を付ける。毎回通るブロックの
     /// 対象は印を付けない（BUG-216: 通らない入力でも使う人のボタンを止めない）。
     #[test]
     fn needs_on_branches_and_error_paths_are_conditional() {
-        let ir = WorkflowIr::from_json(&json!({
+        let got = conditional_of(&json!({
             "ir_version": 1, "name": "wf", "declared_scopes": ["data.read", "data.write"],
             "nodes": [
+                { "id": "first", "type": "data.query", "params": { "table": TABLE } },
                 { "id": "add", "type": "data.record.create", "params": { "table": TABLE, "data": {} }, "on_error": "continue" },
                 { "id": "b", "type": "control.branch", "params": { "condition": { "cmp": { "left": 1, "op": "eq", "right": 1 } } } },
                 { "id": "big", "type": "data.record.delete", "params": { "table": FOLDER } },
                 { "id": "fix", "type": "data.record.update", "params": { "table": FILE } }
             ],
             "edges": [
+                { "from": "first", "to": "add" },
                 { "from": "add", "to": "b" },
                 { "from": "b", "from_port": "true", "to": "big" },
                 { "from": "add", "from_port": "error", "to": "fix" }
             ]
-        }))
-        .expect("test IR");
-        let needs = RegistrationService::access_needs(&ir);
-        let got: Vec<(&str, bool)> = needs
-            .iter()
-            .map(|n| (n.node_id.as_str(), n.conditional))
-            .collect();
-        assert_eq!(got, vec![("add", false), ("big", true), ("fix", true)]);
+        }));
+        let got: Vec<(&str, bool)> = got.iter().map(|(id, c)| (id.as_str(), *c)).collect();
+        assert_eq!(
+            got,
+            vec![
+                ("first", false),
+                ("add", true),
+                ("big", true),
+                ("fix", true)
+            ]
+        );
+    }
+
+    /// 毎回動くブロックでも、失敗を「エラー時」の出口で扱う（`on_error: continue` で `error` の出口に線がある）なら、
+    /// その権限は場合によって要る（足りなければ作った人が決めた誤りの返答で終わるので、使う人のボタンと「いま実行
+    /// する」を止めない）。`continue` でも `error` の出口に線が無いブロックは、毎回要るまま。
+    #[test]
+    fn needs_of_blocks_that_handle_their_own_failure_are_conditional() {
+        let wf = |error_edge: bool| {
+            let mut edges = vec![json!({ "from": "add", "to": "done" })];
+            if error_edge {
+                edges.push(json!({ "from": "add", "from_port": "error", "to": "sorry" }));
+            }
+            json!({
+                "ir_version": 1, "name": "wf", "declared_scopes": ["data.write"],
+                "triggers": [{ "kind": "interactive" }],
+                "nodes": [
+                    { "id": "add", "type": "data.record.create", "params": { "table": TABLE, "data": {} }, "on_error": "continue" },
+                    { "id": "done", "type": "workflow.reply", "params": { "text": "申請しました" } },
+                    { "id": "sorry", "type": "workflow.reply", "params": { "text": "申請先に書けません", "tone": "error" } }
+                ],
+                "edges": edges
+            })
+        };
+        assert_eq!(conditional_of(&wf(true)), vec![("add".to_string(), true)]);
+        assert_eq!(conditional_of(&wf(false)), vec![("add".to_string(), false)]);
     }
 
     /// スクリプト（使ってよい操作にテーブルなどがあるとき）・AI エージェントの読むツール・シークレット・別のワークフローを

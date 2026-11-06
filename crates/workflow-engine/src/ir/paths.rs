@@ -15,12 +15,34 @@
 //! - 繰り返し（`control.map`）の中のブロックは、要素が無ければ動かないので必ず通らない（繰り返しの後ろのブロックは、
 //!   繰り返し自身の `out` から決まる）。
 //! - 出口を導けないブロック（壊れた params・未知の種類）からは、必ず通るとは言わない（止めすぎない側に倒す）。
+//!
+//! 毎回動くブロックでも、失敗を「エラー時」の出口で扱うブロック（[`failure_handled`]・`on_error: continue` で `error`
+//! の出口から線が出ているもの）は、失敗しても作った人が決めた道で終わる（ir.md §7.10 の業務上の失敗の置き方）。押す前の
+//! 権限の確かめは、このブロックが要る権限でも使う人のボタンを止めない（前は押せて、作った人が用意した誤りの返答で
+//! 終わっていた）。
 
 use std::collections::{HashMap, HashSet};
 
 use super::validate::output_ports;
-use super::{Node, WorkflowIr};
+use super::{Node, OnError, WorkflowIr};
 use crate::vocab::NodeType;
+
+/// 失敗を「エラー時」の出口で扱うブロックの id（`on_error: continue` で、`error` の出口から線が出ているもの・
+/// [モジュールの説明](self)）。`error` の出口に線の無い `continue` は、失敗の後に何もしないので入れない。
+#[must_use]
+pub fn failure_handled(ir: &WorkflowIr) -> HashSet<&str> {
+    let handled: HashSet<&str> = ir
+        .edges
+        .iter()
+        .filter(|e| e.from_port == "error")
+        .map(|e| e.from.as_str())
+        .collect();
+    ir.nodes
+        .iter()
+        .filter(|n| n.on_error == OnError::Continue && handled.contains(n.id.as_str()))
+        .map(|n| n.id.as_str())
+        .collect()
+}
 
 /// 前のブロックがうまくいったとき、毎回必ず動くブロックの id（[モジュールの説明](self)）。
 #[must_use]
@@ -147,6 +169,31 @@ mod tests {
             ]),
         );
         assert_eq!(sorted(&ir), vec!["b", "end", "j2", "s"]);
+    }
+
+    /// 失敗を「エラー時」の出口で扱うのは、`on_error: continue` で `error` の出口から線が出ているブロックだけ。
+    /// `continue` でも線が無いもの・`fail_run` で `error` の線だけがある（保存では止まる）ものは入れない。
+    #[test]
+    fn failure_handled_needs_continue_and_an_error_edge() {
+        let ir = ir(
+            &json!([
+                { "id": "add", "type": "data.record.create", "params": {}, "on_error": "continue" },
+                { "id": "loose", "type": "data.record.create", "params": {}, "on_error": "continue" },
+                { "id": "strict", "type": "data.record.create", "params": {} },
+                { "id": "ok", "type": "workflow.reply", "params": {} },
+                { "id": "ng", "type": "workflow.reply", "params": {} }
+            ]),
+            &json!([
+                { "from": "add", "to": "ok" },
+                { "from": "add", "from_port": "error", "to": "ng" },
+                { "from": "strict", "from_port": "error", "to": "ng" }
+            ]),
+        );
+        let mut got: Vec<&str> = failure_handled(&ir).into_iter().collect();
+        got.sort_unstable();
+        assert_eq!(got, vec!["add"]);
+        // 毎回動くかの決まりは変えない（入口のブロックは毎回動く）。
+        assert!(always_run(&ir).contains("add"));
     }
 
     /// 繰り返しの中は要素が無ければ動かないので道による。繰り返しの後ろは繰り返しの「次へ」から必ず通る。

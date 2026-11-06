@@ -467,8 +467,9 @@ async fn unavailable_parts_and_shared_workflows() {
 }
 
 /// 道によって通るブロックだけが要る権限では、使う人のボタンを止めない（BUG-216）。分かれた流れの片方・「エラー時」の
-/// 出口の先だけが書くテーブルに権限が無くても、保存済みのアプリのボタンは押せる（7g の前と同じ）。必ず通るブロックが
-/// 要る権限が足りなければ止める。作る人には、どちらも挙げて「場合によって要る」と言い分ける。
+/// 出口の先だけが書くテーブルに権限が無くても、保存済みのアプリのボタンは押せる（7g の前と同じ）。毎回動くブロックでも、
+/// 失敗を「エラー時」の出口で扱うブロックの権限では止めない（作った人が用意した誤りの返答で終わる）。必ず通るブロックが
+/// 要る権限が足りなければ止める。作る人には、どれも挙げて「場合によって要る」と言い分ける。
 #[tokio::test]
 async fn needs_on_some_paths_do_not_block_buttons() {
     let Some(pool) = pool().await else { return };
@@ -488,22 +489,26 @@ async fn needs_on_some_paths_do_not_block_buttons() {
         let big = e.table(&alice, "高額の確認").await;
         let errors = e.table(&alice, "失敗の記録").await;
         e.grant(&user("bob"), Relation::Submitter, ns.data_table(&claims.to_string()), &alice).await;
-        // 申請を足し、金額が大きいときだけ高額の確認に足す。足せなかったら失敗の記録に足す（bob はどちらも持たない）。
+        // 申請を足し、金額が大きいときだけ高額の確認に足す。続けて失敗の記録にも足すが、足せなければ「エラー時」の出口で
+        // 高額の確認に足す（bob は高額の確認・失敗の記録のどちらも持たない）。
         let ir = json!({
             "ir_version": 1, "name": "申請",
             "declared_scopes": ["data.write"],
             "nodes": [
-                { "id": "add", "type": "data.record.create", "on_error": "continue",
+                { "id": "add", "type": "data.record.create",
                   "params": { "table": claims.to_string(), "data": {} } },
                 { "id": "check", "type": "control.branch",
                   "params": { "condition": { "cmp": { "left": { "$from": "input", "path": "/amount" }, "op": "gt", "right": 100000 } } } },
                 { "id": "big", "type": "data.record.create", "params": { "table": big.to_string(), "data": {} } },
-                { "id": "log", "type": "data.record.create", "params": { "table": errors.to_string(), "data": {} } }
+                { "id": "log", "type": "data.record.create", "on_error": "continue",
+                  "params": { "table": errors.to_string(), "data": {} } },
+                { "id": "sorry", "type": "data.record.create", "params": { "table": big.to_string(), "data": {} } }
             ],
             "edges": [
                 { "from": "add", "to": "check" },
                 { "from": "check", "from_port": "true", "to": "big" },
-                { "from": "add", "from_port": "error", "to": "log" }
+                { "from": "add", "to": "log" },
+                { "from": "log", "from_port": "error", "to": "sorry" }
             ]
         });
         let wf = e
@@ -521,12 +526,13 @@ async fn needs_on_some_paths_do_not_block_buttons() {
         e.mini_apps.publish(&alice, app, 1, None).await.unwrap();
         e.artifacts.share(&alice, app, &user("bob"), ArtifactRole::Viewer, None).await.unwrap();
 
-        // 使う人: 必ず通る追加は足りるので、ボタンは止まらない（高額の確認・失敗の記録の権限は問わない）。
+        // 使う人: 必ず通る追加は足りるので、ボタンは止まらない（高額の確認・失敗の記録の権限は問わない。失敗の記録は
+        // 毎回書くが、失敗を「エラー時」の出口で扱う）。
         let (v, parts) = e.mini_apps.part_needs(&bob, app, None, "my_access", None).await.unwrap();
         let mine = e.checker().mine(&bob, v, &parts).await.unwrap();
-        assert!(mine.parts.is_empty(), "道によって通るブロックの権限でボタンを止めない: {mine:?}");
+        assert!(mine.parts.is_empty(), "場合によって要る権限でボタンを止めない: {mine:?}");
 
-        // 作る人: 3 つとも挙げ、道によって通るものに印を付ける。bob に足りないのは場合によって要るものだけ。
+        // 作る人: 3 つとも挙げ、場合によって要るものに印を付ける。bob に足りないのは場合によって要るものだけ。
         let subjects = e.checker().subjects_for(&alice, app, None, None).await.unwrap().unwrap();
         let report = e.checker().report(&alice, v, &parts, Some(&subjects.0)).await.unwrap();
         let flags: Vec<(String, bool)> = report
