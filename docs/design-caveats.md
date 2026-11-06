@@ -1478,7 +1478,7 @@ skillex 境界（§4.1.1, PIT-26〜29。2026-09-29 に共有プレーン廃止�
   - 取得は web_fetch と同じ関門（`agent-core` の `tools/public_fetch`: URL 検証・解決後 IP の検証とアドレス固定・
     プロキシ非経由）を通す。リダイレクトは 3 回まで、1 回ごとに検証し直す。大きさは 8 MiB、時間は 1 回の取得で 10 秒・
     リダイレクトを含む 1 要求で 20 秒を上限とし、外部への取得は同時 16 件まで（空かなければ 503 でリンクに落とす）。
-    **中身のマジックバイト**で png / jpeg / gif / webp / avif だけを通す（宣言された Content-Type は信じない・SVG は通さない）。
+    **宣言された Content-Type と中身のマジックバイトの両方**で png / jpeg / gif / webp / avif だけを通す（宣言が画像以外・SVG なら取得しない。宣言なし・`application/octet-stream` は中身に任せ、返す型は中身から判定する）。
     応答には `nosniff`・`CSP: default-src 'none'; sandbox`・`Cache-Control: private` を付ける。
   - 代理取得の経路が無い描画（回答 ID がまだ無い・会話以外）と、取得に失敗した画像は、出典に無い画像と同じリンクに落とす。
     サーバ描画の `<img>` は hydration 前に失敗し得るので、付いた時点の `complete && naturalWidth === 0` でも失敗とみなす。

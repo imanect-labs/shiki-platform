@@ -3,9 +3,13 @@
 //! - リダイレクトは [`MAX_REDIRECTS`] 回まで追い、**1 回ごとに URL 検証と解決後 IP の検証をやり直す**
 //!   （画像 CDN は 3xx を返すことが多いが、検証を迂回する誘導にもなる・PIT-36）。
 //! - 時間（[`FETCH_TIMEOUT`]）と大きさ（[`MAX_IMAGE_BYTES`]）に上限を掛ける。
-//! - **中身のマジックバイト**で png / jpeg / gif / webp / avif だけを通す。宣言された Content-Type は
-//!   信じない（`image/png` と名乗る HTML も、スクリプトを持てる SVG も通さない）。返す Content-Type も
-//!   判定した型にする。
+//! - **宣言された Content-Type と中身のマジックバイトの両方**で絞る（#1044）。
+//!   - 宣言が画像以外（`text/html` など）や SVG なら取得しない。宣言が無い・`application/octet-stream`
+//!     （オブジェクトストレージの既定値）は中身の判定に任せる。
+//!   - 中身は png / jpeg / gif / webp / avif だけを通す（`image/png` と名乗る HTML も、スクリプトを持てる
+//!     SVG も通さない）。返す Content-Type は中身から判定した型にする。
+//!   - 宣言と中身の型の完全一致までは求めない（webp を `image/jpeg` と名乗って配る CDN は珍しくなく、
+//!     どちらも許可した画像形式であれば危険は無い）。
 
 use std::time::Duration;
 
@@ -96,6 +100,9 @@ pub(crate) async fn fetch_image(
         if !status.is_success() {
             return Err(ImageFetchError::Upstream(status.to_string()));
         }
+        if !declared_type_allowed(response.headers().get(reqwest::header::CONTENT_TYPE)) {
+            return Err(ImageFetchError::NotImage);
+        }
         if response
             .content_length()
             .is_some_and(|n| n > MAX_IMAGE_BYTES as u64)
@@ -118,6 +125,27 @@ pub(crate) async fn fetch_image(
 /// reqwest のエラーから URL を落として文言にする（リダイレクト先の署名付き URL をログに残さない）。
 fn upstream(e: reqwest::Error) -> ImageFetchError {
     ImageFetchError::Upstream(e.without_url().to_string())
+}
+
+/// 宣言された Content-Type が取得してよいものか。画像（SVG を除く）・宣言なし・
+/// `application/octet-stream` だけを通す。最終的な型は中身で決める（[`sniff_image`]）。
+fn declared_type_allowed(value: Option<&reqwest::header::HeaderValue>) -> bool {
+    let Some(value) = value else {
+        return true;
+    };
+    let Ok(raw) = value.to_str() else {
+        return false;
+    };
+    let media = raw
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    if media.is_empty() || media == "application/octet-stream" {
+        return true;
+    }
+    media.starts_with("image/") && media != "image/svg+xml"
 }
 
 /// 中身の先頭から画像形式を判定する。許可するのはラスタ画像だけ（SVG は通さない）。
@@ -211,12 +239,44 @@ mod tests {
 
     #[tokio::test]
     async fn fetches_png_and_uses_sniffed_type() {
-        let (addr, _) = stub(vec![http("200 OK", "Content-Type: text/html\r\n", PNG)]).await;
+        // 宣言が別の画像形式でも、許可した形式どうしなら通し、返す型は中身で決める。
+        let (addr, _) = stub(vec![http("200 OK", "Content-Type: image/jpeg\r\n", PNG)]).await;
         let url = format!("http://img.example.com:{}/a.png", addr.port());
         let img = fetch_image(&ToStub(addr), &url, allow_loopback)
             .await
             .unwrap();
         assert_eq!(img.mime, "image/png", "宣言ではなく中身で決める");
+    }
+
+    #[tokio::test]
+    async fn rejects_non_image_declared_type_even_with_image_bytes() {
+        for ct in ["text/html; charset=utf-8", "application/json", "TEXT/HTML"] {
+            let (addr, _) = stub(vec![http(
+                "200 OK",
+                &format!("Content-Type: {ct}\r\n"),
+                PNG,
+            )])
+            .await;
+            let url = format!("http://img.example.com:{}/a.png", addr.port());
+            let err = fetch_image(&ToStub(addr), &url, allow_loopback)
+                .await
+                .unwrap_err();
+            assert!(matches!(err, ImageFetchError::NotImage), "{ct}: {err:?}");
+        }
+    }
+
+    #[test]
+    fn declared_type_rules() {
+        use reqwest::header::HeaderValue;
+        let ok = |v: &str| declared_type_allowed(Some(&HeaderValue::from_str(v).unwrap()));
+        assert!(declared_type_allowed(None), "宣言なしは中身に任せる");
+        assert!(ok("image/webp"));
+        assert!(ok("Image/PNG; foo=bar"));
+        assert!(ok("application/octet-stream"));
+        assert!(!ok("image/svg+xml"));
+        assert!(!ok("image/svg+xml; charset=utf-8"));
+        assert!(!ok("text/html"));
+        assert!(!ok("text/plain"));
     }
 
     #[tokio::test]
