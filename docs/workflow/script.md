@@ -383,7 +383,7 @@ Shiki.http.request(req: {
 - 送れる先と、名前解決の後のアドレスの確認（内部のネットワークへは送らない。管理者がデプロイ設定 `workflow.http_internal_hosts` にそのホストを書いたときだけ送れ、リンクローカル・メタデータは送らない）は、http.request ノードと同じ（[ir.md](./ir.md) §7.2・[engine.md](./engine.md) §7.4・BUG-181・D-135）。
 - **`Shiki.http.request({ secret: { name } })` は参照名のみを渡す。** シークレットの解決・宛先束縛検証（PIT-36）・注入は**エンジン側で行い、http.request ノードと同一実装を通る**（二重実装しない）。平文がゲストメモリに乗る経路はレスポンス経由を含め存在しない（レスポンスに反射するのは外部サービスの責任範囲外であり、レダクトは run 履歴側で実施する）。
 - リダイレクトは追わない（3xx は `redirect_denied` で失敗）。`redirect` に書けるのは `"deny"` だけで、省略・null も同じ。`follow_stripped`（追従時にシークレットを剥がし再検証する・PIT-36）は未実装で、ほかの値は送らずに `invalid` で断る（以前は redirect を読まず、何を書いても黙って deny として扱っていた・GAP-27）。
-- exactly-once は**約束しない**（外部副作用・best-effort）。冪等性は `Idempotency-Key` ヘッダ注入支援のみ（[engine.md](./engine.md) §7）。
+- exactly-once は**約束しない**（外部副作用・best-effort）。冪等性は `Idempotency-Key` ヘッダ注入支援（[engine.md](./engine.md) §7）。ただし、送り先の状態を変えうる呼び出し（GET・HEAD・OPTIONS 以外）で相手が誤り（400 以上）を返さなかったものは、呼び出し連番のキーで結果を効果の記録に残し、script を動かし直したとき（リースが切れて拾い直した・やり直し・再開）は送り直さずに記録した応答を返す（ほかの `Shiki.*` の書込と同じ・GAP-28）。同じ連番で別の内容（方法・URL・本文・シークレットの名前）を送ろうとすると `effect_conflict` で失敗する。前の実行が送っている途中で落ちた呼び出しは、送り直さずに `http_delivery_unknown` の誤りを返す。
 
 ### 6.8 `Shiki.workflow.start`（`workflow.start`）
 
@@ -434,7 +434,7 @@ Shiki.fail(message: string, opts?: { permanent?: boolean }): never;
 - **タイムアウト・リトライ**: ノードの `retry` / `timeout_sec` 設定に従う（[ir.md](./ir.md) §4・A7 で `script.run` は timeout 既定 30s／最大 360s＝初期値）。
 - **at-least-once**: script は**再実行され得る**（リース失効・クラッシュ再実行）。冪等にしたい副作用は次の 2 系統で守る:
   - 内部能力（data / storage / notify / workflow.start）は **host 側 dedupe が既定で効く**（effect_journal・[engine.md](./engine.md) §7）。1 実行内で複数の内部副作用を呼ぶ場合、dedupe キーは「step 冪等キー＋実行内の効果的呼び出し連番」で呼び出しごとに独立し、リトライ間で同じ連番に**別の操作**が来た場合（操作 digest 不一致）は黙って記録済み結果を返さず permanent エラーになる。**副作用を呼ぶ順序・内容は `input` にのみ依存させること**（`Date.now()` / `Math.random()` で副作用の分岐を変えない）。
-  - 外部 http は **exactly-once を約束しない**。`Shiki.context.idempotencyKey` を `Idempotency-Key` ヘッダに注入して外部側の冪等性に委ねる。
+  - 外部 http は **exactly-once を約束しない**。`Shiki.context.idempotencyKey` を `Idempotency-Key` ヘッダに注入して外部側の冪等性に委ねる。送り先の状態を変えうる呼び出しは、内部能力と同じ連番のキーで結果を記録し、動かし直したときは送り直さない（§6.7・GAP-28）。そのため、本文に `Date.now()` を入れるなど、送る内容を動かすたびに変えると、動かし直したときに `effect_conflict` で失敗する。
 - **冪等性区分**: `script.run` ノードは best-effort（script 次第・engine が冪等キーを供給・[ir.md](./ir.md) §7）。
 
 ### 7.1 スプレッドシート関数の実行契約（差分）

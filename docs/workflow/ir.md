@@ -405,10 +405,10 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
 | `control.branch` / `switch` / `join` / `map` / `wait` | 制御 | §5 | pure | ―（wait は別枠・§7.5） |
 | `script.run` | script | shiki script 実行 | best-effort（script 次第・冪等キー供給） | 30s / 360s |
 | `skill.invoke` | skill | `skill:<name>@<version>` | skill 宣言に従う | 60s / 360s |
-| `llm.invoke` | AI | llm-gateway 直行 | pure（課金あり） | 120s / 600s |
+| `llm.invoke` | AI | llm-gateway 直行 | pure（課金あり。結果を効果の記録に残し、リースが切れて拾い直したときは呼び直さない・[engine.md](./engine.md) §7.3・GAP-28） | 120s / 600s |
 | `agent.invoke` | AI | agent-core のツールループ（ループはホスト側・道具は能力 API・コードの実行の道具だけをサンドボックスで実行・§7.4） | best-effort | 600s / 3600s |
 | `ai.decide` | AI | 判定用のモデルで、質問に決められた値域（選択肢・段階・はい/いいえ）で答え、確からしさを付けて返す（llm-gateway の判定のチョークポイント・§7.11） | pure（課金あり） | 60s / 300s |
-| `http.request` | 外部 | 外部 HTTP | **best-effort**（Idempotency-Key 注入支援のみ） | 30s / 120s |
+| `http.request` | 外部 | 外部 HTTP | **best-effort**（Idempotency-Key 注入支援。送り先の状態を変えうる送信〔GET・HEAD・OPTIONS 以外〕で相手が誤り〔400 以上〕を返さなかったものは結果を効果の記録に残し、リースが切れて拾い直したときは送り直さない。送っている途中で落ちた送信は送り直さずに `http_delivery_unknown` で止まり、再開で送る・[engine.md](./engine.md) §7.3・§7.4・GAP-28） | 30s / 120s |
 | `human.approval` | 人間参加 | テーブルの 1 行について担当者の承認・却下・差し戻しを待って分岐する（判断は承認者本人の FSM 遷移・§7.9） | engine-dedup（台帳は step で 1 件） | 30s / 120s（停止まで。判断を待つ時間は `timeout_sec` と `run_timeout_sec`） |
 | `workflow.reply` | フロー連携 | 結果を画面に返す（ボタン・会話から起動した本人の画面に出す・スコープ不要・§7.10） | pure | 5s / 10s |
 | `transform.date` | データ加工 | 日付を計算する（基準の日をずらし、その日を含む日・週・月・年の最初と最後の日を返す・スコープ不要・§7.13・GAP-15） | pure | 5s / 10s |
