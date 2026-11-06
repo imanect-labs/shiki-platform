@@ -17,7 +17,13 @@ sed -n '/^jobs:/,$p' .github/workflows/ci.yml | grep -E '^  [a-z-]+:$'
 sed -n '/^  <ジョブ ID>:/,/^  [a-z-]*:$/p' .github/workflows/ci.yml | grep -E '^\s+(- name|run):'
 ```
 
-**`docs/**` / `**.md` / `.claude/**` のみの変更では CI が丸ごとスキップされる**（`paths-ignore`）ため、docs のみの PR で「チェックなし」は正常。
+PR の CI に `paths-ignore` は無い。`docs/**` / 最上位の `*.md` / `.claude/**` のみの変更では changes ジョブが重量ジョブを
+すべて skip し、`changes`・`quality`・`ci-ok` だけが走る（required check の `ci-ok` が pending のまま固着しないため）。
+**チェックが 0 件なら CI は起動していない**（コンフリクトか未登録）。
+
+**マージは `ci-ok` が緑になってからマージキューに入れる。** PR は変更から選んだテストだけを回し、マージキュー
+（`merge_group`）が docs 以外の変更を含む限り全量を回す。キューで落ちたら、PR では選ばれなかったテストが
+壊れている（選択規則の漏れか flaky）ので、PR に戻って直す。
 
 ## CI ジョブ ↔ ローカルコマンド 対応表
 
@@ -58,7 +64,7 @@ Rust はクレートの依存グラフから自動で決まる。手で保つ表
   足した → 毎回回すなら `ALWAYS_RUN`、回さなくてよいなら理由を付けて `ALWAYS_RUN_EXEMPT` へ。
 
 対応表で決まらない変更は E2E を全部回す（漏れずに遅くなるだけ。PR に「E2E の担当シナリオ対応表に無い」警告が出たら
-載せる）。main は常に全量で、PR では選ばれないテストが main で落ちると selection-gap ジョブが Issue を起票する
+載せる）。main とマージキューは常に全量で、PR では選ばれないテストがそこで落ちると selection-gap ジョブが Issue を起票する
 （選択規則の漏れか flaky）。再試行で通った flaky（CI は緑）は、main の flaky-report ジョブが `flaky: <テスト>` の
 Issue に記録する。自分の変更に関係するテストの flaky Issue があれば、ついでに直すか原因を書き足す。
 

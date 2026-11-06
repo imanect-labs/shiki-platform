@@ -254,7 +254,7 @@ A・B で見つけた劣化はこの PR で直す。C で見つけた**既存の
    .claude/skills/pr/scripts/review-status.sh
    ```
 
-   20 回待っても 1 件も出ないなら、**CI が回っていない**。`paths-ignore` 対象のみの変更か、
+   20 回待っても 1 件も出ないなら、**CI が回っていない**（docs だけの PR でも `changes`・`quality`・`ci-ok` は走る）。
    **PR がコンフリクトしている**（`mergeable: CONFLICTING` だと GitHub はマージ ref を作れず
    `pull_request` の run を生成しない）。`gh pr view --json mergeable` で確かめる。
 
