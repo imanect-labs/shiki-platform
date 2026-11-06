@@ -244,6 +244,7 @@ async fn connects_only_to_the_checked_address() {
         None,
         Some("pinned.example.invalid"),
         &[addr],
+        None,
         MAX_BODY,
     )
     .await;
@@ -277,6 +278,7 @@ async fn does_not_follow_redirects() {
         None,
         Some("redirect.example.invalid"),
         &[addr],
+        None,
         MAX_BODY,
     )
     .await;
@@ -300,6 +302,7 @@ async fn reads_the_body_only_up_to_the_byte_limit() {
         None,
         Some("big.example.invalid"),
         &[addr],
+        None,
         10,
     )
     .await;
@@ -328,6 +331,7 @@ async fn connection_failures_do_not_leak_library_text() {
         Some(&serde_json::json!({ "a": 1 })),
         Some("down.example.invalid"),
         &[addr],
+        None,
         MAX_BODY,
     )
     .await;
@@ -358,3 +362,6 @@ fn trims_only_a_cut_character() {
     trim_partial_utf8(&mut empty);
     assert!(empty.is_empty());
 }
+
+#[path = "function_http_proxy_tests.rs"]
+mod proxy;

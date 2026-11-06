@@ -5663,15 +5663,18 @@ name = "shiki-sandbox-client"
 version = "0.0.0"
 dependencies = [
  "async-trait",
+ "base64",
  "futures",
  "proptest",
  "prost",
  "protoc-bin-vendored",
  "serde",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "tonic",
  "tonic-build",
+ "tracing",
  "url",
 ]
 

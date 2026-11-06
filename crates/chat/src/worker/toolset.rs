@@ -95,7 +95,8 @@ impl ChatWorker {
             // web_fetch はホスト側で取得する（#348）。sandbox 配線の有無に依存しない。
             // parser があれば PDF/Office も読める（#405）。取得は web_fetch のガード済み経路が行い、
             // worker へはバイト列だけ渡す（URL を渡すと宛先制限を迂回される）。
-            let mut fetch = WebFetchTool::new();
+            // 外へ出るのに中継が要る環境では、運用者が設定した中継だけを通す（GAP-72）。
+            let mut fetch = WebFetchTool::new().with_proxy(self.config.egress_proxy.clone());
             if let Some(parser) = &self.parser {
                 fetch = fetch.with_parser(parser.clone());
             }

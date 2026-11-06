@@ -360,6 +360,7 @@ fn config_with(idp_base: &str, cors: Vec<String>) -> AppConfig {
         office: api::config::OfficeConfig::default(),
         insights: api::insights::InsightsConfig::default(),
         membership_reconcile: api::membership_reconcile::MembershipReconcileConfig::default(),
+        egress: Default::default(),
     }
 }
 

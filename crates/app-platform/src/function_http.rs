@@ -12,12 +12,15 @@
 //!    ワークフローの `workflow.http_internal_hosts` にあたる内部の送り先の許可は無い。
 //! 3. 3xx は追わない（ゲストが Location を見てもう一度頼めば、その宛先も照らし直す・PIT-36）。
 //! 4. 環境のプロキシ（`HTTPS_PROXY` など）を使わない（`no_proxy`。プロキシ経由だと接続の固定が効かない・PIT-48 の ④）。
-//!    外へ出るのにプロキシが要る環境では外部のサービスに届かない（ワークフローの送り口と同じ・GAP-72）。
+//!    外へ出るのに中継が要る環境では、運用者が設定 `egress.proxy_url` に書いた中継だけを通す（ワークフローの送り口と
+//!    同じ・GAP-72）。中継には確かめた IP アドレスへの CONNECT を頼み（名前を渡さない）、TLS はトンネルの中で URL の
+//!    名前で結ぶ（[`open_tunnel`]・`sandbox_client::egress_proxy`）。
 //! 5. 本文は [`MAX_BODY`] バイトまで流して読み、超えた分は読まない（巨大な応答の全量を持たない）。
 
 use std::net::SocketAddr;
 use std::time::Duration;
 
+use sandbox_client::egress_proxy::{self, EgressProxy, ProxyTunnel};
 use sandbox_client::net_guard::{self, AddrRefusal, HostResolver};
 use script_runtime::HostResponse;
 
@@ -75,15 +78,48 @@ pub(crate) async fn resolve_checked(
     }
 }
 
+/// 中継を使う設定で、確かめたアドレスがすべて公開の IP なら、中継にトンネルを開かせる（GAP-72）。
+///
+/// 開けなければ、送り先には何も送っていないことを言う（中継が認証・方針で断ったものはやり直さない `egress_denied`、
+/// ほかはやり直せる `egress_failed`）。中継の場所と資格情報はゲストに返す文に出さない。
+pub(crate) async fn open_tunnel(
+    proxy: Option<&EgressProxy>,
+    addrs: &[SocketAddr],
+    host: &str,
+) -> Result<Option<ProxyTunnel>, HostResponse> {
+    let Some(proxy) = proxy else {
+        return Ok(None);
+    };
+    if !egress_proxy::via_proxy(addrs) {
+        return Ok(None);
+    }
+    proxy.open(addrs).await.map(Some).map_err(|e| {
+        tracing::warn!(proxy = %proxy.endpoint(), host = %host, reason = ?e,
+            "ミニアプリの関数の外部への送信で、中継のトンネルを開けませんでした");
+        let what = e.message();
+        if e.is_retryable() {
+            failed(format!(
+                "{what}送り先には何も送っていないので、少し待ってから、もう一度試してください。"
+            ))
+        } else {
+            super::functions::deny(format!(
+                "{what}送り先には何も送っていません。管理者に、中継の設定を確かめるよう頼んでください。"
+            ))
+        }
+    })
+}
+
 /// 確かめたアドレスにだけ接続して送り、応答を本文の上限まで読む（3xx は追わない・環境のプロキシを使わない）。
 ///
 /// `domain` は URL のホストが名前のとき（[`resolve_checked`] の戻り値）。IP のホストは名前解決が無いので固定しない。
+/// `tunnel` があれば、その口にだけ接続する（中継には確かめた IP への CONNECT を頼んである・[`open_tunnel`]）。
 pub(crate) async fn send_pinned(
     url: url::Url,
     method: reqwest::Method,
     body: Option<&serde_json::Value>,
     domain: Option<&str>,
     addrs: &[SocketAddr],
+    tunnel: Option<&ProxyTunnel>,
     max_body: usize,
 ) -> HostResponse {
     let shown = url.host_str().unwrap_or_default().to_string();
@@ -93,7 +129,10 @@ pub(crate) async fn send_pinned(
         // 環境のプロキシで接続の固定を迂回させない（PIT-48 の ④）。
         .no_proxy()
         .timeout(REQUEST_TIMEOUT);
-    if let Some(domain) = domain {
+    if let Some(tunnel) = tunnel {
+        // トンネルの口にだけ接続する（TLS は URL の名前で結ぶ）。
+        builder = builder.unix_socket(tunnel.socket_path());
+    } else if let Some(domain) = domain {
         // 確かめたアドレスにだけ接続する（名前を引き直させない）。
         builder = builder.resolve_to_addrs(domain, addrs);
     }

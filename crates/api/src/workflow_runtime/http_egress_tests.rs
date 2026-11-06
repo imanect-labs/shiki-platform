@@ -383,3 +383,6 @@ async fn pinned_resolver_answers_only_the_checked_name() {
         .await
         .is_err());
 }
+
+#[path = "http_egress_proxy_tests.rs"]
+mod proxy;

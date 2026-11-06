@@ -119,6 +119,8 @@ pub const KNOWN_CODES: &[(&str, FailureCategory)] = {
         // この環境で構成されていない機能（AI で判定・AI エージェントのツール・テーブル・社内文書の検索・CSV・シークレット・
         // スクリプト・BUG-175）。
         (crate::nodes::ports::NOT_CONFIGURED, Environment),
+        // 運用者が設定した外への送信の中継が、認証か方針で送信を断った（管理者が中継の設定を直す・GAP-72）。
+        (crate::nodes::http::EGRESS_PROXY_REFUSED, Environment),
         // 作成者の script が投げた誤り（throw・Shiki.fail・書き誤り）。捕まえていないホスト呼び出しの誤りは、元の
         // code で失敗にする（D-121）。
         (script_runtime::SCRIPT_ERROR, Configuration),
@@ -202,6 +204,11 @@ fn specific_message(code: &str) -> Option<&'static str> {
         // 「ワークフローの設定に問題があり」より原因を言う（送り先の名前が見つからない・BUG-202）。
         crate::nodes::http::DESTINATION_NOT_FOUND => {
             "送り先のサービスが見つからなかったため、外部のサービスに送れませんでした。作成者に連絡してください。"
+        }
+        // 「この環境では使えない」より原因を言う（中継が断った・送り先には何も送っていない・GAP-72）。
+        crate::nodes::http::EGRESS_PROXY_REFUSED => {
+            "外への通信の中継（プロキシ）が送信を断ったため、外部のサービスに送れませんでした。送り先には何も\
+             送っていません。管理者に連絡してください。"
         }
         // 「一時的な問題」より原因を言う（送り直さずに止めた・再開すると送り直す・P6・GAP-28）。
         crate::nodes::http::HTTP_DELIVERY_UNKNOWN => {
@@ -750,6 +757,20 @@ mod tests {
         assert_eq!(
             f.message,
             "送り先のサービスが見つからなかったため、外部のサービスに送れませんでした。作成者に連絡してください。"
+        );
+        assert_eq!(resume_hint(Some(code), None).advice, ResumeAdvice::FixFirst);
+    }
+
+    /// 外への送信の中継が断った失敗はこの環境の問題で、管理者が中継の設定を直してから再開する（GAP-72）。
+    #[test]
+    fn proxy_refusals_are_environment_to_fix_first() {
+        let code = crate::nodes::http::EGRESS_PROXY_REFUSED;
+        let f = run_failure(Uuid::nil(), Some(code), None);
+        assert_eq!(f.category, FailureCategory::Environment);
+        assert_eq!(
+            f.message,
+            "外への通信の中継（プロキシ）が送信を断ったため、外部のサービスに送れませんでした。送り先には何も\
+             送っていません。管理者に連絡してください。"
         );
         assert_eq!(resume_hint(Some(code), None).advice, ResumeAdvice::FixFirst);
     }

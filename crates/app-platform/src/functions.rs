@@ -14,6 +14,7 @@
 
 use std::sync::Arc;
 
+use sandbox_client::egress_proxy::EgressProxy;
 use sandbox_client::net_guard::{HostResolver, SystemResolver};
 use script_runtime::{compile, EngineHandle, HostCall, HostResponse, Limits};
 use storage::content_address::{miniapp_bundle_key, sha256_hex};
@@ -104,6 +105,8 @@ pub struct FunctionRunner {
     gateway_origin: String,
     /// 外部への送信の名前解決（既定は OS の DNS。テストで解決先を決める）。
     resolver: Arc<dyn HostResolver>,
+    /// 外部への送信が通す中継（運用者が `egress.proxy_url` に書いたもの・無ければ直接つなぐ・GAP-72）。
+    proxy: Option<EgressProxy>,
 }
 
 impl FunctionRunner {
@@ -127,7 +130,15 @@ impl FunctionRunner {
             http,
             gateway_origin,
             resolver: Arc::new(SystemResolver),
+            proxy: None,
         })
+    }
+
+    /// 外部への送信を、運用者が設定した中継に通す（`egress.proxy_url`・確かめたアドレスがすべて公開の IP のとき・GAP-72）。
+    #[must_use]
+    pub fn with_egress_proxy(mut self, proxy: Option<EgressProxy>) -> Self {
+        self.proxy = proxy;
+        self
     }
 
     /// サーバコード（content address ピン）を取得・整合検証してから関数を実行する。
@@ -165,6 +176,7 @@ impl FunctionRunner {
             http: self.http.clone(),
             gateway_origin: self.gateway_origin.clone(),
             resolver: Arc::clone(&self.resolver),
+            proxy: self.proxy.clone(),
             bearer: inv.bearer,
             egress_allowlist: inv.egress_allowlist,
             app_id: inv.app_id,
@@ -213,6 +225,7 @@ struct GatewayHostCallHandler {
     http: reqwest::Client,
     gateway_origin: String,
     resolver: Arc<dyn HostResolver>,
+    proxy: Option<EgressProxy>,
     bearer: String,
     egress_allowlist: Vec<String>,
     app_id: Uuid,
@@ -407,12 +420,19 @@ impl GatewayHostCallHandler {
                 Ok(v) => v,
                 Err(refused) => return refused,
             };
+        // 外へ出るのに中継が要る環境では、確かめたアドレスへのトンネルを先に開く（送り終えるまで持つ・GAP-72）。
+        let tunnel =
+            match crate::function_http::open_tunnel(self.proxy.as_ref(), &addrs, &host).await {
+                Ok(t) => t,
+                Err(refused) => return refused,
+            };
         crate::function_http::send_pinned(
             url,
             method,
             args.get("body"),
             domain.as_deref(),
             &addrs,
+            tunnel.as_ref(),
             crate::function_http::MAX_BODY,
         )
         .await

@@ -61,6 +61,9 @@ pub struct AppConfig {
     /// 組織の member と部署を Keycloak の所属グループと定期に照合して外す（D-136）。既定は有効・60 秒ごとに 500 人。
     #[serde(default)]
     pub membership_reconcile: crate::membership_reconcile::MembershipReconcileConfig,
+    /// 外への送信の中継（ワークフローの外部への送信・web.fetch・ミニアプリの関数・GAP-72）。既定は使わない。
+    #[serde(default)]
+    pub egress: EgressConfig,
 }
 
 /// Office 統合（Collabora＋WOPI ホスト）の設定（`SHIKI__OFFICE__*`）。
@@ -304,6 +307,7 @@ mod backends;
 mod data_tests;
 #[cfg(test)]
 mod decision_tests;
+mod egress;
 mod miniapp;
 #[cfg(test)]
 mod tests;
@@ -316,6 +320,7 @@ pub use backends::{
     ObjectStoreBackend, StorageConfig, TabularConfig, TelemetryConfig, UploadGcConfig,
     VectorConfig, VectorStoreBackend, WebSearchBackend, WebSearchConfig,
 };
+pub use egress::EgressConfig;
 pub use miniapp::MINIAPP_OAUTH_CALLBACK_PATH;
 
 #[derive(Debug, thiserror::Error)]
@@ -402,6 +407,8 @@ impl AppConfig {
         // 内部の送り先は読めない項目を黙って外さない（社内の送り先を書いたつもりで、実行のときに断られる・D-135）。
         crate::workflow_runtime::check_internal_hosts(&self.workflow.http_internal_hosts)
             .map_err(ConfigError::Invalid)?;
+        // 外への送信の中継の書き方（資格情報を URL に書かない・GAP-72）。パスワードのファイルは配線で読む。
+        self.egress.check()?;
         // 必須 URL。
         let mut urls: Vec<(&str, &str)> = vec![
             ("auth.issuer", self.auth.issuer.as_str()),

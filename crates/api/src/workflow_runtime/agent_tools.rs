@@ -169,8 +169,14 @@ pub(super) async fn web_search(
 }
 
 /// web.fetch（agent-core の WebFetchTool＝解決後の IP の検証・リダイレクト非追従・PIT-48・PIT-56）。
-pub(super) async fn web_fetch(ec: &ExecCtx, req: WebFetchReq) -> Result<Value, PortError> {
-    let tool = agent_core::WebFetchTool::new();
+///
+/// 外へ出るのに中継が要る環境では、外部への送信と同じ中継を通す（`egress.proxy_url`・GAP-72）。
+pub(super) async fn web_fetch(
+    ec: &ExecCtx,
+    req: WebFetchReq,
+    proxy: Option<&sandbox_client::egress_proxy::EgressProxy>,
+) -> Result<Value, PortError> {
+    let tool = agent_core::WebFetchTool::new().with_proxy(proxy.cloned());
     let mut input = json!({ "url": req.url });
     if let Some(q) = req.query {
         input["query"] = json!(q);

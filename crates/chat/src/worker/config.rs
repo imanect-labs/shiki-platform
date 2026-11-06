@@ -61,6 +61,8 @@ pub struct WorkerConfig {
     /// system プロンプトに入れる「今日の日付」のタイムゾーン（#546・既定 Asia/Tokyo）。
     /// テナントごとの設定は持たない（必要になったら別途）。
     pub timezone: chrono_tz::Tz,
+    /// web_fetch が通す外への送信の中継（運用者が `egress.proxy_url` に書いたもの・既定は使わない・GAP-72）。
+    pub egress_proxy: Option<agent_core::EgressProxy>,
 }
 
 impl Default for WorkerConfig {
@@ -102,6 +104,7 @@ impl Default for WorkerConfig {
             // 持たない（「もう一つの正」を作らない）。
             sandbox_backend: agent_core::SandboxBackend::default(),
             timezone: chrono_tz::Asia::Tokyo,
+            egress_proxy: None,
         }
     }
 }

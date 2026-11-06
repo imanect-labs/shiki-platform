@@ -345,7 +345,8 @@ pub(crate) fn build_sandbox(
     Ok(Some(Arc::new(client)))
 }
 
-#[allow(clippy::too_many_arguments)] // 依存束の注入点（main からの一回きり・構造化は wire_gui 側で担保）。
+// 依存束の注入点（main からの一回きり・構造化は wire_gui 側で担保）。配線の列挙なので行数も main と同じ理由で許す。
+#[allow(clippy::too_many_arguments, clippy::too_many_lines)]
 pub(crate) async fn wire_chat(
     config: &AppConfig,
     http: &reqwest::Client,
@@ -364,6 +365,7 @@ pub(crate) async fn wire_chat(
     office_runtime: Option<&api::state::OfficeRuntime>,
     skill_installs: &Arc<app_platform::SkillInstallService>,
     data: &Arc<data::DataStore>,
+    egress_proxy: Option<&sandbox_client::egress_proxy::EgressProxy>,
 ) -> anyhow::Result<Option<Arc<chat::ChatStore>>> {
     if !config.chat.enabled {
         tracing::info!("chat.enabled=false: チャットは無効（/threads 系は 503）");
@@ -429,6 +431,8 @@ pub(crate) async fn wire_chat(
             .chat
             .sandbox_backend
             .unwrap_or_else(|| chat::WorkerConfig::default().sandbox_backend),
+        // web_fetch は、外へ出るのに中継が要る環境では運用者が設定した中継だけを通す（GAP-72）。
+        egress_proxy: egress_proxy.cloned(),
         // 自律プロファイルの既定（予算/ステップ/software）は WorkerConfig::default を踏襲する。
         ..chat::WorkerConfig::default()
     };
@@ -547,6 +551,8 @@ pub(crate) async fn wire_workflow(
     tabular: &Arc<tabular::TabularService>,
     artifacts: &Arc<artifact::ArtifactStore>,
     data: (&Arc<data::DataStore>, &Arc<data::FsmStore>),
+    // http.request・`Shiki.http.request`・web.fetch が通す外への送信の中継（`egress.proxy_url`・GAP-72）。
+    egress_proxy: Option<&sandbox_client::egress_proxy::EgressProxy>,
 ) -> anyhow::Result<(
     Option<Arc<workflow_engine::WorkflowRunLauncher>>,
     Option<Arc<workflow_engine::RunStore>>,
@@ -595,6 +601,7 @@ pub(crate) async fn wire_workflow(
         // agent.invoke の web.search はチャットと同じ検索の設定を使う（BUG-6）。
         web_search: crate::wiring_websearch::wire_websearch(config, http)?,
         registration,
+        egress_proxy: egress_proxy.cloned(),
     })
     .await;
     Ok((Some(Arc::new(launcher)), Some(Arc::new(runs))))

@@ -386,6 +386,7 @@ fn base_config() -> AppConfig {
         office: api::config::OfficeConfig::default(),
         insights: api::insights::InsightsConfig::default(),
         membership_reconcile: api::membership_reconcile::MembershipReconcileConfig::default(),
+        egress: Default::default(),
     }
 }
 

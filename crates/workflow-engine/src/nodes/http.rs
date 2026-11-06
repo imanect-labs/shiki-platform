@@ -97,6 +97,12 @@ pub const DESTINATION_LINK_LOCAL: &str = "destination_link_local";
 /// （`sandbox_client::net_guard::NO_SUCH_HOST`）。試す回数を増やしたブロックでも、URL の誤りではやり直さない。
 pub const DESTINATION_NOT_FOUND: &str = "destination_not_found";
 
+/// 運用者が設定した外への送信の中継（プロキシ）が、認証か方針で送信を断ったときの code（permanent・GAP-72）。
+///
+/// 送り先には何も送っていない。中継の設定（利用者名・パスワード・送れる先）を管理者が直すまで通らないので、やり直さない
+/// （失敗の分類はこの環境の問題）。中継へつなげない・中継が送り先へつなげないときは、やり直せる `unavailable`。
+pub const EGRESS_PROXY_REFUSED: &str = "egress_proxy_refused";
+
 /// 送り先のアドレスで断った失敗か（エンジンが監査に残す）。
 #[must_use]
 pub fn destination_refused(code: &str) -> bool {

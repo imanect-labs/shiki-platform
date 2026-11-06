@@ -320,7 +320,7 @@ impl NodePorts for ProdNodePorts {
         ec: &ExecCtx,
         req: workflow_engine::WebFetchReq,
     ) -> Result<Value, PortError> {
-        super::agent_tools::web_fetch(ec, req).await
+        super::agent_tools::web_fetch(ec, req, self.http.proxy()).await
     }
 
     async fn code_run(

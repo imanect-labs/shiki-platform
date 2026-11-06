@@ -20,6 +20,7 @@ mod gateway_functions;
 mod miniapp_triggers;
 mod shutdown;
 mod wiring;
+mod wiring_egress;
 mod wiring_gateway;
 mod wiring_gui;
 mod wiring_office;
@@ -48,6 +49,8 @@ async fn run() -> anyhow::Result<()> {
     let _telemetry = telemetry::init(&config.telemetry).context("計装の初期化に失敗")?;
 
     tracing::info!(service = %config.telemetry.service_name, "shiki-server 起動中");
+    // 外への送信の中継（ワークフローの外部への送信・web.fetch・ミニアプリの関数が共有する・GAP-72）。
+    let egress_proxy = wiring_egress::wire_egress_proxy(&config)?;
     // script エンジン（ゲストの wasm のコンパイル・数秒〜十数秒）を先に別スレッドで始め、マイグレーション・
     // 配線と重ねる（ワークフローの実行とミニアプリの関数が共有する・起動の無音区間の短縮）。
     if config.workflow.enabled || config.gateway.enabled {
@@ -257,6 +260,7 @@ async fn run() -> anyhow::Result<()> {
         office.as_ref(),
         &skill_installs,
         &data_store,
+        egress_proxy.as_ref(),
     )
     .await?;
 
@@ -274,6 +278,7 @@ async fn run() -> anyhow::Result<()> {
         &tabular,
         &artifacts,
         (&data_store, &fsms),
+        egress_proxy.as_ref(),
     )
     .await?;
 
@@ -326,6 +331,7 @@ async fn run() -> anyhow::Result<()> {
         object_store: &object_store,
         secrets: secrets.as_ref(),
         shutdown: &shutdown,
+        egress_proxy: egress_proxy.as_ref(),
     })
     .await?;
     // 管理コンソール・モデル一覧・チャットのモデル解決が使うゲートウェイ（同一設定から構築）。

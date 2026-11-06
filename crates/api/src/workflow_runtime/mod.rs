@@ -306,6 +306,8 @@ pub struct RuntimeDeps {
     pub web_search: Option<Arc<dyn websearch::SearchProvider>>,
     /// 消したワークフローに残る委譲の掃除（scheduler の tick・BUG-128）。
     pub registration: workflow_engine::RegistrationService,
+    /// 運用者が設定した外への送信の中継（http.request・`Shiki.http.request`・web.fetch・GAP-72）。無ければ直接つなぐ。
+    pub egress_proxy: Option<sandbox_client::egress_proxy::EgressProxy>,
 }
 
 /// 本番 executor を組む（能力ゲートウェイ → ポート・レート制御・script エンジン）。
@@ -324,7 +326,9 @@ async fn build_prod_executor(
         skill_artifacts: deps.skill_artifacts.clone(),
         launcher: launcher.clone(),
         // 内部の IP へ送れるのは、管理者が内部の送り先として書いたホストだけ（送れる先の許可とは分ける・D-135）。
-        http: HttpEgress::new(&deps.config.http_internal_hosts),
+        // 外へ出るのに中継が要る環境では、運用者が設定した中継だけを通す（社内の送り先は直接つなぐ・GAP-72）。
+        http: HttpEgress::new(&deps.config.http_internal_hosts)
+            .with_proxy(deps.egress_proxy.clone()),
         db: deps.db.clone(),
         data: Some(Arc::clone(&deps.data)),
         fsms: Some(Arc::clone(&deps.fsms)),

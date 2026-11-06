@@ -16,7 +16,11 @@
 //!      シークレットの宛先束縛だけでも許さない（宛先束縛はシークレットを作る人が決められる）。
 //!    - リンクローカル（169.254.0.0/16・fe80::/10）とクラウドのメタデータのアドレスは、許可にかかわらず断る。
 //! 3. 3xx は追わない（`redirect::Policy::none`。エンジンが `redirect_denied` で失敗にする）。
-//! 4. 環境のプロキシを使わない（`no_proxy`。プロキシ経由だと接続の固定が効かない）。
+//! 4. 環境のプロキシを使わない（`no_proxy`。プロキシ経由だと接続の固定が効かない）。外へ出るのに中継が要る環境では、
+//!    運用者が設定 `egress.proxy_url` に書いた中継だけを通す（GAP-72）。中継には確かめた IP アドレスへの CONNECT を
+//!    頼み（名前を渡さない）、TLS はトンネルの中で URL の名前で結ぶ（`sandbox_client::egress_proxy`）。社内の送り先
+//!    （内部の IP を含むアドレス）は中継を通さずに直接つなぐ。中継が断った・つなげなかったときは、送り先に何も
+//!    送っていないことを言う（断られたのは [`EGRESS_PROXY_REFUSED`]・やり直さない。ほかは `unavailable`）。
 //! 5. 本文は上限（8 MB）まで読み、超えた分は読まない。
 //!
 //! 断ったときは、作成者向けの文で [`DESTINATION_INTERNAL`]・[`DESTINATION_LINK_LOCAL`] の失敗にする（やり直さない）。
@@ -28,10 +32,11 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use sandbox_client::egress_proxy::{self, EgressProxy, ProxyError, ProxyTunnel};
 use sandbox_client::internal_hosts::InternalHosts;
 use sandbox_client::net_guard::{self, AddrRefusal, HostResolver, SystemResolver};
 use workflow_engine::nodes::http::{
-    DESTINATION_INTERNAL, DESTINATION_LINK_LOCAL, DESTINATION_NOT_FOUND,
+    DESTINATION_INTERNAL, DESTINATION_LINK_LOCAL, DESTINATION_NOT_FOUND, EGRESS_PROXY_REFUSED,
 };
 use workflow_engine::{HttpSendReq, HttpSendResp, PortError};
 
@@ -52,6 +57,8 @@ pub struct HttpEgress {
     resolver: Arc<dyn HostResolver>,
     /// 本文を読む上限（既定 [`MAX_BODY`]）。
     max_body: usize,
+    /// 運用者が設定した外への送信の中継（`egress.proxy_url`・無ければ直接つなぐ・GAP-72）。
+    proxy: Option<EgressProxy>,
 }
 
 impl Default for HttpEgress {
@@ -71,7 +78,21 @@ impl HttpEgress {
             internal_hosts: InternalHosts::lenient(internal_hosts),
             resolver: Arc::new(SystemResolver),
             max_body: MAX_BODY,
+            proxy: None,
         }
+    }
+
+    /// 外への送信の中継を使う（`egress.proxy_url`・GAP-72）。社内の送り先は中継を通さない。
+    #[must_use]
+    pub fn with_proxy(mut self, proxy: Option<EgressProxy>) -> Self {
+        self.proxy = proxy;
+        self
+    }
+
+    /// 外への送信の中継（web.fetch も同じ中継を使う）。
+    #[must_use]
+    pub fn proxy(&self) -> Option<&EgressProxy> {
+        self.proxy.as_ref()
     }
 
     /// 名前解決を差し替える（テストで DNS リバインディング・内部への解決を再現する）。
@@ -96,12 +117,17 @@ impl HttpEgress {
         })?;
         let shown = url.host_str().unwrap_or_default().to_string();
         let (domain, addrs) = self.resolve(&url, &shown).await?;
+        // 外へ出るのに中継が要る環境では、確かめたアドレスへのトンネルを先に開く（送信を終えるまで持つ・GAP-72）。
+        let tunnel = self.open_tunnel(&addrs, &shown).await?;
         let mut builder = reqwest::Client::builder()
             // 3xx は追わない（エンジンが redirect_denied にする・PIT-36）。
             .redirect(reqwest::redirect::Policy::none())
             // 環境のプロキシ（HTTPS_PROXY など）で接続の固定を迂回させない（PIT-48 の ④）。
             .no_proxy();
-        if let Some(domain) = domain {
+        if let Some(tunnel) = &tunnel {
+            // トンネルの口にだけ接続する（中継には確かめた IP への CONNECT を頼んである。TLS は URL の名前で結ぶ）。
+            builder = builder.unix_socket(tunnel.socket_path());
+        } else if let Some(domain) = domain {
             // 確かめたアドレスにだけ接続する（HTTP の部品に名前を引き直させない）。
             builder = builder.dns_resolver(Arc::new(PinnedResolver {
                 host: domain,
@@ -146,6 +172,26 @@ impl HttpEgress {
             body.extend_from_slice(&chunk);
         }
         Ok(HttpSendResp { status, body })
+    }
+
+    /// 中継を使う設定で、確かめたアドレスがすべて公開の IP なら、中継にトンネルを開かせる（社内の送り先は直接つなぐ）。
+    async fn open_tunnel(
+        &self,
+        addrs: &[SocketAddr],
+        shown: &str,
+    ) -> Result<Option<ProxyTunnel>, PortError> {
+        let Some(proxy) = &self.proxy else {
+            return Ok(None);
+        };
+        if !egress_proxy::via_proxy(addrs) {
+            return Ok(None);
+        }
+        proxy.open(addrs).await.map(Some).map_err(|e| {
+            // 管理者向けのログ（中継の場所は host:port だけ・資格情報は出さない）。
+            tracing::warn!(proxy = %proxy.endpoint(), host = %shown, reason = ?e,
+                "ワークフローの外部への送信で、中継のトンネルを開けませんでした");
+            proxy_failure(e)
+        })
     }
 
     /// URL のホストを 1 回だけ解決し、送ってよいアドレスかを確かめる。名前のホストは（名前・アドレス）を返す。
@@ -195,6 +241,23 @@ impl HttpEgress {
                 Err(refused(shown, refusal))
             }
         }
+    }
+}
+
+/// 中継のトンネルを開けなかったときの作成者向けの文（送り先には何も送っていない・GAP-72）。
+fn proxy_failure(e: ProxyError) -> PortError {
+    let what = e.message();
+    if e.is_retryable() {
+        PortError::unavailable(format!(
+            "{what}送り先には何も送っていないので、少し待ってから、もう一度実行してください。続くときは、\
+             管理者に知らせてください。"
+        ))
+    } else {
+        PortError::new(
+            EGRESS_PROXY_REFUSED,
+            format!("{what}送り先には何も送っていません。管理者に、中継の設定を確かめるよう頼んでください。"),
+            false,
+        )
     }
 }
 

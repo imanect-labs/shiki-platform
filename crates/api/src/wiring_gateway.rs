@@ -211,6 +211,7 @@ pub(crate) fn wire_functions(
     db: &sqlx::PgPool,
     object_store: &Arc<dyn storage::ObjectStore>,
     secrets: Option<&Arc<secrets::SecretStore>>,
+    egress_proxy: Option<&sandbox_client::egress_proxy::EgressProxy>,
 ) -> Option<(
     Arc<crate::gateway_functions::GatewayFunctionPort>,
     Arc<app_platform::FunctionRunner>,
@@ -224,7 +225,8 @@ pub(crate) fn wire_functions(
     let loopback = format!("http://127.0.0.1:{}", config.gateway.port);
     let runner = match app_platform::FunctionRunner::new(engine, Arc::clone(object_store), loopback)
     {
-        Ok(r) => Arc::new(r),
+        // 外部 HTTP は、外へ出るのに中継が要る環境では運用者が設定した中継だけを通す（GAP-72）。
+        Ok(r) => Arc::new(r.with_egress_proxy(egress_proxy.cloned())),
         Err(e) => {
             tracing::warn!(error = %e, "FunctionRunner 構築に失敗（B2 関数は無効）");
             return None;
@@ -255,6 +257,8 @@ pub(crate) struct MiniappListenerDeps<'a> {
     pub secrets: Option<&'a Arc<secrets::SecretStore>>,
     /// 停止の合図（ゲートウェイ・B1 配信のリスナが受付を止める）。
     pub shutdown: &'a crate::shutdown::Shutdown,
+    /// B2 関数の外部 HTTP が通す外への送信の中継（`egress.proxy_url`・GAP-72）。
+    pub egress_proxy: Option<&'a sandbox_client::egress_proxy::EgressProxy>,
 }
 
 /// ゲートウェイ（第2リスナ）・B1 配信（第3リスナ）・B2 event/cron トリガをまとめて起動する。
@@ -263,7 +267,13 @@ pub(crate) struct MiniappListenerDeps<'a> {
 /// object store から組み、ゲートウェイへはループバックで委譲する（関数内の能力呼び出しも
 /// 二重ゲートを通る）。
 pub(crate) async fn spawn_miniapp_listeners(deps: MiniappListenerDeps<'_>) -> anyhow::Result<()> {
-    let functions = wire_functions(deps.config, deps.db, deps.object_store, deps.secrets);
+    let functions = wire_functions(
+        deps.config,
+        deps.db,
+        deps.object_store,
+        deps.secrets,
+        deps.egress_proxy,
+    );
     let functions_port: Arc<dyn app_gateway::FunctionPort> = match &functions {
         Some((port, _)) => port.clone(),
         None => Arc::new(app_gateway::NoFunctions),

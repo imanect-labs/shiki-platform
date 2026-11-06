@@ -27,6 +27,10 @@ serde = { workspace = true }
 tokio = { workspace = true, features = ["net"] }
 # 内部の送り先の表（internal_hosts）の名前と IP の読み方を URL とそろえる（D-135）。
 url = { workspace = true }
+# 外への送信の中継（egress_proxy・GAP-72）: Basic 認証の値・トンネルの口を置く 0700 のディレクトリ・管理者向けのログ。
+base64 = { workspace = true }
+tempfile = "3"
+tracing = { workspace = true }
 
 [build-dependencies]
 tonic-build = { workspace = true }

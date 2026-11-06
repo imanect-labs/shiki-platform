@@ -62,6 +62,7 @@ fn handler(allow: Vec<String>) -> GatewayHostCallHandler {
         // 到達不能な origin: ネットワークに出る分岐はこのテストでは踏まない。
         gateway_origin: "http://127.0.0.1:1".into(),
         resolver: Arc::new(SystemResolver),
+        proxy: None,
         bearer: "test-bearer".into(),
         egress_allowlist: allow,
         app_id: Uuid::nil(),

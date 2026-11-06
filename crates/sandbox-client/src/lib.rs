@@ -10,6 +10,8 @@
 
 mod client;
 mod convert;
+/// 運用者が設定で明示した外への送信の中継（HTTP の CONNECT・GAP-72）。
+pub mod egress_proxy;
 mod error;
 mod fake;
 /// 管理者が内部のネットワークの送り先として許したホストの表（D-135）。

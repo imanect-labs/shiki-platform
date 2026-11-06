@@ -10,8 +10,10 @@
 //!   攻撃はここでしか塞げない。
 //! - **リダイレクト非追従**（PIT-36）: 検証を迂回する誘導を遮断する。3xx は Location を
 //!   観測として返し、モデルが改めて（＝再検証を通して）取得できるようにする。
-//! - **シークレット非添付・プロキシ非経由**: 資格情報を載せず、環境プロキシで
-//!   アドレス固定を迂回されない（`no_proxy`）。
+//! - **シークレット非添付・環境のプロキシ非経由**: 資格情報を載せず、環境プロキシで
+//!   アドレス固定を迂回されない（`no_proxy`）。外へ出るのに中継が要る環境では、運用者が設定で明示した中継だけを
+//!   通す（[`WebFetchTool::with_proxy`]・GAP-72）。中継には検証済みの IP アドレスへの CONNECT を頼み（名前を渡さない）、
+//!   TLS はトンネルの中で URL の名前で結ぶ（`sandbox_client::egress_proxy`）。
 //! - 応答は untrusted（PIT-23）。実行経路は作らず、サイズ上限を課す。
 //!
 //! # コンテキスト効率（#405）
@@ -32,6 +34,7 @@ use std::time::Duration;
 
 use authz::AuthContext;
 use rag::DocumentParser;
+use sandbox_client::egress_proxy::{self, EgressProxy, ProxyTunnel};
 use sandbox_client::net_guard::{self, HostResolver, SystemResolver};
 
 use crate::tool::{Tool, ToolError, ToolOutcome};
@@ -54,6 +57,8 @@ mod tests;
 mod tests_documents;
 #[cfg(test)]
 mod tests_efficiency;
+#[cfg(test)]
+mod tests_proxy;
 
 /// テキスト応答の読み取り上限（モデル向け整形上限は [`render`] が別途掛ける）。
 const FETCH_BODY_CAP: usize = 256 * 1024;
@@ -94,6 +99,8 @@ pub struct WebFetchTool {
     parser: Option<Arc<dyn DocumentParser>>,
     /// モデルへ渡す本文の上限（文字）。
     max_chars: usize,
+    /// 運用者が設定した外への送信の中継（`egress.proxy_url`・無ければ直接つなぐ・GAP-72）。
+    proxy: Option<EgressProxy>,
     /// **テスト専用**の解決後 IP 検証スキップ（ループバックのスタブサーバへ繋ぐため）。
     /// `cfg(test)` 限定なのでリリースビルドにはこのフィールド自体が存在しない。
     #[cfg(test)]
@@ -113,6 +120,7 @@ impl WebFetchTool {
             resolver,
             parser: None,
             max_chars: DEFAULT_MAX_CHARS,
+            proxy: None,
             #[cfg(test)]
             skip_addr_guard: false,
         }
@@ -127,6 +135,13 @@ impl WebFetchTool {
         self
     }
 
+    /// 外への送信の中継を通す（`egress.proxy_url`・GAP-72）。検証済みのアドレスがすべて公開の IP のときだけ通す。
+    #[must_use]
+    pub fn with_proxy(mut self, proxy: Option<EgressProxy>) -> Self {
+        self.proxy = proxy;
+        self
+    }
+
     /// モデルへ渡す本文の上限（文字）を差し替える。
     #[must_use]
     pub fn with_max_chars(mut self, max_chars: usize) -> Self {
@@ -134,6 +149,46 @@ impl WebFetchTool {
             self.max_chars = max_chars;
         }
         self
+    }
+
+    /// 検証済みのアドレスにだけつなぐ HTTP の部品を組む（中継を使う設定なら、そのトンネルも返す・GAP-72）。
+    ///
+    /// トンネルは取得を終えるまで持つ（落とすと閉じる）。中継が開けなければ、取得の失敗の結果を返す（中継の場所と
+    /// 資格情報は出さない）。
+    async fn client_for(
+        &self,
+        target: &FetchTarget,
+        addrs: &[SocketAddr],
+    ) -> Result<Result<(reqwest::Client, Option<ProxyTunnel>), ToolOutcome>, ToolError> {
+        let tunnel = match &self.proxy {
+            Some(proxy) if egress_proxy::via_proxy(addrs) => match proxy.open(addrs).await {
+                Ok(tunnel) => Some(tunnel),
+                Err(e) => {
+                    tracing::warn!(target: "web_fetch", proxy = %proxy.endpoint(), url = %target.url,
+                        reason = ?e, "中継のトンネルを開けませんでした");
+                    return Ok(Err(ToolOutcome::error(format!(
+                        "取得に失敗しました: {}",
+                        e.message()
+                    ))));
+                }
+            },
+            _ => None,
+        };
+        let builder = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none()) // PIT-36
+            .no_proxy() // 環境プロキシでアドレス固定を迂回させない
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(FETCH_TIMEOUT)
+            .user_agent(USER_AGENT);
+        let builder = match &tunnel {
+            // トンネルの口にだけ接続する（中継には検証済みの IP への CONNECT を頼んである）。
+            Some(tunnel) => builder.unix_socket(tunnel.socket_path()),
+            None => builder.resolve_to_addrs(&target.host, addrs), // ← DNS を引き直させない
+        };
+        let client = builder
+            .build()
+            .map_err(|e| ToolError::Unavailable(format!("http client: {e}")))?;
+        Ok(Ok((client, tunnel)))
     }
 
     /// 解決結果を検証する（**接続先を確定させる唯一の関門**）。
@@ -243,15 +298,11 @@ impl Tool for WebFetchTool {
             .guard(resolved)
             .map_err(|e| ToolError::Invalid(format!("取得先が拒否されました: {e}")))?;
 
-        let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none()) // PIT-36
-            .no_proxy() // 環境プロキシでアドレス固定を迂回させない
-            .connect_timeout(CONNECT_TIMEOUT)
-            .timeout(FETCH_TIMEOUT)
-            .user_agent(USER_AGENT)
-            .resolve_to_addrs(&target.host, &addrs) // ← DNS を引き直させない
-            .build()
-            .map_err(|e| ToolError::Unavailable(format!("http client: {e}")))?;
+        // 外へ出るのに中継が要る環境では、検証済みのアドレスへのトンネルを先に開く（取得を終えるまで持つ・GAP-72）。
+        let (client, _tunnel) = match self.client_for(&target, &addrs).await? {
+            Ok(v) => v,
+            Err(refused) => return Ok(refused),
+        };
 
         let response = match client.get(target.url.clone()).send().await {
             Ok(r) => r,

@@ -185,6 +185,7 @@ fn config(db_url: &str) -> AppConfig {
         office: api::config::OfficeConfig::default(),
         insights: api::insights::InsightsConfig::default(),
         membership_reconcile: api::membership_reconcile::MembershipReconcileConfig::default(),
+        egress: Default::default(),
     }
 }
 
