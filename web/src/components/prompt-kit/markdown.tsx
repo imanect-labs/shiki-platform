@@ -9,9 +9,11 @@ import Link from "next/link";
 import ReactMarkdown, { type Components, type ExtraProps } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkCjkFriendly from "remark-cjk-friendly";
+import { EyeOff } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { citeNumberFromHref } from "@/lib/citation";
+import { decideAnswerImage, type ImageProxy, type ImageSources } from "@/lib/answer-images";
 import { CitationMarker } from "@/components/chat/citations/citation-marker";
 import { resolveKind } from "@imanect/yui";
 import { isYuiLanguage } from "@imanect/yui/react";
@@ -36,6 +38,12 @@ const UiFigure = dynamic(() => import("./ui-figure").then((m) => m.UiFigure), {
     <div className="my-3 h-48 w-full animate-pulse rounded-xl border border-border/60 bg-secondary/40" />
   ),
 });
+
+/// 出典の画像が無い（会話以外の本文・出典を持たない閲覧者）。外部の画像は 1 枚も読み込まない。
+const NO_IMAGE_SOURCES: ImageSources = new Map();
+
+/// リンクの中を描いているか（リンクの中の画像を読み込まないとき、リンクを入れ子にしない）。
+const InLinkContext = React.createContext(false);
 
 /// 長い URL・英数字の連なりで折り返す（はみ出すと会話全体が横にずれ、吹き出しの左端が切れる）。
 const WRAP_ANYWHERE = "[overflow-wrap:anywhere]";
@@ -172,10 +180,20 @@ function codeClassName(child: React.ReactNode): string | undefined {
 
 /// 描画中の本文と、生成中かどうか（```ui の図が書きかけの行を描かないようにする）。
 /// `untrusted` は利用者が書いた本文（発話の吹き出し）。図・表・引用番号にせず、リンク先を見せる。
-const SourceContext = React.createContext<{ text: string; streaming: boolean; untrusted: boolean }>({
+/// `imageSources` は画像として読み込んでよい URL（出典に現れたもの・lib/answer-images）。
+/// `imageProxy` は出典の画像を shiki-server 経由で読む URL を作る（#1044）。無ければ外部の画像は読み込まない。
+const SourceContext = React.createContext<{
+  text: string;
+  streaming: boolean;
+  untrusted: boolean;
+  imageSources: ImageSources;
+  imageProxy: ImageProxy | null;
+}>({
   text: "",
   streaming: false,
   untrusted: false,
+  imageSources: NO_IMAGE_SOURCES,
+  imageProxy: null,
 });
 
 /// フェンスが原文で終わっているか。react-markdown（mdast-util-to-hast）はフェンスの中身の末尾に
@@ -223,6 +241,125 @@ function UserLink({ href, children }: { href: string; children: React.ReactNode 
     >
       {children}
       {shown ? null : <span className="ml-1 text-[0.85em] font-normal text-muted-foreground">({host})</span>}
+    </a>
+  );
+}
+
+/// 回答の画像。出典に現れた URL と埋め込み画像だけを読み込み、それ以外はホストを添えたリンクにする
+/// （#1005・PIT-77: 回答の画像は閲覧者のブラウザがクリック無しで取りに行くので、LLM が組み立てた URL で
+/// 会話の中身を外へ送らせない）。読み込む画像も Referer を送らない（どの会話から開いたかを渡さない）。
+function AnswerImage({ src, alt }: { src: string; alt: string }) {
+  const { imageSources, imageProxy } = React.useContext(SourceContext);
+  const inLink = React.useContext(InLinkContext);
+  // サーバが取得を断った・取得先が失敗した画像は、読み込まなかった画像と同じリンクに落とす。
+  const [failed, setFailed] = React.useState(false);
+  // サーバ描画の <img> は hydration より先に読み込みに失敗し得る（その error は React に届かない）。
+  // 付いた時点で「読み終えたのに中身が無い」なら失敗として扱う。
+  const imgRef = React.useCallback((img: HTMLImageElement | null) => {
+    if (img && img.complete && img.naturalWidth === 0) setFailed(true);
+  }, []);
+  const decision = decideAnswerImage(src, imageSources);
+  if (decision.kind === "drop") return alt ? <>{alt}</> : null;
+  if (decision.kind === "link") {
+    return (
+      <BlockedImage
+        href={decision.href}
+        host={decision.host}
+        alt={alt}
+        inLink={inLink}
+        reason="出典に無い外部の画像のため読み込んでいません"
+      />
+    );
+  }
+  const host = new URL(decision.src).host;
+  // 出典の画像でも、代理取得の経路が無い本文（会話以外）や取得に失敗したものは読み込まない。
+  // ブラウザから外部ホストへ直接は読みに行かない（閲覧の事実と IP を配信元へ渡さない・#1044）。
+  if (!imageProxy || failed) {
+    return (
+      <BlockedImage
+        href={decision.src}
+        host={host}
+        alt={alt}
+        inLink={inLink}
+        reason={failed ? "外部の画像を読み込めませんでした" : "外部の画像のため読み込んでいません"}
+      />
+    );
+  }
+  // 段落（<p>）の中に置かれるので、ブロック要素（figure）ではなく span で組む。
+  return (
+    <span className="my-3 block">
+      {/* eslint-disable-next-line @next/next/no-img-element -- shiki-server 経由の外部画像で、next/image の最適化対象外 */}
+      <img
+        src={imageProxy(decision.src)}
+        alt={alt}
+        loading="lazy"
+        decoding="async"
+        referrerPolicy="no-referrer"
+        ref={imgRef}
+        onError={() => setFailed(true)}
+        data-testid="answer-image"
+        className="block h-auto max-h-[28rem] max-w-full rounded-lg border border-border/60"
+      />
+      <span data-testid="answer-image-caption" className="mt-1.5 block text-[12px] text-muted-foreground">
+        {alt ? `${alt} · ` : ""}
+        {host}
+      </span>
+    </span>
+  );
+}
+
+/// 読み込まない外部の画像。行き先のホストを添えたリンクにする（押したときだけ新しいタブで開く）。
+function BlockedImage({
+  href,
+  host,
+  alt,
+  inLink,
+  reason,
+}: {
+  href: string;
+  host: string;
+  alt: string;
+  inLink: boolean;
+  reason: string;
+}) {
+  const content = (
+    <>
+      <EyeOff aria-hidden className="mr-1 inline size-[0.95em] -translate-y-px align-middle text-muted-foreground" />
+      外部の画像{alt ? `「${alt}」` : ""}
+      <span className="ml-1 text-muted-foreground">{host}</span>
+    </>
+  );
+  const label = `${reason}（${host}）`;
+  // リンクの中（`[![badge](img)](href)`）では外側のリンクに任せ、ラベルだけにする（<a> を入れ子にしない）。
+  if (inLink) {
+    return (
+      <span
+        title={`${label}: ${href}`}
+        data-testid="answer-image-blocked"
+        className={cn("rounded-[5px] bg-muted/60 px-1 text-[0.9em] text-foreground/80", WRAP_ANYWHERE)}
+      >
+        {content}
+      </span>
+    );
+  }
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer nofollow"
+      referrerPolicy="no-referrer"
+      title={`${label}。押すと新しいタブで開きます: ${href}`}
+      aria-label={`${alt || "画像"}: ${label}。押すと新しいタブで開きます`}
+      data-testid="answer-image-blocked"
+      className={cn(
+        // 本文の行の高さを変えない（上下の余白を持たせない）。枠は付けず、押せることは下線と hover で見せる。
+        "inline rounded-[5px] bg-muted/60 px-1 text-[0.9em] text-foreground/80 underline decoration-border",
+        "underline-offset-2 hover:bg-muted hover:text-foreground hover:decoration-foreground/40",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        WRAP_ANYWHERE,
+      )}
+    >
+      {content}
     </a>
   );
 }
@@ -289,6 +426,44 @@ function FencedCode({ node, children }: { node: ExtraProps["node"]; children: Re
   );
 }
 
+/// 本文のリンク（引用番号・内部リンク・外部リンク・利用者が書いたリンク）。
+function MarkdownLink({ href, children }: { href?: string; children: React.ReactNode }) {
+  const { untrusted } = React.useContext(SourceContext);
+  const url = href ?? "";
+  if (untrusted) return <UserLink href={url}>{children}</UserLink>;
+  // 引用マーカー（`#cite-n`・linkifyCitations が付ける）は本文中の上付き番号チップにする。
+  // ホバーで原文カード、クリックで出典パネル（メッセージの引用文脈があるときのみ）。
+  const cite = citeNumberFromHref(url);
+  if (cite != null) return <CitationMarker n={cite}>{children}</CitationMarker>;
+  // その他の内部リンクはクライアント遷移。
+  if (url.startsWith("/")) {
+    return (
+      <Link
+        href={url}
+        className={cn(
+          "font-medium text-primary underline decoration-primary/30 underline-offset-2 hover:decoration-primary",
+          WRAP_ANYWHERE,
+        )}
+      >
+        {children}
+      </Link>
+    );
+  }
+  return (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={cn(
+        "font-medium text-primary underline decoration-primary/30 underline-offset-2 hover:decoration-primary",
+        WRAP_ANYWHERE,
+      )}
+    >
+      {children}
+    </a>
+  );
+}
+
 const components: Components = {
   // ブロックコードは pre をフックして CodeBlock に差し替える。
   pre({ node, children }) {
@@ -313,40 +488,10 @@ const components: Components = {
     );
   },
   a({ href, children }) {
-    // eslint-disable-next-line react-hooks/rules-of-hooks -- react-markdown は要素を部品として描く
-    const { untrusted } = React.useContext(SourceContext);
-    const url = href ?? "";
-    if (untrusted) return <UserLink href={url}>{children}</UserLink>;
-    // 引用マーカー（`#cite-n`・linkifyCitations が付ける）は本文中の上付き番号チップにする。
-    // ホバーで原文カード、クリックで出典パネル（メッセージの引用文脈があるときのみ）。
-    const cite = citeNumberFromHref(url);
-    if (cite != null) return <CitationMarker n={cite}>{children}</CitationMarker>;
-    // その他の内部リンクはクライアント遷移。
-    if (url.startsWith("/")) {
-      return (
-        <Link
-          href={url}
-          className={cn(
-            "font-medium text-primary underline decoration-primary/30 underline-offset-2 hover:decoration-primary",
-            WRAP_ANYWHERE,
-          )}
-        >
-          {children}
-        </Link>
-      );
-    }
     return (
-      <a
-        href={url}
-        target="_blank"
-        rel="noopener noreferrer"
-        className={cn(
-          "font-medium text-primary underline decoration-primary/30 underline-offset-2 hover:decoration-primary",
-          WRAP_ANYWHERE,
-        )}
-      >
-        {children}
-      </a>
+      <InLinkContext.Provider value={true}>
+        <MarkdownLink href={href}>{children}</MarkdownLink>
+      </InLinkContext.Provider>
     );
   },
   // 組版（#1015・案 B）: 日本語に合わせて行間を 1.8 にし、段落・リスト・見出しの前後に余白をとって
@@ -433,6 +578,12 @@ const components: Components = {
   strong({ children }) {
     return <strong className="font-semibold text-foreground">{children}</strong>;
   },
+  img({ src, alt }) {
+    // 利用者の発話は disallowedElements で画像を落とすので、ここに来るのは回答・画面の本文だけ。
+    // react-markdown は http(s) 以外（data:・javascript: など）の URL を空にして渡す。そのときは代替テキストだけ出す。
+    if (typeof src === "string" && src) return <AnswerImage src={src} alt={alt ?? ""} />;
+    return alt ? <>{alt}</> : null;
+  },
 };
 
 /// LLM の回答・利用者の発話・ノートなどの Markdown を描く。AI の回答では、数式を含むときだけ
@@ -443,6 +594,8 @@ export function Markdown({
   streaming = false,
   breaks = false,
   untrusted = false,
+  imageSources = NO_IMAGE_SOURCES,
+  imageProxy = null,
 }: {
   children: string;
   className?: string;
@@ -453,6 +606,11 @@ export function Markdown({
   /// 利用者が書いた本文。画像は読み込まず（外部へのアクセスを生まない）、図・表・引用番号にせず、
   /// リンクには行き先のホストを添える。
   untrusted?: boolean;
+  /// 画像として読み込んでよい URL（回答なら、その回答のツール結果・引用に現れた画像・lib/answer-images）。
+  /// 省略すると外部の画像は読み込まず、行き先のホストを添えたリンクにする。
+  imageSources?: ImageSources;
+  /// 出典の画像を shiki-server 経由で読む URL を作る（#1044）。省略すると出典の画像も読み込まずリンクにする。
+  imageProxy?: ImageProxy | null;
 }) {
   // 数式は AI の回答だけ（利用者の発話は打ったとおりに見せる）。
   const mathPlugins = useMathPlugins(!untrusted && mayHaveMath(children));
@@ -466,7 +624,7 @@ export function Markdown({
         className,
       )}
     >
-      <SourceContext.Provider value={{ text, streaming, untrusted }}>
+      <SourceContext.Provider value={{ text, streaming, untrusted, imageSources, imageProxy }}>
         <ReactMarkdown
           remarkPlugins={[
             remarkGfm,

@@ -22,7 +22,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use tabular::{validate_read_only, RunnerConfig, RunnerOp, RunnerRequest};
+use tabular::{validate_read_only, RunnerConfig, RunnerOp, RunnerRequest, RunnerTable};
 
 /// ランナーバイナリのパス。`SHIKI_TABULAR_RUNNER` 優先、無ければ除外クレートの既定 target。
 fn runner_path() -> Option<PathBuf> {
@@ -61,6 +61,7 @@ async fn run(csv: &tempfile::NamedTempFile, op: RunnerOp) -> tabular::RunnerResp
         csv_path: csv.path().to_string_lossy().into_owned(),
         memory_limit_mb: 256,
         max_rows: 1000,
+        extra_tables: Vec::new(),
     };
     tabular::runner::run_isolated(&config, &req).await.unwrap()
 }
@@ -68,7 +69,7 @@ async fn run(csv: &tempfile::NamedTempFile, op: RunnerOp) -> tabular::RunnerResp
 #[tokio::test]
 async fn schema_and_rows_work_on_real_csv() {
     let Some(_) = runner_path() else {
-        eprintln!("runner 未ビルドのためスキップ");
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "runner 未ビルド");
         return;
     };
     let csv = write_csv("id,name\n1,alice\n2,bob\n3,carol\n");
@@ -86,6 +87,7 @@ async fn schema_and_rows_work_on_real_csv() {
 #[tokio::test]
 async fn valid_select_query_works() {
     let Some(_) = runner_path() else {
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "runner 未ビルド");
         return;
     };
     let csv = write_csv("id,score\n1,10\n2,30\n3,20\n");
@@ -105,6 +107,7 @@ async fn valid_select_query_works() {
 #[tokio::test]
 async fn aggregation_query_infers_numeric_types() {
     let Some(_) = runner_path() else {
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "runner 未ビルド");
         return;
     };
     let csv = write_csv("region,amount\ntokyo,100\nosaka,50\ntokyo,30\n");
@@ -130,6 +133,7 @@ async fn aggregation_query_infers_numeric_types() {
 #[tokio::test]
 async fn grid_rows_stay_varchar_for_fidelity() {
     let Some(_) = runner_path() else {
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "runner 未ビルド");
         return;
     };
     let csv = write_csv("code\n007\n042\n");
@@ -146,6 +150,7 @@ async fn grid_rows_stay_varchar_for_fidelity() {
 #[tokio::test]
 async fn rejects_arbitrary_path_read() {
     let Some(_) = runner_path() else {
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "runner 未ビルド");
         return;
     };
     let csv = write_csv("a\n1\n");
@@ -166,6 +171,7 @@ async fn rejects_arbitrary_path_read() {
 #[tokio::test]
 async fn rejects_url_read() {
     let Some(_) = runner_path() else {
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "runner 未ビルド");
         return;
     };
     let csv = write_csv("a\n1\n");
@@ -183,6 +189,7 @@ async fn rejects_url_read() {
 #[tokio::test]
 async fn rejects_dml_ddl_control() {
     let Some(_) = runner_path() else {
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "runner 未ビルド");
         return;
     };
     let csv = write_csv("a\n1\n");
@@ -211,6 +218,7 @@ async fn rejects_dml_ddl_control() {
 #[tokio::test]
 async fn cannot_reenable_external_access() {
     let Some(_) = runner_path() else {
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "runner 未ビルド");
         return;
     };
     let csv = write_csv("a\n1\n");
@@ -244,6 +252,7 @@ async fn quota_timeout_kills_runner_not_caller() {
         csv_path: csv.path().to_string_lossy().into_owned(),
         memory_limit_mb: 256,
         max_rows: 1000,
+        extra_tables: Vec::new(),
     };
     let result = tabular::runner::run_isolated(&config, &req).await;
     assert!(
@@ -252,4 +261,156 @@ async fn quota_timeout_kills_runner_not_caller() {
     );
     // 呼び出し側（このプロセス）は生きている＝プロセス境界で封じられた。
     assert_eq!(2 + 2, 4);
+}
+
+/// 追加テーブル付きでランナーを起動する（複数 CSV の JOIN・#1037）。
+async fn run_with_tables(
+    csv: &tempfile::NamedTempFile,
+    op: RunnerOp,
+    extra: &[(&str, &tempfile::NamedTempFile)],
+) -> tabular::RunnerResponse {
+    let path = runner_path().expect("runner binary");
+    let config = RunnerConfig::new(path.to_string_lossy().to_string(), Duration::from_secs(20));
+    let req = RunnerRequest {
+        op,
+        csv_path: csv.path().to_string_lossy().into_owned(),
+        memory_limit_mb: 256,
+        max_rows: 1000,
+        extra_tables: extra
+            .iter()
+            .map(|(name, f)| RunnerTable {
+                name: (*name).to_string(),
+                csv_path: f.path().to_string_lossy().into_owned(),
+            })
+            .collect(),
+    };
+    tabular::runner::run_isolated(&config, &req).await.unwrap()
+}
+
+/// #1037: 2 つの CSV を `data JOIN <name>` で結合できる（型推論も追加テーブルに効く）。
+#[tokio::test]
+async fn joins_primary_with_extra_table() {
+    let Some(_) = runner_path() else {
+        return;
+    };
+    let orders = write_csv("order_id,customer_id,amount\n1,10,100\n2,20,50\n3,10,30\n");
+    let customers = write_csv("customer_id,name\n10,alice\n20,bob\n");
+    let resp = run_with_tables(
+        &orders,
+        RunnerOp::Query {
+            sql: "SELECT c.name, sum(o.amount) AS total FROM data o \
+                  JOIN customers c ON o.customer_id = c.customer_id \
+                  GROUP BY c.name ORDER BY total DESC"
+                .into(),
+        },
+        &[("customers", &customers)],
+    )
+    .await;
+    assert!(resp.ok, "join: {:?}", resp.error);
+    assert_eq!(resp.columns, vec!["name", "total"]);
+    assert_eq!(
+        resp.rows,
+        vec![
+            vec![Some("alice".to_string()), Some("130".to_string())],
+            vec![Some("bob".to_string()), Some("50".to_string())],
+        ]
+    );
+}
+
+/// #1037: ランナーも追加テーブル名を再検証する（api を経由しない直接投入でも識別子の外へ出られない）。
+#[tokio::test]
+async fn runner_rejects_unsafe_extra_table_names() {
+    let Some(_) = runner_path() else {
+        return;
+    };
+    let csv = write_csv("a\n1\n");
+    let other = write_csv("b\n2\n");
+    for name in ["data", "x\" AS SELECT 1; --", "Upper", "a b", ""] {
+        let resp = run_with_tables(
+            &csv,
+            RunnerOp::Query {
+                sql: "SELECT 1".into(),
+            },
+            &[(name, &other)],
+        )
+        .await;
+        assert!(!resp.ok, "拒否されるべき名前: {name:?}");
+        let err = resp.error.unwrap_or_default();
+        assert!(
+            err.contains("使えません"),
+            "名前の再検証で弾かれる（DuckDB 実行まで届かない）: {name:?} → {err}"
+        );
+    }
+}
+
+/// #1037: SQL の予約語は引用符なしで参照できないため、テーブル名として拒否する（DuckDB の語彙が正）。
+#[tokio::test]
+async fn runner_rejects_reserved_word_table_names() {
+    let Some(_) = runner_path() else {
+        return;
+    };
+    let csv = write_csv("a\n1\n");
+    let other = write_csv("b\n2\n");
+    for name in ["order", "select", "group", "table"] {
+        let resp = run_with_tables(
+            &csv,
+            RunnerOp::Query {
+                sql: "SELECT 1".into(),
+            },
+            &[(name, &other)],
+        )
+        .await;
+        assert!(!resp.ok, "予約語は拒否: {name}");
+        assert!(
+            resp.error.unwrap_or_default().contains("予約語"),
+            "理由が予約語であること: {name}"
+        );
+    }
+    // 予約語でない一般的な名前（DuckDB では非予約のキーワード含む）は通る。
+    for name in ["orders", "customers", "name", "status"] {
+        let resp = run_with_tables(
+            &csv,
+            RunnerOp::Query {
+                sql: format!("SELECT count(*) FROM {name}"),
+            },
+            &[(name, &other)],
+        )
+        .await;
+        assert!(resp.ok, "{name}: {:?}", resp.error);
+    }
+}
+
+/// #1037: 追加テーブルはクエリ専用（グリッドの Schema/Rows に紛れ込ませない）。
+#[tokio::test]
+async fn runner_rejects_extra_tables_outside_query() {
+    let Some(_) = runner_path() else {
+        return;
+    };
+    let csv = write_csv("a\n1\n");
+    let other = write_csv("b\n2\n");
+    let resp = run_with_tables(&csv, RunnerOp::Schema, &[("other", &other)]).await;
+    assert!(!resp.ok, "Schema に追加テーブルは渡せない");
+}
+
+/// #1037: 追加テーブルをロードした後も外部アクセスは封鎖されたまま（ロックダウン順序の維持）。
+#[tokio::test]
+async fn extra_tables_keep_external_access_locked() {
+    let Some(_) = runner_path() else {
+        return;
+    };
+    let csv = write_csv("a\n1\n");
+    let other = write_csv("b\n2\n");
+    for sql in [
+        "SELECT * FROM other, read_csv_auto('/etc/passwd')",
+        "SET enable_external_access=true",
+        "COPY other TO '/tmp/leak.csv'",
+    ] {
+        let resp = run_with_tables(
+            &csv,
+            RunnerOp::Query { sql: sql.into() },
+            &[("other", &other)],
+        )
+        .await;
+        assert!(!resp.ok, "拒否されるべき: {sql}");
+    }
 }

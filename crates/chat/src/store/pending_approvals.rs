@@ -60,9 +60,9 @@ impl ChatStore {
              ORDER BY requested_at DESC, r.run_id DESC \
              LIMIT $4",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
-        .bind(&ctx.principal.id)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
+        .bind(&ctx.principal().id)
         .bind(CANDIDATES)
         .fetch_all(&self.db)
         .await

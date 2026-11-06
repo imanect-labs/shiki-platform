@@ -324,9 +324,9 @@ impl DataStore {
                     ),
                 ));
             }
-            return self.field_index_state(&ctx.tenant_id, &table, f).await;
+            return self.field_index_state(ctx.tenant_id(), &table, f).await;
         }
-        let cap = self.max_indexed_fields_for(&ctx.tenant_id).await?;
+        let cap = self.max_indexed_fields_for(ctx.tenant_id()).await?;
         let count = indexed_count(&table.schema);
         if count + 1 > cap {
             if !approve {
@@ -350,17 +350,18 @@ impl DataStore {
         let (sync, building) = self
             .promote_in_tx(ctx, &table, f.id, approve, trace_id)
             .await?;
-        self.schema_cache.invalidate_table(&ctx.tenant_id, table_id);
+        self.schema_cache
+            .invalidate_table(ctx.tenant_id(), table_id);
         if building && sync {
             // 小さいテーブルはこの場でバックフィルを終えて有効化する（透過的な有効化）。
-            self.backfill_table_index(&ctx.tenant_id, table_id).await?;
+            self.backfill_table_index(ctx.tenant_id(), table_id).await?;
         }
         let table = self.fetch_live(ctx, table_id).await?;
         let f = table
             .schema
             .field(field)
             .ok_or_else(|| DataError::Internal("昇格した列が見つかりません".into()))?;
-        self.field_index_state(&ctx.tenant_id, &table, f).await
+        self.field_index_state(ctx.tenant_id(), &table, f).await
     }
 
     /// 昇格の Tx（テーブル行を `FOR UPDATE`・宣言と台帳・監査）。`(同期で作れる, building になった)`。
@@ -374,7 +375,7 @@ impl DataStore {
     ) -> Result<(bool, bool), DataError> {
         let mut tx = self
             .pools
-            .for_tenant(&ctx.tenant_id)
+            .for_tenant(ctx.tenant_id())
             .begin()
             .await
             .map_err(map_db)?;
@@ -382,7 +383,7 @@ impl DataStore {
             "SELECT schema FROM data_table \
              WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL FOR UPDATE",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(table.id)
         .fetch_optional(&mut *tx)
         .await
@@ -409,7 +410,7 @@ impl DataStore {
             "UPDATE data_table SET schema = $3, schema_version = schema_version + 1, \
                updated_at = now() WHERE tenant_id = $1 AND id = $2",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(table.id)
         .bind(sqlx::types::Json(&schema))
         .execute(&mut *tx)
@@ -418,10 +419,10 @@ impl DataStore {
         let rows = rows_upto(&mut tx, table.keys, SYNC_INDEX_MAX_ROWS).await?;
         let building = super::state::sync_ledger(&mut tx, table.keys, &schema, rows > 0).await?;
         if building {
-            super::backfill::start_backfill(&mut tx, table.keys, &ctx.tenant_id, table.id).await?;
+            super::backfill::start_backfill(&mut tx, table.keys, ctx.tenant_id(), table.id).await?;
         } else {
             // 同期で有効化した: 統計を作り直す（バックフィルは完了時に積む・§4.2）。
-            crate::stats::counters::enqueue_analyze(&mut tx, &ctx.tenant_id, table.id).await?;
+            crate::stats::counters::enqueue_analyze(&mut tx, ctx.tenant_id(), table.id).await?;
         }
         self.record_audit_on(
             &mut tx,
@@ -492,7 +493,7 @@ impl DataStore {
             if masked.contains(&f.key) {
                 continue; // 見えない列は索引の有無も出さない
             }
-            let s = self.field_index_state(&ctx.tenant_id, &table, f).await?;
+            let s = self.field_index_state(ctx.tenant_id(), &table, f).await?;
             fields.push(FieldIndexStatus {
                 field: s.field,
                 status: s.status,
@@ -500,7 +501,7 @@ impl DataStore {
         }
         let mut conn = self
             .pools
-            .for_tenant(&ctx.tenant_id)
+            .for_tenant(ctx.tenant_id())
             .acquire()
             .await
             .map_err(map_db)?;
@@ -515,7 +516,7 @@ impl DataStore {
         Ok(TableIndexOverview {
             fields,
             indexed_fields: indexed_count(&table.schema),
-            max_indexed_fields: self.max_indexed_fields_for(&ctx.tenant_id).await?,
+            max_indexed_fields: self.max_indexed_fields_for(ctx.tenant_id()).await?,
             backfill_progress: backfill_progress(&mut conn, table.keys).await?,
             backfill_status: backfill,
         })

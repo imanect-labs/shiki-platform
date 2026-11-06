@@ -127,9 +127,9 @@ impl Tool for CodeInterpreterTool {
 
         let spec = SandboxSpec::code_interpreter(
             self.backend,
-            ctx.tenant_id.clone(),
-            ctx.org.clone(),
-            ctx.principal.id.clone(),
+            ctx.tenant_id().to_owned(),
+            ctx.org().to_owned(),
+            ctx.principal().id.clone(),
         );
         let handle = self
             .sandbox
@@ -276,7 +276,7 @@ mod tests {
                 tenant_id: Some("t1".into()),
             },
             "org1".into(),
-            "t1".into(),
+            authz::TenantId::parse("t1").unwrap(),
         )
     }
 

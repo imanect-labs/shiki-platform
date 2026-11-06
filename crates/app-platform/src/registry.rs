@@ -71,15 +71,15 @@ impl Registry {
              RETURNING id, artifact_kind, name, version, artifact_id, artifact_version, \
                        manifest_digest, publisher, trust_tier, yanked, created_at",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(entry.artifact_kind)
         .bind(entry.name)
         .bind(entry.version)
         .bind(entry.artifact_id)
         .bind(entry.artifact_version)
         .bind(entry.manifest_digest)
-        .bind(&ctx.principal.id)
+        .bind(&ctx.principal().id)
         .bind(entry.trust_tier)
         .bind(entry.signature)
         .fetch_one(&self.db)
@@ -110,7 +110,7 @@ impl Registry {
              WHERE tenant_id = $1 AND artifact_kind = $2 AND name = $3 AND NOT yanked \
              ORDER BY created_at DESC LIMIT 1",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(artifact_kind)
         .bind(name)
         .fetch_optional(&self.db)
@@ -133,7 +133,7 @@ impl Registry {
              FROM registry_entry \
              WHERE tenant_id = $1 AND artifact_kind = $2 AND name = $3 AND version = $4",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(artifact_kind)
         .bind(name)
         .bind(version)
@@ -157,7 +157,7 @@ impl Registry {
              WHERE tenant_id = $1 AND artifact_kind = $2 \
              ORDER BY created_at DESC LIMIT $3",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(artifact_kind)
         .bind(limit.clamp(1, 200))
         .fetch_all(&self.db)
@@ -178,7 +178,7 @@ impl Registry {
             "SELECT signature FROM registry_entry \
              WHERE tenant_id = $1 AND artifact_kind = $2 AND name = $3 AND version = $4",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(artifact_kind)
         .bind(name)
         .bind(version)
@@ -192,7 +192,7 @@ impl Registry {
     pub async fn yank(&self, ctx: &AuthContext, id: Uuid) -> Result<(), AppPlatformError> {
         let updated =
             sqlx::query("UPDATE registry_entry SET yanked = true WHERE tenant_id = $1 AND id = $2")
-                .bind(&ctx.tenant_id)
+                .bind(ctx.tenant_id())
                 .bind(id)
                 .execute(&self.db)
                 .await

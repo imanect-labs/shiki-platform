@@ -75,12 +75,12 @@ impl ChatStore {
              WHERE m.id = $3 AND m.thread_id = $2 AND m.tenant_id = $1 \
              ON CONFLICT DO NOTHING",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(thread_id)
         .bind(message_id)
         .bind(action_id)
-        .bind(&ctx.org)
-        .bind(&ctx.principal.id)
+        .bind(ctx.org())
+        .bind(&ctx.principal().id)
         .execute(&self.db)
         .await
         .map_err(|e| ChatError::Internal(format!("ui_action claim: {e}")))?;
@@ -127,7 +127,7 @@ impl ChatStore {
             "UPDATE ui_action_invocation SET completed_at = now(), run_id = $5 \
              WHERE tenant_id = $1 AND thread_id = $2 AND message_id = $3 AND action_id = $4",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(thread_id)
         .bind(message_id)
         .bind(action_id)
@@ -152,7 +152,7 @@ impl ChatStore {
              WHERE tenant_id = $1 AND thread_id = $2 AND message_id = $3 AND action_id = $4 \
                AND completed_at IS NULL",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(thread_id)
         .bind(message_id)
         .bind(action_id)
@@ -177,7 +177,7 @@ impl ChatStore {
              WHERE tenant_id = $1 AND thread_id = $2 \
              ORDER BY message_id, action_id",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(thread_id)
         .fetch_all(&self.db)
         .await

@@ -202,7 +202,7 @@ pub async fn get_people(
         .map_err(map_report)?
         .ok_or(ApiError::Forbidden)?;
     // 誰がいつ個人別を見たかを残す。残せなければ見せない（閲覧は必ず監査に残す約束）。
-    let object_id = format!("{}|{}", ctx.tenant_id, ctx.org);
+    let object_id = format!("{}|{}", ctx.tenant_id(), ctx.org());
     state
         .audit
         .record(
@@ -428,7 +428,7 @@ pub async fn update_settings(
         Ok(n) => n,
         Err(e) => return Err(invalid(&e.to_string())),
     };
-    let object_id = format!("{}|{}", ctx.tenant_id, ctx.org);
+    let object_id = format!("{}|{}", ctx.tenant_id(), ctx.org());
     if let Err(e) = state
         .audit
         .record(

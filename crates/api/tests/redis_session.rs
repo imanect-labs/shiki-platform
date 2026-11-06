@@ -42,7 +42,7 @@ fn record(csrf: &str) -> SessionRecord {
 
 #[tokio::test]
 async fn redis_put_get_update_delete_and_tenant_scope() {
-    let Ok(redis_url) = std::env::var("REDIS_TEST_URL") else {
+    let Ok(redis_url) = shiki_testenv::var("REDIS_TEST_URL") else {
         eprintln!("REDIS_TEST_URL 未設定のためスキップ");
         return;
     };
@@ -95,7 +95,7 @@ async fn redis_put_get_update_delete_and_tenant_scope() {
 
 #[tokio::test]
 async fn redis_backchannel_logout_indices_and_jti() {
-    let Ok(redis_url) = std::env::var("REDIS_TEST_URL") else {
+    let Ok(redis_url) = shiki_testenv::var("REDIS_TEST_URL") else {
         eprintln!("REDIS_TEST_URL 未設定のためスキップ");
         return;
     };

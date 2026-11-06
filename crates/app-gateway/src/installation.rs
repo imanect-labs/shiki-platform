@@ -243,15 +243,15 @@ impl AppInstallationStore {
              RETURNING {COLS}"
         );
         sqlx::query_as(&sql)
-            .bind(&ctx.tenant_id)
-            .bind(&ctx.org)
+            .bind(ctx.tenant_id())
+            .bind(ctx.org())
             .bind(new.app_id)
             .bind(new.app_name)
             .bind(new.installed_version)
             .bind(new.granted_scopes)
             .bind(new.client_id_b1)
             .bind(new.client_id_b2)
-            .bind(&ctx.principal.id)
+            .bind(&ctx.principal().id)
             .bind(&new.ai.budget_models)
             .bind(new.ai.budget_daily_usd_micros)
             .bind(new.ai.budget_max_tokens)
@@ -272,7 +272,7 @@ impl AppInstallationStore {
         let (exists,): (bool,) = sqlx::query_as(
             "SELECT EXISTS (SELECT 1 FROM app_installation WHERE tenant_id = $1 AND app_id = $2)",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(app_id)
         .fetch_one(&self.db)
         .await
@@ -374,7 +374,7 @@ impl AppInstallationStore {
              WHERE tenant_id = $1 AND status = 'active' ORDER BY created_at DESC LIMIT 200"
         );
         let rows: Vec<Row> = sqlx::query_as(&sql)
-            .bind(&ctx.tenant_id)
+            .bind(ctx.tenant_id())
             .fetch_all(&self.db)
             .await
             .map_err(map_db)?;
@@ -388,7 +388,7 @@ impl AppInstallationStore {
              WHERE tenant_id = $1 AND app_id = $2",
             InstallStatus::Revoked.as_str()
         ))
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(app_id)
         .execute(&self.db)
         .await

@@ -434,6 +434,13 @@ pub fn route_table() -> Vec<RouteDecl> {
                     .delete(routes::chat_feedback::clear_message_feedback)
             },
         ),
+        // 回答の Web 画像の代理取得（出所に現れた URL だけ・#1044）。
+        r(
+            "/threads/{id}/messages/{message_id}/image",
+            &["GET"],
+            Session,
+            || get(routes::chat_images::get_answer_image),
+        ),
         r("/threads/{id}/messages", &["GET", "POST"], Session, || {
             get(routes::chat::get_messages).post(routes::chat::post_message)
         }),
@@ -523,6 +530,12 @@ pub fn route_table() -> Vec<RouteDecl> {
             &["POST"],
             SessionLongRunning,
             || post(routes::file_versions::restore_version),
+        ),
+        r(
+            "/files/{id}/versions/{version}/revert",
+            &["POST"],
+            SessionLongRunning,
+            || post(routes::file_versions::revert_edit),
         ),
         r(
             "/files/{id}/versions/{version}/adopt",

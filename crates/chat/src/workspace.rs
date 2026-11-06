@@ -127,7 +127,7 @@ impl LazyWorkspace {
 
     /// thread のワークスペースフォルダを解決 or 作成する（Durable Workspace）。
     async fn ensure_folder(&self, ctx: &AuthContext) -> Result<Uuid, ToolError> {
-        let tenant = &ctx.tenant_id;
+        let tenant = ctx.tenant_id();
         if let Some(id) = self
             .store
             .workspace_folder_id(self.thread_id, tenant)

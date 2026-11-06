@@ -196,6 +196,16 @@ impl StorageService {
         let mut keys = Vec::with_capacity(rows.len() * 2);
         let mut by_org: HashMap<(String, String), Vec<Uuid>> = HashMap::new();
         for row in rows {
+            // 監査を残せない（tenant_id が文字ポリシー違反の）行のオブジェクトは消さない。
+            // 証跡の無い破壊的操作をしない（fail-closed・行は回収済みなのでログに残す）。
+            if authz::TenantId::parse(row.tenant_id.as_str()).is_err() {
+                tracing::error!(
+                    tenant_id = %row.tenant_id,
+                    upload_id = %row.upload_id,
+                    "tenant_id が文字ポリシーに反するため、期限切れアップロードのオブジェクトを消しません"
+                );
+                continue;
+            }
             keys.push(incoming_object_key(
                 &row.tenant_id,
                 &row.org,
@@ -221,7 +231,13 @@ impl StorageService {
         // 設定ミスや時計 skew で進行中アップロードを巻き添えにした場合、どのテナントのどの
         // upload_id を消したかをログ保持期間に依らず追跡できるようにする。
         for ((tenant_id, org), upload_ids) in by_org {
-            let sctx = system_ctx(&tenant_id, &org, "system");
+            let sctx = match system_ctx(&tenant_id, &org, "system") {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!(error = %e, tenant_id = %tenant_id, "削除の監査文脈を組めない（監査を残せない）");
+                    continue;
+                }
+            };
             if let Err(e) = self
                 .audit
                 .record(
@@ -264,6 +280,12 @@ impl StorageService {
         let mut deleted = 0usize;
         let mut failures = 0u32;
         for pair in pairs {
+            // 監査を残せない（tenant_id が文字ポリシー違反の）組は走査しない。証跡の無い削除をしない。
+            if let Err(e) = system_ctx(&pair.tenant_id, &pair.org, "system") {
+                tracing::error!(error = %e, tenant_id = %pair.tenant_id, "孤児 sweep の監査文脈を組めないため、この組を飛ばします");
+                failures += 1;
+                continue;
+            }
             for kind in ["staging", "incoming"] {
                 if budget.exhausted() {
                     tracing::info!(
@@ -381,7 +403,13 @@ impl StorageService {
 
     /// 孤児削除の監査（system ctx・非チェーン。TTL sweep と同じく削除証跡として残す）。
     async fn record_orphan_audit(&self, pair: &TenantOrg, prefix: &str, count: usize) {
-        let sctx = system_ctx(&pair.tenant_id, &pair.org, "system");
+        let sctx = match system_ctx(&pair.tenant_id, &pair.org, "system") {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(error = %e, tenant_id = %pair.tenant_id, "孤児削除の監査文脈を組めない（監査を残せない）");
+                return;
+            }
+        };
         if let Err(e) = self
             .audit
             .record(

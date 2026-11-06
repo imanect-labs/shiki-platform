@@ -85,12 +85,12 @@ impl TrustedKeyStore {
              VALUES ($1, $2, $3, $4, $5, $6) \
              RETURNING id, key_id, public_key, note, created_by, created_at, revoked_at",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(key_id)
         .bind(public_key)
         .bind(note)
-        .bind(&ctx.principal.id)
+        .bind(&ctx.principal().id)
         .fetch_one(&self.db)
         .await
         .map_err(|e| match &e {
@@ -112,7 +112,7 @@ impl TrustedKeyStore {
             "SELECT public_key FROM app_trusted_key \
              WHERE tenant_id = $1 AND key_id = $2 AND revoked_at IS NULL",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(key_id)
         .fetch_optional(&self.db)
         .await
@@ -130,7 +130,7 @@ impl TrustedKeyStore {
              FROM app_trusted_key \
              WHERE tenant_id = $1 AND revoked_at IS NULL ORDER BY created_at",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .fetch_all(&self.db)
         .await
         .map_err(map_db)?;
@@ -146,7 +146,7 @@ impl TrustedKeyStore {
             "SELECT public_key FROM app_trusted_key \
              WHERE tenant_id = $1 AND revoked_at IS NULL",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .fetch_all(&self.db)
         .await
         .map_err(map_db)?;
@@ -159,7 +159,7 @@ impl TrustedKeyStore {
             "UPDATE app_trusted_key SET revoked_at = now() \
              WHERE tenant_id = $1 AND key_id = $2 AND revoked_at IS NULL",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(key_id)
         .execute(&self.db)
         .await

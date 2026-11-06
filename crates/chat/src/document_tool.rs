@@ -576,7 +576,7 @@ mod tests {
                 tenant_id: None,
             },
             "acme".into(),
-            "default".into(),
+            authz::TenantId::parse("default").unwrap(),
         )
     }
 

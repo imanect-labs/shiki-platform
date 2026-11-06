@@ -49,8 +49,12 @@ impl DataStore {
 }
 
 /// 保守経路の主体（派生イベントの outbox の actor）。認可には使わない。
-pub(crate) fn system_ctx(tenant_id: &str, org: &str) -> AuthContext {
-    AuthContext::new(
+///
+/// tenant_id は DB の値でも文字ポリシーを通す（違反は Internal・派生イベントを出さない）。
+pub(crate) fn system_ctx(tenant_id: &str, org: &str) -> Result<AuthContext, DataError> {
+    let tenant = authz::TenantId::parse(tenant_id)
+        .map_err(|e| DataError::Internal(format!("tenant_id が不正です: {e}")))?;
+    Ok(AuthContext::new(
         Principal {
             kind: PrincipalKind::User,
             id: "system:data-stream".into(),
@@ -60,8 +64,8 @@ pub(crate) fn system_ctx(tenant_id: &str, org: &str) -> AuthContext {
             tenant_id: Some(tenant_id.to_string()),
         },
         org.to_string(),
-        tenant_id.to_string(),
-    )
+        tenant,
+    ))
 }
 
 /// claim したレコード変更 1 件（派生の再配信の材料）。
@@ -367,7 +371,7 @@ async fn emit_derived(
     if ints.is_empty() && ids.is_empty() {
         return Ok(());
     }
-    let ctx = system_ctx(tenant_id, org);
+    let ctx = system_ctx(tenant_id, org)?;
     if ints.len() > DERIVED_FANOUT_CAP || ids.len() > DERIVED_FANOUT_CAP {
         return super::outbox::emit_table_refresh(tx, &ctx, table).await;
     }
@@ -424,7 +428,7 @@ pub(crate) async fn emit_refresh_for_referrers(
     let mut n = 0;
     for id in ids {
         if let Some((t, org)) = table_row_with_org(conn, tenant_id, id).await? {
-            super::outbox::emit_table_refresh(conn, &system_ctx(tenant_id, &org), &t).await?;
+            super::outbox::emit_table_refresh(conn, &system_ctx(tenant_id, &org)?, &t).await?;
             n += 1;
         }
     }

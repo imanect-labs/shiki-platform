@@ -77,8 +77,8 @@ impl DataStore {
             "SELECT count_cap, max_indexed_fields, max_view_lookup_columns \
              FROM data_tenant_settings WHERE tenant_id = $1",
         )
-        .bind(&ctx.tenant_id)
-        .fetch_optional(self.pools.for_tenant(&ctx.tenant_id))
+        .bind(ctx.tenant_id())
+        .fetch_optional(self.pools.for_tenant(ctx.tenant_id()))
         .await
         .map_err(map_db)?;
         let (cap, idx, lookups) = row.unwrap_or((None, None, None));
@@ -218,7 +218,7 @@ impl DataStore {
             .map(|c| i32::try_from(c).unwrap_or(i32::MAX));
         let mut tx = self
             .pools
-            .for_tenant(&ctx.tenant_id)
+            .for_tenant(ctx.tenant_id())
             .begin()
             .await
             .map_err(map_db)?;
@@ -235,7 +235,7 @@ impl DataStore {
                  ELSE data_tenant_settings.max_view_lookup_columns END, \
                updated_at = now()",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(cap)
         .bind(count_cap.is_some())
         .bind(idx)
@@ -262,7 +262,7 @@ impl DataStore {
             AuditEntry {
                 action: AuditAction::DataTenantSettingsUpdate,
                 object_type: "data_tenant_settings",
-                object_id: &ctx.tenant_id,
+                object_id: ctx.tenant_id(),
                 decision: Decision::Allow,
                 trace_id,
                 metadata: serde_json::Value::Object(metadata),

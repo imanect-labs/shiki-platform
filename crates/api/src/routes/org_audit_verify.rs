@@ -56,7 +56,7 @@ pub async fn verify_chain(
             storage::StorageError::NotFound => ApiError::NotFound,
             e => ApiError::Internal(format!("audit verify: {e}")),
         })?;
-    let object_id = format!("{}|{}", ctx.tenant_id, ctx.org);
+    let object_id = format!("{}|{}", ctx.tenant_id(), ctx.org());
     state
         .audit
         .record(

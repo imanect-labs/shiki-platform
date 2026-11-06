@@ -86,7 +86,7 @@ impl ChatStore {
              WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL",
         )
         .bind(thread_id)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(mini_app.map(|(id, _)| id))
         .bind(mini_app.map(|(_, v)| v))
         .execute(&mut *tx)
@@ -96,7 +96,7 @@ impl ChatStore {
             tx.rollback().await.map_err(map_db)?;
             return Err(ChatError::NotFound);
         }
-        replace_skill_pins(&mut tx, thread_id, &ctx.tenant_id, skills).await?;
+        replace_skill_pins(&mut tx, thread_id, ctx.tenant_id(), skills).await?;
         tx.commit().await.map_err(map_db)?;
         self.audit
             .record(
@@ -144,7 +144,7 @@ impl ChatStore {
              WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL FOR UPDATE",
         )
         .bind(thread_id)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .fetch_optional(&mut *tx)
         .await
         .map_err(map_db)?;
@@ -162,10 +162,10 @@ impl ChatStore {
             }
             Some(None) => {}
         }
-        replace_skill_pins(&mut tx, thread_id, &ctx.tenant_id, skills).await?;
+        replace_skill_pins(&mut tx, thread_id, ctx.tenant_id(), skills).await?;
         sqlx::query("UPDATE thread SET updated_at = now() WHERE id = $1 AND tenant_id = $2")
             .bind(thread_id)
-            .bind(&ctx.tenant_id)
+            .bind(ctx.tenant_id())
             .execute(&mut *tx)
             .await
             .map_err(map_db)?;

@@ -54,7 +54,7 @@ enum Loaded {
 impl DataStore {
     /// 副作用なしで生存行を 1 クエリで読む（スキーマ本文はキャッシュの版と一致すれば省く）。
     async fn load_live(&self, ctx: &AuthContext, id: Uuid) -> Result<Loaded, DataError> {
-        let probe = self.schema_cache.probe(&ctx.tenant_id, id);
+        let probe = self.schema_cache.probe(ctx.tenant_id(), id);
         let (cached_version, cached_format) = probe.version();
         let row: Option<LiveRow> = sqlx::query_as(
             "SELECT id, name, app_id, schema_version, created_by, created_at, updated_at, \
@@ -64,12 +64,12 @@ impl DataStore {
              FROM data_table \
              WHERE tenant_id = $1 AND org = $2 AND id = $3 AND deleted_at IS NULL",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(id)
         .bind(cached_version)
         .bind(cached_format)
-        .fetch_optional(self.pools.for_tenant(&ctx.tenant_id))
+        .fetch_optional(self.pools.for_tenant(ctx.tenant_id()))
         .await
         .map_err(map_db)?;
         let Some(row) = row else {
@@ -86,7 +86,7 @@ impl DataStore {
             (None, Some(Json(s))) => {
                 self.schema_cache.insert(
                     &probe,
-                    &ctx.tenant_id,
+                    ctx.tenant_id(),
                     id,
                     row.schema_version,
                     row.key_format,
@@ -134,12 +134,12 @@ impl DataStore {
                 Loaded::Ready(t) => return Ok(*t),
                 Loaded::Missing => return Err(DataError::NotFound),
                 Loaded::Legacy => {
-                    self.migrate_table_field_keys(&ctx.tenant_id, id).await?;
+                    self.migrate_table_field_keys(ctx.tenant_id(), id).await?;
                 }
                 // Task 15.2 より前に作られたテーブル: 索引台帳を作ってから使う（以降の書込は
                 // write-through・既存レコードはバックフィル）。冪等・テーブル行ロックで直列化。
                 Loaded::NoLedger => {
-                    self.init_pivot_index(&ctx.tenant_id, id).await?;
+                    self.init_pivot_index(ctx.tenant_id(), id).await?;
                 }
             }
         }

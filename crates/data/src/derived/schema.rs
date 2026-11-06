@@ -351,7 +351,7 @@ impl DataStore {
     ) -> Result<Catalog, DataError> {
         let mut cat = Catalog::default();
         let root_keys = self
-            .table_keys_of(&ctx.tenant_id, root)
+            .table_keys_of(ctx.tenant_id(), root)
             .await?
             .unwrap_or_default();
         cat.tables.insert(
@@ -388,9 +388,9 @@ impl DataStore {
                     "SELECT {TABLE_COLS} FROM data_table \
                      WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL"
                 ))
-                .bind(&ctx.tenant_id)
+                .bind(ctx.tenant_id())
                 .bind(rt)
-                .fetch_optional(self.pools.for_tenant(&ctx.tenant_id))
+                .fetch_optional(self.pools.for_tenant(ctx.tenant_id()))
                 .await
                 .map_err(map_db)?;
                 loaded.insert(rt, row.is_some());

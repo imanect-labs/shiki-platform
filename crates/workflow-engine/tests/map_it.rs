@@ -56,7 +56,7 @@ impl NodeExecutor for MapExecutor {
 }
 
 async fn setup() -> Option<PgPool> {
-    let db_url = std::env::var("STORAGE_TEST_DATABASE_URL").ok()?;
+    let db_url = shiki_testenv::var("STORAGE_TEST_DATABASE_URL").ok()?;
     let pool = PgPoolOptions::new()
         .max_connections(5)
         .connect(&db_url)

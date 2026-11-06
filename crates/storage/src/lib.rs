@@ -56,5 +56,5 @@ pub use model::{
 };
 pub use object_store::{ObjectStore, ObjectStoreError, S3Config, S3ObjectStore};
 pub use pool_router::PoolRouter;
-pub use service::{StorageService, WriteAtOutcome};
+pub use service::{RevertOutcome, StorageService, WriteAtOutcome};
 pub use tenant::{Tenant, TenantPlacement, TenantStatus, TenantStore};

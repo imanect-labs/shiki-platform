@@ -226,7 +226,7 @@ impl FakeRecordIndex {
         let g = self.tables.lock().unwrap();
         let mut out = Vec::new();
         for ((tenant, _), t) in g.iter() {
-            if *tenant != ctx.tenant_id {
+            if *tenant != ctx.tenant_id() {
                 continue;
             }
             for c in t.chunks.values() {
@@ -312,11 +312,11 @@ fn serial_lock() -> &'static tokio::sync::Mutex<()> {
 }
 
 async fn setup() -> Option<Env> {
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return None;
     };
-    let Ok(fga_url) = std::env::var("OPENFGA_TEST_URL") else {
+    let Ok(fga_url) = shiki_testenv::var("OPENFGA_TEST_URL") else {
         eprintln!("OPENFGA_TEST_URL 未設定のためスキップ");
         return None;
     };
@@ -376,7 +376,7 @@ impl Env {
                 tenant_id: Some(self.tenant.clone()),
             },
             "acme".into(),
-            self.tenant.clone(),
+            authz::TenantId::parse(self.tenant.as_str()).unwrap(),
         )
     }
 
@@ -610,7 +610,7 @@ async fn row_level_permissions_apply_to_record_search() {
             tenant_id: Some("t-other".into()),
         },
         "acme".into(),
-        "t-other".into(),
+        authz::TenantId::parse("t-other").unwrap(),
     );
     let current_gen = env
         .index

@@ -25,7 +25,7 @@ export function Header() {
   const title = resolvePageTitle(pathname);
 
   return (
-    <header className="shiki-dash-bottom hidden h-14 shrink-0 items-center gap-2.5 bg-background/80 px-6 backdrop-blur supports-[backdrop-filter]:bg-background/60 md:flex">
+    <header className="shiki-dash-bottom hidden print:hidden h-14 shrink-0 items-center gap-2.5 bg-background/80 px-6 backdrop-blur supports-[backdrop-filter]:bg-background/60 md:flex">
       {spec ? (
         <ChromeBar spec={spec} />
       ) : (

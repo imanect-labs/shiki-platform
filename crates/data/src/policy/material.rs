@@ -237,7 +237,7 @@ async fn shared_ids(ctx: &AuthContext, az: &AuthzMemo<'_>) -> Result<(Vec<Uuid>,
         if ids.len() >= MAX_SHARED_IDS {
             truncated = true;
             tracing::warn!(
-                user = %ctx.principal.id,
+                user = %ctx.principal().id,
                 limit = MAX_SHARED_IDS,
                 "個別共有集合が上限を超過（超過分は不可視・PIT-18 fail-closed）"
             );
@@ -350,7 +350,7 @@ mod tests {
                 tenant_id: Some("t".into()),
             },
             "o".into(),
-            "t".into(),
+            authz::TenantId::parse("t").unwrap(),
         );
         assert!(role_object(&ctx, "経理").is_some());
         for bad in ["", "a:b", "a#b", "a b", "a\tb", &"x".repeat(300)] {

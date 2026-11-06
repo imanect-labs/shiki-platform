@@ -145,8 +145,8 @@ pub async fn update(
         "INSERT INTO ai_insight_settings (tenant_id, org) VALUES ($1, $2) \
          ON CONFLICT (tenant_id, org) DO NOTHING",
     )
-    .bind(&ctx.tenant_id)
-    .bind(&ctx.org)
+    .bind(ctx.tenant_id())
+    .bind(ctx.org())
     .execute(&mut *tx)
     .await?;
     let (classify, individual, wage, minutes, workflow): Row = sqlx::query_as(
@@ -154,8 +154,8 @@ pub async fn update(
                 workflow_minutes \
          FROM ai_insight_settings WHERE tenant_id = $1 AND org = $2 FOR UPDATE",
     )
-    .bind(&ctx.tenant_id)
-    .bind(&ctx.org)
+    .bind(ctx.tenant_id())
+    .bind(ctx.org())
     .fetch_one(&mut *tx)
     .await?;
     let current = InsightSettings {
@@ -175,14 +175,14 @@ pub async fn update(
                 updated_by = $8, updated_at = now() \
          WHERE tenant_id = $1 AND org = $2",
     )
-    .bind(&ctx.tenant_id)
-    .bind(&ctx.org)
+    .bind(ctx.tenant_id())
+    .bind(ctx.org())
     .bind(next.classify_enabled)
     .bind(next.individual_view)
     .bind(next.hourly_wage_jpy)
     .bind(serde_json::to_value(&next.minutes_per_task).unwrap_or_default())
     .bind(next.workflow_minutes)
-    .bind(&ctx.principal.id)
+    .bind(&ctx.principal().id)
     .execute(&mut *tx)
     .await?;
     tx.commit().await?;

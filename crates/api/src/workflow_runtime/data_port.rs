@@ -108,7 +108,7 @@ impl DataPort<'_> {
         table_id: Uuid,
         relation: Relation,
     ) -> Result<Actor, PortError> {
-        let ctx = auth_ctx(ec);
+        let ctx = auth_ctx(ec)?;
         if ec.principal_kind != "workflow" {
             return Ok(Actor {
                 ctx,
@@ -160,7 +160,7 @@ impl DataPort<'_> {
                 tenant_id: Some(ec.tenant_id.clone()),
             },
             ec.org.clone(),
-            ec.tenant_id.clone(),
+            super::auth::tenant_of(ec)?,
         );
         Ok(Actor {
             ctx: actor,
@@ -180,7 +180,7 @@ impl DataPort<'_> {
         const PREFIX: &str = "data_table:";
         let objects = workflow_engine::delegated_objects(
             self.db,
-            &ctx.tenant_id,
+            ctx.tenant_id(),
             workflow_id,
             delegator,
             PREFIX,
@@ -200,7 +200,7 @@ impl DataPort<'_> {
 
     /// 実行主体（ワークフロー主体なら委譲されたテーブル）の一覧。中身ではなく名前と id だけ。
     pub(super) async fn list_tables(&self, ec: &ExecCtx) -> Result<Value, PortError> {
-        let ctx = auth_ctx(ec);
+        let ctx = auth_ctx(ec)?;
         let tables = self
             .data
             .list_tables(&ctx, MAX_LISTED_TABLES)

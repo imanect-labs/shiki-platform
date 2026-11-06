@@ -17,7 +17,7 @@ pub mod skill;
 
 pub use exec::CapabilityNodeExecutor;
 pub use ports::{
-    AgentInvokeReq, CsvPatchReq, CsvWriteReq, DataWriteOp, DataWriteReq, ExecCtx, HttpSendReq,
-    HttpSendResp, LlmInvokeReq, NodePorts, PortError, ResolvedSecretView, ResolvedSkillView,
-    StorageWriteReq,
+    AgentInvokeReq, CsvPatchReq, CsvQueryReq, CsvQueryTable, CsvWriteReq, DataWriteOp,
+    DataWriteReq, ExecCtx, HttpSendReq, HttpSendResp, LlmInvokeReq, NodePorts, PortError,
+    ResolvedSecretView, ResolvedSkillView, StorageWriteReq,
 };

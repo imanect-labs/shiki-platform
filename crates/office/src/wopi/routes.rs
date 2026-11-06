@@ -100,7 +100,7 @@ async fn authenticate(
     access_token: &str,
 ) -> Result<Authenticated, WopiFailure> {
     let claims = token::verify(&state.token_key, access_token, file_id)?;
-    let ctx = claims.to_auth_context();
+    let ctx = claims.to_auth_context()?;
     let object = ctx.ns().file(&file_id.to_string());
     let subject = ctx.subject();
     for (relation, mode) in [
@@ -162,11 +162,14 @@ async fn check_file_info(
     // viewinfo で全参加者に「Shiki AI」が表示される（コワークの可視化）。
     let (user_id, user_friendly_name) = if auth.ai_actor {
         (
-            format!("shiki-ai:{}", auth.ctx.principal.id),
+            format!("shiki-ai:{}", auth.ctx.principal().id),
             AI_DISPLAY_NAME.to_string(),
         )
     } else {
-        (auth.ctx.principal.id.clone(), auth.ctx.principal.id.clone())
+        (
+            auth.ctx.principal().id.clone(),
+            auth.ctx.principal().id.clone(),
+        )
     };
     let info = CheckFileInfo {
         base_file_name: node.name,
@@ -230,7 +233,7 @@ async fn put_file(
     }
     let ctx = &auth.ctx;
     // ロック保持者のみ書ける（未ロック時は許可＝Collabora の初回保存互換）。
-    lock::check_write_lock(&state.pool, &ctx.tenant_id, file_id, wopi_lock(&headers)?).await?;
+    lock::check_write_lock(&state.pool, ctx.tenant_id(), file_id, wopi_lock(&headers)?).await?;
     // content_type は既存値を維持（WOPI PutFile は型を運ばない）。
     let node = state
         .storage
@@ -282,7 +285,7 @@ async fn lock_operations(
         provided.ok_or_else(|| WopiFailure(OfficeError::Invalid("X-WOPI-Lock が必要です".into())))
     };
     let pool = &state.pool;
-    let tenant = &ctx.tenant_id;
+    let tenant = ctx.tenant_id();
     match operation {
         "LOCK" => {
             let lock_id = require_lock_id()?;

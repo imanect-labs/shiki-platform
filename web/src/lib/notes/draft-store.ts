@@ -30,8 +30,9 @@ export function upsertDraft(
   markdown: string,
   source: DraftSource,
   parentId?: string,
+  opts?: { sourcesNotice?: boolean },
 ): NoteDraftEntry {
-  return store.upsert(threadId, name, markdown, source, parentId);
+  return store.upsert(threadId, name, markdown, source, parentId, opts);
 }
 
 export function getDraft(threadId: string, name: string): NoteDraftEntry | null {

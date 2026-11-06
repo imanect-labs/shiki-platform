@@ -47,9 +47,9 @@ impl DataStore {
             "SELECT id FROM data_table \
              WHERE tenant_id = $1 AND app_id = $2 AND deleted_at IS NULL",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(app_id)
-        .fetch_all(self.pools.for_tenant(&ctx.tenant_id))
+        .fetch_all(self.pools.for_tenant(ctx.tenant_id()))
         .await
         .map_err(map_db)?;
         Ok(rows.into_iter().map(|(id,)| id).collect())
@@ -87,12 +87,12 @@ impl DataStore {
                AND ($5::uuid IS NULL OR app_id = $5) \
              ORDER BY updated_at DESC, id DESC LIMIT $4"
         ))
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(&ids)
         .bind(limit)
         .bind(app_id)
-        .fetch_all(self.pools.for_tenant(&ctx.tenant_id))
+        .fetch_all(self.pools.for_tenant(ctx.tenant_id()))
         .await
         .map_err(map_db)?;
         Ok(rows.into_iter().map(TableRow::into_table).collect())
