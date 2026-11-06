@@ -43,8 +43,10 @@ pub struct TranslateLimits {
     pub chunk_chars: usize,
     /// これ未満の塊は次の見出しで切らずに結合する（呼び出し回数を抑える）。
     pub min_merge_chars: usize,
-    /// チャンク数の上限（超えたら翻訳せず範囲を絞ってもらう・敵対的入力とコストの歯止め）。
+    /// ページ全体のチャンク数の上限（超えたら翻訳せず範囲を絞ってもらう・敵対的入力とコストの歯止め）。
     pub max_chunks: usize,
+    /// 1 回の呼び出しで訳すチャンク数（これを超えるページは部に分け、`part` で続きを訳す）。
+    pub part_chunks: usize,
     /// 同時に訳すチャンク数。
     pub parallel: usize,
     /// 1 チャンクの試行回数（初回＋再試行）。
@@ -56,12 +58,16 @@ impl Default for TranslateLimits {
         TranslateLimits {
             chunk_chars: 2_500,
             min_merge_chars: 300,
-            max_chunks: 60,
+            max_chunks: 400,
+            part_chunks: 20,
             parallel: 4,
             max_attempts: 3,
         }
     }
 }
+
+/// 翻訳で読むページ本文の上限（バイト）。部に分けて続きを訳せるので `web_fetch` より広く取る。
+const TRANSLATE_FETCH_CAP: usize = 2 * 1024 * 1024;
 
 /// 1 チャンクの出力上限の天井（トークン）。
 const MAX_OUTPUT_TOKENS: usize = 32_768;
@@ -133,6 +139,8 @@ struct Request {
     lang: String,
     style: Option<String>,
     terms: Vec<Term>,
+    /// 訳す部（1 始まり）。長いページの続きを訳すときに指定する。
+    part: usize,
 }
 
 fn parse_input(input: &serde_json::Value) -> Result<Request, ToolError> {
@@ -173,11 +181,20 @@ fn parse_input(input: &serde_json::Value) -> Result<Request, ToolError> {
                 .collect()
         })
         .unwrap_or_default();
+    let part = match input.get("part") {
+        None | Some(serde_json::Value::Null) => 1,
+        Some(v) => v
+            .as_u64()
+            .and_then(|n| usize::try_from(n).ok())
+            .filter(|n| *n >= 1)
+            .ok_or_else(|| ToolError::Invalid("part は 1 以上の整数で指定してください".into()))?,
+    };
     Ok(Request {
         url,
         lang,
         style,
         terms,
+        part,
     })
 }
 
@@ -204,6 +221,8 @@ struct Job<'a> {
     call_no: usize,
     title: Option<&'a str>,
     chunks: &'a [chunk::Chunk],
+    /// この呼び出しで訳すチャンクの範囲（部）。
+    range: std::ops::Range<usize>,
     terms: &'a [Term],
     protected: &'a protect::Protected,
 }
@@ -360,15 +379,24 @@ impl WebTranslateTool {
         }
     }
 
+    /// 翻訳を止めた理由（run の停止・利用枠の超過）。無ければ `None`。
+    fn stopped(&self, shared: &Shared) -> Option<String> {
+        if self.cancel.load(Ordering::SeqCst) {
+            return Some("翻訳は停止されました".to_string());
+        }
+        let abort = shared.abort.lock().ok().and_then(|a| a.clone())?;
+        Some(format!("{abort} 翻訳はやり直さないこと。"))
+    }
+
     /// 用語集を作る（失敗しても翻訳は続ける）。訳したタイトルも返す。
     ///
     /// `job.terms` はまだ空（ここで作る）。
     async fn glossary(&self, job: &Job<'_>) -> (Option<String>, Vec<Term>) {
         let (shared, req, call_no) = (job.shared, job.req, job.call_no);
-        let head: String = job
-            .protected
-            .text
-            .chars()
+        // 訳す部の先頭から（続きの部ではその部の語を拾う）。
+        let head: String = job.chunks[job.range.clone()]
+            .iter()
+            .flat_map(|c| c.text.chars().chain(std::iter::once('\n')))
             .take(prompt::GLOSSARY_SOURCE_CHARS)
             .collect();
         if !check::has_translatable_text(&head) {
@@ -441,6 +469,12 @@ impl Tool for WebTranslateTool {
                     "type": "string",
                     "description": "訳調の指定（任意・200 文字まで。例: 「だ・である調」「技術文書として簡潔に」）"
                 },
+                "part": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "長いページの続きを訳すときの部の番号（任意・既定は 1）。前回の結果に\
+                                    「続きがある」とあれば、ユーザーが続きを求めたときに次の番号を渡す"
+                },
                 "glossary": {
                     "type": "array",
                     "description": "ユーザーが指定した訳語（任意・30 語まで）。ページから作る用語集より優先する。\
@@ -478,7 +512,11 @@ impl Tool for WebTranslateTool {
     ) -> Result<ToolOutcome, ToolError> {
         let req = parse_input(&input)?;
         let call_no = self.calls.fetch_add(1, Ordering::SeqCst);
-        let fetched = match self.fetch.fetch(ctx, &req.url).await? {
+        let fetched = match self
+            .fetch
+            .fetch_with_cap(ctx, &req.url, TRANSLATE_FETCH_CAP)
+            .await?
+        {
             Fetched::Page(f) => f,
             Fetched::Observation(outcome) => return Ok(outcome),
         };
@@ -489,14 +527,17 @@ impl Tool for WebTranslateTool {
             source_capped,
             ..
         } = fetched;
-        if !(200..300).contains(&status) {
+        let unusable = if (200..300).contains(&status) {
+            page.body
+                .trim()
+                .is_empty()
+                .then_some("本文を取り出せなかった")
+        } else {
+            Some("ページを取得できなかった")
+        };
+        if let Some(why) = unusable {
             return Ok(ToolOutcome::error(format!(
-                "HTTP {status} | {url}\nページを取得できなかったため翻訳しません"
-            )));
-        }
-        if page.body.trim().is_empty() {
-            return Ok(ToolOutcome::error(format!(
-                "HTTP {status} | {url}\n本文を取り出せなかったため翻訳しません"
+                "HTTP {status} | {url}\n{why}ため翻訳しません"
             )));
         }
 
@@ -508,12 +549,17 @@ impl Tool for WebTranslateTool {
         );
         if chunks.len() > self.limits.max_chunks {
             return Ok(ToolOutcome::error(format!(
-                "{url}\nページが長すぎるため翻訳しません（{} チャンク・上限 {}）。\
-                 ユーザーに訳したい節を確かめ、web_fetch の query で範囲を絞って読んでください。",
-                chunks.len(),
-                self.limits.max_chunks
+                "{url}\nページが長すぎるため翻訳しません。\
+                 ユーザーに訳したい節を確かめ、web_fetch の query で範囲を絞って読んでください。"
             )));
         }
+        let Some((range, parts)) = part_range(chunks.len(), self.limits.part_chunks, req.part)
+        else {
+            return Ok(ToolOutcome::error(format!(
+                "{url}\nこのページは part={} までありません。最後の部まで訳し終えています。",
+                req.part
+            )));
+        };
 
         let shared = Shared::default();
         let started = std::time::Instant::now();
@@ -525,6 +571,7 @@ impl Tool for WebTranslateTool {
             call_no,
             title: page.title.as_deref(),
             chunks: &chunks,
+            range: range.clone(),
             terms: &[],
             protected: &protected,
         };
@@ -533,7 +580,7 @@ impl Tool for WebTranslateTool {
         job.terms = &terms;
 
         let job = &job;
-        let mut results: Vec<(usize, ChunkResult)> = futures::stream::iter(0..chunks.len())
+        let mut results: Vec<(usize, ChunkResult)> = futures::stream::iter(range.clone())
             .map(|i| async move { (i, self.translate_chunk(job, i).await) })
             .buffer_unordered(self.limits.parallel.max(1))
             .collect()
@@ -547,23 +594,14 @@ impl Tool for WebTranslateTool {
             fresh_tokens,
             cost_usd_micros: cost,
         });
-        let stopped = if self.cancel.load(Ordering::SeqCst) {
-            Some("翻訳は停止されました".to_string())
-        } else {
-            shared
-                .abort
-                .lock()
-                .ok()
-                .and_then(|a| a.clone())
-                .map(|msg| format!("{msg} 翻訳はやり直さないこと。"))
-        };
+        let stopped = self.stopped(&shared);
         if let Some(msg) = stopped {
             let mut out = ToolOutcome::error(msg);
             out.usage = usage;
             return Ok(out);
         }
 
-        let assembled = assemble::assemble(&chunks, &results, &protected);
+        let assembled = assemble::assemble(&chunks[range.clone()], &results, &protected);
         tracing::info!(
             target: "web_translate",
             url = %url,
@@ -581,7 +619,8 @@ impl Tool for WebTranslateTool {
         let mut out = ToolOutcome::ok(summary(
             &url,
             &req.lang,
-            chunks.len(),
+            req.part,
+            parts,
             &assembled,
             source_capped,
         ));
@@ -593,6 +632,8 @@ impl Tool for WebTranslateTool {
             "markdown": assembled.markdown,
             "failed_chunks": assembled.failed_chunks,
             "chunks": chunks.len(),
+            "part": req.part,
+            "parts": parts,
             "source_images": protected.image_urls,
             "source_truncated": source_capped,
             "fetched_at": chrono::Utc::now().to_rfc3339(),
@@ -602,27 +643,45 @@ impl Tool for WebTranslateTool {
     }
 }
 
+/// `n` チャンクを `per` 程度ずつ均等な部に割り、`part` 部目（1 始まり）の範囲と部の数を返す。
+/// 部が無ければ `None`（20＋1 のような端数の部を作らない）。
+fn part_range(n: usize, per: usize, part: usize) -> Option<(std::ops::Range<usize>, usize)> {
+    let parts = n.div_ceil(per.max(1)).max(1);
+    let size = n.div_ceil(parts).max(1);
+    (part >= 1 && part <= parts).then(|| ((part - 1) * size..(part * size).min(n), parts))
+}
+
 /// モデルへ返す要約（こちらが生成した値だけ。訳文・タイトル・用語集はページ由来なので載せない）。
+///
+/// 件数（チャンク数・文字数）は載せない。載せるとモデルが回答にそのまま書く（実測）。
 fn summary(
     url: &reqwest::Url,
     lang: &str,
-    chunks: usize,
+    part: usize,
+    parts: usize,
     assembled: &assemble::Assembled,
     source_capped: bool,
 ) -> String {
     use std::fmt::Write as _;
     let mut content = format!(
-        "{url} を {lang} へ翻訳し、訳文を会話に表示しました（{chunks} チャンク・訳文 {} 文字",
-        assembled.markdown.chars().count()
+        "{url} の訳文を会話に表示しました。回答では訳文を書き写さず、件数（チャンク数・文字数）も書かず、\
+         1 文で短く伝えるだけにすること。"
     );
-    let failed = assembled.failed_chunks.len();
-    if failed > 0 {
-        let _ = write!(content, "・翻訳できず原文のまま残した節 {failed}");
+    if !assembled.failed_chunks.is_empty() {
+        content.push_str("一部は翻訳できず原文のまま表示している（表示に注記あり）。");
     }
-    content.push('）');
-    if source_capped {
-        content.push_str("。ページが長く、取得上限までの範囲だけを訳しています");
+    if part < parts {
+        // 部の数は書かせない（件数と同じく回答にそのまま写る）。次の呼び出しの引数だけを示す。
+        let _ = write!(
+            content,
+            "このページには続きがある。「続けて」と送れば続きを訳すと 1 文で添えること（部の数は書かない）。\
+             ユーザーが続きを求めたら web_translate を url={url}・target_lang={lang}・part={} で呼ぶ。",
+            part + 1
+        );
+    } else if source_capped {
+        content.push_str(
+            "ページが非常に長く、取得できた範囲の最後まで訳した（それより後ろは取得していない）。",
+        );
     }
-    content.push_str("。訳文は回答に書き写さず、表示したことを短く伝えてください。");
     content
 }

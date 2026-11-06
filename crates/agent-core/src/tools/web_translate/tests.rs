@@ -258,11 +258,7 @@ async fn a_chunk_that_keeps_failing_is_left_in_the_source_language_with_a_note()
         md.contains("Read [the documentation](https://example.com/docs)"),
         "原文のまま: {md}"
     );
-    assert!(
-        out.content.contains("原文のまま残した節"),
-        "{}",
-        out.content
-    );
+    assert!(out.content.contains("原文のまま表示"), "{}", out.content);
     // 再試行には失敗理由（こちらの固定文言＋プレースホルダ名）が添えられる。
     let users = backend.users();
     assert!(users
@@ -333,7 +329,19 @@ async fn a_cancelled_run_does_not_show_a_translation() {
 
 #[tokio::test]
 async fn a_page_over_the_chunk_limit_is_not_sent_to_the_llm() {
-    let body: String = (0..80)
+    let (addr, _) = stub_server(page_response(&long_page(80))).await;
+    let backend = translator();
+    let mut t = tool(addr, Arc::clone(&backend));
+    t.limits.max_chunks = 10;
+    let out = run(&t, addr.port()).await;
+    assert!(out.is_error);
+    assert!(out.content.contains("長すぎる"), "{}", out.content);
+    assert!(backend.users().is_empty(), "LLM を呼ばない");
+}
+
+/// 見出しごとに 1 チャンクになる長いページ（`n` 節）。
+fn long_page(n: usize) -> String {
+    let body: String = (0..n)
         .map(|i| {
             format!(
                 "<h2>Section {i}</h2><p>{}</p>",
@@ -341,16 +349,58 @@ async fn a_page_over_the_chunk_limit_is_not_sent_to_the_llm() {
             )
         })
         .collect();
-    let (addr, _) = stub_server(page_response(&format!(
-        "<html><body><article>{body}</article></body></html>"
-    )))
-    .await;
+    format!("<html><body><article>{body}</article></body></html>")
+}
+
+/// 長いページは部に分けて訳し、`part` で続きを訳す（件数はモデルへの要約に載せない）。
+#[tokio::test]
+async fn a_long_page_is_translated_part_by_part() {
+    let (addr, _) = stub_server(page_response(&long_page(50))).await;
     let backend = translator();
     let t = tool(addr, Arc::clone(&backend));
-    let out = run(&t, addr.port()).await;
-    assert!(out.is_error);
-    assert!(out.content.contains("長すぎる"), "{}", out.content);
-    assert!(backend.users().is_empty(), "LLM を呼ばない");
+    let url = format!("http://page.example.invalid:{}/a", addr.port());
+    let auth = ctx();
+    let call = |part: Option<u64>| {
+        let mut input = serde_json::json!({ "url": url });
+        if let Some(p) = part {
+            input["part"] = p.into();
+        }
+        t.call(&auth, input, None)
+    };
+
+    let first = call(None).await.unwrap();
+    assert!(!first.is_error, "{}", first.content);
+    let tr = &first.translations[0];
+    assert_eq!(tr["part"], 1);
+    let parts = tr["parts"].as_u64().unwrap();
+    assert!(parts >= 2, "{tr}");
+    let md = tr["markdown"].as_str().unwrap();
+    assert!(md.contains("Ｓｅｃｔｉｏｎ 0"), "{md}");
+    assert!(!md.contains("Ｓｅｃｔｉｏｎ 49"), "続きの部は訳さない");
+    assert!(first.content.contains("part=2"), "{}", first.content);
+    // 続きの呼び出しに要る引数（言語）を示し、部の数は書かせない。
+    assert!(
+        first.content.contains("target_lang=ja"),
+        "{}",
+        first.content
+    );
+    assert!(!first.content.contains("部のうち"), "{}", first.content);
+    assert!(!first.content.contains("チャンク・"), "{}", first.content);
+
+    let last = call(Some(parts)).await.unwrap();
+    let md = last.translations[0]["markdown"].as_str().unwrap();
+    assert!(md.contains("Ｓｅｃｔｉｏｎ 49"), "{md}");
+    assert!(!md.contains("Ｓｅｃｔｉｏｎ 0\n"), "{md}");
+    assert!(
+        !last.content.contains("part="),
+        "最後の部では続きを案内しない: {}",
+        last.content
+    );
+
+    let over = call(Some(parts + 1)).await.unwrap();
+    assert!(over.is_error);
+    assert!(over.translations.is_empty());
+    assert!(parse_input(&serde_json::json!({"url": "https://e.x", "part": 0})).is_err());
 }
 
 /// 最後の試行で段落の訳し残しだけが残ったら、その訳を採る（訳せた段落まで原文に戻さない）。
@@ -383,6 +433,15 @@ async fn a_soft_failure_on_the_last_attempt_keeps_the_translation() {
         backend.translate_users().len(),
         TranslateLimits::default().max_attempts
     );
+}
+
+#[test]
+fn parts_are_balanced() {
+    assert_eq!(part_range(21, 20, 1), Some((0..11, 2)));
+    assert_eq!(part_range(21, 20, 2), Some((11..21, 2)));
+    assert_eq!(part_range(5, 20, 1), Some((0..5, 1)));
+    assert_eq!(part_range(5, 20, 2), None);
+    assert_eq!(part_range(5, 20, 0), None);
 }
 
 #[test]

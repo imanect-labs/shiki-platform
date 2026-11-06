@@ -21,7 +21,7 @@ import { loginViaKeycloak } from "./helpers";
 ///   E2E_BASE_URL=http://localhost:3000 pnpm exec playwright test e2e/translate.manual.spec.ts
 /// ```
 ///
-/// 見るのは「`/translate <URL>` で訳文のカードが出て、モデルの回答は訳文を書き写さない短い案内に留まるか」と、
+/// 見るのは「`/translate <URL>` で訳文が会話に出て、モデルの回答は訳文を書き写さない短い案内に留まるか」と、
 /// 訳文のコード・リンク・画像が原文どおりに残るか。
 const SHOTS = process.env.SHOTS_DIR;
 const PAGE_URL = process.env.TRANSLATE_URL ?? "https://go.dev/blog/range-functions";
@@ -31,7 +31,7 @@ test.use({ deviceScaleFactor: 2, locale: "ja-JP", viewport: { width: 1280, heigh
 // 実 LLM で数十チャンクを訳すので長めに待つ。
 test.setTimeout(15 * 60_000);
 
-test("/translate <URL> で訳文のカードが出る", async ({ page }) => {
+test("/translate <URL> で訳文が会話に出る", async ({ page }) => {
   await page.emulateMedia({ colorScheme: THEME });
   await loginViaKeycloak(page);
   await page.goto("/");
@@ -53,7 +53,7 @@ test("/translate <URL> で訳文のカードが出る", async ({ page }) => {
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/translate-${THEME}-input.png` });
   await page.getByRole("button", { name: "送信" }).click();
 
-  const card = page.getByTestId("translation-card");
+  const card = page.getByTestId("translation-block");
   await expect(card).toBeVisible({ timeout: 14 * 60_000 });
   await expect(page.getByTestId("translation-source")).toHaveText(new URL(PAGE_URL).host);
   await expect(page.getByTestId("translation-body")).not.toBeEmpty();
@@ -61,9 +61,6 @@ test("/translate <URL> で訳文のカードが出る", async ({ page }) => {
   await expect(page.getByRole("button", { name: "生成を停止" })).toHaveCount(0, { timeout: 5 * 60_000 });
   if (SHOTS) {
     await card.scrollIntoViewIfNeeded();
-    await page.screenshot({ path: `${SHOTS}/translate-${THEME}-card.png` });
-    const toggle = page.getByTestId("translation-toggle");
-    if (await toggle.isVisible()) await toggle.click();
-    await card.screenshot({ path: `${SHOTS}/translate-${THEME}-full.png` });
+    await page.screenshot({ path: `${SHOTS}/translate-${THEME}-answer.png` });
   }
 });

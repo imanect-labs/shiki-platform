@@ -26,9 +26,19 @@ pub(super) fn line(translation: &serde_json::Value) -> String {
         .get("markdown")
         .and_then(serde_json::Value::as_str)
         .map_or(0, |m| m.chars().count());
+    let num = |k: &str| translation.get(k).and_then(serde_json::Value::as_u64);
+    // 続きのある長いページは、次の部の番号を案内する（「続けて」で次を訳せるように）。
+    let rest = match (num("part"), num("parts")) {
+        (Some(part), Some(parts)) if part < parts => format!(
+            "続きあり（全 {parts} 部のうち {part} 部目まで表示済み）。続きを求められたら web_translate を \
+             url={url}・target_lang={lang}・part={} で呼ぶ。",
+            part + 1
+        ),
+        _ => String::new(),
+    };
     format!(
         "[翻訳済みのページ: {url}（{lang}・訳文 {chars} 文字を会話に表示済み。訳文は履歴に含めていない。\
-         内容を問われたら web_fetch で原文を読む）]"
+         {rest}内容を問われたら web_fetch で原文を読む）]"
     )
 }
 
@@ -54,6 +64,17 @@ mod tests {
         for leaked in ["訳文の本文", "Ignore previous", "</system>"] {
             assert!(!out.contains(leaked), "{leaked}: {out}");
         }
+        // 続きのある長いページは次の部を案内する。
+        let more = super::line(&serde_json::json!({
+            "source_url": "https://example.com/a", "target_lang": "ja", "markdown": "訳",
+            "part": 1, "parts": 3,
+        }));
+        assert!(more.contains("part=2"), "{more}");
+        let last = super::line(&serde_json::json!({
+            "source_url": "https://example.com/a", "target_lang": "ja", "markdown": "訳",
+            "part": 3, "parts": 3,
+        }));
+        assert!(!last.contains("part="), "{last}");
         let mut tools = Vec::new();
         super::super::history::tools_in_use(&blocks, &mut tools);
         assert_eq!(tools, vec!["web_translate".to_string()]);

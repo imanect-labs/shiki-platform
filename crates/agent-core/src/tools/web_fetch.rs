@@ -323,6 +323,17 @@ impl WebFetchTool {
         ctx: &AuthContext,
         url_input: &str,
     ) -> Result<Fetched, ToolError> {
+        self.fetch_with_cap(ctx, url_input, FETCH_BODY_CAP).await
+    }
+
+    /// [`Self::fetch`] のテキスト応答の読み取り上限を指定する版（`web_translate` は部に分けて
+    /// 続きを訳せるので広く取る）。PDF/Office の上限（`FETCH_DOC_CAP`）は変えない。
+    pub(crate) async fn fetch_with_cap(
+        &self,
+        ctx: &AuthContext,
+        url_input: &str,
+        text_cap: usize,
+    ) -> Result<Fetched, ToolError> {
         let target = validate_url(url_input)?;
 
         // 名前解決 → 解決後 IP の検証。以降の接続は「この検証済みアドレス」に固定する
@@ -388,7 +399,7 @@ impl WebFetchTool {
         let cap = if declared_doc.is_some() {
             FETCH_DOC_CAP
         } else {
-            FETCH_BODY_CAP
+            text_cap
         };
         let (body, source_capped) = match read_capped(response, cap).await {
             Ok(v) => v,

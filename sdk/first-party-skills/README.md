@@ -86,9 +86,9 @@ SHIKI_SIGNING_KEY=<hex> node sdk/cli/src/index.ts skill import-first-party --api
 ## translate
 
 - 実体: instructions（手順書）が本体。`/translate <URL か文章> [言語や訳調の指定]` で起動する。
-- **URL なら `web_translate` ツール**がページを取得・分割・翻訳・検査し、訳文を会話のカード
-  （translation ブロック）に直接出す。モデルは訳文を書き写さず、1〜2 文で案内するだけ
-  （出力トークンを二重に払わない・長いページで途中終了しない）。設計は
+- **URL なら `web_translate` ツール**がページを取得・分割・翻訳・検査し、訳文を回答の位置にそのまま出す
+  （translation ブロック）。モデルは訳文を書き写さず、1 文で案内するだけ（出力トークンを二重に払わない・
+  長いページで途中終了しない）。長いページは部に分けて訳し、「続けて」で `part` を進めて続きを訳す。設計は
   [docs/agent/web-translate.md](../../docs/agent/web-translate.md)。
 - URL でない文章は、ツールを使わずその場で訳す（構造・コード・URL・数式は保つ）。
 - 既定の訳す先は日本語（日本語の文章は英語）。言語・訳調・訳語の指定は `web_translate` の

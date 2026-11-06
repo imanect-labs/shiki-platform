@@ -92,7 +92,7 @@ import { PanelEmptyHint } from "./doc-chat-draft";
 import { WorkflowRefCard } from "./workflow-ref-card";
 import { NoteRefCard } from "./note-ref-card";
 import { NoteDraftCard } from "./note-draft-card";
-import { TranslationCard } from "./translation-card";
+import { TranslationBlock } from "./translation-block";
 import { SlideDraftCard } from "./slide-draft-card";
 import { CsvDraftCard } from "./csv-draft-card";
 import { SkillDraftCard } from "./skill-draft-card";
@@ -1400,7 +1400,7 @@ const AssistantRow = React.memo(function AssistantRow({
           </YuiActionContext.Provider>
           {/* 訳文は外部ページ由来なので、図のボタンの文脈（YuiActionContext）の外に置く。 */}
           {translations.map((b, i) => (
-            <TranslationCard key={i} raw={b.translation} imageProxy={imageProxy} />
+            <TranslationBlock key={i} raw={b.translation} imageProxy={imageProxy} />
           ))}
           {workflowRefs.map((b, i) => (
             <WorkflowRefCard key={i} raw={b.workflow} />
@@ -1534,7 +1534,7 @@ function StreamingRow({
             />
           ) : null}
           {stream.translations.map((translation, i) => (
-            <TranslationCard key={i} raw={translation} imageProxy={streamImageProxy} />
+            <TranslationBlock key={i} raw={translation} imageProxy={streamImageProxy} />
           ))}
           {stream.workflowRefs.map((workflow, i) => (
             <WorkflowRefCard key={i} raw={workflow} />
