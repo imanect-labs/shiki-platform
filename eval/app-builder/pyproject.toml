@@ -1,0 +1,41 @@
+[project]
+name = "app-builder-eval"
+version = "0.0.0"
+description = "AI によるワークフロー（アプリ）作成の評価基盤（GAP-30・保存できるか・実行して期待どおりか）"
+requires-python = ">=3.12,<3.13"
+license = "LicenseRef-Proprietary"
+# anthropic SDK は入れない（自動の再試行と勝手に付くヘッダーを避け、要求の形を自分で決めるため）。
+dependencies = [
+    "httpx>=0.28",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.8",
+    "pytest>=8.3",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
+# プロンプト（日本語の長文）を折り返すと読みにくくなるため行長は見ない。
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+# tests/ の補助（conftest と同じ場所から読む）も自前のものとして並べる。
+known-first-party = ["abeval", "netguard", "fake_upstream"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# abeval をインストールせずに読む（tool-search と同じく uv の仮想のプロジェクト）。
+pythonpath = ["."]
+# /tmp は tmpfs なので一時の置き場をここに作る（.gitignore 済み）。
+addopts = "-ra --basetemp=.pytest_tmp"
+markers = [
+    "server: 評価の版のサーバー（stub の LLM）が要る",
+    "lint_bin: ir_lint のバイナリ（target/debug/examples/ir_lint）が要る",
+    "shell: bash と git が要る",
+]

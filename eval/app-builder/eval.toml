@@ -1,0 +1,56 @@
+# eval/app-builder（abeval）の設定。鍵の項目は置かない（読み込みで拒む）。本物の鍵を読むのは手元の中継
+# （~/.config/shiki-dev/anthropic-relay.py・127.0.0.1:8787）だけ。
+
+# 単価（マイクロ USD／100 万トークン・GAP-30 §6.1）。段の境は「入力＋キャッシュの読み＋キャッシュの書き」が
+# tier_threshold_tokens を超えたら high（手元の中継の cost_of と同じ）。
+[pricing]
+tier_threshold_tokens = 100000
+
+[pricing."claude-haiku-5-5".low]
+input = 100000
+output = 500000
+cache_read = 10000
+cache_write_5m = 125000
+cache_write_1h = 200000
+
+[pricing."claude-haiku-5-5".high]
+input = 500000
+output = 2500000
+cache_read = 50000
+cache_write_5m = 625000
+cache_write_1h = 1000000
+
+# 上限（USD）。eval_cap_usd（評価の累計・月で区切らない）と run_cap_usd（1 回の実行）は abeval.proxy が
+# 送る前に強制する。global_cap_usd は手元の中継が強制する外側の歯止め（ここでは表示だけ）。
+[caps]
+eval_cap_usd = 35
+run_cap_usd = 10
+global_cap_usd = 95
+
+[proxy]
+listen = "127.0.0.1:18200"
+# 上流は手元の中継（鍵はそこで付く）。abeval.proxy はダミーの鍵を送る。
+upstream = "http://127.0.0.1:8787"
+allowed_models = ["claude-haiku-5-5"]
+# 試行の割り当てに使う会話 ID のヘッダー（製品のプロバイダの session_header と同じ名前にする）。上流へは送らない。
+session_header = "x-abeval-session"
+# 手元の中継の台帳で用途を分ける x-campaign-tag の接頭辞（abeval/<exp>/<run>/<trial>）。
+tag_prefix = "abeval"
+
+[paths]
+# 版のバイナリ（bin/）と中継の制御の合言葉（proxy.token・権限 600）。
+home = "~/.local/share/shiki-eval"
+# 評価の台帳（上限の正本・eval/app-builder からの相対・.gitignore 済み）。
+ledger = "results/spend.jsonl"
+# 会話の全文・要求の本文・試行の記録（.gitignore 済み）。
+cache = "data/cache"
+# 手元の中継の台帳（読むだけ・外側の残りの表示に使う）。
+relay_ledger = "~/.local/state/shiki-campaign/anthropic-spend.jsonl"
+
+[server]
+api_url = "http://localhost:10067"
+
+[mode_b]
+# 承認待ちのうち、承認するツール（D-162・H8 (a)。既定で却下し、ここに載せたものだけ承認する）。
+# D-10 の試運転のツールが入ったら足す。
+approve_tools = []
