@@ -1,0 +1,8 @@
+{
+ "code": 0,
+ "out": "停止しました（compose の依存サービスは残しています。落とすなら deploy/compose で docker compose down）。\n",
+ "err": "",
+ "log": [
+  "fuser 3000/tcp"
+ ]
+}

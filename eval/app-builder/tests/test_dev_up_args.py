@@ -1,12 +1,19 @@
 """dev-up.sh の版のサーバー向けの引数（GAP-30・H3 (a)）。
 
 dev-up.sh はほかのセッションと共有している。引数を省いた起動が前と同じであること（作る run-server.sh が
-バイト単位で同じ・shim の呼び出しの記録も同じ・表示も同じ）を、HEAD の版と比べて確かめる。
+バイト単位で同じ・shim の呼び出しの記録も同じ・表示も同じ）を、正解の記録（`tests/fixtures/dev_up/`）と比べて
+確かめる。正解は、引数を足す前の dev-up.sh（59bbd2eb^ = 0a0567a1）で作った（HEAD と比べると、commit の後は
+自分自身と比べることになり何も守らない。CI の深さ 1 の clone でも読めるよう、記録にして置く）。
 docker・cargo・curl などは shim で、本物は動かさない（DB もサーバーも作らない）。
+
+dev-up.sh の既定の経路を意図して変えたときだけ、記録を作り直す（差分を見てから commit する）:
+
+    ABEVAL_REGEN_DEV_UP=1 uv run pytest tests/test_dev_up_args.py -k unchanged -q
 """
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -18,7 +25,7 @@ from pathlib import Path
 import pytest
 
 import shellkit
-from shellkit import DEV_UP, REPO_ROOT
+from shellkit import DEV_UP
 
 pytestmark = [
     pytest.mark.shell,
@@ -44,15 +51,14 @@ LABELED = [
 ]
 
 
-def _head_dev_up() -> str:
-    p = subprocess.run(
-        ["git", "show", "HEAD:.claude/skills/pr/scripts/dev-up.sh"],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    return p.stdout
+GOLDEN = Path(__file__).resolve().parent / "fixtures" / "dev_up"
+REGEN = os.environ.get("ABEVAL_REGEN_DEV_UP") == "1"
+# 記録を作り直すときに流す元の dev-up.sh（既定は今の dev-up.sh。初めの記録は 0a0567a1 の版で作った）。
+BASELINE = os.environ.get("ABEVAL_DEV_UP_BASELINE")
+
+
+def _baseline_text() -> str:
+    return Path(BASELINE).read_text(encoding="utf-8") if BASELINE else DEV_UP.read_text("utf-8")
 
 
 class Box:
@@ -155,14 +161,42 @@ def _default_run(box: Box, text: str) -> tuple[shellkit.Run, bytes]:
     return r, (box.rundir / "run-server.sh").read_bytes()
 
 
-def test_no_args_is_unchanged_from_head(box):
-    """引数を省いた起動は、HEAD の dev-up.sh とバイト単位で同じ run-server.sh を作り、同じ shim を同じ順に呼ぶ。"""
-    old_run, old_script = _default_run(box, _head_dev_up())
-    new_run, new_script = _default_run(box, DEV_UP.read_text(encoding="utf-8"))
-    assert new_script == old_script
-    assert new_run.log == old_run.log
-    assert new_run.out == old_run.out
-    assert new_run.err == old_run.err
+def _normalize(box: Box, text: str) -> str:
+    """一時の場所（実行ごとに違う）を印にする。RUNDIR は root の cksum を含むので先に置き換える。"""
+    return text.replace(str(box.rundir), "<RUNDIR>").replace(str(box.tmp), "<TMP>")
+
+
+def _snapshot(box: Box, r: shellkit.Run, script: bytes | None = None) -> dict:
+    snap = {
+        "code": r.code,
+        "out": _normalize(box, r.out),
+        "err": _normalize(box, r.err),
+        "log": [_normalize(box, line) for line in r.log],
+    }
+    if script is not None:
+        snap["run_server"] = _normalize(box, script.decode())
+    return snap
+
+
+def _check_golden(name: str, snap: dict) -> None:
+    path = GOLDEN / f"{name}.json"
+    if REGEN:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(snap, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
+        return
+    want = json.loads(path.read_text(encoding="utf-8"))
+    for key in want:
+        assert snap[key] == want[key], f"{name}: {key} が引数を足す前の dev-up.sh と違います"
+    assert set(snap) == set(want)
+
+
+def test_no_args_is_unchanged_from_the_baseline(box):
+    """引数を省いた起動は、引数を足す前の dev-up.sh とバイト単位で同じ run-server.sh を作り、同じ shim を同じ順に
+    呼び、同じ表示をする（正解の記録と比べる）。"""
+    new_run, new_script = _default_run(
+        box, _baseline_text() if REGEN else DEV_UP.read_text("utf-8")
+    )
+    _check_golden("default", _snapshot(box, new_run, new_script))
     # 既定の経路は今までどおり: ビルドする・pgrep で残りを止める・web を起動する。
     assert "cargo build -p shiki-api --bin shiki-server" in new_run.log
     assert any(line.startswith("pgrep -f ^") for line in new_run.log)
@@ -175,13 +209,21 @@ def test_no_args_is_unchanged_from_head(box):
     assert f'exec "{box.root}/target/debug/shiki-server"\n' in text
 
 
-def test_status_and_down_are_unchanged_from_head(box):
+def test_status_and_down_are_unchanged_from_the_baseline(box):
     for args in (["--status"], ["--down"]):
         box.reset_rundirs()
-        old = box.run(_head_dev_up(), args)
-        box.reset_rundirs()
-        new = box.run(DEV_UP.read_text(encoding="utf-8"), args)
-        assert (new.code, new.out, new.err, new.log) == (old.code, old.out, old.err, old.log)
+        r = box.run(_baseline_text() if REGEN else DEV_UP.read_text(encoding="utf-8"), args)
+        _check_golden(args[0].lstrip("-"), _snapshot(box, r))
+
+
+def test_the_golden_records_hold_no_machine_paths():
+    """記録に、この機械の一時の場所や利用者名の入ったパスが残らない（印に置き換えてある）。"""
+    names = sorted(p.name for p in GOLDEN.glob("*.json"))
+    assert names == ["default.json", "down.json", "status.json"]
+    for name in names:
+        text = (GOLDEN / name).read_text(encoding="utf-8")
+        assert "/home/" not in text and ".pytest_tmp" not in text, name
+    assert "<TMP>/repo" in (GOLDEN / "default.json").read_text(encoding="utf-8")
 
 
 def test_labeled_args_change_only_their_lines(box):
@@ -413,3 +455,38 @@ def test_abeval_serve_args_are_accepted_by_dev_up(box, tmp_path):
     r = box.run(DEV_UP.read_text(encoding="utf-8"), down.argv[2:], **down.env)
     assert r.code == 0, r.err
     assert not (rundir / "server.env").exists()
+
+
+def test_down_kills_its_own_server_that_ignores_term(tmp_path):
+    """--run-label の停止は、TERM で止まらない自分のサーバーを KILL まで進めて止める（ポートを空ける）。"""
+    stubborn = subprocess.Popen(
+        ["/usr/bin/bash", "-c", "trap '' TERM; while :; do /usr/bin/sleep 0.2; done"],
+        start_new_session=True,
+    )
+    fuser = '#!/usr/bin/env bash\nprintf \'fuser %s\\n\' "$*" >> "$SHIM_LOG"\n'
+    fuser += f"kill -0 {stubborn.pid} 2>/dev/null && printf ' {stubborn.pid}'\nexit 0\n"
+    fast_sleep = "#!/usr/bin/env bash\nexec /usr/bin/sleep 0.05\n"
+    shims = shellkit.make_shims(tmp_path / "shims2", {"fuser": fuser, "sleep": fast_sleep})
+    (tmp_path / "b").mkdir()
+    box = Box(tmp_path / "b")
+    env = {**box.env, "PATH": f"{shims}:/usr/bin:/bin"}
+    rundir = box.labeled_rundir("abeval-t1")
+    rundir.mkdir(parents=True)
+    exe = os.path.realpath("/usr/bin/bash")
+    (rundir / "server.env").write_text(f"port=10067\nexe={exe}\n")
+    try:
+        r = shellkit.run_bash(
+            _write(box, DEV_UP.read_text(encoding="utf-8")),
+            ["--down", "--run-label", "abeval-t1"],
+            cwd=box.root,
+            env=env,
+            log=box.log,
+        )
+        assert r.code == 0, r.err
+        assert stubborn.wait(timeout=10) == -signal.SIGKILL
+        assert "KILL します" in r.err
+        assert r.log.count("fuser 10067/tcp") >= 21  # TERM を 20 回送ってから KILL
+    finally:
+        if stubborn.poll() is None:
+            os.killpg(stubborn.pid, signal.SIGKILL)
+            stubborn.wait()

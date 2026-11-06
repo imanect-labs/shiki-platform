@@ -276,7 +276,16 @@ sandbox_needs_build() {
 # --- ラベルのサーバーの停止 ---
 # PID ファイルのものと、「自分のポートを握り、exe が自分のバイナリのプロセス」だけを止める。
 # pgrep -f で同じパスのバイナリを探して止めると、同じバイナリで動く別のサーバー（stub のスタックなど）まで止める。
-stop_own_server() {  # stop_own_server <port> <exe>
+# （--run-label・--server-bin のときだけ使う。引数を省いた起動の経路は pgrep のまま。）
+own_server_pids() {  # own_server_pids <port> <exe>: 自分のポートを握る自分のバイナリの PID
+  local pid pids=""
+  for pid in $(fuser "$1/tcp" 2>/dev/null | tr -s ' ' '\n' | grep -E '^[0-9]+$' || true); do
+    [ "$(readlink -f "/proc/$pid/exe" 2>/dev/null || echo "?")" = "$2" ] && pids="$pids $pid"
+  done
+  printf '%s' "$pids"
+}
+
+stop_own_server() {  # stop_own_server <port> <exe>（止められなければ 1）
   local port=$1 exe=$2 pid pids
   if [ -f "$SERVER_PID" ]; then
     pid=$(cat "$SERVER_PID" 2>/dev/null || true)
@@ -287,15 +296,25 @@ stop_own_server() {  # stop_own_server <port> <exe>
   fi
   command -v fuser >/dev/null 2>&1 || return 0
   for _ in $(seq 1 20); do
-    pids=""
-    for pid in $(fuser "$port/tcp" 2>/dev/null | tr -s ' ' '\n' | grep -E '^[0-9]+$' || true); do
-      [ "$(readlink -f "/proc/$pid/exe" 2>/dev/null || echo "?")" = "$exe" ] && pids="$pids $pid"
-    done
+    pids=$(own_server_pids "$port" "$exe")
     [ -n "$pids" ] || return 0
     # shellcheck disable=SC2086
     kill -TERM $pids 2>/dev/null || true
     sleep 1
   done
+  # TERM で 20 秒たっても止まらなければ KILL する（残ったまま新しいプロセスを起こすと bind に失敗し、古い方が
+  # /healthz に答えるので起動できたと誤る）。それでも空かなければ止める。
+  pids=$(own_server_pids "$port" "$exe")
+  [ -n "$pids" ] || return 0
+  err "   :${port} の自分のサーバーが TERM で止まらないので KILL します:${pids}"
+  # shellcheck disable=SC2086
+  kill -KILL $pids 2>/dev/null || true
+  sleep 1
+  pids=$(own_server_pids "$port" "$exe")
+  if [ -n "$pids" ]; then
+    err "   :${port} の自分のサーバーを止められません:${pids}"
+    return 1
+  fi
   return 0
 }
 
