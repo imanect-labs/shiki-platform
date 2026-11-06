@@ -191,7 +191,7 @@ test.describe("使う人の権限の確かめの続き（BUG-216・BUG-217・GAP
       await expect(needs.getByTestId("access-conditional")).toHaveText("場合によって要る");
       await expect(dialog.getByTestId("access-report-subject")).toContainText("は場合によって一部を使えません");
       await expect(dialog.getByTestId("access-report-conditional-note")).toContainText(
-        "場合によって要る権限は、分かれた流れや「エラー時」の出口の先、繰り返しの中のブロックが使います。足りなくてもボタンは押せますが、そのブロックまで進むと失敗します。",
+        "場合によって要る権限は、毎回は通らないブロックと、失敗を「エラー時」の出口で扱うブロックが使います。足りなくてもボタンは押せますが、そのブロックまで進むと失敗します。",
       );
       if (SHOTS) await page.screenshot({ path: `${SHOTS}/paths-share-pc.png` });
       await dialog.getByRole("button", { name: "閉じる" }).click();

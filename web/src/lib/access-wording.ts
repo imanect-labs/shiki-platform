@@ -84,13 +84,14 @@ export function needLine(n: AccessNeedView): string {
   return part ? `${part}: ${what}` : what;
 }
 
-/// 道によって通るブロックだけが要る権限に添える印（BUG-216）。
+/// 道によって通るブロックか、失敗を「エラー時」の出口で扱うブロックだけが要る権限に添える印（BUG-216）。
 export const CONDITIONAL_MARK = "場合によって要る";
 
-/// 場合によって要る権限の説明（作る人の共有の画面・BUG-216）。
+/// 場合によって要る権限の説明（作る人の共有の画面・BUG-216）。毎回は通らないブロック（分かれた流れ・「エラー時」の
+/// 出口の先・繰り返しの中）と、失敗を「エラー時」の出口で扱うブロック（`on_error: continue`）の 2 つを言う。
 export function conditionalNote(subject: "app" | "workflow"): string {
   const then = subject === "app" ? "足りなくてもボタンは押せますが" : "足りなくても実行できますが";
-  return `${CONDITIONAL_MARK}権限は、分かれた流れや「エラー時」の出口の先、繰り返しの中のブロックが使います。${then}、そのブロックまで進むと失敗します。`;
+  return `${CONDITIONAL_MARK}権限は、毎回は通らないブロックと、失敗を「エラー時」の出口で扱うブロックが使います。${then}、そのブロックまで進むと失敗します。`;
 }
 
 /// 前もって確かめられないブロックの理由（GAP-82）。
