@@ -13,6 +13,8 @@ mod llm_decider_prompt;
 mod llm_decider_vote;
 pub mod openai;
 pub mod openai_responses;
+/// OpenAI Responses API の SSE の読み取り（openai_responses.rs から分割）。
+mod openai_responses_events;
 /// 送れなかった誤りの文言（送り先の URL を出さない・全アダプタ共通・BUG-218）。
 mod send_failure;
 pub mod stub;
