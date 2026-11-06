@@ -108,10 +108,10 @@ export function MessageExportMenu({
   const saveDocx = async (target: SaveTarget) => {
     if (saving) return;
     setSaving(true);
-    const fileName = /\.docx$/i.test(target.name) ? target.name : `${target.name}.docx`;
+    const docxName = /\.docx$/i.test(target.name) ? target.name : `${target.name}.docx`;
     let blob: Blob;
     try {
-      blob = await toDocx(fileName.replace(/\.docx$/i, ""));
+      blob = await toDocx(docxName.replace(/\.docx$/i, ""));
     } catch (e) {
       toast({ variant: "destructive", description: errorText(e, "Word への変換に失敗しました。") });
       setSaving(false);
@@ -120,7 +120,7 @@ export function MessageExportMenu({
     try {
       // 同じ名前があれば連番の名前で置く（既存のファイルを上書きしない）。
       const node = await uploadNewFile({
-        file: new File([blob], fileName, { type: DOCX_TYPE }),
+        file: new File([blob], docxName, { type: DOCX_TYPE }),
         parentId: target.parentId ?? undefined,
       });
       setSaveOpen(false);
@@ -179,10 +179,11 @@ export function MessageExportMenu({
               setSaveName(fileName());
               setSaveOpen(true);
             }}
+            disabled={saving}
             data-testid="message-export-docx-drive"
           >
             <FileType className="text-blue-600 dark:text-blue-400" />
-            Word としてドライブに保存…
+            {saving ? "ドライブに保存しています…" : "Word としてドライブに保存…"}
           </DropdownMenuItem>
           <DropdownMenuSeparator />
           <DropdownMenuLabel>ダウンロード</DropdownMenuLabel>
@@ -210,7 +211,9 @@ export function MessageExportMenu({
       </DropdownMenu>
       <SaveDraftDialog
         open={saveOpen}
-        onOpenChange={(v) => !saving && setSaveOpen(v)}
+        // 保存中でも閉じられる（通信が止まっても会話を続けられる）。保存はそのまま続き、結果はトーストで
+        // 知らせる。終わるまでメニューの項目は押せない（同じ回答を二重に保存しない）。
+        onOpenChange={setSaveOpen}
         defaultName={saveName}
         saving={saving}
         onConfirm={(t) => void saveDocx(t)}
