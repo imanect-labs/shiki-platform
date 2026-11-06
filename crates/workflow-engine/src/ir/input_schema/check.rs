@@ -272,7 +272,7 @@ mod tests {
             schema_errors(&schema),
             vec![(
                 "/properties/long/pattern".to_string(),
-                format!("pattern は {MAX_PATTERN_CHARS} 文字までです")
+                format!("pattern は {MAX_PATTERN_CHARS} 字までにしてください。")
             )]
         );
 
@@ -295,7 +295,7 @@ mod tests {
             over,
             vec![(
                 format!("/properties/p{MAX_PATTERNS:05}/pattern"),
-                format!("pattern は入力項目の全体で {MAX_PATTERNS} 個までです")
+                format!("pattern は、入力項目を合わせて {MAX_PATTERNS} 個までです。どれかの項目の pattern を減らしてください。")
             )]
         );
     }

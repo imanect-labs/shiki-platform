@@ -61,7 +61,9 @@ impl PatternIssue {
     pub(crate) fn message(self, scope: PatternScope) -> Option<String> {
         Some(match (self, scope) {
             (PatternIssue::TooMany { first: false }, _) => return None,
-            (PatternIssue::TooLong, _) => format!("pattern は {MAX_PATTERN_CHARS} 文字までです"),
+            (PatternIssue::TooLong, _) => {
+                format!("pattern は {MAX_PATTERN_CHARS} 字までにしてください。")
+            }
             (PatternIssue::Unreadable, PatternScope::Input) => {
                 "pattern を正規表現として読めません".to_string()
             }
@@ -69,10 +71,10 @@ impl PatternIssue {
                 "pattern は正しい正規表現の文字列で書いてください".to_string()
             }
             (PatternIssue::TooMany { first: true }, PatternScope::Input) => {
-                format!("pattern は入力項目の全体で {MAX_PATTERNS} 個までです")
+                format!("pattern は、入力項目を合わせて {MAX_PATTERNS} 個までです。どれかの項目の pattern を減らしてください。")
             }
             (PatternIssue::TooMany { first: true }, PatternScope::Output) => {
-                format!("出力の形の pattern は、ワークフローの全体で {MAX_PATTERNS} 個までです")
+                format!("出力の形の pattern は、すべての「AI に聞く」を合わせて {MAX_PATTERNS} 個までです。どれかのブロックの pattern を減らしてください。")
             }
         })
     }
@@ -166,11 +168,11 @@ mod tests {
         let first = PatternIssue::TooMany { first: true };
         assert_eq!(
             first.message(PatternScope::Input).as_deref(),
-            Some("pattern は入力項目の全体で 50 個までです")
+            Some("pattern は、入力項目を合わせて 50 個までです。どれかの項目の pattern を減らしてください。")
         );
         assert_eq!(
             first.message(PatternScope::Output).as_deref(),
-            Some("出力の形の pattern は、ワークフローの全体で 50 個までです")
+            Some("出力の形の pattern は、すべての「AI に聞く」を合わせて 50 個までです。どれかのブロックの pattern を減らしてください。")
         );
         assert_eq!(
             PatternIssue::TooMany { first: false }.message(PatternScope::Output),
@@ -180,7 +182,7 @@ mod tests {
             PatternIssue::TooLong
                 .message(PatternScope::Output)
                 .as_deref(),
-            Some("pattern は 256 文字までです")
+            Some("pattern は 256 字までにしてください。")
         );
     }
 }

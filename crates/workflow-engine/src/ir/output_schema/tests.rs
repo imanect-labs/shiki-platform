@@ -326,7 +326,10 @@ fn saved_patterns_are_capped_across_the_workflow() {
     let got = check_saved_output_schema(&with(&long), &mut PatternBudget::for_save()).unwrap_err();
     assert_eq!(
         got,
-        SchemaIssue::new("/properties/a/pattern", "pattern は 256 文字までです")
+        SchemaIssue::new(
+            "/properties/a/pattern",
+            "pattern は 256 字までにしてください。"
+        )
     );
     let at_limit = "あ".repeat(MAX_PATTERN_CHARS);
     assert_eq!(
@@ -346,7 +349,7 @@ fn saved_patterns_are_capped_across_the_workflow() {
     let got = check_saved_output_schema(&thirty("^a$"), &mut patterns).unwrap_err();
     assert_eq!(
         got.message,
-        format!("出力の形の pattern は、ワークフローの全体で {MAX_PATTERNS} 個までです")
+        format!("出力の形の pattern は、すべての「AI に聞く」を合わせて {MAX_PATTERNS} 個までです。どれかのブロックの pattern を減らしてください。")
     );
     assert!(got.path.ends_with("/pattern"), "{got:?}");
     assert_eq!(

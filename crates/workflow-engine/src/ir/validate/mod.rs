@@ -842,7 +842,7 @@ mod tests {
         let want = vec![(
             Some("b".to_string()),
             format!(
-                "params が不正です: 出力の形の pattern は、ワークフローの全体で {MAX_PATTERNS} 個までです"
+                "params が不正です: 出力の形の pattern は、すべての「AI に聞く」を合わせて {MAX_PATTERNS} 個までです。どれかのブロックの pattern を減らしてください。"
             ),
         )];
         assert_eq!(check(&ir(None)), want);
