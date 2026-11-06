@@ -16,7 +16,8 @@ use super::{EDGE_SHAPE, NODE_SHAPE};
 /// - ブロックの設定の誤り（ノードに紐づき、位置が `/params` の下のもの）: そのノード種の params の形。
 /// - ブロックの設定の外の誤り（ノードに紐づき、位置が `/colour`・`/retry/…` など params の外のもの）: ノードの形
 ///   （params の形を添えても直せない・BUG-220）。
-/// - IR 全体の形の誤り（ノードに紐づかないもの）: ノードとエッジの形。
+/// - IR 全体の形の誤り（ノードに紐づかないもの）: ノードとエッジの形。ただし入力項目の誤り（位置が `/input_schema`
+///   の下のもの・pattern の数や長さの上限を含む）には添えない（ノードとエッジの形では直せない）。
 pub(in crate::workflow_tool) fn validation_hints(errors: &[ValidationError], ir: &Value) -> String {
     let node_type_of = |id: &str| -> Option<NodeType> {
         ir.get("nodes")?
@@ -39,6 +40,7 @@ pub(in crate::workflow_tool) fn validation_hints(errors: &[ValidationError], ir:
                 }
             }
             Some(_) => node_shape = true,
+            None if under_input_schema(e.path.as_deref()) => {}
             None => whole_ir = true,
         }
     }
@@ -70,6 +72,11 @@ pub(in crate::workflow_tool) fn validation_hints(errors: &[ValidationError], ir:
 /// 位置（ブロックの中の位置）がブロックの設定（params）の下か。
 fn under_params(path: Option<&str>) -> bool {
     path.is_some_and(|p| p == "/params" || p.starts_with("/params/"))
+}
+
+/// 位置（IR の中の位置）が入力項目（input_schema）の下か。
+fn under_input_schema(path: Option<&str>) -> bool {
+    path.is_some_and(|p| p == "/input_schema" || p.starts_with("/input_schema/"))
 }
 
 #[cfg(test)]
@@ -152,6 +159,50 @@ mod tests {
         let h = validation_hints(&[at(Some("/colour")), whole], &ir);
         assert_eq!(h.matches(NODE_SHAPE).count(), 1, "{h}");
         assert!(h.starts_with("IR の形: "), "{h}");
+    }
+
+    /// 入力項目の誤り（位置が `/input_schema` の下）には、ノードとエッジの形を添えない。保存の口（V1c）が返す
+    /// pattern の数の上限の誤りでも同じ（BUG-222 で増えた誤り）。
+    #[test]
+    fn input_schema_errors_get_no_ir_shape() {
+        let ir = embedded(EXAMPLE_SUMMARIZE);
+        for path in ["/input_schema", "/input_schema/properties/memo/pattern"] {
+            let e = ValidationError::new("ir.schema_violation", "x").at_path(path);
+            assert_eq!(validation_hints(&[e], &ir), "", "{path}");
+        }
+        // 入力項目と全体の誤りが並べば、全体の誤りのぶんだけ形を添える。
+        let both = [
+            ValidationError::new("ir.schema_violation", "x").at_path("/input_schema"),
+            ValidationError::new("ir.schema_violation", "x").at_path("/input_schemax"),
+        ];
+        assert!(validation_hints(&both, &ir).starts_with("IR の形: "));
+
+        let properties: serde_json::Map<String, Value> = (0..60)
+            .map(|i| {
+                (
+                    format!("f{i}"),
+                    serde_json::json!({ "type": "string", "pattern": "^a$" }),
+                )
+            })
+            .collect();
+        let ir = serde_json::json!({
+            "ir_version": 1, "name": "wf", "triggers": [{ "kind": "interactive" }],
+            "input_schema": { "type": "object", "properties": properties },
+            "nodes": [{ "id": "done", "type": "workflow.reply", "params": { "format": "text", "value": "受け付けました" } }],
+            "edges": []
+        });
+        let errors =
+            workflow_engine::validate(&ir, &workflow_engine::Catalog::default()).unwrap_err();
+        assert!(
+            errors.iter().any(|e| e.code == "ir.schema_violation"
+                && e.node_id.is_none()
+                && e.path
+                    .as_deref()
+                    .is_some_and(|p| p.starts_with("/input_schema"))),
+            "{errors:?}"
+        );
+        let h = validation_hints(&errors, &ir);
+        assert!(!h.contains(EDGE_SHAPE), "{h}");
     }
 
     /// 保存の口（V1）が返すブロックの項目の誤りにも、ブロックの形が添わる（後退していないこと）。
