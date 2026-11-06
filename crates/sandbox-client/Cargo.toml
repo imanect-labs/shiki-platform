@@ -25,6 +25,8 @@ thiserror = { workspace = true }
 serde = { workspace = true }
 # net_guard の名前解決（SSRF/DNS リバインディング防御・#348）。
 tokio = { workspace = true, features = ["net"] }
+# 内部の送り先の表（internal_hosts）の名前と IP の読み方を URL とそろえる（D-135）。
+url = { workspace = true }
 
 [build-dependencies]
 tonic-build = { workspace = true }

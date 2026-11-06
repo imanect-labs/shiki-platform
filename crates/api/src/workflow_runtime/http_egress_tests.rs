@@ -191,45 +191,17 @@ async fn internal_hosts_with_a_port_allow_only_that_port() {
     );
 }
 
-/// 内部の送り先の書き方: 名前は大文字・小文字と末尾の . を問わず、IP は書き方によらず同じ IP にそろえる。読めない
-/// 項目（ワイルドカード・スキーム・パス・ポートの誤り）は、起動時の確かめが管理者向けの文で断る。
+/// 起動時の確かめは、読めない項目（ワイルドカードなど）を設定の名前を添えて断る（読み方は
+/// `sandbox_client::internal_hosts` の 1 か所・そのテストが書き方を確かめる）。
 #[test]
-fn internal_host_entries_are_read_like_urls_and_unreadable_ones_are_reported() {
-    let read = |e: &str| parse_internal_host(e).map(|h| (h.host, h.port));
-    assert_eq!(
-        read(" ERP.Corp.Example. "),
-        Ok(("erp.corp.example".into(), None))
-    );
-    assert_eq!(
-        read("erp.corp.example:8443"),
-        Ok(("erp.corp.example".into(), Some(8443)))
-    );
-    assert_eq!(read("0x0a.0.0.5"), Ok(("10.0.0.5".into(), None)));
-    assert_eq!(read("10.0.0.5:80"), Ok(("10.0.0.5".into(), Some(80))));
-    assert_eq!(read("[FD00:0::5]:8443"), Ok(("fd00::5".into(), Some(8443))));
-    assert_eq!(read("fd00::5"), Ok(("fd00::5".into(), None)));
-    for bad in [
-        "",
-        "*.corp.example",
-        "erp.*.example",
-        "https://erp.corp.example",
-        "erp.corp.example/api",
-        "erp.corp.example:0",
-        "erp.corp.example:http",
-        "[fd00::5",
-        "[fd00::5]8443",
-        "user@erp.corp.example",
-    ] {
-        let err = read(bad).unwrap_err();
-        assert!(
-            err.starts_with(&format!(
-                "workflow.http_internal_hosts の「{bad}」を読めません。"
-            )),
-            "{bad}: {err}"
-        );
-    }
+fn unreadable_internal_host_entries_stop_the_start() {
     assert!(check_internal_hosts(&["erp.corp.example".into(), "10.0.0.5:8443".into()]).is_ok());
-    assert!(check_internal_hosts(&["erp.corp.example".into(), "*.corp.example".into()]).is_err());
+    let err =
+        check_internal_hosts(&["erp.corp.example".into(), "*.corp.example".into()]).unwrap_err();
+    assert!(
+        err.starts_with("workflow.http_internal_hosts の「*.corp.example」を読めません。"),
+        "{err}"
+    );
 }
 
 /// URL の IP の書き方が違っても、内部の送り先に書いた IP と同じなら送れる（10 進の IPv4・省略した IPv6）。
