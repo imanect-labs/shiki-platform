@@ -66,11 +66,13 @@ const SKILL_PART: Record<SkillPart, string> = {
   command: "チャットで呼ぶコマンド",
 };
 
-/// 差が無いときの言い方（調べた範囲を言う・付録 C の P7）。
-const NO_CHANGE: Record<PartKind, string> = {
-  workflow: "入力項目・使ってよい操作・使う人に要る権限は変わりません",
-  data_view: "表の設定と、使う人に要る権限は変わりません",
-  skill: "スキルの設定と、使う人に要る権限は変わりません",
+/// 差が無いときの言い方（調べた範囲を言う・付録 C の P7）。ワークフローの要る権限は、前もって確かめられないブロック
+/// （GAP-82）と実行のときに決まる対象を確かめないので、「確かめられた範囲では」と添える。ビューとスキルの要る権限は
+/// 設定（テーブル・参照するフォルダーと参考資料）だけで決まるので言い切れる。
+const NO_CHANGE: Record<PartKind, readonly string[]> = {
+  workflow: ["入力項目と使ってよい操作は変わりません", "確かめられた範囲では、使う人に要る権限も変わりません"],
+  data_view: ["表の設定と、使う人に要る権限は変わりません"],
+  skill: ["スキルの設定と、使う人に要る権限は変わりません"],
 };
 
 /// 入力項目の呼び方（表示名があれば表示名、英語の名前を添える・作成者向け）。
@@ -149,6 +151,7 @@ export function PinUpdateNote({
   version,
   check,
   onUpgrade,
+  owner,
 }: {
   kind: PartKind;
   artifactId: string;
@@ -156,6 +159,8 @@ export function PinUpdateNote({
   version: number;
   check: PinCheck | undefined;
   onUpgrade: (artifactId: string, version: number) => void;
+  /// エディターを開いた人がアプリの持ち主か（相手ごとの権限を確かめられるのは持ち主だけ・D-146）。
+  owner: boolean;
 }) {
   const update = check?.state === "readable" ? check.update : null;
   const latest = update?.latest_version ?? null;
@@ -181,10 +186,16 @@ export function PinUpdateNote({
               : "変わるところを確かめられませんでした"}
           </li>
         ) : changes.length === 0 ? (
-          <li>{NO_CHANGE[kind]}</li>
+          NO_CHANGE[kind].map((line) => <li key={line}>{line}</li>)
         ) : null}
       </ul>
-      {needsMore(changes) ? (
+      {update.unchecked_blocks ? (
+        // 共有の画面と同じ言い方（前もって確かめられないブロックがあれば、要る権限の増減を言い切らない・GAP-82）。
+        <p className="text-amber-700 dark:text-amber-400" data-testid="miniapp-pin-unchecked">
+          v{latest} には、前もって確かめられないブロックがあります。使う人に足りるかは、実行したときに分かります。
+        </p>
+      ) : null}
+      {owner && needsMore(changes) ? (
         <p className="text-muted-foreground" data-testid="miniapp-pin-access-note">
           使う人に足りるかは、公開するときの確認で、共有している相手ごとに確かめられます。
         </p>
@@ -235,6 +246,7 @@ export function PartPins({
   onUpgrade,
   onRevert,
   onRemove,
+  owner,
 }: {
   kind: NamedKind;
   pins: readonly PartPin[];
@@ -244,6 +256,8 @@ export function PartPins({
   onUpgrade: (artifactId: string, version: number) => void;
   onRevert: (artifactId: string, version: number) => void;
   onRemove: (artifactId: string) => void;
+  /// エディターを開いた人がアプリの持ち主か（[`PinUpdateNote`]）。
+  owner: boolean;
 }) {
   if (pins.length === 0) return null;
   return (
@@ -258,6 +272,7 @@ export function PartPins({
           onUpgrade={onUpgrade}
           onRevert={onRevert}
           onRemove={onRemove}
+          owner={owner}
         />
       ))}
     </ul>
@@ -272,6 +287,7 @@ function PartPinRow({
   onUpgrade,
   onRevert,
   onRemove,
+  owner,
 }: {
   kind: NamedKind;
   pin: PartPin;
@@ -280,6 +296,7 @@ function PartPinRow({
   onUpgrade: (artifactId: string, version: number) => void;
   onRevert: (artifactId: string, version: number) => void;
   onRemove: (artifactId: string) => void;
+  owner: boolean;
 }) {
   const noun = NOUN[kind];
   return (
@@ -302,7 +319,14 @@ function PartPinRow({
           <X className="size-3.5" aria-hidden />
         </button>
       </div>
-      <PinUpdateNote kind={kind} artifactId={pin.artifact_id} version={pin.version} check={check} onUpgrade={onUpgrade} />
+      <PinUpdateNote
+        kind={kind}
+        artifactId={pin.artifact_id}
+        version={pin.version}
+        check={check}
+        onUpgrade={onUpgrade}
+        owner={owner}
+      />
       <PinChangedNote artifactId={pin.artifact_id} version={pin.version} savedVersion={savedVersion} onRevert={onRevert} />
       {/* ワークフローの読めない理由は、入力項目の突き合わせの注記が言う（同じことを 2 回言わない）。 */}
       {kind === "data_view" && check?.state === "unreadable" ? (

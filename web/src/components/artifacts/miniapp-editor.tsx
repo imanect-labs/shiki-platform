@@ -142,6 +142,7 @@ export function MiniAppEditorDialog({
   onSaved,
   onReloadLatest,
   app,
+  owner,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -150,8 +151,12 @@ export function MiniAppEditorDialog({
   onReloadLatest?: () => void;
   /// 編集するアプリ（無ければ新規作成）。
   app?: { id: string; version: number; body: MiniAppBody };
+  /// 開いた人がアプリの持ち主か（公開の確認で相手ごとの権限を確かめられるのは持ち主だけ・D-146）。省くと、新しく
+  /// 作るときは持ち主、編集するときは持ち主でないとする。
+  owner?: boolean;
 }) {
   const editing = app != null;
+  const isOwner = owner ?? !editing;
   // タッチで開いた瞬間にキーボードを出さない（マウス操作のときだけ自動フォーカス）。
   const finePointer = useMediaQuery("(pointer: fine)");
   const [name, setName] = React.useState("");
@@ -520,6 +525,7 @@ export function MiniAppEditorDialog({
               onUpgrade={setVersion("workflow")}
               onRevert={setVersion("workflow")}
               onRemove={(id) => setPins((prev) => prev.filter((x) => x.artifact_id !== id))}
+              owner={isOwner}
             />
             {unreadablePins.map((u) => (
               <p
@@ -668,6 +674,7 @@ export function MiniAppEditorDialog({
               onUpgrade={setVersion("data_view")}
               onRevert={setVersion("data_view")}
               onRemove={(id) => setViews((prev) => prev.filter((x) => x.artifact_id !== id))}
+              owner={isOwner}
             />
             {missingViews.map((alias) => (
               <p key={alias} role="note" className="text-xs text-amber-700 dark:text-amber-400" data-testid="miniapp-view-missing">
@@ -732,6 +739,7 @@ export function MiniAppEditorDialog({
                   version={skillPin.version}
                   check={checks[pinKey("skill", skillPin)]}
                   onUpgrade={(id, version) => setSkillPin({ artifact_id: id, version })}
+                  owner={isOwner}
                 />
                 <PinChangedNote
                   artifactId={skillPin.artifact_id}

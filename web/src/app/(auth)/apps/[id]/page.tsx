@@ -529,6 +529,7 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
                 open={editTarget != null}
                 onOpenChange={(open) => !open && setEditTarget(null)}
                 app={editTarget ?? undefined}
+                owner={canShare}
                 onReloadLatest={() => void reloadLatestIntoEditor()}
                 onSaved={(saved) => {
                   toast(savedToast(saved));
