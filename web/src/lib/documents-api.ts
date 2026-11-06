@@ -39,3 +39,20 @@ export async function createSheet(input: {
   }
   return (await res.json()) as NodeResponse;
 }
+
+/// Markdown を .docx に変換する（POST /documents/export・変換は worker）。ドライブには置かない。
+/// ノートの Word エクスポート（#334）とチャットの回答の書き出し（#1048）で使う。
+export async function markdownToDocx(input: { name: string; markdown: string }): Promise<Blob> {
+  const res = await apiFetch("/documents/export", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (res.status === 503) {
+    throw new Error("文書変換サービスに接続できません。時間をおいて再試行してください (503)");
+  }
+  if (!res.ok) {
+    throw new Error(`docx への変換に失敗しました (${res.status})`);
+  }
+  return res.blob();
+}

@@ -56,7 +56,7 @@ test.describe("chat (permission-aware RAG チャット)", () => {
     await page.getByRole("button", { name: "送信" }).click();
     await page.waitForURL(/\/c\//i, { timeout: 20_000 });
 
-    // 応答が速いとメッセージフッタの共有ボタンも現れ strict 違反になるため、ヘッダ側（先頭）に限定する。
+    // 共有はヘッダ側だけ（回答のフッターには置かない・#1048）。先頭に限定して他の「共有」と取り違えない。
     await page.getByRole("button", { name: "共有" }).first().click();
     await expect(page.getByRole("dialog")).toContainText("会話を共有");
   });

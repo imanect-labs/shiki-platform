@@ -145,7 +145,7 @@ impl RegistrationService {
         ir: &WorkflowIr,
         grants: &[GrantRequest],
     ) -> Result<(), EnableError> {
-        let tenant = &enabler.tenant_id;
+        let tenant = enabler.tenant_id();
         let current = self.view(tenant, workflow_id).await?;
         let registered = current.status != "none";
 

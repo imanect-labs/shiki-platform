@@ -288,6 +288,19 @@ impl ChatStore {
         ui_bindings: &[crate::yui_actions::UiWorkflowBinding],
     ) -> Result<bool, ChatError> {
         let mut tx = self.db.begin().await.map_err(map_db)?;
+        // 回答が確定したらスレッドの更新日を進める（サイドバー履歴の先頭へ上げる。別の画面に
+        // 移った後に終わった会話も「いま終わった」位置に来る）。行ロックは **thread → run の順**に
+        // 取る（削除・投稿と同じ順。逆順だと削除との間でデッドロックし得る）。fencing 不一致なら
+        // 下で rollback するので、ゾンビの確定で更新日は動かない。
+        sqlx::query(
+            "UPDATE thread t SET updated_at = now() FROM generation_run r \
+             WHERE r.run_id = $1 AND t.id = r.thread_id AND t.tenant_id = r.tenant_id \
+               AND t.deleted_at IS NULL",
+        )
+        .bind(run_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_db)?;
         let kv = [KeyValue::Uuid(run_id)];
         let message_id: Option<Uuid> = durable::fenced_finalize(
             &mut *tx,
@@ -369,7 +382,7 @@ impl ChatStore {
         )
         .bind(run_id)
         .bind(thread_id)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .execute(&self.db)
         .await
         .map_err(map_db)?;
@@ -541,27 +554,30 @@ impl ChatStore {
             Option<String>,
             bool,
             Json<Vec<String>>,
+            Option<Json<crate::model::LastModelChoice>>,
         );
         let row: Option<Row> = sqlx::query_as(
-            "SELECT run_id, autonomous, skill_pins, model, effort, model_auto, requested_tools \
+            "SELECT run_id, autonomous, skill_pins, model, effort, model_auto, requested_tools, \
+                    requested_choice \
              FROM generation_run \
              WHERE message_id = $1 AND thread_id = $2 AND tenant_id = $3 \
              ORDER BY created_at DESC, run_id DESC LIMIT 1",
         )
         .bind(message_id)
         .bind(thread_id)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .fetch_optional(&self.db)
         .await
         .map_err(map_db)?;
         Ok(row.map(
-            |(run_id, autonomous, pins, model, effort, model_auto, tools)| RunContext {
+            |(run_id, autonomous, pins, model, effort, model_auto, tools, requested)| RunContext {
                 autonomous,
                 skill_pins: pins.0,
                 model: model.map(|model| crate::model::RunModel {
                     model,
                     effort: effort.as_deref().and_then(llm_gateway::Effort::parse),
                     auto: model_auto,
+                    requested: requested.map(|r| r.0),
                 }),
                 requested_tools: known_tool_names(run_id, &tools.0),
             },

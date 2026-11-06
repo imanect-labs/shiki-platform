@@ -748,6 +748,15 @@
   }
 }
 
+/* 回答の印刷層（#1048）。画面では見せずに画面外で描く（画像・図を読み込ませるため display: none にしない）。 */
+.answer-print-root {
+  position: fixed;
+  top: 0;
+  left: -10000px;
+  width: 760px;
+  background: var(--background);
+}
+
 /* 印刷（PDF エクスポート・#334）: アプリシェルを隠し本文だけを紙面に載せる。
    ノート印刷ビュー（/notes/[id]/print）は本文を全幅で描画し、チャート（SVG）は
    ベクタのまま印刷される。iframe 埋め込みはプレースホルダへ差し替わる（embed-view）。 */
@@ -766,6 +775,40 @@
   .note-print {
     max-width: 100% !important;
     padding: 0 !important;
+  }
+  /* 回答の印刷（PDF の書き出し・#1048）: 印刷の間だけアプリの画面を隠し、body 直下の印刷層だけを
+     紙面に載せる。見出しの直後で改ページせず、図は途中で割らない。図の操作ボタンは載せない。 */
+  html:has(body.printing-answer),
+  body.printing-answer {
+    color-scheme: light;
+    background: oklch(0.99 0 0) !important;
+  }
+  body.printing-answer > :not(.answer-print-root) {
+    display: none !important;
+  }
+  body.printing-answer > .answer-print-root {
+    position: static !important;
+    width: auto !important;
+    /* ダークテーマで書き出しても紙面は白地に濃い文字（:root のライトの値・背景は印刷されないことが多い）。 */
+    color-scheme: light;
+    --background: oklch(0.99 0 0);
+    --foreground: oklch(0.21 0.006 285.9);
+    --card: oklch(1 0 0);
+    --muted: oklch(0.967 0.001 286.4);
+    --muted-foreground: oklch(0.552 0.014 285.9);
+    --border: oklch(0.92 0.004 286.3);
+    --primary: oklch(0.28 0.055 264);
+    background: var(--background);
+    color: var(--foreground);
+  }
+  .answer-print-root :is(h1, h2, h3) {
+    break-after: avoid;
+  }
+  .answer-print-root :is(img, svg, figure, pre, table) {
+    break-inside: avoid;
+  }
+  .answer-print-root [data-yui-chrome] button {
+    display: none !important;
   }
   /* 見出し直後の改ページを避ける（読みやすさ）。 */
   .note-prose h1,

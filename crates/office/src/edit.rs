@@ -154,7 +154,7 @@ impl OfficeEditor {
             .http
             .post(format!("{}/edit", self.worker_base_url))
             .json(&serde_json::json!({
-                "tenant_id": ctx.tenant_id,
+                "tenant_id": ctx.tenant_id(),
                 "content_type": content_type,
                 "file_name": node.name,
                 "data_base64": encoded,
@@ -184,7 +184,7 @@ impl OfficeEditor {
             .map_err(|e| OfficeError::Worker(format!("worker 応答の base64 が不正: {e}")))?;
 
         // WOPI ロック（＝人間の編集セッション）で保存先を分岐する（PIT-44）。
-        let locked = lock::current_lock(&self.pool, &ctx.tenant_id, file_id)
+        let locked = lock::current_lock(&self.pool, ctx.tenant_id(), file_id)
             .await?
             .is_some();
         let saved = if locked {

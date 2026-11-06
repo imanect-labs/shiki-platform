@@ -265,7 +265,10 @@ impl DocSearchTool {
 }
 
 /// ツール説明の本体（`doc_read` があれば [`DOC_READ_HINT`] を足す）。
-const DESCRIPTION: &str = "社内文書を検索し、権限を守った引用チャンクを返す。ユーザーの質問に答えるための根拠が必要なときに使う。\n\
+const DESCRIPTION: &str =
+    "社内文書を検索し、権限を守った引用チャンクを返す。社内固有の情報（規程・制度・手続き、\
+     製品・顧客・案件、社内資料の内容など）が回答に必要なときに使う。一般的な知識・用語の説明や\
+     文章の作成など、社内文書に依らず答えられる依頼には使わない。\n\
      - mode: 既定の hybrid は意味の近さと語の一致を合わせて探す。型番・エラーメッセージ・条文番号・\
      固有名詞など、表記どおりに一致する箇所が欲しいときは keyword にする。\n\
      - file_ids / folder_ids: 結果に出た文書やフォルダの中だけで探し直すときに、結果の file_id / \
@@ -624,6 +627,13 @@ mod tests {
     fn description_mentions_doc_read_only_when_wired() {
         assert!(!DESCRIPTION.contains("doc_read"));
         assert!(DOC_READ_HINT.contains("doc_read"));
+    }
+
+    /// 一般的な質問（「io_uring ってなに？」）で呼ばせない。使う場面を社内固有の情報に限る。
+    #[test]
+    fn description_limits_use_to_company_specific_information() {
+        assert!(DESCRIPTION.contains("社内固有の情報"));
+        assert!(DESCRIPTION.contains("社内文書に依らず答えられる依頼には使わない"));
     }
 
     #[test]

@@ -238,7 +238,7 @@ async fn record_read(
     trace: Option<&str>,
     metadata: serde_json::Value,
 ) -> Result<(), ApiError> {
-    let object_id = format!("{}|{}", ctx.tenant_id, ctx.org);
+    let object_id = format!("{}|{}", ctx.tenant_id(), ctx.org());
     state
         .audit
         .record(

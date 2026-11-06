@@ -30,7 +30,7 @@ use workflow_engine::{
 };
 
 async fn pg() -> Option<PgPool> {
-    let url = std::env::var("STORAGE_TEST_DATABASE_URL").ok()?;
+    let url = shiki_testenv::var("STORAGE_TEST_DATABASE_URL").ok()?;
     let pool = PgPoolOptions::new()
         .max_connections(5)
         .connect(&url)
@@ -111,7 +111,7 @@ async fn multi_tier_is_all_or_nothing() {
 
 #[tokio::test]
 async fn token_bucket_bursts_then_throttles() {
-    let Ok(redis_url) = std::env::var("REDIS_TEST_URL") else {
+    let Ok(redis_url) = shiki_testenv::var("REDIS_TEST_URL") else {
         eprintln!("REDIS_TEST_URL 未設定のためスキップ");
         return;
     };

@@ -196,9 +196,14 @@ test("エージェントモードでも開いているノートを編集対象�
 
   // エージェントモード ON で送る（stub は echosystem: で受け取った system をそのまま返す）。
   // 開いているノートの node_id が届かないと、AI は新規下書きへ逃げてルートに別ファイルを作る。
-  const agentSwitch = panel.getByRole("switch", { name: "エージェントモード" });
-  await agentSwitch.click();
-  await expect(agentSwitch).toHaveAttribute("aria-checked", "true");
+  // パネルは幅が狭いので、トグルを並べず 1 つの「実行モード」ボタンにまとめる（重なり防止）。
+  await expect(panel.getByRole("switch", { name: "エージェントモード" })).toHaveCount(0);
+  await panel.getByTestId("composer-mode-button").click();
+  const card = page.getByTestId("composer-mode-card");
+  await card.getByTestId("composer-mode-agent").click();
+  await expect(card.getByTestId("composer-mode-agent")).toHaveAttribute("aria-checked", "true");
+  await card.getByRole("button", { name: "完了" }).click();
+  await expect(composer).toHaveAttribute("placeholder", /エージェント/);
   await composer.fill("echosystem: 確認");
   await panel.getByRole("button", { name: "送信" }).click();
   // 自律プロファイルの system で走ったこと（通常チャットの経路で通っていないこと）も確かめる。
@@ -225,4 +230,60 @@ test("図の挿入: AI が ```ui の図をノート本文へ自動挿入する�
   await expect(figure).toBeVisible({ timeout: 30_000 });
   await expect(figure).toHaveAttribute("data-ui-kind", "bar");
   await expect(figure).toContainText("月別の売上");
+});
+
+test("アシスタントパネルは左端のつまみで幅を変えられ、幅は保存される", async ({ page }) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await loginViaKeycloak(page);
+  const nodeId = await createNoteViaApi(page, uniqueName("panel-width"));
+  await openNote(page, nodeId);
+  await page.getByTestId("note-ask-ai").click();
+  const panel = page.getByTestId("note-chat-panel");
+  await expect(panel.getByLabel("メッセージを入力")).toBeVisible({ timeout: 20_000 });
+  const sheet = page.getByRole("complementary", { name: "ノートのアシスタント" });
+  const handle = page.getByRole("separator", { name: "アシスタントの幅を変更" });
+  const before = (await sheet.boundingBox())!.width;
+
+  // 左へドラッグすると広がり、本文はパネルの下に潜らない。
+  const hb = (await handle.boundingBox())!;
+  await page.mouse.move(hb.x + hb.width / 2, hb.y + 200);
+  await page.mouse.down();
+  await page.mouse.move(hb.x - 200, hb.y + 200, { steps: 8 });
+  await page.mouse.up();
+  await expect.poll(async () => (await sheet.boundingBox())!.width).toBeGreaterThan(before + 150);
+  const sheetLeft = (await sheet.boundingBox())!.x;
+  const editorRight = await page
+    .getByTestId("note-editor")
+    .evaluate((e) => e.getBoundingClientRect().right);
+  expect(editorRight).toBeLessThanOrEqual(sheetLeft);
+  // 広いパネルでは入力欄の下にエージェントモードのトグルが並ぶ（狭いときは 1 つのボタン）。
+  await expect(panel.getByRole("switch", { name: "エージェントモード" })).toBeVisible();
+
+  // 再読み込みしても幅を覚えている。
+  const saved = await handle.getAttribute("aria-valuenow");
+  await page.reload();
+  await page.getByTestId("note-ask-ai").click();
+  await expect(handle).toHaveAttribute("aria-valuenow", saved!);
+
+  // キーボード（→ で狭める）とダブルクリック（既定幅へ戻す）。
+  await handle.focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(handle).toHaveAttribute("aria-valuenow", String(Number(saved) - 16));
+  await handle.dblclick();
+  await expect(handle).toHaveAttribute("aria-valuenow", "420");
+  await expect(handle).toHaveAttribute("aria-controls", /.+/);
+
+  // 画面が狭いと最大まで広げても本文に 352px を残す（最大幅は画面に合わせて縮む）。
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await expect(handle).not.toHaveAttribute("aria-valuemax", "960");
+  await handle.focus();
+  await page.keyboard.press("End");
+  const max = Number(await handle.getAttribute("aria-valuemax"));
+  expect(max).toBeLessThan(960);
+  await expect(handle).toHaveAttribute("aria-valuenow", String(max));
+  const bodyWidth = await page.getByTestId("assistant-body").evaluate((el) => {
+    const style = getComputedStyle(el);
+    return el.getBoundingClientRect().width - parseFloat(style.paddingRight);
+  });
+  expect(bodyWidth).toBeGreaterThanOrEqual(352);
 });

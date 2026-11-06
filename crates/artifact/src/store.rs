@@ -102,11 +102,11 @@ impl ArtifactStore {
              VALUES ($1, $2, $3, $4, $5, 1) \
              RETURNING id, kind, name, owner, current_version, created_at, updated_at",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(input.kind.as_str())
         .bind(name)
-        .bind(&ctx.principal.id)
+        .bind(&ctx.principal().id)
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| match &e {
@@ -119,10 +119,10 @@ impl ArtifactStore {
             "INSERT INTO artifact_version (tenant_id, artifact_id, version, body, created_by) \
              VALUES ($1, $2, 1, $3, $4)",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(row.id)
         .bind(Json(&input.body))
-        .bind(&ctx.principal.id)
+        .bind(&ctx.principal().id)
         .execute(&mut *tx)
         .await
         .map_err(map_db)?;
@@ -140,7 +140,7 @@ impl ArtifactStore {
             // 運用検知のためエラーをログに残す（CodeRabbit 指摘）。
             if let Err(cleanup) =
                 sqlx::query("DELETE FROM artifact WHERE tenant_id = $1 AND id = $2")
-                    .bind(&ctx.tenant_id)
+                    .bind(ctx.tenant_id())
                     .bind(id)
                     .execute(&self.db)
                     .await
@@ -172,7 +172,7 @@ impl ArtifactStore {
             "SELECT id FROM artifact \
              WHERE tenant_id = $1 AND kind = $2 AND name = $3 AND deleted_at IS NULL",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(kind.as_str())
         .bind(name)
         .fetch_optional(&self.db)
@@ -203,9 +203,9 @@ impl ArtifactStore {
                AND ($5::timestamptz IS NULL OR (updated_at, id) < ($5::timestamptz, $6)) \
              ORDER BY updated_at DESC, id DESC LIMIT $7",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
-        .bind(&ctx.principal.id)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
+        .bind(&ctx.principal().id)
         .bind(kind.map(ArtifactKind::as_str))
         .bind(before_at)
         .bind(before_id)
@@ -254,10 +254,10 @@ impl ArtifactStore {
                AND deleted_at IS NULL AND ($5::text IS NULL OR kind = $5) \
              ORDER BY updated_at DESC, id DESC LIMIT $6",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(&ids)
-        .bind(&ctx.principal.id)
+        .bind(&ctx.principal().id)
         .bind(kind.map(ArtifactKind::as_str))
         .bind(limit)
         .fetch_all(&self.db)
@@ -287,9 +287,9 @@ impl ArtifactStore {
                AND a.kind = 'skill' AND a.deleted_at IS NULL \
              ORDER BY a.name LIMIT $4",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
-        .bind(&ctx.principal.id)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
+        .bind(&ctx.principal().id)
         .bind(limit)
         .fetch_all(&self.db)
         .await
@@ -316,7 +316,7 @@ impl ArtifactStore {
             "UPDATE artifact SET deleted_at = now(), updated_at = now() \
              WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(id)
         .execute(&self.db)
         .await
@@ -344,7 +344,7 @@ impl ArtifactStore {
             "SELECT id, kind, name, owner, current_version, created_at, updated_at \
              FROM artifact WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(id)
         .fetch_optional(&self.db)
         .await

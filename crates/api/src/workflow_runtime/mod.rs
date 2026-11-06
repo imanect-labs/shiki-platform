@@ -125,7 +125,9 @@ impl CapabilityAudit for RunAudit {
 
     fn record_out_of_scope(&self, ec: &workflow_engine::ExecCtx, api: &str, meta: &Value) {
         self.record(&ec.tenant_id, api, false, meta);
-        let ctx = auth::auth_ctx(ec);
+        let Ok(ctx) = auth::auth_ctx(ec) else {
+            return;
+        };
         let recorder = self.recorder.clone();
         let db = self.db.clone();
         let (api, mut meta, trace) = (api.to_string(), meta.clone(), ec.trace_id.clone());
@@ -140,7 +142,7 @@ impl CapabilityAudit for RunAudit {
                         "SELECT workflow_id, version FROM workflow_run \
                          WHERE tenant_id = $1 AND run_id = $2",
                     )
-                    .bind(&ctx.tenant_id)
+                    .bind(ctx.tenant_id())
                     .bind(run_id)
                     .fetch_optional(&db)
                     .await
@@ -479,7 +481,7 @@ mod audit_tests {
     /// 実効スコープの外の呼び出しは実行主体つきで audit_log に残る（検証 C-P2-3。以前は tracing だけ）。
     #[tokio::test]
     async fn out_of_scope_is_written_to_the_audit_log() {
-        let Ok(url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+        let Ok(url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
             eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
             return;
         };

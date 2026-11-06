@@ -780,13 +780,13 @@ impl DataStore {
         }
         let mut tx = self
             .pools
-            .for_tenant(&ctx.tenant_id)
+            .for_tenant(ctx.tenant_id())
             .begin()
             .await
             .map_err(map_db)?;
         let demoted = demote(
             &mut tx,
-            &ctx.tenant_id,
+            ctx.tenant_id(),
             table.id,
             &broken,
             "参照先のテーブル ReBAC・行述語・マスク・個別共有のいずれかが変わった",
@@ -894,7 +894,7 @@ impl DataStore {
             if let Some((_, org)) =
                 crate::stream::relay::table_row_with_org(&mut tx, tenant_id, table_id).await?
             {
-                let ctx = crate::stream::relay::system_ctx(tenant_id, &org);
+                let ctx = crate::stream::relay::system_ctx(tenant_id, &org)?;
                 let changes: Vec<crate::stream::outbox::RecordChange<'_>> = recs
                     .iter()
                     .map(|(rint, _, id, rev)| crate::stream::outbox::RecordChange {

@@ -44,7 +44,7 @@ pub fn test_ctx_org(tenant: &str, user: &str, org: &str) -> AuthContext {
             tenant_id: Some(tenant.into()),
         },
         org.into(),
-        tenant.into(),
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 
@@ -126,7 +126,7 @@ impl VectorStore for FakeVectorStore {
         for p in points {
             store.retain(|(_, q)| q.chunk_id != p.chunk_id);
             store.push((
-                ctx.tenant_id.clone(),
+                ctx.tenant_id().to_owned(),
                 ChunkPoint {
                     chunk_id: p.chunk_id,
                     node_id: p.node_id,
@@ -142,7 +142,7 @@ impl VectorStore for FakeVectorStore {
         self.points
             .lock()
             .unwrap()
-            .retain(|(t, p)| !(t == &ctx.tenant_id && p.node_id == node_id));
+            .retain(|(t, p)| !(t == ctx.tenant_id() && p.node_id == node_id));
         Ok(())
     }
     async fn delete_stale_versions(
@@ -152,7 +152,7 @@ impl VectorStore for FakeVectorStore {
         keep_version: i64,
     ) -> Result<(), RagError> {
         self.points.lock().unwrap().retain(|(t, p)| {
-            !(t == &ctx.tenant_id && p.node_id == node_id && p.version != keep_version)
+            !(t == ctx.tenant_id() && p.node_id == node_id && p.version != keep_version)
         });
         Ok(())
     }
@@ -163,7 +163,7 @@ impl VectorStore for FakeVectorStore {
         tags: &[String],
     ) -> Result<(), RagError> {
         for (t, p) in self.points.lock().unwrap().iter_mut() {
-            if t == &ctx.tenant_id && p.node_id == node_id {
+            if t == ctx.tenant_id() && p.node_id == node_id {
                 p.authz_tags = tags.to_vec();
             }
         }
@@ -178,7 +178,7 @@ impl VectorStore for FakeVectorStore {
         let mut hits: Vec<ScoredChunk> = store
             .iter()
             // tenant 無条件 AND（本物と同じ意味論）。
-            .filter(|(t, _)| t == &ctx.tenant_id)
+            .filter(|(t, _)| t == ctx.tenant_id())
             .filter(|(_, p)| match query.prefilter {
                 PreFilter::TenantOnly => true,
                 PreFilter::Tags(tags) => p.authz_tags.iter().any(|t| tags.contains(t)),

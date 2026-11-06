@@ -50,12 +50,12 @@ impl StorageService {
 
         // content-addressing: 所持バイトをハッシュし、新規 blob のみオブジェクトストアへ。
         let sha256 = sha256_hex(bytes);
-        let final_key = blob_object_key(&ctx.tenant_id, &ctx.org, &sha256);
+        let final_key = blob_object_key(ctx.tenant_id(), ctx.org(), &sha256);
         let blob_exists: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM blob WHERE tenant_id = $1 AND org = $2 AND sha256 = $3)",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(&sha256)
         .fetch_one(&self.db)
         .await?;
@@ -68,8 +68,8 @@ impl StorageService {
         let mut tx = self.db.begin().await?;
         self.bump_blob(
             &mut tx,
-            &ctx.tenant_id,
-            &ctx.org,
+            ctx.tenant_id(),
+            ctx.org(),
             &sha256,
             size,
             content_type,
@@ -89,9 +89,9 @@ impl StorageService {
             .bind(size)
             .bind(content_type)
             .bind(file_id)
-            .bind(&ctx.org)
-            .bind(&ctx.tenant_id)
-            .bind(&ctx.principal.id)
+            .bind(ctx.org())
+            .bind(ctx.tenant_id())
+            .bind(&ctx.principal().id)
             .fetch_optional(&mut *tx)
             .await?
             .ok_or(StorageError::NotFound)?;

@@ -92,8 +92,8 @@ pub(crate) async fn resolve_share_profiles<'a>(
          FROM directory_role \
          WHERE tenant_id = $1 AND org = $2 AND role_id = ANY($4)",
     )
-    .bind(&ctx.tenant_id)
-    .bind(&ctx.org)
+    .bind(ctx.tenant_id())
+    .bind(ctx.org())
     .bind(&user_ids)
     .bind(&role_ids)
     .fetch_all(db)

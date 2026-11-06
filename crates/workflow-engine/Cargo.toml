@@ -54,6 +54,7 @@ chrono-tz = "0.10"
 tokio = { workspace = true, features = ["rt", "time", "macros"] }
 
 [dev-dependencies]
+shiki-testenv.workspace = true
 tokio.workspace = true
 reqwest.workspace = true
 async-trait.workspace = true

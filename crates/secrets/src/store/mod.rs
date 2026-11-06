@@ -132,8 +132,8 @@ impl SecretStore {
         // （tenant_id・org・id）へ AAD で束縛するため、id は INSERT 前にここで採番する（#814）。
         let id = Uuid::new_v4();
         let binding = RowBinding {
-            tenant_id: &ctx.tenant_id,
-            org: &ctx.org,
+            tenant_id: ctx.tenant_id(),
+            org: ctx.org(),
             id,
         };
         let dek = crypto::KeyGuard(crypto::generate_key());
@@ -147,10 +147,10 @@ impl SecretStore {
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
              RETURNING id, name, owner, allowed_hosts, version, created_at, updated_at",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(name)
-        .bind(&ctx.principal.id)
+        .bind(&ctx.principal().id)
         .bind(&hosts)
         .bind(&sealed.ciphertext)
         .bind(&sealed.nonce)
@@ -175,7 +175,7 @@ impl SecretStore {
             .await
         {
             if let Err(cleanup) = sqlx::query("DELETE FROM secret WHERE tenant_id = $1 AND id = $2")
-                .bind(&ctx.tenant_id)
+                .bind(ctx.tenant_id())
                 .bind(id)
                 .execute(&self.db)
                 .await
@@ -222,14 +222,14 @@ impl SecretStore {
         // 束縛先の org は**行の値**を使う（owner 判定の FGA は org を見ないため ctx.org と一致する保証がない）。
         let org: Option<String> =
             sqlx::query_scalar("SELECT org FROM secret WHERE tenant_id = $1 AND id = $2")
-                .bind(&ctx.tenant_id)
+                .bind(ctx.tenant_id())
                 .bind(id)
                 .fetch_optional(&self.db)
                 .await
                 .map_err(map_db)?;
         let org = org.ok_or(SecretError::NotFound)?;
         let binding = RowBinding {
-            tenant_id: &ctx.tenant_id,
+            tenant_id: ctx.tenant_id(),
             org: &org,
             id,
         };
@@ -244,7 +244,7 @@ impl SecretStore {
              WHERE tenant_id = $1 AND id = $2 AND org = $8 \
              RETURNING id, name, owner, allowed_hosts, version, created_at, updated_at",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(id)
         .bind(&sealed.ciphertext)
         .bind(&sealed.nonce)
@@ -290,7 +290,7 @@ impl SecretStore {
              WHERE tenant_id = $1 AND id = $2 \
              RETURNING id, name, owner, allowed_hosts, version, created_at, updated_at",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(id)
         .bind(&hosts)
         .fetch_optional(&self.db)
@@ -325,7 +325,7 @@ impl SecretStore {
             )
             .await?;
         let deleted = sqlx::query("DELETE FROM secret WHERE tenant_id = $1 AND id = $2")
-            .bind(&ctx.tenant_id)
+            .bind(ctx.tenant_id())
             .bind(id)
             .execute(&self.db)
             .await
@@ -350,9 +350,9 @@ impl SecretStore {
             "SELECT id, name, owner, allowed_hosts, version, created_at, updated_at \
              FROM secret WHERE tenant_id = $1 AND org = $2 AND owner = $3 ORDER BY name",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
-        .bind(&ctx.principal.id)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
+        .bind(&ctx.principal().id)
         .fetch_all(&self.db)
         .await
         .map_err(map_db)?;
@@ -378,7 +378,7 @@ impl SecretStore {
             "SELECT id, name, owner, allowed_hosts, version, created_at, updated_at \
              FROM secret WHERE tenant_id = $1 AND id = $2",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(id)
         .fetch_optional(&self.db)
         .await
@@ -406,8 +406,8 @@ impl SecretStore {
                     allowed_hosts \
                  FROM secret WHERE tenant_id = $1 AND org = $2 AND name = $3",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(name)
         .fetch_optional(&self.db)
         .await
@@ -460,8 +460,8 @@ impl SecretStore {
         // 暗号文は行（tenant_id・org・id）へ束縛されている。別行から複製された暗号文は
         // ここで認証タグ不一致になり、平文を出さずに失敗する（#814）。行の org は WHERE で ctx.org。
         let binding = RowBinding {
-            tenant_id: &ctx.tenant_id,
-            org: &ctx.org,
+            tenant_id: ctx.tenant_id(),
+            org: ctx.org(),
             id,
         };
         let plaintext = binding.open(&dek.0, row.enc_version, &row.nonce, &row.ciphertext)?;

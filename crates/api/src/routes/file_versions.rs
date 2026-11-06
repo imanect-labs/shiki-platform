@@ -9,7 +9,7 @@ use axum::{
     Json,
 };
 use chrono::{DateTime, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use storage::FileVersion;
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -169,6 +169,92 @@ pub async fn restore_version(
         .restore_version(&ctx, id, version, trace.as_deref())
         .await?;
     Ok(Json(node.into()))
+}
+
+/// 編集の取り消しリクエスト（#1049）。
+#[derive(Debug, Default, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
+pub struct RevertEditRequest {
+    /// 取り消す編集の後に別の版が作られていても戻す（後の変更も失われる）。既定 false。
+    #[serde(default)]
+    pub force: bool,
+    /// 一緒に取り消す編集の版（パスの `version` に加える・同じ回答で同じファイルを複数回編集した場合）。
+    /// これらに含まれない内容版が後から入っていれば 409。
+    #[serde(default)]
+    pub also_versions: Vec<i64>,
+}
+
+/// 編集の取り消し結果。
+#[derive(Debug, Serialize, ToSchema)]
+pub struct RevertEditResponse {
+    /// 取り消し後のファイル。
+    pub node: NodeResponse,
+    /// 新しい版を作って戻したら true。既に編集前の内容だった（何もしていない）なら false。
+    pub reverted: bool,
+    /// 内容の復元元の版（`reverted` が true のときだけ）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<i64>)]
+    pub restored_from_version: Option<i64>,
+}
+
+/// `version` を作った編集を取り消す（#1049・editor 権限）。
+///
+/// 直前の内容版を**新しい版として**復元する（履歴は残る）。編集の後に別の内容版（他の編集）がある
+/// 場合は `force` が無い限り 409（`code: version_conflict`・`current_version`）。名前変更・移動では競合しない。既に編集前の内容なら
+/// 何もせず `reverted: false`。チャットの「AI の編集を元に戻す」が使う。
+#[utoipa::path(
+    post,
+    path = "/files/{id}/versions/{version}/revert",
+    tag = "files",
+    params(
+        ("id" = Uuid, Path, description = "ファイル ID"),
+        ("version" = i64, Path, description = "取り消す編集が作った版番号"),
+    ),
+    request_body(content = RevertEditRequest, description = "省略時は force=false"),
+    responses(
+        (status = 200, description = "取り消し後のファイル", body = RevertEditResponse),
+        (status = 401, description = "未認証"),
+        (status = 403, description = "認可されていない"),
+        (status = 404, description = "ファイル/版、または編集前の版が無い"),
+        (status = 409, description = "編集の後に別の版がある（force で上書き可）"),
+    ),
+    security(("session" = [])),
+)]
+pub async fn revert_edit(
+    State(state): State<AppState>,
+    AuthContextExt(ctx): AuthContextExt,
+    trace: TraceIdExt,
+    Path((id, version)): Path<(Uuid, i64)>,
+    body: Option<Json<RevertEditRequest>>,
+) -> Result<Json<RevertEditResponse>, ApiError> {
+    let req = body.map(|Json(b)| b).unwrap_or_default();
+    let outcome = state
+        .storage
+        .revert_edit(
+            &ctx,
+            id,
+            &std::iter::once(version)
+                .chain(req.also_versions.iter().copied())
+                .collect::<Vec<_>>(),
+            req.force,
+            trace.as_deref(),
+        )
+        .await?;
+    Ok(Json(match outcome {
+        storage::RevertOutcome::Reverted {
+            node,
+            restored_from_version,
+        } => RevertEditResponse {
+            node: node.into(),
+            reverted: true,
+            restored_from_version: Some(restored_from_version),
+        },
+        storage::RevertOutcome::AlreadyReverted(node) => RevertEditResponse {
+            node: node.into(),
+            reverted: false,
+            restored_from_version: None,
+        },
+    }))
 }
 
 /// AI 提案バージョンを採用し、通常の新バージョンへ昇格する（Task 11.8・editor 権限）。

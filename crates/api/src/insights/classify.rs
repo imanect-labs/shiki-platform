@@ -114,7 +114,7 @@ pub fn parse_category(output: &str) -> &'static str {
 }
 
 /// 分類器の実行主体（組織に閉じる・利用者の集計からは除く）。
-fn classifier_ctx(tenant_id: &str, org: &str) -> AuthContext {
+fn classifier_ctx(tenant_id: &authz::TenantId, org: &str) -> AuthContext {
     AuthContext::new(
         Principal {
             kind: PrincipalKind::User,
@@ -125,7 +125,7 @@ fn classifier_ctx(tenant_id: &str, org: &str) -> AuthContext {
             tenant_id: Some(tenant_id.to_string()),
         },
         org.to_string(),
-        tenant_id.to_string(),
+        tenant_id.clone(),
     )
 }
 
@@ -186,7 +186,11 @@ pub async fn classify_org(
     if threads.is_empty() {
         return Ok(0);
     }
-    let ctx = classifier_ctx(tenant_id, org);
+    let Ok(tenant) = authz::TenantId::parse(tenant_id) else {
+        tracing::warn!(%tenant_id, "分類対象の tenant_id が文字ポリシーに反する（分類しない）");
+        return Ok(0);
+    };
+    let ctx = classifier_ctx(&tenant, org);
     // 組織が許可したモデル（設定の指定 → 組織の既定）。
     let model = match model_override {
         Some(m) => m.to_string(),

@@ -90,7 +90,7 @@ impl ChatStore {
         subject: &authz::Subject,
         grant: bool,
     ) -> Result<bool, ChatError> {
-        let Some(folder_id) = self.workspace_folder_id(thread_id, &ctx.tenant_id).await? else {
+        let Some(folder_id) = self.workspace_folder_id(thread_id, ctx.tenant_id()).await? else {
             return Ok(false);
         };
         let folder = ctx.ns().folder(&folder_id.to_string());
@@ -176,7 +176,7 @@ impl ChatStore {
         ctx: &AuthContext,
         thread_id: Uuid,
     ) -> Result<(), ChatError> {
-        let Some(folder_id) = self.workspace_folder_id(thread_id, &ctx.tenant_id).await? else {
+        let Some(folder_id) = self.workspace_folder_id(thread_id, ctx.tenant_id()).await? else {
             return Ok(());
         };
         let folder = ctx.ns().folder(&folder_id.to_string());

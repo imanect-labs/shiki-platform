@@ -219,7 +219,7 @@ async fn dual_gate(
             )
             .await;
             let usage_key = required_scope_for(&method, matched.as_str());
-            let (tenant, org) = (ctx.auth.tenant_id.clone(), ctx.auth.org.clone());
+            let (tenant, org) = (ctx.auth.tenant_id().to_owned(), ctx.auth.org().to_owned());
             let (app_id, user_sub) = (ctx.installation.app_id, ctx.identity.user_sub.clone());
             req.extensions_mut().insert(ctx);
             let resp = next.run(req).await;
@@ -275,7 +275,7 @@ async fn authorize(
             email: None,
             groups: identity.groups.clone(),
             roles: vec![],
-            tenant_id: Some(tenant.clone()),
+            tenant_id: Some(tenant.to_string()),
         },
         org,
         tenant.clone(),

@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use shiki_sandbox_netns::{Netns, NetnsSpec};
 
 fn gated() -> bool {
-    std::env::var("SANDBOX_NETNS_IT").as_deref() == Ok("1")
+    shiki_testenv::var("SANDBOX_NETNS_IT").as_deref() == Ok("1")
 }
 
 fn holder_bin() -> PathBuf {

@@ -99,7 +99,7 @@ impl TitleJob {
     }
 
     async fn generate(&self) -> Result<(), String> {
-        let tenant = self.ctx.tenant_id.clone();
+        let tenant = self.ctx.tenant_id().to_owned();
         let thread_id = self.run.thread_id;
         let Some(seed) = self
             .store

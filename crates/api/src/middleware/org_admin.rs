@@ -36,7 +36,7 @@ pub async fn require_org_admin(
     let ctx = context_of(&req)?;
     if !is_org_admin(&state, &ctx, Consistency::HigherConsistency).await? {
         let trace = req.extensions().get::<TraceId>().map(|t| t.0.clone());
-        let object_id = format!("{}|{}", ctx.tenant_id, ctx.org);
+        let object_id = format!("{}|{}", ctx.tenant_id(), ctx.org());
         // 監査の失敗で応答は変えない（拒否は既に決まっている・欠落はログで顕在化する）。
         if let Err(e) = state
             .audit
@@ -97,7 +97,7 @@ pub(crate) async fn is_org_admin(
         .check(
             &ctx.subject(),
             Relation::Admin,
-            &ctx.ns().organization(&ctx.org),
+            &ctx.ns().organization(ctx.org()),
             consistency,
         )
         .await?)

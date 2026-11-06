@@ -1429,7 +1429,7 @@ async fn bulk_import_enforces_authorization_per_chunk() {
 async fn bulk_import_rechecks_field_write_permission_when_applying_creates() {
     let _g = serial().await;
     let Some(pool) = setup().await else { return };
-    let Ok(base_url) = std::env::var("OPENFGA_TEST_URL") else {
+    let Ok(base_url) = shiki_testenv::var("OPENFGA_TEST_URL") else {
         eprintln!("OPENFGA_TEST_URL 未設定のためスキップ");
         return;
     };
@@ -1540,7 +1540,7 @@ fn link(key: &str, to: Uuid, card: LinkCardinality, sym: Option<&str>) -> FieldD
 }
 
 async fn fga_store(pool: PgPool) -> Option<DataStore> {
-    let Ok(base_url) = std::env::var("OPENFGA_TEST_URL") else {
+    let Ok(base_url) = shiki_testenv::var("OPENFGA_TEST_URL") else {
         eprintln!("OPENFGA_TEST_URL 未設定のためスキップ");
         return None;
     };

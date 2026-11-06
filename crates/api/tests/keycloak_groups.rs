@@ -695,7 +695,7 @@ async fn group_listing_reads_past_keycloak_default_page() {
 /// 無ければスキップ）。provisioner は realm import の dev 資格情報を使う。
 #[tokio::test]
 async fn real_keycloak_tenant_group_lifecycle() {
-    let Ok(base) = std::env::var("KEYCLOAK_TEST_URL") else {
+    let Ok(base) = shiki_testenv::var("KEYCLOAK_TEST_URL") else {
         eprintln!("KEYCLOAK_TEST_URL 未設定のためスキップ");
         return;
     };

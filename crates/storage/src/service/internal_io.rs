@@ -166,10 +166,10 @@ impl StorageService {
                 self.require(
                     ctx,
                     Relation::Member,
-                    &ctx.ns().organization(&ctx.org),
+                    &ctx.ns().organization(ctx.org()),
                     AuditAction::FileWriteInternal,
                     "organization",
-                    &ctx.org,
+                    ctx.org(),
                     trace_id,
                 )
                 .await?;
@@ -209,12 +209,12 @@ impl StorageService {
         // content-addressing: バイトを所持しているのでメモリ上でハッシュし、新規 blob のみ書き込む。
         // 既存 blob があれば上書きしない（並行 finalize が参照する共有本体を壊さない・dedup）。
         let sha256 = sha256_hex(bytes);
-        let final_key = blob_object_key(&ctx.tenant_id, &ctx.org, &sha256);
+        let final_key = blob_object_key(ctx.tenant_id(), ctx.org(), &sha256);
         let blob_exists: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM blob WHERE tenant_id = $1 AND org = $2 AND sha256 = $3)",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(&sha256)
         .fetch_one(&self.db)
         .await?;
@@ -236,7 +236,7 @@ impl StorageService {
                  ON CONFLICT (tenant_id, idempotency_key) DO NOTHING \
                  RETURNING op_digest, result_summary",
             )
-            .bind(&ctx.tenant_id)
+            .bind(ctx.tenant_id())
             .bind(key)
             .bind(digest)
             .fetch_optional(&mut *tx)
@@ -247,7 +247,7 @@ impl StorageService {
                     "SELECT op_digest, result_summary FROM effect_journal \
                      WHERE tenant_id = $1 AND idempotency_key = $2",
                 )
-                .bind(&ctx.tenant_id)
+                .bind(ctx.tenant_id())
                 .bind(key)
                 .fetch_one(&mut *tx)
                 .await?;
@@ -265,8 +265,8 @@ impl StorageService {
 
         self.bump_blob(
             &mut tx,
-            &ctx.tenant_id,
-            &ctx.org,
+            ctx.tenant_id(),
+            ctx.org(),
             &sha256,
             size,
             content_type,
@@ -328,7 +328,7 @@ impl StorageService {
                 "UPDATE effect_journal SET result_summary = $3 \
                  WHERE tenant_id = $1 AND idempotency_key = $2",
             )
-            .bind(&ctx.tenant_id)
+            .bind(ctx.tenant_id())
             .bind(key)
             .bind(sqlx::types::Json(&summary))
             .execute(&mut *tx)
@@ -391,6 +391,22 @@ impl StorageService {
         file_id: Uuid,
         trace_id: Option<&str>,
     ) -> Result<(Node, Vec<u8>), StorageError> {
+        self.read_file_internal_bounded(ctx, file_id, self.max_upload_size, trace_id)
+            .await
+    }
+
+    /// [`read_file_internal`](Self::read_file_internal) に呼び出し側の上限（バイト）を足したもの。
+    ///
+    /// 上限は**読み出す版そのもの**の `size_bytes` で、ダウンロードの前に判定する（blob は
+    /// content-addressed なので、判定した版と取得する内容は一致する）。呼び出し側が事前に確認した
+    /// サイズを渡せば、確認後に大きい版へ差し替わっても全体をメモリへ載せる前に拒否できる。
+    pub async fn read_file_internal_bounded(
+        &self,
+        ctx: &AuthContext,
+        file_id: Uuid,
+        max_bytes: i64,
+        trace_id: Option<&str>,
+    ) -> Result<(Node, Vec<u8>), StorageError> {
         let node = self.load_node(ctx, file_id, false).await?;
         if node.kind != NodeKind::File {
             return Err(StorageError::NotFound);
@@ -404,14 +420,14 @@ impl StorageService {
             trace_id,
         )
         .await?;
-        if node.size_bytes.unwrap_or(0) > self.max_upload_size {
+        let limit = max_bytes.min(self.max_upload_size);
+        if node.size_bytes.unwrap_or(0) > limit {
             return Err(StorageError::Invalid(format!(
-                "size が内部読み取りの上限を超えています（最大 {} バイト）",
-                self.max_upload_size
+                "size が内部読み取りの上限を超えています（最大 {limit} バイト）"
             )));
         }
         let sha = node.blob_sha256.as_ref().ok_or(StorageError::NotFound)?;
-        let key = blob_object_key(&ctx.tenant_id, &ctx.org, sha);
+        let key = blob_object_key(ctx.tenant_id(), ctx.org(), sha);
         let bytes = self.store.get_object(&key).await?;
         self.audit
             .record(

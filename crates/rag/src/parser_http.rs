@@ -90,7 +90,7 @@ impl DocumentParser for HttpDocumentParser {
         req: ParseRequest<'_>,
     ) -> Result<ParsedDocument, RagError> {
         let mut body = serde_json::json!({
-            "tenant_id": ctx.tenant_id,
+            "tenant_id": ctx.tenant_id(),
             "content_type": req.content_type,
             "file_name": req.file_name,
         });

@@ -30,7 +30,7 @@ use storage::audit_retention::DEFAULT_RETENTION_DAYS;
 use uuid::Uuid;
 
 async fn setup() -> Option<PgPool> {
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return None;
     };
@@ -57,7 +57,7 @@ fn ctx(tenant: &str, org: &str) -> AuthContext {
             tenant_id: Some(tenant.into()),
         },
         org.into(),
-        tenant.into(),
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 
@@ -80,8 +80,8 @@ async fn chained(pool: &PgPool, c: &AuthContext, action: AuditAction) -> i64 {
     .unwrap();
     tx.commit().await.unwrap();
     sqlx::query_scalar("SELECT max(id) FROM audit_log WHERE tenant_id = $1 AND org = $2")
-        .bind(&c.tenant_id)
-        .bind(&c.org)
+        .bind(c.tenant_id())
+        .bind(c.org())
         .fetch_one(pool)
         .await
         .unwrap()
@@ -105,8 +105,8 @@ async fn read(rec: &AuditRecorder, c: &AuthContext) {
 
 async fn actions(pool: &PgPool, c: &AuthContext) -> Vec<String> {
     sqlx::query_scalar("SELECT action FROM audit_log WHERE tenant_id = $1 AND org = $2 ORDER BY id")
-        .bind(&c.tenant_id)
-        .bind(&c.org)
+        .bind(c.tenant_id())
+        .bind(c.org())
         .fetch_all(pool)
         .await
         .unwrap()
@@ -130,7 +130,7 @@ async fn expired_rows_are_purged_and_the_chain_verifies_from_the_anchor() {
 
     let r = rec
         .retention()
-        .sweep_org(&c.tenant_id, &c.org, cutoff, 365)
+        .sweep_org(c.tenant_id(), c.org(), cutoff, 365)
         .await
         .unwrap();
     assert_eq!((r.chained, r.unchained), (3, 2));
@@ -161,8 +161,8 @@ async fn expired_rows_are_purged_and_the_chain_verifies_from_the_anchor() {
         let c = c.clone();
         async move {
             sqlx::query(sql)
-                .bind(&c.tenant_id)
-                .bind(&c.org)
+                .bind(c.tenant_id())
+                .bind(c.org())
                 .bind(keep)
                 .execute(&pool)
                 .await
@@ -211,7 +211,7 @@ async fn expired_rows_are_purged_and_the_chain_verifies_from_the_anchor() {
     // もう一度回しても、消すものが無ければ記録も増えない。
     let again = rec
         .retention()
-        .sweep_org(&c.tenant_id, &c.org, cutoff, 365)
+        .sweep_org(c.tenant_id(), c.org(), cutoff, 365)
         .await
         .unwrap();
     assert_eq!((again.chained, again.unchained), (0, 0));
@@ -228,7 +228,7 @@ async fn when_every_row_expires_new_rows_link_to_the_anchor() {
     // 期限より新しい連結行が無い（全部消える）。削除の記録は境目につながる。
     let r = rec
         .retention()
-        .sweep_org(&c.tenant_id, &c.org, Utc::now(), 365)
+        .sweep_org(c.tenant_id(), c.org(), Utc::now(), 365)
         .await
         .unwrap();
     assert_eq!(r.chained, 2);
@@ -269,7 +269,7 @@ async fn multi_batch_sweep_keeps_its_own_purge_records() {
 
     let r = rec
         .retention()
-        .sweep_org(&c.tenant_id, &c.org, Utc::now(), 365)
+        .sweep_org(c.tenant_id(), c.org(), Utc::now(), 365)
         .await
         .unwrap();
     assert_eq!((r.chained, r.unchained), (2001, 0));
@@ -303,7 +303,7 @@ async fn chained_rows_stop_at_the_first_unexpired_row_in_id_order() {
         .unwrap();
     let r = rec
         .retention()
-        .sweep_org(&c.tenant_id, &c.org, cutoff, 365)
+        .sweep_org(c.tenant_id(), c.org(), cutoff, 365)
         .await
         .unwrap();
     assert_eq!(
@@ -313,8 +313,8 @@ async fn chained_rows_stop_at_the_first_unexpired_row_in_id_order() {
     let left: Vec<i64> = sqlx::query_scalar(
         "SELECT id FROM audit_log WHERE tenant_id = $1 AND org = $2 AND id <= $3 ORDER BY id",
     )
-    .bind(&c.tenant_id)
-    .bind(&c.org)
+    .bind(c.tenant_id())
+    .bind(c.org())
     .bind(d)
     .fetch_all(&pool)
     .await
@@ -323,8 +323,8 @@ async fn chained_rows_stop_at_the_first_unexpired_row_in_id_order() {
     let anchor: i64 = sqlx::query_scalar(
         "SELECT anchor_id FROM audit_chain_anchor WHERE tenant_id = $1 AND org = $2",
     )
-    .bind(&c.tenant_id)
-    .bind(&c.org)
+    .bind(c.tenant_id())
+    .bind(c.org())
     .fetch_one(&pool)
     .await
     .unwrap();
@@ -342,7 +342,7 @@ async fn verification_resumes_from_the_anchor_when_its_position_was_purged() {
     chained(&pool, &c, AuditAction::FolderCreate).await;
     // 検証の続きの位置（first）が、呼び出しの間に保持期間で消えた。
     rec.retention()
-        .sweep_org(&c.tenant_id, &c.org, cutoff, 365)
+        .sweep_org(c.tenant_id(), c.org(), cutoff, 365)
         .await
         .unwrap();
     let v = rec
@@ -365,7 +365,7 @@ async fn the_tenant_purge_record_and_rows_after_it_are_kept() {
     chained(&pool, &c, AuditAction::FolderCreate).await;
     let r = rec
         .retention()
-        .sweep_org(&c.tenant_id, &c.org, Utc::now(), 365)
+        .sweep_org(c.tenant_id(), c.org(), Utc::now(), 365)
         .await
         .unwrap();
     assert_eq!(r.chained, 1, "撤去の記録より前だけを消す");

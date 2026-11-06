@@ -79,8 +79,8 @@ impl ChatStore {
         )
         .bind(message_id)
         .bind(thread_id)
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .fetch_optional(&self.db)
         .await
         .map_err(map_db)?;
@@ -93,11 +93,11 @@ impl ChatStore {
                rating = EXCLUDED.rating, category = EXCLUDED.category, \
                model = EXCLUDED.model, updated_at = now()",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(message_id)
         .bind(thread_id)
-        .bind(&ctx.principal.id)
+        .bind(&ctx.principal().id)
         .bind(rating)
         .bind(category)
         .bind(model)
@@ -127,10 +127,10 @@ impl ChatStore {
             "DELETE FROM message_feedback \
              WHERE tenant_id = $1 AND thread_id = $2 AND message_id = $3 AND user_id = $4",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(thread_id)
         .bind(message_id)
-        .bind(&ctx.principal.id)
+        .bind(&ctx.principal().id)
         .execute(&self.db)
         .await
         .map_err(map_db)?;
@@ -156,9 +156,9 @@ impl ChatStore {
             "SELECT message_id, rating, category FROM message_feedback \
              WHERE tenant_id = $1 AND thread_id = $2 AND user_id = $3",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(thread_id)
-        .bind(&ctx.principal.id)
+        .bind(&ctx.principal().id)
         .fetch_all(&self.db)
         .await
         .map_err(map_db)?;
