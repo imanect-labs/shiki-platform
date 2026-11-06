@@ -180,6 +180,8 @@ fn normalize(markdown: &str) -> String {
     let mut out = String::with_capacity(markdown.len());
     let mut blank_run = 0usize;
     let mut in_fence = false;
+    // 表の中で何行目か（0 = 表の外）。区切り行は見出しの直後（2 行目）にしか無い。
+    let mut table_row = 0usize;
     for line in markdown.lines() {
         let fence = line.trim_start().starts_with("```") || line.trim_start().starts_with("~~~");
         if fence {
@@ -192,8 +194,12 @@ fn normalize(markdown: &str) -> String {
             slim_links(line)
         };
         let line = if !in_fence && !fence && line.trim_start().starts_with('|') {
-            squeeze_table_row(&line, is_table_separator(&line))
+            table_row += 1;
+            // データ行が `| ---- |` でも区切り行とみなさない（値を変えない）。
+            let separator = table_row == 2 && is_table_separator(&line);
+            squeeze_table_row(&line, separator)
         } else {
+            table_row = 0;
             line
         };
         let line = line.trim_end();
@@ -235,7 +241,10 @@ fn squeeze_table_row(line: &str, separator: bool) -> String {
             while i < chars.len() && chars[i] == ' ' {
                 i += 1;
             }
-            let touches_pipe = (start > 0 && chars[start - 1] == '|') || chars.get(i) == Some(&'|');
+            // セルの中の `\|`（escape された縦線）はセルの区切りではない。
+            let after_pipe =
+                start > 0 && chars[start - 1] == '|' && !(start > 1 && chars[start - 2] == '\\');
+            let touches_pipe = after_pipe || chars.get(i) == Some(&'|');
             if touches_pipe {
                 out.push(' ');
             } else {
@@ -506,6 +515,12 @@ mod tests {
         assert_eq!(byline("山田 太郎").as_deref(), Some("山田 太郎"));
         assert_eq!(byline("典拠管理データベース ".repeat(8).as_str()), None);
         assert_eq!(byline("編集部\n2026-08-01"), None);
+    }
+
+    #[test]
+    fn table_data_rows_of_dashes_and_escaped_pipes_are_kept() {
+        let md = normalize("| A |\n| ------ |\n| ---- |\n| a \\|   b |");
+        assert_eq!(md, "| A |\n| --- |\n| ---- |\n| a \\|   b |");
     }
 
     #[test]
