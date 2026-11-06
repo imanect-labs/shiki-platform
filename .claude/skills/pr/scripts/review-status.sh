@@ -43,9 +43,9 @@ BASE_REF=$(printf '%s' "$meta" | jq -r '.baseRefName')
 # 単一の commit_id と永久に一致せず「レビュー済みの bot も未レビュー」と誤判定する。
 HEAD_SHA=$(printf '%s' "$meta" | jq -r '.headRefOid // ""')
 # CONFLICTING の間、GitHub はマージ ref を作れず **`pull_request` の run を一切生成しない**。
-# この状態は「チェックが 0 件」として現れるため、paths-ignore による 0 件と区別が付かない。
-# 区別しないと「docs のみだからチェック無しで正常」と読んでしまい、CI が一度も走っていない
-# PR を緑と報告する（実際に踏んだ）。待っても解消しないので、待機ではなく rebase を促す。
+# この状態は「チェックが 0 件」として現れる。PR の CI には paths-ignore が無く（required check の
+# ci-ok が pending 固着しないよう、docs だけの PR でも changes・quality・ci-ok は必ず走る）、0 件は
+# 「まだ起動していない」か「コンフリクトで起動できない」のどちらか。待っても解消しないので rebase を促す。
 MERGEABLE=$(printf '%s' "$meta" | jq -r '.mergeable // "UNKNOWN"')
 
 if ! repo=$(gh repo view --json owner,name,defaultBranchRef -q '.owner.login + "/" + .name + " " + .defaultBranchRef.name' 2>/dev/null); then
@@ -77,24 +77,15 @@ fi
 echo "== CI チェック (PR #$PR_NUM) =="
 checks_json=$(gh pr checks "$PR_NUM" --json name,state 2>/dev/null || echo '[]')
 if [ "$(printf '%s' "$checks_json" | jq 'length')" -eq 0 ]; then
-  # 「チェックが 1 件も無い」には 3 つの意味がある:
-  #   (a) paths-ignore（docs/**・**.md・.claude/**）のみの変更 → 正常
-  #   (b) CI がまだ check run を登録していない / ワークフローが起動していない → 緑ではない
-  #   (c) PR がコンフリクトしていて run が生成されない → 緑ではない（上の 0. で検出済み）
-  # 一括りにすると (b)(c) を緑と誤判定するので、変更ファイルとマージ可能性で判別する。
-  changed=$(gh pr diff "$PR_NUM" --name-only 2>/dev/null || true)
+  # PR の CI は docs だけの変更でも changes・quality・ci-ok が必ず走るので、0 件は緑ではない:
+  #   (a) CI がまだ check run を登録していない / ワークフローが起動していない
+  #   (b) PR がコンフリクトしていて run が生成されない（上の 0. で検出済み）
   if [ "$MERGEABLE" = "CONFLICTING" ]; then
     echo "  （チェックなし — 上記のコンフリクトにより CI が起動していません）"
-  elif [ -z "$changed" ]; then
-    echo "  ⚠️  チェックが 1 件も無く、変更ファイルも取得できません。CI の起動を確認してください。"
-    blocked=1
-  elif printf '%s\n' "$changed" | grep -qvE '^(docs/|\.claude/)|\.md$'; then
-    echo "  ⚠️  チェックが 1 件もありません。paths-ignore の対象外ファイルを含むため、CI が"
-    echo "     未起動か check run 未登録の可能性があります（push 直後ならしばらく待って再実行）:"
-    printf '%s\n' "$changed" | grep -vE '^(docs/|\.claude/)|\.md$' | head -5 | sed 's/^/       /'
-    blocked=1
   else
-    echo "  （チェックなし — paths-ignore 対象〔docs/**・**.md・.claude/**〕のみの変更のため正常）"
+    echo "  ⚠️  チェックが 1 件もありません。CI が未起動か check run 未登録です"
+    echo "     （push 直後ならしばらく待って再実行）。"
+    blocked=1
   fi
 else
   printf '%s' "$checks_json" | jq -r '.[] | "  [\(.state)] \(.name)"'
