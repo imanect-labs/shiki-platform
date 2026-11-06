@@ -86,17 +86,26 @@ function useNodeInfo(workflowId: string, version: number | null) {
 const FOLD_CHARS = 2_000;
 const FOLD_LINES = 20;
 
-/// 値の大きさを、画面の単位（KB・MB）で言う（付録 C の P11）。
+/// 値の大きさを、画面の単位（KB・MB）で言う（付録 C の P11）。1 KB に満たなければ「1 KB 未満」と言う（P7）。
 function sizeLabel(text: string): string {
   const bytes = new TextEncoder().encode(text).length;
   if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  return `${Math.max(1, Math.round(bytes / 1024)).toLocaleString("ja-JP")} KB`;
+  if (bytes < 1024) return "1 KB 未満";
+  return `${Math.round(bytes / 1024).toLocaleString("ja-JP")} KB`;
+}
+
+/// 畳んだ理由。文字数で畳んだら大きさを、行数だけで畳んだら行数を言う（小さな値を「大きな値」と言わない・P7）。
+function foldedNote(text: string, lines: number): string {
+  return text.length > FOLD_CHARS
+    ? `大きな値（${sizeLabel(text)}）なので畳んでいます。`
+    : `長い値（${lines.toLocaleString("ja-JP")} 行）なので畳んでいます。`;
 }
 
 /// 実行の入力ときっかけの内容を JSON で見せる。大きな値は畳んでおき、押したときだけ広げる（GAP-96）。
 function JsonValue({ title, value, testId }: { title: string; value: unknown; testId: string }) {
   const text = React.useMemo(() => JSON.stringify(value, null, 2) ?? String(value), [value]);
-  const large = text.length > FOLD_CHARS || text.split("\n").length > FOLD_LINES;
+  const lines = React.useMemo(() => text.split("\n").length, [text]);
+  const large = text.length > FOLD_CHARS || lines > FOLD_LINES;
   const [shown, setShown] = React.useState(false);
   const id = React.useId();
   const open = !large || shown;
@@ -128,7 +137,7 @@ function JsonValue({ title, value, testId }: { title: string; value: unknown; te
         </pre>
       ) : (
         <p className="text-[11px] text-muted-foreground" data-testid={`${testId}-folded`}>
-          {`大きな値（${sizeLabel(text)}）なので畳んでいます。`}
+          {foldedNote(text, lines)}
         </p>
       )}
     </div>

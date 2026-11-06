@@ -259,6 +259,19 @@ test("実行のダイアログ: ファイルが保存されたときのワーク
     await bigShown.getByRole("button", { name: "畳む" }).click();
     await expect(bigShown.locator("pre")).toHaveCount(0);
 
+    // 行数だけで畳んだ小さな値は「大きな値（1 KB）」と言わず、行数を言う。
+    const tall = Object.fromEntries(Array.from({ length: 25 }, (_, i) => [`k${String(i).padStart(2, "0")}`, i]));
+    const tallRes = await page.request.post(`/api/workflows/${id}/runs`, {
+      headers: await csrfHeaders(page),
+      data: { input: {}, trigger: tall },
+    });
+    expect(tallRes.ok(), await tallRes.text()).toBeTruthy();
+    const tallRun = ((await tallRes.json()) as { run_id: string }).run_id;
+    await page.goto(`/workflows/${id}/runs?run=${tallRun}`);
+    await expect(sheet.getByTestId("run-detail-trigger-folded")).toHaveText("長い値（27 行）なので畳んでいます。", {
+      timeout: 30_000,
+    });
+
     // スマホ幅でも、畳んだ値と広げた値が横にはみ出さない。
     const phoneCtx = await browser.newContext({
       storageState: await page.context().storageState(),
