@@ -19,6 +19,7 @@ import type { ImageSources } from "@/lib/answer-images";
 import type { Citation } from "@/lib/chat-api";
 import { linkifyCitations } from "@/lib/citation";
 import { formatDateTime } from "@/lib/format";
+import { usePreferences } from "@/lib/preferences";
 import { MessageCitationsProvider, useMessageCitations } from "./citations/citation-context";
 
 /// 画像の読み込みを待つ上限（届かない画像があっても印刷は出す）。
@@ -112,16 +113,22 @@ export function ExportPrint({
 
 function PrintTurn({ item }: { item: PrintItem }) {
   const cited = useMessageCitations();
+  const questionAsMarkdown = usePreferences().prefs.input_format === "markdown";
   const sources = cited ? sourcesMarkdown(item.text, item.citations, cited.nameOf) : null;
   return (
     <section className="answer-print-turn" data-testid="answer-print-turn">
       {item.question ? (
         <div className="mb-4 rounded-md border-l-2 border-border pl-3" data-testid="answer-print-question">
           <p className="mb-1 text-xs font-medium text-muted-foreground">質問</p>
-          {/* 利用者が書いた文（チャットの表示と同じく、図・画像にせず打ったとおりに描く）。 */}
-          <Markdown untrusted breaks>
-            {item.question}
-          </Markdown>
+          {/* 利用者が書いた文。チャットの吹き出しと同じく、書き方の設定が Markdown なら信頼しない
+              Markdown として（図・画像にしない・リンクの行き先を見せる）、テキストなら打ったとおりに描く。 */}
+          {questionAsMarkdown ? (
+            <Markdown untrusted breaks>
+              {item.question}
+            </Markdown>
+          ) : (
+            <p className="whitespace-pre-wrap text-[15px] leading-relaxed [overflow-wrap:anywhere]">{item.question}</p>
+          )}
         </div>
       ) : null}
       <Markdown imageSources={item.imageSources}>{linkifyCitations(item.text, item.citations)}</Markdown>

@@ -47,9 +47,10 @@ test.describe("会話全体の書き出し", () => {
     await expect(dialog.getByTestId("thread-export-include-questions")).toHaveAttribute("data-state", "checked");
 
     const withQuestions = await downloadMd(page);
-    expect(withQuestions).toContain("## 質問\n\nlong:2\n\n## 回答");
+    // 質問は打ったとおりの文字の引用（記号は \\ で文字にする）。
+    expect(withQuestions).toContain("## 質問\n\n> long\\:2\n\n## 回答");
     expect(withQuestions).toContain("段落2。");
-    expect(withQuestions).toContain("## 質問\n\n申請先はどこ\n\n## 回答\n\n回答: 申請先はどこ");
+    expect(withQuestions).toContain("## 質問\n\n> 申請先はどこ\n\n## 回答\n\n回答: 申請先はどこ");
     // 質問 → 回答の順（1 件目の回答が 2 件目の質問より前）。
     expect(withQuestions.indexOf("段落2。")).toBeLessThan(withQuestions.indexOf("申請先はどこ"));
 

@@ -49,7 +49,10 @@ export async function threadMarkdown(
   const parts: string[] = [`# ${escapeInline(opts.title?.trim() || "会話")}`, `${dateText(opts.now)} ・ Shiki との会話`];
   for (const t of turns) {
     if (opts.includeQuestions && t.question?.trim()) {
-      parts.push("## 質問", await closeTrailingFence(t.question.trim()));
+      // 質問は利用者が書いた文。打ったとおりの文字として載せ、見出し・リンク・HTML などの構造にしない
+      // （「## 回答」を書いて回答や出典を装う、閉じない HTML で後ろのやり取りを吸い込む、を防ぐ）。
+      // 先頭の空行と末尾の空白だけ落とす（1 行目の字下げは打ったとおりに残す）。
+      parts.push("## 質問", literalQuote(t.question.replace(/^(?:[ \t]*\n)+/, "").trimEnd()));
     }
     if (!t.answer.trim()) continue;
     parts.push("## 回答", await closeTrailingFence(t.answer.trim()));
@@ -59,18 +62,24 @@ export async function threadMarkdown(
   return `${parts.join("\n\n")}\n`;
 }
 
-/// 本文の後ろに足す文字がコードブロック・数式に入ってしまう（フェンスが閉じていない）なら、開きと同じ
-/// 記号で閉じる。閉じているかは解析に決めさせる（試しの段落を足して、吸われるかを見る）。
+/// 本文の後ろに足す文字がコードブロック・数式・HTML のブロックに入ってしまう（閉じていない）なら、
+/// 閉じる。閉じているかは解析に決めさせる（試しの段落を足して、吸われるかを見る）。
 /// 引用・リストの中なら、空行で入れ物ごと終わるので閉じは要らない。
 async function closeTrailingFence(body: string): Promise<string> {
   const probe = `${body}\n\n${PROBE}`;
   let start: number | undefined;
+  let html = false;
   walk(await parse(probe), (node) => {
-    if ((node.type === "code" || isMathBlock(node)) && (node.position?.end.offset ?? 0) > body.length) {
+    const swallows = (node.position?.end.offset ?? 0) > body.length;
+    if (swallows && (node.type === "code" || isMathBlock(node) || node.type === "html")) {
       start = node.position?.start.offset;
+      html = node.type === "html";
     }
   });
   if (start === undefined) return body;
+  // 閉じない HTML のブロック（`<?php`・`<!--`・`<script` など）は空行では終わらない。チャットは生の
+  // HTML を文字のまま見せるので、書き出しでも先頭の `<` を文字にして段落へ戻す。
+  if (html) return `${body.slice(0, start)}\\${body.slice(start)}`;
   const open = /^(`{3,}|~{3,}|\${2,})/.exec(body.slice(start));
   if (!open) return body; // 字下げのコードブロックは空行と字下げの無い段落で終わる（吸われない）
   const lineStart = body.lastIndexOf("\n", start - 1) + 1;
@@ -245,6 +254,22 @@ function sanitizeFileName(name: string): string {
     .trim()
     .replace(/^\.+/, "");
   return Array.from(s).slice(0, MAX_NAME).join("").trim();
+}
+
+/// 利用者が書いた文を、打ったとおりの文字の引用（`> `）にする。ASCII の記号はすべて `\\` で文字にし
+/// （CommonMark はどの ASCII 記号も `\\` で文字にできる）、行の先頭の空白は字下げのコードにならない
+/// よう詰めずに残す。行の区切りは改行のまま見せる（行末の `\\` は改行）。
+export function literalQuote(text: string): string {
+  const lines = text.replace(/\r\n?/g, "\n").split("\n");
+  return lines
+    .map((line, i) => {
+      if (!line.trim()) return ">";
+      const lead = /^[ \t]*/.exec(line)?.[0] ?? "";
+      const body = line.slice(lead.length).replace(/[!-/:-@[-`{-~]/g, "\\$&");
+      const hardBreak = i < lines.length - 1 && lines[i + 1].trim() ? "\\" : "";
+      return `> ${"\u00a0".repeat(lead.replace(/\t/g, "    ").length)}${body}${hardBreak}`;
+    })
+    .join("\n");
 }
 
 /// 一覧の 1 行に入れる文字の Markdown 記法を無効化する（ファイル名の `*`・`[` などで崩さない）。
