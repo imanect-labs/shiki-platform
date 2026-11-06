@@ -119,14 +119,14 @@ pub async fn start_account_action(
         }
         _ => None,
     };
-    tracing::info!(user = %ctx.principal.id, action = ?query.action, "アカウント操作を開始");
+    tracing::info!(user = %ctx.principal().id, action = ?query.action, "アカウント操作を開始");
     authorize_redirect(
         &state,
         jar,
         Some(AccountAction {
             kind: query.action,
             credential_id,
-            subject: Some(ctx.principal.id.clone()),
+            subject: Some(ctx.principal().id.clone()),
         }),
     )
 }

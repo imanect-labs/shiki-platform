@@ -10,13 +10,13 @@ pub(super) type UserProviders = std::collections::HashMap<
 
 impl LlmGateway {
     pub(super) fn provider_allowed_for(&self, ctx: &AuthContext, provider: &str) -> bool {
-        if ctx.principal.kind != PrincipalKind::User {
+        if ctx.principal().kind != PrincipalKind::User {
             return true;
         }
         self.inner
             .user_providers
-            .get(&ctx.tenant_id)
-            .and_then(|users| users.get(&ctx.principal.id))
+            .get(ctx.tenant_id())
+            .and_then(|users| users.get(&ctx.principal().id))
             .is_none_or(|providers| providers.contains(provider))
     }
 }
@@ -42,7 +42,7 @@ mod tests {
                 tenant_id: Some(tenant.into()),
             },
             "org".into(),
-            tenant.into(),
+            authz::TenantId::parse(tenant).unwrap(),
         )
     }
 
@@ -131,8 +131,11 @@ mod tests {
             LlmGateway::build(db.clone(), reqwest::Client::new(), config.clone()).unwrap();
         assert!(!narrowed.provider_allowed_for(&ctx("tenant", "restricted"), "allowed"));
         assert!(!narrowed.provider_allowed_for(&ctx("tenant", "restricted"), "default"));
-        let mut workflow = ctx("tenant", "restricted");
-        workflow.principal.kind = PrincipalKind::Workflow;
+        let workflow = AuthContext::for_workflow(
+            authz::TenantId::parse("tenant").unwrap(),
+            "org".into(),
+            "restricted",
+        );
         assert!(narrowed.provider_allowed_for(&workflow, "default"));
         config.user_provider_rules[0].tenant_id.clear();
         assert!(LlmGateway::build(db.clone(), reqwest::Client::new(), config.clone()).is_err());

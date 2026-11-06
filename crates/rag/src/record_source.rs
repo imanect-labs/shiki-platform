@@ -305,7 +305,7 @@ mod tests {
                 tenant_id: Some("t".into()),
             },
             "acme".into(),
-            "t".into(),
+            authz::TenantId::parse("t").unwrap(),
         )
     }
 

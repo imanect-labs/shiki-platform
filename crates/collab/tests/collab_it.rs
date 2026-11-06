@@ -22,7 +22,7 @@ use yrs::updates::decoder::Decode;
 use yrs::{Doc, GetString, ReadTxn, StateVector, Text, Transact, Update};
 
 async fn setup_pool() -> Option<PgPool> {
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return None;
     };
@@ -79,7 +79,7 @@ fn test_ctx() -> authz::AuthContext {
             tenant_id: None,
         },
         "acme".into(),
-        "default".into(),
+        authz::TenantId::parse("default").unwrap(),
     )
 }
 

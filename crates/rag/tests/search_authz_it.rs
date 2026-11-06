@@ -94,11 +94,11 @@ fn serial_lock() -> &'static tokio::sync::Mutex<()> {
 
 async fn setup() -> Option<Env> {
     let serial = serial_lock().lock().await;
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return None;
     };
-    let Ok(fga_url) = std::env::var("OPENFGA_TEST_URL") else {
+    let Ok(fga_url) = shiki_testenv::var("OPENFGA_TEST_URL") else {
         eprintln!("OPENFGA_TEST_URL 未設定のためスキップ");
         return None;
     };
@@ -181,10 +181,10 @@ async fn create_folder(env: &Env, name: &str) -> Uuid {
         "insert into node (org, tenant_id, kind, name, created_by, updated_by) \
          values ($1, $2, 'folder', $3, $4, $4) returning id",
     )
-    .bind(&ctx.org)
-    .bind(&ctx.tenant_id)
+    .bind(ctx.org())
+    .bind(ctx.tenant_id())
     .bind(name)
-    .bind(&ctx.principal.id)
+    .bind(&ctx.principal().id)
     .fetch_one(&mut *tx)
     .await
     .unwrap();
@@ -192,8 +192,8 @@ async fn create_folder(env: &Env, name: &str) -> Uuid {
         "insert into node_closure (org, tenant_id, ancestor, descendant, depth) \
          values ($1, $2, $3, $3, 0)",
     )
-    .bind(&ctx.org)
-    .bind(&ctx.tenant_id)
+    .bind(ctx.org())
+    .bind(ctx.tenant_id())
     .bind(id)
     .execute(&mut *tx)
     .await
@@ -212,10 +212,10 @@ async fn index_file(env: &Env, folder: Uuid, name: &str) -> Uuid {
         "insert into blob (tenant_id, org, sha256, size_bytes, content_type, object_key, refcount) \
          values ($1, $2, $3, 10, 'text/plain', $4, 1)",
     )
-    .bind(&ctx.tenant_id)
-    .bind(&ctx.org)
+    .bind(ctx.tenant_id())
+    .bind(ctx.org())
     .bind(&sha)
-    .bind(format!("{}/{}/{}", ctx.tenant_id, ctx.org, sha))
+    .bind(format!("{}/{}/{}", ctx.tenant_id(), ctx.org(), sha))
     .execute(&mut *tx)
     .await
     .unwrap();
@@ -225,12 +225,12 @@ async fn index_file(env: &Env, folder: Uuid, name: &str) -> Uuid {
                            content_type, created_by, updated_by) \
          values ($1, $2, 'file', $3, $4, $5, 10, 'text/plain', $6, $6) returning id",
     )
-    .bind(&ctx.org)
-    .bind(&ctx.tenant_id)
+    .bind(ctx.org())
+    .bind(ctx.tenant_id())
     .bind(name)
     .bind(folder)
     .bind(&sha)
-    .bind(&ctx.principal.id)
+    .bind(&ctx.principal().id)
     .fetch_one(&mut *tx)
     .await
     .unwrap();
@@ -238,8 +238,8 @@ async fn index_file(env: &Env, folder: Uuid, name: &str) -> Uuid {
         "insert into node_closure (org, tenant_id, ancestor, descendant, depth) \
          values ($1, $2, $3, $3, 0), ($1, $2, $4, $3, 1)",
     )
-    .bind(&ctx.org)
-    .bind(&ctx.tenant_id)
+    .bind(ctx.org())
+    .bind(ctx.tenant_id())
     .bind(node_id)
     .bind(folder)
     .execute(&mut *tx)
@@ -482,7 +482,7 @@ async fn hydrate_drops_cross_org_chunk() {
 
     // 同一テナント・別 org の carol に file への直接 viewer を付与（FGA は tenant で名前空間化されるため
     // org を跨いでタプルは書ける）。list_objects/check は通るが hydrate の org 境界で落ちる。
-    let carol = test_ctx_org(&env.alice.tenant_id, "carol", "other-corp");
+    let carol = test_ctx_org(env.alice.tenant_id(), "carol", "other-corp");
     let file_obj = env.alice.ns().file(&file.to_string());
     env.authz
         .write_tuple(&carol.subject(), Relation::Viewer, &file_obj)
@@ -540,7 +540,7 @@ async fn citations_and_decisions_are_audited_with_trace_id() {
         "select metadata, trace_id from audit_log \
          where tenant_id = $1 and action = 'rag.search' order by id desc limit 1",
     )
-    .bind(&env.alice.tenant_id)
+    .bind(env.alice.tenant_id())
     .fetch_one(&env.pool)
     .await
     .unwrap();
@@ -564,7 +564,7 @@ async fn citations_and_decisions_are_audited_with_trace_id() {
         metadata["query_hmac"].as_str(),
         Some(
             test_query_hash_key()
-                .digest(&env.alice.tenant_id, "売上")
+                .digest(env.alice.tenant_id(), "売上")
                 .as_str()
         )
     );
@@ -591,7 +591,7 @@ async fn citations_and_decisions_are_audited_with_trace_id() {
         "select metadata, trace_id from audit_log \
          where tenant_id = $1 and action = 'rag.search' order by id desc limit 1",
     )
-    .bind(&env.alice.tenant_id)
+    .bind(env.alice.tenant_id())
     .fetch_one(&env.pool)
     .await
     .unwrap();
@@ -627,8 +627,8 @@ async fn search_results_carry_anchor_and_blocks_are_readable_with_audit() {
     let now = sqlx::types::chrono::Utc::now();
     let node = storage::Node {
         id: file,
-        org: env.alice.org.clone(),
-        tenant_id: env.alice.tenant_id.clone(),
+        org: env.alice.org().to_owned(),
+        tenant_id: env.alice.tenant_id().to_owned(),
         kind: storage::NodeKind::File,
         name: "位置文書".into(),
         parent_id: Some(folder),
@@ -637,8 +637,8 @@ async fn search_results_carry_anchor_and_blocks_are_readable_with_audit() {
         content_type: Some("text/plain".into()),
         version: hit.version,
         deleted_at: None,
-        created_by: env.alice.principal.id.clone(),
-        updated_by: env.alice.principal.id.clone(),
+        created_by: env.alice.principal().id.clone(),
+        updated_by: env.alice.principal().id.clone(),
         created_at: now,
         updated_at: now,
     };
@@ -673,7 +673,7 @@ async fn search_results_carry_anchor_and_blocks_are_readable_with_audit() {
          where tenant_id = $1 and object_id = $2 and action = 'file.blocks.read' \
            and trace_id = 'trace-blocks'",
     )
-    .bind(&env.alice.tenant_id)
+    .bind(env.alice.tenant_id())
     .bind(file.to_string())
     .fetch_one(&env.pool)
     .await

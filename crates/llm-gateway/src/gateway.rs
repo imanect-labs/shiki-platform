@@ -272,7 +272,7 @@ impl LlmGateway {
         let settings = saved.clone().reconciled(&self.inner.config.catalog);
         if settings != saved {
             tracing::warn!(
-                org = %ctx.org,
+                org = %ctx.org(),
                 default_model = %saved.default_model,
                 auto_model = ?saved.auto_model,
                 "組織の AI 設定がカタログに無いモデルを指しているので、既定・Auto の振り先を戻して扱います"
@@ -476,7 +476,7 @@ impl LlmGateway {
             Err(LimitError::Exceeded(msg)) => {
                 tracing::info!(
                     provider = provider.effective_id(),
-                    user = %ctx.principal.id,
+                    user = %ctx.principal().id,
                     "llm usage limit reached; generation rejected"
                 );
                 Err(LlmError::RateLimited(msg))
@@ -556,7 +556,7 @@ impl LlmGateway {
         }
 
         if let (Some(lf), Some(trace_id)) = (&self.inner.langfuse, rec.trace_id.as_deref()) {
-            let user_id = ctx.principal.id.clone();
+            let user_id = ctx.principal().id.clone();
             lf.record_generation(GenerationTrace {
                 trace_id,
                 // **会計の冪等キーをそのまま使う。** 呼び出しごとに一意で、
@@ -573,9 +573,9 @@ impl LlmGateway {
                 output: &rec.output_preview,
                 usage,
                 metadata: serde_json::json!({
-                    "tenant_id": ctx.tenant_id,
-                    "org": ctx.org,
-                    "user": ctx.principal.id,
+                    "tenant_id": ctx.tenant_id(),
+                    "org": ctx.org(),
+                    "user": ctx.principal().id,
                     "cost_usd_micros": cost,
                     "app_id": rec.app_id,
                     "source": rec.source.as_str(),
@@ -914,7 +914,7 @@ mod tests {
                 tenant_id: Some("t".into()),
             },
             "o".into(),
-            "t".into(),
+            authz::TenantId::parse("t").unwrap(),
         );
         let mut req = GenerateRequest::new(vec![crate::model::Message::text(
             crate::model::Role::User,

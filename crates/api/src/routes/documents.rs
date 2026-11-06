@@ -198,7 +198,7 @@ pub async fn export_document(
     };
     let bytes = state
         .docx_composer
-        .compose(&ctx.tenant_id, &file_name, &req.markdown)
+        .compose(ctx.tenant_id(), &file_name, &req.markdown)
         .await
         .map_err(to_api_error)?;
     // ファイル名は RFC 5987（filename*）で UTF-8 のままエンコードする（日本語名を壊さない）。

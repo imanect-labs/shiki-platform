@@ -44,7 +44,7 @@ pub async fn get_me(
 ) -> Result<Json<MeResponse>, ApiError> {
     // 認可: 自分が自 org の member か（単一チョークポイント経由の check）。
     // 管理者かどうかはメニューの表示にだけ使うので、並べて低遅延で引く（操作はゲートが強い整合性で再判定）。
-    let org = ctx.ns().organization(&ctx.org);
+    let org = ctx.ns().organization(ctx.org());
     let subject = ctx.subject();
     let member = async {
         Ok::<_, ApiError>(
@@ -72,10 +72,10 @@ pub async fn get_me(
     Ok(Json(MeResponse {
         is_admin,
         can_view_audit,
-        id: ctx.principal.id,
-        email: ctx.principal.email,
-        roles: ctx.principal.roles,
-        org: ctx.org,
-        tenant_id: ctx.tenant_id,
+        id: ctx.principal().id.clone(),
+        email: ctx.principal().email.clone(),
+        roles: ctx.principal().roles.clone(),
+        org: ctx.org().to_owned(),
+        tenant_id: ctx.tenant_id().to_owned(),
     }))
 }

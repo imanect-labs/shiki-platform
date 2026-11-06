@@ -43,10 +43,10 @@ impl StorageService {
                AND id IN (SELECT descendant FROM node_closure WHERE tenant_id = $2 AND ancestor = $3) \
              RETURNING id, version",
         )
-        .bind(&ctx.org)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.org())
+        .bind(ctx.tenant_id())
         .bind(folder_id)
-        .bind(&ctx.principal.id)
+        .bind(&ctx.principal().id)
         .fetch_all(&mut *tx)
         .await?;
         if affected.is_empty() {
@@ -124,9 +124,9 @@ impl StorageService {
              RETURNING version",
         )
         .bind(file_id)
-        .bind(&ctx.org)
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.principal.id)
+        .bind(ctx.org())
+        .bind(ctx.tenant_id())
+        .bind(&ctx.principal().id)
         .fetch_optional(&mut *tx)
         .await?;
         let Some(new_version) = new_version else {
@@ -184,10 +184,10 @@ impl StorageService {
         self.require(
             ctx,
             Relation::Member,
-            &ctx.ns().organization(&ctx.org),
+            &ctx.ns().organization(ctx.org()),
             AuditAction::TrashList,
             "organization",
-            &ctx.org,
+            ctx.org(),
             trace_id,
         )
         .await?;
@@ -216,8 +216,8 @@ impl StorageService {
                  ORDER BY n.deleted_at DESC, n.id DESC LIMIT $5"
             );
             let rows: Vec<NodeRow> = sqlx::query_as(&sql)
-                .bind(&ctx.org)
-                .bind(&ctx.tenant_id)
+                .bind(ctx.org())
+                .bind(ctx.tenant_id())
                 .bind(after_ts.as_deref())
                 .bind(after_id)
                 .bind(batch)
@@ -266,7 +266,7 @@ impl StorageService {
                 AuditEntry {
                     action: AuditAction::TrashList,
                     object_type: "organization",
-                    object_id: &ctx.org,
+                    object_id: ctx.org(),
                     decision: Decision::Allow,
                     trace_id,
                     metadata: json!({ "returned": items.len() }),

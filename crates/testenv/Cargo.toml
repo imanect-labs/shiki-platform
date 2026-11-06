@@ -1,0 +1,11 @@
+[package]
+name = "shiki-testenv"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+version = "0.0.0"
+description = "結合テストの外部依存（DB・OpenFGA 等）の接続先を読み、CI では未設定を失敗にする"
+
+[lints]
+workspace = true

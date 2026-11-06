@@ -67,13 +67,13 @@ impl NotificationStore {
              VALUES ($1, $2, $3, $4, $5, $6, $7) \
              RETURNING id, app_id, recipient, title, body, created_by, created_at",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(app_id)
         .bind(recipient)
         .bind(title)
         .bind(body)
-        .bind(&ctx.principal.id)
+        .bind(&ctx.principal().id)
         .fetch_one(&self.db)
         .await
         .map_err(map_db)?;
@@ -92,8 +92,8 @@ impl NotificationStore {
              WHERE tenant_id = $1 AND recipient = $2 \
              ORDER BY created_at DESC, id DESC LIMIT $3",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.principal.id)
+        .bind(ctx.tenant_id())
+        .bind(&ctx.principal().id)
         .bind(limit.clamp(1, 200))
         .fetch_all(&self.db)
         .await

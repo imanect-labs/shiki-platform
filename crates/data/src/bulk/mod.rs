@@ -265,6 +265,8 @@ impl ImportRow {
         let kind: PrincipalKind =
             serde_json::from_value(Value::String(self.principal_kind.clone()))
                 .map_err(|_| DataError::Internal("取込の主体の種別が不正です".into()))?;
+        let tenant = authz::TenantId::parse(tenant_id)
+            .map_err(|e| DataError::Internal(format!("取込の tenant_id が不正です: {e}")))?;
         Ok(AuthContext::new(
             authz::Principal {
                 kind,
@@ -275,7 +277,7 @@ impl ImportRow {
                 tenant_id: Some(tenant_id.to_string()),
             },
             self.org.clone(),
-            tenant_id.to_string(),
+            tenant,
         ))
     }
 }
@@ -509,7 +511,7 @@ impl DataStore {
         // 先に判定する（開始済みの取込は開始時に検査を通っている）。
         let keys = table.keys;
         if let Some(existing) = self
-            .existing_import(&ctx.tenant_id, keys.tenant_int, import_id)
+            .existing_import(ctx.tenant_id(), keys.tenant_int, import_id)
             .await?
         {
             return if existing == keys.table_int {
@@ -544,11 +546,11 @@ impl DataStore {
         let mut staged = CopyRows::default();
         let mut tx = self
             .pools
-            .for_tenant(&ctx.tenant_id)
+            .for_tenant(ctx.tenant_id())
             .begin()
             .await
             .map_err(map_db)?;
-        let kind = serde_json::to_value(ctx.principal.kind)
+        let kind = serde_json::to_value(ctx.principal().kind)
             .ok()
             .and_then(|v| v.as_str().map(str::to_string))
             .ok_or_else(|| DataError::Internal("主体の種別を直列化できません".into()))?;
@@ -564,8 +566,8 @@ impl DataStore {
         .bind(keys.table_int)
         .bind(table_id)
         .bind(&kind)
-        .bind(&ctx.principal.id)
-        .bind(&ctx.org)
+        .bind(&ctx.principal().id)
+        .bind(ctx.org())
         .bind(trace_id)
         .bind(table.schema_version)
         .bind(opts.abort_on_invalid)
@@ -585,7 +587,7 @@ impl DataStore {
             Err(sqlx::Error::Database(db)) if db.is_unique_violation() => {
                 drop(tx);
                 return match self
-                    .existing_import(&ctx.tenant_id, keys.tenant_int, import_id)
+                    .existing_import(ctx.tenant_id(), keys.tenant_int, import_id)
                     .await?
                 {
                     Some(t) if t == keys.table_int => Ok(import_id),
@@ -621,7 +623,7 @@ impl DataStore {
             }
             copy.finish().await.map_err(map_db)?;
         }
-        enqueue_import(&mut tx, &ctx.tenant_id, table_id, import_id, trace_id).await?;
+        enqueue_import(&mut tx, ctx.tenant_id(), table_id, import_id, trace_id).await?;
         self.record_audit_on(
             &mut tx,
             ctx,
@@ -726,7 +728,7 @@ impl DataStore {
         .bind(keys.tenant_int)
         .bind(import_id)
         .bind(keys.table_int)
-        .fetch_optional(self.pools.for_tenant(&ctx.tenant_id))
+        .fetch_optional(self.pools.for_tenant(ctx.tenant_id()))
         .await
         .map_err(map_db)?;
         let (status, total, valid, invalid, applied, rejected, deferred, pc, pm, le, ca, fa) =
@@ -761,7 +763,7 @@ impl DataStore {
         let keys = self.bulk_import_gate(ctx, table_id, import_id).await?;
         let mut conn = self
             .pools
-            .for_tenant(&ctx.tenant_id)
+            .for_tenant(ctx.tenant_id())
             .acquire()
             .await
             .map_err(map_db)?;
@@ -813,7 +815,7 @@ impl DataStore {
         let keys = self.fetch_live(ctx, table_id).await?.keys;
         let mut conn = self
             .pools
-            .for_tenant(&ctx.tenant_id)
+            .for_tenant(ctx.tenant_id())
             .acquire()
             .await
             .map_err(map_db)?;
@@ -822,8 +824,9 @@ impl DataStore {
             .filter(|i| i.table_int == keys.table_int)
             .ok_or(DataError::NotFound)?;
         drop(conn);
-        let creator = imp.auth_context(&ctx.tenant_id)?;
-        if creator.principal.kind == ctx.principal.kind && creator.principal.id == ctx.principal.id
+        let creator = imp.auth_context(ctx.tenant_id())?;
+        if creator.principal().kind == ctx.principal().kind
+            && creator.principal().id == ctx.principal().id
         {
             return Ok(keys);
         }
@@ -832,7 +835,7 @@ impl DataStore {
             .check(ctx, Relation::Owner, &ns.data_table(&table_id.to_string()))
             .await?
             || az
-                .check(ctx, Relation::Admin, &ns.organization(&ctx.org))
+                .check(ctx, Relation::Admin, &ns.organization(ctx.org()))
                 .await?
         {
             return Ok(keys);

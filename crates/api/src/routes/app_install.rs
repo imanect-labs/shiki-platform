@@ -265,7 +265,9 @@ fn provisioner_ctx(
             tenant_id: Some(tenant_id.to_string()),
         },
         org.unwrap_or(tenant_id).to_string(),
-        tenant_id.to_string(),
+        authz::TenantId::parse(tenant_id).map_err(|_| {
+            ApiError::BadRequest("tenant_id に使用できない文字が含まれています".into())
+        })?,
     ))
 }
 
@@ -381,10 +383,10 @@ mod tests {
     #[test]
     fn provisioner_ctx_accepts_valid_tenant_and_defaults_org() {
         let ctx = provisioner_ctx("prov", "a-corp", None).expect("valid");
-        assert_eq!(ctx.tenant_id, "a-corp");
-        assert_eq!(ctx.org, "a-corp");
+        assert_eq!(ctx.tenant_id(), "a-corp");
+        assert_eq!(ctx.org(), "a-corp");
         let ctx = provisioner_ctx("prov", "a-corp", Some("sales")).expect("valid");
-        assert_eq!(ctx.org, "sales");
+        assert_eq!(ctx.org(), "sales");
     }
 
     #[test]

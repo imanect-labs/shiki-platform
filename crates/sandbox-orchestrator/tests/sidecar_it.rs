@@ -17,7 +17,7 @@ use sandbox_orchestrator::backend::Backend;
 use sandbox_orchestrator::config::OrchestratorEnv;
 
 fn gated() -> bool {
-    std::env::var("SANDBOX_IT").as_deref() == Ok("1")
+    shiki_testenv::var("SANDBOX_IT").as_deref() == Ok("1")
 }
 
 async fn collect(

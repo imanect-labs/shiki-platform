@@ -96,7 +96,7 @@ impl Reranker for HttpReranker {
             return Ok(Vec::new());
         }
         let body = serde_json::json!({
-            "tenant_id": ctx.tenant_id,
+            "tenant_id": ctx.tenant_id(),
             "query": query,
             "passages": passages
                 .iter()

@@ -70,13 +70,13 @@ impl DataStore {
                 data: r.data,
             })
             .collect();
-        self.index_writer(plan, &table.schema, &ctx.tenant_id)
+        self.index_writer(plan, &table.schema, ctx.tenant_id())
             .on_create_many(conn, &indexed, defer)
             .await?;
         // 材料化した派生列の値と、このテーブルを参照先にする列の再計算待ち（Task 15.4）。
         let written: Vec<(i64, &Map<String, Value>)> =
             recs.iter().map(|r| (r.record_int, r.data)).collect();
-        crate::derived::materialize::after_records_written(conn, &ctx.tenant_id, table, &written)
+        crate::derived::materialize::after_records_written(conn, ctx.tenant_id(), table, &written)
             .await?;
         let patches: Vec<_> = recs
             .iter()

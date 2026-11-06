@@ -43,6 +43,8 @@ pub async fn require_session(
     let (session_id, tenant_id) =
         decode_session_cookie(&cookie_value).ok_or(ApiError::Unauthorized)?;
     let (session_id, tenant_id) = (session_id.to_string(), tenant_id.to_string());
+    // Cookie 由来の tenant も文字ポリシーを通す（ストアに同名のキーがあっても信用しない）。
+    let tenant = authz::TenantId::parse(tenant_id.as_str()).map_err(|_| ApiError::Unauthorized)?;
 
     let mut record = state
         .sessions
@@ -76,7 +78,7 @@ pub async fn require_session(
                 tokio::spawn(crate::routes::auth::provision_roles(
                     state.clone(),
                     record.principal.clone(),
-                    tenant_id.clone(),
+                    tenant.clone(),
                 ));
             }
             None => {
@@ -96,7 +98,7 @@ pub async fn require_session(
     req.extensions_mut()
         .insert(SessionAccessToken(record.access_token));
     req.extensions_mut().insert(record.principal);
-    req.extensions_mut().insert(TenantId(tenant_id));
+    req.extensions_mut().insert(TenantId(tenant));
     req.extensions_mut().insert(OrgId(org));
     Ok(next.run(req).await)
 }

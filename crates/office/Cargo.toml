@@ -46,6 +46,7 @@ base64.workspace = true
 rand.workspace = true
 
 [dev-dependencies]
+shiki-testenv.workspace = true
 tower = { workspace = true, features = ["util"] }
 http-body-util = "0.1"
 tracing-subscriber.workspace = true

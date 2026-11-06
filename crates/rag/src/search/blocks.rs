@@ -35,8 +35,8 @@ impl SearchService {
                and ordinal >= $5 \
              order by ordinal limit $6",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(node.id)
         .bind(version)
         .bind(from.max(0))

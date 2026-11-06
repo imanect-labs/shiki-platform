@@ -6,53 +6,17 @@
 //! Content-Type 分類は「本文としてモデルへ渡してよいか」と「どの経路で読むか」を決める。
 //! バイナリを本文として渡さないのはトークンを焼かないためでもある。
 
-use url::{Host, Url};
+use url::Url;
 
 use super::{MAX_OFFSET, MAX_QUERY_CHARS};
 use crate::tool::ToolError;
 
-/// 検証済みの取得先（接続を固定する host/port と正規化済み URL）。
-pub(super) struct FetchTarget {
-    pub url: Url,
-    pub host: String,
-    pub port: u16,
-}
+pub(super) use crate::tools::public_fetch::FetchTarget;
 
-/// 入力 URL を検証する（モデル/ユーザー由来＝敵対的として扱う）。
-///
-/// - スキームは http/https のみ（gopher/file 等を拒否）。
-/// - userinfo（`user:pass@`）付きは拒否（ホスト偽装・資格情報混入の防止）。
-/// - ホストは **ドットを含む公開 FQDN のみ**: IP リテラル（v4/v6）・単一ラベル名
-///   （compose のサービス名 `rustfs` 等）・localhost/.local/.internal/.lan/.home.arpa を拒否。
-///   名前が公開 IP に解決されるかは、この後の [`net_guard::ensure_all_public`] が判定する。
+/// 入力 URL を検証する（判定は [`crate::tools::public_fetch::validate_url`] に一本化・#1044）。
 pub(super) fn validate_url(input: &str) -> Result<FetchTarget, ToolError> {
-    let invalid = |msg: &str| ToolError::Invalid(format!("URL が不正です: {msg}"));
-    let url = Url::parse(input.trim()).map_err(|e| invalid(&e.to_string()))?;
-    if !matches!(url.scheme(), "http" | "https") {
-        return Err(invalid("http/https のみ取得できます"));
-    }
-    if !url.username().is_empty() || url.password().is_some() {
-        return Err(invalid("userinfo（user:pass@）付き URL は使えません"));
-    }
-    let host = match url.host() {
-        Some(Host::Domain(d)) => d.to_ascii_lowercase(),
-        Some(Host::Ipv4(_) | Host::Ipv6(_)) => {
-            return Err(invalid("IP アドレス直指定は使えません"));
-        }
-        None => return Err(invalid("ホストがありません")),
-    };
-    // 内部/ローカル名を拒否（SSRF・confused-deputy の素地を断つ）。
-    let forbidden_suffixes = [".local", ".internal", ".localhost", ".lan", ".home.arpa"];
-    if !host.contains('.')
-        || host == "localhost"
-        || forbidden_suffixes.iter().any(|s| host.ends_with(s))
-    {
-        return Err(invalid("内部/ローカルホストは取得できません"));
-    }
-    let port = url
-        .port_or_known_default()
-        .ok_or_else(|| invalid("ポートを特定できません"))?;
-    Ok(FetchTarget { url, host, port })
+    crate::tools::public_fetch::validate_url(input)
+        .map_err(|msg| ToolError::Invalid(format!("URL が不正です: {msg}")))
 }
 
 /// Content-Type の型部分（`; charset=` を落として小文字化）。

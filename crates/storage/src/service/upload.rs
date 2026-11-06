@@ -124,10 +124,10 @@ impl StorageService {
                     self.require(
                         ctx,
                         Relation::Member,
-                        &ctx.ns().organization(&ctx.org),
+                        &ctx.ns().organization(ctx.org()),
                         AuditAction::FileUploadUrlIssue,
                         "organization",
-                        &ctx.org,
+                        ctx.org(),
                         trace_id,
                     )
                     .await?;
@@ -139,22 +139,22 @@ impl StorageService {
         // staging への presigned PUT を発行し、pending_upload に控える。
         // 実体は finalize で content-addressed に昇格し、そこで dedup する。
         let upload_id = Uuid::new_v4();
-        let staging_key = staging_object_key(&ctx.tenant_id, &ctx.org, &upload_id.to_string());
+        let staging_key = staging_object_key(ctx.tenant_id(), ctx.org(), &upload_id.to_string());
         sqlx::query(
             "INSERT INTO pending_upload \
              (upload_id, org, tenant_id, parent_id, name, content_type, declared_sha256, declared_size, staging_key, created_by, target_node_id, base_version) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)",
         )
         .bind(upload_id)
-        .bind(&ctx.org)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.org())
+        .bind(ctx.tenant_id())
         .bind(effective_parent_id)
         .bind(&effective_name)
         .bind(content_type)
         .bind(declared_sha256)
         .bind(declared_size)
         .bind(&staging_key)
-        .bind(&ctx.principal.id)
+        .bind(&ctx.principal().id)
         .bind(target_node_id)
         .bind(base_version)
         .execute(&self.db)
@@ -204,7 +204,7 @@ impl StorageService {
         )
         .await?;
         let sha = node.blob_sha256.as_ref().ok_or(StorageError::NotFound)?;
-        let key = blob_object_key(&ctx.tenant_id, &ctx.org, sha);
+        let key = blob_object_key(ctx.tenant_id(), ctx.org(), sha);
         let url = self
             .store
             .presign_get(
@@ -282,14 +282,14 @@ impl StorageService {
              RETURNING {NODE_COLS}"
         );
         let row: NodeRow = sqlx::query_as(&sql)
-            .bind(&ctx.org)
-            .bind(&ctx.tenant_id)
+            .bind(ctx.org())
+            .bind(ctx.tenant_id())
             .bind(name)
             .bind(parent_id)
             .bind(sha256)
             .bind(size)
             .bind(content_type)
-            .bind(&ctx.principal.id)
+            .bind(&ctx.principal().id)
             .fetch_one(&mut *conn)
             .await?;
         let id = row.id;
@@ -302,7 +302,7 @@ impl StorageService {
             )
             .bind(id)
             .bind(p)
-            .bind(&ctx.tenant_id)
+            .bind(ctx.tenant_id())
             .execute(&mut *conn)
             .await?;
         }
@@ -310,8 +310,8 @@ impl StorageService {
         sqlx::query(
             "INSERT INTO node_closure (tenant_id, org, ancestor, descendant, depth) VALUES ($1, $2, $3, $3, 0)",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(id)
         .execute(&mut *conn)
         .await?;
@@ -342,12 +342,12 @@ impl StorageService {
         )
         .bind(node_id)
         .bind(version)
-        .bind(&ctx.org)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.org())
+        .bind(ctx.tenant_id())
         .bind(sha256)
         .bind(size)
         .bind(content_type)
-        .bind(&ctx.principal.id)
+        .bind(&ctx.principal().id)
         .execute(conn)
         .await?;
         Ok(())

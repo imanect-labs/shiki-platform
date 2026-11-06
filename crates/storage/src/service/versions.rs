@@ -51,8 +51,8 @@ impl StorageService {
              ORDER BY version DESC LIMIT $5",
         )
         .bind(file_id)
-        .bind(&ctx.org)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.org())
+        .bind(ctx.tenant_id())
         .bind(before)
         .bind(limit as i64)
         .fetch_all(&self.db)
@@ -106,13 +106,13 @@ impl StorageService {
              WHERE node_id = $1 AND org = $2 AND tenant_id = $3 AND version = $4",
         )
         .bind(file_id)
-        .bind(&ctx.org)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.org())
+        .bind(ctx.tenant_id())
         .bind(version)
         .fetch_optional(&self.db)
         .await?;
         let (sha, content_type) = version_row.ok_or(StorageError::NotFound)?;
-        let key = blob_object_key(&ctx.tenant_id, &ctx.org, &sha);
+        let key = blob_object_key(ctx.tenant_id(), ctx.org(), &sha);
         let url = self
             .store
             .presign_get(

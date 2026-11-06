@@ -118,7 +118,8 @@ pub(crate) async fn run(args: &[String]) -> anyhow::Result<()> {
             tenant_id: Some(a.tenant.clone()),
         },
         a.org.clone(),
-        a.tenant.clone(),
+        authz::TenantId::parse(a.tenant.as_str())
+            .map_err(|e| anyhow::anyhow!("--tenant が不正です: {e}"))?,
     );
     let subject = ctx.ns().user(&a.user);
     let org_obj = ctx.ns().organization(&a.org);

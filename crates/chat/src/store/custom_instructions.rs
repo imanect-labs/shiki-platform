@@ -23,9 +23,9 @@ impl ChatStore {
             "SELECT about, style, tone FROM user_custom_instruction \
              WHERE tenant_id = $1 AND org = $2 AND user_id = $3",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
-        .bind(&ctx.principal.id)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
+        .bind(&ctx.principal().id)
         .fetch_optional(&self.db)
         .await
         .map_err(map_db)?;
@@ -56,9 +56,9 @@ impl ChatStore {
                 "DELETE FROM user_custom_instruction \
                  WHERE tenant_id = $1 AND org = $2 AND user_id = $3",
             )
-            .bind(&ctx.tenant_id)
-            .bind(&ctx.org)
-            .bind(&ctx.principal.id)
+            .bind(ctx.tenant_id())
+            .bind(ctx.org())
+            .bind(&ctx.principal().id)
             .execute(&mut *tx)
             .await
             .map_err(map_db)?;
@@ -70,9 +70,9 @@ impl ChatStore {
                    about = EXCLUDED.about, style = EXCLUDED.style, tone = EXCLUDED.tone, \
                    updated_at = now()",
             )
-            .bind(&ctx.tenant_id)
-            .bind(&ctx.org)
-            .bind(&ctx.principal.id)
+            .bind(ctx.tenant_id())
+            .bind(ctx.org())
+            .bind(&ctx.principal().id)
             .bind(&value.about)
             .bind(&value.style)
             .bind(value.tone.as_str())
@@ -86,7 +86,7 @@ impl ChatStore {
             AuditEntry {
                 action: AuditAction::MeCustomInstructionsUpdate,
                 object_type: "custom_instructions",
-                object_id: &ctx.principal.id,
+                object_id: &ctx.principal().id,
                 decision: Decision::Allow,
                 trace_id,
                 metadata: json!({

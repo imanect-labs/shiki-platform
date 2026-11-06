@@ -15,7 +15,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use authz::{AuthContext, Principal, PrincipalKind};
+use authz::{AuthContext, Principal, PrincipalKind, TenantId};
 use chrono::{DateTime, Utc};
 use serde_json::json;
 use sqlx::PgPool;
@@ -117,8 +117,7 @@ impl AuditRetention {
         .bind(days)
         .execute(&mut *tx)
         .await?;
-        let mut ctx = system_ctx(tenant_id, &org);
-        ctx.principal.id = actor.to_string();
+        let ctx = system_ctx(tenant_id, &org, actor)?;
         let mut metadata = metadata;
         if let Some(m) = metadata.as_object_mut() {
             m.insert("retention_days".into(), json!(days));
@@ -288,7 +287,7 @@ impl AuditRetention {
         };
         record_on(
             &mut tx,
-            &system_ctx(tenant_id, org),
+            &system_ctx(tenant_id, org, ACTOR)?,
             AuditEntry {
                 action: AuditAction::AuditRetentionPurge,
                 object_type: "organization",
@@ -342,19 +341,22 @@ impl AuditRetention {
     }
 }
 
-fn system_ctx(tenant_id: &str, org: &str) -> AuthContext {
-    AuthContext::new(
+/// 保持期間の操作を監査に刻むための合成コンテキスト。`tenant_id` は DB の値でも文字ポリシーを通す。
+fn system_ctx(tenant_id: &str, org: &str, actor: &str) -> Result<AuthContext, StorageError> {
+    let tenant = TenantId::parse(tenant_id)
+        .map_err(|e| StorageError::Invalid(format!("tenant_id が不正です: {e}")))?;
+    Ok(AuthContext::new(
         Principal {
             kind: PrincipalKind::User,
-            id: ACTOR.into(),
+            id: actor.to_string(),
             email: None,
             groups: vec![],
             roles: vec![],
-            tenant_id: Some(tenant_id.into()),
+            tenant_id: Some(tenant_id.to_string()),
         },
         org.into(),
-        tenant_id.into(),
-    )
+        tenant,
+    ))
 }
 
 /// 連結行を消してよい上限（この id 未満を消す）。チェーンのロックの中で呼ぶ。

@@ -234,9 +234,9 @@ impl StorageService {
         );
         let rows: Vec<NodeRow> = sqlx::query_as(&sql)
             .bind(&ids)
-            .bind(&ctx.org)
-            .bind(&ctx.tenant_id)
-            .bind(&ctx.principal.id)
+            .bind(ctx.org())
+            .bind(ctx.tenant_id())
+            .bind(&ctx.principal().id)
             .bind(after_ts.as_deref())
             .bind(after_id)
             .bind(limit as i64)
@@ -254,7 +254,7 @@ impl StorageService {
                 AuditEntry {
                     action: AuditAction::NodeSharedWithMeList,
                     object_type: "organization",
-                    object_id: &ctx.org,
+                    object_id: ctx.org(),
                     decision: Decision::Allow,
                     trace_id,
                     metadata: json!({ "count": rows.len() }),

@@ -253,7 +253,9 @@ async fn invoke_service(
     ) else {
         anyhow::bail!("B2 構成（server_bundle/client）がありません");
     };
-    // service ctx（監査 actor 用・org/tenant は購読行から）。
+    // service ctx（監査 actor 用・org/tenant は購読行から。購読行の tenant_id も文字ポリシーを通す）。
+    let tenant = authz::TenantId::parse(sub.tenant_id.as_str())
+        .map_err(|e| anyhow::anyhow!("購読の tenant_id が不正です: {e}"))?;
     let ctx = AuthContext::new(
         Principal {
             kind: PrincipalKind::MiniApp,
@@ -264,7 +266,7 @@ async fn invoke_service(
             tenant_id: Some(sub.tenant_id.clone()),
         },
         sub.org.clone(),
-        sub.tenant_id.clone(),
+        tenant,
     );
     let secret = deps
         .port

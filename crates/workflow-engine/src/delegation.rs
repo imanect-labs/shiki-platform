@@ -198,7 +198,7 @@ impl DelegationStore {
         declared_scopes: &[String],
         grants: &[GrantRequest],
     ) -> Result<(), DelegationError> {
-        let tenant = &enabler.tenant_id;
+        let tenant = enabler.tenant_id();
         // ① 範囲検証: 有効化者が全 grant の relation を持つか（1 つでも欠ければ全体拒否）。
         for g in grants {
             let ok = self
@@ -262,10 +262,10 @@ impl DelegationStore {
         )
         .bind(tenant)
         .bind(workflow_id)
-        .bind(&enabler.org)
+        .bind(enabler.org())
         .bind(version)
         .bind(declared_scopes)
-        .bind(&enabler.principal.id)
+        .bind(&enabler.principal().id)
         .execute(&mut **tx)
         .await
         .map_err(map_db)?;
@@ -293,7 +293,7 @@ impl DelegationStore {
             )
             .bind(tenant)
             .bind(workflow_id)
-            .bind(&enabler.principal.id)
+            .bind(&enabler.principal().id)
             .bind(&g.scope)
             .bind(g.object.as_str())
             .bind(g.relation.as_str())
@@ -512,8 +512,12 @@ impl DelegationStore {
             tracing::warn!(error = %e, %workflow_id, "棚卸しの通知で registration の org を読めない");
             None
         });
+        let Ok(tenant) = authz::TenantId::parse(tenant_id) else {
+            tracing::warn!(%workflow_id, "棚卸しの通知で tenant_id が文字ポリシーに反する（通知しない）");
+            return;
+        };
         let ctx = AuthContext::for_workflow(
-            tenant_id.to_string(),
+            tenant,
             org.map(|(o,)| o).unwrap_or_default(),
             &workflow_id.to_string(),
         );

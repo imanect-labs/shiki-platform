@@ -279,7 +279,7 @@ fn session_record(csrf: &str) -> SessionRecord {
 
 /// 実 DB の AppState を組む（chat 有効／無効を選べる）。DB 未設定なら None。
 async fn build_state(with_chat: bool) -> Option<(AppState, Arc<dyn SessionStore>)> {
-    let db_url = std::env::var("STORAGE_TEST_DATABASE_URL").ok()?;
+    let db_url = shiki_testenv::var("STORAGE_TEST_DATABASE_URL").ok()?;
     let pool = PgPoolOptions::new()
         .max_connections(4)
         .connect(&db_url)
@@ -684,7 +684,7 @@ async fn chat_post_resolves_model_choice() {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return;
     };
-    let db_url = std::env::var("STORAGE_TEST_DATABASE_URL").unwrap();
+    let db_url = shiki_testenv::var("STORAGE_TEST_DATABASE_URL").unwrap();
     let pool = PgPoolOptions::new().connect(&db_url).await.unwrap();
     // stub プロバイダに 2 モデル（"fast" は思考強度を受ける・"local" は受けない）。
     let gw = llm_gateway::LlmGateway::build(
@@ -768,6 +768,49 @@ async fn chat_post_resolves_model_choice() {
             .await
             .unwrap();
     assert_eq!(row, (Some("fast".into()), Some("high".into()), false));
+    let requested = |run_id: uuid::Uuid| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, Option<serde_json::Value>>(
+                "SELECT requested_choice FROM generation_run WHERE run_id = $1",
+            )
+            .bind(run_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    // 解決前の選択も残す（別の端末での入力欄の初期値・#1050）。
+    assert_eq!(
+        requested(run_id).await,
+        Some(serde_json::json!({ "model": "fast", "effort": "high" }))
+    );
+
+    // モデルを指定して思考の深さを省いたら、実際に使った深さ（組織の既定）を残す。
+    let resp = app
+        .clone()
+        .oneshot(post(
+            messages.clone(),
+            r#"{"text":"x","model":"fast"}"#.into(),
+        ))
+        .await
+        .unwrap();
+    let run_id: uuid::Uuid = body_json(resp).await["run_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let used: Option<String> =
+        sqlx::query_scalar("SELECT effort FROM generation_run WHERE run_id = $1")
+            .bind(run_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(used.is_some());
+    assert_eq!(
+        requested(run_id).await,
+        Some(serde_json::json!({ "model": "fast", "effort": used }))
+    );
 
     // 思考強度に対応しないモデルは effort を記録しない。省略は Auto（ここでは既定モデルへ）。
     let resp = app
@@ -793,7 +836,7 @@ async fn chat_post_resolves_model_choice() {
 
     let resp = app
         .clone()
-        .oneshot(post(messages, r#"{"text":"x"}"#.into()))
+        .oneshot(post(messages.clone(), r#"{"text":"x"}"#.into()))
         .await
         .unwrap();
     let run_id: uuid::Uuid = body_json(resp).await["run_id"]
@@ -808,6 +851,27 @@ async fn chat_post_resolves_model_choice() {
             .await
             .unwrap();
     assert_eq!(row, (Some("fast".into()), Some("low".into()), true));
+    // 省略（Auto）は Auto として残し、スレッドの単体取得は自分の最後の選択を返す。
+    assert_eq!(
+        requested(run_id).await,
+        Some(serde_json::json!({ "model": null, "effort": null }))
+    );
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/threads/{tid}"))
+                .header(COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(resp).await["last_model_choice"],
+        serde_json::json!({ "model": null, "effort": null })
+    );
 }
 
 /// 共有一覧の各エントリが表示名を正しく持つか（#741）。同テナント・同 org の user は名前と email、
@@ -883,7 +947,11 @@ async fn share_lists_include_directory_names_tenant_scoped() {
         .upsert_role("share741-eng", "default", "acme", "技術部 741")
         .await
         .expect("seed role");
-    let ctx = authz::AuthContext::new(test_principal(), "acme".into(), "default".into());
+    let ctx = authz::AuthContext::new(
+        test_principal(),
+        "acme".into(),
+        authz::TenantId::parse("default").unwrap(),
+    );
     let art = state
         .artifacts
         .create(
@@ -973,7 +1041,7 @@ async fn chat_post_records_requested_tools() {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return;
     };
-    let db_url = std::env::var("STORAGE_TEST_DATABASE_URL").unwrap();
+    let db_url = shiki_testenv::var("STORAGE_TEST_DATABASE_URL").unwrap();
     let pool = PgPoolOptions::new().connect(&db_url).await.unwrap();
     let (cookie, csrf) = login(&sessions, "sid-chat-tools").await;
     let app = build_router(state);
@@ -1435,7 +1503,7 @@ async fn today_endpoints_over_http() {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return;
     };
-    let db_url = std::env::var("STORAGE_TEST_DATABASE_URL").unwrap();
+    let db_url = shiki_testenv::var("STORAGE_TEST_DATABASE_URL").unwrap();
     let pool = PgPoolOptions::new().connect(&db_url).await.unwrap();
     let (cookie, csrf) = login(&sessions, "sid-today").await;
     let get = |uri: &str| {

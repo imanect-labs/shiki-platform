@@ -57,7 +57,7 @@ pub async fn get_autonomous_mode(
     let store = chat_store(&state)?;
     // viewer 認可（存在秘匿込み）。モード値は Thread に載っている。
     let thread = store.get_thread(&ctx, id, trace.as_deref()).await?;
-    let bypass_allowed = store.autonomous_bypass_allowed(&ctx.tenant_id).await?;
+    let bypass_allowed = store.autonomous_bypass_allowed(ctx.tenant_id()).await?;
     Ok(Json(AutonomousModeResponse {
         mode: thread.autonomous_mode,
         bypass_allowed,
@@ -91,7 +91,7 @@ pub async fn set_autonomous_mode(
     store
         .set_autonomous_mode(&ctx, id, req.mode, trace.as_deref())
         .await?;
-    let bypass_allowed = store.autonomous_bypass_allowed(&ctx.tenant_id).await?;
+    let bypass_allowed = store.autonomous_bypass_allowed(ctx.tenant_id()).await?;
     Ok(Json(AutonomousModeResponse {
         mode: req.mode,
         bypass_allowed,

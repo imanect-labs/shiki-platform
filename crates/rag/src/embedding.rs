@@ -88,7 +88,7 @@ impl EmbeddingProvider for HttpEmbeddingProvider {
                 .http
                 .post(format!("{}/embed", self.base_url))
                 .json(&serde_json::json!({
-                    "tenant_id": ctx.tenant_id,
+                    "tenant_id": ctx.tenant_id(),
                     "input_type": input.as_str(),
                     "texts": batch,
                 }))

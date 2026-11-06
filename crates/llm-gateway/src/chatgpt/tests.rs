@@ -105,7 +105,7 @@ fn ctx(id: &str) -> AuthContext {
             tenant_id: Some("t".into()),
         },
         "o".into(),
-        "t".into(),
+        authz::TenantId::parse("t").unwrap(),
     )
 }
 

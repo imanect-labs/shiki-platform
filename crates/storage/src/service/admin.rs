@@ -25,7 +25,7 @@ impl StorageService {
         admin_user_id: &str,
         actor: &str,
     ) -> Result<(), StorageError> {
-        let ctx = system_ctx(tenant_id, org, actor);
+        let ctx = system_ctx(tenant_id, org, actor)?;
         let subject = ctx.ns().user(admin_user_id);
         let org_obj = ctx.ns().organization(org);
         self.authz
@@ -80,7 +80,7 @@ impl StorageService {
         org: &str,
         actor: &str,
     ) -> Result<(u64, u64), StorageError> {
-        let ctx = system_ctx(tenant_id, org, actor);
+        let ctx = system_ctx(tenant_id, org, actor)?;
         let ns = ctx.ns();
         let mut tuples_deleted: u64 = 0;
 

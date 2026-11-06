@@ -211,7 +211,7 @@ impl LiveDoc {
         ctx: &AuthContext,
     ) -> Result<(), CollabError> {
         self.apply_update_bytes(payload)?;
-        let author = ctx.principal.id.as_str();
+        let author = ctx.principal().id.as_str();
         let seq = store
             .append_update(self.node_id, &self.tenant_id, payload, author)
             .await?;
@@ -408,7 +408,7 @@ impl LiveDoc {
         // 適用はメモリに済んでいるため、追記の成否に関わらず先に dirty を立てる
         // （追記失敗時もデバウンス保存がファイルへ回収し、編集が黙って消えない）。
         self.mark_dirty(ctx);
-        let author = format!("ai:{}", ctx.principal.id);
+        let author = format!("ai:{}", ctx.principal().id);
         let seq = match store
             .append_update(self.node_id, &self.tenant_id, update, &author)
             .await

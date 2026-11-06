@@ -119,7 +119,7 @@ impl StorageService {
                    AND password_hash IS NULL AND {ACTIVE_PREDICATE})",
             ))
             .bind(node_id)
-            .bind(&ctx.tenant_id)
+            .bind(ctx.tenant_id())
             .bind(audience.as_str())
             .bind(role.as_str())
             .fetch_one(&mut *tx)
@@ -135,8 +135,8 @@ impl StorageService {
         )
         .bind(link_id)
         .bind(node_id)
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(kind.as_str())
         .bind(audience.as_str())
         .bind(role.as_str())
@@ -144,7 +144,7 @@ impl StorageService {
         .bind(expires_at)
         .bind(password_hash.as_deref())
         .bind(label)
-        .bind(&ctx.principal.id)
+        .bind(&ctx.principal().id)
         .execute(&mut *tx)
         .await?;
 
@@ -154,8 +154,8 @@ impl StorageService {
                 &ns,
                 &obj,
                 node_id,
-                &ctx.tenant_id,
-                &ctx.org,
+                ctx.tenant_id(),
+                ctx.org(),
                 Utc::now(),
             )
             .await?;
@@ -220,7 +220,7 @@ impl StorageService {
              ORDER BY l.created_at DESC",
         ))
         .bind(node_id)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .fetch_all(&self.db)
         .await?;
         rows.into_iter().map(ShareLinkRow::into_model).collect()
@@ -250,8 +250,8 @@ impl StorageService {
              WHERE link_id = $1 AND tenant_id = $2 AND {ACTIVE_PREDICATE}",
         ))
         .bind(link_id)
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.principal.id)
+        .bind(ctx.tenant_id())
+        .bind(&ctx.principal().id)
         .execute(&mut *tx)
         .await?;
         if updated.rows_affected() == 0 {
@@ -265,8 +265,8 @@ impl StorageService {
                 &ns,
                 &obj,
                 node_id,
-                &ctx.tenant_id,
-                &ctx.org,
+                ctx.tenant_id(),
+                ctx.org(),
                 Utc::now(),
             )
             .await?;
@@ -278,7 +278,7 @@ impl StorageService {
                 &obj,
                 link_id,
                 node_id,
-                &ctx.tenant_id,
+                ctx.tenant_id(),
                 Utc::now(),
             )
             .await
@@ -331,9 +331,9 @@ impl StorageService {
              WHERE link_id = $1 AND tenant_id = $2 AND revoked_at IS NULL",
         )
         .bind(link_id)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(expires_at)
-        .bind(&ctx.principal.id)
+        .bind(&ctx.principal().id)
         .execute(&mut *tx)
         .await?;
         if updated.rows_affected() == 0 {
@@ -346,8 +346,8 @@ impl StorageService {
                 &ns,
                 &obj,
                 node_id,
-                &ctx.tenant_id,
-                &ctx.org,
+                ctx.tenant_id(),
+                ctx.org(),
                 Utc::now(),
             )
             .await?;
@@ -383,7 +383,7 @@ impl StorageService {
             "SELECT node_id FROM node_share_link WHERE link_id = $1 AND tenant_id = $2",
         )
         .bind(link_id)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .fetch_optional(&self.db)
         .await?;
         let Some(node_id) = node_id else {

@@ -62,13 +62,13 @@ impl DataStore {
         })?;
         let mut tx = self
             .pools
-            .for_tenant(&ctx.tenant_id)
+            .for_tenant(ctx.tenant_id())
             .begin()
             .await
             .map_err(map_db)?;
         let plan = lock_plan(
             &mut tx,
-            &ctx.tenant_id,
+            ctx.tenant_id(),
             table_id,
             table.keys,
             table.schema_version,
@@ -195,7 +195,7 @@ impl DataStore {
                AND id = $3 \
              RETURNING {WRITTEN_RETURNING}"
         ))
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(table_id)
         .bind(id)
         .bind(Json(&new_stored))
@@ -206,14 +206,14 @@ impl DataStore {
         .await
         .map_err(map_unique)?;
         // 変更のあったフィールド（patches）の索引行と updated_at だけを書き換える（差分更新）。
-        self.index_writer(plan, &table.schema, &ctx.tenant_id)
+        self.index_writer(plan, &table.schema, ctx.tenant_id())
             .on_update(tx, written.record_int, &patches, written.row.updated_at)
             .await
             // 409 unique で名指しするのは今回書いた列だけ（読めない列の名前を返さない）。
             .map_err(|e| crate::scrub_input_field(e, |k| patch_obj.contains_key(k)))?;
         crate::derived::materialize::after_record_write(
             tx,
-            &ctx.tenant_id,
+            ctx.tenant_id(),
             table,
             written.record_int,
             Some(&normalized),

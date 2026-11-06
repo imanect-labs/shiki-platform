@@ -71,7 +71,7 @@ struct Env {
 }
 
 async fn setup() -> Option<Env> {
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return None;
     };
@@ -140,7 +140,7 @@ async fn hold_lock(env: &Env, ctx: &AuthContext, file_id: Uuid) {
     )
     .bind(file_id)
     .bind(ctx.subject().as_str())
-    .bind(&ctx.tenant_id)
+    .bind(ctx.tenant_id())
     .execute(&env.pool)
     .await
     .expect("hold lock");

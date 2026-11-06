@@ -194,10 +194,10 @@ impl DataStore {
             "SELECT id FROM data_table \
              WHERE tenant_id = $1 AND org = $2 AND id = $3 AND deleted_at IS NULL",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(table_id)
-        .fetch_optional(self.pools.for_tenant(&ctx.tenant_id))
+        .fetch_optional(self.pools.for_tenant(ctx.tenant_id()))
         .await
         .map_err(crate::map_db)?;
         if live.is_none() {

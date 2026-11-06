@@ -1,6 +1,6 @@
 "use client";
 
-/// スキルエディタの設定（#919）。本文の上に「プロパティ」（知識スコープ・使うツール・モデル既定）、
+/// スキルエディタの設定（#919）。本文の上に畳める「詳細設定」（知識スコープ・使うツール・モデル既定）、
 /// 本文の下に「お手本の対話」と「スクリプト」を置く（ノートのプロパティ欄と同じ並び）。
 /// 値は [`SkillDraft`]（保存 API の SkillBody と相互変換する編集状態）を直接読み書きする。
 
@@ -11,6 +11,7 @@ import {
   MessagesSquare,
   Plus,
   ScrollText,
+  SlidersHorizontal,
   Wrench,
   X,
   type LucideIcon,
@@ -21,10 +22,12 @@ import type { ScriptKind, ToolName } from "@/generated/gui-spec";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { useLlmModels } from "@/lib/model-choice";
 import type { SkillDraft } from "@/lib/skills/skill-draft";
 import { cn } from "@/lib/utils";
 import { DriveRefChip } from "./drive-ref-chip";
 import { DriveRefPicker } from "./drive-ref-picker";
+import { SkillModelField } from "./skill-model-field";
 
 /// 使うツールの選択肢（`ToolName` 型で束縛＝語彙とズレるとコンパイルエラー）。
 /// allowed_tools は「使うツールの宣言＝モデルへの誘導」で、承認ゲート（破壊系の明示許可）は
@@ -45,7 +48,9 @@ const SCRIPT_KINDS: { value: ScriptKind; label: string; ext: string }[] = [
 
 type Update = <K extends keyof SkillDraft>(key: K, value: SkillDraft[K]) => void;
 
-/// 1 行のプロパティ（PC は「見出し | 値」の 2 列、スマホは見出しの下に値）。
+/// 1 行のプロパティ（広いときは「見出し | 値」の 2 列、狭いときは見出しの下に値）。
+/// 段組みはビューポートではなく本文欄自身の幅（エディタ画面の `@container`）で決める。
+/// アシスタントを開くと PC でも本文欄が細くなり、ビューポート基準だと値の列が潰れるため。
 function PropertyRow({
   icon: Icon,
   label,
@@ -58,7 +63,7 @@ function PropertyRow({
   children: React.ReactNode;
 }) {
   return (
-    <div className="shiki-dash-bottom grid grid-cols-1 gap-1.5 py-2 sm:grid-cols-[9.5rem_minmax(0,1fr)] sm:gap-3">
+    <div className="shiki-dash-bottom grid grid-cols-1 gap-1.5 py-2 @lg:grid-cols-[9.5rem_minmax(0,1fr)] @lg:gap-3">
       <div className="flex min-h-8 items-center gap-2 text-[13px] text-muted-foreground">
         <Icon className="size-4 shrink-0" aria-hidden />
         <span>{label}</span>
@@ -103,13 +108,92 @@ function Pill({
   );
 }
 
+/// 本文の上の「詳細設定」。知識スコープ・使うツール・モデル既定は、多くのスキルで既定のままで
+/// よいので畳んでおき、見出しの横に今の値を 1 行で出す（#1039）。
 export function SkillProperties({ draft, update }: { draft: SkillDraft; update: Update }) {
   const [scopePickerOpen, setScopePickerOpen] = React.useState(false);
-  const modelSet = Boolean(draft.model || draft.temperature || draft.maxTokens);
-  // 値があれば常に開く（AI の下書きで後から入った値も見せる）。
-  const [modelOpen, setModelOpen] = React.useState(false);
-  const showModel = modelOpen || modelSet;
 
+  const scopeCount = draft.scopeFolders.length + draft.scopeFiles.length;
+  const models = useLlmModels();
+  const modelId = draft.model.trim();
+  const modelLabel = modelId
+    ? (models?.models.find((m) => m.id === modelId)?.label ?? modelId)
+    : "システム既定";
+  // 畳んでいても、何が設定されているかは 1 行で見せる（AI の下書きで変わった値も気づける）。
+  const summary = [
+    `知識スコープ: ${scopeCount === 0 ? "すべての文書" : `${scopeCount} 件`}`,
+    `ツール: ${draft.allowedTools === null ? "すべて" : `${draft.allowedTools.length} 件`}`,
+    `モデル: ${modelLabel}`,
+  ];
+  const [open, setOpen] = React.useState(false);
+  const panelId = React.useId();
+
+  return (
+    <section aria-label="スキルの設定" className="shiki-dash-top">
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={panelId}
+        onClick={() => setOpen((v) => !v)}
+        className={cn(
+          "shiki-dash-bottom flex min-h-10 w-full items-start gap-2 py-2.5 text-left text-[13px] outline-none",
+          "rounded-sm text-muted-foreground transition-colors hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:min-h-11",
+        )}
+        data-testid="skill-settings-toggle"
+      >
+        <SlidersHorizontal className="mt-0.5 size-4 shrink-0" aria-hidden />
+        <span className="shrink-0 font-medium text-foreground">詳細設定</span>
+        {/* 開いているときは中身が見えるので要約は出さない。狭い幅では項目ごとに折り返す。 */}
+        <span
+          className="flex min-w-0 flex-1 flex-wrap gap-x-3 gap-y-0.5"
+          data-testid="skill-settings-summary"
+        >
+          {open
+            ? null
+            : summary.map((item) => (
+                <span key={item} className="min-w-0 [overflow-wrap:anywhere]">
+                  {item}
+                </span>
+              ))}
+        </span>
+        <ChevronDown
+          className={cn(
+            "mt-0.5 size-4 shrink-0 transition-transform duration-[var(--duration-normal)]",
+            open && "rotate-180",
+          )}
+          aria-hidden
+        />
+      </button>
+      {open ? (
+        <div id={panelId}>
+          <SettingsRows draft={draft} update={update} onAddScope={() => setScopePickerOpen(true)} />
+        </div>
+      ) : null}
+
+      <DriveRefPicker
+        open={scopePickerOpen}
+        onOpenChange={setScopePickerOpen}
+        accept="folder"
+        onSelect={(ref) => {
+          if (!draft.scopeFolders.includes(ref.id)) {
+            update("scopeFolders", [...draft.scopeFolders, ref.id]);
+          }
+        }}
+      />
+    </section>
+  );
+}
+
+/// 詳細設定の中身（知識スコープ・使うツール・モデル既定）。
+function SettingsRows({
+  draft,
+  update,
+  onAddScope,
+}: {
+  draft: SkillDraft;
+  update: Update;
+  onAddScope: () => void;
+}) {
   const toggleTool = (tool: ToolName) => {
     const current = draft.allowedTools ?? [];
     const next = current.includes(tool) ? current.filter((t) => t !== tool) : [...current, tool];
@@ -118,7 +202,7 @@ export function SkillProperties({ draft, update }: { draft: SkillDraft; update: 
   };
 
   return (
-    <section aria-label="スキルの設定" className="shiki-dash-top">
+    <>
       <PropertyRow
         icon={FolderTree}
         label="知識スコープ"
@@ -151,8 +235,8 @@ export function SkillProperties({ draft, update }: { draft: SkillDraft; update: 
             type="button"
             size="sm"
             variant="ghost"
-            onClick={() => setScopePickerOpen(true)}
-            className="h-8 text-muted-foreground"
+            onClick={onAddScope}
+            className="-ml-2 h-8 text-muted-foreground"
             data-testid="skill-scope-add"
           >
             <Plus className="size-4" aria-hidden />
@@ -200,61 +284,9 @@ export function SkillProperties({ draft, update }: { draft: SkillDraft; update: 
       </PropertyRow>
 
       <PropertyRow icon={Cpu} label="モデル既定">
-        {showModel ? (
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-            <SubField label="モデル名" htmlFor="skill-model">
-              <Input
-                id="skill-model"
-                value={draft.model}
-                onChange={(e) => update("model", e.target.value)}
-                placeholder="例: claude-sonnet"
-                autoCapitalize="none"
-                autoCorrect="off"
-                spellCheck={false}
-              />
-            </SubField>
-            <SubField label="temperature（0〜2）" htmlFor="skill-temperature">
-              <Input
-                id="skill-temperature"
-                value={draft.temperature}
-                onChange={(e) => update("temperature", e.target.value)}
-                placeholder="例: 0.3"
-                inputMode="decimal"
-              />
-            </SubField>
-            <SubField label="最大トークン数" htmlFor="skill-max-tokens">
-              <Input
-                id="skill-max-tokens"
-                value={draft.maxTokens}
-                onChange={(e) => update("maxTokens", e.target.value)}
-                placeholder="例: 2000"
-                inputMode="numeric"
-              />
-            </SubField>
-          </div>
-        ) : (
-          <button
-            type="button"
-            onClick={() => setModelOpen(true)}
-            className="inline-flex min-h-8 items-center gap-1 rounded-md px-2 text-[13px] text-muted-foreground outline-none transition-colors hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring -ml-2"
-          >
-            システム既定
-            <ChevronDown className="size-3.5" aria-hidden />
-          </button>
-        )}
+        <SkillModelField draft={draft} update={update} />
       </PropertyRow>
-
-      <DriveRefPicker
-        open={scopePickerOpen}
-        onOpenChange={setScopePickerOpen}
-        accept="folder"
-        onSelect={(ref) => {
-          if (!draft.scopeFolders.includes(ref.id)) {
-            update("scopeFolders", [...draft.scopeFolders, ref.id]);
-          }
-        }}
-      />
-    </section>
+    </>
   );
 }
 
@@ -288,10 +320,10 @@ function Section({
             </span>
           ) : null}
         </h2>
-        <span className="min-w-0 flex-1 text-xs text-muted-foreground max-sm:basis-full max-sm:order-last">
+        <span className="min-w-0 flex-1 text-xs text-muted-foreground @max-lg:order-last @max-lg:basis-full">
           {description}
         </span>
-        <Button type="button" size="sm" variant="ghost" onClick={onAdd} className="h-8">
+        <Button type="button" size="sm" variant="ghost" onClick={onAdd} className="ml-auto h-8">
           <Plus className="size-4" aria-hidden />
           {addLabel}
         </Button>
@@ -362,7 +394,19 @@ export function SkillExtras({ draft, update }: { draft: SkillDraft; update: Upda
       >
         {draft.scripts.map((sc, i) => (
           <div key={i} className="space-y-1.5 rounded-lg border border-border/60 bg-card/40 p-3">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-medium text-muted-foreground">スクリプト {i + 1}</span>
+              <button
+                type="button"
+                aria-label={`script ${i + 1} を削除`}
+                onClick={() => update("scripts", draft.scripts.filter((_, j) => j !== i))}
+                className={REMOVE_ROW}
+              >
+                <X className="size-4" aria-hidden />
+              </button>
+            </div>
+            {/* 狭いときは種別を次の行へ回す（パスの欄を潰さない）。 */}
+            <div className="flex flex-wrap items-center gap-2">
               <Input
                 value={sc.path}
                 onChange={(e) =>
@@ -373,7 +417,7 @@ export function SkillExtras({ draft, update }: { draft: SkillDraft; update: Upda
                 }
                 placeholder={`scripts/example${SCRIPT_KINDS.find((k) => k.value === sc.kind)?.ext}`}
                 aria-label={`script ${i + 1} のパス`}
-                className="min-w-0 flex-1"
+                className="min-w-[12rem] flex-1"
                 autoCapitalize="none"
                 autoCorrect="off"
                 spellCheck={false}
@@ -397,14 +441,6 @@ export function SkillExtras({ draft, update }: { draft: SkillDraft; update: Upda
                   </option>
                 ))}
               </select>
-              <button
-                type="button"
-                aria-label={`script ${i + 1} を削除`}
-                onClick={() => update("scripts", draft.scripts.filter((_, j) => j !== i))}
-                className={REMOVE_ROW}
-              >
-                <X className="size-4" aria-hidden />
-              </button>
             </div>
             <Textarea
               value={sc.source}
@@ -433,23 +469,3 @@ const REMOVE_ROW = cn(
   "flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground outline-none",
   "hover:bg-accent hover:text-destructive focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:size-11",
 );
-
-/// 複数の入力を並べる欄の、入力ごとの小さな見出し（placeholder をラベル代わりにしない）。
-function SubField({
-  label,
-  htmlFor,
-  children,
-}: {
-  label: string;
-  htmlFor: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <div className="space-y-1">
-      <label htmlFor={htmlFor} className="block text-[11px] text-muted-foreground">
-        {label}
-      </label>
-      {children}
-    </div>
-  );
-}

@@ -89,8 +89,12 @@ impl WopiClaims {
     ///
     /// email/groups/roles は持ち越さない（WOPI 経路の認可は OpenFGA タプルのみで
     /// 決まり、IdP 由来のメタデータを必要としない）。
-    pub fn to_auth_context(&self) -> AuthContext {
-        AuthContext::new(
+    ///
+    /// トークンの tenant_id も文字ポリシーを通す（不正なら Unauthorized・トークン自体を信用しない）。
+    pub fn to_auth_context(&self) -> Result<AuthContext, OfficeError> {
+        let tenant = authz::TenantId::parse(self.tenant_id.as_str())
+            .map_err(|_| OfficeError::Unauthorized)?;
+        Ok(AuthContext::new(
             Principal {
                 kind: self.principal_kind,
                 id: self.principal_id.clone(),
@@ -100,8 +104,8 @@ impl WopiClaims {
                 tenant_id: Some(self.tenant_id.clone()),
             },
             self.org.clone(),
-            self.tenant_id.clone(),
-        )
+            tenant,
+        ))
     }
 }
 
@@ -137,10 +141,10 @@ fn issue_at(
     exp: i64,
 ) -> Result<String, OfficeError> {
     let claims = WopiClaims {
-        principal_id: ctx.principal.id.clone(),
-        principal_kind: ctx.principal.kind,
-        org: ctx.org.clone(),
-        tenant_id: ctx.tenant_id.clone(),
+        principal_id: ctx.principal().id.clone(),
+        principal_kind: ctx.principal().kind,
+        org: ctx.org().to_owned(),
+        tenant_id: ctx.tenant_id().to_owned(),
         file_id,
         ai_actor,
         exp,
@@ -212,7 +216,7 @@ mod tests {
                 tenant_id: Some("default".into()),
             },
             "acme".into(),
-            "default".into(),
+            authz::TenantId::parse("default").unwrap(),
         )
     }
 
@@ -228,10 +232,10 @@ mod tests {
         assert_eq!(claims.file_id, file_id);
         assert!(!claims.ai_actor);
         // AuthContext 再構成（tenant/org 焼き込み・IdP メタは持ち越さない）。
-        let rebuilt = claims.to_auth_context();
-        assert_eq!(rebuilt.tenant_id, "default");
-        assert_eq!(rebuilt.org, "acme");
-        assert_eq!(rebuilt.principal.email, None);
+        let rebuilt = claims.to_auth_context().unwrap();
+        assert_eq!(rebuilt.tenant_id(), "default");
+        assert_eq!(rebuilt.org(), "acme");
+        assert_eq!(rebuilt.principal().email, None);
     }
 
     #[test]
@@ -333,7 +337,7 @@ mod tests {
         assert!(claims.ai_actor);
         // principal は実ユーザーのまま（認可は常に実ユーザーの editor@file）。
         assert_eq!(claims.principal_id, "alice");
-        assert_eq!(claims.to_auth_context().principal.id, "alice");
+        assert_eq!(claims.to_auth_context().unwrap().principal().id, "alice");
     }
 
     #[test]

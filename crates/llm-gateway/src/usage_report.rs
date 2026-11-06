@@ -132,8 +132,8 @@ impl UsageReporter {
                     COUNT(DISTINCT user_sub)::bigint AS users \
              FROM llm_usage WHERE {SCOPE}"
         ))
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(f.from)
         .bind(f.to)
         .bind(f.model.as_deref())
@@ -154,8 +154,8 @@ impl UsageReporter {
                     COUNT(*)::bigint AS calls \
              FROM llm_usage WHERE {SCOPE} GROUP BY 1 ORDER BY 1"
         ))
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(f.from)
         .bind(f.to)
         .bind(f.model.as_deref())
@@ -179,8 +179,8 @@ impl UsageReporter {
              FROM llm_usage WHERE {SCOPE} \
              GROUP BY 1 ORDER BY cost_usd_micros DESC, tokens DESC, key LIMIT $7"
         ))
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(f.from)
         .bind(f.to)
         .bind(f.model.as_deref())

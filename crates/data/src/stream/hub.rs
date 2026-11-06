@@ -186,7 +186,7 @@ impl DataStore {
         trace_id: Option<&str>,
     ) -> Result<RecordStream, DataError> {
         // 世代は材料の解決より**前に**読む（解決の後の変更は次のバッチで必ず検知される）。
-        let epochs = self.authz_epochs(&ctx.tenant_id).await?;
+        let epochs = self.authz_epochs(ctx.tenant_id()).await?;
         let az = self.authz_memo();
         let table = self
             .open_for_read(
@@ -205,7 +205,7 @@ impl DataStore {
         let bounds = {
             let mut conn = self
                 .pools
-                .for_tenant(&ctx.tenant_id)
+                .for_tenant(ctx.tenant_id())
                 .acquire()
                 .await
                 .map_err(map_db)?;
@@ -240,7 +240,7 @@ impl DataStore {
         let id = self.stream.next_id.fetch_add(1, Ordering::Relaxed);
         self.stream
             .lock()
-            .entry((ctx.tenant_id.clone(), table_id))
+            .entry((ctx.tenant_id().to_owned(), table_id))
             .or_default()
             .subs
             .push(Sub {
@@ -527,7 +527,7 @@ impl DataStore {
         let mut plans = HashMap::new();
         for (i, s) in subs.iter().enumerate() {
             let v = Viewer {
-                principal: &s.ctx.principal.id,
+                principal: &s.ctx.principal().id,
                 material: &s.auth.material,
                 shared: &s.auth.shared,
             };
@@ -575,7 +575,7 @@ impl DataStore {
             }
             s.gap_since = None;
             let v = Viewer {
-                principal: &s.ctx.principal.id,
+                principal: &s.ctx.principal().id,
                 material: &s.auth.material,
                 shared: &s.auth.shared,
             };
@@ -682,7 +682,7 @@ impl DataStore {
             if !terminal {
                 let snapshot = std::mem::take(&mut s.awareness_snapshot);
                 for a in &awareness {
-                    if a.principal == s.ctx.principal.id {
+                    if a.principal == s.ctx.principal().id {
                         continue;
                     }
                     // 前のバッチより後の更新か、接続直後のスナップショット（離脱済みは除く）だけ。

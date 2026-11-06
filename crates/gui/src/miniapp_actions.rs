@@ -301,9 +301,9 @@ impl MiniAppStore {
              WHERE tenant_id = $1 AND app_id = $2 AND invoked_by = $3 \
              ORDER BY invoked_at DESC, idempotency_key DESC LIMIT $4",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(app_id)
-        .bind(&ctx.principal.id)
+        .bind(&ctx.principal().id)
         .bind(MAX_RUNS)
         .fetch_all(&self.db)
         .await
@@ -389,7 +389,7 @@ impl MiniAppStore {
                  WHERE r.tenant_id = $1 AND r.app_id = $2 AND r.run_id = x.run_id \
                    AND r.status IS NULL",
             )
-            .bind(&ctx.tenant_id)
+            .bind(ctx.tenant_id())
             .bind(app_id)
             .bind(&ids)
             .bind(&sts)
@@ -418,12 +418,12 @@ impl MiniAppStore {
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) \
              ON CONFLICT DO NOTHING",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(k.app_id)
-        .bind(&ctx.principal.id)
+        .bind(&ctx.principal().id)
         .bind(k.action_id)
         .bind(k.idempotency_key)
-        .bind(&ctx.org)
+        .bind(ctx.org())
         .bind(app_version)
         .bind(label)
         .bind(workflow_name)
@@ -444,9 +444,9 @@ impl MiniAppStore {
              WHERE tenant_id = $1 AND app_id = $2 AND invoked_by = $3 AND action_id = $4 \
                AND idempotency_key = $5",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(k.app_id)
-        .bind(&ctx.principal.id)
+        .bind(&ctx.principal().id)
         .bind(k.action_id)
         .bind(k.idempotency_key)
         .fetch_optional(&self.db)
@@ -468,9 +468,9 @@ impl MiniAppStore {
              WHERE tenant_id = $1 AND app_id = $2 AND invoked_by = $3 AND action_id = $4 \
                AND idempotency_key = $5",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(k.app_id)
-        .bind(&ctx.principal.id)
+        .bind(&ctx.principal().id)
         .bind(k.action_id)
         .bind(k.idempotency_key)
         .bind(run_id)
@@ -486,9 +486,9 @@ impl MiniAppStore {
              WHERE tenant_id = $1 AND app_id = $2 AND invoked_by = $3 AND action_id = $4 \
                AND idempotency_key = $5 AND run_id IS NULL AND status IS NULL",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(k.app_id)
-        .bind(&ctx.principal.id)
+        .bind(&ctx.principal().id)
         .bind(k.action_id)
         .bind(k.idempotency_key)
         .execute(&self.db)

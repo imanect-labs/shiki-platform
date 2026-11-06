@@ -256,10 +256,10 @@ impl DataStore {
             "SELECT planner_fixed FROM data_table \
              WHERE tenant_id = $1 AND org = $2 AND id = $3 AND deleted_at IS NULL",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(table_id)
-        .fetch_optional(self.pools.for_tenant(&ctx.tenant_id))
+        .fetch_optional(self.pools.for_tenant(ctx.tenant_id()))
         .await
         .map_err(map_db)?;
         let fixed = fixed.ok_or(DataError::NotFound)?;
@@ -308,7 +308,7 @@ impl DataStore {
         self.optimizer_gate(ctx, table_id).await?;
         let mut tx = self
             .pools
-            .for_tenant(&ctx.tenant_id)
+            .for_tenant(ctx.tenant_id())
             .begin()
             .await
             .map_err(map_db)?;
@@ -316,8 +316,8 @@ impl DataStore {
             "UPDATE data_table SET planner_fixed = $4, updated_at = now() \
              WHERE tenant_id = $1 AND org = $2 AND id = $3 AND deleted_at IS NULL",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(table_id)
         .bind(fixed)
         .execute(&mut *tx)
