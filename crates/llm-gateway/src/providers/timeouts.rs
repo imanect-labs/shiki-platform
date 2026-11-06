@@ -19,7 +19,7 @@ use futures::{Stream, StreamExt};
 use tokio::time::Instant;
 
 use crate::config::LlmTimeouts;
-use crate::provider::{DeltaStream, LlmError};
+use crate::provider::{DeltaStream, LlmError, CUT_BY_PROVIDER};
 
 /// どのタイムアウトで切れたか（メッセージ用）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -212,12 +212,23 @@ impl RequestClock {
             read = self.within(self.timeouts.idle, Kind::Idle, body.next()) => match read {
                 Ok(None) => None,
                 Ok(Some(Ok(chunk))) => Some(Ok(chunk)),
-                Ok(Some(Err(e))) => Some(Err(LlmError::Unavailable(format!("stream: {e}")))),
+                Ok(Some(Err(e))) => Some(Err(read_failure(&e))),
                 Err(e) => Some(Err(e)),
             },
             () = abandoned => None,
         }
     }
+}
+
+/// 本文を読む途中の失敗（接続が切れた・チャンクの途中で閉じた）の誤り。
+///
+/// こちらの時計（無通信・全体の上限）ではなく、相手か途中の経路が接続を切ったものなので、プロバイダが切った印
+/// （[`CUT_BY_PROVIDER`]）を付ける（まだ何も確定していなければ gateway が送り直す・BUG-224）。HTTP クライアント
+/// 自体の時間切れ（`reqwest::Error::is_timeout`）は暴走止めなので印を付けない。本文を読む誤りの文には送り先の URL が
+/// 入らない（reqwest の本文の誤りは URL を持たない）。
+fn read_failure(e: &reqwest::Error) -> LlmError {
+    let cut = if e.is_timeout() { "" } else { CUT_BY_PROVIDER };
+    LlmError::Unavailable(format!("{cut}stream: {e}"))
 }
 
 #[cfg(test)]

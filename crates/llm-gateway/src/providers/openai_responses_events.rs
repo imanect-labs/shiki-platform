@@ -2,6 +2,10 @@
 //!
 //! SSE をイベント単位に組み立て（[`SseFramer`]）、型付きイベントを中立形の差分へ写す（[`EventMapper`]）。
 //! I/O から切り離して単体で確かめる。
+//!
+//! 流し始めた後の `error`・`response.failed` は、[`CUT_BY_PROVIDER`] の付いた [`LlmError::Unavailable`] にする
+//! （Anthropic の `event: error`・OpenAI 互換の素の誤りの JSON と同じ扱い・BUG-224）。送り直すかは gateway が決める
+//! （まだ何も確定していないときだけ・`retry::resume_unsettled`）。
 
 use std::collections::HashMap;
 
@@ -11,7 +15,7 @@ use serde_json::{json, Value};
 use super::openai_responses::REASONING_PROVIDER;
 use super::tool_names::ToolNameMap;
 use crate::model::{StopReason, StreamDelta};
-use crate::provider::LlmError;
+use crate::provider::{LlmError, CUT_BY_PROVIDER};
 
 /// SSE の 1 行・1 イベントの上限。`response.completed` は応答全文を含むので大きめに取る。
 /// 改行・空行を送らない相手でメモリを使い尽くさないため（超えたらストリームをエラーで終える）。
@@ -125,13 +129,15 @@ impl EventMapper {
             "response.failed" | "error" => {
                 self.finished = true;
                 // 誤りの本文（message には要求の ID などが入る）は文言に入れず、誤りの種類の語だけを載せる（BUG-210）。
+                // 誤りの種類によらずプロバイダが切った印を付ける（送り直すかは gateway が決める・BUG-224）。
                 let error = v
                     .pointer("/response/error")
                     .filter(|e| e.is_object())
                     .unwrap_or(v);
-                vec![Err(LlmError::Unavailable(
-                    crate::provider::midstream_failure("responses", &error.to_string()),
-                ))]
+                let why = crate::provider::midstream_failure("responses", &error.to_string());
+                vec![Err(LlmError::Unavailable(format!(
+                    "{CUT_BY_PROVIDER}{why}"
+                )))]
             }
             _ => Vec::new(),
         }
@@ -347,10 +353,13 @@ mod tests {
         let out = feed_all(&[
             json!({"type": "response.failed", "response": {"error": {"code": "server_error", "message": "boom req_abc123"}}}),
         ]);
+        // どちらもプロバイダが切った印を付ける（まだ何も確定していなければ gateway が送り直す・BUG-224）。
         match &out[0] {
             Err(LlmError::Unavailable(m)) => assert_eq!(
                 m,
-                "responses: プロバイダが応答の途中で失敗しました（server_error）"
+                &format!(
+                    "{CUT_BY_PROVIDER}responses: プロバイダが応答の途中で失敗しました（server_error）"
+                )
             ),
             other => panic!("expected Unavailable, got {other:?}"),
         }
@@ -361,6 +370,7 @@ mod tests {
             Err(LlmError::Unavailable(m)) => {
                 assert!(!m.contains("org-xyz") && !m.contains("slow down"), "{m}");
                 assert!(m.contains("rate_limit_exceeded"), "{m}");
+                assert!(m.starts_with(CUT_BY_PROVIDER), "{m}");
             }
             other => panic!("expected Unavailable, got {other:?}"),
         }

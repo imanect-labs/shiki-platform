@@ -11,6 +11,9 @@
 //! - 会話 ID（[`GenerateRequest::session_id`]）は、設定したヘッダ名で送り、`prompt_cache_key`
 //!   にも使う。ヘッダ名を設定しているのに ID が無い呼び出しには、呼び出しごとの ID を付ける
 //!   （ヘッダ必須のプロバイダで落ちないように）。
+//! - 流し始めた後の `error`・`response.failed`、`response.completed`（か `response.incomplete`）の無いまま
+//!   閉じたストリーム、大きさの上限を超えた行・イベントは、プロバイダが切った印（[`CUT_BY_PROVIDER`]）の付いた
+//!   一時障害にする。送り直すかは gateway が決める（まだ何も確定していないときだけ・BUG-224）。
 
 use std::collections::HashSet;
 
@@ -25,7 +28,7 @@ use super::timeouts::RequestClock;
 use super::tool_names::ToolNameMap;
 use crate::config::LlmTimeouts;
 use crate::model::{Block, GenerateRequest, Message, Role, StreamDelta};
-use crate::provider::{DeltaStream, LlmError, LlmProvider};
+use crate::provider::{DeltaStream, LlmError, LlmProvider, CUT_BY_PROVIDER};
 use crate::tool_loading::context_tools;
 
 /// OpenAI Responses API アダプタ。
@@ -315,8 +318,9 @@ impl OpenAiResponsesProvider {
                     }
                 }
                 if buf.len() > MAX_SSE_BYTES || framer.overflowed() {
-                    let _ = tx.unbounded_send(Err(LlmError::Unavailable(
-                        "responses: SSE line or event exceeded the size limit".into(),
+                    // 改行・空行を送らない相手の応答は読み切れない。途中で切れた応答と同じ扱いにする（BUG-224）。
+                    let _ = tx.unbounded_send(Err(cut(
+                        "responses: SSE line or event exceeded the size limit",
                     )));
                     return;
                 }
@@ -328,14 +332,20 @@ impl OpenAiResponsesProvider {
                     return;
                 }
             }
-            // 完了イベントが来ないまま切れた。書きかけの応答を完了扱いにしない。
-            let _ = tx.unbounded_send(Err(LlmError::Unavailable(
-                "responses: stream ended before response.completed".into(),
+            // 完了イベントが来ないまま切れた。書きかけの応答を完了扱いにせず、プロバイダが切った印を付ける
+            // （まだ何も確定していなければ gateway が送り直す・BUG-224）。
+            let _ = tx.unbounded_send(Err(cut(
+                "responses: stream ended before response.completed",
             )));
         });
 
         Ok(rx.boxed())
     }
+}
+
+/// プロバイダが応答の途中で切った誤り（[`CUT_BY_PROVIDER`] の付いた [`LlmError::Unavailable`]）。
+fn cut(why: &str) -> LlmError {
+    LlmError::Unavailable(format!("{CUT_BY_PROVIDER}{why}"))
 }
 
 #[cfg(test)]
@@ -622,5 +632,84 @@ mod tests {
         let req = GenerateRequest::new(vec![Message::text(Role::User, "hi")]);
         let body = provider().build_body(&req, &ToolNameMap::new(std::iter::empty::<&str>()));
         assert_eq!(body["include"], json!(["reasoning.encrypted_content"]));
+    }
+
+    /// 呼ばれるたびに用意した本文を順に返すモック（尽きたら最後の本文）。呼ばれた回数を数える。
+    async fn scripted(
+        bodies: Vec<&'static str>,
+    ) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = std::sync::Arc::new(AtomicUsize::new(0));
+        let counter = std::sync::Arc::clone(&calls);
+        let app = axum::Router::new().fallback(move || {
+            let n = counter.fetch_add(1, Ordering::SeqCst);
+            let body = bodies[n.min(bodies.len() - 1)];
+            async move { ([("content-type", "text/event-stream")], body) }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (base, calls)
+    }
+
+    /// gateway の送り直し（まだ何も確定していないときだけ）に通した結果（差分は短い名前、誤りは文言）。
+    async fn through_resume(base: String) -> Vec<String> {
+        let provider: std::sync::Arc<dyn LlmProvider> = std::sync::Arc::new(
+            OpenAiResponsesProvider::new(reqwest::Client::new(), base, None, "m"),
+        );
+        let req = GenerateRequest::new(vec![Message::text(Role::User, "hi")]);
+        let first = provider.stream(&req).await.unwrap();
+        crate::retry::resume_unsettled(provider, req, first, crate::retry::MIDSTREAM_RETRIES)
+            .map(|d| match d {
+                Ok(StreamDelta::TextDelta { text }) => format!("text:{text}"),
+                Ok(StreamDelta::ThinkingDelta { text }) => format!("think:{text}"),
+                Ok(StreamDelta::ToolUseStart { id, .. }) => format!("start:{id}"),
+                Ok(StreamDelta::Done { .. }) => "done".into(),
+                Ok(other) => format!("{other:?}"),
+                Err(e) => format!("err:{e}"),
+            })
+            .collect()
+            .await
+    }
+
+    /// 思考だけを流して切れた応答（response.completed の無いまま閉じた・error・response.failed）は送り直し、本文・
+    /// ツール呼び出しを出した後に切れた応答は送り直さずに誤りにする（BUG-224・二重に渡さない）。
+    #[tokio::test]
+    async fn cut_streams_are_sent_again_only_while_nothing_is_settled() {
+        use std::sync::atomic::Ordering;
+        const THINK: &str =
+            "data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"考え中\"}\n\n";
+        const ERROR: &str =
+            "data: {\"type\":\"error\",\"code\":\"server_error\",\"message\":\"boom\"}\n\n";
+        const FAILED: &str = "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"server_error\"}}}\n\n";
+        const ANSWER: &str = concat!(
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"答え\"}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{}}}\n\n",
+        );
+        const TEXT: &str = "data: {\"type\":\"response.output_text.delta\",\"delta\":\"途中\"}\n\n";
+        const TOOL_START: &str = "data: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"doc_search\"}}\n\n";
+        let leak = |parts: &[&str]| -> &'static str { Box::leak(parts.concat().into_boxed_str()) };
+
+        // 思考だけで閉じた・思考だけで error・response.failed → 送り直して答えを流す。
+        for cut in [THINK, leak(&[THINK, ERROR]), leak(&[THINK, FAILED]), ERROR] {
+            let (base, calls) = scripted(vec![cut, ANSWER]).await;
+            let out = through_resume(base).await;
+            assert_eq!(calls.load(Ordering::SeqCst), 2, "{cut}: {out:?}");
+            assert_eq!(out.last().map(String::as_str), Some("done"), "{out:?}");
+            assert!(out.contains(&"text:答え".to_string()), "{out:?}");
+        }
+
+        // 本文を出した後・書きかけのツール呼び出しで閉じた・本文の後の error → 送り直さずに誤り。
+        for cut in [TEXT, TOOL_START, leak(&[TEXT, ERROR])] {
+            let (base, calls) = scripted(vec![cut, ANSWER]).await;
+            let out = through_resume(base).await;
+            assert_eq!(calls.load(Ordering::SeqCst), 1, "{cut}: {out:?}");
+            let last = out.last().unwrap();
+            assert!(
+                last.starts_with("err:llm provider unavailable: cut by provider: responses: "),
+                "{cut}: {out:?}"
+            );
+            assert!(!out.iter().any(|o| o == "done"), "{cut}: {out:?}");
+        }
     }
 }

@@ -135,7 +135,11 @@ async fn stream_cut_before_completed_is_an_error() {
     let req = GenerateRequest::new(vec![Message::text(Role::User, "x")]);
     let out = drain(&provider(&base), &req).await;
     assert!(matches!(out[0], Ok(StreamDelta::TextDelta { .. })));
-    assert!(matches!(out.last(), Some(Err(LlmError::Unavailable(_)))));
+    // プロバイダが切った印を付ける（まだ何も確定していなければ gateway が送り直す・BUG-224）。
+    assert!(
+        matches!(out.last(), Some(Err(LlmError::Unavailable(m))) if m.starts_with("cut by provider: responses: ")),
+        "{out:?}"
+    );
 }
 
 #[tokio::test]
@@ -297,7 +301,11 @@ async fn endless_line_without_newline_is_cut_off_with_an_error() {
     let (base, _) = spawn_mock(StatusCode::OK, body).await;
     let req = GenerateRequest::new(vec![Message::text(Role::User, "x")]);
     let out = drain(&provider(&base), &req).await;
-    assert!(matches!(out.last(), Some(Err(LlmError::Unavailable(m))) if m.contains("size limit")));
+    assert!(
+        matches!(out.last(), Some(Err(LlmError::Unavailable(m))) if m.contains("size limit") && m.starts_with("cut by provider: ")),
+        "{:?}",
+        out.last()
+    );
 }
 
 /// 推論アイテムの往復（#542）: 推論 → ツール呼び出し → 推論アイテムを先頭に戻した 2 ターン目。

@@ -7,7 +7,8 @@
 //! - 受け手がストリームを捨てる → 黙っている上流もタイムアウトを待たずに手放す
 //!
 //! スタブの `slow:<秒>` の待ちにも同じ上限が掛かることも確かめる。接続できない送り先の誤りに送り先の URL が
-//! 入らないことも、同じ 3 アダプタで確かめる（BUG-218）。
+//! 入らないことも、同じ 3 アダプタで確かめる（BUG-218）。流し始めた後に接続が切れた読み取りの誤りには、プロバイダが
+//! 切った印を付け、HTTP クライアント自体の時間切れには付けないことも確かめる（BUG-224）。
 //!
 //! どれも `LlmError::Unavailable` で、メッセージにどのタイムアウトかが入る。時間は短く取る。
 
@@ -68,7 +69,15 @@ impl Adapter {
     }
 
     fn provider(self, base: String, timeouts: LlmTimeouts) -> Box<dyn LlmProvider> {
-        let http = reqwest::Client::new();
+        self.provider_with(reqwest::Client::new(), base, timeouts)
+    }
+
+    fn provider_with(
+        self,
+        http: reqwest::Client,
+        base: String,
+        timeouts: LlmTimeouts,
+    ) -> Box<dyn LlmProvider> {
         match self {
             Adapter::Openai => {
                 Box::new(OpenAiProvider::new(http, base, None, "m").with_timeouts(timeouts))
@@ -342,4 +351,81 @@ async fn stub_slow_hold_is_capped_by_the_same_timeouts() {
         matches!(out.last(), Some(Ok(StreamDelta::Done { .. }))),
         "{out:?}"
     );
+}
+
+/// 最初の差分をチャンクで 1 つ送り、終わりのチャンクを送らないまま接続を閉じる送り先（応答の途中で接続が切れる）。
+async fn spawn_cut_connection(adapter: Adapter) -> String {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let first = adapter.first_event();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        while let Ok((mut sock, _)) = listener.accept().await {
+            // 要求をヘッダと content-length の本文まで読み切ってから答える。
+            let mut buf = Vec::new();
+            let mut chunk = [0u8; 4096];
+            loop {
+                let n = sock.read(&mut chunk).await.unwrap_or(0);
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+                let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
+                    continue;
+                };
+                let head = String::from_utf8_lossy(&buf[..end]).to_ascii_lowercase();
+                let len: usize = head
+                    .lines()
+                    .find_map(|l| l.strip_prefix("content-length:"))
+                    .and_then(|v| v.trim().parse().ok())
+                    .unwrap_or(0);
+                if buf.len() >= end + 4 + len {
+                    break;
+                }
+            }
+            let reply = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\n\r\n{:x}\r\n{first}\r\n",
+                first.len()
+            );
+            let _ = sock.write_all(reply.as_bytes()).await;
+            let _ = sock.flush().await;
+            // 終わりのチャンク（0）を送らずに閉じる。
+            drop(sock);
+        }
+    });
+    format!("http://{addr}")
+}
+
+/// 流し始めた後に接続が切れた読み取りの誤りは、プロバイダが切った印の付いた一時障害にする（まだ何も確定していなければ
+/// gateway が送り直す・BUG-224）。3 アダプタに共通の読み取り（`timeouts.rs` の `next_chunk`）を通る。
+#[tokio::test]
+async fn a_connection_cut_midway_is_marked_as_cut_by_the_provider() {
+    for adapter in Adapter::ALL {
+        let base = spawn_cut_connection(adapter).await;
+        let p = adapter.provider(base, ms(5_000, 5_000, 10_000));
+        let (deltas, msg) = drain_until_error(p.as_ref()).await;
+        assert_eq!(deltas, vec![hi()], "{}", p.name());
+        assert!(
+            msg.starts_with("cut by provider: stream: "),
+            "{}: {msg}",
+            p.name()
+        );
+        assert!(!msg.contains("127.0.0.1"), "{msg}");
+    }
+}
+
+/// HTTP クライアント自体の時間切れ（本文の途中）は暴走止めなので、送り直しの印を付けない（BUG-224）。
+#[tokio::test]
+async fn the_http_clients_own_timeout_is_not_marked_as_cut() {
+    for adapter in Adapter::ALL {
+        let base = spawn_mock(adapter, Behavior::Stall).await;
+        let http = reqwest::Client::builder()
+            .timeout(Duration::from_millis(800))
+            .build()
+            .unwrap();
+        let p = adapter.provider_with(http, base, ms(5_000, 5_000, 10_000));
+        let (deltas, msg) = drain_until_error(p.as_ref()).await;
+        assert_eq!(deltas, vec![hi()], "{}", p.name());
+        assert!(msg.starts_with("stream: "), "{}: {msg}", p.name());
+    }
 }
