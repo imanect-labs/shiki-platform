@@ -290,3 +290,28 @@ def test_find_lint_bin_honours_the_env(tmp_path, monkeypatch):
         run_ir_lint([("a", {})])
     v = static.grader_version()
     assert v["ir_lint_sha256"] is None and v["grader"] >= 1
+
+
+def test_present_if_treats_false_as_absent():
+    """製品の present_if と同じく、false も「値が無い」（with_count: false の /count は読めない）。"""
+    cat = recorded.catalog()
+
+    def ir(with_count):
+        q = {"table": "t", "query": {} if with_count is None else {"with_count": with_count}}
+        return {
+            "nodes": [
+                {"id": "q", "type": "data.query", "params": q},
+                {
+                    "id": "use",
+                    "type": "storage.write",
+                    "params": {
+                        "name": "n",
+                        "content": {"$from": "nodes.q.output", "path": "/count"},
+                    },
+                },
+            ]
+        }
+
+    assert output_path_findings(ir(True), cat) == []
+    for absent in (False, None):
+        assert [f.code for f in output_path_findings(ir(absent), cat)] == ["output_path"], absent

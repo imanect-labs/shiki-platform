@@ -305,10 +305,12 @@ def _resolve(value: Any, tokens: list[str]) -> Any:
 
 
 def _present(params: Any, present_if: str) -> bool:
+    """設定のその場所に値があるか（製品の `OutputField::present_if` と同じく、無い・false・空の文字・空のリスト・
+    空のオブジェクトは「値が無い」）。"""
     if not present_if:
         return True
     v = _resolve(params, pointer_tokens(present_if))
-    return v not in (None, [], {}, "")
+    return not (v is None or v is False or v == "" or v == [] or v == {})
 
 
 def input_ref_findings(ir: Mapping, expect: Expect) -> list[Finding]:
