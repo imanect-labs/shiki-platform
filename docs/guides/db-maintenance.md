@@ -235,11 +235,17 @@ migration 0114 は、`tenant_id` を持つテナント表に RLS を付ける（
   ```sql
   CREATE ROLE shiki_maintenance NOLOGIN NOSUPERUSER BYPASSRLS NOCREATEDB NOCREATEROLE;
   GRANT shiki_maintenance TO shiki_runtime WITH INHERIT FALSE, SET TRUE;
-  -- 表と sequence の権限（0114 を流し直す代わり。所有者のロールで流す）
+  -- 以下は 0114 が飛ばした権限の付与（migration の所有者のロールで流す）
   GRANT USAGE ON SCHEMA public TO shiki_maintenance;
   GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO shiki_maintenance;
   GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO shiki_maintenance;
   REVOKE ALL ON TABLE _sqlx_migrations FROM shiki_maintenance;
+  GRANT EXECUTE ON FUNCTION shiki_analyze(regclass, boolean) TO shiki_maintenance;
+  -- 以後の migration で増える表と sequence にも付ける（既定権限は作ったロールごとに効く）
+  ALTER DEFAULT PRIVILEGES FOR ROLE CURRENT_USER IN SCHEMA public
+      GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO shiki_maintenance;
+  ALTER DEFAULT PRIVILEGES FOR ROLE CURRENT_USER IN SCHEMA public
+      GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO shiki_maintenance;
   ```
   移行モードのうちは、ロールが無くても既存の経路は壊れない（横断処理は文脈を設定しないだけで動く）。
   `begin_cross_tenant_tx` を使う経路だけがロールの切り替えで失敗する。BYPASSRLS のロールを作れない環境では、
