@@ -679,3 +679,21 @@ def test_client_disconnect_is_charged_the_reservation():
     lingering = [t for t in threading.enumerate() if "process_request_thread" in t.name]
     assert lingering == []
 
+
+def test_stopping_writes_inflight_requests_at_their_reservation():
+    """止めるとき（Ctrl-C・SIGTERM）は、処理中の要求を予約の額で書く。後から終わっても二重に書かない。"""
+    cfg = load_config()
+    state = ProxyState(cfg, upstream="http://127.0.0.1:9")
+    state.register_run({"run_id": "r1", "exp": "e0", "cap_usd": 1.0})
+    state.set_active({"run_id": "r1", "trial": "t1"})
+    raw = json.dumps(body()).encode()
+    ticket = state.admit(body(), len(raw), None, False)
+    assert ticket.reserved > 0
+    assert state.abandon_inflight() == 1
+    [entry] = Ledger(cfg.paths.ledger).entries()
+    assert entry["cost_micros"] == ticket.reserved and entry["usage_missing"] is True
+    assert entry["abandoned"] is True and entry["run_id"] == "r1" and entry["trial"] == "t1"
+    assert state.spend()["reserved_micros"] == 0
+    state.settle(ticket, {"cost_micros": 1, "run_id": "r1"})
+    assert len(Ledger(cfg.paths.ledger).entries()) == 1
+    assert state.abandon_inflight() == 0

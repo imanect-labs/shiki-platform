@@ -17,6 +17,8 @@
 - 送る前に拒んだ要求と、上流に繋がらなかった要求は台帳に載らないので、実行（run）ごとに数えて
   `GET /abeval/spend` の `runs[].rejected`・`unreachable`・`last_rejection` で返す（Mode B がチャットの中の
   基盤の失敗を見分けるため。割り当たらない拒否は `unassigned_rejected`）。
+- Ctrl-C・SIGTERM で止めるときは、処理中の要求（予約のあるもの）を予約の額で台帳に書いてから終わる
+  （`usage_missing`・`client_gone`・`abandoned` の印・上流では課金されたかもしれないので少なく数えない）。
 - capture_only の実行は、要求の本文を `<cache>/requests/<run>/` に保存し、上流へ送らずに最小の SSE を返す（$0）。
   `--capture` を付けると、転送した要求の本文も同じ場所に保存する（鍵はヘッダーにあり、本文には入らない）。
 """
@@ -31,6 +33,7 @@ import json
 import os
 import re
 import secrets
+import signal
 import socket
 import sys
 import threading
@@ -96,6 +99,7 @@ class Ticket:
     session: str | None
     reserved: int
     counting: bool
+    model: str | None = None
 
     @property
     def tag_parts(self) -> tuple[str, str, str]:
@@ -128,6 +132,9 @@ class ProxyState:
         self._unreachable: dict[str, int] = {}
         self._last_rejection: dict[str, str] = {}
         self._unassigned_rejected = 0
+        # 予約のある処理中の要求（止めるときに台帳に書く）と、書いた後の要求の番号。
+        self._tickets: dict[int, Ticket] = {}
+        self._abandoned: set[int] = set()
         self.ledger.refresh()  # 壊れた台帳なら起動しない。
 
     # --- 制御の口 ---
@@ -307,15 +314,56 @@ class ProxyState:
                     f"${micros_to_usd(run.cap_micros):.2f}）"
                 )
             self._reserved[seq] = (run.run_id, worst)
-            return Ticket(seq, run, trial, session, worst, counting)
+            ticket = Ticket(seq, run, trial, session, worst, counting, str(model))
+            self._tickets[seq] = ticket
+            return ticket
 
     def settle(self, ticket: Ticket, entry: dict | None) -> None:
         """台帳に書いてから予約を戻す（書いてから戻すので、累計が一瞬でも少なく見えない）。"""
         with self._lock:
+            self._tickets.pop(ticket.seq, None)
+            if ticket.seq in self._abandoned:
+                self._abandoned.discard(
+                    ticket.seq
+                )  # 止めるときに予約の額で書いた（二重に書かない）
+                return
             # 書けなかったら予約を残す（この中継が動いている間は、使ったかもしれない額を上限に数え続ける）。
             if entry is not None:
                 self.ledger.append(entry)
             self._reserved.pop(ticket.seq, None)
+
+    def abandon_inflight(self) -> int:
+        """処理中の要求を予約の額で台帳に書く（止めるとき・書いた数）。後から終わっても二重に書かない。"""
+        with self._lock:
+            n = 0
+            for seq, ticket in sorted(self._tickets.items()):
+                if seq not in self._reserved:
+                    continue
+                exp, run_id, trial = ticket.tag_parts
+                self.ledger.append(
+                    {
+                        "ts": _now(),
+                        "exp": exp,
+                        "run_id": run_id,
+                        "trial": ticket.trial,
+                        "session": ticket.session,
+                        "model": ticket.model,
+                        "path": MESSAGES,
+                        "status": 0,
+                        "usage": {},
+                        "cost_micros": ticket.reserved,
+                        "reserved_micros": ticket.reserved,
+                        "usage_missing": True,
+                        "client_gone": True,
+                        "abandoned": True,
+                        "captured": False,
+                        "tag": f"{self.cfg.proxy.tag_prefix}/{exp}/{run_id}/{trial}",
+                    }
+                )
+                self._reserved.pop(seq, None)
+                self._abandoned.add(seq)
+                n += 1
+            return n
 
     def capture_dir(self, run_id: str) -> Path:
         return self.cfg.paths.cache / "requests" / run_id
@@ -761,11 +809,23 @@ def main(argv: list[str] | None = None) -> int:
         file=sys.stderr,
         flush=True,
     )
+
+    def stop(_signum, _frame):
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, stop)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
+        n = state.abandon_inflight()
+        if n:
+            print(
+                f"abeval.proxy: 処理中の要求 {n} 件を予約の額で台帳に書きました（usage_missing）",
+                file=sys.stderr,
+                flush=True,
+            )
         server.server_close()
     return 0
 
