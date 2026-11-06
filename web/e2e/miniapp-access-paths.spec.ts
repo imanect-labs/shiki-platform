@@ -17,6 +17,7 @@ import {
 /// - 止まった表は、画面に戻ったときに確かめ直して出る。確かめ直しは間隔を空け、同時に 1 つだけ問う（BUG-217）。
 /// - スクリプトやドライブのトップへの保存など、前もって確かめられないブロックがあれば、名前を挙げて言い切らない（GAP-82）。
 ///   文書検索とフォルダーを選ばない一覧も、AI エージェントと同じく、使う人が見られるものだけを使うと言って挙げる。
+///   足りない相手がいるときの公開の確認でも、そのようなブロックがあることを言う。
 /// - 共有されたワークフローの「いま実行する」も、自分に足りない権限を押す前に言い、共有されれば開き直さずに実行できる
 ///   （GAP-37）。
 /// - 失敗を「エラー時」の出口で扱うブロックの権限が無くても、ボタンと「いま実行する」は止めず、作った人が用意した
@@ -447,6 +448,105 @@ test.describe("使う人の権限の確かめの続き（BUG-216・BUG-217・GAP
       await phoneGaps.scrollIntoViewIfNeeded();
       await noSideScroll(alicePhone);
       if (SHOTS) await alicePhone.screenshot({ path: `${SHOTS}/gaps-share-phone.png` });
+    } finally {
+      await cleanupAll(
+        async () => alicePhone?.context().close(),
+        () => bob.context().close(),
+      );
+    }
+  });
+
+  test("足りない相手がいる公開の確認でも、前もって確かめられないブロックがあると言う", async ({ page, browser }) => {
+    test.setTimeout(180_000);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const bob = await personOn(browser, "bob");
+    let alicePhone: Page | null = null;
+    try {
+      await loginViaKeycloak(page);
+      const bobId = await meId(bob);
+      const claims = await createTable(page, uniqueName("e2e-申請"));
+      await shareTable(page, claims.id, bobId, "submitter");
+      const hidden = await createTable(page, uniqueName("e2e-経理"));
+      const addTo = (name: string, table: { id: string; titleKey: string }, label: string, then?: Record<string, unknown>) => ({
+        ir_version: 1,
+        name,
+        display_name: name,
+        declared_scopes: ["data.write"],
+        triggers: [{ kind: "interactive" }],
+        nodes: [
+          {
+            id: "add",
+            type: "data.record.create",
+            label,
+            params: { table: table.id, data: { [table.titleKey]: { $from: "input", path: "/title" } } },
+          },
+          ...(then ? [then] : []),
+        ],
+        edges: then ? [{ from: "add", to: then.id }] : [],
+      });
+      // v1 は申請に足すだけ（bob は足せる）。v2 で、経理に足してからスクリプトで整えるボタンを足す（bob は経理に
+      // 足せない。スクリプトはテーブルに書けるので、前もって確かめられない）。
+      const flow = uniqueName("publish-flow");
+      const flowId = await createFlow(page, addTo(flow, claims, "申請に足す"));
+      const flow2 = uniqueName("publish-gaps");
+      const flow2Id = await createFlow(
+        page,
+        addTo(flow2, hidden, "経理に足す", {
+          id: "tidy",
+          type: "script.run",
+          label: "控えを整える",
+          params: { source: { inline: "function main(i){ return i; }" } },
+        }),
+      );
+      const screen = (withSecond: boolean) =>
+        `# 経費\n\n\`\`\`ui\napp 経費の申請\n件名 = text 必須 as title\nbutton 申請する -> workflow ${flow}\n${
+          withSecond ? `button 経理に回す -> workflow ${flow2}\n` : ""
+        }\`\`\`\n`;
+      const body = { description: "経費の申請", screen: screen(false), workflows: [{ alias: flow, artifact_id: flowId, version: 1 }] };
+      const app = await api(page, "POST", "/mini-apps", { name: uniqueName("publish-app"), body });
+      cleanup.add(() => deleteArtifactApi(page, app.id));
+      await api(page, "POST", `/mini-apps/${app.id}/publish`, { version: 1 });
+      await shareArtifact(page, app.id, bobId);
+      await api(page, "PUT", `/mini-apps/${app.id}`, {
+        expected_version: 1,
+        body: {
+          ...body,
+          screen: screen(true),
+          workflows: [...body.workflows, { alias: flow2, artifact_id: flow2Id, version: 1 }],
+        },
+      });
+
+      const openPublish = async (p: Page) => {
+        await p.goto(`/apps/${app.id}`);
+        await p.getByTestId("miniapp-publish-bar").getByRole("button", { name: "下書きを試す" }).click();
+        await p.getByTestId("miniapp-publish").click();
+        const dialog = p.getByTestId("miniapp-publish-dialog");
+        await expect(dialog.getByTestId("access-report")).toContainText(
+          "共有している相手のうち 1 件は、このバージョンの一部を使えません。",
+          { timeout: 20_000 },
+        );
+        return dialog;
+      };
+      const publish = await openPublish(page);
+      await expect(publish.getByTestId("access-report-missing")).toContainText(`ワークフロー「${flow2}」: テーブル「`);
+      await expect(publish.getByTestId("access-report-publish-unchecked")).toHaveText(
+        "ほかに、前もって確かめられないブロックがあります。",
+      );
+      await expect(publish.getByTestId("access-report")).toContainText(
+        "公開はできます。相手ごとの直し方と、そのブロックの名前は、共有の画面で見られます。",
+      );
+      await expect(publish.getByRole("button", { name: "公開", exact: true })).toBeEnabled();
+      if (SHOTS) await page.screenshot({ path: `${SHOTS}/gaps-publish-missing-pc.png` });
+      await publish.getByRole("button", { name: "キャンセル" }).click();
+
+      alicePhone = await phoneOf(browser, page);
+      const phonePublish = await openPublish(alicePhone);
+      const phoneGaps = phonePublish.getByTestId("access-report-publish-unchecked");
+      await expect(phoneGaps).toBeVisible();
+      await phoneGaps.scrollIntoViewIfNeeded();
+      await noSideScroll(alicePhone);
+      if (SHOTS) await alicePhone.screenshot({ path: `${SHOTS}/gaps-publish-missing-phone.png` });
+      await phonePublish.getByRole("button", { name: "キャンセル" }).click();
     } finally {
       await cleanupAll(
         async () => alicePhone?.context().close(),
