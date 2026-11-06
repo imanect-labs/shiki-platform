@@ -60,8 +60,10 @@ export function MiniAppDataGrid({ alias }: { alias: string }) {
   const [waiting, setWaiting] = React.useState<Waiting | null>(null);
   const [attempt, setAttempt] = React.useState(0);
   const [status, setStatus] = React.useState<DataGridStatus | null>(null);
-  // 権限を確かめ直している（BUG-217）。
+  // 権限を確かめ直している（BUG-217）。確かめ直した後も描けない理由が同じなら、まだ共有されていないと言う。
   const [rechecking, setRechecking] = React.useState(false);
+  const [recheckedFor, setRecheckedFor] = React.useState<string | null>(null);
+  const fixable = host?.fixableBySharing?.(alias) ?? true;
   // 枠の幅（列が収まるか・横に続くかの判定）。
   const frameRef = React.useRef<HTMLElement>(null);
   const [frameWidth, setFrameWidth] = React.useState(0);
@@ -132,7 +134,10 @@ export function MiniAppDataGrid({ alias }: { alias: string }) {
         <AlertTriangle className="mt-0.5 size-4 shrink-0" aria-hidden />
         <div className="flex min-w-0 flex-col items-start gap-1.5">
           <span className="[overflow-wrap:anywhere]">表「{alias}」を表示できません。{blocked}</span>
-          {host.recheck ? (
+          {fixable && recheckedFor === blocked && !rechecking ? (
+            <span data-testid={`miniapp-data-grid-still-blocked-${alias}`}>確かめ直しましたが、まだ共有されていません。</span>
+          ) : null}
+          {host.recheck && fixable ? (
             <Button
               type="button"
               size="sm"
@@ -143,7 +148,10 @@ export function MiniAppDataGrid({ alias }: { alias: string }) {
                 const recheck = host.recheck;
                 if (!recheck) return;
                 setRechecking(true);
-                void recheck().finally(() => setRechecking(false));
+                void recheck().finally(() => {
+                  setRechecking(false);
+                  setRecheckedFor(blocked);
+                });
               }}
             >
               {rechecking ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : <RotateCcw className="size-3.5" aria-hidden />}

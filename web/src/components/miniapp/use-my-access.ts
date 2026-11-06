@@ -7,14 +7,34 @@
 ///
 /// - 問い合わせは同時に 1 つだけ（確かめている間に頼まれたら、同じ答えを待つ）。
 /// - 前の確かめから決まった間隔より短ければ、前の答えを使う（押したとき 2 秒・画面に戻ったとき 10 秒）。
-/// - 止めているもの（足りない・範囲が狭い部品）が無ければ、画面に戻っても確かめ直さない。
+/// - 止めているもの（[`holdsBack`]）が無ければ、画面に戻っても確かめ直さない（確かめるたびに監査の行と OpenFGA への
+///   問いが増えるので、共有してもらっても何も変わらない部品のためには問わない）。
 ///
 /// 判定はサーバー（`GET /mini-apps/{id}/access`）が決める。読めなかったときは止めない（押したときにサーバーが本人の権限で
 /// 確かめる）。
 
 import * as React from "react";
 
-import { getMyMiniAppAccess, type MyAppAccess } from "@/lib/artifact-api";
+import { getMyMiniAppAccess, type MyAppAccess, type MyPartAccess } from "@/lib/artifact-api";
+
+/// 部品を止めているか（共有してもらえば変わるもの）。画面に戻ったときに確かめ直すか、止めた理由に「開き直さずに
+/// 押せます」と添えるかを決める。
+///
+/// - ワークフロー（ボタン）は、足りない権限があるときだけ止める（範囲が狭いだけ〔追加だけの共有〕では押せる）。
+/// - 表は、見られないときと、自分が追加したレコードだけを出しているときに数える（共有されれば全部が出る）。
+/// - スキルは止めない（見られないフォルダーやファイルは AI の答えに使われないだけ）。
+/// - 読めなかった部品（消えた・本文が壊れている）は、共有しても直らない（作成した人が直す）ので数えない。
+export function holdsBack(p: MyPartAccess): boolean {
+  if (p.unavailable) return false;
+  switch (p.part.kind) {
+    case "workflow":
+      return p.status === "missing";
+    case "data_view":
+      return p.status === "missing" || p.status === "limited";
+    case "skill":
+      return false;
+  }
+}
 
 /// 止めたボタンを押したときに、前の確かめを使い回す間隔（二度押しで 2 回問わない）。
 export const RECHECK_ON_PRESS_MS = 2_000;
@@ -75,7 +95,7 @@ export function useMyAppAccess(
   }, [key, check]);
 
   // 止めているものがあるときだけ、画面に戻ったら確かめ直す。
-  const blocking = access?.parts.some((p) => !p.unavailable) ?? false;
+  const blocking = access?.parts.some(holdsBack) ?? false;
   React.useEffect(() => {
     if (!blocking) return;
     const again = () => void check(RECHECK_ON_RETURN_MS);

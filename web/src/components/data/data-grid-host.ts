@@ -20,6 +20,8 @@ export type DataGridHost = {
   ownRecordsOnly?: (alias: string) => boolean;
   /// 表を描けない理由が権限のときに、確かめ直す（共有してもらった後に、開き直さずに表を出す・BUG-217）。
   recheck?: () => Promise<void>;
+  /// 描けない表が、共有してもらえば出るか（ビューが見つからないときは共有しても直らない）。渡さなければ直るものとする。
+  fixableBySharing?: (alias: string) => boolean;
 };
 
 /// 表の別名ごとの、使う人の権限の確かめの結果（[`miniAppDataGridHost`] に渡す）。

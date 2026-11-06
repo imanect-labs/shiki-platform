@@ -52,6 +52,9 @@ export type YuiActionHost = {
   /// 止めたボタンが押されたときに確かめ直し、使えない理由を返す（使えるなら null・確かめられなかったときも null にして
   /// サーバーに任せる）。渡すと、止めたボタンも押せる形で描く（共有してもらった後に、開き直さずに押せる・BUG-217）。
   recheckBlocked?: (workflowName: string) => Promise<string | null>;
+  /// 止めたボタンが、共有してもらえば押せるようになるか（足りない権限がある。ワークフローが見つからないときは
+  /// 共有しても直らない）。渡さなければ、止めたボタンはどれも共有で直るものとして扱う。
+  fixableBySharing?: (workflowName: string) => boolean;
 };
 
 export const YuiActionContext = React.createContext<YuiActionHost | null>(null);
@@ -181,8 +184,10 @@ export function useYuiActions(
   const actions = figure ? figureActions(figure) : [];
   const blocked = host.blockedReason
     ? actions.flatMap((a) => {
-        const reason = a.target.kind === "workflow" ? host.blockedReason?.(a.target.name) : null;
-        return reason ? [{ label: a.label, reason }] : [];
+        if (a.target.kind !== "workflow") return [];
+        const reason = host.blockedReason?.(a.target.name);
+        const fixable = host.fixableBySharing?.(a.target.name) ?? true;
+        return reason ? [{ label: a.label, reason, fixable }] : [];
       })
     : [];
   if (blocked.length > 0 && blocked.length === actions.length && !host.recheckBlocked) {
@@ -192,10 +197,12 @@ export function useYuiActions(
       runs: host.uiRuns.filter((r) => r.action_id.startsWith(prefix)),
     };
   }
+  // 「開き直さずに押せます」は、共有してもらえば押せるボタンがあるときだけ添える（見つからないワークフローは、共有しても
+  // 直らない・付録 C の P7）。
   return {
     onAction,
-    ...(blocked.length > 0 ? { blockedNotes: blocked } : {}),
-    ...(blocked.length > 0 && host.recheckBlocked ? { blockedHint: BLOCKED_HINT } : {}),
+    ...(blocked.length > 0 ? { blockedNotes: blocked.map(({ label, reason }) => ({ label, reason })) } : {}),
+    ...(blocked.some((b) => b.fixable) && host.recheckBlocked ? { blockedHint: BLOCKED_HINT } : {}),
     invokedActions: host.invokedActions.filter((a) => a.startsWith(prefix)).map((a) => a.slice(prefix.length)),
     runs: host.uiRuns.filter((r) => r.action_id.startsWith(prefix)),
     // 会話に送るボタン（-> chat）を持つ図は、会話の無いアプリにできない（保存時に弾かれる）。

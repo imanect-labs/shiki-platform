@@ -31,7 +31,7 @@ import {
   UNPUBLISHED_SHARE_NOTE,
 } from "@/components/miniapp/publish";
 import { DataGridHostContext, miniAppDataGridHost } from "@/components/data/data-grid-host";
-import { RECHECK_ON_PRESS_MS, useMyAppAccess } from "@/components/miniapp/use-my-access";
+import { RECHECK_ON_PRESS_MS, holdsBack, useMyAppAccess } from "@/components/miniapp/use-my-access";
 import { Markdown } from "@/components/prompt-kit/markdown";
 import { useRunsRefresh, YuiActionContext, type YuiActionHost } from "@/components/prompt-kit/yui-actions";
 import {
@@ -341,6 +341,11 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
               const p = fresh ? findPart(fresh.parts, "workflow", name) : null;
               return p ? myBlockedReason(p) : null;
             },
+            // 見つからないワークフローは、共有してもらっても押せるようにならない。
+            fixableBySharing: (name) => {
+              const p = partAccess("workflow", name);
+              return p != null && holdsBack(p);
+            },
           }
         : null,
     [app, runs, refreshRuns, partAccess, checkAccess],
@@ -378,9 +383,13 @@ export default function MiniAppRunPage({ params }: { params: Promise<{ id: strin
               return p ? myBlockedReason(p) : null;
             },
             ownRecordsOnly: (alias: string) => partAccess("data_view", alias)?.status === "limited",
-            // 共有してもらった後に確かめ直す（BUG-217）。
+            // 共有してもらった後に確かめ直す（BUG-217）。見つからないビューは、共有しても直らない。
             recheck: async () => {
               await checkAccess(RECHECK_ON_PRESS_MS);
+            },
+            fixableBySharing: (alias: string) => {
+              const p = partAccess("data_view", alias);
+              return p != null && holdsBack(p);
             },
           }
         : null,
