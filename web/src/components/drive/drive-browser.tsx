@@ -36,6 +36,7 @@ import { cn } from "@/lib/utils";
 
 import { ConfirmDialog, MoveDialog, TextPromptDialog } from "./dialogs";
 import { DriveChrome } from "./drive-chrome";
+import { DriveDragLayer } from "./drive-drag-layer";
 import { NewFab, NewMenuDesktop, type CreateHandlers } from "./new-menu";
 import { NodeCard } from "./node-card";
 import { NodeRow, type NodeAction } from "./node-row";
@@ -587,6 +588,9 @@ export function DriveBrowser() {
           </div>
         )}
       </div>
+
+      {/* ドラッグ中にカーソルへ付いて浮くカード（マウス端末のみ） */}
+      {dnd ? <DriveDragLayer /> : null}
 
       {/* スマホの「＋ 新規」（アップロード／新規フォルダ／新規作成を 1 つに集約） */}
       <NewFab

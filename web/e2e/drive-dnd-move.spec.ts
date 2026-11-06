@@ -41,7 +41,16 @@ test("ドライブの項目を D&D でフォルダへ移動・パンくずで戻
   await expect(page.getByLabel("アップロード中")).toHaveCount(0);
 
   // --- ファイル → フォルダ A ---
-  await page.getByText(fileName, { exact: true }).dragTo(page.getByText(folderA, { exact: true }));
+  // 掴んでいる間はカーソルに付いて浮くカードが出て、乗った先を「→ ○○へ移動」で示す。
+  const src = (await page.getByText(fileName, { exact: true }).boundingBox())!;
+  const dst = (await page.getByText(folderA, { exact: true }).boundingBox())!;
+  await page.mouse.move(src.x + 10, src.y + src.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(src.x + 30, src.y + 20, { steps: 4 });
+  await page.mouse.move(dst.x + 10, dst.y + dst.height / 2, { steps: 8 });
+  await expect(page.getByText(`「${folderA}」へ移動`, { exact: true })).toBeVisible();
+  await page.mouse.up();
+  await expect(page.getByText(`「${folderA}」へ移動`, { exact: true })).toHaveCount(0);
   await expect(page.getByText(`「${fileName}」を「${folderA}」へ移動しました`, { exact: true })).toBeVisible();
   await expect(page.getByText(fileName, { exact: true })).toHaveCount(0);
 
