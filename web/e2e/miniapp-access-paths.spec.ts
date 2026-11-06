@@ -18,6 +18,9 @@ import {
 /// - スクリプトやドライブのトップへの保存など、前もって確かめられないブロックがあれば、名前を挙げて言い切らない（GAP-82）。
 /// - 共有されたワークフローの「いま実行する」も、自分に足りない権限を押す前に言い、共有されれば開き直さずに実行できる
 ///   （GAP-37）。
+/// - 失敗を「エラー時」の出口で扱うブロックの権限が無くても、ボタンと「いま実行する」は止めず、作った人が用意した
+///   誤りの返答で終わる（7g の前と同じ）。
+/// - 範囲が狭いだけの部品（追加だけの共有で読むワークフロー）では、画面に戻っても確かめ直さない（止めているものが無い）。
 /// PC（1440px）とスマホ（390px）で確かめる。作ったもの（アプリ・ワークフロー・ビュー・テーブル）は最後に消す。
 /// `E2E_SHOTS_DIR` を渡すとスクリーンショットを撮る。
 
@@ -401,5 +404,240 @@ test.describe("使う人の権限の確かめの続き（BUG-216・BUG-217・GAP
         () => bob.context().close(),
       );
     }
+  });
+
+  test("失敗を「エラー時」の出口で扱うブロックの権限では、ボタンも「いま実行する」も止めず、作った人の返答で終わる", async ({
+    page,
+    browser,
+  }) => {
+    test.setTimeout(240_000);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const bob = await personOn(browser, "bob");
+    try {
+      await loginViaKeycloak(page);
+      const bobId = await meId(bob);
+      const claimsName = uniqueName("e2e-申請");
+      const claims = await createTable(page, claimsName);
+      // 申請に足し、足せなければ（bob は申請のテーブルの権限を持たない）誤りの返答を出す（ir.md §7.10 の置き方）。
+      const flow = uniqueName("handled-flow");
+      const flowId = await createFlow(page, {
+        ir_version: 1,
+        name: flow,
+        display_name: flow,
+        declared_scopes: ["data.write"],
+        triggers: [{ kind: "interactive" }],
+        input_schema: { type: "object", properties: { title: { type: "string", title: "件名" } } },
+        nodes: [
+          {
+            id: "add",
+            type: "data.record.create",
+            label: "申請に足す",
+            on_error: "continue",
+            params: { table: claims.id, data: { [claims.titleKey]: { $from: "input", path: "/title" } } },
+          },
+          { id: "done", type: "workflow.reply", label: "受付", params: { format: "text", value: "申請しました" } },
+          {
+            id: "sorry",
+            type: "workflow.reply",
+            label: "書けない",
+            params: { format: "text", tone: "error", value: "申請先に書けません。管理者に連絡してください。" },
+          },
+        ],
+        edges: [
+          { from: "add", to: "done" },
+          { from: "add", from_port: "error", to: "sorry" },
+        ],
+      });
+      const screen = `# 経費\n\n\`\`\`ui\napp 経費の申請\n件名 = text 必須 as title\nbutton 申請する -> workflow ${flow}\n\`\`\`\n`;
+      const app = await api(page, "POST", "/mini-apps", {
+        name: uniqueName("handled-app"),
+        body: { description: "経費の申請", screen, workflows: [{ alias: flow, artifact_id: flowId, version: 1 }] },
+      });
+      cleanup.add(() => deleteArtifactApi(page, app.id));
+      await api(page, "POST", `/mini-apps/${app.id}/publish`, { version: 1 });
+      await shareArtifact(page, app.id, bobId);
+      await shareArtifact(page, flowId, bobId);
+      const runCount = async () => {
+        const res = await page.request.get(`/api/workflows/${flowId}/runs`);
+        return ((await res.json()) as { items: unknown[] }).items.length;
+      };
+
+      // 使う人（アプリ）: ボタンは止まらず、押すと作った人が用意した誤りの返答で終わる。
+      await bob.goto(`/apps/${app.id}`);
+      const figure = bob.getByTestId("ui-figure");
+      await expect(figure.getByRole("button", { name: "申請する" })).toBeEnabled({ timeout: 20_000 });
+      await bob.waitForLoadState("networkidle");
+      await expect(figure.getByTestId("ui-figure-blocked")).toHaveCount(0);
+      await figure.getByLabel("件名").fill("出張");
+      await figure.getByRole("button", { name: "申請する" }).click();
+      await figure.getByRole("group", { name: "実行の確認" }).getByRole("button", { name: "実行する" }).click();
+      await expect(bob.getByTestId("yui-run-result")).toContainText("申請先に書けません。管理者に連絡してください。", {
+        timeout: 60_000,
+      });
+      // 裏取り: 申請のテーブルには書いていない（作った人が見る）。
+      const records = (await (await page.request.get(`/api/data/tables/${claims.id}/records`)).json()) as { items: unknown[] };
+      expect(records.items).toHaveLength(0);
+      if (SHOTS) await bob.screenshot({ path: `${SHOTS}/handled-user-pc.png` });
+
+      // 使う人（いま実行する）: 理由を出さず、押すと実行する。
+      const before = await runCount();
+      await bob.goto(`/workflows/${flowId}`);
+      await bob.getByRole("button", { name: "実行", exact: true }).click();
+      const dialog = bob.getByRole("dialog", { name: "いま実行する" });
+      await dialog.getByRole("textbox", { name: "件名" }).fill("出張");
+      await bob.waitForLoadState("networkidle");
+      await expect(dialog.getByTestId("run-now-access")).toHaveCount(0);
+      await dialog.getByRole("button", { name: "実行する" }).click();
+      await bob.waitForURL(/\/runs\?run=/, { timeout: 30_000 });
+      expect(await runCount()).toBe(before + 1);
+
+      // 作る人: 申請のテーブルの権限は「場合によって要る」と言う。
+      await page.goto(`/apps/${app.id}`);
+      await page.getByRole("button", { name: "共有" }).click();
+      const share = page.getByRole("dialog");
+      const needs = share.getByTestId("access-report-needs");
+      await expect(needs).toContainText(`テーブル「${claimsName}」にレコードを追加する`, { timeout: 20_000 });
+      await expect(needs.getByTestId("access-conditional")).toHaveCount(1);
+      await share.getByRole("button", { name: "閉じる" }).click();
+    } finally {
+      await bob.context().close();
+    }
+  });
+
+  test("範囲が狭いだけの部品では、画面に戻っても確かめ直さない", async ({ page, browser }) => {
+    test.setTimeout(180_000);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const bob = await personOn(browser, "bob");
+    try {
+      await loginViaKeycloak(page);
+      const bobId = await meId(bob);
+      const ledger = await createTable(page, uniqueName("e2e-台帳"));
+      // bob は台帳を「追加だけ」で共有されている。ボタンのワークフローは台帳を読む（自分が追加したものだけ読める）。
+      await shareTable(page, ledger.id, bobId, "submitter");
+      const flow = uniqueName("limited-flow");
+      const flowId = await createFlow(page, {
+        ir_version: 1,
+        name: flow,
+        display_name: flow,
+        declared_scopes: ["data.read"],
+        triggers: [{ kind: "interactive" }],
+        nodes: [{ id: "q", type: "data.query", label: "台帳を読む", params: { table: ledger.id } }],
+        edges: [],
+      });
+      const screen = `\`\`\`ui\napp 台帳\nbutton 読む -> workflow ${flow}\n\`\`\`\n`;
+      const app = await api(page, "POST", "/mini-apps", {
+        name: uniqueName("limited-app"),
+        body: { description: "台帳", screen, workflows: [{ alias: flow, artifact_id: flowId, version: 1 }] },
+      });
+      cleanup.add(() => deleteArtifactApi(page, app.id));
+      await api(page, "POST", `/mini-apps/${app.id}/publish`, { version: 1 });
+      await shareArtifact(page, app.id, bobId);
+
+      let checks = 0;
+      const seen: string[] = [];
+      bob.on("request", (req) => {
+        if (new URL(req.url()).pathname === `/api/mini-apps/${app.id}/access`) checks += 1;
+      });
+      bob.on("response", async (res) => {
+        if (new URL(res.url()).pathname === `/api/mini-apps/${app.id}/access`) seen.push(await res.text());
+      });
+      await bob.goto(`/apps/${app.id}`);
+      const figure = bob.getByTestId("ui-figure");
+      await expect(figure.getByRole("button", { name: "読む" })).toBeEnabled({ timeout: 20_000 });
+      await bob.waitForLoadState("networkidle");
+      // 前提: 確かめの答えに、範囲が狭いだけのワークフローの部品がある（止めてはいない）。
+      expect(seen.some((t) => t.includes('"status":"limited"'))).toBeTruthy();
+      await expect(figure.getByTestId("ui-figure-blocked")).toHaveCount(0);
+      const first = checks;
+      expect(first).toBeGreaterThan(0);
+      // 間隔を過ぎてから画面に戻っても、止めているものが無いので問わない。
+      await bob.waitForTimeout(10_500);
+      await bob.evaluate(() => {
+        window.dispatchEvent(new Event("focus"));
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      await bob.waitForTimeout(1_000);
+      expect(checks).toBe(first);
+    } finally {
+      await bob.context().close();
+    }
+  });
+
+  test("見つからない部品には共有で直るとは言わず、確かめ直してもまだ足りなければそう言う", async ({ page }) => {
+    test.setTimeout(180_000);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await loginViaKeycloak(page);
+    const ledger = await createTable(page, uniqueName("e2e-台帳"));
+    const view = await api(page, "POST", "/data/views", { name: uniqueName("e2e-台帳の一覧"), table_id: ledger.id, query: {} });
+    cleanup.add(() => deleteArtifactApi(page, view.id));
+    const flow = uniqueName("gone-flow");
+    const flowId = await createFlow(page, {
+      ir_version: 1,
+      name: flow,
+      display_name: flow,
+      declared_scopes: ["data.read"],
+      triggers: [{ kind: "interactive" }],
+      nodes: [{ id: "q", type: "data.query", label: "台帳を読む", params: { table: ledger.id } }],
+      edges: [],
+    });
+    const app = await api(page, "POST", "/mini-apps", {
+      name: uniqueName("gone-app"),
+      body: {
+        description: "台帳",
+        screen: `\`\`\`ui\napp 台帳\nbutton 読む -> workflow ${flow}\n\`\`\`\n\n\`\`\`data_grid\nledger\n\`\`\`\n`,
+        workflows: [{ alias: flow, artifact_id: flowId, version: 1 }],
+        data_views: [{ alias: "ledger", artifact_id: view.id, version: view.version ?? 1 }],
+      },
+    });
+    cleanup.add(() => deleteArtifactApi(page, app.id));
+    await api(page, "POST", `/mini-apps/${app.id}/publish`, { version: 1 });
+
+    // 確かめの答えを差し替える（部品が消えた・本文が壊れたときの答えと、表だけが見られないときの答え）。
+    const gone = (version: number) => ({
+      version,
+      truncated: false,
+      parts: [
+        { part: { kind: "workflow", alias: flow }, status: "missing", unavailable: true, items: [] },
+        { part: { kind: "data_view", alias: "ledger" }, status: "missing", unavailable: true, items: [] },
+      ],
+    });
+    const hidden = (version: number) => ({
+      version,
+      truncated: false,
+      parts: [
+        {
+          part: { kind: "data_view", alias: "ledger" },
+          status: "missing",
+          unavailable: false,
+          items: [{ object: "table", need: "read", status: "missing", name: null }],
+        },
+      ],
+    });
+    let answer: (version: number) => unknown = gone;
+    await page.route(`**/api/mini-apps/${app.id}/access?*`, (route) => {
+      const version = Number(new URL(route.request().url()).searchParams.get("version") ?? "1");
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(answer(version)) });
+    });
+
+    await page.goto(`/apps/${app.id}`);
+    const blockedButtons = page.getByTestId("ui-figure").getByTestId("ui-figure-blocked");
+    await expect(blockedButtons).toContainText("このボタンで動くワークフローが見つかりません。アプリを作成した人に伝えてください。", {
+      timeout: 20_000,
+    });
+    await expect(blockedButtons).not.toContainText("共有してもらった後は");
+    const blockedGrid = page.getByTestId("miniapp-data-grid-blocked-ledger");
+    await expect(blockedGrid).toContainText("この表のビューが見つかりません。");
+    await expect(blockedGrid.getByRole("button", { name: "もう一度確かめる" })).toHaveCount(0);
+
+    // 表だけが見られないとき: 「もう一度確かめる」を置き、確かめ直してもまだなら、まだ共有されていないと言う。
+    answer = hidden;
+    await page.goto(`/apps/${app.id}`);
+    await expect(blockedGrid).toContainText("この表が使うテーブルが見つからないか、見る権限がありません。", { timeout: 20_000 });
+    await expect(blockedGrid.getByTestId("miniapp-data-grid-still-blocked-ledger")).toHaveCount(0);
+    await blockedGrid.getByRole("button", { name: "もう一度確かめる" }).click();
+    await expect(blockedGrid.getByTestId("miniapp-data-grid-still-blocked-ledger")).toHaveText(
+      "確かめ直しましたが、まだ共有されていません。",
+    );
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/gone-parts-pc.png` });
   });
 });
