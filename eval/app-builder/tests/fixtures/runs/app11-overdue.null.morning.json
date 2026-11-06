@@ -1,0 +1,166 @@
+{
+ "task": "app11-overdue",
+ "variant": "null",
+ "case": "morning",
+ "irs": {
+  "main": {
+   "ir_version": 1,
+   "name": "abeval-rec-0c9885-null",
+   "display_name": "スタブフロー",
+   "declared_scopes": [],
+   "triggers": [
+    {
+     "kind": "interactive"
+    }
+   ],
+   "nodes": [
+    {
+     "id": "compute",
+     "type": "script.run",
+     "params": {
+      "source": {
+       "inline": "function main(i){ return { ok: true }; }"
+      }
+     }
+    }
+   ],
+   "edges": []
+  }
+ },
+ "node_ports": {
+  "main": {
+   "compute": [
+    "out"
+   ]
+  }
+ },
+ "record": {
+  "runs": [
+   {
+    "run_id": "58ad5973-001d-4fca-a4e2-3fb5e46c42f0",
+    "status": "succeeded",
+    "input": {},
+    "steps": [
+     {
+      "step_path": "compute",
+      "node_id": "compute",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "ok": true
+      },
+      "error": null
+     }
+    ],
+    "workflow": null,
+    "scheduled_at": "2026-11-09T00:00:00+00:00",
+    "fail_reason": null
+   }
+  ],
+  "rows": {
+   "loans": [
+    {
+     "id": "e70a433c-b409-4028-ad58-11a3543dd58c",
+     "data": {
+      "borrower": "大野",
+      "code": "E-05",
+      "due_on": "2026-11-09",
+      "loaned_on": "2026-11-02"
+     }
+    },
+    {
+     "id": "38722079-88a7-41c0-81be-cc6c0abe74ea",
+     "data": {
+      "borrower": "佐々木",
+      "code": "E-04",
+      "due_on": "2026-11-08",
+      "loaned_on": "2026-11-01"
+     }
+    },
+    {
+     "id": "72c9f557-3ff1-4643-b527-60e66f97a9f1",
+     "data": {
+      "borrower": "木村",
+      "code": "E-03",
+      "due_on": "2026-11-01",
+      "loaned_on": "2026-10-25",
+      "returned_on": "2026-11-02"
+     }
+    },
+    {
+     "id": "98d33e3b-2a6a-439e-853b-cbd6585f667f",
+     "data": {
+      "borrower": "西村",
+      "code": "E-02",
+      "due_on": "2026-11-12",
+      "loaned_on": "2026-11-05"
+     }
+    },
+    {
+     "id": "a3491524-d79d-450e-ba36-6cca2a981a57",
+     "data": {
+      "borrower": "松本",
+      "code": "E-01",
+      "due_on": "2026-11-05",
+      "loaned_on": "2026-10-29"
+     }
+    }
+   ]
+  },
+  "rows_before": {
+   "loans": [
+    {
+     "id": "e70a433c-b409-4028-ad58-11a3543dd58c",
+     "data": {
+      "borrower": "大野",
+      "code": "E-05",
+      "due_on": "2026-11-09",
+      "loaned_on": "2026-11-02"
+     }
+    },
+    {
+     "id": "38722079-88a7-41c0-81be-cc6c0abe74ea",
+     "data": {
+      "borrower": "佐々木",
+      "code": "E-04",
+      "due_on": "2026-11-08",
+      "loaned_on": "2026-11-01"
+     }
+    },
+    {
+     "id": "72c9f557-3ff1-4643-b527-60e66f97a9f1",
+     "data": {
+      "borrower": "木村",
+      "code": "E-03",
+      "due_on": "2026-11-01",
+      "loaned_on": "2026-10-25",
+      "returned_on": "2026-11-02"
+     }
+    },
+    {
+     "id": "98d33e3b-2a6a-439e-853b-cbd6585f667f",
+     "data": {
+      "borrower": "西村",
+      "code": "E-02",
+      "due_on": "2026-11-12",
+      "loaned_on": "2026-11-05"
+     }
+    },
+    {
+     "id": "a3491524-d79d-450e-ba36-6cca2a981a57",
+     "data": {
+      "borrower": "松本",
+      "code": "E-01",
+      "due_on": "2026-11-05",
+      "loaned_on": "2026-10-29"
+     }
+    }
+   ]
+  },
+  "files": [],
+  "rows_rerun": null,
+  "now": "2026-11-06T19:47:45.739970+00:00"
+ }
+}

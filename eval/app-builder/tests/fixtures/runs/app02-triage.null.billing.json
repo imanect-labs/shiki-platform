@@ -1,0 +1,121 @@
+{
+ "task": "app02-triage",
+ "variant": "null",
+ "case": "billing",
+ "irs": {
+  "main": {
+   "ir_version": 1,
+   "name": "abeval-rec-be230a-null",
+   "display_name": "スタブフロー",
+   "declared_scopes": [],
+   "triggers": [
+    {
+     "kind": "interactive"
+    }
+   ],
+   "nodes": [
+    {
+     "id": "compute",
+     "type": "script.run",
+     "params": {
+      "source": {
+       "inline": "function main(i){ return { ok: true }; }"
+      }
+     }
+    }
+   ],
+   "edges": []
+  }
+ },
+ "node_ports": {
+  "main": {
+   "compute": [
+    "out"
+   ]
+  }
+ },
+ "record": {
+  "runs": [
+   {
+    "run_id": "69663301-0abd-46a9-9ed7-283ff7cd5143",
+    "status": "succeeded",
+    "input": {
+     "body": "先月分の請求書の金額が契約の金額と違っています。正しい金額で請求書を作り直してください。",
+     "subject": "請求書の金額が違う"
+    },
+    "steps": [
+     {
+      "step_path": "compute",
+      "node_id": "compute",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "ok": true
+      },
+      "error": null
+     }
+    ],
+    "workflow": null,
+    "scheduled_at": null,
+    "fail_reason": null
+   }
+  ],
+  "rows": {
+   "inquiries": [],
+   "assign": [
+    {
+     "id": "da3202f0-2672-4550-97be-6bf0733351ca",
+     "data": {
+      "assignee": "石井",
+      "category": "使い方"
+     }
+    },
+    {
+     "id": "c35fbc6a-7a48-4372-baff-e6aa96cff528",
+     "data": {
+      "assignee": "池田",
+      "category": "不具合"
+     }
+    },
+    {
+     "id": "42f1848a-43da-4cb8-99c8-dbb953de5326",
+     "data": {
+      "assignee": "森",
+      "category": "請求"
+     }
+    }
+   ]
+  },
+  "rows_before": {
+   "inquiries": [],
+   "assign": [
+    {
+     "id": "da3202f0-2672-4550-97be-6bf0733351ca",
+     "data": {
+      "assignee": "石井",
+      "category": "使い方"
+     }
+    },
+    {
+     "id": "c35fbc6a-7a48-4372-baff-e6aa96cff528",
+     "data": {
+      "assignee": "池田",
+      "category": "不具合"
+     }
+    },
+    {
+     "id": "42f1848a-43da-4cb8-99c8-dbb953de5326",
+     "data": {
+      "assignee": "森",
+      "category": "請求"
+     }
+    }
+   ]
+  },
+  "files": [],
+  "rows_rerun": null,
+  "now": "2026-11-06T19:47:13.001426+00:00"
+ }
+}

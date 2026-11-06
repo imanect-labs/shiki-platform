@@ -1,0 +1,355 @@
+{
+ "task": "app11-overdue",
+ "variant": "oracle",
+ "case": "morning",
+ "irs": {
+  "main": {
+   "ir_version": 1,
+   "name": "abeval-rec-0c9885-main",
+   "display_name": "延滞の一覧を作る",
+   "triggers": [
+    {
+     "kind": "schedule",
+     "cron": "0 9 * * *",
+     "tz": "Asia/Tokyo"
+    }
+   ],
+   "nodes": [
+    {
+     "id": "today",
+     "type": "transform.date",
+     "label": "今日",
+     "params": {}
+    },
+    {
+     "id": "late",
+     "type": "data.query",
+     "label": "延滞している記録",
+     "params": {
+      "table": "f0e572cf-bb0c-4ea4-b051-75e63cb69a1c",
+      "query": {
+       "filter": {
+        "all": [
+         {
+          "cmp": {
+           "field": "due_on",
+           "op": "lt",
+           "value": {
+            "$from": "nodes.today.output",
+            "path": "/date"
+           }
+          }
+         },
+         {
+          "cmp": {
+           "field": "returned_on",
+           "op": "is_null"
+          }
+         }
+        ]
+       },
+       "sort": [
+        {
+         "field": "due_on"
+        }
+       ],
+       "limit": 200
+      }
+     }
+    },
+    {
+     "id": "format",
+     "type": "script.run",
+     "label": "一覧の文章",
+     "params": {
+      "source": {
+       "inline": "function main(input) {\n  var lines = (input.items || []).map(function (r) {\n    return \"- \" + r.data.code + \" \" + r.data.borrower + \"（返却予定日 \" + r.data.due_on + \"）\";\n  });\n  return { text: \"# 延滞の一覧（\" + input.date + \"）\\n\\n\" + (lines.length ? lines.join(\"\\n\") : \"延滞はありません。\") + \"\\n\" };\n}"
+      },
+      "input": {
+       "items": {
+        "$from": "nodes.late.output",
+        "path": "/items"
+       },
+       "date": {
+        "$from": "nodes.today.output",
+        "path": "/date"
+       }
+      }
+     }
+    },
+    {
+     "id": "save",
+     "type": "storage.write",
+     "label": "一覧を保存",
+     "params": {
+      "folder": "31a63f59-1425-4983-9f0c-e94968a0c87a",
+      "name": {
+       "$template": "延滞一覧-{date}.md",
+       "vars": {
+        "date": {
+         "$from": "nodes.today.output",
+         "path": "/date"
+        }
+       }
+      },
+      "content": {
+       "$from": "nodes.format.output",
+       "path": "/text"
+      },
+      "content_type": "text/markdown",
+      "on_name_taken": "add_number"
+     }
+    }
+   ],
+   "edges": [
+    {
+     "from": "today",
+     "to": "late"
+    },
+    {
+     "from": "late",
+     "to": "format"
+    },
+    {
+     "from": "format",
+     "to": "save"
+    }
+   ]
+  }
+ },
+ "node_ports": {
+  "main": {
+   "format": [
+    "out"
+   ],
+   "late": [
+    "out"
+   ],
+   "save": [
+    "out"
+   ],
+   "today": [
+    "out"
+   ]
+  }
+ },
+ "record": {
+  "runs": [
+   {
+    "run_id": "0dce32d0-2d48-49aa-a171-5fbed2045b5d",
+    "status": "succeeded",
+    "input": {},
+    "steps": [
+     {
+      "step_path": "today",
+      "node_id": "today",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "date": "2026-11-09",
+       "day": 9,
+       "end": "2026-11-09",
+       "month": 11,
+       "next_start_at": "2026-11-10T00:00:00+09:00",
+       "start": "2026-11-09",
+       "start_at": "2026-11-09T00:00:00+09:00",
+       "weekday": 1,
+       "year": 2026
+      },
+      "error": null
+     },
+     {
+      "step_path": "late",
+      "node_id": "late",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "items": [
+        {
+         "created_at": "2026-11-06T19:47:46.111909Z",
+         "data": {
+          "borrower": "松本",
+          "code": "E-01",
+          "due_on": "2026-11-05",
+          "loaned_on": "2026-10-29"
+         },
+         "id": "50f336aa-dc60-4146-a4d8-51c51dd0ec4a",
+         "owner": "00000000-0000-0000-0000-000000000001",
+         "rev": 1,
+         "table_id": "f0e572cf-bb0c-4ea4-b051-75e63cb69a1c",
+         "updated_at": "2026-11-06T19:47:46.111909Z"
+        },
+        {
+         "created_at": "2026-11-06T19:47:46.145746Z",
+         "data": {
+          "borrower": "佐々木",
+          "code": "E-04",
+          "due_on": "2026-11-08",
+          "loaned_on": "2026-11-01"
+         },
+         "id": "47a969e4-e49f-40c9-a885-a28f90bae2a4",
+         "owner": "00000000-0000-0000-0000-000000000001",
+         "rev": 1,
+         "table_id": "f0e572cf-bb0c-4ea4-b051-75e63cb69a1c",
+         "updated_at": "2026-11-06T19:47:46.145746Z"
+        }
+       ],
+       "shares_truncated": false,
+       "snapshot_seq": 15,
+       "sort_degraded": false,
+       "sort_precision": "exact",
+       "suppressed": false
+      },
+      "error": null
+     },
+     {
+      "step_path": "format",
+      "node_id": "format",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "text": "# 延滞の一覧（2026-11-09）\n\n- E-01 松本（返却予定日 2026-11-05）\n- E-04 佐々木（返却予定日 2026-11-08）\n"
+      },
+      "error": null
+     },
+     {
+      "step_path": "save",
+      "node_id": "save",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "file_id": "42094b1a-30ea-44c6-9563-84ba212562c8",
+       "id": "42094b1a-30ea-44c6-9563-84ba212562c8",
+       "name": "延滞一覧-2026-11-09.md",
+       "sha256": "e2e2f817cc4d128f1c24c989d90ede06c0c7396a23372f9b92c2e9de1bd96fc3",
+       "size": 130,
+       "version": 1
+      },
+      "error": null
+     }
+    ],
+    "workflow": null,
+    "scheduled_at": "2026-11-09T00:00:00+00:00",
+    "fail_reason": null
+   }
+  ],
+  "rows": {
+   "loans": [
+    {
+     "id": "bc8834aa-87f3-4e1d-913b-37dd9d916237",
+     "data": {
+      "borrower": "大野",
+      "code": "E-05",
+      "due_on": "2026-11-09",
+      "loaned_on": "2026-11-02"
+     }
+    },
+    {
+     "id": "47a969e4-e49f-40c9-a885-a28f90bae2a4",
+     "data": {
+      "borrower": "佐々木",
+      "code": "E-04",
+      "due_on": "2026-11-08",
+      "loaned_on": "2026-11-01"
+     }
+    },
+    {
+     "id": "5310f993-44eb-4404-8ed4-d80ce1456bbc",
+     "data": {
+      "borrower": "木村",
+      "code": "E-03",
+      "due_on": "2026-11-01",
+      "loaned_on": "2026-10-25",
+      "returned_on": "2026-11-02"
+     }
+    },
+    {
+     "id": "c3b893ad-7100-4daa-9ef0-bdbe747aeb34",
+     "data": {
+      "borrower": "西村",
+      "code": "E-02",
+      "due_on": "2026-11-12",
+      "loaned_on": "2026-11-05"
+     }
+    },
+    {
+     "id": "50f336aa-dc60-4146-a4d8-51c51dd0ec4a",
+     "data": {
+      "borrower": "松本",
+      "code": "E-01",
+      "due_on": "2026-11-05",
+      "loaned_on": "2026-10-29"
+     }
+    }
+   ]
+  },
+  "rows_before": {
+   "loans": [
+    {
+     "id": "bc8834aa-87f3-4e1d-913b-37dd9d916237",
+     "data": {
+      "borrower": "大野",
+      "code": "E-05",
+      "due_on": "2026-11-09",
+      "loaned_on": "2026-11-02"
+     }
+    },
+    {
+     "id": "47a969e4-e49f-40c9-a885-a28f90bae2a4",
+     "data": {
+      "borrower": "佐々木",
+      "code": "E-04",
+      "due_on": "2026-11-08",
+      "loaned_on": "2026-11-01"
+     }
+    },
+    {
+     "id": "5310f993-44eb-4404-8ed4-d80ce1456bbc",
+     "data": {
+      "borrower": "木村",
+      "code": "E-03",
+      "due_on": "2026-11-01",
+      "loaned_on": "2026-10-25",
+      "returned_on": "2026-11-02"
+     }
+    },
+    {
+     "id": "c3b893ad-7100-4daa-9ef0-bdbe747aeb34",
+     "data": {
+      "borrower": "西村",
+      "code": "E-02",
+      "due_on": "2026-11-12",
+      "loaned_on": "2026-11-05"
+     }
+    },
+    {
+     "id": "50f336aa-dc60-4146-a4d8-51c51dd0ec4a",
+     "data": {
+      "borrower": "松本",
+      "code": "E-01",
+      "due_on": "2026-11-05",
+      "loaned_on": "2026-10-29"
+     }
+    }
+   ]
+  },
+  "files": [
+   {
+    "folder": "overdue",
+    "id": "42094b1a-30ea-44c6-9563-84ba212562c8",
+    "name": "延滞一覧-2026-11-09.md",
+    "text": "# 延滞の一覧（2026-11-09）\n\n- E-01 松本（返却予定日 2026-11-05）\n- E-04 佐々木（返却予定日 2026-11-08）\n"
+   }
+  ],
+  "rows_rerun": null,
+  "now": "2026-11-06T19:47:45.739970+00:00"
+ }
+}

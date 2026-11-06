@@ -1,0 +1,195 @@
+{
+ "task": "basic-branch-amount",
+ "variant": "oracle",
+ "case": "low",
+ "irs": {
+  "main": {
+   "ir_version": 1,
+   "name": "abeval-rec-213c43-main",
+   "display_name": "金額で申請の記録先を分ける",
+   "triggers": [
+    {
+     "kind": "interactive"
+    }
+   ],
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "item": {
+      "type": "string"
+     },
+     "amount": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "item",
+     "amount"
+    ],
+    "x-order": [
+     "item",
+     "amount"
+    ]
+   },
+   "nodes": [
+    {
+     "id": "is_large",
+     "type": "control.branch",
+     "label": "5 万円以上か",
+     "params": {
+      "condition": {
+       "cmp": {
+        "left": {
+         "$from": "input",
+         "path": "/amount"
+        },
+        "op": "gte",
+        "right": 50000
+       }
+      }
+     }
+    },
+    {
+     "id": "add_large",
+     "type": "data.record.create",
+     "label": "高額の申請に追加",
+     "params": {
+      "table": "42501549-2013-42e9-bddc-4280b5f5c8e6",
+      "data": {
+       "item": {
+        "$from": "input",
+        "path": "/item"
+       },
+       "amount": {
+        "$from": "input",
+        "path": "/amount"
+       }
+      }
+     }
+    },
+    {
+     "id": "add_small",
+     "type": "data.record.create",
+     "label": "通常の申請に追加",
+     "params": {
+      "table": "24b8bdba-dd0d-4cba-a0ae-a6cd1adfce31",
+      "data": {
+       "item": {
+        "$from": "input",
+        "path": "/item"
+       },
+       "amount": {
+        "$from": "input",
+        "path": "/amount"
+       }
+      }
+     }
+    }
+   ],
+   "edges": [
+    {
+     "from": "is_large",
+     "to": "add_large",
+     "from_port": "true"
+    },
+    {
+     "from": "is_large",
+     "to": "add_small",
+     "from_port": "false"
+    }
+   ]
+  }
+ },
+ "node_ports": {
+  "main": {
+   "add_large": [
+    "out"
+   ],
+   "add_small": [
+    "out"
+   ],
+   "is_large": [
+    "true",
+    "false"
+   ]
+  }
+ },
+ "record": {
+  "runs": [
+   {
+    "run_id": "044b41be-6865-470b-a20f-fa4c061ec1ac",
+    "status": "succeeded",
+    "input": {
+     "amount": 12000,
+     "item": "文房具"
+    },
+    "steps": [
+     {
+      "step_path": "is_large",
+      "node_id": "is_large",
+      "status": "succeeded",
+      "taken_ports": [
+       "false"
+      ],
+      "output": {
+       "amount": 12000,
+       "item": "文房具"
+      },
+      "error": null
+     },
+     {
+      "step_path": "add_large",
+      "node_id": "add_large",
+      "status": "skipped",
+      "taken_ports": [],
+      "output": null,
+      "error": null
+     },
+     {
+      "step_path": "add_small",
+      "node_id": "add_small",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "created_at": "2026-11-06T19:47:00.243066Z",
+       "data": {
+        "amount": 12000,
+        "item": "文房具"
+       },
+       "id": "2e964a4c-92ba-4eb6-a586-c6d027c47a85",
+       "owner": "00000000-0000-0000-0000-000000000001",
+       "rev": 1,
+       "table_id": "24b8bdba-dd0d-4cba-a0ae-a6cd1adfce31",
+       "updated_at": "2026-11-06T19:47:00.243066Z"
+      },
+      "error": null
+     }
+    ],
+    "workflow": null,
+    "scheduled_at": null,
+    "fail_reason": null
+   }
+  ],
+  "rows": {
+   "big": [],
+   "small": [
+    {
+     "id": "2e964a4c-92ba-4eb6-a586-c6d027c47a85",
+     "data": {
+      "amount": 12000,
+      "item": "文房具"
+     }
+    }
+   ]
+  },
+  "rows_before": {
+   "big": [],
+   "small": []
+  },
+  "files": [],
+  "rows_rerun": null,
+  "now": "2026-11-06T19:46:58.456310+00:00"
+ }
+}

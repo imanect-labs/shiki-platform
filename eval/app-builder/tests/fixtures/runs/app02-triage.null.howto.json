@@ -1,0 +1,121 @@
+{
+ "task": "app02-triage",
+ "variant": "null",
+ "case": "howto",
+ "irs": {
+  "main": {
+   "ir_version": 1,
+   "name": "abeval-rec-be230a-null",
+   "display_name": "スタブフロー",
+   "declared_scopes": [],
+   "triggers": [
+    {
+     "kind": "interactive"
+    }
+   ],
+   "nodes": [
+    {
+     "id": "compute",
+     "type": "script.run",
+     "params": {
+      "source": {
+       "inline": "function main(i){ return { ok: true }; }"
+      }
+     }
+    }
+   ],
+   "edges": []
+  }
+ },
+ "node_ports": {
+  "main": {
+   "compute": [
+    "out"
+   ]
+  }
+ },
+ "record": {
+  "runs": [
+   {
+    "run_id": "ab1a55f1-2e68-46cb-b885-ff43150be46f",
+    "status": "succeeded",
+    "input": {
+     "body": "登録した一覧を表計算のファイルに書き出す手順を教えてください。どの画面から操作すればよいですか。",
+     "subject": "一覧を書き出したい"
+    },
+    "steps": [
+     {
+      "step_path": "compute",
+      "node_id": "compute",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "ok": true
+      },
+      "error": null
+     }
+    ],
+    "workflow": null,
+    "scheduled_at": null,
+    "fail_reason": null
+   }
+  ],
+  "rows": {
+   "inquiries": [],
+   "assign": [
+    {
+     "id": "aa6d88c5-1c22-49ab-8080-fcc3cab97dcd",
+     "data": {
+      "assignee": "石井",
+      "category": "使い方"
+     }
+    },
+    {
+     "id": "d83758e0-50f7-4e0c-a65d-ac5646549e9c",
+     "data": {
+      "assignee": "池田",
+      "category": "不具合"
+     }
+    },
+    {
+     "id": "864d41df-b838-407b-8389-a39842cf90e0",
+     "data": {
+      "assignee": "森",
+      "category": "請求"
+     }
+    }
+   ]
+  },
+  "rows_before": {
+   "inquiries": [],
+   "assign": [
+    {
+     "id": "aa6d88c5-1c22-49ab-8080-fcc3cab97dcd",
+     "data": {
+      "assignee": "石井",
+      "category": "使い方"
+     }
+    },
+    {
+     "id": "d83758e0-50f7-4e0c-a65d-ac5646549e9c",
+     "data": {
+      "assignee": "池田",
+      "category": "不具合"
+     }
+    },
+    {
+     "id": "864d41df-b838-407b-8389-a39842cf90e0",
+     "data": {
+      "assignee": "森",
+      "category": "請求"
+     }
+    }
+   ]
+  },
+  "files": [],
+  "rows_rerun": null,
+  "now": "2026-11-06T19:47:13.001426+00:00"
+ }
+}

@@ -1,0 +1,79 @@
+{
+ "task": "basic-map-rows",
+ "variant": "null",
+ "case": "three",
+ "irs": {
+  "main": {
+   "ir_version": 1,
+   "name": "abeval-rec-678b54-null",
+   "display_name": "スタブフロー",
+   "declared_scopes": [],
+   "triggers": [
+    {
+     "kind": "interactive"
+    }
+   ],
+   "nodes": [
+    {
+     "id": "compute",
+     "type": "script.run",
+     "params": {
+      "source": {
+       "inline": "function main(i){ return { ok: true }; }"
+      }
+     }
+    }
+   ],
+   "edges": []
+  }
+ },
+ "node_ports": {
+  "main": {
+   "compute": [
+    "out"
+   ]
+  }
+ },
+ "record": {
+  "runs": [
+   {
+    "run_id": "0e0a444a-b8fc-4e9d-8827-775c1826be31",
+    "status": "succeeded",
+    "input": {
+     "event": "新人研修",
+     "names": [
+      "田中",
+      "山本",
+      "中村"
+     ]
+    },
+    "steps": [
+     {
+      "step_path": "compute",
+      "node_id": "compute",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "ok": true
+      },
+      "error": null
+     }
+    ],
+    "workflow": null,
+    "scheduled_at": null,
+    "fail_reason": null
+   }
+  ],
+  "rows": {
+   "roster": []
+  },
+  "rows_before": {
+   "roster": []
+  },
+  "files": [],
+  "rows_rerun": null,
+  "now": "2026-11-06T19:47:09.394678+00:00"
+ }
+}

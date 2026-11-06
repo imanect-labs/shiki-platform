@@ -1,0 +1,287 @@
+{
+ "task": "app02-triage",
+ "variant": "input_key",
+ "case": "howto",
+ "irs": {
+  "main": {
+   "ir_version": 1,
+   "name": "abeval-rec-be230a-input-key",
+   "display_name": "問い合わせを分類して担当を決める",
+   "triggers": [
+    {
+     "kind": "interactive"
+    }
+   ],
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "subject": {
+      "type": "string"
+     },
+     "body": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "subject",
+     "body"
+    ],
+    "x-order": [
+     "subject",
+     "body"
+    ]
+   },
+   "nodes": [
+    {
+     "id": "register",
+     "type": "data.record.create",
+     "label": "問い合わせを登録",
+     "params": {
+      "table": "0b353389-8f1a-447b-85ba-6766340483d3",
+      "data": {
+       "subject": {
+        "$from": "input",
+        "path": "/subject_x"
+       },
+       "body": {
+        "$from": "input",
+        "path": "/body"
+       },
+       "status": "未対応"
+      }
+     }
+    },
+    {
+     "id": "classify",
+     "type": "llm.invoke",
+     "label": "分類を決める",
+     "params": {
+      "prompt": {
+       "$template": "次の問い合わせを読み、理由を 1 文で書いてから、分類を決めてください。\n件名: {subject}\n本文: {body}",
+       "vars": {
+        "subject": {
+         "$from": "input",
+         "path": "/subject_x"
+        },
+        "body": {
+         "$from": "input",
+         "path": "/body"
+        }
+       }
+      },
+      "output_schema": {
+       "type": "object",
+       "required": [
+        "reason",
+        "category"
+       ],
+       "x-order": [
+        "reason",
+        "category"
+       ],
+       "properties": {
+        "reason": {
+         "type": "string",
+         "maxLength": 200
+        },
+        "category": {
+         "type": "string",
+         "enum": [
+          "請求",
+          "不具合",
+          "使い方"
+         ]
+        }
+       }
+      },
+      "model": "default"
+     }
+    },
+    {
+     "id": "find_assignee",
+     "type": "data.query",
+     "label": "担当者を引く",
+     "params": {
+      "table": "37a5ce1e-723e-4864-a03b-d8ee834feb92",
+      "query": {
+       "filter": {
+        "cmp": {
+         "field": "category",
+         "op": "eq",
+         "value": {
+          "$from": "nodes.classify.output",
+          "path": "/data/category"
+         }
+        }
+       },
+       "limit": 1
+      }
+     }
+    },
+    {
+     "id": "assign",
+     "type": "data.record.update",
+     "label": "分類と担当者を書く",
+     "params": {
+      "table": "0b353389-8f1a-447b-85ba-6766340483d3",
+      "record": {
+       "$from": "nodes.register.output",
+       "path": "/id"
+      },
+      "patch": {
+       "category": {
+        "$from": "nodes.classify.output",
+        "path": "/data/category"
+       },
+       "assignee": {
+        "$from": "nodes.find_assignee.output",
+        "path": "/items/0/data/assignee"
+       },
+       "status": "振り分け済"
+      }
+     }
+    }
+   ],
+   "edges": [
+    {
+     "from": "register",
+     "to": "classify"
+    },
+    {
+     "from": "classify",
+     "to": "find_assignee"
+    },
+    {
+     "from": "find_assignee",
+     "to": "assign"
+    }
+   ]
+  }
+ },
+ "node_ports": {
+  "main": {
+   "assign": [
+    "out"
+   ],
+   "classify": [
+    "out"
+   ],
+   "find_assignee": [
+    "out"
+   ],
+   "register": [
+    "out"
+   ]
+  }
+ },
+ "record": {
+  "runs": [
+   {
+    "run_id": "2626d3a6-6a8a-49f2-9247-6d56241141c5",
+    "status": "failed",
+    "input": {
+     "body": "登録した一覧を表計算のファイルに書き出す手順を教えてください。どの画面から操作すればよいですか。",
+     "subject": "一覧を書き出したい"
+    },
+    "steps": [
+     {
+      "step_path": "register",
+      "node_id": "register",
+      "status": "failed",
+      "taken_ports": [],
+      "output": null,
+      "error": {
+       "attempt": 1,
+       "code": "expr_resolve_error",
+       "message": "data.record.create: data: $from input /subject_x が解決できません（値が無く default もありません）",
+       "node_id": "register",
+       "retryable": false
+      }
+     },
+     {
+      "step_path": "classify",
+      "node_id": "classify",
+      "status": "cancelled",
+      "taken_ports": [],
+      "output": null,
+      "error": null
+     },
+     {
+      "step_path": "find_assignee",
+      "node_id": "find_assignee",
+      "status": "cancelled",
+      "taken_ports": [],
+      "output": null,
+      "error": null
+     },
+     {
+      "step_path": "assign",
+      "node_id": "assign",
+      "status": "cancelled",
+      "taken_ports": [],
+      "output": null,
+      "error": null
+     }
+    ],
+    "workflow": null,
+    "scheduled_at": null,
+    "fail_reason": null
+   }
+  ],
+  "rows": {
+   "inquiries": [],
+   "assign": [
+    {
+     "id": "26fc01ac-5f64-44b1-a157-a1615e8309ee",
+     "data": {
+      "assignee": "石井",
+      "category": "使い方"
+     }
+    },
+    {
+     "id": "4c70e6a5-3be2-4293-b363-e014a8fca575",
+     "data": {
+      "assignee": "池田",
+      "category": "不具合"
+     }
+    },
+    {
+     "id": "adfc514d-a303-423c-bd3f-c3dc5865d6e6",
+     "data": {
+      "assignee": "森",
+      "category": "請求"
+     }
+    }
+   ]
+  },
+  "rows_before": {
+   "inquiries": [],
+   "assign": [
+    {
+     "id": "26fc01ac-5f64-44b1-a157-a1615e8309ee",
+     "data": {
+      "assignee": "石井",
+      "category": "使い方"
+     }
+    },
+    {
+     "id": "4c70e6a5-3be2-4293-b363-e014a8fca575",
+     "data": {
+      "assignee": "池田",
+      "category": "不具合"
+     }
+    },
+    {
+     "id": "adfc514d-a303-423c-bd3f-c3dc5865d6e6",
+     "data": {
+      "assignee": "森",
+      "category": "請求"
+     }
+    }
+   ]
+  },
+  "files": [],
+  "rows_rerun": null,
+  "now": "2026-11-06T19:47:13.001426+00:00"
+ }
+}

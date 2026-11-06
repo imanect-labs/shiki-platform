@@ -1,0 +1,2264 @@
+{
+ "ignored_by_env_codes": [
+  "ir.unknown_secret",
+  "ir.binding_denied",
+  "ir.unknown_skill",
+  "ir.unknown_version"
+ ],
+ "ir_lint": {
+  "crate_version": "0.0.0",
+  "schema": 1
+ },
+ "node_catalog": [
+  {
+   "available": true,
+   "category": "control",
+   "category_label_ja": "流れの制御",
+   "description_ja": "条件を満たすかどうかで「はい / いいえ」に分ける",
+   "dynamic_ports": false,
+   "idempotency": "pure",
+   "label_ja": "条件分岐",
+   "multi_input": false,
+   "output_fields": [],
+   "output_ports": [
+    "true",
+    "false"
+   ],
+   "output_shape": "実行の入力をそのまま通す（分岐・合流の結果としては参照しない）",
+   "port_rule": "static",
+   "required_scope": null,
+   "step_cache": null,
+   "timeout_default_sec": null,
+   "timeout_max_sec": null,
+   "type": "control.branch"
+  },
+  {
+   "available": true,
+   "category": "control",
+   "category_label_ja": "流れの制御",
+   "description_ja": "値に応じて複数の行き先に振り分ける",
+   "dynamic_ports": true,
+   "idempotency": "pure",
+   "label_ja": "振り分け",
+   "multi_input": false,
+   "output_fields": [],
+   "output_ports": [],
+   "output_shape": "実行の入力をそのまま通す（分岐・合流の結果としては参照しない）",
+   "port_rule": "switch_cases",
+   "required_scope": null,
+   "step_cache": null,
+   "timeout_default_sec": null,
+   "timeout_max_sec": null,
+   "type": "control.switch"
+  },
+  {
+   "available": true,
+   "category": "control",
+   "category_label_ja": "流れの制御",
+   "description_ja": "分かれた流れを待ち合わせて 1 つに戻す",
+   "dynamic_ports": false,
+   "idempotency": "pure",
+   "label_ja": "合流",
+   "multi_input": true,
+   "output_fields": [],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "実行の入力をそのまま通す（分岐・合流の結果としては参照しない）",
+   "port_rule": "static",
+   "required_scope": null,
+   "step_cache": null,
+   "timeout_default_sec": null,
+   "timeout_max_sec": null,
+   "type": "control.join"
+  },
+  {
+   "available": true,
+   "category": "control",
+   "category_label_ja": "流れの制御",
+   "description_ja": "リストの要素ごとに同じ処理を繰り返す",
+   "dynamic_ports": false,
+   "idempotency": "pure",
+   "label_ja": "繰り返し",
+   "multi_input": false,
+   "output_fields": [
+    {
+     "name": "items",
+     "note": "領域の出口ノードの出力・要素の順",
+     "optional": false,
+     "present_if": "",
+     "type": "Array<unknown>"
+    },
+    {
+     "name": "errors",
+     "note": "on_item_error: collect のとき",
+     "optional": true,
+     "present_if": "",
+     "type": "Array<{ index: number, error: { code: string, message: string } }>"
+    }
+   ],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "{ items: Array<unknown>（領域の出口ノードの出力・要素の順）, errors?: Array<{ index: number, error: { code: string, message: string } }>（on_item_error: collect のとき） }",
+   "port_rule": "static",
+   "required_scope": null,
+   "step_cache": null,
+   "timeout_default_sec": null,
+   "timeout_max_sec": null,
+   "type": "control.map"
+  },
+  {
+   "available": true,
+   "category": "control",
+   "category_label_ja": "流れの制御",
+   "description_ja": "指定した時間・時刻・できごとまで待つ",
+   "dynamic_ports": false,
+   "idempotency": "pure",
+   "label_ja": "待機",
+   "multi_input": false,
+   "output_fields": [],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "event なら届いたできごとの内容・時間待ちは null",
+   "port_rule": "static",
+   "required_scope": null,
+   "step_cache": null,
+   "timeout_default_sec": null,
+   "timeout_max_sec": null,
+   "type": "control.wait"
+  },
+  {
+   "available": true,
+   "category": "storage",
+   "category_label_ja": "ファイル",
+   "description_ja": "ファイルの中身を文章として読みます。PDF や Word は、社内文書の検索に取り込まれた本文を読みます。",
+   "dynamic_ports": false,
+   "idempotency": "pure",
+   "label_ja": "ファイルを読む",
+   "multi_input": false,
+   "output_fields": [
+    {
+     "name": "file_id",
+     "note": "読んだファイルの ID",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "id",
+     "note": "file_id と同じ・古い名前",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "name",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "version",
+     "note": "読んだバージョン・CSV を編集の前提にできる",
+     "optional": false,
+     "present_if": "",
+     "type": "number"
+    },
+    {
+     "name": "content_type",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "size",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "number"
+    },
+    {
+     "name": "encoding",
+     "note": "読んだ文字コード（UTF-8・Shift_JIS・EUC-JP・UTF-16LE・UTF-16BE）・文章のファイルのときだけ",
+     "optional": true,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "text",
+     "note": "中身の文章（先頭の BOM は含まない）・PDF や Word は社内文書の検索に取り込まれた本文で、ページの変わり目に〔p.2〕のような印と、見出しの行（# で始まる）が入る",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "truncated",
+     "note": "PDF や Word の本文が長く、上限の字数で切ったとき true・文章のファイルは切らない（いつも false）",
+     "optional": false,
+     "present_if": "",
+     "type": "boolean"
+    }
+   ],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "{ file_id: string（読んだファイルの ID）, id: string（file_id と同じ・古い名前）, name: string, version: number（読んだバージョン・CSV を編集の前提にできる）, content_type: string, size: number, encoding?: string（読んだ文字コード（UTF-8・Shift_JIS・EUC-JP・UTF-16LE・UTF-16BE）・文章のファイルのときだけ）, text: string（中身の文章（先頭の BOM は含まない）・PDF や Word は社内文書の検索に取り込まれた本文で、ページの変わり目に〔p.2〕のような印と、見出しの行（# で始まる）が入る）, truncated: boolean（PDF や Word の本文が長く、上限の字数で切ったとき true・文章のファイルは切らない（いつも false）） }",
+   "port_rule": "static",
+   "required_scope": "storage.read",
+   "step_cache": null,
+   "timeout_default_sec": 30,
+   "timeout_max_sec": 120,
+   "type": "storage.read"
+  },
+  {
+   "available": true,
+   "category": "storage",
+   "category_label_ja": "ファイル",
+   "description_ja": "ドライブに新しいファイルを作って保存します。すでにあるファイルは書き換えません。",
+   "dynamic_ports": false,
+   "idempotency": "engine_dedup",
+   "label_ja": "ファイルを保存",
+   "multi_input": false,
+   "output_fields": [
+    {
+     "name": "file_id",
+     "note": "保存したファイルの ID",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "id",
+     "note": "file_id と同じ・古い名前",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "name",
+     "note": "保存した名前・番号を付けたときは付けた名前",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "version",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "number"
+    },
+    {
+     "name": "sha256",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "size",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "number"
+    }
+   ],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "{ file_id: string（保存したファイルの ID）, id: string（file_id と同じ・古い名前）, name: string（保存した名前・番号を付けたときは付けた名前）, version: number, sha256: string, size: number }",
+   "port_rule": "static",
+   "required_scope": "storage.write",
+   "step_cache": null,
+   "timeout_default_sec": 30,
+   "timeout_max_sec": 120,
+   "type": "storage.write"
+  },
+  {
+   "available": true,
+   "category": "storage",
+   "category_label_ja": "ファイル",
+   "description_ja": "フォルダの中のファイル一覧を取得する",
+   "dynamic_ports": false,
+   "idempotency": "pure",
+   "label_ja": "フォルダ一覧",
+   "multi_input": false,
+   "output_fields": [
+    {
+     "name": "items",
+     "note": "名前の順・最大 100 件・kind は file か folder",
+     "optional": false,
+     "present_if": "",
+     "type": "Array<{ id: string, name: string, kind: string, size: number }>"
+    },
+    {
+     "name": "truncated",
+     "note": "続きがあるとき true・残りは items に入らない",
+     "optional": false,
+     "present_if": "",
+     "type": "boolean"
+    },
+    {
+     "name": "next_cursor",
+     "note": "続きの位置・同じフォルダーで cursor に渡すと続きを読む・続きが無ければ null",
+     "optional": false,
+     "present_if": "",
+     "type": "string | null"
+    }
+   ],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "{ items: Array<{ id: string, name: string, kind: string, size: number }>（名前の順・最大 100 件・kind は file か folder）, truncated: boolean（続きがあるとき true・残りは items に入らない）, next_cursor: string | null（続きの位置・同じフォルダーで cursor に渡すと続きを読む・続きが無ければ null） }",
+   "port_rule": "static",
+   "required_scope": "storage.read",
+   "step_cache": null,
+   "timeout_default_sec": 30,
+   "timeout_max_sec": 120,
+   "type": "storage.list"
+  },
+  {
+   "available": true,
+   "category": "ai",
+   "category_label_ja": "AI",
+   "description_ja": "権限の範囲で社内ドキュメントを検索する",
+   "dynamic_ports": false,
+   "idempotency": "pure",
+   "label_ja": "社内検索",
+   "multi_input": false,
+   "output_fields": [
+    {
+     "name": "results",
+     "note": "関連の強いものから並ぶ・relevance は関連の強さの目安・score は順位から決めた値（1 位は 1、2 位は 0.5）で関連の強さではない",
+     "optional": false,
+     "present_if": "",
+     "type": "Array<{ file_id: string, file_name: string, content: string, relevance: \"high\" | \"medium\" | \"low\", score: number }>"
+    }
+   ],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "{ results: Array<{ file_id: string, file_name: string, content: string, relevance: \"high\" | \"medium\" | \"low\", score: number }>（関連の強いものから並ぶ・relevance は関連の強さの目安・score は順位から決めた値（1 位は 1、2 位は 0.5）で関連の強さではない） }",
+   "port_rule": "static",
+   "required_scope": "rag.query",
+   "step_cache": null,
+   "timeout_default_sec": 60,
+   "timeout_max_sec": 120,
+   "type": "rag.search"
+  },
+  {
+   "available": true,
+   "category": "ai",
+   "category_label_ja": "AI",
+   "description_ja": "AI に文章の生成・要約・分類などを頼む",
+   "dynamic_ports": false,
+   "idempotency": "pure",
+   "label_ja": "AI に聞く",
+   "multi_input": false,
+   "output_fields": [
+    {
+     "name": "text",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "model",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "data",
+     "note": "output_schema を書いたとき・その形で検証済みの値",
+     "optional": true,
+     "present_if": "/output_schema",
+     "type": "unknown"
+    }
+   ],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "{ text: string, model: string, data?: unknown（output_schema を書いたとき・その形で検証済みの値） }",
+   "port_rule": "static",
+   "required_scope": null,
+   "step_cache": null,
+   "timeout_default_sec": 120,
+   "timeout_max_sec": 600,
+   "type": "llm.invoke"
+  },
+  {
+   "available": true,
+   "category": "ai",
+   "category_label_ja": "AI",
+   "description_ja": "AI がツールを使って複数手順の作業をこなす",
+   "dynamic_ports": false,
+   "idempotency": "best_effort",
+   "label_ja": "AI エージェント",
+   "multi_input": false,
+   "output_fields": [
+    {
+     "name": "text",
+     "note": "最後の回答・Markdown",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "complete",
+     "note": "false は上限で打ち切った回答",
+     "optional": false,
+     "present_if": "",
+     "type": "boolean"
+    },
+    {
+     "name": "stop",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "\"completed\" | \"truncated\" | \"budget_steps\" | \"budget_time\" | \"budget_tokens\" | \"budget_cost\""
+    },
+    {
+     "name": "model",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "citations",
+     "note": "使った資料・50 件まで",
+     "optional": false,
+     "present_if": "",
+     "type": "Array<{ n: number, file_id?: string, file_name?: string, url?: string, title?: string, snippet: string }>"
+    },
+    {
+     "name": "tool_calls",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "Array<{ tool: string, ok: boolean }>"
+    },
+    {
+     "name": "skipped_tools",
+     "note": "指定したが使えなかった道具",
+     "optional": false,
+     "present_if": "",
+     "type": "Array<string>"
+    },
+    {
+     "name": "usage",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "{ steps: number, tokens: number, cost_usd_micros: number }"
+    }
+   ],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "{ text: string（最後の回答・Markdown）, complete: boolean（false は上限で打ち切った回答）, stop: \"completed\" | \"truncated\" | \"budget_steps\" | \"budget_time\" | \"budget_tokens\" | \"budget_cost\", model: string, citations: Array<{ n: number, file_id?: string, file_name?: string, url?: string, title?: string, snippet: string }>（使った資料・50 件まで）, tool_calls: Array<{ tool: string, ok: boolean }>, skipped_tools: Array<string>（指定したが使えなかった道具）, usage: { steps: number, tokens: number, cost_usd_micros: number } }",
+   "port_rule": "static",
+   "required_scope": null,
+   "step_cache": null,
+   "timeout_default_sec": 600,
+   "timeout_max_sec": 3600,
+   "type": "agent.invoke"
+  },
+  {
+   "available": true,
+   "category": "ai",
+   "category_label_ja": "AI",
+   "description_ja": "質問に選択肢・段階・はい/いいえで答え、確からしさを付けて返す",
+   "dynamic_ports": true,
+   "idempotency": "pure",
+   "label_ja": "AI で判定",
+   "multi_input": false,
+   "output_fields": [
+    {
+     "name": "answers",
+     "note": "確からしさ・確率は 0〜1。choice の label は選択肢の名前（無ければ説明、それも無ければキー）",
+     "optional": false,
+     "present_if": "",
+     "type": "{ [質問のキー]: { type: \"choice\", value: string, label: string, confidence: number, probabilities: { [選択肢のキー]: number } } | { type: \"score\", value: number, level: string, level_index: number, confidence: number, probabilities: Array<number> } | { type: \"boolean\", value: boolean, probability: number, confidence: number } }"
+    },
+    {
+     "name": "model",
+     "note": "指定した判定用のモデル",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "resolved_model",
+     "note": "実際に答えた決定器の版",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "provider",
+     "note": "答えた決定器（llm_decider・typesafe・stub）",
+     "optional": false,
+     "present_if": "",
+     "type": "string | null"
+    },
+    {
+     "name": "calibrated",
+     "note": "false は確からしさが較正されていない（AI の自己申告・得票率）",
+     "optional": false,
+     "present_if": "",
+     "type": "boolean"
+    },
+    {
+     "name": "method",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "\"native\" | \"verbalized\" | \"vote\""
+    },
+    {
+     "name": "samples",
+     "note": "1 回の判定で答えさせた回数",
+     "optional": false,
+     "present_if": "",
+     "type": "number"
+    },
+    {
+     "name": "cached",
+     "note": "決定キャッシュの答えを使い回したか（ノードに cache を書いたときだけ true になり得る）",
+     "optional": false,
+     "present_if": "",
+     "type": "boolean"
+    },
+    {
+     "name": "routed",
+     "note": "route を書いたとき・進んだ出口",
+     "optional": false,
+     "present_if": "",
+     "type": "{ question: string, port: string } | null"
+    },
+    {
+     "name": "raised_questions",
+     "note": "AI が自分の答えに一様（はい/いいえなら 50%）より低い自信を付け、一様まで引き上げた質問のキー（質問の順・AI の自己申告のときだけ入りうる・無ければ空）",
+     "optional": false,
+     "present_if": "",
+     "type": "Array<string>"
+    }
+   ],
+   "output_ports": [],
+   "output_shape": "{ answers: { [質問のキー]: { type: \"choice\", value: string, label: string, confidence: number, probabilities: { [選択肢のキー]: number } } | { type: \"score\", value: number, level: string, level_index: number, confidence: number, probabilities: Array<number> } | { type: \"boolean\", value: boolean, probability: number, confidence: number } }（確からしさ・確率は 0〜1。choice の label は選択肢の名前（無ければ説明、それも無ければキー））, model: string（指定した判定用のモデル）, resolved_model: string（実際に答えた決定器の版）, provider: string | null（答えた決定器（llm_decider・typesafe・stub））, calibrated: boolean（false は確からしさが較正されていない（AI の自己申告・得票率））, method: \"native\" | \"verbalized\" | \"vote\", samples: number（1 回の判定で答えさせた回数）, cached: boolean（決定キャッシュの答えを使い回したか（ノードに cache を書いたときだけ true になり得る））, routed: { question: string, port: string } | null（route を書いたとき・進んだ出口）, raised_questions: Array<string>（AI が自分の答えに一様（はい/いいえなら 50%）より低い自信を付け、一様まで引き上げた質問のキー（質問の順・AI の自己申告のときだけ入りうる・無ければ空）） }",
+   "port_rule": "decide_route",
+   "required_scope": null,
+   "step_cache": {
+    "default_ttl_sec": 86400,
+    "max_ttl_sec": 2592000,
+    "min_ttl_sec": 60
+   },
+   "timeout_default_sec": 60,
+   "timeout_max_sec": 300,
+   "type": "ai.decide"
+  },
+  {
+   "available": true,
+   "category": "external",
+   "category_label_ja": "外部連携",
+   "description_ja": "社外のサービス（API）にリクエストを送る",
+   "dynamic_ports": false,
+   "idempotency": "best_effort",
+   "label_ja": "外部 API 呼び出し",
+   "multi_input": false,
+   "output_fields": [
+    {
+     "name": "status",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "number"
+    },
+    {
+     "name": "host",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "body",
+     "note": "JSON なら解析した値・それ以外は文字列",
+     "optional": false,
+     "present_if": "",
+     "type": "unknown"
+    }
+   ],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "{ status: number, host: string, body: unknown（JSON なら解析した値・それ以外は文字列） }",
+   "port_rule": "static",
+   "required_scope": "http.egress",
+   "step_cache": null,
+   "timeout_default_sec": 30,
+   "timeout_max_sec": 120,
+   "type": "http.request"
+  },
+  {
+   "available": true,
+   "category": "developer",
+   "category_label_ja": "開発者向け",
+   "description_ja": "TypeScript の小さなプログラムで計算・変換する",
+   "dynamic_ports": false,
+   "idempotency": "best_effort",
+   "label_ja": "スクリプト",
+   "multi_input": false,
+   "output_fields": [],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "main(input) の戻り値そのもの",
+   "port_rule": "static",
+   "required_scope": null,
+   "step_cache": null,
+   "timeout_default_sec": 30,
+   "timeout_max_sec": 360,
+   "type": "script.run"
+  },
+  {
+   "available": true,
+   "category": "workflow",
+   "category_label_ja": "フロー連携",
+   "description_ja": "別のワークフローを起動する（結果は待たない）",
+   "dynamic_ports": false,
+   "idempotency": "engine_dedup",
+   "label_ja": "別のフローを開始",
+   "multi_input": false,
+   "output_fields": [
+    {
+     "name": "run_id",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "string | null"
+    }
+   ],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "{ run_id: string | null }（子の結果は待たない）",
+   "port_rule": "static",
+   "required_scope": "workflow.start",
+   "step_cache": null,
+   "timeout_default_sec": 10,
+   "timeout_max_sec": 30,
+   "type": "workflow.start"
+  },
+  {
+   "available": true,
+   "category": "workflow",
+   "category_label_ja": "フロー連携",
+   "description_ja": "ボタンや会話から起動した人の画面に、処理の結果を表示する",
+   "dynamic_ports": false,
+   "idempotency": "pure",
+   "label_ja": "結果を画面に返す",
+   "multi_input": false,
+   "output_fields": [
+    {
+     "name": "format",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "\"text\" | \"markdown\" | \"table\" | \"file_link\""
+    },
+    {
+     "name": "label",
+     "note": "",
+     "optional": true,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "tone",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "truncated",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "boolean"
+    },
+    {
+     "name": "text",
+     "note": "text・markdown",
+     "optional": true,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "columns",
+     "note": "",
+     "optional": true,
+     "present_if": "",
+     "type": "Array<string>"
+    },
+    {
+     "name": "rows",
+     "note": "",
+     "optional": true,
+     "present_if": "",
+     "type": "Array<Array<string>>"
+    },
+    {
+     "name": "total_rows",
+     "note": "table",
+     "optional": true,
+     "present_if": "",
+     "type": "number"
+    },
+    {
+     "name": "files",
+     "note": "file_link",
+     "optional": true,
+     "present_if": "",
+     "type": "Array<{ id: string, name: string }>"
+    }
+   ],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "画面に出す節 { format: \"text\" | \"markdown\" | \"table\" | \"file_link\", label?: string, tone: string, truncated: boolean, text?: string（text・markdown）, columns?: Array<string>, rows?: Array<Array<string>>, total_rows?: number（table）, files?: Array<{ id: string, name: string }>（file_link） }（後続から参照するものではない）",
+   "port_rule": "static",
+   "required_scope": null,
+   "step_cache": null,
+   "timeout_default_sec": 5,
+   "timeout_max_sec": 10,
+   "type": "workflow.reply"
+  },
+  {
+   "available": true,
+   "category": "storage",
+   "category_label_ja": "ファイル",
+   "description_ja": "CSV か Excel のファイルを SQL で集計したり、条件に合う行を取り出したりします。ファイルは書き換えません。",
+   "dynamic_ports": false,
+   "idempotency": "pure",
+   "label_ja": "CSV を集計",
+   "multi_input": false,
+   "output_fields": [
+    {
+     "name": "columns",
+     "note": "列の名前・同じ名前の 2 つ目からは a_1 のように付け直す",
+     "optional": false,
+     "present_if": "",
+     "type": "Array<string>"
+    },
+    {
+     "name": "column_types",
+     "note": "列の型の名前・BIGINT（整数）・DOUBLE（数値）・BOOLEAN（はい／いいえ）・VARCHAR（テキスト）・DATE（日付）など",
+     "optional": false,
+     "present_if": "",
+     "type": "Array<string>"
+    },
+    {
+     "name": "rows",
+     "note": "値は列の種類にかかわらずテキスト・空は null・日付は 2024-01-31 の形",
+     "optional": false,
+     "present_if": "",
+     "type": "Array<Array<string | null>>"
+    },
+    {
+     "name": "items",
+     "note": "1 行ずつ列の名前で値を引く・数値とはい／いいえと空は種類のまま・日付と時刻は rows と同じテキスト・項目の並びは列の順とは限らない",
+     "optional": false,
+     "present_if": "",
+     "type": "Array<{ [列の名前]: string | number | boolean | null }>"
+    },
+    {
+     "name": "total_rows",
+     "note": "結果の行の数・打ち切ったときは null",
+     "optional": false,
+     "present_if": "",
+     "type": "number | null"
+    },
+    {
+     "name": "truncated",
+     "note": "10,000 行か、結果の大きさの上限で打ち切ったとき true",
+     "optional": false,
+     "present_if": "",
+     "type": "boolean"
+    },
+    {
+     "name": "version",
+     "note": "集計した CSV のバージョン・CSV を編集の前提にできる",
+     "optional": false,
+     "present_if": "",
+     "type": "number"
+    }
+   ],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "{ columns: Array<string>（列の名前・同じ名前の 2 つ目からは a_1 のように付け直す）, column_types: Array<string>（列の型の名前・BIGINT（整数）・DOUBLE（数値）・BOOLEAN（はい／いいえ）・VARCHAR（テキスト）・DATE（日付）など）, rows: Array<Array<string | null>>（値は列の種類にかかわらずテキスト・空は null・日付は 2024-01-31 の形）, items: Array<{ [列の名前]: string | number | boolean | null }>（1 行ずつ列の名前で値を引く・数値とはい／いいえと空は種類のまま・日付と時刻は rows と同じテキスト・項目の並びは列の順とは限らない）, total_rows: number | null（結果の行の数・打ち切ったときは null）, truncated: boolean（10,000 行か、結果の大きさの上限で打ち切ったとき true）, version: number（集計した CSV のバージョン・CSV を編集の前提にできる） }",
+   "port_rule": "static",
+   "required_scope": "csv.read",
+   "step_cache": null,
+   "timeout_default_sec": 30,
+   "timeout_max_sec": 120,
+   "type": "csv.query"
+  },
+  {
+   "available": true,
+   "category": "storage",
+   "category_label_ja": "ファイル",
+   "description_ja": "CSV のセル・行・列を書き換えて新しいバージョンを保存する",
+   "dynamic_ports": false,
+   "idempotency": "engine_dedup",
+   "label_ja": "CSV を編集",
+   "multi_input": false,
+   "output_fields": [
+    {
+     "name": "file_id",
+     "note": "編集した CSV の ID",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "node_id",
+     "note": "file_id と同じ・古い名前",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "version",
+     "note": "編集の後のバージョン",
+     "optional": false,
+     "present_if": "",
+     "type": "number"
+    },
+    {
+     "name": "rows",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "number"
+    },
+    {
+     "name": "cols",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "number"
+    }
+   ],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "{ file_id: string（編集した CSV の ID）, node_id: string（file_id と同じ・古い名前）, version: number（編集の後のバージョン）, rows: number, cols: number }",
+   "port_rule": "static",
+   "required_scope": "csv.write",
+   "step_cache": null,
+   "timeout_default_sec": 30,
+   "timeout_max_sec": 120,
+   "type": "csv.patch"
+  },
+  {
+   "available": true,
+   "category": "storage",
+   "category_label_ja": "ファイル",
+   "description_ja": "ドライブに新しい CSV ファイルを作って保存します。すでにあるファイルは書き換えません。",
+   "dynamic_ports": false,
+   "idempotency": "engine_dedup",
+   "label_ja": "CSV を保存",
+   "multi_input": false,
+   "output_fields": [
+    {
+     "name": "file_id",
+     "note": "保存した CSV の ID",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "node_id",
+     "note": "file_id と同じ・古い名前",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "version",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "number"
+    },
+    {
+     "name": "name",
+     "note": "保存した名前・番号を付けたときは付けた名前",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    }
+   ],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "{ file_id: string（保存した CSV の ID）, node_id: string（file_id と同じ・古い名前）, version: number, name: string（保存した名前・番号を付けたときは付けた名前） }",
+   "port_rule": "static",
+   "required_scope": "csv.write",
+   "step_cache": null,
+   "timeout_default_sec": 30,
+   "timeout_max_sec": 120,
+   "type": "csv.write"
+  },
+  {
+   "available": true,
+   "category": "data",
+   "category_label_ja": "業務データ",
+   "description_ja": "テーブルから、条件に合うレコードを読みます。一度に読めるのは最大 200 件です。",
+   "dynamic_ports": false,
+   "idempotency": "pure",
+   "label_ja": "データを調べる",
+   "multi_input": false,
+   "output_fields": [
+    {
+     "name": "items",
+     "note": "",
+     "optional": true,
+     "present_if": "",
+     "type": "Array<{ id: string, data: { [列の参照名]: unknown }, rev: number, … }>"
+    },
+    {
+     "name": "groups",
+     "note": "aggregate のとき",
+     "optional": true,
+     "present_if": "/query/aggregate",
+     "type": "Array<集計の行>"
+    },
+    {
+     "name": "next_cursor",
+     "note": "",
+     "optional": true,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "count",
+     "note": "with_count のとき",
+     "optional": true,
+     "present_if": "/query/with_count",
+     "type": "{ exact: number } | { at_least: number }"
+    }
+   ],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "{ items?: Array<{ id: string, data: { [列の参照名]: unknown }, rev: number, … }>, groups?: Array<集計の行>（aggregate のとき）, next_cursor?: string, count?: { exact: number } | { at_least: number }（with_count のとき） }",
+   "port_rule": "static",
+   "required_scope": "data.read",
+   "step_cache": null,
+   "timeout_default_sec": 30,
+   "timeout_max_sec": 120,
+   "type": "data.query"
+  },
+  {
+   "available": true,
+   "category": "data",
+   "category_label_ja": "業務データ",
+   "description_ja": "業務データに新しいレコードを追加する",
+   "dynamic_ports": false,
+   "idempotency": "engine_dedup",
+   "label_ja": "データを追加",
+   "multi_input": false,
+   "output_fields": [
+    {
+     "name": "id",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "table_id",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "data",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "{ [列の参照名]: unknown }"
+    },
+    {
+     "name": "rev",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "number"
+    },
+    {
+     "name": "owner",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "created_at",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "updated_at",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    }
+   ],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "レコード { id: string, table_id: string, data: { [列の参照名]: unknown }, rev: number, owner: string, created_at: string, updated_at: string }",
+   "port_rule": "static",
+   "required_scope": "data.write",
+   "step_cache": null,
+   "timeout_default_sec": 30,
+   "timeout_max_sec": 120,
+   "type": "data.record.create"
+  },
+  {
+   "available": true,
+   "category": "data",
+   "category_label_ja": "業務データ",
+   "description_ja": "業務データのレコードを書き換える",
+   "dynamic_ports": false,
+   "idempotency": "engine_dedup",
+   "label_ja": "データを更新",
+   "multi_input": false,
+   "output_fields": [
+    {
+     "name": "id",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "table_id",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "data",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "{ [列の参照名]: unknown }"
+    },
+    {
+     "name": "rev",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "number"
+    },
+    {
+     "name": "owner",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "created_at",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "updated_at",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    }
+   ],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "レコード { id: string, table_id: string, data: { [列の参照名]: unknown }, rev: number, owner: string, created_at: string, updated_at: string }",
+   "port_rule": "static",
+   "required_scope": "data.write",
+   "step_cache": null,
+   "timeout_default_sec": 30,
+   "timeout_max_sec": 120,
+   "type": "data.record.update"
+  },
+  {
+   "available": true,
+   "category": "data",
+   "category_label_ja": "業務データ",
+   "description_ja": "選んだ列の値が同じレコードがあれば書き換え、なければ追加します。",
+   "dynamic_ports": false,
+   "idempotency": "engine_dedup",
+   "label_ja": "レコードを追加か更新",
+   "multi_input": false,
+   "output_fields": [
+    {
+     "name": "id",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "table_id",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "data",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "{ [列の参照名]: unknown }"
+    },
+    {
+     "name": "rev",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "number"
+    },
+    {
+     "name": "owner",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "created_at",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "updated_at",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "created",
+     "note": "追加したら true、書き換えたら false",
+     "optional": false,
+     "present_if": "",
+     "type": "boolean"
+    }
+   ],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "レコード { id: string, table_id: string, data: { [列の参照名]: unknown }, rev: number, owner: string, created_at: string, updated_at: string, created: boolean（追加したら true、書き換えたら false） }",
+   "port_rule": "static",
+   "required_scope": "data.write",
+   "step_cache": null,
+   "timeout_default_sec": 30,
+   "timeout_max_sec": 120,
+   "type": "data.record.upsert"
+  },
+  {
+   "available": true,
+   "category": "data",
+   "category_label_ja": "業務データ",
+   "description_ja": "申請・承認などの状態を次へ進める",
+   "dynamic_ports": false,
+   "idempotency": "engine_dedup",
+   "label_ja": "状態を進める",
+   "multi_input": false,
+   "output_fields": [
+    {
+     "name": "id",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "table_id",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "data",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "{ [列の参照名]: unknown }"
+    },
+    {
+     "name": "rev",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "number"
+    },
+    {
+     "name": "owner",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "created_at",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "updated_at",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    }
+   ],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "レコード { id: string, table_id: string, data: { [列の参照名]: unknown }, rev: number, owner: string, created_at: string, updated_at: string }",
+   "port_rule": "static",
+   "required_scope": "data.write",
+   "step_cache": null,
+   "timeout_default_sec": 30,
+   "timeout_max_sec": 120,
+   "type": "data.transition"
+  },
+  {
+   "available": true,
+   "category": "data",
+   "category_label_ja": "業務データ",
+   "description_ja": "業務データのレコードを削除する",
+   "dynamic_ports": false,
+   "idempotency": "engine_dedup",
+   "label_ja": "データを削除",
+   "multi_input": false,
+   "output_fields": [
+    {
+     "name": "id",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "deleted",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "true"
+    }
+   ],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "{ id: string, deleted: true }",
+   "port_rule": "static",
+   "required_scope": "data.write",
+   "step_cache": null,
+   "timeout_default_sec": 30,
+   "timeout_max_sec": 120,
+   "type": "data.record.delete"
+  },
+  {
+   "available": true,
+   "category": "data",
+   "category_label_ja": "業務データ",
+   "description_ja": "業務データにレコードをまとめて追加・更新する",
+   "dynamic_ports": false,
+   "idempotency": "engine_dedup",
+   "label_ja": "データをまとめて登録",
+   "multi_input": false,
+   "output_fields": [
+    {
+     "name": "import_id",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "status",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "rows_total",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "number"
+    },
+    {
+     "name": "rows_applied",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "number"
+    },
+    {
+     "name": "rows_invalid",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "number"
+    },
+    {
+     "name": "rows_rejected",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "number"
+    },
+    {
+     "name": "errors",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "Array<{ row: number, key: string | null, message: string }>"
+    },
+    {
+     "name": "last_error",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "string | null"
+    },
+    {
+     "name": "rows_matched",
+     "note": "同じレコードを探す列で、あるレコードに当たって更新に回した件数",
+     "optional": true,
+     "present_if": "/match_on",
+     "type": "number"
+    }
+   ],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "{ import_id: string, status: string, rows_total: number, rows_applied: number, rows_invalid: number, rows_rejected: number, errors: Array<{ row: number, key: string | null, message: string }>, last_error: string | null, rows_matched?: number（同じレコードを探す列で、あるレコードに当たって更新に回した件数） }",
+   "port_rule": "static",
+   "required_scope": "data.write",
+   "step_cache": null,
+   "timeout_default_sec": 600,
+   "timeout_max_sec": 600,
+   "type": "data.bulk_upsert"
+  },
+  {
+   "available": false,
+   "category": "notify",
+   "category_label_ja": "通知・承認",
+   "description_ja": "アプリ内の通知を相手に届ける",
+   "dynamic_ports": false,
+   "idempotency": "engine_dedup",
+   "label_ja": "通知を送る",
+   "multi_input": false,
+   "output_fields": [],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "",
+   "port_rule": "static",
+   "required_scope": "notify.send",
+   "step_cache": null,
+   "timeout_default_sec": 30,
+   "timeout_max_sec": 60,
+   "type": "notify.send"
+  },
+  {
+   "available": true,
+   "category": "skill",
+   "category_label_ja": "スキル",
+   "description_ja": "インストール済みのスキル（定型作業）を呼び出す",
+   "dynamic_ports": false,
+   "idempotency": "best_effort",
+   "label_ja": "スキルを使う",
+   "multi_input": false,
+   "output_fields": [],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "script を持つ skill は main の戻り値・指示だけの skill は { text: string, model: string }",
+   "port_rule": "static",
+   "required_scope": null,
+   "step_cache": null,
+   "timeout_default_sec": 60,
+   "timeout_max_sec": 360,
+   "type": "skill.invoke"
+  },
+  {
+   "available": false,
+   "category": "control",
+   "category_label_ja": "流れの制御",
+   "description_ja": "条件を満たす間、処理を繰り返す",
+   "dynamic_ports": false,
+   "idempotency": "pure",
+   "label_ja": "条件ループ",
+   "multi_input": false,
+   "output_fields": [],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "",
+   "port_rule": "static",
+   "required_scope": null,
+   "step_cache": null,
+   "timeout_default_sec": null,
+   "timeout_max_sec": null,
+   "type": "control.loop"
+  },
+  {
+   "available": false,
+   "category": "control",
+   "category_label_ja": "流れの制御",
+   "description_ja": "条件を満たさなければフローを失敗として止める",
+   "dynamic_ports": false,
+   "idempotency": "pure",
+   "label_ja": "チェック",
+   "multi_input": false,
+   "output_fields": [],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "",
+   "port_rule": "static",
+   "required_scope": null,
+   "step_cache": null,
+   "timeout_default_sec": null,
+   "timeout_max_sec": null,
+   "type": "control.assert"
+  },
+  {
+   "available": false,
+   "category": "developer",
+   "category_label_ja": "開発者向け",
+   "description_ja": "実行履歴にメモ（ログ）を残す",
+   "dynamic_ports": false,
+   "idempotency": "pure",
+   "label_ja": "ログ出力",
+   "multi_input": false,
+   "output_fields": [],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "",
+   "port_rule": "static",
+   "required_scope": null,
+   "step_cache": null,
+   "timeout_default_sec": null,
+   "timeout_max_sec": null,
+   "type": "debug.log"
+  },
+  {
+   "available": true,
+   "category": "transform",
+   "category_label_ja": "データ加工",
+   "description_ja": "基準の日から、前日・先週・先月などの日付と、週や月の最初と最後の日を求めます。",
+   "dynamic_ports": false,
+   "idempotency": "pure",
+   "label_ja": "日付を計算",
+   "multi_input": false,
+   "output_fields": [
+    {
+     "name": "date",
+     "note": "ずらした日・YYYY-MM-DD",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "start",
+     "note": "期間の最初の日（週の初め・月初など）",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "end",
+     "note": "期間の最後の日（週の終わり・月末など）",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "start_at",
+     "note": "期間の始まりの日時・時差つき",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "next_start_at",
+     "note": "次の期間の始まりの日時・期間はこれより前まで",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "year",
+     "note": "ずらした日の年",
+     "optional": false,
+     "present_if": "",
+     "type": "number"
+    },
+    {
+     "name": "month",
+     "note": "ずらした日の月",
+     "optional": false,
+     "present_if": "",
+     "type": "number"
+    },
+    {
+     "name": "day",
+     "note": "ずらした日の日",
+     "optional": false,
+     "present_if": "",
+     "type": "number"
+    },
+    {
+     "name": "weekday",
+     "note": "ずらした日の曜日・1＝月曜〜7＝日曜",
+     "optional": false,
+     "present_if": "",
+     "type": "number"
+    }
+   ],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "{ date: string（ずらした日・YYYY-MM-DD）, start: string（期間の最初の日（週の初め・月初など））, end: string（期間の最後の日（週の終わり・月末など））, start_at: string（期間の始まりの日時・時差つき）, next_start_at: string（次の期間の始まりの日時・期間はこれより前まで）, year: number（ずらした日の年）, month: number（ずらした日の月）, day: number（ずらした日の日）, weekday: number（ずらした日の曜日・1＝月曜〜7＝日曜） }",
+   "port_rule": "static",
+   "required_scope": null,
+   "step_cache": null,
+   "timeout_default_sec": 5,
+   "timeout_max_sec": 10,
+   "type": "transform.date"
+  },
+  {
+   "available": false,
+   "category": "transform",
+   "category_label_ja": "データ加工",
+   "description_ja": "テンプレートに値を差し込んで文章を作る",
+   "dynamic_ports": false,
+   "idempotency": "pure",
+   "label_ja": "文章の組み立て",
+   "multi_input": false,
+   "output_fields": [],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "",
+   "port_rule": "static",
+   "required_scope": null,
+   "step_cache": null,
+   "timeout_default_sec": null,
+   "timeout_max_sec": null,
+   "type": "transform.template"
+  },
+  {
+   "available": false,
+   "category": "transform",
+   "category_label_ja": "データ加工",
+   "description_ja": "CSV・XML・JSON を扱えるデータに変換する",
+   "dynamic_ports": false,
+   "idempotency": "pure",
+   "label_ja": "データの読み取り",
+   "multi_input": false,
+   "output_fields": [],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "",
+   "port_rule": "static",
+   "required_scope": null,
+   "step_cache": null,
+   "timeout_default_sec": null,
+   "timeout_max_sec": null,
+   "type": "transform.parse"
+  },
+  {
+   "available": false,
+   "category": "transform",
+   "category_label_ja": "データ加工",
+   "description_ja": "データを CSV・XML・JSON の形式にする",
+   "dynamic_ports": false,
+   "idempotency": "pure",
+   "label_ja": "データの書き出し",
+   "multi_input": false,
+   "output_fields": [],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "",
+   "port_rule": "static",
+   "required_scope": null,
+   "step_cache": null,
+   "timeout_default_sec": null,
+   "timeout_max_sec": null,
+   "type": "transform.serialize"
+  },
+  {
+   "available": false,
+   "category": "transform",
+   "category_label_ja": "データ加工",
+   "description_ja": "文字列から規則（正規表現）で抜き出す",
+   "dynamic_ports": false,
+   "idempotency": "pure",
+   "label_ja": "パターン抽出",
+   "multi_input": false,
+   "output_fields": [],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "",
+   "port_rule": "static",
+   "required_scope": null,
+   "step_cache": null,
+   "timeout_default_sec": null,
+   "timeout_max_sec": null,
+   "type": "transform.regex"
+  },
+  {
+   "available": false,
+   "category": "transform",
+   "category_label_ja": "データ加工",
+   "description_ja": "リストの各要素を同じ規則で変換する",
+   "dynamic_ports": false,
+   "idempotency": "pure",
+   "label_ja": "一括変換",
+   "multi_input": false,
+   "output_fields": [],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "",
+   "port_rule": "static",
+   "required_scope": null,
+   "step_cache": null,
+   "timeout_default_sec": null,
+   "timeout_max_sec": null,
+   "type": "transform.map"
+  },
+  {
+   "available": false,
+   "category": "transform",
+   "category_label_ja": "データ加工",
+   "description_ja": "リストから条件に合う要素だけ残す",
+   "dynamic_ports": false,
+   "idempotency": "pure",
+   "label_ja": "絞り込み",
+   "multi_input": false,
+   "output_fields": [],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "",
+   "port_rule": "static",
+   "required_scope": null,
+   "step_cache": null,
+   "timeout_default_sec": null,
+   "timeout_max_sec": null,
+   "type": "transform.filter"
+  },
+  {
+   "available": false,
+   "category": "transform",
+   "category_label_ja": "データ加工",
+   "description_ja": "リストを合計・件数などにまとめる",
+   "dynamic_ports": false,
+   "idempotency": "pure",
+   "label_ja": "集計",
+   "multi_input": false,
+   "output_fields": [],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "",
+   "port_rule": "static",
+   "required_scope": null,
+   "step_cache": null,
+   "timeout_default_sec": null,
+   "timeout_max_sec": null,
+   "type": "transform.reduce"
+  },
+  {
+   "available": false,
+   "category": "office",
+   "category_label_ja": "オフィス文書",
+   "description_ja": "スプレッドシートのセル・範囲を読み取る",
+   "dynamic_ports": false,
+   "idempotency": "pure",
+   "label_ja": "シートを読む",
+   "multi_input": false,
+   "output_fields": [],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "",
+   "port_rule": "static",
+   "required_scope": "sheet.read",
+   "step_cache": null,
+   "timeout_default_sec": null,
+   "timeout_max_sec": null,
+   "type": "sheet.read"
+  },
+  {
+   "available": false,
+   "category": "office",
+   "category_label_ja": "オフィス文書",
+   "description_ja": "スプレッドシートのセル・範囲に書き込む",
+   "dynamic_ports": false,
+   "idempotency": "best_effort",
+   "label_ja": "シートに書く",
+   "multi_input": false,
+   "output_fields": [],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "",
+   "port_rule": "static",
+   "required_scope": "sheet.write",
+   "step_cache": null,
+   "timeout_default_sec": null,
+   "timeout_max_sec": null,
+   "type": "sheet.write"
+  },
+  {
+   "available": false,
+   "category": "office",
+   "category_label_ja": "オフィス文書",
+   "description_ja": "スプレッドシートの末尾に行を追加する",
+   "dynamic_ports": false,
+   "idempotency": "best_effort",
+   "label_ja": "シートに追記",
+   "multi_input": false,
+   "output_fields": [],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "",
+   "port_rule": "static",
+   "required_scope": "sheet.write",
+   "step_cache": null,
+   "timeout_default_sec": null,
+   "timeout_max_sec": null,
+   "type": "sheet.append"
+  },
+  {
+   "available": false,
+   "category": "office",
+   "category_label_ja": "オフィス文書",
+   "description_ja": "ドキュメントの見出し・本文を読み取る",
+   "dynamic_ports": false,
+   "idempotency": "pure",
+   "label_ja": "文書を読む",
+   "multi_input": false,
+   "output_fields": [],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "",
+   "port_rule": "static",
+   "required_scope": "doc.read",
+   "step_cache": null,
+   "timeout_default_sec": null,
+   "timeout_max_sec": null,
+   "type": "doc.read"
+  },
+  {
+   "available": false,
+   "category": "office",
+   "category_label_ja": "オフィス文書",
+   "description_ja": "ドキュメントの内容を書き換える",
+   "dynamic_ports": false,
+   "idempotency": "best_effort",
+   "label_ja": "文書を編集",
+   "multi_input": false,
+   "output_fields": [],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "",
+   "port_rule": "static",
+   "required_scope": "doc.write",
+   "step_cache": null,
+   "timeout_default_sec": null,
+   "timeout_max_sec": null,
+   "type": "doc.edit"
+  },
+  {
+   "available": false,
+   "category": "office",
+   "category_label_ja": "オフィス文書",
+   "description_ja": "ドキュメントにコメントを付ける",
+   "dynamic_ports": false,
+   "idempotency": "best_effort",
+   "label_ja": "文書にコメント",
+   "multi_input": false,
+   "output_fields": [],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "",
+   "port_rule": "static",
+   "required_scope": "doc.write",
+   "step_cache": null,
+   "timeout_default_sec": null,
+   "timeout_max_sec": null,
+   "type": "doc.comment"
+  },
+  {
+   "available": false,
+   "category": "memory",
+   "category_label_ja": "記憶",
+   "description_ja": "保存しておいた値を取り出す",
+   "dynamic_ports": false,
+   "idempotency": "pure",
+   "label_ja": "記憶を読む",
+   "multi_input": false,
+   "output_fields": [],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "",
+   "port_rule": "static",
+   "required_scope": "memory.read",
+   "step_cache": null,
+   "timeout_default_sec": null,
+   "timeout_max_sec": null,
+   "type": "memory.get"
+  },
+  {
+   "available": false,
+   "category": "memory",
+   "category_label_ja": "記憶",
+   "description_ja": "後で使う値を保存しておく",
+   "dynamic_ports": false,
+   "idempotency": "engine_dedup",
+   "label_ja": "記憶する",
+   "multi_input": false,
+   "output_fields": [],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "",
+   "port_rule": "static",
+   "required_scope": "memory.write",
+   "step_cache": null,
+   "timeout_default_sec": null,
+   "timeout_max_sec": null,
+   "type": "memory.set"
+  },
+  {
+   "available": false,
+   "category": "workflow",
+   "category_label_ja": "フロー連携",
+   "description_ja": "他のフローが購読できるできごとを発行する",
+   "dynamic_ports": false,
+   "idempotency": "engine_dedup",
+   "label_ja": "できごとを知らせる",
+   "multi_input": false,
+   "output_fields": [],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "",
+   "port_rule": "static",
+   "required_scope": "event.publish",
+   "step_cache": null,
+   "timeout_default_sec": null,
+   "timeout_max_sec": null,
+   "type": "event.publish"
+  },
+  {
+   "available": false,
+   "category": "workflow",
+   "category_label_ja": "フロー連携",
+   "description_ja": "別のワークフローを実行し結果を受け取る",
+   "dynamic_ports": false,
+   "idempotency": "engine_dedup",
+   "label_ja": "別のフローを呼ぶ",
+   "multi_input": false,
+   "output_fields": [],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "",
+   "port_rule": "static",
+   "required_scope": "workflow.start",
+   "step_cache": null,
+   "timeout_default_sec": null,
+   "timeout_max_sec": null,
+   "type": "workflow.call"
+  },
+  {
+   "available": false,
+   "category": "ai",
+   "category_label_ja": "AI",
+   "description_ja": "検索用の数値表現（埋め込み）を作る",
+   "dynamic_ports": false,
+   "idempotency": "pure",
+   "label_ja": "AI 埋め込み",
+   "multi_input": false,
+   "output_fields": [],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "",
+   "port_rule": "static",
+   "required_scope": null,
+   "step_cache": null,
+   "timeout_default_sec": null,
+   "timeout_max_sec": null,
+   "type": "llm.embed"
+  },
+  {
+   "available": false,
+   "category": "ai",
+   "category_label_ja": "AI",
+   "description_ja": "文章から決まった形式でデータを抜き出す",
+   "dynamic_ports": false,
+   "idempotency": "pure",
+   "label_ja": "AI で抽出",
+   "multi_input": false,
+   "output_fields": [],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "",
+   "port_rule": "static",
+   "required_scope": null,
+   "step_cache": null,
+   "timeout_default_sec": null,
+   "timeout_max_sec": null,
+   "type": "llm.extract"
+  },
+  {
+   "available": false,
+   "category": "ai",
+   "category_label_ja": "AI",
+   "description_ja": "文章やコードを AI がレビューして指摘を返す",
+   "dynamic_ports": false,
+   "idempotency": "pure",
+   "label_ja": "AI レビュー",
+   "multi_input": false,
+   "output_fields": [],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "",
+   "port_rule": "static",
+   "required_scope": null,
+   "step_cache": null,
+   "timeout_default_sec": null,
+   "timeout_max_sec": null,
+   "type": "ai.review"
+  },
+  {
+   "available": false,
+   "category": "ai",
+   "category_label_ja": "AI",
+   "description_ja": "AI の出力の品質を AI が採点する",
+   "dynamic_ports": false,
+   "idempotency": "pure",
+   "label_ja": "AI 品質評価",
+   "multi_input": false,
+   "output_fields": [],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "",
+   "port_rule": "static",
+   "required_scope": null,
+   "step_cache": null,
+   "timeout_default_sec": null,
+   "timeout_max_sec": null,
+   "type": "ai.eval"
+  },
+  {
+   "available": false,
+   "category": "ai",
+   "category_label_ja": "AI",
+   "description_ja": "画像や PDF から文字を読み取る",
+   "dynamic_ports": false,
+   "idempotency": "pure",
+   "label_ja": "文字起こし（画像）",
+   "multi_input": false,
+   "output_fields": [],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "",
+   "port_rule": "static",
+   "required_scope": null,
+   "step_cache": null,
+   "timeout_default_sec": null,
+   "timeout_max_sec": null,
+   "type": "ai.ocr"
+  },
+  {
+   "available": false,
+   "category": "ai",
+   "category_label_ja": "AI",
+   "description_ja": "画像の内容を AI が説明・分類する",
+   "dynamic_ports": false,
+   "idempotency": "pure",
+   "label_ja": "画像の理解",
+   "multi_input": false,
+   "output_fields": [],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "",
+   "port_rule": "static",
+   "required_scope": null,
+   "step_cache": null,
+   "timeout_default_sec": null,
+   "timeout_max_sec": null,
+   "type": "ai.image.analyze"
+  },
+  {
+   "available": false,
+   "category": "ai",
+   "category_label_ja": "AI",
+   "description_ja": "指示から画像を生成する",
+   "dynamic_ports": false,
+   "idempotency": "best_effort",
+   "label_ja": "画像の生成",
+   "multi_input": false,
+   "output_fields": [],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "",
+   "port_rule": "static",
+   "required_scope": null,
+   "step_cache": null,
+   "timeout_default_sec": null,
+   "timeout_max_sec": null,
+   "type": "ai.image.generate"
+  },
+  {
+   "available": false,
+   "category": "ai",
+   "category_label_ja": "AI",
+   "description_ja": "音声を文字に起こす",
+   "dynamic_ports": false,
+   "idempotency": "pure",
+   "label_ja": "文字起こし（音声）",
+   "multi_input": false,
+   "output_fields": [],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "",
+   "port_rule": "static",
+   "required_scope": null,
+   "step_cache": null,
+   "timeout_default_sec": null,
+   "timeout_max_sec": null,
+   "type": "ai.transcribe"
+  },
+  {
+   "available": false,
+   "category": "ai",
+   "category_label_ja": "AI",
+   "description_ja": "文章を読み上げ音声にする",
+   "dynamic_ports": false,
+   "idempotency": "best_effort",
+   "label_ja": "音声の生成",
+   "multi_input": false,
+   "output_fields": [],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "",
+   "port_rule": "static",
+   "required_scope": null,
+   "step_cache": null,
+   "timeout_default_sec": null,
+   "timeout_max_sec": null,
+   "type": "ai.speech"
+  },
+  {
+   "available": false,
+   "category": "external",
+   "category_label_ja": "外部連携",
+   "description_ja": "GraphQL の外部サービスに問い合わせる",
+   "dynamic_ports": false,
+   "idempotency": "best_effort",
+   "label_ja": "GraphQL 呼び出し",
+   "multi_input": false,
+   "output_fields": [],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "",
+   "port_rule": "static",
+   "required_scope": "http.egress",
+   "step_cache": null,
+   "timeout_default_sec": null,
+   "timeout_max_sec": null,
+   "type": "graphql.query"
+  },
+  {
+   "available": false,
+   "category": "developer",
+   "category_label_ja": "開発者向け",
+   "description_ja": "隔離環境でコマンドや Python を 1 回実行する",
+   "dynamic_ports": false,
+   "idempotency": "best_effort",
+   "label_ja": "コマンド実行",
+   "multi_input": false,
+   "output_fields": [],
+   "output_ports": [
+    "out"
+   ],
+   "output_shape": "",
+   "port_rule": "static",
+   "required_scope": "sandbox.exec",
+   "step_cache": null,
+   "timeout_default_sec": null,
+   "timeout_max_sec": null,
+   "type": "sandbox.exec"
+  },
+  {
+   "available": true,
+   "category": "notify",
+   "category_label_ja": "通知・承認",
+   "description_ja": "テーブルの行について担当者の承認・却下・差し戻しを待って分岐する",
+   "dynamic_ports": false,
+   "idempotency": "engine_dedup",
+   "label_ja": "承認を待つ",
+   "multi_input": false,
+   "output_fields": [
+    {
+     "name": "approval_id",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "decision",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "\"approve\" | \"reject\" | \"return\" | \"withdrawn\" | \"timeout\""
+    },
+    {
+     "name": "to",
+     "note": "判断で進んだ状態",
+     "optional": false,
+     "present_if": "",
+     "type": "string | null"
+    },
+    {
+     "name": "decided_by",
+     "note": "判断した人の ID",
+     "optional": false,
+     "present_if": "",
+     "type": "string | null"
+    },
+    {
+     "name": "decided_at",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "string | null"
+    },
+    {
+     "name": "comment",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "string | null"
+    },
+    {
+     "name": "record_id",
+     "note": "",
+     "optional": false,
+     "present_if": "",
+     "type": "string"
+    },
+    {
+     "name": "rev",
+     "note": "判断の後の rev",
+     "optional": false,
+     "present_if": "",
+     "type": "number | null"
+    }
+   ],
+   "output_ports": [
+    "approved",
+    "withdrawn"
+   ],
+   "output_shape": "{ approval_id: string, decision: \"approve\" | \"reject\" | \"return\" | \"withdrawn\" | \"timeout\", to: string | null（判断で進んだ状態）, decided_by: string | null（判断した人の ID）, decided_at: string | null, comment: string | null, record_id: string, rev: number | null（判断の後の rev） }（行の値は載せない。必要なら後で「データを調べる」で読む）",
+   "port_rule": "approval_choices",
+   "required_scope": "notify.send",
+   "step_cache": null,
+   "timeout_default_sec": 30,
+   "timeout_max_sec": 120,
+   "type": "human.approval"
+  }
+ ],
+ "save_warning_codes": [
+  "ir.condition_semantics_changed",
+  "ir.template_escaped_var",
+  "ir.template_unclosed_brace",
+  "ir.required_text_empty",
+  "ir.empty_region",
+  "ir.empty_values",
+  "ir.overlapping_data_triggers",
+  "ir.wait_filter_alias",
+  "ir.approval_timeouts_exceed_run",
+  "ir.reply_without_interactive",
+  "ir.output_schema_few_tokens",
+  "ir.effort_ignored",
+  "ir.decide_low_confidence",
+  "ir.decide_many_ports",
+  "ir.decide_unpinned_model",
+  "ir.unconnected_node",
+  "ir.unknown_input",
+  "ir.plain_key_header"
+ ]
+}

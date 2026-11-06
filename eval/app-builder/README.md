@@ -185,6 +185,19 @@ ABEVAL_API_URL=http://localhost:8080 uv run pytest -m server -q -s
 1 往復・charlie（別テナント）から alice の id が無い id と同じ応答（ワークフローは 403、テーブルは 404）になることを
 確かめる。名前には毎回ちがう印を付ける（ほかの確かめと DB を共有しても重ならない）。
 
+## 採点（`abeval/grade/`・§5）
+
+| 置き場 | 中身 |
+| --- | --- |
+| `grade/static.py` | 1 層目 ir_lint（`errors`・`run_blockers`・`STRICT_WARNINGS` は S2s、ほかの警告は S2w、`ignored_by_env` は数えない）。2 層目は課題の検査（入力の参照・`flow_through`・出力の path〔カタログの `output_fields` と `present_if`〕）と S5（トリガ・ノードの種類・診断用） |
+| `grade/dynamic.py` | dead edge（`node_ports` に無い出口・出口が 1 つのノードの通らなかった線）・差し込みの残り（`{name}`・`{{…}}`）・入力が届かない。`llm_dependent` を stub で流したときは最初の LLM のノードまでに限る |
+| `grade/checks.py` | 照合子（equals・contains・regex・in・absent・rows・files・no_new_rows）。NFKC と数字の正規化。`$fixture` で fixture から期待値を計算する |
+| `grade/mutate.py` | 採点器の自己テストの 8 通りの壊し方と、期待する検査。中身の無い IR（null） |
+| `gen_checks.py` | 課題の検査 G1〜G9 のうちオフラインのもの（G2・G4・G5・G7・G8・G9）。G8 の拒否リストは `~/.config/shiki-dev/abeval-denylist.txt`（リポジトリの外・1 行 1 語）。無ければ理由を出して飛ばす。理由には場所と語の長さだけを書く |
+| `run_cases.py` | run_case をサーバーで流して記録を集める（fixture の行の入れ直し・起動の列・成功した step の出力・行・増えたファイル・再実行）。正解の結合テストと、後の段の Mode A・B が使う |
+
+採点器の版は `grade.GRADER_VERSION` と ir_lint のバイナリの sha（`static.grader_version()`）で残す。
+
 ## 上限と台帳
 
 | 項目 | 既定 | 強制する場所 |
@@ -232,9 +245,24 @@ Mode B で承認待ち（`approval_requested`）が来たら、既定で却下�
   `test_dev_up_args.py` は、引数を省いた dev-up.sh が HEAD の版と同じ run-server.sh を作り、同じ shim を同じ順に
   呼ぶことを確かめる。`test_build_version.py` は一時の git リポジトリと偽の cargo で流す。
 - 一時の置き場は `.pytest_tmp/`（/tmp は tmpfs なので使わない）。
+- 採点器のオフラインのテストは、記録（`tests/fixtures/ir_lint/`・`tests/fixtures/runs/`）を読む。課題を変えたら
+  記録し直す（記録の入力の sha が違うとテストが止まる）。記録と実物の一致は `pytest -m lint_bin` が見る。
+
+  ```bash
+  uv run python scripts/record_fixtures.py --lint                                   # ir_lint の出力
+  uv run python scripts/record_fixtures.py --runs --api-url http://localhost:8080   # stub のスタックで run を記録
+  ABEVAL_API_URL=http://localhost:8080 uv run pytest -m server tests/test_reference_it.py -q   # 正解と null
+  ```
+
+- 採点器の自己テスト（`tests/test_mutate.py`）は、8 通りの壊し方が期待した検査で捕まることと、検査を何もしない
+  ように差し替えるとそのテストが落ちることを確かめる。`from_port: next` は HEAD の検証では保存できないので、
+  正解の記録から V0 の動き（その線の先が動かない）を組んで dead edge を見る。
 
 ## 限界
 
 - 本文のバイト数による予約は大きめなので、上限の間際では最後の数件を拒むことがある（安全側）。Anthropic が
   ツールの定義に足す system の分（数百トークン）は本文に無いが、JSON の記号のバイトがそれより大きい。
 - 評価の台帳は作業ツリーごとにある。評価は 1 つの作業ツリー（このブランチ）から流す。
+- 差し込みの残りと入力が届かないの検査は、stub が prompt を「回答: …」で返すことに頼る。出力の形（output_schema）
+  のある llm.invoke では stub が形に合う最小の値を返すので、その prompt の差し込みの残りは動的には見えない
+  （静的な `ir.template_escaped_var` で捕まえる）。

@@ -1,0 +1,119 @@
+{
+ "task": "app06-stock-move",
+ "variant": "null",
+ "case": "enough",
+ "irs": {
+  "main": {
+   "ir_version": 1,
+   "name": "abeval-rec-a246b6-null",
+   "display_name": "スタブフロー",
+   "declared_scopes": [],
+   "triggers": [
+    {
+     "kind": "interactive"
+    }
+   ],
+   "nodes": [
+    {
+     "id": "compute",
+     "type": "script.run",
+     "params": {
+      "source": {
+       "inline": "function main(i){ return { ok: true }; }"
+      }
+     }
+    }
+   ],
+   "edges": []
+  }
+ },
+ "node_ports": {
+  "main": {
+   "compute": [
+    "out"
+   ]
+  }
+ },
+ "record": {
+  "runs": [
+   {
+    "run_id": "ab39f715-3ef7-411b-b19f-2b683168fe0e",
+    "status": "succeeded",
+    "input": {
+     "code": "P-100",
+     "qty": 15
+    },
+    "steps": [
+     {
+      "step_path": "compute",
+      "node_id": "compute",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "ok": true
+      },
+      "error": null
+     }
+    ],
+    "workflow": null,
+    "scheduled_at": null,
+    "fail_reason": null
+   }
+  ],
+  "rows": {
+   "stock": [
+    {
+     "id": "38d1a586-77c4-445f-a56b-e62a553597f9",
+     "data": {
+      "code": "P-200",
+      "name": "ボールペン（黒）",
+      "qty": 5,
+      "reorder_point": 10,
+      "reorder_qty": 50
+     }
+    },
+    {
+     "id": "fcceac04-1c92-4551-9f28-93efddd53afc",
+     "data": {
+      "code": "P-100",
+      "name": "コピー用紙 A4",
+      "qty": 40,
+      "reorder_point": 20,
+      "reorder_qty": 100
+     }
+    }
+   ],
+   "moves": []
+  },
+  "rows_before": {
+   "stock": [
+    {
+     "id": "38d1a586-77c4-445f-a56b-e62a553597f9",
+     "data": {
+      "code": "P-200",
+      "name": "ボールペン（黒）",
+      "qty": 5,
+      "reorder_point": 10,
+      "reorder_qty": 50
+     }
+    },
+    {
+     "id": "fcceac04-1c92-4551-9f28-93efddd53afc",
+     "data": {
+      "code": "P-100",
+      "name": "コピー用紙 A4",
+      "qty": 40,
+      "reorder_point": 20,
+      "reorder_qty": 100
+     }
+    }
+   ],
+   "moves": []
+  },
+  "files": [],
+  "rows_rerun": null,
+  "now": "2026-11-06T19:47:33.609852+00:00"
+ }
+}

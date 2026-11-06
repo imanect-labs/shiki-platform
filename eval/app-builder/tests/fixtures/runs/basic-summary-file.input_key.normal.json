@@ -1,0 +1,151 @@
+{
+ "task": "basic-summary-file",
+ "variant": "input_key",
+ "case": "normal",
+ "irs": {
+  "main": {
+   "ir_version": 1,
+   "name": "abeval-rec-414008-input-key",
+   "display_name": "本文を要約して保存",
+   "triggers": [
+    {
+     "kind": "interactive"
+    }
+   ],
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "title": {
+      "type": "string"
+     },
+     "body": {
+      "type": "string"
+     }
+    },
+    "required": [
+     "title",
+     "body"
+    ],
+    "x-order": [
+     "title",
+     "body"
+    ]
+   },
+   "nodes": [
+    {
+     "id": "summarize",
+     "type": "llm.invoke",
+     "label": "要約する",
+     "params": {
+      "prompt": {
+       "$template": "次の本文を 3 行で要約してください。\n件名: {title}\n本文: {body}",
+       "vars": {
+        "title": {
+         "$from": "input",
+         "path": "/title_x"
+        },
+        "body": {
+         "$from": "input",
+         "path": "/body"
+        }
+       }
+      },
+      "model": "default"
+     }
+    },
+    {
+     "id": "save",
+     "type": "storage.write",
+     "label": "要約を保存",
+     "params": {
+      "folder": "5a8a7698-d906-4a03-8786-2602f9486a95",
+      "name": {
+       "$template": "要約-{date}.md",
+       "vars": {
+        "date": {
+         "$from": "run",
+         "path": "/date"
+        }
+       }
+      },
+      "content": {
+       "$template": "# {title}\n\n{summary}",
+       "vars": {
+        "title": {
+         "$from": "input",
+         "path": "/title_x"
+        },
+        "summary": {
+         "$from": "nodes.summarize.output",
+         "path": "/text"
+        }
+       }
+      },
+      "content_type": "text/markdown",
+      "on_name_taken": "add_number"
+     }
+    }
+   ],
+   "edges": [
+    {
+     "from": "summarize",
+     "to": "save"
+    }
+   ]
+  }
+ },
+ "node_ports": {
+  "main": {
+   "save": [
+    "out"
+   ],
+   "summarize": [
+    "out"
+   ]
+  }
+ },
+ "record": {
+  "runs": [
+   {
+    "run_id": "b1090793-23fd-4b91-b148-7fa7bf8f49d5",
+    "status": "failed",
+    "input": {
+     "body": "来月から会議室の予約は新しい予約表で受け付けます。予約は前日の 17 時までに入れてください。取り消しも予約表で行います。",
+     "title": "会議室の予約方法"
+    },
+    "steps": [
+     {
+      "step_path": "summarize",
+      "node_id": "summarize",
+      "status": "failed",
+      "taken_ports": [],
+      "output": null,
+      "error": {
+       "attempt": 1,
+       "code": "expr_resolve_error",
+       "message": "llm.invoke: prompt: $template の {title}: $from input /title_x が解決できません（値が無く default もありません）",
+       "node_id": "summarize",
+       "retryable": false
+      }
+     },
+     {
+      "step_path": "save",
+      "node_id": "save",
+      "status": "cancelled",
+      "taken_ports": [],
+      "output": null,
+      "error": null
+     }
+    ],
+    "workflow": null,
+    "scheduled_at": null,
+    "fail_reason": null
+   }
+  ],
+  "rows": {},
+  "rows_before": {},
+  "files": [],
+  "rows_rerun": null,
+  "now": "2026-11-06T19:46:53.118082+00:00"
+ }
+}

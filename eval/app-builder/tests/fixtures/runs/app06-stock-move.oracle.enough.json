@@ -1,0 +1,351 @@
+{
+ "task": "app06-stock-move",
+ "variant": "oracle",
+ "case": "enough",
+ "irs": {
+  "main": {
+   "ir_version": 1,
+   "name": "abeval-rec-a246b6-main",
+   "display_name": "出庫で在庫を減らす",
+   "triggers": [
+    {
+     "kind": "interactive"
+    }
+   ],
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "code": {
+      "type": "string"
+     },
+     "qty": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "code",
+     "qty"
+    ],
+    "x-order": [
+     "code",
+     "qty"
+    ]
+   },
+   "nodes": [
+    {
+     "id": "find",
+     "type": "data.query",
+     "label": "品番で探す",
+     "params": {
+      "table": "b2f1f90b-c340-4b40-baf3-65c859a319ae",
+      "query": {
+       "filter": {
+        "cmp": {
+         "field": "code",
+         "op": "eq",
+         "value": {
+          "$from": "input",
+          "path": "/code"
+         }
+        }
+       },
+       "limit": 1
+      }
+     }
+    },
+    {
+     "id": "enough",
+     "type": "control.branch",
+     "label": "在庫が足りるか",
+     "params": {
+      "condition": {
+       "cmp": {
+        "left": {
+         "$from": "nodes.find.output",
+         "path": "/items/0/data/qty"
+        },
+        "op": "gte",
+        "right": {
+         "$from": "input",
+         "path": "/qty"
+        }
+       }
+      }
+     }
+    },
+    {
+     "id": "negate",
+     "type": "script.run",
+     "label": "減らす数",
+     "params": {
+      "source": {
+       "inline": "function main(input) { return { delta: -Number(input.qty) }; }"
+      },
+      "input": {
+       "qty": {
+        "$from": "input",
+        "path": "/qty"
+       }
+      }
+     }
+    },
+    {
+     "id": "take",
+     "type": "data.record.update",
+     "label": "在庫数を減らす",
+     "params": {
+      "table": "b2f1f90b-c340-4b40-baf3-65c859a319ae",
+      "record": {
+       "$from": "nodes.find.output",
+       "path": "/items/0/id"
+      },
+      "add": {
+       "qty": {
+        "$from": "nodes.negate.output",
+        "path": "/delta"
+       }
+      }
+     }
+    },
+    {
+     "id": "log",
+     "type": "data.record.create",
+     "label": "記録を残す",
+     "params": {
+      "table": "49791bdb-8283-4dff-af80-11280a7e0a0f",
+      "data": {
+       "code": {
+        "$from": "input",
+        "path": "/code"
+       },
+       "qty": {
+        "$from": "input",
+        "path": "/qty"
+       }
+      }
+     }
+    }
+   ],
+   "edges": [
+    {
+     "from": "find",
+     "to": "enough"
+    },
+    {
+     "from": "enough",
+     "to": "negate",
+     "from_port": "true"
+    },
+    {
+     "from": "negate",
+     "to": "take"
+    },
+    {
+     "from": "take",
+     "to": "log"
+    }
+   ]
+  }
+ },
+ "node_ports": {
+  "main": {
+   "enough": [
+    "true",
+    "false"
+   ],
+   "find": [
+    "out"
+   ],
+   "log": [
+    "out"
+   ],
+   "negate": [
+    "out"
+   ],
+   "take": [
+    "out"
+   ]
+  }
+ },
+ "record": {
+  "runs": [
+   {
+    "run_id": "6841a737-db90-4cf9-9079-cae367d15bef",
+    "status": "succeeded",
+    "input": {
+     "code": "P-100",
+     "qty": 15
+    },
+    "steps": [
+     {
+      "step_path": "find",
+      "node_id": "find",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "items": [
+        {
+         "created_at": "2026-11-06T19:47:33.964043Z",
+         "data": {
+          "code": "P-100",
+          "name": "コピー用紙 A4",
+          "qty": 40,
+          "reorder_point": 20,
+          "reorder_qty": 100
+         },
+         "id": "854f6559-d49e-425b-ae24-bd2daeac6526",
+         "owner": "00000000-0000-0000-0000-000000000001",
+         "rev": 1,
+         "table_id": "b2f1f90b-c340-4b40-baf3-65c859a319ae",
+         "updated_at": "2026-11-06T19:47:33.964043Z"
+        }
+       ],
+       "shares_truncated": false,
+       "snapshot_seq": 3,
+       "sort_degraded": false,
+       "sort_precision": "exact",
+       "suppressed": false
+      },
+      "error": null
+     },
+     {
+      "step_path": "enough",
+      "node_id": "enough",
+      "status": "succeeded",
+      "taken_ports": [
+       "true"
+      ],
+      "output": {
+       "code": "P-100",
+       "qty": 15
+      },
+      "error": null
+     },
+     {
+      "step_path": "negate",
+      "node_id": "negate",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "delta": -15
+      },
+      "error": null
+     },
+     {
+      "step_path": "take",
+      "node_id": "take",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "created_at": "2026-11-06T19:47:33.964043Z",
+       "data": {
+        "code": "P-100",
+        "name": "コピー用紙 A4",
+        "qty": 25,
+        "reorder_point": 20,
+        "reorder_qty": 100
+       },
+       "id": "854f6559-d49e-425b-ae24-bd2daeac6526",
+       "owner": "00000000-0000-0000-0000-000000000001",
+       "rev": 2,
+       "table_id": "b2f1f90b-c340-4b40-baf3-65c859a319ae",
+       "updated_at": "2026-11-06T19:47:34.145792Z"
+      },
+      "error": null
+     },
+     {
+      "step_path": "log",
+      "node_id": "log",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "created_at": "2026-11-06T19:47:34.175058Z",
+       "data": {
+        "code": "P-100",
+        "qty": 15
+       },
+       "id": "ab850f54-c2be-4be7-99bc-5e0a9bad12b5",
+       "owner": "00000000-0000-0000-0000-000000000001",
+       "rev": 1,
+       "table_id": "49791bdb-8283-4dff-af80-11280a7e0a0f",
+       "updated_at": "2026-11-06T19:47:34.175058Z"
+      },
+      "error": null
+     }
+    ],
+    "workflow": null,
+    "scheduled_at": null,
+    "fail_reason": null
+   }
+  ],
+  "rows": {
+   "stock": [
+    {
+     "id": "854f6559-d49e-425b-ae24-bd2daeac6526",
+     "data": {
+      "code": "P-100",
+      "name": "コピー用紙 A4",
+      "qty": 25,
+      "reorder_point": 20,
+      "reorder_qty": 100
+     }
+    },
+    {
+     "id": "51c37272-0a63-4ced-b420-07cdd62d6c6b",
+     "data": {
+      "code": "P-200",
+      "name": "ボールペン（黒）",
+      "qty": 5,
+      "reorder_point": 10,
+      "reorder_qty": 50
+     }
+    }
+   ],
+   "moves": [
+    {
+     "id": "ab850f54-c2be-4be7-99bc-5e0a9bad12b5",
+     "data": {
+      "code": "P-100",
+      "qty": 15
+     }
+    }
+   ]
+  },
+  "rows_before": {
+   "stock": [
+    {
+     "id": "51c37272-0a63-4ced-b420-07cdd62d6c6b",
+     "data": {
+      "code": "P-200",
+      "name": "ボールペン（黒）",
+      "qty": 5,
+      "reorder_point": 10,
+      "reorder_qty": 50
+     }
+    },
+    {
+     "id": "854f6559-d49e-425b-ae24-bd2daeac6526",
+     "data": {
+      "code": "P-100",
+      "name": "コピー用紙 A4",
+      "qty": 40,
+      "reorder_point": 20,
+      "reorder_qty": 100
+     }
+    }
+   ],
+   "moves": []
+  },
+  "files": [],
+  "rows_rerun": null,
+  "now": "2026-11-06T19:47:33.609852+00:00"
+ }
+}

@@ -1,0 +1,230 @@
+{
+ "task": "app03-weekly-summary",
+ "variant": "null",
+ "case": "last_week",
+ "irs": {
+  "main": {
+   "ir_version": 1,
+   "name": "abeval-rec-d0d19a-null",
+   "display_name": "スタブフロー",
+   "declared_scopes": [],
+   "triggers": [
+    {
+     "kind": "interactive"
+    }
+   ],
+   "nodes": [
+    {
+     "id": "compute",
+     "type": "script.run",
+     "params": {
+      "source": {
+       "inline": "function main(i){ return { ok: true }; }"
+      }
+     }
+    }
+   ],
+   "edges": []
+  }
+ },
+ "node_ports": {
+  "main": {
+   "compute": [
+    "out"
+   ]
+  }
+ },
+ "record": {
+  "runs": [
+   {
+    "run_id": "ff353cbf-0aa2-4ed6-91a9-1d59c37f7a9b",
+    "status": "succeeded",
+    "input": {},
+    "steps": [
+     {
+      "step_path": "compute",
+      "node_id": "compute",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "ok": true
+      },
+      "error": null
+     }
+    ],
+    "workflow": null,
+    "scheduled_at": "2026-11-09T00:00:00+00:00",
+    "fail_reason": null
+   }
+  ],
+  "rows": {
+   "daily": [
+    {
+     "id": "299aa60a-b40f-4e55-a89c-f757f838f2ac",
+     "data": {
+      "entry_key": "鈴木-2026-11-09",
+      "note": "今週の分",
+      "prospect": 10000,
+      "rep": "鈴木",
+      "report_date": "2026-11-09",
+      "visits": 2
+     }
+    },
+    {
+     "id": "5c79eab2-977c-442a-84e6-751ec5a6940e",
+     "data": {
+      "entry_key": "佐藤-2026-10-30",
+      "note": "前の週の分",
+      "prospect": 999999,
+      "rep": "佐藤",
+      "report_date": "2026-10-30",
+      "visits": 6
+     }
+    },
+    {
+     "id": "20d2a7d4-4361-4ae6-a98a-5aa5aa9692f1",
+     "data": {
+      "entry_key": "鈴木-2026-11-05",
+      "note": "地域を回った",
+      "prospect": 120000,
+      "rep": "鈴木",
+      "report_date": "2026-11-05",
+      "visits": 5
+     }
+    },
+    {
+     "id": "2c362b87-e57b-4f25-9a39-9d380d33a772",
+     "data": {
+      "entry_key": "鈴木-2026-11-03",
+      "note": "大口の相談",
+      "prospect": 300000,
+      "rep": "鈴木",
+      "report_date": "2026-11-03",
+      "visits": 1
+     }
+    },
+    {
+     "id": "a5a0c821-1660-4d6b-aeca-b0d192098a29",
+     "data": {
+      "entry_key": "佐藤-2026-11-06",
+      "note": "展示会の準備",
+      "prospect": 0,
+      "rep": "佐藤",
+      "report_date": "2026-11-06",
+      "visits": 4
+     }
+    },
+    {
+     "id": "a3739c39-c8b7-4cef-b3e9-81db47c603e1",
+     "data": {
+      "entry_key": "佐藤-2026-11-04",
+      "note": "既存の取引先を訪問",
+      "prospect": 50000,
+      "rep": "佐藤",
+      "report_date": "2026-11-04",
+      "visits": 2
+     }
+    },
+    {
+     "id": "9660d2bd-a232-4c98-bad5-714daede96c8",
+     "data": {
+      "entry_key": "佐藤-2026-11-02",
+      "note": "新しい見込みが 1 件",
+      "prospect": 100000,
+      "rep": "佐藤",
+      "report_date": "2026-11-02",
+      "visits": 3
+     }
+    }
+   ],
+   "weekly": []
+  },
+  "rows_before": {
+   "daily": [
+    {
+     "id": "299aa60a-b40f-4e55-a89c-f757f838f2ac",
+     "data": {
+      "entry_key": "鈴木-2026-11-09",
+      "note": "今週の分",
+      "prospect": 10000,
+      "rep": "鈴木",
+      "report_date": "2026-11-09",
+      "visits": 2
+     }
+    },
+    {
+     "id": "5c79eab2-977c-442a-84e6-751ec5a6940e",
+     "data": {
+      "entry_key": "佐藤-2026-10-30",
+      "note": "前の週の分",
+      "prospect": 999999,
+      "rep": "佐藤",
+      "report_date": "2026-10-30",
+      "visits": 6
+     }
+    },
+    {
+     "id": "20d2a7d4-4361-4ae6-a98a-5aa5aa9692f1",
+     "data": {
+      "entry_key": "鈴木-2026-11-05",
+      "note": "地域を回った",
+      "prospect": 120000,
+      "rep": "鈴木",
+      "report_date": "2026-11-05",
+      "visits": 5
+     }
+    },
+    {
+     "id": "2c362b87-e57b-4f25-9a39-9d380d33a772",
+     "data": {
+      "entry_key": "鈴木-2026-11-03",
+      "note": "大口の相談",
+      "prospect": 300000,
+      "rep": "鈴木",
+      "report_date": "2026-11-03",
+      "visits": 1
+     }
+    },
+    {
+     "id": "a5a0c821-1660-4d6b-aeca-b0d192098a29",
+     "data": {
+      "entry_key": "佐藤-2026-11-06",
+      "note": "展示会の準備",
+      "prospect": 0,
+      "rep": "佐藤",
+      "report_date": "2026-11-06",
+      "visits": 4
+     }
+    },
+    {
+     "id": "a3739c39-c8b7-4cef-b3e9-81db47c603e1",
+     "data": {
+      "entry_key": "佐藤-2026-11-04",
+      "note": "既存の取引先を訪問",
+      "prospect": 50000,
+      "rep": "佐藤",
+      "report_date": "2026-11-04",
+      "visits": 2
+     }
+    },
+    {
+     "id": "9660d2bd-a232-4c98-bad5-714daede96c8",
+     "data": {
+      "entry_key": "佐藤-2026-11-02",
+      "note": "新しい見込みが 1 件",
+      "prospect": 100000,
+      "rep": "佐藤",
+      "report_date": "2026-11-02",
+      "visits": 3
+     }
+    }
+   ],
+   "weekly": []
+  },
+  "files": [],
+  "rows_rerun": null,
+  "now": "2026-11-06T19:47:28.423323+00:00"
+ }
+}

@@ -1,0 +1,351 @@
+{
+ "task": "app06-stock-move",
+ "variant": "oracle",
+ "case": "exact",
+ "irs": {
+  "main": {
+   "ir_version": 1,
+   "name": "abeval-rec-a246b6-main",
+   "display_name": "出庫で在庫を減らす",
+   "triggers": [
+    {
+     "kind": "interactive"
+    }
+   ],
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "code": {
+      "type": "string"
+     },
+     "qty": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "code",
+     "qty"
+    ],
+    "x-order": [
+     "code",
+     "qty"
+    ]
+   },
+   "nodes": [
+    {
+     "id": "find",
+     "type": "data.query",
+     "label": "品番で探す",
+     "params": {
+      "table": "b2f1f90b-c340-4b40-baf3-65c859a319ae",
+      "query": {
+       "filter": {
+        "cmp": {
+         "field": "code",
+         "op": "eq",
+         "value": {
+          "$from": "input",
+          "path": "/code"
+         }
+        }
+       },
+       "limit": 1
+      }
+     }
+    },
+    {
+     "id": "enough",
+     "type": "control.branch",
+     "label": "在庫が足りるか",
+     "params": {
+      "condition": {
+       "cmp": {
+        "left": {
+         "$from": "nodes.find.output",
+         "path": "/items/0/data/qty"
+        },
+        "op": "gte",
+        "right": {
+         "$from": "input",
+         "path": "/qty"
+        }
+       }
+      }
+     }
+    },
+    {
+     "id": "negate",
+     "type": "script.run",
+     "label": "減らす数",
+     "params": {
+      "source": {
+       "inline": "function main(input) { return { delta: -Number(input.qty) }; }"
+      },
+      "input": {
+       "qty": {
+        "$from": "input",
+        "path": "/qty"
+       }
+      }
+     }
+    },
+    {
+     "id": "take",
+     "type": "data.record.update",
+     "label": "在庫数を減らす",
+     "params": {
+      "table": "b2f1f90b-c340-4b40-baf3-65c859a319ae",
+      "record": {
+       "$from": "nodes.find.output",
+       "path": "/items/0/id"
+      },
+      "add": {
+       "qty": {
+        "$from": "nodes.negate.output",
+        "path": "/delta"
+       }
+      }
+     }
+    },
+    {
+     "id": "log",
+     "type": "data.record.create",
+     "label": "記録を残す",
+     "params": {
+      "table": "49791bdb-8283-4dff-af80-11280a7e0a0f",
+      "data": {
+       "code": {
+        "$from": "input",
+        "path": "/code"
+       },
+       "qty": {
+        "$from": "input",
+        "path": "/qty"
+       }
+      }
+     }
+    }
+   ],
+   "edges": [
+    {
+     "from": "find",
+     "to": "enough"
+    },
+    {
+     "from": "enough",
+     "to": "negate",
+     "from_port": "true"
+    },
+    {
+     "from": "negate",
+     "to": "take"
+    },
+    {
+     "from": "take",
+     "to": "log"
+    }
+   ]
+  }
+ },
+ "node_ports": {
+  "main": {
+   "enough": [
+    "true",
+    "false"
+   ],
+   "find": [
+    "out"
+   ],
+   "log": [
+    "out"
+   ],
+   "negate": [
+    "out"
+   ],
+   "take": [
+    "out"
+   ]
+  }
+ },
+ "record": {
+  "runs": [
+   {
+    "run_id": "ccc2ae5b-3776-4d95-8647-4e67ac500a4f",
+    "status": "succeeded",
+    "input": {
+     "code": "P-200",
+     "qty": 5
+    },
+    "steps": [
+     {
+      "step_path": "find",
+      "node_id": "find",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "items": [
+        {
+         "created_at": "2026-11-06T19:47:35.202769Z",
+         "data": {
+          "code": "P-200",
+          "name": "ボールペン（黒）",
+          "qty": 5,
+          "reorder_point": 10,
+          "reorder_qty": 50
+         },
+         "id": "99f6276a-5b75-491b-8ebc-109a4a407b0e",
+         "owner": "00000000-0000-0000-0000-000000000001",
+         "rev": 1,
+         "table_id": "b2f1f90b-c340-4b40-baf3-65c859a319ae",
+         "updated_at": "2026-11-06T19:47:35.202769Z"
+        }
+       ],
+       "shares_truncated": false,
+       "snapshot_seq": 7,
+       "sort_degraded": false,
+       "sort_precision": "exact",
+       "suppressed": false
+      },
+      "error": null
+     },
+     {
+      "step_path": "enough",
+      "node_id": "enough",
+      "status": "succeeded",
+      "taken_ports": [
+       "true"
+      ],
+      "output": {
+       "code": "P-200",
+       "qty": 5
+      },
+      "error": null
+     },
+     {
+      "step_path": "negate",
+      "node_id": "negate",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "delta": -5
+      },
+      "error": null
+     },
+     {
+      "step_path": "take",
+      "node_id": "take",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "created_at": "2026-11-06T19:47:35.202769Z",
+       "data": {
+        "code": "P-200",
+        "name": "ボールペン（黒）",
+        "qty": 0,
+        "reorder_point": 10,
+        "reorder_qty": 50
+       },
+       "id": "99f6276a-5b75-491b-8ebc-109a4a407b0e",
+       "owner": "00000000-0000-0000-0000-000000000001",
+       "rev": 2,
+       "table_id": "b2f1f90b-c340-4b40-baf3-65c859a319ae",
+       "updated_at": "2026-11-06T19:47:35.427648Z"
+      },
+      "error": null
+     },
+     {
+      "step_path": "log",
+      "node_id": "log",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "created_at": "2026-11-06T19:47:35.490172Z",
+       "data": {
+        "code": "P-200",
+        "qty": 5
+       },
+       "id": "d8e43036-1bc4-40f9-a912-b5f0ddfa489e",
+       "owner": "00000000-0000-0000-0000-000000000001",
+       "rev": 1,
+       "table_id": "49791bdb-8283-4dff-af80-11280a7e0a0f",
+       "updated_at": "2026-11-06T19:47:35.490172Z"
+      },
+      "error": null
+     }
+    ],
+    "workflow": null,
+    "scheduled_at": null,
+    "fail_reason": null
+   }
+  ],
+  "rows": {
+   "stock": [
+    {
+     "id": "99f6276a-5b75-491b-8ebc-109a4a407b0e",
+     "data": {
+      "code": "P-200",
+      "name": "ボールペン（黒）",
+      "qty": 0,
+      "reorder_point": 10,
+      "reorder_qty": 50
+     }
+    },
+    {
+     "id": "e10a1cc5-0e9d-43b5-881e-67c8d2075046",
+     "data": {
+      "code": "P-100",
+      "name": "コピー用紙 A4",
+      "qty": 40,
+      "reorder_point": 20,
+      "reorder_qty": 100
+     }
+    }
+   ],
+   "moves": [
+    {
+     "id": "d8e43036-1bc4-40f9-a912-b5f0ddfa489e",
+     "data": {
+      "code": "P-200",
+      "qty": 5
+     }
+    }
+   ]
+  },
+  "rows_before": {
+   "stock": [
+    {
+     "id": "99f6276a-5b75-491b-8ebc-109a4a407b0e",
+     "data": {
+      "code": "P-200",
+      "name": "ボールペン（黒）",
+      "qty": 5,
+      "reorder_point": 10,
+      "reorder_qty": 50
+     }
+    },
+    {
+     "id": "e10a1cc5-0e9d-43b5-881e-67c8d2075046",
+     "data": {
+      "code": "P-100",
+      "name": "コピー用紙 A4",
+      "qty": 40,
+      "reorder_point": 20,
+      "reorder_qty": 100
+     }
+    }
+   ],
+   "moves": []
+  },
+  "files": [],
+  "rows_rerun": null,
+  "now": "2026-11-06T19:47:33.609852+00:00"
+ }
+}

@@ -1,0 +1,180 @@
+{
+ "task": "basic-branch-amount",
+ "variant": "input_key",
+ "case": "boundary",
+ "irs": {
+  "main": {
+   "ir_version": 1,
+   "name": "abeval-rec-213c43-input-key",
+   "display_name": "金額で申請の記録先を分ける",
+   "triggers": [
+    {
+     "kind": "interactive"
+    }
+   ],
+   "input_schema": {
+    "type": "object",
+    "properties": {
+     "item": {
+      "type": "string"
+     },
+     "amount": {
+      "type": "number"
+     }
+    },
+    "required": [
+     "item",
+     "amount"
+    ],
+    "x-order": [
+     "item",
+     "amount"
+    ]
+   },
+   "nodes": [
+    {
+     "id": "is_large",
+     "type": "control.branch",
+     "label": "5 万円以上か",
+     "params": {
+      "condition": {
+       "cmp": {
+        "left": {
+         "$from": "input",
+         "path": "/amount"
+        },
+        "op": "gte",
+        "right": 50000
+       }
+      }
+     }
+    },
+    {
+     "id": "add_large",
+     "type": "data.record.create",
+     "label": "高額の申請に追加",
+     "params": {
+      "table": "42501549-2013-42e9-bddc-4280b5f5c8e6",
+      "data": {
+       "item": {
+        "$from": "input",
+        "path": "/item_x"
+       },
+       "amount": {
+        "$from": "input",
+        "path": "/amount"
+       }
+      }
+     }
+    },
+    {
+     "id": "add_small",
+     "type": "data.record.create",
+     "label": "通常の申請に追加",
+     "params": {
+      "table": "24b8bdba-dd0d-4cba-a0ae-a6cd1adfce31",
+      "data": {
+       "item": {
+        "$from": "input",
+        "path": "/item_x"
+       },
+       "amount": {
+        "$from": "input",
+        "path": "/amount"
+       }
+      }
+     }
+    }
+   ],
+   "edges": [
+    {
+     "from": "is_large",
+     "to": "add_large",
+     "from_port": "true"
+    },
+    {
+     "from": "is_large",
+     "to": "add_small",
+     "from_port": "false"
+    }
+   ]
+  }
+ },
+ "node_ports": {
+  "main": {
+   "add_large": [
+    "out"
+   ],
+   "add_small": [
+    "out"
+   ],
+   "is_large": [
+    "true",
+    "false"
+   ]
+  }
+ },
+ "record": {
+  "runs": [
+   {
+    "run_id": "0ea6c0f1-1a8a-4a48-acf0-8ca0c06249b3",
+    "status": "failed",
+    "input": {
+     "amount": 50000,
+     "item": "プロジェクター"
+    },
+    "steps": [
+     {
+      "step_path": "is_large",
+      "node_id": "is_large",
+      "status": "succeeded",
+      "taken_ports": [
+       "true"
+      ],
+      "output": {
+       "amount": 50000,
+       "item": "プロジェクター"
+      },
+      "error": null
+     },
+     {
+      "step_path": "add_small",
+      "node_id": "add_small",
+      "status": "skipped",
+      "taken_ports": [],
+      "output": null,
+      "error": null
+     },
+     {
+      "step_path": "add_large",
+      "node_id": "add_large",
+      "status": "failed",
+      "taken_ports": [],
+      "output": null,
+      "error": {
+       "attempt": 1,
+       "code": "expr_resolve_error",
+       "message": "data.record.create: data: $from input /item_x が解決できません（値が無く default もありません）",
+       "node_id": "add_large",
+       "retryable": false
+      }
+     }
+    ],
+    "workflow": null,
+    "scheduled_at": null,
+    "fail_reason": null
+   }
+  ],
+  "rows": {
+   "big": [],
+   "small": []
+  },
+  "rows_before": {
+   "big": [],
+   "small": []
+  },
+  "files": [],
+  "rows_rerun": null,
+  "now": "2026-11-06T19:46:58.456310+00:00"
+ }
+}

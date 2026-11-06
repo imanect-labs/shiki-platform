@@ -1,0 +1,588 @@
+{
+ "task": "app03-weekly-summary",
+ "variant": "escape_var",
+ "case": "last_week",
+ "irs": {
+  "main": {
+   "ir_version": 1,
+   "name": "abeval-rec-d0d19a-escape-var",
+   "display_name": "日報を週ごとに集計する",
+   "triggers": [
+    {
+     "kind": "schedule",
+     "cron": "0 9 * * 1",
+     "tz": "Asia/Tokyo"
+    }
+   ],
+   "nodes": [
+    {
+     "id": "last_week",
+     "type": "transform.date",
+     "label": "先週",
+     "params": {
+      "shift": {
+       "amount": -1,
+       "unit": "week"
+      },
+      "period": "week"
+     }
+    },
+    {
+     "id": "totals",
+     "type": "data.query",
+     "label": "担当者ごとの合計",
+     "params": {
+      "table": "8f093089-0ca8-44aa-8ce5-dc9aa1fe4e83",
+      "query": {
+       "filter": {
+        "all": [
+         {
+          "cmp": {
+           "field": "report_date",
+           "op": "gte",
+           "value": {
+            "$from": "nodes.last_week.output",
+            "path": "/start"
+           }
+          }
+         },
+         {
+          "cmp": {
+           "field": "report_date",
+           "op": "lte",
+           "value": {
+            "$from": "nodes.last_week.output",
+            "path": "/end"
+           }
+          }
+         }
+        ]
+       },
+       "group_by": [
+        "rep"
+       ],
+       "aggregate": [
+        {
+         "metric": "sum",
+         "field": "visits"
+        },
+        {
+         "metric": "sum",
+         "field": "prospect"
+        }
+       ]
+      }
+     }
+    },
+    {
+     "id": "per_rep",
+     "type": "control.map",
+     "label": "担当者ごと",
+     "params": {
+      "items": {
+       "$from": "nodes.totals.output",
+       "path": "/groups"
+      }
+     }
+    },
+    {
+     "id": "save_total",
+     "type": "data.record.create",
+     "label": "週次集計に追加",
+     "params": {
+      "table": "d2691b1e-ad0f-4c98-9dc6-dcb14922f71c",
+      "data": {
+       "week_start": {
+        "$from": "nodes.last_week.output",
+        "path": "/start"
+       },
+       "rep": {
+        "$from": "each",
+        "path": "/item/key/rep"
+       },
+       "visits": {
+        "$from": "each",
+        "path": "/item/values/0"
+       },
+       "prospect": {
+        "$from": "each",
+        "path": "/item/values/1"
+       }
+      }
+     },
+     "parent": "per_rep"
+    },
+    {
+     "id": "summarize",
+     "type": "llm.invoke",
+     "label": "週報の文章",
+     "params": {
+      "prompt": {
+       "$template": "{{start}} から {end} までの営業の日報の集計です。担当者ごとの訪問件数と見込み額の合計を、読みやすい短い週報にまとめてください。\n{groups}",
+       "vars": {
+        "start": {
+         "$from": "nodes.last_week.output",
+         "path": "/start"
+        },
+        "end": {
+         "$from": "nodes.last_week.output",
+         "path": "/end"
+        },
+        "groups": {
+         "$from": "nodes.totals.output",
+         "path": "/groups"
+        }
+       }
+      },
+      "model": "default"
+     }
+    },
+    {
+     "id": "save_file",
+     "type": "storage.write",
+     "label": "週報を保存",
+     "params": {
+      "folder": "81ab0e1f-9fdf-4a12-8192-52ffe34c1bfd",
+      "name": {
+       "$template": "週報-{start}.md",
+       "vars": {
+        "start": {
+         "$from": "nodes.last_week.output",
+         "path": "/start"
+        }
+       }
+      },
+      "content": {
+       "$from": "nodes.summarize.output",
+       "path": "/text"
+      },
+      "content_type": "text/markdown",
+      "on_name_taken": "add_number"
+     }
+    }
+   ],
+   "edges": [
+    {
+     "from": "last_week",
+     "to": "totals"
+    },
+    {
+     "from": "totals",
+     "to": "per_rep"
+    },
+    {
+     "from": "per_rep",
+     "to": "summarize"
+    },
+    {
+     "from": "summarize",
+     "to": "save_file"
+    }
+   ]
+  }
+ },
+ "node_ports": {
+  "main": {
+   "last_week": [
+    "out"
+   ],
+   "per_rep": [
+    "out"
+   ],
+   "save_file": [
+    "out"
+   ],
+   "save_total": [
+    "out"
+   ],
+   "summarize": [
+    "out"
+   ],
+   "totals": [
+    "out"
+   ]
+  }
+ },
+ "record": {
+  "runs": [
+   {
+    "run_id": "7b6c4983-f031-43fa-bb66-4de06fc6eb7f",
+    "status": "succeeded",
+    "input": {},
+    "steps": [
+     {
+      "step_path": "last_week",
+      "node_id": "last_week",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "date": "2026-11-02",
+       "day": 2,
+       "end": "2026-11-08",
+       "month": 11,
+       "next_start_at": "2026-11-09T00:00:00+09:00",
+       "start": "2026-11-02",
+       "start_at": "2026-11-02T00:00:00+09:00",
+       "weekday": 1,
+       "year": 2026
+      },
+      "error": null
+     },
+     {
+      "step_path": "totals",
+      "node_id": "totals",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "groups": [
+        {
+         "key": {
+          "rep": "佐藤"
+         },
+         "value": 9.0,
+         "values": [
+          9.0,
+          150000.0
+         ]
+        },
+        {
+         "key": {
+          "rep": "鈴木"
+         },
+         "value": 6.0,
+         "values": [
+          6.0,
+          420000.0
+         ]
+        }
+       ],
+       "shares_truncated": false,
+       "sort_degraded": false,
+       "sort_precision": "exact",
+       "suppressed": false
+      },
+      "error": null
+     },
+     {
+      "step_path": "per_rep[0].save_total",
+      "node_id": "save_total",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "created_at": "2026-11-06T19:47:32.290854Z",
+       "data": {
+        "prospect": 150000.0,
+        "rep": "佐藤",
+        "visits": 9.0,
+        "week_start": "2026-11-02"
+       },
+       "id": "cb21ea8f-8b11-4ca3-bd55-ec5a086a6693",
+       "owner": "00000000-0000-0000-0000-000000000001",
+       "rev": 1,
+       "table_id": "d2691b1e-ad0f-4c98-9dc6-dcb14922f71c",
+       "updated_at": "2026-11-06T19:47:32.290854Z"
+      },
+      "error": null
+     },
+     {
+      "step_path": "per_rep",
+      "node_id": "per_rep",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "errors": [],
+       "items": [
+        {
+         "created_at": "2026-11-06T19:47:32.290854Z",
+         "data": {
+          "prospect": 150000.0,
+          "rep": "佐藤",
+          "visits": 9.0,
+          "week_start": "2026-11-02"
+         },
+         "id": "cb21ea8f-8b11-4ca3-bd55-ec5a086a6693",
+         "owner": "00000000-0000-0000-0000-000000000001",
+         "rev": 1,
+         "table_id": "d2691b1e-ad0f-4c98-9dc6-dcb14922f71c",
+         "updated_at": "2026-11-06T19:47:32.290854Z"
+        },
+        {
+         "created_at": "2026-11-06T19:47:32.294259Z",
+         "data": {
+          "prospect": 420000.0,
+          "rep": "鈴木",
+          "visits": 6.0,
+          "week_start": "2026-11-02"
+         },
+         "id": "b7ffbe1b-5dde-4f72-90f8-0b68deb88346",
+         "owner": "00000000-0000-0000-0000-000000000001",
+         "rev": 1,
+         "table_id": "d2691b1e-ad0f-4c98-9dc6-dcb14922f71c",
+         "updated_at": "2026-11-06T19:47:32.294259Z"
+        }
+       ]
+      },
+      "error": null
+     },
+     {
+      "step_path": "per_rep[1].save_total",
+      "node_id": "save_total",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "created_at": "2026-11-06T19:47:32.294259Z",
+       "data": {
+        "prospect": 420000.0,
+        "rep": "鈴木",
+        "visits": 6.0,
+        "week_start": "2026-11-02"
+       },
+       "id": "b7ffbe1b-5dde-4f72-90f8-0b68deb88346",
+       "owner": "00000000-0000-0000-0000-000000000001",
+       "rev": 1,
+       "table_id": "d2691b1e-ad0f-4c98-9dc6-dcb14922f71c",
+       "updated_at": "2026-11-06T19:47:32.294259Z"
+      },
+      "error": null
+     },
+     {
+      "step_path": "summarize",
+      "node_id": "summarize",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "model": "default",
+       "text": "回答: {start} から 2026-11-08 までの営業の日報の集計です。担当者ごとの訪問件数と見込み額の合計を、読みやすい短い週報にまとめてください。\n[{\"key\":{\"rep\":\"佐藤\"},\"value\":9.0,\"values\":[9.0,150000.0]},{\"key\":{\"rep\":\"鈴木\"},\"value\":6.0,\"values\":[6.0,420000.0]}]"
+      },
+      "error": null
+     },
+     {
+      "step_path": "save_file",
+      "node_id": "save_file",
+      "status": "succeeded",
+      "taken_ports": [
+       "out"
+      ],
+      "output": {
+       "file_id": "164ab161-87b1-4db9-8080-932d261f5b68",
+       "id": "164ab161-87b1-4db9-8080-932d261f5b68",
+       "name": "週報-2026-11-02 (2).md",
+       "sha256": "b5faa77f209aeb59d24e4afb6590b4202a802190b5edcdf8135b1baffa2ea441",
+       "size": 317,
+       "version": 1
+      },
+      "error": null
+     }
+    ],
+    "workflow": null,
+    "scheduled_at": "2026-11-09T00:00:00+00:00",
+    "fail_reason": null
+   }
+  ],
+  "rows": {
+   "daily": [
+    {
+     "id": "474a70e8-7f10-4013-86bd-e2a8ec6a5653",
+     "data": {
+      "entry_key": "鈴木-2026-11-09",
+      "note": "今週の分",
+      "prospect": 10000,
+      "rep": "鈴木",
+      "report_date": "2026-11-09",
+      "visits": 2
+     }
+    },
+    {
+     "id": "05afdf58-d905-4c3c-936d-e52f1746ee7f",
+     "data": {
+      "entry_key": "佐藤-2026-10-30",
+      "note": "前の週の分",
+      "prospect": 999999,
+      "rep": "佐藤",
+      "report_date": "2026-10-30",
+      "visits": 6
+     }
+    },
+    {
+     "id": "1b7956f8-d564-487c-9f8d-78ae63e2c8fe",
+     "data": {
+      "entry_key": "鈴木-2026-11-05",
+      "note": "地域を回った",
+      "prospect": 120000,
+      "rep": "鈴木",
+      "report_date": "2026-11-05",
+      "visits": 5
+     }
+    },
+    {
+     "id": "e2eaebc3-d268-423f-9220-5af20745a83c",
+     "data": {
+      "entry_key": "鈴木-2026-11-03",
+      "note": "大口の相談",
+      "prospect": 300000,
+      "rep": "鈴木",
+      "report_date": "2026-11-03",
+      "visits": 1
+     }
+    },
+    {
+     "id": "fde650b0-3a2f-4682-8b79-cfaf047aef16",
+     "data": {
+      "entry_key": "佐藤-2026-11-06",
+      "note": "展示会の準備",
+      "prospect": 0,
+      "rep": "佐藤",
+      "report_date": "2026-11-06",
+      "visits": 4
+     }
+    },
+    {
+     "id": "8d251fea-7e9b-45a0-85c7-8da751f815f9",
+     "data": {
+      "entry_key": "佐藤-2026-11-04",
+      "note": "既存の取引先を訪問",
+      "prospect": 50000,
+      "rep": "佐藤",
+      "report_date": "2026-11-04",
+      "visits": 2
+     }
+    },
+    {
+     "id": "56208991-5f1b-4524-af81-6530a3622d5d",
+     "data": {
+      "entry_key": "佐藤-2026-11-02",
+      "note": "新しい見込みが 1 件",
+      "prospect": 100000,
+      "rep": "佐藤",
+      "report_date": "2026-11-02",
+      "visits": 3
+     }
+    }
+   ],
+   "weekly": [
+    {
+     "id": "b7ffbe1b-5dde-4f72-90f8-0b68deb88346",
+     "data": {
+      "prospect": 420000.0,
+      "rep": "鈴木",
+      "visits": 6.0,
+      "week_start": "2026-11-02"
+     }
+    },
+    {
+     "id": "cb21ea8f-8b11-4ca3-bd55-ec5a086a6693",
+     "data": {
+      "prospect": 150000.0,
+      "rep": "佐藤",
+      "visits": 9.0,
+      "week_start": "2026-11-02"
+     }
+    }
+   ]
+  },
+  "rows_before": {
+   "daily": [
+    {
+     "id": "474a70e8-7f10-4013-86bd-e2a8ec6a5653",
+     "data": {
+      "entry_key": "鈴木-2026-11-09",
+      "note": "今週の分",
+      "prospect": 10000,
+      "rep": "鈴木",
+      "report_date": "2026-11-09",
+      "visits": 2
+     }
+    },
+    {
+     "id": "05afdf58-d905-4c3c-936d-e52f1746ee7f",
+     "data": {
+      "entry_key": "佐藤-2026-10-30",
+      "note": "前の週の分",
+      "prospect": 999999,
+      "rep": "佐藤",
+      "report_date": "2026-10-30",
+      "visits": 6
+     }
+    },
+    {
+     "id": "1b7956f8-d564-487c-9f8d-78ae63e2c8fe",
+     "data": {
+      "entry_key": "鈴木-2026-11-05",
+      "note": "地域を回った",
+      "prospect": 120000,
+      "rep": "鈴木",
+      "report_date": "2026-11-05",
+      "visits": 5
+     }
+    },
+    {
+     "id": "e2eaebc3-d268-423f-9220-5af20745a83c",
+     "data": {
+      "entry_key": "鈴木-2026-11-03",
+      "note": "大口の相談",
+      "prospect": 300000,
+      "rep": "鈴木",
+      "report_date": "2026-11-03",
+      "visits": 1
+     }
+    },
+    {
+     "id": "fde650b0-3a2f-4682-8b79-cfaf047aef16",
+     "data": {
+      "entry_key": "佐藤-2026-11-06",
+      "note": "展示会の準備",
+      "prospect": 0,
+      "rep": "佐藤",
+      "report_date": "2026-11-06",
+      "visits": 4
+     }
+    },
+    {
+     "id": "8d251fea-7e9b-45a0-85c7-8da751f815f9",
+     "data": {
+      "entry_key": "佐藤-2026-11-04",
+      "note": "既存の取引先を訪問",
+      "prospect": 50000,
+      "rep": "佐藤",
+      "report_date": "2026-11-04",
+      "visits": 2
+     }
+    },
+    {
+     "id": "56208991-5f1b-4524-af81-6530a3622d5d",
+     "data": {
+      "entry_key": "佐藤-2026-11-02",
+      "note": "新しい見込みが 1 件",
+      "prospect": 100000,
+      "rep": "佐藤",
+      "report_date": "2026-11-02",
+      "visits": 3
+     }
+    }
+   ],
+   "weekly": []
+  },
+  "files": [
+   {
+    "folder": "weekly_folder",
+    "id": "164ab161-87b1-4db9-8080-932d261f5b68",
+    "name": "週報-2026-11-02 (2).md",
+    "text": "回答: {start} から 2026-11-08 までの営業の日報の集計です。担当者ごとの訪問件数と見込み額の合計を、読みやすい短い週報にまとめてください。\n[{\"key\":{\"rep\":\"佐藤\"},\"value\":9.0,\"values\":[9.0,150000.0]},{\"key\":{\"rep\":\"鈴木\"},\"value\":6.0,\"values\":[6.0,420000.0]}]"
+   }
+  ],
+  "rows_rerun": null,
+  "now": "2026-11-06T19:47:28.423323+00:00"
+ }
+}
