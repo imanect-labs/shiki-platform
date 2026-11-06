@@ -18,6 +18,19 @@ pub struct RunnerRequest {
     pub memory_limit_mb: u32,
     /// 結果の最大行数（これを超える行は返さない・ページングで取得）。
     pub max_rows: u32,
+    /// 追加でロードするテーブル（複数 CSV の JOIN・#1037）。`Query` のときだけ使う。
+    /// パスは `csv_path` と同じく api が viewer 認可後に置いた**信頼できる**一時ファイル。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_tables: Vec<RunnerTable>,
+}
+
+/// 追加テーブル 1 件（テーブル名 → 信頼できるローカルパス）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RunnerTable {
+    /// テーブル名（[`crate::tables::is_valid_table_name`] を満たす・`data` 以外）。
+    pub name: String,
+    /// 信頼できるローカルパス。
+    pub csv_path: String,
 }
 
 /// ランナーの実行種別。
@@ -28,7 +41,8 @@ pub enum RunnerOp {
     Schema,
     /// ページ取得（安定行番号順・offset/limit）。
     Rows { offset: u64 },
-    /// 読み取り専用 SQL（**検証済み**・単一 SELECT/WITH）。テーブル名は `data`。
+    /// 読み取り専用 SQL（**検証済み**・単一 SELECT/WITH）。主ファイルのテーブル名は `data`、
+    /// 追加ファイルは [`RunnerRequest::extra_tables`] の名前。
     Query { sql: String },
 }
 

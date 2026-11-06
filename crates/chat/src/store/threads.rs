@@ -11,17 +11,25 @@ use sqlx::types::Json;
 use storage::audit::{AuditEntry, Decision};
 use uuid::Uuid;
 
-use crate::model::{AutonomousMode, ContentBlock, Message, Role, SkillPin, Thread};
+use crate::model::{
+    AutonomousMode, ContentBlock, LastModelChoice, Message, Role, RunStatus, SkillPin, Thread,
+};
 
 /// thread の SELECT 列（skill ピンは正規化テーブルから jsonb で集約・#344。
-/// 承認モードは thread 列・#350）。
+/// 承認モードは thread 列・#350）。`run_status` は進行中（非端末）の run の状態で、サイドバー履歴の
+/// 「実行中」表示に使う（非端末 run の部分索引 `generation_run_live_thread_idx` で引く）。承認待ちの
+/// run の後ろで別の run が生成中になり得る（承認待ちは後続を待たせない）ので、生成中を優先する。
 pub(super) const THREAD_COLUMNS: &str = "id, title, agent_mode, autonomous_mode, \
     (SELECT coalesce(jsonb_agg(jsonb_build_object( \
         'skill_id', p.skill_id, 'skill_version', p.skill_version) \
         ORDER BY p.position, p.skill_id), '[]'::jsonb) \
      FROM thread_skill_pin p WHERE p.thread_id = thread.id) AS skill_pins, \
     mini_app_id, mini_app_version, origin_note_id, origin_note_name, pinned_at, \
-    search_folder_id, search_folder_name, created_at, updated_at";
+    search_folder_id, search_folder_name, created_at, updated_at, \
+    (SELECT r.status FROM generation_run r \
+     WHERE r.tenant_id = thread.tenant_id AND r.thread_id = thread.id \
+       AND r.status IN ('queued', 'running', 'waiting_approval') \
+     ORDER BY (r.status = 'waiting_approval'), r.created_at LIMIT 1) AS run_status";
 
 /// thread 行。
 #[derive(sqlx::FromRow)]
@@ -40,6 +48,7 @@ pub(super) struct ThreadRow {
     search_folder_name: Option<String>,
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
+    run_status: Option<String>,
 }
 
 impl ThreadRow {
@@ -58,10 +67,50 @@ impl ThreadRow {
             pinned_at: self.pinned_at,
             search_folder_id: self.search_folder_id,
             search_folder_name: self.search_folder_name,
+            // CHECK 制約で閉じている（未知の値は「実行中でない」扱い）。
+            run_status: self.run_status.as_deref().and_then(RunStatus::parse),
+            last_model_choice: None,
             created_at: self.created_at,
             updated_at: self.updated_at,
         }
     }
+}
+
+/// run の列からモデル選択を組み立てる。
+///
+/// 利用者が送った解決前の選択（`requested`）があればそれを返す。組織の既定が特定のモデルだと
+/// Auto や「既定のまま思考の深さだけ変える」も解決後は既定のモデルになり、明示の選択と
+/// 区別できないため。記録の無い（この列以前の）run は解決後の値から推定する（Auto の run は
+/// 振り先のモデルではなく Auto として返す）。
+fn last_choice_of(
+    requested: Option<LastModelChoice>,
+    model: Option<String>,
+    effort: Option<&str>,
+    auto: bool,
+) -> Option<LastModelChoice> {
+    let normalize_effort = |e: Option<&str>| {
+        e.and_then(llm_gateway::Effort::parse)
+            .map(|e| e.as_str().to_string())
+    };
+    if let Some(r) = requested {
+        return Some(LastModelChoice {
+            model: r
+                .model
+                .filter(|m| !m.is_empty() && m != llm_gateway::AUTO_MODEL),
+            effort: normalize_effort(r.effort.as_deref()),
+        });
+    }
+    let model = model?;
+    if auto {
+        return Some(LastModelChoice {
+            model: None,
+            effort: None,
+        });
+    }
+    Some(LastModelChoice {
+        model: Some(model),
+        effort: normalize_effort(effort),
+    })
 }
 
 /// スレッドの由来ノート（ノートの分割ビューから作られたスレッド・issue #282）。
@@ -130,7 +179,7 @@ impl ChatStore {
             // 作成直後のピンは常に空（set_thread_pins が後から入れる）。
             "INSERT INTO thread (id, org, tenant_id, owner, title, agent_mode, origin_note_id, origin_note_name, title_pending) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, true) \
-             RETURNING id, title, agent_mode, autonomous_mode, '[]'::jsonb AS skill_pins, mini_app_id, mini_app_version, origin_note_id, origin_note_name, pinned_at, search_folder_id, search_folder_name, created_at, updated_at",
+             RETURNING id, title, agent_mode, autonomous_mode, '[]'::jsonb AS skill_pins, mini_app_id, mini_app_version, origin_note_id, origin_note_name, pinned_at, search_folder_id, search_folder_name, created_at, updated_at, NULL::text AS run_status",
         )
         .bind(id)
         .bind(&ctx.org)
@@ -294,6 +343,48 @@ impl ChatStore {
         .await
         .map_err(map_db)?;
         row.map(ThreadRow::into_thread).ok_or(ChatError::NotFound)
+    }
+
+    /// 会話画面向けの単体取得（[`Self::get_thread`] ＋ 自分が最後に送った発話のモデル選択・#1050）。
+    /// run を引く分のクエリが増えるので、SSE の購読など選択を使わない経路は `get_thread` を使う。
+    pub async fn get_thread_for_view(
+        &self,
+        ctx: &AuthContext,
+        thread_id: Uuid,
+        trace_id: Option<&str>,
+    ) -> Result<Thread, ChatError> {
+        let mut thread = self.get_thread(ctx, thread_id, trace_id).await?;
+        thread.last_model_choice = self.last_model_choice(ctx, thread_id).await?;
+        Ok(thread)
+    }
+
+    /// 呼び出しユーザーがこのスレッドで最後に投入した run のモデル選択（共有先の他人の選択は
+    /// 引き継がない）。run にモデルが無い（列以前・gateway 未構成）なら `None`。
+    async fn last_model_choice(
+        &self,
+        ctx: &AuthContext,
+        thread_id: Uuid,
+    ) -> Result<Option<LastModelChoice>, ChatError> {
+        type Row = (
+            Option<Json<LastModelChoice>>,
+            Option<String>,
+            Option<String>,
+            bool,
+        );
+        let row: Option<Row> = sqlx::query_as(
+            "SELECT requested_choice, model, effort, model_auto FROM generation_run \
+             WHERE tenant_id = $1 AND thread_id = $2 AND actor = $3 \
+             ORDER BY created_at DESC LIMIT 1",
+        )
+        .bind(&ctx.tenant_id)
+        .bind(thread_id)
+        .bind(&ctx.principal.id)
+        .fetch_optional(&self.db)
+        .await
+        .map_err(map_db)?;
+        Ok(row.and_then(|(requested, model, effort, auto)| {
+            last_choice_of(requested.map(|r| r.0), model, effort.as_deref(), auto)
+        }))
     }
 
     /// スレッドのメッセージを線形取得する（viewer 認可・作成順）。
