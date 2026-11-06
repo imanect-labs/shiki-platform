@@ -380,9 +380,9 @@ impl DataStore {
         // テナントの同時実行の枠（最小量を先に取り、計画後に予測コストまで積み増す・§16.8）。
         let permit = self
             .read_gate
-            .admit(&ctx.tenant_id, crate::query::admission::BASE_TOKENS)
+            .admit(ctx.tenant_id(), crate::query::admission::BASE_TOKENS)
             .await?;
-        let db = self.pools.for_tenant(&ctx.tenant_id);
+        let db = self.pools.for_tenant(ctx.tenant_id());
         let mut tx = db.begin().await.map_err(map_db)?;
         sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
             .execute(&mut *tx)
@@ -441,7 +441,7 @@ impl DataStore {
         if debug.stats.composite_requested {
             let set: Vec<(FieldId, bool)> = bq.sort.iter().map(|k| (k.field, k.desc)).collect();
             if let Err(e) = self
-                .request_sort_set(&ctx.tenant_id, table_id, table.keys, &set)
+                .request_sort_set(ctx.tenant_id(), table_id, table.keys, &set)
                 .await
             {
                 tracing::warn!(error = %e, %table_id, "複合索引の材料化の要求に失敗");
@@ -491,7 +491,7 @@ impl DataStore {
         }
         if self.feedback.record(table_id, &debug.stats) {
             // 推定外れが続いた: 統計収集を前倒しする（失敗しても読取の結果には影響させない）。
-            self.request_analyze(&ctx.tenant_id, table_id).await;
+            self.request_analyze(ctx.tenant_id(), table_id).await;
         }
         Ok((result, debug))
     }
@@ -575,7 +575,7 @@ impl DataStore {
             Vec::new()
         } else {
             let mut v: Vec<i64> =
-                Self::record_ints_for(conn, &ctx.tenant_id, keys, &m.shared_record_ids)
+                Self::record_ints_for(conn, ctx.tenant_id(), keys, &m.shared_record_ids)
                     .await?
                     .into_values()
                     .collect();
@@ -616,7 +616,7 @@ impl DataStore {
         let guard = Guard::new(IndexGuardCtx {
             schema: &table.schema,
             material: m,
-            user: &ctx.principal.id,
+            user: &ctx.principal().id,
             active: &active,
             shared_ints: &shared_ints,
         });
@@ -706,8 +706,8 @@ impl DataStore {
                 ex.stats.strategy = "body";
                 let mut sql = SqlBuf::scoped(keys.tenant_int, keys.table_int);
                 let policy =
-                    compile_read_predicate(&table.schema, m, &ctx.principal.id, "r", &mut sql)?;
-                let w = super::v1::where_sql(&low, &ctx.tenant_id, &policy, &mut sql)?;
+                    compile_read_predicate(&table.schema, m, &ctx.principal().id, "r", &mut sql)?;
+                let w = super::v1::where_sql(&low, ctx.tenant_id(), &policy, &mut sql)?;
                 let text = super::v1::aggregate_sql(bq, &w)?;
                 ex.run_raw("aggregate", text, sql.binds).await?
             } else if joined {
@@ -734,8 +734,8 @@ impl DataStore {
             ex.stats.strategy = "body";
             let mut sql = SqlBuf::scoped(keys.tenant_int, keys.table_int);
             let policy =
-                compile_read_predicate(&table.schema, m, &ctx.principal.id, "r", &mut sql)?;
-            let w = super::v1::where_sql(&low, &ctx.tenant_id, &policy, &mut sql)?;
+                compile_read_predicate(&table.schema, m, &ctx.principal().id, "r", &mut sql)?;
+            let w = super::v1::where_sql(&low, ctx.tenant_id(), &policy, &mut sql)?;
             let text = super::v1::page_sql(&low, &w, after.as_ref(), limit + 1, &mut sql)?;
             let rows = ex.run_raw("body_page", text, sql.binds).await?;
             body_page(bq, &rows, limit)?
@@ -746,12 +746,12 @@ impl DataStore {
 
         if bq.with_count {
             // 件数の上限はテナント設定（既定 10,000・data-platform §5.4）。
-            let count_cap = self.count_cap_for(ex.conn, &ctx.tenant_id).await?;
+            let count_cap = self.count_cap_for(ex.conn, ctx.tenant_id()).await?;
             result.count = Some(if body_path {
                 let mut sql = SqlBuf::scoped(keys.tenant_int, keys.table_int);
                 let policy =
-                    compile_read_predicate(&table.schema, m, &ctx.principal.id, "r", &mut sql)?;
-                let w = super::v1::where_sql(&low, &ctx.tenant_id, &policy, &mut sql)?;
+                    compile_read_predicate(&table.schema, m, &ctx.principal().id, "r", &mut sql)?;
+                let w = super::v1::where_sql(&low, ctx.tenant_id(), &policy, &mut sql)?;
                 let text = super::v1::count_sql(&w, count_cap as i64, &mut sql);
                 ex.stats.count_issued = true;
                 let rows = ex.run_raw("count", text, sql.binds).await?;
@@ -797,7 +797,7 @@ impl DataStore {
             Vec::new()
         } else {
             let prune = super::fetch::prune_keys(bq, &table.schema);
-            super::fetch::fetch_page(&mut ex, &ctx.tenant_id, &ints, prune).await?
+            super::fetch::fetch_page(&mut ex, ctx.tenant_id(), &ints, prune).await?
         };
         let order: HashMap<i64, usize> = ints.iter().enumerate().map(|(i, r)| (*r, i)).collect();
         fetched.sort_by_key(|r| order.get(&r.record_int).copied().unwrap_or(usize::MAX));
@@ -805,7 +805,7 @@ impl DataStore {
         let env = PolicyEnv {
             schema: &table.schema,
             material: m,
-            user: &ctx.principal.id,
+            user: &ctx.principal().id,
             shared: &shared,
         };
         ex.stats.verify_dropped = post_filter(
@@ -860,7 +860,7 @@ impl DataStore {
             let keys: Option<(i32, i64)> = sqlx::query_as(
                 "SELECT tenant_int, table_int FROM data_table WHERE tenant_id = $1 AND id = $2",
             )
-            .bind(&ctx.tenant_id)
+            .bind(ctx.tenant_id())
             .bind(rt)
             .fetch_optional(&mut *conn)
             .await
@@ -870,7 +870,7 @@ impl DataStore {
                     tenant_int,
                     table_int,
                 };
-                out.extend(Self::record_ints_for(conn, &ctx.tenant_id, k, &ids).await?);
+                out.extend(Self::record_ints_for(conn, ctx.tenant_id(), k, &ids).await?);
             }
         }
         Ok(out)

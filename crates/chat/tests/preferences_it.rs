@@ -80,7 +80,7 @@ impl AuthzClient for AllowAll {
 }
 
 async fn setup() -> Option<(PgPool, ChatStore)> {
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return None;
     };
@@ -110,7 +110,7 @@ fn ctx(tenant: &str, org: &str, user: &str) -> AuthContext {
             tenant_id: Some(tenant.into()),
         },
         org.into(),
-        tenant.into(),
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 

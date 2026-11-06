@@ -103,7 +103,7 @@ pub(crate) async fn dev_seed(
                 email: None,
                 groups: vec![],
                 roles: vec![],
-                tenant_id: Some(seed_tenant.clone()),
+                tenant_id: Some(seed_tenant.to_string()),
             },
             u.org.to_string(),
             seed_tenant.clone(),
@@ -152,7 +152,7 @@ pub(crate) async fn dev_seed(
                     email: None,
                     groups: vec![],
                     roles: vec![],
-                    tenant_id: Some(seed_tenant.clone()),
+                    tenant_id: Some(seed_tenant.to_string()),
                 },
                 r.org.to_string(),
                 seed_tenant.clone(),
@@ -209,7 +209,10 @@ async fn seed_org_relation(
 /// dev seed の実効テナント。runtime と同じ規則（`authz::TenantSource`・#808）で解決する:
 /// single は固定 `auth.tenant_id`（fixture の tenant は無視）、multi は fixture の tenant（claim 相当）。
 /// 固定値が空など runtime が 401 にする設定では seed も失敗させる（別名前空間へ黙って書かない）。
-fn effective_seed_tenant(auth: &AuthConfig, fixture_tenant: &str) -> anyhow::Result<String> {
+fn effective_seed_tenant(
+    auth: &AuthConfig,
+    fixture_tenant: &str,
+) -> anyhow::Result<authz::TenantId> {
     auth.tenant_source()
         .resolve(Some(fixture_tenant))
         .map_err(|e| anyhow::anyhow!("dev seed: tenant_id を解決できません: {e}"))

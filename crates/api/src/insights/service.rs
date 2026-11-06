@@ -40,8 +40,8 @@ impl InsightsService {
 
     fn scope(ctx: &AuthContext, r: &Range) -> Scope {
         Scope {
-            tenant_id: ctx.tenant_id.clone(),
-            org: ctx.org.clone(),
+            tenant_id: ctx.tenant_id().to_owned(),
+            org: ctx.org().to_owned(),
             from: r.from,
             to: r.to,
             dept: r.dept.clone().filter(|d| !d.is_empty()),
@@ -49,7 +49,7 @@ impl InsightsService {
     }
 
     pub async fn settings(&self, ctx: &AuthContext) -> Result<InsightSettings, sqlx::Error> {
-        settings::load(&self.db, &ctx.tenant_id, &ctx.org).await
+        settings::load(&self.db, ctx.tenant_id(), ctx.org()).await
     }
 
     pub async fn update_settings(
@@ -117,7 +117,7 @@ impl InsightsService {
         &self,
         ctx: &AuthContext,
     ) -> Result<Vec<(String, String, i64)>, sqlx::Error> {
-        let rows = report::departments(&self.db, &ctx.tenant_id, &ctx.org).await?;
+        let rows = report::departments(&self.db, ctx.tenant_id(), ctx.org()).await?;
         Ok(rows
             .into_iter()
             .map(|(id, display, members)| {

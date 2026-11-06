@@ -12,7 +12,8 @@
 //!
 //! どちらの経路でも、結果は [`validate_tenant_id`] の文字ポリシーを通す。
 
-use crate::ident::{validate_tenant_id, IdentViolation};
+use crate::ident::IdentViolation;
+use crate::tenant_id::TenantId;
 
 /// `tenant_id` の取得元（テナンシーモードの写し）。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,15 +49,14 @@ impl std::error::Error for TenantResolveError {}
 
 impl TenantSource {
     /// claim `tenant` の値（あれば）から `tenant_id` を解決する。前後の空白は落とす。
-    pub fn resolve(&self, claim: Option<&str>) -> Result<String, TenantResolveError> {
+    pub fn resolve(&self, claim: Option<&str>) -> Result<TenantId, TenantResolveError> {
         let tenant_id = match self {
             TenantSource::Fixed(fixed) => {
                 non_empty(Some(fixed)).ok_or(TenantResolveError::EmptyFixed)?
             }
             TenantSource::Claim => non_empty(claim).ok_or(TenantResolveError::MissingClaim)?,
         };
-        validate_tenant_id(tenant_id).map_err(TenantResolveError::Invalid)?;
-        Ok(tenant_id.to_string())
+        TenantId::parse(tenant_id).map_err(TenantResolveError::Invalid)
     }
 }
 

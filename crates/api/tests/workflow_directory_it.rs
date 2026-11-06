@@ -36,7 +36,7 @@ fn user_ctx(tenant: &str, uid: &str) -> AuthContext {
             tenant_id: Some(tenant.into()),
         },
         tenant.into(),
-        tenant.into(),
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 
@@ -79,8 +79,8 @@ fn names(hits: &[workflow_engine::WorkflowSearchHit]) -> Vec<&str> {
 #[tokio::test]
 async fn search_sees_owned_and_shared_only_within_the_tenant() {
     let (Ok(db), Ok(fga_url)) = (
-        std::env::var("STORAGE_TEST_DATABASE_URL"),
-        std::env::var("OPENFGA_TEST_URL"),
+        shiki_testenv::var("STORAGE_TEST_DATABASE_URL"),
+        shiki_testenv::var("OPENFGA_TEST_URL"),
     ) else {
         eprintln!("STORAGE_TEST_DATABASE_URL / OPENFGA_TEST_URL 未設定のためスキップ");
         return;

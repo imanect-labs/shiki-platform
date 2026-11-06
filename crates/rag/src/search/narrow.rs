@@ -147,7 +147,7 @@ impl SearchService {
                 "select descendant from node_closure \
                  where tenant_id = $1 and depth > 0 and ancestor = any($2) and descendant = any($3)",
             )
-            .bind(&ctx.tenant_id)
+            .bind(ctx.tenant_id())
             .bind(&bound.folders)
             .bind(&files)
             .fetch_all(&self.pool)
@@ -188,7 +188,7 @@ impl SearchService {
             "select ancestor, descendant from node_closure \
              where tenant_id = $1 and depth > 0 and ancestor = any($2) and descendant = any($2)",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(&ids)
         .fetch_all(&self.pool)
         .await?

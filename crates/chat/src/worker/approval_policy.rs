@@ -25,14 +25,17 @@ impl ChatWorker {
         let snapshot = AutonomousMode::parse(&run.autonomous_mode).unwrap_or_default();
         let (current, set_by) = self
             .store
-            .thread_autonomous_mode(run.thread_id, &ctx.tenant_id)
+            .thread_autonomous_mode(run.thread_id, ctx.tenant_id())
             .await?;
-        let bypass_allowed = self.store.autonomous_bypass_allowed(&ctx.tenant_id).await?;
+        let bypass_allowed = self
+            .store
+            .autonomous_bypass_allowed(ctx.tenant_id())
+            .await?;
         let (effective, clamp) = crate::autonomous::effective_mode(
             snapshot,
             current,
             set_by.as_deref(),
-            &ctx.principal.id,
+            &ctx.principal().id,
             bypass_allowed,
         );
         if let Some(clamp) = clamp {

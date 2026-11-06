@@ -576,7 +576,7 @@ mod tests {
                 tenant_id: None,
             },
             "acme".into(),
-            "default".into(),
+            authz::TenantId::parse("default").unwrap(),
         );
         let tool = super::SaveCsvTool::new();
         assert!(!tool.requires_confirmation(), "下書きは確認ゲート不要");

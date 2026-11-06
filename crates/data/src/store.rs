@@ -340,9 +340,9 @@ impl DataStore {
             .await?;
         validate_table_schema(&schema)?;
         // 内部整数キーはレジストリで採番する（不変・再利用しない・失敗時は欠番になるだけ）。
-        let keys = self.allocate_table_keys(&ctx.tenant_id).await?;
+        let keys = self.allocate_table_keys(ctx.tenant_id()).await?;
 
-        let db = self.pools.for_tenant(&ctx.tenant_id);
+        let db = self.pools.for_tenant(ctx.tenant_id());
         let mut tx = db.begin().await.map_err(map_db)?;
         let row: TableRow = sqlx::query_as(&format!(
             "INSERT INTO data_table (tenant_id, org, name, schema, created_by, app_id, \
@@ -351,11 +351,11 @@ impl DataStore {
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 2, $9, true, 2) \
              RETURNING {TABLE_COLS}"
         ))
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(name)
         .bind(Json(&schema))
-        .bind(&ctx.principal.id)
+        .bind(&ctx.principal().id)
         .bind(app_id)
         .bind(keys.tenant_int)
         .bind(keys.table_int)
@@ -371,12 +371,12 @@ impl DataStore {
         })?;
         // 対称列（参照先に置く逆リンク）を作り、採番した ID をこのテーブルのスキーマへ書き戻す。
         let row = if prep.needs_symmetric {
-            create_symmetric_fields(&mut tx, &ctx.tenant_id, row.id, &mut schema, None).await?;
+            create_symmetric_fields(&mut tx, ctx.tenant_id(), row.id, &mut schema, None).await?;
             sqlx::query_as(&format!(
                 "UPDATE data_table SET schema = $3 WHERE tenant_id = $1 AND id = $2 \
                  RETURNING {TABLE_COLS}"
             ))
-            .bind(&ctx.tenant_id)
+            .bind(ctx.tenant_id())
             .bind(row.id)
             .bind(Json(&schema))
             .fetch_one(&mut *tx)
@@ -388,7 +388,7 @@ impl DataStore {
         // 索引台帳（空テーブルなので全て active・バックフィル不要）とリンク列の宣言。
         sync_ledger(&mut tx, keys, &schema, false).await?;
         let table = row.into_table();
-        Self::finish_derived_save(&mut tx, &ctx.tenant_id, &table, None, &prep, false).await?;
+        Self::finish_derived_save(&mut tx, ctx.tenant_id(), &table, None, &prep, false).await?;
         tx.commit().await.map_err(map_db)?;
 
         // 作成者を owner に（FGA）。失敗したら行を補償削除して孤立行を残さない。
@@ -402,7 +402,7 @@ impl DataStore {
             // 補償: 行を消す（索引はランタイム DDL を持たないので物理的な後片付けは無い）。
             if let Err(cleanup) =
                 sqlx::query("DELETE FROM data_table WHERE tenant_id = $1 AND id = $2")
-                    .bind(&ctx.tenant_id)
+                    .bind(ctx.tenant_id())
                     .bind(id)
                     .execute(db)
                     .await
@@ -460,13 +460,13 @@ impl DataStore {
         .await?;
         // 未移行（v1 形式）なら先に 3 層へ移行させる（一方向・冪等）。
         self.fetch_live(ctx, id).await?;
-        let db = self.pools.for_tenant(&ctx.tenant_id);
+        let db = self.pools.for_tenant(ctx.tenant_id());
         let mut tx = db.begin().await.map_err(map_db)?;
         let current: Option<TableRow> = sqlx::query_as(&format!(
             "SELECT {TABLE_COLS} FROM data_table \
              WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL FOR UPDATE"
         ))
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(id)
         .fetch_optional(&mut *tx)
         .await
@@ -504,7 +504,7 @@ impl DataStore {
         if prep.needs_symmetric {
             create_symmetric_fields(
                 &mut tx,
-                &ctx.tenant_id,
+                ctx.tenant_id(),
                 id,
                 &mut next,
                 Some(&current.schema.0),
@@ -533,7 +533,7 @@ impl DataStore {
              WHERE tenant_id = $1 AND id = $2 \
              RETURNING {TABLE_COLS}"
         ))
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(id)
         .bind(Json(&next))
         .bind(next_field_id)
@@ -549,15 +549,15 @@ impl DataStore {
         let has_rows = table_has_rows(&mut tx, keys).await?;
         if sync_ledger(&mut tx, keys, &next, has_rows).await? {
             // unique は同じ Tx で同期構築（重複は 409・一意性の強制に空白期間を作らない）。
-            build_unique_now(&mut tx, keys, &next, &ctx.tenant_id).await?;
-            start_backfill(&mut tx, keys, &ctx.tenant_id, id).await?;
+            build_unique_now(&mut tx, keys, &next, ctx.tenant_id()).await?;
+            start_backfill(&mut tx, keys, ctx.tenant_id(), id).await?;
         }
         let current_schema = current.schema.0.clone();
         let row = row.into_table();
         // 材料化の依存登録・昇格した列の再計算待ち・このテーブルを参照先にする列の降格（PIT-71）。
         Self::finish_derived_save(
             &mut tx,
-            &ctx.tenant_id,
+            ctx.tenant_id(),
             &row,
             Some(&current_schema),
             &prep,
@@ -578,10 +578,10 @@ impl DataStore {
         crate::stream::outbox::emit_schema_changed(&mut tx, ctx, &row, trace_id).await?;
         // この表を参照する表の購読にも取り直させる（行述語・マスクの変更で参照元のルックアップ・
         // リンク値の見え方が変わる・B-P2-1）。
-        crate::stream::relay::emit_refresh_for_referrers(&mut tx, &ctx.tenant_id, id).await?;
+        crate::stream::relay::emit_refresh_for_referrers(&mut tx, ctx.tenant_id(), id).await?;
         tx.commit().await.map_err(map_db)?;
         // 版は DB 照合で必ず変わって見えるが、古い本文はここで落としておく（世代切替）。
-        self.schema_cache.invalidate_table(&ctx.tenant_id, id);
+        self.schema_cache.invalidate_table(ctx.tenant_id(), id);
         Ok(row)
     }
 
@@ -602,7 +602,7 @@ impl DataStore {
         .await?;
         let mut tx = self
             .pools
-            .for_tenant(&ctx.tenant_id)
+            .for_tenant(ctx.tenant_id())
             .begin()
             .await
             .map_err(map_db)?;
@@ -611,7 +611,7 @@ impl DataStore {
              WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL \
              RETURNING tenant_int, table_int",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(id)
         .fetch_optional(&mut *tx)
         .await
@@ -622,7 +622,7 @@ impl DataStore {
         // このテーブルを参照先にしていた材料化列は前提が無くなるので降格する（同一 Tx・PIT-71）。
         crate::derived::materialize::demote_dependents(
             &mut tx,
-            &ctx.tenant_id,
+            ctx.tenant_id(),
             TableKeys {
                 tenant_int,
                 table_int,
@@ -631,9 +631,9 @@ impl DataStore {
             "参照先テーブルが削除された",
         )
         .await?;
-        crate::stream::relay::emit_refresh_for_referrers(&mut tx, &ctx.tenant_id, id).await?;
+        crate::stream::relay::emit_refresh_for_referrers(&mut tx, ctx.tenant_id(), id).await?;
         tx.commit().await.map_err(map_db)?;
-        self.schema_cache.invalidate_table(&ctx.tenant_id, id);
+        self.schema_cache.invalidate_table(ctx.tenant_id(), id);
         self.record_audit_best_effort(
             ctx,
             AuditAction::DataTableDelete,

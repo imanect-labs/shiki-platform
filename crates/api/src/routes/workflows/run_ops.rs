@@ -54,12 +54,12 @@ async fn require_run_operator(
     }
     let runs = runs_or_503(state)?;
     let principal = runs
-        .run_principal(&ctx.tenant_id, workflow_id, run_id)
+        .run_principal(ctx.tenant_id(), workflow_id, run_id)
         .await
         .map_err(|e| ApiError::Internal(format!("run principal: {e}")))?
         .ok_or(ApiError::NotFound)?;
     let (p, kind, _trigger) = principal;
-    if kind == "user" && p == ctx.principal.id {
+    if kind == "user" && p == ctx.principal().id {
         Ok(())
     } else {
         Err(ApiError::NotFound)
@@ -98,7 +98,7 @@ pub async fn cancel_workflow_run(
     require_run_operator(&state, &ctx, id, run_id).await?;
     let runs = runs_or_503(&state)?;
     let outcome = runs
-        .request_cancel(&ctx.tenant_id, id, run_id)
+        .request_cancel(ctx.tenant_id(), id, run_id)
         .await
         .map_err(|e| ApiError::Internal(format!("cancel: {e}")))?;
     match outcome {
@@ -168,7 +168,7 @@ pub async fn retry_workflow_run(
             // schedule/event run の再開は委譲の現在有効性を fail-closed で再確認する
             // （失権後に人手で動かし直す抜け道を作らない・engine.md §6.2）。
             let detail = runs
-                .run_detail(&ctx.tenant_id, id, run_id)
+                .run_detail(ctx.tenant_id(), id, run_id)
                 .await
                 .map_err(|e| ApiError::Internal(format!("run: {e}")))?
                 .ok_or(ApiError::NotFound)?;
@@ -176,13 +176,13 @@ pub async fn retry_workflow_run(
                 // 検査対象は**この run のピン済み declared_scopes**（現 consented を渡すと
                 // 再同意で縮小した scope の検知が自明式になり失われる・Codex P1）。
                 let declared = runs
-                    .run_declared_scopes(&ctx.tenant_id, id, run_id)
+                    .run_declared_scopes(ctx.tenant_id(), id, run_id)
                     .await
                     .map_err(|e| ApiError::Internal(format!("run scopes: {e}")))?
                     .ok_or(ApiError::NotFound)?;
                 let admission = state
                     .workflow_registration
-                    .check_run_start(&ctx.tenant_id, id, &declared)
+                    .check_run_start(ctx.tenant_id(), id, &declared)
                     .await
                     .map_err(|e| ApiError::Internal(format!("delegation: {e}")))?;
                 if !matches!(admission, workflow_engine::RunAdmission::Ok) {
@@ -193,7 +193,7 @@ pub async fn retry_workflow_run(
                 }
             }
             match runs
-                .resume_failed(&ctx.tenant_id, id, run_id)
+                .resume_failed(ctx.tenant_id(), id, run_id)
                 .await
                 .map_err(|e| ApiError::Internal(format!("resume: {e}")))?
             {
@@ -217,7 +217,7 @@ pub async fn retry_workflow_run(
                 .as_ref()
                 .ok_or_else(|| ApiError::ServiceUnavailable("workflow 実行時が無効です".into()))?;
             let detail = runs
-                .run_detail(&ctx.tenant_id, id, run_id)
+                .run_detail(ctx.tenant_id(), id, run_id)
                 .await
                 .map_err(|e| ApiError::Internal(format!("run: {e}")))?
                 .ok_or(ApiError::NotFound)?;
@@ -283,7 +283,7 @@ pub async fn stream_workflow_run_events(
         .and_then(|v| v.parse::<i64>().ok())
         .or(q.last_event_id)
         .unwrap_or(0);
-    let tenant = ctx.tenant_id.clone();
+    let tenant = ctx.tenant_id().to_owned();
 
     struct PollState {
         runs: workflow_engine::RunStore,

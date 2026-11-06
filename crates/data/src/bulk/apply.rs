@@ -504,10 +504,10 @@ impl DataStore {
              ON CONFLICT (tenant_int, table_int, id) DO NOTHING \
              RETURNING record_int, id, owner, created_at, updated_at",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(table.id)
-        .bind(&ctx.org)
-        .bind(&ctx.principal.id)
+        .bind(ctx.org())
+        .bind(&ctx.principal().id)
         .bind(table.keys.tenant_int)
         .bind(table.keys.table_int)
         .bind(&ids)

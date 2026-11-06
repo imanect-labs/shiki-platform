@@ -83,7 +83,7 @@ impl AuthzClient for AllowAll {
 }
 
 async fn setup() -> Option<PgPool> {
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return None;
     };
@@ -110,7 +110,7 @@ fn ctx(tenant: &str) -> AuthContext {
             tenant_id: Some(tenant.into()),
         },
         "acme".into(),
-        tenant.into(),
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 
@@ -232,7 +232,7 @@ async fn worker_generates_streams_and_persists_projection() {
         .unwrap();
 
     // SSE 相当の event_stream を drain し、トークン→done を受け取る。
-    let mut rx = store.event_stream(&c.tenant_id, res.run_id, 0);
+    let mut rx = store.event_stream(c.tenant_id(), res.run_id, 0);
     let mut text = String::new();
     let mut done = false;
     let mut title_event = None;
@@ -361,7 +361,7 @@ async fn system_prompt_carries_todays_date_from_run_creation() {
         .await
         .unwrap();
 
-    let mut rx = store.event_stream(&c.tenant_id, res.run_id, 0);
+    let mut rx = store.event_stream(c.tenant_id(), res.run_id, 0);
     let mut text = String::new();
     for _ in 0..500 {
         let next = tokio::time::timeout(Duration::from_secs(15), rx.next())
@@ -458,7 +458,7 @@ async fn custom_instructions_reach_the_model_in_system_prompt() {
             )
             .await
             .unwrap();
-        let mut rx = store.event_stream(&c.tenant_id, res.run_id, 0);
+        let mut rx = store.event_stream(c.tenant_id(), res.run_id, 0);
         let mut text = String::new();
         for _ in 0..500 {
             let next = tokio::time::timeout(Duration::from_secs(15), rx.next())
@@ -733,7 +733,7 @@ async fn earlier_unfinished_run_blocks_later_ones_until_it_ends() {
 /// 生成ジョブの待ち行列は全テストで共有なので、同じ DB では他のテスト（並列に走る別プロセス）の
 /// ワーカーがジョブを拾い、自分の gateway（stub）で生成を成功させてしまう。
 async fn isolated_setup(prefix: &str) -> Option<PgPool> {
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return None;
     };
@@ -830,7 +830,7 @@ async fn rejected_generation_fails_once_without_retrying() {
         .unwrap();
 
     // 再試行していれば backoff（数十秒）を挟むので、ここで待つ間に Error は届かない。
-    let mut rx = store.event_stream(&c.tenant_id, res.run_id, 0);
+    let mut rx = store.event_stream(c.tenant_id(), res.run_id, 0);
     let mut error = None;
     for _ in 0..200 {
         let next = tokio::time::timeout(Duration::from_secs(20), rx.next())
@@ -903,7 +903,7 @@ async fn ui_reference_is_offered_only_when_yui_is_enabled() {
             .post_message(c, thread.id, text, &[], None, Some(true), false, &[], None)
             .await
             .unwrap();
-        let mut rx = store.event_stream(&c.tenant_id, res.run_id, 0);
+        let mut rx = store.event_stream(c.tenant_id(), res.run_id, 0);
         let (mut body, mut call_id, mut observed) = (String::new(), None, None);
         for _ in 0..500 {
             let next = tokio::time::timeout(Duration::from_mins(1), rx.next())

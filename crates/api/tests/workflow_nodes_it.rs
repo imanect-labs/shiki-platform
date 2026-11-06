@@ -52,8 +52,8 @@ struct Harness {
 
 async fn setup() -> Option<Harness> {
     let (Ok(db), Ok(fga_url)) = (
-        std::env::var("STORAGE_TEST_DATABASE_URL"),
-        std::env::var("OPENFGA_TEST_URL"),
+        shiki_testenv::var("STORAGE_TEST_DATABASE_URL"),
+        shiki_testenv::var("OPENFGA_TEST_URL"),
     ) else {
         eprintln!("STORAGE_TEST_DATABASE_URL / OPENFGA_TEST_URL 未設定のためスキップ");
         return None;
@@ -150,7 +150,7 @@ async fn setup() -> Option<Harness> {
             tenant_id: Some(tenant.clone()),
         },
         org.clone(),
-        tenant.clone(),
+        authz::TenantId::parse(tenant.clone()).unwrap(),
     );
     // storage.write を org 直下に許可（member@org）。
     fga.write_tuple(
@@ -785,7 +785,7 @@ fn runner_path() -> Option<PathBuf> {
 async fn csv_query_node_reads_uploaded_csv() {
     let Some(h) = setup().await else { return };
     let Some(runner) = runner_path() else {
-        eprintln!("shiki-tabular-runner 未ビルドのためスキップ（SHIKI_TABULAR_RUNNER 参照）");
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "shiki-tabular-runner 未ビルド");
         return;
     };
     // alice が CSV をアップロード（作成者＝owner なので viewer で読める）。
@@ -837,7 +837,7 @@ async fn csv_query_node_reads_uploaded_csv() {
 async fn csv_query_denied_without_declared_scope() {
     let Some(h) = setup().await else { return };
     let Some(runner) = runner_path() else {
-        eprintln!("shiki-tabular-runner 未ビルドのためスキップ");
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "shiki-tabular-runner 未ビルド");
         return;
     };
     let executor = h.executor_with_tabular(&runner);
@@ -956,7 +956,7 @@ async fn csv_query_node_joins_multiple_csv() {
             tenant_id: Some(h.tenant.clone()),
         },
         h.org.clone(),
-        h.tenant.clone(),
+        authz::TenantId::parse(h.tenant.clone()).unwrap(),
     );
     h.fga
         .write_tuple(

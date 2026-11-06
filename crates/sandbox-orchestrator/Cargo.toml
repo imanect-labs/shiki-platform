@@ -40,6 +40,7 @@ shlex = { workspace = true }
 ignored = ["shiki-sandbox-client"]
 
 [dev-dependencies]
+shiki-testenv.workspace = true
 proptest = { workspace = true }
 
 [lints]

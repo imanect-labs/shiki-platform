@@ -382,7 +382,7 @@ impl ChatStore {
         )
         .bind(run_id)
         .bind(thread_id)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .execute(&self.db)
         .await
         .map_err(map_db)?;
@@ -565,7 +565,7 @@ impl ChatStore {
         )
         .bind(message_id)
         .bind(thread_id)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .fetch_optional(&self.db)
         .await
         .map_err(map_db)?;

@@ -280,7 +280,7 @@ fn session_record(csrf: &str) -> SessionRecord {
 
 /// 実 DB の AppState を組む（office 有効／無効を選べる）。DB 未設定なら None。
 async fn build_state(with_office: bool) -> Option<(AppState, Arc<dyn SessionStore>)> {
-    let db_url = std::env::var("STORAGE_TEST_DATABASE_URL").ok()?;
+    let db_url = shiki_testenv::var("STORAGE_TEST_DATABASE_URL").ok()?;
     let pool = PgPoolOptions::new()
         .max_connections(4)
         .connect(&db_url)
@@ -482,7 +482,11 @@ async fn body_json(resp: axum::response::Response) -> serde_json::Value {
 
 /// セッション主体と同一の AuthContext（テスト用のファイル作成に使う）。
 fn test_ctx() -> AuthContext {
-    AuthContext::new(test_principal(), "acme".into(), "default".into())
+    AuthContext::new(
+        test_principal(),
+        "acme".into(),
+        authz::TenantId::parse("default").unwrap(),
+    )
 }
 
 fn session_post(uri: &str, cookie: &str, csrf: &str, body: serde_json::Value) -> Request<Body> {

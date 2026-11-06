@@ -114,7 +114,7 @@ pub async fn get_preferences(
     let store = chat_store(&state)?;
     let (preferences, bypass_allowed) = tokio::try_join!(
         store.get_preferences(&ctx),
-        store.autonomous_bypass_allowed(&ctx.tenant_id),
+        store.autonomous_bypass_allowed(ctx.tenant_id()),
     )?;
     Ok(Json(UserPreferencesResponse {
         preferences: preferences.into(),
@@ -152,7 +152,7 @@ pub async fn put_preferences(
             })),
             other => other.into(),
         })?;
-    let bypass_allowed = store.autonomous_bypass_allowed(&ctx.tenant_id).await?;
+    let bypass_allowed = store.autonomous_bypass_allowed(ctx.tenant_id()).await?;
     Ok(Json(UserPreferencesResponse {
         preferences: saved.into(),
         bypass_allowed,

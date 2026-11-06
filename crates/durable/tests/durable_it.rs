@@ -42,7 +42,7 @@ const EVENT_SPEC: EventTableSpec = EventTableSpec {
 const KEY_COLUMNS: &[&str] = &["tenant_id", "run_id"];
 
 async fn setup() -> Option<PgPool> {
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return None;
     };
@@ -368,7 +368,7 @@ async fn fenced_finalize_clears_lease_and_rejects_zombie() {
 
 #[tokio::test]
 async fn pubsub_publish_and_subscribe_roundtrip() {
-    let Ok(url) = std::env::var("REDIS_TEST_URL") else {
+    let Ok(url) = shiki_testenv::var("REDIS_TEST_URL") else {
         eprintln!("REDIS_TEST_URL 未設定のためスキップ");
         return;
     };

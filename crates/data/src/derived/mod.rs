@@ -432,7 +432,7 @@ impl DataStore {
             let env = PolicyEnv {
                 schema: &ref_table.schema,
                 material: &m,
-                user: &ctx.principal.id,
+                user: &ctx.principal().id,
                 shared: &shared,
             };
             let mut fetched = fetched;
@@ -519,7 +519,7 @@ impl DataStore {
         let pred = compile_read_predicate(
             &table.schema,
             m,
-            &ctx.principal.id,
+            &ctx.principal().id,
             RECORD_ALIAS,
             &mut binds,
         )?;
@@ -535,14 +535,14 @@ impl DataStore {
         let mut out = Vec::with_capacity(ids.len());
         for stage in crate::query::planner::batch::stages(ids) {
             let q = sqlx::query_as::<_, (Uuid, String, sqlx::types::Json<Value>)>(&sql)
-                .bind(&ctx.tenant_id)
+                .bind(ctx.tenant_id())
                 .bind(table.id)
                 .bind(table.keys.tenant_int)
                 .bind(table.keys.table_int);
             let q = crate::query::sql::bind_query_as(q, &binds.binds);
             let rows = q
                 .bind(stage.to_vec())
-                .fetch_all(self.pools.for_tenant(&ctx.tenant_id))
+                .fetch_all(self.pools.for_tenant(ctx.tenant_id()))
                 .await
                 .map_err(map_db)?;
             out.extend(rows.into_iter().map(|(i, o, d)| (i, o, d.0)));

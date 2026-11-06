@@ -41,13 +41,13 @@ struct Env {
 }
 
 async fn setup() -> Option<Env> {
-    let db_url = std::env::var("STORAGE_TEST_DATABASE_URL")
+    let db_url = shiki_testenv::var("STORAGE_TEST_DATABASE_URL")
         .ok()
         .or_else(|| {
             eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
             None
         })?;
-    let fga_url = std::env::var("OPENFGA_TEST_URL").ok().or_else(|| {
+    let fga_url = shiki_testenv::var("OPENFGA_TEST_URL").ok().or_else(|| {
         eprintln!("OPENFGA_TEST_URL 未設定のためスキップ");
         None
     })?;
@@ -99,7 +99,7 @@ fn ctx(tenant: &str, org: &str, user: &str) -> AuthContext {
             tenant_id: Some(tenant.into()),
         },
         org.into(),
-        tenant.into(),
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 
@@ -118,7 +118,11 @@ fn skill_body(command: &str) -> serde_json::Value {
 /// org メンバーシップを張る（`organization#member` が効く前提を作る）。
 async fn seed_member(env: &Env, c: &AuthContext) {
     env.authz
-        .write_tuple(&c.subject(), Relation::Member, &c.ns().organization(&c.org))
+        .write_tuple(
+            &c.subject(),
+            Relation::Member,
+            &c.ns().organization(c.org()),
+        )
         .await
         .expect("org member tuple");
 }

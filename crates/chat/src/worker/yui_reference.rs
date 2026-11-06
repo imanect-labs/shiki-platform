@@ -216,7 +216,7 @@ mod tests {
                 tenant_id: Some("default".into()),
             },
             "acme".into(),
-            "default".into(),
+            authz::TenantId::parse("default").unwrap(),
         );
         let ok = UiReferenceTool
             .call(&ctx, serde_json::json!({ "kinds": ["bar"] }), None)

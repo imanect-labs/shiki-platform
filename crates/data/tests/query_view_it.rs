@@ -39,8 +39,8 @@ impl RefResolver for AllowRefs {
 }
 
 async fn setup() -> Option<(PgPool, Arc<dyn AuthzClient>)> {
-    let db_url = std::env::var("STORAGE_TEST_DATABASE_URL").ok()?;
-    let base_url = std::env::var("OPENFGA_TEST_URL").ok()?;
+    let db_url = shiki_testenv::var("STORAGE_TEST_DATABASE_URL").ok()?;
+    let base_url = shiki_testenv::var("OPENFGA_TEST_URL").ok()?;
     let pool = PgPoolOptions::new()
         .max_connections(5)
         .connect(&db_url)
@@ -73,7 +73,7 @@ fn ctx(tenant: &str, user: &str) -> AuthContext {
             tenant_id: Some(tenant.into()),
         },
         "acme".into(),
-        tenant.into(),
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 

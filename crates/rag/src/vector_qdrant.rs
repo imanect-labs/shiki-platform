@@ -125,7 +125,7 @@ impl QdrantVectorStore {
         exclude: &[Uuid],
     ) -> Value {
         // tenant フィルタは常に must（authz_tags と独立の防壁・design §4.3）。
-        let mut must = vec![json!({"key": "tenant_id", "match": {"value": ctx.tenant_id}})];
+        let mut must = vec![json!({"key": "tenant_id", "match": {"value": ctx.tenant_id()}})];
         if let PreFilter::Tags(tags) = prefilter {
             must.push(json!({"key": "authz_tags", "match": {"any": tags}}));
         }
@@ -242,7 +242,7 @@ impl VectorStore for QdrantVectorStore {
                         "id": p.chunk_id.to_string(),
                         "vector": p.vector,
                         "payload": {
-                            "tenant_id": ctx.tenant_id,
+                            "tenant_id": ctx.tenant_id(),
                             "node_id": p.node_id.to_string(),
                             "version": p.version,
                             "authz_tags": p.authz_tags,
@@ -266,7 +266,7 @@ impl VectorStore for QdrantVectorStore {
                 "/collections/{ACTIVE_ALIAS}/points/delete?wait=true"
             )))
             .json(&json!({"filter": {"must": [
-                {"key": "tenant_id", "match": {"value": ctx.tenant_id}},
+                {"key": "tenant_id", "match": {"value": ctx.tenant_id()}},
                 {"key": "node_id", "match": {"value": node_id.to_string()}}
             ]}}))
             .send()
@@ -291,7 +291,7 @@ impl VectorStore for QdrantVectorStore {
             )))
             .json(&json!({"filter": {
                 "must": [
-                    {"key": "tenant_id", "match": {"value": ctx.tenant_id}},
+                    {"key": "tenant_id", "match": {"value": ctx.tenant_id()}},
                     {"key": "node_id", "match": {"value": node_id.to_string()}}
                 ],
                 "must_not": [{"key": "version", "match": {"value": keep_version}}]
@@ -318,7 +318,7 @@ impl VectorStore for QdrantVectorStore {
             .json(&json!({
                 "payload": {"authz_tags": tags},
                 "filter": {"must": [
-                    {"key": "tenant_id", "match": {"value": ctx.tenant_id}},
+                    {"key": "tenant_id", "match": {"value": ctx.tenant_id()}},
                     {"key": "node_id", "match": {"value": node_id.to_string()}}
                 ]}
             }))
@@ -415,7 +415,7 @@ mod tests {
                 tenant_id: Some("a-corp".into()),
             },
             "acme".into(),
-            "a-corp".into(),
+            authz::TenantId::parse("a-corp").unwrap(),
         );
         // TenantOnly 縮退でも tenant must は残る（第二の防壁）。
         let f = QdrantVectorStore::build_filter(&ctx, &PreFilter::TenantOnly, &[], &[]);

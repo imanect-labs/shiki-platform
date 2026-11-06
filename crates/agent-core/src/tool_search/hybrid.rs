@@ -98,7 +98,7 @@ fn lock() -> std::sync::MutexGuard<'static, HashMap<String, TenantCache>> {
 
 /// キャッシュを閉じる単位（`{tenant_id}/{org}`）。
 fn scope(ctx: &AuthContext) -> String {
-    format!("{}/{}", ctx.tenant_id, ctx.org)
+    format!("{}/{}", ctx.tenant_id(), ctx.org())
 }
 
 fn text_hash(text: &str) -> u64 {

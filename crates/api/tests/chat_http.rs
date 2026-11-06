@@ -280,7 +280,7 @@ fn session_record(csrf: &str) -> SessionRecord {
 
 /// 実 DB の AppState を組む（chat 有効／無効を選べる）。DB 未設定なら None。
 async fn build_state(with_chat: bool) -> Option<(AppState, Arc<dyn SessionStore>)> {
-    let db_url = std::env::var("STORAGE_TEST_DATABASE_URL").ok()?;
+    let db_url = shiki_testenv::var("STORAGE_TEST_DATABASE_URL").ok()?;
     let pool = PgPoolOptions::new()
         .max_connections(4)
         .connect(&db_url)
@@ -685,7 +685,7 @@ async fn chat_post_resolves_model_choice() {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return;
     };
-    let db_url = std::env::var("STORAGE_TEST_DATABASE_URL").unwrap();
+    let db_url = shiki_testenv::var("STORAGE_TEST_DATABASE_URL").unwrap();
     let pool = PgPoolOptions::new().connect(&db_url).await.unwrap();
     // stub プロバイダに 2 モデル（"fast" は思考強度を受ける・"local" は受けない）。
     let gw = llm_gateway::LlmGateway::build(
@@ -948,7 +948,11 @@ async fn share_lists_include_directory_names_tenant_scoped() {
         .upsert_role("share741-eng", "default", "acme", "技術部 741")
         .await
         .expect("seed role");
-    let ctx = authz::AuthContext::new(test_principal(), "acme".into(), "default".into());
+    let ctx = authz::AuthContext::new(
+        test_principal(),
+        "acme".into(),
+        authz::TenantId::parse("default").unwrap(),
+    );
     let art = state
         .artifacts
         .create(
@@ -1038,7 +1042,7 @@ async fn chat_post_records_requested_tools() {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return;
     };
-    let db_url = std::env::var("STORAGE_TEST_DATABASE_URL").unwrap();
+    let db_url = shiki_testenv::var("STORAGE_TEST_DATABASE_URL").unwrap();
     let pool = PgPoolOptions::new().connect(&db_url).await.unwrap();
     let (cookie, csrf) = login(&sessions, "sid-chat-tools").await;
     let app = build_router(state);
@@ -1500,7 +1504,7 @@ async fn today_endpoints_over_http() {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return;
     };
-    let db_url = std::env::var("STORAGE_TEST_DATABASE_URL").unwrap();
+    let db_url = shiki_testenv::var("STORAGE_TEST_DATABASE_URL").unwrap();
     let pool = PgPoolOptions::new().connect(&db_url).await.unwrap();
     let (cookie, csrf) = login(&sessions, "sid-today").await;
     let get = |uri: &str| {

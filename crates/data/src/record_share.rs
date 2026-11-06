@@ -149,7 +149,7 @@ impl DataStore {
             tracing::warn!(error = %e, %table_id, "SSE への共有変更の通知に失敗（購読は TTL で引き直す）");
         }
         // この表を参照する表の購読にも取り直させる（共有先から見たルックアップ・リンク値が変わる）。
-        if let Err(e) = self.refresh_referrers(&ctx.tenant_id, table_id).await {
+        if let Err(e) = self.refresh_referrers(ctx.tenant_id(), table_id).await {
             tracing::warn!(error = %e, %table_id, "共有変更後の参照元の取り直しの発行に失敗");
         }
     }
@@ -210,7 +210,7 @@ impl DataStore {
         let mut table = self.fetch_live(ctx, table_id).await?;
         let mut tx = self
             .pools
-            .for_tenant(&ctx.tenant_id)
+            .for_tenant(ctx.tenant_id())
             .begin()
             .await
             .map_err(map_db)?;
@@ -218,7 +218,7 @@ impl DataStore {
             "UPDATE data_table SET has_record_shares = true \
              WHERE tenant_id = $1 AND id = $2 AND NOT has_record_shares",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(table_id)
         .execute(&mut *tx)
         .await
@@ -226,7 +226,7 @@ impl DataStore {
         table.has_record_shares = true;
         crate::derived::materialize::demote_dependents(
             &mut tx,
-            &ctx.tenant_id,
+            ctx.tenant_id(),
             table.keys,
             Some((
                 table.id,
@@ -256,7 +256,7 @@ impl DataStore {
             .select_visible_by_id(ctx, &az, &table, record_id)
             .await?
             .ok_or(DataError::NotFound)?;
-        if row.owner == ctx.principal.id {
+        if row.owner == ctx.principal().id {
             return Ok(());
         }
         let is_table_owner = self

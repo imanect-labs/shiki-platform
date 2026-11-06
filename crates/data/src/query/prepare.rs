@@ -56,7 +56,8 @@ impl DataStore {
             .open_for_read(ctx, az, table_id, action, trace_id)
             .await?;
         let masked = self.masked_fields(ctx, az, &table).await?;
-        self.analyze_on_read(tuning, &ctx.tenant_id, &table).await?;
+        self.analyze_on_read(tuning, ctx.tenant_id(), &table)
+            .await?;
         if auto_promote {
             let promoted = self
                 .auto_promote_for(ctx, &table, &masked, query, trace_id)

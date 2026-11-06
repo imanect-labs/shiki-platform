@@ -1131,7 +1131,7 @@ async fn spawn_idp_with_admin() -> String {
 /// 実 Postgres が必要（`STORAGE_TEST_DATABASE_URL` 設定時のみ・CI の coverage ジョブで実走）。
 #[tokio::test]
 async fn admin_tenant_lifecycle_end_to_end() {
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return;
     };
