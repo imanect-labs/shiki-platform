@@ -6,6 +6,9 @@
 //! 流し始めた後の `error`・`response.failed` は、[`CUT_BY_PROVIDER`] の付いた [`LlmError::Unavailable`] にする
 //! （Anthropic の `event: error`・OpenAI 互換の素の誤りの JSON と同じ扱い・BUG-224）。送り直すかは gateway が決める
 //! （まだ何も確定していないときだけ・`retry::resume_unsettled`）。
+//!
+//! 引数の JSON が読めない `function_call` は渡さずに数え、応答の終わり（`response.completed`・`response.incomplete`）で
+//! 誤りにするかを決める（[`super::tool_args`]・BUG-225）。
 
 use std::collections::HashMap;
 
@@ -13,6 +16,7 @@ use futures::channel::mpsc;
 use serde_json::{json, Value};
 
 use super::openai_responses::REASONING_PROVIDER;
+use super::tool_args;
 use super::tool_names::ToolNameMap;
 use crate::model::{StopReason, StreamDelta};
 use crate::provider::{LlmError, CUT_BY_PROVIDER};
@@ -27,6 +31,8 @@ pub(super) struct EventMapper {
     /// 出力アイテム ID → (call_id, wire 名, 累積した引数)。
     calls: HashMap<String, (String, String, String)>,
     saw_tool_call: bool,
+    /// 引数の JSON が読めずに渡さなかった呼び出しの数（[`tool_args::refuse`]）。
+    broken: usize,
     finished: bool,
 }
 
@@ -97,15 +103,11 @@ impl EventMapper {
                     .and_then(Value::as_str)
                     .filter(|a| !a.is_empty())
                     .unwrap_or(&streamed);
-                // 壊れた引数を `{}` にしてツールを実行しない。生成のやり直し（gateway の再試行）に回す。
-                let input: Value = match serde_json::from_str(args.trim()) {
-                    Ok(v) => v,
-                    Err(e) => {
-                        self.finished = true;
-                        return vec![Err(LlmError::Unavailable(format!(
-                            "responses: invalid tool arguments: {e}"
-                        )))];
-                    }
+                // 壊れた引数を `{}` にしてツールを実行しない。応答の終わりで、上限で止まった応答のほかは誤りにする
+                // （送り直すかは gateway が決めるが、呼び出しの始まりを渡した後なので、ふつうは生成の失敗になる）。
+                let Some(input) = tool_args::parse("responses", &call_id, args) else {
+                    self.broken += 1;
+                    return Vec::new();
                 };
                 self.saw_tool_call = true;
                 vec![Ok(StreamDelta::ToolUseStop { id: call_id, input })]
@@ -124,6 +126,9 @@ impl EventMapper {
                 } else {
                     StopReason::EndTurn
                 };
+                if let Some(e) = tool_args::refuse("responses", self.broken, stop_reason) {
+                    return vec![Err(e)];
+                }
                 vec![Ok(StreamDelta::Done { stop_reason, usage })]
             }
             "response.failed" | "error" => {
@@ -324,17 +329,58 @@ mod tests {
         assert!(
             matches!(&out[0], Ok(StreamDelta::TextDelta { text }) if text == "お答えできません")
         );
+        // 引数の JSON が読めない呼び出しは渡さず、応答の終わりで誤りにする（BUG-225）。
+        let broken = |end: Value| {
+            feed_all(&[
+                json!({"type": "response.output_item.added", "item": {"id": "fc_1", "type": "function_call", "call_id": "c", "name": "document_edit"}}),
+                json!({"type": "response.output_item.done", "item": {"id": "fc_1", "type": "function_call", "call_id": "c", "arguments": "{\"path\": "}}),
+                json!({"type": "response.output_item.added", "item": {"id": "fc_2", "type": "function_call", "call_id": "d", "name": "document_edit"}}),
+                json!({"type": "response.output_item.done", "item": {"id": "fc_2", "type": "function_call", "call_id": "d", "arguments": "{\"path\": \"a.md\"}"}}),
+                end,
+            ])
+        };
+        let out = broken(json!({"type": "response.completed", "response": {"usage": {}}}));
+        let stops: Vec<&str> = out
+            .iter()
+            .filter_map(|d| match d {
+                Ok(StreamDelta::ToolUseStop { id, .. }) => Some(id.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(stops, ["d"], "壊れた呼び出し c は渡さない: {out:?}");
+        match out.last() {
+            Some(Err(LlmError::Unavailable(m))) => assert_eq!(
+                m,
+                &format!(
+                    "{CUT_BY_PROVIDER}responses: {}",
+                    tool_args::BROKEN_TOOL_INPUT
+                )
+            ),
+            other => panic!("{other:?}"),
+        }
+        // 出力の上限で止まった応答なら、壊れた呼び出しを渡さずに打ち切りとして終える。
+        let out = broken(
+            json!({"type": "response.incomplete", "response": {"incomplete_details": {"reason": "max_output_tokens"}, "usage": {}}}),
+        );
+        assert!(
+            matches!(
+                out.last(),
+                Some(Ok(StreamDelta::Done {
+                    stop_reason: StopReason::MaxTokens,
+                    ..
+                }))
+            ),
+            "{out:?}"
+        );
+        // 引数の無い呼び出しは `{}` で渡す。
         let out = feed_all(&[
             json!({"type": "response.output_item.added", "item": {"id": "fc_1", "type": "function_call", "call_id": "c", "name": "document_edit"}}),
-            json!({"type": "response.output_item.done", "item": {"id": "fc_1", "type": "function_call", "call_id": "c", "arguments": "{\"path\": "}}),
-            json!({"type": "response.completed", "response": {"usage": {}}}),
+            json!({"type": "response.output_item.done", "item": {"id": "fc_1", "type": "function_call", "call_id": "c", "arguments": ""}}),
         ]);
         assert!(
-            matches!(out.last(), Some(Err(LlmError::Unavailable(m))) if m.contains("invalid tool arguments"))
+            matches!(&out[1], Ok(StreamDelta::ToolUseStop { input, .. }) if *input == json!({})),
+            "{out:?}"
         );
-        assert!(!out
-            .iter()
-            .any(|d| matches!(d, Ok(StreamDelta::ToolUseStop { .. }))));
     }
 
     #[test]

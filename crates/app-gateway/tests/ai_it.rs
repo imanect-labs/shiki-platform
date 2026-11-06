@@ -837,3 +837,58 @@ async fn unreachable_providers_are_not_named_to_the_app() {
             .unwrap();
     }
 }
+
+/// モデルが返したツールの引数の JSON が読めないとき、アプリへ `input: {}` の tool_use_stop を渡さない（BUG-225）。アプリは
+/// 空の引数と壊れた引数を見分けられないので、壊れた呼び出しを渡さずに誤りの error イベントで終える。引数の無い呼び出し
+/// （空の引数）は `{}` で渡す。
+#[tokio::test]
+async fn unreadable_tool_arguments_are_not_handed_to_the_app() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", Uuid::new_v4());
+    let (_app_id, client) = install(&pool, &tenant, AiPin::default()).await;
+    let tok = token(&client, AI_SCOPES, &tenant);
+    let msg = json!({
+        "messages": [{ "role": "user", "content": [ { "type": "text", "text": "a1 を消して" } ] }],
+        "tools": [{ "name": "delete_item", "description": "消す", "input_schema": { "type": "object" } }]
+    });
+    let call = |args: &str| {
+        let line = json!({"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"delete_item","arguments":args}}]}}]});
+        let body = format!(
+            "data: {line}\n\ndata: {{\"choices\":[{{\"delta\":{{}},\"finish_reason\":\"tool_calls\"}}]}}\n\ndata: [DONE]\n\n"
+        );
+        &*Box::leak(body.into_boxed_str())
+    };
+
+    // 1. 途中までの引数: tool_use_start の後に error で終わり、tool_use_stop と done は来ない。
+    let mut st = state(pool.clone(), &tenant);
+    st.caps.llm = Some(provider_llm(pool.clone(), StatusCode::OK, call("{\"id\":\"a1\",")).await);
+    let app = build_gateway_router(st);
+    let (s, sse) = post_sse(&app, "/gw/ai/llm/invoke", &tok, &msg).await;
+    assert_eq!(s, StatusCode::OK, "{sse}");
+    assert!(sse.contains("event: tool_use_start"), "{sse}");
+    assert!(!sse.contains("event: tool_use_stop"), "{sse}");
+    assert!(!sse.contains("event: done"), "{sse}");
+    assert!(sse.contains("event: error"), "{sse}");
+    assert!(
+        sse.contains("モデルがツールに渡す値を読める形で返しませんでした"),
+        "{sse}"
+    );
+
+    // 2. 引数の無い呼び出し: `{}` の tool_use_stop を渡す。
+    let mut st = state(pool.clone(), &tenant);
+    st.caps.llm = Some(provider_llm(pool.clone(), StatusCode::OK, call("")).await);
+    let app = build_gateway_router(st);
+    let (s, sse) = post_sse(&app, "/gw/ai/llm/invoke", &tok, &msg).await;
+    assert_eq!(s, StatusCode::OK, "{sse}");
+    assert!(sse.contains("event: tool_use_stop"), "{sse}");
+    assert!(sse.contains(r#""input":{}"#), "{sse}");
+    assert!(sse.contains("event: done"), "{sse}");
+
+    for table in ["llm_usage", "app_capability_usage", "app_installation"] {
+        sqlx::query(&format!("DELETE FROM {table} WHERE tenant_id = $1"))
+            .bind(&tenant)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+}

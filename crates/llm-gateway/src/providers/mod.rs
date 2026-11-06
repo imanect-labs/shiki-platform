@@ -32,6 +32,8 @@ mod stub_triggers;
 mod think_tags;
 /// 最初の応答・無通信・全体のタイムアウト（全アダプタ共通・#554）。
 mod timeouts;
+/// ツールの引数の JSON の読み取り（全アダプタ共通・BUG-225）。
+mod tool_args;
 /// ツール名の wire 写像（全アダプタ共通・#582）。
 mod tool_names;
 /// TypeSafe System One 互換の決定器（FEAT-1 の T9・実験的・既定は無効）。

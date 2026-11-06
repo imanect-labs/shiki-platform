@@ -14,6 +14,7 @@ use serde_json::{json, Value};
 use super::identity::IdentityHeaders;
 use super::think_tags::{split_content, Piece, ThinkSplitter};
 use super::timeouts::RequestClock;
+use super::tool_args;
 use super::tool_names::ToolNameMap;
 use crate::config::LlmTimeouts;
 use crate::model::{Block, GenerateRequest, Message, Role, StopReason, StreamDelta, Usage};
@@ -247,6 +248,8 @@ struct ToolAcc {
     calls: BTreeMap<i64, (String, String, String)>,
     /// 枠（index）→ プロバイダ固有の `extra_content`（届いたものだけ。ID は取り出すときに引く）。
     extras: BTreeMap<i64, Value>,
+    /// `ToolUseStart` を出した呼び出しの ID（1 回だけ出す）。
+    started: std::collections::BTreeSet<String>,
 }
 
 impl ToolAcc {
@@ -325,28 +328,40 @@ impl ToolAcc {
             .collect()
     }
 
-    /// 完了イベント（ToolUseStop 列）へ落とす。
-    fn drain_stops(&mut self) -> Vec<StreamDelta> {
-        std::mem::take(&mut self.calls)
+    /// 完了イベント（ToolUseStop 列）へ落とす。引数の JSON が読めない呼び出しは `{}` にして渡さず、応答の止まり方
+    /// `stop` が出力の上限でなければ誤りにする（[`super::tool_args`]・BUG-225）。
+    fn drain_stops(&mut self, stop: StopReason) -> Result<Vec<StreamDelta>, LlmError> {
+        let mut broken = 0;
+        let stops = std::mem::take(&mut self.calls)
             .into_values()
             .filter(|(id, name, _)| !id.is_empty() && !name.is_empty())
-            .map(|(id, name, args)| {
-                let input: Value = serde_json::from_str(args.trim()).unwrap_or(json!({}));
-                let _ = name; // name は id で参照済み（tool_use 側で保持）
-                StreamDelta::ToolUseStop { id, input }
+            .filter_map(|(id, _name, args)| {
+                let Some(input) = tool_args::parse("openai", &id, &args) else {
+                    broken += 1;
+                    return None;
+                };
+                Some(StreamDelta::ToolUseStop { id, input })
             })
-            .collect()
+            .collect();
+        match tool_args::refuse("openai", broken, stop) {
+            Some(e) => Err(e),
+            None => Ok(stops),
+        }
     }
 
-    fn starts(&self) -> Vec<StreamDelta> {
-        self.calls
-            .values()
-            .filter(|(id, name, _)| !id.is_empty() && !name.is_empty())
-            .map(|(id, name, _)| StreamDelta::ToolUseStart {
-                id: id.clone(),
-                name: name.clone(),
-            })
-            .collect()
+    /// 新しく ID と名前の揃った呼び出しの `ToolUseStart`（呼び出しごとに 1 回）。wire 名（サニタイズ済み）は元の
+    /// ローカル名へ逆写しする。
+    fn new_starts(&mut self, names: &ToolNameMap) -> Vec<StreamDelta> {
+        let mut out = Vec::new();
+        for (id, name, _) in self.calls.values() {
+            if !id.is_empty() && !name.is_empty() && self.started.insert(id.clone()) {
+                out.push(StreamDelta::ToolUseStart {
+                    id: id.clone(),
+                    name: names.local(name),
+                });
+            }
+        }
+        out
     }
 }
 
@@ -405,7 +420,6 @@ impl LlmProvider for OpenAiProvider {
             let mut byte_stream = resp.bytes_stream();
             let mut buf: Vec<u8> = Vec::new();
             let mut acc = ToolAcc::default();
-            let mut started: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
             let mut usage = Usage::default();
             let mut stop = StopReason::EndTurn;
             // 最後に受け取った finish_reason が "stop" か（終端が欠けたストリームは昇格させない）・
@@ -469,16 +483,8 @@ impl LlmProvider for OpenAiProvider {
                         if let Some(tc) = delta.get("tool_calls") {
                             acc.ingest(tc);
                             // 新規に name/id が確定したツールへ Start を 1 回出す。
-                            // wire 名（サニタイズ済み）を元のローカル名へ逆写しして返す。
-                            for s in acc.starts() {
-                                if let StreamDelta::ToolUseStart { id, name } = s {
-                                    if started.insert(id.clone()) {
-                                        let _ = tx.unbounded_send(Ok(StreamDelta::ToolUseStart {
-                                            id,
-                                            name: names.local(&name),
-                                        }));
-                                    }
-                                }
+                            for s in acc.new_starts(&names) {
+                                let _ = tx.unbounded_send(Ok(s));
                             }
                         }
                     }
@@ -503,7 +509,13 @@ impl LlmProvider for OpenAiProvider {
             for s in acc.drain_extras() {
                 let _ = tx.unbounded_send(Ok(s));
             }
-            let stops = acc.drain_stops();
+            let stops = match acc.drain_stops(stop) {
+                Ok(stops) => stops,
+                Err(e) => {
+                    let _ = tx.unbounded_send(Err(e));
+                    return;
+                }
+            };
             // Gemini API はツールを呼んでも `finish_reason: "stop"` を返す。呼び出しがあるのに
             // EndTurn で返すと、エージェントがツールを実行せずに終わる。finish_reason が
             // 届かずに切れたストリーム（引数が途中かもしれない）は昇格させない。
@@ -746,7 +758,7 @@ mod tests {
             &json!([{"index":0,"id":"t1","function":{"name":"doc_search","arguments":"{\"q"}}]),
         );
         acc.ingest(&json!([{"index":0,"function":{"arguments":"uery\":\"経費\"}"}}]));
-        let stops = acc.drain_stops();
+        let stops = acc.drain_stops(StopReason::ToolUse).unwrap();
         assert_eq!(stops.len(), 1);
         match &stops[0] {
             StreamDelta::ToolUseStop { id, input } => {
@@ -755,6 +767,40 @@ mod tests {
             }
             _ => panic!("expected ToolUseStop"),
         }
+    }
+
+    /// 引数の JSON が読めない呼び出しは `{}` にして渡さない（BUG-225）。出力の上限で止まった応答なら、その呼び出しを
+    /// 渡さないだけにし、それ以外は誤りにする。引数の無い呼び出しは `{}` で渡す。
+    #[test]
+    fn tool_acc_does_not_hand_over_unreadable_arguments() {
+        let ingest = |acc: &mut ToolAcc| {
+            acc.ingest(&json!([
+                {"index":0,"id":"t1","function":{"name":"list_items","arguments":"{\"filter\":"}},
+                {"index":1,"id":"t2","function":{"name":"list_items","arguments":""}}
+            ]));
+        };
+        let mut acc = ToolAcc::default();
+        ingest(&mut acc);
+        match acc.drain_stops(StopReason::ToolUse) {
+            Err(LlmError::Unavailable(m)) => assert_eq!(
+                m,
+                format!(
+                    "{}openai: {}",
+                    crate::provider::CUT_BY_PROVIDER,
+                    tool_args::BROKEN_TOOL_INPUT
+                )
+            ),
+            other => panic!("{other:?}"),
+        }
+        let mut acc = ToolAcc::default();
+        ingest(&mut acc);
+        assert_eq!(
+            acc.drain_stops(StopReason::MaxTokens).unwrap(),
+            [StreamDelta::ToolUseStop {
+                id: "t2".into(),
+                input: json!({})
+            }]
+        );
     }
 
     #[test]
@@ -787,7 +833,8 @@ mod tests {
             [("c1".into(), json!({"k":1})), ("c3".into(), json!({"k":3}))]
         );
         let stops: Vec<(String, Value)> = acc
-            .drain_stops()
+            .drain_stops(StopReason::ToolUse)
+            .unwrap()
             .into_iter()
             .map(|d| match d {
                 StreamDelta::ToolUseStop { id, input } => (id, input),

@@ -12,15 +12,21 @@
 //!
 //! どちらも [`CUT_BY_PROVIDER`] の付いた [`LlmError::Unavailable`] にする。送り直すかは gateway が決める
 //! （まだ何も確定していないときだけ・`retry::resume_unsettled`）。
+//!
+//! 引数の JSON が読めない `tool_use` は、`{}` にして渡さない（[`super::tool_args`]・BUG-225）。
 
 use std::collections::BTreeMap;
 
-use serde_json::{json, Value};
+use serde_json::Value;
 
+use super::tool_args;
 use super::tool_names::ToolNameMap;
 use super::usage::AnthropicUsage;
 use crate::model::{StopReason, StreamDelta};
 use crate::provider::{LlmError, CUT_BY_PROVIDER};
+
+/// 誤りの文の頭のプロバイダ名。
+const PROVIDER: &str = "anthropic";
 
 /// 終わりの合図が来ないまま閉じたストリームの理由（本文の代わりに入れる）。
 const ENDED_BEFORE_STOP: &str = "anthropic: プロバイダが応答を最後まで返さずに接続を切りました";
@@ -37,6 +43,8 @@ pub(super) struct EventReader {
     stop: StopReason,
     /// `message_delta` の `stop_reason` を受け取った（応答の中身は揃った）。
     stop_seen: bool,
+    /// 引数の JSON が読めずに渡さなかった `tool_use` の数（[`tool_args::refuse`]）。
+    broken: usize,
     /// `message_stop` か `error` まで読んだ（以後の行は読まない）。
     finished: bool,
 }
@@ -49,6 +57,7 @@ impl EventReader {
             usage: AnthropicUsage::default(),
             stop: StopReason::EndTurn,
             stop_seen: false,
+            broken: 0,
             finished: false,
         }
     }
@@ -84,7 +93,10 @@ impl EventReader {
                 let Some((id, _name, args)) = self.tools.remove(&idx) else {
                     return Vec::new();
                 };
-                let input: Value = serde_json::from_str(args.trim()).unwrap_or(json!({}));
+                let Some(input) = tool_args::parse(PROVIDER, &id, &args) else {
+                    self.broken += 1;
+                    return Vec::new();
+                };
                 vec![Ok(StreamDelta::ToolUseStop { id, input })]
             }
             Some("message_delta") => {
@@ -99,10 +111,7 @@ impl EventReader {
             }
             Some("message_stop") => {
                 self.finished = true;
-                vec![Ok(StreamDelta::Done {
-                    stop_reason: self.stop,
-                    usage: self.usage.to_usage(),
-                })]
+                vec![self.done()]
             }
             Some("error") => {
                 self.finished = true;
@@ -122,10 +131,7 @@ impl EventReader {
             return None;
         }
         if self.stop_seen && self.tools.is_empty() {
-            return Some(Ok(StreamDelta::Done {
-                stop_reason: self.stop,
-                usage: self.usage.to_usage(),
-            }));
+            return Some(self.done());
         }
         tracing::warn!(
             open_tool_uses = self.tools.len(),
@@ -135,6 +141,17 @@ impl EventReader {
         Some(Err(LlmError::Unavailable(format!(
             "{CUT_BY_PROVIDER}{ENDED_BEFORE_STOP}"
         ))))
+    }
+
+    /// 応答の終わり。引数の読めない呼び出しがあれば、上限で止まった応答のほかは誤りにする（BUG-225）。
+    fn done(&self) -> Item {
+        if let Some(e) = tool_args::refuse(PROVIDER, self.broken, self.stop) {
+            return Err(e);
+        }
+        Ok(StreamDelta::Done {
+            stop_reason: self.stop,
+            usage: self.usage.to_usage(),
+        })
     }
 
     fn block_start(&mut self, v: &Value) -> Vec<Item> {
@@ -300,6 +317,41 @@ mod tests {
         assert_eq!(
             read(&[TOOL_START, TOOL_ARGS, done, block_stop, delta, STOP]),
             ["start:toolu_1", r#"stop:toolu_1:{"q":1}"#, "done:ToolUse"]
+        );
+    }
+
+    /// 引数の JSON が読めない tool_use は `{}` にして渡さない（BUG-225）。上限で止まった応答なら呼び出しを渡さずに
+    /// 打ち切りとして終え、それ以外は誤りにする。引数の無い呼び出しは `{}` で渡す。
+    #[test]
+    fn a_tool_use_with_unreadable_arguments_is_not_handed_over() {
+        let block_stop = r#"data: {"type":"content_block_stop","index":1}"#;
+        let delta = |reason: &str| {
+            format!(r#"data: {{"type":"message_delta","delta":{{"stop_reason":"{reason}"}}}}"#)
+        };
+        let broken = format!(
+            "unavailable:{CUT_BY_PROVIDER}anthropic: {}",
+            tool_args::BROKEN_TOOL_INPUT
+        );
+        let tool_use = delta("tool_use");
+        assert_eq!(
+            read(&[TOOL_START, TOOL_ARGS, block_stop, &tool_use, STOP]),
+            ["start:toolu_1".to_string(), broken.clone()]
+        );
+        // message_stop が欠けても同じ。
+        assert_eq!(
+            read(&[TOOL_START, TOOL_ARGS, block_stop, &tool_use]),
+            ["start:toolu_1".to_string(), broken]
+        );
+        // 出力の上限で切れた引数は、呼び出しを渡さずに打ち切りとして終える。
+        let max_tokens = delta("max_tokens");
+        assert_eq!(
+            read(&[TEXT, TOOL_START, TOOL_ARGS, block_stop, &max_tokens, STOP]),
+            ["text:途中", "start:toolu_1", "done:MaxTokens"]
+        );
+        // 引数の差分の無い呼び出しは、引数の無い呼び出しとして渡す。
+        assert_eq!(
+            read(&[TOOL_START, block_stop, &tool_use, STOP]),
+            ["start:toolu_1", "stop:toolu_1:{}", "done:ToolUse"]
         );
     }
 
