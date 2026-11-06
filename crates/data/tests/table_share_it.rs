@@ -47,12 +47,12 @@ impl RefResolver for Directory {
     async fn user_exists(&self, ctx: &AuthContext, id: &str) -> Result<bool, String> {
         Ok(self
             .users
-            .contains(&(ctx.tenant_id.clone(), id.to_string())))
+            .contains(&(ctx.tenant_id().to_owned(), id.to_string())))
     }
     async fn role_exists(&self, ctx: &AuthContext, id: &str) -> Result<bool, String> {
         Ok(self
             .roles
-            .contains(&(ctx.tenant_id.clone(), id.to_string())))
+            .contains(&(ctx.tenant_id().to_owned(), id.to_string())))
     }
     async fn file_readable(&self, _: &AuthContext, _: Uuid) -> Result<bool, String> {
         Ok(true)
@@ -101,7 +101,7 @@ fn ctx(tenant: &str, user: &str) -> AuthContext {
             tenant_id: Some(tenant.into()),
         },
         "acme".into(),
-        tenant.into(),
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 
@@ -251,7 +251,7 @@ impl Fx {
              WHERE tenant_id = $1 AND object_type = 'data_table' AND object_id = $2 \
                AND action LIKE $3 ORDER BY id",
         )
-        .bind(&self.alice.tenant_id)
+        .bind(self.alice.tenant_id())
         .bind(self.table.to_string())
         .bind(format!("{prefix}%"))
         .fetch_all(&self.pool)
@@ -412,7 +412,7 @@ async fn tick(fx: &Fx) {
                AND NOT EXISTS (SELECT 1 FROM outbox_delivery d \
                                WHERE d.event_id = o.id AND d.consumer = $2)",
         )
-        .bind(&fx.alice.tenant_id)
+        .bind(fx.alice.tenant_id())
         .bind(&ledger)
         .fetch_one(&fx.pool)
         .await
@@ -618,7 +618,7 @@ async fn only_owner_can_share_and_invisible_is_not_found() {
         "SELECT count(*) FROM audit_log WHERE tenant_id = $1 AND object_id = $2 AND decision = 'deny' \
          AND metadata ->> 'reason' = 'app_owned'",
     )
-    .bind(&fx.alice.tenant_id)
+    .bind(fx.alice.tenant_id())
     .bind(app_table.id.to_string())
     .fetch_one(&fx.pool)
     .await
@@ -782,7 +782,7 @@ async fn app_tables_with_materialized_columns_cannot_be_shared() {
     let (ti, tb): (i32, i64) = sqlx::query_as(
         "SELECT tenant_int, table_int FROM data_table WHERE tenant_id = $1 AND id = $2",
     )
-    .bind(&fx.alice.tenant_id)
+    .bind(fx.alice.tenant_id())
     .bind(orders.id)
     .fetch_one(&fx.pool)
     .await
@@ -846,7 +846,7 @@ async fn share_api_does_not_migrate_tables_before_authorization() {
         return;
     };
     let fx = fixture(pool, authz).await;
-    let tenant = fx.alice.tenant_id.clone();
+    let tenant = fx.alice.tenant_id().to_owned();
     let mut conn = fx.pool.acquire().await.unwrap();
     let placement = storage::tenant::ensure_placement(&mut conn, &tenant)
         .await

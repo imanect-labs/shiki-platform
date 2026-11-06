@@ -370,7 +370,11 @@ async fn setup() -> Option<Env> {
         app,
         runner: runner.clone(),
         storage,
-        ctx: authz::AuthContext::new(principal(), "acme".into(), "default".into()),
+        ctx: authz::AuthContext::new(
+            principal(),
+            "acme".into(),
+            authz::TenantId::parse("default").unwrap(),
+        ),
         authz: allow,
     })
 }

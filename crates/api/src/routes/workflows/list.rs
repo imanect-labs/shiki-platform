@@ -91,7 +91,7 @@ pub async fn list_workflows(
     let ids: Vec<Uuid> = arts.iter().map(|a| a.id).collect();
     let items = state
         .workflow_summaries
-        .list(&ctx.tenant_id, &ids)
+        .list(ctx.tenant_id(), &ids)
         .await
         .map_err(|e| ApiError::Internal(format!("一覧要約: {e}")))?;
     Ok(Json(WorkflowListResponse {
@@ -140,7 +140,7 @@ pub async fn get_workflow_layout(
     require_workflow_viewer(&state, &ctx, id, trace.as_deref()).await?;
     let layout = state
         .workflow_layout
-        .get(&ctx.tenant_id, id)
+        .get(ctx.tenant_id(), id)
         .await
         .map_err(|e| ApiError::Internal(format!("layout: {e}")))?;
     Ok(Json(LayoutBody { layout }))
@@ -182,7 +182,7 @@ pub async fn put_workflow_layout(
     }
     state
         .workflow_layout
-        .put(&ctx.tenant_id, id, &body.layout)
+        .put(ctx.tenant_id(), id, &body.layout)
         .await
         .map_err(|e| match e {
             workflow_engine::LayoutError::TooLarge => {

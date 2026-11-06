@@ -193,7 +193,7 @@ fn ctx_for(user: &str) -> AuthContext {
             tenant_id: None,
         },
         "acme".into(),
-        "default".into(),
+        authz::TenantId::parse("default").unwrap(),
     )
 }
 

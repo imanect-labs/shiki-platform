@@ -105,7 +105,7 @@ fn user(org: &str, id: &str) -> AuthContext {
             tenant_id: None,
         },
         org.into(),
-        "default".into(),
+        authz::TenantId::parse("default").unwrap(),
     )
 }
 
@@ -581,7 +581,7 @@ async fn revert_edit_refuses_while_office_editor_holds_lock() {
          VALUES ($1, 'L', 'user:alice', $2, now() + interval '10 minutes')",
     )
     .bind(file.id)
-    .bind(&alice.tenant_id)
+    .bind(alice.tenant_id())
     .execute(&env.pool)
     .await
     .expect("lock");

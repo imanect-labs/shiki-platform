@@ -117,7 +117,7 @@ impl SkillInstallService {
         if meta.kind != artifact::ArtifactKind::Skill {
             return Err(AppPlatformError::Invalid("skill ではありません".into()));
         }
-        if meta.owner != ctx.principal.id {
+        if meta.owner != ctx.principal().id {
             self.audit_deny(ctx, skill_id, AuditAction::SkillPublish, trace_id)
                 .await;
             return Err(AppPlatformError::Forbidden);
@@ -188,7 +188,7 @@ impl SkillInstallService {
             let obj = ctx.ns().artifact(&skill_id.to_string());
             self.authz
                 .write_tuple(
-                    &Subject::userset(&ctx.ns().organization(&ctx.org), Relation::Member),
+                    &Subject::userset(&ctx.ns().organization(ctx.org()), Relation::Member),
                     Relation::Viewer,
                     &obj,
                 )
@@ -295,9 +295,9 @@ impl SkillInstallService {
                created_at = now() \
              RETURNING name, registry_version, skill_id, skill_version, trust_tier, created_at",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
-        .bind(&ctx.principal.id)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
+        .bind(&ctx.principal().id)
         .bind(&entry.name)
         .bind(entry.id)
         .bind(&entry.version)
@@ -330,8 +330,8 @@ impl SkillInstallService {
             "DELETE FROM skill_installation \
              WHERE tenant_id = $1 AND user_id = $2 AND name = $3",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.principal.id)
+        .bind(ctx.tenant_id())
+        .bind(&ctx.principal().id)
         .bind(name)
         .execute(&self.db)
         .await
@@ -361,8 +361,8 @@ impl SkillInstallService {
              WHERE tenant_id = $1 AND user_id = $2 \
              ORDER BY created_at DESC LIMIT 200",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.principal.id)
+        .bind(ctx.tenant_id())
+        .bind(&ctx.principal().id)
         .fetch_all(&self.db)
         .await
         .map_err(map_db)?;
@@ -385,8 +385,8 @@ impl SkillInstallService {
                ON a.tenant_id = i.tenant_id AND a.id = i.skill_id AND a.deleted_at IS NULL \
              WHERE i.tenant_id = $1 AND i.user_id = $2",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.principal.id)
+        .bind(ctx.tenant_id())
+        .bind(&ctx.principal().id)
         .fetch_all(&self.db)
         .await
         .map_err(map_db)?;

@@ -86,7 +86,7 @@ fn ctx() -> AuthContext {
             tenant_id: Some("t1".into()),
         },
         "acme".into(),
-        "t1".into(),
+        authz::TenantId::parse("t1").unwrap(),
     )
 }
 
@@ -116,7 +116,10 @@ impl Tool for RecordingTool {
         _input: serde_json::Value,
         _t: Option<&str>,
     ) -> Result<ToolOutcome, ToolError> {
-        self.principals.lock().unwrap().push(c.principal.id.clone());
+        self.principals
+            .lock()
+            .unwrap()
+            .push(c.principal().id.clone());
         Ok(ToolOutcome::ok("RAW_PAGE_BODY_親へ漏れてはいけない本文"))
     }
 }

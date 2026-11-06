@@ -72,7 +72,7 @@ fn user_ctx(tenant: &str, org: &str, uid: &str) -> AuthContext {
             tenant_id: Some(tenant.into()),
         },
         org.into(),
-        tenant.into(),
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 
@@ -287,7 +287,7 @@ mod fga {
     use super::*;
     /// alice に org member タプルを付与する（storage.write の org 直下配置に必要）。
     pub(super) async fn member(fga: &Arc<dyn AuthzClient>, ctx: &AuthContext) {
-        let org_obj = ctx.ns().organization(&ctx.org);
+        let org_obj = ctx.ns().organization(ctx.org());
         fga.write_tuple(&ctx.subject(), Relation::Member, &org_obj)
             .await
             .expect("org member tuple");

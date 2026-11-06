@@ -101,7 +101,7 @@ fn ctx(tenant: &str, user: &str) -> AuthContext {
             tenant_id: Some(tenant.into()),
         },
         "acme".into(),
-        tenant.into(),
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 
@@ -251,12 +251,12 @@ async fn intersect_and_batch_strategies_apply_and_respect_row_policy() {
             .create_record(
                 who,
                 f.table_id,
-                json!({"applicant": who.principal.id, "amount": amount, "status": status}),
+                json!({"applicant": who.principal().id, "amount": amount, "status": status}),
                 None,
             )
             .await
             .unwrap();
-        if who.principal.id == "bob" && status == "draft" {
+        if who.principal().id == "bob" && status == "draft" {
             bob_drafts.push((amount, r.id));
         }
     }
@@ -283,12 +283,12 @@ async fn intersect_and_batch_strategies_apply_and_respect_row_policy() {
     for (who, expected) in [(&f.alice, Vec::<Uuid>::new()), (&f.bob, bob_expected)] {
         // 既定の入口（CI の行列の回は環境変数の強制戦略で走る）。
         let r = f.store.run_query(who, f.table_id, &q, None).await.unwrap();
-        assert_eq!(ids(&r), expected, "{}", who.principal.id);
+        assert_eq!(ids(&r), expected, "{}", who.principal().id);
         assert_eq!(
             r.count,
             Some(data::CountResult::Exact(expected.len() as u64)),
             "{}",
-            who.principal.id
+            who.principal().id
         );
         // 行列の強制戦略が交差駆動・バッチ駆動なら、実際にそれが使われたこと（自然な選択に戻っていない）。
         let want = match env.force {
@@ -339,7 +339,7 @@ async fn intersect_and_batch_strategies_apply_and_respect_row_policy() {
                 .await
                 .unwrap();
             assert_eq!(d.stats.strategy, label, "{:?}", d.stats);
-            assert_eq!(ids(&r), expected, "{label}: {}", who.principal.id);
+            assert_eq!(ids(&r), expected, "{label}: {}", who.principal().id);
         }
     }
 }
@@ -457,11 +457,11 @@ async fn batch_strategy_link_semijoin_respects_reference_row_policy() {
             .unwrap();
         assert_eq!(d.stats.strategy, "batch", "{:?}", d.stats);
         let got: Vec<Uuid> = r.items.unwrap().iter().map(|x| x.id).collect();
-        assert_eq!(got, expected, "{}", who.principal.id);
+        assert_eq!(got, expected, "{}", who.principal().id);
         // 既定の入口（行列の回は環境変数の強制戦略）でも同じ行。
         let r = store.run_query(who, orders.id, &q, None).await.unwrap();
         let got: Vec<Uuid> = r.items.unwrap().iter().map(|x| x.id).collect();
-        assert_eq!(got, expected, "{}", who.principal.id);
+        assert_eq!(got, expected, "{}", who.principal().id);
     }
 }
 
@@ -669,7 +669,7 @@ async fn role_predicates_and_write_policy() {
     };
     let f = fixture(pool, authz.clone()).await;
     // charlie を経理ロールへ（role:keiri の member）。テーブル viewer も付与。
-    let charlie = ctx(&f.alice.tenant_id, "charlie");
+    let charlie = ctx(f.alice.tenant_id(), "charlie");
     authz
         .write_tuple(
             &charlie.subject(),
@@ -1091,7 +1091,7 @@ async fn share_overflow_fails_closed_with_truncation_flag() {
         pool,
         Arc::new(OverflowShares {
             inner: authz,
-            tenant: f.alice.tenant_id.clone(),
+            tenant: f.alice.tenant_id().to_owned(),
             real: f.alice_rec,
         }),
         Arc::new(AllowRefs),
@@ -1644,7 +1644,7 @@ impl Materialized {
         let (ti, tb): (i32, i64) = sqlx::query_as(
             "SELECT tenant_int, table_int FROM data_table WHERE tenant_id = $1 AND id = $2",
         )
-        .bind(&self.alice.tenant_id)
+        .bind(self.alice.tenant_id())
         .bind(self.orders)
         .fetch_one(&self.pool)
         .await
@@ -2305,9 +2305,10 @@ async fn sql_mirror(store: &DataStore, who: &AuthContext, table_id: Uuid, name: 
                 via_sql.sort_by(|a, b| a.0.cmp(&b.0));
                 via_ir.sort_by(|a, b| a.0.cmp(&b.0));
                 assert_eq!(
-                    via_sql, via_ir,
+                    via_sql,
+                    via_ir,
                     "{name}: SQL と IR で行・値が違う（{}）",
-                    who.principal.id
+                    who.principal().id
                 );
                 break;
             }
@@ -2875,7 +2876,7 @@ async fn link_updates_keep_targets_the_writer_cannot_see() {
         .await
         .unwrap();
     f.store
-        .run_bulk_import(&f.bob.tenant_id, f.parent, imp)
+        .run_bulk_import(f.bob.tenant_id(), f.parent, imp)
         .await
         .unwrap();
     let a = f
@@ -3177,7 +3178,7 @@ async fn share_targets_import_observers_optimizer_admin_and_audit_vocabulary() {
         .write_tuple(
             &dave.subject(),
             Relation::Admin,
-            &dave.ns().organization(&dave.org),
+            &dave.ns().organization(dave.org()),
         )
         .await
         .unwrap();

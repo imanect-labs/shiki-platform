@@ -185,7 +185,7 @@ impl Exec<'_, '_> {
             let mut sql = SqlBuf::scoped(keys.tenant_int, keys.table_int);
             let text = self.intern(
                 "join_fetch",
-                fetch_sql(&ctx.tenant_id, ints, None, &mut sql),
+                fetch_sql(ctx.tenant_id(), ints, None, &mut sql),
             );
             self.stats.statements += 1;
             let mut rows: Vec<JoinFetched> =
@@ -202,7 +202,7 @@ impl Exec<'_, '_> {
             let env = PolicyEnv {
                 schema: &st.table.schema,
                 material: &st.material,
-                user: &ctx.principal.id,
+                user: &ctx.principal().id,
                 shared: &shared,
             };
             self.stats.verify_dropped += post_filter(

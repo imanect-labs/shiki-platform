@@ -53,16 +53,16 @@ pub(crate) struct PrincipalKey {
 
 impl PrincipalKey {
     pub(crate) fn of(ctx: &AuthContext) -> Self {
-        let kind = match ctx.principal.kind {
+        let kind = match ctx.principal().kind {
             PrincipalKind::User => "user",
             PrincipalKind::Workflow => "workflow",
             PrincipalKind::MiniApp => "miniapp",
         };
         PrincipalKey {
             kind,
-            id: ctx.principal.id.clone(),
-            org: ctx.org.clone(),
-            tenant_id: ctx.tenant_id.clone(),
+            id: ctx.principal().id.clone(),
+            org: ctx.org().to_owned(),
+            tenant_id: ctx.tenant_id().to_owned(),
         }
     }
 }
@@ -188,7 +188,7 @@ impl<'r> AuthzMemo<'r> {
             co_at.push(i);
         }
         if let (Some(co), false) = (reach.co_principal(), co_items.is_empty()) {
-            let held = if co.tenant_id == ctx.tenant_id {
+            let held = if co.tenant_id() == ctx.tenant_id() {
                 self.check_rebac(co, &co_items).await?
             } else {
                 vec![false; co_items.len()]

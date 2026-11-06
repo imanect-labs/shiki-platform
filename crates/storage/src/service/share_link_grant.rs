@@ -85,7 +85,7 @@ impl StorageService {
         )
         .bind(link_id)
         .bind(user_id)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .fetch_optional(&mut *tx)
         .await?;
         let Some(grole) = grole else {
@@ -112,7 +112,7 @@ impl StorageService {
         .bind(node_id)
         .bind(user_id)
         .bind(&grole)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(now)
         .fetch_one(&mut *tx)
         .await?;
@@ -263,8 +263,8 @@ impl StorageService {
              LIMIT $4",
         )
         .bind(link_id)
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(SHARE_LINK_GRANTS_LIMIT)
         .fetch_all(&self.db)
         .await?;

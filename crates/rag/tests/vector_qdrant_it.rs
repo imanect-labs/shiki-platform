@@ -43,7 +43,7 @@ fn ctx(tenant: &str) -> AuthContext {
             tenant_id: Some(tenant.into()),
         },
         "acme".into(),
-        tenant.into(),
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 
@@ -259,7 +259,7 @@ async fn stale_versions_are_cleaned_and_purge_tenant_wipes_all() {
     let hits = search(&store, &a, [0.0, 0.0, 0.0, 1.0], &PreFilter::TenantOnly).await;
     assert_eq!(hits, vec![Uuid::new_v5(&node, b"v2")], "旧版のみ消える");
 
-    store.purge_tenant(&a.tenant_id).await.unwrap();
+    store.purge_tenant(a.tenant_id()).await.unwrap();
     assert!(
         search(&store, &a, [0.0, 0.0, 0.0, 1.0], &PreFilter::TenantOnly)
             .await

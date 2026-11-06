@@ -33,7 +33,7 @@ fn user_ctx(tenant: &str, org: &str, uid: &str) -> AuthContext {
             tenant_id: Some(tenant.into()),
         },
         org.into(),
-        tenant.into(),
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 

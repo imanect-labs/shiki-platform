@@ -286,7 +286,7 @@ impl LiveEditor {
             .map_err(|e| LiveEditError::Internal(format!("セッション枠の取得に失敗: {e}")))?;
         let file_lock = match access {
             SessionAccess::Edit => {
-                Some(FileAiLock::acquire(&self.pool, &ctx.tenant_id, file_id).await?)
+                Some(FileAiLock::acquire(&self.pool, ctx.tenant_id(), file_id).await?)
             }
             SessionAccess::Read => None,
         };

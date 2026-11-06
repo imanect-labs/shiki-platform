@@ -128,7 +128,7 @@ pub async fn workflow_run_digest(
     let since = Utc::now() - Duration::hours(WORKFLOW_WINDOW_HOURS);
     let summaries = &state.workflow_summaries;
     let counts = summaries
-        .run_counts(&ctx.tenant_id, &ctx.org, ids.as_deref(), since)
+        .run_counts(ctx.tenant_id(), ctx.org(), ids.as_deref(), since)
         .await
         .map_err(|e| ApiError::Internal(format!("ワークフロー実行の集計: {e}")))?;
     // post-filter: 期間内に実行があったワークフローだけを viewer で確かめ直す（数件〜数十件）。
@@ -151,7 +151,7 @@ pub async fn workflow_run_digest(
         .collect();
     let readable_ids: Vec<Uuid> = readable.iter().map(|c| c.workflow_id).collect();
     let failures = summaries
-        .recent_failures(&ctx.tenant_id, &readable_ids, since, FAILURE_LIMIT)
+        .recent_failures(ctx.tenant_id(), &readable_ids, since, FAILURE_LIMIT)
         .await
         .map_err(|e| ApiError::Internal(format!("ワークフロー実行の集計: {e}")))?;
     Ok(Json(WorkflowRunDigestResponse {

@@ -43,7 +43,7 @@ pub(crate) async fn me(
     roles.sort_unstable();
     Ok(Json(GwIdentity {
         user_sub: ctx.identity.user_sub.clone(),
-        tenant: ctx.auth.tenant_id.clone(),
+        tenant: ctx.auth.tenant_id().to_owned(),
         roles,
     }))
 }

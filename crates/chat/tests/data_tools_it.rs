@@ -96,7 +96,7 @@ fn ctx(tenant: &str, user: &str) -> AuthContext {
             tenant_id: Some(tenant.into()),
         },
         "acme".into(),
-        tenant.into(),
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 
@@ -764,7 +764,7 @@ async fn run_to_done(store: &ChatStore, c: &AuthContext, text: &str) -> Vec<Stre
         .post_message(c, thread.id, text, &[], None, Some(true), false, &[], None)
         .await
         .unwrap();
-    let mut rx = store.event_stream(&c.tenant_id, res.run_id, 0);
+    let mut rx = store.event_stream(c.tenant_id(), res.run_id, 0);
     let mut events = Vec::new();
     for _ in 0..500 {
         let next = tokio::time::timeout(Duration::from_secs(180), rx.next())

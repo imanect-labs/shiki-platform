@@ -235,7 +235,7 @@ pub(crate) async fn emit_schema_changed_by_system(
     table_id: Uuid,
 ) -> Result<(), DataError> {
     if let Some((t, org)) = super::relay::table_row_with_org(conn, tenant_id, table_id).await? {
-        let ctx = super::relay::system_ctx(tenant_id, &org);
+        let ctx = super::relay::system_ctx(tenant_id, &org)?;
         emit_schema_changed(conn, &ctx, &t, None).await?;
     }
     Ok(())

@@ -69,7 +69,7 @@ fn user(tenant: &str, id: &str) -> AuthContext {
             tenant_id: Some(tenant.into()),
         },
         tenant.into(),
-        tenant.into(),
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 

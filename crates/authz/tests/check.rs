@@ -39,7 +39,7 @@ fn ctx_for(tenant_id: &str, user_id: &str) -> AuthContext {
             tenant_id: Some(tenant_id.to_string()),
         },
         "acme".to_string(),
-        tenant_id.to_string(),
+        authz::TenantId::parse(tenant_id.to_string()).unwrap(),
     )
 }
 

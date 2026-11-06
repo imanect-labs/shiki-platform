@@ -128,7 +128,7 @@ pub async fn callback(
     let now = chrono::Utc::now().timestamp();
     let record = SessionRecord {
         principal,
-        tenant_id: tenant_id.clone(),
+        tenant_id: tenant_id.to_string(),
         access_token: tokens.access_token,
         refresh_token: tokens.refresh_token,
         id_token: tokens.id_token,
@@ -225,7 +225,11 @@ fn action_error_redirect(jar: &CookieJar, returned_state: Option<&str>) -> Optio
 // 分岐が本質的に多い。best-effort の各失敗を握り潰す都合で cognitive complexity が高くなるが、
 // 収束ロジックを一望できる利点を優先してグランドファーザ許容する。
 #[allow(clippy::cognitive_complexity)]
-pub(crate) async fn provision_roles(state: AppState, principal: Principal, tenant_id: String) {
+pub(crate) async fn provision_roles(
+    state: AppState,
+    principal: Principal,
+    tenant_id: authz::TenantId,
+) {
     // あるべき集合（claims 由来・正規化済み）。
     let (org, sourced) = desired_from_claims(&principal, &tenant_id, &state.config.auth);
     let ctx = AuthContext::new(principal, org.clone(), tenant_id.clone());
@@ -235,14 +239,14 @@ pub(crate) async fn provision_roles(state: AppState, principal: Principal, tenan
 
     // ディレクトリへの登録（共有の相手検索・AI 活用分析の在籍者）。人だけ（workflow 主体は除く）。
     // 失敗しても認可には影響しない（次回のログイン・refresh で再試行）。
-    if ctx.principal.kind == authz::PrincipalKind::User {
+    if ctx.principal().kind == authz::PrincipalKind::User {
         match state
             .directory
             .ensure_user(
-                &ctx.principal.id,
+                &ctx.principal().id,
                 &tenant_id,
                 &org,
-                ctx.principal.email.as_deref(),
+                ctx.principal().email.as_deref(),
             )
             .await
         {
@@ -259,7 +263,7 @@ pub(crate) async fn provision_roles(state: AppState, principal: Principal, tenan
     // AI 活用分析の部署集計用の写し（#751・PIT-18）。失敗しても認可には影響しない（次回同期で収束）。
     if let Err(e) = state
         .directory
-        .replace_user_roles(&tenant_id, &org, &ctx.principal.id, &sourced)
+        .replace_user_roles(&tenant_id, &org, &ctx.principal().id, &sourced)
         .await
     {
         tracing::warn!(error = %e, "directory_user_role の更新に失敗（分析の部署集計のみに影響）");

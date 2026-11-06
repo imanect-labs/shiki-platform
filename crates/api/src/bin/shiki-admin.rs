@@ -424,7 +424,8 @@ async fn retenant(args: &[String]) -> anyhow::Result<()> {
                         tenant_id: Some(to.clone()),
                     },
                     audit_org.clone(),
-                    to.clone(),
+                    authz::TenantId::parse(to.as_str())
+                        .map_err(|e| anyhow::anyhow!("移行先の tenant_id が不正です: {e}"))?,
                 );
                 let mut tx = db.begin().await?;
                 storage::audit::record_on(

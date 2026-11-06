@@ -79,7 +79,7 @@ fn test_ctx() -> authz::AuthContext {
             tenant_id: None,
         },
         "acme".into(),
-        "default".into(),
+        authz::TenantId::parse("default").unwrap(),
     )
 }
 

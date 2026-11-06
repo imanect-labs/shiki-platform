@@ -224,7 +224,7 @@ async fn fixture(n_orders: usize) -> Option<Fx> {
             )
             .await
             .unwrap();
-        cust.insert(r.id, (c.to_string(), who.principal.id.clone()));
+        cust.insert(r.id, (c.to_string(), who.principal().id.clone()));
         cids.push(r.id);
     }
     let mut ord = HashMap::new();

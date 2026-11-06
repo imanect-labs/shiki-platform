@@ -134,8 +134,8 @@ impl UsageLimiter {
                  FROM llm_usage \
                  WHERE tenant_id = $1 AND user_sub = $2 AND created_at >= {MONTH_START}"
             ))
-            .bind(&ctx.tenant_id)
-            .bind(&ctx.principal.id)
+            .bind(ctx.tenant_id())
+            .bind(&ctx.principal().id)
             .fetch_one(&self.db)
             .await?
         } else {
@@ -166,8 +166,8 @@ impl UsageLimiter {
             "SELECT COALESCE(SUM(cost_usd_micros), 0)::bigint FROM llm_usage \
              WHERE tenant_id = $1 AND user_sub = $2 AND created_at >= {MONTH_START}"
         ))
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.principal.id)
+        .bind(ctx.tenant_id())
+        .bind(&ctx.principal().id)
         .fetch_one(&self.db)
         .await?;
         Ok(Some(sum))

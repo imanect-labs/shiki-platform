@@ -57,7 +57,7 @@ fn ctx(tenant: &str, org: &str) -> AuthContext {
             tenant_id: Some(tenant.into()),
         },
         org.into(),
-        tenant.into(),
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 
@@ -92,8 +92,8 @@ async fn chained(pool: &PgPool, c: &AuthContext, n: i64) -> i64 {
     .unwrap();
     tx.commit().await.unwrap();
     sqlx::query_scalar("SELECT max(id) FROM audit_log WHERE tenant_id = $1 AND org = $2")
-        .bind(&c.tenant_id)
-        .bind(&c.org)
+        .bind(c.tenant_id())
+        .bind(c.org())
         .fetch_one(pool)
         .await
         .unwrap()
@@ -105,8 +105,8 @@ async fn legacy_head(pool: &PgPool, c: &AuthContext) {
     let hash = entry_hash(&HashInput {
         version: 1,
         prev_hash: None,
-        tenant_id: &c.tenant_id,
-        org: &c.org,
+        tenant_id: c.tenant_id(),
+        org: c.org(),
         actor: "alice",
         action: "folder.create",
         object_type: "folder",
@@ -121,8 +121,8 @@ async fn legacy_head(pool: &PgPool, c: &AuthContext) {
          metadata, chained, prev_hash, entry_hash) \
          VALUES ($1, $2, 'alice', 'folder.create', 'folder', 'd1', 'allow', $3::jsonb, true, NULL, $4)",
     )
-    .bind(&c.tenant_id)
-    .bind(&c.org)
+    .bind(c.tenant_id())
+    .bind(c.org())
     .bind(metadata)
     .bind(hash)
     .execute(pool)

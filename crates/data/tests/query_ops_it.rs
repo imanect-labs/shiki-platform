@@ -81,7 +81,7 @@ async fn count_cap_is_a_tenant_setting() {
     let audited: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM audit_log WHERE tenant_id = $1 AND action = 'data.tenant_settings.update'",
     )
-    .bind(&a.tenant_id)
+    .bind(a.tenant_id())
     .fetch_one(&pool)
     .await
     .unwrap();
@@ -103,7 +103,7 @@ async fn building_index_on_a_requested_field_is_not_ready() {
         .create_record(&c, t.id, json!({"status": "x"}), None)
         .await
         .unwrap();
-    let (ti, tb) = keys_of(&pool, &c.tenant_id, t.id).await;
+    let (ti, tb) = keys_of(&pool, c.tenant_id(), t.id).await;
     let sid = i16::try_from(t.schema.field("status").unwrap().id).unwrap();
     sqlx::query(
         "UPDATE data_index_state SET state = 'building' \
@@ -192,7 +192,7 @@ async fn uniqueness_survives_the_upgrade_from_a_mid_backfill_state() {
             .unwrap();
     }
     // バックフィル途中の再現: 一意索引の台帳は building、data_unique はまだ空。
-    let (ti, tb) = keys_of(&pool, &c.tenant_id, t.id).await;
+    let (ti, tb) = keys_of(&pool, c.tenant_id(), t.id).await;
     sqlx::query("DELETE FROM data_unique WHERE tenant_int = $1 AND table_int = $2")
         .bind(ti)
         .bind(tb)
@@ -301,7 +301,9 @@ async fn aggregate_queries_are_audited() {
         .run_query(&a, t.id, &DataQuery::default(), None)
         .await
         .unwrap();
-    assert!(audits(pool.clone(), a.tenant_id.clone()).await.is_empty());
+    assert!(audits(pool.clone(), a.tenant_id().to_owned())
+        .await
+        .is_empty());
 
     let q = DataQuery {
         group_by: vec!["status".into()],
@@ -315,7 +317,7 @@ async fn aggregate_queries_are_audited() {
         .run_query(&a, t.id, &q, Some("trace-agg"))
         .await
         .unwrap();
-    let rows = audits(pool.clone(), a.tenant_id.clone()).await;
+    let rows = audits(pool.clone(), a.tenant_id().to_owned()).await;
     assert_eq!(rows.len(), 1, "{rows:?}");
     let (actor, otype, oid, meta, trace) = &rows[0];
     assert_eq!(actor, "alice");
@@ -337,7 +339,7 @@ async fn aggregate_queries_are_audited() {
         )
         .await
         .unwrap();
-    let rows = audits(pool.clone(), a.tenant_id.clone()).await;
+    let rows = audits(pool.clone(), a.tenant_id().to_owned()).await;
     assert_eq!(rows.len(), 2, "{rows:?}");
     assert_eq!(rows[1].2, t.id.to_string());
 }

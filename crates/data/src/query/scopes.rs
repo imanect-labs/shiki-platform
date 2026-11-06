@@ -218,7 +218,7 @@ impl DataStore {
                 .collect();
             let mut shared_ints: Vec<i64> = Self::record_ints_for(
                 conn,
-                &ctx.tenant_id,
+                ctx.tenant_id(),
                 st.table.keys,
                 &st.material.shared_record_ids,
             )
@@ -266,7 +266,7 @@ pub(crate) fn scope_lows<'a>(
         let guard = Guard::new(IndexGuardCtx {
             schema: &st.table.schema,
             material: &st.material,
-            user: &ctx.principal.id,
+            user: &ctx.principal().id,
             active: &rt.active,
             shared_ints: &rt.shared_ints,
         });

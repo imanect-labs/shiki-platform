@@ -94,12 +94,12 @@ impl DataStore {
                  WHERE tenant_int = $4 AND table_int = $5 AND tenant_id = $1 AND table_id = $2 \
                    AND id = $3)",
             )
-            .bind(&ctx.tenant_id)
+            .bind(ctx.tenant_id())
             .bind(table_id)
             .bind(record_id)
             .bind(table.keys.tenant_int)
             .bind(table.keys.table_int)
-            .fetch_one(self.pools.for_tenant(&ctx.tenant_id))
+            .fetch_one(self.pools.for_tenant(ctx.tenant_id()))
             .await
             .map_err(map_db)?;
             if exists {
@@ -129,12 +129,12 @@ impl DataStore {
                    AND ($4::bigint IS NULL OR rev < $4) \
                  ORDER BY rev DESC LIMIT $5",
             )
-            .bind(&ctx.tenant_id)
+            .bind(ctx.tenant_id())
             .bind(table_id)
             .bind(record_id)
             .bind(cursor)
             .bind(limit)
-            .fetch_all(self.pools.for_tenant(&ctx.tenant_id))
+            .fetch_all(self.pools.for_tenant(ctx.tenant_id()))
             .await
             .map_err(map_db)?;
             let exhausted = i64::try_from(rows.len()).unwrap_or(i64::MAX) < limit;
@@ -286,8 +286,8 @@ pub(crate) async fn insert_revisions(
          FROM unnest($3::uuid[], $4::uuid[], $5::int8[], $6::text[], $7::jsonb[], $8::text[]) \
            AS u(record_id, table_id, rev, kind, patch, trace_id)",
     )
-    .bind(&ctx.tenant_id)
-    .bind(&ctx.principal.id)
+    .bind(ctx.tenant_id())
+    .bind(&ctx.principal().id)
     .bind(&record_ids)
     .bind(&table_ids)
     .bind(&revs)

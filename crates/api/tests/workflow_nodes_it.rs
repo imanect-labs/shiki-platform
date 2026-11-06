@@ -150,7 +150,7 @@ async fn setup() -> Option<Harness> {
             tenant_id: Some(tenant.clone()),
         },
         org.clone(),
-        tenant.clone(),
+        authz::TenantId::parse(tenant.clone()).unwrap(),
     );
     // storage.write を org 直下に許可（member@org）。
     fga.write_tuple(
@@ -956,7 +956,7 @@ async fn csv_query_node_joins_multiple_csv() {
             tenant_id: Some(h.tenant.clone()),
         },
         h.org.clone(),
-        h.tenant.clone(),
+        authz::TenantId::parse(h.tenant.clone()).unwrap(),
     );
     h.fga
         .write_tuple(
