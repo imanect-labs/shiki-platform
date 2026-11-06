@@ -27,8 +27,31 @@
 //!
 //! claim が ready 専用になったことで +1 は無条件になった（旧実装の
 //! `CASE WHEN status = 'ready'` は、同じクエリでリース失効 running も拾っていたことの名残）。
+//!
+//! ## 拾い直しの上限（BUG-215）
+//!
+//! 回収は attempt を戻すので、試す回数ではリースの切れる step を止められない。ブロックの実行より外で決まって panic
+//! する step や、ワーカーが誤りを返して前進できない step（IR を読めないなど）は、リースの期間ごとに上限なく拾い直されて
+//! いた。回収の回数を `lease_reclaims` に数え、[`MAX_LEASE_RECLAIMS`] 回拾い直した step のリースがまた切れたら、
+//! 拾い直さずに `internal` の失敗で確定し、run も失敗で終える（[`RunStore::reclaim_expired_leases`]）。
 
-use super::{map_db, ClaimedStep, RunStore, RunStoreError};
+use serde_json::json;
+use uuid::Uuid;
+
+use super::{append_event, map_db, ClaimedStep, RunStore, RunStoreError};
+use crate::vocab::RunEventKind;
+
+/// リースが切れた step を拾い直す回数の上限（BUG-215）。
+///
+/// ワーカーが落ちる（配備の入れ替え・メモリの不足）たびに 1 回数える。同じ step の実行中にワーカーが 3 回落ちるのは
+/// ふつうでないので、4 回目に切れたら拾い直さない。失敗したところから再開すると数え直す。
+pub const MAX_LEASE_RECLAIMS: i32 = 3;
+
+/// 拾い直しの上限に達した step の誤りの文（code は `internal`・やり直さない・実行履歴に出る）。panic の文や内部の値は
+/// 出さない（[`super::super::node_panic::NODE_PANIC_MESSAGE`] と同じく、作成者には直せないので管理者に連絡するよう言う）。
+pub const LEASE_RECLAIMS_EXHAUSTED_MESSAGE: &str =
+    "このブロックの処理が途中で何度も止まったため、やり直さずに失敗にしました。\
+     続くときは管理者に連絡してください。";
 
 /// ready 専用 claim の SQL。`$tenant_pred` はテナント絞り込み述語（空文字か `AND ...`）。
 ///
@@ -103,12 +126,15 @@ const CLAIM_READY_SCOPED: &str = claim_ready_sql!(" AND s2.tenant_id = $3 ");
 ///
 /// fencing は「現在の保持者だけが書ける」ことだけを表す単調増加値なので、claim 以外が進めても
 /// 不変条件は壊れない（`heartbeat` / `append_event` / `fenced_finalize` はいずれも一致検査のみ）。
+///
+/// **拾い直した回数（`lease_reclaims`）も同時に +1 する。** 上限（`$max`）に達した step は対象外で、
+/// [`EXHAUSTED_LEASES_GLOBAL`] が失敗で確定する（BUG-215）。
 macro_rules! reclaim_leases_sql {
-    ($tenant_pred:literal) => {
+    ($tenant_pred:literal, $max:literal) => {
         concat!(
             "UPDATE step_execution s SET status = 'ready', lease_owner = NULL, \
                  lease_expires_at = NULL, next_retry_at = now(), \
-                 attempt = greatest(s.attempt - 1, 0), \
+                 attempt = greatest(s.attempt - 1, 0), lease_reclaims = s.lease_reclaims + 1, \
                  fencing_token = s.fencing_token + 1, updated_at = now() \
              FROM ( \
                  SELECT s2.tenant_id, s2.run_id, s2.step_path \
@@ -116,7 +142,9 @@ macro_rules! reclaim_leases_sql {
                    JOIN workflow_run r2 \
                      ON r2.tenant_id = s2.tenant_id AND r2.run_id = s2.run_id \
                   WHERE s2.status = 'running' AND s2.lease_expires_at < now() \
-                    AND r2.status = 'running' AND NOT r2.cancel_requested",
+                    AND r2.status = 'running' AND NOT r2.cancel_requested \
+                    AND s2.lease_reclaims < ",
+            $max,
             $tenant_pred,
             "  ORDER BY s2.lease_expires_at \
                   FOR UPDATE OF s2 SKIP LOCKED LIMIT 256 \
@@ -127,8 +155,110 @@ macro_rules! reclaim_leases_sql {
     };
 }
 
-const RECLAIM_LEASES_GLOBAL: &str = reclaim_leases_sql!(" ");
-const RECLAIM_LEASES_SCOPED: &str = reclaim_leases_sql!(" AND s2.tenant_id = $1 ");
+const RECLAIM_LEASES_GLOBAL: &str = reclaim_leases_sql!(" ", "$1");
+const RECLAIM_LEASES_SCOPED: &str = reclaim_leases_sql!(" AND s2.tenant_id = $1 ", "$2");
+
+/// 拾い直しの上限に達したまま、またリースが切れた step の候補（回収と同じ対象の条件・`$1` は上限）。
+///
+/// ロックは取らない（確定は 1 つずつ、run の行を先にロックする Tx で条件を確かめ直す・[`fail_exhausted_lease`]）。
+macro_rules! exhausted_leases_sql {
+    ($tenant_pred:literal) => {
+        concat!(
+            "SELECT s.tenant_id, s.run_id, s.step_path \
+               FROM step_execution s \
+               JOIN workflow_run r ON r.tenant_id = s.tenant_id AND r.run_id = s.run_id \
+              WHERE s.status = 'running' AND s.lease_expires_at < now() \
+                AND r.status = 'running' AND NOT r.cancel_requested \
+                AND s.lease_reclaims >= $1",
+            $tenant_pred,
+            " ORDER BY s.lease_expires_at LIMIT 64"
+        )
+    };
+}
+
+const EXHAUSTED_LEASES_GLOBAL: &str = exhausted_leases_sql!(" ");
+const EXHAUSTED_LEASES_SCOPED: &str = exhausted_leases_sql!(" AND s.tenant_id = $2 ");
+
+/// 拾い直しの上限に達した step を `internal` の失敗で確定し、run も失敗で終える（BUG-215）。確定したら `true`。
+///
+/// run の行を先にロックする（checkpoint と同じ順・デッドロックを避ける）。候補を読んでからの間に、生きていた
+/// ワーカーが checkpoint した・取り消しを求められた・再開された step は、条件を確かめ直して触らない。`fencing_token` も
+/// 進め、リースを失ったまま動いているワーカーの checkpoint を通さない。失敗の扱い（エラー時の出口・繰り返しの要素）は
+/// 使わない（ブロックの外の不具合で、作成者の決めた道では扱えない）。
+async fn fail_exhausted_lease(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    tenant_id: &str,
+    run_id: Uuid,
+    step_path: &str,
+) -> Result<bool, RunStoreError> {
+    let run_running: Option<bool> = sqlx::query_scalar(
+        "SELECT true FROM workflow_run WHERE tenant_id = $1 AND run_id = $2 \
+           AND status = 'running' AND NOT cancel_requested FOR UPDATE",
+    )
+    .bind(tenant_id)
+    .bind(run_id)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(map_db)?;
+    if run_running.is_none() {
+        return Ok(false);
+    }
+    let failed: Option<String> = sqlx::query_scalar(
+        "UPDATE step_execution SET status = 'failed', taken_ports = '{}', \
+             error = jsonb_build_object('code', $5::text, 'message', $6::text, 'retryable', false, \
+                                        'node_id', node_id, 'attempt', attempt), \
+             lease_owner = NULL, lease_expires_at = NULL, wait_code = NULL, wait_since = NULL, \
+             fencing_token = fencing_token + 1, updated_at = now() \
+         WHERE tenant_id = $1 AND run_id = $2 AND step_path = $3 AND status = 'running' \
+           AND lease_expires_at < now() AND lease_reclaims >= $4 \
+         RETURNING node_id",
+    )
+    .bind(tenant_id)
+    .bind(run_id)
+    .bind(step_path)
+    .bind(MAX_LEASE_RECLAIMS)
+    .bind(super::super::node_panic::NODE_PANIC_CODE)
+    .bind(LEASE_RECLAIMS_EXHAUSTED_MESSAGE)
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(map_db)?;
+    let Some(node_id) = failed else {
+        return Ok(false);
+    };
+    append_event(
+        tx,
+        tenant_id,
+        run_id,
+        RunEventKind::StepFailed,
+        &json!({ "step": step_path, "on_error": null, "taken_ports": [],
+                 "reason": "lease_reclaims_exhausted" }),
+    )
+    .await?;
+    super::advance::cancel_remaining_steps(tx, tenant_id, run_id).await?;
+    sqlx::query(
+        "UPDATE workflow_run SET status = 'failed', finished_at = now(), updated_at = now() \
+         WHERE tenant_id = $1 AND run_id = $2 AND status = 'running'",
+    )
+    .bind(tenant_id)
+    .bind(run_id)
+    .execute(&mut **tx)
+    .await
+    .map_err(map_db)?;
+    append_event(
+        tx,
+        tenant_id,
+        run_id,
+        RunEventKind::RunFailed,
+        &serde_json::Value::Null,
+    )
+    .await?;
+    tracing::warn!(
+        tenant_id, %run_id, step = step_path, node_id,
+        max = MAX_LEASE_RECLAIMS,
+        "リースの切れた step を上限まで拾い直したので、失敗にして run を終えた"
+    );
+    Ok(true)
+}
 
 impl RunStore {
     /// ready な step を 1 つ claim する（`FOR UPDATE SKIP LOCKED`・fencing +1・lease 取得）。
@@ -192,15 +322,47 @@ impl RunStore {
     /// 再計算して回収する（engine.md §8.1）。そのため本関数は **reconcile より前**に呼ぶこと。
     ///
     /// [`ConcurrencyStore::reconcile`]: crate::concurrency::ConcurrencyStore::reconcile
+    ///
+    /// 拾い直しの上限（[`MAX_LEASE_RECLAIMS`]）に達した step は戻さずに `internal` の失敗で確定し、run も失敗で終える
+    /// （BUG-215）。戻り値は戻した数と確定した数の和。
     pub async fn reclaim_expired_leases(
         &self,
         tenant_scope: Option<&str>,
     ) -> Result<u64, RunStoreError> {
+        let failed = self.fail_exhausted_leases(tenant_scope).await?;
         let query = match tenant_scope {
-            Some(tenant_id) => sqlx::query(RECLAIM_LEASES_SCOPED).bind(tenant_id),
-            None => sqlx::query(RECLAIM_LEASES_GLOBAL),
+            Some(tenant_id) => sqlx::query(RECLAIM_LEASES_SCOPED)
+                .bind(tenant_id)
+                .bind(MAX_LEASE_RECLAIMS),
+            None => sqlx::query(RECLAIM_LEASES_GLOBAL).bind(MAX_LEASE_RECLAIMS),
         };
         let done = query.execute(&self.db).await.map_err(map_db)?;
-        Ok(done.rows_affected())
+        Ok(done.rows_affected() + failed)
+    }
+
+    /// 拾い直しの上限に達したまま、またリースが切れた step を失敗で確定する（1 つずつの Tx・[`fail_exhausted_lease`]）。
+    async fn fail_exhausted_leases(
+        &self,
+        tenant_scope: Option<&str>,
+    ) -> Result<u64, RunStoreError> {
+        let query = match tenant_scope {
+            Some(tenant_id) => sqlx::query_as::<_, (String, Uuid, String)>(EXHAUSTED_LEASES_SCOPED)
+                .bind(MAX_LEASE_RECLAIMS)
+                .bind(tenant_id),
+            None => sqlx::query_as::<_, (String, Uuid, String)>(EXHAUSTED_LEASES_GLOBAL)
+                .bind(MAX_LEASE_RECLAIMS),
+        };
+        let candidates = query.fetch_all(&self.db).await.map_err(map_db)?;
+        let mut failed = 0;
+        for (tenant_id, run_id, step_path) in candidates {
+            let mut tx = self.db.begin().await.map_err(map_db)?;
+            if fail_exhausted_lease(&mut tx, &tenant_id, run_id, &step_path).await? {
+                tx.commit().await.map_err(map_db)?;
+                failed += 1;
+            } else {
+                tx.rollback().await.map_err(map_db)?;
+            }
+        }
+        Ok(failed)
     }
 }
