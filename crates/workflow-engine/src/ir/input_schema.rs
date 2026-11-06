@@ -17,7 +17,7 @@
 //! 止める（[`schema_errors`]・GAP-35）。起動の検査は値が通る位置のキーワードしか見ないので、保存で全体を見ないと、
 //! 値が入ったときに初めて起動できなくなる。
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use serde_json::{Map, Value};
 
@@ -209,7 +209,7 @@ pub fn validate_input(schema: &Value, input: &Value) -> Result<(), Vec<String>> 
 /// 入力をスキーマで検証する（誤りを場所と理由に分けて返す・実行のダイアログ向け・BUG-109）。
 pub fn validate_input_issues(schema: &Value, input: &Value) -> Result<(), Vec<InputIssue>> {
     let mut errors = Vec::new();
-    Checker { root: "入力" }.check(schema, input, "", 0, &mut errors);
+    Checker::new("入力").check(schema, input, "", 0, &mut errors);
     if errors.is_empty() {
         Ok(())
     } else {
@@ -223,7 +223,7 @@ pub fn validate_input_issues(schema: &Value, input: &Value) -> Result<(), Vec<In
 /// 同じ検査器を使う（キーワードの意味を 2 つに分けない）。
 pub fn validate_value(schema: &Value, v: &Value, root: &str) -> Result<(), Vec<String>> {
     let mut errors = Vec::new();
-    Checker { root }.check(schema, v, "", 0, &mut errors);
+    Checker::new(root).check(schema, v, "", 0, &mut errors);
     if errors.is_empty() {
         Ok(())
     } else {
@@ -239,16 +239,33 @@ fn issue(errs: &mut Vec<InputIssue>, key: &str, message: String) {
     });
 }
 
-/// 検査の文脈（文言の根の呼び名）。
-#[derive(Clone, Copy)]
+/// 検査の文脈（文言の根の呼び名と、1 回の確かめの中でコンパイルした pattern）。
 struct Checker<'a> {
     root: &'a str,
+    /// pattern の文字列からコンパイルの結果へ（読めなければ `None`）。同じ pattern は 1 回の確かめで一度だけ
+    /// コンパイルする（値ごと・配列の要素ごとにコンパイルし直さない・BUG-227）。
+    patterns: HashMap<&'a str, Option<regex::Regex>>,
 }
 
-impl Checker<'_> {
+impl<'a> Checker<'a> {
+    fn new(root: &'a str) -> Self {
+        Checker {
+            root,
+            patterns: HashMap::new(),
+        }
+    }
+
+    /// `p` をコンパイルした正規表現（読めなければ `None`）。この確かめの中で初めて見た pattern だけをコンパイルする。
+    fn pattern(&mut self, p: &'a str) -> Option<&regex::Regex> {
+        self.patterns
+            .entry(p)
+            .or_insert_with(|| compile_pattern(p))
+            .as_ref()
+    }
+
     fn check(
-        self,
-        schema: &Value,
+        &mut self,
+        schema: &'a Value,
         v: &Value,
         path: &str,
         depth: usize,
@@ -330,7 +347,7 @@ impl Checker<'_> {
     }
 
     fn num(
-        self,
+        &self,
         s: &Map<String, Value>,
         key: &str,
         path: &str,
@@ -348,7 +365,7 @@ impl Checker<'_> {
         n
     }
 
-    fn check_number(self, s: &Map<String, Value>, x: f64, path: &str, errs: &mut Vec<InputIssue>) {
+    fn check_number(&self, s: &Map<String, Value>, x: f64, path: &str, errs: &mut Vec<InputIssue>) {
         if let Some(m) = self.num(s, "minimum", path, errs) {
             if x < m {
                 issue(errs, path, format!("{m} 以上にしてください"));
@@ -372,8 +389,8 @@ impl Checker<'_> {
     }
 
     fn check_string(
-        self,
-        s: &Map<String, Value>,
+        &mut self,
+        s: &'a Map<String, Value>,
         text: &str,
         path: &str,
         errs: &mut Vec<InputIssue>,
@@ -392,10 +409,13 @@ impl Checker<'_> {
         }
         if let Some(p) = s.get("pattern") {
             // ワークフローの作者が書いたパターン。regex crate は線形時間なので入力で暴走しない。
-            let re = p.as_str().and_then(compile_pattern);
-            match re {
-                Some(re) if re.is_match(text) => {}
-                Some(_) => issue(errs, path, "形式が違います".into()),
+            let matched = p
+                .as_str()
+                .and_then(|p| self.pattern(p))
+                .map(|re| re.is_match(text));
+            match matched {
+                Some(true) => {}
+                Some(false) => issue(errs, path, "形式が違います".into()),
                 None => issue(
                     errs,
                     path,
@@ -409,8 +429,8 @@ impl Checker<'_> {
     }
 
     fn check_array(
-        self,
-        s: &Map<String, Value>,
+        &mut self,
+        s: &'a Map<String, Value>,
         items: &[Value],
         path: &str,
         depth: usize,
@@ -442,8 +462,8 @@ impl Checker<'_> {
     }
 
     fn check_object(
-        self,
-        s: &Map<String, Value>,
+        &mut self,
+        s: &'a Map<String, Value>,
         map: &Map<String, Value>,
         path: &str,
         depth: usize,
@@ -874,6 +894,45 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    /// BUG-227: 同じ pattern は 1 回の確かめの中で一度だけコンパイルする。配列の要素や値が増えても、コンパイルの回数は
+    /// 増えない（起動の入力の確かめと、出力の確かめが使う validate_value の両方）。
+    #[test]
+    fn patterns_compile_once_per_check() {
+        use crate::ir::patterns::compiled_count;
+
+        let s = json!({ "type": "object", "properties": {
+            "codes": { "type": "array", "items": { "type": "string", "pattern": "^[A-Z]{3}$" } },
+            "same": { "type": "string", "pattern": "^[A-Z]{3}$" },
+            "other": { "type": "string", "pattern": "^[a-z]+$" } } });
+        let input = |n: usize| {
+            let codes: Vec<Value> = (0..n)
+                .map(|i| json!(if i == 0 { "abc" } else { "ABC" }))
+                .collect();
+            json!({ "codes": codes, "same": "ABC", "other": "x" })
+        };
+        let launch = |n: usize| {
+            let before = compiled_count();
+            let issues = validate_input_issues(&s, &input(n)).unwrap_err();
+            assert_eq!(
+                issues,
+                vec![InputIssue {
+                    key: "codes[0]".into(),
+                    message: "形式が違います".into()
+                }]
+            );
+            compiled_count() - before
+        };
+        assert_eq!(launch(1), 2);
+        assert_eq!(launch(50_000), 2);
+        let output = |n: usize| {
+            let before = compiled_count();
+            let errs = validate_value(&s, &input(n), "出力").unwrap_err();
+            assert_eq!(errs, vec!["codes[0]: 形式が違います".to_string()]);
+            compiled_count() - before
+        };
+        assert_eq!(output(50_000), 2);
     }
 
     #[test]
