@@ -5,4 +5,6 @@
 """
 
 # 採点器の版（採点の規則を変えたら上げる。結果には ir_lint のバイナリの sha と一緒に残す）。
-GRADER_VERSION = 1
+# 2: S2d に想定外の状態・想定外の skipped を足し、「入力が届かない」を stub の run だけにした。基盤の失敗で流せ
+#    なかった run_case があれば採点しない。見出しは S2s・S2d（Mode B は S4 も）が決まったときだけ真。
+GRADER_VERSION = 2

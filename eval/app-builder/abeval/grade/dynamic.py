@@ -7,7 +7,14 @@
 - **差し込みの残り**（`leftover`）: step の出力・増えたか変わった行の値・増えたファイルの名前と中身に、`{name}`
   （英数字の名前を 1 重の波括弧で囲んだもの）か `{{…}}` が残っている。
 - **入力が届かない**（`not_delivered`）: `flow_through` の入力の値が、LLM の出力（stub は「回答: <解決した prompt>」を
-  返す）・データの書き込みの出力・行・ファイルのどれにも現れない（空の差し込み・入力の参照ミス）。
+  返す）・データの書き込みの出力・行・ファイルのどれにも現れない（空の差し込み・入力の参照ミス）。stub の run だけで
+  見る（実モデルの出力は入力の全文を含まないので、届いたかを出力から決められない。Mode B は同じ試行で stub の
+  配管も流すので、そちらで見る）。
+- **想定外の状態**（`unexpected_status`）: stub で流した llm_dependent でない run_case で、run の状態が期待
+  （既定は succeeded・`any` は見ない）と違う。flow_through の無い課題でも、実行で失敗する IR を「壊れている」に数える。
+- **想定外の skipped**（`unexpected_skip`）: 成功した run の中で、分岐（出口が 2 つ以上のノード）でも error・timeout の
+  出口でもない線の先が飛ばされた step（分岐でない上流が `out` を取らなかった・`on_error: continue` で失敗した）。
+  飛ばされた上流から続けて飛ばされたものは、元の 1 つだけを数える。期待が succeeded の run_case だけで見る。
 - **llm_dependent** の run_case を stub で流したときは、検査を最初の LLM のノード（llm.invoke・ai.decide・
   agent.invoke）まで（そのノードを含む）に限る。LLM の後ろの動きは stub の出力で決まるので見ない。行とファイルも
   見ない（どのノードが書いたかを決められないため）。
@@ -325,6 +332,89 @@ def not_delivered(
     return out
 
 
+def _split_path(step_path: str) -> tuple[str, str]:
+    """step_path → (要素のスコープ, ノード id)。`m[0].a` → (`m[0]`, `a`)・`a` → (``, `a`)。"""
+    if "[" not in step_path:
+        return "", step_path
+    scope, _, node = step_path.rpartition(".")
+    return scope, node
+
+
+def _scoped(scope: str, node_id: str) -> str:
+    return f"{scope}.{node_id}" if scope else node_id
+
+
+def unexpected_skips(
+    ir: Mapping,
+    node_ports: Mapping[str, Sequence[str]],
+    run: RunRecord,
+    allowed: set[str] | None = None,
+) -> list[Finding]:
+    """成功した run の中の、分岐でない理由で飛ばされた step（飛ばされた上流の続きは数えない）。"""
+    if run.status != "succeeded":
+        return []
+    by_path = {s.step_path: s for s in run.steps}
+    in_edges: dict[str, list[tuple[str, str]]] = {}
+    for e in _edges(ir):
+        in_edges.setdefault(str(e.get("to")), []).append(
+            (str(e.get("from")), str(e.get("from_port") or "out"))
+        )
+    memo: dict[str, bool] = {}
+
+    def edge_ok(scope: str, src: str, port: str) -> bool:
+        if port in NON_ROUTING:
+            return True  # error・timeout の出口は通らないのが普通
+        if len(set(node_ports.get(src) or ()) - NON_ROUTING) >= 2:
+            return True  # 分岐の通らなかった側
+        s = by_path.get(_scoped(scope, src))
+        return s is not None and s.status == "skipped" and explained(s.step_path)
+
+    def explained(path: str) -> bool:
+        if path not in memo:
+            memo[path] = True  # 循環の守り（IR は DAG のはず）
+            scope, node = _split_path(path)
+            memo[path] = all(edge_ok(scope, src, port) for src, port in in_edges.get(node, []))
+        return memo[path]
+
+    out = []
+    for s in run.steps:
+        if s.status != "skipped" or explained(s.step_path):
+            continue
+        scope, node = _split_path(s.step_path)
+        # 元（飛ばされていない上流）だけを数える。LLM の手前に限るときは、元が手前にあるものだけ（dead edge と同じ）。
+        roots = [
+            (src, port)
+            for src, port in in_edges.get(node, [])
+            if not edge_ok(scope, src, port)
+            and getattr(by_path.get(_scoped(scope, src)), "status", None) != "skipped"
+            and (allowed is None or src in allowed)
+        ]
+        for src, port in roots:
+            st = getattr(by_path.get(_scoped(scope, src)), "status", "記録なし")
+            out.append(
+                Finding(
+                    "unexpected_skip",
+                    s.node_id,
+                    f"{s.step_path} が飛ばされた（{src} -[{port}]-> は分岐ではない・{src} は {st}）",
+                )
+            )
+    return out
+
+
+def unexpected_status(run: RunRecord, expected: str, last: bool) -> list[Finding]:
+    """run の状態が期待と違う（succeeded は全部の run、ほかは最後の run で見る・照合子の status と同じ）。"""
+    if expected == "any" or (expected != "succeeded" and not last):
+        return []
+    if run.status == expected:
+        return []
+    why = f"・{run.fail_reason}" if run.fail_reason else ""
+    return [
+        Finding(
+            "unexpected_status", None, f"run の状態が {run.status}（期待 {expected}{why[:200]}）"
+        )
+    ]
+
+
 @dataclass
 class DynamicGrade:
     findings: list[Finding]
@@ -360,23 +450,32 @@ def grade_dynamic(
     *,
     restrict: bool,
     delivery: bool = True,
+    expect_status: str | None = None,
+    skips: bool = False,
 ) -> DynamicGrade:
-    """run_case の記録から dead edge・差し込みの残り・入力が届かないを見つける。
+    """run_case の記録から dead edge・差し込みの残り・入力が届かない・想定外の状態と skipped を見つける。
 
     `restrict` は llm_dependent の run_case を stub で流したとき（最初の LLM のノードまでに限る）。
-    `delivery=False` は、入力が届かないことが正しい run_case（何も変えないのが正解・`expect.flow_through: false`）。
+    `delivery` は「入力が届かない」を見るか（stub の run で、`expect.flow_through` が false でないとき）。
+    `expect_status` は run の状態の期待（None は見ない・stub で流した llm_dependent でない run_case に渡す）。
+    `skips` は想定外の skipped を見るか（期待が succeeded の run_case）。
     役割（`RunRecord.workflow`・無ければ main）ごとに IR・出口・期待を引く。
     """
     findings: list[Finding] = []
     allowed_any: set[str] | None = set() if restrict else None
-    for run in rec.runs:
+    for i, run in enumerate(rec.runs):
         role = run.workflow or "main"
         ir = irs[role]
+        ports = node_ports.get(role) or {}
         allowed = before_llm(ir) if restrict else None
         if allowed is not None and allowed_any is not None:
             allowed_any |= allowed
-        findings += dead_edges(ir, node_ports.get(role) or {}, run, allowed)
+        findings += dead_edges(ir, ports, run, allowed)
         if delivery:
             findings += not_delivered(ir, expects[role], rec, run, allowed)
+        if expect_status is not None:
+            findings += unexpected_status(run, expect_status, last=i == len(rec.runs) - 1)
+        if skips:
+            findings += unexpected_skips(ir, ports, run, allowed)
     findings += leftovers(rec, allowed_any)
     return DynamicGrade(findings, [r.status for r in rec.runs], restrict)

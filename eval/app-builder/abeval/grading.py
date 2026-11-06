@@ -4,13 +4,18 @@
   `node_ports` が無いので、出口は ir_lint の結果で補う。
 - `static_roles`: ir_lint（HEAD の検証器）と課題の検査で S2s・S2w・S5 を出す（ダミーの UUID にした IR を渡す）。
 - `stub_plumbing`: IR を複製して LLM のノードを stub のモデルにして保存し、`stub_ok` の run_case を流す
-  （S2d・S3）。終わったら複製と、流して増えたルートのファイルを消す（fixture は残す）。
+  （S2d・S3）。終わったら複製と、流して増えたルートのファイルを消す（fixture は残す）。複製の名前には試行ごとの
+  短い乱数を足す（中断した実行の複製が残っていても 409 にならない）。
 - `run_saved`: 保存されたワークフローそのもので run_case を流す（Mode B の実行・S3・S4）。
+- 基盤の失敗（保存できない・時間切れ・5xx など）で流せなかった run_case が 1 つでもあれば、`error` を付けて
+  S2d・S3・S4 を None にする（§4.8 の「基盤の失敗は採点しない」。部分だけで採点しない）。呼び出し側は
+  `InfraFailure` で試行を errors に回す。
 """
 
 from __future__ import annotations
 
 import datetime as dt
+import secrets
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from typing import Any
@@ -25,6 +30,22 @@ from abeval.trial import concrete, offline
 
 Lint = Callable[[list[tuple[str, Mapping]]], dict[str, LintResult]]
 INFRA_ERRORS = (CaseError, ShikiError, TimeoutError, StubOnlyViolation, KeyError)
+
+
+class InfraFailure(RuntimeError):
+    """基盤の失敗で採点できない試行（errors に `kind` で入れる・採点しない）。"""
+
+    def __init__(self, kind: str, detail: str, partial: dict | None = None):
+        super().__init__(f"{kind}: {detail}")
+        self.kind = kind
+        self.detail = detail
+        self.partial = partial or {}
+
+
+def raise_if_infra(part: str, result: Mapping) -> None:
+    """stub の配管・実行の結果に基盤の失敗があれば InfraFailure（`part` は stub_plumbing か run_case）。"""
+    if result.get("error"):
+        raise InfraFailure(part, str(result["error"])[:500])
 
 
 def codes(items: Any) -> list[str]:
@@ -103,7 +124,17 @@ def scratch(client: ShikiClient, rec: FixtureRecord) -> Iterator[list[str]]:
 
 
 def _summary(cases: list[dict]) -> dict:
-    graded = [c for c in cases if "error" not in c]
+    """run_case の採点をまとめる（基盤の失敗が 1 つでもあれば、どれも None にして `error` を付ける）。"""
+    failed = [c for c in cases if "error" in c]
+    if failed:
+        return {
+            "s2d": None,
+            "s3": None,
+            "s4": None,
+            "cases": cases,
+            "error": "; ".join(f"{c['case']}: {c['error']}" for c in failed)[:500],
+        }
+    graded = cases
     return {
         "s2d": any(c["s2d"] for c in graded) if graded else None,
         "s3": all(c["s3"] for c in graded) if graded else None,
@@ -161,9 +192,17 @@ def stub_plumbing(
         }
     with scratch(client, rec) as problems:
         try:
-            wfs = save_workflows(client, task, role_irs, rec, tag=tag, stub=True)
+            wfs = save_workflows(
+                client, task, role_irs, rec, tag=f"{tag}-{secrets.token_hex(2)}", stub=True
+            )
         except INFRA_ERRORS as e:
-            return {"error": f"{type(e).__name__}: {str(e)[:400]}", "cases": []}
+            return {
+                "s2d": None,
+                "s3": None,
+                "s4": None,
+                "error": f"{type(e).__name__}: {str(e)[:400]}",
+                "cases": [],
+            }
         for role, w in wfs.items():
             if not w.node_ports:
                 w.node_ports = {k: list(v) for k, v in (lint_ports.get(role) or {}).items()}
@@ -196,9 +235,27 @@ def run_saved(
     return out
 
 
-def headline(s1: bool, s2s: bool | None, s2d: bool | None) -> bool:
-    """Mode A の見出し（正しく保存できる率@1 = S1 ∧ ¬S2s ∧ ¬S2d）。"""
-    return bool(s1) and not s2s and not s2d
+def headline(s1: bool, s2s: bool | None, s2d: bool | None) -> bool | None:
+    """Mode A の見出し（正しく保存できる率@1 = S1 ∧ ¬S2s ∧ ¬S2d）。
+
+    S2s・S2d が False と決まったときだけ真にする。保存できて誤りも見つからないが、どちらかが決まらない（stub の
+    配管を流さない・stub_ok の run_case が無い）ときは None（率の分母に入れない）。
+    """
+    if not s1 or s2s or s2d:
+        return False
+    if s2s is None or s2d is None:
+        return None
+    return True
+
+
+def headline_b(s1: bool, s2s: bool | None, s2d: bool | None, s4: bool | None) -> bool | None:
+    """Mode B の見出し（使えるワークフロー率 = S1 ∧ ¬S2s ∧ ¬S2d ∧ S4）。決まらない項目があれば None。"""
+    a = headline(s1, s2s, s2d)
+    if a is False or s4 is False:
+        return False
+    if a is None or s4 is None:
+        return None
+    return True
 
 
 def safe_cleanup(client: ShikiClient, rec: FixtureRecord) -> list[str]:

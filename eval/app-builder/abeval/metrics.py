@@ -52,9 +52,11 @@ def _s(t: Mapping, name: str) -> Any:
 
 
 def task_counts(trials: Iterable[Mapping], metric: str = "headline") -> dict[str, tuple[int, int]]:
-    """課題 → (試行の数, metric が真の数)。"""
+    """課題 → (試行の数, metric が真の数)。metric が決まらない（None の）試行は数えない。"""
     out: dict[str, list[int]] = {}
     for t in trials:
+        if t.get(metric) is None:
+            continue
         n_c = out.setdefault(str(t["task"]), [0, 0])
         n_c[0] += 1
         n_c[1] += 1 if t.get(metric) else 0

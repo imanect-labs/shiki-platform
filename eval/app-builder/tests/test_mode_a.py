@@ -305,3 +305,33 @@ def test_grade_and_report_work_from_the_results(env, tmp_path):
     text = (tmp_path / "results" / "summary.md").read_text()
     assert "v0/a/medium" in text and "## 6. 限界" in text
     assert THINKING_MARK not in text and TEXT_MARK not in text
+
+
+def test_stub_plumbing_failure_is_an_error_not_a_saved_trial(monkeypatch):
+    """stub の配管が基盤の失敗で流せなければ、採点せずに errors（stub_plumbing）に入れる（見出しを真にしない）。"""
+    from abeval import grading
+
+    with FakeUpstream(responder) as up, running_proxy(up.url) as proxy:
+        ctx = ctx_for(ChatFake(), proxy, "r1", cap=capture_obj())
+        proxy.control().register_run("r1", "e0", 1.0)
+        monkeypatch.setattr(
+            mode_a,
+            "stub_plumbing",
+            lambda *a, **k: grading._summary([{"case": "normal", "error": "TimeoutError: 180"}]),
+        )
+        spec = RunSpec("e0", "a", "v0", ("basic-summary-file",), ("flow",), 1)
+        out = mode_a.run(ctx, spec.trial_specs(), TASKS)
+    assert out.trials == []
+    assert [e["kind"] for e in out.errors] == ["stub_plumbing"]
+    assert "TimeoutError" in out.errors[0]["detail"]
+
+
+def test_without_stub_plumbing_the_headline_is_undecided():
+    with FakeUpstream(responder) as up, running_proxy(up.url) as proxy:
+        ctx = ctx_for(ChatFake(), proxy, "r1", cap=capture_obj())
+        ctx.stub_plumbing = False
+        proxy.control().register_run("r1", "e0", 1.0)
+        spec = RunSpec("e0", "a", "v0", ("basic-summary-file",), ("flow",), 1)
+        out = mode_a.run(ctx, spec.trial_specs(), TASKS)
+    [t] = out.trials
+    assert t["s1"] is True and t["s2d"] is None and t["headline"] is None

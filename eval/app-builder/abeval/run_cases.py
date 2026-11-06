@@ -10,7 +10,8 @@ Mode A（stub の配管）と Mode B（実行）も使う。製品の公開の�
    step の出力・行・増えたファイルを集める。`no_new_rows` なら最後の起動をもう一度流して行を数え直す。ルートに
    増えたファイルは記録に足す（片付けで消す）。
 4. `grade_case`: 動的な検査と照合子をかける（stub で llm_dependent の run_case は照合をせず、動的な検査を最初の
-   LLM のノードまでに限る）。
+   LLM のノードまでに限る）。「入力が届かない」と「想定外の状態」は stub の run だけで見る（実モデルの出力は
+   入力の全文を含まず、状態は照合子の S4 が見る）。
 """
 
 from __future__ import annotations
@@ -249,7 +250,9 @@ def grade_case(
         expects,
         rec,
         restrict=restrict,
-        delivery=case.expect.get("flow_through", True),
+        delivery=stub and case.expect.get("flow_through", True),
+        expect_status=case.status if stub and not case.llm_dependent else None,
+        skips=case.status == "succeeded",
     )
     checks = None
     if not restrict or force_checks:

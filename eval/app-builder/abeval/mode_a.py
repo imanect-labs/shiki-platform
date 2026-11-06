@@ -3,7 +3,8 @@
 1 回の生成で出た IR を採点する（自己修正の往復は Mode B だけで測る。製品の誤りの整形を Python に写さない）。
 
 1. 課題ごとに fixture を作る（課題の間で名前が重なるので、課題ごとに作って片付ける）。
-2. 依頼文に fixture の「参考情報」（テーブルの表示名・id・列の key と型、フォルダー・ファイルの id）を添える。
+2. 依頼文に「参考情報」（入力の項目の key・呼び名・型、テーブルの表示名・id・列の key と型、フォルダー・ファイルの
+   id）を添える（Mode B にも同じものを添える・`trial.reference_info`）。
 3. 生成: model `claude-haiku-5-5`・取り込んだ system と max_tokens・tools は取り込んだ emit_workflow だけ
    （defer_loading を外す）・thinking adaptive・`output_config.effort`・tool_choice auto・stream。temperature と
    prefill は送らない（abeval.anthropic_client が止める）。送り先は abeval.proxy で、会話 ID のヘッダーに試行の
@@ -11,7 +12,9 @@
 4. 結果を分ける: refusal（停止理由）→ truncated（max_tokens）→ emit（emit_workflow の呼び出しがある）→
    asked（聞き返し）→ no_emit。
 5. S1 はその版の `/workflows/validate`、S2s・S2w・S5 は ir_lint と課題の検査、S2d・S3 は stub の配管
-   （名前 `abeval-<key8>-<役割>`・LLM のノードは stub のモデル・`stub_ok` の run_case・終わったら消す）。
+   （名前 `abeval-<key8>-<乱数>-<役割>`・LLM のノードは stub のモデル・`stub_ok` の run_case・終わったら消す）。
+   stub の配管が基盤の失敗で流せなかった試行は、採点せずに errors（kind: stub_plumbing）に入れる。見出しは
+   S2s・S2d が False と決まったときだけ真（stub の配管を流さないと None）。
 6. 生成はキャッシュ（`data/cache/trials/<key>.json`）に置き、同じ条件なら生成しない（台帳の行が増えない）。
    キーの依頼文は fixture の id を印にした文（実験のたびに id が変わってもキーが同じ）。記録の IR も印に戻す。
 7. V1 の採点し直し（`generate=False`）: 生成はせず、キャッシュの生成をその版で採点し直す（取り込みの sha が
@@ -36,8 +39,10 @@ from abeval.config import Config
 from abeval.fixtures import FixtureError, FixtureRecord
 from abeval.grade.static import LintCatalog
 from abeval.grading import (
+    InfraFailure,
     Lint,
     headline,
+    raise_if_infra,
     s1_of,
     safe_cleanup,
     static_roles,
@@ -244,6 +249,7 @@ def grade(
             now=ctx.now(),
             timeout=ctx.cfg.mode_b.run_case_timeout_secs,
         )
+        raise_if_infra("stub_plumbing", stub)
         out["stub"] = stub
         out["s2d"], out["s3"] = stub.get("s2d"), stub.get("s3")
     out["headline"] = headline(out["s1"], out["s2s"], out["s2d"])
@@ -271,6 +277,11 @@ def run_task(ctx: ModeAContext, task: Task, specs: list[TrialSpec], out: Outcome
                 continue
             try:
                 trial = grade(ctx, task, rec, ts, g["key"], g["gen"])
+            except InfraFailure as e:
+                out.errors.append(
+                    {**ts.to_dict(), "key": g["key"], "kind": e.kind, "detail": e.detail}
+                )
+                continue
             except (ShikiError, TimeoutError) as e:
                 out.errors.append(
                     {**ts.to_dict(), "key": g["key"], "kind": "grade", "detail": str(e)[:500]}
