@@ -6,7 +6,8 @@
 //! 止めない（鍵でない値のこともあり、保存済みの定義もある）。注意の文に値を映し返さない。
 //!
 //! 名前の決まりは `nodes::http_headers::looks_like_key_header` の 1 か所。値は、リテラルの文字と、`$template` の差し込み
-//! 以外の文字を見る。認証の方式の語（Bearer など）だけで鍵の無い値（`Bearer {token}` の差し込みなど）は言わない。
+//! 以外の文字と、差し込みの `vars` にリテラルで書いた文字を見る。認証の方式の語（Bearer など）だけで鍵の無い値
+//! （`Bearer {token}` の差し込みで、token が参照のものなど）は言わない。
 
 use serde_json::Value;
 
@@ -57,26 +58,38 @@ pub(super) fn warnings(ir: &WorkflowIr) -> Vec<ValidationError> {
     out
 }
 
-/// 値に、IR に書いたままの文字（認証の方式の語を除く）があるか。参照と差し込みの中身は実行のときに決まるので見ない。
+/// 値に、IR に書いたままの文字（認証の方式の語を除く）があるか。参照の中身は実行のときに決まるので見ない。
 fn has_written_value(value: &Value) -> bool {
     let Ok(expr) = serde_json::from_value::<ValueExpr>(value.clone()) else {
         return false;
     };
-    let text = match &expr {
+    written_text(&expr)
+        .split_whitespace()
+        .any(|word| !AUTH_SCHEMES.contains(&word.to_ascii_lowercase().as_str()))
+}
+
+/// 値の式のうち、IR に書いたままの文字（参照は区切りの空白にする）。
+///
+/// 差し込みの `vars` にリテラルで書いた値も、書いたままの文字として数える（`{"$template":"Bearer {t}","vars":{"t":
+/// "sk-…"}}` の鍵も IR とバージョン履歴に残る）。差し込みは前後を区切りにする（`{a}{b}` や `k-{x}` の値どうしを 1 語に
+/// しない）。
+fn written_text(expr: &ValueExpr) -> String {
+    match expr {
         ValueExpr::Literal(Value::String(s)) => s.clone(),
+        ValueExpr::Literal(Value::Number(n)) => n.to_string(),
         ValueExpr::Template(t) => template_pieces(&t.template)
             .into_iter()
             .map(|piece| match piece {
                 TemplatePiece::Text(s) => s.to_string(),
                 TemplatePiece::Escaped(c) => c.to_string(),
-                // 差し込みの名前は区切りにする（`{a}{b}` の名前どうしを 1 語にしない）。
-                TemplatePiece::Var(_) => " ".to_string(),
+                TemplatePiece::Var(name) => t
+                    .vars
+                    .get(name)
+                    .map_or_else(|| " ".to_string(), |v| format!(" {} ", written_text(v))),
             })
             .collect(),
-        _ => return false,
-    };
-    text.split_whitespace()
-        .any(|word| !AUTH_SCHEMES.contains(&word.to_ascii_lowercase().as_str()))
+        _ => String::new(),
+    }
 }
 
 #[cfg(test)]
@@ -115,6 +128,26 @@ mod tests {
              ください。"
         );
         assert!(!w[0].message.contains("sk-live"));
+    }
+
+    /// 差し込みの vars にリテラルで書いた鍵も、書いた値として知らせる（認証の方式の語だけなら言わない）。
+    #[test]
+    fn literal_vars_of_a_template_are_written_values() {
+        for headers in [
+            json!({ "Authorization": { "$template": "Bearer {t}", "vars": { "t": "sk-live-0123" } } }),
+            json!({ "Authorization": { "$template": "{s} {t}", "vars": {
+                "s": "Bearer", "t": { "$template": "{k}", "vars": { "k": "sk-live-0123" } } } } }),
+            json!({ "X-Api-Key": { "$template": "{n}", "vars": { "n": 1_234_567 } } }),
+        ] {
+            let w = warnings(&ir(headers.clone()));
+            assert_eq!(w.len(), 1, "{headers}");
+            assert!(!w[0].message.contains("sk-live"), "{}", w[0].message);
+        }
+        assert!(warnings(&ir(
+            json!({ "Authorization": { "$template": "{s} {t}", "vars": {
+            "s": "Bearer", "t": { "$from": "input", "path": "/token" } } } })
+        ))
+        .is_empty());
     }
 
     /// 参照・差し込みだけの値、認証の方式の語だけの値、空の値、鍵でない名前のヘッダーは言わない。
