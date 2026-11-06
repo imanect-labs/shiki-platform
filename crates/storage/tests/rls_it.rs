@@ -25,11 +25,17 @@ use std::str::FromStr;
 use authz::TenantId;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use sqlx::{PgPool, Row};
-use storage::db_tenant::{begin_cross_tenant_tx, begin_tenant_tx, set_tenant, MAINTENANCE_ROLE};
+use storage::db_tenant::{
+    begin_cross_tenant_tx, begin_tenant_tx, set_tenant, CROSS_TENANT_APP_NAME_PREFIX,
+    MAINTENANCE_ROLE,
+};
 
 /// テスト用のログインロール（`shiki_runtime` のメンバ）。実アプリの `shiki_app` と同じ形。
 const APP_ROLE: &str = "shiki_rls_it";
 const PERMISSION_DENIED: &str = "42501";
+
+/// RLS の対象外にしているテナント表（migration 0114 の明示リストと一致させる）。`data_*` は別の段で扱う。
+const EXCLUDED: &[&str] = &["outbox_delivery_seq", "audit_log", "storage_event_outbox"];
 
 struct Env {
     /// 所有者（superuser）の接続。RLS を迂回するので、行の準備と後片付けに使う。
@@ -149,25 +155,29 @@ fn sqlstate(err: &sqlx::Error) -> Option<String> {
 #[tokio::test]
 async fn every_tenant_table_has_forced_rls_with_the_isolation_policy() {
     let Some(env) = setup().await else { return };
-    // 0114 と同じ規則で対象を導出し、RLS・FORCE・ポリシーのどれかが欠けた表を挙げる。
+    // migration の導出式に頼らず、`tenant_id` 列を持つ表を（NULL 可・パーティション親も含めて）全部挙げ、
+    // 明示の対象外リストに無いのに RLS・FORCE・ポリシーのどれかが欠けた表を落とす。
+    let excluded: Vec<String> = EXCLUDED.iter().map(|s| (*s).to_string()).collect();
     let missing: Vec<String> = sqlx::query_scalar(
         "SELECT c.relname::text FROM pg_class c \
            JOIN pg_namespace n ON n.oid = c.relnamespace \
            JOIN pg_attribute a ON a.attrelid = c.oid \
-          WHERE n.nspname = 'public' AND c.relkind = 'r' AND NOT c.relispartition \
-            AND c.relname NOT LIKE 'data\\_%' \
-            AND a.attname = 'tenant_id' AND a.attnotnull AND NOT a.attisdropped \
+          WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p') AND NOT c.relispartition \
+            AND c.relname NOT LIKE 'data\\_%' AND NOT (c.relname = ANY($1)) \
+            AND a.attname = 'tenant_id' AND NOT a.attisdropped \
             AND NOT (c.relrowsecurity AND c.relforcerowsecurity AND EXISTS ( \
                   SELECT FROM pg_policy p \
                    WHERE p.polrelid = c.oid AND p.polname = 'shiki_tenant_isolation')) \
           ORDER BY 1",
     )
+    .bind(&excluded)
     .fetch_all(&env.owner)
     .await
     .unwrap();
     assert!(
         missing.is_empty(),
-        "RLS が付いていないテナント表がある（0114 と同じ ENABLE / FORCE / POLICY を付けること）: {missing:?}"
+        "RLS が付いていないテナント表がある（0114 と同じ ENABLE / FORCE / POLICY を付けるか、\
+         理由を書いて対象外リストに足すこと）: {missing:?}"
     );
     let covered: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM pg_policy WHERE polname = 'shiki_tenant_isolation'",
@@ -180,9 +190,44 @@ async fn every_tenant_table_has_forced_rls_with_the_isolation_policy() {
 }
 
 #[tokio::test]
+async fn rls_tables_have_no_index_that_rls_would_disable() {
+    let Some(env) = setup().await else { return };
+    // RLS の付いた表では、leakproof でない演算子・関数を含む条件はインデックス条件に使えない
+    // （ポリシーより先に評価できないため）。式インデックスと、leakproof でない演算子でしか引けない
+    // インデックス（jsonb の GIN 等）は、文脈が未設定でも効かなくなる。そういうインデックスを RLS の
+    // 付いた表に足したら落とす（生成列＋btree にするか、表を対象外にする判断を促す）。
+    let bad: Vec<String> = sqlx::query_scalar(
+        "WITH scoped AS (SELECT polrelid AS rel FROM pg_policy WHERE polname = 'shiki_tenant_isolation'), \
+         idx AS ( \
+           SELECT i.indexrelid, c.relname AS index_name, i.indexprs IS NOT NULL AS has_expr, i.indclass \
+             FROM pg_index i JOIN scoped s ON s.rel = i.indrelid \
+             JOIN pg_class c ON c.oid = i.indexrelid) \
+         SELECT x.index_name::text FROM idx x \
+          WHERE x.has_expr OR EXISTS ( \
+            SELECT FROM unnest(x.indclass::oid[]) AS oc(opc) \
+              JOIN pg_opclass opc ON opc.oid = oc.opc \
+              JOIN pg_amop ao ON ao.amopfamily = opc.opcfamily AND ao.amoppurpose = 's' \
+                   AND ao.amoplefttype = opc.opcintype AND ao.amoprighttype = opc.opcintype \
+              JOIN pg_operator o ON o.oid = ao.amopopr \
+              JOIN pg_proc p ON p.oid = o.oprcode \
+             WHERE NOT p.proleakproof) \
+          ORDER BY 1",
+    )
+    .fetch_all(&env.owner)
+    .await
+    .unwrap();
+    assert!(
+        bad.is_empty(),
+        "RLS の付いた表に、RLS 下で使えなくなるインデックスがある: {bad:?}"
+    );
+    env.cleanup().await;
+}
+
+#[tokio::test]
 async fn tenant_tx_reads_and_writes_only_its_own_tenant() {
     let Some(env) = setup().await else { return };
     let mut tx = begin_tenant_tx(&env.app, &env.a).await.unwrap();
+    assert_eq!(tx.tenant(), &env.a);
     assert_eq!(env.visible(&mut tx).await, vec![env.a.to_string()]);
 
     // 他テナントの行は UPDATE / DELETE の対象に入らない（WHERE で指しても 0 行）。
@@ -313,7 +358,17 @@ async fn only_the_cross_tenant_tx_bypasses_rls() {
         .await
         .unwrap();
     assert_eq!(who, MAINTENANCE_ROLE);
-    set_tenant(&mut tx, &env.a).await.unwrap();
+    let app_name: String = sqlx::query_scalar("SELECT current_setting('application_name')")
+        .fetch_one(&mut *tx)
+        .await
+        .unwrap();
+    assert_eq!(app_name, format!("{CROSS_TENANT_APP_NAME_PREFIX}rls_it"));
+    assert_eq!(tx.purpose(), "rls_it");
+    sqlx::query("SELECT set_config('app.tenant_id', $1, true)")
+        .bind(env.a.as_str())
+        .execute(&mut *tx)
+        .await
+        .unwrap();
     assert_eq!(env.visible(&mut tx).await, env.both());
     tx.commit().await.unwrap();
 

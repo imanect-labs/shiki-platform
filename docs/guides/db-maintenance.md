@@ -209,25 +209,48 @@ shiki-server は**実行時**と**migration** で別の接続を使う。superus
 
 ## 5. テナント表の RLS（#1067・段階導入の第 2 段）
 
-migration 0114 は、`tenant_id`（NOT NULL）を持つテナント表に RLS を付ける（`ENABLE` と `FORCE`、ポリシー
-`shiki_tenant_isolation`）。`data_*` と、`tenant_id` が NULL を取り得る表（`outbox_delivery_seq`）は対象外。
+migration 0114 は、`tenant_id` を持つテナント表に RLS を付ける（`ENABLE` と `FORCE`、ポリシー
+`shiki_tenant_isolation`）。対象外は次の明示リストだけ（`crates/storage/tests/rls_it.rs` の `EXCLUDED` と一致）:
+
+| 表 | 対象外の理由 |
+| --- | --- |
+| `data_*` | `tenant_int`・パーティション・プール分割の上にある。別の段で扱う |
+| `outbox_delivery_seq` | `tenant_id` が NULL を取り得る（consumer 単位の採番） |
+| `audit_log`・`storage_event_outbox` | jsonb の式インデックスと GIN（`@>`）で引いている。RLS の付いた表では leakproof でない演算子をインデックス条件に使えず、文脈が未設定でも全行走査に落ちる。生成列＋btree に置き換えてから対象に入れる |
 
 - **今は移行モード。** トランザクションのテナント文脈（`app.tenant_id`）が未設定なら従来どおり通し、設定されて
   いればその `tenant_id` の行だけを読み書きさせる。文脈は `storage::db_tenant::begin_tenant_tx`（または
   `set_tenant`）がトランザクション限り（`SET LOCAL` 相当）で設定する。既存の SQL は第 3 段でクレートごとに
   この実行器へ移し、全経路を移したら未設定を拒否する厳格モードへ切り替える。
-- **テナント横断の保守処理**は `storage::db_tenant::begin_cross_tenant_tx` を使う。トランザクションの中で
-  `shiki_maintenance`（NOLOGIN・BYPASSRLS）に `SET LOCAL ROLE` する。`shiki_runtime` には INHERIT FALSE /
-  SET TRUE で付与してあるので、ログイン用のロール（`shiki_app`）に追加の付与は要らない。
-- `shiki_maintenance` は migration 0114 が作る。BYPASSRLS のロールを作れるのは superuser（PG16 では CREATEROLE
-  かつ自身が BYPASSRLS）だけなので、migration の実行ロールにその権限が無い環境では先に運用が作っておく:
+- **テナント横断の保守処理**は `storage::db_tenant::begin_cross_tenant_tx(pool, "<purpose>")` を使う。
+  トランザクションの中で `shiki_maintenance`（NOLOGIN・BYPASSRLS）に切り替え、`application_name` を
+  `shiki:cross-tenant:<purpose>` にする（`pg_stat_activity` で追える）。
+- **適用のタイミング。** 0114 は約 66 表の ACCESS EXCLUSIVE ロックを 1 トランザクションで取る。`lock_timeout`
+  （5 秒）で打ち切るので全表が止まり続けることはないが、長いクエリやバッチが走っていると起動時の migration が
+  失敗して再起動を繰り返す。負荷の低い時間帯にデプロイする。
+- **`shiki_maintenance` の用意。** migration 0114 が作り、`shiki_runtime` に INHERIT FALSE / SET TRUE で付与する。
+  BYPASSRLS のロールを作れるのは superuser（PG16 では CREATEROLE かつ自身が BYPASSRLS）だけで、付与にはこの
+  ロールの ADMIN が要る。migration の実行ロールにその権限が無い環境では、0114 は NOTICE を出して作成・付与を
+  飛ばす（migration は止まらない）。その場合は superuser（またはマネージド Postgres の管理ロール）で次を流す:
   ```sql
   CREATE ROLE shiki_maintenance NOLOGIN NOSUPERUSER BYPASSRLS NOCREATEDB NOCREATEROLE;
+  GRANT shiki_maintenance TO shiki_runtime WITH INHERIT FALSE, SET TRUE;
+  -- 表と sequence の権限（0114 を流し直す代わり。所有者のロールで流す）
+  GRANT USAGE ON SCHEMA public TO shiki_maintenance;
+  GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO shiki_maintenance;
+  GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO shiki_maintenance;
+  REVOKE ALL ON TABLE _sqlx_migrations FROM shiki_maintenance;
   ```
-  マネージド Postgres で BYPASSRLS のロールを作れない場合は、第 3 段の厳格化の前に横断処理の扱いを決め直す
-  （移行モードのうちは、横断処理は文脈を設定しないだけで動く）。
+  移行モードのうちは、ロールが無くても既存の経路は壊れない（横断処理は文脈を設定しないだけで動く）。
+  `begin_cross_tenant_tx` を使う経路だけがロールの切り替えで失敗する。BYPASSRLS のロールを作れない環境では、
+  第 3 段の厳格化の前に横断処理の扱いを決め直す。
 - **migration の所有者ロールを替えたとき**は、§4 の既定権限に加えて `shiki_maintenance` にも同じ既定権限を付け直す。
+- **バックアップ（`pg_dump`）。** `pg_dump` は既定で `row_security = off` で読む。FORCE を付けたので、superuser でも
+  BYPASSRLS でもない所有者（マネージド Postgres のマスタユーザ等）でダンプすると
+  `query would be affected by row-level security policy` で失敗する。`--enable-row-security` を付ける
+  （移行モードでは文脈が未設定なので全行が出る）か、BYPASSRLS のロールでダンプする。
 - **新しいテナント表を足す migration** は、同じ `ENABLE` / `FORCE` / `CREATE POLICY shiki_tenant_isolation` を
-  付ける（式は 0114 と同じ）。付け忘れは `crates/storage/tests/rls_it.rs` が落とす。
+  付ける（式は 0114 と同じ）。付け忘れは `crates/storage/tests/rls_it.rs` が落とす。RLS の付いた表に式インデックスや
+  GIN（leakproof でない演算子でしか引けないインデックス）を足したときも同じテストが落ちる。
 - psql で調べるとき、superuser は RLS を迂回する。アプリと同じ見え方を確かめるには `SET ROLE shiki_app` してから
   `SELECT set_config('app.tenant_id', '<tenant>', false)` する。

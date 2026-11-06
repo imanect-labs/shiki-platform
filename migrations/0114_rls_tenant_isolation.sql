@@ -16,13 +16,23 @@
 --
 -- # 対象
 --
--- `public` スキーマの通常表で、NOT NULL の `tenant_id` 列を持つもの（下の DO で導出する）。対象外:
+-- `public` スキーマの通常表で `tenant_id` 列を持つもの（下の DO で導出する）。対象外は次の明示リストだけ:
 --
 -- - `data_*`: `tenant_int`・パーティション・プール分割の上にある（docs/data/shard-safety.md）。別の段で扱う。
--- - `tenant_id` が NULL を取り得る表（`outbox_delivery_seq` = consumer 単位の採番。NULL は横断の consumer）。
+-- - `outbox_delivery_seq`: `tenant_id` が NULL を取り得る（consumer 単位の採番。NULL は横断の consumer）。
+-- - `audit_log`・`storage_event_outbox`: jsonb の式インデックス（`metadata ->> 'thread_id'` 等）と GIN（`@>`）
+--   で引いている。RLS の付いた表では leakproof でない演算子をインデックス条件に使えないため、文脈が
+--   未設定でもこれらのインデックスが効かなくなる（テナント内の全行走査に落ちる）。生成列＋btree に
+--   置き換えてから対象に入れる。
 --
--- この migration より後にテナント表を足すときは、同じ ENABLE / FORCE / POLICY を付けること。付け忘れは
--- 結合テスト（crates/storage/tests/rls_it.rs）が落とす。
+-- この migration より後にテナント表を足すときは、同じ ENABLE / FORCE / POLICY を付けること。付け忘れと、
+-- RLS 下で効かなくなるインデックスの追加は、結合テスト（crates/storage/tests/rls_it.rs）が落とす。
+--
+-- # ロック
+--
+-- ENABLE / FORCE ROW LEVEL SECURITY と CREATE POLICY は表ごとに ACCESS EXCLUSIVE ロックを取り、コミットまで
+-- 持つ。長いクエリの後ろで待ち続けて全表を止めないよう、lock_timeout で打ち切る（起動時の migration が
+-- 失敗するだけで、再起動で再試行される）。負荷の低い時間帯に適用すること（docs/guides/db-maintenance.md §5）。
 
 -- 現在のトランザクションのテナント（未設定なら NULL）。
 --
@@ -39,6 +49,8 @@ AS $$ SELECT NULLIF(pg_catalog.current_setting('app.tenant_id', true), '') $$;
 
 GRANT EXECUTE ON FUNCTION shiki_rls_tenant() TO PUBLIC;
 
+SET LOCAL lock_timeout = '5s';
+
 DO $$
 DECLARE
     t record;
@@ -52,8 +64,8 @@ BEGIN
            AND c.relkind = 'r'
            AND NOT c.relispartition
            AND c.relname NOT LIKE 'data\_%'
+           AND c.relname NOT IN ('outbox_delivery_seq', 'audit_log', 'storage_event_outbox')
            AND a.attname = 'tenant_id'
-           AND a.attnotnull
            AND NOT a.attisdropped
          ORDER BY c.relname
     LOOP
@@ -74,28 +86,47 @@ $$;
 -- テナント横断の保守処理（outbox のリレーと GC・期限切れの失効・運用 CLI 等）用のロール。
 --
 -- BYPASSRLS は継承されない属性なので、メンバになっただけでは効かない。横断用の実行器
--- （`storage::db_tenant::begin_cross_tenant_tx`）がトランザクションの中で `SET LOCAL ROLE` したときだけ効く。
+-- （`storage::db_tenant::begin_cross_tenant_tx`）がトランザクションの中でロールを切り替えたときだけ効く。
 -- shiki_runtime には INHERIT FALSE / SET TRUE で付与する（権限は継承せず、SET ROLE だけを許す）。
 --
--- BYPASSRLS のロールを作るには superuser（PG16 では CREATEROLE かつ自身が BYPASSRLS）が要る。
--- migration の実行ロールにその権限が無い環境では、運用が先に作っておけばここは何もしない
--- （docs/guides/db-maintenance.md §4）。
+-- BYPASSRLS のロールを作るには superuser（PG16 では CREATEROLE かつ自身が BYPASSRLS）が要り、
+-- shiki_runtime への付与にはこのロールの ADMIN が要る。migration の実行ロールにその権限が無い環境
+-- （マネージド Postgres 等）では、NOTICE を出して作成・付与を飛ばす（migration は止めない）。
+-- 移行モードのうちは横断処理が文脈を設定しないだけで動くので、ロールが無くても既存の経路は壊れない。
+-- 運用は docs/guides/db-maintenance.md §5 の手順でロールと付与を用意する。
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = 'shiki_maintenance') THEN
-        CREATE ROLE shiki_maintenance NOLOGIN NOSUPERUSER BYPASSRLS NOCREATEDB NOCREATEROLE;
+        BEGIN
+            CREATE ROLE shiki_maintenance NOLOGIN NOSUPERUSER BYPASSRLS NOCREATEDB NOCREATEROLE;
+        EXCEPTION
+            WHEN insufficient_privilege THEN
+                RAISE NOTICE 'shiki_maintenance を作る権限がありません。運用が作成してください（db-maintenance.md §5）';
+                RETURN;
+            -- 新規のクラスタで複数の migration が同時に走ったとき（結合テスト等）。
+            WHEN duplicate_object OR unique_violation THEN
+                NULL;
+        END;
     END IF;
+    IF NOT (SELECT rolbypassrls FROM pg_catalog.pg_roles WHERE rolname = 'shiki_maintenance') THEN
+        RAISE WARNING 'shiki_maintenance が BYPASSRLS を持っていません。テナント横断の処理が RLS で絞られます';
+    END IF;
+
+    GRANT USAGE ON SCHEMA public TO shiki_maintenance;
+    GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO shiki_maintenance;
+    GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO shiki_maintenance;
+    REVOKE ALL ON TABLE _sqlx_migrations FROM shiki_maintenance;
+    GRANT EXECUTE ON FUNCTION shiki_analyze(regclass, boolean) TO shiki_maintenance;
+    ALTER DEFAULT PRIVILEGES FOR ROLE CURRENT_USER IN SCHEMA public
+        GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO shiki_maintenance;
+    ALTER DEFAULT PRIVILEGES FOR ROLE CURRENT_USER IN SCHEMA public
+        GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO shiki_maintenance;
+
+    BEGIN
+        GRANT shiki_maintenance TO shiki_runtime WITH INHERIT FALSE, SET TRUE;
+    EXCEPTION
+        WHEN insufficient_privilege THEN
+            RAISE NOTICE 'shiki_maintenance を shiki_runtime に付与する権限がありません。運用が付与してください（db-maintenance.md §5）';
+    END;
 END
 $$;
-
-GRANT USAGE ON SCHEMA public TO shiki_maintenance;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO shiki_maintenance;
-GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO shiki_maintenance;
-REVOKE ALL ON TABLE _sqlx_migrations FROM shiki_maintenance;
-GRANT EXECUTE ON FUNCTION shiki_analyze(regclass, boolean) TO shiki_maintenance;
-ALTER DEFAULT PRIVILEGES FOR ROLE CURRENT_USER IN SCHEMA public
-    GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO shiki_maintenance;
-ALTER DEFAULT PRIVILEGES FOR ROLE CURRENT_USER IN SCHEMA public
-    GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO shiki_maintenance;
-
-GRANT shiki_maintenance TO shiki_runtime WITH INHERIT FALSE, SET TRUE;
