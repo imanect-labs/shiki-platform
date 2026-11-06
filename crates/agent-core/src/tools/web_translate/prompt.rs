@@ -126,7 +126,7 @@ pub(super) fn glossary_user(title: Option<&str>, protected_head: &str) -> String
         let _ = writeln!(
             out,
             "<title>{}</title>",
-            one_line(t, MAX_TITLE_CHARS).replace("</title", "&lt;/title")
+            neutralize_tags(&one_line(t, MAX_TITLE_CHARS), &["title"])
         );
     }
     let _ = write!(out, "<source>\n{}\n</source>", block(protected_head));

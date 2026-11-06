@@ -458,10 +458,13 @@ pub(super) fn unwrap_output(raw: &str) -> String {
             s = inner.trim();
         }
     }
-    if s.starts_with("```") && s.ends_with("```") && s.len() > 6 {
-        let first_nl = s.find('\n').unwrap_or(s.len());
-        let inner = &s[first_nl..s.len() - 3];
-        if !inner.contains("```") {
+    // 改行の無い「```訳文```」は包みと判断できないので外さない（検査が不合格にする）。
+    if s.starts_with("```") && s.ends_with("```") {
+        if let Some(inner) = s
+            .find('\n')
+            .and_then(|nl| s.get(nl..s.len().saturating_sub(3)))
+            .filter(|inner| !inner.contains("```"))
+        {
             s = inner.trim_matches('\n');
         }
     }

@@ -435,6 +435,53 @@ async fn a_soft_failure_on_the_last_attempt_keeps_the_translation() {
     );
 }
 
+/// 小さい窓のモデルでは、出力上限を「窓 − 入力の見積もり」で切る（入力＋出力が窓を超えない）。
+#[tokio::test]
+async fn max_tokens_fit_in_a_small_context_window() {
+    struct Small(Mutex<Vec<u32>>);
+    #[async_trait::async_trait]
+    impl Backend for Small {
+        async fn generate(
+            &self,
+            _ctx: &AuthContext,
+            req: GenerateRequest,
+            _key: String,
+            _trace_id: Option<&str>,
+        ) -> Result<Reply, LlmError> {
+            self.0.lock().unwrap().push(req.max_tokens.unwrap_or(0));
+            let text = if is_glossary(&req) {
+                "{}".to_string()
+            } else {
+                fake_translate(&source_of(&user_text(&req)))
+            };
+            Ok(Reply {
+                text,
+                stop: StopReason::EndTurn,
+                spent: (1, 1, 0),
+                error: None,
+            })
+        }
+        fn context_window(&self, _model: Option<&str>) -> Option<u32> {
+            Some(12_000)
+        }
+    }
+    let (addr, _) = stub_server(page_response(PAGE)).await;
+    let backend = Arc::new(Small(Mutex::new(Vec::new())));
+    let mut t = tool(addr, translator());
+    t.backend = backend.clone();
+    let out = run(&t, addr.port()).await;
+    assert!(!out.is_error, "{}", out.content);
+    let seen = backend.0.lock().unwrap().clone();
+    assert!(!seen.is_empty());
+    assert!(seen.iter().all(|m| *m < 12_000), "{seen:?}");
+}
+
+#[test]
+fn unwrap_output_leaves_a_fence_without_a_newline_to_the_check() {
+    assert_eq!(unwrap_output("```訳文```"), "```訳文```");
+    assert_eq!(unwrap_output("```"), "```");
+}
+
 #[test]
 fn parts_are_balanced() {
     assert_eq!(part_range(21, 20, 1), Some((0..11, 2)));

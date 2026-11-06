@@ -11,10 +11,11 @@
 //! | `F` | 脚注の参照 `[\[n\]](#…)` |
 //! | `U` | リンクの URL 部分（テキストは訳す） |
 //! | `A` | 自動リンク `<https://…>` |
-//! | `T` | 境界タグの文字列（`<source>` 等）と、本文に元からある `⟦` `⟧` |
+//! | `T` | 境界タグの文字列（`<source>` 等） |
+//! | `B` | 本文に元からある `⟦` `⟧`（復元の最後に戻す） |
 //!
-//! **本文に元からある `⟦` `⟧` は最初に `T` へ逃がす。** 以降の置き換えの元の文字列にも
-//! 含まれ得るので、復元は入れ子を外れるまで繰り返す（[`Protected::restore`]）。
+//! **本文に元からある `⟦` `⟧` は最初に `B` へ逃がす。** 以降の置き換えの元の文字列にも
+//! 含まれ得るので、復元は入れ子を外れるまで繰り返し、`B` だけは最後に 1 回戻す（[`Protected::restore`]）。
 
 use std::collections::{HashMap, HashSet};
 
@@ -31,6 +32,9 @@ const BOUNDARY_TAGS: [&str; 6] = [
     "</web_page",
     "<web_page",
 ];
+
+/// 本文に元からある `⟦` `⟧` を逃がすプレースホルダの種類（復元の最後に戻す）。
+const BRACKET: char = 'B';
 
 /// 復元の入れ子の深さの上限（`T` ⊂ `c` ⊂ `I` ⊂ … の段数より十分大きい）。
 const MAX_RESTORE_PASSES: usize = 6;
@@ -134,29 +138,38 @@ impl Protected {
     /// プレースホルダを原文へ戻す（入れ子を外れるまで繰り返す）。
     ///
     /// 表に無いプレースホルダ（捏造）はそのまま残る。検査（⑦）で弾くので通常は現れない。
+    ///
+    /// 本文に元からあった括弧（`B`）は**最後に 1 回だけ**戻す。入れ子の展開と同じ周回で戻すと、
+    /// 原文の `⟦c1⟧` という文字列が次の周回で本物のプレースホルダとして置き換わる。
     pub(super) fn restore(&self, s: &str) -> String {
         let mut cur = s.to_string();
         for _ in 0..MAX_RESTORE_PASSES {
-            let found = placeholders(&cur);
-            if found
-                .iter()
-                .all(|(a, b, _)| !self.table.contains_key(&cur[*a..*b]))
-            {
+            let (next, changed) = self.replace_once(&cur, |kind| kind != BRACKET);
+            cur = next;
+            if !changed {
                 break;
             }
-            let mut out = String::with_capacity(cur.len());
-            let mut last = 0;
-            for (a, b, _) in found {
-                if let Some(original) = self.table.get(&cur[a..b]) {
-                    out.push_str(&cur[last..a]);
-                    out.push_str(original);
-                    last = b;
-                }
-            }
-            out.push_str(&cur[last..]);
-            cur = out;
         }
-        cur
+        self.replace_once(&cur, |kind| kind == BRACKET).0
+    }
+
+    /// `pick` に当たる種類のプレースホルダを 1 周だけ置き換える（置き換えたかも返す）。
+    fn replace_once(&self, s: &str, pick: impl Fn(char) -> bool) -> (String, bool) {
+        let mut out = String::with_capacity(s.len());
+        let (mut last, mut changed) = (0, false);
+        for (a, b, ph) in placeholders(s) {
+            if !pick(ph.kind) {
+                continue;
+            }
+            if let Some(original) = self.table.get(&s[a..b]) {
+                out.push_str(&s[last..a]);
+                out.push_str(original);
+                last = b;
+                changed = true;
+            }
+        }
+        out.push_str(&s[last..]);
+        (out, changed)
     }
 }
 
@@ -167,6 +180,8 @@ pub(super) fn protect(markdown: &str) -> Protected {
     let text = escape_brackets(&mut p, markdown);
     // 1. フェンスコードブロック（行単位）。
     let text = protect_fences(&mut p, &text);
+    // 1b. 別行立ての数式（`$$` だけの行で開いて閉じる複数行）。
+    let text = protect_display_math_blocks(&mut p, &text);
     // 2. インラインコード（同じ行の中で、同じ長さのバッククォートの連なりで閉じる）。
     let text = map_lines(&text, |line| protect_code_spans(&mut p, line));
     // 3. 数式。
@@ -197,7 +212,7 @@ fn escape_brackets(p: &mut Protected, s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         if c == OPEN || c == CLOSE {
-            let ph = p.put('T', &c.to_string());
+            let ph = p.put(BRACKET, &c.to_string());
             out.push_str(&ph);
         } else {
             out.push(c);
@@ -255,6 +270,41 @@ fn protect_fences(table: &mut Protected, text: &str) -> String {
             block.push_str(l);
         }
         let ph = table.put('C', &block);
+        out.push(format!("{}{ph}", &line[..indent_len]));
+        at = close + 1;
+    }
+    out.join("\n")
+}
+
+/// `$$` だけの行で開き、`$$` だけの行で閉じる数式を 1 つのブロックにする（閉じが無ければ触らない）。
+fn protect_display_math_blocks(table: &mut Protected, text: &str) -> String {
+    /// 数式 1 本の行数の上限（閉じ忘れで本文を丸ごと飲み込まない）。
+    const MAX_MATH_LINES: usize = 200;
+    if !text.contains("$$") {
+        return text.to_string();
+    }
+    let lines: Vec<&str> = text.split('\n').collect();
+    let mut out: Vec<String> = Vec::with_capacity(lines.len());
+    let mut at = 0;
+    while at < lines.len() {
+        let line = lines[at];
+        let close = (line.trim() == "$$")
+            .then(|| {
+                lines[at + 1..]
+                    .iter()
+                    .take(MAX_MATH_LINES)
+                    .position(|l| l.trim() == "$$")
+                    .map(|k| at + 1 + k)
+            })
+            .flatten();
+        let Some(close) = close else {
+            out.push(line.to_string());
+            at += 1;
+            continue;
+        };
+        let indent_len = line.len() - line.trim_start().len();
+        let block = lines[at..=close].join("\n");
+        let ph = table.put('M', &block[indent_len..]);
         out.push(format!("{}{ph}", &line[..indent_len]));
         at = close + 1;
     }
@@ -623,6 +673,26 @@ mod tests {
         let p = protect(md);
         assert_eq!(p.text, "[⟦I1⟧](⟦U1⟧)");
         assert_eq!(p.restore(&p.text), md);
+    }
+
+    /// 原文に元からあるプレースホルダの形の文字列は、復元で本物と取り違えない。
+    #[test]
+    fn literal_placeholder_text_in_the_source_is_kept() {
+        let md = "Literal ⟦c1⟧ and `actual code`";
+        let p = protect(md);
+        assert_eq!(p.restore(&p.text), md);
+    }
+
+    #[test]
+    fn multi_line_display_math_is_one_block() {
+        let md = "Before\n\n$$\nx = \\text{distance}\n$$\n\nAfter";
+        let p = protect(md);
+        assert_eq!(p.text, "Before\n\n⟦M1⟧\n\nAfter");
+        assert!(p.is_block("⟦M1⟧"));
+        assert_eq!(p.restore(&p.text), md);
+        // 閉じの無い `$$` は触らない。
+        let p = protect("$$\nunclosed");
+        assert_eq!(p.text, "$$\nunclosed");
     }
 
     #[test]

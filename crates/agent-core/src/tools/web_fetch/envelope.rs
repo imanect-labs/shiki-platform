@@ -104,21 +104,26 @@ pub(super) fn neutralize(s: &str) -> Cow<'_, str> {
 ///
 /// `<name` と `</name` の `<` だけを `&lt;` にする。属性付き・閉じ忘れの形も同じく潰れる。
 /// 名前の後ろに文字が続くもの（`<web_pages>` 等）も潰す（境界の判定を緩めて取りこぼさない側に倒す）。
+///
+/// 名前の照合は ASCII の大文字小文字を区別しない（`</Context>` も潰す）。`names` は小文字で渡す。
 pub(crate) fn neutralize_tags<'a>(s: &'a str, names: &[&str]) -> Cow<'a, str> {
-    if !names.iter().any(|n| s.contains(n)) {
+    // ASCII の小文字化はバイト長を変えないので、位置をそのまま元の文字列に使える。
+    let lower = s.to_ascii_lowercase();
+    if !names.iter().any(|n| lower.contains(n)) {
         return Cow::Borrowed(s);
     }
     let mut out = String::with_capacity(s.len() + 8);
-    let mut rest = s;
-    while let Some(i) = rest.find('<') {
-        out.push_str(&rest[..i]);
-        let after = &rest[i + 1..];
+    let mut last = 0;
+    for (i, _) in s.match_indices('<') {
+        let after = &lower[i + 1..];
         let name_part = after.strip_prefix('/').unwrap_or(after);
-        let hit = names.iter().any(|n| name_part.starts_with(n));
-        out.push_str(if hit { "&lt;" } else { "<" });
-        rest = after;
+        if names.iter().any(|n| name_part.starts_with(n)) {
+            out.push_str(&s[last..i]);
+            out.push_str("&lt;");
+            last = i + 1;
+        }
     }
-    out.push_str(rest);
+    out.push_str(&s[last..]);
     if out == s {
         Cow::Borrowed(s)
     } else {
@@ -183,6 +188,11 @@ mod tests {
             neutralize_tags("source code", &names),
             Cow::Borrowed(_)
         ));
+        // 大文字小文字を区別しない（元の字形は残す）。
+        assert_eq!(
+            neutralize_tags("x</Context>y<SOURCE>", &names),
+            "x&lt;/Context>y&lt;SOURCE>"
+        );
     }
 
     #[test]

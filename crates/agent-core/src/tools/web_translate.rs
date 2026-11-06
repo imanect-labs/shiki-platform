@@ -72,6 +72,9 @@ const TRANSLATE_FETCH_CAP: usize = 2 * 1024 * 1024;
 /// 1 チャンクの出力上限の天井（トークン）。
 const MAX_OUTPUT_TOKENS: usize = 32_768;
 
+/// 出力上限を窓の残りで切るときの下限（これより狭いと訳文を書き切れない）。
+const MIN_OUTPUT_TOKENS: usize = 1_024;
+
 /// コンテキスト長が分からないモデルの保守的な既定（トークン）。
 const DEFAULT_CONTEXT_TOKENS: usize = 32_000;
 
@@ -245,6 +248,13 @@ impl WebTranslateTool {
         max_tokens: u32,
         key: String,
     ) -> Result<Generated, LlmError> {
+        // 出力の上限は、コンテキストから入力の見積もりを引いた残りを超えない（小さい窓のモデルで
+        // 「入力＋出力上限が窓を超える」と拒否されないように）。
+        let room = self
+            .context_window()
+            .saturating_sub(prompt::estimate_tokens(&system) + prompt::estimate_tokens(&user))
+            .max(MIN_OUTPUT_TOKENS);
+        let max_tokens = max_tokens.min(u32::try_from(room).unwrap_or(u32::MAX));
         let mut req = GenerateRequest::new(vec![Message::text(Role::User, user)]);
         req.model.clone_from(&self.model);
         req.system = Some(system);
@@ -271,11 +281,15 @@ impl WebTranslateTool {
         })
     }
 
-    fn input_budget_tokens(&self, source: &str, system: &str) -> usize {
-        let window = self
-            .backend
+    /// モデルのコンテキスト長（分からなければ保守的な既定）。
+    fn context_window(&self) -> usize {
+        self.backend
             .context_window(self.model.as_deref())
-            .map_or(DEFAULT_CONTEXT_TOKENS, |w| w as usize);
+            .map_or(DEFAULT_CONTEXT_TOKENS, |w| w as usize)
+    }
+
+    fn input_budget_tokens(&self, source: &str, system: &str) -> usize {
+        let window = self.context_window();
         // 出力の確保分: 本文の見積もり × 膨張係数 2 ＋ 思考の余裕。
         let reserve = prompt::estimate_tokens(source) * 2 + 4_096;
         window.saturating_sub(reserve + prompt::estimate_tokens(system))
