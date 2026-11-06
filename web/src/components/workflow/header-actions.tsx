@@ -457,6 +457,7 @@ export function WorkflowChrome({ ctx }: { ctx: EditorChromeContext }) {
                 <Share2 aria-hidden />
               </ChromeIconButton>
             ) : null}
+            {/* 64rem 未満は、ブロック・入力項目と同じく名前を隠してアイコンだけにする（名前は読み上げとツールチップ）。 */}
             {showEnable ? (
               <Button
                 variant="outline"
@@ -466,12 +467,12 @@ export function WorkflowChrome({ ctx }: { ctx: EditorChromeContext }) {
                 title={
                   state.dirty
                     ? "保存してから設定できます（同意は保存済みバージョンに適用されます）"
-                    : undefined
+                    : enableLabel
                 }
-                className="@max-[56rem]/chrome:hidden"
+                className="@max-[64rem]/chrome:px-2 @max-[56rem]/chrome:hidden"
               >
                 <Power className="size-4" aria-hidden />
-                {enableLabel}
+                <span className="@max-[64rem]/chrome:sr-only">{enableLabel}</span>
               </Button>
             ) : null}
             {desktop ? (

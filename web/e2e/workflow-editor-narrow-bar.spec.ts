@@ -5,7 +5,7 @@ import { cleanupQueue, loginViaKeycloak, removeWorkflowApi, uniqueName } from ".
 /// ワークフローのエディターの上のバー（PC）の e2e（BUG-231）:
 /// - バーは、ビューポートでなくサイドバーを除いたバーの幅で操作を畳み、タイトルと保存の状態をボタンの下に隠さない。
 /// - 1440px と 1280px（サイドバーを開いた既定）: 畳まない（実行履歴・バージョン履歴・共有・自動実行のボタンと、自動実行が
-///   有効なことのバッジを出す）。
+///   有効なことのバッジを出す）。1280px では、ブロック・入力項目・自動実行の設定はアイコンだけにする。
 /// - 1024px でサイドバーを開いている: 実行履歴・バージョン履歴・共有・自動実行を ⋯ に畳み、有効なだけのバッジは出さない。
 /// - 800px でサイドバーを開いている: 元に戻す・やり直すも ⋯ に畳み、保存の状態をタイトルの下に置く。
 /// どの幅でも、タイトルと保存の状態は欄の中に収まり、ボタンと重ならない。スマホ（390px）は今までどおり右上の ⋯ に
@@ -23,7 +23,7 @@ async function csrfHeaders(page: Page): Promise<Record<string, string>> {
 }
 
 /// タイトルと保存の状態が欄の中に見えていて、右の操作と重ならない。
-async function expectTitleClear(page: Page, name: string): Promise<{ stacked: boolean }> {
+async function expectTitleClear(page: Page, name: string): Promise<{ stacked: boolean; clipped: boolean }> {
   const area = page.getByTestId("chrome-bar-title");
   const actions = page.getByTestId("chrome-bar-actions");
   const title = area.getByText(name);
@@ -35,7 +35,9 @@ async function expectTitleClear(page: Page, name: string): Promise<{ stacked: bo
   expect(a.x + a.width, "タイトルの欄は右の操作より左で終わる").toBeLessThanOrEqual(b.x + 1);
   expect(s.x + s.width, "保存の状態は欄の中に収まる（切られていない）").toBeLessThanOrEqual(a.x + a.width + 1);
   expect(t.width, "タイトルが読める幅で出る").toBeGreaterThan(40);
-  return { stacked: s.y > t.y + 4 };
+  // 名前が省略されて（…で切られて）いるか。
+  const clipped = await title.evaluate((el) => el.scrollWidth > el.clientWidth + 1);
+  return { stacked: s.y > t.y + 4, clipped };
 }
 
 test("ワークフローのエディターの上のバーは、狭いと操作を ⋯ に畳み、タイトルと保存の状態を隠さない（BUG-231）", async ({
@@ -88,12 +90,16 @@ test("ワークフローのエディターの上のバーは、狭いと操作�
   await expect(consent).toHaveCount(0);
   await expectTitleClear(page, name);
 
-  // --- 1280px（ほかの e2e の既定の幅）: ブロックと入力項目は名前を隠すが、ほかは畳まない。
+  // --- 1280px（ほかの e2e の既定の幅）: ブロック・入力項目・自動実行の設定は名前を隠してアイコンだけにするが、畳まない。
   await page.setViewportSize({ width: 1280, height: 800 });
   const at1280 = await expectTitleClear(page, name);
   expect(at1280.stacked).toBe(false);
+  // 自動実行の設定の名前を隠した分で、名前を省略せずに出せる（前は頭の 7 字ほどで切れていた）。
+  expect(at1280.clipped, "名前が省略されずに出る").toBe(false);
   await expect(bar.getByTestId("workflow-share")).toBeVisible();
   await expect(bar.getByRole("button", { name: "自動実行の設定" })).toBeVisible();
+  await expect(bar.getByText("自動実行の設定", { exact: true })).toHaveCSS("position", "absolute");
+  await expect(bar.getByRole("button", { name: "自動実行の設定" })).toHaveAttribute("title", "自動実行の設定");
   // 有効なバッジは、隣の「自動実行の設定」と重なる語を省いて「有効（v1）」と見せる（読み上げは省かない）。
   await expect(bar.getByText("自動実行 有効（v1）")).toBeVisible();
   await expect(bar.getByText("自動実行", { exact: true })).toHaveCSS("position", "absolute");
