@@ -68,7 +68,7 @@ export function useExportActions({
   const toDocx = async (name: string) =>
     markdownToDocx({ name, markdown: await docxMarkdown(await markdown()) });
 
-  const openAsNote = async () => {
+  const openAsNote = reportFailure("ノートを開けませんでした。", async () => {
     // 同じ会話で同じ名前の下書きがあれば、上書きせず連番の名前で開く。
     const name = await fileName();
     let draftName = name;
@@ -77,12 +77,12 @@ export function useExportActions({
       sourcesNotice: hasDocSources,
     });
     router.push(draftHref(threadId, draftName));
-  };
+  });
 
-  const downloadMd = async () => {
+  const downloadMd = reportFailure("Markdown を書き出せませんでした。", async () => {
     const [md, name] = await Promise.all([markdown(), fileName()]);
     downloadBlob(new Blob([md], { type: "text/markdown;charset=utf-8" }), `${name}.md`);
-  };
+  });
 
   const downloadDocx = async () => {
     if (converting) return;
@@ -97,10 +97,10 @@ export function useExportActions({
     }
   };
 
-  const openSaveDocx = async () => {
+  const openSaveDocx = reportFailure("保存の準備ができませんでした。", async () => {
     setSaveName(await fileName());
     setSaveOpen(true);
-  };
+  });
 
   const saveDocx = async (target: SaveTarget) => {
     if (saving) return;
@@ -155,6 +155,18 @@ export function useExportActions({
   );
 
   return { converting, saving, openAsNote, downloadMd, downloadDocx, openSaveDocx, dialog };
+}
+
+/// 失敗をトーストで知らせる（呼び出し側は `void` で投げっぱなしにするので、ここで受け止める）。
+function reportFailure(message: string, run: () => Promise<void>): () => Promise<void> {
+  return async () => {
+    try {
+      await run();
+    } catch {
+      // 失敗の中身（部品の読み込み失敗など）は利用者には意味が無いので、やり直しを促す文だけ出す。
+      toast({ variant: "destructive", description: `${message}時間をおいてもう一度お試しください。` });
+    }
+  };
 }
 
 function errorText(e: unknown, fallback: string): string {

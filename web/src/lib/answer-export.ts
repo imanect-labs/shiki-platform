@@ -160,6 +160,12 @@ function loadParser(): Promise<Processor<Root>> {
         .use(remarkCjkFriendly)
         .use(math.default, { singleDollarTextMath: false })
         .freeze() as unknown as Processor<Root>,
+    (e: unknown) => {
+      // 読み込みに失敗したら（配信の入れ替え・通信の切れ目など）覚えずに捨て、次に押したときに読み直す
+      // （表示側の markdown-math と同じ。失敗を覚えると、再読み込みまで書き出しが全部できなくなる）。
+      parserPromise = null;
+      throw e;
+    },
   );
   return parserPromise;
 }
