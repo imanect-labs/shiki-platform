@@ -183,6 +183,7 @@ impl StorageService {
         let mut revoked: Vec<Uuid> = Vec::with_capacity(expired.len());
         for link_id in expired {
             let updated = sqlx::query(
+                // tenant-sql: allow(全テナント横断の共有リンク期限切れ失効)
                 "UPDATE node_share_link SET revoked_at = now() \
                  WHERE link_id = $1 AND revoked_at IS NULL \
                    AND expires_at IS NOT NULL AND expires_at <= $2",
@@ -220,6 +221,7 @@ impl StorageService {
     /// 期限付き active リンクが無ければ `None`。per-user 台帳の期限はリンク期限を追随するため対象外。
     pub async fn next_share_link_expiry(&self) -> Result<Option<DateTime<Utc>>, StorageError> {
         let row: (Option<DateTime<Utc>>,) = sqlx::query_as(
+            // tenant-sql: allow(全テナント横断の次回失効時刻算出)
             "SELECT MIN(expires_at) FROM node_share_link \
              WHERE revoked_at IS NULL AND expires_at IS NOT NULL \
                AND kind IN ('file', 'folder')",

@@ -180,6 +180,7 @@ fn base_config(db_url: &str) -> AppConfig {
         },
         database: DatabaseConfig {
             url: db_url.into(),
+            migrate_url: None,
             max_connections: 5,
         },
         auth: AuthConfig {

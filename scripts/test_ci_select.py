@@ -4,6 +4,7 @@
 """
 
 import importlib.util
+import json
 import subprocess
 import tempfile
 import textwrap
@@ -245,6 +246,31 @@ class SelectionGapTest(unittest.TestCase):
                "packages": [], "e2e_all": False, "e2e": []}
         r = ci.selection_gap(sel, set(), set(), ["python", "compose-smoke", "tabular-runner", "changes"])
         self.assertEqual(r["missed"], ["ジョブ python（PR では回らない）"])
+
+    def test_flaky_tests_are_parsed(self):
+        junit = self.JUNIT.replace(
+            "</testsuite>",
+            '<testcase name="both" classname="shiki-x::y"><flakyFailure/><failure message="z"/></testcase></testsuite>',
+        )
+        # 最後まで落ちたもの（failure）は flaky に数えない。
+        self.assertEqual(ci.flaky_rust_tests([junit]), ["shiki-yui retried"])
+        report = (
+            '{"suites": [{"title": "data.spec.ts", "file": "data.spec.ts", "specs": [], "suites": ['
+            '{"title": "grid", "file": "data.spec.ts", "specs": ['
+            '{"title": "edits a cell", "file": "data.spec.ts", "tests": [{"status": "flaky"}]},'
+            '{"title": "sorts", "file": "data.spec.ts", "tests": [{"status": "expected"}]}]}]}]}'
+        )
+        self.assertEqual(ci.flaky_e2e_tests([report]), ["E2E data.spec.ts › grid › edits a cell"])
+
+    def test_flaky_issue_candidates_are_limited(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cases = "".join(f'<testcase name="t{i}" classname="shiki-a::b"><flakyFailure/></testcase>' for i in range(3))
+            Path(tmp, "junit.xml").write_text(f"<testsuites><testsuite>{cases}</testsuite></testsuites>")
+            out = Path(tmp, "flaky.json")
+            ci.main(["flaky", "--dir", tmp, "--output", str(out), "--limit", "2"])
+            issues = json.loads(out.read_text())
+        self.assertEqual([i["title"] for i in issues], ["flaky: shiki-a::b t0", "flaky: shiki-a::b t1"])
+        self.assertIn("`shiki-a::b t0`", issues[0]["body"])
 
     def test_truncated_junit_is_skipped(self):
         self.assertEqual(ci.failed_rust_tests(["<testsuites><testsuite>"], []), set())

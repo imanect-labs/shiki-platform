@@ -207,6 +207,7 @@ async fn cron_tick(deps: &TriggerDeps) -> anyhow::Result<()> {
         .rows_affected();
         let next = app_platform::next_cron_run_after(&s.expr, chrono::Utc::now())
             .unwrap_or(s.next_run_at + chrono::Duration::hours(1));
+        // tenant-sql: allow(全テナント横断の cron 次回時刻更新（id は直前の横断走査から）)
         sqlx::query("UPDATE app_function_schedule SET next_run_at = $2 WHERE id = $1")
             .bind(s.id)
             .bind(next)

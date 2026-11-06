@@ -292,6 +292,7 @@ fn config_with(idp_base: &str, cors: Vec<String>) -> AppConfig {
         },
         database: DatabaseConfig {
             url: "postgres://localhost/none".into(),
+            migrate_url: None,
             max_connections: 1,
         },
         auth: AuthConfig {

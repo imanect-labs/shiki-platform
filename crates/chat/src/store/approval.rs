@@ -77,10 +77,12 @@ impl ChatStore {
         let Some(tool_name) = pending_name else {
             // 先勝ちで既に決定済み（承認待ちが消えた直後の二重送信）は no-op として受ける。
             let decided: Option<String> = sqlx::query_scalar(
-                "SELECT decision FROM run_approval WHERE run_id = $1 AND tool_call_id = $2",
+                "SELECT decision FROM run_approval \
+                  WHERE run_id = $1 AND tool_call_id = $2 AND tenant_id = $3",
             )
             .bind(run_id)
             .bind(tool_call_id)
+            .bind(ctx.tenant_id())
             .fetch_optional(&self.db)
             .await
             .map_err(|e| map_db(&e))?;
@@ -150,6 +152,7 @@ impl ChatStore {
         tool_call_id: &str,
     ) -> Result<Option<bool>, ChatError> {
         let d: Option<String> = sqlx::query_scalar(
+            // tenant-sql: allow(ワーカー内部の run_id で承認をポーリング)
             "SELECT decision FROM run_approval WHERE run_id = $1 AND tool_call_id = $2",
         )
         .bind(run_id)
@@ -169,6 +172,7 @@ impl ChatStore {
         tool_name: &str,
     ) -> Result<bool, ChatError> {
         let updated = sqlx::query(
+            // tenant-sql: allow(fencing 付きの内部 run_id で更新)
             "UPDATE generation_run SET pending_approval = $3, updated_at = now() \
              WHERE run_id = $1 AND fencing_token = $2",
         )
@@ -192,6 +196,7 @@ impl ChatStore {
         fencing_token: i64,
     ) -> Result<bool, ChatError> {
         let updated = sqlx::query(
+            // tenant-sql: allow(fencing 付きの内部 run_id で更新)
             "UPDATE generation_run SET pending_approval = NULL \
              WHERE run_id = $1 AND fencing_token = $2 AND pending_approval IS NOT NULL",
         )
@@ -209,6 +214,7 @@ impl ChatStore {
         run_id: Uuid,
     ) -> Result<Option<(String, String)>, ChatError> {
         let p: Option<Option<sqlx::types::Json<serde_json::Value>>> =
+            // tenant-sql: allow(テスト用・内部 run_id で照会（HTTP から呼ばないこと）)
             sqlx::query_scalar("SELECT pending_approval FROM generation_run WHERE run_id = $1")
                 .bind(run_id)
                 .fetch_optional(&self.db)
@@ -230,6 +236,7 @@ impl ChatStore {
         status: RunStatus,
     ) -> Result<bool, ChatError> {
         let updated = sqlx::query(
+            // tenant-sql: allow(fencing 付きの内部 run_id で状態更新)
             "UPDATE generation_run SET status = $3, updated_at = now() \
              WHERE run_id = $1 AND fencing_token = $2",
         )
@@ -338,6 +345,7 @@ impl ChatStore {
     /// キャンセル要求が立っているか（承認待ちワーカーが待機を打ち切る判定）。
     pub async fn is_cancel_requested(&self, run_id: Uuid) -> Result<bool, ChatError> {
         let c: Option<bool> =
+            // tenant-sql: allow(ワーカー内部の run_id でキャンセル確認)
             sqlx::query_scalar("SELECT cancel_requested FROM generation_run WHERE run_id = $1")
                 .bind(run_id)
                 .fetch_optional(&self.db)

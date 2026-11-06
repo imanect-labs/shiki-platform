@@ -571,6 +571,77 @@ def failed_e2e_specs(reports: list[str]) -> set[str]:
     return failed
 
 
+def flaky_rust_tests(junit_texts: list[str]) -> list[str]:
+    """nextest の JUnit で、落ちてから再試行で通った（flaky な）テスト。「<パッケージ>::<バイナリ> <テスト名>」。
+
+    nextest は再試行で通ったテストに flakyFailure / flakyError を付ける。最後まで落ちたもの（failure）は
+    selection-gap と通常の失敗が扱うので、ここでは数えない。
+    """
+    flaky = set()
+    for text in junit_texts:
+        try:
+            root = ET.fromstring(text)
+        except ET.ParseError as e:
+            print(f"::warning::JUnit を読めない（flaky の集計から外す）: {e}")
+            continue
+        for case in root.iter("testcase"):
+            if case.find("failure") is not None or case.find("error") is not None:
+                continue
+            if case.find("flakyFailure") is not None or case.find("flakyError") is not None:
+                flaky.add(f"{case.get('classname', '')} {case.get('name', '')}".strip())
+    return sorted(flaky)
+
+
+def flaky_e2e_tests(reports: list[str]) -> list[str]:
+    """Playwright の JSON レポートで、再試行で通った（status が flaky の）テスト。「E2E <spec> › <タイトル>」。"""
+    flaky = set()
+
+    def walk(suite: dict, titles: list[str]) -> None:
+        here = titles + ([suite["title"]] if suite.get("title") and not suite["title"].endswith(".ts") else [])
+        for spec in suite.get("specs", []):
+            if any(t.get("status") == "flaky" for t in spec.get("tests", [])):
+                file = (spec.get("file") or suite.get("file", "")).replace("\\", "/").rsplit("/", 1)[-1]
+                flaky.add(" › ".join([f"E2E {file}", *here, spec.get("title", "")]))
+        for child in suite.get("suites", []):
+            walk(child, here)
+
+    for text in reports:
+        for suite in json.loads(text).get("suites", []):
+            walk(suite, [])
+    return sorted(flaky)
+
+
+def cmd_flaky(args: argparse.Namespace) -> int:
+    """main の run で再試行により通ったテストを、1 テスト 1 件の Issue 候補（JSON）にする。"""
+    base = Path(args.dir)
+    junit = [p.read_text(encoding="utf-8") for p in sorted(base.rglob("*.xml"))]
+    reports = [p.read_text(encoding="utf-8") for p in sorted(base.rglob("e2e-results.json"))]
+    tests = flaky_rust_tests(junit) + flaky_e2e_tests(reports)
+    run = "{}/{}/actions/runs/{}".format(os.environ.get("GITHUB_SERVER_URL", ""), os.environ.get("GITHUB_REPOSITORY", ""),
+                                         os.environ.get("GITHUB_RUN_ID", ""))
+    issues = []
+    for t in tests[: args.limit]:
+        body = "\n".join([
+            "main の run で、このテストは**一度落ちてから再試行で通りました**（CI は緑のまま）。"
+            "nextest（retries = 2）と Playwright（CI で retries: 1）の再試行が吸収した flaky を、"
+            "`scripts/ci-select.py flaky` が自動で記録しています。",
+            "",
+            f"- テスト: {md_code(t)}",
+            f"- コミット: {os.environ.get('GITHUB_SHA', '?')}",
+            f"- run: {run}",
+            "",
+            "同じテストが再び flaky になると、この Issue にコメントが足されます（回数が頻度の目安）。",
+            "直すまでの間に隔離が要るなら、nextest は `.config/nextest.toml` の overrides、Playwright は `test.fixme` で理由を書いて外す。",
+        ])
+        issues.append({"title": f"flaky: {t}", "body": body + "\n"})
+    if len(tests) > args.limit:
+        print(f"::warning::flaky が {len(tests)} 件あり、先頭 {args.limit} 件だけ記録する")
+    Path(args.output).write_text(json.dumps(issues, ensure_ascii=False, indent=1), encoding="utf-8")
+    for t in tests:
+        print(f"flaky: {t}")
+    return 0
+
+
 # ジョブ → それを回すかを決める選択結果のキー（ci.yml の各ジョブの if: と同じ）。
 JOB_FLAGS = {
     "rust": "rust", "coverage": "rust", "data-strategies": "rust", "cargo-deny": "rust",
@@ -701,6 +772,12 @@ def cmd_diff_coverage(args: argparse.Namespace) -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="cmd", required=True)
+
+    f = sub.add_parser("flaky", help="再試行で通ったテストを Issue 候補（JSON）にする（main）")
+    f.add_argument("--dir", required=True, help="テスト結果（nextest の JUnit・Playwright の e2e-results.json）")
+    f.add_argument("--output", required=True, help="Issue 候補 [{title, body}] の書き出し先")
+    f.add_argument("--limit", type=int, default=20, help="1 回の run で記録する上限")
+    f.set_defaults(func=cmd_flaky)
 
     p = sub.add_parser("select")
     p.add_argument("--base", default="HEAD^1")

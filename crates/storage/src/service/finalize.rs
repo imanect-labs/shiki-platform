@@ -99,10 +99,12 @@ impl StorageService {
         if actual_sha != pending.declared_sha256 || actual_size as i64 != pending.declared_size {
             let _ = self.store.delete(&incoming_key).await;
             let _ = self.store.delete(&pending.staging_key).await;
-            let _ = sqlx::query("DELETE FROM pending_upload WHERE upload_id = $1")
-                .bind(upload_id)
-                .execute(&self.db)
-                .await;
+            let _ =
+                sqlx::query("DELETE FROM pending_upload WHERE upload_id = $1 AND tenant_id = $2")
+                    .bind(upload_id)
+                    .bind(ctx.tenant_id())
+                    .execute(&self.db)
+                    .await;
             return Err(StorageError::Integrity(format!(
                 "宣言ハッシュ/サイズと実体が一致しません (label={label})"
             )));
@@ -185,10 +187,13 @@ impl StorageService {
                     // pending を**この txn の先頭処理として claim**する（rows_affected=0 は
                     // 二重 finalize＝既に確定済みなので NotFound）。並行/再試行の finalize が
                     // 同一ノードを二重に作るのを防ぐ。
-                    let claimed = sqlx::query("DELETE FROM pending_upload WHERE upload_id = $1")
-                        .bind(upload_id)
-                        .execute(&mut *tx)
-                        .await?;
+                    let claimed = sqlx::query(
+                        "DELETE FROM pending_upload WHERE upload_id = $1 AND tenant_id = $2",
+                    )
+                    .bind(upload_id)
+                    .bind(ctx.tenant_id())
+                    .execute(&mut *tx)
+                    .await?;
                     if claimed.rows_affected() == 0 {
                         return Err(StorageError::NotFound);
                     }
@@ -287,10 +292,13 @@ impl StorageService {
                 // blob 行が無いと検知できないため）。upload 固有の incoming/staging だけ掃除する。
                 let _ = self.store.delete(&incoming_key).await;
                 let _ = self.store.delete(&pending.staging_key).await;
-                let _ = sqlx::query("DELETE FROM pending_upload WHERE upload_id = $1")
-                    .bind(upload_id)
-                    .execute(&self.db)
-                    .await;
+                let _ = sqlx::query(
+                    "DELETE FROM pending_upload WHERE upload_id = $1 AND tenant_id = $2",
+                )
+                .bind(upload_id)
+                .bind(ctx.tenant_id())
+                .execute(&self.db)
+                .await;
                 return Err(e);
             }
         };
@@ -324,10 +332,12 @@ impl StorageService {
         let mut tx = self.db.begin().await?;
         // pending を**この txn の先頭で claim**する（rows_affected=0 は二重 finalize＝既に確定済み
         // なので NotFound）。並行/再試行の finalize が 1 アップロードを 2 版に増やすのを防ぐ。
-        let claimed = sqlx::query("DELETE FROM pending_upload WHERE upload_id = $1")
-            .bind(upload_id)
-            .execute(&mut *tx)
-            .await?;
+        let claimed =
+            sqlx::query("DELETE FROM pending_upload WHERE upload_id = $1 AND tenant_id = $2")
+                .bind(upload_id)
+                .bind(ctx.tenant_id())
+                .execute(&mut *tx)
+                .await?;
         if claimed.rows_affected() == 0 {
             return Err(StorageError::NotFound);
         }

@@ -169,3 +169,40 @@ SELECT id, attempts, enqueued_at, last_error FROM job_queue_dead WHERE queue = '
 `truncated`）に出る。`truncated=true` が続く場合はバッチ上限に張り付いている＝流入が削除を
 上回っているので、保持日数か `MAX_BATCHES`（`crates/workflow-engine/src/run/store/gc.rs`）を
 見直す。
+
+---
+
+## 4. DB ロール: 実行時ロールと migration の所有者を分ける（#1030）
+
+shiki-server は**実行時**と**migration** で別の接続を使う。superuser とテーブル所有者は RLS を迂回するので、
+実行時は DML だけを持つ非 superuser のロールで接続する（RLS 段階導入の第 1 段）。
+
+| 設定 | 接続するロール | 権限 |
+| --- | --- | --- |
+| `database.url`（`SHIKI__DATABASE__URL`） | `shiki_runtime` のメンバ（compose では `shiki_app`） | 全テーブルの SELECT / INSERT / UPDATE / DELETE・sequence の利用・`shiki_analyze` の実行 |
+| `database.migrate_url`（`SHIKI__DATABASE__MIGRATE_URL`） | テーブルの所有者（migration を流すロール） | DDL |
+
+- `migrate_url` が未設定なら、従来どおり `url` で migration を流す（単一ロールの構成）。`url` を実行時ロールに
+  替えて `migrate_url` を付け忘れると、起動時の migration が権限不足で止まる（fail-fast）。
+- `shiki_runtime`（NOLOGIN のグループロール）は migration 0113 が作る。migration の実行ロールに CREATEROLE が
+  無い環境（マネージド Postgres 等）では、先に運用が作っておく:
+  ```sql
+  CREATE ROLE shiki_runtime NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
+  ```
+- ログイン用のロールは運用が作り、`shiki_runtime` のメンバにする（パスワードを migration に書かないため）:
+  ```sql
+  CREATE ROLE shiki_app LOGIN PASSWORD '...' IN ROLE shiki_runtime;
+  GRANT CONNECT ON DATABASE shiki TO shiki_app;
+  ```
+  compose では `postgres-roles` サービス（`deploy/compose/postgres/runtime-role.sh`）が起動のたびに冪等に作る。
+- **migration の所有者ロールを替えたとき**は、新しい所有者で既定権限を付け直す（既定権限は作ったロールごとに効く。
+  付け忘れると、以後の migration で増えた表に実行時ロールが触れず、初回アクセスで 42501 になる）:
+  ```sql
+  ALTER DEFAULT PRIVILEGES FOR ROLE <新しい所有者> IN SCHEMA public
+      GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO shiki_runtime;
+  ALTER DEFAULT PRIVILEGES FOR ROLE <新しい所有者> IN SCHEMA public
+      GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO shiki_runtime;
+  ```
+- 実行時の ANALYZE（構造化データのパーティションの統計・#986）は、PG16 ではテーブル所有者にしかできないため、
+  `data_*` に絞った SECURITY DEFINER 関数 `shiki_analyze(regclass, skip_locked)` を経由する。
+- 実行時ロールは `_sqlx_migrations`（migration の台帳）に触れない。
