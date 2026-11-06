@@ -1428,7 +1428,7 @@ const AssistantRow = React.memo(function AssistantRow({
           {latest ? (
             <p className="mt-3 text-center text-[11.5px] leading-relaxed text-muted-foreground" data-testid="chat-disclaimer">
               {compactDisclaimer ? null : (
-                <span className="hidden sm:inline">Shiki は社内文書を参照して回答します。</span>
+                <span className="hidden sm:inline">Shiki は必要に応じて社内文書を参照して回答します。</span>
               )}
               誤りが含まれる場合があります。
             </p>
