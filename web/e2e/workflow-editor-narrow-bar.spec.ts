@@ -139,7 +139,11 @@ test("ワークフローのエディターの上のバーは、狭いと操作�
     "自動実行の設定",
   ]);
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/narrow-bar-800-menu.png` });
-  await page.keyboard.press("Escape");
+  // 自動実行をオンにした知らせが残っていると、Escape は知らせを先に閉じる（BUG-177）。メニューが閉じたことまで確かめる。
+  await expect(async () => {
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("menu")).toHaveCount(0, { timeout: 1_000 });
+  }).toPass({ timeout: 10_000 });
 
   // --- スマホ（390px）: PC のバーの ⋯ は出さず、今までどおり右上の ⋯ に畳む。
   const phoneCtx = await browser.newContext({
