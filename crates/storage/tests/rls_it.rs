@@ -35,6 +35,7 @@ const APP_ROLE: &str = "shiki_rls_it";
 const PERMISSION_DENIED: &str = "42501";
 
 /// RLS の対象外にしているテナント表（migration 0114 の明示リストと一致させる）。`data_*` は別の段で扱う。
+/// audit_log・storage_event_outbox は jsonb の式インデックスを生成列＋btree に置き換えてから入れる（#1074）。
 const EXCLUDED: &[&str] = &["outbox_delivery_seq", "audit_log", "storage_event_outbox"];
 
 struct Env {
@@ -155,7 +156,9 @@ fn migration_tables() -> Vec<String> {
         if path.extension().and_then(|e| e.to_str()) != Some("sql") {
             continue;
         }
-        let sql = std::fs::read_to_string(&path).expect("read").to_lowercase();
+        // 空白（改行・タブを含む）を 1 つの空白に畳んでから探す（`CREATE\nTABLE` の書き方も拾う）。
+        let raw = std::fs::read_to_string(&path).expect("read").to_lowercase();
+        let sql = raw.split_whitespace().collect::<Vec<_>>().join(" ");
         let mut rest = sql.as_str();
         while let Some(at) = rest.find("create table") {
             rest = &rest[at + "create table".len()..];

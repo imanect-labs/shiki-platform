@@ -216,7 +216,7 @@ migration 0114 は、`tenant_id` を持つテナント表に RLS を付ける（
 | --- | --- |
 | `data_*` | `tenant_int`・パーティション・プール分割の上にある。別の段で扱う |
 | `outbox_delivery_seq` | `tenant_id` が NULL を取り得る（consumer 単位の採番） |
-| `audit_log`・`storage_event_outbox` | jsonb の式インデックスと GIN（`@>`）で引いている。RLS の付いた表では leakproof でない演算子をインデックス条件に使えず、文脈が未設定でも全行走査に落ちる。生成列＋btree に置き換えてから対象に入れる |
+| `audit_log`・`storage_event_outbox` | jsonb の式インデックスと GIN（`@>`）で引いている。RLS の付いた表では leakproof でない演算子をインデックス条件に使えず、文脈が未設定でも全行走査に落ちる。生成列＋btree に置き換えてから対象に入れる（#1074） |
 
 - **今は移行モード。** トランザクションのテナント文脈（`app.tenant_id`）が未設定なら従来どおり通し、設定されて
   いればその `tenant_id` の行だけを読み書きさせる。文脈は `storage::db_tenant::begin_tenant_tx`（または
