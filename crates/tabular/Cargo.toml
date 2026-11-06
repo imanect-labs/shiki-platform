@@ -33,6 +33,7 @@ uuid = { workspace = true, features = ["v4"] }
 tempfile = "3"
 
 [dev-dependencies]
+shiki-testenv.workspace = true
 
 # lib 名 authz/storage で参照するため machete（名前一致）が誤検出する。
 [package.metadata.cargo-machete]

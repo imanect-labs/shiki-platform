@@ -353,7 +353,7 @@ fn test_ctx(tenant: &str) -> AuthContext {
 
 async fn setup(parser: FakeParser) -> Option<TestEnv> {
     let serial = serial_lock().lock().await;
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return None;
     };

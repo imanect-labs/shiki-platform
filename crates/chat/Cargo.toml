@@ -52,6 +52,7 @@ url.workspace = true
 utoipa.workspace = true
 
 [dev-dependencies]
+shiki-testenv.workspace = true
 tokio = { workspace = true }
 # 結合テスト（generation_it / worker_it）は authz モック＋DB 直操作＋stub gateway のため実依存を dev でも引く。
 shiki-authz.workspace = true

@@ -43,7 +43,7 @@ struct IsolatedDb {
 
 impl IsolatedDb {
     async fn create() -> Option<Self> {
-        let Ok(base) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+        let Ok(base) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
             eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
             return None;
         };

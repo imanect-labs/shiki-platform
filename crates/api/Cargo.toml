@@ -76,6 +76,7 @@ chrono.workspace = true
 async-trait.workspace = true
 
 [dev-dependencies]
+shiki-testenv.workspace = true
 tower = { workspace = true, features = ["util"] }
 http-body-util = "0.1"
 # collab WS 結合テスト（collab_ws_it.rs）: 実 WS クライアント＋yrs クライアント文書。

@@ -114,7 +114,7 @@ impl RefResolver for FixedResolver {
 }
 
 async fn setup() -> Option<PgPool> {
-    let url = std::env::var("STORAGE_TEST_DATABASE_URL").ok()?;
+    let url = shiki_testenv::var("STORAGE_TEST_DATABASE_URL").ok()?;
     let pool = PgPoolOptions::new()
         .max_connections(5)
         .connect(&url)

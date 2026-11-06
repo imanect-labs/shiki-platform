@@ -69,7 +69,7 @@ async fn run(csv: &tempfile::NamedTempFile, op: RunnerOp) -> tabular::RunnerResp
 #[tokio::test]
 async fn schema_and_rows_work_on_real_csv() {
     let Some(_) = runner_path() else {
-        eprintln!("runner 未ビルドのためスキップ");
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "runner 未ビルド");
         return;
     };
     let csv = write_csv("id,name\n1,alice\n2,bob\n3,carol\n");
@@ -87,6 +87,7 @@ async fn schema_and_rows_work_on_real_csv() {
 #[tokio::test]
 async fn valid_select_query_works() {
     let Some(_) = runner_path() else {
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "runner 未ビルド");
         return;
     };
     let csv = write_csv("id,score\n1,10\n2,30\n3,20\n");
@@ -106,6 +107,7 @@ async fn valid_select_query_works() {
 #[tokio::test]
 async fn aggregation_query_infers_numeric_types() {
     let Some(_) = runner_path() else {
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "runner 未ビルド");
         return;
     };
     let csv = write_csv("region,amount\ntokyo,100\nosaka,50\ntokyo,30\n");
@@ -131,6 +133,7 @@ async fn aggregation_query_infers_numeric_types() {
 #[tokio::test]
 async fn grid_rows_stay_varchar_for_fidelity() {
     let Some(_) = runner_path() else {
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "runner 未ビルド");
         return;
     };
     let csv = write_csv("code\n007\n042\n");
@@ -147,6 +150,7 @@ async fn grid_rows_stay_varchar_for_fidelity() {
 #[tokio::test]
 async fn rejects_arbitrary_path_read() {
     let Some(_) = runner_path() else {
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "runner 未ビルド");
         return;
     };
     let csv = write_csv("a\n1\n");
@@ -167,6 +171,7 @@ async fn rejects_arbitrary_path_read() {
 #[tokio::test]
 async fn rejects_url_read() {
     let Some(_) = runner_path() else {
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "runner 未ビルド");
         return;
     };
     let csv = write_csv("a\n1\n");
@@ -184,6 +189,7 @@ async fn rejects_url_read() {
 #[tokio::test]
 async fn rejects_dml_ddl_control() {
     let Some(_) = runner_path() else {
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "runner 未ビルド");
         return;
     };
     let csv = write_csv("a\n1\n");
@@ -212,6 +218,7 @@ async fn rejects_dml_ddl_control() {
 #[tokio::test]
 async fn cannot_reenable_external_access() {
     let Some(_) = runner_path() else {
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "runner 未ビルド");
         return;
     };
     let csv = write_csv("a\n1\n");

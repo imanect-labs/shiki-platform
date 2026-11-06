@@ -479,7 +479,7 @@ mod audit_tests {
     /// 実効スコープの外の呼び出しは実行主体つきで audit_log に残る（検証 C-P2-3。以前は tracing だけ）。
     #[tokio::test]
     async fn out_of_scope_is_written_to_the_audit_log() {
-        let Ok(url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+        let Ok(url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
             eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
             return;
         };

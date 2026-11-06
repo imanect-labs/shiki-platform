@@ -18,6 +18,9 @@ path = "src/bin/holder.rs"
 [dependencies]
 nix = { version = "0.29", features = ["socket", "uio"] }
 
+[dev-dependencies]
+shiki-testenv.workspace = true
+
 [lints.rust]
 # namespace/FD 境界のみ unsafe を許す（他クレートは workspace の forbid を維持）。
 unsafe_code = "allow"

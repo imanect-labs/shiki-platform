@@ -46,6 +46,7 @@ ts-rs = { workspace = true }
 utoipa.workspace = true
 
 [dev-dependencies]
+shiki-testenv.workspace = true
 tokio.workspace = true
 sqlx.workspace = true
 reqwest.workspace = true
