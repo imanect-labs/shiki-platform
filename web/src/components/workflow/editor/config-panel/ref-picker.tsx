@@ -12,6 +12,7 @@ import { Braces, TriangleAlert } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { useMediaQuery } from "@/hooks/use-media-query";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -177,6 +178,8 @@ export function InsertMenu({
   onClosed: () => void;
 }) {
   const options = React.useMemo(() => refOptions(ctx), [ctx]);
+  // 入力項目を開く場所は幅で違う（PC は画面の上のバー、スマホは画面の上の ⋯ のメニュー・エディターと同じ境目）。
+  const desktop = useMediaQuery("(min-width: 768px)");
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -216,7 +219,9 @@ export function InsertMenu({
         ))}
         {ctx.inputFields.length === 0 ? (
           <p className="px-2 pb-1.5 pt-1 text-[11px] leading-relaxed text-muted-foreground">
-            実行するときに入れてもらう値（入力項目）は、画面の上の「入力項目」で追加できます
+            {desktop
+              ? "実行するときに入れてもらう値（入力項目）は、画面の上の「入力項目」で追加できます"
+              : "実行するときに入れてもらう値（入力項目）は、画面の上の ⋯ の「入力項目」で追加できます"}
           </p>
         ) : null}
       </DropdownMenuContent>
