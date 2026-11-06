@@ -350,7 +350,7 @@ async fn seed_file_node(pool: &PgPool) -> Uuid {
 }
 
 async fn setup() -> Option<Harness> {
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return None;
     };

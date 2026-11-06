@@ -45,7 +45,7 @@ fn ctx_for(tenant_id: &str, user_id: &str) -> AuthContext {
 
 #[tokio::test]
 async fn check_allows_member_and_denies_other_org() {
-    let Ok(base_url) = std::env::var("OPENFGA_TEST_URL") else {
+    let Ok(base_url) = shiki_testenv::var("OPENFGA_TEST_URL") else {
         eprintln!("OPENFGA_TEST_URL 未設定のためスキップ");
         return;
     };
@@ -99,7 +99,7 @@ async fn check_allows_member_and_denies_other_org() {
 
 #[tokio::test]
 async fn write_and_delete_tuple_are_idempotent() {
-    let Ok(base_url) = std::env::var("OPENFGA_TEST_URL") else {
+    let Ok(base_url) = shiki_testenv::var("OPENFGA_TEST_URL") else {
         eprintln!("OPENFGA_TEST_URL 未設定のためスキップ");
         return;
     };
@@ -159,7 +159,7 @@ async fn write_and_delete_tuple_are_idempotent() {
 /// BatchCheck（Task 15.9）: 入力順で判定が返り、50 問超は分割して全問を判定する。単発 check と一致する。
 #[tokio::test]
 async fn batch_check_matches_single_checks_and_chunks() {
-    let Ok(base_url) = std::env::var("OPENFGA_TEST_URL") else {
+    let Ok(base_url) = shiki_testenv::var("OPENFGA_TEST_URL") else {
         eprintln!("OPENFGA_TEST_URL 未設定のためスキップ");
         return;
     };

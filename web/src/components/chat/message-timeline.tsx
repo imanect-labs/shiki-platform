@@ -12,7 +12,7 @@ import * as React from "react";
 
 import type { Citation, ContentBlock } from "@/lib/chat-api";
 import { linkifyCitations } from "@/lib/citation";
-import { collectImageSources, pageSourcedTexts } from "@/lib/answer-images";
+import { collectImageSources, pageSourcedTexts, type ImageProxy } from "@/lib/answer-images";
 import { Markdown } from "@/components/prompt-kit/markdown";
 import { ChainOfThought } from "./chain-of-thought";
 import type { ToolActivityItem } from "./tool-activity";
@@ -154,6 +154,7 @@ export function MessageTimeline({
   phase = null,
   waitingLabel = null,
   memoryKey = null,
+  imageProxy = null,
 }: {
   segments: TimelineSegment[];
   citations: Citation[];
@@ -165,6 +166,9 @@ export function MessageTimeline({
   /// 開閉の記憶の鍵（サーバ上の回答 ID）。生成中の行と確定後の行で同じ値を渡すと、確定で
   /// 行が作り直されても思考パネルなどの開閉が保たれる（閉じて読んでいる位置が飛ばない）。
   memoryKey?: string | null;
+  /// 出典の画像を shiki-server 経由で読む URL を作る（#1044）。回答がサーバに保存される前（ID が
+  /// まだ無い）や会話以外の描画では null にし、画像はリンクに落とす。
+  imageProxy?: ImageProxy | null;
 }) {
   const firstWork = segments.findIndex((s) => s.kind === "work");
   const lastText = segments.findLastIndex((s) => s.kind === "text");
@@ -212,7 +216,7 @@ export function MessageTimeline({
         }
         return (
           <div key={s.key} className="text-[15px] leading-relaxed">
-            <Markdown streaming={streaming && i === lastText} imageSources={imageSources}>
+            <Markdown streaming={streaming && i === lastText} imageSources={imageSources} imageProxy={imageProxy}>
               {linkifyCitations(s.text, citations)}
             </Markdown>
           </div>

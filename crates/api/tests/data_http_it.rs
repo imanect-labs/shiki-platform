@@ -219,8 +219,8 @@ const USERS: [&str; 4] = ["alice", "bob", "carol", "admin"];
 
 async fn setup() -> Option<Env> {
     let (Ok(db_url), Ok(fga_url)) = (
-        std::env::var("STORAGE_TEST_DATABASE_URL"),
-        std::env::var("OPENFGA_TEST_URL"),
+        shiki_testenv::var("STORAGE_TEST_DATABASE_URL"),
+        shiki_testenv::var("OPENFGA_TEST_URL"),
     ) else {
         eprintln!("STORAGE_TEST_DATABASE_URL / OPENFGA_TEST_URL 未設定のためスキップ");
         return None;

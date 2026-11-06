@@ -30,7 +30,7 @@ use llm_gateway::{
 use sqlx::{postgres::PgPoolOptions, PgPool};
 
 async fn pool() -> Option<PgPool> {
-    let url = std::env::var("STORAGE_TEST_DATABASE_URL")
+    let url = shiki_testenv::var("STORAGE_TEST_DATABASE_URL")
         .ok()
         .or_else(|| {
             eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");

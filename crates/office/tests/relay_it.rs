@@ -205,11 +205,13 @@ async fn http_allowlist_is_enforced() {
 /// 中継越しに文書を開けること・executescript が届かないことを確かめる。
 #[tokio::test]
 async fn relay_live_collabora() {
-    let (Ok(base), Ok(wopi_src)) = (
-        std::env::var("OFFICE_RELAY_TEST_COLLABORA"),
-        std::env::var("OFFICE_RELAY_TEST_WOPI_SRC"),
-    ) else {
-        eprintln!("skip: OFFICE_RELAY_TEST_COLLABORA / OFFICE_RELAY_TEST_WOPI_SRC 未設定");
+    // COLLABORA を先に読む（未設定なら許可リストどおりスキップ）。渡したのに WOPI_SRC を渡し忘れたら必須モードで落とす。
+    let Ok(base) = shiki_testenv::var("OFFICE_RELAY_TEST_COLLABORA") else {
+        eprintln!("skip: OFFICE_RELAY_TEST_COLLABORA 未設定");
+        return;
+    };
+    let Ok(wopi_src) = shiki_testenv::var("OFFICE_RELAY_TEST_WOPI_SRC") else {
+        eprintln!("skip: OFFICE_RELAY_TEST_WOPI_SRC 未設定");
         return;
     };
     let _ = tracing_subscriber::fmt().with_env_filter("warn").try_init();

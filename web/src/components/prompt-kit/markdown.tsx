@@ -13,7 +13,7 @@ import { EyeOff } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { citeNumberFromHref } from "@/lib/citation";
-import { decideAnswerImage, type ImageSources } from "@/lib/answer-images";
+import { decideAnswerImage, type ImageProxy, type ImageSources } from "@/lib/answer-images";
 import { CitationMarker } from "@/components/chat/citations/citation-marker";
 import { resolveKind } from "@imanect/yui";
 import { isYuiLanguage } from "@imanect/yui/react";
@@ -181,16 +181,19 @@ function codeClassName(child: React.ReactNode): string | undefined {
 /// 描画中の本文と、生成中かどうか（```ui の図が書きかけの行を描かないようにする）。
 /// `untrusted` は利用者が書いた本文（発話の吹き出し）。図・表・引用番号にせず、リンク先を見せる。
 /// `imageSources` は画像として読み込んでよい URL（出典に現れたもの・lib/answer-images）。
+/// `imageProxy` は出典の画像を shiki-server 経由で読む URL を作る（#1044）。無ければ外部の画像は読み込まない。
 const SourceContext = React.createContext<{
   text: string;
   streaming: boolean;
   untrusted: boolean;
   imageSources: ImageSources;
+  imageProxy: ImageProxy | null;
 }>({
   text: "",
   streaming: false,
   untrusted: false,
   imageSources: NO_IMAGE_SOURCES,
+  imageProxy: null,
 });
 
 /// フェンスが原文で終わっているか。react-markdown（mdast-util-to-hast）はフェンスの中身の末尾に
@@ -246,63 +249,54 @@ function UserLink({ href, children }: { href: string; children: React.ReactNode 
 /// （#1005・PIT-77: 回答の画像は閲覧者のブラウザがクリック無しで取りに行くので、LLM が組み立てた URL で
 /// 会話の中身を外へ送らせない）。読み込む画像も Referer を送らない（どの会話から開いたかを渡さない）。
 function AnswerImage({ src, alt }: { src: string; alt: string }) {
-  const { imageSources } = React.useContext(SourceContext);
+  const { imageSources, imageProxy } = React.useContext(SourceContext);
   const inLink = React.useContext(InLinkContext);
+  // サーバが取得を断った・取得先が失敗した画像は、読み込まなかった画像と同じリンクに落とす。
+  const [failed, setFailed] = React.useState(false);
+  // サーバ描画の <img> は hydration より先に読み込みに失敗し得る（その error は React に届かない）。
+  // 付いた時点で「読み終えたのに中身が無い」なら失敗として扱う。
+  const imgRef = React.useCallback((img: HTMLImageElement | null) => {
+    if (img && img.complete && img.naturalWidth === 0) setFailed(true);
+  }, []);
   const decision = decideAnswerImage(src, imageSources);
   if (decision.kind === "drop") return alt ? <>{alt}</> : null;
   if (decision.kind === "link") {
-    const label = `出典に無い外部の画像のため読み込んでいません（${decision.host}）`;
-    const content = (
-      <>
-        <EyeOff aria-hidden className="mr-1 inline size-[0.95em] -translate-y-px align-middle text-muted-foreground" />
-        外部の画像{alt ? `「${alt}」` : ""}
-        <span className="ml-1 text-muted-foreground">{decision.host}</span>
-      </>
-    );
-    // リンクの中（`[![badge](img)](href)`）では外側のリンクに任せ、ラベルだけにする（<a> を入れ子にしない）。
-    if (inLink) {
-      return (
-        <span
-          title={`${label}: ${decision.href}`}
-          data-testid="answer-image-blocked"
-          className={cn("rounded-[5px] bg-muted/60 px-1 text-[0.9em] text-foreground/80", WRAP_ANYWHERE)}
-        >
-          {content}
-        </span>
-      );
-    }
     return (
-      <a
+      <BlockedImage
         href={decision.href}
-        target="_blank"
-        rel="noopener noreferrer nofollow"
-        referrerPolicy="no-referrer"
-        title={`${label}。押すと新しいタブで開きます: ${decision.href}`}
-        aria-label={`${alt || "画像"}: ${label}。押すと新しいタブで開きます`}
-        data-testid="answer-image-blocked"
-        className={cn(
-          // 本文の行の高さを変えない（上下の余白を持たせない）。枠は付けず、押せることは下線と hover で見せる。
-          "inline rounded-[5px] bg-muted/60 px-1 text-[0.9em] text-foreground/80 underline decoration-border",
-          "underline-offset-2 hover:bg-muted hover:text-foreground hover:decoration-foreground/40",
-          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-          WRAP_ANYWHERE,
-        )}
-      >
-        {content}
-      </a>
+        host={decision.host}
+        alt={alt}
+        inLink={inLink}
+        reason="出典に無い外部の画像のため読み込んでいません"
+      />
+    );
+  }
+  const host = new URL(decision.src).host;
+  // 出典の画像でも、代理取得の経路が無い本文（会話以外）や取得に失敗したものは読み込まない。
+  // ブラウザから外部ホストへ直接は読みに行かない（閲覧の事実と IP を配信元へ渡さない・#1044）。
+  if (!imageProxy || failed) {
+    return (
+      <BlockedImage
+        href={decision.src}
+        host={host}
+        alt={alt}
+        inLink={inLink}
+        reason={failed ? "外部の画像を読み込めませんでした" : "外部の画像のため読み込んでいません"}
+      />
     );
   }
   // 段落（<p>）の中に置かれるので、ブロック要素（figure）ではなく span で組む。
-  const host = new URL(decision.src).host;
   return (
     <span className="my-3 block">
-      {/* eslint-disable-next-line @next/next/no-img-element -- 外部の任意のホストの画像で、next/image の最適化対象外 */}
+      {/* eslint-disable-next-line @next/next/no-img-element -- shiki-server 経由の外部画像で、next/image の最適化対象外 */}
       <img
-        src={decision.src}
+        src={imageProxy(decision.src)}
         alt={alt}
         loading="lazy"
         decoding="async"
         referrerPolicy="no-referrer"
+        ref={imgRef}
+        onError={() => setFailed(true)}
         data-testid="answer-image"
         className="block h-auto max-h-[28rem] max-w-full rounded-lg border border-border/60"
       />
@@ -311,6 +305,62 @@ function AnswerImage({ src, alt }: { src: string; alt: string }) {
         {host}
       </span>
     </span>
+  );
+}
+
+/// 読み込まない外部の画像。行き先のホストを添えたリンクにする（押したときだけ新しいタブで開く）。
+function BlockedImage({
+  href,
+  host,
+  alt,
+  inLink,
+  reason,
+}: {
+  href: string;
+  host: string;
+  alt: string;
+  inLink: boolean;
+  reason: string;
+}) {
+  const content = (
+    <>
+      <EyeOff aria-hidden className="mr-1 inline size-[0.95em] -translate-y-px align-middle text-muted-foreground" />
+      外部の画像{alt ? `「${alt}」` : ""}
+      <span className="ml-1 text-muted-foreground">{host}</span>
+    </>
+  );
+  const label = `${reason}（${host}）`;
+  // リンクの中（`[![badge](img)](href)`）では外側のリンクに任せ、ラベルだけにする（<a> を入れ子にしない）。
+  if (inLink) {
+    return (
+      <span
+        title={`${label}: ${href}`}
+        data-testid="answer-image-blocked"
+        className={cn("rounded-[5px] bg-muted/60 px-1 text-[0.9em] text-foreground/80", WRAP_ANYWHERE)}
+      >
+        {content}
+      </span>
+    );
+  }
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer nofollow"
+      referrerPolicy="no-referrer"
+      title={`${label}。押すと新しいタブで開きます: ${href}`}
+      aria-label={`${alt || "画像"}: ${label}。押すと新しいタブで開きます`}
+      data-testid="answer-image-blocked"
+      className={cn(
+        // 本文の行の高さを変えない（上下の余白を持たせない）。枠は付けず、押せることは下線と hover で見せる。
+        "inline rounded-[5px] bg-muted/60 px-1 text-[0.9em] text-foreground/80 underline decoration-border",
+        "underline-offset-2 hover:bg-muted hover:text-foreground hover:decoration-foreground/40",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        WRAP_ANYWHERE,
+      )}
+    >
+      {content}
+    </a>
   );
 }
 
@@ -545,6 +595,7 @@ export function Markdown({
   breaks = false,
   untrusted = false,
   imageSources = NO_IMAGE_SOURCES,
+  imageProxy = null,
 }: {
   children: string;
   className?: string;
@@ -558,6 +609,8 @@ export function Markdown({
   /// 画像として読み込んでよい URL（回答なら、その回答のツール結果・引用に現れた画像・lib/answer-images）。
   /// 省略すると外部の画像は読み込まず、行き先のホストを添えたリンクにする。
   imageSources?: ImageSources;
+  /// 出典の画像を shiki-server 経由で読む URL を作る（#1044）。省略すると出典の画像も読み込まずリンクにする。
+  imageProxy?: ImageProxy | null;
 }) {
   // 数式は AI の回答だけ（利用者の発話は打ったとおりに見せる）。
   const mathPlugins = useMathPlugins(!untrusted && mayHaveMath(children));
@@ -571,7 +624,7 @@ export function Markdown({
         className,
       )}
     >
-      <SourceContext.Provider value={{ text, streaming, untrusted, imageSources }}>
+      <SourceContext.Provider value={{ text, streaming, untrusted, imageSources, imageProxy }}>
         <ReactMarkdown
           remarkPlugins={[
             remarkGfm,

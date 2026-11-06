@@ -154,7 +154,7 @@ async fn uniqueness_survives_the_upgrade_from_a_mid_backfill_state() {
         .execute(&admin)
         .await
         .unwrap();
-    let base = std::env::var("STORAGE_TEST_DATABASE_URL").unwrap();
+    let base = shiki_testenv::var("STORAGE_TEST_DATABASE_URL").unwrap();
     let url = format!("{}/{db}", base.rsplit_once('/').unwrap().0);
     let pool = PgPoolOptions::new()
         .max_connections(4)

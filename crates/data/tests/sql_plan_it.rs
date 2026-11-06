@@ -141,7 +141,7 @@ fn sent_sql(bytes: &[u8]) -> Vec<String> {
 }
 
 fn db_url() -> Option<String> {
-    std::env::var("STORAGE_TEST_DATABASE_URL").ok()
+    shiki_testenv::var("STORAGE_TEST_DATABASE_URL").ok()
 }
 
 async fn migrate(url: &str) -> PgPool {
@@ -261,7 +261,7 @@ async fn caller_sql_text_never_reaches_the_database() {
 }
 
 async fn fga() -> Option<Arc<dyn AuthzClient>> {
-    let Ok(base_url) = std::env::var("OPENFGA_TEST_URL") else {
+    let Ok(base_url) = shiki_testenv::var("OPENFGA_TEST_URL") else {
         eprintln!("OPENFGA_TEST_URL 未設定のためスキップ");
         return None;
     };

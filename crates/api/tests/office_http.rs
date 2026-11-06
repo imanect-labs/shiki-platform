@@ -279,7 +279,7 @@ fn session_record(csrf: &str) -> SessionRecord {
 
 /// 実 DB の AppState を組む（office 有効／無効を選べる）。DB 未設定なら None。
 async fn build_state(with_office: bool) -> Option<(AppState, Arc<dyn SessionStore>)> {
-    let db_url = std::env::var("STORAGE_TEST_DATABASE_URL").ok()?;
+    let db_url = shiki_testenv::var("STORAGE_TEST_DATABASE_URL").ok()?;
     let pool = PgPoolOptions::new()
         .max_connections(4)
         .connect(&db_url)

@@ -22,8 +22,8 @@ use workflow_engine::{DelegationError, DelegationStore, GrantRequest, RunAdmissi
 
 async fn setup() -> Option<(PgPool, Arc<OpenFgaClient>)> {
     let (Ok(db_url), Ok(fga_url)) = (
-        std::env::var("STORAGE_TEST_DATABASE_URL"),
-        std::env::var("OPENFGA_TEST_URL"),
+        shiki_testenv::var("STORAGE_TEST_DATABASE_URL"),
+        shiki_testenv::var("OPENFGA_TEST_URL"),
     ) else {
         eprintln!("STORAGE_TEST_DATABASE_URL / OPENFGA_TEST_URL 未設定のためスキップ");
         return None;

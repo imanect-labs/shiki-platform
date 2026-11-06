@@ -146,7 +146,7 @@ impl AuthzClient for RecordingAuthz {
 }
 
 async fn setup() -> Option<PgPool> {
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return None;
     };
@@ -168,7 +168,7 @@ async fn setup() -> Option<PgPool> {
 /// 返した接続を drop（＝切断）した時点で解放する。
 async fn legacy_scan_guard() -> sqlx::PgConnection {
     use sqlx::Connection;
-    let db_url = std::env::var("STORAGE_TEST_DATABASE_URL").expect("setup 済み");
+    let db_url = shiki_testenv::var("STORAGE_TEST_DATABASE_URL").expect("setup 済み");
     let mut conn = sqlx::PgConnection::connect(&db_url)
         .await
         .expect("connect guard");
@@ -347,7 +347,7 @@ async fn invalid_binding_hosts_rejected() {
 #[tokio::test]
 async fn resolve_denied_without_can_use() {
     let Some(pool) = setup().await else { return };
-    let Ok(base_url) = std::env::var("OPENFGA_TEST_URL") else {
+    let Ok(base_url) = shiki_testenv::var("OPENFGA_TEST_URL") else {
         eprintln!("OPENFGA_TEST_URL 未設定のためスキップ");
         return;
     };

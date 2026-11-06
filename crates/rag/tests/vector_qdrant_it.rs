@@ -48,7 +48,7 @@ fn ctx(tenant: &str) -> AuthContext {
 }
 
 async fn setup() -> Option<QdrantVectorStore> {
-    let Ok(url) = std::env::var("RAG_TEST_QDRANT_URL") else {
+    let Ok(url) = shiki_testenv::var("RAG_TEST_QDRANT_URL") else {
         eprintln!("RAG_TEST_QDRANT_URL 未設定のためスキップ");
         return None;
     };
@@ -79,7 +79,7 @@ fn api_key() -> Option<String> {
 /// 認証を強制していることを確かめる。`RAG_TEST_QDRANT_API_KEY` がある時だけ走る。
 #[tokio::test]
 async fn qdrant_with_api_key_rejects_missing_or_wrong_key() {
-    let (Ok(url), Some(_)) = (std::env::var("RAG_TEST_QDRANT_URL"), api_key()) else {
+    let (Ok(url), Some(_)) = (shiki_testenv::var("RAG_TEST_QDRANT_URL"), api_key()) else {
         eprintln!("RAG_TEST_QDRANT_URL / RAG_TEST_QDRANT_API_KEY 未設定のためスキップ");
         return;
     };
