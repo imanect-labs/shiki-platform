@@ -55,7 +55,8 @@ export async function threadMarkdown(
       parts.push("## 質問", literalQuote(t.question.replace(/^(?:[ \t]*\n)+/, "").trimEnd()));
     }
     if (!t.answer.trim()) continue;
-    parts.push("## 回答", await closeTrailingFence(t.answer.trim()));
+    // 先頭の空行と末尾の空白だけ落とす（字下げのコードブロックで始まる回答の 1 行目を崩さない）。
+    parts.push("## 回答", await closeTrailingFence(t.answer.replace(/^(?:[ \t]*\n)+/, "").trimEnd()));
     const sources = sourcesMarkdown(t.answer, t.citations, opts.nameOf, "###");
     if (sources) parts.push(sources);
   }
@@ -63,30 +64,48 @@ export async function threadMarkdown(
 }
 
 /// 本文の後ろに足す文字がコードブロック・数式・HTML のブロックに入ってしまう（閉じていない）なら、
-/// 閉じる。閉じているかは解析に決めさせる（試しの段落を足して、吸われるかを見る）。
+/// 閉じる。閉じているかは解析に決めさせる（試しの段落を足して、吸われるかを見る）。直した後も吸われる
+/// こと（閉じない HTML が続けて複数ある `<!--\n\n<!--` など）があるので、吸われなくなるまで繰り返す。
 /// 引用・リストの中なら、空行で入れ物ごと終わるので閉じは要らない。
-async function closeTrailingFence(body: string): Promise<string> {
-  const probe = `${body}\n\n${PROBE}`;
-  let start: number | undefined;
-  let html = false;
-  walk(await parse(probe), (node) => {
+async function closeTrailingFence(input: string): Promise<string> {
+  let body = input;
+  for (let pass = 0; pass < MAX_CLOSE_PASSES; pass++) {
+    const block = await swallowingBlock(body);
+    if (!block) return body;
+    const { start, html } = block;
+    if (html) {
+      // 閉じない HTML のブロック（`<?php`・`<!--`・`<script` など）は空行では終わらない。チャットは生の
+      // HTML を文字のまま見せるので、書き出しでも先頭の `<` を文字にして段落へ戻す。
+      body = `${body.slice(0, start)}\\${body.slice(start)}`;
+      continue;
+    }
+    const open = /^(`{3,}|~{3,}|\${2,})/.exec(body.slice(start));
+    if (!open) return body; // 字下げのコードブロックは空行と字下げの無い段落で終わる（吸われない）
+    const lineStart = body.lastIndexOf("\n", start - 1) + 1;
+    // 開きの行の入れ物（`>`・リストの記号）の分だけ、閉じの行にも付ける。
+    const prefix = body.slice(lineStart, start).replace(/[^>\s]/g, " ");
+    body = `${body}\n${prefix}${open[1]}`;
+  }
+  // 回数を使い切っても吸われる（閉じない HTML が大量に続くなど）ときは、行頭の `<` をすべて文字にする
+  // （HTML のブロックは行頭の `<` でしか始まらない）。
+  return (await swallowingBlock(body)) ? body.replace(/^([ \t>]*)</gm, "$1\\<") : body;
+}
+
+/// 本文の後ろに足した試しの段落を吸い込むブロック（コード・数式・HTML）の開始位置。無ければ null。
+async function swallowingBlock(body: string): Promise<{ start: number; html: boolean } | null> {
+  let found: { start: number; html: boolean } | null = null;
+  walk(await parse(`${body}\n\n${PROBE}`), (node) => {
     const swallows = (node.position?.end.offset ?? 0) > body.length;
-    if (swallows && (node.type === "code" || isMathBlock(node) || node.type === "html")) {
-      start = node.position?.start.offset;
-      html = node.type === "html";
+    const start = node.position?.start.offset;
+    if (swallows && start !== undefined && (node.type === "code" || isMathBlock(node) || node.type === "html")) {
+      found = { start, html: node.type === "html" };
     }
   });
-  if (start === undefined) return body;
-  // 閉じない HTML のブロック（`<?php`・`<!--`・`<script` など）は空行では終わらない。チャットは生の
-  // HTML を文字のまま見せるので、書き出しでも先頭の `<` を文字にして段落へ戻す。
-  if (html) return `${body.slice(0, start)}\\${body.slice(start)}`;
-  const open = /^(`{3,}|~{3,}|\${2,})/.exec(body.slice(start));
-  if (!open) return body; // 字下げのコードブロックは空行と字下げの無い段落で終わる（吸われない）
-  const lineStart = body.lastIndexOf("\n", start - 1) + 1;
-  // 開きの行の入れ物（`>`・リストの記号）の分だけ、閉じの行にも付ける。
-  const prefix = body.slice(lineStart, start).replace(/[^>\s]/g, " ");
-  return `${body}\n${prefix}${open[1]}`;
+  return found;
 }
+
+/// 閉じ直しを繰り返す上限（1 回ごとに本文を解析し直すため、敵対的な入力で回り続けないようにする）。
+const MAX_CLOSE_PASSES = 8;
 
 const PROBE = "閉じの確認";
 
