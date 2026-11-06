@@ -15,8 +15,13 @@
 //!
 //! 本文特定が空振り（アプリ的なページ・一覧ページ）なら、掃除済み DOM 全体を Markdown 化する
 //! フォールバックへ落ちる。**何も返さないより、掃除しただけでも返す方が良い**。
+//!
+//! 抽出器が取りこぼす形（数式・遅延読み込みの画像・`<code>` の無い `<pre>`・見出し行の無い表）は、
+//! 1 と 2 の間・2 と 3 の間で DOM を正規化して救う（[`super::extract_dom`]・#1046）。
 
 use dom_smoothie::{Config, Readability};
+
+use super::extract_dom::{self, MathStash};
 
 /// 抽出結果。
 pub(super) struct Article {
@@ -61,17 +66,26 @@ const HEADING_AFFORDANCES: &str = "[class*='editsection'], .headerlink, .hash-li
 pub(super) fn html_to_markdown(html: &str, url: &str) -> Article {
     let doc = dom_query::Document::from(html);
     clean(&doc);
+    // 隠し要素を落とした後に正規化する（隠した数式の注釈を本文へ昇格させない）。
+    let math = extract_dom::prepare(&doc);
     // フォールバック用に掃除済み HTML を退避する（Readability は Document を消費する）。
     let cleaned = doc.html().to_string();
 
     let article = readability_article(doc, url);
     if let Some(article) = article {
-        let markdown = normalize(&to_markdown(&article.content));
+        let markdown = finish(&article.content, &math);
         if markdown.chars().count() >= MIN_EXTRACTED_CHARS {
             return Article {
-                title: non_empty(&article.title),
-                byline: article.byline.as_deref().and_then(byline),
-                site_name: article.site_name.as_deref().and_then(non_empty),
+                // 見出しの数式は本文と同じく目印になっているので戻す（byline は長さの判定より前に戻す）。
+                title: non_empty(&math.restore(&article.title)),
+                byline: article
+                    .byline
+                    .as_deref()
+                    .and_then(|b| byline(&math.restore(b))),
+                site_name: article
+                    .site_name
+                    .as_deref()
+                    .and_then(|s| non_empty(&math.restore(s))),
                 published: article.published_time.as_deref().and_then(non_empty),
                 markdown,
                 extractor: "readability",
@@ -80,13 +94,20 @@ pub(super) fn html_to_markdown(html: &str, url: &str) -> Article {
     }
 
     Article {
-        title: title_of(&cleaned),
+        title: title_of(&cleaned).map(|t| math.restore(&t)),
         byline: None,
         site_name: None,
         published: None,
-        markdown: normalize(&to_markdown(&cleaned)),
+        markdown: finish(&cleaned, &math),
         extractor: "fallback",
     }
+}
+
+/// HTML 断片を整形済みの Markdown にし、退避した数式を戻す。
+fn finish(html: &str, math: &MathStash) -> String {
+    math.restore(&normalize(&to_markdown(
+        &extract_dom::promote_table_headers(html),
+    )))
 }
 
 /// ノイズ要素と隠し要素を DOM から落とす。
@@ -153,12 +174,44 @@ fn byline(s: &str) -> Option<String> {
 ///
 /// - 画像は `data:` URI を含むと数千トークンになり得るため、alt テキストだけ残す。
 /// - リンク URL が本文より長いことは珍しくない。テキストとして意味のないリンクは畳む。
+/// - 表のセルは htmd が列幅まで空白で埋める（MDN の属性一覧は 23 万字の 97% が表の空白だった）ので詰める。
 /// - 空行の連続・行末空白は素直に潰す。
 fn normalize(markdown: &str) -> String {
     let mut out = String::with_capacity(markdown.len());
     let mut blank_run = 0usize;
+    // 開いているフェンスの記号と長さ。htmd はコードの中のバッククォートより長いフェンスで囲むので、
+    // 同じ記号が同じ長さ以上並んだ行（後ろは空白だけ）でしか閉じない。
+    let mut open_fence: Option<(char, usize)> = None;
+    // 表の中で何行目か（0 = 表の外）。区切り行は見出しの直後（2 行目）にしか無い。
+    let mut table_row = 0usize;
     for line in markdown.lines() {
-        let line = slim_links(line);
+        let fence = match (open_fence, fence_marker(line)) {
+            (None, Some(marker)) => {
+                open_fence = Some(marker);
+                true
+            }
+            (Some((ch, len)), Some((c, n))) if c == ch && n >= len && is_bare_fence(line) => {
+                open_fence = None;
+                true
+            }
+            _ => false,
+        };
+        let in_fence = open_fence.is_some();
+        // コードの中の `a[0]()` をリンクとして畳まない（`<pre>` がフェンスになるぶん、コードは増えた）。
+        let line = if in_fence || fence {
+            line.to_string()
+        } else {
+            slim_links(line)
+        };
+        let line = if !in_fence && !fence && line.trim_start().starts_with('|') {
+            table_row += 1;
+            // データ行が `| ---- |` でも区切り行とみなさない（値を変えない）。
+            let separator = table_row == 2 && is_table_separator(&line);
+            squeeze_table_row(&line, separator)
+        } else {
+            table_row = 0;
+            line
+        };
         let line = line.trim_end();
         if line.trim().is_empty() {
             blank_run += 1;
@@ -173,6 +226,69 @@ fn normalize(markdown: &str) -> String {
         out.push('\n');
     }
     out.trim().to_string()
+}
+
+/// 行頭のフェンス（3 個以上の `` ` `` か `~`）の記号と長さ。
+fn fence_marker(line: &str) -> Option<(char, usize)> {
+    let t = line.trim_start();
+    let ch = t.chars().next().filter(|c| *c == '`' || *c == '~')?;
+    let n = t.chars().take_while(|c| *c == ch).count();
+    (n >= 3).then_some((ch, n))
+}
+
+/// 閉じのフェンスになれる行か（フェンスの記号の後ろが空白だけ。言語名などは開きにしか付かない）。
+fn is_bare_fence(line: &str) -> bool {
+    let t = line.trim();
+    t.chars().next().is_some_and(|c| t.chars().all(|x| x == c))
+}
+
+/// 見出しの区切り行（`| --- | :---: |`）か。`|` `-` `:` と空白だけでできている。
+fn is_table_separator(line: &str) -> bool {
+    line.contains('-')
+        && line
+            .chars()
+            .all(|c| matches!(c, '|' | '-' | ':' | ' ' | '\t'))
+}
+
+/// 表の 1 行の、列幅合わせの空白を詰める（`|  a   |` → `| a |`）。詰めるのは `|` に接する空白だけで、
+/// セルの中身（インラインコードの `` `a   b` `` など）の空白は変えない。長い罫線（`| ---- |` → `| --- |`）を
+/// 詰めるのは区切り行だけ（データ行の `a----b` のような値や URL は変えない）。
+fn squeeze_table_row(line: &str, separator: bool) -> String {
+    let chars: Vec<char> = line.trim().chars().collect();
+    let mut out = String::with_capacity(line.len());
+    let mut dashes = 0usize;
+    let mut i = 0usize;
+    while i < chars.len() {
+        let c = chars[i];
+        if c == ' ' {
+            let start = i;
+            while i < chars.len() && chars[i] == ' ' {
+                i += 1;
+            }
+            // セルの中の `\|`（escape された縦線）はセルの区切りではない。
+            let after_pipe =
+                start > 0 && chars[start - 1] == '|' && !(start > 1 && chars[start - 2] == '\\');
+            let touches_pipe = after_pipe || chars.get(i) == Some(&'|');
+            if touches_pipe {
+                out.push(' ');
+            } else {
+                out.extend(&chars[start..i]);
+            }
+            dashes = 0;
+            continue;
+        }
+        i += 1;
+        if c == '-' && separator {
+            dashes += 1;
+            if dashes > 3 {
+                continue;
+            }
+        } else {
+            dashes = 0;
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// 1 行のリンク先から**モデルに何も与えない部分**を落とす。
@@ -197,8 +313,12 @@ fn slim_links(line: &str) -> String {
         };
         let dest = &rest[dest_start..dest_start + close_rel];
         let url = url_part(dest);
+        // 直前の `[` が `![` なら画像。画像の URL は CDN の署名やサイズ指定で長くなるので別の上限にする。
+        let is_image = rest[..open]
+            .rfind('[')
+            .is_some_and(|i| i > 0 && rest.as_bytes()[i - 1] == b'!');
         out.push_str(&rest[..open]);
-        if drop_destination(url) {
+        if drop_destination(url, is_image) {
             out.push(']');
         } else {
             // `title` は落とし、URL だけ残す（`dest` をそのまま書き戻さない）。
@@ -213,11 +333,16 @@ fn slim_links(line: &str) -> String {
 }
 
 /// 行き先を捨てるか。
-fn drop_destination(url: &str) -> bool {
+fn drop_destination(url: &str, is_image: bool) -> bool {
+    let limit = if is_image {
+        MAX_IMAGE_URL_CHARS
+    } else {
+        MAX_LINK_URL_CHARS
+    };
     url.is_empty()
         || url.starts_with("data:")
         || url.starts_with('#')
-        || url.chars().count() > MAX_LINK_URL_CHARS
+        || url.chars().count() > limit
 }
 
 /// `](dest)` の閉じ括弧をバイト位置で返す。
@@ -256,6 +381,9 @@ fn url_part(dest: &str) -> &str {
 
 /// リンク先を残す上限。トラッキングパラメータ塗れの URL は本文より長くなる。
 const MAX_LINK_URL_CHARS: usize = 160;
+/// 画像の URL を残す上限。回答の画像の出所判定（`chat::answer_images`）が扱う長さと揃える。
+/// Wikipedia のサムネイルは約 190 文字あり、リンクの上限では URL が落ちて画像を出せない。
+const MAX_IMAGE_URL_CHARS: usize = 2_048;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
@@ -411,6 +539,22 @@ mod tests {
         assert_eq!(byline("山田 太郎").as_deref(), Some("山田 太郎"));
         assert_eq!(byline("典拠管理データベース ".repeat(8).as_str()), None);
         assert_eq!(byline("編集部\n2026-08-01"), None);
+    }
+
+    #[test]
+    fn longer_fences_are_not_closed_by_shorter_inner_runs() {
+        // htmd はコードの中の ````` より長い `````` で囲む。内側の行でフェンスを閉じない。
+        let md = normalize("``````\n`````\ncallbacks[0]()\n``````\n[x](#a)");
+        assert_eq!(md, "``````\n`````\ncallbacks[0]()\n``````\n[x]");
+        // 言語名の付いた行は閉じのフェンスにならない。
+        let md = normalize("```\n```rust\nf[0]()\n```\n[y](#b)");
+        assert_eq!(md, "```\n```rust\nf[0]()\n```\n[y]");
+    }
+
+    #[test]
+    fn table_data_rows_of_dashes_and_escaped_pipes_are_kept() {
+        let md = normalize("| A |\n| ------ |\n| ---- |\n| a \\|   b |");
+        assert_eq!(md, "| A |\n| --- |\n| ---- |\n| a \\|   b |");
     }
 
     #[test]
