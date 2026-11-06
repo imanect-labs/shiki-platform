@@ -21,6 +21,8 @@ import {
 /// - 失敗を「エラー時」の出口で扱うブロックの権限が無くても、ボタンと「いま実行する」は止めず、作った人が用意した
 ///   誤りの返答で終わる（7g の前と同じ）。
 /// - 範囲が狭いだけの部品（追加だけの共有で読むワークフロー）では、画面に戻っても確かめ直さない（止めているものが無い）。
+/// - 毎回動く繰り返しの中で 1 件ずつテーブルに足すワークフローは、追加の権限が無い使う人のボタンを押す前に止め、作る人
+///   には「場合によって要る」を付けずに言う。共有されれば押したときに確かめ直して動く（GAP-97）。
 /// PC（1440px）とスマホ（390px）で確かめる。作ったもの（アプリ・ワークフロー・ビュー・テーブル）は最後に消す。
 /// `E2E_SHOTS_DIR` を渡すとスクリーンショットを撮る。
 
@@ -194,7 +196,7 @@ test.describe("使う人の権限の確かめの続き（BUG-216・BUG-217・GAP
       await expect(needs.getByTestId("access-conditional")).toHaveText("場合によって要る");
       await expect(dialog.getByTestId("access-report-subject")).toContainText("は場合によって一部を使えません");
       await expect(dialog.getByTestId("access-report-conditional-note")).toContainText(
-        "場合によって要る権限は、毎回は通らないブロックと、失敗を「エラー時」の出口で扱うブロックが使います。足りなくてもボタンは押せますが、そのブロックまで進むと失敗します。",
+        "場合によって要る権限は、毎回は通らないブロックと、失敗を「エラー時」の出口か「失敗を記録して続ける」繰り返しで扱うブロックが使います。足りなくてもボタンは押せますが、そのブロックまで進むと失敗します。",
       );
       if (SHOTS) await page.screenshot({ path: `${SHOTS}/paths-share-pc.png` });
       await dialog.getByRole("button", { name: "閉じる" }).click();
@@ -210,6 +212,112 @@ test.describe("使う人の権限の確かめの続き（BUG-216・BUG-217・GAP
     } finally {
       await cleanupAll(
         async () => alicePhone?.context().close(),
+        () => bob.context().close(),
+      );
+    }
+  });
+
+  test("毎回動く繰り返しの中で 1 件ずつテーブルに足すなら、追加の権限が無い使う人のボタンを押す前に止める（GAP-97）", async ({
+    page,
+    browser,
+  }) => {
+    test.setTimeout(240_000);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const bob = await personOn(browser, "bob");
+    let bobPhone: Page | null = null;
+    try {
+      await loginViaKeycloak(page);
+      const bobId = await meId(bob);
+      const source = await createTable(page, uniqueName("e2e-元の一覧"));
+      const copiesName = uniqueName("e2e-写し");
+      const copies = await createTable(page, copiesName);
+      for (const title of ["一件目", "二件目"]) {
+        await api(page, "POST", `/data/tables/${source.id}/records`, { data: { [source.titleKey]: title } });
+      }
+      await shareTable(page, source.id, bobId, "viewer");
+      // 一覧を読み、1 件ずつ写しのテーブルに足す（bob は写しのテーブルの権限を持たない）。
+      const flow = uniqueName("map-flow");
+      const flowId = await createFlow(page, {
+        ir_version: 1,
+        name: flow,
+        display_name: flow,
+        declared_scopes: ["data.read", "data.write"],
+        triggers: [{ kind: "interactive" }],
+        nodes: [
+          { id: "find", type: "data.query", label: "一覧を読む", params: { table: source.id } },
+          {
+            id: "each",
+            type: "control.map",
+            label: "1 件ずつ",
+            params: { items: { $from: "nodes.find.output", path: "/items" } },
+          },
+          {
+            id: "add",
+            type: "data.record.create",
+            label: "写しに足す",
+            parent: "each",
+            params: { table: copies.id, data: { [copies.titleKey]: "写し" } },
+          },
+        ],
+        edges: [{ from: "find", to: "each" }],
+      });
+      const screen = `# 写し\n\n\`\`\`ui\napp 一覧の写し\nbutton 写す -> workflow ${flow}\n\`\`\`\n`;
+      const app = await api(page, "POST", "/mini-apps", {
+        name: uniqueName("map-app"),
+        body: { description: "一覧の写し", screen, workflows: [{ alias: flow, artifact_id: flowId, version: 1 }] },
+      });
+      cleanup.add(() => deleteArtifactApi(page, app.id));
+      await api(page, "POST", `/mini-apps/${app.id}/publish`, { version: 1 });
+      await shareArtifact(page, app.id, bobId);
+
+      // 使う人: 繰り返しの中の追加の権限が無いので、押す前に止めて理由を言う。
+      await bob.goto(`/apps/${app.id}`);
+      const figure = bob.getByTestId("ui-figure");
+      await expect(figure.getByTestId("ui-figure-blocked")).toContainText(
+        "「写す」はいまは使えません。このボタンが使うテーブルが見つからないか、レコードを追加する権限がありません。アプリを作成した人に頼んでください。",
+        { timeout: 20_000 },
+      );
+      if (SHOTS) await bob.screenshot({ path: `${SHOTS}/map-user-blocked-pc.png` });
+      bobPhone = await phoneOf(browser, bob);
+      await bobPhone.goto(`/apps/${app.id}`);
+      await expect(bobPhone.getByTestId("ui-figure").getByTestId("ui-figure-blocked")).toContainText("「写す」はいまは使えません。", {
+        timeout: 20_000,
+      });
+      await noSideScroll(bobPhone);
+      if (SHOTS) await bobPhone.screenshot({ path: `${SHOTS}/map-user-blocked-phone.png` });
+
+      // 作る人: 写しのテーブルへの追加は毎回要る（「場合によって要る」を付けない）。
+      await page.goto(`/apps/${app.id}`);
+      await page.getByRole("button", { name: "共有" }).click();
+      const dialog = page.getByRole("dialog");
+      const needs = dialog.getByTestId("access-report-needs");
+      await expect(needs).toContainText(`テーブル「${copiesName}」にレコードを追加する`, { timeout: 20_000 });
+      await expect(needs.getByTestId("access-conditional")).toHaveCount(0);
+      await expect(dialog.getByTestId("access-report-conditional-note")).toHaveCount(0);
+      if (SHOTS) await page.screenshot({ path: `${SHOTS}/map-share-pc.png` });
+      await dialog.getByRole("button", { name: "閉じる" }).click();
+
+      // 写しのテーブルを「追加だけ」で共有すると、開いたままの画面で押したときに確かめ直して動き、2 件足す。
+      await shareTable(page, copies.id, bobId, "submitter");
+      await figure.getByRole("button", { name: "写す" }).click();
+      await figure.getByRole("group", { name: "実行の確認" }).getByRole("button", { name: "実行する" }).click();
+      await expect(figure.getByRole("status").filter({ hasText: "起動しました" })).toBeVisible({ timeout: 15_000 });
+      await expect(figure.getByTestId("ui-figure-blocked")).toHaveCount(0);
+      await expect
+        .poll(
+          async () => {
+            const res = await bob.request.get(`/api/mini-apps/${app.id}/runs`);
+            const runs = ((await res.json()) as { runs: { status: string }[] }).runs;
+            return runs[0]?.status ?? "none";
+          },
+          { timeout: 60_000 },
+        )
+        .toBe("succeeded");
+      const records = (await (await page.request.get(`/api/data/tables/${copies.id}/records`)).json()) as { items: unknown[] };
+      expect(records.items).toHaveLength(2);
+    } finally {
+      await cleanupAll(
+        async () => bobPhone?.context().close(),
         () => bob.context().close(),
       );
     }

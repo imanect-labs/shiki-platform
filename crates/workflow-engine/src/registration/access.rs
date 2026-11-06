@@ -39,13 +39,14 @@
 //! # 必ず通るブロックと、道によって通るブロック（BUG-216）
 //!
 //! 要る権限には、そのブロックが毎回動くかを添える（[`AccessNeed::conditional`]・決まりは [`crate::ir::paths`] の
-//! 1 か所）。分かれた流れ・「エラー時」の出口の先・繰り返しの中のブロックは、入力や結果によって動かないので、使う人の
-//! ボタンはそれだけでは止めない（通らない入力でも押せなくすると、前は動いていたボタンを止める）。
+//! 1 か所）。分かれた流れ・「エラー時」の出口の先と、道によって通る繰り返しの中のブロックは、入力や結果によって動かない
+//! ので、使う人のボタンはそれだけでは止めない（通らない入力でも押せなくすると、前は動いていたボタンを止める）。毎回動く
+//! 繰り返しの中は、リストが空でない実行を基準に毎回動くとみなす（GAP-97）。
 //!
-//! 毎回動くブロックでも、失敗を「エラー時」の出口で扱うブロック（`on_error: continue` で `error` の出口から線が出て
-//! いるもの・[`crate::ir::paths::failure_handled`]）が要る権限は、場合によって要るものとする。権限が足りなければ
-//! そのブロックが失敗し、作った人が決めた道（誤りの返答など）で終わるので、使う人のボタンと「いま実行する」は止めない
-//! （ir.md §7.10 が業務上の失敗をこの形で扱うよう勧めている）。
+//! 毎回動くブロックでも、失敗を作った人が決めた道で扱うブロック（`on_error: continue` で `error` の出口から線が出て
+//! いるものと、失敗を扱う繰り返しの中・[`crate::ir::paths::failure_handled`]）が要る権限は、場合によって要るものとする。
+//! 権限が足りなければそのブロックが失敗し、作った人が決めた道（誤りの返答・失敗を記録して続けるなど）で終わるので、使う人
+//! のボタンと「いま実行する」は止めない（ir.md §7.10 が業務上の失敗をこの形で扱うよう勧めている）。
 
 use std::collections::HashSet;
 
@@ -109,9 +110,9 @@ pub struct AccessNeed {
     /// 対象（UUID を直接入れた欄のとき）。入力や前の結果で決まる・まだ選んでいないときは `None`。
     pub object_id: Option<Uuid>,
     pub kind: AccessKind,
-    /// 場合によって要る: 道によって通るブロック（分かれた流れ・「エラー時」の出口の先・繰り返しの中・
-    /// [`crate::ir::paths`]）か、失敗を「エラー時」の出口で扱うブロックだけが要る。偽なら、前のブロックがうまく
-    /// いったとき毎回要り、足りなければ実行が失敗する。
+    /// 場合によって要る: 道によって通るブロック（分かれた流れ・「エラー時」の出口の先・道によって通る繰り返しの中・
+    /// [`crate::ir::paths`]）か、失敗を作った人が決めた道で扱うブロック（「エラー時」の出口・失敗を扱う繰り返しの中）
+    /// だけが要る。偽なら、前のブロックがうまくいったとき毎回要り、足りなければ実行が失敗する。
     pub conditional: bool,
 }
 
@@ -469,6 +470,43 @@ mod tests {
         };
         assert_eq!(conditional_of(&wf(true)), vec![("add".to_string(), true)]);
         assert_eq!(conditional_of(&wf(false)), vec![("add".to_string(), false)]);
+    }
+
+    /// GAP-97: 毎回動く繰り返しの中で 1 件ずつテーブルに足すなら、追加の権限は毎回要る（使う人のボタンを止める）。
+    /// 「失敗を記録して続ける」繰り返しの中と、分かれた流れの先の繰り返しの中は、場合によって要る。
+    #[test]
+    fn needs_inside_always_running_maps_are_not_conditional() {
+        let wf = |on_item_error: &str, after_branch: bool| {
+            let mut edges = vec![json!({ "from": "find", "to": "each" })];
+            if after_branch {
+                edges = vec![
+                    json!({ "from": "find", "to": "b" }),
+                    json!({ "from": "b", "from_port": "true", "to": "each" }),
+                ];
+            }
+            json!({
+                "ir_version": 1, "name": "wf", "declared_scopes": ["data.read", "data.write"],
+                "triggers": [{ "kind": "interactive" }],
+                "nodes": [
+                    { "id": "find", "type": "data.query", "params": { "table": TABLE } },
+                    { "id": "b", "type": "control.branch", "params": { "condition": { "cmp": { "left": 1, "op": "eq", "right": 1 } } } },
+                    { "id": "each", "type": "control.map", "params": {
+                        "items": { "$from": "nodes.find.output", "path": "/rows" }, "on_item_error": on_item_error } },
+                    { "id": "add", "type": "data.record.create", "parent": "each",
+                      "params": { "table": FOLDER, "data": { "src": { "$from": "each", "path": "/item/id" } } } }
+                ],
+                "edges": edges
+            })
+        };
+        let add = |ir: &serde_json::Value| {
+            conditional_of(ir)
+                .into_iter()
+                .find(|(id, _)| id == "add")
+                .map(|(_, c)| c)
+        };
+        assert_eq!(add(&wf("fail_map", false)), Some(false));
+        assert_eq!(add(&wf("collect", false)), Some(true));
+        assert_eq!(add(&wf("fail_map", true)), Some(true));
     }
 
     /// スクリプト（使ってよい操作にテーブルなどがあるとき）・AI エージェントの読むツール・シークレット・別のワークフローを

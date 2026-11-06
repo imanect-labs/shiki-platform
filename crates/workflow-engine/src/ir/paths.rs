@@ -12,36 +12,89 @@
 //!   必ず取られる出口は、出口（「エラー時」を除く）が「次へ」（`out`）だけのブロックの `out`。条件で分ける・振り分け・
 //!   承認・時間切れのある待ち・振り分けのある AI で判定の出口と、「エラー時」の出口は、値や結果によって取られない。
 //! - 待ち合わせ（`control.join`）は、入る線の 1 本でも必ず通るなら必ず通る（all も any も、生きた線が 1 本あれば動く）。
-//! - 繰り返し（`control.map`）の中のブロックは、要素が無ければ動かないので必ず通らない（繰り返しの後ろのブロックは、
-//!   繰り返し自身の `out` から決まる）。
+//! - 繰り返し（`control.map`）が必ず通るなら、中の入口（中で入る線が無いブロック）も必ず通り、中は同じ決まりで広げる
+//!   （GAP-97）。リストが空の実行では中は動かないが、1 件以上の実行を基準にする（「繰り返しの中でテーブルに足す」
+//!   よくある形で、権限の無い人が押した後に失敗で知るより、押す前に止めて理由を言う）。リストがリテラルの空の配列か、
+//!   配列にならない値（差し込みの文字列・配列でないリテラル）なら、中は動かないので必ず通るとは言わない。入れ子の
+//!   繰り返しも同じ。繰り返しの後ろのブロックは、繰り返し自身の `out` から決まる。
 //! - 出口を導けないブロック（壊れた params・未知の種類）からは、必ず通るとは言わない（止めすぎない側に倒す）。
 //!
-//! 毎回動くブロックでも、失敗を「エラー時」の出口で扱うブロック（[`failure_handled`]・`on_error: continue` で `error`
-//! の出口から線が出ているもの）は、失敗しても作った人が決めた道で終わる（ir.md §7.10 の業務上の失敗の置き方）。押す前の
-//! 権限の確かめは、このブロックが要る権限でも使う人のボタンを止めない（前は押せて、作った人が用意した誤りの返答で
-//! 終わっていた）。
+//! 毎回動くブロックでも、失敗を作った人が決めた道で扱うブロック（[`failure_handled`]）は、失敗しても作った人が決めた道
+//! で終わる（ir.md §7.10 の業務上の失敗の置き方）。押す前の権限の確かめは、このブロックが要る権限でも使う人のボタンを
+//! 止めない（前は押せて、作った人が用意した誤りの返答で終わっていた）。扱うのは次の 2 つ。
+//!
+//! - `on_error: continue` で `error` の出口から線が出ているブロック（「エラー時」の出口で扱う）。
+//! - 失敗を扱う繰り返しの中のブロック: 「失敗を記録して続ける」（`on_item_error: collect`）繰り返しと、それ自身が
+//!   「エラー時」の出口で失敗を扱う繰り返しの中（入れ子なら外側のどれかがそうなら）。中の失敗は繰り返しの結果に残るか、
+//!   繰り返しの「エラー時」の出口へ進む。
 
 use std::collections::{HashMap, HashSet};
 
+use super::expr::ValueExpr;
+use super::params::{parse, MapItemError, MapParams};
 use super::validate::output_ports;
 use super::{Node, OnError, WorkflowIr};
 use crate::vocab::NodeType;
 
-/// 失敗を「エラー時」の出口で扱うブロックの id（`on_error: continue` で、`error` の出口から線が出ているもの・
-/// [モジュールの説明](self)）。`error` の出口に線の無い `continue` は、失敗の後に何もしないので入れない。
+/// 失敗を作った人が決めた道で扱うブロックの id（[モジュールの説明](self)）: `on_error: continue` で `error` の出口から
+/// 線が出ているものと、失敗を扱う繰り返しの中のブロック。`error` の出口に線の無い `continue` は、失敗の後に何もしない
+/// ので入れない。
 #[must_use]
 pub fn failure_handled(ir: &WorkflowIr) -> HashSet<&str> {
-    let handled: HashSet<&str> = ir
+    let has_error_edge: HashSet<&str> = ir
         .edges
         .iter()
         .filter(|e| e.from_port == "error")
         .map(|e| e.from.as_str())
         .collect();
+    let by_error_port: HashSet<&str> = ir
+        .nodes
+        .iter()
+        .filter(|n| n.on_error == OnError::Continue && has_error_edge.contains(n.id.as_str()))
+        .map(|n| n.id.as_str())
+        .collect();
+    let nodes: HashMap<&str, &Node> = ir.nodes.iter().map(|n| (n.id.as_str(), n)).collect();
+    // 繰り返しが中の失敗を扱うか（「失敗を記録して続ける」か、繰り返し自身が「エラー時」の出口で扱う）。
+    let handles_items = |m: &Node| {
+        by_error_port.contains(m.id.as_str())
+            || map_params(m).is_some_and(|p| p.on_item_error == MapItemError::Collect)
+    };
     ir.nodes
         .iter()
-        .filter(|n| n.on_error == OnError::Continue && handled.contains(n.id.as_str()))
+        .filter(|n| {
+            by_error_port.contains(n.id.as_str()) || enclosing_maps(n, &nodes).any(&handles_items)
+        })
         .map(|n| n.id.as_str())
         .collect()
+}
+
+/// `node` を囲む繰り返し（内側から外側へ）。壊れた IR の親の輪でも、ブロックの数で止まる。
+fn enclosing_maps<'a>(
+    node: &'a Node,
+    nodes: &'a HashMap<&'a str, &'a Node>,
+) -> impl Iterator<Item = &'a Node> + 'a {
+    std::iter::successors(
+        node.parent.as_deref().and_then(|p| nodes.get(p).copied()),
+        |m| m.parent.as_deref().and_then(|p| nodes.get(p).copied()),
+    )
+    .take(nodes.len())
+}
+
+/// 繰り返しの設定（繰り返しでない・読めないなら `None`）。
+fn map_params(node: &Node) -> Option<MapParams> {
+    if NodeType::parse(&node.node_type) != Some(NodeType::ControlMap) {
+        return None;
+    }
+    parse::<MapParams>(&node.params).ok()
+}
+
+/// 繰り返しが動いたとき、中も動くか（リストが参照か、空でない配列のリテラル。[モジュールの説明](self)）。
+fn runs_its_region(map: &Node) -> bool {
+    map_params(map).is_some_and(|p| match p.items {
+        ValueExpr::From(_) => true,
+        ValueExpr::Literal(serde_json::Value::Array(items)) => !items.is_empty(),
+        ValueExpr::Literal(_) | ValueExpr::Template(_) => false,
+    })
 }
 
 /// 前のブロックがうまくいったとき、毎回必ず動くブロックの id（[モジュールの説明](self)）。
@@ -55,20 +108,29 @@ pub fn always_run(ir: &WorkflowIr) -> HashSet<&str> {
             .or_default()
             .push((e.from.as_str(), e.from_port.as_str()));
     }
-    let body: Vec<&Node> = ir.nodes.iter().filter(|n| n.parent.is_none()).collect();
-    let mut always: HashSet<&str> = body
-        .iter()
-        .filter(|n| incoming.get(n.id.as_str()).is_none_or(Vec::is_empty))
-        .map(|n| n.id.as_str())
-        .collect();
+    let mut always: HashSet<&str> = HashSet::new();
     // 線をたどって広げる（DAG なのでブロックの数の回数で止まる。壊れた IR の閉路でも、足すものが無くなれば止まる）。
+    // 本体の入口は初めから、繰り返しの中の入口は繰り返しが必ず通ると分かった回から、必ず通る（GAP-97）。
     loop {
         let mut grew = false;
-        for n in &body {
+        for n in &ir.nodes {
             if always.contains(n.id.as_str()) {
                 continue;
             }
             let ins = incoming.get(n.id.as_str()).map_or(&[][..], Vec::as_slice);
+            if ins.is_empty() {
+                let entered = match n.parent.as_deref() {
+                    None => true,
+                    Some(p) => {
+                        always.contains(p) && nodes.get(p).is_some_and(|m| runs_its_region(m))
+                    }
+                };
+                if entered {
+                    always.insert(n.id.as_str());
+                    grew = true;
+                }
+                continue;
+            }
             let sure = |(from, port): &(&str, &str)| {
                 always.contains(from) && nodes.get(from).is_some_and(|f| sure_port(f, port))
             };
@@ -196,8 +258,8 @@ mod tests {
         assert!(always_run(&ir).contains("add"));
     }
 
-    /// 繰り返しの中は要素が無ければ動かないので道による。繰り返しの後ろは繰り返しの「次へ」から必ず通る。
-    /// 振り分け・承認・時間切れのある待ち・振り分けのある AI で判定の出口も道による。
+    /// 中が動かない繰り返し（リストがリテラルの空の配列）の中は道による。繰り返しの後ろは繰り返しの「次へ」から必ず
+    /// 通る。振り分け・承認・時間切れのある待ち・振り分けのある AI で判定の出口も道による。
     #[test]
     fn map_regions_and_multi_exit_blocks() {
         let ir = ir(
@@ -223,5 +285,85 @@ mod tests {
             sorted(&ir),
             vec!["after", "after_timer", "m", "sw", "t", "w"]
         );
+    }
+
+    /// GAP-97: 必ず通る繰り返しの中の入口と、そこから「次へ」だけでつながるブロックは必ず通る（リストが空でない実行を
+    /// 基準にする）。中の分かれた流れの先と、中が動かない繰り返し（空の配列・差し込みの文字列）の中、道によって通る
+    /// 繰り返しの中は道による。入れ子の繰り返しも同じ決まりで広げる。
+    #[test]
+    fn regions_of_always_running_maps_are_always() {
+        let from_input = json!({ "$from": "input", "path": "/rows" });
+        let each = json!({ "$from": "each", "path": "/item/lines" });
+        let ir = ir(
+            &json!([
+                { "id": "m", "type": "control.map", "params": { "items": from_input } },
+                { "id": "add", "type": "data.record.create", "parent": "m", "params": {} },
+                { "id": "then", "type": "data.query", "parent": "m", "params": {} },
+                { "id": "check", "type": "control.branch", "parent": "m", "params": { "condition": { "cmp": { "left": 1, "op": "eq", "right": 1 } } } },
+                { "id": "only_yes", "type": "data.query", "parent": "m", "params": {} },
+                { "id": "inner", "type": "control.map", "parent": "m", "params": { "items": each } },
+                { "id": "inner_add", "type": "data.record.create", "parent": "inner", "params": {} },
+                { "id": "literal", "type": "control.map", "params": { "items": [1, 2] } },
+                { "id": "in_literal", "type": "data.query", "parent": "literal", "params": {} },
+                { "id": "templated", "type": "control.map", "params": { "items": { "$template": "{{a}}", "vars": { "a": "x" } } } },
+                { "id": "in_template", "type": "data.query", "parent": "templated", "params": {} },
+                { "id": "b", "type": "control.branch", "params": { "condition": { "cmp": { "left": 1, "op": "eq", "right": 1 } } } },
+                { "id": "m_on_branch", "type": "control.map", "params": { "items": from_input } },
+                { "id": "in_branch_map", "type": "data.record.create", "parent": "m_on_branch", "params": {} }
+            ]),
+            &json!([
+                { "from": "add", "to": "then" },
+                { "from": "then", "to": "check" },
+                { "from": "check", "from_port": "true", "to": "only_yes" },
+                { "from": "b", "from_port": "true", "to": "m_on_branch" }
+            ]),
+        );
+        assert_eq!(
+            sorted(&ir),
+            vec![
+                "add",
+                "b",
+                "check",
+                "in_literal",
+                "inner",
+                "inner_add",
+                "literal",
+                "m",
+                "templated",
+                "then",
+            ]
+        );
+    }
+
+    /// GAP-97: 失敗を扱う繰り返し（「失敗を記録して続ける」と、繰り返し自身が「エラー時」の出口で扱うもの）の中の
+    /// ブロックは、失敗を作った人が決めた道で扱う（入れ子なら外側のどれかが扱えば中も）。ふつうの繰り返しの中は扱わない。
+    #[test]
+    fn regions_of_maps_that_handle_failures_are_failure_handled() {
+        let rows = json!({ "$from": "input", "path": "/rows" });
+        let ir = ir(
+            &json!([
+                { "id": "collect", "type": "control.map", "params": { "items": rows, "on_item_error": "collect" } },
+                { "id": "in_collect", "type": "data.record.create", "parent": "collect", "params": {} },
+                { "id": "nested", "type": "control.map", "parent": "collect", "params": { "items": rows } },
+                { "id": "in_nested", "type": "data.record.create", "parent": "nested", "params": {} },
+                { "id": "routed", "type": "control.map", "params": { "items": rows }, "on_error": "continue" },
+                { "id": "in_routed", "type": "data.record.create", "parent": "routed", "params": {} },
+                { "id": "ng", "type": "workflow.reply", "params": {} },
+                { "id": "plain", "type": "control.map", "params": { "items": rows } },
+                { "id": "in_plain", "type": "data.record.create", "parent": "plain", "params": {} }
+            ]),
+            &json!([
+                { "from": "in_collect", "to": "nested" },
+                { "from": "routed", "from_port": "error", "to": "ng" }
+            ]),
+        );
+        let mut got: Vec<&str> = failure_handled(&ir).into_iter().collect();
+        got.sort_unstable();
+        assert_eq!(
+            got,
+            vec!["in_collect", "in_nested", "in_routed", "nested", "routed"]
+        );
+        // 毎回動くかの決まりは変えない。
+        assert!(always_run(&ir).contains("in_plain"));
     }
 }
