@@ -92,24 +92,78 @@ type FenceBlock =
   | { kind: "text"; lines: string[] }
   | { kind: "fence"; info: string; prefix: string; lines: string[] };
 
-/// 行頭の入れ物（引用の `>`・リストの記号・字下げ）。フェンスはこの後ろに置かれていても開き・閉じになる。
+/// 行頭の入れ物（引用の `>`・リストの記号・字下げ）。フェンスはこの後ろに置かれていても開きになる。
 const CONTAINER = String.raw`((?:[ \t]*>[ \t]?|[ \t]*(?:[-*+]|\d{1,9}[.)])[ \t]+)*[ \t]*)`;
 const OPEN_FENCE = new RegExp(`^${CONTAINER}(\`{3,}|~{3,})(.*)$`);
-const CLOSE_FENCE = new RegExp(`^${CONTAINER}(\`{3,}|~{3,})[ \t]*$`);
+/// 閉じの字下げは問わない（リストの中のフェンスは、記号の行より後ろの行で字下げして書かれる）。
+const CLOSE_FENCE = /^[ \t]*(`{3,}|~{3,})[ \t]*$/;
+const QUOTE_MARKER = /^[ \t]{0,3}>[ \t]?/;
+
+/// フェンスを開いた行の入れ物。引用の深さと、リストの中なら本文の字下げ（記号の後ろの桁）。
+type Container = { quotes: number; listIndent: number };
+
+function containerOf(prefix: string): Container {
+  let quotes = 0;
+  let listIndent = 0;
+  let rest = prefix;
+  for (;;) {
+    const q = QUOTE_MARKER.exec(rest);
+    if (q) {
+      quotes += 1;
+      listIndent = 0;
+      rest = rest.slice(q[0].length);
+      continue;
+    }
+    const l = /^[ \t]*(?:[-*+]|\d{1,9}[.)])[ \t]+/.exec(rest);
+    if (l) {
+      listIndent += l[0].length;
+      rest = rest.slice(l[0].length);
+      continue;
+    }
+    return { quotes, listIndent };
+  }
+}
+
+/// 入れ物の中の行なら、入れ物の記号を外した残りを返す。入れ物を抜けた行（`>` が足りない・リストの
+/// 字下げに届かない）なら null（そのフェンスはこの行の手前で閉じる・CommonMark のとおり）。
+function insideContainer(line: string, c: Container): string | null {
+  let rest = line;
+  for (let i = 0; i < c.quotes; i++) {
+    const q = QUOTE_MARKER.exec(rest);
+    if (!q) return null;
+    rest = rest.slice(q[0].length);
+  }
+  if (c.listIndent > 0 && rest.trim() !== "") {
+    const indent = /^[ \t]*/.exec(rest)?.[0] ?? "";
+    if (indent.replace(/\t/g, "    ").length < c.listIndent) return null;
+    return rest.slice(indent.length);
+  }
+  return rest;
+}
 
 /// 本文を「フェンスの外の行」と「フェンス（開きから閉じまで）」に分ける（CommonMark のとおり、
-/// 閉じは開きと同じ文字で同じ長さ以上・情報文字列なし。閉じが無ければ末尾まで）。引用・リストの中の
-/// フェンスも拾う（チャットはそれも図として描く）。
+/// 閉じは開きと同じ文字で同じ長さ以上・情報文字列なし。閉じが無ければ入れ物の終わりか本文の末尾まで）。
+/// 引用・リストの中のフェンスも拾う（チャットはそれも図として描く）。
 function scanFences(md: string): FenceBlock[] {
   const blocks: FenceBlock[] = [];
-  let open: { ch: string; len: number; block: Extract<FenceBlock, { kind: "fence" }> } | null = null;
+  let open: {
+    ch: string;
+    len: number;
+    container: Container;
+    block: Extract<FenceBlock, { kind: "fence" }>;
+  } | null = null;
   let text: string[] = [];
   for (const line of md.split("\n")) {
     if (open) {
-      open.block.lines.push(line);
-      const close = CLOSE_FENCE.exec(line);
-      if (close && close[2][0] === open.ch && close[2].length >= open.len) open = null;
-      continue;
+      const inner = insideContainer(line, open.container);
+      if (inner !== null) {
+        open.block.lines.push(line);
+        const close = CLOSE_FENCE.exec(inner);
+        if (close && close[1][0] === open.ch && close[1].length >= open.len) open = null;
+        continue;
+      }
+      // 入れ物を抜けた: フェンスはここで閉じ、この行は外の行として読み直す。
+      open = null;
     }
     const m = OPEN_FENCE.exec(line);
     // バッククォートのフェンスの情報文字列にはバッククォートを含められない（インラインのコード）。
@@ -118,7 +172,7 @@ function scanFences(md: string): FenceBlock[] {
       text = [];
       const block = { kind: "fence" as const, info: m[3].trim(), prefix: m[1], lines: [line] };
       blocks.push(block);
-      open = { ch: m[2][0], len: m[2].length, block };
+      open = { ch: m[2][0], len: m[2].length, container: containerOf(m[1]), block };
       continue;
     }
     text.push(line);
