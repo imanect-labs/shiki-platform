@@ -19,8 +19,8 @@ import math
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
-from abeval.config import Config
-from abeval.ledger import Ledger, read_relay_total_usd
+from abeval.config import Config, display_path
+from abeval.ledger import Ledger, read_relay_tagged_usd, read_relay_total_usd
 from abeval.pricing import micros_to_usd
 from abeval.proxy_control import ProxyControl, safe_id
 from abeval.tasks import PHRASINGS
@@ -148,15 +148,25 @@ def trial_estimate(
 
 
 def spent(cfg: Config) -> tuple[float, float | None, list[str]]:
-    """(評価の台帳の累計, 手元の中継の台帳の累計（無ければ None）, 注記)。どちらも読むだけ。"""
+    """(評価の累計, 手元の中継の台帳の累計（無ければ None）, 注記)。どちらも読むだけ。
+
+    評価の累計は、評価の台帳と、手元の中継の台帳の評価の分（tag が `abeval/` で始まる行）の大きい方（評価の台帳が
+    消えても少なく数えない）。注記のパスはホームを `~` にする（結果の runs[] に入るので利用者名を残さない）。
+    """
     notes = []
     eval_usd = micros_to_usd(Ledger(cfg.paths.ledger).refresh().total_micros)
     try:
         relay = read_relay_total_usd(cfg.paths.relay_ledger)
+        tagged = read_relay_tagged_usd(cfg.paths.relay_ledger, cfg.proxy.tag_prefix)
+        if tagged > eval_usd:
+            notes.append(
+                f"手元の中継の台帳の評価の分 ${tagged:.4f} が評価の台帳 ${eval_usd:.4f} より大きいので、そちらで数える"
+            )
+            eval_usd = tagged
     except FileNotFoundError:
         relay = None
         notes.append(
-            f"手元の中継の台帳がありません（{cfg.paths.relay_ledger}）。外側の残りは手元の中継が強制する"
+            f"手元の中継の台帳がありません（{display_path(cfg.paths.relay_ledger)}）。外側の残りは手元の中継が強制する"
         )
     return eval_usd, relay, notes
 

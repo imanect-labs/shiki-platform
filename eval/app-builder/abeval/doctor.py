@@ -28,7 +28,8 @@ from urllib.parse import urlsplit
 import httpx
 
 from abeval import fixtures
-from abeval.config import Config, load_config
+from abeval.budget import ledger_guard
+from abeval.config import Config, display_path, load_config
 from abeval.ledger import Ledger, LedgerCorrupt, read_relay_total_usd
 from abeval.pricing import micros_to_usd
 from abeval.proxy import CONTROL_HEADER, DUMMY_CREDENTIAL, TOKEN_FILE
@@ -245,11 +246,19 @@ def check_budget(cfg: Config, http: httpx.Client) -> list[Check]:
                 "評価の台帳",
                 "ok" if rest > 0 else "ng",
                 f"累計 ${micros_to_usd(spent):.4f} / ${cfg.caps.eval_cap_usd:.2f}"
-                f"（残り ${micros_to_usd(rest):.4f}・{cfg.paths.ledger}）",
+                f"（残り ${micros_to_usd(rest):.4f}・{display_path(cfg.paths.ledger)}）",
             )
         )
     except LedgerCorrupt as e:
         out.append(Check("評価の台帳", "ng", str(e)[:300]))
+    why = ledger_guard(cfg)
+    out.append(
+        Check("評価の台帳の置き場", "ng", why)
+        if why
+        else Check(
+            "評価の台帳の置き場", "ok", f"{display_path(cfg.paths.ledger)}（前の置き場に行は無い）"
+        )
+    )
     return out
 
 

@@ -5,5 +5,5 @@ __pycache__/
 # 会話の全文・要求の本文・試行の記録（再生成できる・コミットしない・H7 (a)）。
 data/cache/
 results/*.tmp
-# 評価の台帳（費用の上限の正本）。手元にだけ置く。消すと上限が数え直しになるので消さない。
+# 評価の台帳の前の置き場（今は作業ツリーの外の ~/.local/share/shiki-eval/ledger.jsonl・README の「上限と台帳」）。
 results/spend.jsonl

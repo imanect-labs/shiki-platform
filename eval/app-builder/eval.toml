@@ -40,8 +40,9 @@ tag_prefix = "abeval"
 [paths]
 # 版のバイナリ（bin/）と中継の制御の合言葉（proxy.token・権限 600）。
 home = "~/.local/share/shiki-eval"
-# 評価の台帳（上限の正本・eval/app-builder からの相対・.gitignore 済み）。
-ledger = "results/spend.jsonl"
+# 評価の台帳（上限の正本・作業ツリーの外・権限 600）。作業ツリーを作り直しても、別の checkout から流しても、
+# 同じ台帳で累計を数える（作業ツリーの中に置くと $0 から数え直しになり、$35 の歯止めがすり抜ける）。
+ledger = "~/.local/share/shiki-eval/ledger.jsonl"
 # 会話の全文・要求の本文・試行の記録（.gitignore 済み）。
 cache = "data/cache"
 # 手元の中継の台帳（読むだけ・外側の残りの表示に使う）。

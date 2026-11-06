@@ -1,9 +1,14 @@
 """費用の残り（`python -m abeval budget`・GAP-30 §6.2）。
 
-- 評価の台帳（`results/spend.jsonl`・abeval.proxy が書く・上限の正本）の累計と、実験ごと・実行（run）ごとの額。
+- 評価の台帳（`~/.local/share/shiki-eval/ledger.jsonl`・abeval.proxy が書く・上限の正本）の累計と、実験ごと・
+  実行（run）ごとの額。
 - 手元の中継の台帳（`~/.local/state/shiki-campaign/anthropic-spend.jsonl`）の累計（外側の歯止め・評価の分も
   含む）。どちらも読むだけで、8787（手元の中継）へは繋がない。
 - 残り = 上限 − 累計（評価は `eval_cap_usd`、総額は `global_cap_usd`）。
+- `ledger_guard`: 評価の台帳が消えた・別の台帳になったのを見つける（abeval.proxy は起動を拒み、doctor は NG）。
+  (1) 前の既定の置き場（作業ツリーの `results/spend.jsonl`）に行が残っている。(2) 手元の中継の台帳のうち tag が
+  `abeval/` で始まる行の累計が、評価の台帳の累計より大きい（作業ツリーを作り直す・`git clean -fdx`・別の checkout
+  から流すと、評価の台帳が $0 から数え直しになり $35 の歯止めがすり抜けるため）。
 """
 
 from __future__ import annotations
@@ -12,9 +17,43 @@ import argparse
 import json
 from dataclasses import dataclass, field
 
-from abeval.config import Config, load_config
-from abeval.ledger import Ledger, LedgerCorrupt, read_relay_total_usd
+from abeval.config import ROOT, Config, display_path, load_config
+from abeval.ledger import Ledger, LedgerCorrupt, read_relay_tagged_usd, read_relay_total_usd
 from abeval.pricing import micros_to_usd
+
+# 前の既定の評価の台帳（作業ツリーの中・ここに行が残っていたら移すまで動かさない）。
+LEGACY_LEDGER = ROOT / "results" / "spend.jsonl"
+# 手元の中継の台帳の評価の分が、評価の台帳より大きいとみなす差（丸めと単価の差を許す）。
+RELAY_TOLERANCE_USD = 0.01
+RELAY_TOLERANCE_RATIO = 0.01
+
+
+def ledger_guard(cfg: Config) -> str | None:
+    """評価の台帳が消えた・別の台帳になった印があれば理由（無ければ None）。どちらの台帳も読むだけ。"""
+    legacy = LEGACY_LEDGER
+    if (
+        legacy.resolve() != cfg.paths.ledger.resolve()
+        and legacy.is_file()
+        and legacy.stat().st_size
+    ):
+        return (
+            f"前の置き場の評価の台帳に行が残っています: {display_path(legacy)}。"
+            f"{display_path(cfg.paths.ledger)} の末尾に足してから消します（README の「上限と台帳」）"
+        )
+    try:
+        relay = read_relay_tagged_usd(cfg.paths.relay_ledger, cfg.proxy.tag_prefix)
+    except FileNotFoundError:
+        return None
+    except LedgerCorrupt as e:
+        return f"手元の中継の台帳が読めません: {e}"
+    ours = micros_to_usd(Ledger(cfg.paths.ledger).refresh().total_micros)
+    if relay > ours + max(RELAY_TOLERANCE_USD, RELAY_TOLERANCE_RATIO * relay):
+        return (
+            f"手元の中継の台帳の評価の分（tag {cfg.proxy.tag_prefix}/・${relay:.4f}）が、評価の台帳の累計"
+            f"（${ours:.4f}・{display_path(cfg.paths.ledger)}）より大きい。評価の台帳が消えたか、別の台帳を"
+            "使っています（このままでは評価の上限がすり抜ける）"
+        )
+    return None
 
 
 @dataclass
@@ -93,9 +132,12 @@ def summarize(cfg: Config) -> Budget:
     try:
         b.relay_usd = read_relay_total_usd(cfg.paths.relay_ledger)
     except FileNotFoundError:
-        b.notes.append(f"手元の中継の台帳がありません: {cfg.paths.relay_ledger}")
+        b.notes.append(f"手元の中継の台帳がありません: {display_path(cfg.paths.relay_ledger)}")
     except LedgerCorrupt as e:
         b.notes.append(f"手元の中継の台帳が読めません: {e}")
+    why = ledger_guard(cfg)
+    if why:
+        b.notes.append(why)
     return b
 
 

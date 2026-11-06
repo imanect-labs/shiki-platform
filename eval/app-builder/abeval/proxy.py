@@ -45,7 +45,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from abeval.config import Config, is_loopback_host, load_config
+from abeval.config import Config, display_path, is_loopback_host, load_config
 from abeval.ledger import Ledger
 from abeval.pricing import micros_to_usd, usd_to_micros
 from abeval.sse import MessageMeta, SseReader, read_message
@@ -799,13 +799,20 @@ def main(argv: list[str] | None = None) -> int:
     if args.listen:
         h, _, p = args.listen.rpartition(":")
         host, port = h.strip("[]"), int(p)
+    from abeval.budget import ledger_guard
+
+    why = ledger_guard(cfg)
+    if why:
+        print(f"abeval.proxy: 起動しません: {why}", file=sys.stderr, flush=True)
+        return 2
     state = ProxyState(cfg, upstream=args.upstream, capture=args.capture)
     server = ProxyServer(state, host, port)
     token_path = state.write_token()
     spent = state.ledger.refresh().total_micros
     print(
         f"abeval.proxy: {server.url} → {state.upstream}  評価の累計 ${micros_to_usd(spent):.4f} / "
-        f"${cfg.caps.eval_cap_usd:.2f}  台帳 {cfg.paths.ledger}  合言葉 {token_path}",
+        f"${cfg.caps.eval_cap_usd:.2f}  台帳 {display_path(cfg.paths.ledger)}  "
+        f"合言葉 {display_path(token_path)}",
         file=sys.stderr,
         flush=True,
     )

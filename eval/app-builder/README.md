@@ -346,8 +346,19 @@ Claude Haiku 5.5 だけ（abeval.proxy の許可リスト）。
 | 評価の累計（`eval_cap_usd`） | $35（月で区切らない） | abeval.proxy（送る前） |
 | 外側の歯止め（`global_cap_usd`） | $95（2026-10-25 からの累計） | 手元の中継（ここでは表示だけ） |
 
-- 評価の台帳は `results/spend.jsonl`（1 行 = 1 回の要求・`cost_micros` はマイクロ USD の整数）。上限の正本なので
-  **消さない**（.gitignore 済み。`git clean -x` で消えるので注意）。壊れた行があれば読み込みで止まる。
+- 評価の台帳は `~/.local/share/shiki-eval/ledger.jsonl`（作業ツリーの外・権限 600・1 行 = 1 回の要求・
+  `cost_micros` はマイクロ USD の整数）。上限の正本なので**消さない**。壊れた行があれば読み込みで止まる。
+  作業ツリーを作り直しても、別の checkout から流しても同じ台帳で数える。
+- 消えた・別の台帳になったときの守り（`budget.ledger_guard`）: 手元の中継の台帳のうち tag が `abeval/` で始まる
+  行の累計が評価の台帳より大きければ、abeval.proxy は起動を拒み、doctor は NG、plan は大きい方で数える。
+- 前の既定（作業ツリーの `results/spend.jsonl`）に行が残っていると、abeval.proxy は起動を拒む。移し方:
+
+  ```bash
+  mkdir -p -m 700 ~/.local/share/shiki-eval
+  cat eval/app-builder/results/spend.jsonl >> ~/.local/share/shiki-eval/ledger.jsonl
+  chmod 600 ~/.local/share/shiki-eval/ledger.jsonl
+  rm eval/app-builder/results/spend.jsonl   # 足したことを確かめてから
+  ```
 - 手元の中継の台帳（`~/.local/state/shiki-campaign/anthropic-spend.jsonl`）は読むだけ（8787 へは繋がない）。
 - 単価は `eval.toml` の `[pricing]`（台帳 §6.1）。段の境は「入力＋キャッシュの読み＋キャッシュの書き」が 100,000
   トークンを超えたら高い段（手元の中継の `cost_of` と同じ）。1 回分は切り上げの整数で数える。
@@ -371,7 +382,7 @@ Mode B で承認待ち（`approval_requested`）が来たら、既定で却下�
 | `results/<exp>.json`・`results/errors-<exp>.jsonl`・`results/summary.md` | する |
 | `data/tasks/`・`data/versions/`・`data/captures/` | する（製品の文面はコードと同じ文字列・IR は架空のデータ・版の記録は commit と sha だけ） |
 | `data/cache/`（会話の全文・要求の本文・試行の記録） | しない（.gitignore） |
-| `results/spend.jsonl`（評価の台帳）・`results/*.tmp` | しない（.gitignore） |
+| 評価の台帳（`~/.local/share/shiki-eval/ledger.jsonl`・作業ツリーの外）・`results/spend.jsonl`（前の置き場）・`results/*.tmp` | しない（.gitignore） |
 
 課題・fixture・レポートには、実在の組織・個人の名前を書かない（public リポジトリ）。
 
@@ -381,8 +392,9 @@ Mode B で承認待ち（`approval_requested`）が来たら、既定で却下�
   `ABEVAL_CAPTURES_DIR`）をテストごとの一時の場所に向け、socket の接続を見張る。手元の中継（`127.0.0.1:8787`）とループバック以外への接続は例外になる（実 LLM を呼ばない）。
 - 印: `server`（stub のスタックか版のサーバーが要る・`ABEVAL_API_URL`）・`lint_bin`（ir_lint のバイナリが要る）・`shell`（bash と git が要る）。
 - `shell` のテストは docker・cargo・curl などを shim（`tests/shellkit.py`）にして流す（本物は動かさない）。
-  `test_dev_up_args.py` は、引数を省いた dev-up.sh が HEAD の版と同じ run-server.sh を作り、同じ shim を同じ順に
-  呼ぶことを確かめる。`test_build_version.py` は一時の git リポジトリと偽の cargo で流す。
+  `test_dev_up_args.py` は、引数を省いた dev-up.sh（と `--status`・`--down`）が、引数を足す前の版（0a0567a1）で
+  作った記録（`tests/fixtures/dev_up/`）と同じ run-server.sh を作り、同じ shim を同じ順に呼ぶことを確かめる
+  （既定の経路を意図して変えたときだけ `ABEVAL_REGEN_DEV_UP=1` で作り直す）。`test_build_version.py` は一時の git リポジトリと偽の cargo で流す。
 - 一時の置き場は `.pytest_tmp/`（/tmp は tmpfs なので使わない）。
 - 採点器のオフラインのテストは、記録（`tests/fixtures/ir_lint/`・`tests/fixtures/runs/`）を読む。課題を変えたら
   記録し直す（記録の入力の sha が違うとテストが止まる）。記録と実物の一致は `pytest -m lint_bin` が見る。
@@ -418,7 +430,8 @@ Mode B で承認待ち（`approval_requested`）が来たら、既定で却下�
 
 - 本文のバイト数による予約は大きめなので、上限の間際では最後の数件を拒むことがある（安全側）。Anthropic が
   ツールの定義に足す system の分（数百トークン）は本文に無いが、JSON の記号のバイトがそれより大きい。
-- 評価の台帳は作業ツリーごとにある。評価は 1 つの作業ツリー（このブランチ）から流す。
+- 評価の台帳はこの機械の 1 つ（作業ツリーの外）。別の機械から流すと別の台帳になる（手元の中継の台帳との
+  突き合わせは、同じ機械の中継だけを見る）。
 - 取り込みの capture_only の要求も、評価の台帳に $0 の行として残る（キャッシュで生成を飛ばした実行でも、取り込みの
   行だけは増える）。
 - Mode B の聞き返しの判定は単純な規則（「？」で終わる・課題の `ask_terms`）なので、実モデルでは取りこぼしがある。

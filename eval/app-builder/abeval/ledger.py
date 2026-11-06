@@ -94,7 +94,7 @@ class Ledger:
     def append(self, entry: Mapping) -> None:
         check_entry(entry)
         data = (json.dumps(entry, ensure_ascii=False, sort_keys=True) + "\n").encode()
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
         fd = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
@@ -176,4 +176,23 @@ def read_relay_total_usd(path: Path) -> float:
             except (ValueError, AttributeError, TypeError) as e:
                 raise LedgerCorrupt(f"{path}:{lineno}: 読めません: {e}") from e
             total += cost
+    return total
+
+
+def read_relay_tagged_usd(path: Path, prefix: str) -> float:
+    """手元の中継の台帳のうち、tag が `<prefix>/` で始まる行（評価の要求）の累計（USD）。読むだけ。"""
+    total = 0.0
+    want = f"{prefix}/"
+    with Path(path).open("rb") as f:
+        for lineno, raw in enumerate(f, 1):
+            if not raw.strip():
+                continue
+            try:
+                entry = json.loads(raw)
+                tag = entry.get("tag") or ""
+                cost = float(entry.get("cost_usd", 0))
+            except (ValueError, AttributeError, TypeError) as e:
+                raise LedgerCorrupt(f"{path}:{lineno}: 読めません: {e}") from e
+            if isinstance(tag, str) and tag.startswith(want):
+                total += cost
     return total

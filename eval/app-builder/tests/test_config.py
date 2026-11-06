@@ -43,7 +43,8 @@ def test_paths_follow_the_environment(tmp_path):
 
 def test_paths_default_relative_to_the_eval_dir():
     cfg = load_config(env={})
-    assert cfg.paths.ledger == ROOT / "results" / "spend.jsonl"
+    # 評価の台帳は作業ツリーの外（作り直しても別の checkout からでも同じ累計）。
+    assert cfg.paths.ledger == Path("~/.local/share/shiki-eval/ledger.jsonl").expanduser()
     assert cfg.paths.cache == ROOT / "data" / "cache"
     assert cfg.paths.home == Path("~/.local/share/shiki-eval").expanduser()
     assert (

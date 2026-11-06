@@ -269,7 +269,12 @@ def test_relay_ledger(world):
     world.cfg.paths.relay_ledger.write_text(json.dumps({"cost_usd": 95.0}) + "\n")
     assert bad(world.run()) == {"手元の中継の台帳"}
     world.cfg.paths.relay_ledger.write_text("{broken\n")
-    assert bad(world.run()) == {"手元の中継の台帳"}
+    assert bad(world.run()) == {"手元の中継の台帳", "評価の台帳の置き場"}
+    # 評価の分（tag が abeval/）が評価の台帳より大きい: 評価の台帳が消えた・別の台帳になった。
+    world.cfg.paths.relay_ledger.write_text(
+        json.dumps({"cost_usd": 1.5, "tag": "abeval/e0/r/t"}) + "\n"
+    )
+    assert bad(world.run()) == {"評価の台帳の置き場"}
     world.cfg.paths.relay_ledger.unlink()
     checks = world.run()
     assert not bad(checks)

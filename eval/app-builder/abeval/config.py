@@ -89,6 +89,15 @@ def _strip_secret_like(value: object) -> object:
     return value
 
 
+def display_path(path: Path | str) -> str:
+    """表示・結果に残すパス（ホームの下は `~/…` にする・利用者名を残さない）。"""
+    p = Path(path).expanduser()
+    try:
+        return "~/" + str(p.relative_to(Path.home()))
+    except ValueError:
+        return str(p)
+
+
 def server_config_sha(path: Path) -> str:
     """製品の設定（llm-eval.toml など）の sha256。鍵の形の項目を除いてから正規化した JSON で数える。"""
     with path.open("rb") as f:
