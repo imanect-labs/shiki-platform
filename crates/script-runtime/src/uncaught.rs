@@ -14,8 +14,10 @@
 //!   文を変えて投げ直したもの（`throw new Error('…: ' + e.message)`）は作成者の誤り。
 //! - やり直せる code（`unavailable` など）で投げ返すと、step の「リトライ回数」の範囲で script ごと動かし直す。
 //!   内部の能力（`Shiki.storage.write`・`Shiki.workflow.start`・`Shiki.data.*` など）の副作用は呼び出し連番の冪等
-//!   キーで高々 1 回だが、外部への `Shiki.http.request` は `Idempotency-Key` を付けるだけなので、前に成功した送信も
-//!   もう一度送られる（相手がそのキーを守るときだけ 1 回になる・script.md §6）。
+//!   キーで高々 1 回だが、外部への `Shiki.http.request` は、やり直しと再開では前に成功した送信ももう一度送られる
+//!   （同じ `Idempotency-Key` を付けるので、相手がそのキーを守るときだけ 1 回になる）。送り先の状態を変えうる送信
+//!   （GET・HEAD・OPTIONS 以外）で相手が誤りを返さなかったものは、リースが切れて同じ試行を拾い直したときだけ、
+//!   記録した応答を返して送り直さない（GAP-28・script.md §6.7）。
 
 use std::fmt::Write as _;
 

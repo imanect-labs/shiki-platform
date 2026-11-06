@@ -3,8 +3,9 @@
 //! script-runtime（swc→QuickJS/wasmtime）で 1 回実行し、ゲスト内の `Shiki.*` 同期呼び出しを
 //! **同じ能力ゲートウェイ**（scope ceiling → effect_journal → 監査）へ合流させる（INV-1/INV-2）。
 //! ホスト呼び出しは効果的呼び出し連番 `seq` で冪等キーを `<step冪等キー>#c<seq>` と派生し、
-//! storage.write / workflow.start の高々 1 回を保つ。送り先の状態を変えうる `Shiki.http.request` も同じキーで結果を
-//! 記録し、script を動かし直したときに送り直さない（GAP-28・[`super::outbound`]）。engine.run は同期ブロッキングのため
+//! storage.write / workflow.start の高々 1 回を保つ。送り先の状態を変えうる `Shiki.http.request` は、試す回数を足した
+//! `<step冪等キー>#a<attempt>#c<seq>` で結果を記録し、リースが切れて拾い直したとき（同じ試行）だけ送り直さない
+//! （やり直しと再開は送る・GAP-28・[`super::outbound`]）。engine.run は同期ブロッキングのため
 //! `spawn_blocking` で回し、非同期ポートは捕捉した `Handle` で `block_on` する（gRPC サーバと同型）。
 
 use std::collections::BTreeSet;
@@ -118,6 +119,7 @@ impl CapabilityNodeExecutor {
             ec: ec.clone(),
             ceiling: ceiling_override.unwrap_or_else(|| ctx.scope_ceiling.clone()),
             base_key: ctx.idempotency_key.clone(),
+            attempt: ctx.attempt,
             http_allowlist: self.http_allowlist.clone(),
             http_timeout_ms: self.http_timeout_ms,
             cancel: ctx.cancel.clone(),
@@ -184,6 +186,8 @@ struct HostBridge {
     ec: ExecCtx,
     ceiling: Vec<String>,
     base_key: String,
+    /// いまの試行（外部への送信の記録のキーに入れる。拾い直しと待ちでは変わらず、やり直しと再開で増える）。
+    attempt: i32,
     /// http.request（Shiki.http.request）の egress allowlist（executor と同一値・#344）。
     http_allowlist: Vec<String>,
     http_timeout_ms: u64,
@@ -196,6 +200,15 @@ const SCRIPT_DEADLINE_MARGIN: std::time::Duration = std::time::Duration::from_se
 
 /// 止める合図の後の `Shiki.*` 呼び出しを断るときの code（BUG-96）。
 pub(crate) const SCRIPT_CANCELLED: &str = "step_cancelled";
+
+/// 能力の誤りをゲストへ返す形にする。
+fn host_err(e: PortError) -> HostResponse {
+    HostResponse::Err {
+        message: e.message,
+        code: e.code,
+        retryable: e.retryable,
+    }
+}
 
 impl HostBridge {
     async fn dispatch(&self, call: &HostCall) -> HostResponse {
@@ -237,11 +250,7 @@ impl HostBridge {
         }
         match self.dispatch_capability(call).await {
             Ok(v) => HostResponse::Ok(v),
-            Err(e) => HostResponse::Err {
-                message: e.message,
-                code: e.code,
-                retryable: e.retryable,
-            },
+            Err(e) => host_err(e),
         }
     }
 
@@ -346,8 +355,12 @@ impl HostBridge {
                 let input = a.get("input").cloned().unwrap_or(Value::Null);
                 self.workflow_start_journaled(&call_key, name, &input).await
             }
-            // http.request（実行時は args が concrete のため宛先束縛を照合できる・#344/10.15）。
-            "http.request" => self.http_request(a, &call_key).await,
+            // http.request（実行時は args が concrete のため宛先束縛を照合できる・#344/10.15）。記録のキーには試す回数を
+            // 入れる（送る `Idempotency-Key` は試行によらない `call_key` のまま）。
+            "http.request" => {
+                let effect_key = format!("{}#a{}#c{}", self.base_key, self.attempt, call.seq);
+                self.http_request(a, &call_key, &effect_key).await
+            }
             // 構造化データ（Task 15.7）。node 経路と同じポート・同じ journal（書込はホスト呼び出しごとの冪等キー）。
             api if api.starts_with("data.") => {
                 super::capability_data::script_data_call(
@@ -370,7 +383,12 @@ impl HostBridge {
     /// ノード経路（`node_http_request`）と同じ防御: secret 添付時は URL ホストを
     /// `secret.allowed_hosts`（∩ グローバル allowlist）とリテラル照合し、3xx は一律拒否する。
     /// secret 平文・レスポンス本文は監査に載せない（status + host のみ）。
-    async fn http_request(&self, a: &Value, call_key: &str) -> Result<Value, PortError> {
+    async fn http_request(
+        &self,
+        a: &Value,
+        call_key: &str,
+        effect_key: &str,
+    ) -> Result<Value, PortError> {
         use super::http::{redirect_denied, summarize_response};
 
         let method = a
@@ -423,8 +441,9 @@ impl HostBridge {
             other => other.to_string().into_bytes(),
         });
 
-        // 送り先の状態を変えうる送信は、呼び出し連番のキーで結果を記録し、script を動かし直したとき（リースが切れて
-        // 拾い直した・やり直し・再開）に送り直さない（ノードの経路と同じ・GAP-28）。
+        // 送り先の状態を変えうる送信は、試す回数と呼び出し連番のキーで結果を記録し、リースが切れて script を拾い直した
+        // とき（同じ試行）に送り直さない（GAP-28）。やり直しと再開は新しい試行なので送る（2xx の応答の中身を見て投げた
+        // script が、原因を直した再開で通るように・本文に時刻を入れる script が再開で effect_conflict にならないように）。
         let digest = super::outbound::http_digest(&method, &url, body.as_deref(), secret_name);
         let recorded = super::outbound::changes_remote(&method);
         let send = async {
@@ -478,7 +497,7 @@ impl HostBridge {
             super::outbound::http_once(
                 &self.journal,
                 &self.ec.tenant_id,
-                call_key,
+                effect_key,
                 &digest,
                 &host,
                 send,

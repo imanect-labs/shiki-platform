@@ -54,6 +54,8 @@ struct CountingPorts {
     http_body: Mutex<Option<Vec<u8>>>,
     /// 外部の応答の状態コード（無ければ 201）。
     http_status: Mutex<Option<u16>>,
+    /// 次の送信を一度だけ一時的な誤り（`unavailable`）で失敗させる URL（送ったことは数える）。
+    fail_once: Mutex<Vec<String>>,
 }
 
 impl CountingPorts {
@@ -110,6 +112,13 @@ impl NodePorts for CountingPorts {
             .unwrap()
             .push(format!("{} {}", req.method, req.url));
         let n = self.sends();
+        {
+            let mut fail = self.fail_once.lock().unwrap();
+            if let Some(i) = fail.iter().position(|u| *u == req.url) {
+                fail.remove(i);
+                return Err(PortError::unavailable("送り先が一時的に応答しません"));
+            }
+        }
         self.maybe_block().await;
         let body = self
             .http_body
@@ -208,6 +217,15 @@ async fn setup_with(script: bool) -> Option<Env> {
 }
 
 impl Env {
+    /// 1 ブロックだけの run のワークフローの id。
+    async fn workflow_id(&self) -> Uuid {
+        sqlx::query_scalar("SELECT workflow_id FROM workflow_run WHERE tenant_id = $1")
+            .bind(&self.tenant)
+            .fetch_one(&self.pool)
+            .await
+            .unwrap()
+    }
+
     /// 1 ブロックだけの run を作る。
     async fn run(&self, node: Value, scopes: &[&str]) -> Uuid {
         let ir = json!({
@@ -739,4 +757,114 @@ async fn a_reclaimed_script_does_not_send_its_posts_twice() {
     assert_eq!(step.4, first.output);
     assert_eq!(rows.len(), 2, "呼び出しごとに記録する: {rows:?}");
     assert!(rows.iter().all(|(k, _)| k.contains("#c")), "{rows:?}");
+}
+
+/// 記録したキーが、試す回数ごとに分かれていること（script の外部への送信・`#a<attempt>#c<seq>`）。
+fn attempts_of(rows: &[(String, Option<Value>)]) -> Vec<String> {
+    rows.iter()
+        .map(|(k, _)| {
+            k.rsplit_once('#')
+                .and_then(|(head, _)| head.rsplit_once('#'))
+                .map_or_else(String::new, |(_, a)| a.to_string())
+        })
+        .collect()
+}
+
+/// 1 つ目の送信は通り、2 つ目の送信が一時的な誤りで失敗する script（`/down` は一度だけ失敗させる）。
+fn post_then_down(first_body: &str) -> Value {
+    let source = format!(
+        r#"function main(input) {{
+  const a = Shiki.http.request({{ method: "POST", url: "https://api.example.com/a", body: {first_body} }});
+  const b = Shiki.http.request({{ method: "POST", url: "https://api.example.com/down", body: {{ n: 2 }} }});
+  return {{ a: a.body, b: b.body }};
+}}"#
+    );
+    json!({ "id": "sc", "type": "script.run", "params": { "source": { "inline": source } } })
+}
+
+/// 2xx の応答の後に script が一時的な誤りで失敗してから再開すると、前の試行の送信も送り直し、新しい応答を使う
+/// （記録は拾い直しの間だけ。応答の中身を見て失敗を判断する script が、原因を直した再開で通る）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn resuming_a_script_sends_again_and_uses_the_new_response() {
+    let Some(env) = setup_with(true).await else {
+        return;
+    };
+    let node = post_then_down("{ n: 1 }");
+    env.ports
+        .fail_once
+        .lock()
+        .unwrap()
+        .push("https://api.example.com/down".into());
+    let run = env.run(node, &["http.egress"]).await;
+    let first_run = env.worker().claim_and_run_once("w-a").await;
+    let failed = env.step(run).await;
+    let resumed = env
+        .store
+        .resume_failed(&env.tenant, env.workflow_id().await, run)
+        .await
+        .unwrap();
+    let ran = [first_run, env.worker().claim_and_run_once("w-b").await];
+    let step = env.step(run).await;
+    let status = env.store.run_status(&env.tenant, run).await.unwrap();
+    let sends = env.ports.sends.lock().unwrap().clone();
+    let rows = env.journal_rows().await;
+    env.cleanup().await;
+
+    assert_eq!(ran, [Ok(true), Ok(true)]);
+    assert_eq!(
+        (failed.0.as_str(), failed.3.as_deref()),
+        ("failed", Some("unavailable"))
+    );
+    assert_eq!(resumed, ResumeOutcome::Resumed);
+    assert_eq!(
+        sends,
+        [
+            "POST https://api.example.com/a",
+            "POST https://api.example.com/down",
+            "POST https://api.example.com/a",
+            "POST https://api.example.com/down",
+        ],
+        "再開で前の試行の送信を送り直していない（記録した古い応答を返した）"
+    );
+    assert_eq!(status, Some(RunStatus::Succeeded));
+    assert_eq!(
+        step.4["a"],
+        json!({ "ok": true, "n": 3 }),
+        "再開した試行の応答を使う"
+    );
+    assert_eq!(attempts_of(&rows), ["a1", "a2", "a2"], "{rows:?}");
+}
+
+/// 本文に時刻を入れる script も、やり直しで effect_conflict にならずに送り直して通る（記録は試す回数ごと）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retrying_a_script_with_a_timestamp_in_the_body_does_not_conflict() {
+    let Some(env) = setup_with(true).await else {
+        return;
+    };
+    let mut node = post_then_down("{ at: Date.now() + Math.random() }");
+    node["retry"] = json!({ "max_attempts": 2 });
+    env.ports
+        .fail_once
+        .lock()
+        .unwrap()
+        .push("https://api.example.com/down".into());
+    let run = env.run(node, &["http.egress"]).await;
+    let first_run = env.worker().claim_and_run_once("w-a").await;
+    let retrying = env.step(run).await;
+    env.age_reservations_and_wake().await;
+    let ran = [first_run, env.worker().claim_and_run_once("w-b").await];
+    let step = env.step(run).await;
+    let status = env.store.run_status(&env.tenant, run).await.unwrap();
+    let sends = env.ports.sends();
+    env.cleanup().await;
+
+    assert_eq!(ran, [Ok(true), Ok(true)]);
+    assert_eq!((retrying.0.as_str(), retrying.1), ("ready", 1));
+    assert_eq!(
+        (step.0.as_str(), step.3.as_deref()),
+        ("succeeded", None),
+        "やり直しで前と違う本文を effect_conflict にした"
+    );
+    assert_eq!(status, Some(RunStatus::Succeeded));
+    assert_eq!(sends, 4);
 }

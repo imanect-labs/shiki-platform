@@ -19,6 +19,8 @@
 //!   記録しない（操作の digest にハッシュで入るだけ）。結果が [`RECORD_MAX_BYTES`] を超えたら、LLM は記録しない
 //!   （拾い直したら呼び直す）、外部への送信は本文を落とした印だけを記録する（拾い直したら届いたことは分かるが続きに
 //!   渡せないので、送り直さずに [`HTTP_DELIVERY_UNKNOWN`] で失敗にする）。記録は step と同じく保持期間の GC で消える。
+//! - キーは、ブロックでは step の冪等キー、script の中では試す回数と呼び出し連番のキー（`#a<attempt>#c<seq>`）。
+//!   script の記録はリースが切れて拾い直したとき（同じ試行）だけ使い、やり直しと再開は送り直す。
 //! - 記録の DB が使えなければ呼ばない（`unavailable`・内部の書込と同じ fail-closed）。結果の記録に失敗したときは、
 //!   呼び出しは済んでいるので結果を返す（拾い直しの窓だけ前と同じ at-least-once）。
 
@@ -235,6 +237,22 @@ fn delivery_unknown(host: &str, sent: bool) -> PortError {
     )
 }
 
+/// 拾い直した実行が、前の実行と同じ位置で別の内容を送ろうとしたときの誤り（`effect_conflict`・permanent）。
+///
+/// script の本文に時刻や乱数を入れると、拾い直したときに内容が変わる。前の内容を送ったか（送っている途中か）は
+/// 記録にあるので、送らずに止める。再開は新しい試行のキーで送る（[`super::script`]）。
+fn outbound_conflict(host: &str) -> PortError {
+    PortError::new(
+        "effect_conflict",
+        format!(
+            "このブロックの処理が途中で止まり、動かし直したときに、外部のサービス（{host}）へ前と違う内容を\
+             送ろうとしたため、送らずに止めました。前の内容が届いたかを送り先で確かめてから、必要なら失敗した\
+             ところから再開してください。再開すると、今の内容で送ります。"
+        ),
+        false,
+    )
+}
+
 /// 外部への送信（送り先の状態を変えうるもの・[`changes_remote`]）を記録つきで 1 回にする。
 ///
 /// `send` は送って応答を確かめ、ブロックの結果 `{ status, host, body }` を返す（監査も中で残す）。`host` は誤りの文に
@@ -269,7 +287,7 @@ where
         }
         JournalDecision::AlreadyDone(v) => Ok(v),
         JournalDecision::InProgress => Err(effect_in_progress(WHAT)),
-        JournalDecision::DigestMismatch => Err(effect_conflict(WHAT)),
+        JournalDecision::DigestMismatch => Err(outbound_conflict(host)),
         JournalDecision::Proceed => {
             let mut pending = ReleaseOnDrop::new(journal, tenant_id, key, digest);
             let result = send.await;
@@ -388,6 +406,20 @@ mod tests {
                 e.message
             );
         }
+    }
+
+    /// 拾い直しで内容が変わった送信は、送らずに止め（やり直さない）、再開で今の内容を送ると言う。
+    #[test]
+    fn a_changed_send_stops_and_says_resuming_sends_the_new_content() {
+        let e = outbound_conflict("api.example.com");
+        assert_eq!(e.code, "effect_conflict");
+        assert!(!e.retryable);
+        assert!(e.message.contains("api.example.com"), "{}", e.message);
+        assert!(
+            e.message.contains("再開すると、今の内容で送ります。"),
+            "{}",
+            e.message
+        );
     }
 
     /// 記録しない journal（テスト用）では、毎回呼ぶ。
