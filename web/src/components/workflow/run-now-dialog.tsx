@@ -14,6 +14,8 @@
 ///   （D-93。空欄なら、きっかけの内容は入力と同じ）。
 /// - スケジュールのきっかけがあるワークフローは、「詳しい設定」で予定の日時を変えて試せる（GAP-88）。欄は開いたときの
 ///   日時（実行情報の時間帯）で始め、変えたときだけ送る（変えなければ、予定の日時は実行した日時のまま）。
+/// - 「詳しい設定」に書いた値は、閉じて開き直しても残す（入力項目の欄と同じ）。そのかわり、見えないまま送らない
+///   （BUG-229）: 開き直したときは、送る値が入っていれば開いた形で始め、閉じた見出しの下には送る値を言う。
 /// - 開いたときに、実行するのに自分に足りない権限を確かめ（`GET /workflows/{id}/access`・アプリのボタンと同じ決まり・
 ///   GAP-37）、足りなければ理由を出す。押したときに確かめ直し、まだ足りなければ送らない（共有してもらっていれば、
 ///   開き直さずに実行できる・BUG-217 と同じ考え方）。確かめられなかったときは止めない（サーバーが本人の権限で確かめる）。
@@ -48,7 +50,7 @@ import { getMyWorkflowAccess, type MyWorkflowAccess } from "@/lib/artifact-api";
 import { myRunBlockedReason } from "@/lib/access-wording";
 import { blockDisplayName } from "@/lib/workflow-block-name";
 import { inputFieldsOf, type InputFieldInfo } from "@/lib/workflow-input-schema";
-import { localDateTimeIn, zoneLabel } from "@/lib/time-zone";
+import { formatLocalDateTime, localDateTimeIn, zoneLabel } from "@/lib/time-zone";
 import { EVENT_CATALOG, RUN_INFO_TZ } from "@/generated/workflow-catalog";
 import type { WorkflowIr } from "@/generated/workflow-ir";
 
@@ -225,6 +227,9 @@ export function RunNowDialog({
   const [fields, setFields] = React.useState<Record<string, string>>({});
   const [jsonText, setJsonText] = React.useState("{}");
   const [triggerText, setTriggerText] = React.useState("");
+  /// 開いたときに「詳しい設定」を開いた形で始めるかを決めるための、いまのきっかけの内容（BUG-229）。
+  const triggerTextRef = React.useRef(triggerText);
+  triggerTextRef.current = triggerText;
   /// 予定の日時の欄（`YYYY-MM-DDTHH:mm`・実行情報の時間帯）と、開いたときの値（変えたときだけ送る）。
   const [scheduledText, setScheduledText] = React.useState("");
   const [scheduledInitial, setScheduledInitial] = React.useState("");
@@ -240,6 +245,9 @@ export function RunNowDialog({
   /// 添えられた持ち主かで言い分ける（別の問い合わせの答えを待たない・BUG-230）。
   const [access, setAccess] = React.useState<MyWorkflowAccess | null>(null);
   const blockedReason = access ? myRunBlockedReason(access.items, access.owner) : null;
+  // 「詳しい設定」で送る値（閉じているときに見出しの下で言う・BUG-229）。予定の日時は変えたときだけ送る。
+  const triggerHeld = trigger !== null && triggerText.trim() !== "";
+  const scheduledHeld = schedule && scheduledText !== "" && scheduledText !== scheduledInitial;
 
   React.useEffect(() => {
     if (!open) return;
@@ -249,6 +257,8 @@ export function RunNowDialog({
     const now = localDateTimeIn(RUN_INFO_TZ);
     setScheduledText(now);
     setScheduledInitial(now);
+    // 前に書いたきっかけの内容が残っていれば、見える形で始める（閉じたまま前の値を送らない・BUG-229）。
+    setAdvanced(triggerTextRef.current.trim() !== "");
     let live = true;
     getMyWorkflowAccess(workflowId)
       .then((a) => live && setAccess(a))
@@ -502,6 +512,15 @@ export function RunNowDialog({
               <ChevronDown className={cn("size-3.5 transition-transform", advanced && "rotate-180")} aria-hidden />
               詳しい設定
             </button>
+            {!advanced && (triggerHeld || scheduledHeld) ? (
+              // 閉じていても送る値を言う（見えないまま前の値で実行しない・BUG-229）。
+              <div className="space-y-0.5 text-[11px] leading-relaxed text-muted-foreground" data-testid="run-now-advanced-held">
+                {scheduledHeld ? (
+                  <p>{`予定の日時を ${formatLocalDateTime(scheduledText)}（${zoneLabel(RUN_INFO_TZ)}）にして実行します。`}</p>
+                ) : null}
+                {triggerHeld ? <p>入れたきっかけの内容で実行します。</p> : null}
+              </div>
+            ) : null}
             {advanced ? (
               <div id={`${idBase}-advanced`} className="space-y-3">
                 {schedule ? (

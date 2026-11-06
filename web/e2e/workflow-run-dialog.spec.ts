@@ -8,6 +8,7 @@ import { cleanupAll, loginViaKeycloak, uniqueName } from "./helpers";
 ///   「API 400」とだけ出た）。どちらでも実行は作られない。
 /// - ファイルが保存されたときのきっかけのワークフローは、「詳しい設定」のきっかけの内容（JSON）で試せる。書いた値が
 ///   `$from trigger` の源になり、空欄なら入力の値を使う。
+/// - 「詳しい設定」を閉じても、送る値があることを見出しの下で言い、閉じて開き直しても値を残して開いた形で始める（BUG-229）。
 
 const SHOTS = process.env.E2E_SHOTS_DIR;
 
@@ -197,6 +198,19 @@ test("実行のダイアログ: ファイルが保存されたときのワーク
     // 書いたきっかけの内容が `$from trigger` の源になる。
     const trial = { file_id: "e2e-file-1", version: 3, op: "update" };
     await field.fill(JSON.stringify(trial));
+    // 「詳しい設定」を閉じても、送る値があることを見出しの下で言う（見えないまま前の値で実行しない・BUG-229）。
+    const toggle = dialog.getByRole("button", { name: "詳しい設定" });
+    await toggle.click();
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await expect(dialog.getByTestId("run-now-advanced-held")).toHaveText("入れたきっかけの内容で実行します。");
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/run-dialog-trigger-held-pc.png` });
+    // 閉じて開き直しても値は残し、開いた形で始める。
+    await dialog.getByRole("button", { name: "閉じる" }).click();
+    await expect(dialog).toHaveCount(0);
+    await page.getByRole("button", { name: "実行", exact: true }).click();
+    await expect(toggle).toHaveAttribute("aria-expanded", "true");
+    await expect(field).toHaveValue(JSON.stringify(trial));
+    await expect(dialog.getByTestId("run-now-advanced-held")).toHaveCount(0);
     await dialog.getByRole("button", { name: "実行する" }).click();
     await page.waitForURL(/\/runs\?run=/, { timeout: 20_000 });
     const runId = new URL(page.url()).searchParams.get("run")!;

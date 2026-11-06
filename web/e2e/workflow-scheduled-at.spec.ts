@@ -8,6 +8,7 @@ import { cleanupQueue, loginViaKeycloak, removeWorkflowApi, uniqueName } from ".
 /// - 「日付を計算」はその日時から数え、「別のワークフローを実行」で始めた子の実行も同じ日時を引き継ぐ。
 /// - 実行履歴の一覧（PC は「予定の日時」の列、スマホはカードの 3 行目）と詳細で、指定した予定の日時と、引き継いだ予定の
 ///   日時を言い分ける。予定の日時の無い実行には出さない。
+/// - 変えた予定の日時は、「詳しい設定」を閉じても見出しの下で言う（BUG-229）。
 /// 前提: shiki-server が SHIKI__WORKFLOW__ENABLED=true（AI のブロックは使わない）。作ったワークフローは最後に消す。
 
 const SHOTS = process.env.E2E_SHOTS_DIR;
@@ -64,7 +65,7 @@ async function stepOutput(page: Page, id: string, runId: string, node: string): 
   return ((await res.json()) as { output: Record<string, unknown> }).output;
 }
 
-/// 「詳しい設定」を開く（開き直したダイアログは前に開いた状態のままなので、閉じていれば押す）。
+/// 「詳しい設定」を開く（開き直したダイアログは、書いたきっかけの内容が無ければ閉じた形で始まるので、閉じていれば押す）。
 async function openAdvanced(dialog: Locator): Promise<void> {
   const toggle = dialog.getByRole("button", { name: "詳しい設定" });
   if ((await toggle.getAttribute("aria-expanded")) !== "true") await toggle.click();
@@ -140,6 +141,12 @@ test("予定の日時: 指定して試し、子の実行も引き継ぎ、実行
   await dialog.getByLabel("予定の日時（日本時間）").fill("2026-11-09T09:00");
   await expect(dialog.getByText(/スケジュールがこの日時に動いたものとして実行し/)).toBeVisible();
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/scheduled-at-dialog-pc.png` });
+  // 閉じても、変えた予定の日時で実行することを言う（BUG-229）。
+  await dialog.getByRole("button", { name: "詳しい設定" }).click();
+  await expect(dialog.getByTestId("run-now-advanced-held")).toHaveText(
+    "予定の日時を 2026/11/09 09:00（日本時間）にして実行します。",
+  );
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/scheduled-at-held-pc.png` });
   await dialog.getByRole("button", { name: "閉じる" }).click();
   const trial = await runFromDialog(page, "2026-11-09T09:00");
   expect(trial.body.scheduled_at).toBe("2026-11-09T09:00");
@@ -238,5 +245,13 @@ test("予定の日時: 指定して試し、子の実行も引き継ぎ、実行
   await expect(phoneDialog.getByLabel("予定の日時（日本時間）")).toBeVisible();
   expect(await phoneDialog.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
   if (SHOTS) await phone.screenshot({ path: `${SHOTS}/scheduled-at-dialog-phone.png` });
+  // 変えて閉じても、変えた予定の日時で実行することを言う（BUG-229）。
+  await phoneDialog.getByLabel("予定の日時（日本時間）").fill("2026-11-09T09:00");
+  await phoneDialog.getByRole("button", { name: "詳しい設定" }).click();
+  await expect(phoneDialog.getByTestId("run-now-advanced-held")).toHaveText(
+    "予定の日時を 2026/11/09 09:00（日本時間）にして実行します。",
+  );
+  expect(await phoneDialog.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+  if (SHOTS) await phone.screenshot({ path: `${SHOTS}/scheduled-at-held-phone.png` });
   await phoneDialog.getByRole("button", { name: "閉じる" }).click();
 });
