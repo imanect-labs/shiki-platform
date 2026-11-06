@@ -160,7 +160,7 @@ test("予定の日時: 指定して試し、子の実行も引き継ぎ、実行
     }),
   );
   await expect(sheet.getByTestId("run-detail-scheduled-note")).toHaveText(
-    "手動で実行するときに指定した日時を、予定の日時として使いました。",
+    "手動で実行するときに指定した日時か、やり直した実行の予定の日時を使いました。",
   );
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/scheduled-at-detail-pc.png` });
   await sheet.getByRole("button", { name: "閉じる" }).click();

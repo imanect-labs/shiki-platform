@@ -51,10 +51,12 @@ export const SCHEDULED_AT_MARKS: Record<ScheduledAtSource, string | null> = {
   parent: "引き継いだ日時",
 };
 
-/// 実行の詳細で、予定の日時の由来を言う文（スケジュールの予定の時刻は見出しで足りるので言わない）。
+/// 実行の詳細で、予定の日時の由来を言う文（スケジュールの予定の時刻は見出しで足りるので言わない）。`specified` は、
+/// 実行のダイアログで指定した日時と、「同じ入力でもう一度実行」が元の実行から引き継いだ日時の両方（由来は run の行から
+/// 導くので、2 つを分けない）。
 export const SCHEDULED_AT_NOTES: Record<ScheduledAtSource, string | null> = {
   schedule: null,
-  specified: "手動で実行するときに指定した日時を、予定の日時として使いました。",
+  specified: "手動で実行するときに指定した日時か、やり直した実行の予定の日時を使いました。",
   parent: "「別のワークフローを実行」で始めた実行です。始めた実行の予定の日時を引き継いでいます。",
 };
 
