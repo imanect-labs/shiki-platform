@@ -17,6 +17,7 @@ use serde_json::{json, Value};
 
 use crate::capability::{
     check_scope_ceiling, op_digest, CapabilityAudit, EffectJournal, ScopeCeiling,
+    EFFECT_IN_PROGRESS,
 };
 use crate::run::{CancelSignal, NodeContext};
 
@@ -112,6 +113,7 @@ impl CapabilityNodeExecutor {
         }
         let exec_id = format!("{}:{}", ctx.run_id.simple(), ctx.step_path);
 
+        let halted: Arc<std::sync::OnceLock<PortError>> = Arc::default();
         let bridge = HostBridge {
             ports: Arc::clone(&self.ports),
             journal: self.journal.clone(),
@@ -123,6 +125,7 @@ impl CapabilityNodeExecutor {
             http_allowlist: self.http_allowlist.clone(),
             http_timeout_ms: self.http_timeout_ms,
             cancel: ctx.cancel.clone(),
+            halted: Arc::clone(&halted),
         };
         let handle = tokio::runtime::Handle::current();
         // `Shiki.data.*` の糖衣をユーザーコードの前に置く（ゲスト wasm を再ビルドせずに足す・
@@ -155,12 +158,18 @@ impl CapabilityNodeExecutor {
             PortError::unavailable(format!("script 実行スレッド: {e}"))
         })?;
 
+        // 前の実行の予約が残っていた呼び出しがあれば、script が誤りを捕まえて続けても、その code で step を失敗にする
+        // （試す回数を使わずに待ち、同じ試行で動かし直す・[`HostBridge::halted`]）。
+        let halted = halted.get().cloned();
         self.audit(
             &ec.tenant_id,
             audit_api,
-            outcome.ok,
+            outcome.ok && halted.is_none(),
             &json!({ "termination": format!("{:?}", outcome.termination) }),
         );
+        if let Some(e) = halted {
+            return Err(e);
+        }
         if outcome.ok {
             Ok(outcome.value.unwrap_or(Value::Null))
         } else {
@@ -193,6 +202,12 @@ struct HostBridge {
     http_timeout_ms: u64,
     /// step の止める合図（時間の上限・run の取り消し・リースの喪失でワーカーが立てる）。
     cancel: CancelSignal,
+    /// 前の実行の予約が結果の無いまま残っていた呼び出しの誤り（[`EFFECT_IN_PROGRESS`]・最初の 1 つ）。
+    ///
+    /// script は誤りを捕まえて続けられるので、そのまま返すだけでは、待たずに step が成功し、予約した前の実行が
+    /// 送る前に落ちていた送信や書込が一度も行われない。立ったら後の `Shiki.*` は同じ誤りで断り（副作用を起こさない）、
+    /// script が終わったら step をこの誤りで失敗にする（`retry::wait_policy` が待つ）。
+    halted: Arc<std::sync::OnceLock<PortError>>,
 }
 
 /// step の時間の上限の期限に足す余白（ワーカーの打ち切りを script の epoch より先にする）。
@@ -234,6 +249,9 @@ impl HostBridge {
                 retryable: false,
             };
         }
+        if let Some(e) = self.halted.get() {
+            return host_err(e.clone());
+        }
         // scope ceiling ゲート（script 経路のホスト呼び出しも declared_scopes 内に縛る）。
         let effective: BTreeSet<String> = self.ceiling.iter().cloned().collect();
         if let ScopeCeiling::Denied(_) = check_scope_ceiling(&call.api, &effective) {
@@ -250,7 +268,12 @@ impl HostBridge {
         }
         match self.dispatch_capability(call).await {
             Ok(v) => HostResponse::Ok(v),
-            Err(e) => host_err(e),
+            Err(e) => {
+                if e.code == EFFECT_IN_PROGRESS {
+                    let _ = self.halted.set(e.clone());
+                }
+                host_err(e)
+            }
         }
     }
 

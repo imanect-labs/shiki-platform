@@ -918,3 +918,68 @@ async fn a_large_response_is_not_sent_again_by_the_remaining_attempts() {
     assert_eq!(sends, 1, "届いた送信をやり直しでもう一度送った");
     assert_eq!(status, Some(RunStatus::Failed));
 }
+
+/// 送信を try/catch で包む script。前の実行の予約が残っていて誤りを受けたら、別の送り先へ送って成功で終わろうとする。
+const CATCHES_IN_PROGRESS: &str = r#"function main(input) {
+  try {
+    const r = Shiki.http.request({ method: "POST", url: "https://api.example.com/a", body: { n: 1 } });
+    return { sent: r.body };
+  } catch (e) {
+    try { Shiki.http.request({ method: "POST", url: "https://api.example.com/b", body: { n: 2 } }); } catch (_) {}
+    return { skipped: true };
+  }
+}"#;
+
+/// 前の実行が送っている途中の送信の誤り（effect_in_progress）を script が捕まえても、step は成功せずに待ち、後の
+/// `Shiki.*` も送らない。前の実行が記録したら、その応答で続ける（送信は 1 回だけ）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_script_that_catches_an_in_progress_send_still_waits() {
+    let Some(env) = setup_with(true).await else {
+        return;
+    };
+    let node = json!({ "id": "sc", "type": "script.run",
+        "params": { "source": { "inline": CATCHES_IN_PROGRESS } } });
+    let run = env.run(node.clone(), &["http.egress"]).await;
+    let gate = Arc::new(Gate::default());
+    *env.ports.gate.lock().unwrap() = Some(Arc::clone(&gate));
+    let dead = env.claim_as_dead_worker().await;
+    let ctx = ctx_of(&dead, &["http.egress"]);
+    let exec = Arc::clone(&env.exec);
+    let params = node["params"].clone();
+    let a = tokio::spawn(async move { exec.execute("script.run", &params, &ctx).await });
+    gate.entered.notified().await;
+
+    let reclaimed = env.reclaim_and_run_once_unchecked().await;
+    let waiting = env.step(run).await;
+    let sends_while_waiting = env.ports.sends.lock().unwrap().clone();
+
+    gate.release.notify_one();
+    let a_result = a.await.unwrap();
+    sqlx::query("UPDATE step_execution SET next_retry_at = now() WHERE tenant_id = $1")
+        .bind(&env.tenant)
+        .execute(&env.pool)
+        .await
+        .unwrap();
+    let ran_after = env.worker().claim_and_run_once("w-c").await;
+    let step = env.step(run).await;
+    let status = env.store.run_status(&env.tenant, run).await.unwrap();
+    let sends = env.ports.sends();
+    env.cleanup().await;
+
+    assert_eq!(reclaimed, (1, Ok(true)));
+    assert_eq!(
+        (waiting.0.as_str(), waiting.1, waiting.2.as_deref()),
+        ("ready", 0, Some("effect_in_progress")),
+        "捕まえた script が待たずに終わった"
+    );
+    assert_eq!(ran_after, Ok(true));
+    assert_eq!(
+        sends_while_waiting,
+        ["POST https://api.example.com/a"],
+        "誤りを受けた後の送信を通した"
+    );
+    assert!(a_result.ok, "{:?}", a_result.error);
+    assert_eq!(status, Some(RunStatus::Succeeded));
+    assert_eq!(step.4, json!({ "sent": { "ok": true, "n": 1 } }));
+    assert_eq!(sends, 1);
+}
