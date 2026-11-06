@@ -171,8 +171,16 @@ uv run python -m abeval.doctor --mode eval --init-sentinel                    # 
 | abeval.proxy（eval） | 合言葉つきの `GET /abeval/spend` が 200 |
 | 手元の中継の台帳（eval） | 累計が $95 未満（読むだけ。8787 へは繋がない。無ければ警告） |
 | 評価の台帳（eval） | 残りがある |
+| 評価の台帳の置き場（eval） | 前の置き場（`results/spend.jsonl`）に行が無く、手元の中継の台帳の評価の分（tag `abeval/`）が評価の台帳より大きくない |
 
 api.anthropic.com へ 401 を確かめることはしない（鍵を持たないので要らない）。
+
+**取り込みの前の点検**（`doctor.capture_guard`・`abeval capture`・`run` の取り込み・`--regrade-from` の前に必ず通す。
+`--skip-doctor` でも飛ばさない）: 取り込みは実モデルの名前（`claude-haiku-5-5`）で発話を送るので、送り先の
+サーバーの anthropic が abeval.proxy を指していないと、評価の台帳を通らずに手元の中継へ届いて課金される。
+API のポートが 10067（ループバック）・llm-eval.toml の base_url が abeval.proxy・そのポートを握るプロセスの
+`SHIKI_CONFIG`（`ss` と `/proc/<pid>/environ` から読む）の anthropic も abeval.proxy で鍵がダミー・`SHIKI__LLM__*` の
+上書き（`SHIKI__LLM__BACKEND` を除く）が無いことを確かめる。読めなければ送らない。
 
 **サーバーの要るテスト**（stub のスタックに対して流す。実 LLM は呼ばない）:
 

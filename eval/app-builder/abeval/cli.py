@@ -273,6 +273,8 @@ def cmd_run(args) -> int:
                 reg = register(plan, ctrl)
                 print(f"abeval.proxy に登録: {reg}")
             if not stub:
+                if not guard_capture(api, cfg, Path(args.llm_config)):
+                    return 1
                 if ctrl is None:
                     ctrl = ProxyControl(
                         f"http://{cfg.proxy.host}:{cfg.proxy.port}", read_token(cfg.paths.home)
@@ -392,9 +394,24 @@ def _execute(args, cfg, client, ctrl, plan, version, cap, tasks, lint, catalog, 
     return trials, errors
 
 
+def guard_capture(api: str, cfg: Config, llm_config: Path) -> bool:
+    """取り込みの前に必ず通す点検（--skip-doctor でも飛ばさない・doctor.capture_guard）。"""
+    bad = [c for c in doctor.capture_guard(api, cfg, llm_config) if c.status == "ng"]
+    for c in bad:
+        print(c.line())
+    if bad:
+        print(
+            "取り込みは実モデルの名前で発話を送るので、送り先が評価の版のサーバー（anthropic が abeval.proxy）と"
+            "確かめられるまで送りません"
+        )
+    return not bad
+
+
 def cmd_capture(args) -> int:
     cfg = load_config()
     api = (args.api_url or os.environ.get("ABEVAL_API_URL") or cfg.api_url).rstrip("/")
+    if not guard_capture(api, cfg, Path(args.llm_config).expanduser()):
+        return 1
     tasks = load_tasks()
     task = select_tasks(tasks, args.task)[0] if args.task else _capture_task(tasks)
     with (

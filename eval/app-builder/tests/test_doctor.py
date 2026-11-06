@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from pathlib import Path
 
 import httpx
 import pytest
@@ -304,3 +305,61 @@ def test_main_exit_codes(world, monkeypatch, capsys):
 def test_bad_mode(world):
     with pytest.raises(ValueError):
         world.run(mode="other")
+
+
+# --- 取り込みの前の点検（capture_guard） ---
+
+
+def _eval_llm(tmp_path, base: str = "http://127.0.0.1:18200", name: str = "llm.toml") -> Path:
+    p = tmp_path / name
+    p.write_text(
+        "[llm]\n[[llm.providers]]\n"
+        f'id = "anthropic"\nbackend = "anthropic"\nbase_url = "{base}"\napi_key = "abeval-dummy"\n'
+        'session_header = "x-abeval-session"\n'
+        '[[llm.models]]\nid = "claude-haiku-5-5"\nprovider = "anthropic"\n'
+        '[[llm.models]]\nid = "default"\nprovider = "stub"\n',
+        encoding="utf-8",
+    )
+    p.chmod(0o600)
+    return p
+
+
+def _guard(monkeypatch, tmp_path, env, api="http://localhost:10067"):
+    from abeval import doctor as d
+
+    monkeypatch.setattr(d, "server_process_env", lambda port: env)
+    return {c.name: c for c in d.capture_guard(api, load_config(), _eval_llm(tmp_path))}
+
+
+def test_capture_guard_passes_only_for_the_eval_server(monkeypatch, tmp_path):
+    server = _eval_llm(tmp_path, name="server.toml")
+    ok = _guard(monkeypatch, tmp_path, {"SHIKI_CONFIG": str(server)})
+    assert all(c.status != "ng" for c in ok.values()), [c.line() for c in ok.values()]
+    # :8080（stub のスタック・anthropic は手元の中継 8787）には送らない。
+    cks = _guard(monkeypatch, tmp_path, None, api="http://localhost:8080")
+    assert cks["取り込みの送り先"].status == "ng" and cks["版のサーバーの設定"].status == "ng"
+    # ポートが合っても、そのプロセスの anthropic が手元の中継を指せば NG。
+    relay = _eval_llm(tmp_path, "http://127.0.0.1:8787", name="relay.toml")
+    got = _guard(monkeypatch, tmp_path, {"SHIKI_CONFIG": str(relay)})["版のサーバーの設定"]
+    assert got.status == "ng" and "abeval.proxy" in got.detail
+    # 環境で LLM の設定を上書きしていれば NG。SHIKI_CONFIG が無ければ NG。
+    over = {"SHIKI_CONFIG": str(server), "SHIKI__LLM__PROVIDERS__0__BASE_URL": "x"}
+    assert _guard(monkeypatch, tmp_path, over)["版のサーバーの設定"].status == "ng"
+    only_backend = {"SHIKI__LLM__BACKEND": "stub"}
+    assert _guard(monkeypatch, tmp_path, only_backend)["版のサーバーの設定"].status == "ng"
+
+
+def test_capture_refuses_to_talk_to_an_unchecked_server(monkeypatch, tmp_path, capsys):
+    from abeval import cli
+    from abeval import doctor as d
+
+    monkeypatch.setattr(d, "server_process_env", lambda port: None)
+    posted = []
+    monkeypatch.setattr(cli, "ShikiClient", lambda *a, **k: posted.append(a) or None)
+    code = cli.main(
+        ["--label", "v0", "--exp", "e0", "--api-url", "http://localhost:8080",
+         "--llm-config", str(_eval_llm(tmp_path))],
+        command="capture",
+    )  # fmt: skip
+    assert code == 1 and posted == []
+    assert "確かめられるまで送りません" in capsys.readouterr().out

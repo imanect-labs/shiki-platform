@@ -152,6 +152,9 @@ def env(monkeypatch, tmp_path):
         )
         monkeypatch.setattr(cli, "_lint", lambda bin_path=None: fake_lint)
         monkeypatch.setattr(cli, "load_catalog", catalog)
+        # 取り込みの前の点検（送り先のポートとプロセスの設定）は、偽の shiki では通らないので外す
+        # （点検そのものは tests/test_doctor.py の capture_guard のテストが見る）。
+        monkeypatch.setattr(cli.doctor, "capture_guard", lambda *a, **k: [])
         monkeypatch.setattr(cli, "grader_version", lambda *a: {"grader": 1, "ir_lint_sha256": None})
         llm = tmp_path / "llm-eval.toml"
         llm.write_text(

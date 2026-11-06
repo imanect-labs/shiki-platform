@@ -12,13 +12,21 @@
 
 `--init-sentinel` を付けたときだけ、alice のルート直下に番兵（フォルダー `abeval-sentinel`）を作る。番兵は
 「評価用のサーバー」の印で、無いサーバーでは fixture の作成も片付けも拒む。
+
+`capture_guard`: 取り込み（`abeval capture`・`run` の取り込み・`--regrade-from`）の前に必ず通す点検。取り込みは
+実モデルの名前で発話を送るので、送り先のサーバーの anthropic が abeval.proxy を指していないと、要求が評価の台帳を
+通らずに手元の中継（8787）へ届いて課金される。API のポートが 10067（ループバック）・llm-eval.toml の base_url が
+abeval.proxy・そのポートを握るプロセスの SHIKI_CONFIG（/proc から読む）の anthropic も abeval.proxy を指し、
+`SHIKI__LLM__*` の上書き（`SHIKI__LLM__BACKEND` を除く）が無いことを確かめる。確かめられなければ NG。
 """
 
 from __future__ import annotations
 
 import argparse
 import os
+import re
 import stat
+import subprocess
 import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -29,7 +37,7 @@ import httpx
 
 from abeval import fixtures
 from abeval.budget import ledger_guard
-from abeval.config import Config, display_path, load_config
+from abeval.config import Config, display_path, is_loopback_host, load_config
 from abeval.ledger import Ledger, LedgerCorrupt, read_relay_total_usd
 from abeval.pricing import micros_to_usd
 from abeval.proxy import CONTROL_HEADER, DUMMY_CREDENTIAL, TOKEN_FILE
@@ -258,6 +266,80 @@ def check_budget(cfg: Config, http: httpx.Client) -> list[Check]:
         else Check(
             "評価の台帳の置き場", "ok", f"{display_path(cfg.paths.ledger)}（前の置き場に行は無い）"
         )
+    )
+    return out
+
+
+def server_process_env(port: int) -> dict[str, str] | None:
+    """そのポートを握っているプロセスの環境（読めなければ None・同じ利用者のプロセスだけ読める）。"""
+    try:
+        out = subprocess.run(
+            ["ss", "-ltnpH", f"sport = :{port}"], capture_output=True, text=True, check=False
+        ).stdout
+    except FileNotFoundError:
+        return None
+    m = re.search(r"pid=(\d+)", out)
+    if not m:
+        return None
+    try:
+        raw = Path(f"/proc/{m.group(1)}/environ").read_bytes().split(b"\0")
+    except OSError:
+        return None
+    env = {}
+    for kv in raw:
+        k, sep, v = kv.partition(b"=")
+        if sep:
+            env[k.decode(errors="replace")] = v.decode(errors="replace")
+    return env
+
+
+def anthropic_points_to_the_proxy(path: Path, cfg: Config) -> str | None:
+    """製品の設定の anthropic が abeval.proxy を指し、鍵がダミーか（違えば理由・値は出さない）。"""
+    try:
+        raw = tomllib.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, tomllib.TOMLDecodeError) as e:
+        return f"{display_path(path)} を読めません: {type(e).__name__}"
+    provs = [
+        p for p in (raw.get("llm") or {}).get("providers") or [] if p.get("backend") == "anthropic"
+    ]
+    if len(provs) != 1:
+        return f"anthropic のプロバイダが {len(provs)} 個"
+    proxy = f"http://{cfg.proxy.host}:{cfg.proxy.port}"
+    if str(provs[0].get("base_url", "")).rstrip("/") != proxy:
+        return f"anthropic の base_url が abeval.proxy（{proxy}）ではない"
+    if provs[0].get("api_key") != DUMMY_CREDENTIAL:
+        return "anthropic の api_key がダミーではない（値は出さない）"
+    return None
+
+
+def capture_guard(api_url: str, cfg: Config, llm_config: Path = LLM_EVAL_CONFIG) -> list[Check]:
+    """取り込みの前の点検（実モデルの名前の発話が評価の台帳を通らずに課金されないこと）。"""
+    out: list[Check] = []
+    u = urlsplit(api_url)
+    ok_port = u.port == EVAL_PORT and is_loopback_host(u.hostname or "")
+    out.append(
+        Check("取り込みの送り先", "ok" if ok_port else "ng", f"{api_url}（期待 :{EVAL_PORT}）")
+    )
+    out += check_llm_config(llm_config, cfg)
+    env = server_process_env(u.port) if ok_port and u.port else None
+    if env is None:
+        out.append(Check("版のサーバーの設定", "ng", f":{u.port} を握るプロセスの環境を読めない"))
+        return out
+    path = env.get("SHIKI_CONFIG")
+    why = (
+        "SHIKI_CONFIG がありません"
+        if not path
+        else anthropic_points_to_the_proxy(Path(path).expanduser(), cfg)
+    )
+    over = sorted(
+        k for k in env if k.startswith("SHIKI__LLM__") and k not in ("SHIKI__LLM__BACKEND",)
+    )
+    if over:
+        why = f"LLM の設定を環境で上書きしています: {over}"
+    out.append(
+        Check("版のサーバーの設定", "ng", why)
+        if why
+        else Check("版のサーバーの設定", "ok", f"{display_path(path)} の anthropic は abeval.proxy")
     )
     return out
 
