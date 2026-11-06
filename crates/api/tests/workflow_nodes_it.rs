@@ -43,6 +43,8 @@ struct Harness {
     org: String,
     tenant: String,
     alice: AuthContext,
+    /// 実 OpenFGA（別ユーザーへの tuple 付与など、テスト固有の前提作りに使う）。
+    fga: Arc<dyn AuthzClient>,
     workflows: WorkflowStore,
     runs: RunStore,
     launcher: WorkflowRunLauncher,
@@ -172,6 +174,7 @@ async fn setup() -> Option<Harness> {
         org,
         tenant,
         alice,
+        fga,
         workflows,
         runs,
         launcher,
@@ -865,4 +868,134 @@ async fn csv_query_denied_without_declared_scope() {
     assert_eq!(status, RunStatus::Failed, "csv.read 未宣言では失敗する");
     let steps = h.step_map(run_id).await;
     assert_eq!(steps.get("q"), Some(&StepStatus::Failed));
+}
+
+/// #1037: csv.query の `tables` で 2 つの CSV を JOIN できる（追加ファイルの id は `$from` で受ける）。
+/// 実行主体（alice）が読めない CSV を混ぜると、他が読めても run は失敗する（fail-closed）。
+#[tokio::test]
+async fn csv_query_node_joins_multiple_csv() {
+    let Some(h) = setup().await else { return };
+    let Some(runner) = runner_path() else {
+        eprintln!("shiki-tabular-runner 未ビルドのためスキップ");
+        return;
+    };
+    let orders = h
+        .storage
+        .write_file_internal(
+            &h.alice,
+            None,
+            "orders.csv",
+            b"customer_id,amount\n10,100\n20,50\n10,30\n",
+            "text/csv",
+            None,
+        )
+        .await
+        .expect("orders");
+    let customers = h
+        .storage
+        .write_file_internal(
+            &h.alice,
+            None,
+            "customers.csv",
+            b"customer_id,name\n10,alice-co\n20,bob-co\n",
+            "text/csv",
+            None,
+        )
+        .await
+        .expect("customers");
+
+    let ir = json!({
+        "ir_version": 1,
+        "name": "csv-join-e2e",
+        "declared_scopes": ["csv.read", "storage.write"],
+        "nodes": [
+            { "id": "q", "type": "csv.query", "params": {
+                "file": { "$from": "input", "path": "/orders" },
+                "sql": "SELECT c.name, sum(o.amount) AS total FROM data o \
+                        JOIN customers c ON o.customer_id = c.customer_id \
+                        GROUP BY c.name ORDER BY total DESC",
+                "tables": [
+                    { "name": "customers", "file": { "$from": "input", "path": "/customers" } }
+                ] } },
+            { "id": "save", "type": "storage.write", "params": {
+                "name": "csv-join-result.json",
+                "content": { "$from": "nodes.q.output" },
+                "content_type": "application/json" } }
+        ],
+        "edges": [ { "from": "q", "to": "save" } ]
+    });
+    let wf_id = h.save(&ir).await;
+    let (_run, status) = h
+        .run(
+            wf_id,
+            &json!({ "orders": orders.id.to_string(), "customers": customers.id.to_string() }),
+            h.executor_with_tabular(&runner),
+        )
+        .await;
+    assert_eq!(status, RunStatus::Succeeded, "JOIN の csv.query が完走する");
+    let result = h
+        .read_file_by_name("csv-join-result.json")
+        .await
+        .expect("結果ファイル");
+    let v: Value = serde_json::from_str(&result).expect("json");
+    assert_eq!(v["columns"], json!(["name", "total"]), "{result}");
+    assert_eq!(
+        v["rows"],
+        json!([["alice-co", "130"], ["bob-co", "50"]]),
+        "{result}"
+    );
+
+    // bob の（alice と共有していない）CSV を tables に混ぜる → 読めないので run は失敗する。
+    let bob = AuthContext::new(
+        Principal {
+            kind: PrincipalKind::User,
+            id: "bob".into(),
+            email: None,
+            groups: vec![],
+            roles: vec![],
+            tenant_id: Some(h.tenant.clone()),
+        },
+        h.org.clone(),
+        authz::TenantId::parse(h.tenant.clone()).unwrap(),
+    );
+    h.fga
+        .write_tuple(
+            &bob.subject(),
+            Relation::Member,
+            &bob.ns().organization(&h.org),
+        )
+        .await
+        .expect("bob member tuple");
+    let secret = h
+        .storage
+        .write_file_internal(
+            &bob,
+            None,
+            "bob-secret.csv",
+            b"customer_id,name\n10,secret\n",
+            "text/csv",
+            None,
+        )
+        .await
+        .expect("bob の CSV");
+    let mut ir2 = ir.clone();
+    ir2["name"] = json!("csv-join-e2e-denied");
+    ir2["nodes"][1]["params"]["name"] = json!("csv-join-denied.json");
+    let wf_id = h.save(&ir2).await;
+    let (_run, status) = h
+        .run(
+            wf_id,
+            &json!({ "orders": orders.id.to_string(), "customers": secret.id.to_string() }),
+            h.executor_with_tabular(&runner),
+        )
+        .await;
+    assert_eq!(
+        status,
+        RunStatus::Failed,
+        "読めない CSV を JOIN に混ぜると fail-closed"
+    );
+    assert!(
+        h.read_file_by_name("csv-join-denied.json").await.is_none(),
+        "部分結果も後続へ流れない"
+    );
 }

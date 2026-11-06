@@ -8,6 +8,7 @@ use sha2::{Digest, Sha256};
 
 use crate::capability::{op_digest, JournalDecision};
 use crate::control::eval::resolve_value;
+use crate::ir::expr::ValueExpr;
 use crate::ir::params::{
     CsvPatchParams, CsvQueryParams, CsvWriteParams, RagSearchParams, StorageListParams,
     StorageReadParams, StorageWriteParams, WorkflowStartParams,
@@ -15,12 +16,81 @@ use crate::ir::params::{
 use crate::run::NodeContext;
 
 use super::exec::CapabilityNodeExecutor;
-use super::ports::{CsvPatchReq, CsvWriteReq, ExecCtx, PortError, StorageWriteReq};
-use super::resolver::{as_bytes, as_string, as_u32, as_uuid, ParamResolver};
+use super::ports::{
+    CsvPatchReq, CsvQueryReq, CsvQueryTable, CsvWriteReq, ExecCtx, PortError, StorageWriteReq,
+};
+use super::resolver::{as_bytes, as_string, as_u32, as_uuid, resolve_field, ParamResolver};
 
 /// params を typed struct として取り出す（保存済み IR は V1 済み・失敗は permanent 扱い）。
 pub(super) fn parse_params<T: serde::de::DeserializeOwned>(raw: &Value) -> Result<T, PortError> {
     crate::ir::params::parse(raw).map_err(|e| PortError::invalid(format!("params が不正: {e}")))
+}
+
+/// csv.query の `tables` を追加テーブル列へ。
+///
+/// 形は `[{ "name": "<テーブル名>", "file": "<UUID>" }, ...]`。
+///
+/// - **IR に書かれたリテラル配列**なら、各要素の `name` / `file` を値式（`$from` / `$template` /
+///   リテラル）として解決する（前段ノードが返したファイル id を使える）。リテラル内の値式は保存時
+///   検証（V5）が生 JSON を走査して検査済み。
+/// - `tables` 自体が `$from` 等で**実行時に解決される値**なら、その中身はデータとして扱い、
+///   **値式として再評価しない**（トリガ payload 等に仕込まれた `$from` で、配線されていない
+///   ノードの出力を引き込ませないため）。
+///
+/// 解決できない（null を含む）値式は `expr_resolve_error` で失敗させる（ir.md: 黙って null を流さない）。
+/// 名前の形・重複・上限の検証は tabular（単一チョークポイント）が行うため、ここでは型だけを
+/// 確かめる（不正は permanent）。
+fn parse_csv_tables(
+    expr: &ValueExpr,
+    r: &ParamResolver<'_>,
+) -> Result<Vec<CsvQueryTable>, PortError> {
+    let invalid = |m: &str| PortError::invalid(format!("csv.query: tables {m}"));
+    let unresolved = || {
+        PortError::new(
+            "expr_resolve_error",
+            "csv.query: tables の値式が解決できません",
+            false,
+        )
+    };
+    // リテラルは要素ごとに値式を解く。それ以外は 1 回だけ解き、結果はデータとして読む。
+    let (items, nested_exprs) = match expr {
+        ValueExpr::Literal(v) => (v.clone(), true),
+        other => (
+            resolve_value(other, r)
+                .filter(|v| !v.is_null())
+                .ok_or_else(unresolved)?,
+            false,
+        ),
+    };
+    let Value::Array(items) = items else {
+        return Err(invalid("は配列である必要があります"));
+    };
+    let field = |item: &Value, key: &str| -> Result<Option<Value>, PortError> {
+        let Some(raw) = item.get(key) else {
+            return Ok(None);
+        };
+        if !nested_exprs {
+            return Ok(Some(raw.clone()));
+        }
+        resolve_field(item, key, r)
+            .filter(|v| !v.is_null())
+            .map(Some)
+            .ok_or_else(unresolved)
+    };
+    items
+        .iter()
+        .map(|item| {
+            let name = field(item, "name")?
+                .as_ref()
+                .and_then(as_string)
+                .ok_or_else(|| invalid("の各要素に name（文字列）が要ります"))?;
+            let file_id = field(item, "file")?
+                .as_ref()
+                .and_then(as_uuid)
+                .ok_or_else(|| invalid("の各要素に file（UUID）が要ります"))?;
+            Ok(CsvQueryTable { name, file_id })
+        })
+        .collect()
 }
 
 /// バイト列の sha256（16 進）。storage.write の op_digest 素材。
@@ -267,18 +337,32 @@ impl CapabilityNodeExecutor {
         let sql = resolve_value(&p.sql, r)
             .and_then(|v| as_string(&v))
             .ok_or_else(|| PortError::invalid("csv.query: sql が解決できません"))?;
-        let out = self.ports.csv_query(ec, file_id, &sql).await?;
-        // SQL 本文は監査に載せない（PII/秘匿クエリ回避）。件数のみ。
+        let tables = match &p.tables {
+            Some(expr) => parse_csv_tables(expr, r)?,
+            None => Vec::new(),
+        };
+        let table_files: Vec<String> = tables.iter().map(|t| t.file_id.to_string()).collect();
+        let out = self
+            .ports
+            .csv_query(
+                ec,
+                CsvQueryReq {
+                    file_id,
+                    sql,
+                    tables,
+                },
+            )
+            .await?;
+        // SQL 本文は監査に載せない（PII/秘匿クエリ回避）。対象ファイルと件数のみ。
         let rows = out
             .get("rows")
             .and_then(Value::as_array)
             .map_or(0, Vec::len);
-        self.audit(
-            &ec.tenant_id,
-            "csv.query",
-            true,
-            &json!({ "file_id": file_id.to_string(), "rows": rows }),
-        );
+        let mut detail = json!({ "file_id": file_id.to_string(), "rows": rows });
+        if !table_files.is_empty() {
+            detail["table_file_ids"] = json!(table_files);
+        }
+        self.audit(&ec.tenant_id, "csv.query", true, &detail);
         Ok(out)
     }
 

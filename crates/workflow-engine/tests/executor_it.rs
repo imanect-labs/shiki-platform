@@ -19,8 +19,8 @@ use serde_json::{json, Value};
 use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
 use workflow_engine::nodes::ports::{
-    AgentInvokeReq, CsvPatchReq, CsvWriteReq, ExecCtx, HttpSendReq, HttpSendResp, LlmInvokeReq,
-    NodePorts, PortError, ResolvedSecretView, StorageWriteReq,
+    AgentInvokeReq, CsvPatchReq, CsvQueryReq, CsvWriteReq, ExecCtx, HttpSendReq, HttpSendResp,
+    LlmInvokeReq, NodePorts, PortError, ResolvedSecretView, StorageWriteReq,
 };
 use workflow_engine::{
     CapabilityAudit, CapabilityNodeExecutor, EffectJournal, NodeContext, NodeExecutor,
@@ -138,12 +138,8 @@ impl NodePorts for FakePorts {
     ) -> Result<Value, PortError> {
         Ok(json!({ "run_id": Uuid::nil().to_string() }))
     }
-    async fn csv_query(
-        &self,
-        _ctx: &ExecCtx,
-        file_id: Uuid,
-        _sql: &str,
-    ) -> Result<Value, PortError> {
+    async fn csv_query(&self, _ctx: &ExecCtx, req: CsvQueryReq) -> Result<Value, PortError> {
+        let file_id = req.file_id;
         Ok(json!({
             "columns": ["a", "b"],
             "rows": [["1", "2"], ["3", "4"]],
