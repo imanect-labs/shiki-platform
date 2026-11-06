@@ -81,7 +81,23 @@ function KindIcon({ kind, name }: { kind: string; name: string }) {
   return <FileText className={cls} aria-hidden />;
 }
 
-export function DocumentRefCard({ raw }: { raw: unknown }) {
+/// 「元に戻す」の対象になる参照か（既存ファイルの内容を変えた編集で、版が確定しているもの）。
+/// 新規作成・提案版（current 未反映）・移動/名前変更・ライブ編集で版が未確認のものは対象外。
+export function isRevertable(doc: DocumentRef): boolean {
+  return !doc.created && !doc.proposal && !doc.moved && doc.version !== null;
+}
+
+export function DocumentRefCard({
+  raw,
+  status,
+  actions,
+}: {
+  raw: unknown;
+  /// 状態表示の上書き（取り消し後の「元に戻しました」など）。
+  status?: string;
+  /// 「開く」の手前に並べる操作（元に戻す / やり直す）。
+  actions?: React.ReactNode;
+}) {
   const doc = parseDocumentRef(raw);
   if (!doc) return null;
   // 提案版は current に反映されていない。「編集しました」と言うとカードが嘘になる（PIT-44）。
@@ -109,9 +125,10 @@ export function DocumentRefCard({ raw }: { raw: unknown }) {
           {doc.name}
         </span>
         <span className="mt-0.5 block text-xs text-muted-foreground">
-          {doc.proposal ? `${version}${action}` : `${action}${version}`}
+          {status ?? (doc.proposal ? `${version}${action}` : `${action}${version}`)}
         </span>
       </span>
+      {actions}
       {href ? (
         <Link
           href={href}

@@ -391,6 +391,22 @@ impl StorageService {
         file_id: Uuid,
         trace_id: Option<&str>,
     ) -> Result<(Node, Vec<u8>), StorageError> {
+        self.read_file_internal_bounded(ctx, file_id, self.max_upload_size, trace_id)
+            .await
+    }
+
+    /// [`read_file_internal`](Self::read_file_internal) に呼び出し側の上限（バイト）を足したもの。
+    ///
+    /// 上限は**読み出す版そのもの**の `size_bytes` で、ダウンロードの前に判定する（blob は
+    /// content-addressed なので、判定した版と取得する内容は一致する）。呼び出し側が事前に確認した
+    /// サイズを渡せば、確認後に大きい版へ差し替わっても全体をメモリへ載せる前に拒否できる。
+    pub async fn read_file_internal_bounded(
+        &self,
+        ctx: &AuthContext,
+        file_id: Uuid,
+        max_bytes: i64,
+        trace_id: Option<&str>,
+    ) -> Result<(Node, Vec<u8>), StorageError> {
         let node = self.load_node(ctx, file_id, false).await?;
         if node.kind != NodeKind::File {
             return Err(StorageError::NotFound);
@@ -404,10 +420,10 @@ impl StorageService {
             trace_id,
         )
         .await?;
-        if node.size_bytes.unwrap_or(0) > self.max_upload_size {
+        let limit = max_bytes.min(self.max_upload_size);
+        if node.size_bytes.unwrap_or(0) > limit {
             return Err(StorageError::Invalid(format!(
-                "size が内部読み取りの上限を超えています（最大 {} バイト）",
-                self.max_upload_size
+                "size が内部読み取りの上限を超えています（最大 {limit} バイト）"
             )));
         }
         let sha = node.blob_sha256.as_ref().ok_or(StorageError::NotFound)?;

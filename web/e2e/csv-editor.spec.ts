@@ -129,6 +129,53 @@ test("CSV SQL コンソール: RO クエリ実行と新規 CSV 保存", async ({
   await expect(page.getByTestId("sql-error")).toBeVisible({ timeout: 15_000 });
 });
 
+test("CSV SQL コンソール: 別の CSV を追加して JOIN できる", async ({ page }) => {
+  await loginViaKeycloak(page);
+  await page.goto("/drive");
+  const id = await createCsv(
+    page,
+    uniqueName("orders") + ".csv",
+    "customer_id,amount\n10,100\n20,50\n10,30\n",
+  );
+  // ピッカーは名前順なので、先頭近くに並ぶ名前にする（他の spec が作ったファイルに埋もれない）。
+  const customersName = `0join-${uniqueName("cust")}.csv`;
+  await createCsv(page, customersName, "customer_id,name\n10,alice\n20,bob\n");
+  await openCsv(page, id);
+
+  await page.getByTestId("csv-tab-sql").click();
+  await expect(page.getByTestId("sql-console")).toBeVisible();
+
+  // ドライブから追加 → ファイル名からテーブル名が補われる（数字始まりは t_ を前置）。
+  await page.getByTestId("sql-add-table").click();
+  await page.getByRole("button", { name: customersName }).click();
+  const tableName = page.getByTestId("sql-table-name");
+  await expect(tableName).toHaveValue(/^t_0join_cust_/);
+
+  // 不正な名前（予約語 data）は実行前に止める。
+  await tableName.fill("data");
+  await expect(page.getByTestId("sql-table-error")).toBeVisible();
+  await expect(page.getByTestId("sql-run")).toBeDisabled();
+
+  await tableName.fill("customers");
+  await expect(page.getByTestId("sql-table-error")).toHaveCount(0);
+  await page
+    .getByTestId("sql-input")
+    .fill(
+      "SELECT c.name, sum(o.amount) AS total FROM data o JOIN customers c ON o.customer_id = c.customer_id GROUP BY c.name ORDER BY total DESC",
+    );
+  await page.getByTestId("sql-run").click();
+  const rows = page.locator('[data-testid="sql-console"] table tbody tr');
+  await expect(rows).toHaveCount(2, { timeout: 15_000 });
+  await expect(rows.nth(0)).toContainText("alice");
+  await expect(rows.nth(0)).toContainText("130");
+
+  // 外すと customers は参照できない（DuckDB の理由をそのまま出す）。
+  await page.getByRole("button", { name: "customers を外す" }).click();
+  await expect(page.getByTestId("sql-table")).toHaveCount(0);
+  await page.getByTestId("sql-run").click();
+  await expect(page.getByTestId("sql-error")).toBeVisible({ timeout: 15_000 });
+});
+
 test("CSV viewer は閲覧のみ", async ({ page, browser }) => {
   await loginViaKeycloak(page); // alice
   await page.goto("/drive");

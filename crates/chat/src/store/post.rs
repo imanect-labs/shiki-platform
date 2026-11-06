@@ -182,8 +182,8 @@ impl ChatStore {
         let run_id: Uuid = sqlx::query_scalar(
             "INSERT INTO generation_run (message_id, thread_id, org, tenant_id, actor, agent_mode, status, trace_id, autonomous, \
                                          autonomous_mode, skill_pins, mini_app_id, mini_app_version, \
-                                         model, effort, model_auto, requested_tools) \
-             VALUES ($1, $2, $3, $4, $5, $6, 'queued', $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) RETURNING run_id",
+                                         model, effort, model_auto, requested_tools, requested_choice) \
+             VALUES ($1, $2, $3, $4, $5, $6, 'queued', $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17) RETURNING run_id",
         )
         .bind(asst_id)
         .bind(thread_id)
@@ -201,6 +201,7 @@ impl ChatStore {
         .bind(model.and_then(|m| m.effort).map(llm_gateway::Effort::as_str))
         .bind(model.is_none_or(|m| m.auto))
         .bind(Json(requested_tools))
+        .bind(model.and_then(|m| m.requested.as_ref()).map(Json))
         .fetch_one(&mut *tx)
         .await
         .map_err(map_db)?;

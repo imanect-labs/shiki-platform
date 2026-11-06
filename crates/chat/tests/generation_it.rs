@@ -436,3 +436,130 @@ async fn requested_tools_are_snapshotted_on_the_run_row() {
             .unwrap();
     assert_eq!(stored, serde_json::json!([]));
 }
+
+/// 自分が最後に送った発話のモデル選択がスレッドの単体取得に載る（別端末で開いたときの初期値・#1050）。
+/// 解決前の選択（requested）があればそれを返し、無い（列以前の）run は解決後の値から推定する。
+#[tokio::test]
+async fn get_thread_for_view_returns_callers_last_model_choice() {
+    use chat::{LastModelChoice, RunModel};
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let store = store(&pool).await;
+    let c = ctx(&tenant);
+    let thread = store
+        .create_thread(&c, "t", false, None, None)
+        .await
+        .unwrap();
+    let view = || async {
+        store
+            .get_thread_for_view(&c, thread.id, None)
+            .await
+            .unwrap()
+    };
+    assert_eq!(
+        view().await.last_model_choice,
+        None,
+        "まだ送っていなければ無い"
+    );
+
+    let post = |model: RunModel| {
+        let store = store.clone();
+        let c = c.clone();
+        async move {
+            store
+                .post_message_with_model(
+                    &c,
+                    thread.id,
+                    "こんにちは",
+                    &[],
+                    None,
+                    None,
+                    false,
+                    &[],
+                    Some(&model),
+                    &[],
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+    };
+    let choice = |model: Option<&str>, effort: Option<&str>| LastModelChoice {
+        model: model.map(str::to_string),
+        effort: effort.map(str::to_string),
+    };
+
+    // 明示的に選んだモデル。
+    post(RunModel {
+        model: "model-a".into(),
+        effort: Some(llm_gateway::Effort::High),
+        auto: false,
+        requested: Some(choice(Some("model-a"), Some("high"))),
+    })
+    .await;
+    assert_eq!(
+        view().await.last_model_choice,
+        Some(choice(Some("model-a"), Some("high")))
+    );
+
+    // 既定が特定のモデルの組織での Auto（解決後は既定のモデル・model_auto = false）でも Auto。
+    post(RunModel {
+        model: "org-default".into(),
+        effort: Some(llm_gateway::Effort::Medium),
+        auto: false,
+        requested: Some(choice(None, None)),
+    })
+    .await;
+    assert_eq!(view().await.last_model_choice, Some(choice(None, None)));
+
+    // 既定のまま思考の深さだけ変えた選択は、モデルを固定せずに思考の深さだけ返す。
+    post(RunModel {
+        model: "org-default".into(),
+        effort: Some(llm_gateway::Effort::Low),
+        auto: false,
+        requested: Some(choice(None, Some("low"))),
+    })
+    .await;
+    assert_eq!(
+        view().await.last_model_choice,
+        Some(choice(None, Some("low")))
+    );
+
+    // 記録の無い（列以前の）run は解決後の値から推定する（Auto は振り先でなく Auto）。
+    post(RunModel {
+        model: "model-b".into(),
+        effort: None,
+        auto: false,
+        requested: None,
+    })
+    .await;
+    assert_eq!(
+        view().await.last_model_choice,
+        Some(choice(Some("model-b"), None))
+    );
+    post(RunModel {
+        model: "auto-target".into(),
+        effort: Some(llm_gateway::Effort::Medium),
+        auto: true,
+        requested: None,
+    })
+    .await;
+    assert_eq!(view().await.last_model_choice, Some(choice(None, None)));
+
+    // 共有先の他人には引き継がない（自分の run だけを見る）。
+    let mut bob = ctx(&tenant);
+    bob.principal.id = "bob".into();
+    let got = store
+        .get_thread_for_view(&bob, thread.id, None)
+        .await
+        .unwrap();
+    assert_eq!(got.last_model_choice, None);
+    // 選択を使わない経路（get_thread）と一覧には載せない（run を引かない）。
+    let got = store.get_thread(&c, thread.id, None).await.unwrap();
+    assert_eq!(got.last_model_choice, None);
+    let listed = store
+        .list_threads(&c, None, None, None, None, 50)
+        .await
+        .unwrap();
+    assert!(listed.iter().all(|t| t.last_model_choice.is_none()));
+}

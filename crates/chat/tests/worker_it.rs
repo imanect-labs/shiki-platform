@@ -684,6 +684,8 @@ async fn earlier_unfinished_run_blocks_later_ones_until_it_ends() {
 
     // 先頭が端末化すると 2 本目の待ちだけが解ける（3 本目はまだ 2 本目を待つ）。
     let detail = "agent: llm error: openai 502: {\"workspace\":\"wrk_01\"} https://api.example.com";
+    let before = store.get_thread(&c, thread.id, None).await.unwrap();
+    assert_eq!(before.run_status, Some(chat::RunStatus::Queued));
     assert!(store
         .force_fail_run(runs[0], "表示用の定型文", detail)
         .await
@@ -705,6 +707,12 @@ async fn earlier_unfinished_run_blocks_later_ones_until_it_ends() {
             .unwrap();
     assert_eq!(status, "failed");
     assert_eq!(last_error.as_deref(), Some(detail));
+    // 強制失敗でも会話の更新日が進む（履歴の先頭へ上がり、「生成が終了」の根拠になる）。
+    let after = store.get_thread(&c, thread.id, None).await.unwrap();
+    assert!(
+        after.updated_at > before.updated_at,
+        "強制失敗で更新日が進む"
+    );
     assert!(!store.blocked_by_earlier_run(runs[1]).await.unwrap());
     assert!(store.blocked_by_earlier_run(runs[2]).await.unwrap());
 
