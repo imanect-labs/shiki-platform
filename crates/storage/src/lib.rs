@@ -29,6 +29,7 @@ pub mod audit_chain;
 pub mod audit_retention;
 pub mod audit_view;
 pub mod content_address;
+pub mod db_tenant;
 pub mod directory;
 pub mod error;
 pub mod event;

@@ -206,3 +206,28 @@ shiki-server は**実行時**と**migration** で別の接続を使う。superus
 - 実行時の ANALYZE（構造化データのパーティションの統計・#986）は、PG16 ではテーブル所有者にしかできないため、
   `data_*` に絞った SECURITY DEFINER 関数 `shiki_analyze(regclass, skip_locked)` を経由する。
 - 実行時ロールは `_sqlx_migrations`（migration の台帳）に触れない。
+
+## 5. テナント表の RLS（#1067・段階導入の第 2 段）
+
+migration 0114 は、`tenant_id`（NOT NULL）を持つテナント表に RLS を付ける（`ENABLE` と `FORCE`、ポリシー
+`shiki_tenant_isolation`）。`data_*` と、`tenant_id` が NULL を取り得る表（`outbox_delivery_seq`）は対象外。
+
+- **今は移行モード。** トランザクションのテナント文脈（`app.tenant_id`）が未設定なら従来どおり通し、設定されて
+  いればその `tenant_id` の行だけを読み書きさせる。文脈は `storage::db_tenant::begin_tenant_tx`（または
+  `set_tenant`）がトランザクション限り（`SET LOCAL` 相当）で設定する。既存の SQL は第 3 段でクレートごとに
+  この実行器へ移し、全経路を移したら未設定を拒否する厳格モードへ切り替える。
+- **テナント横断の保守処理**は `storage::db_tenant::begin_cross_tenant_tx` を使う。トランザクションの中で
+  `shiki_maintenance`（NOLOGIN・BYPASSRLS）に `SET LOCAL ROLE` する。`shiki_runtime` には INHERIT FALSE /
+  SET TRUE で付与してあるので、ログイン用のロール（`shiki_app`）に追加の付与は要らない。
+- `shiki_maintenance` は migration 0114 が作る。BYPASSRLS のロールを作れるのは superuser（PG16 では CREATEROLE
+  かつ自身が BYPASSRLS）だけなので、migration の実行ロールにその権限が無い環境では先に運用が作っておく:
+  ```sql
+  CREATE ROLE shiki_maintenance NOLOGIN NOSUPERUSER BYPASSRLS NOCREATEDB NOCREATEROLE;
+  ```
+  マネージド Postgres で BYPASSRLS のロールを作れない場合は、第 3 段の厳格化の前に横断処理の扱いを決め直す
+  （移行モードのうちは、横断処理は文脈を設定しないだけで動く）。
+- **migration の所有者ロールを替えたとき**は、§4 の既定権限に加えて `shiki_maintenance` にも同じ既定権限を付け直す。
+- **新しいテナント表を足す migration** は、同じ `ENABLE` / `FORCE` / `CREATE POLICY shiki_tenant_isolation` を
+  付ける（式は 0114 と同じ）。付け忘れは `crates/storage/tests/rls_it.rs` が落とす。
+- psql で調べるとき、superuser は RLS を迂回する。アプリと同じ見え方を確かめるには `SET ROLE shiki_app` してから
+  `SELECT set_config('app.tenant_id', '<tenant>', false)` する。
