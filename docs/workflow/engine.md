@@ -1046,6 +1046,8 @@ sweeper はスケジューラリーダーの tick が回し、`step_lease_idx` �
 
 **ブロックの実行中の panic**（BUG-215）: ノード実装の panic はワーカーが捕まえ、step を `internal`（やり直さない・失敗の分類は「分類できない失敗」）で失敗にする。step の誤りの文は決まった文（「サーバーで問題が起きたため、このブロックを実行できませんでした。続くときは管理者に連絡してください。」）で、panic の文（内部の値やソースの位置を含みうる）はログにだけ残す。止める合図（`NodeContext.cancel`）も立てる。`script.run`・`skill.invoke` の実行スレッドの panic も同じ失敗にする。heartbeat は落とすと止まる形で持ち、早く戻る道と panic の巻き戻しでも止める（`JoinHandle` を落としても tokio のタスクは止まらない）。ワーカーのループは 1 回ごとの処理の panic も捕まえて続ける。ノードの実行より外の panic で claim した step は、heartbeat が止まるのでリースが切れ、本節の sweeper が `ready` へ戻す（ワーカーが落ちたときと同じ）。api はワーカーのタスクの `JoinHandle` を見張り、終わったら誤りとして記録する。
 
+既知の限界: ノードの実行より外の panic（store の前進など）が同じ run で必ず起きると、リース失効の回収は `attempt` を戻して `ready` にするので、その step はリースの期間ごとに拾い直され続ける。前進の前の panic なら、ブロックの副作用（`http.request` などのやり直しを許す送信）も毎回くり返される。いまブロックの外で panic する箇所は見つかっていない。直すときは、claim した step の id を panic を捕まえる側へ渡し、fencing token つきで `internal` の失敗として確定させる。
+
 cancel 要求済み run の失効リースは sweeper の対象外とする。claim が cancel 要求済み run を除外する以上 ready に戻しても誰も拾えないため、`drain_cancel_requested`（§9.3）が `cancelled` へ回収する担当になる。
 
 **`attempt` の会計**（実行履歴 UI が「N 回目」としてそのまま表示するため、running 中も現在値であること）:
@@ -1237,7 +1239,11 @@ v1 は次の 2 つだけを提供する。step 単位の入力編集リプレイ
 - **run の再実行**: 新規 run（同一 input）を作成する。手動の実行で試したきっかけの内容（`trigger_payload`・D-93）も
   引き継ぐ（引き継がないと、新しい run の `$from trigger` が入力の値になる）。run の予定の日時（`scheduled_at`・スケジュールの
   予定の時刻・指定した日時・親から引き継いだ日時）も引き継ぎ、同じ予定の分をやり直す（新しい run は手動の実行で指定した
-  日時として履歴に出る・GAP-88）。
+  日時として履歴に出る・GAP-88）。予定の日時から作ったファイルの名前（`$from run` の `scheduled_at`・基準を省いた
+  `transform.date` の結果を差し込んだ名前）は元の run と同じになるので、元の run がすでに保存していれば、同じ名前があるときの
+  扱いが「保存しない」（`on_name_taken` の省略・`fail`）のブロックは `name_taken` で止まる（7h の前は、やり直した日の名前で
+  新しく保存していた）。同じ予定の分を作り直すなら、そのブロックを「番号を付けて保存」（`add_number`）にするか、元の
+  ファイルを消してからやり直す。
 - **再開を勧めるか**（BUG-132）: 実行履歴の詳細は、失敗した run に `resume`（`advice`・`offer`・`note`）を返す。再開は
   ピンした IR・run の入力・きっかけの内容・完了した step の結果をそのまま使うので、それだけで決まる失敗（`run/failure.rs`
   の `SAME_RESULT_CODES`: params の誤り・参照の解決・型・使ってよい操作の天井など）は再開しても同じ結果
