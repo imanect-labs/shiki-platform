@@ -15,7 +15,8 @@
 use serde_json::Value;
 
 use super::{params_message, ValidationError};
-use crate::ir::params::{humanize, params_issues};
+use crate::ir::params::{humanize, params_issues_with};
+use crate::ir::patterns::PatternBudget;
 use crate::ir::schema_faults::{faults_within, pointer, Budget, Fault};
 use crate::ir::{Edge, Node, Trigger, WorkflowIr};
 use crate::vocab::NodeType;
@@ -81,11 +82,13 @@ fn collect(value: &Value) -> Vec<ValidationError> {
     let full =
         |out: &Vec<ValidationError>, budget: &Budget| out.len() >= MAX_TOTAL || budget.exhausted();
     let items = |key: &str| obj.get(key).and_then(Value::as_array).into_iter().flatten();
+    // 出力の形の pattern は、読めた IR と同じくワークフローの全体で数える（BUG-226）。
+    let mut patterns = PatternBudget::for_save();
     for (i, n) in items("nodes").enumerate() {
         if full(&out, &budget) {
             return out;
         }
-        node_errors(i, n, &mut out, &mut budget);
+        node_errors(i, n, &mut out, &mut budget, &mut patterns);
     }
     for (i, e) in items("edges").enumerate() {
         if full(&out, &budget) {
@@ -123,7 +126,13 @@ fn collect(value: &Value) -> Vec<ValidationError> {
 
 /// 1 つのブロックの誤り（ブロックの項目と、読める種類なら設定 V1b）。id が読めればブロックに紐づけ、位置は
 /// ブロックの中で言う（後段の誤りと同じ）。読めなければ `/nodes/<i>/...` で言う。
-fn node_errors(i: usize, n: &Value, out: &mut Vec<ValidationError>, budget: &mut Budget) {
+fn node_errors(
+    i: usize,
+    n: &Value,
+    out: &mut Vec<ValidationError>,
+    budget: &mut Budget,
+    patterns: &mut PatternBudget,
+) {
     let id = n.get("id").and_then(Value::as_str);
     let place = |err: ValidationError, inner: &str| match id {
         Some(id) => {
@@ -151,7 +160,7 @@ fn node_errors(i: usize, n: &Value, out: &mut Vec<ValidationError>, budget: &mut
         return;
     };
     let params = n.get("params").cloned().unwrap_or(Value::Null);
-    for issue in params_issues(nt, &params) {
+    for issue in params_issues_with(nt, &params, patterns) {
         out.push(place(
             ValidationError::new(SCHEMA_VIOLATION, params_message(&issue.message)),
             &issue.path,

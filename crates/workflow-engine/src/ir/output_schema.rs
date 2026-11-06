@@ -11,7 +11,10 @@
 //!   「省略は開いている」と意味が違うので、必ず正規化を通す）。
 //! - `type` の配列は `[T, "null"]` だけ（1 つの型と null の組）。
 //! - プロパティ名は `^[A-Za-z_][A-Za-z0-9_]{0,63}$`。`required` の名前は `properties` にあり、重ならない。
-//! - `pattern` はコンパイルできる。`enum` は空でなく、値は文字列・数値・真偽・null。
+//! - `pattern` はコンパイルできる。保存のときは 1 つ 256 文字まで・ワークフローの全体（すべての「AI に聞く」の出力の形を
+//!   合わせて）で 50 個までにし、超えた分はコンパイルしない（入力項目と同じ決まり・[`super::patterns`]・BUG-226）。
+//!   実行のときの確かめ（[`check_output_schema`]）は上限を掛けない（保存済みの版の実行を変えない）。
+//! - `enum` は空でなく、値は文字列・数値・真偽・null。
 //! - 上限（shiki 側）: 入れ子の深さ [`MAX_DEPTH`]・プロパティ [`MAX_PROPERTIES`]・enum の値
 //!   [`MAX_ENUM_VALUES`]・JSON [`MAX_SCHEMA_BYTES`]。
 //! - 上限（Anthropic の schema complexity limits・1 回の要求の全スキーマの合計。llm.invoke は 1 回に
@@ -23,6 +26,7 @@
 use serde_json::{Map, Value};
 
 use super::input_schema::{order_errors, validate_value, ANNOTATIONS, ASSERTIONS, TYPES};
+use super::patterns::{PatternBudget, PatternScope};
 
 /// 入れ子の深さの上限（根から `properties` / `items` をたどる段数）。
 pub const MAX_DEPTH: usize = 5;
@@ -67,11 +71,26 @@ struct Counts {
     unions: usize,
 }
 
-/// 出力の形を保存時に検査する（最初の誤りを 1 件返す・V1 の cross-field 検査から呼ぶ）。
+/// 出力の形を実行のときに確かめる（最初の誤りを 1 件返す・保存を通らない経路の IR を黙って緩く送らない）。
+///
+/// `pattern` の長さと数の上限は掛けない（保存のときだけの上限で、保存済みの版の実行を変えない・BUG-226）。
 ///
 /// # Errors
 /// 形・キーワード・上限のどれかに合わないとき。
 pub fn check_output_schema(schema: &Value) -> Result<(), SchemaIssue> {
+    check(schema, &mut PatternBudget::unlimited())
+}
+
+/// 出力の形を保存のときに検査する（最初の誤りを 1 件返す・V1 の cross-field 検査から呼ぶ）。`patterns` は
+/// ワークフローの全体で数える `pattern` の数（[`super::patterns`]）。
+pub(crate) fn check_saved_output_schema(
+    schema: &Value,
+    patterns: &mut PatternBudget,
+) -> Result<(), SchemaIssue> {
+    check(schema, patterns)
+}
+
+fn check(schema: &Value, patterns: &mut PatternBudget) -> Result<(), SchemaIssue> {
     let size = serde_json::to_vec(schema).map_or(usize::MAX, |b| b.len());
     if size > MAX_SCHEMA_BYTES {
         return Err(SchemaIssue::new(
@@ -90,7 +109,7 @@ pub fn check_output_schema(schema: &Value) -> Result<(), SchemaIssue> {
     };
     // 使えないキーワード（$from・$ref など）は根の型より先に知らせる（直し方が分かる方を先に）。
     let mut counts = Counts::default();
-    walk(schema, "", 0, &mut counts)?;
+    walk(schema, "", 0, &mut counts, patterns)?;
     if root.get("type").and_then(Value::as_str) != Some("object") {
         return Err(SchemaIssue::new(
             "/type",
@@ -203,7 +222,13 @@ fn token(key: &str) -> String {
     key.replace('~', "~0").replace('/', "~1")
 }
 
-fn walk(schema: &Value, ptr: &str, depth: usize, c: &mut Counts) -> Result<(), SchemaIssue> {
+fn walk(
+    schema: &Value,
+    ptr: &str,
+    depth: usize,
+    c: &mut Counts,
+    patterns: &mut PatternBudget,
+) -> Result<(), SchemaIssue> {
     let Some(s) = schema.as_object() else {
         return Err(SchemaIssue::new(
             ptr,
@@ -226,7 +251,7 @@ fn walk(schema: &Value, ptr: &str, depth: usize, c: &mut Counts) -> Result<(), S
         ));
     }
     check_type(s, ptr, c)?;
-    check_scalars(s, ptr, c)?;
+    check_scalars(s, ptr, c, patterns)?;
     let types = type_names(s);
     let object = is_object_schema(s);
     for key in ["required", "additionalProperties"] {
@@ -238,7 +263,7 @@ fn walk(schema: &Value, ptr: &str, depth: usize, c: &mut Counts) -> Result<(), S
         }
     }
     if object {
-        check_object(s, ptr, depth, c)?;
+        check_object(s, ptr, depth, c, patterns)?;
     }
     if let Some(items) = s.get("items") {
         if !types.contains(&"array") {
@@ -247,7 +272,7 @@ fn walk(schema: &Value, ptr: &str, depth: usize, c: &mut Counts) -> Result<(), S
                 "items は type が array の項目にだけ書けます",
             ));
         }
-        walk(items, &format!("{ptr}/items"), depth + 1, c)?;
+        walk(items, &format!("{ptr}/items"), depth + 1, c, patterns)?;
     }
     Ok(())
 }
@@ -280,7 +305,12 @@ fn check_type(s: &Map<String, Value>, ptr: &str, c: &mut Counts) -> Result<(), S
 }
 
 /// 値の制約（enum・pattern・数の制約・注記の型）。
-fn check_scalars(s: &Map<String, Value>, ptr: &str, c: &mut Counts) -> Result<(), SchemaIssue> {
+fn check_scalars(
+    s: &Map<String, Value>,
+    ptr: &str,
+    c: &mut Counts,
+    patterns: &mut PatternBudget,
+) -> Result<(), SchemaIssue> {
     if let Some(e) = s.get("enum") {
         let at = format!("{ptr}/enum");
         let Some(values) = e.as_array().filter(|v| !v.is_empty()) else {
@@ -304,14 +334,13 @@ fn check_scalars(s: &Map<String, Value>, ptr: &str, c: &mut Counts) -> Result<()
         }
     }
     if let Some(p) = s.get("pattern") {
-        let compiled = p
-            .as_str()
-            .and_then(|p| regex::RegexBuilder::new(p).size_limit(1 << 20).build().ok());
-        if compiled.is_none() {
-            return Err(SchemaIssue::new(
-                format!("{ptr}/pattern"),
-                "pattern は正しい正規表現の文字列で書いてください",
-            ));
+        // 数の上限を超えた 2 つ目からは、言わずにコンパイルもしない（超えた最初の位置で 1 回だけ言う）。
+        if let Some(message) = patterns
+            .check(p)
+            .err()
+            .and_then(|issue| issue.message(PatternScope::Output))
+        {
+            return Err(SchemaIssue::new(format!("{ptr}/pattern"), message));
         }
     }
     for key in ["minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"] {
@@ -357,6 +386,7 @@ fn check_object(
     ptr: &str,
     depth: usize,
     c: &mut Counts,
+    patterns: &mut PatternBudget,
 ) -> Result<(), SchemaIssue> {
     if !matches!(
         s.get("additionalProperties"),
@@ -423,7 +453,7 @@ fn check_object(
         if !required.contains(&name.as_str()) {
             c.optional += 1;
         }
-        walk(sub, &at, depth + 1, c)?;
+        walk(sub, &at, depth + 1, c, patterns)?;
     }
     Ok(())
 }

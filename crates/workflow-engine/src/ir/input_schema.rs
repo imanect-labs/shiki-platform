@@ -21,6 +21,8 @@ use std::collections::HashSet;
 
 use serde_json::{Map, Value};
 
+use super::patterns::compile_pattern;
+
 mod check;
 pub use check::schema_errors;
 
@@ -495,11 +497,6 @@ impl Checker<'_> {
             }
         }
     }
-}
-
-/// 作者が書いた `pattern` を読む（起動の検査と保存の検査で同じ読み方・regex crate は線形時間なので入力で暴走しない）。
-fn compile_pattern(p: &str) -> Option<regex::Regex> {
-    regex::RegexBuilder::new(p).size_limit(1 << 20).build().ok()
 }
 
 /// RFC 3339 の full-date（`YYYY-MM-DD`・桁は固定）で、暦に実在する日付か。

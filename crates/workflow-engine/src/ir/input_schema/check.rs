@@ -8,27 +8,21 @@
 //! 見るキーワードと意味は起動の検査と同じ集合（[`super::ASSERTIONS`]・[`super::ANNOTATIONS`]）。`x-order` の形は
 //! [`super::order_errors`] が見る。
 //!
-//! `pattern` は 1 つ [`MAX_PATTERN_CHARS`] 文字まで・入力項目の全体で [`MAX_PATTERNS`] 個までにし、それより多いものは
-//! コンパイルしない（だれでも呼べる検証の口で、何万個もの pattern をコンパイルさせない・BUG-222）。長さの上限は条件の
-//! 「正規表現に一致」と同じ（[`crate::ir::expr::MAX_REGEX_LEN`]）。保存のときだけの上限で、保存済みの版の起動は変えない。
+//! `pattern` の長さと数の上限（入力項目の全体で数える）は、出力の形と同じ決まり（[`crate::ir::patterns`]・BUG-222）。
+//! 保存のときだけの上限で、保存済みの版の起動は変えない。
 
 use serde_json::{Map, Value};
 
 use super::{
-    compile_pattern, pointer_token, ANNOTATIONS, ASSERTIONS, MAX_DEPTH, MAX_ERRORS,
-    NUMBER_KEYWORDS, TYPES,
+    pointer_token, ANNOTATIONS, ASSERTIONS, MAX_DEPTH, MAX_ERRORS, NUMBER_KEYWORDS, TYPES,
 };
-
-/// 1 つの `pattern` の長さの上限（文字数・条件の正規表現と同じ数）。
-pub(super) const MAX_PATTERN_CHARS: usize = crate::ir::expr::MAX_REGEX_LEN;
-/// 入力項目の全体に書ける `pattern` の数の上限（コンパイルするのはこの数まで）。
-pub(super) const MAX_PATTERNS: usize = 50;
+use crate::ir::patterns::{PatternBudget, PatternScope};
 
 /// 入力項目の形の誤り（入力項目の中の位置の JSON Pointer, 文言）。根は空文字。最大 [`MAX_ERRORS`] 件。
 #[must_use]
 pub fn schema_errors(schema: &Value) -> Vec<(String, String)> {
     let mut out = Vec::new();
-    let mut patterns = 0;
+    let mut patterns = PatternBudget::for_save();
     walk(schema, "", 0, &mut out, &mut patterns);
     out.truncate(MAX_ERRORS);
     out
@@ -40,13 +34,13 @@ fn push(out: &mut Vec<(String, String)>, at: String, message: impl Into<String>)
     }
 }
 
-/// `patterns` は、ここまでに見た `pattern` の数（[`MAX_PATTERNS`]）。
+/// `patterns` は、ここまでに見た `pattern` の数（入力項目の全体で数える）。
 fn walk(
     schema: &Value,
     ptr: &str,
     depth: usize,
     out: &mut Vec<(String, String)>,
-    patterns: &mut usize,
+    patterns: &mut PatternBudget,
 ) {
     if out.len() >= MAX_ERRORS {
         return;
@@ -117,7 +111,7 @@ fn check_keywords(
     s: &Map<String, Value>,
     ptr: &str,
     out: &mut Vec<(String, String)>,
-    patterns: &mut usize,
+    patterns: &mut PatternBudget,
 ) {
     if let Some(t) = s.get("type") {
         let ok = match t {
@@ -174,26 +168,17 @@ fn check_keywords(
 }
 
 /// `pattern` の形。数と長さの上限の内のものだけをコンパイルする（BUG-222）。数の上限は、超えた最初の位置で 1 回だけ言う。
-fn check_pattern(p: &Value, at: &str, out: &mut Vec<(String, String)>, patterns: &mut usize) {
-    *patterns += 1;
-    if *patterns > MAX_PATTERNS {
-        if *patterns == MAX_PATTERNS + 1 {
-            push(
-                out,
-                at.to_string(),
-                format!("pattern は入力項目の全体で {MAX_PATTERNS} 個までです"),
-            );
+fn check_pattern(
+    p: &Value,
+    at: &str,
+    out: &mut Vec<(String, String)>,
+    patterns: &mut PatternBudget,
+) {
+    if let Err(issue) = patterns.check(p) {
+        if let Some(message) = issue.message(PatternScope::Input) {
+            push(out, at.to_string(), message);
         }
-        return;
     }
-    let message = match p.as_str() {
-        Some(text) if text.chars().count() > MAX_PATTERN_CHARS => {
-            format!("pattern は {MAX_PATTERN_CHARS} 文字までです")
-        }
-        Some(text) if compile_pattern(text).is_some() => return,
-        _ => "pattern を正規表現として読めません".to_string(),
-    };
-    push(out, at.to_string(), message);
 }
 
 #[cfg(test)]
@@ -202,6 +187,7 @@ mod tests {
 
     use super::super::validate_input;
     use super::*;
+    use crate::ir::patterns::{MAX_PATTERNS, MAX_PATTERN_CHARS};
 
     fn at(schema: &Value) -> Vec<String> {
         schema_errors(schema).into_iter().map(|(p, _)| p).collect()

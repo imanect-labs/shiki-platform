@@ -13,6 +13,8 @@ pub mod output_schema;
 pub mod params;
 /// どのブロックが毎回動くか（IR の線から・押す前の権限の確かめが使う・BUG-216）。
 pub mod paths;
+/// 入力項目と出力の形の `pattern` の読み方と、保存のときの上限（BUG-222・BUG-226）。
+pub(crate) mod patterns;
 /// serde で読む型の誤りを、まとめて位置つきで集める（V1・V1b・GAP-35）。
 pub(crate) mod schema_faults;
 pub mod scopes;

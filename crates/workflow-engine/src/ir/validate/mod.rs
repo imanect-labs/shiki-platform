@@ -262,7 +262,9 @@ pub fn validate(
         ));
     }
     // V1b: ノード params の typed 契約照合（deny-unknown・必須・型・ir.md §7「params の正は codegen」）。
-    // 予約語彙/未知 type は V3 が拒否するため対象外。エラーはノード単位に path 付きで収集する。
+    // 予約語彙/未知 type は V3 が拒否するため対象外。エラーはノード単位に path 付きで収集する。出力の形の pattern は
+    // ワークフローの全体で数える（BUG-226）。
+    let mut patterns = crate::ir::patterns::PatternBudget::for_save();
     for node in &ir.nodes {
         let Some(nt) = crate::vocab::NodeType::parse(&node.node_type) else {
             continue;
@@ -270,7 +272,7 @@ pub fn validate(
         if !nt.available_stage_a() {
             continue;
         }
-        for issue in crate::ir::params::params_issues(nt, &node.params) {
+        for issue in crate::ir::params::params_issues_with(nt, &node.params, &mut patterns) {
             errors.push(
                 ValidationError::new(v1_schema::SCHEMA_VIOLATION, params_message(&issue.message))
                     .at_node(&node.id)
@@ -789,6 +791,59 @@ mod tests {
         assert_eq!(errs.len(), 1, "{:?}", &errs[..errs.len().min(3)]);
         assert_eq!(errs[0].code, "ir.limit_exceeded");
         assert!(errs[0].message.contains("1MB"), "{}", errs[0].message);
+    }
+
+    /// 「AI に聞く」の出力の形の pattern は、ブロックをまたいでワークフローの全体で 50 個まで数え、超えた分は
+    /// コンパイルしない（BUG-226）。読める IR でも読めない IR でも同じ。
+    #[test]
+    fn output_schema_patterns_are_counted_across_blocks() {
+        use crate::ir::patterns::{compiled_count, MAX_PATTERNS};
+
+        let schema = |p: &str| {
+            let props: serde_json::Map<String, serde_json::Value> = (0..30)
+                .map(|i| {
+                    (
+                        format!("k{i:02}"),
+                        json!({ "type": "string", "pattern": p }),
+                    )
+                })
+                .collect();
+            let required: Vec<String> = props.keys().cloned().collect();
+            json!({ "type": "object", "properties": props, "required": required })
+        };
+        let ask = |id: &str, p: &str| {
+            json!({ "id": id, "type": "llm.invoke",
+                    "params": { "prompt": "仕分けて", "max_tokens": 2048, "output_schema": schema(p) } })
+        };
+        let ir = |extra: Option<(&str, serde_json::Value)>| {
+            let mut ir = json!({
+                "ir_version": 1, "name": "wf", "triggers": [{ "kind": "interactive" }],
+                "nodes": [ask("a", "^x$"), ask("b", "^x$"), ask("c", "(")],
+                "edges": [{ "from": "a", "to": "b" }, { "from": "b", "to": "c" }]
+            });
+            if let Some((k, v)) = extra {
+                ir[k] = v;
+            }
+            ir
+        };
+        let check = |ir: &serde_json::Value| {
+            let before = compiled_count();
+            let errs = validate(ir, &catalog()).unwrap_err();
+            assert!(compiled_count() - before <= MAX_PATTERNS, "{errs:#?}");
+            errs.into_iter()
+                .filter(|e| e.path.as_deref().is_some_and(|p| p.ends_with("/pattern")))
+                .map(|e| (e.node_id, e.message))
+                .collect::<Vec<_>>()
+        };
+        let want = vec![(
+            Some("b".to_string()),
+            format!(
+                "params が不正です: 出力の形の pattern は、ワークフローの全体で {MAX_PATTERNS} 個までです"
+            ),
+        )];
+        assert_eq!(check(&ir(None)), want);
+        // 読めない IR（全体に知らない項目）でも、ブロックの設定の確かめで同じ数え方をする。
+        assert_eq!(check(&ir(Some(("surprise", json!(1))))), want);
     }
 
     #[test]

@@ -69,6 +69,7 @@ pub use transform::{
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
+use crate::ir::patterns::PatternBudget;
 use crate::vocab::NodeType;
 
 /// 必須の値の欄の項目が無いときの値（null）。
@@ -177,7 +178,19 @@ pub fn check_params(nt: NodeType, raw: &Value) -> Result<(), ParamsIssue> {
 /// 型の誤り（deny-unknown・必須・型）は項目ごとに位置つきで集める。型どおりに読めたときだけ項目どうしの検査
 /// （kind と供給する項目の整合など）を掛け、その最初の 1 件を返す（型の誤りを直す前の組み合わせを言わない）。
 /// 予約語彙（`available_stage_a() == false`）は V3 が保存を拒否するため対象外（空）。
+///
+/// 出力の形の `pattern` の数は、この params だけで数える。ワークフローの全体で数える保存の確かめは
+/// [`params_issues_with`] を使う（BUG-226）。
 pub fn params_issues(nt: NodeType, raw: &Value) -> Vec<ParamsIssue> {
+    params_issues_with(nt, raw, &mut PatternBudget::for_save())
+}
+
+/// [`params_issues`] の、出力の形の `pattern` の数を `patterns` で数える形（ワークフローの全体の上限・BUG-226）。
+pub(crate) fn params_issues_with(
+    nt: NodeType,
+    raw: &Value,
+    patterns: &mut PatternBudget,
+) -> Vec<ParamsIssue> {
     match nt {
         NodeType::ControlBranch => issues_of::<BranchParams>(raw),
         NodeType::ControlSwitch => issues_of::<SwitchParams>(raw),
@@ -190,7 +203,9 @@ pub fn params_issues(nt: NodeType, raw: &Value) -> Vec<ParamsIssue> {
         NodeType::StorageWrite => issues_of::<StorageWriteParams>(raw),
         NodeType::StorageList => issues_of::<StorageListParams>(raw),
         NodeType::RagSearch => issues_of::<RagSearchParams>(raw),
-        NodeType::LlmInvoke => issues_as::<LlmInvokeParams>(raw, |p| p.check_cross_fields()),
+        NodeType::LlmInvoke => {
+            issues_as::<LlmInvokeParams>(raw, |p| p.check_cross_fields_with(patterns))
+        }
         NodeType::AgentInvoke => issues_of::<AgentInvokeParams>(raw),
         NodeType::AiDecide => issues_as::<AiDecideParams>(raw, |p| p.check_cross_fields()),
         NodeType::HttpRequest => issues_as::<HttpRequestParams>(raw, |p| p.check_cross_fields()),

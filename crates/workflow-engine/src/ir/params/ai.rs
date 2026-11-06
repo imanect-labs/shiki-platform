@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 use crate::ir::expr::ValueExpr;
+use crate::ir::patterns::PatternBudget;
 use crate::vocab::AgentTool;
 
 /// `llm.invoke` — llm-gateway 直行（pure・課金あり）。
@@ -55,17 +56,29 @@ pub enum LlmEffort {
 }
 
 impl LlmInvokeParams {
-    /// 項目どうしの整合（`output_schema` の形・上限）。V1 の typed 契約の照合の後に呼ぶ。
+    /// 項目どうしの整合（`output_schema` の形・上限）。V1 の typed 契約の照合の後に呼ぶ。`pattern` の数は、この
+    /// ブロックの出力の形だけで数える（ワークフローの全体で数えるのは [`super::params_issues`] を通す保存の確かめ）。
     ///
     /// # Errors
     /// `output_schema` が出力の形の制約に合わないとき（path は `/params/output_schema/...`）。
     pub fn check_cross_fields(&self) -> Result<(), super::ParamsIssue> {
+        self.check_cross_fields_with(&mut PatternBudget::for_save())
+    }
+
+    /// [`Self::check_cross_fields`] の `pattern` の数を、ワークフローの全体で数える形（`patterns` を全部のブロックで
+    /// 使い回す・BUG-226）。
+    pub(crate) fn check_cross_fields_with(
+        &self,
+        patterns: &mut PatternBudget,
+    ) -> Result<(), super::ParamsIssue> {
         let Some(schema) = &self.output_schema else {
             return Ok(());
         };
-        crate::ir::output_schema::check_output_schema(schema).map_err(|issue| super::ParamsIssue {
-            path: format!("/params/output_schema{}", issue.path),
-            message: issue.message,
+        crate::ir::output_schema::check_saved_output_schema(schema, patterns).map_err(|issue| {
+            super::ParamsIssue {
+                path: format!("/params/output_schema{}", issue.path),
+                message: issue.message,
+            }
         })
     }
 }

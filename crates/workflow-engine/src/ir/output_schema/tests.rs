@@ -313,3 +313,58 @@ fn closed_schema_rejects_extras_and_enforces_dropped_constraints() {
     let errs = validate_output(&schema, "[1]").unwrap_err();
     assert_eq!(errs, vec!["出力: 項目のまとまりを入れてください"]);
 }
+
+/// 保存のときの pattern は、入力項目と同じく 1 つ 256 文字まで・数はワークフローの全体（使い回す数え）で 50 個まで。
+/// 超えた分はコンパイルせず、数の超過は超えた最初の位置で 1 回だけ言う（BUG-226）。実行のときの確かめは上限を掛けない
+/// （保存済みの版の実行を変えない）。
+#[test]
+fn saved_patterns_are_capped_across_the_workflow() {
+    use crate::ir::patterns::{compiled_count, PatternBudget, MAX_PATTERNS, MAX_PATTERN_CHARS};
+
+    let with = |p: &str| json!({ "type": "object", "properties": { "a": { "type": "string", "pattern": p } } });
+    let long = "a".repeat(MAX_PATTERN_CHARS + 1);
+    let got = check_saved_output_schema(&with(&long), &mut PatternBudget::for_save()).unwrap_err();
+    assert_eq!(
+        got,
+        SchemaIssue::new("/properties/a/pattern", "pattern は 256 文字までです")
+    );
+    let at_limit = "あ".repeat(MAX_PATTERN_CHARS);
+    assert_eq!(
+        check_saved_output_schema(&with(&at_limit), &mut PatternBudget::for_save()),
+        Ok(())
+    );
+
+    // 30 個ずつの出力の形を 3 つ（ブロック 3 つ）。数えを使い回すと、2 つ目の 21 個目で 1 回だけ言い、3 つ目は
+    // 読めない pattern でも言わずにコンパイルもしない。
+    let thirty = |p: &str| props(30, true, &json!({ "type": "string", "pattern": p }));
+    let mut patterns = PatternBudget::for_save();
+    let before = compiled_count();
+    assert_eq!(
+        check_saved_output_schema(&thirty("^a$"), &mut patterns),
+        Ok(())
+    );
+    let got = check_saved_output_schema(&thirty("^a$"), &mut patterns).unwrap_err();
+    assert_eq!(
+        got.message,
+        format!("出力の形の pattern は、ワークフローの全体で {MAX_PATTERNS} 個までです")
+    );
+    assert!(got.path.ends_with("/pattern"), "{got:?}");
+    assert_eq!(
+        check_saved_output_schema(&thirty("("), &mut patterns),
+        Ok(())
+    );
+    assert_eq!(compiled_count() - before, MAX_PATTERNS);
+
+    // 実行のときは長さも数も見ずに、すべて読む。
+    assert_eq!(check_output_schema(&with(&long)), Ok(()));
+    let before = compiled_count();
+    assert_eq!(
+        check_output_schema(&props(
+            60,
+            true,
+            &json!({ "type": "string", "pattern": "^a$" })
+        )),
+        Ok(())
+    );
+    assert_eq!(compiled_count() - before, 60);
+}
