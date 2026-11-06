@@ -146,6 +146,40 @@ impl Env {
     }
 }
 
+/// migrations/ の SQL が `CREATE TABLE` する表の名前（小文字）。
+fn migration_tables() -> Vec<String> {
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../migrations");
+    let mut names = std::collections::BTreeSet::new();
+    for entry in std::fs::read_dir(&dir).expect("migrations") {
+        let path = entry.expect("entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("sql") {
+            continue;
+        }
+        let sql = std::fs::read_to_string(&path).expect("read").to_lowercase();
+        let mut rest = sql.as_str();
+        while let Some(at) = rest.find("create table") {
+            rest = &rest[at + "create table".len()..];
+            let mut words = rest.split_whitespace();
+            let mut name = words.next().unwrap_or_default();
+            if name == "if" {
+                // IF NOT EXISTS
+                words.next();
+                words.next();
+                name = words.next().unwrap_or_default();
+            }
+            let name: String = name
+                .trim_start_matches("public.")
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            if !name.is_empty() {
+                names.insert(name);
+            }
+        }
+    }
+    names.into_iter().collect()
+}
+
 fn sqlstate(err: &sqlx::Error) -> Option<String> {
     err.as_database_error()
         .and_then(|d| d.code())
@@ -158,12 +192,21 @@ async fn every_tenant_table_has_forced_rls_with_the_isolation_policy() {
     // migration の導出式に頼らず、`tenant_id` 列を持つ表を（NULL 可・パーティション親も含めて）全部挙げ、
     // 明示の対象外リストに無いのに RLS・FORCE・ポリシーのどれかが欠けた表を落とす。
     let excluded: Vec<String> = EXCLUDED.iter().map(|s| (*s).to_string()).collect();
+    // 共有の DB には、結合テストが実行時に作る表（durable_it の durable_test_* 等）も同居する。
+    // 対象は migrations/ が作る表に限る。
+    let migrated = migration_tables();
+    assert!(
+        migrated.len() > 100,
+        "migrations から表を読めていない: {}",
+        migrated.len()
+    );
     let missing: Vec<String> = sqlx::query_scalar(
         "SELECT c.relname::text FROM pg_class c \
            JOIN pg_namespace n ON n.oid = c.relnamespace \
            JOIN pg_attribute a ON a.attrelid = c.oid \
           WHERE n.nspname = 'public' AND c.relkind IN ('r', 'p') AND NOT c.relispartition \
             AND c.relname NOT LIKE 'data\\_%' AND NOT (c.relname = ANY($1)) \
+            AND c.relname = ANY($2) \
             AND a.attname = 'tenant_id' AND NOT a.attisdropped \
             AND NOT (c.relrowsecurity AND c.relforcerowsecurity AND EXISTS ( \
                   SELECT FROM pg_policy p \
@@ -171,6 +214,7 @@ async fn every_tenant_table_has_forced_rls_with_the_isolation_policy() {
           ORDER BY 1",
     )
     .bind(&excluded)
+    .bind(&migrated)
     .fetch_all(&env.owner)
     .await
     .unwrap();
