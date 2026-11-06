@@ -185,6 +185,30 @@ ABEVAL_API_URL=http://localhost:8080 uv run pytest -m server -q -s
 1 往復・charlie（別テナント）から alice の id が無い id と同じ応答（ワークフローは 403、テーブルは 404）になることを
 確かめる。名前には毎回ちがう印を付ける（ほかの確かめと DB を共有しても重ならない）。
 
+## 課題集（`data/tasks/core.json`・§3）
+
+中核の 20 課題（§3.2）を、それぞれ 3 つの言い方（`flow`・`app`・`auto`）で書く。形の正は `abeval/tasks.py` の
+docstring（§3.1 に `clarifications`・`run_cases[].llm_dependent`・`run_cases[].stub_ok`・`trigger`・`scheduled_at`・
+`sequence`・`requires` を足したもの）。名前と組織はすべて架空。
+
+- 正解の IR（`reference.ir`・2 つで 1 組の課題は `reference.irs`）は、テーブル・フォルダー・ファイルを
+  `@table:<ref>`・`@folder:<ref>`・`@file:<ref>` で書き、保存の前に fixture の id に置き換える（GAP-35 の実在の
+  検査を通すため）。オフラインの検査（ir_lint）では ref ごとに決まったダミーの UUID にする。正解は llm.invoke の
+  model を書かない（組織の既定で動く）。stub で流すときだけ `default` にする（`run_cases.prepare_ir`）。
+- 相対の日付は使わず、日付で結果が決まる課題（先週・今日）は run_case の `scheduled_at` で予定の日時を決める
+  （GAP-88・`requires` に `cap:scheduled_at`）。
+- fixture のテーブルは、絞り込み・集計・並べ替えに使う列を `indexed: true` にする（索引の無い列は実行で失敗する）。
+  担当者ごとの合計を見る課題は `aggregate_min_rows: 1`、APP-08 だけは既定の K（5）のままにして、件数の少ない
+  地域が伏せられることを期待値に入れる（PIT-17）。状態の進め方（FSM）は fixture で作らないので、状態は選択肢の列を
+  書き換える形にしている（data.transition は使わない）。
+- 対象外（このマシンで動かない・評価の設定に判定用のモデルが無い）: ai.decide・RAG・agent.invoke・Office。
+  APP-09（きっかけがファイルの保存）は、有効化を使わずに、手動の起動にきっかけの内容（`trigger`）を渡して流す
+  （`requires: trigger:event・cap:trigger`）。
+- 分類を照合する課題（APP-02・APP-05・APP-12）の run_case は `llm_dependent`。stub では照合せず、3 回中 3 回の
+  確かめは実モデルで測る段（T10）で行う。
+- 何も変えないのが正解の run_case（在庫が足りない・貸出中）は `expect.flow_through: false`（入力が届かない検査を
+  しない）。中身の無い IR はこの run_case を通り得るので、null の確かめは課題の単位（S4 は全 run_case が通ること）。
+
 ## 採点（`abeval/grade/`・§5）
 
 | 置き場 | 中身 |
