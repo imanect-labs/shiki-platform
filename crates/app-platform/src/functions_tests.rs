@@ -63,7 +63,6 @@ fn handler(allow: Vec<String>) -> GatewayHostCallHandler {
         gateway_origin: "http://127.0.0.1:1".into(),
         resolver: Arc::new(SystemResolver),
         proxy: None,
-        internal_hosts: InternalHosts::default(),
         bearer: "test-bearer".into(),
         egress_allowlist: allow,
         app_id: Uuid::nil(),
@@ -210,88 +209,4 @@ async fn external_http_refuses_allowed_hosts_that_resolve_inside() {
         1,
         "許可していないホストは引かない"
     );
-}
-
-/// 決めた応答を返すループバックのサーバー（受けた頼みの数を数える）。
-async fn serve_ok(body: &'static str) -> (u16, Arc<std::sync::atomic::AtomicUsize>) {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let port = listener.local_addr().unwrap().port();
-    let hits = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let counter = Arc::clone(&hits);
-    tokio::spawn(async move {
-        while let Ok((mut sock, _)) = listener.accept().await {
-            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            let mut buf = vec![0u8; 4096];
-            let _ = sock.read(&mut buf).await;
-            let reply = format!(
-                "HTTP/1.1 200 OK\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-                body.len()
-            );
-            let _ = sock.write_all(reply.as_bytes()).await;
-            let _ = sock.shutdown().await;
-        }
-    });
-    (port, hits)
-}
-
-fn internal_hosts(entries: &[String]) -> InternalHosts {
-    InternalHosts::parse("gateway.function_http_internal_hosts", entries).unwrap()
-}
-
-/// 管理者が内部の送り先として許したホスト（`gateway.function_http_internal_hosts`）だけは、内部の IP へも送る。ポートを
-/// 書いた項目は、決まったポートの外のそのポートも開ける。manifest の許可は今までどおり要る（GAP-72・D-135）。
-#[tokio::test]
-async fn internal_hosts_set_by_the_admin_open_internal_addresses() {
-    let (port, hits) = serve_ok("intranet").await;
-    let url = serde_json::json!({ "url": format!("http://127.0.0.1:{port}/api") });
-
-    // 書いていなければ、決まったポートの外は断る。ポートを書かない項目も、決まったポートの外は開けない。
-    let mut h = handler(vec!["127.0.0.1".to_string()]);
-    for entries in [vec![], vec!["127.0.0.1".to_string()]] {
-        h.internal_hosts = internal_hosts(&entries);
-        let out = h.external_http(&url).await;
-        assert!(
-            matches!(&out, HostResponse::Err { code, .. } if code == "egress_denied"),
-            "{entries:?}"
-        );
-    }
-
-    // ポートまで書けば届く。
-    h.internal_hosts = internal_hosts(&[format!("127.0.0.1:{port}")]);
-    let HostResponse::Ok(v) = h.external_http(&url).await else {
-        panic!("届くこと");
-    };
-    assert_eq!(v["body"], "intranet");
-    assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
-
-    // manifest の許可に無いホストは、内部の送り先に書いても送らない。
-    let mut other = handler(vec!["api.allowed.com".to_string()]);
-    other.internal_hosts = internal_hosts(&[format!("127.0.0.1:{port}")]);
-    assert!(matches!(
-        other.external_http(&url).await,
-        HostResponse::Err { code, .. } if code == "egress_denied"
-    ));
-    assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1);
-}
-
-/// 名前の送り先も、内部の送り先に書けば内部の IP へ送れる。リンクローカル・メタデータは書いても送らない。
-#[tokio::test]
-async fn internal_hosts_do_not_open_link_local_or_metadata() {
-    let mut h = handler(vec!["erp.corp.example".to_string()]);
-    h.internal_hosts = internal_hosts(&["erp.corp.example".to_string()]);
-    h.resolver = Arc::new(FixedResolver {
-        addrs: vec!["169.254.169.254:0".parse().unwrap()],
-        lookups: std::sync::atomic::AtomicUsize::new(0),
-    });
-    let out = h
-        .external_http(&serde_json::json!({ "url": "https://erp.corp.example/v1" }))
-        .await;
-    match out {
-        HostResponse::Err { code, message, .. } => {
-            assert_eq!(code, "egress_denied");
-            assert!(message.contains("特別なアドレス"), "{message}");
-        }
-        HostResponse::Ok(v) => panic!("送らないこと: {v}"),
-    }
 }

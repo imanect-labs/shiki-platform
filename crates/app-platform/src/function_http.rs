@@ -8,11 +8,8 @@
 //!    内部のアドレスやメタデータに届かない。名前が無い（`net_guard::NO_SUCH_HOST`）ならやり直さない `egress_denied`、
 //!    DNS に届かない・一時的に引けない・時間切れならやり直せる `egress_failed` にする（ワークフローの送り口と同じ・BUG-202）。
 //! 2. 解決先に公開でない IP が 1 つでもあれば、応答ごと断る（公開と内部の混在も断る）。IP の分類は
-//!    `sandbox_client::net_guard` が単一の正（web.fetch・ワークフロー・サンドボックスと同じ表）。例外は、管理者が
-//!    デプロイ設定 `gateway.function_http_internal_hosts`（ミニアプリの関数の内部の送り先）に書いたホストだけで、内部の
-//!    IP へも送る（ワークフローの `workflow.http_internal_hosts` と同じ書き方と照らし方・`sandbox_client::internal_hosts`・
-//!    D-135）。ワークフローの設定とは分け、ミニアプリの関数には、管理者がこの設定に書いたホストだけを開ける
-//!    （manifest の `egress_allowlist` にも書いてあること）。リンクローカルとクラウドのメタデータは、書いても送らない。
+//!    `sandbox_client::net_guard` が単一の正（web.fetch・ワークフロー・サンドボックスと同じ表）。ミニアプリの関数には、
+//!    ワークフローの `workflow.http_internal_hosts` にあたる内部の送り先の許可は無い。
 //! 3. 3xx は追わない（ゲストが Location を見てもう一度頼めば、その宛先も照らし直す・PIT-36）。
 //! 4. 環境のプロキシ（`HTTPS_PROXY` など）を使わない（`no_proxy`。プロキシ経由だと接続の固定が効かない・PIT-48 の ④）。
 //!    外へ出るのに中継が要る環境では、運用者が設定 `egress.proxy_url` に書いた中継だけを通す（ワークフローの送り口と
@@ -39,12 +36,10 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 /// URL のホストを 1 回だけ解決し、送ってよいアドレスかを確かめる。名前のホストは（名前・アドレス）を返す。
 ///
 /// IP の書き方（10 進・8 進・16 進の IPv4、IPv4 を写した IPv6）は、URL を読んだ時点で IP にそろう。
-/// `allow_internal` は、管理者が内部の送り先として許したホストか（内部の IP も通す。リンクローカル・メタデータは断る）。
 pub(crate) async fn resolve_checked(
     resolver: &dyn HostResolver,
     url: &url::Url,
     port: u16,
-    allow_internal: bool,
 ) -> Result<(Option<String>, Vec<SocketAddr>), HostResponse> {
     let shown = url.host_str().unwrap_or_default();
     let (domain, found_addrs) = match url.host() {
@@ -72,7 +67,7 @@ pub(crate) async fn resolve_checked(
         None => return Err(super::functions::invalid("URL にホストがありません")),
     };
     let seen = found_addrs.clone();
-    match net_guard::check_addrs(found_addrs, allow_internal) {
+    match net_guard::check_addrs(found_addrs, false) {
         Ok(addrs) => Ok((domain, addrs)),
         Err(refusal) => {
             // 管理者向けのログ（ゲストに返す文にはアドレスを載せない）。
@@ -222,10 +217,9 @@ fn refused(host: &str, refusal: AddrRefusal) -> HostResponse {
                  続くときは、URL のドメインを確かめてください。"
             ))
         }
-        AddrRefusal::Internal => format!(
-            "{host} は内部のネットワークにつながるため、接続しませんでした。社内のサービスに送るには、管理者に、\
-             この送り先をミニアプリの関数の社内の送り先として登録するよう頼んでください。"
-        ),
+        AddrRefusal::Internal => {
+            format!("{host} は内部のネットワークにつながるため、接続しませんでした。")
+        }
         AddrRefusal::LinkLocalOrMetadata => format!(
             "{host} は、サーバーの設定を読み出せる特別なアドレスにつながるため、接続しませんでした。"
         ),

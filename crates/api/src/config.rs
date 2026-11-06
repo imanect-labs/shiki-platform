@@ -153,13 +153,6 @@ pub struct GatewayConfig {
     /// 未設定なら組み込みバンドル配信は off（/builtin/* は 404）。
     #[serde(default)]
     pub builtin_dir: Option<String>,
-    /// ミニアプリの関数の外部 HTTP で、内部のネットワークの IP へ送ってよいホスト（D-135 と同じ書き方・GAP-72）。
-    ///
-    /// ワークフローの `workflow.http_internal_hosts` とは分ける（ミニアプリには、ここに書いたホストだけを開ける）。
-    /// manifest の `egress_allowlist` にも書いたホストだけに送る。ポートを書いた項目は、決まったポート（80・443）の
-    /// 外のそのポートも開ける。読めない項目があると起動しない。既定は空（内部へは送らない）。
-    #[serde(default)]
-    pub function_http_internal_hosts: Vec<String>,
 }
 
 fn default_gateway_port() -> u16 {
@@ -189,7 +182,6 @@ impl Default for GatewayConfig {
             public_origin: None,
             web_origin: None,
             builtin_dir: None,
-            function_http_internal_hosts: Vec::new(),
         }
     }
 }
@@ -415,11 +407,6 @@ impl AppConfig {
         // 内部の送り先は読めない項目を黙って外さない（社内の送り先を書いたつもりで、実行のときに断られる・D-135）。
         crate::workflow_runtime::check_internal_hosts(&self.workflow.http_internal_hosts)
             .map_err(ConfigError::Invalid)?;
-        sandbox_client::internal_hosts::InternalHosts::parse(
-            "gateway.function_http_internal_hosts",
-            &self.gateway.function_http_internal_hosts,
-        )
-        .map_err(ConfigError::Invalid)?;
         // 外への送信の中継の書き方（資格情報を URL に書かない・GAP-72）。パスワードのファイルは配線で読む。
         self.egress.check()?;
         // 必須 URL。

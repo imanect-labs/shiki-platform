@@ -135,9 +135,7 @@ async fn refuses_names_that_resolve_to_internal_addresses() {
         "ula.example",
     ] {
         let url = url::Url::parse(&format!("https://{host}/x")).unwrap();
-        let err = resolve_checked(&*resolver, &url, 443, false)
-            .await
-            .unwrap_err();
+        let err = resolve_checked(&*resolver, &url, 443).await.unwrap_err();
         assert_eq!(code_of(&err), "egress_denied", "{host}");
         let message = message_of(&err);
         assert!(message.contains(host), "{message}");
@@ -151,12 +149,10 @@ async fn refuses_names_that_resolve_to_internal_addresses() {
         "名前は 1 回ずつ引く"
     );
     let meta = url::Url::parse("https://meta.example/").unwrap();
-    assert!(message_of(
-        &resolve_checked(&*resolver, &meta, 443, false)
-            .await
-            .unwrap_err()
-    )
-    .contains("特別なアドレス"));
+    assert!(
+        message_of(&resolve_checked(&*resolver, &meta, 443).await.unwrap_err())
+            .contains("特別なアドレス")
+    );
 
     // IP の書き方（10 進の IPv4・IPv4 を写した IPv6）も、URL を読んだ時点で IP にそろえて断る。
     for raw in [
@@ -167,9 +163,7 @@ async fn refuses_names_that_resolve_to_internal_addresses() {
         "http://169.254.169.254/latest/meta-data/",
     ] {
         let url = url::Url::parse(raw).unwrap();
-        let err = resolve_checked(&*resolver, &url, 80, false)
-            .await
-            .unwrap_err();
+        let err = resolve_checked(&*resolver, &url, 80).await.unwrap_err();
         assert_eq!(code_of(&err), "egress_denied", "{raw}");
     }
     assert_eq!(
@@ -185,14 +179,14 @@ async fn refuses_names_that_resolve_to_internal_addresses() {
 async fn passes_public_names_and_tells_missing_names_from_lookup_failures() {
     let resolver = MapResolver::new(&[("api.example", &["93.184.216.34", "2606:4700::1"])]);
     let url = url::Url::parse("https://api.example/v1").unwrap();
-    let (domain, addrs) = resolve_checked(&*resolver, &url, 443, false).await.unwrap();
+    let (domain, addrs) = resolve_checked(&*resolver, &url, 443).await.unwrap();
     assert_eq!(domain.as_deref(), Some("api.example"));
     assert_eq!(addrs.len(), 2);
     assert!(addrs.iter().all(|a| a.port() == 443));
 
     // 名前が無い（NXDOMAIN）: URL の誤りなので、やり直さない。
     let missing = url::Url::parse("https://missing.example/").unwrap();
-    let err = resolve_checked(&*resolver, &missing, 443, false)
+    let err = resolve_checked(&*resolver, &missing, 443)
         .await
         .unwrap_err();
     assert!(matches!(
@@ -207,7 +201,7 @@ async fn passes_public_names_and_tells_missing_names_from_lookup_failures() {
 
     // DNS に届かない・一時的に引けない（EAI_AGAIN など）: やり直せる。URL の誤りだとは言い切らない。
     let unknown = url::Url::parse("https://nowhere.example/").unwrap();
-    let err = resolve_checked(&*resolver, &unknown, 443, false)
+    let err = resolve_checked(&*resolver, &unknown, 443)
         .await
         .unwrap_err();
     assert!(matches!(
@@ -221,9 +215,7 @@ async fn passes_public_names_and_tells_missing_names_from_lookup_failures() {
     // 名前を引けてもアドレスが 1 つも無い答えも、引けなかったのと同じにやり直せる。
     let empty = MapResolver::new(&[("empty.example", &[])]);
     let url = url::Url::parse("https://empty.example/").unwrap();
-    let err = resolve_checked(&*empty, &url, 443, false)
-        .await
-        .unwrap_err();
+    let err = resolve_checked(&*empty, &url, 443).await.unwrap_err();
     assert_eq!(code_of(&err), "egress_failed");
 }
 
@@ -231,7 +223,7 @@ async fn passes_public_names_and_tells_missing_names_from_lookup_failures() {
 #[tokio::test]
 async fn resolution_has_a_time_limit() {
     let url = url::Url::parse("https://slow.example/").unwrap();
-    let err = resolve_checked(&HangingResolver, &url, 443, false)
+    let err = resolve_checked(&HangingResolver, &url, 443)
         .await
         .unwrap_err();
     assert!(matches!(

@@ -15,7 +15,6 @@
 use std::sync::Arc;
 
 use sandbox_client::egress_proxy::EgressProxy;
-use sandbox_client::internal_hosts::InternalHosts;
 use sandbox_client::net_guard::{HostResolver, SystemResolver};
 use script_runtime::{compile, EngineHandle, HostCall, HostResponse, Limits};
 use storage::content_address::{miniapp_bundle_key, sha256_hex};
@@ -108,8 +107,6 @@ pub struct FunctionRunner {
     resolver: Arc<dyn HostResolver>,
     /// 外部への送信が通す中継（運用者が `egress.proxy_url` に書いたもの・無ければ直接つなぐ・GAP-72）。
     proxy: Option<EgressProxy>,
-    /// 内部の IP への送信を許すホスト（`gateway.function_http_internal_hosts`・既定は空・D-135 と同じ決まり・GAP-72）。
-    internal_hosts: InternalHosts,
 }
 
 impl FunctionRunner {
@@ -134,18 +131,7 @@ impl FunctionRunner {
             gateway_origin,
             resolver: Arc::new(SystemResolver),
             proxy: None,
-            internal_hosts: InternalHosts::default(),
         })
-    }
-
-    /// 管理者が内部の送り先として許したホスト（`gateway.function_http_internal_hosts`）を使う。
-    ///
-    /// manifest の `egress_allowlist` にも書いてあるホストだけに、内部の IP への送信を許す（リンクローカル・メタデータは
-    /// 断る）。ポートを書いた項目は、決まったポート（80・443）の外でも、そのポートを開ける。
-    #[must_use]
-    pub fn with_internal_hosts(mut self, internal_hosts: InternalHosts) -> Self {
-        self.internal_hosts = internal_hosts;
-        self
     }
 
     /// 外部への送信を、運用者が設定した中継に通す（`egress.proxy_url`・確かめたアドレスがすべて公開の IP のとき・GAP-72）。
@@ -191,7 +177,6 @@ impl FunctionRunner {
             gateway_origin: self.gateway_origin.clone(),
             resolver: Arc::clone(&self.resolver),
             proxy: self.proxy.clone(),
-            internal_hosts: self.internal_hosts.clone(),
             bearer: inv.bearer,
             egress_allowlist: inv.egress_allowlist,
             app_id: inv.app_id,
@@ -241,7 +226,6 @@ struct GatewayHostCallHandler {
     gateway_origin: String,
     resolver: Arc<dyn HostResolver>,
     proxy: Option<EgressProxy>,
-    internal_hosts: InternalHosts,
     bearer: String,
     egress_allowlist: Vec<String>,
     app_id: Uuid,
@@ -403,27 +387,12 @@ impl GatewayHostCallHandler {
         let Some(host) = url.host_str().map(str::to_string) else {
             return invalid("URL にホストがありません");
         };
-        // 既定のポート（http は 80・https は 443）だけ（内部のポートへ届かないように・アルファの制約）。管理者が内部の
-        // 送り先としてポートまで書いたホストは、そのポートも開ける（D-135 と同じ「ポートを書けばそのポートだけ」）。
-        let url_host = url.host();
-        let port = match url.port_or_known_default() {
-            Some(p @ (80 | 443)) => p,
-            Some(p)
-                if url_host
-                    .as_ref()
-                    .is_some_and(|h| self.internal_hosts.names_port(h, p)) =>
-            {
-                p
-            }
-            _ => {
-                return deny(format!(
-                    "{host} へは、決まったポート（http は 80、https は 443）でだけ接続できます。"
-                ))
-            }
+        // 既定のポート（http は 80・https は 443）だけ（内部のポートへ届かないように・アルファの制約）。
+        let Some(port @ (80 | 443)) = url.port_or_known_default() else {
+            return deny(format!(
+                "{host} へは、決まったポート（http は 80、https は 443）でだけ接続できます。"
+            ));
         };
-        let allow_internal = url_host
-            .as_ref()
-            .is_some_and(|h| self.internal_hosts.allows(h, port));
         if !egress_allowed(&self.egress_allowlist, &host) {
             return deny(format!(
                 "このアプリが通信してよい先に {host} が含まれていないため、接続しませんでした。"
@@ -446,17 +415,11 @@ impl GatewayHostCallHandler {
             }
         };
         // SSRF 防御: 名前を 1 回だけ引き、許可ホストが内部・メタデータの IP に解決されるなら断る（PIT-23・PIT-48）。
-        let (domain, addrs) = match crate::function_http::resolve_checked(
-            &*self.resolver,
-            &url,
-            port,
-            allow_internal,
-        )
-        .await
-        {
-            Ok(v) => v,
-            Err(refused) => return refused,
-        };
+        let (domain, addrs) =
+            match crate::function_http::resolve_checked(&*self.resolver, &url, port).await {
+                Ok(v) => v,
+                Err(refused) => return refused,
+            };
         // 外へ出るのに中継が要る環境では、確かめたアドレスへのトンネルを先に開く（送り終えるまで持つ・GAP-72）。
         let tunnel =
             match crate::function_http::open_tunnel(self.proxy.as_ref(), &addrs, &host).await {
