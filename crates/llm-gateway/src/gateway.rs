@@ -403,12 +403,24 @@ impl LlmGateway {
         structured::apply_mode(&mut req, structured::mode_for(slot.config.kind, entry));
         req.model = Some(entry.resolved_id().to_string());
 
-        // 連携者のプラン枠は、トークンの取得時にも呼び出し主体と照合し直す（再試行のたびにも）。
-        if let (Some(p), ProviderKind::ChatgptPlan) = (&self.inner.chatgpt_plan, slot.config.kind) {
-            return stream_with_retry(&p.for_caller(ctx), &req, &UNAVAILABLE_BACKOFF).await;
-        }
-        // 流れ始めた後に切れても、まだ何も確定していなければ送り直す（#897）。
-        let provider = Arc::clone(&slot.provider);
+        self.open_stream(ctx, slot, req).await
+    }
+
+    /// 確かめを済ませた要求を振り先のプロバイダで流す。接続前の一時障害は待ってから送り直し、流れ始めた後に
+    /// 切れても、まだ何も確定していなければ送り直す（#897）。
+    ///
+    /// 連携者の ChatGPT プランも同じく送り直す（BUG-224）。プランは連携した本人の呼び出しにだけ使える（D-30）ので、
+    /// 送り直すのも本人の生成だけで、トークンの取得時に呼び出し主体と照合し直す（送り直しのたびにも）。
+    async fn open_stream(
+        &self,
+        ctx: &AuthContext,
+        slot: &ProviderSlot,
+        req: GenerateRequest,
+    ) -> Result<DeltaStream, LlmError> {
+        let provider: Arc<dyn LlmProvider> = match (&self.inner.chatgpt_plan, slot.config.kind) {
+            (Some(p), ProviderKind::ChatgptPlan) => Arc::new(p.for_caller(ctx)),
+            _ => Arc::clone(&slot.provider),
+        };
         let first = stream_with_retry(provider.as_ref(), &req, &UNAVAILABLE_BACKOFF).await?;
         Ok(resume_unsettled(provider, req, first, MIDSTREAM_RETRIES))
     }

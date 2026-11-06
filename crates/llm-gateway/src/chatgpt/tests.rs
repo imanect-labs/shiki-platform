@@ -378,12 +378,12 @@ async fn disconnect_revokes_and_forgets_all_but_the_host_id() {
 async fn provider_calls_responses_with_the_owner_token_in_plan_shape() {
     let f = fixture().await;
     connect(&f, &ctx("me"), 3600).await;
-    let provider = ChatGptPlanProvider::new(
+    let provider = Arc::new(ChatGptPlanProvider::new(
         reqwest::Client::new(),
         f.account.clone(),
         "gpt-6.1-sol".into(),
         crate::config::LlmTimeouts::default(),
-    );
+    ));
     assert_eq!(provider.name(), "chatgpt_plan");
     let mut req = GenerateRequest::new(vec![Message::text(Role::User, "hi")]);
     req.max_tokens = Some(100);
@@ -421,12 +421,12 @@ async fn provider_calls_responses_with_the_owner_token_in_plan_shape() {
 async fn plan_failures_are_explained_without_the_provider_body() {
     let f = fixture().await;
     connect(&f, &ctx("me"), 3600).await;
-    let provider = ChatGptPlanProvider::new(
+    let provider = Arc::new(ChatGptPlanProvider::new(
         reqwest::Client::new(),
         f.account.clone(),
         "gpt-6.1-sol".into(),
         crate::config::LlmTimeouts::default(),
-    );
+    ));
     let me = ctx("me");
     let req = GenerateRequest::new(vec![Message::text(Role::User, "hi")]);
     let fail = |status: StatusCode, body: Value| {

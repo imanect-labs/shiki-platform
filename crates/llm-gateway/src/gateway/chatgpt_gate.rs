@@ -149,6 +149,11 @@ mod tests {
 
     /// 既定（stub）＋ ChatGPT プランの構成。資格情報ファイルの連携者は `owner`。
     fn gateway(dir: &std::path::Path) -> LlmGateway {
+        gateway_at(dir, None)
+    }
+
+    /// [`gateway`] の推論 API の送り先を `api_base` にしたもの（無ければ既定の送り先）。
+    fn gateway_at(dir: &std::path::Path, api_base: Option<&str>) -> LlmGateway {
         let path = dir.join("chatgpt.json");
         std::fs::write(
             &path,
@@ -165,7 +170,11 @@ mod tests {
             .to_string(),
         )
         .unwrap();
-        let account = ChatGptAccount::open(reqwest::Client::new(), ChatGptSettings::new(path));
+        let mut settings = ChatGptSettings::new(path);
+        if let Some(base) = api_base {
+            settings.api_base = base.to_string();
+        }
+        let account = ChatGptAccount::open(reqwest::Client::new(), settings);
         let config = GatewayConfig {
             extra_providers: vec![ProviderConfig {
                 id: CHATGPT_PROVIDER_ID.into(),
@@ -235,6 +244,75 @@ mod tests {
             gw.stream(&owner, req).await,
             Err(LlmError::Unavailable(_))
         ));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// 呼ばれるたびに用意した Responses API の本文を順に返すモック（尽きたら最後の本文）。呼ばれた回数を数える。
+    async fn scripted_responses(
+        bodies: Vec<&'static str>,
+    ) -> (String, Arc<std::sync::atomic::AtomicUsize>) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let calls = Arc::new(AtomicUsize::new(0));
+        let counter = Arc::clone(&calls);
+        let app = axum::Router::new().fallback(move || {
+            let n = counter.fetch_add(1, Ordering::SeqCst);
+            let body = bodies[n.min(bodies.len() - 1)];
+            async move { ([("content-type", "text/event-stream")], body) }
+        });
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        (base, calls)
+    }
+
+    /// ChatGPT プランも、思考だけを流して切れた応答は送り直す（BUG-224）。送り直しも連携者の本人の呼び出しとして
+    /// 照合し直し、本人でない呼び出しは送り直しの経路に乗っても送らない（D-30）。
+    #[tokio::test]
+    async fn chatgpt_plan_streams_cut_before_anything_settles_are_sent_again() {
+        use futures::StreamExt;
+        use std::sync::atomic::Ordering;
+        const THINK_THEN_CLOSE: &str =
+            "data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"考え中\"}\n\n";
+        const ANSWER: &str = concat!(
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"答え\"}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"usage\":{}}}\n\n",
+        );
+        let (base, calls) = scripted_responses(vec![THINK_THEN_CLOSE, ANSWER]).await;
+        let dir = temp_dir();
+        let gw = gateway_at(&dir, Some(&base));
+        let entry = gw.catalog().get("chatgpt:gpt").unwrap().clone();
+        let slot = gw.slot_for(&entry).unwrap();
+        let mut req = GenerateRequest::new(vec![Message::text(Role::User, "hi")]);
+        req.model = Some("gpt".into());
+
+        let owner = ctx(authz::PrincipalKind::User, "owner");
+        let out: Vec<String> = gw
+            .open_stream(&owner, slot, req.clone())
+            .await
+            .unwrap()
+            .map(|d| match d {
+                Ok(crate::model::StreamDelta::TextDelta { text }) => format!("text:{text}"),
+                Ok(crate::model::StreamDelta::ThinkingDelta { text }) => format!("think:{text}"),
+                Ok(crate::model::StreamDelta::Done { .. }) => "done".into(),
+                Ok(other) => format!("{other:?}"),
+                Err(e) => format!("err:{e}"),
+            })
+            .collect()
+            .await;
+        assert_eq!(calls.load(Ordering::SeqCst), 2, "{out:?}");
+        assert_eq!(
+            out,
+            ["think:考え中", "think:\n\n", "text:答え", "done"],
+            "{out:?}"
+        );
+
+        // 本人でない呼び出しは、トークンの取得で断る（推論 API へは送らない）。
+        let other = ctx(authz::PrincipalKind::User, "someone");
+        assert!(matches!(
+            gw.open_stream(&other, slot, req).await,
+            Err(LlmError::Config(_))
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
