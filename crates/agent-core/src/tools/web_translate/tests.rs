@@ -490,6 +490,91 @@ async fn max_tokens_fit_in_a_small_context_window() {
     assert!(seen.iter().all(|total| *total <= WINDOW), "{seen:?}");
 }
 
+/// 窓の残りが下限に満たない呼び出しは出さない（用語集も翻訳も呼ばれず、チャンクは原文のまま）。
+#[tokio::test]
+async fn nothing_is_sent_when_the_window_is_too_small() {
+    struct Tiny(Mutex<usize>);
+    #[async_trait::async_trait]
+    impl Backend for Tiny {
+        async fn generate(
+            &self,
+            _ctx: &AuthContext,
+            _req: GenerateRequest,
+            _key: String,
+            _trace_id: Option<&str>,
+        ) -> Result<Reply, LlmError> {
+            *self.0.lock().unwrap() += 1;
+            Err(LlmError::Internal("呼ばれてはいけない".into()))
+        }
+        fn context_window(&self, _model: Option<&str>) -> Option<u32> {
+            Some(1_200)
+        }
+    }
+    let (addr, _) = stub_server(page_response(PAGE)).await;
+    let backend = Arc::new(Tiny(Mutex::new(0)));
+    let mut t = tool(addr, translator());
+    t.backend = backend.clone();
+    let out = run(&t, addr.port()).await;
+    assert_eq!(*backend.0.lock().unwrap(), 0, "用語集も翻訳も呼ばない");
+    let tr = &out.translations[0];
+    assert!(!tr["failed_chunks"].as_array().unwrap().is_empty(), "{tr}");
+}
+
+/// 出力上限で切れたら、次の試行は上限を倍にする（窓の残りは超えない）。
+#[tokio::test]
+async fn a_cut_off_reply_is_retried_with_a_larger_limit() {
+    struct CutOnce(Mutex<Vec<u32>>);
+    #[async_trait::async_trait]
+    impl Backend for CutOnce {
+        async fn generate(
+            &self,
+            _ctx: &AuthContext,
+            req: GenerateRequest,
+            _key: String,
+            _trace_id: Option<&str>,
+        ) -> Result<Reply, LlmError> {
+            if is_glossary(&req) {
+                return Ok(Reply {
+                    text: "{}".into(),
+                    stop: StopReason::EndTurn,
+                    spent: (1, 1, 0),
+                    error: None,
+                });
+            }
+            let mut seen = self.0.lock().unwrap();
+            seen.push(req.max_tokens.unwrap_or(0));
+            let first = seen.len() == 1;
+            Ok(Reply {
+                text: if first {
+                    String::new()
+                } else {
+                    fake_translate(&source_of(&user_text(&req)))
+                },
+                stop: if first {
+                    StopReason::MaxTokens
+                } else {
+                    StopReason::EndTurn
+                },
+                spent: (1, 1, 0),
+                error: None,
+            })
+        }
+        fn context_window(&self, _model: Option<&str>) -> Option<u32> {
+            Some(100_000)
+        }
+    }
+    let page = "<html><body><article><h1>Short</h1><p>One short paragraph to translate here.</p></article></body></html>";
+    let (addr, _) = stub_server(page_response(page)).await;
+    let backend = Arc::new(CutOnce(Mutex::new(Vec::new())));
+    let mut t = tool(addr, translator());
+    t.backend = backend.clone();
+    let out = run(&t, addr.port()).await;
+    assert_eq!(out.translations[0]["failed_chunks"], serde_json::json!([]));
+    let seen = backend.0.lock().unwrap().clone();
+    assert_eq!(seen.len(), 2, "{seen:?}");
+    assert_eq!(seen[1], seen[0] * 2, "切れた後は上限を倍にする: {seen:?}");
+}
+
 #[test]
 fn unwrap_output_leaves_a_fence_without_a_newline_to_the_check() {
     assert_eq!(unwrap_output("```訳文```"), "```訳文```");
