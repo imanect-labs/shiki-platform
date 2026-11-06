@@ -140,6 +140,10 @@ pub struct PinUpdate {
     /// 新しい版はあるが、変わるところを調べられなかった（固定している版の本文が無いなど）。`changes` が空でも
     /// 「変わらない」とは言わない。
     pub diff_unknown: bool,
+    /// 最新の版に、前もって確かめられないブロック（スクリプト・シークレット・別のワークフローを実行など・GAP-82）が
+    /// ある（ワークフローだけ）。使う人に要る権限の増減は確かめられた範囲だけを言うので、`changes` に増減が無くても
+    /// 要る権限が変わらないとは言わない（共有の画面の `unchecked` と同じ決まり）。
+    pub unchecked_blocks: bool,
 }
 
 /// 名前を引く前の、部品 1 つの結果（要る権限の増減の対象には、まだ名前が無い）。
@@ -198,6 +202,7 @@ impl MiniAppStore {
             latest_version: None,
             changes: Vec::new(),
             diff_unknown: false,
+            unchecked_blocks: false,
         };
         let meta = match self.artifacts.get(ctx, pin.artifact_id, trace_id).await {
             Ok(m) if m.kind == kind => m,
@@ -236,6 +241,7 @@ impl MiniAppStore {
         let d = diff_versions(kind, &from, &to);
         update.changes = d.changes;
         update.diff_unknown = d.unknown;
+        update.unchecked_blocks = d.unchecked;
         Ok(Unnamed {
             update,
             access: d.access,
@@ -317,6 +323,7 @@ mod tests {
                 latest_version: Some(2),
                 changes: vec![PinDiff::ViewQuery],
                 diff_unknown: false,
+                unchecked_blocks: false,
             },
             access: vec![
                 added(1),

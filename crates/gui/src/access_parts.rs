@@ -85,15 +85,19 @@ fn skill_needs(skill: &SkillBody) -> Vec<PartNeed> {
     needs
 }
 
-/// 部品の版の本文が要る権限（ワークフロー・保存ビュー・スキル・アプリの確かめと同じ定義）。本文を読めない・ほかの
-/// 種類なら `None`（部品の版を上げる差・GAP-11）。
-pub(crate) fn body_needs(kind: ArtifactKind, body: &Value) -> Option<Vec<PartNeed>> {
+/// 部品の版の本文が要る権限（ワークフロー・保存ビュー・スキル・アプリの確かめと同じ定義）と、前もって確かめられない
+/// ブロックがあるか（GAP-82・ワークフローだけ）。本文を読めない・ほかの種類なら `None`（部品の版を上げる差・GAP-11）。
+pub(crate) fn body_needs(kind: ArtifactKind, body: &Value) -> Option<(Vec<PartNeed>, bool)> {
     match kind {
-        ArtifactKind::Workflow => WorkflowIr::from_json(body).ok().map(|ir| ir_needs(&ir)),
+        ArtifactKind::Workflow => WorkflowIr::from_json(body)
+            .ok()
+            .map(|ir| (ir_needs(&ir), !ir_gaps(&ir).is_empty())),
         ArtifactKind::DataView => data::DataViewBody::from_stored(body.clone())
             .ok()
-            .map(|v| view_needs(&v)),
-        ArtifactKind::Skill => validate_skill_body(body).ok().map(|s| skill_needs(&s)),
+            .map(|v| (view_needs(&v), false)),
+        ArtifactKind::Skill => validate_skill_body(body)
+            .ok()
+            .map(|s| (skill_needs(&s), false)),
         _ => None,
     }
 }

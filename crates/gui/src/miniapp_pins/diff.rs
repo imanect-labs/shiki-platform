@@ -19,6 +19,8 @@ pub struct VersionDiff {
     pub access: Vec<AccessChange>,
     /// 本文を読めず、調べられなかった差がある（`changes` が空でも「変わらない」とは言わない）。
     pub unknown: bool,
+    /// 新しい版に、前もって確かめられないブロックがある（GAP-82・要る権限の増減は確かめられた範囲だけ）。
+    pub unchecked: bool,
 }
 
 /// 使う人に要る権限の増減 1 つ（対象・操作・増え方）。
@@ -47,9 +49,15 @@ pub enum AccessChangeKind {
 pub fn diff_versions(kind: ArtifactKind, from: &Value, to: &Value) -> VersionDiff {
     let mut d = kind_changes(kind, from, to);
     match (body_needs(kind, from), body_needs(kind, to)) {
-        (Some(from), Some(to)) => d.access = access_changes(&from, &to),
+        (Some((from, _)), Some((to, unchecked))) => {
+            d.access = access_changes(&from, &to);
+            d.unchecked = unchecked;
+        }
         // 読めない版（壊れた本文）。要る権限の増減は言えない。
-        _ => d.unknown = true,
+        (_, to) => {
+            d.unknown = true;
+            d.unchecked = to.is_some_and(|(_, unchecked)| unchecked);
+        }
     }
     d
 }
@@ -484,6 +492,39 @@ mod tests {
         // 同じ版どうしは差が無い。
         let same = diff_versions(ArtifactKind::Workflow, &to, &to.clone());
         assert!(same.changes.is_empty() && same.access.is_empty() && !same.unknown);
+        assert!(!same.unchecked);
+    }
+
+    /// 新しい版に前もって確かめられないブロック（ドライブのトップへの保存・別のワークフローを実行など・GAP-82）が
+    /// あれば印を付ける。要る権限の増減も使ってよい操作の増減も無い差でも、「要る権限は変わらない」と言わせない。
+    #[test]
+    fn unchecked_blocks_in_the_new_version_are_flagged() {
+        let scopes = json!(["storage.write", "workflow.start"]);
+        let from = ir(
+            scopes.clone(),
+            json!([{ "id": "keep", "type": "storage.write", "params": { "folder": TABLE, "name": "a.txt", "content": "x" } }]),
+            json!([]),
+        );
+        let to = ir(
+            scopes,
+            json!([
+                { "id": "keep", "type": "storage.write", "params": { "folder": TABLE, "name": "a.txt", "content": "x" } },
+                { "id": "top", "type": "storage.write", "params": { "name": "b.txt", "content": "x" } },
+                { "id": "next", "type": "workflow.start", "params": { "name": "child" } }
+            ]),
+            json!([{ "from": "keep", "to": "top" }, { "from": "top", "to": "next" }]),
+        );
+        let d = diff_versions(ArtifactKind::Workflow, &from, &to);
+        assert!(
+            d.changes.is_empty() && d.access.is_empty() && !d.unknown,
+            "{d:?}"
+        );
+        assert!(d.unchecked, "確かめられないブロックがある");
+        // 前の版にだけあるときは付けない（新しい版で要る権限は確かめられた）。
+        assert!(!diff_versions(ArtifactKind::Workflow, &to, &from).unchecked);
+        // 保存ビューとスキルには、確かめられないブロックが無い。
+        let view = json!({ "table_id": TABLE, "query": {} });
+        assert!(!diff_versions(ArtifactKind::DataView, &view, &view.clone()).unchecked);
     }
 
     /// 保存ビューのテーブルが変われば、読むテーブルが入れ替わる。スキルの参照するフォルダーと参考資料も同じ定義で言う。

@@ -254,6 +254,41 @@ async fn workflow_changes(e: &Env, tenant: &str) {
     assert_eq!(broken[0].latest_version, Some(2));
     assert!(broken[0].changes.is_empty());
     assert!(broken[0].diff_unknown);
+    assert!(
+        !wf_updates[0].unchecked_blocks,
+        "v2 には確かめられないブロックが無い"
+    );
+
+    // 新しい版に前もって確かめられないブロック（ドライブのトップへの保存）があれば印を付ける（GAP-82）。要る権限の
+    // 増減が無くても、要る権限が変わらないとは言わせない。
+    let mut v3 = artifacts
+        .get_version(&alice, wf, 2, None)
+        .await
+        .expect("v2 body")
+        .body;
+    v3["declared_scopes"] = json!(["data.read", "data.write", "storage.write"]);
+    v3["nodes"]
+        .as_array_mut()
+        .expect("nodes")
+        .push(json!({ "id": "top", "type": "storage.write", "params": { "name": "控え.txt", "content": "x" } }));
+    artifacts
+        .append_version(&alice, wf, v3, Some(2), None)
+        .await
+        .expect("workflow v3");
+    let flagged = apps
+        .pin_updates(&alice, ArtifactKind::Workflow, &[pin(wf, 2)], &names, None)
+        .await
+        .expect("flagged");
+    assert_eq!(flagged[0].latest_version, Some(3));
+    assert!(
+        flagged[0].changes.iter().all(|d| !matches!(
+            d,
+            PinDiff::AccessAdded { .. } | PinDiff::AccessRemoved { .. }
+        )),
+        "{:?}",
+        flagged[0].changes
+    );
+    assert!(flagged[0].unchecked_blocks);
 
     // 読めない人には、最新の版も差も返さない。種類の違う部品も読めないと同じ扱い。
     let hidden_wf = apps
