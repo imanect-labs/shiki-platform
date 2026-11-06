@@ -21,6 +21,8 @@ import {
 /// - 失敗を「エラー時」の出口で扱うブロックの権限が無くても、ボタンと「いま実行する」は止めず、作った人が用意した
 ///   誤りの返答で終わる（7g の前と同じ）。
 /// - 範囲が狭いだけの部品（追加だけの共有で読むワークフロー）では、画面に戻っても確かめ直さない（止めているものが無い）。
+/// - 持ち主の「いま実行する」は、持ち主かを確かめの答えと一緒に受け、別の問い合わせに失敗しても、作成した人に頼めとは
+///   言わない（BUG-230）。
 /// - 毎回動く繰り返しの中で 1 件ずつテーブルに足すワークフローは、追加の権限が無い使う人のボタンを押す前に止め、作る人
 ///   には「場合によって要る」を付けずに言う。共有されれば押したときに確かめ直して動く（GAP-97）。
 /// PC（1440px）とスマホ（390px）で確かめる。作ったもの（アプリ・ワークフロー・ビュー・テーブル）は最後に消す。
@@ -512,6 +514,47 @@ test.describe("使う人の権限の確かめの続き（BUG-216・BUG-217・GAP
         () => bob.context().close(),
       );
     }
+  });
+
+  test("持ち主の「いま実行する」は、持ち主かの問い合わせに失敗しても、作成した人に頼めとは言わない（BUG-230）", async ({
+    page,
+  }) => {
+    test.setTimeout(120_000);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await loginViaKeycloak(page);
+    // 持ち主が書き先のテーブルを消した（持ち主にも足りない権限がある）ワークフロー。
+    const claims = await createTable(page, uniqueName("e2e-申請"));
+    const flow = uniqueName("owner-run-access");
+    const flowId = await createFlow(page, {
+      ir_version: 1,
+      name: flow,
+      display_name: flow,
+      declared_scopes: ["data.write"],
+      triggers: [{ kind: "interactive" }],
+      nodes: [
+        {
+          id: "add",
+          type: "data.record.create",
+          label: "申請に足す",
+          params: { table: claims.id, data: { [claims.titleKey]: "出張" } },
+        },
+      ],
+      edges: [],
+    });
+    await deleteTableApi(page, claims.id);
+    // 画面が別に問う持ち主の答え（ワークフローの情報）が届かない。確かめの答えだけで、頼む先を言い分ける。
+    await page.route(`**/api/artifacts/${flowId}`, (route) =>
+      route.request().method() === "GET" ? route.fulfill({ status: 503, body: "" }) : route.fallback(),
+    );
+    await page.goto(`/workflows/${flowId}`);
+    await page.getByRole("button", { name: "実行", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "いま実行する" });
+    await expect(dialog.getByTestId("run-now-access")).toHaveText(
+      "このワークフローが使うテーブルが見つからないか、レコードを追加する権限がありません。テーブルの持ち主に共有を頼むか、ブロックの設定で選び直してください。共有してもらった後は、そのまま実行できます。",
+      { timeout: 20_000 },
+    );
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/run-access-owner-pc.png` });
+    await dialog.getByRole("button", { name: "閉じる" }).click();
   });
 
   test("失敗を「エラー時」の出口で扱うブロックの権限では、ボタンも「いま実行する」も止めず、作った人の返答で終わる", async ({

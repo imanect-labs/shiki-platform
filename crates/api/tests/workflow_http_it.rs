@@ -1870,6 +1870,19 @@ async fn manual_run_takes_trial_scheduled_at() {
     }
 }
 
+/// BUG-230: 「いま実行する」の自分の確かめ（GET /workflows/{id}/access）は、確かめた人がワークフローの持ち主かを添える
+/// （画面は答えと一緒に頼む先を言い分け、持ち主かを別の問い合わせで待たない）。
+#[tokio::test]
+async fn my_workflow_access_tells_the_owner() {
+    let Some(env) = setup().await else { return };
+    let id = create_amount_flow(&env, "my-access-owner").await;
+    let (st, body) = req(&env, "GET", &format!("/workflows/{id}/access"), None).await;
+    delete_flow_and_runs(&env, &id).await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(body["owner"], true, "{body}");
+    assert_eq!(body["items"], json!([]), "{body}");
+}
+
 /// GAP-67: 自動実行の起動を見送り続けているワークフローの登録の口（GET registration）は、理由・直し方・見送った版・
 /// 回数・時刻を返す。オフにすると返さない（null）。理由の文は作成者向けで、内部の理由の文を出さない。
 #[tokio::test]

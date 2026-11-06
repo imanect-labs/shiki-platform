@@ -479,15 +479,18 @@ impl AccessChecker<'_> {
     }
 
     /// 共有されたワークフローを手動で実行する人の確かめ: 自分に足りない権限（アプリのボタンと同じ決まり・GAP-37）。
+    /// `owner` は確かめた人がワークフローの持ち主か（呼ぶ側がワークフローの持ち主から決め、答えに添える・BUG-230）。
     pub async fn mine_workflow(
         &self,
         ctx: &AuthContext,
         version: i64,
+        owner: bool,
         needs: &PartNeeds,
     ) -> Result<MyWorkflowAccess, GuiError> {
         let (mut per_part, truncated) = self.my_items(ctx, std::slice::from_ref(needs)).await?;
         Ok(MyWorkflowAccess {
             version,
+            owner,
             items: per_part.pop().unwrap_or_default(),
             truncated,
         })

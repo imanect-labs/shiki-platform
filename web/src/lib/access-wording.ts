@@ -156,8 +156,9 @@ function myItem(i: MyAccessItem, where: string): string {
 
 /// ワークフローを手動で実行する人に、実行できない理由を言う（アプリのボタンと同じ決まり・GAP-37）。足りていれば null。
 /// 頼む先は、押した人がワークフローの持ち主かで分ける（付録 C の P4）: 持ち主でなければワークフローを作成した人、
-/// 持ち主なら、対象の持ち主に共有を頼むか、ブロックの設定で選び直す。
-export function myRunBlockedReason(items: readonly MyAccessItem[], viewerIsOwner = false): string | null {
+/// 持ち主なら、対象の持ち主に共有を頼むか、ブロックの設定で選び直す。持ち主かは、確かめの答え（`owner`）と一緒に
+/// サーバーが言う（画面が別に問い合わせた持ち主の答えを待たない・BUG-230）。
+export function myRunBlockedReason(items: readonly MyAccessItem[], viewerIsOwner: boolean): string | null {
   const missing = items.filter((i) => i.status === "missing");
   if (missing.length === 0) return null;
   const first = myItem(missing[0], "このワークフローが使う");

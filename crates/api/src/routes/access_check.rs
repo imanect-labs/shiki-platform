@@ -259,8 +259,10 @@ pub async fn my_workflow_access(
         .get_version(&ctx, id, meta.current_version, trace)
         .await
         .map_err(super::workflows::save::map_store_err)?;
+    // 持ち主かは確かめの答えに添える（画面が別の問い合わせの答えを待たずに、頼む先を言い分ける・BUG-230）。
+    let owner = meta.owner == ctx.principal.id;
     let mine = checker(&state)
-        .mine_workflow(&ctx, version, &gui::workflow_needs(&ir))
+        .mine_workflow(&ctx, version, owner, &gui::workflow_needs(&ir))
         .await
         .map_err(map_gui_err)?;
     Ok(Json(mine))

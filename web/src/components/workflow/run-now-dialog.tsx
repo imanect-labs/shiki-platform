@@ -17,6 +17,7 @@
 /// - 開いたときに、実行するのに自分に足りない権限を確かめ（`GET /workflows/{id}/access`・アプリのボタンと同じ決まり・
 ///   GAP-37）、足りなければ理由を出す。押したときに確かめ直し、まだ足りなければ送らない（共有してもらっていれば、
 ///   開き直さずに実行できる・BUG-217 と同じ考え方）。確かめられなかったときは止めない（サーバーが本人の権限で確かめる）。
+///   頼む先は、確かめの答えに添えられた「持ち主か」で言い分ける（答えが届く前は理由を出さない・BUG-230）。
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
@@ -207,7 +208,6 @@ export function RunNowDialog({
   workflowId,
   ir,
   version,
-  owner = false,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -215,8 +215,6 @@ export function RunNowDialog({
   ir: WorkflowIr;
   /// フォームの元になった保存済みバージョン（実行前に最新と一致することを確認する）。
   version: number;
-  /// 開いた人がワークフローの持ち主か（足りない権限を頼む先を言い分ける）。
-  owner?: boolean;
 }) {
   const router = useRouter();
   const props = schemaFields(ir);
@@ -238,9 +236,10 @@ export function RunNowDialog({
   const [failure, setFailure] = React.useState<{ message: string; lines: string[] } | null>(null);
   /// ブロックの名前（名前を付けていなければカタログのブロック名。ブロックの ID は出さない・付録 C の P1）。
   const labels = React.useMemo(() => new Map(ir.nodes.map((n) => [n.id, blockDisplayName(n)])), [ir.nodes]);
-  /// 実行するのに自分に足りない権限（開いたときに確かめる・読めなかったときは null で止めない）。
+  /// 実行するのに自分に足りない権限（開いたときに確かめる・読めなかったときは null で止めない）。頼む先は、答えに
+  /// 添えられた持ち主かで言い分ける（別の問い合わせの答えを待たない・BUG-230）。
   const [access, setAccess] = React.useState<MyWorkflowAccess | null>(null);
-  const blockedReason = access ? myRunBlockedReason(access.items, owner) : null;
+  const blockedReason = access ? myRunBlockedReason(access.items, access.owner) : null;
 
   React.useEffect(() => {
     if (!open) return;
@@ -302,7 +301,7 @@ export function RunNowDialog({
       if (blockedReason) {
         const fresh = await getMyWorkflowAccess(workflowId).catch(() => null);
         if (fresh) setAccess(fresh);
-        const still = fresh ? myRunBlockedReason(fresh.items, owner) : null;
+        const still = fresh ? myRunBlockedReason(fresh.items, fresh.owner) : null;
         if (still) {
           // 理由はすぐ下の注意に出ているので、ここではまだ足りないことだけを言う。
           setFailure({ message: "足りない権限が、まだ共有されていません。", lines: [] });

@@ -451,7 +451,8 @@ async fn unavailable_parts_and_shared_workflows() {
         assert_eq!(report.needs[0].part, None);
         assert_eq!(report.subjects.unwrap()[0].statuses, vec![AccessStatus::Missing]);
         // 実行する人（bob）自身の確かめ: アプリのボタンと同じ決まりで、見えないテーブルは名前を出さない。
-        let mine = e.checker().mine_workflow(&bob, 1, &parts[0]).await.unwrap();
+        let mine = e.checker().mine_workflow(&bob, 1, false, &parts[0]).await.unwrap();
+        assert!(!mine.owner, "持ち主かは呼ぶ側が決めた値のまま返す");
         let items: Vec<(AccessKind, AccessStatus, Option<&str>)> =
             mine.items.iter().map(|i| (i.need, i.status, i.name.as_deref())).collect();
         assert_eq!(items, vec![(AccessKind::Add, AccessStatus::Missing, None)]);
@@ -461,7 +462,7 @@ async fn unavailable_parts_and_shared_workflows() {
             .unwrap();
         let report = e.checker().report(&alice, 1, &parts, Some(&subjects.0)).await.unwrap();
         assert_eq!(report.subjects.unwrap()[0].statuses, vec![AccessStatus::Ok]);
-        assert!(e.checker().mine_workflow(&bob, 1, &parts[0]).await.unwrap().items.is_empty());
+        assert!(e.checker().mine_workflow(&bob, 1, false, &parts[0]).await.unwrap().items.is_empty());
     })
     .await;
 }
