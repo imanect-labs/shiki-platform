@@ -117,14 +117,17 @@ impl EventSink for TestSink {
     }
 }
 
-/// どの要求にも `body` を SSE で返す送り先（接続ごとに 1 応答・`connection: close`）。
-async fn spawn_sse(body: String) -> String {
+/// どの要求にも `body` を SSE で返す送り先（接続ごとに 1 応答・`connection: close`）。受けた要求の数も返す。
+async fn spawn_sse(body: String) -> (String, Arc<AtomicUsize>) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
+    let requests = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&requests);
     tokio::spawn(async move {
         while let Ok((mut sock, _)) = listener.accept().await {
             let body = body.clone();
+            let counted = Arc::clone(&counted);
             tokio::spawn(async move {
                 // 要求をヘッダと content-length の本文まで読み切ってから答える。
                 let mut buf = Vec::new();
@@ -148,6 +151,7 @@ async fn spawn_sse(body: String) -> String {
                         break;
                     }
                 }
+                counted.fetch_add(1, Ordering::SeqCst);
                 let reply = format!(
                     "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
                     body.len()
@@ -157,7 +161,7 @@ async fn spawn_sse(body: String) -> String {
             });
         }
     });
-    format!("http://{addr}")
+    (format!("http://{addr}"), requests)
 }
 
 fn gateway(pool: PgPool, kind: ProviderKind, base: String) -> LlmGateway {
@@ -227,6 +231,16 @@ fn broken_calls(kind: ProviderKind, at_limit: bool) -> String {
         .collect()
 }
 
+/// 1 回の run_agent の結果（ツールの呼ばれた回数・止まり方・イベント・送り先が受けた要求の数・止まったときの履歴）。
+struct Ran {
+    reads: usize,
+    writes: usize,
+    out: Result<AgentStop, AgentError>,
+    events: Vec<AgentEvent>,
+    requests: usize,
+    messages: Vec<LlmMessage>,
+}
+
 /// 1 回の run_agent（ツールの呼ばれた回数と結果）。
 async fn run(
     pool: &PgPool,
@@ -234,7 +248,26 @@ async fn run(
     kind: ProviderKind,
     at_limit: bool,
 ) -> (usize, usize, Result<AgentStop, AgentError>, Vec<AgentEvent>) {
-    let base = spawn_sse(broken_calls(kind, at_limit)).await;
+    let r = run_with(
+        pool,
+        tenant,
+        kind,
+        at_limit,
+        vec![LlmMessage::text(LlmRole::User, "一覧を出して a1 を消して")],
+    )
+    .await;
+    (r.reads, r.writes, r.out, r.events)
+}
+
+/// 履歴 `history` から 1 回の run_agent を動かす。
+async fn run_with(
+    pool: &PgPool,
+    tenant: &str,
+    kind: ProviderKind,
+    at_limit: bool,
+    history: Vec<LlmMessage>,
+) -> Ran {
+    let (base, requests) = spawn_sse(broken_calls(kind, at_limit)).await;
     let gw = gateway(pool.clone(), kind, base);
     let reads = Arc::new(AtomicUsize::new(0));
     let writes = Arc::new(AtomicUsize::new(0));
@@ -257,7 +290,7 @@ async fn run(
     let out = run_agent(
         &gw,
         &tools,
-        vec![LlmMessage::text(LlmRole::User, "一覧を出して a1 を消して")],
+        history,
         &RunContext {
             ctx: &c,
             idempotency_prefix: format!("run-{}:0", uuid::Uuid::new_v4()),
@@ -271,14 +304,19 @@ async fn run(
         None,
         &mut sink,
     )
-    .await
-    .map(|o| o.stop);
-    (
-        reads.load(Ordering::SeqCst),
-        writes.load(Ordering::SeqCst),
-        out,
-        sink.0,
-    )
+    .await;
+    let messages = out
+        .as_ref()
+        .map(|o| o.checkpoint.messages.clone())
+        .unwrap_or_default();
+    Ran {
+        reads: reads.load(Ordering::SeqCst),
+        writes: writes.load(Ordering::SeqCst),
+        out: out.map(|o| o.stop),
+        events: sink.0,
+        requests: requests.load(Ordering::SeqCst),
+        messages,
+    }
 }
 
 /// 引数の JSON が読めない呼び出しは、3 つのアダプタのどれでもツールを動かさない（BUG-225）。応答が出力の上限で
@@ -319,4 +357,57 @@ async fn unreadable_tool_arguments_never_reach_a_tool() {
         .execute(&pool)
         .await
         .unwrap();
+}
+
+/// 前の手順にツールの結果がある形でも、出力の上限で切れた書きかけの呼び出しは、空の応答として催促せず、空の
+/// assistant も履歴に積まずに打ち切りで止まる（もう一度生成させない・BUG-225 の後の空の応答の催促）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_call_cut_by_the_output_limit_after_a_tool_result_stops_without_a_nudge() {
+    use llm_gateway::Block;
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let history = vec![
+        LlmMessage::text(LlmRole::User, "一覧を出して a1 を消して"),
+        LlmMessage {
+            role: LlmRole::Assistant,
+            content: vec![Block::ToolUse {
+                id: "c0".into(),
+                name: "list_items".into(),
+                input: serde_json::json!({}),
+            }],
+        },
+        LlmMessage {
+            role: LlmRole::Tool,
+            content: vec![Block::tool_result("c0", "a1・a2", false)],
+        },
+    ];
+    let mut ran = Vec::new();
+    for kind in [
+        ProviderKind::Openai,
+        ProviderKind::Anthropic,
+        ProviderKind::OpenaiResponses,
+    ] {
+        ran.push((
+            kind,
+            run_with(&pool, &tenant, kind, true, history.clone()).await,
+        ));
+    }
+    // 生成の会計の行を片付けてから確かめる（落ちても行を残さない）。
+    sqlx::query("DELETE FROM llm_usage WHERE tenant_id = $1")
+        .bind(&tenant)
+        .execute(&pool)
+        .await
+        .unwrap();
+    for (kind, r) in ran {
+        assert_eq!((r.reads, r.writes), (0, 0), "{kind:?}: {:?}", r.out);
+        assert_eq!(r.out.as_ref().ok(), Some(&AgentStop::Truncated), "{kind:?}");
+        assert_eq!(
+            r.requests, 1,
+            "{kind:?}: 空の応答として催促し、もう一度生成させた"
+        );
+        assert_eq!(
+            r.messages, history,
+            "{kind:?}: 催促の文か空の assistant を履歴に積んだ"
+        );
+    }
 }

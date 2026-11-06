@@ -520,8 +520,17 @@ async fn run_step(
     // 返すプロバイダが実在する（実測: 委譲の子が 8 体中 3 体、本文ゼロで「正常終了」した）。
     // そのまま畳むと成果物が消えるので、**1 度だけ**書き直させる。空の assistant メッセージは
     // 積まない（content が空のメッセージを拒否するプロバイダがある）。
-    if text_acc.is_empty() && calls.is_empty() && nudge_empty_response(&mut state.messages) {
-        return Ok(StepOutcome::Continue);
+    //
+    // ただし出力の上限で切れた応答は催促しない。書きかけのツール呼び出しは渡されない（BUG-225）ので本文も
+    // 呼び出しも無く見えるが、空で返したのではない。「本文として書いて」と促すと誤った指示になり、同じ大きさの
+    // 呼び出しでまた切れる。空の assistant も積まずに打ち切りで止める。
+    if text_acc.is_empty() && calls.is_empty() {
+        if final_stop == StopReason::MaxTokens {
+            return Ok(StepOutcome::Stop(AgentStop::Truncated));
+        }
+        if nudge_empty_response(&mut state.messages) {
+            return Ok(StepOutcome::Continue);
+        }
     }
 
     // assistant メッセージを履歴へ（届いた順のまま）。
