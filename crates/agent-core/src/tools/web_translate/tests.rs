@@ -438,7 +438,9 @@ async fn a_soft_failure_on_the_last_attempt_keeps_the_translation() {
 /// 小さい窓のモデルでは、出力上限を「窓 − 入力の見積もり」で切る（入力＋出力が窓を超えない）。
 #[tokio::test]
 async fn max_tokens_fit_in_a_small_context_window() {
-    struct Small(Mutex<Vec<u32>>);
+    /// 窓 6,000 トークン（用語集は本文の先頭 6,000 字を入力に取るので、出力上限を大きく切られる）。
+    const WINDOW: usize = 6_000;
+    struct Small(Mutex<Vec<usize>>);
     #[async_trait::async_trait]
     impl Backend for Small {
         async fn generate(
@@ -448,7 +450,12 @@ async fn max_tokens_fit_in_a_small_context_window() {
             _key: String,
             _trace_id: Option<&str>,
         ) -> Result<Reply, LlmError> {
-            self.0.lock().unwrap().push(req.max_tokens.unwrap_or(0));
+            let input = prompt::estimate_tokens(req.system.as_deref().unwrap_or(""))
+                + prompt::estimate_tokens(&user_text(&req));
+            self.0
+                .lock()
+                .unwrap()
+                .push(input + req.max_tokens.unwrap_or(0) as usize);
             let text = if is_glossary(&req) {
                 "{}".to_string()
             } else {
@@ -462,18 +469,25 @@ async fn max_tokens_fit_in_a_small_context_window() {
             })
         }
         fn context_window(&self, _model: Option<&str>) -> Option<u32> {
-            Some(12_000)
+            Some(WINDOW as u32)
         }
     }
-    let (addr, _) = stub_server(page_response(PAGE)).await;
+    // 本文の先頭が長く、用語集の入力だけで窓を使い切るページ。
+    let long = format!(
+        "<html><body><article><h1>Long</h1><p>{}</p>{}</article></body></html>",
+        "Some words in a long introduction. ".repeat(300),
+        PAGE
+    );
+    let (addr, _) = stub_server(page_response(&long)).await;
     let backend = Arc::new(Small(Mutex::new(Vec::new())));
     let mut t = tool(addr, translator());
     t.backend = backend.clone();
     let out = run(&t, addr.port()).await;
     assert!(!out.is_error, "{}", out.content);
     let seen = backend.0.lock().unwrap().clone();
-    assert!(!seen.is_empty());
-    assert!(seen.iter().all(|m| *m < 12_000), "{seen:?}");
+    assert!(!seen.is_empty(), "チャンクの翻訳は呼ばれる");
+    // 入力の見積もり＋出力上限が窓を超える要求を 1 回も出さない（収まらない用語集は呼ばない）。
+    assert!(seen.iter().all(|total| *total <= WINDOW), "{seen:?}");
 }
 
 #[test]

@@ -249,11 +249,16 @@ impl WebTranslateTool {
         key: String,
     ) -> Result<Generated, LlmError> {
         // 出力の上限は、コンテキストから入力の見積もりを引いた残りを超えない（小さい窓のモデルで
-        // 「入力＋出力上限が窓を超える」と拒否されないように）。
+        // 「入力＋出力上限が窓を超える」と拒否されないように）。残りが訳文を書き切れないほど狭ければ
+        // 呼び出さない（下限で残りを超える要求を出さない。用語集なら用語集なしで続ける）。
         let room = self
             .context_window()
-            .saturating_sub(prompt::estimate_tokens(&system) + prompt::estimate_tokens(&user))
-            .max(MIN_OUTPUT_TOKENS);
+            .saturating_sub(prompt::estimate_tokens(&system) + prompt::estimate_tokens(&user));
+        if room < MIN_OUTPUT_TOKENS {
+            return Err(LlmError::Config(
+                "入力がモデルのコンテキストに収まらないため呼び出しません".into(),
+            ));
+        }
         let max_tokens = max_tokens.min(u32::try_from(room).unwrap_or(u32::MAX));
         let mut req = GenerateRequest::new(vec![Message::text(Role::User, user)]);
         req.model.clone_from(&self.model);
