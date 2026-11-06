@@ -165,6 +165,34 @@ pub fn check_secret_header(name: &str) -> Result<(), HeaderRefused> {
     check_secret_header_on(HeaderSurface::Script, name)
 }
 
+/// 鍵を入れることの多いヘッダーの名前に含まれる語（小文字・[`looks_like_key_header`]）。
+pub const KEY_HEADER_WORDS: &[&str] = &[
+    "authorization",
+    "api-key",
+    "api_key",
+    "apikey",
+    "token",
+    "secret",
+    "password",
+    "passwd",
+    "credential",
+    "cookie",
+    "session",
+    "x-auth",
+];
+
+/// API キー・トークンなどの鍵を入れることの多いヘッダーの名前か（名前に [`KEY_HEADER_WORDS`] のどれかを含む・
+/// 大文字と小文字は区別しない）。
+///
+/// 「外部 API 呼び出し」の「ヘッダー」に、この名前で値をそのまま書くと、保存は止めずに注意を返す
+/// （`ir.plain_key_header`・GAP-19）。書いた値は IR と版の履歴に残り、ワークフローを見られる人に見え、応答に映り
+/// 返っても隠さない（隠すのはシークレットの値だけ）。
+#[must_use]
+pub fn looks_like_key_header(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    KEY_HEADER_WORDS.iter().any(|w| name.contains(w))
+}
+
 /// シークレットを付けるヘッダーの名前（`secret.attach.header`）を確かめる（名前の形と、Shiki が決めるヘッダー・BUG-184）。
 pub fn check_secret_header_on(surface: HeaderSurface, name: &str) -> Result<(), HeaderRefused> {
     if !is_token(name) {

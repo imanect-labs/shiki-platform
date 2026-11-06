@@ -14,9 +14,11 @@ pub use data_keys::{ADD_NOT_NUMBER, MATCH_NOT_UNIQUE};
 mod decide;
 pub use decide::{DECIDE_LOW_CONFIDENCE, DECIDE_MANY_PORTS, DECIDE_UNPINNED_MODEL};
 mod exists;
+mod http_keys;
 pub use exists::{
     referenced_files, referenced_folders, referenced_tables, UNKNOWN_FILE, UNKNOWN_FOLDER,
 };
+pub use http_keys::PLAIN_KEY_HEADER;
 mod input_refs;
 pub use input_refs::UNKNOWN_INPUT;
 mod llm;
@@ -184,7 +186,8 @@ pub struct Catalog {
 /// FEAT-1）と、線が 1 本も無いブロック（[`UNCONNECTED_NODE`]・実行の始めに動く・BUG-106）と、必須の文字の欄が空のもの
 /// （[`REQUIRED_TEXT_EMPTY`]・有効化と実行の前には止める・D-43）と、中にブロックの無い繰り返し（[`EMPTY_REGION`]・
 /// 有効化と実行の前には止める・D-85）と、値を書く欄の中身の無い入れ物（[`EMPTY_VALUES`]・何も止めない）と、
-/// 入力項目に無い項目を指す入力の参照（[`UNKNOWN_INPUT`]・GAP-35）。
+/// 入力項目に無い項目を指す入力の参照（[`UNKNOWN_INPUT`]・GAP-35）と、「外部 API 呼び出し」の鍵を入れることの多い
+/// 名前のヘッダーにそのまま書いた値（[`PLAIN_KEY_HEADER`]・GAP-19）。
 /// 出しうるコードは [`SAVE_WARNING_CODES`] に載せる（web はその表から生成した定数で受ける・BUG-48）。
 #[must_use]
 pub fn save_warnings(ir: &WorkflowIr, catalog: &Catalog) -> Vec<ValidationError> {
@@ -201,6 +204,7 @@ pub fn save_warnings(ir: &WorkflowIr, catalog: &Catalog) -> Vec<ValidationError>
     out.extend(decide::warnings(ir));
     out.extend(v2_graph::warnings(ir));
     out.extend(input_refs::warnings(ir));
+    out.extend(http_keys::warnings(ir));
     // 表に無い警告は web の定数に出ない（警告を足したら表にも足す・テストのどの経路で起きても止める）。
     debug_assert!(
         out.iter()

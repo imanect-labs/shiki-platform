@@ -144,8 +144,12 @@ function RunTimeoutSuggestion({ ctx }: { ctx: EditorContext }) {
 const SHEET_BOTTOM_SPACE = "pb-20";
 
 /// 欄の下に出す保存時の警告のコード（注意の帯には出さない・生成した定数で引く）。書いた思考の深さが組織の設定に
-/// 従うので使われない（D-75）。必須の文字の欄の空（`REQUIRED_TEXT_EMPTY`）は「入力してください」として別に扱う。
-const FIELD_WARNING_CODES: ReadonlySet<string> = new Set([WARNING_CODES.EFFORT_IGNORED]);
+/// 従うので使われない（D-75）。鍵の名前のヘッダーに値をそのまま書いた（GAP-19）。必須の文字の欄の空
+/// （`REQUIRED_TEXT_EMPTY`）は「入力してください」として別に扱う。
+const FIELD_WARNING_CODES: ReadonlySet<string> = new Set([
+  WARNING_CODES.EFFORT_IGNORED,
+  WARNING_CODES.PLAIN_KEY_HEADER,
+]);
 
 /// 置いたときに空の文字で入れてある必須の欄（`defaultParams` の `""`）のうち、まだ空のもの。
 /// 保存は通るが中身の無い指示で動いてしまうので、欄の下で入力を促す（BUG-15）。

@@ -44,14 +44,17 @@ const HEADER_NOUNS: ComposeNouns = {
 
 /// 「ヘッダー」の欄（名前と値の組・値は差し込める・GAP-19）。決まり（書けないヘッダー・上限）は保存時にサーバが
 /// 確かめ、誤りは欄の下に出す（nodes/http_headers.rs が正。画面では決まりを写さない）。
-function HttpHeadersField({ node, dispatch, refCandidates, inMapRegion, fieldErrors }: FormProps) {
+function HttpHeadersField({ node, dispatch, refCandidates, inMapRegion, fieldErrors, fieldWarnings }: FormProps) {
   const p = paramsOf<NodeParamsByType["http.request"]>(node);
   return (
     <div className="space-y-1">
+      {/* 鍵の名前のヘッダーに値をそのまま書いた注意（ir.plain_key_header・GAP-19）は、注記の代わりに欄の下に出す。
+          決まりはサーバー（nodes/http_headers.rs の looks_like_key_header）。 */}
       <Field
         label="ヘッダー（省略可）"
-        hint="書いたヘッダーを付けて送ります。値には、入力や前のブロックの結果を差し込めます。"
+        hint="書いたヘッダーを付けて送ります。値には、入力や前のブロックの結果を差し込めます。ここに書いた値はワークフローを見られる人に見えるので、API キーなどの鍵はシークレットで付けてください。"
         error={fieldErrors.get("headers")}
+        warning={fieldWarnings?.get("headers")}
       >
         <ObjectComposer
           value={p.headers as ValueExpr | undefined}
@@ -91,7 +94,7 @@ function HttpHeadersField({ node, dispatch, refCandidates, inMapRegion, fieldErr
         {/* 値は IR（バージョン履歴を含む）にそのまま残り、ワークフローを見られる人に見える。応答に映り返っても隠さない
             （隠すのはシークレットの値だけ）。 */}
         <p>
-          API キーなどの鍵は、ここに書かずにシークレットに入れて、「使用するシークレット」で付けてください。ここに書いた値は、このワークフローを見られる人に見えます。
+          ここに書いた値は版の履歴にも残り、送り先の応答に同じ文字が返っても隠しません（隠すのは、「使用するシークレット」で付けた値だけです）。鍵はシークレットに入れて、「使用するシークレット」で付けてください。
         </p>
       </MoreInfo>
     </div>

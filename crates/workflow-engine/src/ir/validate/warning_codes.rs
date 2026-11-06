@@ -7,9 +7,9 @@
 use super::{
     APPROVAL_TIMEOUTS_EXCEED_RUN, DECIDE_LOW_CONFIDENCE, DECIDE_MANY_PORTS, DECIDE_UNPINNED_MODEL,
     EFFORT_IGNORED, EMPTY_REGION, EMPTY_VALUES, OUTPUT_SCHEMA_FEW_TOKENS,
-    OVERLAPPING_DATA_TRIGGERS, REPLY_WITHOUT_INTERACTIVE, REQUIRED_TEXT_EMPTY, SEMANTICS_CHANGED,
-    TEMPLATE_ESCAPED_VAR, TEMPLATE_UNCLOSED_BRACE, UNCONNECTED_NODE, UNKNOWN_INPUT,
-    WAIT_FILTER_ALIAS,
+    OVERLAPPING_DATA_TRIGGERS, PLAIN_KEY_HEADER, REPLY_WITHOUT_INTERACTIVE, REQUIRED_TEXT_EMPTY,
+    SEMANTICS_CHANGED, TEMPLATE_ESCAPED_VAR, TEMPLATE_UNCLOSED_BRACE, UNCONNECTED_NODE,
+    UNKNOWN_INPUT, WAIT_FILTER_ALIAS,
 };
 
 /// 定数の名前と値の組の表を作る（名前は Rust の定数の名前をそのまま使い、別の綴りを持たない）。
@@ -38,6 +38,7 @@ pub const SAVE_WARNING_CODES: &[(&str, &str)] = named![
     DECIDE_UNPINNED_MODEL,
     UNCONNECTED_NODE,
     UNKNOWN_INPUT,
+    PLAIN_KEY_HEADER,
 ];
 
 #[cfg(test)]
@@ -250,6 +251,16 @@ mod tests {
                         { "id": "a", "type": "storage.read", "params": {} },
                         { "id": "dropped", "type": "storage.read", "params": {} }
                     ]),
+                    json!([]),
+                ),
+            ),
+            (
+                PLAIN_KEY_HEADER,
+                ir(
+                    interactive(),
+                    json!([{ "id": "call", "type": "http.request", "params": {
+                        "url": "https://api.example.com",
+                        "headers": { "Authorization": "Bearer sk-1" } } }]),
                     json!([]),
                 ),
             ),

@@ -7,6 +7,8 @@ import { cleanupAll, loginViaKeycloak, removeWorkflowApi, uniqueName } from "./h
 /// - Shiki が決めるヘッダー（Host）を書くと、保存の前の確かめで欄の下に理由が出る（サーバーの決まり・nodes/http_headers.rs）。
 /// - シークレットを付けるヘッダーの名前に Host を書くと、使うシークレットの欄の下に理由が出る（BUG-184）。
 /// - スマホ幅のシートでも、ヘッダーの行が横にはみ出さない。
+/// - Authorization など鍵の名前のヘッダーに値をそのまま書くと、保存は止めずに欄の下で知らせる（値は映し返さない・
+///   ir.plain_key_header）。
 /// 送ったヘッダーが相手に届くこと・送ってはいけないヘッダーを実行で断ることは、Rust の結合テスト
 /// （workflow_nodes_it の http_request_node_sends_author_headers_through_the_production_port）と
 /// executor_it で確かめる（e2e は外部へ送らない）。
@@ -74,7 +76,13 @@ test("外部 API 呼び出し: ヘッダーを名前と値で足し、書けな�
     await expect(panel.getByText(/20 個まで、値は 1 つ 4 KB まで、名前と値を合わせて 8 KB までです。/)).toBeVisible();
     await expect(
       panel.getByText(
-        "API キーなどの鍵は、ここに書かずにシークレットに入れて、「使用するシークレット」で付けてください。ここに書いた値は、このワークフローを見られる人に見えます。",
+        "書いたヘッダーを付けて送ります。値には、入力や前のブロックの結果を差し込めます。ここに書いた値はワークフローを見られる人に見えるので、API キーなどの鍵はシークレットで付けてください。",
+        { exact: true },
+      ),
+    ).toBeVisible();
+    await expect(
+      panel.getByText(
+        "ここに書いた値は版の履歴にも残り、送り先の応答に同じ文字が返っても隠しません（隠すのは、「使用するシークレット」で付けた値だけです）。鍵はシークレットに入れて、「使用するシークレット」で付けてください。",
         { exact: true },
       ),
     ).toBeVisible();
@@ -148,6 +156,112 @@ test("外部 API 呼び出し: ヘッダーを名前と値で足し、書けな�
       await nameBox.evaluate((el) => el.scrollIntoView({ block: "center" }));
       expect(await sheet.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
       if (SHOTS) await phone.screenshot({ path: `${SHOTS}/http-headers-phone.png` });
+    } finally {
+      await phoneCtx.close();
+    }
+  } finally {
+    await cleanupAll(async () => {
+      if (id) await removeWorkflowApi(page, id);
+    });
+  }
+});
+
+const KEY_WARNING =
+  "ヘッダー「Authorization」に、値をそのまま書いています。この値は、ワークフローを見られる人に見え、版の履歴にも残ります。API キーなどの鍵は、シークレットに入れて「使用するシークレット」で付けてください。";
+
+test("外部 API 呼び出し: 鍵の名前のヘッダーに値をそのまま書くと、保存は止めずに欄の下で知らせる（GAP-19）", async ({
+  browser,
+  page,
+}) => {
+  test.setTimeout(180_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await loginViaKeycloak(page);
+  page.on("dialog", (d) => void d.accept());
+  let id = "";
+  try {
+    const name = uniqueName("http-key-header");
+    const created = await page.request.post("/api/workflows", {
+      headers: await csrfHeaders(page),
+      data: {
+        ir: {
+          ir_version: 1,
+          name,
+          display_name: name,
+          triggers: [{ kind: "interactive" }],
+          nodes: [
+            {
+              id: "hook",
+              type: "http.request",
+              label: "受付を知らせる",
+              params: { method: "POST", url: "https://hooks.example.com/notify", fail_on_error_status: true },
+            },
+          ],
+          edges: [],
+        },
+      },
+    });
+    expect(created.ok(), await created.text()).toBeTruthy();
+    id = ((await created.json()) as { id: string }).id;
+
+    await page.goto(`/workflows/${id}`);
+    await page.getByTestId("rf__node-hook").click();
+    const panel = page.getByRole("complementary", { name: "ブロックの設定" });
+    await panel.getByRole("button", { name: "ヘッダーを追加" }).click();
+    const row = panel.getByTestId("compose-row").nth(0);
+    await row.getByRole("textbox", { name: "ヘッダーの名前" }).fill("Authorization");
+    const warned = nextValidation(page, (body) => body.includes("sk-e2e-0123456789"));
+    await row.getByRole("textbox", { name: "「Authorization」の値" }).fill("Bearer sk-e2e-0123456789");
+    const body = (await (await warned).json()) as { warnings: { code: string; message: string }[] };
+    const warning = body.warnings.find((w) => w.code === "ir.plain_key_header");
+    expect(warning?.message).toBe(KEY_WARNING);
+    expect(JSON.stringify(body.warnings)).not.toContain("sk-e2e");
+    // 欄の下に出し（注記の代わり）、注意の帯には出さない。
+    const fieldWarning = panel.locator("[data-field-warning]").filter({ hasText: KEY_WARNING });
+    await expect(fieldWarning).toBeVisible();
+    await expect(panel.getByText(KEY_WARNING, { exact: true })).toHaveCount(1);
+    await fieldWarning.scrollIntoViewIfNeeded();
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/http-key-header-warning-pc.png` });
+
+    // 保存は止めない（IR に書いたとおりに入る）。
+    await page.getByRole("button", { name: "保存", exact: true }).click();
+    await expect(page.getByText(/保存しました/).first()).toBeVisible({ timeout: 15_000 });
+    const saved = (await (await page.request.get(`/api/workflows/${id}`)).json()) as {
+      ir: { nodes: { id: string; params: Record<string, unknown> }[] };
+    };
+    expect(saved.ir.nodes.find((n) => n.id === "hook")?.params.headers).toEqual({
+      Authorization: "Bearer sk-e2e-0123456789",
+    });
+
+    // 値を認証の方式の語だけにすると、注意は消える（鍵の値を IR に書いていない）。
+    const cleared = nextValidation(page, (b) => !b.includes("sk-e2e-0123456789"));
+    await row.getByRole("textbox", { name: "「Authorization」の値" }).fill("Bearer ");
+    await cleared;
+    await expect(fieldWarning).toHaveCount(0);
+    await row.getByRole("textbox", { name: "「Authorization」の値" }).fill("Bearer sk-e2e-0123456789");
+    await expect(fieldWarning).toBeVisible();
+
+    // スマホの一覧から開いても、欄の下に注意が出て、横にはみ出さない。
+    const phoneCtx = await browser.newContext({
+      storageState: await page.context().storageState(),
+      viewport: { width: 390, height: 844 },
+      hasTouch: true,
+      isMobile: true,
+      deviceScaleFactor: 3,
+      ignoreHTTPSErrors: true,
+    });
+    try {
+      const phone = await phoneCtx.newPage();
+      phone.on("dialog", (d) => void d.accept());
+      await phone.goto(`/workflows/${id}`);
+      const flow = phone.getByTestId("workflow-mobile-flow");
+      await expect(flow).toBeVisible({ timeout: 15_000 });
+      await flow.getByRole("button", { name: /受付を知らせる/ }).filter({ hasText: "受付を知らせる" }).first().click();
+      const sheet = phone.getByRole("dialog");
+      const shown = sheet.locator("[data-field-warning]").filter({ hasText: KEY_WARNING });
+      await expect(shown).toBeVisible({ timeout: 15_000 });
+      await shown.evaluate((el) => el.scrollIntoView({ block: "center" }));
+      expect(await sheet.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+      if (SHOTS) await phone.screenshot({ path: `${SHOTS}/http-key-header-warning-phone.png` });
     } finally {
       await phoneCtx.close();
     }
