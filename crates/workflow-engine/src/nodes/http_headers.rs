@@ -185,7 +185,7 @@ pub const KEY_HEADER_WORDS: &[&str] = &[
 /// 大文字と小文字は区別しない）。
 ///
 /// 「外部 API 呼び出し」の「ヘッダー」に、この名前で値をそのまま書くと、保存は止めずに注意を返す
-/// （`ir.plain_key_header`・GAP-19）。書いた値は IR と版の履歴に残り、ワークフローを見られる人に見え、応答に映り
+/// （`ir.plain_key_header`・GAP-19）。書いた値は IR とバージョン履歴に残り、ワークフローを見られる人に見え、応答に映り
 /// 返っても隠さない（隠すのはシークレットの値だけ）。
 #[must_use]
 pub fn looks_like_key_header(name: &str) -> bool {
