@@ -16,9 +16,10 @@
 //!    追加だけ（submitter）で足りる（[`AccessKind::Add`]）。
 //! 2. **書き換え・状態を進めるは、追加だけの人も自分のレコードで許されることがある**（D-127）。編集が要るが、
 //!    追加だけでも足りうる（[`AccessKind::Change`]）。削除・追加か更新・まとめて登録は編集が要る（[`AccessKind::Edit`]）。
-//! 3. **きっかけ・AI の参照範囲は確かめない**。きっかけは自動実行の委譲で読むもので、手動の実行では使わない。
-//!    AI エージェント・文書検索の範囲は「選んだフォルダーの中で、使う人が見られる文書だけ」で、足りなくても失敗しない。
-//!    フォルダーを省いた保存・一覧はドライブのトップで、組織のメンバーなら誰でも書ける・読める。
+//! 3. **きっかけ・AI の参照範囲は要る権限として確かめない**。きっかけは自動実行の委譲で読むもので、手動の実行では
+//!    使わない。AI エージェントの読むツール・文書検索・フォルダーを省いた一覧（ドライブのトップ）は「使う人が見られる
+//!    ものだけ」を使い、足りなくても失敗しない（対象も決まっていない）ので、下の「前もって確かめられないブロック」に
+//!    挙げる。フォルダーを省いた保存もドライブのトップで、組織のメンバーなら誰でも書ける。
 //!
 //! 対象が入力や前の結果で決まるとき（値の式）・まだ選んでいないときは、対象を決めずに挙げる（`object_id = None`。
 //! 呼び出し側は確かめずに「実行のときに決まる」と言う）。
@@ -30,8 +31,14 @@
 //! 確かめられないブロック」として名前を出す（「要る権限はありません」「全員持っています」と言い切らないため）。
 //!
 //! - スクリプトを実行（使ってよい操作にテーブル・ファイル・外部のサービス・別のワークフローがあるとき。中の
-//!   `Shiki.data`・`Shiki.storage` などが何を読み書きするかは、スクリプトが動くまで決まらない）。
+//!   `Shiki.data`・`Shiki.storage` などが何を読み書きするかは、スクリプトが動くまで決まらない）。使ってよい操作は
+//!   ワークフロー全体のもの（`declared_scopes`）で、スクリプトのブロックごとには無いので、中でそれを使わない
+//!   スクリプトも挙げる（言い過ぎの側）。本文の字面で見分けると、名前を組み立てて `Shiki` を引くスクリプトを
+//!   取りこぼし、「確かめられた」と言い切ってしまう。
 //! - AI エージェントの、社内の文書やファイルを読むツール（使う人が見られるものだけを読む）。
+//! - 文書検索（使う人が見られる文書だけを探す）と、フォルダーを省いた一覧（ドライブのトップで、使う人が見られる
+//!   ものだけを並べる）。AI エージェントと同じく、失敗はしないが、使う人によって結果が変わる（「全員持っています」と
+//!   言い切ると、相手に見えない文書を前提にしたワークフローに気づかない・GAP-82）。
 //! - シークレットを使う外部への送信（使う人がそのシークレットを使えるか）。
 //! - 別のワークフローを実行（名前で引くワークフローと、そのワークフローが要る権限）。
 //! - ドライブのトップへの保存（保存先のフォルダーを省いた保存。保存できるのは組織のメンバーだけ）。
@@ -124,6 +131,10 @@ pub enum AccessUnchecked {
     Script,
     /// AI エージェントの、社内の文書やファイルを読むツール（使う人が見られるものだけを読む）。
     AgentTools,
+    /// 文書検索（使う人が見られる文書だけを探す・失敗はしない）。
+    DocSearch,
+    /// フォルダーを省いた一覧（ドライブのトップで、使う人が見られるものだけを並べる・失敗はしない）。
+    DriveTopList,
     /// シークレットを使う外部への送信（使う人がそのシークレットを使えるか）。
     Secret,
     /// 別のワークフローを実行（名前で引くワークフローと、そのワークフローが要る権限）。
@@ -240,9 +251,9 @@ fn read_grant(ir: &WorkflowIr, grant: &SuggestedGrant, sure: &HashSet<&str>) -> 
     let node = ir.nodes.iter().find(|n| n.id == node_id)?;
     let node_type = NodeType::parse(&node.node_type)?;
     match node_type {
-        // 文書検索の範囲は、使う人が見られる文書だけを使う（足りなくても失敗しない）。
-        NodeType::RagSearch => return None,
-        // AI エージェントのツールは、使う人が見られる文書やファイルだけを読む（前もって確かめられない）。
+        // 文書検索と AI エージェントのツールは、使う人が見られる文書やファイルだけを使う（足りなくても失敗しないが、
+        // 使う人によって結果が変わる。前もって確かめられない）。
+        NodeType::RagSearch => return Some(Reading::Unchecked(AccessUnchecked::DocSearch)),
         NodeType::AgentInvoke => return Some(Reading::Unchecked(AccessUnchecked::AgentTools)),
         _ => {}
     }
@@ -256,8 +267,8 @@ fn read_grant(ir: &WorkflowIr, grant: &SuggestedGrant, sure: &HashSet<&str>) -> 
         .object_id
         .as_deref()
         .and_then(|s| Uuid::parse_str(s.trim()).ok());
-    // フォルダーを省いた保存・一覧はドライブのトップ。一覧は組織のメンバーなら誰でも読め、見られるものだけを返す。
-    // 保存は組織のメンバーだけができる（前もって確かめられない）。
+    // フォルダーを省いた保存・一覧はドライブのトップ（前もって確かめられない）。保存は組織のメンバーだけができる。
+    // 一覧は見られるものだけを返す（失敗しないが、使う人によって結果が変わる）。
     if object == AccessObject::Folder
         && object_id.is_none()
         && node
@@ -265,8 +276,11 @@ fn read_grant(ir: &WorkflowIr, grant: &SuggestedGrant, sure: &HashSet<&str>) -> 
             .get("folder")
             .is_none_or(serde_json::Value::is_null)
     {
-        return (grant.relation == "editor")
-            .then_some(Reading::Unchecked(AccessUnchecked::DriveTop));
+        return Some(Reading::Unchecked(if grant.relation == "editor" {
+            AccessUnchecked::DriveTop
+        } else {
+            AccessUnchecked::DriveTopList
+        }));
     }
     let kind = match (grant.relation.as_str(), object, node_type) {
         ("viewer", _, _) => AccessKind::Read,
@@ -350,7 +364,7 @@ mod tests {
     }
 
     /// ファイルとフォルダー: 読む・一覧は閲覧、保存・CSV の編集は編集。フォルダーを省いた保存・一覧はドライブのトップ
-    /// なので挙げない。値の式の対象は対象を決めずに挙げる。
+    /// なので要る権限には挙げない（前もって確かめられないブロック・GAP-82）。値の式の対象は対象を決めずに挙げる。
     #[test]
     fn storage_and_csv_targets() {
         let got = needs(
@@ -509,9 +523,10 @@ mod tests {
         assert_eq!(add(&wf("fail_map", true)), Some(true));
     }
 
-    /// スクリプト（使ってよい操作にテーブルなどがあるとき）・AI エージェントの読むツール・シークレット・別のワークフローを
-    /// 実行・ドライブのトップへの保存は、前もって確かめられないブロックとして名前つきで挙げる（GAP-82）。文書検索・
-    /// ドライブのトップの一覧・外へ届かないスクリプトは挙げない。
+    /// スクリプト（使ってよい操作にテーブルなどがあるとき）・AI エージェントの読むツール・文書検索・シークレット・別の
+    /// ワークフローを実行・ドライブのトップへの保存と一覧は、前もって確かめられないブロックとして名前つきで挙げる
+    /// （GAP-82）。文書検索・ドライブのトップの一覧・AI エージェントは、使う人が見られるものだけを使う同じ理由で、
+    /// そろえて挙げる。外へ届かないスクリプトと、社内を読まない AI エージェントは挙げない。
     #[test]
     fn blocks_beyond_the_check_are_listed_by_name() {
         let ir = |scopes: serde_json::Value| {
@@ -551,15 +566,29 @@ mod tests {
             vec![
                 ("s", Script),
                 ("ag", AgentTools),
+                ("rs", DocSearch),
                 ("h", Secret),
                 ("st", StartWorkflow),
-                ("top", DriveTop)
+                ("top", DriveTop),
+                ("ls", DriveTopList)
             ]
         );
         assert_eq!(got[0].1, "金額を計算", "付けた名前で言う");
         // 外へ届く操作が無いスクリプトは挙げない。
         let got = kinds(&ir(json!(["rag.query"])));
         assert!(got.iter().all(|g| g.2 != Script), "{got:?}");
+        // 前の結果でフォルダーを決める一覧は、ドライブのトップではない（要る権限に、対象を決めずに挙げる）。
+        let chosen = WorkflowIr::from_json(&json!({
+            "ir_version": 1, "name": "wf", "declared_scopes": ["storage.read"],
+            "nodes": [{ "id": "ls", "type": "storage.list", "params": { "folder": { "$from": "input", "path": "/folder" } } }],
+            "edges": []
+        }))
+        .expect("test IR");
+        assert!(kinds(&chosen).is_empty());
+        assert_eq!(
+            RegistrationService::access_needs(&chosen),
+            vec![need("ls", AccessObject::Folder, None, AccessKind::Read)]
+        );
         // 要る権限には挙げない（確かめない）。
         let needs = RegistrationService::access_needs(&ir(json!(["data.write", "storage.write"])));
         assert!(needs.is_empty(), "{needs:?}");

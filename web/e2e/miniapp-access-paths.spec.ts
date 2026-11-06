@@ -16,6 +16,7 @@ import {
 ///   共有の画面は、それを「場合によって要る」と言い分ける。
 /// - 止まった表は、画面に戻ったときに確かめ直して出る。確かめ直しは間隔を空け、同時に 1 つだけ問う（BUG-217）。
 /// - スクリプトやドライブのトップへの保存など、前もって確かめられないブロックがあれば、名前を挙げて言い切らない（GAP-82）。
+///   文書検索とフォルダーを選ばない一覧も、AI エージェントと同じく、使う人が見られるものだけを使うと言って挙げる。
 /// - 共有されたワークフローの「いま実行する」も、自分に足りない権限を押す前に言い、共有されれば開き直さずに実行できる
 ///   （GAP-37）。
 /// - 失敗を「エラー時」の出口で扱うブロックの権限が無くても、ボタンと「いま実行する」は止めず、作った人が用意した
@@ -400,16 +401,20 @@ test.describe("使う人の権限の確かめの続き（BUG-216・BUG-217・GAP
         ir_version: 1,
         name: flow,
         display_name: flow,
-        declared_scopes: ["data.read", "data.write", "storage.write"],
+        declared_scopes: ["data.read", "data.write", "storage.read", "storage.write", "rag.query"],
         triggers: [{ kind: "interactive" }],
         nodes: [
           { id: "q", type: "data.query", label: "台帳を読む", params: { table: ledger.id } },
           { id: "calc", type: "script.run", label: "金額を足す", params: { source: { inline: "function main(i){ return i; }" } } },
           { id: "keep", type: "storage.write", label: "控えを保存", params: { name: "控え.txt", content: "x" } },
+          { id: "find", type: "rag.search", label: "規程を探す", params: { query: "出張の規程" } },
+          { id: "ls", type: "storage.list", label: "トップを一覧", params: {} },
         ],
         edges: [
           { from: "q", to: "calc" },
           { from: "calc", to: "keep" },
+          { from: "keep", to: "find" },
+          { from: "find", to: "ls" },
         ],
       });
       await shareArtifact(page, flowId, bobId);
@@ -421,8 +426,12 @@ test.describe("使う人の権限の確かめの続き（BUG-216・BUG-217・GAP
       await expect(gaps).toContainText("前もって確かめられないブロックがあります。足りるかは、実行したときに分かります。", {
         timeout: 20_000,
       });
-      await expect(gaps).toContainText("「金額を足す」: スクリプトの中で使うテーブルやファイルは、動くまで決まりません。");
+      await expect(gaps).toContainText("「金額を足す」: スクリプトがテーブルやファイルなどを使うかは、動くまで分かりません。");
       await expect(gaps).toContainText("「控えを保存」: ドライブのトップに保存できるのは、組織のメンバーだけです。");
+      // 文書検索とフォルダーを選ばない一覧も、AI エージェントと同じ理由（使う人が見られるものだけを使う）で挙げる。
+      await expect(gaps).toContainText("「規程を探す」: 使う人が見られる文書だけを検索します。");
+      await expect(gaps).toContainText("「トップを一覧」: 使う人が見られるファイルとフォルダーだけを一覧にします。");
+      await expect(gaps.getByRole("listitem")).toHaveCount(4);
       await expect(dialog.getByTestId("access-report-all-ok")).toHaveText(
         "確かめられた範囲では、共有している相手は全員、要る権限を持っています。",
       );

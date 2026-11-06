@@ -96,13 +96,19 @@ export function conditionalNote(subject: "app" | "workflow"): string {
   return `${CONDITIONAL_MARK}権限は、毎回は通らないブロックと、失敗を「エラー時」の出口か「失敗を記録して続ける」繰り返しで扱うブロックが使います。${then}、そのブロックまで進むと失敗します。`;
 }
 
-/// 前もって確かめられないブロックの理由（GAP-82）。
+/// 前もって確かめられないブロックの理由（GAP-82）。スクリプトは、ワークフローで使ってよい操作にテーブルなどがあれば
+/// 挙がる（中で使わないスクリプトも挙がる）ので、使うかどうかも分からないと言う。文書検索・フォルダーを選ばない一覧・
+/// AI エージェントは、使う人が見られるものだけを使う同じ理由で挙がる（失敗はしないが、使う人によって結果が変わる）。
 function uncheckedReason(kind: UncheckedBlock["kind"]): string {
   switch (kind) {
     case "script":
-      return "スクリプトの中で使うテーブルやファイルは、動くまで決まりません。";
+      return "スクリプトがテーブルやファイルなどを使うかは、動くまで分かりません。";
     case "agent_tools":
       return "AI エージェントは、使う人が見られる文書やファイルだけを読みます。";
+    case "doc_search":
+      return "使う人が見られる文書だけを検索します。";
+    case "drive_top_list":
+      return "使う人が見られるファイルとフォルダーだけを一覧にします。";
     case "secret":
       return "使う人がシークレットを使えるかは、確かめていません。";
     case "start_workflow":
