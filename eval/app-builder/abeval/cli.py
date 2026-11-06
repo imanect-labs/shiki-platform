@@ -37,7 +37,13 @@ from abeval.proxy_control import ProxyControl, read_token, safe_id
 from abeval.shiki import ShikiClient
 from abeval.tasks import PHRASINGS, Task, load_tasks
 from abeval.trial import placeholder_ids, prompt_text
-from abeval.versions import LLM_EVAL_CONFIG, VersionError, read_record
+from abeval.versions import (
+    LLM_EVAL_CONFIG,
+    VersionError,
+    probe_node_types,
+    read_record,
+    update_record,
+)
 
 STUB_URL = "http://localhost:8080"
 
@@ -76,13 +82,13 @@ def select_tasks(all_tasks: list[Task], names: str | None) -> list[Task]:
 
 
 def in_scope(
-    tasks: list[Task], catalog: LintCatalog, caps: Mapping
+    tasks: list[Task], catalog: LintCatalog, caps: Mapping, node_types: list[str] | None = None
 ) -> tuple[list[Task], list[dict]]:
-    """版に無い機能の要る課題を外す（対象外として数える）。"""
+    """版に無い機能の要る課題を外す（対象外として数える）。ノードの種類は版のサーバーで確かめたもの。"""
     triggers = (
         ("interactive", "schedule", "event") if caps.get("trigger") else ("interactive", "schedule")
     )
-    feats = version_features(catalog, caps, triggers=triggers)
+    feats = version_features(catalog, caps, triggers=triggers, node_types=node_types)
     ok, out = [], []
     for t in tasks:
         g = g9_supported(t, feats)
@@ -91,6 +97,16 @@ def in_scope(
         else:
             out.append({"task": t.id, "missing": g.problems})
     return ok, out
+
+
+def _record_node_types(label: str, node_types: list[str]) -> None:
+    """版の記録に、版のサーバーで確かめたノードの種類を残す（記録の無い版は残さない）。"""
+    try:
+        rec = read_record(label)
+    except VersionError:
+        return
+    if rec.extra.get("node_types") != node_types:
+        update_record(label, {"node_types": node_types})
 
 
 def _spec(args, tasks: list[Task]) -> RunSpec:
@@ -181,9 +197,12 @@ def do_capture(
             fixtures.cleanup(client, rec)
 
 
-def _versions_entry(v: Version, cap: Capture | None, caps: Mapping) -> dict:
+def _versions_entry(
+    v: Version, cap: Capture | None, caps: Mapping, node_types: list[str] | None = None
+) -> dict:
     fp = (cap.meta.get("fingerprint") or {}) if cap else {}
     return {
+        "node_types": node_types,
         "commit": v.commit,
         "binary_sha256": v.binary_sha,
         "config_sha": fp.get("llm_config_sha"),
@@ -235,7 +254,11 @@ def cmd_run(args) -> int:
             )
             return 1
         caps = client.capabilities()
-        tasks, out_of_scope = in_scope(all_tasks, catalog, caps)
+        # requires の node:* は、HEAD の ir_lint のカタログではなく、版のサーバーの検証で確かめる（cap:* と同じく版で）。
+        node_types = probe_node_types(client, sorted(catalog.nodes))
+        if not stub:
+            _record_node_types(args.label, node_types)
+        tasks, out_of_scope = in_scope(all_tasks, catalog, caps, node_types)
         for o in out_of_scope:
             print(f"[対象外] {o['task']}: {o['missing']}")
         if not tasks:
@@ -316,7 +339,7 @@ def cmd_run(args) -> int:
                     "regrade_from": regrade,
                 }
             ],
-            versions={args.label: _versions_entry(version, cap, caps)},
+            versions={args.label: _versions_entry(version, cap, caps, node_types)},
             grader=grader_version(Path(args.lint_bin) if args.lint_bin else None),
             cost={"exp_usd": exp_usd},
             out_of_scope=[{**o, "label": args.label} for o in out_of_scope],

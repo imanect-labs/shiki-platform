@@ -99,14 +99,22 @@ def installed(tmp_path):
     exe.parent.mkdir(parents=True)
     exe.write_bytes(b"fake server\n")
     exe.chmod(0o755)
+    runner = home / "bin" / "shiki-tabular-runner-v0"
+    runner.write_bytes(b"fake runner\n")
+    runner.chmod(0o755)
     vdir = tmp_path / "versions"
     versions.write_record(
-        versions.parse_record(_record(binary_sha256=versions.file_sha256(exe))), vdir
+        versions.parse_record(
+            _record(
+                binary_sha256=versions.file_sha256(exe), runner_sha256=versions.file_sha256(runner)
+            )
+        ),
+        vdir,
     )
     cfg = tmp_path / "llm-eval.toml"
     cfg.write_text("[llm]\n")
     cfg.chmod(0o600)
-    return {"home": home, "exe": exe, "versions_dir": vdir, "llm_config": cfg}
+    return {"home": home, "exe": exe, "runner": runner, "versions_dir": vdir, "llm_config": cfg}
 
 
 def test_serve_plan(installed):
@@ -150,6 +158,8 @@ def test_serve_plan(installed):
         "SHIKI__LLM__BACKEND": "stub",
         "SHIKI__CHAT__BUDGET_MAX_COST_USD_MICROS": "150000",
         "SHIKI__CHAT__MAX_STEPS": "12",
+        # 版と同じ commit でビルドしたランナー（作業ツリーの HEAD のランナーを使わない）。
+        "SHIKI__TABULAR__RUNNER_PATH": str(installed["runner"].resolve()),
     }
     assert plan.dropped == ("SHIKI_CONFIG", "SHIKI__CHAT__MAX_STEPS")
     assert "SHIKI__CHAT__MAX_STEPS=12" in plan.show()
@@ -177,6 +187,63 @@ def test_serve_refuses_a_changed_binary(installed):
             versions_dir=installed["versions_dir"],
             base_env={},
         )
+
+
+@pytest.mark.parametrize("change", ["rebuilt", "missing", "unrecorded"])
+def test_serve_refuses_a_runner_that_is_not_the_versions(installed, change):
+    if change == "rebuilt":
+        installed["runner"].write_bytes(b"rebuilt runner\n")
+        want = "ランナーの sha が記録と違います"
+    elif change == "missing":
+        installed["runner"].unlink()
+        want = "ランナーがありません"
+    else:
+        raw = json.loads((installed["versions_dir"] / "v0.json").read_text())
+        del raw["runner_sha256"]
+        (installed["versions_dir"] / "v0.json").write_text(json.dumps(raw))
+        want = "ランナーの sha がありません"
+    with pytest.raises(VersionError, match=want):
+        versions.serve_plan(
+            "v0",
+            home=installed["home"],
+            llm_config=installed["llm_config"],
+            versions_dir=installed["versions_dir"],
+            base_env={},
+        )
+
+
+def test_probe_node_types_reads_unknown_node_type_errors():
+    class Client:
+        def __init__(self, unknown):
+            self.unknown = unknown
+            self.sent = None
+
+        def validate(self, ir):
+            self.sent = ir
+            return {
+                "errors": [
+                    {"code": "ir.unknown_node_type", "node_id": n["id"]}
+                    for n in ir["nodes"]
+                    if n["type"] in self.unknown
+                ]
+                + [{"code": "ir.schema_violation", "node_id": "p0", "message": "params"}]
+            }
+
+    c = Client({"data.record.upsert", "transform.date"})
+    got = versions.probe_node_types(c, ["data.query", "data.record.upsert", "transform.date"])
+    assert got == ["data.query"]
+    assert [n["type"] for n in c.sent["nodes"]] == [
+        "data.query",
+        "data.record.upsert",
+        "transform.date",
+    ]
+
+    class Broken:
+        def validate(self, ir):
+            return {"errors": [{"code": "ir.schema_violation", "message": "読めない"}]}
+
+    with pytest.raises(VersionError, match="読めません"):
+        versions.probe_node_types(Broken(), ["data.query"])
 
 
 def test_serve_refuses_a_missing_binary(installed):
@@ -235,7 +302,7 @@ def test_down_plan():
 
 def test_cli_dry_run(installed, monkeypatch, capsys):
     monkeypatch.setenv("ABEVAL_HOME", str(installed["home"]))
-    monkeypatch.setattr(versions, "VERSIONS_DIR", installed["versions_dir"])
+    monkeypatch.setenv("ABEVAL_VERSIONS_DIR", str(installed["versions_dir"]))
     monkeypatch.setattr(
         versions,
         "serve_plan",
@@ -248,7 +315,7 @@ def test_cli_dry_run(installed, monkeypatch, capsys):
 
 def test_cli_refuses_without_a_record(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("ABEVAL_HOME", str(tmp_path / "home"))
-    monkeypatch.setattr(versions, "VERSIONS_DIR", tmp_path / "versions")
+    monkeypatch.setenv("ABEVAL_VERSIONS_DIR", str(tmp_path / "versions"))
     real = versions.serve_plan
     monkeypatch.setattr(
         versions,
@@ -262,3 +329,10 @@ def test_cli_refuses_without_a_record(tmp_path, monkeypatch, capsys):
 def test_dev_up_path_exists():
     assert versions.DEV_UP.is_file()
     assert os.access(versions.DEV_UP, os.R_OK)
+
+
+def test_the_versions_dir_follows_the_environment(tmp_path, monkeypatch):
+    monkeypatch.setenv("ABEVAL_VERSIONS_DIR", str(tmp_path / "vv"))
+    assert versions.record_path("v0") == tmp_path / "vv" / "v0.json"
+    monkeypatch.delenv("ABEVAL_VERSIONS_DIR")
+    assert versions.record_path("v0") == versions.VERSIONS_DIR / "v0.json"

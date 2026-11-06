@@ -9,8 +9,12 @@
 #     1. <worktree-root>/abeval-<label> に `git worktree add --detach` する（既にあれば拒む）。
 #     2. `git status --porcelain` が空でなければ止める（素性を確かめられない版は測らない）。
 #     3. `cargo build -p shiki-api --bin shiki-server` でビルドする（CARGO_TARGET_DIR は worktree の target）。
-#     4. バイナリを <bin-dir>/shiki-server-<label> に写し、sha256 を取る。
-#     5. <versions-dir>/<label>.json に {label, commit, tree_clean, binary_sha256, built_at, rustc} を書く。
+#        CSV の集計の隔離ランナー（workspace の外・crates/tabular/runner）も、同じ commit で
+#        `cargo build --locked --manifest-path crates/tabular/runner/Cargo.toml` でビルドする（target/tabular-runner。
+#        版のサーバーが作業ツリーの HEAD のランナーを使うと、版の差にランナーの差が混ざるため）。
+#     4. バイナリを <bin-dir>/shiki-server-<label>、ランナーを <bin-dir>/shiki-tabular-runner-<label> に写し、
+#        sha256 を取る。
+#     5. <versions-dir>/<label>.json に {label, commit, tree_clean, binary_sha256, runner_sha256, built_at, rustc} を書く。
 #     6. worktree を消す（target も消える）。途中で失敗しても worktree は消す。
 #
 #   既定:
@@ -100,9 +104,10 @@ VERSIONS_DIR=$(abs_path "$VERSIONS_DIR")
 
 WT="$WORKTREE_ROOT/abeval-$LABEL"
 BIN="$BIN_DIR/shiki-server-$LABEL"
+RUNNER="$BIN_DIR/shiki-tabular-runner-$LABEL"
 RECORD="$VERSIONS_DIR/$LABEL.json"
 
-for p in "$WT" "$BIN" "$RECORD"; do
+for p in "$WT" "$BIN" "$RUNNER" "$RECORD"; do
   if [ -e "$p" ]; then
     err "既にあります（同じ label を作り直すなら、先に消してください）: $p"
     exit 2
@@ -115,13 +120,15 @@ RUSTC=${ABEVAL_RUSTC:-rustc}
 say "label=$LABEL commit=$COMMIT"
 say "  worktree  $WT"
 say "  binary    $BIN"
+say "  runner    $RUNNER"
 say "  record    $RECORD"
 if [ "$DRY_RUN" = 1 ]; then
   say "（--dry-run: 何も作りません）"
   say "  1. git -C $REPO worktree add --detach $WT $COMMIT"
   say "  2. git -C $WT status --porcelain（空でなければ止める）"
   say "  3. (cd $WT && CARGO_TARGET_DIR=$WT/target $CARGO build -p shiki-api --bin shiki-server)"
-  say "  4. install -m 755 $WT/target/debug/shiki-server $BIN・sha256"
+  say "     (cd $WT && CARGO_TARGET_DIR=$WT/target/tabular-runner $CARGO build --locked --manifest-path crates/tabular/runner/Cargo.toml)"
+  say "  4. install -m 755 $WT/target/debug/shiki-server $BIN・$RUNNER・sha256"
   say "  5. $RECORD を書く"
   say "  6. git -C $REPO worktree remove --force $WT"
   exit 0
@@ -155,6 +162,15 @@ say "== 3. ビルドする（sccache が効けば 7 分程度） =="
 )
 BUILT="$WT/target/debug/shiki-server"
 [ -f "$BUILT" ] && [ -x "$BUILT" ] || { err "ビルドしたバイナリがありません: $BUILT"; exit 1; }
+# CSV の集計の隔離ランナー（workspace の外のクレート・同じ commit のもの）。
+RUNNER_MANIFEST="$WT/crates/tabular/runner/Cargo.toml"
+[ -f "$RUNNER_MANIFEST" ] || { err "ランナーのクレートがありません: $RUNNER_MANIFEST"; exit 1; }
+(
+  cd "$WT"
+  CARGO_TARGET_DIR="$WT/target/tabular-runner" "$CARGO" build --locked --manifest-path crates/tabular/runner/Cargo.toml
+)
+BUILT_RUNNER="$WT/target/tabular-runner/debug/shiki-tabular-runner"
+[ -f "$BUILT_RUNNER" ] && [ -x "$BUILT_RUNNER" ] || { err "ビルドしたランナーがありません: $BUILT_RUNNER"; exit 1; }
 # ビルドが作業ツリーを書き換えていないか（生成物の書き戻しなど）。
 DIRTY=$(git -C "$WT" status --porcelain --untracked-files=all -- . ':(exclude)target')
 if [ -n "$DIRTY" ]; then
@@ -169,16 +185,20 @@ mkdir -p "$BIN_DIR"
 install -m 755 "$BUILT" "$BIN.tmp.$$"
 mv -f "$BIN.tmp.$$" "$BIN"
 SHA=$(sha256sum "$BIN" | cut -d' ' -f1)
+install -m 755 "$BUILT_RUNNER" "$RUNNER.tmp.$$"
+mv -f "$RUNNER.tmp.$$" "$RUNNER"
+RUNNER_SHA=$(sha256sum "$RUNNER" | cut -d' ' -f1)
 
 say "== 5. 版の記録を書く =="
 mkdir -p "$VERSIONS_DIR"
-LABEL="$LABEL" COMMIT="$COMMIT" SHA="$SHA" RUSTC_VERSION="$RUSTC_VERSION" python3 - "$RECORD" <<'PY'
+LABEL="$LABEL" COMMIT="$COMMIT" SHA="$SHA" RUNNER_SHA="$RUNNER_SHA" RUSTC_VERSION="$RUSTC_VERSION" python3 - "$RECORD" <<'PY'
 import datetime, json, os, sys
 record = {
     "label": os.environ["LABEL"],
     "commit": os.environ["COMMIT"],
     "tree_clean": True,
     "binary_sha256": os.environ["SHA"],
+    "runner_sha256": os.environ["RUNNER_SHA"],
     "built_at": datetime.datetime.now(datetime.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
     "rustc": os.environ["RUSTC_VERSION"],
 }
@@ -198,4 +218,5 @@ say ""
 say "[ok] $LABEL ($COMMIT)"
 say "  binary  $BIN"
 say "  sha256  $SHA"
+say "  runner  $RUNNER（$RUNNER_SHA）"
 say "  record  $RECORD"

@@ -10,7 +10,7 @@
 | G6 独立の判定 | 期待を見せない別の呼び出しで答えさせて照合する | LLM が要る（ここには無い） |
 | G7 重複 | ほかの依頼文との文字 3-gram の Jaccard が 0.6 未満 | |
 | G8 架空の名前 | 拒否リスト（リポジトリの外 `~/.config/shiki-dev/abeval-denylist.txt`）の語が課題のどこにも無い | 無ければ理由を出して飛ばす |
-| G9 対象の機能 | `requires` が対象の版にある | 版の機能（カタログ・OpenAPI）から |
+| G9 対象の機能 | `requires` が対象の版にある | 版の機能（版のサーバーで確かめたノードの種類・OpenAPI）から |
 """
 
 from __future__ import annotations
@@ -228,9 +228,17 @@ def version_features(
     capabilities: Mapping[str, Any] | None = None,
     *,
     triggers: Iterable[str] = ("interactive", "schedule"),
+    node_types: Iterable[str] | None = None,
 ) -> set[str]:
-    """版の機能の印（`node:<種類>`・`cap:<機能>`・`trigger:<種類>`）。"""
-    out = {f"node:{t}" for t, n in catalog.nodes.items() if n.available}
+    """版の機能の印（`node:<種類>`・`cap:<機能>`・`trigger:<種類>`）。
+
+    `node_types` は版のサーバーで確かめた使えるノードの種類（`versions.probe_node_types`）。無ければ HEAD の
+    カタログ（ir_lint）で決める（版の判定には使わない・課題の検査の既定）。
+    """
+    if node_types is not None:
+        out = {f"node:{t}" for t in node_types}
+    else:
+        out = {f"node:{t}" for t, n in catalog.nodes.items() if n.available}
     out |= {f"cap:{k}" for k, v in (capabilities or {}).items() if v}
     out |= {f"trigger:{t}" for t in triggers}
     return out

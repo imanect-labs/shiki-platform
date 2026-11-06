@@ -26,8 +26,12 @@ printf 'cargo %s cwd=%s target=%s\n' "$*" "$PWD" "${CARGO_TARGET_DIR:-}" >> "$SH
 [ -n "${FAKE_CARGO_FAIL:-}" ] && exit 101
 [ -n "${FAKE_CARGO_TOUCH:-}" ] && echo changed >> README.md
 mkdir -p "$CARGO_TARGET_DIR/debug"
-printf 'fake-server %s\n' "$(git rev-parse HEAD)" > "$CARGO_TARGET_DIR/debug/shiki-server"
-chmod +x "$CARGO_TARGET_DIR/debug/shiki-server"
+case "$*" in
+  *--manifest-path*) out="$CARGO_TARGET_DIR/debug/shiki-tabular-runner"; what=runner ;;
+  *) out="$CARGO_TARGET_DIR/debug/shiki-server"; what=server ;;
+esac
+printf 'fake-%s %s\n' "$what" "$(git rev-parse HEAD)" > "$out"
+chmod +x "$out"
 """
 
 FAKE_RUSTC = """#!/usr/bin/env bash
@@ -51,6 +55,9 @@ class Box:
         g("init", "-q")
         (self.repo / "README.md").write_text("abeval test\n")
         (self.repo / ".gitignore").write_text("target/\n")
+        runner = self.repo / "crates" / "tabular" / "runner"
+        runner.mkdir(parents=True)
+        (runner / "Cargo.toml").write_text('[package]\nname = "shiki-tabular-runner"\n')
         g("add", ".")
         g("commit", "-q", "-m", "first")
         self.first = g("rev-parse", "HEAD")
@@ -104,12 +111,27 @@ def test_builds_records_and_removes_the_worktree(box):
     assert record["binary_sha256"] == hashlib.sha256(binary.read_bytes()).hexdigest()
     assert record["rustc"] == "rustc 1.99.0 (abeval 2026-01-01)"
     assert record["built_at"].endswith("Z")
-    assert set(record) == {"label", "commit", "tree_clean", "binary_sha256", "built_at", "rustc"}
-    # ビルドしたのは指定した commit（HEAD ではない）。
+    assert set(record) == {
+        "label",
+        "commit",
+        "tree_clean",
+        "binary_sha256",
+        "runner_sha256",
+        "built_at",
+        "rustc",
+    }
+    # ビルドしたのは指定した commit（HEAD ではない）。ランナーも同じ commit のもの。
     assert binary.read_text() == f"fake-server {box.first}\n"
     assert binary.stat().st_mode & 0o111
+    runner = box.bin_dir / "shiki-tabular-runner-v1"
+    assert runner.read_text() == f"fake-runner {box.first}\n" and runner.stat().st_mode & 0o111
+    assert record["runner_sha256"] == hashlib.sha256(runner.read_bytes()).hexdigest()
     wt = box.wt_root / "abeval-v1"
-    assert r.log == [f"cargo build -p shiki-api --bin shiki-server cwd={wt} target={wt}/target"]
+    assert r.log == [
+        f"cargo build -p shiki-api --bin shiki-server cwd={wt} target={wt}/target",
+        "cargo build --locked --manifest-path crates/tabular/runner/Cargo.toml "
+        f"cwd={wt} target={wt}/target/tabular-runner",
+    ]
     assert not wt.exists()
     assert box.worktrees() == [str(box.repo)]
 
@@ -203,3 +225,12 @@ def test_syntax():
         ["bash", "-n", str(BUILD_VERSION)], capture_output=True, text=True, check=False
     )
     assert p.returncode == 0, p.stderr
+
+
+def test_a_commit_without_the_runner_is_refused(box):
+    box.git("rm", "-q", "-r", "crates")
+    box.git("commit", "-q", "-m", "no runner")
+    r = box.run("v1", "HEAD")
+    assert r.code == 1 and "ランナーのクレートがありません" in r.err
+    assert not (box.versions / "v1.json").exists()
+    assert not (box.wt_root / "abeval-v1").exists()

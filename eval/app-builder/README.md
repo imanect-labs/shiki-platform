@@ -72,13 +72,15 @@ target/debug/examples/ir_lint --catalog   # ノードのカタログ（出力の
 ## 版（ビルドと起動・§4.1・§4.2）
 
 版は「きれいな commit から別の worktree でビルドしたバイナリ」（H1 (a)・D-54）。ビルドは 1 版 7 分程度（sccache）・
-ピークのメモリが大きいので、ほかのビルド・E2E・スタックの起動と重ねない（台帳 §9.4）。
+ピークのメモリが大きいので、ほかのビルド・E2E・スタックの起動と重ねない（台帳 §9.4）。CSV の集計の隔離ランナー
+（workspace の外・bundled の DuckDB）も同じ commit でビルドするので、cold なら DuckDB の C++ の分だけ長くかかる。
 
 ```bash
 # 版をビルドして退避する（~/orca/workspaces/shiki-platform/abeval-<label> に worktree を作り、終わったら消す）
 eval/app-builder/scripts/build-version.sh --dry-run v0 81a9899b   # 手順だけを表示
 eval/app-builder/scripts/build-version.sh v0 81a9899b
-#  → ~/.local/share/shiki-eval/bin/shiki-server-v0 と data/versions/v0.json（commit・tree_clean・binary_sha256・built_at・rustc）
+#  → ~/.local/share/shiki-eval/bin/shiki-server-v0・shiki-tabular-runner-v0 と
+#    data/versions/v0.json（commit・tree_clean・binary_sha256・runner_sha256・built_at・rustc）
 ```
 
 - label は英小文字で始まり英小文字か数字で終わる 21 文字まで（DB・store・バケットの名前に使う）。
@@ -106,14 +108,21 @@ uv run python -m abeval serve --label v0 --down
 | API・ゲートウェイ | `:10067`（Keycloak が許すリダイレクト先）・`18190`/`18191` |
 | PID ファイル・ログ | dev-up の `--run-label abeval-<label>` の置き場（同じバイナリで動く別のサーバーを pgrep で止めない） |
 | LLM の設定 | `SHIKI_CONFIG=~/.config/shiki-dev/llm-eval.toml`（権限 600 でなければ起動しない） |
+| CSV の集計の隔離ランナー | `SHIKI__TABULAR__RUNNER_PATH=~/.local/share/shiki-eval/bin/shiki-tabular-runner-<label>`（版と同じ commit。作業ツリーの HEAD のランナーを使わない） |
 
-- 起動の前に、版の記録の `tree_clean` と、バイナリの sha256 が記録と同じことを確かめる（違えば起動しない）。
+- 起動の前に、版の記録の `tree_clean` と、バイナリとランナーの sha256 が記録と同じことを確かめる（違えば・
+  ランナーの記録が無ければ起動しない）。
+- `run` は、版のサーバーの `/workflows/validate` で使えるノードの種類を確かめ（未知の種類に返る
+  `ir.unknown_node_type` で見る・費用 0）、版の記録の `node_types` と結果の `versions.<label>.node_types` に残す。
+  課題の `requires` の `node:*` はこれで判定する（HEAD の ir_lint のカタログで判定すると、V0 に無いノードの課題が
+  対象外にならない）。
 - 呼び出し側のシェルに残った `SHIKI__*`・`SHIKI_CONFIG` は渡さない。条件は手数の上限（`--max-steps` →
   `SHIKI__CHAT__MAX_STEPS`・省けば製品の値）と 1 発話の予算（`--budget-micros` →
   `SHIKI__CHAT__BUDGET_MAX_COST_USD_MICROS`・既定 $0.15）だけをここで決める。
 - dev-up.sh の引数は `dev-up.sh --help` を参照（`--server-bin`・`--db-name`・`--store-name`・`--bucket`・
   `--redis-db`・`--port`・`--gateway-ports`・`--api-only`・`--run-label`）。引数を省いた起動は前と同じ
-  （`tests/test_dev_up_args.py` が HEAD の dev-up.sh と比べて確かめる）。
+  （`tests/test_dev_up_args.py` が、引数を足す前の dev-up.sh で作った記録と比べて確かめる）。ラベルのサーバーの
+  停止は、TERM で 20 秒止まらなければ KILL し、それでも空かなければ止める。
 - 引数を省いた dev-up.sh（:8080 のスタック）は、起動のときに `pgrep -f ^<repo>/target/debug/shiki-server$` で
   残りのサーバーを止める（前からの動き）。版のサーバーを `--server-bin <repo>/target/debug/shiki-server` で
   動かしている間に既定のスタックを起動すると、版のサーバーも止まる。版のサーバーは退避したバイナリ

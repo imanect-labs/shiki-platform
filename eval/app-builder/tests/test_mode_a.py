@@ -338,3 +338,39 @@ def test_without_stub_plumbing_the_headline_is_undecided():
         out = mode_a.run(ctx, spec.trial_specs(), TASKS)
     [t] = out.trials
     assert t["s1"] is True and t["s2d"] is None and t["headline"] is None
+
+
+def test_requires_are_judged_by_the_version_server(env, capsys):
+    """requires の node:* は、HEAD のカタログでなく版のサーバーの検証で決める（V0 に無い種類の課題は対象外）。"""
+    from abeval import versions
+
+    fake, _, up, llm = env
+    v0_missing = {"data.record.upsert", "transform.date"}
+    fake.validator = lambda ir: [
+        {"code": "ir.unknown_node_type", "node_id": n["id"]}
+        for n in ir.get("nodes") or []
+        if n.get("type") in v0_missing
+    ]
+    versions.write_record(
+        versions.parse_record(
+            {
+                "label": "v0",
+                "commit": "c" * 40,
+                "tree_clean": True,
+                "binary_sha256": "b" * 64,
+                "built_at": "2026-11-06T00:00:00Z",
+                "rustc": "rustc 1.99.0",
+            }
+        )
+    )
+    args = argv(llm)
+    i = args.index("--tasks")
+    args[i + 1] = "basic-summary-file,app01-posting-batch,app03-daily-submit"
+    assert cli.main(args, command="run") == 0
+    out = capsys.readouterr().out
+    assert "[対象外] app01-posting-batch" in out and "[対象外] app03-daily-submit" in out
+    assert "[対象外] basic-summary-file" not in out
+    rec = versions.read_record("v0")
+    assert "data.query" in rec.extra["node_types"]
+    assert not v0_missing & set(rec.extra["node_types"])
+    assert up.received == []

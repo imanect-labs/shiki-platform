@@ -1,13 +1,17 @@
 """版の記録（`data/versions/<label>.json`）と、版のサーバーの起動（dev-up.sh の引数を組む・GAP-30 §4.1・§4.2）。
 
-- 版の記録は `scripts/build-version.sh` が書く（label・commit・tree_clean・binary_sha256・built_at・rustc）。
-  ここでは読み、後の段（取り込み・機能の判定）が足す項目を `update_record` で足す。
+- 版の記録は `scripts/build-version.sh` が書く（label・commit・tree_clean・binary_sha256・runner_sha256・
+  built_at・rustc）。ここでは読み、後の段（取り込み・機能の判定）が足す項目を `update_record` で足す。
+  `run` は、版のサーバーの検証の口で使えるノードの種類を確かめ（`probe_node_types`）、`node_types` として足す
+  （課題の `requires` の `node:*` を、HEAD のカタログでなく版で判定するため）。
 - `python -m abeval serve --label L [--down]` は、記録とバイナリの sha を確かめてから dev-up.sh を版のサーバー向けの
   引数で呼ぶ（H3 (a)・D-54）。分けるもの: DB `shiki_eval_<label の - を _ に>`・store と バケット
   `shiki-eval-<label>`・Redis の DB 番号（label ごと）・API の :10067・ゲートウェイの 18190/18191。
   LLM の設定は `~/.config/shiki-dev/llm-eval.toml`（`SHIKI_CONFIG`）。呼び出し側のシェルに残った `SHIKI__*` は
   渡さない（条件は手数の上限 `SHIKI__CHAT__MAX_STEPS` と 1 発話の予算 `SHIKI__CHAT__BUDGET_MAX_COST_USD_MICROS`
-  だけを、ここで決めて渡す）。
+  だけを、ここで決めて渡す）。CSV の集計の隔離ランナーは、版と同じ commit でビルドしたもの
+  （`<home>/bin/shiki-tabular-runner-<label>`・sha を記録と照らす）を `SHIKI__TABULAR__RUNNER_PATH` で渡す
+  （作業ツリーの HEAD のランナーを使うと、版の差にランナーの差が混ざり、途中でビルドし直されても記録に残らない）。
 """
 
 from __future__ import annotations
@@ -31,6 +35,16 @@ LABEL_RE = re.compile(r"^[a-z](?:[a-z0-9-]{0,19}[a-z0-9])?$")
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 COMMIT_RE = re.compile(r"^[0-9a-f]{40}$")
 VERSIONS_DIR = ROOT / "data" / "versions"
+
+
+def versions_dir(where: Path | None = None) -> Path:
+    """版の記録の置き場（`ABEVAL_VERSIONS_DIR` で差し替えられる・テストは一時の場所に向ける）。"""
+    if where is not None:
+        return Path(where)
+    env = os.environ.get("ABEVAL_VERSIONS_DIR")
+    return Path(env).expanduser() if env else VERSIONS_DIR
+
+
 DEV_UP = ROOT.parent.parent / ".claude" / "skills" / "pr" / "scripts" / "dev-up.sh"
 LLM_EVAL_CONFIG = Path("~/.config/shiki-dev/llm-eval.toml")
 EVAL_PORT = 10067
@@ -70,8 +84,8 @@ class VersionRecord:
         return {**self.extra, **{k: getattr(self, k) for k in REQUIRED}}
 
 
-def record_path(label: str, versions_dir: Path = VERSIONS_DIR) -> Path:
-    return Path(versions_dir) / f"{check_label(label)}.json"
+def record_path(label: str, where: Path | None = None) -> Path:
+    return versions_dir(where) / f"{check_label(label)}.json"
 
 
 def parse_record(raw: Mapping, where: str = "<record>") -> VersionRecord:
@@ -100,8 +114,8 @@ def parse_record(raw: Mapping, where: str = "<record>") -> VersionRecord:
     )
 
 
-def read_record(label: str, versions_dir: Path = VERSIONS_DIR) -> VersionRecord:
-    path = record_path(label, versions_dir)
+def read_record(label: str, where: Path | None = None) -> VersionRecord:
+    path = record_path(label, where)
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -118,9 +132,9 @@ def read_record(label: str, versions_dir: Path = VERSIONS_DIR) -> VersionRecord:
     return rec
 
 
-def write_record(rec: VersionRecord, versions_dir: Path = VERSIONS_DIR) -> Path:
+def write_record(rec: VersionRecord, where: Path | None = None) -> Path:
     parse_record(rec.to_dict())  # 書く前に形を確かめる
-    path = record_path(rec.label, versions_dir)
+    path = record_path(rec.label, where)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     tmp.write_text(
@@ -131,14 +145,14 @@ def write_record(rec: VersionRecord, versions_dir: Path = VERSIONS_DIR) -> Path:
     return path
 
 
-def update_record(label: str, fields: Mapping, versions_dir: Path = VERSIONS_DIR) -> VersionRecord:
+def update_record(label: str, fields: Mapping, where: Path | None = None) -> VersionRecord:
     """後の段の項目を足す（ビルドの項目は書き換えない）。"""
     clash = [k for k in fields if k in REQUIRED]
     if clash:
         raise VersionError(f"ビルドの項目は書き換えません: {clash}")
-    rec = read_record(label, versions_dir)
+    rec = read_record(label, where)
     new = VersionRecord(**{k: getattr(rec, k) for k in REQUIRED}, extra={**rec.extra, **fields})
-    write_record(new, versions_dir)
+    write_record(new, where)
     return new
 
 
@@ -152,6 +166,32 @@ def file_sha256(path: Path) -> str:
 
 def binary_path(label: str, home: Path) -> Path:
     return Path(home) / "bin" / f"shiki-server-{check_label(label)}"
+
+
+def runner_path(label: str, home: Path) -> Path:
+    return Path(home) / "bin" / f"shiki-tabular-runner-{check_label(label)}"
+
+
+def probe_node_types(client, candidates: list[str]) -> list[str]:
+    """版のサーバーの `/workflows/validate` で、使えるノードの種類を確かめる（費用 0）。
+
+    1 つの IR に候補の種類のノードを並べて検証し、`ir.unknown_node_type` が付かないものを使えるとみなす（V0 も
+    HEAD も、未知の種類と予約の種類にこのコードをノードの id 付きで返す）。IR が読めない誤りしか返らなければ
+    判定できないので VersionError。
+    """
+    ids = {f"p{i}": t for i, t in enumerate(candidates)}
+    ir = {
+        "ir_version": 1,
+        "name": "abeval-probe",
+        "triggers": [{"kind": "interactive"}],
+        "nodes": [{"id": i, "type": t, "params": {}} for i, t in ids.items()],
+        "edges": [],
+    }
+    errors = client.validate(ir).get("errors") or []
+    if any(e.get("code") == "ir.schema_violation" and not e.get("node_id") for e in errors):
+        raise VersionError(f"ノードの種類を確かめる IR が検証で読めません: {errors[:3]}")
+    unknown = {str(e.get("node_id")) for e in errors if e.get("code") == "ir.unknown_node_type"}
+    return sorted(t for i, t in ids.items() if i not in unknown)
 
 
 def db_name(label: str) -> str:
@@ -186,6 +226,7 @@ class ServePlan:
     def show(self) -> str:
         keys = (
             "SHIKI_CONFIG",
+            "SHIKI__TABULAR__RUNNER_PATH",
             "SHIKI__LLM__BACKEND",
             "SHIKI__CHAT__MAX_STEPS",
             "SHIKI__CHAT__BUDGET_MAX_COST_USD_MICROS",
@@ -229,7 +270,7 @@ def serve_plan(
     *,
     home: Path,
     llm_config: Path = LLM_EVAL_CONFIG,
-    versions_dir: Path = VERSIONS_DIR,
+    versions_dir: Path | None = None,
     max_steps: int | None = None,
     budget_micros: int = DEFAULT_BUDGET_MICROS,
     redis: int | None = None,
@@ -247,6 +288,19 @@ def serve_plan(
     if actual != rec.binary_sha256:
         raise VersionError(
             f"版のバイナリの sha が記録と違います: {exe}（記録 {rec.binary_sha256[:12]}… 実物 {actual[:12]}…）"
+        )
+    runner = runner_path(label, home)
+    want = rec.extra.get("runner_sha256")
+    if not isinstance(want, str) or not SHA_RE.match(want):
+        raise VersionError(
+            f"{label}: 版の記録にランナーの sha がありません（scripts/build-version.sh で作り直す）"
+        )
+    if not runner.is_file() or not os.access(runner, os.X_OK):
+        raise VersionError(f"版のランナーがありません: {runner}")
+    got = file_sha256(runner)
+    if got != want:
+        raise VersionError(
+            f"版のランナーの sha が記録と違います: {runner}（記録 {want[:12]}… 実物 {got[:12]}…）"
         )
     cfg = check_llm_config(llm_config)
     if max_steps is not None and (isinstance(max_steps, bool) or not 1 <= int(max_steps) <= 50):
@@ -282,6 +336,8 @@ def serve_plan(
     # llm-eval.toml の backend（stub）とそろえる（dev-up の既定も stub。呼び出し側の値を拾わない）。
     env["SHIKI__LLM__BACKEND"] = "stub"
     env["SHIKI__CHAT__BUDGET_MAX_COST_USD_MICROS"] = str(int(budget_micros))
+    # dev-up は呼び出し側の値を使う（無ければ作業ツリーの HEAD のランナー）。
+    env["SHIKI__TABULAR__RUNNER_PATH"] = str(runner.resolve())
     if max_steps is not None:
         env["SHIKI__CHAT__MAX_STEPS"] = str(int(max_steps))
     return ServePlan(argv, env, dropped)

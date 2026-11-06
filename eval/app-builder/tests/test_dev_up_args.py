@@ -424,6 +424,7 @@ def test_abeval_serve_args_are_accepted_by_dev_up(box, tmp_path):
 
     home = tmp_path / "eval-home"
     exe = shellkit.write_exe(home / "bin" / "shiki-server-v0-retry", "#!/bin/sh\nexit 0\n")
+    runner = shellkit.write_exe(home / "bin" / "shiki-tabular-runner-v0-retry", "#!/bin/sh\n")
     vdir = tmp_path / "versions"
     versions.write_record(
         versions.parse_record(
@@ -432,6 +433,7 @@ def test_abeval_serve_args_are_accepted_by_dev_up(box, tmp_path):
                 "commit": "0" * 40,
                 "tree_clean": True,
                 "binary_sha256": versions.file_sha256(exe),
+                "runner_sha256": versions.file_sha256(runner),
                 "built_at": "2026-11-06T00:00:00Z",
                 "rustc": "rustc 1.99.0",
             }
@@ -451,6 +453,8 @@ def test_abeval_serve_args_are_accepted_by_dev_up(box, tmp_path):
     assert "/shiki_eval_v0_retry\n" in text
     assert "export SHIKI__AUTHZ__STORE_NAME=shiki-eval-v0-retry\n" in text
     assert f'exec "{exe.resolve()}"\n' in text
+    # 版と同じ commit のランナーを使う（dev-up は呼び出し側の値を使う）。
+    assert f"export SHIKI__TABULAR__RUNNER_PATH={runner.resolve()}\n" in text
     down = versions.down_plan("v0-retry", base_env=box.env)
     r = box.run(DEV_UP.read_text(encoding="utf-8"), down.argv[2:], **down.env)
     assert r.code == 0, r.err
