@@ -57,7 +57,7 @@ pub enum LlmEffort {
 
 impl LlmInvokeParams {
     /// 項目どうしの整合（`output_schema` の形・上限）。V1 の typed 契約の照合の後に呼ぶ。`pattern` の数は、この
-    /// ブロックの出力の形だけで数える（ワークフローの全体で数えるのは [`super::params_issues`] を通す保存の確かめ）。
+    /// ブロックの出力の形だけで数える（ワークフローの全体で数えるのは保存時検証の [`crate::ir::validate::validate`]）。
     ///
     /// # Errors
     /// `output_schema` が出力の形の制約に合わないとき（path は `/params/output_schema/...`）。

@@ -179,8 +179,8 @@ pub fn check_params(nt: NodeType, raw: &Value) -> Result<(), ParamsIssue> {
 /// （kind と供給する項目の整合など）を掛け、その最初の 1 件を返す（型の誤りを直す前の組み合わせを言わない）。
 /// 予約語彙（`available_stage_a() == false`）は V3 が保存を拒否するため対象外（空）。
 ///
-/// 出力の形の `pattern` の数は、この params だけで数える。ワークフローの全体で数える保存の確かめは
-/// [`params_issues_with`] を使う（BUG-226）。
+/// 出力の形の `pattern` の数は、この params だけで数える。ワークフローの全体で数えるのは保存時検証
+/// （[`crate::ir::validate::validate`]・BUG-226）。
 pub fn params_issues(nt: NodeType, raw: &Value) -> Vec<ParamsIssue> {
     params_issues_with(nt, raw, &mut PatternBudget::for_save())
 }
