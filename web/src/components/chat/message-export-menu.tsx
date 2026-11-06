@@ -23,7 +23,12 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { toast } from "@/components/ui/use-toast";
-import { SaveDraftDialog, saveFailedMessage, type SaveTarget } from "@/components/notes/save-draft-dialog";
+import {
+  SaveDraftDialog,
+  SOURCES_NOTICE,
+  saveFailedMessage,
+  type SaveTarget,
+} from "@/components/notes/save-draft-dialog";
 import { answerFileName, answerMarkdown, docxMarkdown, noteMarkdown } from "@/lib/answer-export";
 import type { Citation } from "@/lib/chat-api";
 import { isWebCitation } from "@/lib/citation";
@@ -72,7 +77,9 @@ export function MessageExportMenu({
     // 同じ会話で同じ名前の下書きがあれば、上書きせず連番の名前で開く。
     let draftName = name;
     for (let i = 2; getDraft(threadId, draftName); i++) draftName = `${name} (${i})`;
-    upsertDraft(threadId, draftName, noteMarkdown(markdown()), "user");
+    upsertDraft(threadId, draftName, noteMarkdown(markdown()), "user", undefined, {
+      sourcesNotice: hasDocSources,
+    });
     router.push(draftHref(threadId, draftName));
   };
 
@@ -203,11 +210,7 @@ export function MessageExportMenu({
         entityLabel="ファイル"
         description="回答を Word 文書（.docx）にしてドライブに保存します。"
         defaultFolder={defaultFolder}
-        notice={
-          hasDocSources
-            ? "この回答には出典の文書の内容が含まれます。共有するときは、出典の文書を読めない人に見せてよいか確かめてください。"
-            : undefined
-        }
+        notice={hasDocSources ? SOURCES_NOTICE : undefined}
       />
       {printing && imageSources ? (
         <AnswerPrint

@@ -92,36 +92,48 @@ type FenceBlock =
   | { kind: "text"; lines: string[] }
   | { kind: "fence"; info: string; prefix: string; lines: string[] };
 
-/// 行頭の入れ物（引用の `>`・リストの記号・字下げ）。フェンスはこの後ろに置かれていても開きになる。
-const CONTAINER = String.raw`((?:[ \t]*>[ \t]?|[ \t]*(?:[-*+]|\d{1,9}[.)])[ \t]+)*[ \t]*)`;
-const OPEN_FENCE = new RegExp(`^${CONTAINER}(\`{3,}|~{3,})(.*)$`);
 /// 閉じの字下げは問わない（リストの中のフェンスは、記号の行より後ろの行で字下げして書かれる）。
 const CLOSE_FENCE = /^[ \t]*(`{3,}|~{3,})[ \t]*$/;
 const QUOTE_MARKER = /^[ \t]{0,3}>[ \t]?/;
+const LIST_MARKER = /(?:[-*+]|\d{1,9}[.)])[ \t]+/y;
 
 /// フェンスを開いた行の入れ物。引用の深さと、リストの中なら本文の字下げ（記号の後ろの桁）。
 type Container = { quotes: number; listIndent: number };
 
-function containerOf(prefix: string): Container {
+/// 行頭の入れ物（引用の `>`・リストの記号・字下げ）を前から 1 回だけ読む。正規表現の繰り返しで
+/// 空白の割り振りを探させると、`> > > …` のような行で照合が指数的に遅くなるため、手で進める。
+function readContainer(line: string): Container & { prefix: string; rest: string } {
   let quotes = 0;
   let listIndent = 0;
-  let rest = prefix;
+  let i = 0;
   for (;;) {
-    const q = QUOTE_MARKER.exec(rest);
-    if (q) {
+    let j = i;
+    while (line[j] === " " || line[j] === "\t") j++;
+    if (line[j] === ">") {
+      j++;
+      if (line[j] === " " || line[j] === "\t") j++;
       quotes += 1;
       listIndent = 0;
-      rest = rest.slice(q[0].length);
+      i = j;
       continue;
     }
-    const l = /^[ \t]*(?:[-*+]|\d{1,9}[.)])[ \t]+/.exec(rest);
-    if (l) {
-      listIndent += l[0].length;
-      rest = rest.slice(l[0].length);
+    LIST_MARKER.lastIndex = j;
+    if (LIST_MARKER.test(line)) {
+      listIndent += LIST_MARKER.lastIndex - i;
+      i = LIST_MARKER.lastIndex;
       continue;
     }
-    return { quotes, listIndent };
+    return { quotes, listIndent, prefix: line.slice(0, j), rest: line.slice(j) };
   }
+}
+
+/// フェンスの開きの行なら、入れ物・フェンスの文字と長さ・情報文字列を返す。
+function openFence(line: string): (Container & { prefix: string; ch: string; len: number; info: string }) | null {
+  const c = readContainer(line);
+  const m = /^(`{3,}|~{3,})(.*)$/.exec(c.rest);
+  // バッククォートのフェンスの情報文字列にはバッククォートを含められない（インラインのコード）。
+  if (!m || (m[1][0] === "`" && m[2].includes("`"))) return null;
+  return { quotes: c.quotes, listIndent: c.listIndent, prefix: c.prefix, ch: m[1][0], len: m[1].length, info: m[2].trim() };
 }
 
 /// 入れ物の中の行なら、入れ物の記号を外した残りを返す。入れ物を抜けた行（`>` が足りない・リストの
@@ -165,14 +177,13 @@ function scanFences(md: string): FenceBlock[] {
       // 入れ物を抜けた: フェンスはここで閉じ、この行は外の行として読み直す。
       open = null;
     }
-    const m = OPEN_FENCE.exec(line);
-    // バッククォートのフェンスの情報文字列にはバッククォートを含められない（インラインのコード）。
-    if (m && !(m[2][0] === "`" && m[3].includes("`"))) {
+    const f = openFence(line);
+    if (f) {
       if (text.length > 0) blocks.push({ kind: "text", lines: text });
       text = [];
-      const block = { kind: "fence" as const, info: m[3].trim(), prefix: m[1], lines: [line] };
+      const block = { kind: "fence" as const, info: f.info, prefix: f.prefix, lines: [line] };
       blocks.push(block);
-      open = { ch: m[2][0], len: m[2].length, container: containerOf(m[1]), block };
+      open = { ch: f.ch, len: f.len, container: { quotes: f.quotes, listIndent: f.listIndent }, block };
       continue;
     }
     text.push(line);

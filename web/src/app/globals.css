@@ -778,12 +778,28 @@
   }
   /* 回答の印刷（PDF の書き出し・#1048）: 印刷の間だけアプリの画面を隠し、body 直下の印刷層だけを
      紙面に載せる。見出しの直後で改ページせず、図は途中で割らない。図の操作ボタンは載せない。 */
+  html:has(body.printing-answer),
+  body.printing-answer {
+    color-scheme: light;
+    background: oklch(0.99 0 0) !important;
+  }
   body.printing-answer > :not(.answer-print-root) {
     display: none !important;
   }
   body.printing-answer > .answer-print-root {
     position: static !important;
     width: auto !important;
+    /* ダークテーマで書き出しても紙面は白地に濃い文字（:root のライトの値・背景は印刷されないことが多い）。 */
+    color-scheme: light;
+    --background: oklch(0.99 0 0);
+    --foreground: oklch(0.21 0.006 285.9);
+    --card: oklch(1 0 0);
+    --muted: oklch(0.967 0.001 286.4);
+    --muted-foreground: oklch(0.552 0.014 285.9);
+    --border: oklch(0.92 0.004 286.3);
+    --primary: oklch(0.28 0.055 264);
+    background: var(--background);
+    color: var(--foreground);
   }
   .answer-print-root :is(h1, h2, h3) {
     break-after: avoid;
