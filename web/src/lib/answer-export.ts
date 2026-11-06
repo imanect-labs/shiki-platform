@@ -8,6 +8,13 @@
 /// - 画像は md ではそのまま、ノート・Word ではリンクにする（ノートは画像を取り込まず、Word の変換側に
 ///   外部の画像を取りに行かせない）。
 
+import type { Code, Heading, Image, Nodes, Root } from "mdast";
+import { toString } from "mdast-util-to-string";
+import remarkCjkFriendly from "remark-cjk-friendly";
+import remarkGfm from "remark-gfm";
+import remarkParse from "remark-parse";
+import { unified } from "unified";
+
 import type { Citation } from "@/lib/chat-api";
 import { citationLocator, groupCitations, isWebCitation, safeWebUrl } from "@/lib/citation";
 
@@ -50,151 +57,67 @@ export function sourcesMarkdown(
 /// Word 用の Markdown。```ui の図は Word に描けないため、プレースホルダに置き換える（引用・リストの
 /// 中の図も、その入れ物の中に置く）。画像はリンクにする（変換側に外部の画像を取りに行かせない）。
 export function docxMarkdown(md: string): string {
-  const out: string[] = [];
-  for (const block of scanFences(md)) {
-    if (block.kind === "fence" && isFigureInfo(block.info)) {
-      out.push(`${block.prefix}${FIGURE_PLACEHOLDER}`);
-    } else if (block.kind === "fence") {
-      out.push(...block.lines);
-    } else {
-      out.push(...block.lines.map(imageAsLink));
-    }
-  }
-  return out.join("\n");
+  const edits: Edit[] = [];
+  walk(parse(md), (node) => {
+    if (node.type === "code" && isFigure(node)) edits.push(editOf(node, FIGURE_PLACEHOLDER));
+    if (node.type === "image") edits.push(editOf(node, imageLink(node)));
+  });
+  return applyEdits(md, edits);
 }
 
 /// ノート用の Markdown。ノートの取り込みは画像を代替テキストにしてしまう（URL が消える）ので、
 /// 画像はリンクにして元の画像へたどれるようにする。図（```ui）はノートで描けるのでそのまま。
 export function noteMarkdown(md: string): string {
-  return scanFences(md)
-    .flatMap((block) => (block.kind === "fence" ? block.lines : block.lines.map(imageAsLink)))
-    .join("\n");
+  const edits: Edit[] = [];
+  walk(parse(md), (node) => {
+    if (node.type === "image") edits.push(editOf(node, imageLink(node)));
+  });
+  return applyEdits(md, edits);
 }
 
 const FIGURE_PLACEHOLDER = "（図はこのファイルに含まれません。チャットの回答で確認してください。）";
 
-/// `![代替](URL "題")` を `[代替](URL)` にする（代替が空なら「画像」）。インラインコードの中は触らない。
-function imageAsLink(line: string): string {
-  return line
-    .split(/(`+[^`]*`+)/)
-    .map((part, i) =>
-      i % 2 === 1
-        ? part
-        : part.replace(
-            /!\[([^\]]*)\]\(\s*(<[^>]*>|[^\s)]+)(?:\s+(?:"[^"]*"|'[^']*'))?\s*\)/g,
-            (_m, alt: string, url: string) => `[${alt.trim() || "画像"}](${url})`,
-          ),
-    )
-    .join("");
+/// チャットの表示と同じ解析（remark・GFM・日本語の強調）。図・画像・見出しの判定を表示とずらさない。
+/// 手で行を読むと、引用・リスト・字下げのコードブロックの規則（CommonMark）を取り違える。
+const parser = unified().use(remarkParse).use(remarkGfm).use(remarkCjkFriendly).freeze();
+
+function parse(md: string): Root {
+  return parser.parse(md);
 }
 
-type FenceBlock =
-  | { kind: "text"; lines: string[] }
-  | { kind: "fence"; info: string; prefix: string; lines: string[] };
+function walk(node: Nodes, visit: (node: Nodes) => void): void {
+  visit(node);
+  if ("children" in node) for (const child of node.children) walk(child, visit);
+}
 
-/// 閉じの字下げは問わない（リストの中のフェンスは、記号の行より後ろの行で字下げして書かれる）。
-const CLOSE_FENCE = /^[ \t]*(`{3,}|~{3,})[ \t]*$/;
-const QUOTE_MARKER = /^[ \t]{0,3}>[ \t]?/;
-const LIST_MARKER = /(?:[-*+]|\d{1,9}[.)])[ \t]+/y;
+/// 本文の範囲（解析の位置）を別の文字に差し替える。
+type Edit = { start: number; end: number; text: string };
 
-/// フェンスを開いた行の入れ物。引用の深さと、リストの中なら本文の字下げ（記号の後ろの桁）。
-type Container = { quotes: number; listIndent: number };
+function editOf(node: Nodes, text: string): Edit {
+  return { start: node.position?.start.offset ?? 0, end: node.position?.end.offset ?? 0, text };
+}
 
-/// 行頭の入れ物（引用の `>`・リストの記号・字下げ）を前から 1 回だけ読む。正規表現の繰り返しで
-/// 空白の割り振りを探させると、`> > > …` のような行で照合が指数的に遅くなるため、手で進める。
-function readContainer(line: string): Container & { prefix: string; rest: string } {
-  let quotes = 0;
-  let listIndent = 0;
-  let i = 0;
-  for (;;) {
-    let j = i;
-    while (line[j] === " " || line[j] === "\t") j++;
-    if (line[j] === ">") {
-      j++;
-      if (line[j] === " " || line[j] === "\t") j++;
-      quotes += 1;
-      listIndent = 0;
-      i = j;
-      continue;
-    }
-    LIST_MARKER.lastIndex = j;
-    if (LIST_MARKER.test(line)) {
-      listIndent += LIST_MARKER.lastIndex - i;
-      i = LIST_MARKER.lastIndex;
-      continue;
-    }
-    return { quotes, listIndent, prefix: line.slice(0, j), rest: line.slice(j) };
+/// 後ろの差し替えから当てる（前の位置がずれない）。位置の無い・重なる差し替えは当てない。
+function applyEdits(md: string, edits: Edit[]): string {
+  let out = md;
+  let limit = Number.POSITIVE_INFINITY;
+  for (const e of [...edits].sort((x, y) => y.start - x.start)) {
+    if (e.end <= e.start || e.end > limit) continue;
+    out = out.slice(0, e.start) + e.text + out.slice(e.end);
+    limit = e.start;
   }
+  return out;
 }
 
-/// フェンスの開きの行なら、入れ物・フェンスの文字と長さ・情報文字列を返す。
-function openFence(line: string): (Container & { prefix: string; ch: string; len: number; info: string }) | null {
-  const c = readContainer(line);
-  const m = /^(`{3,}|~{3,})(.*)$/.exec(c.rest);
-  // バッククォートのフェンスの情報文字列にはバッククォートを含められない（インラインのコード）。
-  if (!m || (m[1][0] === "`" && m[2].includes("`"))) return null;
-  return { quotes: c.quotes, listIndent: c.listIndent, prefix: c.prefix, ch: m[1][0], len: m[1].length, info: m[2].trim() };
+/// 図として描かれるフェンスか（ui / yui、`ui bar`・`yui:Bar` のような種類付きも）。
+function isFigure(node: Code): boolean {
+  return /^(?:ui|yui)(?:$|:)/i.test((node.lang ?? "").trim());
 }
 
-/// 入れ物の中の行なら、入れ物の記号を外した残りを返す。入れ物を抜けた行（`>` が足りない・リストの
-/// 字下げに届かない）なら null（そのフェンスはこの行の手前で閉じる・CommonMark のとおり）。
-function insideContainer(line: string, c: Container): string | null {
-  let rest = line;
-  for (let i = 0; i < c.quotes; i++) {
-    const q = QUOTE_MARKER.exec(rest);
-    if (!q) return null;
-    rest = rest.slice(q[0].length);
-  }
-  if (c.listIndent > 0 && rest.trim() !== "") {
-    const indent = /^[ \t]*/.exec(rest)?.[0] ?? "";
-    if (indent.replace(/\t/g, "    ").length < c.listIndent) return null;
-    return rest.slice(indent.length);
-  }
-  return rest;
-}
-
-/// 本文を「フェンスの外の行」と「フェンス（開きから閉じまで）」に分ける（CommonMark のとおり、
-/// 閉じは開きと同じ文字で同じ長さ以上・情報文字列なし。閉じが無ければ入れ物の終わりか本文の末尾まで）。
-/// 引用・リストの中のフェンスも拾う（チャットはそれも図として描く）。
-function scanFences(md: string): FenceBlock[] {
-  const blocks: FenceBlock[] = [];
-  let open: {
-    ch: string;
-    len: number;
-    container: Container;
-    block: Extract<FenceBlock, { kind: "fence" }>;
-  } | null = null;
-  let text: string[] = [];
-  for (const line of md.split("\n")) {
-    if (open) {
-      const inner = insideContainer(line, open.container);
-      if (inner !== null) {
-        open.block.lines.push(line);
-        const close = CLOSE_FENCE.exec(inner);
-        if (close && close[1][0] === open.ch && close[1].length >= open.len) open = null;
-        continue;
-      }
-      // 入れ物を抜けた: フェンスはここで閉じ、この行は外の行として読み直す。
-      open = null;
-    }
-    const f = openFence(line);
-    if (f) {
-      if (text.length > 0) blocks.push({ kind: "text", lines: text });
-      text = [];
-      const block = { kind: "fence" as const, info: f.info, prefix: f.prefix, lines: [line] };
-      blocks.push(block);
-      open = { ch: f.ch, len: f.len, container: { quotes: f.quotes, listIndent: f.listIndent }, block };
-      continue;
-    }
-    text.push(line);
-  }
-  if (text.length > 0) blocks.push({ kind: "text", lines: text });
-  return blocks;
-}
-
-/// 図として描かれるフェンスの情報文字列か（ui / yui、`ui bar`・`yui:Bar` のような種類付きも）。
-function isFigureInfo(info: string): boolean {
-  return /^(?:ui|yui)(?:$|[\s:])/i.test(info);
+/// `![代替](URL "題")` を `[代替](URL)` にする（代替が空なら「画像」）。
+function imageLink(node: Image): string {
+  const alt = escapeInline(node.alt?.trim() || "画像");
+  return `[${alt}](${linkDestination(node.url) ?? ""})`;
 }
 
 /// リンク先に入れる URL の、Markdown のリンク記法を閉じてしまう文字を符号化する
@@ -216,24 +139,11 @@ export function answerFileName(text: string, threadTitle: string | null, now = n
   return `回答_${y}-${m}-${d}`;
 }
 
-/// コードブロックの外にある最初の見出し（`#`〜`###`）の文字。強調・コード・リンク・引用番号の
-/// 記法だけを落とす（`file_name`・`10~20件` のように名前に含まれる記号は残す）。
+/// 最上位の最初の見出し（`#`〜`###`）の文字。強調・コード・リンクの記法は解析で落ち、引用番号
+/// （`[1]`）だけを消す（`file_name`・`10~20件` のように名前に含まれる記号は残る）。
 function firstHeading(text: string): string | null {
-  for (const block of scanFences(text)) {
-    if (block.kind !== "text") continue;
-    for (const line of block.lines) {
-      const h = /^ {0,3}#{1,3}[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*$/.exec(line);
-      if (!h) continue;
-      return h[1]
-        .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
-        .replace(/\[\d+\]/g, "")
-        .replace(/(\*\*|__|~~)(.+?)\1/g, "$2")
-        .replace(/(^|[^\w*])\*(\S(?:.*?\S)?)\*(?!\w)/g, "$1$2")
-        .replace(/`+/g, "")
-        .trim();
-    }
-  }
-  return null;
+  const h = parse(text).children.find((n): n is Heading => n.type === "heading" && n.depth <= 3);
+  return h ? toString(h).replace(/\[\d+\]/g, "").trim() : null;
 }
 
 /// ファイル名に使えない文字を落とし、長すぎる名前を切る。

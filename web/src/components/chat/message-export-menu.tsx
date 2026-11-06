@@ -66,7 +66,9 @@ export function MessageExportMenu({
   const [saving, setSaving] = React.useState(false);
   const defaultFolder = useDefaultSaveFolder(threadId, undefined, saveOpen);
 
-  const name = React.useMemo(() => answerFileName(text, threadTitle), [text, threadTitle]);
+  // ファイル名は押したときだけ求める（会話の全回答を描くたびに本文を解析しない）。
+  const fileName = () => answerFileName(text, threadTitle);
+  const [saveName, setSaveName] = React.useState("");
   // 出典の名前は、押した時点で解決できているものを使う（一覧の表示と同じ）。
   const markdown = () => answerMarkdown(text, citations, cited?.nameOf ?? (() => "出典"));
   // 共有の注意は社内文書を出典に持つときだけ（Web ページは誰でも読めるので注意しない）。閲覧できない
@@ -75,6 +77,7 @@ export function MessageExportMenu({
 
   const openAsNote = () => {
     // 同じ会話で同じ名前の下書きがあれば、上書きせず連番の名前で開く。
+    const name = fileName();
     let draftName = name;
     for (let i = 2; getDraft(threadId, draftName); i++) draftName = `${name} (${i})`;
     upsertDraft(threadId, draftName, noteMarkdown(markdown()), "user", undefined, {
@@ -84,7 +87,7 @@ export function MessageExportMenu({
   };
 
   const downloadMd = () => {
-    downloadBlob(new Blob([markdown()], { type: "text/markdown;charset=utf-8" }), `${name}.md`);
+    downloadBlob(new Blob([markdown()], { type: "text/markdown;charset=utf-8" }), `${fileName()}.md`);
   };
 
   const toDocx = (docName: string) => markdownToDocx({ name: docName, markdown: docxMarkdown(markdown()) });
@@ -93,6 +96,7 @@ export function MessageExportMenu({
     if (busy) return;
     setBusy(true);
     try {
+      const name = fileName();
       downloadBlob(await toDocx(name), `${name}.docx`);
     } catch (e) {
       toast({ variant: "destructive", description: errorText(e, "Word への変換に失敗しました。") });
@@ -171,7 +175,10 @@ export function MessageExportMenu({
           </DropdownMenuItem>
           <DropdownMenuItem
             className="gap-2.5 px-2.5 py-2"
-            onSelect={() => setSaveOpen(true)}
+            onSelect={() => {
+              setSaveName(fileName());
+              setSaveOpen(true);
+            }}
             data-testid="message-export-docx-drive"
           >
             <FileType className="text-blue-600 dark:text-blue-400" />
@@ -204,7 +211,7 @@ export function MessageExportMenu({
       <SaveDraftDialog
         open={saveOpen}
         onOpenChange={(v) => !saving && setSaveOpen(v)}
-        defaultName={name}
+        defaultName={saveName}
         saving={saving}
         onConfirm={(t) => void saveDocx(t)}
         entityLabel="ファイル"
