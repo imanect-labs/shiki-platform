@@ -7,7 +7,7 @@
 /// `defaultFolder` で渡す（AI の指定 → 由来ノートのフォルダ → ルートの順・#942）。任意で
 /// フォルダを選び直せる（後で移動も可）。保存自体は呼び出し側（onConfirm）が行う。
 
-import { FileWarning, Folder, FolderInput, MessageSquare, PencilLine, Save } from "lucide-react";
+import { FileWarning, Folder, FolderInput, MessageSquare, PencilLine, Save, TriangleAlert } from "lucide-react";
 import Link from "next/link";
 import * as React from "react";
 
@@ -43,6 +43,10 @@ export function saveFailedMessage(e: unknown, parentId: string | null): string {
     : "保存に失敗しました。";
 }
 
+/// 出典に社内文書を持つ回答をドライブへ置くときの注意（チャットの書き出し・下書きノートの保存で共用）。
+export const SOURCES_NOTICE =
+  "この回答には出典の文書の内容が含まれます。共有するときは、出典の文書を読めない人に見せてよいか確かめてください。";
+
 export function SaveDraftDialog({
   open,
   onOpenChange,
@@ -52,6 +56,7 @@ export function SaveDraftDialog({
   entityLabel = "ノート",
   description = "下書きをノートとして保存します。保存後はバージョン管理・共有・共同編集ができます。",
   defaultFolder,
+  notice,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -65,6 +70,8 @@ export function SaveDraftDialog({
   /// 保存先の初期値（`null`=ルート・`undefined`=解決中）。既定値を置かない（置くと解決中が
   /// ルートに化け、解決前に押した保存がルートへ作られる）。
   defaultFolder: { id: string; name: string } | null | undefined;
+  /// 保存の前に読んでほしい注意（出典付きの回答の書き出しなど）。名前欄の上に出す。
+  notice?: React.ReactNode;
 }) {
   const [name, setName] = React.useState(defaultName);
   const [folder, setFolder] = React.useState<{ id: string; name: string } | null>(null);
@@ -105,6 +112,16 @@ export function SaveDraftDialog({
         </DialogHeader>
 
         <div className="space-y-3">
+          {notice ? (
+            <p
+              role="note"
+              data-testid="save-draft-notice"
+              className="flex gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-900 dark:text-amber-200"
+            >
+              <TriangleAlert className="mt-px size-3.5 shrink-0" aria-hidden />
+              <span>{notice}</span>
+            </p>
+          ) : null}
           <label className="block space-y-1.5">
             <span className="text-sm font-medium">{entityLabel}名</span>
             <Input
