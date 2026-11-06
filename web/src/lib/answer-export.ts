@@ -23,9 +23,32 @@ export type SourceName = (c: Pick<Citation, "node_id" | "web">) => string;
 
 /// 回答の本文に「出典」の一覧を付けた Markdown。出典が無ければ本文だけ。
 export function answerMarkdown(text: string, citations: readonly Citation[], nameOf: SourceName): string {
-  const body = text.trimEnd();
   const sources = sourcesMarkdown(text, citations, nameOf);
-  return sources ? `${body}\n\n${sources}\n` : `${body}\n`;
+  if (!sources) return `${text.trimEnd()}\n`;
+  // 本文の終わりのフェンスが閉じていない（生成の停止など）と、後ろに足す出典まで図・コードに入る。
+  return `${closeTrailingFence(text.trimEnd())}\n\n${sources}\n`;
+}
+
+/// 本文の最後のコードブロックが閉じていなければ、開きと同じフェンスで閉じる（入れ物の記号も付ける）。
+function closeTrailingFence(body: string): string {
+  let last: Code | null = null;
+  walk(parse(body), (node) => {
+    if (node.type === "code" && node.position?.end.offset === body.length) last = node;
+  });
+  const code = last as Code | null;
+  const start = code?.position?.start.offset;
+  if (!code || start === undefined) return body;
+  const lineStart = body.lastIndexOf("\n", start - 1) + 1;
+  const prefix = body.slice(lineStart, start);
+  const open = /^(`{3,}|~{3,})/.exec(body.slice(start));
+  if (!open) return body; // 字下げのコードブロック（閉じが無い）
+  const lines = body.slice(start).split("\n");
+  const tail = lines[lines.length - 1].replace(/^[ \t>]*/, "");
+  const closed =
+    lines.length > 1 && new RegExp(`^${open[1][0] === "`" ? "`" : "~"}{${open[1].length},}[ \\t]*$`).test(tail);
+  if (closed) return body;
+  // 引用の中なら `>` を、リストの中なら記号の分の字下げを付けて閉じる。
+  return `${body}\n${prefix.replace(/[^>\s]/g, " ")}${open[1]}`;
 }
 
 /// 「出典」の節（見出しと箇条書き）。本文で使った出所だけを、本文で最初に引いた順に並べる。
