@@ -1062,7 +1062,8 @@ flowchart TB
     列の名前にする（列の案内は見出しにした行の番号とシートの一覧を返す・GAP-83）。数式は計算せず保存された値を読み、
     外部のブックへの参照と XML の外部の実体はたどらない。アップロードされた Excel は敵対的な入力として扱い、
     ファイルの大きさ・zip の中の数・実際に展開した大きさ（ヘッダの大きさは信じない）・読むシートを合わせた値の数・
-    値の文字の合計・表の大きさ（値のある行の数 × 列の幅）・シートごとの列の幅に上限を置く（`tabular::input` の単一定義・離れた 2 つの
+    値の文字の合計・表の大きさ（値のある行の数 × 列の幅）・シートごとの列の幅に上限を置く（`tabular::input` の単一定義。
+    実体はランナーと共有する `crates/tabular/protocol` にある・離れた 2 つの
     セルで宣言の範囲の表を確保しない・値は疎のまま持つ）。ランナーのプロセスにはアドレス空間の上限（RLIMIT_AS）も
     掛ける（DuckDB の memory_limit は Rust 側の確保に効かない・PIT-39）。
     古い形式（.xls）とパスワードを付けたファイルは読まない。編集（`csv.patch`）と新しい保存（`csv.write`）は
@@ -1554,6 +1555,7 @@ crates/
   office/          # OfficeSuite トレイト・WOPI ホスト（Collabora）
   collab/          # Yjs(yrs) 共同編集同期サーバ・DocKind（ノート md／スライド／HTML ページ）シリアライズ
   tabular/         # CSV クエリ/パッチ単一チョークポイント（DuckDB は非特権別プロセスに隔離）
+    protocol/      #   隔離ランナーと共有するプロトコルの型・Excel の入力の上限・SQL の検証（ランナーはこれだけに依存する）
   textenc/         # 文字コードの判定（BOM・UTF-8・日本の文字コードの推定）と書き戻しの単一定義
   site/            # サイト/ページ/publication・publish パイプライン・マニフェスト・フォーム定義
 ingestion-worker/  # Python: Docling パース・docx/pptx 生成/編集
