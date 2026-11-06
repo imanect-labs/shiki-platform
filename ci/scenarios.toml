@@ -140,6 +140,7 @@ crates = ["shiki-collab", "shiki-chat"]
 e2e = [
     "agent-full-stack.spec.ts",
     "ai-live-edit-video.spec.ts",
+    "chat-answer-export.spec.ts",
     "composer-create.spec.ts",
     "drive-ai-save-move.spec.ts",
     "immersive-editor.spec.ts",

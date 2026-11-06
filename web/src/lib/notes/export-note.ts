@@ -17,6 +17,7 @@ import { Fragment } from "@tiptap/pm/model";
 import type { Editor } from "@tiptap/react";
 
 import { markdownToDocx } from "@/lib/documents-api";
+import { downloadBlob } from "@/lib/download";
 import { parseEmbedPayload } from "@/components/notes/embed/types";
 import { serializeFragment } from "./markdown-serialize";
 
@@ -25,18 +26,7 @@ export function noteMarkdown(editor: Editor): string {
   return serializeFragment(editor.state.doc.content);
 }
 
-/// Blob を名前つきでダウンロードさせる（スライドの downloadBlob と同型の汎用ユーティリティ）。
-export function downloadBlob(blob: Blob, filename: string): void {
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
-  // 次の tick で revoke（Safari が click 前に revoke すると失敗するため遅延する）。
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
+export { downloadBlob };
 
 /// md をそのままダウンロードする。
 export function exportNoteMarkdown(editor: Editor, name: string): void {

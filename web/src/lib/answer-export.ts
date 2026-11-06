@@ -30,7 +30,7 @@ export function sourcesMarkdown(
   const lines = docs.map((d) => {
     const first = d.passages[0].citation;
     const name = escapeInline(nameOf(first));
-    const url = isWebCitation(first) ? safeWebUrl(first.web.url) : null;
+    const url = isWebCitation(first) ? linkDestination(safeWebUrl(first.web.url)) : null;
     const label = url ? `[${name}](${url})` : name;
     // 箇所ごとの番号と場所（Web はページそのものなので場所を繰り返さない）。
     const places = d.passages
@@ -46,19 +46,67 @@ export function sourcesMarkdown(
 }
 
 /// Word 用の Markdown。```ui の図は Word に描けないため、プレースホルダの引用に置き換える。
+/// 図として描かれるフェンス（``` / ~~~ と ui / yui。種類の付いた ```ui bar・```yui:Bar も）を対象にする。
 export function docxMarkdown(md: string): string {
-  // 3 個以上のバックティック＋`ui`（種類の付いた ```ui bar・```UI 棒 も含む）、本文、同数の閉じ。
-  const fence = /^(`{3,})[ \t]*ui\b[^\n]*\n[\s\S]*?\n\1[ \t]*$/gim;
-  return md.replace(fence, "> 図はこのファイルに含まれません。チャットの回答で確認してください。");
+  const out: string[] = [];
+  for (const block of scanFences(md)) {
+    if (block.kind === "fence" && isFigureInfo(block.info)) {
+      out.push("> 図はこのファイルに含まれません。チャットの回答で確認してください。");
+    } else {
+      out.push(...block.lines);
+    }
+  }
+  return out.join("\n");
+}
+
+type FenceBlock = { kind: "text"; lines: string[] } | { kind: "fence"; info: string; lines: string[] };
+
+/// 本文を「フェンスの外の行」と「フェンス（開きから閉じまで）」に分ける（CommonMark のとおり、
+/// 閉じは開きと同じ文字で同じ長さ以上・情報文字列なし。閉じが無ければ末尾まで）。
+function scanFences(md: string): FenceBlock[] {
+  const blocks: FenceBlock[] = [];
+  let open: { ch: string; len: number; block: Extract<FenceBlock, { kind: "fence" }> } | null = null;
+  let text: string[] = [];
+  for (const line of md.split("\n")) {
+    if (open) {
+      open.block.lines.push(line);
+      const close = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line);
+      if (close && close[1][0] === open.ch && close[1].length >= open.len) open = null;
+      continue;
+    }
+    const m = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    // バッククォートのフェンスの情報文字列にはバッククォートを含められない（インラインのコード）。
+    if (m && !(m[1][0] === "`" && m[2].includes("`"))) {
+      if (text.length > 0) blocks.push({ kind: "text", lines: text });
+      text = [];
+      const block = { kind: "fence" as const, info: m[2].trim(), lines: [line] };
+      blocks.push(block);
+      open = { ch: m[1][0], len: m[1].length, block };
+      continue;
+    }
+    text.push(line);
+  }
+  if (text.length > 0) blocks.push({ kind: "text", lines: text });
+  return blocks;
+}
+
+/// 図として描かれるフェンスの情報文字列か（ui / yui、`ui bar`・`yui:Bar` のような種類付きも）。
+function isFigureInfo(info: string): boolean {
+  return /^(?:ui|yui)(?:$|[\s:])/i.test(info);
+}
+
+/// リンク先に入れる URL の、Markdown のリンク記法を閉じてしまう文字を符号化する
+/// （`https://a/x)[偽](https://b` のような URL で、出典の一覧に別のリンクを差し込ませない）。
+function linkDestination(url: string | null): string | null {
+  return url ? url.replace(/[()[\]<>\s]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`) : null;
 }
 
 const MAX_NAME = 60;
 
 /// 書き出すファイルの名前（拡張子なし）。回答の最初の見出し → 会話の題名 → 「回答_日付」の順。
 export function answerFileName(text: string, threadTitle: string | null, now = new Date()): string {
-  const heading = firstHeading(text);
-  const base = heading ?? threadTitle?.trim() ?? "";
-  const clean = sanitizeFileName(base);
+  // 見出しが記法だけ（`## [1]` など）で空になったら、会話の題名へ進む。
+  const clean = sanitizeFileName(firstHeading(text) ?? "") || sanitizeFileName(threadTitle ?? "");
   if (clean) return clean;
   const y = now.getFullYear();
   const m = String(now.getMonth() + 1).padStart(2, "0");
@@ -66,19 +114,22 @@ export function answerFileName(text: string, threadTitle: string | null, now = n
   return `回答_${y}-${m}-${d}`;
 }
 
-/// コードブロックの外にある最初の見出し（`#`〜`###`）の文字。強調などの記法は落とす。
+/// コードブロックの外にある最初の見出し（`#`〜`###`）の文字。強調・コード・リンク・引用番号の
+/// 記法だけを落とす（`file_name`・`10~20件` のように名前に含まれる記号は残す）。
 function firstHeading(text: string): string | null {
-  let fence: string | null = null;
-  for (const line of text.split("\n")) {
-    const open = /^\s*(`{3,}|~{3,})/.exec(line);
-    if (open) {
-      if (!fence) fence = open[1][0];
-      else if (open[1][0] === fence) fence = null;
-      continue;
+  for (const block of scanFences(text)) {
+    if (block.kind !== "text") continue;
+    for (const line of block.lines) {
+      const h = /^ {0,3}#{1,3}[ \t]+(.+?)(?:[ \t]+#+)?[ \t]*$/.exec(line);
+      if (!h) continue;
+      return h[1]
+        .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+        .replace(/\[\d+\]/g, "")
+        .replace(/(\*\*|__|~~)(.+?)\1/g, "$2")
+        .replace(/(^|[^\w*])\*(\S(?:.*?\S)?)\*(?!\w)/g, "$1$2")
+        .replace(/`+/g, "")
+        .trim();
     }
-    if (fence) continue;
-    const h = /^\s{0,3}#{1,3}\s+(.+?)\s*#*\s*$/.exec(line);
-    if (h) return h[1].replace(/[*_`~]|\[(\d+)\]/g, "").replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").trim();
   }
   return null;
 }

@@ -26,11 +26,12 @@ import { toast } from "@/components/ui/use-toast";
 import { SaveDraftDialog, saveFailedMessage, type SaveTarget } from "@/components/notes/save-draft-dialog";
 import { answerFileName, answerMarkdown, docxMarkdown } from "@/lib/answer-export";
 import type { Citation } from "@/lib/chat-api";
+import { isWebCitation } from "@/lib/citation";
 import { markdownToDocx } from "@/lib/documents-api";
+import { downloadBlob } from "@/lib/download";
 import { useDefaultSaveFolder } from "@/lib/drafts/save-folder";
 import { draftHref } from "@/lib/notes/draft-nav";
 import { getDraft, upsertDraft } from "@/lib/notes/draft-store";
-import { downloadBlob } from "@/lib/notes/export-note";
 import { uploadNewFile } from "@/lib/storage";
 import { useMessageCitations } from "./citations/citation-context";
 import { footerButtonClass } from "./message-footer";
@@ -66,8 +67,9 @@ export function MessageExportMenu({
   const name = React.useMemo(() => answerFileName(text, threadTitle), [text, threadTitle]);
   // 出典の名前は、押した時点で解決できているものを使う（一覧の表示と同じ）。
   const markdown = () => answerMarkdown(text, citations, cited?.nameOf ?? (() => "出典"));
-  // 共有の注意は社内文書を出典に持つときだけ（Web ページは誰でも読めるので注意しない）。
-  const hasDocSources = cited?.groups.docs.some((d) => !d.web) ?? false;
+  // 共有の注意は社内文書を出典に持つときだけ（Web ページは誰でも読めるので注意しない）。閲覧できない
+  // 出典（withheld）は一覧には出ないが、本文はその文書を元に書かれているので注意の対象に含める。
+  const hasDocSources = citations.some((c) => c.withheld || !isWebCitation(c));
 
   const openAsNote = () => {
     // 同じ会話で同じ名前の下書きがあれば、上書きせず連番の名前で開く。

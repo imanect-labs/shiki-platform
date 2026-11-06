@@ -11,16 +11,24 @@ import { useSearchParams } from "next/navigation";
 import * as React from "react";
 
 import { MessageCitationsProvider, useMessageCitations } from "@/components/chat/citations/citation-context";
-import { segmentsFromBlocks } from "@/components/chat/message-timeline";
+import { answerImageSources, segmentsFromBlocks } from "@/components/chat/message-timeline";
 import { Markdown } from "@/components/prompt-kit/markdown";
 import { EditorLoading } from "@/components/shell/editor-loading";
 import { EmptyState } from "@/components/ui/empty-state";
 import { sourcesMarkdown } from "@/lib/answer-export";
+import type { ImageSources } from "@/lib/answer-images";
 import { getThread, getThreadMessages, type Citation } from "@/lib/chat-api";
 import { linkifyCitations } from "@/lib/citation";
 import { formatDateTime } from "@/lib/format";
 
-type Answer = { text: string; citations: Citation[]; createdAt: string; title: string | null };
+type Answer = {
+  text: string;
+  citations: Citation[];
+  /// 画像として読み込んでよい URL（チャットの表示と同じく、この回答の出典に現れたものだけ）。
+  imageSources: ImageSources;
+  createdAt: string;
+  title: string | null;
+};
 
 /// 出典の名前が解決するのを待つ上限（読めない文書があっても印刷は出す）。
 const NAME_WAIT_MS = 3000;
@@ -47,11 +55,16 @@ function AnswerPrint({ threadId }: { threadId: string }) {
         const m = messages.find((x) => x.id === messageId && x.role === "assistant");
         if (!m) return setAnswer("notfound");
         // 本文はチャットの表示・コピーと同じ組み立て（本文の区切りを段落として繋ぐ）。
-        const text = segmentsFromBlocks(m.content)
-          .flatMap((s) => (s.kind === "text" ? [s.text] : []))
-          .join("\n\n");
+        const segments = segmentsFromBlocks(m.content);
+        const text = segments.flatMap((s) => (s.kind === "text" ? [s.text] : [])).join("\n\n");
         const citations = m.content.filter((b): b is Citation => b.type === "citation");
-        setAnswer({ text, citations, createdAt: m.createdAt, title: thread?.title.trim() || null });
+        setAnswer({
+          text,
+          citations,
+          imageSources: answerImageSources(segments, citations),
+          createdAt: m.createdAt,
+          title: thread?.title.trim() || null,
+        });
       })
       .catch(() => !cancelled && setAnswer("notfound"));
     return () => {
@@ -74,7 +87,7 @@ function AnswerPrint({ threadId }: { threadId: string }) {
         Shiki の回答 ・ {formatDateTime(answer.createdAt)}
       </p>
       <MessageCitationsProvider messageKey={`print:${messageId}`} citations={answer.citations} text={answer.text}>
-        <Markdown>{linkifyCitations(answer.text, answer.citations)}</Markdown>
+        <Markdown imageSources={answer.imageSources}>{linkifyCitations(answer.text, answer.citations)}</Markdown>
         <PrintSources text={answer.text} citations={answer.citations} />
       </MessageCitationsProvider>
     </div>
