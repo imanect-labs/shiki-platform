@@ -55,6 +55,10 @@ def running_proxy(upstream_url: str, capture: bool = False):
     cfg = load_config()
     state = ProxyState(cfg, upstream=upstream_url, capture=capture)
     server = ProxyServer(state, "127.0.0.1", 0)
+    # テストでは応答のスレッドの終わりを待って閉じる（daemon のままだと、テストの後も動くスレッドがインタプリタの
+    # 終了と重なって異常終了することがある）。
+    server.daemon_threads = False
+    server.block_on_close = True
     state.write_token()
     t = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
     t.start()
@@ -671,3 +675,7 @@ def test_client_disconnect_is_charged_the_reservation():
         assert entry["usage_missing"] is True
         assert entry["cost_micros"] == entry["reserved_micros"] > 0
         assert p.control("GET", "/abeval/spend").json()["reserved_micros"] == 0
+    # 偽の上流と中継の応答のスレッドは、閉じるときに終わっている（テストの後まで書き続けない）。
+    lingering = [t for t in threading.enumerate() if "process_request_thread" in t.name]
+    assert lingering == []
+

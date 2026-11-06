@@ -1,6 +1,10 @@
 """偽の上流（ループバックの一時のポートで動く stdlib のサーバー・受けた要求を記録する）。
 
 応答は HTTP/1.0 の close 区切り（手元の中継と同じ）。`responder` で応答の中身を決める。
+
+応答のスレッドは daemon にせず、閉じるときに終わりを待つ（`block_on_close`）。daemon のままだと、相手に切られた
+応答のスレッドがテストの後も書き続け、インタプリタの終了と重なって Python が異常終了する（exit 134）。切られた
+接続への書き込み（BrokenPipeError・ConnectionResetError）は握り、標準エラーにトレースバックを出さない。
 """
 
 from __future__ import annotations
@@ -83,6 +87,16 @@ def sse_reply(**kw) -> Reply:
     )
 
 
+class QuietServer(ThreadingHTTPServer):
+    """応答のスレッドの終わりを待って閉じる・誤りのトレースバックを出さないサーバー。"""
+
+    daemon_threads = False
+    block_on_close = True
+
+    def handle_error(self, request, client_address):  # 切られた接続などを標準エラーに出さない
+        pass
+
+
 class FakeUpstream:
     def __init__(self, responder: Callable[[Received], Reply] | None = None):
         self.responder = responder or (lambda _req: sse_reply())
@@ -123,12 +137,13 @@ class FakeUpstream:
                         self.wfile.flush()
                         if reply.delay:
                             time.sleep(reply.delay)
+                except (BrokenPipeError, ConnectionResetError):
+                    pass  # 相手（中継）が途中で切った
                 finally:
                     with outer._lock:
                         outer.in_flight -= 1
 
-        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self._server.daemon_threads = True
+        self._server = QuietServer(("127.0.0.1", 0), Handler)
         self._thread = threading.Thread(
             target=self._server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True
         )
@@ -144,4 +159,5 @@ class FakeUpstream:
 
     def __exit__(self, *exc) -> None:
         self._server.shutdown()
-        self._server.server_close()
+        self._server.server_close()  # 応答のスレッドの終わりを待つ
+        self._thread.join(timeout=10)

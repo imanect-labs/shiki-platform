@@ -26,6 +26,10 @@ def running_proxy(upstream_url: str, capture: bool = False):
     cfg = load_config()
     state = ProxyState(cfg, upstream=upstream_url, capture=capture)
     server = ProxyServer(state, "127.0.0.1", 0)
+    # テストでは応答のスレッドの終わりを待って閉じる（daemon のままだと、テストの後も動くスレッドがインタプリタの
+    # 終了と重なって異常終了することがある）。
+    server.daemon_threads = False
+    server.block_on_close = True
     state.write_token()
     t = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
     t.start()
