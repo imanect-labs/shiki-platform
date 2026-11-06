@@ -69,11 +69,13 @@ export function useExportActions({
     markdownToDocx({ name, markdown: await docxMarkdown(await markdown()) });
 
   const openAsNote = reportFailure("ノートを開けませんでした。", async () => {
-    // 同じ会話で同じ名前の下書きがあれば、上書きせず連番の名前で開く。
+    // 同じ会話で同じ名前の下書きがあれば、上書きせず連番の名前で開く。名前は本文を組み立て終えてから
+    // 選ぶ（組み立ての待ちの間に別の書き出しが同じ名前を取ると、後から終わった方が上書きするため）。
     const name = await fileName();
+    const content = await noteMarkdown(await markdown());
     let draftName = name;
     for (let i = 2; getDraft(threadId, draftName); i++) draftName = `${name} (${i})`;
-    upsertDraft(threadId, draftName, await noteMarkdown(await markdown()), "user", undefined, {
+    upsertDraft(threadId, draftName, content, "user", undefined, {
       sourcesNotice: hasDocSources,
     });
     router.push(draftHref(threadId, draftName));
