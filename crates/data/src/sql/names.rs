@@ -1,6 +1,6 @@
 //! SQL 前段面の名前・式の小さな部品（列の参照・テーブル名・`ON` 式・`pg_*` の拒否）。
 
-use sqlparser::ast::{BinaryOperator, Expr, Ident, ObjectName, UnaryOperator};
+use sqlparser::ast::{BinaryOperator, Expr, Ident, ObjectName, UnaryOperator, Value};
 
 use super::ast::{Col, Loc};
 use super::parse::{at, unsupported};
@@ -17,21 +17,31 @@ pub(crate) fn strip(e: &Expr) -> &Expr {
     e
 }
 
-/// 条件式（真偽を返す式）か。
+/// 条件式（真偽を返す式）か。`TRUE` / `FALSE` と `(p) IS [NOT] TRUE / FALSE` も条件式
+/// （`(TRUE) IS NULL` を「左辺が列でない」と拒否しない・`(c ILIKE 'a%') IS NULL` は ILIKE の理由で拒否する・
+/// #1004 の生成テストで見つけた）。
 pub(crate) fn is_predicate(e: &Expr) -> bool {
-    matches!(
-        strip(e),
-        Expr::BinaryOp { .. }
-            | Expr::UnaryOp {
-                op: UnaryOperator::Not,
-                ..
-            }
-            | Expr::InList { .. }
-            | Expr::Between { .. }
-            | Expr::Like { .. }
-            | Expr::IsNull(_)
-            | Expr::IsNotNull(_)
-    )
+    match strip(e) {
+        Expr::Value(v) => matches!(v.value, Value::Boolean(_)),
+        x => matches!(
+            x,
+            Expr::BinaryOp { .. }
+                | Expr::UnaryOp {
+                    op: UnaryOperator::Not,
+                    ..
+                }
+                | Expr::InList { .. }
+                | Expr::Between { .. }
+                | Expr::Like { .. }
+                | Expr::ILike { .. }
+                | Expr::IsNull(_)
+                | Expr::IsNotNull(_)
+                | Expr::IsTrue(_)
+                | Expr::IsNotTrue(_)
+                | Expr::IsFalse(_)
+                | Expr::IsNotFalse(_)
+        ),
+    }
 }
 
 pub(crate) fn snippet(e: &Expr) -> String {
