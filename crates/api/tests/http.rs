@@ -320,6 +320,7 @@ fn base_config() -> AppConfig {
         },
         database: DatabaseConfig {
             url: "postgres://localhost/none".into(),
+            migrate_url: None,
             max_connections: 1,
         },
         auth: AuthConfig {
