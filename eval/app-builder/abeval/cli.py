@@ -3,6 +3,7 @@
 - `plan`: 計画と見積もりを出すだけ（費用を使わない）。
 - `run --mode a|b`: 既定は計画を出して終わる。`--go` を付けたときだけ、点検（doctor）→ abeval.proxy への実行の
   登録 → 取り込み → 試行 → 結果の書き出し、の順に進む（登録の上限は min(最悪 × 1.2, $10)）。
+  - `--stub`（Mode B だけ）: stub のスタックで配管を確かめる（model `default`・費用 0・abeval.proxy を使わない）。
   - `--regrade-from <版>`（Mode A だけ）: 生成せず、その版の生成をこの版のサーバーで採点し直す（V1・費用 0）。
     取り込みの sha が同じことを条件にする。
 - `grade --exp E`: 結果の IR を ir_lint（HEAD）で採点し直す（サーバー不要・S2s・S2w・S5 だけ）。
@@ -21,8 +22,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from abeval import budget as budget_mod
-from abeval import doctor, fixtures, mode_a, report
+from abeval import doctor, fixtures, mode_a, mode_b, report
 from abeval.anthropic_client import AnthropicClient
+from abeval.approvals import ApprovalPolicy
 from abeval.cache import TrialCache
 from abeval.capture import Capture, CaptureError, capture, captures_dir
 from abeval.config import Config, load_config
@@ -364,7 +366,23 @@ def _execute(args, cfg, client, ctrl, plan, version, cap, tasks, lint, catalog, 
         if out.stopped:
             print(f"[打ち切り] {out.stopped}")
         return out.trials, out.errors
-    raise SystemExit("Mode B はまだ入っていません（T9）")
+    ctx = mode_b.ModeBContext(
+        cfg=cfg,
+        client=client,
+        policy=ApprovalPolicy(frozenset(cfg.mode_b.approve_tools)),
+        lint=lint,
+        catalog=catalog,
+        cache=cache,
+        binary_sha=version.binary_sha,
+        config_sha=((cap.meta.get("fingerprint") or {}).get("llm_config_sha") if cap else None)
+        or "stub",
+        capture_sha=cap.sha if cap else "stub",
+        ctrl=None if stub else ctrl,
+        run_id=None if stub else plan.run_id,
+        stub=stub,
+        stub_plumbing=not args.no_stub_plumbing,
+    )
+    return mode_b.run(ctx, plan.trials, by_id)
 
 
 def cmd_capture(args) -> int:

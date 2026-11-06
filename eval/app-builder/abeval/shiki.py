@@ -111,8 +111,15 @@ def assert_stub_only(obj: Mapping) -> None:
 # --- SSE ---
 
 
-def iter_sse(lines: Iterator[str]) -> Iterator[dict]:
-    """SSE の行からイベント（{"id": int|None, "data": <JSON>}）を読む。コメント（:）と空の data は飛ばす。"""
+KEEPALIVE = {"type": "_keepalive"}
+
+
+def iter_sse(lines: Iterator[str], *, keepalive: bool = False) -> Iterator[dict]:
+    """SSE の行からイベント（{"id": int|None, "data": <JSON>}）を読む。コメント（:）と空の data は飛ばす。
+
+    `keepalive=True` なら、コメントの行（サーバーの keep-alive）ごとに `{"id": None, "data": KEEPALIVE}` を返す
+    （イベントの来ない間も、呼び出し側が壁時計を見られるように）。
+    """
     data: list[str] = []
     event_id: int | None = None
     for raw in lines:
@@ -128,6 +135,8 @@ def iter_sse(lines: Iterator[str]) -> Iterator[dict]:
             data, event_id = [], None
             continue
         if line.startswith(":"):
+            if keepalive and not data:
+                yield {"id": None, "data": dict(KEEPALIVE)}
             continue
         name, _, value = line.partition(":")
         value = value[1:] if value.startswith(" ") else value
@@ -455,9 +464,17 @@ class ShikiClient:
         return self._json("GET", f"/threads/{thread_id}/messages")
 
     def stream(
-        self, thread_id: str, last_event_id: int = 0, *, timeout: float = 360.0
+        self,
+        thread_id: str,
+        last_event_id: int = 0,
+        *,
+        timeout: float = 360.0,
+        keepalive: bool = False,
     ) -> Iterator[dict]:
-        """SSE（最も古い未完了の run）。終わりのイベントでサーバーが閉じる。run が無ければすぐ空で終わる。"""
+        """SSE（最も古い未完了の run）。終わりのイベントでサーバーが閉じる。run が無ければすぐ空で終わる。
+
+        `keepalive=True` なら keep-alive のコメントも疑似のイベントとして返す（`iter_sse`）。
+        """
         deadline = time.monotonic() + timeout
         if not self.logged_in:
             self.login()
@@ -475,7 +492,7 @@ class ShikiClient:
                 if r.status_code != 200:
                     r.read()
                     raise ShikiError("GET", f"/threads/{thread_id}/stream", r.status_code, r.text)
-                for ev in iter_sse(r.iter_lines()):
+                for ev in iter_sse(r.iter_lines(), keepalive=keepalive):
                     yield ev
                     if time.monotonic() >= deadline:
                         return
