@@ -110,14 +110,28 @@ test("束ねたスキルは固定した版を見せ、新しいバージョン�
   // 選択欄は固定している v1 を見せる（名前は、読めると分かってから引く）。
   const select = dialog.getByLabel("スキル（任意）");
   await expect(select.locator("option:checked")).toHaveText(`${f.skill}（v1）`, { timeout: 15_000 });
-  // 版の本文も、名前も別に読まない（スキルの一覧にあるので、選択欄は一覧の名前で出る）。
-  await page.waitForLoadState("networkidle");
-  expect(asked).toEqual(["POST /api/mini-apps/pin-updates"]);
   const pin = dialog.getByTestId("miniapp-skill-pin");
   const update = pin.getByTestId("miniapp-pin-update");
   await expect(update).toContainText("新しいバージョン v2 があります。v2 にすると、次のように変わります。", {
     timeout: 15_000,
   });
+  // 版の本文も、名前も別に読まない（スキルの一覧にあるので、選択欄は一覧の名前で出る）。pin-updates の答えが画面に
+  // 出た後も、1 秒続けて要求が増えないのを待ってから比べる（一覧を読んだ後に遅れて出る余分な要求も捕まえる）。
+  let seen = -1;
+  let quietSince = Date.now();
+  await expect
+    .poll(
+      () => {
+        if (asked.length !== seen) {
+          seen = asked.length;
+          quietSince = Date.now();
+        }
+        return Date.now() - quietSince;
+      },
+      { timeout: 10_000, intervals: [200] },
+    )
+    .toBeGreaterThanOrEqual(1_000);
+  expect(asked).toEqual(["POST /api/mini-apps/pin-updates"]);
   await expect(update.getByTestId("miniapp-pin-changes").getByRole("listitem")).toHaveText([
     "AI への指示が変わります",
     "参照するフォルダーとファイルが変わります",
