@@ -14,7 +14,8 @@ import {
 /// - きっかけのフォルダーが消えた定義を保存すると、知らせが「きっかけの設定」に直すところがあると言い、
 ///   きっかけの設定の「対象フォルダ」の下に理由が出る。キャンバスのきっかけには赤い印、上には「直すところ」の一覧が出る。
 /// - スマホ幅の一覧でも、きっかけのカードに「要修正」と「直すところ」の一覧が出て、横にはみ出さない。
-/// - ドライブから選んだファイルを消した定義を保存すると、ファイルの欄の下に理由が出て保存が止まる（GAP-91）。
+/// - ドライブから選んだファイル・フォルダーを消した定義では、選んだ行が「見つからないファイル」と呼び名を言い、欄の下で
+///   理由と直し方を 1 回だけ言う（保存の誤りと重ねない）。保存は止まる。PC とスマホで確かめる（GAP-91）。
 /// 作ったもの（ワークフロー・フォルダー・ファイル）は最後に消す。`E2E_SHOTS_DIR` を渡すとスクリーンショットを撮る。
 
 const SHOTS = process.env.E2E_SHOTS_DIR;
@@ -29,6 +30,9 @@ async function csrfHeaders(page: Page): Promise<Record<string, string>> {
 
 const MISSING_FOLDER = "選んだフォルダーが見つかりません。削除されたか、見る権限がありません。フォルダーを選び直してください。";
 const MISSING_FILE = "選んだファイルが見つかりません。削除されたか、見る権限がありません。ファイルを選び直してください。";
+/// 選んだ行が見つからないと言うときの、欄の下の理由と直し方（保存の誤りと同じ言い方で、行の呼び名と重ねない・GAP-91）。
+const FILE_HINT = "削除されたか、見る権限がありません。ファイルを選び直してください。";
+const FOLDER_HINT = "削除されたか、見る権限がありません。フォルダーを選び直してください。";
 
 test("消えたフォルダーをきっかけにした定義は、きっかけの設定の欄の下に理由を出して保存を止める（GAP-35）", async ({
   page,
@@ -144,7 +148,10 @@ test("消えたフォルダーをきっかけにした定義は、きっかけ�
   }
 });
 
-test("ドライブから選んだファイルを消した定義は、ファイルの欄の下に理由を出して保存を止める（GAP-91）", async ({ page }) => {
+test("ドライブから選んだファイルとフォルダーを消した定義は、選んだ行の呼び名と欄の下の理由を 1 回だけ出して保存を止める（GAP-91）", async ({
+  page,
+  browser,
+}) => {
   test.setTimeout(180_000);
   await page.setViewportSize({ width: 1440, height: 900 });
   await loginViaKeycloak(page);
@@ -155,8 +162,15 @@ test("ドライブから選んだファイルを消した定義は、ファイ�
   expect(file.ok(), await file.text()).toBeTruthy();
   const fileId = ((await file.json()) as { node_id: string }).node_id;
   cleanup.add(() => trashFileApi(page, fileId));
+  const created = await page.request.post("/api/folders", {
+    headers: await csrfHeaders(page),
+    data: { name: uniqueName("e2e-控え"), parent_id: null },
+  });
+  expect(created.ok(), await created.text()).toBeTruthy();
+  const folderId = ((await created.json()) as { id: string }).id;
+  cleanup.add(() => trashFolderApi(page, folderId));
 
-  // 選んだファイルが見える間は保存できる。
+  // 選んだファイルとフォルダーが見える間は保存できる。
   const name = uniqueName("read-file-gone");
   const res = await page.request.post("/api/workflows", {
     headers: await csrfHeaders(page),
@@ -166,8 +180,16 @@ test("ドライブから選んだファイルを消した定義は、ファイ�
         name,
         display_name: name,
         triggers: [{ kind: "interactive" }],
-        nodes: [{ id: "read", type: "storage.read", label: "台帳を読む", params: { file: fileId } }],
-        edges: [],
+        nodes: [
+          { id: "read", type: "storage.read", label: "台帳を読む", params: { file: fileId } },
+          {
+            id: "keep",
+            type: "storage.write",
+            label: "控えを残す",
+            params: { folder: folderId, name: "控え.txt", content: "控え" },
+          },
+        ],
+        edges: [{ from: "read", to: "keep" }],
       },
     },
   });
@@ -175,20 +197,35 @@ test("ドライブから選んだファイルを消した定義は、ファイ�
   const id = ((await res.json()) as { id: string }).id;
   cleanup.add(() => removeWorkflowApi(page, id));
 
-  // 選んだファイルを消す（保存した後に消された・見られなくなった）。保存済みの版はそのまま残る。
+  // 選んだファイルとフォルダーを消す（保存した後に消された・見られなくなった）。保存済みの版はそのまま残る。
   await trashFileApi(page, fileId);
+  await trashFolderApi(page, folderId);
 
   await page.goto(`/workflows/${id}`);
   const canvas = page.locator(".react-flow");
   await canvas.getByText("台帳を読む").first().click();
   const panel = page.getByRole("complementary", { name: "ブロックの設定" });
-  // 変更を入れると、ライブの確かめがファイルの欄の下に理由を出す（内部の位置や code は出さない）。
+  // 開いたばかり（保存の誤りをまだ受けていない）でも、行は呼び名を、欄の下は理由と直し方を言う。
+  await expect(panel.getByText("見つからないファイル", { exact: true })).toBeVisible({ timeout: 15_000 });
+  await expect(panel.getByText(FILE_HINT, { exact: true })).toBeVisible();
+  // 変更を入れると、ライブの確かめが同じ誤りを返す（キャンバスに印が出る）。保存の誤りは欄の下に重ねず、理由は 1 回だけ。
   await panel.getByLabel("ブロック名").fill("台帳を読む（月次）");
-  await expect(panel.getByText(MISSING_FILE)).toBeVisible({ timeout: 15_000 });
+  await expect(canvas.locator('[aria-label="検証エラー 1 件"]').first()).toBeVisible({ timeout: 15_000 });
+  await expect(panel.getByText(/削除されたか、/)).toHaveCount(1);
+  await expect(panel).not.toContainText(MISSING_FILE);
+  await expect(panel).not.toContainText("閲覧の権限");
   await expect(panel).not.toContainText("/params/file");
   await expect(panel).not.toContainText("ir.unknown_file");
-  await expect(canvas.locator('[aria-label="検証エラー 1 件"]')).toBeVisible();
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/workflow-file-gone-pc.png` });
+
+  // 保存先のフォルダーの欄も同じ形（行は呼び名だけ・理由は欄の下に 1 回）。
+  await page.getByRole("button", { name: "パネルを閉じる" }).click();
+  await canvas.getByText("控えを残す").first().click();
+  await expect(panel.getByText("見つからないフォルダー", { exact: true })).toBeVisible({ timeout: 15_000 });
+  await expect(panel.getByText(FOLDER_HINT, { exact: true })).toBeVisible();
+  await expect(panel.getByText(/削除されたか、/)).toHaveCount(1);
+  await expect(panel).not.toContainText(MISSING_FOLDER);
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/workflow-folder-gone-pc.png` });
 
   // 保存は止まる（保存済みの版は変わらない）。
   const saved = page.waitForResponse((r) => r.request().method() === "PUT" && r.url().endsWith(`/workflows/${id}`));
@@ -200,4 +237,35 @@ test("ドライブから選んだファイルを消した定義は、ファイ�
     ir: { nodes: { label?: string }[] };
   };
   expect(wf.ir.nodes[0].label).toBe("台帳を読む");
+
+  // スマホ幅: ブロックのシートでも同じ形で、横にはみ出さない。
+  const ctx = await browser.newContext({
+    storageState: await page.context().storageState(),
+    viewport: { width: 390, height: 844 },
+    hasTouch: true,
+    isMobile: true,
+    deviceScaleFactor: 2,
+    ignoreHTTPSErrors: true,
+  });
+  try {
+    const phone = await ctx.newPage();
+    await phone.goto(`/workflows/${id}`);
+    const flow = phone.getByTestId("workflow-mobile-flow");
+    await expect(flow).toBeVisible({ timeout: 20_000 });
+    await flow.getByRole("button", { name: /台帳を読む/ }).filter({ hasText: "台帳を読む" }).first().click();
+    const sheet = phone.getByRole("dialog");
+    await expect(sheet.getByText("見つからないファイル", { exact: true })).toBeVisible({ timeout: 15_000 });
+    await expect(sheet.getByText(FILE_HINT, { exact: true })).toBeVisible();
+    await expect(sheet.getByText(/削除されたか、/)).toHaveCount(1);
+    const overflow = await phone.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    expect(overflow).toBeLessThanOrEqual(0);
+    if (SHOTS) await phone.screenshot({ path: `${SHOTS}/workflow-file-gone-phone.png` });
+    await sheet.getByRole("button", { name: "閉じる" }).click();
+    await flow.getByRole("button", { name: /控えを残す/ }).filter({ hasText: "控えを残す" }).first().click();
+    await expect(sheet.getByText("見つからないフォルダー", { exact: true })).toBeVisible({ timeout: 15_000 });
+    await expect(sheet.getByText(/削除されたか、/)).toHaveCount(1);
+    if (SHOTS) await phone.screenshot({ path: `${SHOTS}/workflow-folder-gone-phone.png` });
+  } finally {
+    await cleanupAll(() => ctx.close());
+  }
 });

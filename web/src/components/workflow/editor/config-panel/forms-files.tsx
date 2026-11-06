@@ -25,6 +25,7 @@ import type { CsvEncoding, NameTakenPolicy, ValueExpr } from "@/generated/workfl
 import { breadcrumb, getNode, type NodeResponse } from "@/lib/storage";
 import { getSchema, runQuery, TabularLoadError, type SchemaResponse, type TableResponse } from "@/lib/tabular-api";
 import { cn } from "@/lib/utils";
+import { nodeErrorView } from "../validation";
 import { Field, FieldSelectTrigger, MoreInfo, NumberInput } from "./common";
 import type { FormProps } from "./forms-basic";
 import { paramsOf, patchParams } from "./params";
@@ -181,6 +182,38 @@ function PickedRow({
 /// 前の結果から指定している値を「選ぶ」の表示に切り替えたとき（選ぶと置き換わる）。
 const DYNAMIC_TEXT = "前の結果から指定しています（選ぶと置き換えます）";
 
+/// 選んだファイル・フォルダーを引けないときの、行の呼び名と欄の下の理由（GAP-91）。行は呼び名だけを言い、理由と
+/// 直し方は欄の下で 1 回だけ言う。言い方は保存の誤り（ir.unknown_file・ir.unknown_folder の「選んだ…が見つかりません。
+/// 削除されたか、見る権限がありません。…を選び直してください。」）とそろえる。開いたばかりの定義は保存の誤りをまだ
+/// 受けていないので、理由は行を引けなかったことから言う。
+const MISSING = {
+  file: { row: "見つからないファイル", hint: "削除されたか、見る権限がありません。ファイルを選び直してください。" },
+  folder: { row: "見つからないフォルダー", hint: "削除されたか、見る権限がありません。フォルダーを選び直してください。" },
+} as const;
+
+/// ドライブから選ぶ欄の下に出す誤り。行が見つからないと言っているときは、同じ値を指す欄そのものの保存の誤り
+/// （ir.unknown_file・ir.unknown_folder）を重ねず、理由と直し方を 1 回だけ言う（BUG-82 と同じ型）。どの値を確かめた
+/// 誤りかは、検証した時点の値で見る（選び直した後の古い誤りを、今の値の誤りとして消さない）。ほかの誤りはそのまま出す。
+function pickFieldError({
+  fieldErrors,
+  serverCheck,
+  param,
+  literal,
+  missing,
+  kind,
+}: Pick<FormProps, "fieldErrors" | "serverCheck"> & {
+  param: string;
+  literal: string | null;
+  missing: boolean;
+  kind: keyof typeof MISSING;
+}): string | undefined {
+  if (!missing || literal === null) return fieldErrors.get(param);
+  const path = `/params/${param}`;
+  const checked = (serverCheck.node?.params as Record<string, unknown> | undefined)?.[param];
+  const others = serverCheck.errors.filter((e) => !(e.path === path && checked === literal));
+  return nodeErrorView(others).fields.get(param) ?? MISSING[kind].hint;
+}
+
 type PickFieldProps = FormProps & {
   /// params の項目名（既定 `file` / `folder`）。
   param?: string;
@@ -196,6 +229,7 @@ export function FileField({
   refCandidates,
   inMapRegion,
   fieldErrors,
+  serverCheck,
   param = "file",
   label,
   hint,
@@ -216,17 +250,18 @@ export function FileField({
   const [open, setOpen] = React.useState(false);
   const { item, missing, loading } = useDriveItem(literal);
   const error = fieldErrors.get(param);
+  const pickError = pickFieldError({ fieldErrors, serverCheck, param, literal, missing, kind: "file" });
   const text = dynamic
     ? DYNAMIC_TEXT
     : loading
       ? "読み込み中…"
       : missing
-        ? "ファイルが見つかりません（削除されたか、閲覧の権限がありません）"
+        ? MISSING.file.row
         : (item?.name ?? "ファイルが選ばれていません");
   return (
     <div className="space-y-1.5">
       {mode === "pick" ? (
-        <Field label={label} error={error} hint={hint}>
+        <Field label={label} error={pickError} hint={hint}>
           <PickedRow
             label={label}
             kind="file"
@@ -273,6 +308,7 @@ export function FolderField({
   refCandidates,
   inMapRegion,
   fieldErrors,
+  serverCheck,
   param = "folder",
   label,
   hint,
@@ -285,17 +321,18 @@ export function FolderField({
   const [open, setOpen] = React.useState(false);
   const { item, missing, loading } = useDriveItem(literal);
   const error = fieldErrors.get(param);
+  const pickError = pickFieldError({ fieldErrors, serverCheck, param, literal, missing, kind: "folder" });
   const text = dynamic
     ? DYNAMIC_TEXT
     : loading
       ? "読み込み中…"
       : missing
-        ? "フォルダが見つかりません（削除されたか、権限がありません）"
+        ? MISSING.folder.row
         : (item?.name ?? (optional ? "マイドライブ（指定なし）" : "フォルダが選ばれていません"));
   return (
     <div className="space-y-1.5">
       {mode === "pick" ? (
-        <Field label={label} error={error} hint={hint}>
+        <Field label={label} error={pickError} hint={hint}>
           <PickedRow
             label={label}
             kind="folder"
