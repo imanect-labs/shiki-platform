@@ -28,6 +28,7 @@ ALLOW = re.compile(r"tenant-sql:\s*allow\((?P<reason>[^)]*)\)")
 SQL_VERB = re.compile(r"\b(select|insert|update|delete)\b", re.I)
 TABLE_REF = re.compile(r"\b(?:from|join|update|into)\s+(?:only\s+)?([a-z_][a-z0-9_]*)\b", re.I)
 TENANT_COND = re.compile(r"\btenant_(?:id|int)\b", re.I)
+ESCAPES = {"n": "\n", "t": "\t", "r": "\r"}
 CREATE_TABLE = re.compile(
     r"create\s+table\s+(?:if\s+not\s+exists\s+)?([a-z_][a-z0-9_]*)\s*\((.*?)\)\s*(?:partition\s+by[^;]*)?;",
     re.I | re.S,
@@ -73,7 +74,8 @@ def string_literals(src: str) -> list[tuple[int, str]]:
             i = end
         elif c == "'":
             if src.startswith("\\", i + 1):
-                end = src.find("'", i + 2)
+                # '\'' のようにエスケープした引用符を閉じ引用符と取り違えないよう、エスケープの次から探す。
+                end = src.find("'", i + 3)
                 i = n if end < 0 else end + 1
             elif i + 2 < n and src[i + 2] == "'":
                 i += 3
@@ -94,7 +96,8 @@ def string_literals(src: str) -> list[tuple[int, str]]:
                 if src[j] == "\\" and j + 1 < n:
                     if src[j + 1] == "\n":
                         line += 1
-                    text.append(src[j + 1])
+                    # \n や \t を文字のまま残すと "id\nFROM" が "idnFROM" になり、FROM の語境界を見失う。
+                    text.append(ESCAPES.get(src[j + 1], src[j + 1]))
                     j += 2
                     continue
                 if src[j] == "\n":
@@ -162,7 +165,7 @@ def _skip_literal(src: str, i: int) -> int:
     c = src[i]
     if c == "'":
         if src.startswith("\\", i + 1):
-            end = src.find("'", i + 2)
+            end = src.find("'", i + 3)
             return n if end < 0 else end + 1
         if i + 2 < n and src[i + 2] == "'":
             return i + 3
@@ -195,7 +198,8 @@ def violations(path: str, src: str, tables: set[str]) -> list[str]:
         if not refs or TENANT_COND.search(text):
             continue
         window = lines[max(0, line - 4) : line]
-        allowed = [m for w in window if (m := ALLOW.search(w))]
+        # 注記は行コメントの中だけを数える（文字列リテラルに同じ文言があっても例外にしない）。
+        allowed = [m for w in window if (m := ALLOW.search(w)) and "//" in w[: m.start()]]
         if allowed and allowed[-1].group("reason").strip():
             continue
         out.append(f"{path}:{line}: {', '.join(refs)}")

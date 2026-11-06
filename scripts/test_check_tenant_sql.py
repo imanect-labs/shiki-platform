@@ -81,6 +81,21 @@ class ViolationsTest(unittest.TestCase):
         self.assertEqual(lint.violations("crates/api/src/x.rs", src, tables), ["crates/api/src/x.rs:1: data_table"])
         self.assertEqual(lint.violations("crates/data/src/x.rs", src, tables), [])
 
+    def test_escaped_quote_char_does_not_desync_the_scanner(self):
+        # 空白なしで並ぶと、旧実装は '\'' の閉じ引用符を取り残し、続く '"' の " を文字列の開始と誤る。
+        src = "let c = ('\\'','\"');\nlet q = \"SELECT * FROM node WHERE id = $1\";\n"
+        self.assertEqual(self.check(src), ["x.rs:2: node"])
+
+    def test_newline_and_tab_escapes_keep_word_boundaries(self):
+        self.assertEqual(self.check('let q = "SELECT id\\nFROM node";\n'), ["x.rs:1: node"])
+        self.assertEqual(self.check('let q = "SELECT id\\tFROM node";\n'), ["x.rs:1: node"])
+
+    def test_allow_inside_a_string_literal_does_not_count(self):
+        src = 'let s = "tenant-sql: allow(文字列の中)";\nlet q = "DELETE FROM job_queue WHERE done";\n'
+        self.assertEqual(self.check(src), ["x.rs:2: job_queue"])
+        trailing = 'foo(); // tenant-sql: allow(行末のコメント)\nlet q = "DELETE FROM job_queue WHERE done";\n'
+        self.assertEqual(self.check(trailing), [])
+
     def test_test_paths(self):
         for p in ["crates/a/tests/x.rs", "crates/a/src/tests.rs", "crates/a/src/b_tests.rs", "crates/a/src/x/tests_y.rs"]:
             self.assertTrue(lint.is_test_path(p), p)
