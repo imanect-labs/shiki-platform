@@ -158,15 +158,28 @@ class Capture:
     def emit_tool(self) -> dict:
         return emit_tool(self.tools)
 
-    def write(self, root: Path | None = None) -> Path:
+    def write(self, root: Path | None = None, denylist: Path | None = None) -> Path:
+        """`data/captures/<label>/<exp>/` に書く（コミットするので、書く前に鍵の形と拒否リストの語を検査する）。"""
+        from abeval.gen_checks import load_denylist
+        from abeval.report import check_publishable
+
+        meta = {**self.meta, "label": self.label, "exp": self.exp, "max_tokens": self.max_tokens}
+        meta["sha"] = {"capture": self.sha, "system": self.system_sha, "tools": self.tools_sha}
+        words, _ = load_denylist(denylist)
+        problems = check_publishable(
+            {"system": self.system, "tools": self.tools, "meta": meta}, words, forbidden_keys=False
+        )
+        if problems:
+            raise CaptureError(
+                "取り込みに入れてはいけないものがあるので書きません（製品の system のカスタム指示など）:\n- "
+                + "\n- ".join(problems[:20])
+            )
         d = Path(root or captures_dir()) / self.label / self.exp
         d.mkdir(parents=True, exist_ok=True)
         (d / "system.txt").write_text(self.system, encoding="utf-8")
         (d / "tools.json").write_text(
             json.dumps(self.tools, ensure_ascii=False, indent=1) + "\n", encoding="utf-8"
         )
-        meta = {**self.meta, "label": self.label, "exp": self.exp, "max_tokens": self.max_tokens}
-        meta["sha"] = {"capture": self.sha, "system": self.system_sha, "tools": self.tools_sha}
         (d / "meta.json").write_text(
             json.dumps(meta, ensure_ascii=False, indent=1, sort_keys=True) + "\n", encoding="utf-8"
         )

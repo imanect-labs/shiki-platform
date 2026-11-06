@@ -685,6 +685,8 @@ def score(
     out: dict[str, Any] = {
         **ts.to_dict(),
         "key": key,
+        # stub のスタックの配管の確かめ（集計で実モデルの条件に混ぜない）。
+        "stub_run": ctx.stub,
         "chat_runs": len(chat.runs),
         "clarified": chat.clarified,
         "sse_errors": chat.sse_errors,

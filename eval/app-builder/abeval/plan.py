@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 
 from abeval.config import Config, display_path
 from abeval.ledger import Ledger, read_relay_tagged_usd, read_relay_total_usd
+from abeval.metrics import effort_name
 from abeval.pricing import micros_to_usd
 from abeval.proxy_control import ProxyControl, safe_id
 from abeval.tasks import PHRASINGS
@@ -248,7 +249,7 @@ def format_plan(plan: Plan) -> str:
     s = plan.spec
     lines = [
         f"計画: exp={s.exp} mode={s.mode} label={s.label}  課題 {len(s.tasks)}・言い方 {len(s.phrasings)}・"
-        f"試行 {s.trials}・effort {[e or 'auto' for e in s.efforts]}"
+        f"試行 {s.trials}・effort {[effort_name(s.mode, e) for e in s.efforts]}"
         + (f"・手数 {s.max_steps}" if s.max_steps else "")
         + f" → {len(plan.trials)} 試行",
         f"見積もり（推測）: 中央 ${plan.central_usd:.4f}・最悪 ${plan.worst_usd:.4f}"

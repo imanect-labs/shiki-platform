@@ -45,7 +45,13 @@ class TrialSpec:
 
     @property
     def trial_id(self) -> str:
-        parts = [self.task_id, self.phrasing, str(self.n), self.effort or "auto"]
+        # effort の指定が無いとき、Mode B は製品の Auto（auto）、Mode A は思考なし（nothink）。
+        parts = [
+            self.task_id,
+            self.phrasing,
+            str(self.n),
+            self.effort or ("auto" if self.mode == "b" else "nothink"),
+        ]
         if self.max_steps is not None:
             parts.append(f"s{self.max_steps}")
         return _SAFE.sub("-", ".".join(parts))[:128]

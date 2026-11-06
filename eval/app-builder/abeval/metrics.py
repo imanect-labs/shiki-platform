@@ -38,13 +38,45 @@ def rate(values: Iterable[Any]) -> dict:
 
 
 def condition_of(t: Mapping) -> tuple:
-    return (t.get("label"), t.get("mode"), t.get("effort"), t.get("max_steps"))
+    """条件（版・モード・effort・手数・stub の試行か）。"""
+    return (
+        t.get("label"),
+        t.get("mode"),
+        t.get("effort"),
+        t.get("max_steps"),
+        bool(t.get("stub_run")),
+    )
+
+
+def effort_name(mode: str | None, effort: str | None) -> str:
+    """effort の表示名。指定の無いときは、Mode B は製品の Auto（auto）、Mode A は思考なし（no_thinking）。"""
+    if effort:
+        return effort
+    return "auto" if mode == "b" else "no_thinking"
 
 
 def condition_name(cond: Sequence) -> str:
-    label, mode, effort, steps = cond
-    s = f"{label}/{mode}/{effort or 'auto'}"
-    return s + (f"/手数{steps}" if steps else "")
+    label, mode, effort, steps = cond[:4]
+    stub = len(cond) > 4 and cond[4]
+    s = f"{label}/{mode}/{effort_name(mode, effort)}"
+    return s + (f"/手数{steps}" if steps else "") + ("/stub" if stub else "")
+
+
+def dedupe(trials: Iterable[Mapping], *, include_stub: bool = False) -> list[Mapping]:
+    """試行をキーで重ねる（後のものを採る・キャッシュから流し直した同じ試行を二重に数えない）。stub の試行
+    （`run --stub` の配管の確かめ）は既定で除く（実モデルの条件に混ぜない）。"""
+    by_key: dict[str, Mapping] = {}
+    rest: list[Mapping] = []
+    for t in trials:
+        if t.get("stub_run") and not include_stub:
+            continue
+        key = t.get("key")
+        if isinstance(key, str):
+            by_key.pop(key, None)
+            by_key[key] = t
+        else:
+            rest.append(t)
+    return [*rest, *by_key.values()]
 
 
 def _s(t: Mapping, name: str) -> Any:

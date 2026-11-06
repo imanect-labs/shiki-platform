@@ -13,6 +13,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import re
+from pathlib import Path
 
 import httpx
 import pytest
@@ -184,8 +185,9 @@ def test_without_go_only_the_plan_and_nothing_reaches_the_upstream(env, capsys):
     assert Ledger(load_config().paths.ledger).entries() == []
 
 
-def test_go_runs_three_trials_and_the_rerun_is_served_from_the_cache(env, tmp_path):
+def test_go_runs_three_trials_and_the_rerun_is_served_from_the_cache(env, tmp_path, monkeypatch):
     fake, proxy, up, llm = env
+    monkeypatch.setenv("ABEVAL_DENYLIST", str(tmp_path / "no-denylist.txt"))
     cfg = load_config()
     assert cli.main(argv(llm, "--go"), command="run") == 0
     assert len(up.received) == 3
@@ -203,6 +205,10 @@ def test_go_runs_three_trials_and_the_rerun_is_served_from_the_cache(env, tmp_pa
     # 記録の IR は fixture の id を印に戻している。
     assert t0["irs"]["main"]["nodes"][1]["params"]["folder"] == "@folder:out"
     assert doc["versions"]["v0"]["capture_sha"] and doc["aggregates"][0]["trials"] == 3
+    # 拒否リスト（G8）が無ければ、飛ばしたことを印に残す（ホームの絶対パスは残さない）。
+    assert "G8" in doc["runs"][0]["g8_skipped"]
+    raw = (tmp_path / "results" / "e1a.json").read_text()
+    assert str(Path.home()) not in raw
     # 会話の全文は結果に入らず、キャッシュにだけある。
     text = (tmp_path / "results" / "e1a.json").read_text()
     assert THINKING_MARK not in text and TEXT_MARK not in text

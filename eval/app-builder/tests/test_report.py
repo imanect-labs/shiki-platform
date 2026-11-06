@@ -131,3 +131,29 @@ def test_summary_has_the_six_sections_and_no_transcript(tmp_path):
     assert "| a | 3/3 | 2/3 |" in text
     path = report.write_summary([d], path=tmp_path / "summary.md", iters=100)
     assert path.read_text() == report.summary_md([d], iters=100)
+
+
+def test_summary_counts_a_trial_once_and_leaves_out_stub_runs():
+    """実験をまたいで同じ試行（キャッシュから流し直した分）を二重に数えず、stub の試行を実モデルの条件に混ぜない。"""
+    same = keyed(trial("t1", 0, mode="b", effort=None, s4=True), "k1")
+    stub = keyed(trial("t2", 0, mode="b", effort=None, s4=True, stub_run=True), "k2")
+    other = keyed(trial("t3", 0, mode="b", effort=None, s4=False), "k3")
+    d1 = report.finalize(doc([same, stub], exp="e0"), iters=10)
+    d2 = report.finalize(doc([same, other], exp="e1"), iters=10)
+    text = report.summary_md([d1, d2], iters=10)
+    row = next(line for line in text.splitlines() if line.startswith("| v0/b/auto |"))
+    assert (
+        row.split("|")[2].strip() == "2"
+    )  # 試行の数: k1 と k3（k1 は 1 回・stub の k2 は入れない）
+    assert "/stub" not in text
+
+
+def test_condition_names_say_what_auto_means_per_mode():
+    from abeval.metrics import condition_name, condition_of
+
+    a = trial("t", 0, mode="a", effort=None)
+    b = trial("t", 0, mode="b", effort=None)
+    assert condition_name(condition_of(a)) == "v0/a/no_thinking"  # Mode A は思考なし
+    assert condition_name(condition_of(b)) == "v0/b/auto"  # Mode B は製品の Auto
+    s = {**b, "stub_run": True}
+    assert condition_name(condition_of(s)) == "v0/b/auto/stub"

@@ -25,6 +25,8 @@ from abeval.gen_checks import load_denylist
 from abeval.metrics import (
     aggregate,
     condition_name,
+    condition_of,
+    dedupe,
     failure_breakdown,
     paired_bootstrap,
     task_means,
@@ -68,8 +70,14 @@ def _walk(value: Any, at: str, in_ir: bool) -> Iterator[tuple[str, str | None, A
             yield from _walk(v, f"{at}/{i}", in_ir)
 
 
-def check_publishable(doc: Any, words: Sequence[str] | None) -> list[str]:
-    """結果に入れてよいか。問題の場所と理由（語そのものは出さない）の列。"""
+def check_publishable(
+    doc: Any, words: Sequence[str] | None, *, forbidden_keys: bool = True
+) -> list[str]:
+    """結果に入れてよいか。問題の場所と理由（語そのものは出さない）の列。
+
+    `forbidden_keys=False` は会話の全文の項目名の検査をしない（取り込んだ製品のツールの定義には、`messages` などの
+    名前の引数があり得るため。鍵の形と拒否リストの語は見る）。
+    """
     problems = []
     norm_words = [unicodedata.normalize("NFKC", w).casefold() for w in words or [] if w]
 
@@ -85,7 +93,7 @@ def check_publishable(doc: Any, words: Sequence[str] | None) -> list[str]:
         strings("/", doc)
     for at, key, value, in_ir in _walk(doc, "", False):
         if key is not None:
-            if not in_ir and key in FORBIDDEN_KEYS:
+            if forbidden_keys and not in_ir and key in FORBIDDEN_KEYS:
                 problems.append(f"{at}: 会話の全文・本文の項目（{key}）は結果に入れない")
             strings(f"{at}（キー）", key)
         if isinstance(value, str):
@@ -166,7 +174,7 @@ def build_result(
 
 
 def _cond(t: Mapping) -> tuple:
-    return (t.get("label"), t.get("mode"), t.get("effort"), t.get("max_steps"))
+    return condition_of(t)
 
 
 def finalize(doc: Mapping, *, iters: int = 10_000) -> dict:
@@ -269,8 +277,11 @@ LIMITS = [
 def summary_md(
     docs: Sequence[Mapping], *, budget: Mapping | None = None, iters: int = 10_000
 ) -> str:
-    """results/<exp>.json（finalize 済み）の列から summary.md を作る。"""
-    trials = [t for d in docs for t in d.get("trials") or []]
+    """results/<exp>.json（finalize 済み）の列から summary.md を作る。
+
+    試行は実験をまたいでキーで重ね（同じ試行を二重に数えない）、stub の試行（`run --stub`）は除く。
+    """
+    trials = dedupe(t for d in docs for t in d.get("trials") or [])
     rows = aggregate(trials, iters=iters)
     lines = ["# AI によるワークフロー作成の評価（GAP-30）", ""]
     lines.append(

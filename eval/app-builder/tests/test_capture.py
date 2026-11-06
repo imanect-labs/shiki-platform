@@ -260,3 +260,21 @@ def test_capture_refuses_a_real_looking_key(stack, tmp_path):
             client, ctrl, load_config(), label="v0", exp="e0", llm_config=llm, root=tmp_path
         )
     assert up.received == []
+
+
+def test_write_refuses_key_like_values_and_listed_words(tmp_path):
+    """data/captures/ はコミットするので、鍵の形の値と拒否リストの語が入った取り込みは書かない（G8・H7）。"""
+    deny = tmp_path / "deny.txt"
+    deny.write_text("架空商事\n", encoding="utf-8")
+    tools = [{"name": "emit_workflow", "description": "x", "input_schema": {"type": "object"}}]
+    ok = Capture("v0", "e0", "system", tools, 8192, {})
+    assert ok.write(tmp_path / "caps", denylist=deny).is_dir()
+    # ツールの引数の名前（messages など）は会話の全文の項目と見なさない。
+    tools2 = [{**tools[0], "input_schema": {"properties": {"messages": {"type": "array"}}}}]
+    assert Capture("v0", "e1", "system", tools2, 8192, {}).write(tmp_path / "caps", denylist=deny)
+    for system in ("指示: 架空商事の担当として答える", "鍵 " + "sk-" + "ant-" + "zz"):
+        bad = Capture("v0", "e2", system, tools, 8192, {})
+        with pytest.raises(CaptureError, match="書きません") as e:
+            bad.write(tmp_path / "caps", denylist=deny)
+        assert "架空商事" not in str(e.value)  # 語そのものは理由に出さない
+    assert not (tmp_path / "caps" / "v0" / "e2").exists()

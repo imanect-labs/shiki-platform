@@ -28,7 +28,7 @@ from abeval.approvals import ApprovalPolicy
 from abeval.cache import TrialCache
 from abeval.capture import Capture, CaptureError, capture, captures_dir
 from abeval.config import Config, canonical_json, load_config, sha256_hex
-from abeval.gen_checks import g9_supported, version_features
+from abeval.gen_checks import g9_supported, load_denylist, version_features
 from abeval.grade.static import LintCatalog, grader_version, load_catalog, run_ir_lint
 from abeval.ledger import Ledger
 from abeval.plan import RunSpec, format_plan, make_plan, mode_a_reserve_usd, register, spent
@@ -97,6 +97,13 @@ def in_scope(
         else:
             out.append({"task": t.id, "missing": g.problems})
     return ok, out
+
+
+def display_note(text: str | None) -> str | None:
+    """結果に残す注記（ホームの絶対パスを `~` にする・利用者名を残さない）。"""
+    if not text:
+        return None
+    return text.replace(str(Path.home()), "~")
 
 
 def _record_node_types(label: str, node_types: list[str]) -> None:
@@ -328,6 +335,9 @@ def cmd_run(args) -> int:
                 if e.get("run_id") == plan.run_id
             )
         )
+        _, g8_skipped = load_denylist()
+        if g8_skipped:
+            print(f"[注] {g8_skipped}（結果に g8_skipped の印を残す）")
         doc = report.build_result(
             exp=args.exp,
             trials=trials,
@@ -337,6 +347,8 @@ def cmd_run(args) -> int:
                     "finished_at": dt.datetime.now(dt.UTC).isoformat(timespec="seconds"),
                     "stub": stub,
                     "regrade_from": regrade,
+                    # 拒否リスト（G8）が無くて、課題・結果の検査を飛ばしたか（理由の文・無ければ None）。
+                    "g8_skipped": display_note(g8_skipped),
                 }
             ],
             versions={args.label: _versions_entry(version, cap, caps, node_types)},
@@ -508,7 +520,10 @@ def _run_args(ap: argparse.ArgumentParser) -> None:
     ap.add_argument("--phrasings", help=f"言い方（, 区切り・既定 {','.join(PHRASINGS)}）")
     ap.add_argument("--trials", type=int, default=3)
     ap.add_argument(
-        "--effort", action="append", help="low|medium|high|auto（重ねて指定できる・既定 medium）"
+        "--effort",
+        action="append",
+        help="low|medium|high|auto（重ねて指定できる・既定 medium。auto は Mode A では思考なし、"
+        "Mode B では製品の Auto）",
     )
     ap.add_argument(
         "--max-steps", type=int, help="手数の上限（版のサーバーを同じ値で起動しておく）"
