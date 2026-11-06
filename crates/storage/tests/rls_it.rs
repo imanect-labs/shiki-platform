@@ -156,31 +156,51 @@ fn migration_tables() -> Vec<String> {
         if path.extension().and_then(|e| e.to_str()) != Some("sql") {
             continue;
         }
-        // 空白（改行・タブを含む）を 1 つの空白に畳んでから探す（`CREATE\nTABLE` の書き方も拾う）。
-        let raw = std::fs::read_to_string(&path).expect("read").to_lowercase();
-        let sql = raw.split_whitespace().collect::<Vec<_>>().join(" ");
-        let mut rest = sql.as_str();
-        while let Some(at) = rest.find("create table") {
-            rest = &rest[at + "create table".len()..];
-            let mut words = rest.split_whitespace();
-            let mut name = words.next().unwrap_or_default();
-            if name == "if" {
-                // IF NOT EXISTS
-                words.next();
-                words.next();
-                name = words.next().unwrap_or_default();
-            }
-            let name: String = name
-                .trim_start_matches("public.")
-                .chars()
-                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
-                .collect();
-            if !name.is_empty() {
-                names.insert(name);
-            }
-        }
+        names.extend(created_tables(
+            &std::fs::read_to_string(&path).expect("read"),
+        ));
     }
     names.into_iter().collect()
+}
+
+/// SQL が `CREATE TABLE [IF NOT EXISTS] [public.]<name>` する表の名前（小文字）。
+fn created_tables(sql: &str) -> Vec<String> {
+    // 空白（改行・タブを含む）を 1 つの空白に畳んでから探す（`CREATE\nTABLE` の書き方も拾う）。
+    let sql = sql
+        .to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut out = Vec::new();
+    let mut rest = sql.as_str();
+    while let Some(at) = rest.find("create table") {
+        rest = &rest[at + "create table".len()..];
+        let mut words = rest.split_whitespace();
+        let mut name = words.next().unwrap_or_default();
+        if name == "if" {
+            // IF NOT EXISTS
+            words.next();
+            words.next();
+            name = words.next().unwrap_or_default();
+        }
+        let name: String = name
+            .trim_start_matches("public.")
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        if !name.is_empty() {
+            out.push(name);
+        }
+    }
+    out
+}
+
+#[test]
+fn created_tables_handles_line_breaks_tabs_and_qualifiers() {
+    let sql =
+        "CREATE\nTABLE a (tenant_id text);\ncreate\ttable IF NOT EXISTS\n  public.b(\n id int);\n\
+               CREATE TABLE c AS SELECT 1;\n-- create unique index d on a (x);\n";
+    assert_eq!(created_tables(sql), vec!["a", "b", "c"]);
 }
 
 fn sqlstate(err: &sqlx::Error) -> Option<String> {
