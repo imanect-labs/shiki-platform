@@ -29,7 +29,7 @@ import { Field, FieldInput, FieldSelectTrigger } from "./common";
 import { previewSchedule } from "@/lib/workflow-api";
 import { zoneLabel } from "@/lib/time-zone";
 import { DataTableSelect, isFsmTable, NoFsmTableNote, useDataTables } from "./data-tables";
-import { useDriveItem } from "./forms-files";
+import { MISSING, useDriveItem } from "./forms-files";
 import type { InputRefUsage } from "./input-schema-editor";
 import { InputsSection } from "./inputs-section";
 import { triggerErrorView } from "../validation";
@@ -414,20 +414,22 @@ function FolderEventFields({
   const [pickerOpen, setPickerOpen] = React.useState(false);
   const [folderName, setFolderName] = React.useState<string | null>(null);
   const folder = (trigger.scope as { folder?: string } | null)?.folder ?? "";
-  // 保存した定義を開き直したときも名前で出す（id は出さない）。引けなければ選び直しを促す。
+  // 保存した定義を開き直したときも名前で出す（id は出さない）。引けなければ、欄は呼び名だけを言い、理由と直し方は
+  // 欄の下で 1 回だけ言う（保存の誤り ir.unknown_folder があればそれを、まだ届いていなければ同じ理由の文を・GAP-91）。
   const saved = useDriveItem(folder || null);
+  const missing = Boolean(folder) && saved.missing && folderName === null;
   return (
     <>
       <Field
         label="対象フォルダ"
         hint="このフォルダ（配下含む）にファイルが保存されたとき（新しい版を含む）に動きます。同じファイルの続く保存は 1 回にまとめ、このワークフロー自身の保存では動きません。必須です"
-        error={error}
+        error={error ?? (missing ? MISSING.folder.hint : undefined)}
       >
         <div className="flex items-center gap-1.5">
           <FieldInput
             value={folderName ?? saved.item?.name ?? ""}
             readOnly
-            placeholder={folder && saved.missing ? "見つからないフォルダーです。選び直してください" : "フォルダを選択…"}
+            placeholder={missing ? MISSING.folder.row : "フォルダを選択…"}
             className="h-8 flex-1 text-xs max-md:text-base"
           />
           <Button

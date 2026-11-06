@@ -83,6 +83,11 @@ test("消えたフォルダーをきっかけにした定義は、きっかけ�
   await expect(canvas.getByText("受け取る").first()).toBeVisible({ timeout: 20_000 });
   await canvas.getByText("ファイルが保存されたとき").first().click();
   const triggerPanel = page.getByRole("complementary", { name: "きっかけの設定" });
+  // 開いたばかりで保存の誤りがまだ無くても、欄は呼び名だけを言い、理由と直し方を欄の下で 1 回だけ言う（GAP-91）。
+  await expect(triggerPanel.getByPlaceholder("見つからないフォルダー", { exact: true })).toHaveValue("", {
+    timeout: 15_000,
+  });
+  await expect(triggerPanel.getByText(FOLDER_HINT, { exact: true })).toBeVisible();
   // 変更を入れて保存する（手動の実行のきっかけを足す）。
   await triggerPanel.getByRole("button", { name: "きっかけを追加" }).click();
   await page.getByRole("button", { name: "保存", exact: true }).click();
@@ -96,8 +101,9 @@ test("消えたフォルダーをきっかけにした定義は、きっかけ�
   await expect(triggerPanel.getByText(MISSING_FOLDER)).toBeVisible({ timeout: 10_000 });
   await expect(triggerPanel).not.toContainText("/triggers/");
   await expect(triggerPanel).not.toContainText("ir.unknown_folder");
-  // 欄は消えたフォルダーの id を出さず、選び直しを促す。
-  await expect(triggerPanel.getByPlaceholder("見つからないフォルダーです。選び直してください")).toHaveValue("");
+  // 欄は消えたフォルダーの id を出さず、呼び名だけを言う。選び直しを促すのは欄の下の 1 か所だけ（重ねない・GAP-91）。
+  await expect(triggerPanel.getByPlaceholder("見つからないフォルダー", { exact: true })).toHaveValue("");
+  await expect(triggerPanel.getByText(/選び直してください/)).toHaveCount(1);
   // キャンバスのきっかけに赤い印、上に「直すところ」の一覧。一覧から押すと、きっかけの設定を開く。
   await expect(canvas.getByRole("img", { name: "直すところ 1 件" })).toBeVisible();
   const summary = page.getByTestId("workflow-errors");
