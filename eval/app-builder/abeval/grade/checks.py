@@ -21,6 +21,11 @@
 `{"$fixture": {"table": ref, "op": "sum"|"count", "field"?: 列, "where"?: {列: 値}, "range"?: {"field", "from", "to"}}}`
 は、fixture の定義の行（`@rel:` は fixture を作った時刻で解く）から計算する。range は両端を含む（文字の大小で比べる。
 日付 `YYYY-MM-DD` は文字の順が日付の順）。
+
+`{"$run_date": {}}` は run を始めた日（日本時間の `YYYY-MM-DD`・製品の `$from run /date` と同じ決め方）と一致する
+（形だけの正規表現にしない。決め打ちの日付を書いた IR を通さない）。`files[].name_regex` の中の `@run_date` も、
+その日付（正規表現に逃がしたもの）に置き換える。run を始めた時刻が記録に無い（古い記録）ときは、run_case を
+流し始めた時刻とその 10 分後の日付のどちらかと一致すればよい。
 """
 
 from __future__ import annotations
@@ -129,21 +134,58 @@ def fixture_value(spec: Mapping, fixtures: Mapping, now: dt.datetime) -> Any:
     raise ValueError(f"$fixture の op が違います: {op!r}")
 
 
-def expand_expected(value: Any, fixtures: Mapping, now: dt.datetime) -> Any:
-    """期待値の中の `$fixture` を計算した値にする（ほかの特別な形はそのまま）。"""
+RUN_DATE_TOKEN = "@run_date"
+
+
+def expand_expected(
+    value: Any, fixtures: Mapping, now: dt.datetime, run_dates: Sequence[str] = ()
+) -> Any:
+    """期待値の中の `$fixture` を計算した値に、`$run_date` を run を始めた日の候補（`$one_of`）にする。"""
     if isinstance(value, Mapping):
         if set(value) == {"$fixture"}:
             return fixture_value(value["$fixture"], fixtures, now)
-        return {k: expand_expected(v, fixtures, now) for k, v in value.items()}
+        if set(value) == {"$run_date"}:
+            return {"$one_of": list(run_dates)}
+        out = {k: expand_expected(v, fixtures, now, run_dates) for k, v in value.items()}
+        if isinstance(out.get("name_regex"), str) and RUN_DATE_TOKEN in out["name_regex"]:
+            alt = "|".join(re.escape(d) for d in run_dates) or "(?!)"
+            out["name_regex"] = out["name_regex"].replace(RUN_DATE_TOKEN, f"(?:{alt})")
+        return out
     if isinstance(value, list):
-        return [expand_expected(v, fixtures, now) for v in value]
+        return [expand_expected(v, fixtures, now, run_dates) for v in value]
     return value
+
+
+JST = dt.timezone(dt.timedelta(hours=9))
+
+
+def run_start_dates(started: Sequence[str | None], fallback: str | None) -> list[str]:
+    """run を始めた日（日本時間）の候補。始めた時刻が無ければ、流し始めた時刻とその 10 分後の日。"""
+    out: list[str] = []
+
+    def add(t: dt.datetime) -> None:
+        d = t.astimezone(JST).date().isoformat()
+        if d not in out:
+            out.append(d)
+
+    for s in started:
+        if s:
+            add(dt.datetime.fromisoformat(s.replace("Z", "+00:00")))
+    if not out and fallback:
+        t = dt.datetime.fromisoformat(fallback.replace("Z", "+00:00"))
+        add(t)
+        add(t + dt.timedelta(minutes=10))
+    return out
 
 
 # --- 値の比べ方 ---
 
 
 def equals(actual: Any, expected: Any) -> bool:
+    if isinstance(expected, Mapping) and set(expected) == {"$one_of"}:
+        return actual is not MISSING and any(
+            normalize(actual) == normalize(w) for w in expected["$one_of"]
+        )
     if isinstance(expected, Mapping) and set(expected) == {"$regex"}:
         return (
             isinstance(actual, str | int | float)
@@ -329,6 +371,8 @@ class CaseResult:
     files: list[Mapping]
     rows_rerun: Mapping[str, list] | None = None
     notes: list[str] = field(default_factory=list)
+    # run を始めた日（日本時間の YYYY-MM-DD）の候補（`$run_date` と name_regex の `@run_date`）。
+    run_dates: list[str] = field(default_factory=list)
 
 
 def status_result(expected: str, statuses: Sequence[str]) -> CheckResult:
@@ -345,7 +389,7 @@ def evaluate(
     expect: Mapping, result: CaseResult, fixtures: Mapping, now: dt.datetime
 ) -> list[CheckResult]:
     """run_case の期待を全部照合する（S4 は全部が ok）。"""
-    exp = expand_expected(dict(expect), fixtures, now)
+    exp = expand_expected(dict(expect), fixtures, now, result.run_dates)
     out = [status_result(exp.get("status", "succeeded"), result.statuses)]
     for c in exp.get("checks") or []:
         out.append(check_pointer(c, result.subject))

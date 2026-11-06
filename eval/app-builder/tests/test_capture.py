@@ -223,7 +223,8 @@ def test_capture_end_to_end_costs_nothing_and_reaches_no_upstream(stack, tmp_pat
         assert ctrl.spend()["runs"] == {}  # 取り込みの実行は登録を外す
     assert up.received == []
     assert fake.llm_replies == [200, 200]
-    assert c.system == SYSTEM + today_note(FIXED, "Asia/Tokyo")
+    assert c.system == SYSTEM + today_note(cfg.capture_date, "Asia/Tokyo")
+    assert cfg.capture_date == dt.date(2026, 11, 4)  # eval.toml の [capture] fixed_date
     assert c.meta["original_dates"] == ["2026-11-06"]
     assert c.meta["fingerprint"]["custom_instructions"] == "empty"
     assert c.meta["fingerprint"]["fixtures"]["tables"] == ["日報"]

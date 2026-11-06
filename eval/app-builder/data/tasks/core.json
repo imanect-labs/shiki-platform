@@ -69,7 +69,7 @@
       "files": [
        {
         "folder": "out",
-        "name_regex": "^要約-\\d{4}-\\d{2}-\\d{2}( \\(\\d+\\))?\\.md$",
+        "name_regex": "^要約-@run_date( \\(\\d+\\))?\\.md$",
         "count": 1,
         "contains": [
          "会議室の予約方法"
@@ -4950,7 +4950,7 @@
           "code": "E-01",
           "borrower": "松本",
           "loaned_on": {
-           "$regex": "^\\d{4}-\\d{2}-\\d{2}$"
+           "$run_date": {}
           }
          }
         ]
@@ -5309,7 +5309,7 @@
           "code": "E-01",
           "borrower": "松本",
           "returned_on": {
-           "$regex": "^\\d{4}-\\d{2}-\\d{2}$"
+           "$run_date": {}
           }
          },
          {

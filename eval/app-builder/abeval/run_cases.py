@@ -174,6 +174,7 @@ def _run_once(
         role,
         run.get("scheduled_at"),
         run.get("fail_reason"),
+        run.get("started_at") or run.get("created_at"),
     )
 
 

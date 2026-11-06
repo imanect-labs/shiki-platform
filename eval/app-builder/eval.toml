@@ -69,8 +69,10 @@ poll_secs = 2
 run_case_timeout_secs = 180
 
 [capture]
-# 取り込んだ system の「今日の日付」の一文を置き換える固定の日付（課題の scheduled_at と同じ 2026-11-09 の月曜）。
-fixed_date = "2026-11-09"
+# 取り込んだ system の「今日の日付」の一文を置き換える固定の日付（Mode A のモデルが見る「今日」）。課題の
+# scheduled_at（2026-11-09 の月曜）と違う週の日にする（同じだと、「先週」や「今日」を決め打ちした IR も
+# run_case を通ってしまう・tests/test_core_tasks.py が確かめる）。
+fixed_date = "2026-11-04"
 
 # 1 試行の見積もり（USD・推測。E0 の実測で置き換える・GAP-30 §13）。plan は最悪で上限を判定する。
 [estimates.a]

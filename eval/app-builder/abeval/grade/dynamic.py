@@ -27,7 +27,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from abeval.grade.checks import CaseResult, normalize, text_of
+from abeval.grade.checks import CaseResult, normalize, run_start_dates, text_of
 from abeval.grade.static import LLM_NODE_TYPES, Finding
 from abeval.tasks import Expect
 
@@ -58,6 +58,8 @@ class RunRecord:
     workflow: str | None = None
     scheduled_at: str | None = None
     fail_reason: str | None = None
+    # run を始めた時刻（`started_at`・無ければ `created_at`。古い記録には無い）。
+    started_at: str | None = None
 
     def outputs(self) -> dict[str, Any]:
         """ノード id → 最後に成功した step の出力。"""
@@ -93,6 +95,7 @@ class CaseRecord:
                 workflow=r.get("workflow"),
                 scheduled_at=r.get("scheduled_at"),
                 fail_reason=r.get("fail_reason"),
+                started_at=r.get("started_at"),
             )
             for r in d["runs"]
         ]
@@ -120,6 +123,7 @@ class CaseRecord:
             rows_before=self.rows_before,
             files=self.files,
             rows_rerun=self.rows_rerun,
+            run_dates=run_start_dates([r.started_at for r in self.runs], self.now),
         )
 
 

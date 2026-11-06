@@ -188,8 +188,8 @@ class Config:
     approve_tools: tuple[str, ...]
     mode_a: ModeA = ModeA()
     mode_b: ModeB = ModeB()
-    # 取り込んだ system の「今日の日付」を置き換える固定の日付。
-    capture_date: dt.date = dt.date(2026, 11, 9)
+    # 取り込んだ system の「今日の日付」を置き換える固定の日付（課題の scheduled_at と違う週の日）。
+    capture_date: dt.date = dt.date(2026, 11, 4)
     estimates: dict = field(default_factory=lambda: dict(DEFAULT_ESTIMATES))
 
 
@@ -361,7 +361,7 @@ def _mode_b(sec: dict, approve: tuple[str, ...]) -> ModeB:
 
 
 def _capture_date(sec: dict) -> dt.date:
-    v = sec.get("fixed_date", "2026-11-09")
+    v = sec.get("fixed_date", "2026-11-04")
     try:
         return dt.date.fromisoformat(str(v))
     except ValueError as e:

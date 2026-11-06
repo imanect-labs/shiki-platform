@@ -8,6 +8,7 @@ LLM に依存する分類・このマシンで動かない機能を使わない�
 from __future__ import annotations
 
 import datetime as dt
+import json
 
 import pytest
 
@@ -93,6 +94,27 @@ def test_scheduled_tasks_fix_the_date_with_scheduled_at(tasks):
     assert weekly.scheduled_at
     for tid in DATE_DEPENDENT:
         assert "cap:scheduled_at" in tasks[tid].requires, tid
+
+
+def test_the_fixed_capture_date_is_not_in_a_scheduled_week(tasks):
+    """Mode A のモデルが見る「今日」が、run_case の予定の日と同じ週だと、決め打ちの日付の IR も通ってしまう。"""
+    from abeval.config import load_config
+
+    fixed = load_config().capture_date
+    for t in tasks.values():
+        for c in t.run_cases:
+            for s in c.steps:
+                if s.scheduled_at:
+                    day = dt.date.fromisoformat(s.scheduled_at[:10])
+                    assert day.isocalendar()[:2] != fixed.isocalendar()[:2], (t.id, c.id)
+
+
+def test_dates_written_by_the_run_are_matched_against_the_run_date(tasks):
+    """実行の日に決まる値（貸出日・返却日・要約のファイル名）は、形の正規表現でなく run を始めた日で照合する。"""
+    text = json.dumps({k: tasks[k].raw for k in ("app11-checkout", "app11-return")})
+    assert '"$run_date"' in text and "\\\\d{4}-" not in text
+    files = tasks["basic-summary-file"].run_cases[0].expect["files"][0]
+    assert "@run_date" in files["name_regex"]
 
 
 def test_classification_run_cases_are_llm_dependent(tasks):

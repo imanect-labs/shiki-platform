@@ -246,3 +246,52 @@ def test_recorded_null_runs_fail_s4_per_task():
         if case.expect.get("flow_through", True):
             assert not ok, f"null が {task_id}/{case_id} を通った"
     assert by_task and all(not all(v) for v in by_task.values()), by_task
+
+
+# --- run を始めた日 ---
+
+
+def test_run_date_matches_the_day_the_run_started_in_japan_time():
+    from abeval.grade.checks import run_start_dates
+
+    # 2026-11-08T15:30Z は日本時間で 11-09。
+    dates = run_start_dates(["2026-11-08T15:30:00Z"], None)
+    assert dates == ["2026-11-09"]
+    exp = {
+        "rows": [{"table": "t", "match": [{"d": {"$run_date": {}}}]}],
+        "files": [{"folder": None, "name_regex": "^要約-@run_date\\.md$"}],
+    }
+    ok = CaseResult(
+        ["succeeded"],
+        {},
+        {"t": [{"id": "1", "data": {"d": "2026-11-09"}}]},
+        {},
+        [{"folder": None, "name": "要約-2026-11-09.md"}],
+        run_dates=dates,
+    )
+    assert all(c.ok for c in evaluate(exp, ok, {}, NOW))
+    # 決め打ちの日付（形は合う）は通らない。
+    bad = CaseResult(
+        ["succeeded"],
+        {},
+        {"t": [{"id": "1", "data": {"d": "2026-11-04"}}]},
+        {},
+        [{"folder": None, "name": "要約-2026-11-04.md"}],
+        run_dates=dates,
+    )
+    assert [c.kind for c in evaluate(exp, bad, {}, NOW) if not c.ok] == [
+        "rows:match",
+        "files:exists",
+    ]
+    # 日付の候補が無ければ（記録が無い）、どれにも合わない。
+    none = CaseResult(["succeeded"], {}, ok.rows, {}, ok.files)
+    assert [c.ok for c in evaluate(exp, none, {}, NOW)] == [True, False, False]
+
+
+def test_run_date_falls_back_to_when_the_case_started():
+    from abeval.grade.checks import run_start_dates
+
+    # 古い記録（run の開始の時刻が無い）は、流し始めた時刻とその 10 分後の日（日付が変わる間際）。
+    assert run_start_dates([None], "2026-11-08T14:55:00+00:00") == ["2026-11-08", "2026-11-09"]
+    assert run_start_dates([None], "2026-11-08T10:00:00+00:00") == ["2026-11-08"]
+    assert run_start_dates([], None) == []
