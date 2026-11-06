@@ -76,9 +76,16 @@ pub(super) fn html_to_markdown(html: &str, url: &str) -> Article {
         let markdown = finish(&article.content, &math);
         if markdown.chars().count() >= MIN_EXTRACTED_CHARS {
             return Article {
-                title: non_empty(&article.title),
-                byline: article.byline.as_deref().and_then(byline),
-                site_name: article.site_name.as_deref().and_then(non_empty),
+                // 見出しの数式は本文と同じく目印になっているので戻す（byline は長さの判定より前に戻す）。
+                title: non_empty(&math.restore(&article.title)),
+                byline: article
+                    .byline
+                    .as_deref()
+                    .and_then(|b| byline(&math.restore(b))),
+                site_name: article
+                    .site_name
+                    .as_deref()
+                    .and_then(|s| non_empty(&math.restore(s))),
                 published: article.published_time.as_deref().and_then(non_empty),
                 markdown,
                 extractor: "readability",
@@ -87,7 +94,7 @@ pub(super) fn html_to_markdown(html: &str, url: &str) -> Article {
     }
 
     Article {
-        title: title_of(&cleaned),
+        title: title_of(&cleaned).map(|t| math.restore(&t)),
         byline: None,
         site_name: None,
         published: None,
@@ -178,7 +185,12 @@ fn normalize(markdown: &str) -> String {
         if fence {
             in_fence = !in_fence;
         }
-        let line = slim_links(line);
+        // コードの中の `a[0]()` をリンクとして畳まない（`<pre>` がフェンスになるぶん、コードは増えた）。
+        let line = if in_fence || fence {
+            line.to_string()
+        } else {
+            slim_links(line)
+        };
         let line = if !in_fence && !fence && line.trim_start().starts_with('|') {
             squeeze_table_row(&line, is_table_separator(&line))
         } else {
@@ -208,22 +220,31 @@ fn is_table_separator(line: &str) -> bool {
             .all(|c| matches!(c, '|' | '-' | ':' | ' ' | '\t'))
 }
 
-/// 表の 1 行の、列幅合わせの空白を詰める（`|  a   |` → `| a |`）。長い罫線（`| ---- |` → `| --- |`）を
+/// 表の 1 行の、列幅合わせの空白を詰める（`|  a   |` → `| a |`）。詰めるのは `|` に接する空白だけで、
+/// セルの中身（インラインコードの `` `a   b` `` など）の空白は変えない。長い罫線（`| ---- |` → `| --- |`）を
 /// 詰めるのは区切り行だけ（データ行の `a----b` のような値や URL は変えない）。
 fn squeeze_table_row(line: &str, separator: bool) -> String {
+    let chars: Vec<char> = line.trim().chars().collect();
     let mut out = String::with_capacity(line.len());
-    let mut prev_space = false;
     let mut dashes = 0usize;
-    for c in line.trim().chars() {
+    let mut i = 0usize;
+    while i < chars.len() {
+        let c = chars[i];
         if c == ' ' {
-            if !prev_space {
-                out.push(' ');
+            let start = i;
+            while i < chars.len() && chars[i] == ' ' {
+                i += 1;
             }
-            prev_space = true;
+            let touches_pipe = (start > 0 && chars[start - 1] == '|') || chars.get(i) == Some(&'|');
+            if touches_pipe {
+                out.push(' ');
+            } else {
+                out.extend(&chars[start..i]);
+            }
             dashes = 0;
             continue;
         }
-        prev_space = false;
+        i += 1;
         if c == '-' && separator {
             dashes += 1;
             if dashes > 3 {

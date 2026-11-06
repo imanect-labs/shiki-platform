@@ -111,17 +111,19 @@ fn tidy_latex(latex: &str) -> Option<String> {
         return None;
     }
     let mut out = String::with_capacity(collapsed.len());
-    let mut chars = collapsed.chars().peekable();
+    let mut chars = collapsed.chars();
     while let Some(c) = chars.next() {
         match c {
-            '\\' if chars.peek() == Some(&'|') => {
-                chars.next();
-                out.push_str("\\Vert ");
-            }
-            '\\' if chars.peek() == Some(&'$') => {
-                chars.next();
-                out.push_str("\\$");
-            }
+            // `\` はその次の 1 文字と組で読む（`\\|` は「改行」＋「縦線」で、二重縦線 `\|` ではない）。
+            '\\' => match chars.next() {
+                Some('|') => out.push_str("\\Vert "),
+                Some('$') => out.push_str("\\$"),
+                Some(next) => {
+                    out.push('\\');
+                    out.push(next);
+                }
+                None => out.push('\\'),
+            },
             '|' => out.push_str("\\vert "),
             '$' => out.push_str("\\$"),
             _ => out.push(c),
@@ -296,18 +298,21 @@ fn lazy_source(img: &Selection<'_>, with_srcset: bool) -> Option<String> {
     }
     for attr in LAZY_SRCSET_ATTRS {
         if let Some(v) = img.attr(attr) {
-            let first = v
-                .split(',')
-                .next()
-                .unwrap_or_default()
-                .split_whitespace()
-                .next();
-            if let Some(url) = first.filter(|u| !u.starts_with("data:")) {
+            if let Some(url) = first_srcset_url(&v).filter(|u| !u.starts_with("data:")) {
                 return Some(url.to_string());
             }
         }
     }
     None
+}
+
+/// srcset の先頭の候補の URL（WHATWG の構文に沿う: 先頭の `,` と空白を飛ばし、URL は次の空白まで。
+/// URL の末尾の `,` は候補の区切り。URL の中の `,`（`w_800,c_fill` など）は区切りではない）。
+fn first_srcset_url(srcset: &str) -> Option<&str> {
+    let s = srcset.trim_start_matches(|c: char| c == ',' || c.is_whitespace());
+    let end = s.find(char::is_whitespace).unwrap_or(s.len());
+    let url = s[..end].trim_end_matches(',');
+    (!url.is_empty()).then_some(url)
 }
 
 /// `<code>` を持たない `<pre>` を `<pre><code>` に包む（htmd がフェンスにするのはこの形だけ）。
@@ -411,6 +416,38 @@ mod tests {
         assert_eq!(img.attr("src").as_deref(), Some("/img/a.png"));
         assert!(!img.has_attr("loading"));
         assert_eq!(img.attr("class").as_deref(), Some("thumb"));
+    }
+
+    #[test]
+    fn srcset_keeps_commas_inside_urls() {
+        assert_eq!(
+            first_srcset_url(
+                "https://res.example.com/w_800,c_fill/a.jpg 800w, https://res.example.com/w_400/a.jpg 400w"
+            ),
+            Some("https://res.example.com/w_800,c_fill/a.jpg")
+        );
+        assert_eq!(
+            first_srcset_url("  /only.png"),
+            Some("/only.png"),
+            "記述子の無い候補"
+        );
+        assert_eq!(
+            first_srcset_url("/a.png, /b.png"),
+            Some("/a.png"),
+            "末尾の `,` は区切り"
+        );
+        assert_eq!(first_srcset_url(" , "), None);
+    }
+
+    #[test]
+    fn backslash_pairs_are_read_together() {
+        // `\\|` は改行＋縦線、`\\$` は改行＋ドル記号。二重縦線 `\|`・`\$` と取り違えない。
+        assert_eq!(tidy_latex(r"a \\| b").as_deref(), Some(r"a \\\vert  b"));
+        assert_eq!(tidy_latex(r"a \\$ b").as_deref(), Some(r"a \\\$ b"));
+        assert_eq!(tidy_latex(r"\| \$").as_deref(), Some(r"\Vert  \$"));
+        let mut s = MathStash::new();
+        let m = s.push(r"x \\| y", true).unwrap();
+        assert_eq!(s.restore(&m), r"$$x \\\vert  y$$");
     }
 
     #[test]
@@ -591,6 +628,20 @@ mod tests {
         assert!(out.contains("(https://example.com/a----b)"), "{out}");
         assert!(out.contains("x----y"), "{out}");
         assert!(out.contains("| --- |"), "{out}");
+    }
+
+    #[test]
+    fn inline_code_in_table_cells_keeps_its_spacing() {
+        let out =
+            md(r#"<table><tr><th>Code</th></tr><tr><td><code>a   b</code></td></tr></table>"#);
+        assert!(out.contains("`a   b`"), "{out}");
+    }
+
+    #[test]
+    fn code_fences_are_not_link_slimmed() {
+        let out = md("<pre><code>callbacks[0]()\nitems[i](x \"t\")</code></pre>");
+        assert!(out.contains("callbacks[0]()"), "{out}");
+        assert!(out.contains("items[i](x \"t\")"), "{out}");
     }
 
     #[test]
