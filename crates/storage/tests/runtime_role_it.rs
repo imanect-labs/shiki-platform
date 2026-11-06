@@ -151,8 +151,44 @@ async fn runtime_role_cannot_run_ddl_truncate_or_analyze() {
     .await;
     assert_sqlstate(&mut conn, "DROP TABLE tenant", "42501").await;
     assert_sqlstate(&mut conn, "TRUNCATE audit_log", PERMISSION_DENIED).await;
+
     // 素の ANALYZE は所有者でないので黙って飛ばされる（エラーにならず WARNING だけ）。
-    // 統計を取り直す経路は shiki_analyze だけにする（下のテスト）。
+    // 統計を取り直す経路は shiki_analyze だけにする（下のテスト）。飛ばされたことは、ANALYZE が
+    // 同期的に書き換える pg_class.reltuples（未収集なら -1）で確かめる。
+    let probe = format!("runtime_role_analyze_{}", uuid::Uuid::new_v4().simple());
+    sqlx::query("RESET ROLE").execute(&mut conn).await.unwrap();
+    sqlx::query(&format!(
+        "CREATE TABLE {probe} AS SELECT g AS id FROM generate_series(1, 100) g"
+    ))
+    .execute(&mut conn)
+    .await
+    .unwrap();
+    sqlx::query(&format!("GRANT SELECT ON {probe} TO shiki_runtime"))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    sqlx::query("SET ROLE shiki_runtime")
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    sqlx::query(&format!("ANALYZE {probe}"))
+        .execute(&mut conn)
+        .await
+        .expect("素の ANALYZE はエラーにならず飛ばされる");
+    sqlx::query("RESET ROLE").execute(&mut conn).await.unwrap();
+    let reltuples: f32 = sqlx::query_scalar("SELECT reltuples FROM pg_class WHERE relname = $1")
+        .bind(&probe)
+        .fetch_one(&mut conn)
+        .await
+        .unwrap();
+    sqlx::query(&format!("DROP TABLE {probe}"))
+        .execute(&mut conn)
+        .await
+        .unwrap();
+    assert!(
+        reltuples < 0.0,
+        "実行時ロールの素の ANALYZE で統計が取り直された（reltuples = {reltuples}）"
+    );
 }
 
 #[tokio::test]

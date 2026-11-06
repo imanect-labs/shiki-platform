@@ -12,7 +12,14 @@
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'shiki_runtime') THEN
-        CREATE ROLE shiki_runtime NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
+        BEGIN
+            CREATE ROLE shiki_runtime NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
+        EXCEPTION
+            -- ロールはクラスタ共通なので、新規のクラスタで複数の DB の migration が同時に走ると
+            -- （結合テストが DB を作り分けるとき等）、存在確認の後に別の接続が先に作ることがある。
+            WHEN duplicate_object OR unique_violation THEN
+                NULL;
+        END;
     END IF;
 END
 $$;
