@@ -37,7 +37,7 @@ struct Env {
 }
 
 async fn setup() -> Option<Env> {
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return None;
     };
@@ -72,7 +72,7 @@ fn service(env: &Env, authz: ScriptedAuthz, config: RagConfig) -> SearchService 
 /// node＋rag_chunk 行を直接作り、FakeVectorStore に指定スコアのベクタを積む。
 /// クエリベクトル（`fake_vector(query)`）との内積が `weight` になるよう仕込む。
 async fn seed_chunk(env: &Env, name: &str, query: &str, weight: f32, folder_tag: &str) -> Uuid {
-    seed_chunk_in_org(env, name, query, weight, folder_tag, &env.ctx.org).await
+    seed_chunk_in_org(env, name, query, weight, folder_tag, env.ctx.org()).await
 }
 
 /// `seed_chunk` の org 指定版。`env.ctx.org` 以外を渡すと、**同一テナントの別 org** の文書になる
@@ -91,10 +91,10 @@ async fn seed_chunk_in_org(
         "insert into blob (tenant_id, org, sha256, size_bytes, content_type, object_key, refcount) \
          values ($1, $2, $3, 10, 'text/plain', $4, 1)",
     )
-    .bind(&ctx.tenant_id)
+    .bind(ctx.tenant_id())
     .bind(org)
     .bind(&sha)
-    .bind(format!("{}/{}/{}", ctx.tenant_id, org, sha))
+    .bind(format!("{}/{}/{}", ctx.tenant_id(), org, sha))
     .execute(&env.pool)
     .await
     .unwrap();
@@ -105,10 +105,10 @@ async fn seed_chunk_in_org(
          values ($1, $2, 'file', $3, $4, 10, 'text/plain', $5, $5) returning id",
     )
     .bind(org)
-    .bind(&ctx.tenant_id)
+    .bind(ctx.tenant_id())
     .bind(name)
     .bind(&sha)
-    .bind(&ctx.principal.id)
+    .bind(&ctx.principal().id)
     .fetch_one(&env.pool)
     .await
     .unwrap();
@@ -124,7 +124,7 @@ async fn seed_chunk_in_org(
          values ($1, $2, $3, $4, 1, null, 'leaf', 0, 1, '{}', $5, 10, $6, 'fake-model')",
     )
     .bind(chunk_id)
-    .bind(&ctx.tenant_id)
+    .bind(ctx.tenant_id())
     .bind(org)
     .bind(node_id)
     .bind(format!("{name} の本文"))
@@ -284,7 +284,7 @@ async fn readable_set_overflow_falls_back_to_tenant_only() {
     // 可読集合が上限（既定 500）を超える → pre-filter 放棄・tenant-only 縮退。
     let authz = ScriptedAuthz {
         readable_folders: (0..600)
-            .map(|i| format!("folder:{}|f{i}", env.ctx.tenant_id))
+            .map(|i| format!("folder:{}|f{i}", env.ctx.tenant_id()))
             .collect(),
         readable_files: vec![],
         denied_files: HashSet::new(),

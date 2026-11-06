@@ -54,13 +54,13 @@ impl ChatStore {
         )
         .bind(run_id)
         .bind(thread_id)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .fetch_optional(&self.db)
         .await
         .map_err(|e| map_db(&e))?;
         let pending = match row {
             None => return Err(ChatError::NotFound),
-            Some((a, _)) if a != ctx.principal.id => return Err(ChatError::Forbidden),
+            Some((a, _)) if a != ctx.principal().id => return Err(ChatError::Forbidden),
             Some((_, p)) => p.map(|j| j.0),
         };
         // 承認待ちのツール呼び出し（承認要求を出す前に run へ永続化済み）と照合する。承認待ちでない run・
@@ -82,7 +82,7 @@ impl ChatStore {
             )
             .bind(run_id)
             .bind(tool_call_id)
-            .bind(&ctx.tenant_id)
+            .bind(ctx.tenant_id())
             .fetch_optional(&self.db)
             .await
             .map_err(|e| map_db(&e))?;
@@ -117,8 +117,8 @@ impl ChatStore {
         .bind(tool_call_id)
         .bind(tool_name)
         .bind(decision)
-        .bind(&ctx.principal.id)
-        .bind(&ctx.tenant_id)
+        .bind(&ctx.principal().id)
+        .bind(ctx.tenant_id())
         .execute(&self.db)
         .await
         .map_err(|e| map_db(&e))?;

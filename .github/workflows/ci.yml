@@ -41,6 +41,15 @@ env:
   # 100GB 超に膨らんでいた（#419）。設定はマニフェスト側の 1 箇所に集約する。
   # 増分コンパイルは CI（毎回クリーン相当・rust-cache 復元）では利得がなくオーバーヘッド。
   CARGO_INCREMENTAL: "0"
+  # 結合テストの接続先のうち、coverage ジョブが用意しない依存（実 Keycloak・実 LLM・Office エンジン/Collabora・
+  # VM 系サンドボックス）。結合テストのジョブは SHIKI_REQUIRE_IT=1 で「接続先が未設定ならスキップ」を失敗に変える
+  # （crates/testenv）。ここに挙げた変数だけは未設定でもスキップを許す。SANDBOX_GVISOR_IT は非ブロッキングの
+  # sandbox-gvisor ジョブで、SHIKI_TABULAR_RUNNER（隔離ランナーのバイナリ）は tabular-runner ジョブの adversarial
+  # テストだけで走る。それ以外は **CI で一度も走らない結合テスト**なので、減らせるものは減らす
+  # （coverage ジョブの Job Summary にも出す）。手動で回す計測・実地評価のフラグ（DATA_BENCH・WEB_FETCH_LIVE・
+  # SHIKI_SQL_EVAL_URL 等）は結合テストの門番ではないので対象外。
+  SHIKI_REQUIRE_IT_EXCEPT: >-
+    KEYCLOAK_TEST_URL,OPENAI_TEST_URL,ANTHROPIC_TEST_URL,OPENAI_RESPONSES_TEST_URL,OFFICE_ENGINE_TEST_WS,OFFICE_RELAY_TEST_COLLABORA,SHIKI_TABULAR_RUNNER,SANDBOX_IT,SANDBOX_NETNS_IT,SANDBOX_FC_IT,SANDBOX_GVISOR_IT
 
 jobs:
   # PR の変更ファイルから、回すジョブと Rust テストの対象を選ぶ（#921・scripts/ci-select.py）。
@@ -211,6 +220,10 @@ jobs:
       # 全テナント横断の保守処理などの例外は `tenant-sql: allow(<理由>)` の注記で明示する。
       - name: tenant-sql gate (テナント表の SQL は tenant 条件つき)
         run: python3 scripts/check-tenant-sql.py
+      # 結合テストの接続先を std::env::var で直接読むと、CI（SHIKI_REQUIRE_IT=1）でも黙ってスキップされる
+      # 穴が戻るので、shiki_testenv::var 経由に限る（crates/testenv）。
+      - name: it-env gate (結合テストの接続先は shiki_testenv::var で読む)
+        run: bash scripts/check-it-env.sh
       # 同じく CI で拾えない構造的バグ（#453）。CI は全サービスをまとめて起動せず必要な
       # ものだけ名指しで起動するため、ホストポートの二重 publish が衝突する組み合わせは
       # 一度も同時に立ち上がらない。ローカルの `docker compose up` だけが壊れる。
@@ -462,6 +475,9 @@ jobs:
       # storage の結合テストは postgres + rustfs + openfga 実体を使う（presigned/closure/監査を実経路で検証）。
       - name: test + coverage (cargo-llvm-cov)
         env:
+          # 接続先が未設定の結合テストを、スキップ（＝pass）ではなく失敗にする（crates/testenv）。
+          # 例外は workflow 冒頭の SHIKI_REQUIRE_IT_EXCEPT。
+          SHIKI_REQUIRE_IT: "1"
           OPENFGA_TEST_URL: http://localhost:8082
           REDIS_TEST_URL: redis://localhost:6379
           STORAGE_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/shiki
@@ -496,6 +512,16 @@ jobs:
             cargo llvm-cov --no-report --workspace $ALWAYS_RUN_TESTS
           }
           run_tests 2>&1 | tee cargo-test.log
+      # CI で一度も走らない結合テストの接続先を毎回見える場所に出す（減らすべき負債の一覧）。
+      - name: "job summary: CI で走らない結合テスト"
+        if: always()
+        run: |
+          {
+            echo '### このジョブで走らない結合テスト（SHIKI_REQUIRE_IT_EXCEPT）'
+            echo '次の接続先は coverage ジョブが用意しないため、これを読む結合テストはスキップされています（SANDBOX_GVISOR_IT は sandbox-gvisor ジョブで別に走る）。'
+            echo
+            tr ',' '\n' <<< "$SHIKI_REQUIRE_IT_EXCEPT" | sed 's/^ *//;s/^/- `/;s/$/`/'
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: upload failed tests (main)
         if: failure() && github.event_name == 'push'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -654,6 +680,8 @@ jobs:
         wait: compose-up
       - name: policy_threat_it under every read strategy (data)
         env:
+          # 接続先が未設定なら全変種が黙ってスキップして緑になるので、失敗にする（crates/testenv）。
+          SHIKI_REQUIRE_IT: "1"
           OPENFGA_TEST_URL: http://localhost:8082
           STORAGE_TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/shiki
         run: |

@@ -39,7 +39,7 @@ impl StorageService {
                AND revoked_at IS NULL AND expires_at IS NOT NULL AND expires_at <= $3",
         )
         .bind(node_id)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(now)
         .fetch_all(&self.db)
         .await?;
@@ -49,7 +49,15 @@ impl StorageService {
         let ns = ctx.ns();
         let obj = node_fga_object(&ns, kind, node_id);
         let added = self
-            .expire_node_links(&ns, &obj, node_id, &ctx.tenant_id, &ctx.org, &expired, now)
+            .expire_node_links(
+                &ns,
+                &obj,
+                node_id,
+                ctx.tenant_id(),
+                ctx.org(),
+                &expired,
+                now,
+            )
             .await?;
         // 遅延失効はチェーン監査しない（タイマ側が監査する・#339 踏襲）。
         let _ = added; // expire では add は起きない（remove のみ）。
@@ -117,7 +125,10 @@ impl StorageService {
                 continue;
             }
             // 失効の監査（system ctx・非チェーン。create/redeem はチェーン監査済み）。
-            let sctx = system_ctx(&n.tenant_id, &n.org, "system");
+            let Some(sctx) = expiry_audit_ctx(&n.tenant_id, &n.org, n.node_id) else {
+                failures += 1;
+                continue;
+            };
             if let Err(e) = self
                 .audit
                 .record(
@@ -219,4 +230,22 @@ impl StorageService {
         .await?;
         Ok(row.0)
     }
+}
+
+/// 失効の監査文脈。tenant_id が文字ポリシーに反すれば `None`（そのノードは失敗として数える）。
+///
+/// 失効（アクセスを止める側）は文脈に依らず先に済ませる。監査だけが残せないので、失効した事実を
+/// error ログに残す（失効を止めると期限切れのリンクが使え続ける＝fail-open になるため）。
+fn expiry_audit_ctx(tenant_id: &str, org: &str, node_id: Uuid) -> Option<AuthContext> {
+    system_ctx(tenant_id, org, "system")
+        .inspect_err(|e| {
+            tracing::error!(
+                error = %e,
+                %node_id,
+                %tenant_id,
+                %org,
+                "共有リンクは失効させたが、監査文脈を組めず監査を残せない"
+            );
+        })
+        .ok()
 }

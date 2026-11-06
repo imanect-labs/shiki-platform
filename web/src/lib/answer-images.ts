@@ -13,6 +13,7 @@
 /// それ以外の画像は読み込まず、行き先のホストを添えたリンクとして見せる（押したときだけ開く）。
 
 import type { ToolName } from "@/generated/gui-spec";
+import { apiUrl } from "@/lib/api";
 
 /// ページの本文を返すツール（封筒の内側がページ由来）。語彙は codegen の `ToolName` で縛る。
 const WEB_PAGE_TOOL: ToolName = "web_fetch";
@@ -117,4 +118,15 @@ export function decideAnswerImage(src: string, sources: ImageSources): AnswerIma
   if (source) return { kind: "load", src: source };
   const href = fetchableUrl(src);
   return { kind: "link", href, host: new URL(href).host };
+}
+
+/// 出典の画像を shiki-server 経由で読む URL を作る（#1044）。ブラウザから外部ホストへは直接通信しない。
+///
+/// サーバも同じ規則で出所を判定し直し、出所に無い URL は取得しない（ここでの判定は見た目だけ）。
+/// 渡すのは出典に書かれていた字句（`decideAnswerImage` の `src`）。
+export type ImageProxy = (sourceUrl: string) => string;
+
+export function answerImageProxy(threadId: string, messageId: string): ImageProxy {
+  const base = `/threads/${encodeURIComponent(threadId)}/messages/${encodeURIComponent(messageId)}/image`;
+  return (sourceUrl) => apiUrl(`${base}?u=${encodeURIComponent(sourceUrl)}`);
 }

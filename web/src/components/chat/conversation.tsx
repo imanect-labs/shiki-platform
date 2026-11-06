@@ -68,6 +68,7 @@ import { useMediaQuery } from "@/hooks/use-media-query";
 import { useStickToBottom } from "@/hooks/use-stick-to-bottom";
 import { useTurnJump } from "@/hooks/use-turn-jump";
 import { MessageFeedbackButtons, ThreadFeedbackProvider } from "./message-feedback";
+import { MessageExportMenu } from "./message-export-menu";
 import { MessageFooter } from "./message-footer";
 import { MessageCitationsProvider, SourcePanelProvider } from "./citations/citation-context";
 import { DisclosureMemoryProvider } from "./disclosure-memory";
@@ -113,6 +114,7 @@ import { ChatPageHeaderSlot } from "./chat-header-actions";
 import { ContextUsageDialog } from "./context-meter";
 import { ApprovalCard, BudgetBanner, PlanPanel } from "./agent-progress";
 import { cn } from "@/lib/utils";
+import { answerImageProxy } from "@/lib/answer-images";
 import { useMarkThreadViewing } from "@/lib/thread-viewing";
 
 /// ストリーミング中のアシスタント応答の蓄積状態。
@@ -900,6 +902,7 @@ export function Conversation({
                       onSaveAsApp={setSaveTarget}
                       latest={m.id === latestAssistantId}
                       compactDisclaimer={isPanel}
+                      threadTitle={threadTitle}
                     />
                   ),
                 )}
@@ -1277,6 +1280,7 @@ const AssistantRow = React.memo(function AssistantRow({
   onSaveAsApp,
   latest = false,
   compactDisclaimer = false,
+  threadTitle = null,
 }: {
   threadId: string;
   messageId: string;
@@ -1297,6 +1301,8 @@ const AssistantRow = React.memo(function AssistantRow({
   latest?: boolean;
   /// 免責文を短くする（分割ビューのパネル）。
   compactDisclaimer?: boolean;
+  /// 会話の題名（書き出すファイル名の候補・回答に見出しが無いとき）。
+  threadTitle?: string | null;
 }) {
   // コールバックが変わっても図・タイマーを作り直さないよう、ref で最新を呼ぶ。
   const reload = React.useRef(onUiAction);
@@ -1324,6 +1330,11 @@ const AssistantRow = React.memo(function AssistantRow({
   }, [openRuns, uiRuns, onChanged]);
   // 本文と操作のまとまりを起きた順に（生成中と同じ配置）。
   const segments = React.useMemo(() => segmentsFromBlocks(blocks), [blocks]);
+  // 出典の画像は shiki-server 経由で読む（#1044）。サーバ上の回答 ID がまだ無い間は読まない。
+  const imageProxy = React.useMemo(
+    () => (savedMessageId ? answerImageProxy(threadId, savedMessageId) : null),
+    [threadId, savedMessageId],
+  );
   // コピー・引用の対応付け用の本文全体。区切りは段落として繋ぐ（ライブ表示と揃える）。
   const text = segments
     .flatMap((seg) => (seg.kind === "text" ? [seg.text] : []))
@@ -1372,6 +1383,7 @@ const AssistantRow = React.memo(function AssistantRow({
                 segments={segments}
                 citations={citations}
                 memoryKey={savedMessageId ?? messageId}
+                imageProxy={imageProxy}
               />
             </div>
           </YuiActionContext.Provider>
@@ -1402,6 +1414,13 @@ const AssistantRow = React.memo(function AssistantRow({
           {evidenceOpen ? <EvidenceTable /> : null}
           {text ? (
             <MessageFooter text={text} pinned={latest}>
+              <MessageExportMenu
+                threadId={threadId}
+                threadTitle={threadTitle}
+                segments={segments}
+                text={text}
+                citations={citations}
+              />
               {savedMessageId ? <MessageFeedbackButtons messageId={savedMessageId} /> : null}
               <EvidenceToggle open={evidenceOpen} onToggle={() => setEvidenceOpen((v) => !v)} />
             </MessageFooter>
@@ -1457,6 +1476,10 @@ function StreamingRow({
     stream.plan.length === 0 &&
     !stream.approval;
   const segments = resolveStreamSegments(stream.segments, stream.tools);
+  const streamImageProxy = React.useMemo(
+    () => (stream.assistantMessageId ? answerImageProxy(threadId, stream.assistantMessageId) : null),
+    [threadId, stream.assistantMessageId],
+  );
   const last = segments[segments.length - 1];
   const waiting = useStreamWaiting({
     text: stream.text,
@@ -1477,6 +1500,7 @@ function StreamingRow({
             citations={stream.citations}
             streaming
             memoryKey={stream.assistantMessageId}
+            imageProxy={streamImageProxy}
             phase={runningSubtask(stream.plan)}
             waitingLabel={waiting.label}
           />

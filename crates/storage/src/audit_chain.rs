@@ -112,8 +112,8 @@ impl AuditChainVerifier {
             "SELECT anchor_id, anchor_hash, purged_rows FROM audit_chain_anchor \
              WHERE tenant_id = $1 AND org = $2",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .fetch_optional(&mut *tx)
         .await?;
         // 続きの位置の行が、前回の呼び出しの後に保持期間で消えていたら境目から続ける。
@@ -129,8 +129,8 @@ impl AuditChainVerifier {
                     "SELECT entry_hash FROM audit_log \
                      WHERE tenant_id = $1 AND org = $2 AND chained AND id = $3",
                 )
-                .bind(&ctx.tenant_id)
-                .bind(&ctx.org)
+                .bind(ctx.tenant_id())
+                .bind(ctx.org())
                 .bind(id)
                 .fetch_optional(&mut *tx)
                 .await?
@@ -157,8 +157,8 @@ impl AuditChainVerifier {
                  WHERE tenant_id = $1 AND org = $2 AND chained AND id > $3 \
                  ORDER BY id LIMIT $4",
             )
-            .bind(&ctx.tenant_id)
-            .bind(&ctx.org)
+            .bind(ctx.tenant_id())
+            .bind(ctx.org())
             .bind(cursor)
             .bind(BATCH)
             .fetch_all(&mut *tx)
@@ -186,8 +186,8 @@ impl AuditChainVerifier {
                 let computed = entry_hash(&HashInput {
                     version,
                     prev_hash: stored_prev.as_deref(),
-                    tenant_id: hashed_tenant(&renames, id, &ctx.tenant_id),
-                    org: &ctx.org,
+                    tenant_id: hashed_tenant(&renames, id, ctx.tenant_id()),
+                    org: ctx.org(),
                     actor: &actor,
                     action: &action,
                     object_type: &object_type,
@@ -242,8 +242,8 @@ async fn renames(
         "SELECT id, metadata ->> 'from' FROM audit_log \
          WHERE tenant_id = $1 AND org = $2 AND chained AND action = $3 ORDER BY id",
     )
-    .bind(&ctx.tenant_id)
-    .bind(&ctx.org)
+    .bind(ctx.tenant_id())
+    .bind(ctx.org())
     .bind(AuditAction::TenantRetenant.as_str())
     .fetch_all(&mut *conn)
     .await?;

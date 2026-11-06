@@ -26,9 +26,9 @@ impl StorageService {
              WHERE upload_id = $1 AND org = $2 AND tenant_id = $3 AND created_by = $4",
         )
         .bind(upload_id)
-        .bind(&ctx.org)
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.principal.id)
+        .bind(ctx.org())
+        .bind(ctx.tenant_id())
+        .bind(&ctx.principal().id)
         .fetch_optional(&self.db)
         .await?
         .ok_or(StorageError::NotFound)?;
@@ -73,10 +73,10 @@ impl StorageService {
                     self.require(
                         ctx,
                         Relation::Member,
-                        &ctx.ns().organization(&ctx.org),
+                        &ctx.ns().organization(ctx.org()),
                         AuditAction::FileUploadFinalize,
                         "organization",
-                        &ctx.org,
+                        ctx.org(),
                         trace_id,
                     )
                     .await?;
@@ -91,7 +91,7 @@ impl StorageService {
                 "staging オブジェクトが存在しません（アップロード未完了 label={label}）"
             )));
         }
-        let incoming_key = incoming_object_key(&ctx.tenant_id, &ctx.org, &label);
+        let incoming_key = incoming_object_key(ctx.tenant_id(), ctx.org(), &label);
         self.store.copy(&pending.staging_key, &incoming_key).await?;
 
         // 不変スナップショットを再ハッシュし、宣言値と照合（client バイトを信頼しない）。
@@ -102,7 +102,7 @@ impl StorageService {
             let _ =
                 sqlx::query("DELETE FROM pending_upload WHERE upload_id = $1 AND tenant_id = $2")
                     .bind(upload_id)
-                    .bind(&ctx.tenant_id)
+                    .bind(ctx.tenant_id())
                     .execute(&self.db)
                     .await;
             return Err(StorageError::Integrity(format!(
@@ -112,12 +112,12 @@ impl StorageService {
 
         // 既存の有効 blob を上書きしない（content-addressed への昇格は新規 blob の時だけ）。
         // 既存 blob があるなら finalize は実バイトを所持した上での正当な dedup。
-        let final_key = blob_object_key(&ctx.tenant_id, &ctx.org, &actual_sha);
+        let final_key = blob_object_key(ctx.tenant_id(), ctx.org(), &actual_sha);
         let blob_exists: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM blob WHERE tenant_id = $1 AND org = $2 AND sha256 = $3)",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(&actual_sha)
         .fetch_one(&self.db)
         .await?;
@@ -154,8 +154,8 @@ impl StorageService {
                     let mut tx = self.db.begin().await?;
                     self.bump_blob(
                         &mut tx,
-                        &ctx.tenant_id,
-                        &ctx.org,
+                        ctx.tenant_id(),
+                        ctx.org(),
                         &actual_sha,
                         actual_size as i64,
                         &pending.content_type,
@@ -191,7 +191,7 @@ impl StorageService {
                         "DELETE FROM pending_upload WHERE upload_id = $1 AND tenant_id = $2",
                     )
                     .bind(upload_id)
-                    .bind(&ctx.tenant_id)
+                    .bind(ctx.tenant_id())
                     .execute(&mut *tx)
                     .await?;
                     if claimed.rows_affected() == 0 {
@@ -296,7 +296,7 @@ impl StorageService {
                     "DELETE FROM pending_upload WHERE upload_id = $1 AND tenant_id = $2",
                 )
                 .bind(upload_id)
-                .bind(&ctx.tenant_id)
+                .bind(ctx.tenant_id())
                 .execute(&self.db)
                 .await;
                 return Err(e);
@@ -335,7 +335,7 @@ impl StorageService {
         let claimed =
             sqlx::query("DELETE FROM pending_upload WHERE upload_id = $1 AND tenant_id = $2")
                 .bind(upload_id)
-                .bind(&ctx.tenant_id)
+                .bind(ctx.tenant_id())
                 .execute(&mut *tx)
                 .await?;
         if claimed.rows_affected() == 0 {
@@ -343,8 +343,8 @@ impl StorageService {
         }
         self.bump_blob(
             &mut tx,
-            &ctx.tenant_id,
-            &ctx.org,
+            ctx.tenant_id(),
+            ctx.org(),
             sha256,
             size,
             content_type,
@@ -366,9 +366,9 @@ impl StorageService {
             .bind(size)
             .bind(content_type)
             .bind(target)
-            .bind(&ctx.org)
-            .bind(&ctx.tenant_id)
-            .bind(&ctx.principal.id)
+            .bind(ctx.org())
+            .bind(ctx.tenant_id())
+            .bind(&ctx.principal().id)
             .bind(base_version)
             .fetch_optional(&mut *tx)
             .await?;
@@ -380,8 +380,8 @@ impl StorageService {
                      WHERE id = $1 AND org = $2 AND tenant_id = $3 AND kind = 'file' AND deleted_at IS NULL",
                 )
                 .bind(target)
-                .bind(&ctx.org)
-                .bind(&ctx.tenant_id)
+                .bind(ctx.org())
+                .bind(ctx.tenant_id())
                 .fetch_optional(&mut *tx)
                 .await?;
                 if let Some(current) = current {

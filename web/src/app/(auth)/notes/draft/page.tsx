@@ -20,6 +20,7 @@ import {
   DraftNotFound,
   DraftTabs,
   SaveDraftDialog,
+  SOURCES_NOTICE,
   saveFailedMessage,
   draftChrome,
   type SaveTarget,
@@ -67,7 +68,8 @@ function DraftNotePageInner() {
   const [chatOpen, setChatOpen] = React.useState(true);
   const [saveOpen, setSaveOpen] = React.useState(false);
   // 保存先の初期値（AI の指定 → 由来ノートのフォルダ → ルート・#942）。保存ダイアログを開いたときだけ引く。
-  const aiParentId = drafts.find((d) => d.name === activeName)?.parentId;
+  const activeDraft = drafts.find((d) => d.name === activeName);
+  const aiParentId = activeDraft?.parentId;
   const defaultFolder = useDefaultSaveFolder(threadId, aiParentId, saveOpen);
   const [saving, setSaving] = React.useState(false);
   const [recovered, setRecovered] = React.useState(false);
@@ -242,6 +244,7 @@ function DraftNotePageInner() {
         saving={saving}
         onConfirm={doSave}
         defaultFolder={defaultFolder}
+        notice={activeDraft?.sourcesNotice ? SOURCES_NOTICE : undefined}
       />
     </div>
   );

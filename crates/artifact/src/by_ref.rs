@@ -51,10 +51,10 @@ impl ArtifactStore {
                AND v.body->>$6 = $7 \
              ORDER BY a.updated_at DESC, a.id DESC LIMIT $8",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(kind.as_str())
-        .bind(&ctx.principal.id)
+        .bind(&ctx.principal().id)
         .bind(&shared)
         .bind(body_key)
         .bind(body_value)

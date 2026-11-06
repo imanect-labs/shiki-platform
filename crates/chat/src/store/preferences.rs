@@ -23,9 +23,9 @@ impl ChatStore {
             "SELECT prefs FROM user_preference \
              WHERE tenant_id = $1 AND org = $2 AND user_id = $3",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
-        .bind(&ctx.principal.id)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
+        .bind(&ctx.principal().id)
         .fetch_optional(&self.db)
         .await
         .map_err(map_db)?;
@@ -57,9 +57,9 @@ impl ChatStore {
                 "SELECT prefs FROM user_preference \
                  WHERE tenant_id = $1 AND org = $2 AND user_id = $3 FOR UPDATE",
             )
-            .bind(&ctx.tenant_id)
-            .bind(&ctx.org)
-            .bind(&ctx.principal.id)
+            .bind(ctx.tenant_id())
+            .bind(ctx.org())
+            .bind(&ctx.principal().id)
             .fetch_optional(&mut *tx)
             .await
             .map_err(map_db)?;
@@ -72,7 +72,7 @@ impl ChatStore {
             let allowed: Option<bool> = sqlx::query_scalar(
                 "SELECT allow_autonomous_bypass FROM tenant WHERE tenant_id = $1",
             )
-            .bind(&ctx.tenant_id)
+            .bind(ctx.tenant_id())
             .fetch_optional(&mut *tx)
             .await
             .map_err(map_db)?;
@@ -86,9 +86,9 @@ impl ChatStore {
              ON CONFLICT (tenant_id, org, user_id) DO UPDATE SET \
                prefs = EXCLUDED.prefs, updated_at = now()",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
-        .bind(&ctx.principal.id)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
+        .bind(&ctx.principal().id)
         .bind(&stored)
         .execute(&mut *tx)
         .await
@@ -99,7 +99,7 @@ impl ChatStore {
             AuditEntry {
                 action: AuditAction::MePreferencesUpdate,
                 object_type: "user_preferences",
-                object_id: &ctx.principal.id,
+                object_id: &ctx.principal().id,
                 decision: Decision::Allow,
                 trace_id,
                 metadata: stored,

@@ -313,6 +313,27 @@ impl ChatWorker {
         Ok(true)
     }
 
+    /// 本文なしで run を終端状態に確定する（終端イベントは finalize と同一 TX）。
+    async fn finalize_empty(
+        &self,
+        run_id: Uuid,
+        fencing: i64,
+        status: RunStatus,
+        last_error: Option<&str>,
+    ) -> Result<(), ChatError> {
+        self.store
+            .finalize_run(
+                run_id,
+                fencing,
+                status,
+                &[],
+                last_error,
+                Some(&StreamEventKind::Status { status }),
+            )
+            .await?;
+        Ok(())
+    }
+
     /// 1 run を生成する（claim→モード分岐→確定）。
     async fn process_run(
         &self,
@@ -328,24 +349,26 @@ impl ChatWorker {
             // 既に done/cancelled、または有効リース保持中。ack 相当（何もしない）。
             return Ok(());
         };
-        let ctx = build_ctx(&run);
         let fencing = run.fencing_token;
+        // run 行の tenant_id が文字ポリシーに反するなら、文脈を組まずに失敗で確定する
+        // （再試行しても直らない・リース切れで同じ run を取り直し続けない）。
+        let Some(ctx) = build_ctx(&run) else {
+            tracing::error!(%run_id, "run の tenant_id が文字ポリシーに反する（失敗で確定）");
+            return self
+                .finalize_empty(
+                    run_id,
+                    fencing,
+                    RunStatus::Failed,
+                    Some("tenant_id が不正です"),
+                )
+                .await;
+        };
 
         // 明示停止済みなら即キャンセル確定（終端イベントは finalize と同一 TX）。
         if run.cancel_requested {
-            self.store
-                .finalize_run(
-                    run_id,
-                    fencing,
-                    RunStatus::Cancelled,
-                    &[],
-                    None,
-                    Some(&StreamEventKind::Status {
-                        status: RunStatus::Cancelled,
-                    }),
-                )
-                .await?;
-            return Ok(());
+            return self
+                .finalize_empty(run_id, fencing, RunStatus::Cancelled, None)
+                .await;
         }
 
         // resume する run は、チェックポイント境界より後に残る**破棄 attempt のイベント**を
@@ -491,8 +514,10 @@ impl ChatWorker {
 }
 
 /// run 行から発話ユーザーの [`AuthContext`] を再構築する（昇格しない）。
-fn build_ctx(run: &ClaimedRun) -> AuthContext {
-    AuthContext::new(
+/// tenant_id が文字ポリシーに反するなら `None`（DB の値も信用しない）。
+fn build_ctx(run: &ClaimedRun) -> Option<AuthContext> {
+    let tenant = authz::TenantId::parse(run.tenant_id.as_str()).ok()?;
+    Some(AuthContext::new(
         Principal {
             kind: authz::PrincipalKind::User,
             id: run.actor.clone(),
@@ -502,8 +527,8 @@ fn build_ctx(run: &ClaimedRun) -> AuthContext {
             tenant_id: Some(run.tenant_id.clone()),
         },
         run.org.clone(),
-        run.tenant_id.clone(),
-    )
+        tenant,
+    ))
 }
 
 /// ハートビートを、持ち主が抜けるときに止める。

@@ -51,7 +51,7 @@ impl ChatStore {
              WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL",
         )
         .bind(thread_id)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(&title)
         .execute(&self.db)
         .await
@@ -92,7 +92,9 @@ impl ChatStore {
         sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended('thread_pin:' || $1, 0))")
             .bind(format!(
                 "{}|{}|{}",
-                ctx.tenant_id, ctx.org, ctx.principal.id
+                ctx.tenant_id(),
+                ctx.org(),
+                ctx.principal().id
             ))
             .execute(&mut *tx)
             .await
@@ -106,10 +108,10 @@ impl ChatStore {
                         AND p.deleted_at IS NULL AND p.pinned_at IS NOT NULL) < $6)",
         )
         .bind(thread_id)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(pinned)
-        .bind(&ctx.org)
-        .bind(&ctx.principal.id)
+        .bind(ctx.org())
+        .bind(&ctx.principal().id)
         .bind(MAX_PINNED)
         .execute(&mut *tx)
         .await
@@ -121,7 +123,7 @@ impl ChatStore {
                  WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL)",
             )
             .bind(thread_id)
-            .bind(&ctx.tenant_id)
+            .bind(ctx.tenant_id())
             .fetch_one(&mut *tx)
             .await
             .map_err(map_db)?;
@@ -177,7 +179,7 @@ impl ChatStore {
              WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL",
         )
         .bind(thread_id)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .execute(&mut *tx)
         .await
         .map_err(map_db)?;
@@ -191,7 +193,7 @@ impl ChatStore {
                AND status IN ('queued', 'running', 'waiting_approval')",
         )
         .bind(thread_id)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .execute(&mut *tx)
         .await
         .map_err(map_db)?;
@@ -270,9 +272,9 @@ impl ChatStore {
                AND deleted_at IS NULL AND pinned_at IS NOT NULL \
              ORDER BY pinned_at DESC, id DESC LIMIT $4",
         ))
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
-        .bind(&ctx.principal.id)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
+        .bind(&ctx.principal().id)
         .bind(MAX_PINNED)
         .fetch_all(&self.db)
         .await

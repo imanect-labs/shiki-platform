@@ -166,10 +166,10 @@ impl StorageService {
                 self.require(
                     ctx,
                     Relation::Member,
-                    &ctx.ns().organization(&ctx.org),
+                    &ctx.ns().organization(ctx.org()),
                     AuditAction::FileWriteInternal,
                     "organization",
-                    &ctx.org,
+                    ctx.org(),
                     trace_id,
                 )
                 .await?;
@@ -209,12 +209,12 @@ impl StorageService {
         // content-addressing: バイトを所持しているのでメモリ上でハッシュし、新規 blob のみ書き込む。
         // 既存 blob があれば上書きしない（並行 finalize が参照する共有本体を壊さない・dedup）。
         let sha256 = sha256_hex(bytes);
-        let final_key = blob_object_key(&ctx.tenant_id, &ctx.org, &sha256);
+        let final_key = blob_object_key(ctx.tenant_id(), ctx.org(), &sha256);
         let blob_exists: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM blob WHERE tenant_id = $1 AND org = $2 AND sha256 = $3)",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(&sha256)
         .fetch_one(&self.db)
         .await?;
@@ -236,7 +236,7 @@ impl StorageService {
                  ON CONFLICT (tenant_id, idempotency_key) DO NOTHING \
                  RETURNING op_digest, result_summary",
             )
-            .bind(&ctx.tenant_id)
+            .bind(ctx.tenant_id())
             .bind(key)
             .bind(digest)
             .fetch_optional(&mut *tx)
@@ -247,7 +247,7 @@ impl StorageService {
                     "SELECT op_digest, result_summary FROM effect_journal \
                      WHERE tenant_id = $1 AND idempotency_key = $2",
                 )
-                .bind(&ctx.tenant_id)
+                .bind(ctx.tenant_id())
                 .bind(key)
                 .fetch_one(&mut *tx)
                 .await?;
@@ -265,8 +265,8 @@ impl StorageService {
 
         self.bump_blob(
             &mut tx,
-            &ctx.tenant_id,
-            &ctx.org,
+            ctx.tenant_id(),
+            ctx.org(),
             &sha256,
             size,
             content_type,
@@ -328,7 +328,7 @@ impl StorageService {
                 "UPDATE effect_journal SET result_summary = $3 \
                  WHERE tenant_id = $1 AND idempotency_key = $2",
             )
-            .bind(&ctx.tenant_id)
+            .bind(ctx.tenant_id())
             .bind(key)
             .bind(sqlx::types::Json(&summary))
             .execute(&mut *tx)
@@ -427,7 +427,7 @@ impl StorageService {
             )));
         }
         let sha = node.blob_sha256.as_ref().ok_or(StorageError::NotFound)?;
-        let key = blob_object_key(&ctx.tenant_id, &ctx.org, sha);
+        let key = blob_object_key(ctx.tenant_id(), ctx.org(), sha);
         let bytes = self.store.get_object(&key).await?;
         self.audit
             .record(

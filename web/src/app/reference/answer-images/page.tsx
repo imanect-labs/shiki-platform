@@ -4,11 +4,13 @@
 ///
 /// 認証・LLM 不要（middleware は /reference を除外）。実部品（MessageTimeline）に固定フィクスチャを流す。
 /// web_fetch が返したページに現れた画像は描き、LLM が組み立てた URL（会話の中身を載せたもの）は
-/// 読み込まずにリンクにする。画像のホストは `.test`（実在しない）なので、E2E は要求を横取りして応答する。
+/// 読み込まずにリンクにする。出典の画像も**ブラウザから外部へは読みに行かず**、shiki-server の代理取得
+/// （`/api/threads/{id}/messages/{message_id}/image`・#1044）を通す。E2E はその要求を横取りして応答する。
 
 import * as React from "react";
 
 import { MessageTimeline, type TimelineSegment } from "@/components/chat/message-timeline";
+import { answerImageProxy } from "@/lib/answer-images";
 
 /// web_fetch がページの本文に残す画像（Markdown の画像記法）。
 const PAGE_IMAGE = "https://images.example.test/market/saas-share-2026.png";
@@ -91,6 +93,9 @@ const SEGMENTS: TimelineSegment[] = [
   { kind: "text", key: "t1", text: ANSWER },
 ];
 
+/// ギャラリー用の代理取得の URL（実在しない会話。E2E が横取りする）。
+const PROXY = answerImageProxy("demo-thread", "demo-answer");
+
 export default function AnswerImagesGalleryPage() {
   return (
     <main className="mx-auto max-w-3xl space-y-8 p-6">
@@ -98,11 +103,17 @@ export default function AnswerImagesGalleryPage() {
         <h1 className="text-lg font-semibold tracking-tight">回答の画像</h1>
         <p className="mt-1 text-[13px] text-muted-foreground">
           回答に描く画像は、その回答の出典（ツール結果・引用）に現れた URL だけ。出典に無い画像は読み込まず、
-          行き先のホストを添えたリンクにする（#1005）。
+          行き先のホストを添えたリンクにする（#1005）。出典の画像も shiki-server 経由で読み、読めなければリンクに落とす（#1044）。
         </p>
       </header>
       <section data-testid="answer-images-timeline" className="min-w-0 rounded-xl border border-border px-6 py-5">
-        <MessageTimeline segments={SEGMENTS} citations={[]} />
+        <MessageTimeline segments={SEGMENTS} citations={[]} imageProxy={PROXY} />
+      </section>
+      <section className="space-y-2">
+        <h2 className="text-[13px] font-medium text-muted-foreground">代理取得の経路が無い本文（回答の ID がまだ無い・会話以外）</h2>
+        <div data-testid="answer-images-no-proxy" className="min-w-0 rounded-xl border border-border px-6 py-5">
+          <MessageTimeline segments={SEGMENTS} citations={[]} />
+        </div>
       </section>
     </main>
   );

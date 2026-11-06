@@ -626,7 +626,7 @@ CONFLICT | E12(1.2兆円) vs E18(9800億円) | 集計範囲が異なる可能性
                 tenant_id: Some("t1".into()),
             },
             "org1".into(),
-            "t1".into(),
+            authz::TenantId::parse("t1").unwrap(),
         )
     }
 

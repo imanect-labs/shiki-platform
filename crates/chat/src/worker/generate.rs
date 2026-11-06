@@ -226,7 +226,7 @@ impl ChatWorker {
             run.fencing_token,
             cancel.clone(),
         )
-        .with_slot(Arc::clone(slot), &ctx.tenant_id, &ctx.principal.id);
+        .with_slot(Arc::clone(slot), ctx.tenant_id(), &ctx.principal().id);
         // 実行前フェーズ（#400）。非自律は常に Execute（門は自律の調査フローだけの概念）。
         let mut gate_stage = super::gate::GateStage::Execute;
         // 門が承認まで取り上げたツール（発話ごとのツール指定の注記で「承認後に使える」と言う・#734）。
@@ -261,8 +261,8 @@ impl ChatWorker {
                 (snapshot, opts.approval) = self.autonomous_approval(ctx, run).await?;
                 approver = approver.with_autonomous_mode(
                     run.thread_id,
-                    ctx.tenant_id.clone(),
-                    ctx.principal.id.clone(),
+                    ctx.tenant_id().to_owned(),
+                    ctx.principal().id.clone(),
                     snapshot,
                 );
                 // システム領域（自動生成の使い捨てワークスペース）への書込は承認カードを出さない
@@ -419,7 +419,7 @@ impl ChatWorker {
     ) -> Result<(Arc<dyn WorkspaceStore>, bool), ChatError> {
         let system = match self
             .store
-            .workspace_folder_id(thread_id, &ctx.tenant_id)
+            .workspace_folder_id(thread_id, ctx.tenant_id())
             .await?
         {
             Some(folder_id) => storage
@@ -433,7 +433,7 @@ impl ChatWorker {
                 .unwrap_or(false),
             None => self
                 .store
-                .workspace_parent_folder_id(thread_id, &ctx.tenant_id)
+                .workspace_parent_folder_id(thread_id, ctx.tenant_id())
                 .await?
                 .is_none(),
         };

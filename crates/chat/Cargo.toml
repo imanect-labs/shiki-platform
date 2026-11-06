@@ -46,10 +46,13 @@ futures.workspace = true
 chrono.workspace = true
 chrono-tz = "0.10"
 uuid = { workspace = true, features = ["v4"] }
+# 回答の画像の出所判定（URL の正規化・#1044）。
+url.workspace = true
 # チャットの DTO / SSE イベント型を単一定義し api 層に手書きミラーを作らない（codegen が正）。
 utoipa.workspace = true
 
 [dev-dependencies]
+shiki-testenv.workspace = true
 tokio = { workspace = true }
 # 結合テスト（generation_it / worker_it）は authz モック＋DB 直操作＋stub gateway のため実依存を dev でも引く。
 shiki-authz.workspace = true

@@ -148,7 +148,7 @@ fn ctx_of(kind: PrincipalKind, tenant: &str, org: &str, id: &str) -> AuthContext
             tenant_id: Some(tenant.into()),
         },
         org.into(),
-        tenant.into(),
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 

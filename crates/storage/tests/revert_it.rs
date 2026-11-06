@@ -37,8 +37,8 @@ struct Env {
 
 async fn setup() -> Option<Env> {
     let (Ok(db_url), Ok(fga_url)) = (
-        std::env::var("STORAGE_TEST_DATABASE_URL"),
-        std::env::var("OPENFGA_TEST_URL"),
+        shiki_testenv::var("STORAGE_TEST_DATABASE_URL"),
+        shiki_testenv::var("OPENFGA_TEST_URL"),
     ) else {
         eprintln!("STORAGE_TEST_DATABASE_URL / OPENFGA_TEST_URL 未設定のためスキップ");
         return None;
@@ -105,7 +105,7 @@ fn user(org: &str, id: &str) -> AuthContext {
             tenant_id: None,
         },
         org.into(),
-        "default".into(),
+        authz::TenantId::parse("default").unwrap(),
     )
 }
 
@@ -581,7 +581,7 @@ async fn revert_edit_refuses_while_office_editor_holds_lock() {
          VALUES ($1, 'L', 'user:alice', $2, now() + interval '10 minutes')",
     )
     .bind(file.id)
-    .bind(&alice.tenant_id)
+    .bind(alice.tenant_id())
     .execute(&env.pool)
     .await
     .expect("lock");

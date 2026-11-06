@@ -101,17 +101,17 @@ impl DataStore {
             return Ok(ReverseValues::default());
         };
         // 参照元テーブル（対称列から見た相手）。消えていれば辺は無い。
-        let Some(src_keys) = self.table_keys_of(&ctx.tenant_id, src_table_id).await? else {
+        let Some(src_keys) = self.table_keys_of(ctx.tenant_id(), src_table_id).await? else {
             return Ok(ReverseValues::default());
         };
         let ids: Vec<Uuid> = rows.iter().map(|r| r.id).collect();
         let mut conn = self
             .pools
-            .for_tenant(&ctx.tenant_id)
+            .for_tenant(ctx.tenant_id())
             .acquire()
             .await
             .map_err(map_db)?;
-        let ints = Self::record_ints_for(&mut conn, &ctx.tenant_id, table.keys, &ids).await?;
+        let ints = Self::record_ints_for(&mut conn, ctx.tenant_id(), table.keys, &ids).await?;
         let by_int: HashMap<i64, Uuid> = ints.iter().map(|(u, i)| (*i, *u)).collect();
         let src: Vec<i64> = by_int.keys().copied().collect();
         let edges = traverse(&mut conn, table.keys, f.id, src_keys.table_int, &src).await?;

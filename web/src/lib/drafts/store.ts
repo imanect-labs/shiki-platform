@@ -41,6 +41,9 @@ export type DraftEntry = {
   updatedAt: number;
   /// AI が指定した保存先フォルダの id か `"root"`（保存ダイアログの初期値にするだけ・確定は人・#942）。
   parentId?: string;
+  /// 社内文書（閲覧できないものを含む）を出典に持つ回答から作った下書きか。保存ダイアログで共有の
+  /// 注意を出す（#1048）。一度付いたら、その下書きの以後の upsert でも保つ。
+  sourcesNotice?: boolean;
 };
 
 export type DraftStore = {
@@ -54,6 +57,7 @@ export type DraftStore = {
     content: string,
     source: DraftSource,
     parentId?: string,
+    opts?: { sourcesNotice?: boolean },
   ): DraftEntry;
   get(threadId: string, name: string): DraftEntry | null;
   /// 会話の下書き一覧（更新日昇順＝タブは作られた順）。
@@ -173,7 +177,7 @@ export function createDraftStore(kind: DraftKind): DraftStore {
 
   return {
     subscribe,
-    upsert(threadId, name, content, source, parentId) {
+    upsert(threadId, name, content, source, parentId, opts) {
       const store = { ...read() };
       const k = keyOf(threadId, name);
       const prev = store[k];
@@ -188,6 +192,7 @@ export function createDraftStore(kind: DraftKind): DraftStore {
         source,
         updatedAt: Date.now(),
         ...(nextParent ? { parentId: nextParent } : {}),
+        ...(opts?.sourcesNotice || prev?.sourcesNotice ? { sourcesNotice: true } : {}),
       };
       store[k] = entry;
       write(store);

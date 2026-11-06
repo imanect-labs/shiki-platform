@@ -44,8 +44,8 @@ impl SkillInstallService {
                AND r.trust_tier = 'first_party' AND r.yanked = false \
              ORDER BY r.name, r.created_at DESC LIMIT 100",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(SKILL_KIND)
         .fetch_all(&self.db)
         .await
@@ -73,8 +73,8 @@ impl SkillInstallService {
              WHERE i.tenant_id = $1 AND i.user_id = $2 \
              ORDER BY (i.trust_tier <> 'first_party'), i.created_at DESC LIMIT 200",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.principal.id)
+        .bind(ctx.tenant_id())
+        .bind(&ctx.principal().id)
         .fetch_all(&self.db)
         .await
         .map_err(map_db)?;

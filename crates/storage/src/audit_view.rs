@@ -182,8 +182,8 @@ impl AuditViewer {
             "SELECT user_id FROM directory_user \
              WHERE tenant_id = $1 AND org = $2 AND lower(email) = lower($3) LIMIT 1",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(actor)
         .fetch_optional(&self.db)
         .await?;
@@ -223,9 +223,9 @@ fn build_query<'a>(
         )
         .push_bind(chunk)
         .push(" AND tenant_id = ")
-        .push_bind(&ctx.tenant_id)
+        .push_bind(ctx.tenant_id())
         .push(" AND org = ")
-        .push_bind(&ctx.org)
+        .push_bind(ctx.org())
         .push(" AND created_at >= ")
         .push_bind(f.from)
         .push(" AND created_at < ")
@@ -244,9 +244,9 @@ fn build_query<'a>(
         " a LEFT JOIN directory_user du ON du.tenant_id = a.tenant_id AND du.org = a.org \
          AND du.user_id = a.actor WHERE a.tenant_id = ",
     )
-    .push_bind(&ctx.tenant_id)
+    .push_bind(ctx.tenant_id())
     .push(" AND a.org = ")
-    .push_bind(&ctx.org)
+    .push_bind(ctx.org())
     .push(" AND a.created_at >= ")
     .push_bind(f.from)
     .push(" AND a.created_at < ")
@@ -318,7 +318,7 @@ mod tests {
                 tenant_id: None,
             },
             "acme".into(),
-            "t1".into(),
+            authz::TenantId::parse("t1").unwrap(),
         )
     }
 

@@ -102,7 +102,7 @@ fn tools() -> Vec<Arc<dyn Tool>> {
 }
 
 async fn setup() -> Option<PgPool> {
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return None;
     };
@@ -130,7 +130,7 @@ fn ctx() -> AuthContext {
             tenant_id: Some(tenant.clone()),
         },
         "acme".into(),
-        tenant,
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 

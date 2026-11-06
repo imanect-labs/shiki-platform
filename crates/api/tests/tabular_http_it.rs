@@ -281,12 +281,12 @@ struct Env {
 }
 
 async fn setup() -> Option<Env> {
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return None;
     };
     let Some(runner) = runner_path() else {
-        eprintln!("隔離ランナー未ビルドのためスキップ");
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "隔離ランナー未ビルド");
         return None;
     };
     let s3_endpoint = std::env::var("STORAGE_TEST_S3_ENDPOINT")
@@ -370,7 +370,11 @@ async fn setup() -> Option<Env> {
         app,
         runner: runner.clone(),
         storage,
-        ctx: authz::AuthContext::new(principal(), "acme".into(), "default".into()),
+        ctx: authz::AuthContext::new(
+            principal(),
+            "acme".into(),
+            authz::TenantId::parse("default").unwrap(),
+        ),
         authz: allow,
     })
 }

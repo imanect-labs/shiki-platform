@@ -79,9 +79,9 @@ pub(crate) async fn subscribe(
         .map(|t| t.id)
         .collect();
     // 接続時点のカーソルから未来分のみ（履歴のリプレイはしない）。
-    let cursor = latest_event_id(&state.caps.db, &ctx.auth.tenant_id).await?;
+    let cursor = latest_event_id(&state.caps.db, ctx.auth.tenant_id()).await?;
     let db = state.caps.db.clone();
-    let tenant = ctx.auth.tenant_id.clone();
+    let tenant = ctx.auth.tenant_id().to_owned();
 
     struct TailState {
         cursor: i64,

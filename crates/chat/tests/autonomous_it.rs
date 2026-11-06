@@ -88,7 +88,7 @@ impl AuthzClient for AllowAll {
 }
 
 async fn setup() -> Option<PgPool> {
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return None;
     };
@@ -115,7 +115,7 @@ fn ctx(tenant: &str) -> AuthContext {
             tenant_id: Some(tenant.into()),
         },
         "acme".into(),
-        tenant.into(),
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 
@@ -237,7 +237,7 @@ async fn run_autonomous_fswrite(store: &ChatStore, c: &AuthContext, thread_id: u
         )
         .await
         .unwrap();
-    let mut rx = store.event_stream(&c.tenant_id, res.run_id, 0);
+    let mut rx = store.event_stream(c.tenant_id(), res.run_id, 0);
     for _ in 0..500 {
         let next = tokio::time::timeout(Duration::from_secs(20), rx.next())
             .await
@@ -287,7 +287,7 @@ async fn autonomous_run_writes_workspace_file_e2e() {
         )
         .await
         .unwrap();
-    let mut rx = store.event_stream(&c.tenant_id, res.run_id, 0);
+    let mut rx = store.event_stream(c.tenant_id(), res.run_id, 0);
     let mut done = false;
     let mut saw_fs_write = false;
     for _ in 0..500 {
@@ -312,7 +312,7 @@ async fn autonomous_run_writes_workspace_file_e2e() {
     );
 
     let folder = store
-        .workspace_folder_id(thread.id, &c.tenant_id)
+        .workspace_folder_id(thread.id, c.tenant_id())
         .await
         .unwrap()
         .expect("ワークスペースフォルダが作成される");
@@ -329,7 +329,7 @@ async fn autonomous_run_writes_workspace_file_e2e() {
     );
     // 承認モードは run 前後で変わらない（skill も自動処理もポリシに触れない・#392）。
     let (mode_after, _) = store
-        .thread_autonomous_mode(thread.id, &c.tenant_id)
+        .thread_autonomous_mode(thread.id, c.tenant_id())
         .await
         .unwrap();
     assert_eq!(
@@ -364,12 +364,12 @@ async fn autonomous_run_writes_workspace_file_e2e() {
         .await
         .unwrap();
     store
-        .set_thread_workspace(t1.id, &c.tenant_id, None, Some(parent.id))
+        .set_thread_workspace(t1.id, c.tenant_id(), None, Some(parent.id))
         .await
         .unwrap();
     run_autonomous_fswrite(&store, &c, t1.id).await;
     let ws1 = store
-        .workspace_folder_id(t1.id, &c.tenant_id)
+        .workspace_folder_id(t1.id, c.tenant_id())
         .await
         .unwrap()
         .expect("ワークスペースが作られる");
@@ -404,12 +404,12 @@ async fn autonomous_run_writes_workspace_file_e2e() {
         .await
         .unwrap();
     store
-        .set_thread_workspace(t2.id, &c.tenant_id, Some(existing.id), None)
+        .set_thread_workspace(t2.id, c.tenant_id(), Some(existing.id), None)
         .await
         .unwrap();
     run_autonomous_fswrite(&store, &c, t2.id).await;
     let ws2 = store
-        .workspace_folder_id(t2.id, &c.tenant_id)
+        .workspace_folder_id(t2.id, c.tenant_id())
         .await
         .unwrap()
         .expect("ワークスペースが確定する");
@@ -439,7 +439,7 @@ async fn autonomous_run_writes_workspace_file_e2e() {
         )
         .await
         .unwrap();
-    let mut rx3 = store.event_stream(&c.tenant_id, res3.run_id, 0);
+    let mut rx3 = store.event_stream(c.tenant_id(), res3.run_id, 0);
     let mut t3_done = false;
     for _ in 0..500 {
         let next = tokio::time::timeout(Duration::from_secs(20), rx3.next())
@@ -460,7 +460,7 @@ async fn autonomous_run_writes_workspace_file_e2e() {
     assert!(t3_done, "fs を使わない自律 run も完了する");
     assert!(
         store
-            .workspace_folder_id(t3.id, &c.tenant_id)
+            .workspace_folder_id(t3.id, c.tenant_id())
             .await
             .unwrap()
             .is_none(),

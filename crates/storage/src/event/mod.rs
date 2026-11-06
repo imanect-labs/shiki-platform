@@ -98,12 +98,12 @@ pub async fn emit_on(
          (org, tenant_id, node_id, version, op, actor, trace_id, payload) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)",
     )
-    .bind(&ctx.org)
-    .bind(&ctx.tenant_id)
+    .bind(ctx.org())
+    .bind(ctx.tenant_id())
     .bind(event.node_id)
     .bind(event.version)
     .bind(event.op.as_str())
-    .bind(&ctx.principal.id)
+    .bind(&ctx.principal().id)
     .bind(trace_id)
     .bind(&payload_str)
     .execute(conn)
@@ -145,9 +145,9 @@ pub async fn emit_many_on(
               WITH ORDINALITY AS e(node_id, version, op, payload, private, ord) \
          ORDER BY e.ord",
     )
-    .bind(&ctx.org)
-    .bind(&ctx.tenant_id)
-    .bind(&ctx.principal.id)
+    .bind(ctx.org())
+    .bind(ctx.tenant_id())
+    .bind(&ctx.principal().id)
     .bind(trace_id)
     .bind(&node_ids)
     .bind(&versions)

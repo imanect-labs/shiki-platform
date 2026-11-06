@@ -353,7 +353,7 @@ pub async fn update_settings(
         Err(e) => return Err(invalid(&e.to_string())),
     };
     // 監査はコミット済み操作の記録（失敗しても結果は変えず、欠落をログで顕在化する）。
-    let object_id = format!("{}|{}", ctx.tenant_id, ctx.org);
+    let object_id = format!("{}|{}", ctx.tenant_id(), ctx.org());
     if let Err(e) = state
         .audit
         .record(

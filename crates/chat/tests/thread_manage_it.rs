@@ -116,7 +116,7 @@ impl AuthzClient for AllowAll {
 }
 
 async fn setup() -> Option<PgPool> {
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return None;
     };
@@ -143,7 +143,7 @@ fn ctx(tenant: &str) -> AuthContext {
             tenant_id: Some(tenant.into()),
         },
         "acme".into(),
-        tenant.into(),
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 
@@ -307,7 +307,7 @@ async fn pin_and_unpin_threads() {
 
     // 他人（同テナントの別ユーザー）のピン留め一覧には出ない（一覧は本人のものだけ）。
     let mut bob = ctx(&tenant);
-    bob.principal.id = "bob".into();
+    bob.principal_mut().id = "bob".into();
     assert!(store.list_pinned_threads(&bob).await.unwrap().is_empty());
 }
 

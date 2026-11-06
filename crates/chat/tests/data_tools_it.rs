@@ -55,11 +55,11 @@ impl RefResolver for AllowRefs {
 }
 
 async fn setup() -> Option<(PgPool, Arc<dyn AuthzClient>)> {
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return None;
     };
-    let Ok(base_url) = std::env::var("OPENFGA_TEST_URL") else {
+    let Ok(base_url) = shiki_testenv::var("OPENFGA_TEST_URL") else {
         eprintln!("OPENFGA_TEST_URL 未設定のためスキップ");
         return None;
     };
@@ -96,7 +96,7 @@ fn ctx(tenant: &str, user: &str) -> AuthContext {
             tenant_id: Some(tenant.into()),
         },
         "acme".into(),
-        tenant.into(),
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 
@@ -764,7 +764,7 @@ async fn run_to_done(store: &ChatStore, c: &AuthContext, text: &str) -> Vec<Stre
         .post_message(c, thread.id, text, &[], None, Some(true), false, &[], None)
         .await
         .unwrap();
-    let mut rx = store.event_stream(&c.tenant_id, res.run_id, 0);
+    let mut rx = store.event_stream(c.tenant_id(), res.run_id, 0);
     let mut events = Vec::new();
     for _ in 0..500 {
         let next = tokio::time::timeout(Duration::from_secs(180), rx.next())

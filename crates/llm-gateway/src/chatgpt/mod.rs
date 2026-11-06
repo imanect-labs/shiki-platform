@@ -128,10 +128,10 @@ struct Owner {
 impl Owner {
     /// 対話する本人（ユーザー）だけが連携・利用できる。
     fn of(ctx: &AuthContext) -> Option<Owner> {
-        (ctx.principal.kind == PrincipalKind::User).then(|| Owner {
-            tenant_id: ctx.tenant_id.clone(),
-            org: ctx.org.clone(),
-            principal_id: ctx.principal.id.clone(),
+        (ctx.principal().kind == PrincipalKind::User).then(|| Owner {
+            tenant_id: ctx.tenant_id().to_owned(),
+            org: ctx.org().to_owned(),
+            principal_id: ctx.principal().id.clone(),
         })
     }
 

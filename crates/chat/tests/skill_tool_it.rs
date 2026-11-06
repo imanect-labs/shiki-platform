@@ -90,7 +90,7 @@ impl AuthzClient for AllowAll {
 }
 
 async fn setup() -> Option<PgPool> {
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return None;
     };
@@ -117,7 +117,7 @@ fn ctx(tenant: &str) -> AuthContext {
             tenant_id: Some(tenant.into()),
         },
         "acme".into(),
-        tenant.into(),
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 
@@ -233,7 +233,7 @@ async fn skill_tool_loads_instructions_and_records_invocation() {
         .await
         .unwrap();
 
-    let mut rx = store.event_stream(&c.tenant_id, res.run_id, 0);
+    let mut rx = store.event_stream(c.tenant_id(), res.run_id, 0);
     let mut done = false;
     let mut invoked: Option<serde_json::Value> = None;
     let mut tool_result_content = String::new();
@@ -314,7 +314,7 @@ async fn skill_tool_loads_instructions_and_records_invocation() {
         )
         .await
         .unwrap();
-    let mut rx = store.event_stream(&c.tenant_id, res.run_id, 0);
+    let mut rx = store.event_stream(c.tenant_id(), res.run_id, 0);
     let mut done = false;
     let mut saw_error_result = false;
     let mut saw_invoked = false;

@@ -75,9 +75,9 @@ impl SearchService {
              join node n on n.id = c.node_id and n.tenant_id = c.tenant_id \
              where c.tenant_id = $1 and c.id = any($2) and n.org = $3 and n.deleted_at is null",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(&ids)
-        .bind(&ctx.org)
+        .bind(ctx.org())
         .fetch_all(&self.pool)
         .await?;
         Ok(live.into_iter().collect())
@@ -113,9 +113,9 @@ impl SearchService {
              join node n on n.id = c.node_id and n.tenant_id = c.tenant_id \
              where c.tenant_id = $1 and c.id = any($2) and n.org = $3 and n.deleted_at is null",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(&ids)
-        .bind(&ctx.org)
+        .bind(ctx.org())
         .fetch_all(&self.pool)
         .await?;
         Ok(rows.into_iter().map(|r| (r.id, r)).collect())
@@ -174,9 +174,9 @@ impl SearchService {
                  where c.tenant_id = $1 and c.id = any($2) and n.org = $3 \
                    and n.deleted_at is null",
             )
-            .bind(&ctx.tenant_id)
+            .bind(ctx.tenant_id())
             .bind(&parent_ids)
-            .bind(&ctx.org)
+            .bind(ctx.org())
             .fetch_all(&self.pool)
             .await?;
             rows.into_iter().collect()

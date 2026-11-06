@@ -79,7 +79,7 @@ impl AuthzClient for AllowAll {
 }
 
 async fn setup() -> Option<PgPool> {
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return None;
     };
@@ -106,7 +106,7 @@ fn ctx(tenant: &str) -> AuthContext {
             tenant_id: Some(tenant.into()),
         },
         "acme".into(),
-        tenant.into(),
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 
@@ -164,7 +164,7 @@ async fn post_message_is_transactional_outbox() {
     .await
     .unwrap();
     let claimed_by_worker = store
-        .run_status(&c.tenant_id, res.run_id)
+        .run_status(c.tenant_id(), res.run_id)
         .await
         .unwrap()
         .is_some_and(|s| s != chat::RunStatus::Queued);
@@ -295,7 +295,7 @@ async fn cancel_is_cooperative_and_visible_to_claim() {
         )
         .await
         .unwrap();
-    let status = store.run_status(&c.tenant_id, res.run_id).await.unwrap();
+    let status = store.run_status(c.tenant_id(), res.run_id).await.unwrap();
     assert_eq!(status, Some(chat::RunStatus::Cancelled));
 }
 
@@ -322,7 +322,7 @@ async fn replay_returns_events_after_cursor() {
             .unwrap();
     }
     // cursor=1 以降（seq 2,3）だけ返る（Last-Event-ID 再開・非重複）。
-    let events = store.replay_events(&c.tenant_id, run_id, 1).await.unwrap();
+    let events = store.replay_events(c.tenant_id(), run_id, 1).await.unwrap();
     assert_eq!(events.len(), 2);
     assert_eq!(events[0].seq, 2);
     assert_eq!(events[1].seq, 3);
@@ -548,7 +548,7 @@ async fn get_thread_for_view_returns_callers_last_model_choice() {
 
     // 共有先の他人には引き継がない（自分の run だけを見る）。
     let mut bob = ctx(&tenant);
-    bob.principal.id = "bob".into();
+    bob.principal_mut().id = "bob".into();
     let got = store
         .get_thread_for_view(&bob, thread.id, None)
         .await
