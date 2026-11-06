@@ -10,7 +10,7 @@ use ts_rs::TS;
 pub const MAX_CONDITION_DEPTH: usize = 5;
 /// `$template` の vars 上限（V7）。
 pub const MAX_TEMPLATE_VARS: usize = 50;
-/// regex パターン長上限（V5）。
+/// regex パターン長上限（V5・文字数で数える・BUG-228。入力項目と出力の形の pattern の長さも同じ数）。
 pub const MAX_REGEX_LEN: usize = 256;
 
 /// `$from` 参照（`{ "$from": "...", "path": "<JSON Pointer>", "default": ... }`・ir.md §3.1）。

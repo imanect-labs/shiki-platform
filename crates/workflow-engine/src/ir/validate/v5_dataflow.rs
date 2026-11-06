@@ -317,19 +317,20 @@ fn check_cmp(
             ctx,
         ));
     }
-    // matches は right がリテラル文字列で、regex としてコンパイル可能・長さ上限内。
+    // matches は right がリテラル文字列で、regex としてコンパイル可能・長さ上限内。長さは入力項目の pattern と同じく
+    // 文字数で数える（BUG-228）。
     if cmp.op == CmpOp::Matches {
         let msg = match &cmp.right {
             Some(ValueExpr::Literal(Value::String(pat))) => {
-                if pat.len() > MAX_REGEX_LEN {
-                    Some("regex パターンが長すぎます（最大 256）")
+                if pat.chars().count() > MAX_REGEX_LEN {
+                    Some(format!("正規表現は {MAX_REGEX_LEN} 字までにしてください。"))
                 } else if regex::Regex::new(pat).is_err() {
-                    Some("regex がコンパイルできません")
+                    Some("正規表現の書き方が正しくありません。".to_string())
                 } else {
                     None
                 }
             }
-            _ => Some("matches の right はリテラル文字列である必要があります"),
+            _ => Some("matches の right はリテラル文字列である必要があります".to_string()),
         };
         if let Some(msg) = msg {
             errors.push(err("ir.expr_type_error", msg, path, ctx));
@@ -597,6 +598,42 @@ mod tests {
             &mut errs,
         );
         assert!(errs.iter().any(|e| e.code == "ir.expr_type_error"));
+    }
+
+    /// BUG-228: 「正規表現に一致」の長さは、入力項目の pattern と同じく文字数で数え、文言の数と合わせる。日本語の
+    /// 256 文字は通り（前はバイトで数えて 86 文字ほどで断っていた）、257 文字は断る。
+    #[test]
+    fn matches_length_is_counted_in_characters() {
+        let errs_for = |pat: String| {
+            let mut errs = Vec::new();
+            check(
+                &ir(json!({
+                    "ir_version": 1, "name": "wf",
+                    "nodes": [{ "id": "b", "type": "control.branch", "params": { "condition":
+                        { "cmp": { "left": "x", "op": "matches", "right": pat } } } }],
+                    "edges": []
+                })),
+                &mut errs,
+            );
+            errs.into_iter()
+                .map(|e| (e.code, e.message))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(errs_for("あ".repeat(MAX_REGEX_LEN)), vec![]);
+        assert_eq!(
+            errs_for("あ".repeat(MAX_REGEX_LEN + 1)),
+            vec![(
+                "ir.expr_type_error".to_string(),
+                "正規表現は 256 字までにしてください。".to_string()
+            )]
+        );
+        assert_eq!(
+            errs_for("(".to_string()),
+            vec![(
+                "ir.expr_type_error".to_string(),
+                "正規表現の書き方が正しくありません。".to_string()
+            )]
+        );
     }
 
     /// 1 ノード（`a` → `b`）の `b` の params を V5 に通す。
