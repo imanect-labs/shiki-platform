@@ -15,6 +15,8 @@ enum Behavior {
     Tunnel(SocketAddr),
     /// この応答の行を返して閉じる。
     Respond(&'static str),
+    /// CONNECT を受けたまま答えない（接続は開いたまま）。
+    Silent,
 }
 
 /// 受けた要求の見出し（中継は CONNECT、相手は HTTP の要求・TLS ならその始まりのバイト）。
@@ -50,6 +52,12 @@ async fn fake_proxy(behavior: Behavior) -> (SocketAddr, Seen) {
                     let _ = sock
                         .write_all(format!("{line}\r\ncontent-length: 0\r\n\r\n").as_bytes())
                         .await;
+                }
+                Behavior::Silent => {
+                    tokio::spawn(async move {
+                        tokio::time::sleep(Duration::from_secs(60)).await;
+                        drop(sock);
+                    });
                 }
             }
         }
@@ -261,4 +269,39 @@ async fn unreachable_proxies_and_upstream_failures_are_retryable() {
             )
         );
     }
+}
+
+/// 中継が CONNECT に答えないときも、ブロックの時間の上限より長く待たない（トンネルを開く時間も上限に数える）。
+/// 送り先には何も送っていないので、やり直せる失敗。
+#[tokio::test]
+async fn a_silent_proxy_does_not_outlast_the_time_limit() {
+    let (proxy, at_proxy) = fake_proxy(Behavior::Silent).await;
+    let resolver = MapResolver::new(&[(
+        "api.example.test",
+        &[
+            format!("{PUBLIC}:443").parse().unwrap(),
+            "93.184.216.35:443".parse().unwrap(),
+        ],
+    )]);
+    let egress = HttpEgress::default()
+        .with_resolver(resolver)
+        .with_proxy(proxy_at(proxy, None));
+    let mut req = get("https://api.example.test/");
+    req.timeout_ms = Some(300);
+    let started = std::time::Instant::now();
+    let err = egress.send(req).await.unwrap_err();
+    let took = started.elapsed();
+    assert!(took < Duration::from_secs(3), "{took:?}");
+    assert_eq!(err.code, "unavailable");
+    assert!(err.retryable);
+    assert!(
+        err.message.contains("送り先には何も送っていない"),
+        "{}",
+        err.message
+    );
+    assert_eq!(
+        at_proxy.lock().unwrap().len(),
+        1,
+        "CONNECT を頼んだのは 1 回だけ"
+    );
 }

@@ -109,7 +109,13 @@ impl HttpEgress {
     }
 
     /// 送り先を確かめて送り、応答を本文の上限まで読む。
+    ///
+    /// 時間の上限（`timeout_ms`）は、中継のトンネルを開く時間も含めて数える（中継が CONNECT に答えないときも、作成者が
+    /// 決めた上限より長く待たない）。送信はトンネルを開いた残りの時間で打ち切る。
     pub async fn send(&self, req: HttpSendReq) -> Result<HttpSendResp, PortError> {
+        let deadline = req
+            .timeout_ms
+            .map(|ms| tokio::time::Instant::now() + Duration::from_millis(ms));
         let url = url::Url::parse(&req.url).map_err(|_| {
             PortError::invalid(
                 "URL の書き方が正しくありません。https:// から、ドメインまで書いてください。",
@@ -118,7 +124,16 @@ impl HttpEgress {
         let shown = url.host_str().unwrap_or_default().to_string();
         let (domain, addrs) = self.resolve(&url, &shown).await?;
         // 外へ出るのに中継が要る環境では、確かめたアドレスへのトンネルを先に開く（送信を終えるまで持つ・GAP-72）。
-        let tunnel = self.open_tunnel(&addrs, &shown).await?;
+        let tunnel = match deadline {
+            Some(at) => tokio::time::timeout_at(at, self.open_tunnel(&addrs, &shown))
+                .await
+                .map_err(|_| {
+                    tracing::warn!(host = %shown,
+                        "ワークフローの外部への送信で、中継のトンネルが時間の上限までに開きませんでした");
+                    proxy_failure(ProxyError::UpstreamFailed)
+                })??,
+            None => self.open_tunnel(&addrs, &shown).await?,
+        };
         let mut builder = reqwest::Client::builder()
             // 3xx は追わない（エンジンが redirect_denied にする・PIT-36）。
             .redirect(reqwest::redirect::Policy::none())
@@ -148,8 +163,10 @@ impl HttpEgress {
         if let Some(body) = req.body {
             request = request.body(body);
         }
-        if let Some(ms) = req.timeout_ms {
-            request = request.timeout(Duration::from_millis(ms));
+        if let Some(at) = deadline {
+            // トンネルを開いた残りの時間（使い切っていても 0 にはしない・送る前に打ち切る）。
+            let left = at.saturating_duration_since(tokio::time::Instant::now());
+            request = request.timeout(left.max(Duration::from_millis(1)));
         }
         let mut resp = request.send().await.map_err(|_| {
             PortError::unavailable(format!(
