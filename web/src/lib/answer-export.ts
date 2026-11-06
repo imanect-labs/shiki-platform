@@ -5,6 +5,8 @@
 ///   ならないので、番号と出所の対応を文字で残す）。閲覧できない出典（withheld）は一覧に出さない。
 /// - ```ui の図はノート・md ではそのまま残す（ノートは図として描ける）。Word は図を描けないので
 ///   プレースホルダへ置き換える（生の図の定義を Word に載せない）。
+/// - 画像は md ではそのまま、ノート・Word ではリンクにする（ノートは画像を取り込まず、Word の変換側に
+///   外部の画像を取りに行かせない）。
 
 import type { Citation } from "@/lib/chat-api";
 import { citationLocator, groupCitations, isWebCitation, safeWebUrl } from "@/lib/citation";
@@ -45,24 +47,59 @@ export function sourcesMarkdown(
   return `## 出典\n\n${lines.join("\n")}`;
 }
 
-/// Word 用の Markdown。```ui の図は Word に描けないため、プレースホルダの引用に置き換える。
-/// 図として描かれるフェンス（``` / ~~~ と ui / yui。種類の付いた ```ui bar・```yui:Bar も）を対象にする。
+/// Word 用の Markdown。```ui の図は Word に描けないため、プレースホルダに置き換える（引用・リストの
+/// 中の図も、その入れ物の中に置く）。画像はリンクにする（変換側に外部の画像を取りに行かせない）。
 export function docxMarkdown(md: string): string {
   const out: string[] = [];
   for (const block of scanFences(md)) {
     if (block.kind === "fence" && isFigureInfo(block.info)) {
-      out.push("> 図はこのファイルに含まれません。チャットの回答で確認してください。");
-    } else {
+      out.push(`${block.prefix}${FIGURE_PLACEHOLDER}`);
+    } else if (block.kind === "fence") {
       out.push(...block.lines);
+    } else {
+      out.push(...block.lines.map(imageAsLink));
     }
   }
   return out.join("\n");
 }
 
-type FenceBlock = { kind: "text"; lines: string[] } | { kind: "fence"; info: string; lines: string[] };
+/// ノート用の Markdown。ノートの取り込みは画像を代替テキストにしてしまう（URL が消える）ので、
+/// 画像はリンクにして元の画像へたどれるようにする。図（```ui）はノートで描けるのでそのまま。
+export function noteMarkdown(md: string): string {
+  return scanFences(md)
+    .flatMap((block) => (block.kind === "fence" ? block.lines : block.lines.map(imageAsLink)))
+    .join("\n");
+}
+
+const FIGURE_PLACEHOLDER = "（図はこのファイルに含まれません。チャットの回答で確認してください。）";
+
+/// `![代替](URL "題")` を `[代替](URL)` にする（代替が空なら「画像」）。インラインコードの中は触らない。
+function imageAsLink(line: string): string {
+  return line
+    .split(/(`+[^`]*`+)/)
+    .map((part, i) =>
+      i % 2 === 1
+        ? part
+        : part.replace(
+            /!\[([^\]]*)\]\(\s*(<[^>]*>|[^\s)]+)(?:\s+(?:"[^"]*"|'[^']*'))?\s*\)/g,
+            (_m, alt: string, url: string) => `[${alt.trim() || "画像"}](${url})`,
+          ),
+    )
+    .join("");
+}
+
+type FenceBlock =
+  | { kind: "text"; lines: string[] }
+  | { kind: "fence"; info: string; prefix: string; lines: string[] };
+
+/// 行頭の入れ物（引用の `>`・リストの記号・字下げ）。フェンスはこの後ろに置かれていても開き・閉じになる。
+const CONTAINER = String.raw`((?:[ \t]*>[ \t]?|[ \t]*(?:[-*+]|\d{1,9}[.)])[ \t]+)*[ \t]*)`;
+const OPEN_FENCE = new RegExp(`^${CONTAINER}(\`{3,}|~{3,})(.*)$`);
+const CLOSE_FENCE = new RegExp(`^${CONTAINER}(\`{3,}|~{3,})[ \t]*$`);
 
 /// 本文を「フェンスの外の行」と「フェンス（開きから閉じまで）」に分ける（CommonMark のとおり、
-/// 閉じは開きと同じ文字で同じ長さ以上・情報文字列なし。閉じが無ければ末尾まで）。
+/// 閉じは開きと同じ文字で同じ長さ以上・情報文字列なし。閉じが無ければ末尾まで）。引用・リストの中の
+/// フェンスも拾う（チャットはそれも図として描く）。
 function scanFences(md: string): FenceBlock[] {
   const blocks: FenceBlock[] = [];
   let open: { ch: string; len: number; block: Extract<FenceBlock, { kind: "fence" }> } | null = null;
@@ -70,18 +107,18 @@ function scanFences(md: string): FenceBlock[] {
   for (const line of md.split("\n")) {
     if (open) {
       open.block.lines.push(line);
-      const close = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(line);
-      if (close && close[1][0] === open.ch && close[1].length >= open.len) open = null;
+      const close = CLOSE_FENCE.exec(line);
+      if (close && close[2][0] === open.ch && close[2].length >= open.len) open = null;
       continue;
     }
-    const m = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    const m = OPEN_FENCE.exec(line);
     // バッククォートのフェンスの情報文字列にはバッククォートを含められない（インラインのコード）。
-    if (m && !(m[1][0] === "`" && m[2].includes("`"))) {
+    if (m && !(m[2][0] === "`" && m[3].includes("`"))) {
       if (text.length > 0) blocks.push({ kind: "text", lines: text });
       text = [];
-      const block = { kind: "fence" as const, info: m[2].trim(), lines: [line] };
+      const block = { kind: "fence" as const, info: m[3].trim(), prefix: m[1], lines: [line] };
       blocks.push(block);
-      open = { ch: m[1][0], len: m[1].length, block };
+      open = { ch: m[2][0], len: m[2].length, block };
       continue;
     }
     text.push(line);

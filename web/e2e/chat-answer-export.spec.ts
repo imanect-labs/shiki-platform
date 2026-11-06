@@ -73,28 +73,35 @@ test.describe("チャットの回答の書き出し（#1048）", () => {
     await expect(page.locator(".ProseMirror").getByText("段落2。")).toBeVisible({ timeout: 20_000 });
   });
 
-  test("PDF は回答 1 件の印刷ビューを開き、印刷ダイアログを出す", async ({ page, context }) => {
-    // 印刷ダイアログの代わりに呼ばれたことだけを記録する。
+  test("PDF はその場で回答 1 件だけを印刷し、終わると画面を戻す", async ({ page, context }) => {
+    // 印刷ダイアログの代わりに、呼ばれた時点の紙面（印刷層の文字・画面を隠しているか）を記録する。
     await context.addInitScript(() => {
       window.print = () => {
-        (window as unknown as { __printed: boolean }).__printed = true;
+        const root = document.querySelector(".answer-print-root");
+        (window as unknown as { __printed: unknown }).__printed = {
+          text: root?.textContent ?? "",
+          heading: root?.querySelector("h2")?.textContent ?? "",
+          hiding: document.body.classList.contains("printing-answer"),
+        };
       };
     });
     const exportButton = await askLong(page);
+    const threadUrl = page.url();
     await exportButton.click();
-    const [popup] = await Promise.all([
-      context.waitForEvent("page"),
-      page.getByTestId("message-export-pdf").click(),
-    ]);
-    await popup.waitForLoadState();
-    expect(popup.url()).toMatch(/\/c\/[0-9a-f-]+\/print\?m=/i);
-    const view = popup.getByTestId("answer-print");
-    await expect(view.getByRole("heading", { name: "第1章" })).toBeVisible({ timeout: 20_000 });
-    await expect(view.getByText("段落2。")).toBeVisible();
-    await expect
-      .poll(() => popup.evaluate(() => (window as unknown as { __printed?: boolean }).__printed === true), {
+    await page.getByTestId("message-export-pdf").click();
+    const printed = await expect
+      .poll(() => page.evaluate(() => (window as unknown as { __printed?: unknown }).__printed ?? null), {
         timeout: 10_000,
       })
-      .toBe(true);
+      .not.toBeNull()
+      .then(() => page.evaluate(() => (window as unknown as { __printed: Record<string, unknown> }).__printed));
+    expect(printed.heading).toBe("第1章");
+    expect(printed.text).toContain("段落2。");
+    expect(printed.hiding).toBe(true);
+    // 新しいタブも遷移も起きず、印刷後は印刷層を外して画面を戻す。
+    expect(context.pages()).toHaveLength(1);
+    expect(page.url()).toBe(threadUrl);
+    await expect(page.getByTestId("answer-print")).toHaveCount(0);
+    expect(await page.evaluate(() => document.body.classList.contains("printing-answer"))).toBe(false);
   });
 });

@@ -4,7 +4,7 @@
 ///
 /// - エクスポート（ドライブに置く）: ノートとして開く（下書きノートへ流し込み、保存は下書き画面で
 ///   決める）／Word としてドライブに保存（名前と保存先を選んで .docx を置く）。
-/// - ダウンロード（手元に保存）: Markdown・Word・PDF（回答 1 件の印刷ビューをブラウザで印刷する）。
+/// - ダウンロード（手元に保存）: Markdown・Word・PDF（回答をその場で印刷する・[`AnswerPrint`]）。
 ///
 /// 出典付きの回答には、閲覧権限のある人だけが読める文書の抜粋が入りうる。ドライブに置くと
 /// 共有で出典を読めない人にも見えるので、保存ダイアログで注意を出す（human 決定: UI の注意に留める）。
@@ -24,7 +24,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { toast } from "@/components/ui/use-toast";
 import { SaveDraftDialog, saveFailedMessage, type SaveTarget } from "@/components/notes/save-draft-dialog";
-import { answerFileName, answerMarkdown, docxMarkdown } from "@/lib/answer-export";
+import { answerFileName, answerMarkdown, docxMarkdown, noteMarkdown } from "@/lib/answer-export";
 import type { Citation } from "@/lib/chat-api";
 import { isWebCitation } from "@/lib/citation";
 import { markdownToDocx } from "@/lib/documents-api";
@@ -33,29 +33,26 @@ import { useDefaultSaveFolder } from "@/lib/drafts/save-folder";
 import { draftHref } from "@/lib/notes/draft-nav";
 import { getDraft, upsertDraft } from "@/lib/notes/draft-store";
 import { uploadNewFile } from "@/lib/storage";
+import { AnswerPrint } from "./answer-print";
 import { useMessageCitations } from "./citations/citation-context";
+import { answerImageSources, type TimelineSegment } from "./message-timeline";
 import { footerButtonClass } from "./message-footer";
 
 const DOCX_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
 
-/// 回答の印刷ビュー（PDF）の URL。
-export function answerPrintHref(threadId: string, messageId: string): string {
-  return `/c/${encodeURIComponent(threadId)}/print?m=${encodeURIComponent(messageId)}`;
-}
-
 export function MessageExportMenu({
   threadId,
-  messageId,
   threadTitle,
+  segments,
   text,
   citations,
 }: {
   threadId: string;
-  /// 保存済みの回答の ID（PDF の印刷ビューが読み直すのに使う・まだ無ければ PDF は押せない）。
-  messageId: string | null;
   threadTitle: string | null;
+  /// 回答の区切り（印刷で、出典に現れた画像だけを描くのに使う）。
+  segments: TimelineSegment[];
   text: string;
-  citations: readonly Citation[];
+  citations: Citation[];
 }) {
   const router = useRouter();
   const cited = useMessageCitations();
@@ -75,7 +72,7 @@ export function MessageExportMenu({
     // 同じ会話で同じ名前の下書きがあれば、上書きせず連番の名前で開く。
     let draftName = name;
     for (let i = 2; getDraft(threadId, draftName); i++) draftName = `${name} (${i})`;
-    upsertDraft(threadId, draftName, markdown(), "user");
+    upsertDraft(threadId, draftName, noteMarkdown(markdown()), "user");
     router.push(draftHref(threadId, draftName));
   };
 
@@ -133,10 +130,12 @@ export function MessageExportMenu({
     }
   };
 
-  const printPdf = () => {
-    if (!messageId) return;
-    window.open(answerPrintHref(threadId, messageId), "_blank", "noopener");
-  };
+  // PDF: その場で印刷する（会話を取り直さない）。押している間は層を出し、閉じたら外す。
+  const [printing, setPrinting] = React.useState(false);
+  const imageSources = React.useMemo(
+    () => (printing ? answerImageSources(segments, citations) : null),
+    [printing, segments, citations],
+  );
 
   return (
     <>
@@ -187,8 +186,7 @@ export function MessageExportMenu({
           </DropdownMenuItem>
           <DropdownMenuItem
             className="gap-2.5 px-2.5 py-2"
-            onSelect={printPdf}
-            disabled={!messageId}
+            onSelect={() => setPrinting(true)}
             data-testid="message-export-pdf"
           >
             <Printer className="text-muted-foreground" />
@@ -211,6 +209,15 @@ export function MessageExportMenu({
             : undefined
         }
       />
+      {printing && imageSources ? (
+        <AnswerPrint
+          text={text}
+          citations={citations}
+          imageSources={imageSources}
+          title={threadTitle}
+          onDone={() => setPrinting(false)}
+        />
+      ) : null}
     </>
   );
 }

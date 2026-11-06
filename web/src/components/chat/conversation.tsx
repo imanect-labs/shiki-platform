@@ -1409,8 +1409,8 @@ const AssistantRow = React.memo(function AssistantRow({
             <MessageFooter text={text} pinned={latest}>
               <MessageExportMenu
                 threadId={threadId}
-                messageId={savedMessageId}
                 threadTitle={threadTitle}
+                segments={segments}
                 text={text}
                 citations={citations}
               />
