@@ -2,13 +2,13 @@
 
 /// 会話画面（/c/[id]）のクローム。シェルの `usePageChrome` へ登録して使う。
 ///
-/// - 右上（スマホ）/ バー右端（PC）: 新しいチャット → ⋯（共有・リンクをコピー・設定）。
+/// - 右上（スマホ）/ バー右端（PC）: 新しいチャット → ⋯（共有・リンクをコピー・会話を書き出し・設定）。
 /// - PC のバーには従来どおり文字の「共有」ボタンも出す（幅に余裕があるため）。
 /// - スマホではタイトルを出さず、⋯ メニューの先頭に会話名を出す。
 ///
 /// スレッドの名前の変更・ピン留め・削除はサイドバー履歴の行メニューに置く（ここには置かない）。
 
-import { ChartPie, Copy, Settings, Share2, SquarePen } from "lucide-react";
+import { ChartPie, Copy, FileOutput, Settings, Share2, SquarePen } from "lucide-react";
 import { useRouter } from "next/navigation";
 
 import { Button } from "@/components/ui/button";
@@ -35,11 +35,14 @@ export function ChatPageHeaderSlot({
   onShare,
   contextUsage,
   onOpenContext,
+  onExport,
 }: {
   title: string;
   onShare: () => void;
   contextUsage: ContextUsage | null;
   onOpenContext: () => void;
+  /// 会話全体の書き出しダイアログを開く。書き出せる回答が無ければ渡さない（項目を出さない）。
+  onExport?: () => void;
 }) {
   const contextLabel = contextUsage ? contextMenuLabel(contextUsage) : null;
   const router = useRouter();
@@ -68,6 +71,9 @@ export function ChatPageHeaderSlot({
       menu: [
         { key: "share", label: "共有", icon: Share2, onSelect: onShare },
         { key: "copy", label: "リンクをコピー", icon: Copy, onSelect: () => void copyCurrentLink() },
+        ...(onExport
+          ? [{ key: "export", label: "会話を書き出し…", icon: FileOutput, onSelect: onExport, testId: "thread-export" }]
+          : []),
         ...(contextLabel
           ? [{ key: "context", label: contextLabel, icon: ChartPie, onSelect: onOpenContext }]
           : []),
@@ -80,7 +86,7 @@ export function ChatPageHeaderSlot({
         },
       ],
     }),
-    [title, onShare, router, contextLabel, onOpenContext],
+    [title, onShare, router, contextLabel, onOpenContext, onExport],
   );
   return null;
 }
