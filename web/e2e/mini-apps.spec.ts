@@ -877,7 +877,7 @@ test.describe("ミニアプリ（部品のピン・共同編集）", () => {
       await page.getByRole("button", { name: "編集" }).click();
       const dialog = page.getByRole("dialog");
       const skillSelect = dialog.getByLabel("スキル（任意）");
-      // ピンの版を直に読めたので、名前つきで選んだまま。「読めない」とは言わない。
+      // 読めると確かめられた（新しいバージョンの確かめ）ので、名前を引いて選んだまま。「読めない」とは言わない。
       await expect(skillSelect.locator("option:checked")).toHaveText(`${skillName}（v1）`);
       await expect(dialog.getByText("束ねているスキルは、削除されたか、あなたに見る権限がありません")).toHaveCount(0);
       await dialog.getByLabel(/画面の見出し/).fill("経費の案内（改訂）");

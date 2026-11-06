@@ -47,7 +47,6 @@ import {
   getArtifact,
   getMiniAppPinUpdates,
   getMiniAppWorkflowInputs,
-  getSkill,
   isVersionConflict,
   updateMiniApp,
   validationMessages,
@@ -72,7 +71,8 @@ function viewAlias(name: string, taken: readonly Pin[]): string {
 }
 
 /// 束ねているスキルのピンを読めるか（スキルの一覧は読み込んだページの分しか無いので、一覧に無いことでは決めない・
-/// ピンの版を直に読んで、404・403 のときだけ読めないとする・BUG-17）。
+/// BUG-17）。読めるかは、新しいバージョンの確かめ（`POST /mini-apps/pin-updates` の readable・削除されたか見る権限が
+/// 無いときだけ false）の答えを使い、同じことを問う要求を別に出さない（GAP-98）。名前は、読めて一覧に無いときだけ引く。
 type PinnedSkill =
   | { state: "checking" }
   | { state: "readable"; name: string | null }
@@ -91,12 +91,6 @@ type PinnedInputs =
   | { state: "unreadable" }
   /// 通信・サーバの誤りで決められない。
   | { state: "unknown" };
-
-/// 誤りの状態コード（`artifact-api`・`workflow-api` の `ok` が添える）。
-function statusOf(e: unknown): number | null {
-  const status = (e as { status?: unknown } | null)?.status;
-  return typeof status === "number" ? status : null;
-}
 
 /// 新しいアプリの画面の雛形（最初に選んだワークフローの名前を入れる）。
 function templateScreen(workflow: string): string {
@@ -177,7 +171,8 @@ export function MiniAppEditorDialog({
   const skills = React.useMemo(() => skillList.items ?? [], [skillList.items]);
   const workflows = React.useMemo(() => workflowList.items ?? [], [workflowList.items]);
   const viewChoices = React.useMemo(() => viewList.items ?? [], [viewList.items]);
-  const [pinnedSkill, setPinnedSkill] = React.useState<PinnedSkill>({ state: "checking" });
+  /// 束ねているスキルの名前（読めると分かってから引く・読めなければ null）。
+  const [pinnedSkillName, setPinnedSkillName] = React.useState<{ key: string; name: string | null } | null>(null);
   /// 束ねるスキルと版（同じスキルのままなら保存してある版を据え置き、新しいバージョンは差を見て上げる・GAP-86）。
   const [skillPin, setSkillPin] = React.useState<SkillPin | null>(null);
   const [pins, setPins] = React.useState<Pin[]>([]);
@@ -220,27 +215,7 @@ export function MiniAppEditorDialog({
     setInputs({});
     setError(null);
     setConflict(false);
-    // 束ねているスキルは一覧（読み込んだページの分だけ）に有るかでなく、ピンの版を直に読んで確かめる。
-    setPinnedSkill({ state: "checking" });
-    const pin = app?.body.skill;
-    if (!pin) return;
-    let live = true;
-    void getSkill(pin.artifact_id, pin.version)
-      .then(async () => {
-        // 名前は選択欄に出すためだけに読む（読めなくても、版が読めたので読めるスキルとして扱う）。
-        const name = await getArtifact(pin.artifact_id).then(
-          (m) => m.name,
-          () => null,
-        );
-        if (live) setPinnedSkill({ state: "readable", name });
-      })
-      .catch((e: unknown) => {
-        const status = statusOf(e);
-        if (live) setPinnedSkill({ state: status === 403 || status === 404 ? "unreadable" : "unknown" });
-      });
-    return () => {
-      live = false;
-    };
+    setPinnedSkillName(null);
   }, [open, app]);
 
   const addWorkflow = () => {
@@ -303,6 +278,32 @@ export function MiniAppEditorDialog({
         setChecks((m) => ({ ...m, ...Object.fromEntries(keys.map((k) => [k, { state: "unknown" } as const])) })),
       );
   }, [pins, views, skillPin, open]);
+  // 保存してあるスキルのピンが読めるかは、新しいバージョンの確かめの答えで決める（同じことを問う要求を別に出さない・
+  // GAP-98）。名前は、読めて、スキルの一覧（読み込んだページ）に無いときだけ引く（一覧にあれば選択欄は一覧の名前で出る）。
+  const savedSkill = app?.body.skill ?? null;
+  const savedSkillKey = savedSkill ? pinKey("skill", savedSkill) : null;
+  const savedSkillCheck = savedSkillKey ? checks[savedSkillKey] : undefined;
+  const savedSkillReadable = savedSkillCheck?.state === "readable";
+  const savedSkillOutsideList =
+    savedSkill != null && skillList.items != null && !skillList.items.some((s) => s.id === savedSkill.artifact_id);
+  React.useEffect(() => {
+    if (!open || !savedSkill || !savedSkillKey || !savedSkillReadable || !savedSkillOutsideList) return;
+    let live = true;
+    // 名前は選択欄に出すためだけに読む（読めなくても、確かめで読めたので読めるスキルとして扱う）。
+    void getArtifact(savedSkill.artifact_id).then(
+      (m) => live && setPinnedSkillName({ key: savedSkillKey, name: m.name }),
+      () => live && setPinnedSkillName({ key: savedSkillKey, name: null }),
+    );
+    return () => {
+      live = false;
+    };
+  }, [open, savedSkill, savedSkillKey, savedSkillReadable, savedSkillOutsideList]);
+  const pinnedSkill: PinnedSkill =
+    savedSkillCheck == null
+      ? { state: "checking" }
+      : savedSkillCheck.state === "readable"
+        ? { state: "readable", name: pinnedSkillName?.key === savedSkillKey ? pinnedSkillName.name : null }
+        : { state: savedSkillCheck.state };
   const setVersion = (kind: PartKind) => (artifactId: string, version: number) =>
     (kind === "workflow" ? setPins : setViews)((prev) =>
       prev.map((p) => (p.artifact_id === artifactId ? { ...p, version } : p)),

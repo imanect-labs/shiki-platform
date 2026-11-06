@@ -16,6 +16,7 @@ import {
 /// - 新しいバージョンがあれば、スキルの何が変わるか（AI への指示・参照するフォルダーとファイル）と、使う人に要る権限の
 ///   増減（参照するフォルダーを見る権限）を出し、「v2 にする」で上げられる。保存の前なら元に戻せる。
 /// - 上げて保存すると、下書きのスキルは v2 になる。
+/// - 束ねたスキルが読めるかは、新しいバージョンの確かめの答えで決め、版の本文を別に読まない（GAP-98）。
 /// PC（1440px）とスマホ（390px）で確かめる。作ったもの（アプリ・スキル・フォルダー）は最後に消す。
 /// `E2E_SHOTS_DIR` を渡すとスクリーンショットを撮る。
 
@@ -39,7 +40,7 @@ async function api<T = Record<string, unknown>>(page: Page, method: "GET" | "POS
   return (await res.json()) as T;
 }
 
-type Fixture = { appId: string; skill: string; folder: string };
+type Fixture = { appId: string; skillId: string; skill: string; folder: string };
 
 /// スキル（v1）を束ねたアプリを作り、その後でスキルを v2 に改訂する（AI への指示と参照するフォルダーを変える）。
 async function setup(page: Page): Promise<Fixture> {
@@ -74,7 +75,7 @@ async function setup(page: Page): Promise<Fixture> {
     },
     expected_version: 1,
   });
-  return { appId: app.id, skill, folder };
+  return { appId: app.id, skillId: s.id, skill, folder };
 }
 
 async function openEditor(page: Page, appId: string) {
@@ -90,11 +91,28 @@ test("束ねたスキルは固定した版を見せ、新しいバージョン�
   await page.setViewportSize({ width: 1440, height: 900 });
   await loginViaKeycloak(page);
   const f = await setup(page);
-  const dialog = await openEditor(page, f.appId);
+  // 束ねたスキルが読めるかは、新しいバージョンの確かめ（pin-updates）の答えで決め、版の本文を別に読まない（GAP-98）。
+  // 数えるのはエディターを開いてから（アプリの画面が読むものは数えない）。
+  await page.goto(`/apps/${f.appId}`);
+  await expect(page.getByRole("button", { name: "編集" })).toBeVisible({ timeout: 15_000 });
+  await page.waitForLoadState("networkidle");
+  const asked: string[] = [];
+  page.on("request", (req) => {
+    const path = new URL(req.url()).pathname;
+    if (path.startsWith(`/api/skills/${f.skillId}`) || path === "/api/mini-apps/pin-updates" || path === `/api/artifacts/${f.skillId}`) {
+      asked.push(`${req.method()} ${path}`);
+    }
+  });
+  await page.getByRole("button", { name: "編集" }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByRole("heading", { name: "アプリを編集" })).toBeVisible();
 
-  // 選択欄は固定している v1 を見せる。
+  // 選択欄は固定している v1 を見せる（名前は、読めると分かってから引く）。
   const select = dialog.getByLabel("スキル（任意）");
   await expect(select.locator("option:checked")).toHaveText(`${f.skill}（v1）`, { timeout: 15_000 });
+  // 版の本文も、名前も別に読まない（スキルの一覧にあるので、選択欄は一覧の名前で出る）。
+  await page.waitForLoadState("networkidle");
+  expect(asked).toEqual(["POST /api/mini-apps/pin-updates"]);
   const pin = dialog.getByTestId("miniapp-skill-pin");
   const update = pin.getByTestId("miniapp-pin-update");
   await expect(update).toContainText("新しいバージョン v2 があります。v2 にすると、次のように変わります。", {
