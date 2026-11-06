@@ -119,6 +119,72 @@ uv run python -m abeval serve --label v0 --down
   動かしている間に既定のスタックを起動すると、版のサーバーも止まる。版のサーバーは退避したバイナリ
   （`~/.local/share/shiki-eval/bin/`）で動かす。
 
+## shiki のクライアント・fixture・点検（§4.4・§4.7）
+
+**クライアント（`abeval/shiki.py` の `ShikiClient`）**: 利用者ごとに 1 つ（Cookie の入れ物を分ける）。BFF を通さず、
+API（stub のスタックは `:8080`、版のサーバーは `:10067`）を製品の公開の口で叩く。
+
+- ログインは `deploy/compose/smoke-bff.sh` と同じ OIDC の手順。Keycloak の画面の `kc-form-login` の action
+  （`&amp;` を戻す）に username と password を POST し、戻り先（dev-up の既定は `:3000/auth/callback`）の scheme・
+  host・port を API の基底に置き換えて `/auth/callback` を呼ぶ（302 は追わない）。
+- Keycloak は http でも `Secure` の Cookie を出す。Python の cookiejar は https でないと送り返さないので、Keycloak の
+  Cookie はログインの往復の間だけ自分で持ち、authorize と同じ宛先にだけ付ける。
+- 状態を変える要求（POST・PUT・PATCH・DELETE）にだけ `x-csrf-token`（Cookie `shiki_csrf` の値）を付ける。
+  401 なら 1 回だけログインし直す。版の機能は `capabilities()`（OpenAPI の `node_ports`・`trigger`・
+  `scheduled_at`・`/me/custom-instructions`）で判定する。チャットの道具の有無（`list_workflows`）は OpenAPI に
+  載らないので、取り込んだ tools で決める。
+- `stub_only=True`（stub のスタック）では、model が `default`・`decide-stub` 以外の IR と発話、model を省いた
+  llm.invoke・ai.decide・agent.invoke、実モデルの名前を含む値を、送る前に止める（`assert_stub_only`）。
+  手元の llm-stub.toml の anthropic は本物の中継（8787）を指しているため。保存済みのワークフローを動かす前にも、
+  その IR を読んで確かめる。
+
+**fixture（`abeval/fixtures.py`）**: 課題の `fixtures`（`folders`・`tables`（`records` つき）・`csv`）を、
+フォルダー → テーブル → 行 → CSV の順に作り、作った id を順に `FixtureRecord` に残す（途中で落ちても、そこまでの
+分を片付けられる）。
+
+- `@rel:-6d` は基準の時刻（Asia/Tokyo）からの相対の日付（`YYYY-MM-DD`）。`@rel:-6dT09:00` はその日の日本時間の
+  時刻、`@rel:+2h`・`@rel:-30m` は時刻（どちらも RFC 3339・+09:00）。
+- `@id:<ref>` は先に作った fixture の id、`@record:<テーブルの ref>:<番号>` はその行の id。
+- 片付けで消すのは、記録した id（新しい順・行はテーブルごと消える）と、試行の開始の後に作られた `abeval-` の印の
+  付いたもの（ルート直下のノード・テーブル・ワークフロー）だけ。本人の全資源は消さない。フォルダーとファイルは
+  ゴミ箱に入る（製品にゴミ箱を空にする口は無い）。
+- 番兵（alice のルート直下のフォルダー `abeval-sentinel`）が無いサーバーでは、作るのも片付けるのも拒む。
+
+**点検（`python -m abeval.doctor`）**
+
+```bash
+uv run python -m abeval.doctor --mode stub --api-url http://localhost:8080   # stub のスタック
+uv run python -m abeval.doctor --mode eval                                    # 版のサーバー（:10067・--go の前）
+uv run python -m abeval.doctor --mode eval --init-sentinel                    # 評価用のサーバーに番兵を作る
+```
+
+| 項目 | 合格 |
+| --- | --- |
+| `/healthz` | 200 |
+| alice・bob・charlie のログインと `/me` の org | alice と bob は a-corp、charlie は b-corp |
+| `/llm/models` | eval は claude-haiku-5-5 と default、stub は default がある |
+| 番兵 | ある（無ければ `--init-sentinel`） |
+| alice のカスタム指示 | 空（about・style が空白で tone が default）。404 は「口が無い版」で空とみなす |
+| OpenAPI の機能 | 表示だけ |
+| ポート（eval） | 10067。:8080 の組が動いていれば警告（重ねない） |
+| llm-eval.toml（eval） | 権限 600・anthropic の base_url が abeval.proxy・api_key がダミー（値は出さない）・session_header・モデルが claude-haiku-5-5 と default だけ・anthropic のモデルが中継の許可リストの中 |
+| abeval.proxy（eval） | 合言葉つきの `GET /abeval/spend` が 200 |
+| 手元の中継の台帳（eval） | 累計が $95 未満（読むだけ。8787 へは繋がない。無ければ警告） |
+| 評価の台帳（eval） | 残りがある |
+
+api.anthropic.com へ 401 を確かめることはしない（鍵を持たないので要らない）。
+
+**サーバーの要るテスト**（stub のスタックに対して流す。実 LLM は呼ばない）:
+
+```bash
+ABEVAL_API_URL=http://localhost:8080 uv run pytest -m server -q -s
+```
+
+ログインと org・モデル・カスタム指示・番兵（無ければ作り、終わったら消す）・fixture の作成と片付け（テーブル・
+ルート直下のノード・ワークフローの一覧が前と同じに戻る）・IR の検証・stub の IR の保存と実行・stub のチャットの
+1 往復・charlie（別テナント）から alice の id が無い id と同じ応答（ワークフローは 403、テーブルは 404）になることを
+確かめる。名前には毎回ちがう印を付ける（ほかの確かめと DB を共有しても重ならない）。
+
 ## 上限と台帳
 
 | 項目 | 既定 | 強制する場所 |
@@ -161,7 +227,7 @@ Mode B で承認待ち（`approval_requested`）が来たら、既定で却下�
 
 - `tests/conftest.py` は、置き場（台帳・キャッシュ・`ABEVAL_HOME`）をテストごとの一時の場所に向け、socket の
   接続を見張る。手元の中継（`127.0.0.1:8787`）とループバック以外への接続は例外になる（実 LLM を呼ばない）。
-- 印: `server`（評価の版のサーバーが要る）・`lint_bin`（ir_lint のバイナリが要る）・`shell`（bash と git が要る）。
+- 印: `server`（stub のスタックか版のサーバーが要る・`ABEVAL_API_URL`）・`lint_bin`（ir_lint のバイナリが要る）・`shell`（bash と git が要る）。
 - `shell` のテストは docker・cargo・curl などを shim（`tests/shellkit.py`）にして流す（本物は動かさない）。
   `test_dev_up_args.py` は、引数を省いた dev-up.sh が HEAD の版と同じ run-server.sh を作り、同じ shim を同じ順に
   呼ぶことを確かめる。`test_build_version.py` は一時の git リポジトリと偽の cargo で流す。

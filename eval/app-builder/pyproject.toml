@@ -26,7 +26,7 @@ ignore = ["E501"]
 
 [tool.ruff.lint.isort]
 # tests/ の補助（conftest と同じ場所から読む）も自前のものとして並べる。
-known-first-party = ["abeval", "netguard", "fake_upstream", "shellkit"]
+known-first-party = ["abeval", "netguard", "fake_upstream", "fake_shiki", "shellkit"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

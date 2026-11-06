@@ -15,7 +15,13 @@ def _serve(argv: list[str]) -> int:
     return versions.main(argv)
 
 
-COMMANDS = {"serve": _serve}
+def _doctor(argv: list[str]) -> int:
+    from abeval import doctor
+
+    return doctor.main(argv)
+
+
+COMMANDS = {"serve": _serve, "doctor": _doctor}
 
 
 def main(argv: list[str] | None = None) -> int:
