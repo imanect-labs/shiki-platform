@@ -84,7 +84,7 @@ pub async fn get_answer_image(
     };
 
     // 認可と出所の判定は毎回通したうえで、取得の結果だけをキャッシュから返す。
-    match CACHE.get(&ctx.tenant_id, &source) {
+    match CACHE.get(ctx.tenant_id(), &source) {
         Some(Cached::Image(hit)) => return Ok(image_response(hit)),
         Some(Cached::Failed(status)) => return Ok(status.into_response()),
         None => {}
@@ -105,14 +105,19 @@ pub async fn get_answer_image(
                 mime: image.mime,
                 bytes: image.bytes.into(),
             };
-            CACHE.put(&ctx.tenant_id, &source, Cached::Image(cached.clone()), TTL);
+            CACHE.put(ctx.tenant_id(), &source, Cached::Image(cached.clone()), TTL);
             Ok(image_response(cached))
         }
         Err(e) => {
             tracing::info!(target: "answer_image", %thread_id, %message_id, reason = e.reason(), "画像を代理取得できませんでした");
             // 失敗も短く持つ（会話を開くたびに配信元や配信元の DNS へ問い合わせさせない）。
             let status = failure_status(&e);
-            CACHE.put(&ctx.tenant_id, &source, Cached::Failed(status), FAILURE_TTL);
+            CACHE.put(
+                ctx.tenant_id(),
+                &source,
+                Cached::Failed(status),
+                FAILURE_TTL,
+            );
             Ok(status.into_response())
         }
     }

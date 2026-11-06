@@ -55,11 +55,11 @@ impl ChatStore {
             "SELECT run_id, actor, status FROM generation_run WHERE message_id = $1 AND tenant_id = $2",
         )
         .bind(message_id)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .fetch_all(&self.db)
         .await
         .map_err(map_db)?;
-        let is_actor = !runs.is_empty() && runs.iter().all(|(_, a, _)| *a == ctx.principal.id);
+        let is_actor = !runs.is_empty() && runs.iter().all(|(_, a, _)| *a == ctx.principal().id);
 
         // 保存済みの本体（確定後）。見つかればイベントは読まない。
         let texts = page_texts_from_blocks(&message.content, is_actor);
@@ -91,7 +91,7 @@ impl ChatStore {
                AND type IN ('tool_call', 'tool_result', 'citation') \
              ORDER BY seq LIMIT $3",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(&run_ids)
         .bind(MAX_SOURCE_EVENTS)
         .fetch_all(&self.db)
