@@ -384,7 +384,9 @@ jobs:
   # #921 の human 決定）。
   coverage:
     name: Coverage (cargo-llvm-cov, gate 80%)
-    needs: [changes]
+    # tabular の結合テスト（tabular_http_it / workflow_nodes_it の csv.*）は隔離ランナーが無いと
+    # 黙ってスキップされ、CSV クエリ経路が計測にも検証にも入らない。tabular-runner の成果物を使う。
+    needs: [changes, tabular-runner]
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 40
@@ -421,6 +423,14 @@ jobs:
       - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
         with:
           tool: cargo-llvm-cov
+      # 隔離 DuckDB ランナー（tabular-runner の成果物）。artifact は実行ビットを落とすので付け直す。
+      - name: download tabular runner binary (tabular-runner の成果物)
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: shiki-tabular-runner-bin
+          path: ${{ runner.temp }}/tabular-runner
+      - name: make tabular runner executable
+        run: chmod +x "$RUNNER_TEMP/tabular-runner/shiki-tabular-runner"
       # live 依存（OpenFGA / Redis）を起動し、結合テストのカバレッジも算入する。
       # これにより fga_http / client（OpenFGA 経路）と redis_store（Redis 経路）も
       # 単体テストでは届かない実経路をカバーした上で全体カバレッジを評価する。
@@ -459,6 +469,8 @@ jobs:
           RAG_TEST_QDRANT_URL: http://localhost:6333
           # compose の Qdrant は API キー付き（.env.example の dev 値・#812）。
           RAG_TEST_QDRANT_API_KEY: shiki-qdrant-dev-key
+          # tabular の結合テストが使う隔離ランナー（未設定だと黙ってスキップされる）。
+          SHIKI_TABULAR_RUNNER: ${{ runner.temp }}/tabular-runner/shiki-tabular-runner
           FULL: ${{ needs.changes.outputs.full }}
           CARGO_PACKAGES: ${{ needs.changes.outputs.cargo_packages }}
           ALWAYS_RUN_TESTS: ${{ needs.changes.outputs.always_run_tests }}

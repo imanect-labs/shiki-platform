@@ -231,4 +231,37 @@ test.describe("スマホのチャット", () => {
     expect((await bar.boundingBox())?.height ?? 0).toBeLessThanOrEqual(58);
     await phone.context().close();
   });
+
+  test("PC で選んで送ったモデルは、スマホで同じ会話を開いても選ばれたまま", async ({ browser, page }) => {
+    const phone = await phonePage(browser, page);
+    // PC（ログイン済みの page）でモデルを選んで送る。
+    await page.goto("/");
+    await page.getByTestId("model-button").click();
+    const picker = page.getByTestId("model-picker");
+    const option = picker.getByRole("group").getByRole("option").first();
+    const label = ((await option.locator("[data-label]").textContent()) ?? "").trim();
+    expect(label.length).toBeGreaterThan(0);
+    await option.click();
+    await page.keyboard.press("Escape");
+    await page.getByLabel("メッセージを入力").fill("モデルの引き継ぎ");
+    await page.getByRole("button", { name: "送信" }).click();
+    await page.waitForURL(/\/c\/[0-9a-f-]+/i, { timeout: 20_000 });
+    await expect(page.getByText(/回答/).first()).toBeVisible({ timeout: 30_000 });
+    const url = new URL(page.url());
+
+    // スマホは別のタブ（sessionStorage は共有しない）。サーバの記録から同じモデルが入る。
+    await phone.goto(url.pathname);
+    const model = phone.getByTestId("model-button");
+    await expect(model).toBeVisible({ timeout: 20_000 });
+    await expect(model).toContainText(label);
+
+    // このタブで Auto に戻したら、読み直してもサーバの記録で上書きしない。
+    await model.click();
+    await phone.getByTestId("model-picker").getByRole("option", { name: /Auto|組織の既定/ }).click();
+    await expect(model).toBeHidden();
+    await phone.reload();
+    await expect(phone.getByLabel("メッセージを入力")).toBeVisible();
+    await expect(model).toBeHidden();
+    await phone.context().close();
+  });
 });

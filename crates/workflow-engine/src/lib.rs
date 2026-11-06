@@ -37,9 +37,9 @@ pub use ir::validate::{semantics_warnings, validate, Catalog, ValidationError, S
 pub use ir::WorkflowIr;
 pub use layout::{EditorLayoutStore, LayoutError};
 pub use nodes::{
-    AgentInvokeReq, CapabilityNodeExecutor, CsvPatchReq, CsvWriteReq, DataWriteOp, DataWriteReq,
-    ExecCtx, HttpSendReq, HttpSendResp, LlmInvokeReq, NodePorts, PortError, ResolvedSecretView,
-    ResolvedSkillView, StorageWriteReq,
+    AgentInvokeReq, CapabilityNodeExecutor, CsvPatchReq, CsvQueryReq, CsvQueryTable, CsvWriteReq,
+    DataWriteOp, DataWriteReq, ExecCtx, HttpSendReq, HttpSendResp, LlmInvokeReq, NodePorts,
+    PortError, ResolvedSecretView, ResolvedSkillView, StorageWriteReq,
 };
 pub use ratelimit::{BucketConfig, TokenBucket};
 pub use registration::{

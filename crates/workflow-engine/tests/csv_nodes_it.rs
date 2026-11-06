@@ -21,8 +21,8 @@ use serde_json::{json, Value};
 use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
 use workflow_engine::nodes::ports::{
-    AgentInvokeReq, CsvPatchReq, CsvWriteReq, ExecCtx, HttpSendReq, HttpSendResp, LlmInvokeReq,
-    NodePorts, PortError, ResolvedSecretView, StorageWriteReq,
+    AgentInvokeReq, CsvPatchReq, CsvQueryReq, CsvWriteReq, ExecCtx, HttpSendReq, HttpSendResp,
+    LlmInvokeReq, NodePorts, PortError, ResolvedSecretView, StorageWriteReq,
 };
 use workflow_engine::{
     CapabilityAudit, CapabilityNodeExecutor, EffectJournal, NodeContext, NodeExecutor,
@@ -31,6 +31,8 @@ use workflow_engine::{
 /// csv 系ポートのみ意味を持つ最小 fake（他能力は未使用）。patch/write の適用回数を数える。
 #[derive(Default)]
 struct CsvPorts {
+    /// 最後に受けた csv.query の追加テーブル（name, file_id）。
+    query_tables: Mutex<Vec<(String, Uuid)>>,
     patch_calls: Mutex<u32>,
     write_calls: Mutex<u32>,
 }
@@ -84,7 +86,13 @@ impl NodePorts for CsvPorts {
     async fn workflow_start(&self, _c: &ExecCtx, _n: &str, _i: &Value) -> Result<Value, PortError> {
         unreachable!()
     }
-    async fn csv_query(&self, _c: &ExecCtx, file_id: Uuid, _sql: &str) -> Result<Value, PortError> {
+    async fn csv_query(&self, _c: &ExecCtx, req: CsvQueryReq) -> Result<Value, PortError> {
+        let file_id = req.file_id;
+        *self.query_tables.lock().unwrap() = req
+            .tables
+            .iter()
+            .map(|t| (t.name.clone(), t.file_id))
+            .collect();
         Ok(json!({
             "columns": ["n"],
             "rows": [["1"], ["2"], ["3"]],
@@ -152,6 +160,123 @@ async fn csv_query_dispatches_with_csv_read_scope() {
         .await;
     assert!(res.ok, "{:?}", res.error);
     assert_eq!(res.output["columns"], json!(["n"]));
+}
+
+/// #1037: tables（JOIN 用の追加 CSV）が解決されてポートへ渡る（$from 参照も可）。
+#[tokio::test]
+async fn csv_query_passes_extra_tables_to_port() {
+    let ports = Arc::new(CsvPorts::default());
+    let exec = CapabilityNodeExecutor::new(ports.clone(), lazy_journal(), Arc::new(SilentAudit));
+    let other = Uuid::new_v4();
+    let mut c = ctx(vec!["csv.read".into()]);
+    c.input = json!({ "customers": other.to_string() });
+    let res = exec
+        .execute(
+            "csv.query",
+            &json!({
+                "file": Uuid::nil().to_string(),
+                "sql": "SELECT * FROM data JOIN customers USING (id)",
+                "tables": [{ "name": "customers", "file": { "$from": "input", "path": "/customers" } }]
+            }),
+            &c,
+        )
+        .await;
+    assert!(res.ok, "{:?}", res.error);
+    assert_eq!(
+        *ports.query_tables.lock().unwrap(),
+        vec![("customers".to_string(), other)]
+    );
+}
+
+/// #1037: tables の形が不正なら permanent の invalid、値式が解決できない（null 含む）なら
+/// expr_resolve_error（ポートは呼ばない・黙って単一 CSV に落とさない）。
+#[tokio::test]
+async fn csv_query_rejects_malformed_tables() {
+    let exec = CapabilityNodeExecutor::new(
+        Arc::new(CsvPorts::default()),
+        lazy_journal(),
+        Arc::new(SilentAudit),
+    );
+    let mut c = ctx(vec!["csv.read".into()]);
+    c.input = json!({ "nothing": null });
+    for (tables, code) in [
+        (json!("customers"), "invalid"),
+        (json!([{ "name": "customers" }]), "invalid"),
+        (
+            json!([{ "name": "customers", "file": "not-a-uuid" }]),
+            "invalid",
+        ),
+        (json!([{ "file": Uuid::nil().to_string() }]), "invalid"),
+        (
+            json!({ "$from": "input", "path": "/missing" }),
+            "expr_resolve_error",
+        ),
+        (
+            json!({ "$from": "input", "path": "/nothing" }),
+            "expr_resolve_error",
+        ),
+        (
+            json!([{ "name": "c", "file": { "$from": "input", "path": "/missing" } }]),
+            "expr_resolve_error",
+        ),
+    ] {
+        let res = exec
+            .execute(
+                "csv.query",
+                &json!({ "file": Uuid::nil().to_string(), "sql": "SELECT 1", "tables": tables }),
+                &c,
+            )
+            .await;
+        assert!(!res.ok, "拒否されるべき tables: {tables}");
+        assert_eq!(res.error.unwrap().code, code, "tables: {tables}");
+    }
+}
+
+/// 実行時に解決された tables の中身は値式として**再評価しない**（トリガ payload 等に仕込んだ
+/// `$from` で、配線されていない値を引き込ませない）。
+#[tokio::test]
+async fn csv_query_does_not_reevaluate_runtime_tables() {
+    let ports = Arc::new(CsvPorts::default());
+    let exec = CapabilityNodeExecutor::new(ports.clone(), lazy_journal(), Arc::new(SilentAudit));
+    let other = Uuid::new_v4();
+    let mut c = ctx(vec!["csv.read".into()]);
+    c.input = json!({
+        "secret": "leaked",
+        "tables": [{ "name": { "$from": "input", "path": "/secret" }, "file": other.to_string() }],
+        "ok": [{ "name": "customers", "file": other.to_string() }]
+    });
+    let res = exec
+        .execute(
+            "csv.query",
+            &json!({ "file": Uuid::nil().to_string(), "sql": "SELECT 1",
+                     "tables": { "$from": "input", "path": "/tables" } }),
+            &c,
+        )
+        .await;
+    assert!(
+        !res.ok,
+        "埋め込まれた値式は文字列として扱われず name 不正になる"
+    );
+    assert_eq!(res.error.unwrap().code, "invalid");
+    assert!(
+        ports.query_tables.lock().unwrap().is_empty(),
+        "ポートは呼ばれない"
+    );
+
+    // データとして正しい形なら、そのまま使える。
+    let res = exec
+        .execute(
+            "csv.query",
+            &json!({ "file": Uuid::nil().to_string(), "sql": "SELECT 1",
+                     "tables": { "$from": "input", "path": "/ok" } }),
+            &c,
+        )
+        .await;
+    assert!(res.ok, "{:?}", res.error);
+    assert_eq!(
+        *ports.query_tables.lock().unwrap(),
+        vec![("customers".to_string(), other)]
+    );
 }
 
 #[tokio::test]

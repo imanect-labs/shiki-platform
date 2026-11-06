@@ -20,6 +20,11 @@ fn denied(err: &tabular::TabularError) -> ToolOutcome {
     if let TE::QueryFailed(m) = err {
         return ToolOutcome::error(format!("SQL の実行に失敗しました: {m}"));
     }
+    // テーブル指定の誤り（名前の形・重複・上限）も理由を返して自己修正させる（入力の検証のみ・
+    // ストレージに触れる前に弾くので存在秘匿の懸念なし）。
+    if let TE::InvalidTables(m) = err {
+        return ToolOutcome::error(format!("tables の指定が不正です: {m}"));
+    }
     let msg = match err {
         TE::Forbidden | TE::Authz(_) | TE::Storage(storage::StorageError::Forbidden) => {
             "この CSV を操作する権限がありません。"
@@ -58,6 +63,38 @@ fn format_table(resp: &tabular::RunnerResponse, max_preview: usize) -> String {
     out
 }
 
+/// csv.query の説明（モデル向け）。
+const QUERY_DESCRIPTION: &str = "CSV ファイルに読み取り専用 SQL（SELECT のみ）を実行して分析する。node_id の CSV のテーブル名は \
+         `data`。例: SELECT category, count(*) FROM data GROUP BY category。複数の CSV を JOIN する\
+         ときは tables に {name, node_id} を並べると、各 CSV が name のテーブルとして使える（最大 8 個）。\
+         例: tables=[{name:\"customers\", node_id:…}] で SELECT c.name, sum(d.amount) FROM data d JOIN \
+         customers c ON d.customer_id = c.id GROUP BY c.name。対象すべての CSV の閲覧権限が要る。";
+
+/// csv.query の入力スキーマ。追加テーブルの上限・名前規則は tabular の定義を参照する（単一定義）。
+fn query_input_schema() -> serde_json::Value {
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "node_id": { "type": "string", "format": "uuid", "description": "CSV のノード ID（テーブル名 data）" },
+            "sql": { "type": "string", "description": "読み取り専用 SELECT（主 CSV は data、追加 CSV は tables の name）" },
+            "tables": {
+                "type": "array",
+                "description": "JOIN 用に追加する CSV（省略可・最大 8 個）",
+                "maxItems": tabular::MAX_EXTRA_TABLES,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "name": { "type": "string", "pattern": tabular::TABLE_NAME_PATTERN, "description": "SQL で使うテーブル名（英小文字・数字・_。data 以外）" },
+                        "node_id": { "type": "string", "format": "uuid", "description": "追加する CSV のノード ID" }
+                    },
+                    "required": ["name", "node_id"]
+                }
+            }
+        },
+        "required": ["node_id", "sql"]
+    })
+}
+
 /// csv.query（RO SQL・viewer）。
 pub struct CsvQueryTool {
     tabular: Arc<TabularService>,
@@ -72,6 +109,32 @@ impl CsvQueryTool {
 struct QueryInput {
     node_id: Uuid,
     sql: String,
+    /// JOIN 用の追加 CSV（#1037）。省略時は単一 CSV クエリ。
+    #[serde(default)]
+    tables: Vec<QueryTableInput>,
+}
+
+#[derive(Debug, Deserialize)]
+struct QueryTableInput {
+    name: String,
+    node_id: Uuid,
+}
+
+/// csv.query の入力を (主 CSV, SQL, 追加テーブル) へ。名前の形・重複・上限は tabular が検証する。
+fn parse_query_input(
+    input: serde_json::Value,
+) -> Result<(Uuid, String, Vec<tabular::TableRef>), ToolError> {
+    let input: QueryInput = serde_json::from_value(input)
+        .map_err(|e| ToolError::Invalid(format!("入力が不正です: {e}")))?;
+    let tables = input
+        .tables
+        .into_iter()
+        .map(|t| tabular::TableRef {
+            name: t.name,
+            file_id: t.node_id,
+        })
+        .collect();
+    Ok((input.node_id, input.sql, tables))
 }
 
 #[async_trait::async_trait]
@@ -80,18 +143,10 @@ impl Tool for CsvQueryTool {
         ToolName::CsvQuery.as_str()
     }
     fn description(&self) -> &'static str {
-        "CSV ファイルに読み取り専用 SQL（SELECT のみ）を実行して分析する。テーブル名は `data`。\
-         例: SELECT category, count(*) FROM data GROUP BY category。ファイルの閲覧権限が要る。"
+        QUERY_DESCRIPTION
     }
     fn input_schema(&self) -> serde_json::Value {
-        serde_json::json!({
-            "type": "object",
-            "properties": {
-                "node_id": { "type": "string", "format": "uuid", "description": "CSV のノード ID" },
-                "sql": { "type": "string", "description": "読み取り専用 SELECT（テーブル名 data）" }
-            },
-            "required": ["node_id", "sql"]
-        })
+        query_input_schema()
     }
     async fn call(
         &self,
@@ -99,11 +154,10 @@ impl Tool for CsvQueryTool {
         input: serde_json::Value,
         trace_id: Option<&str>,
     ) -> Result<ToolOutcome, ToolError> {
-        let input: QueryInput = serde_json::from_value(input)
-            .map_err(|e| ToolError::Invalid(format!("入力が不正です: {e}")))?;
+        let (node_id, sql, tables) = parse_query_input(input)?;
         match self
             .tabular
-            .query(ctx, input.node_id, &input.sql, trace_id)
+            .query_tables(ctx, node_id, &tables, &sql, trace_id)
             .await
         {
             Ok(resp) => Ok(ToolOutcome::ok(format_table(&resp, 50))),
@@ -368,7 +422,7 @@ impl Tool for SaveCsvTool {
 #[cfg(test)]
 mod tests {
     //! error 写像（`denied`）と結果整形（`format_table`）の純関数を検証する。
-    use super::{denied, format_table};
+    use super::{denied, format_table, parse_query_input, query_input_schema, QUERY_DESCRIPTION};
     use tabular::{RunnerResponse, TabularError as TE};
 
     #[test]
@@ -381,6 +435,57 @@ mod tests {
             o.content
         );
         assert!(o.content.contains("no column x"));
+    }
+
+    #[test]
+    fn parse_query_input_maps_tables_and_defaults_to_none() {
+        let main = uuid::Uuid::new_v4();
+        let other = uuid::Uuid::new_v4();
+        let (id, sql, tables) = parse_query_input(serde_json::json!({
+            "node_id": main, "sql": "SELECT 1",
+            "tables": [{ "name": "customers", "node_id": other }]
+        }))
+        .unwrap();
+        assert_eq!((id, sql.as_str()), (main, "SELECT 1"));
+        assert_eq!(
+            tables,
+            vec![tabular::TableRef {
+                name: "customers".into(),
+                file_id: other
+            }]
+        );
+        // tables 省略は従来どおり単一 CSV。
+        let (_, _, none) =
+            parse_query_input(serde_json::json!({ "node_id": main, "sql": "SELECT 1" })).unwrap();
+        assert!(none.is_empty());
+        // 追加テーブルの node_id が UUID でなければ入力不正（モデルの自己修正へ）。
+        assert!(parse_query_input(serde_json::json!({
+            "node_id": main, "sql": "SELECT 1",
+            "tables": [{ "name": "c", "node_id": "x" }]
+        }))
+        .is_err());
+    }
+
+    /// スキーマの上限・名前規則は tabular の単一定義と一致し、説明も tables に触れている。
+    #[test]
+    fn query_schema_uses_tabular_limits() {
+        let schema = query_input_schema();
+        let tables = &schema["properties"]["tables"];
+        assert_eq!(tables["maxItems"], tabular::MAX_EXTRA_TABLES);
+        assert_eq!(
+            tables["items"]["properties"]["name"]["pattern"],
+            tabular::TABLE_NAME_PATTERN
+        );
+        assert_eq!(schema["required"], serde_json::json!(["node_id", "sql"]));
+        assert!(QUERY_DESCRIPTION.contains("tables"));
+    }
+
+    #[test]
+    fn denied_invalid_tables_returns_reason() {
+        let o = denied(&TE::InvalidTables("テーブル名 `data` は予約".into()));
+        assert!(o.is_error);
+        assert!(o.content.contains("tables の指定が不正"), "{}", o.content);
+        assert!(o.content.contains("予約"));
     }
 
     #[test]

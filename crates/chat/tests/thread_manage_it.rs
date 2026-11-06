@@ -18,7 +18,7 @@ use authz::{
     AuthContext, AuthzClient, AuthzError, Consistency, FgaObject, ObjectType, Principal,
     ReadTupleKey, Relation, Subject,
 };
-use chat::{ChatError, ChatStore, ThreadRole};
+use chat::{ChatError, ChatStore, RunStatus, ThreadRole};
 use sqlx::{postgres::PgPoolOptions, PgPool};
 use storage::model::ShareTarget;
 
@@ -482,4 +482,112 @@ async fn title_seed_stops_after_three_user_messages() {
         .await
         .unwrap()
         .is_none());
+}
+
+/// 進行中の run の状態が一覧・取得・ピン留め一覧の行に載り（サイドバーの「実行中」表示）、
+/// 回答が確定すると消えて更新日が進む（履歴の先頭へ上がる）。ゾンビの確定では更新日は動かない。
+#[tokio::test]
+async fn run_status_is_listed_and_finalize_bumps_updated_at() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let store = store(&pool).await;
+    let c = ctx(&tenant);
+    let thread = store
+        .create_thread(&c, "裏で動く会話", false, None, None)
+        .await
+        .unwrap();
+    assert_eq!(thread.run_status, None, "作成直後は run が無い");
+    store
+        .set_thread_pinned(&c, thread.id, true, None)
+        .await
+        .unwrap();
+
+    let listed = |store: ChatStore, c: authz::AuthContext| async move {
+        let page = store
+            .list_threads(&c, None, None, None, None, 10)
+            .await
+            .unwrap();
+        let pinned = store.list_pinned_threads(&c).await.unwrap();
+        assert_eq!(page.len(), 1);
+        assert_eq!(pinned.len(), 1);
+        assert_eq!(
+            page[0].run_status, pinned[0].run_status,
+            "一覧とピン留め一覧で揃う"
+        );
+        page[0].clone()
+    };
+
+    // このバイナリはワーカーを回さないので、投稿した run は queued のまま残る。
+    let run_id = post(&store, &c, thread.id, "集計して").await;
+    assert_eq!(
+        listed(store.clone(), c.clone()).await.run_status,
+        Some(RunStatus::Queued)
+    );
+    let set_status = |status: &'static str| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query(
+                "UPDATE generation_run SET status = $2, fencing_token = 7 WHERE run_id = $1",
+            )
+            .bind(run_id)
+            .bind(status)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+    };
+    set_status("waiting_approval").await;
+    assert_eq!(
+        store
+            .get_thread(&c, thread.id, None)
+            .await
+            .unwrap()
+            .run_status,
+        Some(RunStatus::WaitingApproval)
+    );
+    // 承認待ちは後続を待たせないので、その後ろの run が生成中になり得る。生成中を優先して出す。
+    let later = post(&store, &c, thread.id, "その間に別の質問").await;
+    sqlx::query("UPDATE generation_run SET status = 'running' WHERE run_id = $1")
+        .bind(later)
+        .execute(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        listed(store.clone(), c.clone()).await.run_status,
+        Some(RunStatus::Running),
+        "承認待ちより生成中を優先する"
+    );
+    sqlx::query("UPDATE generation_run SET status = 'done' WHERE run_id = $1")
+        .bind(later)
+        .execute(&pool)
+        .await
+        .unwrap();
+    set_status("running").await;
+    let before = listed(store.clone(), c.clone()).await;
+    assert_eq!(before.run_status, Some(RunStatus::Running));
+
+    // 確定すると run_status は消え、更新日が進む。
+    assert!(store
+        .finalize_run(run_id, 7, RunStatus::Done, &[], None, None)
+        .await
+        .unwrap());
+    let after = listed(store.clone(), c.clone()).await;
+    assert_eq!(after.run_status, None, "端末の run は実行中に数えない");
+    assert!(
+        after.updated_at > before.updated_at,
+        "確定で更新日が進む: {} -> {}",
+        before.updated_at,
+        after.updated_at
+    );
+
+    // fencing 不一致（ゾンビ）の確定は no-op で、更新日も動かさない。
+    let zombie = post(&store, &c, thread.id, "もう一度").await;
+    let posted = listed(store.clone(), c.clone()).await;
+    assert!(!store
+        .finalize_run(zombie, 99, RunStatus::Done, &[], None, None)
+        .await
+        .unwrap());
+    let unchanged = listed(store.clone(), c.clone()).await;
+    assert_eq!(unchanged.updated_at, posted.updated_at);
+    assert_eq!(unchanged.run_status, Some(RunStatus::Queued));
 }

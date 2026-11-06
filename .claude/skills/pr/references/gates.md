@@ -72,7 +72,12 @@ export REDIS_TEST_URL=redis://localhost:6379
 export STORAGE_TEST_S3_ENDPOINT=http://localhost:9000
 export RAG_TEST_QDRANT_URL=http://localhost:6333
 export RAG_TEST_QDRANT_API_KEY=shiki-qdrant-dev-key  # compose の Qdrant は API キー付き（#812）
+# tabular の IT（tabular_http_it / workflow_nodes_it の csv.*）は隔離ランナーが要る（無いと黙ってスキップ）
+export SHIKI_TABULAR_RUNNER=$PWD/crates/tabular/runner/target/release/shiki-tabular-runner
 ```
+
+- tabular の IT はアップロードした blob を content-addressing で共有する。**別バケットで同じ DB を使い回すと**
+  「同じ内容は既にある」扱いで実体が上がらず `ObjectStore(NotFound)` の 500 になる。再実行で落ちたら DB を作り直す。
 
 - migration checksum 不一致（`VersionMismatch(n)`）は別ブランチの残骸。使い捨てなのでリセットしてよい:
   `docker exec pg-test psql -U postgres -c "DROP DATABASE shiki WITH (FORCE);" -c "CREATE DATABASE shiki;"`

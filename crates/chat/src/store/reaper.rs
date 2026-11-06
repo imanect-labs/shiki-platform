@@ -51,6 +51,19 @@ impl ChatStore {
         let Some(seq) = seq else {
             return Ok(false); // 既に端末状態
         };
+        // run の failed 化と、終わった会話を履歴の先頭へ上げる更新（[`Self::finalize_run_with_ui`]
+        // と同じ・サイドバーの「生成が終了（未読）」の根拠）を 1 つのトランザクションで確定する。
+        // 行ロックは thread → run の順に取る（削除・投稿と同じ。逆順だと削除との間でデッドロックし得る）。
+        let mut tx = self.db.begin().await.map_err(map_db)?;
+        sqlx::query(
+            "UPDATE thread t SET updated_at = now() FROM generation_run r \
+             WHERE r.run_id = $1 AND t.id = r.thread_id AND t.tenant_id = r.tenant_id \
+               AND t.deleted_at IS NULL",
+        )
+        .bind(run_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_db)?;
         let thread_id: Option<Uuid> = sqlx::query_scalar(
             // tenant-sql: allow(ワーカーや reaper の内部 run_id で強制失敗)
             "UPDATE generation_run SET status = 'failed', last_error = $2, \
@@ -59,9 +72,10 @@ impl ChatStore {
         )
         .bind(run_id)
         .bind(detail)
-        .fetch_optional(&self.db)
+        .fetch_optional(&mut *tx)
         .await
         .map_err(map_db)?;
+        tx.commit().await.map_err(map_db)?;
         tracing::error!(
             run_id = %run_id,
             thread_id = ?thread_id,

@@ -35,7 +35,12 @@ use sqlx::postgres::PgPoolOptions;
 use tower::ServiceExt;
 use uuid::Uuid;
 
-struct AllowAll;
+/// 既定は全許可。`denied` に入れた id を含む object の check だけ拒否する（複数 CSV クエリで
+/// 「片方だけ読めない」を再現する・#1037）。
+#[derive(Default)]
+struct AllowAll {
+    denied: std::sync::Mutex<Vec<String>>,
+}
 
 #[async_trait]
 impl AuthzClient for AllowAll {
@@ -43,10 +48,16 @@ impl AuthzClient for AllowAll {
         &self,
         _: &Subject,
         _: Relation,
-        _: &FgaObject,
+        object: &FgaObject,
         _: Consistency,
     ) -> Result<bool, AuthzError> {
-        Ok(true)
+        let object = object.to_string();
+        Ok(!self
+            .denied
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|id| object.contains(id.as_str())))
     }
     async fn write_tuple(
         &self,
@@ -262,8 +273,11 @@ fn config(db_url: &str) -> AppConfig {
 
 struct Env {
     app: axum::Router,
+    /// 隔離ランナーのパス（クォータを変えた TabularService を別に組む用）。
+    runner: PathBuf,
     storage: Arc<storage::StorageService>,
     ctx: authz::AuthContext,
+    authz: Arc<AllowAll>,
 }
 
 async fn setup() -> Option<Env> {
@@ -292,7 +306,8 @@ async fn setup() -> Option<Env> {
         .await
         .expect("migrate");
 
-    let authz: Arc<dyn AuthzClient> = Arc::new(AllowAll);
+    let allow = Arc::new(AllowAll::default());
+    let authz: Arc<dyn AuthzClient> = allow.clone();
     let s3 = storage::object_store::S3Config {
         internal_endpoint: s3_endpoint.clone(),
         public_endpoint: s3_endpoint,
@@ -353,8 +368,10 @@ async fn setup() -> Option<Env> {
     );
     Some(Env {
         app,
+        runner: runner.clone(),
         storage,
         ctx: authz::AuthContext::new(principal(), "acme".into(), "default".into()),
+        authz: allow,
     })
 }
 
@@ -635,4 +652,279 @@ async fn tabular_schema_rows_query_patch_flow() {
     .await;
     assert_eq!(st, StatusCode::OK, "{body:?}");
     assert!(body["node_id"].is_string());
+}
+
+async fn create_csv(env: &Env, body: &[u8]) -> Uuid {
+    let name = format!("join-{}.csv", Uuid::new_v4());
+    env.storage
+        .write_file_internal(&env.ctx, None, &name, body, "text/csv", None)
+        .await
+        .expect("create csv")
+        .id
+}
+
+async fn query(env: &Env, id: Uuid, body: Value) -> (StatusCode, Value) {
+    json_body(
+        env.app
+            .clone()
+            .oneshot(post(&format!("/files/{id}/tabular/query"), body))
+            .await
+            .unwrap(),
+    )
+    .await
+}
+
+/// #1037: `tables` で追加した CSV と JOIN できる。不正なテーブル名は 400、追加ファイルの片方でも
+/// 読めなければ拒否して部分結果を返さない（fail-closed）。閲覧権限の無いファイルは StorageService が
+/// 存在秘匿で 404 にする（無いファイルと区別させない）。
+#[tokio::test]
+async fn tabular_query_joins_multiple_csv() {
+    let Some(env) = setup().await else { return };
+    let orders = create_csv(
+        &env,
+        b"order_id,customer_id,amount\n1,10,100\n2,20,50\n3,10,30\n",
+    )
+    .await;
+    let customers = create_csv(&env, b"customer_id,name\n10,alice\n20,bob\n").await;
+    let regions = create_csv(&env, b"name,region\nalice,tokyo\nbob,osaka\n").await;
+    let sql = "SELECT c.name, r.region, sum(o.amount) AS total FROM data o \
+               JOIN customers c ON o.customer_id = c.customer_id \
+               JOIN regions r ON r.name = c.name \
+               GROUP BY c.name, r.region ORDER BY total DESC";
+
+    let (st, body) = query(
+        &env,
+        orders,
+        json!({"sql": sql, "tables": [
+            {"name": "customers", "file_id": customers},
+            {"name": "regions", "file_id": regions},
+        ]}),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK, "{body:?}");
+    assert_eq!(body["columns"], json!(["name", "region", "total"]));
+    assert_eq!(
+        body["rows"],
+        json!([["alice", "tokyo", "130"], ["bob", "osaka", "50"]])
+    );
+
+    // tables 省略は従来どおり（data のみ）。追加テーブルを参照すると DuckDB の理由付き 400。
+    let (st, body) = query(&env, orders, json!({"sql": "SELECT * FROM customers"})).await;
+    assert_eq!(st, StatusCode::BAD_REQUEST, "{body:?}");
+
+    // 不正なテーブル名（予約名 data・大文字・重複）は 400。
+    for tables in [
+        json!([{"name": "data", "file_id": customers}]),
+        json!([{"name": "Customers", "file_id": customers}]),
+        json!([{"name": "c", "file_id": customers}, {"name": "c", "file_id": regions}]),
+    ] {
+        let (st, body) = query(&env, orders, json!({"sql": "SELECT 1", "tables": tables})).await;
+        assert_eq!(st, StatusCode::BAD_REQUEST, "tables={tables} body={body:?}");
+    }
+
+    // 存在しない追加ファイルは 404。
+    let (st, _b) = query(
+        &env,
+        orders,
+        json!({"sql": "SELECT 1", "tables": [{"name": "ghost", "file_id": Uuid::new_v4()}]}),
+    )
+    .await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
+
+    // 追加ファイルの 1 つだけ閲覧権限が無い → 404（存在秘匿・他が読めても部分結果を返さない）。
+    env.authz.denied.lock().unwrap().push(regions.to_string());
+    let (st, body) = query(
+        &env,
+        orders,
+        json!({"sql": sql, "tables": [
+            {"name": "customers", "file_id": customers},
+            {"name": "regions", "file_id": regions},
+        ]}),
+    )
+    .await;
+    assert_eq!(st, StatusCode::NOT_FOUND, "{body:?}");
+    assert!(body.get("rows").is_none(), "部分結果を返さない: {body:?}");
+
+    // 主ファイル側が読めない場合も同様（追加ファイルが読めても通らない）。
+    env.authz.denied.lock().unwrap().clear();
+    env.authz.denied.lock().unwrap().push(orders.to_string());
+    let (st, body) = query(
+        &env,
+        orders,
+        json!({"sql": "SELECT * FROM customers", "tables": [{"name": "customers", "file_id": customers}]}),
+    )
+    .await;
+    assert_eq!(st, StatusCode::NOT_FOUND, "{body:?}");
+    assert!(body.get("rows").is_none(), "部分結果を返さない: {body:?}");
+}
+
+/// #1037: 入力の合計サイズが予算を超えるクエリは、ランナーへ渡さずクォータ超過で拒否する
+/// （api プロセスが複数 CSV を同時に抱え込まないための上限）。
+#[tokio::test]
+async fn tabular_query_rejects_inputs_over_budget() {
+    let Some(env) = setup().await else { return };
+    let a = create_csv(&env, b"k,v\n1,aaaaaaaaaa\n").await;
+    let b = create_csv(&env, b"k,w\n1,bbbbbbbbbb\n").await;
+    let small = tabular::TabularService::new(
+        Arc::clone(&env.storage),
+        tabular::RunnerConfig::new(
+            env.runner.to_string_lossy().to_string(),
+            Duration::from_secs(20),
+        ),
+        tabular::Quotas {
+            max_query_input_bytes: 20,
+            ..tabular::Quotas::default()
+        },
+    );
+    let tables = [tabular::TableRef {
+        name: "other".into(),
+        file_id: b,
+    }];
+    let res = small
+        .query_tables(
+            &env.ctx,
+            a,
+            &tables,
+            "SELECT * FROM data JOIN other USING (k)",
+            None,
+        )
+        .await;
+    assert!(
+        matches!(res, Err(tabular::TabularError::QuotaExceeded(_))),
+        "合計が予算超過なら拒否: {res:?}"
+    );
+    // 予算内なら同じクエリが通る（拒否は予算のせいであること）。
+    let ok = tabular::TabularService::new(
+        Arc::clone(&env.storage),
+        tabular::RunnerConfig::new(
+            env.runner.to_string_lossy().to_string(),
+            Duration::from_secs(20),
+        ),
+        tabular::Quotas::default(),
+    )
+    .query_tables(
+        &env.ctx,
+        a,
+        &tables,
+        "SELECT * FROM data JOIN other USING (k)",
+        None,
+    )
+    .await
+    .expect("予算内");
+    assert_eq!(ok.rows.len(), 1);
+}
+
+/// #1037: 確認したサイズを上限にした取得は、確認後に大きい版へ差し替わったらダウンロード前に拒否する
+/// （複数 CSV クエリの入力予算を、メタデータ確認と取得の間の差し替えでも破らせない）。
+#[tokio::test]
+async fn bounded_read_rejects_file_grown_after_check() {
+    let Some(env) = setup().await else { return };
+    let id = create_csv(&env, b"k\n1\n").await;
+    let checked = env
+        .storage
+        .get_metadata(&env.ctx, id, None)
+        .await
+        .expect("meta")
+        .size_bytes
+        .expect("size");
+    // 確認したサイズ以内なら読める。
+    let (_, bytes) = env
+        .storage
+        .read_file_internal_bounded(&env.ctx, id, checked, None)
+        .await
+        .expect("bounded read");
+    assert_eq!(bytes.len() as i64, checked);
+    // 確認後に大きい版へ差し替わる → 同じ上限では拒否される。
+    let grown = format!("k\n{}\n", "9".repeat(4096));
+    env.storage
+        .update_file_content_internal(&env.ctx, id, grown.as_bytes(), "text/csv", None)
+        .await
+        .expect("grow");
+    let res = env
+        .storage
+        .read_file_internal_bounded(&env.ctx, id, checked, None)
+        .await;
+    assert!(
+        matches!(res, Err(storage::StorageError::Invalid(_))),
+        "差し替え後の大きい版は上限で拒否: {res:?}"
+    );
+}
+
+/// #1049: `POST /files/{id}/versions/{v}/revert` は編集の直前の版を新しい版として戻し、
+/// 二度目は何もしない。編集の後に別の版があれば force なしでは 409（`current_version` 付き）。
+#[tokio::test]
+async fn revert_edit_route_restores_and_detects_conflicts() {
+    let Some(env) = setup().await else { return };
+    let tag = Uuid::new_v4();
+    let id = create_csv(&env, format!("k,v\n1,{tag}\n").as_bytes()).await;
+    let base = env
+        .storage
+        .get_metadata(&env.ctx, id, None)
+        .await
+        .unwrap()
+        .version;
+    let edited = env
+        .storage
+        .update_file_content_internal(
+            &env.ctx,
+            id,
+            format!("k,v\n1,{tag}\n2,ai\n").as_bytes(),
+            "text/csv",
+            None,
+        )
+        .await
+        .unwrap();
+
+    let revert = |v: i64, body: Value| {
+        env.app
+            .clone()
+            .oneshot(post(&format!("/files/{id}/versions/{v}/revert"), body))
+    };
+    let (st, body) = json_body(revert(edited.version, json!({})).await.unwrap()).await;
+    assert_eq!(st, StatusCode::OK, "{body:?}");
+    assert_eq!(body["reverted"], json!(true));
+    assert_eq!(body["restored_from_version"], json!(base));
+    let after = body["node"]["version"].as_i64().unwrap();
+    assert_eq!(after, edited.version + 1);
+
+    // 二度目は何もしない（版を積まない）。
+    let (st, body) = json_body(revert(edited.version, json!({})).await.unwrap()).await;
+    assert_eq!(st, StatusCode::OK);
+    assert_eq!(body["reverted"], json!(false));
+    assert_eq!(body["node"]["version"], json!(after));
+
+    // 取り消しを取り消す（=やり直し）→ 後から別の版を作る → 元の編集の取り消しは 409。
+    let (st, _) = json_body(revert(after, json!({})).await.unwrap()).await;
+    assert_eq!(st, StatusCode::OK);
+    env.storage
+        .update_file_content_internal(
+            &env.ctx,
+            id,
+            format!("k,v\n1,{tag}\n2,ai\n3,human\n").as_bytes(),
+            "text/csv",
+            None,
+        )
+        .await
+        .unwrap();
+    let (st, body) = json_body(revert(edited.version, json!({})).await.unwrap()).await;
+    assert_eq!(st, StatusCode::CONFLICT, "{body:?}");
+    assert_eq!(body["code"], json!("version_conflict"));
+    // force なら戻せる。未知のフィールドは 400/422 で弾く（タイプミスで force が効かない事故を防ぐ）。
+    let (st, _) = json_body(
+        revert(edited.version, json!({ "force": true }))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(st, StatusCode::OK);
+    let (st, _) = json_body(
+        revert(edited.version, json!({ "forse": true }))
+            .await
+            .unwrap(),
+    )
+    .await;
+    assert!(st.is_client_error(), "未知フィールドは拒否: {st}");
+    // 作成時の版（その前の内容版が無い）は 404。
+    let (st, _) = json_body(revert(base, json!({})).await.unwrap()).await;
+    assert_eq!(st, StatusCode::NOT_FOUND);
 }
