@@ -5,7 +5,8 @@
 /// 各ページは `usePageChrome(spec)` で「タイトル・戻る・主操作・アイコン操作・アシスタント・⋯」を
 /// **構造として**渡す。シェルは同じ spec から 2 通りに描く:
 ///
-/// - PC（md 以上）: 上部の 1 本のバー（`<Header>`）。
+/// - PC（md 以上）: 上部の 1 本のバー（`<Header>`）。バーはコンテナー（`@container/chrome`）なので、ページはサイドバーを
+///   除いたバーの幅で、操作の並べ方を変えられる（ビューポートの幅では、サイドバーを開いたときに足りない・BUG-231）。
 /// - スマホ: タイトルバーは出さず、左上にメニュー（＋戻る）、右上に操作群を浮かせる（`<MobileChrome>`）。
 ///
 /// 右側の並びは **主操作 → アイコン操作 → アシスタント → ⋯** で固定する（画面ごとに順序を
@@ -148,19 +149,22 @@ export function ChromePrimaryButton({
   );
 }
 
-/// ⋯ メニュー（PC・スマホ共通。タッチでは項目が 44px になる）。
+/// ⋯ メニュー（PC・スマホ共通。タッチでは項目が 44px になる）。`testId` はページが PC のバーに自分で置く ⋯ を
+/// スマホの ⋯（`chrome-menu`）と区別するためのもの。
 export function ChromeMenu({
   items,
   title,
+  testId = "chrome-menu",
 }: {
   items: ChromeMenuItem[];
   title?: React.ReactNode;
+  testId?: string;
 }) {
   if (items.length === 0) return null;
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <ChromeIconButton label="その他の操作" data-testid="chrome-menu">
+        <ChromeIconButton label="その他の操作" data-testid={testId}>
           <MoreHorizontal aria-hidden />
         </ChromeIconButton>
       </DropdownMenuTrigger>
@@ -284,19 +288,29 @@ export function ChromeBackButton({ back }: { back: NonNullable<PageChromeSpec["b
 }
 
 /// PC のバーの中身（左に戻る＋タイトル＋補足、右に操作群）。
+///
+/// バーは `@container/chrome`（ページの操作がバーの幅で並べ方を変える・BUG-231）。タイトルと補足の欄ははみ出しを切り、
+/// 操作の下に描かない。幅が 36rem 未満なら、タイトルの下に補足を置く（2 つを横に並べると、どちらも読めない幅になる）。
 export function ChromeBar({ spec }: { spec: PageChromeSpec }) {
   return (
-    <div className="flex min-w-0 flex-1 items-center gap-2">
+    <div className="@container/chrome flex min-w-0 flex-1 items-center gap-2" data-testid="chrome-bar">
       {spec.back ? <ChromeBackButton back={spec.back} /> : null}
-      <div className="flex min-w-0 flex-1 items-baseline gap-2.5">
+      <div
+        className="flex min-w-0 flex-1 items-baseline gap-2.5 overflow-x-clip @max-[36rem]/chrome:flex-col @max-[36rem]/chrome:items-start @max-[36rem]/chrome:gap-0"
+        data-testid="chrome-bar-title"
+      >
         {spec.title ? (
-          <span className="min-w-0 truncate text-sm font-medium text-foreground">{spec.title}</span>
+          <span className="min-w-0 truncate text-sm font-medium text-foreground @max-[36rem]/chrome:max-w-full">
+            {spec.title}
+          </span>
         ) : null}
         {spec.subtitle ? (
-          <span className="shrink-0 truncate text-xs text-muted-foreground">{spec.subtitle}</span>
+          <span className="shrink-0 truncate text-xs text-muted-foreground @max-[36rem]/chrome:max-w-full @max-[36rem]/chrome:shrink">
+            {spec.subtitle}
+          </span>
         ) : null}
       </div>
-      <div className="flex shrink-0 items-center gap-1">
+      <div className="flex shrink-0 items-center gap-1" data-testid="chrome-bar-actions">
         {spec.desktopExtra}
         <ChromeActions spec={spec} />
       </div>
