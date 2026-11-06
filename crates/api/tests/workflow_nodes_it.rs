@@ -4129,6 +4129,173 @@ async fn http_to_internal_addresses_is_refused_through_the_production_port() {
     assert_eq!(meta_script, refused("destination_link_local"));
 }
 
+// ------- GAP-72: 外への送信の中継（egress.proxy_url）を通す（本番のポート）-----------------------
+
+/// 偽の中継（CONNECT の要求の 1 行目を記録する）。`refuse` が `Some` ならその応答の行を返して閉じ、`None` なら 200 を
+/// 返して `origin` へつなぐ（頼まれたアドレスへはつながない・外の世界の代わり）。
+async fn spawn_fake_proxy(
+    origin: std::net::SocketAddr,
+    refuse: Option<&'static str>,
+) -> (std::net::SocketAddr, Arc<std::sync::Mutex<Vec<String>>>) {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let seen: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+    let log = Arc::clone(&seen);
+    tokio::spawn(async move {
+        while let Ok((mut sock, _)) = listener.accept().await {
+            let log = Arc::clone(&log);
+            tokio::spawn(async move {
+                let mut head = Vec::new();
+                let mut byte = [0u8; 1];
+                while !head.ends_with(b"\r\n\r\n") && sock.read(&mut byte).await.unwrap_or(0) == 1 {
+                    head.push(byte[0]);
+                }
+                let first = String::from_utf8_lossy(&head)
+                    .lines()
+                    .next()
+                    .unwrap_or_default()
+                    .to_string();
+                log.lock().unwrap().push(first);
+                if let Some(line) = refuse {
+                    let _ = sock
+                        .write_all(format!("{line}\r\ncontent-length: 0\r\n\r\n").as_bytes())
+                        .await;
+                    return;
+                }
+                let mut upstream = tokio::net::TcpStream::connect(origin).await.unwrap();
+                sock.write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                    .await
+                    .unwrap();
+                let _ = tokio::io::copy_bidirectional(&mut sock, &mut upstream).await;
+            });
+        }
+    });
+    (addr, seen)
+}
+
+/// 中継を設定すると、「外部 API 呼び出し」と script の `Shiki.http.request` は、本番のポートで、確かめた公開の IP への
+/// CONNECT を中継に頼んで送る（名前は中継に渡さない）。中継が認証で断ったら、送らずに egress_proxy_refused（やり直さ
+/// ない）で失敗する（GAP-72）。
+#[tokio::test]
+async fn http_goes_through_the_configured_proxy_through_the_production_port() {
+    let Some(h) = setup().await else { return };
+    let (base, seen) = spawn_http_recorder().await;
+    let port: u16 = base.rsplit(':').next().unwrap().parse().unwrap();
+    let origin: std::net::SocketAddr = ([127, 0, 0, 1], port).into();
+    let (proxy, connects) = spawn_fake_proxy(origin, None).await;
+    let (denying, denied) =
+        spawn_fake_proxy(origin, Some("HTTP/1.1 407 Proxy Authentication Required")).await;
+    let resolver = || {
+        Arc::new(MapResolver {
+            map: [(
+                "api.example.invalid".to_string(),
+                ([93, 184, 216, 34], port).into(),
+            )]
+            .into_iter()
+            .collect(),
+            lookups: std::sync::Mutex::new(Vec::new()),
+        })
+    };
+    let url = format!("http://api.example.invalid:{port}");
+    let ir = |name: &str, node: Value| {
+        json!({
+            "ir_version": 1, "name": name, "declared_scopes": ["http.egress"],
+            "triggers": [{ "kind": "interactive" }], "nodes": [node], "edges": [],
+        })
+    };
+    let node = h
+        .save(&ir(
+            "http-proxy-node",
+            json!({ "id": "send", "type": "http.request", "params": {
+                "method": "POST", "url": format!("{url}/node"), "body": "x" } }),
+        ))
+        .await;
+    let script = h
+        .save(&ir(
+            "http-proxy-script",
+            json!({ "id": "send", "type": "script.run", "params": { "source": { "inline": format!(
+                "function main(input) {{ return Shiki.http.request({{ method: \"POST\", \
+                 url: \"{url}/script\", body: \"y\" }}).status; }}") } } }),
+        ))
+        .await;
+    let egress = |proxy: std::net::SocketAddr| {
+        api::workflow_runtime::HttpEgress::default()
+            .with_resolver(resolver() as _)
+            .with_proxy(Some(
+                sandbox_client::egress_proxy::EgressProxy::new(
+                    &format!("http://{proxy}"),
+                    Some(("shiki", "s3cret")),
+                )
+                .unwrap(),
+            ))
+    };
+    let allow = vec!["api.example.invalid".to_string()];
+    let mut outcomes = Vec::new();
+    for (wf, via) in [(node, proxy), (script, proxy), (node, denying)] {
+        let executor = h.executor_with_http(None, allow.clone(), None, egress(via));
+        let (run, status) = h.run(wf, &json!({}), executor).await;
+        let error = sqlx::query_as::<_, (Option<String>, Option<bool>, Option<String>)>(
+            "SELECT error->>'code', (error->>'retryable')::bool, error->>'message' FROM step_execution \
+             WHERE tenant_id = $1 AND run_id = $2 AND node_id = 'send'",
+        )
+        .bind(&h.tenant)
+        .bind(run)
+        .fetch_one(&h.pool)
+        .await
+        .unwrap();
+        outcomes.push((status, error));
+    }
+    let requests = seen.lock().await.clone();
+
+    // 片付け（run の履歴・ワークフロー・OpenFGA のストア）。
+    h.runs.purge_tenant_history(&h.tenant).await.unwrap();
+    for id in [node, script] {
+        h.artifacts.delete(&h.alice, id, None).await.unwrap();
+    }
+    h.delete_fga_store().await;
+
+    assert_eq!(outcomes[0], (RunStatus::Succeeded, (None, None, None)));
+    assert_eq!(outcomes[1], (RunStatus::Succeeded, (None, None, None)));
+    assert_eq!(
+        *connects.lock().unwrap(),
+        [
+            format!("CONNECT 93.184.216.34:{port} HTTP/1.1"),
+            format!("CONNECT 93.184.216.34:{port} HTTP/1.1")
+        ],
+        "確かめた IP への CONNECT（名前は渡さない）"
+    );
+    assert!(
+        requests.iter().any(|r| r.starts_with("POST /node ")),
+        "{requests:?}"
+    );
+    assert!(
+        requests.iter().any(|r| r.starts_with("POST /script ")),
+        "{requests:?}"
+    );
+    assert!(
+        requests
+            .iter()
+            .all(|r| !r.to_ascii_lowercase().contains("proxy-authorization")),
+        "中継の認証は送り先に届かない: {requests:?}"
+    );
+
+    let (status, (code, retryable, message)) = &outcomes[2];
+    assert_eq!(*status, RunStatus::Failed);
+    assert_eq!(code.as_deref(), Some("egress_proxy_refused"));
+    assert_eq!(*retryable, Some(false));
+    let message = message.clone().unwrap_or_default();
+    assert!(
+        message.contains("送り先には何も送っていません"),
+        "{message}"
+    );
+    assert!(
+        !message.contains("s3cret") && !message.contains(&denying.to_string()),
+        "{message}"
+    );
+    assert_eq!(denied.lock().unwrap().len(), 1);
+}
+
 // ------- GAP-19: 「外部 API 呼び出し」の作成者のヘッダー（本番のポート）-----------------------
 
 /// 「外部 API 呼び出し」の「ヘッダー」は、本番のポートで相手に届く（値の差し込み・作成者の Content-Type）。送っては
