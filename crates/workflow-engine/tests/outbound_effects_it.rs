@@ -285,6 +285,17 @@ impl Env {
         assert_eq!(self.worker().claim_and_run_once("w-b").await, Ok(true));
     }
 
+    /// [`Self::reclaim_and_run_once`] と同じ。確かめずに（戻した数, 動かした結果）を返す（片付けの後で確かめる）。
+    async fn reclaim_and_run_once_unchecked(&self) -> (u64, Result<bool, String>) {
+        let reclaimed = self
+            .store
+            .reclaim_expired_leases(Some(&self.tenant))
+            .await
+            .unwrap();
+        let ran = self.worker().claim_and_run_once("w-b").await;
+        (reclaimed, ran)
+    }
+
     /// （状態, attempt, 待っている理由, 誤りの code, 結果）。
     async fn step(&self, run: Uuid) -> (String, i32, Option<String>, Option<String>, Value) {
         let (status, attempt, wait, code, out): StepRow = sqlx::query_as(
@@ -867,4 +878,43 @@ async fn retrying_a_script_with_a_timestamp_in_the_body_does_not_conflict() {
     );
     assert_eq!(status, Some(RunStatus::Succeeded));
     assert_eq!(sends, 4);
+}
+
+/// 応答が大きくて本文を落として記録した送信は、試す回数が残っていても、拾い直しの後にやり直さない（届いたと
+/// 分かっているので、すぐにもう一度届く）。再開すれば送る。
+#[tokio::test]
+async fn a_large_response_is_not_sent_again_by_the_remaining_attempts() {
+    let Some(env) = setup().await else { return };
+    *env.ports.http_body.lock().unwrap() = Some(vec![b'x'; RECORD_MAX_BYTES + 1]);
+    let mut node = post_node();
+    node["retry"] = json!({ "max_attempts": 3 });
+    let run = env.run(node.clone(), &["http.egress"]).await;
+    let dead = env.claim_as_dead_worker().await;
+    let first = env
+        .exec
+        .execute(
+            "http.request",
+            &node["params"],
+            &ctx_of(&dead, &["http.egress"]),
+        )
+        .await;
+    let reclaimed = env.reclaim_and_run_once_unchecked().await;
+    let stopped = env.step(run).await;
+    // やり直しが待っていれば、ここで拾われて送り直す。
+    env.age_reservations_and_wake().await;
+    let ran_again = env.worker().claim_and_run_once("w-c").await;
+    let sends = env.ports.sends();
+    let status = env.store.run_status(&env.tenant, run).await.unwrap();
+    env.cleanup().await;
+
+    assert!(first.ok, "{:?}", first.error);
+    assert_eq!(reclaimed, (1, Ok(true)));
+    assert_eq!(
+        (stopped.0.as_str(), stopped.3.as_deref()),
+        ("failed", Some(HTTP_DELIVERY_UNKNOWN)),
+        "試す回数が残っているのでやり直しに回した"
+    );
+    assert_eq!(ran_again, Ok(false));
+    assert_eq!(sends, 1, "届いた送信をやり直しでもう一度送った");
+    assert_eq!(status, Some(RunStatus::Failed));
 }

@@ -18,7 +18,8 @@
 //!   反射したシークレットの平文をマスクしたあとのもの）で、step の結果と同じもの。要求の本文・ヘッダー・シークレットは
 //!   記録しない（操作の digest にハッシュで入るだけ）。結果が [`RECORD_MAX_BYTES`] を超えたら、LLM は記録しない
 //!   （拾い直したら呼び直す）、外部への送信は本文を落とした印だけを記録する（拾い直したら届いたことは分かるが続きに
-//!   渡せないので、送り直さずに [`HTTP_DELIVERY_UNKNOWN`] で失敗にする）。記録は step と同じく保持期間の GC で消える。
+//!   渡せないので、送り直さずに [`HTTP_DELIVERY_UNKNOWN`] で失敗にする。届いたと分かっているので、試す回数が残っていても
+//!   やり直さない）。記録は step と同じく保持期間の GC で消える。
 //! - キーは、ブロックでは step の冪等キー、script の中では試す回数と呼び出し連番のキー（`#a<attempt>#c<seq>`）。
 //!   script の記録はリースが切れて拾い直したとき（同じ試行）だけ使い、やり直しと再開は送り直す。
 //! - 記録の DB が使えなければ呼ばない（`unavailable`・内部の書込と同じ fail-closed）。結果の記録に失敗したときは、
@@ -215,8 +216,12 @@ where
     }
 }
 
-/// 外部への送信が届いたかを確かめられないときの誤り（[`HTTP_DELIVERY_UNKNOWN`]・retryable）。`sent` は、届いたことは
-/// 分かっているが応答を記録していないとき。
+/// 外部への送信が届いたかを確かめられないときの誤り（[`HTTP_DELIVERY_UNKNOWN`]）。`sent` は、届いたことは分かって
+/// いるが応答を記録していないとき。
+///
+/// 届いたと分かっているとき（`sent`）はやり直さない（試す回数が残っていても、すぐ同じ送信がもう一度届く）。届いたかが
+/// 分からないときはやり直せる（試す回数のやり直しで送る・作成者がやり直しを選んだ送信）。どちらも失敗の分類は一時障害
+/// なので、利用者は送り先を確かめてから再開できる。
 fn delivery_unknown(host: &str, sent: bool) -> PortError {
     let head = if sent {
         format!(
@@ -233,7 +238,7 @@ fn delivery_unknown(host: &str, sent: bool) -> PortError {
             "{head}送り先の状態を確かめてから、必要なら失敗したところから再開してください。\
              再開すると、もう一度送ります。"
         ),
-        true,
+        !sent,
     )
 }
 
@@ -398,7 +403,8 @@ mod tests {
         for sent in [false, true] {
             let e = delivery_unknown("api.example.com", sent);
             assert_eq!(e.code, HTTP_DELIVERY_UNKNOWN);
-            assert!(e.retryable);
+            // 届いたと分かっている送信は、試す回数が残っていてもやり直さない（すぐにもう一度届く）。
+            assert_eq!(e.retryable, !sent);
             assert!(e.message.contains("api.example.com"), "{}", e.message);
             assert!(
                 e.message.contains("再開すると、もう一度送ります。"),
