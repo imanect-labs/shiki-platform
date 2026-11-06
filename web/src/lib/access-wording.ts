@@ -152,14 +152,18 @@ function myItem(i: MyAccessItem, where: string): string {
   return `${where}${NOUN[i.object]}が見つからないか、${verbOf(i.object, i.need).verb}権限がありません。`;
 }
 
-/// 共有されたワークフローを手動で実行する人に、実行できない理由を言う（アプリのボタンと同じ決まり・GAP-37）。足りて
-/// いれば null。
-export function myRunBlockedReason(items: readonly MyAccessItem[]): string | null {
+/// ワークフローを手動で実行する人に、実行できない理由を言う（アプリのボタンと同じ決まり・GAP-37）。足りていれば null。
+/// 頼む先は、押した人がワークフローの持ち主かで分ける（付録 C の P4）: 持ち主でなければワークフローを作成した人、
+/// 持ち主なら、対象の持ち主に共有を頼むか、ブロックの設定で選び直す。
+export function myRunBlockedReason(items: readonly MyAccessItem[], viewerIsOwner = false): string | null {
   const missing = items.filter((i) => i.status === "missing");
   if (missing.length === 0) return null;
   const first = myItem(missing[0], "このワークフローが使う");
   const more = missing.length > 1 ? `ほかに ${missing.length - 1} 件、足りない権限があります。` : "";
-  return `${first}${more}ワークフローを作成した人に頼んでください。`;
+  const ask = viewerIsOwner
+    ? `${NOUN[missing[0].object]}の持ち主に共有を頼むか、ブロックの設定で選び直してください。`
+    : "ワークフローを作成した人に頼んでください。";
+  return `${first}${more}${ask}`;
 }
 
 /// 使う人に、部品を使えない理由を言う（ボタン・表）。足りていれば null。

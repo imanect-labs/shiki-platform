@@ -207,6 +207,7 @@ export function RunNowDialog({
   workflowId,
   ir,
   version,
+  owner = false,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -214,6 +215,8 @@ export function RunNowDialog({
   ir: WorkflowIr;
   /// フォームの元になった保存済みバージョン（実行前に最新と一致することを確認する）。
   version: number;
+  /// 開いた人がワークフローの持ち主か（足りない権限を頼む先を言い分ける）。
+  owner?: boolean;
 }) {
   const router = useRouter();
   const props = schemaFields(ir);
@@ -237,7 +240,7 @@ export function RunNowDialog({
   const labels = React.useMemo(() => new Map(ir.nodes.map((n) => [n.id, blockDisplayName(n)])), [ir.nodes]);
   /// 実行するのに自分に足りない権限（開いたときに確かめる・読めなかったときは null で止めない）。
   const [access, setAccess] = React.useState<MyWorkflowAccess | null>(null);
-  const blockedReason = access ? myRunBlockedReason(access.items) : null;
+  const blockedReason = access ? myRunBlockedReason(access.items, owner) : null;
 
   React.useEffect(() => {
     if (!open) return;
@@ -299,7 +302,7 @@ export function RunNowDialog({
       if (blockedReason) {
         const fresh = await getMyWorkflowAccess(workflowId).catch(() => null);
         if (fresh) setAccess(fresh);
-        const still = fresh ? myRunBlockedReason(fresh.items) : null;
+        const still = fresh ? myRunBlockedReason(fresh.items, owner) : null;
         if (still) {
           // 理由はすぐ下の注意に出ているので、ここではまだ足りないことだけを言う。
           setFailure({ message: "足りない権限が、まだ共有されていません。", lines: [] });

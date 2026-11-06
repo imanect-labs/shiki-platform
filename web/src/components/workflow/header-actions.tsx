@@ -515,6 +515,7 @@ export function WorkflowChrome({ ctx }: { ctx: EditorChromeContext }) {
         workflowId={workflowId}
         ir={state.ir}
         version={state.savedVersion}
+        owner={canShare}
       />
       <VersionsDialog
         open={versionsOpen}
