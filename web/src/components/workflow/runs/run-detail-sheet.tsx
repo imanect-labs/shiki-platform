@@ -8,7 +8,7 @@
 
 import * as React from "react";
 import Link from "next/link";
-import { Ban, Loader2, PencilLine, Play, RotateCcw } from "lucide-react";
+import { Ban, ChevronDown, Loader2, PencilLine, Play, RotateCcw } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -20,6 +20,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { toast } from "@/components/ui/use-toast";
+import { cn } from "@/lib/utils";
 import { getWorkflowVersion } from "@/lib/workflow-api";
 import { cancelRun, retryRun } from "@/lib/workflow-run-api";
 import type { WorkflowIr } from "@/generated/workflow-ir";
@@ -78,6 +79,59 @@ function useNodeInfo(workflowId: string, version: number | null) {
   return React.useCallback(
     (nodeId: string): NodeInfo | null => map?.get(nodeId) ?? null,
     [map],
+  );
+}
+
+/// 畳んで見せる値の大きさ（どちらかを超えたら畳む・GAP-96）。
+const FOLD_CHARS = 2_000;
+const FOLD_LINES = 20;
+
+/// 値の大きさを、画面の単位（KB・MB）で言う（付録 C の P11）。
+function sizeLabel(text: string): string {
+  const bytes = new TextEncoder().encode(text).length;
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(bytes / 1024)).toLocaleString("ja-JP")} KB`;
+}
+
+/// 実行の入力ときっかけの内容を JSON で見せる。大きな値は畳んでおき、押したときだけ広げる（GAP-96）。
+function JsonValue({ title, value, testId }: { title: string; value: unknown; testId: string }) {
+  const text = React.useMemo(() => JSON.stringify(value, null, 2) ?? String(value), [value]);
+  const large = text.length > FOLD_CHARS || text.split("\n").length > FOLD_LINES;
+  const [shown, setShown] = React.useState(false);
+  const id = React.useId();
+  const open = !large || shown;
+  return (
+    <div data-testid={testId}>
+      <div className="mb-1 flex items-center justify-between gap-2">
+        <h3 className="text-[11px] font-medium text-muted-foreground">{title}</h3>
+        {large ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-6 px-2 text-[11px]"
+            aria-expanded={open}
+            aria-controls={id}
+            onClick={() => setShown((v) => !v)}
+          >
+            <ChevronDown className={cn("size-3.5 transition-transform", open && "rotate-180")} aria-hidden />
+            {open ? "畳む" : "表示する"}
+          </Button>
+        ) : null}
+      </div>
+      {open ? (
+        <pre
+          id={id}
+          className="max-h-60 overflow-auto rounded-md border bg-muted/40 p-2 font-mono text-[11px] leading-relaxed scrollbar-subtle"
+        >
+          {text}
+        </pre>
+      ) : (
+        <p className="text-[11px] text-muted-foreground" data-testid={`${testId}-folded`}>
+          {`大きな値（${sizeLabel(text)}）なので畳んでいます。`}
+        </p>
+      )}
+    </div>
   );
 }
 
@@ -315,14 +369,17 @@ export function RunDetailSheet({
               </div>
 
               {detail.input !== null && detail.input !== undefined ? (
-                <div>
-                  <h3 className="mb-1 text-[11px] font-medium text-muted-foreground">
-                    実行時の入力
-                  </h3>
-                  <pre className="max-h-40 overflow-auto rounded-md border bg-muted/40 p-2 font-mono text-[11px] leading-relaxed scrollbar-subtle">
-                    {JSON.stringify(detail.input, null, 2)}
-                  </pre>
-                </div>
+                <JsonValue key={`${detail.runId}-input`} title="実行時の入力" value={detail.input} testId="run-detail-input" />
+              ) : null}
+              {/* 手動の実行で試したきっかけの内容（やり直しで引き継いだものも・D-93・GAP-96）。試していなければ出さない
+                  （きっかけの内容は入力と同じ）。 */}
+              {detail.triggerPayload !== null && detail.triggerPayload !== undefined ? (
+                <JsonValue
+                  key={`${detail.runId}-trigger`}
+                  title="試したきっかけの内容"
+                  value={detail.triggerPayload}
+                  testId="run-detail-trigger"
+                />
               ) : null}
 
               <div>

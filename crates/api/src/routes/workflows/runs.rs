@@ -309,6 +309,11 @@ pub struct RunDetailResponse {
     /// run 入力。
     #[schema(value_type = Object)]
     pub input: serde_json::Value,
+    /// 手動の実行で試したきっかけの内容（実行のダイアログで書いた値か、「同じ入力でもう一度実行」が元の実行から
+    /// 引き継いだ値・`$from trigger` の源・D-93・GAP-96）。試していない実行は null（きっかけの内容は入力と同じ）。
+    /// 見られる人は実行の詳細と同じ（ワークフローを見られる人）。
+    #[schema(value_type = Option<Object>)]
+    pub trigger_payload: Option<serde_json::Value>,
     /// run 単位の理由の code（`run_timeout`・`approval_timeout` など・古い画面の互換のために残す）。画面は
     /// `failure` を出す。
     pub fail_reason: Option<String>,
@@ -366,6 +371,7 @@ pub async fn get_workflow_run(
         trigger_kind: d.trigger_kind,
         version: d.version,
         input: d.input,
+        trigger_payload: d.trigger_payload,
         fail_reason: d.fail_reason,
         failure: d.failure,
         resume: d.resume,

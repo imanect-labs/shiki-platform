@@ -1737,13 +1737,27 @@ async fn manual_run_takes_trial_trigger() {
     assert_ne!(again_trial, with_trial, "新しい run を作る");
     while worker.claim_and_run_once("w-trial").await.unwrap() {}
     assert_eq!(
-        output(again_trial).await,
+        output(again_trial.clone()).await,
         json!({ "input": { "amount": 3 }, "trigger": trial, "scheduled_at": null })
     );
     assert_eq!(
-        output(again_without).await,
+        output(again_without.clone()).await,
         json!({ "input": { "amount": 4 }, "trigger": { "amount": 4 }, "scheduled_at": null })
     );
+
+    // --- GAP-96: 実行の詳細は、試したきっかけの内容を返す（引き継いだ run も）。試していない run は null。
+    let trigger_payload = |run: String| {
+        let env = &env;
+        let id = id.clone();
+        async move {
+            let (st, detail) = req(env, "GET", &format!("/workflows/{id}/runs/{run}"), None).await;
+            assert_eq!(st, StatusCode::OK, "{detail}");
+            detail["trigger_payload"].clone()
+        }
+    };
+    assert_eq!(trigger_payload(with_trial).await, trial);
+    assert_eq!(trigger_payload(again_trial).await, trial);
+    assert_eq!(trigger_payload(again_without).await, Value::Null);
     delete_flow_and_runs(&env, &id).await;
 }
 

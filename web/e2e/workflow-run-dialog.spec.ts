@@ -9,6 +9,7 @@ import { cleanupAll, loginViaKeycloak, uniqueName } from "./helpers";
 /// - ファイルが保存されたときのきっかけのワークフローは、「詳しい設定」のきっかけの内容（JSON）で試せる。書いた値が
 ///   `$from trigger` の源になり、空欄なら入力の値を使う。
 /// - 「詳しい設定」を閉じても、送る値があることを見出しの下で言い、閉じて開き直しても値を残して開いた形で始める（BUG-229）。
+/// - 実行の詳細は、試したきっかけの内容を出し、大きな値は畳む（GAP-96）。
 
 const SHOTS = process.env.E2E_SHOTS_DIR;
 
@@ -143,7 +144,10 @@ test("実行のダイアログ: 実行できない設定は、名前を付けて
 type StepOutput = { output: unknown };
 type RunDetail = { status: string };
 
-test("実行のダイアログ: ファイルが保存されたときのワークフローを、きっかけの内容を入れて試せる（D-93）", async ({ page }) => {
+test("実行のダイアログ: ファイルが保存されたときのワークフローを、きっかけの内容を入れて試せる（D-93・BUG-229・GAP-96）", async ({
+  page,
+  browser,
+}) => {
   test.setTimeout(150_000);
   await page.setViewportSize({ width: 1440, height: 900 });
   await loginViaKeycloak(page);
@@ -224,6 +228,61 @@ test("実行のダイアログ: ファイルが保存されたときのワーク
       await page.request.get(`/api/workflows/${id}/runs/${runId}/steps?path=echo`)
     ).json()) as StepOutput;
     expect(step.output).toEqual(trial);
+
+    // 実行の詳細は、試したきっかけの内容を出す（GAP-96）。
+    const sheet = page.getByRole("dialog").filter({ hasText: "実行の詳細" });
+    const shown = sheet.getByTestId("run-detail-trigger");
+    await expect(shown.getByRole("heading", { name: "試したきっかけの内容" })).toBeVisible({ timeout: 30_000 });
+    // 保存した値の項目の並びは DB が決めるので、読んだ JSON で比べる。
+    await expect(shown.locator("pre")).toBeVisible();
+    expect(JSON.parse((await shown.locator("pre").textContent()) ?? "null")).toEqual(trial);
+    await expect(sheet.getByTestId("run-detail-trigger-folded")).toHaveCount(0);
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/run-detail-trigger-pc.png` });
+
+    // 大きなきっかけの内容は畳み、押したときだけ広げる。
+    const big = { file_id: "e2e-file-2", rows: Array.from({ length: 120 }, (_, i) => ({ n: i, note: `行 ${i} の備考` })) };
+    const res = await page.request.post(`/api/workflows/${id}/runs`, {
+      headers: await csrfHeaders(page),
+      data: { input: {}, trigger: big },
+    });
+    expect(res.ok(), await res.text()).toBeTruthy();
+    const bigRun = ((await res.json()) as { run_id: string }).run_id;
+    await page.goto(`/workflows/${id}/runs?run=${bigRun}`);
+    const bigShown = sheet.getByTestId("run-detail-trigger");
+    await expect(sheet.getByTestId("run-detail-trigger-folded")).toHaveText(/^大きな値（\d+ KB）なので畳んでいます。$/, {
+      timeout: 30_000,
+    });
+    await expect(bigShown.locator("pre")).toHaveCount(0);
+    if (SHOTS) await page.screenshot({ path: `${SHOTS}/run-detail-trigger-folded-pc.png` });
+    await bigShown.getByRole("button", { name: "表示する" }).click();
+    await expect(bigShown.locator("pre")).toContainText('"file_id": "e2e-file-2"');
+    await bigShown.getByRole("button", { name: "畳む" }).click();
+    await expect(bigShown.locator("pre")).toHaveCount(0);
+
+    // スマホ幅でも、畳んだ値と広げた値が横にはみ出さない。
+    const phoneCtx = await browser.newContext({
+      storageState: await page.context().storageState(),
+      viewport: { width: 390, height: 844 },
+      hasTouch: true,
+      isMobile: true,
+      deviceScaleFactor: 2,
+      ignoreHTTPSErrors: true,
+    });
+    try {
+      const phone = await phoneCtx.newPage();
+      await phone.goto(`/workflows/${id}/runs?run=${bigRun}`);
+      const phoneSheet = phone.getByRole("dialog").filter({ hasText: "実行の詳細" });
+      const phoneShown = phoneSheet.getByTestId("run-detail-trigger");
+      await expect(phoneSheet.getByTestId("run-detail-trigger-folded")).toBeVisible({ timeout: 30_000 });
+      await phoneShown.scrollIntoViewIfNeeded();
+      if (SHOTS) await phone.screenshot({ path: `${SHOTS}/run-detail-trigger-folded-phone.png` });
+      await phoneShown.getByRole("button", { name: "表示する" }).click();
+      await expect(phoneShown.locator("pre")).toBeVisible();
+      expect(await phoneSheet.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+      if (SHOTS) await phone.screenshot({ path: `${SHOTS}/run-detail-trigger-open-phone.png` });
+    } finally {
+      await phoneCtx.close();
+    }
   } finally {
     await cleanupAll(
       async () => {

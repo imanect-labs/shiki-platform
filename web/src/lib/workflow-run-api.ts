@@ -219,6 +219,9 @@ export type RunDetail = {
   triggerKind: string;
   version: number;
   input: unknown;
+  /// 手動の実行で試したきっかけの内容（実行のダイアログで書いた値か、やり直しで引き継いだ値・D-93・GAP-96）。試して
+  /// いない実行は null（きっかけの内容は入力と同じ）。
+  triggerPayload: unknown;
   failReason: string | null;
   /// 失敗していれば理由（文言はサーバーが組む。web に対応表を持たない）。
   failure: RunFailure | null;
@@ -244,6 +247,7 @@ export async function getRun(workflowId: string, runId: string): Promise<RunDeta
     triggerKind: d.trigger_kind,
     version: d.version,
     input: d.input,
+    triggerPayload: d.trigger_payload ?? null,
     failReason: d.fail_reason ?? null,
     failure: d.failure ?? null,
     resume: d.resume ?? null,
