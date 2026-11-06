@@ -24,6 +24,33 @@ export type ThreadList = {
   upsertLocal: (thread: Thread) => void;
 };
 
+/// 生成中（順番待ち・生成中）の会話があるときの読み直し間隔。終わったらすぐ「完了」に変えたい。
+const LIVE_POLL_MS = 4_000;
+/// 承認待ちだけのときの読み直し間隔（承認は別の画面から返ることもあるが、急がない）。
+const WAITING_POLL_MS = 20_000;
+
+/// 裏で生成が続いている会話があれば、先頭ページを定期的に読み直す（実行中→完了の切り替え・
+/// 終わった会話の先頭への移動を、その会話を開いていなくても拾う）。
+///
+/// 終わりを知らせる通知はその会話の画面（SSE）にしか届かないため、ここは読み直しで追う。
+/// 実行中の会話が無ければ何もしない。タブが裏にある間は叩かず、表に戻ったら 1 度読む。
+function useLiveRefresh(threads: Thread[], refresh: React.RefObject<(() => void) | null>) {
+  const live = threads.some((t) => t.runStatus === "queued" || t.runStatus === "running");
+  const waiting = !live && threads.some((t) => t.runStatus === "waiting_approval");
+  React.useEffect(() => {
+    if (!live && !waiting) return;
+    const tick = () => {
+      if (document.visibilityState === "visible") refresh.current?.();
+    };
+    const id = window.setInterval(tick, live ? LIVE_POLL_MS : WAITING_POLL_MS);
+    document.addEventListener("visibilitychange", tick);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", tick);
+    };
+  }, [live, waiting, refresh]);
+}
+
 /// `(updated_at, id)` の降順で a が b より後ろ（古い）か。サーバの keyset 順と一致させる。
 function isOlder(a: Thread, b: Thread): boolean {
   if (a.updatedAt !== b.updatedAt) return a.updatedAt < b.updatedAt;
@@ -51,6 +78,8 @@ export function useThreadList(query = "", enabled = true): ThreadList {
   // 検索語の切り替えで古い応答が後から届いても反映しない世代カウンタ。
   const generation = React.useRef(0);
   const fetchingMore = React.useRef(false);
+  const refresh = React.useRef<(() => void) | null>(null);
+  useLiveRefresh(threads, refresh);
 
   React.useEffect(() => {
     if (!enabled) return;
@@ -65,10 +94,25 @@ export function useThreadList(query = "", enabled = true): ThreadList {
     setThreads([]);
     setCursor(null);
 
-    const loadFirst = (initial: boolean) => {
+    // 先頭ページの取得は 1 本ずつに束ねる。取得中に取り直しを頼まれたら（実行中の読み直し・変更通知）、
+    // 今の取得が終わってから 1 度だけ取り直す。応答は必ず反映され（取得が読み直しの間隔より遅くても
+    // 捨て続けない）、古い応答が新しい応答を後から上書きすることもない（同時に飛ぶのは 1 本だけ）。
+    // 初回の取得が終わるまでは、取り直しも初回として扱う（読み込み中・失敗の表示をそれに揃える）。
+    let inFlight = false;
+    let again = false;
+    let loaded = false;
+    const loadFirst = () => {
+      if (inFlight) {
+        again = true;
+        return;
+      }
+      inFlight = true;
+      again = false;
+      const initial = !loaded;
       listThreads(undefined, { q: query })
         .then(({ threads: first, nextCursor }) => {
           if (!current()) return;
+          loaded = true;
           if (initial) {
             setError(false);
             setThreads(first);
@@ -88,22 +132,32 @@ export function useThreadList(query = "", enabled = true): ThreadList {
         })
         .catch(() => {
           if (!current()) return;
-          // 通知での取り直しの失敗は、表示中の一覧をそのまま残す。
-          if (initial) {
+          // 取り直しの失敗は、表示中の一覧をそのまま残す。初回（待っている取り直しも無い）だけ失敗を出す。
+          if (initial && !again) {
             setThreads([]);
             setCursor(null);
             setError(true);
           }
         })
         .finally(() => {
-          if (current() && initial) setLoading(false);
+          inFlight = false;
+          if (!current()) return;
+          if (again) {
+            loadFirst();
+            return;
+          }
+          // 待っている取り直しが無くなった時点で読み込み中を終える（初回の成功の直後に束ねた
+          // 取り直しが走った場合、その取り直しは初回ではないので initial では判定しない）。
+          setLoading(false);
         });
     };
 
-    loadFirst(true);
-    const unsubscribe = subscribeThreadsChanged(() => loadFirst(false));
+    loadFirst();
+    refresh.current = loadFirst;
+    const unsubscribe = subscribeThreadsChanged(loadFirst);
     return () => {
       unsubscribe();
+      refresh.current = null;
       active = false;
     };
   }, [query, enabled]);
@@ -164,6 +218,8 @@ export function usePinnedThreads(enabled = true): {
   patchLocal: (id: string, patch: Partial<Thread>) => void;
 } {
   const [threads, setThreads] = React.useState<Thread[]>([]);
+  const refresh = React.useRef<(() => void) | null>(null);
+  useLiveRefresh(threads, refresh);
   React.useEffect(() => {
     if (!enabled) return;
     let active = true;
@@ -180,9 +236,11 @@ export function usePinnedThreads(enabled = true): {
         });
     };
     load();
+    refresh.current = load;
     const unsubscribe = subscribeThreadsChanged(load);
     return () => {
       active = false;
+      refresh.current = null;
       unsubscribe();
     };
   }, [enabled]);

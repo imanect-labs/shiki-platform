@@ -17,8 +17,13 @@ use crate::ir::expr::ValueExpr;
 pub struct CsvQueryParams {
     /// 対象 CSV ファイル id（UUID に解決される値）。
     pub file: ValueExpr,
-    /// 読み取り専用 SELECT（テーブル名 `data`）。
+    /// 読み取り専用 SELECT（`file` はテーブル `data`、`tables` の各 CSV は指定名）。
     pub sql: ValueExpr,
+    /// JOIN 用の追加 CSV（#1037）。`[{ "name": "<テーブル名>", "file": "<UUID>" }, ...]` に
+    /// 解決される値（最大 8 個）。各ファイルにも実行主体の閲覧権限が要る。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub tables: Option<ValueExpr>,
 }
 
 /// `csv.patch` — CSV をパッチ編集して新バージョンを保存（editor・EngineDedup）。

@@ -41,7 +41,12 @@ import {
   type UiActionRun,
 } from "@/lib/chat-api";
 import { popPending } from "@/lib/pending-message";
-import { readModelChoice } from "@/lib/model-choice";
+import {
+  pinModelChoice,
+  readModelChoice,
+  restoreModelChoice,
+  useRestoreModelChoice,
+} from "@/lib/model-choice";
 import { readToolChoice, settleToolChoice } from "@/lib/tool-choice";
 import { triggerDownload } from "@/lib/storage";
 import { newId } from "@/lib/chat-store";
@@ -89,7 +94,8 @@ import { NoteDraftCard } from "./note-draft-card";
 import { SlideDraftCard } from "./slide-draft-card";
 import { CsvDraftCard } from "./csv-draft-card";
 import { SkillDraftCard } from "./skill-draft-card";
-import { DocumentRefCard, LegacyDocumentDraftCard, parseDocumentRef, documentRefHref } from "./document-ref-card";
+import { LegacyDocumentDraftCard, parseDocumentRef, documentRefHref } from "./document-ref-card";
+import { DocumentRefList } from "./document-ref-list";
 import { upsertDraft, parseNoteDraft } from "@/lib/notes/draft-store";
 import { draftHref } from "@/lib/notes/draft-nav";
 import { parseSlideDraft, slideDraftHref, slideDraftStore } from "@/lib/slides/draft";
@@ -107,6 +113,7 @@ import { ChatPageHeaderSlot } from "./chat-header-actions";
 import { ContextUsageDialog } from "./context-meter";
 import { ApprovalCard, BudgetBanner, PlanPanel } from "./agent-progress";
 import { cn } from "@/lib/utils";
+import { useMarkThreadViewing } from "@/lib/thread-viewing";
 
 /// ストリーミング中のアシスタント応答の蓄積状態。
 type StreamState = {
@@ -278,6 +285,11 @@ export function Conversation({
   const [saveTarget, setSaveTarget] = React.useState<SaveAsAppTarget | null>(null);
   // スレッド名（クロームのタイトル・⋯ メニューの見出し）と検索フォルダ（#965）。page のときだけ引く。
   const { title: threadTitle, searchFolderName } = useThreadMeta(isPanel ? null : threadId);
+  // 表示中の会話として登録する（サイドバー履歴が、見ている間に終わった回答を未読にしない）。
+  useMarkThreadViewing(threadId);
+  // 別の端末で選んで送ったモデルを、このタブの入力欄の初期値にする（#1050）。page はスレッド名と
+  // 一緒に読む（useThreadMeta）ので、ここで読むのはパネルのときだけ。
+  useRestoreModelChoice(isPanel ? threadId : null);
   // 追従スクロール（下端付近にいる間だけ追う・離れたら「最新へ」）。
   const {
     scrollerRef,
@@ -570,6 +582,7 @@ export function Conversation({
       const runAutonomous = autonomousOverride ?? autonomous;
       // 入力欄で選んだモデル（#553）。未選択は Auto（組織の既定）。
       const model = readModelChoice(threadId);
+      pinModelChoice(threadId, model);
       // 入力欄で選んだツール（#734）。この発話にだけ効くが、空に戻すのは**受理されてから**
       // （400・通信失敗で選択が消えると、送り直すときに選び直しになる）。
       const tools = readToolChoice(threadId);
@@ -1100,12 +1113,14 @@ function useThreadMeta(threadId: string | null): {
     const load = () =>
       getThread(threadId)
         .then(
-          (t) =>
-            active &&
+          (t) => {
+            if (!active) return;
+            restoreModelChoice(threadId, t.lastModelChoice);
             setMeta({
               title: t.title.trim() || null,
               searchFolderName: t.searchFolderId ? (t.searchFolderName ?? "フォルダ") : null,
-            }),
+            });
+          },
         )
         .catch(() => {
           /* 読めなければ「新しいチャット」のまま（会話そのものは別に読み込む） */
@@ -1378,9 +1393,7 @@ const AssistantRow = React.memo(function AssistantRow({
           {skillDrafts.map((b, i) => (
             <SkillDraftCard key={i} raw={b.draft} threadId={threadId} />
           ))}
-          {documentRefs.map((b, i) => (
-            <DocumentRefCard key={i} raw={b.document} />
-          ))}
+          <DocumentRefList raws={documentRefs.map((b) => b.document)} />
           {legacyDocumentDrafts.map((b, i) => (
             <LegacyDocumentDraftCard key={i} raw={b.draft} />
           ))}
@@ -1496,9 +1509,7 @@ function StreamingRow({
           {stream.skillDrafts.map((draft, i) => (
             <SkillDraftCard key={i} raw={draft} threadId={threadId} />
           ))}
-          {stream.documentRefs.map((document, i) => (
-            <DocumentRefCard key={i} raw={document} />
-          ))}
+          <DocumentRefList raws={stream.documentRefs} />
           <ArtifactFiles files={stream.files} />
         </div>
       </Message>

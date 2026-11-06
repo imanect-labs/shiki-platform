@@ -768,6 +768,49 @@ async fn chat_post_resolves_model_choice() {
             .await
             .unwrap();
     assert_eq!(row, (Some("fast".into()), Some("high".into()), false));
+    let requested = |run_id: uuid::Uuid| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, Option<serde_json::Value>>(
+                "SELECT requested_choice FROM generation_run WHERE run_id = $1",
+            )
+            .bind(run_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    // 解決前の選択も残す（別の端末での入力欄の初期値・#1050）。
+    assert_eq!(
+        requested(run_id).await,
+        Some(serde_json::json!({ "model": "fast", "effort": "high" }))
+    );
+
+    // モデルを指定して思考の深さを省いたら、実際に使った深さ（組織の既定）を残す。
+    let resp = app
+        .clone()
+        .oneshot(post(
+            messages.clone(),
+            r#"{"text":"x","model":"fast"}"#.into(),
+        ))
+        .await
+        .unwrap();
+    let run_id: uuid::Uuid = body_json(resp).await["run_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let used: Option<String> =
+        sqlx::query_scalar("SELECT effort FROM generation_run WHERE run_id = $1")
+            .bind(run_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(used.is_some());
+    assert_eq!(
+        requested(run_id).await,
+        Some(serde_json::json!({ "model": "fast", "effort": used }))
+    );
 
     // 思考強度に対応しないモデルは effort を記録しない。省略は Auto（ここでは既定モデルへ）。
     let resp = app
@@ -793,7 +836,7 @@ async fn chat_post_resolves_model_choice() {
 
     let resp = app
         .clone()
-        .oneshot(post(messages, r#"{"text":"x"}"#.into()))
+        .oneshot(post(messages.clone(), r#"{"text":"x"}"#.into()))
         .await
         .unwrap();
     let run_id: uuid::Uuid = body_json(resp).await["run_id"]
@@ -808,6 +851,27 @@ async fn chat_post_resolves_model_choice() {
             .await
             .unwrap();
     assert_eq!(row, (Some("fast".into()), Some("low".into()), true));
+    // 省略（Auto）は Auto として残し、スレッドの単体取得は自分の最後の選択を返す。
+    assert_eq!(
+        requested(run_id).await,
+        Some(serde_json::json!({ "model": null, "effort": null }))
+    );
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/threads/{tid}"))
+                .header(COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(resp).await["last_model_choice"],
+        serde_json::json!({ "model": null, "effort": null })
+    );
 }
 
 /// 共有一覧の各エントリが表示名を正しく持つか（#741）。同テナント・同 org の user は名前と email、

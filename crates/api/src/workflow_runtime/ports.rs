@@ -22,8 +22,8 @@ use super::auth::auth_ctx;
 use storage::StorageService;
 use uuid::Uuid;
 use workflow_engine::{
-    CsvPatchReq, CsvWriteReq, DataWriteReq, ExecCtx, HttpSendReq, HttpSendResp, LlmInvokeReq,
-    NodePorts, PortError, ResolvedSecretView, ResolvedSkillView, StorageWriteReq,
+    CsvPatchReq, CsvQueryReq, CsvWriteReq, DataWriteReq, ExecCtx, HttpSendReq, HttpSendResp,
+    LlmInvokeReq, NodePorts, PortError, ResolvedSecretView, ResolvedSkillView, StorageWriteReq,
     WorkflowRunLauncher,
 };
 
@@ -90,6 +90,7 @@ fn map_tabular(e: tabular::TabularError) -> PortError {
         T::NotFound(m) => PortError::new("not_found", format!("csv: {m}"), false),
         T::SqlRejected(m) => PortError::invalid(format!("csv SQL 拒否: {m}")),
         T::InvalidPatch(m) => PortError::invalid(format!("csv パッチ不正: {m}")),
+        T::InvalidTables(m) => PortError::invalid(format!("csv テーブル指定不正: {m}")),
         T::RevConflict { base, current } => PortError::new(
             "conflict",
             format!("csv 競合: base={base}, current={current}"),
@@ -447,14 +448,22 @@ impl NodePorts for ProdNodePorts {
         Ok(json!({ "run_id": run_id.map(|r| r.to_string()) }))
     }
 
-    async fn csv_query(&self, ec: &ExecCtx, file_id: Uuid, sql: &str) -> Result<Value, PortError> {
+    async fn csv_query(&self, ec: &ExecCtx, req: CsvQueryReq) -> Result<Value, PortError> {
         let ctx = auth_ctx(ec);
         let tabular = self
             .tabular
             .as_ref()
             .ok_or_else(|| PortError::forbidden("tabular が未構成です"))?;
+        let tables: Vec<tabular::TableRef> = req
+            .tables
+            .into_iter()
+            .map(|t| tabular::TableRef {
+                name: t.name,
+                file_id: t.file_id,
+            })
+            .collect();
         let resp = tabular
-            .query(&ctx, file_id, sql, ec.trace_id.as_deref())
+            .query_tables(&ctx, req.file_id, &tables, &req.sql, ec.trace_id.as_deref())
             .await
             .map_err(map_tabular)?;
         let rows: Vec<Value> = resp
@@ -575,6 +584,20 @@ fn llm_port_error(e: &llm_gateway::LlmError) -> PortError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// tabular の入力起因のエラー（テーブル指定・SQL・パッチ・クエリ実行）は再試行しない。
+    #[test]
+    fn tabular_input_errors_are_not_retried() {
+        for e in [
+            tabular::TabularError::InvalidTables("dup".into()),
+            tabular::TabularError::SqlRejected("ddl".into()),
+            tabular::TabularError::QueryFailed("no column".into()),
+        ] {
+            let p = map_tabular(e);
+            assert_eq!(p.code, "invalid");
+            assert!(!p.retryable, "{p:?}");
+        }
+    }
 
     #[test]
     fn llm_config_errors_are_not_retried() {
