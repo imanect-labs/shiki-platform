@@ -8,7 +8,8 @@
 //!   実行履歴の「同じ入力でもう一度実行」が元の run から引き継ぐ値。
 //! - 「別のワークフローを実行」で始めた子の run: 始めた run（親）の予定の日時を引き継ぐ（親に無ければ空）。
 //!
-//! 由来は列に持たず、run の行のきっかけの種類と親の run の有無から導く（[`SCHEDULED_FROM`]）。
+//! 由来は列に持たず、run の行のきっかけの種類・親の run・やり直しの元の run（`rerun_of`）の有無から導く
+//! （[`SCHEDULED_FROM`]）。
 
 use chrono::{DateTime, Datelike, NaiveDateTime, TimeZone, Utc};
 use serde::{Deserialize, Serialize};
@@ -22,10 +23,13 @@ use crate::vocab::RUN_INFO_TIMEZONE;
 pub enum ScheduledAtSource {
     /// スケジュールの予定の時刻（スケジュールで動いた実行）。
     Schedule,
-    /// 手動の実行で指定した日時（実行のダイアログで試した値か、「同じ入力でもう一度実行」で元の実行から引き継いだ値）。
+    /// 手動の実行で指定した日時（実行のダイアログで試した値）。やり直しの元の run を行に持つ前（GAP-89 の残りを直す前）に
+    /// 「同じ入力でもう一度実行」で作った実行も、こちらになる。
     Specified,
     /// 「別のワークフローを実行」で始めた実行が、始めた実行から引き継いだ日時。
     Parent,
+    /// 「同じ入力でもう一度実行」で作った実行が、元の実行から引き継いだ日時（GAP-89）。
+    Rerun,
 }
 
 impl ScheduledAtSource {
@@ -35,6 +39,7 @@ impl ScheduledAtSource {
             ScheduledAtSource::Schedule => "schedule",
             ScheduledAtSource::Specified => "specified",
             ScheduledAtSource::Parent => "parent",
+            ScheduledAtSource::Rerun => "rerun",
         }
     }
 
@@ -44,6 +49,7 @@ impl ScheduledAtSource {
             "schedule" => ScheduledAtSource::Schedule,
             "specified" => ScheduledAtSource::Specified,
             "parent" => ScheduledAtSource::Parent,
+            "rerun" => ScheduledAtSource::Rerun,
             _ => return None,
         })
     }
@@ -52,12 +58,14 @@ impl ScheduledAtSource {
 /// run の予定の日時の由来（別名 `r` の `workflow_run` に対する式・[`ScheduledAtSource::as_str`] の値か NULL）。
 ///
 /// 予定の日時を書くのは、スケジュールの発火（きっかけは `schedule`）、手動の実行で指定した値（親の run が無い）、
-/// 子の run の引き継ぎ（親の run がある）だけ。イベントの run は予定の日時を持たない（親の run の印 `cause_run_id`
-/// を持つことはある）。
+/// 子の run の引き継ぎ（親の run がある）、「同じ入力でもう一度実行」の引き継ぎ（やり直しの元の run `rerun_of` がある）
+/// だけ。イベントの run は予定の日時を持たない（親の run の印 `cause_run_id` を持つことはある）。やり直しの元の run を
+/// 持たない前からの run は、今までどおり `specified` になる。
 pub(crate) const SCHEDULED_FROM: &str = "CASE \
      WHEN r.scheduled_at IS NULL THEN NULL \
      WHEN r.trigger_kind = 'schedule' THEN 'schedule' \
      WHEN r.cause_run_id IS NOT NULL THEN 'parent' \
+     WHEN r.rerun_of IS NOT NULL THEN 'rerun' \
      ELSE 'specified' END";
 
 /// 試す予定の日時が読めないときの文（実行のダイアログが欄の下に出す・API の 400 の message）。
@@ -147,6 +155,7 @@ mod tests {
             ScheduledAtSource::Schedule,
             ScheduledAtSource::Specified,
             ScheduledAtSource::Parent,
+            ScheduledAtSource::Rerun,
         ] {
             assert!(
                 SCHEDULED_FROM.contains(&format!("'{}'", source.as_str())),

@@ -42,6 +42,7 @@ export const SCHEDULED_AT_LABELS: Record<ScheduledAtSource, string> = {
   schedule: "予定の日時",
   specified: "指定した予定の日時",
   parent: "引き継いだ予定の日時",
+  rerun: "元の実行の予定の日時",
 };
 
 /// PC の一覧の「予定の日時」の列で、日時に添える由来（スケジュールの予定の時刻には添えない）。
@@ -49,15 +50,16 @@ export const SCHEDULED_AT_MARKS: Record<ScheduledAtSource, string | null> = {
   schedule: null,
   specified: "指定した日時",
   parent: "引き継いだ日時",
+  rerun: "元の実行の日時",
 };
 
-/// 実行の詳細で、予定の日時の由来を言う文（スケジュールの予定の時刻は見出しで足りるので言わない）。`specified` は、
-/// 実行のダイアログで指定した日時と、「同じ入力でもう一度実行」が元の実行から引き継いだ日時の両方（由来は run の行から
-/// 導くので、2 つを分けない）。
+/// 実行の詳細で、予定の日時の由来を言う文（スケジュールの予定の時刻は見出しで足りるので言わない）。「同じ入力でもう一度
+/// 実行」が元の実行から引き継いだ日時は `rerun` で、実行のダイアログで指定した日時（`specified`）と分ける（GAP-89）。
 export const SCHEDULED_AT_NOTES: Record<ScheduledAtSource, string | null> = {
   schedule: null,
-  specified: "手動で実行するときに指定した日時か、やり直した実行の予定の日時を使いました。",
+  specified: "手動で実行するときに指定した日時を使いました。",
   parent: "「別のワークフローを実行」で始めた実行です。始めた実行の予定の日時を引き継いでいます。",
+  rerun: "「同じ入力でもう一度実行」で始めた実行です。元の実行の予定の日時を引き継いでいます。",
 };
 
 export function isTerminalRunStatus(status: string): boolean {

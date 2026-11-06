@@ -101,6 +101,7 @@ pub async fn start_workflow_run(
     let trial = workflow_engine::RunTrial {
         trigger: req.trigger.as_ref(),
         scheduled_at,
+        rerun_of: None,
     };
     // start_interactive 内で workflows.get_latest の OpenFGA 認可を通る。IR 取得失敗（権限なし/不在）は
     // 存在秘匿のため 404 に写す（500 にしない）。

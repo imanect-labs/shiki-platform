@@ -290,9 +290,24 @@ async fn run_detail_orders_steps_of_the_same_tx_by_the_graph() {
     );
 }
 
+/// 予定の日時・親の run・やり直しの元の run だけを決めた run の由来。
+fn origin(
+    scheduled_at: Option<chrono::DateTime<chrono::Utc>>,
+    parent_run_id: Option<Uuid>,
+    rerun_of: Option<Uuid>,
+) -> RunOrigin<'static> {
+    RunOrigin {
+        scheduled_at,
+        parent_run_id,
+        rerun_of,
+        ..RunOrigin::default()
+    }
+}
+
 /// GAP-89: 実行履歴の一覧と詳細は、予定の日時とその由来を返す。スケジュールの run はその回の予定の時刻
-/// （`schedule`）、手動の実行で指定した日時は `specified`、親の run を持つ子の日時は `parent`。予定の日時の無い
-/// run（ふつうの手動の実行・イベント）は、どちらも返さない。
+/// （`schedule`）、手動の実行で指定した日時は `specified`、親の run を持つ子の日時は `parent`、やり直しの元の run を
+/// 持つ run（「同じ入力でもう一度実行」）が引き継いだ日時は `rerun`。予定の日時の無い run（ふつうの手動の実行・その
+/// やり直し・イベント）は、どちらも返さない。
 #[tokio::test]
 async fn history_reports_the_scheduled_time_and_where_it_came_from() {
     let Some(pool) = setup().await else { return };
@@ -331,46 +346,29 @@ async fn history_reports_the_scheduled_time_and_where_it_came_from() {
                 .unwrap()
         }
     };
-    let scheduled = create(
-        "schedule",
-        RunOrigin {
-            scheduled_at: Some(planned),
-            ..RunOrigin::default()
-        },
-    )
-    .await;
-    let specified = create(
-        "interactive",
-        RunOrigin {
-            scheduled_at: Some(trial),
-            ..RunOrigin::default()
-        },
-    )
-    .await;
-    let child = create(
-        "interactive",
-        RunOrigin {
-            parent_run_id: Some(scheduled),
-            scheduled_at: Some(planned),
-            ..RunOrigin::default()
-        },
-    )
-    .await;
-    let plain = create("interactive", RunOrigin::default()).await;
-    let event = create(
-        "event",
-        RunOrigin {
-            parent_run_id: Some(plain),
-            ..RunOrigin::default()
-        },
-    )
-    .await;
+    let scheduled = create("schedule", origin(Some(planned), None, None)).await;
+    let specified = create("interactive", origin(Some(trial), None, None)).await;
+    let child = create("interactive", origin(Some(planned), Some(scheduled), None)).await;
+    // 「同じ入力でもう一度実行」で作った run（元の run の予定の日時を引き継ぐ・GAP-89）。
+    let rerun = create("interactive", origin(Some(planned), None, Some(scheduled))).await;
+    let plain = create("interactive", origin(None, None, None)).await;
+    // 予定の日時の無い run のやり直しは、由来も無い。
+    let plain_rerun = create("interactive", origin(None, None, Some(plain))).await;
+    let event = create("event", origin(None, Some(plain), None)).await;
     let items = store
         .list_runs(&tenant, wf, &RunListFilter::default(), None, 10)
         .await
         .unwrap();
     let mut details = Vec::new();
-    for run in [scheduled, specified, child, plain, event] {
+    for run in [
+        scheduled,
+        specified,
+        child,
+        rerun,
+        plain,
+        plain_rerun,
+        event,
+    ] {
         details.push(store.run_detail(&tenant, wf, run).await.unwrap().unwrap());
     }
     // 片付けを先に済ませてから確かめる（落ちても行を残さない）。
@@ -384,7 +382,9 @@ async fn history_reports_the_scheduled_time_and_where_it_came_from() {
         (scheduled, Some(planned), Some("schedule")),
         (specified, Some(trial), Some("specified")),
         (child, Some(planned), Some("parent")),
+        (rerun, Some(planned), Some("rerun")),
         (plain, None, None),
+        (plain_rerun, None, None),
         (event, None, None),
     ];
     for ((run, at, from), detail) in expected.iter().zip(&details) {

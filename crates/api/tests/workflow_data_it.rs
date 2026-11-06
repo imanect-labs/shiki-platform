@@ -1796,8 +1796,8 @@ async fn child_runs_inherit_the_parents_scheduled_time() {
                 parent,
                 &json!({}),
                 workflow_engine::RunTrial {
-                    trigger: None,
                     scheduled_at: Some(trial_at),
+                    ..Default::default()
                 },
             )
             .await

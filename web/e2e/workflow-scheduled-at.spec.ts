@@ -7,7 +7,8 @@ import { cleanupQueue, loginViaKeycloak, removeWorkflowApi, uniqueName } from ".
 ///   開いたときの日時で始める。変えなければ送らず（予定の日時は実行した日時のまま）、変えるとその日時で動く。
 /// - 「日付を計算」はその日時から数え、「別のワークフローを実行」で始めた子の実行も同じ日時を引き継ぐ。
 /// - 実行履歴の一覧（PC は「予定の日時」の列、スマホはカードの 3 行目）と詳細で、指定した予定の日時と、引き継いだ予定の
-///   日時を言い分ける。予定の日時の無い実行には出さない。
+///   日時を言い分ける。予定の日時の無い実行には出さない。「同じ入力でもう一度実行」が元の実行から引き継いだ日時も、
+///   指定した日時と言い分ける（GAP-89）。
 /// - 変えた予定の日時は、「詳しい設定」を閉じても見出しの下で言う（BUG-229）。
 /// 前提: shiki-server が SHIKI__WORKFLOW__ENABLED=true（AI のブロックは使わない）。作ったワークフローは最後に消す。
 
@@ -166,9 +167,7 @@ test("予定の日時: 指定して試し、子の実行も引き継ぎ、実行
       second: "2-digit",
     }),
   );
-  await expect(sheet.getByTestId("run-detail-scheduled-note")).toHaveText(
-    "手動で実行するときに指定した日時か、やり直した実行の予定の日時を使いました。",
-  );
+  await expect(sheet.getByTestId("run-detail-scheduled-note")).toHaveText("手動で実行するときに指定した日時を使いました。");
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/scheduled-at-detail-pc.png` });
   await sheet.getByRole("button", { name: "閉じる" }).click();
   await expect(sheet).toHaveCount(0);
@@ -254,4 +253,40 @@ test("予定の日時: 指定して試し、子の実行も引き継ぎ、実行
   expect(await phoneDialog.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
   if (SHOTS) await phone.screenshot({ path: `${SHOTS}/scheduled-at-held-phone.png` });
   await phoneDialog.getByRole("button", { name: "閉じる" }).click();
+
+  // --- 「同じ入力でもう一度実行」は元の予定の日時を引き継ぎ、指定した日時と言い分ける（GAP-89）。
+  await page.goto(`/workflows/${parent}/runs?run=${trial.runId}`);
+  await expect(sheet.getByText("指定した予定の日時")).toBeVisible({ timeout: 30_000 });
+  await sheet.getByRole("button", { name: "同じ入力でもう一度実行" }).click();
+  await expect.poll(() => new URL(page.url()).searchParams.get("run"), { timeout: 30_000 }).not.toBe(trial.runId);
+  const rerunId = new URL(page.url()).searchParams.get("run")!;
+  expect(await waitEnd(page, parent, rerunId)).toBe("succeeded");
+  expect(await stepOutput(page, parent, rerunId, "last_week")).toMatchObject({ start: "2026-11-02", end: "2026-11-08" });
+  await expect(sheet.getByText("元の実行の予定の日時", { exact: true })).toBeVisible({ timeout: 30_000 });
+  await expect(sheet.getByTestId("run-detail-scheduled-note")).toHaveText(
+    "「同じ入力でもう一度実行」で始めた実行です。元の実行の予定の日時を引き継いでいます。",
+  );
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/scheduled-at-rerun-detail-pc.png` });
+  await sheet.getByRole("button", { name: "閉じる" }).click();
+  await expect(sheet).toHaveCount(0);
+  const rerunCell = table.getByTestId("run-scheduled-at").and(table.locator('[data-source="rerun"]'));
+  await expect(rerunCell).toHaveCount(1);
+  await expect(rerunCell).toContainText("元の実行の日時");
+  expect((await runs(page, parent)).find((r) => r.run_id === rerunId)).toMatchObject({
+    scheduled_at: "2026-11-09T00:00:00+00:00",
+    scheduled_at_source: "rerun",
+  });
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/scheduled-at-rerun-list-pc.png` });
+  // スマホ: 一覧のカードと詳細の見出しでも言い分ける。
+  await phone.goto(`/workflows/${parent}/runs`);
+  const phoneRerun = phone
+    .getByRole("list", { name: "実行の一覧" })
+    .getByTestId("run-scheduled-at")
+    .and(phone.locator('[data-source="rerun"]'));
+  await expect(phoneRerun).toContainText("元の実行の予定の日時:", { timeout: 30_000 });
+  await phone.goto(`/workflows/${parent}/runs?run=${rerunId}`);
+  await expect(phoneSheet.getByText("元の実行の予定の日時", { exact: true })).toBeVisible({ timeout: 30_000 });
+  expect(await phoneSheet.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+  if (SHOTS) await phone.screenshot({ path: `${SHOTS}/scheduled-at-rerun-detail-phone.png` });
+  await phoneSheet.getByRole("button", { name: "閉じる" }).click();
 });

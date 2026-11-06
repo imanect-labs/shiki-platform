@@ -231,10 +231,12 @@ pub async fn retry_workflow_run(
                 .ok_or(ApiError::NotFound)?;
             // 元 version をピンし同一入力で新規 run（実行主体は呼び出し者＝正直な semantics）。元の run で試した
             // きっかけの内容も引き継ぐ（無ければ入力と同じ・D-93）。予定の日時（スケジュールの予定の時刻・指定した
-            // 日時・親から引き継いだ日時）も引き継ぎ、同じ予定の分をやり直す（無ければ始めた日時・GAP-88）。
+            // 日時・親から引き継いだ日時）も引き継ぎ、同じ予定の分をやり直す（無ければ始めた日時・GAP-88）。元の run を
+            // 行に残し、実行履歴は引き継いだ予定の日時を指定した日時と言い分ける（GAP-89）。
             let trial = workflow_engine::RunTrial {
                 trigger: detail.trigger_payload.as_ref(),
                 scheduled_at: detail.scheduled_at,
+                rerun_of: Some(run_id),
             };
             let new_run = launcher
                 .start_interactive_version_trial(&ctx, id, detail.version, &detail.input, trial)

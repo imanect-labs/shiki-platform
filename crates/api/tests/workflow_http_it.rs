@@ -1874,8 +1874,43 @@ async fn manual_run_takes_trial_scheduled_at() {
         assert_eq!(st, StatusCode::ACCEPTED, "{body}");
         let again_without = body["run_id"].as_str().unwrap().to_string();
         while worker.claim_and_run_once("w-trial-at").await.unwrap() {}
-        assert_eq!(output(again).await, json!("2026-11-09T00:00:00+00:00"));
-        assert_eq!(output(again_without).await, Value::Null);
+        assert_eq!(
+            output(again.clone()).await,
+            json!("2026-11-09T00:00:00+00:00")
+        );
+        assert_eq!(output(again_without.clone()).await, Value::Null);
+
+        // --- 引き継いだ予定の日時は、指定した日時と言い分ける（由来は rerun・元の run を行に残す・GAP-89）。
+        let (st, detail) = req(&env, "GET", &format!("/workflows/{id}/runs/{again}"), None).await;
+        assert_eq!(st, StatusCode::OK, "{detail}");
+        assert_eq!(detail["scheduled_at"], "2026-11-09T00:00:00+00:00");
+        assert_eq!(detail["scheduled_at_source"], "rerun");
+        let (st, list) = req(&env, "GET", &format!("/workflows/{id}/runs"), None).await;
+        assert_eq!(st, StatusCode::OK, "{list}");
+        let source = |run: &str| {
+            list["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|i| i["run_id"] == run)
+                .map(|i| i["scheduled_at_source"].clone())
+                .unwrap()
+        };
+        assert_eq!(source(&again), "rerun");
+        assert_eq!(source(&with_trial), "specified", "試した run はそのまま");
+        assert_eq!(
+            source(&again_without),
+            Value::Null,
+            "予定の日時が無ければ由来も無い"
+        );
+        let rerun_of: Option<Uuid> = sqlx::query_scalar(
+            "SELECT rerun_of FROM workflow_run WHERE tenant_id = 'default' AND run_id = $1::uuid",
+        )
+        .bind(&again)
+        .fetch_one(&env.pool)
+        .await
+        .unwrap();
+        assert_eq!(rerun_of, Some(Uuid::parse_str(&with_trial).unwrap()));
     };
     let outcome = futures::FutureExt::catch_unwind(std::panic::AssertUnwindSafe(body)).await;
     delete_flow_and_runs(&env, &id).await;

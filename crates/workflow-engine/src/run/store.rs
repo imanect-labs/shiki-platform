@@ -135,6 +135,8 @@ pub struct RunOrigin<'a> {
     /// 指定した日時（試す値・GAP-88）を渡す。`None` なら、親の run（`parent_run_id`）の予定の日時を引き継ぎ
     /// （GAP-90）、親も無ければ空のまま（実行情報は始めた時刻を予定の日時として返す）。
     pub scheduled_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// やり直しの元の run（「同じ入力でもう一度実行」で作る run だけ・実行履歴が予定の日時の由来を言い分ける・GAP-89）。
+    pub rerun_of: Option<Uuid>,
 }
 
 /// running の run が多重度（`max_parallel_runs`）に数える条件（SQL の述語・別名 `r`）。
@@ -330,12 +332,12 @@ impl RunStore {
              (tenant_id, org, workflow_id, version, trigger_kind, trigger_id, principal, \
               principal_kind, input, ir_snapshot, status, started_at, timeout_at, \
               trigger_event_id, trigger_chain, cause_run_id, reply_nodes, trigger_payload, \
-              step_order, scheduled_at) \
+              step_order, scheduled_at, rerun_of) \
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, \
                      CASE WHEN $11 = 'running' THEN now() END, \
                      CASE WHEN $11 = 'running' \
                           THEN now() + ($12 || ' seconds')::interval END, \
-                     $13, $14, $15, $16, $17, $18, $19) \
+                     $13, $14, $15, $16, $17, $18, $19, $20) \
              RETURNING run_id",
         )
         .bind(tenant_id)
@@ -361,6 +363,7 @@ impl RunStore {
         // 予定の日時（run を作る Tx で書く。発火の記録の run_id は後から書くので、ワーカーが最初の step を取る時点では
         // 発火の記録から読めないことがある・GAP-15）。
         .bind(scheduled_at)
+        .bind(origin.rerun_of)
         .fetch_one(&mut *tx)
         .await
         .map_err(map_db)?;

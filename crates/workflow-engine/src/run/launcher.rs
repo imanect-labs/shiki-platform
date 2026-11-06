@@ -28,6 +28,9 @@ pub struct RunTrial<'a> {
     pub trigger: Option<&'a Value>,
     /// 試す予定の日時（`$from run` の `scheduled_at` の源・GAP-88）。`None` なら、予定の日時は始めた日時と同じ。
     pub scheduled_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// やり直しの元の run（「同じ入力でもう一度実行」だけが渡す）。実行履歴は、元の run から引き継いだ予定の日時を、
+    /// 実行のダイアログで指定した日時と言い分ける（GAP-89）。`None` なら今までどおり。
+    pub rerun_of: Option<Uuid>,
 }
 
 impl<'a> RunTrial<'a> {
@@ -36,6 +39,7 @@ impl<'a> RunTrial<'a> {
         RunOrigin {
             trigger_payload: self.trigger,
             scheduled_at: self.scheduled_at,
+            rerun_of: self.rerun_of,
             ..RunOrigin::default()
         }
     }
