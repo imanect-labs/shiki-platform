@@ -288,7 +288,7 @@ pub struct ServerConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DatabaseConfig {
     /// 実行時の Postgres 接続 URL（必須）。DML だけを持つ非 superuser のロール
-    /// （`shiki_runtime` のメンバ・migration 0110）で接続する。
+    /// （`shiki_runtime` のメンバ・migration 0113）で接続する。
     pub url: String,
     /// migration（DDL）を流す接続 URL（テーブルの所有者）。未設定なら `url` で流す
     /// （所有者と実行時を分けない従来の構成・単一ロールのオンプレ等）。

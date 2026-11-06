@@ -1,4 +1,4 @@
-//! 実行時ロール（`shiki_runtime`・migration 0110）の権限の結合テスト（#1030）。
+//! 実行時ロール（`shiki_runtime`・migration 0113）の権限の結合テスト（#1030）。
 //!
 //! shiki-server は実行時に `shiki_runtime` のメンバ（compose では `shiki_app`）で接続し、migration だけを
 //! 所有者の接続で流す。ここでは所有者の接続で migration を流したあと、同じセッションで
@@ -45,7 +45,7 @@ async fn runtime_conn() -> Option<PgConnection> {
     sqlx::query("SET ROLE shiki_runtime")
         .execute(&mut conn)
         .await
-        .expect("SET ROLE shiki_runtime（migration 0110 がロールを作る）");
+        .expect("SET ROLE shiki_runtime（migration 0113 がロールを作る）");
     Some(conn)
 }
 

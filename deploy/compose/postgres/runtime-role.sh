@@ -2,7 +2,7 @@
 # shiki-server の実行時ロール（ログイン用）を作る（#1030）。compose の postgres-roles サービスが
 # 毎回の起動時に流す（冪等）。初回だけ走る init スクリプトに置くと、既存ボリュームに届かない。
 #
-#   shiki_runtime … DML だけを持つグループロール（NOLOGIN）。権限は migration 0110 が付ける。
+#   shiki_runtime … DML だけを持つグループロール（NOLOGIN）。権限は migration 0113 が付ける。
 #   shiki_app     … shiki-server が接続するログインロール。shiki_runtime のメンバ。
 #
 # migration は従来どおり所有者（POSTGRES_USER）の接続で流す（SHIKI__DATABASE__MIGRATE_URL）。

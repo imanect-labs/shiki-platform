@@ -25,7 +25,7 @@ GRANT USAGE, SELECT, UPDATE ON ALL SEQUENCES IN SCHEMA public TO shiki_runtime;
 REVOKE ALL ON TABLE _sqlx_migrations FROM shiki_runtime;
 
 -- これ以降の migration で増えるオブジェクトにも同じ権限を付ける。既定権限は「作ったロール」ごとに
--- 効くので、0110 を流したロール（current_user）を明示する。migration の所有者ロールを替えたら、
+-- 効くので、0113 を流したロール（current_user）を明示する。migration の所有者ロールを替えたら、
 -- 新しい所有者で同じ ALTER DEFAULT PRIVILEGES FOR ROLE を流すこと（docs/guides/db-maintenance.md §4）。
 ALTER DEFAULT PRIVILEGES FOR ROLE CURRENT_USER IN SCHEMA public
     GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO shiki_runtime;

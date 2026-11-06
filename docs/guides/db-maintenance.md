@@ -184,7 +184,7 @@ shiki-server は**実行時**と**migration** で別の接続を使う。superus
 
 - `migrate_url` が未設定なら、従来どおり `url` で migration を流す（単一ロールの構成）。`url` を実行時ロールに
   替えて `migrate_url` を付け忘れると、起動時の migration が権限不足で止まる（fail-fast）。
-- `shiki_runtime`（NOLOGIN のグループロール）は migration 0110 が作る。migration の実行ロールに CREATEROLE が
+- `shiki_runtime`（NOLOGIN のグループロール）は migration 0113 が作る。migration の実行ロールに CREATEROLE が
   無い環境（マネージド Postgres 等）では、先に運用が作っておく:
   ```sql
   CREATE ROLE shiki_runtime NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
