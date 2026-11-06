@@ -220,6 +220,10 @@ jobs:
       # 書き方を字句で止める。依存グラフで縛れるもの（aws-sdk-s3・tantivy）は cargo-deny の [bans] wrappers が担う。
       - name: chokepoint gate (LLM・OpenFGA・Qdrant の API は所定のクレート経由)
         run: bash scripts/check-chokepoints.sh
+      # テナント表を読み書きする SQL に tenant 条件があるかを全クレートで見る（T1・crates/data の S3 を全体へ）。
+      # 全テナント横断の保守処理などの例外は `tenant-sql: allow(<理由>)` の注記で明示する。
+      - name: tenant-sql gate (テナント表の SQL は tenant 条件つき)
+        run: python3 scripts/check-tenant-sql.py
       # 結合テストの接続先を std::env::var で直接読むと、CI（SHIKI_REQUIRE_IT=1）でも黙ってスキップされる
       # 穴が戻るので、shiki_testenv::var 経由に限る（crates/testenv）。
       - name: it-env gate (結合テストの接続先は shiki_testenv::var で読む)

@@ -59,6 +59,7 @@ pub(super) async fn upgrade_row(
 
 /// 旧版行の件数（dry-run 用）。
 pub async fn count_legacy_secrets(db: &PgPool) -> Result<i64, SecretError> {
+    // tenant-sql: allow(運用 CLI の全テナント再暗号化件数)
     sqlx::query_scalar("SELECT count(*) FROM secret WHERE enc_version = 0")
         .fetch_one(db)
         .await

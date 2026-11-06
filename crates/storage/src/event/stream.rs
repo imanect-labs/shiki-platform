@@ -48,6 +48,7 @@ pub async fn lock_consumer_seq(
     .execute(&mut *conn)
     .await?;
     let next: i64 = sqlx::query_scalar(
+        // tenant-sql: allow(台帳 consumer の採番行ロック)
         "SELECT next_seq FROM outbox_delivery_seq WHERE consumer = $1 FOR UPDATE",
     )
     .bind(consumer)
@@ -76,6 +77,7 @@ pub async fn mark_delivered_seq(
     lock_consumer_seq(conn, consumer, Some(tenant_id)).await?;
     // 既に採番済みの event を除く（入力順を保つ）。
     let done: HashSet<i64> = sqlx::query_scalar(
+        // tenant-sql: allow(outbox リレーの採番済み判定（claim した event id）)
         "SELECT event_id FROM outbox_delivery WHERE consumer = $1 AND event_id = ANY($2)",
     )
     .bind(consumer)
@@ -99,6 +101,7 @@ pub async fn mark_delivered_seq(
     // ので、これが起きるのは未登録・廃止済みの consumer か明示集合での GC のときだけ。その場合も
     // FK 違反でバッチ全体（他の event の採番）を巻き戻さない。
     let live: HashSet<i64> = sqlx::query_scalar(
+        // tenant-sql: allow(outbox リレーの生存イベント確認)
         "SELECT o.id FROM storage_event_outbox o WHERE o.id = ANY($1) FOR KEY SHARE OF o",
     )
     .bind(&pending)
@@ -124,6 +127,7 @@ pub async fn mark_delivered_seq(
     let n = i64::try_from(todo.len())
         .map_err(|_| StorageError::Invalid("採番する件数が多すぎます".into()))?;
     let first: i64 = sqlx::query_scalar(
+        // tenant-sql: allow(outbox リレーの連番払い出し)
         "UPDATE outbox_delivery_seq SET next_seq = next_seq + $2, updated_at = now() \
          WHERE consumer = $1 RETURNING next_seq - $2",
     )
@@ -159,6 +163,7 @@ pub async fn private_payloads(
         return Ok(HashMap::new());
     }
     let rows: Vec<(i64, Value)> = sqlx::query_as(
+        // tenant-sql: allow(outbox リレーの非公開本文取得（claim した id）)
         "SELECT id, private_payload FROM storage_event_outbox \
          WHERE id = ANY($1) AND private_payload IS NOT NULL",
     )
@@ -300,11 +305,13 @@ pub async fn stream_bounds(
     consumer: &str,
 ) -> Result<StreamBounds, StorageError> {
     let next: Option<i64> =
+        // tenant-sql: allow(認可済みテーブルのストリーム範囲（呼び出し側で ctx 認可済み）)
         sqlx::query_scalar("SELECT next_seq FROM outbox_delivery_seq WHERE consumer = $1")
             .bind(consumer)
             .fetch_optional(&mut *conn)
             .await?;
     let floor: Option<i64> = sqlx::query_scalar(
+        // tenant-sql: allow(認可済みテーブルのストリーム範囲（呼び出し側で ctx 認可済み）)
         "SELECT min(delivery_seq) FROM outbox_delivery \
          WHERE consumer = $1 AND delivery_seq IS NOT NULL",
     )

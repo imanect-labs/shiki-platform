@@ -18,6 +18,8 @@ docs/design.md を正本とする実装時の遵守事項。ここはチェッ�
 
 - 全データアクセスは AuthContext { principal, org, tenant_id } を受け取っているか。アンビエント権限（暗黙のグローバル権限）に依存していないか。
 - tenant_id を day-1 から保持しているか（SaaS マルチテナント前提）。tenant_id スコープの隔離境界を壊していないか。
+  テナント表を読み書きする SQL は tenant 条件を持つこと（`scripts/check-tenant-sql.py` が quality ジョブで落とす）。
+  全テナント横断の保守処理など正当な例外は `// tenant-sql: allow(<理由>)` で明示し、理由を書けないなら条件を足す。
 
 ## 二段 authz（design §4.3, §4.10）
 

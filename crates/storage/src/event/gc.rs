@@ -150,6 +150,7 @@ async fn delete_delivered(
     let expected = i64::try_from(consumers.len())
         .map_err(|_| StorageError::Invalid("consumer 数が多すぎます".into()))?;
     let deleted = sqlx::query(
+        // tenant-sql: allow(全テナント横断の配送済み outbox GC)
         "DELETE FROM storage_event_outbox \
          WHERE id IN ( \
              SELECT o.id FROM storage_event_outbox o \
@@ -240,6 +241,7 @@ impl OutboxBacklog {
 /// （素直に `LEFT JOIN ... GROUP BY` で書くと `outbox_delivery` の全走査になり 586ms かかる）。
 pub async fn outbox_backlog(conn: &mut PgConnection) -> Result<OutboxBacklog, StorageError> {
     let latest_event_id: i64 =
+        // tenant-sql: allow(outbox 滞留の全体メトリクス)
         sqlx::query_scalar("SELECT coalesce(max(id), 0) FROM storage_event_outbox")
             .fetch_one(&mut *conn)
             .await?;
@@ -252,6 +254,7 @@ pub async fn outbox_backlog(conn: &mut PgConnection) -> Result<OutboxBacklog, St
     .unwrap_or(0);
     // 相関サブクエリで per-consumer の max を索引から引く（結合にすると全走査になる）。
     let rows: Vec<(String, i64)> = sqlx::query_as(
+        // tenant-sql: allow(outbox 滞留の全体メトリクス)
         "SELECT c.name, \
                 coalesce((SELECT max(d.event_id) FROM outbox_delivery d \
                           WHERE d.consumer = c.name), 0) \
@@ -279,6 +282,7 @@ pub async fn outbox_backlog(conn: &mut PgConnection) -> Result<OutboxBacklog, St
 /// 先頭（最小 id）の行が GC できない理由を引く（[`gc_delivered_registered`] と同じ判定）。
 async fn head_blocker(conn: &mut PgConnection) -> Result<Option<HeadBlocker>, StorageError> {
     let head: Option<(i64, DateTime<Utc>, bool)> = sqlx::query_as(
+        // tenant-sql: allow(GC 先頭行の滞留診断)
         "SELECT id, created_at, processed_at IS NOT NULL FROM storage_event_outbox \
          ORDER BY id LIMIT 1",
     )
@@ -288,6 +292,7 @@ async fn head_blocker(conn: &mut PgConnection) -> Result<Option<HeadBlocker>, St
         return Ok(None);
     };
     let undelivered: Vec<String> = sqlx::query_scalar(
+        // tenant-sql: allow(GC 先頭行の滞留診断)
         "SELECT c.name FROM outbox_consumer c \
          WHERE NOT EXISTS (SELECT 1 FROM outbox_delivery d \
                            WHERE d.event_id = $1 AND d.consumer = c.name) \
@@ -302,6 +307,7 @@ async fn head_blocker(conn: &mut PgConnection) -> Result<Option<HeadBlocker>, St
         ack_consumers(&mut *conn).await?
     };
     let retained_until: Option<DateTime<Utc>> = sqlx::query_scalar(
+        // tenant-sql: allow(GC 先頭行の滞留診断)
         "SELECT max(retain_until) FROM outbox_delivery \
          WHERE event_id = $1 AND retain_until > now()",
     )
