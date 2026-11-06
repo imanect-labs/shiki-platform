@@ -61,6 +61,8 @@ vocab_enum! {
         QuoteCheck => "quote_check",
         WebSearch => "web_search",
         WebFetch => "web_fetch",
+        /// Web ページの本文を指定言語へ訳して会話に表示する（docs/agent/web-translate.md）。
+        WebTranslate => "web_translate",
         CodeInterpreter => "code_interpreter",
         FsList => "fs_list",
         FsRead => "fs_read",
@@ -245,7 +247,9 @@ impl ToolName {
             | Self::CsvWrite
             | Self::DataRecordWrite
             | Self::DriveFind
-            | Self::DriveMove => ToolLoading::Deferred,
+            | Self::DriveMove
+            // 翻訳を頼まれたときだけ使う（skill `translate` が名指しするので遅延でも 1 手で載る）。
+            | Self::WebTranslate => ToolLoading::Deferred,
         }
     }
 
@@ -311,6 +315,9 @@ impl ToolName {
             }
             Self::DriveMove => {
                 "drive file folder move rename organize relocate ドライブ ファイル フォルダ 移動 名前変更 整理 保存先"
+            }
+            Self::WebTranslate => {
+                "translate translation web page url website language english japanese 翻訳 訳す 和訳 英訳 ページ サイト 記事"
             }
             Self::Skill
             | Self::SkillSearch

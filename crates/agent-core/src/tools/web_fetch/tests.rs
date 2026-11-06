@@ -15,7 +15,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::*;
 
-pub(super) fn ctx() -> AuthContext {
+pub(crate) fn ctx() -> AuthContext {
     AuthContext::new(
         authz::Principal {
             kind: authz::PrincipalKind::User,
@@ -44,7 +44,7 @@ impl HostResolver for StubResolver {
     }
 }
 
-pub(super) fn tool_with(addrs: Vec<SocketAddr>) -> (WebFetchTool, Arc<AtomicUsize>) {
+pub(crate) fn tool_with(addrs: Vec<SocketAddr>) -> (WebFetchTool, Arc<AtomicUsize>) {
     let calls = Arc::new(AtomicUsize::new(0));
     let tool = WebFetchTool::with_resolver(Arc::new(StubResolver {
         addrs,
@@ -54,7 +54,7 @@ pub(super) fn tool_with(addrs: Vec<SocketAddr>) -> (WebFetchTool, Arc<AtomicUsiz
 }
 
 /// ループバックのスタブ HTTP サーバ。固定レスポンスを返し、受け取った Host ヘッダを晒す。
-pub(super) async fn stub_server(
+pub(crate) async fn stub_server(
     response: Vec<u8>,
 ) -> (SocketAddr, Arc<tokio::sync::Mutex<String>>) {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

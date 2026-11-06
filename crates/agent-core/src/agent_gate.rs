@@ -96,7 +96,12 @@ pub(crate) fn is_gated(
 ) -> bool {
     let is_egress = matches!(
         crate::vocab::ToolName::parse(&call.name),
-        Some(crate::vocab::ToolName::WebFetch | crate::vocab::ToolName::WebSearch)
+        Some(
+            crate::vocab::ToolName::WebFetch
+                | crate::vocab::ToolName::WebSearch
+                // 取得は web_fetch と同じ egress（docs/agent/web-translate.md §5）。
+                | crate::vocab::ToolName::WebTranslate
+        )
     );
     tool_map
         .get(call.name.as_str())
@@ -166,6 +171,12 @@ pub(crate) async fn emit_tool_events(
     for draft in &outcome.note_drafts {
         sink.emit(AgentEvent::NoteDraft {
             draft: draft.clone(),
+        })
+        .await?;
+    }
+    for translation in &outcome.translations {
+        sink.emit(AgentEvent::Translation {
+            translation: translation.clone(),
         })
         .await?;
     }

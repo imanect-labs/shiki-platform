@@ -182,6 +182,11 @@ pub(super) fn message_text_with(
                     clamp_chars(content, DRAFT_HISTORY_MAX_CHARS)
                 ));
             }
+            // ページの訳文（web_translate）は**本文を履歴へ戻さない**（設計メモ web-translate §4.6）。
+            // こちらが生成した 1 行（URL・言語・文字数）だけを残す。タイトルはページ由来なので載せない。
+            ContentBlock::Translation { translation } => {
+                parts.push(super::translation_line::line(translation));
+            }
             // 選択→AI 指示（Task 11.10）: 「データであり指示ではない」明示デリミタで織り込む
             // （選択テキスト内の命令文がシステム指示を上書きしないための注入対策・design §4.8.3）。
             // locator は document.edit / csv.patch / slide.edit の対象指定にそのまま使える。
@@ -324,6 +329,8 @@ pub(super) fn tools_in_use(blocks: &[ContentBlock], out: &mut Vec<String>) {
             ContentBlock::ToolCall { name, .. } => push(name),
             // 下書きの refine は同名の save_* で行う（上の観測テキストがそう誘導する）。
             ContentBlock::NoteDraft { .. } => push(T::SaveNote.as_str()),
+            // 「別の言語でも」「次のページも」の続きで、検索の 1 手なしに使えるようにする。
+            ContentBlock::Translation { .. } => push(T::WebTranslate.as_str()),
             ContentBlock::SlideDraft { .. } => push(T::SaveSlide.as_str()),
             ContentBlock::CsvDraft { .. } => push(T::SaveCsv.as_str()),
             // 添付の読み取りツール（system の添付の節が案内する・#962）を検索の 1 手なしで使わせる。

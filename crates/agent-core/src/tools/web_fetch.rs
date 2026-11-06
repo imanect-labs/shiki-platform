@@ -36,6 +36,9 @@ use sandbox_client::net_guard::{self, HostResolver, SystemResolver};
 
 use super::public_fetch::{self, read_capped, PinError};
 
+pub(crate) use envelope::neutralize_tags;
+pub(crate) use render::Page;
+
 use crate::tool::{Tool, ToolError, ToolOutcome};
 
 mod decode;
@@ -57,7 +60,7 @@ use input::{
 };
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 #[cfg(test)]
 mod tests_documents;
 #[cfg(test)]
@@ -157,6 +160,16 @@ impl WebFetchTool {
     }
 }
 
+#[cfg(test)]
+impl WebFetchTool {
+    /// ループバックのスタブサーバへ繋ぐテスト用（解決後 IP の検証を外す・`web_translate` のテストが使う）。
+    pub(crate) fn loopback_for_tests(addr: SocketAddr) -> Self {
+        let (mut tool, _) = tests::tool_with(vec![addr]);
+        tool.skip_addr_guard = true;
+        tool
+    }
+}
+
 impl Default for WebFetchTool {
     fn default() -> Self {
         Self::new()
@@ -231,8 +244,86 @@ impl Tool for WebFetchTool {
             .get("url")
             .and_then(serde_json::Value::as_str)
             .ok_or_else(|| ToolError::Invalid("missing 'url'".into()))?;
-        let target = validate_url(url_input)?;
         let options = parse_options(&input);
+        let fetched = match self.fetch(ctx, url_input).await? {
+            Fetched::Page(fetched) => fetched,
+            Fetched::Observation(outcome) => return Ok(outcome),
+        };
+        let FetchedPage {
+            page,
+            url,
+            status,
+            content_type,
+            source_capped,
+            bytes_in,
+        } = fetched;
+        let target_url = url.as_str();
+
+        let rendered = render::render(
+            &page,
+            &render::RenderOpts {
+                url: target_url,
+                status,
+                content_type: content_type.as_deref(),
+                query: options.query.as_deref(),
+                offset: options.offset,
+                max_chars: self.max_chars,
+                source_capped,
+            },
+        );
+        // 削減率の回帰検知（抽出が壊れると静かにトークンだけ焼けるため観測する）。
+        tracing::info!(
+            target: "web_fetch",
+            url = %target_url,
+            status,
+            kind = page.kind,
+            extractor = page.extractor,
+            encoding = %page.encoding,
+            bytes_in,
+            chars_body = page.body.chars().count(),
+            chars_out = rendered.chars().count(),
+            "web_fetch 抽出完了"
+        );
+        // エラーページ（404・ボット除けの 403 等）は出典にしない（根拠にならない）。
+        if !(200..300).contains(&status) {
+            return Ok(ToolOutcome::ok(crate::cite::defuse(&rendered).into_owned()));
+        }
+        Ok(cited(&page, target_url, &rendered))
+    }
+}
+
+/// 取得〜抽出の結果（`web_fetch` と `web_translate` が共有する・取得経路を二重実装しない）。
+pub(crate) enum Fetched {
+    /// 本文を取り出せたページ（エラーステータスのページも含む）。
+    Page(FetchedPage),
+    /// モデルへそのまま返す観測（リダイレクト・テキストでない応答・取得や解析の失敗）。
+    Observation(ToolOutcome),
+}
+
+/// 取り出した本文と、取得の事実（こちらが観測した値）。
+pub(crate) struct FetchedPage {
+    pub page: Page,
+    /// 取得した URL（検証済みの正規形）。
+    pub url: reqwest::Url,
+    pub status: u16,
+    pub content_type: Option<String>,
+    /// 取得上限で本文が切れたか。
+    pub source_capped: bool,
+    /// 読み込んだバイト数（観測用）。
+    pub bytes_in: usize,
+}
+
+impl WebFetchTool {
+    /// URL を検証して取得し、本文を取り出す（**ガード付き取得の唯一の経路**・PIT-48）。
+    ///
+    /// 名前解決 → 解決後 IP の検証 → 検証済みアドレスへの接続 → 上限付き読み込み → 抽出。
+    /// `web_translate` もこの関数を呼ぶ（ガードを二重実装しない）。
+    pub(crate) async fn fetch(
+        &self,
+        ctx: &AuthContext,
+        url_input: &str,
+    ) -> Result<Fetched, ToolError> {
+        let target = validate_url(url_input)?;
 
         // 名前解決 → 解決後 IP の検証。以降の接続は「この検証済みアドレス」に固定する
         // （関門は public_fetch に一本化・画像プロキシと共有する・#1044）。
@@ -256,7 +347,9 @@ impl Tool for WebFetchTool {
         let response = match client.get(target.url.clone()).send().await {
             Ok(r) => r,
             Err(e) => {
-                return Ok(ToolOutcome::error(format!("取得に失敗しました: {e}")));
+                return Ok(Fetched::Observation(ToolOutcome::error(format!(
+                    "取得に失敗しました: {e}"
+                ))));
             }
         };
 
@@ -269,27 +362,27 @@ impl Tool for WebFetchTool {
             let mut head = format!("HTTP {} | {}", status.as_u16(), target.url);
             let _ = write!(
                 head,
-                "\nLocation: {loc}\n（リダイレクトは追従しません。必要なら上の URL を web_fetch し直してください）"
+                "\nLocation: {loc}\n（リダイレクトは追従しません。必要なら上の URL を取得し直してください）"
             );
-            return Ok(ToolOutcome::ok(head));
+            return Ok(Fetched::Observation(ToolOutcome::ok(head)));
         }
 
         let declared_doc = doc::classify(content_type.as_deref(), &target.url);
         if !is_textual(content_type.as_deref()) && declared_doc.is_none() {
-            return Ok(ToolOutcome::error(format!(
+            return Ok(Fetched::Observation(ToolOutcome::error(format!(
                 "HTTP {} | {} | {}\nテキストではないため本文を返しません",
                 status.as_u16(),
                 content_type.as_deref().unwrap_or("(Content-Type なし)"),
                 target.url
-            )));
+            ))));
         }
         if declared_doc.is_some() && self.parser.is_none() {
-            return Ok(ToolOutcome::error(format!(
+            return Ok(Fetched::Observation(ToolOutcome::error(format!(
                 "HTTP {} | {} | {}\n文書解析（Docling）が未配線のため本文を返せません",
                 status.as_u16(),
                 content_type.as_deref().unwrap_or("(Content-Type なし)"),
                 target.url
-            )));
+            ))));
         }
 
         let cap = if declared_doc.is_some() {
@@ -300,11 +393,11 @@ impl Tool for WebFetchTool {
         let (body, source_capped) = match read_capped(response, cap).await {
             Ok(v) => v,
             Err(e) => {
-                return Ok(ToolOutcome::error(format!(
+                return Ok(Fetched::Observation(ToolOutcome::error(format!(
                     "HTTP {} | {}\n本文の読み取りに失敗: {e}",
                     status.as_u16(),
                     target.url
-                )))
+                ))))
             }
         };
 
@@ -318,59 +411,36 @@ impl Tool for WebFetchTool {
                 // セントラルディレクトリも末尾にあるため、上限で切れた文書は必ず解析に失敗する。
                 // 「解析失敗」ではなく「大きすぎる」と返す方が、モデルは次の手を打てる。
                 if source_capped {
-                    return Ok(ToolOutcome::error(format!(
+                    return Ok(Fetched::Observation(ToolOutcome::error(format!(
                         "HTTP {} | {}\n文書が取得上限 {} で切れているため解析しません\
                          （PDF/Office は末尾の索引が欠けると必ず失敗します）。\
                          分割された版か HTML 版を探してください。",
                         status.as_u16(),
                         target.url,
                         human_cap(cap)
-                    )));
+                    ))));
                 }
                 match document_page(parser, ctx, &body, &target, mime).await {
                     Ok(page) => page,
                     Err(message) => {
-                        return Ok(ToolOutcome::error(format!(
+                        return Ok(Fetched::Observation(ToolOutcome::error(format!(
                             "HTTP {} | {}\n{message}",
                             status.as_u16(),
                             target.url
-                        )))
+                        ))))
                     }
                 }
             }
             _ => text_page(body, content_type.as_deref(), &target).await?,
         };
-
-        let rendered = render::render(
-            &page,
-            &render::RenderOpts {
-                url: target.url.as_str(),
-                status: status.as_u16(),
-                content_type: content_type.as_deref(),
-                query: options.query.as_deref(),
-                offset: options.offset,
-                max_chars: self.max_chars,
-                source_capped,
-            },
-        );
-        // 削減率の回帰検知（抽出が壊れると静かにトークンだけ焼けるため観測する）。
-        tracing::info!(
-            target: "web_fetch",
-            url = %target.url,
-            status = status.as_u16(),
-            kind = page.kind,
-            extractor = page.extractor,
-            encoding = %page.encoding,
+        Ok(Fetched::Page(FetchedPage {
+            page,
+            url: target.url,
+            status: status.as_u16(),
+            content_type,
+            source_capped,
             bytes_in,
-            chars_body = page.body.chars().count(),
-            chars_out = rendered.chars().count(),
-            "web_fetch 抽出完了"
-        );
-        // エラーページ（404・ボット除けの 403 等）は出典にしない（根拠にならない）。
-        if !status.is_success() {
-            return Ok(ToolOutcome::ok(crate::cite::defuse(&rendered).into_owned()));
-        }
-        Ok(cited(&page, target.url.as_str(), &rendered))
+        }))
     }
 }
 
