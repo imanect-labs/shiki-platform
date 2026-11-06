@@ -2,7 +2,8 @@
 
 キーは次を正規化した JSON の sha256（どれかが変われば自然に再実行になる）:
 課題 id・モード・言い方（id と依頼文の本文）・fixture の定義・試行の番号・条件・設定の sha・取り込みの sha・
-バイナリの sha。採点器の版は入れない（採点はキャッシュから何度でもやり直す）。
+バイナリの sha。Mode A は採点器の版を入れない（生成だけを置き、採点はキャッシュから何度でもやり直す）。Mode B は
+採点した結果を置くので、`extra` に採点器の版と課題の期待の sha を入れる（直したら流し直す）。
 
 置き場は `<cache>/trials/<key>.json`（`data/cache/` は .gitignore 済み）。書き込みは同じ場所の一時ファイルに
 書いて fsync してから rename する（途中で落ちても壊れた記録を残さない）。
@@ -33,8 +34,9 @@ def trial_key(
     config_sha: str,
     capture_sha: str,
     binary_sha: str,
+    extra: dict | None = None,
 ) -> str:
-    """試行のキャッシュのキー。"""
+    """試行のキャッシュのキー（`extra` は Mode B の採点器の版と課題の期待の sha など・無ければ入れない）。"""
     if isinstance(trial, bool) or not isinstance(trial, int) or trial < 0:
         raise ValueError(f"trial は 0 以上の整数です: {trial!r}")
     for name, v in (
@@ -60,6 +62,8 @@ def trial_key(
         "capture_sha": capture_sha,
         "binary_sha": binary_sha,
     }
+    if extra is not None:
+        material["extra"] = extra
     return sha256_hex(canonical_json(material))
 
 

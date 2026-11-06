@@ -100,7 +100,10 @@ def test_clarification_is_sent_once():
     task = TASKS["basic-summary-file"]
     trial, errors = mode_b.run_trial(make_ctx(fake), task, spec("basic-summary-file"))
     assert errors == []
-    assert [p["text"] for p in fake.posted] == [task.phrasings["flow"], task.clarifications]
+    first, second = (p["text"] for p in fake.posted)
+    assert (
+        first.startswith(task.phrasings["flow"] + "\n\n参考情報") and second == task.clarifications
+    )
     assert trial["clarified"] and trial["chat_runs"] == 2 and trial["s8"]["asked"]
 
 

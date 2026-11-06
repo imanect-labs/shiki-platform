@@ -109,7 +109,8 @@ def test_stub_runs_have_no_cost_lines():
     ctx = make_ctx(fake, stub=True)
     trial, _ = mode_b.run_trial(ctx, TASKS["basic-summary-file"], spec("basic-summary-file"))
     assert trial["cost"]["total_micros"] == 0
-    assert fake.posted[0] == {
-        "text": TASKS["basic-summary-file"].phrasings["flow"],
-        "model": "default",
-    }
+    posted = fake.posted[0]
+    assert set(posted) == {"text", "model"} and posted["model"] == "default"
+    # 依頼文に Mode A と同じ参考情報（入力の key・フォルダーの本物の id）を添える。
+    assert posted["text"].startswith(TASKS["basic-summary-file"].phrasings["flow"] + "\n\n参考情報")
+    assert "title（件名・文字）" in posted["text"] and "@folder:" not in posted["text"]

@@ -14,6 +14,9 @@
   HTTP/1.0 の close 区切り（手元の中継と同じ）。
 - 終わったら実際の費用で台帳に 1 行を書いて予約を戻す。usage が最後まで取れなければ予約の額で数え、
   usage_missing の印を付ける。誤りの応答（4xx・5xx を読み切ったもの）は 0 で数える。
+- 送る前に拒んだ要求と、上流に繋がらなかった要求は台帳に載らないので、実行（run）ごとに数えて
+  `GET /abeval/spend` の `runs[].rejected`・`unreachable`・`last_rejection` で返す（Mode B がチャットの中の
+  基盤の失敗を見分けるため。割り当たらない拒否は `unassigned_rejected`）。
 - capture_only の実行は、要求の本文を `<cache>/requests/<run>/` に保存し、上流へ送らずに最小の SSE を返す（$0）。
   `--capture` を付けると、転送した要求の本文も同じ場所に保存する（鍵はヘッダーにあり、本文には入らない）。
 """
@@ -120,6 +123,11 @@ class ProxyState:
         self._active: tuple[str, str | None] | None = None
         self._reserved: dict[int, tuple[str, int]] = {}
         self._seq = 0
+        # 台帳に載らない失敗の数（実行ごと）。
+        self._rejected: dict[str, int] = {}
+        self._unreachable: dict[str, int] = {}
+        self._last_rejection: dict[str, str] = {}
+        self._unassigned_rejected = 0
         self.ledger.refresh()  # 壊れた台帳なら起動しない。
 
     # --- 制御の口 ---
@@ -200,6 +208,22 @@ class ProxyState:
             self._active = (run_id, trial)
         return {"run_id": run_id, "trial": trial}
 
+    def note_rejection(self, session: str | None, message: str) -> None:
+        """送る前に拒んだ要求を数える（割り当てを決められなければ unassigned に数える）。"""
+        with self._lock:
+            try:
+                run, _ = self._resolve(session)
+            except Rejected:
+                self._unassigned_rejected += 1
+                return
+            self._rejected[run.run_id] = self._rejected.get(run.run_id, 0) + 1
+            self._last_rejection[run.run_id] = message[:300]
+
+    def note_unreachable(self, ticket: Ticket) -> None:
+        with self._lock:
+            rid = ticket.run.run_id
+            self._unreachable[rid] = self._unreachable.get(rid, 0) + 1
+
     def spend(self) -> dict:
         with self._lock:
             totals = self.ledger.refresh()
@@ -213,6 +237,9 @@ class ProxyState:
                     "spent_micros": totals.run_micros(r.run_id),
                     "reserved_micros": reserved_by_run.get(r.run_id, 0),
                     "capture_only": r.capture_only,
+                    "rejected": self._rejected.get(r.run_id, 0),
+                    "unreachable": self._unreachable.get(r.run_id, 0),
+                    "last_rejection": self._last_rejection.get(r.run_id),
                 }
                 for r in self._runs.values()
             }
@@ -226,6 +253,7 @@ class ProxyState:
                 if self._active is None
                 else {"run_id": self._active[0], "trial": self._active[1]},
                 "runs": runs,
+                "unassigned_rejected": self._unassigned_rejected,
             }
 
     # --- 要求の受け付け ---
@@ -519,6 +547,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise _invalid(f"{state.cfg.proxy.session_header} の値が不正です")
             ticket = state.admit(req, len(raw), session, counting)
         except Rejected as e:
+            if not counting:
+                state.note_rejection(self.headers.get(state.cfg.proxy.session_header), str(e))
             return self._error(e.status, e.etype, str(e))
         if ticket.run.capture_only:
             return self._capture(ticket, raw, req)
@@ -606,7 +636,8 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     stream_done = True
         except (httpx.ConnectError, httpx.ConnectTimeout) as e:
-            # 上流に届いていない（費用は無い）。
+            # 上流に届いていない（費用は無い・台帳に載らないので数える）。
+            state.note_unreachable(ticket)
             self._safe_error(502, "api_error", f"abeval: 上流に繋がりません: {type(e).__name__}")
         except httpx.HTTPError as e:
             sent_to_upstream = True  # 送った後の誤り（上流で費用が出たかもしれない）

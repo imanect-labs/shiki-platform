@@ -214,11 +214,12 @@ docstring（§3.1 に `clarifications`・`run_cases[].llm_dependent`・`run_case
 | 置き場 | 中身 |
 | --- | --- |
 | `grade/static.py` | 1 層目 ir_lint（`errors`・`run_blockers`・`STRICT_WARNINGS` は S2s、ほかの警告は S2w、`ignored_by_env` は数えない）。2 層目は課題の検査（入力の参照・`flow_through`・出力の path〔カタログの `output_fields` と `present_if`〕）と S5（トリガ・ノードの種類・診断用） |
-| `grade/dynamic.py` | dead edge（`node_ports` に無い出口・出口が 1 つのノードの通らなかった線）・差し込みの残り（`{name}`・`{{…}}`）・入力が届かない。`llm_dependent` を stub で流したときは最初の LLM のノードまでに限る |
+| `grade/dynamic.py` | dead edge（`node_ports` に無い出口・出口が 1 つのノードの通らなかった線）・差し込みの残り（`{name}`・`{{…}}`）・入力が届かない（stub の run だけ。実モデルの出力は入力の全文を含まない）・想定外の状態（stub で流した `llm_dependent` でない run_case の状態が期待と違う）・想定外の skipped（成功した run で、分岐でも error の出口でもない線の先が飛ばされた。元の 1 つだけを数える）。`llm_dependent` を stub で流したときは最初の LLM のノードまでに限る |
 | `grade/checks.py` | 照合子（equals・contains・regex・in・absent・rows・files・no_new_rows）。NFKC と数字の正規化。`$fixture` で fixture から期待値を計算する |
 | `grade/mutate.py` | 採点器の自己テストの 8 通りの壊し方と、期待する検査。中身の無い IR（null） |
 | `gen_checks.py` | 課題の検査 G1〜G9 のうちオフラインのもの（G2・G4・G5・G7・G8・G9）。G8 の拒否リストは `~/.config/shiki-dev/abeval-denylist.txt`（リポジトリの外・1 行 1 語）。無ければ理由を出して飛ばす。理由には場所と語の長さだけを書く |
 | `run_cases.py` | run_case をサーバーで流して記録を集める（fixture の行の入れ直し・起動の列・成功した step の出力・行・増えたファイル・再実行）。正解の結合テストと、後の段の Mode A・B が使う |
+| `grading.py` | 試行の採点の部品。基盤の失敗（保存できない・時間切れ・5xx など）で流せなかった run_case が 1 つでもあれば、S2d・S3・S4 を None にして試行を errors に回す（部分だけで採点しない）。見出しは S2s・S2d（Mode B は S4 も）が決まったときだけ真で、決まらなければ None（率の分母に入れない） |
 
 採点器の版は `grade.GRADER_VERSION` と ir_lint のバイナリの sha（`static.grader_version()`）で残す。
 
@@ -245,8 +246,8 @@ uv run python -m abeval budget                                             # 評
 | --- | --- |
 | `abeval/capture.py` | 取り込み。abeval.proxy に `capture_only` の実行を登録し、新しいスレッドに短い発話（`claude-haiku-5-5`・effort あり）を送って、保存された要求のうち emit_workflow を含む最初のものから system・tools・max_tokens を `data/captures/<label>/<exp>/` に書く。「今日の日付」の一文（製品の `opts.rs` の書式）は `[capture] fixed_date` に置き換え、tools の説明文の fixture のテーブルの id は印（`@table:<ref>`）に戻す。指紋（llm-eval.toml の sha・カスタム指示・workflow と decision のモデル・fixture の名前・OpenAPI の機能・tools と system の sha）を meta.json に残し、前の取り込みと違う項目を `changed_from_previous` に出す。llm-eval.toml の鍵の形の項目がダミーでなければ止める |
 | `abeval/anthropic_client.py` | httpx で Messages を stream で送る（SDK なし）。temperature・top_p・top_k と prefill は送る前に止める。再試行は 429・5xx（529）・接続の誤り・流れの途中の overloaded だけ（400・403 は再試行しない）。全幅のジッタ・`retry-after` を守る・回数を記録する |
-| `abeval/mode_a.py` | Mode A（単発）。課題ごとに fixture を作り（課題の間で名前が重なるため）、参考情報（テーブルの表示名・id・列の key と型、フォルダー・ファイルの id）を添えて生成する。tools は取り込んだ emit_workflow だけ（defer_loading を外す）・thinking adaptive・`output_config.effort`・tool_choice auto。結果は refusal → truncated → emit → asked → no_emit の順に分ける。S1 はその版の validate、S2s・S2w・S5 は ir_lint、S2d・S3 は stub の配管 |
-| `abeval/mode_b.py`・`abeval/approvals.py` | Mode B（製品のチャット・並列度 1）。SSE は承認の要求を拾うためにだけ使い、完了は `GET messages` の `active_run_id` を `[mode_b] poll_secs` ごとに読み直す。壁時計の上限（`wall_clock_secs`・6 分）で取り消して timeout。聞き返し（「？」で終わる・課題の `ask_terms`）には `clarifications` を 1 回だけ。emit_workflow の入力の IR は validate にかけ直して検証エラーを数える（結果の文を読まない）。保存されたワークフローそのもので run_case を流し（評価の版は実モデル・費用は active で試行に割り当てる）、stub の配管も流す。採点の後の hook（`ModeBContext.hooks`）はミニアプリ（T12）の差し込み口 |
+| `abeval/mode_a.py` | Mode A（単発）。課題ごとに fixture を作り（課題の間で名前が重なるため）、参考情報（入力の項目の key・呼び名・型、テーブルの表示名・id・列の key と型、フォルダー・ファイルの id・`trial.reference_info`）を添えて生成する。tools は取り込んだ emit_workflow だけ（defer_loading を外す）・thinking adaptive・`output_config.effort`・tool_choice auto。結果は refusal → truncated → emit → asked → no_emit の順に分ける。S1 はその版の validate、S2s・S2w・S5 は ir_lint、S2d・S3 は stub の配管（流せなかったら errors の `stub_plumbing`） |
+| `abeval/mode_b.py`・`abeval/approvals.py` | Mode B（製品のチャット・並列度 1）。SSE は承認の要求を拾うためにだけ使い、完了は `GET messages` の `active_run_id` を `[mode_b] poll_secs` ごとに読み直す。依頼文には Mode A と同じ参考情報を添える。壁時計の上限（`wall_clock_secs`・6 分）で取り消して timeout。保存の前の聞き返し（「？」で終わる・課題の `ask_terms`）には `clarifications` を 1 回だけ（S8 の `asked` は「保存の前に聞き返した」。保存した後の「有効化しますか？」は数えない）。会話が誤りで終わった・abeval.proxy が拒んだ・上流に繋がらない・run_case を流せなかった試行は採点もキャッシュもせず errors に入れる（kind は llm_error・upstream・budget・run_case・stub_plumbing。budget は残りを打ち切る）。各試行の前に、実行と評価の残りが 1 試行の最悪より少なければ打ち切る。emit_workflow の入力の IR は validate にかけ直して検証エラーを数える（結果の文を読まない）。保存されたワークフローそのもので run_case を流し（評価の版は実モデル・費用は active で試行に割り当てる）、stub の配管も流す。採点の後の hook（`ModeBContext.hooks`）はミニアプリ（T12）の差し込み口 |
 | `abeval/plan.py` | 試行の列（Mode A は言い方 × 試行、Mode B は言い方を試行で回す）と見積もり（`[estimates]`・Mode A は取り込みから組んだ予約の額と大きい方）。最悪が `run_cap_usd` を超えれば拒み、課題を分けた組を示す。評価の台帳＋最悪が `eval_cap_usd`、手元の中継の台帳＋最悪が `global_cap_usd` を超えても拒む。`--go` のときだけ abeval.proxy に登録する（上限は min(最悪 × 1.2, $10)） |
 | `abeval/budget.py` | 評価の台帳の累計・実験ごと・実行ごと（usage が無く予約で数えた行の数）・手元の中継の累計・残り（読むだけ） |
 | `abeval/metrics.py` | S1〜S9・課題ごと・pass@k の不偏推定・課題を単位にした対応のあるブートストラップ（10,000 回・種は固定） |
@@ -255,14 +256,18 @@ uv run python -m abeval budget                                             # 評
 - 生成と会話の全文（応答のブロック・メッセージ一覧・承認の入力）はキャッシュ（`data/cache/trials/`）にだけ置く。
   結果には保存された IR（fixture の id は印に戻したもの）と採点だけを入れる。
 - キャッシュのキーは、依頼文（参考情報の id は印のまま）・fixture・試行の番号・条件・llm-eval.toml の sha・
-  取り込みの sha・バイナリの sha。同じ条件で流し直すと生成も会話もしない（台帳に費用の行が増えない。取り込みの
+  取り込みの sha・バイナリの sha。Mode B は採点した結果を置くので、採点器の版（GRADER_VERSION と ir_lint の
+  sha）と課題の期待（expect・roles・run_cases）の sha も入れる（採点器か課題を直したら流し直す。Mode A は生成
+  だけを置き、採点は毎回やり直す）。同じ条件で流し直すと生成も会話もしない（台帳に費用の行が増えない。取り込みの
   $0 の行だけが足される）。
 - 費用の割り当て: Mode A は会話 ID のヘッダーに試行の id を載せる。Mode B は会話 ID（thread_id）を試行に、
   run_case の llm.invoke（会話 ID が無い）は active を試行にする。突き合わせは `/org-admin/ai/usage` の前後の差
   （1% 以内・SQL は使わない）。
 - 失敗の分け方: モデルの結果（保存できない・壊れている・聞き返し・拒否・承認の要求）は結果に、基盤の失敗
-  （再試行切れ・timeout・fixture の作成・予算切れ・片付けの残り）は `errors-<exp>.jsonl` に入れる（採点しない）。
-  費用の上限で拒まれたら、その実行の残りを打ち切る。
+  （再試行切れ・timeout・fixture の作成・予算切れ・会話の誤り・流せなかった run_case と stub の配管・片付けの残り）
+  は `errors-<exp>.jsonl` に入れる（採点しない）。費用の上限で拒まれたら、その実行の残りを打ち切る。送る前に
+  拒んだ要求と上流に繋がらない要求は台帳に載らないので、abeval.proxy が実行ごとに数える（`GET /abeval/spend` の
+  `rejected`・`unreachable`）。
 
 ## E0（試走）と E1 を流す手順（親が行う）
 
@@ -418,6 +423,9 @@ Mode B で承認待ち（`approval_requested`）が来たら、既定で却下�
   行だけは増える）。
 - Mode B の聞き返しの判定は単純な規則（「？」で終わる・課題の `ask_terms`）なので、実モデルでは取りこぼしがある。
   S8 の `unknown`（保存も聞き返しもしないで終えた）に残す。
+- 製品のチャットには、Drive のフォルダーやファイルの id を調べる道具が無い（fs_* はスレッドの作業フォルダーの中
+  だけ）。そのため Mode B にも Mode A と同じ参考情報（id と入力の key）を添えて測る。製品の経路だけで id を知れる
+  かは、この評価では測らない。
 - 製品の `/org-admin/ai/usage` は日の単位なので、突き合わせは試行の前後の差で見る（並列度 1・同じ日のうちの差）。
   ほかの利用が同じサーバーにあると合わない。
 - 差し込みの残りと入力が届かないの検査は、stub が prompt を「回答: …」で返すことに頼る。出力の形（output_schema）

@@ -27,7 +27,7 @@ from abeval.anthropic_client import AnthropicClient
 from abeval.approvals import ApprovalPolicy
 from abeval.cache import TrialCache
 from abeval.capture import Capture, CaptureError, capture, captures_dir
-from abeval.config import Config, load_config
+from abeval.config import Config, canonical_json, load_config, sha256_hex
 from abeval.gen_checks import g9_supported, version_features
 from abeval.grade.static import LintCatalog, grader_version, load_catalog, run_ir_lint
 from abeval.ledger import Ledger
@@ -377,12 +377,19 @@ def _execute(args, cfg, client, ctrl, plan, version, cap, tasks, lint, catalog, 
         config_sha=((cap.meta.get("fingerprint") or {}).get("llm_config_sha") if cap else None)
         or "stub",
         capture_sha=cap.sha if cap else "stub",
+        grader_sha=sha256_hex(
+            canonical_json(grader_version(Path(args.lint_bin) if args.lint_bin else None))
+        ),
         ctrl=None if stub else ctrl,
         run_id=None if stub else plan.run_id,
         stub=stub,
         stub_plumbing=not args.no_stub_plumbing,
     )
-    return mode_b.run(ctx, plan.trials, by_id)
+    trials, errors = mode_b.run(ctx, plan.trials, by_id)
+    stopped = next((e["detail"] for e in errors if e.get("kind") == "stopped"), None)
+    if stopped:
+        print(f"[打ち切り] {stopped}")
+    return trials, errors
 
 
 def cmd_capture(args) -> int:
@@ -415,7 +422,7 @@ def cmd_capture(args) -> int:
 
 def cmd_grade(args) -> int:
     """結果の IR を ir_lint で採点し直す（S2s・S2w・S5・見出しの S2s の部分）。"""
-    from abeval.grading import static_roles
+    from abeval.grading import headline, headline_b, static_roles
 
     doc = report.read_result(args.exp)
     if doc is None:
@@ -432,8 +439,10 @@ def cmd_grade(args) -> int:
         st = static_roles(task, irs, lint, catalog, str(t["key"])[:12])
         t["static"] = {k: v for k, v in st.items() if k != "node_ports"}
         t["s2s"], t["s2w"], t["s5"] = st["s2s"], st["s2w"], st["s5"]
-        s4_ok = t.get("s4") is True if t.get("mode") == "b" else True
-        t["headline"] = bool(t.get("s1")) and not t["s2s"] and not t.get("s2d") and s4_ok
+        if t.get("mode") == "b":
+            t["headline"] = headline_b(t.get("s1"), t["s2s"], t.get("s2d"), t.get("s4"))
+        else:
+            t["headline"] = headline(t.get("s1"), t["s2s"], t.get("s2d"))
         n += 1
     doc["grader"] = grader_version(Path(args.lint_bin) if args.lint_bin else None)
     report.write_result(doc, [], merge=False)

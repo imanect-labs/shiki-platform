@@ -100,16 +100,24 @@ def summarize(cfg: Config) -> Budget:
 
 
 def trial_spend(cfg: Config, trial_id: str, run_id: str | None = None) -> dict:
-    """1 試行の費用（評価の台帳の行を試行で集める・会話の分は会話 ID のある行、run_case の分は active の行）。"""
-    out = {"chat_micros": 0, "run_case_micros": 0, "lines": 0, "usage_missing": 0}
+    """1 試行の費用（評価の台帳の行を試行で集める・会話の分は会話 ID のある行、run_case の分は active の行）。
+
+    `statuses` は 200 以外の応答の状態コードの数（上流の 429・5xx、手元の中継の 403、送った後の誤りの 0）。
+    """
+    out: dict = {"chat_micros": 0, "run_case_micros": 0, "lines": 0, "usage_missing": 0}
+    statuses: dict[str, dict[str, int]] = {"chat": {}, "run_case": {}}
     for e in Ledger(cfg.paths.ledger).entries():
         if e.get("trial") != trial_id or (run_id and e.get("run_id") != run_id):
             continue
-        key = "chat_micros" if e.get("session") else "run_case_micros"
-        out[key] += e["cost_micros"]
+        phase = "chat" if e.get("session") else "run_case"
+        out[f"{phase}_micros"] += e["cost_micros"]
         out["lines"] += 1
         out["usage_missing"] += 1 if e.get("usage_missing") else 0
+        if "status" in e and e["status"] != 200 and not e.get("captured"):
+            k = str(e.get("status"))
+            statuses[phase][k] = statuses[phase].get(k, 0) + 1
     out["total_micros"] = out["chat_micros"] + out["run_case_micros"]
+    out["statuses"] = {k: dict(sorted(v.items())) for k, v in statuses.items()}
     return out
 
 

@@ -559,7 +559,26 @@ def test_upstream_down_is_502_and_costs_nothing():
         assert status == 502
         assert json.loads(data)["error"]["type"] == "api_error"
         assert ledger_entries(p) == []
-        assert p.control("GET", "/abeval/spend").json()["reserved_micros"] == 0
+        spend = p.control("GET", "/abeval/spend").json()
+        assert spend["reserved_micros"] == 0
+        # 台帳に載らないので、実行ごとに数えて返す（Mode B が基盤の失敗を見分ける）。
+        assert spend["runs"]["r1"]["unreachable"] == 1 and spend["runs"]["r1"]["rejected"] == 0
+
+
+def test_rejections_are_counted_per_run(fake):
+    with running_proxy(fake.url) as p:
+        p.run(cap_usd=0.000001)
+        status, _, _ = post(p, body())
+        assert status == 400
+        status, _, _ = post(p, body(model="claude-other-1"))
+        assert status == 400
+        p.control("PUT", "/abeval/active", {"run_id": None})
+        post(p, body())  # 割り当たらない
+        spend = p.control("GET", "/abeval/spend").json()
+        r = spend["runs"]["r1"]
+        assert r["rejected"] == 2 and "許可リスト" in r["last_rejection"]
+        assert spend["unassigned_rejected"] == 1
+        assert fake.received == [] and ledger_entries(p) == []
 
 
 def test_received_requests_keep_the_body(fake):

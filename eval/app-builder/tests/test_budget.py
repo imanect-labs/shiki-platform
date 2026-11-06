@@ -71,6 +71,7 @@ def test_trial_spend_splits_chat_and_run_cases():
         "lines": 2,
         "usage_missing": 0,
         "total_micros": 3_500,
+        "statuses": {"chat": {}, "run_case": {}},
     }
     # run を指定しなければ、ほかの実行の同じ試行の id の分も入る。
     assert budget.trial_spend(cfg, "t1")["total_micros"] == 3_900

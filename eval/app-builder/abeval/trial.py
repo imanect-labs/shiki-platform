@@ -5,9 +5,12 @@
 - 生成した IR は、fixture の id を置き場所の印（`@table:<ref>` など）に戻してから記録する（`canonical`）。
   実験のたびに fixture を作り直すので id が変わっても、記録から採点し直せる（印を今の id に戻す・`concrete`）。
   ir_lint には、ref ごとに決まったダミーの UUID にして渡す（`offline`・結果が実行ごとに変わらない）。
-- 依頼文の「参考情報」は、fixture のテーブル（表示名・id・列の key と型）・フォルダー・ファイルの id を載せる
-  （Mode A にはデータを調べるツールが無い。製品の検証は名指しするテーブルやフォルダーの実在を見る）。
-  キャッシュのキーには印のままの文を使う（id が変わってもキーが変わらない）。
+- 依頼文の「参考情報」は、fixture のテーブル（表示名・id・列の key と型）・フォルダー・ファイルの id と、
+  入力の項目（課題の入力の key・依頼文での呼び名・型）を載せる（Mode A にはデータを調べるツールが無い。
+  Mode B のチャットにもフォルダーやファイルの id を調べる道具が無い。製品の検証は名指しするテーブルやフォルダーの
+  実在を見る。run_case は課題の key で入力を送るので、key を知らせないと名前を当てる運で合否が決まる）。
+  Mode A と Mode B に同じ参考情報を添える。キャッシュのキーには印のままの文を使う（id が変わってもキーが
+  変わらない）。
 """
 
 from __future__ import annotations
@@ -144,10 +147,55 @@ def _field_line(f: Mapping) -> str:
     return f"{f.get('key')}（{'・'.join(bits)}）"
 
 
+_TRIGGER_WORDS = {
+    "interactive": "手で動かすワークフロー",
+    "schedule": "決まった時刻に動くワークフロー",
+    "event": "ファイルが置かれたときに動くワークフロー",
+}
+
+
+def _type_word(value: Any) -> str:
+    if isinstance(value, bool):
+        return "真偽"
+    if isinstance(value, int | float):
+        return "数値"
+    if isinstance(value, list):
+        inner = {_type_word(v) for v in value}
+        return f"{inner.pop()}の配列" if len(inner) == 1 else "配列"
+    if isinstance(value, Mapping):
+        return "オブジェクト"
+    return "文字"
+
+
+def input_lines(task: Task) -> list[str]:
+    """入力の項目の行（役割ごと・入力の無い役割は出さない）。型は run_case の値から読む。"""
+    out = []
+    for role in task.roles:
+        if not role.expect.inputs:
+            continue
+        seen: dict[str, Any] = {}
+        for case in task.run_cases:
+            for step in case.steps:
+                if (step.workflow or "main") == role.role:
+                    for k, v in step.input.items():
+                        seen.setdefault(k, v)
+        items = []
+        for spec in role.expect.inputs:
+            bits = [spec.terms[0], _type_word(seen[spec.key]) if spec.key in seen else "文字"]
+            if not spec.required:
+                bits.append("任意")
+            items.append(f"{spec.key}（{'・'.join(bits)}）")
+        who = (
+            "入力" if task.kind != "workflow_set" else f"{_TRIGGER_WORDS[role.trigger_kind]}の入力"
+        )
+        out.append(f"- {who}の項目（key はこのとおりにする）: {'、'.join(items)}")
+    return out
+
+
 def reference_info(task: Task, ids: Mapping[str, str]) -> str:
-    """依頼文に添える参考情報（fixture が無ければ空）。`ids` は ref → id（キーでは印）。"""
+    """依頼文に添える参考情報（fixture も入力も無ければ空）。`ids` は ref → id（キーでは印）。"""
     fx = task.fixtures
-    lines: list[str] = []
+    lines: list[str] = input_lines(task)
     for t in fx.get(FIXTURE_KIND["table"]) or []:
         fields = (t.get("schema") or {}).get("fields") or []
         cols = ", ".join(_field_line(f) for f in fields if isinstance(f, Mapping))
@@ -163,7 +211,10 @@ def reference_info(task: Task, ids: Mapping[str, str]) -> str:
         lines.append(f"- ファイル「{c['name']}」（id: {ids[c['ref']]}{where}）")
     if not lines:
         return ""
-    return "参考情報（この環境にあるもの。id はそのまま使えます）:\n" + "\n".join(lines)
+    return (
+        "参考情報（テーブル・フォルダー・ファイルはこの環境にあるもので、id はそのまま使えます）:\n"
+        + "\n".join(lines)
+    )
 
 
 def prompt_text(task: Task, phrasing: str, ids: Mapping[str, str], *, with_reference: bool) -> str:
