@@ -31,7 +31,7 @@ pub use approval::{
 };
 pub use capability::{
     check_scope_ceiling, effective_scopes, CapabilityAudit, EffectJournal, JournalDecision,
-    ScopeCeiling,
+    OutboundCheck, ScopeCeiling,
 };
 pub use concurrency::{ConcurrencyStore, ScopeKind, Slot};
 pub use control::{branch_port, switch_port};

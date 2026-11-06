@@ -13,7 +13,8 @@
 //! - AI エージェントは自分の作業時間の上限（`max_duration_sec`）で止まる。その前に打ち切らないよう、作業時間の
 //!   上限に [`AGENT_STOP_MARGIN_SEC`] を足した時間より短くしない（ノードの上限を超えても）。
 //! - 効果の記録（effect_journal）の予約を step の外の Tx で取る種は、打ち切りで予約が結果の無いまま残ることがある。
-//!   やり直しは予約を回収できるまで待つ（[`retry_floor_after_timeout_sec`]）。
+//!   やり直しは予約を回収できるまで待つ（[`retry_floor_after_timeout_sec`]）。外への呼び出し（llm.invoke・
+//!   http.request）は、打ち切りで呼び出しを捨てたときに予約を外す（`nodes::outbound`）。
 
 use std::time::Duration;
 
@@ -70,7 +71,8 @@ const RECLAIM_MARGIN_SEC: i64 = 30;
 /// 書き込みと記録を 1 つの Tx にする `storage.write`（打ち切りで両方が巻き戻る）と、予約を取らない種は含まない。
 /// 予約を取るのは `nodes/capability.rs`（workflow.start・csv.patch・csv.write）と `nodes/capability_data.rs`
 /// （data の書き込み）。script・skill の `Shiki.*` は、打ち切っても script のスレッドが呼び出しを終えるまで走る
-/// （ワーカーが待つ・[`runs_on_blocking_thread`]）ので、予約は結果を書いてから外れる。
+/// （ワーカーが待つ・[`runs_on_blocking_thread`]）ので、予約は結果を書いてから外れる。外への呼び出し（llm.invoke・
+/// http.request）は、打ち切りで呼び出しを捨てたときに予約を外す（`nodes::outbound`・GAP-28）ので含まない。
 fn holds_effect_reservation(nt: NodeType) -> bool {
     matches!(
         nt,
@@ -89,8 +91,8 @@ fn holds_effect_reservation(nt: NodeType) -> bool {
 /// 打ち切った step のやり直しまでの最短の待ち（秒・待たなくてよいなら `None`）。
 ///
 /// 予約の残りうる種（[`holds_effect_reservation`]）を打ち切ったあと、回収の猶予（[`RESERVATION_RECLAIM_SECS`]）より
-/// 前にやり直すと、予約が「別のワーカーが処理中」（`effect_in_progress`・retryable）を返し、試す回数を使い切って
-/// 失敗する（効果が済んでいても）。回収できるまで待ってからやり直す。回収した予約はもう一度実行するので、打ち切りの
+/// 前にやり直すと、予約が「前の実行が処理中」（`effect_in_progress`）を返し、試す回数を使わずに回収できるまで待つ
+/// （GAP-28）。待つあいだ何度も動かし直さないよう、はじめから回収できるまで待ってからやり直す。回収した予約はもう一度実行するので、打ち切りの
 /// 前に済んでいた効果がもう一度起きることはある（回収窓の at-least-once・engine.md §7.3・§9.4）。
 #[must_use]
 pub fn retry_floor_after_timeout_sec(code: &str, nt: Option<NodeType>) -> Option<i64> {

@@ -71,6 +71,14 @@ pub const HTTP_ERROR_STATUS: &str = "http_error_status";
 /// （あちらは試す回数を消費しないので、相手の 429 に使うと何度でも送り直してしまう）。
 pub const HTTP_RETRYABLE_STATUS: &str = "http_retryable_status";
 
+/// 外部への送信が届いたかを確かめられないので、送り直さずに止めたときの code（retryable・GAP-28）。
+///
+/// 前の実行（リースが切れた・落ちたワーカー）が送っている途中で止まり、結果を記録しないまま効果の記録の予約の回収の
+/// 猶予を過ぎたとき（`nodes::outbound`）と、送った応答が大きくて記録しておらず次のブロックに渡せないときに使う。
+/// 予約は消すので、試す回数が残っていればやり直しで、残っていなければ再開で、もう一度送る（作成者か利用者が送り直すと
+/// 決めたもの）。失敗の分類は一時障害。
+pub const HTTP_DELIVERY_UNKNOWN: &str = "http_delivery_unknown";
+
 /// 送り先の名前が内部のネットワークの IP にもつながるので送らなかったときの code（ポートの送り口が名前解決の後に
 /// 断る・permanent・BUG-181・D-135）。
 ///

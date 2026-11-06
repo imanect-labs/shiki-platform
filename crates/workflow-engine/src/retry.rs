@@ -3,8 +3,10 @@
 //! - retryable: 一時障害。指数バックオフ＋full jitter で再試行（attempt 消費）。
 //! - permanent: 恒久障害。即 terminal（失敗）。
 //! - rate_limited: レート超過。再試行するが **attempt を消費しない**（順番待ちに近い扱い）。
-//! - wait: 待てば通る失敗（取り込み待ち）。**attempt を消費せず**、間隔を伸ばしながら読み直し、待つ上限を過ぎたら
-//!   その誤りで失敗にする（[`WaitPolicy`]・D-125）。
+//! - wait: 待てば通る失敗（取り込み待ち・効果の記録の予約の残り）。**attempt を消費せず**、間隔を伸ばしながら
+//!   やり直し、待つ上限を過ぎたらその誤りで失敗にする（[`WaitPolicy`]・D-125・GAP-28）。
+
+use crate::capability::journal::{EFFECT_IN_PROGRESS, RESERVATION_RECLAIM_SECS};
 
 /// エラーのリトライ分類。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,10 +45,28 @@ pub const INDEX_WAIT: WaitPolicy = WaitPolicy {
     max_wait_secs: INDEX_WAIT_MAX_MINUTES * 60,
 };
 
+/// 効果の記録の予約が結果の無いまま残っている（`effect_in_progress`）ときの待ち方（GAP-28）。
+///
+/// 前の実行（リースが切れた・落ちたワーカー）の予約は、回収の猶予（[`RESERVATION_RECLAIM_SECS`]）を過ぎると取り直せる
+/// （外への送信は「送ったか分からない」と分かる）。その前に記録が付けば、記録した結果を返す。5 秒から始めて最大 1 分おきに、
+/// 猶予に 30 秒を足した時間まで（およそ 10 回）やり直す。待ち始めたときには予約はもう作られているので、この間に必ず
+/// 猶予を過ぎる。
+pub const EFFECT_WAIT: WaitPolicy = WaitPolicy {
+    first_delay_secs: 5,
+    max_delay_secs: 60,
+    max_wait_secs: RESERVATION_RECLAIM_SECS as i64 + 30,
+};
+
 /// 試す回数を使わずに待つ code と待ち方（ここに無い code は待たない・単一定義）。
 #[must_use]
 pub fn wait_policy(code: &str) -> Option<WaitPolicy> {
-    (code == crate::nodes::ports::INDEX_PENDING).then_some(INDEX_WAIT)
+    if code == crate::nodes::ports::INDEX_PENDING {
+        Some(INDEX_WAIT)
+    } else if code == EFFECT_IN_PROGRESS {
+        Some(EFFECT_WAIT)
+    } else {
+        None
+    }
 }
 
 impl WaitPolicy {
@@ -136,6 +156,23 @@ mod tests {
         assert_eq!(wait_policy("index_pending"), Some(INDEX_WAIT));
         assert_eq!(wait_policy("unavailable"), None);
         assert_eq!(INDEX_WAIT.max_wait_secs, 30 * 60);
+    }
+
+    /// 効果の記録の予約の残りも試す回数を使わずに待ち、予約を回収できる時刻（猶予）より後まで待つ（GAP-28）。
+    #[test]
+    fn effect_in_progress_waits_past_the_reclaim_window() {
+        assert_eq!(classify(EFFECT_IN_PROGRESS, true), RetryClass::Wait);
+        let p = wait_policy(EFFECT_IN_PROGRESS).expect("待つ");
+        assert_eq!(p, EFFECT_WAIT);
+        assert!(p.max_wait_secs > i64::from(RESERVATION_RECLAIM_SECS));
+        let mut waited = 0;
+        let mut tries = 0;
+        while let Some(d) = p.next_delay_secs(waited) {
+            waited += d;
+            tries += 1;
+        }
+        assert_eq!(waited, p.max_wait_secs);
+        assert!((5..=15).contains(&tries), "{tries}");
     }
 
     /// 待つ間隔はおおむね倍々に伸び、2 分で頭打ちになり、30 分の時刻ちょうどに最後の 1 回を読んで終える。

@@ -4,7 +4,10 @@
 //! - llm/http は外部 API のためレート制御を通す（`rate_limited` は attempt 非消費）。
 //! - http.request は **宛先束縛（secret.allowed_hosts）× egress allowlist の AND** を URL ホスト部
 //!   リテラルで照合し、リダイレクトは既定拒否（SSRF/DNS rebinding/近似ホストを弾く・PIT-36）。
-//! - secret 平文・レスポンス本文は監査/journal に載せない（run 履歴に平文を出さない）。
+//! - secret 平文は監査/journal に載せない（run 履歴に平文を出さない）。レスポンス本文は監査に載せず、step の結果と
+//!   効果の記録（拾い直しで送り直さないため・GAP-28）には反射した平文をマスクしてから載せる。
+//! - llm.invoke と、送り先の状態を変えうる http.request は、結果を効果の記録に残し、リースが切れて拾い直したときに
+//!   呼び直さない（[`super::outbound`]・GAP-28）。
 
 use secrets::DestinationBinding;
 use serde_json::{json, Value};
@@ -122,15 +125,31 @@ impl CapabilityNodeExecutor {
             repair: None,
             call_suffix: None,
         };
-        let (out, repaired) = match &schema {
-            Some(schema) => {
-                let (out, repaired) = self.invoke_structured(ec, req, schema).await?;
-                (out, Some(repaired))
+        // 呼び出し（修復を含む）の結果を記録し、リースが切れて拾い直したときに呼び直さない（二重課金・GAP-28）。
+        let digest = super::outbound::llm_digest(&req);
+        let call = async {
+            match &schema {
+                Some(schema) => {
+                    let (out, repaired) = self.invoke_structured(ec, req, schema).await?;
+                    Ok((out, Some(repaired)))
+                }
+                None => Ok((
+                    without_stop_reason(self.ports.llm_invoke(ec, req).await?),
+                    None,
+                )),
             }
-            None => (
-                without_stop_reason(self.ports.llm_invoke(ec, req).await?),
-                None,
-            ),
+        };
+        let (out, called) = super::outbound::llm_once(
+            &self.journal,
+            &ec.tenant_id,
+            &ctx.idempotency_key,
+            &digest,
+            call,
+        )
+        .await?;
+        // 記録した結果を返したとき（前の実行が呼んだ）は、監査を残さない（いま呼んでいない）。
+        let Some(repaired) = called else {
+            return Ok(out);
         };
         // prompt 本文は監査に載せない（モデル名のみ）。model は実際に使ったモデル（ポートが解決した名前）、
         // requested_model はノードの設定（null は組織の既定に従った）。構造化出力なら直させたかも残す。
@@ -203,71 +222,95 @@ impl CapabilityNodeExecutor {
         }
         headers.extend(author_headers);
 
-        // Stage A は **常にリダイレクト非追従**（3xx は拒否）。`follow_stripped` は追従先の宛先束縛
-        // 再照合（各ホップの host ∈ binding）が要るため後続で実装するまで fail-closed で扱う
-        // （auto-follow は SSRF/内部 IP rebind の窓になるため絶対に有効化しない）。
-        let resp = self
-            .ports
-            .http_send(
-                ec,
-                HttpSendReq {
-                    method: method.clone(),
-                    url,
-                    headers,
-                    body,
-                    follow_redirects: false,
-                    timeout_ms: Some(self.http_timeout_ms),
-                },
-            )
-            .await
-            .inspect_err(|e| {
-                // 名前解決の後のアドレスで断った送信も監査に残す（送り先と理由・BUG-181）。
-                if destination_refused(&e.code) {
-                    self.audit(
-                        &ec.tenant_id,
-                        "http.request",
-                        false,
-                        &json!({ "host": host, "reason": e.code }),
-                    );
-                }
-            })?;
+        // 送り先の状態を変えうる送信は、結果を記録してリースが切れて拾い直したときに送り直さない（GAP-28）。
+        let digest = super::outbound::http_digest(
+            &method,
+            &url,
+            body.as_deref(),
+            p.secret.as_ref().map(|s| s.name.as_str()),
+        );
+        let recorded = super::outbound::changes_remote(&method);
+        let send = async {
+            // Stage A は **常にリダイレクト非追従**（3xx は拒否）。`follow_stripped` は追従先の宛先束縛
+            // 再照合（各ホップの host ∈ binding）が要るため後続で実装するまで fail-closed で扱う
+            // （auto-follow は SSRF/内部 IP rebind の窓になるため絶対に有効化しない）。
+            let resp = self
+                .ports
+                .http_send(
+                    ec,
+                    HttpSendReq {
+                        method,
+                        url,
+                        headers,
+                        body,
+                        follow_redirects: false,
+                        timeout_ms: Some(self.http_timeout_ms),
+                    },
+                )
+                .await
+                .inspect_err(|e| {
+                    // 名前解決の後のアドレスで断った送信も監査に残す（送り先と理由・BUG-181）。
+                    if destination_refused(&e.code) {
+                        self.audit(
+                            &ec.tenant_id,
+                            "http.request",
+                            false,
+                            &json!({ "host": host, "reason": e.code }),
+                        );
+                    }
+                })?;
 
-        if redirect_denied(resp.status) {
+            if redirect_denied(resp.status) {
+                self.audit(
+                    &ec.tenant_id,
+                    "http.request",
+                    false,
+                    &json!({ "host": host, "status": resp.status, "reason": "redirect_denied" }),
+                );
+                return Err(PortError::new(
+                    "redirect_denied",
+                    "リダイレクトは拒否されます（Stage A は非追従）",
+                    false,
+                ));
+            }
+
+            // 監査には本文を載せない（ステータス＋ホストのみ）。送信は済んでいるので、相手の誤りで
+            // ブロックを失敗にするときも送ったことは残す。
             self.audit(
                 &ec.tenant_id,
                 "http.request",
-                false,
-                &json!({ "host": host, "status": resp.status, "reason": "redirect_denied" }),
+                true,
+                &summarize_response(resp.status, &host),
             );
-            return Err(PortError::new(
-                "redirect_denied",
-                "リダイレクトは拒否されます（Stage A は非追従）",
-                false,
-            ));
-        }
-
-        // 監査/journal には本文を載せない（ステータス＋ホストのみ）。送信は済んでいるので、相手の誤りで
-        // ブロックを失敗にするときも送ったことは残す。
-        self.audit(
-            &ec.tenant_id,
-            "http.request",
-            true,
-            &summarize_response(resp.status, &host),
-        );
-        // 相手の誤りでブロックを失敗にする（選んだときだけ・省略は今までどおり成功として次へ渡す・BUG-99）。
-        if p.fail_on_error_status == Some(true) {
-            if let Some((code, retryable)) = classify_error_status(resp.status) {
-                return Err(PortError::new(
-                    code,
-                    error_status_message(&host, resp.status, retryable),
-                    retryable,
-                ));
+            // 相手の誤りでブロックを失敗にする（選んだときだけ・省略は今までどおり成功として次へ渡す・BUG-99）。
+            if p.fail_on_error_status == Some(true) {
+                if let Some((code, retryable)) = classify_error_status(resp.status) {
+                    return Err(PortError::new(
+                        code,
+                        error_status_message(&host, resp.status, retryable),
+                        retryable,
+                    ));
+                }
             }
+            // 出力は次ノードへ本文を渡す（監査には出さない）。外部の応答に反射した secret の平文は、step の出力
+            // （実行履歴・画面に返す結果）と効果の記録へ書く前にマスクする（記録時のレダクト・write-only 原則・
+            // GAP-09 の T0）。
+            let body = response_body(&resp.body, resolved_secret.as_ref());
+            Ok(json!({ "status": resp.status, "host": host, "body": body }))
+        };
+        if recorded {
+            super::outbound::http_once(
+                &self.journal,
+                &ec.tenant_id,
+                &ctx.idempotency_key,
+                &digest,
+                &host,
+                send,
+            )
+            .await
+        } else {
+            send.await
         }
-        // 出力は次ノードへ本文を渡す（監査には出さない）。外部の応答に反射した secret の平文は、step の出力
-        // （実行履歴・画面に返す結果）へ書く前にマスクする（記録時のレダクト・write-only 原則・GAP-09 の T0）。
-        let body = response_body(&resp.body, resolved_secret.as_ref());
-        Ok(json!({ "status": resp.status, "host": host, "body": body }))
     }
 
     /// 「ヘッダー」の値を解決し、シークレットを付けるヘッダーの名前と合わせて決まりを当てる（BUG-184・GAP-19）。

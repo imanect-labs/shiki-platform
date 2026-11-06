@@ -234,12 +234,10 @@ impl NodePorts for FakePorts {
     }
 }
 
-/// journal 用の非接続 lazy pool（純ロジックテストは journal を叩かない）。
+/// 記録しない journal（純ロジックのテスト・DB を使わない）。llm.invoke と http.request も journal を通るので
+/// （GAP-28）、DB の無い記録しない journal にする（重複を除くことは DB を使う結合テストで確かめる）。
 fn lazy_journal() -> EffectJournal {
-    let pool = PgPoolOptions::new()
-        .connect_lazy("postgres://unused:unused@127.0.0.1:1/none")
-        .unwrap();
-    EffectJournal::new(pool)
+    EffectJournal::unrecorded()
 }
 
 fn executor(ports: Arc<FakePorts>, audit: Arc<CapturingAudit>) -> CapabilityNodeExecutor {

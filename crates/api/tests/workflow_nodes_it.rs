@@ -2681,6 +2681,107 @@ async fn llm_node_effort_follows_the_organization_rules() {
     }
 }
 
+// ------- llm.invoke の拾い直しと会計（GAP-28）---------------------------------
+
+/// 本番のポートで AI を実際に呼んだ回数を数える監査（記録した結果を返したときは残らない）。
+#[derive(Default)]
+struct LlmCallAudit(std::sync::atomic::AtomicUsize);
+impl workflow_engine::CapabilityAudit for LlmCallAudit {
+    fn record(&self, _t: &str, api: &str, ok: bool, _m: &Value) {
+        if api == "llm.invoke" && ok {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+}
+
+/// AI に聞いたあと、checkpoint の前にワーカーが落ちても、拾い直した実行は本番のポートで AI を呼び直さず、会計は
+/// 1 行のまま（二重に課金しない・GAP-28）。落ちたワーカーは、リースの切れた claim のあと checkpoint しない形で作る。
+/// 会計は step のキーで重複を除くので（engine.md §7.2 の H7）、呼んだ回数は監査で数える。
+#[tokio::test]
+async fn a_reclaimed_llm_step_is_charged_once() {
+    let Some(h) = setup().await else { return };
+    let audit = Arc::new(LlmCallAudit::default());
+    let executor: Arc<dyn NodeExecutor> = Arc::new(CapabilityNodeExecutor::new(
+        h.ports(None, None),
+        EffectJournal::new(h.pool.clone()),
+        Arc::clone(&audit) as Arc<dyn workflow_engine::CapabilityAudit>,
+    ));
+    let ir = json!({
+        "ir_version": 1, "name": "llm-reclaim", "declared_scopes": [],
+        "nodes": [{ "id": "ai", "type": "llm.invoke", "params": { "prompt": "hello" } }],
+        "edges": []
+    });
+    let wf = h.save(&ir).await;
+    let run_id = h
+        .launcher
+        .start_interactive(&h.alice, wf, &json!({}))
+        .await
+        .expect("start")
+        .expect("run id");
+    let dead = h
+        .runs
+        .claim_ready_step("w-dead", -1, Some(&h.tenant))
+        .await
+        .unwrap()
+        .expect("claim");
+    let ctx = workflow_engine::NodeContext {
+        tenant_id: dead.tenant_id.clone(),
+        org: dead.org.clone(),
+        run_id: dead.run_id,
+        run_started_at: dead.run_started_at,
+        run_scheduled_at: dead.run_scheduled_at,
+        step_path: dead.step_path.clone(),
+        idempotency_key: dead.idempotency_key.clone(),
+        attempt: dead.attempt,
+        principal: dead.principal.clone(),
+        principal_kind: dead.principal_kind.clone(),
+        input: dead.input.0.clone(),
+        trigger: dead.trigger_or_input(),
+        node_outputs: Value::Null,
+        each: None,
+        trace_id: Some(dead.run_id.simple().to_string()),
+        scope_ceiling: vec![],
+        cancel: workflow_engine::CancelSignal::default(),
+        workflow_id: dead.workflow_id,
+        cache: None,
+    };
+    let first = executor
+        .execute("llm.invoke", &ir["nodes"][0]["params"], &ctx)
+        .await;
+    let charged_by_the_dead_worker = h.usage_keys().await;
+    let calls_by_the_dead_worker = audit.0.load(std::sync::atomic::Ordering::SeqCst);
+    let reclaimed = h
+        .runs
+        .reclaim_expired_leases(Some(&h.tenant))
+        .await
+        .unwrap();
+    let worker =
+        workflow_engine::WorkflowWorker::new(h.runs.clone(), executor, WorkerConfig::default())
+            .scoped_to_tenant(&h.tenant);
+    while worker.claim_and_run_once("w1").await.unwrap() {}
+    let status = h.runs.run_status(&h.tenant, run_id).await.unwrap();
+    let (output, _) = h.step_output(run_id).await;
+    let keys = h.usage_keys().await;
+    let calls = audit.0.load(std::sync::atomic::Ordering::SeqCst);
+    h.cleanup_runs().await;
+    h.delete_fga_store().await;
+
+    assert!(first.ok, "{:?}", first.error);
+    assert_eq!(calls_by_the_dead_worker, 1);
+    assert_eq!(calls, 1, "拾い直しで AI を呼び直した（二重に課金される）");
+    assert_eq!(
+        charged_by_the_dead_worker,
+        [format!("wf:{}:{run_id}:ai", h.tenant)]
+    );
+    assert_eq!(reclaimed, 1);
+    assert_eq!(status, Some(RunStatus::Succeeded));
+    assert_eq!(
+        keys, charged_by_the_dead_worker,
+        "拾い直しで AI を呼び直した"
+    );
+    assert_eq!(output, first.output, "前の実行の答えを次へ渡す");
+}
+
 // ------- Test 11: llm.invoke の構造化出力（GAP-13）----------------------------
 
 impl Harness {
@@ -2702,14 +2803,20 @@ impl Harness {
             .unwrap();
     }
 
-    /// このテストのテナントに作った run・会計・決定キャッシュの行を消す（run を消せば step は FK で消える）。
+    /// このテストのテナントに作った run・会計・決定キャッシュ・効果の記録の行を消す（run を消せば step は FK で消える。
+    /// llm.invoke も効果の記録を残す・GAP-28）。
     async fn cleanup_runs(&self) {
         self.clear_usage().await;
-        sqlx::query("DELETE FROM llm_decision_cache WHERE tenant_id = $1")
-            .bind(&self.tenant)
-            .execute(&self.pool)
-            .await
-            .unwrap();
+        for sql in [
+            "DELETE FROM llm_decision_cache WHERE tenant_id = $1",
+            "DELETE FROM effect_journal WHERE tenant_id = $1",
+        ] {
+            sqlx::query(sql)
+                .bind(&self.tenant)
+                .execute(&self.pool)
+                .await
+                .unwrap();
+        }
         sqlx::query("DELETE FROM workflow_run WHERE tenant_id = $1")
             .bind(&self.tenant)
             .execute(&self.pool)

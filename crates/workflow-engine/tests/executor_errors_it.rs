@@ -14,7 +14,6 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
-use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
 use workflow_engine::nodes::ports::{
     AgentInvokeReq, CsvPatchReq, CsvWriteReq, ExecCtx, HttpSendReq, HttpSendResp, LlmInvokeReq,
@@ -137,12 +136,9 @@ impl NodePorts for FakePorts {
     }
 }
 
+/// 記録しない journal（DB を使わない・llm.invoke も journal を通る・GAP-28）。
 fn lazy_journal() -> EffectJournal {
-    EffectJournal::new(
-        PgPoolOptions::new()
-            .connect_lazy("postgres://unused:unused@127.0.0.1:1/none")
-            .unwrap(),
-    )
+    EffectJournal::unrecorded()
 }
 
 fn exec(ports: Arc<FakePorts>) -> CapabilityNodeExecutor {

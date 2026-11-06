@@ -16,7 +16,6 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
-use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
 use workflow_engine::ir::params::LlmEffort;
 use workflow_engine::nodes::ports::{
@@ -122,12 +121,10 @@ impl CapabilityAudit for Audit {
 }
 
 fn executor(ports: &Arc<ScriptedLlm>, audit: &Arc<Audit>) -> CapabilityNodeExecutor {
-    let pool = PgPoolOptions::new()
-        .connect_lazy("postgres://unused:unused@127.0.0.1:1/none")
-        .unwrap();
+    // 記録しない journal（DB を使わない・llm.invoke も journal を通る・GAP-28）。
     CapabilityNodeExecutor::new(
         Arc::clone(ports) as Arc<dyn NodePorts>,
-        EffectJournal::new(pool),
+        EffectJournal::unrecorded(),
         Arc::clone(audit) as Arc<dyn CapabilityAudit>,
     )
 }

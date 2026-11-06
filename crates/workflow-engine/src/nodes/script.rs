@@ -3,7 +3,8 @@
 //! script-runtime（swc→QuickJS/wasmtime）で 1 回実行し、ゲスト内の `Shiki.*` 同期呼び出しを
 //! **同じ能力ゲートウェイ**（scope ceiling → effect_journal → 監査）へ合流させる（INV-1/INV-2）。
 //! ホスト呼び出しは効果的呼び出し連番 `seq` で冪等キーを `<step冪等キー>#c<seq>` と派生し、
-//! storage.write / workflow.start の高々 1 回を保つ。engine.run は同期ブロッキングのため
+//! storage.write / workflow.start の高々 1 回を保つ。送り先の状態を変えうる `Shiki.http.request` も同じキーで結果を
+//! 記録し、script を動かし直したときに送り直さない（GAP-28・[`super::outbound`]）。engine.run は同期ブロッキングのため
 //! `spawn_blocking` で回し、非同期ポートは捕捉した `Handle` で `block_on` する（gRPC サーバと同型）。
 
 use std::collections::BTreeSet;
@@ -422,51 +423,70 @@ impl HostBridge {
             other => other.to_string().into_bytes(),
         });
 
-        let resp = self
-            .ports
-            .http_send(
-                &self.ec,
-                super::ports::HttpSendReq {
-                    method,
-                    url,
-                    headers,
-                    body,
-                    follow_redirects: false,
-                    timeout_ms: Some(self.http_timeout_ms),
-                },
+        // 送り先の状態を変えうる送信は、呼び出し連番のキーで結果を記録し、script を動かし直したとき（リースが切れて
+        // 拾い直した・やり直し・再開）に送り直さない（ノードの経路と同じ・GAP-28）。
+        let digest = super::outbound::http_digest(&method, &url, body.as_deref(), secret_name);
+        let recorded = super::outbound::changes_remote(&method);
+        let send = async {
+            let resp = self
+                .ports
+                .http_send(
+                    &self.ec,
+                    super::ports::HttpSendReq {
+                        method,
+                        url,
+                        headers,
+                        body,
+                        follow_redirects: false,
+                        timeout_ms: Some(self.http_timeout_ms),
+                    },
+                )
+                .await
+                .inspect_err(|e| {
+                    // 名前解決の後のアドレスで断った送信も監査に残す（ノードの経路と同じ・BUG-181）。
+                    if super::http::destination_refused(&e.code) {
+                        self.audit.record(
+                            &self.ec.tenant_id,
+                            "http.request",
+                            false,
+                            &json!({ "host": host, "reason": e.code, "via": "script" }),
+                        );
+                    }
+                })?;
+            if redirect_denied(resp.status) {
+                self.audit.record(
+                    &self.ec.tenant_id,
+                    "http.request",
+                    false,
+                    &json!({ "host": host, "status": resp.status, "reason": "redirect_denied", "via": "script" }),
+                );
+                return Err(PortError::new(
+                    "redirect_denied",
+                    "リダイレクトは拒否されます（非追従）",
+                    false,
+                ));
+            }
+            let mut meta = summarize_response(resp.status, &host);
+            meta["via"] = json!("script");
+            self.audit
+                .record(&self.ec.tenant_id, "http.request", true, &meta);
+            // 外部の応答に反射した secret の平文は、script へ返す前と記録する前にマスクする（GAP-09 の T0・ノード経路と同じ）。
+            let body = super::capability_ai::response_body(&resp.body, resolved.as_ref());
+            Ok(json!({ "status": resp.status, "host": host, "body": body }))
+        };
+        if recorded {
+            super::outbound::http_once(
+                &self.journal,
+                &self.ec.tenant_id,
+                call_key,
+                &digest,
+                &host,
+                send,
             )
             .await
-            .inspect_err(|e| {
-                // 名前解決の後のアドレスで断った送信も監査に残す（ノードの経路と同じ・BUG-181）。
-                if super::http::destination_refused(&e.code) {
-                    self.audit.record(
-                        &self.ec.tenant_id,
-                        "http.request",
-                        false,
-                        &json!({ "host": host, "reason": e.code, "via": "script" }),
-                    );
-                }
-            })?;
-        if redirect_denied(resp.status) {
-            self.audit.record(
-                &self.ec.tenant_id,
-                "http.request",
-                false,
-                &json!({ "host": host, "status": resp.status, "reason": "redirect_denied", "via": "script" }),
-            );
-            return Err(PortError::new(
-                "redirect_denied",
-                "リダイレクトは拒否されます（非追従）",
-                false,
-            ));
+        } else {
+            send.await
         }
-        let mut meta = summarize_response(resp.status, &host);
-        meta["via"] = json!("script");
-        self.audit
-            .record(&self.ec.tenant_id, "http.request", true, &meta);
-        // 外部の応答に反射した secret の平文は、script へ返す前にマスクする（GAP-09 の T0・ノード経路と同じ）。
-        let body = super::capability_ai::response_body(&resp.body, resolved.as_ref());
-        Ok(json!({ "status": resp.status, "host": host, "body": body }))
     }
 
     /// 送り先の照合（宛先束縛 × egress allowlist の AND・URL のホスト部の文字・ノードの経路と同じ）。拒否は監査に残す

@@ -2,7 +2,8 @@
 //!
 //! ノード実行・script の HostCall はすべてここに合流する。手順（engine.md §9.2）:
 //! 1. **scope 天井交差**: 実効スコープ = 宣言スコープ ∩ 委譲（ノード設定で権限を拡大できない・縮小のみ）
-//! 2. **effect_journal dedupe**: 副作用 API は高々 1 回（storage.write / workflow.start）
+//! 2. **effect_journal dedupe**: 副作用 API は高々 1 回（storage.write / workflow.start）。外への呼び出し
+//!    （llm.invoke・http.request）も結果を記録し、拾い直しで繰り返さない（GAP-28・`nodes::outbound`）
 //! 3. rate limit（外部 API）・既存チョークポイント経由・監査記録
 //!
 //! 本モジュールはゲートの骨格（scope 天井・journal・監査フック）を提供する。個別能力の実処理は
@@ -15,7 +16,9 @@ use std::collections::BTreeSet;
 use serde_json::Value;
 
 use crate::vocab::Scope;
-pub use journal::{op_digest, EffectJournal, JournalDecision, JournalError};
+pub use journal::{
+    op_digest, EffectJournal, JournalDecision, JournalError, OutboundCheck, EFFECT_IN_PROGRESS,
+};
 
 /// 能力呼び出しの監査シンク（run 監査・OTel へ流す）。実装は呼び出し側が注入する。
 pub trait CapabilityAudit: Send + Sync {

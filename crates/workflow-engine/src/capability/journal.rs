@@ -3,6 +3,10 @@
 //! 冪等キー＋op_digest（`sha256(api＋正規化パラメータ)`）で副作用を UNIQUE 記録する。
 //! 同一キーで再実行が来たら記録済み結果を no-op で返す。キー衝突かつ digest 不一致は
 //! **permanent エラー**（同じ論理操作で違うことをしようとしている＝バグ or 攻撃）。
+//!
+//! 外への呼び出し（`llm.invoke`・`http.request`・`Shiki.http.request`）も同じ表で記録する（GAP-28・
+//! `nodes::outbound`）。外部への送信は、前の実行の予約が結果の無いまま残っていたら取り直さずに知らせる
+//! （[`EffectJournal::check_outbound`]・送ったかどうか分からない）。
 
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -12,6 +16,11 @@ use sqlx::PgPool;
 /// ワーカーはクラッシュしリースも失効したとみなし別ワーカーが再取得する。step リース TTL＋heartbeat
 /// 猶予より十分長く取る（生存ワーカーの副作用と競合しないため）。
 pub const RESERVATION_RECLAIM_SECS: i32 = 300;
+
+/// 前の実行の予約が結果の無いまま残っている（まだ処理中か、ワーカーが落ちた）ときの code（retryable）。
+///
+/// 試す回数を使わずに、予約を回収できるまで待ってやり直す（`retry::wait_policy`・GAP-28）。
+pub const EFFECT_IN_PROGRESS: &str = "effect_in_progress";
 
 /// journal 参照の結果。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,6 +33,23 @@ pub enum JournalDecision {
     InProgress,
     /// 同一キーで別の操作（digest 不一致）。permanent エラーにする。
     DigestMismatch,
+}
+
+/// 外への送信の予約の結果（[`EffectJournal::check_outbound`]）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OutboundCheck {
+    /// 予約の行で決まった（[`EffectJournal::check`] と同じ）。
+    Decision(JournalDecision),
+    /// 前の実行の予約が、結果の無いまま回収の猶予（[`RESERVATION_RECLAIM_SECS`]）を過ぎていた。送ったかどうか
+    /// 分からないので取り直さない。予約は消したので、次の実行（再開・やり直し）は送る。
+    Abandoned,
+}
+
+/// 予約の行を見た結果（[`EffectJournal::check`] と [`EffectJournal::check_outbound`] の共通部分）。
+enum Peek {
+    Decided(JournalDecision),
+    /// 結果の無い予約がある（処理中か、予約したワーカーが落ちた）。
+    Unfinished,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -71,12 +97,20 @@ fn canonical_json(v: &Value) -> String {
 /// effect journal のデータチョークポイント。
 #[derive(Clone)]
 pub struct EffectJournal {
-    db: PgPool,
+    /// `None` は記録しない journal（[`EffectJournal::unrecorded`]）。
+    db: Option<PgPool>,
 }
 
 impl EffectJournal {
     pub fn new(db: PgPool) -> Self {
-        EffectJournal { db }
+        EffectJournal { db: Some(db) }
+    }
+
+    /// 何も記録しない journal（DB を使わない executor のテスト用）。予約はいつも取れ、記録と予約を外すのは何もしない
+    /// ので、**重複を除かない**。本番の結線は [`EffectJournal::new`] を使う。
+    #[must_use]
+    pub fn unrecorded() -> Self {
+        EffectJournal { db: None }
     }
 
     /// 副作用実行の前に**アトミックに予約**する（外部副作用の at-most-once の要）。
@@ -84,13 +118,75 @@ impl EffectJournal {
     /// `INSERT ... ON CONFLICT DO NOTHING` で行を占有する。勝者だけ `Proceed`（副作用を実行）。
     /// 競合時は既存行を見て、digest 不一致=`DigestMismatch`・結果あり=`AlreadyDone`・結果未確定=
     /// `InProgress`（別ワーカー実行中＝二重送信しない）。リース takeover で 2 ワーカーが同 step に
-    /// 入っても、この予約が 1 つに絞るため副作用は高々 1 回（PIT-31）。
+    /// 入っても、この予約が 1 つに絞るため副作用は高々 1 回（PIT-31）。結果の無い予約が回収の猶予を過ぎて
+    /// いれば取り直して `Proceed`（回収窓の at-least-once）。
     pub async fn check(
         &self,
         tenant_id: &str,
         idempotency_key: &str,
         digest: &str,
     ) -> Result<JournalDecision, JournalError> {
+        match self
+            .peek_or_reserve(tenant_id, idempotency_key, digest)
+            .await?
+        {
+            Peek::Decided(d) => Ok(d),
+            // 結果未確定（実行中 or 孤児予約）。予約が古ければ回収を試みる。
+            Peek::Unfinished => self.try_reclaim(tenant_id, idempotency_key).await,
+        }
+    }
+
+    /// 外への送信の前に予約する（[`Self::check`] と同じ。ただし古い予約を取り直さない・GAP-28）。
+    ///
+    /// 結果の無い予約が回収の猶予を過ぎていたら、予約したワーカーは送っている途中か、送った後・記録の前に落ちた。
+    /// 相手が受け取ったかは分からないので、送り直さずに [`OutboundCheck::Abandoned`] を返し、予約を消す（次の実行が
+    /// 送る。再開と試す回数のやり直しは、作成者か利用者が送り直すと決めたもの）。猶予の内なら `InProgress`。
+    pub async fn check_outbound(
+        &self,
+        tenant_id: &str,
+        idempotency_key: &str,
+        digest: &str,
+    ) -> Result<OutboundCheck, JournalError> {
+        let Some(db) = &self.db else {
+            return Ok(OutboundCheck::Decision(JournalDecision::Proceed));
+        };
+        match self
+            .peek_or_reserve(tenant_id, idempotency_key, digest)
+            .await?
+        {
+            Peek::Decided(d) => Ok(OutboundCheck::Decision(d)),
+            Peek::Unfinished => {
+                let abandoned: Option<bool> = sqlx::query_scalar(
+                    "DELETE FROM effect_journal \
+                     WHERE tenant_id = $1 AND idempotency_key = $2 AND result_summary IS NULL \
+                       AND reserved_at < now() - make_interval(secs => $3::double precision) \
+                     RETURNING true",
+                )
+                .bind(tenant_id)
+                .bind(idempotency_key)
+                .bind(RESERVATION_RECLAIM_SECS)
+                .fetch_optional(db)
+                .await
+                .map_err(map_db)?;
+                Ok(if abandoned.is_some() {
+                    OutboundCheck::Abandoned
+                } else {
+                    OutboundCheck::Decision(JournalDecision::InProgress)
+                })
+            }
+        }
+    }
+
+    /// 予約の行を取るか、既存の行を見る（記録しない journal はいつも取れる）。
+    async fn peek_or_reserve(
+        &self,
+        tenant_id: &str,
+        idempotency_key: &str,
+        digest: &str,
+    ) -> Result<Peek, JournalError> {
+        let Some(db) = &self.db else {
+            return Ok(Peek::Decided(JournalDecision::Proceed));
+        };
         // 予約 INSERT（result_summary=NULL）。勝てば 1 行返る。
         let won: Option<bool> = sqlx::query_scalar(
             "INSERT INTO effect_journal (tenant_id, idempotency_key, op_digest) \
@@ -100,11 +196,11 @@ impl EffectJournal {
         .bind(tenant_id)
         .bind(idempotency_key)
         .bind(digest)
-        .fetch_optional(&self.db)
+        .fetch_optional(db)
         .await
         .map_err(map_db)?;
         if won.is_some() {
-            return Ok(JournalDecision::Proceed);
+            return Ok(Peek::Decided(JournalDecision::Proceed));
         }
         // 競合: 既存行の digest と結果を見る。
         let row: Option<(String, Option<Value>)> = sqlx::query_as(
@@ -113,16 +209,15 @@ impl EffectJournal {
         )
         .bind(tenant_id)
         .bind(idempotency_key)
-        .fetch_optional(&self.db)
+        .fetch_optional(db)
         .await
         .map_err(map_db)?;
-        match row {
-            Some((d, _)) if d != digest => Ok(JournalDecision::DigestMismatch),
-            Some((_, Some(summary))) => Ok(JournalDecision::AlreadyDone(summary)),
-            // 結果未確定（実行中 or 孤児予約）。予約が古ければ回収を試みる。
-            Some((_, None)) => self.try_reclaim(tenant_id, idempotency_key).await,
-            None => Ok(JournalDecision::Proceed), // 直前に削除された稀ケースは再挑戦。
-        }
+        Ok(match row {
+            Some((d, _)) if d != digest => Peek::Decided(JournalDecision::DigestMismatch),
+            Some((_, Some(summary))) => Peek::Decided(JournalDecision::AlreadyDone(summary)),
+            Some((_, None)) => Peek::Unfinished,
+            None => Peek::Decided(JournalDecision::Proceed), // 直前に削除された稀ケースは再挑戦。
+        })
     }
 
     /// 孤児予約（result_summary が NULL のまま `RESERVATION_RECLAIM_SECS` 経過）を再取得する。
@@ -136,6 +231,9 @@ impl EffectJournal {
         tenant_id: &str,
         idempotency_key: &str,
     ) -> Result<JournalDecision, JournalError> {
+        let Some(db) = &self.db else {
+            return Ok(JournalDecision::Proceed);
+        };
         let reclaimed: Option<bool> = sqlx::query_scalar(
             "UPDATE effect_journal SET reserved_at = now() \
              WHERE tenant_id = $1 AND idempotency_key = $2 AND result_summary IS NULL \
@@ -145,7 +243,7 @@ impl EffectJournal {
         .bind(tenant_id)
         .bind(idempotency_key)
         .bind(RESERVATION_RECLAIM_SECS)
-        .fetch_optional(&self.db)
+        .fetch_optional(db)
         .await
         .map_err(map_db)?;
         if reclaimed.is_some() {
@@ -165,6 +263,7 @@ impl EffectJournal {
         digest: &str,
         result_summary: &Value,
     ) -> Result<(), JournalError> {
+        let Some(db) = &self.db else { return Ok(()) };
         sqlx::query(
             "INSERT INTO effect_journal (tenant_id, idempotency_key, op_digest, result_summary) \
              VALUES ($1, $2, $3, $4) \
@@ -175,7 +274,7 @@ impl EffectJournal {
         .bind(idempotency_key)
         .bind(digest)
         .bind(result_summary)
-        .execute(&self.db)
+        .execute(db)
         .await
         .map_err(map_db)?;
         Ok(())
@@ -192,6 +291,7 @@ impl EffectJournal {
         idempotency_key: &str,
         digest: &str,
     ) -> Result<(), JournalError> {
+        let Some(db) = &self.db else { return Ok(()) };
         sqlx::query(
             "DELETE FROM effect_journal WHERE tenant_id = $1 AND idempotency_key = $2 \
                AND op_digest = $3 AND result_summary IS NULL",
@@ -199,7 +299,31 @@ impl EffectJournal {
         .bind(tenant_id)
         .bind(idempotency_key)
         .bind(digest)
-        .execute(&self.db)
+        .execute(db)
+        .await
+        .map_err(map_db)?;
+        Ok(())
+    }
+
+    /// 記録した結果ごと行を消す（同じ操作の行だけ・記録した結果を使えなかったとき・GAP-28）。
+    ///
+    /// 外への送信で、応答が大きくて記録しなかった（印だけ残した）行を拾い直しで見つけたら、送り直さずに失敗にし、
+    /// この行を消す。次の実行（再開・やり直し）は送る。
+    pub async fn discard(
+        &self,
+        tenant_id: &str,
+        idempotency_key: &str,
+        digest: &str,
+    ) -> Result<(), JournalError> {
+        let Some(db) = &self.db else { return Ok(()) };
+        sqlx::query(
+            "DELETE FROM effect_journal WHERE tenant_id = $1 AND idempotency_key = $2 \
+               AND op_digest = $3",
+        )
+        .bind(tenant_id)
+        .bind(idempotency_key)
+        .bind(digest)
+        .execute(db)
         .await
         .map_err(map_db)?;
         Ok(())

@@ -44,7 +44,10 @@ pub const KNOWN_CODES: &[(&str, FailureCategory)] = {
         ("index_preparing", Temporary),
         // PDF・Office の本文の社内文書の検索への取り込みが終わっていない（storage.read・D-111）。
         (crate::nodes::ports::INDEX_PENDING, Temporary),
-        ("effect_in_progress", Temporary),
+        // 前の実行の効果の記録の予約が残っている（試す回数を使わずに待ち、待つ上限を過ぎたときだけ失敗になる・GAP-28）。
+        (crate::capability::EFFECT_IN_PROGRESS, Temporary),
+        // 外部への送信が届いたかを確かめられないので、送り直さずに止めた（GAP-28）。
+        (crate::nodes::http::HTTP_DELIVERY_UNKNOWN, Temporary),
         ("concurrency_limited", Temporary),
         ("fetch_failed", Temporary),
         // 外部のサービスが一時的な誤り（5xx・429）を返した（http.request の fail_on_error_status・BUG-99）。
@@ -199,6 +202,11 @@ fn specific_message(code: &str) -> Option<&'static str> {
         // 「ワークフローの設定に問題があり」より原因を言う（送り先の名前が見つからない・BUG-202）。
         crate::nodes::http::DESTINATION_NOT_FOUND => {
             "送り先のサービスが見つからなかったため、外部のサービスに送れませんでした。作成者に連絡してください。"
+        }
+        // 「一時的な問題」より原因を言う（送り直さずに止めた・再開すると送り直す・P6・GAP-28）。
+        crate::nodes::http::HTTP_DELIVERY_UNKNOWN => {
+            "外部のサービスに送った内容が届いたかを確かめられないため、送り直さずに止めました。\
+             送り先の状態を確かめてから、必要なら失敗したところから再開してください。再開すると、もう一度送ります。"
         }
         // 付録 C の §5.2（failure.rs の時間切れの文言の直し）。
         "run_timeout" => {

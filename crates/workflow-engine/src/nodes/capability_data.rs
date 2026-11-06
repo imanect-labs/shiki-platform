@@ -170,7 +170,15 @@ where
             );
         })
     };
-    let (out, wrote) = journaled(journal, &ec.tenant_id, key, &digest, "データ書込", apply).await?;
+    let (out, wrote) = journaled(
+        journal,
+        &ec.tenant_id,
+        key,
+        &digest,
+        "テーブルへの書き込み",
+        apply,
+    )
+    .await?;
     if wrote {
         // 値・行の中身は監査に載せない（PII）。テーブルと対象の外部 ID だけ。
         audit.record(

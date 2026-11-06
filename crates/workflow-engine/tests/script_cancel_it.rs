@@ -11,7 +11,6 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
-use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
 use workflow_engine::nodes::ports::{
     AgentInvokeReq, CsvPatchReq, CsvWriteReq, ExecCtx, HttpSendReq, HttpSendResp, LlmInvokeReq,
@@ -128,11 +127,8 @@ fn ctx(input: Value) -> NodeContext {
 }
 
 fn executor(ports: Arc<SlowReadPorts>) -> CapabilityNodeExecutor {
-    let journal = EffectJournal::new(
-        PgPoolOptions::new()
-            .connect_lazy("postgres://unused:unused@127.0.0.1:1/none")
-            .unwrap(),
-    );
+    // 記録しない journal（DB を使わない・Shiki.http.request も journal を通る・GAP-28）。
+    let journal = EffectJournal::unrecorded();
     let engine = Arc::new(script_runtime::engine::ScriptEngine::new().expect("script engine"));
     CapabilityNodeExecutor::new(ports as Arc<dyn NodePorts>, journal, Arc::new(NoAudit))
         .with_script_engine(engine, script_runtime::engine::Limits::default())

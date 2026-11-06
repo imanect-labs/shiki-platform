@@ -6,7 +6,7 @@
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 
-use crate::capability::{op_digest, EffectJournal, JournalDecision};
+use crate::capability::{op_digest, EffectJournal, JournalDecision, EFFECT_IN_PROGRESS};
 use crate::ir::params::{
     content_type_from_name, CsvPatchParams, CsvQueryParams, CsvWriteParams, NameTakenPolicy,
     RagSearchParams, StorageListParams, StorageReadParams, StorageWriteParams, WorkflowStartParams,
@@ -73,15 +73,39 @@ fn leaves_no_effect(e: &PortError) -> bool {
     e.code != "unavailable"
 }
 
+/// 前の実行の予約が結果の無いまま残っているときの誤り（[`EFFECT_IN_PROGRESS`]・retryable）。
+///
+/// step は試す回数を使わずに、予約を回収できるまで待ってやり直す（`retry::wait_policy`・GAP-28）。この文が履歴に
+/// 残るのは、待つ上限を過ぎても予約が残っていたときだけ。`what` は何をしていたかを言う語（「保存」「AI の呼び出し」など）。
+pub(super) fn effect_in_progress(what: &str) -> PortError {
+    PortError::new(
+        EFFECT_IN_PROGRESS,
+        format!(
+            "前に始めた{what}の結果を確かめられないため、続けられませんでした。\
+             少し待ってから、失敗したところから再開してください。"
+        ),
+        true,
+    )
+}
+
+/// 同じ冪等キーで別の操作をしようとしたときの誤り（permanent・engine.md §7.3 の操作 digest・付録 D の N3）。
+pub(super) fn effect_conflict(what: &str) -> PortError {
+    PortError::new(
+        "effect_conflict",
+        format!("このブロックが前と違う内容で{what}をしようとしたため、止めました。"),
+        false,
+    )
+}
+
 /// 内部能力の書込を effect_journal で高々 1 回にする（予約 → 書込 → 結果の記録・cross-TX・PIT-31）。
 ///
 /// node と script の `Shiki.*`、data・csv.patch・csv.write・workflow.start が同じ手順を通る（予約を外す決まりを
 /// 1 か所に置く）。書込が副作用の無い誤り（[`leaves_no_effect`]）を返したら予約を外す。外さないと、原因を直して
 /// 回収の猶予（[`crate::capability::journal::RESERVATION_RECLAIM_SECS`]）の内に再開した同じステップが
-/// `effect_in_progress` で待たされ、既定の試す回数ではすぐに失敗になる（BUG-188）。
+/// `effect_in_progress` で待たされる（BUG-188。いまは試す回数を使わずに待つ・GAP-28）。
 ///
 /// 返すのは結果と、いま書いたか（`false` は記録済みの結果を返した。監査はいま書いたときだけ残す）。`what` は誤りの
-/// 文で何をしていたかを言う語（「起動」「編集」「保存」など）。
+/// 文で何をしていたかを言う語（「別のワークフローの実行」「CSV の保存」など）。
 pub(crate) async fn journaled<F>(
     journal: &EffectJournal,
     tenant_id: &str,
@@ -103,7 +127,7 @@ where
                 Ok(out) => out,
                 Err(e) => {
                     // 外せなくても元の誤りを返す（本当の原因の代わりに「一時的な問題」を見せない）。予約は残るので、
-                    // 回収の猶予の内に再開すると effect_in_progress で待つが、猶予の後は通る。
+                    // 回収の猶予の内に再開すると effect_in_progress で待ち、猶予の後に通る。
                     if leaves_no_effect(&e) {
                         if let Err(je) = journal.release(tenant_id, key, digest).await {
                             tracing::warn!(error = %je, code = %e.code,
@@ -120,16 +144,8 @@ where
             Ok((out, true))
         }
         JournalDecision::AlreadyDone(v) => Ok((v, false)),
-        JournalDecision::InProgress => Err(PortError::new(
-            "effect_in_progress",
-            format!("別ワーカーが{what}処理中"),
-            true,
-        )),
-        JournalDecision::DigestMismatch => Err(PortError::new(
-            "effect_conflict",
-            format!("同一冪等キーで別の{what}要求"),
-            false,
-        )),
+        JournalDecision::InProgress => Err(effect_in_progress(what)),
+        JournalDecision::DigestMismatch => Err(effect_conflict(what)),
     }
 }
 
@@ -360,7 +376,7 @@ impl CapabilityNodeExecutor {
             &ec.tenant_id,
             idempotency_key,
             &digest,
-            "起動",
+            "別のワークフローの実行",
             ports.workflow_start(ec, name, input),
         )
         .await
@@ -470,7 +486,7 @@ impl CapabilityNodeExecutor {
             &ec.tenant_id,
             &ctx.idempotency_key,
             &digest,
-            "編集",
+            "CSV の編集",
             self.ports.csv_patch(
                 ec,
                 CsvPatchReq {
@@ -543,7 +559,7 @@ impl CapabilityNodeExecutor {
             &ec.tenant_id,
             &ctx.idempotency_key,
             &digest,
-            "保存",
+            "CSV の保存",
             write,
         )
         .await?;
