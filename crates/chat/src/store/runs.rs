@@ -191,6 +191,7 @@ impl ChatStore {
         // リースを延長し続ける**必要がある（承認ブロック中にリース失効→誤キャンセルを防ぐ・Task 5.6）。
         // よって chat 専用 SQL で running / waiting_approval の両方を受ける。fencing でゾンビは弾く。
         let cancel: Option<bool> = sqlx::query_scalar(
+            // tenant-sql: allow(fencing 付きの内部 run_id でリース延長)
             "UPDATE generation_run \
                 SET lease_until = now() + ($3 || ' seconds')::interval, updated_at = now() \
              WHERE run_id = $1 AND fencing_token = $2 \
@@ -317,6 +318,7 @@ impl ChatStore {
             tx.rollback().await.map_err(map_db)?;
             return Ok(false);
         };
+        // tenant-sql: allow(fencing 済みの run 行から得た message_id で本文確定)
         sqlx::query("UPDATE message SET content = $2 WHERE id = $1")
             .bind(message_id)
             .bind(Json(content))
@@ -325,6 +327,7 @@ impl ChatStore {
             .map_err(map_db)?;
         super::yui_actions::insert_bindings(&mut tx, message_id, ui_bindings).await?;
         // 端末確定でチェックポイントを落とす（再開対象でなくなった run の履歴 JSON を残さない・#351）。
+        // tenant-sql: allow(fencing 確定済みの run の checkpoint を消去)
         sqlx::query("UPDATE generation_run SET checkpoint = NULL WHERE run_id = $1")
             .bind(run_id)
             .execute(&mut *tx)

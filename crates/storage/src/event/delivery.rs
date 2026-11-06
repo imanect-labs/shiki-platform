@@ -399,6 +399,7 @@ pub async fn unregister_consumer(
         return Ok(false);
     }
     // 台帳行も消す（残しても GC 判定は consumer 集合基準なので害はないが、無用に肥大させない）。
+    // tenant-sql: allow(廃止コンシューマの全台帳削除)
     sqlx::query("DELETE FROM outbox_delivery WHERE consumer = $1")
         .bind(consumer)
         .execute(conn)

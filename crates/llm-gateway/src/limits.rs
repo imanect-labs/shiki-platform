@@ -184,6 +184,7 @@ impl UsageLimiter {
             return Ok(None);
         };
         let (sum,): (i64,) = sqlx::query_as(&format!(
+            // tenant-sql: allow(共有 API キー枠の全テナント合算)
             "SELECT COALESCE(SUM(cost_usd_micros), 0)::bigint FROM llm_usage \
              WHERE provider_id = ANY($1) AND created_at >= {MONTH_START}"
         ))

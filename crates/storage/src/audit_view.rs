@@ -217,6 +217,7 @@ fn build_query<'a>(
     let mut q = QueryBuilder::new("");
     let source = if let Some(chunk) = &f.chunk_id {
         q.push(
+            // tenant-sql: allow(QueryBuilder が直後に tenant_id を push する)
             "WITH cited AS MATERIALIZED (SELECT * FROM audit_log \
              WHERE action = 'rag.search' AND metadata -> 'cited_chunk_ids' ? ",
         )
