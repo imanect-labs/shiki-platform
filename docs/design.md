@@ -794,10 +794,13 @@ flowchart TB
   ① アプリ層の URL 検証（http/https のみ・userinfo 不可・IP リテラル/単一ラベル/内部ドメイン拒否）、
   ② **解決後 IP の再検証**（全解決先が公開 IP であること・`sandbox_client::net_guard`）、
   ③ **検証済みアドレスへの接続固定**（`resolve_to_addrs`。接続時に再解決させない＝DNS リバインディング遮断）、
-  ④ リダイレクト非追従（PIT-36）、⑤ シークレット非添付・プロキシ非経由、⑥ 本文 256KiB 上限・テキストのみ。
+  ④ リダイレクト非追従（PIT-36）、⑤ シークレット非添付・環境のプロキシ非経由、⑥ 本文 256KiB 上限・テキストのみ。
   IP 分類は **net_guard が単一の正**で、egress プロキシ（gVisor/FC ティア）とミニアプリ HTTP（app-platform）も同じ表を使う。
-  ミニアプリの関数の外部 HTTP も、②〜⑤（接続固定・リダイレクト非追従・プロキシ非経由）と本文の上限（1 MiB）を同じく
-  守る（BUG-196・[PIT-48](./design-caveats.md)）。
+  ミニアプリの関数の外部 HTTP も、②〜⑤（接続固定・リダイレクト非追従・環境のプロキシ非経由）と本文の上限（1 MiB）を
+  同じく守る（BUG-196・[PIT-48](./design-caveats.md)）。外へ出るのに中継が要る環境（オンプレ）では、web_fetch・
+  ワークフローの外部への送信・ミニアプリの関数の外部 HTTP を、運用者が設定で明示した中継（`egress.proxy_url`）にだけ
+  通す。中継には③で確かめた IP アドレスへの CONNECT を頼み（名前を渡さない）、TLS はトンネルの中で URL の名前で結ぶ
+  （`sandbox_client::egress_proxy`・GAP-72）。社内の送り先（管理者が内部の送り先として許したホスト）は中継を通さない。
   **前提条件（#346 で充足済み）**: code_interpreter が宣伝する numpy/pandas は、native rootfs へビルド時に同梱する
   （`deploy/sandbox-assets/rootfs-requirements.txt`・digest pin × wheel ハッシュ全固定 `--require-hashes` の二層で再現）。
   同梱物はティアで異なる（native のみ openpyxl・#384）ため、**ツール description はティアから導出**して
