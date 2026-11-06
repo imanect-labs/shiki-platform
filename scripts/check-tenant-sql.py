@@ -53,7 +53,16 @@ def tenant_tables(migrations: list[str]) -> set[str]:
 
 def string_literals(src: str) -> list[tuple[int, str]]:
     """Rust ソースの文字列リテラル（開始行・中身）。コメント・char リテラル・ライフタイムを読み飛ばす。"""
+    return scan(src)[0]
+
+
+def scan(src: str) -> tuple[list[tuple[int, str]], list[tuple[int, str]]]:
+    """Rust ソースを字句で読み、文字列リテラルと行コメント（それぞれ開始行・中身）を返す。
+
+    注記（`tenant-sql: allow`）は行コメントの中だけを数えるため、文字列リテラル内の `//` と区別する。
+    """
     out: list[tuple[int, str]] = []
+    comments: list[tuple[int, str]] = []
     i, line, n = 0, 1, len(src)
 
     def prev_ident(k: int) -> bool:
@@ -65,8 +74,10 @@ def string_literals(src: str) -> list[tuple[int, str]]:
             line += 1
             i += 1
         elif src.startswith("//", i):
+            start = i
             while i < n and src[i] != "\n":
                 i += 1
+            comments.append((line, src[start:i]))
         elif src.startswith("/*", i):
             end = src.find("*/", i + 2)
             end = n if end < 0 else end + 2
@@ -108,7 +119,7 @@ def string_literals(src: str) -> list[tuple[int, str]]:
             i = j + 1
         else:
             i += 1
-    return out
+    return out, comments
 
 
 TEST_MOD = re.compile(r"#\[cfg\(test\)\]\s*(?:pub(?:\([a-z]+\))?\s+)?mod\s+\w+\s*\{")
@@ -183,13 +194,17 @@ def _skip_literal(src: str, i: int) -> int:
 
 
 def violations(path: str, src: str, tables: set[str]) -> list[str]:
-    lines = src.split("\n")
     tests = test_ranges(src)
     # crates/data/src の data_* は S3（shard_safety_lint.rs）が見る。
     if path.startswith("crates/data/src/"):
         tables = {t for t in tables if not t.startswith("data_")}
     out = []
-    for line, text in string_literals(src):
+    literals, comments = scan(src)
+    allow_lines: dict[int, str] = {}
+    for cline, ctext in comments:
+        if m := ALLOW.search(ctext):
+            allow_lines[cline] = m.group("reason")
+    for line, text in literals:
         if any(a <= line <= b for a, b in tests):
             continue
         if not SQL_VERB.search(text):
@@ -197,10 +212,9 @@ def violations(path: str, src: str, tables: set[str]) -> list[str]:
         refs = sorted({t.lower() for t in TABLE_REF.findall(text)} & tables)
         if not refs or TENANT_COND.search(text):
             continue
-        window = lines[max(0, line - 4) : line]
-        # 注記は行コメントの中だけを数える（文字列リテラルに同じ文言があっても例外にしない）。
-        allowed = [m for w in window if (m := ALLOW.search(w)) and "//" in w[: m.start()]]
-        if allowed and allowed[-1].group("reason").strip():
+        # 注記は字句解析で行コメントと判定したものだけを数える（文字列リテラル内の `//` や同じ文言は効かない）。
+        reasons = [allow_lines[k] for k in range(max(1, line - 3), line + 1) if k in allow_lines]
+        if reasons and reasons[-1].strip():
             continue
         out.append(f"{path}:{line}: {', '.join(refs)}")
     return out

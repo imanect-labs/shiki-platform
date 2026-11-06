@@ -93,6 +93,8 @@ class ViolationsTest(unittest.TestCase):
     def test_allow_inside_a_string_literal_does_not_count(self):
         src = 'let s = "tenant-sql: allow(文字列の中)";\nlet q = "DELETE FROM job_queue WHERE done";\n'
         self.assertEqual(self.check(src), ["x.rs:2: job_queue"])
+        slashes = 'let s = "// tenant-sql: allow(文字列内)";\nlet q = "DELETE FROM job_queue WHERE done";\n'
+        self.assertEqual(self.check(slashes), ["x.rs:2: job_queue"])
         trailing = 'foo(); // tenant-sql: allow(行末のコメント)\nlet q = "DELETE FROM job_queue WHERE done";\n'
         self.assertEqual(self.check(trailing), [])
 
