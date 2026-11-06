@@ -4,7 +4,7 @@
     uv run python scripts/record_fixtures.py --runs --api-url http://localhost:8080   # run の記録（stub のスタックが要る）
 
 - `--lint`: `tests/fixtures/ir_lint/catalog.json`（`ir_lint --catalog`）と `tests/fixtures/ir_lint/core.jsonl`
-  （中核の課題の正解の IR・その壊し方 8 通り・中身の無い IR を ir_lint に掛けた結果）。置き場所の印はダミーの
+  （中核の課題の正解の IR・その壊し方 9 通り・中身の無い IR を ir_lint に掛けた結果）。置き場所の印はダミーの
   UUID にする（`tasks.offline_irs`）。各行に入力の IR の sha（`ir_sha`）を足すので、課題を変えて記録し直して
   いなければオフラインのテストが気づく。実物との一致は `pytest -m lint_bin`（tests/test_lint_bin.py）が見る。
 - `--runs`: [`RUN_TASKS`] の課題を stub のスタックで流した記録（`tests/fixtures/runs/<課題>.<種類>.<run_case>.json`）。
@@ -75,6 +75,7 @@ def record_lint() -> None:
                 "ignored_by_env": list(r.ignored_by_env),
                 "warnings": list(r.warnings),
                 "run_blockers": list(r.run_blockers),
+                "enable_blockers": list(r.enable_blockers),
                 "node_ports": {k: list(v) for k, v in r.node_ports.items()},
                 "declared_scopes": list(r.declared_scopes),
             }

@@ -1,4 +1,4 @@
-"""採点器の自己テスト: 8 通りの壊し方が、期待した検査で捕まる（GAP-30 §5.4）。
+"""採点器の自己テスト: 9 通りの壊し方が、期待した検査で捕まる（GAP-30 §5.4）。
 
 - 静的: 中核の全課題の正解 IR に当てはまる壊し方を全部かけ、記録した ir_lint の出力（tests/fixtures/ir_lint/）で
   採点する。
@@ -193,16 +193,44 @@ def test_disabling_a_detector_makes_the_self_test_fail(
 def test_disabling_lint_errors_makes_the_self_test_fail(monkeypatch):
     real = static.classify_lint
 
-    def no_errors(r):
-        l1 = real(r)
+    def no_errors(r, unattended=False):
+        l1 = real(r, unattended)
         return static.Layer1(
-            (), l1.run_blockers, l1.strict_warnings, l1.warnings, l1.ignored_by_env, l1.input_error
+            (),
+            l1.run_blockers,
+            l1.strict_warnings,
+            l1.warnings,
+            l1.ignored_by_env,
+            l1.input_error,
+            l1.enable_blockers,
         )
 
     monkeypatch.setattr(static, "classify_lint", no_errors)
     failed = check_static()
     for name in ("edge_port_key", "from_port_next", "unknown_var", "from_node_id"):
         assert any(f"mut:{name}:" in f for f in failed), name
+
+
+def test_not_counting_enable_blockers_lets_a_missing_folder_through(monkeypatch):
+    """自動で動く課題で保存先のフォルダを省くと、有効化の前に止まる（S2s）。数えないと見逃す。"""
+    assert not [f for f in check_static() if "mut:drop_folder" in f]
+    real = static.classify_lint
+    monkeypatch.setattr(static, "classify_lint", lambda r, unattended=False: real(r, False))
+    failed = check_static()
+    assert failed and all("mut:drop_folder" in f for f in failed), failed
+
+
+def test_enable_blockers_count_only_for_unattended_tasks():
+    from abeval.grade.static import LintResult
+
+    lr = LintResult(id="x", enable_blockers=({"code": "ir.write_folder_required"},))
+    t = recorded.tasks()["basic-summary-file"]  # 対話の課題
+    g = grade_static({"nodes": [], "edges": []}, t.role(None).expect, lr, recorded.catalog())
+    assert g.layer1.enable_blockers == () and not g.layer1.s2s
+    t = recorded.tasks()["app03-weekly-summary"]  # スケジュールの課題
+    g = grade_static({"nodes": [], "edges": []}, t.role(None).expect, lr, recorded.catalog())
+    assert g.layer1.enable_blockers == ("ir.write_folder_required",) and g.s2s
+    assert "lint:ir.write_folder_required" in g.detectors()
 
 
 def test_v0_synthesis_really_skips_the_dead_edge_target():

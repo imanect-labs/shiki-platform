@@ -45,12 +45,13 @@ def test_recorded_lint_matches_the_binary():
             "ignored_by_env": list(r.ignored_by_env),
             "warnings": list(r.warnings),
             "run_blockers": list(r.run_blockers),
+            "enable_blockers": list(r.enable_blockers),
             "node_ports": {k: list(v) for k, v in r.node_ports.items()},
             "declared_scopes": list(r.declared_scopes),
             **({"input_error": r.input_error} if r.input_error else {}),
         }
         assert json.loads(json.dumps(got)) == _plain(want[i]), i
-    assert meta["schema"] == 1
+    assert meta["schema"] == 2
 
 
 def test_recorded_catalog_matches_the_binary():

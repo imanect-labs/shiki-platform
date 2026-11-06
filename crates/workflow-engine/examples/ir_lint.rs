@@ -1,17 +1,21 @@
 //! 保存時検証の CLI（評価基盤 `eval/app-builder/` の採点の 1 層目・GAP-30）。
 //!
 //! 製品の規則を評価側へ写さないため、検証 API（`POST /workflows/validate`）と同じ関数を同じ順で呼ぶ
-//! （`complete_declared_scopes` → `validate` → `save_warnings`・`node_ports`）。カタログは
+//! （`complete_declared_scopes` → `validate` → `save_warnings`・`node_ports`）。止める理由は、実行の口と
+//! 有効化の口（`POST /workflows/{id}/enable` が 409 で返す）と同じ関数で出す（`run_blockers`・`enable_blockers`）。カタログは
 //! `Catalog::default()`（モデル・テーブル・フォルダー・ファイル・相手のワークフローは照合しない。secret と skill は
 //! 空の集合と照合する）。
 //!
 //! 標準入力の JSONL を 1 行ずつ読む（1 行 = `{"id": str, "ir": object}`・空行は読み飛ばす）。1 行ごとに標準出力へ
-//! `{"id", "errors", "ignored_by_env", "warnings", "run_blockers", "node_ports", "declared_scopes"}` を書く。
+//! `{"id", "errors", "ignored_by_env", "warnings", "run_blockers", "enable_blockers", "node_ports",
+//! "declared_scopes"}` を書く。
 //!
 //! - `errors`: 検証の誤り（環境に依存するコードを除く）。
 //! - `ignored_by_env`: 環境（登録した secret・入れた skill）に依存するコードの誤り（[`IGNORED_BY_ENV`]）。
 //! - `warnings`: 保存を止めない警告（`save_warnings`）。
 //! - `run_blockers`: 対話の実行の前に止める理由（`run_blockers`）。
+//! - `enable_blockers`: 自動実行をオンにする前に止める理由（`enable_blockers`・schedule / event のきっかけで、
+//!   保存先や一覧のフォルダを省いたなど。採点はきっかけが schedule・event の課題だけで数える）。
 //! - `node_ports`: ノードの出口（検証 API と同じ `node_ports`）。
 //! - `declared_scopes`: スコープを補った後の宣言。
 //!
@@ -29,12 +33,16 @@ use std::io::{self, BufRead, BufWriter, Write};
 use serde_json::{json, Value};
 use workflow_engine::vocab::node_catalog;
 use workflow_engine::{
-    complete_declared_scopes, node_ports, run_blockers, save_warnings, validate, Catalog,
-    ValidationError, WorkflowIr, SAVE_WARNING_CODES,
+    complete_declared_scopes, enable_blockers, node_ports, run_blockers, save_warnings, validate,
+    Catalog, ValidationError, WorkflowIr, SAVE_WARNING_CODES,
 };
 
 /// 環境に依存する誤りのコード。評価の版のサーバと ir_lint ではカタログ（登録した secret・入れた skill）が違うので、
 /// 採点の「静的に誤りがある」（S2s）に数えず、別の欄に分ける。
+///
+/// `ir.unknown_version` は環境に依存するコードではない（版ごとの `MAX_IR_VERSION` の差に備えて設計どおりに
+/// 分けている・今は V0 も HEAD も 1 なので、ir_version が 0 か 2 以上なら必ず出る静的な誤り）。S1（版のサーバの
+/// 検証）では落ちるので見出しには響かないが、S2s の内訳には出ない。
 const IGNORED_BY_ENV: &[&str] = &[
     "ir.unknown_secret",
     "ir.binding_denied",
@@ -42,8 +50,8 @@ const IGNORED_BY_ENV: &[&str] = &[
     "ir.unknown_version",
 ];
 
-/// 出力の形の版（形を変えたら上げる）。
-const SCHEMA: u32 = 1;
+/// 出力の形の版（形を変えたら上げる）。2: `enable_blockers` を足した。
+const SCHEMA: u32 = 2;
 
 fn meta() -> Value {
     json!({ "crate_version": env!("CARGO_PKG_VERSION"), "schema": SCHEMA })
@@ -68,21 +76,28 @@ fn split_by_env(errors: Vec<ValidationError>) -> (Vec<ValidationError>, Vec<Vali
 }
 
 /// 読めた IR の警告・出口・止める理由。
-type Derived = (
-    Vec<ValidationError>,
-    BTreeMap<String, Vec<String>>,
-    Vec<ValidationError>,
-);
+#[derive(Default)]
+struct Derived {
+    warnings: Vec<ValidationError>,
+    ports: BTreeMap<String, Vec<String>>,
+    run_blockers: Vec<ValidationError>,
+    enable_blockers: Vec<ValidationError>,
+}
 
 fn derived(ir: &WorkflowIr, catalog: &Catalog) -> Derived {
-    (save_warnings(ir, catalog), node_ports(ir), run_blockers(ir))
+    Derived {
+        warnings: save_warnings(ir, catalog),
+        ports: node_ports(ir),
+        run_blockers: run_blockers(ir),
+        enable_blockers: enable_blockers(ir),
+    }
 }
 
 /// 1 つの IR を検証 API と同じ順で検査する。
 fn lint(id: &str, raw: &Value) -> Value {
     let catalog = Catalog::default();
     let (ir, _) = complete_declared_scopes(raw);
-    let (errors, (warnings, ports, blockers)) = match validate(&ir, &catalog) {
+    let (errors, d) = match validate(&ir, &catalog) {
         Ok(parsed) => (Vec::new(), derived(&parsed, &catalog)),
         // スキーマを通る IR なら、ほかの誤りがあっても警告と出口は出す（検証 API と同じ）。
         Err(errors) => {
@@ -106,9 +121,10 @@ fn lint(id: &str, raw: &Value) -> Value {
         "id": id,
         "errors": errors,
         "ignored_by_env": ignored,
-        "warnings": warnings,
-        "run_blockers": blockers,
-        "node_ports": ports,
+        "warnings": d.warnings,
+        "run_blockers": d.run_blockers,
+        "enable_blockers": d.enable_blockers,
+        "node_ports": d.ports,
         "declared_scopes": declared_scopes,
     })
 }
@@ -375,5 +391,41 @@ mod tests {
         assert!(!run_blockers(&parsed).is_empty());
         assert_eq!(out["run_blockers"], json!(run_blockers(&parsed)), "{out:#}");
         assert!(codes(&out, "errors").is_empty(), "{out:#}");
+    }
+
+    #[test]
+    fn enable_blockers_come_from_the_enable_function() {
+        // スケジュールで動く IR の保存先のフォルダを省くと、保存はできるが自動実行をオンにできない
+        // （POST /workflows/{id}/enable が 409・WRITE_FOLDER_REQUIRED）。対話の IR では出ない。
+        let scheduled = json!({
+            "ir_version": 1, "name": "wf", "declared_scopes": [],
+            "triggers": [{ "kind": "schedule", "cron": "0 9 * * 1", "tz": "Asia/Tokyo" }],
+            "nodes": [{ "id": "save", "type": "storage.write", "params": {
+                "name": "a.md", "content": "x" } }],
+            "edges": []
+        });
+        let out = lint_one(&scheduled);
+        let (completed, _) = complete_declared_scopes(&scheduled);
+        let parsed = WorkflowIr::from_json(&completed).unwrap();
+        assert_eq!(
+            out["enable_blockers"],
+            json!(enable_blockers(&parsed)),
+            "{out:#}"
+        );
+        assert!(
+            codes(&out, "enable_blockers")
+                .iter()
+                .any(|c| c == "ir.write_folder_required"),
+            "{out:#}"
+        );
+        let mut interactive = scheduled.clone();
+        interactive["triggers"] = json!([{ "kind": "interactive" }]);
+        let out = lint_one(&interactive);
+        assert!(
+            !codes(&out, "enable_blockers")
+                .iter()
+                .any(|c| c == "ir.write_folder_required"),
+            "{out:#}"
+        );
     }
 }

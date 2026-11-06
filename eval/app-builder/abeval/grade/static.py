@@ -1,10 +1,13 @@
 """静的な採点（GAP-30 §5.2）。
 
-**1 層目: ir_lint**（HEAD の `complete_declared_scopes` → `validate` → `save_warnings`・`node_ports`・`run_blockers`）。
-標準入力の JSONL を渡し、1 行ずつの結果を読む（`crates/workflow-engine/examples/ir_lint.rs`）。
+**1 層目: ir_lint**（HEAD の `complete_declared_scopes` → `validate` → `save_warnings`・`node_ports`・`run_blockers`・
+`enable_blockers`）。標準入力の JSONL を渡し、1 行ずつの結果を読む（`crates/workflow-engine/examples/ir_lint.rs`）。
 
 - `errors`（環境に依存するコード `ignored_by_env` を除いたもの）と `run_blockers`（対話の実行の前に止める理由）は
   S2s（保存できても静的に誤り）に入れる。
+- `enable_blockers`（自動実行をオンにする前に止める理由・保存先や一覧のフォルダの省略など）は、課題のきっかけが
+  schedule か event のときだけ S2s に入れる（その課題は自動実行をオンにしないと使えない。対話の課題で余計な
+  きっかけを足しただけなら数えない）。
 - `warnings` のうち [`STRICT_WARNINGS`] は S2s、それ以外は S2w（警告だけ・診断用）に入れる。
 
   STRICT_WARNINGS の選び方: 実行で結果を壊すか、依頼を満たさないことがほぼ確かなものだけを選ぶ。
@@ -100,6 +103,7 @@ class LintResult:
     ignored_by_env: tuple[dict, ...] = ()
     warnings: tuple[dict, ...] = ()
     run_blockers: tuple[dict, ...] = ()
+    enable_blockers: tuple[dict, ...] = ()
     node_ports: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     declared_scopes: tuple[str, ...] = ()
     input_error: str | None = None
@@ -112,6 +116,7 @@ class LintResult:
             ignored_by_env=tuple(d.get("ignored_by_env") or ()),
             warnings=tuple(d.get("warnings") or ()),
             run_blockers=tuple(d.get("run_blockers") or ()),
+            enable_blockers=tuple(d.get("enable_blockers") or ()),
             node_ports={k: tuple(v) for k, v in (d.get("node_ports") or {}).items()},
             declared_scopes=tuple(d.get("declared_scopes") or ()),
             input_error=d.get("input_error"),
@@ -232,14 +237,25 @@ class Layer1:
     warnings: tuple[str, ...]
     ignored_by_env: tuple[str, ...]
     input_error: str | None
+    # 自動実行をオンにする前に止める理由（きっかけが schedule・event の課題だけ・それ以外は空）。
+    enable_blockers: tuple[str, ...] = ()
 
     @property
     def s2s(self) -> bool:
-        return bool(self.errors or self.run_blockers or self.strict_warnings or self.input_error)
+        return bool(
+            self.errors
+            or self.run_blockers
+            or self.enable_blockers
+            or self.strict_warnings
+            or self.input_error
+        )
 
 
-def classify_lint(r: LintResult) -> Layer1:
-    """ir_lint の 1 行を S2s と S2w に分ける。"""
+UNATTENDED = ("schedule", "event")
+
+
+def classify_lint(r: LintResult, unattended: bool = False) -> Layer1:
+    """ir_lint の 1 行を S2s と S2w に分ける（`unattended` は課題のきっかけが schedule・event）。"""
     warn = [w["code"] for w in r.warnings]
     return Layer1(
         errors=tuple(e["code"] for e in r.errors),
@@ -248,6 +264,7 @@ def classify_lint(r: LintResult) -> Layer1:
         warnings=tuple(c for c in warn if c not in STRICT_WARNINGS),
         ignored_by_env=tuple(e["code"] for e in r.ignored_by_env),
         input_error=r.input_error,
+        enable_blockers=tuple(e["code"] for e in r.enable_blockers) if unattended else (),
     )
 
 
@@ -445,9 +462,10 @@ class StaticGrade:
 
     def detectors(self) -> set[str]:
         """捕まえた検査の名前（採点器の自己テストで、期待した分類で捕まったかを見る）。"""
+        l1 = self.layer1
         out = {
             f"lint:{c}"
-            for c in (*self.layer1.errors, *self.layer1.strict_warnings, *self.layer1.run_blockers)
+            for c in (*l1.errors, *l1.strict_warnings, *l1.run_blockers, *l1.enable_blockers)
         }
         out |= {f"task:{f.code}" for f in self.task_findings}
         if self.structure:
@@ -463,6 +481,7 @@ class StaticGrade:
             "lint": {
                 "errors": list(l1.errors),
                 "run_blockers": list(l1.run_blockers),
+                "enable_blockers": list(l1.enable_blockers),
                 "strict_warnings": list(l1.strict_warnings),
                 "warnings": list(l1.warnings),
                 "ignored_by_env": list(l1.ignored_by_env),
@@ -485,4 +504,5 @@ def grade_static(
             *output_path_findings(ir, catalog),
         ]
     structure = structure_findings(ir, expect) if isinstance(ir, Mapping) else []
-    return StaticGrade(classify_lint(lint), task, structure)
+    unattended = (expect.trigger or {}).get("kind") in UNATTENDED
+    return StaticGrade(classify_lint(lint, unattended), task, structure)

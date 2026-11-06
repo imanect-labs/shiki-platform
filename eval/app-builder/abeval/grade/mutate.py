@@ -10,6 +10,7 @@
 | `input_key` | 下流に届くべき入力の参照の key を替える | `task:input_ref`（入力の参照ミス）と `dyn:not_delivered`（S2d） |
 | `drop_node_type` | 期待のノード種（all_of）のノードを抜く | `s5` |
 | `llm_path_category` | 形の無い llm.invoke の出力の path を `/category` にする | `task:output_path` |
+| `drop_folder` | きっかけが schedule・event の課題で、保存（storage.write・csv.write）の folder を省く | `lint:ir.write_folder_required`（自動実行をオンにできない・S2s） |
 
 当てはまらない IR（壊す場所が無い）では None を返す。ノード id・エッジの順は保つ（記録と並べて比べるため）。
 """
@@ -169,6 +170,22 @@ def llm_path_category(ir: dict, _: Expect) -> dict | None:
     return None
 
 
+def drop_folder(ir: dict, expect: Expect) -> dict | None:
+    """自動で動く課題の、最初の保存のノードの folder を省く（stub の対話の実行はルートに書けて通る）。"""
+    if (expect.trigger or {}).get("kind") not in ("schedule", "event"):
+        return None
+    m = copy.deepcopy(ir)
+    for n in m.get("nodes") or []:
+        params = n.get("params")
+        if (
+            n.get("type") in ("storage.write", "csv.write")
+            and isinstance(params, dict)
+            and params.pop("folder", None) is not None
+        ):
+            return m
+    return None
+
+
 MUTATIONS: tuple[Mutation, ...] = (
     Mutation("edge_port_key", frozenset({"lint:ir.schema_violation"}), frozenset(), edge_port_key),
     Mutation(
@@ -190,6 +207,7 @@ MUTATIONS: tuple[Mutation, ...] = (
     ),
     Mutation("drop_node_type", frozenset({"s5"}), frozenset(), drop_node_type),
     Mutation("llm_path_category", frozenset({"task:output_path"}), frozenset(), llm_path_category),
+    Mutation("drop_folder", frozenset({"lint:ir.write_folder_required"}), frozenset(), drop_folder),
 )
 
 

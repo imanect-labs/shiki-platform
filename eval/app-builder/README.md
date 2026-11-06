@@ -230,10 +230,10 @@ docstring（§3.1 に `clarifications`・`run_cases[].llm_dependent`・`run_case
 
 | 置き場 | 中身 |
 | --- | --- |
-| `grade/static.py` | 1 層目 ir_lint（`errors`・`run_blockers`・`STRICT_WARNINGS` は S2s、ほかの警告は S2w、`ignored_by_env` は数えない）。2 層目は課題の検査（入力の参照・`flow_through`・出力の path〔カタログの `output_fields` と `present_if`〕）と S5（トリガ・ノードの種類・診断用） |
+| `grade/static.py` | 1 層目 ir_lint（`errors`・`run_blockers`・`STRICT_WARNINGS` は S2s、`enable_blockers`〔自動実行をオンにする前に止める理由・保存先のフォルダの省略など〕はきっかけが schedule・event の課題だけ S2s、ほかの警告は S2w、`ignored_by_env` は数えない）。2 層目は課題の検査（入力の参照・`flow_through`・出力の path〔カタログの `output_fields` と `present_if`〕）と S5（トリガ・ノードの種類・診断用） |
 | `grade/dynamic.py` | dead edge（`node_ports` に無い出口・出口が 1 つのノードの通らなかった線）・差し込みの残り（`{name}`・`{{…}}`）・入力が届かない（stub の run だけ。実モデルの出力は入力の全文を含まない）・想定外の状態（stub で流した `llm_dependent` でない run_case の状態が期待と違う）・想定外の skipped（成功した run で、分岐でも error の出口でもない線の先が飛ばされた。元の 1 つだけを数える）。`llm_dependent` を stub で流したときは最初の LLM のノードまでに限る |
 | `grade/checks.py` | 照合子（equals・contains・regex・in・absent・rows・files・no_new_rows）。NFKC と数字の正規化。`$fixture` で fixture から期待値を計算する。実行の日に決まる値（貸出日・ファイル名の日付）は `{"$run_date": {}}`・name_regex の `@run_date` で、run を始めた日（日本時間・`$from run /date` と同じ）と照合する（形の正規表現にしない） |
-| `grade/mutate.py` | 採点器の自己テストの 8 通りの壊し方と、期待する検査。中身の無い IR（null） |
+| `grade/mutate.py` | 採点器の自己テストの 9 通りの壊し方（設計の 8 通りと、自動で動く課題の保存先のフォルダを省く `drop_folder`）と、期待する検査。中身の無い IR（null） |
 | `gen_checks.py` | 課題の検査 G1〜G9 のうちオフラインのもの（G2・G4・G5・G7・G8・G9）。G8 の拒否リストは `~/.config/shiki-dev/abeval-denylist.txt`（リポジトリの外・1 行 1 語）。無ければ理由を出して飛ばす。理由には場所と語の長さだけを書く |
 | `run_cases.py` | run_case をサーバーで流して記録を集める（fixture の行の入れ直し・起動の列・成功した step の出力・行・増えたファイル・再実行）。正解の結合テストと、後の段の Mode A・B が使う |
 | `grading.py` | 試行の採点の部品。基盤の失敗（保存できない・時間切れ・5xx など）で流せなかった run_case が 1 つでもあれば、S2d・S3・S4 を None にして試行を errors に回す（部分だけで採点しない）。見出しは S2s・S2d（Mode B は S4 も）が決まったときだけ真で、決まらなければ None（率の分母に入れない） |
@@ -439,7 +439,7 @@ Mode B で承認待ち（`approval_requested`）が来たら、既定で却下�
   （`test_capture_it.py`）は、API のポートを握るサーバーの `SHIKI_CONFIG` の anthropic が `127.0.0.1:18200`
   （abeval.proxy）を指し、鍵がダミーのときだけ流す（テストの中で capture_only の abeval.proxy を 18200 で動かす・
   上流は繋がらない宛先）。それ以外のスタックでは理由を出して飛ばす。
-- 採点器の自己テスト（`tests/test_mutate.py`）は、8 通りの壊し方が期待した検査で捕まることと、検査を何もしない
+- 採点器の自己テスト（`tests/test_mutate.py`）は、9 通りの壊し方が期待した検査で捕まることと、検査を何もしない
   ように差し替えるとそのテストが落ちることを確かめる。`from_port: next` は HEAD の検証では保存できないので、
   正解の記録から V0 の動き（その線の先が動かない）を組んで dead edge を見る。
 
