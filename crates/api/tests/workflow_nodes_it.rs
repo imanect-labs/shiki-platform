@@ -562,6 +562,8 @@ async fn combined_pipeline_covers_many_node_types() {
     );
     // 隔離ティアは admin ポリシー（ここでは既定 wasm）が spec に反映される。
     assert_eq!(specs[0].backend, sandbox_client::SandboxBackend::Wasm);
+    // run の行と、外への呼び出しの効果の記録（LLM の答え・応答の本文）を片付ける。
+    h.cleanup_runs().await;
 }
 
 /// テスト用に url プレースホルダを差し替える（json! で動的 URL を host リテラルに埋めるため）。
@@ -632,6 +634,8 @@ async fn switch_routes_to_list_or_llm() {
         Some(&StepStatus::Skipped),
         "case(list) は skip"
     );
+    // run の行と、外への呼び出しの効果の記録（LLM の答え・応答の本文）を片付ける。
+    h.cleanup_runs().await;
 }
 
 // ------- Test 3: script の Shiki.*（storage.write）＋Shiki.workflow.start -------
@@ -1997,6 +2001,8 @@ async fn http_request_sends_object_bodies_as_json() {
     assert!(request("arr").contains("content-type: application/json"));
     let plain = request("str");
     assert!(!plain.contains("content-type"), "{plain}");
+    // run の行と、外への呼び出しの効果の記録（LLM の答え・応答の本文）を片付ける。
+    h.cleanup_runs().await;
 }
 
 /// script の `Shiki.http.request` は、作成者が書いた headers を本番のポートで相手に送る（以前は黙って捨てていた・
@@ -2070,6 +2076,8 @@ async fn script_http_request_sends_the_headers_the_author_wrote() {
 
     // 片付け（run の履歴・ワークフロー・OpenFGA のストア）。
     h.runs.purge_tenant_history(&h.tenant).await.unwrap();
+    // 効果の記録（外への送信の応答）も片付ける（テナントの行が無いと履歴の GC は何も消さない）。
+    h.cleanup_runs().await;
     for id in [sent, refused] {
         h.artifacts.delete(&h.alice, id, None).await.unwrap();
     }
@@ -2451,6 +2459,8 @@ async fn llm_model_errors_are_recorded_in_japanese() {
     .await
     .unwrap();
     assert_eq!(attempts, 1);
+    // run の行と、外への呼び出しの効果の記録（LLM の答え・応答の本文）を片付ける。
+    h.cleanup_runs().await;
 }
 
 // ------- Test 10: llm.invoke のモデルの解決（BUG-12）----------------------------
@@ -2563,6 +2573,8 @@ async fn llm_omitted_model_follows_the_organization_default() {
         h.workflow_usage_models().await,
         ["stub-smart", "stub-smart"]
     );
+    // run の行と、外への呼び出しの効果の記録（LLM の答え）を片付ける。
+    h.cleanup_runs().await;
 }
 
 /// 明示したモデルを管理者が無効にすると、組織の既定へ戻さずに非再試行で失敗し、生成も会計も起きない。
@@ -2607,6 +2619,8 @@ async fn llm_explicit_model_fails_closed_once_disabled() {
         .await;
     assert_eq!(status, RunStatus::Succeeded);
     assert_eq!(h.step_output(run_id).await.0["model"], "stub");
+    // run の行と、外への呼び出しの効果の記録（LLM の答え）を片付ける。
+    h.cleanup_runs().await;
 }
 
 /// ノードに書いた思考の深さ（low）は、選べる組織で特定のモデルで動くときだけモデルへ届く。モデルを省略して Auto で
@@ -3954,6 +3968,8 @@ async fn http_error_statuses_through_the_production_port() {
         outcomes.push((status, row));
     }
     h.runs.purge_tenant_history(&h.tenant).await.unwrap();
+    // 効果の記録（外への送信の応答）も片付ける（テナントの行が無いと履歴の GC は何も消さない）。
+    h.cleanup_runs().await;
     for wf in workflows {
         h.artifacts.delete(&h.alice, wf, None).await.unwrap();
     }
@@ -4097,6 +4113,8 @@ async fn http_to_internal_addresses_is_refused_through_the_production_port() {
 
     // 片付け（run の履歴・ワークフロー・OpenFGA のストア）。
     h.runs.purge_tenant_history(&h.tenant).await.unwrap();
+    // 効果の記録（外への送信の応答）も片付ける（テナントの行が無いと履歴の GC は何も消さない）。
+    h.cleanup_runs().await;
     for id in workflows {
         h.artifacts.delete(&h.alice, id, None).await.unwrap();
     }
@@ -4250,6 +4268,8 @@ async fn http_goes_through_the_configured_proxy_through_the_production_port() {
 
     // 片付け（run の履歴・ワークフロー・OpenFGA のストア）。
     h.runs.purge_tenant_history(&h.tenant).await.unwrap();
+    // 効果の記録（外への送信の応答）も片付ける（テナントの行が無いと履歴の GC は何も消さない）。
+    h.cleanup_runs().await;
     for id in [node, script] {
         h.artifacts.delete(&h.alice, id, None).await.unwrap();
     }
@@ -4351,6 +4371,8 @@ async fn http_request_node_sends_author_headers_through_the_production_port() {
 
     // 片付け（run の履歴・ワークフロー・OpenFGA のストア）。
     h.runs.purge_tenant_history(&h.tenant).await.unwrap();
+    // 効果の記録（外への送信の応答）も片付ける（テナントの行が無いと履歴の GC は何も消さない）。
+    h.cleanup_runs().await;
     h.artifacts.delete(&h.alice, wf, None).await.unwrap();
     if let Ok((id, _)) = &refused {
         h.artifacts.delete(&h.alice, *id, None).await.unwrap();
