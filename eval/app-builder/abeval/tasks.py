@@ -8,6 +8,7 @@
   "requires": ["node:llm.invoke", "cap:scheduled_at", "trigger:event"],
   "phrasings": {"flow": "…", "app": "…", "auto": "…"},
   "clarifications": "聞き返されたときに 1 回だけ返す決まった答え",
+  "ask_terms": ["（任意）最後の文章にあれば聞き返しと判定する語"],
   "fixtures": {"folders": [...], "tables": [...], "csv": [...]},
   "expect": {
     "trigger": {"kind": "schedule", "cron_any": ["0 9 * * 1"], "tz": "Asia/Tokyo"},
@@ -461,6 +462,7 @@ def parse_task(raw: Mapping[str, Any]) -> Task:
         "run_cases",
         "reference",
         "notes",
+        "ask_terms",
     }
     for k in raw:
         if k not in known:
@@ -486,6 +488,9 @@ def parse_task(raw: Mapping[str, Any]) -> Task:
         ph = {k: "" for k in PHRASINGS}
     if not _str(raw.get("clarifications")):
         problems.append(f"{where}.clarifications（聞き返しへの答え）がありません")
+    terms = raw.get("ask_terms", [])
+    if not isinstance(terms, list) or not all(_str(t) for t in terms):
+        problems.append(f"{where}.ask_terms（聞き返しと判定する語）は空でない文字列の配列です")
     refs = _check_fixture_refs(raw, where, problems)
     roles: dict[str, Role] = {}
     if kind == "workflow_set":

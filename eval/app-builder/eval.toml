@@ -50,7 +50,39 @@ relay_ledger = "~/.local/state/shiki-campaign/anthropic-spend.jsonl"
 [server]
 api_url = "http://localhost:10067"
 
+[mode_a]
+# 生成と validate の並列度（stub の配管の実行は直列・同じテーブルを使うため）。
+parallel = 4
+# 1 回の生成の送信の上限（再試行は 429・5xx・接続の誤りだけ）。
+max_attempts = 4
+
 [mode_b]
 # 承認待ちのうち、承認するツール（D-162・H8 (a)。既定で却下し、ここに載せたものだけ承認する）。
 # D-10 の試運転のツールが入ったら足す。
 approve_tools = []
+# 1 試行の会話の壁時計の上限（秒）。超えたら run を取り消し、timeout として errors に入れる（製品の承認待ちの
+# 上限 30 分より先に効く）。
+wall_clock_secs = 360
+# 完了を待つときの読み直しの間隔（秒）。
+poll_secs = 2
+# run_case の 1 回の起動の待ちの上限（秒）。
+run_case_timeout_secs = 180
+
+[capture]
+# 取り込んだ system の「今日の日付」の一文を置き換える固定の日付（課題の scheduled_at と同じ 2026-11-09 の月曜）。
+fixed_date = "2026-11-09"
+
+# 1 試行の見積もり（USD・推測。E0 の実測で置き換える・GAP-30 §13）。plan は最悪で上限を判定する。
+[estimates.a]
+central = 0.005
+worst = 0.012
+
+[estimates.b]
+central = 0.03
+worst = 0.05
+
+[estimates.b.effort_worst]
+high = 0.07
+
+[estimates.b.steps_worst]
+12 = 0.10

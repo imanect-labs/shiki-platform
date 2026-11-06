@@ -9,13 +9,14 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
 import ipaddress
 import json
 import os
 import tomllib
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from abeval.pricing import ModelPrice, Pricing, Tier, usd_to_micros
@@ -133,6 +134,49 @@ class Paths:
 
 
 @dataclass(frozen=True)
+class ModeA:
+    """Mode A の進め方（生成と validate の並列度・再試行の回数の上限）。"""
+
+    parallel: int = 4
+    max_attempts: int = 4
+
+
+@dataclass(frozen=True)
+class ModeB:
+    """Mode B の進め方（承認の許可リスト・壁時計の上限・読み直しの間隔・run_case の待ち）。"""
+
+    approve_tools: tuple[str, ...] = ()
+    wall_clock_secs: float = 360.0
+    poll_secs: float = 2.0
+    run_case_timeout_secs: float = 180.0
+
+
+@dataclass(frozen=True)
+class Estimate:
+    """1 試行の見積もり（USD・推測。E0 の実測で置き換える）。"""
+
+    central: float
+    worst: float
+    # 条件ごとの最悪の上書き（effort の名前・手数の上限の数 → USD）。
+    effort_worst: dict = field(default_factory=dict)
+    steps_worst: dict = field(default_factory=dict)
+
+    def worst_for(self, effort: str | None = None, max_steps: int | None = None) -> float:
+        w = self.worst
+        if effort is not None and effort in self.effort_worst:
+            w = max(w, float(self.effort_worst[effort]))
+        if max_steps is not None and str(max_steps) in self.steps_worst:
+            w = max(w, float(self.steps_worst[str(max_steps)]))
+        return w
+
+
+DEFAULT_ESTIMATES = {
+    "a": Estimate(0.005, 0.012),
+    "b": Estimate(0.03, 0.05, {"high": 0.07}, {"12": 0.10}),
+}
+
+
+@dataclass(frozen=True)
 class Config:
     source: Path
     sha: str
@@ -142,6 +186,11 @@ class Config:
     paths: Paths
     api_url: str
     approve_tools: tuple[str, ...]
+    mode_a: ModeA = ModeA()
+    mode_b: ModeB = ModeB()
+    # 取り込んだ system の「今日の日付」を置き換える固定の日付。
+    capture_date: dt.date = dt.date(2026, 11, 9)
+    estimates: dict = field(default_factory=lambda: dict(DEFAULT_ESTIMATES))
 
 
 def _section(raw: dict, name: str) -> dict:
@@ -283,4 +332,59 @@ def load_config(path: Path | None = None, env: Mapping[str, str] | None = None) 
         paths=paths,
         api_url=_string(server, "api_url", "server").rstrip("/"),
         approve_tools=tuple(approve),
+        mode_a=_mode_a(raw.get("mode_a") or {}),
+        mode_b=_mode_b(mode_b, tuple(approve)),
+        capture_date=_capture_date(raw.get("capture") or {}),
+        estimates=_estimates(raw.get("estimates") or {}),
     )
+
+
+def _positive_int(sec: dict, name: str, where: str, default: int) -> int:
+    v = sec.get(name, default)
+    if isinstance(v, bool) or not isinstance(v, int) or v <= 0:
+        raise ConfigError(f"[{where}] {name} は正の整数です: {v!r}")
+    return v
+
+
+def _mode_a(sec: dict) -> ModeA:
+    return ModeA(
+        parallel=_positive_int(sec, "parallel", "mode_a", ModeA.parallel),
+        max_attempts=_positive_int(sec, "max_attempts", "mode_a", ModeA.max_attempts),
+    )
+
+
+def _mode_b(sec: dict, approve: tuple[str, ...]) -> ModeB:
+    vals = {}
+    for name in ("wall_clock_secs", "poll_secs", "run_case_timeout_secs"):
+        vals[name] = _number(sec, name, "mode_b") if name in sec else getattr(ModeB, name)
+    return ModeB(approve_tools=approve, **vals)
+
+
+def _capture_date(sec: dict) -> dt.date:
+    v = sec.get("fixed_date", "2026-11-09")
+    try:
+        return dt.date.fromisoformat(str(v))
+    except ValueError as e:
+        raise ConfigError(f"[capture] fixed_date は YYYY-MM-DD です: {v!r}") from e
+
+
+def _estimates(sec: dict) -> dict:
+    out = dict(DEFAULT_ESTIMATES)
+    for mode, body in sec.items():
+        if mode not in ("a", "b") or not isinstance(body, dict):
+            raise ConfigError(f"[estimates] は a と b の表です: {mode!r}")
+        central = _number(body, "central", f"estimates.{mode}")
+        worst = _number(body, "worst", f"estimates.{mode}")
+        if worst < central:
+            raise ConfigError(f"[estimates.{mode}] worst が central より小さい")
+        extra = {}
+        for k in ("effort_worst", "steps_worst"):
+            sub = body.get(k) or {}
+            if not isinstance(sub, dict) or not all(
+                isinstance(x, int | float) and not isinstance(x, bool) and x > 0
+                for x in sub.values()
+            ):
+                raise ConfigError(f"[estimates.{mode}.{k}] は名前 → 正の数の表です")
+            extra[k] = {str(a): float(b) for a, b in sub.items()}
+        out[mode] = Estimate(central, worst, **extra)
+    return out

@@ -1,7 +1,17 @@
-"""`python -m abeval <コマンド>`。コマンドは各モジュールの main に渡す（後の段が表に足す）。
+"""`python -m abeval <コマンド>`。
 
-- `serve --label L [--down]`: 版のサーバーを起動・停止する（abeval.versions）。
-- 点検は `python -m abeval.doctor`、中継は `python -m abeval.proxy`。
+| コマンド | 中身 |
+| --- | --- |
+| `capture --label L --exp E` | 説明文と system を取り込む（$0・abeval.proxy の capture_only） |
+| `doctor [--mode eval|stub]` | 評価の前の点検（abeval.doctor） |
+| `plan --mode a|b --label L --exp E ...` | 計画と見積もり（費用を使わない） |
+| `run --mode a|b --label L --exp E ... [--go]` | 既定は計画だけ。`--go` で実行する（`--stub`・`--regrade-from`） |
+| `grade --exp E` | 結果の IR を ir_lint で採点し直す（サーバー不要） |
+| `report [--exp E ...]` | results/summary.md を作る |
+| `budget [--json]` | 費用の累計と残り |
+| `serve --label L [--down]` | 版のサーバーを起動・停止する（abeval.versions） |
+
+中継は `python -m abeval.proxy`。
 """
 
 from __future__ import annotations
@@ -21,7 +31,27 @@ def _doctor(argv: list[str]) -> int:
     return doctor.main(argv)
 
 
-COMMANDS = {"serve": _serve, "doctor": _doctor}
+def _budget(argv: list[str]) -> int:
+    from abeval import budget
+
+    return budget.main(argv)
+
+
+def _cli(name: str):
+    def run(argv: list[str]) -> int:
+        from abeval import cli
+
+        return cli.main(argv, command=name)
+
+    return run
+
+
+COMMANDS = {
+    "serve": _serve,
+    "doctor": _doctor,
+    "budget": _budget,
+    **{name: _cli(name) for name in ("capture", "plan", "run", "grade", "report")},
+}
 
 
 def main(argv: list[str] | None = None) -> int:
