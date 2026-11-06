@@ -52,6 +52,8 @@ pub struct TabularService {
     storage: Arc<StorageService>,
     runner: RunnerConfig,
     quotas: Quotas,
+    /// SQL の予約語（ランナーから 1 回だけ引いて使い回す・#1061）。失敗は記録しない（次で再試行）。
+    reserved_words: tokio::sync::OnceCell<Arc<[String]>>,
 }
 
 /// 保存（新規 CSV）結果。
@@ -80,7 +82,44 @@ impl TabularService {
             storage,
             runner,
             quotas,
+            reserved_words: tokio::sync::OnceCell::new(),
         }
+    }
+
+    /// SQL の予約語の一覧（DuckDB の `duckdb_keywords()` の `reserved`・#1061）。
+    ///
+    /// 追加テーブル名の予約語判定はランナーが同じ語彙で行う。これは画面側の補完・事前検証用で、
+    /// 語彙を手書きで複製しないために DuckDB 自身から引く。ファイルを読まないので認可は不要
+    /// （公開情報）。初回だけランナーを起動し、以降は使い回す。
+    pub async fn reserved_words(&self) -> Result<Arc<[String]>, TabularError> {
+        self.reserved_words
+            .get_or_try_init(|| async {
+                let request = RunnerRequest {
+                    op: RunnerOp::ReservedWords,
+                    csv_path: String::new(),
+                    memory_limit_mb: self.quotas.memory_limit_mb,
+                    max_rows: 0,
+                    extra_tables: Vec::new(),
+                };
+                let response = run_isolated(&self.runner, &request).await?;
+                if !response.ok {
+                    return Err(TabularError::Runner(
+                        response.error.unwrap_or_else(|| "unknown".into()),
+                    ));
+                }
+                let words: Vec<String> = response
+                    .rows
+                    .into_iter()
+                    .filter_map(|row| row.into_iter().next().flatten())
+                    .collect();
+                if words.is_empty() {
+                    // 空の一覧は「予約語なし」と区別できない。壊れた応答として失敗にする（記録しない）。
+                    return Err(TabularError::Runner("予約語の一覧が空です".into()));
+                }
+                Ok(Arc::from(words))
+            })
+            .await
+            .cloned()
     }
 
     /// CSV のスキーマ（列名・型）と総行数を返す（viewer 認可）。
