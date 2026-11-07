@@ -26,9 +26,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     # 呼び出し元ごとに分ける（github.workflow は workflow_call では呼び出し元の名前になる）。
+    # 止めるのは PR だけ（ci.yml の workflow の concurrency と同じ・#920）。main への push の run を止めると、
+    # ci.yml の ci-ok（needs に eval-app-builder を含む）が cancelled で赤くなり、uv のキャッシュも保存されない。
     concurrency:
       group: eval-app-builder-${{ github.workflow }}-${{ github.ref }}
-      cancel-in-progress: true
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     defaults:
       run:
         working-directory: eval/app-builder
