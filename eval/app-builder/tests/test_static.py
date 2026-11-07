@@ -11,7 +11,9 @@ import pytest
 import recorded
 from abeval.grade import static
 from abeval.grade.static import (
+    LINT_SCHEMA,
     STRICT_WARNINGS,
+    LintCatalog,
     LintError,
     LintResult,
     classify_lint,
@@ -204,20 +206,47 @@ def test_null_ir_is_lint_clean_but_misses_the_task():
     assert g.s2s, "下流に届くべき入力をどこも読まない（flow_through）"
 
 
-def test_parse_lint_output_rejects_broken_output():
-    ok = (
-        json.dumps({"id": "a", "errors": []}) + "\n" + json.dumps({"ir_lint": {"schema": 1}}) + "\n"
+def _lint_out(schema=LINT_SCHEMA, **line) -> str:
+    meta = {} if schema is None else {"schema": schema}
+    return (
+        json.dumps({"id": "a", "errors": [], **line}) + "\n" + json.dumps({"ir_lint": meta}) + "\n"
     )
+
+
+def test_parse_lint_output_rejects_broken_output():
+    ok = _lint_out()
     res, meta = parse_lint_output(ok, ["a"])
-    assert meta == {"schema": 1} and res["a"].errors == ()
+    assert meta == {"schema": LINT_SCHEMA} and res["a"].errors == ()
     with pytest.raises(LintError, match="版の行"):
         parse_lint_output(json.dumps({"id": "a"}) + "\n")
     with pytest.raises(LintError, match="id が入力と違います"):
         parse_lint_output(ok, ["a", "b"])
     with pytest.raises(LintError, match="id の無い行"):
         parse_lint_output(
-            json.dumps({"id": None, "input_error": "x"}) + "\n" + json.dumps({"ir_lint": {}})
+            json.dumps({"id": None, "input_error": "x"})
+            + "\n"
+            + json.dumps({"ir_lint": {"schema": LINT_SCHEMA}})
         )
+
+
+@pytest.mark.parametrize("schema", [2, 1, None, "3", 4])
+def test_an_old_or_unknown_lint_output_shape_is_refused(schema):
+    """古い ir_lint（schema 2 は output_paths が無い）を空の欄として読まず、作り直しを促して止める（S2s を甘くしない）。"""
+    with pytest.raises(LintError, match="出力の形の版") as e:
+        parse_lint_output(_lint_out(schema), ["a"])
+    assert "cargo build -p shiki-workflow-engine --example ir_lint" in str(e.value)
+
+
+def test_an_old_catalog_is_refused_too():
+    d = json.loads((recorded.LINT_DIR / "catalog.json").read_text(encoding="utf-8"))
+    assert LintCatalog.from_json(d).meta["schema"] == LINT_SCHEMA
+    with pytest.raises(LintError, match="--catalog の出力の形の版"):
+        LintCatalog.from_json({**d, "ir_lint": {**d["ir_lint"], "schema": 2}})
+
+
+def test_the_grader_version_carries_the_lint_schema(tmp_path, monkeypatch):
+    monkeypatch.setenv("ABEVAL_IR_LINT", str(tmp_path / "none"))
+    assert static.grader_version()["ir_lint_schema"] == LINT_SCHEMA
 
 
 def _fake_bin(tmp_path, body: str):
@@ -235,12 +264,12 @@ def test_run_ir_lint_feeds_jsonl_and_reads_results(tmp_path):
         f'cat > "{out}"\n'
         'echo \'{"id":"a","errors":[{"code":"ir.bad_ref","message":"m"}],"warnings":[]}\'\n'
         'echo \'{"id":"b","errors":[],"warnings":[]}\'\n'
-        'echo \'{"ir_lint":{"schema":1}}\'\n',
+        "echo '" + json.dumps({"ir_lint": {"schema": LINT_SCHEMA}}) + "'\n",
     )
     res, meta = run_ir_lint([("a", {"nodes": []}), ("b", {"nodes": [1]})], p)
     sent = [json.loads(line) for line in out.read_text().splitlines()]
     assert [s["id"] for s in sent] == ["a", "b"] and sent[1]["ir"] == {"nodes": [1]}
-    assert res["a"].errors[0]["code"] == "ir.bad_ref" and meta == {"schema": 1}
+    assert res["a"].errors[0]["code"] == "ir.bad_ref" and meta == {"schema": LINT_SCHEMA}
     with pytest.raises(ValueError, match="重複"):
         run_ir_lint([("a", {}), ("a", {})], p)
     bad = _fake_bin(tmp_path, "exit 3\n")

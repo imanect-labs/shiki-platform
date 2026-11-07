@@ -13,7 +13,13 @@ import pytest
 
 import recorded
 from abeval import gen_checks as g
-from abeval.grade.static import LintCatalog, catalog_from_bin, find_lint_bin, run_ir_lint
+from abeval.grade.static import (
+    LINT_SCHEMA,
+    LintCatalog,
+    catalog_from_bin,
+    find_lint_bin,
+    run_ir_lint,
+)
 from abeval.tasks import load_tasks
 
 BIN = find_lint_bin()
@@ -52,7 +58,7 @@ def test_recorded_lint_matches_the_binary():
             **({"input_error": r.input_error} if r.input_error else {}),
         }
         assert json.loads(json.dumps(got)) == _plain(want[i]), i
-    assert meta["schema"] == 3
+    assert meta["schema"] == LINT_SCHEMA
 
 
 def test_recorded_catalog_matches_the_binary():

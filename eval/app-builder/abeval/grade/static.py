@@ -2,7 +2,8 @@
 
 **1 層目: ir_lint**（HEAD の `complete_declared_scopes` → `validate` → `save_warnings`・`node_ports`・`run_blockers`・
 `enable_blockers` と、出力の path の検査 `output_paths`）。標準入力の JSONL を渡し、1 行ずつの結果を読む
-（`crates/workflow-engine/examples/ir_lint.rs`）。
+（`crates/workflow-engine/examples/ir_lint.rs`）。版の行の出力の形の版（`schema`）が [`LINT_SCHEMA`] でなければ
+止める（作り直していない古い ir_lint の無い欄を空として読み、S2s を黙って甘くしないため）。採点器の版にも入れる。
 
 - `errors`（環境に依存するコード `ignored_by_env` を除いたもの）と `run_blockers`（対話の実行の前に止める理由）は
   S2s（保存できても静的に誤り）に入れる。
@@ -61,10 +62,23 @@ STRICT_WARNINGS = frozenset(
     }
 )
 LLM_NODE_TYPES = frozenset({"llm.invoke", "ai.decide", "agent.invoke"})
+# 採点が読む ir_lint の出力の形の版（`ir_lint.rs` の `SCHEMA`）。2: enable_blockers を足した。3: output_paths を
+# 足した（GAP-112）。古い ir_lint は無い欄を空として読ませ、S2s を黙って甘くするので、違えば止める。
+LINT_SCHEMA = 3
 
 
 class LintError(RuntimeError):
     """ir_lint を動かせない・出力が読めない。"""
+
+
+def check_schema(meta: Mapping | None, what: str = "ir_lint") -> None:
+    """ir_lint の版の行の `schema` が採点の読む形（[`LINT_SCHEMA`]）と同じか（違えば LintError）。"""
+    got = (meta or {}).get("schema")
+    if got != LINT_SCHEMA:
+        raise LintError(
+            f"{what} の出力の形の版が {got!r} です（採点は {LINT_SCHEMA} を読む）。ir_lint が古いので "
+            "cargo build -p shiki-workflow-engine --example ir_lint で作り直します"
+        )
 
 
 def find_lint_bin() -> Path | None:
@@ -92,9 +106,13 @@ def file_sha256(path: Path) -> str:
 
 
 def grader_version(bin_path: Path | None = None) -> dict:
-    """結果に残す採点器の版（ir_lint の crate_version は 0.0.0 なのでバイナリの sha で区別する）。"""
+    """結果に残す採点器の版（ir_lint の crate_version は 0.0.0 なのでバイナリの sha で区別する・出力の形の版も）。"""
     p = bin_path or find_lint_bin()
-    return {"grader": GRADER_VERSION, "ir_lint_sha256": file_sha256(p) if p else None}
+    return {
+        "grader": GRADER_VERSION,
+        "ir_lint_schema": LINT_SCHEMA,
+        "ir_lint_sha256": file_sha256(p) if p else None,
+    }
 
 
 # --- 1 層目: ir_lint ---
@@ -152,7 +170,7 @@ def run_ir_lint(
 def parse_lint_output(
     text: str, ids: list[str] | None = None
 ) -> tuple[dict[str, LintResult], dict]:
-    """ir_lint の出力（JSONL）を読む。最後の行は版の行。"""
+    """ir_lint の出力（JSONL）を読む。最後の行は版の行（`schema` が [`LINT_SCHEMA`] でなければ止める）。"""
     out: dict[str, LintResult] = {}
     meta: dict | None = None
     for line in text.splitlines():
@@ -168,6 +186,7 @@ def parse_lint_output(
         out[r.id] = r
     if meta is None:
         raise LintError("ir_lint の出力に版の行がありません")
+    check_schema(meta)
     if ids is not None and sorted(out) != sorted(ids):
         raise LintError(f"ir_lint の結果の id が入力と違います: {sorted(set(ids) ^ set(out))}")
     return out, meta
@@ -192,6 +211,7 @@ class LintCatalog:
 
     @classmethod
     def from_json(cls, d: Mapping) -> LintCatalog:
+        check_schema(d.get("ir_lint"), "ir_lint --catalog")
         nodes = {}
         for e in d["node_catalog"]:
             nodes[e["type"]] = NodeInfo(

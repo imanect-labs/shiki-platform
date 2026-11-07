@@ -27,7 +27,8 @@ uv run python -m abeval.proxy         # 記録・上限つきの中継（127.0.0
 
 ir_lint の使い方（標準入力の JSONL → 標準出力の JSONL・誤りがあっても終了コード 0）。1 行の欄は `errors`・
 `ignored_by_env`・`warnings`・`run_blockers`・`enable_blockers`・`output_paths`（出力の path の検査・GAP-112）・
-`node_ports`・`declared_scopes`（形の版は最後の行の `schema`・いまは 3）:
+`node_ports`・`declared_scopes`（形の版は最後の行の `schema`・いまは 3。採点は形の版が違う出力を読まずに止める。
+workflow-engine を変えたのに example を作り直していないときに、無い欄を空として読んで S2s を甘くしないため）:
 
 ```bash
 echo '{"id":"t1","ir":{...}}' | target/debug/examples/ir_lint
