@@ -32,6 +32,7 @@ from abeval.metrics import (
     failure_breakdown,
     paired_bootstrap,
     task_means,
+    trial_identity,
 )
 from abeval.trial import MODEL
 
@@ -144,11 +145,6 @@ def read_errors(exp: str, where: Path | None = None) -> list[dict]:
         if isinstance(e, dict):
             out.append(e)
     return out
-
-
-def trial_identity(t: Mapping) -> tuple:
-    """試行そのものの名前（条件・課題・言い方・番号）。キャッシュのキーは採点器の版などで変わるので使わない。"""
-    return (*condition_of(t), t.get("task"), t.get("phrasing"), t.get("n"))
 
 
 def merge_result(prev: Mapping | None, new: Mapping) -> dict:
@@ -361,6 +357,30 @@ def _headline_rows(
     return rows, out
 
 
+def _grader_name(d: Mapping) -> str:
+    g = d.get("grader") or {}
+    return f"採点器の版 {g.get('grader')}" if isinstance(g, Mapping) else "採点器の版 ?"
+
+
+def same_grader(docs: Sequence[Mapping]) -> tuple[list[Mapping], list[Mapping]]:
+    """いちばん新しい採点器の版（版の番号が大きく、同じなら ir_lint の sha と形の版も同じもの）で採点した実験と、
+    それ以外（表から外す）。"""
+    if not docs:
+        return [], []
+
+    def ident(d: Mapping) -> str:
+        return json.dumps(d.get("grader") or {}, sort_keys=True)
+
+    def number(d: Mapping) -> int:
+        g = d.get("grader") or {}
+        v = g.get("grader") if isinstance(g, Mapping) else None
+        return v if isinstance(v, int) else -1
+
+    best = max(docs, key=lambda d: (number(d), sum(ident(x) == ident(d) for x in docs)))
+    keep = [d for d in docs if ident(d) == ident(best)]
+    return keep, [d for d in docs if ident(d) != ident(best)]
+
+
 def summary_md(
     docs: Sequence[Mapping],
     *,
@@ -374,6 +394,7 @@ def summary_md(
     条件ごとの課題の数と、外した課題（版に無い機能の対象外と、errors の種類ごと・採点しなかった試行）を出す
     （モードや条件で課題の集合が違うまま見出しを並べて読まないため）。
     """
+    docs, left_out = same_grader(docs)
     trials = dedupe(t for d in docs for t in d.get("trials") or [])
     rows, head_rows = _headline_rows(docs, trials, errors, iters)
     lines = ["# AI によるワークフロー作成の評価（GAP-30）", ""]
@@ -382,6 +403,14 @@ def summary_md(
         + ", ".join(f"{d['experiment']}（{len(d.get('trials') or [])} 試行）" for d in docs)
         + f"。モデル {MODEL}。"
     )
+    if left_out:
+        lines += [
+            "",
+            "採点器の版が違うので外した実験: "
+            + "・".join(f"{d['experiment']}（{_grader_name(d)}）" for d in left_out)
+            + f"。表は {_grader_name(docs[0])} で採点した実験だけ（違う規則で採点した試行を同じ表で数えない）。"
+            "同じ条件で流し直すか、`abeval grade` で採点し直す。",
+        ]
     lines += ["", "## 1. 見出し", ""]
     lines += _table(
         [
@@ -489,12 +518,18 @@ def summary_md(
             ],
         )
     lines += ["", "## 5. 費用", ""]
-    for d in docs:
-        c = d.get("cost") or {}
+    by_exp = (budget or {}).get("by_exp_usd") or {}
+    for d in [*docs, *left_out]:
+        exp = str(d["experiment"])
+        tried = sum(r["cost_usd"] for r in aggregate(d.get("trials") or [], iters=1))
         lines.append(
-            f"- {d['experiment']}: 試行の分 {_usd(sum(r['cost_usd'] for r in aggregate(d.get('trials') or [], iters=1)))}"
-            + (f"・台帳の分 {_usd(c.get('exp_usd'))}" if c.get("exp_usd") is not None else "")
+            f"- {exp}: 試行の分 {_usd(tried)}"
+            + (f"・評価の台帳の累計 {_usd(by_exp.get(exp))}" if exp in by_exp else "")
         )
+    lines.append(
+        "- 試行の分は、試行に割り当てた費用（キャッシュから流し直した試行と `--regrade-from` で採点し直した試行は、"
+        "もとの生成の費用を数える）。評価の台帳の累計は、その実験の名前で実際に払った額（流し直した分も含む）。"
+    )
     if budget:
         lines.append(
             f"- 評価の累計 {_usd(budget.get('eval_usd'))} / ${budget.get('eval_cap_usd')}"

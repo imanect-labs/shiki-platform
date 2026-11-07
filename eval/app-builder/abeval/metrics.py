@@ -62,21 +62,23 @@ def condition_name(cond: Sequence) -> str:
     return s + (f"/手数{steps}" if steps else "") + ("/stub" if stub else "")
 
 
+def trial_identity(t: Mapping) -> tuple:
+    """試行そのものの名前（条件・課題・言い方・番号）。キャッシュのキーは使わない（採点器の版などで変わる。版を
+    採点し直した試行〔`--regrade-from`〕はもとの版の試行と同じキーを持つ）。"""
+    return (*condition_of(t), t.get("task"), t.get("phrasing"), t.get("n"))
+
+
 def dedupe(trials: Iterable[Mapping], *, include_stub: bool = False) -> list[Mapping]:
-    """試行をキーで重ねる（後のものを採る・キャッシュから流し直した同じ試行を二重に数えない）。stub の試行
-    （`run --stub` の配管の確かめ）は既定で除く（実モデルの条件に混ぜない）。"""
-    by_key: dict[str, Mapping] = {}
-    rest: list[Mapping] = []
+    """試行を試行の名前で重ねる（後のものを採る・キャッシュから流し直した同じ試行や、後の実験で測り直した同じ試行
+    を二重に数えない）。stub の試行（`run --stub` の配管の確かめ）は既定で除く（実モデルの条件に混ぜない）。"""
+    by_id: dict[tuple, Mapping] = {}
     for t in trials:
         if t.get("stub_run") and not include_stub:
             continue
-        key = t.get("key")
-        if isinstance(key, str):
-            by_key.pop(key, None)
-            by_key[key] = t
-        else:
-            rest.append(t)
-    return [*rest, *by_key.values()]
+        ident = trial_identity(t)
+        by_id.pop(ident, None)
+        by_id[ident] = t
+    return list(by_id.values())
 
 
 def _s(t: Mapping, name: str) -> Any:

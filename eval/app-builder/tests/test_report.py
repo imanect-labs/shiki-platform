@@ -295,3 +295,31 @@ def test_merge_drops_the_previous_trials_graded_by_another_grader(tmp_path):
             "grader": {"grader": 2},
         }
     ]
+
+
+def test_summary_keeps_a_regraded_version_apart_from_its_source():
+    """`--regrade-from v0` の V1 の試行は V0 の試行と同じキーを持つが、版が違うので別の試行として数える。"""
+    v0 = keyed(trial("t1", 0, s1=True), "same-key")
+    v1 = keyed({**trial("t1", 0, s1=False), "label": "v1"}, "same-key")
+    d0 = report.finalize(doc([v0], exp="e1a-v0"), iters=10)
+    d1 = report.finalize(doc([v1], exp="e1a-v1"), iters=10)
+    text = report.summary_md([d0, d1], iters=10)
+    assert any(line.startswith("| v0/a/medium |") for line in text.splitlines())
+    assert any(line.startswith("| v1/a/medium |") for line in text.splitlines())
+
+
+def test_summary_leaves_out_experiments_graded_by_another_grader():
+    old = report.finalize(doc([keyed(trial("t1", 0, s1=False), "o")], exp="e0a"), iters=10)
+    new = doc([keyed(trial("t1", 0), "n"), keyed(trial("t2", 0), "n2")], exp="e1a")
+    new["grader"] = {"grader": 2}
+    new = report.finalize(new, iters=10)
+    text = report.summary_md(
+        [old, new], budget={"by_exp_usd": {"e0a": 0.01, "e1a": 0.02}}, iters=10
+    )
+    assert "採点器の版が違うので外した実験: e0a（採点器の版 1）" in text
+    row = next(line for line in text.splitlines() if line.startswith("| v0/a/medium |"))
+    # 表は新しい版の 2 試行だけ（古い版の t1 の失敗は混ぜない）。
+    assert [c.strip() for c in row.split("|")][3] == "2"
+    # 費用は外した実験の分も出し、評価の台帳の累計は実験ごとに出す。
+    assert "- e0a: 試行の分" in text and "評価の台帳の累計 $0.0100" in text
+    assert "- e1a: 試行の分" in text and "評価の台帳の累計 $0.0200" in text
