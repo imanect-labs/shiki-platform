@@ -25,6 +25,13 @@ FAKE_CARGO = r"""#!/usr/bin/env bash
 printf 'cargo %s cwd=%s target=%s\n' "$*" "$PWD" "${CARGO_TARGET_DIR:-}" >> "$SHIM_LOG"
 [ -n "${FAKE_CARGO_FAIL:-}" ] && exit 101
 [ -n "${FAKE_CARGO_TOUCH:-}" ] && echo changed >> README.md
+# 古い lock の再現: ランナーを --locked でビルドすると断り、--offline なら lock に足す。
+if [ -n "${FAKE_CARGO_STALE_LOCK:-}" ]; then
+  case "$*" in
+    *--locked*--manifest-path*) echo "error: cannot update the lock file because --locked was passed" >&2; exit 101 ;;
+    *--offline*--manifest-path*) printf '\n[[package]]\nname = "added-dep"\nversion = "1.0.0"\n' >> crates/tabular/runner/Cargo.lock ;;
+  esac
+fi
 mkdir -p "$CARGO_TARGET_DIR/debug"
 case "$*" in
   *--manifest-path*) out="$CARGO_TARGET_DIR/debug/shiki-tabular-runner"; what=runner ;;
@@ -58,6 +65,9 @@ class Box:
         runner = self.repo / "crates" / "tabular" / "runner"
         runner.mkdir(parents=True)
         (runner / "Cargo.toml").write_text('[package]\nname = "shiki-tabular-runner"\n')
+        (runner / "Cargo.lock").write_text(
+            'version = 4\n\n[[package]]\nname = "duckdb"\nversion = "1.0.0"\n'
+        )
         g("add", ".")
         g("commit", "-q", "-m", "first")
         self.first = g("rev-parse", "HEAD")
@@ -233,4 +243,57 @@ def test_a_commit_without_the_runner_is_refused(box):
     r = box.run("v1", "HEAD")
     assert r.code == 1 and "ランナーのクレートがありません" in r.err
     assert not (box.versions / "v1.json").exists()
+    assert not (box.wt_root / "abeval-v1").exists()
+
+
+def test_stale_runner_lock_is_refused_with_a_hint(box):
+    r = box.run("v1", "HEAD", FAKE_CARGO_STALE_LOCK="1")
+    assert r.code == 1
+    assert "--runner-lock-update" in r.err
+    assert not (box.versions / "v1.json").exists()
+    assert not (box.versions / "v1.runner-lock.diff").exists()
+    assert not (box.bin_dir / "shiki-server-v1").exists()
+    assert not (box.wt_root / "abeval-v1").exists()
+    assert box.worktrees() == [str(box.repo)]
+
+
+def test_runner_lock_update_builds_offline_and_records_the_diff(box):
+    r = box.run("--runner-lock-update", "v1", box.first[:8], FAKE_CARGO_STALE_LOCK="1")
+    assert r.code == 0, r.err
+    wt = box.wt_root / "abeval-v1"
+    assert r.log == [
+        f"cargo build -p shiki-api --bin shiki-server cwd={wt} target={wt}/target",
+        "cargo build --offline --manifest-path crates/tabular/runner/Cargo.toml "
+        f"cwd={wt} target={wt}/target/tabular-runner",
+    ]
+    record = json.loads((box.versions / "v1.json").read_text())
+    diff = box.versions / "v1.runner-lock.diff"
+    assert record["runner_lock_updated"] is True
+    assert record["runner_lock_diff_sha256"] == hashlib.sha256(diff.read_bytes()).hexdigest()
+    text = diff.read_text()
+    assert "crates/tabular/runner/Cargo.lock" in text and '+name = "added-dep"' in text
+    # 今ある版は消していない（足しただけ）。
+    assert not any(line.startswith("-name") for line in text.splitlines())
+    assert record["tree_clean"] is True and record["commit"] == box.first
+    assert not wt.exists()
+
+
+def test_runner_lock_update_without_a_change_records_false(box):
+    r = box.run("--runner-lock-update", "v1", "HEAD")
+    assert r.code == 0, r.err
+    record = json.loads((box.versions / "v1.json").read_text())
+    assert record["runner_lock_updated"] is False
+    assert "runner_lock_diff_sha256" not in record
+    assert not (box.versions / "v1.runner-lock.diff").exists()
+
+
+def test_runner_lock_update_still_refuses_other_changes(box):
+    r = box.run(
+        "--runner-lock-update", "v1", "HEAD", FAKE_CARGO_STALE_LOCK="1", FAKE_CARGO_TOUCH="1"
+    )
+    assert r.code == 1
+    assert "書き換えました" in r.err and "README.md" in r.err
+    assert "Cargo.lock" not in r.err
+    assert not (box.versions / "v1.json").exists()
+    assert not (box.versions / "v1.runner-lock.diff").exists()
     assert not (box.wt_root / "abeval-v1").exists()

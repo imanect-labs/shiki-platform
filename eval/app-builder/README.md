@@ -89,6 +89,11 @@ eval/app-builder/scripts/build-version.sh v0 81a9899b
 - label は英小文字で始まり英小文字か数字で終わる 21 文字まで（DB・store・バケットの名前に使う）。
 - worktree・バイナリ・版の記録が既にあれば拒む。`git status --porcelain` が空でない（汚れた）worktree と、
   ビルドが作業ツリーを書き換えた場合は止める（素性を確かめられない版は測らない）。worktree は失敗しても消す。
+- `--runner-lock-update`: その commit のランナーの Cargo.lock が古く、`--locked` でビルドできない版に付ける。
+  V0（81a9899b）がそうで、ランナーが path で参照する shiki-tabular の依存が増えたのに lock を更新していない。
+  ランナーだけを `--offline` でビルドし、lock の今ある版（DuckDB など）は残して足りない分だけを足させる。
+  書き換わってよいのはランナーの Cargo.lock だけで、差分を `data/versions/<label>.runner-lock.diff` に残し、
+  版の記録に `runner_lock_updated` と差分の sha256 を書く。付けずに断られたときは、その旨を出して止まる。
 
 版のサーバーは、dev-up.sh の版のサーバー向けの引数（H3 (a)）で、API だけを専用の DB・store・バケット・Redis の
 番号・ポートで起動する（Web とゲートウェイの外部の起動はしない）。
@@ -341,7 +346,7 @@ Claude Haiku 5.5 だけ（abeval.proxy の許可リスト）。
 1. 版をビルドする（別の worktree・1 版 7 分程度・ほかのビルドや E2E やスタックと重ねない）。
 
    ```bash
-   eval/app-builder/scripts/build-version.sh v0 81a9899b       # 修正前（D-54 の 1）
+   eval/app-builder/scripts/build-version.sh --runner-lock-update v0 81a9899b   # 修正前（D-54 の 1・ランナーの lock が古い）
    eval/app-builder/scripts/build-version.sh v1 71e9b79a       # Mode B だけ測る・Mode A は採点し直し
    eval/app-builder/scripts/build-version.sh vn <BUG-3 と GAP-29 が着地したきれいな commit>
    ```
