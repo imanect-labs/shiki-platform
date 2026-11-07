@@ -195,6 +195,63 @@ test("有効化: 実行の入力でファイルを決めるブロックはファ
   await expect(dialog.getByRole("button", { name: "同意してオンにする" })).toBeEnabled();
 });
 
+test("有効化: 集計でつなぐ CSV を実行の入力で決めるブロックは、そのファイルを選ばせない（#1037・C-P2-2）", async ({ page }) => {
+  test.setTimeout(120_000);
+  await loginViaKeycloak(page);
+  const cookies = await page.context().cookies();
+  const csrf = cookies.find((c) => c.name === "shiki_csrf")?.value ?? "";
+  const fileName = `${uniqueName("wf-enable-join")}.csv`;
+  const file = await page.request.post("/api/tabular/save", {
+    headers: { "x-csrf-token": csrf },
+    data: { parent_id: null, name: fileName, csv: "品目,数量\nりんご,3\n" },
+  });
+  expect(file.ok(), await file.text()).toBeTruthy();
+  const fileId = ((await file.json()) as { node_id: string }).node_id;
+  created.push(() => removeDriveItem(page, "files", fileId));
+  // 集計するファイルは固定で、つなぐ CSV の 1 件のファイル・つなぐ CSV の並びそのものを実行の入力で決める。
+  const shapes = [
+    { label: "受け取った単価とつなぐ", tables: [{ name: "master", file: { $from: "input", path: "/master" } }] },
+    { label: "受け取った表とつなぐ", tables: { $from: "input", path: "/tables" } },
+  ];
+  for (const shape of shapes) {
+    const name = uniqueName("enable-input-join");
+    const res = await page.request.post("/api/workflows", {
+      headers: { "x-csrf-token": csrf, "content-type": "application/json" },
+      data: {
+        ir: {
+          ir_version: 1,
+          name,
+          display_name: name,
+          declared_scopes: ["csv.read"],
+          triggers: [{ kind: "schedule", cron: "0 9 * * *", tz: "Asia/Tokyo", catchup: "skip" }],
+          nodes: [
+            {
+              id: "q",
+              type: "csv.query",
+              label: shape.label,
+              params: { file: fileId, sql: "SELECT * FROM data", tables: shape.tables },
+            },
+          ],
+          edges: [],
+        },
+      },
+    });
+    expect(res.ok(), await res.text()).toBeTruthy();
+    const id = ((await res.json()) as { id: string }).id;
+    created.push(() => removeFlow(page, id));
+    await page.goto(`/workflows/${id}`);
+    await page.getByRole("button", { name: /自動実行を有効化/ }).click();
+    const dialog = page.locator('[role="dialog"]');
+    await expect(dialog.getByText("自動実行の設定")).toBeVisible();
+    // 入力で決まるファイルは選ばせず、理由を示す（関係のないファイルを選ぶまで止めない）。
+    await expect(dialog.getByText(new RegExp(`「${shape.label}」のファイルは実行の入力で決まるため`))).toBeVisible();
+    await expect(dialog.getByRole("button", { name: /渡すファイルを/ })).toHaveCount(0);
+    // 固定のファイルは名前で出る。
+    await expect(dialog.getByText(`ファイル「${fileName}」`)).toBeVisible({ timeout: 10_000 });
+    await expect(dialog.getByRole("button", { name: "同意してオンにする" })).toBeEnabled();
+  }
+});
+
 /// 保存は通るが、そのままでは動かせない設定（D-40・D-43）: 必須の文字の欄が空のブロックと、スケジュールで動くのに
 /// 保存先のフォルダを省いた書込。有効化のダイアログは理由をブロックの名前つきで示し、有効化のボタンを押せない。
 /// サーバの有効化も同じ理由で 409 `not_ready` を返す。

@@ -30,6 +30,7 @@ import { FolderPicker } from "@/components/artifacts/folder-picker";
 import { DrivePicker } from "@/components/chat/drive-picker";
 import { DataTableSelect, UNREADABLE_TABLE, useDataTables } from "@/components/workflow/editor/config-panel/data-tables";
 import { DriveItemName, isCsvFile, isQueryableFile } from "@/components/workflow/editor/config-panel/forms-files";
+import { isFromRef } from "@/components/workflow/editor/config-panel/value-refs";
 import { useMe } from "@/hooks/use-me";
 import type { Node as IrNode } from "@/generated/workflow-ir";
 import { AiProvidersNote, hasAiNodes } from "./ai-providers-note";
@@ -61,6 +62,29 @@ const TARGETS: Record<string, { what: string; param?: string }> = {
   file: { what: "ファイル", param: "file" },
   folder: { what: "フォルダ" },
 };
+
+/// 提案の対象を前の結果から決める値（`$from`）。無ければ null。
+///
+/// CSV を集計は、集計するファイル（`file`）のほかに、つなぐ CSV（`tables` の全体と各 `file`）も読むファイルを決める。
+/// 同意の提案はどれかが値式なら対象の決まらない提案を挙げる（同じブロックの対象の決まらない提案は 1 つにまとまる）ので、
+/// どれかが値式なら、その提案は前の結果で決まるものとして扱う（選ばせると、実行の対象と無関係なファイルに権限だけが
+/// 渡る・C-P2-2）。
+function dynamicTargetRef(node: IrNode | undefined, param: string | undefined): { $from: string } | null {
+  if (!node || !param) return null;
+  const params = (node.params ?? {}) as Record<string, unknown>;
+  const values: unknown[] = [params[param]];
+  if (node.type === "csv.query" && param === "file") {
+    const tables = params.tables;
+    if (Array.isArray(tables)) {
+      for (const t of tables) {
+        if (t !== null && typeof t === "object") values.push((t as Record<string, unknown>).file);
+      }
+    } else {
+      values.push(tables);
+    }
+  }
+  return values.find(isFromRef) ?? null;
+}
 
 type GrantRow = SuggestedGrant & {
   picked?: { id: string; name: string };
@@ -192,9 +216,9 @@ export function EnableDialog({
         const grants: GrantRow[] = p.grants.map((g) => {
           const node = g.source.startsWith("node:") ? nodes.get(g.source.slice(5)) : undefined;
           const target = TARGETS[g.objectKind];
-          const value = target?.param ? (node?.params as Record<string, unknown> | undefined)?.[target.param] : undefined;
-          if (target && g.needsUserPick && value && typeof value === "object" && "$from" in value) {
-            const from = String((value as { $from: unknown }).$from);
+          const value = dynamicTargetRef(node, target?.param);
+          if (target && g.needsUserPick && value) {
+            const from = value.$from;
             return {
               ...g,
               dynamic: {
