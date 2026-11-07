@@ -1,0 +1,3858 @@
+{
+ "experiment": "e1b-v1",
+ "created_at": "2026-11-07T06:29:13+00:00",
+ "model": "claude-haiku-5-5",
+ "runs": [
+  {
+   "spec": {
+    "exp": "e1b-v1",
+    "mode": "b",
+    "label": "v1",
+    "tasks": [
+     "basic-branch-amount",
+     "basic-switch-category",
+     "basic-map-rows",
+     "app01-claim-submit",
+     "app12-faq-table"
+    ],
+    "phrasings": [
+     "flow",
+     "app",
+     "auto"
+    ],
+    "trials": 3,
+    "efforts": [
+     "medium"
+    ],
+    "max_steps": null
+   },
+   "trials": 15,
+   "central_usd": 0.1605,
+   "worst_usd": 0.525,
+   "eval_spent_usd": 3.03665,
+   "relay_spent_usd": 3.242803,
+   "run_id": "e1b-v1.v1.b.20261107T062056",
+   "cap_usd": 0.63,
+   "caps": {
+    "run": 10.0,
+    "eval": 35.0,
+    "global": 95.0
+   },
+   "problems": [],
+   "notes": [],
+   "splits": [],
+   "finished_at": "2026-11-07T06:29:13+00:00",
+   "stub": false,
+   "regrade_from": null,
+   "g8_skipped": null
+  }
+ ],
+ "versions": {
+  "v1": {
+   "node_types": [
+    "agent.invoke",
+    "control.branch",
+    "control.join",
+    "control.map",
+    "control.switch",
+    "control.wait",
+    "csv.patch",
+    "csv.query",
+    "csv.write",
+    "data.bulk_upsert",
+    "data.query",
+    "data.record.create",
+    "data.record.delete",
+    "data.record.update",
+    "data.transition",
+    "http.request",
+    "llm.invoke",
+    "rag.search",
+    "script.run",
+    "skill.invoke",
+    "storage.list",
+    "storage.read",
+    "storage.write",
+    "workflow.start"
+   ],
+   "commit": "71e9b79aaad518ab6736038d42a49be38f6ec921",
+   "binary_sha256": "b4e9311436cbe9c4e34075b879b3ea21069f80bde317204edb0f3c9675af1cc6",
+   "config_sha": "17b0be22fe40b55fe1eed7bfa7a23487dfa031c88d79c3871a6114d8575971fb",
+   "capture_sha": "eab2739c95d65f2425dde638115464b9a44a30448fc04ad3adde1b3380659905",
+   "fingerprint_sha": "43ecfa8c64e6eb24ab2141a66523e977d9cc52d31770be6bcdfff6ef6e6e2c5d",
+   "capture_changed": [],
+   "capabilities": {
+    "node_ports": false,
+    "trigger": false,
+    "scheduled_at": false,
+    "custom_instructions": false,
+    "fsm": true,
+    "list_workflows": null
+   },
+   "behavior_check": {
+    "probes_sha": "9f2a91a209a5a3088f5ff16f9749dda92eddead71ea1814564133465ad2cc5e5",
+    "recorded_at": "2026-11-07T06:20:05+00:00",
+    "results": {
+     "port_next": {
+      "errors": [
+       "ir.unknown_port"
+      ],
+      "warnings": []
+     },
+     "template_var": {
+      "errors": [
+       "ir.bad_template"
+      ],
+      "warnings": []
+     },
+     "unknown_folder": {
+      "errors": [],
+      "warnings": []
+     }
+    }
+   }
+  }
+ },
+ "grader": {
+  "grader": 9,
+  "ir_lint_schema": 3,
+  "ir_lint_sha256": "2d821bff376849e7617117161990404080e84693efc384505f15e989927c101f"
+ },
+ "conditions": [
+  "v1/b/medium"
+ ],
+ "trials": [
+  {
+   "exp": "e1b-v1",
+   "mode": "b",
+   "label": "v1",
+   "task": "basic-branch-amount",
+   "phrasing": "flow",
+   "n": 0,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "basic-branch-amount.flow.0.medium",
+   "key": "08a6dd764181df4ea76b82265d785894eaaa2b1bc477158b78f2e0fbc289abb6",
+   "stub_run": false,
+   "chat_runs": 1,
+   "chat_end_unconfirmed": 0,
+   "clarified": false,
+   "sse_errors": [],
+   "s6": {
+    "emit_count": 3,
+    "emit_failed": 3,
+    "validation_errors": 5,
+    "validation_codes": {
+     "ir.schema_violation": 5
+    },
+    "steps": 6,
+    "hit_step_limit": true,
+    "tool_search_used": true,
+    "emit_loaded": true,
+    "tool_calls": {
+     "emit_workflow": 3,
+     "tool_search": 3
+    }
+   },
+   "irs": {},
+   "workflow_versions": {},
+   "missing_roles": [
+    "main"
+   ],
+   "s1": false,
+   "s8": {
+    "asked": false,
+    "claimed_without_save": false,
+    "no_emit": false,
+    "unknown": false
+   },
+   "s9": {
+    "requests": 0,
+    "approved": 0,
+    "denied": 0,
+    "tools": [],
+    "errors": [],
+    "unapproved_side_effects": [],
+    "serious": false
+   },
+   "s2s": null,
+   "s2w": null,
+   "s2d": null,
+   "s3": null,
+   "s4": false,
+   "s5": null,
+   "headline": false,
+   "secs": 20.818,
+   "cost": {
+    "chat_micros": 7088,
+    "run_case_micros": 0,
+    "lines": 8,
+    "usage_missing": 0,
+    "total_micros": 7088,
+    "statuses": {
+     "chat": {},
+     "run_case": {}
+    },
+    "reconcile": {
+     "ledger_micros": 7088,
+     "usage_micros": 7080,
+     "diff_micros": 8,
+     "ok": true
+    }
+   }
+  },
+  {
+   "exp": "e1b-v1",
+   "mode": "b",
+   "label": "v1",
+   "task": "basic-branch-amount",
+   "phrasing": "app",
+   "n": 1,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "basic-branch-amount.app.1.medium",
+   "key": "402f9cbdaed1fe33e40238d899bb45fc06c02bddea373313adff0a317bddc4b7",
+   "stub_run": false,
+   "chat_runs": 1,
+   "chat_end_unconfirmed": 0,
+   "clarified": false,
+   "sse_errors": [],
+   "s6": {
+    "emit_count": 5,
+    "emit_failed": 5,
+    "validation_errors": 9,
+    "validation_codes": {
+     "ir.schema_violation": 9
+    },
+    "steps": 6,
+    "hit_step_limit": true,
+    "tool_search_used": true,
+    "emit_loaded": true,
+    "tool_calls": {
+     "emit_workflow": 5,
+     "tool_search": 1
+    }
+   },
+   "irs": {},
+   "workflow_versions": {},
+   "missing_roles": [
+    "main"
+   ],
+   "s1": false,
+   "s8": {
+    "asked": false,
+    "claimed_without_save": false,
+    "no_emit": false,
+    "unknown": false
+   },
+   "s9": {
+    "requests": 0,
+    "approved": 0,
+    "denied": 0,
+    "tools": [],
+    "errors": [],
+    "unapproved_side_effects": [],
+    "serious": false
+   },
+   "s2s": null,
+   "s2w": null,
+   "s2d": null,
+   "s3": null,
+   "s4": false,
+   "s5": null,
+   "headline": false,
+   "secs": 26.268,
+   "cost": {
+    "chat_micros": 7689,
+    "run_case_micros": 0,
+    "lines": 8,
+    "usage_missing": 0,
+    "total_micros": 7689,
+    "statuses": {
+     "chat": {},
+     "run_case": {}
+    },
+    "reconcile": {
+     "ledger_micros": 7689,
+     "usage_micros": 7683,
+     "diff_micros": 6,
+     "ok": true
+    }
+   }
+  },
+  {
+   "exp": "e1b-v1",
+   "mode": "b",
+   "label": "v1",
+   "task": "basic-branch-amount",
+   "phrasing": "auto",
+   "n": 2,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "basic-branch-amount.auto.2.medium",
+   "key": "ada404ce29e2a2922f3f0d443add5fce348c192b887b39eb07b8bda7c6a94cf1",
+   "stub_run": false,
+   "chat_runs": 1,
+   "chat_end_unconfirmed": 0,
+   "clarified": false,
+   "sse_errors": [],
+   "s6": {
+    "emit_count": 4,
+    "emit_failed": 4,
+    "validation_errors": 4,
+    "validation_codes": {
+     "ir.schema_violation": 4
+    },
+    "steps": 5,
+    "hit_step_limit": false,
+    "tool_search_used": true,
+    "emit_loaded": true,
+    "tool_calls": {
+     "emit_workflow": 4,
+     "tool_search": 1
+    }
+   },
+   "irs": {},
+   "workflow_versions": {},
+   "missing_roles": [
+    "main"
+   ],
+   "s1": false,
+   "s8": {
+    "asked": false,
+    "claimed_without_save": false,
+    "no_emit": false,
+    "unknown": false
+   },
+   "s9": {
+    "requests": 0,
+    "approved": 0,
+    "denied": 0,
+    "tools": [],
+    "errors": [],
+    "unapproved_side_effects": [],
+    "serious": false
+   },
+   "s2s": null,
+   "s2w": null,
+   "s2d": null,
+   "s3": null,
+   "s4": false,
+   "s5": null,
+   "headline": false,
+   "secs": 20.141,
+   "cost": {
+    "chat_micros": 6772,
+    "run_case_micros": 0,
+    "lines": 7,
+    "usage_missing": 0,
+    "total_micros": 6772,
+    "statuses": {
+     "chat": {},
+     "run_case": {}
+    },
+    "reconcile": {
+     "ledger_micros": 6772,
+     "usage_micros": 6766,
+     "diff_micros": 6,
+     "ok": true
+    }
+   }
+  },
+  {
+   "exp": "e1b-v1",
+   "mode": "b",
+   "label": "v1",
+   "task": "basic-switch-category",
+   "phrasing": "flow",
+   "n": 0,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "basic-switch-category.flow.0.medium",
+   "key": "d7b112fcc3e27809b1be9197ed3b7855d30619f25b4be19a12ca7c9d15bc8059",
+   "stub_run": false,
+   "chat_runs": 1,
+   "chat_end_unconfirmed": 0,
+   "clarified": false,
+   "sse_errors": [],
+   "s6": {
+    "emit_count": 4,
+    "emit_failed": 3,
+    "validation_errors": 7,
+    "validation_codes": {
+     "ir.schema_violation": 7
+    },
+    "steps": 6,
+    "hit_step_limit": true,
+    "tool_search_used": true,
+    "emit_loaded": true,
+    "tool_calls": {
+     "emit_workflow": 4,
+     "read_workflow": 1,
+     "tool_search": 1
+    }
+   },
+   "irs": {
+    "main": {
+     "declared_scopes": [
+      "data.write"
+     ],
+     "display_name": "問い合わせ台帳への追加",
+     "edges": [],
+     "ir_version": 1,
+     "name": "inquiry-ledger-add",
+     "nodes": [
+      {
+       "id": "add_record",
+       "label": "問い合わせ台帳に追加",
+       "params": {
+        "data": {
+         "category": {
+          "$from": "input",
+          "path": "/category"
+         },
+         "team": "総務チーム",
+         "title": {
+          "$from": "input",
+          "path": "/title"
+         }
+        },
+        "table": "@table:log"
+       },
+       "type": "data.record.create"
+      }
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ]
+    }
+   },
+   "workflow_versions": {
+    "main": 1
+   },
+   "missing_roles": [],
+   "s1": true,
+   "s8": {
+    "asked": false,
+    "claimed_without_save": false,
+    "no_emit": false,
+    "unknown": false
+   },
+   "s9": {
+    "requests": 0,
+    "approved": 0,
+    "denied": 0,
+    "tools": [],
+    "errors": [],
+    "unapproved_side_effects": [],
+    "serious": false
+   },
+   "static": {
+    "s2s": false,
+    "s2w": false,
+    "s5": false,
+    "roles": {
+     "main": {
+      "s2s": false,
+      "s2w": false,
+      "s5": false,
+      "lint": {
+       "errors": [],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": [
+       {
+        "code": "node_any_of",
+        "node_id": null,
+        "detail": "['control.switch', 'control.branch', 'script.run'] のどれもありません"
+       }
+      ]
+     }
+    }
+   },
+   "s2s": false,
+   "s2w": false,
+   "s5": false,
+   "revalidation": {
+    "main": {
+     "errors": [],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "runs": {
+    "s2d": false,
+    "s3": true,
+    "s4": false,
+    "cases": [
+     {
+      "case": "keiri",
+      "s3": true,
+      "s2d": false,
+      "s4": false,
+      "dynamic": {
+       "s2d": false,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "log {}: 1 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": false,
+        "detail": "log: {'title': '請求書の再発行', 'category': '経理', 'team': '経理チーム'} に合う行が無い（[{'category': '経理', 'team': '総務チーム', 'title': '請求書の再発行'}]）"
+       }
+      ],
+      "failed_steps": []
+     },
+     {
+      "case": "jinji",
+      "s3": true,
+      "s2d": false,
+      "s4": false,
+      "dynamic": {
+       "s2d": false,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "log {}: 1 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": false,
+        "detail": "log: {'title': '有給休暇の残り日数', 'team': '人事チーム'} に合う行が無い（[{'category': '人事', 'team': '総務チーム', 'title': '有給休暇の残り日数'}]）"
+       }
+      ],
+      "failed_steps": []
+     },
+     {
+      "case": "other",
+      "s3": true,
+      "s2d": false,
+      "s4": true,
+      "dynamic": {
+       "s2d": false,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "log {}: 1 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "log: {'title': '椅子が壊れた', 'category': '設備', 'team': '総務チーム'} に合う行がある（[{'category': '設備', 'team': '総務チーム', 'title': '椅子が壊れた'}]）"
+       }
+      ],
+      "failed_steps": []
+     }
+    ]
+   },
+   "s3": true,
+   "s4": false,
+   "stub": {
+    "s2d": false,
+    "s3": true,
+    "s4": false,
+    "cases": [
+     {
+      "case": "keiri",
+      "s3": true,
+      "s2d": false,
+      "s4": false,
+      "dynamic": {
+       "s2d": false,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "log {}: 1 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": false,
+        "detail": "log: {'title': '請求書の再発行', 'category': '経理', 'team': '経理チーム'} に合う行が無い（[{'category': '経理', 'team': '総務チーム', 'title': '請求書の再発行'}]）"
+       }
+      ],
+      "failed_steps": []
+     },
+     {
+      "case": "jinji",
+      "s3": true,
+      "s2d": false,
+      "s4": false,
+      "dynamic": {
+       "s2d": false,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "log {}: 1 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": false,
+        "detail": "log: {'title': '有給休暇の残り日数', 'team': '人事チーム'} に合う行が無い（[{'category': '人事', 'team': '総務チーム', 'title': '有給休暇の残り日数'}]）"
+       }
+      ],
+      "failed_steps": []
+     },
+     {
+      "case": "other",
+      "s3": true,
+      "s2d": false,
+      "s4": true,
+      "dynamic": {
+       "s2d": false,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "log {}: 1 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "log: {'title': '椅子が壊れた', 'category': '設備', 'team': '総務チーム'} に合う行がある（[{'category': '設備', 'team': '総務チーム', 'title': '椅子が壊れた'}]）"
+       }
+      ],
+      "failed_steps": []
+     }
+    ]
+   },
+   "s2d": false,
+   "headline": false,
+   "secs": 32.303,
+   "cost": {
+    "chat_micros": 7713,
+    "run_case_micros": 0,
+    "lines": 8,
+    "usage_missing": 0,
+    "total_micros": 7713,
+    "statuses": {
+     "chat": {},
+     "run_case": {}
+    },
+    "reconcile": {
+     "ledger_micros": 7713,
+     "usage_micros": 7706,
+     "diff_micros": 7,
+     "ok": true
+    }
+   }
+  },
+  {
+   "exp": "e1b-v1",
+   "mode": "b",
+   "label": "v1",
+   "task": "basic-switch-category",
+   "phrasing": "app",
+   "n": 1,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "basic-switch-category.app.1.medium",
+   "key": "b85a70830995242ad8ed6f2a514ec16c0ebedc537d84d51e32183c9fb4bc68e4",
+   "stub_run": false,
+   "chat_runs": 1,
+   "chat_end_unconfirmed": 0,
+   "clarified": false,
+   "sse_errors": [],
+   "s6": {
+    "emit_count": 5,
+    "emit_failed": 5,
+    "validation_errors": 16,
+    "validation_codes": {
+     "ir.bad_ref": 2,
+     "ir.schema_violation": 8,
+     "ir.unknown_port": 6
+    },
+    "steps": 6,
+    "hit_step_limit": true,
+    "tool_search_used": true,
+    "emit_loaded": true,
+    "tool_calls": {
+     "data_schema": 1,
+     "emit_workflow": 5,
+     "tool_search": 1
+    }
+   },
+   "irs": {},
+   "workflow_versions": {},
+   "missing_roles": [
+    "main"
+   ],
+   "s1": false,
+   "s8": {
+    "asked": false,
+    "claimed_without_save": false,
+    "no_emit": false,
+    "unknown": false
+   },
+   "s9": {
+    "requests": 0,
+    "approved": 0,
+    "denied": 0,
+    "tools": [],
+    "errors": [],
+    "unapproved_side_effects": [],
+    "serious": false
+   },
+   "s2s": null,
+   "s2w": null,
+   "s2d": null,
+   "s3": null,
+   "s4": false,
+   "s5": null,
+   "headline": false,
+   "secs": 29.331,
+   "cost": {
+    "chat_micros": 9551,
+    "run_case_micros": 0,
+    "lines": 8,
+    "usage_missing": 0,
+    "total_micros": 9551,
+    "statuses": {
+     "chat": {},
+     "run_case": {}
+    },
+    "reconcile": {
+     "ledger_micros": 9551,
+     "usage_micros": 9545,
+     "diff_micros": 6,
+     "ok": true
+    }
+   }
+  },
+  {
+   "exp": "e1b-v1",
+   "mode": "b",
+   "label": "v1",
+   "task": "basic-switch-category",
+   "phrasing": "auto",
+   "n": 2,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "basic-switch-category.auto.2.medium",
+   "key": "97504567353bd2ca222d94110c02be4b47945b68abbe19ee1fe18bfbb72d9d40",
+   "stub_run": false,
+   "chat_runs": 1,
+   "chat_end_unconfirmed": 0,
+   "clarified": false,
+   "sse_errors": [],
+   "s6": {
+    "emit_count": 0,
+    "emit_failed": 0,
+    "validation_errors": 0,
+    "validation_codes": {},
+    "steps": 0,
+    "hit_step_limit": false,
+    "tool_search_used": false,
+    "emit_loaded": false,
+    "tool_calls": {}
+   },
+   "irs": {},
+   "workflow_versions": {},
+   "missing_roles": [
+    "main"
+   ],
+   "s1": false,
+   "s8": {
+    "asked": false,
+    "claimed_without_save": false,
+    "no_emit": true,
+    "unknown": true
+   },
+   "s9": {
+    "requests": 0,
+    "approved": 0,
+    "denied": 0,
+    "tools": [],
+    "errors": [],
+    "unapproved_side_effects": [],
+    "serious": false
+   },
+   "s2s": null,
+   "s2w": null,
+   "s2d": null,
+   "s3": null,
+   "s4": false,
+   "s5": null,
+   "headline": false,
+   "secs": 3.503,
+   "cost": {
+    "chat_micros": 768,
+    "run_case_micros": 0,
+    "lines": 2,
+    "usage_missing": 0,
+    "total_micros": 768,
+    "statuses": {
+     "chat": {},
+     "run_case": {}
+    },
+    "reconcile": {
+     "ledger_micros": 768,
+     "usage_micros": 767,
+     "diff_micros": 1,
+     "ok": true
+    }
+   }
+  },
+  {
+   "exp": "e1b-v1",
+   "mode": "b",
+   "label": "v1",
+   "task": "basic-map-rows",
+   "phrasing": "flow",
+   "n": 0,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "basic-map-rows.flow.0.medium",
+   "key": "128c84c3aa7adcb72aa3e79651a4488a143af1fbe6254643285cd4780f72c061",
+   "stub_run": false,
+   "chat_runs": 1,
+   "chat_end_unconfirmed": 0,
+   "clarified": false,
+   "sse_errors": [],
+   "s6": {
+    "emit_count": 4,
+    "emit_failed": 4,
+    "validation_errors": 10,
+    "validation_codes": {
+     "ir.bad_ref": 3,
+     "ir.empty_region": 3,
+     "ir.schema_violation": 4
+    },
+    "steps": 6,
+    "hit_step_limit": true,
+    "tool_search_used": true,
+    "emit_loaded": true,
+    "tool_calls": {
+     "data_schema": 1,
+     "emit_workflow": 4,
+     "tool_search": 1
+    }
+   },
+   "irs": {},
+   "workflow_versions": {},
+   "missing_roles": [
+    "main"
+   ],
+   "s1": false,
+   "s8": {
+    "asked": false,
+    "claimed_without_save": false,
+    "no_emit": false,
+    "unknown": false
+   },
+   "s9": {
+    "requests": 0,
+    "approved": 0,
+    "denied": 0,
+    "tools": [],
+    "errors": [],
+    "unapproved_side_effects": [],
+    "serious": false
+   },
+   "s2s": null,
+   "s2w": null,
+   "s2d": null,
+   "s3": null,
+   "s4": false,
+   "s5": null,
+   "headline": false,
+   "secs": 23.924,
+   "cost": {
+    "chat_micros": 6523,
+    "run_case_micros": 0,
+    "lines": 8,
+    "usage_missing": 0,
+    "total_micros": 6523,
+    "statuses": {
+     "chat": {},
+     "run_case": {}
+    },
+    "reconcile": {
+     "ledger_micros": 6523,
+     "usage_micros": 6515,
+     "diff_micros": 8,
+     "ok": true
+    }
+   }
+  },
+  {
+   "exp": "e1b-v1",
+   "mode": "b",
+   "label": "v1",
+   "task": "basic-map-rows",
+   "phrasing": "app",
+   "n": 1,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "basic-map-rows.app.1.medium",
+   "key": "4676e8ad50b06616c7433249bfe0607c77b599bb1b460859d375f2fb538e0661",
+   "stub_run": false,
+   "chat_runs": 1,
+   "chat_end_unconfirmed": 0,
+   "clarified": false,
+   "sse_errors": [],
+   "s6": {
+    "emit_count": 4,
+    "emit_failed": 3,
+    "validation_errors": 4,
+    "validation_codes": {
+     "ir.bad_ref": 1,
+     "ir.empty_region": 1,
+     "ir.schema_violation": 2
+    },
+    "steps": 5,
+    "hit_step_limit": false,
+    "tool_search_used": true,
+    "emit_loaded": true,
+    "tool_calls": {
+     "data_schema": 1,
+     "emit_workflow": 4,
+     "tool_search": 1
+    }
+   },
+   "irs": {
+    "main": {
+     "declared_scopes": [
+      "data.write"
+     ],
+     "display_name": "出席者の一括登録",
+     "edges": [],
+     "ir_version": 1,
+     "name": "event-attendee-register",
+     "nodes": [
+      {
+       "id": "fan",
+       "label": "氏名ごとに繰り返す",
+       "params": {
+        "items": {
+         "$from": "input",
+         "path": "/names"
+        }
+       },
+       "type": "control.map"
+      },
+      {
+       "id": "reg",
+       "label": "名簿に1人分を追加",
+       "params": {
+        "data": {
+         "event": {
+          "$from": "input",
+          "path": "/event"
+         },
+         "name": {
+          "$from": "each",
+          "path": "/item"
+         }
+        },
+        "table": "@table:roster"
+       },
+       "parent": "fan",
+       "type": "data.record.create"
+      }
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ]
+    }
+   },
+   "workflow_versions": {
+    "main": 1
+   },
+   "missing_roles": [],
+   "s1": true,
+   "s8": {
+    "asked": false,
+    "claimed_without_save": false,
+    "no_emit": false,
+    "unknown": false
+   },
+   "s9": {
+    "requests": 0,
+    "approved": 0,
+    "denied": 0,
+    "tools": [],
+    "errors": [],
+    "unapproved_side_effects": [],
+    "serious": false
+   },
+   "static": {
+    "s2s": false,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": false,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": false,
+   "s2w": false,
+   "s5": true,
+   "revalidation": {
+    "main": {
+     "errors": [],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "runs": {
+    "s2d": false,
+    "s3": true,
+    "s4": true,
+    "cases": [
+     {
+      "case": "three",
+      "s3": true,
+      "s2d": false,
+      "s4": true,
+      "dynamic": {
+       "s2d": false,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "roster {}: 3 行（期待 3）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "roster: {'event': '新人研修', 'name': '田中'} に合う行がある（[{'event': '新人研修', 'name': '中村'}, {'event': '新人研修', 'name': '山本'}, {'event': '新人研修', 'name': '田中'}]）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "roster: {'event': '新人研修', 'name': '山本'} に合う行がある（[{'event': '新人研修', 'name': '中村'}, {'event': '新人研修', 'name': '山本'}, {'event': '新人研修', 'name': '田中'}]）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "roster: {'event': '新人研修', 'name': '中村'} に合う行がある（[{'event': '新人研修', 'name': '中村'}, {'event': '新人研修', 'name': '山本'}, {'event': '新人研修', 'name': '田中'}]）"
+       }
+      ],
+      "failed_steps": []
+     }
+    ]
+   },
+   "s3": true,
+   "s4": true,
+   "stub": {
+    "s2d": false,
+    "s3": true,
+    "s4": true,
+    "cases": [
+     {
+      "case": "three",
+      "s3": true,
+      "s2d": false,
+      "s4": true,
+      "dynamic": {
+       "s2d": false,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "roster {}: 3 行（期待 3）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "roster: {'event': '新人研修', 'name': '田中'} に合う行がある（[{'event': '新人研修', 'name': '中村'}, {'event': '新人研修', 'name': '山本'}, {'event': '新人研修', 'name': '田中'}]）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "roster: {'event': '新人研修', 'name': '山本'} に合う行がある（[{'event': '新人研修', 'name': '中村'}, {'event': '新人研修', 'name': '山本'}, {'event': '新人研修', 'name': '田中'}]）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "roster: {'event': '新人研修', 'name': '中村'} に合う行がある（[{'event': '新人研修', 'name': '中村'}, {'event': '新人研修', 'name': '山本'}, {'event': '新人研修', 'name': '田中'}]）"
+       }
+      ],
+      "failed_steps": []
+     }
+    ]
+   },
+   "s2d": false,
+   "headline": true,
+   "secs": 18.325,
+   "cost": {
+    "chat_micros": 6083,
+    "run_case_micros": 0,
+    "lines": 7,
+    "usage_missing": 0,
+    "total_micros": 6083,
+    "statuses": {
+     "chat": {},
+     "run_case": {}
+    },
+    "reconcile": {
+     "ledger_micros": 6083,
+     "usage_micros": 6076,
+     "diff_micros": 7,
+     "ok": true
+    }
+   }
+  },
+  {
+   "exp": "e1b-v1",
+   "mode": "b",
+   "label": "v1",
+   "task": "basic-map-rows",
+   "phrasing": "auto",
+   "n": 2,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "basic-map-rows.auto.2.medium",
+   "key": "19eb311e8e7c1f53860d7df7857c704b52e53d743e195bed22501515246fef2a",
+   "stub_run": false,
+   "chat_runs": 1,
+   "chat_end_unconfirmed": 0,
+   "clarified": false,
+   "sse_errors": [],
+   "s6": {
+    "emit_count": 4,
+    "emit_failed": 4,
+    "validation_errors": 9,
+    "validation_codes": {
+     "ir.bad_ref": 3,
+     "ir.empty_region": 3,
+     "ir.schema_violation": 3
+    },
+    "steps": 5,
+    "hit_step_limit": false,
+    "tool_search_used": true,
+    "emit_loaded": true,
+    "tool_calls": {
+     "data_schema": 1,
+     "emit_workflow": 4,
+     "tool_search": 1
+    }
+   },
+   "irs": {},
+   "workflow_versions": {},
+   "missing_roles": [
+    "main"
+   ],
+   "s1": false,
+   "s8": {
+    "asked": false,
+    "claimed_without_save": false,
+    "no_emit": false,
+    "unknown": false
+   },
+   "s9": {
+    "requests": 0,
+    "approved": 0,
+    "denied": 0,
+    "tools": [],
+    "errors": [],
+    "unapproved_side_effects": [],
+    "serious": false
+   },
+   "s2s": null,
+   "s2w": null,
+   "s2d": null,
+   "s3": null,
+   "s4": false,
+   "s5": null,
+   "headline": false,
+   "secs": 20.074,
+   "cost": {
+    "chat_micros": 6527,
+    "run_case_micros": 0,
+    "lines": 7,
+    "usage_missing": 0,
+    "total_micros": 6527,
+    "statuses": {
+     "chat": {},
+     "run_case": {}
+    },
+    "reconcile": {
+     "ledger_micros": 6527,
+     "usage_micros": 6520,
+     "diff_micros": 7,
+     "ok": true
+    }
+   }
+  },
+  {
+   "exp": "e1b-v1",
+   "mode": "b",
+   "label": "v1",
+   "task": "app01-claim-submit",
+   "phrasing": "flow",
+   "n": 0,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "app01-claim-submit.flow.0.medium",
+   "key": "41a14365fe5fe1932ea8aae5b0e1ebf31114c4b5bc5cecf35aa054e64ad24f6e",
+   "stub_run": false,
+   "chat_runs": 1,
+   "chat_end_unconfirmed": 0,
+   "clarified": false,
+   "sse_errors": [],
+   "s6": {
+    "emit_count": 5,
+    "emit_failed": 4,
+    "validation_errors": 13,
+    "validation_codes": {
+     "ir.bad_ref": 2,
+     "ir.schema_violation": 9,
+     "ir.unknown_port": 2
+    },
+    "steps": 6,
+    "hit_step_limit": true,
+    "tool_search_used": true,
+    "emit_loaded": true,
+    "tool_calls": {
+     "data_schema": 2,
+     "emit_workflow": 5,
+     "tool_search": 1
+    }
+   },
+   "irs": {
+    "main": {
+     "declared_scopes": [
+      "data.read",
+      "data.write"
+     ],
+     "display_name": "経費申請の受付",
+     "edges": [
+      {
+       "from": "branch_amount",
+       "from_port": "true",
+       "to": "find_bucho"
+      },
+      {
+       "from": "branch_amount",
+       "from_port": "false",
+       "to": "find_kacho"
+      },
+      {
+       "from": "find_bucho",
+       "from_port": "out",
+       "to": "create_bucho"
+      },
+      {
+       "from": "find_kacho",
+       "from_port": "out",
+       "to": "create_kacho"
+      }
+     ],
+     "ir_version": 1,
+     "name": "expense-request-intake",
+     "nodes": [
+      {
+       "id": "branch_amount",
+       "label": "金額が10万円以上か",
+       "params": {
+        "condition": {
+         "cmp": {
+          "left": {
+           "$from": "input",
+           "path": "/amount"
+          },
+          "op": "gte",
+          "right": 100000
+         }
+        }
+       },
+       "type": "control.branch"
+      },
+      {
+       "id": "find_bucho",
+       "label": "部長を検索",
+       "params": {
+        "query": {
+         "filter": {
+          "cmp": {
+           "field": "level",
+           "op": "eq",
+           "value": "部長"
+          }
+         },
+         "limit": 1
+        },
+        "table": "@table:approvers"
+       },
+       "type": "data.query"
+      },
+      {
+       "id": "find_kacho",
+       "label": "課長を検索",
+       "params": {
+        "query": {
+         "filter": {
+          "cmp": {
+           "field": "level",
+           "op": "eq",
+           "value": "課長"
+          }
+         },
+         "limit": 1
+        },
+        "table": "@table:approvers"
+       },
+       "type": "data.query"
+      },
+      {
+       "id": "create_bucho",
+       "label": "経費申請を登録（部長承認）",
+       "params": {
+        "data": {
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         },
+         "applicant": {
+          "$from": "input",
+          "path": "/applicant"
+         },
+         "approver": {
+          "$from": "nodes.find_bucho.output",
+          "path": "/rows/0/name"
+         },
+         "status": "申請中",
+         "title": {
+          "$from": "input",
+          "path": "/title"
+         }
+        },
+        "table": "@table:claims"
+       },
+       "type": "data.record.create"
+      },
+      {
+       "id": "create_kacho",
+       "label": "経費申請を登録（課長承認）",
+       "params": {
+        "data": {
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         },
+         "applicant": {
+          "$from": "input",
+          "path": "/applicant"
+         },
+         "approver": {
+          "$from": "nodes.find_kacho.output",
+          "path": "/rows/0/name"
+         },
+         "status": "申請中",
+         "title": {
+          "$from": "input",
+          "path": "/title"
+         }
+        },
+        "table": "@table:claims"
+       },
+       "type": "data.record.create"
+      }
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ]
+    }
+   },
+   "workflow_versions": {
+    "main": 1
+   },
+   "missing_roles": [],
+   "s1": true,
+   "s8": {
+    "asked": false,
+    "claimed_without_save": false,
+    "no_emit": false,
+    "unknown": false
+   },
+   "s9": {
+    "requests": 0,
+    "approved": 0,
+    "denied": 0,
+    "tools": [],
+    "errors": [],
+    "unapproved_side_effects": [],
+    "serious": false
+   },
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [
+        "ir_lint.output_path",
+        "ir_lint.output_path"
+       ],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": true,
+   "revalidation": {
+    "main": {
+     "errors": [],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "runs": {
+    "s2d": false,
+    "s3": false,
+    "s4": false,
+    "cases": [
+     {
+      "case": "small",
+      "s3": false,
+      "s2d": false,
+      "s4": false,
+      "dynamic": {
+       "s2d": false,
+       "s3": false,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "failed"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": false,
+        "detail": "状態 ['failed']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": false,
+        "detail": "claims {}: 0 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": false,
+        "detail": "claims: {'title': '出張の交通費', 'amount': 24000, 'applicant': '小林', 'approver': '高橋', 'status': '申請中'} に合う行が無い（[]）"
+       }
+      ],
+      "failed_steps": [
+       {
+        "step": "create_kacho",
+        "node_id": "create_kacho",
+        "workflow": null,
+        "error": {
+         "attempt": 1,
+         "code": "expr_resolve_error",
+         "message": "data.record.create: data: $from nodes.find_kacho.output /rows/0/name が解決できません（値が無く default もありません）",
+         "node_id": "create_kacho",
+         "retryable": false
+        }
+       }
+      ]
+     },
+     {
+      "case": "large",
+      "s3": false,
+      "s2d": false,
+      "s4": false,
+      "dynamic": {
+       "s2d": false,
+       "s3": false,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "failed"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": false,
+        "detail": "状態 ['failed']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": false,
+        "detail": "claims {}: 0 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": false,
+        "detail": "claims: {'title': '展示会の出展料', 'amount': 150000, 'applicant': '加藤', 'approver': '伊藤', 'status': '申請中'} に合う行が無い（[]）"
+       }
+      ],
+      "failed_steps": [
+       {
+        "step": "create_bucho",
+        "node_id": "create_bucho",
+        "workflow": null,
+        "error": {
+         "attempt": 1,
+         "code": "expr_resolve_error",
+         "message": "data.record.create: data: $from nodes.find_bucho.output /rows/0/name が解決できません（値が無く default もありません）",
+         "node_id": "create_bucho",
+         "retryable": false
+        }
+       }
+      ]
+     },
+     {
+      "case": "boundary",
+      "s3": false,
+      "s2d": false,
+      "s4": false,
+      "dynamic": {
+       "s2d": false,
+       "s3": false,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "failed"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": false,
+        "detail": "状態 ['failed']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": false,
+        "detail": "claims {}: 0 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": false,
+        "detail": "claims: {'approver': '伊藤', 'status': '申請中'} に合う行が無い（[]）"
+       }
+      ],
+      "failed_steps": [
+       {
+        "step": "create_bucho",
+        "node_id": "create_bucho",
+        "workflow": null,
+        "error": {
+         "attempt": 1,
+         "code": "expr_resolve_error",
+         "message": "data.record.create: data: $from nodes.find_bucho.output /rows/0/name が解決できません（値が無く default もありません）",
+         "node_id": "create_bucho",
+         "retryable": false
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "s3": false,
+   "s4": false,
+   "stub": {
+    "s2d": true,
+    "s3": false,
+    "s4": false,
+    "cases": [
+     {
+      "case": "small",
+      "s3": false,
+      "s2d": true,
+      "s4": false,
+      "dynamic": {
+       "s2d": true,
+       "s3": false,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "failed"
+       ],
+       "findings": [
+        {
+         "code": "not_delivered",
+         "node_id": null,
+         "detail": "入力 title='出張の交通費' が LLM・行・ファイルに届かない"
+        },
+        {
+         "code": "not_delivered",
+         "node_id": null,
+         "detail": "入力 amount=24000 が LLM・行・ファイルに届かない"
+        },
+        {
+         "code": "not_delivered",
+         "node_id": null,
+         "detail": "入力 applicant='小林' が LLM・行・ファイルに届かない"
+        },
+        {
+         "code": "unexpected_status",
+         "node_id": null,
+         "detail": "run の状態が failed（期待 succeeded）"
+        }
+       ]
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": false,
+        "detail": "状態 ['failed']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": false,
+        "detail": "claims {}: 0 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": false,
+        "detail": "claims: {'title': '出張の交通費', 'amount': 24000, 'applicant': '小林', 'approver': '高橋', 'status': '申請中'} に合う行が無い（[]）"
+       }
+      ],
+      "failed_steps": [
+       {
+        "step": "create_kacho",
+        "node_id": "create_kacho",
+        "workflow": null,
+        "error": {
+         "attempt": 1,
+         "code": "expr_resolve_error",
+         "message": "data.record.create: data: $from nodes.find_kacho.output /rows/0/name が解決できません（値が無く default もありません）",
+         "node_id": "create_kacho",
+         "retryable": false
+        }
+       }
+      ]
+     },
+     {
+      "case": "large",
+      "s3": false,
+      "s2d": true,
+      "s4": false,
+      "dynamic": {
+       "s2d": true,
+       "s3": false,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "failed"
+       ],
+       "findings": [
+        {
+         "code": "not_delivered",
+         "node_id": null,
+         "detail": "入力 title='展示会の出展料' が LLM・行・ファイルに届かない"
+        },
+        {
+         "code": "not_delivered",
+         "node_id": null,
+         "detail": "入力 amount=150000 が LLM・行・ファイルに届かない"
+        },
+        {
+         "code": "not_delivered",
+         "node_id": null,
+         "detail": "入力 applicant='加藤' が LLM・行・ファイルに届かない"
+        },
+        {
+         "code": "unexpected_status",
+         "node_id": null,
+         "detail": "run の状態が failed（期待 succeeded）"
+        }
+       ]
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": false,
+        "detail": "状態 ['failed']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": false,
+        "detail": "claims {}: 0 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": false,
+        "detail": "claims: {'title': '展示会の出展料', 'amount': 150000, 'applicant': '加藤', 'approver': '伊藤', 'status': '申請中'} に合う行が無い（[]）"
+       }
+      ],
+      "failed_steps": [
+       {
+        "step": "create_bucho",
+        "node_id": "create_bucho",
+        "workflow": null,
+        "error": {
+         "attempt": 1,
+         "code": "expr_resolve_error",
+         "message": "data.record.create: data: $from nodes.find_bucho.output /rows/0/name が解決できません（値が無く default もありません）",
+         "node_id": "create_bucho",
+         "retryable": false
+        }
+       }
+      ]
+     },
+     {
+      "case": "boundary",
+      "s3": false,
+      "s2d": true,
+      "s4": false,
+      "dynamic": {
+       "s2d": true,
+       "s3": false,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "failed"
+       ],
+       "findings": [
+        {
+         "code": "not_delivered",
+         "node_id": null,
+         "detail": "入力 title='研修の受講料' が LLM・行・ファイルに届かない"
+        },
+        {
+         "code": "not_delivered",
+         "node_id": null,
+         "detail": "入力 amount=100000 が LLM・行・ファイルに届かない"
+        },
+        {
+         "code": "not_delivered",
+         "node_id": null,
+         "detail": "入力 applicant='吉田' が LLM・行・ファイルに届かない"
+        },
+        {
+         "code": "unexpected_status",
+         "node_id": null,
+         "detail": "run の状態が failed（期待 succeeded）"
+        }
+       ]
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": false,
+        "detail": "状態 ['failed']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": false,
+        "detail": "claims {}: 0 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": false,
+        "detail": "claims: {'approver': '伊藤', 'status': '申請中'} に合う行が無い（[]）"
+       }
+      ],
+      "failed_steps": [
+       {
+        "step": "create_bucho",
+        "node_id": "create_bucho",
+        "workflow": null,
+        "error": {
+         "attempt": 1,
+         "code": "expr_resolve_error",
+         "message": "data.record.create: data: $from nodes.find_bucho.output /rows/0/name が解決できません（値が無く default もありません）",
+         "node_id": "create_bucho",
+         "retryable": false
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "s2d": true,
+   "headline": false,
+   "secs": 46.204,
+   "cost": {
+    "chat_micros": 11102,
+    "run_case_micros": 0,
+    "lines": 8,
+    "usage_missing": 0,
+    "total_micros": 11102,
+    "statuses": {
+     "chat": {},
+     "run_case": {}
+    },
+    "reconcile": {
+     "ledger_micros": 11102,
+     "usage_micros": 11094,
+     "diff_micros": 8,
+     "ok": true
+    }
+   }
+  },
+  {
+   "exp": "e1b-v1",
+   "mode": "b",
+   "label": "v1",
+   "task": "app01-claim-submit",
+   "phrasing": "app",
+   "n": 1,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "app01-claim-submit.app.1.medium",
+   "key": "7652404771021a1561d0853e5b2306e9755d4d307ae55b332f6e1cd6e8b05cf7",
+   "stub_run": false,
+   "chat_runs": 1,
+   "chat_end_unconfirmed": 0,
+   "clarified": false,
+   "sse_errors": [],
+   "s6": {
+    "emit_count": 4,
+    "emit_failed": 4,
+    "validation_errors": 8,
+    "validation_codes": {
+     "ir.bad_ref": 2,
+     "ir.schema_violation": 4,
+     "ir.unknown_port": 2
+    },
+    "steps": 6,
+    "hit_step_limit": true,
+    "tool_search_used": true,
+    "emit_loaded": true,
+    "tool_calls": {
+     "data_query": 1,
+     "data_schema": 2,
+     "emit_workflow": 4,
+     "tool_search": 1
+    }
+   },
+   "irs": {},
+   "workflow_versions": {},
+   "missing_roles": [
+    "main"
+   ],
+   "s1": false,
+   "s8": {
+    "asked": false,
+    "claimed_without_save": false,
+    "no_emit": false,
+    "unknown": false
+   },
+   "s9": {
+    "requests": 0,
+    "approved": 0,
+    "denied": 0,
+    "tools": [],
+    "errors": [],
+    "unapproved_side_effects": [],
+    "serious": false
+   },
+   "s2s": null,
+   "s2w": null,
+   "s2d": null,
+   "s3": null,
+   "s4": false,
+   "s5": null,
+   "headline": false,
+   "secs": 37.475,
+   "cost": {
+    "chat_micros": 9885,
+    "run_case_micros": 0,
+    "lines": 8,
+    "usage_missing": 0,
+    "total_micros": 9885,
+    "statuses": {
+     "chat": {},
+     "run_case": {}
+    },
+    "reconcile": {
+     "ledger_micros": 9885,
+     "usage_micros": 9877,
+     "diff_micros": 8,
+     "ok": true
+    }
+   }
+  },
+  {
+   "exp": "e1b-v1",
+   "mode": "b",
+   "label": "v1",
+   "task": "app01-claim-submit",
+   "phrasing": "auto",
+   "n": 2,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "app01-claim-submit.auto.2.medium",
+   "key": "912ac8c6ad604355dbc288f1d0f23a2b3966173a8160a267676c56ce523a88a3",
+   "stub_run": false,
+   "chat_runs": 1,
+   "chat_end_unconfirmed": 0,
+   "clarified": false,
+   "sse_errors": [],
+   "s6": {
+    "emit_count": 5,
+    "emit_failed": 4,
+    "validation_errors": 8,
+    "validation_codes": {
+     "ir.bad_ref": 2,
+     "ir.schema_violation": 4,
+     "ir.unknown_port": 2
+    },
+    "steps": 6,
+    "hit_step_limit": true,
+    "tool_search_used": true,
+    "emit_loaded": true,
+    "tool_calls": {
+     "data_schema": 2,
+     "emit_workflow": 5,
+     "tool_search": 1
+    }
+   },
+   "irs": {
+    "main": {
+     "declared_scopes": [
+      "data.read",
+      "data.write"
+     ],
+     "display_name": "経費申請の受付と承認者割り当て",
+     "edges": [
+      {
+       "from": "check_amount",
+       "from_port": "true",
+       "to": "find_bucho"
+      },
+      {
+       "from": "check_amount",
+       "from_port": "false",
+       "to": "find_kacho"
+      },
+      {
+       "from": "find_bucho",
+       "from_port": "out",
+       "to": "create_bucho"
+      },
+      {
+       "from": "find_kacho",
+       "from_port": "out",
+       "to": "create_kacho"
+      }
+     ],
+     "ir_version": 1,
+     "name": "expense-intake-approver-assign",
+     "nodes": [
+      {
+       "id": "check_amount",
+       "label": "金額が10万円以上か",
+       "params": {
+        "condition": {
+         "cmp": {
+          "left": {
+           "$from": "input",
+           "path": "/amount"
+          },
+          "op": "gte",
+          "right": 100000
+         }
+        }
+       },
+       "type": "control.branch"
+      },
+      {
+       "id": "find_bucho",
+       "label": "部長を検索",
+       "params": {
+        "query": {
+         "filter": {
+          "cmp": {
+           "field": "level",
+           "op": "eq",
+           "value": "部長"
+          }
+         },
+         "limit": 1
+        },
+        "table": "承認者"
+       },
+       "type": "data.query"
+      },
+      {
+       "id": "find_kacho",
+       "label": "課長を検索",
+       "params": {
+        "query": {
+         "filter": {
+          "cmp": {
+           "field": "level",
+           "op": "eq",
+           "value": "課長"
+          }
+         },
+         "limit": 1
+        },
+        "table": "承認者"
+       },
+       "type": "data.query"
+      },
+      {
+       "id": "create_bucho",
+       "label": "申請中で登録（部長承認）",
+       "params": {
+        "data": {
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         },
+         "applicant": {
+          "$from": "input",
+          "path": "/applicant"
+         },
+         "approver": {
+          "$from": "nodes.find_bucho.output",
+          "path": "/records/0/name"
+         },
+         "status": "申請中",
+         "title": {
+          "$from": "input",
+          "path": "/title"
+         }
+        },
+        "table": "経費申請"
+       },
+       "type": "data.record.create"
+      },
+      {
+       "id": "create_kacho",
+       "label": "申請中で登録（課長承認）",
+       "params": {
+        "data": {
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         },
+         "applicant": {
+          "$from": "input",
+          "path": "/applicant"
+         },
+         "approver": {
+          "$from": "nodes.find_kacho.output",
+          "path": "/records/0/name"
+         },
+         "status": "申請中",
+         "title": {
+          "$from": "input",
+          "path": "/title"
+         }
+        },
+        "table": "経費申請"
+       },
+       "type": "data.record.create"
+      }
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ]
+    }
+   },
+   "workflow_versions": {
+    "main": 1
+   },
+   "missing_roles": [],
+   "s1": true,
+   "s8": {
+    "asked": false,
+    "claimed_without_save": false,
+    "no_emit": false,
+    "unknown": false
+   },
+   "s9": {
+    "requests": 0,
+    "approved": 0,
+    "denied": 0,
+    "tools": [],
+    "errors": [],
+    "unapproved_side_effects": [],
+    "serious": false
+   },
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [
+        "ir_lint.output_path",
+        "ir_lint.output_path"
+       ],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": true,
+   "revalidation": {
+    "main": {
+     "errors": [],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "runs": {
+    "s2d": false,
+    "s3": false,
+    "s4": false,
+    "cases": [
+     {
+      "case": "small",
+      "s3": false,
+      "s2d": false,
+      "s4": false,
+      "dynamic": {
+       "s2d": false,
+       "s3": false,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "failed"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": false,
+        "detail": "状態 ['failed']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": false,
+        "detail": "claims {}: 0 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": false,
+        "detail": "claims: {'title': '出張の交通費', 'amount': 24000, 'applicant': '小林', 'approver': '高橋', 'status': '申請中'} に合う行が無い（[]）"
+       }
+      ],
+      "failed_steps": [
+       {
+        "step": "find_kacho",
+        "node_id": "find_kacho",
+        "workflow": null,
+        "error": {
+         "attempt": 1,
+         "code": "invalid",
+         "message": "data.query: table が UUID ではありません",
+         "node_id": "find_kacho",
+         "retryable": false
+        }
+       }
+      ]
+     },
+     {
+      "case": "large",
+      "s3": false,
+      "s2d": false,
+      "s4": false,
+      "dynamic": {
+       "s2d": false,
+       "s3": false,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "failed"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": false,
+        "detail": "状態 ['failed']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": false,
+        "detail": "claims {}: 0 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": false,
+        "detail": "claims: {'title': '展示会の出展料', 'amount': 150000, 'applicant': '加藤', 'approver': '伊藤', 'status': '申請中'} に合う行が無い（[]）"
+       }
+      ],
+      "failed_steps": [
+       {
+        "step": "find_bucho",
+        "node_id": "find_bucho",
+        "workflow": null,
+        "error": {
+         "attempt": 1,
+         "code": "invalid",
+         "message": "data.query: table が UUID ではありません",
+         "node_id": "find_bucho",
+         "retryable": false
+        }
+       }
+      ]
+     },
+     {
+      "case": "boundary",
+      "s3": false,
+      "s2d": false,
+      "s4": false,
+      "dynamic": {
+       "s2d": false,
+       "s3": false,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "failed"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": false,
+        "detail": "状態 ['failed']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": false,
+        "detail": "claims {}: 0 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": false,
+        "detail": "claims: {'approver': '伊藤', 'status': '申請中'} に合う行が無い（[]）"
+       }
+      ],
+      "failed_steps": [
+       {
+        "step": "find_bucho",
+        "node_id": "find_bucho",
+        "workflow": null,
+        "error": {
+         "attempt": 1,
+         "code": "invalid",
+         "message": "data.query: table が UUID ではありません",
+         "node_id": "find_bucho",
+         "retryable": false
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "s3": false,
+   "s4": false,
+   "stub": {
+    "s2d": true,
+    "s3": false,
+    "s4": false,
+    "cases": [
+     {
+      "case": "small",
+      "s3": false,
+      "s2d": true,
+      "s4": false,
+      "dynamic": {
+       "s2d": true,
+       "s3": false,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "failed"
+       ],
+       "findings": [
+        {
+         "code": "not_delivered",
+         "node_id": null,
+         "detail": "入力 title='出張の交通費' が LLM・行・ファイルに届かない"
+        },
+        {
+         "code": "not_delivered",
+         "node_id": null,
+         "detail": "入力 amount=24000 が LLM・行・ファイルに届かない"
+        },
+        {
+         "code": "not_delivered",
+         "node_id": null,
+         "detail": "入力 applicant='小林' が LLM・行・ファイルに届かない"
+        },
+        {
+         "code": "unexpected_status",
+         "node_id": null,
+         "detail": "run の状態が failed（期待 succeeded）"
+        }
+       ]
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": false,
+        "detail": "状態 ['failed']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": false,
+        "detail": "claims {}: 0 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": false,
+        "detail": "claims: {'title': '出張の交通費', 'amount': 24000, 'applicant': '小林', 'approver': '高橋', 'status': '申請中'} に合う行が無い（[]）"
+       }
+      ],
+      "failed_steps": [
+       {
+        "step": "find_kacho",
+        "node_id": "find_kacho",
+        "workflow": null,
+        "error": {
+         "attempt": 1,
+         "code": "invalid",
+         "message": "data.query: table が UUID ではありません",
+         "node_id": "find_kacho",
+         "retryable": false
+        }
+       }
+      ]
+     },
+     {
+      "case": "large",
+      "s3": false,
+      "s2d": true,
+      "s4": false,
+      "dynamic": {
+       "s2d": true,
+       "s3": false,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "failed"
+       ],
+       "findings": [
+        {
+         "code": "not_delivered",
+         "node_id": null,
+         "detail": "入力 title='展示会の出展料' が LLM・行・ファイルに届かない"
+        },
+        {
+         "code": "not_delivered",
+         "node_id": null,
+         "detail": "入力 amount=150000 が LLM・行・ファイルに届かない"
+        },
+        {
+         "code": "not_delivered",
+         "node_id": null,
+         "detail": "入力 applicant='加藤' が LLM・行・ファイルに届かない"
+        },
+        {
+         "code": "unexpected_status",
+         "node_id": null,
+         "detail": "run の状態が failed（期待 succeeded）"
+        }
+       ]
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": false,
+        "detail": "状態 ['failed']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": false,
+        "detail": "claims {}: 0 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": false,
+        "detail": "claims: {'title': '展示会の出展料', 'amount': 150000, 'applicant': '加藤', 'approver': '伊藤', 'status': '申請中'} に合う行が無い（[]）"
+       }
+      ],
+      "failed_steps": [
+       {
+        "step": "find_bucho",
+        "node_id": "find_bucho",
+        "workflow": null,
+        "error": {
+         "attempt": 1,
+         "code": "invalid",
+         "message": "data.query: table が UUID ではありません",
+         "node_id": "find_bucho",
+         "retryable": false
+        }
+       }
+      ]
+     },
+     {
+      "case": "boundary",
+      "s3": false,
+      "s2d": true,
+      "s4": false,
+      "dynamic": {
+       "s2d": true,
+       "s3": false,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "failed"
+       ],
+       "findings": [
+        {
+         "code": "not_delivered",
+         "node_id": null,
+         "detail": "入力 title='研修の受講料' が LLM・行・ファイルに届かない"
+        },
+        {
+         "code": "not_delivered",
+         "node_id": null,
+         "detail": "入力 amount=100000 が LLM・行・ファイルに届かない"
+        },
+        {
+         "code": "not_delivered",
+         "node_id": null,
+         "detail": "入力 applicant='吉田' が LLM・行・ファイルに届かない"
+        },
+        {
+         "code": "unexpected_status",
+         "node_id": null,
+         "detail": "run の状態が failed（期待 succeeded）"
+        }
+       ]
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": false,
+        "detail": "状態 ['failed']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": false,
+        "detail": "claims {}: 0 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": false,
+        "detail": "claims: {'approver': '伊藤', 'status': '申請中'} に合う行が無い（[]）"
+       }
+      ],
+      "failed_steps": [
+       {
+        "step": "find_bucho",
+        "node_id": "find_bucho",
+        "workflow": null,
+        "error": {
+         "attempt": 1,
+         "code": "invalid",
+         "message": "data.query: table が UUID ではありません",
+         "node_id": "find_bucho",
+         "retryable": false
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "s2d": true,
+   "headline": false,
+   "secs": 44.432,
+   "cost": {
+    "chat_micros": 10744,
+    "run_case_micros": 0,
+    "lines": 8,
+    "usage_missing": 0,
+    "total_micros": 10744,
+    "statuses": {
+     "chat": {},
+     "run_case": {}
+    },
+    "reconcile": {
+     "ledger_micros": 10744,
+     "usage_micros": 10738,
+     "diff_micros": 6,
+     "ok": true
+    }
+   }
+  },
+  {
+   "exp": "e1b-v1",
+   "mode": "b",
+   "label": "v1",
+   "task": "app12-faq-table",
+   "phrasing": "flow",
+   "n": 0,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "app12-faq-table.flow.0.medium",
+   "key": "8e0c2e6e56a3b4ad2f3d4e57648ec30ffd60b8e33eb7419209735a9579e20cef",
+   "stub_run": false,
+   "chat_runs": 1,
+   "chat_end_unconfirmed": 0,
+   "clarified": false,
+   "sse_errors": [],
+   "s6": {
+    "emit_count": 5,
+    "emit_failed": 4,
+    "validation_errors": 16,
+    "validation_codes": {
+     "ir.bad_ref": 3,
+     "ir.missing_model": 1,
+     "ir.schema_violation": 11,
+     "ir.unknown_scope": 1
+    },
+    "steps": 6,
+    "hit_step_limit": true,
+    "tool_search_used": true,
+    "emit_loaded": true,
+    "tool_calls": {
+     "data_schema": 2,
+     "emit_workflow": 5,
+     "tool_search": 1
+    }
+   },
+   "irs": {
+    "main": {
+     "declared_scopes": [
+      "data.read",
+      "data.write"
+     ],
+     "display_name": "社内 FAQ 自動回答",
+     "edges": [
+      {
+       "from": "search_faq",
+       "to": "check_hit"
+      },
+      {
+       "from": "check_hit",
+       "from_port": "true",
+       "to": "ai_answer"
+      },
+      {
+       "from": "check_hit",
+       "from_port": "false",
+       "to": "record_escalate"
+      },
+      {
+       "from": "ai_answer",
+       "to": "record_auto"
+      }
+     ],
+     "ir_version": 1,
+     "name": "faq-auto-answer",
+     "nodes": [
+      {
+       "id": "search_faq",
+       "label": "よくある質問を検索",
+       "params": {
+        "query": {
+         "filter": {
+          "cmp": {
+           "field": "question",
+           "op": "contains",
+           "value": {
+            "$from": "input",
+            "path": "/question"
+           }
+          }
+         },
+         "limit": 3,
+         "select": [
+          "faq_no",
+          "question",
+          "answer"
+         ]
+        },
+        "table": "@table:faq"
+       },
+       "type": "data.query"
+      },
+      {
+       "id": "check_hit",
+       "label": "該当があるか",
+       "params": {
+        "condition": {
+         "cmp": {
+          "left": {
+           "$from": "nodes.search_faq.output",
+           "path": "/count"
+          },
+          "op": "gt",
+          "right": 0
+         }
+        }
+       },
+       "type": "control.branch"
+      },
+      {
+       "id": "ai_answer",
+       "label": "FAQ の回答をもとに答えを作成",
+       "params": {
+        "model": "default",
+        "prompt": {
+         "$template": "次の社内よくある質問の回答だけを根拠に、利用者への答えを日本語で丁寧に書いてください。根拠にない内容は書かないでください。\n\n質問: {{q}}\n\nよくある質問の回答: {{a}}",
+         "vars": {
+          "a": {
+           "$from": "nodes.search_faq.output",
+           "path": "/rows/0/answer"
+          },
+          "q": {
+           "$from": "input",
+           "path": "/question"
+          }
+         }
+        }
+       },
+       "type": "llm.invoke"
+      },
+      {
+       "id": "record_auto",
+       "label": "自動回答を記録",
+       "params": {
+        "data": {
+         "answer": {
+          "$from": "nodes.ai_answer.output",
+          "path": "/text"
+         },
+         "question": {
+          "$from": "input",
+          "path": "/question"
+         },
+         "source": {
+          "$from": "nodes.search_faq.output",
+          "path": "/rows/0/faq_no"
+         },
+         "status": "自動回答"
+        },
+        "table": "@table:log"
+       },
+       "type": "data.record.create"
+      },
+      {
+       "id": "record_escalate",
+       "label": "エスカレーションを記録",
+       "params": {
+        "data": {
+         "question": {
+          "$from": "input",
+          "path": "/question"
+         },
+         "status": "エスカレーション"
+        },
+        "table": "@table:log"
+       },
+       "type": "data.record.create"
+      }
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ]
+    }
+   },
+   "workflow_versions": {
+    "main": 1
+   },
+   "missing_roles": [],
+   "s1": true,
+   "s8": {
+    "asked": false,
+    "claimed_without_save": false,
+    "no_emit": false,
+    "unknown": false
+   },
+   "s9": {
+    "requests": 0,
+    "approved": 0,
+    "denied": 0,
+    "tools": [],
+    "errors": [],
+    "unapproved_side_effects": [],
+    "serious": false
+   },
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": false,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": false,
+      "lint": {
+       "errors": [],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [
+        "ir_lint.output_path",
+        "ir_lint.output_path",
+        "ir_lint.output_path"
+       ],
+       "strict_warnings": [
+        "ir.template_escaped_var",
+        "ir.template_escaped_var"
+       ],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": [
+       {
+        "code": "node_all_of",
+        "node_id": null,
+        "detail": "data.transition がありません"
+       }
+      ]
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": false,
+   "revalidation": {
+    "main": {
+     "errors": [],
+     "warnings": [
+      "ir.template_escaped_var",
+      "ir.template_escaped_var"
+     ],
+     "node_ports": null
+    }
+   },
+   "runs": {
+    "s2d": false,
+    "s3": false,
+    "s4": false,
+    "cases": [
+     {
+      "case": "known",
+      "s3": false,
+      "s2d": false,
+      "s4": false,
+      "dynamic": {
+       "s2d": false,
+       "s3": false,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "failed"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": false,
+        "detail": "状態 ['failed']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": false,
+        "detail": "log {}: 0 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": false,
+        "detail": "log: {'question': '会議室の予約', 'source': 'FAQ-1', 'status': '自動回答'} に合う行が無い（[]）"
+       }
+      ],
+      "failed_steps": [
+       {
+        "step": "record_escalate",
+        "node_id": "record_escalate",
+        "workflow": null,
+        "error": {
+         "attempt": 1,
+         "code": "invalid",
+         "message": "作成時の状態は「自動回答」だけです（状態は作成後に遷移で変えてください）",
+         "node_id": "record_escalate",
+         "retryable": false
+        }
+       }
+      ]
+     },
+     {
+      "case": "unknown",
+      "s3": false,
+      "s2d": false,
+      "s4": false,
+      "dynamic": {
+       "s2d": false,
+       "s3": false,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "failed"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": false,
+        "detail": "状態 ['failed']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": false,
+        "detail": "log {}: 0 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": false,
+        "detail": "log: {'question': '駐車場の利用申請', 'status': 'エスカレーション'} に合う行が無い（[]）"
+       },
+       {
+        "kind": "rows:absent",
+        "ok": true,
+        "detail": "log: {'status': '自動回答'} に合う行が 0 行"
+       }
+      ],
+      "failed_steps": [
+       {
+        "step": "record_escalate",
+        "node_id": "record_escalate",
+        "workflow": null,
+        "error": {
+         "attempt": 1,
+         "code": "invalid",
+         "message": "作成時の状態は「自動回答」だけです（状態は作成後に遷移で変えてください）",
+         "node_id": "record_escalate",
+         "retryable": false
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "s3": false,
+   "s4": false,
+   "stub": {
+    "s2d": true,
+    "s3": false,
+    "s4": null,
+    "cases": [
+     {
+      "case": "known",
+      "s3": false,
+      "s2d": true,
+      "s4": null,
+      "dynamic": {
+       "s2d": true,
+       "s3": false,
+       "restricted_to_before_llm": true,
+       "statuses": [
+        "failed"
+       ],
+       "findings": [
+        {
+         "code": "not_delivered",
+         "node_id": null,
+         "detail": "入力 question='会議室の予約' が LLM・行・ファイルに届かない"
+        }
+       ]
+      },
+      "checks": null,
+      "failed_steps": [
+       {
+        "step": "record_escalate",
+        "node_id": "record_escalate",
+        "workflow": null,
+        "error": {
+         "attempt": 1,
+         "code": "invalid",
+         "message": "作成時の状態は「自動回答」だけです（状態は作成後に遷移で変えてください）",
+         "node_id": "record_escalate",
+         "retryable": false
+        }
+       }
+      ]
+     },
+     {
+      "case": "unknown",
+      "s3": false,
+      "s2d": true,
+      "s4": null,
+      "dynamic": {
+       "s2d": true,
+       "s3": false,
+       "restricted_to_before_llm": true,
+       "statuses": [
+        "failed"
+       ],
+       "findings": [
+        {
+         "code": "not_delivered",
+         "node_id": null,
+         "detail": "入力 question='駐車場の利用申請' が LLM・行・ファイルに届かない"
+        }
+       ]
+      },
+      "checks": null,
+      "failed_steps": [
+       {
+        "step": "record_escalate",
+        "node_id": "record_escalate",
+        "workflow": null,
+        "error": {
+         "attempt": 1,
+         "code": "invalid",
+         "message": "作成時の状態は「自動回答」だけです（状態は作成後に遷移で変えてください）",
+         "node_id": "record_escalate",
+         "retryable": false
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "s2d": true,
+   "headline": false,
+   "secs": 55.939,
+   "cost": {
+    "chat_micros": 12492,
+    "run_case_micros": 0,
+    "lines": 8,
+    "usage_missing": 0,
+    "total_micros": 12492,
+    "statuses": {
+     "chat": {},
+     "run_case": {}
+    },
+    "reconcile": {
+     "ledger_micros": 12492,
+     "usage_micros": 12484,
+     "diff_micros": 8,
+     "ok": true
+    }
+   }
+  },
+  {
+   "exp": "e1b-v1",
+   "mode": "b",
+   "label": "v1",
+   "task": "app12-faq-table",
+   "phrasing": "app",
+   "n": 1,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "app12-faq-table.app.1.medium",
+   "key": "a5071a5a5c850825ecb036d52956ad77e1fed133541c336f3dedb413ced389aa",
+   "stub_run": false,
+   "chat_runs": 1,
+   "chat_end_unconfirmed": 0,
+   "clarified": false,
+   "sse_errors": [],
+   "s6": {
+    "emit_count": 5,
+    "emit_failed": 5,
+    "validation_errors": 17,
+    "validation_codes": {
+     "ir.bad_ref": 4,
+     "ir.bad_template": 1,
+     "ir.missing_model": 1,
+     "ir.schema_violation": 11
+    },
+    "steps": 6,
+    "hit_step_limit": true,
+    "tool_search_used": true,
+    "emit_loaded": true,
+    "tool_calls": {
+     "data_schema": 2,
+     "emit_workflow": 5,
+     "tool_search": 1
+    }
+   },
+   "irs": {},
+   "workflow_versions": {},
+   "missing_roles": [
+    "main"
+   ],
+   "s1": false,
+   "s8": {
+    "asked": false,
+    "claimed_without_save": false,
+    "no_emit": false,
+    "unknown": false
+   },
+   "s9": {
+    "requests": 0,
+    "approved": 0,
+    "denied": 0,
+    "tools": [],
+    "errors": [],
+    "unapproved_side_effects": [],
+    "serious": false
+   },
+   "s2s": null,
+   "s2w": null,
+   "s2d": null,
+   "s3": null,
+   "s4": false,
+   "s5": null,
+   "headline": false,
+   "secs": 58.975,
+   "cost": {
+    "chat_micros": 14219,
+    "run_case_micros": 0,
+    "lines": 8,
+    "usage_missing": 0,
+    "total_micros": 14219,
+    "statuses": {
+     "chat": {},
+     "run_case": {}
+    },
+    "reconcile": {
+     "ledger_micros": 14219,
+     "usage_micros": 14212,
+     "diff_micros": 7,
+     "ok": true
+    }
+   }
+  },
+  {
+   "exp": "e1b-v1",
+   "mode": "b",
+   "label": "v1",
+   "task": "app12-faq-table",
+   "phrasing": "auto",
+   "n": 2,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "app12-faq-table.auto.2.medium",
+   "key": "46f4010075833bc1656479debaff3bc3a202cc27e8d01fbf6a0c0bddb1a08201",
+   "stub_run": false,
+   "chat_runs": 1,
+   "chat_end_unconfirmed": 0,
+   "clarified": false,
+   "sse_errors": [],
+   "s6": {
+    "emit_count": 5,
+    "emit_failed": 4,
+    "validation_errors": 15,
+    "validation_codes": {
+     "ir.bad_ref": 3,
+     "ir.missing_model": 1,
+     "ir.schema_violation": 9,
+     "ir.unknown_port": 2
+    },
+    "steps": 6,
+    "hit_step_limit": true,
+    "tool_search_used": true,
+    "emit_loaded": true,
+    "tool_calls": {
+     "data_schema": 2,
+     "emit_workflow": 5,
+     "tool_search": 1
+    }
+   },
+   "irs": {
+    "main": {
+     "declared_scopes": [
+      "data.read",
+      "data.write"
+     ],
+     "display_name": "よくある質問の自動回答",
+     "edges": [
+      {
+       "from": "search_faq",
+       "from_port": "out",
+       "to": "has_faq"
+      },
+      {
+       "from": "has_faq",
+       "from_port": "true",
+       "to": "make_answer"
+      },
+      {
+       "from": "make_answer",
+       "from_port": "out",
+       "to": "save_auto"
+      },
+      {
+       "from": "has_faq",
+       "from_port": "false",
+       "to": "save_escalate"
+      }
+     ],
+     "ir_version": 1,
+     "name": "faq-auto-answer",
+     "nodes": [
+      {
+       "id": "search_faq",
+       "label": "よくある質問を検索",
+       "params": {
+        "query": {
+         "filter": {
+          "cmp": {
+           "field": "question",
+           "op": "contains",
+           "value": {
+            "$from": "input",
+            "path": "/question"
+           }
+          }
+         },
+         "limit": 5,
+         "select": [
+          "faq_no",
+          "question",
+          "answer"
+         ]
+        },
+        "table": "@table:faq"
+       },
+       "type": "data.query"
+      },
+      {
+       "id": "has_faq",
+       "label": "該当あり？",
+       "params": {
+        "condition": {
+         "cmp": {
+          "left": {
+           "$from": "nodes.search_faq.output",
+           "path": "/count"
+          },
+          "op": "gt",
+          "right": 0
+         }
+        }
+       },
+       "type": "control.branch"
+      },
+      {
+       "id": "make_answer",
+       "label": "FAQ回答を材料にAIが回答を作成",
+       "params": {
+        "model": "default",
+        "prompt": {
+         "$template": "以下の『よくある質問』の回答だけを材料に、質問に対する答えを日本語で丁寧に作成してください。材料に無いことは推測せず、出典番号を [番号] の形で答えの末尾に付けてください。\n\n質問: {{question}}\n\nよくある質問（番号・質問・回答）:\n{{faq}}",
+         "vars": {
+          "faq": {
+           "$from": "nodes.search_faq.output",
+           "path": "/rows"
+          },
+          "question": {
+           "$from": "input",
+           "path": "/question"
+          }
+         }
+        }
+       },
+       "type": "llm.invoke"
+      },
+      {
+       "id": "save_auto",
+       "label": "問い合わせ記録に保存（自動回答）",
+       "params": {
+        "data": {
+         "answer": {
+          "$from": "nodes.make_answer.output",
+          "path": "/text"
+         },
+         "question": {
+          "$from": "input",
+          "path": "/question"
+         },
+         "source": {
+          "$from": "nodes.search_faq.output",
+          "path": "/rows/0/faq_no"
+         },
+         "status": "自動回答"
+        },
+        "table": "@table:log"
+       },
+       "type": "data.record.create"
+      },
+      {
+       "id": "save_escalate",
+       "label": "問い合わせ記録に保存（エスカレーション）",
+       "params": {
+        "data": {
+         "question": {
+          "$from": "input",
+          "path": "/question"
+         },
+         "status": "エスカレーション"
+        },
+        "table": "@table:log"
+       },
+       "type": "data.record.create"
+      }
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ]
+    }
+   },
+   "workflow_versions": {
+    "main": 1
+   },
+   "missing_roles": [],
+   "s1": true,
+   "s8": {
+    "asked": false,
+    "claimed_without_save": false,
+    "no_emit": false,
+    "unknown": false
+   },
+   "s9": {
+    "requests": 0,
+    "approved": 0,
+    "denied": 0,
+    "tools": [],
+    "errors": [],
+    "unapproved_side_effects": [],
+    "serious": false
+   },
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": false,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": false,
+      "lint": {
+       "errors": [],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [
+        "ir_lint.output_path",
+        "ir_lint.output_path",
+        "ir_lint.output_path"
+       ],
+       "strict_warnings": [
+        "ir.template_escaped_var",
+        "ir.template_escaped_var"
+       ],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": [
+       {
+        "code": "node_all_of",
+        "node_id": null,
+        "detail": "data.transition がありません"
+       }
+      ]
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": false,
+   "revalidation": {
+    "main": {
+     "errors": [],
+     "warnings": [
+      "ir.template_escaped_var",
+      "ir.template_escaped_var"
+     ],
+     "node_ports": null
+    }
+   },
+   "runs": {
+    "s2d": false,
+    "s3": false,
+    "s4": false,
+    "cases": [
+     {
+      "case": "known",
+      "s3": false,
+      "s2d": false,
+      "s4": false,
+      "dynamic": {
+       "s2d": false,
+       "s3": false,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "failed"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": false,
+        "detail": "状態 ['failed']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": false,
+        "detail": "log {}: 0 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": false,
+        "detail": "log: {'question': '会議室の予約', 'source': 'FAQ-1', 'status': '自動回答'} に合う行が無い（[]）"
+       }
+      ],
+      "failed_steps": [
+       {
+        "step": "save_escalate",
+        "node_id": "save_escalate",
+        "workflow": null,
+        "error": {
+         "attempt": 1,
+         "code": "invalid",
+         "message": "作成時の状態は「自動回答」だけです（状態は作成後に遷移で変えてください）",
+         "node_id": "save_escalate",
+         "retryable": false
+        }
+       }
+      ]
+     },
+     {
+      "case": "unknown",
+      "s3": false,
+      "s2d": false,
+      "s4": false,
+      "dynamic": {
+       "s2d": false,
+       "s3": false,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "failed"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": false,
+        "detail": "状態 ['failed']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": false,
+        "detail": "log {}: 0 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": false,
+        "detail": "log: {'question': '駐車場の利用申請', 'status': 'エスカレーション'} に合う行が無い（[]）"
+       },
+       {
+        "kind": "rows:absent",
+        "ok": true,
+        "detail": "log: {'status': '自動回答'} に合う行が 0 行"
+       }
+      ],
+      "failed_steps": [
+       {
+        "step": "save_escalate",
+        "node_id": "save_escalate",
+        "workflow": null,
+        "error": {
+         "attempt": 1,
+         "code": "invalid",
+         "message": "作成時の状態は「自動回答」だけです（状態は作成後に遷移で変えてください）",
+         "node_id": "save_escalate",
+         "retryable": false
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "s3": false,
+   "s4": false,
+   "stub": {
+    "s2d": true,
+    "s3": false,
+    "s4": null,
+    "cases": [
+     {
+      "case": "known",
+      "s3": false,
+      "s2d": true,
+      "s4": null,
+      "dynamic": {
+       "s2d": true,
+       "s3": false,
+       "restricted_to_before_llm": true,
+       "statuses": [
+        "failed"
+       ],
+       "findings": [
+        {
+         "code": "not_delivered",
+         "node_id": null,
+         "detail": "入力 question='会議室の予約' が LLM・行・ファイルに届かない"
+        }
+       ]
+      },
+      "checks": null,
+      "failed_steps": [
+       {
+        "step": "save_escalate",
+        "node_id": "save_escalate",
+        "workflow": null,
+        "error": {
+         "attempt": 1,
+         "code": "invalid",
+         "message": "作成時の状態は「自動回答」だけです（状態は作成後に遷移で変えてください）",
+         "node_id": "save_escalate",
+         "retryable": false
+        }
+       }
+      ]
+     },
+     {
+      "case": "unknown",
+      "s3": false,
+      "s2d": true,
+      "s4": null,
+      "dynamic": {
+       "s2d": true,
+       "s3": false,
+       "restricted_to_before_llm": true,
+       "statuses": [
+        "failed"
+       ],
+       "findings": [
+        {
+         "code": "not_delivered",
+         "node_id": null,
+         "detail": "入力 question='駐車場の利用申請' が LLM・行・ファイルに届かない"
+        }
+       ]
+      },
+      "checks": null,
+      "failed_steps": [
+       {
+        "step": "save_escalate",
+        "node_id": "save_escalate",
+        "workflow": null,
+        "error": {
+         "attempt": 1,
+         "code": "invalid",
+         "message": "作成時の状態は「自動回答」だけです（状態は作成後に遷移で変えてください）",
+         "node_id": "save_escalate",
+         "retryable": false
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "s2d": true,
+   "headline": false,
+   "secs": 52.137,
+   "cost": {
+    "chat_micros": 12362,
+    "run_case_micros": 0,
+    "lines": 8,
+    "usage_missing": 0,
+    "total_micros": 12362,
+    "statuses": {
+     "chat": {},
+     "run_case": {}
+    },
+    "reconcile": {
+     "ledger_micros": 12362,
+     "usage_micros": 12354,
+     "diff_micros": 8,
+     "ok": true
+    }
+   }
+  }
+ ],
+ "out_of_scope": [
+  {
+   "task": "app01-posting-batch",
+   "missing": [
+    "版に無い: node:data.record.upsert"
+   ],
+   "label": "v1"
+  },
+  {
+   "task": "app03-daily-submit",
+   "missing": [
+    "版に無い: node:data.record.upsert"
+   ],
+   "label": "v1"
+  },
+  {
+   "task": "app03-weekly-summary",
+   "missing": [
+    "版に無い: node:transform.date",
+    "版に無い: cap:scheduled_at"
+   ],
+   "label": "v1"
+  },
+  {
+   "task": "app03-pair",
+   "missing": [
+    "版に無い: node:data.record.upsert",
+    "版に無い: node:transform.date",
+    "版に無い: cap:scheduled_at"
+   ],
+   "label": "v1"
+  },
+  {
+   "task": "app08-weekly-kpi",
+   "missing": [
+    "版に無い: node:transform.date",
+    "版に無い: cap:scheduled_at"
+   ],
+   "label": "v1"
+  },
+  {
+   "task": "app11-overdue",
+   "missing": [
+    "版に無い: node:transform.date",
+    "版に無い: cap:scheduled_at"
+   ],
+   "label": "v1"
+  },
+  {
+   "task": "app09-minutes-tasks",
+   "missing": [
+    "版に無い: trigger:event",
+    "版に無い: cap:trigger"
+   ],
+   "label": "v1"
+  },
+  {
+   "task": "basic-summary-file",
+   "missing": [
+    "成り立たない: 正解がこの版で保存できない: CaseError: basic-summary-file/main: 検証を通りません: [{'code': 'ir.schema_violation', 'message': \"params が不正です: 項目 'on_name_taken' は使えません\", 'node_id': 'save', 'path': '/params/on_name_taken'}]"
+   ],
+   "label": "v1"
+  },
+  {
+   "task": "app02-triage",
+   "missing": [
+    "成り立たない: 正解がこの版で保存できない: CaseError: app02-triage/main: 検証を通りません: [{'code': 'ir.schema_violation', 'message': \"params が不正です: 項目 'output_schema' は使えません\", 'node_id': 'classify', 'path': '/params/output_schema'}]"
+   ],
+   "label": "v1"
+  },
+  {
+   "task": "app05-screening-text",
+   "missing": [
+    "成り立たない: 正解がこの版で保存できない: CaseError: app05-screening-text/main: 検証を通りません: [{'code': 'ir.schema_violation', 'message': \"params が不正です: 項目 'output_schema' は使えません\", 'node_id': 'judge', 'path': '/params/output_schema'}]"
+   ],
+   "label": "v1"
+  },
+  {
+   "task": "app06-stock-move",
+   "missing": [
+    "成り立たない: 正解がこの版で保存できない: CaseError: app06-stock-move/main: 検証を通りません: [{'code': 'ir.schema_violation', 'message': \"params が不正です: 項目 'add' は使えません\", 'node_id': 'take', 'path': '/params/add'}]"
+   ],
+   "label": "v1"
+  },
+  {
+   "task": "app06-reorder-check",
+   "missing": [
+    "成り立たない: 正解がこの版で保存できない: CaseError: app06-reorder-check/main: 検証を通りません: [{'code': 'ir.schema_violation', 'message': \"params が不正です: 項目 'match_on' は使えません\", 'node_id': 'save_drafts', 'path': '/params/match_on'}, {'code': 'ir.schema_violation', 'message': \"params が不正です: 項目 'encoding' は使えません\", 'node_id': 'write_csv', 'path': '/p"
+   ],
+   "label": "v1"
+  },
+  {
+   "task": "app11-checkout",
+   "missing": [
+    "成り立たない: 正解がこの版で通らない: available: unexpected_status run の状態が failed（期待 succeeded）／available: 照合 status 状態 ['failed']（期待 succeeded）／available: 照合 rows:count loans {}: 0 行（期待 1）／available: 照合 rows:match loans: {'code': 'E-01', 'borrower': '松本', 'loaned_on': {'$one_of': ['2026-11-07']}} に合う行が無い（[]）／available: 落ちた step log: data.record.create: data: $from run /date が解決できません（値が無く default もありません）"
+   ],
+   "label": "v1"
+  },
+  {
+   "task": "app11-return",
+   "missing": [
+    "成り立たない: 正解がこの版で通らない: back: unexpected_status run の状態が failed（期待 succeeded）／back: 照合 status 状態 ['failed']（期待 succeeded）／back: 照合 rows:match loans: {'code': 'E-01', 'borrower': '松本', 'returned_on': {'$one_of': ['2026-11-07']}} に合う行が無い（[{'borrower': '西村', 'code'／back: 落ちた step close: data.record.update: patch: $from run /date が解決できません（値が無く default もありません）"
+   ],
+   "label": "v1"
+  },
+  {
+   "task": "app10-survey-csv",
+   "missing": [
+    "成り立たない: 正解がこの版で通らない: survey: unexpected_status run の状態が failed（期待 succeeded）／survey: 照合 status 状態 ['failed']（期待 succeeded）／survey: 照合 rows:count summary {}: 0 行（期待 1）／survey: 照合 rows:match summary: {'responses': 10, 'promoters': 5, 'detractors': 3, 'nps': 20} に合う行が無い（[]）／survey: 落ちた step calc: script.run: input: $from nodes.count.output /items/0/detractors が解決できません（値が無く default もありません）"
+   ],
+   "label": "v1"
+  }
+ ],
+ "cost": {
+  "exp_usd": 0.129518
+ },
+ "aggregates": [
+  {
+   "condition": "v1/b/medium",
+   "label": "v1",
+   "mode": "b",
+   "effort": "medium",
+   "max_steps": null,
+   "trials": 15,
+   "tasks": 5,
+   "s1": {
+    "n": 15,
+    "true": 6,
+    "rate": 0.4
+   },
+   "s2s": {
+    "n": 6,
+    "true": 4,
+    "rate": 0.6666666666666666
+   },
+   "s2w": {
+    "n": 6,
+    "true": 0,
+    "rate": 0.0
+   },
+   "s2d": {
+    "n": 6,
+    "true": 4,
+    "rate": 0.6666666666666666
+   },
+   "s3": {
+    "n": 6,
+    "true": 2,
+    "rate": 0.3333333333333333
+   },
+   "s5": {
+    "n": 6,
+    "true": 3,
+    "rate": 0.5
+   },
+   "headline": {
+    "n": 15,
+    "true": 1,
+    "rate": 0.06666666666666667
+   },
+   "headline_ci": {
+    "mean": 0.06666666666666667,
+    "lo": 0.0,
+    "hi": 0.2,
+    "n_tasks": 5
+   },
+   "pass_at_k": {
+    "1": 0.06666666666666668,
+    "2": 0.13333333333333336,
+    "3": 0.2
+   },
+   "cost_usd": 0.129518,
+   "cost_per_completed_task_usd": 0.129518,
+   "mean_secs": 32.6566,
+   "retries": 0,
+   "s8": {
+    "asked": 0,
+    "claimed_without_save": 0,
+    "no_emit": 1,
+    "unknown": 1
+   },
+   "s4": {
+    "n": 15,
+    "true": 1,
+    "rate": 0.06666666666666667
+   },
+   "s6": {
+    "emit_count": 4.133333333333334,
+    "validation_errors": 9.4,
+    "steps": 5.4,
+    "hit_step_limit": {
+     "n": 15,
+     "true": 11,
+     "rate": 0.7333333333333333
+    },
+    "emit_loaded": {
+     "n": 15,
+     "true": 14,
+     "rate": 0.9333333333333333
+    }
+   },
+   "s9": {
+    "requests": 0,
+    "approved": 0,
+    "denied": 0,
+    "serious": 0,
+    "tools": []
+   }
+  }
+ ],
+ "failures": {
+  "validation": {
+   "ir.schema_violation": 90,
+   "ir.bad_ref": 25,
+   "ir.unknown_port": 14,
+   "ir.empty_region": 7,
+   "ir.missing_model": 3,
+   "ir.bad_template": 1,
+   "ir.unknown_scope": 1
+  },
+  "lint": {
+   "ir_lint.output_path": 10,
+   "ir.template_escaped_var": 4
+  },
+  "task": {},
+  "dynamic": {
+   "not_delivered": 22,
+   "unexpected_status": 6
+  },
+  "steps_stub": {
+   "invalid": 7,
+   "expr_resolve_error": 3
+  },
+  "steps_runs": {
+   "invalid": 7,
+   "expr_resolve_error": 3
+  },
+  "steps_by_node_stub": {
+   "data.record.create/invalid": 4,
+   "data.query/invalid": 3,
+   "data.record.create/expr_resolve_error": 3
+  },
+  "steps_by_node_runs": {
+   "data.record.create/invalid": 4,
+   "data.query/invalid": 3,
+   "data.record.create/expr_resolve_error": 3
+  }
+ }
+}
