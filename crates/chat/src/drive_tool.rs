@@ -13,11 +13,19 @@ use std::sync::Arc;
 use agent_core::{Tool, ToolError, ToolName, ToolOutcome};
 use authz::AuthContext;
 use serde::Deserialize;
-use storage::{ChildSort, Crumb, Node, NodeKind, StorageError, StorageService};
+use storage::{ChildPage, ChildSort, Crumb, Node, NodeKind, StorageError, StorageService};
 use uuid::Uuid;
 
 /// 1 回の検索で返す件数の上限（パス解決を件数分行うため小さく保つ）。
 const MAX_FIND_RESULTS: usize = 20;
+
+/// 1 回の検索でたどる検索のページの数の上限。
+///
+/// 見えるノードが多い利用者では、storage の名前の検索は語で候補を選ばずに並びの順に候補を引き、OpenFGA に問う数の
+/// 上限（`storage::NODE_SCAN_MAX_CHECKS`）で打ち切って、`limit` より少ない（空のこともある）ページに続きの位置を
+/// 付けて返す（BUG-187）。1 ページ目だけで「見つかりませんでした」と言い切ると偽の陰性になるので、続きを数ページ
+/// たどる。たどりきれなければ、探しきれなかったと伝える（無いとは言わない）。
+const MAX_FIND_PAGES: usize = 4;
 
 /// 作成系ツールの保存先 `parent_id` を読む（#942）。省略・空文字・`"root"` はルート（`None`）。
 ///
@@ -55,15 +63,19 @@ where
 /// ツールが使うドライブ操作（テストで差し替える境界・本番は [`StorageService`]）。
 #[async_trait::async_trait]
 pub trait DriveOps: Send + Sync {
-    /// 名前の部分一致で、本人に見えるノードを探す（system ノードは含まない）。
+    /// 名前の部分一致で、本人に見えるノードを 1 ページ探す（system ノードは含まない）。
+    ///
+    /// `limit` より少ない（空のこともある）ページに続きの位置が付くことがある（BUG-187）。続きの位置は見えない
+    /// ノードの名前を含みうるので、次のページを引くのにだけ使い、モデルへは出さない。
     async fn find(
         &self,
         ctx: &AuthContext,
         query: &str,
         kind: Option<NodeKind>,
+        cursor: Option<&str>,
         limit: usize,
         trace_id: Option<&str>,
-    ) -> Result<Vec<Node>, StorageError>;
+    ) -> Result<ChildPage, StorageError>;
     /// 自身まで読める祖先列（root→自身）。末尾が自身。
     async fn path(
         &self,
@@ -91,21 +103,20 @@ impl DriveOps for StorageService {
         ctx: &AuthContext,
         query: &str,
         kind: Option<NodeKind>,
+        cursor: Option<&str>,
         limit: usize,
         trace_id: Option<&str>,
-    ) -> Result<Vec<Node>, StorageError> {
-        let page = self
-            .search_nodes_by_name_kind(
-                ctx,
-                query,
-                kind,
-                ChildSort::default(),
-                None,
-                limit,
-                trace_id,
-            )
-            .await?;
-        Ok(page.items)
+    ) -> Result<ChildPage, StorageError> {
+        self.search_nodes_by_name_kind(
+            ctx,
+            query,
+            kind,
+            ChildSort::default(),
+            cursor,
+            limit,
+            trace_id,
+        )
+        .await
     }
 
     async fn path(
@@ -153,6 +164,59 @@ fn path_text(crumbs: &[Crumb]) -> String {
         .map(|c| c.name.as_str())
         .collect::<Vec<_>>()
         .join(" / ")
+}
+
+/// 名前で探した結果（`incomplete`: `limit` に届かないまま続きが残った＝探しきれていない）。
+struct Found {
+    nodes: Vec<Node>,
+    incomplete: bool,
+}
+
+/// 続きの位置を [`MAX_FIND_PAGES`] ページまでたどり、`limit` 件に届くか続きが無くなるまで集める。
+async fn find_bounded(
+    drive: &dyn DriveOps,
+    ctx: &AuthContext,
+    query: &str,
+    kind: Option<NodeKind>,
+    limit: usize,
+    trace_id: Option<&str>,
+) -> Result<Found, StorageError> {
+    let mut nodes: Vec<Node> = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..MAX_FIND_PAGES {
+        let page = drive
+            .find(
+                ctx,
+                query,
+                kind,
+                cursor.as_deref(),
+                limit - nodes.len(),
+                trace_id,
+            )
+            .await?;
+        nodes.extend(page.items);
+        nodes.truncate(limit);
+        cursor = page.next_cursor;
+        if nodes.len() >= limit || cursor.is_none() {
+            break;
+        }
+    }
+    let incomplete = nodes.len() < limit && cursor.is_some();
+    Ok(Found { nodes, incomplete })
+}
+
+/// 探しきれなかったときに添える、次の手（種別をまだ絞っていなければ、種別は候補を減らすので勧める）。
+fn not_exhausted_hint(kind: Option<NodeKind>) -> &'static str {
+    match kind {
+        None => {
+            "ドライブのファイル・フォルダが多く、すべては探しきれていません（無いとは限りません）。\
+                 kind で種別を絞って探し直すか、置き場所をユーザーに確かめてください。"
+        }
+        Some(_) => {
+            "ドライブのファイル・フォルダが多く、すべては探しきれていません（無いとは限りません）。\
+                    置き場所をユーザーに確かめてください。"
+        }
+    }
 }
 
 /// 名前でファイル・フォルダを探すツール（読み取りのみ）。
@@ -224,8 +288,11 @@ impl Tool for DriveFindTool {
         };
         let limit = input.limit.unwrap_or(10).clamp(1, MAX_FIND_RESULTS);
         // 種別の絞り込みと件数の上限は検索側（SQL）で効かせる（取ってから捨てない）。
-        let hits = match self.drive.find(ctx, query, kind, limit, trace_id).await {
-            Ok(nodes) => nodes,
+        let Found {
+            nodes: hits,
+            incomplete,
+        } = match find_bounded(self.drive.as_ref(), ctx, query, kind, limit, trace_id).await {
+            Ok(found) => found,
             Err(StorageError::Forbidden | StorageError::NotFound) => {
                 return Ok(ToolOutcome::error("ドライブを検索する権限がありません。"));
             }
@@ -234,11 +301,16 @@ impl Tool for DriveFindTool {
                 return Ok(ToolOutcome::error("ドライブの検索に失敗しました。"));
             }
         };
+        let what = kind.map_or("ファイル・フォルダ", kind_label);
         if hits.is_empty() {
-            return Ok(ToolOutcome::ok(format!(
-                "「{query}」に一致する{}は見つかりませんでした。",
-                kind.map_or("ファイル・フォルダ", kind_label)
-            )));
+            return Ok(ToolOutcome::ok(if incomplete {
+                format!(
+                    "「{query}」に一致する{what}は、探した範囲では見つかりませんでした。{}",
+                    not_exhausted_hint(kind)
+                )
+            } else {
+                format!("「{query}」に一致する{what}は見つかりませんでした。")
+            }));
         }
         // 場所は並列に引く（件数は上限 20）。読めない・消えた場合は場所を省く。
         let paths =
@@ -262,8 +334,13 @@ impl Tool for DriveFindTool {
             })
             .collect::<Vec<_>>()
             .join("\n");
+        let rest = if incomplete {
+            format!("目的のものが無ければ: {}\n", not_exhausted_hint(kind))
+        } else {
+            String::new()
+        };
         Ok(ToolOutcome::ok(format!(
-            "「{query}」の検索結果（{} 件）:\n{lines}\n",
+            "「{query}」の検索結果（{} 件）:\n{lines}\n{rest}",
             hits.len()
         )))
     }
