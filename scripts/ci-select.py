@@ -84,13 +84,28 @@ ALWAYS_RUN_EXEMPT = {
 DEP_TABLES = ("dependencies", "dev-dependencies", "build-dependencies")
 
 
+def member_manifests(root: Path, workspace: dict) -> list[Path]:
+    """ルートの Cargo.toml の workspace.members（glob）に当たり、workspace.exclude に無いクレートの Cargo.toml。
+
+    `crates/*` だけを見ると、members に足した入れ子のクレート（crates/tabular/protocol）が外のクレートの変更として
+    扱われ、選択からも検査からも外れる。"""
+    excluded = {e.rstrip("/") for e in workspace.get("exclude", [])}
+    found: set[Path] = set()
+    for pattern in workspace.get("members", []):
+        for manifest in root.glob(f"{pattern.rstrip('/')}/Cargo.toml"):
+            if manifest.parent.relative_to(root).as_posix() not in excluded:
+                found.add(manifest)
+    return sorted(found)
+
+
 def workspace_packages(root: Path) -> dict[str, dict]:
-    """crates/* の各パッケージ名 → {dir, deps}。deps は workspace 内の依存先パッケージ名（dev / build を含む）。"""
+    """workspace の各パッケージ名 → {dir, deps}。deps は workspace 内の依存先パッケージ名（dev / build を含む）。"""
     root_manifest = tomllib.loads((root / "Cargo.toml").read_text())
-    ws_deps = root_manifest.get("workspace", {}).get("dependencies", {})
+    workspace = root_manifest.get("workspace", {})
+    ws_deps = workspace.get("dependencies", {})
     members: dict[str, dict] = {}
     raw: dict[str, dict] = {}
-    for manifest in sorted(root.glob("crates/*/Cargo.toml")):
+    for manifest in member_manifests(root, workspace):
         data = tomllib.loads(manifest.read_text())
         name = data.get("package", {}).get("name")
         if not name:
@@ -118,6 +133,11 @@ def workspace_packages(root: Path) -> dict[str, dict]:
                 if dep in members and dep != name:
                     members[name]["deps"].add(dep)
     return members
+
+
+def member_manifest_paths(members: dict[str, dict]) -> set[str]:
+    """workspace のクレートの Cargo.toml（入れ子のクレート crates/tabular/protocol も含む）。"""
+    return {f"{info['dir']}/Cargo.toml" for info in members.values()}
 
 
 def reverse_closure(members: dict[str, dict], seeds: set[str]) -> set[str]:
@@ -211,7 +231,7 @@ def select(members: dict[str, dict], files: list[str], full_run: bool = False,
                 seeds |= used
                 lock_crates |= used
                 reasons.append(f"Cargo.lock: 変わった依存を使うクレート {len(used)} 件")
-        elif re.fullmatch(r"crates/[^/]+/Cargo\.toml", f):
+        elif re.fullmatch(r"crates/[^/]+/Cargo\.toml", f) or f in member_manifest_paths(members):
             # 依存・フィーチャの変更は、フィーチャ統合で依存を共有する他のクレートのビルドも変える。
             full = True
             reasons.append(f"全量（クレートの依存定義）: {f}")

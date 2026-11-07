@@ -169,6 +169,31 @@ class SelectTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             ci.workspace_packages(Path(self._tmp.name))
 
+    def test_nested_member_is_its_own_package(self):
+        # workspace.members に足した入れ子のクレート（crates/tabular/protocol）は、外のクレートの変更として扱わず、
+        # そのクレートと依存元を選ぶ。Cargo.toml の変更は全量。workspace.exclude のクレート（runner）は外のクレートの中身。
+        root = Path(self._tmp.name)
+        (root / "Cargo.toml").write_text(
+            '[workspace]\nmembers = ["crates/*", "crates/tabular/protocol"]\nexclude = ["crates/tabular/runner"]\n'
+        )
+        for d, name, deps in [
+            ("tabular", "shiki-tabular", 'shiki-tabular-protocol = { path = "protocol" }\n'),
+            ("tabular/protocol", "shiki-tabular-protocol", ""),
+            ("tabular/runner", "shiki-tabular-runner", 'shiki-tabular-protocol = { path = "../protocol" }\n'),
+        ]:
+            p = root / "crates" / d
+            p.mkdir(parents=True)
+            (p / "Cargo.toml").write_text(f'[package]\nname = "{name}"\n[dependencies]\n{deps}')
+        members = ci.workspace_packages(root)
+        self.assertIn("shiki-tabular-protocol", members)
+        self.assertNotIn("shiki-tabular-runner", members)
+        self.assertEqual(members["shiki-tabular"]["deps"], {"shiki-tabular-protocol"})
+        sel = ci.select(members, ["crates/tabular/protocol/src/sql_guard.rs"])
+        self.assertEqual(sel["packages"], ["shiki-tabular", "shiki-tabular-protocol"])
+        self.assertIn("package(=shiki-tabular-protocol)", sel["nextest_filter"])
+        self.assertTrue(ci.select(members, ["crates/tabular/protocol/Cargo.toml"])["full"])
+        self.assertEqual(ci.select(members, ["crates/tabular/runner/src/main.rs"])["packages"], ["shiki-tabular"])
+
     def test_always_run_is_in_the_filter(self):
         f = ci.select(self.members, ["crates/yui/src/lib.rs"])["nextest_filter"]
         self.assertIn("package(=shiki-yui)", f)
@@ -305,6 +330,9 @@ class RealWorkspaceTest(unittest.TestCase):
         self.assertNotIn(r"e2e/data-grid\.spec\.ts$", args)
         # API ルートは使う spec を import から辿れないので全部回す（shiki-api が [all]）。
         self.assertTrue(ci.select(members, ["crates/api/src/routes/data.rs"], scenarios=scenarios)["e2e_all"])
+
+    def test_nested_members_are_read_from_the_root_manifest(self):
+        self.assertIn("shiki-tabular-protocol", ci.workspace_packages(REPO))
 
     def test_authz_change_reaches_most_of_the_workspace(self):
         members = ci.workspace_packages(REPO)
