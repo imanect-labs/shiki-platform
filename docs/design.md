@@ -831,8 +831,8 @@ flowchart TB
   IP 分類は **net_guard が単一の正**で、egress プロキシ（gVisor/FC ティア）とミニアプリ HTTP（app-platform）も同じ表を使う。
   ミニアプリの関数の外部 HTTP も、②〜⑤（接続固定・リダイレクト非追従・環境のプロキシ非経由）と本文の上限（1 MiB）を
   同じく守る（BUG-196・[PIT-48](./design-caveats.md)）。外へ出るのに中継が要る環境（オンプレ）では、web_fetch・
-  ワークフローの外部への送信・ミニアプリの関数の外部 HTTP を、運用者が設定で明示した中継（`egress.proxy_url`）にだけ
-  通す。中継には③で確かめた IP アドレスへの CONNECT を頼み（名前を渡さない）、TLS はトンネルの中で URL の名前で結ぶ
+  ワークフローの外部への送信・ミニアプリの関数の外部 HTTP・回答の画像の代理取得（PIT-77）を、運用者が設定で明示した
+  中継（`egress.proxy_url`）にだけ通す。中継には③で確かめた IP アドレスへの CONNECT を頼み（名前を渡さない）、TLS はトンネルの中で URL の名前で結ぶ
   （`sandbox_client::egress_proxy`・GAP-72）。社内の送り先（管理者が内部の送り先として許したホスト）は中継を通さない。
   **前提条件（#346 で充足済み）**: code_interpreter が宣伝する numpy/pandas は、native rootfs へビルド時に同梱する
   （`deploy/sandbox-assets/rootfs-requirements.txt`・digest pin × wheel ハッシュ全固定 `--require-hashes` の二層で再現）。
