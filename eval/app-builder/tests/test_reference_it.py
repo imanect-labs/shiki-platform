@@ -18,6 +18,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import socket
@@ -28,6 +29,7 @@ import pytest
 
 from abeval import fixtures
 from abeval.grade.mutate import null_ir
+from abeval.grading import stub_plumbing
 from abeval.run_cases import Saved, execute_case, grade_case, save_workflows
 from abeval.shiki import ShikiClient, ShikiError
 from abeval.tasks import load_tasks, stub_cases
@@ -130,3 +132,58 @@ def test_reference_passes_and_null_fails(alice, task):
         with pytest.raises(ShikiError) as e:
             alice.get_fsm(fid)
         assert e.value.status == 404, fid
+
+
+def _writes_files(task) -> bool:
+    return any(
+        n.get("type") in ("storage.write", "csv.write")
+        for ir in task.reference_irs().values()
+        for n in ir.get("nodes", [])
+    )
+
+
+FILE_TASKS = [t for t in TASKS if _writes_files(t)]
+
+
+def _fail_on_name_taken(irs: dict) -> dict:
+    """保存のブロックの「同じ名前があるとき」を既定（失敗にする）に戻した IR（モデルが書かないときの形）。"""
+    out = copy.deepcopy(irs)
+    for ir in out.values():
+        for n in ir.get("nodes", []):
+            if n.get("type") in ("storage.write", "csv.write"):
+                n.get("params", {}).pop("on_name_taken", None)
+    return out
+
+
+@pytest.mark.parametrize("task", FILE_TASKS, ids=[t.id for t in FILE_TASKS])
+def test_stub_plumbing_after_the_run_cases_starts_from_the_fixture_files(alice, task):
+    """Mode B と同じ順（同じ fixture で run_case を流してから stub の配管）でも、前の run のファイルに
+    `name_taken` でぶつからない（GRADER_VERSION 8）。正解の IR は「番号を付けて保存」を書いているので、
+    モデルがよく書く既定（失敗にする）に戻してから流す。"""
+    before = _snapshot(alice)
+    now = fixtures.now_utc()
+    rec = fixtures.create_fixtures(alice, task.fixtures, now=now)
+    irs = _fail_on_name_taken(task.reference_irs())
+    try:
+        tag = f"rerun-{uuid.uuid4().hex[:6]}"
+        wfs = save_workflows(alice, task, irs, rec, tag=tag, stub=True)
+        ports = {r: w.node_ports for r, w in wfs.items()}
+        for case in stub_cases(task):
+            execute_case(alice, task, case, wfs, rec, now=now)
+        out = stub_plumbing(
+            alice,
+            task,
+            rec,
+            irs,
+            tag=tag,
+            lint_ports=ports,
+            now=now,
+            timeout=180.0,
+        )
+    finally:
+        report = fixtures.cleanup(alice, rec)
+    assert report.ok, report.errors
+    text = json.dumps(out, ensure_ascii=False)
+    assert "name_taken" not in text, text[:3000]
+    assert out.get("s2d") is False, text[:3000]
+    assert _snapshot(alice) == before, "片付けの後に残ったものがあります"

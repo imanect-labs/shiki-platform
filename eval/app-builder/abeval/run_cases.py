@@ -6,7 +6,10 @@ Mode A（stub の配管）と Mode B（実行）も使う。製品の公開の�
 1. `prepare_ir`: 置き場所の印（`@table:` など）を fixture の id に置き換え、名前を付け替える。`stub=True` では
    LLM のノードの model を stub（`default`・判定は `decide-stub`）にし、effort を外す（stub は受けない）。
 2. `save_workflows`: 検証（`/workflows/validate`）して保存する。作った id は fixture の記録に残す（片付けで消える）。
-3. `execute_case`: run_case の前に fixture の行を入れ直し、起動の列（`sequence`）を順に流して終わりを待つ。成功した
+3. `execute_case`: run_case の前に fixture の行を入れ直し、前の run が fixture の置き場に作ったファイルを消す
+   （`clear_run_files`。run_case ごとに fixture の状態から始める。Mode B は実モデルの run_case の後に同じ fixture で
+   stub の配管を流すので、消さないと日付の名前のファイルが `name_taken` でぶつかる）。起動の列（`sequence`）を順に
+   流して終わりを待つ。成功した
    step の出力・行・増えたファイルを集める。`no_new_rows` なら最後の起動をもう一度流して行を数え直す。ルートに
    増えたファイルは記録に足す（片付けで消す）。
 4. `grade_case`: 動的な検査と照合子をかける（stub で llm_dependent の run_case は照合をせず、動的な検査を最初の
@@ -128,6 +131,29 @@ def new_files(client: ShikiClient, rec: FixtureRecord, task: Task, before: set[s
     return out
 
 
+def clear_run_files(client: ShikiClient, rec: FixtureRecord, task: Task) -> list[str]:
+    """前の run が fixture の置き場に作ったファイルを消す（消した id）。
+
+    fixture のフォルダーでは、fixture が置いたファイル（記録に ref があるもの。課題のスキーマが fixture に ref を
+    必ず求める）だけを残す。ルートでは、この試行の run が作ったと記録したファイル（`new_files` が ref なしで足す）
+    だけを消し、番兵やほかのものには触れない。消したものは記録に残すので、試行の最後の片付けは missing_ok で通る。
+    """
+    fixture_files = {c.id for c in rec.created if c.kind == "file" and c.ref}
+    run_root_files = {
+        c.id for c in rec.created if c.kind == "file" and not c.ref and c.parent is None
+    }
+    removed = []
+    for ref, fid in _folders(rec, task).items():
+        for n in client.nodes(fid):
+            if n.get("kind") == "folder" or n["id"] in fixture_files:
+                continue
+            if ref is None and n["id"] not in run_root_files:
+                continue
+            client.delete_file(n["id"], missing_ok=True)
+            removed.append(n["id"])
+    return removed
+
+
 def _resolve_value(value: Any, rec: FixtureRecord, now: dt.datetime) -> Any:
     return resolve_refs(resolve_rel(value, now), rec.refs, rec.rows)
 
@@ -192,6 +218,8 @@ def execute_case(
     """run_case を流して記録を集める（起動できなかった段は status が not_started）。"""
     if reload and _tables(rec, task):
         reload_rows(client, rec, task.fixtures, now=now)
+    if reload:
+        clear_run_files(client, rec, task)
     rows_before = snapshot_rows(client, rec, task)
     files_before = snapshot_files(client, rec, task)
     runs = []

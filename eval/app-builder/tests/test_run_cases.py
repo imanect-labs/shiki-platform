@@ -275,3 +275,74 @@ def test_unknown_roles_are_a_case_error():
     c, t, rec = _setup()
     with pytest.raises(CaseError, match="役割"):
         execute_case(c, t, t.run_cases[0], {}, rec, now=NOW)
+
+
+class FilesClient(FakeClient):
+    """run のたびに、同じ名前のファイルを fixture のフォルダーとルートに置く（日付の名前の再現）。
+
+    同じ名前の生きているファイルがあれば、製品と同じく `name_taken` で失敗の run にする。
+    """
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self.deleted: list[str] = []
+        self.name_taken = 0
+        self.k = 0
+
+    def delete_file(self, file_id, *, missing_ok=False):
+        self.deleted.append(file_id)
+        for nodes in self.nodes_by.values():
+            nodes[:] = [n for n in nodes if n["id"] != file_id]
+        return True
+
+    def start_run(self, wf_id, input, *, trigger=None, scheduled_at=None):
+        self.started.append({"wf": wf_id, "input": dict(input), "scheduled_at": scheduled_at})
+        out = next(k for k in self.nodes_by if k is not None)
+        for where in (out, None):
+            if any(n["name"] == "out-2026-11-07.md" for n in self.nodes_by[where]):
+                self.name_taken += 1
+                continue
+            self.k += 1
+            self.nodes_by[where].append(
+                {"id": f"made{self.k}", "name": "out-2026-11-07.md", "kind": "file"}
+            )
+        return f"run{len(self.started)}"
+
+
+def test_each_run_case_starts_without_the_files_of_the_previous_runs():
+    c = FilesClient()
+    t = _task()
+    rec = fixtures.create_fixtures(c, t.fixtures, now=NOW)
+    # fixture が置いたファイル（ref つき）と、ルートにある番兵などのほかのもの。
+    out = rec.refs["out"]
+    c.nodes_by[out].append({"id": "fx", "name": "fixture.csv", "kind": "file"})
+    rec.add("file", "fx", "fixture.csv", "fx_ref", out)
+    c.nodes_by[None].append({"id": "other", "name": "keep-me.md", "kind": "file"})
+    saved = save_workflows(c, t, t.reference_irs(), rec, tag="ref-1", stub=True)
+    first = execute_case(c, t, t.run_cases[0], saved, rec, now=NOW)
+    assert first.files, "1 回目の run_case はファイルを作る"
+    taken = c.name_taken
+    second = execute_case(c, t, t.run_cases[0], saved, rec, now=NOW)
+    # 2 回目は前の run のファイルを消してから流すので、きれいな状態から始めた 1 回目と同じぶつかり方になる（同じ
+    # run_case の中の 2 つ目以降の起動は、どちらの回でも 1 つ目のファイルにぶつかる）。消さなければ 1 つ目の起動も
+    # ぶつかる。
+    assert c.name_taken - taken == taken
+    assert {f["name"] for f in second.files} == {"out-2026-11-07.md"}
+    # fixture のファイルと、記録に無いルートのもの（番兵など）は消さない。
+    assert "fx" not in c.deleted and "other" not in c.deleted
+    assert any(n["id"] == "fx" for n in c.nodes_by[out])
+    assert any(n["id"] == "other" for n in c.nodes_by[None])
+    # 1 回目の run が fixture のフォルダー（made1）とルート（made2）に作ったものを消した。ルートのものは記録に
+    # 残る（試行の最後の片付けは missing_ok で通る）。フォルダーのものはフォルダーごと最後に消える。
+    assert {"made1", "made2"} <= set(c.deleted)
+    assert "made2" in rec.ids("file")
+
+
+def test_clear_run_files_is_skipped_when_rows_are_not_reloaded():
+    c = FilesClient()
+    t = _task()
+    rec = fixtures.create_fixtures(c, t.fixtures, now=NOW)
+    saved = save_workflows(c, t, t.reference_irs(), rec, tag="ref-1", stub=True)
+    execute_case(c, t, t.run_cases[0], saved, rec, now=NOW)
+    execute_case(c, t, t.run_cases[0], saved, rec, now=NOW, reload=False)
+    assert c.deleted == []
