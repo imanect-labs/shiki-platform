@@ -14,6 +14,12 @@
 //! 当たるかを列で返すだけ・[`ScanWhere::Named`]）。語で候補を選ぶと、当たる見えないノードがあるときだけ OpenFGA に
 //! 問うことになり、応答の時間と「0 件で続きあり」から、見えないノードの名前に語が含まれるかが分かってしまう。
 //! 問う数は語によらない（BUG-149 のテーブルの名前の検索と同じ考え方）。ListObjects が返した分は問い直さない。
+//! 種別（ファイル・フォルダー・#942）の絞り込みは名前ではないので、候補の選び方に入れる。
+//!
+//! # 並び
+//!
+//! どの経路も、どのキー・向きでも**フォルダーを先頭**にし、名前は自然順で比べる（#1040・[`child_order_sql`]）。
+//! 続きの位置（[`ChildCursor`]）は並びの値・名前・id・種別を持つ。
 
 use std::collections::HashSet;
 
@@ -38,7 +44,11 @@ pub(super) enum ScanWhere<'a> {
         include_system: bool,
     },
     /// 組織の生きているノード（システム領域を除く）。`terms`（ILIKE の模様）は候補を選ばず、当たるかの列にだけ使う。
-    Named { terms: &'a [String] },
+    /// `kind` は種別の絞り込み（`None` は両方・#942）。
+    Named {
+        terms: &'a [String],
+        kind: Option<NodeKind>,
+    },
 }
 
 /// 候補の行と、名前の検索の語に当たるか（フォルダーの子は常に当たる）。
@@ -49,37 +59,15 @@ struct ScanRow {
     hit: bool,
 }
 
-/// 並びの列式・型・向き・キーセットの比較（[`child_sort_value`] と同じ列式）。
-struct Order {
-    col: &'static str,
-    cast: &'static str,
-    dir: &'static str,
-    cmp: &'static str,
-}
-
-fn order_of(sort: ChildSort) -> Order {
-    let (col, cast) = match sort.key {
-        ChildSortKey::Name => ("name", "text"),
-        ChildSortKey::Updated => ("updated_at", "timestamptz"),
-        // フォルダは size_bytes が NULL のため 0 とみなす（NULL を keyset から排除）。
-        ChildSortKey::Size => ("coalesce(size_bytes, 0)", "bigint"),
-    };
-    let (dir, cmp) = if sort.desc {
-        ("DESC", "<")
-    } else {
-        ("ASC", ">")
-    };
-    Order {
-        col,
-        cast,
-        dir,
-        cmp,
+/// 行の位置（続きの位置にする・[`child_sort_value`] と同じ値）。
+fn position_of(sort: ChildSort, row: &NodeRow) -> ChildCursor {
+    ChildCursor {
+        value: child_sort_value(sort.key, row),
+        name: row.name.clone(),
+        id: row.id,
+        // 種類の読めない行はファイルとして扱う（問いと同じ・fail-closed）。
+        kind: NodeKind::parse(&row.kind).unwrap_or(NodeKind::File),
     }
-}
-
-/// 続きの位置（並びの値と id）を内部のカーソルにする（外へは API が封をして出す）。
-fn encode_at(sort: ChildSort, at: Option<&(String, Uuid)>) -> Option<String> {
-    at.map(|(v, id)| encode_child_cursor(sort, v, *id))
 }
 
 impl StorageService {
@@ -104,7 +92,7 @@ impl StorageService {
         let mut at = cursor.map(|c| decode_child_cursor(sort, c)).transpose()?;
         let mut items: Vec<Node> = Vec::with_capacity(limit + 1);
         // 選んだ件の位置（`limit` + 1 件目が見つかったら、`limit` 件目の位置を続きにする）。
-        let mut picked: Vec<(String, Uuid)> = Vec::with_capacity(limit + 1);
+        let mut picked: Vec<ChildCursor> = Vec::with_capacity(limit + 1);
         let mut checks = 0usize;
         let mut first = true;
         loop {
@@ -140,18 +128,19 @@ impl StorageService {
             .await?
             .into_iter();
             for r in rows {
-                at = Some((child_sort_value(sort.key, &r.node), r.node.id));
+                at = Some(position_of(sort, &r.node));
                 // `known` の行は問いに入れていない（問いの答えは known でない行の順に並ぶ）。
                 let visible = known.contains(&r.node.id) || held.next().unwrap_or(false);
                 if !visible || !r.hit {
                     continue;
                 }
-                picked.push((child_sort_value(sort.key, &r.node), r.node.id));
+                picked.push(position_of(sort, &r.node));
                 items.push(row_to_node(r.node)?);
                 if items.len() > limit {
                     // 後ろに見えるものがある: その 1 件は次のページで問い直す。
                     items.truncate(limit);
-                    return Ok((items, encode_at(sort, picked.get(limit - 1))));
+                    let next = picked.get(limit - 1).map(|c| encode_child_cursor(sort, c));
+                    return Ok((items, next));
                 }
             }
             if exhausted {
@@ -163,26 +152,28 @@ impl StorageService {
                     found = items.len(),
                     "ドライブの一覧: OpenFGA に問う数の上限に届いたので、見つけた分と続きの位置を返す"
                 );
-                return Ok((items, encode_at(sort, at.as_ref())));
+                return Ok((items, at.as_ref().map(|c| encode_child_cursor(sort, c))));
             }
             first = false;
         }
     }
 
     /// 候補を `n` 件、並びの順に引く（`at` の後ろから）。
+    ///
+    /// 続きの位置は [`child_order_sql`] と同じ置き場（`$4` = 並びの値・`$5` = id・`$8` = 種別・`$9` = 名前）に渡す。
     async fn fetch_candidates(
         &self,
         ctx: &AuthContext,
         filter: &ScanWhere<'_>,
         sort: ChildSort,
-        at: Option<&(String, Uuid)>,
+        at: Option<&ChildCursor>,
         n: usize,
     ) -> Result<Vec<ScanRow>, StorageError> {
-        let o = order_of(sort);
-        let (col, cast, dir, cmp) = (o.col, o.cast, o.dir, o.cmp);
         let limit = i64::try_from(n).unwrap_or(i64::MAX);
-        let after_val = at.map(|(v, _)| v.as_str());
-        let after_id = at.map(|(_, id)| *id);
+        let after_val = at.map(|c| c.value.as_str());
+        let after_id = at.map(|c| c.id);
+        let after_kind = at.map(|c| c.kind.as_str());
+        let after_name = at.map(|c| c.name.as_str());
         let rows = match filter {
             ScanWhere::Children {
                 parent_id,
@@ -190,34 +181,40 @@ impl StorageService {
             } => {
                 // parent_id は IS NOT DISTINCT FROM で NULL（最上位）も同値比較する。after_val は text で受けて
                 // 列型へキャストして比べる。
+                let ChildOrderSql { order_by, keyset } = child_order_sql(sort);
                 let sql = format!(
                     "SELECT {NODE_COLS}, true AS hit FROM node \
                      WHERE org = $1 AND tenant_id = $2 AND deleted_at IS NULL \
                        AND ($7 OR system = false) \
                        AND parent_id IS NOT DISTINCT FROM $3 \
-                       AND ($4::text IS NULL OR ({col}, id) {cmp} ($4::{cast}, $5)) \
-                     ORDER BY {col} {dir}, id {dir} LIMIT $6"
+                       AND {keyset} \
+                     ORDER BY {order_by} LIMIT $6"
                 );
                 sqlx::query_as(&sql)
-                    .bind(&ctx.org)
-                    .bind(&ctx.tenant_id)
+                    .bind(ctx.org())
+                    .bind(ctx.tenant_id())
                     .bind(parent_id)
                     .bind(after_val)
                     .bind(after_id)
                     .bind(limit)
                     .bind(include_system)
+                    .bind(after_kind)
+                    .bind(after_name)
                     .fetch_all(&self.db)
                     .await?
             }
-            ScanWhere::Named { terms } => {
+            ScanWhere::Named { terms, kind } => {
                 let sql = named_scan_sql(sort);
                 sqlx::query_as(&sql)
-                    .bind(&ctx.org)
-                    .bind(&ctx.tenant_id)
+                    .bind(ctx.org())
+                    .bind(ctx.tenant_id())
                     .bind(terms)
                     .bind(after_val)
                     .bind(after_id)
                     .bind(limit)
+                    .bind(kind.map(NodeKind::as_str))
+                    .bind(after_kind)
+                    .bind(after_name)
                     .fetch_all(&self.db)
                     .await?
             }
@@ -226,11 +223,12 @@ impl StorageService {
     }
 
     /// 名前の検索で、ListObjects が上限より少なく返したときの経路: viewer の集合の中だけを名前に当てる（問わない）。
-    #[allow(clippy::too_many_arguments)] // 認可 ctx ＋ 語 ＋ ソート ＋ ページング ＋ 見える集合。
+    #[allow(clippy::too_many_arguments)] // 認可 ctx ＋ 語 ＋ 種別 ＋ ソート ＋ ページング ＋ 見える集合。
     pub(super) async fn search_in_visible(
         &self,
         ctx: &AuthContext,
         terms: &[String],
+        kind: Option<NodeKind>,
         sort: ChildSort,
         cursor: Option<&str>,
         limit: usize,
@@ -241,31 +239,35 @@ impl StorageService {
             return Ok((Vec::new(), None));
         }
         let at = cursor.map(|c| decode_child_cursor(sort, c)).transpose()?;
-        let o = order_of(sort);
-        let (col, cast, dir, cmp) = (o.col, o.cast, o.dir, o.cmp);
+        // 置き場は [`child_order_sql`] に合わせる（`$4`・`$5`・`$8`・`$9` が続きの位置）。
+        let ChildOrderSql { order_by, keyset } = child_order_sql(sort);
         let sql = format!(
             "SELECT {NODE_COLS} FROM node \
-             WHERE id = ANY($1) AND org = $2 AND tenant_id = $3 AND deleted_at IS NULL AND system = false \
-               AND name ILIKE ALL($4) \
-               AND ($5::text IS NULL OR ({col}, id) {cmp} ($5::{cast}, $6)) \
-             ORDER BY {col} {dir}, id {dir} LIMIT $7"
+             WHERE id = ANY($10) AND org = $1 AND tenant_id = $2 AND deleted_at IS NULL AND system = false \
+               AND name ILIKE ALL($3) \
+               AND {keyset} \
+               AND ($7::text IS NULL OR kind = $7) \
+             ORDER BY {order_by} LIMIT $6"
         );
         let rows: Vec<NodeRow> = sqlx::query_as(&sql)
-            .bind(ids)
-            .bind(&ctx.org)
-            .bind(&ctx.tenant_id)
+            .bind(ctx.org())
+            .bind(ctx.tenant_id())
             .bind(terms)
-            .bind(at.as_ref().map(|(v, _)| v.as_str()))
-            .bind(at.as_ref().map(|(_, id)| *id))
+            .bind(at.as_ref().map(|c| c.value.as_str()))
+            .bind(at.as_ref().map(|c| c.id))
             // 後ろに見えるものがあるかを確かめるため 1 件多く引く（BUG-180）。
             .bind(i64::try_from(limit + 1).unwrap_or(101))
+            .bind(kind.map(NodeKind::as_str))
+            .bind(at.as_ref().map(|c| c.kind.as_str()))
+            .bind(at.as_ref().map(|c| c.name.as_str()))
+            .bind(ids)
             .fetch_all(&self.db)
             .await?;
         let mut rows = rows;
         let next = if rows.len() > limit {
             rows.truncate(limit);
             rows.last()
-                .map(|r| encode_child_cursor(sort, &child_sort_value(sort.key, r), r.id))
+                .map(|r| encode_child_cursor(sort, &position_of(sort, r)))
         } else {
             None
         };
@@ -309,17 +311,19 @@ impl StorageService {
 
 /// 名前の検索で ListObjects が上限に届いたときに候補を引く文（[`ScanWhere::Named`]）。
 ///
-/// 引数は `$1` = org・`$2` = tenant_id・`$3` = 語（ILIKE の模様）・`$4`・`$5` = 続きの位置（並びの値・id）・`$6` = 件数。
-/// 語は `hit` の列にだけ使い、候補は選ばない（[モジュール文書](self)）。名前の順の索引（migration 0128 の
-/// `node_name_scan_idx`）をたどって打ち切る前提で、計画の回帰テストが EXPLAIN する。
+/// 引数は `$1` = org・`$2` = tenant_id・`$3` = 語（ILIKE の模様）・`$4`・`$5` = 続きの位置（並びの値・id）・`$6` = 件数・
+/// `$7` = 種別（`NULL` は両方）・`$8`・`$9` = 続きの位置（種別・名前）。並びは [`child_order_sql`]（フォルダー優先・
+/// 名前の自然順・#1040）。語は `hit` の列にだけ使い、候補は選ばない（[モジュール文書](self)）。名前の順では、向きごとの
+/// 索引（migration 0137 の `node_name_scan_idx`・`node_name_scan_desc_idx`）をたどって打ち切る前提で、計画の回帰
+/// テストが EXPLAIN する。
 #[must_use]
 pub fn named_scan_sql(sort: ChildSort) -> String {
-    let o = order_of(sort);
-    let (col, cast, dir, cmp) = (o.col, o.cast, o.dir, o.cmp);
+    let ChildOrderSql { order_by, keyset } = child_order_sql(sort);
     format!(
         "SELECT {NODE_COLS}, (name ILIKE ALL($3)) AS hit FROM node \
          WHERE org = $1 AND tenant_id = $2 AND deleted_at IS NULL AND system = false \
-           AND ($4::text IS NULL OR ({col}, id) {cmp} ($4::{cast}, $5)) \
-         ORDER BY {col} {dir}, id {dir} LIMIT $6"
+           AND {keyset} \
+           AND ($7::text IS NULL OR kind = $7) \
+         ORDER BY {order_by} LIMIT $6"
     )
 }

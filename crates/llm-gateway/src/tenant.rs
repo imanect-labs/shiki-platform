@@ -437,8 +437,8 @@ impl TenantLlmStore {
     /// 組織の設定を読む（行が無ければ既定）。
     pub async fn load(&self, ctx: &AuthContext) -> Result<TenantLlmSettings, sqlx::Error> {
         let row: SettingsRow = sqlx::query_as(LOAD_SQL)
-            .bind(&ctx.tenant_id)
-            .bind(&ctx.org)
+            .bind(ctx.tenant_id())
+            .bind(ctx.org())
             .fetch_one(&self.db)
             .await?;
         Ok(settings_from_row(row))
@@ -455,8 +455,8 @@ impl TenantLlmStore {
                     EXISTS (SELECT 1 FROM tenant_llm_model \
                             WHERE tenant_id = $1 AND org = $2 AND model_id = $3)",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(&entry.id)
         .fetch_one(&self.db)
         .await?;
@@ -479,12 +479,16 @@ impl TenantLlmStore {
     ) -> Result<Result<TenantLlmSettings, E>, sqlx::Error> {
         let mut tx = self.db.begin().await?;
         sqlx::query("SELECT pg_advisory_xact_lock(hashtextextended($1, 553))")
-            .bind(format!("tenant_llm_settings:{}|{}", ctx.tenant_id, ctx.org))
+            .bind(format!(
+                "tenant_llm_settings:{}|{}",
+                ctx.tenant_id(),
+                ctx.org()
+            ))
             .execute(&mut *tx)
             .await?;
         let row: SettingsRow = sqlx::query_as(LOAD_SQL)
-            .bind(&ctx.tenant_id)
-            .bind(&ctx.org)
+            .bind(ctx.tenant_id())
+            .bind(ctx.org())
             .fetch_one(&mut *tx)
             .await?;
         let next = match change(&settings_from_row(row)) {
@@ -506,15 +510,15 @@ impl TenantLlmStore {
                updated_by = EXCLUDED.updated_by, \
                updated_at = now()",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(&next.default_model)
         .bind(next.allow_user_choice)
         .bind(next.default_effort.as_str())
         .bind(next.auto_model.as_deref())
         .bind(next.auto_effort.map(Effort::as_str))
         .bind(next.jpy_per_usd_centi)
-        .bind(&ctx.principal.id)
+        .bind(&ctx.principal().id)
         .execute(&mut *tx)
         .await?;
         if let Some(allowed) = &next.allowed_models {
@@ -522,8 +526,8 @@ impl TenantLlmStore {
                 "DELETE FROM tenant_llm_model \
                  WHERE tenant_id = $1 AND org = $2 AND NOT (model_id = ANY($3))",
             )
-            .bind(&ctx.tenant_id)
-            .bind(&ctx.org)
+            .bind(ctx.tenant_id())
+            .bind(ctx.org())
             .bind(allowed)
             .execute(&mut *tx)
             .await?;
@@ -532,10 +536,10 @@ impl TenantLlmStore {
                  SELECT $1, $2, m, $4, now() FROM unnest($3::text[]) AS m \
                  ON CONFLICT (tenant_id, org, model_id) DO NOTHING",
             )
-            .bind(&ctx.tenant_id)
-            .bind(&ctx.org)
+            .bind(ctx.tenant_id())
+            .bind(ctx.org())
             .bind(allowed)
-            .bind(&ctx.principal.id)
+            .bind(&ctx.principal().id)
             .execute(&mut *tx)
             .await?;
         }

@@ -12,7 +12,7 @@
 //! - 呼ぶのは必ずチョークポイント [`LlmGateway::decide`] から。組織の許可・利用上限・会計はそこで行う。
 //!   決定器は失敗しても、それまでに使ったトークン量を [`DecideFailure`] で返す（会計に載せる・PIT-28）。
 //! - 確からしさは、決定器が較正を主張しない限り `calibrated = false`（LLM の自己申告・得票率は
-//!   較正されていない・PIT-80）。
+//!   較正されていない・PIT-81）。
 //!
 //! [`LlmProvider`]: crate::provider::LlmProvider
 //! [`LlmGateway::decide`]: crate::gateway::LlmGateway::decide
@@ -83,7 +83,7 @@ pub struct ChoiceOption {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DecideResponse {
     /// 実際に答えた決定器の版（例 `claude-haiku-5-5+llm_decider/v3/k1/low`）。版が変わったら
-    /// しきい値を測り直す（PIT-80）。
+    /// しきい値を測り直す（PIT-81）。
     pub resolved_model: String,
     /// 質問のキー → 答え（要求の質問と同じキーの集合）。
     pub answers: BTreeMap<String, Answer>,

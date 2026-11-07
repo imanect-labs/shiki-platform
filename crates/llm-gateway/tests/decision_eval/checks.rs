@@ -138,7 +138,7 @@ fn the_freeze_matches_the_questions_and_the_prompt() {
         let t = f.theta[name];
         assert!(THETAS.iter().any(|x| (x - t).abs() < 1e-9), "{name}: {t}");
     }
-    // 凍結した版はコードの版と同じ（版を上げたら凍結し直す・PIT-80）。シナリオの版は workflow-engine の
+    // 凍結した版はコードの版と同じ（版を上げたら凍結し直す・PIT-81）。シナリオの版は workflow-engine の
     // decision_scenarios が frozen.json と照らす。
     assert_eq!(f.prompt_version, PROMPT_VERSION);
 }

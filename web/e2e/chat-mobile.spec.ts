@@ -48,7 +48,8 @@ test.describe("スマホのチャット", () => {
     const input = phone.getByLabel("メッセージを入力");
     await input.fill("一行目");
     await input.press("Enter");
-    await expect(input).toHaveValue("一行目\n");
+    // 入力欄は Markdown の WYSIWYG なので、改行は段落の区切りになる。
+    await expect(input.locator("p")).toHaveText(["一行目", ""]);
 
     const url = `https://example.com/${"very-long-path-segment-".repeat(12)}${Date.now().toString(36)}`;
     await input.fill(`このページを要約して ${url}`);
@@ -69,17 +70,9 @@ test.describe("スマホのチャット", () => {
 
     // 免責文は最新の回答の下に 1 回だけ。
     await expect(phone.getByTestId("chat-disclaimer")).toHaveCount(1, { timeout: 30_000 });
-    await phone.context().close();
-  });
 
-  test("実行モードのボタンからエージェントに切り替えると、プレースホルダで状態が分かる", async ({
-    browser,
-    page,
-  }) => {
-    const phone = await phonePage(browser, page);
-    await phone.goto("/");
-
-    // スマホではトグルを並べず、1 つのボタンにまとめる。
+    // 会話の入力欄では、トグルを並べず 1 つの「実行モード」ボタンにまとめる。
+    // エージェントに切り替えると、プレースホルダで状態が分かる。
     await expect(phone.getByRole("switch", { name: "エージェントモード" })).toHaveCount(0);
     await phone.getByTestId("composer-mode-button").click();
     const card = phone.getByTestId("composer-mode-card");
@@ -93,6 +86,28 @@ test.describe("スマホのチャット", () => {
     await phone.getByTestId("composer-mode-button").click();
     await expect(phone.getByLabel("メッセージを入力")).not.toBeFocused();
     await phone.keyboard.press("Escape");
+    await phone.context().close();
+  });
+
+  test("ホームではモードを入力欄の上で切り替え、エージェントの設定がその下に出る", async ({
+    browser,
+    page,
+  }) => {
+    const phone = await phonePage(browser, page);
+    await phone.goto("/");
+
+    // ホームの入力欄には実行モードのボタンを出さない（モードは入力欄の上で選ぶ・#964）。
+    await expect(phone.getByTestId("composer-mode-button")).toHaveCount(0);
+    await phone.getByTestId("home-mode-agent").click();
+    await expect(phone.getByTestId("home-mode-agent")).toHaveAttribute("aria-selected", "true");
+    await expect(phone.getByLabel("メッセージを入力")).toHaveAttribute("placeholder", "エージェントに依頼");
+    await expect(phone.getByRole("button", { name: /作業フォルダ/ })).toBeVisible();
+    await expect(phone.getByRole("radiogroup", { name: "承認", exact: true })).toBeVisible();
+    // 横にはみ出さない（モードの切替・設定の段がスマホ幅に収まる）。
+    const overflow = await phone.evaluate(
+      () => document.documentElement.scrollWidth - window.innerWidth,
+    );
+    expect(overflow).toBeLessThanOrEqual(0);
 
     // 「+」は下からのシート（添付 → 作成 → モデル → ツール → スキル）。
     await phone.getByRole("button", { name: "追加メニューを開く" }).click();
@@ -155,6 +170,44 @@ test.describe("スマホのチャット", () => {
     await phone.context().close();
   });
 
+  test("画像を添付すると、入力欄と送った発話に小さい四角のサムネイルが出る", async ({ browser, page }) => {
+    const phone = await phonePage(browser, page);
+    await phone.goto("/");
+
+    // 1×1 の PNG（名前は一意にする: 同じ名前はドライブで重複になりアップロードが失敗する）。
+    const png = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+      "base64",
+    );
+    const name = `mobile-photo-${Date.now().toString(36)}.png`;
+    await phone.getByRole("button", { name: "追加メニューを開く" }).click();
+    const [chooser] = await Promise.all([
+      phone.waitForEvent("filechooser"),
+      phone.getByTestId("composer-plus-sheet").getByRole("button", { name: /ファイル・写真/ }).click(),
+    ]);
+    await chooser.setFiles({ name, mimeType: "image/png", buffer: png });
+
+    // 入力欄の上: 画像のサムネイル（読み込めている）と、アップロード完了後にだけ出る「外す」。
+    const remove = phone.getByRole("button", { name: `${name} の添付を外す` });
+    await expect(remove).toBeVisible({ timeout: 30_000 });
+    const thumb = phone.getByRole("img", { name });
+    await expect.poll(() => thumb.evaluate((el: HTMLImageElement) => el.naturalWidth)).toBeGreaterThan(0);
+
+    // 送った発話にも出て、押すとファイルのビューアへ行けるリンクになっている。
+    await phone.getByLabel("メッセージを入力").fill("この画像は？");
+    await phone.getByRole("button", { name: "送信" }).click();
+    await phone.waitForURL(/\/c\/[0-9a-f-]+/i, { timeout: 20_000 });
+    // 入力欄の添付は送ったら空になる。
+    await expect(remove).toHaveCount(0);
+    const link = phone.getByRole("link", { name: `${name} を開く` });
+    await expect(link).toHaveAttribute("href", /^\/file\/[0-9a-f-]+$/i);
+    await expect.poll(
+      () => link.getByRole("img").evaluate((el: HTMLImageElement) => el.naturalWidth),
+      { timeout: 30_000 },
+    ).toBeGreaterThan(0);
+    await phone.context().close();
+  });
+
   test("「+」のシートからモデルを選ぶと、入力欄にモデルが出て 2 段になる", async ({ browser, page }) => {
     const phone = await phonePage(browser, page);
     await phone.goto("/");
@@ -183,6 +236,39 @@ test.describe("スマホのチャット", () => {
     await phone.getByTestId("model-picker").getByRole("option", { name: /Auto|組織の既定/ }).click();
     await expect(model).toBeHidden();
     expect((await bar.boundingBox())?.height ?? 0).toBeLessThanOrEqual(58);
+    await phone.context().close();
+  });
+
+  test("PC で選んで送ったモデルは、スマホで同じ会話を開いても選ばれたまま", async ({ browser, page }) => {
+    const phone = await phonePage(browser, page);
+    // PC（ログイン済みの page）でモデルを選んで送る。
+    await page.goto("/");
+    await page.getByTestId("model-button").click();
+    const picker = page.getByTestId("model-picker");
+    const option = picker.getByRole("group").getByRole("option").first();
+    const label = ((await option.locator("[data-label]").textContent()) ?? "").trim();
+    expect(label.length).toBeGreaterThan(0);
+    await option.click();
+    await page.keyboard.press("Escape");
+    await page.getByLabel("メッセージを入力").fill("モデルの引き継ぎ");
+    await page.getByRole("button", { name: "送信" }).click();
+    await page.waitForURL(/\/c\/[0-9a-f-]+/i, { timeout: 20_000 });
+    await expect(page.getByText(/回答/).first()).toBeVisible({ timeout: 30_000 });
+    const url = new URL(page.url());
+
+    // スマホは別のタブ（sessionStorage は共有しない）。サーバの記録から同じモデルが入る。
+    await phone.goto(url.pathname);
+    const model = phone.getByTestId("model-button");
+    await expect(model).toBeVisible({ timeout: 20_000 });
+    await expect(model).toContainText(label);
+
+    // このタブで Auto に戻したら、読み直してもサーバの記録で上書きしない。
+    await model.click();
+    await phone.getByTestId("model-picker").getByRole("option", { name: /Auto|組織の既定/ }).click();
+    await expect(model).toBeHidden();
+    await phone.reload();
+    await expect(phone.getByLabel("メッセージを入力")).toBeVisible();
+    await expect(model).toBeHidden();
     await phone.context().close();
   });
 });

@@ -8,6 +8,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::tenant_id::TenantId;
+
 /// プリンシパルの種別（Task 10.4a）。
 ///
 /// `user` = 対話トリガの本人（OIDC subject）。`workflow` = schedule/event run の専用サービス
@@ -51,15 +53,17 @@ pub struct Principal {
 
 /// データアクセスの認可コンテキスト。`principal` + `org` + `tenant_id`。
 ///
-/// `tenant_id` は SaaS マルチテナントの隔離境界であり day-1 から必須。`new()` の
-/// 必須引数とすることで「`tenant_id` 無しの `AuthContext`」を型レベルで構築不能にする。
+/// `tenant_id` は SaaS マルチテナントの隔離境界であり day-1 から必須。フィールドは private で、
+/// 組み立ては [`AuthContext::new`] / [`AuthContext::for_miniapp`] / [`AuthContext::for_workflow`] だけ。
+/// いずれも検証済みの [`TenantId`] しか受け取らないので、「`tenant_id` 無し」「未検証の
+/// `tenant_id`（空文字・区切り文字入り）」の `AuthContext` は型の上で作れない。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthContext {
-    pub principal: Principal,
+    principal: Principal,
     /// 所属組織（テナント内の最上位スコープ）。
-    pub org: String,
+    org: String,
     /// テナント識別子（SaaS の隔離境界。オンプレは単一固定）。
-    pub tenant_id: String,
+    tenant_id: TenantId,
     /// この操作をワークフローの run の中で行うなら、その run（run の書込の印・`in_run` で付ける）。
     ///
     /// 書込は outbox の consumer 非公開部（`private_payload`）にこれを載せ、ワークフローの relay が因果の鎖
@@ -67,17 +71,56 @@ pub struct AuthContext {
     /// （ノードの実行・その委譲元の文脈）だけで、利用者の要求（HTTP）から組む文脈では常に `None`。要求が
     /// 運ぶ値（trace_id など）からは決まらないので、利用者が run を名乗れない（BUG-44）。
     /// **認可の判断には使わない**（主体・権限は `principal` が正）。
-    pub origin_run: Option<uuid::Uuid>,
+    origin_run: Option<uuid::Uuid>,
 }
 
 impl AuthContext {
-    pub fn new(principal: Principal, org: String, tenant_id: String) -> Self {
+    pub fn new(principal: Principal, org: String, tenant_id: TenantId) -> Self {
         AuthContext {
             principal,
             org,
             tenant_id,
             origin_run: None,
         }
+    }
+
+    /// 認証主体。
+    pub fn principal(&self) -> &Principal {
+        &self.principal
+    }
+
+    /// 所属組織（テナント内の最上位スコープ）。
+    pub fn org(&self) -> &str {
+        &self.org
+    }
+
+    /// テナント識別子（文字列として）。
+    pub fn tenant_id(&self) -> &str {
+        self.tenant_id.as_str()
+    }
+
+    /// 検証済みのテナント識別子。別の `AuthContext` を組むときに渡す。
+    pub fn tenant(&self) -> &TenantId {
+        &self.tenant_id
+    }
+
+    /// この操作をした run（[`Self::in_run`] で付けた印・利用者の要求から組んだ文脈では `None`）。
+    ///
+    /// 書込の outbox に載せて、ワークフローの relay が因果の鎖を引くためだけに使う。**認可の判断には使わない**。
+    pub fn origin_run(&self) -> Option<uuid::Uuid> {
+        self.origin_run
+    }
+
+    /// 主体を書き換える（同じテナントのまま。テナントは差し替えられない）。
+    pub fn principal_mut(&mut self) -> &mut Principal {
+        &mut self.principal
+    }
+
+    /// org を差し替えた文脈（同じテナントのまま）。
+    #[must_use]
+    pub fn with_org(mut self, org: impl Into<String>) -> Self {
+        self.org = org.into();
+        self
     }
 
     /// run の中の操作として印を付ける（[`Self::origin_run`]・`None` なら外す）。
@@ -94,7 +137,7 @@ impl AuthContext {
     /// 生の [`FgaObject`](crate::FgaObject) / [`Subject`](crate::Subject) を組めず、必ず
     /// この [`Namespace`](crate::Namespace) 経由で識別子を構築する。
     pub fn ns(&self) -> crate::object::Namespace<'_> {
-        crate::object::Namespace::new(&self.tenant_id)
+        crate::object::Namespace::new(self.tenant_id.as_str())
     }
 
     /// 認可問い合わせの主体。tenant 名前空間化済み（SAAS.1）。
@@ -115,7 +158,7 @@ impl AuthContext {
     /// event/cron 起動はこの `miniapp` subject で認可を評価し、所有テーブルの owner タプルに
     /// のみ照合する（アプリ単独権限へ昇格しない・所有データ束縛）。ユーザー起点の呼び出しは
     /// token-exchange で `User` プリンシパルを維持する（confused-deputy 防御・design §4.6）。
-    pub fn for_miniapp(tenant_id: String, org: String, app_local_id: &str) -> Self {
+    pub fn for_miniapp(tenant_id: TenantId, org: String, app_local_id: &str) -> Self {
         AuthContext {
             principal: Principal {
                 kind: PrincipalKind::MiniApp,
@@ -123,7 +166,7 @@ impl AuthContext {
                 email: None,
                 groups: vec![],
                 roles: vec![],
-                tenant_id: Some(tenant_id.clone()),
+                tenant_id: Some(tenant_id.to_string()),
             },
             org,
             tenant_id,
@@ -132,7 +175,7 @@ impl AuthContext {
     }
 
     /// workflow プリンシパルの AuthContext を組む（schedule/event run の実行主体・Task 10.4a）。
-    pub fn for_workflow(tenant_id: String, org: String, workflow_local_id: &str) -> Self {
+    pub fn for_workflow(tenant_id: TenantId, org: String, workflow_local_id: &str) -> Self {
         AuthContext {
             principal: Principal {
                 kind: PrincipalKind::Workflow,
@@ -140,7 +183,7 @@ impl AuthContext {
                 email: None,
                 groups: vec![],
                 roles: vec![],
-                tenant_id: Some(tenant_id.clone()),
+                tenant_id: Some(tenant_id.to_string()),
             },
             org,
             tenant_id,

@@ -187,17 +187,18 @@ impl WorkflowRunLauncher {
         }
         let ir_json = serde_json::to_value(ir).map_err(|e| LauncherError::Ir(e.to_string()))?;
         let graph = RunGraph::build(ir);
-        let principal_kind = run_principal_kind(ctx.principal.kind)?;
+        // principal_kind は呼び出し主体の種別に従う（ユーザー起動＝user・workflow.start＝workflow）。
+        let principal_kind = run_principal_kind(ctx.principal().kind)?;
         let run_id = self
             .runs
             .create_run_from(
-                &ctx.tenant_id,
-                &ctx.org,
+                ctx.tenant_id(),
+                ctx.org(),
                 workflow_id,
                 version,
                 "interactive",
                 None,
-                &ctx.principal.id,
+                &ctx.principal().id,
                 principal_kind,
                 input,
                 &ir_json,
@@ -296,8 +297,9 @@ impl WorkflowRunLauncher {
 
         // workflow プリンシパルの AuthContext（registration の org）で **enabled_version の IR** を読む。
         // 最新版でなく有効化した版を実行し、未同意の新版が schedule/event で走るのを防ぐ。
-        let wf_ctx =
-            AuthContext::for_workflow(tenant_id.to_string(), org.clone(), &workflow_id.to_string());
+        let tenant = authz::TenantId::parse(tenant_id)
+            .map_err(|e| LauncherError::Run(format!("tenant_id が不正です: {e}")))?;
+        let wf_ctx = AuthContext::for_workflow(tenant, org.clone(), &workflow_id.to_string());
         let (version, ir) = match self
             .workflows
             .get_version(&wf_ctx, workflow_id, enabled_version, None)

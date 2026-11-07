@@ -24,6 +24,10 @@ pub enum StorageError {
     /// `current` は今の版（クライアントが最新を開き直す・上書きを選ぶ材料）。
     #[error("ファイルが他の保存で更新されています（現在の版 {current}）")]
     VersionConflict { current: i64 },
+    /// ブラウザの Office エディタ（WOPI ロック）で開かれているため、内容を差し替えられない（409）。
+    /// 差し替えるとエディタの次の自動保存が古いメモリ上の内容で書き戻し、変更が黙って失われる。
+    #[error("ファイルが Office エディタで開かれています")]
+    Locked,
     /// 入力が不正（400）。
     #[error("不正な引数: {0}")]
     Invalid(String),

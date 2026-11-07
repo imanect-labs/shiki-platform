@@ -205,6 +205,7 @@ shiki-textenc = { path = "crates/textenc" }
 shiki-artifact = { path = "crates/artifact" }
 shiki-secrets = { path = "crates/secrets" }
 shiki-script-runtime = { path = "crates/script-runtime" }
+shiki-testenv = { path = "crates/testenv" }
 shiki-workflow-engine = { path = "crates/workflow-engine" }
 shiki-storage = { path = "crates/storage" }
 shiki-office = { path = "crates/office" }

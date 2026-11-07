@@ -60,8 +60,11 @@ impl InstallService {
         // 実行時の解決主体はアプリの service identity（miniapp）。ユーザー起動/トリガ双方が
         // この principal で resolve するため、can_use を miniapp へ付与する（installer 本人
         // 以外・サービス起動でも解決できるようにする）。
-        let app_ctx =
-            AuthContext::for_miniapp(ctx.tenant_id.clone(), ctx.org.clone(), &app_id.to_string());
+        let app_ctx = AuthContext::for_miniapp(
+            ctx.tenant().clone(),
+            ctx.org().to_owned(),
+            &app_id.to_string(),
+        );
         if let Err(e) = store.grant_can_use(ctx, id, &app_ctx.subject(), None).await {
             tracing::error!(error = %e, %app_id, "B2 secret の can_use@miniapp 付与に失敗");
         }
@@ -125,8 +128,8 @@ impl InstallService {
                     "INSERT INTO app_event_subscription (tenant_id, org, app_id, event_type, function) \
                      VALUES ($1, $2, $3, $4, $5) ON CONFLICT DO NOTHING",
                 )
-                .bind(&ctx.tenant_id)
-                .bind(&ctx.org)
+                .bind(ctx.tenant_id())
+                .bind(ctx.org())
                 .bind(app_id)
                 .bind(event_type)
                 .bind(function)
@@ -148,8 +151,8 @@ impl InstallService {
                      (tenant_id, org, app_id, function, expr, next_run_at) \
                  VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING",
             )
-            .bind(&ctx.tenant_id)
-            .bind(&ctx.org)
+            .bind(ctx.tenant_id())
+            .bind(ctx.org())
             .bind(app_id)
             .bind(&entry.function)
             .bind(&entry.expr)
@@ -171,7 +174,7 @@ impl InstallService {
             if let Err(e) = sqlx::query(&format!(
                 "DELETE FROM {table} WHERE tenant_id = $1 AND app_id = $2"
             ))
-            .bind(&ctx.tenant_id)
+            .bind(ctx.tenant_id())
             .bind(app_id)
             .execute(&self.db)
             .await
@@ -192,7 +195,7 @@ impl InstallService {
         // 失効を先に（gateway は次のリクエストから 403＝トークン有効期限内でも遮断）。
         let installation = self
             .installations
-            .resolve_active_by_app(&ctx.tenant_id, app_id)
+            .resolve_active_by_app(ctx.tenant_id(), app_id)
             .await
             .map_err(map_gateway)?;
         self.installations

@@ -210,6 +210,7 @@ fn base_config(db_url: &str) -> AppConfig {
         },
         database: DatabaseConfig {
             url: db_url.into(),
+            migrate_url: None,
             max_connections: 5,
         },
         auth: AuthConfig {
@@ -249,6 +250,7 @@ fn base_config(db_url: &str) -> AppConfig {
             s3: None,
             max_upload_size_bytes: 5 * 1024 * 1024 * 1024,
             upload_gc: api::config::UploadGcConfig::default(),
+            audit_retention: api::config::AuditRetentionConfig::default(),
         },
         vector: VectorConfig {
             backend: VectorStoreBackend::Qdrant,
@@ -301,7 +303,11 @@ struct Harness {
 
 /// subject 文字列（`user:<tenant>|<id>` 形式）を AuthContext と同じ経路で作る。
 fn subject_of(id: &str) -> Subject {
-    let ctx = authz::AuthContext::new(principal(id), "acme".into(), "default".into());
+    let ctx = authz::AuthContext::new(
+        principal(id),
+        "acme".into(),
+        authz::TenantId::parse("default").unwrap(),
+    );
     ctx.subject()
 }
 
@@ -347,7 +353,7 @@ async fn seed_file_node(pool: &PgPool) -> Uuid {
 }
 
 async fn setup() -> Option<Harness> {
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return None;
     };

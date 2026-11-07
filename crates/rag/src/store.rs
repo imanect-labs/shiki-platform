@@ -61,7 +61,7 @@ pub async fn replace_chunks(
 ) -> Result<(), RagError> {
     let mut tx = pool.begin().await?;
     sqlx::query("delete from rag_chunk where tenant_id = $1 and node_id = $2")
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(node_id)
         .execute(&mut *tx)
         .await?;
@@ -83,8 +83,8 @@ pub async fn replace_chunks(
                 ChunkKind::Leaf | ChunkKind::Table => Some(embedding_model_version),
             };
             row.push_bind(chunk.id)
-                .push_bind(&ctx.tenant_id)
-                .push_bind(&ctx.org)
+                .push_bind(ctx.tenant_id())
+                .push_bind(ctx.org())
                 .push_bind(node_id)
                 .push_bind(version)
                 .push_bind(chunk.parent_id)
@@ -134,14 +134,14 @@ async fn ensure_skipped_are_own(
          where id = any($1) and (tenant_id <> $2 or node_id <> $3)",
     )
     .bind(&ids)
-    .bind(&ctx.tenant_id)
+    .bind(ctx.tenant_id())
     .bind(node_id)
     .fetch_one(&mut **tx)
     .await?;
     if foreign > 0 {
         tracing::error!(
             %node_id,
-            tenant_id = %ctx.tenant_id,
+            tenant_id = %ctx.tenant_id(),
             foreign,
             "chunk_id が別ノード/別テナントの既存行と衝突（取り込みを拒否）"
         );
@@ -168,7 +168,7 @@ async fn replace_blocks(
     blocks: &[ParsedBlock],
 ) -> Result<(), RagError> {
     sqlx::query("delete from doc_block where tenant_id = $1 and node_id = $2 and version = $3")
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(node_id)
         .bind(version)
         .execute(&mut **tx)
@@ -185,8 +185,8 @@ async fn replace_blocks(
                   page, prov) ",
         );
         qb.push_values(batch, |mut row, (ordinal, block)| {
-            row.push_bind(&ctx.tenant_id)
-                .push_bind(&ctx.org)
+            row.push_bind(ctx.tenant_id())
+                .push_bind(ctx.org())
                 .push_bind(node_id)
                 .push_bind(version)
                 .push_bind(*ordinal)
@@ -210,7 +210,7 @@ async fn replace_blocks(
              ) recent \
          )",
     )
-    .bind(&ctx.tenant_id)
+    .bind(ctx.tenant_id())
     .bind(node_id)
     .bind(KEEP_BLOCK_VERSIONS)
     .execute(&mut **tx)
@@ -226,7 +226,7 @@ pub async fn update_tags(
     authz_tags: &[String],
 ) -> Result<(), RagError> {
     sqlx::query("update rag_chunk set authz_tags = $3 where tenant_id = $1 and node_id = $2")
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(node_id)
         .bind(authz_tags)
         .execute(pool)
@@ -238,12 +238,12 @@ pub async fn update_tags(
 pub async fn delete_node(pool: &PgPool, ctx: &AuthContext, node_id: Uuid) -> Result<(), RagError> {
     let mut tx = pool.begin().await?;
     sqlx::query("delete from rag_chunk where tenant_id = $1 and node_id = $2")
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(node_id)
         .execute(&mut *tx)
         .await?;
     sqlx::query("delete from doc_block where tenant_id = $1 and node_id = $2")
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(node_id)
         .execute(&mut *tx)
         .await?;
@@ -261,7 +261,7 @@ pub async fn chunks_for_node(
         "select id, node_id, version, parent_id, kind, page, heading_path, content, authz_tags \
          from rag_chunk where tenant_id = $1 and node_id = $2 order by ordinal",
     )
-    .bind(&ctx.tenant_id)
+    .bind(ctx.tenant_id())
     .bind(node_id)
     .fetch_all(pool)
     .await?;

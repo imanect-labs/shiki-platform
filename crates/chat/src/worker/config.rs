@@ -22,6 +22,10 @@ pub struct WorkerConfig {
     /// 通常チャットで旧・無条件 RAG 注入経路（`run_classic_mode`）を使うか（既定 false）。
     /// false ならモデル裁量ループ（issue #102）。運用で確実に毎ターン検索したい場合のみ true。
     pub classic_rag: bool,
+    /// 回答に ```ui ブロック（Yui）の図・UI を書かせるか（#530）。true なら `ui_reference`
+    /// （種類ごとの書き方）を提示する。system プロンプトの早見は配線側が
+    /// [`super::with_yui_guide`] で足す（既定 false。運用設定 `chat.yui` の既定は true）。
+    pub yui: bool,
     /// 通常チャット 1 発話の累積トークン上限（新規ぶん・#426）。
     ///
     /// 通常チャットはこれまで max_steps だけで止まり、検索・本文の読み出しが積む量にも課金にも
@@ -68,8 +72,17 @@ pub struct WorkerConfig {
 impl Default for WorkerConfig {
     fn default() -> Self {
         WorkerConfig {
-            system_prompt: "あなたは社内文書に基づいて日本語で丁寧に回答するアシスタントです。\
-                根拠がある場合は検索結果を活用し、分からない場合は正直に伝えてください。\
+            // 「社内文書に基づいて回答する」と枠づけると、一般的な質問（「io_uring ってなに？」）
+            // でもモデルが毎回 doc_search を呼ぶ。社内固有の情報が要るときだけ検索させる。
+            system_prompt: "あなたは社内向けのアシスタントです。日本語で丁寧に回答してください。\
+                社内固有の情報（社内の規程・制度・手続き、製品・顧客・案件、社内資料の内容や数値など）が\
+                必要な質問では、社内文書を検索し、その結果を根拠に回答してください。\
+                会社ごとに決まりが異なりうること（手当・申請手順・社内システムの使い方など）も\
+                社内固有の情報として扱います。\
+                一般的な知識（技術用語や概念の説明、プログラミング、一般常識など）、翻訳・要約・文章の作成、\
+                計算、あいさつや雑談のように社内文書に依らず答えられる依頼では、\
+                検索せずにあなたの知識で回答してください。\
+                分からない場合は正直に伝えてください。\
                 検索結果に付く関連度が「低」のものだけを根拠に断定しないでください。\
                 社内文書や Web の検索・取得結果を根拠にした文には、その文の末尾に結果の番号を [1] の形で\
                 付けてください（複数なら [1][3]）。番号は結果に付いているものをそのまま使い、\
@@ -79,6 +92,7 @@ impl Default for WorkerConfig {
             lease_secs: 30,
             max_steps: 6,
             classic_rag: false,
+            yui: false,
             // 既定: 新規ぶん 30 万トークン・1 USD（自律の 1 割強）。6 ステップで検索と本文の
             // 読み出しを重ねても届かない量で、暴走だけを止める。
             chat_max_tokens: 300_000,
@@ -161,4 +175,18 @@ pub struct WorkerDeps {
     /// Excel・Word のレイアウト編集エンジン（office.read / office.excel_edit / office.word_edit・#725）。
     /// office 有効時のみ配線し、未配線ならツールを提示しない。
     pub office_engine: Option<Arc<office::engine::OfficeEngine>>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::WorkerConfig;
+
+    /// 既定のシステムプロンプトは、一般的な質問を検索せずに答えさせる（毎回 RAG を走らせない）。
+    #[test]
+    fn default_prompt_answers_general_questions_without_search() {
+        let prompt = WorkerConfig::default().system_prompt;
+        assert!(!prompt.contains("社内文書に基づいて"), "{prompt}");
+        assert!(prompt.contains("社内固有の情報"), "{prompt}");
+        assert!(prompt.contains("検索せずにあなたの知識で回答"), "{prompt}");
+    }
 }

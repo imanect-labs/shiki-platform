@@ -43,6 +43,9 @@ impl LlmGateway {
     /// モデル選択に出してよいか。ChatGPT プランのモデルは連携者にだけ見せる
     /// （他の利用者には選んでも使えないモデルになるため）。
     pub fn model_visible_to(&self, ctx: &AuthContext, entry: &ModelEntry) -> bool {
+        if !self.provider_allowed_for(ctx, entry.provider_id()) {
+            return false;
+        }
         if !self.is_personal_model(entry) {
             return true;
         }
@@ -143,7 +146,7 @@ mod tests {
                 tenant_id: Some("t".into()),
             },
             "o".into(),
-            "t".into(),
+            authz::TenantId::parse("t").unwrap(),
         )
     }
 

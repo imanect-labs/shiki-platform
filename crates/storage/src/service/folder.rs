@@ -28,8 +28,8 @@ impl StorageService {
              WHERE id = $1 AND org = $2 AND tenant_id = $3 AND kind = 'folder' AND deleted_at IS NULL)",
         )
         .bind(folder_id)
-        .bind(&ctx.org)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.org())
+        .bind(ctx.tenant_id())
         .fetch_one(&self.db)
         .await?;
         if !exists {
@@ -71,8 +71,8 @@ impl StorageService {
              WHERE id = $1 AND org = $2 AND tenant_id = $3 AND deleted_at IS NULL",
         )
         .bind(node_id)
-        .bind(&ctx.org)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.org())
+        .bind(ctx.tenant_id())
         .fetch_optional(&self.db)
         .await?;
         system.ok_or(StorageError::NotFound)
@@ -143,10 +143,10 @@ impl StorageService {
                 self.require(
                     ctx,
                     Relation::Member,
-                    &ctx.ns().organization(&ctx.org),
+                    &ctx.ns().organization(ctx.org()),
                     AuditAction::FolderCreate,
                     "organization",
-                    &ctx.org,
+                    ctx.org(),
                     trace_id,
                 )
                 .await?;
@@ -164,8 +164,8 @@ impl StorageService {
                      FOR UPDATE",
                 )
                 .bind(p)
-                .bind(&ctx.org)
-                .bind(&ctx.tenant_id)
+                .bind(ctx.org())
+                .bind(ctx.tenant_id())
                 .fetch_optional(&mut *tx)
                 .await?;
                 match parent_live.as_deref() {
@@ -185,11 +185,11 @@ impl StorageService {
                  RETURNING {NODE_COLS}"
             );
             let row: NodeRow = sqlx::query_as(&sql)
-                .bind(&ctx.org)
-                .bind(&ctx.tenant_id)
+                .bind(ctx.org())
+                .bind(ctx.tenant_id())
                 .bind(name)
                 .bind(parent_id)
-                .bind(&ctx.principal.id)
+                .bind(&ctx.principal().id)
                 .bind(force_system)
                 .fetch_one(&mut *tx)
                 .await?;
@@ -203,7 +203,7 @@ impl StorageService {
                 )
                 .bind(folder_id)
                 .bind(p)
-                .bind(&ctx.tenant_id)
+                .bind(ctx.tenant_id())
                 .execute(&mut *tx)
                 .await?;
             }
@@ -211,8 +211,8 @@ impl StorageService {
             sqlx::query(
                 "INSERT INTO node_closure (tenant_id, org, ancestor, descendant, depth) VALUES ($1, $2, $3, $3, 0)",
             )
-            .bind(&ctx.tenant_id)
-            .bind(&ctx.org)
+            .bind(ctx.tenant_id())
+            .bind(ctx.org())
             .bind(folder_id)
             .execute(&mut *tx)
             .await?;
@@ -307,8 +307,8 @@ impl StorageService {
              WHERE id = $1 AND org = $2 AND tenant_id = $3 AND deleted_at IS NULL",
         )
         .bind(id)
-        .bind(&ctx.org)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.org())
+        .bind(ctx.tenant_id())
         .fetch_optional(&self.db)
         .await?;
         match kind.as_deref() {

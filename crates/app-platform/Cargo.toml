@@ -43,6 +43,7 @@ uuid = { workspace = true, features = ["v4"] }
 utoipa.workspace = true
 
 [dev-dependencies]
+shiki-testenv.workspace = true
 axum.workspace = true
 tokio.workspace = true
 futures.workspace = true

@@ -21,8 +21,8 @@ use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
 use workflow_engine::ir::params::NameTakenPolicy;
 use workflow_engine::nodes::ports::{
-    name_taken_error, AgentInvokeReq, CsvPatchReq, CsvWriteReq, ExecCtx, HttpSendReq, HttpSendResp,
-    LlmInvokeReq, NodePorts, PortError, ResolvedSecretView, StorageWriteReq,
+    name_taken_error, AgentInvokeReq, CsvPatchReq, CsvQueryReq, CsvWriteReq, ExecCtx, HttpSendReq,
+    HttpSendResp, LlmInvokeReq, NodePorts, PortError, ResolvedSecretView, StorageWriteReq,
 };
 use workflow_engine::{
     CapabilityAudit, CapabilityNodeExecutor, EffectJournal, NodeContext, NodeExecutor,
@@ -211,12 +211,8 @@ impl NodePorts for FakePorts {
         *self.last_start.lock().unwrap() = Some((name.to_string(), input.clone()));
         Ok(json!({ "run_id": Uuid::nil().to_string() }))
     }
-    async fn csv_query(
-        &self,
-        _ctx: &ExecCtx,
-        file_id: Uuid,
-        _sql: &str,
-    ) -> Result<Value, PortError> {
+    async fn csv_query(&self, _ctx: &ExecCtx, req: CsvQueryReq) -> Result<Value, PortError> {
+        let file_id = req.file_id;
         Ok(json!({
             "columns": ["a", "b"],
             "rows": [["1", "2"], ["3", "4"]],

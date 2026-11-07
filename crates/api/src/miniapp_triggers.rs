@@ -251,6 +251,7 @@ async fn cron_tick(deps: &TriggerDeps) -> anyhow::Result<()> {
         .execute(&mut *tx)
         .await?
         .rows_affected();
+        // tenant-sql: allow(全テナント横断の cron 次回時刻更新（id は直前の横断走査から）)
         sqlx::query("UPDATE app_function_schedule SET next_run_at = $2 WHERE id = $1")
             .bind(s.id)
             .bind(next)
@@ -418,7 +419,9 @@ async fn invoke_service(
             false,
         ));
     }
-    // service ctx（監査 actor 用・org/tenant は購読行から）。
+    // service ctx（監査 actor 用・org/tenant は購読行から。購読行の tenant_id も文字ポリシーを通す）。
+    let tenant = authz::TenantId::parse(sub.tenant_id.as_str())
+        .map_err(|e| anyhow::anyhow!("購読の tenant_id が不正です: {e}"))?;
     let ctx = AuthContext::new(
         Principal {
             kind: PrincipalKind::MiniApp,
@@ -429,7 +432,7 @@ async fn invoke_service(
             tenant_id: Some(sub.tenant_id.clone()),
         },
         sub.org.clone(),
-        sub.tenant_id.clone(),
+        tenant,
     );
     let secret = match deps.port.resolve_b2_secret(&ctx, sub.app_id).await {
         Ok(secret) => secret,

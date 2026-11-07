@@ -1,7 +1,7 @@
 "use client";
 
-/// ホームのコンポーザ直下に置く skill セレクタ（Task 6.11「チャット開始時に skill を選択」）。
-/// 選択すると次に開始するチャットへ version 込みでピンされる。
+/// ホームのチャットモードに置く skill セレクタ（Task 6.11「チャット開始時に skill を選択」）。
+/// 選択すると次に開始するチャットへ version 込みでピンされる。skill が 1 つも無いときは `empty` を出す。
 ///
 /// 新しい順に 6 件をすぐ選べるように並べ、ほかは「スキルを探す」から名前で絞り込んで選ぶ。50 件より古い自分の
 /// スキルと、共有された分の続きは、そこで「さらに読み込む」で足す（BUG-186）。読み込みの失敗は、選択肢が無いことに
@@ -33,14 +33,17 @@ const CHIP =
 export function SkillPicker({
   selected,
   onSelect,
+  empty = null,
 }: {
   selected: ArtifactMeta | null;
   onSelect: (skill: ArtifactMeta | null) => void;
+  empty?: React.ReactNode;
 }) {
   const list = useArtifactList("skill");
   const skills = list.items ?? [];
   const [open, setOpen] = React.useState(false);
 
+  // 読み込み中は何も出さない（説明も出さない。読み終えてから説明→チップへ入れ替わる揺れを避ける）。
   if (list.items === null) return null;
   if (list.error) {
     return (
@@ -49,7 +52,8 @@ export function SkillPicker({
       </div>
     );
   }
-  if (skills.length === 0 && !list.hasMore) return null;
+  // 読み込んだ分が 0 件でも続きがあれば「スキルを探す」から足せるので、空の表示は続きも無いときだけ。
+  if (skills.length === 0 && !list.hasMore) return <>{empty}</>;
 
   // 選んだスキルが先頭の 6 件に無ければ、先頭に置いて選んでいることを見せる。
   const top = skills.slice(0, CHIPS);

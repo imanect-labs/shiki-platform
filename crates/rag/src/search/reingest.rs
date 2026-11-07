@@ -295,15 +295,15 @@ impl SearchService {
     ) -> Result<(BackfillStatus, bool), RagError> {
         let mut tx = self.pool.begin().await?;
         sqlx::query("select pg_advisory_xact_lock(hashtextextended('rag_backfill:' || $1, 0))")
-            .bind(format!("{}|{}", ctx.tenant_id, ctx.org))
+            .bind(format!("{}|{}", ctx.tenant_id(), ctx.org()))
             .execute(&mut *tx)
             .await?;
         let running: Option<BackfillRow> = sqlx::query_as(&format!(
             "select {BACKFILL_COLS} from rag_backfill \
              where tenant_id = $1 and org = $2 and status = 'running'"
         ))
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .fetch_optional(&mut *tx)
         .await?;
         if let Some(row) = running {
@@ -315,8 +315,8 @@ impl SearchService {
              where tenant_id = $1 and org = $2 and kind = 'file' and deleted_at is null \
                and system = false",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .fetch_one(&mut *tx)
         .await?;
         let (id, row): (i64, BackfillRow) = {
@@ -324,9 +324,9 @@ impl SearchService {
                 "insert into rag_backfill (tenant_id, org, requested_by, status, files_total, trace_id) \
                  values ($1, $2, $3, 'running', $4, $5) returning id, {BACKFILL_COLS}"
             ))
-            .bind(&ctx.tenant_id)
-            .bind(&ctx.org)
-            .bind(&ctx.principal.id)
+            .bind(ctx.tenant_id())
+            .bind(ctx.org())
+            .bind(&ctx.principal().id)
             .bind(total)
             .bind(trace_id)
             .fetch_one(&mut *tx)
@@ -339,7 +339,7 @@ impl SearchService {
             AuditEntry {
                 action: AuditAction::OrgAdminSearchBackfill,
                 object_type: "organization",
-                object_id: &ctx.org,
+                object_id: ctx.org(),
                 decision: Decision::Allow,
                 trace_id,
                 metadata: json!({ "backfill_id": id, "files_total": total }),
@@ -358,11 +358,11 @@ impl SearchService {
             "select {BACKFILL_COLS} from rag_backfill \
              where tenant_id = $1 and org = $2 order by started_at desc, id desc limit 1"
         ))
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .fetch_optional(&mut *conn)
         .await?;
-        let waiting = waiting_on(&mut conn, &ctx.tenant_id, &ctx.org, WAITING_COUNT_CAP).await?;
+        let waiting = waiting_on(&mut conn, ctx.tenant_id(), ctx.org(), WAITING_COUNT_CAP).await?;
         Ok(SearchIngestStatus {
             enabled: true,
             waiting: waiting.min(WAITING_COUNT_CAP),

@@ -8,14 +8,18 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import ReactMarkdown, { type Components, type ExtraProps } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkCjkFriendly from "remark-cjk-friendly";
+import { EyeOff } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 import { citeNumberFromHref } from "@/lib/citation";
+import { decideAnswerImage, type ImageProxy, type ImageSources } from "@/lib/answer-images";
 import { CitationMarker } from "@/components/chat/citations/citation-marker";
 import { resolveKind } from "@imanect/yui";
 import { isYuiLanguage } from "@imanect/yui/react";
 
 import { CodeBlock } from "./code-block";
+import { MathTex, mathKind, mayHaveMath, useMathPlugins } from "./markdown-math";
 // 引用・箇条書きの中の図はボタンを出さない（重い図の描画部とは別に、軽いコンテキストだけ読む）。
 import { YuiNestedContext } from "./yui-actions";
 import { DataGridHostContext } from "@/components/data/data-grid-host";
@@ -34,6 +38,12 @@ const UiFigure = dynamic(() => import("./ui-figure").then((m) => m.UiFigure), {
     <div className="my-3 h-48 w-full animate-pulse rounded-xl border border-border/60 bg-secondary/40" />
   ),
 });
+
+/// 出典の画像が無い（会話以外の本文・出典を持たない閲覧者）。外部の画像は 1 枚も読み込まない。
+const NO_IMAGE_SOURCES: ImageSources = new Map();
+
+/// リンクの中を描いているか（リンクの中の画像を読み込まないとき、リンクを入れ子にしない）。
+const InLinkContext = React.createContext(false);
 
 /// 長い URL・英数字の連なりで折り返す（はみ出すと会話全体が横にずれ、吹き出しの左端が切れる）。
 const WRAP_ANYWHERE = "[overflow-wrap:anywhere]";
@@ -75,6 +85,67 @@ function remarkBrTags() {
   return (tree: any) => walk(tree);
 }
 
+/// 引用番号の直後に続く閉じの約物（。、）」など）。
+const CLOSING_PUNCT = /^[。、，．）」』】〕〉》！？!?,.:;：；…]+/;
+
+/// 引用番号チップと直後の約物を、折り返さない 1 つの塊にする（#1015）。
+///
+/// チップは行内の箱（inline-flex）なので前後で改行でき、番号が行末に来ると直後の「。」だけが
+/// 次の行頭に落ちる。単語結合子（U+2060）は Chrome では箱の後ろの改行を止めないため、
+/// hast の段階で `<span class="whitespace-nowrap">` に包む。
+function rehypeCiteNowrap() {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const walk = (node: any) => {
+    if (!node || !Array.isArray(node.children)) return;
+    for (let i = 0; i < node.children.length; i++) {
+      const child = node.children[i];
+      const next = node.children[i + 1];
+      const href = child?.type === "element" && child.tagName === "a" ? String(child.properties?.href ?? "") : "";
+      const punct = next?.type === "text" ? CLOSING_PUNCT.exec(next.value)?.[0] : undefined;
+      if (punct && citeNumberFromHref(href) != null) {
+        next.value = next.value.slice(punct.length);
+        const glued = {
+          type: "element",
+          tagName: "span",
+          properties: { className: ["whitespace-nowrap"] },
+          children: [child, { type: "text", value: punct }],
+        };
+        node.children.splice(i, next.value ? 1 : 2, glued);
+        continue;
+      }
+      walk(child);
+    }
+  };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (tree: any) => walk(tree);
+}
+
+/// 段落の中の単独の改行を改行として描く（利用者の発話用・GFM の既定では空白に潰れる）。
+/// textarea の時代に送った「一行目\n二行目」も、そのまま 2 行で見せるため。コードは触らない。
+function remarkSoftBreaks() {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const walk = (node: any) => {
+    if (!node || !Array.isArray(node.children)) return;
+    for (let i = 0; i < node.children.length; i++) {
+      const child = node.children[i];
+      if (child.type === "text" && child.value.includes("\n")) {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const replacement: any[] = [];
+        child.value.split("\n").forEach((part: string, idx: number) => {
+          if (idx > 0) replacement.push({ type: "break" });
+          if (part) replacement.push({ type: "text", value: part });
+        });
+        node.children.splice(i, 1, ...replacement);
+        i += replacement.length - 1;
+      } else {
+        walk(child);
+      }
+    }
+  };
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (tree: any) => walk(tree);
+}
+
 /// 1 つの React 要素（```pre > code```）からコード文字列と言語を取り出す。
 /// `raw` は react-markdown が渡す中身そのもの（フェンスが閉じていなくても末尾に改行が足されている）。
 function extractCode(child: React.ReactNode): {
@@ -102,10 +173,30 @@ function extractCode(child: React.ReactNode): {
   };
 }
 
+/// pre 直下の code 要素のクラス名。
+function codeClassName(child: React.ReactNode): string | undefined {
+  return React.isValidElement(child) ? (child.props as { className?: string }).className : undefined;
+}
+
 /// 描画中の本文と、生成中かどうか（```ui の図が書きかけの行を描かないようにする）。
-const SourceContext = React.createContext<{ text: string; streaming: boolean }>({
+/// `untrusted` は利用者が書いた本文（発話の吹き出し）。図・表・引用番号にせず、リンク先を見せる。
+/// `imageSources` は画像として読み込んでよい URL（出典に現れたもの・lib/answer-images）。
+/// `imageProxy` は出典の画像を shiki-server 経由で読む URL を作る（#1044）。無ければ外部の画像は読み込まない。
+/// `external` は外から来た文章（ワークフローが画面に返した結果・エージェントの回答・GAP-09）。外部リンクにホスト名を添える。
+const SourceContext = React.createContext<{
+  text: string;
+  streaming: boolean;
+  untrusted: boolean;
+  external: boolean;
+  imageSources: ImageSources;
+  imageProxy: ImageProxy | null;
+}>({
   text: "",
   streaming: false,
+  untrusted: false,
+  external: false,
+  imageSources: NO_IMAGE_SOURCES,
+  imageProxy: null,
 });
 
 /// フェンスが原文で終わっているか。react-markdown（mdast-util-to-hast）はフェンスの中身の末尾に
@@ -128,6 +219,177 @@ function fenceMeta(node: ExtraProps["node"]): string | undefined {
   return typeof meta === "string" ? meta.trim().split(/\s+/)[0] : undefined;
 }
 
+/// URL のホスト名（読めなければ空）。
+function hostOf(url: string): string {
+  try {
+    return new URL(url, typeof window !== "undefined" ? window.location.href : "https://localhost").host;
+  } catch {
+    return "";
+  }
+}
+
+/// 自分のオリジンへのリンクか（文字列の先頭ではなく、解決したオリジンで判定する）。
+///
+/// 「//evil.example/」（プロトコル相対）や「/\evil.example/」（ブラウザは \ を / と読む）は "/" で始まっても
+/// 別オリジンになる。サーバー側の描画（window が無い）では、"/" の後に "/" も "\" も続かないパスだけを内部とする。
+function isInternalUrl(url: string): boolean {
+  if (!url) return false;
+  if (typeof window === "undefined") return /^\/(?![/\\])/.test(url);
+  try {
+    return new URL(url, window.location.href).origin === window.location.origin;
+  } catch {
+    return false;
+  }
+}
+
+/// 利用者が書いたリンク。表示の文字と行き先が違うときは行き先のホストを添える（文字で行き先を偽れない）。
+function UserLink({ href, children }: { href: string; children: React.ReactNode }) {
+  let host: string | null = null;
+  try {
+    const u = new URL(href);
+    if (u.protocol === "http:" || u.protocol === "https:") host = u.host;
+  } catch {
+    /* 相対・不正な URL はリンクにしない */
+  }
+  if (!host) return <>{children}</>;
+  const label = typeof children === "string" ? children : null;
+  const shown = label !== null && (label === href || label === href.replace(/^https?:\/\//, ""));
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer nofollow"
+      title={href}
+      className={cn(
+        "font-medium text-primary underline decoration-primary/30 underline-offset-2 hover:decoration-primary",
+        WRAP_ANYWHERE,
+      )}
+    >
+      {children}
+      {shown ? null : <span className="ml-1 text-[0.85em] font-normal text-muted-foreground">({host})</span>}
+    </a>
+  );
+}
+
+/// 回答の画像。出典に現れた URL と埋め込み画像だけを読み込み、それ以外はホストを添えたリンクにする
+/// （#1005・PIT-77: 回答の画像は閲覧者のブラウザがクリック無しで取りに行くので、LLM が組み立てた URL で
+/// 会話の中身を外へ送らせない）。読み込む画像も Referer を送らない（どの会話から開いたかを渡さない）。
+function AnswerImage({ src, alt }: { src: string; alt: string }) {
+  const { imageSources, imageProxy } = React.useContext(SourceContext);
+  const inLink = React.useContext(InLinkContext);
+  // サーバが取得を断った・取得先が失敗した画像は、読み込まなかった画像と同じリンクに落とす。
+  const [failed, setFailed] = React.useState(false);
+  // サーバ描画の <img> は hydration より先に読み込みに失敗し得る（その error は React に届かない）。
+  // 付いた時点で「読み終えたのに中身が無い」なら失敗として扱う。
+  const imgRef = React.useCallback((img: HTMLImageElement | null) => {
+    if (img && img.complete && img.naturalWidth === 0) setFailed(true);
+  }, []);
+  const decision = decideAnswerImage(src, imageSources);
+  if (decision.kind === "drop") return alt ? <>{alt}</> : null;
+  if (decision.kind === "link") {
+    return (
+      <BlockedImage
+        href={decision.href}
+        host={decision.host}
+        alt={alt}
+        inLink={inLink}
+        reason="出典に無い外部の画像のため読み込んでいません"
+      />
+    );
+  }
+  const host = new URL(decision.src).host;
+  // 出典の画像でも、代理取得の経路が無い本文（会話以外）や取得に失敗したものは読み込まない。
+  // ブラウザから外部ホストへ直接は読みに行かない（閲覧の事実と IP を配信元へ渡さない・#1044）。
+  if (!imageProxy || failed) {
+    return (
+      <BlockedImage
+        href={decision.src}
+        host={host}
+        alt={alt}
+        inLink={inLink}
+        reason={failed ? "外部の画像を読み込めませんでした" : "外部の画像のため読み込んでいません"}
+      />
+    );
+  }
+  // 段落（<p>）の中に置かれるので、ブロック要素（figure）ではなく span で組む。
+  return (
+    <span className="my-3 block">
+      {/* eslint-disable-next-line @next/next/no-img-element -- shiki-server 経由の外部画像で、next/image の最適化対象外 */}
+      <img
+        src={imageProxy(decision.src)}
+        alt={alt}
+        loading="lazy"
+        decoding="async"
+        referrerPolicy="no-referrer"
+        ref={imgRef}
+        onError={() => setFailed(true)}
+        data-testid="answer-image"
+        className="block h-auto max-h-[28rem] max-w-full rounded-lg border border-border/60"
+      />
+      <span data-testid="answer-image-caption" className="mt-1.5 block text-[12px] text-muted-foreground">
+        {alt ? `${alt} · ` : ""}
+        {host}
+      </span>
+    </span>
+  );
+}
+
+/// 読み込まない外部の画像。行き先のホストを添えたリンクにする（押したときだけ新しいタブで開く）。
+function BlockedImage({
+  href,
+  host,
+  alt,
+  inLink,
+  reason,
+}: {
+  href: string;
+  host: string;
+  alt: string;
+  inLink: boolean;
+  reason: string;
+}) {
+  const content = (
+    <>
+      <EyeOff aria-hidden className="mr-1 inline size-[0.95em] -translate-y-px align-middle text-muted-foreground" />
+      外部の画像{alt ? `「${alt}」` : ""}
+      <span className="ml-1 text-muted-foreground">{host}</span>
+    </>
+  );
+  const label = `${reason}（${host}）`;
+  // リンクの中（`[![badge](img)](href)`）では外側のリンクに任せ、ラベルだけにする（<a> を入れ子にしない）。
+  if (inLink) {
+    return (
+      <span
+        title={`${label}: ${href}`}
+        data-testid="answer-image-blocked"
+        className={cn("rounded-[5px] bg-muted/60 px-1 text-[0.9em] text-foreground/80", WRAP_ANYWHERE)}
+      >
+        {content}
+      </span>
+    );
+  }
+  return (
+    <a
+      href={href}
+      target="_blank"
+      rel="noopener noreferrer nofollow"
+      referrerPolicy="no-referrer"
+      title={`${label}。押すと新しいタブで開きます: ${href}`}
+      aria-label={`${alt || "画像"}: ${label}。押すと新しいタブで開きます`}
+      data-testid="answer-image-blocked"
+      className={cn(
+        // 本文の行の高さを変えない（上下の余白を持たせない）。枠は付けず、押せることは下線と hover で見せる。
+        "inline rounded-[5px] bg-muted/60 px-1 text-[0.9em] text-foreground/80 underline decoration-border",
+        "underline-offset-2 hover:bg-muted hover:text-foreground hover:decoration-foreground/40",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        WRAP_ANYWHERE,
+      )}
+    >
+      {content}
+    </a>
+  );
+}
+
 /// 図の「表で表示」。リンク・画像は描かない（図と同じく文字と数値だけにする）。
 /// ノートの ```ui の図（NodeView）も同じ描き方にする。
 export function renderFigureTable(markdown: string) {
@@ -145,11 +407,15 @@ export function renderFigureTable(markdown: string) {
 
 /// ブロックコード。```ui（Yui）の図は図にし、描けなければ通常のコードブロックに戻す（#530）。
 function FencedCode({ node, children }: { node: ExtraProps["node"]; children: React.ReactNode }) {
-  const { text, streaming } = React.useContext(SourceContext);
+  const { text, streaming, untrusted } = React.useContext(SourceContext);
   const { code, raw, lang, ui, uiKind, dataGrid } = extractCode(children);
   const closed = fenceEnded(text, node);
   const nested = React.useContext(YuiNestedContext);
   const gridHost = React.useContext(DataGridHostContext);
+  // 利用者が書いたフェンスは図・表にせず、コードとして見せる（図と操作は AI の回答だけのもの）。
+  if (untrusted) return <CodeBlock code={code} lang={lang} />;
+  // 別行立ての数式（remark-math が pre > code.math-display にする・数式を読み込んだときだけ現れる）。
+  if (mathKind(codeClassName(children)) === "display") return <MathTex tex={code} display />;
   // ```data_grid はミニアプリの画面の表（トップレベルだけ・サーバーと同じ規則）。中身の 1 行目が別名。
   if (dataGrid && gridHost && !nested && closed) {
     const alias = code.split(/\r?\n/)[0]?.trim() ?? "";
@@ -186,12 +452,64 @@ function FencedCode({ node, children }: { node: ExtraProps["node"]; children: Re
   );
 }
 
+/// 本文のリンク（引用番号・内部リンク・外部リンク・利用者が書いたリンク）。
+function MarkdownLink({ href, children }: { href?: string; children: React.ReactNode }) {
+  const { untrusted, external } = React.useContext(SourceContext);
+  const url = href ?? "";
+  if (untrusted) return <UserLink href={url}>{children}</UserLink>;
+  // 引用マーカー（`#cite-n`・linkifyCitations が付ける）は本文中の上付き番号チップにする。
+  // ホバーで原文カード、クリックで出典パネル（メッセージの引用文脈があるときのみ）。
+  const cite = citeNumberFromHref(url);
+  if (cite != null) return <CitationMarker n={cite}>{children}</CitationMarker>;
+  // その他の内部リンク（自分のオリジン）はクライアント遷移。「//host/」のようなプロトコル相対の URL は
+  // "/" で始まっても別オリジンなので外部として扱う（同じタブで注記なしに別のサイトへ飛ばさない）。
+  if (isInternalUrl(url)) {
+    return (
+      <Link
+        href={url}
+        className={cn(
+          "font-medium text-primary underline decoration-primary/30 underline-offset-2 hover:decoration-primary",
+          WRAP_ANYWHERE,
+        )}
+      >
+        {children}
+      </Link>
+    );
+  }
+  const link = (
+    <a
+      href={url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={cn(
+        "font-medium text-primary underline decoration-primary/30 underline-offset-2 hover:decoration-primary",
+        WRAP_ANYWHERE,
+      )}
+    >
+      {children}
+    </a>
+  );
+  // 外から来た文章の外部リンクにはホスト名を添える（釣りのリンクに気づきやすくする・GAP-09）。
+  const host = external ? hostOf(url) : "";
+  if (!host) return link;
+  return (
+    <>
+      {link}
+      <span className="ml-0.5 text-[0.85em] text-muted-foreground">（{host}）</span>
+    </>
+  );
+}
+
 const components: Components = {
   // ブロックコードは pre をフックして CodeBlock に差し替える。
   pre({ node, children }) {
+    // 数式（math-display）・図・表・コードのどれで描くかは FencedCode が決める。
     return <FencedCode node={node}>{children}</FencedCode>;
   },
   code({ className, children }) {
+    // 行内の数式（remark-math が code.math-inline にする）。`\[ \]` が文中にあれば math-display。
+    const math = mathKind(className);
+    if (math) return <MathTex tex={String(children ?? "")} display={math === "display"} />;
     // インラインコード（pre 配下は上で処理済み）。
     return (
       <code
@@ -206,82 +524,72 @@ const components: Components = {
     );
   },
   a({ href, children }) {
-    const url = href ?? "";
-    // 引用マーカー（`#cite-n`・linkifyCitations が付ける）は本文中の上付き番号チップにする。
-    // ホバーで原文カード、クリックで出典パネル（メッセージの引用文脈があるときのみ）。
-    const cite = citeNumberFromHref(url);
-    if (cite != null) return <CitationMarker n={cite}>{children}</CitationMarker>;
-    // その他の内部リンク（自分のオリジン）はクライアント遷移。「//host/」のようなプロトコル相対の URL は
-    // "/" で始まっても別オリジンなので外部として扱う（同じタブで注記なしに別のサイトへ飛ばさない）。
-    if (isInternalUrl(url)) {
-      return (
-        <Link
-          href={url}
-          className={cn(
-            "font-medium text-primary underline decoration-primary/30 underline-offset-2 hover:decoration-primary",
-            WRAP_ANYWHERE,
-          )}
-        >
-          {children}
-        </Link>
-      );
-    }
     return (
-      <a
-        href={url}
-        target="_blank"
-        rel="noopener noreferrer"
-        className={cn(
-          "font-medium text-primary underline decoration-primary/30 underline-offset-2 hover:decoration-primary",
-          WRAP_ANYWHERE,
-        )}
-      >
-        {children}
-      </a>
+      <InLinkContext.Provider value={true}>
+        <MarkdownLink href={href}>{children}</MarkdownLink>
+      </InLinkContext.Provider>
     );
   },
+  // 組版（#1015・案 B）: 日本語に合わせて行間を 1.8 にし、段落・リスト・見出しの前後に余白をとって
+  // まとまりを分ける。本文の色はわずかに落とし（ルート）、見出し・太字を foreground で浮かせる。
   p({ children }) {
-    return <p className="my-2.5 leading-relaxed first:mt-0 last:mb-0">{children}</p>;
+    return <p className="my-3.5 leading-[1.8] first:mt-0 last:mb-0">{children}</p>;
   },
   ul({ children }) {
-    return <ul className="my-2.5 ml-5 list-disc space-y-1 marker:text-muted-foreground">{children}</ul>;
+    return <ul className="my-3.5 ml-5 list-disc space-y-1.5 marker:text-primary/60">{children}</ul>;
   },
   ol({ children }) {
-    return <ol className="my-2.5 ml-5 list-decimal space-y-1 marker:text-muted-foreground">{children}</ol>;
+    return <ol className="my-3.5 ml-5 list-decimal space-y-1.5 marker:text-primary/60">{children}</ol>;
   },
   li({ children }) {
     // 箇条書きの中の図はボタンを出さない（操作を持つ図はトップレベルだけ・サーバーと同じ規則）。
     return (
-      <li className="leading-relaxed">
+      <li className="leading-[1.8]">
         <YuiNestedContext.Provider value={true}>{children}</YuiNestedContext.Provider>
       </li>
     );
   },
+  // 見出しは段の区切りなので上を大きく空ける。h1/h2 は下線、h3 は色の縦線で本文と階層を分ける。
   h1({ children }) {
-    return <h1 className="mb-2 mt-4 text-xl font-semibold first:mt-0">{children}</h1>;
+    return (
+      <h1 className="mb-3 mt-9 border-b border-border pb-2 text-xl font-bold text-foreground first:mt-0">
+        {children}
+      </h1>
+    );
   },
   h2({ children }) {
-    return <h2 className="mb-2 mt-4 text-lg font-semibold first:mt-0">{children}</h2>;
+    return (
+      <h2 className="mb-3 mt-9 border-b border-border pb-2 text-[18px] font-bold text-foreground first:mt-0">
+        {children}
+      </h2>
+    );
   },
   h3({ children }) {
-    return <h3 className="mb-1.5 mt-3 text-base font-semibold first:mt-0">{children}</h3>;
+    return (
+      <h3 className="mb-2 mt-7 border-l-[3px] border-primary pl-2.5 text-[15px] font-semibold leading-snug text-foreground first:mt-0">
+        {children}
+      </h3>
+    );
+  },
+  h4({ children }) {
+    return <h4 className="mb-1.5 mt-5 text-[15px] font-semibold text-foreground first:mt-0">{children}</h4>;
   },
   blockquote({ children }) {
     return (
-      <blockquote className="my-3 border-l-2 border-border pl-4 text-muted-foreground">
+      <blockquote className="my-5 rounded-r-lg border-l-[3px] border-primary/30 bg-muted/50 py-2 pl-4 pr-3">
         <YuiNestedContext.Provider value={true}>{children}</YuiNestedContext.Provider>
       </blockquote>
     );
   },
   hr() {
-    return <hr className="my-4 border-border" />;
+    return <hr className="my-6 border-border" />;
   },
   // 表は横スクロールの箱に収める（本文の幅を押し広げない）。見出しは折り返さず、セルは
   // 最小幅を持たせて 1 文字ずつの縦長にならないようにする。箱の端まで来た横スクロールが
   // ページ（戻るジェスチャ）へ抜けないよう overscroll-x-contain。
   table({ children }) {
     return (
-      <div className="my-3 max-w-full overflow-x-auto overscroll-x-contain rounded-lg border border-border">
+      <div className="my-5 max-w-full overflow-x-auto overscroll-x-contain rounded-lg border border-border">
         <table className="w-full border-collapse text-[13px]">{children}</table>
       </div>
     );
@@ -306,88 +614,71 @@ const components: Components = {
   strong({ children }) {
     return <strong className="font-semibold text-foreground">{children}</strong>;
   },
-};
-
-/// URL のホスト名（読めなければ空）。
-function hostOf(url: string): string {
-  try {
-    return new URL(url, typeof window !== "undefined" ? window.location.href : "https://localhost").host;
-  } catch {
-    return "";
-  }
-}
-
-/// 自分のオリジンへのリンクか（文字列の先頭ではなく、解決したオリジンで判定する）。
-///
-/// 「//evil.example/」（プロトコル相対）や「/\evil.example/」（ブラウザは \ を / と読む）は "/" で始まっても
-/// 別オリジンになる。サーバー側の描画（window が無い）では、"/" の後に "/" も "\" も続かないパスだけを内部とする。
-function isInternalUrl(url: string): boolean {
-  if (!url) return false;
-  if (typeof window === "undefined") return /^\/(?![/\\])/.test(url);
-  try {
-    return new URL(url, window.location.href).origin === window.location.origin;
-  } catch {
-    return false;
-  }
-}
-
-/// 外から来た文章（ワークフローが画面に返した結果など・GAP-09）の描き方。
-/// 画像は自動で読み込まず（外部への持ち出しに使える）リンクにし、外部リンクにはホスト名を添える
-/// （釣りのリンクに気づきやすくする）。
-const untrustedComponents: Components = {
-  ...components,
   img({ src, alt }) {
-    const url = typeof src === "string" ? src : "";
-    const host = hostOf(url);
-    const label = `画像: ${alt?.trim() || "（説明なし）"}${host ? `（${host}）` : ""}`;
-    if (!url) return <span className="text-muted-foreground">{label}</span>;
-    return (
-      <a
-        href={url}
-        target="_blank"
-        rel="noopener noreferrer"
-        className={cn("font-medium text-primary underline decoration-primary/30 underline-offset-2", WRAP_ANYWHERE)}
-      >
-        {label}
-      </a>
-    );
-  },
-  a(props) {
-    const url = props.href ?? "";
-    const link = components.a ? React.createElement(components.a, props) : null;
-    // 内部リンク（自分のオリジン）だけはそのまま。プロトコル相対の「//host/」も外部としてホスト名を添える。
-    if (isInternalUrl(url)) return link;
-    const host = hostOf(url);
-    return (
-      <>
-        {link}
-        {host ? <span className="ml-0.5 text-[0.85em] text-muted-foreground">（{host}）</span> : null}
-      </>
-    );
+    // 利用者の発話は disallowedElements で画像を落とすので、ここに来るのは回答・画面の本文だけ。
+    // react-markdown は http(s) 以外（data:・javascript: など）の URL を空にして渡す。そのときは代替テキストだけ出す。
+    if (typeof src === "string" && src) return <AnswerImage src={src} alt={alt ?? ""} />;
+    return alt ? <>{alt}</> : null;
   },
 };
 
+/// LLM の回答・利用者の発話・ノートなどの Markdown を描く。AI の回答では、数式を含むときだけ
+/// 数式の解析と KaTeX を読み込み、引用番号と直後の約物を折り返さない塊にする（#1015）。
 export function Markdown({
   children,
   className,
   streaming = false,
+  breaks = false,
   untrusted = false,
+  external = false,
+  imageSources = NO_IMAGE_SOURCES,
+  imageProxy = null,
 }: {
   children: string;
   className?: string;
   /// 生成中の本文か（```ui の図が書きかけの行を描かないようにする）。
   streaming?: boolean;
-  /// 外から来た文章か（画像を読み込まずリンクにし、外部リンクにホスト名を添える）。
+  /// 段落の中の単独の改行も改行として描く（利用者の発話）。
+  breaks?: boolean;
+  /// 利用者が書いた本文。画像は読み込まず（外部へのアクセスを生まない）、図・表・引用番号にせず、
+  /// リンクには行き先のホストを添える。
   untrusted?: boolean;
+  /// 外から来た文章（ワークフローが画面に返した結果・エージェントの回答・GAP-09）。外部リンクにホスト名を添える。
+  /// 図・表は描く（操作は呼び出し側が無効の文脈で包む）。画像は `imageSources` に無いので読み込まずリンクにする。
+  external?: boolean;
+  /// 画像として読み込んでよい URL（回答なら、その回答のツール結果・引用に現れた画像・lib/answer-images）。
+  /// 省略すると外部の画像は読み込まず、行き先のホストを添えたリンクにする。
+  imageSources?: ImageSources;
+  /// 出典の画像を shiki-server 経由で読む URL を作る（#1044）。省略すると出典の画像も読み込まずリンクにする。
+  imageProxy?: ImageProxy | null;
 }) {
+  // 数式は AI の回答だけ（利用者の発話は打ったとおりに見せる）。
+  const mathPlugins = useMathPlugins(!untrusted && mayHaveMath(children));
+  const text = children;
   return (
-    <div className={cn("min-w-0 text-[15px] leading-relaxed text-foreground", WRAP_ANYWHERE, className)}>
-      <SourceContext.Provider value={{ text: children, streaming }}>
+    <div
+      className={cn(
+        // 本文はわずかに色を落とし、見出し・太字（foreground）を浮かせる（#1015）。
+        "min-w-0 text-[15px] leading-[1.8] text-foreground/85",
+        WRAP_ANYWHERE,
+        className,
+      )}
+    >
+      <SourceContext.Provider value={{ text, streaming, untrusted, external, imageSources, imageProxy }}>
         <ReactMarkdown
-          remarkPlugins={[remarkGfm, remarkBrTags]}
-          components={untrusted ? untrustedComponents : components}
+          remarkPlugins={[
+            remarkGfm,
+            // 日本語の約物に隣接する `**` を強調として閉じる（`**「結論」**について` が太字にならない問題）。
+            remarkCjkFriendly,
+            remarkBrTags,
+            ...(breaks ? [remarkSoftBreaks] : []),
+            ...(mathPlugins ?? []),
+          ]}
+          rehypePlugins={untrusted ? undefined : [rehypeCiteNowrap]}
+          components={components}
+          disallowedElements={untrusted ? ["img"] : undefined}
         >
-          {children}
+          {text}
         </ReactMarkdown>
       </SourceContext.Provider>
     </div>

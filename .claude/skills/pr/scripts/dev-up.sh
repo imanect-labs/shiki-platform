@@ -704,6 +704,7 @@ else
   Q_S3_PUBLIC=$(printf '%q' "$EFF_S3_PUBLIC")
   Q_S3_BUCKET=$(printf '%q' "$EFF_S3_BUCKET")
   Q_WORKER_URL=$(printf '%q' "$EFF_WORKER_URL")
+  Q_RUNNER=$(printf '%q' "$ROOT/crates/tabular/runner/target/release/shiki-tabular-runner")
   if [ -n "$EFF_CORS" ]; then
     CORS_LINE="export SHIKI__STORAGE__S3__CORS_ALLOWED_ORIGINS=$(printf '%q' "$EFF_CORS")"
   else
@@ -753,6 +754,12 @@ ${CORS_LINE}
 export SHIKI__STORAGE__S3__ACCESS_KEY="\${SHIKI_DEV_RUN_S3_ACCESS_KEY:?dev-up.sh から起動してください}"
 export SHIKI__STORAGE__S3__SECRET_KEY="\${SHIKI_DEV_RUN_S3_SECRET_KEY:?dev-up.sh から起動してください}"
 export SHIKI__GATEWAY__ENABLED=true
+# data の keyset カーソル鍵（開発専用の起動時乱数）。compose の shiki-server と同じ既定にする
+# （未設定だと鍵ファイルを要求して起動に失敗する・docker-compose.yml の同名設定を参照）。
+export SHIKI__DATA__EPHEMERAL_CURSOR_KEY=true
+# CSV（tabular）の DuckDB 隔離ランナー。workspace 外のクレートなので下で個別にビルドし、
+# 絶対パスで渡す（既定の bare 名は PATH 解決になり、native では見つからず CSV が開けない）。
+export SHIKI__TABULAR__RUNNER_PATH=${Q_RUNNER}
 # native の第2/第3リスナは compose の shiki-server（8090/8091 を publish）と衝突しない
 # 18090/18091 を使う。web 側には NEXT_PUBLIC_GATEWAY_ORIGIN / NEXT_PUBLIC_B1_ORIGIN で
 # 同じ値を渡す。
@@ -856,6 +863,17 @@ EOF
     err "   ⚠️ CSV の集計の隔離ランナーがありません: $TABULAR_RUNNER"
     err "      このままでは csv.* のブロックと CSV の画面の SQL が失敗します。次でビルドしてください:"
     err "      cargo build --locked --manifest-path crates/tabular/runner/Cargo.toml"
+  fi
+
+  # CSV の隔離ランナー（CI の tabular-runner ジョブと同じ release ビルド）。毎回 cargo に
+  # 任せる（変更が無ければすぐ終わり、crates/tabular の変更はランナーにも入る）。
+  # DuckDB を同梱するため、初回だけ数分かかる。
+  if [ ! -x "$ROOT/crates/tabular/runner/target/release/shiki-tabular-runner" ]; then
+    say "   CSV ランナー（shiki-tabular-runner）をビルド中（初回は数分）…"
+  fi
+  if ! cargo build --manifest-path "$ROOT/crates/tabular/runner/Cargo.toml" --release; then
+    err "shiki-tabular-runner のビルドに失敗しました（CSV の表示・クエリは使えません）。"
+    exit 1
   fi
 
   apply_store_switch

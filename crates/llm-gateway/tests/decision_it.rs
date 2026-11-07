@@ -46,7 +46,11 @@ async fn pool() -> Option<PgPool> {
 /// テストごとの組織（AI 設定・会計を他のテストと共有しない）。
 fn workflow() -> AuthContext {
     let tenant = format!("dec-{}", uuid::Uuid::new_v4().simple());
-    AuthContext::for_workflow(tenant, "org".into(), "wf-1")
+    AuthContext::for_workflow(
+        authz::TenantId::parse(tenant).unwrap(),
+        "org".into(),
+        "wf-1",
+    )
 }
 
 /// 管理者（組織の AI 設定を保存する）。
@@ -58,17 +62,17 @@ fn admin(of: &AuthContext) -> AuthContext {
             email: None,
             groups: vec![],
             roles: vec![],
-            tenant_id: Some(of.tenant_id.clone()),
+            tenant_id: Some(of.tenant_id().to_string()),
         },
-        of.org.clone(),
-        of.tenant_id.clone(),
+        of.org().to_string(),
+        authz::TenantId::parse(of.tenant_id().to_string()).unwrap(),
     )
 }
 
 async fn cleanup(pool: &PgPool, ctx: &AuthContext) {
     for table in ["llm_usage", "tenant_llm_model", "tenant_llm_settings"] {
         sqlx::query(&format!("DELETE FROM {table} WHERE tenant_id = $1"))
-            .bind(&ctx.tenant_id)
+            .bind(ctx.tenant_id())
             .execute(pool)
             .await
             .unwrap();
@@ -177,7 +181,7 @@ async fn usage_rows(
         "SELECT idempotency_key, model, provider, provider_id, source, cost_usd_micros \
          FROM llm_usage WHERE tenant_id = $1 ORDER BY created_at, idempotency_key",
     )
-    .bind(&ctx.tenant_id)
+    .bind(ctx.tenant_id())
     .fetch_all(pool)
     .await
     .unwrap()

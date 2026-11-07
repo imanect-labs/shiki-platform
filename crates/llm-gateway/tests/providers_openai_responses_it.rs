@@ -214,7 +214,7 @@ fn live_provider(base: String) -> OpenAiResponsesProvider {
 ///     `OPENAI_RESPONSES_TEST_CA=<PEM>`（TLS を中継するプロキシの CA。必要な環境だけ）
 #[tokio::test]
 async fn live_round_trip_with_tool_call() {
-    let Ok(base) = std::env::var("OPENAI_RESPONSES_TEST_URL") else {
+    let Ok(base) = shiki_testenv::var("OPENAI_RESPONSES_TEST_URL") else {
         return;
     };
     let p = live_provider(base);
@@ -311,7 +311,7 @@ async fn endless_line_without_newline_is_cut_off_with_an_error() {
 /// 推論アイテムの往復（#542）: 推論 → ツール呼び出し → 推論アイテムを先頭に戻した 2 ターン目。
 #[tokio::test]
 async fn live_reasoning_items_round_trip() {
-    let Ok(base) = std::env::var("OPENAI_RESPONSES_TEST_URL") else {
+    let Ok(base) = shiki_testenv::var("OPENAI_RESPONSES_TEST_URL") else {
         return;
     };
     let p = live_provider(base);

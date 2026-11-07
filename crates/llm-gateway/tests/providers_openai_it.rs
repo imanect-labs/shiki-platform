@@ -441,7 +441,7 @@ fn collect(deltas: &[StreamDelta], thinking: bool) -> String {
 ///     `OPENAI_TEST_SESSION_HEADER=x-opencode-session` `OPENAI_TEST_KEY=<キー>`
 #[tokio::test]
 async fn openai_live_round_trip() {
-    let Ok(base) = std::env::var("OPENAI_TEST_URL") else {
+    let Ok(base) = shiki_testenv::var("OPENAI_TEST_URL") else {
         return;
     };
     let model = std::env::var("OPENAI_TEST_MODEL").unwrap_or_else(|_| "m".into());
@@ -484,7 +484,7 @@ async fn openai_live_round_trip() {
 ///     `OPENAI_TEST_MODEL=gemma-4-31b-it` `OPENAI_TEST_KEY=<キー>`
 #[tokio::test]
 async fn openai_live_tool_round_trip() {
-    let Ok(base) = std::env::var("OPENAI_TEST_URL") else {
+    let Ok(base) = shiki_testenv::var("OPENAI_TEST_URL") else {
         return;
     };
     let model = std::env::var("OPENAI_TEST_MODEL").unwrap_or_else(|_| "m".into());

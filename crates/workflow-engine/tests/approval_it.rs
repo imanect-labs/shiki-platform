@@ -118,7 +118,11 @@ impl NodePorts for ApprovalPorts {
     async fn workflow_start(&self, _c: &ExecCtx, _n: &str, _i: &Value) -> Result<Value, PortError> {
         unreachable!()
     }
-    async fn csv_query(&self, _c: &ExecCtx, _f: Uuid, _sql: &str) -> Result<Value, PortError> {
+    async fn csv_query(
+        &self,
+        _: &ExecCtx,
+        _: workflow_engine::CsvQueryReq,
+    ) -> Result<Value, PortError> {
         unreachable!()
     }
     async fn csv_patch(&self, _c: &ExecCtx, _r: CsvPatchReq) -> Result<Value, PortError> {
@@ -794,7 +798,7 @@ async fn expired_approvals_that_fail_keep_the_timeout_reason() {
             tenant_id: Some(env.tenant.clone()),
         },
         "acme".into(),
-        env.tenant.clone(),
+        authz::TenantId::parse(env.tenant.clone()).unwrap(),
     );
     let outcomes = workflow_engine::RunOutcomeReader::new(pool)
         .own_outcomes(&alice, &[run], &[])

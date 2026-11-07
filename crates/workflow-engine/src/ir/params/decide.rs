@@ -174,7 +174,7 @@ pub struct DecideRoute {
     pub by: Option<DecideRouteBy>,
     /// しきい値（0.5〜1.0）。確からしさがこれ以上なら答えに従い、届かなければ `uncertain` へ出す。
     ///
-    /// 既定を置かない（版ごとに実測で決めるもの・PIT-80・D-88）。空のまま保存はでき、入れるまで実行と自動実行の
+    /// 既定を置かない（版ごとに実測で決めるもの・PIT-81・D-88）。空のまま保存はでき、入れるまで実行と自動実行の
     /// オンを止める（readiness）。実行時に空なら AI を呼ばずに失敗する（[`DECIDE_THRESHOLD_MISSING`]）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
@@ -200,7 +200,7 @@ impl DecideRoute {
 /// `ai.decide` — 判定用のモデルで、質問に決められた値域で答え、確からしさを付けて返す（pure・課金あり）。
 ///
 /// 呼ぶのは llm-gateway の判定のチョークポイント（`LlmGateway::decide`・組織の許可・利用上限・会計）。
-/// 確からしさは較正されていないことがある（出力の `calibrated`・PIT-80）。
+/// 確からしさは較正されていないことがある（出力の `calibrated`・PIT-81）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]
 #[ts(export)]

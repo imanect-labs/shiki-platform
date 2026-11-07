@@ -64,12 +64,12 @@ impl DataStore {
         // 行を引くテーブル（追加だけの人は自分の行に絞る）。進められる人は絞る前の定義で評価する。
         let view = access.view(&table);
 
-        let db = self.pools.for_tenant(&ctx.tenant_id);
+        let db = self.pools.for_tenant(ctx.tenant_id());
         let mut tx = db.begin().await.map_err(map_db)?;
         // 索引の計画（テーブル行を FOR KEY SHARE・レコード行より先に取る・Task 15.2）。
         let plan = crate::index::state::lock_plan(
             &mut tx,
-            &ctx.tenant_id,
+            ctx.tenant_id(),
             table_id,
             table.keys,
             table.schema_version,
@@ -148,7 +148,7 @@ impl DataStore {
              RETURNING {}",
             crate::record::WRITTEN_RETURNING
         ))
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(table_id)
         .bind(record_id)
         .bind(sqlx::types::Json(&new_stored))
@@ -164,12 +164,12 @@ impl DataStore {
             new: Value::String(to.to_string()),
         }];
         // status の索引行と updated_at だけを書き換える（差分更新・同一 Tx）。
-        self.index_writer(&plan, &table.schema, &ctx.tenant_id)
+        self.index_writer(&plan, &table.schema, ctx.tenant_id())
             .on_update(&mut tx, written.record_int, &patch, written.row.updated_at)
             .await?;
         crate::derived::materialize::after_record_write(
             &mut tx,
-            &ctx.tenant_id,
+            ctx.tenant_id(),
             &table,
             written.record_int,
             Some(&data),

@@ -74,7 +74,8 @@ impl ChatStore {
             trace_id,
         )
         .await?;
-        if mode == AutonomousMode::Bypass && !self.autonomous_bypass_allowed(&ctx.tenant_id).await?
+        if mode == AutonomousMode::Bypass
+            && !self.autonomous_bypass_allowed(ctx.tenant_id()).await?
         {
             return Err(ChatError::Invalid(
                 "全自動（bypass）モードは組織ポリシで禁止されています".into(),
@@ -85,9 +86,9 @@ impl ChatStore {
              WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL",
         )
         .bind(thread_id)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(mode.as_str())
-        .bind(&ctx.principal.id)
+        .bind(&ctx.principal().id)
         .execute(&self.db)
         .await
         .map_err(|e| map_db(&e))?;
@@ -123,6 +124,7 @@ impl ChatStore {
         checkpoint: &serde_json::Value,
     ) -> Result<bool, ChatError> {
         let updated = sqlx::query(
+            // tenant-sql: allow(fencing 付きの内部 run_id で保存)
             "UPDATE generation_run SET checkpoint = $3, updated_at = now() \
              WHERE run_id = $1 AND fencing_token = $2 \
                AND status IN ('running', 'waiting_approval')",

@@ -74,6 +74,9 @@ vocab_enum! {
         /// 調査の**委譲**（隔離コンテキストのサブエージェントを 1 体走らせる・#391）。
         /// 子は新しい履歴・read-only ツールのみで走り、**合成済み findings だけ**を返す。
         Subagent => "subagent",
+        /// 回答の ```ui ブロック（Yui）の種類ごとの書き方を返す（`@imanect/yui/guide` から
+        /// 生成・読み取りのみ）。早見は system にあり、図を書く前にこれで読む。
+        UiReference => "ui_reference",
         /// 撤去した generative UI の発話ツール（#604）。図は回答の本文に ```ui で書く。
         /// 保存済みのスキルの `allowed_tools` が読めるよう**名前だけ**残す（どこにも提示しない）。
         EmitUi => "emit_ui",
@@ -83,6 +86,9 @@ vocab_enum! {
         ReadWorkflow => "read_workflow",
         /// 本人に見えるワークフローを名前で探す一覧（新しい会話から既存のワークフローを直す前提・GAP-31）。
         ListWorkflows => "list_workflows",
+        /// 本人に見えるワークフローを名前・説明で探すツール（図のボタン `-> workflow 名前` に
+        /// 実在する名前を書くため・入力の項目も返す・読み取りのみ）。
+        SearchWorkflows => "search_workflows",
         /// ノート（md/Yjs）の共同編集ツール（AI が編集参加者として編集・Task 11P.4）。
         DocumentEdit => "document.edit",
         /// ノート本文の読み取りツール（document.edit の前提・現状の md を得る・Task 11P.4）。
@@ -97,6 +103,9 @@ vocab_enum! {
         /// AI 生成 CSV を**下書き**として用意するツール（csv_draft カード化・保存しない・
         /// 確認不要・save_note と同型の下書き確定型・Task 11.11）。
         SaveCsv => "save_csv",
+        /// AI 生成スキルを**下書き**として用意するツール（skill_draft カード化・保存しない・
+        /// 確認不要・save_note と同型の下書き確定型・#919）。保存はスキルエディタで人が行う。
+        SaveSkill => "save_skill",
         /// 新規 Word 文書（.docx）を作成するツール（#381）。空テンプレを実体化してから
         /// Collabora へ本文を paste する（md エディタ下書きは廃止・承認ゲート対象）。
         SaveDocument => "save_document",
@@ -133,6 +142,11 @@ vocab_enum! {
         DataSchema => "data_schema",
         /// テーブルのレコードの作成・更新（editor ＋書込述語・承認必須・Task 15.7）。
         DataRecordWrite => "data_record_write",
+        /// ドライブのファイル・フォルダを名前で探す（本人に見える範囲・読み取りのみ・#942）。
+        /// 保存先・移動先のフォルダ id を解決する入口。
+        DriveFind => "drive.find",
+        /// ドライブのファイル・フォルダの移動・名前変更（種別を問わない・承認ゲート対象・#942）。
+        DriveMove => "drive.move",
     }
 }
 
@@ -200,6 +214,8 @@ impl ToolName {
             | Self::FsAppend
             | Self::FsEdit
             | Self::Subagent
+            // 図を書く回答のたびに使う（定義は小さい・遅延にすると検索の 1 手が毎回挟まる）。
+            | Self::UiReference
             | Self::EmitUi
             // 構造化データの読取は「社内の知識源」として doc_search と同じく常時載せる（発話ユーザーに
             // 見えるテーブルが 1 つも無ければ提示しない・description のテーブル一覧は有界）。
@@ -210,12 +226,14 @@ impl ToolName {
             | Self::EmitWorkflow
             | Self::ReadWorkflow
             | Self::ListWorkflows
+            | Self::SearchWorkflows
             | Self::DocumentEdit
             | Self::DocumentRead
             | Self::DocumentEmbed
             | Self::SaveNote
             | Self::SaveSlide
             | Self::SaveCsv
+            | Self::SaveSkill
             | Self::SaveDocument
             | Self::SaveSheet
             | Self::SlideEdit
@@ -228,7 +246,9 @@ impl ToolName {
             | Self::CsvQuery
             | Self::CsvPatch
             | Self::CsvWrite
-            | Self::DataRecordWrite => ToolLoading::Deferred,
+            | Self::DataRecordWrite
+            | Self::DriveFind
+            | Self::DriveMove => ToolLoading::Deferred,
         }
     }
 
@@ -266,6 +286,10 @@ impl ToolName {
                 "workflow list find search existing open fix edit automation \
                  ワークフロー 一覧 探す 既存 開く 直す 修正 自動化 フロー"
             }
+            Self::SearchWorkflows => {
+                "workflow search find list lookup name button launch app form automation \
+                 ワークフロー 探す 検索 一覧 名前 ボタン 起動 実行 フォーム 自動化"
+            }
             Self::DocumentEdit => {
                 "note markdown document edit rewrite append ノート 文書 編集 追記 書き換え"
             }
@@ -274,6 +298,9 @@ impl ToolName {
             Self::SaveNote => "note markdown create save draft ノート メモ 作成 保存",
             Self::SaveSlide => "slide presentation deck create draft スライド プレゼン 資料 作成",
             Self::SaveCsv => "csv table spreadsheet create draft 表 作成",
+            Self::SaveSkill => {
+                "skill prompt instructions create draft edit スキル 指示文 プロンプト 作成 編集"
+            }
             Self::SaveDocument => "word docx document create report 文書 ワード 報告書 作成",
             Self::SaveSheet => {
                 "excel xlsx spreadsheet sheet workbook create 表計算 エクセル スプレッドシート 作成"
@@ -306,6 +333,12 @@ impl ToolName {
             Self::DataRecordWrite => {
                 "data table record row create update write insert テーブル レコード 行 追加 登録 更新 書き込み"
             }
+            Self::DriveFind => {
+                "drive folder file find search locate lookup path ドライブ フォルダ ファイル 探す 検索 場所 保存先"
+            }
+            Self::DriveMove => {
+                "drive file folder move rename organize relocate ドライブ ファイル フォルダ 移動 名前変更 整理 保存先"
+            }
             Self::Skill
             | Self::SkillSearch
             | Self::DocSearch
@@ -321,6 +354,7 @@ impl ToolName {
             | Self::FsAppend
             | Self::FsEdit
             | Self::Subagent
+            | Self::UiReference
             | Self::EmitUi
             | Self::DataQuery
             | Self::DataSchema => "",

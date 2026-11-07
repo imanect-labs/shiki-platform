@@ -160,14 +160,14 @@ impl DataStore {
 
         let mut tx = self
             .pools
-            .for_tenant(&ctx.tenant_id)
+            .for_tenant(ctx.tenant_id())
             .begin()
             .await
             .map_err(map_db)?;
         // 索引の計画（テーブル行を FOR KEY SHARE・レコード行より先に取る）。
         let plan = lock_plan(
             &mut tx,
-            &ctx.tenant_id,
+            ctx.tenant_id(),
             table_id,
             table.keys,
             table.schema_version,
@@ -179,11 +179,11 @@ impl DataStore {
              VALUES ($1, $2, $3, $4, $5, $6, $7) \
              RETURNING {WRITTEN_RETURNING}"
         ))
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(table_id)
-        .bind(&ctx.org)
+        .bind(ctx.org())
         .bind(Json(Value::Object(encode_record(&table.schema, &normalized))))
-        .bind(&ctx.principal.id)
+        .bind(&ctx.principal().id)
         .bind(table.keys.tenant_int)
         .bind(table.keys.table_int)
         .fetch_one(&mut *tx)
@@ -421,13 +421,13 @@ impl DataStore {
         let table = self.fetch_live(ctx, table_id).await?;
         let mut tx = self
             .pools
-            .for_tenant(&ctx.tenant_id)
+            .for_tenant(ctx.tenant_id())
             .begin()
             .await
             .map_err(map_db)?;
         let plan = lock_plan(
             &mut tx,
-            &ctx.tenant_id,
+            ctx.tenant_id(),
             table_id,
             table.keys,
             table.schema_version,
@@ -452,7 +452,7 @@ impl DataStore {
                AND id = $3 \
              RETURNING record_int",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(table_id)
         .bind(id)
         .bind(table.keys.tenant_int)
@@ -462,12 +462,12 @@ impl DataStore {
         .map_err(map_db)?;
         let old_map = decode_record(&table.schema, &current.data.0);
         // そのレコードの索引行を全て消す（同一 Tx）。
-        self.index_writer(&plan, &table.schema, &ctx.tenant_id)
+        self.index_writer(&plan, &table.schema, ctx.tenant_id())
             .on_delete(&mut tx, record_int, &old_map)
             .await?;
         crate::derived::materialize::after_record_write(
             &mut tx,
-            &ctx.tenant_id,
+            ctx.tenant_id(),
             &table,
             record_int,
             None,

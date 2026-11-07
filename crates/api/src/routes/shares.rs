@@ -137,7 +137,7 @@ pub async fn shared_with_me(
     let kind = data::ListPositionKind::DriveShared;
     let after = match q.cursor.as_deref().filter(|c| !c.is_empty()) {
         Some(c) => {
-            let p = state.data.open_list_position(kind, &ctx.tenant_id, c)?;
+            let p = state.data.open_list_position(kind, ctx.tenant_id(), c)?;
             Some(storage::SharedPosition {
                 updated_at: p.updated_at,
                 id: p.id,
@@ -154,7 +154,7 @@ pub async fn shared_with_me(
         .map(|p| {
             state.data.seal_list_position(
                 kind,
-                &ctx.tenant_id,
+                ctx.tenant_id(),
                 data::ListPosition {
                     updated_at: p.updated_at,
                     id: p.id,

@@ -75,6 +75,9 @@ pub(super) fn to_stream_kind(event: &AgentEvent) -> StreamEventKind {
         AgentEvent::CsvDraft { draft } => StreamEventKind::CsvDraft {
             draft: draft.clone(),
         },
+        AgentEvent::SkillDraft { draft } => StreamEventKind::SkillDraft {
+            draft: draft.clone(),
+        },
         AgentEvent::DocumentRef { document } => StreamEventKind::DocumentRef {
             document: document.clone(),
         },

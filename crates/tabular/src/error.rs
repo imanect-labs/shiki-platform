@@ -28,6 +28,9 @@ pub enum TabularError {
     /// （編集と保存は CSV だけ・D-17）。文言は利用者向け。
     #[error("{0}")]
     Unsupported(String),
+    /// 複数 CSV クエリの追加テーブル指定が不正（名前の形・`data` との衝突・重複・上限超過・CSV でない追加ファイル）。
+    #[error("不正なテーブル指定: {0}")]
+    InvalidTables(String),
     /// パッチ入力が不正（範囲外の行/列・型不一致・元の文字コードで書けない文字等）。
     #[error("不正なパッチ: {0}")]
     InvalidPatch(String),

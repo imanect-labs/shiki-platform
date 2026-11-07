@@ -134,6 +134,21 @@ pub fn route_table() -> Vec<RouteDecl> {
             get(routes::me_custom_instructions::get_custom_instructions)
                 .put(routes::me_custom_instructions::put_custom_instructions)
         }),
+        // ユーザー設定（設定 → チャット／表示・本人の分だけ・#952。chat 無効では 503）。
+        r("/me/preferences", &["GET", "PUT"], Session, || {
+            get(routes::me_preferences::get_preferences)
+                .put(routes::me_preferences::put_preferences)
+        }),
+        // ホームの「今日のこと」（本人の承認待ち・ワークフロー実行の集計・今月の利用量・#965）。
+        r("/me/approvals", &["GET"], Session, || {
+            get(routes::me_today::list_pending_approvals)
+        }),
+        r("/me/workflow-runs", &["GET"], Session, || {
+            get(routes::me_today::workflow_run_digest)
+        }),
+        r("/me/usage", &["GET"], Session, || {
+            get(routes::me_today::my_usage)
+        }),
         // ChatGPT プランの接続（プレビュー環境の個人利用・#854。無効な環境では 404）。
         r("/me/chatgpt", &["GET", "DELETE"], Session, || {
             get(routes::me_chatgpt::get_chatgpt).delete(routes::me_chatgpt::disconnect_chatgpt)
@@ -471,6 +486,13 @@ pub fn route_table() -> Vec<RouteDecl> {
                     .delete(routes::chat_feedback::clear_message_feedback)
             },
         ),
+        // 回答の Web 画像の代理取得（出所に現れた URL だけ・#1044）。
+        r(
+            "/threads/{id}/messages/{message_id}/image",
+            &["GET"],
+            Session,
+            || get(routes::chat_images::get_answer_image),
+        ),
         r("/threads/{id}/messages", &["GET", "POST"], Session, || {
             get(routes::chat::get_messages).post(routes::chat::post_message)
         }),
@@ -562,6 +584,12 @@ pub fn route_table() -> Vec<RouteDecl> {
             || post(routes::file_versions::restore_version),
         ),
         r(
+            "/files/{id}/versions/{version}/revert",
+            &["POST"],
+            SessionLongRunning,
+            || post(routes::file_versions::revert_edit),
+        ),
+        r(
             "/files/{id}/versions/{version}/adopt",
             &["POST"],
             SessionLongRunning,
@@ -590,6 +618,13 @@ pub fn route_table() -> Vec<RouteDecl> {
             &["PUT"],
             Provisioner,
             || put(routes::admin::set_tenant_workflow_retention),
+        ),
+        // 監査ログの保持期間（日次で期限を過ぎた行を消す・#831）。
+        r(
+            "/admin/tenants/{tenant_id}/audit-retention",
+            &["PUT"],
+            Provisioner,
+            || put(routes::admin::set_tenant_audit_retention),
         ),
     ];
     table.extend(routes::collab::collab_route_decls());

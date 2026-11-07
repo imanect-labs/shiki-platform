@@ -18,6 +18,7 @@ import { AlertTriangle, Check, ChevronRight, Filter, ListX, Loader2, RefreshCw }
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { DateTime } from "@/components/ui/date-time";
 import { EmptyState } from "@/components/ui/empty-state";
 import {
   Popover,
@@ -154,7 +155,7 @@ const COLUMNS: ColumnDef<RunListItem>[] = [
     header: "受付日時",
     cell: ({ row }) => (
       <span className="text-xs tabular-nums">
-        {formatDateTime(row.original.createdAt)}
+        <DateTime iso={row.original.createdAt} absolute={formatDateTime} />
       </span>
     ),
   },
@@ -442,7 +443,7 @@ export function RunsTable({
                       </span>
                     </span>
                     <span className="flex items-center gap-3 text-[13px] tabular-nums">
-                      <span>{formatDateTime(run.createdAt)}</span>
+                      <DateTime iso={run.createdAt} absolute={formatDateTime} />
                       <span className="text-muted-foreground">
                         {formatDuration(run.startedAt, run.finishedAt)}
                       </span>

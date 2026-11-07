@@ -24,8 +24,9 @@ use serde_json::{json, Value};
 use sqlx::postgres::PgPoolOptions;
 use uuid::Uuid;
 use workflow_engine::nodes::ports::{
-    AgentInvokeReq, CsvPatchReq, CsvWriteReq, DataWriteOp, DataWriteReq, ExecCtx, HttpSendReq,
-    HttpSendResp, LlmInvokeReq, NodePorts, PortError, ResolvedSecretView, StorageWriteReq,
+    AgentInvokeReq, CsvPatchReq, CsvQueryReq, CsvWriteReq, DataWriteOp, DataWriteReq, ExecCtx,
+    HttpSendReq, HttpSendResp, LlmInvokeReq, NodePorts, PortError, ResolvedSecretView,
+    StorageWriteReq,
 };
 use workflow_engine::{
     CapabilityAudit, CapabilityNodeExecutor, EffectJournal, NodeContext, NodeExecutor,
@@ -97,7 +98,7 @@ impl NodePorts for DataPorts {
     async fn workflow_start(&self, _c: &ExecCtx, _n: &str, _i: &Value) -> Result<Value, PortError> {
         unreachable!()
     }
-    async fn csv_query(&self, _c: &ExecCtx, _f: Uuid, _sql: &str) -> Result<Value, PortError> {
+    async fn csv_query(&self, _c: &ExecCtx, _r: CsvQueryReq) -> Result<Value, PortError> {
         unreachable!()
     }
     async fn csv_patch(&self, _c: &ExecCtx, _r: CsvPatchReq) -> Result<Value, PortError> {
@@ -377,7 +378,7 @@ async fn script_shiki_data_query_and_out_of_scope_audit() {
 /// DB 必要: 書込は effect_journal で高々 1 回（同じステップの再実行・script のホスト呼び出しの再実行）。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn data_writes_are_applied_at_most_once() {
-    let Ok(db) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return;
     };

@@ -44,6 +44,7 @@ lindera = { version = "4.0", features = ["embed-ipadic"] }
 lindera-tantivy = { version = "4.0", features = ["embed-ipadic"] }
 
 [dev-dependencies]
+shiki-testenv.workspace = true
 # HTTP クライアント実装（parser/embedding/rerank）のローカルスタブサーバ用。
 axum.workspace = true
 tokio.workspace = true

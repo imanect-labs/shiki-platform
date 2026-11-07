@@ -53,7 +53,7 @@ impl ArtifactStore {
         known: &HashSet<Uuid>,
     ) -> Result<Vec<bool>, ArtifactError> {
         let ns = ctx.ns();
-        let trusted = |c: &Candidate| c.owner == ctx.principal.id || known.contains(&c.id);
+        let trusted = |c: &Candidate| c.owner == ctx.principal().id || known.contains(&c.id);
         let ask: Vec<authz::FgaObject> = chunk
             .iter()
             .filter(|c| !trusted(c))
@@ -93,7 +93,10 @@ impl ArtifactStore {
                 );
                 break;
             }
-            picked.checks += chunk.iter().filter(|c| c.owner != ctx.principal.id).count();
+            picked.checks += chunk
+                .iter()
+                .filter(|c| c.owner != ctx.principal().id)
+                .count();
             let flags = self.visible_flags(ctx, chunk, &none).await?;
             for (c, visible) in chunk.iter().zip(flags) {
                 if visible {

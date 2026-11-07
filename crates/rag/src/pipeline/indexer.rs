@@ -96,8 +96,12 @@ impl std::fmt::Display for IndexOutcome {
 }
 
 /// イベント由来の認可コンテキスト（actor/org/tenant）。識別子構築（`ns()`）の起点。
-fn event_context(message: &IngestMessage) -> AuthContext {
-    AuthContext::new(
+///
+/// キューのメッセージは信頼しない。tenant_id は文字ポリシーを通し、違反は恒久エラーにする。
+fn event_context(message: &IngestMessage) -> Result<AuthContext, RagError> {
+    let tenant = authz::TenantId::parse(message.tenant_id.as_str())
+        .map_err(|e| RagError::InvalidTenant(e.to_string()))?;
+    Ok(AuthContext::new(
         Principal {
             kind: authz::PrincipalKind::User,
             id: message.actor.clone(),
@@ -107,8 +111,8 @@ fn event_context(message: &IngestMessage) -> AuthContext {
             tenant_id: Some(message.tenant_id.clone()),
         },
         message.org.clone(),
-        message.tenant_id.clone(),
-    )
+        tenant,
+    ))
 }
 
 /// ジョブ本体。冪等判定 → op 分岐 → rag_ingest_job へ結果記録。
@@ -121,12 +125,12 @@ pub async fn handle(
         return Ok(IndexOutcome::Skipped("already-processed"));
     }
 
-    let ctx = event_context(message);
+    let ctx = event_context(message)?;
     // 削除中/削除済みテナントへの書き戻しを fail-closed で止める（purge と並行して
     // claim 済みジョブが rag_chunk/Qdrant/Tantivy を復活させない・SAAS.2）。
     if !deps
         .indexer_storage
-        .tenant_is_active(&ctx.tenant_id)
+        .tenant_is_active(ctx.tenant_id())
         .await?
     {
         let outcome = IndexOutcome::Skipped("tenant-deleting");
@@ -137,7 +141,7 @@ pub async fn handle(
     // フォルダの move/delete/restore は子孫ファイルの個別ジョブへ展開する。
     let is_folder = deps
         .indexer_storage
-        .node_snapshot(&ctx.tenant_id, message.node_id)
+        .node_snapshot(ctx.tenant_id(), message.node_id)
         .await?
         .is_some_and(|s| s.kind == "folder");
     let result = match (message.op.as_str(), is_folder) {
@@ -173,7 +177,7 @@ async fn index_node(
 ) -> Result<IndexOutcome, RagError> {
     let Some(snapshot) = deps
         .indexer_storage
-        .node_snapshot(&ctx.tenant_id, message.node_id)
+        .node_snapshot(ctx.tenant_id(), message.node_id)
         .await?
     else {
         return Ok(IndexOutcome::Skipped("node-missing"));
@@ -206,7 +210,7 @@ async fn index_node(
     let text = if is_text_type(&base_type) {
         let bytes = deps
             .indexer_storage
-            .read_blob(&ctx.tenant_id, &ctx.org, blob_sha256)
+            .read_blob(ctx.tenant_id(), ctx.org(), blob_sha256)
             .await?;
         text_for_worker(&bytes, &base_type, deps.config.max_parse_bytes)?
     } else {
@@ -218,7 +222,7 @@ async fn index_node(
         TextForWorker::Original => {
             source_url = deps
                 .indexer_storage
-                .presign_internal_get(&ctx.tenant_id, &ctx.org, blob_sha256)
+                .presign_internal_get(ctx.tenant_id(), ctx.org(), blob_sha256)
                 .await?;
             ParseSource::Url(&source_url)
         }
@@ -333,7 +337,7 @@ async fn fan_out_folder(
 ) -> Result<IndexOutcome, RagError> {
     let files = deps
         .indexer_storage
-        .descendant_files(&ctx.tenant_id, message.node_id)
+        .descendant_files(ctx.tenant_id(), message.node_id)
         .await?;
     if files.is_empty() {
         return Ok(IndexOutcome::Skipped("empty-folder"));
@@ -372,7 +376,7 @@ async fn retag_node(
 ) -> Result<IndexOutcome, RagError> {
     let Some(snapshot) = deps
         .indexer_storage
-        .node_snapshot(&ctx.tenant_id, message.node_id)
+        .node_snapshot(ctx.tenant_id(), message.node_id)
         .await?
     else {
         return Ok(IndexOutcome::Skipped("node-missing"));
@@ -408,7 +412,7 @@ async fn remove_node(
     // 削除→復元で node.version は必ず進むため、「現行版が新しく・生存中」なら stale。
     if let Some(snapshot) = deps
         .indexer_storage
-        .node_snapshot(&ctx.tenant_id, message.node_id)
+        .node_snapshot(ctx.tenant_id(), message.node_id)
         .await?
     {
         if !snapshot.deleted && snapshot.version > message.version {
@@ -434,7 +438,7 @@ async fn compute_authz_tags(
 ) -> Result<Vec<String>, RagError> {
     let ancestors = deps
         .indexer_storage
-        .ancestor_folder_ids(&ctx.tenant_id, node_id)
+        .ancestor_folder_ids(ctx.tenant_id(), node_id)
         .await?;
     let mut tags = Vec::with_capacity(ancestors.len() + 1);
     tags.push(ctx.ns().file(&node_id.to_string()).as_str().to_string());

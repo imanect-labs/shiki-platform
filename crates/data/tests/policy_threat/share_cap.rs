@@ -114,7 +114,7 @@ where
     };
     let fga = Arc::new(fga);
     let f = fixture(pool.clone(), authz).await;
-    let tenant = f.alice.tenant_id.clone();
+    let tenant = f.alice.tenant_id().to_string();
     let purge = DataStore::new(pool, Arc::clone(&f.authz), Arc::new(AllowRefs));
     let outcome = tokio::spawn(body(f, Arc::clone(&fga))).await;
     purge.purge_tenant(&tenant).await.expect("テナントの撤去");

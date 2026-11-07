@@ -2,7 +2,8 @@
 
 /// 業務データ（構造化データ）のテーブル一覧（Task 15.5）: 自分が使えるテーブル（owner・共有された）と作成。
 
-import { Database, Loader2, Plus, Table2, Trash2 } from "lucide-react";
+import { Database, Loader2, Plus, SquareTerminal, Table2, Trash2 } from "lucide-react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import * as React from "react";
 
@@ -195,12 +196,23 @@ export default function DataTablesPage() {
     </div>
   ) : null;
 
-  const createButton = (
-    <Button onClick={() => setCreating(true)} data-testid="create-table">
-      <Plus className="size-4" aria-hidden />
-      <span className="sm:hidden">新規作成</span>
-      <span className="hidden sm:inline">新しいテーブル</span>
-    </Button>
+  const headerActions = (
+    <>
+      {/* SQL の画面（#978）。テーブルが無いときは書く先が無いので出さない。 */}
+      {items && items.length > 0 ? (
+        <Button variant="outline" asChild data-testid="open-sql">
+          <Link href="/data/sql">
+            <SquareTerminal className="size-4" aria-hidden />
+            SQL
+          </Link>
+        </Button>
+      ) : null}
+      <Button onClick={() => setCreating(true)} data-testid="create-table">
+        <Plus className="size-4" aria-hidden />
+        <span className="sm:hidden">新規作成</span>
+        <span className="hidden sm:inline">新しいテーブル</span>
+      </Button>
+    </>
   );
 
   return (
@@ -208,7 +220,7 @@ export default function DataTablesPage() {
       title="データ"
       description="業務データのテーブル。行と列は開いた人の権限で絞られます。"
       className="max-w-4xl"
-      actions={createButton}
+      actions={headerActions}
     >
       {loadError ? (
         <div className="flex flex-col items-center gap-3 py-16 text-center" data-testid="data-table-list-error">

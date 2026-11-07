@@ -172,7 +172,7 @@ impl VectorStore for FakeVectorStore {
         for p in points {
             store.retain(|(_, q)| q.chunk_id != p.chunk_id);
             store.push((
-                ctx.tenant_id.clone(),
+                ctx.tenant_id().to_owned(),
                 ChunkPoint {
                     chunk_id: p.chunk_id,
                     node_id: p.node_id,
@@ -188,7 +188,7 @@ impl VectorStore for FakeVectorStore {
         self.points
             .lock()
             .unwrap()
-            .retain(|(t, p)| !(t == &ctx.tenant_id && p.node_id == node_id));
+            .retain(|(t, p)| !(t == ctx.tenant_id() && p.node_id == node_id));
         Ok(())
     }
     async fn delete_stale_versions(
@@ -198,7 +198,7 @@ impl VectorStore for FakeVectorStore {
         keep_version: i64,
     ) -> Result<(), RagError> {
         self.points.lock().unwrap().retain(|(t, p)| {
-            !(t == &ctx.tenant_id && p.node_id == node_id && p.version != keep_version)
+            !(t == ctx.tenant_id() && p.node_id == node_id && p.version != keep_version)
         });
         Ok(())
     }
@@ -209,7 +209,7 @@ impl VectorStore for FakeVectorStore {
         tags: &[String],
     ) -> Result<(), RagError> {
         for (t, p) in self.points.lock().unwrap().iter_mut() {
-            if t == &ctx.tenant_id && p.node_id == node_id {
+            if t == ctx.tenant_id() && p.node_id == node_id {
                 p.authz_tags = tags.to_vec();
             }
         }
@@ -224,7 +224,7 @@ impl VectorStore for FakeVectorStore {
         let mut hits: Vec<ScoredChunk> = store
             .iter()
             // tenant 無条件 AND（本物と同じ意味論）。
-            .filter(|(t, _)| t == &ctx.tenant_id)
+            .filter(|(t, _)| t == ctx.tenant_id())
             .filter(|(_, p)| match query.prefilter {
                 PreFilter::TenantOnly => true,
                 PreFilter::Tags(tags) => p.authz_tags.iter().any(|t| tags.contains(t)),
@@ -349,13 +349,13 @@ fn test_ctx(tenant: &str) -> AuthContext {
             tenant_id: Some(tenant.into()),
         },
         "acme".into(),
-        tenant.into(),
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 
 async fn setup(parser: FakeParser) -> Option<TestEnv> {
     let serial = serial_lock().lock().await;
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return None;
     };
@@ -406,10 +406,10 @@ async fn create_file_with_event(env: &TestEnv, parent: Option<Uuid>, name: &str)
         "insert into blob (tenant_id, org, sha256, size_bytes, content_type, object_key, refcount) \
          values ($1, $2, $3, 10, 'text/plain', $4, 1)",
     )
-    .bind(&ctx.tenant_id)
-    .bind(&ctx.org)
+    .bind(ctx.tenant_id())
+    .bind(ctx.org())
     .bind(&sha)
-    .bind(format!("{}/{}/{}", ctx.tenant_id, ctx.org, sha))
+    .bind(format!("{}/{}/{}", ctx.tenant_id(), ctx.org(), sha))
     .execute(&mut *tx)
     .await
     .unwrap();
@@ -419,12 +419,12 @@ async fn create_file_with_event(env: &TestEnv, parent: Option<Uuid>, name: &str)
                            content_type, created_by, updated_by) \
          values ($1, $2, 'file', $3, $4, $5, 10, 'text/plain', $6, $6) returning id",
     )
-    .bind(&ctx.org)
-    .bind(&ctx.tenant_id)
+    .bind(ctx.org())
+    .bind(ctx.tenant_id())
     .bind(name)
     .bind(parent)
     .bind(&sha)
-    .bind(&ctx.principal.id)
+    .bind(&ctx.principal().id)
     .fetch_one(&mut *tx)
     .await
     .unwrap();
@@ -433,8 +433,8 @@ async fn create_file_with_event(env: &TestEnv, parent: Option<Uuid>, name: &str)
         "insert into node_closure (org, tenant_id, ancestor, descendant, depth) \
          values ($1, $2, $3, $3, 0)",
     )
-    .bind(&ctx.org)
-    .bind(&ctx.tenant_id)
+    .bind(ctx.org())
+    .bind(ctx.tenant_id())
     .bind(node_id)
     .execute(&mut *tx)
     .await
@@ -444,8 +444,8 @@ async fn create_file_with_event(env: &TestEnv, parent: Option<Uuid>, name: &str)
             "insert into node_closure (org, tenant_id, ancestor, descendant, depth) \
              values ($1, $2, $3, $4, 1)",
         )
-        .bind(&ctx.org)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.org())
+        .bind(ctx.tenant_id())
         .bind(p)
         .bind(node_id)
         .execute(&mut *tx)
@@ -478,10 +478,10 @@ async fn create_folder(env: &TestEnv, name: &str) -> Uuid {
         "insert into node (org, tenant_id, kind, name, created_by, updated_by) \
          values ($1, $2, 'folder', $3, $4, $4) returning id",
     )
-    .bind(&ctx.org)
-    .bind(&ctx.tenant_id)
+    .bind(ctx.org())
+    .bind(ctx.tenant_id())
     .bind(name)
-    .bind(&ctx.principal.id)
+    .bind(&ctx.principal().id)
     .fetch_one(&mut *tx)
     .await
     .unwrap();
@@ -489,8 +489,8 @@ async fn create_folder(env: &TestEnv, name: &str) -> Uuid {
         "insert into node_closure (org, tenant_id, ancestor, descendant, depth) \
          values ($1, $2, $3, $3, 0)",
     )
-    .bind(&ctx.org)
-    .bind(&ctx.tenant_id)
+    .bind(ctx.org())
+    .bind(ctx.tenant_id())
     .bind(id)
     .execute(&mut *tx)
     .await
@@ -504,7 +504,7 @@ async fn drain_pipeline(env: &TestEnv) {
     for _ in 0..20 {
         // バックオフ待ちのリトライも即時消費し、drain を決定的にする（テスト専用・自分のテナントのジョブだけ）。
         make_jobs_visible(env).await;
-        relay::relay_tenant_once(&env.pool, &env.deps.config, &env.ctx.tenant_id)
+        relay::relay_tenant_once(&env.pool, &env.deps.config, env.ctx.tenant_id())
             .await
             .unwrap();
         let n = consumer::consume_once(&env.deps).await.unwrap();
@@ -521,7 +521,7 @@ async fn drain_pipeline(env: &TestEnv) {
 async fn make_jobs_visible(env: &TestEnv) {
     sqlx::query("update job_queue set visible_at = now() where queue = $1 and tenant_id = $2")
         .bind(RAG_INGEST_QUEUE)
-        .bind(&env.ctx.tenant_id)
+        .bind(env.ctx.tenant_id())
         .execute(&env.pool)
         .await
         .unwrap();
@@ -531,7 +531,7 @@ async fn make_jobs_visible(env: &TestEnv) {
 async fn queued_jobs(env: &TestEnv) -> i64 {
     sqlx::query_scalar("select count(*) from job_queue where queue = $1 and tenant_id = $2")
         .bind(RAG_INGEST_QUEUE)
-        .bind(&env.ctx.tenant_id)
+        .bind(env.ctx.tenant_id())
         .fetch_one(&env.pool)
         .await
         .unwrap()
@@ -542,7 +542,7 @@ async fn job_status(env: &TestEnv, node: Uuid, op: &str) -> Option<(String, Opti
         "select status, last_error from rag_ingest_job \
          where tenant_id = $1 and node_id = $2 and op = $3",
     )
-    .bind(&env.ctx.tenant_id)
+    .bind(env.ctx.tenant_id())
     .bind(node)
     .bind(op)
     .fetch_optional(&env.pool)
@@ -576,7 +576,7 @@ async fn upload_event_flows_to_all_indexes() {
         "select kind, authz_tags from rag_chunk where tenant_id = $1 and node_id = $2 \
          order by ordinal",
     )
-    .bind(&env.ctx.tenant_id)
+    .bind(env.ctx.tenant_id())
     .bind(node)
     .fetch_all(&env.pool)
     .await
@@ -643,7 +643,7 @@ async fn duplicate_events_do_not_double_ingest() {
 
     let count: i64 =
         sqlx::query_scalar("select count(*) from rag_chunk where tenant_id = $1 and node_id = $2")
-            .bind(&env.ctx.tenant_id)
+            .bind(env.ctx.tenant_id())
             .bind(node)
             .fetch_one(&env.pool)
             .await
@@ -686,7 +686,7 @@ async fn permanent_parse_failure_goes_straight_to_dlq_and_requeue_recovers() {
         .unwrap();
     let dead_job = dead
         .iter()
-        .find(|d| d.tenant_id == env.ctx.tenant_id)
+        .find(|d| d.tenant_id == env.ctx.tenant_id())
         .expect("DLQ に入る");
 
     // 再実行（requeue）: 今度も失敗するが「DLQ から再投入できる」経路を検証。
@@ -711,7 +711,7 @@ async fn transient_failures_retry_until_attempts_exhausted() {
     };
     let node = create_file_with_event(&env, None, "flaky.txt").await;
 
-    relay::relay_tenant_once(&env.pool, &env.deps.config, &env.ctx.tenant_id)
+    relay::relay_tenant_once(&env.pool, &env.deps.config, env.ctx.tenant_id())
         .await
         .unwrap();
     // 1 回目: 失敗 → バックオフ再配信待ち。バックオフを 0 に潰して即再試行できるようにする。
@@ -726,7 +726,7 @@ async fn transient_failures_retry_until_attempts_exhausted() {
     let dead = jobq::dead_jobs(&mut conn, RAG_INGEST_QUEUE, 10)
         .await
         .unwrap();
-    assert!(dead.iter().any(|d| d.tenant_id == env.ctx.tenant_id));
+    assert!(dead.iter().any(|d| d.tenant_id == env.ctx.tenant_id()));
 }
 
 #[tokio::test]
@@ -767,8 +767,8 @@ async fn move_reevaluates_tags_and_delete_removes_everywhere() {
         "insert into node_closure (org, tenant_id, ancestor, descendant, depth) \
          values ($1, $2, $3, $4, 1)",
     )
-    .bind(&env.ctx.org)
-    .bind(&env.ctx.tenant_id)
+    .bind(env.ctx.org())
+    .bind(env.ctx.tenant_id())
     .bind(folder_new)
     .bind(node)
     .execute(&mut *tx)
@@ -967,7 +967,7 @@ async fn purge_tenant(env: &TestEnv) {
         "delete from blob where tenant_id = $1",
     ] {
         sqlx::query(sql)
-            .bind(&env.ctx.tenant_id)
+            .bind(env.ctx.tenant_id())
             .execute(&env.pool)
             .await
             .unwrap();
@@ -1015,8 +1015,8 @@ async fn folder_move_fans_out_to_descendant_files() {
         "insert into node_closure (org, tenant_id, ancestor, descendant, depth) \
          values ($1, $2, $3, $4, 1), ($1, $2, $3, $5, 2)",
     )
-    .bind(&env.ctx.org)
-    .bind(&env.ctx.tenant_id)
+    .bind(env.ctx.org())
+    .bind(env.ctx.tenant_id())
     .bind(folder_b)
     .bind(folder_a)
     .bind(node)
@@ -1130,7 +1130,7 @@ async fn system_area_writes_are_not_indexed() {
         .unwrap();
 
     // 本番の relay（`relay_once`）と同じ本体を、自分のテナントに絞って流す。
-    relay::relay_tenant_once(&env.pool, &env.deps.config, &env.ctx.tenant_id)
+    relay::relay_tenant_once(&env.pool, &env.deps.config, env.ctx.tenant_id())
         .await
         .unwrap();
 

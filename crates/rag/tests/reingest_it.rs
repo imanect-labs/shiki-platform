@@ -178,7 +178,11 @@ async fn setup() -> Option<Env> {
     let carol = test_ctx(&tenant, "carol");
     for u in [&alice, &bob, &carol] {
         authz
-            .write_tuple(&u.subject(), Relation::Member, &u.ns().organization(&u.org))
+            .write_tuple(
+                &u.subject(),
+                Relation::Member,
+                &u.ns().organization(u.org()),
+            )
             .await
             .unwrap();
     }
@@ -345,7 +349,7 @@ impl Env {
         sqlx::query_scalar(
             "select count(*) from audit_log where tenant_id = $1 and action = $2 and decision = $3",
         )
-        .bind(&self.alice.tenant_id)
+        .bind(self.alice.tenant_id())
         .bind(action)
         .bind(decision)
         .fetch_one(&self.pool)
@@ -355,14 +359,14 @@ impl Env {
 
     /// テナントの行・タプル・オブジェクトと、テストのストアを消す。
     async fn cleanup(&self) {
-        let tenant = self.alice.tenant_id.clone();
+        let tenant = self.alice.tenant_id().to_string();
         sqlx::query("delete from job_queue where tenant_id = $1")
             .bind(&tenant)
             .execute(&self.pool)
             .await
             .unwrap();
         self.storage
-            .purge_tenant(&tenant, &self.alice.org, "reingest-it")
+            .purge_tenant(&tenant, self.alice.org(), "reingest-it")
             .await
             .unwrap();
         rag::RagAdmin::new(self.pool.clone(), None, None)
@@ -658,7 +662,7 @@ async fn backfill_queues_files_without_a_record_little_by_little() {
 
         // 組織の待ち行列を、上限の 1 件手前まで埋める（ほかの取り込みが溜まっている状態）。同じテナントのほかの組織の
         // 待ちは、上限を超えるほどあっても数えない（ほかの組織の量を見せず、この組織のまとめての取り込みを止めない）。
-        for (org, n) in [(env.alice.org.as_str(), MAX_WAITING - 1), ("another-org", MAX_WAITING * 2)] {
+        for (org, n) in [(env.alice.org(), MAX_WAITING - 1), ("another-org", MAX_WAITING * 2)] {
             sqlx::query(
                 "insert into job_queue (queue, tenant_id, payload, visible_at, fair_seq) \
                  select $1, $2, jsonb_build_object('node_id', gen_random_uuid()::text, 'op', 'create', 'org', $4::text), \
@@ -666,7 +670,7 @@ async fn backfill_queues_files_without_a_record_little_by_little() {
                  from generate_series(1, $3)",
             )
             .bind(RAG_INGEST_QUEUE)
-            .bind(&env.alice.tenant_id)
+            .bind(env.alice.tenant_id())
             .bind(n as i32)
             .bind(org)
             .execute(&env.pool)
@@ -680,7 +684,7 @@ async fn backfill_queues_files_without_a_record_little_by_little() {
         let step2 = backfill::step_once(&env.deps).await.unwrap();
         let mid = env.search.ingest_status(&env.alice).await.unwrap();
         sqlx::query("delete from job_queue where tenant_id = $1 and visible_at > now() + interval '1 hour'")
-            .bind(&env.alice.tenant_id)
+            .bind(env.alice.tenant_id())
             .execute(&env.pool)
             .await
             .unwrap();
@@ -692,7 +696,7 @@ async fn backfill_queues_files_without_a_record_little_by_little() {
         let reindexed: Vec<Uuid> = sqlx::query_scalar(
             "select distinct node_id from rag_ingest_job where tenant_id = $1 and op = 'reindex'",
         )
-        .bind(&env.alice.tenant_id)
+        .bind(env.alice.tenant_id())
         .fetch_all(&env.pool)
         .await
         .unwrap();

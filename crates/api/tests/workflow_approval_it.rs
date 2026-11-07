@@ -253,6 +253,7 @@ fn config(db_url: &str, tenant: &str) -> AppConfig {
         database: DatabaseConfig {
             url: db_url.into(),
             max_connections: 5,
+            migrate_url: None,
         },
         auth: AuthConfig {
             issuer: "http://localhost/realms/shiki".into(),
@@ -291,6 +292,7 @@ fn config(db_url: &str, tenant: &str) -> AppConfig {
             s3: None,
             max_upload_size_bytes: 5 * 1024 * 1024 * 1024,
             upload_gc: api::config::UploadGcConfig::default(),
+            audit_retention: api::config::AuditRetentionConfig::default(),
         },
         vector: VectorConfig {
             backend: VectorStoreBackend::Qdrant,
@@ -326,7 +328,11 @@ fn principal(id: &str) -> Principal {
 }
 
 fn ctx(id: &str, tenant: &str) -> AuthContext {
-    AuthContext::new(principal(id), "acme".into(), tenant.into())
+    AuthContext::new(
+        principal(id),
+        "acme".into(),
+        authz::TenantId::parse(tenant).unwrap(),
+    )
 }
 
 struct Env {
@@ -645,7 +651,7 @@ fn build_app(
 }
 
 fn req(method: &str, user: &AuthContext, path: &str, body: Body) -> Request<Body> {
-    let u = &user.principal.id;
+    let u = &user.principal().id;
     Request::builder()
         .method(method)
         .uri(path)
@@ -653,7 +659,7 @@ fn req(method: &str, user: &AuthContext, path: &str, body: Body) -> Request<Body
             COOKIE,
             format!(
                 "shiki_session=sid-{u}.{}; shiki_csrf=csrf-{u}",
-                user.tenant_id
+                user.tenant_id()
             ),
         )
         .header("x-csrf-token", format!("csrf-{u}"))
@@ -913,7 +919,7 @@ impl Env {
             .create_record(
                 &self.alice,
                 table,
-                json!({ "title": title, "amount": 12000, "approver": approver.principal.id, "status": "draft" }),
+                json!({ "title": title, "amount": 12000, "approver": approver.principal().id, "status": "draft" }),
                 None,
             )
             .await
@@ -1210,7 +1216,7 @@ async fn approvals_are_decided_by_the_approver_in_the_inbox() {
     );
     let out = out.unwrap();
     assert_eq!(out["decision"], "approve");
-    assert_eq!(out["decided_by"], json!(env.bob.principal.id));
+    assert_eq!(out["decided_by"], json!(env.bob.principal().id));
     assert_eq!(out["comment"], "規程どおりです");
     assert_eq!(env.step(run, "done").await.0, "succeeded");
     assert_eq!(env.step(run, "ng").await.0, "skipped");
@@ -1240,7 +1246,7 @@ async fn approvals_are_decided_by_the_approver_in_the_inbox() {
         (st.as_str(), ports),
         ("succeeded", vec!["approved".to_string()])
     );
-    assert_eq!(out.unwrap()["decided_by"], json!(env.dave.principal.id));
+    assert_eq!(out.unwrap()["decided_by"], json!(env.dave.principal().id));
     assert!(env.item_for(&env.carol, others).await.is_none());
     let resolved: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM audit_log WHERE tenant_id = $1 AND action = 'workflow.approval.resolve' \
@@ -1285,7 +1291,7 @@ async fn approvers_only_choose_the_inbox_and_the_state_flow_decides_who_approves
             &env.alice,
             table,
             record,
-            json!({ "approver": env.alice.principal.id }),
+            json!({ "approver": env.alice.principal().id }),
             row.rev,
             None,
         )
@@ -1301,7 +1307,7 @@ async fn approvers_only_choose_the_inbox_and_the_state_flow_decides_who_approves
         (st.as_str(), ports),
         ("succeeded", vec!["approved".to_string()])
     );
-    assert_eq!(out.unwrap()["decided_by"], json!(env.alice.principal.id));
+    assert_eq!(out.unwrap()["decided_by"], json!(env.alice.principal().id));
     env.cleanup().await;
 }
 
@@ -1416,7 +1422,7 @@ async fn reconcile_settles_transitions_that_raced_the_suspend() {
         ("succeeded", vec!["approved".to_string()])
     );
     let out = out.unwrap();
-    assert_eq!(out["decided_by"], json!(env.bob.principal.id));
+    assert_eq!(out["decided_by"], json!(env.bob.principal().id));
     assert_eq!(out["rev"], row.rev + 1);
     assert_eq!(env.step(run, "done").await.0, "succeeded");
     env.cleanup().await;
@@ -2007,7 +2013,7 @@ impl Env {
         )
         .bind(&self.tenant)
         .bind(approval)
-        .bind(&user.principal.id)
+        .bind(&user.principal().id)
         .fetch_all(&self.pool)
         .await
         .unwrap();
@@ -2075,7 +2081,7 @@ async fn decisions_refused_before_the_transition_are_audited() {
     )
     .bind(&env.tenant)
     .bind(other_id)
-    .bind(&env.bob.principal.id)
+    .bind(&env.bob.principal().id)
     .execute(&env.pool)
     .await
     .unwrap();
@@ -2235,7 +2241,7 @@ impl Env {
         )
         .bind(&self.tenant)
         .bind(run)
-        .bind(&user.principal.id)
+        .bind(&user.principal().id)
         .execute(&self.pool)
         .await
         .unwrap();
@@ -2765,7 +2771,7 @@ impl Env {
         )
         .bind(&self.tenant)
         .bind(id)
-        .bind(&user.principal.id)
+        .bind(&user.principal().id)
         .execute(&self.pool)
         .await
         .unwrap();
@@ -2779,7 +2785,7 @@ impl Env {
                AND object_id = $3 AND decision = 'deny'",
         )
         .bind(&self.tenant)
-        .bind(&user.principal.id)
+        .bind(&user.principal().id)
         .bind(table.to_string())
         .fetch_one(&self.pool)
         .await
@@ -2818,7 +2824,7 @@ async fn manual_runs_find_the_row_of_the_person_who_ran_them() {
         .await
         .unwrap()
         .id;
-    let id = |c: &AuthContext| c.principal.id.clone();
+    let id = |c: &AuthContext| c.principal().id.clone();
     for (who, boss) in [(&env.alice, &env.bob), (&env.dave, &env.carol)] {
         env.data
             .create_record(
@@ -3223,7 +3229,7 @@ async fn inbox_reads_do_not_audit_tables_the_user_cannot_see() {
     )
     .bind(&env.tenant)
     .bind(hidden_approval)
-    .bind(&env.bob.principal.id)
+    .bind(&env.bob.principal().id)
     .execute(&env.pool)
     .await
     .unwrap();
@@ -3378,7 +3384,11 @@ async fn cancelled_decisions_neither_lose_nor_strand_their_comment() {
     assert_eq!(out.unwrap()["comment"], "1 回目");
     assert_eq!(
         env.comment_rows(&id).await,
-        vec![(rev + 1, env.bob.principal.id.clone(), "1 回目".to_string())]
+        vec![(
+            rev + 1,
+            env.bob.principal().id.clone(),
+            "1 回目".to_string()
+        )]
     );
 
     // 2 件目: 別の人（経理の carol）が同じ rev に置き残したコメントがあっても、bob はコメント付きで判断できる。
@@ -3395,7 +3405,7 @@ async fn cancelled_decisions_neither_lose_nor_strand_their_comment() {
     .bind(&env.tenant)
     .bind(Uuid::parse_str(&id).unwrap())
     .bind(rev + 1)
-    .bind(&env.carol.principal.id)
+    .bind(&env.carol.principal().id)
     .execute(&env.pool)
     .await
     .unwrap();
@@ -3527,7 +3537,7 @@ async fn decisions_racing_the_deadline_keep_the_row_and_the_run_in_step() {
         "行は承認へ進んだので、run も承認の出口へ"
     );
     let out = out.unwrap();
-    assert_eq!(out["decided_by"], json!(env.bob.principal.id));
+    assert_eq!(out["decided_by"], json!(env.bob.principal().id));
     assert_eq!(out["comment"], "期限の直前");
     assert_eq!(env.approval_of(run).await.1, "approved");
     assert_eq!(env.step(run, "late").await.0, "skipped");
@@ -4073,7 +4083,7 @@ async fn count_without_listing_roles(env: Arc<Env>) {
         .create_record(
             &env.alice,
             table,
-            json!({ "title": "出張旅費", "amount": 12000, "approver": env.bob.principal.id,
+            json!({ "title": "出張旅費", "amount": 12000, "approver": env.bob.principal().id,
                     "status": "draft" }),
             None,
         )
@@ -4096,7 +4106,7 @@ async fn count_without_listing_roles(env: Arc<Env>) {
             count,
             json!({ "count": want, "more": false }),
             "{}",
-            who.principal.id
+            who.principal().id
         );
         let (st, body) = env.get(who, "/approvals").await;
         assert_eq!(st, StatusCode::OK, "{body}");
@@ -4104,13 +4114,13 @@ async fn count_without_listing_roles(env: Arc<Env>) {
             body["items"].as_array().map(Vec::len),
             Some(want),
             "一覧と同じ数: {}",
-            who.principal.id
+            who.principal().id
         );
         assert_eq!(
             env.fga_calls.snapshot().0,
             listed,
             "所属ロールの実効集合を引かない: {}",
-            who.principal.id
+            who.principal().id
         );
     }
 }

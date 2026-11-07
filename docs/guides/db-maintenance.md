@@ -77,23 +77,41 @@ CREATE INDEX CONCURRENTLY IF NOT EXISTS thread_owner_pinned_idx
 
 CREATE INDEX CONCURRENTLY IF NOT EXISTS generation_run_thread_idx
     ON generation_run (tenant_id, thread_id, created_at);
+
+-- #965 / migration 0108: ホームの「今日のこと」の承認待ちを actor で引く（承認待ちだけの部分索引）
+CREATE INDEX CONCURRENTLY IF NOT EXISTS generation_run_waiting_actor_idx
+    ON generation_run (tenant_id, actor)
+    WHERE status = 'waiting_approval';
 ```
 
 停止時間を取れる環境なら、事前作成せずにそのまま migration に任せてもよい（通常の
 `CREATE INDEX` なので、構築の間だけ対象表への書込が止まる）。
 
-**ドライブの `node` の索引（migration 0125 `node_shared_scan_idx`・0128 `node_name_scan_idx`・BUG-162・BUG-187）は、
-まだ事前作成できない。** どちらも `IF NOT EXISTS` の無い `create index` なので、先に同じ名前で作ると migration が
-失敗する。構築の間は `node` への書込（ドライブのアップロード・保存・移動・削除・名前の変更）が待たされるので、`node` が
-大きな環境では停止時間を取って当てる（読むのは止まらない）。事前作成できるようにするには、main に載せる前に
-2 つの migration を `create index if not exists` に直してから、下と同じ手順に足す（提案）。
+**ドライブの `node` の索引（migration 0134 `node_shared_scan_idx`・0137 `node_name_scan_idx` と
+`node_name_scan_desc_idx`・BUG-162・BUG-187）** も、上と同じ手順で事前に作れる（どれも `create index if not exists`）。
+構築の間は `node` への書込（ドライブのアップロード・保存・移動・削除・名前の変更）が待たされるので、`node` が大きな
+環境では事前に作るか、停止時間を取って当てる（読むのは止まらない）。
 
 ```sql
--- migration 0125 / 0128 が `if not exists` になってから使う。
+-- BUG-162 / migration 0134: ドライブの「共有されたもの」を更新の順に引く
 CREATE INDEX CONCURRENTLY IF NOT EXISTS node_shared_scan_idx
     ON node (tenant_id, org, updated_at, id) WHERE deleted_at IS NULL;
+
+-- BUG-187 / migration 0137: 名前の検索の候補を「フォルダー優先 → 名前の自然順 → id」に引く（昇順・降順で 1 本ずつ・#1040）
 CREATE INDEX CONCURRENTLY IF NOT EXISTS node_name_scan_idx
-    ON node (tenant_id, org, name, id) WHERE deleted_at IS NULL;
+    ON node (tenant_id, org, (kind <> 'folder'), (name COLLATE node_name_natural), id) WHERE deleted_at IS NULL;
+CREATE INDEX CONCURRENTLY IF NOT EXISTS node_name_scan_desc_idx
+    ON node (tenant_id, org, (kind = 'folder'), (name COLLATE node_name_natural), id) WHERE deleted_at IS NULL;
+```
+
+`node_name_scan_idx` と `node_name_scan_desc_idx` は ICU の照合（`node_name_natural`・migration 0110）で並べる。
+Postgres の ICU の版が上がり、照合の版の違いを警告したら、この 2 本を作り直してから版を記録し直す（並びが比較と
+ずれたままだと、名前の検索の続きで欠けることがある。見えないものが出ることはない）。
+
+```sql
+REINDEX INDEX CONCURRENTLY node_name_scan_idx;
+REINDEX INDEX CONCURRENTLY node_name_scan_desc_idx;
+ALTER COLLATION node_name_natural REFRESH VERSION;
 ```
 
 途中で失敗すると**無効な index が残り、プランナに使われないまま書込コストだけ増える**。
@@ -178,3 +196,40 @@ SELECT id, attempts, enqueued_at, last_error FROM job_queue_dead WHERE queue = '
 `truncated`）に出る。`truncated=true` が続く場合はバッチ上限に張り付いている＝流入が削除を
 上回っているので、保持日数か `MAX_BATCHES`（`crates/workflow-engine/src/run/store/gc.rs`）を
 見直す。
+
+---
+
+## 4. DB ロール: 実行時ロールと migration の所有者を分ける（#1030）
+
+shiki-server は**実行時**と**migration** で別の接続を使う。superuser とテーブル所有者は RLS を迂回するので、
+実行時は DML だけを持つ非 superuser のロールで接続する（RLS 段階導入の第 1 段）。
+
+| 設定 | 接続するロール | 権限 |
+| --- | --- | --- |
+| `database.url`（`SHIKI__DATABASE__URL`） | `shiki_runtime` のメンバ（compose では `shiki_app`） | 全テーブルの SELECT / INSERT / UPDATE / DELETE・sequence の利用・`shiki_analyze` の実行 |
+| `database.migrate_url`（`SHIKI__DATABASE__MIGRATE_URL`） | テーブルの所有者（migration を流すロール） | DDL |
+
+- `migrate_url` が未設定なら、従来どおり `url` で migration を流す（単一ロールの構成）。`url` を実行時ロールに
+  替えて `migrate_url` を付け忘れると、起動時の migration が権限不足で止まる（fail-fast）。
+- `shiki_runtime`（NOLOGIN のグループロール）は migration 0113 が作る。migration の実行ロールに CREATEROLE が
+  無い環境（マネージド Postgres 等）では、先に運用が作っておく:
+  ```sql
+  CREATE ROLE shiki_runtime NOLOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
+  ```
+- ログイン用のロールは運用が作り、`shiki_runtime` のメンバにする（パスワードを migration に書かないため）:
+  ```sql
+  CREATE ROLE shiki_app LOGIN PASSWORD '...' IN ROLE shiki_runtime;
+  GRANT CONNECT ON DATABASE shiki TO shiki_app;
+  ```
+  compose では `postgres-roles` サービス（`deploy/compose/postgres/runtime-role.sh`）が起動のたびに冪等に作る。
+- **migration の所有者ロールを替えたとき**は、新しい所有者で既定権限を付け直す（既定権限は作ったロールごとに効く。
+  付け忘れると、以後の migration で増えた表に実行時ロールが触れず、初回アクセスで 42501 になる）:
+  ```sql
+  ALTER DEFAULT PRIVILEGES FOR ROLE <新しい所有者> IN SCHEMA public
+      GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO shiki_runtime;
+  ALTER DEFAULT PRIVILEGES FOR ROLE <新しい所有者> IN SCHEMA public
+      GRANT USAGE, SELECT, UPDATE ON SEQUENCES TO shiki_runtime;
+  ```
+- 実行時の ANALYZE（構造化データのパーティションの統計・#986）は、PG16 ではテーブル所有者にしかできないため、
+  `data_*` に絞った SECURITY DEFINER 関数 `shiki_analyze(regclass, skip_locked)` を経由する。
+- 実行時ロールは `_sqlx_migrations`（migration の台帳）に触れない。

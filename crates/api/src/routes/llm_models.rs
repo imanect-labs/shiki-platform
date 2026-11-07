@@ -249,7 +249,7 @@ mod tests {
             serde_json::json!({
                 "version": 1,
                 "client_id": "oaiapp_1",
-                "owner": {"tenant_id": ctx.tenant_id, "org": ctx.org, "principal_id": ctx.principal.id},
+                "owner": {"tenant_id": ctx.tenant_id(), "org": ctx.org(), "principal_id": ctx.principal().id},
                 "tokens": {
                     "access_token": "at",
                     "refresh_token": "rt",
@@ -335,7 +335,7 @@ mod tests {
                 tenant_id: Some(tenant.clone()),
             },
             "acme".into(),
-            tenant,
+            authz::TenantId::parse(tenant).unwrap(),
         );
         let dir = std::env::temp_dir().join(format!("shiki-llmm-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -390,7 +390,7 @@ mod tests {
         assert_eq!(ids(&decide), ["decide"]);
         for table in ["tenant_llm_model", "tenant_llm_settings"] {
             sqlx::query(&format!("DELETE FROM {table} WHERE tenant_id = $1"))
-                .bind(&owner.tenant_id)
+                .bind(owner.tenant_id())
                 .execute(&pool)
                 .await
                 .unwrap();

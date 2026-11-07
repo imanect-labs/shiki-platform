@@ -54,7 +54,7 @@ impl DataStore {
         let sql = compile_read_predicate(
             &table.schema,
             &m,
-            &ctx.principal.id,
+            &ctx.principal().id,
             RECORD_ALIAS,
             &mut binds,
         )?;
@@ -87,7 +87,7 @@ impl DataStore {
             &pred.binds,
         )
         .bind(id);
-        q.fetch_optional(self.pools.for_tenant(&ctx.tenant_id))
+        q.fetch_optional(self.pools.for_tenant(ctx.tenant_id()))
             .await
             .map_err(map_db)
     }
@@ -123,7 +123,7 @@ impl DataStore {
             &pred.binds,
         )
         .bind(ids.to_vec());
-        q.fetch_all(self.pools.for_tenant(&ctx.tenant_id))
+        q.fetch_all(self.pools.for_tenant(ctx.tenant_id()))
             .await
             .map_err(map_db)
     }
@@ -160,14 +160,14 @@ impl DataStore {
         );
         let mut q =
             sqlx::query_as::<Postgres, (Uuid, i64, sqlx::types::Json<serde_json::Value>)>(&sql)
-                .bind(&ctx.tenant_id)
+                .bind(ctx.tenant_id())
                 .bind(table.id)
                 .bind(table.keys.tenant_int)
                 .bind(table.keys.table_int);
         q = crate::query::sql::bind_query_as(q, &pred.binds);
         q.bind(keys.to_vec())
             .bind(ids.to_vec())
-            .fetch_all(self.pools.for_tenant(&ctx.tenant_id))
+            .fetch_all(self.pools.for_tenant(ctx.tenant_id()))
             .await
             .map_err(map_db)
     }
@@ -219,7 +219,7 @@ impl DataStore {
             actor,
             &table.schema,
             &m,
-            &ctx.principal.id,
+            &ctx.principal().id,
             RECORD_ALIAS,
             &mut binds,
         )?;
@@ -230,7 +230,7 @@ impl DataStore {
                AND r.tenant_int = $3 AND r.table_int = $4 AND ({pred}) AND r.id = ${id_ph})"
         );
         let mut q = sqlx::query_scalar::<Postgres, bool>(&sql)
-            .bind(&ctx.tenant_id)
+            .bind(ctx.tenant_id())
             .bind(table.id)
             .bind(table.keys.tenant_int)
             .bind(table.keys.table_int);
@@ -238,7 +238,7 @@ impl DataStore {
             q = push_bind_scalar(q, b);
         }
         q.bind(record_id)
-            .fetch_one(self.pools.for_tenant(&ctx.tenant_id))
+            .fetch_one(self.pools.for_tenant(ctx.tenant_id()))
             .await
             .map_err(map_db)
     }
@@ -264,7 +264,7 @@ impl DataStore {
             write_expr,
             &table.schema,
             &m,
-            &ctx.principal.id,
+            &ctx.principal().id,
             RECORD_ALIAS,
             &mut binds,
         )?;
@@ -275,7 +275,7 @@ impl DataStore {
                AND r.tenant_int = $3 AND r.table_int = $4 AND ({pred}) AND r.id = ${id_ph})"
         );
         let mut q = sqlx::query_scalar::<Postgres, bool>(&sql)
-            .bind(&ctx.tenant_id)
+            .bind(ctx.tenant_id())
             .bind(table.id)
             .bind(table.keys.tenant_int)
             .bind(table.keys.table_int);
@@ -284,7 +284,7 @@ impl DataStore {
         }
         let by_policy = q
             .bind(record_id)
-            .fetch_one(self.pools.for_tenant(&ctx.tenant_id))
+            .fetch_one(self.pools.for_tenant(ctx.tenant_id()))
             .await
             .map_err(map_db)?;
         if by_policy {
@@ -338,7 +338,7 @@ fn bind_all<'q>(
     binds: &[Bind],
 ) -> QueryAs<'q, Postgres, RecordRow, PgArguments> {
     let mut q = q
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(table.id)
         .bind(table.keys.tenant_int)
         .bind(table.keys.table_int);

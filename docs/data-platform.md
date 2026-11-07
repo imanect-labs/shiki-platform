@@ -1757,7 +1757,7 @@ absent  ──promote──▶  building  ──収束──▶  active  ──d
 | **ワークフローのトリガ・wait** | ❌ 語彙予約のみ | **データ変更トリガ（`data.record.created` / `data.record.updated` / `data.transition`・`scope: { table }`）と wait(event) のデータ版**（GAP-07）。発火・起床の判定と run 入力は §9.2 の `change_event_view`（委譲元・実行主体の見え方）。一括取込では発火しない・自分の書込で自分を起こさない（workflow engine.md §5.4） |
 | **ワークフローの承認待ち** | ❌ 語彙予約のみ | **`human.approval`**（GAP-08）。FSM で管理するテーブルの 1 行に束縛し、判断は承認者本人の `FsmStore::transition`（actor 述語・行の可視性・editor・rev は data が判定）。停止時の行の状態は `FsmStore::approval_target`（viewer・遷移の定義だけ・actor 述語は返さない）、受信箱は担当の行を承認者本人の権限で `DataStore::get_records` で読み直す（件数は今の状態だけを `DataStore::filter_visible_states` で読む・見え方は同じ・BUG-43・workflow engine.md §9.6） |
 | **generative UI** | ❌ `TableProps` は静的データ埋め込み | **`ActionBinding` に `DataView { view_id, pinned_version }` を追加**し、`data_grid` コンポーネントを束縛で描画。クライアントが送れるのは `action_id + params` のみ（`ActionDispatcher` の不変条件を維持）。実装（Task 15.7）: ミニアプリの画面の `` ```data_grid ``（中身は束ねた保存ビューの別名）。ピンは `MiniAppBody.data_views` で、保存時に保存者の権限で解決する（`MiniAppStore`・ワークフローのピンと同じ流儀）。描画は `POST /mini-apps/{id}/ui-actions`（`action_id = data_grid:{別名}`・params は `DataViewPage` の `cursor` / `limit` だけ）で、定義はバンドル権限で読み、**行・列は閲覧者本人の権限で毎回評価**する（`DataViewStore::run_via_bundle`）。#604 で tool 束縛を撤去したので束縛は 3 種 |
-| **chat / agent-core** | ❌ data 系ツールがゼロ | **`data_query`（読取）・`data_record_write`（`requires_confirmation`）・`data_schema`（グラウンディング）**。`csv_tool.rs` の 3 ツールが最も近い先例。description には**発話ユーザーが viewer のテーブル一覧**を動的に載せる（`SkillTool` と同じ流儀・テーブル数は有界）。実装（Task 15.7）: `crates/chat/src/data_tool.rs`。一覧は 30 件まで、見えるテーブルが無ければ提示しない。`data_schema` は読めない列を載せない。`data_record_write` は作成・更新（status は FSM の遷移でだけ動く） |
+| **chat / agent-core** | ❌ data 系ツールがゼロ | **`data_query`（読取）・`data_record_write`（`requires_confirmation`）・`data_schema`（グラウンディング）**。`csv_tool.rs` の 3 ツールが最も近い先例。description には**発話ユーザーが viewer のテーブル一覧**を動的に載せる（`SkillTool` と同じ流儀・テーブル数は有界）。実装（Task 15.7）: `crates/chat/src/data_tool.rs`。一覧は 30 件まで、見えるテーブルが無ければ提示しない。`data_query` は `sql`（§16.1 の SQL 前段面・#970）か `table` ＋ `query`（DataQuery）を受け、説明は SQL を主にする（SQL は DataQuery へ変換されて同じ経路を通る）。拒否は理由・位置・手がかり・候補をモデルへ返す。`data_schema` は読めない列を載せない。`data_record_write` は作成・更新（status は FSM の遷移でだけ動く） |
 | **RAG** | ❌ 構造化データのフックがゼロ | **§11.1**。Task 15.8 で設計スパイク＋ PoC（[data/rag-integration.md](./data/rag-integration.md)）。本番の配線はポストアルファ |
 
 > **Phase 15 実装の補足（Task 15.7）**:
@@ -2099,6 +2099,10 @@ Postgres プールが勝つのは「**中規模のテナントが数十〜数百
 生成が安定せず、検証エラー → 自己修正のラウンドが伸びる。
 **チャットからテーブルを操作する体験（§11・Phase 15.7）の質はここでほぼ決まる。**
 副次的に、BI ツール接続と、SQL DB からの移行者の学習コストにも効く。
+
+> **入口**: `POST /data/sql`（Task 15.10）・チャットの `data_query` の `sql` 入力（#970）・/data の SQL 画面
+> （`/data/sql`・#978。入力欄・結果の表・拒否の理由と位置・使える候補・テーブルと列の参照一覧）。どれも同じ SQL 前段面を
+> 閲覧者本人の権限で通す（画面・ツールは表示だけで、認可と名前の秘匿は前段面が担う）。
 
 #### 生 SQL 拒否と両立させる形
 

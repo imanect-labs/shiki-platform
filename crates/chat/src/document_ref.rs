@@ -68,9 +68,33 @@ pub fn created_payload(node_id: Uuid, name: &str, version: Option<i64>) -> serde
     v
 }
 
+/// **移動・名前変更**した文書の参照（`moved: true`・#942）。
+///
+/// 中身は変わっていないので「編集しました（vN）」と言わせない。`moved_to` は移動先の表示名
+/// （読める範囲のパス）で、名前変更だけのときは `null`。
+pub fn moved_payload(node_id: Uuid, name: &str, moved_to: Option<&str>) -> serde_json::Value {
+    let mut v = payload(node_id, name, None);
+    v["moved"] = serde_json::Value::Bool(true);
+    v["moved_to"] = moved_to.map_or(serde_json::Value::Null, Into::into);
+    v
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn moved_payload_marks_move_without_version() {
+        let id = Uuid::new_v4();
+        let v = moved_payload(id, "議事録.md", Some("管理部 / 経理"));
+        assert_eq!(v["moved"], true);
+        assert_eq!(v["moved_to"], "管理部 / 経理");
+        assert!(v["version"].is_null());
+        assert_eq!(
+            moved_payload(id, "a.md", None)["moved_to"],
+            serde_json::Value::Null
+        );
+    }
 
     #[test]
     fn kind_maps_extensions_to_editors() {

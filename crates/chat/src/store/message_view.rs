@@ -95,7 +95,7 @@ impl ChatStore {
              WHERE message_id = ANY($1) AND tenant_id = $2",
         )
         .bind(&ids)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .fetch_all(&self.db)
         .await
         .map_err(map_db)?;
@@ -121,7 +121,7 @@ impl ChatStore {
             if actors
                 .get(&m.id)
                 .and_then(Option::as_deref)
-                .is_some_and(|a| a == ctx.principal.id)
+                .is_some_and(|a| a == ctx.principal().id)
             {
                 continue;
             }
@@ -167,16 +167,16 @@ impl ChatStore {
         )
         .bind(run_id)
         .bind(thread_id)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .fetch_optional(&self.db)
         .await
         .map_err(map_db)?;
         let Some(actor) = actor else {
             return Err(ChatError::NotFound);
         };
-        let is_actor = actor == ctx.principal.id;
+        let is_actor = actor == ctx.principal().id;
         let state = (
-            self.event_stream(&ctx.tenant_id, run_id, from_seq),
+            self.event_stream(ctx.tenant_id(), run_id, from_seq),
             self.clone(),
             ctx.clone(),
             HashSet::<String>::new(),

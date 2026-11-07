@@ -12,7 +12,7 @@
 //! - プロバイダがスキーマを拒んだ 400（複雑すぎる・使えない書き方）は、本文を利用者に出さない定型文の
 //!   [`LlmError::BadRequest`] にする（[`is_schema_rejection`] で見分けられる）。
 //! - 形の項目は、作者が並べた順（`x-order`・無ければ保存された順）でプロバイダへ書く（[`wire_schema_text`]・
-//!   [`body_bytes`]・指示のモードの [`apply_mode`]。制約付きデコードは送った順に書く・BUG-123・PIT-81）。
+//!   [`body_bytes`]・指示のモードの [`apply_mode`]。制約付きデコードは送った順に書く・BUG-123・PIT-82）。
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map, Value};
@@ -217,7 +217,7 @@ pub fn wire_schema(schema: &Value) -> Value {
 /// プロバイダへ書く出力の形の JSON の文字列（[`wire_schema`] と同じ中身で、`properties` を作者の並びにしたもの）。
 ///
 /// 並びは各オブジェクトの `x-order` に書かれたキーをその順に先に、残りを保存された順（辞書順）に後ろに置く。
-/// `x-order` は書かない（BUG-123・PIT-81）。
+/// `x-order` は書かない（BUG-123・PIT-82）。
 #[must_use]
 pub fn wire_schema_text(schema: &Value) -> String {
     order::to_text(&ordered_wire(schema))

@@ -512,7 +512,7 @@ impl FulltextIndex for TantivyFulltext {
         node_id: Uuid,
         docs: &[FulltextDoc<'_>],
     ) -> Result<(), RagError> {
-        let tenant = self.tenant_index(&ctx.tenant_id)?;
+        let tenant = self.tenant_index(ctx.tenant_id())?;
         self.write_with(&tenant, |writer, fields| {
             writer.delete_term(Term::from_field_text(fields.node_id, &node_id.to_string()));
             for doc in docs {
@@ -546,10 +546,10 @@ impl FulltextIndex for TantivyFulltext {
         exclude: &[Uuid],
     ) -> Result<Vec<ScoredChunk>, RagError> {
         // index-per-tenant: 自テナントの索引だけを開く（存在しなければヒット 0）。
-        if !self.tenant_dir(&ctx.tenant_id).join("meta.json").exists() {
+        if !self.tenant_dir(ctx.tenant_id()).join("meta.json").exists() {
             return Ok(Vec::new());
         }
-        let tenant = self.tenant_index(&ctx.tenant_id)?;
+        let tenant = self.tenant_index(ctx.tenant_id())?;
 
         // 本文クエリはクエリ側も同じ Lindera で形態素化し、**形態素の OR（BM25）**にする。
         // QueryParser は空白区切り 1 語が複数トークンに展開されると PhraseQuery（連続一致）

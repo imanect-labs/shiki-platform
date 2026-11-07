@@ -58,7 +58,7 @@ impl ArtifactStore {
                ON p.id = v.artifact_id AND p.version = v.version \
              WHERE v.tenant_id = $1",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(&ids)
         .bind(&versions)
         .fetch_all(&self.db)

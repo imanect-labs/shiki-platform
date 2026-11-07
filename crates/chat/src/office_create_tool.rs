@@ -19,6 +19,7 @@ use authz::AuthContext;
 use office::live::{CellValue, LiveEditError, LiveEditReport, LiveOp, LiveSaveResult};
 use office::{CreatedOffice, OfficeError, OfficeKind};
 use serde::Deserialize;
+use uuid::Uuid;
 
 /// 作成結果と、本文流し込み（Collabora セッション）の結果。ops が空なら流し込みは `None`。
 type CreateOutcome = (CreatedOffice, Option<Result<LiveEditReport, LiveEditError>>);
@@ -29,6 +30,7 @@ trait OfficeCreate: Send + Sync {
     async fn create(
         &self,
         ctx: &AuthContext,
+        parent_id: Option<Uuid>,
         name: &str,
         kind: OfficeKind,
         ops: &[LiveOp],
@@ -41,15 +43,17 @@ impl OfficeCreate for office::OfficeCreator {
     async fn create(
         &self,
         ctx: &AuthContext,
+        parent_id: Option<Uuid>,
         name: &str,
         kind: OfficeKind,
         ops: &[LiveOp],
         trace_id: Option<&str>,
     ) -> Result<CreateOutcome, OfficeError> {
-        // 保存先はドライブのルート（org 直下・save_note / 成果物保存と同じ既定）。
+        // 保存先は指定フォルダ（省略はドライブのルート＝org 直下・#942）。認可は
+        // StorageService が親フォルダの editor で判定する。
         // future が大きい（WS セッション込み）ため heap へ逃がす（clippy::large_futures）。
         Box::pin(office::OfficeCreator::create(
-            self, ctx, None, name, kind, ops, trace_id,
+            self, ctx, parent_id, name, kind, ops, trace_id,
         ))
         .await
     }
@@ -208,6 +212,9 @@ struct SaveDocumentInput {
     /// 本文 Markdown（HTML に変換して Collabora へ貼り込む）。
     #[serde(default)]
     markdown: String,
+    /// 保存先フォルダ（省略・空・`"root"` でドライブのルート・#942）。
+    #[serde(default, deserialize_with = "crate::drive_tool::de_parent_id")]
+    parent_id: Option<Uuid>,
 }
 
 #[async_trait::async_trait]
@@ -221,14 +228,17 @@ impl Tool for SaveDocumentTool {
          Collabora（LibreOffice）に変換させるため、見出し・箇条書き（ネスト可）・表・太字・\
          斜体・リンク・引用がそのまま Word の書式になる。作成後はユーザーの画面で Collabora \
          Writer が開く。追記・修正は返る node_id を office.live_edit に渡すこと（同じ文書を\
-         二重に作らない）。**ドライブにファイルを作る操作のため実行にはユーザーの承認が要る。**"
+         二重に作らない）。保存先を指定されたら drive.find でフォルダ id を調べて parent_id に\
+         渡す（省略するとドライブのルート）。\
+         **ドライブにファイルを作る操作のため実行にはユーザーの承認が要る。**"
     }
     fn input_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {
                 "name": { "type": "string", "description": "文書名（.docx は自動付与）" },
-                "markdown": { "type": "string", "description": "本文の Markdown（省略すると空の文書を作る）" }
+                "markdown": { "type": "string", "description": "本文の Markdown（省略すると空の文書を作る）" },
+                "parent_id": { "type": "string", "description": "保存先フォルダの id（省略または \"root\" でドライブのルート）" }
             },
             "required": ["name"]
         })
@@ -264,7 +274,14 @@ impl Tool for SaveDocumentTool {
         };
         match self
             .creator
-            .create(ctx, &file_name, OfficeKind::Document, &ops, trace_id)
+            .create(
+                ctx,
+                input.parent_id,
+                &file_name,
+                OfficeKind::Document,
+                &ops,
+                trace_id,
+            )
             .await
         {
             Ok((created, fill)) => Ok(outcome_for(&created, fill.as_ref())),
@@ -295,6 +312,9 @@ struct SaveSheetInput {
     /// A1 起点に貼り込む値の矩形（1 行目はヘッダにするのが自然）。
     #[serde(default)]
     rows: Vec<Vec<CellValue>>,
+    /// 保存先フォルダ（省略・空・`"root"` でドライブのルート・#942）。
+    #[serde(default, deserialize_with = "crate::drive_tool::de_parent_id")]
+    parent_id: Option<Uuid>,
 }
 
 #[async_trait::async_trait]
@@ -308,7 +328,8 @@ impl Tool for SaveSheetTool {
          各セルは文字列・数値・真偽値のいずれか（1 行目をヘッダにする）。数式は入らない\
          （値として扱われる）。作成後はユーザーの画面で Collabora Calc が開く。追記・修正は\
          返る node_id を office.live_edit（set_cells）に渡すこと。表形式のデータを分析だけ\
-         したい場合は CSV（save_csv）の方が扱いやすい。\
+         したい場合は CSV（save_csv）の方が扱いやすい。保存先を指定されたら drive.find で\
+         フォルダ id を調べて parent_id に渡す（省略するとドライブのルート）。\
          **ドライブにファイルを作る操作のため実行にはユーザーの承認が要る。**"
     }
     fn input_schema(&self) -> serde_json::Value {
@@ -325,7 +346,8 @@ impl Tool for SaveSheetTool {
                         "type": "array",
                         "items": { "description": "セル値（文字列・数値・真偽値のいずれか）" }
                     }
-                }
+                },
+                "parent_id": { "type": "string", "description": "保存先フォルダの id（省略または \"root\" でドライブのルート）" }
             },
             "required": ["name"]
         })
@@ -355,7 +377,14 @@ impl Tool for SaveSheetTool {
         };
         match self
             .creator
-            .create(ctx, &file_name, OfficeKind::Spreadsheet, &ops, trace_id)
+            .create(
+                ctx,
+                input.parent_id,
+                &file_name,
+                OfficeKind::Spreadsheet,
+                &ops,
+                trace_id,
+            )
             .await
         {
             Ok((created, fill)) => Ok(outcome_for(&created, fill.as_ref())),

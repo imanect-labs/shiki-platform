@@ -345,12 +345,26 @@ export function DocChatPanel({
   );
 }
 
+function activeThreadKey(key: string): string {
+  return `docchat:active:${key}`;
+}
+
+/// [`useLocalActiveThreadStore`] の保存先へ、フックの外から書く（作成した直後の文書へ
+/// それまでの会話を引き継ぐ・#919）。保存できない環境では何もしない。
+export function writeLocalActiveThread(key: string, threadId: string): void {
+  try {
+    writeScoped(activeThreadKey(key), threadId);
+  } catch {
+    /* プライベートモード等では保存できない */
+  }
+}
+
 /// localStorage をアクティブ会話 id の保存先にする [`ActiveThreadStore`]（Office 文書用・
 /// Yjs を持たないドキュメントの per-user 会話継続）。キーはユーザー＋テナント単位で、
 /// ログアウトで消える（[`@/lib/user-storage`]・#817）。
 export function useLocalActiveThreadStore(key: string): ActiveThreadStore {
   return React.useMemo<ActiveThreadStore>(() => {
-    const storageKey = `docchat:active:${key}`;
+    const storageKey = activeThreadKey(key);
     return {
       read: () => {
         try {

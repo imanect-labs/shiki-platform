@@ -8,7 +8,7 @@
 //! - ファイルが使うプレースホルダは、どれも `placeholders` に説明がある（説明だけで使わないものも無い）。
 //!   表の `ref` と同意（grants）の表の名前が合っている。
 //! - 判定のノードの質問は評価の質問のファイル（`eval/decision/datasets/*.questions.json`）と同じで、しきい値は
-//!   凍結（`frozen.json`）の値。評価で測ったものと違う質問・しきい値でシナリオを流さない（PIT-80）。
+//!   凍結（`frozen.json`）の値。評価で測ったものと違う質問・しきい値でシナリオを流さない（PIT-81）。
 //! - 判定のノードの出口は、確からしさで振り分ける `out`・`uncertain` と、失敗を人へ回す `error`。
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

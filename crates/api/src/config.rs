@@ -296,8 +296,15 @@ pub struct ServerConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DatabaseConfig {
-    /// Postgres 接続 URL（必須）。
+    /// 実行時の Postgres 接続 URL（必須）。DML だけを持つ非 superuser のロール
+    /// （`shiki_runtime` のメンバ・migration 0113）で接続する。
     pub url: String,
+    /// migration（DDL）を流す接続 URL（テーブルの所有者）。未設定なら `url` で流す
+    /// （所有者と実行時を分けない従来の構成・単一ロールのオンプレ等）。
+    ///
+    /// 実行時を所有者や superuser で接続すると RLS を迂回するので、本番は分けること（#1030）。
+    #[serde(default)]
+    pub migrate_url: Option<String>,
     pub max_connections: u32,
 }
 
@@ -315,10 +322,10 @@ mod tests;
 pub use auth::{AuthConfig, SessionConfig, Tenancy};
 pub(crate) use backends::chatgpt_model_id;
 pub use backends::{
-    AuthzConfig, ChatConfig, LangfuseConfig, LlmAutoConfig, LlmBackend, LlmChatGptConfig,
-    LlmConfig, LlmLimitsConfig, LlmModelEntry, LlmProviderEntry, LlmProviderLimit, LogFormat,
-    ObjectStoreBackend, StorageConfig, TabularConfig, TelemetryConfig, UploadGcConfig,
-    VectorConfig, VectorStoreBackend, WebSearchBackend, WebSearchConfig,
+    AuditRetentionConfig, AuthzConfig, ChatConfig, LangfuseConfig, LlmAutoConfig, LlmBackend,
+    LlmChatGptConfig, LlmConfig, LlmLimitsConfig, LlmModelEntry, LlmProviderEntry,
+    LlmProviderLimit, LogFormat, ObjectStoreBackend, StorageConfig, TabularConfig, TelemetryConfig,
+    UploadGcConfig, VectorConfig, VectorStoreBackend, WebSearchBackend, WebSearchConfig,
 };
 pub use egress::EgressConfig;
 pub use miniapp::MINIAPP_OAUTH_CALLBACK_PATH;
@@ -638,3 +645,7 @@ impl AppConfig {
         Ok(())
     }
 }
+
+#[cfg(test)]
+#[path = "config/user_provider_tests.rs"]
+mod user_provider_tests;

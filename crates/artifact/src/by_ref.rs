@@ -40,13 +40,13 @@ impl ArtifactStore {
                AND v.body->>$4 = $5 \
              ORDER BY (a.owner = $7) DESC, a.updated_at DESC, a.id DESC LIMIT $6",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(kind.as_str())
         .bind(body_key)
         .bind(body_value)
         .bind(MAX_CANDIDATES)
-        .bind(&ctx.principal.id)
+        .bind(&ctx.principal().id)
         .fetch_all(&self.db)
         .await
         .map_err(map_db)?;
@@ -60,8 +60,8 @@ impl ArtifactStore {
             " FROM artifact \
              WHERE tenant_id = $1 AND org = $2 AND id = ANY($3) AND deleted_at IS NULL"
         ))
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(&ids)
         .fetch_all(&self.db)
         .await
@@ -98,12 +98,12 @@ impl ArtifactStore {
                AND v.body::text ILIKE $4 \
              ORDER BY (a.owner = $6) DESC, a.updated_at DESC, a.id DESC LIMIT $5",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(kind.as_str())
         .bind(&needle)
         .bind(MAX_CANDIDATES)
-        .bind(&ctx.principal.id)
+        .bind(&ctx.principal().id)
         .fetch_all(&self.db)
         .await
         .map_err(map_db)?;
@@ -126,8 +126,8 @@ impl ArtifactStore {
                ON v.tenant_id = a.tenant_id AND v.artifact_id = a.id AND v.version = a.current_version \
              WHERE a.tenant_id = $1 AND a.org = $2 AND a.id = ANY($3) AND a.deleted_at IS NULL"
         ))
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(&ids)
         .fetch_all(&self.db)
         .await

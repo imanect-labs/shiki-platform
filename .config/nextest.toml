@@ -6,3 +6,8 @@
 retries = 2
 # 遅いテストは警告のみで kill しない（誤検知回避）。
 slow-timeout = "120s"
+
+# main で落ちたテストを selection-gap ジョブが読む（PR で選ばれていたかの突き合わせ・#922）。
+# 出力先は target/nextest/default/junit.xml。再試行で通った flaky は failure にならない。
+[profile.default.junit]
+path = "junit.xml"

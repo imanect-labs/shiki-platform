@@ -163,6 +163,7 @@ audit_actions! {
     AppTableRolesUpdate = "app.table_roles.update", "アプリのテーブルを使える部署・グループを変更", App;
     AppUninstall = "app.uninstall", "アプリをアンインストール", App;
     ArtifactAccessCheck = "artifact.access_check", "使う人の権限を確かめる", Share;
+    AuditRetentionPurge = "audit.retention.purge", "保持期間を過ぎた監査ログを削除", Audit;
     ArtifactCreate = "artifact.create", "アーティファクトを作成", App;
     ArtifactDelete = "artifact.delete", "アーティファクトを削除", App;
     ArtifactGet = "artifact.get", "アーティファクトを参照", App;
@@ -243,6 +244,7 @@ audit_actions! {
     MeChatgptConnect = "me.chatgpt.connect", "ChatGPT プランを連携", Chat;
     MeChatgptDisconnect = "me.chatgpt.disconnect", "ChatGPT プランの連携を解除", Chat;
     MeCustomInstructionsUpdate = "me.custom_instructions.update", "カスタム指示を変更", Chat;
+    MePreferencesUpdate = "me.preferences.update", "ユーザー設定を変更", Chat;
     MiniappResolve = "miniapp.resolve", "ミニアプリを開く", App;
     NodeBreadcrumbRead = "node.breadcrumb.read", "フォルダの階層を参照", Folder;
     NodeSearch = "node.search", "ドライブを検索", Search;
@@ -267,6 +269,7 @@ audit_actions! {
     OrgAuditAccess = "org_audit.access", "監査ログへのアクセス", Audit;
     OrgAuditExport = "org_audit.export", "監査ログを書き出し", Audit;
     OrgAuditSearch = "org_audit.search", "監査ログを検索", Audit;
+    OrgAuditVerify = "org_audit.verify", "監査ログのチェーンを検証", Audit;
     OrgAuditViewerGrant = "org_audit.viewer.grant", "監査閲覧者を付与", Audit;
     OrgAuditViewerRevoke = "org_audit.viewer.revoke", "監査閲覧者を剥奪", Audit;
     RagDocRead = "rag.doc_read", "文書を読む（AI）", Search;
@@ -291,6 +294,7 @@ audit_actions! {
     StorageUploadGcExpire = "storage.upload_gc.expire", "未完了のアップロードを破棄", System;
     StorageUploadGcOrphanDelete = "storage.upload_gc.orphan_delete", "孤立したアップロードを削除", System;
     TenantProvision = "tenant.provision", "テナントを作成", Admin;
+    TenantAuditRetentionSet = "tenant.audit_retention.set", "監査ログの保持期間を変更", Admin;
     TenantPurge = "tenant.purge", "テナントを撤去", Admin;
     TenantRetenant = "tenant.retenant", "テナント ID を変更", Admin;
     ThreadCreate = "thread.create", "スレッドを作成", Chat;

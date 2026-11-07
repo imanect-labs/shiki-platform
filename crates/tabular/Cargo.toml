@@ -24,6 +24,8 @@ csv.workspace = true
 shiki-textenc.workspace = true
 
 serde = { workspace = true }
+# 複数 CSV の並行取得（try_join_all・件数は MAX_EXTRA_TABLES で有界）。
+futures.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 # 区切りを推定できなかったときの警告（編集はカンマ区切りとして続ける・BUG-144）。
@@ -37,6 +39,7 @@ tempfile = "3"
 # Excel（.xlsx）のテストの材料（zip 爆弾など）をテストの中で組む（runner_xlsx_it・D-17）。
 crc32fast = "1"
 flate2 = "1"
+shiki-testenv.workspace = true
 
 # lib 名 authz/storage で参照するため machete（名前一致）が誤検出する。
 [package.metadata.cargo-machete]

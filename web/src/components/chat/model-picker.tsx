@@ -22,7 +22,7 @@ import { ModelList, SEARCH_MIN_MODELS, type ModelListDefaultRow } from "@/compon
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Sheet, SheetContent, SheetTitle, SheetTrigger } from "@/components/ui/sheet";
 
-const EFFORTS: { value: EffortLevel; label: string; hint: string }[] = [
+export const EFFORTS: { value: EffortLevel; label: string; hint: string }[] = [
   { value: "low", label: "速い", hint: "短く素早く答えます" },
   { value: "medium", label: "標準", hint: "ふだんの業務に" },
   { value: "high", label: "じっくり", hint: "時間をかけて考えます" },
@@ -36,7 +36,7 @@ const effortLabel = (e: EffortLevel) => EFFORTS.find((x) => x.value === e)?.labe
 /// 「選ばない」選択肢の表示。モデルを指定しない投稿は組織の既定で動くので、既定が Auto なら
 /// Auto（振り先を添える）、管理者が特定のモデルを既定にしていればそのモデルとして見せる。
 /// 既定の行は「auto」「おまかせ」「既定」でも検索で引ける。
-function defaultOption(data: LlmModelsResponse): ModelListDefaultRow {
+export function defaultOption(data: LlmModelsResponse): ModelListDefaultRow {
   if (data.default_model !== "auto") {
     const m = data.models.find((x) => x.id === data.default_model);
     return { label: "組織の既定", target: m?.label ?? null, keywords: "auto 既定" };
@@ -49,7 +49,7 @@ function defaultOption(data: LlmModelsResponse): ModelListDefaultRow {
 }
 
 /// 組織の既定が特定のモデルならそのモデル（Auto なら null）。
-function defaultModelOf(data: LlmModelsResponse): LlmModelOption | null {
+export function defaultModelOf(data: LlmModelsResponse): LlmModelOption | null {
   if (data.default_model === "auto") return null;
   return data.models.find((m) => m.id === data.default_model) ?? null;
 }

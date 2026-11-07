@@ -115,7 +115,7 @@ fn make_ctx(org: &str, uid: &str) -> AuthContext {
             tenant_id: None,
         },
         org.into(),
-        "default".into(),
+        authz::TenantId::parse("default").unwrap(),
     )
 }
 

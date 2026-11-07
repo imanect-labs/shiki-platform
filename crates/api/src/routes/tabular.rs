@@ -43,7 +43,8 @@ fn to_api_error(err: tabular::TabularError) -> ApiError {
         TE::Forbidden | TE::Authz(_) => ApiError::Forbidden,
         TE::NotFound(_) => ApiError::NotFound,
         TE::Storage(e) => ApiError::from(e),
-        TE::SqlRejected(m) => ApiError::BadRequest(m),
+        // SQL の誤りと、追加のテーブルの指定の誤り（JOIN・#1059）は、文言をそのまま返す 400。
+        TE::SqlRejected(m) | TE::InvalidTables(m) => ApiError::BadRequest(m),
         // 編集の誤り（元の文字コードで書けない文字など）と、文字コードを決められない・文章でない CSV、読めない Excel、
         // CSV の編集・保存に渡した Excel は、文言つきの構造化 400（画面がそのまま出す・GAP-45・D-17）。
         TE::InvalidPatch(m) | TE::NotText(m) | TE::Unsupported(m) => ApiError::invalid_input(&m),
@@ -210,10 +211,26 @@ pub async fn get_rows(
 /// RO SQL クエリ。
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct QueryRequest {
+    /// 読み取り専用 SELECT。パスの CSV はテーブル `data`、`tables` の各 CSV は指定名で参照する。
     pub sql: String,
+    /// JOIN 用に追加でロードする CSV（各ファイルにも閲覧権限が要る・最大 8 個・#1037）。
+    #[serde(default)]
+    pub tables: Vec<QueryTable>,
+}
+
+/// 追加テーブル 1 件（SQL から参照する名前 → CSV ファイル）。
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct QueryTable {
+    /// テーブル名（英小文字・数字・`_`、先頭は数字以外、63 文字以内。`data` は不可）。
+    pub name: String,
+    /// CSV ファイル ID。
+    pub file_id: Uuid,
 }
 
 /// 読み取り専用 SQL を実行する（viewer 認可・SQL 検証必須）。
+///
+/// `tables` を渡すと複数 CSV を JOIN できる。対象の**全ファイル**に閲覧権限が要り、1 つでも
+/// 欠ければ 404（存在秘匿＝無いファイルと区別しない・部分結果は返さない）。
 #[utoipa::path(
     post, path = "/files/{id}/tabular/query", request_body = QueryRequest,
     params(("id" = Uuid, Path, description = "CSV ファイル ID")),
@@ -227,9 +244,17 @@ pub async fn post_query(
     Path(id): Path<Uuid>,
     Json(req): Json<QueryRequest>,
 ) -> Result<Json<TableResponse>, ApiError> {
+    let tables: Vec<tabular::TableRef> = req
+        .tables
+        .into_iter()
+        .map(|t| tabular::TableRef {
+            name: t.name,
+            file_id: t.file_id,
+        })
+        .collect();
     let resp = state
         .tabular
-        .query(&ctx, id, &req.sql, trace.0.as_deref())
+        .query_tables(&ctx, id, &tables, &req.sql, trace.0.as_deref())
         .await
         .map_err(to_api_error)?;
     Ok(Json(TableResponse::from_runner(resp, None)))

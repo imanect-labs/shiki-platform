@@ -384,7 +384,15 @@ function InsertMenu({ editor }: { editor: Editor }) {
 }
 
 /// 本文上部の静的ツールバー（editable のときのみ表示）。
-export function NoteToolbar({ editor }: { editor: Editor }) {
+export function NoteToolbar({
+  editor,
+  extra,
+}: {
+  editor: Editor;
+  /// 画面固有の挿入ボタン（スキルエディタの「ドライブから参照」等）。上のバーと
+  /// キーボード直上の補助バーの先頭に出す（スマホの横スクロールでも最初から見える）。
+  extra?: React.ReactNode;
+}) {
   useEditorTick(editor);
   const touchEditing = useTouchEditing(editor);
   const canUndo = editor.can().undo?.() ?? false;
@@ -396,7 +404,7 @@ export function NoteToolbar({ editor }: { editor: Editor }) {
   return (
     <>
       {touchEditing ? (
-        <KeyboardAccessoryBar editor={editor} canUndo={canUndo} canRedo={canRedo} />
+        <KeyboardAccessoryBar editor={editor} canUndo={canUndo} canRedo={canRedo} extra={extra} />
       ) : null}
       <div
         // スクロール追従（スクロール域の上端に張り付く清潔なツールバー）。浮遊ピルではなく
@@ -412,6 +420,12 @@ export function NoteToolbar({ editor }: { editor: Editor }) {
         {/* PC は折り返し、スマホは 1 段の横スクロール（右端は「＋」の手前でフェード）。 */}
         <div className="relative min-w-0 flex-1">
           <div className="flex items-center gap-0.5 px-3 py-1.5 md:flex-wrap max-md:overflow-x-auto max-md:overscroll-x-contain max-md:pr-6 max-md:[scrollbar-width:none]">
+            {extra ? (
+              <>
+                {extra}
+                <ToolbarSeparator className="shrink-0" />
+              </>
+            ) : null}
             <ToolbarButton
               onClick={() => editor.chain().focus().undo().run()}
               disabled={!canUndo}
@@ -457,7 +471,9 @@ export function NoteToolbar({ editor }: { editor: Editor }) {
               active={editor.isActive("heading", { level: 3 })}
               onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}
               aria-label="見出し 3"
-              className="max-md:hidden"
+              // 画面固有のボタンがある分、狭い PC では見出し 3 を畳んで 1 行に収める
+              // （見出し 3 は「/」と「###」でも入れられる）。
+              className={extra ? "max-2xl:hidden" : "max-md:hidden"}
             >
               <Heading3 />
             </ToolbarButton>
@@ -542,10 +558,12 @@ function KeyboardAccessoryBar({
   editor,
   canUndo,
   canRedo,
+  extra,
 }: {
   editor: Editor;
   canUndo: boolean;
   canRedo: boolean;
+  extra?: React.ReactNode;
 }) {
   const viewport = useVisualViewportBottom(true);
   // body 直下へ出す。本文側の祖先に transform / filter / backdrop-filter が付くと fixed の
@@ -569,6 +587,12 @@ function KeyboardAccessoryBar({
     >
       <div className="relative min-w-0 flex-1">
         <div className="flex items-center gap-0.5 overflow-x-auto overscroll-x-contain px-2 py-1 pr-6 [scrollbar-width:none]">
+          {extra ? (
+            <>
+              {extra}
+              <ToolbarSeparator className="shrink-0" />
+            </>
+          ) : null}
           <ToolbarButton
             onClick={() => editor.chain().focus().undo().run()}
             disabled={!canUndo}

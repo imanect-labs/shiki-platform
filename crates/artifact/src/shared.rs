@@ -55,10 +55,10 @@ impl ArtifactStore {
                AND ($6::timestamptz IS NULL OR (updated_at, id) < ($6, $7::uuid)) \
              ORDER BY updated_at DESC, id DESC LIMIT $8"
         ))
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(&ids)
-        .bind(&ctx.principal.id)
+        .bind(&ctx.principal().id)
         .bind(kind.map(ArtifactKind::as_str))
         .bind(after.map(|(at, _)| at))
         .bind(after.map(|(_, id)| id))
@@ -102,9 +102,9 @@ impl ArtifactStore {
                    AND ($5::timestamptz IS NULL OR (updated_at, id) < ($5, $6::uuid)) \
                  ORDER BY updated_at DESC, id DESC LIMIT $7",
             )
-            .bind(&ctx.tenant_id)
-            .bind(&ctx.org)
-            .bind(&ctx.principal.id)
+            .bind(ctx.tenant_id())
+            .bind(ctx.org())
+            .bind(&ctx.principal().id)
             .bind(kind.map(ArtifactKind::as_str))
             .bind(at.map(|(t, _)| t))
             .bind(at.map(|(_, id)| id))
@@ -153,8 +153,8 @@ impl ArtifactStore {
             " FROM artifact \
              WHERE tenant_id = $1 AND org = $2 AND id = ANY($3) AND deleted_at IS NULL"
         ))
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(&picked)
         .fetch_all(&self.db)
         .await

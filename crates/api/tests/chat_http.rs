@@ -184,6 +184,7 @@ fn base_config(db_url: &str) -> AppConfig {
         },
         database: DatabaseConfig {
             url: db_url.into(),
+            migrate_url: None,
             max_connections: 4,
         },
         auth: AuthConfig {
@@ -223,6 +224,7 @@ fn base_config(db_url: &str) -> AppConfig {
             s3: None,
             max_upload_size_bytes: 5 * 1024 * 1024 * 1024,
             upload_gc: api::config::UploadGcConfig::default(),
+            audit_retention: api::config::AuditRetentionConfig::default(),
         },
         vector: VectorConfig {
             backend: VectorStoreBackend::Qdrant,
@@ -280,7 +282,7 @@ fn session_record(csrf: &str) -> SessionRecord {
 
 /// 実 DB の AppState を組む（chat 有効／無効を選べる）。DB 未設定なら None。
 async fn build_state(with_chat: bool) -> Option<(AppState, Arc<dyn SessionStore>)> {
-    let db_url = std::env::var("STORAGE_TEST_DATABASE_URL").ok()?;
+    let db_url = shiki_testenv::var("STORAGE_TEST_DATABASE_URL").ok()?;
     let pool = PgPoolOptions::new()
         .max_connections(4)
         .connect(&db_url)
@@ -687,7 +689,7 @@ async fn chat_post_resolves_model_choice() {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return;
     };
-    let db_url = std::env::var("STORAGE_TEST_DATABASE_URL").unwrap();
+    let db_url = shiki_testenv::var("STORAGE_TEST_DATABASE_URL").unwrap();
     let pool = PgPoolOptions::new().connect(&db_url).await.unwrap();
     // stub プロバイダに 2 モデル（"fast" は思考強度を受ける・"local" は受けない）。
     let gw = llm_gateway::LlmGateway::build(
@@ -771,6 +773,49 @@ async fn chat_post_resolves_model_choice() {
             .await
             .unwrap();
     assert_eq!(row, (Some("fast".into()), Some("high".into()), false));
+    let requested = |run_id: uuid::Uuid| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_scalar::<_, Option<serde_json::Value>>(
+                "SELECT requested_choice FROM generation_run WHERE run_id = $1",
+            )
+            .bind(run_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap()
+        }
+    };
+    // 解決前の選択も残す（別の端末での入力欄の初期値・#1050）。
+    assert_eq!(
+        requested(run_id).await,
+        Some(serde_json::json!({ "model": "fast", "effort": "high" }))
+    );
+
+    // モデルを指定して思考の深さを省いたら、実際に使った深さ（組織の既定）を残す。
+    let resp = app
+        .clone()
+        .oneshot(post(
+            messages.clone(),
+            r#"{"text":"x","model":"fast"}"#.into(),
+        ))
+        .await
+        .unwrap();
+    let run_id: uuid::Uuid = body_json(resp).await["run_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let used: Option<String> =
+        sqlx::query_scalar("SELECT effort FROM generation_run WHERE run_id = $1")
+            .bind(run_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+    assert!(used.is_some());
+    assert_eq!(
+        requested(run_id).await,
+        Some(serde_json::json!({ "model": "fast", "effort": used }))
+    );
 
     // 思考強度に対応しないモデルは effort を記録しない。省略は Auto（ここでは既定モデルへ）。
     let resp = app
@@ -796,7 +841,7 @@ async fn chat_post_resolves_model_choice() {
 
     let resp = app
         .clone()
-        .oneshot(post(messages, r#"{"text":"x"}"#.into()))
+        .oneshot(post(messages.clone(), r#"{"text":"x"}"#.into()))
         .await
         .unwrap();
     let run_id: uuid::Uuid = body_json(resp).await["run_id"]
@@ -811,6 +856,27 @@ async fn chat_post_resolves_model_choice() {
             .await
             .unwrap();
     assert_eq!(row, (Some("fast".into()), Some("low".into()), true));
+    // 省略（Auto）は Auto として残し、スレッドの単体取得は自分の最後の選択を返す。
+    assert_eq!(
+        requested(run_id).await,
+        Some(serde_json::json!({ "model": null, "effort": null }))
+    );
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/threads/{tid}"))
+                .header(COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(resp).await["last_model_choice"],
+        serde_json::json!({ "model": null, "effort": null })
+    );
 }
 
 /// 共有一覧の各エントリが表示名を正しく持つか（#741）。同テナント・同 org の user は名前と email、
@@ -886,7 +952,11 @@ async fn share_lists_include_directory_names_tenant_scoped() {
         .upsert_role("share741-eng", "default", "acme", "技術部 741")
         .await
         .expect("seed role");
-    let ctx = authz::AuthContext::new(test_principal(), "acme".into(), "default".into());
+    let ctx = authz::AuthContext::new(
+        test_principal(),
+        "acme".into(),
+        authz::TenantId::parse("default").unwrap(),
+    );
     let art = state
         .artifacts
         .create(
@@ -976,7 +1046,7 @@ async fn chat_post_records_requested_tools() {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return;
     };
-    let db_url = std::env::var("STORAGE_TEST_DATABASE_URL").unwrap();
+    let db_url = shiki_testenv::var("STORAGE_TEST_DATABASE_URL").unwrap();
     let pool = PgPoolOptions::new().connect(&db_url).await.unwrap();
     let (cookie, csrf) = login(&sessions, "sid-chat-tools").await;
     let app = build_router(state);
@@ -1382,4 +1452,382 @@ async fn threads_are_not_created_for_a_mini_app_whose_skill_is_unavailable() {
 
     let (st, _) = send_json(&app, "DELETE", &format!("/artifacts/{app_id}"), auth, None).await;
     assert!(st.is_success(), "{st}");
+}
+
+/// ユーザー設定（#952）: 本人の分の読み書き・欠けた項目は既定値・不正なモデル ID の 400（画面へ出す
+/// `detail` 付き）・未知の値の拒否・未認証 401・CSRF 無しの書き込み拒否・chat 無効の 503。
+///
+/// このファイルのテストは同じ利用者（tenant `default`）を共有して並列に走るので、スレッド作成に効く
+/// 既定の承認モードと org の全自動キャップには触れない（そちらは `chat` の preferences_it が
+/// テナントを分けて確かめる）。最後に既定値へ戻す。
+#[tokio::test]
+async fn preferences_round_trip_over_http() {
+    let Some((state, sessions)) = build_state(true).await else {
+        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+        return;
+    };
+    let (cookie, csrf) = login(&sessions, "sid-preferences").await;
+    let app = build_router(state);
+    let put = |body: serde_json::Value, with_csrf: bool| {
+        let mut req = Request::builder()
+            .method("PUT")
+            .uri("/me/preferences")
+            .header(COOKIE, &cookie)
+            .header("content-type", "application/json");
+        if with_csrf {
+            req = req.header("x-csrf-token", csrf);
+        }
+        req.body(Body::from(body.to_string())).unwrap()
+    };
+    let get = || {
+        Request::builder()
+            .uri("/me/preferences")
+            .header(COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    // 未認証は 401。
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/me/preferences")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // 保存（欠けた項目は既定値で埋まり、モデル ID は前後の空白を落とす。読み直しても同じ）。
+    let resp = app
+        .clone()
+        .oneshot(put(
+            serde_json::json!({
+                "submit_key": "mod_enter",
+                "input_format": "plain",
+                "default_model": { "model": " claude-sonnet ", "effort": "high" },
+                "expand_reasoning": true,
+                "time_format": "relative",
+            }),
+            true,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let saved = body_json(resp).await;
+    assert_eq!(
+        saved["preferences"],
+        serde_json::json!({
+            "submit_key": "mod_enter",
+            "input_format": "plain",
+            "default_model": { "model": "claude-sonnet", "effort": "high" },
+            "web_search_by_default": false,
+            "default_autonomous_mode": "require_approval",
+            "expand_reasoning": true,
+            "time_format": "relative",
+        })
+    );
+    assert_eq!(saved["bypass_allowed"], true);
+    let resp = app.clone().oneshot(get()).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(body_json(resp).await, saved);
+
+    // CSRF 無しの書き込みは通らない。
+    let resp = app
+        .clone()
+        .oneshot(put(serde_json::json!({}), false))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+    // 未知の値は受け付けない。
+    let resp = app
+        .clone()
+        .oneshot(put(serde_json::json!({ "submit_key": "space" }), true))
+        .await
+        .unwrap();
+    assert!(resp.status().is_client_error(), "{}", resp.status());
+    // 長すぎるモデル ID は 400 で、画面へ出す文言を `detail` に載せる。
+    let resp = app
+        .clone()
+        .oneshot(put(
+            serde_json::json!({ "default_model": { "model": "m".repeat(201), "effort": "low" } }),
+            true,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let detail = body_json(resp).await["detail"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(detail.contains("200 文字以内"), "{detail}");
+    // 拒否した書き込みで値は変わらない。
+    let resp = app.clone().oneshot(get()).await.unwrap();
+    assert_eq!(body_json(resp).await, saved);
+
+    // 既定値へ戻す（欠けた項目はすべて既定値）。
+    let resp = app
+        .clone()
+        .oneshot(put(serde_json::json!({}), true))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(resp).await["preferences"],
+        serde_json::json!({
+            "submit_key": "enter",
+            "input_format": "markdown",
+            "default_model": null,
+            "web_search_by_default": false,
+            "default_autonomous_mode": "require_approval",
+            "expand_reasoning": false,
+            "time_format": "absolute",
+        })
+    );
+
+    // chat 無効なら 503。
+    let Some((state, sessions)) = build_state(false).await else {
+        return;
+    };
+    let (cookie, _) = login(&sessions, "sid-preferences-off").await;
+    let resp = build_router(state)
+        .oneshot(
+            Request::builder()
+                .uri("/me/preferences")
+                .header(COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+/// #965: ホームの「今日のこと」の `/me/approvals` と `/me/usage`。
+/// 承認待ちは自分が actor の run が載り、未認証は 401。利用量は LLM 未構成なら 503、構成済みなら
+/// 本人の当月の利用額と上限（上限なしは null）を返す。
+#[tokio::test]
+async fn today_endpoints_over_http() {
+    let Some((mut state, sessions)) = build_state(true).await else {
+        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+        return;
+    };
+    let db_url = shiki_testenv::var("STORAGE_TEST_DATABASE_URL").unwrap();
+    let pool = PgPoolOptions::new().connect(&db_url).await.unwrap();
+    let (cookie, csrf) = login(&sessions, "sid-today").await;
+    let get = |uri: &str| {
+        Request::builder()
+            .uri(uri)
+            .header(COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap()
+    };
+
+    // LLM 未構成の利用量は 503（承認待ちは chat だけで答えられる）。
+    let app = build_router(state.clone());
+    let resp = app.clone().oneshot(get("/me/usage")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/me/approvals")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // スレッドを作って発話し、その run を承認待ちにする（ワーカーが書く状態を SQL で再現）。
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/threads")
+                .header(COOKIE, &cookie)
+                .header("x-csrf-token", csrf)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"title":"承認のテスト","agent_mode":true}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let tid = body_json(resp).await["id"].as_str().unwrap().to_string();
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/threads/{tid}/messages"))
+                .header(COOKIE, &cookie)
+                .header("x-csrf-token", csrf)
+                .header("content-type", "application/json")
+                .body(Body::from(r#"{"text":"移動して"}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::ACCEPTED);
+    let run_id: uuid::Uuid = body_json(resp).await["run_id"]
+        .as_str()
+        .unwrap()
+        .parse()
+        .unwrap();
+    sqlx::query(
+        "UPDATE generation_run SET status = 'waiting_approval', \
+             pending_approval = jsonb_build_object('tool_call_id', 'tc-home', \
+                 'tool_name', 'drive.move', 'requested_at', now()) \
+         WHERE run_id = $1",
+    )
+    .bind(run_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let resp = app.clone().oneshot(get("/me/approvals")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    let item = body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|i| i["run_id"] == serde_json::json!(run_id.to_string()))
+        .unwrap_or_else(|| panic!("承認待ちの run が載る: {body}"));
+    assert_eq!(item["thread_id"], serde_json::json!(tid));
+    assert_eq!(item["thread_title"], serde_json::json!("承認のテスト"));
+    assert_eq!(item["tool_name"], serde_json::json!("drive.move"));
+    assert!(item["requested_at"].is_string());
+    // 後続のテストに承認待ちを残さない。
+    sqlx::query(
+        "UPDATE generation_run SET status = 'cancelled', pending_approval = NULL WHERE run_id = $1",
+    )
+    .bind(run_id)
+    .execute(&pool)
+    .await
+    .unwrap();
+
+    let gw = llm_gateway::LlmGateway::build(
+        pool.clone(),
+        reqwest::Client::new(),
+        llm_gateway::GatewayConfig::default(),
+    )
+    .unwrap();
+    state.llm = Some(Arc::new(gw));
+    let app = build_router(state);
+    let resp = app.clone().oneshot(get("/me/usage")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = body_json(resp).await;
+    assert!(
+        body["used_usd_micros"].is_null(),
+        "上限が無い環境では集計しない: {body}"
+    );
+    assert!(
+        body["limit_usd_micros"].is_null(),
+        "上限が無い環境では null: {body}"
+    );
+    assert!(body["period_start"].is_string() && body["period_end"].is_string());
+}
+
+/// #965: 検索フォルダ付きでスレッドを作る。作成者が見られるフォルダなら名前ごと保存して返し、
+/// 存在しない id は 404（孤児スレッドを作らない）。
+#[tokio::test]
+async fn create_thread_with_search_folder() {
+    let Some((state, sessions)) = build_state(true).await else {
+        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+        return;
+    };
+    let (cookie, csrf) = login(&sessions, "sid-search-folder").await;
+    let app = build_router(state);
+    let post = |uri: &str, body: serde_json::Value| {
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header(COOKIE, &cookie)
+            .header("x-csrf-token", csrf)
+            .header("content-type", "application/json")
+            .body(Body::from(body.to_string()))
+            .unwrap()
+    };
+
+    let folder_name = format!("search-{}", uuid::Uuid::new_v4().simple());
+    let resp = app
+        .clone()
+        .oneshot(post("/folders", serde_json::json!({ "name": folder_name })))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let fid = body_json(resp).await["id"].as_str().unwrap().to_string();
+
+    let resp = app
+        .clone()
+        .oneshot(post(
+            "/threads",
+            serde_json::json!({ "title": "フォルダで探す", "search_folder_id": fid }),
+        ))
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["search_folder_id"], serde_json::json!(fid));
+    assert_eq!(body["search_folder_name"], serde_json::json!(folder_name));
+    let tid = body["id"].as_str().unwrap().to_string();
+
+    // 読み直しても残る。
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/threads/{tid}"))
+                .header(COOKIE, &cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(resp).await["search_folder_name"],
+        serde_json::json!(folder_name)
+    );
+
+    // 入れ子のフォルダも選べる（パンくずの末尾が自身）。
+    let resp = app
+        .clone()
+        .oneshot(post(
+            "/folders",
+            serde_json::json!({ "name": "下の階層", "parent_id": fid }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::OK);
+    let child = body_json(resp).await["id"].as_str().unwrap().to_string();
+    let resp = app
+        .clone()
+        .oneshot(post(
+            "/threads",
+            serde_json::json!({ "title": "下の階層で探す", "search_folder_id": child }),
+        ))
+        .await
+        .unwrap();
+    let status = resp.status();
+    let body = body_json(resp).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["search_folder_name"], serde_json::json!("下の階層"));
+
+    // 存在しないフォルダは 404。
+    let resp = app
+        .clone()
+        .oneshot(post(
+            "/threads",
+            serde_json::json!({ "title": "x", "search_folder_id": uuid::Uuid::new_v4() }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
 }

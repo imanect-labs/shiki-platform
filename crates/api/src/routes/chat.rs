@@ -133,6 +133,28 @@ pub async fn create_thread(
         None
     };
 
+    // 検索フォルダは**作成者の viewer 権限**で解決する（見えないフォルダで絞れない・名前は解決時点の
+    // 表示名を非正規化して持つ・#965）。フォルダでなければ 400。fail-closed。
+    let search_folder = if let Some(folder_id) = req.search_folder_id {
+        let crumbs = state
+            .storage
+            .breadcrumb(&ctx, folder_id, trace.as_deref())
+            .await?;
+        // パンくずは root → 自身の順（自身は末尾）。
+        match crumbs.last() {
+            Some(c) if c.id == folder_id && c.kind == storage::model::NodeKind::Folder => {
+                Some((folder_id, c.name.clone()))
+            }
+            _ => {
+                return Err(ApiError::BadRequest(
+                    "検索フォルダにはフォルダを指定してください".into(),
+                ))
+            }
+        }
+    } else {
+        None
+    };
+
     // 由来ノートは**発話ユーザーの viewer 権限**で解決する（見えないノートに紐づけられない・
     // 表示名は解決時点の name を非正規化して持つ・issue #282）。fail-closed。
     let origin = if let Some(note_id) = req.origin_note_id {
@@ -168,8 +190,15 @@ pub async fn create_thread(
     }
     if let Some((folder, parent)) = workspace {
         store
-            .set_thread_workspace(thread.id, &ctx.tenant_id, folder, parent)
+            .set_thread_workspace(thread.id, ctx.tenant_id(), folder, parent)
             .await?;
+    }
+    if let Some((folder_id, name)) = search_folder {
+        store
+            .set_thread_search_folder(thread.id, ctx.tenant_id(), folder_id, &name)
+            .await?;
+        thread.search_folder_id = Some(folder_id);
+        thread.search_folder_name = Some(name);
     }
     Ok(Json(thread))
 }
@@ -261,7 +290,7 @@ pub async fn get_thread(
 ) -> Result<Json<Thread>, ApiError> {
     Ok(Json(
         chat_store(&state)?
-            .get_thread(&ctx, id, trace.as_deref())
+            .get_thread_for_view(&ctx, id, trace.as_deref())
             .await?,
     ))
 }
@@ -289,14 +318,14 @@ pub async fn get_messages(
     // 進行中（非端末）の run があれば id と自律フラグを返す（再訪時の承認送信・進捗復元・
     // 自律 UI（モードセレクタ）の復元に使う・#350）。
     let active = store
-        .current_run(id, &ctx.tenant_id)
+        .current_run(id, ctx.tenant_id())
         .await?
         .filter(|r| !r.status.is_terminal());
     // 順番待ちの発話（生成が始まっていない run の発話）。認可は上の get_messages が済ませている。
     // 進行中 run が無ければ順番待ちも存在し得ない（先頭が走り出しているはず）ので引かない。
     let queued_runs = if let Some(current) = active {
         store
-            .queued_user_messages(id, &ctx.tenant_id, current.run_id)
+            .queued_user_messages(id, ctx.tenant_id(), current.run_id)
             .await?
             .into_iter()
             .map(|(user_message_id, run_id)| super::chat_dto::QueuedRun {
@@ -307,7 +336,7 @@ pub async fn get_messages(
     } else {
         Vec::new()
     };
-    let context_usage = store.latest_context_usage(id, &ctx.tenant_id).await?;
+    let context_usage = store.latest_context_usage(id, ctx.tenant_id()).await?;
     Ok(Json(MessagesResponse {
         context_usage,
         messages,
@@ -416,11 +445,29 @@ async fn resolve_run_model(
         .await
         .map_err(|e| ApiError::Internal(format!("tenant llm settings: {e}")))?
     {
-        Ok(r) => Ok(Some(chat::RunModel {
-            model: r.model,
-            effort: r.effort,
-            auto: r.auto,
-        })),
+        Ok(r) => {
+            // 解決前の選択（組織の既定に置き換わる前）を残す（別の端末での入力欄の初期値・#1050）。
+            // モデルを指定して思考の深さを省いた発話は、実際に使った深さ（組織の既定）を残す
+            // （省略を「深さ指定なし」として復元すると、次の送信で別の深さになる）。
+            let model = choice
+                .model
+                .clone()
+                .filter(|m| !m.is_empty() && m != llm_gateway::AUTO_MODEL);
+            let effort = match (&model, choice.effort) {
+                (_, Some(e)) => Some(e),
+                (Some(_), None) => r.effort,
+                (None, None) => None,
+            };
+            Ok(Some(chat::RunModel {
+                requested: Some(chat::LastModelChoice {
+                    model,
+                    effort: effort.map(|e| e.as_str().to_string()),
+                }),
+                model: r.model,
+                effort: r.effort,
+                auto: r.auto,
+            }))
+        }
         Err(e) => Err(ApiError::UnprocessableJson(serde_json::json!({
             "status": 400,
             "title": "Bad Request",
@@ -459,7 +506,7 @@ pub async fn stream_thread(
     let from_seq = last_event_id(&headers, &q);
     // いま映すべき run（＝最も古い未完了 run）を購読する。run が無ければ即終了の空ストリーム。
     // 順番待ちの run を購読した場合はイベント 0 件で待機し、ワーカーが着手した時点で流れ出す。
-    let stream: SseEventStream = match chat.current_run(id, &ctx.tenant_id).await? {
+    let stream: SseEventStream = match chat.current_run(id, ctx.tenant_id()).await? {
         Some(current) => chat
             .viewer_event_stream(&ctx, id, current.run_id, from_seq, trace.as_deref())
             .await?

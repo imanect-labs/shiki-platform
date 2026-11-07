@@ -46,8 +46,8 @@ impl StorageService {
              WHERE id = ANY($1) AND org = $2 AND tenant_id = $3 AND deleted_at IS NULL",
         )
         .bind(&want)
-        .bind(&ctx.org)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.org())
+        .bind(ctx.tenant_id())
         .fetch_all(&self.db)
         .await?;
         // 求めた種類と違うもの（フォルダーの欄に入ったファイルの id など）は見えないものと同じに扱う。

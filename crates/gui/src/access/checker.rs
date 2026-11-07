@@ -299,7 +299,7 @@ impl AccessChecker<'_> {
             .map(|&i| fga_object(ctx, objects[i].0, objects[i].1))
             .collect();
         let node_asks: Vec<Vec<Relation>> = nodes.iter().map(|&i| asks[i].clone()).collect();
-        let org = ctx.ns().organization_member(&ctx.org);
+        let org = ctx.ns().organization_member(ctx.org());
         let org_held = self
             .held(&[org], &fga, &node_asks)
             .await?

@@ -255,7 +255,7 @@ pub async fn list_workflow_runs(
         _ => None,
     };
     let items = runs
-        .list_runs(&ctx.tenant_id, id, &filter, before, q.limit.unwrap_or(50))
+        .list_runs(ctx.tenant_id(), id, &filter, before, q.limit.unwrap_or(50))
         .await
         .map_err(|e| ApiError::Internal(format!("run 一覧: {e}")))?;
     Ok(Json(RunListResponse {
@@ -361,7 +361,7 @@ pub async fn get_workflow_run(
     let runs = runs_or_503(&state)?;
     // run は workflow_id 束縛で引く（別ワークフローの run_id を渡しても存在秘匿）。
     let d = runs
-        .run_detail(&ctx.tenant_id, id, run_id)
+        .run_detail(ctx.tenant_id(), id, run_id)
         .await
         .map_err(|e| ApiError::Internal(format!("run 詳細: {e}")))?
         .ok_or(ApiError::NotFound)?;
@@ -452,7 +452,7 @@ pub async fn get_workflow_step(
     require_workflow_viewer(&state, &ctx, id, trace.as_deref()).await?;
     let runs = runs_or_503(&state)?;
     let d = runs
-        .step_detail(&ctx.tenant_id, id, run_id, &q.path)
+        .step_detail(ctx.tenant_id(), id, run_id, &q.path)
         .await
         .map_err(|e| ApiError::Internal(format!("step 詳細: {e}")))?
         .ok_or(ApiError::NotFound)?;
@@ -520,7 +520,7 @@ pub async fn list_workflow_run_events(
     let runs = runs_or_503(&state)?;
     let items = runs
         .list_events(
-            &ctx.tenant_id,
+            ctx.tenant_id(),
             id,
             run_id,
             q.after_seq.unwrap_or(0),

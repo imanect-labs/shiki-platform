@@ -2,38 +2,54 @@
 
 import { FileText, ListChecks, Lightbulb, Sparkles } from "lucide-react";
 
+import type { Suggestion } from "@/lib/home-modes";
+import { cn } from "@/lib/utils";
 import { seasonVar } from "@/lib/season";
 
-/// ホームの候補プロンプト（prompt-kit の PromptSuggestion 相当）。押すと即チャット開始。
-/// 4 つの候補を四季(shiki)に対応させ、アイコンに控えめな季節の差し色を添える（春→夏→秋→冬）。
-const SUGGESTIONS: { icon: typeof FileText; text: string }[] = [
-  { icon: FileText, text: "経費精算の提出期限と接待交際費の上限を教えて。" },
-  { icon: ListChecks, text: "社内の経費精算のルールを教えて" },
-  { icon: Lightbulb, text: "新機能の企画アイデアを5つ出して" },
-  { icon: Sparkles, text: "この資料をもとにメール文面を作成して" },
-];
+/// アイコンは並び順に固定で、四季(shiki)に対応させる（春→夏→秋→冬）。
+const ICONS = [FileText, ListChecks, Lightbulb, Sparkles] as const;
 
-export function PromptSuggestions({ onPick }: { onPick: (text: string) => void }) {
+/// ホームの候補プロンプト（prompt-kit の PromptSuggestion 相当）。押すと即チャット開始。
+/// 4 つの候補のアイコンに控えめな季節の差し色を添える。`meta`（出どころ）は本文の右に小さく出す。
+/// 長い候補は 1 行に詰めるので、全文は title で確かめられるようにする。
+/// スマホは先頭の 2 つだけを注記なしで出す（縦に 4 段積むと入力欄の周りが詰まって見える）。
+export function PromptSuggestions({
+  items,
+  onPick,
+}: {
+  items: readonly Suggestion[];
+  onPick: (suggestion: Suggestion) => void;
+}) {
   return (
     <div className="flex w-full max-w-2xl flex-wrap items-center justify-center gap-2">
-      {SUGGESTIONS.map((s, i) => {
-        const Icon = s.icon;
+      {items.slice(0, ICONS.length).map((s, i) => {
+        const Icon = ICONS[i];
         // 季節トークンを CSS 変数に束ね、アイコン色とホバー時の枠/地のごく薄い差し色に使う。
         const season = seasonVar(i);
+        const label = s.label ?? s.text;
         return (
           <button
-            key={s.text}
+            key={`${label}:${s.attachment?.node_id ?? ""}`}
             type="button"
-            onClick={() => onPick(s.text)}
+            title={label}
+            onClick={() => onPick(s)}
             style={{ ["--season" as string]: season }}
-            className="group inline-flex items-center gap-2 rounded-full border border-border bg-card px-3.5 py-2 text-[13px] text-foreground/80 transition-colors hover:border-[var(--season)]/40 hover:bg-[var(--season)]/[0.07] hover:text-foreground"
+            className={cn(
+              "group inline-flex max-w-full items-center gap-2 rounded-full border border-border bg-card px-3.5 py-2 text-[13px] text-foreground/80 transition-colors hover:border-[var(--season)]/40 hover:bg-[var(--season)]/[0.07] hover:text-foreground",
+              i >= 2 && "max-sm:hidden",
+            )}
           >
             <Icon
-              className="size-4 transition-colors"
+              className="size-4 shrink-0 transition-colors"
               style={{ color: season }}
               aria-hidden
             />
-            {s.text}
+            <span className="min-w-0 truncate">{label}</span>
+            {s.meta ? (
+              <span className="hidden shrink-0 text-[11.5px] text-muted-foreground sm:inline">
+                {s.meta}
+              </span>
+            ) : null}
           </button>
         );
       })}

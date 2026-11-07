@@ -26,6 +26,20 @@ pub struct RunnerRequest {
     /// 返さず、[`RunnerResponse::truncated`] を立てる。省略は上限なし（この項目が無かったころの api と同じ）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_result_bytes: Option<u64>,
+    /// 追加でロードするテーブル（複数 CSV の JOIN・#1037）。`Query` のときだけ使う（CSV の主ファイルだけ・Excel とは
+    /// 組み合わせない）。パスは `csv_path` と同じく api が viewer 認可後に置いた**信頼できる**一時ファイル（UTF-8 に
+    /// 直した CSV）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extra_tables: Vec<RunnerTable>,
+}
+
+/// 追加テーブル 1 件（テーブル名 → 信頼できるローカルパス）。
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RunnerTable {
+    /// テーブル名（[`crate::tables::is_valid_table_name`] を満たす・`data` 以外）。
+    pub name: String,
+    /// 信頼できるローカルパス。
+    pub csv_path: String,
 }
 
 /// 集計の結果の大きさの上限の既定（8 MiB）。ワークフローの「CSV を集計」の結果（rows と items）がこれを超えないように、
@@ -130,8 +144,8 @@ pub enum RunnerOp {
     Schema,
     /// ページ取得（安定行番号順・offset/limit）。
     Rows { offset: u64 },
-    /// 読み取り専用 SQL（**検証済み**・単一 SELECT/WITH）。テーブル名は `data`（Excel はほかのシートもシートの名前で
-    /// 読める・[`SheetInfo`]）。
+    /// 読み取り専用 SQL（**検証済み**・単一 SELECT/WITH）。主ファイルのテーブル名は `data`（Excel はほかのシートも
+    /// シートの名前で読める・[`SheetInfo`]）、追加ファイルは [`RunnerRequest::extra_tables`] の名前。
     Query { sql: String },
     /// 区切り文字と改行を推定して返す（[`RunnerResponse::dialect`]）。集計の読み込み（`read_csv_auto`）と同じ推定器
     /// （DuckDB の `sniff_csv`）を同じ引数で使い、CSV の編集が集計と同じ区切りで読み書きする（BUG-144）。

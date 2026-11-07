@@ -5,8 +5,8 @@
 //! 解決し（[`ChatWorker::yui_bindings`]）、押されたときはサーバーが本文を読み直して検証する
 //! （`store::yui_actions`・#604）。
 
-/// 書き方の説明（評価で最も正確だった版をもとにしたもの）。
-const GUIDE: &str = include_str!("yui_guide.md");
+/// 回答の中で図と UI をどう使うかの shiki 側の決まり（手書き。種類の説明は書かない）。
+const HOST_GUIDE: &str = include_str!("yui_guide.md");
 
 impl super::ChatWorker {
     /// 本文の図のワークフローのボタン（`-> workflow 名前`）を、**回答した主体**の権限で解決して
@@ -49,9 +49,19 @@ impl super::ChatWorker {
     }
 }
 
-/// システムプロンプトの末尾に図の書き方を足す。
+/// システムプロンプトの末尾に、図と UI の使い方を足す。
+///
+/// shiki 側の決まり → 共通の決まり → 種類の早見の順。種類ごとの書き方は載せず、モデルが
+/// `ui_reference` で読む（早見は常に載せる。無いとどの種類を使うかの判断が落ちる・y-ui の評価）。
 pub fn with_yui_guide(base: &str) -> String {
-    format!("{}\n\n{}", base.trim_end(), GUIDE.trim_end())
+    let reference = &*super::yui_reference::REFERENCE;
+    format!(
+        "{}\n\n{}\n\n{}\n\n種類の早見:\n{}",
+        base.trim_end(),
+        HOST_GUIDE.trim_end(),
+        reference.rules.trim_end(),
+        reference.index.trim_end()
+    )
 }
 
 #[cfg(test)]
@@ -61,11 +71,16 @@ mod tests {
     #[test]
     fn appends_guide_after_base_prompt() {
         let out = with_yui_guide("あなたはアシスタントです。\n");
-        assert!(out.starts_with("あなたはアシスタントです。\n\n# 図の書き方"));
-        // 5 種類すべての書き方を含み、撤去した emit_ui には触れない（#604）。
-        for kind in ["```ui", "bar", "line", "stat", "flow", "stack"] {
+        assert!(out.starts_with("あなたはアシスタントです。\n\n# 回答の中の図と UI"));
+        // 早見は全種類（ask・plan を除く）を載せ、円グラフも描けると伝わる。
+        for kind in ["`bar`", "`pie`", "`calc`", "`app`", "`compare`", "`map`"] {
             assert!(out.contains(kind), "{kind} が無い");
         }
+        assert!(out.contains("種類の早見:\nグラフ:"));
+        assert!(out.contains("ui_reference"));
+        // 種類ごとの書き方（作例）は載せない（ui_reference で読む）。
+        assert!(!out.contains("```ui\npie "));
         assert!(!out.contains("emit_ui"));
+        assert!(!out.contains("描けない"));
     }
 }

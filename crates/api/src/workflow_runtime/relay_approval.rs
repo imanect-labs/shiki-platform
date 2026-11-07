@@ -49,9 +49,10 @@ fn exec_ctx(s: &EventWaitSubscriber) -> ExecCtx {
     }
 }
 
-/// relay の system 主体（監査の actor）。
-fn system_ctx(tenant_id: &str, org: &str) -> AuthContext {
-    AuthContext::new(
+/// relay の system 主体（監査の actor）。tenant_id が文字ポリシーに反するなら組まない（#1032）。
+fn system_ctx(tenant_id: &str, org: &str) -> Option<AuthContext> {
+    let tenant = authz::TenantId::parse(tenant_id).ok()?;
+    Some(AuthContext::new(
         Principal {
             kind: PrincipalKind::User,
             id: "system:workflow-relay".into(),
@@ -61,8 +62,8 @@ fn system_ctx(tenant_id: &str, org: &str) -> AuthContext {
             tenant_id: Some(tenant_id.to_string()),
         },
         org.to_string(),
-        tenant_id.to_string(),
-    )
+        tenant,
+    ))
 }
 
 /// 承認の監査（書込の失敗は警告に留める・relay を止めない）。
@@ -101,9 +102,14 @@ pub(super) async fn audit_resolved_because(
     if let Some(reason) = reason {
         metadata["reason"] = json!(reason);
     }
+    // 監査の actor を組めない（tenant_id が不正）なら書かない（ほかの行と同じく relay を止めない）。
+    let Some(ctx) = system_ctx(&r.tenant_id, &r.org) else {
+        tracing::warn!(approval_id = %r.approval_id, "承認の決着の監査を書けない（tenant_id が不正）");
+        return;
+    };
     audit(
         db,
-        &system_ctx(&r.tenant_id, &r.org),
+        &ctx,
         AuditAction::WorkflowApprovalResolve,
         r.approval_id,
         metadata,
@@ -235,17 +241,20 @@ pub(super) async fn reconcile_approvals(deps: &RelayDeps<'_>) -> Result<(), anyh
         } else {
             fail_unavailable(deps, &p.subscriber, &p.wait).await?;
         }
-        audit(
-            deps.db,
-            &auth_ctx(&ec),
-            AuditAction::WorkflowApprovalRequest,
-            p.wait.approval_id,
-            json!({
-                "run_id": p.subscriber.run_id, "workflow_id": p.workflow_id, "table_id": p.table_id,
-                "record_id": p.wait.record_id, "assignees": p.assignees,
-            }),
-        )
-        .await;
+        // 実行主体を組めない（run の tenant_id が不正）なら監査は書かない（突合の印は付ける）。
+        if let Ok(ctx) = auth_ctx(&ec) {
+            audit(
+                deps.db,
+                &ctx,
+                AuditAction::WorkflowApprovalRequest,
+                p.wait.approval_id,
+                json!({
+                    "run_id": p.subscriber.run_id, "workflow_id": p.workflow_id, "table_id": p.table_id,
+                    "record_id": p.wait.record_id, "assignees": p.assignees,
+                }),
+            )
+            .await;
+        }
         deps.runs
             .mark_approval_reconciled(&p.subscriber.tenant_id, p.wait.approval_id)
             .await?;

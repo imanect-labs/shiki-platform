@@ -288,16 +288,16 @@ async fn tables(
         .expect("owner@miniapp");
     // alice はアプリを入れた組織のメンバー（ログインの同期が付ける・D-130）。ゲートウェイは利用者の組織を
     // インストールから決め、このタプルで確かめる。
-    let ns = authz::Namespace::for_tenant(&installer.tenant_id);
+    let ns = authz::Namespace::for_tenant(installer.tenant_id());
     authz
         .write_tuple(
             &ns.user(ALICE),
             Relation::Member,
-            &ns.organization(&installer.org),
+            &ns.organization(installer.org()),
         )
         .await
         .expect("alice in the org");
-    let alice = common::ctx_as(&installer.tenant_id, ALICE);
+    let alice = common::ctx_as(installer.tenant_id(), ALICE);
     let alice_bound = data
         .create_table_for_app(&alice, new_table("alice の控え"), app_id, None)
         .await

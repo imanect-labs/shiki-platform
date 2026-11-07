@@ -66,8 +66,8 @@ impl UsageRecorder {
              VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15) \
              ON CONFLICT (tenant_id, idempotency_key) DO NOTHING",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(&rec.idempotency_key)
         .bind(&rec.provider)
         .bind(&rec.model)
@@ -78,7 +78,7 @@ impl UsageRecorder {
         .bind(rec.cost_usd_micros)
         .bind(rec.trace_id.as_deref())
         .bind(rec.app_id)
-        .bind(&ctx.principal.id)
+        .bind(&ctx.principal().id)
         .bind(rec.source.as_str())
         .bind(&rec.provider_id)
         .execute(&self.db)
@@ -102,8 +102,8 @@ impl UsageRecorder {
              WHERE tenant_id = $1 AND org = $2 AND app_id = $3 \
              GROUP BY user_sub, model ORDER BY cost_usd_micros DESC",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(app_id)
         .fetch_all(&self.db)
         .await
@@ -122,7 +122,7 @@ impl UsageRecorder {
             "SELECT COALESCE(SUM(cost_usd_micros), 0)::bigint FROM llm_usage \
              WHERE tenant_id = $1 AND app_id = $2 AND created_at >= date_trunc('day', now())",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(app_id)
         .fetch_one(&self.db)
         .await?;

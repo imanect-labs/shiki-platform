@@ -120,7 +120,7 @@ impl DataPort<'_> {
         table_id: Uuid,
         relation: Relation,
     ) -> Result<Actor, PortError> {
-        let ctx = auth_ctx(ec);
+        let ctx = auth_ctx(ec)?;
         if ec.principal_kind != "workflow" {
             return Ok(Actor {
                 ctx,
@@ -172,7 +172,7 @@ impl DataPort<'_> {
                 tenant_id: Some(ec.tenant_id.clone()),
             },
             ec.org.clone(),
-            ec.tenant_id.clone(),
+            super::auth::tenant_of(ec)?,
         )
         // 委譲元の権限で書いても、run の書込の印は残す（relay の因果の鎖・by_workflow・BUG-44）。
         .in_run(ec.run_id);
@@ -194,7 +194,7 @@ impl DataPort<'_> {
         const PREFIX: &str = "data_table:";
         let objects = workflow_engine::delegated_objects(
             self.db,
-            &ctx.tenant_id,
+            ctx.tenant_id(),
             workflow_id,
             delegator,
             PREFIX,
@@ -217,7 +217,7 @@ impl DataPort<'_> {
     /// `truncated` は一覧に載らなかった見えるテーブルがあるかもしれないこと（上限の件数を超えたか、見えるテーブルが
     /// 多い人で OpenFGA に問う数の上限で切れた・BUG-149）。
     pub(super) async fn list_tables(&self, ec: &ExecCtx) -> Result<Value, PortError> {
-        let ctx = auth_ctx(ec);
+        let ctx = auth_ctx(ec)?;
         let listing = self
             .data
             .list_tables_listing(&ctx, MAX_LISTED_TABLES)

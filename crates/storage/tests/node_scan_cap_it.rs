@@ -190,7 +190,7 @@ fn ctx(tenant: &str, user: &str) -> AuthContext {
             tenant_id: Some(tenant.into()),
         },
         ORG.into(),
-        tenant.into(),
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 
@@ -794,10 +794,11 @@ async fn exact_name_lookup_finds_the_sibling_a_search_page_misses() {
     .await;
 }
 
-/// 上限に届いた名前の検索で候補を引く文（`storage::named_scan_sql`）は、名前の順の索引（migration 0128 の
-/// `node_name_scan_idx`）をたどって件数で打ち切る。索引が無いと、引くたびに組織の生きているノードをすべて読んで
-/// 並べ直す計画になる。小さな表でも索引を選べるかだけを見るため、走査と並べ直しを抑えて計画を立てさせる（索引で
-/// 並びを満たせないと Sort が残る）。昇順・降順と、続きの位置の有無を見る。行は作らない。
+/// 上限に届いた名前の検索で候補を引く文（`storage::named_scan_sql`）は、名前の順の索引（migration 0137 の
+/// `node_name_scan_idx`・降順は `node_name_scan_desc_idx`）をたどって件数で打ち切る。並びはフォルダー優先 → 名前の
+/// 自然順 → id（#1040）。索引が無いと、引くたびに組織の生きているノードをすべて読んで並べ直す計画になる。小さな表でも
+/// 索引を選べるかだけを見るため、走査と並べ直しを抑えて計画を立てさせる（索引で並びを満たせないと Sort が残る）。
+/// 昇順・降順と、続きの位置の有無と、種別の絞り込みの有無を見る。行は作らない。
 #[tokio::test]
 async fn the_named_candidate_scan_walks_the_name_index_without_sorting() {
     let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
@@ -813,34 +814,43 @@ async fn the_named_candidate_scan_walks_the_name_index_without_sorting() {
         .run(&pool)
         .await
         .expect("マイグレーション適用");
-    for desc in [false, true] {
+    for (desc, index) in [
+        (false, "node_name_scan_idx"),
+        (true, "node_name_scan_desc_idx"),
+    ] {
         let sort = ChildSort {
             key: ChildSortKey::Name,
             desc,
         };
         let explain = format!("EXPLAIN {}", storage::named_scan_sql(sort));
-        for after in [None, Some(("m".to_string(), Uuid::new_v4()))] {
-            let mut tx = pool.begin().await.unwrap();
-            for set in [
-                "SET LOCAL enable_seqscan = off",
-                "SET LOCAL enable_sort = off",
-            ] {
-                sqlx::query(set).execute(&mut *tx).await.unwrap();
+        // 続きの位置は（並びの値・id・種別・名前）。名前の順では並びの値も名前。
+        for after in [None, Some(("m".to_string(), Uuid::new_v4(), "file"))] {
+            for kind in [None, Some("file")] {
+                let mut tx = pool.begin().await.unwrap();
+                for set in [
+                    "SET LOCAL enable_seqscan = off",
+                    "SET LOCAL enable_sort = off",
+                ] {
+                    sqlx::query(set).execute(&mut *tx).await.unwrap();
+                }
+                let plan: Vec<String> = sqlx::query_scalar(&explain)
+                    .bind(ORG)
+                    .bind("t-plan")
+                    .bind(vec!["%a%".to_string()])
+                    .bind(after.as_ref().map(|a| a.0.clone()))
+                    .bind(after.as_ref().map(|a| a.1))
+                    .bind(200_i64)
+                    .bind(kind)
+                    .bind(after.as_ref().map(|a| a.2))
+                    .bind(after.as_ref().map(|a| a.0.clone()))
+                    .fetch_all(&mut *tx)
+                    .await
+                    .unwrap();
+                tx.rollback().await.unwrap();
+                let plan = plan.join("\n");
+                assert!(plan.contains(&format!(" {index} ")), "{plan}");
+                assert!(!plan.contains("Sort"), "{plan}");
             }
-            let plan: Vec<String> = sqlx::query_scalar(&explain)
-                .bind(ORG)
-                .bind("t-plan")
-                .bind(vec!["%a%".to_string()])
-                .bind(after.as_ref().map(|a| a.0.clone()))
-                .bind(after.as_ref().map(|a| a.1))
-                .bind(200_i64)
-                .fetch_all(&mut *tx)
-                .await
-                .unwrap();
-            tx.rollback().await.unwrap();
-            let plan = plan.join("\n");
-            assert!(plan.contains("node_name_scan_idx"), "{plan}");
-            assert!(!plan.contains("Sort"), "{plan}");
         }
     }
 }

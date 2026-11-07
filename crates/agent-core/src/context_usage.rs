@@ -217,11 +217,13 @@ fn reads_material(name: &str) -> bool {
         | ToolName::Grep
         | ToolName::ReadWorkflow
         | ToolName::ListWorkflows
+        | ToolName::SearchWorkflows
         | ToolName::DocumentRead
         | ToolName::SlideRead
         | ToolName::OfficeRead
         | ToolName::CsvQuery
-        | ToolName::DataQuery => true,
+        | ToolName::DataQuery
+        | ToolName::DriveFind => true,
         ToolName::Skill
         | ToolName::SkillSearch
         | ToolName::QuoteCheck
@@ -232,6 +234,8 @@ fn reads_material(name: &str) -> bool {
         | ToolName::FsDelete
         | ToolName::Shell
         | ToolName::Subagent
+        // 書き方の説明で、回答の根拠になる資料ではない。
+        | ToolName::UiReference
         | ToolName::EmitUi
         | ToolName::EmitWorkflow
         | ToolName::DocumentEdit
@@ -239,6 +243,7 @@ fn reads_material(name: &str) -> bool {
         | ToolName::SaveNote
         | ToolName::SaveSlide
         | ToolName::SaveCsv
+        | ToolName::SaveSkill
         | ToolName::SaveDocument
         | ToolName::SaveSheet
         | ToolName::SlideEdit
@@ -249,7 +254,8 @@ fn reads_material(name: &str) -> bool {
         | ToolName::CsvPatch
         | ToolName::CsvWrite
         | ToolName::DataSchema
-        | ToolName::DataRecordWrite => false,
+        | ToolName::DataRecordWrite
+        | ToolName::DriveMove => false,
     }
 }
 

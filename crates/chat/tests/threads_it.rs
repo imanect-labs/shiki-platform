@@ -126,7 +126,7 @@ impl AuthzClient for AllowAll {
 }
 
 async fn setup() -> Option<PgPool> {
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return None;
     };
@@ -153,7 +153,7 @@ fn ctx(tenant: &str) -> AuthContext {
             tenant_id: Some(tenant.into()),
         },
         "acme".into(),
-        tenant.into(),
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 
@@ -349,19 +349,19 @@ async fn set_thread_workspace_roundtrips_folder_and_parent() {
         .unwrap();
     let parent = uuid::Uuid::new_v4();
     store
-        .set_thread_workspace(t1.id, &c.tenant_id, None, Some(parent))
+        .set_thread_workspace(t1.id, c.tenant_id(), None, Some(parent))
         .await
         .unwrap();
     assert_eq!(
         store
-            .workspace_parent_folder_id(t1.id, &c.tenant_id)
+            .workspace_parent_folder_id(t1.id, c.tenant_id())
             .await
             .unwrap(),
         Some(parent)
     );
     assert_eq!(
         store
-            .workspace_folder_id(t1.id, &c.tenant_id)
+            .workspace_folder_id(t1.id, c.tenant_id())
             .await
             .unwrap(),
         None
@@ -374,12 +374,12 @@ async fn set_thread_workspace_roundtrips_folder_and_parent() {
         .unwrap();
     let folder = uuid::Uuid::new_v4();
     store
-        .set_thread_workspace(t2.id, &c.tenant_id, Some(folder), None)
+        .set_thread_workspace(t2.id, c.tenant_id(), Some(folder), None)
         .await
         .unwrap();
     assert_eq!(
         store
-            .workspace_folder_id(t2.id, &c.tenant_id)
+            .workspace_folder_id(t2.id, c.tenant_id())
             .await
             .unwrap(),
         Some(folder)
@@ -523,7 +523,7 @@ async fn share_thread_propagates_workspace_editor() {
     // ワークスペースフォルダを紐づける（通常は初回自律 run が作る）。
     let folder_id = uuid::Uuid::new_v4();
     store
-        .set_workspace_folder_if_absent(thread.id, &c.tenant_id, folder_id)
+        .set_workspace_folder_if_absent(thread.id, c.tenant_id(), folder_id)
         .await
         .unwrap();
     let folder_obj = c.ns().folder(&folder_id.to_string()).as_str().to_string();
@@ -594,7 +594,7 @@ async fn backfill_grants_workspace_to_thread_members() {
     // 初回自律 run 相当: フォルダを紐づけてからバックフィルする。
     let folder_id = uuid::Uuid::new_v4();
     store
-        .set_workspace_folder_if_absent(thread.id, &c.tenant_id, folder_id)
+        .set_workspace_folder_if_absent(thread.id, c.tenant_id(), folder_id)
         .await
         .unwrap();
     store
@@ -787,7 +787,7 @@ async fn event_stream_replays_appended_events() {
         .unwrap();
 
     // from_seq=0 で全リプレイ。Done を受け取ったら終了。
-    let mut rx = store.event_stream(&c.tenant_id, run_id, 0);
+    let mut rx = store.event_stream(c.tenant_id(), run_id, 0);
     let mut tokens = String::new();
     let mut done = false;
     for _ in 0..50 {
@@ -873,7 +873,7 @@ async fn agent_mode_worker_runs_to_done() {
         .await
         .unwrap();
 
-    let mut rx = store.event_stream(&c.tenant_id, res.run_id, 0);
+    let mut rx = store.event_stream(c.tenant_id(), res.run_id, 0);
     let mut done = false;
     for _ in 0..500 {
         let next = tokio::time::timeout(Duration::from_secs(20), rx.next())
@@ -941,7 +941,8 @@ async fn db_approver_blocks_until_decision() {
     let mut waited = false;
     for _ in 0..40 {
         tokio::time::sleep(StdDuration::from_millis(50)).await;
-        if store.run_status(&c.tenant_id, run_id).await.unwrap() == Some(RunStatus::WaitingApproval)
+        if store.run_status(c.tenant_id(), run_id).await.unwrap()
+            == Some(RunStatus::WaitingApproval)
         {
             waited = true;
             break;
@@ -974,7 +975,7 @@ async fn db_approver_blocks_until_decision() {
         .unwrap();
     assert_eq!(decision, agent_core::ApprovalDecision::Approved);
     assert_eq!(
-        store.run_status(&c.tenant_id, run_id).await.unwrap(),
+        store.run_status(c.tenant_id(), run_id).await.unwrap(),
         Some(RunStatus::Running)
     );
 
@@ -1103,7 +1104,7 @@ async fn tool_result_bodies_are_hidden_from_other_viewers() {
 
     // 別ユーザー（共有された閲覧者）には本文を返さない。ブロック自体と成否は残す。
     let mut other = ctx(&tenant);
-    other.principal.id = "bob".into();
+    other.principal_mut().id = "bob".into();
     let theirs = store.get_messages(&other, thread.id, None).await.unwrap();
     let results: Vec<&ContentBlock> = theirs
         .iter()
@@ -1184,7 +1185,7 @@ async fn unreadable_citations_become_number_only_stubs() {
         .unwrap();
 
     let mut viewer = ctx(&tenant);
-    viewer.principal.id = "bob".into();
+    viewer.principal_mut().id = "bob".into();
     authz
         .deny
         .lock()
@@ -1286,7 +1287,7 @@ async fn viewer_event_stream_redacts_for_other_viewers() {
     }
 
     let mut viewer = ctx(&tenant);
-    viewer.principal.id = "bob".into();
+    viewer.principal_mut().id = "bob".into();
     // **閲覧者（bob）にだけ**拒否する。実装が誤って実行主体（alice）の権限で判定すると、
     // bob にも抜粋が流れてこのテストが落ちる。
     // Web の出典をファイル（node_id は空）として判定してしまうと、ここで拒否されて番号だけになる。
@@ -1424,7 +1425,7 @@ async fn viewer_event_stream_checks_thread_and_drops_legacy_citations() {
 
     // 番号の無い旧形式の引用は、読めなければ番号だけの出典にもできないので落とす。
     let mut viewer = ctx(&tenant);
-    viewer.principal.id = "bob".into();
+    viewer.principal_mut().id = "bob".into();
     authz
         .deny
         .lock()
@@ -1494,7 +1495,7 @@ async fn pending_approval_is_persisted_and_the_wait_releases_the_slot() {
     let cancel = Arc::new(AtomicBool::new(false));
     let approver = DbApprover::new(store.clone(), run_id, claimed.fencing_token, cancel)
         .with_timing(StdDuration::from_millis(50), StdDuration::from_secs(20))
-        .with_slot(Arc::clone(&slot), &c.tenant_id, &c.principal.id);
+        .with_slot(Arc::clone(&slot), c.tenant_id(), &c.principal().id);
     let handle = tokio::spawn(async move {
         approver
             .decide("tc-9", "data_record_write", &serde_json::json!({}))
@@ -1510,7 +1511,7 @@ async fn pending_approval_is_persisted_and_the_wait_releases_the_slot() {
     }
     assert!(parked, "承認待ちの間は枠を返す（他の run が生成できる）");
     assert_eq!(
-        store.run_status(&c.tenant_id, run_id).await.unwrap(),
+        store.run_status(c.tenant_id(), run_id).await.unwrap(),
         Some(RunStatus::WaitingApproval)
     );
     // 承認待ちのツール呼び出しが run に残る（再読込後も引ける）。
@@ -1566,9 +1567,166 @@ async fn pending_approval_is_persisted_and_the_wait_releases_the_slot() {
     assert_eq!(sem.available_permits(), 0, "再開した run が枠を持つ");
     assert_eq!(store.pending_approval(run_id).await.unwrap(), None);
     assert_eq!(
-        store.run_status(&c.tenant_id, run_id).await.unwrap(),
+        store.run_status(c.tenant_id(), run_id).await.unwrap(),
         Some(RunStatus::Running)
     );
+}
+
+/// #965: 検索フォルダを設定すると、スレッドの取得とワーカー用の読み出しの両方に出る。
+#[tokio::test]
+async fn thread_search_folder_roundtrips() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let store = store(&pool, Arc::new(AllowAll::new())).await;
+    let c = ctx(&tenant);
+    let thread = store
+        .create_thread(&c, "フォルダで探す", false, None, None)
+        .await
+        .unwrap();
+    assert_eq!(thread.search_folder_id, None);
+    assert_eq!(
+        store
+            .thread_search_folder(&tenant, thread.id)
+            .await
+            .unwrap(),
+        None
+    );
+
+    let folder = uuid::Uuid::new_v4();
+    store
+        .set_thread_search_folder(thread.id, &tenant, folder, "規程集")
+        .await
+        .unwrap();
+    let got = store.get_thread(&c, thread.id, None).await.unwrap();
+    assert_eq!(got.search_folder_id, Some(folder));
+    assert_eq!(got.search_folder_name.as_deref(), Some("規程集"));
+    assert_eq!(
+        store
+            .thread_search_folder(&tenant, thread.id)
+            .await
+            .unwrap(),
+        Some(folder)
+    );
+    // 別テナントからは読めない（tenant で絞る）。
+    assert_eq!(
+        store
+            .thread_search_folder("other", thread.id)
+            .await
+            .unwrap(),
+        None
+    );
+}
+
+/// #965: ホームの「今日のこと」に出す承認待ちの一覧。自分が actor の run だけを返す。
+/// 他人の run・承認待ちでない run・editor を失った thread は出さない。
+#[tokio::test]
+async fn list_pending_approvals_returns_only_my_waiting_runs_with_editor_access() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let authz = Arc::new(AllowAll::new());
+    let store = store(&pool, Arc::clone(&authz)).await;
+    let alice = ctx(&tenant);
+    let mut bob = ctx(&tenant);
+    bob.principal_mut().id = "bob".into();
+
+    // 承認待ちの run を作る（ワーカーが書く状態を SQL で再現する）。`post_message` を通すと
+    // 一瞬 queued になり、同じバイナリの別テストが回すワーカーに拾われる（自動タイトルで題名が
+    // 書き換わる・run が終わる）ので、生成ジョブを積まずに waiting_approval の run を直接作る。
+    async fn waiting_run(
+        store: &ChatStore,
+        pool: &PgPool,
+        c: &AuthContext,
+        title: &str,
+        tool_call_id: &str,
+    ) -> (uuid::Uuid, uuid::Uuid) {
+        let thread = store
+            .create_thread(c, title, true, None, None)
+            .await
+            .unwrap();
+        let message_id: uuid::Uuid = sqlx::query_scalar(
+            "INSERT INTO message (thread_id, org, tenant_id, role, content, agent_mode) \
+             VALUES ($1, $2, $3, 'assistant', '[]'::jsonb, true) RETURNING id",
+        )
+        .bind(thread.id)
+        .bind(c.org())
+        .bind(c.tenant_id())
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        let run_id: uuid::Uuid = sqlx::query_scalar(
+            "INSERT INTO generation_run (message_id, thread_id, org, tenant_id, actor, agent_mode, \
+                                         status, pending_approval) \
+             VALUES ($1, $2, $3, $4, $5, true, 'waiting_approval', \
+                     jsonb_build_object('tool_call_id', $6::text, 'tool_name', 'drive.move', \
+                                        'requested_at', now())) \
+             RETURNING run_id",
+        )
+        .bind(message_id)
+        .bind(thread.id)
+        .bind(c.org())
+        .bind(c.tenant_id())
+        .bind(&c.principal().id)
+        .bind(tool_call_id)
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        (thread.id, run_id)
+    }
+
+    let (mine, mine_run) = waiting_run(&store, &pool, &alice, "移動の確認", "tc-a").await;
+    let (_, _) = waiting_run(&store, &pool, &bob, "bob の承認待ち", "tc-b").await;
+    // 承認待ちでない run（生成中のまま）は出さない。
+    let idle = store
+        .create_thread(&alice, "ふつうの会話", false, None, None)
+        .await
+        .unwrap();
+    store
+        .post_message(&alice, idle.id, "hi", &[], None, None, false, &[], None)
+        .await
+        .unwrap();
+
+    let got = store.list_pending_approvals(&alice, 10).await.unwrap();
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert_eq!(got[0].thread_id, mine);
+    assert_eq!(got[0].run_id, mine_run);
+    assert_eq!(got[0].thread_title, "移動の確認");
+    assert_eq!(got[0].tool_call_id, "tc-a");
+    assert_eq!(got[0].tool_name, "drive.move");
+    assert_eq!(got[0].origin_note_id, None);
+
+    // 別 org の同名ユーザーには出さない（tenant ＋ org ＋ actor で絞る）。
+    let mut other_org = ctx(&tenant);
+    other_org = other_org.with_org("other");
+    assert!(store
+        .list_pending_approvals(&other_org, 10)
+        .await
+        .unwrap()
+        .is_empty());
+
+    // thread の editor を失ったら出さない（post-filter・共有の剥奪は即時に効く）。
+    authz.deny_for.lock().unwrap().push((
+        alice.subject().to_string(),
+        alice.ns().thread(&mine.to_string()).as_str().to_string(),
+    ));
+    assert!(store
+        .list_pending_approvals(&alice, 10)
+        .await
+        .unwrap()
+        .is_empty());
+
+    // 件数の上限は editor の確認のあとで切る（新しい方が落ちたら古い承認待ちが繰り上がる）。
+    let (newer, _) = waiting_run(&store, &pool, &alice, "新しい承認待ち", "tc-c").await;
+    {
+        let mut deny = authz.deny_for.lock().unwrap();
+        deny.clear();
+        deny.push((
+            alice.subject().to_string(),
+            alice.ns().thread(&newer.to_string()).as_str().to_string(),
+        ));
+    }
+    let got = store.list_pending_approvals(&alice, 1).await.unwrap();
+    assert_eq!(got.len(), 1, "{got:?}");
+    assert_eq!(got[0].run_id, mine_run);
 }
 
 /// R3-5: 承認待ちの保留の上限（ここではユーザーあたり 1 件）を超える承認要求は待たずに却下する。
@@ -1620,7 +1778,7 @@ async fn approval_over_the_parking_cap_is_rejected_without_waiting() {
         Arc::clone(&limits),
         Arc::clone(&sem).acquire_owned().await.unwrap(),
     );
-    other.park(&c.tenant_id, &c.principal.id).await.unwrap();
+    other.park(c.tenant_id(), &c.principal().id).await.unwrap();
     let slot = RunSlot::new(
         Arc::clone(&sem),
         Arc::clone(&limits),
@@ -1634,7 +1792,7 @@ async fn approval_over_the_parking_cap_is_rejected_without_waiting() {
         Arc::new(AtomicBool::new(false)),
     )
     .with_timing(StdDuration::from_millis(50), StdDuration::from_secs(20))
-    .with_slot(Arc::clone(&slot), &c.tenant_id, &c.principal.id);
+    .with_slot(Arc::clone(&slot), c.tenant_id(), &c.principal().id);
     let decision = tokio::time::timeout(
         StdDuration::from_secs(5),
         approver.decide("tc-1", "data_record_write", &serde_json::json!({})),
@@ -1648,7 +1806,7 @@ async fn approval_over_the_parking_cap_is_rejected_without_waiting() {
         "却下した run は枠を返さない"
     );
     assert_ne!(
-        store.run_status(&c.tenant_id, run_id).await.unwrap(),
+        store.run_status(c.tenant_id(), run_id).await.unwrap(),
         Some(RunStatus::WaitingApproval),
         "承認待ちへ遷移しない"
     );
@@ -1673,5 +1831,5 @@ async fn approval_over_the_parking_cap_is_rejected_without_waiting() {
         Arc::clone(&limits),
         Arc::clone(&sem).acquire_owned().await.unwrap(),
     );
-    third.park(&c.tenant_id, "someone-else").await.unwrap();
+    third.park(c.tenant_id(), "someone-else").await.unwrap();
 }

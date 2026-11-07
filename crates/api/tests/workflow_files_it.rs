@@ -198,13 +198,13 @@ async fn setup() -> Option<Env> {
             tenant_id: Some(tenant.clone()),
         },
         tenant.clone(),
-        tenant.clone(),
+        authz::TenantId::parse(tenant.clone()).unwrap(),
     );
     // alice はドライブのルートにファイル・フォルダを作れる（member@org）。
     fga.write_tuple(
         &alice.subject(),
         Relation::Member,
-        &alice.ns().organization(&alice.org),
+        &alice.ns().organization(alice.org()),
     )
     .await
     .expect("member tuple");
@@ -324,13 +324,13 @@ impl Env {
                 tenant_id: Some(self.tenant.clone()),
             },
             self.tenant.clone(),
-            self.tenant.clone(),
+            authz::TenantId::parse(self.tenant.clone()).unwrap(),
         );
         self.fga
             .write_tuple(
                 &ctx.subject(),
                 Relation::Member,
-                &ctx.ns().organization(&ctx.org),
+                &ctx.ns().organization(ctx.org()),
             )
             .await
             .expect("member tuple");

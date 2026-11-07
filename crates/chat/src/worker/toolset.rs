@@ -22,11 +22,10 @@ impl ChatWorker {
         ctx: &AuthContext,
         run: &ClaimedRun,
         skills: &[crate::skill::AppliedSkill],
-        attachments: Vec<AttachmentRef>,
-    ) -> Vec<Arc<dyn Tool>> {
-        let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
-        self.push_core_tools(&mut tools, skills, attachments, run);
-        // AI ワークフロー編集（説明文に発話ユーザーのモデル一覧を載せる・Task 10.13）。
+        attachments: &[AttachmentRef],
+    ) -> Result<Vec<Arc<dyn Tool>>, crate::ChatError> {
+        let mut tools = self.core_tools(skills, attachments, run).await?;
+        // AI ワークフロー編集（説明文に発話ユーザーのモデル一覧を載せる・Task 10.13）と、ワークフローを探すツール。
         self.push_workflow_tools(&mut tools, ctx).await;
         // skill ツール（カタログ引き・#344 Task 10.11）。
         self.push_skill_tool(&mut tools, ctx, run, skills).await;
@@ -35,26 +34,29 @@ impl ChatWorker {
         self.push_office_and_csv_tools(&mut tools);
         // 構造化データ（発話ユーザーに見えるテーブルがあるときだけ・Task 15.7）。
         self.push_data_tools(&mut tools, ctx).await;
-        tools
+        Ok(tools)
     }
 
     /// 全プロファイル共通のツール（検索・コード実行・web・generative UI）。ワークフローは
-    /// [`Self::push_workflow_tools`]（発話ユーザーのモデル一覧を引くため async）。
+    /// [`Self::push_workflow_tools`]（発話ユーザーのモデル一覧を引くため ctx が要る）。
     ///
     /// `attachments` は会話の添付で、`code_interpreter` が実行前に `/workspace` へ置く（#379）。
-    pub(super) fn push_core_tools(
+    ///
+    /// doc_search / doc_read には skill の知識スコープと会話の検索フォルダを交差前のまま課す
+    /// （[`Self::search_bounds`]・絞り込みのみ・#965）。
+    pub(super) async fn core_tools(
         &self,
-        tools: &mut Vec<Arc<dyn Tool>>,
         skills: &[crate::skill::AppliedSkill],
-        attachments: Vec<AttachmentRef>,
+        attachments: &[AttachmentRef],
         run: &ClaimedRun,
-    ) {
+    ) -> Result<Vec<Arc<dyn Tool>>, crate::ChatError> {
+        let mut tools: Vec<Arc<dyn Tool>> = Vec::new();
         if let Some(search) = &self.search {
-            // skill の知識スコープを doc_search に反映する（Task 6.8・絞り込みのみ・
-            // 複数ピンは全ピンが scope を持つ時のみ union・#344）。
-            let scope = crate::skill::combined_scope(skills);
+            let bounds = self.search_bounds(run, skills).await?;
+            let folder = bounds.folder.clone().unwrap_or_default();
             // この回答のための検索・読み出しとして監査に残す（1 回答の判定と引用を引ける・#829）。
-            let doc_search = DocSearchTool::with_scope(search.clone(), scope.clone())
+            let doc_search = DocSearchTool::with_scope(search.clone(), bounds.skill.clone())
+                .within(folder.clone())
                 .for_answer(run.thread_id, run.message_id);
             // 当たった文書を引用の外まで読む（#425）。認可は StorageService の viewer 判定で、
             // 知識スコープは検索と同じものを課す（スコープ ∩ ReBAC）。
@@ -64,8 +66,9 @@ impl ChatWorker {
                     crate::doc_read_tool::DocReadTool::with_scope(
                         search.clone(),
                         storage.clone(),
-                        scope,
+                        bounds.skill,
                     )
+                    .within(folder)
                     .for_answer(run.thread_id, run.message_id),
                 ));
             } else {
@@ -85,7 +88,7 @@ impl ChatWorker {
                     Arc::new(crate::attachments::StorageAttachmentStore::new(
                         storage.clone(),
                     )),
-                    attachments,
+                    attachments.to_vec(),
                 );
             }
             tools.push(Arc::new(code));
@@ -102,12 +105,18 @@ impl ChatWorker {
             }
             tools.push(Arc::new(fetch));
         }
+        // ```ui の種類ごとの書き方（早見は system にある・ui_reference で書く前に読む）。
+        // 外部への入出力も認可も無い読み取りなので、図を書かせる構成なら常に提示する。
+        if self.config.yui {
+            tools.push(Arc::new(super::yui_reference::UiReferenceTool));
+        }
+        Ok(tools)
     }
 
     /// AI ワークフロー編集（emit_workflow / read_workflow・Task 10.13）と、既存のワークフローを探す
-    /// list_workflows（GAP-31）。
+    /// list_workflows（GAP-31）・search_workflows（図のボタンに実在する名前を書く）。
     ///
-    /// ストアとカタログ源（保存 API と同一実装）が両方配線されている時のみ提示する。emit_workflow の
+    /// emit / read / list はストアとカタログ源（保存 API と同一実装）が両方配線されている時のみ提示する。emit_workflow の
     /// 説明文には発話ユーザーの組織で使えるモデルと判定用のモデルを載せる（保存時の照合と同じ集合）。引けなければ
     /// run を落とさず、モデルを載せない説明文にする（候補は検証エラーで返る）。
     pub(super) async fn push_workflow_tools(
@@ -115,32 +124,39 @@ impl ChatWorker {
         tools: &mut Vec<Arc<dyn Tool>>,
         ctx: &AuthContext,
     ) {
-        let (Some(store), Some(catalog)) = (&self.workflow_store, &self.workflow_catalog) else {
-            return;
-        };
-        let mut emit = crate::workflow_tool::EmitWorkflowTool::new(store.clone(), catalog.clone());
-        match catalog.models(ctx).await {
-            Ok(models) => emit = emit.with_models(&models),
-            Err(e) => {
-                tracing::warn!(error = %e, "モデル一覧の取得に失敗（emit_workflow の説明文に載せない）");
+        if let (Some(store), Some(catalog)) = (&self.workflow_store, &self.workflow_catalog) {
+            let mut emit =
+                crate::workflow_tool::EmitWorkflowTool::new(store.clone(), catalog.clone());
+            match catalog.models(ctx).await {
+                Ok(models) => emit = emit.with_models(&models),
+                Err(e) => {
+                    tracing::warn!(error = %e, "モデル一覧の取得に失敗（emit_workflow の説明文に載せない）");
+                }
             }
-        }
-        // 判定用のモデル（ai.decide）も id と表示名を載せる（保存時の誤りの候補で知る往復を減らす・D-79）。
-        match catalog.decision_models(ctx).await {
-            Ok(models) => emit = emit.with_decision_models(&models),
-            Err(e) => {
-                tracing::warn!(error = %e, "判定用のモデルの一覧の取得に失敗（emit_workflow の説明文に載せない）");
+            // 判定用のモデル（ai.decide）も id と表示名を載せる（保存時の誤りの候補で知る往復を減らす・D-79）。
+            match catalog.decision_models(ctx).await {
+                Ok(models) => emit = emit.with_decision_models(&models),
+                Err(e) => {
+                    tracing::warn!(error = %e, "判定用のモデルの一覧の取得に失敗（emit_workflow の説明文に載せない）");
+                }
             }
+            tools.push(Arc::new(emit));
+            tools.push(Arc::new(crate::workflow_tool::ReadWorkflowTool::new(
+                store.clone(),
+            )));
+            // 既存のワークフローを名前で探す（新しい会話から直す・本人に見えるものだけ・GAP-31）。
+            tools.push(Arc::new(crate::workflow_tool::ListWorkflowsTool::new(
+                store.clone(),
+                workflow_engine::WorkflowSummaryStore::new(self.db.clone()),
+            )));
         }
-        tools.push(Arc::new(emit));
-        tools.push(Arc::new(crate::workflow_tool::ReadWorkflowTool::new(
-            store.clone(),
-        )));
-        // 既存のワークフローを名前で探す（新しい会話から直す・本人に見えるものだけ・GAP-31）。
-        tools.push(Arc::new(crate::workflow_tool::ListWorkflowsTool::new(
-            store.clone(),
-            workflow_engine::WorkflowSummaryStore::new(self.db.clone()),
-        )));
+        // 本人に見えるワークフローを探す（search_workflows・読み取りのみ）。図のボタンに実在する
+        // 名前を書かせる。認可は注入した実装が一覧 API と同じ所有∪共有の経路で行う。
+        if let Some(directory) = &self.workflow_directory {
+            tools.push(Arc::new(
+                crate::workflow_search_tool::SearchWorkflowsTool::new(directory.clone()),
+            ));
+        }
     }
 
     /// ドキュメント共同編集ツールの配線（ノート=Task 11P.4／スライド=Task 11.3）。
@@ -154,6 +170,8 @@ impl ChatWorker {
         tools.push(Arc::new(crate::slide_tool::SaveSlideTool::new()));
         // 下書き CSV（csv_draft・下書き確定型・Task 11.11・storage 非依存・確定は UI 保存）。
         tools.push(Arc::new(crate::csv_tool::SaveCsvTool::new()));
+        // 下書きスキル（skill_draft・下書き確定型・#919・保存はスキルエディタで人が行う）。
+        tools.push(Arc::new(crate::skill_draft_tool::SaveSkillTool::new()));
         let (Some(collab), Some(storage)) = (&self.collab, &self.storage) else {
             return;
         };
@@ -223,6 +241,15 @@ impl ChatWorker {
             tools.push(Arc::new(crate::office_create_tool::SaveSheetTool::new(
                 creator.clone(),
             )));
+        }
+        // ドライブのファイル・フォルダを探す／移動する（種別を問わない・#942）。認可は
+        // StorageService が発話ユーザーの権限で行う（移動は承認ゲート対象）。
+        if let Some(storage) = &self.storage {
+            let drive: Arc<dyn crate::drive_tool::DriveOps> = storage.clone();
+            tools.push(Arc::new(crate::drive_tool::DriveFindTool::new(
+                drive.clone(),
+            )));
+            tools.push(Arc::new(crate::drive_tool::DriveMoveTool::new(drive)));
         }
         if let Some(tabular) = &self.tabular {
             tools.push(Arc::new(crate::csv_tool::CsvQueryTool::new(

@@ -2,6 +2,7 @@
 
 import * as React from "react";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
   AlertTriangle,
@@ -10,6 +11,7 @@ import {
   ChevronUp,
   Clock3,
   FileDown,
+  FolderSearch,
 } from "lucide-react";
 
 import {
@@ -40,13 +42,20 @@ import {
   type UiActionRun,
 } from "@/lib/chat-api";
 import { popPending } from "@/lib/pending-message";
-import { readModelChoice } from "@/lib/model-choice";
+import {
+  pinModelChoice,
+  readModelChoice,
+  restoreModelChoice,
+  useRestoreModelChoice,
+} from "@/lib/model-choice";
 import { readToolChoice, settleToolChoice } from "@/lib/tool-choice";
 import { triggerDownload } from "@/lib/storage";
 import { newId } from "@/lib/chat-store";
 import { selectionKindLabel, type SelectionContext } from "@/lib/selection-context";
 import type { ActiveCommand } from "@/lib/slash-command";
 import { Message, MessageContent } from "@/components/prompt-kit/message";
+import { Markdown } from "@/components/prompt-kit/markdown";
+import { usePreferences } from "@/lib/preferences";
 import { invokeChatYuiAction } from "@/lib/artifact-api";
 import { SaveAsAppDialog, type SaveAsAppTarget } from "@/components/artifacts/save-as-app-dialog";
 import { Loader } from "@/components/prompt-kit/loader";
@@ -60,12 +69,15 @@ import { useMediaQuery } from "@/hooks/use-media-query";
 import { useStickToBottom } from "@/hooks/use-stick-to-bottom";
 import { useTurnJump } from "@/hooks/use-turn-jump";
 import { MessageFeedbackButtons, ThreadFeedbackProvider } from "./message-feedback";
+import { MessageExportMenu } from "./message-export-menu";
 import { MessageFooter } from "./message-footer";
 import { MessageCitationsProvider, SourcePanelProvider } from "./citations/citation-context";
+import { DisclosureMemoryProvider } from "./disclosure-memory";
 import { CitationSources } from "./citations/citation-sources";
 import { EvidenceTable, EvidenceToggle } from "./citations/evidence-table";
 import { SourcePanelAside, SourcePanelSheet } from "./citations/source-panel";
 import { type ToolActivityItem } from "./tool-activity";
+import { AttachmentThumb, isImageAttachment } from "./attachment-thumb";
 import { StreamWaitingLine, useStreamWaiting } from "./stream-waiting";
 import {
   appendStreamText,
@@ -83,16 +95,28 @@ import { NoteRefCard } from "./note-ref-card";
 import { NoteDraftCard } from "./note-draft-card";
 import { SlideDraftCard } from "./slide-draft-card";
 import { CsvDraftCard } from "./csv-draft-card";
-import { DocumentRefCard, LegacyDocumentDraftCard, parseDocumentRef, documentRefHref } from "./document-ref-card";
+import { SkillDraftCard } from "./skill-draft-card";
+import { LegacyDocumentDraftCard, parseDocumentRef, documentRefHref } from "./document-ref-card";
+import { DocumentRefList } from "./document-ref-list";
 import { upsertDraft, parseNoteDraft } from "@/lib/notes/draft-store";
 import { draftHref } from "@/lib/notes/draft-nav";
 import { parseSlideDraft, slideDraftHref, slideDraftStore } from "@/lib/slides/draft";
 import { csvDraftHref, csvDraftStore, parseCsvDraft } from "@/lib/csv/draft";
+import {
+  mergeAiSkill,
+  parseSkillDraft,
+  parseStoredSkillBody,
+  skillDraftHref,
+  skillDraftStore,
+  type AiSkillDraft,
+} from "@/lib/skills/skill-draft";
 import { ThreadShareDialog } from "./share-dialog";
 import { ChatPageHeaderSlot } from "./chat-header-actions";
 import { ContextUsageDialog } from "./context-meter";
 import { ApprovalCard, BudgetBanner, PlanPanel } from "./agent-progress";
 import { cn } from "@/lib/utils";
+import { answerImageProxy } from "@/lib/answer-images";
+import { useMarkThreadViewing } from "@/lib/thread-viewing";
 
 /// ストリーミング中のアシスタント応答の蓄積状態。
 type StreamState = {
@@ -114,6 +138,8 @@ type StreamState = {
   slideDrafts: unknown[];
   /// 未保存の下書き CSV（Task 11.11・save_csv の下書き確定型）。
   csvDrafts: unknown[];
+  /// 未保存の下書きスキル（#919・save_skill の下書き確定型）。
+  skillDrafts: unknown[];
   /// AI が作成/編集した文書の参照（#381・save_document / save_sheet / 各編集ツール）。
   documentRefs: unknown[];
   /// 自律エージェント（Phase 5）: 計画・承認要求・予算警告。
@@ -153,6 +179,7 @@ const EMPTY_STREAM: StreamState = {
   noteDrafts: [],
   slideDrafts: [],
   csvDrafts: [],
+  skillDrafts: [],
   documentRefs: [],
   plan: [],
   approval: null,
@@ -168,6 +195,8 @@ export function Conversation({
   onNoteDraftOpened,
   onSlideDraftOpened,
   onCsvDraftOpened,
+  onSkillDraftOpened,
+  adoptSkillDraftOnLoad = false,
   onDocumentCreated,
 }: {
   threadId: string;
@@ -181,6 +210,15 @@ export function Conversation({
   onSlideDraftOpened?: (name: string) => void;
   /// save_csv の下書き（csv_draft）を受けたときの導線（Task 11.11・note と同型）。
   onCsvDraftOpened?: (name: string) => void;
+  /// save_skill の下書き（skill_draft）を受けたときの導線（#919）。渡されない場合は run の
+  /// 完了後にスキルエディタへ遷移する（主線）。スキルエディタ自身はその場で内容を流し込む。
+  /// `key` はその下書きのイベントを指す（応答のメッセージ id ＋ 応答の中の何番目か）。パネルの
+  /// 開き直しでの再生と読み直しで同じ値になり、同じ内容を言い直した別の下書きとは区別できる。
+  onSkillDraftOpened?: (draft: AiSkillDraft, key: string | null) => void;
+  /// 読み込んだ時点で最後の発話への応答が済んでいたら、その応答の下書きスキルも
+  /// `onSkillDraftOpened` へ渡す。この画面で会話を作って最初の発話を送った直後に使う
+  /// （応答が速いと購読より先に終わり、下書きのイベントを受け取れないため・#919）。
+  adoptSkillDraftOnLoad?: boolean;
   /// AI が Office 文書を**新規作成**したときの導線（#381）。渡されない場合は
   /// 作成された文書（Collabora）へ遷移する（主線）。編集の参照では発火しない。
   onDocumentCreated?: (href: string) => void;
@@ -197,6 +235,8 @@ export function Conversation({
   // 届くため、その場で router.push すると Conversation がアンマウントされて SSE 購読が閉じ、
   // 複合依頼の後続ツールの承認カードが出せず run が承認待ちで止まる。
   const pendingOpenRef = React.useRef<string | null>(null);
+  // 読み込み時に下書きスキルを渡したか（`adoptSkillDraftOnLoad`・1 回だけ）。
+  const adoptedDraftRef = React.useRef(false);
   const [error, setError] = React.useState<string | null>(null);
   // 実行への注意喚起（承認モードのクランプ等・#350）。エラーではないが黙らせない。
   const [notice, setNotice] = React.useState<string | null>(null);
@@ -246,11 +286,24 @@ export function Conversation({
   const reload = React.useCallback(() => setReloadKey((k) => k + 1), []);
   // 回答の ```ui app を「アプリとして保存」する対象（#604）。
   const [saveTarget, setSaveTarget] = React.useState<SaveAsAppTarget | null>(null);
-  // スレッド名（クロームのタイトル・⋯ メニューの見出し）。page のときだけ引く。
-  const threadTitle = useThreadTitle(isPanel ? null : threadId);
+  // スレッド名（クロームのタイトル・⋯ メニューの見出し）と検索フォルダ（#965）。page のときだけ引く。
+  const { title: threadTitle, searchFolderName } = useThreadMeta(isPanel ? null : threadId);
+  // 表示中の会話として登録する（サイドバー履歴が、見ている間に終わった回答を未読にしない）。
+  useMarkThreadViewing(threadId);
+  // 別の端末で選んで送ったモデルを、このタブの入力欄の初期値にする（#1050）。page はスレッド名と
+  // 一緒に読む（useThreadMeta）ので、ここで読むのはパネルのときだけ。
+  useRestoreModelChoice(isPanel ? threadId : null);
   // 追従スクロール（下端付近にいる間だけ追う・離れたら「最新へ」）。
-  const { scrollerRef, contentRef, scroller, content, showJump, scrollToBottom } =
-    useStickToBottom();
+  const {
+    scrollerRef,
+    contentRef,
+    stopAtRef,
+    scroller,
+    content,
+    showJump,
+    scrollToBottom,
+    jumpToLatest,
+  } = useStickToBottom();
   // 読み返し中の「一つ前／一つ後の自分の発話へ」。
   const turnJump = useTurnJump(scroller, content);
   // 入力欄は本文の上に重ねる（背後を透かす）。その高さだけ本文の末尾と「最新へ」を持ち上げる。
@@ -395,7 +448,7 @@ export function Conversation({
         updateStream((s) => (s ? { ...s, noteDrafts: [...s.noteDrafts, raw] } : s));
         const d = parseNoteDraft(raw);
         if (!d) return;
-        upsertDraft(threadId, d.name, d.markdown, "ai");
+        upsertDraft(threadId, d.name, d.markdown, "ai", d.parentId);
         if (onNoteDraftOpened) onNoteDraftOpened(d.name);
         else router.push(draftHref(threadId, d.name));
       },
@@ -405,7 +458,7 @@ export function Conversation({
         updateStream((s) => (s ? { ...s, slideDrafts: [...s.slideDrafts, raw] } : s));
         const d = parseSlideDraft(raw);
         if (!d) return;
-        slideDraftStore.upsert(threadId, d.name, d.content, "ai");
+        slideDraftStore.upsert(threadId, d.name, d.content, "ai", d.parentId);
         if (onSlideDraftOpened) onSlideDraftOpened(d.name);
         else router.push(slideDraftHref(threadId, d.name));
       },
@@ -414,9 +467,24 @@ export function Conversation({
         updateStream((s) => (s ? { ...s, csvDrafts: [...s.csvDrafts, raw] } : s));
         const d = parseCsvDraft(raw);
         if (!d) return;
-        csvDraftStore.upsert(threadId, d.name, d.csv, "ai");
+        csvDraftStore.upsert(threadId, d.name, d.csv, "ai", d.parentId);
         if (onCsvDraftOpened) onCsvDraftOpened(d.name);
         else router.push(csvDraftHref(threadId, d.name));
+      },
+      onSkillDraft: (raw) => {
+        // note_draft と同型: ストリームに残しつつ下書きストアへ upsert（source=ai＝流し込み）。
+        const cur = streamRef.current;
+        const owner = cur?.assistantMessageId ?? null;
+        const key = cur && owner ? `${owner}:${cur.skillDrafts.length}` : null;
+        updateStream((s) => (s ? { ...s, skillDrafts: [...s.skillDrafts, raw] } : s));
+        const d = parseSkillDraft(raw);
+        if (!d) return;
+        // 渡した項目だけを重ねる（直すたびに他の項目を消さない）。
+        const prev = parseStoredSkillBody(skillDraftStore.get(threadId, d.name)?.content ?? "");
+        skillDraftStore.upsert(threadId, d.name, JSON.stringify(mergeAiSkill(prev, d)), "ai");
+        if (onSkillDraftOpened) onSkillDraftOpened(d, key);
+        // 遷移は run の完了後（途中で遷移すると SSE が切れ、後続の操作が止まる・#381 と同じ）。
+        else pendingOpenRef.current = skillDraftHref(threadId, d.name);
       },
       onDocumentRef: (raw) => {
         updateStream((s) => (s ? { ...s, documentRefs: [...s.documentRefs, raw] } : s));
@@ -494,6 +562,7 @@ export function Conversation({
     onNoteDraftOpened,
     onSlideDraftOpened,
     onCsvDraftOpened,
+    onSkillDraftOpened,
     onDocumentCreated,
     router,
   ]);
@@ -516,6 +585,7 @@ export function Conversation({
       const runAutonomous = autonomousOverride ?? autonomous;
       // 入力欄で選んだモデル（#553）。未選択は Auto（組織の既定）。
       const model = readModelChoice(threadId);
+      pinModelChoice(threadId, model);
       // 入力欄で選んだツール（#734）。この発話にだけ効くが、空に戻すのは**受理されてから**
       // （400・通信失敗で選択が消えると、送り直すときに選び直しになる）。
       const tools = readToolChoice(threadId);
@@ -697,6 +767,22 @@ export function Conversation({
         );
         setMessages(shown.filter((m) => !queuedRunOf.has(m.id)));
         const resuming = activeRunId !== null;
+        // 初回の読み込みでだけ（その後の読み直しで、手で直した内容を上書きしない）。
+        if (adoptSkillDraftOnLoad && onSkillDraftOpened && !resuming && !adoptedDraftRef.current) {
+          adoptedDraftRef.current = true;
+          const lastUser = shown.map((m) => m.role).lastIndexOf("user");
+          // 最後の下書きと、それが応答の中で何番目か（ストリームで受けたときと同じ key にする）。
+          const found = shown
+            .slice(lastUser + 1)
+            .flatMap((m) =>
+              m.content
+                .filter((b): b is Extract<ContentBlock, { type: "skill_draft" }> => b.type === "skill_draft")
+                .map((b, i) => ({ draft: b.draft, key: `${m.id}:${i}` })),
+            )
+            .at(-1);
+          const latest = found ? parseSkillDraft(found.draft) : null;
+          if (found && latest) onSkillDraftOpened(latest, found.key);
+        }
         if (resuming) {
           // 進行中 run の id を復元し、承認待ちなら承認/却下を送れるようにする（Task 5.6）。
           // 自律 run なら再訪時もエージェントモード UI（承認モードセレクタ含む）を復元する
@@ -722,7 +808,7 @@ export function Conversation({
               pending.text,
               pending.attachments,
               pending.autonomous ?? false,
-              undefined,
+              pending.context,
               pending.skills,
             );
           }
@@ -758,6 +844,7 @@ export function Conversation({
   return (
     <SourcePanelProvider key={threadId}>
       <ThreadFeedbackProvider threadId={threadId}>
+      <DisclosureMemoryProvider>
       <div className="flex h-full min-h-0">
         <div className="flex h-full min-h-0 min-w-0 flex-1 flex-col">
           {/* page: 統一ヘッダスロットへタイトル＋共有/設定を注入（横バー二重を解消）。
@@ -816,15 +903,19 @@ export function Conversation({
                       onSaveAsApp={setSaveTarget}
                       latest={m.id === latestAssistantId}
                       compactDisclaimer={isPanel}
+                      threadTitle={threadTitle}
                     />
                   ),
                 )}
                 {stream ? (
-                  <StreamingRow
-                    stream={stream}
-                    onApproval={decideApproval}
-                    threadId={threadId}
-                  />
+                  // 生成中の回答の先頭（ここが画面の上端に来たら追従を終える）。
+                  <div ref={stopAtRef} className="min-w-0" data-testid="streaming-row">
+                    <StreamingRow
+                      stream={stream}
+                      onApproval={decideApproval}
+                      threadId={threadId}
+                    />
+                  </div>
                 ) : null}
                 {/* 順番待ちは「AI が答えている最中に積んだ次の発話」なので応答の後ろに置く。 */}
                 {queued.map((q) => (
@@ -872,7 +963,7 @@ export function Conversation({
                 </button>
                 <button
                   type="button"
-                  onClick={() => scrollToBottom("smooth")}
+                  onClick={jumpToLatest}
                   aria-label="最新のメッセージへ移動"
                   data-testid="jump-to-latest"
                   className={cn(JUMP_PILL, "size-10 justify-center")}
@@ -907,6 +998,16 @@ export function Conversation({
                   isPanel ? "max-w-none md:pb-3" : "max-w-3xl",
                 )}
               >
+                {searchFolderName ? (
+                  // この会話の社内文書検索はこのフォルダの配下に絞られる（ホームの社内検索・#965）。
+                  <p
+                    className="mb-1.5 flex items-center justify-center gap-1.5 text-xs text-muted-foreground"
+                    data-testid="thread-search-folder"
+                  >
+                    <FolderSearch className="size-3.5 shrink-0" aria-hidden />
+                    <span className="truncate">「{searchFolderName}」の中から社内文書を探します</span>
+                  </p>
+                ) : null}
                 <Composer
                   onSubmit={submitFromComposer}
                   onStop={stop}
@@ -927,6 +1028,7 @@ export function Conversation({
         {sourceAside ? <SourcePanelAside /> : null}
       </div>
       {!sourceAside ? <SourcePanelSheet /> : null}
+      </DisclosureMemoryProvider>
       </ThreadFeedbackProvider>
     </SourcePanelProvider>
   );
@@ -980,6 +1082,8 @@ function finalizeStream(
   for (const draft of s.slideDrafts) blocks.push({ type: "slide_draft", draft });
   // 未保存の下書き CSV カード（Task 11.11）。
   for (const draft of s.csvDrafts) blocks.push({ type: "csv_draft", draft });
+  // 未保存の下書きスキルカード（#919）。
+  for (const draft of s.skillDrafts) blocks.push({ type: "skill_draft", draft });
   // AI が作成/編集した文書への参照カード（#381）。
   for (const document of s.documentRefs) blocks.push({ type: "document_ref", document });
   if (blocks.length === 0) return;
@@ -998,16 +1102,30 @@ function finalizeStream(
 
 // ── 行レンダリング ───────────────────────────────────────────────────
 
-/// 会話画面のスレッド名。作成直後の自動命名・改名に追従するため、一覧の変更通知で読み直す。
-function useThreadTitle(threadId: string | null): string | null {
-  const [title, setTitle] = React.useState<string | null>(null);
+/// 会話画面のスレッド名と検索フォルダ名。作成直後の自動命名・改名に追従するため、一覧の変更通知で読み直す。
+function useThreadMeta(threadId: string | null): {
+  title: string | null;
+  searchFolderName: string | null;
+} {
+  const [meta, setMeta] = React.useState<{ title: string | null; searchFolderName: string | null }>(
+    { title: null, searchFolderName: null },
+  );
   React.useEffect(() => {
-    setTitle(null);
+    setMeta({ title: null, searchFolderName: null });
     if (!threadId) return;
     let active = true;
     const load = () =>
       getThread(threadId)
-        .then((t) => active && setTitle(t.title.trim() || null))
+        .then(
+          (t) => {
+            if (!active) return;
+            restoreModelChoice(threadId, t.lastModelChoice);
+            setMeta({
+              title: t.title.trim() || null,
+              searchFolderName: t.searchFolderId ? (t.searchFolderName ?? "フォルダ") : null,
+            });
+          },
+        )
         .catch(() => {
           /* 読めなければ「新しいチャット」のまま（会話そのものは別に読み込む） */
         });
@@ -1018,7 +1136,7 @@ function useThreadTitle(threadId: string | null): string | null {
       unsubscribe();
     };
   }, [threadId]);
-  return title;
+  return meta;
 }
 
 /// 読み返し中に浮かせる移動ボタン（最新へ・一つ前・一つ後）の共通の面。
@@ -1033,6 +1151,8 @@ const UserRow = React.memo(function UserRow({
   blocks: ContentBlock[];
   footer?: React.ReactNode;
 }) {
+  // 書き方の設定が Markdown なら、送った発話も Markdown として描く（テキストなら打ったとおり）。
+  const markdown = usePreferences().prefs.input_format === "markdown";
   const text = blocks
     .filter((b): b is Extract<ContentBlock, { type: "text" }> => b.type === "text")
     .map((b) => b.text)
@@ -1052,22 +1172,49 @@ const UserRow = React.memo(function UserRow({
             data-testid="message-selection-chip"
             className="inline-flex max-w-full items-center gap-1 truncate rounded-full border border-border bg-card px-2.5 py-1 text-[12px] text-foreground/80"
           >
-            {selectionKindLabel(s.context.kind)}: {s.context.excerpt.slice(0, 80)}
+            {selectionKindLabel(s.context.kind)}:{" "}
+            {/* 編集中のスキルは本文が JSON なので、名前だけを見せる（#919）。 */}
+            {s.context.kind === "skill_draft"
+              ? s.context.draft_name || "名前未設定"
+              : s.context.excerpt.slice(0, 80)}
           </span>
         ))}
         {files.length > 0 ? (
-          <div className="flex flex-wrap justify-end gap-1.5">
-            {files.map((f) => (
-              <span
-                key={f.node_id}
-                className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border border-border bg-card px-2.5 py-1 text-[12px] text-foreground/80 [overflow-wrap:anywhere]"
-              >
-                📎 {f.name}
-              </span>
-            ))}
+          <div className="flex flex-wrap items-center justify-end gap-1.5">
+            {files.map((f) =>
+              // 画像は小さい四角で中身を見せ、押すとファイルのビューアで開く。
+              isImageAttachment(f) ? (
+                <Link
+                  key={f.node_id}
+                  href={`/file/${f.node_id}`}
+                  aria-label={`${f.name} を開く`}
+                  className="flex rounded-xl outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  <AttachmentThumb nodeId={f.node_id} name={f.name} className="size-16" />
+                </Link>
+              ) : (
+                <span
+                  key={f.node_id}
+                  className="inline-flex min-w-0 max-w-full items-center gap-1 rounded-full border border-border bg-card px-2.5 py-1 text-[12px] text-foreground/80 [overflow-wrap:anywhere]"
+                >
+                  📎 {f.name}
+                </span>
+              ),
+            )}
           </div>
         ) : null}
-        {text ? (
+        {text && markdown ? (
+          // 入力欄が Markdown のときは、打ったときの見た目のまま描く（段落の間は詰める）。
+          <Markdown
+            breaks
+            untrusted
+            // 太字は入力欄と同じ太さにする（semibold は字形が無いフォントで太字に見えない）。
+            // インラインコードの地は吹き出しと同じ色なので、背景の色で浮かせる。
+            className="max-w-full rounded-2xl bg-secondary px-4 py-2.5 text-secondary-foreground [&_:not(pre)>code]:bg-background/70 [&_p]:my-0 [&_strong]:font-bold"
+          >
+            {text}
+          </Markdown>
+        ) : text ? (
           <MessageContent className="max-w-full rounded-2xl bg-secondary px-4 py-2.5 text-[15px] leading-relaxed text-secondary-foreground [overflow-wrap:anywhere]">
             {text}
           </MessageContent>
@@ -1134,6 +1281,7 @@ const AssistantRow = React.memo(function AssistantRow({
   onSaveAsApp,
   latest = false,
   compactDisclaimer = false,
+  threadTitle = null,
 }: {
   threadId: string;
   messageId: string;
@@ -1154,6 +1302,8 @@ const AssistantRow = React.memo(function AssistantRow({
   latest?: boolean;
   /// 免責文を短くする（分割ビューのパネル）。
   compactDisclaimer?: boolean;
+  /// 会話の題名（書き出すファイル名の候補・回答に見出しが無いとき）。
+  threadTitle?: string | null;
 }) {
   // コールバックが変わっても図・タイマーを作り直さないよう、ref で最新を呼ぶ。
   const reload = React.useRef(onUiAction);
@@ -1179,6 +1329,11 @@ const AssistantRow = React.memo(function AssistantRow({
   useRunsRefresh(uiRuns, onChanged, uiRuns, 4000);
   // 本文と操作のまとまりを起きた順に（生成中と同じ配置）。
   const segments = React.useMemo(() => segmentsFromBlocks(blocks), [blocks]);
+  // 出典の画像は shiki-server 経由で読む（#1044）。サーバ上の回答 ID がまだ無い間は読まない。
+  const imageProxy = React.useMemo(
+    () => (savedMessageId ? answerImageProxy(threadId, savedMessageId) : null),
+    [threadId, savedMessageId],
+  );
   // コピー・引用の対応付け用の本文全体。区切りは段落として繋ぐ（ライブ表示と揃える）。
   const text = segments
     .flatMap((seg) => (seg.kind === "text" ? [seg.text] : []))
@@ -1206,6 +1361,9 @@ const AssistantRow = React.memo(function AssistantRow({
   const csvDrafts = blocks.filter(
     (b): b is Extract<ContentBlock, { type: "csv_draft" }> => b.type === "csv_draft",
   );
+  const skillDrafts = blocks.filter(
+    (b): b is Extract<ContentBlock, { type: "skill_draft" }> => b.type === "skill_draft",
+  );
   const documentRefs = blocks.filter(
     (b): b is Extract<ContentBlock, { type: "document_ref" }> => b.type === "document_ref",
   );
@@ -1223,7 +1381,12 @@ const AssistantRow = React.memo(function AssistantRow({
         <div className="w-full min-w-0" data-message-state={provisional ?? "saved"}>
           <YuiActionContext.Provider value={yuiHost}>
             <div className="space-y-2">
-              <MessageTimeline segments={segments} citations={citations} />
+              <MessageTimeline
+                segments={segments}
+                citations={citations}
+                memoryKey={savedMessageId ?? messageId}
+                imageProxy={imageProxy}
+              />
             </div>
           </YuiActionContext.Provider>
           {workflowRefs.map((b, i) => (
@@ -1241,9 +1404,10 @@ const AssistantRow = React.memo(function AssistantRow({
           {csvDrafts.map((b, i) => (
             <CsvDraftCard key={i} raw={b.draft} threadId={threadId} />
           ))}
-          {documentRefs.map((b, i) => (
-            <DocumentRefCard key={i} raw={b.document} />
+          {skillDrafts.map((b, i) => (
+            <SkillDraftCard key={i} raw={b.draft} threadId={threadId} />
           ))}
+          <DocumentRefList raws={documentRefs.map((b) => b.document)} />
           {legacyDocumentDrafts.map((b, i) => (
             <LegacyDocumentDraftCard key={i} raw={b.draft} />
           ))}
@@ -1252,6 +1416,13 @@ const AssistantRow = React.memo(function AssistantRow({
           {evidenceOpen ? <EvidenceTable /> : null}
           {text ? (
             <MessageFooter text={text} pinned={latest}>
+              <MessageExportMenu
+                threadId={threadId}
+                threadTitle={threadTitle}
+                segments={segments}
+                text={text}
+                citations={citations}
+              />
               {savedMessageId ? <MessageFeedbackButtons messageId={savedMessageId} /> : null}
               <EvidenceToggle open={evidenceOpen} onToggle={() => setEvidenceOpen((v) => !v)} />
             </MessageFooter>
@@ -1259,7 +1430,7 @@ const AssistantRow = React.memo(function AssistantRow({
           {latest ? (
             <p className="mt-3 text-center text-[11.5px] leading-relaxed text-muted-foreground" data-testid="chat-disclaimer">
               {compactDisclaimer ? null : (
-                <span className="hidden sm:inline">Shiki は社内文書を参照して回答します。</span>
+                <span className="hidden sm:inline">Shiki は必要に応じて社内文書を参照して回答します。</span>
               )}
               誤りが含まれる場合があります。
             </p>
@@ -1307,6 +1478,10 @@ function StreamingRow({
     stream.plan.length === 0 &&
     !stream.approval;
   const segments = resolveStreamSegments(stream.segments, stream.tools);
+  const streamImageProxy = React.useMemo(
+    () => (stream.assistantMessageId ? answerImageProxy(threadId, stream.assistantMessageId) : null),
+    [threadId, stream.assistantMessageId],
+  );
   const last = segments[segments.length - 1];
   const waiting = useStreamWaiting({
     text: stream.text,
@@ -1326,6 +1501,8 @@ function StreamingRow({
             segments={segments}
             citations={stream.citations}
             streaming
+            memoryKey={stream.assistantMessageId}
+            imageProxy={streamImageProxy}
             phase={runningSubtask(stream.plan)}
             waitingLabel={waiting.label}
           />
@@ -1355,9 +1532,10 @@ function StreamingRow({
           {stream.csvDrafts.map((draft, i) => (
             <CsvDraftCard key={i} raw={draft} threadId={threadId} />
           ))}
-          {stream.documentRefs.map((document, i) => (
-            <DocumentRefCard key={i} raw={document} />
+          {stream.skillDrafts.map((draft, i) => (
+            <SkillDraftCard key={i} raw={draft} threadId={threadId} />
           ))}
+          <DocumentRefList raws={stream.documentRefs} />
           <ArtifactFiles files={stream.files} />
         </div>
       </Message>

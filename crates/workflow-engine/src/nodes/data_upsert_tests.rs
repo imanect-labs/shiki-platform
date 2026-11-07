@@ -165,7 +165,11 @@ impl NodePorts for Fake {
     ) -> Result<ResolvedSkillView, PortError> {
         unreachable!()
     }
-    async fn csv_query(&self, _: &ExecCtx, _: Uuid, _: &str) -> Result<Value, PortError> {
+    async fn csv_query(
+        &self,
+        _: &ExecCtx,
+        _: crate::nodes::ports::CsvQueryReq,
+    ) -> Result<Value, PortError> {
         unreachable!()
     }
     async fn csv_patch(&self, _: &ExecCtx, _: CsvPatchReq) -> Result<Value, PortError> {

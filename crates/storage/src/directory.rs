@@ -175,9 +175,9 @@ impl DirectoryStore {
                AND ($5::text IS NULL OR (email, user_id) > ($5, $6)) \
              ORDER BY email, user_id LIMIT $7",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
-        .bind(&ctx.principal.id)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
+        .bind(&ctx.principal().id)
         .bind(&pattern)
         .bind(after_email.as_deref())
         .bind(after_id.as_deref())
@@ -221,8 +221,8 @@ impl DirectoryStore {
             "SELECT user_id, display_name FROM directory_user \
              WHERE tenant_id = $1 AND org = $2 AND user_id = ANY($3)",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(ids)
         .fetch_all(&self.db)
         .await
@@ -251,8 +251,8 @@ impl DirectoryStore {
             "SELECT EXISTS(SELECT 1 FROM directory_user \
              WHERE tenant_id = $1 AND org = $2 AND user_id = $3)",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(user_id)
         .fetch_one(&self.db)
         .await
@@ -270,8 +270,8 @@ impl DirectoryStore {
             "SELECT EXISTS(SELECT 1 FROM directory_role \
              WHERE tenant_id = $1 AND org = $2 AND role_id = $3)",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(role_id)
         .fetch_one(&self.db)
         .await
@@ -367,8 +367,8 @@ impl DirectoryStore {
                AND ($4::text IS NULL OR (display_name, role_id) > ($4, $5)) \
              ORDER BY display_name, role_id LIMIT $6",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(&pattern)
         .bind(after_name.as_deref())
         .bind(after_id.as_deref())

@@ -52,7 +52,7 @@ fn ctx(tenant: &str, user: &str) -> AuthContext {
             tenant_id: Some(tenant.into()),
         },
         "acme".into(),
-        tenant.into(),
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 
@@ -381,7 +381,7 @@ async fn approval_reads_follow_row_and_field_visibility() {
             states.iter().map(Option::is_some).collect::<Vec<_>>(),
             rows.records.iter().map(Option::is_some).collect::<Vec<_>>(),
             "{}",
-            who.principal.id
+            who.principal().id
         );
     }
     assert_eq!(
@@ -392,7 +392,7 @@ async fn approval_reads_follow_row_and_field_visibility() {
             .unwrap(),
         vec![state("draft")]
     );
-    let before = denials(dave.principal.id.clone()).await;
+    let before = denials(dave.principal().id.clone()).await;
     for _ in 0..3 {
         assert!(store
             .filter_visible_states(&dave, table.id, &[r.id])
@@ -410,10 +410,10 @@ async fn approval_reads_follow_row_and_field_visibility() {
             .unwrap()
             .is_none());
     }
-    assert_eq!(denials(dave.principal.id.clone()).await, before);
+    assert_eq!(denials(dave.principal().id.clone()).await, before);
     // 本人が求めた読取（get_records）は従来どおり Deny を残す。
     let _ = store.get_records(&dave, table.id, &[r.id], None).await;
-    assert_eq!(denials(dave.principal.id.clone()).await, before + 1);
+    assert_eq!(denials(dave.principal().id.clone()).await, before + 1);
 
     // 状態の列が読めない人には、見える行でも状態を返さない（件数に数えない・一覧で出ないのと同じ）。
     let mut hidden_status = schema(None);

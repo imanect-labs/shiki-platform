@@ -68,7 +68,7 @@ pub(crate) async fn list_page(
                 "shared_cursor と before_updated_at・before_id は同時に使えません".into(),
             ));
         }
-        let p = data.open_list_position(shared_position_kind(kind), &ctx.tenant_id, c)?;
+        let p = data.open_list_position(shared_position_kind(kind), ctx.tenant_id(), c)?;
         let page = artifacts
             .list_shared_page(ctx, kind, Some((p.updated_at, p.id)), limit)
             .await?;
@@ -126,7 +126,7 @@ fn seal_shared(
     next.map(|(updated_at, id)| {
         data.seal_list_position(
             shared_position_kind(kind),
-            &ctx.tenant_id,
+            ctx.tenant_id(),
             data::ListPosition { updated_at, id },
         )
     })

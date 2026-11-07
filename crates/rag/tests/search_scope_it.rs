@@ -37,7 +37,7 @@ struct Env {
 }
 
 async fn setup() -> Option<Env> {
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return None;
     };
@@ -77,10 +77,10 @@ async fn seed_chunk(env: &Env, name: &str, query: &str, weight: f32, folder_id: 
         "insert into blob (tenant_id, org, sha256, size_bytes, content_type, object_key, refcount) \
          values ($1, $2, $3, 10, 'text/plain', $4, 1)",
     )
-    .bind(&ctx.tenant_id)
-    .bind(&ctx.org)
+    .bind(ctx.tenant_id())
+    .bind(ctx.org())
     .bind(&sha)
-    .bind(format!("{}/{}/{}", ctx.tenant_id, ctx.org, sha))
+    .bind(format!("{}/{}/{}", ctx.tenant_id(), ctx.org(), sha))
     .execute(&env.pool)
     .await
     .unwrap();
@@ -90,11 +90,11 @@ async fn seed_chunk(env: &Env, name: &str, query: &str, weight: f32, folder_id: 
                            created_by, updated_by) \
          values ($1, $2, 'file', $3, $4, 10, 'text/plain', $5, $5) returning id",
     )
-    .bind(&ctx.org)
-    .bind(&ctx.tenant_id)
+    .bind(ctx.org())
+    .bind(ctx.tenant_id())
     .bind(name)
     .bind(&sha)
-    .bind(&ctx.principal.id)
+    .bind(&ctx.principal().id)
     .fetch_one(&env.pool)
     .await
     .unwrap();
@@ -130,8 +130,8 @@ async fn seed_chunk_on(
          values ($1, $2, $3, $4, 1, null, 'leaf', 0, 1, '{}', $5, 10, $6, 'fake-model')",
     )
     .bind(chunk_id)
-    .bind(&ctx.tenant_id)
-    .bind(&ctx.org)
+    .bind(ctx.tenant_id())
+    .bind(ctx.org())
     .bind(node_id)
     .bind(format!("{name} の本文"))
     .bind(&tags)
@@ -285,7 +285,7 @@ async fn scope_never_widens_post_filter_still_applies() {
         "SELECT count(*) FROM audit_log \
          WHERE tenant_id = $1 AND action = 'rag.search' AND metadata ? 'scope'",
     )
-    .bind(&env.ctx.tenant_id)
+    .bind(env.ctx.tenant_id())
     .fetch_one(&env.pool)
     .await
     .unwrap();
@@ -340,11 +340,11 @@ async fn make_node(env: &Env, kind: &str, parent: Option<Uuid>) -> Uuid {
             "insert into node (org, tenant_id, kind, name, parent_id, created_by, updated_by) \
              values ($1, $2, 'folder', $3, $4, $5, $5) returning id",
         )
-        .bind(&ctx.org)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.org())
+        .bind(ctx.tenant_id())
         .bind(&name)
         .bind(parent)
-        .bind(&ctx.principal.id)
+        .bind(&ctx.principal().id)
         .fetch_one(&env.pool)
         .await
         .unwrap()
@@ -354,10 +354,10 @@ async fn make_node(env: &Env, kind: &str, parent: Option<Uuid>) -> Uuid {
             "insert into blob (tenant_id, org, sha256, size_bytes, content_type, object_key, refcount) \
              values ($1, $2, $3, 10, 'text/plain', $4, 1)",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(&sha)
-        .bind(format!("{}/{}/{}", ctx.tenant_id, ctx.org, sha))
+        .bind(format!("{}/{}/{}", ctx.tenant_id(), ctx.org(), sha))
         .execute(&env.pool)
         .await
         .unwrap();
@@ -366,12 +366,12 @@ async fn make_node(env: &Env, kind: &str, parent: Option<Uuid>) -> Uuid {
                                content_type, created_by, updated_by) \
              values ($1, $2, 'file', $3, $4, $5, 10, 'text/plain', $6, $6) returning id",
         )
-        .bind(&ctx.org)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.org())
+        .bind(ctx.tenant_id())
         .bind(&name)
         .bind(parent)
         .bind(&sha)
-        .bind(&ctx.principal.id)
+        .bind(&ctx.principal().id)
         .fetch_one(&env.pool)
         .await
         .unwrap()
@@ -382,8 +382,8 @@ async fn make_node(env: &Env, kind: &str, parent: Option<Uuid>) -> Uuid {
           where tenant_id = $2 and descendant = $4 \
          union all select $1, $2, $3, $3, 0",
     )
-    .bind(&ctx.org)
-    .bind(&ctx.tenant_id)
+    .bind(ctx.org())
+    .bind(ctx.tenant_id())
     .bind(id)
     .bind(parent)
     .execute(&env.pool)
@@ -555,7 +555,7 @@ async fn search_narrowed_rechecks_base_and_audits_empty_intersection() {
     let before: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM audit_log WHERE tenant_id = $1 AND action = 'rag.search'",
     )
-    .bind(&ctx.tenant_id)
+    .bind(ctx.tenant_id())
     .fetch_one(&env.pool)
     .await
     .unwrap();
@@ -575,7 +575,7 @@ async fn search_narrowed_rechecks_base_and_audits_empty_intersection() {
     let after: i64 = sqlx::query_scalar(
         "SELECT count(*) FROM audit_log WHERE tenant_id = $1 AND action = 'rag.search'",
     )
-    .bind(&ctx.tenant_id)
+    .bind(ctx.tenant_id())
     .fetch_one(&env.pool)
     .await
     .unwrap();
@@ -595,6 +595,105 @@ async fn search_narrowed_rechecks_base_and_audits_empty_intersection() {
         .await
         .unwrap();
     assert_eq!(out.results.len(), 2);
+}
+
+/// 課された範囲が複数（skill の知識スコープと会話の検索フォルダ）でも、交差前のまま全部で
+/// 確かめる（#965・Codex）。検索フォルダが知識スコープの外へ移動された後は、索引のタグが古い
+/// ままでも、検索フォルダの中の文書を返さない（知識スコープの制約が失われない）。
+#[tokio::test]
+async fn search_narrowed_within_keeps_every_bound() {
+    let Some(env) = setup().await else { return };
+    let query = "検索フォルダの資料";
+    // A（skill の範囲）── inside ── kept／C ── moved_out ── left
+    // moved_out は A の外へ移動済み（索引上はまだ A 配下のタグを持つ）。
+    let a = make_node(&env, "folder", None).await;
+    let c = make_node(&env, "folder", None).await;
+    let inside = make_node(&env, "folder", Some(a)).await;
+    let moved_out = make_node(&env, "folder", Some(c)).await;
+    let kept = make_node(&env, "file", Some(inside)).await;
+    let left = make_node(&env, "file", Some(moved_out)).await;
+    seed_chunk_on(&env, kept, "kept", query, 0.8, &[a, inside]).await;
+    seed_chunk_on(&env, left, "left", query, 0.9, &[a, moved_out]).await;
+    // 検索フォルダの外へ移動済みのファイル（索引上はまだ検索フォルダ配下のタグを持つ）。
+    let drifted = make_node(&env, "file", Some(c)).await;
+    seed_chunk_on(&env, drifted, "drifted", query, 0.95, &[moved_out]).await;
+    let svc = service(
+        &env,
+        allow_all_authz(&env, &[a, c, inside, moved_out]),
+        RagConfig::default(),
+    );
+    let ctx = &env.ctx;
+    let found =
+        |out: rag::SearchOutput| -> Vec<Uuid> { out.results.iter().map(|r| r.file_id).collect() };
+
+    let out = svc
+        .search_narrowed_within(
+            ctx,
+            query,
+            Some(5),
+            SearchMode::Dense,
+            Some(&folders(&[a])),
+            &[&folders(&[inside])],
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(found(out), vec![kept], "両方の内側の文書は返す");
+
+    let out = svc
+        .search_narrowed_within(
+            ctx,
+            query,
+            Some(5),
+            SearchMode::Dense,
+            Some(&folders(&[a])),
+            &[&folders(&[moved_out])],
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(
+        out.results.is_empty(),
+        "検索フォルダが知識スコープの外へ出たら何も返さない: {:?}",
+        found(out)
+    );
+
+    // 検索フォルダだけなら、その中の文書は返る（範囲を課しすぎていないこと）。木の上で検索
+    // フォルダの外へ出たファイルは、索引のタグが古くても返さない（CodeRabbit）。
+    let out = svc
+        .search_narrowed_within(
+            ctx,
+            query,
+            Some(5),
+            SearchMode::Dense,
+            None,
+            &[&folders(&[moved_out])],
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(found(out), vec![left]);
+
+    // モデルの絞り込みを重ねても、課された範囲の外へは出ない。
+    let out = svc
+        .search_narrowed_within(
+            ctx,
+            query,
+            Some(5),
+            SearchMode::Dense,
+            Some(&folders(&[a])),
+            &[
+                &folders(&[moved_out]),
+                &SearchScope {
+                    folders: Vec::new(),
+                    files: vec![left],
+                },
+            ],
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(out.results.is_empty());
 }
 
 /// 結果には reranker の生スコアと、設定の閾値で落とした関連度が付く（#424）。

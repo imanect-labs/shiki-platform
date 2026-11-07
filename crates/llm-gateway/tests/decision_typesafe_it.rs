@@ -311,7 +311,11 @@ async fn through_the_gateway_the_model_is_opt_in_and_billed_as_itself() {
     )
     .unwrap();
     let tenant = format!("ts-{}", uuid::Uuid::new_v4().simple());
-    let flow = authz::AuthContext::for_workflow(tenant.clone(), "org".into(), "wf-1");
+    let flow = authz::AuthContext::for_workflow(
+        authz::TenantId::parse(tenant.clone()).unwrap(),
+        "org".into(),
+        "wf-1",
+    );
     let call = DecideCall {
         idempotency_key: "wf:ts:r1:ai".into(),
         trace_id: None,
@@ -341,7 +345,7 @@ async fn through_the_gateway_the_model_is_opt_in_and_billed_as_itself() {
             tenant_id: Some(tenant.clone()),
         },
         "org".into(),
-        tenant.clone(),
+        authz::TenantId::parse(tenant.clone()).unwrap(),
     );
     gw.update_tenant_settings(
         &admin,

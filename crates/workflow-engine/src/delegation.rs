@@ -204,7 +204,7 @@ impl DelegationStore {
         declared_scopes: &[String],
         grants: &[GrantRequest],
     ) -> Result<Vec<RevokedDelegation>, DelegationError> {
-        let tenant = &enabler.tenant_id;
+        let tenant = enabler.tenant_id();
         // ⓪ 同じ (scope, 対象) に relation の違う grant を断る（タプルを書く前に・全体拒否）。台帳の一意キーは
         //    (委譲元, scope, 対象) なので、両方のタプルを書くと台帳には後の relation の 1 行しか残らない。もう一方の
         //    タプルは台帳に載らないまま残り、その後の取り消し・再同意・削除で外れない。画面は scope ごとに relation を
@@ -281,10 +281,10 @@ impl DelegationStore {
         )
         .bind(tenant)
         .bind(workflow_id)
-        .bind(&enabler.org)
+        .bind(enabler.org())
         .bind(version)
         .bind(declared_scopes)
-        .bind(&enabler.principal.id)
+        .bind(&enabler.principal().id)
         .execute(&mut **tx)
         .await
         .map_err(map_db)?;
@@ -299,7 +299,7 @@ impl DelegationStore {
             )
             .bind(tenant)
             .bind(workflow_id)
-            .bind(&enabler.principal.id)
+            .bind(&enabler.principal().id)
             .bind(&g.scope)
             .bind(g.object.as_str())
             .bind(g.relation.as_str())
@@ -610,8 +610,12 @@ impl DelegationStore {
             tracing::warn!(error = %e, %workflow_id, "棚卸しの通知で registration の org を読めない");
             None
         });
+        let Ok(tenant) = authz::TenantId::parse(tenant_id) else {
+            tracing::warn!(%workflow_id, "棚卸しの通知で tenant_id が文字ポリシーに反する（通知しない）");
+            return;
+        };
         let ctx = AuthContext::for_workflow(
-            tenant_id.to_string(),
+            tenant,
             org.map(|(o,)| o).unwrap_or_default(),
             &workflow_id.to_string(),
         );

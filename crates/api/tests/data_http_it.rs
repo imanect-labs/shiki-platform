@@ -119,6 +119,7 @@ fn config(db_url: &str) -> AppConfig {
         },
         database: DatabaseConfig {
             url: db_url.into(),
+            migrate_url: None,
             max_connections: 5,
         },
         auth: AuthConfig {
@@ -158,6 +159,7 @@ fn config(db_url: &str) -> AppConfig {
             s3: None,
             max_upload_size_bytes: 5 * 1024 * 1024 * 1024,
             upload_gc: api::config::UploadGcConfig::default(),
+            audit_retention: api::config::AuditRetentionConfig::default(),
         },
         vector: VectorConfig {
             backend: VectorStoreBackend::Qdrant,
@@ -208,7 +210,11 @@ fn principal(id: &str) -> Principal {
 }
 
 fn ctx(id: &str) -> AuthContext {
-    AuthContext::new(principal(id), "acme".into(), TENANT.into())
+    AuthContext::new(
+        principal(id),
+        "acme".into(),
+        authz::TenantId::parse(TENANT).unwrap(),
+    )
 }
 
 /// 利用者（セッション ID = 利用者 ID）。alice: owner／bob: viewer／carol: 権限なし／admin: 組織管理者。
@@ -216,8 +222,8 @@ const USERS: [&str; 4] = ["alice", "bob", "carol", "admin"];
 
 async fn setup() -> Option<Env> {
     let (Ok(db_url), Ok(fga_url)) = (
-        std::env::var("STORAGE_TEST_DATABASE_URL"),
-        std::env::var("OPENFGA_TEST_URL"),
+        shiki_testenv::var("STORAGE_TEST_DATABASE_URL"),
+        shiki_testenv::var("OPENFGA_TEST_URL"),
     ) else {
         eprintln!("STORAGE_TEST_DATABASE_URL / OPENFGA_TEST_URL 未設定のためスキップ");
         return None;

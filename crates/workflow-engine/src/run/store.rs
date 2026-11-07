@@ -672,7 +672,7 @@ impl RunStatusReader {
         ctx: &authz::AuthContext,
         run_ids: &[Uuid],
     ) -> Result<std::collections::HashMap<Uuid, RunStatus>, RunStoreError> {
-        let tenant_id = ctx.tenant_id.as_str();
+        let tenant_id = ctx.tenant_id();
         if run_ids.is_empty() {
             return Ok(std::collections::HashMap::new());
         }

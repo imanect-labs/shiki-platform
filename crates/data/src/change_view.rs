@@ -143,11 +143,11 @@ impl DataStore {
                  FROM data_record_revision \
                  WHERE tenant_id = $1 AND table_id = $2 AND record_id = $3 AND rev = $4",
             )
-            .bind(&ctx.tenant_id)
+            .bind(ctx.tenant_id())
             .bind(table_id)
             .bind(ev.record_id)
             .bind(ev.rev)
-            .fetch_optional(self.pools.for_tenant(&ctx.tenant_id))
+            .fetch_optional(self.pools.for_tenant(ctx.tenant_id()))
             .await
             .map_err(map_db)?;
             let Some(rev) = rev else {

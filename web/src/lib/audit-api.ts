@@ -75,3 +75,19 @@ export function auditExportUrl(q: AuditQuery, format: AuditFormat): string {
   p.set("format", format);
   return `/api/org-audit/export?${p.toString()}`;
 }
+
+export type ChainReport = components["schemas"]["ChainReport"];
+
+/// ハッシュチェーンを確かめる（#828）。`afterId` を渡すとその行の続きから。1 回で確かめる行数に
+/// 上限があるので、`complete` が false なら `last_id` を渡して続ける。検証したことも監査に残る。
+export async function verifyAuditChain(afterId?: number | null): Promise<ChainReport> {
+  const p = new URLSearchParams();
+  if (afterId != null) p.set("after_id", String(afterId));
+  const res = await apiFetch(`/org-audit/verify${p.size ? `?${p.toString()}` : ""}`);
+  if (!res.ok) {
+    const fallback =
+      res.status === 403 ? "監査ログを見る権限がありません" : `エラーが発生しました（${res.status}）`;
+    throw new ApiError(res.status, fallback);
+  }
+  return (await res.json()) as ChainReport;
+}

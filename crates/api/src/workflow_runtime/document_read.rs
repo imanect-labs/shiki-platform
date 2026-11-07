@@ -72,7 +72,7 @@ pub(super) async fn storage_read_document(
     file_id: Uuid,
     max_chars: u32,
 ) -> Result<Value, PortError> {
-    let ctx = auth_ctx(ec);
+    let ctx = auth_ctx(ec)?;
     let trace = ec.trace_id.as_deref();
     let hide = |e: StorageError| match e {
         StorageError::Forbidden | StorageError::NotFound => hidden_file(ec),

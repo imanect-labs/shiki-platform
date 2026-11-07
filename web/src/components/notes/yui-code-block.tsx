@@ -33,7 +33,7 @@ import { BarChart3, Code2 } from "lucide-react";
 import * as React from "react";
 
 import { renderFigureTable } from "@/components/prompt-kit/markdown";
-import { ToolbarButton, UiFigure } from "@/components/prompt-kit/ui-figure";
+import { figureBleed, ToolbarButton, UiFigure } from "@/components/prompt-kit/ui-figure";
 import { normalizeYuiInfo } from "@/lib/notes/yui-language";
 import { cn } from "@/lib/utils";
 
@@ -302,7 +302,7 @@ function YuiCodeBlockView({ node, editor, getPos }: NodeViewProps) {
           {showSource ? (
             // 編集中は図を下に描き直して見せる（操作欄は図の表示に戻ってから）。
             <div className="mt-2 rounded-lg border border-dashed border-border/80 px-3 pb-1 pt-0.5 print:border-0 sm:px-4">
-              <YuiFigure figure={result.figure} className="-mx-3 sm:-mx-4" />
+              <YuiFigure figure={result.figure} className={figureBleed(result.figure.kind)} />
             </div>
           ) : (
             <div

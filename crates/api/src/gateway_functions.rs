@@ -131,8 +131,8 @@ impl FunctionPort for GatewayFunctionPort {
         // B2 client secret はアプリ所有の資格情報なので、呼出ユーザーではなくアプリの
         // service identity（miniapp）で解決する（installer 以外のユーザーでも起動できる）。
         let app_ctx = AuthContext::for_miniapp(
-            ctx.tenant_id.clone(),
-            ctx.org.clone(),
+            ctx.tenant().clone(),
+            ctx.org().to_owned(),
             &spec.app_id.to_string(),
         );
         let secret = self.resolve_b2_secret(&app_ctx, spec.app_id).await?;
@@ -157,7 +157,7 @@ impl FunctionPort for GatewayFunctionPort {
             .run(
                 server_bundle,
                 FunctionInvocation {
-                    tenant_id: ctx.tenant_id.clone(),
+                    tenant_id: ctx.tenant_id().to_owned(),
                     app_id: spec.app_id,
                     function: spec.function,
                     payload: spec.payload,

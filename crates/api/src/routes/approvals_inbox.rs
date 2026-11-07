@@ -52,7 +52,7 @@ pub(super) async fn my_roles(
 ) -> Result<Vec<String>, ApiError> {
     let ledger = &state.workflow_approvals;
     let few = ledger
-        .assignee_roles(&ctx.tenant_id, &ctx.org, approval, DIRECT_ROLE_CHECKS + 1)
+        .assignee_roles(ctx.tenant_id(), ctx.org(), approval, DIRECT_ROLE_CHECKS + 1)
         .await
         .map_err(internal)?;
     if i64::try_from(few.len()).unwrap_or(i64::MAX) <= DIRECT_ROLE_CHECKS {
@@ -74,15 +74,15 @@ pub(super) async fn my_roles(
         return Ok(roles);
     }
     let candidates = ledger
-        .assignee_roles(&ctx.tenant_id, &ctx.org, approval, MAX_ROLE_CHECKS)
+        .assignee_roles(ctx.tenant_id(), ctx.org(), approval, MAX_ROLE_CHECKS)
         .await
         .map_err(internal)?;
     // 候補は名前の順で上限まで。届いたら、後ろのロール宛ての承認はこの人の受信箱に出ない（件数にも数えない）ので、
     // 黙って切らずに残す（応答には印を足さない・BUG-161 の残り）。
     if i64::try_from(candidates.len()).unwrap_or(i64::MAX) >= MAX_ROLE_CHECKS {
         tracing::warn!(
-            tenant_id = %ctx.tenant_id,
-            org = %ctx.org,
+            tenant_id = %ctx.tenant_id(),
+            org = %ctx.org(),
             approval = ?approval,
             limit = MAX_ROLE_CHECKS,
             "所属ロールが上限に届いた人の承認の担当のロールの候補が上限に届きました。名前の順で後ろのロール宛ての承認は、\
@@ -146,9 +146,9 @@ pub(super) async fn count(
         let keys = state
             .workflow_approvals
             .inbox_keys(
-                &ctx.tenant_id,
-                &ctx.org,
-                &ctx.principal.id,
+                ctx.tenant_id(),
+                ctx.org(),
+                &ctx.principal().id,
                 &roles,
                 after,
                 COUNT_PAGE,

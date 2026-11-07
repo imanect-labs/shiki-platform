@@ -267,7 +267,7 @@ async fn shared_by_direct_tuples(
         .await?;
     if roles_cut {
         tracing::warn!(
-            user = %ctx.principal.id,
+            user = %ctx.principal().id,
             roles = roles.len(),
             "所属ロールの実効集合が上限に届いたため、読み直せないロールの個別共有は見えない方向に倒す（BUG-161）"
         );
@@ -299,7 +299,7 @@ fn cap_shared_ids<'a>(
         }
         if ids.len() >= MAX_SHARED_IDS {
             tracing::warn!(
-                user = %ctx.principal.id,
+                user = %ctx.principal().id,
                 limit = MAX_SHARED_IDS,
                 "個別共有集合が上限を超過（超過分は不可視・PIT-18 fail-closed）"
             );
@@ -468,7 +468,7 @@ mod tests {
                 tenant_id: Some("t".into()),
             },
             "o".into(),
-            "t".into(),
+            authz::TenantId::parse("t").unwrap(),
         );
         assert!(role_object(&ctx, "経理").is_some());
         for bad in ["", "a:b", "a#b", "a b", "a\tb", &"x".repeat(300)] {

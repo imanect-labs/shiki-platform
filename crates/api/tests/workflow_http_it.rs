@@ -37,7 +37,14 @@ use workflow_engine::{
 };
 
 /// 全許可 authz（ルート層の配線検証用・実 FGA は registration IT が担う）。
-struct AllowAll;
+/// ListObjects だけは、書かれた owner タプルのオブジェクトを返す（所有は viewer を含むので、
+/// 実 FGA でも自分のアーティファクトは viewer の ListObjects に載る）。
+/// `padding` を立てると、無関係なアーティファクトを足して可読集合を大きく見せる（縮退経路の検証）。
+#[derive(Default)]
+struct AllowAll {
+    owned: std::sync::Mutex<Vec<String>>,
+    padding: std::sync::atomic::AtomicUsize,
+}
 
 #[async_trait]
 impl AuthzClient for AllowAll {
@@ -53,9 +60,12 @@ impl AuthzClient for AllowAll {
     async fn write_tuple(
         &self,
         _s: &Subject,
-        _r: Relation,
-        _o: &FgaObject,
+        r: Relation,
+        o: &FgaObject,
     ) -> Result<bool, AuthzError> {
+        if r == Relation::Owner {
+            self.owned.lock().unwrap().push(o.as_str().to_owned());
+        }
         Ok(true)
     }
     async fn delete_tuple(
@@ -77,9 +87,18 @@ impl AuthzClient for AllowAll {
         &self,
         _s: &Subject,
         _r: Relation,
-        _t: ObjectType,
+        t: ObjectType,
     ) -> Result<Vec<String>, AuthzError> {
-        Ok(vec![])
+        let prefix = format!("{}:", t.as_str());
+        let owned = self.owned.lock().unwrap();
+        let mut objects: Vec<String> = owned
+            .iter()
+            .filter(|o| o.starts_with(&prefix))
+            .cloned()
+            .collect();
+        let padding = self.padding.load(std::sync::atomic::Ordering::Relaxed);
+        objects.extend((0..padding).map(|_| format!("{prefix}default|{}", Uuid::new_v4())));
+        Ok(objects)
     }
     async fn delete_object_tuples(&self, _o: &FgaObject) -> Result<u32, AuthzError> {
         Ok(0)
@@ -128,6 +147,7 @@ fn config(db_url: &str) -> AppConfig {
         },
         database: DatabaseConfig {
             url: db_url.into(),
+            migrate_url: None,
             max_connections: 5,
         },
         auth: AuthConfig {
@@ -167,6 +187,7 @@ fn config(db_url: &str) -> AppConfig {
             s3: None,
             max_upload_size_bytes: 5 * 1024 * 1024 * 1024,
             upload_gc: api::config::UploadGcConfig::default(),
+            audit_retention: api::config::AuditRetentionConfig::default(),
         },
         vector: VectorConfig {
             backend: VectorStoreBackend::Qdrant,
@@ -200,13 +221,14 @@ fn config(db_url: &str) -> AppConfig {
 
 struct Env {
     app: axum::Router,
+    stub: Arc<AllowAll>,
     pool: sqlx::PgPool,
     cookie: &'static str,
     csrf: &'static str,
 }
 
 async fn setup() -> Option<Env> {
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return None;
     };
@@ -241,7 +263,8 @@ async fn setup() -> Option<Env> {
         .await
         .unwrap();
 
-    let authz: Arc<dyn AuthzClient> = Arc::new(AllowAll);
+    let stub = Arc::new(AllowAll::default());
+    let authz: Arc<dyn AuthzClient> = Arc::clone(&stub) as Arc<dyn AuthzClient>;
     let artifacts = Arc::new(artifact::ArtifactStore::new(
         pool.clone(),
         Arc::clone(&authz),
@@ -314,7 +337,7 @@ async fn setup() -> Option<Env> {
         app_platform::Registry::new(pool.clone()),
         Arc::clone(&mini_app_code),
         Arc::clone(&data_store),
-        Arc::new(AllowAll),
+        Arc::new(AllowAll::default()),
         None,
         vec![],
     ));
@@ -323,16 +346,16 @@ async fn setup() -> Option<Env> {
         app_platform::Registry::new(pool.clone()),
         app_platform::TrustedKeyStore::new(pool.clone()),
         Arc::clone(&artifacts),
-        Arc::new(AllowAll),
+        Arc::new(AllowAll::default()),
     ));
     let bundles = Arc::new(app_platform::BundleStore::new(
         Arc::new(NoopStore),
-        Arc::new(AllowAll),
+        Arc::new(AllowAll::default()),
         storage::audit::AuditRecorder::new(pool.clone()),
     ));
     let app_usage = Arc::new(app_platform::AppUsageStore::new(
         pool.clone(),
-        Arc::new(AllowAll),
+        Arc::new(AllowAll::default()),
     ));
     let state = AppState {
         config: Arc::new(config(&db_url)),
@@ -396,6 +419,7 @@ async fn setup() -> Option<Env> {
     };
     Some(Env {
         app: build_router(state),
+        stub,
         pool,
         cookie: "shiki_session=sid-wf.default; shiki_csrf=csrf-wf",
         csrf: "csrf-wf",
@@ -675,6 +699,41 @@ async fn workflow_http_end_to_end() {
     )
     .await;
     assert_eq!(body["status"], json!("failed"));
+
+    // --- ホームの「今日のこと」: 直近 24 時間の成功・失敗の件数と、失敗の明細（#965）。
+    // tenant は他のテストと共有なので件数は下限で見て、明細はこの run が載ることを確かめる。
+    let (st, body) = req(&env, "GET", "/me/workflow-runs", None).await;
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert_eq!(body["window_hours"], json!(24));
+    assert!(body["succeeded"].as_i64().unwrap() >= 1, "{body}");
+    assert!(body["failed"].as_i64().unwrap() >= 1, "{body}");
+    let failures = body["recent_failures"].as_array().unwrap();
+    let mine = failures
+        .iter()
+        .find(|f| f["run_id"] == json!(run_fail.to_string()))
+        .unwrap_or_else(|| panic!("失敗した run が明細に載る: {body}"));
+    assert_eq!(mine["workflow_id"], json!(wf_fail));
+    assert_eq!(mine["display_name"], json!("テストフロー"));
+    assert!(mine["finished_at"].is_string());
+    // 可読集合が大きい（ListObjects が切り詰められうる）ときは tenant＋org に縮退して数え、
+    // post-filter で確かめる。同じ失敗がやはり明細に載る。
+    env.stub
+        .padding
+        .store(600, std::sync::atomic::Ordering::Relaxed);
+    let (st, body) = req(&env, "GET", "/me/workflow-runs", None).await;
+    env.stub
+        .padding
+        .store(0, std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(st, StatusCode::OK, "{body}");
+    assert!(body["failed"].as_i64().unwrap() >= 1, "{body}");
+    assert!(
+        body["recent_failures"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|f| f["run_id"] == json!(run_fail.to_string())),
+        "縮退しても失敗した run が明細に載る: {body}"
+    );
 
     let (st, body) = req(
         &env,
@@ -1954,7 +2013,7 @@ async fn registration_reports_skipped_automatic_runs() {
 
     // 空の欄のある v1 を、有効化の前の確認を通さずにオンにした状態（前の版でオンにした定義・BUG-51）で、スケジュールが
     // 2 回起動を見送る。
-    let authz: Arc<dyn AuthzClient> = Arc::new(AllowAll);
+    let authz: Arc<dyn AuthzClient> = Arc::new(AllowAll::default());
     let artifacts = Arc::new(artifact::ArtifactStore::new(
         env.pool.clone(),
         Arc::clone(&authz),
@@ -1965,7 +2024,11 @@ async fn registration_reports_skipped_automatic_runs() {
         workflow_engine::WorkflowStore::new(artifacts),
         RunStore::new(env.pool.clone(), workflow_engine::DEFAULT_LEASE_SECS),
     );
-    let alice = authz::AuthContext::new(test_principal(), "acme".into(), "default".into());
+    let alice = authz::AuthContext::new(
+        test_principal(),
+        "acme".into(),
+        authz::TenantId::parse("default").unwrap(),
+    );
     delegation.enable(&alice, wf, 1, &[], &[]).await.unwrap();
     for _ in 0..2 {
         let out = <workflow_engine::WorkflowRunLauncher as workflow_engine::RunLauncher>::launch(

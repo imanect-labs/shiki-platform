@@ -499,8 +499,9 @@ pub trait NodePorts: Send + Sync {
         version: &str,
     ) -> Result<ResolvedSkillView, PortError>;
 
-    /// csv.query（`TabularService.query`・隔離 DuckDB での RO SQL・viewer）。返り値は列＋行の要約。
-    async fn csv_query(&self, ctx: &ExecCtx, file_id: Uuid, sql: &str) -> Result<Value, PortError>;
+    /// csv.query（`TabularService.query_tables`・隔離 DuckDB での RO SQL・対象全ファイルの viewer）。
+    /// 返り値は列＋行の要約。
+    async fn csv_query(&self, ctx: &ExecCtx, req: CsvQueryReq) -> Result<Value, PortError>;
 
     /// csv.patch（`TabularService.patch`・editor・rev 楽観ロック）。冪等化は capability 層の
     /// effect_journal が担保するため、ポートは副作用の適用のみを行う。`ops` は `PatchOp` 配列の JSON。
@@ -658,6 +659,21 @@ impl DataWriteOp {
             DataWriteOp::BulkUpsert { .. } => "data.bulk_upsert",
         }
     }
+}
+
+/// csv.query の要求（RO SQL・pure）。`tables` は JOIN 用の追加 CSV（#1037）。
+#[derive(Debug, Clone)]
+pub struct CsvQueryReq {
+    pub file_id: Uuid,
+    pub sql: String,
+    pub tables: Vec<CsvQueryTable>,
+}
+
+/// csv.query の追加テーブル 1 件（SQL で使う名前 → CSV ファイル）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CsvQueryTable {
+    pub name: String,
+    pub file_id: Uuid,
 }
 
 /// csv.patch の要求（冪等化は capability 層の effect_journal・ポートは適用のみ）。

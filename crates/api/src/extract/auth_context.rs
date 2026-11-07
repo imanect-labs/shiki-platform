@@ -50,7 +50,7 @@ pub struct AuthContextExt(pub AuthContext);
 /// 認証 middleware が [`resolve_tenant_id`] の結果を載せ、extractor が取り出す。
 /// `tenant_id` を撒く継ぎ目を `AuthContext` 構築の一点に集約するための運搬器。
 #[derive(Debug, Clone)]
-pub(crate) struct TenantId(pub String);
+pub(crate) struct TenantId(pub authz::TenantId);
 
 /// 解決済み org を request extension で運ぶ newtype（[`resolve_org`] の結果）。
 #[derive(Debug, Clone)]
@@ -104,7 +104,7 @@ pub(crate) fn group_layout(auth: &AuthConfig) -> GroupLayout {
 pub(crate) fn resolve_tenant_id(
     principal: &Principal,
     auth: &AuthConfig,
-) -> Result<String, ApiError> {
+) -> Result<authz::TenantId, ApiError> {
     auth.tenant_source()
         .resolve(principal.tenant_id.as_deref())
         .map_err(|e| {
@@ -215,7 +215,9 @@ mod tests {
         parts
             .extensions
             .insert(principal_with_groups(&["/tenants/t/acme"]));
-        parts.extensions.insert(TenantId("t".into()));
+        parts
+            .extensions
+            .insert(TenantId(authz::TenantId::parse("t").unwrap()));
         assert!(matches!(
             AuthContextExt::from_request_parts(&mut parts, &()).await,
             Err(ApiError::Unauthorized)
@@ -224,7 +226,7 @@ mod tests {
         let AuthContextExt(ctx) = AuthContextExt::from_request_parts(&mut parts, &())
             .await
             .unwrap();
-        assert_eq!((ctx.org.as_str(), ctx.tenant_id.as_str()), ("acme", "t"));
+        assert_eq!((ctx.org(), ctx.tenant_id()), ("acme", "t"));
     }
 
     #[test]

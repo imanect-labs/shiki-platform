@@ -37,6 +37,7 @@ pub mod org_group;
 pub mod scope;
 pub mod subject;
 pub mod tenancy;
+pub mod tenant_id;
 pub mod visible;
 pub mod vocab;
 
@@ -51,4 +52,5 @@ pub use org_group::GroupLayout;
 pub use scope::CapabilityScope;
 pub use subject::Subject;
 pub use tenancy::{TenantResolveError, TenantSource};
+pub use tenant_id::TenantId;
 pub use vocab::{ObjectType, Relation};

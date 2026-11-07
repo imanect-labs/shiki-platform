@@ -8,6 +8,7 @@ import { uploadNewFile, type NodeResponse } from "@/lib/storage";
 import type { Attachment, AutonomousMode, WorkspaceChoice } from "@/lib/chat-api";
 import { HOME_SCOPE, useModelChoice } from "@/lib/model-choice";
 import { selectableTool, useToolChoice } from "@/lib/tool-choice";
+import { previewKind } from "@/lib/file-preview";
 import {
   readScoped,
   removeScoped,
@@ -18,6 +19,7 @@ import {
 } from "@/lib/user-storage";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { ApprovalModeSelect, approvalModeDef } from "./approval-mode-select";
+import { AttachmentThumb, isImageAttachment } from "./attachment-thumb";
 import { ComposerModeButton } from "./composer-mode";
 import { PlusMenu } from "./composer-plus-menu";
 import { ComposerTokens, TOKEN_GAP, type ComposerToken } from "./composer-tokens";
@@ -31,6 +33,7 @@ import {
 } from "@/lib/selection-context";
 import { FolderPicker } from "@/components/artifacts/folder-picker";
 import { PromptInput, PromptInputTextarea } from "@/components/prompt-kit/prompt-input";
+import dynamic from "next/dynamic";
 import {
   SlashCommandMenu,
   slashOptionId,
@@ -46,12 +49,24 @@ import {
   type SlashSuggestion,
 } from "@/lib/slash-command";
 import { toast } from "@/components/ui/use-toast";
+import { usePreferences } from "@/lib/preferences";
+import { useModKeyLabel } from "@/hooks/use-mod-key";
 import { DrivePicker } from "./drive-picker";
+
+/// Markdown の入力欄（TipTap）は重いので、出すときに読み込む（テキストの設定では読み込まない）。
+/// 読み込む間は入力欄と同じ高さの枠を置き、レイアウトを跳ねさせない。
+const PromptInputEditor = dynamic(
+  () => import("@/components/prompt-kit/prompt-input-editor").then((m) => m.PromptInputEditor),
+  { ssr: false, loading: () => <div aria-hidden className="min-h-10 md:min-h-[44px]" /> },
+);
 
 /// 小さな × の押せる範囲を、見た目を変えずに周囲へ広げる（指で外せるように）。
 const HIT_AREA = "relative after:absolute after:-inset-2";
 
-type Uploading = { name: string; fraction: number };
+/// アップロード中のファイル。画像なら端末のファイルから作った object URL を持つ。
+type Uploading = { name: string; fraction: number; preview?: string };
+/// 入力欄の添付。端末から選んだ画像は、アップロード後も object URL でサムネイルを出す（送信時に外す）。
+type ComposerAttachment = Attachment & { preview?: string };
 
 /// 補完候補を確定済みコマンドへ写す。
 function toActiveCommand(s: SlashSuggestion): ActiveCommand {
@@ -163,8 +178,24 @@ export const Composer = React.memo(function Composer({
   className?: string;
 }) {
   const [value, setValue] = React.useState("");
-  const [attachments, setAttachments] = React.useState<Attachment[]>([]);
+  const [attachments, setAttachments] = React.useState<ComposerAttachment[]>([]);
   const [uploading, setUploading] = React.useState<Uploading | null>(null);
+  const attachmentsRef = React.useRef(attachments);
+  attachmentsRef.current = attachments;
+  // 作った object URL。画面を離れたら、アップロード中のものも含めて手放す。
+  const previewUrls = React.useRef(new Set<string>());
+  React.useEffect(() => {
+    const urls = previewUrls.current;
+    return () => {
+      urls.forEach((u) => URL.revokeObjectURL(u));
+      urls.clear();
+    };
+  }, []);
+  const revokePreview = (url?: string) => {
+    if (!url) return;
+    URL.revokeObjectURL(url);
+    previewUrls.current.delete(url);
+  };
   const [menuOpen, setMenuOpen] = React.useState(false);
   const desktop = useMediaQuery("(min-width: 768px)");
   const modelScope = scope ?? threadId ?? HOME_SCOPE;
@@ -175,6 +206,15 @@ export const Composer = React.memo(function Composer({
   const [modelOpen, setModelOpen] = React.useState(false);
   // この発話に使うツール（#734）。送信時に会話側が読み出して空に戻す。
   const toolChoice = useToolChoice(modelScope);
+  // 送信キー（ユーザー設定・#952）。Ctrl/⌘+Enter にしていれば Enter は改行。
+  const preferences = usePreferences();
+  const { submit_key: submitKey } = preferences.prefs;
+  // 入力欄の書き方（ユーザー設定）。設定を読む前は既定（Markdown）で出し、打てない時間を作らない。
+  // 読めた設定と違えば、本文が空のときだけ切り替える（書きかけを Markdown のエスケープ付きのまま
+  // textarea へ移さない。空になったとき＝送信後に切り替わる）。
+  const desiredFormat = preferences.loaded ? preferences.prefs.input_format : "markdown";
+  const [inputFormat, setInputFormat] = React.useState(desiredFormat);
+  const modKey = useModKeyLabel();
   const [pickerOpen, setPickerOpen] = React.useState(false);
   const [wsPickerOpen, setWsPickerOpen] = React.useState(false);
   const fileInputRef = React.useRef<HTMLInputElement | null>(null);
@@ -204,6 +244,9 @@ export const Composer = React.memo(function Composer({
   }, [draftKey, scopeReady, draftRestored]);
   // 保存は打鍵ごとではなく、手が止まってからまとめて書く（長文の貼り付け後も入力を重くしない）。
   // 画面を離れる（アンマウント・リロードやタブを閉じる）ときは待たずに書く（直後に離れても取りこぼさない）。
+  React.useEffect(() => {
+    if (desiredFormat !== inputFormat && value === "") setInputFormat(desiredFormat);
+  }, [desiredFormat, inputFormat, value]);
   const latestValue = React.useRef(value);
   // コミットした値だけを持つ（破棄されたレンダーの値を保存しない）。保存の effect より先に置く。
   React.useEffect(() => {
@@ -280,9 +323,11 @@ export const Composer = React.memo(function Composer({
     const body = typed ? typed.rest : value;
     const text = composeText(active, body);
     if (!text) return;
-    const sentAttachments = attachments;
-    const result = onSubmit(text, attachments, takePendingSelection() ?? undefined, active ?? undefined);
+    // 送るのは node と名前だけ（サムネイルの object URL は入力欄の中だけで使い、送ったら手放す）。
+    const sentAttachments = attachments.map(({ node_id, name }) => ({ node_id, name }));
+    const result = onSubmit(text, sentAttachments, takePendingSelection() ?? undefined, active ?? undefined);
     setValue("");
+    attachments.forEach((a) => revokePreview(a.preview));
     setAttachments([]);
     setCommand(null);
     setSlashDismissed(false);
@@ -296,18 +341,11 @@ export const Composer = React.memo(function Composer({
     }
   };
 
-  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+  /// 入力欄のキー（textarea と Markdown 入力で共通）。`atStart` はカーソルが本文の先頭で選択が無いか。
+  const onKeyDown = (e: KeyboardEvent, atStart: boolean) => {
     // 本文の先頭での Backspace は、見えている最後の語を外す（ChatGPT と同じ操作感）。
-    const el = e.currentTarget;
     const last = tokens[tokens.length - 1];
-    if (
-      last &&
-      e.key === "Backspace" &&
-      !e.nativeEvent.isComposing &&
-      e.keyCode !== 229 &&
-      el.selectionStart === 0 &&
-      el.selectionEnd === 0
-    ) {
+    if (last && e.key === "Backspace" && !e.isComposing && e.keyCode !== 229 && atStart) {
       e.preventDefault();
       last.onRemove();
       return;
@@ -325,7 +363,7 @@ export const Composer = React.memo(function Composer({
       e.preventDefault();
       setSlashIndex((i) => (i - 1 + len) % len);
     } else if (
-      (e.key === "Enter" && !e.nativeEvent.isComposing && e.keyCode !== 229) ||
+      (e.key === "Enter" && !e.isComposing && e.keyCode !== 229) ||
       e.key === "Tab"
     ) {
       e.preventDefault();
@@ -336,10 +374,17 @@ export const Composer = React.memo(function Composer({
     }
   };
 
-  const addAttachment = (node: NodeResponse) => {
-    setAttachments((prev) =>
-      prev.some((a) => a.node_id === node.id) ? prev : [...prev, { node_id: node.id, name: node.name }],
-    );
+  const addAttachment = (node: NodeResponse, preview?: string) => {
+    if (attachmentsRef.current.some((a) => a.node_id === node.id)) {
+      revokePreview(preview);
+      return;
+    }
+    setAttachments((prev) => [...prev, { node_id: node.id, name: node.name, preview }]);
+  };
+
+  const removeAttachment = (a: ComposerAttachment) => {
+    revokePreview(a.preview);
+    setAttachments((prev) => prev.filter((x) => x.node_id !== a.node_id));
   };
 
   const onPickLocal = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -348,16 +393,23 @@ export const Composer = React.memo(function Composer({
     if (!file) return;
     // スマホの「+」のシートはファイルを選ぶまで開いておき、選んだら閉じる。
     setMenuOpen(false);
-    setUploading({ name: file.name, fraction: 0 });
+    // 画像はアップロードを待たずに、端末のファイルからサムネイルを出す。
+    let preview: string | undefined;
+    if (previewKind({ name: file.name }) === "image") {
+      preview = URL.createObjectURL(file);
+      previewUrls.current.add(preview);
+    }
+    setUploading({ name: file.name, fraction: 0, preview });
     try {
       // 同じ名前があれば連番名で置く（同じ写真をもう一度添付すると 409 で失敗していた・#880）。
       const node = await uploadNewFile({
         file,
-        onProgress: (fraction) => setUploading({ name: file.name, fraction }),
+        onProgress: (fraction) => setUploading({ name: file.name, fraction, preview }),
       });
-      addAttachment(node);
+      addAttachment(node, preview);
       toast({ description: `${node.name} をアップロードしました（自動でベクトル化されます）` });
     } catch {
+      revokePreview(preview);
       toast({ description: `${file.name} のアップロードに失敗しました` });
     } finally {
       setUploading(null);
@@ -405,7 +457,10 @@ export const Composer = React.memo(function Composer({
   const [textScroll, setTextScroll] = React.useState(0);
 
   return (
-    <div className={cn("flex flex-col gap-2", className)}>
+    // @container: 操作の段の並べ方はビューポートではなく**コンポーザ自身の幅**で決める。
+    // 文書のアシスタントパネル（PC でも幅 28rem）ではビューポート基準の md: だと PC 用の
+    // 横並びになり、エージェントモードとモデル選択が重なる。
+    <div className={cn("@container flex flex-col gap-2", className)}>
       {/* 選択コンテキストチップ（選択→AI 指示・Task 11.10） */}
       {selection ? (
         <div
@@ -415,7 +470,10 @@ export const Composer = React.memo(function Composer({
           <TextSelect className="size-3.5 shrink-0 text-primary" aria-hidden />
           <span className="font-medium">{selectionKindLabel(selection.kind)}</span>
           <span className="min-w-0 flex-1 truncate text-muted-foreground">
-            {selection.excerpt.slice(0, 120)}
+            {/* 編集中のスキルは本文が JSON なので、名前だけを見せる（#919）。 */}
+            {selection.kind === "skill_draft"
+              ? selection.draft_name || "名前未設定"
+              : selection.excerpt.slice(0, 120)}
           </span>
           <button
             type="button"
@@ -432,28 +490,60 @@ export const Composer = React.memo(function Composer({
       ) : null}
       {/* 添付チップ */}
       {(attachments.length > 0 || uploading) && (
-        <div className="flex flex-wrap gap-1.5 px-1">
-          {attachments.map((a) => (
-            <span
-              key={a.node_id}
-              className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-full border border-border bg-card py-1 pl-2.5 pr-1.5 text-[13px] text-foreground/85"
-            >
-              <Paperclip className="size-3.5 shrink-0 text-muted-foreground" />
-              <span className="min-w-0 max-w-[160px] truncate">{a.name}</span>
-              <button
-                type="button"
-                onClick={() => setAttachments((prev) => prev.filter((x) => x.node_id !== a.node_id))}
-                aria-label="添付を外す"
-                className={cn(
-                  "flex size-5 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground",
-                  HIT_AREA,
-                )}
+        <div className="flex flex-wrap items-center gap-2.5 px-1 pt-1">
+          {attachments.map((a) =>
+            isImageAttachment(a) ? (
+              <AttachmentThumb
+                key={a.node_id}
+                nodeId={a.node_id}
+                name={a.name}
+                src={a.preview}
               >
-                <X className="size-3.5" />
-              </button>
-            </span>
-          ))}
-          {uploading ? (
+                <button
+                  type="button"
+                  onClick={() => removeAttachment(a)}
+                  aria-label={`${a.name} の添付を外す`}
+                  // 押せる範囲は隣の添付に食い込まない広さにとどめる（並びの間隔 10px）。
+                  className="absolute -right-1.5 -top-1.5 flex size-5 items-center justify-center rounded-full border-2 border-background bg-foreground text-background shadow-sm transition-colors after:absolute after:-inset-1 hover:bg-foreground/80"
+                >
+                  <X className="size-3" strokeWidth={2.5} />
+                </button>
+              </AttachmentThumb>
+            ) : (
+              <span
+                key={a.node_id}
+                className="inline-flex min-w-0 max-w-full items-center gap-1.5 rounded-full border border-border bg-card py-1 pl-2.5 pr-1.5 text-[13px] text-foreground/85"
+              >
+                <Paperclip className="size-3.5 shrink-0 text-muted-foreground" />
+                <span className="min-w-0 max-w-[160px] truncate">{a.name}</span>
+                <button
+                  type="button"
+                  onClick={() => removeAttachment(a)}
+                  aria-label={`${a.name} の添付を外す`}
+                  className={cn(
+                    "flex size-5 shrink-0 items-center justify-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground",
+                    HIT_AREA,
+                  )}
+                >
+                  <X className="size-3.5" />
+                </button>
+              </span>
+            ),
+          )}
+          {uploading?.preview ? (
+            <AttachmentThumb name={uploading.name} src={uploading.preview}>
+              <span
+                role="status"
+                aria-busy="true"
+                aria-label={`${uploading.name} をアップロード中`}
+                className="absolute inset-0 flex flex-col items-center justify-center gap-0.5 rounded-[inherit] bg-background/45 text-[10px] font-medium tabular-nums text-foreground"
+              >
+                <Loader2 className="size-4 animate-spin" aria-hidden />
+                {/* 進み具合は見た目だけ（変わるたびに読み上げない） */}
+                <span aria-hidden>{Math.round(uploading.fraction * 100)}%</span>
+              </span>
+            </AttachmentThumb>
+          ) : uploading ? (
             <span className="inline-flex items-center gap-1.5 rounded-full border border-border bg-card px-2.5 py-1 text-[13px] text-muted-foreground">
               <Loader2 className="size-3.5 animate-spin" />
               <span className="max-w-[160px] truncate">{uploading.name}</span>
@@ -476,8 +566,9 @@ export const Composer = React.memo(function Composer({
           // 本文の上に重ねるので面を少し透かし、背後はぼかす。
           "relative rounded-[26px] border-border bg-card/85 shadow-sm backdrop-blur-xl transition-shadow",
           "focus-within:border-ring/25 focus-within:shadow-md focus-within:ring-4 focus-within:ring-ring/10",
-          // 入力欄 → 操作の段 の 2 段（左に +、右にモデルと送信）。
-          "grid grid-cols-[minmax(0,1fr)_auto] items-end gap-x-2 gap-y-1 p-2",
+          // 入力欄 → 操作の段 の 2 段（左に +、右にモデルと送信）。左（+・モード）を優先し、
+          // 入らないときは右のモデル名を省略して縮める（右の列は最小 0・モデルボタンは min-w-0）。
+          "grid grid-cols-[auto_minmax(0,1fr)] items-end gap-x-2 gap-y-1 p-2",
           // スマホで既定のモデルのときは 1 行の丸いバー（+・入力欄・送信）。伸びてもボタンは下端に揃える。
           oneLine && "max-md:grid-cols-[auto_minmax(0,1fr)_auto] max-md:gap-x-1 max-md:p-1.5",
         )}
@@ -510,33 +601,66 @@ export const Composer = React.memo(function Composer({
               )}
             />
           ) : null}
-          {/* 補完中は combobox として関連付ける（Codex P2）。フォーカスは textarea に
-              残るため、aria-activedescendant が無いとスクリーンリーダーへ選択が伝わらない。 */}
-          <PromptInputTextarea
-            placeholder={effectivePlaceholder}
-            autoFocus={autoFocus}
-            aria-label="メッセージを入力"
-            role={slashOpen ? "combobox" : undefined}
-            aria-expanded={slashOpen || undefined}
-            aria-controls={slashOpen ? SLASH_LISTBOX_ID : undefined}
-            aria-autocomplete={slashOpen ? "list" : undefined}
-            aria-activedescendant={
-              slashOpen ? slashOptionId(Math.min(slashIndex, slashHits!.length - 1)) : undefined
-            }
-            onKeyDown={onKeyDown}
-            onScroll={(e) => setTextScroll(e.currentTarget.scrollTop)}
-            // 先頭の語の幅だけ 1 行目を下げる（続けて打った文字は語の右から、2 行目以降は左端から）。
-            style={tokens.length > 0 ? { textIndent: tokensWidth + TOKEN_GAP } : undefined}
-            className={cn(
-              "min-h-10 min-w-0 px-0 py-2 text-base leading-6 placeholder:text-muted-foreground/70",
-              // 長いプレースホルダは折り返さずに切る（入力欄を 2 行に押し広げない）。
-              "placeholder-shown:overflow-hidden placeholder-shown:text-ellipsis placeholder-shown:whitespace-nowrap",
-              "md:min-h-[44px] md:pb-1 md:pt-0 md:text-[15px] md:leading-relaxed",
-            )}
-          />
+          {/* 補完中は combobox として関連付ける（Codex P2）。フォーカスは入力欄に
+              残るため、aria-activedescendant が無いとスクリーンリーダーへ選択が伝わらない。
+              書き方はユーザー設定（既定は Markdown の WYSIWYG・テキストは従来の textarea）。 */}
+          {inputFormat === "markdown" ? (
+            <PromptInputEditor
+              placeholder={effectivePlaceholder}
+              autoFocus={autoFocus}
+              attributes={{
+                "aria-label": "メッセージを入力",
+                role: slashOpen ? "combobox" : undefined,
+                "aria-expanded": slashOpen ? "true" : undefined,
+                "aria-controls": slashOpen ? SLASH_LISTBOX_ID : undefined,
+                "aria-autocomplete": slashOpen ? "list" : undefined,
+                "aria-activedescendant": slashOpen
+                  ? slashOptionId(Math.min(slashIndex, slashHits!.length - 1))
+                  : undefined,
+              }}
+              onKeyDown={(e, { atStart }) => onKeyDown(e, atStart)}
+              submitKey={submitKey}
+              onScroll={setTextScroll}
+              // 先頭の語の幅だけ 1 行目を下げる（続けて打った文字は語の右から、2 行目以降は左端から）。
+              firstLineIndent={tokens.length > 0 ? tokensWidth + TOKEN_GAP : undefined}
+              className={cn(
+                "min-h-10 min-w-0 py-2 text-base leading-6",
+                "md:min-h-[44px] md:pb-1 md:pt-0 md:text-[15px] md:leading-relaxed",
+              )}
+            />
+          ) : (
+            <PromptInputTextarea
+              placeholder={effectivePlaceholder}
+              autoFocus={autoFocus}
+              aria-label="メッセージを入力"
+              role={slashOpen ? "combobox" : undefined}
+              aria-expanded={slashOpen || undefined}
+              aria-controls={slashOpen ? SLASH_LISTBOX_ID : undefined}
+              aria-autocomplete={slashOpen ? "list" : undefined}
+              aria-activedescendant={
+                slashOpen ? slashOptionId(Math.min(slashIndex, slashHits!.length - 1)) : undefined
+              }
+              onKeyDown={(e) => {
+                const el = e.currentTarget;
+                onKeyDown(e.nativeEvent, el.selectionStart === 0 && el.selectionEnd === 0);
+                if (e.nativeEvent.defaultPrevented) e.preventDefault();
+              }}
+              submitKey={submitKey}
+              onScroll={(e) => setTextScroll(e.currentTarget.scrollTop)}
+              // 先頭の語の幅だけ 1 行目を下げる（続けて打った文字は語の右から、2 行目以降は左端から）。
+              style={tokens.length > 0 ? { textIndent: tokensWidth + TOKEN_GAP } : undefined}
+              className={cn(
+                "min-h-10 min-w-0 px-0 py-2 text-base leading-6 placeholder:text-muted-foreground/70",
+                // 長いプレースホルダは折り返さずに切る（入力欄を 2 行に押し広げない）。
+                "placeholder-shown:overflow-hidden placeholder-shown:text-ellipsis placeholder-shown:whitespace-nowrap",
+                "md:min-h-[44px] md:pb-1 md:pt-0 md:text-[15px] md:leading-relaxed",
+              )}
+            />
+          )}
         </div>
 
-        {/* 左: 「+」（PC はエージェントモード等も同じ段に並べる）。 */}
+        {/* 左: 「+」（PC で幅に余裕があればエージェントモード等も同じ段に並べる。狭い
+            アシスタントパネルではスマホと同じく右の実行モードボタン 1 つにまとめる）。 */}
         <div
           className={cn(
             "col-start-1 row-start-2 flex min-w-0 items-center gap-1.5 pb-0.5 pl-0.5",
@@ -557,7 +681,7 @@ export const Composer = React.memo(function Composer({
             onOpenModel={oneLine ? () => setModelOpen(true) : undefined}
           />
           {onAutonomousChange ? (
-            <div className="hidden min-w-0 items-center gap-1.5 md:flex">
+            <div className="hidden min-w-0 items-center gap-1.5 md:@xl:flex">
               <button
                 type="button"
                 role="switch"
@@ -624,7 +748,7 @@ export const Composer = React.memo(function Composer({
           />
           {onAutonomousChange ? (
             <ComposerModeButton
-              className="md:hidden"
+              className="md:size-9 md:@xl:hidden"
               autonomous={autonomous}
               onAutonomousChange={onAutonomousChange}
               approvalMode={approvalMode}
@@ -654,7 +778,13 @@ export const Composer = React.memo(function Composer({
               onClick={submit}
               disabled={!canSend}
               aria-label={streaming ? "順番待ちに追加" : "送信"}
-              title={streaming ? "生成が終わったら自動で送信します" : undefined}
+              title={
+                streaming
+                  ? "生成が終わったら自動で送信します"
+                  : submitKey === "mod_enter"
+                    ? `送信（${modKey}+Enter）`
+                    : undefined
+              }
               className={cn(
                 "flex size-10 shrink-0 items-center justify-center rounded-full transition-colors md:size-9",
                 "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-card",
@@ -676,7 +806,7 @@ export const Composer = React.memo(function Composer({
         onChange={onPickLocal}
         aria-hidden
       />
-      <DrivePicker open={pickerOpen} onOpenChange={setPickerOpen} onSelect={addAttachment} />
+      <DrivePicker open={pickerOpen} onOpenChange={setPickerOpen} onSelect={(node) => addAttachment(node)} />
       {onWorkspaceChange ? (
         <FolderPicker
           open={wsPickerOpen}

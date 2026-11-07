@@ -82,6 +82,16 @@ pub async fn step_once(deps: &PipelineDeps) -> Result<StepOutcome, RagError> {
     else {
         return Ok(StepOutcome::Idle);
     };
+    // DB の値も信頼しない。文字ポリシーに反する tenant_id では積まずに終える（fail-closed・#1032）。止めずに
+    // 返すと、同じ行が先頭に残ってほかのテナントのまとめての取り込みを塞ぐので、終えてから誤りを返す。
+    let tenant = match authz::TenantId::parse(run.tenant_id.as_str()) {
+        Ok(tenant) => tenant,
+        Err(e) => {
+            finish(&mut tx, run.id, None, 0, 0, true).await?;
+            tx.commit().await?;
+            return Err(RagError::InvalidTenant(e.to_string()));
+        }
+    };
     // 削除中・削除済みのテナントには積まない（撤去と並行して索引を作り直させない・SAAS.2）。
     if !deps
         .indexer_storage
@@ -168,7 +178,7 @@ pub async fn step_once(deps: &PipelineDeps) -> Result<StepOutcome, RagError> {
                 tenant_id: Some(run.tenant_id.clone()),
             },
             run.org.clone(),
-            run.tenant_id.clone(),
+            tenant,
         );
         storage::event::emit_many_on(&mut tx, &actor, &events, run.trace_id.as_deref()).await?;
     }

@@ -3,11 +3,11 @@
 /// 下書きノートを「ドライブに保存」するダイアログ（issue #282）と、下書き画面（ノート・
 /// スライド・CSV）共通のクローム・状態バッジ・タブ・空状態。
 ///
-/// 名前と保存先フォルダ（既定＝ルート／マイドライブ）を選び、POST /notes で実体化する。
-/// 保存先は human 決定「保存先ピッカー（既定=ルート）」に従い、既定はルート直下・任意で
-/// フォルダを選べる（後で移動も可）。保存自体は呼び出し側（onConfirm）が行う。
+/// 名前と保存先フォルダを選び、POST /notes で実体化する。保存先の初期値は呼び出し側が
+/// `defaultFolder` で渡す（AI の指定 → 由来ノートのフォルダ → ルートの順・#942）。任意で
+/// フォルダを選び直せる（後で移動も可）。保存自体は呼び出し側（onConfirm）が行う。
 
-import { FileWarning, Folder, FolderInput, MessageSquare, PencilLine, Save } from "lucide-react";
+import { FileWarning, Folder, FolderInput, MessageSquare, PencilLine, Save, TriangleAlert } from "lucide-react";
 import Link from "next/link";
 import * as React from "react";
 
@@ -39,6 +39,19 @@ export type SaveTarget = { name: string; parentId: string | null; addNumber?: bo
 /// `numbered` は番号を付けて保存しても空いている名前が無かったとき（番号を付けるボタンは出さない）。
 export type DraftNameTaken = { name: string; parentId: string | null; message: string; numbered: boolean };
 
+/// 保存の失敗をユーザー向けの文言にする。保存先フォルダへ書けない（403）ときは、選び直せば
+/// 済むことを伝える（初期値は AI の指定や由来ノートの場所で、閲覧だけのフォルダのこともある）。
+export function saveFailedMessage(e: unknown, parentId: string | null): string {
+  const forbidden = e instanceof Error && /\(403\)/.test(e.message);
+  return forbidden && parentId
+    ? "このフォルダには保存する権限がありません。保存先を選び直してください。"
+    : "保存に失敗しました。";
+}
+
+/// 出典に社内文書を持つ回答をドライブへ置くときの注意（チャットの書き出し・下書きノートの保存で共用）。
+export const SOURCES_NOTICE =
+  "この回答には出典の文書の内容が含まれます。共有するときは、出典の文書を読めない人に見せてよいか確かめてください。";
+
 export function SaveDraftDialog({
   open,
   onOpenChange,
@@ -48,6 +61,8 @@ export function SaveDraftDialog({
   entityLabel = "ノート",
   description = "下書きをノートとして保存します。保存後はバージョン管理・共有・共同編集ができます。",
   nameTaken = null,
+  defaultFolder,
+  notice,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -60,10 +75,17 @@ export function SaveDraftDialog({
   description?: string;
   /// 保存先に同じ名前があった（呼び出し側が保存の応答から渡す）。
   nameTaken?: DraftNameTaken | null;
+  /// 保存先の初期値（`null`=ルート・`undefined`=解決中）。既定値を置かない（置くと解決中が
+  /// ルートに化け、解決前に押した保存がルートへ作られる）。
+  defaultFolder: { id: string; name: string } | null | undefined;
+  /// 保存の前に読んでほしい注意（出典付きの回答の書き出しなど）。名前欄の上に出す。
+  notice?: React.ReactNode;
 }) {
   const [name, setName] = React.useState(defaultName);
   const [folder, setFolder] = React.useState<{ id: string; name: string } | null>(null);
   const [pickerOpen, setPickerOpen] = React.useState(false);
+  /// ユーザーが保存先を選び直したか（選び直した後は初期値で上書きしない）。
+  const [folderTouched, setFolderTouched] = React.useState(false);
 
   // ダイアログを**開いた瞬間だけ**既定名へ戻す（open が false→true の遷移時のみ）。開いたまま
   // defaultName（呼び出し元の activeName）が AI 流し込みで変わっても、ユーザーの入力中の名前/保存先を
@@ -72,109 +94,135 @@ export function SaveDraftDialog({
   React.useEffect(() => {
     if (open && !prevOpen.current) {
       setName(defaultName);
-      setFolder(null);
+      setFolderTouched(false);
     }
     prevOpen.current = open;
   }, [open, defaultName]);
+  // 保存先の初期値は解決が遅れて届くことがあるので、選び直していない間は追従する。
+  React.useEffect(() => {
+    if (open && !folderTouched) setFolder(defaultFolder ?? null);
+  }, [open, defaultFolder, folderTouched]);
+  const chooseFolder = (next: { id: string; name: string } | null) => {
+    setFolderTouched(true);
+    setFolder(next);
+  };
 
-  const canSave = name.trim().length > 0 && !saving;
+  // 保存先の初期値を解決している間は保存させない（意図せずルートへ作らない）。
+  const resolving = defaultFolder === undefined && !folderTouched;
+  const canSave = name.trim().length > 0 && !saving && !resolving;
   const parentId = folder?.id ?? null;
   // 知らせは、知らせた名前と保存先のままのときだけ出す（直したら消える）。
   const taken = nameTaken && nameTaken.name === name.trim() && nameTaken.parentId === parentId ? nameTaken : null;
 
   return (
-    <>
-      <Dialog open={open} onOpenChange={onOpenChange}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>ドライブに保存</DialogTitle>
-            <DialogDescription>{description}</DialogDescription>
-          </DialogHeader>
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>ドライブに保存</DialogTitle>
+          <DialogDescription>{description}</DialogDescription>
+        </DialogHeader>
 
-          <div className="space-y-3">
-            <label className="block space-y-1.5">
-              <span className="text-sm font-medium">{entityLabel}名</span>
-              <Input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder={`${entityLabel}名`}
-                data-testid="save-draft-name"
-                aria-invalid={taken ? true : undefined}
-                aria-describedby={taken ? "save-draft-name-taken" : undefined}
-                autoFocus
-              />
-            </label>
-            {taken ? (
-              <p
-                id="save-draft-name-taken"
-                role="alert"
-                className="text-sm text-destructive"
-                data-testid="save-draft-name-taken"
-              >
-                {taken.message}
-              </p>
-            ) : null}
+        <div className="space-y-3">
+          {notice ? (
+            <p
+              role="note"
+              data-testid="save-draft-notice"
+              className="flex gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-900 dark:text-amber-200"
+            >
+              <TriangleAlert className="mt-px size-3.5 shrink-0" aria-hidden />
+              <span>{notice}</span>
+            </p>
+          ) : null}
+          <label className="block space-y-1.5">
+            <span className="text-sm font-medium">{entityLabel}名</span>
+            <Input
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder={`${entityLabel}名`}
+              data-testid="save-draft-name"
+              aria-invalid={taken ? true : undefined}
+              aria-describedby={taken ? "save-draft-name-taken" : undefined}
+              autoFocus
+            />
+          </label>
+          {taken ? (
+            <p
+              id="save-draft-name-taken"
+              role="alert"
+              className="text-sm text-destructive"
+              data-testid="save-draft-name-taken"
+            >
+              {taken.message}
+            </p>
+          ) : null}
 
-            <div className="space-y-1.5">
-              <span className="text-sm font-medium">保存先</span>
+          <div className="space-y-1.5">
+            <span className="text-sm font-medium">保存先</span>
+            <button
+              type="button"
+              onClick={() => setPickerOpen(true)}
+              data-testid="save-draft-location"
+              className="flex w-full items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-left text-sm transition-colors hover:border-primary/40 hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <Folder className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+              <span className="min-w-0 flex-1 truncate">
+                {resolving ? "保存先を確認中…" : folder ? folder.name : "マイドライブ（ルート）"}
+              </span>
+              <FolderInput className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+            </button>
+            {folder ? (
               <button
                 type="button"
-                onClick={() => setPickerOpen(true)}
-                data-testid="save-draft-location"
-                className="flex w-full items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-left text-sm transition-colors hover:border-primary/40 hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                onClick={() => chooseFolder(null)}
+                className="text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
               >
-                <Folder className="size-4 shrink-0 text-muted-foreground" aria-hidden />
-                <span className="min-w-0 flex-1 truncate">
-                  {folder ? folder.name : "マイドライブ（ルート）"}
-                </span>
-                <FolderInput className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+                ルートに戻す
               </button>
-              {folder ? (
-                <button
-                  type="button"
-                  onClick={() => setFolder(null)}
-                  className="text-xs text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
-                >
-                  ルートに戻す
-                </button>
-              ) : null}
-            </div>
+            ) : null}
           </div>
+        </div>
 
-          <DialogFooter>
-            <Button type="button" variant="ghost" onClick={() => onOpenChange(false)} disabled={saving}>
-              キャンセル
+        <DialogFooter>
+          <Button
+            type="button"
+            variant="ghost"
+            onClick={() => onOpenChange(false)}
+            disabled={saving}
+          >
+            キャンセル
+          </Button>
+          {taken && !taken.numbered ? (
+            <Button
+              type="button"
+              disabled={!canSave}
+              data-testid="save-draft-numbered"
+              onClick={() => onConfirm({ name: name.trim(), parentId, addNumber: true })}
+            >
+              {saving ? "保存中…" : "番号を付けて保存"}
             </Button>
-            {taken && !taken.numbered ? (
-              <Button
-                type="button"
-                disabled={!canSave}
-                data-testid="save-draft-numbered"
-                onClick={() => onConfirm({ name: name.trim(), parentId, addNumber: true })}
-              >
-                {saving ? "保存中…" : "番号を付けて保存"}
-              </Button>
-            ) : (
-              <Button
-                type="button"
-                disabled={!canSave || taken !== null}
-                data-testid="save-draft-confirm"
-                onClick={() => onConfirm({ name: name.trim(), parentId })}
-              >
-                {saving ? "保存中…" : "保存"}
-              </Button>
-            )}
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+          ) : (
+            <Button
+              type="button"
+              disabled={!canSave || taken !== null}
+              data-testid="save-draft-confirm"
+              onClick={() => onConfirm({ name: name.trim(), parentId })}
+            >
+              {saving ? "保存中…" : "保存"}
+            </Button>
+          )}
+        </DialogFooter>
 
-      <FolderPicker
-        open={pickerOpen}
-        onOpenChange={setPickerOpen}
-        purpose="scope"
-        onSelect={(f) => setFolder({ id: f.id, name: f.name })}
-      />
-    </>
+        {/* ピッカーは DialogContent の**中**に置く（React ツリー上の子ダイアログにする）。外の兄弟に
+              置くと、ピッカーでの選択がこのダイアログの外側操作とみなされて一緒に閉じ、開き直すと
+              保存先がルートへ戻る（＝サブフォルダへ保存できない）。 */}
+        <FolderPicker
+          open={pickerOpen}
+          onOpenChange={setPickerOpen}
+          purpose="destination"
+          onSelect={(f) => chooseFolder({ id: f.id, name: f.name })}
+        />
+      </DialogContent>
+    </Dialog>
   );
 }
 

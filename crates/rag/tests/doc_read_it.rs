@@ -35,7 +35,7 @@ struct Env {
 }
 
 async fn setup() -> Option<Env> {
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return None;
     };
@@ -83,10 +83,10 @@ async fn make_file(env: &Env, name: &str, version: i64) -> storage::Node {
         "insert into blob (tenant_id, org, sha256, size_bytes, content_type, object_key, refcount) \
          values ($1, $2, $3, 10, 'text/plain', $4, 1)",
     )
-    .bind(&ctx.tenant_id)
-    .bind(&ctx.org)
+    .bind(ctx.tenant_id())
+    .bind(ctx.org())
     .bind(&sha)
-    .bind(format!("{}/{}/{}", ctx.tenant_id, ctx.org, sha))
+    .bind(format!("{}/{}/{}", ctx.tenant_id(), ctx.org(), sha))
     .execute(&env.pool)
     .await
     .unwrap();
@@ -95,20 +95,20 @@ async fn make_file(env: &Env, name: &str, version: i64) -> storage::Node {
                            version, created_by, updated_by) \
          values ($1, $2, 'file', $3, $4, 10, 'text/plain', $5, $6, $6) returning id",
     )
-    .bind(&ctx.org)
-    .bind(&ctx.tenant_id)
+    .bind(ctx.org())
+    .bind(ctx.tenant_id())
     .bind(name)
     .bind(&sha)
     .bind(version)
-    .bind(&ctx.principal.id)
+    .bind(&ctx.principal().id)
     .fetch_one(&env.pool)
     .await
     .unwrap();
     let now = sqlx::types::chrono::Utc::now();
     storage::Node {
         id,
-        org: ctx.org.clone(),
-        tenant_id: ctx.tenant_id.clone(),
+        org: ctx.org().to_owned(),
+        tenant_id: ctx.tenant_id().to_owned(),
         kind: storage::NodeKind::File,
         name: name.into(),
         parent_id: None,
@@ -117,8 +117,8 @@ async fn make_file(env: &Env, name: &str, version: i64) -> storage::Node {
         content_type: Some("text/plain".into()),
         version,
         deleted_at: None,
-        created_by: ctx.principal.id.clone(),
-        updated_by: ctx.principal.id.clone(),
+        created_by: ctx.principal().id.clone(),
+        updated_by: ctx.principal().id.clone(),
         created_at: now,
         updated_at: now,
     }
@@ -144,8 +144,8 @@ async fn chunk(
          values ($1, $2, $3, $4, $5, null, $6, $7, $8, $9, $10, 1, $11, 'fake-model')",
     )
     .bind(Uuid::new_v4())
-    .bind(&ctx.tenant_id)
-    .bind(&ctx.org)
+    .bind(ctx.tenant_id())
+    .bind(ctx.org())
     .bind(node.id)
     .bind(version)
     .bind(kind)
@@ -174,8 +174,8 @@ async fn block(
         "insert into doc_block (tenant_id, org, node_id, version, ordinal, type, level, text, page) \
          values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
     )
-    .bind(&ctx.tenant_id)
-    .bind(&ctx.org)
+    .bind(ctx.tenant_id())
+    .bind(ctx.org())
     .bind(node.id)
     .bind(version)
     .bind(ordinal)
@@ -268,7 +268,7 @@ async fn reads_blocks_by_position_and_records_audit() {
          where tenant_id = $1 and object_id = $2 and action = 'rag.doc_read' \
            and trace_id = 'trace-read'",
     )
-    .bind(&ctx.tenant_id)
+    .bind(ctx.tenant_id())
     .bind(node.id.to_string())
     .fetch_one(&env.pool)
     .await
@@ -343,7 +343,7 @@ async fn unindexed_and_foreign_contexts_read_nothing() {
     chunk(&env, &node, 1, 0, "leaf", None, &[], "社外秘").await;
     for other in [
         test_ctx(&format!("t-{}", Uuid::new_v4().simple()), "alice"),
-        test_ctx_org(&env.ctx.tenant_id, "alice", "other-org"),
+        test_ctx_org(env.ctx.tenant_id(), "alice", "other-org"),
     ] {
         let got = env
             .search
@@ -407,7 +407,7 @@ async fn huge_unit_continues_and_outline_is_audited() {
         "select count(*) from audit_log \
          where tenant_id = $1 and action = 'rag.doc_read' and trace_id = 'trace-outline'",
     )
-    .bind(&ctx.tenant_id)
+    .bind(ctx.tenant_id())
     .fetch_one(&env.pool)
     .await
     .unwrap();
@@ -484,7 +484,7 @@ async fn many_blocks_are_read_in_order_across_windows() {
 
 /// このテストのテナントで積んだ行を片付ける（索引・取り込みの記録・内容の履歴・ファイル・監査）。
 async fn cleanup(env: &Env) {
-    let tenant = &env.ctx.tenant_id;
+    let tenant = env.ctx.tenant_id();
     for sql in [
         "delete from rag_chunk where tenant_id = $1",
         "delete from doc_block where tenant_id = $1",
@@ -561,7 +561,7 @@ async fn reads_whole_text_across_batches_and_marks_the_cut() {
         "select count(*) from audit_log \
          where tenant_id = $1 and action = 'rag.doc_read' and trace_id = 'trace-whole'",
     )
-    .bind(&ctx.tenant_id)
+    .bind(ctx.tenant_id())
     .fetch_one(&env.pool)
     .await
     .unwrap();
@@ -621,8 +621,8 @@ async fn index_state_tells_why_the_text_is_not_readable_yet() {
         )
         .bind(node.id)
         .bind(version)
-        .bind(&ctx.org)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.org())
+        .bind(ctx.tenant_id())
         .bind(node.blob_sha256.clone().unwrap())
     };
     let job = |version: i64, op: &'static str, status: &'static str| {
@@ -631,8 +631,8 @@ async fn index_state_tells_why_the_text_is_not_readable_yet() {
              values ($1, $2, $3, $4, $5, $6) \
              on conflict (tenant_id, node_id, version, op) do update set status = excluded.status",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(node.id)
         .bind(version)
         .bind(op)
@@ -657,8 +657,8 @@ async fn index_state_tells_why_the_text_is_not_readable_yet() {
         "insert into storage_event_outbox (org, tenant_id, node_id, version, op, actor) \
          values ($1, $2, $3, 1, 'create', 'alice')",
     )
-    .bind(&ctx.org)
-    .bind(&ctx.tenant_id)
+    .bind(ctx.org())
+    .bind(ctx.tenant_id())
     .bind(node.id)
     .execute(&env.pool)
     .await
@@ -669,14 +669,14 @@ async fn index_state_tells_why_the_text_is_not_readable_yet() {
     );
     // relay が取り込みの待ち行列へ積んだ（outbox は処理済み）。
     sqlx::query("update storage_event_outbox set processed_at = now() where tenant_id = $1")
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .execute(&env.pool)
         .await
         .unwrap();
     sqlx::query("insert into job_queue (queue, tenant_id, payload) values ('rag_ingest', $1, $2)")
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(
-            serde_json::json!({ "tenant_id": ctx.tenant_id, "org": ctx.org,
+            serde_json::json!({ "tenant_id": ctx.tenant_id(), "org": ctx.org(),
             "node_id": node.id, "version": 1, "op": "create", "actor": "alice" }),
         )
         .execute(&env.pool)
@@ -687,7 +687,7 @@ async fn index_state_tells_why_the_text_is_not_readable_yet() {
         env.search.index_state(ctx, &node).await.unwrap(),
     );
     sqlx::query("delete from job_queue where tenant_id = $1")
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .execute(&env.pool)
         .await
         .unwrap();
@@ -770,7 +770,7 @@ async fn index_state_tells_why_the_text_is_not_readable_yet() {
         env.search.index_state(ctx, &node).await.unwrap(),
     );
     // 別の org の文脈ではノードも索引も見えない（本文は返さない）。
-    let other = test_ctx_org(&ctx.tenant_id, "alice", "other-org");
+    let other = test_ctx_org(ctx.tenant_id(), "alice", "other-org");
     state(
         "別の org",
         env.search.index_state(&other, &node).await.unwrap(),

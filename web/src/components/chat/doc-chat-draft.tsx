@@ -48,6 +48,7 @@ export function DocChatDraft({
   scope,
   onStart,
   onDirtyChange,
+  hint,
 }: {
   /// モデル・ツールの選択の保存先（ホームや他の文書と共有しない）。作った会話へ引き継ぐ。
   scope: string;
@@ -56,6 +57,8 @@ export function DocChatDraft({
   /// 入力欄に送れる入力（本文・コマンド・添付）があるか（書きかけ）が変わったときに呼ぶ。
   /// 外れる（アンマウント）ときは false。
   onDirtyChange?: (dirty: boolean) => void;
+  /// 空の会話の案内（既定はドキュメント向けの [`PanelEmptyHint`]）。
+  hint?: React.ReactNode;
 }) {
   // エージェントモード（会話内の入力欄と同じく、この発話から切り替えられる）。
   const [autonomous, setAutonomous] = React.useState(false);
@@ -94,7 +97,7 @@ export function DocChatDraft({
   return (
     <div className="flex h-full min-h-0 flex-col" data-testid="doc-chat-draft">
       <div className="min-h-0 flex-1 overflow-y-auto px-4 py-5">
-        <PanelEmptyHint />
+        {hint ?? <PanelEmptyHint />}
       </div>
       <div className="shrink-0 px-4 pt-2 pb-[max(0.75rem,env(safe-area-inset-bottom))] md:pb-3">
         {error ? (

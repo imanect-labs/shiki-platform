@@ -68,7 +68,7 @@ test("スラッシュコマンドの補完と確定", async ({ page }) => {
   const pill = page.getByTestId("slash-command-pill");
   await expect(pill).toBeVisible();
   await expect(pill).toContainText(`/${cmd}`);
-  await expect(input).toHaveValue("");
+  await expect(input).toHaveText("");
   // hint がプレースホルダになる。
   await expect(input).toHaveAttribute("placeholder", "調べたいことを入力");
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/slash-command-pill.png` });

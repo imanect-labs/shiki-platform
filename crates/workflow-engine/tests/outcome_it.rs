@@ -62,7 +62,7 @@ fn user(tenant: &str, id: &str, org: &str) -> AuthContext {
             tenant_id: Some(tenant.into()),
         },
         org.into(),
-        tenant.into(),
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 
@@ -119,7 +119,11 @@ impl NodePorts for NoPorts {
     ) -> Result<ResolvedSkillView, PortError> {
         Err(unused())
     }
-    async fn csv_query(&self, _: &ExecCtx, _: Uuid, _: &str) -> Result<Value, PortError> {
+    async fn csv_query(
+        &self,
+        _: &ExecCtx,
+        _: workflow_engine::CsvQueryReq,
+    ) -> Result<Value, PortError> {
         Err(unused())
     }
     async fn csv_patch(&self, _: &ExecCtx, _: CsvPatchReq) -> Result<Value, PortError> {
@@ -298,7 +302,7 @@ async fn only_the_taken_branch_replies_and_only_to_the_invoker() {
         user(&tenant, "alice", "other-org"),
     ] {
         let got = reader.own_outcomes(&other, &[run], &[run]).await.unwrap();
-        assert!(got.is_empty(), "{:?} に返った", other.principal.id);
+        assert!(got.is_empty(), "{:?} に返った", other.principal().id);
     }
     // 別のテナントからは状態も見えない。
     let elsewhere = user("t-elsewhere", "alice", "acme");

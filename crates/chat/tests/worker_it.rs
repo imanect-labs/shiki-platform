@@ -83,7 +83,7 @@ impl AuthzClient for AllowAll {
 }
 
 async fn setup() -> Option<PgPool> {
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return None;
     };
@@ -110,7 +110,7 @@ fn ctx(tenant: &str) -> AuthContext {
             tenant_id: Some(tenant.into()),
         },
         "acme".into(),
-        tenant.into(),
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 
@@ -232,7 +232,7 @@ async fn worker_generates_streams_and_persists_projection() {
         .unwrap();
 
     // SSE 相当の event_stream を drain し、トークン→done を受け取る。
-    let mut rx = store.event_stream(&c.tenant_id, res.run_id, 0);
+    let mut rx = store.event_stream(c.tenant_id(), res.run_id, 0);
     let mut text = String::new();
     let mut done = false;
     let mut title_event = None;
@@ -361,7 +361,7 @@ async fn system_prompt_carries_todays_date_from_run_creation() {
         .await
         .unwrap();
 
-    let mut rx = store.event_stream(&c.tenant_id, res.run_id, 0);
+    let mut rx = store.event_stream(c.tenant_id(), res.run_id, 0);
     let mut text = String::new();
     for _ in 0..500 {
         let next = tokio::time::timeout(Duration::from_secs(15), rx.next())
@@ -458,7 +458,7 @@ async fn custom_instructions_reach_the_model_in_system_prompt() {
             )
             .await
             .unwrap();
-        let mut rx = store.event_stream(&c.tenant_id, res.run_id, 0);
+        let mut rx = store.event_stream(c.tenant_id(), res.run_id, 0);
         let mut text = String::new();
         for _ in 0..500 {
             let next = tokio::time::timeout(Duration::from_secs(15), rx.next())
@@ -684,6 +684,8 @@ async fn earlier_unfinished_run_blocks_later_ones_until_it_ends() {
 
     // 先頭が端末化すると 2 本目の待ちだけが解ける（3 本目はまだ 2 本目を待つ）。
     let detail = "agent: llm error: openai 502: {\"workspace\":\"wrk_01\"} https://api.example.com";
+    let before = store.get_thread(&c, thread.id, None).await.unwrap();
+    assert_eq!(before.run_status, Some(chat::RunStatus::Queued));
     assert!(store
         .force_fail_run(runs[0], "表示用の定型文", detail)
         .await
@@ -705,6 +707,12 @@ async fn earlier_unfinished_run_blocks_later_ones_until_it_ends() {
             .unwrap();
     assert_eq!(status, "failed");
     assert_eq!(last_error.as_deref(), Some(detail));
+    // 強制失敗でも会話の更新日が進む（履歴の先頭へ上がり、「生成が終了」の根拠になる）。
+    let after = store.get_thread(&c, thread.id, None).await.unwrap();
+    assert!(
+        after.updated_at > before.updated_at,
+        "強制失敗で更新日が進む"
+    );
     assert!(!store.blocked_by_earlier_run(runs[1]).await.unwrap());
     assert!(store.blocked_by_earlier_run(runs[2]).await.unwrap());
 
@@ -725,7 +733,7 @@ async fn earlier_unfinished_run_blocks_later_ones_until_it_ends() {
 /// 生成ジョブの待ち行列は全テストで共有なので、同じ DB では他のテスト（並列に走る別プロセス）の
 /// ワーカーがジョブを拾い、自分の gateway（stub）で生成を成功させてしまう。
 async fn isolated_setup(prefix: &str) -> Option<PgPool> {
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return None;
     };
@@ -822,7 +830,7 @@ async fn rejected_generation_fails_once_without_retrying() {
         .unwrap();
 
     // 再試行していれば backoff（数十秒）を挟むので、ここで待つ間に Error は届かない。
-    let mut rx = store.event_stream(&c.tenant_id, res.run_id, 0);
+    let mut rx = store.event_stream(c.tenant_id(), res.run_id, 0);
     let mut error = None;
     for _ in 0..200 {
         let next = tokio::time::timeout(Duration::from_secs(20), rx.next())
@@ -877,4 +885,106 @@ async fn rejected_generation_fails_once_without_retrying() {
     );
     // ジョブは再試行の待ち行列に戻らず DLQ へ移る。
     assert_eq!(dead, 1, "DLQ へ移ること");
+}
+
+/// 図を書かせる構成（`yui: true`）では、system に種類の早見が届き、`ui_reference` が提示されて
+/// 種類ごとの書き方を返す。書かせない構成では提示しない（stub の `calltool:` が呼べず本文になる）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ui_reference_is_offered_only_when_yui_is_enabled() {
+    // 生成ジョブの待ち行列を他のテストのワーカーと共有しない（設定の違うワーカーに拾われない）。
+    let Some(pool) = isolated_setup("chat_yui").await else {
+        return;
+    };
+    let store = ChatStore::connect(pool.clone(), Arc::new(AllowAll), None)
+        .await
+        .unwrap();
+
+    /// 1 発話を流し、本文と ui_reference の観測（あれば）を返す。
+    async fn ask(store: &ChatStore, c: &AuthContext, text: &str) -> (String, Option<String>) {
+        let thread = store.create_thread(c, "t", true, None, None).await.unwrap();
+        let res = store
+            .post_message(c, thread.id, text, &[], None, Some(true), false, &[], None)
+            .await
+            .unwrap();
+        let mut rx = store.event_stream(c.tenant_id(), res.run_id, 0);
+        let (mut body, mut call_id, mut observed) = (String::new(), None, None);
+        for _ in 0..500 {
+            let next = tokio::time::timeout(Duration::from_mins(1), rx.next())
+                .await
+                .expect("イベント待ちがタイムアウト（ワーカーが生成しない）");
+            let Some(ev) = next else { break };
+            match ev.event {
+                StreamEventKind::Token { text: t } => body.push_str(&t),
+                StreamEventKind::ToolCall { id, name, .. } if name == "ui_reference" => {
+                    call_id = Some(id);
+                }
+                StreamEventKind::ToolResult {
+                    tool_call_id,
+                    ok,
+                    content,
+                } if Some(&tool_call_id) == call_id.as_ref() => {
+                    assert!(ok, "ui_reference が失敗: {content}");
+                    observed = Some(content);
+                }
+                StreamEventKind::Done { .. } => break,
+                StreamEventKind::Error { message } => panic!("生成失敗: {message}"),
+                _ => {}
+            }
+        }
+        (body, observed)
+    }
+
+    let worker_config = |yui: bool| WorkerConfig {
+        system_prompt: if yui {
+            chat::with_yui_guide("あなたはアシスタントです。")
+        } else {
+            "あなたはアシスタントです。".into()
+        },
+        model: Some("m".into()),
+        lease_secs: 120,
+        max_steps: 4,
+        yui,
+        ..Default::default()
+    };
+    let call = r#"calltool:ui_reference {"kinds":["pie","calc"]}"#;
+
+    let worker = ChatWorker::new(
+        pool.clone(),
+        store.clone(),
+        test_deps(stub_gateway(pool.clone())),
+        worker_config(true),
+    );
+    worker.spawn(1);
+    let c = ctx(&format!("t-{}", uuid::Uuid::new_v4()));
+    let (system, _) = ask(&store, &c, "echosystem:").await;
+    assert!(
+        system.contains("種類の早見:"),
+        "早見が system に無い: {system}"
+    );
+    assert!(system.contains("`pie` 円グラフ"), "円グラフが早見に無い");
+    let (_, observed) = ask(&store, &c, call).await;
+    let observed = observed.expect("yui が有効なら ui_reference が提示される");
+    assert!(observed.contains("## pie 円グラフ"), "{observed}");
+    assert!(observed.contains("## calc 計算機"), "{observed}");
+    assert!(observed.contains("```ui\npie "), "作例を含む: {observed}");
+
+    // 書かせない構成は別の DB で（上のワーカーに拾われない）。
+    let Some(pool) = isolated_setup("chat_yui_off").await else {
+        return;
+    };
+    let store = ChatStore::connect(pool.clone(), Arc::new(AllowAll), None)
+        .await
+        .unwrap();
+    let worker = ChatWorker::new(
+        pool.clone(),
+        store.clone(),
+        test_deps(stub_gateway(pool.clone())),
+        worker_config(false),
+    );
+    worker.spawn(1);
+    let (_, observed) = ask(&store, &c, call).await;
+    assert!(
+        observed.is_none(),
+        "yui が無効なら ui_reference は提示しない"
+    );
 }

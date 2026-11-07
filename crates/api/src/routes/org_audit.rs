@@ -50,6 +50,12 @@ pub(crate) fn org_audit_route_decls() -> Vec<RouteDecl> {
             AccessPolicy::OrgAuditor,
             || get(export_events),
         ),
+        r(
+            "/org-audit/verify",
+            &["GET"],
+            AccessPolicy::OrgAuditor,
+            || get(super::org_audit_verify::verify_chain),
+        ),
     ]
 }
 
@@ -232,7 +238,7 @@ async fn record_read(
     trace: Option<&str>,
     metadata: serde_json::Value,
 ) -> Result<(), ApiError> {
-    let object_id = format!("{}|{}", ctx.tenant_id, ctx.org);
+    let object_id = format!("{}|{}", ctx.tenant_id(), ctx.org());
     state
         .audit
         .record(

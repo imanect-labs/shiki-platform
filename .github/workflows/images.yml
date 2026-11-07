@@ -37,6 +37,13 @@ permissions:
   contents: read
   packages: write
 
+# ci.yml と同じ値にそろえる。rust-cache のキーは CARGO_* の値から作るため、ずれていると
+# web イメージの gen:api が ci.yml の web ジョブのキャッシュ（shared-key: gen-api）を読めない（#920）。
+env:
+  CARGO_NET_RETRY: "10"
+  CARGO_HTTP_MULTIPLEXING: "false"
+  CARGO_INCREMENTAL: "0"
+
 concurrency:
   # **走行中の run は cancel しない。** 以前は `paths` で絞っていたので docs
   # だけの push ではそもそも起動せず、走行中のビルドを殺すことは無かった。
@@ -307,8 +314,13 @@ jobs:
         if: env.NEEDS_GEN == '1'
         with:
           toolchain: "1.96.0"
+      # ci.yml の web ジョブが main で保存した gen:api のキャッシュを読むだけにする
+      # （同じ依存をもう 1 本 10GB の枠に積まない・#920）。
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         if: env.NEEDS_GEN == '1'
+        with:
+          shared-key: gen-api
+          save-if: "false"
       # Takumi Guard: pnpm install 前に npm プロキシを設定（匿名＝ブロックのみ）。
       - uses: flatt-security/setup-takumi-guard-npm@14f07d0cbc739b42a1b7c70a04c2b84cd1318ddd # v1.4.0
         if: env.NEEDS_GEN == '1'

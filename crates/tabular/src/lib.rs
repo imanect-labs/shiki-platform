@@ -24,10 +24,17 @@ pub use tabular_protocol::protocol;
 pub mod runner;
 pub mod service;
 pub mod sql_guard;
+pub mod tables;
 
 pub use error::TabularError;
 pub use patch::{apply_patches, apply_patches_with, PatchOp, PatchResult};
-pub use protocol::{CsvDialect, InputFormat, RunnerOp, RunnerRequest, RunnerResponse, SheetInfo};
+pub use protocol::{
+    CsvDialect, InputFormat, RunnerOp, RunnerRequest, RunnerResponse, RunnerTable, SheetInfo,
+};
 pub use runner::RunnerConfig;
 pub use service::{PatchApplied, Quotas, SavedCsv, TabularService};
 pub use sql_guard::validate_read_only;
+pub use tables::{
+    is_valid_table_name, validate_tables, TableRef, MAX_EXTRA_TABLES, PRIMARY_TABLE,
+    TABLE_NAME_PATTERN,
+};

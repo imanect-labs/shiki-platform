@@ -42,6 +42,16 @@ test.describe("監査ログ", () => {
     await page.getByLabel("操作の種類").fill("org_audit.export");
     await page.getByRole("button", { name: "絞り込む" }).click();
     await expect(table.getByRole("cell", { name: "org_audit.export" }).first()).toBeVisible();
+
+    // ハッシュチェーンを先頭から検証できる（#828）。記録したままなら崩れていない。
+    await page.getByRole("button", { name: "チェーンを検証", exact: true }).click();
+    const dialog = page.getByTestId("audit-verify");
+    // 新しい DB では連結された記録がまだ無いこともある。
+    await expect(dialog.getByText(/崩れていません（[\d,]+ 件を確認）|連結された記録はまだありません/)).toBeVisible({
+      timeout: 20_000,
+    });
+    await page.keyboard.press("Escape");
+    await expect(dialog).toBeHidden();
   });
 
   test("管理者でない監査閲覧者は監査ログだけを開ける", async ({ page }) => {

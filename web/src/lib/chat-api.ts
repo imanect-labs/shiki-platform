@@ -10,6 +10,7 @@
 "use client";
 
 import type { UserSelectableTool } from "@/generated/gui-spec";
+import type { EffortLevel } from "@/lib/admin-ai-api";
 import type { ModelChoice } from "@/lib/model-choice";
 import { apiFetch } from "@/lib/api";
 import { okWithReason } from "@/lib/artifact-api";
@@ -74,6 +75,16 @@ export type Thread = {
   originNoteName?: string | null;
   /// ピン留めした時刻（null＝ピン留めなし）。サイドバー履歴の先頭に出す。
   pinnedAt: string | null;
+  /// 検索フォルダ（ホームの「社内検索」でフォルダを選んで始めた会話・#965）。社内文書の検索を
+  /// このフォルダの配下に絞る。名前は作成時点のもの。
+  searchFolderId?: string | null;
+  searchFolderName?: string | null;
+  /// 進行中の run の状態（queued / running / waiting_approval）。無ければ null。
+  /// 別の画面へ移った後も裏で生成が続いている会話を、サイドバー履歴で「実行中」と示すのに使う。
+  runStatus: RunStatus | null;
+  /// 自分がこのスレッドで最後に送った発話のモデル選択（単体取得でだけ載る・別端末で開いたときの
+  /// 入力欄の初期値）。`undefined` はまだ送っていない、`null` は Auto。
+  lastModelChoice?: ModelChoice;
   createdAt: string;
   updatedAt: string;
 };
@@ -209,9 +220,27 @@ function toThread(t: ApiThread): Thread {
     originNoteId: t.origin_note_id ?? null,
     originNoteName: t.origin_note_name ?? null,
     pinnedAt: t.pinned_at ?? null,
+    searchFolderId: t.search_folder_id ?? null,
+    searchFolderName: t.search_folder_name ?? null,
+    runStatus: t.run_status ?? null,
+    lastModelChoice: toModelChoice(t.last_model_choice),
     createdAt: t.created_at,
     updatedAt: t.updated_at,
   };
+}
+
+const EFFORTS: readonly EffortLevel[] = ["low", "medium", "high"];
+
+/// サーバの記録を入力欄の選択の形にする。モデルも思考の深さも無ければ Auto、モデルが無く
+/// 思考の深さだけあれば「既定のまま思考の深さだけ変える」。モデルがあって思考の深さが無い
+/// （モデルが対応しない）ときは送っても使われないので中間を入れておく。
+function toModelChoice(
+  c: components["schemas"]["LastModelChoice"] | null | undefined,
+): ModelChoice | undefined {
+  if (!c) return undefined;
+  const effort = EFFORTS.find((e) => e === c.effort);
+  if (!c.model) return effort ? { model: null, effort } : null;
+  return { model: c.model, effort: effort ?? "medium" };
 }
 
 async function ok<T>(res: Response): Promise<T> {
@@ -223,10 +252,11 @@ async function ok<T>(res: Response): Promise<T> {
 /// `pinned` はピン留めだけ（ピン留めの新しい順・1 ページで全件）。
 export async function listThreads(
   cursor?: string,
-  opts?: { originNoteId?: string; q?: string; pinned?: boolean },
+  opts?: { originNoteId?: string; q?: string; pinned?: boolean; limit?: number },
 ): Promise<{ threads: Thread[]; nextCursor: string | null }> {
   const params = new URLSearchParams();
   if (cursor) params.set("cursor", cursor);
+  if (opts?.limit) params.set("limit", String(opts.limit));
   if (opts?.originNoteId) params.set("origin_note_id", opts.originNoteId);
   if (opts?.q?.trim()) params.set("q", opts.q.trim());
   if (opts?.pinned) params.set("pinned", "true");
@@ -248,6 +278,8 @@ export async function createThread(
     workspace?: WorkspaceChoice;
     /// 由来ノート（ノートの分割ビューから作るスレッド・issue #282）。
     originNoteId?: string;
+    /// 検索フォルダ（ホームの「社内検索」・#965）。社内文書の検索をこのフォルダの配下に絞る。
+    searchFolderId?: string;
   },
 ): Promise<Thread> {
   const toPin = (p?: ArtifactPin) =>
@@ -270,6 +302,7 @@ export async function createThread(
         mini_app: toPin(pins?.miniApp),
         workspace,
         origin_note_id: pins?.originNoteId,
+        search_folder_id: pins?.searchFolderId,
       }),
     }),
   );
@@ -520,6 +553,8 @@ export type StreamHandlers = {
   onSlideDraft?: (draft: unknown) => void;
   /// 未保存の下書き CSV（save_csv の下書き確定型・Task 11.11）。下書き画面を開く/流し込む。
   onCsvDraft?: (draft: unknown) => void;
+  /// 未保存の下書きスキル（save_skill の下書き確定型・#919）。スキルエディタを開く/流し込む。
+  onSkillDraft?: (draft: unknown) => void;
   /// AI が作成/編集した文書への参照（#381）。カード化し、新規作成ならエディタへ遷移する。
   onDocumentRef?: (document: unknown) => void;
   /// skill ツールの発動記録（#344）。会話中に読み込んだスキルのチップ表示に使う。
@@ -626,6 +661,9 @@ function subscribe(threadId: string, handlers: StreamHandlers): () => void {
         break;
       case "csv_draft":
         handlers.onCsvDraft?.(kind.draft);
+        break;
+      case "skill_draft":
+        handlers.onSkillDraft?.(kind.draft);
         break;
       case "document_ref":
         handlers.onDocumentRef?.(kind.document);
@@ -794,6 +832,9 @@ export async function postMessage(
     user_message_id: string;
     assistant_message_id: string;
   };
+  // 投稿で更新日が進み run が積まれた。履歴を読み直して先頭へ上げ、「実行中」を出す
+  // （このまま別の画面へ移っても、サイドバーが裏の生成を追える）。
+  notifyThreadsChanged();
   return {
     runId: body.run_id,
     userMessageId: body.user_message_id,

@@ -405,7 +405,7 @@ test.describe("経費の規程の script（実行しない）", () => {
       same: [],
       boss: [{ id: "b-1", data: { manager: "manager-1" } }],
     });
-    // 評価データ（build_datasets.py の rule_flags）と同じフラグ、同じ判定の材料（PIT-80: 評価と同じ入力で判定する）。
+    // 評価データ（build_datasets.py の rule_flags）と同じフラグ、同じ判定の材料（PIT-81: 評価と同じ入力で判定する）。
     for (const row of loadDataset("expense_policy")) {
       const got = main(input(expenseRecord(row.state)));
       expect(got.flags, row.id).toEqual(row.rule_flags ?? []);

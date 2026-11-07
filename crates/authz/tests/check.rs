@@ -39,13 +39,13 @@ fn ctx_for(tenant_id: &str, user_id: &str) -> AuthContext {
             tenant_id: Some(tenant_id.to_string()),
         },
         "acme".to_string(),
-        tenant_id.to_string(),
+        authz::TenantId::parse(tenant_id.to_string()).unwrap(),
     )
 }
 
 #[tokio::test]
 async fn check_allows_member_and_denies_other_org() {
-    let Ok(base_url) = std::env::var("OPENFGA_TEST_URL") else {
+    let Ok(base_url) = shiki_testenv::var("OPENFGA_TEST_URL") else {
         eprintln!("OPENFGA_TEST_URL 未設定のためスキップ");
         return;
     };
@@ -99,7 +99,7 @@ async fn check_allows_member_and_denies_other_org() {
 
 #[tokio::test]
 async fn write_and_delete_tuple_are_idempotent() {
-    let Ok(base_url) = std::env::var("OPENFGA_TEST_URL") else {
+    let Ok(base_url) = shiki_testenv::var("OPENFGA_TEST_URL") else {
         eprintln!("OPENFGA_TEST_URL 未設定のためスキップ");
         return;
     };
@@ -160,7 +160,7 @@ async fn write_and_delete_tuple_are_idempotent() {
 /// 分けた BatchCheck は 4 本ずつ並べて送る（BUG-163）ので、並べる組をまたいでも入力順のまま返ること。
 #[tokio::test]
 async fn batch_check_matches_single_checks_and_chunks() {
-    let Ok(base_url) = std::env::var("OPENFGA_TEST_URL") else {
+    let Ok(base_url) = shiki_testenv::var("OPENFGA_TEST_URL") else {
         eprintln!("OPENFGA_TEST_URL 未設定のためスキップ");
         return;
     };

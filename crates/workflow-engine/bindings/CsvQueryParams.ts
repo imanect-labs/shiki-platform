@@ -10,6 +10,11 @@ export type CsvQueryParams = {
  */
 file: ValueExpr, 
 /**
- * 読み取り専用 SELECT（テーブル名 `data`）。
+ * 読み取り専用 SELECT（`file` はテーブル `data`、`tables` の各 CSV は指定名）。
  */
-sql: ValueExpr, };
+sql: ValueExpr, 
+/**
+ * JOIN 用の追加 CSV（#1037）。`[{ "name": "<テーブル名>", "file": "<UUID>" }, ...]` に
+ * 解決される値（最大 8 個）。各ファイルにも実行主体の閲覧権限が要る。
+ */
+tables?: ValueExpr, };

@@ -246,6 +246,7 @@ async fn run(file: &tempfile::NamedTempFile, op: RunnerOp) -> RunnerResponse {
         memory_limit_mb: 512,
         max_rows: 1000,
         max_result_bytes: None,
+        extra_tables: Vec::new(),
     };
     tabular::runner::run_isolated(&config, &req).await.unwrap()
 }

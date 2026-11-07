@@ -106,7 +106,7 @@ pub(super) async fn invoke(
     ec: &ExecCtx,
     req: LlmInvokeReq,
 ) -> Result<Value, PortError> {
-    let ctx = auth_ctx(ec);
+    let ctx = auth_ctx(ec)?;
     // モデルは実行のたびに実行主体の組織の設定で決める（省略は組織の既定・BUG-12）。解決後の名前を
     // 生成・会計・出力に同じ値で使う（gateway の既定に任せると会計の名前とずれる）。
     let choice = resolve_for_workflow(

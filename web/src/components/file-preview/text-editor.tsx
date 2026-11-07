@@ -34,8 +34,8 @@ import {
 } from "@codemirror/view";
 import { tagHighlighter, tags as t } from "@lezer/highlight";
 
-/// トークンに `cm-t-*` のクラスを付ける（色は globals.css でライト/ダーク別に当てる）。
-const highlighter = tagHighlighter([
+/// トークンに `cm-t-*` のクラスを付ける（色は globals.css でライト/ダーク別に当てる）。SQL 画面の入力欄も使う。
+export const codeHighlighter = tagHighlighter([
   { tag: [t.keyword, t.modifier, t.controlKeyword, t.operatorKeyword, t.definitionKeyword], class: "cm-t-keyword" },
   { tag: [t.string, t.special(t.string), t.regexp, t.escape, t.character], class: "cm-t-string" },
   { tag: [t.comment, t.lineComment, t.blockComment, t.docComment, t.meta], class: "cm-t-comment" },
@@ -56,8 +56,8 @@ const highlighter = tagHighlighter([
   { tag: [t.invalid], class: "cm-t-invalid" },
 ]);
 
-/// 閲覧（`.file-code`）と同じ寸法にする。色はアプリのトークンから取る。
-const theme = EditorView.theme({
+/// 閲覧（`.file-code`）と同じ寸法にする。色はアプリのトークンから取る。SQL 画面の入力欄も使う。
+export const codeEditorTheme = EditorView.theme({
   "&": {
     fontSize: "13px",
     backgroundColor: "transparent",
@@ -251,7 +251,7 @@ export const TextEditor = React.forwardRef<
           dropCursor(),
           EditorState.allowMultipleSelections.of(true),
           indentOnInput(),
-          syntaxHighlighting(highlighter),
+          syntaxHighlighting(codeHighlighter),
           bracketMatching(),
           closeBrackets(),
           autocompletion({ activateOnTyping: false }),
@@ -278,7 +278,7 @@ export const TextEditor = React.forwardRef<
           ]),
           wrapComp.current.of(wrap ? EditorView.lineWrapping : []),
           langComp.current.of([]),
-          theme,
+          codeEditorTheme,
           phrases,
           EditorView.contentAttributes.of({ "aria-label": `${fileName} を編集`, spellcheck: "false" }),
           EditorView.updateListener.of((u) => {

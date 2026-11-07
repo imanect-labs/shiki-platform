@@ -248,7 +248,7 @@ impl ProdNodePorts {
         req: AgentInvokeReq,
         gateway: Arc<dyn AgentToolGateway>,
     ) -> Result<Value, PortError> {
-        let ctx = auth_ctx(ec);
+        let ctx = auth_ctx(ec)?;
         let choice =
             resolve_for_workflow(&self.gateway, ec, &ctx, req.model.as_deref(), None).await?;
         let log = Arc::new(Mutex::new(RunLog::default()));

@@ -10,7 +10,7 @@
 //!   同じ文面を判定させたかを当たり外れで推測できる。
 //! - **期限**: 書き込みから `ttl` まで。読むときはノードの今の `ttl` でも絞る（短くしたら古い答えは当たらない）。
 //!   期限を過ぎた行は書き込みのたびにテナントの中で少しずつ消す。
-//! - **掃除**: ワークフローを消すと、その行は同じトランザクションの中でトリガが消す（migration 0114）。期限切れ・
+//! - **掃除**: ワークフローを消すと、その行は同じトランザクションの中でトリガが消す（migration 0123）。期限切れ・
 //!   実行履歴の保持期間より前に書いた行・ワークフローが無い行は、日次の実行履歴 GC（workflow-engine の
 //!   run/store/gc.rs）がテナントごとに消す（書き込みが止まったテナントでも残さない）。
 //! - 当たっても、組織の許可（判定用のモデルと元の chat モデルの両方）はチョークポイントが毎回確かめる。会計と
@@ -113,8 +113,8 @@ impl DecisionCacheStore {
               WHERE tenant_id = $1 AND org = $2 AND workflow_id = $3 AND cache_key = $4 \
                 AND expires_at > now() AND created_at > now() - make_interval(secs => $5)",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(scope.workflow_id)
         .bind(key.as_slice())
         .bind(secs(scope.ttl))
@@ -148,8 +148,8 @@ impl DecisionCacheStore {
                SET resolved_model = excluded.resolved_model, response = excluded.response, \
                    created_at = now(), expires_at = excluded.expires_at",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(scope.workflow_id)
         .bind(key.as_slice())
         .bind(&stored.resolved_model)
@@ -163,7 +163,7 @@ impl DecisionCacheStore {
                 WHERE tenant_id = $1 AND expires_at <= now() \
                 ORDER BY expires_at LIMIT $2))",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(PURGE_BATCH)
         .execute(&self.db)
         .await?;

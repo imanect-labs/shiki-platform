@@ -432,7 +432,7 @@ impl SearchService {
         // 検索語はサーバだけが持つ鍵で HMAC する（#833）。監査閲覧者は管理者でなくてもなれるので、
         // 鍵なしのハッシュだと「この語で検索した人がいるか」を自分で計算して確かめられてしまう。
         // 旧方式（鍵なしの sha256・`query_sha256`）の行とは突き合わせられない（キー名で区別する）。
-        let query_hmac = self.query_hash_key.digest(&ctx.tenant_id, query);
+        let query_hmac = self.query_hash_key.digest(ctx.tenant_id(), query);
         let (allowed_files, denied_files): (Vec<&Uuid>, Vec<&Uuid>) = {
             let mut allowed = Vec::new();
             let mut denied = Vec::new();

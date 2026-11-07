@@ -10,7 +10,7 @@ import {
   type DeviceInfo,
   type SessionInfo,
 } from "@/lib/account-api";
-import { formatDateTime } from "@/lib/format";
+import { formatDateTime, relativeTime } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -23,19 +23,6 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "@/components/ui/use-toast";
 import { IconTile, SettingsEmpty, SettingsItem, SettingsPage, SettingsSection, StatusDot } from "./settings-ui";
-
-/// 「3 分前」「2 日前」のような相対時刻（1 週間以上前は日時）。
-function relativeTime(iso: string | null | undefined, now: number): string {
-  if (!iso) return "—";
-  const t = new Date(iso).getTime();
-  if (Number.isNaN(t)) return "—";
-  const sec = Math.max(0, Math.round((now - t) / 1000));
-  if (sec < 60) return "たった今";
-  if (sec < 3600) return `${Math.floor(sec / 60)} 分前`;
-  if (sec < 86400) return `${Math.floor(sec / 3600)} 時間前`;
-  if (sec < 7 * 86400) return `${Math.floor(sec / 86400)} 日前`;
-  return formatDateTime(iso);
-}
 
 /// 端末の見出し（「Chrome · macOS 14」）。Keycloak が判別できない値は落としてある。
 function deviceTitle(device: DeviceInfo, session: SessionInfo): string {

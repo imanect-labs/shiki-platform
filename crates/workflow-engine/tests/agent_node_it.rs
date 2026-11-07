@@ -145,7 +145,11 @@ impl NodePorts for AgentPorts {
     async fn workflow_start(&self, _: &ExecCtx, _: &str, _: &Value) -> Result<Value, PortError> {
         unreachable!()
     }
-    async fn csv_query(&self, _: &ExecCtx, _: Uuid, _: &str) -> Result<Value, PortError> {
+    async fn csv_query(
+        &self,
+        _: &ExecCtx,
+        _: workflow_engine::CsvQueryReq,
+    ) -> Result<Value, PortError> {
         unreachable!()
     }
     async fn csv_patch(&self, _: &ExecCtx, _: CsvPatchReq) -> Result<Value, PortError> {

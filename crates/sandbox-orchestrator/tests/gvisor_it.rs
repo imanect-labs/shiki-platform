@@ -27,7 +27,7 @@ struct Env {
 }
 
 fn gated() -> Option<Env> {
-    if std::env::var("SANDBOX_GVISOR_IT").as_deref() != Ok("1") {
+    if shiki_testenv::var("SANDBOX_GVISOR_IT").as_deref() != Ok("1") {
         eprintln!("skip: set SANDBOX_GVISOR_IT=1");
         return None;
     }

@@ -37,12 +37,20 @@ use rag::DocumentParser;
 use sandbox_client::egress_proxy::{self, EgressProxy, ProxyTunnel};
 use sandbox_client::net_guard::{self, HostResolver, SystemResolver};
 
+use super::public_fetch::{self, read_capped, PinError};
+
 use crate::tool::{Tool, ToolError, ToolOutcome};
 
 mod decode;
 mod doc;
 mod envelope;
+
+/// 封筒の開き・閉じタグ（ページ由来の本文の境界）。出所の判定（回答の画像・#1044）が参照する正本。
+pub const PAGE_OPEN: &str = envelope::OPEN;
+/// 封筒の閉じタグ。ページ由来の本文の同じ文字列は実体参照に潰すので、最初のものが本物。
+pub const PAGE_CLOSE: &str = envelope::CLOSE;
 mod extract;
+mod extract_dom;
 mod input;
 mod render;
 mod sections;
@@ -83,12 +91,7 @@ const MAX_QUERY_CHARS: usize = 200;
 /// 1 リクエストの上限（接続〜読み切りまで）。
 const FETCH_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// 接続確立の上限（到達不能な宛先で 20 秒待たない）。
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// 名前解決の上限。reqwest の timeout は client 構築後にしか効かないため、
-/// **解決フェーズにも独立して期限を掛ける**（応答しない DNS で張り付かせない）。
-const RESOLVE_TIMEOUT: Duration = Duration::from_secs(5);
+// 接続確立・名前解決の期限は public_fetch（CONNECT_TIMEOUT / RESOLVE_TIMEOUT）が持つ。
 
 const USER_AGENT: &str = "shiki-web-fetch/1.0";
 
@@ -174,12 +177,8 @@ impl WebFetchTool {
             },
             _ => None,
         };
-        let builder = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::none()) // PIT-36
-            .no_proxy() // 環境プロキシでアドレス固定を迂回させない
-            .connect_timeout(CONNECT_TIMEOUT)
-            .timeout(FETCH_TIMEOUT)
-            .user_agent(USER_AGENT);
+        // リダイレクト非追従・環境プロキシ非経由・期限は public_fetch の既定に揃える（#1044）。
+        let builder = public_fetch::client_builder(FETCH_TIMEOUT, USER_AGENT);
         let builder = match &tunnel {
             // トンネルの口にだけ接続する（中継には検証済みの IP への CONNECT を頼んである）。
             Some(tunnel) => builder.unix_socket(tunnel.socket_path()),
@@ -187,7 +186,7 @@ impl WebFetchTool {
         };
         let client = builder
             .build()
-            .map_err(|e| ToolError::Unavailable(format!("http client: {e}")))?;
+            .map_err(|e| pin_error(PinError::Client(e.to_string())))?;
         Ok(Ok((client, tunnel)))
     }
 
@@ -206,6 +205,18 @@ impl WebFetchTool {
             return Ok(addrs);
         }
         net_guard::ensure_all_public(addrs)
+    }
+}
+
+/// 取得先の確定の失敗をツールの誤りに写す（文言は public_fetch の関門と同じ・#1044）。
+fn pin_error(e: PinError) -> ToolError {
+    match e {
+        PinError::ResolveTimeout => {
+            ToolError::Invalid("URL が不正です: 名前解決がタイムアウトしました".into())
+        }
+        PinError::Resolve(e) => ToolError::Invalid(format!("URL が不正です: {e}")),
+        PinError::Rejected(e) => ToolError::Invalid(format!("取得先が拒否されました: {e}")),
+        PinError::Client(e) => ToolError::Unavailable(format!("http client: {e}")),
     }
 }
 
@@ -228,12 +239,16 @@ impl Tool for WebFetchTool {
             "URL のページを取得し、本文を抽出して Markdown で返す（広告・ナビ・スクリプトは除去済み・\
              リダイレクトは追従しない）。PDF や Office 文書も本文を抽出できる。web_search で得た URL の\
              内容を読むときに使う。長いページは query に知りたい論点を書くと関連する節だけ返り、\
-             offset で続きを読める。取得できるのは公開ホストの http/https のみで、内部ネットワークへは通信しない。"
+             offset で続きを読める。取得できるのは公開ホストの http/https のみで、内部ネットワークへは通信しない。\
+             本文の画像は ![説明](URL) で残る。説明に役立つ図・写真は、その記法を URL ごと一字一句そのまま\
+             回答に書くと会話に表示される（取得したページに無い URL・書き換えた URL の画像は表示されない）。"
         } else {
             "URL のページを取得し、本文を抽出して Markdown で返す（広告・ナビ・スクリプトは除去済み・\
              リダイレクトは追従しない）。web_search で得た URL の内容を読むときに使う。\
              長いページは query に知りたい論点を書くと関連する節だけ返り、offset で続きを読める。\
-             取得できるのは公開ホストの http/https のみで、内部ネットワークへは通信しない。"
+             取得できるのは公開ホストの http/https のみで、内部ネットワークへは通信しない。\
+             本文の画像は ![説明](URL) で残る。説明に役立つ図・写真は、その記法を URL ごと一字一句そのまま\
+             回答に書くと会話に表示される（取得したページに無い URL・書き換えた URL の画像は表示されない）。"
         }
     }
 
@@ -282,21 +297,13 @@ impl Tool for WebFetchTool {
         let target = validate_url(url_input)?;
         let options = parse_options(&input);
 
-        // 名前解決 → 解決後 IP の検証。以降の接続は「この検証済みアドレス」に固定する。
-        //
-        // 解決にも**期限を掛ける**（reqwest の timeout は client 構築後にしか効かないため、
-        // 応答しない DNS で無期限に張り付くのを防ぐ）。
-        let resolved = tokio::time::timeout(
-            RESOLVE_TIMEOUT,
-            self.resolver.lookup(&target.host, target.port),
-        )
+        // 名前解決 → 解決後 IP の検証。以降の接続は「この検証済みアドレス」に固定する
+        // （関門は public_fetch に一本化・画像プロキシと共有する・#1044）。
+        let addrs = public_fetch::resolve_verified(self.resolver.as_ref(), &target, |addrs| {
+            self.guard(addrs)
+        })
         .await
-        .map_err(|_| ToolError::Invalid("URL が不正です: 名前解決がタイムアウトしました".into()))?
-        .map_err(|e| ToolError::Invalid(format!("URL が不正です: {e}")))?;
-
-        let addrs = self
-            .guard(resolved)
-            .map_err(|e| ToolError::Invalid(format!("取得先が拒否されました: {e}")))?;
+        .map_err(pin_error)?;
 
         // 外へ出るのに中継が要る環境では、検証済みのアドレスへのトンネルを先に開く（取得を終えるまで持つ・GAP-72）。
         let (client, _tunnel) = match self.client_for(&target, &addrs).await? {
@@ -562,21 +569,4 @@ fn header(response: &reqwest::Response, name: reqwest::header::HeaderName) -> Op
         .get(name)
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned)
-}
-
-/// 本文を `cap` バイトまで読む（上限に達したら以降は受け取らない）。
-async fn read_capped(
-    mut response: reqwest::Response,
-    cap: usize,
-) -> Result<(Vec<u8>, bool), reqwest::Error> {
-    let mut body: Vec<u8> = Vec::new();
-    while let Some(chunk) = response.chunk().await? {
-        let remaining = cap - body.len();
-        if chunk.len() >= remaining {
-            body.extend_from_slice(&chunk[..remaining]);
-            return Ok((body, true));
-        }
-        body.extend_from_slice(&chunk);
-    }
-    Ok((body, false))
 }

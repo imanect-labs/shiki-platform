@@ -20,6 +20,7 @@ import {
   DraftNotFound,
   DraftTabs,
   SaveDraftDialog,
+  saveFailedMessage,
   draftChrome,
   type SaveTarget,
 } from "@/components/notes/save-draft-dialog";
@@ -33,6 +34,7 @@ import { getThreadMessages } from "@/lib/chat-api";
 import { createSlide } from "@/lib/slides-api";
 import { parseSlideDraft, slideDraftStore } from "@/lib/slides/draft";
 import { parseSlideDocJson, readSlidesJson, seedSlides } from "@/lib/slides-doc";
+import { useDefaultSaveFolder } from "@/lib/drafts/save-folder";
 import { useStorageScopeReady } from "@/lib/user-storage";
 
 /// useSearchParams を使うため Suspense 境界でラップする（静的生成の CSR bailout 要件・Next.js）。
@@ -54,6 +56,9 @@ function DraftSlidePageInner() {
   const [activeName, setActiveName] = React.useState(nameParam);
   const [chatOpen, setChatOpen] = React.useState(true);
   const [saveOpen, setSaveOpen] = React.useState(false);
+  // 保存先の初期値（AI の指定 → 由来ノートのフォルダ → ルート・#942）。保存ダイアログを開いたときだけ引く。
+  const aiParentId = drafts.find((d) => d.name === activeName)?.parentId;
+  const defaultFolder = useDefaultSaveFolder(threadId, aiParentId, saveOpen);
   const [saving, setSaving] = React.useState(false);
   const [recovered, setRecovered] = React.useState(false);
   // ローカル Y.Doc（サーバ collab 非接続・SlideWorkspace のホスト）。下書き切替で作り直す。
@@ -121,12 +126,14 @@ function DraftSlidePageInner() {
     getThreadMessages(threadId)
       .then(({ messages }) => {
         if (cancelled) return;
+        // ローカルに無い名前だけ、履歴の下書きを順に流し直す（同名の呼び直しは最後の状態になる）。
+        const local = new Set(slideDraftStore.list(threadId).map((d) => d.name));
         for (const m of messages) {
           for (const b of m.content) {
             if (b.type === "slide_draft") {
               const d = parseSlideDraft(b.draft);
-              if (d && !slideDraftStore.get(threadId, d.name)) {
-                slideDraftStore.upsert(threadId, d.name, d.content, "ai");
+              if (d && !local.has(d.name)) {
+                slideDraftStore.upsert(threadId, d.name, d.content, "ai", d.parentId);
               }
             }
           }
@@ -175,8 +182,8 @@ function DraftSlidePageInner() {
           toast({ description: `「${node.name.replace(/\.slide$/i, "")}」を保存しました。` });
           router.replace(`/slides/${node.id}`);
         })
-        .catch(() => {
-          toast({ description: "保存に失敗しました。" });
+        .catch((e: unknown) => {
+          toast({ description: saveFailedMessage(e, target.parentId) });
           setSaving(false);
         });
     },
@@ -259,6 +266,7 @@ function DraftSlidePageInner() {
         defaultName={activeName}
         saving={saving}
         onConfirm={doSave}
+        defaultFolder={defaultFolder}
         entityLabel="スライド"
         description="下書きをスライドとして保存します。保存後はバージョン管理・共有・共同編集ができます。"
       />

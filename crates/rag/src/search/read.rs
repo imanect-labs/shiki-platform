@@ -264,8 +264,8 @@ impl SearchService {
              where c.tenant_id = $1 and c.org = $2 and c.node_id = $3 \
              order by c.version desc limit 1",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(node.id)
         .fetch_optional(&self.pool)
         .await?
@@ -289,8 +289,8 @@ impl SearchService {
                  where tenant_id = $1 and org = $2 and node_id = $3 and version = $4 \
                    and authz_tags && $5)",
             )
-            .bind(&ctx.tenant_id)
-            .bind(&ctx.org)
+            .bind(ctx.tenant_id())
+            .bind(ctx.org())
             .bind(node.id)
             .bind(version)
             .bind(&readable.tags)
@@ -347,8 +347,8 @@ impl SearchService {
                      where tenant_id = $1 and org = $2 and node_id = $3 and version = $4 \
                        and {scope} and page >= $5"
                 ))
-                .bind(&ctx.tenant_id)
-                .bind(&ctx.org)
+                .bind(ctx.tenant_id())
+                .bind(ctx.org())
                 .bind(node.id)
                 .bind(version)
                 .bind(page)
@@ -370,8 +370,8 @@ impl SearchService {
                      where tenant_id = $1 and org = $2 and node_id = $3 and version = $4 \
                        and {heading_only} and {column} ilike $5 escape '\\'"
                 ))
-                .bind(&ctx.tenant_id)
-                .bind(&ctx.org)
+                .bind(ctx.tenant_id())
+                .bind(ctx.org())
                 .bind(node.id)
                 .bind(version)
                 .bind(pattern)
@@ -453,8 +453,8 @@ impl SearchService {
             }
         };
         let units: Vec<Unit> = sqlx::query_as(sql)
-            .bind(&ctx.tenant_id)
-            .bind(&ctx.org)
+            .bind(ctx.tenant_id())
+            .bind(ctx.org())
             .bind(node.id)
             .bind(version)
             .bind(start)
@@ -493,8 +493,8 @@ impl SearchService {
             }
         };
         Ok(sqlx::query_scalar(sql)
-            .bind(&ctx.tenant_id)
-            .bind(&ctx.org)
+            .bind(ctx.tenant_id())
+            .bind(ctx.org())
             .bind(node.id)
             .bind(version)
             .bind(OUTLINE_LIMIT)

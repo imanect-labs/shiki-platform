@@ -6,6 +6,9 @@
 // Enter を送信扱いしないガード（isComposing / keyCode 229）を追加している。
 // タッチ端末（pointer: coarse）では Enter を改行にし（送信はボタンのみ）、autoFocus は
 // マウスの端末だけで効かせる（開いた瞬間にソフトキーボードを出さない）。
+// 送信キーを Ctrl/⌘+Enter にできる（`submitKey`・ユーザー設定 #952。Enter は改行になる）。
+// 入力欄の要素（`textareaRef`）は Markdown の WYSIWYG 入力（prompt-input-editor）の
+// contenteditable のこともあるので HTMLElement で持つ。
 import * as React from "react";
 import {
   createContext,
@@ -32,7 +35,7 @@ type PromptInputContextType = {
   maxHeight: number | string;
   onSubmit?: () => void;
   disabled?: boolean;
-  textareaRef: React.RefObject<HTMLTextAreaElement | null>;
+  textareaRef: React.RefObject<HTMLElement | null>;
 };
 
 const PromptInputContext = createContext<PromptInputContextType>({
@@ -42,7 +45,7 @@ const PromptInputContext = createContext<PromptInputContextType>({
   maxHeight: 240,
   onSubmit: undefined,
   disabled: false,
-  textareaRef: React.createRef<HTMLTextAreaElement>(),
+  textareaRef: React.createRef<HTMLElement>(),
 });
 
 function usePromptInput() {
@@ -73,7 +76,7 @@ function PromptInput({
   ...props
 }: PromptInputProps) {
   const [internalValue, setInternalValue] = useState(value || "");
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const textareaRef = useRef<HTMLElement>(null);
 
   const handleChange = (newValue: string) => {
     setInternalValue(newValue);
@@ -125,6 +128,9 @@ function PromptInput({
 
 export type PromptInputTextareaProps = {
   disableAutosize?: boolean;
+  /// 送信キー。`enter`（既定）は Enter で送信・Shift+Enter で改行、`mod_enter` は Ctrl/⌘+Enter で
+  /// 送信・Enter で改行。
+  submitKey?: "enter" | "mod_enter";
 } & React.ComponentProps<typeof Textarea>;
 
 /// タッチが主の端末か（Enter を改行にする・autoFocus しない判定に使う）。
@@ -138,6 +144,7 @@ function PromptInputTextarea({
   disableAutosize = false,
   autoFocus = false,
   enterKeyHint,
+  submitKey = "enter",
   ...props
 }: PromptInputTextareaProps) {
   const { value, setValue, maxHeight, onSubmit, disabled, textareaRef } =
@@ -185,9 +192,9 @@ function PromptInputTextarea({
   };
 
   useLayoutEffect(() => {
-    if (!textareaRef.current || disableAutosize) return;
-
     const el = textareaRef.current;
+    if (!(el instanceof HTMLTextAreaElement) || disableAutosize) return;
+
     el.style.height = "auto";
     if (!el.value) {
       el.style.height = "";
@@ -212,10 +219,20 @@ function PromptInputTextarea({
     onKeyDown?.(e);
     if (e.defaultPrevented) return;
     // IME 変換確定中（日本語入力）の Enter は送信せず確定に使わせる。Safari は確定の Enter で
-    // isComposing を落とすことがあるので keyCode 229 も見る。タッチ端末の Enter は改行
-    // （ソフトキーボードの Enter で誤送信しない。送信はボタンだけ）。
+    // isComposing を落とすことがあるので keyCode 229 も見る。
     const composing = e.nativeEvent.isComposing || e.keyCode === 229;
-    if (e.key === "Enter" && !e.shiftKey && !composing && !isCoarsePointer()) {
+    if (e.key !== "Enter" || composing) return;
+    if (submitKey === "mod_enter") {
+      // Ctrl/⌘ を添えたときだけ送る（修飾キーは明示の操作なので、タッチ端末の外付けキーボードでも送る）。
+      // 素の Enter・Shift+Enter は既定の改行のまま。
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault();
+        onSubmit?.();
+      }
+      return;
+    }
+    // タッチ端末の Enter は改行（ソフトキーボードの Enter で誤送信しない。送信はボタンだけ）。
+    if (!e.shiftKey && !isCoarsePointer()) {
       e.preventDefault();
       onSubmit?.();
     }
@@ -233,7 +250,7 @@ function PromptInputTextarea({
       )}
       rows={1}
       disabled={disabled}
-      enterKeyHint={enterKeyHint ?? (coarse ? "enter" : "send")}
+      enterKeyHint={enterKeyHint ?? (coarse || submitKey === "mod_enter" ? "enter" : "send")}
       {...props}
     />
   );

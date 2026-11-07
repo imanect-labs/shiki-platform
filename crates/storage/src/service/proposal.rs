@@ -51,12 +51,12 @@ impl StorageService {
 
         // content-addressing: 新規 blob のみオブジェクトストアへ（update と同一手順）。
         let sha256 = sha256_hex(bytes);
-        let final_key = blob_object_key(&ctx.tenant_id, &ctx.org, &sha256);
+        let final_key = blob_object_key(ctx.tenant_id(), ctx.org(), &sha256);
         let blob_exists: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM blob WHERE tenant_id = $1 AND org = $2 AND sha256 = $3)",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(&sha256)
         .fetch_one(&self.db)
         .await?;
@@ -74,15 +74,15 @@ impl StorageService {
              FOR UPDATE",
         )
         .bind(file_id)
-        .bind(&ctx.org)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.org())
+        .bind(ctx.tenant_id())
         .fetch_optional(&mut *tx)
         .await?;
         let (current,) = node_version.ok_or(StorageError::NotFound)?;
         self.bump_blob(
             &mut tx,
-            &ctx.tenant_id,
-            &ctx.org,
+            ctx.tenant_id(),
+            ctx.org(),
             &sha256,
             size,
             content_type,
@@ -101,12 +101,12 @@ impl StorageService {
         )
         .bind(file_id)
         .bind(current)
-        .bind(&ctx.org)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.org())
+        .bind(ctx.tenant_id())
         .bind(&sha256)
         .bind(size)
         .bind(content_type)
-        .bind(&ctx.principal.id)
+        .bind(&ctx.principal().id)
         .fetch_one(&mut *tx)
         .await?;
         audit::record_on(
@@ -158,8 +158,8 @@ impl StorageService {
              FOR UPDATE",
         )
         .bind(file_id)
-        .bind(&ctx.org)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.org())
+        .bind(ctx.tenant_id())
         .fetch_optional(&mut *tx)
         .await?
         .ok_or(StorageError::NotFound)?;
@@ -169,18 +169,18 @@ impl StorageService {
              WHERE node_id = $1 AND org = $2 AND tenant_id = $3 AND version = $4 AND is_proposal",
         )
         .bind(file_id)
-        .bind(&ctx.org)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.org())
+        .bind(ctx.tenant_id())
         .bind(version)
         .fetch_optional(&mut *tx)
         .await?;
         let (sha, size, content_type) = src.ok_or(StorageError::NotFound)?;
         // 新しい通常版が同じ blob を参照する（refcount +1・実体コピーなし。restore と同型）。
-        let final_key = blob_object_key(&ctx.tenant_id, &ctx.org, &sha);
+        let final_key = blob_object_key(ctx.tenant_id(), ctx.org(), &sha);
         self.bump_blob(
             &mut tx,
-            &ctx.tenant_id,
-            &ctx.org,
+            ctx.tenant_id(),
+            ctx.org(),
             &sha,
             size,
             &content_type,
@@ -200,9 +200,9 @@ impl StorageService {
             .bind(size)
             .bind(&content_type)
             .bind(file_id)
-            .bind(&ctx.org)
-            .bind(&ctx.tenant_id)
-            .bind(&ctx.principal.id)
+            .bind(ctx.org())
+            .bind(ctx.tenant_id())
+            .bind(&ctx.principal().id)
             .fetch_optional(&mut *tx)
             .await?
             .ok_or(StorageError::NotFound)?;

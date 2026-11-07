@@ -29,8 +29,10 @@ export function upsertDraft(
   name: string,
   markdown: string,
   source: DraftSource,
+  parentId?: string,
+  opts?: { sourcesNotice?: boolean },
 ): NoteDraftEntry {
-  return store.upsert(threadId, name, markdown, source);
+  return store.upsert(threadId, name, markdown, source, parentId, opts);
 }
 
 export function getDraft(threadId: string, name: string): NoteDraftEntry | null {
@@ -52,7 +54,9 @@ export function useDrafts(threadId: string): NoteDraftEntry[] {
 }
 
 /// note_draft イベント/ブロックの payload を厳格に検証する（fail-closed）。
-export function parseNoteDraft(raw: unknown): { name: string; markdown: string } | null {
+export function parseNoteDraft(
+  raw: unknown,
+): { name: string; markdown: string; parentId?: string } | null {
   const d = parseDraftPayload(raw, "markdown");
-  return d ? { name: d.name, markdown: d.content } : null;
+  return d ? { name: d.name, markdown: d.content, parentId: d.parentId } : null;
 }

@@ -405,9 +405,9 @@ pub async fn list_approvals(
     let next = loop {
         let rows = store(&state)
             .inbox(
-                &ctx.tenant_id,
-                &ctx.org,
-                &ctx.principal.id,
+                ctx.tenant_id(),
+                ctx.org(),
+                &ctx.principal().id,
                 &roles,
                 after,
                 PAGE,
@@ -472,7 +472,7 @@ pub async fn get_approval(
 ) -> Result<Json<ApprovalItem>, ApiError> {
     let roles = my_roles(&state, &ctx, Some(id)).await?;
     let row = store(&state)
-        .get_assigned(&ctx.tenant_id, &ctx.org, &ctx.principal.id, &roles, id)
+        .get_assigned(ctx.tenant_id(), ctx.org(), &ctx.principal().id, &roles, id)
         .await
         .map_err(internal)?
         .filter(|r| r.decidable)
@@ -511,7 +511,7 @@ pub async fn decide_approval(
 ) -> Result<(StatusCode, Json<ApprovalDecisionResponse>), ApiError> {
     let roles = my_roles(&state, &ctx, Some(id)).await?;
     let row = store(&state)
-        .get_assigned(&ctx.tenant_id, &ctx.org, &ctx.principal.id, &roles, id)
+        .get_assigned(ctx.tenant_id(), ctx.org(), &ctx.principal().id, &roles, id)
         .await
         .map_err(internal)?
         .ok_or(ApiError::NotFound)?;
@@ -617,7 +617,7 @@ impl DecideWork {
         ctx: &AuthContext,
     ) -> Result<(StatusCode, Json<ApprovalDecisionResponse>), ApiError> {
         let mut decision_tx = match store(state)
-            .begin_decision(&ctx.tenant_id, self.id)
+            .begin_decision(ctx.tenant_id(), self.id)
             .await
             .map_err(internal)?
         {
@@ -641,7 +641,7 @@ impl DecideWork {
         let next_rev = self.expected_rev.saturating_add(1);
         if let Some(body) = self.comment.as_deref() {
             decision_tx
-                .put_comment(next_rev, &ctx.principal.id, self.decision, body)
+                .put_comment(next_rev, &ctx.principal().id, self.decision, body)
                 .await
                 .map_err(internal)?;
         }
@@ -683,7 +683,7 @@ impl DecideWork {
                 let accepted = AcceptedDecision {
                     kind: self.decision,
                     to: self.to.clone(),
-                    by: ctx.principal.id.clone(),
+                    by: ctx.principal().id.clone(),
                     rev: rec.rev,
                     at: rec.updated_at,
                 };

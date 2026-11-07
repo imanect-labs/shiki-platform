@@ -246,7 +246,7 @@ impl InstallService {
             if let Err(e) = self
                 .installations
                 .mark_clients_repaired(
-                    &ctx.tenant_id,
+                    ctx.tenant_id(),
                     app_id,
                     &self.client_spec(),
                     b2_service_sub.as_deref(),

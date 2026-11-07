@@ -234,10 +234,10 @@ async fn dual_gate(
             )
             .await;
             let usage_key = required_scope_for(&method, matched.as_str());
-            let (tenant, org) = (ctx.auth.tenant_id.clone(), ctx.auth.org.clone());
+            let (tenant, org) = (ctx.auth.tenant_id().to_owned(), ctx.auth.org().to_owned());
             let (app_id, user_sub) = (ctx.installation.app_id, ctx.identity.user_sub.clone());
             // アプリの主体（自動実行）の分は、利用者と分けて記録する（サービスアカウントの id は記録しない・BUG-204）。
-            let is_app = ctx.auth.principal.kind == PrincipalKind::MiniApp;
+            let is_app = ctx.auth.principal().kind == PrincipalKind::MiniApp;
             req.extensions_mut().insert(ctx);
             let resp = next.run(req).await;
             if resp.status().is_success() {
@@ -287,8 +287,12 @@ async fn authorize(
         .resolve_service_identity(&identity.client_id, &identity.user_sub)
         .await?
     {
-        let auth =
-            AuthContext::for_miniapp(svc.tenant_id, svc.org, &svc.installation.app_id.to_string());
+        // インストールの行の tenant_id も文字ポリシーを通す（不変条件の違反は fail-closed・#1032）。
+        let tenant = authz::TenantId::parse(svc.tenant_id).map_err(|e| {
+            tracing::error!(error = %e, "B2 のサービスアカウントの解決先のテナントが不正です");
+            GatewayError::Internal("インストールのテナントが不正です".into())
+        })?;
+        let auth = AuthContext::for_miniapp(tenant, svc.org, &svc.installation.app_id.to_string());
         if !entry.app_principal {
             record(state, &auth, &svc.installation, &route, Decision::Deny).await;
             return Err(GatewayError::Forbidden(APP_PRINCIPAL_DENIED.into()));
@@ -321,7 +325,7 @@ async fn authorize(
             email: None,
             groups: vec![],
             roles: vec![],
-            tenant_id: Some(tenant.clone()),
+            tenant_id: Some(tenant.to_string()),
         },
         resolved.org,
         tenant,
@@ -332,7 +336,7 @@ async fn authorize(
         .check(
             &auth.subject(),
             Relation::Member,
-            &auth.ns().organization(&auth.org),
+            &auth.ns().organization(auth.org()),
             Consistency::HigherConsistency,
         )
         .await
@@ -414,7 +418,7 @@ async fn record(
 ///
 /// `principal` は呼び出す主体の種類（利用者は `user`・自動実行のアプリの主体は `app`・BUG-183）。
 async fn whoami(Extension(ctx): Extension<GatewayCtx>) -> Json<serde_json::Value> {
-    let principal = match ctx.auth.principal.kind {
+    let principal = match ctx.auth.principal().kind {
         PrincipalKind::MiniApp => "app",
         _ => "user",
     };

@@ -415,7 +415,7 @@ mod tests {
         assert!(!pattern_within("example.com", &c));
         assert!(!pattern_within("*.other.test", &c));
         assert!(!pattern_within("evil-example.com", &c));
-        // 完全一致の天井は、そのサブドメインのワイルドカードを含まない（PIT-79 ③の縮小のみ）。
+        // 完全一致の天井は、そのサブドメインのワイルドカードを含まない（PIT-80 ③の縮小のみ）。
         assert!(!pattern_within("*.api.other.test", &c));
         let exact = vec!["docs.example.com".to_string()];
         assert!(pattern_within("docs.example.com", &exact));

@@ -38,6 +38,7 @@ sha2 = { workspace = true, optional = true }
 test-support = ["dep:base64", "dep:sha2"]
 
 [dev-dependencies]
+shiki-testenv.workspace = true
 http-body-util = "0.1"
 shiki-artifact.workspace = true
 # 自分の結合テストで test_support を使う。

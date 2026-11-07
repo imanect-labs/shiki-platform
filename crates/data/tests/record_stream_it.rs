@@ -50,11 +50,11 @@ impl RefResolver for AllowRefs {
 }
 
 async fn setup() -> Option<(PgPool, Arc<dyn AuthzClient>)> {
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return None;
     };
-    let Ok(base_url) = std::env::var("OPENFGA_TEST_URL") else {
+    let Ok(base_url) = shiki_testenv::var("OPENFGA_TEST_URL") else {
         eprintln!("OPENFGA_TEST_URL 未設定のためスキップ");
         return None;
     };
@@ -91,7 +91,7 @@ fn ctx(tenant: &str, user: &str) -> AuthContext {
             tenant_id: Some(tenant.into()),
         },
         "acme".into(),
-        tenant.into(),
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 
@@ -284,7 +284,7 @@ async fn relay_all(fx: &Fx) {
                AND NOT EXISTS (SELECT 1 FROM outbox_delivery d \
                                WHERE d.event_id = o.id AND d.consumer = $2)",
         )
-        .bind(&fx.alice.tenant_id)
+        .bind(fx.alice.tenant_id())
         .bind(&ledger)
         .fetch_one(&fx.pool)
         .await
@@ -306,7 +306,7 @@ async fn relay_all(fx: &Fx) {
 /// を FK 違反で落とした）。ここでは RAG の ack と**登録済みの全台帳 consumer の配送**を済ませ、保持期間
 /// だけが GC を止める状態にしてから、登録台帳を読む本番の入口で GC する。
 async fn expire_retention_and_gc(fx: &Fx) -> usize {
-    let tenant = &fx.alice.tenant_id;
+    let tenant = fx.alice.tenant_id();
     // 先に、登録済みの全台帳 consumer が配送済み（追いついた）状態にする。並行 GC と FK で競合しないよう
     // 行を `FOR KEY SHARE` で押さえる（claim 中の他テストのリレーはそのコミットを待つ）。
     sqlx::query(
@@ -912,7 +912,7 @@ async fn low_water_mark_never_skips_an_uncommitted_gap() {
     sqlx::query(insert)
         .bind(&stream)
         .bind(ea)
-        .bind(&fx.alice.tenant_id)
+        .bind(fx.alice.tenant_id())
         .bind(head + 1)
         .execute(&mut *a)
         .await
@@ -921,7 +921,7 @@ async fn low_water_mark_never_skips_an_uncommitted_gap() {
     sqlx::query(insert)
         .bind(&stream)
         .bind(eb)
-        .bind(&fx.alice.tenant_id)
+        .bind(fx.alice.tenant_id())
         .bind(head + 2)
         .execute(&mut *b)
         .await
@@ -1190,7 +1190,7 @@ async fn bulk_import_summary_skips_per_row_checks_and_reveals_no_count() {
         .await
         .unwrap();
     fx.store
-        .run_bulk_import(&fx.alice.tenant_id, fx.table, import)
+        .run_bulk_import(fx.alice.tenant_id(), fx.table, import)
         .await
         .unwrap();
     let evals = fx.store.stream_predicate_evaluations();
@@ -1262,7 +1262,7 @@ async fn bulk_upsert_update_rows_are_still_delivered_per_row() {
         .await
         .unwrap();
     fx.store
-        .run_bulk_import(&fx.alice.tenant_id, fx.table, import)
+        .run_bulk_import(fx.alice.tenant_id(), fx.table, import)
         .await
         .unwrap();
     tick(&fx).await;
@@ -1312,7 +1312,7 @@ async fn bulk_import_transition_derived_schema_and_awareness_reach_subscribers()
         .await
         .unwrap();
     fx.store
-        .run_bulk_import(&fx.alice.tenant_id, fx.table, import)
+        .run_bulk_import(fx.alice.tenant_id(), fx.table, import)
         .await
         .unwrap();
     tick(&fx).await;
@@ -1705,7 +1705,7 @@ async fn snapshot_read_is_stable_across_concurrent_changes() {
     let ints: HashMap<Uuid, i64> = sqlx::query_as::<_, (Uuid, i64)>(
         "SELECT id, record_int FROM data_record WHERE tenant_id = $1 AND table_id = $2",
     )
-    .bind(&fx.alice.tenant_id)
+    .bind(fx.alice.tenant_id())
     .bind(fx.table)
     .fetch_all(&fx.pool)
     .await
@@ -2037,7 +2037,7 @@ async fn add_only_subscribers_get_no_departures_of_others() {
         return;
     };
     let fx = fixture(pool, authz, manual()).await;
-    let dave = ctx(&fx.alice.tenant_id, "dave");
+    let dave = ctx(fx.alice.tenant_id(), "dave");
     fx.authz
         .write_tuple(
             &dave.subject(),

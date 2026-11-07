@@ -67,6 +67,7 @@ impl StorageService {
     ///
     /// `parent_id` が `None` なら org ルート直下。`limit` は 1..=100 にクランプ。
     /// `sort`（name/updated/size×方向）を **keyset カーソルに織り込んで**サーバ側で並べる。
+    /// どのキー・方向でも**フォルダを先頭**にまとめ、名前は自然順で比べる（#1040）。
     /// クライアント側の全件ソートは採らない（全件取得の禁止）。
     ///
     /// 権限フィルタは **子の候補を BatchCheck でまとめて OpenFGA viewer の post-filter に通す**（読めない子は読み飛ばす・
@@ -157,10 +158,10 @@ impl StorageService {
                 self.require(
                     ctx,
                     Relation::Member,
-                    &ctx.ns().organization(&ctx.org),
+                    &ctx.ns().organization(ctx.org()),
                     AuditAction::FolderChildrenList,
                     "organization",
-                    &ctx.org,
+                    ctx.org(),
                     trace_id,
                 )
                 .await?;
@@ -191,8 +192,8 @@ impl StorageService {
              WHERE org = $1 AND tenant_id = $2 AND parent_id IS NOT DISTINCT FROM $3 AND name = $4 \
                AND deleted_at IS NULL AND system = false"
         ))
-        .bind(&ctx.org)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.org())
+        .bind(ctx.tenant_id())
         .bind(parent_id)
         .bind(name)
         .fetch_optional(&self.db)
@@ -249,13 +250,32 @@ impl StorageService {
         limit: usize,
         trace_id: Option<&str>,
     ) -> Result<ChildPage, StorageError> {
+        self.search_nodes_by_name_kind(ctx, query, None, sort, cursor, limit, trace_id)
+            .await
+    }
+
+    /// [`Self::search_nodes_by_name`] を種別（ファイル/フォルダ）で絞る版（#942）。
+    ///
+    /// 絞り込みは SQL 側で行う（取ってから捨てると、上位をもう一方の種別が占めたときに
+    /// 目的のものが 1 件も返らず、捨てる行の分まで OpenFGA check が走る）。
+    #[allow(clippy::too_many_arguments)]
+    pub async fn search_nodes_by_name_kind(
+        &self,
+        ctx: &AuthContext,
+        query: &str,
+        kind: Option<NodeKind>,
+        sort: ChildSort,
+        cursor: Option<&str>,
+        limit: usize,
+        trace_id: Option<&str>,
+    ) -> Result<ChildPage, StorageError> {
         self.require(
             ctx,
             Relation::Member,
-            &ctx.ns().organization(&ctx.org),
+            &ctx.ns().organization(ctx.org()),
             AuditAction::NodeSearch,
             "organization",
-            &ctx.org,
+            ctx.org(),
             trace_id,
         )
         .await?;
@@ -273,11 +293,15 @@ impl StorageService {
 
         // 名前検索はユーザー向けの導線のみ（システム領域は常に対象外・#392）。
         // エージェントのワークスペースは名前解決（`resolve_child_file`）で引く。
+        // 種別の絞り込み（#942）は候補の選び方に入れてよい（種別は名前でなく、語の当たり外れを明かさない）。
         let (known, cut) = self.visible_nodes(ctx).await?;
         let (items, next_cursor) = if cut {
             self.scan_nodes(
                 ctx,
-                &ScanWhere::Named { terms: &terms },
+                &ScanWhere::Named {
+                    terms: &terms,
+                    kind,
+                },
                 sort,
                 cursor,
                 limit,
@@ -286,7 +310,7 @@ impl StorageService {
             .await?
         } else {
             let ids: Vec<Uuid> = known.into_iter().collect();
-            self.search_in_visible(ctx, &terms, sort, cursor, limit, &ids)
+            self.search_in_visible(ctx, &terms, kind, sort, cursor, limit, &ids)
                 .await?
         };
         // 検索も列挙操作として監査へ（クエリ本文は含めない: 低エントロピー語の露出回避）。
@@ -296,7 +320,7 @@ impl StorageService {
                 AuditEntry {
                     action: AuditAction::NodeSearch,
                     object_type: "organization",
-                    object_id: &ctx.org,
+                    object_id: ctx.org(),
                     decision: Decision::Allow,
                     trace_id,
                     metadata: json!({ "returned": items.len() }),
@@ -336,8 +360,8 @@ impl StorageService {
              ORDER BY c.depth ASC",
         )
         .bind(node_id)
-        .bind(&ctx.org)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.org())
+        .bind(ctx.tenant_id())
         .fetch_all(&self.db)
         .await?;
 
@@ -398,8 +422,8 @@ impl StorageService {
         };
         let row: Option<NodeRow> = sqlx::query_as(&sql)
             .bind(id)
-            .bind(&ctx.org)
-            .bind(&ctx.tenant_id)
+            .bind(ctx.org())
+            .bind(ctx.tenant_id())
             .fetch_optional(&self.db)
             .await?;
         row.map(row_to_node)

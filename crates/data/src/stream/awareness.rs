@@ -61,12 +61,12 @@ impl DataStore {
              ON CONFLICT (tenant_id, table_id, principal) DO UPDATE SET \
                record_id = excluded.record_id, field_key = excluded.field_key, updated_at = now()",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(table_id)
-        .bind(&ctx.principal.id)
+        .bind(&ctx.principal().id)
         .bind(record_id)
         .bind(field.as_deref())
-        .execute(self.pools.for_tenant(&ctx.tenant_id))
+        .execute(self.pools.for_tenant(ctx.tenant_id()))
         .await
         .map_err(map_db)?;
         Ok(())

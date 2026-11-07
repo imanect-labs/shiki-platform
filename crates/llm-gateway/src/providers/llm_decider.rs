@@ -11,7 +11,7 @@
 //!   回が 1 つでもあれば判定全体を失敗にし、それまでに使ったトークン量を合わせて返す。
 //! - 温度は送らない（Haiku 5.5 は既定以外の温度を受けない）。思考の深さは既定 low、上限のトークン数は
 //!   low で 2048、それより深いと 4096（思考も上限に数えるため）。
-//! - 確からしさは較正されていない（`calibrated = false`・PIT-80）。自己申告（1 回）で、一様より低い申告を引き上げた
+//! - 確からしさは較正されていない（`calibrated = false`・PIT-81）。自己申告（1 回）で、一様より低い申告を引き上げた
 //!   ときは、引き上げた質問のキーを応答の `raised_questions` に載せ（作る人が実行の詳細で見る・D-114）、キーと数を
 //!   ログにも残す（取り違えや迷いの合図が値から消えるので・BUG-124。材料と答えは載せない）。
 //!
@@ -22,7 +22,7 @@ use std::sync::Arc;
 use futures::StreamExt;
 
 /// プロンプトの版（答えた版 `resolved_model` の `llm_decider/<版>/` に載る）。評価の凍結（`eval/decision/frozen.json`）
-/// はこの値と照らす（版を上げたら凍結し直す・PIT-80）。
+/// はこの値と照らす（版を上げたら凍結し直す・PIT-81）。
 pub use super::llm_decider_prompt::PROMPT_VERSION;
 use super::llm_decider_prompt::{self as prompt, Reply};
 use super::llm_decider_vote::{aggregate, raised_below_uniform};

@@ -111,8 +111,8 @@ impl StorageService {
         )
         .bind(c.link_id)
         .bind(c.node_id)
-        .bind(&ctx.principal.id)
-        .bind(&ctx.tenant_id)
+        .bind(&ctx.principal().id)
+        .bind(ctx.tenant_id())
         .bind(l.kind.as_str())
         .bind(l.role.as_str())
         .fetch_optional(&mut *tx)
@@ -156,7 +156,7 @@ impl StorageService {
         // **台帳から参照されない孤児タプル＝恒久 fail-open** になる。
         let ns = ctx.ns();
         let obj = node_fga_object(&ns, l.kind, c.node_id);
-        let subject = ns.user(&ctx.principal.id);
+        let subject = ns.user(&ctx.principal().id);
         let write = self
             .authz
             .write_tuple(&subject, l.role.relation_via_link(), &obj)
@@ -223,8 +223,9 @@ impl StorageService {
         // レート制限（総当たり・Argon2 CPU DoS の抑止・B-3）。principal と token の双方で数え、
         // どちらか超過なら Argon2 も DB 参照もせず即 deny する（DoS の芽を先に断つ）。
         let now = Utc::now();
-        let principal_key = share_link_ratelimit::principal_key(&ctx.tenant_id, &ctx.principal.id);
-        let token_key = share_link_ratelimit::token_key(&ctx.tenant_id, &ctx.org, token);
+        let principal_key =
+            share_link_ratelimit::principal_key(ctx.tenant_id(), &ctx.principal().id);
+        let token_key = share_link_ratelimit::token_key(ctx.tenant_id(), ctx.org(), token);
         if !self.redeem_limiter.check(&principal_key, now)
             || !self.redeem_limiter.check(&token_key, now)
         {
@@ -242,8 +243,8 @@ impl StorageService {
                AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now())",
         )
         .bind(token)
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .fetch_optional(&self.db)
         .await?;
         let Some(row) = row else {
@@ -310,8 +311,8 @@ impl StorageService {
                AND revoked_at IS NULL AND (expires_at IS NULL OR expires_at > now())",
         )
         .bind(c.link_id)
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .fetch_optional(&mut **tx)
         .await?;
         let Some(row) = row else {

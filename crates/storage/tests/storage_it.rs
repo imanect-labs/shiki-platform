@@ -41,11 +41,11 @@ struct Ctx {
 }
 
 async fn setup() -> Option<Ctx> {
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return None;
     };
-    let Ok(openfga_url) = std::env::var("OPENFGA_TEST_URL") else {
+    let Ok(openfga_url) = shiki_testenv::var("OPENFGA_TEST_URL") else {
         eprintln!("OPENFGA_TEST_URL 未設定のためスキップ");
         return None;
     };
@@ -121,7 +121,7 @@ fn make_ctx(org: &str, uid: &str) -> AuthContext {
             tenant_id: None,
         },
         org.into(),
-        "default".into(),
+        authz::TenantId::parse("default").unwrap(),
     )
 }
 
@@ -1931,6 +1931,31 @@ async fn name_search_filters_by_permission_and_neutralizes_wildcards() {
         .unwrap();
     assert!(page.items.is_empty(), "% は文字として扱われヒットしない");
 
+    // 種別で絞る（#942）: SQL で絞るので、名前順で先に並ぶファイルに埋もれずフォルダが返る。
+    // 「営業」を含み名前順でフォルダより前に並ぶファイルを置き、limit=1 でも取り違えないことを見る
+    // （件数で切ってから種別で捨てる実装なら、このファイルだけ取って空になる）。
+    upload(&cx.service, &cx.http, &alice, None, "a営業メモ.txt", b"s")
+        .await
+        .unwrap();
+    let page = cx
+        .service
+        .search_nodes_by_name_kind(&alice, "営業", Some(NodeKind::Folder), sort, None, 1, None)
+        .await
+        .unwrap();
+    assert_eq!(
+        page.items.iter().map(|n| n.id).collect::<Vec<_>>(),
+        vec![dept.id]
+    );
+    let page = cx
+        .service
+        .search_nodes_by_name_kind(&alice, "報告", Some(NodeKind::Folder), sort, None, 50, None)
+        .await
+        .unwrap();
+    assert!(
+        page.items.is_empty(),
+        "フォルダだけに絞るとファイルは返らない"
+    );
+
     // 権限フィルタ: bob には共有前は何も見えない。共有後はフォルダ配下だけ見える。
     let page = cx
         .service
@@ -1986,6 +2011,128 @@ async fn name_search_filters_by_permission_and_neutralizes_wildcards() {
     );
 }
 
+/// 子一覧を limit 件ずつ最後まで辿り、名前の列を返す（keyset のページ境界をまたぐ検証用）。
+async fn list_all_names(
+    service: &StorageService,
+    ctx: &AuthContext,
+    parent: Option<Uuid>,
+    sort: storage::ChildSort,
+    limit: usize,
+) -> Vec<String> {
+    let mut names = vec![];
+    let mut cursor: Option<String> = None;
+    loop {
+        let page = service
+            .list_children(ctx, parent, sort, cursor.as_deref(), limit, false, None)
+            .await
+            .unwrap();
+        names.extend(page.items.into_iter().map(|n| n.name));
+        match page.next_cursor {
+            Some(c) => cursor = Some(c),
+            None => return names,
+        }
+    }
+}
+
+/// 子一覧・名前検索が、フォルダ優先 → 選んだキー → 名前の自然順で並び、
+/// ページ境界をまたいでも欠落・重複しないこと（#1040）。
+#[tokio::test]
+async fn children_list_folders_first_and_natural_name_order() {
+    let Some(cx) = setup().await else {
+        return;
+    };
+    let org = format!("org-{}", Uuid::new_v4().simple());
+    seed_org_member(&cx.authz, &org, "alice").await;
+    let alice = make_ctx(&org, "alice");
+    let root = cx
+        .service
+        .create_folder(&alice, None, "並び順", None)
+        .await
+        .unwrap();
+    for name in ["資料10", "b", "資料2"] {
+        cx.service
+            .create_folder(&alice, Some(root.id), name, None)
+            .await
+            .unwrap();
+    }
+    // サイズは名前順と逆にしておく（サイズ順が名前に引きずられていないことを見る）。
+    for (name, body) in [
+        ("File10.txt", &b"x"[..]),
+        ("A.txt", &b"xxx"[..]),
+        ("file2.txt", &b"xx"[..]),
+    ] {
+        upload(&cx.service, &cx.http, &alice, Some(root.id), name, body)
+            .await
+            .unwrap();
+    }
+    let sort = |key, desc| storage::ChildSort { key, desc };
+    use storage::ChildSortKey::{Name, Size};
+
+    // 名前昇順: フォルダ → ファイル、各塊は自然順（2 < 10・大文字小文字は同列・ラテン → 漢字）。
+    // limit=2 でフォルダ/ファイル境界をまたいでも欠落・重複しない。
+    let asc = ["b", "資料2", "資料10", "A.txt", "file2.txt", "File10.txt"];
+    for limit in [1, 2, 4, 50] {
+        assert_eq!(
+            list_all_names(&cx.service, &alice, Some(root.id), sort(Name, false), limit).await,
+            asc,
+            "limit={limit}"
+        );
+    }
+    // 名前降順: フォルダは先頭のまま、各塊の中だけ逆順。
+    assert_eq!(
+        list_all_names(&cx.service, &alice, Some(root.id), sort(Name, true), 2).await,
+        ["資料10", "資料2", "b", "File10.txt", "file2.txt", "A.txt"]
+    );
+    // サイズ: フォルダ（0 扱い）は昇降どちらでも先頭、ファイルはサイズ順。サイズが同じ
+    // フォルダ同士は名前の自然順で並ぶ（limit=1/2 で同値の塊がページ境界をまたいでも崩れない）。
+    for limit in [1, 2] {
+        assert_eq!(
+            list_all_names(&cx.service, &alice, Some(root.id), sort(Size, false), limit).await,
+            ["b", "資料2", "資料10", "File10.txt", "file2.txt", "A.txt"],
+            "limit={limit}"
+        );
+        assert_eq!(
+            list_all_names(&cx.service, &alice, Some(root.id), sort(Size, true), limit).await,
+            ["資料10", "資料2", "b", "A.txt", "file2.txt", "File10.txt"],
+            "limit={limit}"
+        );
+    }
+
+    // 名前検索も同じ並び（フォルダ優先 → 自然順）で、ページ境界をまたいで辿れる。
+    upload(
+        &cx.service,
+        &cx.http,
+        &alice,
+        Some(root.id),
+        "資料1.txt",
+        b"y",
+    )
+    .await
+    .unwrap();
+    let mut found = vec![];
+    let mut cursor: Option<String> = None;
+    loop {
+        let page = cx
+            .service
+            .search_nodes_by_name(
+                &alice,
+                "資料",
+                sort(Name, false),
+                cursor.as_deref(),
+                1,
+                None,
+            )
+            .await
+            .unwrap();
+        found.extend(page.items.into_iter().map(|n| n.name));
+        match page.next_cursor {
+            Some(c) => cursor = Some(c),
+            None => break,
+        }
+    }
+    assert_eq!(found, ["資料2", "資料10", "資料1.txt"]);
+}
+
 /// tenant_id ＋ org でスコープした AuthContext を作る（テナント分離検証用）。
 fn make_ctx_tenant(org: &str, tenant: &str, uid: &str) -> AuthContext {
     AuthContext::new(
@@ -1998,7 +2145,7 @@ fn make_ctx_tenant(org: &str, tenant: &str, uid: &str) -> AuthContext {
             tenant_id: None,
         },
         org.into(),
-        tenant.into(),
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 
@@ -3142,7 +3289,7 @@ async fn write_file_internal_idempotent_dedups_by_key() {
     let summary: serde_json::Value = sqlx::query_scalar(
         "SELECT result_summary FROM effect_journal WHERE tenant_id = $1 AND idempotency_key = $2",
     )
-    .bind(&actx.tenant_id)
+    .bind(actx.tenant_id())
     .bind(&key)
     .fetch_one(&pool)
     .await
@@ -4325,7 +4472,7 @@ async fn share_link_grant_revoke_is_durable() {
     // 台帳行は残り、ソフト失効している（deny 台帳の実体）。
     assert!(
         matches!(
-            grant_revoked_at(&pool, l.link_id, &bob, &octx.tenant_id).await,
+            grant_revoked_at(&pool, l.link_id, &bob, octx.tenant_id()).await,
             Some(Some(_))
         ),
         "grant 行は消さずソフト失効させる"
@@ -4600,7 +4747,7 @@ async fn share_link_revoke_clears_grants_but_keeps_deny_on_active_link() {
         .expect("revoke grant on a");
     assert!(
         matches!(
-            grant_revoked_at(&pool, a.link_id, &bob, &octx.tenant_id).await,
+            grant_revoked_at(&pool, a.link_id, &bob, octx.tenant_id()).await,
             Some(Some(_))
         ),
         "active リンクの個別取消は deny 行を残す"
@@ -4612,7 +4759,7 @@ async fn share_link_revoke_clears_grants_but_keeps_deny_on_active_link() {
         .await
         .expect("revoke link b");
     assert!(
-        grant_revoked_at(&pool, b.link_id, &bob, &octx.tenant_id)
+        grant_revoked_at(&pool, b.link_id, &bob, octx.tenant_id())
             .await
             .is_none(),
         "失効したリンクの台帳行は削除される（再 redeem が構造的に不可能なので deny 行は不要）"
@@ -4620,7 +4767,7 @@ async fn share_link_revoke_clears_grants_but_keeps_deny_on_active_link() {
     // A の deny 行は無傷で、A からの再解錠は依然として拒否される。
     assert!(
         matches!(
-            grant_revoked_at(&pool, a.link_id, &bob, &octx.tenant_id).await,
+            grant_revoked_at(&pool, a.link_id, &bob, octx.tenant_id()).await,
             Some(Some(_))
         ),
         "B の失効掃除が A の deny 行を巻き込まない"
@@ -4684,7 +4831,7 @@ async fn share_link_revoke_deletes_grants() {
         .await
         .expect("redeem");
     assert!(matches!(
-        grant_revoked_at(&pool, l.link_id, &bob, &octx.tenant_id).await,
+        grant_revoked_at(&pool, l.link_id, &bob, octx.tenant_id()).await,
         Some(None)
     ));
 
@@ -4693,7 +4840,7 @@ async fn share_link_revoke_deletes_grants() {
         .await
         .expect("revoke link");
     assert!(
-        grant_revoked_at(&pool, l.link_id, &bob, &octx.tenant_id)
+        grant_revoked_at(&pool, l.link_id, &bob, octx.tenant_id())
             .await
             .is_none(),
         "リンク失効で台帳行は削除される（墓石を溜めない）"
@@ -4790,7 +4937,7 @@ async fn share_link_redeem_denied_after_concurrent_revoke() {
         "UPDATE node_share_link SET revoked_at = now() WHERE link_id = $1 AND tenant_id = $2",
     )
     .bind(l.link_id)
-    .bind(&octx.tenant_id)
+    .bind(octx.tenant_id())
     .execute(&mut *hold)
     .await
     .expect("revoke while holding lock");
@@ -4824,7 +4971,7 @@ async fn share_link_redeem_denied_after_concurrent_revoke() {
         "孤児 via_link タプルが残っていない"
     );
     assert!(
-        grant_revoked_at(&pool, l.link_id, &bob, &octx.tenant_id)
+        grant_revoked_at(&pool, l.link_id, &bob, octx.tenant_id())
             .await
             .is_none(),
         "拒否された redeem は台帳行を作らない"
@@ -4903,7 +5050,7 @@ async fn share_link_concurrent_redeem_two_links_refcount() {
     )
     .bind(file.id)
     .bind(&bob)
-    .bind(&octx.tenant_id)
+    .bind(octx.tenant_id())
     .fetch_one(&pool)
     .await
     .expect("count live grants");
@@ -5000,7 +5147,7 @@ async fn share_link_expire_race_with_extend_keeps_grants() {
     sqlx::query("UPDATE node_share_link SET expires_at = $2 WHERE link_id = $1 AND tenant_id = $3")
         .bind(l.link_id)
         .bind(sweep_now + chrono::Duration::hours(1))
-        .bind(&octx.tenant_id)
+        .bind(octx.tenant_id())
         .execute(&mut *hold)
         .await
         .expect("extend while holding lock");
@@ -5022,7 +5169,7 @@ async fn share_link_expire_race_with_extend_keeps_grants() {
     );
     assert!(
         matches!(
-            grant_revoked_at(&pool, l.link_id, &bob, &octx.tenant_id).await,
+            grant_revoked_at(&pool, l.link_id, &bob, octx.tenant_id()).await,
             Some(None)
         ),
         "延長されたリンクの grant は deny 台帳へ載らない（永久追放を作らない）"
@@ -5081,7 +5228,7 @@ async fn share_link_grant_revoke_rejects_corrupt_role() {
          WHERE link_id = $1 AND tenant_id = $2",
     )
     .bind(l.link_id)
-    .bind(&octx.tenant_id)
+    .bind(octx.tenant_id())
     .execute(&pool)
     .await
     .expect("corrupt role");
@@ -5145,7 +5292,7 @@ async fn share_link_revoke_keeps_corrupt_grant_row() {
          WHERE link_id = $1 AND tenant_id = $2",
     )
     .bind(l.link_id)
-    .bind(&octx.tenant_id)
+    .bind(octx.tenant_id())
     .execute(&pool)
     .await
     .expect("corrupt role");
@@ -5160,7 +5307,7 @@ async fn share_link_revoke_keeps_corrupt_grant_row() {
         "SELECT COUNT(*) FROM node_share_link_grant WHERE link_id = $1 AND tenant_id = $2",
     )
     .bind(l.link_id)
-    .bind(&octx.tenant_id)
+    .bind(octx.tenant_id())
     .fetch_one(&pool)
     .await
     .expect("count");
@@ -5873,7 +6020,7 @@ async fn provision_tenant_admin_grants_admin_and_upgrades_existing_member() {
             tenant_id: Some(tenant.clone()),
         },
         org.into(),
-        tenant.clone(),
+        authz::TenantId::parse(tenant.clone()).unwrap(),
     );
     let subject = ctx.subject();
     let org_obj = ctx.ns().organization(org);
@@ -6009,12 +6156,18 @@ async fn purge_tenant_strips_tuples_of_every_org_in_the_tenant() {
     let b_sub = make_ctx_tenant(&org_sub, &tb, "ub-sub");
     let dir = DirectoryStore::new(pool.clone());
     for c in [&a_main, &a_sub, &b_sub] {
-        dir.upsert_user(&c.principal.id, &c.tenant_id, &c.org, "x@example.com", "x")
-            .await
-            .expect("directory");
+        dir.upsert_user(
+            &c.principal().id,
+            c.tenant_id(),
+            c.org(),
+            "x@example.com",
+            "x",
+        )
+        .await
+        .expect("directory");
         for rel in [Relation::Member, Relation::Admin] {
             authz
-                .write_tuple(&c.subject(), rel, &c.ns().organization(&c.org))
+                .write_tuple(&c.subject(), rel, &c.ns().organization(c.org()))
                 .await
                 .expect("org タプル");
         }
@@ -6026,7 +6179,7 @@ async fn purge_tenant_strips_tuples_of_every_org_in_the_tenant() {
                 .check(
                     &c.subject(),
                     rel,
-                    &c.ns().organization(&c.org),
+                    &c.ns().organization(c.org()),
                     Consistency::HigherConsistency,
                 )
                 .await
@@ -6048,7 +6201,7 @@ async fn purge_tenant_strips_tuples_of_every_org_in_the_tenant() {
             assert!(
                 !has(c.clone(), rel).await,
                 "A の org {} の {} タプルが剥がれる",
-                c.org,
+                c.org(),
                 rel.as_str()
             );
         }

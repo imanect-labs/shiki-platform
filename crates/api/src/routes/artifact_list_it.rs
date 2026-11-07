@@ -59,7 +59,7 @@ fn ctx(tenant: &str, user: &str) -> AuthContext {
             tenant_id: Some(tenant.into()),
         },
         "acme".into(),
-        tenant.into(),
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 
@@ -154,7 +154,7 @@ async fn drafts_scenario(artifacts: &ArtifactStore, data: &DataStore, tenant: &s
         .expect("create");
     for (who, role) in [(&bob, ArtifactRole::Viewer), (&carol, ArtifactRole::Editor)] {
         let to = ShareTarget::User {
-            id: who.principal.id.clone(),
+            id: who.principal().id.clone(),
         };
         artifacts
             .share(&alice, app.id, &to, role, None)
@@ -284,7 +284,7 @@ async fn scenario(artifacts: &ArtifactStore, data: &DataStore, tenant: &str) {
     let alice = ctx(tenant, &format!("alice-{}", Uuid::new_v4().simple()));
     let bob = ctx(tenant, &format!("bob-{}", Uuid::new_v4().simple()));
     let to_alice = ShareTarget::User {
-        id: alice.principal.id.clone(),
+        id: alice.principal().id.clone(),
     };
     // 作る順（古い順）: b1・b2・a1・a2・a3・b3。共有された b1〜b3 は alice が閲覧できる。
     let mut ids = std::collections::HashMap::new();
@@ -308,7 +308,7 @@ async fn scenario(artifacts: &ArtifactStore, data: &DataStore, tenant: &str) {
             )
             .await
             .expect("create");
-        if who.principal.id == bob.principal.id {
+        if who.principal().id == bob.principal().id {
             artifacts
                 .share(&bob, a.id, &to_alice, ArtifactRole::Viewer, None)
                 .await
@@ -429,7 +429,7 @@ async fn scenario(artifacts: &ArtifactStore, data: &DataStore, tenant: &str) {
         assert!(crossed.is_err(), "{other_kind:?}");
     }
     // 別のテナントでは、同じ位置を読めない。
-    let other = ctx(&format!("{tenant}-other"), &alice.principal.id);
+    let other = ctx(&format!("{tenant}-other"), &alice.principal().id);
     let elsewhere = list_page(
         artifacts,
         data,

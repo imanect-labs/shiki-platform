@@ -42,7 +42,7 @@ impl ArtifactStore {
                AND ($3::bigint IS NULL OR current_version = $3) \
              RETURNING current_version",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(id)
         .bind(expected_version)
         .fetch_optional(&mut *tx)
@@ -56,7 +56,7 @@ impl ArtifactStore {
                 "SELECT kind, current_version FROM artifact \
                  WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL",
             )
-            .bind(&ctx.tenant_id)
+            .bind(ctx.tenant_id())
             .bind(id)
             .fetch_optional(&self.db)
             .await
@@ -74,11 +74,11 @@ impl ArtifactStore {
             "INSERT INTO artifact_version (tenant_id, artifact_id, version, body, created_by) \
              VALUES ($1, $2, $3, $4, $5) RETURNING created_at",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(id)
         .bind(new_version)
         .bind(Json(&body))
-        .bind(&ctx.principal.id)
+        .bind(&ctx.principal().id)
         .fetch_one(&mut *tx)
         .await
         .map_err(map_db)?;
@@ -105,7 +105,7 @@ impl ArtifactStore {
             artifact_id: id,
             version: new_version,
             body,
-            created_by: ctx.principal.id.clone(),
+            created_by: ctx.principal().id.clone(),
             created_at,
         })
     }
@@ -165,7 +165,7 @@ impl ArtifactStore {
                ON v.tenant_id = a.tenant_id AND v.artifact_id = a.id AND v.version = $3 \
              WHERE a.tenant_id = $1 AND a.id = $2 AND a.deleted_at IS NULL",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(id)
         .bind(version)
         .fetch_optional(&self.db)
@@ -221,7 +221,7 @@ impl ArtifactStore {
                AND EXISTS (SELECT 1 FROM artifact a \
                            WHERE a.tenant_id = $1 AND a.id = $2 AND a.deleted_at IS NULL)",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(component_id)
         .bind(version)
         .fetch_optional(&self.db)
@@ -268,7 +268,7 @@ impl ArtifactStore {
                            WHERE a.tenant_id = $1 AND a.id = $2 AND a.kind = $4 \
                              AND a.deleted_at IS NULL)",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(id)
         .bind(version)
         .bind(kind.as_str())
@@ -318,7 +318,7 @@ impl ArtifactStore {
                            WHERE a.tenant_id = $1 AND a.id = $2 AND a.deleted_at IS NULL) \
              ORDER BY v.version DESC",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(id)
         .fetch_all(&self.db)
         .await

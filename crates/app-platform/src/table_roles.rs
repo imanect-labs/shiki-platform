@@ -304,7 +304,7 @@ impl InstallService {
         app_id: Uuid,
     ) -> Result<(), AppPlatformError> {
         self.installations
-            .resolve_active_by_app(&ctx.tenant_id, app_id)
+            .resolve_active_by_app(ctx.tenant_id(), app_id)
             .await
             .map_err(crate::install::map_gateway)?
             .map(|_| ())
@@ -513,7 +513,7 @@ mod tests {
                 tenant_id: Some("t".into()),
             },
             "acme".into(),
-            "t".into(),
+            authz::TenantId::parse("t").unwrap(),
         );
         let obj = ctx.ns().data_table("tbl");
         let out = installs

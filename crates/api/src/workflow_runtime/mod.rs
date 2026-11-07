@@ -101,7 +101,7 @@ pub struct AgentConfig {
     /// web.fetch が読んでよいサイトの天井（ホスト名か `*.example.com`）。未設定・空なら web.fetch は
     /// 提示しない（ノードの `egress_allowlist` はこの部分集合に限る）。`http_allowlist`（http.request の
     /// 宛先）には戻さない: 広い宛先を http.request に許した環境で、AI の web.fetch まで同じ宛先を継いで
-    /// 間接プロンプトインジェクションの出口を広げないため（D-59・PIT-79）。
+    /// 間接プロンプトインジェクションの出口を広げないため（D-59・PIT-80）。
     #[serde(default)]
     pub web_allowlist: Option<Vec<String>>,
     /// ノードで手順の上限を省略したときの値（既定 8・最大 24）。
@@ -232,7 +232,9 @@ impl CapabilityAudit for RunAudit {
 
     fn record_out_of_scope(&self, ec: &workflow_engine::ExecCtx, api: &str, meta: &Value) {
         self.record(&ec.tenant_id, api, false, meta);
-        let ctx = auth::auth_ctx(ec);
+        let Ok(ctx) = auth::auth_ctx(ec) else {
+            return;
+        };
         let recorder = self.recorder.clone();
         let db = self.db.clone();
         let (api, mut meta, trace) = (api.to_string(), meta.clone(), ec.trace_id.clone());
@@ -247,7 +249,7 @@ impl CapabilityAudit for RunAudit {
                         "SELECT workflow_id, version FROM workflow_run \
                          WHERE tenant_id = $1 AND run_id = $2",
                     )
-                    .bind(&ctx.tenant_id)
+                    .bind(ctx.tenant_id())
                     .bind(run_id)
                     .fetch_optional(&db)
                     .await
@@ -590,6 +592,11 @@ async fn retire_deleted_workflows(
             cancelled_runs = r.cancelled_runs.len(),
             "消したワークフローに残っていた委譲・実行を取り消しました"
         );
+        // 監査の actor を組めない（tenant_id が不正）なら監査だけを書かない（取り消しは済んでいる）。
+        let Ok(tenant_id) = authz::TenantId::parse(tenant.as_str()) else {
+            tracing::warn!(%workflow_id, "消したワークフローの後始末の監査を書けない（tenant_id が不正）");
+            continue;
+        };
         let ctx = authz::AuthContext::new(
             authz::Principal {
                 kind: authz::PrincipalKind::User,
@@ -600,7 +607,7 @@ async fn retire_deleted_workflows(
                 tenant_id: Some(tenant.clone()),
             },
             w.org.clone(),
-            tenant.clone(),
+            tenant_id,
         );
         let object_id = workflow_id.to_string();
         for (action, metadata) in retire_audit(r) {
@@ -691,7 +698,7 @@ mod audit_tests {
     /// 実効スコープの外の呼び出しは実行主体つきで audit_log に残る（検証 C-P2-3。以前は tracing だけ）。
     #[tokio::test]
     async fn out_of_scope_is_written_to_the_audit_log() {
-        let Ok(url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+        let Ok(url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
             eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
             return;
         };

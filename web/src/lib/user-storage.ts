@@ -39,6 +39,8 @@ export function isUserDataKey(key: string): boolean {
     // ホームから会話画面へ渡す最初のメッセージ（本文・添付。sessionStorage・
     // [`stashPending`](@/lib/pending-message)）。通常は直後に取り出すが、遷移が途切れると残る。
     key.startsWith("shiki:pending-message:") ||
+    // サイドバー履歴の既読の記録（会話 id・[`useThreadActivity`](@/components/shell/sidebar/use-thread-activity)）。
+    key.startsWith("shiki:thread-seen@") ||
     // 旧クライアント内チャット（backend 実装前のダミー保存）。今は書かないが残骸を消す。
     key === "shiki:chats:v1"
   );

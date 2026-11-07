@@ -218,7 +218,7 @@ impl storage::object_store::ObjectStore for FakeStore {
 }
 
 async fn setup() -> Option<PgPool> {
-    let url = std::env::var("STORAGE_TEST_DATABASE_URL").ok()?;
+    let url = shiki_testenv::var("STORAGE_TEST_DATABASE_URL").ok()?;
     let pool = PgPoolOptions::new()
         .max_connections(5)
         .connect(&url)
@@ -240,6 +240,7 @@ fn base_config(db_url: &str) -> AppConfig {
         },
         database: DatabaseConfig {
             url: db_url.into(),
+            migrate_url: None,
             max_connections: 5,
         },
         auth: AuthConfig {
@@ -279,6 +280,7 @@ fn base_config(db_url: &str) -> AppConfig {
             s3: None,
             max_upload_size_bytes: 5 * 1024 * 1024 * 1024,
             upload_gc: api::config::UploadGcConfig::default(),
+            audit_retention: api::config::AuditRetentionConfig::default(),
         },
         vector: VectorConfig {
             backend: VectorStoreBackend::Qdrant,
@@ -818,7 +820,7 @@ async fn install_import_uninstall_over_http() {
             tenant_id: Some("default".into()),
         },
         "acme".into(),
-        "default".into(),
+        authz::TenantId::parse("default").unwrap(),
     );
     keys.add(&kctx, "http-key", &public, None).await.unwrap();
     let import_manifest: app_platform::MiniAppManifest =
@@ -1165,7 +1167,7 @@ async fn first_party_skill_import_and_install_over_http() {
             tenant_id: Some("default".into()),
         },
         "acme".into(),
-        "default".into(),
+        authz::TenantId::parse("default").unwrap(),
     );
     keys.add(&kctx, "skill-key", &public, None).await.unwrap();
     let body: serde_json::Value = serde_json::from_str(include_str!(

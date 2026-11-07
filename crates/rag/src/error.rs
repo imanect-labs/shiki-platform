@@ -56,6 +56,11 @@ pub enum RagError {
     /// 材料解決の失敗も含むので一時エラー扱い（fail-closed で検索ごと失敗させる）。
     #[error("検索ソースエラー: {0}")]
     Source(String),
+
+    /// メッセージの tenant_id が文字ポリシー（`authz::TenantId::parse`）に反する。
+    /// 再試行しても直らない恒久エラー（DLQ へ送って可視化する）。
+    #[error("tenant_id が不正です: {0}")]
+    InvalidTenant(String),
 }
 
 impl RagError {
@@ -77,7 +82,8 @@ impl RagError {
             | RagError::EmbeddingVersionMismatch { .. }
             | RagError::Serde(_)
             | RagError::Config(_)
-            | RagError::ChunkIdConflict { .. } => false,
+            | RagError::ChunkIdConflict { .. }
+            | RagError::InvalidTenant(_) => false,
         }
     }
 }

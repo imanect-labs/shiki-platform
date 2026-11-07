@@ -7,7 +7,7 @@
 /// - 質問: decide-questions.tsx（種類ごとの値域・リテラルだけ）。
 /// - 振り分け（`route`）: しない／答えで分ける／確かなときだけ進める、使う質問、しきい値。
 /// - 出口はサーバが設定から導いたもの（検証 API の `node_ports`）を見せる。TS に導出を書かない（H15）。
-/// - 確からしさは較正されていない（AI の自己申告・得票率）ことを常に出す（D-52 の H4・PIT-80）。
+/// - 確からしさは較正されていない（AI の自己申告・得票率）ことを常に出す（D-52 の H4・PIT-81）。
 /// - 答えの使い回し（step 属性 `cache`・決定キャッシュ・T10）は既定で切る。期間の決まりはノードカタログの
 ///   `step_cache`（Rust の単一定義）から読み、範囲の外の候補は出さない。
 ///
@@ -46,7 +46,7 @@ import { ValueExprInput } from "./value-expr-input";
 type Params = Partial<NodeParamsByType["ai.decide"]>;
 type RouteMode = "none" | DecideRouteBy;
 
-/// しきい値の範囲（ir.md §7.11 の 0.5〜1.0）。既定は置かない（版ごとに実測で決める・PIT-80・D-88）。
+/// しきい値の範囲（ir.md §7.11 の 0.5〜1.0）。既定は置かない（版ごとに実測で決める・PIT-81・D-88）。
 const MIN_CONFIDENCE = 0.5;
 const MAX_CONFIDENCE = 1;
 /// 「0.80 から始める」で入れる仮の値（既定ではない・押した人が選んだと分かるようにボタンで入れる・D-88）。
@@ -442,7 +442,7 @@ function thresholdRangeError(value: number | undefined): string | undefined {
 }
 
 /// しきい値の欄（0.50〜1.00 を数で入れる）。空のときは「0.80 から始める」で仮の値を入れられる（既定は置かない・
-/// D-88・PIT-80）。
+/// D-88・PIT-81）。
 function ThresholdInput({ value, onChange }: { value: number | undefined; onChange: (next: number | undefined) => void }) {
   const a11y = useFieldControl();
   // 打っている途中の文字（「0.」など）を保つ。値が外から変わったら合わせる。

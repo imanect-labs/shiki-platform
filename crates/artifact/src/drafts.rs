@@ -41,7 +41,7 @@ impl ArtifactStore {
     ) -> Result<Vec<Artifact>, ArtifactError> {
         let ask: Vec<Uuid> = items
             .iter()
-            .filter(|a| a.kind.has_drafts() && a.owner != ctx.principal.id)
+            .filter(|a| a.kind.has_drafts() && a.owner != ctx.principal().id)
             .map(|a| a.id)
             .collect();
         if ask.is_empty() {
@@ -67,7 +67,7 @@ impl ArtifactStore {
         Ok(items
             .into_iter()
             .map(|a| {
-                let can_edit = a.owner == ctx.principal.id || editors.contains(&a.id);
+                let can_edit = a.owner == ctx.principal().id || editors.contains(&a.id);
                 if a.kind.shows_drafts(can_edit) {
                     a
                 } else {

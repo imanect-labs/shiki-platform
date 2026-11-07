@@ -7,7 +7,7 @@ import type { ValueExpr } from "./ValueExpr";
  * `ai.decide` — 判定用のモデルで、質問に決められた値域で答え、確からしさを付けて返す（pure・課金あり）。
  *
  * 呼ぶのは llm-gateway の判定のチョークポイント（`LlmGateway::decide`・組織の許可・利用上限・会計）。
- * 確からしさは較正されていないことがある（出力の `calibrated`・PIT-80）。
+ * 確からしさは較正されていないことがある（出力の `calibrated`・PIT-81）。
  */
 export type AiDecideParams = { 
 /**

@@ -60,6 +60,10 @@ pub struct CreateThreadRequest {
     /// 履歴で「ノート由来」と分かり、当該ノートの会話一覧に載る。通常チャットは未指定。
     #[serde(default)]
     pub origin_note_id: Option<Uuid>,
+    /// 検索フォルダ（ホームの「社内検索」・#965）。この会話の社内文書検索をこのフォルダの配下に
+    /// 絞る（絞り込みのみ・作成者が閲覧できるフォルダに限る）。
+    #[serde(default)]
+    pub search_folder_id: Option<Uuid>,
 }
 
 /// スレッド一覧レスポンス（keyset ページング）。

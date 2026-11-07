@@ -122,6 +122,10 @@ pub struct SlideDraft {
     pub name: String,
     /// 正規化スライド JSON 文字列（サニタイズ済みが正規形・PIT-40）。
     pub content: String,
+    /// AI が指定した保存先フォルダの id か `"root"`（保存ダイアログの初期値にするだけ・
+    /// 確定は人・#942）。`None` は指定なし（前回の指定を保つ）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
 }
 
 /// 未保存の下書き CSV（save_csv の下書き確定型・Task 11.11）。
@@ -133,6 +137,10 @@ pub struct CsvDraft {
     pub name: String,
     /// CSV 本文（ヘッダ行＋データ行）。
     pub csv: String,
+    /// AI が指定した保存先フォルダの id か `"root"`（保存ダイアログの初期値にするだけ・
+    /// 確定は人・#942）。`None` は指定なし（前回の指定を保つ）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_id: Option<String>,
 }
 
 /// ツール実行結果。`content` はモデルへ返すテキスト、`citations` は UI 引用へ。
@@ -164,6 +172,11 @@ pub struct ToolOutcome {
     /// **まだ StorageService へ作成していない**下書き CSV を入れる（chat 側で csv_draft
     /// ブロックへ写り、フロントが下書き CSV 画面で詰めてから「ドライブに保存」で確定する）。
     pub csv_drafts: Vec<CsvDraft>,
+    /// 未保存の下書きスキル（save_skill の下書き確定型・#919）。
+    /// `{name, skill}` の JSON（skill = SkillBody 相当・保存時検証を通したもの）。**まだ artifact
+    /// として保存していない**下書きを入れる（chat 側で skill_draft ブロックへ写り、フロントが
+    /// スキルエディタで詰めてから人が保存する）。
+    pub skill_drafts: Vec<serde_json::Value>,
     /// AI が作成/編集した文書への参照（#381）。
     /// `{id, name, kind, version}` の JSON。**StorageService へ作成済み/編集済みのノードのみ**
     /// を入れる（chat 側で document_ref ブロックへ写り、成果物への導線カードになる）。
@@ -206,6 +219,7 @@ impl ToolOutcome {
             note_drafts: Vec::new(),
             slide_drafts: Vec::new(),
             csv_drafts: Vec::new(),
+            skill_drafts: Vec::new(),
             document_refs: Vec::new(),
             skill_invocations: Vec::new(),
             subagent_runs: Vec::new(),
@@ -225,6 +239,7 @@ impl ToolOutcome {
             note_drafts: Vec::new(),
             slide_drafts: Vec::new(),
             csv_drafts: Vec::new(),
+            skill_drafts: Vec::new(),
             document_refs: Vec::new(),
             skill_invocations: Vec::new(),
             subagent_runs: Vec::new(),

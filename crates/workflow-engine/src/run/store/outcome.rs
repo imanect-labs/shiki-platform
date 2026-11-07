@@ -117,7 +117,7 @@ impl RunOutcomeReader {
             "SELECT r.run_id, r.status, {WAITING_FOR} FROM workflow_run r \
              WHERE r.tenant_id = $1 AND r.run_id = ANY($2)"
         ))
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(run_ids)
         .fetch_all(&self.db)
         .await
@@ -160,10 +160,10 @@ impl RunOutcomeReader {
                           AND s.step_path = ANY(r.reply_nodes) AND s.status = 'succeeded') \
              FROM workflow_run r WHERE r.run_id = ANY($2) AND {OWN_RUN}"
         ))
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(run_ids)
-        .bind(&ctx.principal.id)
-        .bind(&ctx.org)
+        .bind(&ctx.principal().id)
+        .bind(ctx.org())
         .fetch_all(&self.db)
         .await
         .map_err(map_db)?;
@@ -211,10 +211,10 @@ impl RunOutcomeReader {
              WHERE r.run_id = ANY($2) AND {OWN_RUN} AND s.status = 'succeeded' \
              ORDER BY r.run_id, array_position(r.reply_nodes, s.step_path)"
         ))
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(run_ids)
-        .bind(&ctx.principal.id)
-        .bind(&ctx.org)
+        .bind(&ctx.principal().id)
+        .bind(ctx.org())
         .fetch_all(&self.db)
         .await
         .map_err(map_db)?;

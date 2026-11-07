@@ -736,20 +736,35 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
   }
 }
 
-type EditorInit = { ir: WorkflowIr; version: number; layout: EditorLayout };
+/// 画面移動の前に残した未保存の編集（同じ版から始めたもの）。あれば未保存の状態で開く。
+/// IR と座標は、それぞれ未保存のものだけを復元する（動かしていない座標で保存済みの配置を上書きしない）。
+export type EditorDraft = {
+  ir: WorkflowIr;
+  irDirty: boolean;
+  layout: EditorLayout;
+  layoutDirty: boolean;
+  undoStack: WorkflowIr[];
+  redoStack: WorkflowIr[];
+};
+
+type EditorInit = { ir: WorkflowIr; version: number; layout: EditorLayout; draft?: EditorDraft | null };
 
 function initEditorState(initial: EditorInit): EditorState {
+  const irDraft = initial.draft?.irDirty ? initial.draft : null;
+  const layoutDraft = initial.draft?.layoutDirty ? initial.draft : null;
+  const ir = irDraft?.ir ?? initial.ir;
   return {
-    ir: initial.ir,
+    ir,
     savedVersion: initial.version,
     // 全ノード・全きっかけの座標を手元で決めて持つ（開いただけでは保存しない。何かを動かしたら
     // 全座標が保存される）。座標の無いノードが混ざると 1 つ動かすだけで全体が平行移動するため（BUG-2）。
-    layout: seedLayout(initial.ir, initial.layout),
+    // 自動保存が終わる前に離れた座標は、復元して保存し直す（手元で全座標を決めた後のものなので埋め直さない）。
+    layout: layoutDraft?.layout ?? seedLayout(ir, initial.layout),
     selection: { kind: "none" },
-    dirty: false,
-    layoutDirty: false,
-    undoStack: [],
-    redoStack: [],
+    dirty: irDraft !== null,
+    layoutDirty: layoutDraft !== null,
+    undoStack: irDraft?.undoStack ?? [],
+    redoStack: irDraft?.redoStack ?? [],
     serverErrors: [],
     serverErrorsIr: null,
     serverWarnings: [],

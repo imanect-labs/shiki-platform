@@ -117,7 +117,7 @@ impl NodeExecutor for WaitMapExecutor {
 }
 
 async fn setup() -> Option<PgPool> {
-    let db_url = std::env::var("STORAGE_TEST_DATABASE_URL").ok()?;
+    let db_url = shiki_testenv::var("STORAGE_TEST_DATABASE_URL").ok()?;
     let pool = PgPoolOptions::new()
         .max_connections(5)
         .connect(&db_url)
@@ -597,7 +597,7 @@ async fn wait_event_timeout_fail_fails_run() {
             tenant_id: Some(tenant.clone()),
         },
         "acme".into(),
-        tenant.clone(),
+        authz::TenantId::parse(tenant.clone()).unwrap(),
     );
     let outcomes = workflow_engine::RunOutcomeReader::new(pool.clone())
         .own_outcomes(&alice, &[run_id], &[])

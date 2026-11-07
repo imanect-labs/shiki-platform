@@ -1397,3 +1397,137 @@ test("スマホ: ブロックの設定シートは下端に余白を取り、最
   // 左下に浮くボタン（高さ 44px 程度）の上に出る。
   expect(box.y + box.height).toBeLessThanOrEqual(viewport.height - 64);
 });
+
+/// 未保存のまま実行履歴を見て戻っても、編集が消えない（アプリ内の画面移動では下書きを残して復元する）。
+test("エディタ: 未保存のまま実行履歴へ移って戻っても編集が残る", async ({ page }) => {
+  test.setTimeout(120_000);
+  await loginViaKeycloak(page);
+  await page.goto("/workflows");
+  await expect(page.getByText("読み込み中…")).toHaveCount(0);
+  await page.getByRole("button", { name: "新しいワークフロー", exact: true }).click();
+  await page.waitForURL(/\/workflows\/[0-9a-f-]+$/i, { timeout: 20_000 });
+  const editorUrl = page.url();
+
+  await page.getByRole("button", { name: "最初のブロック" }).click();
+  await page.getByRole("button", { name: /^スクリプト/ }).click();
+  const canvas = page.locator(".react-flow");
+  await expect(canvas.getByText("スクリプト").first()).toBeVisible();
+
+  // 保存せずに実行履歴へ → エディタへ戻る。
+  await page.getByRole("button", { name: "実行履歴" }).click();
+  await page.waitForURL(/\/runs$/, { timeout: 20_000 });
+  await page.getByRole("link", { name: "エディタへ戻る" }).click();
+  await page.waitForURL(editorUrl, { timeout: 20_000 });
+
+  await expect(canvas.getByText("スクリプト").first()).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByText(/v1・未保存/).first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "保存", exact: true })).toBeEnabled();
+
+  // 保存すれば下書きは消え、もう一度往復しても「復元」は出ない。
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(page.getByText(/保存しました/).first()).toBeVisible({ timeout: 15_000 });
+  await page.getByRole("button", { name: "実行履歴" }).click();
+  await page.waitForURL(/\/runs$/, { timeout: 20_000 });
+  await page.getByRole("link", { name: "エディタへ戻る" }).click();
+  await page.waitForURL(editorUrl, { timeout: 20_000 });
+  await expect(canvas.getByText("スクリプト").first()).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole("button", { name: "保存", exact: true })).toBeDisabled();
+});
+
+/// 保存の完了を待たずに離れて戻っても、保存の後に続けた編集が残り、版も保存の結果に合う（次の保存が競合しない）。
+test("エディタ: 保存中に実行履歴へ移って戻っても、続けた編集が残り次の保存が通る", async ({ page }) => {
+  test.setTimeout(120_000);
+  await loginViaKeycloak(page);
+  await page.goto("/workflows");
+  await expect(page.getByText("読み込み中…")).toHaveCount(0);
+  await page.getByRole("button", { name: "新しいワークフロー", exact: true }).click();
+  await page.waitForURL(/\/workflows\/[0-9a-f-]+$/i, { timeout: 20_000 });
+  const editorUrl = page.url();
+
+  await page.getByRole("button", { name: "最初のブロック" }).click();
+  await page.getByRole("button", { name: /^スクリプト/ }).click();
+  const canvas = page.locator(".react-flow");
+  await expect(canvas.getByText("スクリプト").first()).toBeVisible();
+
+  // 保存の PUT を遅らせ、その間に編集を続けて離れる。
+  await page.route("**/api/workflows/*", async (route) => {
+    if (route.request().method() === "PUT") await new Promise((r) => setTimeout(r, 8_000));
+    await route.continue();
+  });
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await canvas.getByLabel("次のブロックを追加").first().click();
+  await page.getByRole("button", { name: /^ファイルを保存/ }).click();
+  await expect(canvas.getByText("ファイルを保存").first()).toBeVisible();
+  await page.getByRole("button", { name: "実行履歴" }).click();
+  await page.waitForURL(/\/runs$/, { timeout: 20_000 });
+  await page.getByRole("link", { name: "エディタへ戻る" }).click();
+  await page.waitForURL(editorUrl, { timeout: 20_000 });
+
+  // 保存の後に足したブロックが未保存として残り、保存の結果の版（v2）から編集が続く。
+  await expect(canvas.getByText("ファイルを保存").first()).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByText(/v2・未保存/).first()).toBeVisible();
+  await expect(page.getByText(/復元できませんでした/)).toHaveCount(0);
+  await page.unroute("**/api/workflows/*");
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  await expect(page.getByText(/保存しました（v3）/).first()).toBeVisible({ timeout: 15_000 });
+});
+
+/// 保存中に元に戻して（保存前の内容に戻して）離れても、その取り消しが残る（保存した内容で上書きしない）。
+test("エディタ: 保存中に元に戻して離れて戻っても、取り消しが残る", async ({ page }) => {
+  test.setTimeout(120_000);
+  await loginViaKeycloak(page);
+  await page.goto("/workflows");
+  await expect(page.getByText("読み込み中…")).toHaveCount(0);
+  await page.getByRole("button", { name: "新しいワークフロー", exact: true }).click();
+  await page.waitForURL(/\/workflows\/[0-9a-f-]+$/i, { timeout: 20_000 });
+  const editorUrl = page.url();
+  const canvas = page.locator(".react-flow");
+
+  await page.getByRole("button", { name: "最初のブロック" }).click();
+  await page.getByRole("button", { name: /^スクリプト/ }).click();
+  await expect(canvas.getByText("スクリプト").first()).toBeVisible();
+
+  await page.route("**/api/workflows/*", async (route) => {
+    if (route.request().method() === "PUT") await new Promise((r) => setTimeout(r, 8_000));
+    await route.continue();
+  });
+  await page.getByRole("button", { name: "保存", exact: true }).click();
+  // 保存の応答を待たずに、追加を取り消して（保存前の内容に戻して）離れる。
+  await page.getByRole("button", { name: "元に戻す" }).click();
+  await expect(canvas.getByText("スクリプト")).toHaveCount(0);
+  await page.getByRole("button", { name: "実行履歴" }).click();
+  await page.waitForURL(/\/runs$/, { timeout: 20_000 });
+  await page.getByRole("link", { name: "エディタへ戻る" }).click();
+  await page.waitForURL(editorUrl, { timeout: 20_000 });
+
+  // 保存した版（v2・スクリプトあり）の上に、取り消した内容が未保存として残る。
+  await expect(page.getByText(/v2・未保存/).first()).toBeVisible({ timeout: 20_000 });
+  await expect(canvas.getByText("スクリプト")).toHaveCount(0);
+  await page.unroute("**/api/workflows/*");
+});
+
+/// 元に戻して保存済みと同じ内容になっても、やり直せる編集は往復の後もやり直せる。
+test("エディタ: 元に戻してから実行履歴へ移って戻っても、やり直せる", async ({ page }) => {
+  test.setTimeout(120_000);
+  await loginViaKeycloak(page);
+  await page.goto("/workflows");
+  await expect(page.getByText("読み込み中…")).toHaveCount(0);
+  await page.getByRole("button", { name: "新しいワークフロー", exact: true }).click();
+  await page.waitForURL(/\/workflows\/[0-9a-f-]+$/i, { timeout: 20_000 });
+  const editorUrl = page.url();
+  const canvas = page.locator(".react-flow");
+
+  await page.getByRole("button", { name: "最初のブロック" }).click();
+  await page.getByRole("button", { name: /^スクリプト/ }).click();
+  await expect(canvas.getByText("スクリプト").first()).toBeVisible();
+  await page.getByRole("button", { name: "元に戻す" }).click();
+  await expect(canvas.getByText("スクリプト")).toHaveCount(0);
+
+  await page.getByRole("button", { name: "実行履歴" }).click();
+  await page.waitForURL(/\/runs$/, { timeout: 20_000 });
+  await page.getByRole("link", { name: "エディタへ戻る" }).click();
+  await page.waitForURL(editorUrl, { timeout: 20_000 });
+
+  await page.getByRole("button", { name: "やり直す" }).click();
+  await expect(canvas.getByText("スクリプト").first()).toBeVisible();
+});

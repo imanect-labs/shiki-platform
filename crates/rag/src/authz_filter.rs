@@ -233,7 +233,7 @@ mod tests {
                 tenant_id: None,
             },
             "org".into(),
-            "t".into(),
+            authz::TenantId::parse("t").unwrap(),
         )
     }
 

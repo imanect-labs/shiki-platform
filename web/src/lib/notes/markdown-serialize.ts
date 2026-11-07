@@ -11,17 +11,37 @@
 /// バイト単位一致ではなく「同じ意味・同じ正規形」を目標にする。
 
 import { Fragment, type Mark, type Node as PMNode } from "@tiptap/pm/model";
+import { marked } from "marked";
+
+import { driveRefHref, isNodeId } from "@/lib/skills/drive-ref";
 
 /// フラグメント（スライス内容・ドキュメント本体）を正規化 md へ描画する。
 /// 末尾は単一改行（Rust `render_markdown` と同じく空でなければ改行終端）。
 ///
 /// AI の削除の提案（`aiDeletion` の印）は、サーバの保存と同じく「承認したら」の形で描く
 /// （旧文と新文を並べない・#886）。
-export function serializeFragment(fragment: Fragment): string {
-  const blocks = collectBlocks(withoutDeletions(fragment));
-  const body = renderBlocks(blocks);
-  return body.length > 0 ? `${body}\n` : "";
+export function serializeFragment(fragment: Fragment, options: SerializeOptions = {}): string {
+  const prev = current;
+  current = options;
+  try {
+    const blocks = collectBlocks(withoutDeletions(fragment));
+    const body = renderBlocks(blocks);
+    return body.length > 0 ? `${body}\n` : "";
+  } finally {
+    current = prev;
+  }
 }
+
+export interface SerializeOptions {
+  /// エスケープを「読み直しで記法に化けるもの」だけに絞る（スキルエディタ・#919）。
+  /// SKILL.md は AI が読む指示文なので、`doc_search` を `doc\_search`、`<rules>` を
+  /// `\<rules\>` のように書き換えない。`<…>` は読み直しでも文字のまま残る
+  /// （[`parseMarkdownToNodes`] の `htmlAsText`・インライン HTML は文字）。
+  literalText?: boolean;
+}
+
+/// 描画中のオプション（描画は同期なので、呼び出しの間だけ立てる）。
+let current: SerializeOptions = {};
 
 /// 表の形を保つため、中身が無くなっても残すノード（Rust の md 読み出しと同じ）。
 const KEEP_EMPTY = new Set(["table", "tableRow", "tableCell", "tableHeader"]);
@@ -73,7 +93,16 @@ function renderBlock(node: PMNode): string {
       // 段落の先頭行がブロック記法（見出し #・箇条書き -/+・番号 1.）に一致すると、
       // 素テキストで貼り戻したとき別ブロックに再解釈される。先頭行だけエスケープして
       // 往復で意味が変わらないようにする（継続行は同一段落に属するので対象外）。
-      const rendered = renderInlineChildren(node);
+      let rendered = renderInlineChildren(node);
+      // literalText は素の文字に読み戻せる記号を残すので、強制改行の後の行頭も
+      // [`escapeLiteralLineStart`] で引用・箇条書き・水平線・フェンスにならないようにする
+      // （先頭行は下の escapeBlockStart が見る）。
+      if (current.literalText) {
+        rendered = rendered.replace(
+          /(\\\n)([^\n]*)/g,
+          (_, br: string, line: string) => br + escapeLiteralLineStart(line),
+        );
+      }
       const nl = rendered.indexOf("\n");
       return nl === -1
         ? escapeBlockStart(rendered)
@@ -216,6 +245,8 @@ function renderInlineChildren(node: PMNode): string {
   node.forEach((child) => {
     if (child.type.name === "hardBreak") {
       out += "\\\n";
+    } else if (child.type.name === "driveRef") {
+      out += renderDriveRef(child);
     } else if (child.isText) {
       out += renderText(child.text ?? "", child.marks);
     }
@@ -246,6 +277,18 @@ function renderText(text: string, marks: readonly Mark[]): string {
   return body;
 }
 
+/// ドライブ参照（スキルエディタ・#919）: `[パス](shiki://drive/<kind>/<id>)`。
+function renderDriveRef(node: PMNode): string {
+  const kind = node.attrs.kind === "folder" ? "folder" : "file";
+  const id = typeof node.attrs.id === "string" ? node.attrs.id : "";
+  const label = typeof node.attrs.label === "string" && node.attrs.label ? node.attrs.label : id;
+  // id が UUID の形でなければリンクにしない（リンク先へ文字を差し込ませない・名前だけ残す）。
+  if (!isNodeId(id)) return escapeInline(label);
+  // ラベルの `[`・`]` は必ず潰す（素の文字に読み戻せても、リンクのラベル内では括弧の対応を崩す）。
+  const text = current.literalText ? escapeLiteralAll(label) : escapeInline(label);
+  return `[${text}](${driveRefHref(kind, id)})`;
+}
+
 /// コードスパン: 内容のバッククォート連長より 1 長いフェンスで包む（CommonMark）。
 function renderCodeSpan(text: string): string {
   const runs = text.match(/`+/g);
@@ -259,13 +302,53 @@ function renderCodeSpan(text: string): string {
 
 /// インライン特殊文字のバックスラッシュエスケープ（Rust `escape_inline` と一致）。
 function escapeInline(text: string): string {
+  if (current.literalText) return escapeLiteral(text);
   return text.replace(/[\\`*_[\]<>~|]/g, (c) => `\\${c}`);
+}
+
+/// `literalText` のエスケープ: 読み直して素の文字に戻るなら何もしない（`a*b`・`[必須]`・
+/// `C:\share`・`doc_search` を書き換えない）。記法に化ける（強調・リンク・コード・エスケープ
+/// になる）ときだけ [`escapeLiteralAll`] で潰す。インラインの `<…>` は読み込みで文字のまま
+/// 残る（[`parseMarkdownToNodes`]）ので素の文字とみなす。行頭の `>` は [`escapeBlockStart`]。
+function escapeLiteral(text: string): string {
+  let tokens: { type: string; raw: string }[];
+  try {
+    tokens = marked.Lexer.lexInline(text) as unknown as { type: string; raw: string }[];
+  } catch {
+    return escapeLiteralAll(text);
+  }
+  const plain =
+    tokens.every((t) => t.type === "text" || t.type === "html") &&
+    tokens.map((t) => t.raw).join("") === text;
+  return plain ? text : escapeLiteralAll(text);
+}
+
+/// 記法に化ける文字列のエスケープ（`<` `>` はそのまま・`_` は語の境目だけ）。
+function escapeLiteralAll(text: string): string {
+  const word = /[\p{L}\p{N}]/u;
+  let out = "";
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (c === "_") {
+      const inWord = word.test(text[i - 1] ?? "") && word.test(text[i + 1] ?? "");
+      out += inWord ? c : "\\_";
+    } else if ("\\`*[]~|".includes(c)) {
+      out += `\\${c}`;
+    } else {
+      out += c;
+    }
+  }
+  return out;
 }
 
 /// 段落先頭行のブロック記法をエスケープする（`escapeInline` 済みの文字列に適用）。
 /// `*`/`>`/`` ` `` は `escapeInline` で既にエスケープ済みなので、残る `#`・`-`・`+`・
 /// 番号付きリスト（`1.`/`1)`）だけを対象にする。
 function escapeBlockStart(line: string): string {
+  if (current.literalText) {
+    const escaped = escapeLiteralLineStart(line);
+    if (escaped !== line) return escaped;
+  }
   const marker = /^(\s*)([#\-+])(\s|$)/.exec(line);
   if (marker) {
     return `${marker[1]}\\${line.slice(marker[1].length)}`;
@@ -282,6 +365,16 @@ function escapeBlockStart(line: string): string {
     return `${rule[1]}\\${line.slice(rule[1].length)}`;
   }
   return line;
+}
+
+/// `literalText` の行頭: [`escapeLiteral`] は素の文字に読み戻せる記号（`>`・`*`・`` ` ``・`~`・
+/// `_`）を残すが、行頭ではブロック記法（引用・`*` の箇条書き・`***`/`___` の水平線・
+/// `` ``` ``/`~~~` のフェンス）になるので、先頭の記号だけ断つ。
+function escapeLiteralLineStart(line: string): string {
+  const m =
+    /^(\s*)(?:>|\*(?=\s|$)|([*_])(?:[ \t]*\2){2,}[ \t]*$|`{3,}|~{3,})/.exec(line);
+  if (!m) return line;
+  return `${m[1]}\\${line.slice(m[1].length)}`;
 }
 
 /// リンク先: 空白・括弧を含む URL は <> で包む（Rust `escape_link_dest`）。

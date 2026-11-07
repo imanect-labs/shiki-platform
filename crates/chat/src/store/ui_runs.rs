@@ -66,11 +66,11 @@ impl ChatStore {
              WHERE tenant_id = $1 AND thread_id = $2 AND run_id = $3 AND invoked_by = $4 \
                AND org = $5 LIMIT 1",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(thread_id)
         .bind(run_id)
-        .bind(&ctx.principal.id)
-        .bind(&ctx.org)
+        .bind(&ctx.principal().id)
+        .bind(ctx.org())
         .fetch_all(&self.db)
         .await
         .map_err(|e| ChatError::Internal(format!("db: {e}")))?;
@@ -111,7 +111,7 @@ impl ChatStore {
         // 結果を読むのは押した本人の run だけ（他人の run は読取口に渡さない・読取口も本人で絞る）。
         let mine: Vec<Uuid> = rows
             .iter()
-            .filter(|r| r.7 == ctx.principal.id)
+            .filter(|r| r.7 == ctx.principal().id)
             .filter_map(|r| r.4)
             .collect();
         let with_reply: Vec<Uuid> = match reply_for {
@@ -119,7 +119,7 @@ impl ChatStore {
             ReplyFor::OpenAndLatest => {
                 let mut latest_done: HashMap<Uuid, Uuid> = HashMap::new();
                 for (r, s) in rows.iter().zip(&statuses) {
-                    if let (Some(id), true) = (r.4, s.is_terminal() && r.7 == ctx.principal.id) {
+                    if let (Some(id), true) = (r.4, s.is_terminal() && r.7 == ctx.principal().id) {
                         // 行は古い順なので、後に来たものが最新。
                         latest_done.insert(r.0, id);
                     }
@@ -128,7 +128,7 @@ impl ChatStore {
                 rows.iter()
                     .zip(&statuses)
                     .filter(|(r, s)| {
-                        r.7 == ctx.principal.id
+                        r.7 == ctx.principal().id
                             && (!s.is_terminal() || r.4.is_some_and(|id| latest.contains(&id)))
                     })
                     .filter_map(|(r, _)| r.4)
@@ -154,7 +154,7 @@ impl ChatStore {
                     (m, action_id, label, workflow_name, run_id, row_status, summary, by, at, _),
                     status,
                 )| {
-                    let outcome = if by == ctx.principal.id {
+                    let outcome = if by == ctx.principal().id {
                         run_id.and_then(|id| own.remove(&id)).unwrap_or_default()
                     } else {
                         workflow_engine::OwnOutcome::default()
@@ -214,7 +214,7 @@ impl ChatStore {
              WHERE r.tenant_id = $1 AND r.thread_id = $2 AND r.run_id = x.run_id \
                AND r.status IS NULL",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(thread_id)
         .bind(&ids)
         .bind(&sts)

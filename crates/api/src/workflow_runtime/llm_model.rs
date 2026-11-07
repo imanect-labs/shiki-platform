@@ -158,7 +158,7 @@ mod tests {
             run_id: None,
             step_path: Some("ai".into()),
         };
-        let ctx = super::super::auth::auth_ctx(&ec);
+        let ctx = super::super::auth::auth_ctx(&ec).unwrap();
         let e = resolve_for_workflow(&gw, &ec, &ctx, None, None)
             .await
             .unwrap_err();

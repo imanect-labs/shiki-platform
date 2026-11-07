@@ -67,7 +67,7 @@ fn eval_ctx() -> AuthContext {
             tenant_id: Some(EVAL_TENANT.into()),
         },
         EVAL_ORG.into(),
-        EVAL_TENANT.into(),
+        authz::TenantId::parse(EVAL_TENANT).unwrap(),
     )
 }
 
@@ -172,7 +172,7 @@ async fn decision_eval() {
                 "凍結したしきい値 {t} は候補（{THETAS:?}）のどれか"
             );
         }
-        // コードのプロンプトの版が凍結と違えば、1 件も呼ばずに止める（PIT-80）。
+        // コードのプロンプトの版が凍結と違えば、1 件も呼ばずに止める（PIT-81）。
         assert_eq!(
             f.prompt_version, PROMPT_VERSION,
             "コードのプロンプトの版 {PROMPT_VERSION} が凍結した版 {} と違う（凍結し直すか、版を戻す）",
@@ -265,7 +265,7 @@ async fn decision_eval() {
     }
     let finished_at = chrono::Utc::now().to_rfc3339();
     let after = setup::relay_spend(&http, &relay).await;
-    let (db_rows, db_micros) = setup::usage_of_run(&pool, &ctx.tenant_id, &key_prefix).await;
+    let (db_rows, db_micros) = setup::usage_of_run(&pool, ctx.tenant_id(), &key_prefix).await;
 
     let latencies: Vec<u64> = outcome
         .calls

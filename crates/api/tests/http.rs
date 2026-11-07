@@ -320,6 +320,7 @@ fn base_config() -> AppConfig {
         },
         database: DatabaseConfig {
             url: "postgres://localhost/none".into(),
+            migrate_url: None,
             max_connections: 1,
         },
         auth: AuthConfig {
@@ -359,6 +360,7 @@ fn base_config() -> AppConfig {
             s3: None,
             max_upload_size_bytes: 5 * 1024 * 1024 * 1024,
             upload_gc: api::config::UploadGcConfig::default(),
+            audit_retention: api::config::AuditRetentionConfig::default(),
         },
         vector: VectorConfig {
             backend: VectorStoreBackend::Qdrant,

@@ -167,7 +167,7 @@ pub async fn get_table_fsm(
     Path(id): Path<Uuid>,
 ) -> Result<Json<TableFsmResponse>, ApiError> {
     let view = state.fsms.table_fsm(&ctx, id, trace.as_deref()).await?;
-    let pending_approvals = pending_moves(&state, &ctx.tenant_id, id).await?;
+    let pending_approvals = pending_moves(&state, ctx.tenant_id(), id).await?;
     let workflows = state
         .artifacts
         .list_visible_mentioning(&ctx, artifact::ArtifactKind::Workflow, id, MAX_WORKFLOWS)
@@ -236,7 +236,7 @@ pub async fn save_table_fsm(
         )
         .await?;
     if !req.confirm_pending {
-        let lost: Vec<PendingApprovalMove> = pending_moves(&state, &ctx.tenant_id, id)
+        let lost: Vec<PendingApprovalMove> = pending_moves(&state, ctx.tenant_id(), id)
             .await?
             .into_iter()
             .filter(|m| req.body.transition(&m.from, &m.to).is_none())

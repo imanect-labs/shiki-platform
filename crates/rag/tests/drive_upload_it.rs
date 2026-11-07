@@ -151,17 +151,17 @@ fn user(tenant: &str, id: &str) -> AuthContext {
             tenant_id: Some(tenant.into()),
         },
         "acme".into(),
-        tenant.into(),
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 
 async fn setup() -> Option<Env> {
     let serial = serial_lock().lock().await;
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return None;
     };
-    let Ok(fga_url) = std::env::var("OPENFGA_TEST_URL") else {
+    let Ok(fga_url) = shiki_testenv::var("OPENFGA_TEST_URL") else {
         eprintln!("OPENFGA_TEST_URL 未設定のためスキップ");
         return None;
     };
@@ -228,7 +228,11 @@ async fn setup() -> Option<Env> {
     let bob = user(&tenant, "bob");
     for u in [&alice, &bob] {
         authz
-            .write_tuple(&u.subject(), Relation::Member, &u.ns().organization(&u.org))
+            .write_tuple(
+                &u.subject(),
+                Relation::Member,
+                &u.ns().organization(u.org()),
+            )
             .await
             .unwrap();
     }
@@ -493,9 +497,9 @@ async fn real_folder_move_retags_descendants_and_delete_hides() {
 
 /// テナントの行・タプル・オブジェクトと、テストのストアを消す（落ちても後片付けをしてから結果を返す）。
 async fn cleanup(env: &Env) {
-    let tenant = env.alice.tenant_id.clone();
+    let tenant = env.alice.tenant_id().to_string();
     env.service
-        .purge_tenant(&tenant, &env.alice.org, "drive-upload-it")
+        .purge_tenant(&tenant, env.alice.org(), "drive-upload-it")
         .await
         .unwrap();
     let resp = env

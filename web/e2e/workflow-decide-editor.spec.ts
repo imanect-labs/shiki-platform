@@ -353,7 +353,7 @@ test.describe("AI で判定（エディタ）", () => {
       await expect(question.getByText(/選択肢のキーに「error」は使えません/)).toBeVisible({ timeout: 10_000 });
       await question.getByRole("textbox", { name: "選択肢 2 のキー" }).fill("bug");
 
-      // 振り分け: 答えで分ける（使う質問は選択肢の質問）。しきい値は既定を置かず空のまま（D-88・PIT-80）で、
+      // 振り分け: 答えで分ける（使う質問は選択肢の質問）。しきい値は既定を置かず空のまま（D-88・PIT-81）で、
       // 空のままでは実行できないことを欄の下で言う。「0.80 から始める」で仮の値を入れ、範囲の外は欄の下で知らせる。
       await choose(page, panel.getByRole("combobox", { name: "振り分け", exact: true }), "答えで分ける");
       await expect(panel.getByRole("combobox", { name: "振り分けに使う質問" })).toContainText("category");

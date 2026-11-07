@@ -3,7 +3,9 @@
 /// エディタ本体（PC: パレット / キャンバス / 設定の 3 ペイン、スマホ: 縦のステップ一覧）。
 ///
 /// - 保存は**明示**（PUT + expected_version・409 は競合通知→再読込）。autosave しない
-///   （版が無限に増える＋検証必須のため）。dirty は離脱ガード。
+///   （版が無限に増える＋検証必須のため）。dirty は離脱ガード（再読み込み・タブを閉じる）。
+///   アプリ内の画面移動（実行履歴を見て戻る等）では未保存の編集をメモリに残し、戻ったら復元する
+///   （`draft-store.ts`）。
 /// - ライブ検証: IR 変更を 600ms debounce で `POST /workflows/validate` に流し、
 ///   エラーを該当ノード上へ表示（保存前に気づける）。保存を止めない警告（`warnings`・条件の意味論の
 ///   切替で分岐の結果が変わり得る条件など）も開いた時点・編集中・保存時に受け、注意の印と一覧で見せる。
@@ -35,6 +37,7 @@ import {
   type EditorLayout,
 } from "@/lib/workflow-api";
 import { AddNodeSheet } from "./add-node-sheet";
+import { takeDraft, workflowDraftStore } from "./draft-store";
 import { addAction, endTarget, targetLabel, targetPlace, targetRegion, type AddTarget } from "./add-target";
 import { layoutForSave } from "./auto-layout";
 import { Canvas } from "./canvas";
@@ -84,10 +87,13 @@ export function WorkflowEditor({
   renderSidePanel,
   renderChrome,
 }: Props) {
+  // 実行履歴などへ移って戻ったとき、未保存の編集を引き継ぐ（同じ版から始めた下書きだけ）。
+  const [restored] = React.useState(() => takeDraft(workflowId, initialVersion));
   const [state, dispatch] = useEditorState({
     ir: initialIr,
     version: initialVersion,
     layout: initialLayout,
+    draft: restored.draft,
   });
   const [saving, setSaving] = React.useState(false);
   // ブロックパレットは既定で隠す（視界を奪わない）。トグルで表示、追加は主にノード尻尾の＋から。
@@ -121,14 +127,69 @@ export function WorkflowEditor({
     return () => clearTimeout(timer);
   }, [state.ir, state.dirty, dispatch]);
 
+  // ── 未保存の編集を画面移動の間も残す（保存・元に戻して保存済みと同じになったら消す）──────────
+  // 保存済みの内容（元に戻して同じになったかの比較用。`dirty` は undo では下りないため）。
+  const savedIrJson = React.useRef(JSON.stringify(initialIr));
+  React.useEffect(() => {
+    // IR の下書きを残す条件:
+    // - 保存中は、保存済みの内容と同じに戻っていても残す（保存が通ると保存済みの内容が変わるため。
+    //   消すかどうかは保存の結果を反映してから決める・`workflowDraftStore.saved`）。
+    // - やり直せる編集（redo）があるなら、保存済みと同じ内容でも残す（戻ってからやり直せるように）。
+    const irDirty =
+      state.dirty &&
+      (saving || state.redoStack.length > 0 || JSON.stringify(state.ir) !== savedIrJson.current);
+    // 座標だけの変更（自動保存の前に離れた分）も残す。
+    if (irDirty || state.layoutDirty) {
+      workflowDraftStore.set(workflowId, {
+        baseVersion: state.savedVersion,
+        ir: state.ir,
+        irDirty,
+        layout: state.layout,
+        layoutDirty: state.layoutDirty,
+        undoStack: state.undoStack,
+        redoStack: state.redoStack,
+      });
+    } else {
+      workflowDraftStore.clear(workflowId);
+    }
+  }, [
+    workflowId,
+    saving,
+    state.dirty,
+    state.savedVersion,
+    state.ir,
+    state.layout,
+    state.layoutDirty,
+    state.undoStack,
+    state.redoStack,
+  ]);
+
+  const restoreNotified = React.useRef(false);
+  React.useEffect(() => {
+    // 開発時の StrictMode の二重実行で 2 回出さない。
+    if (restoreNotified.current) return;
+    restoreNotified.current = true;
+    // 復元できたときは知らせない（保存状態の「未保存」で分かる・往復のたびに通知が積もるため）。
+    // 黙って消えるのは困るので、捨てたときだけ知らせる。
+    if (restored.discarded) {
+      toast({
+        variant: "destructive",
+        title: "保存していない編集を復元できませんでした",
+        description: "離れている間に新しい版が保存されたため、最新版を開いています。",
+      });
+    }
+  }, [restored]);
+
   // ── 開いた時点の警告（保存済みの定義が意味論の切替で振る舞いを変え得るか）──────────
   React.useEffect(() => {
     let active = true;
-    validateWorkflow(initialIr)
+    // 下書きを復元したときは、その内容で受ける（保存済みの版の警告で上書きしない）。
+    const openedIr = restored.draft?.irDirty ? restored.draft.ir : initialIr;
+    validateWorkflow(openedIr)
       .then(({ warnings, declaredScopes, nodePorts }) => {
         if (!active) return;
         dispatch({ type: "set_warnings", warnings });
-        dispatch({ type: "set_ports", ports: nodePorts, ir: initialIr });
+        dispatch({ type: "set_ports", ports: nodePorts, ir: openedIr });
         if (declaredScopes) setScopes(declaredScopes);
       })
       .catch(() => {
@@ -183,7 +244,16 @@ export function WorkflowEditor({
     // 送るスナップショットを固定し、保存中に続いた編集を「保存済み」と誤表示しない。
     const irToSave = state.ir;
     try {
-      const saved = await updateWorkflow(workflowId, irToSave, state.savedVersion);
+      const fromVersion = state.savedVersion;
+      // 保存の完了を待たずに画面を離れていても、完了時に下書きを新しい版に合わせる。開き直す側は
+      // この完了を待ってからサーバの版を読む（`workflowDraftStore.settled`）。
+      const request = updateWorkflow(workflowId, irToSave, fromVersion).then((res) => {
+        workflowDraftStore.saved(workflowId, fromVersion, irToSave, res.version);
+        return res;
+      });
+      workflowDraftStore.trackSave(workflowId, request);
+      const saved = await request;
+      savedIrJson.current = JSON.stringify(irToSave);
       // サーバが補完した宣言（保存した版の declared_scopes）を手元の IR にも入れる（保存中に続けた編集が
       // 無いときだけ・reducer が判断する。あれば次の保存でまた補完される）。
       dispatch({ type: "saved", version: saved.version, savedIr: irToSave, declaredScopes: saved.declared_scopes });

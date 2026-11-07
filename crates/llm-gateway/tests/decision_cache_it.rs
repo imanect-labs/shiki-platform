@@ -50,7 +50,11 @@ async fn pool() -> Option<PgPool> {
 
 /// テストごとのテナント（AI 設定・会計・キャッシュを他のテストと共有しない）。
 fn workflow_in(tenant: &str, org: &str) -> AuthContext {
-    AuthContext::for_workflow(tenant.to_string(), org.into(), "wf-1")
+    AuthContext::for_workflow(
+        authz::TenantId::parse(tenant.to_string()).unwrap(),
+        org.into(),
+        "wf-1",
+    )
 }
 
 fn tenant() -> String {
@@ -65,10 +69,10 @@ fn admin(of: &AuthContext) -> AuthContext {
             email: None,
             groups: vec![],
             roles: vec![],
-            tenant_id: Some(of.tenant_id.clone()),
+            tenant_id: Some(of.tenant_id().to_string()),
         },
-        of.org.clone(),
-        of.tenant_id.clone(),
+        of.org().to_string(),
+        authz::TenantId::parse(of.tenant_id().to_string()).unwrap(),
     )
 }
 

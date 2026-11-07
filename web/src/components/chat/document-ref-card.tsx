@@ -31,6 +31,10 @@ export type DocumentRef = {
   /// 提案バージョン（WOPI ロック中の office.edit・PIT-44）なら true。
   /// current には**まだ入っていない**ので「編集しました」と言い切らない。
   proposal: boolean;
+  /// 移動・名前変更（drive.move・#942）なら true。中身は変わっていないので版を出さない。
+  moved: boolean;
+  /// 移動先の表示名（読める範囲のパス）。名前変更だけなら null。
+  movedTo: string | null;
 };
 
 /// 参照 JSON を防御的にパースする（形が崩れていたら描画しない）。
@@ -45,6 +49,8 @@ export function parseDocumentRef(raw: unknown): DocumentRef | null {
     version: typeof r.version === "number" ? r.version : null,
     created: r.created === true,
     proposal: r.proposal === true,
+    moved: r.moved === true,
+    movedTo: typeof r.moved_to === "string" ? r.moved_to : null,
   };
 }
 
@@ -75,16 +81,36 @@ function KindIcon({ kind, name }: { kind: string; name: string }) {
   return <FileText className={cls} aria-hidden />;
 }
 
-export function DocumentRefCard({ raw }: { raw: unknown }) {
+/// 「元に戻す」の対象になる参照か（既存ファイルの内容を変えた編集で、版が確定しているもの）。
+/// 新規作成・提案版（current 未反映）・移動/名前変更・ライブ編集で版が未確認のものは対象外。
+export function isRevertable(doc: DocumentRef): boolean {
+  return !doc.created && !doc.proposal && !doc.moved && doc.version !== null;
+}
+
+export function DocumentRefCard({
+  raw,
+  status,
+  actions,
+}: {
+  raw: unknown;
+  /// 状態表示の上書き（取り消し後の「元に戻しました」など）。
+  status?: string;
+  /// 「開く」の手前に並べる操作（元に戻す / やり直す）。
+  actions?: React.ReactNode;
+}) {
   const doc = parseDocumentRef(raw);
   if (!doc) return null;
   // 提案版は current に反映されていない。「編集しました」と言うとカードが嘘になる（PIT-44）。
   const action = doc.proposal
     ? "提案として保存しました（バージョン履歴から採用すると反映されます）"
-    : doc.created
-      ? "作成しました"
-      : "編集しました";
-  const version = doc.version === null ? "" : `（v${doc.version}）`;
+    : doc.moved
+      ? doc.movedTo
+        ? `「${doc.movedTo}」へ移動しました`
+        : "名前を変えました"
+      : doc.created
+        ? "作成しました"
+        : "編集しました";
+  const version = doc.version === null || doc.moved ? "" : `（v${doc.version}）`;
   const href = documentRefHref(doc);
   return (
     <div
@@ -99,9 +125,10 @@ export function DocumentRefCard({ raw }: { raw: unknown }) {
           {doc.name}
         </span>
         <span className="mt-0.5 block text-xs text-muted-foreground">
-          {doc.proposal ? `${version}${action}` : `${action}${version}`}
+          {status ?? (doc.proposal ? `${version}${action}` : `${action}${version}`)}
         </span>
       </span>
+      {actions}
       {href ? (
         <Link
           href={href}

@@ -22,6 +22,8 @@ import {
   FileSpreadsheet,
   FileText,
   Files,
+  FolderInput,
+  FolderSearch,
   Globe,
   LayoutTemplate,
   ListChecks,
@@ -272,6 +274,18 @@ const TOOL_DISPLAY: Record<ToolName, ToolDisplay> = {
   },
 
   // 画面・ワークフロー。
+  // 回答に ```ui の図・UI を書く前に、種類ごとの書き方を読む（`@imanect/yui/guide`）。
+  ui_reference: {
+    icon: LayoutTemplate,
+    category: "meta",
+    lead: (t) => (t ? `図（${t}）の書き方を` : "図の書き方を"),
+    verb: "確認",
+    suru: true,
+    target: (input) => {
+      const kinds = Array.isArray(input.kinds) ? input.kinds.filter((k): k is string => typeof k === "string") : [];
+      return kinds.length > 0 ? clip(kinds.join("・"), 30) : null;
+    },
+  },
   emit_ui: { icon: LayoutTemplate, category: "write", lead: () => "画面を", verb: "組み立て", failed: "組み立てられませんでした" },
   emit_workflow: {
     icon: Workflow,
@@ -289,6 +303,16 @@ const TOOL_DISPLAY: Record<ToolName, ToolDisplay> = {
   },
   // 既存のワークフローを名前で探す（GAP-31）。語があれば「「経費」でワークフローを検索中」。
   list_workflows: {
+    icon: Workflow,
+    category: "search",
+    lead: (t) => (t ? `${t}でワークフローを` : "ワークフローを"),
+    verb: "検索",
+    suru: true,
+    target: quoted("query"),
+  },
+
+  // 本人に見えるワークフローを探す（図のボタンに実在する名前を書くため・読み取りのみ）。
+  search_workflows: {
     icon: Workflow,
     category: "search",
     lead: (t) => (t ? `${t}でワークフローを` : "ワークフローを"),
@@ -344,6 +368,14 @@ const TOOL_DISPLAY: Record<ToolName, ToolDisplay> = {
     icon: Table2,
     category: "write",
     lead: (t) => (t ? `CSV「${t}」の下書きを` : "CSV の下書きを"),
+    verb: "作成",
+    suru: true,
+    target: named(),
+  },
+  save_skill: {
+    icon: Sparkles,
+    category: "write",
+    lead: (t) => (t ? `スキル「${t}」の下書きを` : "スキルの下書きを"),
     verb: "作成",
     suru: true,
     target: named(),
@@ -474,6 +506,23 @@ const TOOL_DISPLAY: Record<ToolName, ToolDisplay> = {
     verb: (input) => (input.op === "update" ? "更新" : "追加"),
     suru: true,
     target: named("table"),
+  },
+  // ドライブのファイル・フォルダ（種別を問わない・#942）。
+  "drive.find": {
+    icon: FolderSearch,
+    category: "search",
+    lead: (t) => (t ? `ドライブで${t}を` : "ドライブを"),
+    verb: "検索",
+    suru: true,
+    target: quoted("query"),
+  },
+  "drive.move": {
+    icon: FolderInput,
+    category: "write",
+    lead: objectOf("ファイル"),
+    verb: (input) => (input.destination_folder_id ? "移動" : "名前変更"),
+    suru: true,
+    nodeIdKey: "node_id",
   },
 };
 

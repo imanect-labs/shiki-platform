@@ -40,12 +40,18 @@ impl ChatWorker {
             run.trace_id.as_deref(),
         )
         .await?;
-        let scope = crate::skill::combined_scope(&skills);
+        // 社内文書検索に課す範囲（skill の知識スコープと会話の検索フォルダ・#965）。
+        let bounds = self.search_bounds(run, &skills).await?;
         let mut history = history;
 
         // 直近ユーザー発話で事前検索し、文脈注入＋引用イベント。
         let query = history.last().map(message_preview).unwrap_or_default();
         let mut system = self.config.system_prompt.clone();
+        // classic はツールを渡さないので ui_reference を呼べない。図を書かせる構成なら、
+        // 種類ごとの書き方を system に全部載せる（早見だけでは書き方が分からず崩れる）。
+        if self.config.yui {
+            system.push_str(&super::yui_reference::classic_kind_guides());
+        }
         // 本人のカスタム指示（#900）は skill の指示文より前（エージェント経路と同じ順）。
         if let Some(section) = self.custom_instructions_section(ctx).await {
             system.push_str(&section);
@@ -74,7 +80,8 @@ impl ChatWorker {
                 ctx,
                 &query,
                 None,
-                scope.as_ref(),
+                bounds.skill.as_ref(),
+                &bounds.folder.iter().collect::<Vec<_>>(),
                 // この回答のための検索として監査に残す（#829）。
                 rag::AuditTrail::for_answer(run.trace_id.as_deref(), run.thread_id, run.message_id),
             )

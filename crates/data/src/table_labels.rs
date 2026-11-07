@@ -48,10 +48,10 @@ impl DataStore {
             "SELECT id, name, app_id FROM data_table \
              WHERE tenant_id = $1 AND org = $2 AND id = ANY($3) AND deleted_at IS NULL",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(ids)
-        .fetch_all(self.pools.for_tenant(&ctx.tenant_id))
+        .fetch_all(self.pools.for_tenant(ctx.tenant_id()))
         .await
         .map_err(map_db)?;
         if rows.is_empty() {

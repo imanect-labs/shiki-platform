@@ -1,6 +1,7 @@
 "use client";
 
-/// スキル管理ページ（Task 6.11）: 一覧・作成・編集（新版）・共有・バージョン履歴。
+/// スキル管理ページ（Task 6.11）: 一覧・共有・バージョン履歴。作成・編集はスキルエディタ
+/// （`/skills/new`・`/skills/{id}`・#919）で行う。
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
@@ -13,10 +14,9 @@ import { ConfirmDialog } from "@/components/drive/dialogs";
 import { ArtifactCard } from "@/components/artifacts/artifact-card";
 import { toast } from "@/components/ui/use-toast";
 import { ArtifactShareDialog } from "@/components/artifacts/share-dialog";
-import { SkillEditorDialog } from "@/components/artifacts/skill-editor";
 import { VersionsDialog } from "@/components/artifacts/versions-dialog";
 import { ListLoadFailed, ListMore } from "@/components/artifacts/shared-more";
-import { deleteArtifact, getSkill, type ArtifactMeta, type SkillVersion } from "@/lib/artifact-api";
+import { deleteArtifact, type ArtifactMeta } from "@/lib/artifact-api";
 import { useArtifactList } from "@/hooks/use-artifact-list";
 import { createThread } from "@/lib/chat-api";
 import { useMe } from "@/hooks/use-me";
@@ -25,8 +25,6 @@ import { SkillStoreSection } from "@/components/artifacts/skill-store-section";
 
 type DialogState =
   | { kind: "closed" }
-  | { kind: "create" }
-  | { kind: "edit"; meta: ArtifactMeta; skill: SkillVersion }
   | { kind: "share"; meta: ArtifactMeta }
   | { kind: "versions"; meta: ArtifactMeta }
   | { kind: "delete"; meta: ArtifactMeta };
@@ -42,22 +40,6 @@ export default function SkillsPage() {
   // 自分が分かるまでは出さない。
   const me = useMe();
   const myId = me.data?.id;
-
-  const openEdit = async (meta: ArtifactMeta) => {
-    setPending(meta.id);
-    try {
-      const skill = await getSkill(meta.id);
-      setDialog({ kind: "edit", meta, skill });
-    } catch (e) {
-      toast({
-        variant: "destructive",
-        title: "読み込みに失敗しました",
-        description: e instanceof Error ? e.message : String(e),
-      });
-    } finally {
-      setPending(null);
-    }
-  };
 
   const startChat = async (meta: ArtifactMeta) => {
     setPending(meta.id);
@@ -120,7 +102,7 @@ export default function SkillsPage() {
       description="指示文・知識スコープ・許可ツールをまとめて、チャットに適用できます。"
       className="max-w-4xl"
       actions={
-        <Button onClick={() => setDialog({ kind: "create" })}>
+        <Button onClick={() => router.push("/skills/new")}>
           <Sparkles className="size-4" aria-hidden />
           スキルを作成
         </Button>
@@ -142,7 +124,7 @@ export default function SkillsPage() {
           description="業務知識をまとめたスキルを作るか、組織のスキルストアから追加しましょう。"
           action={
             <div className="flex flex-wrap justify-center gap-2">
-              <Button onClick={() => setDialog({ kind: "create" })}>
+              <Button onClick={() => router.push("/skills/new")}>
                 <Sparkles className="size-4" aria-hidden />
                 スキルを作成
               </Button>
@@ -170,7 +152,13 @@ export default function SkillsPage() {
                   </Button>
                 }
                 menu={[
-                  { key: "edit", label: "編集", icon: Pencil, onSelect: () => void openEdit(meta), disabled: busy },
+                  {
+                    key: "edit",
+                    label: "編集",
+                    icon: Pencil,
+                    onSelect: () => router.push(`/skills/${meta.id}`),
+                    disabled: busy,
+                  },
                   ...(meta.owner === myId
                     ? [{ key: "share", label: "共有", icon: Share2, onSelect: () => setDialog({ kind: "share", meta }) }]
                     : []),
@@ -209,16 +197,6 @@ export default function SkillsPage() {
 
       <SkillStoreSection />
 
-      <SkillEditorDialog
-        open={dialog.kind === "create" || dialog.kind === "edit"}
-        onOpenChange={(open) => !open && setDialog({ kind: "closed" })}
-        editing={dialog.kind === "edit" ? dialog.skill : null}
-        editingName={dialog.kind === "edit" ? dialog.meta.name : ""}
-        onSaved={() => {
-          reload();
-          toast({ title: "保存しました" });
-        }}
-      />
       <ArtifactShareDialog
         open={dialog.kind === "share"}
         onOpenChange={(open) => !open && setDialog({ kind: "closed" })}

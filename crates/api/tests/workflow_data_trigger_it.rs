@@ -92,7 +92,7 @@ fn user(tenant: &str, id: &str) -> AuthContext {
             tenant_id: Some(tenant.into()),
         },
         tenant.into(),
-        tenant.into(),
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 
@@ -211,7 +211,7 @@ async fn setup() -> Option<Env> {
     fga.write_tuple(
         &alice.subject(),
         Relation::Member,
-        &alice.ns().organization(&alice.org),
+        &alice.ns().organization(alice.org()),
     )
     .await
     .unwrap();

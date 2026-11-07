@@ -33,6 +33,10 @@ pub const PURGE_RETAINED: &[(&str, &str)] = &[
         "テナント台帳。行は tombstone（deleted）として残し、同名での再作成を検知する",
     ),
     (
+        "audit_chain_anchor",
+        "保持期間で消した監査ログのチェーンの境目（#831）。残した audit_log を検証する起点なので一緒に残す",
+    ),
+    (
         "tenant_placement",
         "内部整数キー tenant_int の台帳（data-platform §3.2）。採番は不変・再利用しないため台帳と同じく残す",
     ),
@@ -76,6 +80,7 @@ pub const RETENANT_SIDECAR_COMPLETE: &[&str] = &[
     "user_custom_instruction",
     // 監査チェーンとテナント台帳は retenant 本体が扱う（監査は旧 tenant_id で検証・docs 参照）。
     "audit_log",
+    "audit_chain_anchor",
     "tenant",
     // 配置レジストリ（tenant_int / pool）は外部状態を持たない。tenant_id ごと付け替えれば
     // 内部整数キーが新 tenant_id へ移り、data_record 等の tenant_int と整合したままになる。

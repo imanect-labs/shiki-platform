@@ -48,6 +48,7 @@ utoipa.workspace = true
 unicode-normalization = "0.1"
 
 [dev-dependencies]
+shiki-testenv.workspace = true
 # 結合テスト（agent_it）は authz モック＋DB 直操作＋stub gateway で run_agent ループを走らせる。
 tokio = { workspace = true }
 shiki-authz.workspace = true

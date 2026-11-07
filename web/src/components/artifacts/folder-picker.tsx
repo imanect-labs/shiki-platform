@@ -6,6 +6,8 @@
 /// - `purpose="scope"`（既定・skill の知識スコープ）: フォルダを 1 つ選ぶ（mode は "existing" 固定）。
 /// - `purpose="workspace"`（エージェントの作業場所）: 各フォルダを「このフォルダを使う」（existing）で
 ///   選ぶか、現在地に「ここに新規作成」（new_under）できる。
+/// - `purpose="destination"`（下書きの保存先）: 選び方は scope と同じで、説明文だけ保存先向けにする。
+/// - `purpose="search"`（ホームの社内検索で探すフォルダ・#965）: 選び方は scope と同じで、説明文だけ検索向けにする。
 
 import * as React from "react";
 import { ChevronLeft, FolderPlus } from "lucide-react";
@@ -34,7 +36,7 @@ export function FolderPicker({
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSelect: (folder: FolderChoice) => void;
-  purpose?: "scope" | "workspace";
+  purpose?: "scope" | "workspace" | "destination" | "search";
 }) {
   // (id, name) のスタック。先頭はルート（マイドライブ）。
   const [stack, setStack] = React.useState<{ id?: string; name: string }[]>([
@@ -52,7 +54,13 @@ export function FolderPicker({
     [open, current.id],
   );
   const list = useInfiniteList<NodeResponse>(fetchPage, [open, current.id]);
-  const sentinelRef = useInfiniteSentinel(list.loadMore, open && sentinelEnabled(list), list.items.length);
+  // 一覧はフォルダだけに絞って出すため、読み足した行がファイルばかりだと sentinel が見えたままになり
+  // IntersectionObserver が再発火しない。取得完了ごとに件数を渡し、見えていれば続きを読む。
+  const sentinelRef = useInfiniteSentinel(
+    list.loadMore,
+    open && sentinelEnabled(list),
+    list.loadingMore ? undefined : list.items.length,
+  );
 
   React.useEffect(() => {
     if (open) setStack([{ name: "マイドライブ" }]);
@@ -73,7 +81,11 @@ export function FolderPicker({
           <DialogDescription>
             {isWorkspace
               ? "エージェントが作業するワークスペースの場所を選んでください（このフォルダを使うか、配下に新しく作れます）。"
-              : "知識スコープに含めるフォルダを選んでください（配下のファイルすべてが対象になります）。"}
+              : purpose === "destination"
+                ? "保存先のフォルダを選んでください（フォルダを開くと、その中のフォルダも選べます）。"
+                : purpose === "search"
+                  ? "社内文書を探すフォルダを選んでください（配下の文書すべてから探します）。"
+                  : "知識スコープに含めるフォルダを選んでください（配下のファイルすべてが対象になります）。"}
           </DialogDescription>
         </DialogHeader>
 

@@ -114,7 +114,7 @@ fn ctx(tenant: &str, user: &str) -> AuthContext {
             tenant_id: Some(tenant.into()),
         },
         "acme".into(),
-        tenant.into(),
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 
@@ -582,7 +582,7 @@ async fn a_new_conversation_fixes_an_existing_workflow() {
             )
             .await
             .unwrap();
-        let mut rx = store.event_stream(&alice.tenant_id, res.run_id, 0);
+        let mut rx = store.event_stream(alice.tenant_id(), res.run_id, 0);
         let mut tools = Vec::new();
         let mut card = None;
         for _ in 0..500 {

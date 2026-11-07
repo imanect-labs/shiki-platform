@@ -24,7 +24,7 @@
 //!
 //! # 回し方
 //!
-//! - `membership_reconcile.interval_secs`（既定 60 秒・下限 10 秒）ごとに、続きの位置（migration 0130・0135 の
+//! - `membership_reconcile.interval_secs`（既定 60 秒・下限 10 秒）ごとに、続きの位置（migration 0139・0144 の
 //!   `membership_reconcile_cursor`）から `batch_size` 人（既定 500・1〜1,000）を照合する。最後まで読んだら頭に戻る。
 //!   ディレクトリの N 人を 1 周するのに ceil(N / batch_size) 回かかる（既定では 1,000 人で 2 分、10,000 人で 20 分）。
 //! - 1 人につき OpenFGA の読みが 1〜2 回と、Keycloak の読みが 1 回（所属グループで決まらないロールの候補がある人は
@@ -439,6 +439,11 @@ async fn after_roles_revoked(
     }
     // ログインの同期と同じ組織（`AuthContext` と同じ規則）。
     let org = org_of_groups(groups, &entry.tenant_id, layout);
+    // tenant_id が文字ポリシーに反するなら通知しない（購読は TTL で引き直す・#1032）。
+    let Ok(tenant) = authz::TenantId::parse(entry.tenant_id.as_str()) else {
+        tracing::warn!("照合: tenant_id が不正なため SSE へのロール変更を通知しません");
+        return;
+    };
     let ctx = AuthContext::new(
         Principal {
             kind: PrincipalKind::User,
@@ -449,7 +454,7 @@ async fn after_roles_revoked(
             tenant_id: Some(entry.tenant_id.clone()),
         },
         org,
-        entry.tenant_id.clone(),
+        tenant,
     );
     if let Err(e) = deps.data.notify_authz_changed(&ctx, None).await {
         tracing::warn!(error = %e, "照合: SSE へのロール変更の通知に失敗（購読は TTL で引き直す）");

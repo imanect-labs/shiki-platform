@@ -116,6 +116,12 @@ impl LlmGateway {
             ),
             None => None,
         };
+        // 利用者ごとのプロバイダの許可（生成と同じ判定・DB に触れる前・#1014）。LLM に真似させる決定器は、元のモデルの
+        // プロバイダも使う。
+        self.ensure_provider_allowed(ctx, entry)?;
+        if let Some(via) = via {
+            self.ensure_provider_allowed(ctx, via)?;
+        }
         self.ensure_permitted(ctx, entry).await?;
         if let Some(via) = via {
             self.ensure_permitted(ctx, via).await?;

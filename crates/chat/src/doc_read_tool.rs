@@ -30,8 +30,9 @@ const OUT_OF_SCOPE: &str = "この文書は、適用中の skill の参照範囲
 pub struct DocReadTool {
     search: Arc<SearchService>,
     storage: Arc<StorageService>,
-    /// 知識スコープ（skill・Task 6.8）。None は全可読範囲。
-    scope: Option<SearchScope>,
+    /// 課された範囲（skill の知識スコープ・Task 6.8／会話の検索フォルダ・#965）。空なら
+    /// 全可読範囲。交差前のまま持ち、読むたびに全部の内側かを確かめる。
+    bounds: Vec<SearchScope>,
     /// 会話の回答のための読み出しなら、その会話と回答（監査に残す・#829）。
     answer: Option<(Uuid, Uuid)>,
 }
@@ -50,9 +51,18 @@ impl DocReadTool {
         DocReadTool {
             search,
             storage,
-            scope: scope.filter(|s| !s.is_empty()),
+            bounds: scope.into_iter().filter(|s| !s.is_empty()).collect(),
             answer: None,
         }
+    }
+
+    /// 範囲をもう 1 つ課す（会話の検索フォルダ・#965。`DocSearchTool::within` と同じものを渡す）。
+    #[must_use]
+    pub fn within(mut self, bound: SearchScope) -> Self {
+        if !bound.is_empty() {
+            self.bounds.push(bound);
+        }
+        self
     }
 
     /// 会話（thread）の回答（assistant のメッセージ）のための読み出しとして構成する（#829）。
@@ -177,9 +187,21 @@ fn observation(name: &str, file_id: Uuid, input: &ReadInput, read: DocRead) -> S
     let name = defuse(name);
     match read {
         DocRead::Denied => DENIED.to_string(),
-        DocRead::NotIndexed => format!(
-            "文書「{name}」はまだ検索用の索引が無いか、本文を取り出せない形式のため読めない。"
-        ),
+        DocRead::NotIndexed => {
+            // 索引に頼らず原本を読めるツールがある種別は、ここで止めずにそちらへ案内する
+            // （大きな CSV は索引が無く、ここで「読めない」と答えて終わっていた）。
+            let next = if crate::file_reader::direct_reader(&name).is_some() {
+                format!(
+                    "この形式は原本を直接読むツールで読める（会話の添付なら system の添付の節に\
+                     載っている。node_id: {file_id}）。"
+                )
+            } else {
+                String::new()
+            };
+            format!(
+                "文書「{name}」はまだ検索用の索引が無いか、本文を取り出せない形式のため doc_read では読めない。{next}"
+            )
+        }
         DocRead::PositionNotFound { version, outline } => {
             let what = match &input.from {
                 ReadFrom::Page(p) => format!("{p} ページ以降"),
@@ -322,10 +344,10 @@ impl Tool for DocReadTool {
                 "フォルダは読めない。中の文書は doc_search の folder_ids で絞って探す。",
             ));
         }
-        if let Some(scope) = &self.scope {
+        for bound in &self.bounds {
             let inside = self
                 .search
-                .file_in_scope(ctx, scope, node.id)
+                .file_in_scope(ctx, bound, node.id)
                 .await
                 .map_err(|e| ToolError::Unavailable(format!("doc_read failed: {e}")))?;
             if !inside {
@@ -484,5 +506,19 @@ mod tests {
             DocRead::NotIndexed,
         );
         assert!(none.contains("索引が無い"));
+        assert!(
+            !none.contains("直接読む"),
+            "読み取りツールの無い種別は案内しない"
+        );
+        // 索引の無い大きな CSV は、ここで止めずに csv.query へ案内する。
+        let id = Uuid::new_v4();
+        let csv = observation(
+            "customers-100000.csv",
+            id,
+            &input(ReadFrom::Start, None),
+            DocRead::NotIndexed,
+        );
+        assert!(csv.contains("原本を直接読むツールで読める"));
+        assert!(csv.contains(&format!("node_id: {id}")));
     }
 }

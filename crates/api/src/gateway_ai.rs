@@ -343,7 +343,7 @@ mod tests {
                 tenant_id: Some(tenant.clone()),
             },
             "acme".into(),
-            tenant.clone(),
+            authz::TenantId::parse(tenant.clone()).unwrap(),
         );
         let patch = llm_gateway::SettingsPatch {
             default_model: Some("stub-n".into()),
@@ -479,7 +479,7 @@ mod tests {
                 tenant_id: Some(tenant.clone()),
             },
             "acme".into(),
-            tenant.clone(),
+            authz::TenantId::parse(tenant.clone()).unwrap(),
         );
         let port = GatewayAgentPort {
             llm: Arc::new(llm),

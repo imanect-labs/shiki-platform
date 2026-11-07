@@ -550,7 +550,7 @@ fn blank_fields(ir: &WorkflowIr, with_reply: bool) -> Vec<ValidationError> {
                     ));
                 }
             }
-            // 出口を分ける判定のしきい値は、既定を置かず書かせる（版ごとに実測で決める・PIT-80・D-88）。
+            // 出口を分ける判定のしきい値は、既定を置かず書かせる（版ごとに実測で決める・PIT-81・D-88）。
             if let Some(route) = node.params.get("route").and_then(Value::as_object) {
                 if route.get("min_confidence").is_none_or(Value::is_null) {
                     out.push(blank(

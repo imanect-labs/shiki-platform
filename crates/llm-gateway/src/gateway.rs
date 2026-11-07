@@ -17,7 +17,7 @@ use crate::config::{
     DEFAULT_PROVIDER_ID,
 };
 use crate::langfuse::{GenerationTrace, LangfuseClient};
-use crate::limits::{LimitError, UsageLimiter};
+use crate::limits::{LimitError, MonthUsage, UsageLimiter};
 use crate::model::{Effort, GenerateRequest, Usage};
 use crate::provider::{DeltaStream, LlmError, LlmProvider};
 use crate::providers::{
@@ -39,6 +39,8 @@ mod chatgpt_gate;
 mod decide;
 /// ノード（ワークフロー・ミニアプリ）のモデル解決（同上）。
 mod node_choice;
+/// 利用者ごとのプロバイダの許可（同上・#1014）。
+mod user_provider_gate;
 
 /// 会計の「利用元」（管理画面の利用元別集計・`llm_usage.source`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -119,6 +121,7 @@ struct Inner {
     /// プロバイダ ID → アダプタ。モデルの `provider` で振り分ける。
     providers: HashMap<String, ProviderSlot>,
     config: GatewayConfig,
+    user_providers: user_provider_gate::UserProviders,
     accounting: UsageRecorder,
     tenants: TenantLlmStore,
     usage: UsageReporter,
@@ -184,9 +187,11 @@ impl LlmGateway {
             )));
         }
         let deciders = decide::build_deciders(&config, &providers, &http)?;
+        let user_providers = user_provider_gate::build_user_providers(&config, &providers)?;
         Ok(LlmGateway {
             inner: Arc::new(Inner {
                 providers,
+                user_providers,
                 accounting: UsageRecorder::new(db.clone()),
                 tenants: TenantLlmStore::new(db.clone()),
                 usage: UsageReporter::new(db.clone()),
@@ -253,7 +258,7 @@ impl LlmGateway {
         let settings = saved.clone().reconciled(&self.inner.config.catalog);
         if settings != saved {
             tracing::warn!(
-                org = %ctx.org,
+                org = %ctx.org(),
                 default_model = %saved.default_model,
                 auto_model = ?saved.auto_model,
                 "組織の AI 設定がカタログに無いモデルを指しているので、既定・Auto の振り先を戻して扱います"
@@ -323,6 +328,17 @@ impl LlmGateway {
         .ok()
     }
 
+    /// 呼び出しユーザー本人の当月（日本時間）の利用額と上限（ホームの「今日のこと」・#965）。
+    ///
+    /// 上限の判定と同じ集計（[`UsageLimiter::month_usage`](crate::limits::UsageLimiter::month_usage)）。
+    /// 本人の分だけを返すので管理者権限は要らない。
+    pub async fn month_usage(&self, ctx: &AuthContext) -> Result<MonthUsage, sqlx::Error> {
+        self.inner
+            .limits
+            .month_usage(ctx, &self.inner.config.limits)
+            .await
+    }
+
     /// 利用量ダッシュボードの集計（tenant_id ＋ org に閉じる）。
     pub async fn usage_report(
         &self,
@@ -390,6 +406,8 @@ impl LlmGateway {
             )));
         }
         let slot = self.slot_for(entry)?;
+        // 利用者ごとのプロバイダの許可（一覧と生成と判定で同じ判定・DB に触れる前・#1014）。
+        self.ensure_provider_allowed(ctx, entry)?;
         if slot.config.kind == ProviderKind::ChatgptPlan {
             // 連携者のプラン枠。本人以外（他の利用者・ワークフロー等）には使わせない。
             self.ensure_chatgpt_owner(ctx)?;
@@ -449,7 +467,7 @@ impl LlmGateway {
             Err(LimitError::Exceeded(msg)) => {
                 tracing::info!(
                     provider = provider.effective_id(),
-                    user = %ctx.principal.id,
+                    user = %ctx.principal().id,
                     "llm usage limit reached; generation rejected"
                 );
                 Err(LlmError::RateLimited(msg))
@@ -534,7 +552,7 @@ impl LlmGateway {
         }
 
         if let (Some(lf), Some(trace_id)) = (&self.inner.langfuse, rec.trace_id.as_deref()) {
-            let user_id = ctx.principal.id.clone();
+            let user_id = ctx.principal().id.clone();
             lf.record_generation(GenerationTrace {
                 trace_id,
                 // **会計の冪等キーをそのまま使う。** 呼び出しごとに一意で、
@@ -551,9 +569,9 @@ impl LlmGateway {
                 output: &rec.output_preview,
                 usage,
                 metadata: serde_json::json!({
-                    "tenant_id": ctx.tenant_id,
-                    "org": ctx.org,
-                    "user": ctx.principal.id,
+                    "tenant_id": ctx.tenant_id(),
+                    "org": ctx.org(),
+                    "user": ctx.principal().id,
                     "cost_usd_micros": cost,
                     "app_id": rec.app_id,
                     "source": rec.source.as_str(),
@@ -896,7 +914,7 @@ mod tests {
                 tenant_id: Some("t".into()),
             },
             "o".into(),
-            "t".into(),
+            authz::TenantId::parse("t").unwrap(),
         );
         let mut req = GenerateRequest::new(vec![crate::model::Message::text(
             crate::model::Role::User,

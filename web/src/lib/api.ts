@@ -18,6 +18,11 @@ export function csrfToken(): string | undefined {
   return match ? decodeURIComponent(match[1]) : undefined;
 }
 
+/// BFF 経由の API の URL（`<img src>` のように fetch を通さず読ませるときに使う）。
+export function apiUrl(path: string): string {
+  return `${API_BASE}${path}`;
+}
+
 /// セッション Cookie を送る fetch ラッパ（Authorization ヘッダは使わない）。
 /// 状態変更系メソッドには CSRF ヘッダを自動付与する。
 export async function apiFetch(path: string, init?: RequestInit): Promise<Response> {
@@ -27,7 +32,7 @@ export async function apiFetch(path: string, init?: RequestInit): Promise<Respon
     const token = csrfToken();
     if (token) headers.set("X-CSRF-Token", token);
   }
-  return fetch(`${API_BASE}${path}`, { ...init, headers, credentials: "include" });
+  return fetch(apiUrl(path), { ...init, headers, credentials: "include" });
 }
 
 /// 現在のユーザー情報を取得する（未ログインなら 401）。

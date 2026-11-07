@@ -399,7 +399,7 @@ pub fn stub_llm(pool: PgPool) -> Arc<llm_gateway::LlmGateway> {
 }
 
 pub async fn setup() -> Option<PgPool> {
-    let url = std::env::var("STORAGE_TEST_DATABASE_URL").ok()?;
+    let url = shiki_testenv::var("STORAGE_TEST_DATABASE_URL").ok()?;
     let pool = PgPoolOptions::new()
         .max_connections(5)
         .connect(&url)
@@ -427,7 +427,7 @@ pub fn ctx_as(tenant: &str, user: &str) -> AuthContext {
             tenant_id: Some(tenant.into()),
         },
         "acme".into(),
-        tenant.into(),
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 

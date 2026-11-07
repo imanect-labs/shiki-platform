@@ -91,7 +91,7 @@ impl AppUsageStore {
             return Err(AppPlatformError::Forbidden);
         }
         let capabilities =
-            app_gateway::fetch_usage(&self.db, &ctx.tenant_id, &ctx.org, app_id, 1000)
+            app_gateway::fetch_usage(&self.db, ctx.tenant_id(), ctx.org(), app_id, 1000)
                 .await
                 .map_err(|e| AppPlatformError::Internal(format!("capability usage: {e}")))?
                 .into_iter()

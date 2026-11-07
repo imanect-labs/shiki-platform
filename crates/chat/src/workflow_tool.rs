@@ -433,7 +433,7 @@ impl Tool for ReadWorkflowTool {
                     .map_err(|e| ToolError::Internal(format!("IR の直列化に失敗: {e}")))?;
                 let body = serde_json::json!({ "id": meta.id, "version": version, "ir": ir_json })
                     .to_string();
-                if meta.owner == ctx.principal.id {
+                if meta.owner == ctx.principal().id {
                     return Ok(ToolOutcome::ok(body));
                 }
                 Ok(ToolOutcome::ok(format!(
@@ -493,7 +493,7 @@ mod tests {
                 })
             }
         }
-        let ctx = AuthContext::for_workflow("t".into(), "o".into(), "wf");
+        let ctx = AuthContext::for_workflow(authz::TenantId::parse("t").unwrap(), "o".into(), "wf");
         let listed = Fixed.decision_models(&ctx).await.unwrap();
         assert_eq!(
             listed,

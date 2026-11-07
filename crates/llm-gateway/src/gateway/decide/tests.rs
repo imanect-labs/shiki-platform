@@ -259,7 +259,7 @@ async fn typesafe_decision_entries_build_only_when_opted_in_and_pinned() {
 }
 
 fn ctx() -> AuthContext {
-    AuthContext::for_workflow("t".into(), "o".into(), "wf")
+    AuthContext::for_workflow(authz::TenantId::parse("t").unwrap(), "o".into(), "wf")
 }
 
 fn call() -> DecideCall {

@@ -80,7 +80,7 @@ pub(super) async fn decide(
     ec: &ExecCtx,
     req: LlmDecideReq,
 ) -> Result<Value, PortError> {
-    let ctx = auth_ctx(ec);
+    let ctx = auth_ctx(ec)?;
     let dreq = DecideRequest {
         model: req.model.clone(),
         state: req.state,

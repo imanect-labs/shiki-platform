@@ -30,6 +30,7 @@ sha2.workspace = true
 rand.workspace = true
 
 [dev-dependencies]
+shiki-testenv.workspace = true
 tokio = { workspace = true }
 axum.workspace = true
 # 判定の評価（tests/decision_eval.rs）が dev と同じ TOML を読む（サーバと同じ読み方）。

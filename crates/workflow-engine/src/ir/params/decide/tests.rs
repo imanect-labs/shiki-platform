@@ -220,7 +220,7 @@ fn the_route_must_point_at_a_choice_or_boolean_question() {
         json!({ "question": "category", "min_confidence": 0.3 }),
     ));
     assert_eq!(e.message, "しきい値は 0.50〜1.00 にしてください。");
-    // しきい値は既定を置かない（版ごとに決めるもの・PIT-80）。空のまま保存でき、実行と自動実行のオンの前に
+    // しきい値は既定を置かない（版ごとに決めるもの・PIT-81）。空のまま保存でき、実行と自動実行のオンの前に
     // readiness が止める（D-88）。空のしきい値では答えに従わない（人の確認へ回す・多層防御）。
     for blank in [
         json!({ "question": "category" }),

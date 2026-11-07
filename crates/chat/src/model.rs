@@ -211,6 +211,10 @@ pub enum ContentBlock {
     /// `draft = {name, csv}`（csv=CSV 本文・StorageService 未作成）。
     /// フロントは下書き CSV 画面を開いて詰めてから「ドライブに保存」で確定する。
     CsvDraft { draft: serde_json::Value },
+    /// 未保存の下書きスキルカード（save_skill の下書き確定型・#919）。
+    /// `draft = {name, skill}`（skill=SkillBody 相当・保存時検証済み・artifact 未保存）。
+    /// フロントはスキルエディタを開いて詰めてから人が保存する。
+    SkillDraft { draft: serde_json::Value },
     /// AI が作成/編集した文書への参照カード（#381）。
     /// `document = {id, name, kind, version}`（kind=office/note/csv/slide・実在ノードのみ）。
     /// フロントは kind に応じて /office/{id}・/notes/{id}・/csv/{id}・/slides/{id} へ導線を出す。
@@ -243,6 +247,9 @@ pub struct RunModel {
     pub effort: Option<llm_gateway::Effort>,
     /// ユーザーが選ばなかった（Auto）か。Auto のときだけ skill のピンがモデルを上書きできる。
     pub auto: bool,
+    /// 利用者が送った解決前の選択（別の端末で開いたときの入力欄の初期値・#1050）。
+    /// `None` は記録が無い（この列以前の run）。
+    pub requested: Option<LastModelChoice>,
 }
 
 /// skill のバージョンピン 1 件（thread の「最初からロード済み」スキル・#344 Task 10.11）。
@@ -295,8 +302,53 @@ pub struct Thread {
     /// ピン留めした時刻（None＝ピン留めなし）。サイドバー履歴の先頭に出す。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pinned_at: Option<DateTime<Utc>>,
+    /// 検索フォルダ（ホームの「社内検索」でフォルダを選んで始めた会話・#965）。社内文書の検索を
+    /// このフォルダの配下に絞る（絞り込みのみ・権限は広げない）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_folder_id: Option<Uuid>,
+    /// 検索フォルダの表示名（作成時点の非正規化・改名には追随しない）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_folder_name: Option<String>,
+    /// 進行中（非端末: queued / running / waiting_approval）の run の状態。無ければ None。
+    /// サイドバー履歴で、別の画面へ移った後も生成が続いている会話に「実行中」を出すのに使う。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_status: Option<RunStatus>,
+    /// 呼び出しユーザーがこのスレッドで最後に送った発話のモデル選択（#553 の端末間引き継ぎ）。
+    /// 入力欄の選択はタブ内にしか残らないため、別の端末で開いたときの初期値に使う。
+    /// 単体取得（`GET /threads/{id}`）でだけ載せる。この利用者がまだ送っていなければ無い。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_model_choice: Option<LastModelChoice>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+/// 発話で使ったモデル選択（[`Thread::last_model_choice`]）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub struct LastModelChoice {
+    /// 選んだモデル。`None` は Auto（組織の既定に任せた）。
+    pub model: Option<String>,
+    /// 思考の深さ（`low` / `medium` / `high`）。モデルが対応しない・Auto のときは無い。
+    pub effort: Option<String>,
+}
+
+/// 自分の承認を待っている run（ホームの「今日のこと」・#965）。
+///
+/// 承認できるのは run の actor 本人だけなので、一覧は自分が actor の run に限る。
+/// ツールの入力・理由は載せない（大きく・機微になり得る。中身は会話画面の承認カードで確かめる）。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct PendingApproval {
+    pub thread_id: Uuid,
+    pub thread_title: String,
+    /// 由来の文書（文書の横で始めた会話・[`Thread::origin_note_id`]）。開く先を文書の画面にするのに使う。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_note_id: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_note_name: Option<String>,
+    pub run_id: Uuid,
+    pub tool_call_id: String,
+    /// 承認を求めているツール名。
+    pub tool_name: String,
+    pub requested_at: DateTime<Utc>,
 }
 
 /// メッセージ（API DTO 兼ドメイン）。

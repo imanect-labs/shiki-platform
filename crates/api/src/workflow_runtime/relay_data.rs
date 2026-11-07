@@ -254,7 +254,11 @@ async fn principal_actor(
         let Ok(workflow_id) = Uuid::parse_str(&who.id) else {
             return Ok(None);
         };
-        let ctx = AuthContext::for_workflow(tenant_id.to_string(), who.org.clone(), &who.id);
+        // tenant_id が文字ポリシーに反する主体は読めないものとして扱う（fail-closed・#1032）。
+        let Ok(tenant) = authz::TenantId::parse(tenant_id) else {
+            return Ok(None);
+        };
+        let ctx = AuthContext::for_workflow(tenant, who.org.clone(), &who.id);
         let object = ctx.ns().data_table(&table_id.to_string());
         let delegator = workflow_engine::active_delegator(
             deps.db,

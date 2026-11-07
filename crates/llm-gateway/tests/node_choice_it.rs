@@ -58,13 +58,17 @@ fn user(tenant: &str, id: &str) -> AuthContext {
             tenant_id: Some(tenant.into()),
         },
         "org".into(),
-        tenant.into(),
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 
 /// schedule / event の run の実行主体（ワークフロー）。
 fn workflow(tenant: &str) -> AuthContext {
-    AuthContext::for_workflow(tenant.into(), "org".into(), "wf-1")
+    AuthContext::for_workflow(
+        authz::TenantId::parse(tenant).unwrap(),
+        "org".into(),
+        "wf-1",
+    )
 }
 
 fn entry(id: &str) -> ModelEntry {

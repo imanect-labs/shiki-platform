@@ -270,14 +270,14 @@ impl DataStore {
             after: query
                 .cursor
                 .as_deref()
-                .map(|c| TableCursor::open(&self.cursor, &ctx.tenant_id, c))
+                .map(|c| TableCursor::open(&self.cursor, ctx.tenant_id(), c))
                 .transpose()?,
             include_add_only,
         };
         let listed = self.list_tables_filtered(ctx, &filter, query.limit).await?;
         let next_cursor = listed
             .next
-            .map(|c| c.seal(&self.cursor, &ctx.tenant_id))
+            .map(|c| c.seal(&self.cursor, ctx.tenant_id()))
             .transpose()?;
         Ok(TablePage {
             items: listed.items,
@@ -379,9 +379,9 @@ impl DataStore {
             "SELECT id FROM data_table \
              WHERE tenant_id = $1 AND app_id = $2 AND deleted_at IS NULL",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(app_id)
-        .fetch_all(self.pools.for_tenant(&ctx.tenant_id))
+        .fetch_all(self.pools.for_tenant(ctx.tenant_id()))
         .await
         .map_err(map_db)?;
         Ok(rows.into_iter().map(|(id,)| id).collect())
@@ -401,10 +401,10 @@ impl DataStore {
              WHERE tenant_id = $1 AND org = $2 AND app_id = $3 AND deleted_at IS NULL \
              ORDER BY created_at, id",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(app_id)
-        .fetch_all(self.pools.for_tenant(&ctx.tenant_id))
+        .fetch_all(self.pools.for_tenant(ctx.tenant_id()))
         .await
         .map_err(map_db)
     }
@@ -424,10 +424,10 @@ impl DataStore {
              WHERE tenant_id = $1 AND org = $2 AND app_id = ANY($3) AND deleted_at IS NULL \
              GROUP BY app_id",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(app_ids)
-        .fetch_all(self.pools.for_tenant(&ctx.tenant_id))
+        .fetch_all(self.pools.for_tenant(ctx.tenant_id()))
         .await
         .map_err(map_db)?;
         Ok(rows.into_iter().collect())
@@ -470,15 +470,15 @@ impl DataStore {
                AND ($7::timestamptz IS NULL OR (updated_at, id) < ($7, $8::uuid)) \
              ORDER BY updated_at DESC, id DESC LIMIT $4"
         ))
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(&ids)
         .bind(i64::try_from(limit + 1).unwrap_or(i64::MAX))
         .bind(filter.app_id)
         .bind(filter.pattern.as_deref())
         .bind(filter.after.map(|c| c.updated_at))
         .bind(filter.after.map(|c| c.id))
-        .fetch_all(self.pools.for_tenant(&ctx.tenant_id))
+        .fetch_all(self.pools.for_tenant(ctx.tenant_id()))
         .await
         .map_err(map_db)?;
         let mut items: Vec<DataTable> = rows.into_iter().map(TableRow::into_table).collect();
@@ -502,7 +502,7 @@ impl DataStore {
     ) -> Result<Listed, DataError> {
         let subject = ctx.subject();
         let ns = ctx.ns();
-        let pool = self.pools.for_tenant(&ctx.tenant_id);
+        let pool = self.pools.for_tenant(ctx.tenant_id());
         let mut after = filter.after;
         let mut picked: Vec<TableCursor> = Vec::new();
         let mut checks = 0usize;
@@ -516,8 +516,8 @@ impl DataStore {
                    AND ($5::timestamptz IS NULL OR (updated_at, id) < ($5, $6::uuid)) \
                  ORDER BY updated_at DESC, id DESC LIMIT $7",
             )
-            .bind(&ctx.tenant_id)
-            .bind(&ctx.org)
+            .bind(ctx.tenant_id())
+            .bind(ctx.org())
             .bind(filter.app_id)
             .bind(filter.pattern.as_deref())
             .bind(after.map(|c| c.updated_at))
@@ -597,12 +597,12 @@ impl DataStore {
                AND ($4::uuid IS NULL OR app_id = $4) \
                AND ($5::text IS NULL OR name ILIKE $5 ESCAPE '\\')"
         ))
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(&ids)
         .bind(filter.app_id)
         .bind(filter.pattern.as_deref())
-        .fetch_all(self.pools.for_tenant(&ctx.tenant_id))
+        .fetch_all(self.pools.for_tenant(ctx.tenant_id()))
         .await
         .map_err(map_db)?;
         let mut by_id: HashMap<Uuid, DataTable> =

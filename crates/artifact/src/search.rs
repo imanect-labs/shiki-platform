@@ -70,11 +70,11 @@ impl ArtifactStore {
                     OR v.body->>'description' ILIKE $6 ESCAPE '\\') \
              ORDER BY (a.owner = $5) DESC, a.updated_at DESC, a.id DESC LIMIT $7",
         )
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(req.kind.as_str())
         .bind(req.include_shared)
-        .bind(&ctx.principal.id)
+        .bind(&ctx.principal().id)
         .bind(needle)
         .bind(MAX_CANDIDATES)
         .fetch_all(&self.db)
@@ -99,8 +99,8 @@ impl ArtifactStore {
             " FROM artifact \
              WHERE tenant_id = $1 AND org = $2 AND id = ANY($3) AND deleted_at IS NULL"
         ))
-        .bind(&ctx.tenant_id)
-        .bind(&ctx.org)
+        .bind(ctx.tenant_id())
+        .bind(ctx.org())
         .bind(&ids)
         .fetch_all(&self.db)
         .await
@@ -125,7 +125,7 @@ impl ArtifactStore {
         let ns = ctx.ns();
         let ask: Vec<authz::FgaObject> = items
             .iter()
-            .filter(|a| a.owner != ctx.principal.id)
+            .filter(|a| a.owner != ctx.principal().id)
             .map(|a| ns.artifact(&a.id.to_string()))
             .collect();
         let mut held = authz::visible::holds_any(
@@ -140,7 +140,7 @@ impl ArtifactStore {
         .into_iter();
         Ok(items
             .iter()
-            .map(|a| a.owner == ctx.principal.id || held.next().unwrap_or(false))
+            .map(|a| a.owner == ctx.principal().id || held.next().unwrap_or(false))
             .collect())
     }
 }

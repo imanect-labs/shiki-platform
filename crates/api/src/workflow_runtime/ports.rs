@@ -23,9 +23,9 @@ use uuid::Uuid;
 use workflow_engine::nodes::ports::{block_not_configured, name_taken_error, NAME_TAKEN};
 use workflow_engine::vocab::NodeType;
 use workflow_engine::{
-    CsvPatchReq, CsvWriteReq, DataWriteReq, ExecCtx, HttpSendReq, HttpSendResp, LlmDecideReq,
-    LlmInvokeReq, NodePorts, PortError, ResolvedSecretView, ResolvedSkillView, StorageListReq,
-    StorageWriteReq, WorkflowRunLauncher,
+    CsvPatchReq, CsvQueryReq, CsvWriteReq, DataWriteReq, ExecCtx, HttpSendReq, HttpSendResp,
+    LlmDecideReq, LlmInvokeReq, NodePorts, PortError, ResolvedSecretView, ResolvedSkillView,
+    StorageListReq, StorageWriteReq, WorkflowRunLauncher,
 };
 
 /// 本番ポート（AppState のチョークポイント参照を保持）。
@@ -133,6 +133,7 @@ fn map_tabular(e: tabular::TabularError) -> PortError {
         T::Unsupported(m) => PortError::invalid(m),
         // 文字コードを決められない・文章でない CSV（「ファイルを読む」と同じ分類・やり直さない・GAP-45）。
         T::NotText(m) => PortError::new(workflow_engine::nodes::ports::NOT_TEXT_FILE, m, false),
+        T::InvalidTables(m) => PortError::invalid(format!("csv テーブル指定不正: {m}")),
         T::RevConflict { base, current } => PortError::new(
             "conflict",
             format!("csv 競合: base={base}, current={current}"),
@@ -151,7 +152,7 @@ fn map_tabular(e: tabular::TabularError) -> PortError {
 #[async_trait]
 impl NodePorts for ProdNodePorts {
     async fn storage_write(&self, ec: &ExecCtx, req: StorageWriteReq) -> Result<Value, PortError> {
-        let ctx = auth_ctx(ec);
+        let ctx = auth_ctx(ec)?;
         // 番号を付けるのはチョークポイントの 1 か所（D-112）。
         let policy = on_name_taken(req.on_name_taken);
         self.storage
@@ -175,7 +176,7 @@ impl NodePorts for ProdNodePorts {
 
     async fn storage_read(&self, ec: &ExecCtx, file_id: Uuid) -> Result<Value, PortError> {
         use super::text_file::{is_binary, not_text_kind};
-        let ctx = auth_ctx(ec);
+        let ctx = auth_ctx(ec)?;
         let trace = ec.trace_id.as_deref();
         // 文章でない種類（PDF・Office・画像など）は中身を読む前に断る（大きな文書を読み込んでから捨てない）。
         let meta = self
@@ -207,7 +208,7 @@ impl NodePorts for ProdNodePorts {
     }
 
     async fn storage_list(&self, ec: &ExecCtx, req: StorageListReq) -> Result<Value, PortError> {
-        let ctx = auth_ctx(ec);
+        let ctx = auth_ctx(ec)?;
         let sort = ChildSort::default();
         // 続きの位置は見えない子の名前を含みうるので、テナントと一覧（フォルダー・並び）に束縛して封をする（D-131）。
         let kind = data::ListCursorKind::WorkflowFolder;
@@ -222,7 +223,7 @@ impl NodePorts for ProdNodePorts {
                     workflow_engine::nodes::ports::not_configured("フォルダ一覧の続きの位置")
                 })?;
                 Some(
-                    data.open_list_cursor(kind, &ctx.tenant_id, &scope, token)
+                    data.open_list_cursor(kind, ctx.tenant_id(), &scope, token)
                         .map_err(|_| storage_cursor_invalid())?,
                 )
             }
@@ -247,7 +248,7 @@ impl NodePorts for ProdNodePorts {
         // 封をできない構成（data が無い）では続きの位置を出さず、truncated だけで言う。
         let next_cursor = match (page.next_cursor.as_deref(), self.data.as_ref()) {
             (Some(raw), Some(data)) => Some(
-                data.seal_list_cursor(kind, &ctx.tenant_id, &scope, raw)
+                data.seal_list_cursor(kind, ctx.tenant_id(), &scope, raw)
                     .map_err(|e| PortError::unavailable(format!("続きの位置: {e}")))?,
             ),
             _ => None,
@@ -273,7 +274,7 @@ impl NodePorts for ProdNodePorts {
         query: &str,
         top_k: Option<u32>,
     ) -> Result<Value, PortError> {
-        let ctx = auth_ctx(ec);
+        let ctx = auth_ctx(ec)?;
         let search = self
             .search
             .as_ref()
@@ -360,7 +361,7 @@ impl NodePorts for ProdNodePorts {
         ec: &ExecCtx,
         name: &str,
     ) -> Result<ResolvedSecretView, PortError> {
-        let ctx = auth_ctx(ec);
+        let ctx = auth_ctx(ec)?;
         let secrets = self
             .secrets
             .as_ref()
@@ -385,7 +386,7 @@ impl NodePorts for ProdNodePorts {
         let Some(artifacts) = &self.skill_artifacts else {
             return Err(PortError::unavailable("skill 解決が未配線です"));
         };
-        let ctx = auth_ctx(ec);
+        let ctx = auth_ctx(ec)?;
         super::skill_port::resolve_skill(
             &self.db,
             artifacts,
@@ -403,7 +404,7 @@ impl NodePorts for ProdNodePorts {
         name: &str,
         input: &Value,
     ) -> Result<Value, PortError> {
-        let ctx = auth_ctx(ec);
+        let ctx = auth_ctx(ec)?;
         // 名前 → workflow_id（artifact 名の一意性・tenant×kind 内）。
         let id: Option<Uuid> = sqlx::query_scalar(
             "SELECT id FROM artifact \
@@ -444,14 +445,23 @@ impl NodePorts for ProdNodePorts {
         Ok(json!({ "run_id": run_id.map(|r| r.to_string()) }))
     }
 
-    async fn csv_query(&self, ec: &ExecCtx, file_id: Uuid, sql: &str) -> Result<Value, PortError> {
-        let ctx = auth_ctx(ec);
+    async fn csv_query(&self, ec: &ExecCtx, req: CsvQueryReq) -> Result<Value, PortError> {
+        let ctx = auth_ctx(ec)?;
         let tabular = self
             .tabular
             .as_ref()
             .ok_or_else(|| block_not_configured(NodeType::CsvQuery))?;
+        let tables: Vec<tabular::TableRef> = req
+            .tables
+            .into_iter()
+            .map(|t| tabular::TableRef {
+                name: t.name,
+                file_id: t.file_id,
+            })
+            .collect();
+        // 読んだ主ファイルの版も受け取る（後ろの「CSV を編集」の前提にできる・D-96）。
         let (resp, version) = tabular
-            .query_with_version(&ctx, file_id, sql, ec.trace_id.as_deref())
+            .query_tables_with_version(&ctx, req.file_id, &tables, &req.sql, ec.trace_id.as_deref())
             .await
             .map_err(map_tabular)?;
         let rows: Vec<Value> = resp
@@ -474,7 +484,7 @@ impl NodePorts for ProdNodePorts {
     }
 
     async fn csv_patch(&self, ec: &ExecCtx, req: CsvPatchReq) -> Result<Value, PortError> {
-        let ctx = auth_ctx(ec);
+        let ctx = auth_ctx(ec)?;
         let tabular = self
             .tabular
             .as_ref()
@@ -501,7 +511,7 @@ impl NodePorts for ProdNodePorts {
     }
 
     async fn csv_write(&self, ec: &ExecCtx, req: CsvWriteReq) -> Result<Value, PortError> {
-        let ctx = auth_ctx(ec);
+        let ctx = auth_ctx(ec)?;
         let tabular = self
             .tabular
             .as_ref()
@@ -615,6 +625,20 @@ fn csv_items(columns: &[String], values: &[Vec<Value>]) -> Vec<Value> {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    /// tabular の入力起因のエラー（テーブル指定・SQL・パッチ・クエリ実行）は再試行しない。
+    #[test]
+    fn tabular_input_errors_are_not_retried() {
+        for e in [
+            tabular::TabularError::InvalidTables("dup".into()),
+            tabular::TabularError::SqlRejected("ddl".into()),
+            tabular::TabularError::QueryFailed("no column".into()),
+        ] {
+            let p = map_tabular(e);
+            assert_eq!(p.code, "invalid");
+            assert!(!p.retryable, "{p:?}");
+        }
+    }
 
     /// 集計の結果の行を、列の名前で引ける項目のまとまりにし、値の種類を保つ（GAP-40）。
     #[test]

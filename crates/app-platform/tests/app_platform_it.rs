@@ -78,7 +78,7 @@ impl AuthzClient for AllowAll {
 }
 
 async fn setup() -> Option<PgPool> {
-    let url = std::env::var("STORAGE_TEST_DATABASE_URL").ok()?;
+    let url = shiki_testenv::var("STORAGE_TEST_DATABASE_URL").ok()?;
     let pool = PgPoolOptions::new()
         .max_connections(5)
         .connect(&url)
@@ -102,7 +102,7 @@ fn ctx(tenant: &str, user: &str) -> AuthContext {
             tenant_id: Some(tenant.into()),
         },
         "acme".into(),
-        tenant.into(),
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 
@@ -277,7 +277,11 @@ async fn registry_list_is_scoped_to_the_callers_org() {
     let s = store(pool.clone());
     let tenant = format!("t-{}", uuid::Uuid::new_v4());
     let acme = ctx(&tenant, "alice");
-    let beta = AuthContext::new(acme.principal.clone(), "beta".into(), tenant.clone());
+    let beta = AuthContext::new(
+        acme.principal().clone(),
+        "beta".into(),
+        authz::TenantId::parse(tenant.clone()).unwrap(),
+    );
     let kind = ArtifactKind::MiniAppCode.as_str();
     let body = async {
         let id = s

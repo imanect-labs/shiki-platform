@@ -467,7 +467,11 @@ async fn installation_list_is_scoped_to_the_callers_org() {
     let tenant = format!("t-{}", Uuid::new_v4());
     let store = AppInstallationStore::new(pool.clone());
     let acme = ctx(&tenant);
-    let beta = authz::AuthContext::new(acme.principal.clone(), "beta".into(), tenant.clone());
+    let beta = authz::AuthContext::new(
+        acme.principal().clone(),
+        "beta".into(),
+        authz::TenantId::parse(tenant.clone()).unwrap(),
+    );
     let install = |c: authz::AuthContext, name: &'static str| {
         let store = store.clone();
         async move {
@@ -524,10 +528,10 @@ async fn installation_writes_are_scoped_to_the_callers_org() {
     let beta = authz::AuthContext::new(
         authz::Principal {
             id: "carol".into(),
-            ..acme.principal.clone()
+            ..acme.principal().clone()
         },
         "beta".into(),
-        tenant.clone(),
+        authz::TenantId::parse(tenant.clone()).unwrap(),
     );
     let app_id = Uuid::new_v4();
     let install = |c: authz::AuthContext, scope: &'static str| {

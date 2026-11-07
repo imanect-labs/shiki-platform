@@ -246,7 +246,7 @@ impl FsmStore {
         .bind(af.json_key())
         .bind(initial)
         .bind(LOCK_COUNT_CAP + 1)
-        .fetch_one(self.data.pools.for_tenant(&ctx.tenant_id))
+        .fetch_one(self.data.pools.for_tenant(ctx.tenant_id()))
         .await
         .map_err(crate::map_db)?;
         Ok((n > 0).then_some(LockedRecords {

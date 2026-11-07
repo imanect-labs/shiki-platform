@@ -73,13 +73,13 @@ impl WorkflowStore {
             .items
             .iter()
             .zip(editable)
-            .map(|(a, e)| (a.id, (a.owner == ctx.principal.id, e)))
+            .map(|(a, e)| (a.id, (a.owner == ctx.principal().id, e)))
             .collect();
         let ids: Vec<Uuid> = page.items.iter().map(|a| a.id).collect();
         let db = |e: sqlx::Error| ArtifactError::Internal(format!("ワークフローの要約: {e}"));
-        let rows = summaries.list(&ctx.tenant_id, &ids).await.map_err(db)?;
+        let rows = summaries.list(ctx.tenant_id(), &ids).await.map_err(db)?;
         let mut inputs: HashMap<Uuid, WorkflowInputs> = summaries
-            .inputs(&ctx.tenant_id, &ids)
+            .inputs(ctx.tenant_id(), &ids)
             .await
             .map_err(db)?
             .into_iter()

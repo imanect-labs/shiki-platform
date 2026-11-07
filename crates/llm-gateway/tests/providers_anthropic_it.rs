@@ -338,7 +338,7 @@ async fn anthropic_dotted_tool_names_round_trip_through_wire_names() {
 ///     `ANTHROPIC_TEST_SESSION_HEADER=x-opencode-session` `ANTHROPIC_TEST_KEY=<キー>`
 #[tokio::test]
 async fn anthropic_live_round_trip() {
-    let Ok(base) = std::env::var("ANTHROPIC_TEST_URL") else {
+    let Ok(base) = shiki_testenv::var("ANTHROPIC_TEST_URL") else {
         return;
     };
     let model = std::env::var("ANTHROPIC_TEST_MODEL").unwrap_or_else(|_| "m".into());
@@ -377,7 +377,7 @@ async fn anthropic_live_round_trip() {
 /// `ANTHROPIC_TEST_URL` が無ければ黙ってスキップ（設定は上の往復テストと同じ）。
 #[tokio::test]
 async fn anthropic_live_dotted_tool_call() {
-    let Ok(base) = std::env::var("ANTHROPIC_TEST_URL") else {
+    let Ok(base) = shiki_testenv::var("ANTHROPIC_TEST_URL") else {
         return;
     };
     let model = std::env::var("ANTHROPIC_TEST_MODEL").unwrap_or_else(|_| "m".into());

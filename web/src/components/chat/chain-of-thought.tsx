@@ -6,9 +6,11 @@
 import * as React from "react";
 import { Brain, ChevronDown, ChevronRight } from "lucide-react";
 
+import { usePreferences } from "@/lib/preferences";
 import { cn } from "@/lib/utils";
 import { seasonVar } from "@/lib/season";
 import type { Citation } from "@/lib/chat-api";
+import { useRememberedOpen } from "./disclosure-memory";
 import { ToolActivity, type ToolActivityItem } from "./tool-activity";
 
 export function ChainOfThought({
@@ -20,6 +22,7 @@ export function ChainOfThought({
   phase = null,
   /// 次のイベントを待っている間の文言（待った時間で進む）。待っていなければ null。
   waitingLabel = null,
+  memoryKey = null,
 }: {
   thinking: string;
   tools: ToolActivityItem[];
@@ -27,9 +30,14 @@ export function ChainOfThought({
   streaming?: boolean;
   phase?: string | null;
   waitingLabel?: string | null;
+  /// 開閉を覚えておく鍵（回答 ID ＋まとまりの位置）。確定で行が作り直されても開閉を保つ。
+  memoryKey?: string | null;
 }) {
-  const [open, setOpen] = React.useState(false);
-  const [showDetail, setShowDetail] = React.useState(false);
+  // 押して開閉するまでは設定の既定（思考過程を開いて表示・#952）に従う。押した後の開閉は、確定で
+  // 行が作り直されても保つ。
+  const [open, setOpen] = useRememberedOpen(memoryKey && `${memoryKey}:thinking`, null);
+  const expandByDefault = usePreferences().prefs.expand_reasoning;
+  const [showDetail, setShowDetail] = useRememberedOpen(memoryKey && `${memoryKey}:detail`);
 
   const hasThinking = thinking.trim().length > 0;
   const hasTools = tools.length > 0;
@@ -37,9 +45,9 @@ export function ChainOfThought({
   const hasContent = hasThinking || hasTools || citations.length > 0;
   if (!hasContent && !streaming) return null;
 
-  // 思考テキストのパネルは押したときだけ開く。生成中に自動で開くと、まとまりが終わった瞬間に
-  // 閉じて行が縮む（パカパカする）。
-  const expanded = open;
+  // 思考テキストのパネルは押したとき（または設定で最初から）開く。生成中だけ自動で開くと、
+  // まとまりが終わった瞬間に閉じて行が縮む（パカパカする）ので、生成の状態では開閉しない。
+  const expanded = open ?? expandByDefault;
   // ツールがあるまとまりでは、生きている表示（回転・待ちの文言）はツールの見出しが受け持つ。
   // 思考の見出しにも同じ文言を出すと 2 行が同じことを言う。
   const live = streaming && !hasTools;
@@ -55,7 +63,7 @@ export function ChainOfThought({
         <div className={cn(hasTools && "mb-1")}>
           <button
             type="button"
-            onClick={() => setOpen((v) => !v)}
+            onClick={() => setOpen(!expanded)}
             className="flex flex-wrap items-center gap-1.5 rounded-md py-0.5 text-[13px] text-muted-foreground transition-colors hover:text-foreground"
             aria-expanded={expanded}
           >
@@ -85,7 +93,7 @@ export function ChainOfThought({
                 <div>
                   <button
                     type="button"
-                    onClick={() => setShowDetail((v) => !v)}
+                    onClick={() => setShowDetail(!showDetail)}
                     className="flex items-center gap-1 text-[12px] text-muted-foreground/80 transition-colors hover:text-foreground"
                     aria-expanded={showDetail}
                   >
@@ -115,6 +123,7 @@ export function ChainOfThought({
         phaseOverride={phase}
         citations={citations}
         waitingLabel={waitingLabel}
+        memoryKey={memoryKey && `${memoryKey}:tools`}
       />
     </div>
   );

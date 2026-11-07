@@ -32,8 +32,8 @@ pub mod skill;
 pub use capability_agent::AgentLimits;
 pub use exec::CapabilityNodeExecutor;
 pub use ports::{
-    AgentInvokeReq, AgentToolGateway, ApprovalTarget, CodeRunReq, CsvPatchReq, CsvWriteReq,
-    DataWriteOp, DataWriteReq, DecideCache, DocReadReq, ExecCtx, HttpSendReq, HttpSendResp,
-    LlmDecideReq, LlmInvokeReq, LlmRepair, NodePorts, PortError, ResolvedSecretView,
-    ResolvedSkillView, StorageListReq, StorageWriteReq, WebFetchReq,
+    AgentInvokeReq, AgentToolGateway, ApprovalTarget, CodeRunReq, CsvPatchReq, CsvQueryReq,
+    CsvQueryTable, CsvWriteReq, DataWriteOp, DataWriteReq, DecideCache, DocReadReq, ExecCtx,
+    HttpSendReq, HttpSendResp, LlmDecideReq, LlmInvokeReq, LlmRepair, NodePorts, PortError,
+    ResolvedSecretView, ResolvedSkillView, StorageListReq, StorageWriteReq, WebFetchReq,
 };

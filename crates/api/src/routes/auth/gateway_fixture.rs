@@ -181,7 +181,7 @@ impl GatewayFixture {
                 tenant_id: Some(TENANT.into()),
             },
             TENANT.into(),
-            TENANT.into(),
+            authz::TenantId::parse(TENANT).unwrap(),
         );
         let name = format!("{label}-{}", Uuid::new_v4().simple());
         let manifest = MiniAppManifest {

@@ -126,7 +126,7 @@ fn ctx(tenant: &str, user: &str) -> AuthContext {
             tenant_id: Some(tenant.into()),
         },
         "acme".into(),
-        tenant.into(),
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 
@@ -183,7 +183,11 @@ impl NodePorts for NoPorts {
     ) -> Result<ResolvedSkillView, PortError> {
         Err(unused())
     }
-    async fn csv_query(&self, _: &ExecCtx, _: Uuid, _: &str) -> Result<Value, PortError> {
+    async fn csv_query(
+        &self,
+        _: &ExecCtx,
+        _: workflow_engine::CsvQueryReq,
+    ) -> Result<Value, PortError> {
         Err(unused())
     }
     async fn csv_patch(&self, _: &ExecCtx, _: CsvPatchReq) -> Result<Value, PortError> {
@@ -267,13 +271,13 @@ impl WorkflowStarter for RunStarter {
         Ok(self
             .0
             .create_run(
-                &ctx.tenant_id,
-                &ctx.org,
+                ctx.tenant_id(),
+                ctx.org(),
                 workflow_id,
                 version,
                 "interactive",
                 None,
-                &ctx.principal.id,
+                &ctx.principal().id,
                 "user",
                 input,
                 &ir,

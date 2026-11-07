@@ -133,6 +133,7 @@ impl Tool for MockSearchTool {
             note_drafts: vec![],
             slide_drafts: vec![],
             csv_drafts: vec![],
+            skill_drafts: vec![],
             document_refs: vec![],
             skill_invocations: vec![],
             subagent_runs: vec![],
@@ -196,7 +197,7 @@ impl Tool for MockFailTool {
 
 /// テスト DB へ接続しマイグレーションを適用する（未設定ならスキップ）。
 async fn setup() -> Option<PgPool> {
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return None;
     };
@@ -223,7 +224,7 @@ fn ctx(tenant: &str) -> AuthContext {
             tenant_id: Some(tenant.into()),
         },
         "acme".into(),
-        tenant.into(),
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 

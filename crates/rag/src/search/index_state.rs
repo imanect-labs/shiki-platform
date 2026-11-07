@@ -159,7 +159,7 @@ pub(crate) async fn state_on(
     ) {
         return Ok((state, None));
     }
-    let facts = facts_on(conn, &ctx.tenant_id, &ctx.org, &[node.id]).await?;
+    let facts = facts_on(conn, ctx.tenant_id(), ctx.org(), &[node.id]).await?;
     Ok(facts.first().map_or((IndexState::Pending, None), |f| {
         (classify(f), Some(f.content))
     }))

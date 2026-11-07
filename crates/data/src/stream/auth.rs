@@ -126,9 +126,9 @@ impl DataStore {
         )
         .bind(table.keys.tenant_int)
         .bind(table.keys.table_int)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(&m.shared_record_ids)
-        .fetch_all(self.pools.for_tenant(&ctx.tenant_id))
+        .fetch_all(self.pools.for_tenant(ctx.tenant_id()))
         .await
         .map_err(crate::map_db)?;
         Ok(ids.into_iter().collect())

@@ -36,7 +36,7 @@ pub enum WriteOrigin {
 
 /// 非公開部に載せる印の値（文脈の run か `null`）。
 pub(super) fn origin_value(ctx: &AuthContext) -> Value {
-    ctx.origin_run
+    ctx.origin_run()
         .map_or(Value::Null, |r| Value::String(r.to_string()))
 }
 
@@ -103,7 +103,7 @@ mod tests {
                 tenant_id: Some("t".into()),
             },
             "o".into(),
-            "t".into(),
+            authz::TenantId::parse("t").unwrap(),
         )
     }
 

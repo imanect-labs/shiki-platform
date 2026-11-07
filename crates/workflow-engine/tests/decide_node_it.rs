@@ -106,7 +106,11 @@ impl NodePorts for ScriptedDecider {
     ) -> Result<workflow_engine::nodes::ResolvedSkillView, PortError> {
         Err(unused())
     }
-    async fn csv_query(&self, _: &ExecCtx, _: Uuid, _: &str) -> Result<Value, PortError> {
+    async fn csv_query(
+        &self,
+        _: &ExecCtx,
+        _: workflow_engine::CsvQueryReq,
+    ) -> Result<Value, PortError> {
         Err(unused())
     }
     async fn csv_patch(&self, _: &ExecCtx, _: CsvPatchReq) -> Result<Value, PortError> {
@@ -166,7 +170,11 @@ impl NodePorts for NoDecider {
     ) -> Result<workflow_engine::nodes::ResolvedSkillView, PortError> {
         Err(unused())
     }
-    async fn csv_query(&self, _: &ExecCtx, _: Uuid, _: &str) -> Result<Value, PortError> {
+    async fn csv_query(
+        &self,
+        _: &ExecCtx,
+        _: workflow_engine::CsvQueryReq,
+    ) -> Result<Value, PortError> {
         Err(unused())
     }
     async fn csv_patch(&self, _: &ExecCtx, _: CsvPatchReq) -> Result<Value, PortError> {

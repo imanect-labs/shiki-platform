@@ -17,6 +17,7 @@ pub(crate) mod composite;
 pub(crate) mod link;
 pub(crate) mod normalize;
 pub(crate) mod parity;
+pub(crate) mod partition;
 pub(crate) mod promote;
 pub(crate) mod scan;
 pub(crate) mod state;
@@ -133,6 +134,8 @@ pub use backfill::{
     INDEX_BACKFILL_QUEUE,
 };
 pub use parity::{IndexParityMismatch, IndexParityReport};
+#[doc(hidden)]
+pub use partition::analyze_index_partitions_without_stats;
 pub use promote::{
     FieldIndexStatus, IndexPromotion, IndexStatus, TableIndexOverview, DEFAULT_MAX_INDEXED_FIELDS,
     SYNC_INDEX_MAX_ROWS,

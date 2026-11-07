@@ -51,7 +51,7 @@ fn user() -> AuthContext {
             tenant_id: Some(tenant.clone()),
         },
         tenant.clone(),
-        tenant,
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 
@@ -306,7 +306,7 @@ async fn effort_warnings_follow_the_organization_settings() {
         "DELETE FROM tenant_llm_settings WHERE tenant_id = $1",
     ] {
         sqlx::query(sql)
-            .bind(&ctx.tenant_id)
+            .bind(ctx.tenant_id())
             .execute(&pool)
             .await
             .unwrap();
@@ -329,7 +329,7 @@ fn gateway_with_plan(pool: PgPool, ctx: &AuthContext, dir: &std::path::Path) -> 
         json!({
             "version": 1,
             "client_id": "oaiapp_1",
-            "owner": {"tenant_id": ctx.tenant_id, "org": ctx.org, "principal_id": ctx.principal.id},
+            "owner": {"tenant_id": ctx.tenant_id(), "org": ctx.org(), "principal_id": ctx.principal().id},
             "tokens": {
                 "access_token": "at",
                 "refresh_token": "rt",

@@ -79,10 +79,10 @@ pub struct AppInstallation {
     pub server_bundle: Option<String>,
     /// ServerSpec 全体の同意時ピン（JSON・app-platform が解釈する。gateway は不透明に運ぶ）。
     pub server_spec: Option<serde_json::Value>,
-    /// Keycloak にアプリのクライアントが無く、起動時の照合が作り直せなかった（入れ直しが要る・GAP-70・migration 0127）。
+    /// Keycloak にアプリのクライアントが無く、起動時の照合が作り直せなかった（入れ直しが要る・GAP-70・migration 0136）。
     pub oauth_client_missing: bool,
     /// Keycloak で B2 のクライアントが無効にされていて、起動時の照合が有効に戻さなかった（BUG-201・D-137・
-    /// migration 0131）。
+    /// migration 0140）。
     pub oauth_client_disabled: bool,
 }
 
@@ -266,9 +266,9 @@ impl AppInstallationStore {
             "SELECT EXISTS (SELECT 1 FROM app_installation \
              WHERE tenant_id = $1 AND app_id = $2 AND org <> $3 AND status = 'active')",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(app_id)
-        .bind(&ctx.org)
+        .bind(ctx.org())
         .fetch_one(&self.db)
         .await
         .map_err(map_db)?;
@@ -310,15 +310,15 @@ impl AppInstallationStore {
              RETURNING {COLS}"
         );
         sqlx::query_as(&sql)
-            .bind(&ctx.tenant_id)
-            .bind(&ctx.org)
+            .bind(ctx.tenant_id())
+            .bind(ctx.org())
             .bind(new.app_id)
             .bind(new.app_name)
             .bind(new.installed_version)
             .bind(new.granted_scopes)
             .bind(new.client_id_b1)
             .bind(new.client_id_b2)
-            .bind(&ctx.principal.id)
+            .bind(&ctx.principal().id)
             .bind(&new.ai.budget_models)
             .bind(new.ai.budget_daily_usd_micros)
             .bind(new.ai.budget_max_tokens)
@@ -339,7 +339,7 @@ impl AppInstallationStore {
         let (exists,): (bool,) = sqlx::query_as(
             "SELECT EXISTS (SELECT 1 FROM app_installation WHERE tenant_id = $1 AND app_id = $2)",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(app_id)
         .fetch_one(&self.db)
         .await
@@ -375,7 +375,7 @@ impl AppInstallationStore {
     /// インストールと、それを入れたテナント・組織を引く（自動実行のアプリの主体・BUG-183）。
     ///
     /// 一致するのは、インストールの B2 のクライアントと、そのサービスアカウントの利用者（`b2_service_sub`・
-    /// migration 0126）の両方が合うトークンだけ。同じ B2 が交換した利用者のトークン（`sub` は利用者）・別のアプリの
+    /// migration 0135）の両方が合うトークンだけ。同じ B2 が交換した利用者のトークン（`sub` は利用者）・別のアプリの
     /// クライアントのトークン・アンインストールしたアプリのトークンは `None`（利用者として扱うか、断る）。
     ///
     /// **テナントで絞らない理由**: サービスアカウントの利用者には tenant の属性が無く、トークンにテナントが無い。
@@ -486,8 +486,8 @@ impl AppInstallationStore {
              ORDER BY created_at DESC LIMIT 200"
         );
         let rows: Vec<Row> = sqlx::query_as(&sql)
-            .bind(&ctx.tenant_id)
-            .bind(&ctx.org)
+            .bind(ctx.tenant_id())
+            .bind(ctx.org())
             .fetch_all(&self.db)
             .await
             .map_err(map_db)?;
@@ -504,9 +504,9 @@ impl AppInstallationStore {
              WHERE tenant_id = $1 AND app_id = $2 AND org = $3",
             InstallStatus::Revoked.as_str()
         ))
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(app_id)
-        .bind(&ctx.org)
+        .bind(ctx.org())
         .execute(&self.db)
         .await
         .map_err(map_db)?;
@@ -521,7 +521,7 @@ impl AppInstallationStore {
 
     /// 有効なインストールのうち、クライアントを `fingerprint` の登録の形で揃えていないものと、前の照合でクライアントを
     /// 作り直せなかったもの（`oauth_client_missing`・GAP-70）・無効の B2 を有効に戻さなかったもの
-    /// （`oauth_client_disabled`・BUG-201）を、古い順に最大 `limit` 件引く（起動時の照合・BUG-172・migration 0124）。
+    /// （`oauth_client_disabled`・BUG-201）を、古い順に最大 `limit` 件引く（起動時の照合・BUG-172・migration 0133）。
     /// `skip`（この照合で揃えた・揃えられなかったアプリ）は外す。
     ///
     /// **テナントで絞らない理由**: 起動時の保守の走査で、呼び出す人がいない（[`Self::resolve_active_by_app_global`]

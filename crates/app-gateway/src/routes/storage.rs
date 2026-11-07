@@ -80,7 +80,7 @@ pub(crate) async fn list_children(
     let sort = ChildSort::default();
     let kind = data::ListCursorKind::DriveFolder;
     let scope = sort.cursor_scope(&node_id.to_string());
-    let tenant = &ctx.auth.tenant_id;
+    let tenant = ctx.auth.tenant_id();
     let cursor = q
         .cursor
         .as_deref()

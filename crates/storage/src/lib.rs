@@ -25,6 +25,8 @@
 
 pub mod audit;
 pub mod audit_action;
+pub mod audit_chain;
+pub mod audit_retention;
 pub mod audit_view;
 pub mod content_address;
 pub mod directory;
@@ -58,7 +60,7 @@ pub use naming::{numbered_name, OnNameTaken, MAX_NUMBERED_NAME};
 pub use object_store::{ObjectStore, ObjectStoreError, S3Config, S3ObjectStore};
 pub use pool_router::PoolRouter;
 pub use service::{
-    named_scan_sql, shared_scan_sql, NodeLabel, StorageService, WriteAtOutcome, MAX_NODE_LABELS,
-    NODE_SCAN_MAX_CHECKS, SHARED_SCAN_CHUNK, SHARED_SCAN_MAX_CHECKS,
+    named_scan_sql, shared_scan_sql, NodeLabel, RevertOutcome, StorageService, WriteAtOutcome,
+    MAX_NODE_LABELS, NODE_SCAN_MAX_CHECKS, SHARED_SCAN_CHUNK, SHARED_SCAN_MAX_CHECKS,
 };
 pub use tenant::{Tenant, TenantPlacement, TenantStatus, TenantStore};

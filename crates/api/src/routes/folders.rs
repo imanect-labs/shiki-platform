@@ -209,7 +209,11 @@ pub async fn list_children(
         .cursor
         .as_deref()
         .filter(|c| !c.is_empty())
-        .map(|c| state.data.open_list_cursor(kind, &ctx.tenant_id, &scope, c))
+        .map(|c| {
+            state
+                .data
+                .open_list_cursor(kind, ctx.tenant_id(), &scope, c)
+        })
         .transpose()?;
     let page = match name_query {
         Some(name_query) => {
@@ -246,7 +250,7 @@ pub async fn list_children(
         .map(|c| {
             state
                 .data
-                .seal_list_cursor(kind, &ctx.tenant_id, &scope, &c)
+                .seal_list_cursor(kind, ctx.tenant_id(), &scope, &c)
         })
         .transpose()?;
     let mut items: Vec<NodeResponse> = page.items.into_iter().map(Into::into).collect();

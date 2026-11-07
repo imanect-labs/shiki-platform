@@ -12,6 +12,7 @@ import * as React from "react";
 
 import type { Citation, ContentBlock } from "@/lib/chat-api";
 import { linkifyCitations } from "@/lib/citation";
+import { collectImageSources, pageSourcedTexts, type ImageProxy } from "@/lib/answer-images";
 import { Markdown } from "@/components/prompt-kit/markdown";
 import { ChainOfThought } from "./chain-of-thought";
 import type { ToolActivityItem } from "./tool-activity";
@@ -131,6 +132,18 @@ export function segmentsFromBlocks(blocks: ContentBlock[]): TimelineSegment[] {
   return out;
 }
 
+/// 回答の本文に画像として描いてよい URL（#1005・PIT-77）。この回答で取得した Web ページの本文
+/// （web_fetch の封筒の内側。サブエージェントの分も含む）と Web の引用の抜粋に、画像として字句どおり
+/// 現れたものだけ。ツール結果全般は数えない（モデル自身が書いた文字列を含むため・lib/answer-images）。
+///
+/// 共有された会話を run の実行者以外が見るときはツール結果が空で届く（サーバが伏せる）ので、
+/// 引用の抜粋に現れた分しか描けない。描けない画像はリンクに落ちる（読み込まない側に倒す）。
+export function answerImageSources(segments: TimelineSegment[], citations: Citation[]): Map<string, string> {
+  const tools = segments.flatMap((s) => (s.kind === "work" ? s.tools : []));
+  const webSnippets = citations.flatMap((c) => (c.web ? [c.snippet] : []));
+  return collectImageSources(pageSourcedTexts(tools, webSnippets));
+}
+
 /// 区切りを順に描く。生成中は末尾の区切りだけが「動いている」。
 ///
 /// 参照ドキュメントのチップは最初の操作のまとまりに付ける（操作が無ければ先頭に単独で出す）。
@@ -140,6 +153,8 @@ export function MessageTimeline({
   streaming = false,
   phase = null,
   waitingLabel = null,
+  memoryKey = null,
+  imageProxy = null,
 }: {
   segments: TimelineSegment[];
   citations: Citation[];
@@ -148,9 +163,25 @@ export function MessageTimeline({
   phase?: string | null;
   /// 次のイベントを待っている間の文言（末尾の操作のまとまり・本文前の見出しに出す）。
   waitingLabel?: string | null;
+  /// 開閉の記憶の鍵（サーバ上の回答 ID）。生成中の行と確定後の行で同じ値を渡すと、確定で
+  /// 行が作り直されても思考パネルなどの開閉が保たれる（閉じて読んでいる位置が飛ばない）。
+  memoryKey?: string | null;
+  /// 出典の画像を shiki-server 経由で読む URL を作る（#1044）。回答がサーバに保存される前（ID が
+  /// まだ無い）や会話以外の描画では null にし、画像はリンクに落とす。
+  imageProxy?: ImageProxy | null;
 }) {
   const firstWork = segments.findIndex((s) => s.kind === "work");
   const lastText = segments.findLastIndex((s) => s.kind === "text");
+  // 生成中は本文のトークンごとに描き直すが、ツール結果と引用はその間変わらない。出典の本文
+  // （最大で数万字）を毎トークン走査しないよう、結果の有無・長さと引用の件数が変わった時だけ作り直す。
+  const sourcesKey =
+    segments
+      .flatMap((s) => (s.kind === "work" ? s.tools.map((t) => `${t.key}:${t.result?.length ?? -1}`) : []))
+      .join(",") +
+    "|" +
+    citations.map((c) => `${c.cite_id}:${c.web ? c.snippet.length : -1}`).join(",");
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- 出典が変わったかは sourcesKey が表す
+  const imageSources = React.useMemo(() => answerImageSources(segments, citations), [sourcesKey]);
   const leading =
     // 本文も操作もまだ無い（生成の開始直後）、または操作が無く引用だけある。
     (streaming && segments.length === 0) || (firstWork < 0 && citations.length > 0);
@@ -168,9 +199,12 @@ export function MessageTimeline({
       {segments.map((s, i) => {
         const live = streaming && i === segments.length - 1;
         if (s.kind === "work") {
+          // 何番目の操作のまとまりか（生成中と確定後で同じ並び。区切りの key は本文も数える）。
+          const nth = segments.slice(0, i).filter((x) => x.kind === "work").length;
           return (
             <ChainOfThought
               key={s.key}
+              memoryKey={memoryKey && `${memoryKey}:w${nth}`}
               thinking={s.thinking}
               tools={s.tools}
               citations={i === firstWork ? citations : []}
@@ -182,7 +216,7 @@ export function MessageTimeline({
         }
         return (
           <div key={s.key} className="text-[15px] leading-relaxed">
-            <Markdown streaming={streaming && i === lastText}>
+            <Markdown streaming={streaming && i === lastText} imageSources={imageSources} imageProxy={imageProxy}>
               {linkifyCitations(s.text, citations)}
             </Markdown>
           </div>

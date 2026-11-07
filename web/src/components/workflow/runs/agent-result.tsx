@@ -90,7 +90,7 @@ export function AgentResult({ output }: { output: AgentOutput }) {
       <div className="max-h-80 overflow-auto rounded-md border bg-background p-2.5 scrollbar-subtle">
         <YuiActionContext.Provider value={null}>
           <DataGridHostContext.Provider value={null}>
-            <Markdown untrusted className="text-[13px]">
+            <Markdown external className="text-[13px]">
               {text}
             </Markdown>
           </DataGridHostContext.Provider>

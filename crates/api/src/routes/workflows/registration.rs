@@ -226,13 +226,13 @@ pub async fn get_registration(
     }
     let view = state
         .workflow_registration
-        .view(&ctx.tenant_id, id)
+        .view(ctx.tenant_id(), id)
         .await
         .map_err(map_enable_err)?;
     // 見送りの記録はワークフローを見られる人にだけ返す（上の viewer の確かめの後）。
     let launch_skip = state
         .workflow_registration
-        .launch_skip(&ctx.tenant_id, id)
+        .launch_skip(ctx.tenant_id(), id)
         .await
         .map_err(map_enable_err)?
         .map(|s| LaunchSkipItem {
@@ -379,7 +379,7 @@ pub async fn enable_workflow(
     // 外れた委譲を撤去する）。前の委譲先も控えておき、後でまとめて data へ知らせる。
     let before = state
         .workflow_registration
-        .view(&ctx.tenant_id, id)
+        .view(ctx.tenant_id(), id)
         .await
         .map_err(map_enable_err)?;
     let registration = &state.workflow_registration;
@@ -470,13 +470,13 @@ pub async fn disable_workflow(
         // 自動実行で動いている run も取り消す（engine.md §10.4・BUG-131）。
         state
             .workflow_registration
-            .disable_and_revoke(&ctx.tenant_id, id)
+            .disable_and_revoke(ctx.tenant_id(), id)
             .await
             .map_err(map_enable_err)?
     } else {
         state
             .workflow_registration
-            .disable(&ctx.tenant_id, id)
+            .disable(ctx.tenant_id(), id)
             .await
             .map_err(map_enable_err)?;
         Revocation::default()
@@ -502,7 +502,7 @@ pub async fn disable_workflow(
 /// ワークフローを消したあとで止める（`DELETE /artifacts/{id}` の kind=workflow・BUG-128・D-105）。
 ///
 /// 論理削除の commit の後に、「権限も取り消す」と同じ経路で委譲を取り消し、自動実行をオフにし、動いている run を
-/// すべて取り消す（承認の依頼も取り下げる）。DB の側は論理削除のトリガ（migration 0117）が済ませているので、ここが
+/// すべて取り消す（承認の依頼も取り下げる）。DB の側は論理削除のトリガ（migration 0126）が済ませているので、ここが
 /// 失敗しても動き出さない。失敗は削除の結果を変えず、ログに残す（外せなかった委譲は scheduler の掃除が取り消す）。
 pub(crate) async fn after_workflow_deleted(
     state: &AppState,
@@ -510,7 +510,11 @@ pub(crate) async fn after_workflow_deleted(
     id: Uuid,
     trace: Option<&str>,
 ) {
-    match state.workflow_registration.retire(&ctx.tenant_id, id).await {
+    match state
+        .workflow_registration
+        .retire(ctx.tenant_id(), id)
+        .await
+    {
         Ok(r) => {
             if r.registered || !r.cancelled_runs.is_empty() {
                 record_audit(
@@ -710,7 +714,7 @@ mod tests {
                 tenant_id: Some("t1".into()),
             },
             "acme".into(),
-            "t1".into(),
+            authz::TenantId::parse("t1").unwrap(),
         )
     }
 

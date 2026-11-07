@@ -47,6 +47,13 @@ export function buildOfficeFrameUrl(session: OfficeSession): string {
   return url.toString();
 }
 
+/// Collabora の UI の既定値（起動の form POST の `ui_defaults`）。
+///
+/// Collabora 26.04 はブラウザで開いた Writer のルーラーを既定で隠す（デスクトップ版でだけ出す）。
+/// 文書の余白・インデントを見るのに要るので、既定で出す。利用者が「表示 → ルーラー」で切り替えた
+/// 値は Collabora が localStorage に持ち、こちらより優先される（隠した人の設定は上書きしない）。
+export const OFFICE_UI_DEFAULTS = "TextRuler=true";
+
 /// Collabora に渡す言語タグ。ブラウザの言語が BCP 47 として解釈できないと（POSIX ロケール由来の
 /// `en-US@posix` など）、Collabora の JS が Intl の RangeError で止まり、文書を読み込まない。
 /// `@` 以降を落として正規化し、それでも解釈できなければ日本語にする。

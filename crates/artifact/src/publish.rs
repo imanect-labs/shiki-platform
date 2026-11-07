@@ -57,7 +57,7 @@ impl ArtifactStore {
                         published_at \
                  FROM artifact WHERE tenant_id = $1 AND id = $2 AND deleted_at IS NULL FOR UPDATE",
             )
-            .bind(&ctx.tenant_id)
+            .bind(ctx.tenant_id())
             .bind(id)
             .fetch_optional(&mut *tx)
             .await
@@ -87,10 +87,10 @@ impl ArtifactStore {
                     published_version = $3, published_at = now(), published_by = $4, updated_at = now() \
              WHERE tenant_id = $1 AND id = $2 RETURNING published_at",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(id)
         .bind(version)
-        .bind(&ctx.principal.id)
+        .bind(&ctx.principal().id)
         .fetch_one(&mut *tx)
         .await
         .map_err(map_db)?;

@@ -4,7 +4,7 @@
 //!   （ワークフローでは error の出口から人へ回る）。
 //! - 経費の AI の判定（needs_review）は、規程のフラグが出ない行（中身で判断する行）で正解と比べる。
 //!   規程のフラグが出る行は、問いで「それだけを理由にしなくてよい」と言っているため。経理確認へ回すか
-//!   （routed）は「規程のフラグ OR AI が true OR 確からしさが θ 未満 OR 誤り」で決める（R8・PIT-80 ③）。
+//!   （routed）は「規程のフラグ OR AI が true OR 確からしさが θ 未満 OR 誤り」で決める（R8・PIT-81 ③）。
 
 use std::collections::{BTreeMap, BTreeSet};
 

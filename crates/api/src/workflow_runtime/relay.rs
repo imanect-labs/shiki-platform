@@ -318,6 +318,14 @@ pub(super) async fn audit_suppressed(
     reason: &str,
     trace_id: Option<&str>,
 ) {
+    let Ok(tenant) = authz::TenantId::parse(tenant_id) else {
+        tracing::warn!(
+            trigger_id,
+            reason,
+            "トリガの抑止の監査を書けない（tenant_id が不正）"
+        );
+        return;
+    };
     let ctx = authz::AuthContext::new(
         authz::Principal {
             kind: authz::PrincipalKind::User,
@@ -328,7 +336,7 @@ pub(super) async fn audit_suppressed(
             tenant_id: Some(tenant_id.to_string()),
         },
         org.to_string(),
-        tenant_id.to_string(),
+        tenant,
     );
     let entry = storage::audit::AuditEntry {
         action: storage::audit::AuditAction::WorkflowTriggerSuppressed,
@@ -500,11 +508,10 @@ impl SavedFileGate<'_> {
     /// relay の発火の前（[`relay_file_triggers`]）と、待たせた発火・再試行の起動の前（[`GatedLauncher`]・
     /// BUG-50）の両方がこれで確かめる。
     async fn admits_trigger(&self, t: &EventTriggerRef, org: &str) -> Result<bool, anyhow::Error> {
-        let ctx = authz::AuthContext::for_workflow(
-            t.tenant_id.clone(),
-            org.to_string(),
-            &t.workflow_id.to_string(),
-        );
+        let tenant = authz::TenantId::parse(t.tenant_id.as_str())
+            .map_err(|e| anyhow::anyhow!("ファイル保存トリガの tenant_id が不正です: {e}"))?;
+        let ctx =
+            authz::AuthContext::for_workflow(tenant, org.to_string(), &t.workflow_id.to_string());
         let mut note = serde_json::Map::new();
         note.insert("via".into(), json!("workflow.trigger"));
         note.insert("trigger_id".into(), json!(t.trigger_id));
@@ -522,7 +529,10 @@ impl EventWaitGate for SavedFileGate<'_> {
             &sub.org,
             &sub.principal,
             &sub.principal_kind,
-        );
+        )
+        .map_err(|e| {
+            RunStoreError::Internal(format!("wait(event) の実行主体を組めません: {}", e.message))
+        })?;
         let mut note = serde_json::Map::new();
         note.insert("via".into(), json!("workflow.wait_event"));
         note.insert("run_id".into(), json!(sub.run_id.to_string()));

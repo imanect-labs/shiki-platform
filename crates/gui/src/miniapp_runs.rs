@@ -97,10 +97,10 @@ impl MiniAppStore {
              WHERE tenant_id = $1 AND app_id = $2 AND invoked_by = $3 AND org = $4 \
              ORDER BY invoked_at DESC, idempotency_key DESC LIMIT $5",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(app_id)
-        .bind(&ctx.principal.id)
-        .bind(&ctx.org)
+        .bind(&ctx.principal().id)
+        .bind(ctx.org())
         .bind(MAX_RUNS)
         .fetch_all(&self.db)
         .await
@@ -129,10 +129,10 @@ impl MiniAppStore {
              WHERE tenant_id = $1 AND app_id = $2 AND invoked_by = $3 AND org = $4 AND run_id = $5 \
              LIMIT 1",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(app_id)
-        .bind(&ctx.principal.id)
-        .bind(&ctx.org)
+        .bind(&ctx.principal().id)
+        .bind(ctx.org())
         .bind(run_id)
         .fetch_all(&self.db)
         .await
@@ -272,7 +272,7 @@ impl MiniAppStore {
              WHERE r.tenant_id = $1 AND r.app_id = $2 AND r.run_id = x.run_id \
                AND r.status IS NULL",
         )
-        .bind(&ctx.tenant_id)
+        .bind(ctx.tenant_id())
         .bind(app_id)
         .bind(&ids)
         .bind(&sts)

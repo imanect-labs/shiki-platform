@@ -155,7 +155,7 @@ pub async fn sign_out_other_sessions(
         .delete_other_sessions()
         .await
         .map_err(account_error)?;
-    tracing::info!(user = %ctx.principal.id, "他の全セッションをログアウト");
+    tracing::info!(user = %ctx.principal().id, "他の全セッションをログアウト");
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -187,7 +187,7 @@ pub async fn sign_out_session(
         .delete_session(&id)
         .await
         .map_err(account_error)?;
-    tracing::info!(user = %ctx.principal.id, session = %id, "セッションをログアウト");
+    tracing::info!(user = %ctx.principal().id, session = %id, "セッションをログアウト");
     Ok(StatusCode::NO_CONTENT)
 }
 

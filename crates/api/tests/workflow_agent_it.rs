@@ -129,7 +129,7 @@ async fn setup() -> Option<Harness> {
             tenant_id: Some(tenant.clone()),
         },
         tenant.clone(),
-        tenant.clone(),
+        authz::TenantId::parse(tenant.clone()).unwrap(),
     );
     fga.write_tuple(
         &alice.subject(),

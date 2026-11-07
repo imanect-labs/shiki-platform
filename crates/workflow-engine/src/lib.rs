@@ -59,9 +59,10 @@ pub use nodes::llm_structured::{
 };
 pub use nodes::{
     AgentInvokeReq, AgentLimits, AgentToolGateway, ApprovalTarget, CapabilityNodeExecutor,
-    CodeRunReq, CsvPatchReq, CsvWriteReq, DataWriteOp, DataWriteReq, DecideCache, DocReadReq,
-    ExecCtx, HttpSendReq, HttpSendResp, LlmDecideReq, LlmInvokeReq, LlmRepair, NodePorts,
-    PortError, ResolvedSecretView, ResolvedSkillView, StorageListReq, StorageWriteReq, WebFetchReq,
+    CodeRunReq, CsvPatchReq, CsvQueryReq, CsvQueryTable, CsvWriteReq, DataWriteOp, DataWriteReq,
+    DecideCache, DocReadReq, ExecCtx, HttpSendReq, HttpSendResp, LlmDecideReq, LlmInvokeReq,
+    LlmRepair, NodePorts, PortError, ResolvedSecretView, ResolvedSkillView, StorageListReq,
+    StorageWriteReq, WebFetchReq,
 };
 pub use ratelimit::{BucketConfig, TokenBucket};
 pub use registration::{
@@ -92,4 +93,7 @@ pub use scheduler::{
     LaunchOutcome, LeaderLease, RunLauncher, SchedulerStore, SkipReason,
 };
 pub use store::{WorkflowStore, WorkflowStoreError};
-pub use summary::{WorkflowInputs, WorkflowSummary, WorkflowSummaryStore};
+pub use summary::{
+    FailedRun, WorkflowInputs, WorkflowRunCount, WorkflowSearchHit, WorkflowSummary,
+    WorkflowSummaryStore,
+};

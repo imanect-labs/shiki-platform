@@ -44,7 +44,7 @@ pub(super) async fn storage_read_window(
     max_chars: u32,
 ) -> Result<Value, PortError> {
     use storage::StorageError as S;
-    let ctx = auth_ctx(ec);
+    let ctx = auth_ctx(ec)?;
     let trace = ec.trace_id.as_deref();
     let meta = match ports.storage.get_metadata(&ctx, file_id, trace).await {
         Ok(n) => n,
@@ -126,7 +126,7 @@ pub(super) async fn doc_read(
     if let Some(h) = req.heading {
         input["heading"] = json!(h);
     }
-    let ctx = auth_ctx(ec);
+    let ctx = auth_ctx(ec)?;
     let out = tool
         .call(&ctx, input, ec.trace_id.as_deref())
         .await
@@ -152,7 +152,7 @@ pub(super) async fn web_search(
         .as_ref()
         .ok_or_else(|| tool_not_configured(AgentTool::WebSearch))?;
     let hits = provider
-        .search(&auth_ctx(ec), query, MAX_WEB_RESULTS)
+        .search(&auth_ctx(ec)?, query, MAX_WEB_RESULTS)
         .await
         .map_err(|e| match e {
             websearch::SearchError::Invalid(m) => PortError::invalid(m),
@@ -185,7 +185,7 @@ pub(super) async fn web_fetch(
         input["offset"] = json!(o);
     }
     let out = tool
-        .call(&auth_ctx(ec), input, ec.trace_id.as_deref())
+        .call(&auth_ctx(ec)?, input, ec.trace_id.as_deref())
         .await
         .map_err(|e| match e {
             agent_core::ToolError::Invalid(m) => PortError::invalid(m),

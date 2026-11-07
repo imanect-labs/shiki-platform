@@ -17,7 +17,13 @@ sed -n '/^jobs:/,$p' .github/workflows/ci.yml | grep -E '^  [a-z-]+:$'
 sed -n '/^  <ジョブ ID>:/,/^  [a-z-]*:$/p' .github/workflows/ci.yml | grep -E '^\s+(- name|run):'
 ```
 
-**`docs/**` / `**.md` / `.claude/**` のみの変更では CI が丸ごとスキップされる**（`paths-ignore`）ため、docs のみの PR で「チェックなし」は正常。
+PR の CI に `paths-ignore` は無い。`docs/**` / 最上位の `*.md` / `.claude/**` のみの変更では changes ジョブが重量ジョブを
+すべて skip し、`changes`・`quality`・`ci-ok` だけが走る（required check の `ci-ok` が pending のまま固着しないため）。
+**チェックが 0 件なら CI は起動していない**（コンフリクトか未登録）。
+
+**マージは `ci-ok` が緑になってからマージキューに入れる。** PR は変更から選んだテストだけを回し、マージキュー
+（`merge_group`）が docs 以外の変更を含む限り全量を回す。キューで落ちたら、PR では選ばれなかったテストが
+壊れている（選択規則の漏れか flaky）ので、PR に戻って直す。
 
 ## CI ジョブ ↔ ローカルコマンド 対応表
 
@@ -25,15 +31,15 @@ sed -n '/^  <ジョブ ID>:/,/^  [a-z-]*:$/p' .github/workflows/ci.yml | grep -E
 | --- | --- | --- |
 | Rust (fmt/clippy/test) | `cargo fmt --all --check`<br>`cargo clippy --all-targets --all-features -- -D warnings`<br>`cargo nextest run --workspace --all-features` | `crates/` 差分 |
 | Build shiki-server | （ローカルでは不要。compose 系ジョブへ release バイナリを artifact 共有するための CI 専用ジョブ） | — |
-| Quality gates | `bash scripts/check-file-size.sh`<br>`bash scripts/check-migration-versions.sh`<br>`bash scripts/check-compose-ports.sh`<br>`cargo machete crates` | 常に（`.rs` 追加・依存追加・migration 追加時は必須） |
+| Quality gates | `bash scripts/check-file-size.sh`<br>`bash scripts/check-migration-versions.sh`<br>`bash scripts/check-compose-ports.sh`<br>`python3 -m unittest discover -s scripts -p 'test_*.py'`<br>`python3 scripts/ci-select.py check`<br>`cargo machete crates` | 常に（`.rs` 追加・依存追加・migration 追加・E2E spec／ページ／クレート追加時は必須） |
 | cargo-deny | `cargo deny --all-features check` | `Cargo.toml` / `Cargo.lock` 差分 |
-| Coverage (gate 80%) | 下記「カバレッジ」節 | `.rs` の**新規追加**時 |
+| Coverage (gate 80%) | 下記「カバレッジ」節 | `crates/` 差分（CI は Rust の変更があれば回す。`.rs` の新規追加時は特に注意） |
 | Web | `pnpm install --frozen-lockfile`<br>`pnpm gen:api`<br>`pnpm lint`<br>`pnpm build` | `web/` 差分 |
 | Python | `cd ingestion-worker && uv sync --frozen`<br>`uv run ruff check .`<br>`uv run pytest -m "not slow" -q` | `ingestion-worker/` 差分 |
 | Tabular runner | `cargo fmt --manifest-path crates/tabular/runner/Cargo.toml --check`<br>`cargo clippy --manifest-path crates/tabular/runner/Cargo.toml --release -- -D warnings`<br>`cargo build --manifest-path crates/tabular/runner/Cargo.toml --release`<br>→ `SHIKI_TABULAR_RUNNER=crates/tabular/runner/target/release/shiki-tabular-runner cargo test -p shiki-tabular --test runner_adversarial_it` | `crates/tabular/` 差分 |
 | compose smoke | `bash deploy/compose/smoke-bff.sh` | 認証・起動経路・compose 定義の変更時 |
 | Keycloak User Profile smoke | `bash deploy/compose/smoke-keycloak-user-profile.sh`（compose の Keycloak 相手。`KC=` で URL 指定可） | `deploy/keycloak/` 差分・Keycloak admin REST 経路（`crates/api/src/keycloak_admin.rs`）の変更時 |
-| Web E2E | `references/verify.md` 参照 | `web/` 差分 |
+| Web E2E | `references/verify.md` 参照 | `web/` 差分（CI は下記「テストの選択」の spec だけを回す） |
 | Sandbox gVisor IT | `bash scripts/fetch-native-assets.sh && bash scripts/build-sandbox-rootfs.sh`<br>→ `SANDBOX_GVISOR_IT=1 RUNSC_BIN=deploy/sandbox-assets/bin/runsc GVISOR_ROOTFS=deploy/sandbox-assets/rootfs cargo test -p shiki-sandbox-orchestrator --test gvisor_it -- --test-threads=1` | `crates/sandbox-*` 差分（CI では**非ブロッキング**） |
 
 `scripts/local-gates.sh` は、この表のうち**自動化できるもの**（file-size / fmt / clippy / test / machete / deny / doctest / tabular / web / python）を差分から判定して実行する。
@@ -44,6 +50,23 @@ sed -n '/^  <ジョブ ID>:/,/^  [a-z-]*:$/p' .github/workflows/ci.yml | grep -E
 - **`cargo build --all` は不要**。CI では廃止済み（`clippy --all-targets` が全ターゲットの型検査を兼ねる）。
 - **rust ジョブは compose 非依存** = env ゲートされた結合テストはスキップされ、実質ユニットのみ走る。結合テストは coverage ジョブと compose ジョブが担保する。ローカルで IT も回すなら下記「結合テスト」節の env を与える。
 - **doctest は nextest が実行しない**。coverage 側（`cargo llvm-cov --all`）で走るため、doctest を書いたら `cargo test --doc` を別途回す。
+
+## テストの選択と対応表（CI が回すものを決める表）
+
+PR の CI は変更ファイルから回すジョブ・テストを選ぶ（`scripts/ci-select.py`・#921/#922。結果は Job Summary の「テストの選択」）。
+Rust はクレートの依存グラフから自動で決まる。手で保つ表は 2 つで、**載せ忘れは quality ジョブの
+`python3 scripts/ci-select.py check` が落とす**（エラー文言がどこに何を足すかを示す）:
+
+- **`ci/scenarios.toml`（E2E の担当シナリオ対応表）**: E2E spec を足した → その spec が開くページのシナリオの `e2e` へ。
+  ページ（`page.tsx`）を足した → そのページを開く spec のシナリオの `pages` へ。クレートを足した → どこからも依存されない
+  なら `crates`・`[all]`・`[none]` のどれかへ。部品・lib は import から自動で辿るので載せない。
+- **`scripts/ci-select.py` の `ALWAYS_RUN`**: 名前が脅威テストらしい結合テスト（`threat`・`tenant`・`authz`・`scope` 等）を
+  足した → 毎回回すなら `ALWAYS_RUN`、回さなくてよいなら理由を付けて `ALWAYS_RUN_EXEMPT` へ。
+
+対応表で決まらない変更は E2E を全部回す（漏れずに遅くなるだけ。PR に「E2E の担当シナリオ対応表に無い」警告が出たら
+載せる）。main とマージキューは常に全量で、PR では選ばれないテストがそこで落ちると selection-gap ジョブが Issue を起票する
+（選択規則の漏れか flaky）。再試行で通った flaky（CI は緑）は、main の flaky-report ジョブが `flaky: <テスト>` の
+Issue に記録する。自分の変更に関係するテストの flaky Issue があれば、ついでに直すか原因を書き足す。
 
 ## 結合テスト（IT）をローカルで回す
 
@@ -56,7 +79,16 @@ export REDIS_TEST_URL=redis://localhost:6379
 export STORAGE_TEST_S3_ENDPOINT=http://localhost:9000
 export RAG_TEST_QDRANT_URL=http://localhost:6333
 export RAG_TEST_QDRANT_API_KEY=shiki-qdrant-dev-key  # compose の Qdrant は API キー付き（#812）
+# tabular の IT（tabular_http_it / workflow_nodes_it の csv.*）は隔離ランナーが要る（無いと黙ってスキップ）
+export SHIKI_TABULAR_RUNNER=$PWD/crates/tabular/runner/target/release/shiki-tabular-runner
 ```
+
+- **`SHIKI_REQUIRE_IT=1` を付けて回す。** 接続先が未設定の結合テストはスキップして pass に数えられるので、
+  env を 1 つ渡し忘れても緑に見える。これを付けると未設定が失敗になる（`crates/testenv`・CI の coverage ジョブと同じ）。
+  CI が用意しない依存（実 Keycloak・実 LLM 等）は ci.yml の `SHIKI_REQUIRE_IT_EXCEPT` と同じ値を `SHIKI_REQUIRE_IT_EXCEPT` に渡す。
+  新しい結合テストの接続先は `shiki_testenv::var("…")` で読む（`std::env::var` 直読みは quality ジョブの it-env gate が落とす）。
+- tabular の IT はアップロードした blob を content-addressing で共有する。**別バケットで同じ DB を使い回すと**
+  「同じ内容は既にある」扱いで実体が上がらず `ObjectStore(NotFound)` の 500 になる。再実行で落ちたら DB を作り直す。
 
 - migration checksum 不一致（`VersionMismatch(n)`）は別ブランチの残骸。使い捨てなのでリセットしてよい:
   `docker exec pg-test psql -U postgres -c "DROP DATABASE shiki WITH (FORCE);" -c "CREATE DATABASE shiki;"`
@@ -65,7 +97,10 @@ export RAG_TEST_QDRANT_API_KEY=shiki-qdrant-dev-key  # compose の Qdrant は AP
 
 ## カバレッジ 80% ゲート
 
-CI は **workspace 総計の行カバレッジ**を `cargo llvm-cov --fail-under-lines 80` で判定する（per-crate ではない）。
+CI は 2 段で判定する（#921）。
+
+- **PR**: changes ジョブ（`scripts/ci-select.py`）が選んだテスト（変更したクレート＋依存するクレート＋常に回す脅威テスト）だけを計測し、**変更した行**の 80% 以上で判定する（`scripts/ci-select.py diff-coverage`）。未達の行はカバレッジコメントと Job Summary に出る。ローカルでは CI と同じ除外（ci.yml の coverage ジョブの `COV_IGNORE`）を付けて `cargo llvm-cov report --lcov --output-path lcov.info --ignore-filename-regex "$COV_IGNORE"` の後に `python3 scripts/ci-select.py diff-coverage --lcov lcov.info --ignore "$COV_IGNORE" --base "$(git merge-base origin/main HEAD)" --head HEAD`（base は merge-base。`origin/main` を直接渡すと main 側の変更が混ざる）。ファイルの移動・改名は検出して動かしただけの行は数えないが、1000 行ゲートのための**分割**は移した行が新規行として数えられる。元が 80% 未満なら分割と同じ PR でテストを足すか、分割だけの PR にして理由を書く。
+- **main**: 全テストを計測し、**workspace 総計の行カバレッジ**を `cargo llvm-cov report --fail-under-lines 80 --ignore-filename-regex "$COV_IGNORE"` で判定する（per-crate ではない）。PR の変更行が通っても、テストの無い新規ファイルが総計を下げると main で落ちる。
 
 **最頻の落とし穴**: 新規 API ルートファイル（`crates/api/src/routes/*.rs`）はハンドラを叩く HTTP テストが無いと 0〜30% になり、**総計を 80% 未満へ引きずり落とす**。過去に複数 PR がこれで落ちている。
 

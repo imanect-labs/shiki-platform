@@ -48,6 +48,7 @@ utoipa.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+shiki-testenv.workspace = true
 sqlx.workspace = true
 reqwest.workspace = true
 

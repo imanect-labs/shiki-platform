@@ -111,12 +111,12 @@ pub async fn emit_on(
          (org, tenant_id, node_id, version, op, actor, trace_id, payload, private_payload) \
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9::jsonb)",
     )
-    .bind(&ctx.org)
-    .bind(&ctx.tenant_id)
+    .bind(ctx.org())
+    .bind(ctx.tenant_id())
     .bind(event.node_id)
     .bind(event.version)
     .bind(event.op.as_str())
-    .bind(&ctx.principal.id)
+    .bind(&ctx.principal().id)
     .bind(trace_id)
     .bind(&payload_str)
     .bind(&private_str)
@@ -160,9 +160,9 @@ pub async fn emit_many_on(
               WITH ORDINALITY AS e(node_id, version, op, payload, private, ord) \
          ORDER BY e.ord",
     )
-    .bind(&ctx.org)
-    .bind(&ctx.tenant_id)
-    .bind(&ctx.principal.id)
+    .bind(ctx.org())
+    .bind(ctx.tenant_id())
+    .bind(&ctx.principal().id)
     .bind(trace_id)
     .bind(&node_ids)
     .bind(&versions)
@@ -247,6 +247,7 @@ pub async fn mark_processed(conn: &mut PgConnection, ids: &[i64]) -> Result<(), 
     if ids.is_empty() {
         return Ok(());
     }
+    // tenant-sql: allow(outbox リレーの処理済み ack（claim と同じ txn）)
     sqlx::query("UPDATE storage_event_outbox SET processed_at = now() WHERE id = ANY($1)")
         .bind(ids)
         .execute(conn)

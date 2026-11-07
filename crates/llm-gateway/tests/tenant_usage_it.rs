@@ -26,7 +26,7 @@ use sqlx::postgres::PgPoolOptions;
 use sqlx::PgPool;
 
 async fn pool() -> Option<PgPool> {
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return None;
     };
@@ -53,7 +53,7 @@ fn ctx(tenant: &str, org: &str, user: &str) -> AuthContext {
             tenant_id: Some(tenant.into()),
         },
         org.into(),
-        tenant.into(),
+        authz::TenantId::parse(tenant).unwrap(),
     )
 }
 
@@ -526,4 +526,96 @@ async fn app_llm_usage_is_scoped_to_the_callers_org() {
     assert_eq!(seen.len(), 1, "{seen:?}");
     assert_eq!(seen[0].user_sub, "alice");
     assert_eq!(seen[0].model, "a");
+}
+
+#[tokio::test]
+async fn user_provider_rules_intersect_org_settings_and_constrain_auto() {
+    let Some(pool) = pool().await else {
+        return;
+    };
+    let tenant = format!("provider-rule-{}", uuid::Uuid::new_v4());
+    let mut config = GatewayConfig {
+        extra_providers: vec![llm_gateway::ProviderConfig {
+            id: "allowed".into(),
+            ..Default::default()
+        }],
+        user_provider_rules: vec![llm_gateway::config::UserProviderRule {
+            tenant_id: tenant.clone(),
+            user_sub: "restricted".into(),
+            providers: vec!["allowed".into()],
+        }],
+        catalog: ModelCatalog {
+            default_model: "hidden".into(),
+            models: vec![
+                ModelEntry {
+                    id: "hidden".into(),
+                    ..Default::default()
+                },
+                ModelEntry {
+                    id: "visible".into(),
+                    provider: Some("allowed".into()),
+                    ..Default::default()
+                },
+            ],
+        },
+        ..Default::default()
+    };
+    config.auto.model = "hidden".into();
+    let gw = LlmGateway::build(pool, reqwest::Client::new(), config).unwrap();
+    let restricted = ctx(&tenant, "org", "restricted");
+    let other = ctx(&tenant, "org", "other");
+    let settings = gw.settings_for(&restricted).await.unwrap();
+    assert_eq!(
+        settings
+            .enabled_models(gw.catalog())
+            .iter()
+            .map(|m| m.id.as_str())
+            .collect::<Vec<_>>(),
+        ["visible"]
+    );
+    assert_eq!(
+        gw.settings_for(&other)
+            .await
+            .unwrap()
+            .enabled_models(gw.catalog())
+            .len(),
+        2
+    );
+    let auto = gw
+        .resolve_choice(&restricted, &ModelChoice::default())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(auto.model, "visible");
+    let explicit = ModelChoice {
+        model: Some("hidden".into()),
+        ..Default::default()
+    };
+    assert!(matches!(
+        gw.resolve_choice(&restricted, &explicit).await.unwrap(),
+        Err(ChoiceError::ModelNotAllowed(_))
+    ));
+    // 組織が許可していないモデルを個人の許可リストで復活させない。
+    gw.update_tenant_settings(
+        &other,
+        &SettingsPatch {
+            models: vec![("hidden".into(), true), ("visible".into(), false)],
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(gw
+        .settings_for(&restricted)
+        .await
+        .unwrap()
+        .enabled_models(gw.catalog())
+        .is_empty());
+    assert!(matches!(
+        gw.resolve_choice(&restricted, &ModelChoice::default())
+            .await
+            .unwrap(),
+        Err(ChoiceError::NoModel)
+    ));
 }

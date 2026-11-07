@@ -77,7 +77,10 @@ impl AutonomousMode {
         /// オートで自動承認する「版管理で復元可能な書込」。不可逆・高影響（fs_delete / shell /
         /// office.live_edit=開いているセッションへの即時注入）は含めない。
         /// 新規作成（csv.write / save_document / save_sheet・#381）は既存データを壊さず
-        /// 削除で戻せるため、csv.write と同じ扱いにする。
+        /// 削除で戻せるため、csv.write と同じ扱いにする。移動・名前変更（drive.move・#942）は
+        /// 含めない: 共有フォルダへ移すと閲覧・RAG の可視範囲が広がって移し戻しても開示は取り消せず、
+        /// ルートへ移すと継承していた権限が外れて戻せなくなることがある（human 決定）。全自動（bypass）は
+        /// 他の不可逆ツールと同じく `allow_all` で自動承認する（明示オプトイン・org で禁止可）。
         const VERSIONED_WRITES: [ToolName; 9] = [
             ToolName::FsWrite,
             ToolName::FsEdit,
@@ -246,6 +249,7 @@ mod tests {
             "office.live_edit",
             "save_document",
             "save_sheet",
+            "drive.move",
         ] {
             assert!(!p.is_pre_authorized(tool), "{tool} は承認必須で止まること");
         }
@@ -270,7 +274,8 @@ mod tests {
         ] {
             assert!(p.is_pre_authorized(tool), "{tool} はオートで自動承認");
         }
-        for tool in ["fs_delete", "shell", "office.live_edit"] {
+        // drive.move は移動で可視範囲・継承権限が変わり取り消せないことがあるため承認維持（#942）。
+        for tool in ["fs_delete", "shell", "office.live_edit", "drive.move"] {
             assert!(!p.is_pre_authorized(tool), "{tool} は不可逆のため承認維持");
         }
     }

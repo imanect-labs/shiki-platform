@@ -179,7 +179,7 @@ async fn setup() -> Option<Env> {
     fga.write_tuple(
         &alice.subject(),
         Relation::Member,
-        &alice.ns().organization(&alice.org),
+        &alice.ns().organization(alice.org()),
     )
     .await
     .expect("member tuple");
@@ -249,7 +249,7 @@ fn user_ctx(tenant: &str, id: &str) -> AuthContext {
             tenant_id: Some(tenant.to_string()),
         },
         tenant.to_string(),
-        tenant.to_string(),
+        authz::TenantId::parse(tenant.to_string()).unwrap(),
     )
 }
 
@@ -415,8 +415,8 @@ impl Env {
              values ($1, $2, $3, $4, $5, null, 'leaf', 0, 1, '{}', '検索用', 3, $6, 'fixed')",
         )
         .bind(Uuid::new_v4())
-        .bind(&owner.tenant_id)
-        .bind(&owner.org)
+        .bind(owner.tenant_id())
+        .bind(owner.org())
         .bind(node.id)
         .bind(node.version)
         .bind(&tags)
@@ -428,8 +428,8 @@ impl Env {
                 "insert into doc_block (tenant_id, org, node_id, version, ordinal, type, level, text, page) \
                  values ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
             )
-            .bind(&owner.tenant_id)
-            .bind(&owner.org)
+            .bind(owner.tenant_id())
+            .bind(owner.org())
             .bind(node.id)
             .bind(node.version)
             .bind(i32::try_from(ordinal).unwrap())
@@ -671,7 +671,7 @@ async fn hidden_and_missing_documents_fail_the_same_way() {
         .write_tuple(
             &bob.subject(),
             Relation::Member,
-            &bob.ns().organization(&bob.org),
+            &bob.ns().organization(bob.org()),
         )
         .await
         .unwrap();
@@ -893,7 +893,7 @@ async fn reindexing_an_unrecorded_pdf_makes_it_readable() {
         .write_tuple(
             &bob.subject(),
             Relation::Member,
-            &bob.ns().organization(&bob.org),
+            &bob.ns().organization(bob.org()),
         )
         .await
         .unwrap();
@@ -956,7 +956,7 @@ async fn reindexing_an_unrecorded_pdf_makes_it_readable() {
     for (version, op, actor) in &events {
         let message = rag::IngestMessage {
             tenant_id: env.tenant.clone(),
-            org: alice.org.clone(),
+            org: alice.org().to_string(),
             node_id: orphan.id,
             version: *version,
             op: op.clone(),

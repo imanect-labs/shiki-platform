@@ -304,7 +304,7 @@ function SectionBody({ section: s }: { section: ReplySection }) {
       return (
         <YuiActionContext.Provider value={null}>
           <DataGridHostContext.Provider value={null}>
-            <Markdown untrusted className="text-[13px]">
+            <Markdown external className="text-[13px]">
               {s.text}
             </Markdown>
           </DataGridHostContext.Provider>

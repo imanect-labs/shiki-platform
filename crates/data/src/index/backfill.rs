@@ -21,6 +21,7 @@ use sqlx::types::Json;
 use sqlx::PgConnection;
 use uuid::Uuid;
 
+use super::partition::analyze_index_partitions_without_stats;
 use super::state::{activate_building, load_states, sync_ledger, IndexPlan};
 use super::write::{IndexWriter, IndexedRecord};
 use super::{IndexState, IndexTable, MAX_MULTI_VALUES_CEILING};
@@ -337,6 +338,17 @@ impl DataStore {
         table_id: Uuid,
         max_records: i64,
     ) -> Result<IndexBackfillStep, DataError> {
+        // チャンクは作り直す組の旧い索引行を消してから書く。列統計の無いパーティションでは削除が列の
+        // 索引行を全部読むので、チャンクの Tx の前に統計を作る（#986・統計があれば 1 文で終わる）。
+        if let Some(keys) = self.table_keys_of(tenant_id, table_id).await? {
+            analyze_index_partitions_without_stats(
+                &self.pools,
+                tenant_id,
+                keys.tenant_int,
+                keys.table_int,
+            )
+            .await;
+        }
         let result = self.backfill_chunk(tenant_id, table_id, max_records).await;
         if let Err(e) = &result {
             // 失敗は進捗に記録する（チャンクはロールバック済み・次回は同じ位置から）。

@@ -77,10 +77,10 @@ impl StorageService {
                     self.require(
                         ctx,
                         Relation::Member,
-                        &ctx.ns().organization(&ctx.org),
+                        &ctx.ns().organization(ctx.org()),
                         action,
                         "organization",
-                        &ctx.org,
+                        ctx.org(),
                         trace_id,
                     )
                     .await?;
@@ -95,8 +95,8 @@ impl StorageService {
             let mut ids: Vec<Uuid> = sqlx::query_scalar(
                 "SELECT descendant FROM node_closure WHERE tenant_id = $1 AND org = $2 AND ancestor = $3",
             )
-            .bind(&ctx.tenant_id)
-            .bind(&ctx.org)
+            .bind(ctx.tenant_id())
+            .bind(ctx.org())
             .bind(node_id)
             .fetch_all(&mut *tx)
             .await?;
@@ -104,8 +104,8 @@ impl StorageService {
                 let anc: Vec<Uuid> = sqlx::query_scalar(
                     "SELECT ancestor FROM node_closure WHERE tenant_id = $1 AND org = $2 AND descendant = $3",
                 )
-                .bind(&ctx.tenant_id)
-                .bind(&ctx.org)
+                .bind(ctx.tenant_id())
+                .bind(ctx.org())
                 .bind(p)
                 .fetch_all(&mut *tx)
                 .await?;
@@ -120,8 +120,8 @@ impl StorageService {
              WHERE id = ANY($1) AND org = $2 AND tenant_id = $3 ORDER BY id FOR UPDATE",
         )
         .bind(&lock_ids)
-        .bind(&ctx.org)
-        .bind(&ctx.tenant_id)
+        .bind(ctx.org())
+        .bind(ctx.tenant_id())
         .fetch_all(&mut *tx)
         .await?;
 
@@ -134,8 +134,8 @@ impl StorageService {
         );
         let fresh: NodeRow = sqlx::query_as(&fresh_sql)
             .bind(node_id)
-            .bind(&ctx.org)
-            .bind(&ctx.tenant_id)
+            .bind(ctx.org())
+            .bind(ctx.tenant_id())
             .fetch_optional(&mut *tx)
             .await?
             .ok_or(StorageError::NotFound)?;
@@ -162,8 +162,8 @@ impl StorageService {
                      WHERE id = $1 AND org = $2 AND tenant_id = $3 AND deleted_at IS NULL",
                 )
                 .bind(p)
-                .bind(&ctx.org)
-                .bind(&ctx.tenant_id)
+                .bind(ctx.org())
+                .bind(ctx.tenant_id())
                 .fetch_optional(&mut *tx)
                 .await?;
                 match target_live.as_deref() {
@@ -186,7 +186,7 @@ impl StorageService {
                     "SELECT EXISTS(SELECT 1 FROM node_closure \
                      WHERE tenant_id = $1 AND ancestor = $2 AND descendant = $3)",
                 )
-                .bind(&ctx.tenant_id)
+                .bind(ctx.tenant_id())
                 .bind(node_id)
                 .bind(p)
                 .fetch_one(&mut *tx)
@@ -209,9 +209,9 @@ impl StorageService {
             .bind(final_name)
             .bind(final_parent)
             .bind(node_id)
-            .bind(&ctx.org)
-            .bind(&ctx.tenant_id)
-            .bind(&ctx.principal.id)
+            .bind(ctx.org())
+            .bind(ctx.tenant_id())
+            .bind(&ctx.principal().id)
             .fetch_optional(&mut *tx)
             .await?
             .ok_or(StorageError::NotFound)?;
@@ -228,7 +228,7 @@ impl StorageService {
                    AND ancestor IN (SELECT ancestor FROM node_closure WHERE tenant_id = $2 AND descendant = $1 AND ancestor <> $1)",
             )
             .bind(node_id)
-            .bind(&ctx.tenant_id)
+            .bind(ctx.tenant_id())
             .execute(&mut *tx)
             .await?;
             if let Some(p) = final_parent {
@@ -241,7 +241,7 @@ impl StorageService {
                 )
                 .bind(p)
                 .bind(node_id)
-                .bind(&ctx.tenant_id)
+                .bind(ctx.tenant_id())
                 .execute(&mut *tx)
                 .await?;
             }
@@ -256,7 +256,7 @@ impl StorageService {
             )
             .bind(node_id)
             .bind(final_parent)
-            .bind(&ctx.tenant_id)
+            .bind(ctx.tenant_id())
             .execute(&mut *tx)
             .await?;
         }
