@@ -317,7 +317,7 @@ pub(super) fn emit_description(
          - リテラル: 文字列・数値・真偽・null・object・array。object / array の中にも下の 2 つを置ける。\n\
          - 参照 {{\"$from\":\"<source>\",\"path\":\"/キー/0\",\"default\":既定値}}（path・default は省略可）。source は input（実行の入力）・trigger（トリガの内容）・run（実行情報 {{ {run} }}。日時は日本時間で、同じ実行の中ではやり直しても同じ値）・nodes.<id>.output（エッジでたどれる前のノードの出力。形は【ノード】の出力）・each（map 領域の中だけ）のどれか。中身は path（JSON Pointer・/ で始める）で指し、source に input.title のような書き方はしない。解決できず default も無ければ step は失敗する。\n\
          - 文章の組み立て {{\"$template\":\"件名: {{title}}（{{count}} 件）\",\"vars\":{{\"title\":{{\"$from\":\"input\",\"path\":\"/title\"}},\"count\":…}}}}。差し込みは {{名前}} で、名前は vars のキー（vars に無い名前はエラー）。{{{{ と }}}} は差し込みではなく波括弧そのものを出す書き方（{{{{title}}}} と書くと「{{title}}」という文字が出る）。\n\
-         - url・secret・skill・model など型が string の項目はリテラルの文字列だけ（参照は書けない）。テーブル・フォルダ・ファイルの id は実在する uuid を書く（data_schema・doc_search などで調べる。推測しない）。\n\
+         - url・secret・skill・model など型が string の項目はリテラルの文字列だけ（参照は書けない）。テーブル・フォルダ・ファイルの id は実在する uuid を書く（推測しない）。フォルダ・ファイルの id は drive.find で名前から調べ（フォルダは kind: \"folder\"、ファイルは kind: \"file\" で絞る）、テーブルの id は data_schema で調べる。\n\
          - schedule・event で動かすワークフローの storage.write・csv.write には folder を必ず書く（省略はルートへの保存で、自動の実行はルートに書けないので有効化できない）。storage.write・csv.write は既存のファイルを上書きしない。同じ名前のファイルがあると失敗するので、毎回動くワークフローは on_name_taken に \"add_number\" を書く（「名前 (2).md」のように番号を付けて保存する）か、名前に {{\"$from\":\"run\",\"path\":\"/date\"}} を差し込む。content_type を省くとファイル名の拡張子（.md・.txt・.csv・.json・.html）から決まる。CSV（csv.write と、種類が text/csv の storage.write）は encoding に \"utf8_bom\" を書く（日本語の Windows の Excel で文字化けしない。省略は BOM なしの UTF-8。Shift_JIS だけを読む仕組みへ渡すなら \"shift_jis\"）。CSV の content には、CSV の文字のほか、csv.query の結果（{{\"$from\":\"nodes.<id>.output\"}}・{{columns, rows}} の表）や、項目のまとまりのリスト（列は項目の名前を合わせたもので名前の順）をそのまま渡せる（CSV に組み立てる。数・入れ子の値・csv.query が打ち切った表〔truncated〕は失敗する）。\n\
          - csv.query は CSV と Excel（.xlsx。表示している左端のシートが data で、ほかのシートは FROM \"集計\" のようにシートの名前で読む。表の上の表題の行は飛ばし、値の多い最初の行が列の名前。数式は計算せず保存された値を読む）を集計する。Excel を読めるのは csv.query だけ（csv.patch・csv.write は CSV だけ）。複数の CSV をつないで集計するときは、tables に [{{\"name\":\"master\",\"file\":\"<CSV の uuid>\"}}, …]（{max_tables} 個まで。name は英小文字・数字・_ で data 以外）を書き、SQL では file の CSV を data、tables の CSV を name の名前で読む（例: SELECT d.品目, m.単価 FROM data d JOIN master m ON d.品目 = m.品目。つなげるのは CSV どうしだけで、Excel には使えない）。結果の rows は値をすべて文字で返す。数・真偽を種類のまま使う（control.branch で大小を比べる・合計を出す・列の名前がテーブルの列の参照名と同じなら data.bulk_upsert の rows に渡す）ときは items（1 行ずつ {{列の名前: 値}}。{{\"$from\":\"nodes.<id>.output\",\"path\":\"/items\"}}、1 件目の列は /items/0/<列の名前>）を使う。csv.write の content には結果の全体（{{columns, rows}} の表）を渡す。\n\
          - storage.list は名前の順に {list_max} 件までを返し、続きがあると truncated が true で next_cursor に続きの位置が入る。続きは、同じ folder の storage.list の cursor に {{\"$from\":\"nodes.<id>.output\",\"path\":\"/next_cursor\"}} を書いて読む（別のフォルダーの続きの位置は失敗する。省略・null は先頭から）。\n\
@@ -645,6 +645,14 @@ mod tests {
         // CSV を集計は Excel も読み、数・真偽を種類のまま使うなら items を使う（GAP-40・D-17）。
         assert!(
             d.contains("Excel を読めるのは csv.query だけ") && d.contains("\"path\":\"/items\"}"),
+            "{d}"
+        );
+        // フォルダ・ファイルの id は drive.find、テーブルは data_schema で調べる（GAP-107）。
+        assert!(
+            d.contains(
+                "フォルダ・ファイルの id は drive.find で名前から調べ（フォルダは kind: \"folder\""
+            ) && d.contains("テーブルの id は data_schema で調べる")
+                && !d.contains("doc_search などで調べる"),
             "{d}"
         );
         // CSV をつなぐ集計は tables に書き、SQL では file を data・tables を name の名前で読む（#1059）。
