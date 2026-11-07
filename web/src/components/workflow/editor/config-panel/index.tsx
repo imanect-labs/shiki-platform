@@ -48,9 +48,9 @@ import {
 } from "./forms-data";
 import { TransformDateForm } from "./forms-date";
 import { HttpRequestForm, ScriptRunForm } from "./forms-external";
+import { CsvQueryForm } from "./forms-csv-query";
 import {
   CsvPatchForm,
-  CsvQueryForm,
   CsvWriteForm,
   StorageListForm,
   StorageReadForm,

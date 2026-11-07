@@ -7,14 +7,13 @@
 /// 選んだものの名前は ID から引き直して出す（開き直しても UUID だけにならない）。
 
 import * as React from "react";
-import { File as FileIcon, Play, X } from "lucide-react";
+import { File as FileIcon, X } from "lucide-react";
 
 import { FolderPicker } from "@/components/artifacts/folder-picker";
 import { DrivePicker } from "@/components/chat/drive-picker";
 import { NodeIcon } from "@/components/drive/primitives";
 import { Button } from "@/components/ui/button";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Textarea } from "@/components/ui/textarea";
 import {
   STORAGE_READ_INDEX_WAIT_MAX_MINUTES,
   STORAGE_LIST_MAX_ITEMS,
@@ -23,22 +22,27 @@ import {
 } from "@/generated/workflow-catalog";
 import type { CsvEncoding, NameTakenPolicy, ValueExpr } from "@/generated/workflow-ir";
 import { breadcrumb, getNode, type NodeResponse } from "@/lib/storage";
-import { getSchema, runQuery, TabularLoadError, type SchemaResponse, type TableResponse } from "@/lib/tabular-api";
 import { cn } from "@/lib/utils";
 import { nodeErrorView } from "../validation";
 import { Field, FieldSelectTrigger, MoreInfo, NumberInput } from "./common";
 import type { FormProps } from "./forms-basic";
 import { paramsOf, patchParams } from "./params";
 import { typeLabel as blockTypeLabel } from "../regions";
-import { ValueExprInput } from "./value-expr-input";
+import { ValueExprInput, type RefCandidate } from "./value-expr-input";
+import { valueAtParamsPath } from "./value-refs";
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /// 名前の表示に要る分だけ（ピッカーの応答・`GET /files/{id}`・フォルダーのパンくずのどれからでも作れる）。
 type DriveItem = Pick<NodeResponse, "id" | "name" | "kind"> & Partial<Pick<NodeResponse, "content_type">>;
 
 /// ID → ドライブの項目（名前の表示用・ページを開いている間だけ持つ）。選んだときの応答もここへ入れる。
 const driveItems = new Map<string, DriveItem>();
+
+/// ピッカーで選んだものを覚える（引き直さずに名前を出す）。
+export function rememberDriveItem(n: DriveItem): void {
+  driveItems.set(n.id, n);
+}
 
 /// ID のファイル・フォルダを引く（名前の表示用）。見つからない・読めないときは `missing`。
 export function useDriveItem(id: string | null): { item: DriveItem | null; missing: boolean; loading: boolean } {
@@ -194,23 +198,28 @@ export const MISSING = {
 /// ドライブから選ぶ欄の下に出す誤り。行が見つからないと言っているときは、同じ値を指す欄そのものの保存の誤り
 /// （ir.unknown_file・ir.unknown_folder）を重ねず、理由と直し方を 1 回だけ言う（BUG-82 と同じ型）。どの値を確かめた
 /// 誤りかは、検証した時点の値で見る（選び直した後の古い誤りを、今の値の誤りとして消さない）。ほかの誤りはそのまま出す。
+///
+/// `param` は欄の誤りを引く名前（`file`・入れ子なら `tables/0`）、`path` は値の位置（params の中・既定は `param`・
+/// 入れ子なら `tables/0/file`）。
 function pickFieldError({
   fieldErrors,
   serverCheck,
   param,
+  path = param,
   literal,
   missing,
   kind,
 }: Pick<FormProps, "fieldErrors" | "serverCheck"> & {
   param: string;
+  path?: string;
   literal: string | null;
   missing: boolean;
   kind: keyof typeof MISSING;
 }): string | undefined {
   if (!missing || literal === null) return fieldErrors.get(param);
-  const path = `/params/${param}`;
-  const checked = (serverCheck.node?.params as Record<string, unknown> | undefined)?.[param];
-  const others = serverCheck.errors.filter((e) => !(e.path === path && checked === literal));
+  const pointer = `/params/${path}`;
+  const checked = valueAtParamsPath(serverCheck.node?.params, pointer);
+  const others = serverCheck.errors.filter((e) => !(e.path === pointer && checked === literal));
   return nodeErrorView(others).fields.get(param) ?? MISSING[kind].hint;
 }
 
@@ -219,6 +228,13 @@ type PickFieldProps = FormProps & {
   param?: string;
   label: string;
   hint?: string;
+};
+
+/// ファイルの選び方（ドライブから選ぶとき）。
+type FilePickerProps = {
+  accept?: (n: NodeResponse) => boolean;
+  pickerTitle?: string;
+  pickerDescription?: string;
 };
 
 /// 対象のファイル（ドライブから選ぶ ／ 前の結果から）。`exprHint` は「入力や結果から選ぶ」ときの注記（ドライブで選んだ
@@ -233,24 +249,69 @@ export function FileField({
   param = "file",
   label,
   hint,
+  exprHint,
+  accept,
+  pickerTitle,
+  pickerDescription,
+}: PickFieldProps & FilePickerProps & { exprHint?: string }) {
+  return (
+    <FilePick
+      value={paramsOf<Record<string, ValueExpr>>(node)[param]}
+      onChange={(v) => patchParams(dispatch, node, { [param]: v })}
+      refCandidates={refCandidates}
+      inMapRegion={inMapRegion}
+      fieldErrors={fieldErrors}
+      serverCheck={serverCheck}
+      param={param}
+      label={label}
+      hint={hint}
+      exprHint={exprHint}
+      accept={accept}
+      pickerTitle={pickerTitle}
+      pickerDescription={pickerDescription}
+    />
+  );
+}
+
+/// ファイルを選ぶ欄の本体（値と書き戻しを受け取る・params の項目そのものでない値〔CSV を集計のつなぐ CSV の
+/// 各ファイル〕にも使う）。`param` は欄の誤りを引く名前、`path` は値の位置（[`pickFieldError`]）。`bare` なら見出しを
+/// 出さない（行の中に置くとき・見出しは `label` を読み上げとボタンの名前にだけ使う）。
+export function FilePick({
+  value,
+  onChange,
+  refCandidates,
+  inMapRegion,
+  fieldErrors,
+  serverCheck,
+  param,
+  path,
+  label,
+  hint,
+  bare,
   accept,
   pickerTitle = "ファイルを選ぶ",
   pickerDescription = "使うファイルを選んでください。",
   exprHint,
-}: PickFieldProps & {
-  exprHint?: string;
-  accept?: (n: NodeResponse) => boolean;
-  pickerTitle?: string;
-  pickerDescription?: string;
-}) {
-  const value = paramsOf<Record<string, ValueExpr>>(node)[param];
+}: Pick<FormProps, "fieldErrors" | "serverCheck"> &
+  FilePickerProps & {
+    value: ValueExpr | undefined;
+    onChange: (next: ValueExpr) => void;
+    refCandidates: RefCandidate[];
+    inMapRegion: boolean;
+    param: string;
+    path?: string;
+    label: string;
+    hint?: string;
+    bare?: boolean;
+    exprHint?: string;
+  }) {
   const literal = typeof value === "string" && value !== "" ? value : null;
   const dynamic = value !== undefined && typeof value !== "string";
   const [mode, setMode] = React.useState<"pick" | "expr">(dynamic ? "expr" : "pick");
   const [open, setOpen] = React.useState(false);
   const { item, missing, loading } = useDriveItem(literal);
   const error = fieldErrors.get(param);
-  const pickError = pickFieldError({ fieldErrors, serverCheck, param, literal, missing, kind: "file" });
+  const pickError = pickFieldError({ fieldErrors, serverCheck, param, path, literal, missing, kind: "file" });
   const text = dynamic
     ? DYNAMIC_TEXT
     : loading
@@ -258,26 +319,36 @@ export function FileField({
       : missing
         ? MISSING.file.row
         : (item?.name ?? "ファイルが選ばれていません");
+  const row = (
+    <PickedRow
+      label={label}
+      kind="file"
+      item={item}
+      text={text}
+      muted={!item}
+      danger={missing}
+      verb={literal ? "変更" : "選ぶ"}
+      onPick={() => setOpen(true)}
+    />
+  );
   return (
     <div className="space-y-1.5">
       {mode === "pick" ? (
-        <Field label={label} error={pickError} hint={hint}>
-          <PickedRow
-            label={label}
-            kind="file"
-            item={item}
-            text={text}
-            muted={!item}
-            danger={missing}
-            verb={literal ? "変更" : "選ぶ"}
-            onPick={() => setOpen(true)}
-          />
-        </Field>
+        bare ? (
+          <>
+            {row}
+            {pickError ? <p className="text-[11px] text-destructive">{pickError}</p> : null}
+          </>
+        ) : (
+          <Field label={label} error={pickError} hint={hint}>
+            {row}
+          </Field>
+        )
       ) : (
         <ValueExprInput
           label={label}
           value={value}
-          onChange={(v) => patchParams(dispatch, node, { [param]: v })}
+          onChange={onChange}
           refCandidates={refCandidates}
           inMapRegion={inMapRegion}
           placeholder="ファイル ID"
@@ -294,7 +365,7 @@ export function FileField({
         accept={accept}
         onSelect={(n) => {
           driveItems.set(n.id, n);
-          patchParams(dispatch, node, { [param]: n.id });
+          onChange(n.id);
         }}
       />
     </div>
@@ -629,257 +700,6 @@ const CSV_PICKER = {
   pickerTitle: "CSV ファイルを選ぶ",
   pickerDescription: "使う CSV ファイルを選んでください（.csv のファイルだけを表示しています）。",
 };
-
-/// 「CSV を集計」のファイルの選び方（CSV と Excel・D-17）。
-const CSV_QUERY_PICKER = {
-  accept: (n: NodeResponse) => isQueryableFile(n),
-  pickerTitle: "CSV か Excel のファイルを選ぶ",
-  pickerDescription: "集計するファイルを選んでください（CSV と Excel のファイルだけを表示しています）。",
-};
-
-/// 列の型（集計で読むときの DuckDB の型名）の呼び名（値の種類の呼び名にそろえる）。
-function typeLabel(t: string): string {
-  const u = t.toUpperCase();
-  if (/^(TINYINT|SMALLINT|INTEGER|BIGINT|HUGEINT|UTINYINT|USMALLINT|UINTEGER|UBIGINT)$/.test(u)) return "整数";
-  if (/INT|DOUBLE|FLOAT|DECIMAL|NUMERIC|REAL/.test(u)) return "数値";
-  if (u.startsWith("TIMESTAMP")) return "日時";
-  if (u === "DATE") return "日付";
-  if (u.startsWith("TIME")) return "時刻";
-  if (u.startsWith("BOOL")) return "はい／いいえ";
-  return "テキスト";
-}
-
-/// 集計の結果の値の渡り方（rows はテキスト・items は種類のまま・GAP-40）。
-const RESULT_VALUES_HINT =
-  "結果の行（rows）は、値をすべてテキストで渡します。数値やはい／いいえを種類のまま使うときは、行の値（items）を選び、列の名前で引きます。";
-
-/// CSV の列（本人の権限でスキーマを読む）とテーブル名の案内。読めないときはサーバーの理由（直し方つき）を出す。
-function CsvColumnsHint({ fileId }: { fileId: string | null }) {
-  const [state, setState] = React.useState<{ id: string; schema: SchemaResponse | null; reason: string | null } | null>(
-    null,
-  );
-  React.useEffect(() => {
-    if (!fileId) return;
-    let active = true;
-    getSchema(fileId)
-      .then((schema) => active && setState({ id: fileId, schema, reason: null }))
-      .catch(
-        (e) =>
-          active &&
-          setState({
-            id: fileId,
-            schema: null,
-            reason: e instanceof TabularLoadError && e.unreadable ? e.message : null,
-          }),
-      );
-    return () => {
-      active = false;
-    };
-  }, [fileId]);
-  const current = state && state.id === fileId ? state : null;
-  return (
-    <div className="space-y-1 rounded-md bg-muted/50 p-2 text-[11px] leading-relaxed text-muted-foreground" data-testid="csv-columns">
-      <p>
-        テーブル名は <code className="font-mono text-foreground">data</code> です。日本語や空白を含む列名は{" "}
-        <code className="font-mono text-foreground">&quot;列名&quot;</code> のように二重引用符で囲みます。
-      </p>
-      {!fileId ? null : !current ? (
-        <p>列を読み込み中…</p>
-      ) : current.schema === null ? (
-        <p className="text-destructive">
-          {current.reason ?? "列を読み取れませんでした。CSV か Excel として読めないか、見る権限がありません。"}
-        </p>
-      ) : (
-        <>
-          <p>
-            列:{" "}
-            {current.schema.columns.map((c, i) => (
-              <span key={`${c}-${i}`}>
-                {i > 0 ? "、" : ""}
-                <code className="font-mono text-foreground">{c}</code>
-                {current.schema!.column_types[i] ? `（${typeLabel(current.schema!.column_types[i])}）` : ""}
-              </span>
-            ))}
-            {typeof current.schema.total_rows === "number" ? `・${current.schema.total_rows} 行` : ""}
-          </p>
-          {typeof current.schema.header_row === "number" ? (
-            <p data-testid="csv-header-row">
-              {current.schema.header_row} 行目を列の名前にしています。それより上の行は表題とみなして読みません。
-            </p>
-          ) : null}
-          <ExcelSheets sheets={current.schema.sheets} />
-        </>
-      )}
-      <p data-testid="csv-result-values-hint">{RESULT_VALUES_HINT}</p>
-    </div>
-  );
-}
-
-/// SQL に書くシートの名前（二重引用符で囲み、中の二重引用符は重ねる）。
-function sheetIdent(name: string): string {
-  return `"${name.replaceAll('"', '""')}"`;
-}
-
-/// Excel のシートの一覧と、ほかのシートの読み方（GAP-84）。CSV は出さない。
-function ExcelSheets({ sheets }: { sheets: SchemaResponse["sheets"] }) {
-  if (sheets.length === 0) return null;
-  const example = sheets.find((s) => !s.data && s.usable);
-  return (
-    <div data-testid="csv-sheets">
-      <p>
-        シート:{" "}
-        {sheets.map((s, i) => (
-          // シートごとにまとめて折り返す（呼び名の途中で行を変えない）。
-          <span key={`${s.name}-${i}`} className="inline-block">
-            <code className="font-mono text-foreground">{sheetIdent(s.name)}</code>
-            {s.data ? "（data）" : !s.usable ? "（名前が重なるため、名前では読めません）" : s.hidden ? "（隠したシート）" : ""}
-            {i < sheets.length - 1 ? "、" : ""}
-          </span>
-        ))}
-      </p>
-      {example ? (
-        <p>
-          ほかのシートは <code className="font-mono text-foreground">FROM {sheetIdent(example.name)}</code>{" "}
-          のように、シートの名前で読めます。
-        </p>
-      ) : null}
-    </div>
-  );
-}
-
-const PREVIEW_ROWS = 5;
-
-/// 試し実行（本人の権限で SQL を流し、上位数行だけを見せる・ワークフローの実行や保存はしない）。
-function CsvPreview({ fileId, sql }: { fileId: string | null; sql: string }) {
-  const [running, setRunning] = React.useState(false);
-  // 結果は流したときのファイルと SQL に紐づける（どちらかを変えたら古い結果を出さない）。
-  const [result, setResult] = React.useState<{ key: string; table: TableResponse | null; error: string | null } | null>(
-    null,
-  );
-  const key = `${fileId ?? ""}\n${sql}`;
-  const shown = result && result.key === key ? result : null;
-  const run = async () => {
-    if (!fileId || !sql.trim()) return;
-    setRunning(true);
-    try {
-      const table = await runQuery(fileId, sql);
-      setResult({ key, table, error: null });
-    } catch (e) {
-      setResult({ key, table: null, error: e instanceof Error ? e.message : String(e) });
-    } finally {
-      setRunning(false);
-    }
-  };
-  return (
-    <div className="space-y-1.5">
-      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-        <Button
-          variant="outline"
-          size="sm"
-          className="h-7 text-xs"
-          loading={running}
-          disabled={!fileId || !sql.trim() || running}
-          onClick={() => void run()}
-        >
-          {!running ? <Play className="size-3.5" aria-hidden /> : null}
-          試しに実行
-        </Button>
-        <span className="text-[11px] text-muted-foreground">
-          {fileId ? "あなたの権限で流し、上位 5 行を表示します" : "ファイルを選ぶと試せます"}
-        </span>
-      </div>
-      {shown?.error ? (
-        <p role="alert" className="rounded-md border border-destructive/40 bg-destructive/5 px-2 py-1.5 text-[11px] text-destructive">
-          {shown.error}
-        </p>
-      ) : null}
-      {shown?.table ? <PreviewTable table={shown.table} /> : null}
-    </div>
-  );
-}
-
-function PreviewTable({ table }: { table: TableResponse }) {
-  const rows = table.rows.slice(0, PREVIEW_ROWS);
-  return (
-    <div className="space-y-1" data-testid="csv-preview">
-      <div className="max-w-full overflow-x-auto rounded-md border scrollbar-subtle">
-        <table className="w-full border-collapse text-[11px]">
-          <thead>
-            <tr>
-              {table.columns.map((c, i) => (
-                <th key={`${c}-${i}`} className="whitespace-nowrap border-b bg-muted/50 px-2 py-1 text-left font-medium">
-                  {c}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r, i) => (
-              <tr key={i} className="border-b last:border-b-0">
-                {r.map((v, j) => (
-                  <td key={j} className="max-w-48 truncate whitespace-nowrap px-2 py-1" title={v ?? ""}>
-                    {v ?? ""}
-                  </td>
-                ))}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <p className="text-[11px] text-muted-foreground">
-        {table.rows.length === 0
-          ? "該当する行はありません"
-          : `${table.rows.length} 行${table.truncated ? "（上限で打ち切り）" : ""}のうち上位 ${rows.length} 行`}
-      </p>
-    </div>
-  );
-}
-
-export function CsvQueryForm(props: FormProps) {
-  const { node, dispatch, refCandidates, inMapRegion, fieldErrors } = props;
-  const p = paramsOf<NodeParamsByType["csv.query"]>(node);
-  const fileId = typeof p.file === "string" && UUID_RE.test(p.file) ? p.file : null;
-  const sql = p.sql === undefined || typeof p.sql === "string" ? ((p.sql as string | undefined) ?? "") : null;
-  return (
-    <div className="space-y-4">
-      <FileField
-        {...props}
-        {...CSV_QUERY_PICKER}
-        label="集計する CSV か Excel のファイル"
-        hint="有効化のとき、このファイルの閲覧権限を渡します。Excel のファイルは、表示している左端のシートを data として読み、ほかのシートは名前で読めます。表の上にある表題の行は、列の名前にしません。"
-      />
-      {sql !== null ? (
-        <Field label="SQL（読み取りだけの SELECT）" error={fieldErrors.get("sql")}>
-          <Textarea
-            aria-label="SQL"
-            value={sql}
-            rows={5}
-            spellCheck={false}
-            autoCapitalize="none"
-            autoCorrect="off"
-            placeholder="SELECT * FROM data LIMIT 100"
-            aria-invalid={fieldErrors.get("sql") ? true : undefined}
-            onChange={(e) => patchParams(dispatch, node, { sql: e.target.value })}
-            className="font-mono text-xs md:text-xs"
-          />
-        </Field>
-      ) : (
-        <ValueExprInput
-          label="SQL（読み取りだけの SELECT）"
-          text
-          value={p.sql as ValueExpr}
-          onChange={(v) => patchParams(dispatch, node, { sql: v })}
-          refCandidates={refCandidates}
-          inMapRegion={inMapRegion}
-          multiline
-          error={fieldErrors.get("sql")}
-        />
-      )}
-      <CsvColumnsHint fileId={fileId} />
-      {sql !== null ? <CsvPreview fileId={fileId} sql={sql} /> : null}
-    </div>
-  );
-}
 
 /// 編集前の版（数で指定 ／ 前の結果から）。数のときは選んだファイルの今の版を入れられる。
 function BaseRevField({ node, dispatch, refCandidates, inMapRegion, fieldErrors }: FormProps) {
