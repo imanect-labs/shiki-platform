@@ -692,8 +692,10 @@ else
     EFF_CORS='[*]'
     EMBED_LINE="# 埋め込みの版は server の既定値（ローカルの worker と同じ）"
   fi
-  # CSV の集計の隔離ランナー（csv.* のブロックと CSV の画面の SQL が使う・BUG-22）。呼び出し側の env にあればそれを使う。
-  TABULAR_RUNNER=${SHIKI__TABULAR__RUNNER_PATH:-$ROOT/crates/tabular/runner/target/debug/shiki-tabular-runner}
+  # CSV の集計の隔離ランナー（csv.* のブロックと CSV の画面の SQL が使う・BUG-22）。呼び出し側の env にあればそれを使う
+  # （版のサーバーの評価は版のランナーを渡す）。無ければ CI の tabular-runner ジョブと同じ release ビルドを下でビルドして使う。
+  TABULAR_RUNNER_FROM_ENV=${SHIKI__TABULAR__RUNNER_PATH:+1}
+  TABULAR_RUNNER=${SHIKI__TABULAR__RUNNER_PATH:-$ROOT/crates/tabular/runner/target/release/shiki-tabular-runner}
   # ログインの戻り先（web と同じオリジン）。--api-only では API を直接叩くので API のオリジンにする。
   LOGIN_ORIGIN=http://localhost:3000
   [ "$API_ONLY" = 1 ] && LOGIN_ORIGIN=http://localhost:${API_PORT}
@@ -704,7 +706,6 @@ else
   Q_S3_PUBLIC=$(printf '%q' "$EFF_S3_PUBLIC")
   Q_S3_BUCKET=$(printf '%q' "$EFF_S3_BUCKET")
   Q_WORKER_URL=$(printf '%q' "$EFF_WORKER_URL")
-  Q_RUNNER=$(printf '%q' "$ROOT/crates/tabular/runner/target/release/shiki-tabular-runner")
   if [ -n "$EFF_CORS" ]; then
     CORS_LINE="export SHIKI__STORAGE__S3__CORS_ALLOWED_ORIGINS=$(printf '%q' "$EFF_CORS")"
   else
@@ -754,12 +755,6 @@ ${CORS_LINE}
 export SHIKI__STORAGE__S3__ACCESS_KEY="\${SHIKI_DEV_RUN_S3_ACCESS_KEY:?dev-up.sh から起動してください}"
 export SHIKI__STORAGE__S3__SECRET_KEY="\${SHIKI_DEV_RUN_S3_SECRET_KEY:?dev-up.sh から起動してください}"
 export SHIKI__GATEWAY__ENABLED=true
-# data の keyset カーソル鍵（開発専用の起動時乱数）。compose の shiki-server と同じ既定にする
-# （未設定だと鍵ファイルを要求して起動に失敗する・docker-compose.yml の同名設定を参照）。
-export SHIKI__DATA__EPHEMERAL_CURSOR_KEY=true
-# CSV（tabular）の DuckDB 隔離ランナー。workspace 外のクレートなので下で個別にビルドし、
-# 絶対パスで渡す（既定の bare 名は PATH 解決になり、native では見つからず CSV が開けない）。
-export SHIKI__TABULAR__RUNNER_PATH=${Q_RUNNER}
 # native の第2/第3リスナは compose の shiki-server（8090/8091 を publish）と衝突しない
 # 18090/18091 を使う。web 側には NEXT_PUBLIC_GATEWAY_ORIGIN / NEXT_PUBLIC_B1_ORIGIN で
 # 同じ値を渡す。
@@ -774,8 +769,10 @@ export SHIKI__CHAT__ENABLED=true
 # 回答の ui ブロック（Yui）の図（#530）。compose の既定と揃える。
 export SHIKI__CHAT__YUI=true
 export SHIKI__WORKFLOW__ENABLED=true
-# data の一覧の続きの位置の鍵（無いと起動が止まる）は開発用の乱数鍵にする。CSV の集計は隔離ランナーで動かす
-# （無いと csv.* が失敗する）。どちらも呼び出し側の env にあればそれを使う（BUG-22）。
+# data の一覧の続きの位置の鍵（無いと起動が止まる）は開発用の乱数鍵にする（compose の shiki-server と同じ既定）。
+# CSV の集計は DuckDB の隔離ランナーで動かす（無いと csv.* と CSV の画面が失敗する）。ランナーは workspace の外の
+# クレートなので dev-up.sh が個別にビルドし、絶対パスで渡す（既定の bare 名は PATH で探し、native では見つからない）。
+# どちらも呼び出し側の env にあればそれを使う（BUG-22）。
 export SHIKI__DATA__EPHEMERAL_CURSOR_KEY=${SHIKI__DATA__EPHEMERAL_CURSOR_KEY:-true}
 export SHIKI__TABULAR__RUNNER_PATH=${Q_TABULAR_RUNNER}
 # 既定は stub（E2E の前提）。実 LLM で確かめるときは呼び出し側で BACKEND 等を渡す
@@ -859,21 +856,21 @@ EOF
     fi
   fi
 
-  if [ ! -x "$TABULAR_RUNNER" ]; then
+  # CSV の隔離ランナー（CI の tabular-runner ジョブと同じ release ビルド）。呼び出し側がランナーもサーバーも渡さない
+  # ときだけ、毎回 cargo に任せる（変更が無ければすぐ終わり、crates/tabular の変更はランナーにも入る）。DuckDB を同梱
+  # するため、初回だけ数分かかる。渡されたもの（版のサーバーの評価など・--server-bin）は作業ツリーからビルドし直さない。
+  if [ -z "$TABULAR_RUNNER_FROM_ENV" ] && [ -z "$SERVER_BIN" ]; then
+    if [ ! -x "$TABULAR_RUNNER" ]; then
+      say "   CSV ランナー（shiki-tabular-runner）をビルド中（初回は数分）…"
+    fi
+    if ! cargo build --manifest-path "$ROOT/crates/tabular/runner/Cargo.toml" --release; then
+      err "shiki-tabular-runner のビルドに失敗しました（CSV の表示・クエリは使えません）。"
+      exit 1
+    fi
+  elif [ ! -x "$TABULAR_RUNNER" ]; then
     err "   ⚠️ CSV の集計の隔離ランナーがありません: $TABULAR_RUNNER"
-    err "      このままでは csv.* のブロックと CSV の画面の SQL が失敗します。次でビルドしてください:"
-    err "      cargo build --locked --manifest-path crates/tabular/runner/Cargo.toml"
-  fi
-
-  # CSV の隔離ランナー（CI の tabular-runner ジョブと同じ release ビルド）。毎回 cargo に
-  # 任せる（変更が無ければすぐ終わり、crates/tabular の変更はランナーにも入る）。
-  # DuckDB を同梱するため、初回だけ数分かかる。
-  if [ ! -x "$ROOT/crates/tabular/runner/target/release/shiki-tabular-runner" ]; then
-    say "   CSV ランナー（shiki-tabular-runner）をビルド中（初回は数分）…"
-  fi
-  if ! cargo build --manifest-path "$ROOT/crates/tabular/runner/Cargo.toml" --release; then
-    err "shiki-tabular-runner のビルドに失敗しました（CSV の表示・クエリは使えません）。"
-    exit 1
+    err "      このままでは csv.* のブロックと CSV の画面の SQL が失敗します。SHIKI__TABULAR__RUNNER_PATH で渡すか、"
+    err "      次でビルドしてください: cargo build --locked --release --manifest-path crates/tabular/runner/Cargo.toml"
   fi
 
   apply_store_switch
