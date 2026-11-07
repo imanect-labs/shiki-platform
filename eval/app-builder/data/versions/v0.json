@@ -1,0 +1,11 @@
+{
+  "binary_sha256": "bfb4f4ca2672bf1457fcc12eaf6b4de02e86ce31ce62c18d00aca1f8a839421e",
+  "built_at": "2026-11-07T03:36:10Z",
+  "commit": "81a9899b5f386add09e608887c0a08e142193967",
+  "label": "v0",
+  "runner_lock_diff_sha256": "a9012c9ddf9d7fb2e1cd198b9ff73f71797c490b55f734a3398541acda6585c7",
+  "runner_lock_updated": true,
+  "runner_sha256": "746a66d2a811599f7c71253f9c9891f3f4e873aa96ef8ec8b07070fea641c0ba",
+  "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+  "tree_clean": true
+}

@@ -25,7 +25,8 @@
 #   --dry-run は何も作らずに手順だけを表示する。
 #   --runner-lock-update: その commit のランナーの Cargo.lock が古く、`--locked` でビルドできないとき
 #     （81a9899b のように、path で参照する shiki-tabular の依存が増えたのに lock を更新していない commit）に付ける。
-#     ランナーだけを `--offline`（`--locked` なし）でビルドし、lock の今ある版は残して足りない分だけを足させる。
+#     ランナーだけを `--offline`（`--locked` なし）でビルドし、lock の今ある版は残して足りない分だけを足させる
+#     （使われなくなった古い重複の版は cargo が刈る）。
 #     書き換わってよいのはランナーの Cargo.lock だけで、ほかが変われば今までどおり止める。lock を足したときは
 #     <versions-dir>/<label>.runner-lock.diff に差分を残し、版の記録に runner_lock_updated と差分の sha256 を書く。
 #   cargo と rustc は ABEVAL_CARGO・ABEVAL_RUSTC で差し替えられる（テスト用）。

@@ -91,7 +91,9 @@ eval/app-builder/scripts/build-version.sh v0 81a9899b
   ビルドが作業ツリーを書き換えた場合は止める（素性を確かめられない版は測らない）。worktree は失敗しても消す。
 - `--runner-lock-update`: その commit のランナーの Cargo.lock が古く、`--locked` でビルドできない版に付ける。
   V0（81a9899b）がそうで、ランナーが path で参照する shiki-tabular の依存が増えたのに lock を更新していない。
-  ランナーだけを `--offline` でビルドし、lock の今ある版（DuckDB など）は残して足りない分だけを足させる。
+  ランナーだけを `--offline` でビルドし、lock の今ある版（DuckDB など）は残して足りない分だけを足させる
+  （使われなくなった古い重複の版は cargo が刈る。V0 では 5 個を足し、hyper 0.14 などの使われない古い版を刈った。
+  残った依存の版は 1 つも変わらず、DuckDB は 1.10504.0 のまま）。
   書き換わってよいのはランナーの Cargo.lock だけで、差分を `data/versions/<label>.runner-lock.diff` に残し、
   版の記録に `runner_lock_updated` と差分の sha256 を書く。付けずに断られたときは、その旨を出して止まる。
 
