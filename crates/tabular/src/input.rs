@@ -40,6 +40,33 @@ pub fn sniff(bytes: &[u8]) -> Sniffed {
     }
 }
 
+/// Excel のブックの名前の拡張子（マクロ付きを含む）。
+const WORKBOOK_EXTENSIONS: [&str; 2] = [".xlsx", ".xlsm"];
+
+/// Excel のブックの Content-Type（ブラウザが .xlsx・.xlsm に付けるもの）。Windows が CSV に付ける
+/// `application/vnd.ms-excel` は含めない。
+const WORKBOOK_CONTENT_TYPES: [&str; 2] = [
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "application/vnd.ms-excel.sheet.macroenabled.12",
+];
+
+/// 中身を取得する前に、名前と Content-Type（メタデータ）から Excel のブックと見るか（取得してから断らないため）。
+///
+/// 画面（ワークフローの「CSV を集計」のファイルの選び方）が Excel と見るものと同じ。形式を決めるのは中身の先頭の
+/// バイト（[`sniff`]）で、これは取得を省くための前倒しの確かめ。名前も Content-Type もアップロードした人が決めるので、
+/// ここで Excel と見なかったファイルも、取得した後に [`sniff`] で確かめる。
+#[must_use]
+pub fn looks_like_workbook(name: &str, content_type: Option<&str>) -> bool {
+    let name = name.trim();
+    let content_type = content_type.unwrap_or_default().trim().to_ascii_lowercase();
+    WORKBOOK_EXTENSIONS
+        .into_iter()
+        .any(|ext| strip_ascii_suffix(name, ext).is_some())
+        || WORKBOOK_CONTENT_TYPES
+            .into_iter()
+            .any(|t| content_type.starts_with(t))
+}
+
 /// 古い形式の Office・パスワードを付けたファイルを集計に渡したとき。
 pub const OLD_OFFICE: &str = "古い形式の Excel（.xls）と、パスワードを付けたファイルは読めません。Excel で .xlsx か CSV に保存し直してください。";
 
@@ -90,6 +117,29 @@ mod tests {
         // 「PK」で始まる CSV は文章のまま（4 バイトの印がそろったときだけ zip）。
         assert_eq!(sniff(b"PK,amount\n1,2\n"), Sniffed::Text);
         assert_eq!(sniff(b""), Sniffed::Text);
+    }
+
+    #[test]
+    fn workbooks_are_seen_from_the_name_or_the_content_type() {
+        let xlsx = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+        assert!(looks_like_workbook("売上.XLSX", None));
+        assert!(looks_like_workbook(
+            "売上.xlsm ",
+            Some("application/octet-stream")
+        ));
+        assert!(looks_like_workbook("売上", Some(xlsx)));
+        assert!(looks_like_workbook(
+            "売上",
+            Some("application/vnd.ms-excel.sheet.macroEnabled.12")
+        ));
+        // Windows が CSV に付ける Content-Type・古い形式の .xls（中身で決める）・CSV は Excel と見ない。
+        assert!(!looks_like_workbook(
+            "経費.csv",
+            Some("application/vnd.ms-excel")
+        ));
+        assert!(!looks_like_workbook("古い.xls", None));
+        assert!(!looks_like_workbook("xlsx の一覧.csv", Some("text/csv")));
+        assert!(!looks_like_workbook("İ.csv", None));
     }
 
     #[test]

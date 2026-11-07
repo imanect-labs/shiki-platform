@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use authz::AuthContext;
 use futures::future::try_join_all;
-use storage::{NodeKind, OnNameTaken, StorageService};
+use storage::{Node, NodeKind, OnNameTaken, StorageService};
 use uuid::Uuid;
 
 use crate::error::TabularError;
@@ -200,7 +200,23 @@ impl TabularService {
             total = total.saturating_add(u64::try_from(size).unwrap_or(u64::MAX));
         }
         self.check_input_budget(total)?;
-        // 2) 並行に取得する（各取得も viewer を要求する＝メタデータ確認後の剥奪も拾う）。各ファイルは
+        // 2) Excel に表を足す要求・Excel を表として足す要求は、本体を取得する前にメタデータ（名前・Content-Type）で
+        //    断る（取得してから断らない）。形式を決めるのは中身の先頭のバイトなので、ここを通ったファイルも 4) の後に
+        //    中身で確かめる。
+        if !tables.is_empty() {
+            let workbook =
+                |node: &Node| input::looks_like_workbook(&node.name, node.content_type.as_deref());
+            if workbook(&metas[0]) {
+                return Err(excel_cannot_take_tables());
+            }
+            let meta_of: HashMap<Uuid, &Node> = ids.iter().copied().zip(&metas).collect();
+            for t in tables {
+                if meta_of.get(&t.file_id).is_some_and(|node| workbook(node)) {
+                    return Err(table_not_csv(&t.name));
+                }
+            }
+        }
+        // 3) 並行に取得する（各取得も viewer を要求する＝メタデータ確認後の剥奪も拾う）。各ファイルは
         //    確認したサイズを上限に取得する＝確認後に大きい版へ差し替わっても、全体をメモリへ載せる
         //    前に拒否される（取得する元のバイト列の合計は予算内に収まる）。try_join_all は最初の失敗で
         //    残りを破棄する。
@@ -210,7 +226,7 @@ impl TabularService {
                 .map(|(id, size)| self.fetch_input(ctx, *id, Some(*size), trace_id)),
         )
         .await?;
-        // 3) 1) は元のバイト数で数えた。CSV は UTF-8 に直して一時ファイルに書く（GAP-45）ので、大きくなることがある
+        // 4) 1) は元のバイト数で数えた。CSV は UTF-8 に直して一時ファイルに書く（GAP-45）ので、大きくなることがある
         //    （Shift_JIS の半角カナは 1 バイトが 3 バイト、全角は 2 バイトが 3 バイト）。ランナーに渡す一時ファイルの
         //    合計も予算に収める。
         let written = fetched
@@ -231,20 +247,16 @@ impl TabularService {
                 .ok_or_else(|| TabularError::Internal("一時ファイルが見つかりません".into()))
         };
         let primary = input(&file_id)?;
+        // 2) の前倒しの確かめを通った（名前・Content-Type が Excel でない）ファイルも、中身で決めた形式で確かめる。
         if !tables.is_empty() && primary.format != InputFormat::Csv {
-            return Err(TabularError::InvalidTables(
-                "Excel のファイルには、ほかの CSV を表として足せません（CSV のファイルで使ってください）".into(),
-            ));
+            return Err(excel_cannot_take_tables());
         }
         let extra = tables
             .iter()
             .map(|t| {
                 let table = input(&t.file_id)?;
                 if table.format != InputFormat::Csv {
-                    return Err(TabularError::InvalidTables(format!(
-                        "テーブル `{}` のファイルは CSV ではありません（足せるのは CSV だけです）",
-                        t.name
-                    )));
+                    return Err(table_not_csv(&t.name));
                 }
                 Ok(RunnerTable {
                     name: t.name.clone(),
@@ -404,10 +416,12 @@ impl TabularService {
                 (runner_file(&bytes, ".xlsx")?, InputFormat::Xlsx)
             }
             Sniffed::OldOffice => return Err(TabularError::NotText(input::OLD_OFFICE.into())),
-            Sniffed::Text => (
-                runner_file(decode_csv(&bytes)?.text.as_bytes(), ".csv")?,
-                InputFormat::Csv,
-            ),
+            Sniffed::Text => {
+                let text = decode_csv(&bytes)?.text;
+                // UTF-8 に直したら元のバイト列はすぐ手放す（一時ファイルに書く間、両方をメモリに持たない）。
+                drop(bytes);
+                (runner_file(text.as_bytes(), ".csv")?, InputFormat::Csv)
+            }
         };
         Ok(RunnerInput {
             file,
@@ -525,6 +539,21 @@ fn runner_file(bytes: &[u8], suffix: &str) -> Result<tempfile::NamedTempFile, Ta
 /// CSV の中身を読めないときの文言（利用者向け・ワークフローの誤りと CSV の画面にそのまま出す）。
 const NOT_TEXT_CSV: &str =
     "この CSV の中身は文章として読めません。UTF-8 か Shift_JIS で保存した CSV を選んでください。";
+
+/// Excel の主ファイルに表を足そうとしたとき（取得の前と後の確かめで同じ文言）。
+fn excel_cannot_take_tables() -> TabularError {
+    TabularError::InvalidTables(
+        "Excel のファイルには、ほかの CSV を表として足せません（CSV のファイルで使ってください）"
+            .into(),
+    )
+}
+
+/// 表として足すファイルが CSV でないとき（取得の前と後の確かめで同じ文言）。
+fn table_not_csv(name: &str) -> TabularError {
+    TabularError::InvalidTables(format!(
+        "テーブル `{name}` のファイルは CSV ではありません（足せるのは CSV だけです）"
+    ))
+}
 
 /// CSV のバイト列の文字コードを決めて読む（読めなければ [`TabularError::NotText`]）。
 fn decode_csv(bytes: &[u8]) -> Result<textenc::Decoded, TabularError> {

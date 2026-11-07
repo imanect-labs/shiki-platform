@@ -282,8 +282,82 @@ struct Env {
     /// 隔離ランナーのパス（クォータを変えた TabularService を別に組む用）。
     runner: PathBuf,
     storage: Arc<storage::StorageService>,
+    /// StorageService を別に組む用（取得の回数を数える store を挟む）。
+    pool: sqlx::PgPool,
+    object_store: Arc<dyn storage::ObjectStore>,
     ctx: authz::AuthContext,
     authz: Arc<AllowAll>,
+}
+
+/// 本体の取得（`get_object`）の回数を数える ObjectStore（ほかはそのまま渡す）。取得の前に断ることを確かめる。
+struct CountingStore {
+    inner: Arc<dyn storage::ObjectStore>,
+    gets: std::sync::atomic::AtomicUsize,
+}
+
+#[async_trait]
+impl storage::object_store::ObjectStore for CountingStore {
+    async fn ensure_bucket(&self) -> Result<(), storage::ObjectStoreError> {
+        self.inner.ensure_bucket().await
+    }
+    async fn presign_get_internal(
+        &self,
+        k: &str,
+        t: Duration,
+    ) -> Result<String, storage::ObjectStoreError> {
+        self.inner.presign_get_internal(k, t).await
+    }
+    async fn presign_put(
+        &self,
+        k: &str,
+        t: Duration,
+        l: i64,
+    ) -> Result<String, storage::ObjectStoreError> {
+        self.inner.presign_put(k, t, l).await
+    }
+    async fn presign_get(
+        &self,
+        k: &str,
+        t: Duration,
+        f: Option<&str>,
+        c: Option<&str>,
+    ) -> Result<String, storage::ObjectStoreError> {
+        self.inner.presign_get(k, t, f, c).await
+    }
+    async fn read_and_hash(&self, k: &str) -> Result<(String, u64), storage::ObjectStoreError> {
+        self.inner.read_and_hash(k).await
+    }
+    async fn put_object(
+        &self,
+        k: &str,
+        b: Vec<u8>,
+        c: &str,
+    ) -> Result<(), storage::ObjectStoreError> {
+        self.inner.put_object(k, b, c).await
+    }
+    async fn get_object(&self, k: &str) -> Result<Vec<u8>, storage::ObjectStoreError> {
+        self.gets.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.inner.get_object(k).await
+    }
+    async fn exists(&self, k: &str) -> Result<bool, storage::ObjectStoreError> {
+        self.inner.exists(k).await
+    }
+    async fn copy(&self, s: &str, d: &str) -> Result<(), storage::ObjectStoreError> {
+        self.inner.copy(s, d).await
+    }
+    async fn delete(&self, k: &str) -> Result<(), storage::ObjectStoreError> {
+        self.inner.delete(k).await
+    }
+    async fn list_prefix(
+        &self,
+        p: &str,
+        c: Option<&str>,
+    ) -> Result<(Vec<String>, Option<String>), storage::ObjectStoreError> {
+        self.inner.list_prefix(p, c).await
+    }
+    async fn delete_batch(&self, k: &[String]) -> Result<(), storage::ObjectStoreError> {
+        self.inner.delete_batch(k).await
+    }
 }
 
 async fn setup() -> Option<Env> {
@@ -329,7 +403,7 @@ async fn setup() -> Option<Env> {
     object_store.ensure_bucket().await.expect("bucket");
     let storage = Arc::new(storage::StorageService::new(
         pool.clone(),
-        object_store,
+        Arc::clone(&object_store),
         Arc::clone(&authz),
         Duration::from_secs(120),
         Duration::from_secs(900),
@@ -376,6 +450,8 @@ async fn setup() -> Option<Env> {
         app,
         runner: runner.clone(),
         storage,
+        pool,
+        object_store,
         ctx: authz::AuthContext::new(
             principal(),
             "acme".into(),
@@ -1644,6 +1720,118 @@ async fn tabular_query_budget_counts_inputs_after_conversion() {
         .await
         .expect("直した後の合計が予算内");
     assert_eq!(ok.rows.len(), 1);
+}
+
+/// Excel の主ファイルに表を足す要求と、Excel を表として足す要求は、本体を取得する前にメタデータ（名前・Content-Type）で
+/// 断る（M5）。名前と Content-Type が CSV のままで中身が Excel のファイルは、取得した後に中身で確かめて同じく断る。
+#[tokio::test]
+async fn tabular_query_refuses_excel_tables_before_fetching() {
+    let Some(env) = setup().await else { return };
+    let counting = Arc::new(CountingStore {
+        inner: Arc::clone(&env.object_store),
+        gets: std::sync::atomic::AtomicUsize::new(0),
+    });
+    let storage = Arc::new(storage::StorageService::new(
+        env.pool.clone(),
+        Arc::clone(&counting) as Arc<dyn storage::ObjectStore>,
+        Arc::clone(&env.authz) as Arc<dyn AuthzClient>,
+        Duration::from_secs(120),
+        Duration::from_secs(900),
+        64 * 1024 * 1024,
+    ));
+    let service = tabular::TabularService::new(
+        Arc::clone(&storage),
+        tabular::RunnerConfig::new(
+            env.runner.to_string_lossy().to_string(),
+            Duration::from_secs(20),
+        ),
+        tabular::Quotas::default(),
+    );
+    let gets = || counting.gets.load(std::sync::atomic::Ordering::SeqCst);
+    // 中身は実行ごとに変える（同じ DB で流し直しても読めるように）。
+    let tag = Uuid::new_v4().simple().to_string();
+    let zip = [b"PK\x03\x04".as_slice(), tag.as_bytes()].concat();
+    let write = |name: String, bytes: Vec<u8>, content_type: &'static str| {
+        let storage = Arc::clone(&storage);
+        let ctx = env.ctx.clone();
+        async move {
+            storage
+                .write_file_internal(&ctx, None, &name, &bytes, content_type, None)
+                .await
+                .expect("create file")
+                .id
+        }
+    };
+    let book = write(
+        format!("売上-{tag}.xlsx"),
+        zip.clone(),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    .await;
+    // Content-Type だけが Excel のもの（名前に拡張子が無い）も、画面と同じく Excel と見る。
+    let typed = write(
+        format!("売上-{tag}"),
+        [zip.as_slice(), b"-typed"].concat(),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    .await;
+    let csv = write(
+        format!("経費-{tag}.csv"),
+        format!("k\n{tag}\n").into_bytes(),
+        "text/csv",
+    )
+    .await;
+    let table = |name: &str, file_id: Uuid| tabular::TableRef {
+        name: name.into(),
+        file_id,
+    };
+    let sql = "SELECT * FROM data";
+
+    let res = service
+        .query_tables(&env.ctx, book, &[table("other", csv)], sql, None)
+        .await;
+    assert!(
+        matches!(&res, Err(tabular::TabularError::InvalidTables(m)) if m.contains("Excel のファイルには、ほかの CSV を表として足せません")),
+        "主ファイルが Excel: {res:?}"
+    );
+    for file_id in [book, typed] {
+        let res = service
+            .query_tables(&env.ctx, csv, &[table("book", file_id)], sql, None)
+            .await;
+        assert!(
+            matches!(&res, Err(tabular::TabularError::InvalidTables(m)) if m.contains("テーブル `book` のファイルは CSV ではありません")),
+            "表が Excel: {res:?}"
+        );
+    }
+    assert_eq!(gets(), 0, "本体を取得する前に断る");
+
+    // 名前と Content-Type は CSV のまま、中身が Excel のファイル: 取得した後に中身で確かめて断る（同じ文言）。
+    let disguised = write(
+        format!("偽-{tag}.csv"),
+        [zip.as_slice(), b"-disguised"].concat(),
+        "text/csv",
+    )
+    .await;
+    let res = service
+        .query_tables(&env.ctx, csv, &[table("book", disguised)], sql, None)
+        .await;
+    assert!(
+        matches!(&res, Err(tabular::TabularError::InvalidTables(m)) if m.contains("テーブル `book` のファイルは CSV ではありません")),
+        "中身が Excel: {res:?}"
+    );
+    let res = service
+        .query_tables(&env.ctx, disguised, &[table("other", csv)], sql, None)
+        .await;
+    assert!(
+        matches!(&res, Err(tabular::TabularError::InvalidTables(m)) if m.contains("Excel のファイルには")),
+        "中身が Excel の主ファイル: {res:?}"
+    );
+    assert!(gets() > 0, "中身で決める確かめは取得の後");
+
+    // 表を足さなければ、Excel の主ファイルは今までどおり取得して読む（前倒しの確かめは表を足すときだけ）。
+    let before = gets();
+    let _ = service.query_tables(&env.ctx, book, &[], sql, None).await;
+    assert!(gets() > before, "表を足さない集計は Excel も取得する");
 }
 
 /// #1037: 確認したサイズを上限にした取得は、確認後に大きい版へ差し替わったらダウンロード前に拒否する
