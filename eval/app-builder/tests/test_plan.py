@@ -56,11 +56,13 @@ def test_spec_validation():
 
 def test_estimate_uses_the_table_and_the_reserve():
     cfg = load_config()
+    # 見積もりの値は E0 の実測で置き換えるので、eval.toml の表から読んで比べる。
+    est = cfg.estimates["a"]
     p = make_plan(spec(), cfg, eval_spent_usd=0, relay_spent_usd=0)
     assert p.ok
-    assert p.worst_usd == pytest.approx(180 * 0.012)
-    assert p.central_usd == pytest.approx(180 * 0.005)
-    assert p.cap_usd == pytest.approx(min(180 * 0.012 * 1.2, 10))
+    assert p.worst_usd == pytest.approx(180 * est.worst)
+    assert p.central_usd == pytest.approx(180 * est.central)
+    assert p.cap_usd == pytest.approx(min(180 * est.worst * 1.2, 10))
     # 取り込みから組んだ予約（abeval.proxy と同じ式）が大きければそれを最悪にする。
     r = mode_a_reserve_usd(cfg, 60_000, 8192)
     assert r == pytest.approx((60_000 * 0.10 + 8192 * 0.50) / 1e6, rel=1e-3)
@@ -77,14 +79,16 @@ def test_effort_and_steps_raise_the_mode_b_worst():
     steps = make_plan(
         spec(mode="b", max_steps=12), cfg, eval_spent_usd=0, relay_spent_usd=0
     ).worst_usd
-    assert base == pytest.approx(60 * 0.05)
-    assert high == pytest.approx(60 * 0.07)
-    assert steps == pytest.approx(60 * 0.10)
+    est = cfg.estimates["b"]
+    assert base == pytest.approx(60 * est.worst)
+    assert high == pytest.approx(60 * est.worst_for(effort="high"))
+    assert steps == pytest.approx(60 * est.worst_for(max_steps=12))
+    assert high > base and steps > base
 
 
 def test_refuses_a_run_over_ten_dollars_and_shows_splits():
     cfg = load_config()
-    # E1 の Mode B の 3 版分（180 試行 × 最悪 $0.05 = $9）に high を足すと $10 を超える。
+    # E1 の Mode B の 3 版分（180 試行）に high を足すと $10 を超える。
     s = spec(mode="b", trials=9, efforts=("medium", "high"))
     p = make_plan(s, cfg, eval_spent_usd=0, relay_spent_usd=0)
     assert not p.ok and p.worst_usd > 10

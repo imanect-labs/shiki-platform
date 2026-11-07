@@ -75,14 +75,17 @@ run_case_timeout_secs = 180
 # run_case を通ってしまう・tests/test_core_tasks.py が確かめる）。
 fixed_date = "2026-11-04"
 
-# 1 試行の見積もり（USD・推測。E0 の実測で置き換える・GAP-30 §13）。plan は最悪で上限を判定する。
+# 1 試行の見積もり（USD・GAP-30 §13）。plan は最悪で上限を判定する。
+# a と b は E0（2026-11-07・vn・Haiku 5.5・effort medium・4 課題）の実測で置き換えた: Mode A は平均 $0.0037・
+# 最大 $0.0054（12 試行）、Mode B は平均 $0.0107・最大 $0.0214（12 試行・手数の上限 6 に達した試行を含む）。
+# 最悪は、E0 に無い大きな課題に備えて実測の最大のおよそ 1.6〜2 倍にした。effort high と手数 12 は推測のまま。
 [estimates.a]
-central = 0.005
-worst = 0.012
+central = 0.0037
+worst = 0.010
 
 [estimates.b]
-central = 0.03
-worst = 0.05
+central = 0.0107
+worst = 0.035
 
 [estimates.b.effort_worst]
 high = 0.07
