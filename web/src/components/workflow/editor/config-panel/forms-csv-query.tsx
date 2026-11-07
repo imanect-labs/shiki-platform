@@ -24,7 +24,7 @@ import {
   type SchemaResponse,
   type TableResponse,
 } from "@/lib/tabular-api";
-import { Field } from "./common";
+import { BLANK_PICK_MESSAGE, BLANK_REQUIRED_MESSAGE, Field } from "./common";
 import type { FormProps } from "./forms-basic";
 import {
   FileField,
@@ -381,14 +381,38 @@ function previewTables(value: ValueExpr | undefined): { tables: QueryTable[] } |
   return { tables };
 }
 
+/// つなぐ CSV のファイルが空か（項目が無い・空の文字。前の結果から指定した値は空と見ない・readiness と同じ）。
+function fileBlank(t: TableItem): boolean {
+  return t.file === undefined || t.file === null || (typeof t.file === "string" && t.file.trim() === "");
+}
+
+/// 行の key（並びの添字ではなく、行を足したときに振る印・IR には書かない）。前の行を外したとき、後の行の欄の状態
+/// （ファイルの「ドライブから選ぶ／前の結果から指定する」の切り替えなど）が前の行から移らないようにする。並びが外から
+/// 変わった（取り消し・読み直し）ときは、足りない分を振り足し、余る分を落とす。
+function useRowKeys(count: number): { keys: readonly number[]; remove: (i: number) => void } {
+  const ref = React.useRef<{ keys: number[]; next: number }>({ keys: [], next: 0 });
+  const rows = ref.current;
+  while (rows.keys.length < count) rows.keys.push(rows.next++);
+  if (rows.keys.length > count) rows.keys.length = count;
+  return { keys: rows.keys, remove: (i) => void rows.keys.splice(i, 1) };
+}
+
 /// つなぐ CSV（`tables`・#1037）。足した CSV は、付けた名前の表として SQL で読める（集計するファイルは data）。
 ///
 /// 空のときは「つなぐ CSV を足す」のボタンだけを出す。ドライブから CSV を選ぶと 1 件足し、名前はファイル名から付ける
-/// （英字の無い名前は t1 のような番号）。`tables` 全体を前の結果から指定しているときは、その値の欄を出す。
+/// （英字の無い名前は t1 のような番号）。足した後は足した行の「SQL での名前」へ、選ばずに閉じたら足すボタンへ
+/// フォーカスを戻す。空のときも足した後も同じ根の要素の中に、足すボタンとピッカーを同じ位置で置く（作り直さない）。
+/// `tables` 全体を前の結果から指定しているときは、その値の欄を出す。
 function CsvTablesField(props: FormProps & { primaryExcel: boolean }) {
   const { node, dispatch, refCandidates, inMapRegion, fieldErrors, serverCheck, primaryExcel } = props;
   const value = paramsOf<NodeParamsByType["csv.query"]>(node).tables as ValueExpr | undefined;
   const [open, setOpen] = React.useState(false);
+  const items = (Array.isArray(value) ? value : []).map(tableItem);
+  const rowKeys = useRowKeys(items.length);
+  const listRef = React.useRef<HTMLUListElement>(null);
+  const addButton = React.useRef<HTMLButtonElement>(null);
+  /// ピッカーで CSV を選んで閉じたか（閉じた後、足した行へフォーカスを移す）。
+  const added = React.useRef(false);
   if (value !== undefined && !Array.isArray(value)) {
     return (
       <ValueExprInput
@@ -412,12 +436,27 @@ function CsvTablesField(props: FormProps & { primaryExcel: boolean }) {
       />
     );
   }
-  const items = (value ?? []).map(tableItem);
   const write = (next: TableItem[]) => patchParams(dispatch, node, { tables: next.length > 0 ? next : undefined });
   const update = (i: number, patch: TableItem) => write(items.map((t, j) => (j === i ? { ...t, ...patch } : t)));
+  const remove = (i: number) => {
+    rowKeys.remove(i);
+    write(items.filter((_, j) => j !== i));
+  };
   const full = items.length >= MAX_EXTRA_TABLES;
-  // 欄そのものの誤り（形の誤りなど）。1 件ごとの誤りはその件の下に出すので、ここで同じ文を重ねない。
-  const fieldError = items.some((_, i) => fieldErrors.has(`tables/${i}`)) ? undefined : fieldErrors.get("tables");
+  // 欄そのものの誤り（形の誤りなど）。1 件ごとの誤りはその件の下に出すので、ここで同じ文を重ねない。空の欄の知らせ
+  // （保存時の注意の名前・ファイルが空）も、行ごとに出すので重ねない。
+  const listError = fieldErrors.get("tables");
+  const fieldError =
+    listError === BLANK_PICK_MESSAGE ||
+    listError === BLANK_REQUIRED_MESSAGE ||
+    items.some((_, i) => fieldErrors.has(`tables/${i}`))
+      ? undefined
+      : listError;
+  // 行のファイルの欄の誤り。空なら「選んでください」（ほかの選ぶ欄と同じ・保存時の注意を待たない）。
+  const rowErrors = (i: number, t: TableItem) => {
+    if (fieldErrors.has(`tables/${i}`) || !fileBlank(t)) return fieldErrors;
+    return new Map(fieldErrors).set(`tables/${i}`, BLANK_PICK_MESSAGE);
+  };
   const example = items.find((t) => typeof t.name === "string" && isValidTableName(t.name))?.name as string | undefined;
   const picker = (
     <DrivePicker
@@ -429,114 +468,125 @@ function CsvTablesField(props: FormProps & { primaryExcel: boolean }) {
       onSelect={(n) => {
         rememberDriveItem(n);
         const taken = items.flatMap((t) => (typeof t.name === "string" ? [t.name] : []));
+        added.current = true;
         write([...items, { name: deriveTableName(n.name, taken), file: n.id }]);
+      }}
+      onCloseAutoFocus={(e) => {
+        // ダイアログを開いたボタンは Radix の Trigger ではないので、何もしないとフォーカスがページの先頭へ落ちる。
+        // 足したら足した行の「SQL での名前」へ、選ばずに閉じたら「つなぐ CSV を足す」へ戻す。
+        const rows = added.current
+          ? listRef.current?.querySelectorAll<HTMLElement>('[data-testid="csv-table"]')
+          : undefined;
+        added.current = false;
+        const target = rows?.[rows.length - 1]?.querySelector<HTMLElement>("input") ?? addButton.current;
+        if (!target) return;
+        e.preventDefault();
+        target.focus();
       }}
     />
   );
-  const add = (
-    <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-      <Button variant="outline" size="sm" className="h-7 text-xs" disabled={full} onClick={() => setOpen(true)}>
-        <Plus className="size-3.5" aria-hidden />
-        つなぐ CSV を足す
-      </Button>
-      {full ? (
-        <span className="text-[11px] text-muted-foreground">つなげる CSV は {MAX_EXTRA_TABLES} 個までです</span>
-      ) : null}
-    </div>
-  );
-  const errorText = fieldError ? <p className="text-[11px] text-destructive">{fieldError}</p> : null;
-  if (items.length === 0) {
-    return (
-      <div className="space-y-1.5" data-testid="csv-tables">
-        {add}
-        {errorText}
-        {picker}
-      </div>
-    );
-  }
   return (
-    <fieldset className="min-w-0 space-y-2" data-testid="csv-tables">
-      <legend className="mb-0.5 text-xs font-medium text-foreground">つなぐ CSV</legend>
-      <p className="text-[11px] text-muted-foreground">
-        SQL では、集計するファイルを <code className="font-mono text-foreground">{PRIMARY_TABLE}</code>
-        、つなぐ CSV を「SQL での名前」で読みます。有効化のとき、それぞれの閲覧権限を渡します。
-      </p>
-      <ul className="space-y-2">
-        {items.map((t, i) => {
-          const nameError = tableNameError(items, i);
-          const nth = `${i + 1} つ目`;
-          return (
-            <li key={i} className="min-w-0 space-y-1.5 rounded-md border p-2" data-testid="csv-table">
-              <div className="flex min-w-0 items-center gap-1.5">
-                {isExpr(t.name) ? (
-                  <div className="min-w-0 flex-1">
-                    <ValueExprInput
-                      label={`${nth}の CSV の SQL での名前`}
-                      shownLabel="SQL での名前"
-                      text
-                      value={t.name}
-                      onChange={(v) => update(i, { name: v })}
-                      refCandidates={refCandidates}
-                      inMapRegion={inMapRegion}
-                    />
+    <div className="space-y-2" data-testid="csv-tables">
+      {items.length > 0 ? (
+        <fieldset className="min-w-0 space-y-2">
+          <legend className="mb-0.5 text-xs font-medium text-foreground">つなぐ CSV</legend>
+          <p className="text-[11px] text-muted-foreground">
+            SQL では、集計するファイルを <code className="font-mono text-foreground">{PRIMARY_TABLE}</code>
+            、つなぐ CSV を「SQL での名前」で読みます。有効化のとき、それぞれの閲覧権限を渡します。
+          </p>
+          <ul ref={listRef} className="space-y-2">
+            {items.map((t, i) => {
+              const nameError = tableNameError(items, i);
+              const nth = `${i + 1} つ目`;
+              return (
+                <li key={rowKeys.keys[i]} className="min-w-0 space-y-1.5 rounded-md border p-2" data-testid="csv-table">
+                  <div className="flex min-w-0 items-center gap-1.5">
+                    {isExpr(t.name) ? (
+                      <div className="min-w-0 flex-1">
+                        <ValueExprInput
+                          label={`${nth}の CSV の SQL での名前`}
+                          shownLabel="SQL での名前"
+                          text
+                          value={t.name}
+                          onChange={(v) => update(i, { name: v })}
+                          refCandidates={refCandidates}
+                          inMapRegion={inMapRegion}
+                        />
+                      </div>
+                    ) : (
+                      <label className="flex min-w-0 flex-1 items-center gap-2">
+                        <span className="shrink-0 text-[11px] text-muted-foreground">SQL での名前</span>
+                        <Input
+                          value={typeof t.name === "string" ? t.name : ""}
+                          onChange={(e) => update(i, { name: e.target.value })}
+                          aria-label={`${nth}の CSV の SQL での名前`}
+                          aria-invalid={nameError ? true : undefined}
+                          placeholder="例: master"
+                          spellCheck={false}
+                          autoCapitalize="none"
+                          autoCorrect="off"
+                          className="h-7 min-w-0 flex-1 font-mono text-xs md:text-xs"
+                        />
+                      </label>
+                    )}
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="size-7 shrink-0"
+                      aria-label={`${nth}の CSV を外す`}
+                      onClick={() => remove(i)}
+                    >
+                      <X className="size-3.5" aria-hidden />
+                    </Button>
                   </div>
-                ) : (
-                  <label className="flex min-w-0 flex-1 items-center gap-2">
-                    <span className="shrink-0 text-[11px] text-muted-foreground">SQL での名前</span>
-                    <Input
-                      value={typeof t.name === "string" ? t.name : ""}
-                      onChange={(e) => update(i, { name: e.target.value })}
-                      aria-label={`${nth}の CSV の SQL での名前`}
-                      aria-invalid={nameError ? true : undefined}
-                      placeholder="例: master"
-                      spellCheck={false}
-                      autoCapitalize="none"
-                      autoCorrect="off"
-                      className="h-7 min-w-0 flex-1 font-mono text-xs md:text-xs"
-                    />
-                  </label>
-                )}
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="size-7 shrink-0"
-                  aria-label={`${nth}の CSV を外す`}
-                  onClick={() => write(items.filter((_, j) => j !== i))}
-                >
-                  <X className="size-3.5" aria-hidden />
-                </Button>
-              </div>
-              {nameError ? <p className="text-[11px] text-destructive">{nameError}</p> : null}
-              <FilePick
-                {...TABLE_PICKER}
-                bare
-                value={t.file}
-                onChange={(v) => update(i, { file: v })}
-                refCandidates={refCandidates}
-                inMapRegion={inMapRegion}
-                fieldErrors={fieldErrors}
-                serverCheck={serverCheck}
-                param={`tables/${i}`}
-                path={`tables/${i}/file`}
-                label={`${nth}のつなぐ CSV`}
-              />
-            </li>
-          );
-        })}
-      </ul>
-      {primaryExcel ? (
-        <p className="text-[11px] text-destructive">
-          集計するファイルが Excel のときは、CSV をつなげません。集計するファイルに CSV を選んでください。
-        </p>
+                  {nameError ? <p className="text-[11px] text-destructive">{nameError}</p> : null}
+                  <FilePick
+                    {...TABLE_PICKER}
+                    bare
+                    value={t.file}
+                    onChange={(v) => update(i, { file: v })}
+                    refCandidates={refCandidates}
+                    inMapRegion={inMapRegion}
+                    fieldErrors={rowErrors(i, t)}
+                    serverCheck={serverCheck}
+                    param={`tables/${i}`}
+                    path={`tables/${i}/file`}
+                    label={`${nth}のつなぐ CSV`}
+                  />
+                </li>
+              );
+            })}
+          </ul>
+          {primaryExcel ? (
+            <p className="text-[11px] text-destructive">
+              集計するファイルが Excel のときは、CSV をつなげません。集計するファイルに CSV を選んでください。
+            </p>
+          ) : null}
+        </fieldset>
       ) : null}
-      {errorText}
-      {add}
+      {fieldError ? <p className="text-[11px] text-destructive">{fieldError}</p> : null}
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+        <Button
+          ref={addButton}
+          variant="outline"
+          size="sm"
+          className="h-7 text-xs"
+          disabled={full}
+          onClick={() => setOpen(true)}
+        >
+          <Plus className="size-3.5" aria-hidden />
+          つなぐ CSV を足す
+        </Button>
+        {full ? (
+          <span className="text-[11px] text-muted-foreground">つなげる CSV は {MAX_EXTRA_TABLES} 個までです</span>
+        ) : null}
+      </div>
       {example ? (
         <p className="text-[11px] text-muted-foreground">
           例: <code className="font-mono text-foreground">SELECT * FROM data JOIN {example} ON …</code>
         </p>
       ) : null}
       {picker}
-    </fieldset>
+    </div>
   );
 }

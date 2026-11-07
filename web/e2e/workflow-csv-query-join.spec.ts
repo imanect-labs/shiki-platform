@@ -15,6 +15,8 @@ import {
 /// - ボタンからドライブの CSV を選ぶと 1 件足し、名前はファイル名から付ける（英字の無い名前は t1）。名前は SQL で読む
 ///   名前として直せ、使えない名前（data・大文字など）はその場で言う。直すまで試しに実行できない。
 /// - 試しに実行・ワークフローの実行の両方で、つないだ集計の結果が出る。保存した定義の tables は選んだとおり。
+/// - 足した後は、足した行の「SQL での名前」へフォーカスが移る。前の行を外しても、後の行の欄の状態（ファイルの選び方の
+///   切り替え）は移らない。
 /// - 外すと、ボタンだけに戻り、定義から tables が消える。スマホでも欄が横にはみ出さない。
 ///
 /// 作ったもの（フォルダー・CSV・ワークフロー）は finally で片付ける（互いに独立に）。
@@ -118,6 +120,8 @@ test("CSV を集計: つなぐ CSV を足し、名前を付けて SQL でつな�
     await expect(row).toContainText(pricesName);
     const name = row.getByRole("textbox", { name: "1 つ目の CSV の SQL での名前" });
     await expect(name).toHaveValue("t1");
+    // 足した後は、足した行の「SQL での名前」へフォーカスが移る（キーボードで続けて名前を直せる）。
+    await expect(name).toBeFocused();
 
     // 使えない名前はその場で言い、直すまで試しに実行できない。
     await name.fill("data");
@@ -189,9 +193,25 @@ test("CSV を集計: つなぐ CSV を足し、名前を付けて SQL でつな�
       await phoneCtx.close();
     }
 
-    // 外すと、ボタンだけに戻り、保存した定義から tables が消える。
+    // 2 つ目を足し、1 つ目を「前の結果から指定する」にしてから外す: 残った行は、外した行の切り替えを引き継がずに
+    // ファイルの名前で出る。
     await page.goto(`/workflows/${workflowId}`);
     await page.getByTestId("rf__node-q").click();
+    await tables.getByRole("button", { name: "つなぐ CSV を足す" }).click();
+    await picker.getByRole("button", { name: folderName }).click({ timeout: 15_000 });
+    await picker.getByRole("button", { name: itemsName }).click({ timeout: 15_000 });
+    await expect(picker).toHaveCount(0);
+    const rows = tables.getByTestId("csv-table");
+    await expect(rows).toHaveCount(2);
+    await expect(rows.nth(1).getByRole("textbox", { name: "2 つ目の CSV の SQL での名前" })).toBeFocused();
+    await rows.nth(0).getByRole("button", { name: "前の結果から指定する" }).click();
+    await expect(rows.nth(0).getByRole("button", { name: "ドライブから選ぶ" })).toBeVisible();
+    await panel.getByRole("button", { name: "1 つ目の CSV を外す" }).click();
+    await expect(rows).toHaveCount(1);
+    await expect(rows.nth(0)).toContainText(itemsName);
+    await expect(rows.nth(0).getByRole("button", { name: "前の結果から指定する" })).toBeVisible();
+
+    // 外すと、ボタンだけに戻り、保存した定義から tables が消える。
     await panel.getByRole("button", { name: "1 つ目の CSV を外す" }).click();
     await expect(tables.getByTestId("csv-table")).toHaveCount(0);
     await expect(tables.getByRole("button", { name: "つなぐ CSV を足す" })).toBeVisible();

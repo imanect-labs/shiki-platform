@@ -26,6 +26,7 @@ export function DrivePicker({
   title = "ドライブから選択",
   description = "添付するファイルを選んでください。",
   accept,
+  onCloseAutoFocus,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -33,6 +34,8 @@ export function DrivePicker({
   title?: string;
   description?: string;
   accept?: (node: NodeResponse) => boolean;
+  /// 閉じたときのフォーカスの戻し方（既定は開いたときの要素へ戻す。`preventDefault` して別の要素へ移せる）。
+  onCloseAutoFocus?: (event: Event) => void;
 }) {
   const [stack, setStack] = React.useState<(string | undefined)[]>([undefined]);
   const parentId = stack[stack.length - 1];
@@ -55,7 +58,7 @@ export function DrivePicker({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="max-w-2xl" onCloseAutoFocus={onCloseAutoFocus}>
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{description}</DialogDescription>
