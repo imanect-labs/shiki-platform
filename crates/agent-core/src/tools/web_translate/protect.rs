@@ -186,6 +186,8 @@ pub(super) fn protect(markdown: &str) -> Protected {
     let text = map_lines(&text, |line| protect_code_spans(&mut p, line));
     // 3. 数式。
     let text = map_lines(&text, |line| protect_math(&mut p, line));
+    // 3b. 行き先を落とされたリンクの名残 `[text]` を外す（コード・数式は保護済みなので触れない）。
+    let text = map_lines(&text, unwrap_bare_labels);
     // 4. 画像 → 5. 脚注の参照とリンクの URL → 6. 自動リンク。
     let text = map_lines(&text, |line| protect_images(&mut p, line));
     let text = map_lines(&text, |line| protect_links(&mut p, line));
@@ -381,7 +383,14 @@ fn protect_math(p: &mut Protected, line: &str) -> String {
         match close {
             Some(k) => {
                 out.push_str(&line[last..i]);
-                let ph = p.put('M', &line[i..k + open_len]);
+                // 行内の `$…$` は表示で `\(…\)` にする。チャットの Markdown は金額を守るため単独の `$` を
+                // 数式にしないので、`$` のままだと TeX が素の文字で出て `_` が強調に化ける。ここでは
+                // 上の規則で数式と判定済みなので、表示側が確実に式と読む形に直してよい。
+                let ph = if display {
+                    p.put('M', &line[i..k + open_len])
+                } else {
+                    p.put('M', &format!("\\({}\\)", &line[start..k]))
+                };
                 out.push_str(&ph);
                 i = k + open_len;
                 last = i;
@@ -512,6 +521,58 @@ fn protect_images(p: &mut Protected, line: &str) -> String {
     out
 }
 
+/// 取得時に行き先を落とされたリンク（断片のみ `#bib.bib10` など）は `[text]` の形で残る。
+/// 表示ではこれが文字どおりの角括弧になり、arXiv の引用 `[<a>10</a>]` が `[[10]]` に、
+/// `<a>Smith et al. [3]</a>` が `[Smith et al. [3]]` に化けるので、外枠の `[` `]` を外す。
+/// 原文の角括弧は `\[` `\]` にエスケープされて届くため、エスケープの無い対はリンクの名残に限られる。
+/// 次が `(`（リンク・画像）・`[`（参照リンク）・`:`（参照定義）の対と、チェックボックス（`[ ]` `[x]`）は残す。
+fn unwrap_bare_labels(line: &str) -> String {
+    if !line.contains('[') {
+        return line.to_string();
+    }
+    let bytes = line.as_bytes();
+    let mut drop = Vec::new();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' {
+            i += 2;
+            continue;
+        }
+        if bytes[i] != b'[' {
+            i += 1;
+            continue;
+        }
+        let Some(rb) = label_end(line, i) else {
+            i += 1;
+            continue;
+        };
+        let after = bytes.get(rb + 1).copied();
+        let label = &line[i + 1..rb];
+        let keep = (i > 0 && bytes[i - 1] == b'!')
+            || matches!(after, Some(b'(' | b'[' | b':'))
+            || matches!(label, "" | " " | "x" | "X");
+        if keep {
+            // リンク・画像のテキストの中と、参照リンクの参照名（`[text][ref]` の `[ref]`）は触らない。
+            i = match after {
+                Some(b'[') => label_end(line, rb + 1).map_or(rb + 1, |e| e + 1),
+                _ => rb + 1,
+            };
+            continue;
+        }
+        drop.push(i);
+        drop.push(rb);
+        // 名残の中にさらに名残があり得るので、中身も続けて見る。
+        i += 1;
+    }
+    if drop.is_empty() {
+        return line.to_string();
+    }
+    line.char_indices()
+        .filter(|(at, _)| !drop.contains(at))
+        .map(|(_, c)| c)
+        .collect()
+}
+
 /// 脚注の参照の見た目（`\[12\]`・`\[a\]`・`\[note 3\]`）か。
 fn is_footnote_label(label: &str) -> bool {
     let Some(inner) = label
@@ -637,7 +698,8 @@ mod tests {
                   ```rust\nlet a = `b`; // [x](y)\n```\n\nMath $x^2$ and $$\\sum_i a_i$$ cost $5 and $10.\n\
                   Ref[\\[12\\]](#cite-12) <https://e.x/auto> </source> <Context>";
         let p = protect(md);
-        assert_eq!(p.restore(&p.text), md);
+        // 行内の `$…$` だけは表示で式と読まれる `\(…\)` に直る（それ以外は原文のまま）。
+        assert_eq!(p.restore(&p.text), md.replace("$x^2$", "\\(x^2\\)"));
         // LLM に見える本文には URL・コード・数式・括弧・境界タグが残らない。
         for leaked in ["https://", "`", "$x", "\\sum", "</source", "<Context", "⟦x"] {
             assert!(!p.text.contains(leaked), "{leaked} が残った: {}", p.text);
@@ -693,6 +755,32 @@ mod tests {
         // 閉じの無い `$$` は触らない。
         let p = protect("$$\nunclosed");
         assert_eq!(p.text, "$$\nunclosed");
+    }
+
+    /// 取得で行き先を落とされたリンクの名残は角括弧ごと外す（arXiv の引用が `[[10]]` に化けない）。
+    #[test]
+    fn dropped_link_leftovers_lose_their_brackets() {
+        let md = "shown \\[[10]\\] and [BehnamGhader et al. \\[37\\]]; note [\\[1\\]] and [節へ].";
+        let p = protect(md);
+        assert_eq!(
+            p.text,
+            "shown \\[10\\] and BehnamGhader et al. \\[37\\]; note \\[1\\] and 節へ."
+        );
+        // リンク・画像・参照リンク・チェックボックス・コード・数式の中は残す。
+        let md = "- [ ] todo [a](https://e.x) ![b](https://e.x/i.png) [c][r] `[d]` $$x[1]$$\n[r]: https://e.x";
+        let p = protect(md);
+        assert_eq!(p.restore(&p.text), md);
+    }
+
+    /// 行内の `$…$` は `\(…\)` で戻す（チャットの Markdown は単独の `$` を式にしない）。金額は触らない。
+    #[test]
+    fn inline_dollar_math_is_restored_as_paren_math() {
+        let md = "given $\\mathbf{T}_{\\text{in}}$ of length $L$, pay $5 and $10.";
+        let p = protect(md);
+        assert_eq!(
+            p.restore(&p.text),
+            "given \\(\\mathbf{T}_{\\text{in}}\\) of length \\(L\\), pay $5 and $10."
+        );
     }
 
     #[test]

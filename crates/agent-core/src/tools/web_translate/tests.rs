@@ -151,6 +151,7 @@ fn tool(addr: std::net::SocketAddr, backend: Arc<Scripted>) -> WebTranslateTool 
         idempotency_prefix: "run:1".into(),
         cancel: Arc::new(AtomicBool::new(false)),
         calls: AtomicUsize::new(0),
+        translated: Mutex::default(),
         limits: TranslateLimits::default(),
     }
 }
@@ -357,18 +358,25 @@ fn long_page(n: usize) -> String {
 async fn a_long_page_is_translated_part_by_part() {
     let (addr, _) = stub_server(page_response(&long_page(50))).await;
     let backend = translator();
-    let t = tool(addr, Arc::clone(&backend));
     let url = format!("http://page.example.invalid:{}/a", addr.port());
     let auth = ctx();
-    let call = |part: Option<u64>| {
+    let auth = &auth;
+    let input = |part: Option<u64>| {
         let mut input = serde_json::json!({ "url": url });
         if let Some(p) = part {
             input["part"] = p.into();
         }
-        t.call(&auth, input, None)
+        input
+    };
+    // 部ごとに別の run（ユーザーの「続けて」ごとに新しい run になる）。
+    let call = |part: Option<u64>| {
+        let t = tool(addr, Arc::clone(&backend));
+        let input = input(part);
+        async move { t.call(auth, input, None).await }
     };
 
-    let first = call(None).await.unwrap();
+    let first_run = tool(addr, Arc::clone(&backend));
+    let first = first_run.call(auth, input(None), None).await.unwrap();
     assert!(!first.is_error, "{}", first.content);
     let tr = &first.translations[0];
     assert_eq!(tr["part"], 1);
@@ -386,6 +394,21 @@ async fn a_long_page_is_translated_part_by_part() {
     );
     assert!(!first.content.contains("部のうち"), "{}", first.content);
     assert!(!first.content.contains("チャンク・"), "{}", first.content);
+    // 同じ run で続きの部を連鎖して訳さない（取得も LLM 呼び出しもせずに断る）。
+    let before = backend.users().len();
+    let chained = first_run.call(auth, input(Some(2)), None).await.unwrap();
+    assert!(chained.is_error, "{}", chained.content);
+    assert!(chained.translations.is_empty());
+    assert!(
+        chained.content.contains("既に訳しました"),
+        "{}",
+        chained.content
+    );
+    assert_eq!(
+        backend.users().len(),
+        before,
+        "断った呼び出しで LLM を呼ばない"
+    );
 
     let last = call(Some(parts)).await.unwrap();
     let md = last.translations[0]["markdown"].as_str().unwrap();

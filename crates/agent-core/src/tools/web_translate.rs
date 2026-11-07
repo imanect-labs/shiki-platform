@@ -91,6 +91,9 @@ pub struct WebTranslateTool {
     idempotency_prefix: String,
     cancel: Arc<AtomicBool>,
     calls: AtomicUsize,
+    /// この run で訳し終えた URL。1 回の依頼で同じページの部を連鎖して訳さないためのもの
+    /// （指示だけでは弱いモデルが「続けて」1 回で残りの部を全部呼ぶ。実測）。
+    translated: std::sync::Mutex<std::collections::HashSet<String>>,
     limits: TranslateLimits,
 }
 
@@ -111,6 +114,7 @@ impl WebTranslateTool {
             idempotency_prefix,
             cancel,
             calls: AtomicUsize::new(0),
+            translated: std::sync::Mutex::default(),
             limits: TranslateLimits::default(),
         }
     }
@@ -398,6 +402,24 @@ impl WebTranslateTool {
         }
     }
 
+    /// この run で同じ URL を訳し終えていれば断る（取得前に判定し、取得も LLM 呼び出しもしない）。
+    fn refuse_repeat(&self, url: &str) -> Option<ToolOutcome> {
+        let done = self.translated.lock().is_ok_and(|done| done.contains(url));
+        done.then(|| {
+            ToolOutcome::error(format!(
+                "{url} はこの応答で既に訳しました。続きは、ユーザーが次に「続けて」と送ったときに訳します。\
+                 今は web_translate を呼ばず、1 文で答えて終えてください。"
+            ))
+        })
+    }
+
+    /// 訳し終えた URL（依頼の URL とリダイレクト後の URL）を記録する。
+    fn mark_translated(&self, urls: [String; 2]) {
+        if let Ok(mut done) = self.translated.lock() {
+            done.extend(urls);
+        }
+    }
+
     /// 翻訳を止めた理由（run の停止・利用枠の超過）。無ければ `None`。
     fn stopped(&self, shared: &Shared) -> Option<String> {
         if self.cancel.load(Ordering::SeqCst) {
@@ -530,6 +552,9 @@ impl Tool for WebTranslateTool {
         trace_id: Option<&str>,
     ) -> Result<ToolOutcome, ToolError> {
         let req = parse_input(&input)?;
+        if let Some(refused) = self.refuse_repeat(&req.url) {
+            return Ok(refused);
+        }
         let call_no = self.calls.fetch_add(1, Ordering::SeqCst);
         let fetched = match self
             .fetch
@@ -635,6 +660,7 @@ impl Tool for WebTranslateTool {
             tokens,
             "web_translate 完了"
         );
+        self.mark_translated([req.url.clone(), url.to_string()]);
         let mut out = ToolOutcome::ok(summary(
             &url,
             &req.lang,
@@ -694,7 +720,8 @@ fn summary(
         let _ = write!(
             content,
             "このページには続きがある。「続けて」と送れば続きを訳すと 1 文で添えること（部の数は書かない）。\
-             ユーザーが続きを求めたら web_translate を url={url}・target_lang={lang}・part={} で呼ぶ。",
+             この応答では続きを訳さない（web_translate をもう呼ばない）。\
+             次にユーザーが続きを求めたら web_translate を url={url}・target_lang={lang}・part={} で 1 回だけ呼ぶ。",
             part + 1
         );
     } else if source_capped {
