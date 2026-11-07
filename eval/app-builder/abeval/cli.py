@@ -8,6 +8,8 @@
     指し、Mode B では手数の上限と 1 発話の予算が `--max-steps`・`--budget-micros` と同じこと（`doctor.version_guard`）。
     あわせて振る舞いの指紋（`behavior.verify`）が serve で記録したものと同じこと。確かめたプロセスは、取り込みの前・
     Mode B の各試行の前と結果を残す前・結果を書く前に、替わっていないか確かめ直す（`ServerIdentity.recheck`）。
+  - Mode B は、測る日が予定の週に入る課題（`mode_b.date_window_reason`）を、版に無い機能の課題（対象外）と同じく
+    計画の前に外す（登録の予約と $10 の判定に入れない）。外した課題は試行ごとに errors（kind: date_window）に残す。
   - `--stub`（Mode B だけ）: stub のスタックで配管を確かめる（model `default`・費用 0・abeval.proxy を使わない）。
   - `--regrade-from <版>`（Mode A だけ）: 生成せず、その版の生成をこの版のサーバーで採点し直す（V1・費用 0）。
     取り込みの sha が同じことを条件にする。
@@ -121,6 +123,29 @@ def _record_node_types(label: str, node_types: list[str]) -> None:
         return
     if rec.extra.get("node_types") != node_types:
         update_record(label, {"node_types": node_types})
+
+
+def split_date_window(tasks: list[Task], now: dt.datetime) -> tuple[list[Task], dict[str, str]]:
+    """Mode B で、測る日が予定の週に入る課題を外す（(流す課題, 外した課題 → 理由)・BUG-247）。"""
+    kept: list[Task] = []
+    reasons: dict[str, str] = {}
+    for t in tasks:
+        why = mode_b.date_window_reason(t, now)
+        if why:
+            reasons[t.id] = why
+        else:
+            kept.append(t)
+    return kept, reasons
+
+
+def date_window_errors(args, windowed: list[Task], reasons: Mapping[str, str]) -> list[dict]:
+    """計画から外した課題の試行ごとの errors（kind: date_window・レポートで条件ごとに外した課題を数える）。"""
+    if not windowed:
+        return []
+    return [
+        {**ts.to_dict(), "kind": "date_window", "detail": reasons[ts.task_id]}
+        for ts in _spec(args, windowed).trial_specs()
+    ]
 
 
 def _spec(args, tasks: list[Task]) -> RunSpec:
@@ -281,11 +306,16 @@ def cmd_run(args) -> int:
         tasks, out_of_scope = in_scope(all_tasks, catalog, caps, node_types)
         for o in out_of_scope:
             print(f"[対象外] {o['task']}: {o['missing']}")
+        window: dict[str, str] = {}
+        windowed: list[Task] = []
         if args.mode == "b" and not stub:
-            for t in tasks:
-                why = mode_b.date_window_reason(t, fixtures.now_utc())
-                if why:
-                    print(f"[日付] {t.id}: {why}（errors に date_window で残す）")
+            # 予定の週に流さない課題は、対象外と同じく計画の前に外す（登録の予約と $10 の判定に入れない）。
+            tasks, window = split_date_window(tasks, fixtures.now_utc())
+            windowed = [t for t in all_tasks if t.id in window]
+            for t in windowed:
+                print(
+                    f"[日付] {t.id}: {window[t.id]}（計画から外し、errors に date_window で残す）"
+                )
         if not tasks:
             print("流せる課題がありません")
             return 2
@@ -342,6 +372,7 @@ def cmd_run(args) -> int:
                 args, cfg, client, ctrl, plan, version, cap, tasks, lint, catalog, stub, regrade,
                 preflight=None if ident is None else ident.recheck,
             )  # fmt: skip
+            errors = [*date_window_errors(args, windowed, window), *errors]
         finally:
             if ctrl is not None:
                 if args.go and not stub and not regrade:

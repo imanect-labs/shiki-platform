@@ -48,8 +48,9 @@ sha も入れる（採点器か課題を直したら流し直す）。会話と�
 予定の週（BUG-247）: モデルが見る「今日」は測った日になる（製品の `today_note` は run の作成時刻から作る）。測る日
 （日本時間）が課題の `scheduled_at` の週（`grade.dates.scheduled_window`）に入る日は、結果が予定の日時で決まる課題
 （`Task.scheduled_dependent`・`requires` の `cap:scheduled_at`）を流さずに errors（kind: date_window）に理由を
-入れる（「今日」「先週」を決め打ちした IR も run_case を通り得るため）。stub のスタックの配管の確かめでは見ない
-（stub のモデルは日付を決め打ちしない）。
+入れる（「今日」「先週」を決め打ちした IR も run_case を通り得るため）。`run` は計画の前に外す（`cli.cmd_run`）。
+ここでも見るのは、流している間に日付が変わったときのため。stub のスタックの配管の確かめでは見ない（stub の
+モデルは日付を決め打ちしない）。
 
 ミニアプリ（T12）の差し込み口として、採点の後に呼ぶ hook（`ModeBContext.hooks`）を残す。会話の全文は
 キャッシュにだけ置く（結果に入れない・H7 (a)）。

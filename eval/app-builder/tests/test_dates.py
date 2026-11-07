@@ -304,3 +304,63 @@ def test_disabling_the_window_guard_runs_the_task(monkeypatch):
         make_ctx(fake, now=inside), TASKS["app03-weekly-summary"], spec("app03-weekly-summary")
     )
     assert fake.posted, "守りを外すと流れてしまう（上のテストが守りを見ている）"
+
+
+# --- 計画の前に外す（cli） ---
+
+
+def test_run_drops_windowed_tasks_before_the_plan(monkeypatch, capsys):
+    """予定の週に流さない課題は、対象外と同じく計画（登録の予約・$10 の判定）に入れない。表示は [日付] のまま。"""
+    from types import SimpleNamespace
+
+    from abeval import cli, fixtures
+    from abeval.shiki import ShikiClient
+
+    fake = ChatFake()
+    seed = ShikiClient("http://localhost:8080", "alice", transport=fake.transport())
+    fixtures.init_sentinel(seed)
+    monkeypatch.setattr(
+        cli,
+        "ShikiClient",
+        lambda api, user, **k: ShikiClient(api, user, transport=fake.transport()),
+    )
+    monkeypatch.setattr(cli, "guard_version", lambda *a, **k: SimpleNamespace(recheck=lambda: None))
+    monkeypatch.setattr(cli, "guard_behavior", lambda *a, **k: True)
+    monkeypatch.setattr(cli, "load_catalog", recorded.catalog)
+    monkeypatch.setattr(cli, "probe_node_types", lambda client, types: list(types))
+    monkeypatch.setattr(cli, "_record_node_types", lambda *a: None)
+    monkeypatch.setattr(cli, "in_scope", lambda tasks, *a, **k: (list(tasks), []))
+    monkeypatch.setattr(fixtures, "now_utc", lambda: dt.datetime(2026, 11, 10, 1, 0, tzinfo=dt.UTC))
+    planned = []
+    monkeypatch.setattr(cli, "cmd_plan", lambda args: planned.append(args.tasks) or (0, None))
+    argv = [
+        "--mode", "b", "--label", "v0", "--exp", "e1b", "--trials", "1",
+        "--tasks", "app03-weekly-summary,app01-posting-batch,basic-branch-amount",
+        "--api-url", "http://localhost:8080",
+    ]  # fmt: skip
+    assert cli.main(argv, command="run") == 0
+    assert planned == ["app01-posting-batch,basic-branch-amount"]
+    out = capsys.readouterr().out
+    assert "[日付] app03-weekly-summary" in out and "計画から外し" in out
+
+
+def test_windowed_tasks_are_kept_as_date_window_errors_per_trial():
+    from types import SimpleNamespace
+
+    from abeval import cli
+
+    inside = dt.datetime(2026, 11, 10, 1, 0, tzinfo=dt.UTC)
+    tasks = [TASKS["app03-weekly-summary"], TASKS["basic-branch-amount"]]
+    kept, reasons = cli.split_date_window(tasks, inside)
+    assert [t.id for t in kept] == ["basic-branch-amount"] and list(reasons) == [
+        "app03-weekly-summary"
+    ]
+    args = SimpleNamespace(
+        exp="e1b", mode="b", label="v0", phrasings=None, trials=2, effort=["medium", "high"],
+        max_steps=None,
+    )  # fmt: skip
+    errs = cli.date_window_errors(args, [TASKS["app03-weekly-summary"]], reasons)
+    assert len(errs) == 4 and {e["kind"] for e in errs} == {"date_window"}
+    assert {e["task"] for e in errs} == {"app03-weekly-summary"}
+    assert sorted({e["effort"] for e in errs}) == ["high", "medium"]
+    assert cli.date_window_errors(args, [], {}) == []
