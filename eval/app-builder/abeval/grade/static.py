@@ -28,6 +28,8 @@
 
 - `input_ref`: `$from input` の path の先頭の key が課題の入力に無い（`default` を書いた参照は除く）。
 - `flow_through`: 下流に届くべき入力が、どの値式からも参照されていない。
+- `date_literal`: 実行の日に決まる値を持つ課題（`Expect.date_dependent`）で、ノードの設定に日付の文字がある
+  （「今日」「先週」を決め打ちした・`grade.dates`・BUG-247）。Mode A と Mode B で同じに見る。
 - S5（構造・診断用）: トリガの種類・cron・tz と、ノードの種類の all_of・any_of・none_of。
 """
 
@@ -45,6 +47,7 @@ from typing import Any
 
 from abeval.config import ROOT
 from abeval.grade import GRADER_VERSION
+from abeval.grade.dates import ir_date_literals
 from abeval.tasks import Expect
 
 REPO = ROOT.parent.parent
@@ -351,6 +354,20 @@ def flow_through_findings(ir: Mapping, expect: Expect) -> list[Finding]:
     ]
 
 
+def date_literal_findings(ir: Mapping, expect: Expect) -> list[Finding]:
+    """実行の日に決まる値を持つ課題で、設定の中の日付の文字（決め打ち）。ほかの課題では見ない。"""
+    if not expect.date_dependent:
+        return []
+    return [
+        Finding(
+            "date_literal",
+            node,
+            f"{at}: 日付を決め打ちしています: {hit!r}（実行の日・予定の日から決める値）",
+        )
+        for node, at, hit in ir_date_literals(ir)
+    ]
+
+
 def _norm_cron(c: str) -> str:
     return " ".join(str(c).split())
 
@@ -456,7 +473,11 @@ def grade_static(
     """1 つの IR の静的な採点（ir_lint の結果と、課題の期待から）。`catalog` は呼び出し側との互換のため。"""
     task = []
     if isinstance(ir, Mapping):
-        task = [*input_ref_findings(ir, expect), *flow_through_findings(ir, expect)]
+        task = [
+            *input_ref_findings(ir, expect),
+            *flow_through_findings(ir, expect),
+            *date_literal_findings(ir, expect),
+        ]
     structure = structure_findings(ir, expect) if isinstance(ir, Mapping) else []
     unattended = (expect.trigger or {}).get("kind") in UNATTENDED
     return StaticGrade(classify_lint(lint, unattended), task, structure)

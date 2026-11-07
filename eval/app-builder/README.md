@@ -240,6 +240,9 @@ docstring（§3.1 に `clarifications`・`run_cases[].llm_dependent`・`run_case
   model を書かない（組織の既定で動く）。stub で流すときだけ `default` にする（`run_cases.prepare_ir`）。
 - 相対の日付は使わず、日付で結果が決まる課題（先週・今日）は run_case の `scheduled_at` で予定の日時を決める
   （GAP-88・`requires` に `cap:scheduled_at`）。
+- 実行の日に決まる値を持つ課題（run_case が `scheduled_at` か、期待の `$run_date`・`@run_date` を使う課題。課題の印
+  `date_dependent` で明示してもよい）は、IR の設定の中の日付の文字（`2026-11-07`・`2026/11/07`・`2026年11月7日`・
+  `11月7日`・`20261107` など）を日付の決め打ちとして S2s に数える（`date_literal`・Mode A と Mode B で同じ・BUG-247）。
 - fixture のテーブルは、絞り込み・集計・並べ替えに使う列を `indexed: true` にする（索引の無い列は実行で失敗する）。
   担当者ごとの合計を見る課題は `aggregate_min_rows: 1`、APP-08 だけは既定の K（5）のままにして、件数の少ない
   地域が伏せられることを期待値に入れる（PIT-17）。状態の進め方（FSM）は fixture で作らないので、状態は選択肢の列を
@@ -259,7 +262,8 @@ docstring（§3.1 に `clarifications`・`run_cases[].llm_dependent`・`run_case
 | `grade/static.py` | 1 層目 ir_lint（`errors`・`run_blockers`・`STRICT_WARNINGS` は S2s、`enable_blockers`〔自動実行をオンにする前に止める理由・保存先のフォルダの省略など〕はきっかけが schedule・event の課題だけ S2s、ほかの警告は S2w、`ignored_by_env`〔登録した secret・入れた skill に依存するコード。`ir.unknown_version` は環境に依存しないので errors〕は数えない、`output_paths`〔`$from nodes.<id>.output` の path の先頭がそのノードの出力の項目に無い・ir_lint が製品のカタログの `output_fields` と `present_if` で決める・Python では判定しない〕は S2s）。2 層目は課題の検査（入力の参照・`flow_through`）と S5（トリガ・ノードの種類・診断用） |
 | `grade/dynamic.py` | dead edge（`node_ports` に無い出口・出口が 1 つのノードの通らなかった線）・差し込みの残り（`{name}`・`{{…}}`）・入力が届かない（stub の run だけ。実モデルの出力は入力の全文を含まない）・想定外の状態（stub で流した `llm_dependent` でない run_case の状態が期待と違う）・想定外の skipped（成功した run で、分岐でも error の出口でもない線の先が飛ばされた。元の 1 つだけを数える）。`llm_dependent` を stub で流したときは最初の LLM のノードまでに限る |
 | `grade/checks.py` | 照合子（equals・contains・regex・in・absent・rows・files・no_new_rows）。NFKC と数字の正規化。`$fixture` で fixture から期待値を計算する。実行の日に決まる値（貸出日・ファイル名の日付）は `{"$run_date": {}}`・name_regex の `@run_date` で、run を始めた日（日本時間・`$from run /date` と同じ）と照合する（形の正規表現にしない） |
-| `grade/mutate.py` | 採点器の自己テストの 9 通りの壊し方（設計の 8 通りと、自動で動く課題の保存先のフォルダを省く `drop_folder`）と、期待する検査。中身の無い IR（null） |
+| `grade/dates.py` | 日付の決め打ちの検査（設定の中の日付の文字・NFKC でそろえ、月 1〜12・日 1〜31 のものだけ）と、予定の週（`scheduled_at` の週とその先週・日本時間）。製品の規則ではなく、課題の期待から見る |
+| `grade/mutate.py` | 採点器の自己テストの 10 通りの壊し方（設計の 8 通りと、自動で動く課題の保存先のフォルダを省く `drop_folder`、実行の日に決まる値の参照を日付の文字にする `fixed_date`）と、期待する検査。中身の無い IR（null） |
 | `gen_checks.py` | 課題の検査 G1〜G9 のうちオフラインのもの（G2・G4・G5・G7・G8・G9）。G8 の拒否リストは `~/.config/shiki-dev/abeval-denylist.txt`（リポジトリの外・1 行 1 語）。無ければ理由を出して飛ばす。理由には場所と語の長さだけを書く |
 | `run_cases.py` | run_case をサーバーで流して記録を集める（fixture の行の入れ直し・起動の列・成功した step の出力・行・増えたファイル・再実行）。正解の結合テストと、後の段の Mode A・B が使う |
 | `grading.py` | 試行の採点の部品。基盤の失敗（保存できない・時間切れ・5xx など）で流せなかった run_case が 1 つでもあれば、S2d・S3・S4 を None にして試行を errors に回す（部分だけで採点しない）。見出しは S2s・S2d（Mode B は S4 も）が決まったときだけ真で、決まらなければ None（率の分母に入れない） |
@@ -292,7 +296,7 @@ uv run python -m abeval budget --reconcile [--yes]                         # 中
 | `abeval/capture.py` | 取り込み。abeval.proxy に `capture_only` の実行を登録し、新しいスレッドに短い発話（`claude-haiku-5-5`・effort あり）を送って、保存された要求のうち emit_workflow を含む最初のものから system・tools・max_tokens を `data/captures/<label>/<exp>/` に書く。「今日の日付」の一文（製品の `opts.rs` の書式）は `[capture] fixed_date` に置き換え、tools の説明文の fixture のテーブルの id は印（`@table:<ref>`）に戻す。指紋（llm-eval.toml の sha・カスタム指示・workflow と decision のモデル・fixture の名前・OpenAPI の機能・tools と system の sha）を meta.json に残し、前の取り込みと違う項目を `changed_from_previous` に出す。llm-eval.toml の鍵の形の項目がダミーでなければ止める |
 | `abeval/anthropic_client.py` | httpx で Messages を stream で送る（SDK なし）。temperature・top_p・top_k と prefill は送る前に止める。再試行は 429・5xx（529）・接続の誤り・流れの途中の overloaded だけ（400・403 は再試行しない）。全幅のジッタ・`retry-after` を守る・回数を記録する |
 | `abeval/mode_a.py` | Mode A（単発）。課題ごとに fixture を作り（課題の間で名前が重なるため）、参考情報（入力の項目の key・呼び名・型、テーブルの表示名・id・列の key と型、フォルダー・ファイルの id・`trial.reference_info`）を添えて生成する。tools は取り込んだ emit_workflow だけ（defer_loading を外す）・thinking adaptive・`output_config.effort`・tool_choice auto。結果は refusal → truncated → emit → asked → no_emit の順に分ける。S1 はその版の validate、S2s・S2w・S5 は ir_lint、S2d・S3 は stub の配管（流せなかったら errors の `stub_plumbing`） |
-| `abeval/mode_b.py`・`abeval/approvals.py` | Mode B（製品のチャット・並列度 1）。SSE は承認の要求を拾うためにだけ使い、完了は `GET messages` の `active_run_id` を `[mode_b] poll_secs` ごとに読み直す。依頼文には Mode A と同じ参考情報を添える。壁時計の上限（`wall_clock_secs`・6 分）で取り消して timeout。保存の前の聞き返し（「？」で終わる・課題の `ask_terms`）には `clarifications` を 1 回だけ（S8 の `asked` は「保存の前に聞き返した」。保存した後の「有効化しますか？」は数えない）。会話が誤りで終わった・abeval.proxy が拒んだ・上流に繋がらない・run_case を流せなかった試行は採点もキャッシュもせず errors に入れる（kind は llm_error・upstream・budget・run_case・stub_plumbing。budget は残りを打ち切る）。各試行の前に、実行と評価の残りが 1 試行の最悪より少なければ打ち切る。emit_workflow の入力の IR は validate にかけ直して検証エラーを数える（結果の文を読まない）。保存されたワークフローそのもので run_case を流し（評価の版は実モデル・費用は active で試行に割り当てる）、stub の配管も流す。採点の後の hook（`ModeBContext.hooks`）はミニアプリ（T12）の差し込み口 |
+| `abeval/mode_b.py`・`abeval/approvals.py` | Mode B（製品のチャット・並列度 1）。SSE は承認の要求を拾うためにだけ使い、完了は `GET messages` の `active_run_id` を `[mode_b] poll_secs` ごとに読み直す。依頼文には Mode A と同じ参考情報を添える。壁時計の上限（`wall_clock_secs`・6 分）で取り消して timeout。保存の前の聞き返し（「？」で終わる・課題の `ask_terms`）には `clarifications` を 1 回だけ（S8 の `asked` は「保存の前に聞き返した」。保存した後の「有効化しますか？」は数えない）。会話が誤りで終わった・abeval.proxy が拒んだ・上流に繋がらない・run_case を流せなかった試行は採点もキャッシュもせず errors に入れる（kind は llm_error・upstream・budget・run_case・stub_plumbing。budget は残りを打ち切る）。各試行の前に、実行と評価の残りが 1 試行の最悪より少なければ打ち切る。予定の課題（`scheduled_at`）は、測る日（日本時間）がその週か先週に入れば流さずに errors（kind `date_window`）に理由を入れる（stub の配管では見ない・BUG-247）。emit_workflow の入力の IR は validate にかけ直して検証エラーを数える（結果の文を読まない）。保存されたワークフローそのもので run_case を流し（評価の版は実モデル・費用は active で試行に割り当てる）、stub の配管も流す。採点の後の hook（`ModeBContext.hooks`）はミニアプリ（T12）の差し込み口 |
 | `abeval/plan.py` | 試行の列（Mode A は言い方 × 試行、Mode B は言い方を試行で回す）と見積もり（`[estimates]`・Mode A は取り込みから組んだ予約の額と大きい方）。最悪が `run_cap_usd` を超えれば拒み、課題を分けた組を示す。評価の台帳＋最悪が `eval_cap_usd`、手元の中継の台帳＋最悪が `global_cap_usd` を超えても拒む。`--go` のときだけ abeval.proxy に登録する（上限は min(最悪 × 1.2, $10)） |
 | `abeval/budget.py` | 評価の台帳の累計・実験ごと・実行ごと（usage が無く予約で数えた行の数）・手元の中継の累計・残り（読むだけ） |
 | `abeval/metrics.py` | S1〜S9・課題ごと・pass@k の不偏推定・課題を単位にした対応のあるブートストラップ（10,000 回・種は固定） |
@@ -488,7 +492,7 @@ Mode B で承認待ち（`approval_requested`）が来たら、既定で却下�
   （`tests/fake_proc.py`・pid の下の exe・environ・stat）と偽の `ss` の出力で流し、本物の `ss` と /proc はテストの
   中で起こした子プロセス（ループバックで待ち受けるだけ）で確かめる（`ss` が無ければ飛ばす）。振る舞いの指紋の組が
   HEAD で版の差を表すことは `test_behavior.py` の `lint_bin`（ir_lint）と `server`（stub のスタック）で見る。
-- 採点器の自己テスト（`tests/test_mutate.py`）は、9 通りの壊し方が期待した検査で捕まることと、検査を何もしない
+- 採点器の自己テスト（`tests/test_mutate.py`・`tests/test_dates.py`）は、10 通りの壊し方が期待した検査で捕まることと、検査を何もしない
   ように差し替えるとそのテストが落ちることを確かめる。`from_port: next` は HEAD の検証では保存できないので、
   正解の記録から V0 の動き（その線の先が動かない）を組んで dead edge を見る。
 
@@ -507,6 +511,13 @@ Mode B で承認待ち（`approval_requested`）が来たら、既定で却下�
   かは、この評価では測らない。
 - 製品の `/org-admin/ai/usage` は日の単位なので、突き合わせは試行の前後の差で見る（並列度 1・同じ日のうちの差）。
   ほかの利用が同じサーバーにあると合わない。
+- Mode B のモデルが見る「今日」は、測った日の実際の日付になる（製品の `today_note` は run の作成時刻から作る。
+  取り込みの固定の日付 `[capture] fixed_date` は Mode A にしか効かない・付録 B の「7j で実装に合わせて変えたところ」）。
+  そのため Mode B では、貸出日などに今日の日付を決め打ちした IR も、同じ日に流す run_case の `$run_date` と一致して
+  通り得る。日付の文字の決め打ちは静的な検査（`date_literal`）で両方のモードで同じに捕まえる。予定の課題
+  （`scheduled_at`）は、測る日（日本時間）がその週か先週に入る日には Mode B で流さない（errors の `date_window`・
+  2026-11-09 の予定なら 2026-11-02〜15 の間は流さない）。文字の形にならない決め打ち（script の中で
+  `new Date(2026, 10, 7)` のように組み立てる・今日からの差を数で書くなど）は見つけられない。
 - 差し込みの残りと入力が届かないの検査は、stub が prompt を「回答: …」で返すことに頼る。出力の形（output_schema）
   のある llm.invoke では stub が形に合う最小の値を返すので、その prompt の差し込みの残りは動的には見えない
   （静的な `ir.template_escaped_var` で捕まえる）。

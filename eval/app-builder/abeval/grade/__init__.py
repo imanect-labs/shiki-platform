@@ -10,4 +10,5 @@
 # 3: きっかけが schedule・event の課題で、ir_lint の enable_blockers（有効化の前に止める理由）を S2s に数える。
 # 4: ir_lint が `ir.unknown_version` を ignored_by_env から errors に戻した（S2s に数える・D-164 (f)）。
 # 5: 出力の path の検査を ir_lint（`output_paths`・`ir_lint.output_path`）に移した（Python で判定しない・GAP-112）。
-GRADER_VERSION = 5
+# 6: 実行の日に決まる値を持つ課題で、設定の中の日付の文字（決め打ち）を S2s に数える（date_literal・BUG-247）。
+GRADER_VERSION = 6

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import datetime as dt
+
 from abeval import fixtures
 from abeval.approvals import ApprovalPolicy
 from abeval.cache import TrialCache
@@ -15,6 +17,8 @@ from fake_chat import ChatFake
 from recorded import catalog
 
 TASKS = {t.id: t for t in load_tasks()}
+# 偽の「今」（日本時間 2026-10-21 水曜 10 時）。課題の予定の週（2026-11-02〜15）から外す（測る日の守り・BUG-247）。
+FIXED_NOW = dt.datetime(2026, 10, 21, 1, 0, tzinfo=dt.UTC)
 
 
 class FakeClock:
@@ -34,7 +38,9 @@ def fake_lint(items):
     return {i: LintResult(id=i) for i, _ in items}
 
 
-def make_ctx(fake: ChatFake, *, approve=(), stub=False, ctrl=None, run_id=None) -> ModeBContext:
+def make_ctx(
+    fake: ChatFake, *, approve=(), stub=False, ctrl=None, run_id=None, now=FIXED_NOW
+) -> ModeBContext:
     cfg = load_config()
     client = ShikiClient("http://localhost:8080", "alice", transport=fake.transport())
     fixtures.init_sentinel(client)
@@ -54,6 +60,7 @@ def make_ctx(fake: ChatFake, *, approve=(), stub=False, ctrl=None, run_id=None) 
         stub=stub,
         clock=clock,
         sleep=clock.sleep,
+        now=lambda: now,
     )
 
 

@@ -9,6 +9,7 @@
   "phrasings": {"flow": "…", "app": "…", "auto": "…"},
   "clarifications": "聞き返されたときに 1 回だけ返す決まった答え",
   "ask_terms": ["（任意）最後の文章にあれば聞き返しと判定する語"],
+  "date_dependent": true,
   "fixtures": {"folders": [...], "tables": [...], "csv": [...]},
   "expect": {
     "trigger": {"kind": "schedule", "cron_any": ["0 9 * * 1"], "tz": "Asia/Tokyo"},
@@ -37,6 +38,9 @@
   null の確かめは課題の単位（S4 は全 run_case の照合が通ること）で行う。
 - `reference.ir` の中の `@table:<ref>`・`@folder:<ref>`・`@file:<ref>` は、fixture で作ったものの id に置き換えて
   保存する（GAP-35 で名指しの実在を確かめるため）。オフラインの検査（ir_lint）では決まったダミーの UUID にする。
+- `date_dependent`（任意の印）: 実行の日に決まる値を持つ課題か。省くと run_case から決める（`scheduled_at` か、
+  期待の `$run_date`・`@run_date` を使う run_case があれば真）。真の課題では、IR の設定の中の日付の文字を S2s に
+  数える（日付の決め打ち・`grade.dates`・BUG-247）。
 - `requires` は `node:<種類>`（その版のカタログで使える）・`cap:<機能>`（`shiki.capabilities_of` の項目）・
   `trigger:<種類>`（その種類のきっかけで動かす経路。`event` は有効化を使うので後回し）。
 
@@ -46,6 +50,7 @@
 from __future__ import annotations
 
 import copy
+import dataclasses
 import json
 import re
 import uuid
@@ -99,6 +104,8 @@ class Expect:
     node_types: Mapping[str, Any]
     inputs: tuple[InputSpec, ...]
     flow_through: tuple[str, ...]
+    # 実行の日に決まる値を持つ課題（日付の文字の決め打ちを S2s に数える・課題の単位で決める・BUG-247）。
+    date_dependent: bool = False
 
     @property
     def input_keys(self) -> frozenset[str]:
@@ -174,6 +181,37 @@ class Task:
     def texts(self) -> list[str]:
         """答えの漏れ・拒否リストの検査に掛ける、モデルに見せる文（依頼文と聞き返しへの答え）。"""
         return [*self.phrasings.values(), self.clarifications]
+
+    def scheduled_at(self) -> list[str]:
+        """run_case の起動の予定の日時（`scheduled_at`・起動の列の各段も）。"""
+        return [s.scheduled_at for c in self.run_cases for s in c.steps if s.scheduled_at]
+
+    @property
+    def date_dependent(self) -> bool:
+        return all(r.expect.date_dependent for r in self.roles) if self.roles else False
+
+
+def _uses_run_date(value: Any) -> bool:
+    """期待の中に `$run_date`（実行した日）か name_regex の `@run_date` があるか。"""
+    if isinstance(value, Mapping):
+        if set(value) == {"$run_date"}:
+            return True
+        regex = value.get("name_regex")
+        if isinstance(regex, str) and "@run_date" in regex:
+            return True
+        return any(_uses_run_date(v) for v in value.values())
+    if isinstance(value, list):
+        return any(_uses_run_date(v) for v in value)
+    return False
+
+
+def _date_dependent(raw: Mapping, cases: list[RunCase]) -> bool:
+    flag = raw.get("date_dependent")
+    if isinstance(flag, bool):
+        return flag
+    return any(s.scheduled_at for c in cases for s in c.steps) or any(
+        _uses_run_date(c.expect) for c in cases
+    )
 
 
 # --- 置き場所の印 ---
@@ -463,6 +501,7 @@ def parse_task(raw: Mapping[str, Any]) -> Task:
         "reference",
         "notes",
         "ask_terms",
+        "date_dependent",
     }
     for k in raw:
         if k not in known:
@@ -491,6 +530,8 @@ def parse_task(raw: Mapping[str, Any]) -> Task:
     terms = raw.get("ask_terms", [])
     if not isinstance(terms, list) or not all(_str(t) for t in terms):
         problems.append(f"{where}.ask_terms（聞き返しと判定する語）は空でない文字列の配列です")
+    if "date_dependent" in raw and not _bool(raw["date_dependent"]):
+        problems.append(f"{where}.date_dependent（実行の日に決まる値を持つか）は真偽です")
     refs = _check_fixture_refs(raw, where, problems)
     roles: dict[str, Role] = {}
     if kind == "workflow_set":
@@ -555,6 +596,11 @@ def parse_task(raw: Mapping[str, Any]) -> Task:
                 problems.append(f"{where}.reference（{role}）{at}: fixture に無い {k} です: {r}")
     if problems:
         raise TaskError(problems)
+    dated = _date_dependent(raw, cases)
+    roles = {
+        k: dataclasses.replace(r, expect=dataclasses.replace(r.expect, date_dependent=dated))
+        for k, r in roles.items()
+    }
     return Task(
         id=tid,
         app=raw.get("app"),

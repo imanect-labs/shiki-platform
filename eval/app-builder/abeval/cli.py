@@ -281,6 +281,11 @@ def cmd_run(args) -> int:
         tasks, out_of_scope = in_scope(all_tasks, catalog, caps, node_types)
         for o in out_of_scope:
             print(f"[対象外] {o['task']}: {o['missing']}")
+        if args.mode == "b" and not stub:
+            for t in tasks:
+                why = mode_b.date_window_reason(t, fixtures.now_utc())
+                if why:
+                    print(f"[日付] {t.id}: {why}（errors に date_window で残す）")
         if not tasks:
             print("流せる課題がありません")
             return 2

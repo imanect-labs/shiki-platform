@@ -35,6 +35,11 @@ stub_plumbing）。拒否と繋がらない要求は台帳に載らないので�
 キャッシュのキーには採点器の版（GRADER_VERSION と ir_lint の sha）と課題の期待（expect・roles・run_cases）の
 sha も入れる（採点器か課題を直したら流し直す）。
 
+予定の週（BUG-247）: モデルが見る「今日」は測った日になる（製品の `today_note` は run の作成時刻から作る）。測る日
+（日本時間）が、課題の `scheduled_at` の週とその先週（`grade.dates.scheduled_window`）に入る日は、その課題を流さずに
+errors（kind: date_window）に理由を入れる（「今日」「先週」を決め打ちした IR も run_case を通り得るため）。stub の
+スタックの配管の確かめでは見ない（stub のモデルは日付を決め打ちしない）。
+
 ミニアプリ（T12）の差し込み口として、採点の後に呼ぶ hook（`ModeBContext.hooks`）を残す。会話の全文は
 キャッシュにだけ置く（結果に入れない・H7 (a)）。
 """
@@ -57,6 +62,7 @@ from abeval.budget import trial_spend
 from abeval.cache import TrialCache, trial_key
 from abeval.config import Config, canonical_json, sha256_hex
 from abeval.fixtures import FixtureError, FixtureRecord
+from abeval.grade.dates import in_window, scheduled_window
 from abeval.grade.static import LintCatalog
 from abeval.grading import (
     InfraFailure,
@@ -427,6 +433,20 @@ def key_for(ctx: ModeBContext, task: Task, ts: TrialSpec, prompt: str | None = N
     )
 
 
+def date_window_reason(task: Task, now: dt.datetime, *, stub: bool = False) -> str | None:
+    """測る日が課題の予定の週（と先週）に入れば、流さない理由（BUG-247）。stub では見ない。"""
+    if stub:
+        return None
+    window = scheduled_window(task.scheduled_at())
+    if window is None or not in_window(now, window):
+        return None
+    day = now.astimezone(JST).date()
+    return (
+        f"測る日 {day}（日本時間）が課題の予定の週とその先週（{window[0]}〜{window[1]}）に重なるので"
+        "流しません（モデルが見る「今日」が予定の日に近く、日付を決め打ちした IR も run_case を通り得る）"
+    )
+
+
 # --- 基盤の失敗の見分け ---
 
 
@@ -590,6 +610,9 @@ def run_trial(ctx: ModeBContext, task: Task, ts: TrialSpec) -> tuple[dict | None
         return {**cached["result"], "from_cache": True}, []
     errors: list[dict] = []
     base = {**ts.to_dict(), "key": key, "mode": "b"}
+    dated = date_window_reason(task, ctx.now(), stub=ctx.stub)
+    if dated:
+        return None, [{**base, "kind": "date_window", "detail": dated}]
     why = ctx.preflight() if ctx.preflight is not None else None
     if why:
         return None, [{**base, "kind": "server", "detail": why, "stop": True}]

@@ -1,4 +1,4 @@
-"""採点器の自己テスト用の壊し方（GAP-30 §5.4）。正解の IR を機械的に壊し、期待した検査で捕まることを確かめる。
+"""採点器の自己テスト用の壊し方（GAP-30 §5.4・10 通り）。正解の IR を機械的に壊し、期待した検査で捕まることを確かめる。
 
 | 名前 | 壊し方 | 期待する検査 |
 | --- | --- | --- |
@@ -11,6 +11,7 @@
 | `drop_node_type` | 期待のノード種（all_of）のノードを抜く | `s5` |
 | `llm_path_category` | 形の無い llm.invoke の出力の path を `/category` にする | `lint:ir_lint.output_path`（ir_lint の出力の path の検査） |
 | `drop_folder` | きっかけが schedule・event の課題で、保存（storage.write・csv.write）の folder を省く | `lint:ir.write_folder_required`（自動実行をオンにできない・S2s） |
+| `fixed_date` | 実行の日に決まる値を持つ課題で、実行の日（`$from run /date`）か日付の計算（transform.date）の出力の参照を、取り込みの「今日」の日付の文字にする | `task:date_literal`（日付の決め打ち・S2s・BUG-247） |
 
 当てはまらない IR（壊す場所が無い）では None を返す。ノード id・エッジの順は保つ（記録と並べて比べるため）。
 """
@@ -186,6 +187,51 @@ def drop_folder(ir: dict, expect: Expect) -> dict | None:
     return None
 
 
+# `fixed_date` で入れる日付（取り込みで固定する「今日」・eval.toml の [capture] fixed_date と同じ日）。
+FIXED_DATE = "2026-11-04"
+
+
+def _date_source(ref: Mapping, types: Mapping[str, Any]) -> bool:
+    src = ref.get("$from")
+    if src == "run":
+        return (ref.get("path") or "") == "/date"
+    if isinstance(src, str) and src.startswith("nodes.") and src.endswith(".output"):
+        return types.get(src[len("nodes.") : -len(".output")]) == "transform.date"
+    return False
+
+
+def _replace_first_date_ref(value: Any, types: Mapping[str, Any]) -> tuple[Any, bool]:
+    if isinstance(value, dict):
+        if isinstance(value.get("$from"), str):
+            return (FIXED_DATE, True) if _date_source(value, types) else (value, False)
+        for k, v in value.items():
+            new, done = _replace_first_date_ref(v, types)
+            if done:
+                value[k] = new
+                return value, True
+    elif isinstance(value, list):
+        for i, v in enumerate(value):
+            new, done = _replace_first_date_ref(v, types)
+            if done:
+                value[i] = new
+                return value, True
+    return value, False
+
+
+def fixed_date(ir: dict, expect: Expect) -> dict | None:
+    """実行の日に決まる値を持つ課題で、最初の日付の参照を日付の文字にする（決め打ち）。"""
+    if not expect.date_dependent:
+        return None
+    m = copy.deepcopy(ir)
+    types = {n.get("id"): n.get("type") for n in m.get("nodes") or []}
+    for n in m.get("nodes") or []:
+        if isinstance(n.get("params"), dict):
+            _, done = _replace_first_date_ref(n["params"], types)
+            if done:
+                return m
+    return None
+
+
 MUTATIONS: tuple[Mutation, ...] = (
     Mutation("edge_port_key", frozenset({"lint:ir.schema_violation"}), frozenset(), edge_port_key),
     Mutation(
@@ -213,6 +259,7 @@ MUTATIONS: tuple[Mutation, ...] = (
         llm_path_category,
     ),
     Mutation("drop_folder", frozenset({"lint:ir.write_folder_required"}), frozenset(), drop_folder),
+    Mutation("fixed_date", frozenset({"task:date_literal"}), frozenset(), fixed_date),
 )
 
 
