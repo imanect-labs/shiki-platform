@@ -126,7 +126,10 @@ def test_empty_sse_falls_back_to_polling():
     trial, errors = mode_b.run_trial(ctx, TASKS["basic-summary-file"], spec("basic-summary-file"))
     assert errors == [] and trial is not None
     assert ctx.clock.sleeps == [ctx.cfg.mode_b.poll_secs] * 3
-    assert fake.streams == 4  # 読み直すたびに SSE を繋ぎ直す（承認の要求を取りこぼさない）
+    # 読み直すたびに SSE を繋ぎ直し（承認の要求を取りこぼさない）、終わった後も終わりのイベントを探して
+    # END_REPLAYS 回読み直す（BUG-248）。返事はあるので採点する（終わりは確かめられないと残す）。
+    assert fake.streams == 4 + mode_b.END_REPLAYS
+    assert trial["chat_end_unconfirmed"] == 1
 
 
 def _saved(fake: ChatFake, ir: dict, name: str) -> str:

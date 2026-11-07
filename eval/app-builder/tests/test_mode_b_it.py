@@ -9,6 +9,8 @@
   run は終わり、テーブルの行は増えない。
 - C: 依頼文が「？」で終わる。stub がそれを返すので聞き返しと判定し、clarifications を 1 回送って 2 つ目の run に
   なる。
+- 終わった run の SSE（BUG-248 の前提）: SSE に繋がずに run の終わりを待ってから `last_event_id=0` で繋ぐと、製品は
+  その run のイベントを終わりのイベントまで流して閉じる（Mode B の終わりの確かめが頼る口）。
 
 どの試行の後も /workflows・/data/tables・/threads の一覧が元に戻る。`ABEVAL_RECORD_TRANSCRIPTS=<dir>` を渡すと
 会話の記録（stub の応答だけ・架空のデータ）を書き出す（tests/fixtures/transcripts/ の作り直し）。
@@ -196,3 +198,27 @@ def test_c_question_gets_one_clarification(alice):
     assert trial["s1"] is False
     assert _snapshot(alice) == before
     _record("c-clarified", ctx, trial)
+
+
+def test_a_finished_run_replays_its_end_on_the_sse(alice):
+    """繋ぐ前に終わった run でも、SSE は終わりのイベントまでを流して閉じる（BUG-248 の読み直しの前提）。"""
+    th = alice.create_thread()["id"]
+    try:
+        run_id = alice.post_message(th, "終わりの確かめ", model="default")["run_id"]
+        assert run_id
+        page = alice.wait_chat_idle(th, timeout=120)
+        assert not page.get("active_run_id")
+        events = [
+            e["data"] for e in alice.stream(th, 0, timeout=30) if isinstance(e.get("data"), dict)
+        ]
+        ends = [mode_b._end_of(d) for d in events if mode_b._end_of(d)]
+        assert ends, events[-5:]
+        assert ends[-1] in ("done", "error", "failed", "cancelled")
+        assert mode_b.has_reply(page), page["messages"][-1:]
+        # 途中から読み直しても、残りに終わりのイベントがある（last_event_id は 1 からの seq）。
+        tail = [
+            e["data"] for e in alice.stream(th, 1, timeout=30) if isinstance(e.get("data"), dict)
+        ]
+        assert any(mode_b._end_of(d) for d in tail), tail[-5:]
+    finally:
+        alice.delete_thread(th, missing_ok=True)

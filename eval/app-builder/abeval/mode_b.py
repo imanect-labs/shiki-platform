@@ -8,9 +8,17 @@
    テーブル・フォルダー・ファイルの id と、入力の項目の key）を添える（チャットにはフォルダーやファイルの id を
    調べる道具が無いので、二つのモードで与える情報をそろえる。キャッシュのキーは印のままの文）。
 4. 直後に SSE（`last_event_id=0`）を読み、`approval_requested` を承認の方針で決める（abeval.approvals・既定で
-   却下）。SSE は承認の要求を拾うためにだけ使い、完了は `GET messages` の `active_run_id` を `poll_secs` ごとに
-   読み直して待つ（SSE が空で終われば読み直しに切り替える）。壁時計の上限（`wall_clock_secs`・6 分）を
-   超えたら `POST …/runs/{run_id}/cancel` で取り消し、timeout として errors に入れる（採点しない）。
+   却下）。SSE は承認の要求と終わりのイベント（done・error・status の done・failed・cancelled）を拾うために使い、
+   完了は `GET messages` の `active_run_id` を `poll_secs` ごとに読み直して待つ（SSE が空で終われば読み直しに
+   切り替える）。壁時計の上限（`wall_clock_secs`・6 分）を超えたら `POST …/runs/{run_id}/cancel` で取り消し、
+   timeout として errors に入れる（採点しない）。
+   - 終わりの確かめ（BUG-248）: 製品には run の状態を読む口が無い（`GET messages` にも状態は無い）。run が終わった
+     のに終わりのイベントを読めていない（SSE が空で終わった・切れた）ときは、SSE を `last_event_id` から読み直す
+     （製品の SSE は、スレッドの最新の run が終わっていれば残りのイベントを流して閉じる・`chat.rs` の
+     `stream_thread`・`store/stream.rs`）。`END_REPLAYS` 回読み直しても読めなければ終わりは「確かめられない」とし、
+     最後の user の発話の後に assistant の返事（中身のある発話）が無ければ失敗の印として、採点もキャッシュもせず
+     errors（kind: no_reply）に入れる。返事があれば採点し、`chat_end_unconfirmed` に数を残す。終わった後に読んだ
+     承認の要求には答えない（記録だけ残す）。
 5. run が終わって、まだ保存していない（workflow_ref も成功した emit_workflow も無い）うえで最後の文章が
    聞き返しなら、課題の `clarifications` を 1 回だけ送る（S8 の asked は「保存の前に聞き返した」。保存の後の
    「有効化しますか？」は聞き返しに数えない・Mode A が emit を asked より先に判定するのと同じ順）。
@@ -99,6 +107,8 @@ JST = ZoneInfo("Asia/Tokyo")
 DEFAULT_MAX_STEPS = 6
 TERMINAL_EVENTS = frozenset({"done", "error"})
 TERMINAL_STATUS = frozenset({"done", "failed", "cancelled"})
+# run が終わったのに終わりのイベントを読めていないとき、SSE を読み直す回数（BUG-248）。
+END_REPLAYS = 2
 SAVED_CLAIM = ("保存しました", "作成しました", "保存済み")
 CANCEL_WAIT_POLLS = 15
 
@@ -146,6 +156,11 @@ class ChatResult:
     page: dict
     # 会話が誤りで終わった印（SSE の error イベントの文・失敗の状態）。空なら誤りなし。
     failures: list[dict] = field(default_factory=list)
+    # run → 終わりの状態（SSE の終わりのイベントの種類か、読めなければ "unconfirmed"・BUG-248）。
+    ends: dict[str, str] = field(default_factory=dict)
+
+    def unconfirmed(self) -> list[str]:
+        return [r for r in self.runs if self.ends.get(r, "unconfirmed") == "unconfirmed"]
 
 
 @dataclass
@@ -173,6 +188,16 @@ def _remaining(ctx: ModeBContext, deadline: float) -> float:
     return deadline - ctx.clock()
 
 
+def _end_of(data: Mapping) -> str | None:
+    """SSE のイベントが終わりのイベントなら、その種類（done・error・failed・cancelled）。"""
+    kind = data.get("type")
+    if kind in TERMINAL_EVENTS:
+        return str(kind)
+    if kind == "status" and data.get("status") in TERMINAL_STATUS:
+        return str(data["status"])
+    return None
+
+
 def wait_run(
     ctx: ModeBContext,
     thread_id: str,
@@ -181,13 +206,21 @@ def wait_run(
     deadline: float,
     errors: list,
     failures: list | None = None,
+    ends: dict | None = None,
 ) -> dict:
-    """run の終わりまで待つ（SSE で承認の要求を拾い、完了は読み直しで判定）。最後のメッセージ一覧を返す。
+    """run の終わりまで待つ（SSE で承認の要求と終わりのイベントを拾い、完了は読み直しで判定）。最後のメッセージ
+    一覧を返す。
 
     SSE の `error` イベント（生成の失敗）と、失敗・取り消しの状態は `failures` に残す（基盤の失敗の判定に使う）。
+    `ends[run_id]` に終わりの状態（終わりのイベントの種類か "unconfirmed"）を残す。run が終わったのに終わりの
+    イベントを読めていなければ、SSE を `last_event_id` から `END_REPLAYS` 回まで読み直す（BUG-248）。
     """
     failures = [] if failures is None else failures
+    ends = {} if ends is None else ends
     last_id = 0
+    end: str | None = None
+    finished = False  # GET messages で run の終わりを見た（この後の SSE は読み直し）
+    replays = 0
     while True:
         if _remaining(ctx, deadline) <= 0:
             raise ChatTimeout(run_id)
@@ -198,26 +231,38 @@ def wait_run(
                 if isinstance(ev.get("id"), int):
                     last_id = ev["id"]
                 data = ev.get("data") or {}
-                kind = data.get("type")
-                if kind == "approval_requested":
-                    handle_request(ctx.client, thread_id, run_id, data, ctx.policy, log)
-                elif kind in TERMINAL_EVENTS or (
-                    kind == "status" and data.get("status") in TERMINAL_STATUS
-                ):
-                    if kind == "error":
+                if data.get("type") == "approval_requested":
+                    if finished:
+                        # 終わった run の要求には答えない（決める相手がいない・記録だけ残す）。
+                        call_id = data.get("tool_call_id")
+                        if isinstance(call_id, str) and not log.seen(call_id):
+                            log.add(data, run_id, False, "run は終わっていた（答えを送らない）")
+                    else:
+                        handle_request(ctx.client, thread_id, run_id, data, ctx.policy, log)
+                    continue
+                got = _end_of(data)
+                if got is not None:
+                    end = got
+                    if got == "error":
                         failures.append(
                             {"run": run_id, "error": str(data.get("message") or "")[:300]}
                         )
-                    elif kind == "status" and data.get("status") in ("failed", "cancelled"):
-                        failures.append({"run": run_id, "status": data.get("status")})
+                    elif got in ("failed", "cancelled"):
+                        failures.append({"run": run_id, "status": got})
                     break
                 if _remaining(ctx, deadline) <= 0:
                     break
         except (httpx.HTTPError, ShikiError) as e:
             errors.append(f"sse: {type(e).__name__}")
+        if finished and end is None:
+            replays += 1
         page = ctx.client.messages(thread_id)
         if not page.get("active_run_id") and not page.get("queued_runs"):
-            return page
+            if end is not None or replays >= END_REPLAYS:
+                ends[run_id] = end or "unconfirmed"
+                return page
+            finished = True
+            continue  # 終わった run の SSE の残りを読み直す（待たない）
         if _remaining(ctx, deadline) <= 0:
             raise ChatTimeout(run_id)
         ctx.sleep(ctx.cfg.mode_b.poll_secs)
@@ -250,22 +295,56 @@ def drive_chat(
     log = ApprovalLog()
     sse_errors: list[str] = []
     failures: list[dict] = []
+    ends: dict[str, str] = {}
     args = message_args(ctx, ts)
     run_id = ctx.client.post_message(thread_id, prompt, **args)["run_id"]
     runs = [run_id]
-    page = wait_run(ctx, thread_id, run_id, log, deadline, sse_errors, failures)
+    page = wait_run(ctx, thread_id, run_id, log, deadline, sse_errors, failures, ends)
     clarified = False
     first = parse_transcript(page)
     if (
         not failures
+        and has_reply(page)
         and not saved_anything(first)
         and is_question(first.final_text, ask_terms(task))
     ):
         run_id = ctx.client.post_message(thread_id, task.clarifications, **args)["run_id"]
         runs.append(run_id)
         clarified = True
-        page = wait_run(ctx, thread_id, run_id, log, deadline, sse_errors, failures)
-    return ChatResult(runs, log, clarified, sse_errors, page, failures)
+        page = wait_run(ctx, thread_id, run_id, log, deadline, sse_errors, failures, ends)
+    return ChatResult(runs, log, clarified, sse_errors, page, failures, ends)
+
+
+def _ordered(page: Mapping) -> list[Mapping]:
+    """メッセージを作られた順に（同じ時刻なら一覧の順・`parse_transcript` と同じ並べ方）。"""
+    msgs = [m for m in page.get("messages") or [] if isinstance(m, Mapping)]
+    return [
+        m
+        for _, m in sorted(enumerate(msgs), key=lambda p: (str(p[1].get("created_at") or ""), p[0]))
+    ]
+
+
+def _substantive(block: object) -> bool:
+    """返事の中身になるブロックか（思考と空の文は数えない）。"""
+    if not isinstance(block, Mapping):
+        return False
+    kind = block.get("type")
+    if kind == "thinking":
+        return False
+    if kind == "text":
+        return bool(str(block.get("text") or "").strip())
+    return kind is not None
+
+
+def has_reply(page: Mapping) -> bool:
+    """最後の user の発話の後に、中身のある assistant の発話があるか（製品は発話を受けると中身の無い枠を置く）。"""
+    msgs = _ordered(page)
+    users = [i for i, m in enumerate(msgs) if m.get("role") == "user"]
+    after = msgs[users[-1] + 1 :] if users else msgs
+    return any(
+        m.get("role") == "assistant" and any(_substantive(b) for b in m.get("content") or [])
+        for m in after
+    )
 
 
 def saved_anything(t: Transcript) -> bool:
@@ -283,10 +362,8 @@ def saved_anything(t: Transcript) -> bool:
 
 def parse_transcript(page: Mapping) -> Transcript:
     """メッセージ一覧から tool_call・tool_result・workflow_ref・最後の文章を読む（知らないブロックは無視）。"""
-    msgs = [m for m in page.get("messages") or [] if isinstance(m, Mapping)]
-    msgs = sorted(enumerate(msgs), key=lambda p: (str(p[1].get("created_at") or ""), p[0]))
     t = Transcript()
-    for _, m in msgs:
+    for m in _ordered(page):
         steps = []
         texts = []
         for b in m.get("content") or []:
@@ -513,6 +590,13 @@ def infra_failure(
             f"・上流の応答 {chat_st}" if chat_st else ""
         )
         return {"kind": kind, "detail": detail[:500], "stop": False}
+    if chat is not None and chat.unconfirmed() and not has_reply(chat.page):
+        # 終わりの状態を確かめられず、最後の発話に返事が無い（製品の中の失敗とみなす・BUG-248）。
+        detail = (
+            f"run {chat.unconfirmed()} の終わりを SSE で確かめられず、最後の発話に返事がありません"
+            + (f"・上流の応答 {chat_st}" if chat_st else "")
+        )
+        return {"kind": "no_reply", "detail": detail[:500], "stop": False}
     if trial is not None and case_st and trial.get("s3") is False:
         return {
             "kind": "upstream",
@@ -725,6 +809,8 @@ def score(
         # stub のスタックの配管の確かめ（集計で実モデルの条件に混ぜない）。
         "stub_run": ctx.stub,
         "chat_runs": len(chat.runs),
+        # 終わりを SSE で確かめられなかった run の数（返事はあったので採点した・BUG-248）。
+        "chat_end_unconfirmed": len(chat.unconfirmed()),
         "clarified": chat.clarified,
         "sse_errors": chat.sse_errors,
         "s6": trips,

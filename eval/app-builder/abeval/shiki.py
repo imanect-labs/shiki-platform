@@ -471,7 +471,8 @@ class ShikiClient:
         timeout: float = 360.0,
         keepalive: bool = False,
     ) -> Iterator[dict]:
-        """SSE（最も古い未完了の run）。終わりのイベントでサーバーが閉じる。run が無ければすぐ空で終わる。
+        """SSE（スレッドのいまの run: 終わっていない最も古い run、無ければ最新の run）。終わりのイベントでサーバーが
+        閉じる。終わった run なら `last_event_id` より後の残りを流して閉じる。run が無ければすぐ空で終わる。
 
         `keepalive=True` なら keep-alive のコメントも疑似のイベントとして返す（`iter_sse`）。
         """
