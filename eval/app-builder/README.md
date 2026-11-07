@@ -97,6 +97,7 @@ install -m 600 eval/app-builder/config/llm-eval.example.toml ~/.config/shiki-dev
 cd eval/app-builder
 uv run python -m abeval serve --label v0 --dry-run      # dev-up.sh の呼び出しを表示するだけ
 uv run python -m abeval serve --label v0 [--max-steps 12] [--budget-micros 150000]
+uv run python -m abeval serve --label v0 --record-behavior   # 起動せず、振る舞いの指紋だけを残し直す
 uv run python -m abeval serve --label v0 --down
 ```
 
@@ -112,13 +113,21 @@ uv run python -m abeval serve --label v0 --down
 
 - 起動の前に、版の記録の `tree_clean` と、バイナリとランナーの sha256 が記録と同じことを確かめる（違えば・
   ランナーの記録が無ければ起動しない）。
+- 起動した直後に、:10067 を握るプロセスが版のバイナリ（下の「版のサーバーの点検」と同じ確かめ）であることを確かめ、
+  **振る舞いの指紋**（§4.1 の 5・`abeval/behavior.py`）を版の記録の `behavior_check` に残す。決まった IR の組を
+  `/workflows/validate` に送り、誤りと警告のコードを残す（費用 0）。組は V0（81a9899b）と HEAD のコードを読んで、
+  版で結果が変わるものを選んだ: `from_port: "next"` の線（V0 は通る・V1 以降は `ir.unknown_port`）、vars に無い
+  `{name}` の `$template`（V0 は通る・V1 以降は `ir.bad_template`）、無いフォルダーの storage.list（V0・V1 は通る・
+  HEAD は `ir.unknown_folder`）。版のサーバーと確かめられなければ指紋を残さずに 1 で終わる。組を変えたときや、
+  指紋の無い記録のときは、起動したまま `--record-behavior` で残し直す。
 - `run` は、版のサーバーの `/workflows/validate` で使えるノードの種類を確かめ（未知の種類に返る
   `ir.unknown_node_type` で見る・費用 0）、版の記録の `node_types` と結果の `versions.<label>.node_types` に残す。
   課題の `requires` の `node:*` はこれで判定する（HEAD の ir_lint のカタログで判定すると、V0 に無いノードの課題が
   対象外にならない）。
 - 呼び出し側のシェルに残った `SHIKI__*`・`SHIKI_CONFIG` は渡さない。条件は手数の上限（`--max-steps` →
   `SHIKI__CHAT__MAX_STEPS`・省けば製品の値）と 1 発話の予算（`--budget-micros` →
-  `SHIKI__CHAT__BUDGET_MAX_COST_USD_MICROS`・既定 $0.15）だけをここで決める。
+  `SHIKI__CHAT__BUDGET_MAX_COST_USD_MICROS`・既定 $0.15）だけをここで決める。Mode B の `run` は、同じ値を
+  `run --max-steps`・`--budget-micros` に渡さないと流さない（版のサーバーの環境を /proc から読んで比べる）。
 - dev-up.sh の引数は `dev-up.sh --help` を参照（`--server-bin`・`--db-name`・`--store-name`・`--bucket`・
   `--redis-db`・`--port`・`--gateway-ports`・`--api-only`・`--run-label`）。引数を省いた起動は前と同じ
   （`tests/test_dev_up_args.py` が、引数を足す前の dev-up.sh で作った記録と比べて確かめる）。ラベルのサーバーの
@@ -184,12 +193,27 @@ uv run python -m abeval.doctor --mode eval --init-sentinel                    # 
 
 api.anthropic.com へ 401 を確かめることはしない（鍵を持たないので要らない）。
 
-**取り込みの前の点検**（`doctor.capture_guard`・`abeval capture`・`run` の取り込み・`--regrade-from` の前に必ず通す。
-`--skip-doctor` でも飛ばさない）: 取り込みは実モデルの名前（`claude-haiku-5-5`）で発話を送るので、送り先の
-サーバーの anthropic が abeval.proxy を指していないと、評価の台帳を通らずに手元の中継へ届いて課金される。
-API のポートが 10067（ループバック）・llm-eval.toml の base_url が abeval.proxy・そのポートを握るプロセスの
-`SHIKI_CONFIG`（`ss` と `/proc/<pid>/environ` から読む）の anthropic も abeval.proxy で鍵がダミー・`SHIKI__LLM__*` の
-上書き（`SHIKI__LLM__BACKEND` を除く）が無いことを確かめる。読めなければ送らない。
+**版のサーバーの点検**（`doctor.version_guard`・BUG-246）: stub でない `run`（Mode A・Mode B・取り込み・
+`--regrade-from`・計画だけのときも）と `capture` の前に必ず通す（`--skip-doctor` でも飛ばさない）。どれかが NG なら、
+サーバーにも abeval.proxy にも何も送らずに 1 で終わる。
+
+| 確かめること | 読むところ |
+| --- | --- |
+| API のポートが 10067（ループバック）・llm-eval.toml（上の表の eval の項目） | 引数・設定 |
+| ポートを握るプロセスがただ 1 つ | `ss -ltnpH` |
+| そのプロセスの実行ファイルが serve の渡す退避したバイナリ（`~/.local/share/shiki-eval/bin/shiki-server-<label>`）で、動いている実行ファイルそのものの sha256 が版の記録と同じ（消されて置き換えられたものは NG） | `/proc/<pid>/exe` |
+| CSV の集計のランナーが版のランナーで、sha が記録と同じ | `/proc/<pid>/environ` の `SHIKI__TABULAR__RUNNER_PATH` |
+| `SHIKI_CONFIG` の anthropic が abeval.proxy を指し鍵がダミー・`SHIKI__LLM__*` の上書き（`SHIKI__LLM__BACKEND` を除く）が無い・設定のファイルがサーバーの起動の後に書き換えられていない | `/proc/<pid>/environ`・`/proc/<pid>/stat` |
+| Mode B だけ: `SHIKI__CHAT__MAX_STEPS` が `--max-steps` と同じ（省いたなら無い）・`SHIKI__CHAT__BUDGET_MAX_COST_USD_MICROS` が `--budget-micros` と同じ | `/proc/<pid>/environ` |
+| 振る舞いの指紋が serve で記録したものと同じ（無ければ・組が変わっていれば NG） | `/workflows/validate` |
+
+取り込みは実モデルの名前（`claude-haiku-5-5`）で発話を送るので、送り先のサーバーの anthropic が abeval.proxy を
+指していないと、評価の台帳を通らずに手元の中継へ届いて課金される。前の版のサーバーを止め忘れて流すと、別の版の
+結果がその版の名前で残り、流し直してもキャッシュから返る（キャッシュのキーは版の記録の sha で作る）。確かめた
+プロセス（pid と起動の時刻）は、取り込みの前・Mode B の各試行の発話の前と採点した試行をキャッシュに置く前・
+結果を書く前に、替わっていないか（と LLM の行き先・条件）を確かめ直す。替わっていれば、その試行は採点も
+キャッシュもせず errors（kind `server`）に入れて残りを打ち切り、結果は書かない。読めないもの（`ss` が無い・別の
+利用者のプロセス）は確かめられないので NG にする。
 
 **サーバーの要るテスト**（stub のスタックに対して流す。実 LLM は呼ばない）:
 
@@ -256,7 +280,8 @@ uv run python -m abeval budget                                             # 評
 ```
 
 共通の引数: `--tasks a,b`（既定は全部）・`--phrasings flow,app,auto`・`--trials 3`・`--effort low|medium|high|auto`
-（重ねて指定できる）・`--max-steps N`（版のサーバーを `serve --max-steps N` で起動しておく・条件の印）。
+（重ねて指定できる）・`--max-steps N`・`--budget-micros N`（既定 150000。Mode B は、版のサーバーを
+`serve --max-steps N --budget-micros N` の同じ値で起動していないと流さない）。
 版に無い機能の要る課題（`requires`）は「対象外」として外し、結果の `out_of_scope` に残す。
 
 | 置き場 | 中身 |
@@ -439,6 +464,10 @@ Mode B で承認待ち（`approval_requested`）が来たら、既定で却下�
   （`test_capture_it.py`）は、API のポートを握るサーバーの `SHIKI_CONFIG` の anthropic が `127.0.0.1:18200`
   （abeval.proxy）を指し、鍵がダミーのときだけ流す（テストの中で capture_only の abeval.proxy を 18200 で動かす・
   上流は繋がらない宛先）。それ以外のスタックでは理由を出して飛ばす。
+- 版のサーバーの点検（`test_server_guard.py`・`test_run_guard.py`・`test_serve_behavior.py`）は、偽の /proc
+  （`tests/fake_proc.py`・pid の下の exe・environ・stat）と偽の `ss` の出力で流し、本物の `ss` と /proc はテストの
+  中で起こした子プロセス（ループバックで待ち受けるだけ）で確かめる（`ss` が無ければ飛ばす）。振る舞いの指紋の組が
+  HEAD で版の差を表すことは `test_behavior.py` の `lint_bin`（ir_lint）と `server`（stub のスタック）で見る。
 - 採点器の自己テスト（`tests/test_mutate.py`）は、9 通りの壊し方が期待した検査で捕まることと、検査を何もしない
   ように差し替えるとそのテストが落ちることを確かめる。`from_port: next` は HEAD の検証では保存できないので、
   正解の記録から V0 の動き（その線の先が動かない）を組んで dead edge を見る。

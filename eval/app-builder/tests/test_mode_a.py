@@ -130,6 +130,17 @@ def test_question_terms_from_the_task():
     assert mode_a.classify(res, ("教えてください",)) == "asked"
 
 
+class PassingIdentity:
+    """確かめ直しがいつも通る版のサーバー（偽の shiki 用）。"""
+
+    def __init__(self):
+        self.calls = 0
+
+    def recheck(self):
+        self.calls += 1
+        return None
+
+
 @pytest.fixture()
 def env(monkeypatch, tmp_path):
     """CLI を偽の shiki・abeval.proxy（一時のポート）・偽の上流で動かす。"""
@@ -153,9 +164,10 @@ def env(monkeypatch, tmp_path):
         )
         monkeypatch.setattr(cli, "_lint", lambda bin_path=None: fake_lint)
         monkeypatch.setattr(cli, "load_catalog", catalog)
-        # 取り込みの前の点検（送り先のポートとプロセスの設定）は、偽の shiki では通らないので外す
-        # （点検そのものは tests/test_doctor.py の capture_guard のテストが見る）。
-        monkeypatch.setattr(cli.doctor, "capture_guard", lambda *a, **k: [])
+        # 版のサーバーの点検（送り先のポート・プロセスの版と設定）と振る舞いの指紋は、偽の shiki では通らないので
+        # 合格にする（点検そのものは tests/test_server_guard.py・test_behavior.py・test_run_guard.py が見る）。
+        monkeypatch.setattr(cli.doctor, "version_guard", lambda *a, **k: ([], PassingIdentity()))
+        monkeypatch.setattr(cli.behavior, "verify", lambda *a, **k: None)
         monkeypatch.setattr(cli, "grader_version", lambda *a: {"grader": 1, "ir_lint_sha256": None})
         llm = tmp_path / "llm-eval.toml"
         llm.write_text(
@@ -380,3 +392,57 @@ def test_requires_are_judged_by_the_version_server(env, capsys):
     assert "data.query" in rec.extra["node_types"]
     assert not v0_missing & set(rec.extra["node_types"])
     assert up.received == []
+
+
+# --- 版のサーバーの確かめ直し（BUG-246） ---
+
+
+class ChangesAt(PassingIdentity):
+    """n 回目の確かめ直しから「替わった」と答える版のサーバー。"""
+
+    def __init__(self, n: int):
+        super().__init__()
+        self.n = n
+
+    def recheck(self):
+        super().recheck()
+        return "版のサーバーが替わりました" if self.calls >= self.n else None
+
+
+def test_run_rechecks_the_server_before_the_capture(env, monkeypatch, tmp_path, capsys):
+    fake, _, up, llm = env
+    ident = ChangesAt(1)
+    monkeypatch.setattr(cli.doctor, "version_guard", lambda *a, **k: ([], ident))
+    assert cli.main(argv(llm, "--go"), command="run") == 1
+    assert "取り込みの前の確かめ直し" in capsys.readouterr().out
+    assert up.received == [] and fake.llm_replies == []
+    assert not (tmp_path / "captures").exists() and not (tmp_path / "results").exists()
+
+
+def test_run_does_not_write_results_when_the_server_changed_during_the_run(
+    env, monkeypatch, tmp_path, capsys
+):
+    fake, _, up, llm = env
+    ident = ChangesAt(2)  # 取り込みの前は通り、結果を書く前に替わっていた
+    monkeypatch.setattr(cli.doctor, "version_guard", lambda *a, **k: ([], ident))
+    assert cli.main(argv(llm, "--go"), command="run") == 1
+    assert "結果を書く前の確かめ直し" in capsys.readouterr().out
+    assert not (tmp_path / "results" / "e1a.json").exists()
+    assert ident.calls == 2
+
+
+def test_mode_b_gets_the_recheck_of_the_checked_server(env, monkeypatch):
+    fake, _, up, llm = env
+    ident = PassingIdentity()
+    monkeypatch.setattr(cli.doctor, "version_guard", lambda *a, **k: ([], ident))
+    got = {}
+
+    def fake_run(ctx, specs, tasks):
+        got["preflight"] = ctx.preflight
+        return [], []
+
+    monkeypatch.setattr(cli.mode_b, "run", fake_run)
+    args = argv(llm, "--go")
+    args[args.index("a")] = "b"
+    assert cli.main(args, command="run") == 0
+    assert got["preflight"] == ident.recheck

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 import shutil
+import time
 from pathlib import Path
 
 import httpx
 import pytest
+from fake_proc import FakeProc
 
 from abeval import doctor, fixtures
 from abeval.config import ROOT, load_config
@@ -325,10 +327,15 @@ def _eval_llm(tmp_path, base: str = "http://127.0.0.1:18200", name: str = "llm.t
 
 
 def _guard(monkeypatch, tmp_path, env, api="http://localhost:10067"):
-    from abeval import doctor as d
+    """そのポートを握る偽のプロセス（環境が env・設定を書いた後に起動した）で capture_guard を通す。"""
+    from abeval import server_guard
 
-    monkeypatch.setattr(d, "server_process_env", lambda port: env)
-    return {c.name: c for c in d.capture_guard(api, load_config(), _eval_llm(tmp_path))}
+    proc = FakeProc(tmp_path / "proc")
+    monkeypatch.setattr(server_guard, "PROC", proc.root)
+    monkeypatch.setattr(server_guard, "run_ss", proc.ss)
+    if env is not None:
+        proc.add(4242, exe=tmp_path / "server-bin", env=env, started_at=time.time() + 5)
+    return {c.name: c for c in doctor.capture_guard(api, load_config(), _eval_llm(tmp_path))}
 
 
 def test_capture_guard_passes_only_for_the_eval_server(monkeypatch, tmp_path):
@@ -347,13 +354,15 @@ def test_capture_guard_passes_only_for_the_eval_server(monkeypatch, tmp_path):
     assert _guard(monkeypatch, tmp_path, over)["版のサーバーの設定"].status == "ng"
     only_backend = {"SHIKI__LLM__BACKEND": "stub"}
     assert _guard(monkeypatch, tmp_path, only_backend)["版のサーバーの設定"].status == "ng"
+    # 待ち受けているプロセスが無ければ NG。
+    none = _guard(monkeypatch, tmp_path, None)["版のサーバーの設定"]
+    assert none.status == "ng" and "待ち受けているプロセスがありません" in none.detail
 
 
 def test_capture_refuses_to_talk_to_an_unchecked_server(monkeypatch, tmp_path, capsys):
-    from abeval import cli
-    from abeval import doctor as d
+    from abeval import cli, server_guard
 
-    monkeypatch.setattr(d, "server_process_env", lambda port: None)
+    monkeypatch.setattr(server_guard, "run_ss", lambda port: "")
     posted = []
     monkeypatch.setattr(cli, "ShikiClient", lambda *a, **k: posted.append(a) or None)
     code = cli.main(

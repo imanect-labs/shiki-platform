@@ -12,6 +12,10 @@
   だけを、ここで決めて渡す）。CSV の集計の隔離ランナーは、版と同じ commit でビルドしたもの
   （`<home>/bin/shiki-tabular-runner-<label>`・sha を記録と照らす）を `SHIKI__TABULAR__RUNNER_PATH` で渡す
   （作業ツリーの HEAD のランナーを使うと、版の差にランナーの差が混ざり、途中でビルドし直されても記録に残らない）。
+- serve は起動した後に、:10067 を握るプロセスが版のバイナリ（sha が記録と同じ）であることを /proc から確かめ、
+  振る舞いの指紋（`abeval.behavior`・決まった IR の組の検証の結果）を版の記録の `behavior_check` に残す（§4.1 の 5・
+  BUG-246）。`run` と `capture` は同じ組を送り直して記録と比べる。`--record-behavior` は起動せずに、動いている
+  版のサーバーで確かめて残す（指紋の組を変えたとき・指紋の無い記録のとき）。
 """
 
 from __future__ import annotations
@@ -27,6 +31,7 @@ import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from abeval.config import ROOT, load_config
 
@@ -343,6 +348,51 @@ def serve_plan(
     return ServePlan(argv, env, dropped)
 
 
+def record_behavior(
+    label: str,
+    *,
+    home: Path,
+    api_url: str = f"http://localhost:{EVAL_PORT}",
+    versions_dir: Path | None = None,
+) -> int:
+    """動いている版のサーバーが版のバイナリであることを確かめてから、振る舞いの指紋を版の記録に残す。"""
+    import httpx
+
+    from abeval import behavior, server_guard
+    from abeval.shiki import LoginError, ShikiClient, ShikiError
+
+    port = urlsplit(api_url).port or EVAL_PORT
+    proc = server_guard.process_on_port(port)
+    if isinstance(proc, str):
+        print(f"abeval serve: 振る舞いの指紋を残せません: {proc}", file=sys.stderr)
+        return 1
+    bad = [
+        c
+        for c in server_guard.identity_checks(proc, label, home, versions_dir=versions_dir)
+        if c.status == "ng"
+    ]
+    if bad:
+        for c in bad:
+            print(c.line(), file=sys.stderr)
+        print(
+            f"abeval serve: :{port} のサーバーが {label} の版と確かめられないので、指紋を残しません",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        with ShikiClient(api_url, "alice", timeout=60.0) as client:
+            entry = behavior.record(label, client, versions_dir=versions_dir)
+    except (LoginError, ShikiError, httpx.HTTPError, VersionError) as e:
+        print(f"abeval serve: 振る舞いの指紋を残せません: {str(e)[:300]}", file=sys.stderr)
+        return 1
+    print(
+        f"abeval serve: 振る舞いの指紋を版の記録に残しました（{label}）: "
+        f"{json.dumps(entry['results'], ensure_ascii=False, sort_keys=True)}",
+        file=sys.stderr,
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         prog="python -m abeval serve", description="版のサーバーを起動・停止する"
@@ -365,9 +415,17 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--llm-config", type=Path, default=LLM_EVAL_CONFIG)
     ap.add_argument("--redis-db", type=int, help="Redis の DB 番号（既定は label から決める）")
     ap.add_argument("--dry-run", action="store_true", help="呼び出しを表示するだけ")
+    ap.add_argument(
+        "--record-behavior",
+        action="store_true",
+        help="起動せず、動いている版のサーバーが版のバイナリであることを確かめてから、振る舞いの指紋を"
+        "版の記録に残す",
+    )
     args = ap.parse_args(argv)
     try:
         check_label(args.label)
+        if args.record_behavior:
+            return record_behavior(args.label, home=load_config().paths.home)
         if args.down:
             plan = down_plan(args.label)
         else:
@@ -391,7 +449,11 @@ def main(argv: list[str] | None = None) -> int:
     print(plan.show(), file=sys.stderr, flush=True)
     if args.dry_run:
         return 0
-    return subprocess.run(plan.argv, env=plan.env, cwd=ROOT, check=False).returncode
+    code = subprocess.run(plan.argv, env=plan.env, cwd=ROOT, check=False).returncode
+    if code != 0 or args.down:
+        return code
+    # 起動した直後に、版のサーバーであることを確かめてから振る舞いの指紋を残す（§4.1 の 5）。
+    return record_behavior(args.label, home=load_config().paths.home)
 
 
 if __name__ == "__main__":

@@ -28,6 +28,10 @@
 stub_plumbing）。拒否と繋がらない要求は台帳に載らないので、abeval.proxy の実行ごとの数（`GET /abeval/spend`）の
 増え方で見る。各試行の前に、実行と評価の残りが 1 試行の最悪より少なければ打ち切る。
 
+版のサーバーの確かめ直し（`ModeBContext.preflight`・BUG-246）: 各試行の発話の前と、採点した試行をキャッシュに
+置く前に呼ぶ。:10067 のプロセスが run の前に確かめた版のサーバーのまま（anthropic が abeval.proxy・条件が同じ）で
+なければ、その試行を採点もキャッシュもせず errors（kind: server）に入れ、残りを打ち切る。
+
 キャッシュのキーには採点器の版（GRADER_VERSION と ir_lint の sha）と課題の期待（expect・roles・run_cases）の
 sha も入れる（採点器か課題を直したら流し直す）。
 
@@ -123,6 +127,8 @@ class ModeBContext:
     hooks: list[Callable[[dict], dict]] = field(default_factory=list)
     # 依頼文を fixture を作った後で組み直す（stub の確かめで、本物の id を入れた calltool の文にする）。
     prompt_fn: Callable[[Task, TrialSpec, FixtureRecord], str] | None = None
+    # 版のサーバーの確かめ直し（違えば理由・`ServerIdentity.recheck`・stub のスタックでは None）。
+    preflight: Callable[[], str | None] | None = None
 
 
 @dataclass
@@ -584,6 +590,9 @@ def run_trial(ctx: ModeBContext, task: Task, ts: TrialSpec) -> tuple[dict | None
         return {**cached["result"], "from_cache": True}, []
     errors: list[dict] = []
     base = {**ts.to_dict(), "key": key, "mode": "b"}
+    why = ctx.preflight() if ctx.preflight is not None else None
+    if why:
+        return None, [{**base, "kind": "server", "detail": why, "stop": True}]
     try:
         counters = proxy_counters(ctx)
     except (ProxyControlError, httpx.HTTPError) as e:
@@ -645,6 +654,11 @@ def run_trial(ctx: ModeBContext, task: Task, ts: TrialSpec) -> tuple[dict | None
             errors.append({**base, "kind": "leftover", "detail": left})
             if trial is not None:
                 trial["leftover"] = left
+    why = ctx.preflight() if trial is not None and ctx.preflight is not None else None
+    if why:
+        # 流している間に版のサーバーが替わった（採点もキャッシュもしない）。
+        errors.append({**base, "kind": "server", "detail": why, "stop": True})
+        return None, errors
     if trial is not None:
         trial["cost"] = _costs(ctx, ts, usage0, day0)
         ctx.cache.put(

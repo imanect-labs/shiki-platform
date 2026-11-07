@@ -3,6 +3,11 @@
 - `plan`: 計画と見積もりを出すだけ（費用を使わない）。
 - `run --mode a|b`: 既定は計画を出して終わる。`--go` を付けたときだけ、点検（doctor）→ abeval.proxy への実行の
   登録 → 取り込み → 試行 → 結果の書き出し、の順に進む（登録の上限は min(最悪 × 1.2, $10)）。
+  - stub でない `run` と `capture` は、計画を出す前に必ず版のサーバーを確かめる（`--skip-doctor` でも飛ばさない・
+    BUG-246）: :10067 を握るプロセスが `--label` の版のバイナリ（sha が版の記録と同じ）で、anthropic が abeval.proxy を
+    指し、Mode B では手数の上限と 1 発話の予算が `--max-steps`・`--budget-micros` と同じこと（`doctor.version_guard`）。
+    あわせて振る舞いの指紋（`behavior.verify`）が serve で記録したものと同じこと。確かめたプロセスは、取り込みの前・
+    Mode B の各試行の前と結果を残す前・結果を書く前に、替わっていないか確かめ直す（`ServerIdentity.recheck`）。
   - `--stub`（Mode B だけ）: stub のスタックで配管を確かめる（model `default`・費用 0・abeval.proxy を使わない）。
   - `--regrade-from <版>`（Mode A だけ）: 生成せず、その版の生成をこの版のサーバーで採点し直す（V1・費用 0）。
     取り込みの sha が同じことを条件にする。
@@ -21,8 +26,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from abeval import behavior, doctor, fixtures, mode_a, mode_b, report
 from abeval import budget as budget_mod
-from abeval import doctor, fixtures, mode_a, mode_b, report
 from abeval.anthropic_client import AnthropicClient
 from abeval.approvals import ApprovalPolicy
 from abeval.cache import TrialCache
@@ -34,10 +39,12 @@ from abeval.ledger import Ledger
 from abeval.plan import RunSpec, format_plan, make_plan, mode_a_reserve_usd, register, spent
 from abeval.pricing import micros_to_usd
 from abeval.proxy_control import ProxyControl, read_token, safe_id
+from abeval.server_guard import Conditions, ServerIdentity
 from abeval.shiki import ShikiClient
 from abeval.tasks import PHRASINGS, Task, load_tasks
 from abeval.trial import placeholder_ids, prompt_text
 from abeval.versions import (
+    DEFAULT_BUDGET_MICROS,
     LLM_EVAL_CONFIG,
     VersionError,
     probe_node_types,
@@ -250,10 +257,16 @@ def cmd_run(args) -> int:
         args.api_url or os.environ.get("ABEVAL_API_URL") or (STUB_URL if stub else cfg.api_url)
     ).rstrip("/")
     all_tasks = select_tasks(load_tasks(), args.tasks)
+    # 版のサーバーの点検は何よりも先に（--skip-doctor でも飛ばさない・BUG-246）。
+    ident = None if stub else guard_version(api, cfg, args, mode_b=args.mode == "b")
+    if not stub and ident is None:
+        return 1
     lint = _lint(Path(args.lint_bin) if args.lint_bin else None)
     catalog = load_catalog()
     client = ShikiClient(api, "alice", stub_only=stub, timeout=60.0)
     try:
+        if not stub and not guard_behavior(args.label, client):
+            return 1
         if fixtures.find_sentinel(client) is None:
             print(
                 f"番兵（alice のルート直下のフォルダー「{fixtures.SENTINEL_NAME}」）がありません。評価用のサーバーなら "
@@ -303,7 +316,7 @@ def cmd_run(args) -> int:
                 reg = register(plan, ctrl)
                 print(f"abeval.proxy に登録: {reg}")
             if not stub:
-                if not guard_capture(api, cfg, Path(args.llm_config)):
+                if not recheck_server(ident, "取り込みの前"):
                     return 1
                 if ctrl is None:
                     ctrl = ProxyControl(
@@ -321,8 +334,9 @@ def cmd_run(args) -> int:
                 if cap.meta.get("changed_from_previous"):
                     print(f"[注] 前の取り込みと違う項目: {cap.meta['changed_from_previous']}")
             trials, errors = _execute(
-                args, cfg, client, ctrl, plan, version, cap, tasks, lint, catalog, stub, regrade
-            )
+                args, cfg, client, ctrl, plan, version, cap, tasks, lint, catalog, stub, regrade,
+                preflight=None if ident is None else ident.recheck,
+            )  # fmt: skip
         finally:
             if ctrl is not None:
                 if args.go and not stub and not regrade:
@@ -335,6 +349,8 @@ def cmd_run(args) -> int:
                 if e.get("run_id") == plan.run_id
             )
         )
+        if not recheck_server(ident, "結果を書く前"):
+            return 1
         _, g8_skipped = load_denylist()
         if g8_skipped:
             print(f"[注] {g8_skipped}（結果に g8_skipped の印を残す）")
@@ -365,7 +381,9 @@ def cmd_run(args) -> int:
         client.close()
 
 
-def _execute(args, cfg, client, ctrl, plan, version, cap, tasks, lint, catalog, stub, regrade):
+def _execute(
+    args, cfg, client, ctrl, plan, version, cap, tasks, lint, catalog, stub, regrade, preflight=None
+):
     by_id = {t.id: t for t in tasks}
     cache = TrialCache(cfg.paths.cache)
     if args.mode == "a":
@@ -421,6 +439,7 @@ def _execute(args, cfg, client, ctrl, plan, version, cap, tasks, lint, catalog, 
         run_id=None if stub else plan.run_id,
         stub=stub,
         stub_plumbing=not args.no_stub_plumbing,
+        preflight=preflight,
     )
     trials, errors = mode_b.run(ctx, plan.trials, by_id)
     stopped = next((e["detail"] for e in errors if e.get("kind") == "stopped"), None)
@@ -429,41 +448,66 @@ def _execute(args, cfg, client, ctrl, plan, version, cap, tasks, lint, catalog, 
     return trials, errors
 
 
-def guard_capture(api: str, cfg: Config, llm_config: Path) -> bool:
-    """取り込みの前に必ず通す点検（--skip-doctor でも飛ばさない・doctor.capture_guard）。"""
-    bad = [c for c in doctor.capture_guard(api, cfg, llm_config) if c.status == "ng"]
-    for c in bad:
-        print(c.line())
-    if bad:
-        print(
-            "取り込みは実モデルの名前で発話を送るので、送り先が評価の版のサーバー（anthropic が abeval.proxy）と"
-            "確かめられるまで送りません"
-        )
-    return not bad
+REFUSE = (
+    "送り先が --label の版のサーバー（anthropic が abeval.proxy）と確かめられるまで送りません"
+    "（python -m abeval serve --label <版> で起動する）"
+)
+
+
+def guard_version(api: str, cfg: Config, args, *, mode_b: bool) -> ServerIdentity | None:
+    """run・capture の前に必ず通す点検（--skip-doctor でも飛ばさない・doctor.version_guard・BUG-246）。"""
+    cond = Conditions(args.max_steps, args.budget_micros) if mode_b else None
+    checks, ident = doctor.version_guard(
+        api, cfg, args.label, llm_config=Path(args.llm_config).expanduser(), conditions=cond
+    )
+    for c in checks:
+        if c.status == "ng":
+            print(c.line())
+    if ident is None:
+        print(REFUSE)
+    return ident
+
+
+def guard_behavior(label: str, client: ShikiClient) -> bool:
+    """振る舞いの指紋が serve で記録したものと同じか（違えば流さない・§4.1 の 5）。"""
+    why = behavior.verify(label, client)
+    if why:
+        print(f"[NG]   版の振る舞いの指紋: {why}")
+        print(REFUSE)
+    return why is None
+
+
+def recheck_server(ident: ServerIdentity | None, when: str) -> bool:
+    """確かめた版のサーバーのままか（stub は確かめない）。"""
+    why = ident.recheck() if ident is not None else None
+    if why:
+        print(f"[NG]   {when}の確かめ直し: {why}")
+        print(REFUSE)
+    return why is None
 
 
 def cmd_capture(args) -> int:
     cfg = load_config()
     api = (args.api_url or os.environ.get("ABEVAL_API_URL") or cfg.api_url).rstrip("/")
-    if not guard_capture(api, cfg, Path(args.llm_config).expanduser()):
+    ident = guard_version(api, cfg, args, mode_b=False)
+    if ident is None:
         return 1
     tasks = load_tasks()
     task = select_tasks(tasks, args.task)[0] if args.task else _capture_task(tasks)
-    with (
-        ShikiClient(api, "alice", timeout=60.0) as client,
-        ProxyControl(
-            f"http://{cfg.proxy.host}:{cfg.proxy.port}", read_token(cfg.paths.home)
-        ) as ctrl,
-    ):
-        cap = do_capture(
-            client,
-            ctrl,
-            cfg,
-            args.label,
-            safe_id(args.exp),
-            task,
-            Path(args.llm_config).expanduser(),
-        )
+    with ShikiClient(api, "alice", timeout=60.0) as client:
+        if not guard_behavior(args.label, client):
+            return 1
+        ctrl = ProxyControl(f"http://{cfg.proxy.host}:{cfg.proxy.port}", read_token(cfg.paths.home))
+        with ctrl:
+            cap = do_capture(
+                client,
+                ctrl,
+                cfg,
+                args.label,
+                safe_id(args.exp),
+                task,
+                Path(args.llm_config).expanduser(),
+            )
     print(
         f"取り込みました: data/captures/{args.label}/{args.exp}（sha {cap.sha[:12]}・tools {len(cap.tools)}）"
     )
@@ -526,7 +570,16 @@ def _run_args(ap: argparse.ArgumentParser) -> None:
         "Mode B では製品の Auto）",
     )
     ap.add_argument(
-        "--max-steps", type=int, help="手数の上限（版のサーバーを同じ値で起動しておく）"
+        "--max-steps",
+        type=int,
+        help="手数の上限（Mode B は版のサーバーの起動の値と同じことを確かめる・serve --max-steps）",
+    )
+    ap.add_argument(
+        "--budget-micros",
+        type=int,
+        default=DEFAULT_BUDGET_MICROS,
+        help="1 発話の予算（マイクロ USD・Mode B は版のサーバーの起動の値と同じことを確かめる・"
+        f"serve --budget-micros・既定 {DEFAULT_BUDGET_MICROS}）",
     )
 
 
