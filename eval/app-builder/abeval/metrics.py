@@ -218,6 +218,44 @@ def aggregate(trials: Sequence[Mapping], *, iters: int = BOOTSTRAP_ITERS) -> lis
     return rows
 
 
+# 試行を採点しなかった印ではない errors の種類（採点した試行の片付けの問題）。
+NOT_EXCLUDING = frozenset({"cleanup", "leftover"})
+
+
+def trial_ident(t: Mapping) -> tuple:
+    """試行の同一性（条件と試行の id。id の無い古い記録は課題・言い方・番号）。"""
+    return (condition_of(t), t.get("trial_id") or (t.get("task"), t.get("phrasing"), t.get("n")))
+
+
+def excluded(trials: Iterable[Mapping], errors: Iterable[Mapping]) -> dict[tuple, dict[str, dict]]:
+    """条件 → errors の種類 → {"tasks": 課題の数, "trials": 試行の数}（採点しなかった試行だけ）。
+
+    `trials` は採点した試行（`dedupe` 済み）。同じ試行の errors は最後の種類で 1 回だけ数え、後で採点できた試行
+    （流し直した分）は数えない。stub の試行（`stub_run`）と、片付けの問題（[`NOT_EXCLUDING`]）は数えない。
+    """
+    scored = {trial_ident(t) for t in trials}
+    last: dict[tuple, Mapping] = {}
+    for e in errors:
+        if e.get("stub_run") or e.get("kind") in NOT_EXCLUDING:
+            continue
+        if not e.get("task") or not e.get("mode"):
+            continue
+        ident = trial_ident(e)
+        if ident in scored:
+            continue
+        last.pop(ident, None)
+        last[ident] = e
+    acc: dict[tuple, dict[str, tuple[set, list]]] = {}
+    for (cond, _), e in last.items():
+        tasks, n = acc.setdefault(cond, {}).setdefault(str(e.get("kind")), (set(), [0]))
+        tasks.add(str(e["task"]))
+        n[0] += 1
+    return {
+        cond: {k: {"tasks": len(v[0]), "trials": v[1][0]} for k, v in sorted(kinds.items())}
+        for cond, kinds in acc.items()
+    }
+
+
 def _count(values: Iterable[Any]) -> dict:
     out: dict = {}
     for v in values:

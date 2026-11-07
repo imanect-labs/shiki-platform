@@ -142,10 +142,115 @@ def test_summary_counts_a_trial_once_and_leaves_out_stub_runs():
     d2 = report.finalize(doc([same, other], exp="e1"), iters=10)
     text = report.summary_md([d1, d2], iters=10)
     row = next(line for line in text.splitlines() if line.startswith("| v0/b/auto |"))
-    assert (
-        row.split("|")[2].strip() == "2"
-    )  # 試行の数: k1 と k3（k1 は 1 回・stub の k2 は入れない）
+    cells = [c.strip() for c in row.split("|")]
+    # 課題の数（t1・t3）と試行の数（k1 と k3。k1 は 1 回・stub の k2 は入れない）。
+    assert cells[2] == "2" and cells[3] == "2"
     assert "/stub" not in text
+
+
+def _err(task, kind, *, n=0, mode="b", effort=None, **kw) -> dict:
+    return {
+        "exp": "e1b", "mode": mode, "label": "v0", "task": task, "phrasing": "flow", "n": n,
+        "effort": effort, "max_steps": None, "trial_id": f"{task}.flow.{n}.{effort or 'auto'}",
+        "kind": kind, "detail": "x", **kw,
+    }  # fmt: skip
+
+
+def test_excluded_counts_unscored_trials_by_kind_per_condition():
+    from abeval.metrics import excluded
+
+    scored = [{**trial("t1", 0, mode="b", effort=None, s4=True), "phrasing": "flow",
+               "trial_id": "t1.flow.0.auto"}]  # fmt: skip
+    errors = [
+        _err("w1", "date_window", n=0),
+        _err("w1", "date_window", n=1),
+        _err("w2", "date_window", n=0),
+        _err("t2", "no_reply"),
+        _err("t2", "infra"),  # 同じ試行の後の誤り（最後の種類で 1 回）
+        _err("t1", "llm_error"),  # 後で採点できた試行（流し直した分）は数えない
+        _err("t3", "cleanup"),  # 片付けの問題は外した試行ではない
+        _err("t4", "no_reply", stub_run=True),  # stub の配管の確かめ
+        {"task": "t5", "kind": "cleanup", "detail": "x"},  # Mode A の片付け（条件が無い）
+        _err("a1", "fixture", mode="a", effort="medium"),
+    ]
+    ex = excluded(scored, errors)
+    b = ("v0", "b", None, None, False)
+    assert ex[b] == {"date_window": {"tasks": 2, "trials": 3}, "infra": {"tasks": 1, "trials": 1}}
+    assert ex[("v0", "a", "medium", None, False)] == {"fixture": {"tasks": 1, "trials": 1}}
+    assert len(ex) == 2
+
+
+def test_the_headline_table_shows_tasks_and_what_was_left_out():
+    """条件ごとの課題の数と、外した課題（対象外・errors の種類ごと）を見出しの表に出す（BUG-247 の読み違いを防ぐ）。"""
+    a = [keyed({**trial(f"t{i}", 0), "phrasing": "flow"}, f"a{i}") for i in range(4)]
+    b = [keyed({**trial("t0", 0, mode="b", effort=None, s4=True), "phrasing": "flow"}, "b0")]
+    d = doc([*a, *b])
+    d["out_of_scope"] = [{"task": "t9", "label": "v0", "missing": ["cap:x"]}]
+    d = report.finalize(d, iters=10)
+    errors = [_err("t1", "date_window"), _err("t2", "date_window"), _err("t3", "no_reply")]
+    # 採点した試行の無い条件（high は全部外した）も出す。
+    errors.append(_err("t1", "budget", effort="high"))
+    text = report.summary_md([d], iters=10, errors=errors)
+    lines = text.splitlines()
+    head = next(line for line in lines if line.startswith("| 条件 |"))
+    assert "| 課題 |" in head and "外した課題" in head
+
+    def cells(name):
+        row = next(line for line in lines if line.startswith(f"| {name} |"))
+        return [c.strip() for c in row.split("|")]
+
+    ra, rb = cells("v0/a/medium"), cells("v0/b/auto")
+    assert ra[2] == "4" and ra[-2] == "対象外 1 課題"
+    assert rb[2] == "1"
+    assert rb[-2] == "対象外 1 課題・date_window 2 課題（2 試行）・no_reply 1 課題（1 試行）"
+    rh = cells("v0/b/high")
+    assert rh[2] == "0" and rh[3] == "0" and rh[-2].endswith("budget 1 課題（1 試行）")
+    assert "課題の集合が違う" in text
+    # errors を渡さなければ外した試行は出さない（対象外だけ）。
+    assert "date_window 2 課題" not in report.summary_md([d], iters=10)
+
+
+def test_report_reads_the_errors_of_each_experiment(tmp_path, monkeypatch):
+    from abeval import cli
+
+    t = keyed({**trial("t0", 0, mode="b", effort=None, s4=True), "phrasing": "flow"}, "b0")
+    report.write_result(doc([t], exp="e1b"), [_err("t1", "date_window")], iters=10)
+    assert [e["kind"] for e in report.read_errors("e1b")] == ["date_window"]
+    assert report.read_errors("none") == []
+    assert cli.main(["--exp", "e1b"], command="report") == 0
+    text = (report.results_dir() / "summary.md").read_text(encoding="utf-8")
+    row = next(line for line in text.splitlines() if line.startswith("| v0/b/auto |"))
+    assert "date_window 1 課題（1 試行）" in row
+
+
+def test_stub_run_errors_are_marked(monkeypatch):
+    """run --stub の errors には stub の印を付ける（実モデルの条件の外した試行に数えない）。"""
+    from abeval import cli, fixtures
+    from abeval.shiki import ShikiClient
+    from fake_chat import ChatFake
+    from recorded import catalog
+
+    fake = ChatFake()
+    fixtures.init_sentinel(
+        ShikiClient("http://localhost:8080", "alice", transport=fake.transport())
+    )
+    monkeypatch.setattr(
+        cli,
+        "ShikiClient",
+        lambda api, user, **k: ShikiClient(api, user, transport=fake.transport()),
+    )
+    monkeypatch.setattr(cli, "load_catalog", catalog)
+    monkeypatch.setattr(cli, "probe_node_types", lambda client, types: list(types))
+    monkeypatch.setattr(cli, "in_scope", lambda tasks, *a, **k: (list(tasks), []))
+    monkeypatch.setattr(cli, "grader_version", lambda *a: {"grader": 1})
+    monkeypatch.setattr(
+        cli, "_execute", lambda *a, **k: ([], [_err("basic-branch-amount", "no_reply")])
+    )
+    argv = ["--mode", "b", "--label", "stub", "--exp", "s0", "--trials", "1", "--stub",
+            "--tasks", "basic-branch-amount", "--api-url", "http://localhost:8080"]  # fmt: skip
+    assert cli.main(argv, command="run") == 0
+    [e] = report.read_errors("s0")
+    assert e["kind"] == "no_reply" and e["stub_run"] is True
 
 
 def test_condition_names_say_what_auto_means_per_mode():

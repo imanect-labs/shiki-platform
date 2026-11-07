@@ -4,7 +4,8 @@
   取り込みの sha・指紋）・grader・conditions・trials（採点した記録・保存された IR）・aggregates・cost。
   同じ実験をもう一度流したら、試行はキーで置き換えて足す（キャッシュから採点し直した分も入る）。
 - `results/errors-<exp>.jsonl`: 基盤の失敗（採点しない）。
-- `results/summary.md`: 6 節（見出しの表・失敗の内訳・課題ごとの表・effort と手数・費用・限界）。
+- `results/summary.md`: 6 節（見出しの表・失敗の内訳・課題ごとの表・effort と手数・費用・限界）。見出しの表には
+  条件ごとの課題の数と、外した課題（対象外と、errors の種類ごとの採点しなかった試行）を出す。
 - 書く前に検査する（`check_publishable`）: 会話の全文と要求の本文の項目（transcript・messages・response・
   thinking など）・鍵の形の値（`sk-ant-`）・拒否リスト（G8・リポジトリの外）の語。見つかれば書かない。
   拒否リストの語そのものは理由に出さない（場所と語の長さだけ）。
@@ -27,6 +28,7 @@ from abeval.metrics import (
     condition_name,
     condition_of,
     dedupe,
+    excluded,
     failure_breakdown,
     paired_bootstrap,
     task_means,
@@ -124,6 +126,24 @@ def read_result(exp: str, where: Path | None = None) -> dict | None:
         return json.loads(p.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return None
+
+
+def read_errors(exp: str, where: Path | None = None) -> list[dict]:
+    """results/errors-<exp>.jsonl（基盤の失敗・無ければ空。読めない行は飛ばす）。"""
+    p = Path(where or results_dir()) / f"errors-{exp}.jsonl"
+    try:
+        lines = p.read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return []
+    out = []
+    for line in lines:
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(e, dict):
+            out.append(e)
+    return out
 
 
 def merge_result(prev: Mapping | None, new: Mapping) -> dict:
@@ -274,15 +294,65 @@ LIMITS = [
 ]
 
 
-def summary_md(
-    docs: Sequence[Mapping], *, budget: Mapping | None = None, iters: int = 10_000
-) -> str:
-    """results/<exp>.json（finalize 済み）の列から summary.md を作る。
+def _excluded_cell(kinds: Mapping[str, Mapping] | None, out_of_scope: int) -> str:
+    parts = [f"対象外 {out_of_scope} 課題"] if out_of_scope else []
+    parts += [f"{k} {v['tasks']} 課題（{v['trials']} 試行）" for k, v in (kinds or {}).items()]
+    return "・".join(parts) or "なし"
 
-    試行は実験をまたいでキーで重ね（同じ試行を二重に数えない）、stub の試行（`run --stub`）は除く。
+
+def _headline_rows(
+    docs: Sequence[Mapping], trials: Sequence[Mapping], errors: Sequence[Mapping], iters: int
+) -> tuple[list[dict], list[list[str]]]:
+    """見出しの表の行（条件ごとの課題の数と、外した課題の数〔対象外と errors の種類ごと〕を添える）。"""
+    rows = aggregate(trials, iters=iters)
+    ex = excluded(trials, errors)
+    oos: dict[str, set[str]] = {}
+    for d in docs:
+        for o in d.get("out_of_scope") or []:
+            oos.setdefault(str(o.get("label")), set()).add(str(o.get("task")))
+    out = []
+    seen = set()
+    for r in rows:
+        cond = (r["label"], r["mode"], r["effort"], r["max_steps"], False)
+        seen.add(cond)
+        out.append(
+            [
+                r["condition"],
+                str(r["tasks"]),
+                str(r["trials"]),
+                _pct(r["s1"]),
+                _pct(r["s2s"]),
+                _pct(r["s2d"]),
+                _pct(r.get("s4")),
+                _ci(r["headline_ci"]),
+                _usd(r["cost_per_completed_task_usd"]),
+                _excluded_cell(ex.get(cond), len(oos.get(str(r["label"]), ()))),
+            ]
+        )
+    # 採点した試行が 1 つも無い（全部外した）条件も出す。
+    for cond in sorted((c for c in ex if c not in seen), key=lambda c: tuple(str(x) for x in c)):
+        out.append(
+            [condition_name(cond), "0", "0", *(["—"] * 6)]
+            + [_excluded_cell(ex[cond], len(oos.get(str(cond[0]), ())))]
+        )
+    return rows, out
+
+
+def summary_md(
+    docs: Sequence[Mapping],
+    *,
+    budget: Mapping | None = None,
+    iters: int = 10_000,
+    errors: Sequence[Mapping] = (),
+) -> str:
+    """results/<exp>.json（finalize 済み）の列と、その errors の行から summary.md を作る。
+
+    試行は実験をまたいでキーで重ね（同じ試行を二重に数えない）、stub の試行（`run --stub`）は除く。見出しの表には
+    条件ごとの課題の数と、外した課題（版に無い機能の対象外と、errors の種類ごと・採点しなかった試行）を出す
+    （モードや条件で課題の集合が違うまま見出しを並べて読まないため）。
     """
     trials = dedupe(t for d in docs for t in d.get("trials") or [])
-    rows = aggregate(trials, iters=iters)
+    rows, head_rows = _headline_rows(docs, trials, errors, iters)
     lines = ["# AI によるワークフロー作成の評価（GAP-30）", ""]
     lines.append(
         "実験: "
@@ -293,6 +363,7 @@ def summary_md(
     lines += _table(
         [
             "条件",
+            "課題",
             "試行",
             "S1",
             "S2s",
@@ -300,22 +371,18 @@ def summary_md(
             "S4",
             "見出し（課題の 95% 区間）",
             "完了した課題あたりの費用",
+            "外した課題（採点しなかった試行）",
         ],
-        [
-            [
-                r["condition"],
-                str(r["trials"]),
-                _pct(r["s1"]),
-                _pct(r["s2s"]),
-                _pct(r["s2d"]),
-                _pct(r.get("s4")),
-                _ci(r["headline_ci"]),
-                _usd(r["cost_per_completed_task_usd"]),
-            ]
-            for r in rows
-        ],
+        head_rows,
     )
-    lines += ["", "見出し: Mode A は S1 ∧ ¬S2s ∧ ¬S2d、Mode B は S1 ∧ ¬S2s ∧ ¬S2d ∧ S4。"]
+    lines += [
+        "",
+        "見出し: Mode A は S1 ∧ ¬S2s ∧ ¬S2d、Mode B は S1 ∧ ¬S2s ∧ ¬S2d ∧ S4。",
+        "",
+        "「課題」は見出しの分母に入った課題の数。条件ごとに課題の集合が違うことがある（版に無い機能の対象外・"
+        "予定の週に流さない date_window・基盤の失敗で採点しなかった試行）。モードや条件の見出しを並べて読むときは、"
+        "課題の数と外した課題を見る。下の比べ方は同じモードの中の共通の課題だけを使う。",
+    ]
     comp = _comparisons(trials, iters)
     if comp:
         lines += [""]
@@ -433,9 +500,10 @@ def write_summary(
     budget: Mapping | None = None,
     denylist: Path | None = None,
     iters: int = 10_000,
+    errors: Sequence[Mapping] = (),
 ) -> Path:
     words, _ = load_denylist(denylist)
-    text = summary_md(docs, budget=budget, iters=iters)
+    text = summary_md(docs, budget=budget, iters=iters, errors=errors)
     _require_publishable(text, words)
     path = Path(path or results_dir() / "summary.md")
     _atomic_write(path, text)

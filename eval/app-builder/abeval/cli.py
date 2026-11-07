@@ -373,6 +373,9 @@ def cmd_run(args) -> int:
                 preflight=None if ident is None else ident.recheck,
             )  # fmt: skip
             errors = [*date_window_errors(args, windowed, window), *errors]
+            if stub:
+                # stub の配管の確かめの errors（レポートで実モデルの条件の外した試行に数えない）。
+                errors = [{**e, "stub_run": True} for e in errors]
         finally:
             if ctrl is not None:
                 if args.go and not stub and not regrade:
@@ -587,8 +590,9 @@ def cmd_report(args) -> int:
     cfg = load_config()
     names = args.exp or sorted(p.stem for p in report.results_dir().glob("*.json"))
     docs = [d for d in (report.read_result(n) for n in names) if d]
+    errors = [e for d in docs for e in report.read_errors(str(d["experiment"]))]
     b = budget_mod.summarize(cfg).to_dict()
-    path = report.write_summary(docs, budget=b)
+    path = report.write_summary(docs, budget=b, errors=errors)
     print(f"書きました: {path}（実験 {len(docs)}）")
     return 0
 
