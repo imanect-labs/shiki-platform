@@ -255,7 +255,7 @@ def test_run_date_matches_the_day_the_run_started_in_japan_time():
     from abeval.grade.checks import run_start_dates
 
     # 2026-11-08T15:30Z は日本時間で 11-09。
-    dates = run_start_dates(["2026-11-08T15:30:00Z"], None)
+    dates = run_start_dates(["2026-11-08T15:30:00Z"])
     assert dates == ["2026-11-09"]
     exp = {
         "rows": [{"table": "t", "match": [{"d": {"$run_date": {}}}]}],
@@ -288,10 +288,29 @@ def test_run_date_matches_the_day_the_run_started_in_japan_time():
     assert [c.ok for c in evaluate(exp, none, {}, NOW)] == [True, False, False]
 
 
-def test_run_date_falls_back_to_when_the_case_started():
+def test_run_date_has_no_guess_without_the_start_time():
     from abeval.grade.checks import run_start_dates
 
-    # 古い記録（run の開始の時刻が無い）は、流し始めた時刻とその 10 分後の日（日付が変わる間際）。
-    assert run_start_dates([None], "2026-11-08T14:55:00+00:00") == ["2026-11-08", "2026-11-09"]
-    assert run_start_dates([None], "2026-11-08T10:00:00+00:00") == ["2026-11-08"]
-    assert run_start_dates([], None) == []
+    # 始めた時刻が無い run（起動できなかった）は数えない。1 つも無ければ候補は空（当てずっぽうにしない）。
+    assert run_start_dates([None, "2026-11-08T14:55:00+00:00"]) == ["2026-11-08"]
+    assert run_start_dates(["2026-11-08T14:55:00+00:00", "2026-11-08T15:05:00+00:00"]) == [
+        "2026-11-08",
+        "2026-11-09",
+    ]
+    assert run_start_dates([None]) == [] and run_start_dates([]) == []
+
+
+def test_recorded_runs_carry_their_start_time():
+    """記録した run（stub のスタック）は、実物と同じく始めた時刻を持つ（GAP-114）。"""
+    import recorded
+
+    seen = 0
+    for task, variant, case in recorded.runs():
+        _, _, rec = recorded.run(task, variant, case)
+        for r in rec.runs:
+            if r.status == "not_started":
+                continue
+            assert r.started_at, (task, variant, case, r.run_id)
+            seen += 1
+        assert rec.case_result().run_dates, (task, variant, case)
+    assert seen >= 40

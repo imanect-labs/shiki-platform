@@ -5,7 +5,7 @@
  "irs": {
   "main": {
    "ir_version": 1,
-   "name": "abeval-rec-678b54-null",
+   "name": "abeval-rec-e7055b-null",
    "display_name": "スタブフロー",
    "declared_scopes": [],
    "triggers": [
@@ -37,7 +37,7 @@
  "record": {
   "runs": [
    {
-    "run_id": "0e0a444a-b8fc-4e9d-8827-775c1826be31",
+    "run_id": "8ac31132-5832-4282-97b0-280a26a1d151",
     "status": "succeeded",
     "input": {
      "event": "新人研修",
@@ -63,7 +63,8 @@
     ],
     "workflow": null,
     "scheduled_at": null,
-    "fail_reason": null
+    "fail_reason": null,
+    "started_at": "2026-11-07T00:43:10.318197+00:00"
    }
   ],
   "rows": {
@@ -74,6 +75,6 @@
   },
   "files": [],
   "rows_rerun": null,
-  "now": "2026-11-06T19:47:09.394678+00:00"
+  "now": "2026-11-07T00:43:08.951124+00:00"
  }
 }

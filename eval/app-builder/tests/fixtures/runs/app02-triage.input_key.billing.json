@@ -5,7 +5,7 @@
  "irs": {
   "main": {
    "ir_version": 1,
-   "name": "abeval-rec-be230a-input-key",
+   "name": "abeval-rec-98021a-input-key",
    "display_name": "問い合わせを分類して担当を決める",
    "triggers": [
     {
@@ -37,7 +37,7 @@
      "type": "data.record.create",
      "label": "問い合わせを登録",
      "params": {
-      "table": "0b353389-8f1a-447b-85ba-6766340483d3",
+      "table": "df17679d-2c84-4b4b-8d97-424d041325c5",
       "data": {
        "subject": {
         "$from": "input",
@@ -102,7 +102,7 @@
      "type": "data.query",
      "label": "担当者を引く",
      "params": {
-      "table": "37a5ce1e-723e-4864-a03b-d8ee834feb92",
+      "table": "f7f64419-0969-48e8-bcab-61a6a772c619",
       "query": {
        "filter": {
         "cmp": {
@@ -123,7 +123,7 @@
      "type": "data.record.update",
      "label": "分類と担当者を書く",
      "params": {
-      "table": "0b353389-8f1a-447b-85ba-6766340483d3",
+      "table": "df17679d-2c84-4b4b-8d97-424d041325c5",
       "record": {
        "$from": "nodes.register.output",
        "path": "/id"
@@ -177,7 +177,7 @@
  "record": {
   "runs": [
    {
-    "run_id": "5b9f6e67-3af9-4f93-9975-66bf4f4a4012",
+    "run_id": "c33f6b82-67fa-4ed5-ac04-1376ba937d95",
     "status": "failed",
     "input": {
      "body": "先月分の請求書の金額が契約の金額と違っています。正しい金額で請求書を作り直してください。",
@@ -225,28 +225,29 @@
     ],
     "workflow": null,
     "scheduled_at": null,
-    "fail_reason": null
+    "fail_reason": null,
+    "started_at": "2026-11-07T00:43:24.863505+00:00"
    }
   ],
   "rows": {
    "inquiries": [],
    "assign": [
     {
-     "id": "40befb3f-7f36-4605-8c38-31e0e6998701",
+     "id": "528df749-6389-48e9-8089-f78afdf3ecc8",
      "data": {
       "assignee": "石井",
       "category": "使い方"
      }
     },
     {
-     "id": "7fef04f0-6828-4387-9738-0561da9f4933",
+     "id": "cb8bb630-eac0-4a64-9def-8d42fd14e74f",
      "data": {
       "assignee": "池田",
       "category": "不具合"
      }
     },
     {
-     "id": "1f791c9d-749a-433d-ab9f-2b0b55c98f92",
+     "id": "62ff6585-e7b6-4693-b735-dba98c2ab93d",
      "data": {
       "assignee": "森",
       "category": "請求"
@@ -258,21 +259,21 @@
    "inquiries": [],
    "assign": [
     {
-     "id": "40befb3f-7f36-4605-8c38-31e0e6998701",
+     "id": "528df749-6389-48e9-8089-f78afdf3ecc8",
      "data": {
       "assignee": "石井",
       "category": "使い方"
      }
     },
     {
-     "id": "7fef04f0-6828-4387-9738-0561da9f4933",
+     "id": "cb8bb630-eac0-4a64-9def-8d42fd14e74f",
      "data": {
       "assignee": "池田",
       "category": "不具合"
      }
     },
     {
-     "id": "1f791c9d-749a-433d-ab9f-2b0b55c98f92",
+     "id": "62ff6585-e7b6-4693-b735-dba98c2ab93d",
      "data": {
       "assignee": "森",
       "category": "請求"
@@ -282,6 +283,6 @@
   },
   "files": [],
   "rows_rerun": null,
-  "now": "2026-11-06T19:47:13.001426+00:00"
+  "now": "2026-11-07T00:43:12.640570+00:00"
  }
 }

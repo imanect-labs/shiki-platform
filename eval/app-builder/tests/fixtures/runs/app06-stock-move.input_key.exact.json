@@ -5,7 +5,7 @@
  "irs": {
   "main": {
    "ir_version": 1,
-   "name": "abeval-rec-a246b6-input-key",
+   "name": "abeval-rec-e015b9-input-key",
    "display_name": "出庫で在庫を減らす",
    "triggers": [
     {
@@ -37,7 +37,7 @@
      "type": "data.query",
      "label": "品番で探す",
      "params": {
-      "table": "b2f1f90b-c340-4b40-baf3-65c859a319ae",
+      "table": "1b143439-0aec-4579-965e-aaf2a86abee1",
       "query": {
        "filter": {
         "cmp": {
@@ -94,7 +94,7 @@
      "type": "data.record.update",
      "label": "在庫数を減らす",
      "params": {
-      "table": "b2f1f90b-c340-4b40-baf3-65c859a319ae",
+      "table": "1b143439-0aec-4579-965e-aaf2a86abee1",
       "record": {
        "$from": "nodes.find.output",
        "path": "/items/0/id"
@@ -112,7 +112,7 @@
      "type": "data.record.create",
      "label": "記録を残す",
      "params": {
-      "table": "49791bdb-8283-4dff-af80-11280a7e0a0f",
+      "table": "e6c99b56-ea39-4b26-8e00-2b50aa53de13",
       "data": {
        "code": {
         "$from": "input",
@@ -170,7 +170,7 @@
  "record": {
   "runs": [
    {
-    "run_id": "44ed5d0a-0185-4ca7-8787-f3b22dfbb197",
+    "run_id": "522188b5-aaaf-4a3d-9c9b-731228989c9f",
     "status": "failed",
     "input": {
      "code": "P-200",
@@ -226,13 +226,14 @@
     ],
     "workflow": null,
     "scheduled_at": null,
-    "fail_reason": null
+    "fail_reason": null,
+    "started_at": "2026-11-07T00:43:43.490629+00:00"
    }
   ],
   "rows": {
    "stock": [
     {
-     "id": "e9460cc4-d847-4f22-9b3b-6a91de54e509",
+     "id": "efe92d15-0fd9-40be-986c-0e36d1572a49",
      "data": {
       "code": "P-200",
       "name": "ボールペン（黒）",
@@ -242,7 +243,7 @@
      }
     },
     {
-     "id": "7b5b5975-7332-4682-a7fc-2d859961982b",
+     "id": "f83495a9-472c-46b7-8925-1b43a58248e8",
      "data": {
       "code": "P-100",
       "name": "コピー用紙 A4",
@@ -257,7 +258,7 @@
   "rows_before": {
    "stock": [
     {
-     "id": "e9460cc4-d847-4f22-9b3b-6a91de54e509",
+     "id": "efe92d15-0fd9-40be-986c-0e36d1572a49",
      "data": {
       "code": "P-200",
       "name": "ボールペン（黒）",
@@ -267,7 +268,7 @@
      }
     },
     {
-     "id": "7b5b5975-7332-4682-a7fc-2d859961982b",
+     "id": "f83495a9-472c-46b7-8925-1b43a58248e8",
      "data": {
       "code": "P-100",
       "name": "コピー用紙 A4",
@@ -281,6 +282,6 @@
   },
   "files": [],
   "rows_rerun": null,
-  "now": "2026-11-06T19:47:33.609852+00:00"
+  "now": "2026-11-07T00:43:34.102984+00:00"
  }
 }

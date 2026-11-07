@@ -5,7 +5,7 @@
  "irs": {
   "main": {
    "ir_version": 1,
-   "name": "abeval-rec-414008-input-key",
+   "name": "abeval-rec-8fbfe0-input-key",
    "display_name": "本文を要約して保存",
    "triggers": [
     {
@@ -58,7 +58,7 @@
      "type": "storage.write",
      "label": "要約を保存",
      "params": {
-      "folder": "5a8a7698-d906-4a03-8786-2602f9486a95",
+      "folder": "e7f53e4a-50d0-4a8f-ab40-081e6c95bc3d",
       "name": {
        "$template": "要約-{date}.md",
        "vars": {
@@ -107,7 +107,7 @@
  "record": {
   "runs": [
    {
-    "run_id": "b1090793-23fd-4b91-b148-7fa7bf8f49d5",
+    "run_id": "58a01dcd-1489-4107-baf9-69bb490c4a9b",
     "status": "failed",
     "input": {
      "body": "来月から会議室の予約は新しい予約表で受け付けます。予約は前日の 17 時までに入れてください。取り消しも予約表で行います。",
@@ -139,13 +139,14 @@
     ],
     "workflow": null,
     "scheduled_at": null,
-    "fail_reason": null
+    "fail_reason": null,
+    "started_at": "2026-11-07T00:42:55.988153+00:00"
    }
   ],
   "rows": {},
   "rows_before": {},
   "files": [],
   "rows_rerun": null,
-  "now": "2026-11-06T19:46:53.118082+00:00"
+  "now": "2026-11-07T00:42:48.319650+00:00"
  }
 }

@@ -5,7 +5,7 @@
  "irs": {
   "main": {
    "ir_version": 1,
-   "name": "abeval-rec-be230a-main",
+   "name": "abeval-rec-98021a-main",
    "display_name": "問い合わせを分類して担当を決める",
    "triggers": [
     {
@@ -37,7 +37,7 @@
      "type": "data.record.create",
      "label": "問い合わせを登録",
      "params": {
-      "table": "0b353389-8f1a-447b-85ba-6766340483d3",
+      "table": "df17679d-2c84-4b4b-8d97-424d041325c5",
       "data": {
        "subject": {
         "$from": "input",
@@ -102,7 +102,7 @@
      "type": "data.query",
      "label": "担当者を引く",
      "params": {
-      "table": "37a5ce1e-723e-4864-a03b-d8ee834feb92",
+      "table": "f7f64419-0969-48e8-bcab-61a6a772c619",
       "query": {
        "filter": {
         "cmp": {
@@ -123,7 +123,7 @@
      "type": "data.record.update",
      "label": "分類と担当者を書く",
      "params": {
-      "table": "0b353389-8f1a-447b-85ba-6766340483d3",
+      "table": "df17679d-2c84-4b4b-8d97-424d041325c5",
       "record": {
        "$from": "nodes.register.output",
        "path": "/id"
@@ -177,7 +177,7 @@
  "record": {
   "runs": [
    {
-    "run_id": "6b8ef096-9993-4fc8-9a22-e58b47744470",
+    "run_id": "6bf7c68f-5513-41fa-acc5-23e813e8d09e",
     "status": "succeeded",
     "input": {
      "body": "先月分の請求書の金額が契約の金額と違っています。正しい金額で請求書を作り直してください。",
@@ -192,17 +192,17 @@
        "out"
       ],
       "output": {
-       "created_at": "2026-11-06T19:47:13.561144Z",
+       "created_at": "2026-11-07T00:43:13.349778Z",
        "data": {
         "body": "先月分の請求書の金額が契約の金額と違っています。正しい金額で請求書を作り直してください。",
         "status": "未対応",
         "subject": "請求書の金額が違う"
        },
-       "id": "3414da7a-a151-4c44-97d6-38def44eedcd",
+       "id": "85ad797f-e976-4f45-a10d-4cbd2012eba2",
        "owner": "00000000-0000-0000-0000-000000000001",
        "rev": 1,
-       "table_id": "0b353389-8f1a-447b-85ba-6766340483d3",
-       "updated_at": "2026-11-06T19:47:13.561144Z"
+       "table_id": "df17679d-2c84-4b4b-8d97-424d041325c5",
+       "updated_at": "2026-11-07T00:43:13.349778Z"
       },
       "error": null
      },
@@ -233,20 +233,20 @@
       "output": {
        "items": [
         {
-         "created_at": "2026-11-06T19:47:13.364526Z",
+         "created_at": "2026-11-07T00:43:13.097352Z",
          "data": {
           "assignee": "森",
           "category": "請求"
          },
-         "id": "f2d865d6-1e2d-4bd7-a94b-ca7d706c143c",
+         "id": "557bbe7b-6c1f-481f-87fb-c39e9498cece",
          "owner": "00000000-0000-0000-0000-000000000001",
          "rev": 1,
-         "table_id": "37a5ce1e-723e-4864-a03b-d8ee834feb92",
-         "updated_at": "2026-11-06T19:47:13.364526Z"
+         "table_id": "f7f64419-0969-48e8-bcab-61a6a772c619",
+         "updated_at": "2026-11-07T00:43:13.097352Z"
         }
        ],
        "shares_truncated": false,
-       "snapshot_seq": 9,
+       "snapshot_seq": 5,
        "sort_degraded": false,
        "sort_precision": "exact",
        "suppressed": false
@@ -261,7 +261,7 @@
        "out"
       ],
       "output": {
-       "created_at": "2026-11-06T19:47:13.561144Z",
+       "created_at": "2026-11-07T00:43:13.349778Z",
        "data": {
         "assignee": "森",
         "body": "先月分の請求書の金額が契約の金額と違っています。正しい金額で請求書を作り直してください。",
@@ -269,24 +269,25 @@
         "status": "振り分け済",
         "subject": "請求書の金額が違う"
        },
-       "id": "3414da7a-a151-4c44-97d6-38def44eedcd",
+       "id": "85ad797f-e976-4f45-a10d-4cbd2012eba2",
        "owner": "00000000-0000-0000-0000-000000000001",
        "rev": 2,
-       "table_id": "0b353389-8f1a-447b-85ba-6766340483d3",
-       "updated_at": "2026-11-06T19:47:13.667677Z"
+       "table_id": "df17679d-2c84-4b4b-8d97-424d041325c5",
+       "updated_at": "2026-11-07T00:43:13.434196Z"
       },
       "error": null
      }
     ],
     "workflow": null,
     "scheduled_at": null,
-    "fail_reason": null
+    "fail_reason": null,
+    "started_at": "2026-11-07T00:43:13.183327+00:00"
    }
   ],
   "rows": {
    "inquiries": [
     {
-     "id": "3414da7a-a151-4c44-97d6-38def44eedcd",
+     "id": "85ad797f-e976-4f45-a10d-4cbd2012eba2",
      "data": {
       "assignee": "森",
       "body": "先月分の請求書の金額が契約の金額と違っています。正しい金額で請求書を作り直してください。",
@@ -298,21 +299,21 @@
    ],
    "assign": [
     {
-     "id": "06a8f6ae-7d5b-4316-a57d-d808e73ddca5",
+     "id": "77fd552c-5ebd-4497-ab2d-f2c565d62e31",
      "data": {
       "assignee": "石井",
       "category": "使い方"
      }
     },
     {
-     "id": "60c1cdd1-4f07-4fa0-966b-7e9ee9718c99",
+     "id": "345abade-156f-4a64-9976-d1cd984ffb3f",
      "data": {
       "assignee": "池田",
       "category": "不具合"
      }
     },
     {
-     "id": "f2d865d6-1e2d-4bd7-a94b-ca7d706c143c",
+     "id": "557bbe7b-6c1f-481f-87fb-c39e9498cece",
      "data": {
       "assignee": "森",
       "category": "請求"
@@ -324,21 +325,21 @@
    "inquiries": [],
    "assign": [
     {
-     "id": "06a8f6ae-7d5b-4316-a57d-d808e73ddca5",
+     "id": "77fd552c-5ebd-4497-ab2d-f2c565d62e31",
      "data": {
       "assignee": "石井",
       "category": "使い方"
      }
     },
     {
-     "id": "60c1cdd1-4f07-4fa0-966b-7e9ee9718c99",
+     "id": "345abade-156f-4a64-9976-d1cd984ffb3f",
      "data": {
       "assignee": "池田",
       "category": "不具合"
      }
     },
     {
-     "id": "f2d865d6-1e2d-4bd7-a94b-ca7d706c143c",
+     "id": "557bbe7b-6c1f-481f-87fb-c39e9498cece",
      "data": {
       "assignee": "森",
       "category": "請求"
@@ -348,6 +349,6 @@
   },
   "files": [],
   "rows_rerun": null,
-  "now": "2026-11-06T19:47:13.001426+00:00"
+  "now": "2026-11-07T00:43:12.640570+00:00"
  }
 }

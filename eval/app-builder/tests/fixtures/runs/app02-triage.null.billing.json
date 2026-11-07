@@ -5,7 +5,7 @@
  "irs": {
   "main": {
    "ir_version": 1,
-   "name": "abeval-rec-be230a-null",
+   "name": "abeval-rec-98021a-null",
    "display_name": "スタブフロー",
    "declared_scopes": [],
    "triggers": [
@@ -37,7 +37,7 @@
  "record": {
   "runs": [
    {
-    "run_id": "69663301-0abd-46a9-9ed7-283ff7cd5143",
+    "run_id": "c5852c73-8da2-4a7e-af02-a5e27fff7b1a",
     "status": "succeeded",
     "input": {
      "body": "先月分の請求書の金額が契約の金額と違っています。正しい金額で請求書を作り直してください。",
@@ -59,28 +59,29 @@
     ],
     "workflow": null,
     "scheduled_at": null,
-    "fail_reason": null
+    "fail_reason": null,
+    "started_at": "2026-11-07T00:43:17.071482+00:00"
    }
   ],
   "rows": {
    "inquiries": [],
    "assign": [
     {
-     "id": "da3202f0-2672-4550-97be-6bf0733351ca",
+     "id": "8ab18549-4dee-418c-a13d-a818ac42bbd4",
      "data": {
       "assignee": "石井",
       "category": "使い方"
      }
     },
     {
-     "id": "c35fbc6a-7a48-4372-baff-e6aa96cff528",
+     "id": "a77f6d5c-90df-4193-9f50-413e18d2febf",
      "data": {
       "assignee": "池田",
       "category": "不具合"
      }
     },
     {
-     "id": "42f1848a-43da-4cb8-99c8-dbb953de5326",
+     "id": "ad795110-57bc-4051-8332-a08b487afeb3",
      "data": {
       "assignee": "森",
       "category": "請求"
@@ -92,21 +93,21 @@
    "inquiries": [],
    "assign": [
     {
-     "id": "da3202f0-2672-4550-97be-6bf0733351ca",
+     "id": "8ab18549-4dee-418c-a13d-a818ac42bbd4",
      "data": {
       "assignee": "石井",
       "category": "使い方"
      }
     },
     {
-     "id": "c35fbc6a-7a48-4372-baff-e6aa96cff528",
+     "id": "a77f6d5c-90df-4193-9f50-413e18d2febf",
      "data": {
       "assignee": "池田",
       "category": "不具合"
      }
     },
     {
-     "id": "42f1848a-43da-4cb8-99c8-dbb953de5326",
+     "id": "ad795110-57bc-4051-8332-a08b487afeb3",
      "data": {
       "assignee": "森",
       "category": "請求"
@@ -116,6 +117,6 @@
   },
   "files": [],
   "rows_rerun": null,
-  "now": "2026-11-06T19:47:13.001426+00:00"
+  "now": "2026-11-07T00:43:12.640570+00:00"
  }
 }

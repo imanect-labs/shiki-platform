@@ -5,7 +5,7 @@
  "irs": {
   "main": {
    "ir_version": 1,
-   "name": "abeval-rec-213c43-main",
+   "name": "abeval-rec-268ccb-main",
    "display_name": "金額で申請の記録先を分ける",
    "triggers": [
     {
@@ -54,7 +54,7 @@
      "type": "data.record.create",
      "label": "高額の申請に追加",
      "params": {
-      "table": "42501549-2013-42e9-bddc-4280b5f5c8e6",
+      "table": "ff47132f-e903-4a8f-83ca-e5276419d8bb",
       "data": {
        "item": {
         "$from": "input",
@@ -72,7 +72,7 @@
      "type": "data.record.create",
      "label": "通常の申請に追加",
      "params": {
-      "table": "24b8bdba-dd0d-4cba-a0ae-a6cd1adfce31",
+      "table": "4ea54fc1-6c06-4940-bbeb-2de6ae730344",
       "data": {
        "item": {
         "$from": "input",
@@ -117,7 +117,7 @@
  "record": {
   "runs": [
    {
-    "run_id": "616be64b-017c-4027-bb66-18c44a2e8923",
+    "run_id": "2b33d48d-4b8d-4aaf-8dac-eb8e2ebf96b4",
     "status": "succeeded",
     "input": {
      "amount": 80000,
@@ -153,29 +153,30 @@
        "out"
       ],
       "output": {
-       "created_at": "2026-11-06T19:46:59.186922Z",
+       "created_at": "2026-11-07T00:42:57.901992Z",
        "data": {
         "amount": 80000,
         "item": "ノートパソコン"
        },
-       "id": "159a4df4-ee9c-428c-9e88-ef22476c3924",
+       "id": "8976a93d-f951-4c2e-b3f9-a1432f013e70",
        "owner": "00000000-0000-0000-0000-000000000001",
        "rev": 1,
-       "table_id": "42501549-2013-42e9-bddc-4280b5f5c8e6",
-       "updated_at": "2026-11-06T19:46:59.186922Z"
+       "table_id": "ff47132f-e903-4a8f-83ca-e5276419d8bb",
+       "updated_at": "2026-11-07T00:42:57.901992Z"
       },
       "error": null
      }
     ],
     "workflow": null,
     "scheduled_at": null,
-    "fail_reason": null
+    "fail_reason": null,
+    "started_at": "2026-11-07T00:42:57.765274+00:00"
    }
   ],
   "rows": {
    "big": [
     {
-     "id": "159a4df4-ee9c-428c-9e88-ef22476c3924",
+     "id": "8976a93d-f951-4c2e-b3f9-a1432f013e70",
      "data": {
       "amount": 80000,
       "item": "ノートパソコン"
@@ -190,6 +191,6 @@
   },
   "files": [],
   "rows_rerun": null,
-  "now": "2026-11-06T19:46:58.456310+00:00"
+  "now": "2026-11-07T00:42:57.413326+00:00"
  }
 }

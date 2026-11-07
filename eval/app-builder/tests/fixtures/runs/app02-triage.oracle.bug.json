@@ -5,7 +5,7 @@
  "irs": {
   "main": {
    "ir_version": 1,
-   "name": "abeval-rec-be230a-main",
+   "name": "abeval-rec-98021a-main",
    "display_name": "問い合わせを分類して担当を決める",
    "triggers": [
     {
@@ -37,7 +37,7 @@
      "type": "data.record.create",
      "label": "問い合わせを登録",
      "params": {
-      "table": "0b353389-8f1a-447b-85ba-6766340483d3",
+      "table": "df17679d-2c84-4b4b-8d97-424d041325c5",
       "data": {
        "subject": {
         "$from": "input",
@@ -102,7 +102,7 @@
      "type": "data.query",
      "label": "担当者を引く",
      "params": {
-      "table": "37a5ce1e-723e-4864-a03b-d8ee834feb92",
+      "table": "f7f64419-0969-48e8-bcab-61a6a772c619",
       "query": {
        "filter": {
         "cmp": {
@@ -123,7 +123,7 @@
      "type": "data.record.update",
      "label": "分類と担当者を書く",
      "params": {
-      "table": "0b353389-8f1a-447b-85ba-6766340483d3",
+      "table": "df17679d-2c84-4b4b-8d97-424d041325c5",
       "record": {
        "$from": "nodes.register.output",
        "path": "/id"
@@ -177,7 +177,7 @@
  "record": {
   "runs": [
    {
-    "run_id": "9c6e8b82-4b3a-41e7-8092-cdfa62be92ba",
+    "run_id": "1c2c18a1-d894-4a62-af50-6e6e97ef4034",
     "status": "succeeded",
     "input": {
      "body": "ログインした後に一覧のボタンを押すと、画面が真っ白になって何も表示されません。何度やっても同じです。",
@@ -192,17 +192,17 @@
        "out"
       ],
       "output": {
-       "created_at": "2026-11-06T19:47:14.770968Z",
+       "created_at": "2026-11-07T00:43:14.561225Z",
        "data": {
         "body": "ログインした後に一覧のボタンを押すと、画面が真っ白になって何も表示されません。何度やっても同じです。",
         "status": "未対応",
         "subject": "画面が真っ白になる"
        },
-       "id": "25189af7-5341-410e-98e9-caa36f005982",
+       "id": "25d2b07d-cc24-4264-b5f3-b8a092281149",
        "owner": "00000000-0000-0000-0000-000000000001",
        "rev": 1,
-       "table_id": "0b353389-8f1a-447b-85ba-6766340483d3",
-       "updated_at": "2026-11-06T19:47:14.770968Z"
+       "table_id": "df17679d-2c84-4b4b-8d97-424d041325c5",
+       "updated_at": "2026-11-07T00:43:14.561225Z"
       },
       "error": null
      },
@@ -233,16 +233,16 @@
       "output": {
        "items": [
         {
-         "created_at": "2026-11-06T19:47:14.642715Z",
+         "created_at": "2026-11-07T00:43:14.402787Z",
          "data": {
           "assignee": "森",
           "category": "請求"
          },
-         "id": "cefd586c-b30d-4683-a7d3-500c10715a06",
+         "id": "62d37d32-ac74-4388-a108-9a672c159471",
          "owner": "00000000-0000-0000-0000-000000000001",
          "rev": 1,
-         "table_id": "37a5ce1e-723e-4864-a03b-d8ee834feb92",
-         "updated_at": "2026-11-06T19:47:14.642715Z"
+         "table_id": "f7f64419-0969-48e8-bcab-61a6a772c619",
+         "updated_at": "2026-11-07T00:43:14.402787Z"
         }
        ],
        "shares_truncated": false,
@@ -261,7 +261,7 @@
        "out"
       ],
       "output": {
-       "created_at": "2026-11-06T19:47:14.770968Z",
+       "created_at": "2026-11-07T00:43:14.561225Z",
        "data": {
         "assignee": "森",
         "body": "ログインした後に一覧のボタンを押すと、画面が真っ白になって何も表示されません。何度やっても同じです。",
@@ -269,24 +269,25 @@
         "status": "振り分け済",
         "subject": "画面が真っ白になる"
        },
-       "id": "25189af7-5341-410e-98e9-caa36f005982",
+       "id": "25d2b07d-cc24-4264-b5f3-b8a092281149",
        "owner": "00000000-0000-0000-0000-000000000001",
        "rev": 2,
-       "table_id": "0b353389-8f1a-447b-85ba-6766340483d3",
-       "updated_at": "2026-11-06T19:47:14.866368Z"
+       "table_id": "df17679d-2c84-4b4b-8d97-424d041325c5",
+       "updated_at": "2026-11-07T00:43:14.640043Z"
       },
       "error": null
      }
     ],
     "workflow": null,
     "scheduled_at": null,
-    "fail_reason": null
+    "fail_reason": null,
+    "started_at": "2026-11-07T00:43:14.482019+00:00"
    }
   ],
   "rows": {
    "inquiries": [
     {
-     "id": "25189af7-5341-410e-98e9-caa36f005982",
+     "id": "25d2b07d-cc24-4264-b5f3-b8a092281149",
      "data": {
       "assignee": "森",
       "body": "ログインした後に一覧のボタンを押すと、画面が真っ白になって何も表示されません。何度やっても同じです。",
@@ -298,21 +299,21 @@
    ],
    "assign": [
     {
-     "id": "4744c7e9-f266-4a6d-b3fd-18dab560842e",
+     "id": "a925d93c-2834-4503-9e04-d72e7dd0b9f6",
      "data": {
       "assignee": "石井",
       "category": "使い方"
      }
     },
     {
-     "id": "c822058d-5c00-494d-9792-a37541294935",
+     "id": "bc72034d-e47d-4aee-a3bc-6cba2bdcc42b",
      "data": {
       "assignee": "池田",
       "category": "不具合"
      }
     },
     {
-     "id": "cefd586c-b30d-4683-a7d3-500c10715a06",
+     "id": "62d37d32-ac74-4388-a108-9a672c159471",
      "data": {
       "assignee": "森",
       "category": "請求"
@@ -324,21 +325,21 @@
    "inquiries": [],
    "assign": [
     {
-     "id": "4744c7e9-f266-4a6d-b3fd-18dab560842e",
+     "id": "a925d93c-2834-4503-9e04-d72e7dd0b9f6",
      "data": {
       "assignee": "石井",
       "category": "使い方"
      }
     },
     {
-     "id": "c822058d-5c00-494d-9792-a37541294935",
+     "id": "bc72034d-e47d-4aee-a3bc-6cba2bdcc42b",
      "data": {
       "assignee": "池田",
       "category": "不具合"
      }
     },
     {
-     "id": "cefd586c-b30d-4683-a7d3-500c10715a06",
+     "id": "62d37d32-ac74-4388-a108-9a672c159471",
      "data": {
       "assignee": "森",
       "category": "請求"
@@ -348,6 +349,6 @@
   },
   "files": [],
   "rows_rerun": null,
-  "now": "2026-11-06T19:47:13.001426+00:00"
+  "now": "2026-11-07T00:43:12.640570+00:00"
  }
 }

@@ -5,7 +5,7 @@
  "irs": {
   "main": {
    "ir_version": 1,
-   "name": "abeval-rec-a246b6-main",
+   "name": "abeval-rec-e015b9-main",
    "display_name": "出庫で在庫を減らす",
    "triggers": [
     {
@@ -37,7 +37,7 @@
      "type": "data.query",
      "label": "品番で探す",
      "params": {
-      "table": "b2f1f90b-c340-4b40-baf3-65c859a319ae",
+      "table": "1b143439-0aec-4579-965e-aaf2a86abee1",
       "query": {
        "filter": {
         "cmp": {
@@ -94,7 +94,7 @@
      "type": "data.record.update",
      "label": "在庫数を減らす",
      "params": {
-      "table": "b2f1f90b-c340-4b40-baf3-65c859a319ae",
+      "table": "1b143439-0aec-4579-965e-aaf2a86abee1",
       "record": {
        "$from": "nodes.find.output",
        "path": "/items/0/id"
@@ -112,7 +112,7 @@
      "type": "data.record.create",
      "label": "記録を残す",
      "params": {
-      "table": "49791bdb-8283-4dff-af80-11280a7e0a0f",
+      "table": "e6c99b56-ea39-4b26-8e00-2b50aa53de13",
       "data": {
        "code": {
         "$from": "input",
@@ -170,7 +170,7 @@
  "record": {
   "runs": [
    {
-    "run_id": "6841a737-db90-4cf9-9079-cae367d15bef",
+    "run_id": "8d048b7c-d4d2-484f-adb1-ada5c0afc3fb",
     "status": "succeeded",
     "input": {
      "code": "P-100",
@@ -187,7 +187,7 @@
       "output": {
        "items": [
         {
-         "created_at": "2026-11-06T19:47:33.964043Z",
+         "created_at": "2026-11-07T00:43:34.408415Z",
          "data": {
           "code": "P-100",
           "name": "コピー用紙 A4",
@@ -195,15 +195,15 @@
           "reorder_point": 20,
           "reorder_qty": 100
          },
-         "id": "854f6559-d49e-425b-ae24-bd2daeac6526",
+         "id": "89f33d74-51f3-4544-96f8-638d570a3098",
          "owner": "00000000-0000-0000-0000-000000000001",
          "rev": 1,
-         "table_id": "b2f1f90b-c340-4b40-baf3-65c859a319ae",
-         "updated_at": "2026-11-06T19:47:33.964043Z"
+         "table_id": "1b143439-0aec-4579-965e-aaf2a86abee1",
+         "updated_at": "2026-11-07T00:43:34.408415Z"
         }
        ],
        "shares_truncated": false,
-       "snapshot_seq": 3,
+       "snapshot_seq": 6,
        "sort_degraded": false,
        "sort_precision": "exact",
        "suppressed": false
@@ -243,7 +243,7 @@
        "out"
       ],
       "output": {
-       "created_at": "2026-11-06T19:47:33.964043Z",
+       "created_at": "2026-11-07T00:43:34.408415Z",
        "data": {
         "code": "P-100",
         "name": "コピー用紙 A4",
@@ -251,11 +251,11 @@
         "reorder_point": 20,
         "reorder_qty": 100
        },
-       "id": "854f6559-d49e-425b-ae24-bd2daeac6526",
+       "id": "89f33d74-51f3-4544-96f8-638d570a3098",
        "owner": "00000000-0000-0000-0000-000000000001",
        "rev": 2,
-       "table_id": "b2f1f90b-c340-4b40-baf3-65c859a319ae",
-       "updated_at": "2026-11-06T19:47:34.145792Z"
+       "table_id": "1b143439-0aec-4579-965e-aaf2a86abee1",
+       "updated_at": "2026-11-07T00:43:34.588957Z"
       },
       "error": null
      },
@@ -267,29 +267,30 @@
        "out"
       ],
       "output": {
-       "created_at": "2026-11-06T19:47:34.175058Z",
+       "created_at": "2026-11-07T00:43:34.621716Z",
        "data": {
         "code": "P-100",
         "qty": 15
        },
-       "id": "ab850f54-c2be-4be7-99bc-5e0a9bad12b5",
+       "id": "74ac66cf-9aac-46c8-948c-594525ddc732",
        "owner": "00000000-0000-0000-0000-000000000001",
        "rev": 1,
-       "table_id": "49791bdb-8283-4dff-af80-11280a7e0a0f",
-       "updated_at": "2026-11-06T19:47:34.175058Z"
+       "table_id": "e6c99b56-ea39-4b26-8e00-2b50aa53de13",
+       "updated_at": "2026-11-07T00:43:34.621716Z"
       },
       "error": null
      }
     ],
     "workflow": null,
     "scheduled_at": null,
-    "fail_reason": null
+    "fail_reason": null,
+    "started_at": "2026-11-07T00:43:34.494218+00:00"
    }
   ],
   "rows": {
    "stock": [
     {
-     "id": "854f6559-d49e-425b-ae24-bd2daeac6526",
+     "id": "89f33d74-51f3-4544-96f8-638d570a3098",
      "data": {
       "code": "P-100",
       "name": "コピー用紙 A4",
@@ -299,7 +300,7 @@
      }
     },
     {
-     "id": "51c37272-0a63-4ced-b420-07cdd62d6c6b",
+     "id": "008e335b-b04c-455a-b807-de3583c063b7",
      "data": {
       "code": "P-200",
       "name": "ボールペン（黒）",
@@ -311,7 +312,7 @@
    ],
    "moves": [
     {
-     "id": "ab850f54-c2be-4be7-99bc-5e0a9bad12b5",
+     "id": "74ac66cf-9aac-46c8-948c-594525ddc732",
      "data": {
       "code": "P-100",
       "qty": 15
@@ -322,7 +323,7 @@
   "rows_before": {
    "stock": [
     {
-     "id": "51c37272-0a63-4ced-b420-07cdd62d6c6b",
+     "id": "008e335b-b04c-455a-b807-de3583c063b7",
      "data": {
       "code": "P-200",
       "name": "ボールペン（黒）",
@@ -332,7 +333,7 @@
      }
     },
     {
-     "id": "854f6559-d49e-425b-ae24-bd2daeac6526",
+     "id": "89f33d74-51f3-4544-96f8-638d570a3098",
      "data": {
       "code": "P-100",
       "name": "コピー用紙 A4",
@@ -346,6 +347,6 @@
   },
   "files": [],
   "rows_rerun": null,
-  "now": "2026-11-06T19:47:33.609852+00:00"
+  "now": "2026-11-07T00:43:34.102984+00:00"
  }
 }

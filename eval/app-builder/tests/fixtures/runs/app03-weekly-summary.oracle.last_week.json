@@ -5,7 +5,7 @@
  "irs": {
   "main": {
    "ir_version": 1,
-   "name": "abeval-rec-d0d19a-main",
+   "name": "abeval-rec-25f9ce-main",
    "display_name": "日報を週ごとに集計する",
    "triggers": [
     {
@@ -32,7 +32,7 @@
      "type": "data.query",
      "label": "担当者ごとの合計",
      "params": {
-      "table": "8f093089-0ca8-44aa-8ce5-dc9aa1fe4e83",
+      "table": "5c8e7afe-1c40-4c3a-a049-5118737bffa8",
       "query": {
        "filter": {
         "all": [
@@ -90,7 +90,7 @@
      "type": "data.record.create",
      "label": "週次集計に追加",
      "params": {
-      "table": "d2691b1e-ad0f-4c98-9dc6-dcb14922f71c",
+      "table": "7b4c3a7d-03f1-4f40-acde-9b5bfb2a9afa",
       "data": {
        "week_start": {
         "$from": "nodes.last_week.output",
@@ -142,7 +142,7 @@
      "type": "storage.write",
      "label": "週報を保存",
      "params": {
-      "folder": "81ab0e1f-9fdf-4a12-8192-52ffe34c1bfd",
+      "folder": "6fbccfac-bc55-4967-865b-83c72318027d",
       "name": {
        "$template": "週報-{start}.md",
        "vars": {
@@ -206,7 +206,7 @@
  "record": {
   "runs": [
    {
-    "run_id": "cd7c40ac-b09a-4755-b16c-d421f7ced479",
+    "run_id": "9db820d5-927a-4d4b-9c0b-6681ac5fa4b5",
     "status": "succeeded",
     "input": {},
     "steps": [
@@ -275,18 +275,18 @@
        "out"
       ],
       "output": {
-       "created_at": "2026-11-06T19:47:29.278462Z",
+       "created_at": "2026-11-07T00:43:29.525353Z",
        "data": {
         "prospect": 150000.0,
         "rep": "佐藤",
         "visits": 9.0,
         "week_start": "2026-11-02"
        },
-       "id": "77e7adca-330f-4299-9d5b-84ec26336aa1",
+       "id": "3e0b948e-082b-4d3c-9e5d-392fdbbfd73c",
        "owner": "00000000-0000-0000-0000-000000000001",
        "rev": 1,
-       "table_id": "d2691b1e-ad0f-4c98-9dc6-dcb14922f71c",
-       "updated_at": "2026-11-06T19:47:29.278462Z"
+       "table_id": "7b4c3a7d-03f1-4f40-acde-9b5bfb2a9afa",
+       "updated_at": "2026-11-07T00:43:29.525353Z"
       },
       "error": null
      },
@@ -301,32 +301,32 @@
        "errors": [],
        "items": [
         {
-         "created_at": "2026-11-06T19:47:29.278462Z",
+         "created_at": "2026-11-07T00:43:29.525353Z",
          "data": {
           "prospect": 150000.0,
           "rep": "佐藤",
           "visits": 9.0,
           "week_start": "2026-11-02"
          },
-         "id": "77e7adca-330f-4299-9d5b-84ec26336aa1",
+         "id": "3e0b948e-082b-4d3c-9e5d-392fdbbfd73c",
          "owner": "00000000-0000-0000-0000-000000000001",
          "rev": 1,
-         "table_id": "d2691b1e-ad0f-4c98-9dc6-dcb14922f71c",
-         "updated_at": "2026-11-06T19:47:29.278462Z"
+         "table_id": "7b4c3a7d-03f1-4f40-acde-9b5bfb2a9afa",
+         "updated_at": "2026-11-07T00:43:29.525353Z"
         },
         {
-         "created_at": "2026-11-06T19:47:29.299511Z",
+         "created_at": "2026-11-07T00:43:29.555158Z",
          "data": {
           "prospect": 420000.0,
           "rep": "鈴木",
           "visits": 6.0,
           "week_start": "2026-11-02"
          },
-         "id": "ea633989-0d18-447a-860f-369a4478631c",
+         "id": "0da32f46-d531-403c-9ea2-5dee91a6a9e7",
          "owner": "00000000-0000-0000-0000-000000000001",
          "rev": 1,
-         "table_id": "d2691b1e-ad0f-4c98-9dc6-dcb14922f71c",
-         "updated_at": "2026-11-06T19:47:29.299511Z"
+         "table_id": "7b4c3a7d-03f1-4f40-acde-9b5bfb2a9afa",
+         "updated_at": "2026-11-07T00:43:29.555158Z"
         }
        ]
       },
@@ -340,18 +340,18 @@
        "out"
       ],
       "output": {
-       "created_at": "2026-11-06T19:47:29.299511Z",
+       "created_at": "2026-11-07T00:43:29.555158Z",
        "data": {
         "prospect": 420000.0,
         "rep": "鈴木",
         "visits": 6.0,
         "week_start": "2026-11-02"
        },
-       "id": "ea633989-0d18-447a-860f-369a4478631c",
+       "id": "0da32f46-d531-403c-9ea2-5dee91a6a9e7",
        "owner": "00000000-0000-0000-0000-000000000001",
        "rev": 1,
-       "table_id": "d2691b1e-ad0f-4c98-9dc6-dcb14922f71c",
-       "updated_at": "2026-11-06T19:47:29.299511Z"
+       "table_id": "7b4c3a7d-03f1-4f40-acde-9b5bfb2a9afa",
+       "updated_at": "2026-11-07T00:43:29.555158Z"
       },
       "error": null
      },
@@ -376,8 +376,8 @@
        "out"
       ],
       "output": {
-       "file_id": "17873464-b2ba-4c0c-bd29-cee7a70a048c",
-       "id": "17873464-b2ba-4c0c-bd29-cee7a70a048c",
+       "file_id": "10e0a4dc-1e73-4d81-adce-5e9490c7a94f",
+       "id": "10e0a4dc-1e73-4d81-adce-5e9490c7a94f",
        "name": "週報-2026-11-02.md",
        "sha256": "12dcf99749ca96229dab6ce400bf9346afb3eaf9a66e19e934a59780639ee386",
        "size": 320,
@@ -388,13 +388,14 @@
     ],
     "workflow": null,
     "scheduled_at": "2026-11-09T00:00:00+00:00",
-    "fail_reason": null
+    "fail_reason": null,
+    "started_at": "2026-11-07T00:43:29.440916+00:00"
    }
   ],
   "rows": {
    "daily": [
     {
-     "id": "540e291a-1280-4fc5-8c1e-308f35d1b1a8",
+     "id": "23760c1b-e8a2-45ab-a4c2-71886657b648",
      "data": {
       "entry_key": "鈴木-2026-11-09",
       "note": "今週の分",
@@ -405,7 +406,7 @@
      }
     },
     {
-     "id": "d279c5d6-3748-465f-98d5-d886d085f7bb",
+     "id": "fe6c7d44-0668-431f-9558-268145c5604e",
      "data": {
       "entry_key": "佐藤-2026-10-30",
       "note": "前の週の分",
@@ -416,7 +417,7 @@
      }
     },
     {
-     "id": "81df0877-d5a1-4325-83e6-26dcb20b2c30",
+     "id": "84b19f7e-1c6f-4a48-843d-7dc1c9bcead4",
      "data": {
       "entry_key": "鈴木-2026-11-05",
       "note": "地域を回った",
@@ -427,7 +428,7 @@
      }
     },
     {
-     "id": "d7b71f35-10d6-454f-8682-fb39411d3429",
+     "id": "08d8558e-a3c3-4a2b-8136-cb4b486a6690",
      "data": {
       "entry_key": "鈴木-2026-11-03",
       "note": "大口の相談",
@@ -438,7 +439,7 @@
      }
     },
     {
-     "id": "306d2e21-1b81-4568-aa21-c25533c60bec",
+     "id": "a7934e14-5544-48b2-b3d2-a0112c718368",
      "data": {
       "entry_key": "佐藤-2026-11-06",
       "note": "展示会の準備",
@@ -449,7 +450,7 @@
      }
     },
     {
-     "id": "09319473-aa74-4cf1-999d-b4ed1619145a",
+     "id": "7e7a5aa5-446f-494f-9b9c-3b712e7e573f",
      "data": {
       "entry_key": "佐藤-2026-11-04",
       "note": "既存の取引先を訪問",
@@ -460,7 +461,7 @@
      }
     },
     {
-     "id": "2a1cdad2-bc95-4e2d-88ac-7f2418860100",
+     "id": "48e3eaa1-2b56-4877-83b3-cda23856abb3",
      "data": {
       "entry_key": "佐藤-2026-11-02",
       "note": "新しい見込みが 1 件",
@@ -473,7 +474,7 @@
    ],
    "weekly": [
     {
-     "id": "ea633989-0d18-447a-860f-369a4478631c",
+     "id": "0da32f46-d531-403c-9ea2-5dee91a6a9e7",
      "data": {
       "prospect": 420000.0,
       "rep": "鈴木",
@@ -482,7 +483,7 @@
      }
     },
     {
-     "id": "77e7adca-330f-4299-9d5b-84ec26336aa1",
+     "id": "3e0b948e-082b-4d3c-9e5d-392fdbbfd73c",
      "data": {
       "prospect": 150000.0,
       "rep": "佐藤",
@@ -495,7 +496,7 @@
   "rows_before": {
    "daily": [
     {
-     "id": "540e291a-1280-4fc5-8c1e-308f35d1b1a8",
+     "id": "23760c1b-e8a2-45ab-a4c2-71886657b648",
      "data": {
       "entry_key": "鈴木-2026-11-09",
       "note": "今週の分",
@@ -506,7 +507,7 @@
      }
     },
     {
-     "id": "d279c5d6-3748-465f-98d5-d886d085f7bb",
+     "id": "fe6c7d44-0668-431f-9558-268145c5604e",
      "data": {
       "entry_key": "佐藤-2026-10-30",
       "note": "前の週の分",
@@ -517,7 +518,7 @@
      }
     },
     {
-     "id": "81df0877-d5a1-4325-83e6-26dcb20b2c30",
+     "id": "84b19f7e-1c6f-4a48-843d-7dc1c9bcead4",
      "data": {
       "entry_key": "鈴木-2026-11-05",
       "note": "地域を回った",
@@ -528,7 +529,7 @@
      }
     },
     {
-     "id": "d7b71f35-10d6-454f-8682-fb39411d3429",
+     "id": "08d8558e-a3c3-4a2b-8136-cb4b486a6690",
      "data": {
       "entry_key": "鈴木-2026-11-03",
       "note": "大口の相談",
@@ -539,7 +540,7 @@
      }
     },
     {
-     "id": "306d2e21-1b81-4568-aa21-c25533c60bec",
+     "id": "a7934e14-5544-48b2-b3d2-a0112c718368",
      "data": {
       "entry_key": "佐藤-2026-11-06",
       "note": "展示会の準備",
@@ -550,7 +551,7 @@
      }
     },
     {
-     "id": "09319473-aa74-4cf1-999d-b4ed1619145a",
+     "id": "7e7a5aa5-446f-494f-9b9c-3b712e7e573f",
      "data": {
       "entry_key": "佐藤-2026-11-04",
       "note": "既存の取引先を訪問",
@@ -561,7 +562,7 @@
      }
     },
     {
-     "id": "2a1cdad2-bc95-4e2d-88ac-7f2418860100",
+     "id": "48e3eaa1-2b56-4877-83b3-cda23856abb3",
      "data": {
       "entry_key": "佐藤-2026-11-02",
       "note": "新しい見込みが 1 件",
@@ -577,12 +578,12 @@
   "files": [
    {
     "folder": "weekly_folder",
-    "id": "17873464-b2ba-4c0c-bd29-cee7a70a048c",
+    "id": "10e0a4dc-1e73-4d81-adce-5e9490c7a94f",
     "name": "週報-2026-11-02.md",
     "text": "回答: 2026-11-02 から 2026-11-08 までの営業の日報の集計です。担当者ごとの訪問件数と見込み額の合計を、読みやすい短い週報にまとめてください。\n[{\"key\":{\"rep\":\"佐藤\"},\"value\":9.0,\"values\":[9.0,150000.0]},{\"key\":{\"rep\":\"鈴木\"},\"value\":6.0,\"values\":[6.0,420000.0]}]"
    }
   ],
   "rows_rerun": null,
-  "now": "2026-11-06T19:47:28.423323+00:00"
+  "now": "2026-11-07T00:43:28.678731+00:00"
  }
 }

@@ -5,7 +5,7 @@
  "irs": {
   "main": {
    "ir_version": 1,
-   "name": "abeval-rec-be230a-input-key",
+   "name": "abeval-rec-98021a-input-key",
    "display_name": "問い合わせを分類して担当を決める",
    "triggers": [
     {
@@ -37,7 +37,7 @@
      "type": "data.record.create",
      "label": "問い合わせを登録",
      "params": {
-      "table": "0b353389-8f1a-447b-85ba-6766340483d3",
+      "table": "df17679d-2c84-4b4b-8d97-424d041325c5",
       "data": {
        "subject": {
         "$from": "input",
@@ -102,7 +102,7 @@
      "type": "data.query",
      "label": "担当者を引く",
      "params": {
-      "table": "37a5ce1e-723e-4864-a03b-d8ee834feb92",
+      "table": "f7f64419-0969-48e8-bcab-61a6a772c619",
       "query": {
        "filter": {
         "cmp": {
@@ -123,7 +123,7 @@
      "type": "data.record.update",
      "label": "分類と担当者を書く",
      "params": {
-      "table": "0b353389-8f1a-447b-85ba-6766340483d3",
+      "table": "df17679d-2c84-4b4b-8d97-424d041325c5",
       "record": {
        "$from": "nodes.register.output",
        "path": "/id"
@@ -177,7 +177,7 @@
  "record": {
   "runs": [
    {
-    "run_id": "6d3e3db9-717a-4911-96d0-16f9bc84987b",
+    "run_id": "a49757c9-b76d-44db-b777-74461a18e5b3",
     "status": "failed",
     "input": {
      "body": "ログインした後に一覧のボタンを押すと、画面が真っ白になって何も表示されません。何度やっても同じです。",
@@ -225,28 +225,29 @@
     ],
     "workflow": null,
     "scheduled_at": null,
-    "fail_reason": null
+    "fail_reason": null,
+    "started_at": "2026-11-07T00:43:26.163082+00:00"
    }
   ],
   "rows": {
    "inquiries": [],
    "assign": [
     {
-     "id": "e84c2891-7d2c-4024-95d6-c0cd90b39818",
+     "id": "8176915e-876c-43db-9218-7ace93bf3d22",
      "data": {
       "assignee": "石井",
       "category": "使い方"
      }
     },
     {
-     "id": "82d16e83-6c3e-4589-8778-c9dee48a3ce3",
+     "id": "a9bf2780-a055-46a2-b1ac-77eed47e15f0",
      "data": {
       "assignee": "池田",
       "category": "不具合"
      }
     },
     {
-     "id": "0a9137ec-f09f-4f29-a2a0-892e3c447459",
+     "id": "965be165-3c02-4b80-b6b5-dd55ca50ae03",
      "data": {
       "assignee": "森",
       "category": "請求"
@@ -258,21 +259,21 @@
    "inquiries": [],
    "assign": [
     {
-     "id": "e84c2891-7d2c-4024-95d6-c0cd90b39818",
+     "id": "8176915e-876c-43db-9218-7ace93bf3d22",
      "data": {
       "assignee": "石井",
       "category": "使い方"
      }
     },
     {
-     "id": "82d16e83-6c3e-4589-8778-c9dee48a3ce3",
+     "id": "a9bf2780-a055-46a2-b1ac-77eed47e15f0",
      "data": {
       "assignee": "池田",
       "category": "不具合"
      }
     },
     {
-     "id": "0a9137ec-f09f-4f29-a2a0-892e3c447459",
+     "id": "965be165-3c02-4b80-b6b5-dd55ca50ae03",
      "data": {
       "assignee": "森",
       "category": "請求"
@@ -282,6 +283,6 @@
   },
   "files": [],
   "rows_rerun": null,
-  "now": "2026-11-06T19:47:13.001426+00:00"
+  "now": "2026-11-07T00:43:12.640570+00:00"
  }
 }

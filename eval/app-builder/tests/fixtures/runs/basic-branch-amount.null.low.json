@@ -5,7 +5,7 @@
  "irs": {
   "main": {
    "ir_version": 1,
-   "name": "abeval-rec-213c43-null",
+   "name": "abeval-rec-268ccb-null",
    "display_name": "スタブフロー",
    "declared_scopes": [],
    "triggers": [
@@ -37,7 +37,7 @@
  "record": {
   "runs": [
    {
-    "run_id": "062a2a74-4d96-479d-a640-e2083b8f6703",
+    "run_id": "95fe4cf6-5b86-4cba-b0ba-1f060fdac84a",
     "status": "succeeded",
     "input": {
      "amount": 12000,
@@ -59,7 +59,8 @@
     ],
     "workflow": null,
     "scheduled_at": null,
-    "fail_reason": null
+    "fail_reason": null,
+    "started_at": "2026-11-07T00:43:02.839698+00:00"
    }
   ],
   "rows": {
@@ -72,6 +73,6 @@
   },
   "files": [],
   "rows_rerun": null,
-  "now": "2026-11-06T19:46:58.456310+00:00"
+  "now": "2026-11-07T00:42:57.413326+00:00"
  }
 }

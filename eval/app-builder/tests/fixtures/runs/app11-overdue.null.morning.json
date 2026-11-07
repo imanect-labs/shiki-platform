@@ -5,7 +5,7 @@
  "irs": {
   "main": {
    "ir_version": 1,
-   "name": "abeval-rec-0c9885-null",
+   "name": "abeval-rec-6b5988-null",
    "display_name": "スタブフロー",
    "declared_scopes": [],
    "triggers": [
@@ -37,7 +37,7 @@
  "record": {
   "runs": [
    {
-    "run_id": "58ad5973-001d-4fca-a4e2-3fb5e46c42f0",
+    "run_id": "2ed28d22-c53a-45a9-8fc3-30b099c46a74",
     "status": "succeeded",
     "input": {},
     "steps": [
@@ -56,13 +56,14 @@
     ],
     "workflow": null,
     "scheduled_at": "2026-11-09T00:00:00+00:00",
-    "fail_reason": null
+    "fail_reason": null,
+    "started_at": "2026-11-07T00:43:47.788746+00:00"
    }
   ],
   "rows": {
    "loans": [
     {
-     "id": "e70a433c-b409-4028-ad58-11a3543dd58c",
+     "id": "a61ef271-8047-45b5-b708-80e9db38e4c0",
      "data": {
       "borrower": "大野",
       "code": "E-05",
@@ -71,7 +72,7 @@
      }
     },
     {
-     "id": "38722079-88a7-41c0-81be-cc6c0abe74ea",
+     "id": "97975671-26ca-4d54-8630-43b32db2dfc1",
      "data": {
       "borrower": "佐々木",
       "code": "E-04",
@@ -80,7 +81,7 @@
      }
     },
     {
-     "id": "72c9f557-3ff1-4643-b527-60e66f97a9f1",
+     "id": "e812a097-639e-4e0b-b52d-e0847dbd02ba",
      "data": {
       "borrower": "木村",
       "code": "E-03",
@@ -90,7 +91,7 @@
      }
     },
     {
-     "id": "98d33e3b-2a6a-439e-853b-cbd6585f667f",
+     "id": "35ac7d04-01f7-4762-ba2b-63f2fc69eeef",
      "data": {
       "borrower": "西村",
       "code": "E-02",
@@ -99,7 +100,7 @@
      }
     },
     {
-     "id": "a3491524-d79d-450e-ba36-6cca2a981a57",
+     "id": "d26f1698-5d3f-4d62-8b66-0e45a167c5b2",
      "data": {
       "borrower": "松本",
       "code": "E-01",
@@ -112,7 +113,7 @@
   "rows_before": {
    "loans": [
     {
-     "id": "e70a433c-b409-4028-ad58-11a3543dd58c",
+     "id": "a61ef271-8047-45b5-b708-80e9db38e4c0",
      "data": {
       "borrower": "大野",
       "code": "E-05",
@@ -121,7 +122,7 @@
      }
     },
     {
-     "id": "38722079-88a7-41c0-81be-cc6c0abe74ea",
+     "id": "97975671-26ca-4d54-8630-43b32db2dfc1",
      "data": {
       "borrower": "佐々木",
       "code": "E-04",
@@ -130,7 +131,7 @@
      }
     },
     {
-     "id": "72c9f557-3ff1-4643-b527-60e66f97a9f1",
+     "id": "e812a097-639e-4e0b-b52d-e0847dbd02ba",
      "data": {
       "borrower": "木村",
       "code": "E-03",
@@ -140,7 +141,7 @@
      }
     },
     {
-     "id": "98d33e3b-2a6a-439e-853b-cbd6585f667f",
+     "id": "35ac7d04-01f7-4762-ba2b-63f2fc69eeef",
      "data": {
       "borrower": "西村",
       "code": "E-02",
@@ -149,7 +150,7 @@
      }
     },
     {
-     "id": "a3491524-d79d-450e-ba36-6cca2a981a57",
+     "id": "d26f1698-5d3f-4d62-8b66-0e45a167c5b2",
      "data": {
       "borrower": "松本",
       "code": "E-01",
@@ -161,6 +162,6 @@
   },
   "files": [],
   "rows_rerun": null,
-  "now": "2026-11-06T19:47:45.739970+00:00"
+  "now": "2026-11-07T00:43:45.907881+00:00"
  }
 }

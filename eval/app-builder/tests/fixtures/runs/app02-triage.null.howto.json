@@ -5,7 +5,7 @@
  "irs": {
   "main": {
    "ir_version": 1,
-   "name": "abeval-rec-be230a-null",
+   "name": "abeval-rec-98021a-null",
    "display_name": "スタブフロー",
    "declared_scopes": [],
    "triggers": [
@@ -37,7 +37,7 @@
  "record": {
   "runs": [
    {
-    "run_id": "ab1a55f1-2e68-46cb-b885-ff43150be46f",
+    "run_id": "0c755a2c-b881-491f-94e4-c94451a8c59e",
     "status": "succeeded",
     "input": {
      "body": "登録した一覧を表計算のファイルに書き出す手順を教えてください。どの画面から操作すればよいですか。",
@@ -59,28 +59,29 @@
     ],
     "workflow": null,
     "scheduled_at": null,
-    "fail_reason": null
+    "fail_reason": null,
+    "started_at": "2026-11-07T00:43:19.587616+00:00"
    }
   ],
   "rows": {
    "inquiries": [],
    "assign": [
     {
-     "id": "aa6d88c5-1c22-49ab-8080-fcc3cab97dcd",
+     "id": "1010c992-e113-484a-ad41-336ca3a491ba",
      "data": {
       "assignee": "石井",
       "category": "使い方"
      }
     },
     {
-     "id": "d83758e0-50f7-4e0c-a65d-ac5646549e9c",
+     "id": "278f3116-2736-46c5-bd67-916a8de4e9c2",
      "data": {
       "assignee": "池田",
       "category": "不具合"
      }
     },
     {
-     "id": "864d41df-b838-407b-8389-a39842cf90e0",
+     "id": "6dbc8205-7dff-4661-b3df-a78be9c6fee7",
      "data": {
       "assignee": "森",
       "category": "請求"
@@ -92,21 +93,21 @@
    "inquiries": [],
    "assign": [
     {
-     "id": "aa6d88c5-1c22-49ab-8080-fcc3cab97dcd",
+     "id": "1010c992-e113-484a-ad41-336ca3a491ba",
      "data": {
       "assignee": "石井",
       "category": "使い方"
      }
     },
     {
-     "id": "d83758e0-50f7-4e0c-a65d-ac5646549e9c",
+     "id": "278f3116-2736-46c5-bd67-916a8de4e9c2",
      "data": {
       "assignee": "池田",
       "category": "不具合"
      }
     },
     {
-     "id": "864d41df-b838-407b-8389-a39842cf90e0",
+     "id": "6dbc8205-7dff-4661-b3df-a78be9c6fee7",
      "data": {
       "assignee": "森",
       "category": "請求"
@@ -116,6 +117,6 @@
   },
   "files": [],
   "rows_rerun": null,
-  "now": "2026-11-06T19:47:13.001426+00:00"
+  "now": "2026-11-07T00:43:12.640570+00:00"
  }
 }

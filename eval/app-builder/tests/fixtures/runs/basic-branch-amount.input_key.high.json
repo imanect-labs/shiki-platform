@@ -5,7 +5,7 @@
  "irs": {
   "main": {
    "ir_version": 1,
-   "name": "abeval-rec-213c43-input-key",
+   "name": "abeval-rec-268ccb-input-key",
    "display_name": "金額で申請の記録先を分ける",
    "triggers": [
     {
@@ -54,7 +54,7 @@
      "type": "data.record.create",
      "label": "高額の申請に追加",
      "params": {
-      "table": "42501549-2013-42e9-bddc-4280b5f5c8e6",
+      "table": "ff47132f-e903-4a8f-83ca-e5276419d8bb",
       "data": {
        "item": {
         "$from": "input",
@@ -72,7 +72,7 @@
      "type": "data.record.create",
      "label": "通常の申請に追加",
      "params": {
-      "table": "24b8bdba-dd0d-4cba-a0ae-a6cd1adfce31",
+      "table": "4ea54fc1-6c06-4940-bbeb-2de6ae730344",
       "data": {
        "item": {
         "$from": "input",
@@ -117,7 +117,7 @@
  "record": {
   "runs": [
    {
-    "run_id": "655ed778-5872-443f-ab52-98b564ccd373",
+    "run_id": "9db9d5ea-766c-4ca9-b8de-2000700b825f",
     "status": "failed",
     "input": {
      "amount": 80000,
@@ -162,7 +162,8 @@
     ],
     "workflow": null,
     "scheduled_at": null,
-    "fail_reason": null
+    "fail_reason": null,
+    "started_at": "2026-11-07T00:43:05.293784+00:00"
    }
   ],
   "rows": {
@@ -175,6 +176,6 @@
   },
   "files": [],
   "rows_rerun": null,
-  "now": "2026-11-06T19:46:58.456310+00:00"
+  "now": "2026-11-07T00:42:57.413326+00:00"
  }
 }

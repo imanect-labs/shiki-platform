@@ -58,7 +58,7 @@ class RunRecord:
     workflow: str | None = None
     scheduled_at: str | None = None
     fail_reason: str | None = None
-    # run を始めた時刻（`started_at`・無ければ `created_at`。古い記録には無い）。
+    # run を始めた時刻（`started_at`・無ければ `created_at`）。`$run_date` の照合に使う。
     started_at: str | None = None
 
     def outputs(self) -> dict[str, Any]:
@@ -123,7 +123,7 @@ class CaseRecord:
             rows_before=self.rows_before,
             files=self.files,
             rows_rerun=self.rows_rerun,
-            run_dates=run_start_dates([r.started_at for r in self.runs], self.now),
+            run_dates=run_start_dates([r.started_at for r in self.runs]),
         )
 
 

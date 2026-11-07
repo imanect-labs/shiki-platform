@@ -5,7 +5,7 @@
  "irs": {
   "main": {
    "ir_version": 1,
-   "name": "abeval-rec-414008-null",
+   "name": "abeval-rec-8fbfe0-null",
    "display_name": "スタブフロー",
    "declared_scopes": [],
    "triggers": [
@@ -37,7 +37,7 @@
  "record": {
   "runs": [
    {
-    "run_id": "50d48bc2-f12e-4891-89d2-d3effebaa827",
+    "run_id": "ca159260-c226-4957-beb0-b6a62480acbb",
     "status": "succeeded",
     "input": {
      "body": "来月から会議室の予約は新しい予約表で受け付けます。予約は前日の 17 時までに入れてください。取り消しも予約表で行います。",
@@ -59,13 +59,14 @@
     ],
     "workflow": null,
     "scheduled_at": null,
-    "fail_reason": null
+    "fail_reason": null,
+    "started_at": "2026-11-07T00:42:50.231311+00:00"
    }
   ],
   "rows": {},
   "rows_before": {},
   "files": [],
   "rows_rerun": null,
-  "now": "2026-11-06T19:46:53.118082+00:00"
+  "now": "2026-11-07T00:42:48.319650+00:00"
  }
 }

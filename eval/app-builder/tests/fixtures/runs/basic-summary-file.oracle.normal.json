@@ -5,7 +5,7 @@
  "irs": {
   "main": {
    "ir_version": 1,
-   "name": "abeval-rec-414008-main",
+   "name": "abeval-rec-8fbfe0-main",
    "display_name": "本文を要約して保存",
    "triggers": [
     {
@@ -58,7 +58,7 @@
      "type": "storage.write",
      "label": "要約を保存",
      "params": {
-      "folder": "5a8a7698-d906-4a03-8786-2602f9486a95",
+      "folder": "e7f53e4a-50d0-4a8f-ab40-081e6c95bc3d",
       "name": {
        "$template": "要約-{date}.md",
        "vars": {
@@ -107,7 +107,7 @@
  "record": {
   "runs": [
    {
-    "run_id": "5d45fd4a-dc19-44cc-b2f3-962441fd8d5f",
+    "run_id": "16d24603-3139-49fa-8ef4-20eac6e4ca2a",
     "status": "succeeded",
     "input": {
      "body": "来月から会議室の予約は新しい予約表で受け付けます。予約は前日の 17 時までに入れてください。取り消しも予約表で行います。",
@@ -135,8 +135,8 @@
        "out"
       ],
       "output": {
-       "file_id": "33d70625-2bc6-4e81-b039-3424f38fd928",
-       "id": "33d70625-2bc6-4e81-b039-3424f38fd928",
+       "file_id": "1928ea52-f9be-4391-864a-3d5a4af95608",
+       "id": "1928ea52-f9be-4391-864a-3d5a4af95608",
        "name": "要約-2026-11-07.md",
        "sha256": "c062d10f690af04da1b55f46d9cfad45484c72e5c7289a066cf2bacc4204be7b",
        "size": 304,
@@ -147,7 +147,8 @@
     ],
     "workflow": null,
     "scheduled_at": null,
-    "fail_reason": null
+    "fail_reason": null,
+    "started_at": "2026-11-07T00:42:48.905382+00:00"
    }
   ],
   "rows": {},
@@ -155,12 +156,12 @@
   "files": [
    {
     "folder": "out",
-    "id": "33d70625-2bc6-4e81-b039-3424f38fd928",
+    "id": "1928ea52-f9be-4391-864a-3d5a4af95608",
     "name": "要約-2026-11-07.md",
     "text": "# 会議室の予約方法\n\n回答: 次の本文を 3 行で要約してください。\n件名: 会議室の予約方法\n本文: 来月から会議室の予約は新しい予約表で受け付けます。予約は前日の 17 時までに入れてください。取り消しも予約表で行います。"
    }
   ],
   "rows_rerun": null,
-  "now": "2026-11-06T19:46:53.118082+00:00"
+  "now": "2026-11-07T00:42:48.319650+00:00"
  }
 }

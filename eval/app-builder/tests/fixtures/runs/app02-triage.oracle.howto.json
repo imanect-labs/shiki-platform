@@ -5,7 +5,7 @@
  "irs": {
   "main": {
    "ir_version": 1,
-   "name": "abeval-rec-be230a-main",
+   "name": "abeval-rec-98021a-main",
    "display_name": "問い合わせを分類して担当を決める",
    "triggers": [
     {
@@ -37,7 +37,7 @@
      "type": "data.record.create",
      "label": "問い合わせを登録",
      "params": {
-      "table": "0b353389-8f1a-447b-85ba-6766340483d3",
+      "table": "df17679d-2c84-4b4b-8d97-424d041325c5",
       "data": {
        "subject": {
         "$from": "input",
@@ -102,7 +102,7 @@
      "type": "data.query",
      "label": "担当者を引く",
      "params": {
-      "table": "37a5ce1e-723e-4864-a03b-d8ee834feb92",
+      "table": "f7f64419-0969-48e8-bcab-61a6a772c619",
       "query": {
        "filter": {
         "cmp": {
@@ -123,7 +123,7 @@
      "type": "data.record.update",
      "label": "分類と担当者を書く",
      "params": {
-      "table": "0b353389-8f1a-447b-85ba-6766340483d3",
+      "table": "df17679d-2c84-4b4b-8d97-424d041325c5",
       "record": {
        "$from": "nodes.register.output",
        "path": "/id"
@@ -177,7 +177,7 @@
  "record": {
   "runs": [
    {
-    "run_id": "d2ff6e35-e294-450a-ae0d-6df5948fce3e",
+    "run_id": "5a12fcb2-142c-4720-8e44-150b3e125e24",
     "status": "succeeded",
     "input": {
      "body": "登録した一覧を表計算のファイルに書き出す手順を教えてください。どの画面から操作すればよいですか。",
@@ -192,17 +192,17 @@
        "out"
       ],
       "output": {
-       "created_at": "2026-11-06T19:47:16.109948Z",
+       "created_at": "2026-11-07T00:43:15.771787Z",
        "data": {
         "body": "登録した一覧を表計算のファイルに書き出す手順を教えてください。どの画面から操作すればよいですか。",
         "status": "未対応",
         "subject": "一覧を書き出したい"
        },
-       "id": "ba0725c0-bb76-49e3-9c2a-05f2a14933af",
+       "id": "508e57b2-c904-4a56-8481-513d8a217afa",
        "owner": "00000000-0000-0000-0000-000000000001",
        "rev": 1,
-       "table_id": "0b353389-8f1a-447b-85ba-6766340483d3",
-       "updated_at": "2026-11-06T19:47:16.109948Z"
+       "table_id": "df17679d-2c84-4b4b-8d97-424d041325c5",
+       "updated_at": "2026-11-07T00:43:15.771787Z"
       },
       "error": null
      },
@@ -233,16 +233,16 @@
       "output": {
        "items": [
         {
-         "created_at": "2026-11-06T19:47:15.913507Z",
+         "created_at": "2026-11-07T00:43:15.662435Z",
          "data": {
           "assignee": "森",
           "category": "請求"
          },
-         "id": "ab601d8c-b640-4aaf-96cb-00a1ef1eb684",
+         "id": "cccb88cc-f7bc-4260-9e44-968176b380c4",
          "owner": "00000000-0000-0000-0000-000000000001",
          "rev": 1,
-         "table_id": "37a5ce1e-723e-4864-a03b-d8ee834feb92",
-         "updated_at": "2026-11-06T19:47:15.913507Z"
+         "table_id": "f7f64419-0969-48e8-bcab-61a6a772c619",
+         "updated_at": "2026-11-07T00:43:15.662435Z"
         }
        ],
        "shares_truncated": false,
@@ -261,7 +261,7 @@
        "out"
       ],
       "output": {
-       "created_at": "2026-11-06T19:47:16.109948Z",
+       "created_at": "2026-11-07T00:43:15.771787Z",
        "data": {
         "assignee": "森",
         "body": "登録した一覧を表計算のファイルに書き出す手順を教えてください。どの画面から操作すればよいですか。",
@@ -269,24 +269,25 @@
         "status": "振り分け済",
         "subject": "一覧を書き出したい"
        },
-       "id": "ba0725c0-bb76-49e3-9c2a-05f2a14933af",
+       "id": "508e57b2-c904-4a56-8481-513d8a217afa",
        "owner": "00000000-0000-0000-0000-000000000001",
        "rev": 2,
-       "table_id": "0b353389-8f1a-447b-85ba-6766340483d3",
-       "updated_at": "2026-11-06T19:47:16.182421Z"
+       "table_id": "df17679d-2c84-4b4b-8d97-424d041325c5",
+       "updated_at": "2026-11-07T00:43:15.854744Z"
       },
       "error": null
      }
     ],
     "workflow": null,
     "scheduled_at": null,
-    "fail_reason": null
+    "fail_reason": null,
+    "started_at": "2026-11-07T00:43:15.744670+00:00"
    }
   ],
   "rows": {
    "inquiries": [
     {
-     "id": "ba0725c0-bb76-49e3-9c2a-05f2a14933af",
+     "id": "508e57b2-c904-4a56-8481-513d8a217afa",
      "data": {
       "assignee": "森",
       "body": "登録した一覧を表計算のファイルに書き出す手順を教えてください。どの画面から操作すればよいですか。",
@@ -298,21 +299,21 @@
    ],
    "assign": [
     {
-     "id": "60499fa4-39c5-489d-9c2d-ddeb59aad98c",
+     "id": "2c9e1789-4972-4688-8a22-92c9343059be",
      "data": {
       "assignee": "石井",
       "category": "使い方"
      }
     },
     {
-     "id": "d3432adb-1ac2-46be-bdaf-f1a7fb94bea0",
+     "id": "3c0e25ff-397c-45b6-b5fe-848fa354bc7a",
      "data": {
       "assignee": "池田",
       "category": "不具合"
      }
     },
     {
-     "id": "ab601d8c-b640-4aaf-96cb-00a1ef1eb684",
+     "id": "cccb88cc-f7bc-4260-9e44-968176b380c4",
      "data": {
       "assignee": "森",
       "category": "請求"
@@ -324,21 +325,21 @@
    "inquiries": [],
    "assign": [
     {
-     "id": "60499fa4-39c5-489d-9c2d-ddeb59aad98c",
+     "id": "2c9e1789-4972-4688-8a22-92c9343059be",
      "data": {
       "assignee": "石井",
       "category": "使い方"
      }
     },
     {
-     "id": "d3432adb-1ac2-46be-bdaf-f1a7fb94bea0",
+     "id": "3c0e25ff-397c-45b6-b5fe-848fa354bc7a",
      "data": {
       "assignee": "池田",
       "category": "不具合"
      }
     },
     {
-     "id": "ab601d8c-b640-4aaf-96cb-00a1ef1eb684",
+     "id": "cccb88cc-f7bc-4260-9e44-968176b380c4",
      "data": {
       "assignee": "森",
       "category": "請求"
@@ -348,6 +349,6 @@
   },
   "files": [],
   "rows_rerun": null,
-  "now": "2026-11-06T19:47:13.001426+00:00"
+  "now": "2026-11-07T00:43:12.640570+00:00"
  }
 }

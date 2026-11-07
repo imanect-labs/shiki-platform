@@ -5,7 +5,7 @@
  "irs": {
   "main": {
    "ir_version": 1,
-   "name": "abeval-rec-678b54-input-key",
+   "name": "abeval-rec-e7055b-input-key",
    "display_name": "参加者を名簿に登録",
    "triggers": [
     {
@@ -51,7 +51,7 @@
      "type": "data.record.create",
      "label": "名簿に追加",
      "params": {
-      "table": "b1f3796a-bfda-4b03-be17-3773b1f25036",
+      "table": "eb8e7109-74f4-46c9-8901-48b47cecfe09",
       "data": {
        "event": {
         "$from": "input",
@@ -82,7 +82,7 @@
  "record": {
   "runs": [
    {
-    "run_id": "1a3f21b4-73f1-4884-b595-a2c44e8cb54b",
+    "run_id": "1b4eebdf-6421-4865-84de-6119d8631b65",
     "status": "failed",
     "input": {
      "event": "新人研修",
@@ -151,7 +151,8 @@
     ],
     "workflow": null,
     "scheduled_at": null,
-    "fail_reason": null
+    "fail_reason": null,
+    "started_at": "2026-11-07T00:43:11.442727+00:00"
    }
   ],
   "rows": {
@@ -162,6 +163,6 @@
   },
   "files": [],
   "rows_rerun": null,
-  "now": "2026-11-06T19:47:09.394678+00:00"
+  "now": "2026-11-07T00:43:08.951124+00:00"
  }
 }

@@ -159,22 +159,23 @@ def expand_expected(
 JST = dt.timezone(dt.timedelta(hours=9))
 
 
-def run_start_dates(started: Sequence[str | None], fallback: str | None) -> list[str]:
-    """run を始めた日（日本時間）の候補。始めた時刻が無ければ、流し始めた時刻とその 10 分後の日。"""
+def run_start_dates(started: Sequence[str | None]) -> list[str]:
+    """run を始めた日（日本時間）の候補（run の `started_at`、無ければ `created_at`・起動できなかった run は無い）。
+
+    実物の run は `created_at` を必ず返し、記録（tests/fixtures/runs/）も持つ（GAP-114）。始めた時刻が 1 つも無ければ
+    候補は空で、`$run_date` はどれにも合わない（日付を当てずっぽうにしない）。
+    """
     out: list[str] = []
-
-    def add(t: dt.datetime) -> None:
-        d = t.astimezone(JST).date().isoformat()
-        if d not in out:
-            out.append(d)
-
     for s in started:
         if s:
-            add(dt.datetime.fromisoformat(s.replace("Z", "+00:00")))
-    if not out and fallback:
-        t = dt.datetime.fromisoformat(fallback.replace("Z", "+00:00"))
-        add(t)
-        add(t + dt.timedelta(minutes=10))
+            d = (
+                dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
+                .astimezone(JST)
+                .date()
+                .isoformat()
+            )
+            if d not in out:
+                out.append(d)
     return out
 
 

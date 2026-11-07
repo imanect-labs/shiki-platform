@@ -5,7 +5,7 @@
  "irs": {
   "main": {
    "ir_version": 1,
-   "name": "abeval-rec-d0d19a-null",
+   "name": "abeval-rec-25f9ce-null",
    "display_name": "スタブフロー",
    "declared_scopes": [],
    "triggers": [
@@ -37,7 +37,7 @@
  "record": {
   "runs": [
    {
-    "run_id": "ff353cbf-0aa2-4ed6-91a9-1d59c37f7a9b",
+    "run_id": "f4c2a40b-8e77-45f4-93ce-225e2dd77d84",
     "status": "succeeded",
     "input": {},
     "steps": [
@@ -56,13 +56,14 @@
     ],
     "workflow": null,
     "scheduled_at": "2026-11-09T00:00:00+00:00",
-    "fail_reason": null
+    "fail_reason": null,
+    "started_at": "2026-11-07T00:43:31.052505+00:00"
    }
   ],
   "rows": {
    "daily": [
     {
-     "id": "299aa60a-b40f-4e55-a89c-f757f838f2ac",
+     "id": "b63dd81a-e7e7-40a9-abe2-fb1f794d3e44",
      "data": {
       "entry_key": "鈴木-2026-11-09",
       "note": "今週の分",
@@ -73,7 +74,7 @@
      }
     },
     {
-     "id": "5c79eab2-977c-442a-84e6-751ec5a6940e",
+     "id": "00617cd9-bc34-4b19-b5c1-29cc8db6e319",
      "data": {
       "entry_key": "佐藤-2026-10-30",
       "note": "前の週の分",
@@ -84,7 +85,7 @@
      }
     },
     {
-     "id": "20d2a7d4-4361-4ae6-a98a-5aa5aa9692f1",
+     "id": "53da1cf1-449f-401d-8ce9-57336a0157ef",
      "data": {
       "entry_key": "鈴木-2026-11-05",
       "note": "地域を回った",
@@ -95,7 +96,7 @@
      }
     },
     {
-     "id": "2c362b87-e57b-4f25-9a39-9d380d33a772",
+     "id": "d85d16f8-2b2b-4037-9664-16562626cde2",
      "data": {
       "entry_key": "鈴木-2026-11-03",
       "note": "大口の相談",
@@ -106,7 +107,7 @@
      }
     },
     {
-     "id": "a5a0c821-1660-4d6b-aeca-b0d192098a29",
+     "id": "37e7d9fd-b8be-4567-8bce-9059225817c3",
      "data": {
       "entry_key": "佐藤-2026-11-06",
       "note": "展示会の準備",
@@ -117,7 +118,7 @@
      }
     },
     {
-     "id": "a3739c39-c8b7-4cef-b3e9-81db47c603e1",
+     "id": "4a33ac86-f0e1-4bdf-a44e-97986d716672",
      "data": {
       "entry_key": "佐藤-2026-11-04",
       "note": "既存の取引先を訪問",
@@ -128,7 +129,7 @@
      }
     },
     {
-     "id": "9660d2bd-a232-4c98-bad5-714daede96c8",
+     "id": "e7294aef-235a-428d-b582-17f67038b7ea",
      "data": {
       "entry_key": "佐藤-2026-11-02",
       "note": "新しい見込みが 1 件",
@@ -144,7 +145,7 @@
   "rows_before": {
    "daily": [
     {
-     "id": "299aa60a-b40f-4e55-a89c-f757f838f2ac",
+     "id": "b63dd81a-e7e7-40a9-abe2-fb1f794d3e44",
      "data": {
       "entry_key": "鈴木-2026-11-09",
       "note": "今週の分",
@@ -155,7 +156,7 @@
      }
     },
     {
-     "id": "5c79eab2-977c-442a-84e6-751ec5a6940e",
+     "id": "00617cd9-bc34-4b19-b5c1-29cc8db6e319",
      "data": {
       "entry_key": "佐藤-2026-10-30",
       "note": "前の週の分",
@@ -166,7 +167,7 @@
      }
     },
     {
-     "id": "20d2a7d4-4361-4ae6-a98a-5aa5aa9692f1",
+     "id": "53da1cf1-449f-401d-8ce9-57336a0157ef",
      "data": {
       "entry_key": "鈴木-2026-11-05",
       "note": "地域を回った",
@@ -177,7 +178,7 @@
      }
     },
     {
-     "id": "2c362b87-e57b-4f25-9a39-9d380d33a772",
+     "id": "d85d16f8-2b2b-4037-9664-16562626cde2",
      "data": {
       "entry_key": "鈴木-2026-11-03",
       "note": "大口の相談",
@@ -188,7 +189,7 @@
      }
     },
     {
-     "id": "a5a0c821-1660-4d6b-aeca-b0d192098a29",
+     "id": "37e7d9fd-b8be-4567-8bce-9059225817c3",
      "data": {
       "entry_key": "佐藤-2026-11-06",
       "note": "展示会の準備",
@@ -199,7 +200,7 @@
      }
     },
     {
-     "id": "a3739c39-c8b7-4cef-b3e9-81db47c603e1",
+     "id": "4a33ac86-f0e1-4bdf-a44e-97986d716672",
      "data": {
       "entry_key": "佐藤-2026-11-04",
       "note": "既存の取引先を訪問",
@@ -210,7 +211,7 @@
      }
     },
     {
-     "id": "9660d2bd-a232-4c98-bad5-714daede96c8",
+     "id": "e7294aef-235a-428d-b582-17f67038b7ea",
      "data": {
       "entry_key": "佐藤-2026-11-02",
       "note": "新しい見込みが 1 件",
@@ -225,6 +226,6 @@
   },
   "files": [],
   "rows_rerun": null,
-  "now": "2026-11-06T19:47:28.423323+00:00"
+  "now": "2026-11-07T00:43:28.678731+00:00"
  }
 }
