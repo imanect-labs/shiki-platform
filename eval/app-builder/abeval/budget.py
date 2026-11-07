@@ -9,16 +9,31 @@
   (1) 前の既定の置き場（作業ツリーの `results/spend.jsonl`）に行が残っている。(2) 手元の中継の台帳のうち tag が
   `abeval/` で始まる行の累計が、評価の台帳の累計より大きい（作業ツリーを作り直す・`git clean -fdx`・別の checkout
   から流すと、評価の台帳が $0 から数え直しになり $35 の歯止めがすり抜けるため）。
+- `--reconcile`（BUG-250）: abeval.proxy が SIGKILL・OOM で落ちると、処理中だった要求は手元の中継で課金されたのに
+  評価の台帳に載らず、(2) で起動を拒まれる。手元の中継の台帳の評価の分を tag（`abeval/<exp>/<run>/<trial>`）ごとに
+  評価の台帳と比べ、手元の中継の方が多い tag の差を、印（`kind: reconciled`）の付いた行として評価の台帳に足す
+  （少なく数えない側に寄せる・手元の中継の台帳は読むだけ）。何をどれだけ足すかを先に表示し、`--yes` が無ければ
+  書かない。書くのは abeval.proxy が止まっているとき（`ss` で 18200 に待ち受けが無い）だけで、評価の台帳の
+  排他の錠（flock）を取ったまま読み直して足す。
 """
 
 from __future__ import annotations
 
 import argparse
+import datetime as dt
 import json
+import math
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from abeval.config import ROOT, Config, display_path, load_config
-from abeval.ledger import Ledger, LedgerCorrupt, read_relay_tagged_usd, read_relay_total_usd
+from abeval.ledger import (
+    Ledger,
+    LedgerCorrupt,
+    read_relay_by_tag,
+    read_relay_tagged_usd,
+    read_relay_total_usd,
+)
 from abeval.pricing import micros_to_usd
 
 # 前の既定の評価の台帳（作業ツリーの中・ここに行が残っていたら移すまで動かさない）。
@@ -26,6 +41,13 @@ LEGACY_LEDGER = ROOT / "results" / "spend.jsonl"
 # 手元の中継の台帳の評価の分が、評価の台帳より大きいとみなす差（丸めと単価の差を許す）。
 RELAY_TOLERANCE_USD = 0.01
 RELAY_TOLERANCE_RATIO = 0.01
+# 差を足した行の印（`budget --reconcile`）。
+RECONCILED = "reconciled"
+RECONCILE_HINT = (
+    "abeval.proxy が SIGKILL・OOM で落ちた（処理中の要求が評価の台帳に載らなかった）なら、"
+    "uv run python -m abeval budget --reconcile で足す行を確かめ、--yes で評価の台帳に足してから起動し直す"
+    "（README の「上限と台帳」）"
+)
 
 
 def ledger_guard(cfg: Config) -> str | None:
@@ -51,9 +73,121 @@ def ledger_guard(cfg: Config) -> str | None:
         return (
             f"手元の中継の台帳の評価の分（tag {cfg.proxy.tag_prefix}/・${relay:.4f}）が、評価の台帳の累計"
             f"（${ours:.4f}・{display_path(cfg.paths.ledger)}）より大きい。評価の台帳が消えたか、別の台帳を"
-            "使っています（このままでは評価の上限がすり抜ける）"
+            f"使っています（このままでは評価の上限がすり抜ける）。{RECONCILE_HINT}"
         )
     return None
+
+
+# --- 差を足す（BUG-250） ---
+
+
+@dataclass(frozen=True)
+class Shortfall:
+    """手元の中継の台帳の方が多い tag 1 つ（足す額 = 手元の中継の額 − 評価の台帳の額）。"""
+
+    tag: str
+    relay_micros: int
+    relay_lines: int
+    eval_micros: int
+
+    @property
+    def add_micros(self) -> int:
+        return self.relay_micros - self.eval_micros
+
+    def entry(self, now: str) -> dict:
+        _, exp, run_id, trial = ([*self.tag.split("/", 3), None, None, None])[:4]
+        return {
+            "ts": now,
+            "kind": RECONCILED,
+            "exp": exp,
+            "run_id": run_id,
+            "trial": None if trial in (None, "-") else trial,
+            "session": None,
+            "tag": self.tag,
+            "path": "reconcile",
+            "usage": {},
+            "cost_micros": self.add_micros,
+            "relay_micros": self.relay_micros,
+            "relay_lines": self.relay_lines,
+            "eval_micros_before": self.eval_micros,
+            "usage_missing": False,
+            "captured": False,
+        }
+
+
+def _entry_tag(e: dict, prefix: str) -> str | None:
+    tag = e.get("tag")
+    if isinstance(tag, str) and tag:
+        return tag
+    exp, run_id = e.get("exp"), e.get("run_id")
+    if isinstance(exp, str) and isinstance(run_id, str):
+        return f"{prefix}/{exp}/{run_id}/{e.get('trial') or '-'}"
+    return None
+
+
+def shortfalls(cfg: Config, entries: list[dict] | None = None) -> list[Shortfall]:
+    """手元の中継の台帳の評価の分が、評価の台帳より多い tag（どちらの台帳も読むだけ）。"""
+    try:
+        relay = read_relay_by_tag(cfg.paths.relay_ledger, cfg.proxy.tag_prefix)
+    except FileNotFoundError:
+        return []
+    ours: dict[str, int] = {}
+    for e in Ledger(cfg.paths.ledger).entries() if entries is None else entries:
+        tag = _entry_tag(e, cfg.proxy.tag_prefix)
+        if tag is not None:
+            ours[tag] = ours.get(tag, 0) + e["cost_micros"]
+    out = []
+    for tag, (usd, n) in sorted(relay.items()):
+        # 少なく数えないよう切り上げる（浮動小数の誤差の分は丸めてから）。
+        micros = math.ceil(round(usd * 1_000_000, 3))
+        got = ours.get(tag, 0)
+        if micros > got:
+            out.append(Shortfall(tag, micros, n, got))
+    return out
+
+
+def format_shortfalls(items: list[Shortfall]) -> str:
+    if not items:
+        return "足す行はありません（手元の中継の台帳の評価の分は、どの tag も評価の台帳を超えていない）"
+    lines = ["評価の台帳に足す行（手元の中継の台帳の方が多い tag・kind=reconciled）:"]
+    for s in items:
+        lines.append(
+            f"  {s.tag}: 手元の中継 ${micros_to_usd(s.relay_micros):.6f}（{s.relay_lines} 行）・評価の台帳 "
+            f"${micros_to_usd(s.eval_micros):.6f} → 足す ${micros_to_usd(s.add_micros):.6f}"
+        )
+    total = sum(s.add_micros for s in items)
+    lines.append(f"合計 ${micros_to_usd(total):.6f}（{len(items)} 行）")
+    return "\n".join(lines)
+
+
+def proxy_stopped(cfg: Config, ss: Callable[[int], str | None] | None = None) -> str | None:
+    """abeval.proxy が止まっていなければ理由（待ち受けを `ss` で見る・繋がない）。"""
+    if ss is None:
+        from abeval.server_guard import run_ss
+
+        ss = run_ss
+    out = ss(cfg.proxy.port)
+    if out is None:
+        return "ss がありません（abeval.proxy が止まっているか確かめられない）"
+    if any(line.strip() for line in out.splitlines()):
+        return f"abeval.proxy（:{cfg.proxy.port}）が動いています。処理中の要求と二重に数えないよう、止めてから足す"
+    return None
+
+
+def reconcile(cfg: Config, *, ss: Callable[[int], str | None] | None = None) -> list[Shortfall]:
+    """差を評価の台帳に足す（錠を取ったまま読み直して決める）。足した行（abeval.proxy が動いていれば ValueError）。"""
+    why = proxy_stopped(cfg, ss)
+    if why:
+        raise ValueError(why)
+    done: list[Shortfall] = []
+
+    def build(entries: list[dict]) -> list[dict]:
+        done[:] = shortfalls(cfg, entries)
+        now = dt.datetime.now(dt.UTC).isoformat(timespec="seconds")
+        return [s.entry(now) for s in done]
+
+    Ledger(cfg.paths.ledger).append_locked(build)
+    return done
 
 
 @dataclass
@@ -187,7 +321,42 @@ def format_budget(b: Budget) -> str:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m abeval budget", description="費用の累計と残り")
     ap.add_argument("--json", action="store_true", help="JSON で出す")
+    ap.add_argument(
+        "--reconcile",
+        action="store_true",
+        help="手元の中継の台帳の評価の分のうち、評価の台帳に無い差を表示する（abeval.proxy が落ちた後）",
+    )
+    ap.add_argument("--yes", action="store_true", help="--reconcile の差を評価の台帳に足す")
     args = ap.parse_args(argv)
+    if args.yes and not args.reconcile:
+        ap.error("--yes は --reconcile と一緒に使います")
+    if args.reconcile:
+        return _reconcile_main(load_config(), yes=args.yes)
     b = summarize(load_config())
     print(json.dumps(b.to_dict(), ensure_ascii=False, indent=1) if args.json else format_budget(b))
+    return 0
+
+
+def _reconcile_main(cfg: Config, *, yes: bool) -> int:
+    try:
+        items = shortfalls(cfg)
+    except LedgerCorrupt as e:
+        print(f"台帳が読めません: {e}")
+        return 1
+    print(format_shortfalls(items))
+    if not items:
+        return 0
+    if not yes:
+        print(f"（--yes を付けたときだけ {display_path(cfg.paths.ledger)} に書く）")
+        return 0
+    try:
+        done = reconcile(cfg)
+    except (ValueError, LedgerCorrupt) as e:
+        print(f"書きませんでした: {e}")
+        return 1
+    total = sum(s.add_micros for s in done)
+    print(
+        f"評価の台帳に {len(done)} 行（${micros_to_usd(total):.6f}）を足しました: "
+        f"{display_path(cfg.paths.ledger)}"
+    )
     return 0

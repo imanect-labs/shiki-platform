@@ -5,6 +5,9 @@
 - 読むときは共有の錠を取る。壊れた行があれば例外にする（少なく数えて上限を越えないため）。
 - 鍵の形の値（`sk-ant-` を含む値）と、名前に key・authorization を含む項目は書き込みを拒む。
 
+- `append_locked` は、排他の錠を取ったまま全部の行を読み、足す行を決めて書く（読みと書きの間にほかの書き込みを
+  挟まない・`budget --reconcile` が使う）。
+
 手元の中継の台帳（`~/.local/state/shiki-campaign/anthropic-spend.jsonl`）は読むだけ（[`read_relay_total_usd`]）。
 """
 
@@ -14,7 +17,7 @@ import fcntl
 import json
 import os
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -109,6 +112,44 @@ class Ledger:
         finally:
             os.close(fd)
 
+    def append_locked(self, build: Callable[[list[dict]], list[dict]]) -> list[dict]:
+        """排他の錠を取ったまま全部の行を読み、`build(行)` が返した行を足す（足した行を返す）。
+
+        読んでから書くまでの間に、ほかのプロセス（abeval.proxy など）の書き込みを挟まない。壊れた行があれば
+        何も書かずに LedgerCorrupt。
+        """
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd = os.open(self.path, os.O_RDWR | os.O_APPEND | os.O_CREAT, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            try:
+                os.lseek(fd, 0, os.SEEK_SET)
+                chunks = []
+                while chunk := os.read(fd, 1 << 20):
+                    chunks.append(chunk)
+                data = b"".join(chunks)
+                if data and not data.endswith(b"\n"):
+                    raise LedgerCorrupt(f"{self.path}: 最後の行が途中で切れています")
+                entries = [
+                    _parse_line(raw, i, self.path) for i, raw in enumerate(data.splitlines(), 1)
+                ]
+                new = list(build(entries))
+                for e in new:
+                    check_entry(e)
+                out = b"".join(
+                    (json.dumps(e, ensure_ascii=False, sort_keys=True) + "\n").encode() for e in new
+                )
+                view = memoryview(out)
+                while view:
+                    n = os.write(fd, view)
+                    view = view[n:]
+                os.fsync(fd)
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+        return new
+
     def _read_from(self, offset: int) -> tuple[bytes, int]:
         try:
             fd = os.open(self.path, os.O_RDONLY)
@@ -181,7 +222,12 @@ def read_relay_total_usd(path: Path) -> float:
 
 def read_relay_tagged_usd(path: Path, prefix: str) -> float:
     """手元の中継の台帳のうち、tag が `<prefix>/` で始まる行（評価の要求）の累計（USD）。読むだけ。"""
-    total = 0.0
+    return sum(usd for usd, _ in read_relay_by_tag(path, prefix).values())
+
+
+def read_relay_by_tag(path: Path, prefix: str) -> dict[str, tuple[float, int]]:
+    """手元の中継の台帳のうち、tag が `<prefix>/` で始まる行の tag ごとの (累計 USD, 行の数)。読むだけ。"""
+    out: dict[str, tuple[float, int]] = {}
     want = f"{prefix}/"
     with Path(path).open("rb") as f:
         for lineno, raw in enumerate(f, 1):
@@ -194,5 +240,6 @@ def read_relay_tagged_usd(path: Path, prefix: str) -> float:
             except (ValueError, AttributeError, TypeError) as e:
                 raise LedgerCorrupt(f"{path}:{lineno}: 読めません: {e}") from e
             if isinstance(tag, str) and tag.startswith(want):
-                total += cost
-    return total
+                usd, n = out.get(tag, (0.0, 0))
+                out[tag] = (usd + cost, n + 1)
+    return out

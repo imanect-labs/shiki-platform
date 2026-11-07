@@ -277,6 +277,7 @@ uv run python -m abeval capture --label v0 --exp e1a                       # 取
 uv run python -m abeval grade  --exp e1a                                   # 結果の IR を ir_lint で採点し直す
 uv run python -m abeval report                                             # results/summary.md
 uv run python -m abeval budget                                             # 評価の累計・実行ごと・総額の残り
+uv run python -m abeval budget --reconcile [--yes]                         # 中継が落ちた後の差を足す（BUG-250）
 ```
 
 共通の引数: `--tasks a,b`（既定は全部）・`--phrasings flow,app,auto`・`--trials 3`・`--effort low|medium|high|auto`
@@ -392,7 +393,24 @@ Claude Haiku 5.5 だけ（abeval.proxy の許可リスト）。
   `cost_micros` はマイクロ USD の整数）。上限の正本なので**消さない**。壊れた行があれば読み込みで止まる。
   作業ツリーを作り直しても、別の checkout から流しても同じ台帳で数える。
 - 消えた・別の台帳になったときの守り（`budget.ledger_guard`）: 手元の中継の台帳のうち tag が `abeval/` で始まる
-  行の累計が評価の台帳より大きければ、abeval.proxy は起動を拒み、doctor は NG、plan は大きい方で数える。
+  行の累計が評価の台帳より大きければ（$0.01 か 1% を超えて）、abeval.proxy は起動を拒み、doctor は NG、plan は
+  大きい方で数える。
+- abeval.proxy が SIGKILL・OOM で落ちたときの戻し方（BUG-250）: 処理中だった要求は、手元の中継では課金されたのに
+  評価の台帳に載らない（予約の額で書くのは SIGTERM と Ctrl-C で止めたときだけ）。そのままだと上の守りで
+  abeval.proxy を起動し直せない。abeval.proxy を止めたまま、差を確かめてから足す。
+
+  ```bash
+  uv run python -m abeval budget --reconcile         # 足す行を表示するだけ（書かない）
+  uv run python -m abeval budget --reconcile --yes   # 評価の台帳に足す
+  ```
+
+  - 手元の中継の台帳の評価の分を tag（`abeval/<exp>/<run>/<trial>`）ごとに評価の台帳と比べ、手元の中継の方が
+    多い tag だけ、その差（切り上げ）を `kind: "reconciled"` の行として足す（exp・run_id・trial は tag から。
+    実行ごとの累計にも入る）。評価の台帳の方が多い tag は足さない（少なく数えない側に寄せる）。
+  - 手元の中継の台帳は読むだけ。書くのは、abeval.proxy が止まっている（`ss` で 18200 に待ち受けが無い）ときだけで、
+    評価の台帳の排他の錠（flock）を取ったまま読み直して決める。もう一度流しても足す行は増えない。
+  - 評価の台帳そのものが消えた（作業ツリーの中の台帳を消した・別の機械の台帳を使った）ときも同じ命令で戻せるが、
+    足す額を見て、消えた理由を確かめてから `--yes` を付ける。
 - 前の既定（作業ツリーの `results/spend.jsonl`）に行が残っていると、abeval.proxy は起動を拒む。移し方:
 
   ```bash
