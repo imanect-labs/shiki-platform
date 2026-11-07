@@ -40,13 +40,16 @@ env:
   # 100GB 超に膨らんでいた（#419）。設定はマニフェスト側の 1 箇所に集約する。
   # 増分コンパイルは CI（毎回クリーン相当・rust-cache 復元）では利得がなくオーバーヘッド。
   CARGO_INCREMENTAL: "0"
-  # 結合テストの接続先のうち、coverage ジョブが用意しない依存（実 Keycloak・実 LLM・Office エンジン/Collabora・
-  # VM 系サンドボックス）。結合テストのジョブは SHIKI_REQUIRE_IT=1 で「接続先が未設定ならスキップ」を失敗に変える
-  # （crates/testenv）。ここに挙げた変数だけは未設定でもスキップを許す。SANDBOX_GVISOR_IT は非ブロッキングの
-  # sandbox-gvisor ジョブで、SHIKI_TABULAR_RUNNER（隔離ランナーのバイナリ）は tabular-runner ジョブの adversarial
-  # テストだけで走る。それ以外は **CI で一度も走らない結合テスト**なので、減らせるものは減らす
-  # （coverage ジョブの Job Summary にも出す）。手動で回す計測・実地評価のフラグ（DATA_BENCH・WEB_FETCH_LIVE・
-  # SHIKI_SQL_EVAL_URL 等）は結合テストの門番ではないので対象外。
+  # 結合テストの接続先のうち、未設定でもスキップを許すもの。結合テストのジョブは SHIKI_REQUIRE_IT=1 で
+  # 「接続先が未設定ならスキップ」を失敗に変える（crates/testenv）。ここに挙げた変数だけは未設定でもスキップを許す。
+  # - coverage ジョブが用意しない依存（実 LLM・Office エンジン/Collabora・VM 系サンドボックス）。SANDBOX_GVISOR_IT は
+  #   非ブロッキングの sandbox-gvisor ジョブで走る。それ以外は **CI で一度も走らない結合テスト**なので、減らせるものは
+  #   減らす（coverage ジョブの Job Summary にも出す）。
+  # - KEYCLOAK_TEST_URL（BUG-193）と SHIKI_TABULAR_RUNNER（#1059）は、coverage ジョブが Keycloak とランナーを用意して
+  #   渡すが、必須にはしていない（変数が欠けても落ちずにスキップされる）。ランナーは tabular-runner ジョブの
+  #   adversarial テストも使う。
+  # 手動で回す計測・実地評価のフラグ（DATA_BENCH・WEB_FETCH_LIVE・SHIKI_SQL_EVAL_URL 等）は結合テストの門番では
+  # ないので対象外。
   SHIKI_REQUIRE_IT_EXCEPT: >-
     KEYCLOAK_TEST_URL,OPENAI_TEST_URL,ANTHROPIC_TEST_URL,OPENAI_RESPONSES_TEST_URL,OFFICE_ENGINE_TEST_WS,OFFICE_RELAY_TEST_COLLABORA,SHIKI_TABULAR_RUNNER,SANDBOX_IT,SANDBOX_NETNS_IT,SANDBOX_FC_IT,SANDBOX_GVISOR_IT
 
@@ -579,10 +582,12 @@ jobs:
         if: always()
         run: |
           {
-            echo '### このジョブで走らない結合テスト（SHIKI_REQUIRE_IT_EXCEPT）'
-            echo '次の接続先は coverage ジョブが用意しないため、これを読む結合テストはスキップされています（SANDBOX_GVISOR_IT は sandbox-gvisor ジョブで別に走る）。'
+            echo '### このジョブで走らない結合テスト（SHIKI_REQUIRE_IT_EXCEPT のうち、このジョブが渡さないもの）'
+            echo '次の接続先は coverage ジョブが用意しないため、これを読む結合テストはスキップされています（SANDBOX_GVISOR_IT は sandbox-gvisor ジョブで別に走る）。KEYCLOAK_TEST_URL と SHIKI_TABULAR_RUNNER は渡しているので一覧から外す（必須にはしていない）。'
             echo
-            tr ',' '\n' <<< "$SHIKI_REQUIRE_IT_EXCEPT" | sed 's/^ *//;s/^/- `/;s/$/`/'
+            # 外す 2 つは、テストの手順の env で渡している変数（そちらを変えたら、ここも直す）。
+            tr ',' '\n' <<< "$SHIKI_REQUIRE_IT_EXCEPT" | sed 's/^ *//' \
+              | grep -vxE 'KEYCLOAK_TEST_URL|SHIKI_TABULAR_RUNNER' | sed 's/^/- `/;s/$/`/'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: upload failed tests (main)
         if: failure() && github.event_name != 'pull_request'
