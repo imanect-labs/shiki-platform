@@ -134,6 +134,17 @@ uv run python -m abeval serve --label v0 --down
   `ir.unknown_node_type` で見る・費用 0）、版の記録の `node_types` と結果の `versions.<label>.node_types` に残す。
   課題の `requires` の `node:*` はこれで判定する（HEAD の ir_lint のカタログで判定すると、V0 に無いノードの課題が
   対象外にならない）。
+- **版で課題が成り立つか（D-167）**: 課題の `requires` はノードの種類と API の口しか見ないので、後から入った設定の
+  項目（保存の `on_name_taken`・「AI に聞く」の `output_schema`・足す数の `add`・照合の `match_on` など）や実行時の値の
+  取り出し方の差を拾えない。そこで `run` は（stub でないとき）、版のサーバーで正解の IR を本番の採点と同じ道具
+  （stub の配管・出口は ir_lint で補う）で流し、成り立たない課題をその版の対象外にする（費用 0・20 課題で数分。
+  結果の `out_of_scope` に「成り立たない: 理由」が残る）。正解からは入力の並びの注記 `x-order`（2026-10-26）を外す
+  （V0・V1 は知らないキーワードで起動を断るが、課題の成り立ちには関わらない）。結果は版の記録の `feasible` に採点器の
+  版と課題集の sha と一緒に残し、どちらかが変わったら確かめ直す。時間切れなど基盤の失敗では対象外にせず、流すのを
+  止める。版の比べは、版の間で共通の課題だけで行う。V0（81a9899b）で成り立つのは、2026-11-07 の時点で 20 課題の
+  うち一部だけ（版の記録を見る）。
+- 古い版で正解の結合テストを流すとき（fixture と正解がその版で通るかを確かめる）は、`ABEVAL_DROP_X_ORDER=1` を
+  付けて、正解から `x-order` を外す。
 - 呼び出し側のシェルに残った `SHIKI__*`・`SHIKI_CONFIG` は渡さない。条件は手数の上限（`--max-steps` →
   `SHIKI__CHAT__MAX_STEPS`・省けば製品の値）と 1 発話の予算（`--budget-micros` →
   `SHIKI__CHAT__BUDGET_MAX_COST_USD_MICROS`・既定 $0.15）だけをここで決める。Mode B の `run` は、同じ値を

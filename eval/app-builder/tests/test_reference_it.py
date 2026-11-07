@@ -36,6 +36,24 @@ from abeval.tasks import load_tasks, stub_cases
 
 API = os.environ.get("ABEVAL_API_URL", "").rstrip("/")
 TASKS = load_tasks()
+# 入力の並びの注記 `x-order`（D-60・2026-10-26）を知らない版（V0 = 81a9899b・V1 = 71e9b79a）は、入力の確かめが
+# 知らないキーワードで起動を断る（fail-closed）。その版で fixture と正解が通るかを確かめるときは 1 にして、
+# 正解の IR から外す（モデルの IR は版の説明文で作るので、測るときは外さない）。
+DROP_X_ORDER = os.environ.get("ABEVAL_DROP_X_ORDER") == "1"
+
+
+def _drop_x_order(value):
+    if isinstance(value, dict):
+        return {k: _drop_x_order(v) for k, v in value.items() if k != "x-order"}
+    if isinstance(value, list):
+        return [_drop_x_order(v) for v in value]
+    return value
+
+
+def reference_irs(task) -> dict:
+    irs = task.reference_irs()
+    return _drop_x_order(irs) if DROP_X_ORDER else irs
+
 
 pytestmark = [
     pytest.mark.server,
@@ -94,7 +112,7 @@ def test_reference_passes_and_null_fails(alice, task):
     problems: list[str] = []
     try:
         tag = f"ref-{uuid.uuid4().hex[:6]}"
-        wfs = save_workflows(alice, task, task.reference_irs(), rec, tag=tag, stub=True)
+        wfs = save_workflows(alice, task, reference_irs(task), rec, tag=tag, stub=True)
         irs = {r: w.ir for r, w in wfs.items()}
         ports = {r: w.node_ports for r, w in wfs.items()}
         cases = stub_cases(task)
@@ -163,7 +181,7 @@ def test_stub_plumbing_after_the_run_cases_starts_from_the_fixture_files(alice, 
     before = _snapshot(alice)
     now = fixtures.now_utc()
     rec = fixtures.create_fixtures(alice, task.fixtures, now=now)
-    irs = _fail_on_name_taken(task.reference_irs())
+    irs = _fail_on_name_taken(reference_irs(task))
     try:
         tag = f"rerun-{uuid.uuid4().hex[:6]}"
         wfs = save_workflows(alice, task, irs, rec, tag=tag, stub=True)

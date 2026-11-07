@@ -335,6 +335,7 @@ def test_run_drops_windowed_tasks_before_the_plan(monkeypatch, capsys):
     monkeypatch.setattr(cli, "probe_node_types", lambda client, types: list(types))
     monkeypatch.setattr(cli, "_record_node_types", lambda *a: None)
     monkeypatch.setattr(cli, "in_scope", lambda tasks, *a, **k: (list(tasks), []))
+    monkeypatch.setattr(cli, "_infeasible", lambda *a, **k: {})
     monkeypatch.setattr(fixtures, "now_utc", lambda: dt.datetime(2026, 11, 10, 1, 0, tzinfo=dt.UTC))
     planned = []
     monkeypatch.setattr(cli, "cmd_plan", lambda args: planned.append(args.tasks) or (0, None))

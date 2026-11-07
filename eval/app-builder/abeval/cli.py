@@ -28,7 +28,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from abeval import behavior, doctor, fixtures, mode_a, mode_b, report
+from abeval import behavior, doctor, feasibility, fixtures, mode_a, mode_b, report
 from abeval import budget as budget_mod
 from abeval.anthropic_client import AnthropicClient
 from abeval.approvals import ApprovalPolicy
@@ -123,6 +123,42 @@ def _record_node_types(label: str, node_types: list[str]) -> None:
         return
     if rec.extra.get("node_types") != node_types:
         update_record(label, {"node_types": node_types})
+
+
+def _infeasible(
+    label: str,
+    client: ShikiClient,
+    lint,
+    catalog: LintCatalog,
+    caps: Mapping,
+    node_types: list[str] | None,
+) -> dict[str, str | None] | None:
+    """版で成り立たない課題 → 理由（版の記録に残した結果を使い、無ければ確かめて残す）。基盤の失敗は None。"""
+    every = load_tasks()
+    checkable, _ = in_scope(every, catalog, caps, node_types)
+    want = [t.id for t in checkable]
+    try:
+        rec = read_record(label)
+    except VersionError as e:
+        print(f"版の記録を読めません: {e}")
+        return None
+    got = feasibility.cached(rec.extra, every, want)
+    if got is not None:
+        return got
+    print(
+        f"[成り立ち] {label} の版のサーバーで、正解を {len(want)} 課題流して確かめます（費用 0・数分）"
+    )
+    try:
+        got = feasibility.probe(client, checkable, lint, catalog)
+    except feasibility.FeasibilityError as e:
+        print(f"課題が成り立つかを確かめられません（流すのを止めます）: {e}")
+        return None
+    update_record(label, feasibility.record_fields(rec.extra, got, every))
+    bad = [i for i, r in got.items() if r]
+    print(
+        f"[成り立ち] {len(want) - len(bad)} 課題が成り立ち、{len(bad)} 課題は成り立たない（版の記録に残した）"
+    )
+    return got
 
 
 def split_date_window(tasks: list[Task], now: dt.datetime) -> tuple[list[Task], dict[str, str]]:
@@ -304,6 +340,21 @@ def cmd_run(args) -> int:
         if not stub:
             _record_node_types(args.label, node_types)
         tasks, out_of_scope = in_scope(all_tasks, catalog, caps, node_types)
+        if not stub:
+            # requires で拾えない版の差（設定の項目・実行時の値の取り出し方）を、版のサーバーで正解を流して
+            # 確かめる（D-167）。成り立たない課題は、その版の対象外にする。
+            infeasible = _infeasible(args.label, client, lint, catalog, caps, node_types)
+            if infeasible is None:
+                return 1
+            kept = []
+            for t in tasks:
+                if infeasible.get(t.id):
+                    out_of_scope.append(
+                        {"task": t.id, "missing": [f"成り立たない: {infeasible[t.id]}"]}
+                    )
+                else:
+                    kept.append(t)
+            tasks = kept
         for o in out_of_scope:
             print(f"[対象外] {o['task']}: {o['missing']}")
         window: dict[str, str] = {}

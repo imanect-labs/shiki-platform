@@ -168,6 +168,9 @@ def env(monkeypatch, tmp_path):
         # 合格にする（点検そのものは tests/test_server_guard.py・test_behavior.py・test_run_guard.py が見る）。
         monkeypatch.setattr(cli.doctor, "version_guard", lambda *a, **k: ([], PassingIdentity()))
         monkeypatch.setattr(cli.behavior, "verify", lambda *a, **k: None)
+        # 課題が版で成り立つかの確かめ（D-167）は、偽の shiki では正解を流せないので、すべて成り立つとする
+        # （確かめそのものは tests/test_feasibility.py と server の test_reference_it が見る）。
+        monkeypatch.setattr(cli, "_infeasible", lambda *a, **k: {})
         monkeypatch.setattr(cli, "grader_version", lambda *a: {"grader": 1, "ir_lint_sha256": None})
         llm = tmp_path / "llm-eval.toml"
         llm.write_text(
@@ -446,3 +449,29 @@ def test_mode_b_gets_the_recheck_of_the_checked_server(env, monkeypatch):
     args[args.index("a")] = "b"
     assert cli.main(args, command="run") == 0
     assert got["preflight"] == ident.recheck
+
+
+def test_tasks_that_do_not_hold_on_the_version_are_out_of_scope(env, monkeypatch, capsys):
+    """正解がその版で成り立たない課題は、その版の対象外にして理由を結果に残す（D-167）。"""
+    fake, _, up, llm = env
+    monkeypatch.setattr(
+        cli,
+        "_infeasible",
+        lambda *a, **k: {
+            "app01-claim-submit": "正解がこの版で保存できない: x",
+            "basic-summary-file": None,
+        },
+    )
+    args = argv(llm)
+    i = args.index("--tasks")
+    args[i + 1] = "basic-summary-file,app01-claim-submit"
+    assert cli.main(args, command="run") == 0
+    out = capsys.readouterr().out
+    assert "[対象外] app01-claim-submit" in out and "成り立たない" in out
+    assert "[対象外] basic-summary-file" not in out
+
+
+def test_run_stops_when_feasibility_cannot_be_checked(env, monkeypatch):
+    fake, _, up, llm = env
+    monkeypatch.setattr(cli, "_infeasible", lambda *a, **k: None)
+    assert cli.main(argv(llm), command="run") == 1
