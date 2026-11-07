@@ -326,6 +326,43 @@ def test_mode_b_conditions_must_match_the_server(world, env, max_steps, budget, 
     assert (c.status == "ok") is ok, c.line()
 
 
+def test_mode_b_conditions_read_env_names_without_case_and_the_toml_chat_table(world, tmp_path):
+    """製品の figment は環境の名前の大文字・小文字を区別しない。[chat] の手数の上限は serve の環境では渡さない。"""
+
+    def check(env=None, toml_extra=""):
+        e = dict(world.env)
+        e.update(env or {})
+        if toml_extra:
+            cfg = tmp_path / f"chat-{abs(hash(toml_extra))}.toml"
+            cfg.write_text(world.server_cfg.read_text(encoding="utf-8") + toml_extra)
+            e["SHIKI_CONFIG"] = str(cfg)
+        world.start(env=e)
+        return server_guard.condition_problems(world.process(), Conditions(None, 150_000))
+
+    assert check() == []
+    # 小文字の名前でも手数の上限が効く（印は製品の既定・サーバーは 12）。
+    assert any("手数の上限は 12" in w for w in check({"shiki__chat__max_steps": "12"}))
+    # 同じ設定を指す名前が 2 つ（どちらが効くか決まらない）。
+    two = {
+        "SHIKI__CHAT__BUDGET_MAX_COST_USD_MICROS": "150000",
+        "Shiki__Chat__Budget_Max_Cost_Usd_Micros": "1",
+    }
+    assert any("複数" in w for w in check(two))
+    # chat の表をまるごと上書きする。
+    assert any("まるごと" in w for w in check({"SHIKI__CHAT": "{max_steps=12}"}))
+    # TOML の [chat] に手数の上限（serve と run が --max-steps を省くと、記録は既定・実際は 12）。
+    for extra in ("\n[chat]\nmax_steps = 12\n", "\n[chat]\nbudget_max_cost_usd_micros = 1\n"):
+        assert any("[chat]" in w for w in check(toml_extra=extra)), extra
+    # ほかの [chat] の項目は条件に関わらない。
+    assert check(toml_extra="\n[chat]\nenabled = true\n") == []
+    # 確かめ直しでも見る。
+    world.start()
+    _, ident = world.guard(conditions=Conditions(None, 150_000))
+    assert ident is not None and ident.recheck() is None
+    world.start(env={**world.env, "shiki__chat__max_steps": "12"})
+    assert "手数の上限" in ident.recheck()
+
+
 # --- 組み立て（doctor.version_guard）と確かめ直し ---
 
 

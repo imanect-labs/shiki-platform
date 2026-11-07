@@ -17,7 +17,10 @@
   表をまるごと上書きする `SHIKI__LLM` も見る）。設定のファイルがプロセスの起動の後に書き換えられていない
   （書き換えられていると、サーバーが起動のときに読んだ中身を確かめられない）。
 - 条件（`condition_checks`・Mode B）: 環境の `SHIKI__CHAT__MAX_STEPS` が `--max-steps` と同じ（省いたなら無い）、
-  `SHIKI__CHAT__BUDGET_MAX_COST_USD_MICROS` が `--budget-micros` と同じ（serve が渡す値）。
+  `SHIKI__CHAT__BUDGET_MAX_COST_USD_MICROS` が `--budget-micros` と同じ（serve が渡す値）。環境の名前は大文字・
+  小文字を区別せずに読む（同じ設定を指す名前が 2 つあれば・chat の表をまるごと上書きしていれば NG）。
+  `SHIKI_CONFIG` の `[chat]` に `max_steps`・`budget_max_cost_usd_micros` があれば NG（serve は環境でしか渡さない
+  ので、`--max-steps` を省いたときにサーバーは TOML の値で動き、記録の「製品の既定」と食い違う）。
 - 確かめたプロセス（pid・起動の時刻・実行ファイル）を `ServerIdentity` に控え、取り込みの前・Mode B の各試行の
   発話の前と結果を残す前・結果を書く前に、同じプロセスのままか（と LLM の行き先・条件）を確かめ直す（`recheck`）。
   pid と起動の時刻が同じなら動いている実行ファイルは替わらないので、sha は最初の 1 回だけ数える。
@@ -50,8 +53,9 @@ PROC = Path("/proc")
 LLM_BACKEND_ENV = "SHIKI__LLM__BACKEND"
 # serve が版のサーバーに渡す既定のプロバイダ（`versions.serve_plan`・llm-eval.toml の `[llm] backend` とそろえる）。
 SERVE_BACKEND = "stub"
-MAX_STEPS_ENV = "SHIKI__CHAT__MAX_STEPS"
-BUDGET_ENV = "SHIKI__CHAT__BUDGET_MAX_COST_USD_MICROS"
+# Mode B の条件の `[chat]` の項目（環境の名前は SHIKI__CHAT__ に続けて大文字・`SHIKI__CHAT__MAX_STEPS` と
+# `SHIKI__CHAT__BUDGET_MAX_COST_USD_MICROS`）。
+CHAT_CONDITION_KEYS = ("max_steps", "budget_max_cost_usd_micros")
 RUNNER_ENV = "SHIKI__TABULAR__RUNNER_PATH"
 # 設定の mtime とプロセスの起動の時刻を比べるときの許し（起動の時刻は btime と clock tick から出すので秒の精度）。
 CONFIG_MTIME_SLACK_SECS = 2.0
@@ -381,16 +385,34 @@ class Conditions:
     max_steps: int | None
     budget_micros: int
 
-    def problems(self, env: Mapping[str, str]) -> list[str]:
+    def problems(self, env: Mapping[str, str], chat: Mapping | None = None) -> list[str]:
+        """違いの理由（`env` はサーバーの環境・`chat` は SHIKI_CONFIG の `[chat]` の表）。"""
         out = []
-        got = _env_int(env.get(MAX_STEPS_ENV))
+        chat_env = env_overrides(env, "CHAT")
+        whole = sorted(name for name, _ in chat_env.get("", []))
+        if whole:
+            out.append(f"chat の表を環境でまるごと上書きしています: {whole}")
+        in_toml = sorted(k for k in CHAT_CONDITION_KEYS if k in (chat or {}))
+        if in_toml:
+            out.append(
+                f"版のサーバーの SHIKI_CONFIG の [chat] に {in_toml} があります（serve は環境でしか渡さないので、"
+                "--max-steps を省くと TOML の値で動き記録の条件と食い違う・設定から消す）"
+            )
+        values = {}
+        for key in CHAT_CONDITION_KEYS:
+            got_vals = chat_env.get(key.upper(), [])
+            if len(got_vals) > 1:
+                names = sorted(name for name, _ in got_vals)
+                out.append(f"同じ設定（chat.{key}）を指す環境の名前が複数あります: {names}")
+            values[key] = _env_int(got_vals[-1][1]) if got_vals else None
+        got = values["max_steps"]
         if got != self.max_steps:
             out.append(
                 f"版のサーバーの手数の上限は {got if got is not None else '製品の既定'}、指定は "
                 f"{self.max_steps if self.max_steps is not None else '製品の既定'}"
                 "（serve --max-steps と run --max-steps をそろえる）"
             )
-        got_b = _env_int(env.get(BUDGET_ENV))
+        got_b = values["budget_max_cost_usd_micros"]
         if got_b != self.budget_micros:
             out.append(
                 f"版のサーバーの 1 発話の予算は {got_b if got_b is not None else '無し'}、指定は "
@@ -399,8 +421,20 @@ class Conditions:
         return out
 
 
+def condition_problems(proc: Process, cond: Conditions) -> list[str]:
+    """そのプロセスの環境と SHIKI_CONFIG の `[chat]` を、Mode B の条件と比べた違いの理由。"""
+    path = config_path(proc)
+    if path is None:
+        return ["版のサーバーの条件を確かめられません: SHIKI_CONFIG がありません"]
+    raw = _read_toml(path)
+    if isinstance(raw, str):
+        return [f"版のサーバーの条件を確かめられません: {raw}"]
+    chat = raw.get("chat") if isinstance(raw.get("chat"), Mapping) else {}
+    return cond.problems(proc.env, chat)
+
+
 def condition_checks(proc: Process, cond: Conditions) -> list[Check]:
-    bad = cond.problems(proc.env)
+    bad = condition_problems(proc, cond)
     if bad:
         return [Check("版のサーバーの条件", "ng", "・".join(bad))]
     steps = cond.max_steps if cond.max_steps is not None else "製品の既定"
@@ -435,7 +469,7 @@ class ServerIdentity:
         if why:
             return f"版のサーバーの LLM の行き先: {why}"
         if self.conditions is not None:
-            bad = self.conditions.problems(got.env)
+            bad = condition_problems(got, self.conditions)
             if bad:
                 return "・".join(bad)
         return None

@@ -213,7 +213,7 @@ api.anthropic.com へ 401 を確かめることはしない（鍵を持たない
 | そのプロセスの実行ファイルが serve の渡す退避したバイナリ（`~/.local/share/shiki-eval/bin/shiki-server-<label>`）で、動いている実行ファイルそのものの sha256 が版の記録と同じ（消されて置き換えられたものは NG） | `/proc/<pid>/exe` |
 | CSV の集計のランナーが版のランナーで、sha が記録と同じ | `/proc/<pid>/environ` の `SHIKI__TABULAR__RUNNER_PATH` |
 | `SHIKI_CONFIG` の anthropic が abeval.proxy を指し鍵がダミー・既定のプロバイダ（モデル `default`。AI が組んだ IR の llm.invoke や製品の中の呼び出しが使う）が stub（環境の `SHIKI__LLM__BACKEND` が serve の渡す `stub`、環境に無ければ TOML の `[llm] backend` が `stub`）・`[llm]` の `base_url`・`api_key` が空・anthropic のほかのプロバイダと `[llm.chatgpt]` が無い・llm の表を環境で上書きする名前（`SHIKI__LLM__BACKEND` を除く。製品の figment と同じく大文字・小文字を区別せず、`shiki__llm__providers` や表をまるごと上書きする `SHIKI__LLM` も見る）が無い・設定のファイルがサーバーの起動の後に書き換えられていない | `/proc/<pid>/environ`・`/proc/<pid>/stat` |
-| Mode B だけ: `SHIKI__CHAT__MAX_STEPS` が `--max-steps` と同じ（省いたなら無い）・`SHIKI__CHAT__BUDGET_MAX_COST_USD_MICROS` が `--budget-micros` と同じ | `/proc/<pid>/environ` |
+| Mode B だけ: `SHIKI__CHAT__MAX_STEPS` が `--max-steps` と同じ（省いたなら無い）・`SHIKI__CHAT__BUDGET_MAX_COST_USD_MICROS` が `--budget-micros` と同じ（環境の名前は大文字・小文字を区別しない。同じ設定を指す名前が複数・chat の表をまるごと上書き・`SHIKI_CONFIG` の `[chat]` に `max_steps` か `budget_max_cost_usd_micros` がある、のどれも NG。serve は環境でしか渡さないので、TOML の値があると `--max-steps` を省いたときに記録の条件と食い違う） | `/proc/<pid>/environ`・`SHIKI_CONFIG` |
 | 振る舞いの指紋が serve で記録したものと同じ（無ければ・組が変わっていれば NG） | `/workflows/validate` |
 
 取り込みは実モデルの名前（`claude-haiku-5-5`）で発話を送るので、送り先のサーバーの anthropic が abeval.proxy を
