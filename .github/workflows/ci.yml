@@ -3,7 +3,9 @@ name: CI
 on:
   pull_request:
     # docs のみの変更で重量 CI（Rust フルビルド×複数ジョブ・compose）を回さない。
-    # file-size ゲートは *.rs のみ対象（scripts/check-file-size.sh）のため取りこぼしは無い。
+    # file-size ゲートは *.rs のみ対象（scripts/check-file-size.sh）なので docs と **.md の取りこぼしは無い。
+    # .claude/** のうち .claude/skills/pr/scripts/**（dev-up.sh など・引数を省いた dev-up の経路を eval-app-builder の
+    # テストが固定の記録と比べる）は、eval-app-builder.yml が自分の paths で拾う（GAP-110）。
     # ブランチ保護の required checks は未設定なので pending 固着も起きない。
     paths-ignore:
       - "docs/**"
@@ -292,33 +294,11 @@ jobs:
       - name: pytest (fast)
         run: uv run pytest -m "not slow" -q
 
+  # 手順は eval-app-builder.yml にだけ置く（.claude/skills/pr/scripts/** だけの変更でも走らせるため、あちらは
+  # 自分の paths でも起きる・GAP-110）。ここは ci.yml の on のとおりに呼ぶ。
   eval-app-builder:
-    name: Python (eval/app-builder ruff / pytest)
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    defaults:
-      run:
-        working-directory: eval/app-builder
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      # Takumi Guard: uv sync 前に PyPI プロキシを設定（匿名＝ブロックのみ）。
-      - uses: flatt-security/setup-takumi-guard-pypi@a01b3b2a6436d3df60d4e29c805ad83a704aadc5 # v1.3.0
-      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
-        with:
-          enable-cache: true
-          cache-dependency-glob: "eval/app-builder/uv.lock"
-      - name: uv sync
-        run: uv sync --frozen
-      - name: ruff
-        run: uv run ruff check .
-      # AI によるワークフロー作成の評価基盤（GAP-30）の単体テスト。ネットワーク・LLM・サーバーなしで流す
-      # （conftest がループバック以外と手元の中継への接続を止める）。サーバーの要るもの（server）と ir_lint の
-      # バイナリの要るもの（lint_bin・Rust のビルドをこのジョブに持ち込まない）は除く。shell のテストは bash と
-      # git だけで動く（docker・cargo などは shim）。
-      - name: pytest (not server, not lint_bin)
-        run: uv run pytest -m "not server and not lint_bin" -q
+    name: eval-app-builder
+    uses: ./.github/workflows/eval-app-builder.yml
 
   coverage:
     name: Coverage (cargo-llvm-cov, gate 80%)
