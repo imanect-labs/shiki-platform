@@ -1,0 +1,8175 @@
+{
+ "experiment": "e1a-v0",
+ "created_at": "2026-11-07T06:00:41+00:00",
+ "model": "claude-haiku-5-5",
+ "runs": [
+  {
+   "spec": {
+    "exp": "e1a-v0",
+    "mode": "a",
+    "label": "v0",
+    "tasks": [
+     "basic-branch-amount",
+     "basic-switch-category",
+     "basic-map-rows",
+     "app01-claim-submit",
+     "app12-faq-table"
+    ],
+    "phrasings": [
+     "flow",
+     "app",
+     "auto"
+    ],
+    "trials": 3,
+    "efforts": [
+     "medium"
+    ],
+    "max_steps": null
+   },
+   "trials": 45,
+   "central_usd": 0.1665,
+   "worst_usd": 0.45,
+   "eval_spent_usd": 2.849816,
+   "relay_spent_usd": 3.056041,
+   "run_id": "e1a-v0.v0.a.20261107T055909",
+   "cap_usd": 0.54,
+   "caps": {
+    "run": 10.0,
+    "eval": 35.0,
+    "global": 95.0
+   },
+   "problems": [],
+   "notes": [],
+   "splits": [],
+   "finished_at": "2026-11-07T06:00:41+00:00",
+   "stub": false,
+   "regrade_from": null,
+   "g8_skipped": null
+  }
+ ],
+ "versions": {
+  "v0": {
+   "node_types": [
+    "agent.invoke",
+    "control.branch",
+    "control.join",
+    "control.map",
+    "control.switch",
+    "control.wait",
+    "csv.patch",
+    "csv.query",
+    "csv.write",
+    "data.bulk_upsert",
+    "data.query",
+    "data.record.create",
+    "data.record.delete",
+    "data.record.update",
+    "data.transition",
+    "http.request",
+    "llm.invoke",
+    "rag.search",
+    "script.run",
+    "skill.invoke",
+    "storage.list",
+    "storage.read",
+    "storage.write",
+    "workflow.start"
+   ],
+   "commit": "81a9899b5f386add09e608887c0a08e142193967",
+   "binary_sha256": "bfb4f4ca2672bf1457fcc12eaf6b4de02e86ce31ce62c18d00aca1f8a839421e",
+   "config_sha": "17b0be22fe40b55fe1eed7bfa7a23487dfa031c88d79c3871a6114d8575971fb",
+   "capture_sha": "eab2739c95d65f2425dde638115464b9a44a30448fc04ad3adde1b3380659905",
+   "fingerprint_sha": "43ecfa8c64e6eb24ab2141a66523e977d9cc52d31770be6bcdfff6ef6e6e2c5d",
+   "capture_changed": [],
+   "capabilities": {
+    "node_ports": false,
+    "trigger": false,
+    "scheduled_at": false,
+    "custom_instructions": false,
+    "fsm": true,
+    "list_workflows": null
+   },
+   "behavior_check": {
+    "probes_sha": "9f2a91a209a5a3088f5ff16f9749dda92eddead71ea1814564133465ad2cc5e5",
+    "recorded_at": "2026-11-07T05:46:33+00:00",
+    "results": {
+     "port_next": {
+      "errors": [],
+      "warnings": []
+     },
+     "template_var": {
+      "errors": [],
+      "warnings": []
+     },
+     "unknown_folder": {
+      "errors": [],
+      "warnings": []
+     }
+    }
+   }
+  }
+ },
+ "grader": {
+  "grader": 9,
+  "ir_lint_schema": 3,
+  "ir_lint_sha256": "2d821bff376849e7617117161990404080e84693efc384505f15e989927c101f"
+ },
+ "conditions": [
+  "v0/a/medium"
+ ],
+ "trials": [
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "basic-branch-amount",
+   "phrasing": "flow",
+   "n": 0,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "basic-branch-amount.flow.0.medium",
+   "key": "6577ab3803c348bc3a17b5855259f6fca3d117335a839cfe5f44d0bfb0931160",
+   "status": "emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3801,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 845,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 370
+    }
+   },
+   "cost_micros": 803,
+   "retries": 0,
+   "secs": 4.315,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": false
+   },
+   "irs": {
+    "main": {
+     "ir_version": 1,
+     "name": "amount-based-application-split",
+     "display_name": "金額で申請テーブルを振り分け",
+     "declared_scopes": [
+      "data.write"
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "check_amount",
+       "type": "control.branch",
+       "label": "金額が5万円以上か",
+       "params": {
+        "condition": {
+         "op": ">=",
+         "left": {
+          "$from": "input",
+          "path": "/amount"
+         },
+         "right": 50000
+        }
+       }
+      },
+      {
+       "id": "add_high",
+       "type": "data.record.create",
+       "label": "高額の申請に追加",
+       "params": {
+        "table_id": "@table:big",
+        "values": {
+         "item": {
+          "$from": "input",
+          "path": "/item"
+         },
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         }
+        }
+       }
+      },
+      {
+       "id": "add_normal",
+       "type": "data.record.create",
+       "label": "通常の申請に追加",
+       "params": {
+        "table_id": "@table:small",
+        "values": {
+         "item": {
+          "$from": "input",
+          "path": "/item"
+         },
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         }
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "check_amount",
+       "port": "true",
+       "to": "add_high"
+      },
+      {
+       "from": "check_amount",
+       "port": "false",
+       "to": "add_normal"
+      }
+     ]
+    }
+   },
+   "missing_roles": [],
+   "validation": {
+    "main": {
+     "errors": [
+      "ir.schema_violation"
+     ],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "s1": false,
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation"
+       ],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": true,
+   "s2d": null,
+   "s3": null,
+   "headline": false,
+   "from_cache": false
+  },
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "basic-branch-amount",
+   "phrasing": "flow",
+   "n": 1,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "basic-branch-amount.flow.1.medium",
+   "key": "d0fb7e158e1281b9c40837e023d38331d341e7a70400638343f8b5cd9ca0fe2c",
+   "status": "emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3801,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 914,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 394
+    }
+   },
+   "cost_micros": 838,
+   "retries": 0,
+   "secs": 4.025,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": false
+   },
+   "irs": {
+    "main": {
+     "ir_version": 1,
+     "name": "amount-based-request-split",
+     "display_name": "金額で申請テーブルを振り分け",
+     "declared_scopes": [
+      "data.write"
+     ],
+     "triggers": [
+      {
+       "kind": "interactive",
+       "inputs": [
+        {
+         "key": "item",
+         "label": "品目",
+         "type": "text"
+        },
+        {
+         "key": "amount",
+         "label": "金額",
+         "type": "number"
+        }
+       ]
+      }
+     ],
+     "nodes": [
+      {
+       "id": "check_amount",
+       "type": "control.branch",
+       "label": "金額が5万円以上か",
+       "params": {
+        "condition": {
+         "left": {
+          "$from": "input",
+          "path": "/amount"
+         },
+         "op": ">=",
+         "right": 50000
+        }
+       }
+      },
+      {
+       "id": "add_high",
+       "type": "data.record.create",
+       "label": "高額の申請に追加",
+       "params": {
+        "table_id": "@table:big",
+        "values": {
+         "item": {
+          "$from": "input",
+          "path": "/item"
+         },
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         }
+        }
+       }
+      },
+      {
+       "id": "add_normal",
+       "type": "data.record.create",
+       "label": "通常の申請に追加",
+       "params": {
+        "table_id": "@table:small",
+        "values": {
+         "item": {
+          "$from": "input",
+          "path": "/item"
+         },
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         }
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "check_amount",
+       "port": "true",
+       "to": "add_high"
+      },
+      {
+       "from": "check_amount",
+       "port": "false",
+       "to": "add_normal"
+      }
+     ]
+    }
+   },
+   "missing_roles": [],
+   "validation": {
+    "main": {
+     "errors": [
+      "ir.schema_violation"
+     ],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "s1": false,
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation"
+       ],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": true,
+   "s2d": null,
+   "s3": null,
+   "headline": false,
+   "from_cache": false
+  },
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "basic-branch-amount",
+   "phrasing": "flow",
+   "n": 2,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "basic-branch-amount.flow.2.medium",
+   "key": "a494357ab7fa9b1e85efab15c1920751494ee36337d10464b55445711effd856",
+   "status": "emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3801,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 762,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 289
+    }
+   },
+   "cost_micros": 762,
+   "retries": 0,
+   "secs": 3.424,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": false
+   },
+   "irs": {
+    "main": {
+     "ir_version": 1,
+     "name": "expense-request-split",
+     "display_name": "申請の金額で振り分けて登録",
+     "declared_scopes": [
+      "data.write"
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "check_amount",
+       "type": "control.branch",
+       "label": "金額が5万円以上か",
+       "params": {
+        "condition": {
+         "op": "gte",
+         "left": {
+          "$from": "input",
+          "path": "/amount"
+         },
+         "right": 50000
+        }
+       }
+      },
+      {
+       "id": "add_high",
+       "type": "data.record.create",
+       "label": "高額の申請に追加",
+       "params": {
+        "table_id": "@table:big",
+        "values": {
+         "item": {
+          "$from": "input",
+          "path": "/item"
+         },
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         }
+        }
+       }
+      },
+      {
+       "id": "add_normal",
+       "type": "data.record.create",
+       "label": "通常の申請に追加",
+       "params": {
+        "table_id": "@table:small",
+        "values": {
+         "item": {
+          "$from": "input",
+          "path": "/item"
+         },
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         }
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "check_amount",
+       "port": "true",
+       "to": "add_high"
+      },
+      {
+       "from": "check_amount",
+       "port": "false",
+       "to": "add_normal"
+      }
+     ]
+    }
+   },
+   "missing_roles": [],
+   "validation": {
+    "main": {
+     "errors": [
+      "ir.schema_violation"
+     ],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "s1": false,
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation"
+       ],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": true,
+   "s2d": null,
+   "s3": null,
+   "headline": false,
+   "from_cache": false
+  },
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "basic-branch-amount",
+   "phrasing": "app",
+   "n": 0,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "basic-branch-amount.app.0.medium",
+   "key": "9aca744fba970a0d28120de32fb0c2e6986122f22d48b0c06b7d8089ca7bee97",
+   "status": "emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3785,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 881,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 409
+    }
+   },
+   "cost_micros": 819,
+   "retries": 0,
+   "secs": 4.022,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": false
+   },
+   "irs": {
+    "main": {
+     "ir_version": 1,
+     "name": "purchase-request-routing",
+     "display_name": "購入申請の振り分け",
+     "declared_scopes": [
+      "data.write"
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "check_amount",
+       "type": "control.branch",
+       "label": "金額が50,000円以上か",
+       "params": {
+        "condition": {
+         "op": "gte",
+         "left": {
+          "$from": "input",
+          "path": "/amount"
+         },
+         "right": 50000
+        }
+       }
+      },
+      {
+       "id": "save_high",
+       "type": "data.record.create",
+       "label": "高額の申請に記録",
+       "params": {
+        "table_id": "@table:big",
+        "values": {
+         "item": {
+          "$from": "input",
+          "path": "/item"
+         },
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         }
+        }
+       }
+      },
+      {
+       "id": "save_normal",
+       "type": "data.record.create",
+       "label": "通常の申請に記録",
+       "params": {
+        "table_id": "@table:small",
+        "values": {
+         "item": {
+          "$from": "input",
+          "path": "/item"
+         },
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         }
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "check_amount",
+       "port": "true",
+       "to": "save_high"
+      },
+      {
+       "from": "check_amount",
+       "port": "false",
+       "to": "save_normal"
+      }
+     ]
+    }
+   },
+   "missing_roles": [],
+   "validation": {
+    "main": {
+     "errors": [
+      "ir.schema_violation"
+     ],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "s1": false,
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation"
+       ],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": true,
+   "s2d": null,
+   "s3": null,
+   "headline": false,
+   "from_cache": false
+  },
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "basic-branch-amount",
+   "phrasing": "app",
+   "n": 1,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "basic-branch-amount.app.1.medium",
+   "key": "3347be531ba02b1beb30b736c2c95948abbcd71cf77d26747ff5353d5bc1b7a9",
+   "status": "emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3785,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 990,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 518
+    }
+   },
+   "cost_micros": 874,
+   "retries": 0,
+   "secs": 4.7,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": false
+   },
+   "irs": {
+    "main": {
+     "ir_version": 1,
+     "name": "purchase-request-router",
+     "display_name": "購入申請の振り分け",
+     "declared_scopes": [
+      "data.write"
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "route_amount",
+       "type": "control.branch",
+       "label": "金額で分岐（50,000円以上は高額）",
+       "params": {
+        "left": {
+         "$from": "input",
+         "path": "/amount"
+        },
+        "op": "gte",
+        "right": 50000
+       }
+      },
+      {
+       "id": "save_high",
+       "type": "data.record.create",
+       "label": "高額の申請に記録",
+       "params": {
+        "table_id": "@table:big",
+        "values": {
+         "item": {
+          "$from": "input",
+          "path": "/item"
+         },
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         }
+        }
+       }
+      },
+      {
+       "id": "save_normal",
+       "type": "data.record.create",
+       "label": "通常の申請に記録",
+       "params": {
+        "table_id": "@table:small",
+        "values": {
+         "item": {
+          "$from": "input",
+          "path": "/item"
+         },
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         }
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "route_amount",
+       "port": "true",
+       "to": "save_high"
+      },
+      {
+       "from": "route_amount",
+       "port": "false",
+       "to": "save_normal"
+      }
+     ]
+    }
+   },
+   "missing_roles": [],
+   "validation": {
+    "main": {
+     "errors": [
+      "ir.schema_violation"
+     ],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "s1": false,
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation"
+       ],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": true,
+   "s2d": null,
+   "s3": null,
+   "headline": false,
+   "from_cache": false
+  },
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "basic-branch-amount",
+   "phrasing": "app",
+   "n": 2,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "basic-branch-amount.app.2.medium",
+   "key": "8b19cb6e4368b963ab763d7411d41580c38606073107d592607b8d1d3923c875",
+   "status": "emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3785,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 754,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 284
+    }
+   },
+   "cost_micros": 756,
+   "retries": 0,
+   "secs": 3.485,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": false
+   },
+   "irs": {
+    "main": {
+     "ir_version": 1,
+     "name": "purchase-request-router",
+     "display_name": "購入申請の振り分け",
+     "declared_scopes": [
+      "data.write"
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "check_amount",
+       "type": "control.branch",
+       "label": "金額が50,000円以上か",
+       "params": {
+        "condition": {
+         "left": {
+          "$from": "input",
+          "path": "/amount"
+         },
+         "op": ">=",
+         "right": 50000
+        }
+       }
+      },
+      {
+       "id": "save_high",
+       "type": "data.record.create",
+       "label": "高額の申請に記録",
+       "params": {
+        "table_id": "@table:big",
+        "record": {
+         "item": {
+          "$from": "input",
+          "path": "/item"
+         },
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         }
+        }
+       }
+      },
+      {
+       "id": "save_normal",
+       "type": "data.record.create",
+       "label": "通常の申請に記録",
+       "params": {
+        "table_id": "@table:small",
+        "record": {
+         "item": {
+          "$from": "input",
+          "path": "/item"
+         },
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         }
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "check_amount",
+       "port": "true",
+       "to": "save_high"
+      },
+      {
+       "from": "check_amount",
+       "port": "false",
+       "to": "save_normal"
+      }
+     ]
+    }
+   },
+   "missing_roles": [],
+   "validation": {
+    "main": {
+     "errors": [
+      "ir.schema_violation"
+     ],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "s1": false,
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation"
+       ],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": true,
+   "s2d": null,
+   "s3": null,
+   "headline": false,
+   "from_cache": false
+  },
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "basic-branch-amount",
+   "phrasing": "auto",
+   "n": 0,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "basic-branch-amount.auto.0.medium",
+   "key": "0f5a2bdc9776d242d4012d4b7b22b6bb03894ac7cd188660448bf17acc35d74e",
+   "status": "emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3805,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 865,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 395
+    }
+   },
+   "cost_micros": 813,
+   "retries": 0,
+   "secs": 3.923,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": false
+   },
+   "irs": {
+    "main": {
+     "ir_version": 1,
+     "name": "application-amount-router",
+     "display_name": "申し込みの金額振り分け",
+     "declared_scopes": [
+      "data.write"
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "check_amount",
+       "type": "control.branch",
+       "label": "金額が5万円以上か",
+       "params": {
+        "condition": {
+         "left": {
+          "$from": "input",
+          "path": "/amount"
+         },
+         "op": ">=",
+         "right": 50000
+        }
+       }
+      },
+      {
+       "id": "add_high",
+       "type": "data.record.create",
+       "label": "高額の申請に追加",
+       "params": {
+        "table_id": "@table:big",
+        "record": {
+         "item": {
+          "$from": "input",
+          "path": "/item"
+         },
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         }
+        }
+       }
+      },
+      {
+       "id": "add_normal",
+       "type": "data.record.create",
+       "label": "通常の申請に追加",
+       "params": {
+        "table_id": "@table:small",
+        "record": {
+         "item": {
+          "$from": "input",
+          "path": "/item"
+         },
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         }
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "check_amount",
+       "port": "true",
+       "to": "add_high"
+      },
+      {
+       "from": "check_amount",
+       "port": "false",
+       "to": "add_normal"
+      }
+     ]
+    }
+   },
+   "missing_roles": [],
+   "validation": {
+    "main": {
+     "errors": [
+      "ir.schema_violation"
+     ],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "s1": false,
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation"
+       ],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": true,
+   "s2d": null,
+   "s3": null,
+   "headline": false,
+   "from_cache": false
+  },
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "basic-branch-amount",
+   "phrasing": "auto",
+   "n": 1,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "basic-branch-amount.auto.1.medium",
+   "key": "638f41a2389aa45a905ea72c57fa5ce4c3d5be3551b82099872cfa871fa557c7",
+   "status": "emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3805,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 755,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 287
+    }
+   },
+   "cost_micros": 758,
+   "retries": 0,
+   "secs": 3.603,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": false
+   },
+   "irs": {
+    "main": {
+     "ir_version": 1,
+     "name": "amount-split-records",
+     "display_name": "申し込みを金額で振り分けて記録",
+     "declared_scopes": [
+      "data.write"
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "check_amount",
+       "type": "control.branch",
+       "label": "金額が5万円以上か",
+       "params": {
+        "left": {
+         "$from": "input",
+         "path": "/amount"
+        },
+        "op": ">=",
+        "right": 50000
+       }
+      },
+      {
+       "id": "add_high",
+       "type": "data.record.create",
+       "label": "高額の申請に追加",
+       "params": {
+        "table_id": "@table:big",
+        "values": {
+         "item": {
+          "$from": "input",
+          "path": "/item"
+         },
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         }
+        }
+       }
+      },
+      {
+       "id": "add_normal",
+       "type": "data.record.create",
+       "label": "通常の申請に追加",
+       "params": {
+        "table_id": "@table:small",
+        "values": {
+         "item": {
+          "$from": "input",
+          "path": "/item"
+         },
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         }
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "check_amount",
+       "port": "true",
+       "to": "add_high"
+      },
+      {
+       "from": "check_amount",
+       "port": "false",
+       "to": "add_normal"
+      }
+     ]
+    }
+   },
+   "missing_roles": [],
+   "validation": {
+    "main": {
+     "errors": [
+      "ir.schema_violation"
+     ],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "s1": false,
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation"
+       ],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": true,
+   "s2d": null,
+   "s3": null,
+   "headline": false,
+   "from_cache": false
+  },
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "basic-branch-amount",
+   "phrasing": "auto",
+   "n": 2,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "basic-branch-amount.auto.2.medium",
+   "key": "4fee305d092023a9cb1db474ae050ed31b67d88c2c84f8e5c3e1fc392cd37b60",
+   "status": "emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3805,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 1215,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 742
+    }
+   },
+   "cost_micros": 988,
+   "retries": 0,
+   "secs": 4.822,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": false
+   },
+   "irs": {
+    "main": {
+     "ir_version": 1,
+     "name": "amount-split-application",
+     "display_name": "申し込みの金額振り分け",
+     "declared_scopes": [
+      "data.write"
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "judge_amount",
+       "type": "control.branch",
+       "label": "金額が5万円以上か",
+       "params": {
+        "condition": {
+         "op": ">=",
+         "left": {
+          "$from": "input",
+          "path": "/amount"
+         },
+         "right": 50000
+        }
+       }
+      },
+      {
+       "id": "save_high",
+       "type": "data.record.create",
+       "label": "高額の申請に追加",
+       "params": {
+        "table_id": "@table:big",
+        "record": {
+         "item": {
+          "$from": "input",
+          "path": "/item"
+         },
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         }
+        }
+       }
+      },
+      {
+       "id": "save_normal",
+       "type": "data.record.create",
+       "label": "通常の申請に追加",
+       "params": {
+        "table_id": "@table:small",
+        "record": {
+         "item": {
+          "$from": "input",
+          "path": "/item"
+         },
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         }
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "judge_amount",
+       "port": "true",
+       "to": "save_high"
+      },
+      {
+       "from": "judge_amount",
+       "port": "false",
+       "to": "save_normal"
+      }
+     ]
+    }
+   },
+   "missing_roles": [],
+   "validation": {
+    "main": {
+     "errors": [
+      "ir.schema_violation"
+     ],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "s1": false,
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation"
+       ],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": true,
+   "s2d": null,
+   "s3": null,
+   "headline": false,
+   "from_cache": false
+  },
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "basic-switch-category",
+   "phrasing": "flow",
+   "n": 0,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "basic-switch-category.flow.0.medium",
+   "key": "f621cf22fd324915eae6b3f68ef8aae338f94cc3095bfbc5fb0fca8dad21f407",
+   "status": "emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3781,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 1189,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 776
+    }
+   },
+   "cost_micros": 973,
+   "retries": 0,
+   "secs": 5.514,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": false
+   },
+   "irs": {
+    "main": {
+     "ir_version": 1,
+     "name": "inquiry-ledger-add",
+     "display_name": "問い合わせ台帳に追加",
+     "declared_scopes": [
+      "data.write"
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "assign_team",
+       "type": "script.run",
+       "label": "担当チームを決める",
+       "params": {
+        "script": "export default function (input) { const team = input.category === '経理' ? '経理チーム' : input.category === '人事' ? '人事チーム' : '総務チーム'; return { team }; }",
+        "input": {
+         "category": {
+          "$from": "input",
+          "path": "/category"
+         }
+        }
+       }
+      },
+      {
+       "id": "add_record",
+       "type": "data.record.create",
+       "label": "問い合わせ台帳に追加",
+       "params": {
+        "table_id": "@table:log",
+        "values": {
+         "title": {
+          "$from": "input",
+          "path": "/title"
+         },
+         "category": {
+          "$from": "input",
+          "path": "/category"
+         },
+         "team": {
+          "$from": "assign_team",
+          "path": "/team"
+         }
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "assign_team",
+       "port": "next",
+       "to": "add_record"
+      }
+     ]
+    }
+   },
+   "missing_roles": [],
+   "validation": {
+    "main": {
+     "errors": [
+      "ir.schema_violation"
+     ],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "s1": false,
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation"
+       ],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": true,
+   "s2d": null,
+   "s3": null,
+   "headline": false,
+   "from_cache": false
+  },
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "basic-switch-category",
+   "phrasing": "flow",
+   "n": 1,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "basic-switch-category.flow.1.medium",
+   "key": "ed193cf71853319188260212b26e9983733e65317d4059ef3179d4d75333340b",
+   "status": "emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3781,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 986,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 564
+    }
+   },
+   "cost_micros": 872,
+   "retries": 0,
+   "secs": 4.634,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": false
+   },
+   "irs": {
+    "main": {
+     "ir_version": 1,
+     "name": "inquiry-ledger-add",
+     "display_name": "問い合わせ台帳への登録",
+     "declared_scopes": [
+      "data.write"
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "assign_team",
+       "type": "script.run",
+       "label": "担当チームを決める",
+       "params": {
+        "input": {
+         "category": {
+          "$from": "input",
+          "path": "/category"
+         }
+        },
+        "script": "const category = input.category; let team; if (category === '経理') { team = '経理チーム'; } else if (category === '人事') { team = '人事チーム'; } else { team = '総務チーム'; } return { team };"
+       }
+      },
+      {
+       "id": "add_record",
+       "type": "data.record.create",
+       "label": "問い合わせ台帳に追加",
+       "params": {
+        "table_id": "@table:log",
+        "values": {
+         "title": {
+          "$from": "input",
+          "path": "/title"
+         },
+         "category": {
+          "$from": "input",
+          "path": "/category"
+         },
+         "team": {
+          "$from": "assign_team",
+          "path": "/team"
+         }
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "assign_team",
+       "port": "next",
+       "to": "add_record"
+      }
+     ]
+    }
+   },
+   "missing_roles": [],
+   "validation": {
+    "main": {
+     "errors": [
+      "ir.schema_violation"
+     ],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "s1": false,
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation"
+       ],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": true,
+   "s2d": null,
+   "s3": null,
+   "headline": false,
+   "from_cache": false
+  },
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "basic-switch-category",
+   "phrasing": "flow",
+   "n": 2,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "basic-switch-category.flow.2.medium",
+   "key": "29c137ae34e6febd41c98f9e44de4735f1e6a7a72d27313390f166c2872fd4fd",
+   "status": "emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3781,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 939,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 510
+    }
+   },
+   "cost_micros": 848,
+   "retries": 0,
+   "secs": 4.686,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": false
+   },
+   "irs": {
+    "main": {
+     "ir_version": 1,
+     "name": "inquiry-ledger-add",
+     "display_name": "問い合わせ台帳への登録",
+     "declared_scopes": [
+      "data.write"
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "decide_team",
+       "type": "script.run",
+       "label": "担当チームを決める",
+       "params": {
+        "input": {
+         "category": {
+          "$from": "input",
+          "path": "/category"
+         }
+        },
+        "code": "export default function main(input) { const c = String(input.category ?? '').trim(); let team = '総務チーム'; if (c === '経理') team = '経理チーム'; else if (c === '人事') team = '人事チーム'; return { team }; }"
+       }
+      },
+      {
+       "id": "add_record",
+       "type": "data.record.create",
+       "label": "台帳に1行追加",
+       "params": {
+        "table_id": "@table:log",
+        "values": {
+         "title": {
+          "$from": "input",
+          "path": "/title"
+         },
+         "category": {
+          "$from": "input",
+          "path": "/category"
+         },
+         "team": {
+          "$from": "decide_team",
+          "path": "/team"
+         }
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "decide_team",
+       "port": "next",
+       "to": "add_record"
+      }
+     ]
+    }
+   },
+   "missing_roles": [],
+   "validation": {
+    "main": {
+     "errors": [
+      "ir.schema_violation"
+     ],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "s1": false,
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation"
+       ],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": true,
+   "s2d": null,
+   "s3": null,
+   "headline": false,
+   "from_cache": false
+  },
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "basic-switch-category",
+   "phrasing": "app",
+   "n": 0,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "basic-switch-category.app.0.medium",
+   "key": "0bb86c17d8bbdb185da59a390cec4a7d432bf5a0484b6409be2a4ce1af5355b1",
+   "status": "emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3755,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 1318,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 857
+    }
+   },
+   "cost_micros": 1035,
+   "retries": 0,
+   "secs": 5.81,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": false
+   },
+   "irs": {
+    "main": {
+     "ir_version": 1,
+     "name": "inquiry-routing",
+     "display_name": "問い合わせ振り分け",
+     "declared_scopes": [
+      "data.write"
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "decide_team",
+       "type": "script.run",
+       "label": "担当チームを決める",
+       "params": {
+        "script": "export default function(input){ const c = String(input.category ?? '').trim(); const team = c === '経理' ? '経理チーム' : c === '人事' ? '人事チーム' : '総務チーム'; return { title: input.title, category: input.category, team }; }",
+        "input": {
+         "title": {
+          "$from": "input",
+          "path": "/title"
+         },
+         "category": {
+          "$from": "input",
+          "path": "/category"
+         }
+        }
+       }
+      },
+      {
+       "id": "save_ticket",
+       "type": "data.record.create",
+       "label": "問い合わせ台帳に記録",
+       "params": {
+        "table_id": "@table:log",
+        "values": {
+         "title": {
+          "$from": "decide_team",
+          "path": "/title"
+         },
+         "category": {
+          "$from": "decide_team",
+          "path": "/category"
+         },
+         "team": {
+          "$from": "decide_team",
+          "path": "/team"
+         }
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "decide_team",
+       "port": "next",
+       "to": "save_ticket"
+      }
+     ]
+    }
+   },
+   "missing_roles": [],
+   "validation": {
+    "main": {
+     "errors": [
+      "ir.schema_violation"
+     ],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "s1": false,
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation"
+       ],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": true,
+   "s2d": null,
+   "s3": null,
+   "headline": false,
+   "from_cache": false
+  },
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "basic-switch-category",
+   "phrasing": "app",
+   "n": 1,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "basic-switch-category.app.1.medium",
+   "key": "64e438759671c9dee46fcbb38127853b6c4a73e9897d8f9551693d065e18f071",
+   "status": "emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3755,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 1298,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 863
+    }
+   },
+   "cost_micros": 1025,
+   "retries": 0,
+   "secs": 6.103,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": false
+   },
+   "irs": {
+    "main": {
+     "ir_version": 1,
+     "name": "inquiry-routing",
+     "display_name": "問い合わせ担当振り分け",
+     "declared_scopes": [
+      "data.write"
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "assign_team",
+       "type": "script.run",
+       "label": "担当チームを決める",
+       "params": {
+        "input": {
+         "title": {
+          "$from": "input",
+          "path": "/title"
+         },
+         "category": {
+          "$from": "input",
+          "path": "/category"
+         }
+        },
+        "source": "const c = String(input.category ?? '').trim(); const team = c === '経理' ? '経理チーム' : c === '人事' ? '人事チーム' : '総務チーム'; return { team };"
+       }
+      },
+      {
+       "id": "save_ledger",
+       "type": "data.record.create",
+       "label": "問い合わせ台帳に登録",
+       "params": {
+        "table": "@table:log",
+        "values": {
+         "title": {
+          "$from": "input",
+          "path": "/title"
+         },
+         "category": {
+          "$from": "input",
+          "path": "/category"
+         },
+         "team": {
+          "$from": "assign_team",
+          "path": "/team"
+         }
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "assign_team",
+       "port": "next",
+       "to": "save_ledger"
+      }
+     ]
+    }
+   },
+   "missing_roles": [],
+   "validation": {
+    "main": {
+     "errors": [
+      "ir.schema_violation"
+     ],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "s1": false,
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation"
+       ],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": true,
+   "s2d": null,
+   "s3": null,
+   "headline": false,
+   "from_cache": false
+  },
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "basic-switch-category",
+   "phrasing": "app",
+   "n": 2,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "basic-switch-category.app.2.medium",
+   "key": "95a88fe9a6325f66c97aa91e189d771e9a30e4fa9f71a3e931fcc46b40589efd",
+   "status": "emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3755,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 1365,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 687
+    }
+   },
+   "cost_micros": 1058,
+   "retries": 0,
+   "secs": 6.399,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": false
+   },
+   "irs": {
+    "main": {
+     "ir_version": 1,
+     "name": "inquiry-router",
+     "display_name": "問い合わせ担当振り分け",
+     "declared_scopes": [
+      "data.write"
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "route",
+       "type": "control.switch",
+       "label": "区分で振り分け",
+       "params": {
+        "value": {
+         "$from": "input",
+         "path": "/category"
+        },
+        "cases": [
+         {
+          "match": "経理",
+          "port": "accounting"
+         },
+         {
+          "match": "人事",
+          "port": "hr"
+         }
+        ],
+        "default_port": "general"
+       }
+      },
+      {
+       "id": "rec_accounting",
+       "type": "data.record.create",
+       "label": "問い合わせ台帳に記録（経理）",
+       "params": {
+        "table_id": "@table:log",
+        "values": {
+         "title": {
+          "$from": "input",
+          "path": "/title"
+         },
+         "category": {
+          "$from": "input",
+          "path": "/category"
+         },
+         "team": "経理チーム"
+        }
+       }
+      },
+      {
+       "id": "rec_hr",
+       "type": "data.record.create",
+       "label": "問い合わせ台帳に記録（人事）",
+       "params": {
+        "table_id": "@table:log",
+        "values": {
+         "title": {
+          "$from": "input",
+          "path": "/title"
+         },
+         "category": {
+          "$from": "input",
+          "path": "/category"
+         },
+         "team": "人事チーム"
+        }
+       }
+      },
+      {
+       "id": "rec_general",
+       "type": "data.record.create",
+       "label": "問い合わせ台帳に記録（総務）",
+       "params": {
+        "table_id": "@table:log",
+        "values": {
+         "title": {
+          "$from": "input",
+          "path": "/title"
+         },
+         "category": {
+          "$from": "input",
+          "path": "/category"
+         },
+         "team": "総務チーム"
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "route",
+       "port": "accounting",
+       "to": "rec_accounting"
+      },
+      {
+       "from": "route",
+       "port": "hr",
+       "to": "rec_hr"
+      },
+      {
+       "from": "route",
+       "port": "general",
+       "to": "rec_general"
+      }
+     ]
+    }
+   },
+   "missing_roles": [],
+   "validation": {
+    "main": {
+     "errors": [
+      "ir.schema_violation"
+     ],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "s1": false,
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation"
+       ],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": true,
+   "s2d": null,
+   "s3": null,
+   "headline": false,
+   "from_cache": false
+  },
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "basic-switch-category",
+   "phrasing": "auto",
+   "n": 0,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "basic-switch-category.auto.0.medium",
+   "key": "26607c9ea7114461fc2ee6d7c2e095f762f9b39c74554dfb19f4c2e63826bf31",
+   "status": "emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3764,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 783,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 341
+    }
+   },
+   "cost_micros": 768,
+   "retries": 0,
+   "secs": 3.839,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": false
+   },
+   "irs": {
+    "main": {
+     "ir_version": 1,
+     "name": "inquiry-team-assignment",
+     "display_name": "問い合わせ担当チーム割り振り",
+     "declared_scopes": [
+      "data.write"
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "assign_team",
+       "type": "script.run",
+       "label": "担当チームを決める",
+       "params": {
+        "input": {
+         "category": {
+          "$from": "input",
+          "path": "/category"
+         }
+        },
+        "script": "export default function main(input) { const c = String(input.category ?? '').trim(); let team = '総務チーム'; if (c === '経理') team = '経理チーム'; else if (c === '人事') team = '人事チーム'; return { team }; }"
+       }
+      },
+      {
+       "id": "register_inquiry",
+       "type": "data.record.create",
+       "label": "問い合わせ台帳に登録",
+       "params": {
+        "table_id": "@table:log",
+        "values": {
+         "title": {
+          "$from": "input",
+          "path": "/title"
+         },
+         "category": {
+          "$from": "input",
+          "path": "/category"
+         },
+         "team": {
+          "$from": "assign_team",
+          "path": "/team"
+         }
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "assign_team",
+       "port": "next",
+       "to": "register_inquiry"
+      }
+     ]
+    }
+   },
+   "missing_roles": [],
+   "validation": {
+    "main": {
+     "errors": [
+      "ir.schema_violation"
+     ],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "s1": false,
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation"
+       ],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": true,
+   "s2d": null,
+   "s3": null,
+   "headline": false,
+   "from_cache": false
+  },
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "basic-switch-category",
+   "phrasing": "auto",
+   "n": 1,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "basic-switch-category.auto.1.medium",
+   "key": "72574986d9c2435f12804b5b5f2561056ed0d136805fac92bbb8bcd4b6edd660",
+   "status": "emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3764,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 1053,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 363
+    }
+   },
+   "cost_micros": 903,
+   "retries": 0,
+   "secs": 4.717,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": false
+   },
+   "irs": {
+    "main": {
+     "ir_version": 1,
+     "name": "inquiry-team-assignment",
+     "display_name": "問い合わせ担当チーム割り振り",
+     "declared_scopes": [
+      "data.write"
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "decide_team",
+       "type": "control.switch",
+       "label": "区分で担当チームを決める",
+       "params": {
+        "value": {
+         "$from": "input",
+         "path": "/category"
+        },
+        "cases": [
+         {
+          "when": "経理",
+          "to": "accounting"
+         },
+         {
+          "when": "人事",
+          "to": "hr"
+         }
+        ],
+        "default": "general"
+       }
+      },
+      {
+       "id": "accounting",
+       "type": "script.run",
+       "label": "経理チーム",
+       "params": {
+        "code": "return { team: '経理チーム' };"
+       }
+      },
+      {
+       "id": "hr",
+       "type": "script.run",
+       "label": "人事チーム",
+       "params": {
+        "code": "return { team: '人事チーム' };"
+       }
+      },
+      {
+       "id": "general",
+       "type": "script.run",
+       "label": "総務チーム",
+       "params": {
+        "code": "return { team: '総務チーム' };"
+       }
+      },
+      {
+       "id": "join_team",
+       "type": "control.join",
+       "label": "担当チームの合流",
+       "params": {}
+      },
+      {
+       "id": "register",
+       "type": "data.record.create",
+       "label": "問い合わせ台帳に登録",
+       "params": {
+        "table_id": "@table:log",
+        "values": {
+         "title": {
+          "$from": "input",
+          "path": "/title"
+         },
+         "category": {
+          "$from": "input",
+          "path": "/category"
+         },
+         "team": {
+          "$from": "join_team",
+          "path": "/team"
+         }
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "decide_team",
+       "port": "accounting",
+       "to": "accounting"
+      },
+      {
+       "from": "decide_team",
+       "port": "hr",
+       "to": "hr"
+      },
+      {
+       "from": "decide_team",
+       "port": "default",
+       "to": "general"
+      },
+      {
+       "from": "accounting",
+       "port": "next",
+       "to": "join_team"
+      },
+      {
+       "from": "hr",
+       "port": "next",
+       "to": "join_team"
+      },
+      {
+       "from": "general",
+       "port": "next",
+       "to": "join_team"
+      },
+      {
+       "from": "join_team",
+       "port": "next",
+       "to": "register"
+      }
+     ]
+    }
+   },
+   "missing_roles": [],
+   "validation": {
+    "main": {
+     "errors": [
+      "ir.schema_violation"
+     ],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "s1": false,
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation"
+       ],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": true,
+   "s2d": null,
+   "s3": null,
+   "headline": false,
+   "from_cache": false
+  },
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "basic-switch-category",
+   "phrasing": "auto",
+   "n": 2,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "basic-switch-category.auto.2.medium",
+   "key": "7de305013c7512d06b6dc67f2fd6f17f70a1feaef2e8aa9420278c5eaebf7a2b",
+   "status": "emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3764,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 1000,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 583
+    }
+   },
+   "cost_micros": 877,
+   "retries": 0,
+   "secs": 4.413,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": false
+   },
+   "irs": {
+    "main": {
+     "ir_version": 1,
+     "name": "inquiry-team-assignment",
+     "display_name": "問い合わせ担当チーム割り振り",
+     "declared_scopes": [
+      "data.write"
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "assign_team",
+       "type": "script.run",
+       "label": "担当チームを判定",
+       "params": {
+        "script": "export default function (input) { const c = input.category; const team = c === '経理' ? '経理チーム' : c === '人事' ? '人事チーム' : '総務チーム'; return { title: input.title, category: input.category, team: team }; }"
+       }
+      },
+      {
+       "id": "create_record",
+       "type": "data.record.create",
+       "label": "問い合わせ台帳に登録",
+       "params": {
+        "table_id": "@table:log",
+        "record": {
+         "title": {
+          "$from": "assign_team",
+          "path": "/title"
+         },
+         "category": {
+          "$from": "assign_team",
+          "path": "/category"
+         },
+         "team": {
+          "$from": "assign_team",
+          "path": "/team"
+         }
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "assign_team",
+       "port": "next",
+       "to": "create_record"
+      }
+     ]
+    }
+   },
+   "missing_roles": [],
+   "validation": {
+    "main": {
+     "errors": [
+      "ir.schema_violation"
+     ],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "s1": false,
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation"
+       ],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [
+       {
+        "code": "flow_through",
+        "node_id": null,
+        "detail": "入力 'title' をどの値式も読まない（下流に届かない）"
+       },
+       {
+        "code": "flow_through",
+        "node_id": null,
+        "detail": "入力 'category' をどの値式も読まない（下流に届かない）"
+       }
+      ],
+      "structure": []
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": true,
+   "s2d": null,
+   "s3": null,
+   "headline": false,
+   "from_cache": false
+  },
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "basic-map-rows",
+   "phrasing": "flow",
+   "n": 0,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "basic-map-rows.flow.0.medium",
+   "key": "b9338787bf1aa4b491b099f2d2420cddeaca5811ff6b582f80887e320866eaf9",
+   "status": "emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3726,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 600,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 275
+    }
+   },
+   "cost_micros": 673,
+   "retries": 0,
+   "secs": 3.333,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": false
+   },
+   "irs": {
+    "main": {
+     "ir_version": 1,
+     "name": "event-roster-append",
+     "display_name": "イベント参加者名簿への追加",
+     "declared_scopes": [
+      "data.write"
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "loop_names",
+       "type": "control.map",
+       "label": "参加者ごとに繰り返す",
+       "params": {
+        "items": {
+         "$from": "input",
+         "path": "/names"
+        }
+       }
+      },
+      {
+       "id": "add_row",
+       "type": "data.record.create",
+       "label": "参加者名簿に追加",
+       "params": {
+        "table_id": "@table:roster",
+        "values": {
+         "event": {
+          "$from": "input",
+          "path": "/event"
+         },
+         "name": {
+          "$from": "loop_names",
+          "path": "/item"
+         }
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "loop_names",
+       "port": "each",
+       "to": "add_row"
+      }
+     ]
+    }
+   },
+   "missing_roles": [],
+   "validation": {
+    "main": {
+     "errors": [
+      "ir.schema_violation"
+     ],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "s1": false,
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation"
+       ],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": true,
+   "s2d": null,
+   "s3": null,
+   "headline": false,
+   "from_cache": false
+  },
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "basic-map-rows",
+   "phrasing": "flow",
+   "n": 1,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "basic-map-rows.flow.1.medium",
+   "key": "39e2fe6a0a35c4f127e19bcc2b2dfc42e95fb9c61160b1fb35655367b64593a8",
+   "status": "emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3726,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 640,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 318
+    }
+   },
+   "cost_micros": 693,
+   "retries": 0,
+   "secs": 3.106,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": false
+   },
+   "irs": {
+    "main": {
+     "ir_version": 1,
+     "name": "event-roster-add",
+     "display_name": "イベント参加者の名簿登録",
+     "declared_scopes": [
+      "data.write"
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "each_name",
+       "type": "control.map",
+       "label": "参加者ごとに繰り返す",
+       "params": {
+        "items": {
+         "$from": "input",
+         "path": "/names"
+        }
+       }
+      },
+      {
+       "id": "add_row",
+       "type": "data.record.create",
+       "label": "参加者名簿に追加",
+       "params": {
+        "table_id": "@table:roster",
+        "values": {
+         "event": {
+          "$from": "input",
+          "path": "/event"
+         },
+         "name": {
+          "$from": "each_name",
+          "path": "/item"
+         }
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "each_name",
+       "port": "item",
+       "to": "add_row"
+      }
+     ]
+    }
+   },
+   "missing_roles": [],
+   "validation": {
+    "main": {
+     "errors": [
+      "ir.schema_violation"
+     ],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "s1": false,
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation"
+       ],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": true,
+   "s2d": null,
+   "s3": null,
+   "headline": false,
+   "from_cache": false
+  },
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "basic-map-rows",
+   "phrasing": "flow",
+   "n": 2,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "basic-map-rows.flow.2.medium",
+   "key": "c0d31faec685bf9526f1e97c9a68ce54b9733a3bc2376ac8ce4ad921061ef255",
+   "status": "emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3726,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 638,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 313
+    }
+   },
+   "cost_micros": 692,
+   "retries": 0,
+   "secs": 3.08,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": false
+   },
+   "irs": {
+    "main": {
+     "ir_version": 1,
+     "name": "event-roster-add",
+     "display_name": "イベント参加者名簿への追加",
+     "declared_scopes": [
+      "data.write"
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "loop_names",
+       "type": "control.map",
+       "label": "参加者ごとに繰り返す",
+       "params": {
+        "items": {
+         "$from": "input",
+         "path": "/names"
+        }
+       }
+      },
+      {
+       "id": "add_row",
+       "type": "data.record.create",
+       "label": "参加者名簿に追加",
+       "params": {
+        "table_id": "@table:roster",
+        "values": {
+         "event": {
+          "$from": "input",
+          "path": "/event"
+         },
+         "name": {
+          "$from": "loop_names",
+          "path": "/item"
+         }
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "loop_names",
+       "port": "next",
+       "to": "add_row"
+      }
+     ]
+    }
+   },
+   "missing_roles": [],
+   "validation": {
+    "main": {
+     "errors": [
+      "ir.schema_violation"
+     ],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "s1": false,
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation"
+       ],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": true,
+   "s2d": null,
+   "s3": null,
+   "headline": false,
+   "from_cache": false
+  },
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "basic-map-rows",
+   "phrasing": "app",
+   "n": 0,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "basic-map-rows.app.0.medium",
+   "key": "96996d975c84d6df6b142077e88c48f20d3f88d850d10f66fc0944b3b382c031",
+   "status": "emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3728,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 961,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 642
+    }
+   },
+   "cost_micros": 854,
+   "retries": 0,
+   "secs": 5.011,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": false
+   },
+   "irs": {
+    "main": {
+     "ir_version": 1,
+     "name": "event-attendee-register",
+     "display_name": "出席者の一括登録",
+     "declared_scopes": [
+      "data.write"
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "register_each",
+       "type": "control.map",
+       "label": "氏名ごとに繰り返す",
+       "params": {
+        "items": {
+         "$from": "input",
+         "path": "/names"
+        }
+       }
+      },
+      {
+       "id": "create_attendee",
+       "type": "data.record.create",
+       "label": "参加者名簿に追加",
+       "params": {
+        "table": "@table:roster",
+        "values": {
+         "event": {
+          "$from": "input",
+          "path": "/event"
+         },
+         "name": {
+          "$from": "input",
+          "path": "/names"
+         }
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "register_each",
+       "port": "next",
+       "to": "create_attendee"
+      }
+     ]
+    }
+   },
+   "missing_roles": [],
+   "validation": {
+    "main": {
+     "errors": [
+      "ir.schema_violation"
+     ],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "s1": false,
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [
+        "ir.schema_violation",
+        "ir.schema_violation"
+       ],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": true,
+   "s2d": null,
+   "s3": null,
+   "headline": false,
+   "from_cache": false
+  },
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "basic-map-rows",
+   "phrasing": "app",
+   "n": 1,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "basic-map-rows.app.1.medium",
+   "key": "8bd7c5f9f1546af1f755f5f7459576b6bc3393835d0ea4b914ca25e9c63e22e5",
+   "status": "emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3728,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 1005,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 637
+    }
+   },
+   "cost_micros": 876,
+   "retries": 0,
+   "secs": 5.398,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": false
+   },
+   "irs": {
+    "main": {
+     "ir_version": 1,
+     "name": "attendee-roster-register",
+     "display_name": "出席者名簿の一括登録",
+     "declared_scopes": [
+      "data.write"
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "build_rows",
+       "type": "script.run",
+       "label": "名簿の行を作成",
+       "params": {
+        "input": {
+         "$from": "input",
+         "path": "/"
+        },
+        "code": "const names = (input.names || []).map(n => String(n).trim()).filter(n => n.length > 0); return { rows: names.map(name => ({ event: input.event, name })) };"
+       }
+      },
+      {
+       "id": "save_roster",
+       "type": "data.bulk_upsert",
+       "label": "参加者名簿に登録",
+       "params": {
+        "table_id": "@table:roster",
+        "records": {
+         "$from": "build_rows",
+         "path": "/rows"
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "build_rows",
+       "port": "next",
+       "to": "save_roster"
+      }
+     ]
+    }
+   },
+   "missing_roles": [],
+   "validation": {
+    "main": {
+     "errors": [
+      "ir.schema_violation"
+     ],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "s1": false,
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": false,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": false,
+      "lint": {
+       "errors": [
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation"
+       ],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [
+       {
+        "code": "input_ref",
+        "node_id": "build_rows",
+        "detail": "/params/input: 入力に無い key を読む: /（入力は ['event', 'names']）"
+       },
+       {
+        "code": "flow_through",
+        "node_id": null,
+        "detail": "入力 'event' をどの値式も読まない（下流に届かない）"
+       },
+       {
+        "code": "flow_through",
+        "node_id": null,
+        "detail": "入力 'names' をどの値式も読まない（下流に届かない）"
+       }
+      ],
+      "structure": [
+       {
+        "code": "node_all_of",
+        "node_id": null,
+        "detail": "data.record.create がありません"
+       },
+       {
+        "code": "node_any_of",
+        "node_id": null,
+        "detail": "['control.map'] のどれもありません"
+       }
+      ]
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": false,
+   "s2d": null,
+   "s3": null,
+   "headline": false,
+   "from_cache": false
+  },
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "basic-map-rows",
+   "phrasing": "app",
+   "n": 2,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "basic-map-rows.app.2.medium",
+   "key": "250b1244ceb7e467754659de200ae12b85526b0aa582f7b5e33bd24e9cb46480",
+   "status": "emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3728,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 893,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 568
+    }
+   },
+   "cost_micros": 820,
+   "retries": 0,
+   "secs": 4.71,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": false
+   },
+   "irs": {
+    "main": {
+     "ir_version": 1,
+     "name": "attendee-roster-register",
+     "display_name": "出席者名簿の登録",
+     "declared_scopes": [
+      "data.write"
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "each_name",
+       "type": "control.map",
+       "label": "氏名ごとに繰り返す",
+       "params": {
+        "items": {
+         "$from": "input",
+         "path": "/names"
+        }
+       }
+      },
+      {
+       "id": "add_row",
+       "type": "data.record.create",
+       "label": "参加者名簿に1人分を追加",
+       "params": {
+        "table_id": "@table:roster",
+        "values": {
+         "event": {
+          "$from": "input",
+          "path": "/event"
+         },
+         "name": {
+          "$from": "each_name",
+          "path": "/item"
+         }
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "each_name",
+       "port": "next",
+       "to": "add_row"
+      }
+     ]
+    }
+   },
+   "missing_roles": [],
+   "validation": {
+    "main": {
+     "errors": [
+      "ir.schema_violation"
+     ],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "s1": false,
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation"
+       ],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": true,
+   "s2d": null,
+   "s3": null,
+   "headline": false,
+   "from_cache": false
+  },
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "basic-map-rows",
+   "phrasing": "auto",
+   "n": 0,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "basic-map-rows.auto.0.medium",
+   "key": "befad1ed710da5eecfd4ff2fe5b05db5181a25511798c9adfe0e041f68bcd8ab",
+   "status": "emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3740,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 858,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 538
+    }
+   },
+   "cost_micros": 803,
+   "retries": 0,
+   "secs": 4.358,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": false
+   },
+   "irs": {
+    "main": {
+     "ir_version": 1,
+     "name": "participant-roster-append",
+     "display_name": "参加者名簿への転記",
+     "declared_scopes": [
+      "data.write"
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "each_name",
+       "type": "control.map",
+       "label": "氏名ごとに繰り返し",
+       "params": {
+        "items": {
+         "$from": "input",
+         "path": "/names"
+        }
+       }
+      },
+      {
+       "id": "add_row",
+       "type": "data.record.create",
+       "label": "参加者名簿に追加",
+       "params": {
+        "table_id": "@table:roster",
+        "record": {
+         "event": {
+          "$from": "input",
+          "path": "/event"
+         },
+         "name": {
+          "$from": "each_name",
+          "path": "/item"
+         }
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "each_name",
+       "port": "body",
+       "to": "add_row"
+      }
+     ]
+    }
+   },
+   "missing_roles": [],
+   "validation": {
+    "main": {
+     "errors": [
+      "ir.schema_violation"
+     ],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "s1": false,
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation"
+       ],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": true,
+   "s2d": null,
+   "s3": null,
+   "headline": false,
+   "from_cache": false
+  },
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "basic-map-rows",
+   "phrasing": "auto",
+   "n": 1,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "basic-map-rows.auto.1.medium",
+   "key": "91c1dc1000efecdd2126d2074910b32e88abd9ba2676b7eb1b3c2e17e9d3b1c1",
+   "status": "emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3740,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 798,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 476
+    }
+   },
+   "cost_micros": 773,
+   "retries": 0,
+   "secs": 4.195,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": false
+   },
+   "irs": {
+    "main": {
+     "ir_version": 1,
+     "name": "participant-roster-append",
+     "display_name": "参加者名簿への転記",
+     "declared_scopes": [
+      "data.write"
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "each_name",
+       "type": "control.map",
+       "label": "氏名ごとに繰り返し",
+       "params": {
+        "items": {
+         "$from": "input",
+         "path": "/names"
+        }
+       }
+      },
+      {
+       "id": "add_row",
+       "type": "data.record.create",
+       "label": "参加者名簿に行を追加",
+       "params": {
+        "table_id": "@table:roster",
+        "values": {
+         "event": {
+          "$from": "input",
+          "path": "/event"
+         },
+         "name": {
+          "$from": "each_name",
+          "path": "/item"
+         }
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "each_name",
+       "port": "each",
+       "to": "add_row"
+      }
+     ]
+    }
+   },
+   "missing_roles": [],
+   "validation": {
+    "main": {
+     "errors": [
+      "ir.schema_violation"
+     ],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "s1": false,
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation"
+       ],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": true,
+   "s2d": null,
+   "s3": null,
+   "headline": false,
+   "from_cache": false
+  },
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "basic-map-rows",
+   "phrasing": "auto",
+   "n": 2,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "basic-map-rows.auto.2.medium",
+   "key": "5858115abdad6cfb7e9560e3622a2aee04f2fd4990494442fd650c2c6af83488",
+   "status": "emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3740,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 1235,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 908
+    }
+   },
+   "cost_micros": 992,
+   "retries": 0,
+   "secs": 5.548,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": false
+   },
+   "irs": {
+    "main": {
+     "ir_version": 1,
+     "name": "participant-roster-append",
+     "display_name": "参加者名簿への転記",
+     "declared_scopes": [
+      "data.write"
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "rows",
+       "type": "control.map",
+       "label": "氏名ごとに繰り返す",
+       "params": {
+        "items": {
+         "$from": "input",
+         "path": "/names"
+        },
+        "item_name": "name"
+       }
+      },
+      {
+       "id": "add_row",
+       "type": "data.record.create",
+       "label": "参加者名簿に行を追加",
+       "params": {
+        "table_id": "@table:roster",
+        "record": {
+         "event": {
+          "$from": "input",
+          "path": "/event"
+         },
+         "name": {
+          "$from": "rows",
+          "path": "/item"
+         }
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "rows",
+       "port": "each",
+       "to": "add_row"
+      }
+     ]
+    }
+   },
+   "missing_roles": [],
+   "validation": {
+    "main": {
+     "errors": [
+      "ir.schema_violation"
+     ],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "s1": false,
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation"
+       ],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": true,
+   "s2d": null,
+   "s3": null,
+   "headline": false,
+   "from_cache": false
+  },
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "app01-claim-submit",
+   "phrasing": "flow",
+   "n": 0,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "app01-claim-submit.flow.0.medium",
+   "key": "13b042d68596e525c56eb98caec0b4379d8b865e100e18a5c9ed40a6c60c98d7",
+   "status": "no_emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3915,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 1227,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 679
+    }
+   },
+   "cost_micros": 1005,
+   "retries": 0,
+   "secs": 5.805,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": true
+   },
+   "irs": {},
+   "missing_roles": [
+    "main"
+   ],
+   "s1": false,
+   "s2s": null,
+   "s2w": null,
+   "s2d": null,
+   "s3": null,
+   "s5": null,
+   "headline": false,
+   "from_cache": false
+  },
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "app01-claim-submit",
+   "phrasing": "flow",
+   "n": 1,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "app01-claim-submit.flow.1.medium",
+   "key": "62307105a14c0ef4bf88c8c3d747574c340df036e956e75ca6071c31e40982f3",
+   "status": "emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3915,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 1482,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 919
+    }
+   },
+   "cost_micros": 1133,
+   "retries": 0,
+   "secs": 6.87,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": false
+   },
+   "irs": {
+    "main": {
+     "ir_version": 1,
+     "name": "expense-application-intake",
+     "display_name": "経費申請の受付",
+     "declared_scopes": [
+      "data.read",
+      "data.write"
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "decide_level",
+       "type": "script.run",
+       "label": "金額から承認者の役職を決める",
+       "params": {
+        "input": {
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         }
+        },
+        "code": "export default (input) => ({ level: Number(input.amount) >= 100000 ? '部長' : '課長' })"
+       }
+      },
+      {
+       "id": "find_approver",
+       "type": "data.query",
+       "label": "役職に合う承認者を探す",
+       "params": {
+        "table_id": "@table:approvers",
+        "filter": {
+         "level": {
+          "$from": "decide_level",
+          "path": "/level"
+         }
+        },
+        "limit": 1
+       }
+      },
+      {
+       "id": "create_expense",
+       "type": "data.record.create",
+       "label": "経費申請に1行追加（申請中）",
+       "params": {
+        "table_id": "@table:claims",
+        "values": {
+         "title": {
+          "$from": "input",
+          "path": "/title"
+         },
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         },
+         "applicant": {
+          "$from": "input",
+          "path": "/applicant"
+         },
+         "approver": {
+          "$from": "find_approver",
+          "path": "/rows/0/name"
+         },
+         "status": "申請中"
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "decide_level",
+       "port": "next",
+       "to": "find_approver"
+      },
+      {
+       "from": "find_approver",
+       "port": "next",
+       "to": "create_expense"
+      }
+     ]
+    }
+   },
+   "missing_roles": [],
+   "validation": {
+    "main": {
+     "errors": [
+      "ir.schema_violation"
+     ],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "s1": false,
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation"
+       ],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": true,
+   "s2d": null,
+   "s3": null,
+   "headline": false,
+   "from_cache": false
+  },
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "app01-claim-submit",
+   "phrasing": "flow",
+   "n": 2,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "app01-claim-submit.flow.2.medium",
+   "key": "f91be78d44f56e1d116c803c755c17eac23746baebe62ecf63aa72358e804710",
+   "status": "emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3915,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 1485,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 676
+    }
+   },
+   "cost_micros": 1134,
+   "retries": 0,
+   "secs": 6.394,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": false
+   },
+   "irs": {
+    "main": {
+     "ir_version": 1,
+     "name": "expense-application-intake",
+     "display_name": "経費申請の受付",
+     "declared_scopes": [
+      "data.read",
+      "data.write"
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "branch_amount",
+       "type": "control.branch",
+       "label": "金額が10万円以上か",
+       "params": {
+        "left": {
+         "$from": "input",
+         "path": "/amount"
+        },
+        "op": "gte",
+        "right": 100000
+       }
+      },
+      {
+       "id": "find_manager",
+       "type": "data.query",
+       "label": "部長を探す",
+       "params": {
+        "table": "@table:approvers",
+        "filter": {
+         "level": "部長"
+        }
+       }
+      },
+      {
+       "id": "find_section_chief",
+       "type": "data.query",
+       "label": "課長を探す",
+       "params": {
+        "table": "@table:approvers",
+        "filter": {
+         "level": "課長"
+        }
+       }
+      },
+      {
+       "id": "create_for_manager",
+       "type": "data.record.create",
+       "label": "経費申請を追加（部長承認）",
+       "params": {
+        "table": "@table:claims",
+        "values": {
+         "title": {
+          "$from": "input",
+          "path": "/title"
+         },
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         },
+         "applicant": {
+          "$from": "input",
+          "path": "/applicant"
+         },
+         "approver": {
+          "$from": "find_manager",
+          "path": "/records/0/name"
+         },
+         "status": "申請中"
+        }
+       }
+      },
+      {
+       "id": "create_for_section_chief",
+       "type": "data.record.create",
+       "label": "経費申請を追加（課長承認）",
+       "params": {
+        "table": "@table:claims",
+        "values": {
+         "title": {
+          "$from": "input",
+          "path": "/title"
+         },
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         },
+         "applicant": {
+          "$from": "input",
+          "path": "/applicant"
+         },
+         "approver": {
+          "$from": "find_section_chief",
+          "path": "/records/0/name"
+         },
+         "status": "申請中"
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "branch_amount",
+       "port": "true",
+       "to": "find_manager"
+      },
+      {
+       "from": "branch_amount",
+       "port": "false",
+       "to": "find_section_chief"
+      },
+      {
+       "from": "find_manager",
+       "port": "next",
+       "to": "create_for_manager"
+      },
+      {
+       "from": "find_section_chief",
+       "port": "next",
+       "to": "create_for_section_chief"
+      }
+     ]
+    }
+   },
+   "missing_roles": [],
+   "validation": {
+    "main": {
+     "errors": [
+      "ir.schema_violation"
+     ],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "s1": false,
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation"
+       ],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": true,
+   "s2d": null,
+   "s3": null,
+   "headline": false,
+   "from_cache": false
+  },
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "app01-claim-submit",
+   "phrasing": "app",
+   "n": 0,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "app01-claim-submit.app.0.medium",
+   "key": "77429f9d7d71a0f8ab3fa4cac9440ff9cec195cd8bf4d303edccb80ed30e51ee",
+   "status": "emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3891,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 1520,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 710
+    }
+   },
+   "cost_micros": 1150,
+   "retries": 0,
+   "secs": 6.419,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": false
+   },
+   "irs": {
+    "main": {
+     "ir_version": 1,
+     "name": "expense-request-submit",
+     "display_name": "経費申請の登録（承認者振り分け付き）",
+     "declared_scopes": [
+      "data.read",
+      "data.write"
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "check_amount",
+       "type": "control.branch",
+       "label": "金額が10万円以上か",
+       "params": {
+        "left": {
+         "$from": "input",
+         "path": "/amount"
+        },
+        "op": ">=",
+        "right": 100000
+       }
+      },
+      {
+       "id": "find_bucho",
+       "type": "data.query",
+       "label": "部長の承認者を探す",
+       "params": {
+        "table": "@table:approvers",
+        "where": {
+         "level": "部長"
+        }
+       }
+      },
+      {
+       "id": "find_kacho",
+       "type": "data.query",
+       "label": "課長の承認者を探す",
+       "params": {
+        "table": "@table:approvers",
+        "where": {
+         "level": "課長"
+        }
+       }
+      },
+      {
+       "id": "create_bucho",
+       "type": "data.record.create",
+       "label": "経費申請を登録（部長承認）",
+       "params": {
+        "table": "@table:claims",
+        "values": {
+         "title": {
+          "$from": "input",
+          "path": "/title"
+         },
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         },
+         "applicant": {
+          "$from": "input",
+          "path": "/applicant"
+         },
+         "approver": {
+          "$from": "find_bucho",
+          "path": "/0/name"
+         },
+         "status": "申請中"
+        }
+       }
+      },
+      {
+       "id": "create_kacho",
+       "type": "data.record.create",
+       "label": "経費申請を登録（課長承認）",
+       "params": {
+        "table": "@table:claims",
+        "values": {
+         "title": {
+          "$from": "input",
+          "path": "/title"
+         },
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         },
+         "applicant": {
+          "$from": "input",
+          "path": "/applicant"
+         },
+         "approver": {
+          "$from": "find_kacho",
+          "path": "/0/name"
+         },
+         "status": "申請中"
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "check_amount",
+       "port": "true",
+       "to": "find_bucho"
+      },
+      {
+       "from": "check_amount",
+       "port": "false",
+       "to": "find_kacho"
+      },
+      {
+       "from": "find_bucho",
+       "port": "next",
+       "to": "create_bucho"
+      },
+      {
+       "from": "find_kacho",
+       "port": "next",
+       "to": "create_kacho"
+      }
+     ]
+    }
+   },
+   "missing_roles": [],
+   "validation": {
+    "main": {
+     "errors": [
+      "ir.schema_violation"
+     ],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "s1": false,
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation"
+       ],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": true,
+   "s2d": null,
+   "s3": null,
+   "headline": false,
+   "from_cache": false
+  },
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "app01-claim-submit",
+   "phrasing": "app",
+   "n": 1,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "app01-claim-submit.app.1.medium",
+   "key": "4d9df0b5a9ff807ef1aba6ae788d080b16e1c1f624e5279b68d4e903089c4636",
+   "status": "emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3891,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 1513,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 948
+    }
+   },
+   "cost_micros": 1146,
+   "retries": 0,
+   "secs": 6.719,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": false
+   },
+   "irs": {
+    "main": {
+     "ir_version": 1,
+     "name": "expense-request-submit",
+     "display_name": "経費申請の登録",
+     "declared_scopes": [
+      "data.read",
+      "data.write"
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "calc_level",
+       "type": "script.run",
+       "label": "承認レベルを決める（10万円以上は部長、未満は課長）",
+       "params": {
+        "code": "const amount = Number(input.amount); return { level: amount >= 100000 ? '部長' : '課長' };",
+        "input": {
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         }
+        }
+       }
+      },
+      {
+       "id": "find_approver",
+       "type": "data.query",
+       "label": "承認者の表から承認者を探す",
+       "params": {
+        "table": "@table:approvers",
+        "where": {
+         "level": {
+          "$from": "calc_level",
+          "path": "/level"
+         }
+        },
+        "limit": 1
+       }
+      },
+      {
+       "id": "create_request",
+       "type": "data.record.create",
+       "label": "経費申請を「申請中」で登録",
+       "params": {
+        "table": "@table:claims",
+        "values": {
+         "title": {
+          "$from": "input",
+          "path": "/title"
+         },
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         },
+         "applicant": {
+          "$from": "input",
+          "path": "/applicant"
+         },
+         "approver": {
+          "$from": "find_approver",
+          "path": "/records/0/name"
+         },
+         "status": "申請中"
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "calc_level",
+       "port": "next",
+       "to": "find_approver"
+      },
+      {
+       "from": "find_approver",
+       "port": "next",
+       "to": "create_request"
+      }
+     ]
+    }
+   },
+   "missing_roles": [],
+   "validation": {
+    "main": {
+     "errors": [
+      "ir.schema_violation"
+     ],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "s1": false,
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation"
+       ],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": true,
+   "s2d": null,
+   "s3": null,
+   "headline": false,
+   "from_cache": false
+  },
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "app01-claim-submit",
+   "phrasing": "app",
+   "n": 2,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "app01-claim-submit.app.2.medium",
+   "key": "99c0f68e31ea343a7888401601b3ed0e8a1a9cb110bdf37ba612ac29fd3f6170",
+   "status": "emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3891,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 1906,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 1107
+    }
+   },
+   "cost_micros": 1343,
+   "retries": 0,
+   "secs": 8.789,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": false
+   },
+   "irs": {
+    "main": {
+     "ir_version": 1,
+     "name": "expense-request-submit",
+     "display_name": "経費申請の提出",
+     "declared_scopes": [
+      "data.read",
+      "data.write"
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "input",
+       "type": "control.branch",
+       "label": "金額で承認者を分ける",
+       "params": {
+        "condition": {
+         "op": ">=",
+         "left": {
+          "$from": "input",
+          "path": "/amount"
+         },
+         "right": 100000
+        }
+       }
+      },
+      {
+       "id": "find_bucho",
+       "type": "data.query",
+       "label": "部長を探す",
+       "params": {
+        "table_id": "@table:approvers",
+        "filter": {
+         "level": "部長"
+        }
+       }
+      },
+      {
+       "id": "create_bucho",
+       "type": "data.record.create",
+       "label": "部長承認で申請を登録",
+       "params": {
+        "table_id": "@table:claims",
+        "values": {
+         "title": {
+          "$from": "input",
+          "path": "/title"
+         },
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         },
+         "applicant": {
+          "$from": "input",
+          "path": "/applicant"
+         },
+         "approver": {
+          "$from": "find_bucho",
+          "path": "/rows/0/name"
+         },
+         "status": "申請中"
+        }
+       }
+      },
+      {
+       "id": "find_kacho",
+       "type": "data.query",
+       "label": "課長を探す",
+       "params": {
+        "table_id": "@table:approvers",
+        "filter": {
+         "level": "課長"
+        }
+       }
+      },
+      {
+       "id": "create_kacho",
+       "type": "data.record.create",
+       "label": "課長承認で申請を登録",
+       "params": {
+        "table_id": "@table:claims",
+        "values": {
+         "title": {
+          "$from": "input",
+          "path": "/title"
+         },
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         },
+         "applicant": {
+          "$from": "input",
+          "path": "/applicant"
+         },
+         "approver": {
+          "$from": "find_kacho",
+          "path": "/rows/0/name"
+         },
+         "status": "申請中"
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "input",
+       "port": "true",
+       "to": "find_bucho"
+      },
+      {
+       "from": "find_bucho",
+       "port": "next",
+       "to": "create_bucho"
+      },
+      {
+       "from": "input",
+       "port": "false",
+       "to": "find_kacho"
+      },
+      {
+       "from": "find_kacho",
+       "port": "next",
+       "to": "create_kacho"
+      }
+     ]
+    }
+   },
+   "missing_roles": [],
+   "validation": {
+    "main": {
+     "errors": [
+      "ir.schema_violation"
+     ],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "s1": false,
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation"
+       ],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": true,
+   "s2d": null,
+   "s3": null,
+   "headline": false,
+   "from_cache": false
+  },
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "app01-claim-submit",
+   "phrasing": "auto",
+   "n": 0,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "app01-claim-submit.auto.0.medium",
+   "key": "f0b4e750e00e1654b35f247d63566e6dbe50ba774fd653ad2d5ce0d092578588",
+   "status": "emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3899,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 1785,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 1128
+    }
+   },
+   "cost_micros": 1283,
+   "retries": 0,
+   "secs": 8.31,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": false
+   },
+   "irs": {
+    "main": {
+     "ir_version": 1,
+     "name": "expense-request-intake",
+     "display_name": "経費申請の受付と承認者割り当て",
+     "declared_scopes": [
+      "data.read",
+      "data.write"
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "list_approvers",
+       "type": "data.query",
+       "label": "承認者一覧を取得",
+       "params": {
+        "table_id": "@table:approvers"
+       }
+      },
+      {
+       "id": "pick_approver",
+       "type": "script.run",
+       "label": "金額に応じて承認者を選ぶ",
+       "params": {
+        "inputs": {
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         },
+         "approvers": {
+          "$from": "list_approvers",
+          "path": "/rows"
+         }
+        },
+        "code": "export default function (input) {\n  const level = Number(input.amount) >= 100000 ? \"部長\" : \"課長\";\n  const found = (input.approvers || []).find((r) => r.level === level);\n  if (!found) throw new Error(\"役職「\" + level + \"」の承認者が見つかりません\");\n  return { approver: found.name, level: level };\n}"
+       }
+      },
+      {
+       "id": "create_expense",
+       "type": "data.record.create",
+       "label": "経費申請を登録（申請中）",
+       "params": {
+        "table_id": "@table:claims",
+        "values": {
+         "title": {
+          "$from": "input",
+          "path": "/title"
+         },
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         },
+         "applicant": {
+          "$from": "input",
+          "path": "/applicant"
+         },
+         "approver": {
+          "$from": "pick_approver",
+          "path": "/approver"
+         },
+         "status": "申請中"
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "list_approvers",
+       "port": "next",
+       "to": "pick_approver"
+      },
+      {
+       "from": "pick_approver",
+       "port": "next",
+       "to": "create_expense"
+      }
+     ]
+    }
+   },
+   "missing_roles": [],
+   "validation": {
+    "main": {
+     "errors": [
+      "ir.schema_violation"
+     ],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "s1": false,
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation"
+       ],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": true,
+   "s2d": null,
+   "s3": null,
+   "headline": false,
+   "from_cache": false
+  },
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "app01-claim-submit",
+   "phrasing": "auto",
+   "n": 1,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "app01-claim-submit.auto.1.medium",
+   "key": "9d5dbb972419d94cf3ed7f4bb126e4b190715afb94438ac4ec11ff9438256d9b",
+   "status": "emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3899,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 2205,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 1361
+    }
+   },
+   "cost_micros": 1493,
+   "retries": 0,
+   "secs": 9.372,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": false
+   },
+   "irs": {
+    "main": {
+     "ir_version": 1,
+     "name": "expense-request-intake",
+     "display_name": "経費申請の受付と承認者割り当て",
+     "declared_scopes": [
+      "data.read",
+      "data.write"
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "check_amount",
+       "type": "control.branch",
+       "label": "金額が10万円以上か判定",
+       "params": {
+        "left": {
+         "$from": "input",
+         "path": "/amount"
+        },
+        "op": "gte",
+        "right": 100000
+       }
+      },
+      {
+       "id": "find_manager",
+       "type": "data.query",
+       "label": "部長を承認者テーブルから検索",
+       "params": {
+        "table": "@table:approvers",
+        "filter": {
+         "level": "部長"
+        },
+        "limit": 1
+       }
+      },
+      {
+       "id": "find_section_chief",
+       "type": "data.query",
+       "label": "課長を承認者テーブルから検索",
+       "params": {
+        "table": "@table:approvers",
+        "filter": {
+         "level": "課長"
+        },
+        "limit": 1
+       }
+      },
+      {
+       "id": "create_for_manager",
+       "type": "data.record.create",
+       "label": "経費申請を作成（部長承認）",
+       "params": {
+        "table": "@table:claims",
+        "values": {
+         "title": {
+          "$from": "input",
+          "path": "/title"
+         },
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         },
+         "applicant": {
+          "$from": "input",
+          "path": "/applicant"
+         },
+         "approver": {
+          "$from": "find_manager",
+          "path": "/rows/0/name"
+         },
+         "status": "申請中"
+        }
+       }
+      },
+      {
+       "id": "create_for_section_chief",
+       "type": "data.record.create",
+       "label": "経費申請を作成（課長承認）",
+       "params": {
+        "table": "@table:claims",
+        "values": {
+         "title": {
+          "$from": "input",
+          "path": "/title"
+         },
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         },
+         "applicant": {
+          "$from": "input",
+          "path": "/applicant"
+         },
+         "approver": {
+          "$from": "find_section_chief",
+          "path": "/rows/0/name"
+         },
+         "status": "申請中"
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "check_amount",
+       "port": "true",
+       "to": "find_manager"
+      },
+      {
+       "from": "check_amount",
+       "port": "false",
+       "to": "find_section_chief"
+      },
+      {
+       "from": "find_manager",
+       "port": "next",
+       "to": "create_for_manager"
+      },
+      {
+       "from": "find_section_chief",
+       "port": "next",
+       "to": "create_for_section_chief"
+      }
+     ]
+    }
+   },
+   "missing_roles": [],
+   "validation": {
+    "main": {
+     "errors": [
+      "ir.schema_violation"
+     ],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "s1": false,
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation"
+       ],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": true,
+   "s2d": null,
+   "s3": null,
+   "headline": false,
+   "from_cache": false
+  },
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "app01-claim-submit",
+   "phrasing": "auto",
+   "n": 2,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "app01-claim-submit.auto.2.medium",
+   "key": "eb50686ce14b5a38677e3b547e011048baabf187320b0d071e0b251881ce4c85",
+   "status": "emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3899,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 1686,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 850
+    }
+   },
+   "cost_micros": 1233,
+   "retries": 0,
+   "secs": 7.416,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": false
+   },
+   "irs": {
+    "main": {
+     "ir_version": 1,
+     "name": "expense-approver-assign",
+     "display_name": "経費申請の受付と承認者割り当て",
+     "declared_scopes": [
+      "data.read",
+      "data.write"
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "check_amount",
+       "type": "control.branch",
+       "label": "金額が10万円以上か",
+       "params": {
+        "condition": {
+         "left": {
+          "$from": "input",
+          "path": "/amount"
+         },
+         "op": ">=",
+         "right": 100000
+        }
+       }
+      },
+      {
+       "id": "find_manager",
+       "type": "data.query",
+       "label": "部長を検索",
+       "params": {
+        "table_id": "@table:approvers",
+        "filter": {
+         "level": "部長"
+        },
+        "limit": 1
+       }
+      },
+      {
+       "id": "find_section_chief",
+       "type": "data.query",
+       "label": "課長を検索",
+       "params": {
+        "table_id": "@table:approvers",
+        "filter": {
+         "level": "課長"
+        },
+        "limit": 1
+       }
+      },
+      {
+       "id": "create_for_manager",
+       "type": "data.record.create",
+       "label": "申請中で登録（部長承認）",
+       "params": {
+        "table_id": "@table:claims",
+        "values": {
+         "title": {
+          "$from": "input",
+          "path": "/title"
+         },
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         },
+         "applicant": {
+          "$from": "input",
+          "path": "/applicant"
+         },
+         "approver": {
+          "$from": "find_manager",
+          "path": "/records/0/name"
+         },
+         "status": "申請中"
+        }
+       }
+      },
+      {
+       "id": "create_for_section_chief",
+       "type": "data.record.create",
+       "label": "申請中で登録（課長承認）",
+       "params": {
+        "table_id": "@table:claims",
+        "values": {
+         "title": {
+          "$from": "input",
+          "path": "/title"
+         },
+         "amount": {
+          "$from": "input",
+          "path": "/amount"
+         },
+         "applicant": {
+          "$from": "input",
+          "path": "/applicant"
+         },
+         "approver": {
+          "$from": "find_section_chief",
+          "path": "/records/0/name"
+         },
+         "status": "申請中"
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "check_amount",
+       "port": "true",
+       "to": "find_manager"
+      },
+      {
+       "from": "check_amount",
+       "port": "false",
+       "to": "find_section_chief"
+      },
+      {
+       "from": "find_manager",
+       "port": "next",
+       "to": "create_for_manager"
+      },
+      {
+       "from": "find_section_chief",
+       "port": "next",
+       "to": "create_for_section_chief"
+      }
+     ]
+    }
+   },
+   "missing_roles": [],
+   "validation": {
+    "main": {
+     "errors": [
+      "ir.schema_violation"
+     ],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "s1": false,
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation"
+       ],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": true,
+   "s2d": null,
+   "s3": null,
+   "headline": false,
+   "from_cache": false
+  },
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "app12-faq-table",
+   "phrasing": "flow",
+   "n": 0,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "app12-faq-table.flow.0.medium",
+   "key": "b4c7b6aef3cb30619e52210f0b8aaaecc8e0171667babe6b252a943bdecd432b",
+   "status": "emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3948,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 1630,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 794
+    }
+   },
+   "cost_micros": 1210,
+   "retries": 0,
+   "secs": 7.379,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": false
+   },
+   "irs": {
+    "main": {
+     "ir_version": 1,
+     "name": "faq-auto-answer",
+     "display_name": "社内よくある質問への自動回答",
+     "declared_scopes": [
+      "data.read",
+      "data.write"
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "search_faq",
+       "type": "data.query",
+       "label": "よくある質問を検索",
+       "params": {
+        "table_id": "@table:faq",
+        "filter": {
+         "question": {
+          "contains": {
+           "$from": "input",
+           "path": "/question"
+          }
+         }
+        }
+       }
+      },
+      {
+       "id": "found_check",
+       "type": "control.branch",
+       "label": "該当する質問があるか",
+       "params": {
+        "condition": {
+         "left": {
+          "$from": "search_faq",
+          "path": "/records"
+         },
+         "op": "is_not_empty"
+        }
+       }
+      },
+      {
+       "id": "make_answer",
+       "type": "llm.invoke",
+       "label": "回答文を作成",
+       "params": {
+        "prompt": {
+         "$template": "次の社内よくある質問の回答をもとに、質問者への回答文を丁寧な日本語で作成してください。回答の内容を変えたり、推測を加えたりしないこと。\n\n質問: {{question}}\n よくある質問の回答: {{answer}}",
+         "vars": {
+          "question": {
+           "$from": "input",
+           "path": "/question"
+          },
+          "answer": {
+           "$from": "search_faq",
+           "path": "/records/0/answer"
+          }
+         }
+        }
+       }
+      },
+      {
+       "id": "record_auto",
+       "type": "data.record.create",
+       "label": "自動回答を記録",
+       "params": {
+        "table_id": "@table:log",
+        "values": {
+         "question": {
+          "$from": "input",
+          "path": "/question"
+         },
+         "answer": {
+          "$from": "make_answer",
+          "path": "/text"
+         },
+         "source": {
+          "$from": "search_faq",
+          "path": "/records/0/faq_no"
+         },
+         "status": "自動回答"
+        }
+       }
+      },
+      {
+       "id": "record_escalation",
+       "type": "data.record.create",
+       "label": "エスカレーションを記録",
+       "params": {
+        "table_id": "@table:log",
+        "values": {
+         "question": {
+          "$from": "input",
+          "path": "/question"
+         },
+         "status": "エスカレーション"
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "search_faq",
+       "port": "next",
+       "to": "found_check"
+      },
+      {
+       "from": "found_check",
+       "port": "true",
+       "to": "make_answer"
+      },
+      {
+       "from": "make_answer",
+       "port": "next",
+       "to": "record_auto"
+      },
+      {
+       "from": "found_check",
+       "port": "false",
+       "to": "record_escalation"
+      }
+     ]
+    }
+   },
+   "missing_roles": [],
+   "validation": {
+    "main": {
+     "errors": [
+      "ir.schema_violation"
+     ],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "s1": false,
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": false,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": false,
+      "lint": {
+       "errors": [
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation"
+       ],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": [
+       {
+        "code": "node_all_of",
+        "node_id": null,
+        "detail": "data.transition がありません"
+       }
+      ]
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": false,
+   "s2d": null,
+   "s3": null,
+   "headline": false,
+   "from_cache": false
+  },
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "app12-faq-table",
+   "phrasing": "flow",
+   "n": 1,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "app12-faq-table.flow.1.medium",
+   "key": "242dd9b2f24d0d54d26497e709542ec4994428cd9cf1de7bf596f20aa3649851",
+   "status": "emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3948,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 1717,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 639
+    }
+   },
+   "cost_micros": 1254,
+   "retries": 0,
+   "secs": 8.3,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": false
+   },
+   "irs": {
+    "main": {
+     "ir_version": 1,
+     "name": "internal-faq-answer",
+     "display_name": "社内質問への自動回答",
+     "declared_scopes": [
+      "data.read",
+      "data.write"
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "search_faq",
+       "type": "data.query",
+       "label": "よくある質問を検索",
+       "params": {
+        "table_id": "@table:faq",
+        "where": {
+         "question": {
+          "contains": {
+           "$from": "input",
+           "path": "/question"
+          }
+         }
+        }
+       }
+      },
+      {
+       "id": "found_check",
+       "type": "control.branch",
+       "label": "該当する質問があるか",
+       "params": {
+        "condition": {
+         "$from": "search_faq",
+         "path": "/count",
+         "op": "gt",
+         "value": 0
+        }
+       }
+      },
+      {
+       "id": "draft_answer",
+       "type": "llm.invoke",
+       "label": "回答文を作成",
+       "params": {
+        "prompt": {
+         "$template": "次の社内よくある質問の回答をもとに、質問者への回答文を丁寧な日本語で作成してください。回答文以外は書かないでください。\n\n質問: {{question}}\n よくある質問: {{faq_question}}\n よくある質問の回答: {{faq_answer}}",
+         "vars": {
+          "question": {
+           "$from": "input",
+           "path": "/question"
+          },
+          "faq_question": {
+           "$from": "search_faq",
+           "path": "/rows/0/question"
+          },
+          "faq_answer": {
+           "$from": "search_faq",
+           "path": "/rows/0/answer"
+          }
+         }
+        }
+       }
+      },
+      {
+       "id": "record_auto",
+       "type": "data.record.create",
+       "label": "問い合わせ記録（自動回答）",
+       "params": {
+        "table_id": "@table:log",
+        "values": {
+         "question": {
+          "$from": "input",
+          "path": "/question"
+         },
+         "answer": {
+          "$from": "draft_answer",
+          "path": "/text"
+         },
+         "source": {
+          "$from": "search_faq",
+          "path": "/rows/0/faq_no"
+         },
+         "status": "自動回答"
+        }
+       }
+      },
+      {
+       "id": "record_escalation",
+       "type": "data.record.create",
+       "label": "問い合わせ記録（エスカレーション）",
+       "params": {
+        "table_id": "@table:log",
+        "values": {
+         "question": {
+          "$from": "input",
+          "path": "/question"
+         },
+         "status": "エスカレーション"
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "search_faq",
+       "port": "next",
+       "to": "found_check"
+      },
+      {
+       "from": "found_check",
+       "port": "true",
+       "to": "draft_answer"
+      },
+      {
+       "from": "draft_answer",
+       "port": "next",
+       "to": "record_auto"
+      },
+      {
+       "from": "found_check",
+       "port": "false",
+       "to": "record_escalation"
+      }
+     ]
+    }
+   },
+   "missing_roles": [],
+   "validation": {
+    "main": {
+     "errors": [
+      "ir.schema_violation"
+     ],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "s1": false,
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": false,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": false,
+      "lint": {
+       "errors": [
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation"
+       ],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": [
+       {
+        "code": "node_all_of",
+        "node_id": null,
+        "detail": "data.transition がありません"
+       }
+      ]
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": false,
+   "s2d": null,
+   "s3": null,
+   "headline": false,
+   "from_cache": false
+  },
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "app12-faq-table",
+   "phrasing": "flow",
+   "n": 2,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "app12-faq-table.flow.2.medium",
+   "key": "49a24fd224a082eb27ac3e1c362b948a9c2a52d222e451dd854ae625a934552b",
+   "status": "emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3948,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 1650,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 607
+    }
+   },
+   "cost_micros": 1220,
+   "retries": 0,
+   "secs": 6.827,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": false
+   },
+   "irs": {
+    "main": {
+     "ir_version": 1,
+     "name": "faq-auto-answer",
+     "display_name": "社内質問の自動回答",
+     "declared_scopes": [
+      "data.read",
+      "data.write"
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "search_faq",
+       "type": "data.query",
+       "label": "よくある質問を検索",
+       "params": {
+        "table_id": "@table:faq",
+        "filter": {
+         "question": {
+          "contains": {
+           "$from": "input",
+           "path": "/question"
+          }
+         }
+        }
+       }
+      },
+      {
+       "id": "found",
+       "type": "control.branch",
+       "label": "よくある質問が見つかったか",
+       "params": {
+        "condition": {
+         "op": "not_empty",
+         "value": {
+          "$from": "search_faq",
+          "path": "/rows"
+         }
+        }
+       }
+      },
+      {
+       "id": "draft_answer",
+       "type": "llm.invoke",
+       "label": "FAQの回答をもとに答えを作成",
+       "params": {
+        "prompt": {
+         "$template": "次のよくある質問の回答をもとに、社員からの質問「{{question}}」への答えを日本語で丁寧に作成してください。回答の内容にない推測は含めないでください。\n\nよくある質問の回答: {{answer}}",
+         "vars": {
+          "question": {
+           "$from": "input",
+           "path": "/question"
+          },
+          "answer": {
+           "$from": "search_faq",
+           "path": "/rows/0/answer"
+          }
+         }
+        }
+       }
+      },
+      {
+       "id": "record_auto",
+       "type": "data.record.create",
+       "label": "問い合わせ記録に自動回答を追加",
+       "params": {
+        "table_id": "@table:log",
+        "record": {
+         "question": {
+          "$from": "input",
+          "path": "/question"
+         },
+         "answer": {
+          "$from": "draft_answer",
+          "path": "/text"
+         },
+         "source": {
+          "$from": "search_faq",
+          "path": "/rows/0/faq_no"
+         },
+         "status": "自動回答"
+        }
+       }
+      },
+      {
+       "id": "record_escalation",
+       "type": "data.record.create",
+       "label": "問い合わせ記録にエスカレーションを追加",
+       "params": {
+        "table_id": "@table:log",
+        "record": {
+         "question": {
+          "$from": "input",
+          "path": "/question"
+         },
+         "status": "エスカレーション"
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "search_faq",
+       "port": "next",
+       "to": "found"
+      },
+      {
+       "from": "found",
+       "port": "true",
+       "to": "draft_answer"
+      },
+      {
+       "from": "draft_answer",
+       "port": "next",
+       "to": "record_auto"
+      },
+      {
+       "from": "found",
+       "port": "false",
+       "to": "record_escalation"
+      }
+     ]
+    }
+   },
+   "missing_roles": [],
+   "validation": {
+    "main": {
+     "errors": [
+      "ir.schema_violation"
+     ],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "s1": false,
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": false,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": false,
+      "lint": {
+       "errors": [
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation"
+       ],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": [
+       {
+        "code": "node_all_of",
+        "node_id": null,
+        "detail": "data.transition がありません"
+       }
+      ]
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": false,
+   "s2d": null,
+   "s3": null,
+   "headline": false,
+   "from_cache": false
+  },
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "app12-faq-table",
+   "phrasing": "app",
+   "n": 0,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "app12-faq-table.app.0.medium",
+   "key": "51ea3efec7b9a0211ed9730ce00ab40a513151ac4d90e3faae2db1b5259603a6",
+   "status": "emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3927,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 2996,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 1756
+    }
+   },
+   "cost_micros": 1891,
+   "retries": 0,
+   "secs": 14.231,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": false
+   },
+   "irs": {
+    "main": {
+     "ir_version": 1,
+     "name": "helpdesk-first-response",
+     "display_name": "社内ヘルプデスク一次回答",
+     "declared_scopes": [
+      "data.read",
+      "data.write"
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "faq_list",
+       "type": "data.query",
+       "label": "よくある質問を取得",
+       "params": {
+        "table_id": "@table:faq",
+        "columns": [
+         "faq_no",
+         "question",
+         "answer"
+        ],
+        "limit": 500
+       }
+      },
+      {
+       "id": "judge",
+       "type": "llm.invoke",
+       "label": "近い FAQ を探す",
+       "params": {
+        "prompt": {
+         "$template": "次の質問に最も近いよくある質問を、下の一覧から1つ選んでください。\n質問: {{q}}\n\nよくある質問一覧(JSON):\n{{faq}}\n\n該当するものがなければ faq_no に null を入れてください。出力は次の JSON だけにしてください: {\"faq_no\": \"番号 または null\"}",
+         "vars": {
+          "q": {
+           "$from": "input",
+           "path": "/question"
+          },
+          "faq": {
+           "$from": "faq_list",
+           "path": "/rows"
+          }
+         }
+        },
+        "output": "json"
+       }
+      },
+      {
+       "id": "found",
+       "type": "control.branch",
+       "label": "該当の有無",
+       "params": {
+        "condition": {
+         "left": {
+          "$from": "judge",
+          "path": "/faq_no"
+         },
+         "op": "exists"
+        }
+       }
+      },
+      {
+       "id": "answer",
+       "type": "llm.invoke",
+       "label": "FAQ の内容で回答を作る",
+       "params": {
+        "prompt": {
+         "$template": "次の質問に、該当 FAQ（番号 {{no}}）の内容だけを根拠に、丁寧な日本語で回答してください。FAQ に無いことは推測で書かないでください。\n質問: {{q}}\n\nよくある質問一覧(JSON):\n{{faq}}",
+         "vars": {
+          "no": {
+           "$from": "judge",
+           "path": "/faq_no"
+          },
+          "q": {
+           "$from": "input",
+           "path": "/question"
+          },
+          "faq": {
+           "$from": "faq_list",
+           "path": "/rows"
+          }
+         }
+        }
+       }
+      },
+      {
+       "id": "save_auto",
+       "type": "data.record.create",
+       "label": "問い合わせ記録に保存（自動回答）",
+       "params": {
+        "table_id": "@table:log",
+        "record": {
+         "question": {
+          "$from": "input",
+          "path": "/question"
+         },
+         "answer": {
+          "$from": "answer",
+          "path": "/text"
+         },
+         "source": {
+          "$from": "judge",
+          "path": "/faq_no"
+         },
+         "status": "自動回答"
+        }
+       }
+      },
+      {
+       "id": "save_escalation",
+       "type": "data.record.create",
+       "label": "問い合わせ記録に保存（エスカレーション用）",
+       "params": {
+        "table_id": "@table:log",
+        "record": {
+         "question": {
+          "$from": "input",
+          "path": "/question"
+         },
+         "answer": "",
+         "source": "",
+         "status": "自動回答"
+        }
+       }
+      },
+      {
+       "id": "escalate",
+       "type": "data.transition",
+       "label": "エスカレーションへ進める",
+       "params": {
+        "table_id": "@table:log",
+        "record_id": {
+         "$from": "save_escalation",
+         "path": "/id"
+        },
+        "status_column": "status",
+        "to": "エスカレーション"
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "faq_list",
+       "port": "next",
+       "to": "judge"
+      },
+      {
+       "from": "judge",
+       "port": "next",
+       "to": "found"
+      },
+      {
+       "from": "found",
+       "port": "true",
+       "to": "answer"
+      },
+      {
+       "from": "answer",
+       "port": "next",
+       "to": "save_auto"
+      },
+      {
+       "from": "found",
+       "port": "false",
+       "to": "save_escalation"
+      },
+      {
+       "from": "save_escalation",
+       "port": "next",
+       "to": "escalate"
+      }
+     ]
+    }
+   },
+   "missing_roles": [],
+   "validation": {
+    "main": {
+     "errors": [
+      "ir.schema_violation"
+     ],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "s1": false,
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation"
+       ],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": true,
+   "s2d": null,
+   "s3": null,
+   "headline": false,
+   "from_cache": false
+  },
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "app12-faq-table",
+   "phrasing": "app",
+   "n": 1,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "app12-faq-table.app.1.medium",
+   "key": "2bddece7e5cb1f64bc7dc971e1c558d9dca1e55a2e1afc65cc1a45fd0748b7d8",
+   "status": "emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3927,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 2674,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 1676
+    }
+   },
+   "cost_micros": 1730,
+   "retries": 0,
+   "secs": 11.757,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": false
+   },
+   "irs": {
+    "main": {
+     "ir_version": 1,
+     "name": "helpdesk-faq-answer",
+     "display_name": "社内ヘルプデスク一次回答",
+     "declared_scopes": [
+      "data.read",
+      "data.write"
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "faq",
+       "type": "data.query",
+       "label": "よくある質問を取得",
+       "params": {
+        "table_id": "@table:faq",
+        "fields": [
+         "faq_no",
+         "question",
+         "answer"
+        ]
+       }
+      },
+      {
+       "id": "judge",
+       "type": "llm.invoke",
+       "label": "よくある質問から回答を作成",
+       "params": {
+        "prompt": {
+         "$template": "次のユーザーの質問に最も近いよくある質問を、一覧の中から探してください。\n該当するものがあれば、その FAQ の回答の内容だけを使って、丁寧な日本語で答えを書いてください。一覧にない内容を補ったり推測したりしないでください。\n該当するものがなければ matched を false にし、answer は空文字、faq_no は空文字にしてください。\n\n出力は次の JSON のみ: {\"matched\": true または false, \"faq_no\": \"使った FAQ の番号\", \"answer\": \"答え\"}\n\n【ユーザーの質問】\n{{q}}\n\n【よくある質問一覧】\n{{faqs}}",
+         "vars": {
+          "q": {
+           "$from": "input",
+           "path": "/question"
+          },
+          "faqs": {
+           "$from": "faq",
+           "path": "/records"
+          }
+         }
+        },
+        "format": "json"
+       }
+      },
+      {
+       "id": "check",
+       "type": "control.branch",
+       "label": "該当する FAQ があるか",
+       "params": {
+        "left": {
+         "$from": "judge",
+         "path": "/matched"
+        },
+        "op": "==",
+        "right": true
+       }
+      },
+      {
+       "id": "rec_auto",
+       "type": "data.record.create",
+       "label": "問い合わせ記録（自動回答）",
+       "params": {
+        "table_id": "@table:log",
+        "values": {
+         "question": {
+          "$from": "input",
+          "path": "/question"
+         },
+         "answer": {
+          "$from": "judge",
+          "path": "/answer"
+         },
+         "source": {
+          "$template": "FAQ {{no}}",
+          "vars": {
+           "no": {
+            "$from": "judge",
+            "path": "/faq_no"
+           }
+          }
+         },
+         "status": "自動回答"
+        }
+       }
+      },
+      {
+       "id": "rec_esc",
+       "type": "data.record.create",
+       "label": "問い合わせ記録（エスカレーション）",
+       "params": {
+        "table_id": "@table:log",
+        "values": {
+         "question": {
+          "$from": "input",
+          "path": "/question"
+         },
+         "answer": "",
+         "source": "",
+         "status": "エスカレーション"
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "faq",
+       "port": "next",
+       "to": "judge"
+      },
+      {
+       "from": "judge",
+       "port": "next",
+       "to": "check"
+      },
+      {
+       "from": "check",
+       "port": "true",
+       "to": "rec_auto"
+      },
+      {
+       "from": "check",
+       "port": "false",
+       "to": "rec_esc"
+      }
+     ]
+    }
+   },
+   "missing_roles": [],
+   "validation": {
+    "main": {
+     "errors": [
+      "ir.schema_violation"
+     ],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "s1": false,
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": false,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": false,
+      "lint": {
+       "errors": [
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation"
+       ],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": [
+       {
+        "code": "node_all_of",
+        "node_id": null,
+        "detail": "data.transition がありません"
+       }
+      ]
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": false,
+   "s2d": null,
+   "s3": null,
+   "headline": false,
+   "from_cache": false
+  },
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "app12-faq-table",
+   "phrasing": "app",
+   "n": 2,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "app12-faq-table.app.2.medium",
+   "key": "59d8d31111ee865f0d70af0a32d13dfb0b0dd976ce078d325a5b17988e136d7b",
+   "status": "no_emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3927,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 2562,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 1436
+    }
+   },
+   "cost_micros": 1674,
+   "retries": 0,
+   "secs": 11.524,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": true
+   },
+   "irs": {},
+   "missing_roles": [
+    "main"
+   ],
+   "s1": false,
+   "s2s": null,
+   "s2w": null,
+   "s2d": null,
+   "s3": null,
+   "s5": null,
+   "headline": false,
+   "from_cache": false
+  },
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "app12-faq-table",
+   "phrasing": "auto",
+   "n": 0,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "app12-faq-table.auto.0.medium",
+   "key": "162f4ee9c6b49cb91cd8f7f9c50918405a79fedc31bd2bad3b93a0c6b3814b93",
+   "status": "emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3921,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 2028,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 1112
+    }
+   },
+   "cost_micros": 1407,
+   "retries": 0,
+   "secs": 9.327,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": false
+   },
+   "irs": {
+    "main": {
+     "ir_version": 1,
+     "name": "faq-auto-answer",
+     "display_name": "よくある質問の自動回答",
+     "declared_scopes": [
+      "data.read",
+      "data.write"
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "faq_search",
+       "type": "data.query",
+       "label": "よくある質問を検索",
+       "params": {
+        "table_id": "@table:faq",
+        "search": {
+         "$from": "input",
+         "path": "/question"
+        },
+        "search_columns": [
+         "question"
+        ],
+        "return_columns": [
+         "faq_no",
+         "question",
+         "answer"
+        ],
+        "limit": 5
+       }
+      },
+      {
+       "id": "has_match",
+       "type": "control.branch",
+       "label": "該当あり？",
+       "params": {
+        "condition": {
+         "left": {
+          "$from": "faq_search",
+          "path": "/count"
+         },
+         "op": "gt",
+         "right": 0
+        }
+       }
+      },
+      {
+       "id": "ai_answer",
+       "type": "llm.invoke",
+       "label": "FAQ を材料に回答を作成",
+       "params": {
+        "prompt": {
+         "$template": "次の「よくある質問」の回答を材料にして、質問に日本語で丁寧に答えてください。材料にない内容は推測せず、その旨を伝えてください。\n\n質問: {{question}}\n\nよくある質問の回答: {{faq_answer}}",
+         "vars": {
+          "question": {
+           "$from": "input",
+           "path": "/question"
+          },
+          "faq_answer": {
+           "$from": "faq_search",
+           "path": "/rows/0/answer"
+          }
+         }
+        }
+       }
+      },
+      {
+       "id": "record_auto",
+       "type": "data.record.create",
+       "label": "問い合わせ記録に登録（自動回答）",
+       "params": {
+        "table_id": "@table:log",
+        "fields": {
+         "question": {
+          "$from": "input",
+          "path": "/question"
+         },
+         "answer": {
+          "$from": "ai_answer",
+          "path": "/text"
+         },
+         "source": {
+          "$template": "FAQ No.{{no}}",
+          "vars": {
+           "no": {
+            "$from": "faq_search",
+            "path": "/rows/0/faq_no"
+           }
+          }
+         },
+         "status": "自動回答"
+        }
+       }
+      },
+      {
+       "id": "record_escalate",
+       "type": "data.record.create",
+       "label": "問い合わせ記録に登録（エスカレーション）",
+       "params": {
+        "table_id": "@table:log",
+        "fields": {
+         "question": {
+          "$from": "input",
+          "path": "/question"
+         },
+         "status": "エスカレーション"
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "faq_search",
+       "port": "next",
+       "to": "has_match"
+      },
+      {
+       "from": "has_match",
+       "port": "true",
+       "to": "ai_answer"
+      },
+      {
+       "from": "ai_answer",
+       "port": "next",
+       "to": "record_auto"
+      },
+      {
+       "from": "has_match",
+       "port": "false",
+       "to": "record_escalate"
+      }
+     ]
+    }
+   },
+   "missing_roles": [],
+   "validation": {
+    "main": {
+     "errors": [
+      "ir.schema_violation"
+     ],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "s1": false,
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": false,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": false,
+      "lint": {
+       "errors": [
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation"
+       ],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": [
+       {
+        "code": "node_all_of",
+        "node_id": null,
+        "detail": "data.transition がありません"
+       }
+      ]
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": false,
+   "s2d": null,
+   "s3": null,
+   "headline": false,
+   "from_cache": false
+  },
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "app12-faq-table",
+   "phrasing": "auto",
+   "n": 1,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "app12-faq-table.auto.1.medium",
+   "key": "9f95322840f0ddab2b819b053c2b1b87d464a27054c1a6bdac05af31910aa11e",
+   "status": "emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3921,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 2008,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 1181
+    }
+   },
+   "cost_micros": 1397,
+   "retries": 0,
+   "secs": 8.796,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": false
+   },
+   "irs": {
+    "main": {
+     "ir_version": 1,
+     "name": "faq-auto-answer",
+     "display_name": "よくある質問への自動回答",
+     "declared_scopes": [
+      "data.read",
+      "data.write"
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ],
+     "nodes": [
+      {
+       "id": "search_faq",
+       "type": "data.query",
+       "label": "よくある質問を検索",
+       "params": {
+        "table_id": "@table:faq",
+        "search": {
+         "$from": "input",
+         "path": "/question"
+        },
+        "limit": 3
+       }
+      },
+      {
+       "id": "check_hit",
+       "type": "control.branch",
+       "label": "該当あり？",
+       "params": {
+        "condition": {
+         "$from": "search_faq",
+         "path": "/records"
+        },
+        "operator": "is_not_empty"
+       }
+      },
+      {
+       "id": "ai_answer",
+       "type": "llm.invoke",
+       "label": "AIで回答を作成",
+       "params": {
+        "prompt": {
+         "$template": "次の質問に、参考回答の内容だけを根拠に、丁寧な日本語で答えてください。\n\n質問: {{question}}\n参考回答: {{faq_answer}}",
+         "vars": {
+          "question": {
+           "$from": "input",
+           "path": "/question"
+          },
+          "faq_answer": {
+           "$from": "search_faq",
+           "path": "/records/0/answer"
+          }
+         }
+        }
+       }
+      },
+      {
+       "id": "save_auto",
+       "type": "data.record.create",
+       "label": "問い合わせ記録へ登録（自動回答）",
+       "params": {
+        "table_id": "@table:log",
+        "values": {
+         "question": {
+          "$from": "input",
+          "path": "/question"
+         },
+         "answer": {
+          "$from": "ai_answer",
+          "path": "/text"
+         },
+         "source": {
+          "$from": "search_faq",
+          "path": "/records/0/faq_no"
+         },
+         "status": "自動回答"
+        }
+       }
+      },
+      {
+       "id": "save_escalation",
+       "type": "data.record.create",
+       "label": "問い合わせ記録へ登録（エスカレーション）",
+       "params": {
+        "table_id": "@table:log",
+        "values": {
+         "question": {
+          "$from": "input",
+          "path": "/question"
+         },
+         "status": "エスカレーション"
+        }
+       }
+      }
+     ],
+     "edges": [
+      {
+       "from": "search_faq",
+       "port": "next",
+       "to": "check_hit"
+      },
+      {
+       "from": "check_hit",
+       "port": "true",
+       "to": "ai_answer"
+      },
+      {
+       "from": "ai_answer",
+       "port": "next",
+       "to": "save_auto"
+      },
+      {
+       "from": "check_hit",
+       "port": "false",
+       "to": "save_escalation"
+      }
+     ]
+    }
+   },
+   "missing_roles": [],
+   "validation": {
+    "main": {
+     "errors": [
+      "ir.schema_violation"
+     ],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "s1": false,
+   "static": {
+    "s2s": true,
+    "s2w": false,
+    "s5": false,
+    "roles": {
+     "main": {
+      "s2s": true,
+      "s2w": false,
+      "s5": false,
+      "lint": {
+       "errors": [
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation",
+        "ir.schema_violation"
+       ],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": [
+       {
+        "code": "node_all_of",
+        "node_id": null,
+        "detail": "data.transition がありません"
+       }
+      ]
+     }
+    }
+   },
+   "s2s": true,
+   "s2w": false,
+   "s5": false,
+   "s2d": null,
+   "s3": null,
+   "headline": false,
+   "from_cache": false
+  },
+  {
+   "exp": "e1a-v0",
+   "mode": "a",
+   "label": "v0",
+   "task": "app12-faq-table",
+   "phrasing": "auto",
+   "n": 2,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "app12-faq-table.auto.2.medium",
+   "key": "67f298de88f937d10856b4e7bd1f3ad7ee848e028abfd4d5149f02969d4383ce",
+   "status": "no_emit",
+   "stop_reason": "tool_use",
+   "refusal_category": null,
+   "model": "claude-haiku-5-5",
+   "usage": {
+    "input_tokens": 3921,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 2349,
+    "service_tier": "standard",
+    "inference_geo": "global",
+    "speed": "standard",
+    "output_tokens_details": {
+     "thinking_tokens": 1421
+    }
+   },
+   "cost_micros": 1567,
+   "retries": 0,
+   "secs": 10.89,
+   "emit_count": 1,
+   "s8": {
+    "refusal": false,
+    "asked": false,
+    "no_emit": true
+   },
+   "irs": {},
+   "missing_roles": [
+    "main"
+   ],
+   "s1": false,
+   "s2s": null,
+   "s2w": null,
+   "s2d": null,
+   "s3": null,
+   "s5": null,
+   "headline": false,
+   "from_cache": false
+  }
+ ],
+ "out_of_scope": [
+  {
+   "task": "app01-posting-batch",
+   "missing": [
+    "版に無い: node:data.record.upsert"
+   ],
+   "label": "v0"
+  },
+  {
+   "task": "app03-daily-submit",
+   "missing": [
+    "版に無い: node:data.record.upsert"
+   ],
+   "label": "v0"
+  },
+  {
+   "task": "app03-weekly-summary",
+   "missing": [
+    "版に無い: node:transform.date",
+    "版に無い: cap:scheduled_at"
+   ],
+   "label": "v0"
+  },
+  {
+   "task": "app03-pair",
+   "missing": [
+    "版に無い: node:data.record.upsert",
+    "版に無い: node:transform.date",
+    "版に無い: cap:scheduled_at"
+   ],
+   "label": "v0"
+  },
+  {
+   "task": "app08-weekly-kpi",
+   "missing": [
+    "版に無い: node:transform.date",
+    "版に無い: cap:scheduled_at"
+   ],
+   "label": "v0"
+  },
+  {
+   "task": "app11-overdue",
+   "missing": [
+    "版に無い: node:transform.date",
+    "版に無い: cap:scheduled_at"
+   ],
+   "label": "v0"
+  },
+  {
+   "task": "app09-minutes-tasks",
+   "missing": [
+    "版に無い: trigger:event",
+    "版に無い: cap:trigger"
+   ],
+   "label": "v0"
+  },
+  {
+   "task": "basic-summary-file",
+   "missing": [
+    "成り立たない: 正解がこの版で保存できない: CaseError: basic-summary-file/main: 検証を通りません: [{'code': 'ir.schema_violation', 'message': \"params が不正です: 項目 'on_name_taken' は使えません\", 'node_id': 'save', 'path': '/params/on_name_taken'}]"
+   ],
+   "label": "v0"
+  },
+  {
+   "task": "app02-triage",
+   "missing": [
+    "成り立たない: 正解がこの版で保存できない: CaseError: app02-triage/main: 検証を通りません: [{'code': 'ir.schema_violation', 'message': \"params が不正です: 項目 'output_schema' は使えません\", 'node_id': 'classify', 'path': '/params/output_schema'}]"
+   ],
+   "label": "v0"
+  },
+  {
+   "task": "app05-screening-text",
+   "missing": [
+    "成り立たない: 正解がこの版で保存できない: CaseError: app05-screening-text/main: 検証を通りません: [{'code': 'ir.schema_violation', 'message': \"params が不正です: 項目 'output_schema' は使えません\", 'node_id': 'judge', 'path': '/params/output_schema'}]"
+   ],
+   "label": "v0"
+  },
+  {
+   "task": "app06-stock-move",
+   "missing": [
+    "成り立たない: 正解がこの版で保存できない: CaseError: app06-stock-move/main: 検証を通りません: [{'code': 'ir.schema_violation', 'message': \"params が不正です: 項目 'add' は使えません\", 'node_id': 'take', 'path': '/params/add'}]"
+   ],
+   "label": "v0"
+  },
+  {
+   "task": "app06-reorder-check",
+   "missing": [
+    "成り立たない: 正解がこの版で保存できない: CaseError: app06-reorder-check/main: 検証を通りません: [{'code': 'ir.schema_violation', 'message': \"params が不正です: 項目 'match_on' は使えません\", 'node_id': 'save_drafts', 'path': '/params/match_on'}, {'code': 'ir.schema_violation', 'message': \"params が不正です: 項目 'encoding' は使えません\", 'node_id': 'write_csv', 'path': '/p"
+   ],
+   "label": "v0"
+  },
+  {
+   "task": "app11-checkout",
+   "missing": [
+    "成り立たない: 正解がこの版で通らない: available: unexpected_status run の状態が failed（期待 succeeded）／available: 照合 status 状態 ['failed']（期待 succeeded）／available: 照合 rows:count loans {}: 0 行（期待 1）／available: 照合 rows:match loans: {'code': 'E-01', 'borrower': '松本', 'loaned_on': {'$one_of': ['2026-11-07']}} に合う行が無い（[]）／available: 落ちた step log: 値式（$from）が解決できません"
+   ],
+   "label": "v0"
+  },
+  {
+   "task": "app11-return",
+   "missing": [
+    "成り立たない: 正解がこの版で通らない: back: unexpected_status run の状態が failed（期待 succeeded）／back: 照合 status 状態 ['failed']（期待 succeeded）／back: 照合 rows:match loans: {'code': 'E-01', 'borrower': '松本', 'returned_on': {'$one_of': ['2026-11-07']}} に合う行が無い（[{'borrower': '西村', 'code'／back: 落ちた step close: 値式（$from）が解決できません"
+   ],
+   "label": "v0"
+  },
+  {
+   "task": "app10-survey-csv",
+   "missing": [
+    "成り立たない: 正解がこの版で通らない: survey: unexpected_status run の状態が failed（期待 succeeded）／survey: 照合 status 状態 ['failed']（期待 succeeded）／survey: 照合 rows:count summary {}: 0 行（期待 1）／survey: 照合 rows:match summary: {'responses': 10, 'promoters': 5, 'detractors': 3, 'nps': 20} に合う行が無い（[]）／survey: 落ちた step save: 値式（$from）が解決できません"
+   ],
+   "label": "v0"
+  }
+ ],
+ "cost": {
+  "exp_usd": 0.047216
+ },
+ "aggregates": [
+  {
+   "condition": "v0/a/medium",
+   "label": "v0",
+   "mode": "a",
+   "effort": "medium",
+   "max_steps": null,
+   "trials": 45,
+   "tasks": 5,
+   "s1": {
+    "n": 45,
+    "true": 0,
+    "rate": 0.0
+   },
+   "s2s": {
+    "n": 0,
+    "true": 0,
+    "rate": null
+   },
+   "s2w": {
+    "n": 0,
+    "true": 0,
+    "rate": null
+   },
+   "s2d": {
+    "n": 0,
+    "true": 0,
+    "rate": null
+   },
+   "s3": {
+    "n": 0,
+    "true": 0,
+    "rate": null
+   },
+   "s5": {
+    "n": 42,
+    "true": 35,
+    "rate": 0.8333333333333334
+   },
+   "headline": {
+    "n": 45,
+    "true": 0,
+    "rate": 0.0
+   },
+   "headline_ci": {
+    "mean": 0.0,
+    "lo": 0.0,
+    "hi": 0.0,
+    "n_tasks": 5
+   },
+   "pass_at_k": {
+    "1": 0.0,
+    "2": 0.0,
+    "3": 0.0,
+    "4": 0.0,
+    "5": 0.0,
+    "6": 0.0,
+    "7": 0.0,
+    "8": 0.0,
+    "9": 0.0
+   },
+   "cost_usd": 0.047216,
+   "cost_per_completed_task_usd": null,
+   "mean_secs": 6.139955555555556,
+   "retries": 0,
+   "s8": {
+    "asked": 0,
+    "no_emit": 3,
+    "refusal": 0
+   },
+   "status": {
+    "emit": 42,
+    "no_emit": 3
+   }
+  }
+ ],
+ "failures": {
+  "validation": {
+   "ir.schema_violation": 42
+  },
+  "lint": {
+   "ir.schema_violation": 353
+  },
+  "task": {
+   "flow_through": 4,
+   "input_ref": 1
+  },
+  "dynamic": {},
+  "steps_stub": {},
+  "steps_runs": {},
+  "steps_by_node_stub": {},
+  "steps_by_node_runs": {}
+ }
+}
