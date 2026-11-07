@@ -139,6 +139,10 @@ fn first_segment(path: &str) -> Option<String> {
 
 /// 設定（params）の `present_if` の場所に値があるか（[`workflow_engine::vocab::OutputField::present_if`] の約束:
 /// 無い・`null`・`false`・空の文字・空のリスト・空のオブジェクトは「値が無い」。空の `present_if` は常にある）。
+///
+/// 製品の Rust には、この約束を判定する関数が無い（判定するのは右パネルの
+/// `web/src/components/workflow/editor/config-panel/value-refs.ts` の `hasParamAt` だけ）。ここはその写しなので、
+/// 製品が決め方を変えたら合わせる（`lint_bin` の突き合わせでは気づけない・GAP-112）。
 fn present(params: &Value, present_if: &str) -> bool {
     if present_if.is_empty() {
         return true;

@@ -548,6 +548,10 @@ Mode B で承認待ち（`approval_requested`）が来たら、既定で却下�
   `map_data`）なので、失敗の内訳からは分けられない。`steps_by_node_*` の `data.query/invalid` には、索引の誤りと、
   ほかの入力の誤り（列の型の取り違え・無い列・状態の進め方など）が混ざる。製品のすき間なのかモデルの失敗なのかは、
   内訳では見分けられない（文では判定しない。製品が step の誤りに data のコードを残すまでの限界）。
+- 出力の path の検査（ir_lint の `output_paths`）の `present_if` の「値がある」の判定は、製品の Rust に判定する関数が
+  無いので、右パネルの `hasParamAt`（`web/.../config-panel/value-refs.ts`）を ir_lint に写している（写しの置き場が
+  Python から ir_lint に移っただけで、判定は前と同じ）。製品が決め方（数の 0 の扱いなど）を変えても、`lint_bin` の
+  突き合わせでは気づけない（GAP-112）。
 - 差し込みの残りと入力が届かないの検査は、stub が prompt を「回答: …」で返すことに頼る。出力の形（output_schema）
   のある llm.invoke では stub が形に合う最小の値を返すので、その prompt の差し込みの残りは動的には見えない
   （静的な `ir.template_escaped_var` で捕まえる）。

@@ -9,7 +9,8 @@
   S2s（保存できても静的に誤り）に入れる。
 - `output_paths`（`$from nodes.<id>.output` の path の先頭が、そのノードの出力の項目に無い・コード
   `ir_lint.output_path`）は S2s に入れる。出力の項目は ir_lint が製品のカタログ（`output_fields`・`present_if`）で
-  決める（Python では判定しない・GAP-112）。
+  決める（Python では判定しない・GAP-112）。`present_if` の「値がある」の判定は、製品の Rust に関数が無いので
+  ir_lint が web の `hasParamAt` を写している（写しの置き場が Python から ir_lint に移っただけ・README の限界）。
 - `enable_blockers`（自動実行をオンにする前に止める理由・保存先や一覧のフォルダの省略など）は、課題のきっかけが
   schedule か event のときだけ S2s に入れる（その課題は自動実行をオンにしないと使えない。対話の課題で余計な
   きっかけを足しただけなら数えない）。
