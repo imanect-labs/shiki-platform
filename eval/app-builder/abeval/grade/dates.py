@@ -6,10 +6,13 @@
   実行の日に決まる値を持つ課題（`Expect.date_dependent`・run_case が `$run_date`・`@run_date`・`scheduled_at` を
   使う課題か、課題の印 `date_dependent`）では、どれも S2s に数える（`grade.static.date_literal_findings`）。
   依頼の中の日付は課題に無い（「今日」「先週」「実行した日」で頼む）ので、決め打ちとみなす。
-- **予定の週**（`scheduled_window`）: 課題の run_case の `scheduled_at`（日本時間）の週（月曜はじまり）と、その
-  「先週」（fixture の日付が入る週）を合わせた範囲。Mode B のモデルが見る「今日」は測った日になる（製品の
-  `today_note` は run の作成時刻から作る）ので、測る日がこの範囲に入ると、「今日」「先週」を決め打ちした IR も
-  `scheduled_at` の run_case を通り得る。Mode B は、その日にはこの課題を流さない（`mode_b.date_window_reason`）。
+- **予定の週**（`scheduled_window`）: 課題の run_case の `scheduled_at`（日本時間）の週（月曜はじまり）。Mode B の
+  モデルが見る「今日」は測った日になる（製品の `today_note` は run の作成時刻から作る）ので、測る日がこの週に
+  入ると、「今日」「先週」を見えている今日から決め打ちした IR も `scheduled_at` の run_case を通り得る。Mode B は、
+  その日には結果が予定の日時で決まる課題（`Task.scheduled_dependent`）を流さない（`mode_b.date_window_reason`）。
+  予定の週の前の週は入れない: その週の「今日」から「次の月曜の実行」を見越して先週の範囲を決め打ちする書き方は、
+  Mode A の取り込みの今日（`[capture] fixed_date`・2026-11-04）にも同じに当たり、Mode B だけを止めると二つの
+  モードの扱いがずれる（文字の形なら `date_literal` が両方で捕まえる）。
 
 文字の形にならない決め打ち（script の中で `new Date(2026, 10, 7)` のように組み立てるなど）は見つけられない（README の
 限界）。
@@ -102,15 +105,11 @@ def week_of(day: dt.date) -> tuple[dt.date, dt.date]:
 
 
 def scheduled_window(scheduled: list[str]) -> tuple[dt.date, dt.date] | None:
-    """予定の週と、その先週を合わせた範囲（`scheduled_at` が無ければ None）。"""
+    """予定の週（日本時間・月曜〜日曜。予定が週をまたげば両端を含む範囲。`scheduled_at` が無ければ None）。"""
     if not scheduled:
         return None
-    starts, ends = [], []
-    for s in scheduled:
-        start, end = week_of(_jst_date(s))
-        starts.append(start - dt.timedelta(days=7))
-        ends.append(end)
-    return min(starts), max(ends)
+    weeks = [week_of(_jst_date(s)) for s in scheduled]
+    return min(w[0] for w in weeks), max(w[1] for w in weeks)
 
 
 def in_window(now: dt.datetime, window: tuple[dt.date, dt.date] | None) -> bool:

@@ -187,33 +187,68 @@ def test_disabling_date_literals_lets_the_fixed_date_mutant_through(monkeypatch)
 
 # --- 予定の週（Mode B） ---
 
+# 結果が予定の日時で決まる課題（requires の cap:scheduled_at）。予定で起動しても結果に日付の出ない app01-posting-batch
+# （15 分ごとの取り込み）と app06-reorder-check（ファイル名の日付は形だけを見る）は入れない。
+SCHEDULED_DEPENDENT = {"app03-weekly-summary", "app03-pair", "app08-weekly-kpi", "app11-overdue"}
 
-def test_the_window_is_the_scheduled_week_and_the_week_before():
+
+def test_the_window_is_the_scheduled_week_only():
     assert scheduled_window([]) is None
     w = scheduled_window(["2026-11-09T09:00:00+09:00"])
-    assert w == (dt.date(2026, 11, 2), dt.date(2026, 11, 15))
+    assert w == (dt.date(2026, 11, 9), dt.date(2026, 11, 15))
     # 日本時間で日付が変わる（UTC では前の日曜）。
     assert scheduled_window(["2026-11-08T15:30:00Z"]) == w
     for day, inside in [
-        (dt.datetime(2026, 11, 1, 23, 59, tzinfo=JST), False),
-        (dt.datetime(2026, 11, 2, 0, 0, tzinfo=JST), True),
-        (dt.datetime(2026, 11, 7, 12, 0, tzinfo=JST), True),
+        (
+            dt.datetime(2026, 11, 7, 12, 0, tzinfo=JST),
+            False,
+        ),  # 前の週（Mode A の今日 11-04 と同じ週）
+        (dt.datetime(2026, 11, 8, 23, 59, tzinfo=JST), False),
+        (dt.datetime(2026, 11, 9, 0, 0, tzinfo=JST), True),
         (dt.datetime(2026, 11, 15, 23, 59, tzinfo=JST), True),
         (dt.datetime(2026, 11, 16, 0, 0, tzinfo=JST), False),
         (dt.datetime(2026, 11, 15, 15, 0, tzinfo=dt.UTC), False),  # 日本時間では 16 日
+        (dt.datetime(2026, 11, 8, 15, 0, tzinfo=dt.UTC), True),  # 日本時間では 9 日
     ]:
         assert in_window(day, w) is inside, day
     assert not in_window(dt.datetime(2026, 11, 7, tzinfo=JST), None)
     assert dates.week_of(dt.date(2026, 11, 9)) == (dt.date(2026, 11, 9), dt.date(2026, 11, 15))
+    # 予定が週をまたぐなら両端を含む。
+    assert scheduled_window(["2026-11-09T09:00:00+09:00", "2026-11-17T09:00:00+09:00"]) == (
+        dt.date(2026, 11, 9),
+        dt.date(2026, 11, 22),
+    )
 
 
 def test_every_scheduled_task_has_a_window():
     for t in recorded.tasks().values():
         if t.scheduled_at():
             assert scheduled_window(t.scheduled_at()) == (
-                dt.date(2026, 11, 2),
+                dt.date(2026, 11, 9),
                 dt.date(2026, 11, 15),
             ), t.id
+
+
+def test_only_tasks_whose_result_follows_the_schedule_are_windowed():
+    got = {t.id for t in recorded.tasks().values() if t.scheduled_dependent}
+    assert got == SCHEDULED_DEPENDENT
+    assert all(
+        recorded.tasks()[i].scheduled_at() for i in ("app01-posting-batch", "app06-reorder-check")
+    )
+
+
+def test_a_dated_scheduled_expectation_needs_the_scheduled_at_cap():
+    """予定の run_case の期待に日付があるのに cap:scheduled_at が無い課題は読み込めない（窓から漏らさない）。"""
+    raw = copy.deepcopy(dict(recorded.tasks()["app08-weekly-kpi"].raw))
+    raw["requires"] = [r for r in raw["requires"] if r != "cap:scheduled_at"]
+    with pytest.raises(ValueError, match="cap:scheduled_at"):
+        parse_task(raw)
+    # 期待に日付の無い予定の課題は書かなくてよい（印を書かなければ窓に掛からない）。
+    raw = copy.deepcopy(dict(recorded.tasks()["app01-posting-batch"].raw))
+    assert "cap:scheduled_at" not in raw["requires"]
+    assert not parse_task(raw).scheduled_dependent
+    raw["requires"] = [*raw["requires"], "cap:scheduled_at"]
+    assert parse_task(raw).scheduled_dependent
 
 
 def test_mode_b_does_not_run_a_scheduled_task_inside_the_window():
@@ -225,7 +260,7 @@ def test_mode_b_does_not_run_a_scheduled_task_inside_the_window():
     )
     assert trial is None
     assert [e["kind"] for e in errors] == ["date_window"]
-    assert "2026-11-02〜2026-11-15" in errors[0]["detail"] and not errors[0].get("stop")
+    assert "2026-11-09〜2026-11-15" in errors[0]["detail"] and not errors[0].get("stop")
     assert fake.posted == [] and fake.threads == {}  # 何も作らない・話しかけない
     # 予定の課題でなければ同じ日でも流す。
     trial, errors = mode_b.run_trial(
@@ -234,13 +269,27 @@ def test_mode_b_does_not_run_a_scheduled_task_inside_the_window():
     assert trial is not None and errors == []
 
 
+@pytest.mark.parametrize("task", ["app01-posting-batch", "app06-reorder-check"])
+def test_mode_b_runs_a_scheduled_task_whose_result_has_no_date_inside_the_window(task):
+    """予定で起動しても結果が日付で変わらない課題は、予定の週でも流す（分母から外さない）。"""
+    inside = dt.datetime(2026, 11, 10, 1, 0, tzinfo=dt.UTC)
+    assert mode_b.date_window_reason(TASKS[task], inside) is None
+
+
 def test_mode_b_runs_scheduled_tasks_outside_the_window_and_on_the_stub_stack():
-    outside = dt.datetime(2026, 11, 16, 1, 0, tzinfo=dt.UTC)
-    fake = ChatFake()
-    trial, errors = mode_b.run_trial(
-        make_ctx(fake, now=outside), TASKS["app03-weekly-summary"], spec("app03-weekly-summary")
-    )
-    assert trial is not None and errors == [] and fake.posted
+    for n, outside in enumerate(
+        (
+            dt.datetime(2026, 11, 16, 1, 0, tzinfo=dt.UTC),
+            dt.datetime(2026, 11, 7, 3, 0, tzinfo=dt.UTC),  # 前の週（Mode A の今日と同じ扱い）
+        )
+    ):
+        fake = ChatFake()
+        trial, errors = mode_b.run_trial(
+            make_ctx(fake, now=outside),
+            TASKS["app03-weekly-summary"],
+            spec("app03-weekly-summary", n=n),
+        )
+        assert trial is not None and errors == [] and fake.posted, outside
     inside = dt.datetime(2026, 11, 10, 1, 0, tzinfo=dt.UTC)
     assert mode_b.date_window_reason(TASKS["app03-weekly-summary"], inside, stub=True) is None
     assert mode_b.date_window_reason(TASKS["app03-weekly-summary"], inside) is not None

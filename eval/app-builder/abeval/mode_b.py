@@ -46,9 +46,10 @@ sha も入れる（採点器か課題を直したら流し直す）。会話と�
 採点の後の hook）も入れる（どれかを変えて流し直したら、前の条件の結果を返さない・BUG-249）。
 
 予定の週（BUG-247）: モデルが見る「今日」は測った日になる（製品の `today_note` は run の作成時刻から作る）。測る日
-（日本時間）が、課題の `scheduled_at` の週とその先週（`grade.dates.scheduled_window`）に入る日は、その課題を流さずに
-errors（kind: date_window）に理由を入れる（「今日」「先週」を決め打ちした IR も run_case を通り得るため）。stub の
-スタックの配管の確かめでは見ない（stub のモデルは日付を決め打ちしない）。
+（日本時間）が課題の `scheduled_at` の週（`grade.dates.scheduled_window`）に入る日は、結果が予定の日時で決まる課題
+（`Task.scheduled_dependent`・`requires` の `cap:scheduled_at`）を流さずに errors（kind: date_window）に理由を
+入れる（「今日」「先週」を決め打ちした IR も run_case を通り得るため）。stub のスタックの配管の確かめでは見ない
+（stub のモデルは日付を決め打ちしない）。
 
 ミニアプリ（T12）の差し込み口として、採点の後に呼ぶ hook（`ModeBContext.hooks`）を残す。会話の全文は
 キャッシュにだけ置く（結果に入れない・H7 (a)）。
@@ -538,16 +539,16 @@ def key_for(ctx: ModeBContext, task: Task, ts: TrialSpec, prompt: str | None = N
 
 
 def date_window_reason(task: Task, now: dt.datetime, *, stub: bool = False) -> str | None:
-    """測る日が課題の予定の週（と先週）に入れば、流さない理由（BUG-247）。stub では見ない。"""
-    if stub:
+    """結果が予定の日時で決まる課題で、測る日が予定の週に入れば流さない理由（BUG-247）。stub では見ない。"""
+    if stub or not task.scheduled_dependent:
         return None
     window = scheduled_window(task.scheduled_at())
     if window is None or not in_window(now, window):
         return None
     day = now.astimezone(JST).date()
     return (
-        f"測る日 {day}（日本時間）が課題の予定の週とその先週（{window[0]}〜{window[1]}）に重なるので"
-        "流しません（モデルが見る「今日」が予定の日に近く、日付を決め打ちした IR も run_case を通り得る）"
+        f"測る日 {day}（日本時間）が課題の予定の週（{window[0]}〜{window[1]}）に重なるので流しません"
+        "（モデルが見る「今日」が予定の日と同じ週で、日付を決め打ちした IR も run_case を通り得る）"
     )
 
 

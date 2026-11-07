@@ -45,6 +45,9 @@
   最初の状態から進め方で届くことを確かめる。使う課題は `requires` に `cap:fsm` を書く。
 - `requires` は `node:<種類>`（その版のカタログで使える）・`cap:<機能>`（`shiki.capabilities_of` の項目）・
   `trigger:<種類>`（その種類のきっかけで動かす経路。`event` は有効化を使うので後回し）。
+  `cap:scheduled_at` は「結果が予定の日時で決まる」課題の印も兼ねる（先週の集計・今日より前の延滞など）。予定の
+  run_case の期待に日付（日付の文字・`$fixture` の範囲・name_regex の日付・`$run_date`）があれば必ず書く（無いと
+  読み込めない）。Mode B は、この印の課題を予定の週には流さない（BUG-247）。
 
 製品の規則（IR の検証）は写さない。ここで見るのは課題の形と、課題の中の参照の辻褄だけ。
 """
@@ -63,6 +66,7 @@ from typing import Any
 
 from abeval.config import ROOT
 from abeval.fixtures import FixtureError, fsm_spec
+from abeval.grade.dates import date_literals
 
 TASKS_DIR = ROOT / "data" / "tasks"
 CORE_TASKS = TASKS_DIR / "core.json"
@@ -73,6 +77,8 @@ TRIGGER_KINDS = ("interactive", "schedule", "event")
 STATUSES = ("succeeded", "failed", "cancelled", "any")
 MATCH_OPS = ("equals", "contains", "regex", "in", "absent")
 REQUIRE_KINDS = ("node", "cap", "trigger")
+# 予定の日時で起動する口（`POST /workflows/{id}/run` の `scheduled_at`）。結果が予定の日時で決まる課題が書く。
+SCHEDULED_CAP = "cap:scheduled_at"
 _TASK_ID = re.compile(r"^[a-z][a-z0-9-]{0,47}$")
 _CASE_ID = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 _REF = re.compile(r"^[a-z][a-z0-9_]{0,31}$")
@@ -193,6 +199,16 @@ class Task:
     def date_dependent(self) -> bool:
         return all(r.expect.date_dependent for r in self.roles) if self.roles else False
 
+    @property
+    def scheduled_dependent(self) -> bool:
+        """結果が予定の日時（`scheduled_at`）で決まる課題か（`requires` の `cap:scheduled_at`）。
+
+        予定の日時で起動しても結果が変わらない課題（期待に日付の無い 15 分ごとの取り込みなど）は数えない。期待に
+        日付のある予定の run_case を持つ課題は、`cap:scheduled_at` を書かないと読み込めない（`parse_task`）。
+        Mode B が予定の週に流さない課題を選ぶのに使う（`mode_b.date_window_reason`・BUG-247）。
+        """
+        return SCHEDULED_CAP in self.requires and bool(self.scheduled_at())
+
 
 def _uses_run_date(value: Any) -> bool:
     """期待の中に `$run_date`（実行した日）か name_regex の `@run_date` があるか。"""
@@ -206,6 +222,17 @@ def _uses_run_date(value: Any) -> bool:
     if isinstance(value, list):
         return any(_uses_run_date(v) for v in value)
     return False
+
+
+def _expect_dated(value: Any) -> bool:
+    """期待の中に日付があるか（日付の文字・`$fixture` の範囲・name_regex の日付か、`$run_date`・`@run_date`）。"""
+    if _uses_run_date(value):
+        return True
+    if isinstance(value, Mapping):
+        return any(_expect_dated(v) for v in value.values())
+    if isinstance(value, list):
+        return any(_expect_dated(v) for v in value)
+    return isinstance(value, str) and bool(date_literals(value))
 
 
 def _date_dependent(raw: Mapping, cases: list[RunCase]) -> bool:
@@ -616,6 +643,13 @@ def parse_task(raw: Mapping[str, Any]) -> Task:
                 problems.append(f"{where}.reference（{role}）{at}: 置き場所の印の形が違います: {r}")
             elif refs.get(r) != k:
                 problems.append(f"{where}.reference（{role}）{at}: fixture に無い {k} です: {r}")
+    for c in cases:
+        scheduled = any(st.scheduled_at for st in c.steps)
+        if scheduled and SCHEDULED_CAP not in reqs and _expect_dated(c.expect):
+            problems.append(
+                f"{where}.run_cases（{c.id}）: 予定の日時で決まる期待（日付）があるので、requires に "
+                f"{SCHEDULED_CAP} を書きます（予定の週の守り・BUG-247）"
+            )
     if problems:
         raise TaskError(problems)
     dated = _date_dependent(raw, cases)

@@ -17,7 +17,7 @@ from fake_chat import ChatFake
 from recorded import catalog
 
 TASKS = {t.id: t for t in load_tasks()}
-# 偽の「今」（日本時間 2026-10-21 水曜 10 時）。課題の予定の週（2026-11-02〜15）から外す（測る日の守り・BUG-247）。
+# 偽の「今」（日本時間 2026-10-21 水曜 10 時）。課題の予定の週（2026-11-09〜15）から外す（測る日の守り・BUG-247）。
 FIXED_NOW = dt.datetime(2026, 10, 21, 1, 0, tzinfo=dt.UTC)
 
 
