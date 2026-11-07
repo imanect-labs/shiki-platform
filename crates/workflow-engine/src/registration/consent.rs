@@ -108,16 +108,29 @@ pub(super) fn suggested_grants(ir: &WorkflowIr) -> Vec<SuggestedGrant> {
             // CSV 表データ（Task 11P.9）: 実行は TabularService のファイル ReBAC で決まる
             // （query = viewer@file・patch = editor@file・write = 保存先フォルダの作成権限）。
             // schedule / event の run は委譲が無いと「csv 権限なし」で落ちるので、storage.* と
-            // 同じ形で対象を提案する（BUG-10）。
-            crate::vocab::NodeType::CsvQuery | crate::vocab::NodeType::CsvPatch => {
+            // 同じ形で対象を提案する（BUG-10）。集計は JOIN のために足す CSV（`tables`）も全部の閲覧を
+            // 実行主体で確かめるので、足した CSV も同じ形で提案する。
+            crate::vocab::NodeType::CsvQuery => {
+                for file in csv_query_files(&node.params) {
+                    out.push(SuggestedGrant {
+                        scope: "csv.read".into(),
+                        object_kind: "file".into(),
+                        object_id: file.clone(),
+                        object_name: None,
+                        relation: "viewer".into(),
+                        source: source.clone(),
+                        needs_user_pick: file.is_none(),
+                    });
+                }
+            }
+            crate::vocab::NodeType::CsvPatch => {
                 let file = literal_str(&node.params, "file");
-                let read = nt == crate::vocab::NodeType::CsvQuery;
                 out.push(SuggestedGrant {
-                    scope: if read { "csv.read" } else { "csv.write" }.into(),
+                    scope: "csv.write".into(),
                     object_kind: "file".into(),
                     object_id: file.clone(),
                     object_name: None,
-                    relation: if read { "viewer" } else { "editor" }.into(),
+                    relation: "editor".into(),
                     source,
                     needs_user_pick: file.is_none(),
                 });
@@ -298,6 +311,27 @@ fn agent_folder_scopes(params: &serde_json::Value) -> Vec<&'static str> {
     out
 }
 
+/// csv.query が読むファイル（`file` と、JOIN のために足す `tables` の各 `file`・同じものは 1 つ・並びは書いた順）。
+///
+/// 各ファイルの扱いは `file` と同じ（リテラルの id はその id・値式と空の欄は `None` で選ばせる）。`tables` 自体を
+/// 値式で書いたとき（中のファイルは実行まで分からない）も `None` を 1 つ挙げる。
+fn csv_query_files(params: &serde_json::Value) -> Vec<Option<String>> {
+    let mut files = vec![literal_str(params, "file")];
+    let tables: Vec<Option<String>> = match params.get("tables") {
+        None | Some(serde_json::Value::Null) => Vec::new(),
+        Some(serde_json::Value::Array(items)) => {
+            items.iter().map(|item| literal_str(item, "file")).collect()
+        }
+        Some(_) => vec![None],
+    };
+    for file in tables {
+        if !files.contains(&file) {
+            files.push(file);
+        }
+    }
+    files
+}
+
 /// params のフィールドが文字列リテラルならその値（`$from`/`$template` は None）。
 ///
 /// 空の文字（置いたばかりで選んでいない欄・D-83）は対象が決まっていないので None（選ばせる側に回す）。
@@ -396,6 +430,59 @@ mod tests {
         );
         assert_eq!(w.object_id.as_deref(), Some(FOLDER));
         assert!(!w.needs_user_pick);
+    }
+
+    /// CSV を集計の JOIN のために足す CSV（`tables`）も、`file` と同じく閲覧の委譲を提案する（実行は全部のファイルの
+    /// 閲覧を実行主体で確かめる）。同じファイルは 1 つにまとめ、値式・空の欄は選ばせる。`tables` 自体を値式で書いた
+    /// ときも選ばせる。
+    #[test]
+    fn csv_query_suggests_the_joined_files_too() {
+        const JOINED: &str = "bbbbbbbb-cccc-dddd-eeee-ffffffffffff";
+        let ir = |tables: serde_json::Value| {
+            WorkflowIr::from_json(&json!({
+                "ir_version": 1, "name": "wf", "declared_scopes": ["csv.read"],
+                "nodes": [{ "id": "q", "type": "csv.query",
+                            "params": { "file": FILE, "sql": "SELECT 1", "tables": tables } }],
+                "edges": []
+            }))
+            .expect("test IR")
+        };
+        let targets = |grants: &[SuggestedGrant]| -> Vec<(Option<String>, bool)> {
+            for g in grants {
+                assert_eq!(
+                    (
+                        g.scope.as_str(),
+                        g.object_kind.as_str(),
+                        g.relation.as_str(),
+                        g.source.as_str()
+                    ),
+                    ("csv.read", "file", "viewer", "node:q"),
+                    "{g:?}"
+                );
+            }
+            grants
+                .iter()
+                .map(|g| (g.object_id.clone(), g.needs_user_pick))
+                .collect()
+        };
+        let listed = ir(json!([
+            { "name": "master", "file": JOINED },
+            { "name": "again", "file": FILE },
+            { "name": "picked", "file": { "$from": "input", "path": "/file" } },
+            { "name": "blank", "file": "" }
+        ]));
+        let want = vec![
+            (Some(FILE.to_string()), false),
+            (Some(JOINED.to_string()), false),
+            (None, true),
+        ];
+        assert_eq!(targets(&super::suggested_grants(&listed)), want);
+        assert_eq!(targets(&RegistrationService::consent_plan(&listed)), want);
+        let dynamic = ir(json!({ "$from": "input", "path": "/tables" }));
+        assert_eq!(
+            targets(&RegistrationService::consent_plan(&dynamic)),
+            vec![(Some(FILE.to_string()), false), (None, true)]
+        );
     }
 
     /// wait(event) のフォルダは閲覧の委譲を提案する（起床は実行主体が読めるファイルの保存だけ）。

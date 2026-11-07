@@ -3,7 +3,7 @@
 //! 業務データのブロック（データを調べる・追加・更新・追加か更新・削除・まとめて登録）・データ変更のきっかけ
 //! （追加・更新）・データを待つブロック（wait(event)）のテーブルと、ファイルを保存・フォルダ一覧・CSV を保存の
 //! フォルダー、ファイル保存のきっかけとそれを待つブロックのフォルダー、ファイルを読む・CSV を集計・CSV を編集の
-//! ファイルが、保存する人に見えるものであること。
+//! ファイル（CSV を集計は JOIN のために足す CSV も）が、保存する人に見えるものであること。
 //! 見えないもの（共有されていない・ほかの組織のもの）と無いもの（削除された・書き損じた id）は、同じ code と文言に
 //! する（存在を明かさない・付録 C の P5）。承認と状態を進めるのテーブルは、状態の進め方も要るので
 //! [`super::approval`]・[`super::transition`] が照らす。
@@ -118,7 +118,7 @@ fn sites<'a>(ir: &'a WorkflowIr) -> Vec<Site<'a>> {
                     "/params/folder",
                 );
             }
-            // ドライブから選んだファイル（GAP-91）。
+            // ドライブから選んだファイル（GAP-91）。CSV を集計は、JOIN のために足す CSV（`tables` の各 `file`）も。
             NodeType::StorageRead | NodeType::CsvQuery | NodeType::CsvPatch => {
                 add(
                     Kind::File,
@@ -126,6 +126,17 @@ fn sites<'a>(ir: &'a WorkflowIr) -> Vec<Site<'a>> {
                     literal(p.get("file")),
                     "/params/file",
                 );
+                if nt == NodeType::CsvQuery {
+                    let tables = p.get("tables").and_then(Value::as_array);
+                    for (i, item) in tables.into_iter().flatten().enumerate() {
+                        add(
+                            Kind::File,
+                            Owner::Here,
+                            literal(item.get("file")),
+                            &format!("/params/tables/{i}/file"),
+                        );
+                    }
+                }
             }
             NodeType::ControlWait if p.get("kind").and_then(Value::as_str) == Some("event") => {
                 let source = p
@@ -337,6 +348,50 @@ mod tests {
         let mut none = Vec::new();
         v4(&ir(), &Catalog::default(), &mut none);
         assert!(none.is_empty());
+    }
+
+    /// CSV を集計の JOIN のために足す CSV（`tables` の各 `file`）も、`file` と同じく照らし、引く材料に入れる（値式と
+    /// 空の欄は照らさない。`tables` 自体を値式で書いたときも照らさない）。
+    #[test]
+    fn joined_csv_files_are_checked_too() {
+        let ir = |tables: Value| {
+            WorkflowIr::from_json(&json!({
+                "ir_version": 1, "name": "wf",
+                "nodes": [{ "id": "sum", "type": "csv.query",
+                            "params": { "file": DOC, "sql": "select 1", "tables": tables } }],
+                "edges": []
+            }))
+            .unwrap()
+        };
+        let listed = ir(json!([
+            { "name": "master", "file": DOC },
+            { "name": "gone", "file": TRASHED },
+            { "name": "typo", "file": "請求.csv" },
+            { "name": "picked", "file": { "$from": "input", "path": "/f" } },
+            { "name": "blank", "file": "" }
+        ]));
+        let mut errors = Vec::new();
+        v4(&listed, &catalog(), &mut errors);
+        let got: Vec<At<'_>> = errors
+            .iter()
+            .map(|e| (e.code.as_str(), e.node_id.as_deref(), e.path.as_deref()))
+            .collect();
+        assert_eq!(
+            got,
+            vec![
+                (UNKNOWN_FILE, Some("sum"), Some("/params/tables/1/file")),
+                (UNKNOWN_FILE, Some("sum"), Some("/params/tables/2/file")),
+            ]
+        );
+        let parse = |s: &str| Uuid::parse_str(s).unwrap();
+        assert_eq!(
+            referenced_files(&listed),
+            [parse(DOC), parse(TRASHED)].into_iter().collect()
+        );
+        let dynamic = ir(json!({ "$from": "input", "path": "/tables" }));
+        let mut none = Vec::new();
+        v4(&dynamic, &catalog(), &mut none);
+        assert!(none.is_empty(), "{none:?}");
     }
 
     /// 引く材料は、承認・状態を進めるのテーブルも含めたリテラルの id だけ（書き損じ・参照は引かない）。

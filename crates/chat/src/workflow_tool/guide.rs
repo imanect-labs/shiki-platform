@@ -319,7 +319,7 @@ pub(super) fn emit_description(
          - 文章の組み立て {{\"$template\":\"件名: {{title}}（{{count}} 件）\",\"vars\":{{\"title\":{{\"$from\":\"input\",\"path\":\"/title\"}},\"count\":…}}}}。差し込みは {{名前}} で、名前は vars のキー（vars に無い名前はエラー）。{{{{ と }}}} は差し込みではなく波括弧そのものを出す書き方（{{{{title}}}} と書くと「{{title}}」という文字が出る）。\n\
          - url・secret・skill・model など型が string の項目はリテラルの文字列だけ（参照は書けない）。テーブル・フォルダ・ファイルの id は実在する uuid を書く（data_schema・doc_search などで調べる。推測しない）。\n\
          - schedule・event で動かすワークフローの storage.write・csv.write には folder を必ず書く（省略はルートへの保存で、自動の実行はルートに書けないので有効化できない）。storage.write・csv.write は既存のファイルを上書きしない。同じ名前のファイルがあると失敗するので、毎回動くワークフローは on_name_taken に \"add_number\" を書く（「名前 (2).md」のように番号を付けて保存する）か、名前に {{\"$from\":\"run\",\"path\":\"/date\"}} を差し込む。content_type を省くとファイル名の拡張子（.md・.txt・.csv・.json・.html）から決まる。CSV（csv.write と、種類が text/csv の storage.write）は encoding に \"utf8_bom\" を書く（日本語の Windows の Excel で文字化けしない。省略は BOM なしの UTF-8。Shift_JIS だけを読む仕組みへ渡すなら \"shift_jis\"）。CSV の content には、CSV の文字のほか、csv.query の結果（{{\"$from\":\"nodes.<id>.output\"}}・{{columns, rows}} の表）や、項目のまとまりのリスト（列は項目の名前を合わせたもので名前の順）をそのまま渡せる（CSV に組み立てる。数・入れ子の値・csv.query が打ち切った表〔truncated〕は失敗する）。\n\
-         - csv.query は CSV と Excel（.xlsx。表示している左端のシートが data で、ほかのシートは FROM \"集計\" のようにシートの名前で読む。表の上の表題の行は飛ばし、値の多い最初の行が列の名前。数式は計算せず保存された値を読む）を集計する。Excel を読めるのは csv.query だけ（csv.patch・csv.write は CSV だけ）。結果の rows は値をすべて文字で返す。数・真偽を種類のまま使う（control.branch で大小を比べる・合計を出す・列の名前がテーブルの列の参照名と同じなら data.bulk_upsert の rows に渡す）ときは items（1 行ずつ {{列の名前: 値}}。{{\"$from\":\"nodes.<id>.output\",\"path\":\"/items\"}}、1 件目の列は /items/0/<列の名前>）を使う。csv.write の content には結果の全体（{{columns, rows}} の表）を渡す。\n\
+         - csv.query は CSV と Excel（.xlsx。表示している左端のシートが data で、ほかのシートは FROM \"集計\" のようにシートの名前で読む。表の上の表題の行は飛ばし、値の多い最初の行が列の名前。数式は計算せず保存された値を読む）を集計する。Excel を読めるのは csv.query だけ（csv.patch・csv.write は CSV だけ）。複数の CSV をつないで集計するときは、tables に [{{\"name\":\"master\",\"file\":\"<CSV の uuid>\"}}, …]（{max_tables} 個まで。name は英小文字・数字・_ で data 以外）を書き、SQL では file の CSV を data、tables の CSV を name の名前で読む（例: SELECT d.品目, m.単価 FROM data d JOIN master m ON d.品目 = m.品目。つなげるのは CSV どうしだけで、Excel には使えない）。結果の rows は値をすべて文字で返す。数・真偽を種類のまま使う（control.branch で大小を比べる・合計を出す・列の名前がテーブルの列の参照名と同じなら data.bulk_upsert の rows に渡す）ときは items（1 行ずつ {{列の名前: 値}}。{{\"$from\":\"nodes.<id>.output\",\"path\":\"/items\"}}、1 件目の列は /items/0/<列の名前>）を使う。csv.write の content には結果の全体（{{columns, rows}} の表）を渡す。\n\
          - storage.list は名前の順に {list_max} 件までを返し、続きがあると truncated が true で next_cursor に続きの位置が入る。続きは、同じ folder の storage.list の cursor に {{\"$from\":\"nodes.<id>.output\",\"path\":\"/next_cursor\"}} を書いて読む（別のフォルダーの続きの位置は失敗する。省略・null は先頭から）。\n\
          - llm.invoke の prompt・agent.invoke の instruction・rag.search の query・csv.query の sql は空にしない（空のままでは有効化も実行もできない）。\n\
          - http.request は fail_on_error_status: true で、相手が 400 以上を返したときブロックを失敗にする（省略は成功として status を返す）。\n\
@@ -332,6 +332,7 @@ pub(super) fn emit_description(
          - 在庫を減らす・合計に足すような数の書き換えは add（{{\"<数の列>\": 足す数}}・負の数で減らす）を使う（data.record.update と data.record.upsert）。読んだ値に足した値を patch に書くと、同時に動いたときに足し分が消える。足した結果が列の最小値・最大値を外れると書かずに失敗するので、在庫を 0 未満にしないなら列の最小値を 0 にしておく。\n\
          - 前日・先週・先月・月末・週の初めなどの日付は transform.date で求める（script で計算しない）。base を省くと実行情報の scheduled_at（schedule では予定の時刻で、遅れて動いても変わらない）から数える。workflow.start で始めた実行の scheduled_at は、始めた実行に予定の日時（schedule の予定の時刻・手動の実行で指定した日時）があればそれを引き継ぐ（子の transform.date も同じ週・月を数えるので、予定の日時を入力で渡さない）。始めた実行に予定の日時が無いとき（日時を指定しない手動の実行・きっかけで動いた実行・ミニアプリから動いた実行）は、子の scheduled_at は子の実行が始まった日時（子の started_at と同じ）になる。そのような実行が承認や待ちの後で子を始め、子でも親と同じ日・週を数えるなら、親の transform.date の結果（start など）を子の入力で渡す。手動の実行では、実行のダイアログの「詳しい設定」で予定の日時を指定して試せる。shift でずらし（{{\"amount\":-1,\"unit\":\"week\"}} で先週）、period（day・week・month・year）を書くと、その日を含む期間の最初の日 start・最後の日 end（YYYY-MM-DD。テーブルの日付の列は start 以上・end 以下で絞る）と、始まりの日時 start_at・次の期間の始まりの日時 next_start_at（日時の列は start_at 以上・next_start_at より前で絞る）が出る。週の初めは week_starts_on（既定 monday）、時間帯は tz（既定 Asia/Tokyo）。月をずらした先にその日が無ければ月末になる。\n",
         max_limit = data::MAX_QUERY_LIMIT,
+        max_tables = tabular::MAX_EXTRA_TABLES,
         list_max = workflow_engine::vocab::STORAGE_LIST_MAX_ITEMS,
         max_headers = workflow_engine::nodes::http_headers::MAX_HEADERS,
         max_value_kb = workflow_engine::nodes::http_headers::MAX_VALUE_BYTES / 1024,
@@ -644,6 +645,14 @@ mod tests {
         // CSV を集計は Excel も読み、数・真偽を種類のまま使うなら items を使う（GAP-40・D-17）。
         assert!(
             d.contains("Excel を読めるのは csv.query だけ") && d.contains("\"path\":\"/items\"}"),
+            "{d}"
+        );
+        // CSV をつなぐ集計は tables に書き、SQL では file を data・tables を name の名前で読む（#1059）。
+        assert!(
+            d.contains(&format!(
+                "tables に [{{\"name\":\"master\",\"file\":\"<CSV の uuid>\"}}, …]（{} 個まで",
+                tabular::MAX_EXTRA_TABLES
+            )) && d.contains("file の CSV を data、tables の CSV を name の名前で読む"),
             "{d}"
         );
         // Excel の表の上の表題の行は飛ばす（GAP-83）。

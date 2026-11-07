@@ -394,6 +394,32 @@ mod tests {
         );
     }
 
+    /// CSV を集計の JOIN のために足す CSV（`tables`）も、`file` と同じく閲覧が要る（実行は全部のファイルの閲覧を本人で
+    /// 確かめる）。同じファイルは 1 つにし、値式のファイルは対象を決めずに挙げる。
+    #[test]
+    fn csv_query_needs_the_joined_files_too() {
+        const JOINED: &str = "cccccccc-dddd-eeee-ffff-000000000000";
+        let got = needs(
+            &json!([{ "id": "q", "type": "csv.query", "params": { "file": FILE, "sql": "SELECT 1",
+                "tables": [
+                    { "name": "master", "file": JOINED },
+                    { "name": "again", "file": FILE },
+                    { "name": "picked", "file": { "$from": "input", "path": "/file" } }
+                ] } }]),
+            &json!([]),
+        );
+        use AccessKind::*;
+        use AccessObject::*;
+        assert_eq!(
+            got,
+            vec![
+                need("q", File, Some(FILE), Read),
+                need("q", File, Some(JOINED), Read),
+                need("q", File, None, Read),
+            ]
+        );
+    }
+
     /// きっかけ・AI の参照範囲・シークレット・別のワークフローは挙げない。承認・データの変更を待つは読む。
     /// 同じブロックの同じ対象は 1 つにする。
     #[test]
