@@ -81,11 +81,15 @@ export RAG_TEST_QDRANT_URL=http://localhost:6333
 export RAG_TEST_QDRANT_API_KEY=shiki-qdrant-dev-key  # compose の Qdrant は API キー付き（#812）
 # tabular の IT（tabular_http_it / workflow_nodes_it の csv.*）は隔離ランナーが要る（無いと黙ってスキップ）
 export SHIKI_TABULAR_RUNNER=$PWD/crates/tabular/runner/target/release/shiki-tabular-runner
+# Keycloak を要る IT（app-gateway の keycloak_it・app-platform の install_it 等・BUG-193）。compose の Keycloak（realm shiki）
+export KEYCLOAK_TEST_URL=http://localhost:8081
 ```
 
 - **`SHIKI_REQUIRE_IT=1` を付けて回す。** 接続先が未設定の結合テストはスキップして pass に数えられるので、
   env を 1 つ渡し忘れても緑に見える。これを付けると未設定が失敗になる（`crates/testenv`・CI の coverage ジョブと同じ）。
-  CI が用意しない依存（実 Keycloak・実 LLM 等）は ci.yml の `SHIKI_REQUIRE_IT_EXCEPT` と同じ値を `SHIKI_REQUIRE_IT_EXCEPT` に渡す。
+  CI が用意しない依存（実 LLM・Office エンジン・VM 系サンドボックス等）は ci.yml の `SHIKI_REQUIRE_IT_EXCEPT` と同じ値を
+  `SHIKI_REQUIRE_IT_EXCEPT` に渡す。Keycloak（`KEYCLOAK_TEST_URL`）と隔離ランナー（`SHIKI_TABULAR_RUNNER`）は CI の
+  coverage ジョブが渡して必須にしているので、例外に入っていない（上のとおり渡す）。
   新しい結合テストの接続先は `shiki_testenv::var("…")` で読む（`std::env::var` 直読みは quality ジョブの it-env gate が落とす）。
 - tabular の IT はアップロードした blob を content-addressing で共有する。**別バケットで同じ DB を使い回すと**
   「同じ内容は既にある」扱いで実体が上がらず `ObjectStore(NotFound)` の 500 になる。再実行で落ちたら DB を作り直す。

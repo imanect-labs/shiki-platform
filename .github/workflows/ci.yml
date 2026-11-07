@@ -45,13 +45,13 @@ env:
   # - coverage ジョブが用意しない依存（実 LLM・Office エンジン/Collabora・VM 系サンドボックス）。SANDBOX_GVISOR_IT は
   #   非ブロッキングの sandbox-gvisor ジョブで走る。それ以外は **CI で一度も走らない結合テスト**なので、減らせるものは
   #   減らす（coverage ジョブの Job Summary にも出す）。
-  # - KEYCLOAK_TEST_URL（BUG-193）と SHIKI_TABULAR_RUNNER（#1059）は、coverage ジョブが Keycloak とランナーを用意して
-  #   渡すが、必須にはしていない（変数が欠けても落ちずにスキップされる）。ランナーは tabular-runner ジョブの
-  #   adversarial テストも使う。
+  # KEYCLOAK_TEST_URL（BUG-193）と SHIKI_TABULAR_RUNNER（#1059）は、coverage ジョブが Keycloak とランナーを用意して
+  # 渡し、必須にしている（ここに挙げない＝渡す手順が壊れたら、黙ってスキップせずに落ちる）。ランナーは tabular-runner
+  # ジョブの adversarial テストも使うが、そのジョブは SHIKI_REQUIRE_IT を立てない。
   # 手動で回す計測・実地評価のフラグ（DATA_BENCH・WEB_FETCH_LIVE・SHIKI_SQL_EVAL_URL 等）は結合テストの門番では
   # ないので対象外。
   SHIKI_REQUIRE_IT_EXCEPT: >-
-    KEYCLOAK_TEST_URL,OPENAI_TEST_URL,ANTHROPIC_TEST_URL,OPENAI_RESPONSES_TEST_URL,OFFICE_ENGINE_TEST_WS,OFFICE_RELAY_TEST_COLLABORA,SHIKI_TABULAR_RUNNER,SANDBOX_IT,SANDBOX_NETNS_IT,SANDBOX_FC_IT,SANDBOX_GVISOR_IT
+    OPENAI_TEST_URL,ANTHROPIC_TEST_URL,OPENAI_RESPONSES_TEST_URL,OFFICE_ENGINE_TEST_WS,OFFICE_RELAY_TEST_COLLABORA,SANDBOX_IT,SANDBOX_NETNS_IT,SANDBOX_FC_IT,SANDBOX_GVISOR_IT
 
 jobs:
   # PR の変更ファイルから、回すジョブと Rust テストの対象を選ぶ（#921・scripts/ci-select.py）。
@@ -582,12 +582,10 @@ jobs:
         if: always()
         run: |
           {
-            echo '### このジョブで走らない結合テスト（SHIKI_REQUIRE_IT_EXCEPT のうち、このジョブが渡さないもの）'
-            echo '次の接続先は coverage ジョブが用意しないため、これを読む結合テストはスキップされています（SANDBOX_GVISOR_IT は sandbox-gvisor ジョブで別に走る）。KEYCLOAK_TEST_URL と SHIKI_TABULAR_RUNNER は渡しているので一覧から外す（必須にはしていない）。'
+            echo '### このジョブで走らない結合テスト（SHIKI_REQUIRE_IT_EXCEPT）'
+            echo '次の接続先は coverage ジョブが用意しないため、これを読む結合テストはスキップされています（SANDBOX_GVISOR_IT は sandbox-gvisor ジョブで別に走る）。'
             echo
-            # 外す 2 つは、テストの手順の env で渡している変数（そちらを変えたら、ここも直す）。
-            tr ',' '\n' <<< "$SHIKI_REQUIRE_IT_EXCEPT" | sed 's/^ *//' \
-              | grep -vxE 'KEYCLOAK_TEST_URL|SHIKI_TABULAR_RUNNER' | sed 's/^/- `/;s/$/`/'
+            tr ',' '\n' <<< "$SHIKI_REQUIRE_IT_EXCEPT" | sed 's/^ *//;s/^/- `/;s/$/`/'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: upload failed tests (main)
         if: failure() && github.event_name != 'pull_request'
