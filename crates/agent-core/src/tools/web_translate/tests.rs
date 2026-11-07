@@ -463,7 +463,8 @@ async fn a_soft_failure_on_the_last_attempt_keeps_the_translation() {
 async fn max_tokens_fit_in_a_small_context_window() {
     /// 窓 6,000 トークン（用語集は本文の先頭 6,000 字を入力に取るので、出力上限を大きく切られる）。
     const WINDOW: usize = 6_000;
-    struct Small(Mutex<Vec<usize>>);
+    /// 呼び出しごとの（入力の見積もり＋出力上限）と、翻訳（用語集以外）の呼び出しの数。
+    struct Small(Mutex<Vec<usize>>, AtomicUsize);
     #[async_trait::async_trait]
     impl Backend for Small {
         async fn generate(
@@ -482,6 +483,7 @@ async fn max_tokens_fit_in_a_small_context_window() {
             let text = if is_glossary(&req) {
                 "{}".to_string()
             } else {
+                self.1.fetch_add(1, Ordering::SeqCst);
                 fake_translate(&source_of(&user_text(&req)))
             };
             Ok(Reply {
@@ -502,13 +504,17 @@ async fn max_tokens_fit_in_a_small_context_window() {
         PAGE
     );
     let (addr, _) = stub_server(page_response(&long)).await;
-    let backend = Arc::new(Small(Mutex::new(Vec::new())));
+    let backend = Arc::new(Small(Mutex::new(Vec::new()), AtomicUsize::new(0)));
     let mut t = tool(addr, translator());
     t.backend = backend.clone();
     let out = run(&t, addr.port()).await;
     assert!(!out.is_error, "{}", out.content);
     let seen = backend.0.lock().unwrap().clone();
-    assert!(!seen.is_empty(), "チャンクの翻訳は呼ばれる");
+    // 用語集の呼び出しだけでは足りない（予算に収まらないチャンクは呼び出しなしで失敗扱いになる）。
+    assert!(
+        backend.1.load(Ordering::SeqCst) > 0,
+        "チャンクの翻訳は呼ばれる"
+    );
     // 入力の見積もり＋出力上限が窓を超える要求を 1 回も出さない（収まらない用語集は呼ばない）。
     assert!(seen.iter().all(|total| *total <= WINDOW), "{seen:?}");
 }

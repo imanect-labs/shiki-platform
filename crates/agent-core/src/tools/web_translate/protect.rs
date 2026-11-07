@@ -242,8 +242,10 @@ fn fence_open(line: &str) -> Option<(char, usize)> {
     if c != '`' && c != '~' {
         return None;
     }
+    // 記号は ASCII なので、文字数がそのままバイト数になる。
     let n = t.chars().take_while(|&x| x == c).count();
-    (n >= 3).then_some((c, n))
+    // バッククォートのフェンスの情報文字列にバッククォートは書けない（```x``` は行内のコード）。
+    (n >= 3 && !(c == '`' && t[n..].contains('`'))).then_some((c, n))
 }
 
 fn protect_fences(table: &mut Protected, text: &str) -> String {
@@ -531,7 +533,9 @@ fn unwrap_bare_labels(line: &str) -> String {
         return line.to_string();
     }
     let bytes = line.as_bytes();
-    let mut drop = Vec::new();
+    // 外す `[` `]` の位置（バイト単位の印。位置の検索を文字ごとに線形にしない）。
+    let mut drop = vec![false; bytes.len()];
+    let mut dropped = false;
     let mut i = 0;
     while i < bytes.len() {
         if bytes[i] == b'\\' {
@@ -559,16 +563,17 @@ fn unwrap_bare_labels(line: &str) -> String {
             };
             continue;
         }
-        drop.push(i);
-        drop.push(rb);
+        drop[i] = true;
+        drop[rb] = true;
+        dropped = true;
         // 名残の中にさらに名残があり得るので、中身も続けて見る。
         i += 1;
     }
-    if drop.is_empty() {
+    if !dropped {
         return line.to_string();
     }
     line.char_indices()
-        .filter(|(at, _)| !drop.contains(at))
+        .filter(|&(at, _)| !drop[at])
         .map(|(_, c)| c)
         .collect()
 }
@@ -719,6 +724,13 @@ mod tests {
         assert_eq!(p.text, "- item\n\n  ⟦C1⟧\n\nafter");
         assert!(p.is_block("⟦C1⟧"));
         assert_eq!(p.restore(&p.text), md);
+    }
+
+    /// 情報文字列にバッククォートを含む行はフェンスの開きではない（後ろの本文を丸ごと飲み込まない）。
+    #[test]
+    fn backticks_in_the_info_string_do_not_open_a_fence() {
+        let p = protect("```x``` is code\n\nlater text");
+        assert_eq!(p.text, "⟦c1⟧ is code\n\nlater text");
     }
 
     #[test]
