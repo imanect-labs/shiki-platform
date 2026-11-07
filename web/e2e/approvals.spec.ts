@@ -31,6 +31,16 @@ test("承認待ち: 申請 → 受信箱で承認 → ワークフローが「�
   cleanup.add(() => teardown(page, s));
   await waitForApproval(page, s);
 
+  // ホームの「今日のこと」にも、ワークフローの承認待ちの件数が出て、押すと受信箱へ移る（home-today.spec.ts が
+  // 言い方と 0 件のときを確かめる）。
+  await page.goto("/");
+  const home = page
+    .getByRole("region", { name: "今日のこと" })
+    .getByRole("link", { name: /ワークフローの承認待ち \d+\+? 件/ });
+  await expect(home).toBeVisible({ timeout: 20_000 });
+  await home.click();
+  await page.waitForURL(/\/approvals$/, { timeout: 15_000 });
+
   // サイドバーの「承認」に件数が出る（読み上げのラベルに件数を含める）。100 件以上は「99+」と出る。
   await page.goto("/approvals");
   const badge = /承認（\d+\+? 件）/;

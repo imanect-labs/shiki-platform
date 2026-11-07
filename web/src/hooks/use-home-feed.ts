@@ -1,5 +1,6 @@
 import * as React from "react";
 
+import { useApprovalCountState, type ApprovalCount } from "@/hooks/use-approval-count";
 import { listThreads, type Thread } from "@/lib/chat-api";
 import {
   fetchMyUsage,
@@ -29,13 +30,16 @@ export type HomeFeed = {
   shares: NodeResponse[] | null;
   /// 候補に使う、最近共有された文書（フォルダを除く・新しい順）。
   sharedFiles: NodeResponse[] | null;
-  /// 自分の承認を待っている run（#965）。
+  /// 自分の承認を待っている会話の run（チャットのエージェントの承認・#965）。
   approvals: PendingApproval[] | null;
+  /// 自分の判断を待っているワークフローの承認の件数（受信箱 /approvals・GAP-08）。読めなければ null（出さない）。
+  workflowApprovals: ApprovalCount | null;
   /// 直近 24 時間のワークフロー実行の集計（取れなければ空の集計）。
   workflows: WorkflowRunDigest | null;
   /// 本人の当月の利用額と上限（LLM 未構成・取得失敗は null のまま＝出さない）。
   usage: MyUsage | null;
-  /// 「今日のこと」の 3 つを読み終えたか（読み込み中の骨組みに使う）。
+  /// 「今日のこと」の 4 つ（会話の承認待ち・ワークフローの承認待ち・実行の集計・利用）を読み終えたか（読み込み中の
+  /// 骨組みに使う）。
   todayLoaded: boolean;
 };
 
@@ -48,8 +52,12 @@ const EMPTY_DIGEST: WorkflowRunDigest = {
 
 /// ホームに出す最近の会話・自分に共有されたもの・「今日のこと」を並行で読む。
 /// どれかが失敗しても残りは出す（失敗した側は空として扱い、ホームを止めない）。
+///
+/// ワークフローの承認待ちの件数は、サイドバーの「承認」のバッジと同じ読み方（[`useApprovalCountState`]・受信箱で
+/// 判断したときや 60 秒ごとに読み直す）で読む。
 export function useHomeFeed(): HomeFeed {
-  const [feed, setFeed] = React.useState<HomeFeed>({
+  const workflowApprovals = useApprovalCountState();
+  const [feed, setFeed] = React.useState<Omit<HomeFeed, "workflowApprovals">>({
     threads: null,
     shares: null,
     sharedFiles: null,
@@ -78,7 +86,7 @@ export function useHomeFeed(): HomeFeed {
           })),
       );
     // 届いたものから出す（遅い API に承認待ちまで引きずられない）。「読み込み済み」は 3 つとも
-    // 終わってから立てる。
+    // 終わってから立てる（ワークフローの承認待ちの件数は、読み終えたかを返しで合わせる）。
     const today = [
       fetchPendingApprovals()
         .catch(() => [] as PendingApproval[])
@@ -96,5 +104,12 @@ export function useHomeFeed(): HomeFeed {
     };
   }, []);
 
-  return feed;
+  return React.useMemo(
+    () => ({
+      ...feed,
+      workflowApprovals: workflowApprovals.value,
+      todayLoaded: feed.todayLoaded && workflowApprovals.settled,
+    }),
+    [feed, workflowApprovals],
+  );
 }

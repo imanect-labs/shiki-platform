@@ -16,8 +16,10 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
+import { approvalBadge, type ApprovalCount } from "@/hooks/use-approval-count";
 import type { HomeFeed } from "@/hooks/use-home-feed";
 import { usagePercent } from "@/lib/home-today";
+import { APPROVALS_NAV } from "@/lib/nav-config";
 import type { NodeResponse } from "@/lib/storage";
 import { formatUsd } from "@/components/admin/format";
 import { cn } from "@/lib/utils";
@@ -27,7 +29,8 @@ import { seasonVar } from "@/lib/season";
 import { threadDisplay, threadHref } from "@/lib/thread-link";
 import { Skeleton } from "@/components/ui/skeleton";
 
-/// 「今日のこと」の列に出す行数の上限（承認待ち → 失敗 → 集計 → 利用量 → 最近の共有の順に詰める）。
+/// 「今日のこと」の列に出す行数の上限（承認待ち〔チャット・ワークフロー〕 → 失敗 → 集計 → 利用量 → 最近の共有の順に
+/// 詰める）。
 const TODAY_MAX_ROWS = 5;
 
 /// 「今日のこと」の 1 行。`urgent` は対応が要るもの（承認待ち・ワークフローの失敗）で、スマホでも出す。
@@ -59,11 +62,14 @@ function todayItems(feed: HomeFeed, now: number): TodayItem[] {
       href: threadHref(thread),
       icon: ShieldCheck,
       title: threadDisplay(thread).title || "無題の会話",
-      // ツールの入力は持たない（機微・大きい）ので、何をするかは会話の承認カードで確かめてもらう。
-      meta: `承認待ち・${relativeTime(a.requested_at, now)}`,
+      // ツールの入力は持たない（機微・大きい）ので、何をするかは会話の承認カードで確かめてもらう。下のワークフローの
+      // 承認待ちと見分けられるように、チャットの承認だと言う。
+      meta: `チャットの承認待ち・${relativeTime(a.requested_at, now)}`,
       urgent: true,
     });
   }
+  const workflowApprovals = workflowApprovalItem(feed.workflowApprovals);
+  if (workflowApprovals) items.push(workflowApprovals);
   const wf = feed.workflows;
   for (const f of (wf?.recent_failures ?? []).slice(0, 2)) {
     items.push({
@@ -113,7 +119,22 @@ function todayItems(feed: HomeFeed, now: number): TodayItem[] {
   return items.slice(0, TODAY_MAX_ROWS);
 }
 
-/// ホームの「続きから」（最近の会話）と「今日のこと」（承認待ち・ワークフローの失敗・今月の利用・
+/// ワークフローの承認待ち（受信箱 /approvals の件数・GAP-08）。1 件ずつではなく件数の 1 行にまとめ、受信箱へ移る。
+/// 0 件なら出さない。数え切れずに数えた分が 0 件のときは、数を言わない（サイドバーのバッジと同じ・[`approvalBadge`]）。
+function workflowApprovalItem(c: ApprovalCount | null): TodayItem | null {
+  const badge = approvalBadge(c);
+  if (!c || !badge) return null;
+  return {
+    key: "workflow-approvals",
+    href: APPROVALS_NAV.href,
+    icon: APPROVALS_NAV.icon,
+    title: c.count === 0 ? "ワークフローの承認待ちがあるかもしれません" : `ワークフローの承認待ち ${badge.spoken}`,
+    meta: `「${APPROVALS_NAV.label}」の画面で判断します`,
+    urgent: true,
+  };
+}
+
+/// ホームの「続きから」（最近の会話）と「今日のこと」（チャットとワークフローの承認待ち・ワークフローの失敗・今月の利用・
 /// 最近の共有）を左右に並べる（#964・#965）。見出しと区切りはショートカットのカテゴリと同じ
 /// （小さな見出し・縦の破線）。幅が足りず縦に積むときは区切りを出さない。片方が空なら残った方だけを
 /// 出し、両方とも空（使い始め）なら何も出さない。

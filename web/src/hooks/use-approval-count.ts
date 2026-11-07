@@ -1,6 +1,6 @@
 "use client";
 
-/// サイドバーの「承認」の件数バッジ（GAP-08・D-27）。
+/// サイドバーの「承認」の件数バッジと、ホームの「今日のこと」のワークフローの承認待ち（GAP-08・D-27）。
 ///
 /// フォーカスが戻ったとき・60 秒ごと・受信箱で判断したとき（{@link APPROVALS_CHANGED_EVENT}）に読み直す。
 /// 隠れているタブでは読まない。読めなかったら件数を出さない（バッジを消す・誤った数を出さない）。
@@ -13,17 +13,39 @@ const POLL_MS = 60_000;
 
 export type ApprovalCount = { count: number; more: boolean };
 
+/// 件数（読めなければ null）と、1 回目の読み込みが終わったか（読めなかったときも終わった扱い）。
+export type ApprovalCountState = { value: ApprovalCount | null; settled: boolean };
+
+/// 読んでいる最中の問い合わせ。PC のホームではサイドバーとホームが同じ時に読むので、1 つにまとめる。
+let pending: Promise<ApprovalCount> | null = null;
+
+function loadCount(): Promise<ApprovalCount> {
+  if (!pending) {
+    pending = countApprovals()
+      .then((c) => ({ count: c.count, more: c.more }))
+      .finally(() => {
+        pending = null;
+      });
+  }
+  return pending;
+}
+
 export function useApprovalCount(): ApprovalCount | null {
-  const [value, setValue] = React.useState<ApprovalCount | null>(null);
+  return useApprovalCountState().value;
+}
+
+/// [`useApprovalCount`] に、1 回目の読み込みが終わったかを添えたもの（ホームの読み込み中の骨組みに使う）。
+export function useApprovalCountState(): ApprovalCountState {
+  const [state, setState] = React.useState<ApprovalCountState>({ value: null, settled: false });
   React.useEffect(() => {
     let alive = true;
     let inflight = false;
     const load = () => {
       if (inflight || (typeof document !== "undefined" && document.visibilityState === "hidden")) return;
       inflight = true;
-      countApprovals()
-        .then((c) => alive && setValue({ count: c.count, more: c.more }))
-        .catch(() => alive && setValue(null))
+      loadCount()
+        .then((value) => alive && setState({ value, settled: true }))
+        .catch(() => alive && setState({ value: null, settled: true }))
         .finally(() => {
           inflight = false;
         });
@@ -44,7 +66,7 @@ export function useApprovalCount(): ApprovalCount | null {
       document.removeEventListener("visibilitychange", onVisible);
     };
   }, []);
-  return value;
+  return state;
 }
 
 /// バッジの表記。`text` は件数のピルに出す字（レールの点は字を出さない）、`spoken` は読み上げ・ツールチップの

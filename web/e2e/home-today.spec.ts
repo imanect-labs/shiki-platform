@@ -114,3 +114,63 @@ test("最近の共有: 1 ページ目が空で続きがあるときも、続き�
   expect(asked).toContain("page-2");
   if (SHOTS) await today.screenshot({ path: `${SHOTS}/home-today-shares-pc.png` });
 });
+
+test("ワークフローの承認待ち: 件数を出して「承認」の画面へ移り、0 件なら出さない（PC・スマホ・GAP-08）", async ({
+  browser,
+  page,
+}) => {
+  test.setTimeout(120_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await loginViaKeycloak(page);
+  let count: Count = { count: 3, more: false };
+  const chat = `e2e-チャットの承認-${Date.now().toString(36)}`;
+  await fixToday(page, { count: () => count, chatApproval: chat });
+
+  // チャットの承認待ち（会話ごと）と、ワークフローの承認待ち（件数の 1 行）を言葉で見分けられる。
+  await page.goto("/");
+  const today = page.getByRole("region", { name: "今日のこと" });
+  const workflow = today.getByRole("link", { name: /ワークフローの承認待ち 3 件/ });
+  await expect(workflow).toBeVisible({ timeout: 20_000 });
+  await expect(workflow).toContainText("「承認」の画面で判断します");
+  await expect(workflow).toHaveAttribute("href", "/approvals");
+  await expect(today.getByRole("link", { name: new RegExp(chat) })).toContainText("チャットの承認待ち・");
+  if (SHOTS) await today.screenshot({ path: `${SHOTS}/home-today-workflow-approvals-pc.png` });
+
+  // 押すと「承認」の画面（受信箱）へ移る。
+  await workflow.click();
+  await page.waitForURL(/\/approvals$/, { timeout: 15_000 });
+  await expect(page.getByRole("heading", { name: "承認", exact: true })).toBeVisible();
+
+  // 数え切れずに数えた分が 0 件なら、数を言わずに「あるかもしれません」と出す（サイドバーのバッジと同じ）。
+  count = { count: 0, more: true };
+  await page.goto("/");
+  await expect(today.getByRole("link", { name: /ワークフローの承認待ちがあるかもしれません/ })).toBeVisible({
+    timeout: 20_000,
+  });
+  await expect(today).not.toContainText("0 件");
+
+  // 0 件なら出さない（チャットの承認待ちは残る）。
+  count = { count: 0, more: false };
+  await page.goto("/");
+  await expect(today.getByRole("link", { name: new RegExp(chat) })).toBeVisible({ timeout: 20_000 });
+  await expect(today).not.toContainText("ワークフローの承認待ち");
+
+  // スマホのホームは対応が要るものだけを出す。ワークフローの承認待ちも出て、横にはみ出さない。
+  count = { count: 12, more: false };
+  const ctx = await phoneContext(browser, page);
+  try {
+    const phone = await ctx.newPage();
+    await fixToday(phone, { count: () => count });
+    await phone.goto("/");
+    const phoneToday = phone.getByRole("region", { name: "今日のこと" });
+    const row = phoneToday.getByRole("link", { name: /ワークフローの承認待ち 12 件/ });
+    await expect(row).toBeVisible({ timeout: 20_000 });
+    await row.scrollIntoViewIfNeeded();
+    expect(await phone.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(PHONE.width);
+    if (SHOTS) await phone.screenshot({ path: `${SHOTS}/home-today-workflow-approvals-phone.png` });
+    await row.tap();
+    await phone.waitForURL(/\/approvals$/, { timeout: 15_000 });
+  } finally {
+    await ctx.close();
+  }
+});
