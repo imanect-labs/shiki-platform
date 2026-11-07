@@ -9,8 +9,13 @@
   版の記録の binary_sha256 と同じ。CSV の集計のランナー（環境の `SHIKI__TABULAR__RUNNER_PATH`）も版のランナーで、
   sha が記録の runner_sha256 と同じ。
 - LLM の行き先（`route_problem`・取り込みと Mode B の発話の前）: `SHIKI_CONFIG` の anthropic が abeval.proxy を指し、
-  鍵がダミー。`SHIKI__LLM__*`（`SHIKI__LLM__BACKEND` を除く）の上書きが無い。設定のファイルがプロセスの起動の後に
-  書き換えられていない（書き換えられていると、サーバーが起動のときに読んだ中身を確かめられない）。
+  鍵がダミー。既定のプロバイダ（モデル `default`・AI が組んだ IR の llm.invoke や製品の中の呼び出しが使う・製品の
+  `wiring.rs` の `primary_provider`）が stub: 環境の `SHIKI__LLM__BACKEND` が serve の渡す `stub`、環境に無ければ
+  TOML の `[llm] backend` が `stub`。`[llm]` の `base_url`・`api_key` が空。anthropic のほかのプロバイダと
+  `[llm.chatgpt]` が無い。`SHIKI__LLM__BACKEND` のほかに llm の表を環境で上書きする名前が無い。環境の名前は、製品の
+  figment（`Env::prefixed("SHIKI__").split("__")`）と同じく大文字・小文字を区別せずに読む（`shiki__llm__providers`・
+  表をまるごと上書きする `SHIKI__LLM` も見る）。設定のファイルがプロセスの起動の後に書き換えられていない
+  （書き換えられていると、サーバーが起動のときに読んだ中身を確かめられない）。
 - 条件（`condition_checks`・Mode B）: 環境の `SHIKI__CHAT__MAX_STEPS` が `--max-steps` と同じ（省いたなら無い）、
   `SHIKI__CHAT__BUDGET_MAX_COST_USD_MICROS` が `--budget-micros` と同じ（serve が渡す値）。
 - 確かめたプロセス（pid・起動の時刻・実行ファイル）を `ServerIdentity` に控え、取り込みの前・Mode B の各試行の
@@ -42,6 +47,9 @@ from abeval.versions import (
 )
 
 PROC = Path("/proc")
+LLM_BACKEND_ENV = "SHIKI__LLM__BACKEND"
+# serve が版のサーバーに渡す既定のプロバイダ（`versions.serve_plan`・llm-eval.toml の `[llm] backend` とそろえる）。
+SERVE_BACKEND = "stub"
 MAX_STEPS_ENV = "SHIKI__CHAT__MAX_STEPS"
 BUDGET_ENV = "SHIKI__CHAT__BUDGET_MAX_COST_USD_MICROS"
 RUNNER_ENV = "SHIKI__TABULAR__RUNNER_PATH"
@@ -139,15 +147,27 @@ def process_on_port(
     return read_process(pids[0], proc_root)
 
 
-def anthropic_points_to_the_proxy(path: Path, cfg: Config) -> str | None:
-    """製品の設定の anthropic が abeval.proxy を指し、鍵がダミーか（違えば理由・値は出さない）。"""
+def _read_toml(path: Path) -> dict | str:
     try:
-        raw = tomllib.loads(Path(path).read_text(encoding="utf-8"))
+        return tomllib.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, tomllib.TOMLDecodeError) as e:
         return f"{display_path(path)} を読めません: {type(e).__name__}"
-    provs = [
-        p for p in (raw.get("llm") or {}).get("providers") or [] if p.get("backend") == "anthropic"
-    ]
+
+
+def anthropic_points_to_the_proxy(path: Path, cfg: Config) -> str | None:
+    """製品の設定の anthropic が abeval.proxy を指し、鍵がダミーか（違えば理由・値は出さない）。"""
+    raw = _read_toml(path)
+    if isinstance(raw, str):
+        return raw
+    return _proxy_problem(raw, cfg)
+
+
+def _providers(raw: Mapping) -> list[Mapping]:
+    return [p for p in (raw.get("llm") or {}).get("providers") or [] if isinstance(p, Mapping)]
+
+
+def _proxy_problem(raw: Mapping, cfg: Config) -> str | None:
+    provs = [p for p in _providers(raw) if p.get("backend") == "anthropic"]
     if len(provs) != 1:
         return f"anthropic のプロバイダが {len(provs)} 個"
     proxy = f"http://{cfg.proxy.host}:{cfg.proxy.port}"
@@ -156,6 +176,60 @@ def anthropic_points_to_the_proxy(path: Path, cfg: Config) -> str | None:
     if provs[0].get("api_key") != DUMMY_CREDENTIAL:
         return "anthropic の api_key がダミーではない（値は出さない）"
     return None
+
+
+def default_provider_problem(raw: Mapping, *, backend_from_env: bool) -> str | None:
+    """既定のプロバイダ（ID `default`）が stub で、ほかに評価の台帳を通らない行き先が無いか（違えば理由・値は出さない）。
+
+    `backend_from_env` は環境の `SHIKI__LLM__BACKEND` が stub であること（確かめた後）。無ければ TOML の
+    `[llm] backend` を見る（製品の既定は vllm）。
+    """
+    llm = raw.get("llm") if isinstance(raw.get("llm"), Mapping) else {}
+    if not backend_from_env and llm.get("backend") != SERVE_BACKEND:
+        return (
+            f"既定のプロバイダ（[llm] backend）が {SERVE_BACKEND} ではありません（環境の {LLM_BACKEND_ENV} も"
+            "無い。モデル default の呼び出しが abeval.proxy を通らない）"
+        )
+    for key in ("base_url", "api_key"):
+        if str(llm.get(key) or "").strip():
+            return f"[llm] の {key} が空ではありません（stub の既定のプロバイダは使わない・値は出さない）"
+    others = sorted(
+        str(p.get("id") or p.get("backend"))
+        for p in _providers(raw)
+        if p.get("backend") != "anthropic"
+    )
+    if others:
+        return f"anthropic のほかのプロバイダがあります: {others}（評価の要求は abeval.proxy だけを通す）"
+    chatgpt = llm.get("chatgpt") if isinstance(llm.get("chatgpt"), Mapping) else {}
+    if chatgpt.get("enabled"):
+        return "[llm.chatgpt] が有効です（評価の台帳を通らない）"
+    return None
+
+
+def shiki_env_key(name: str) -> list[str] | None:
+    """環境の名前が製品の設定のどこを上書きするか（大文字にした段の列。`SHIKI__` で始まらなければ None）。
+
+    製品の figment（`Env::prefixed("SHIKI__").split("__")`）と同じ読み方をする: 前置きは大文字・小文字を区別せず、
+    `__` で段に分け、空の段より後は入れ子にならない（`SHIKI__LLM____X` は llm の表をまるごと上書きする）。
+    段が無い（`SHIKI__` だけ）なら設定の全体を上書きする。
+    """
+    up = name.upper()
+    if not up.startswith("SHIKI__"):
+        return None
+    segs = up[len("SHIKI__") :].split("__")
+    return segs[: segs.index("")] if "" in segs else segs
+
+
+def env_overrides(env: Mapping[str, str], table: str) -> dict[str, list[tuple[str, str]]]:
+    """その表（大文字の `LLM`・`CHAT`）を環境で上書きする値（表の中の場所 → [(名前, 値)]）。表や設定の全体を
+    まるごと上書きする名前は場所 `""` に入れる。"""
+    out: dict[str, list[tuple[str, str]]] = {}
+    for name, value in env.items():
+        segs = shiki_env_key(name)
+        if segs is None or (segs and segs[0] != table):
+            continue
+        out.setdefault("__".join(segs[1:]), []).append((name, value))
+    return out
 
 
 def config_path(proc: Process) -> Path | None:
@@ -170,16 +244,24 @@ def config_path(proc: Process) -> Path | None:
 
 
 def route_problem(proc: Process, cfg: Config) -> str | None:
-    """サーバーの anthropic が abeval.proxy を指していないなどの理由（無ければ None・値は出さない）。"""
-    over = sorted(
-        k for k in proc.env if k.startswith("SHIKI__LLM__") and k != "SHIKI__LLM__BACKEND"
-    )
+    """サーバーの LLM の要求が abeval.proxy か stub にしか行かないと確かめられない理由（無ければ None・値は出さない）。"""
+    llm_env = env_overrides(proc.env, "LLM")
+    over = sorted(name for key, vs in llm_env.items() if key != "BACKEND" for name, _ in vs)
     if over:
         return f"LLM の設定を環境で上書きしています: {over}"
+    backends = sorted({v.strip() for _, v in llm_env.get("BACKEND", [])})
+    if backends and backends != [SERVE_BACKEND]:
+        return (
+            f"既定のプロバイダ（{LLM_BACKEND_ENV}）が {backends} です（serve が渡す {SERVE_BACKEND} だけを通す。"
+            "モデル default の呼び出しが abeval.proxy を通らない）"
+        )
     path = config_path(proc)
     if path is None:
         return "SHIKI_CONFIG がありません"
-    why = anthropic_points_to_the_proxy(path, cfg)
+    raw = _read_toml(path)
+    if isinstance(raw, str):
+        return raw
+    why = _proxy_problem(raw, cfg) or default_provider_problem(raw, backend_from_env=bool(backends))
     if why:
         return why
     if proc.started_at is None:

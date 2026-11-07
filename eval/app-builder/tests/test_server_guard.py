@@ -26,7 +26,7 @@ API = f"http://localhost:{PORT}"
 
 def eval_llm(path: Path, base: str = "http://127.0.0.1:18200", key: str = "abeval-dummy") -> Path:
     path.write_text(
-        "[llm]\n[[llm.providers]]\n"
+        '[llm]\nbackend = "stub"\n[[llm.providers]]\n'
         f'id = "anthropic"\nbackend = "anthropic"\nbase_url = "{base}"\napi_key = "{key}"\n'
         'session_header = "x-abeval-session"\n'
         '[[llm.models]]\nid = "claude-haiku-5-5"\nprovider = "anthropic"\n'
@@ -214,6 +214,76 @@ def test_the_route_must_be_the_proxy_with_a_dummy_key(world, tmp_path):
     env = {k: v for k, v in world.env.items() if k != "SHIKI_CONFIG"}
     world.start(env=env)
     assert "SHIKI_CONFIG がありません" in server_guard.route_problem(world.process(), world.cfg)
+
+
+RELAY = "http://127.0.0.1:8787"
+
+
+def _with_top(path: Path, top: str) -> Path:
+    """[llm] の表の先頭（backend の行など）を書き換えた設定（anthropic は abeval.proxy のまま）。"""
+    text = path.read_text(encoding="utf-8").replace('[llm]\nbackend = "stub"\n', f"[llm]\n{top}", 1)
+    out = path.with_name(f"top-{abs(hash(top))}.toml")
+    out.write_text(text, encoding="utf-8")
+    return out
+
+
+@pytest.mark.parametrize(
+    ("env", "top", "why"),
+    [
+        # 既定のプロバイダを環境で anthropic にした（モデル default が手元の中継へ直接届く）。
+        ({"SHIKI__LLM__BACKEND": "anthropic"}, None, "SHIKI__LLM__BACKEND"),
+        ({"shiki__llm__backend": "anthropic"}, None, "SHIKI__LLM__BACKEND"),
+        # 小文字の名前も figment は読む（前置きの比べは大文字・小文字を区別しない）。
+        (
+            {"shiki__llm__providers": f'[{{id="x",backend="anthropic",base_url="{RELAY}"}}]'},
+            None,
+            "上書き",
+        ),
+        # llm の表をまるごと上書きする書き方。
+        ({"SHIKI__LLM": f'{{backend="anthropic",base_url="{RELAY}"}}'}, None, "上書き"),
+        ({"SHIKI__LLM____X": "1"}, None, "上書き"),  # 空の段より後は入れ子にならない（llm の全体）
+        ({"SHIKI__": '{llm={backend="anthropic"}}'}, None, "上書き"),  # 設定の全体
+        # 環境に BACKEND が無い: TOML の backend が stub でなければ NG（製品の既定は vllm）。
+        ({"SHIKI__LLM__BACKEND": None}, 'backend = "anthropic"\n', "[llm] backend"),
+        ({"SHIKI__LLM__BACKEND": None}, "", "[llm] backend"),
+        # 最上位の base_url・api_key（campaign の設定から残った手元の中継）。
+        (None, f'backend = "stub"\nbase_url = "{RELAY}"\n', "base_url"),
+        ({"SHIKI__LLM__BACKEND": None}, f'backend = "stub"\nbase_url = "{RELAY}"\n', "base_url"),
+        (None, 'backend = "stub"\napi_key = "dummy-not-shown"\n', "api_key"),
+        # anthropic のほかのプロバイダ・ChatGPT プラン。
+        (
+            None,
+            f'backend = "stub"\n[[llm.providers]]\nid = "relay"\nbackend = "openai"\nbase_url = "{RELAY}"\n',
+            "ほかのプロバイダ",
+        ),
+        (None, 'backend = "stub"\n[llm.chatgpt]\nenabled = true\n', "chatgpt"),
+    ],
+)
+def test_the_default_provider_and_env_overrides_are_checked(world, env, top, why):
+    """モデル default（AI の IR の llm.invoke・製品の中の呼び出し）の行き先も、環境の上書きも見る（serve を使わずに
+    手で起動したときに、評価の台帳を通らず手元の中継へ届く形を通さない）。"""
+    e = dict(world.env)
+    for k, v in (env or {}).items():
+        if v is None:
+            e.pop(k, None)
+        else:
+            e[k] = v
+    if top is not None:
+        e["SHIKI_CONFIG"] = str(_with_top(world.server_cfg, top))
+    world.start(env=e)
+    got = server_guard.route_problem(world.process(), world.cfg)
+    assert got and why in got, got
+    assert "dummy-not-shown" not in got and RELAY not in got
+
+
+def test_the_default_provider_may_come_from_the_toml(world):
+    """環境に SHIKI__LLM__BACKEND が無くても、TOML の [llm] backend が stub なら通る（serve を使わない起動）。"""
+    e = {k: v for k, v in world.env.items() if k != "SHIKI__LLM__BACKEND"}
+    world.start(env=e)
+    assert server_guard.route_problem(world.process(), world.cfg) is None
+    assert server_guard.shiki_env_key("Shiki__Llm__Backend") == ["LLM", "BACKEND"]
+    assert server_guard.shiki_env_key("SHIKI__LLM____X") == ["LLM"]
+    assert server_guard.shiki_env_key("SHIKI_CONFIG") is None
 
 
 def test_a_config_written_after_the_server_started_is_refused(world):

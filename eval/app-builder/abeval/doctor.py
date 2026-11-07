@@ -17,8 +17,10 @@
 実モデルの名前で発話を送るので、送り先のサーバーの anthropic が abeval.proxy を指していないと、要求が評価の台帳を
 通らずに手元の中継（8787）へ届いて課金される。API のポートが 10067（ループバック）・llm-eval.toml の base_url が
 abeval.proxy・そのポートを握るプロセスの SHIKI_CONFIG（/proc から読む）の anthropic も abeval.proxy を指し、
-`SHIKI__LLM__*` の上書き（`SHIKI__LLM__BACKEND` を除く）が無く、設定がサーバーの起動の後に書き換えられていないことを
-確かめる（`server_guard.route_problem`）。確かめられなければ NG。
+既定のプロバイダ（モデル default）が stub で（環境の `SHIKI__LLM__BACKEND`、無ければ TOML の `[llm] backend`）、
+`[llm]` の base_url・api_key が空で、ほかのプロバイダが無く、llm の表の環境の上書き（`SHIKI__LLM__BACKEND` を除く・
+大文字と小文字を区別しない）が無く、設定がサーバーの起動の後に書き換えられていないことを確かめる
+（`server_guard.route_problem`）。確かめられなければ NG。
 
 `version_guard`: `abeval run`（Mode A・Mode B・取り込み・`--regrade-from`）と `abeval capture` の前に必ず通す点検
 （`--skip-doctor` でも飛ばさない・BUG-246）。`capture_guard` に加えて、そのプロセスが `--label` の版のサーバー

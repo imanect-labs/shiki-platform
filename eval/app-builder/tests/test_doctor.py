@@ -315,7 +315,7 @@ def test_bad_mode(world):
 def _eval_llm(tmp_path, base: str = "http://127.0.0.1:18200", name: str = "llm.toml") -> Path:
     p = tmp_path / name
     p.write_text(
-        "[llm]\n[[llm.providers]]\n"
+        '[llm]\nbackend = "stub"\n[[llm.providers]]\n'
         f'id = "anthropic"\nbackend = "anthropic"\nbase_url = "{base}"\napi_key = "abeval-dummy"\n'
         'session_header = "x-abeval-session"\n'
         '[[llm.models]]\nid = "claude-haiku-5-5"\nprovider = "anthropic"\n'
