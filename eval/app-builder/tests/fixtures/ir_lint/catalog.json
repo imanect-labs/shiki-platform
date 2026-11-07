@@ -746,7 +746,7 @@
    "available": true,
    "category": "storage",
    "category_label_ja": "ファイル",
-   "description_ja": "CSV か Excel のファイルを SQL で集計したり、条件に合う行を取り出したりします。ファイルは書き換えません。",
+   "description_ja": "CSV か Excel のファイルを SQL で集計したり、条件に合う行を取り出したりします。複数の CSV をつないで集計することもできます。ファイルは書き換えません。",
    "dynamic_ports": false,
    "idempotency": "pure",
    "label_ja": "CSV を集計",
