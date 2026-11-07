@@ -460,7 +460,7 @@ async fn csv_patch_is_idempotent_across_retry() {
 /// 上限まで埋まっていれば、ポートが最後に試した名前で組んだ文のまま失敗にする。
 #[tokio::test]
 async fn csv_write_numbers_taken_names_once_across_retry() {
-    let Ok(db) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return;
     };
@@ -605,7 +605,7 @@ async fn csv_write_refuses_values_that_cannot_be_csv() {
 /// （JSON の文字のまま .csv にしない・BUG-178）。文字の内容はこれまでどおりそのまま保存する。
 #[tokio::test]
 async fn csv_write_builds_csv_from_tables_and_lists() {
-    let Ok(db) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return;
     };
@@ -680,7 +680,7 @@ async fn csv_write_builds_csv_from_tables_and_lists() {
 /// workflow.start と、script の `Shiki.workflow.start` を確かめる。
 #[tokio::test]
 async fn refused_writes_release_the_journal_reservation() {
-    let Ok(db) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return;
     };

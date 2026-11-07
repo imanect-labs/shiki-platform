@@ -13,8 +13,8 @@ use data::{BulkImportOptions, BulkImportRow, FsmBody, FsmTransition};
 
 /// [`setup`] と同じ環境に、後で消すストアを添える。
 pub(super) async fn setup_cleaned() -> Option<(PgPool, Arc<dyn AuthzClient>, String, String)> {
-    let db_url = std::env::var("STORAGE_TEST_DATABASE_URL").ok()?;
-    let base_url = std::env::var("OPENFGA_TEST_URL").ok()?;
+    let db_url = shiki_testenv::var("STORAGE_TEST_DATABASE_URL").ok()?;
+    let base_url = shiki_testenv::var("OPENFGA_TEST_URL").ok()?;
     let pool = PgPoolOptions::new()
         .max_connections(5)
         .connect(&db_url)

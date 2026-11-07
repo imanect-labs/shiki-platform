@@ -264,7 +264,7 @@ async fn other_versions_and_malformed_answers_fail_with_their_usage() {
 /// 届かない（既定は無効）。有効にすると判定し、会計は判定用のモデルの単価・TypeSafe のプロバイダで付く。
 #[tokio::test]
 async fn through_the_gateway_the_model_is_opt_in_and_billed_as_itself() {
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return;
     };

@@ -40,7 +40,7 @@ pub struct TestRealm {
 impl TestRealm {
     /// `KEYCLOAK_TEST_URL` から作る（無ければ `None`＝テストはスキップ）。
     pub fn from_env() -> Option<Self> {
-        let base = std::env::var("KEYCLOAK_TEST_URL").ok()?;
+        let base = shiki_testenv::var("KEYCLOAK_TEST_URL").ok()?;
         let http = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             .build()

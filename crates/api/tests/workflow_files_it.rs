@@ -112,8 +112,8 @@ fn runner_path() -> Option<PathBuf> {
 
 async fn setup() -> Option<Env> {
     let (Ok(db), Ok(fga_url)) = (
-        std::env::var("STORAGE_TEST_DATABASE_URL"),
-        std::env::var("OPENFGA_TEST_URL"),
+        shiki_testenv::var("STORAGE_TEST_DATABASE_URL"),
+        shiki_testenv::var("OPENFGA_TEST_URL"),
     ) else {
         eprintln!("STORAGE_TEST_DATABASE_URL / OPENFGA_TEST_URL 未設定のためスキップ");
         return None;
@@ -211,7 +211,10 @@ async fn setup() -> Option<Env> {
 
     let runner = runner_path();
     if runner.is_none() {
-        eprintln!("shiki-tabular-runner 未ビルドのため csv.* の確認はスキップ（SHIKI_TABULAR_RUNNER 参照）");
+        shiki_testenv::missing(
+            "SHIKI_TABULAR_RUNNER",
+            "shiki-tabular-runner 未ビルドのため csv.* の確認",
+        );
     }
     let tabular = runner.map(|r| {
         Arc::new(tabular::TabularService::new(

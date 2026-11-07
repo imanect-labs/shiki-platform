@@ -374,7 +374,7 @@ async fn prompt_mode_writes_the_schema_in_the_authors_order_into_system() {
 // ---- gateway（カタログのモード → プロバイダへ届く形） ----
 
 async fn pool() -> Option<sqlx::PgPool> {
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return None;
     };
@@ -475,7 +475,7 @@ async fn gateway_applies_the_catalog_mode_before_the_provider() {
 /// 例（キャンペーンの中継）: `ANTHROPIC_TEST_URL=http://127.0.0.1:8787`
 ///     `ANTHROPIC_TEST_MODEL=claude-haiku-5-5` `ANTHROPIC_TEST_KEY=dummy-via-relay`
 fn live_provider() -> Option<AnthropicProvider> {
-    let base = std::env::var("ANTHROPIC_TEST_URL").ok()?;
+    let base = shiki_testenv::var("ANTHROPIC_TEST_URL").ok()?;
     let model = std::env::var("ANTHROPIC_TEST_MODEL").unwrap_or_else(|_| "m".into());
     Some(AnthropicProvider::new(
         reqwest::Client::new(),

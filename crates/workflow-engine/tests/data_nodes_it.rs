@@ -484,7 +484,7 @@ async fn data_writes_are_applied_at_most_once() {
 /// から data へ渡す（生の値式を行の値として書かない・BUG-1）。data.record.create の data も同じ関数で展開する。
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn bulk_upsert_rows_resolve_nested_refs() {
-    let Ok(db) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return;
     };

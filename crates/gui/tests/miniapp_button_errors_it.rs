@@ -33,7 +33,7 @@ use uuid::Uuid;
 use workflow_engine::{Catalog, DelegationStore, RunStore, WorkflowRunLauncher, WorkflowStore};
 
 async fn pool() -> Option<PgPool> {
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return None;
     };
@@ -100,7 +100,7 @@ impl WorkflowStarter for LauncherStarter {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn button_input_errors_name_the_screen_fields() {
     let Some(pool) = pool().await else { return };
-    let Ok(base_url) = std::env::var("OPENFGA_TEST_URL") else {
+    let Ok(base_url) = shiki_testenv::var("OPENFGA_TEST_URL") else {
         eprintln!("OPENFGA_TEST_URL 未設定のためスキップ");
         return;
     };

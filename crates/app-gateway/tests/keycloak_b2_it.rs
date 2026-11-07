@@ -391,7 +391,7 @@ async fn service_tokens_reach_only_app_tables_in_single_and_multi_tenancy() {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return;
     };
-    let Ok(fga_url) = std::env::var("OPENFGA_TEST_URL") else {
+    let Ok(fga_url) = shiki_testenv::var("OPENFGA_TEST_URL") else {
         eprintln!("OPENFGA_TEST_URL 未設定のためスキップ");
         return;
     };

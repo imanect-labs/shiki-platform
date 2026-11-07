@@ -109,8 +109,8 @@ fn schema(fsm: Option<FsmRef>) -> TableSchema {
 #[tokio::test]
 async fn approval_reads_follow_row_and_field_visibility() {
     let (Ok(db_url), Ok(base_url)) = (
-        std::env::var("STORAGE_TEST_DATABASE_URL"),
-        std::env::var("OPENFGA_TEST_URL"),
+        shiki_testenv::var("STORAGE_TEST_DATABASE_URL"),
+        shiki_testenv::var("OPENFGA_TEST_URL"),
     ) else {
         eprintln!("STORAGE_TEST_DATABASE_URL / OPENFGA_TEST_URL 未設定のためスキップ");
         return;

@@ -116,8 +116,8 @@ fn roles(viewer: &[&str], editor: &[&str], submitter: &[&str]) -> AppTableRoles 
 #[tokio::test]
 async fn table_roles_can_be_changed_after_install() {
     let (Ok(db_url), Ok(fga_url)) = (
-        std::env::var("STORAGE_TEST_DATABASE_URL"),
-        std::env::var("OPENFGA_TEST_URL"),
+        shiki_testenv::var("STORAGE_TEST_DATABASE_URL"),
+        shiki_testenv::var("OPENFGA_TEST_URL"),
     ) else {
         eprintln!("STORAGE_TEST_DATABASE_URL・OPENFGA_TEST_URL のどちらかが無いためスキップ");
         return;

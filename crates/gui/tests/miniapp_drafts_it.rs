@@ -37,7 +37,7 @@ use sqlx::PgPool;
 use uuid::Uuid;
 
 async fn pool() -> Option<PgPool> {
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return None;
     };
@@ -62,7 +62,7 @@ struct Fga {
 
 impl Fga {
     async fn connect() -> Option<Fga> {
-        let Ok(base_url) = std::env::var("OPENFGA_TEST_URL") else {
+        let Ok(base_url) = shiki_testenv::var("OPENFGA_TEST_URL") else {
             eprintln!("OPENFGA_TEST_URL 未設定のためスキップ");
             return None;
         };

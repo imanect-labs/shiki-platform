@@ -109,8 +109,8 @@ fn ctx(tenant: &str, user: &str) -> AuthContext {
 
 async fn setup() -> Option<Env> {
     let (Ok(db_url), Ok(base_url)) = (
-        std::env::var("STORAGE_TEST_DATABASE_URL"),
-        std::env::var("OPENFGA_TEST_URL"),
+        shiki_testenv::var("STORAGE_TEST_DATABASE_URL"),
+        shiki_testenv::var("OPENFGA_TEST_URL"),
     ) else {
         eprintln!("STORAGE_TEST_DATABASE_URL / OPENFGA_TEST_URL 未設定のためスキップ");
         return None;
@@ -347,7 +347,7 @@ async fn invisible_nodes_stop_at_the_check_budget_and_the_rest_follows() {
 /// 抑えて計画を立てさせる（索引で並びを満たせないと Sort が残る）。続きの位置の有無の両方を見る。行は作らない。
 #[tokio::test]
 async fn the_candidate_scan_walks_the_order_index_without_sorting() {
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return;
     };

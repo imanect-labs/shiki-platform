@@ -578,8 +578,8 @@ impl TestStore {
 
 /// [`setup`] と同じ環境に、後で消すストアの情報を添える。
 async fn setup_cleaned() -> Option<(PgPool, Arc<dyn AuthzClient>, TestStore)> {
-    let db_url = std::env::var("STORAGE_TEST_DATABASE_URL").ok()?;
-    let base_url = std::env::var("OPENFGA_TEST_URL").ok()?;
+    let db_url = shiki_testenv::var("STORAGE_TEST_DATABASE_URL").ok()?;
+    let base_url = shiki_testenv::var("OPENFGA_TEST_URL").ok()?;
     let pool = PgPoolOptions::new()
         .max_connections(5)
         .connect(&db_url)

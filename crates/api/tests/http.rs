@@ -1668,7 +1668,7 @@ impl rag::fulltext::FulltextIndex for NoFulltext {
 /// 検索の監査を書くので実 DB が要る（`STORAGE_TEST_DATABASE_URL` が無ければスキップ）。
 #[tokio::test]
 async fn search_debug_is_returned_only_to_org_admins() {
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return;
     };

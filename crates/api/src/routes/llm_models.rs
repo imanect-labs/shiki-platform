@@ -314,7 +314,7 @@ mod tests {
     #[tokio::test]
     #[allow(clippy::print_stderr)]
     async fn workflow_purpose_matches_the_workflow_model_check() {
-        let Ok(url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+        let Ok(url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
             eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
             return;
         };

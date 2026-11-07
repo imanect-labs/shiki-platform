@@ -196,8 +196,8 @@ fn ctx(tenant: &str, user: &str) -> AuthContext {
 
 async fn setup() -> Option<Env> {
     let (Ok(db_url), Ok(base_url)) = (
-        std::env::var("STORAGE_TEST_DATABASE_URL"),
-        std::env::var("OPENFGA_TEST_URL"),
+        shiki_testenv::var("STORAGE_TEST_DATABASE_URL"),
+        shiki_testenv::var("OPENFGA_TEST_URL"),
     ) else {
         eprintln!("STORAGE_TEST_DATABASE_URL / OPENFGA_TEST_URL 未設定のためスキップ");
         return None;
@@ -801,7 +801,7 @@ async fn exact_name_lookup_finds_the_sibling_a_search_page_misses() {
 /// 昇順・降順と、続きの位置の有無と、種別の絞り込みの有無を見る。行は作らない。
 #[tokio::test]
 async fn the_named_candidate_scan_walks_the_name_index_without_sorting() {
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return;
     };

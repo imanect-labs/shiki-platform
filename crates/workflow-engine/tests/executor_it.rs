@@ -1514,7 +1514,7 @@ async fn branch_type_mismatch_fails_the_step() {
 /// null で子を起動しない（BUG-13）。
 #[tokio::test]
 async fn workflow_start_input_nested_refs_are_resolved() {
-    let Ok(db) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return;
     };

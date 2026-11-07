@@ -32,10 +32,12 @@ futures.workspace = true
 # test-support（実 Keycloak の結合テストの手助け・PKCE）だけが使う。
 base64 = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
+# test-support が KEYCLOAK_TEST_URL を読む（結合テストの接続先は shiki_testenv::var で読む・#1023）。
+shiki-testenv = { workspace = true, optional = true }
 
 [features]
 # 実 Keycloak を使う結合テストの手助け（app_gateway::test_support）。本番のビルドには入れない。
-test-support = ["dep:base64", "dep:sha2"]
+test-support = ["dep:base64", "dep:sha2", "dep:shiki-testenv"]
 
 [dev-dependencies]
 shiki-testenv.workspace = true

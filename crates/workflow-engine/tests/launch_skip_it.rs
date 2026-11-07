@@ -28,8 +28,8 @@ use workflow_engine::{
 
 async fn setup() -> Option<(PgPool, Arc<OpenFgaClient>)> {
     let (Ok(db), Ok(fga)) = (
-        std::env::var("STORAGE_TEST_DATABASE_URL"),
-        std::env::var("OPENFGA_TEST_URL"),
+        shiki_testenv::var("STORAGE_TEST_DATABASE_URL"),
+        shiki_testenv::var("OPENFGA_TEST_URL"),
     ) else {
         eprintln!("STORAGE_TEST_DATABASE_URL / OPENFGA_TEST_URL 未設定のためスキップ");
         return None;
@@ -181,7 +181,7 @@ impl Env {
                 .await
                 .unwrap();
         }
-        let fga_url = std::env::var("OPENFGA_TEST_URL").unwrap();
+        let fga_url = shiki_testenv::var("OPENFGA_TEST_URL").unwrap();
         let deleted = reqwest::Client::new()
             .delete(format!("{fga_url}/stores/{}", self.fga.store_id()))
             .send()

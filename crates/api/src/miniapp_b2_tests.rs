@@ -171,8 +171,8 @@ struct Env {
 
 async fn env() -> Option<Env> {
     let realm = TestRealm::from_env()?;
-    let db_url = std::env::var("STORAGE_TEST_DATABASE_URL").ok()?;
-    let fga_url = std::env::var("OPENFGA_TEST_URL").ok()?;
+    let db_url = shiki_testenv::var("STORAGE_TEST_DATABASE_URL").ok()?;
+    let fga_url = shiki_testenv::var("OPENFGA_TEST_URL").ok()?;
     let pool = sqlx::postgres::PgPoolOptions::new()
         .max_connections(8)
         .connect(&db_url)

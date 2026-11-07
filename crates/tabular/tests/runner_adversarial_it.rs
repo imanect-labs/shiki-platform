@@ -243,6 +243,7 @@ async fn query_returns_readable_text_and_typed_values() {
 #[tokio::test]
 async fn query_tolerates_trailing_semicolons_comments_and_duplicate_names() {
     let Some(path) = runner_path() else {
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "runner 未ビルド");
         return;
     };
     let csv = write_csv("a,b\n1,x\n2,y\n");
@@ -292,6 +293,7 @@ async fn query_tolerates_trailing_semicolons_comments_and_duplicate_names() {
 #[tokio::test]
 async fn query_results_stop_before_the_size_limit() {
     let Some(path) = runner_path() else {
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "runner 未ビルド");
         return;
     };
     // 引用符・改行・制御文字・日本語を含む値（JSON にすると大きさが変わる）と、数・空。
@@ -487,6 +489,7 @@ async fn cannot_reenable_external_access() {
 #[tokio::test]
 async fn quota_timeout_kills_runner_not_caller() {
     let Some(path) = runner_path() else {
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "runner 未ビルド");
         return;
     };
     let csv = write_csv("a\n1\n");

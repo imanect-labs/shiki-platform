@@ -269,7 +269,7 @@ fn assert_refused(resp: &RunnerResponse, needle: &str) {
 #[tokio::test]
 async fn reads_the_leftmost_sheet_with_types() {
     let Some(_) = runner_path() else {
-        eprintln!("runner 未ビルドのためスキップ");
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "runner 未ビルド");
         return;
     };
     let file = write_file(include_bytes!("fixtures/expenses.xlsx"));
@@ -369,6 +369,7 @@ async fn reads_the_leftmost_sheet_with_types() {
 #[tokio::test]
 async fn names_columns_and_decides_types_like_the_csv_reader() {
     let Some(_) = runner_path() else {
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "runner 未ビルド");
         return;
     };
     let shared = ["名前", " 金額 ", "", "名前", "NAME", "あ", "い"];
@@ -487,6 +488,7 @@ type HeaderCase<'a> = (&'a str, Vec<String>, Vec<&'a str>, Option<u32>, u64);
 #[tokio::test]
 async fn skips_title_rows_above_the_header() {
     let Some(_) = runner_path() else {
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "runner 未ビルド");
         return;
     };
     let file = write_file(include_bytes!("fixtures/sales.xlsx"));
@@ -621,6 +623,7 @@ async fn skips_title_rows_above_the_header() {
 #[tokio::test]
 async fn reads_other_sheets_by_name() {
     let Some(_) = runner_path() else {
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "runner 未ビルド");
         return;
     };
     let file = write_file(include_bytes!("fixtures/sales.xlsx"));
@@ -672,6 +675,7 @@ async fn reads_other_sheets_by_name() {
 #[tokio::test]
 async fn reads_only_the_sheets_the_sql_names_and_counts_them_together() {
     let Some(_) = runner_path() else {
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "runner 未ビルド");
         return;
     };
     let small = [row(1, &[t("A1", "値")]), row(2, &[n("A2", "1", 0)])].concat();
@@ -776,6 +780,7 @@ async fn reads_only_the_sheets_the_sql_names_and_counts_them_together() {
 #[tokio::test]
 async fn never_follows_external_links_or_entities() {
     let Some(_) = runner_path() else {
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "runner 未ビルド");
         return;
     };
     let mut parts = book(
@@ -829,6 +834,7 @@ async fn never_follows_external_links_or_entities() {
 #[tokio::test]
 async fn refuses_zip_bombs() {
     let Some(_) = runner_path() else {
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "runner 未ビルド");
         return;
     };
     let big = vec![b' '; (MAX_ENTRY_UNPACKED_BYTES + 1) as usize];
@@ -878,6 +884,7 @@ async fn refuses_zip_bombs() {
 #[tokio::test]
 async fn refuses_files_over_the_size_limit() {
     let Some(_) = runner_path() else {
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "runner 未ビルド");
         return;
     };
     let file = write_file(b"PK\x03\x04");
@@ -891,6 +898,7 @@ async fn refuses_files_over_the_size_limit() {
 #[tokio::test]
 async fn refuses_far_apart_cells_without_allocating_the_range() {
     let Some(_) = runner_path() else {
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "runner 未ビルド");
         return;
     };
     let far = [row(1, &[s("A1", 0)]), row(1_048_576, &[s("XFD1048576", 0)])].concat();
@@ -910,6 +918,7 @@ async fn refuses_far_apart_cells_without_allocating_the_range() {
 #[tokio::test]
 async fn refuses_wide_and_tall_sheets_by_the_table_size() {
     let Some(_) = runner_path() else {
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "runner 未ビルド");
         return;
     };
     let width_end = "ALL"; // 1,000 列目
@@ -973,6 +982,7 @@ async fn refuses_wide_and_tall_sheets_by_the_table_size() {
 #[tokio::test]
 async fn refuses_too_much_text_or_too_many_cells() {
     let Some(_) = runner_path() else {
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "runner 未ビルド");
         return;
     };
     let long = "あ".repeat(1 << 18); // 768 KiB
@@ -1005,6 +1015,7 @@ async fn refuses_too_much_text_or_too_many_cells() {
 #[tokio::test]
 async fn refuses_files_that_are_not_workbooks() {
     let Some(_) = runner_path() else {
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "runner 未ビルド");
         return;
     };
     let docx = zip(&[entry("word/document.xml", "<w:document/>")]);

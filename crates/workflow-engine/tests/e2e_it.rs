@@ -374,7 +374,7 @@ async fn scheduled_launch_skips_enabled_versions_with_blank_required_fields() {
         .execute(&pool)
         .await
         .unwrap();
-    let fga_url = std::env::var("OPENFGA_TEST_URL").unwrap();
+    let fga_url = shiki_testenv::var("OPENFGA_TEST_URL").unwrap();
     let deleted = reqwest::Client::new()
         .delete(format!("{fga_url}/stores/{}", fga.store_id()))
         .send()
@@ -470,7 +470,7 @@ async fn unattended_and_child_launches_run_versions_with_a_blank_reply() {
         .execute(&pool)
         .await
         .unwrap();
-    let fga_url = std::env::var("OPENFGA_TEST_URL").unwrap();
+    let fga_url = shiki_testenv::var("OPENFGA_TEST_URL").unwrap();
     let deleted = reqwest::Client::new()
         .delete(format!("{fga_url}/stores/{}", fga.store_id()))
         .send()

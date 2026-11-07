@@ -1106,7 +1106,7 @@ async fn csv_nodes_read_excel_encodings_and_keep_the_encoding_when_patching() {
     use textenc::encoding_rs::{SHIFT_JIS, UTF_16LE};
     let Some(h) = setup().await else { return };
     let Some(runner) = runner_path() else {
-        eprintln!("shiki-tabular-runner 未ビルドのためスキップ（SHIKI_TABULAR_RUNNER 参照）");
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "shiki-tabular-runner 未ビルド");
         return;
     };
     let csv = "経費,金額\n交通費,1200\n宿泊費,8000\n";
@@ -1264,7 +1264,7 @@ async fn csv_nodes_read_excel_encodings_and_keep_the_encoding_when_patching() {
 #[tokio::test]
 async fn csv_query_items_keep_value_kinds() {
     let Some(runner) = runner_path() else {
-        eprintln!("shiki-tabular-runner 未ビルドのためスキップ（SHIKI_TABULAR_RUNNER 参照）");
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "shiki-tabular-runner 未ビルド");
         return;
     };
     let Some(h) = setup().await else { return };
@@ -1369,7 +1369,7 @@ async fn csv_query_items_keep_value_kinds() {
 #[tokio::test]
 async fn csv_query_reads_the_leftmost_sheet_of_an_excel_file() {
     let Some(runner) = runner_path() else {
-        eprintln!("shiki-tabular-runner 未ビルドのためスキップ（SHIKI_TABULAR_RUNNER 参照）");
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "shiki-tabular-runner 未ビルド");
         return;
     };
     let Some(h) = setup().await else { return };
@@ -1566,7 +1566,7 @@ async fn new_csv_files_are_saved_in_the_chosen_encoding() {
     use textenc::encoding_rs::{SHIFT_JIS, UTF_8};
     let Some(h) = setup().await else { return };
     let Some(runner) = runner_path() else {
-        eprintln!("shiki-tabular-runner 未ビルドのためスキップ（SHIKI_TABULAR_RUNNER 参照）");
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "shiki-tabular-runner 未ビルド");
         return;
     };
     let tag = Uuid::new_v4().simple().to_string();
@@ -1720,7 +1720,7 @@ async fn new_csv_files_are_saved_in_the_chosen_encoding() {
 async fn csv_write_saves_tables_and_lists_as_csv() {
     let Some(h) = setup().await else { return };
     let Some(runner) = runner_path() else {
-        eprintln!("shiki-tabular-runner 未ビルドのためスキップ（SHIKI_TABULAR_RUNNER 参照）");
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "shiki-tabular-runner 未ビルド");
         return;
     };
     let tag = Uuid::new_v4().simple().to_string();
@@ -3449,7 +3449,7 @@ async fn csv_write_numbers_taken_names_through_the_production_port() {
     use workflow_engine::NodePorts;
     let Some(h) = setup().await else { return };
     let Some(runner) = runner_path() else {
-        eprintln!("shiki-tabular-runner 未ビルドのためスキップ（SHIKI_TABULAR_RUNNER 参照）");
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "shiki-tabular-runner 未ビルド");
         return;
     };
     let tag = Uuid::new_v4().simple().to_string();
@@ -4404,7 +4404,7 @@ async fn http_request_node_sends_author_headers_through_the_production_port() {
 async fn csv_query_node_joins_multiple_csv() {
     let Some(h) = setup().await else { return };
     let Some(runner) = runner_path() else {
-        eprintln!("shiki-tabular-runner 未ビルドのためスキップ");
+        shiki_testenv::missing("SHIKI_TABULAR_RUNNER", "shiki-tabular-runner 未ビルド");
         return;
     };
     let orders = h

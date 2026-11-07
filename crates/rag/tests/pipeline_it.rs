@@ -1173,7 +1173,7 @@ async fn system_area_writes_are_not_indexed() {
 /// （並行に走るほかのテストの取り込みを横取りしない・BUG-159）。ほかのテナントのイベントは setup の前にも後にも積む。
 #[tokio::test]
 async fn relay_leaves_other_tenants_unprocessed_events_alone() {
-    let Ok(db_url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(db_url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return;
     };

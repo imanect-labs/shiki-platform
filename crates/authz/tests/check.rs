@@ -238,7 +238,7 @@ async fn batch_check_matches_single_checks_and_chunks() {
 /// 互いに含意しない。部署（role#member）への付与も効き、ワークフローの主体へは付けられない（型で拒否）。
 #[tokio::test]
 async fn data_table_submitter_is_add_only_and_not_a_viewer() {
-    let Ok(base_url) = std::env::var("OPENFGA_TEST_URL") else {
+    let Ok(base_url) = shiki_testenv::var("OPENFGA_TEST_URL") else {
         eprintln!("OPENFGA_TEST_URL 未設定のためスキップ");
         return;
     };

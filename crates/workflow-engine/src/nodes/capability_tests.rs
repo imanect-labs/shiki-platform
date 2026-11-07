@@ -9,7 +9,7 @@ use sqlx::PgPool;
 use super::*;
 
 async fn pool() -> Option<PgPool> {
-    let Ok(url) = std::env::var("STORAGE_TEST_DATABASE_URL") else {
+    let Ok(url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
         eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
         return None;
     };
@@ -32,7 +32,7 @@ async fn a_failed_release_keeps_the_original_error() {
     let Some(admin) = pool().await else { return };
     let tenant = format!("t-{}", uuid::Uuid::new_v4());
     // 予約は別の接続の口で取り、書込の中でその口を閉じる（予約を外す DELETE が失敗する）。
-    let url = std::env::var("STORAGE_TEST_DATABASE_URL").unwrap();
+    let url = shiki_testenv::var("STORAGE_TEST_DATABASE_URL").unwrap();
     let journal_pool = PgPoolOptions::new()
         .max_connections(1)
         .connect(&url)
