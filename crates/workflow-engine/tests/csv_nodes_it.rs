@@ -187,6 +187,25 @@ fn lazy_journal() -> EffectJournal {
     EffectJournal::new(pool)
 }
 
+/// テスト用の DB に繋ぎ、migration を流す（effect_journal は migration が作るので、このファイルだけを新しい DB で
+/// 流しても通す）。接続先が未設定なら `None`（スキップ・CI は `SHIKI_REQUIRE_IT=1` で失敗に変える）。
+async fn test_pool() -> Option<sqlx::PgPool> {
+    let Ok(db) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
+        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+        return None;
+    };
+    let pool = PgPoolOptions::new()
+        .max_connections(4)
+        .connect(&db)
+        .await
+        .expect("test DB 接続");
+    sqlx::migrate!("../../migrations")
+        .run(&pool)
+        .await
+        .expect("migrate");
+    Some(pool)
+}
+
 fn ctx(scopes: Vec<String>) -> NodeContext {
     NodeContext {
         tenant_id: "t1".into(),
@@ -409,16 +428,10 @@ async fn csv_patch_rejects_non_array_ops() {
 /// DB 必須: 同一冪等キーでの再試行が csv.patch を高々 1 回しか適用しない（PIT-31）。
 #[tokio::test]
 async fn csv_patch_is_idempotent_across_retry() {
-    let Ok(db) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
-        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+    let Some(pool) = test_pool().await else {
         return;
     };
-    let pool = PgPoolOptions::new()
-        .max_connections(4)
-        .connect(&db)
-        .await
-        .expect("test DB 接続");
-    // effect_journal テーブルは storage/workflow の migration で作られる。冪等キーを一意にする。
+    // 冪等キーを一意にする（ほかのテストと記録を共有しない）。
     let key = format!("wf:csvtest:{}", Uuid::new_v4());
     let ports = Arc::new(CsvPorts::default());
     let exec = CapabilityNodeExecutor::new(
@@ -460,15 +473,9 @@ async fn csv_patch_is_idempotent_across_retry() {
 /// 上限まで埋まっていれば、ポートが最後に試した名前で組んだ文のまま失敗にする。
 #[tokio::test]
 async fn csv_write_numbers_taken_names_once_across_retry() {
-    let Ok(db) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
-        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+    let Some(pool) = test_pool().await else {
         return;
     };
-    let pool = PgPoolOptions::new()
-        .max_connections(4)
-        .connect(&db)
-        .await
-        .expect("test DB 接続");
     let ports = Arc::new(CsvPorts::default());
     *ports.taken_names.lock().unwrap() = vec!["集計.csv".into()];
     *ports.numbered_as.lock().unwrap() = Some("集計 (2).csv".into());
@@ -605,15 +612,9 @@ async fn csv_write_refuses_values_that_cannot_be_csv() {
 /// （JSON の文字のまま .csv にしない・BUG-178）。文字の内容はこれまでどおりそのまま保存する。
 #[tokio::test]
 async fn csv_write_builds_csv_from_tables_and_lists() {
-    let Ok(db) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
-        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+    let Some(pool) = test_pool().await else {
         return;
     };
-    let pool = PgPoolOptions::new()
-        .max_connections(4)
-        .connect(&db)
-        .await
-        .expect("test DB 接続");
     let ports = Arc::new(CsvPorts::default());
     let exec = CapabilityNodeExecutor::new(
         ports.clone(),
@@ -680,15 +681,9 @@ async fn csv_write_builds_csv_from_tables_and_lists() {
 /// workflow.start と、script の `Shiki.workflow.start` を確かめる。
 #[tokio::test]
 async fn refused_writes_release_the_journal_reservation() {
-    let Ok(db) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
-        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+    let Some(pool) = test_pool().await else {
         return;
     };
-    let pool = PgPoolOptions::new()
-        .max_connections(4)
-        .connect(&db)
-        .await
-        .expect("test DB 接続");
     let ports = Arc::new(CsvPorts::default());
     let engine = Arc::new(script_runtime::engine::ScriptEngine::new().expect("script engine"));
     let exec = CapabilityNodeExecutor::new(
