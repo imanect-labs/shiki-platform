@@ -1,0 +1,64 @@
+{
+  "behavior_check": {
+    "probes_sha": "9f2a91a209a5a3088f5ff16f9749dda92eddead71ea1814564133465ad2cc5e5",
+    "recorded_at": "2026-11-07T02:46:40+00:00",
+    "results": {
+      "port_next": {
+        "errors": [
+          "ir.unknown_port"
+        ],
+        "warnings": []
+      },
+      "template_var": {
+        "errors": [
+          "ir.bad_template"
+        ],
+        "warnings": []
+      },
+      "unknown_folder": {
+        "errors": [
+          "ir.unknown_folder"
+        ],
+        "warnings": []
+      }
+    }
+  },
+  "binary_sha256": "637562e919031d778072342a10c0121ce94a7f9a8738f646abac3701e017fdb8",
+  "built_at": "2026-11-07T02:45:32Z",
+  "commit": "eeb6f2e34ef93697e685a2449b8dbc6c4ba3b77c",
+  "label": "vn",
+  "node_types": [
+    "agent.invoke",
+    "ai.decide",
+    "control.branch",
+    "control.join",
+    "control.map",
+    "control.switch",
+    "control.wait",
+    "csv.patch",
+    "csv.query",
+    "csv.write",
+    "data.bulk_upsert",
+    "data.query",
+    "data.record.create",
+    "data.record.delete",
+    "data.record.update",
+    "data.record.upsert",
+    "data.transition",
+    "http.request",
+    "human.approval",
+    "llm.invoke",
+    "rag.search",
+    "script.run",
+    "skill.invoke",
+    "storage.list",
+    "storage.read",
+    "storage.write",
+    "transform.date",
+    "workflow.reply",
+    "workflow.start"
+  ],
+  "runner_sha256": "6e275ecd605975b26b68f522b5d4cbbc321e93343304fb4e6deac881d3cc5534",
+  "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+  "tree_clean": true
+}
