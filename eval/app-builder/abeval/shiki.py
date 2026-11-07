@@ -181,6 +181,8 @@ class ShikiClient:
         self._timeout = timeout
         self.stub_only = stub_only
         self.logins = 0
+        # `GET /nodes/by-name` があるか（None はまだ分からない・V0 には無い）。
+        self._by_name: bool | None = None
         self._http = httpx.Client(
             base_url=self.api, transport=transport, timeout=timeout, follow_redirects=False
         )
@@ -640,10 +642,24 @@ class ShikiClient:
             params = {**params, "cursor": page["next_cursor"]}
 
     def node_by_name(self, name: str, parent_id: str | None = None) -> dict | None:
+        """親の直下の名前の一致するノード（無ければ None）。
+
+        `GET /nodes/by-name` は見つからないとき 200 で `{"node": null}` を返す。この口の無い版（V0 = 81a9899b）は
+        404 になるので、そのときは親の一覧から名前で探す（版のサーバーで番兵を探すため）。
+        """
         params = {"name": name}
         if parent_id:
             params["parent_id"] = parent_id
-        return self._json("GET", "/nodes/by-name", params=params).get("node")
+        if self._by_name is not False:
+            try:
+                node = self._json("GET", "/nodes/by-name", params=params).get("node")
+                self._by_name = True
+                return node
+            except ShikiError as e:
+                if e.status != 404 or self._by_name:
+                    raise
+                self._by_name = False
+        return next((n for n in self.nodes(parent_id) if n.get("name") == name), None)
 
     def tabular_save(self, name: str, csv: str, parent_id: str | None = None) -> dict:
         body: dict = {"name": name, "csv": csv}

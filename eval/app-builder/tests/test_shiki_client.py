@@ -358,3 +358,14 @@ def test_threads_follow_the_cursor(fake):
         assert {t["id"] for t in c.threads()} == made
     with client(fake, "charlie") as ch:
         assert ch.threads() == []
+
+
+@pytest.mark.parametrize("has_by_name", [True, False])
+def test_node_by_name_falls_back_to_the_listing_when_the_endpoint_is_missing(fake, has_by_name):
+    fake.has_by_name = has_by_name
+    c = client(fake)
+    made = c.create_folder("abeval-sentinel")
+    assert c.node_by_name("abeval-sentinel")["id"] == made["id"]
+    assert c.node_by_name("not-there") is None
+    # 口があるかは 1 回で決まり、無い版では一覧から探し続ける。
+    assert c._by_name is has_by_name

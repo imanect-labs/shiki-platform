@@ -58,6 +58,8 @@ class FakeShiki:
         default_factory=lambda: {"about": "", "style": "", "tone": "default"}
     )
     models: list[str] = field(default_factory=lambda: ["default", "claude-haiku-5-5"])
+    # `GET /nodes/by-name` があるか（V0 = 81a9899b には無く、404 になる）。
+    has_by_name: bool = True
     openapi_doc: dict = field(
         default_factory=lambda: {
             "paths": {
@@ -344,6 +346,8 @@ class FakeShiki:
             ]
             return _json(200, {"items": items, "next_cursor": None})
         if path == "/nodes/by-name":
+            if not self.has_by_name:
+                return _json(404, {"status": 404, "code": "not_found", "message": "見つかりません"})
             parent = params.get("parent_id")
             hit = [
                 self._node_view(n)
