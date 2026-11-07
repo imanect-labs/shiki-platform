@@ -88,6 +88,7 @@ def test_write_result_refuses_listed_words_via_the_denylist_file(tmp_path, monke
 
 
 def test_merge_replaces_trials_by_key_and_appends_errors(tmp_path):
+    # 試行の名前（課題・番号・条件）が同じなら置き換える（ここではキーも同じ）。
     a = keyed(trial("a", 0, s1=False), "k1")
     b = keyed(trial("a", 1), "k2")
     report.write_result(doc([a, b]), [{"kind": "timeout", "task": "a"}], where=tmp_path, iters=50)
@@ -265,3 +266,32 @@ def test_condition_names_say_what_auto_means_per_mode():
     assert condition_name(condition_of(b)) == "v0/b/auto"  # Mode B は製品の Auto
     s = {**b, "stub_run": True}
     assert condition_name(condition_of(s)) == "v0/b/auto/stub"
+
+
+def test_merge_replaces_the_same_trial_even_when_the_cache_key_changed(tmp_path):
+    a = keyed(trial("a", 0, s1=False), "old-key")
+    report.write_result(doc([a]), [], where=tmp_path, iters=50)
+    a2 = keyed(trial("a", 0), "new-key")
+    report.write_result(doc([a2]), [], where=tmp_path, iters=50)
+    d = report.read_result("e0", tmp_path)
+    assert [t["key"] for t in d["trials"]] == ["new-key"]
+    assert d["aggregates"][0]["trials"] == 1
+
+
+def test_merge_drops_the_previous_trials_graded_by_another_grader(tmp_path):
+    old = [keyed(trial("a", i, s1=False), f"o{i}") for i in range(3)]
+    report.write_result(doc(old), [], where=tmp_path, iters=50)
+    newer = doc([keyed(trial("a", 0), "n0")])
+    newer["grader"] = {"grader": 2}
+    report.write_result(newer, [], where=tmp_path, iters=50)
+    d = report.read_result("e0", tmp_path)
+    assert [t["key"] for t in d["trials"]] == ["n0"]
+    assert d["aggregates"][0]["trials"] == 1
+    assert d["merge_notes"] == [
+        {
+            "dropped_trials": 3,
+            "reason": "採点器の版が違う",
+            "prev_grader": {"grader": 1},
+            "grader": {"grader": 2},
+        }
+    ]

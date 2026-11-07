@@ -146,12 +146,34 @@ def read_errors(exp: str, where: Path | None = None) -> list[dict]:
     return out
 
 
+def trial_identity(t: Mapping) -> tuple:
+    """試行そのものの名前（条件・課題・言い方・番号）。キャッシュのキーは採点器の版などで変わるので使わない。"""
+    return (*condition_of(t), t.get("task"), t.get("phrasing"), t.get("n"))
+
+
 def merge_result(prev: Mapping | None, new: Mapping) -> dict:
-    """同じ実験の前の結果に足す（試行はキーで置き換える・実行と版は足す）。"""
+    """同じ実験の前の結果に足す（試行は試行の名前で置き換える・実行と版は足す）。
+
+    採点器の版（`grader`）が前と違うときは、前の試行を捨てて `merge_notes` に残す。違う規則で採点した試行を
+    同じ表で数えないため（BUG-254）。捨てた試行は、同じ条件で流し直す（Mode A は生成をキャッシュから読み直して
+    採点し直す・Mode B は採点器の版がキャッシュのキーに入るので会話から流し直す）。
+    """
     if not prev:
         return dict(new)
-    trials = {t["key"]: t for t in prev.get("trials") or []}
-    trials.update({t["key"]: t for t in new.get("trials") or []})
+    prev_trials = list(prev.get("trials") or [])
+    notes = list(prev.get("merge_notes") or [])
+    if prev_trials and prev.get("grader") != new.get("grader"):
+        notes.append(
+            {
+                "dropped_trials": len(prev_trials),
+                "reason": "採点器の版が違う",
+                "prev_grader": prev.get("grader"),
+                "grader": new.get("grader"),
+            }
+        )
+        prev_trials = []
+    trials = {trial_identity(t): t for t in prev_trials}
+    trials.update({trial_identity(t): t for t in new.get("trials") or []})
     runs = [*(prev.get("runs") or []), *(new.get("runs") or [])]
     versions = {**(prev.get("versions") or {}), **(new.get("versions") or {})}
     out_of_scope = {
@@ -165,6 +187,7 @@ def merge_result(prev: Mapping | None, new: Mapping) -> dict:
         "runs": runs,
         "versions": versions,
         "out_of_scope": list(out_of_scope.values()),
+        "merge_notes": notes,
     }
 
 
