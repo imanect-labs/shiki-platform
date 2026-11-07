@@ -5,7 +5,7 @@
  "irs": {
   "main": {
    "ir_version": 1,
-   "name": "abeval-rec-98021a-null",
+   "name": "abeval-rec-9a0c4f-null",
    "display_name": "スタブフロー",
    "declared_scopes": [],
    "triggers": [
@@ -37,7 +37,7 @@
  "record": {
   "runs": [
    {
-    "run_id": "0c755a2c-b881-491f-94e4-c94451a8c59e",
+    "run_id": "1d100188-a505-418c-944a-1e6c62b60c6f",
     "status": "succeeded",
     "input": {
      "body": "登録した一覧を表計算のファイルに書き出す手順を教えてください。どの画面から操作すればよいですか。",
@@ -60,28 +60,28 @@
     "workflow": null,
     "scheduled_at": null,
     "fail_reason": null,
-    "started_at": "2026-11-07T00:43:19.587616+00:00"
+    "started_at": "2026-11-07T01:15:50.193310+00:00"
    }
   ],
   "rows": {
    "inquiries": [],
    "assign": [
     {
-     "id": "1010c992-e113-484a-ad41-336ca3a491ba",
+     "id": "db54070f-78e7-4f3e-9c7f-703d16d42baf",
      "data": {
       "assignee": "石井",
       "category": "使い方"
      }
     },
     {
-     "id": "278f3116-2736-46c5-bd67-916a8de4e9c2",
+     "id": "ed169e61-de70-48b9-ac3b-588a1ff21bb4",
      "data": {
       "assignee": "池田",
       "category": "不具合"
      }
     },
     {
-     "id": "6dbc8205-7dff-4661-b3df-a78be9c6fee7",
+     "id": "7e52be18-e612-4684-9cb5-432025c21ecc",
      "data": {
       "assignee": "森",
       "category": "請求"
@@ -93,21 +93,21 @@
    "inquiries": [],
    "assign": [
     {
-     "id": "1010c992-e113-484a-ad41-336ca3a491ba",
+     "id": "db54070f-78e7-4f3e-9c7f-703d16d42baf",
      "data": {
       "assignee": "石井",
       "category": "使い方"
      }
     },
     {
-     "id": "278f3116-2736-46c5-bd67-916a8de4e9c2",
+     "id": "ed169e61-de70-48b9-ac3b-588a1ff21bb4",
      "data": {
       "assignee": "池田",
       "category": "不具合"
      }
     },
     {
-     "id": "6dbc8205-7dff-4661-b3df-a78be9c6fee7",
+     "id": "7e52be18-e612-4684-9cb5-432025c21ecc",
      "data": {
       "assignee": "森",
       "category": "請求"
@@ -117,6 +117,6 @@
   },
   "files": [],
   "rows_rerun": null,
-  "now": "2026-11-07T00:43:12.640570+00:00"
+  "now": "2026-11-07T01:15:43.116260+00:00"
  }
 }

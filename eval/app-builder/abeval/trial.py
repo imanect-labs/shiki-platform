@@ -5,7 +5,7 @@
 - 生成した IR は、fixture の id を置き場所の印（`@table:<ref>` など）に戻してから記録する（`canonical`）。
   実験のたびに fixture を作り直すので id が変わっても、記録から採点し直せる（印を今の id に戻す・`concrete`）。
   ir_lint には、ref ごとに決まったダミーの UUID にして渡す（`offline`・結果が実行ごとに変わらない）。
-- 依頼文の「参考情報」は、fixture のテーブル（表示名・id・列の key と型）・フォルダー・ファイルの id と、
+- 依頼文の「参考情報」は、fixture のテーブル（表示名・id・列の key と型・状態の進め方）・フォルダー・ファイルの id と、
   入力の項目（課題の入力の key・依頼文での呼び名・型）を載せる（Mode A にはデータを調べるツールが無い。
   Mode B のチャットにもフォルダーやファイルの id を調べる道具が無い。製品の検証は名指しするテーブルやフォルダーの
   実在を見る。run_case は課題の key で入力を送るので、key を知らせないと名前を当てる運で合否が決まる）。
@@ -20,6 +20,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from abeval.fixtures import fsm_spec
 from abeval.tasks import FIXTURE_KIND, PLACEHOLDER, Task, dummy_ids
 
 MODEL = "claude-haiku-5-5"
@@ -153,6 +154,23 @@ def _field_line(f: Mapping) -> str:
     return f"{f.get('key')}（{'・'.join(bits)}）"
 
 
+def _fsm_line(table: Mapping) -> str:
+    """状態の進め方（状態の列・追加したときの状態・進め方）。無ければ空（GAP-113）。
+
+    状態の進め方のあるテーブルでは、足した行の状態は最初の状態に決まり、状態の列はほかの書き方で変えられない。
+    これはテーブルの性質（Mode B のチャットはデータの道具で状態の列だけを読める・Mode A には調べる道具が無い）
+    なので、列の型と同じく参考情報に載せる。どのブロックで進めるかは書かない（答えの漏れ）。
+    """
+    fsm = fsm_spec(table)
+    if fsm is None:
+        return ""
+    moves = "、".join(f"{a} → {b}" for a, b, _ in fsm.transitions)
+    return (
+        f"。状態の進め方: 状態の列は {fsm.field}、追加したときの状態は「{fsm.initial}」、"
+        f"進め方は {moves}"
+    )
+
+
 _TRIGGER_WORDS = {
     "interactive": "手で動かすワークフロー",
     "schedule": "決まった時刻に動くワークフロー",
@@ -205,7 +223,7 @@ def reference_info(task: Task, ids: Mapping[str, str]) -> str:
     for t in fx.get(FIXTURE_KIND["table"]) or []:
         fields = (t.get("schema") or {}).get("fields") or []
         cols = ", ".join(_field_line(f) for f in fields if isinstance(f, Mapping))
-        lines.append(f"- テーブル「{t['name']}」（id: {ids[t['ref']]}）: 列 {cols}")
+        lines.append(f"- テーブル「{t['name']}」（id: {ids[t['ref']]}）: 列 {cols}{_fsm_line(t)}")
     for f in fx.get(FIXTURE_KIND["folder"]) or []:
         lines.append(f"- フォルダー「{f['name']}」（id: {ids[f['ref']]}）")
     for c in fx.get(FIXTURE_KIND["file"]) or []:

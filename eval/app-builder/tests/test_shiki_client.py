@@ -6,6 +6,7 @@ import httpx
 import pytest
 
 from abeval.shiki import (
+    FSM_PATHS,
     LoginError,
     ShikiClient,
     ShikiError,
@@ -178,11 +179,12 @@ def test_capabilities_from_openapi(fake):
         "trigger": True,
         "scheduled_at": True,
         "custom_instructions": True,
+        "fsm": True,
         "list_workflows": None,
     }
-    # V0 のように項目の無い版。
+    # V0 のように項目の無い版（状態の進め方の口は V0 からある・81a9899b の openapi.rs）。
     v0 = {
-        "paths": {"/workflows": {}},
+        "paths": {"/workflows": {}, **{p: {} for p in FSM_PATHS}},
         "components": {
             "schemas": {
                 "ValidateWorkflowResponse": {"properties": {"errors": {}}},
@@ -195,8 +197,13 @@ def test_capabilities_from_openapi(fake):
         "trigger": False,
         "scheduled_at": False,
         "custom_instructions": False,
+        "fsm": True,
         "list_workflows": False,
     }
+    # 口が 1 つでも欠ければ、fixture の状態の進め方を作れない。
+    for missing in FSM_PATHS:
+        doc = {**v0, "paths": {p: {} for p in v0["paths"] if p != missing}}
+        assert capabilities_of(doc)["fsm"] is False, missing
     # openapi は認証なしで読む（ログインしない）。
     assert not any(r.url.path == "/auth/login" for r in fake.seen)
 

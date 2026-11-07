@@ -41,6 +41,8 @@
 - `date_dependent`（任意の印）: 実行の日に決まる値を持つ課題か。省くと run_case から決める（`scheduled_at` か、
   期待の `$run_date`・`@run_date` を使う run_case があれば真）。真の課題では、IR の設定の中の日付の文字を S2s に
   数える（日付の決め打ち・`grade.dates`・BUG-247）。
+- `fixtures.tables[].fsm`（任意）: テーブルの状態の進め方（形は `abeval.fixtures` の docstring）。fixture の行の状態に
+  最初の状態から進め方で届くことを確かめる。使う課題は `requires` に `cap:fsm` を書く。
 - `requires` は `node:<種類>`（その版のカタログで使える）・`cap:<機能>`（`shiki.capabilities_of` の項目）・
   `trigger:<種類>`（その種類のきっかけで動かす経路。`event` は有効化を使うので後回し）。
 
@@ -60,6 +62,7 @@ from pathlib import Path
 from typing import Any
 
 from abeval.config import ROOT
+from abeval.fixtures import FixtureError, fsm_spec
 
 TASKS_DIR = ROOT / "data" / "tasks"
 CORE_TASKS = TASKS_DIR / "core.json"
@@ -475,7 +478,26 @@ def _check_fixture_refs(raw: Mapping, where: str, problems: list[str]) -> dict[s
                 refs[ref] = kind
             if not _str(item.get("name")):
                 problems.append(f"{w}.name がありません")
+            if key == "tables":
+                _check_fsm(item, w, problems)
     return refs
+
+
+def _check_fsm(table: Mapping, where: str, problems: list[str]) -> None:
+    """状態の進め方（`fsm`）の形と、行の状態に最初の状態から届くこと（fixture を作るときと同じ読み方）。"""
+    try:
+        fsm = fsm_spec(table)
+    except FixtureError as e:
+        problems.append(f"{where}.fsm: {e}")
+        return
+    if fsm is None:
+        return
+    for i, row in enumerate(table.get("records") or []):
+        if isinstance(row, Mapping) and row.get(fsm.field) is not None:
+            try:
+                fsm.path(row[fsm.field])
+            except FixtureError as e:
+                problems.append(f"{where}.records[{i}]: {e}")
 
 
 def parse_task(raw: Mapping[str, Any]) -> Task:

@@ -5,7 +5,7 @@
  "irs": {
   "main": {
    "ir_version": 1,
-   "name": "abeval-rec-98021a-input-key",
+   "name": "abeval-rec-9a0c4f-input-key",
    "display_name": "問い合わせを分類して担当を決める",
    "triggers": [
     {
@@ -37,7 +37,7 @@
      "type": "data.record.create",
      "label": "問い合わせを登録",
      "params": {
-      "table": "df17679d-2c84-4b4b-8d97-424d041325c5",
+      "table": "cdf78ef2-60e8-4cbd-a2ae-dfe2061f998a",
       "data": {
        "subject": {
         "$from": "input",
@@ -102,7 +102,7 @@
      "type": "data.query",
      "label": "担当者を引く",
      "params": {
-      "table": "f7f64419-0969-48e8-bcab-61a6a772c619",
+      "table": "811be132-0b38-4f8e-8cf3-21d828052c9a",
       "query": {
        "filter": {
         "cmp": {
@@ -123,7 +123,7 @@
      "type": "data.record.update",
      "label": "分類と担当者を書く",
      "params": {
-      "table": "df17679d-2c84-4b4b-8d97-424d041325c5",
+      "table": "cdf78ef2-60e8-4cbd-a2ae-dfe2061f998a",
       "record": {
        "$from": "nodes.register.output",
        "path": "/id"
@@ -136,9 +136,21 @@
        "assignee": {
         "$from": "nodes.find_assignee.output",
         "path": "/items/0/data/assignee"
-       },
-       "status": "振り分け済"
+       }
       }
+     }
+    },
+    {
+     "id": "mark_triaged",
+     "type": "data.transition",
+     "label": "振り分け済にする",
+     "params": {
+      "table": "cdf78ef2-60e8-4cbd-a2ae-dfe2061f998a",
+      "record": {
+       "$from": "nodes.register.output",
+       "path": "/id"
+      },
+      "to": "振り分け済"
      }
     }
    ],
@@ -154,6 +166,10 @@
     {
      "from": "find_assignee",
      "to": "assign"
+    },
+    {
+     "from": "assign",
+     "to": "mark_triaged"
     }
    ]
   }
@@ -169,6 +185,9 @@
    "find_assignee": [
     "out"
    ],
+   "mark_triaged": [
+    "out"
+   ],
    "register": [
     "out"
    ]
@@ -177,7 +196,7 @@
  "record": {
   "runs": [
    {
-    "run_id": "c33f6b82-67fa-4ed5-ac04-1376ba937d95",
+    "run_id": "9c6736a2-6453-4e33-a4a1-e1bf59080128",
     "status": "failed",
     "input": {
      "body": "先月分の請求書の金額が契約の金額と違っています。正しい金額で請求書を作り直してください。",
@@ -221,33 +240,41 @@
       "taken_ports": [],
       "output": null,
       "error": null
+     },
+     {
+      "step_path": "mark_triaged",
+      "node_id": "mark_triaged",
+      "status": "cancelled",
+      "taken_ports": [],
+      "output": null,
+      "error": null
      }
     ],
     "workflow": null,
     "scheduled_at": null,
     "fail_reason": null,
-    "started_at": "2026-11-07T00:43:24.863505+00:00"
+    "started_at": "2026-11-07T01:15:55.306595+00:00"
    }
   ],
   "rows": {
    "inquiries": [],
    "assign": [
     {
-     "id": "528df749-6389-48e9-8089-f78afdf3ecc8",
+     "id": "e4247477-82dc-460d-8b09-ec7d17bbdfcf",
      "data": {
       "assignee": "石井",
       "category": "使い方"
      }
     },
     {
-     "id": "cb8bb630-eac0-4a64-9def-8d42fd14e74f",
+     "id": "6813225c-63a1-4f5f-aedd-a973cb278852",
      "data": {
       "assignee": "池田",
       "category": "不具合"
      }
     },
     {
-     "id": "62ff6585-e7b6-4693-b735-dba98c2ab93d",
+     "id": "8023c037-8287-4da2-8271-420ab3d12606",
      "data": {
       "assignee": "森",
       "category": "請求"
@@ -259,21 +286,21 @@
    "inquiries": [],
    "assign": [
     {
-     "id": "528df749-6389-48e9-8089-f78afdf3ecc8",
+     "id": "e4247477-82dc-460d-8b09-ec7d17bbdfcf",
      "data": {
       "assignee": "石井",
       "category": "使い方"
      }
     },
     {
-     "id": "cb8bb630-eac0-4a64-9def-8d42fd14e74f",
+     "id": "6813225c-63a1-4f5f-aedd-a973cb278852",
      "data": {
       "assignee": "池田",
       "category": "不具合"
      }
     },
     {
-     "id": "62ff6585-e7b6-4693-b735-dba98c2ab93d",
+     "id": "8023c037-8287-4da2-8271-420ab3d12606",
      "data": {
       "assignee": "森",
       "category": "請求"
@@ -283,6 +310,6 @@
   },
   "files": [],
   "rows_rerun": null,
-  "now": "2026-11-07T00:43:12.640570+00:00"
+  "now": "2026-11-07T01:15:43.116260+00:00"
  }
 }

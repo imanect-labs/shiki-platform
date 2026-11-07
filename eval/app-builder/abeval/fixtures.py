@@ -6,10 +6,19 @@
 {
   "folders": [{"ref": "weekly", "name": "週報", "parent": "<folder の ref>"}],
   "tables":  [{"ref": "daily", "name": "日報", "schema": {"fields": [...]},
-               "records": [{"report_date": "@rel:-6d", "visits": 3}]}],
+               "records": [{"report_date": "@rel:-6d", "visits": 3}],
+               "fsm": {"field": "status", "transitions": [{"from": "申請中", "to": "承認済"}]}}],
   "csv":     [{"ref": "survey", "name": "アンケート.csv", "folder": "<folder の ref>", "text": "a,b\\n1,2\\n"}]
 }
 ```
+
+- `tables[].fsm` はテーブルの状態の進め方（GAP-113）。状態は `field`（選択肢の列）の選択肢で、先頭が最初の状態。
+  進め方の `actor`（進められる人の条件）は省けば `public`（テーブルの編集者ならだれでも）。製品の公開の口だけで
+  作る: 状態の列（`status_field`）を付けてテーブルを作り、`POST /data/fsms` で定義を作って、
+  `PUT /data/tables/{id}/schema` でテーブルに付ける（`fsm_ref`）。どれも V0（81a9899b）からある口
+  （`PUT /data/tables/{id}/fsm` は後から入った）。状態の進め方のあるテーブルでは、行を足したときの状態は最初の状態に
+  決まるので、ほかの状態の行は最初の状態で足してから、進め方を最短の道で進める（`POST …/transition`）。
+  定義（`artifact(kind=fsm)`）はテーブルを消しても残るので、記録して片付けで消す。
 
 - 値の `@rel:<N><d|w|h|m>` は基準の時刻（Asia/Tokyo）からの相対。`d`・`w` は日付（`YYYY-MM-DD`）、`@rel:-6dT09:00` は
   その日の日本時間の時刻（RFC 3339・+09:00）、`h`・`m` は時刻（RFC 3339・+09:00・秒は 0）。
@@ -39,8 +48,11 @@ MARK = "abeval-"
 _REL = re.compile(r"^@rel:([+-]?\d{1,5})([dwhm])(?:T(\d{2}):(\d{2}))?$")
 _ID = re.compile(r"^@id:([A-Za-z0-9_.-]+)$")
 _RECORD = re.compile(r"^@record:([A-Za-z0-9_.-]+):(\d+)$")
-# 片付けの順（後に作ったものから・行はテーブルごと消えるので、テーブルが記録にあれば消さない）。
-KINDS = ("workflow", "thread", "file", "record", "table", "folder")
+# 記録できる種類（片付けは後に作ったものから・行はテーブルごと消えるので、テーブルが記録にあれば消さない。
+# 状態の進め方の定義はテーブルを消しても残る）。
+KINDS = ("workflow", "thread", "file", "record", "fsm", "table", "folder")
+# 進め方の進められる人の条件を省いたとき（行の決まりの式・テーブルの編集者ならだれでも）。
+DEFAULT_ACTOR = "public"
 
 
 class FixtureError(RuntimeError):
@@ -112,6 +124,85 @@ def resolve_refs(value: Any, refs: Mapping[str, str], rows: Mapping[str, list[st
                 raise FixtureError(f"まだ作っていない行です: {value!r}")
             return ids[i]
     return value
+
+
+@dataclass(frozen=True)
+class FsmSpec:
+    """テーブルの状態の進め方（課題の `fixtures.tables[].fsm`）。状態は状態の列の選択肢（先頭が最初の状態）。"""
+
+    field: str
+    states: tuple[str, ...]
+    # (元の状態, 次の状態, 進められる人の条件)。
+    transitions: tuple[tuple[str, str, Any], ...]
+
+    @property
+    def initial(self) -> str:
+        return self.states[0]
+
+    def body(self) -> dict:
+        """`FsmBody` の形（`POST /data/fsms` の body）。"""
+        return {
+            "states": list(self.states),
+            "transitions": [{"from": a, "to": b, "actor": act} for a, b, act in self.transitions],
+        }
+
+    def path(self, to: str) -> list[str]:
+        """最初の状態から `to` まで進める状態の列（最短・同じ長さなら定義の順で先のもの・最初の状態なら空）。"""
+        if to not in self.states:
+            raise FixtureError(f"状態の進め方に無い状態です: {to!r}（状態は {list(self.states)}）")
+        prev: dict[str, str | None] = {self.initial: None}
+        queue = [self.initial]
+        while queue and to not in prev:
+            nxt = []
+            for s in queue:
+                for a, b, _ in self.transitions:
+                    if a == s and b not in prev:
+                        prev[b] = s
+                        nxt.append(b)
+            queue = nxt
+        if to not in prev:
+            raise FixtureError(f"最初の状態「{self.initial}」から「{to}」へ進める道がありません")
+        out: list[str] = []
+        at: str | None = to
+        while at is not None and at != self.initial:
+            out.append(at)
+            at = prev[at]
+        return out[::-1]
+
+
+def fsm_spec(table: Mapping) -> FsmSpec | None:
+    """fixture のテーブルの `fsm` を読む（無ければ None・形の誤りは FixtureError）。製品の検証は写さない。"""
+    raw = table.get("fsm")
+    if raw is None:
+        return None
+    where = f"テーブル「{table.get('name')}」の fsm"
+    if not isinstance(raw, Mapping) or set(raw) - {"field", "transitions"}:
+        raise FixtureError(f"{where} は {{field, transitions}} のオブジェクトです")
+    key = raw.get("field")
+    fields = (table.get("schema") or {}).get("fields") or []
+    f = next((x for x in fields if isinstance(x, Mapping) and x.get("key") == key), None)
+    opts = f.get("options") if f else None
+    if f is None or f.get("type") != "select" or not isinstance(opts, list) or not opts:
+        raise FixtureError(f"{where}.field は選択肢のある select の列の key です: {key!r}")
+    if not all(isinstance(o, str) for o in opts):
+        raise FixtureError(f"{where}: 状態の列の選択肢は文字です")
+    status = (table.get("schema") or {}).get("status_field")
+    if status is not None and status != key:
+        raise FixtureError(f"{where}.field がスキーマの status_field と違います: {status!r}")
+    trs = raw.get("transitions")
+    if not isinstance(trs, list) or not trs:
+        raise FixtureError(f"{where}.transitions は 1 つ以上の進め方の配列です")
+    out = []
+    for i, t in enumerate(trs):
+        if not isinstance(t, Mapping) or set(t) - {"from", "to", "actor"}:
+            raise FixtureError(f"{where}.transitions[{i}] は {{from, to, actor?}} です")
+        a, b = t.get("from"), t.get("to")
+        if a not in opts or b not in opts:
+            raise FixtureError(
+                f"{where}.transitions[{i}] の状態が選択肢にありません: {a!r} → {b!r}"
+            )
+        out.append((a, b, t.get("actor", DEFAULT_ACTOR)))
+    return FsmSpec(key, tuple(opts), tuple(out))
 
 
 @dataclass
@@ -212,7 +303,7 @@ def create_fixtures(
     now: dt.datetime | None = None,
     record: FixtureRecord | None = None,
 ) -> FixtureRecord:
-    """fixture を作る（フォルダー → テーブル → 行 → CSV の順）。失敗したら FixtureError（record つき）。"""
+    """fixture を作る（フォルダー → テーブル（→ 状態の進め方）→ 行 → CSV の順）。失敗したら FixtureError（record つき）。"""
     spec = spec or {}
     now = now or now_utc()
     rec = record or new_record(client.user)
@@ -227,9 +318,14 @@ def create_fixtures(
             rec.add("folder", node["id"], name, f.get("ref"), parent)
         for i, t in enumerate(_spec_list(spec, "tables")):
             name = _name(t, f"tables[{i}]")
+            fsm = fsm_spec(t)
             schema = resolve_refs(t.get("schema") or {"fields": []}, rec.refs, rec.rows)
+            if fsm is not None:
+                schema = {**schema, "status_field": fsm.field}
             table = client.create_table(name, schema)
             rec.add("table", table["id"], name, t.get("ref"))
+            if fsm is not None:
+                _attach_fsm(client, rec, table["id"], fsm)
             _insert_rows(client, rec, t, table["id"], now)
         for i, c in enumerate(_spec_list(spec, "csv")):
             name = _name(c, f"csv[{i}]")
@@ -249,18 +345,40 @@ def create_fixtures(
     return rec
 
 
+def _attach_fsm(client: ShikiClient, rec: FixtureRecord, table_id: str, fsm: FsmSpec) -> None:
+    """定義を作って（作った id はすぐ記録する）、テーブルのスキーマの改訂で付ける（`fsm_ref`）。"""
+    name = f"{MARK}fsm-{table_id}"
+    made = client.create_fsm(name, table_id, fsm.body())
+    rec.add("fsm", made["id"], name, parent=table_id)
+    table = client.get_table(table_id)
+    schema = {
+        **table["schema"],
+        "fsm_ref": {"artifact_id": made["id"], "version": made["version"]},
+    }
+    client.update_table_schema(table_id, schema, table["schema_version"])
+
+
 def _insert_rows(
     client: ShikiClient, rec: FixtureRecord, table_spec: Mapping, table_id: str, now: dt.datetime
 ) -> None:
     rows = table_spec.get("records") or []
     if not isinstance(rows, list) or not all(isinstance(r, Mapping) for r in rows):
         raise FixtureError("tables[].records はオブジェクトの配列です")
+    fsm = fsm_spec(table_spec)
     ref = table_spec.get("ref") or table_id
     ids = rec.rows.setdefault(ref, [])
     for row in rows:
         data = resolve_refs(resolve_rel(row, now), rec.refs, rec.rows)
+        hops: list[str] = []
+        if fsm is not None and data.get(fsm.field) is not None:
+            # 足したときの状態は最初の状態に決まる。ほかの状態は進め方で進める。
+            hops = fsm.path(data[fsm.field])
+            data = {**data, fsm.field: fsm.initial}
         created = client.create_record(table_id, data)
         ids.append(created["id"])
+        rev = created["rev"]
+        for to in hops:
+            rev = client.transition_record(table_id, created["id"], to, rev)["rev"]
 
 
 def reload_rows(
@@ -310,6 +428,8 @@ def _delete(client: ShikiClient, kind: str, id: str, parent: str | None) -> bool
         return client.delete_file(id, missing_ok=True)
     if kind == "table":
         return client.delete_table(id, missing_ok=True)
+    if kind == "fsm":
+        return client.delete_artifact(id, missing_ok=True)
     if kind == "folder":
         return client.delete_folder(id, missing_ok=True)
     if kind == "record":

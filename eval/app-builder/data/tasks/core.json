@@ -1279,7 +1279,8 @@
     "node:data.query",
     "node:control.map",
     "node:data.record.upsert",
-    "node:data.record.update"
+    "node:data.transition",
+    "cap:fsm"
    ],
    "phrasings": {
     "flow": "15 分ごとに動くフローを作ってください。「経費申請」テーブルで状態が「承認済」の行を探し、1 件ずつ「仕訳台帳」テーブルに申請の ID・摘要（件名）・金額の行を追加してから、その申請の状態を「計上済」に変えます。何度動いても同じ申請の仕訳が 2 行にならないようにしてください。",
@@ -1350,7 +1351,28 @@
         "approver": "高橋",
         "status": "申請中"
        }
-      ]
+      ],
+      "fsm": {
+       "field": "status",
+       "transitions": [
+        {
+         "from": "申請中",
+         "to": "承認済"
+        },
+        {
+         "from": "申請中",
+         "to": "差戻し"
+        },
+        {
+         "from": "差戻し",
+         "to": "申請中"
+        },
+        {
+         "from": "承認済",
+         "to": "計上済"
+        }
+       ]
+      }
      },
      {
       "ref": "journal",
@@ -1391,7 +1413,8 @@
     },
     "node_types": {
      "all_of": [
-      "data.query"
+      "data.query",
+      "data.transition"
      ],
      "any_of": [
       [
@@ -1520,7 +1543,7 @@
       },
       {
        "id": "mark_posted",
-       "type": "data.record.update",
+       "type": "data.transition",
        "label": "計上済にする",
        "params": {
         "table": "@table:claims",
@@ -1528,9 +1551,7 @@
          "$from": "each",
          "path": "/item/id"
         },
-        "patch": {
-         "status": "計上済"
-        }
+        "to": "計上済"
        },
        "parent": "per_claim"
       }
@@ -1556,7 +1577,9 @@
     "node:llm.invoke",
     "node:data.query",
     "node:data.record.create",
-    "node:data.record.update"
+    "node:data.record.update",
+    "node:data.transition",
+    "cap:fsm"
    ],
    "phrasings": {
     "flow": "問い合わせの件名と本文を受け取るフローを作ってください。まず「問い合わせ」テーブルに件名と本文を状態「未対応」で登録します。次に AI で本文を読んで分類を「請求」「不具合」「使い方」のどれかに決め、「担当割り当て」テーブルでその分類の担当者を引きます。最後に登録した行の分類と担当者を書き、状態を「振り分け済」にしてください。",
@@ -1605,6 +1628,15 @@
           "振り分け済"
          ],
          "indexed": true
+        }
+       ]
+      },
+      "fsm": {
+       "field": "status",
+       "transitions": [
+        {
+         "from": "未対応",
+         "to": "振り分け済"
         }
        ]
       }
@@ -1657,7 +1689,8 @@
      "all_of": [
       "llm.invoke",
       "data.record.create",
-      "data.query"
+      "data.query",
+      "data.transition"
      ],
      "any_of": [
       [
@@ -1898,9 +1931,21 @@
          "assignee": {
           "$from": "nodes.find_assignee.output",
           "path": "/items/0/data/assignee"
-         },
-         "status": "振り分け済"
+         }
         }
+       }
+      },
+      {
+       "id": "mark_triaged",
+       "type": "data.transition",
+       "label": "振り分け済にする",
+       "params": {
+        "table": "@table:inquiries",
+        "record": {
+         "$from": "nodes.register.output",
+         "path": "/id"
+        },
+        "to": "振り分け済"
        }
       }
      ],
@@ -1916,6 +1961,10 @@
       {
        "from": "find_assignee",
        "to": "assign"
+      },
+      {
+       "from": "assign",
+       "to": "mark_triaged"
       }
      ]
     }
@@ -3272,7 +3321,9 @@
     "node:llm.invoke",
     "node:data.record.create",
     "node:data.record.update",
-    "node:control.branch"
+    "node:control.branch",
+    "node:data.transition",
+    "cap:fsm"
    ],
    "phrasings": {
     "flow": "応募者の書類選考を手伝うフローを作ってください。入力は氏名・応募職種・志望動機です。まず「応募者」テーブルに状態「応募」で登録し、AI に志望動機を読ませて 1〜5 の評価点と理由を出させ、その行に書き込みます。評価点が 4 以上なら状態を「書類通過」に変え、3 以下なら「応募」のままにしてください。自動で見送りにはしません。",
@@ -3324,6 +3375,19 @@
          "indexed": true
         }
        ]
+      },
+      "fsm": {
+       "field": "status",
+       "transitions": [
+        {
+         "from": "応募",
+         "to": "書類通過"
+        },
+        {
+         "from": "応募",
+         "to": "見送り"
+        }
+       ]
       }
      }
     ]
@@ -3335,7 +3399,8 @@
     "node_types": {
      "all_of": [
       "llm.invoke",
-      "data.record.create"
+      "data.record.create",
+      "data.transition"
      ],
      "none_of": [
       "agent.invoke"
@@ -3569,7 +3634,7 @@
       },
       {
        "id": "promote",
-       "type": "data.record.update",
+       "type": "data.transition",
        "label": "書類通過にする",
        "params": {
         "table": "@table:applicants",
@@ -3577,9 +3642,7 @@
          "$from": "nodes.register.output",
          "path": "/id"
         },
-        "patch": {
-         "status": "書類通過"
-        }
+        "to": "書類通過"
        }
       }
      ],
@@ -4780,7 +4843,9 @@
     "node:data.query",
     "node:control.branch",
     "node:data.record.update",
-    "node:data.record.create"
+    "node:data.record.create",
+    "node:data.transition",
+    "cap:fsm"
    ],
    "phrasings": {
     "flow": "備品を貸し出すフローを作ってください。入力は管理番号と借りる人です。「備品」テーブルでその管理番号の行を探し、状態が「在庫」のときだけ、状態を「貸出中」・借りている人を借りる人に変え、「貸出記録」テーブルに管理番号・借りた人・貸出日（実行した日）の 1 行を追加します。すでに「貸出中」なら何も変えないでください。",
@@ -4836,7 +4901,20 @@
         "status": "貸出中",
         "borrower": "西村"
        }
-      ]
+      ],
+      "fsm": {
+       "field": "status",
+       "transitions": [
+        {
+         "from": "在庫",
+         "to": "貸出中"
+        },
+        {
+         "from": "貸出中",
+         "to": "在庫"
+        }
+       ]
+      }
      },
      {
       "ref": "loans",
@@ -4883,7 +4961,8 @@
     "node_types": {
      "all_of": [
       "data.query",
-      "data.record.create"
+      "data.record.create",
+      "data.transition"
      ],
      "any_of": [
       [
@@ -5052,7 +5131,7 @@
       },
       {
        "id": "lend",
-       "type": "data.record.update",
+       "type": "data.transition",
        "label": "貸出中にする",
        "params": {
         "table": "@table:equipment",
@@ -5060,8 +5139,20 @@
          "$from": "nodes.find.output",
          "path": "/items/0/id"
         },
+        "to": "貸出中"
+       }
+      },
+      {
+       "id": "set_borrower",
+       "type": "data.record.update",
+       "label": "借りている人を書く",
+       "params": {
+        "table": "@table:equipment",
+        "record": {
+         "$from": "nodes.find.output",
+         "path": "/items/0/id"
+        },
         "patch": {
-         "status": "貸出中",
          "borrower": {
           "$from": "input",
           "path": "/borrower"
@@ -5104,6 +5195,10 @@
       },
       {
        "from": "lend",
+       "to": "set_borrower"
+      },
+      {
+       "from": "set_borrower",
        "to": "log"
       }
      ]
@@ -5116,7 +5211,9 @@
    "kind": "workflow",
    "requires": [
     "node:data.query",
-    "node:data.record.update"
+    "node:data.record.update",
+    "node:data.transition",
+    "cap:fsm"
    ],
    "phrasings": {
     "flow": "備品の返却を受け付けるフローを作ってください。入力は管理番号です。「備品」テーブルのその行の状態を「在庫」に戻して借りている人を空にし、「貸出記録」テーブルでその管理番号のまだ返却日が入っていない記録を探して、返却日に実行した日の日付を入れてください。",
@@ -5173,7 +5270,20 @@
         "status": "貸出中",
         "borrower": "西村"
        }
-      ]
+      ],
+      "fsm": {
+       "field": "status",
+       "transitions": [
+        {
+         "from": "在庫",
+         "to": "貸出中"
+        },
+        {
+         "from": "貸出中",
+         "to": "在庫"
+        }
+       ]
+      }
      },
      {
       "ref": "loans",
@@ -5240,7 +5350,8 @@
     },
     "node_types": {
      "all_of": [
-      "data.query"
+      "data.query",
+      "data.transition"
      ],
      "any_of": [
       [
@@ -5378,7 +5489,7 @@
       },
       {
        "id": "back",
-       "type": "data.record.update",
+       "type": "data.transition",
        "label": "在庫に戻す",
        "params": {
         "table": "@table:equipment",
@@ -5386,8 +5497,20 @@
          "$from": "nodes.find.output",
          "path": "/items/0/id"
         },
+        "to": "在庫"
+       }
+      },
+      {
+       "id": "clear_borrower",
+       "type": "data.record.update",
+       "label": "借りている人を空にする",
+       "params": {
+        "table": "@table:equipment",
+        "record": {
+         "$from": "nodes.find.output",
+         "path": "/items/0/id"
+        },
         "patch": {
-         "status": "在庫",
          "borrower": null
         }
        }
@@ -5449,6 +5572,10 @@
       },
       {
        "from": "back",
+       "to": "clear_borrower"
+      },
+      {
+       "from": "clear_borrower",
        "to": "open_loan"
       },
       {
@@ -5731,7 +5858,9 @@
     "node:data.query",
     "node:control.branch",
     "node:llm.invoke",
-    "node:data.record.create"
+    "node:data.record.create",
+    "node:data.transition",
+    "cap:fsm"
    ],
    "phrasings": {
     "flow": "社内の質問に答えるフローを作ってください。入力は質問です。「よくある質問」テーブルを質問の言葉で検索し、見つかったときは AI がその回答をもとに答えの文章を作って、「問い合わせ記録」テーブルに質問・答え・出典（よくある質問の番号）・状態「自動回答」で記録します。見つからないときは AI に答えさせず、質問と状態「エスカレーション」だけを記録してください。",
@@ -5815,6 +5944,15 @@
          "indexed": true
         }
        ]
+      },
+      "fsm": {
+       "field": "status",
+       "transitions": [
+        {
+         "from": "自動回答",
+         "to": "エスカレーション"
+        }
+       ]
       }
      }
     ]
@@ -5827,7 +5965,8 @@
      "all_of": [
       "data.query",
       "data.record.create",
-      "llm.invoke"
+      "llm.invoke",
+      "data.transition"
      ],
      "none_of": [
       "agent.invoke",
@@ -6010,16 +6149,28 @@
       {
        "id": "log_escalated",
        "type": "data.record.create",
-       "label": "エスカレーションを記録",
+       "label": "質問を記録",
        "params": {
         "table": "@table:log",
         "data": {
          "question": {
           "$from": "input",
           "path": "/question"
-         },
-         "status": "エスカレーション"
+         }
         }
+       }
+      },
+      {
+       "id": "escalate",
+       "type": "data.transition",
+       "label": "エスカレーションにする",
+       "params": {
+        "table": "@table:log",
+        "record": {
+         "$from": "nodes.log_escalated.output",
+         "path": "/id"
+        },
+        "to": "エスカレーション"
        }
       }
      ],
@@ -6041,6 +6192,10 @@
        "from": "found",
        "to": "log_escalated",
        "from_port": "false"
+      },
+      {
+       "from": "log_escalated",
+       "to": "escalate"
       }
      ]
     }

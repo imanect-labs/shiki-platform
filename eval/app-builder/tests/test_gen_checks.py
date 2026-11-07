@@ -150,7 +150,7 @@ def test_verify_offline_runs_everything_and_skips_g8_without_a_list(tmp_path, mo
         lint=recorded.lint(),
         features=g.version_features(
             recorded.catalog(),
-            {"scheduled_at": True, "trigger": True},
+            {"scheduled_at": True, "trigger": True, "fsm": True},
             triggers=("interactive", "schedule", "event"),
         ),
     )
@@ -158,3 +158,28 @@ def test_verify_offline_runs_everything_and_skips_g8_without_a_list(tmp_path, mo
     assert checks == {"G2", "G4", "G5", "G7", "G8", "G9"}
     assert all(r.ok for r in out), [r.to_dict() for r in out if not r.ok]
     assert all(r.skipped for r in out if r.check == "G8")
+
+
+def test_g9_tasks_with_a_state_flow_need_the_fsm_routes():
+    """fixture で状態の進め方を作る課題は、その口（cap:fsm）の無い版では対象外になる（GAP-113）。"""
+    tasks = recorded.tasks()
+    fsm_tasks = {
+        tid for tid, t in tasks.items() if any("fsm" in x for x in t.fixtures.get("tables") or [])
+    }
+    assert fsm_tasks == {
+        "app01-posting-batch",
+        "app02-triage",
+        "app05-screening-text",
+        "app11-checkout",
+        "app11-return",
+        "app12-faq-table",
+    }
+    caps = {"scheduled_at": True, "trigger": True}
+    without = g.version_features(recorded.catalog(), caps)
+    with_fsm = g.version_features(recorded.catalog(), {**caps, "fsm": True})
+    for tid in fsm_tasks:
+        assert {"cap:fsm", "node:data.transition"} <= set(tasks[tid].requires), tid
+        assert g.g9_supported(tasks[tid], without).problems == ["版に無い: cap:fsm"], tid
+        assert g.g9_supported(tasks[tid], with_fsm).ok, tid
+    # 状態の進め方を作らない課題は cap:fsm を求めない。
+    assert not any("cap:fsm" in t.requires for tid, t in tasks.items() if tid not in fsm_tasks)

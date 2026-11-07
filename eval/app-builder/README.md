@@ -151,21 +151,27 @@ API（stub のスタックは `:8080`、版のサーバーは `:10067`）を製�
   Cookie はログインの往復の間だけ自分で持ち、authorize と同じ宛先にだけ付ける。
 - 状態を変える要求（POST・PUT・PATCH・DELETE）にだけ `x-csrf-token`（Cookie `shiki_csrf` の値）を付ける。
   401 なら 1 回だけログインし直す。版の機能は `capabilities()`（OpenAPI の `node_ports`・`trigger`・
-  `scheduled_at`・`/me/custom-instructions`）で判定する。チャットの道具の有無（`list_workflows`）は OpenAPI に
-  載らないので、取り込んだ tools で決める。
+  `scheduled_at`・`/me/custom-instructions`・`fsm`〔fixture で状態の進め方を作る口: `POST /data/fsms`・
+  `PUT /data/tables/{id}/schema`・`POST …/records/{record_id}/transition`〕）で判定する。チャットの道具の有無
+  （`list_workflows`）は OpenAPI に載らないので、取り込んだ tools で決める。
 - `stub_only=True`（stub のスタック）では、model が `default`・`decide-stub` 以外の IR と発話、model を省いた
   llm.invoke・ai.decide・agent.invoke、実モデルの名前を含む値を、送る前に止める（`assert_stub_only`）。
   手元の llm-stub.toml の anthropic は本物の中継（8787）を指しているため。保存済みのワークフローを動かす前にも、
   その IR を読んで確かめる。
 
-**fixture（`abeval/fixtures.py`）**: 課題の `fixtures`（`folders`・`tables`（`records` つき）・`csv`）を、
-フォルダー → テーブル → 行 → CSV の順に作り、作った id を順に `FixtureRecord` に残す（途中で落ちても、そこまでの
-分を片付けられる）。
+**fixture（`abeval/fixtures.py`）**: 課題の `fixtures`（`folders`・`tables`（`records`・`fsm` つき）・`csv`）を、
+フォルダー → テーブル（→ 状態の進め方）→ 行 → CSV の順に作り、作った id を順に `FixtureRecord` に残す（途中で
+落ちても、そこまでの分を片付けられる）。
 
 - `@rel:-6d` は基準の時刻（Asia/Tokyo）からの相対の日付（`YYYY-MM-DD`）。`@rel:-6dT09:00` はその日の日本時間の
   時刻、`@rel:+2h`・`@rel:-30m` は時刻（どちらも RFC 3339・+09:00）。
 - `@id:<ref>` は先に作った fixture の id、`@record:<テーブルの ref>:<番号>` はその行の id。
-- 片付けで消すのは、記録した id（新しい順・行はテーブルごと消える）と、試行の開始の後に作られた `abeval-` の印の
+- `tables[].fsm`（`{"field": "status", "transitions": [{"from": "申請中", "to": "承認済"}]}`）はテーブルの状態の進め方
+  （GAP-113）。状態は `field`（選択肢の列）の選択肢で、先頭が最初の状態。進められる人（`actor`）は省けば `public`。
+  状態の列を付けてテーブルを作り、`POST /data/fsms` で定義を作って `PUT /data/tables/{id}/schema` で付ける
+  （V0〔81a9899b〕からある口。`PUT /data/tables/{id}/fsm` は後から入ったので使わない）。足した行の状態は最初の
+  状態に決まるので、ほかの状態の行は最初の状態で足してから進め方の最短の道で進める（入れ直しも同じ）。定義は
+  テーブルを消しても残る（stub のスタックで確かめた）ので、記録して片付けで消す。- 片付けで消すのは、記録した id（新しい順・行はテーブルごと消える）と、試行の開始の後に作られた `abeval-` の印の
   付いたもの（ルート直下のノード・テーブル・ワークフロー）だけ。本人の全資源は消さない。フォルダーとファイルは
   ゴミ箱に入る（製品にゴミ箱を空にする口は無い）。
 - 番兵（alice のルート直下のフォルダー `abeval-sentinel`）が無いサーバーでは、作るのも片付けるのも拒む。
@@ -245,8 +251,12 @@ docstring（§3.1 に `clarifications`・`run_cases[].llm_dependent`・`run_case
   `11月7日`・`20261107` など）を日付の決め打ちとして S2s に数える（`date_literal`・Mode A と Mode B で同じ・BUG-247）。
 - fixture のテーブルは、絞り込み・集計・並べ替えに使う列を `indexed: true` にする（索引の無い列は実行で失敗する）。
   担当者ごとの合計を見る課題は `aggregate_min_rows: 1`、APP-08 だけは既定の K（5）のままにして、件数の少ない
-  地域が伏せられることを期待値に入れる（PIT-17）。状態の進め方（FSM）は fixture で作らないので、状態は選択肢の列を
-  書き換える形にしている（data.transition は使わない）。
+  地域が伏せられることを期待値に入れる（PIT-17）。
+- 設計（付録 B の改訂版 §3.2）で状態を進める 6 課題（app01-posting-batch・app02-triage・app05-screening-text・
+  app11-checkout・app11-return・app12-faq-table）は、fixture のテーブルに状態の進め方（`fsm`）を付け、正解は
+  data.transition で状態を進める（GAP-113。状態の列は record の書き換えでは変えられず、足した行は最初の状態に
+  なる）。参考情報には状態の列・追加したときの状態・進め方を載せる（どのブロックで進めるかは書かない）。
+  `requires` に `node:data.transition`・`cap:fsm` を書く（どちらも V0 からあるので、V0 でも対象外にならない）。
 - 対象外（このマシンで動かない・評価の設定に判定用のモデルが無い）: ai.decide・RAG・agent.invoke・Office。
   APP-09（きっかけがファイルの保存）は、有効化を使わずに、手動の起動にきっかけの内容（`trigger`）を渡して流す
   （`requires: trigger:event・cap:trigger`）。
@@ -295,7 +305,7 @@ uv run python -m abeval budget --reconcile [--yes]                         # 中
 | --- | --- |
 | `abeval/capture.py` | 取り込み。abeval.proxy に `capture_only` の実行を登録し、新しいスレッドに短い発話（`claude-haiku-5-5`・effort あり）を送って、保存された要求のうち emit_workflow を含む最初のものから system・tools・max_tokens を `data/captures/<label>/<exp>/` に書く。「今日の日付」の一文（製品の `opts.rs` の書式）は `[capture] fixed_date` に置き換え、tools の説明文の fixture のテーブルの id は印（`@table:<ref>`）に戻す。指紋（llm-eval.toml の sha・カスタム指示・workflow と decision のモデル・fixture の名前・OpenAPI の機能・tools と system の sha）を meta.json に残し、前の取り込みと違う項目を `changed_from_previous` に出す。llm-eval.toml の鍵の形の項目がダミーでなければ止める |
 | `abeval/anthropic_client.py` | httpx で Messages を stream で送る（SDK なし）。temperature・top_p・top_k と prefill は送る前に止める。再試行は 429・5xx（529）・接続の誤り・流れの途中の overloaded だけ（400・403 は再試行しない）。全幅のジッタ・`retry-after` を守る・回数を記録する |
-| `abeval/mode_a.py` | Mode A（単発）。課題ごとに fixture を作り（課題の間で名前が重なるため）、参考情報（入力の項目の key・呼び名・型、テーブルの表示名・id・列の key と型、フォルダー・ファイルの id・`trial.reference_info`）を添えて生成する。tools は取り込んだ emit_workflow だけ（defer_loading を外す）・thinking adaptive・`output_config.effort`・tool_choice auto。結果は refusal → truncated → emit → asked → no_emit の順に分ける。S1 はその版の validate、S2s・S2w・S5 は ir_lint、S2d・S3 は stub の配管（流せなかったら errors の `stub_plumbing`） |
+| `abeval/mode_a.py` | Mode A（単発）。課題ごとに fixture を作り（課題の間で名前が重なるため）、参考情報（入力の項目の key・呼び名・型、テーブルの表示名・id・列の key と型・状態の進め方、フォルダー・ファイルの id・`trial.reference_info`）を添えて生成する。tools は取り込んだ emit_workflow だけ（defer_loading を外す）・thinking adaptive・`output_config.effort`・tool_choice auto。結果は refusal → truncated → emit → asked → no_emit の順に分ける。S1 はその版の validate、S2s・S2w・S5 は ir_lint、S2d・S3 は stub の配管（流せなかったら errors の `stub_plumbing`） |
 | `abeval/mode_b.py`・`abeval/approvals.py` | Mode B（製品のチャット・並列度 1）。SSE は承認の要求と終わりのイベントを拾うために使い、完了は `GET messages` の `active_run_id` を `[mode_b] poll_secs` ごとに読み直す。製品には run の状態を読む口が無いので、run が終わったのに終わりのイベントを読めていない（SSE が空で終わった・切れた）ときは SSE を `last_event_id` から読み直し（製品は終わった run の残りを流して閉じる）、それでも読めず最後の発話に返事が無ければ errors（kind `no_reply`）に入れる（BUG-248）。依頼文には Mode A と同じ参考情報を添える。壁時計の上限（`wall_clock_secs`・6 分）で取り消して timeout。保存の前の聞き返し（「？」で終わる・課題の `ask_terms`）には `clarifications` を 1 回だけ（S8 の `asked` は「保存の前に聞き返した」。保存した後の「有効化しますか？」は数えない）。会話が誤りで終わった・abeval.proxy が拒んだ・上流に繋がらない・run_case を流せなかった試行は採点もキャッシュもせず errors に入れる（kind は llm_error・upstream・no_reply・budget・run_case・stub_plumbing。budget は残りを打ち切る）。各試行の前に、実行と評価の残りが 1 試行の最悪より少なければ打ち切る。予定の課題（`scheduled_at`）は、測る日（日本時間）がその週か先週に入れば流さずに errors（kind `date_window`）に理由を入れる（stub の配管では見ない・BUG-247）。emit_workflow の入力の IR は validate にかけ直して検証エラーを数える（結果の文を読まない）。保存されたワークフローそのもので run_case を流し（評価の版は実モデル・費用は active で試行に割り当てる）、stub の配管も流す。採点の後の hook（`ModeBContext.hooks`）はミニアプリ（T12）の差し込み口 |
 | `abeval/plan.py` | 試行の列（Mode A は言い方 × 試行、Mode B は言い方を試行で回す）と見積もり（`[estimates]`・Mode A は取り込みから組んだ予約の額と大きい方）。最悪が `run_cap_usd` を超えれば拒み、課題を分けた組を示す。評価の台帳＋最悪が `eval_cap_usd`、手元の中継の台帳＋最悪が `global_cap_usd` を超えても拒む。`--go` のときだけ abeval.proxy に登録する（上限は min(最悪 × 1.2, $10)） |
 | `abeval/budget.py` | 評価の台帳の累計・実験ごと・実行ごと（usage が無く予約で数えた行の数）・手元の中継の累計・残り（読むだけ） |
@@ -471,6 +481,7 @@ Mode B で承認待ち（`approval_requested`）が来たら、既定で却下�
   ```bash
   uv run python scripts/record_fixtures.py --lint                                   # ir_lint の出力
   uv run python scripts/record_fixtures.py --runs --api-url http://localhost:8080   # stub のスタックで run を記録
+  uv run python scripts/record_fixtures.py --runs --tasks app11-checkout             # 変えた課題の run だけ記録し直す
   ABEVAL_API_URL=http://localhost:8080 uv run pytest -m server tests/test_reference_it.py -q   # 正解と null
   ```
 

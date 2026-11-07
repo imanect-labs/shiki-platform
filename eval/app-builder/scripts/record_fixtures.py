@@ -2,6 +2,7 @@
 
     uv run python scripts/record_fixtures.py --lint                                   # ir_lint の出力（バイナリが要る）
     uv run python scripts/record_fixtures.py --runs --api-url http://localhost:8080   # run の記録（stub のスタックが要る）
+    uv run python scripts/record_fixtures.py --runs --tasks app02-triage,app11-checkout  # 変えた課題の run だけ
 
 - `--lint`: `tests/fixtures/ir_lint/catalog.json`（`ir_lint --catalog`）と `tests/fixtures/ir_lint/core.jsonl`
   （中核の課題の正解の IR・その壊し方 9 通り・中身の無い IR を ir_lint に掛けた結果）。置き場所の印はダミーの
@@ -42,6 +43,7 @@ RUN_TASKS = (
     "app02-triage",
     "app03-weekly-summary",
     "app06-stock-move",
+    "app11-checkout",
     "app11-overdue",
 )
 RUN_MUTATIONS = ("escape_var", "input_key")
@@ -112,13 +114,18 @@ def _save_ir(client: ShikiClient, task, rec, role: str, ir: dict, name: str) -> 
     return Saved(created["id"], 1, v.get("node_ports") or {}, body, v)
 
 
-def record_runs(api_url: str) -> None:
+def record_runs(api_url: str, only: list[str] | None = None) -> None:
     tasks = {t.id: t for t in load_tasks()}
+    unknown = sorted(set(only or ()) - set(RUN_TASKS))
+    if unknown:
+        raise SystemExit(f"run を記録する課題ではありません: {unknown}（RUN_TASKS）")
     client = ShikiClient(api_url, "alice", stub_only=True, timeout=60.0)
     client.login()
     sentinel, made = fixtures.init_sentinel(client)
     try:
         for tid in RUN_TASKS:
+            if only and tid not in only:
+                continue
             task = tasks[tid]
             now = fixtures.now_utc()
             rec = fixtures.create_fixtures(client, task.fixtures, now=now)
@@ -168,13 +175,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--lint", action="store_true", help="ir_lint の出力を記録する")
     ap.add_argument("--runs", action="store_true", help="stub のスタックで run を記録する")
     ap.add_argument("--api-url", default="http://localhost:8080")
+    ap.add_argument(
+        "--tasks", help="--runs で記録する課題（カンマ区切り・既定は RUN_TASKS の全部）"
+    )
     args = ap.parse_args(argv)
     if not (args.lint or args.runs):
         ap.error("--lint か --runs を付けます")
     if args.lint:
         record_lint()
     if args.runs:
-        record_runs(args.api_url)
+        record_runs(args.api_url, [x for x in (args.tasks or "").split(",") if x] or None)
     return 0
 
 

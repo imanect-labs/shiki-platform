@@ -19,6 +19,13 @@ from abeval.tasks import (
     substitute,
 )
 
+FSM_SCHEMA = {
+    "fields": [
+        {"key": "kind", "type": "text"},
+        {"key": "status", "type": "select", "options": ["受付", "対応中", "完了"]},
+    ]
+}
+
 
 def task(**over) -> dict:
     t = {
@@ -151,6 +158,27 @@ def test_a_valid_task_parses():
         ),
         (lambda t: t["reference"]["ir"]["nodes"][0]["params"].update(x="@table:"), "印の形"),
         (lambda t: t.update(roles=[]), "roles は workflow_set だけ"),
+        (
+            lambda t: t["fixtures"]["tables"][0].update(
+                fsm={"field": "kind", "transitions": [{"from": "a", "to": "b"}]}
+            ),
+            "select の列",
+        ),
+        (
+            lambda t: t["fixtures"]["tables"][0].update(
+                schema=FSM_SCHEMA,
+                fsm={"field": "status", "transitions": [{"from": "下書き", "to": "完了"}]},
+            ),
+            "選択肢にありません",
+        ),
+        (
+            lambda t: t["fixtures"]["tables"][0].update(
+                schema=FSM_SCHEMA,
+                fsm={"field": "status", "transitions": [{"from": "受付", "to": "対応中"}]},
+                records=[{"status": "完了"}],
+            ),
+            "records[0]: 最初の状態「受付」から「完了」へ進める道がありません",
+        ),
     ],
 )
 def test_shape_errors_are_reported(change, needle):
@@ -158,6 +186,19 @@ def test_shape_errors_are_reported(change, needle):
     change(raw)
     found = problems(raw)
     assert any(needle in p for p in found), found
+
+
+def test_a_table_with_a_state_flow_parses():
+    raw = task()
+    raw["fixtures"]["tables"][0].update(
+        schema=FSM_SCHEMA,
+        fsm={
+            "field": "status",
+            "transitions": [{"from": "受付", "to": "対応中"}, {"from": "対応中", "to": "完了"}],
+        },
+        records=[{"status": "完了"}, {"status": "受付"}, {"kind": "状態なし"}],
+    )
+    assert parse_task(raw).fixtures["tables"][0]["fsm"]["field"] == "status"
 
 
 def test_all_problems_are_reported_at_once():

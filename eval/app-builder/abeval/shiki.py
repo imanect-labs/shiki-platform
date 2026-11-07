@@ -40,6 +40,12 @@ _REAL_MODEL_HINT = re.compile(r"claude|haiku|sonnet|opus|gpt-|gemini|deepseek", 
 _FORM_LOGIN = re.compile(r'<form[^>]*\bid="kc-form-login"[^>]*>', re.IGNORECASE)
 _ACTION = re.compile(r'\baction="([^"]+)"')
 TERMINAL_RUN = frozenset({"succeeded", "failed", "cancelled"})
+# テーブルに状態の進め方を付けて行の状態を進める口（定義の作成・スキーマの改訂・状態を進める）。
+FSM_PATHS = (
+    "/data/fsms",
+    "/data/tables/{id}/schema",
+    "/data/tables/{id}/records/{record_id}/transition",
+)
 
 
 class ShikiError(RuntimeError):
@@ -553,6 +559,34 @@ class ShikiClient:
         ok = (204, 404) if missing_ok else (204,)
         return self.request("DELETE", f"/data/tables/{table_id}", ok=ok).status_code == 204
 
+    def update_table_schema(
+        self, table_id: str, schema: Mapping, expected_schema_version: int
+    ) -> dict:
+        return self._json(
+            "PUT",
+            f"/data/tables/{table_id}/schema",
+            json_body={"schema": schema, "expected_schema_version": expected_schema_version},
+        )
+
+    def create_fsm(self, name: str, table_id: str, body: Mapping) -> dict:
+        """状態の進め方の定義を作る（`{id, version, body}`・テーブルに付けるのはスキーマの改訂）。"""
+        return self._json(
+            "POST",
+            "/data/fsms",
+            json_body={"name": name, "table_id": table_id, "body": body},
+            ok=(201,),
+        )
+
+    def get_fsm(self, fsm_id: str) -> dict:
+        return self._json("GET", f"/data/fsms/{fsm_id}")
+
+    def transition_record(self, table_id: str, record_id: str, to: str, expected_rev: int) -> dict:
+        return self._json(
+            "POST",
+            f"/data/tables/{table_id}/records/{record_id}/transition",
+            json_body={"to": to, "expected_rev": expected_rev},
+        )
+
     def records(self, table_id: str) -> list[dict]:
         items: list[dict] = []
         params: dict = {"limit": 200}
@@ -673,6 +707,8 @@ def capabilities_of(doc: Mapping, captured_tools: list[str] | None = None) -> di
         "trigger": "trigger" in start,
         "scheduled_at": "scheduled_at" in start,
         "custom_instructions": "/me/custom-instructions" in paths,
+        # fixture でテーブルに状態の進め方を付けて行の状態を進める口（`fixtures` の fsm・V0 からある）。
+        "fsm": all(p in paths for p in FSM_PATHS),
         # チャットの道具の一覧は OpenAPI に載らない（取り込んだ tools で決める・無ければ None）。
         "list_workflows": None if captured_tools is None else "list_workflows" in captured_tools,
     }

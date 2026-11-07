@@ -10,7 +10,8 @@
 4. 中身の無い IR（stub の `emitwf:ok` と同じ形）で同じ run_case を流し、照合（llm_dependent も含める）が落ちる
    ことを確かめる。S4 は試行の単位（全 run_case の照合が通る）なので、課題の S4 が落ちることと、何かを変える
    run_case がどれも落ちることを見る（何も変えないのが正解の run_case〔`expect.flow_through: false`〕は null も通る）。
-5. 片付けて、テーブル・ルート直下のノード・ワークフローの一覧が前と同じに戻ることを確かめる。
+5. 片付けて、テーブル・ルート直下のノード・ワークフローの一覧が前と同じに戻り、状態の進め方の定義も消えたことを
+   確かめる。
 
 実 LLM は呼ばない（`ShikiClient(stub_only=True)` が実モデルを指す IR を送る前に止める）。
 """
@@ -28,7 +29,7 @@ import pytest
 from abeval import fixtures
 from abeval.grade.mutate import null_ir
 from abeval.run_cases import Saved, execute_case, grade_case, save_workflows
-from abeval.shiki import ShikiClient
+from abeval.shiki import ShikiClient, ShikiError
 from abeval.tasks import load_tasks, stub_cases
 
 API = os.environ.get("ABEVAL_API_URL", "").rstrip("/")
@@ -124,3 +125,8 @@ def test_reference_passes_and_null_fails(alice, task):
     assert report.ok, report.errors
     assert not problems, "\n".join(problems)
     assert _snapshot(alice) == before, "片付けの後に残ったものがあります"
+    # 状態の進め方の定義はテーブルを消しても残るので、片付けが消したことを確かめる（GAP-113）。
+    for fid in rec.ids("fsm"):
+        with pytest.raises(ShikiError) as e:
+            alice.get_fsm(fid)
+        assert e.value.status == 404, fid

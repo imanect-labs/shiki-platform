@@ -232,3 +232,74 @@ def test_fixtures_workflow_chat_and_cleanup(users, sentinel):
     with pytest.raises(ShikiError) as e:
         alice.messages(th["id"])
     assert e.value.status == 404
+
+
+def test_state_flow_fixture_reaches_the_states_and_its_cleanup(users, sentinel):
+    """状態の進め方（GAP-113）を製品の公開の口で作る。行は最初の状態から進め方で目当ての状態に届く。
+
+    足したときに最初の状態でない状態を書くと製品は断る（fixture が進め方で進める理由）。定義
+    （artifact(kind=fsm)）はテーブルを消しても残るので、片付けで消す。
+    """
+    alice = users["alice"]
+    tag = secrets.token_hex(3)
+    before = _snapshot(alice)
+    spec = {
+        "tables": [
+            {
+                "ref": "claims",
+                "name": f"評価の確かめ-申請-{tag}",
+                "schema": {
+                    "fields": [
+                        {"key": "title", "display_name": "件名", "type": "text"},
+                        {
+                            "key": "status",
+                            "display_name": "状態",
+                            "type": "select",
+                            "options": ["申請中", "承認済", "計上済"],
+                            "indexed": True,
+                        },
+                    ]
+                },
+                "records": [
+                    {"title": "a", "status": "計上済"},
+                    {"title": "b", "status": "申請中"},
+                    {"title": "c"},
+                ],
+                "fsm": {
+                    "field": "status",
+                    "transitions": [
+                        {"from": "申請中", "to": "承認済"},
+                        {"from": "承認済", "to": "計上済"},
+                    ],
+                },
+            }
+        ]
+    }
+    rec = fixtures.new_record("alice")
+    try:
+        fixtures.create_fixtures(alice, spec, record=rec)
+        tid, fsm_id = rec.refs["claims"], rec.ids("fsm")[0]
+        schema = alice.get_table(tid)["schema"]
+        assert schema["status_field"] == "status"
+        assert schema["fsm_ref"]["artifact_id"] == fsm_id
+        got = {r["data"]["title"]: r["data"].get("status") for r in alice.records(tid)}
+        assert got == {"a": "計上済", "b": "申請中", "c": "申請中"}, got
+        with pytest.raises(ShikiError) as e:
+            alice.create_record(tid, {"title": "d", "status": "承認済"})
+        assert e.value.status == 400, e.value
+        # 入れ直しも進め方で同じ状態に戻る（run_case の前）。
+        fixtures.reload_rows(alice, rec, spec)
+        again = {r["data"]["title"]: r["data"].get("status") for r in alice.records(tid)}
+        assert again == got
+        # 定義はテーブルを消しても残る。
+        assert alice.delete_table(tid)
+        assert alice.get_fsm(fsm_id)["id"] == fsm_id
+        print(f"\nテーブルを消した後も状態の進め方の定義 {fsm_id} は読める（片付けで消す）")
+    finally:
+        report = fixtures.cleanup(alice, rec)
+        assert report.ok, report.errors
+    assert ("fsm", fsm_id) in {(k, i) for k, i, _ in report.deleted}
+    with pytest.raises(ShikiError) as e:
+        alice.get_fsm(fsm_id)
+    assert e.value.status == 404
+    assert _snapshot(alice) == before
