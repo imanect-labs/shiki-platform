@@ -1723,8 +1723,10 @@ async fn tabular_query_budget_counts_inputs_after_conversion() {
     assert_eq!(ok.rows.len(), 1);
 }
 
-/// Excel の主ファイルに表を足す要求と、Excel を表として足す要求は、本体を取得する前にメタデータ（名前・Content-Type）で
-/// 断る（M5）。名前と Content-Type が CSV のままで中身が Excel のファイルは、取得した後に中身で確かめて同じく断る。
+/// Excel の主ファイルに表を足す要求と、Excel を表として足す要求は、名前と Content-Type の両方が Excel のブックを指すなら
+/// 本体を取得する前に断る（M5）。片方だけが Excel を指すものと、名前と Content-Type が CSV のままで中身が Excel のものは、
+/// 取得した後に中身で確かめて同じく断る。名前だけ .xlsx の CSV（ワークフローの保存で作れる）は、中身で CSV と決めて
+/// 表を足しても読む（表の有無で同じファイルの扱いを変えない）。
 #[tokio::test]
 async fn tabular_query_refuses_excel_tables_before_fetching() {
     let Some(env) = setup().await else { return };
@@ -1769,13 +1771,6 @@ async fn tabular_query_refuses_excel_tables_before_fetching() {
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
     .await;
-    // Content-Type だけが Excel のもの（名前に拡張子が無い）も、画面と同じく Excel と見る。
-    let typed = write(
-        format!("売上-{tag}"),
-        [zip.as_slice(), b"-typed"].concat(),
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
-    .await;
     let csv = write(
         format!("経費-{tag}.csv"),
         format!("k\n{tag}\n").into_bytes(),
@@ -1795,39 +1790,63 @@ async fn tabular_query_refuses_excel_tables_before_fetching() {
         matches!(&res, Err(tabular::TabularError::InvalidTables(m)) if m.contains("Excel のファイルには、ほかの CSV を表として足せません")),
         "主ファイルが Excel: {res:?}"
     );
-    for file_id in [book, typed] {
-        let res = service
-            .query_tables(&env.ctx, csv, &[table("book", file_id)], sql, None)
-            .await;
-        assert!(
-            matches!(&res, Err(tabular::TabularError::InvalidTables(m)) if m.contains("テーブル `book` のファイルは CSV ではありません")),
-            "表が Excel: {res:?}"
-        );
-    }
+    let res = service
+        .query_tables(&env.ctx, csv, &[table("book", book)], sql, None)
+        .await;
+    assert!(
+        matches!(&res, Err(tabular::TabularError::InvalidTables(m)) if m.contains("テーブル `book` のファイルは CSV ではありません")),
+        "表が Excel: {res:?}"
+    );
     assert_eq!(gets(), 0, "本体を取得する前に断る");
 
-    // 名前と Content-Type は CSV のまま、中身が Excel のファイル: 取得した後に中身で確かめて断る（同じ文言）。
+    // Content-Type だけが Excel のもの（名前に拡張子が無い）と、名前と Content-Type は CSV のまま中身が Excel のもの:
+    // 取得した後に中身で確かめて断る（同じ文言）。
+    let typed = write(
+        format!("売上-{tag}"),
+        [zip.as_slice(), b"-typed"].concat(),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    .await;
     let disguised = write(
         format!("偽-{tag}.csv"),
         [zip.as_slice(), b"-disguised"].concat(),
         "text/csv",
     )
     .await;
-    let res = service
-        .query_tables(&env.ctx, csv, &[table("book", disguised)], sql, None)
-        .await;
-    assert!(
-        matches!(&res, Err(tabular::TabularError::InvalidTables(m)) if m.contains("テーブル `book` のファイルは CSV ではありません")),
-        "中身が Excel: {res:?}"
-    );
-    let res = service
-        .query_tables(&env.ctx, disguised, &[table("other", csv)], sql, None)
-        .await;
-    assert!(
-        matches!(&res, Err(tabular::TabularError::InvalidTables(m)) if m.contains("Excel のファイルには")),
-        "中身が Excel の主ファイル: {res:?}"
-    );
+    for file_id in [typed, disguised] {
+        let res = service
+            .query_tables(&env.ctx, csv, &[table("book", file_id)], sql, None)
+            .await;
+        assert!(
+            matches!(&res, Err(tabular::TabularError::InvalidTables(m)) if m.contains("テーブル `book` のファイルは CSV ではありません")),
+            "中身が Excel: {res:?}"
+        );
+        let res = service
+            .query_tables(&env.ctx, file_id, &[table("other", csv)], sql, None)
+            .await;
+        assert!(
+            matches!(&res, Err(tabular::TabularError::InvalidTables(m)) if m.contains("Excel のファイルには")),
+            "中身が Excel の主ファイル: {res:?}"
+        );
+    }
     assert!(gets() > 0, "中身で決める確かめは取得の後");
+
+    // 名前だけ .xlsx で中身が CSV のもの（Content-Type は種類の分からないファイル）: 取得して中身で CSV と決めるので、
+    // 表として足しても、表を足す主ファイルにしても読める。
+    let named = write(
+        format!("単価-{tag}.xlsx"),
+        format!("k\n{tag}\n").into_bytes(),
+        "application/octet-stream",
+    )
+    .await;
+    let join = "SELECT d.k FROM data d JOIN master m ON d.k = m.k";
+    for (primary, joined) in [(csv, named), (named, csv)] {
+        let res = service
+            .query_tables(&env.ctx, primary, &[table("master", joined)], join, None)
+            .await
+            .expect("中身が CSV なら表を足せる");
+        assert_eq!(res.rows.len(), 1, "{res:?}");
+    }
 
     // 表を足さなければ、Excel の主ファイルは今までどおり取得して読む（前倒しの確かめは表を足すときだけ）。
     let before = gets();

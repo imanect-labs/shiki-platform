@@ -52,9 +52,11 @@ const WORKBOOK_CONTENT_TYPES: [&str; 2] = [
 
 /// 中身を取得する前に、名前と Content-Type（メタデータ）から Excel のブックと見るか（取得してから断らないため）。
 ///
-/// 画面（ワークフローの「CSV を集計」のファイルの選び方）が Excel と見るものと同じ。形式を決めるのは中身の先頭の
-/// バイト（[`sniff`]）で、これは取得を省くための前倒しの確かめ。名前も Content-Type もアップロードした人が決めるので、
-/// ここで Excel と見なかったファイルも、取得した後に [`sniff`] で確かめる。
+/// 形式を決めるのは中身の先頭のバイト（[`sniff`]）で、これは取得を省くための前倒しの確かめ。名前と Content-Type の
+/// **両方**が Excel のブックを指すときだけ Excel と見る（ブラウザでアップロードした .xlsx・.xlsm はこの形）。片方だけの
+/// もの（ワークフローの保存で名前だけ .xlsx にした CSV は Content-Type が `application/octet-stream`）は Excel と見ず、
+/// 取得した後に [`sniff`] で決める（中身が CSV なら、表を足しても足さなくても CSV として読む）。両方が Excel を指すのに
+/// 中身が CSV のファイル（名前を変えてアップロードしたもの）だけは、表を足す集計では取得せずに断る（画面も選ばせない）。
 #[must_use]
 pub fn looks_like_workbook(name: &str, content_type: Option<&str>) -> bool {
     let name = name.trim();
@@ -62,7 +64,7 @@ pub fn looks_like_workbook(name: &str, content_type: Option<&str>) -> bool {
     WORKBOOK_EXTENSIONS
         .into_iter()
         .any(|ext| strip_ascii_suffix(name, ext).is_some())
-        || WORKBOOK_CONTENT_TYPES
+        && WORKBOOK_CONTENT_TYPES
             .into_iter()
             .any(|t| content_type.starts_with(t))
 }
@@ -120,18 +122,21 @@ mod tests {
     }
 
     #[test]
-    fn workbooks_are_seen_from_the_name_or_the_content_type() {
-        let xlsx = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-        assert!(looks_like_workbook("売上.XLSX", None));
-        assert!(looks_like_workbook(
-            "売上.xlsm ",
+    fn workbooks_are_seen_from_both_the_name_and_the_content_type() {
+        let book = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+        let macro_book = "application/vnd.ms-excel.sheet.macroEnabled.12";
+        assert!(looks_like_workbook("売上.XLSX", Some(book)));
+        assert!(looks_like_workbook("売上.xlsm ", Some(macro_book)));
+        assert!(looks_like_workbook("売上.xlsx", Some(macro_book)));
+        // 片方だけが Excel を指すものは、取得した後に中身で決める（名前だけ .xlsx にした CSV を断らない）。
+        assert!(!looks_like_workbook("単価.xlsx", None));
+        assert!(!looks_like_workbook(
+            "単価.xlsx",
             Some("application/octet-stream")
         ));
-        assert!(looks_like_workbook("売上", Some(xlsx)));
-        assert!(looks_like_workbook(
-            "売上",
-            Some("application/vnd.ms-excel.sheet.macroEnabled.12")
-        ));
+        assert!(!looks_like_workbook("単価.xlsm", Some("text/csv")));
+        assert!(!looks_like_workbook("売上", Some(book)));
+        assert!(!looks_like_workbook("売上.csv", Some(macro_book)));
         // Windows が CSV に付ける Content-Type・古い形式の .xls（中身で決める）・CSV は Excel と見ない。
         assert!(!looks_like_workbook(
             "経費.csv",

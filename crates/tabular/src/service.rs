@@ -200,9 +200,9 @@ impl TabularService {
             total = total.saturating_add(u64::try_from(size).unwrap_or(u64::MAX));
         }
         self.check_input_budget(total)?;
-        // 2) Excel に表を足す要求・Excel を表として足す要求は、本体を取得する前にメタデータ（名前・Content-Type）で
-        //    断る（取得してから断らない）。形式を決めるのは中身の先頭のバイトなので、ここを通ったファイルも 4) の後に
-        //    中身で確かめる。
+        // 2) Excel に表を足す要求・Excel を表として足す要求は、名前と Content-Type の両方が Excel のブックを指すなら
+        //    本体を取得する前に断る（取得してから断らない）。形式を決めるのは中身の先頭のバイトなので、片方だけのもの
+        //    （名前だけ .xlsx にした CSV など）は断らずに取得し、4) の後に中身で確かめる（中身が CSV なら表を足せる）。
         if !tables.is_empty() {
             let workbook =
                 |node: &Node| input::looks_like_workbook(&node.name, node.content_type.as_deref());
@@ -247,7 +247,8 @@ impl TabularService {
                 .ok_or_else(|| TabularError::Internal("一時ファイルが見つかりません".into()))
         };
         let primary = input(&file_id)?;
-        // 2) の前倒しの確かめを通った（名前・Content-Type が Excel でない）ファイルも、中身で決めた形式で確かめる。
+        // 2) の前倒しの確かめを通った（名前と Content-Type の両方は Excel を指さない）ファイルも、中身で決めた形式で
+        // 確かめる。
         if !tables.is_empty() && primary.format != InputFormat::Csv {
             return Err(excel_cannot_take_tables());
         }
