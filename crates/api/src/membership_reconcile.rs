@@ -244,6 +244,7 @@ async fn run_locked(deps: &ReconcileDeps) -> Result<Option<ReconcileReport>, Rec
     match cursor_move(page.len(), batch, done) {
         CursorMove::Rewind => {
             // 行は消さない（最後に照合を始めた時刻を残す）。位置だけを外す。
+            // tenant-sql: allow(全テナントを順に照合する保守ジョブの 1 行だけの位置の表・id = 1)
             sqlx::query(
                 "UPDATE membership_reconcile_cursor SET cursor_tenant_id = NULL, \
                    cursor_user_id = NULL, updated_at = now() WHERE id = 1",
@@ -474,6 +475,7 @@ enum Turn {
 /// ロックを持って呼ぶ（読むのと始めた時刻を書くのが、ほかのサーバーと重ならない）。時刻は DB の時刻で比べる
 /// （サーバーの時計のずれに左右されない）。
 async fn claim_turn(db: &PgPool, interval: Duration) -> Result<Turn, sqlx::Error> {
+    // tenant-sql: allow(全テナントを順に照合する保守ジョブの 1 行だけの位置の表・id = 1)
     let row: Option<(Option<String>, Option<String>, bool)> = sqlx::query_as(
         "SELECT cursor_tenant_id, cursor_user_id, \
                 coalesce(last_run_at > now() - make_interval(secs => $1), false) \
@@ -486,6 +488,7 @@ async fn claim_turn(db: &PgPool, interval: Duration) -> Result<Turn, sqlx::Error
     if too_soon {
         return Ok(Turn::TooSoon);
     }
+    // tenant-sql: allow(全テナントを順に照合する保守ジョブの 1 行だけの位置の表・id = 1)
     sqlx::query(
         "INSERT INTO membership_reconcile_cursor (id, last_run_at) VALUES (1, now()) \
          ON CONFLICT (id) DO UPDATE SET last_run_at = now()",
@@ -500,6 +503,7 @@ async fn claim_turn(db: &PgPool, interval: Duration) -> Result<Turn, sqlx::Error
 }
 
 async fn save_cursor(db: &PgPool, last: &DirectoryEntry) -> Result<(), sqlx::Error> {
+    // tenant-sql: allow(全テナントを順に照合する保守ジョブの 1 行だけの位置の表・id = 1)
     sqlx::query(
         "INSERT INTO membership_reconcile_cursor (id, cursor_tenant_id, cursor_user_id) \
          VALUES (1, $1, $2) \

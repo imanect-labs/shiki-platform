@@ -332,6 +332,7 @@ pub async fn data_change_events_after(
     const MATCH: &str = "o.tenant_id = $1 AND o.payload ->> 'table_id' = $2 \
                          AND ($3::text IS NULL OR o.payload ->> 'record_id' = $3) \
                          AND o.id > $4 AND o.version > $5";
+    // tenant-sql: allow(tenant 条件は MATCH の o.tenant_id = $1 にあり format! で差し込む・字句の誤検知)
     let sql = format!(
         "SELECT * FROM ( \
            (SELECT {COLS} FROM storage_event_outbox o \

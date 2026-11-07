@@ -214,10 +214,13 @@ async fn cron_tick(deps: &TriggerDeps) -> anyhow::Result<()> {
             Err(e) => {
                 tracing::warn!(error = %e, schedule = %s.id, app_id = %s.app_id,
                     "cron の式を読めないため、関数を実行しません");
-                sqlx::query("UPDATE app_function_schedule SET next_run_at = $2 WHERE id = $1")
-                    .bind(s.id)
-                    .bind(chrono::Utc::now() + chrono::Duration::days(1))
-                    .execute(&mut *tx)
+                sqlx::query(
+                    "UPDATE app_function_schedule SET next_run_at = $2 WHERE tenant_id = $3 AND id = $1",
+                )
+                .bind(s.id)
+                .bind(chrono::Utc::now() + chrono::Duration::days(1))
+                .bind(&s.tenant_id)
+                .execute(&mut *tx)
                     .await?;
                 continue;
             }
@@ -233,11 +236,14 @@ async fn cron_tick(deps: &TriggerDeps) -> anyhow::Result<()> {
         if !hits {
             tracing::info!(schedule = %s.id, app_id = %s.app_id, at = %s.next_run_at, %next,
                 "式に当たらない時刻のため実行せず、次の時刻を計算し直します");
-            sqlx::query("UPDATE app_function_schedule SET next_run_at = $2 WHERE id = $1")
-                .bind(s.id)
-                .bind(next)
-                .execute(&mut *tx)
-                .await?;
+            sqlx::query(
+                "UPDATE app_function_schedule SET next_run_at = $2 WHERE tenant_id = $3 AND id = $1",
+            )
+            .bind(s.id)
+            .bind(next)
+            .bind(&s.tenant_id)
+            .execute(&mut *tx)
+            .await?;
             continue;
         }
         // (schedule_id, scheduled_at) 一意＝リーダー交代/再起動でも同一時刻の二重起動なし。
@@ -290,14 +296,15 @@ async fn cron_tick(deps: &TriggerDeps) -> anyhow::Result<()> {
 /// 値は変わらないので、起動のたびに流してよい。tick と取り違えないよう、読んだ時刻のままの行だけを書き換える。
 /// 戻り値 = 書き換えた行の数。
 async fn realign_schedules(db: &PgPool, now: chrono::DateTime<chrono::Utc>) -> anyhow::Result<u64> {
-    let rows: Vec<(Uuid, String, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
-        "SELECT id, expr, next_run_at FROM app_function_schedule WHERE next_run_at > $1",
+    // tenant-sql: allow(起動時に全テナントの予定の時刻を今の読み方で計算し直す保守処理。書き戻しは行の tenant で絞る)
+    let rows: Vec<(Uuid, String, String, chrono::DateTime<chrono::Utc>)> = sqlx::query_as(
+        "SELECT id, tenant_id, expr, next_run_at FROM app_function_schedule WHERE next_run_at > $1",
     )
     .bind(now)
     .fetch_all(db)
     .await?;
     let mut changed = 0;
-    for (id, expr, at) in rows {
+    for (id, tenant_id, expr, at) in rows {
         let Ok(next) = app_platform::next_cron_run_after(&expr, now) else {
             continue;
         };
@@ -306,11 +313,12 @@ async fn realign_schedules(db: &PgPool, now: chrono::DateTime<chrono::Utc>) -> a
         }
         changed += sqlx::query(
             "UPDATE app_function_schedule SET next_run_at = $3 \
-             WHERE id = $1 AND next_run_at = $2 AND next_run_at > now()",
+             WHERE tenant_id = $4 AND id = $1 AND next_run_at = $2 AND next_run_at > now()",
         )
         .bind(id)
         .bind(at)
         .bind(next)
+        .bind(&tenant_id)
         .execute(db)
         .await?
         .rows_affected();

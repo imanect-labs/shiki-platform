@@ -108,6 +108,7 @@ pub(super) async fn handle_suspend(
             let is_data = crate::vocab::EventSource::parse(source)
                 .is_some_and(crate::vocab::EventSource::is_data);
             let after_event_id = if suspend_rev.is_none() && is_data {
+                // tenant-sql: allow(outbox 全体の採番の位置の上限を読むだけで行は返さない)
                 let id: i64 =
                     sqlx::query_scalar("SELECT coalesce(max(id), 0) FROM storage_event_outbox")
                         .fetch_one(&mut **tx)

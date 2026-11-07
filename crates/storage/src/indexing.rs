@@ -25,6 +25,7 @@ use crate::object_store::ObjectStore;
 /// `node.version`。名前の変更・移動・ごみ箱への移動と戻しも `node.version` を進めるが、本文は変わらないので、
 /// 取り込み（RAG）が「この取り込みは古いか」と「索引の本文はいまの内容か」を決めるときはこの値と比べる
 /// （`node.version` と比べると、取り込みより先に名前を変えたファイルが二度と取り込まれない）。
+// tenant-sql: allow(外側の node の行に相関する副問い合わせの式。外側の SQL が node を tenant で絞る)
 pub const CONTENT_VERSION_SQL: &str = "coalesce((select max(v.version) from node_version v \
      where v.node_id = node.id and not v.is_proposal and v.version <= node.version), node.version)";
 

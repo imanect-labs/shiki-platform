@@ -87,7 +87,7 @@ pub async fn step_once(deps: &PipelineDeps) -> Result<StepOutcome, RagError> {
     let tenant = match authz::TenantId::parse(run.tenant_id.as_str()) {
         Ok(tenant) => tenant,
         Err(e) => {
-            finish(&mut tx, run.id, None, 0, 0, true).await?;
+            finish(&mut tx, &run.tenant_id, run.id, None, 0, 0, true).await?;
             tx.commit().await?;
             return Err(RagError::InvalidTenant(e.to_string()));
         }
@@ -98,7 +98,7 @@ pub async fn step_once(deps: &PipelineDeps) -> Result<StepOutcome, RagError> {
         .tenant_is_active(&run.tenant_id)
         .await?
     {
-        finish(&mut tx, run.id, None, 0, 0, true).await?;
+        finish(&mut tx, &run.tenant_id, run.id, None, 0, 0, true).await?;
         tx.commit().await?;
         return Ok(StepOutcome::Advanced {
             scanned: 0,
@@ -110,8 +110,9 @@ pub async fn step_once(deps: &PipelineDeps) -> Result<StepOutcome, RagError> {
     let budget = usize::try_from(MAX_WAITING - waiting).unwrap_or(0);
     if budget == 0 {
         // 順番を後ろへ回す（ほかのテナントのものを先に進める）。
-        sqlx::query("update rag_backfill set updated_at = now() where id = $1")
+        sqlx::query("update rag_backfill set updated_at = now() where tenant_id = $2 and id = $1")
             .bind(run.id)
+            .bind(&run.tenant_id)
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
@@ -182,7 +183,16 @@ pub async fn step_once(deps: &PipelineDeps) -> Result<StepOutcome, RagError> {
         );
         storage::event::emit_many_on(&mut tx, &actor, &events, run.trace_id.as_deref()).await?;
     }
-    finish(&mut tx, run.id, last, scanned, events.len(), done).await?;
+    finish(
+        &mut tx,
+        &run.tenant_id,
+        run.id,
+        last,
+        scanned,
+        events.len(),
+        done,
+    )
+    .await?;
     tx.commit().await?;
     Ok(StepOutcome::Advanced {
         scanned,
@@ -194,6 +204,7 @@ pub async fn step_once(deps: &PipelineDeps) -> Result<StepOutcome, RagError> {
 /// 続きの位置と件数を進める（`done` なら終える）。
 async fn finish(
     tx: &mut sqlx::Transaction<'_, Postgres>,
+    tenant_id: &str,
     id: i64,
     after_id: Option<Uuid>,
     scanned: usize,
@@ -206,13 +217,14 @@ async fn finish(
              updated_at = now(), \
              status = case when $5 then 'done' else status end, \
              finished_at = case when $5 then now() else finished_at end \
-         where id = $1",
+         where tenant_id = $6 and id = $1",
     )
     .bind(id)
     .bind(after_id)
     .bind(i64::try_from(scanned).unwrap_or(i64::MAX))
     .bind(i64::try_from(queued).unwrap_or(i64::MAX))
     .bind(done)
+    .bind(tenant_id)
     .execute(&mut **tx)
     .await?;
     Ok(())

@@ -71,6 +71,7 @@ pub async fn write_origins(
     if ids.is_empty() {
         return Ok(HashMap::new());
     }
+    // tenant-sql: allow(配送したイベントの outbox の id（大域一意の内部の id）で由来の印だけを引く)
     let rows: Vec<(i64, Option<bool>, Option<String>)> = sqlx::query_as(
         "SELECT id, private_payload ? $2, private_payload ->> $2 \
          FROM storage_event_outbox WHERE id = ANY($1)",
