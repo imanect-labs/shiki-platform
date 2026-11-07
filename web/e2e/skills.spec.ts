@@ -126,15 +126,18 @@ test.describe("skill（作成・共有・チャット適用）", () => {
         : route.continue(),
     );
     await page.goto("/skills");
+    // 作成は専用ページ（#919）。1 本目のテストと同じ手順で入力して保存する。
     await page.getByRole("button", { name: "スキルを作成" }).first().click();
-    const dialog = page.getByRole("dialog");
-    await dialog.getByLabel(/名前/).fill(uniqueName("e2e-skill-error"));
-    await dialog.getByLabel(/説明/).fill("E2E 検証用のスキル");
-    await dialog.getByLabel(/指示文/).fill("あなたは E2E テストのアシスタントです。");
-    await dialog.getByRole("button", { name: "作成" }).click();
-    const alert = dialog.getByRole("alert");
+    await page.waitForURL(/\/skills\/new/);
+    await page.getByTestId("skill-name-input").fill(uniqueName("e2e-skill-error"));
+    await page.getByTestId("skill-description-input").fill("E2E 検証用のスキル");
+    await page.getByTestId("skill-body-editor").click();
+    await page.keyboard.type("あなたは E2E テストのアシスタントです。");
+    await page.getByTestId("skill-save-button").click();
+    // 文言は 1 件 1 行（whitespace-pre-wrap の段落）で出る。
+    const alert = page.getByTestId("skill-save-error");
     await expect(alert).toContainText("説明が長すぎます。", { timeout: 15_000 });
-    expect(await alert.innerText()).toBe("説明が長すぎます。\n答え方のお手本の 1 組目が長すぎます。");
+    expect(await alert.locator("p").innerText()).toBe("説明が長すぎます。\n答え方のお手本の 1 組目が長すぎます。");
     await expect(alert).not.toContainText("（description）");
     await expect(alert).not.toContainText("few_shot[0]");
     await page.unroute("**/api/skills");
