@@ -188,7 +188,7 @@ export function ContinueSection({ feed }: { feed: HomeFeed }) {
           <span aria-hidden className="shiki-divide-l hidden w-[1.5px] shrink-0 @min-[600px]:block" />
         ) : null}
         {showToday ? (
-          <Column title="今日のこと" className={urgent ? undefined : "max-sm:hidden"}>
+          <Column title="今日のこと" className={urgent ? undefined : "max-sm:hidden"} busy={!todayDone}>
             {todayLoading ? (
               <RowsSkeleton />
             ) : (
@@ -222,19 +222,23 @@ function nodeIcon(node: Pick<NodeResponse, "kind" | "name">): LucideIcon {
   return FileText;
 }
 
+/// `busy` は、行を出しながらまだ読んでいるもの（後から行が足される・消える）があるか（`aria-busy`）。
 function Column({
   title,
   className,
+  busy,
   children,
 }: {
   title: string;
   className?: string;
+  busy?: boolean;
   children: React.ReactNode;
 }) {
   const id = React.useId();
   return (
     <section
       aria-labelledby={id}
+      aria-busy={busy}
       className={cn("min-w-0 flex-1 px-5", className)}
     >
       <h3

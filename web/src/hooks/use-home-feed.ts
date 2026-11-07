@@ -20,7 +20,7 @@ export const HOME_FEED_LIMIT = 4;
 ///
 /// 共有されたものが多い人には、1 ページ目が短いか空のまま続きの位置だけが付いて返ることがある（BUG-162）。
 /// 1 ページ目だけを読むと、共有があっても 1 件も出ないので、ドライブの「共有」の画面と同じく続きをたどって
-/// この件数まで集める（往復の上限は sharedWithMeUpTo が持つ）。
+/// この件数まで集める（往復の上限は sharedWithMeUpTo が持つ）。続きの取得に失敗しても、それまでに集めた分は出す。
 const SHARES_FETCH_LIMIT = 12;
 
 export type HomeFeed = {
@@ -73,7 +73,7 @@ export function useHomeFeed(): HomeFeed {
       .then((r) => r.threads.slice(0, HOME_FEED_LIMIT))
       .catch(() => [])
       .then((threads) => active && setFeed((f) => ({ ...f, threads })));
-    sharedWithMeUpTo({ want: SHARES_FETCH_LIMIT })
+    sharedWithMeUpTo({ want: SHARES_FETCH_LIMIT, keepOnError: true })
       .then((r) => r.items)
       .catch(() => [])
       .then(

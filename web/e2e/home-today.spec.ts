@@ -4,7 +4,8 @@ import { loginViaKeycloak } from "./helpers";
 
 /// ホームの「今日のこと」の e2e:
 /// - 最近の共有: 共有されたものが多い人には、1 ページ目が空のまま続きの位置だけが付いて返ることがある（BUG-162）。
-///   ホームも続きをたどって共有を出す（1 ページ目だけを読んで「共有なし」にしない）。
+///   ホームも続きをたどって共有を出す（1 ページ目だけを読んで「共有なし」にしない）。続きの取得に失敗しても、それまでに
+///   集めた共有は出す。
 /// - ワークフローの承認待ち（受信箱 /approvals・GAP-08）: 件数を 1 行で出し、「承認」の画面へ移る。チャットの承認待ちと
 ///   言葉で見分けられる。0 件なら出さない。スマホのホーム（対応が要るものだけを出す）にも出る。
 ///
@@ -115,6 +116,53 @@ test("最近の共有: 1 ページ目が空で続きがあるときも、続き�
   if (SHOTS) await today.screenshot({ path: `${SHOTS}/home-today-shares-pc.png` });
 });
 
+test("最近の共有: 続きの取得に失敗しても、それまでに集めた共有は出す", async ({ page }) => {
+  test.setTimeout(90_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await loginViaKeycloak(page);
+  await fixToday(page, { count: () => ({ count: 0, more: false }) });
+  const id = "00000000-0000-4000-8000-0000000000b2";
+  const name = `e2e-集めた共有-${Date.now().toString(36)}.md`;
+  const now = new Date().toISOString();
+  const asked: (string | null)[] = [];
+  await page.route(
+    (u) => u.pathname === "/api/shares/shared-with-me",
+    (r) => {
+      const cursor = new URL(r.request().url()).searchParams.get("cursor");
+      asked.push(cursor);
+      // 1 ページ目は 1 件と続きの位置。続きの取得は失敗する。
+      if (cursor) return r.fulfill({ status: 500, json: { title: "一時的に読めません" } });
+      return r.fulfill({
+        json: {
+          items: [
+            {
+              id,
+              name,
+              kind: "file",
+              version: 1,
+              content_type: "text/markdown",
+              created_by: "bob",
+              updated_by: "bob",
+              updated_by_name: "bob",
+              created_at: now,
+              updated_at: now,
+            },
+          ],
+          next_cursor: "page-2",
+        },
+      });
+    },
+  );
+
+  await page.goto("/");
+  const today = page.getByRole("region", { name: "今日のこと" });
+  const row = today.getByRole("link", { name: new RegExp(name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")) });
+  await expect(row).toBeVisible({ timeout: 20_000 });
+  await expect(row).toContainText("共有・bob");
+  // 続きも読みにいった（失敗した続きで、集めた分を捨てない）。
+  expect(asked).toContain("page-2");
+});
+
 test("ワークフローの承認待ち: 件数を出して「承認」の画面へ移り、0 件なら出さない（PC・スマホ・GAP-08）", async ({
   browser,
   page,
@@ -149,10 +197,12 @@ test("ワークフローの承認待ち: 件数を出して「承認」の画面
   });
   await expect(today).not.toContainText("0 件");
 
-  // 0 件なら出さない（チャットの承認待ちは残る）。
+  // 0 件なら出さない（チャットの承認待ちは残る）。件数を読み終えた（「今日のこと」が読み込み中でない）ことを待ってから
+  // 確かめる（件数を出す前に確かめて通らないように）。
   count = { count: 0, more: false };
   await page.goto("/");
   await expect(today.getByRole("link", { name: new RegExp(chat) })).toBeVisible({ timeout: 20_000 });
+  await expect(today).toHaveAttribute("aria-busy", "false", { timeout: 20_000 });
   await expect(today).not.toContainText("ワークフローの承認待ち");
 
   // スマホのホームは対応が要るものだけを出す。ワークフローの承認待ちも出て、横にはみ出さない。

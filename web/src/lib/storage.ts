@@ -544,12 +544,23 @@ const SHARED_MAX_PAGES = 5;
 ///
 /// 共有されたものが多い人では、1 ページが `limit` より少ないか 0 件のまま、続きの位置だけが付いて返ることがある
 /// （サーバーが OpenFGA に問う数を抑えるため・BUG-162）。往復の上限で止まったら `next_cursor` を返す。
-export async function sharedWithMeUpTo(opts: { cursor?: string; want?: number } = {}): Promise<ChildrenResponse> {
+///
+/// `keepOnError` を立てると、2 ページ目より後の取得に失敗したとき、それまでに集めた分を返す（`next_cursor` は失敗した
+/// ページの位置）。1 ページ目の失敗は立てても失敗にする。
+export async function sharedWithMeUpTo(
+  opts: { cursor?: string; want?: number; keepOnError?: boolean } = {},
+): Promise<ChildrenResponse> {
   const want = opts.want ?? 50;
   const items: NodeResponse[] = [];
   let cursor = opts.cursor;
   for (let page = 0; page < SHARED_MAX_PAGES; page += 1) {
-    const p = await sharedWithMe({ cursor, limit: Math.min(100, Math.max(1, want - items.length)) });
+    let p: ChildrenResponse;
+    try {
+      p = await sharedWithMe({ cursor, limit: Math.min(100, Math.max(1, want - items.length)) });
+    } catch (e) {
+      if (page === 0 || !opts.keepOnError) throw e;
+      break;
+    }
     items.push(...p.items);
     cursor = p.next_cursor ?? undefined;
     if (!cursor || items.length >= want) break;
