@@ -252,6 +252,7 @@ def failure_breakdown(trials: Sequence[Mapping]) -> dict:
                 *lr.get("strict_warnings", []),
                 *lr.get("run_blockers", []),
                 *lr.get("enable_blockers", []),
+                *lr.get("output_paths", []),
             ]:
                 lint[c] = lint.get(c, 0) + 1
             for f in r.get("task") or []:

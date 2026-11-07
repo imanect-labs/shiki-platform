@@ -25,7 +25,9 @@ uv run pytest -m "not server" -q      # サーバーも LLM も要らないテ�
 uv run python -m abeval.proxy         # 記録・上限つきの中継（127.0.0.1:18200 → 手元の中継）
 ```
 
-ir_lint の使い方（標準入力の JSONL → 標準出力の JSONL・誤りがあっても終了コード 0）:
+ir_lint の使い方（標準入力の JSONL → 標準出力の JSONL・誤りがあっても終了コード 0）。1 行の欄は `errors`・
+`ignored_by_env`・`warnings`・`run_blockers`・`enable_blockers`・`output_paths`（出力の path の検査・GAP-112）・
+`node_ports`・`declared_scopes`（形の版は最後の行の `schema`・いまは 3）:
 
 ```bash
 echo '{"id":"t1","ir":{...}}' | target/debug/examples/ir_lint
@@ -254,7 +256,7 @@ docstring（§3.1 に `clarifications`・`run_cases[].llm_dependent`・`run_case
 
 | 置き場 | 中身 |
 | --- | --- |
-| `grade/static.py` | 1 層目 ir_lint（`errors`・`run_blockers`・`STRICT_WARNINGS` は S2s、`enable_blockers`〔自動実行をオンにする前に止める理由・保存先のフォルダの省略など〕はきっかけが schedule・event の課題だけ S2s、ほかの警告は S2w、`ignored_by_env`〔登録した secret・入れた skill に依存するコード。`ir.unknown_version` は環境に依存しないので errors〕は数えない）。2 層目は課題の検査（入力の参照・`flow_through`・出力の path〔カタログの `output_fields` と `present_if`〕）と S5（トリガ・ノードの種類・診断用） |
+| `grade/static.py` | 1 層目 ir_lint（`errors`・`run_blockers`・`STRICT_WARNINGS` は S2s、`enable_blockers`〔自動実行をオンにする前に止める理由・保存先のフォルダの省略など〕はきっかけが schedule・event の課題だけ S2s、ほかの警告は S2w、`ignored_by_env`〔登録した secret・入れた skill に依存するコード。`ir.unknown_version` は環境に依存しないので errors〕は数えない、`output_paths`〔`$from nodes.<id>.output` の path の先頭がそのノードの出力の項目に無い・ir_lint が製品のカタログの `output_fields` と `present_if` で決める・Python では判定しない〕は S2s）。2 層目は課題の検査（入力の参照・`flow_through`）と S5（トリガ・ノードの種類・診断用） |
 | `grade/dynamic.py` | dead edge（`node_ports` に無い出口・出口が 1 つのノードの通らなかった線）・差し込みの残り（`{name}`・`{{…}}`）・入力が届かない（stub の run だけ。実モデルの出力は入力の全文を含まない）・想定外の状態（stub で流した `llm_dependent` でない run_case の状態が期待と違う）・想定外の skipped（成功した run で、分岐でも error の出口でもない線の先が飛ばされた。元の 1 つだけを数える）。`llm_dependent` を stub で流したときは最初の LLM のノードまでに限る |
 | `grade/checks.py` | 照合子（equals・contains・regex・in・absent・rows・files・no_new_rows）。NFKC と数字の正規化。`$fixture` で fixture から期待値を計算する。実行の日に決まる値（貸出日・ファイル名の日付）は `{"$run_date": {}}`・name_regex の `@run_date` で、run を始めた日（日本時間・`$from run /date` と同じ）と照合する（形の正規表現にしない） |
 | `grade/mutate.py` | 採点器の自己テストの 9 通りの壊し方（設計の 8 通りと、自動で動く課題の保存先のフォルダを省く `drop_folder`）と、期待する検査。中身の無い IR（null） |

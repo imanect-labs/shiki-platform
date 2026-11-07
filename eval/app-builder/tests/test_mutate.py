@@ -169,7 +169,6 @@ def test_mutations_do_not_apply_where_there_is_nothing_to_break():
         (dynamic, "not_delivered", lambda *a, **k: [], check_dynamic),
         (static, "STRICT_WARNINGS", frozenset(), check_static),
         (static, "input_ref_findings", lambda *a, **k: [], check_static),
-        (static, "output_path_findings", lambda *a, **k: [], check_static),
         (static, "structure_findings", lambda *a, **k: [], check_static),
     ],
     ids=[
@@ -178,7 +177,6 @@ def test_mutations_do_not_apply_where_there_is_nothing_to_break():
         "not_delivered",
         "strict_warnings",
         "input_ref",
-        "output_path",
         "structure",
     ],
 )
@@ -203,12 +201,35 @@ def test_disabling_lint_errors_makes_the_self_test_fail(monkeypatch):
             l1.ignored_by_env,
             l1.input_error,
             l1.enable_blockers,
+            l1.output_paths,
         )
 
     monkeypatch.setattr(static, "classify_lint", no_errors)
     failed = check_static()
     for name in ("edge_port_key", "from_port_next", "unknown_var", "from_node_id"):
         assert any(f"mut:{name}:" in f for f in failed), name
+
+
+def test_not_reading_lint_output_paths_lets_a_bad_output_path_through(monkeypatch):
+    """出力の path の誤り（ir_lint の output_paths）を読まないと、llm_path_category を見逃す（GAP-112）。"""
+    assert not [f for f in check_static() if "mut:llm_path_category" in f]
+    real = static.classify_lint
+
+    def no_output_paths(r, unattended=False):
+        l1 = real(r, unattended)
+        return static.Layer1(
+            l1.errors,
+            l1.run_blockers,
+            l1.strict_warnings,
+            l1.warnings,
+            l1.ignored_by_env,
+            l1.input_error,
+            l1.enable_blockers,
+        )
+
+    monkeypatch.setattr(static, "classify_lint", no_output_paths)
+    failed = check_static()
+    assert failed and all("mut:llm_path_category" in f for f in failed), failed
 
 
 def test_not_counting_enable_blockers_lets_a_missing_folder_through(monkeypatch):

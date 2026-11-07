@@ -18,7 +18,6 @@ from abeval.grade.static import (
     flow_through_findings,
     grade_static,
     input_ref_findings,
-    output_path_findings,
     parse_lint_output,
     run_ir_lint,
     structure_findings,
@@ -126,55 +125,26 @@ def test_flow_through_findings():
     assert flow_through_findings(whole, _expect(["body"], ["body"])) == []
 
 
-def test_output_path_findings_use_catalog_fields_and_present_if():
-    cat = recorded.catalog()
-    ir = {
-        "nodes": [
-            {"id": "plain", "type": "llm.invoke", "params": {"prompt": "x"}},
-            {
-                "id": "shaped",
-                "type": "llm.invoke",
-                "params": {"prompt": "x", "output_schema": {"type": "object"}},
-            },
-            {"id": "q", "type": "data.query", "params": {"table": "t"}},
-            {
-                "id": "agg",
-                "type": "data.query",
-                "params": {"table": "t", "query": {"aggregate": [{"metric": "count"}]}},
-            },
-            {"id": "soft", "type": "data.query", "on_error": "continue", "params": {"table": "t"}},
-            {"id": "s", "type": "script.run", "params": {}},
-            {
-                "id": "use",
-                "type": "storage.write",
-                "params": {
-                    "name": "n",
-                    "content": [
-                        {"$from": "nodes.plain.output", "path": "/text"},
-                        {"$from": "nodes.plain.output", "path": "/category"},
-                        {"$from": "nodes.shaped.output", "path": "/data/category"},
-                        {"$from": "nodes.plain.output", "path": "/data"},
-                        {"$from": "nodes.q.output", "path": "/items/0/id"},
-                        {"$from": "nodes.q.output", "path": "/groups"},
-                        {"$from": "nodes.agg.output", "path": "/groups/0/value"},
-                        {"$from": "nodes.soft.output", "path": "/error/message"},
-                        {"$from": "nodes.q.output", "path": "/error/message"},
-                        {"$from": "nodes.s.output", "path": "/anything"},
-                        {"$from": "nodes.missing.output", "path": "/x"},
-                        {"$from": "nodes.q.output"},
-                    ],
-                },
-            },
-        ]
-    }
-    found = output_path_findings(ir, cat)
-    bad = sorted(f.detail.split(":")[0] for f in found)
-    assert bad == [
-        "/params/content/1",
-        "/params/content/3",
-        "/params/content/5",
-        "/params/content/8",
-    ], found
+def test_output_paths_come_from_ir_lint_and_count_as_s2s():
+    """出力の path の誤りは ir_lint の `output_paths` を読むだけ（Python で判定しない・GAP-112）。"""
+    hit = {"code": "ir_lint.output_path", "message": "m", "node_id": "use", "path": "/params/x"}
+    lr = LintResult(id="x", output_paths=(hit,))
+    l1 = classify_lint(lr)
+    assert l1.output_paths == ("ir_lint.output_path",) and l1.s2s
+    g = grade_static({"nodes": [], "edges": []}, _expect(), lr, recorded.catalog())
+    assert g.s2s and "lint:ir_lint.output_path" in g.detectors()
+    assert g.to_dict()["lint"]["output_paths"] == ["ir_lint.output_path"]
+    assert g.task_findings == []  # 2 層目（課題の検査）には入らない
+    clean = classify_lint(LintResult(id="y"))
+    assert clean.output_paths == () and not clean.s2s
+    # 記録の行からも読める（record_fixtures.py が書く形）。
+    assert LintResult.from_json({"id": "z", "output_paths": [hit]}).output_paths == (hit,)
+
+
+def test_python_no_longer_judges_output_paths():
+    assert not hasattr(static, "output_path_findings")
+    assert not hasattr(static, "_present")
+    assert not hasattr(static.NodeInfo, "output_fields")
 
 
 def test_structure_findings_trigger_and_node_types():
@@ -290,28 +260,3 @@ def test_find_lint_bin_honours_the_env(tmp_path, monkeypatch):
         run_ir_lint([("a", {})])
     v = static.grader_version()
     assert v["ir_lint_sha256"] is None and v["grader"] >= 1
-
-
-def test_present_if_treats_false_as_absent():
-    """製品の present_if と同じく、false も「値が無い」（with_count: false の /count は読めない）。"""
-    cat = recorded.catalog()
-
-    def ir(with_count):
-        q = {"table": "t", "query": {} if with_count is None else {"with_count": with_count}}
-        return {
-            "nodes": [
-                {"id": "q", "type": "data.query", "params": q},
-                {
-                    "id": "use",
-                    "type": "storage.write",
-                    "params": {
-                        "name": "n",
-                        "content": {"$from": "nodes.q.output", "path": "/count"},
-                    },
-                },
-            ]
-        }
-
-    assert output_path_findings(ir(True), cat) == []
-    for absent in (False, None):
-        assert [f.code for f in output_path_findings(ir(absent), cat)] == ["output_path"], absent

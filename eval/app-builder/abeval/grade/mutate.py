@@ -9,7 +9,7 @@
 | `from_node_id` | vars の中の `$from` を `nodes.<id>.output` からノード id にする | `lint:ir.bad_ref`（S2s） |
 | `input_key` | 下流に届くべき入力の参照の key を替える | `task:input_ref`（入力の参照ミス）と `dyn:not_delivered`（S2d） |
 | `drop_node_type` | 期待のノード種（all_of）のノードを抜く | `s5` |
-| `llm_path_category` | 形の無い llm.invoke の出力の path を `/category` にする | `task:output_path` |
+| `llm_path_category` | 形の無い llm.invoke の出力の path を `/category` にする | `lint:ir_lint.output_path`（ir_lint の出力の path の検査） |
 | `drop_folder` | きっかけが schedule・event の課題で、保存（storage.write・csv.write）の folder を省く | `lint:ir.write_folder_required`（自動実行をオンにできない・S2s） |
 
 当てはまらない IR（壊す場所が無い）では None を返す。ノード id・エッジの順は保つ（記録と並べて比べるため）。
@@ -206,7 +206,12 @@ MUTATIONS: tuple[Mutation, ...] = (
         "input_key", frozenset({"task:input_ref"}), frozenset({"dyn:not_delivered"}), input_key
     ),
     Mutation("drop_node_type", frozenset({"s5"}), frozenset(), drop_node_type),
-    Mutation("llm_path_category", frozenset({"task:output_path"}), frozenset(), llm_path_category),
+    Mutation(
+        "llm_path_category",
+        frozenset({"lint:ir_lint.output_path"}),
+        frozenset(),
+        llm_path_category,
+    ),
     Mutation("drop_folder", frozenset({"lint:ir.write_folder_required"}), frozenset(), drop_folder),
 )
 

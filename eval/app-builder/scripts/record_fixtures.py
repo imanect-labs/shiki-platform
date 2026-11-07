@@ -76,6 +76,7 @@ def record_lint() -> None:
                 "warnings": list(r.warnings),
                 "run_blockers": list(r.run_blockers),
                 "enable_blockers": list(r.enable_blockers),
+                "output_paths": list(r.output_paths),
                 "node_ports": {k: list(v) for k, v in r.node_ports.items()},
                 "declared_scopes": list(r.declared_scopes),
             }

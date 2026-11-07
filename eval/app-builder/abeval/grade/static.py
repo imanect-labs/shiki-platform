@@ -1,10 +1,14 @@
 """静的な採点（GAP-30 §5.2）。
 
 **1 層目: ir_lint**（HEAD の `complete_declared_scopes` → `validate` → `save_warnings`・`node_ports`・`run_blockers`・
-`enable_blockers`）。標準入力の JSONL を渡し、1 行ずつの結果を読む（`crates/workflow-engine/examples/ir_lint.rs`）。
+`enable_blockers` と、出力の path の検査 `output_paths`）。標準入力の JSONL を渡し、1 行ずつの結果を読む
+（`crates/workflow-engine/examples/ir_lint.rs`）。
 
 - `errors`（環境に依存するコード `ignored_by_env` を除いたもの）と `run_blockers`（対話の実行の前に止める理由）は
   S2s（保存できても静的に誤り）に入れる。
+- `output_paths`（`$from nodes.<id>.output` の path の先頭が、そのノードの出力の項目に無い・コード
+  `ir_lint.output_path`）は S2s に入れる。出力の項目は ir_lint が製品のカタログ（`output_fields`・`present_if`）で
+  決める（Python では判定しない・GAP-112）。
 - `enable_blockers`（自動実行をオンにする前に止める理由・保存先や一覧のフォルダの省略など）は、課題のきっかけが
   schedule か event のときだけ S2s に入れる（その課題は自動実行をオンにしないと使えない。対話の課題で余計な
   きっかけを足しただけなら数えない）。
@@ -24,9 +28,6 @@
 
 - `input_ref`: `$from input` の path の先頭の key が課題の入力に無い（`default` を書いた参照は除く）。
 - `flow_through`: 下流に届くべき入力が、どの値式からも参照されていない。
-- `output_path`: `$from nodes.<id>.output` の path の先頭が、そのノードの出力の項目（カタログの `output_fields` と
-  `present_if`）に無い。出力の形の決まらないノード（script.run・control.* など項目の無いもの）は見ない。
-  `on_error: continue` のノードの `error` は読める。
 - S5（構造・診断用）: トリガの種類・cron・tz と、ノードの種類の all_of・any_of・none_of。
 """
 
@@ -104,6 +105,7 @@ class LintResult:
     warnings: tuple[dict, ...] = ()
     run_blockers: tuple[dict, ...] = ()
     enable_blockers: tuple[dict, ...] = ()
+    output_paths: tuple[dict, ...] = ()
     node_ports: Mapping[str, tuple[str, ...]] = field(default_factory=dict)
     declared_scopes: tuple[str, ...] = ()
     input_error: str | None = None
@@ -117,6 +119,7 @@ class LintResult:
             warnings=tuple(d.get("warnings") or ()),
             run_blockers=tuple(d.get("run_blockers") or ()),
             enable_blockers=tuple(d.get("enable_blockers") or ()),
+            output_paths=tuple(d.get("output_paths") or ()),
             node_ports={k: tuple(v) for k, v in (d.get("node_ports") or {}).items()},
             declared_scopes=tuple(d.get("declared_scopes") or ()),
             input_error=d.get("input_error"),
@@ -173,7 +176,6 @@ class NodeInfo:
     available: bool
     output_ports: tuple[str, ...]
     port_rule: str
-    output_fields: tuple[tuple[str, str], ...]  # (名前, present_if)
 
 
 @dataclass(frozen=True)
@@ -194,9 +196,6 @@ class LintCatalog:
                 available=bool(e.get("available")),
                 output_ports=tuple(e.get("output_ports") or ()),
                 port_rule=e.get("port_rule") or "static",
-                output_fields=tuple(
-                    (f["name"], f.get("present_if") or "") for f in e.get("output_fields") or ()
-                ),
             )
         return cls(
             nodes=nodes,
@@ -239,6 +238,8 @@ class Layer1:
     input_error: str | None
     # 自動実行をオンにする前に止める理由（きっかけが schedule・event の課題だけ・それ以外は空）。
     enable_blockers: tuple[str, ...] = ()
+    # 出力の path の誤り（ir_lint の `output_paths` のコード）。
+    output_paths: tuple[str, ...] = ()
 
     @property
     def s2s(self) -> bool:
@@ -247,6 +248,7 @@ class Layer1:
             or self.run_blockers
             or self.enable_blockers
             or self.strict_warnings
+            or self.output_paths
             or self.input_error
         )
 
@@ -265,6 +267,7 @@ def classify_lint(r: LintResult, unattended: bool = False) -> Layer1:
         ignored_by_env=tuple(e["code"] for e in r.ignored_by_env),
         input_error=r.input_error,
         enable_blockers=tuple(e["code"] for e in r.enable_blockers) if unattended else (),
+        output_paths=tuple(e["code"] for e in r.output_paths),
     )
 
 
@@ -310,26 +313,6 @@ def iter_node_refs(ir: Mapping) -> Iterator[tuple[str, str, Mapping]]:
                 yield str(n.get("id")), at, ref
 
 
-def _resolve(value: Any, tokens: list[str]) -> Any:
-    for t in tokens:
-        if isinstance(value, Mapping) and t in value:
-            value = value[t]
-        elif isinstance(value, list) and t.isdigit() and int(t) < len(value):
-            value = value[int(t)]
-        else:
-            return None
-    return value
-
-
-def _present(params: Any, present_if: str) -> bool:
-    """設定のその場所に値があるか（製品の `OutputField::present_if` と同じく、無い・false・空の文字・空のリスト・
-    空のオブジェクトは「値が無い」）。"""
-    if not present_if:
-        return True
-    v = _resolve(params, pointer_tokens(present_if))
-    return not (v is None or v is False or v == "" or v == [] or v == {})
-
-
 def input_ref_findings(ir: Mapping, expect: Expect) -> list[Finding]:
     keys = expect.input_keys
     out = []
@@ -366,38 +349,6 @@ def flow_through_findings(ir: Mapping, expect: Expect) -> list[Finding]:
         for k in expect.flow_through
         if k not in read
     ]
-
-
-def output_path_findings(ir: Mapping, catalog: LintCatalog) -> list[Finding]:
-    nodes = {str(n.get("id")): n for n in ir.get("nodes") or [] if isinstance(n, Mapping)}
-    out = []
-    for node, at, ref in iter_node_refs(ir):
-        src = ref["$from"]
-        if not (src.startswith("nodes.") and src.endswith(".output")):
-            continue
-        target = nodes.get(src[len("nodes.") : -len(".output")])
-        tokens = pointer_tokens(ref.get("path"))
-        if target is None or not tokens:
-            continue  # 無いノードは ir_lint（bad_ref）が見る
-        info = catalog.nodes.get(str(target.get("type")))
-        if info is None or not info.output_fields:
-            continue  # 出力の形が決まらないノード
-        allowed = {
-            name
-            for name, present_if in info.output_fields
-            if _present(target.get("params"), present_if)
-        }
-        if target.get("on_error") == "continue":
-            allowed.add("error")
-        if tokens[0] not in allowed:
-            out.append(
-                Finding(
-                    "output_path",
-                    node,
-                    f"{at}: {target.get('id')}（{info.type}）の出力に /{tokens[0]} はありません（{sorted(allowed)}）",
-                )
-            )
-    return out
 
 
 def _norm_cron(c: str) -> str:
@@ -465,7 +416,13 @@ class StaticGrade:
         l1 = self.layer1
         out = {
             f"lint:{c}"
-            for c in (*l1.errors, *l1.strict_warnings, *l1.run_blockers, *l1.enable_blockers)
+            for c in (
+                *l1.errors,
+                *l1.strict_warnings,
+                *l1.run_blockers,
+                *l1.enable_blockers,
+                *l1.output_paths,
+            )
         }
         out |= {f"task:{f.code}" for f in self.task_findings}
         if self.structure:
@@ -482,6 +439,7 @@ class StaticGrade:
                 "errors": list(l1.errors),
                 "run_blockers": list(l1.run_blockers),
                 "enable_blockers": list(l1.enable_blockers),
+                "output_paths": list(l1.output_paths),
                 "strict_warnings": list(l1.strict_warnings),
                 "warnings": list(l1.warnings),
                 "ignored_by_env": list(l1.ignored_by_env),
@@ -495,14 +453,10 @@ class StaticGrade:
 def grade_static(
     ir: Mapping, expect: Expect, lint: LintResult, catalog: LintCatalog
 ) -> StaticGrade:
-    """1 つの IR の静的な採点（ir_lint の結果と、課題の期待から）。"""
+    """1 つの IR の静的な採点（ir_lint の結果と、課題の期待から）。`catalog` は呼び出し側との互換のため。"""
     task = []
     if isinstance(ir, Mapping):
-        task = [
-            *input_ref_findings(ir, expect),
-            *flow_through_findings(ir, expect),
-            *output_path_findings(ir, catalog),
-        ]
+        task = [*input_ref_findings(ir, expect), *flow_through_findings(ir, expect)]
     structure = structure_findings(ir, expect) if isinstance(ir, Mapping) else []
     unattended = (expect.trigger or {}).get("kind") in UNATTENDED
     return StaticGrade(classify_lint(lint, unattended), task, structure)

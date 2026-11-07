@@ -6,7 +6,7 @@
  ],
  "ir_lint": {
   "crate_version": "0.0.0",
-  "schema": 2
+  "schema": 3
  },
  "node_catalog": [
   {
