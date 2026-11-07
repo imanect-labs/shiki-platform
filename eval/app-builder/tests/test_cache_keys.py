@@ -1,7 +1,8 @@
 """キャッシュのキーが結果を左右するものをすべて含むこと（BUG-249）。
 
-- Mode B: 課題の `clarifications`・`ask_terms`、承認の方針（`[mode_b] approve_tools` と副作用のあるツールの組）、
-  版のサーバーの 1 発話の予算、stub の配管を流すか、採点の後の hook。どれかを変えたら前の結果を返さない。
+- Mode B: 送る model、課題の `clarifications`・`ask_terms`・`date_dependent`、承認の方針（`[mode_b] approve_tools` と
+  副作用のあるツールの組）、版のサーバーの 1 発話の予算、stub の配管を流すか、採点の後の hook。どれかを変えたら前の
+  結果を返さない。
 - Mode A: 送る model もキーに入れる。生成の結果の分け方（聞き返し）は課題の `ask_terms` に依るので、キャッシュから
   読んだときに今の課題で分け直す（キーに入れて生成し直すのではなく、採点の側でやり直す）。
 """
@@ -91,6 +92,27 @@ def _mode_a_ctx() -> mode_a.ModeAContext:
         config_sha="c" * 64,
         generate=False,
     )
+
+
+def test_mode_b_key_has_the_model_and_the_date_flag(monkeypatch):
+    """送る model を替えたら・課題に date_dependent を書き足したら、前の採点を返さない。"""
+    ctx = make_ctx(ChatFake())
+    ts = spec(TASK.id)
+    base = mode_b.key_for(ctx, TASK, ts)
+    monkeypatch.setattr(mode_b, "MODEL", "claude-other")
+    assert mode_b.key_for(ctx, TASK, ts) != base
+    monkeypatch.undo()
+    assert mode_b.key_for(ctx, TASK, ts) == base
+    plain = TASKS["basic-branch-amount"]
+    flagged = parse_task({**copy.deepcopy(dict(plain.raw)), "date_dependent": True})
+    assert flagged.date_dependent and not plain.date_dependent
+    ts = spec(plain.id)
+    assert mode_b.key_for(ctx, flagged, ts) != mode_b.key_for(ctx, plain, ts)
+    # stub は default を送る（実モデルの名前を替えても stub の配管の確かめのキーは変わらない）。
+    stub = make_ctx(ChatFake(), stub=True)
+    k = mode_b.key_for(stub, TASK, spec(TASK.id))
+    monkeypatch.setattr(mode_b, "MODEL", "claude-other")
+    assert mode_b.key_for(stub, TASK, spec(TASK.id)) == k
 
 
 def test_mode_a_key_has_the_model(monkeypatch):

@@ -41,9 +41,10 @@ stub_plumbing）。拒否と繋がらない要求は台帳に載らないので�
 なければ、その試行を採点もキャッシュもせず errors（kind: server）に入れ、残りを打ち切る。
 
 キャッシュのキーには採点器の版（GRADER_VERSION と ir_lint の sha）と課題の期待（expect・roles・run_cases）の
-sha も入れる（採点器か課題を直したら流し直す）。会話と採点を左右する条件（課題の `clarifications`・`ask_terms`、
-承認の方針の `[mode_b] approve_tools` と副作用のあるツールの組、版のサーバーの 1 発話の予算、stub の配管を流すか、
-採点の後の hook）も入れる（どれかを変えて流し直したら、前の条件の結果を返さない・BUG-249）。
+sha も入れる（採点器か課題を直したら流し直す）。会話と採点を左右する条件（送る model、課題の `clarifications`・
+`ask_terms`・`date_dependent`、承認の方針の `[mode_b] approve_tools` と副作用のあるツールの組、版のサーバーの
+1 発話の予算、stub の配管を流すか、採点の後の hook）も入れる（どれかを変えて流し直したら、前の条件の結果を返さない・
+BUG-249）。
 
 予定の週（BUG-247）: モデルが見る「今日」は測った日になる（製品の `today_note` は run の作成時刻から作る）。測る日
 （日本時間）が課題の `scheduled_at` の週（`grade.dates.scheduled_window`）に入る日は、結果が予定の日時で決まる課題
@@ -506,8 +507,14 @@ def key_prompt(task: Task, ts: TrialSpec) -> str:
 
 
 def key_conditions(ctx: ModeBContext, task: Task) -> dict:
-    """会話と採点を左右する条件のうち、試行の条件（effort・手数）と版の sha のほかのもの（BUG-249）。"""
+    """会話と採点を左右する条件のうち、試行の条件（effort・手数）と版の sha のほかのもの（BUG-249）。
+
+    送る model（stub は `default`）と、課題の印 `date_dependent`（日付の文字を S2s に数えるか。`task_expect_sha` は
+    raw の expect・roles・run_cases だけを見るので、印を書き足しても変わらない）も入れる。
+    """
     return {
+        "model": STUB_MODEL if ctx.stub else MODEL,
+        "date_dependent": task.date_dependent,
         "clarifications": task.clarifications,
         "ask_terms": list(ask_terms(task)),
         "approve_tools": sorted(ctx.policy.approve_tools),
