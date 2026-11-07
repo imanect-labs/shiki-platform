@@ -157,3 +157,78 @@ def test_failure_breakdown_counts_codes():
     assert fb["validation"] == {"ir.unknown_port": 3}
     assert fb["lint"] == {"ir.bad_ref": 1} and fb["task"] == {"input_ref": 1}
     assert fb["dynamic"] == {"dead_edge": 1}
+    assert fb["steps"] == {} and fb["steps_by_node"] == {}
+
+
+def test_failure_breakdown_counts_failed_steps_by_product_code():
+    """run_case の実行で落ちた step の誤りを、製品のコードと「ノードの種類/コード」で数える（GAP-111）。"""
+    ir = {
+        "nodes": [
+            {"id": "find", "type": "data.query"},
+            {"id": "add", "type": "data.record.create"},
+        ]
+    }
+    unindexed = {
+        "code": "invalid",
+        "message": "'x' では絞り込み・並べ替えできません",
+        "node_id": "find",
+    }
+    t = trial("a", 0)
+    t["irs"] = {"main": ir}
+    t["stub"] = {
+        "cases": [
+            {
+                "failed_steps": [
+                    {"step": "find", "node_id": "find", "workflow": None, "error": unindexed}
+                ]
+            },
+            {
+                "failed_steps": [
+                    {"step": "add", "node_id": "add", "error": {"code": "expr_resolve_error"}},
+                    {"run": "not_started", "error": "400: 入力が足りません"},
+                ]
+            },
+        ]
+    }
+    t2 = trial("b", 0, mode="b")
+    t2["irs"] = {"main": ir}
+    # node_id が step の誤りにしか無い記録・code の無い誤りも数える（文では分けない）。
+    t2["runs"] = {
+        "cases": [
+            {"failed_steps": [{"step": "find", "error": unindexed}, {"step": "zz", "error": "x"}]}
+        ]
+    }
+    fb = m.failure_breakdown([t, t2])
+    assert fb["steps"] == {
+        "invalid": 2,
+        "expr_resolve_error": 1,
+        "run_not_started": 1,
+        "unknown": 1,
+    }
+    assert fb["steps_by_node"] == {
+        "data.query/invalid": 2,
+        "data.record.create/expr_resolve_error": 1,
+        "?/unknown": 1,
+    }
+    assert list(fb["steps"]) == ["invalid", "expr_resolve_error", "run_not_started", "unknown"]
+
+
+def test_failed_steps_from_a_recorded_run_are_broken_down_by_node_type():
+    """stub のスタックで記録した run（入力の key を替えた壊し方）の落ちた step を、ノードの種類つきで数える。"""
+    import datetime as dt
+
+    import recorded
+    from abeval.run_cases import grade_case
+
+    task = recorded.tasks()["app02-triage"]
+    irs, ports, rec = recorded.run("app02-triage", "input_key", "billing")
+    case = next(c for c in task.run_cases if c.id == "billing")
+    g = grade_case(task, case, rec, irs, ports, stub=True, now=dt.datetime.now(dt.UTC))
+    assert g["failed_steps"][0]["node_id"] == "register"
+    assert g["failed_steps"][0]["workflow"] is None
+    t = trial("a", 0)
+    t["irs"] = irs
+    t["stub"] = {"cases": [g]}
+    fb = m.failure_breakdown([t])
+    assert fb["steps"] == {"expr_resolve_error": 1}
+    assert fb["steps_by_node"] == {"data.record.create/expr_resolve_error": 1}

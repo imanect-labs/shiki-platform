@@ -259,7 +259,7 @@ def grade_case(
     if not restrict or force_checks:
         checks = [c.to_dict() for c in evaluate(case.expect, rec.case_result(), task.fixtures, now)]
     failed = [
-        {"step": s.step_path, "error": s.error}
+        {"step": s.step_path, "node_id": s.node_id, "workflow": r.workflow, "error": s.error}
         for r in rec.runs
         for s in r.steps
         if s.status == "failed"

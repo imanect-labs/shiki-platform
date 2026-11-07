@@ -233,12 +233,43 @@ def _cost_micros(t: Mapping) -> int:
     return v if isinstance(v, int) else 0
 
 
+# 起動できなかった run（`failed_steps` の `{"run": "not_started"}`・製品の誤りのコードが無い）の印。
+RUN_NOT_STARTED = "run_not_started"
+
+
+def _step_code(entry: Mapping) -> str:
+    """run_case の実行で落ちた step の誤りのコード（製品の step の誤りの `code` をそのまま・文は読まない）。"""
+    if entry.get("run") == "not_started":
+        return RUN_NOT_STARTED
+    err = entry.get("error")
+    code = err.get("code") if isinstance(err, Mapping) else None
+    return code if isinstance(code, str) and code else "unknown"
+
+
+def _node_type(t: Mapping, entry: Mapping) -> str:
+    """落ちた step のノードの種類（試行の IR から引く・引けなければ ?）。"""
+    err = entry.get("error")
+    node = entry.get("node_id") or (err.get("node_id") if isinstance(err, Mapping) else None)
+    ir = (t.get("irs") or {}).get(entry.get("workflow") or "main") or {}
+    for n in ir.get("nodes") or [] if isinstance(ir, Mapping) else []:
+        if isinstance(n, Mapping) and n.get("id") == node:
+            return str(n.get("type"))
+    return "?"
+
+
 def failure_breakdown(trials: Sequence[Mapping]) -> dict:
-    """失敗の内訳（検証エラーのコード・静的・動的の検査・生成の結果）。"""
+    """失敗の内訳（検証エラーのコード・静的・動的の検査・実行で落ちた step の誤り・生成の結果）。
+
+    `steps` は run_case の実行（stub の配管と Mode B の実行）で落ちた step の誤りを、製品の誤りのコードごとに数える
+    （起動できなかった run は `run_not_started`）。`steps_by_node` は「ノードの種類/コード」で数える（索引の無い列での
+    絞り込みのように、製品が同じコードで返す誤りを、どのノードで落ちたかで分けて読む・GAP-111）。
+    """
     validation: dict[str, int] = {}
     lint: dict[str, int] = {}
     task: dict[str, int] = {}
     dynamic: dict[str, int] = {}
+    steps: dict[str, int] = {}
+    steps_by_node: dict[str, int] = {}
     for t in trials:
         for v in (t.get("validation") or {}).values():
             for c in v.get("errors") or []:
@@ -261,9 +292,23 @@ def failure_breakdown(trials: Sequence[Mapping]) -> dict:
             for case in (t.get(part) or {}).get("cases") or []:
                 for f in (case.get("dynamic") or {}).get("findings") or []:
                     dynamic[f["code"]] = dynamic.get(f["code"], 0) + 1
+                for e in case.get("failed_steps") or []:
+                    if not isinstance(e, Mapping):
+                        continue
+                    code = _step_code(e)
+                    steps[code] = steps.get(code, 0) + 1
+                    if code != RUN_NOT_STARTED:
+                        k = f"{_node_type(t, e)}/{code}"
+                        steps_by_node[k] = steps_by_node.get(k, 0) + 1
+
+    def ranked(d: dict[str, int]) -> dict[str, int]:
+        return dict(sorted(d.items(), key=lambda kv: (-kv[1], kv[0])))
+
     return {
-        "validation": dict(sorted(validation.items(), key=lambda kv: -kv[1])),
-        "lint": dict(sorted(lint.items(), key=lambda kv: -kv[1])),
-        "task": dict(sorted(task.items(), key=lambda kv: -kv[1])),
-        "dynamic": dict(sorted(dynamic.items(), key=lambda kv: -kv[1])),
+        "validation": ranked(validation),
+        "lint": ranked(lint),
+        "task": ranked(task),
+        "dynamic": ranked(dynamic),
+        "steps": ranked(steps),
+        "steps_by_node": ranked(steps_by_node),
     }

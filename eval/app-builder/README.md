@@ -299,7 +299,7 @@ uv run python -m abeval budget --reconcile [--yes]                         # 中
 | `abeval/mode_b.py`・`abeval/approvals.py` | Mode B（製品のチャット・並列度 1）。SSE は承認の要求と終わりのイベントを拾うために使い、完了は `GET messages` の `active_run_id` を `[mode_b] poll_secs` ごとに読み直す。製品には run の状態を読む口が無いので、run が終わったのに終わりのイベントを読めていない（SSE が空で終わった・切れた）ときは SSE を `last_event_id` から読み直し（製品は終わった run の残りを流して閉じる）、それでも読めず最後の発話に返事が無ければ errors（kind `no_reply`）に入れる（BUG-248）。依頼文には Mode A と同じ参考情報を添える。壁時計の上限（`wall_clock_secs`・6 分）で取り消して timeout。保存の前の聞き返し（「？」で終わる・課題の `ask_terms`）には `clarifications` を 1 回だけ（S8 の `asked` は「保存の前に聞き返した」。保存した後の「有効化しますか？」は数えない）。会話が誤りで終わった・abeval.proxy が拒んだ・上流に繋がらない・run_case を流せなかった試行は採点もキャッシュもせず errors に入れる（kind は llm_error・upstream・no_reply・budget・run_case・stub_plumbing。budget は残りを打ち切る）。各試行の前に、実行と評価の残りが 1 試行の最悪より少なければ打ち切る。予定の課題（`scheduled_at`）は、測る日（日本時間）がその週か先週に入れば流さずに errors（kind `date_window`）に理由を入れる（stub の配管では見ない・BUG-247）。emit_workflow の入力の IR は validate にかけ直して検証エラーを数える（結果の文を読まない）。保存されたワークフローそのもので run_case を流し（評価の版は実モデル・費用は active で試行に割り当てる）、stub の配管も流す。採点の後の hook（`ModeBContext.hooks`）はミニアプリ（T12）の差し込み口 |
 | `abeval/plan.py` | 試行の列（Mode A は言い方 × 試行、Mode B は言い方を試行で回す）と見積もり（`[estimates]`・Mode A は取り込みから組んだ予約の額と大きい方）。最悪が `run_cap_usd` を超えれば拒み、課題を分けた組を示す。評価の台帳＋最悪が `eval_cap_usd`、手元の中継の台帳＋最悪が `global_cap_usd` を超えても拒む。`--go` のときだけ abeval.proxy に登録する（上限は min(最悪 × 1.2, $10)） |
 | `abeval/budget.py` | 評価の台帳の累計・実験ごと・実行ごと（usage が無く予約で数えた行の数）・手元の中継の累計・残り（読むだけ） |
-| `abeval/metrics.py` | S1〜S9・課題ごと・pass@k の不偏推定・課題を単位にした対応のあるブートストラップ（10,000 回・種は固定） |
+| `abeval/metrics.py` | S1〜S9・課題ごと・pass@k の不偏推定・課題を単位にした対応のあるブートストラップ（10,000 回・種は固定）・失敗の内訳（検証エラー・ir_lint・課題の検査・動的な検査と、run_case の実行で落ちた step の誤りを製品のコードごと〔`steps`〕と「ノードの種類/コード」ごと〔`steps_by_node`〕に数える・GAP-111） |
 | `abeval/report.py` | `results/<exp>.json`（同じ実験は試行をキーで置き換えて足す）・`errors-<exp>.jsonl`・`summary.md`（6 節）。書く前に、会話の全文と本文の項目・鍵の形の値・拒否リスト（G8）の語を検査し、見つかれば何も書かない |
 
 - 生成と会話の全文（応答のブロック・メッセージ一覧・承認の入力）はキャッシュ（`data/cache/trials/`）にだけ置く。
@@ -522,6 +522,9 @@ Mode B で承認待ち（`approval_requested`）が来たら、既定で却下�
   （`scheduled_at`）は、測る日（日本時間）がその週か先週に入る日には Mode B で流さない（errors の `date_window`・
   2026-11-09 の予定なら 2026-11-02〜15 の間は流さない）。文字の形にならない決め打ち（script の中で
   `new Date(2026, 10, 7)` のように組み立てる・今日からの差を数で書くなど）は見つけられない。
+- 索引の無い列で絞り込んで実行で落ちた step は、製品の step の誤りのコードが `invalid`（ほかの入力の誤りと同じ。
+  data の `field_not_indexed` は step の誤りに残らない）なので、コードだけでは分けられない。失敗の内訳の
+  `steps_by_node` の `data.query/invalid` で読む（文では判定しない）。
 - 差し込みの残りと入力が届かないの検査は、stub が prompt を「回答: …」で返すことに頼る。出力の形（output_schema）
   のある llm.invoke では stub が形に合う最小の値を返すので、その prompt の差し込みの残りは動的には見えない
   （静的な `ir.template_escaped_var` で捕まえる）。
