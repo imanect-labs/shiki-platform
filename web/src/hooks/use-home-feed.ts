@@ -9,13 +9,17 @@ import {
   type PendingApproval,
   type WorkflowRunDigest,
 } from "@/lib/home-today";
-import { sharedWithMe, type NodeResponse } from "@/lib/storage";
+import { sharedWithMeUpTo, type NodeResponse } from "@/lib/storage";
 
 /// ホームの「続きから」と「最近の共有」に出す件数。最初から必要な件数だけ取る（全件取得しない）。
 export const HOME_FEED_LIMIT = 4;
 
 /// 共有は少し多めに取る。一覧に出すのは先頭 HOME_FEED_LIMIT 件だが、候補プロンプトは文書（ファイル）
 /// から作るので、新しい共有がフォルダばかりでも、その後ろの文書を候補に使えるようにする。
+///
+/// 共有されたものが多い人には、1 ページ目が短いか空のまま続きの位置だけが付いて返ることがある（BUG-162）。
+/// 1 ページ目だけを読むと、共有があっても 1 件も出ないので、ドライブの「共有」の画面と同じく続きをたどって
+/// この件数まで集める（往復の上限は sharedWithMeUpTo が持つ）。
 const SHARES_FETCH_LIMIT = 12;
 
 export type HomeFeed = {
@@ -61,7 +65,7 @@ export function useHomeFeed(): HomeFeed {
       .then((r) => r.threads.slice(0, HOME_FEED_LIMIT))
       .catch(() => [])
       .then((threads) => active && setFeed((f) => ({ ...f, threads })));
-    sharedWithMe({ limit: SHARES_FETCH_LIMIT })
+    sharedWithMeUpTo({ want: SHARES_FETCH_LIMIT })
       .then((r) => r.items)
       .catch(() => [])
       .then(
