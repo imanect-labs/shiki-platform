@@ -1442,13 +1442,25 @@ async fn query(env: &Env, id: Uuid, body: Value) -> (StatusCode, Value) {
 #[tokio::test]
 async fn tabular_query_joins_multiple_csv() {
     let Some(env) = setup().await else { return };
+    // 中身は実行ごとに変える（中身の同じ blob は前の実行のバケットを指すので、同じ DB で流し直すと読めない）。
+    // tag の列は JOIN にも結果にも使わない。
+    let tag = Uuid::new_v4().simple().to_string();
     let orders = create_csv(
         &env,
-        b"order_id,customer_id,amount\n1,10,100\n2,20,50\n3,10,30\n",
+        format!("order_id,customer_id,amount,tag\n1,10,100,{tag}\n2,20,50,{tag}\n3,10,30,{tag}\n")
+            .as_bytes(),
     )
     .await;
-    let customers = create_csv(&env, b"customer_id,name\n10,alice\n20,bob\n").await;
-    let regions = create_csv(&env, b"name,region\nalice,tokyo\nbob,osaka\n").await;
+    let customers = create_csv(
+        &env,
+        format!("customer_id,name,tag\n10,alice,{tag}\n20,bob,{tag}\n").as_bytes(),
+    )
+    .await;
+    let regions = create_csv(
+        &env,
+        format!("name,region,tag\nalice,tokyo,{tag}\nbob,osaka,{tag}\n").as_bytes(),
+    )
+    .await;
     let sql = "SELECT c.name, r.region, sum(o.amount) AS total FROM data o \
                JOIN customers c ON o.customer_id = c.customer_id \
                JOIN regions r ON r.name = c.name \
@@ -1525,8 +1537,16 @@ async fn tabular_query_joins_multiple_csv() {
 #[tokio::test]
 async fn tabular_query_rejects_inputs_over_budget() {
     let Some(env) = setup().await else { return };
-    let a = create_csv(&env, b"k,v\n1,aaaaaaaaaa\n").await;
-    let b = create_csv(&env, b"k,w\n1,bbbbbbbbbb\n").await;
+    // 中身は実行ごとに変える（同じ DB で流し直しても読めるように）。
+    let tag = Uuid::new_v4().simple().to_string();
+    let a_body = format!("k,v\n1,a{tag}\n");
+    let b_body = format!("k,w\n1,b{tag}\n");
+    let a = create_csv(&env, a_body.as_bytes()).await;
+    let b = create_csv(&env, b_body.as_bytes()).await;
+    // 予算は合計より 1 バイト少なくする（どちらのファイルも単独では予算内で、合計だけが超える）。tag の長さで判定は
+    // 変わらない。
+    let budget = (a_body.len() + b_body.len() - 1) as u64;
+    assert!(a_body.len() as u64 <= budget && b_body.len() as u64 <= budget);
     let small = tabular::TabularService::new(
         Arc::clone(&env.storage),
         tabular::RunnerConfig::new(
@@ -1534,7 +1554,7 @@ async fn tabular_query_rejects_inputs_over_budget() {
             Duration::from_secs(20),
         ),
         tabular::Quotas {
-            max_query_input_bytes: 20,
+            max_query_input_bytes: budget,
             ..tabular::Quotas::default()
         },
     );
@@ -1582,9 +1602,13 @@ async fn tabular_query_rejects_inputs_over_budget() {
 #[tokio::test]
 async fn tabular_query_budget_counts_inputs_after_conversion() {
     let Some(env) = setup().await else { return };
-    let text = format!("k,v\n1,{}\n", "経費精算".repeat(10));
+    // 中身は実行ごとに変える（同じ DB で流し直しても読めるように）。tag は ASCII なので、Shift_JIS と UTF-8 で
+    // 同じ大きさになり、直した後に増える分（全角の 40 文字ぶん）は変わらない。
+    let tag = Uuid::new_v4().simple().to_string();
+    let text = format!("k,v\n1,{}{tag}\n", "経費精算".repeat(10));
     let (sjis, _, _) = textenc::encoding_rs::SHIFT_JIS.encode(&text);
-    let other = b"k,w\n1,b\n";
+    let other = format!("k,w\n1,b{tag}\n");
+    let other = other.as_bytes();
     let a = create_csv(&env, &sjis).await;
     let b = create_csv(&env, other).await;
     let original = (sjis.len() + other.len()) as u64;
@@ -1627,7 +1651,9 @@ async fn tabular_query_budget_counts_inputs_after_conversion() {
 #[tokio::test]
 async fn bounded_read_rejects_file_grown_after_check() {
     let Some(env) = setup().await else { return };
-    let id = create_csv(&env, b"k\n1\n").await;
+    // 中身は実行ごとに変える（同じ DB で流し直しても読めるように）。
+    let tag = Uuid::new_v4().simple().to_string();
+    let id = create_csv(&env, format!("k\n{tag}\n").as_bytes()).await;
     let checked = env
         .storage
         .get_metadata(&env.ctx, id, None)
@@ -1643,7 +1669,7 @@ async fn bounded_read_rejects_file_grown_after_check() {
         .expect("bounded read");
     assert_eq!(bytes.len() as i64, checked);
     // 確認後に大きい版へ差し替わる → 同じ上限では拒否される。
-    let grown = format!("k\n{}\n", "9".repeat(4096));
+    let grown = format!("k\n{tag}\n{}\n", "9".repeat(4096));
     env.storage
         .update_file_content_internal(&env.ctx, id, grown.as_bytes(), "text/csv", None)
         .await
