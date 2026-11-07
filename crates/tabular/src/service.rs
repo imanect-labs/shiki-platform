@@ -202,13 +202,27 @@ impl TabularService {
         self.check_input_budget(total)?;
         // 2) 並行に取得する（各取得も viewer を要求する＝メタデータ確認後の剥奪も拾う）。各ファイルは
         //    確認したサイズを上限に取得する＝確認後に大きい版へ差し替わっても、全体をメモリへ載せる
-        //    前に拒否される（合計は予算内に収まる）。try_join_all は最初の失敗で残りを破棄する。
+        //    前に拒否される（取得する元のバイト列の合計は予算内に収まる）。try_join_all は最初の失敗で
+        //    残りを破棄する。
         let fetched = try_join_all(
             ids.iter()
                 .zip(&sizes)
                 .map(|(id, size)| self.fetch_input(ctx, *id, Some(*size), trace_id)),
         )
         .await?;
+        // 3) 1) は元のバイト数で数えた。CSV は UTF-8 に直して一時ファイルに書く（GAP-45）ので、大きくなることがある
+        //    （Shift_JIS の半角カナは 1 バイトが 3 バイト、全角は 2 バイトが 3 バイト）。ランナーに渡す一時ファイルの
+        //    合計も予算に収める。
+        let written = fetched
+            .iter()
+            .try_fold(0u64, |sum, input| {
+                let len = input.file.as_file().metadata()?.len();
+                Ok::<_, std::io::Error>(sum.saturating_add(len))
+            })
+            .map_err(|e| {
+                TabularError::Internal(format!("一時ファイルの大きさを読めません: {e}"))
+            })?;
+        self.check_input_budget(written)?;
         let input_of: HashMap<Uuid, &RunnerInput> = ids.iter().copied().zip(&fetched).collect();
         let input = |id: &Uuid| {
             input_of

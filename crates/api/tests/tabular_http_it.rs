@@ -1576,6 +1576,52 @@ async fn tabular_query_rejects_inputs_over_budget() {
     assert_eq!(ok.rows.len(), 1);
 }
 
+/// 入力の予算は、文字コードを UTF-8 に直した後の大きさでも確かめる（GAP-45 と #1037 の重なり）。Shift_JIS の
+/// 全角は UTF-8 にすると 2 バイトが 3 バイトになるので、元の合計が予算内でも、ランナーに渡す一時ファイルの合計が
+/// 予算を超えれば拒否する。
+#[tokio::test]
+async fn tabular_query_budget_counts_inputs_after_conversion() {
+    let Some(env) = setup().await else { return };
+    let text = format!("k,v\n1,{}\n", "経費精算".repeat(10));
+    let (sjis, _, _) = textenc::encoding_rs::SHIFT_JIS.encode(&text);
+    let other = b"k,w\n1,b\n";
+    let a = create_csv(&env, &sjis).await;
+    let b = create_csv(&env, other).await;
+    let original = (sjis.len() + other.len()) as u64;
+    let converted = (text.len() + other.len()) as u64;
+    assert!(original < converted, "{original} < {converted}");
+    let service = |budget: u64| {
+        tabular::TabularService::new(
+            Arc::clone(&env.storage),
+            tabular::RunnerConfig::new(
+                env.runner.to_string_lossy().to_string(),
+                Duration::from_secs(20),
+            ),
+            tabular::Quotas {
+                max_query_input_bytes: budget,
+                ..tabular::Quotas::default()
+            },
+        )
+    };
+    let tables = [tabular::TableRef {
+        name: "other".into(),
+        file_id: b,
+    }];
+    let sql = "SELECT * FROM data JOIN other USING (k)";
+    let res = service(original)
+        .query_tables(&env.ctx, a, &tables, sql, None)
+        .await;
+    assert!(
+        matches!(res, Err(tabular::TabularError::QuotaExceeded(_))),
+        "UTF-8 に直した合計が予算超過なら拒否: {res:?}"
+    );
+    let ok = service(converted)
+        .query_tables(&env.ctx, a, &tables, sql, None)
+        .await
+        .expect("直した後の合計が予算内");
+    assert_eq!(ok.rows.len(), 1);
+}
+
 /// #1037: 確認したサイズを上限にした取得は、確認後に大きい版へ差し替わったらダウンロード前に拒否する
 /// （複数 CSV クエリの入力予算を、メタデータ確認と取得の間の差し替えでも破らせない）。
 #[tokio::test]
