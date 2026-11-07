@@ -315,13 +315,55 @@ def _reaches(want: Any, sinks: list[Any]) -> bool:
     return False
 
 
+def _input_keys(value: Any) -> Iterator[str]:
+    """値の中の `{"$from": "input", "path": "/key/..."}` が指す入力の項目（先頭の段）。"""
+    if isinstance(value, Mapping):
+        if value.get("$from") == "input":
+            path = str(value.get("path") or "")
+            head = path.lstrip("/").split("/", 1)[0]
+            if head:
+                yield head
+        for v in value.values():
+            yield from _input_keys(v)
+    elif isinstance(value, list | tuple):
+        for v in value:
+            yield from _input_keys(v)
+
+
+def unobservable_inputs(ir: Mapping, allowed: set[str]) -> frozenset[str]:
+    """LLM の手前で打ち切った run では見えない入力の項目。
+
+    LLM の後ろのノード（`allowed` の外）でしか使わない入力と、出力の形（`output_schema`）を決めた LLM の指示で
+    しか使わない入力（stub は指示を返さず、決まった形のダミーを返す）。どちらも、正しい IR でも打ち切った run では
+    どこにも現れない。入力を使っているかは静的な検査（flow_through）が見る。
+    """
+    seen: set[str] = set()
+    hidden: set[str] = set()
+    for nid, n in _nodes(ir).items():
+        keys = set(_input_keys(n.get("params") or {}))
+        structured_llm = n.get("type") in LLM_NODE_TYPES and bool(
+            (n.get("params") or {}).get("output_schema")
+        )
+        if nid not in allowed or structured_llm:
+            hidden |= keys
+        else:
+            seen |= keys
+    return frozenset(hidden - seen)
+
+
 def not_delivered(
-    ir: Mapping, expect: Expect, rec: CaseRecord, run: RunRecord, allowed: set[str] | None = None
+    ir: Mapping,
+    expect: Expect,
+    rec: CaseRecord,
+    run: RunRecord,
+    allowed: set[str] | None = None,
+    *,
+    skip: frozenset[str] = frozenset(),
 ) -> list[Finding]:
     sinks = _sinks(ir, rec, run, allowed)
     out = []
     for key in expect.flow_through:
-        if key not in run.input:
+        if key not in run.input or key in skip:
             continue
         values = run.input[key] if isinstance(run.input[key], list) else [run.input[key]]
         for v in values:
@@ -460,7 +502,8 @@ def grade_dynamic(
     """run_case の記録から dead edge・差し込みの残り・入力が届かない・想定外の状態と skipped を見つける。
 
     `restrict` は llm_dependent の run_case を stub で流したとき（最初の LLM のノードまでに限る）。
-    `delivery` は「入力が届かない」を見るか（stub の run で、`expect.flow_through` が false でないとき）。
+    `delivery` は「入力が届かない」を見るか（stub の run で、`expect.flow_through` が false でないとき）。`restrict`
+    のときは、打ち切りで見えない入力（`unobservable_inputs`）を外して見る。
     `expect_status` は run の状態の期待（None は見ない・stub で流した llm_dependent でない run_case に渡す）。
     `skips` は想定外の skipped を見るか（期待が succeeded の run_case）。
     役割（`RunRecord.workflow`・無ければ main）ごとに IR・出口・期待を引く。
@@ -476,7 +519,8 @@ def grade_dynamic(
             allowed_any |= allowed
         findings += dead_edges(ir, ports, run, allowed)
         if delivery:
-            findings += not_delivered(ir, expects[role], rec, run, allowed)
+            hidden = unobservable_inputs(ir, allowed) if allowed is not None else frozenset()
+            findings += not_delivered(ir, expects[role], rec, run, allowed, skip=hidden)
         if expect_status is not None:
             findings += unexpected_status(run, expect_status, last=i == len(rec.runs) - 1)
         if skips:

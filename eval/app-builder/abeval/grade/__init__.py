@@ -15,4 +15,6 @@
 # 7: 日付の文字で、和暦や 2 桁の年に続く月日（「令和8年11月9日」の「11月9日」）も数える。
 # 8: run_case の前に、前の run が fixture の置き場に作ったファイルを消す（Mode B で実モデルの run_case の後の
 #    stub の配管が、同じ日付の名前のファイルに `name_taken` でぶつかって S2d を誤って真にしていた）。
-GRADER_VERSION = 8
+# 9: llm_dependent の run_case を stub で流して LLM の手前で打ち切るときは、「入力が届かない」を見ない（LLM の後で
+#    だけ入力を使う正しい形を誤って落としていた）。
+GRADER_VERSION = 9

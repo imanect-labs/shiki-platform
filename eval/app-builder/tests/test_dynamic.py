@@ -16,6 +16,7 @@ from abeval.grade.dynamic import (
     grade_dynamic,
     leftovers,
     not_delivered,
+    unobservable_inputs,
 )
 from abeval.tasks import Expect, InputSpec
 
@@ -235,3 +236,51 @@ def test_case_record_round_trips_and_builds_the_subject():
     assert res.statuses == ["succeeded"]
     assert res.subject["outputs"]["save"]["name"].startswith("要約-")
     assert res.subject["runs"][0]["input"]["title"] == "会議室の予約方法"
+
+
+def test_restricted_runs_skip_only_the_inputs_they_cannot_observe():
+    """LLM で採点してから、名前と一緒に行を作る形（GRADER_VERSION 9）。名前は LLM の後でだけ使い、志望動機は出力の
+    形を決めた LLM の指示でだけ使う。LLM の手前で打ち切る run ではどちらも見えないので、判定から外す。"""
+    ir = {
+        "nodes": [
+            {
+                "id": "score",
+                "type": "llm.invoke",
+                "params": {
+                    "prompt": {
+                        "$template": "{m}",
+                        "vars": {"m": {"$from": "input", "path": "/motivation"}},
+                    },
+                    "output_schema": {"type": "object"},
+                },
+            },
+            {
+                "id": "save",
+                "type": "data.record.create",
+                "params": {"data": {"name": {"$from": "input", "path": "/name"}}},
+            },
+        ],
+        "edges": [{"from": "score", "to": "save"}],
+    }
+    assert unobservable_inputs(ir, before_llm(ir)) == {"name", "motivation"}
+    run = RunRecord(
+        "r",
+        "succeeded",
+        {"name": "青木", "motivation": "経理を整えたい", "note": "メモ"},
+        [_step("score", output={"data": {"score": 1, "reason": "stub"}})],
+    )
+    exp = {"main": _expect(["name", "motivation", "note"])}
+    restricted = grade_dynamic({"main": ir}, {}, exp, _rec([run]), restrict=True)
+    # どこでも使わない入力（note）は、打ち切った run でも今までどおり届かないと数える。
+    assert [f.detail.split("=")[0] for f in restricted.findings if f.code == "not_delivered"] == [
+        "入力 note"
+    ]
+    # 指示を返す LLM（出力の形なし）の指示に入れた入力は、打ち切った run でも見える。
+    plain = {
+        **ir,
+        "nodes": [
+            dict(ir["nodes"][0], params={"prompt": ir["nodes"][0]["params"]["prompt"]}),
+            ir["nodes"][1],
+        ],
+    }
+    assert unobservable_inputs(plain, before_llm(plain)) == {"name"}
