@@ -215,9 +215,12 @@ async fn run_reads(
     .await
 }
 
-/// 直列化のキー（同一ホストへの `web_fetch` を束ねる）。`None` は他と束ねない＝単独レーン。
+/// 直列化のキー（同一ホストへの `web_fetch`・`web_translate` を束ねる）。`None` は他と束ねない＝単独レーン。
 fn politeness_key(call: &PendingCall) -> Option<String> {
-    if crate::vocab::ToolName::parse(&call.name) != Some(crate::vocab::ToolName::WebFetch) {
+    if !matches!(
+        crate::vocab::ToolName::parse(&call.name),
+        Some(crate::vocab::ToolName::WebFetch | crate::vocab::ToolName::WebTranslate)
+    ) {
         return None;
     }
     let url = call.input.get("url").and_then(serde_json::Value::as_str)?;

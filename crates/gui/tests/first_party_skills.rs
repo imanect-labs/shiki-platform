@@ -213,3 +213,44 @@ fn deep_research_declares_both_command_variants() {
         );
     }
 }
+
+/// translate は `/translate <URL か文章>` が本体。URL のページは `web_translate` が訳して会話に出すので、
+/// 宣言と「訳文を書き写さない」指示を固定する（docs/agent/web-translate.md §4.6）。
+#[test]
+fn translate_routes_urls_to_web_translate() {
+    let (_, body) = bundles()
+        .into_iter()
+        .find(|(name, _)| name == "translate")
+        .expect("translate バンドルがあること");
+    let skill = gui::validate_skill_body(&body).expect("検証を通る");
+
+    let command = skill.command.expect("command 宣言がある");
+    assert_eq!(command.name, "translate");
+    // 門は掛けない（訳すだけの依頼に質問・計画のカードを挟まない）。
+    assert!(command.variants.iter().all(|v| v.phase.is_none()));
+
+    let tools: Vec<&str> = skill
+        .allowed_tools
+        .as_ref()
+        .expect("allowed_tools を宣言する")
+        .iter()
+        .map(|t| t.as_str())
+        .collect();
+    assert!(
+        tools.contains(&"web_translate"),
+        "web_translate が宣言に無い"
+    );
+    for forbidden in ["fs_delete", "shell", "office.live_edit"] {
+        assert!(
+            !tools.contains(&forbidden),
+            "{forbidden} を宣言してはいけない"
+        );
+    }
+    // 訳文はツールが表示する。回答へ書き写すと出力を二重に払い、長いページは途中で切れる。
+    for required in ["web_translate", "書き写さない", "web_fetch"] {
+        assert!(
+            skill.instructions.contains(required),
+            "instructions に {required:?} が無い"
+        );
+    }
+}

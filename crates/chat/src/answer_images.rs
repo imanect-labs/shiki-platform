@@ -267,10 +267,35 @@ pub fn page_texts_from_blocks(blocks: &[ContentBlock], tool_results_visible: boo
                 }
             }
             ContentBlock::Citation(c) if c.is_web() => out.push(c.snippet.clone()),
+            // 訳文の画像は、ツールが**翻訳したページの本文**から取り出した URL（LLM を通らない値）。
+            // 訳文は閲覧者全員に見えるブロックなので、実行者かどうかに関わらず数える。
+            ContentBlock::Translation { translation } => {
+                out.extend(translation_image_texts(translation));
+            }
             _ => {}
         }
     }
     out
+}
+
+/// 訳文ブロックの出所の画像（`source_images`）を、出所の本文と同じ形（`![](url)`）にする。
+///
+/// 訳文の `markdown` そのものは数えない（復元した訳文を出所に数えない・web-translate §4.5）。
+fn translation_image_texts(translation: &serde_json::Value) -> Vec<String> {
+    /// 1 ページから数える画像の上限（敵対的な本文で出所の表を膨らませない）。
+    const MAX_IMAGES: usize = 500;
+    translation
+        .get("source_images")
+        .and_then(serde_json::Value::as_array)
+        .map(|urls| {
+            urls.iter()
+                .filter_map(serde_json::Value::as_str)
+                .filter(|u| u.len() <= MAX_URL && !u.contains(char::is_whitespace))
+                .take(MAX_IMAGES)
+                .map(|u| format!("![]({u})"))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// 出所になる本文を、生成中の run のイベントから取り出す（規則は [`page_texts_from_blocks`] と同じ）。
@@ -298,6 +323,9 @@ pub fn page_texts_from_events(
                 }
             }
             StreamEventKind::Citation(c) if c.is_web() => out.push(c.snippet.clone()),
+            StreamEventKind::Translation { translation } => {
+                out.extend(translation_image_texts(translation));
+            }
             _ => {}
         }
     }
@@ -483,6 +511,34 @@ mod tests {
                 .map(String::as_str),
         );
         assert!(resolve_source(&s, "https://img.example.com/b.png").is_none());
+    }
+
+    /// 訳文の画像は、ツールが原文から取り出した `source_images` だけが出所になる（訳文の本文は数えない）。
+    #[test]
+    fn translation_images_come_from_the_source_page_only() {
+        let translation = serde_json::json!({
+            "markdown": "![x](https://evil.example/leak.png) ![fig](https://img.example.com/fig.png)",
+            "source_images": ["https://img.example.com/fig.png", "https://img.example.com/a b.png"],
+        });
+        let blocks = vec![ContentBlock::Translation {
+            translation: translation.clone(),
+        }];
+        // 訳文は閲覧者全員に見えるので、実行者でなくても数える。
+        let s = collect_image_sources(
+            page_texts_from_blocks(&blocks, false)
+                .iter()
+                .map(String::as_str),
+        );
+        assert!(resolve_source(&s, "https://img.example.com/fig.png").is_some());
+        assert!(resolve_source(&s, "https://evil.example/leak.png").is_none());
+        let events = vec![StreamEventKind::Translation { translation }];
+        let s = collect_image_sources(
+            page_texts_from_events(&events, false)
+                .iter()
+                .map(String::as_str),
+        );
+        assert!(resolve_source(&s, "https://img.example.com/fig.png").is_some());
+        assert!(resolve_source(&s, "https://evil.example/leak.png").is_none());
     }
 
     #[test]

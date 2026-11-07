@@ -109,6 +109,38 @@ impl ChatWorker {
         Ok(tools)
     }
 
+    /// ページ翻訳（`web_translate`・docs/agent/web-translate.md）を提示ツールに加える。
+    ///
+    /// `web_fetch` と同じ条件（web 検索が配線されている構成）でだけ提示し、取得は `web_fetch` と
+    /// 同じ設定の取得経路を使う。訳は llm-gateway 経由で `model`（会話で決まったモデル）を使い、
+    /// run の停止で残りのチャンクを訳さない。計画承認前の段階（門）では調査系と同じく渡さない。
+    pub(super) fn push_translate_tool(
+        &self,
+        tools: &mut Vec<Arc<dyn Tool>>,
+        run: &ClaimedRun,
+        cancel: &Arc<std::sync::atomic::AtomicBool>,
+        model: Option<String>,
+        gate_stage: super::gate::GateStage,
+    ) {
+        if self.web_search.is_none() || gate_stage != super::gate::GateStage::Execute {
+            return;
+        }
+        let mut fetch = WebFetchTool::new();
+        if let Some(parser) = &self.parser {
+            fetch = fetch.with_parser(parser.clone());
+        }
+        tools.push(Arc::new(
+            agent_core::WebTranslateTool::new(
+                fetch,
+                self.gateway.clone(),
+                format!("{}:{}", run.run_id, run.fencing_token),
+                Arc::clone(cancel),
+            )
+            .with_model(model)
+            .with_session_id(Some(run.thread_id.to_string())),
+        ));
+    }
+
     /// ドキュメント共同編集ツールの配線（ノート=Task 11P.4／スライド=Task 11.3）。
     ///
     /// collab ハブと storage が両方配線されている時のみ提示する。編集は共有 Yjs へ

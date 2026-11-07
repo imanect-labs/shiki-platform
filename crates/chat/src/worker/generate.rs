@@ -307,6 +307,8 @@ impl ChatWorker {
         super::opts::append_system_section(&mut opts, self.custom_instructions_section(ctx).await);
         self.apply_skills(ctx, run, &skills, &mut opts, &mut history)
             .await?;
+        // ページ翻訳は訳に使うモデルが決まった**後**に積む（会話で選んだモデルで訳す）。
+        self.push_translate_tool(&mut tools, run, &cancel, opts.model.clone(), gate_stage);
         // 発話ごとのツール指定（#734）は skill の指示文より**後ろ**に置く（手順書の記述に
         // 上書きされないように）。照合先は**提示の最終形**（門で絞った後の `tools`）なので、
         // 指定でツールが増えることはない（誘導のみ・opts.approval にも触れない）。門が承認まで

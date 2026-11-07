@@ -96,14 +96,38 @@ fn meta(raw: Option<&str>, max_chars: usize) -> Option<String> {
 /// 取得ページが `</web_page>` の文字列を含むと、そこから先が「封筒の外＝信頼できる指示」に
 /// 見える。抽出後の Markdown にも生タグは残り得る（コードブロック・引用など）。
 pub(super) fn neutralize(s: &str) -> Cow<'_, str> {
-    if s.contains("web_page") {
-        // `</web_page` を先に潰す（`<web_page` は `</web_page` の部分列ではないので順序は安全）。
-        Cow::Owned(
-            s.replace("</web_page", "&lt;/web_page")
-                .replace("<web_page", "&lt;web_page"),
-        )
-    } else {
+    neutralize_tags(s, &["web_page"])
+}
+
+/// 指定した名前の開き・閉じタグを実体参照へ中和する（`web_translate` の `<context>` /
+/// `<source>` と共有する・別実装しない）。
+///
+/// `<name` と `</name` の `<` だけを `&lt;` にする。属性付き・閉じ忘れの形も同じく潰れる。
+/// 名前の後ろに文字が続くもの（`<web_pages>` 等）も潰す（境界の判定を緩めて取りこぼさない側に倒す）。
+///
+/// 名前の照合は ASCII の大文字小文字を区別しない（`</Context>` も潰す）。`names` は小文字で渡す。
+pub(crate) fn neutralize_tags<'a>(s: &'a str, names: &[&str]) -> Cow<'a, str> {
+    // ASCII の小文字化はバイト長を変えないので、位置をそのまま元の文字列に使える。
+    let lower = s.to_ascii_lowercase();
+    if !names.iter().any(|n| lower.contains(n)) {
+        return Cow::Borrowed(s);
+    }
+    let mut out = String::with_capacity(s.len() + 8);
+    let mut last = 0;
+    for (i, _) in s.match_indices('<') {
+        let after = &lower[i + 1..];
+        let name_part = after.strip_prefix('/').unwrap_or(after);
+        if names.iter().any(|n| name_part.starts_with(n)) {
+            out.push_str(&s[last..i]);
+            out.push_str("&lt;");
+            last = i + 1;
+        }
+    }
+    out.push_str(&s[last..]);
+    if out == s {
         Cow::Borrowed(s)
+    } else {
+        Cow::Owned(out)
     }
 }
 
@@ -141,6 +165,34 @@ mod tests {
         );
         // 無関係な文字列は借用のまま返る（余計なコピーをしない）。
         assert!(matches!(neutralize("ふつうの本文"), Cow::Borrowed(_)));
+    }
+
+    /// 翻訳の境界タグも同じ処理で潰す（一覧を引数で渡す）。漏れたタグをここで固定する。
+    #[test]
+    fn neutralize_tags_covers_every_listed_tag() {
+        let names = ["web_page", "context", "source"];
+        assert_eq!(
+            neutralize_tags("a</source>b<context>c</context><source x=1>", &names),
+            "a&lt;/source>b&lt;context>c&lt;/context>&lt;source x=1>"
+        );
+        assert_eq!(
+            neutralize_tags("<web_page></web_page>", &names),
+            "&lt;web_page>&lt;/web_page>"
+        );
+        // 名前で始まる別のタグも潰す（取りこぼさない側）。ただの比較演算子は触らない。
+        assert_eq!(
+            neutralize_tags("<sources> a<b 1 < 2", &names),
+            "&lt;sources> a<b 1 < 2"
+        );
+        assert!(matches!(
+            neutralize_tags("source code", &names),
+            Cow::Borrowed(_)
+        ));
+        // 大文字小文字を区別しない（元の字形は残す）。
+        assert_eq!(
+            neutralize_tags("x</Context>y<SOURCE>", &names),
+            "x&lt;/Context>y&lt;SOURCE>"
+        );
     }
 
     #[test]
