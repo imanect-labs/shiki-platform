@@ -92,10 +92,10 @@ async function serve(page: Page, pattern: RegExp, pages: Record<string, unknown>
   return { asked, stop: () => page.unroute(pattern, handler) };
 }
 
-async function phonePage(browser: Browser, page: Page) {
+async function phonePage(browser: Browser, page: Page, width = 390) {
   const ctx = await browser.newContext({
     storageState: await page.context().storageState(),
-    viewport: { width: 390, height: 844 },
+    viewport: { width, height: 844 },
     deviceScaleFactor: 2,
     isMobile: true,
     hasTouch: true,
@@ -177,21 +177,34 @@ test("ホームのスキルの選択: 6 件より後ろと 50 件より古いス
   }
 
   if (process.env.E2E_SHOTS_DIR) {
+    // スマホ幅のホームはスキルの段を出さない（スキルは「+」から選ぶ・#975）。探す画面は、段が出るいちばん狭い幅
+    // （sm の 640px）で崩れないことを見る。
     const phone = await phonePage(browser, page);
     try {
       const phoneServed = await serve(phone.page, SKILLS, pages);
       await phone.page.goto("/");
-      await phone.page.getByLabel("スキルを選択").getByTestId("skill-picker-search").click();
-      const dialog = phone.page.getByTestId("skill-picker-dialog");
-      await expect(dialog.getByTestId("skill-picker-option")).toHaveCount(7);
-      expect(await phone.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
-      await phone.page.screenshot({ path: `${process.env.E2E_SHOTS_DIR}/home-skill-search-phone.png` });
-      await dialog.getByLabel("スキルの名前").fill("経費");
-      await expect(dialog.getByTestId("list-more")).toBeVisible();
-      await phone.page.screenshot({ path: `${process.env.E2E_SHOTS_DIR}/home-skill-search-more-phone.png` });
+      const picker = phone.page.getByLabel("スキルを選択");
+      await expect(picker).toHaveCount(1);
+      await expect(picker).toBeHidden();
       await phoneServed.stop();
     } finally {
       await phone.ctx.close();
+    }
+    const narrow = await phonePage(browser, page, 640);
+    try {
+      const narrowServed = await serve(narrow.page, SKILLS, pages);
+      await narrow.page.goto("/");
+      await narrow.page.getByLabel("スキルを選択").getByTestId("skill-picker-search").click();
+      const dialog = narrow.page.getByTestId("skill-picker-dialog");
+      await expect(dialog.getByTestId("skill-picker-option")).toHaveCount(7);
+      expect(await narrow.page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
+      await narrow.page.screenshot({ path: `${process.env.E2E_SHOTS_DIR}/home-skill-search-narrow.png` });
+      await dialog.getByLabel("スキルの名前").fill("経費");
+      await expect(dialog.getByTestId("list-more")).toBeVisible();
+      await narrow.page.screenshot({ path: `${process.env.E2E_SHOTS_DIR}/home-skill-search-more-narrow.png` });
+      await narrowServed.stop();
+    } finally {
+      await narrow.ctx.close();
     }
   }
 });

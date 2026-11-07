@@ -302,7 +302,8 @@ test("未保存の変更があるとき、アプリ内のリンクで離れる�
   // 破棄すれば移る。
   await page.locator('a[href="/skills"]').first().click();
   await dialog.getByTestId("text-discard-confirm").click();
-  await expect(page).toHaveURL(/\/skills$/);
+  // 手元の next dev は開く画面をその場でコンパイルし直すことがあるので、移った先の URL は長めに待つ。
+  await expect(page).toHaveURL(/\/skills$/, { timeout: 20_000 });
 });
 
 test("行頭の記号は、保存しても箇条書き・水平線・コードにならない", async ({ page }) => {

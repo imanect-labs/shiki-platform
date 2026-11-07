@@ -68,8 +68,12 @@ async function openOnPhone(phone: Page, id: string, label: string): Promise<Loca
   await phone.goto(`/workflows/${id}`);
   const list = phone.getByTestId("workflow-mobile-flow");
   await expect(list).toBeVisible({ timeout: 15_000 });
-  // ブロックの行のボタンの名前は「{カテゴリ} {ブロック名}」（「…の後ろにブロックを追加」と取り違えない）。
-  await list.getByRole("button", { name: new RegExp(` ${label}$`) }).first().click();
+  // ブロックの行のボタンの名前は「{カテゴリ} {ブロック名}」で、誤りや注意があれば「要修正 N」「注意 N」が続く
+  // （「…の後ろにブロックを追加」と取り違えない）。
+  await list
+    .getByRole("button", { name: new RegExp(` ${label}( (要修正|注意) \\d+)?$`) })
+    .first()
+    .click();
   const sheet = phone.getByRole("dialog").filter({ hasText: "このブロックを削除" });
   await expect(sheet).toBeVisible();
   return sheet;

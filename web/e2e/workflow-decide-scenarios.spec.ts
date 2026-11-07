@@ -379,11 +379,12 @@ test.describe("判定の受け入れシナリオ（stub の決定器）", () => 
         .toBe("succeeded");
       expect((await getRecord(page, table, failed.id)).data.status).toBe("経理確認");
     } finally {
+      // 表を消すとそのタプルも撤去される（BUG-149）ので、bob の editor は表より先に外す。
       await cleanupAll(
-        () => cleanup(page, out),
         async () => {
           if (revoke) await revoke();
         },
+        () => cleanup(page, out),
         async () => {
           if (!d.enabled) await setEnabled(page, d.id, false);
         },
