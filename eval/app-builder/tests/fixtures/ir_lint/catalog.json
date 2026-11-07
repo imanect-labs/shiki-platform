@@ -2,8 +2,7 @@
  "ignored_by_env_codes": [
   "ir.unknown_secret",
   "ir.binding_denied",
-  "ir.unknown_skill",
-  "ir.unknown_version"
+  "ir.unknown_skill"
  ],
  "ir_lint": {
   "crate_version": "0.0.0",

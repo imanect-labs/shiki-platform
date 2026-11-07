@@ -40,15 +40,9 @@ use workflow_engine::{
 /// 環境に依存する誤りのコード。評価の版のサーバと ir_lint ではカタログ（登録した secret・入れた skill）が違うので、
 /// 採点の「静的に誤りがある」（S2s）に数えず、別の欄に分ける。
 ///
-/// `ir.unknown_version` は環境に依存するコードではない（版ごとの `MAX_IR_VERSION` の差に備えて設計どおりに
-/// 分けている・今は V0 も HEAD も 1 なので、ir_version が 0 か 2 以上なら必ず出る静的な誤り）。S1（版のサーバの
-/// 検証）では落ちるので見出しには響かないが、S2s の内訳には出ない。
-const IGNORED_BY_ENV: &[&str] = &[
-    "ir.unknown_secret",
-    "ir.binding_denied",
-    "ir.unknown_skill",
-    "ir.unknown_version",
-];
+/// `ir.unknown_version` は入れない（D-164 (f)）。環境に依存するコードではなく、V0 も HEAD も `MAX_IR_VERSION` が 1
+/// なので、ir_version が 0 か 2 以上なら必ず出る静的な誤り（`errors` に出して S2s に数える）。
+const IGNORED_BY_ENV: &[&str] = &["ir.unknown_secret", "ir.binding_denied", "ir.unknown_skill"];
 
 /// 出力の形の版（形を変えたら上げる）。2: `enable_blockers` を足した。
 const SCHEMA: u32 = 2;
@@ -270,16 +264,7 @@ mod tests {
             "nodes": [{ "id": "s", "type": "skill.invoke", "params": { "skill": "skill:expense@1" } }],
             "edges": []
         });
-        let version = json!({
-            "ir_version": 99, "name": "wf",
-            "nodes": [{ "id": "s", "type": "skill.invoke", "params": { "skill": "skill:expense@1" } }],
-            "edges": []
-        });
-        for (ir, code) in [
-            (&secret, "ir.unknown_secret"),
-            (&skill, "ir.unknown_skill"),
-            (&version, "ir.unknown_version"),
-        ] {
+        for (ir, code) in [(&secret, "ir.unknown_secret"), (&skill, "ir.unknown_skill")] {
             let out = lint_one(ir);
             assert!(
                 codes(&out, "ignored_by_env").iter().any(|c| c == code),
@@ -290,6 +275,21 @@ mod tests {
                 "{code} は errors に入らない: {out:#}"
             );
         }
+        // ir_version の誤りは環境に依存しない静的な誤り（errors に出る・D-164 (f)）。
+        let version = json!({
+            "ir_version": 99, "name": "wf", "declared_scopes": [],
+            "nodes": [{ "id": "s", "type": "script.run", "params": {
+                "source": { "inline": "function main(i){ return i; }" }, "input": {} } }],
+            "edges": []
+        });
+        let out = lint_one(&version);
+        assert!(
+            codes(&out, "errors")
+                .iter()
+                .any(|c| c == "ir.unknown_version"),
+            "ir.unknown_version は errors に入る: {out:#}"
+        );
+        assert!(codes(&out, "ignored_by_env").is_empty(), "{out:#}");
         // binding_denied は登録した secret が要るので Catalog::default() では出ない。振り分けだけを確かめる。
         let (errors, ignored) = split_by_env(vec![
             ValidationError::new("ir.binding_denied", "x"),

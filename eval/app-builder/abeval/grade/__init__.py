@@ -8,4 +8,5 @@
 # 2: S2d に想定外の状態・想定外の skipped を足し、「入力が届かない」を stub の run だけにした。基盤の失敗で流せ
 #    なかった run_case があれば採点しない。見出しは S2s・S2d（Mode B は S4 も）が決まったときだけ真。
 # 3: きっかけが schedule・event の課題で、ir_lint の enable_blockers（有効化の前に止める理由）を S2s に数える。
-GRADER_VERSION = 3
+# 4: ir_lint が `ir.unknown_version` を ignored_by_env から errors に戻した（S2s に数える・D-164 (f)）。
+GRADER_VERSION = 4

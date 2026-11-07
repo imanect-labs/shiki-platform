@@ -43,11 +43,11 @@ def test_strict_warnings_are_real_save_warning_codes():
 
 
 def test_ignored_by_env_comes_from_the_catalog():
+    # ir.unknown_version は環境に依存しない静的な誤りなので errors に出る（D-164 (f)）。
     assert set(recorded.catalog().ignored_by_env_codes) == {
         "ir.unknown_secret",
         "ir.binding_denied",
         "ir.unknown_skill",
-        "ir.unknown_version",
     }
 
 

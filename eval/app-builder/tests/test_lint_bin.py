@@ -63,3 +63,24 @@ def test_recorded_catalog_matches_the_binary():
 def test_g2_with_the_live_binary():
     res = g.g2_reference_passes(load_tasks(), recorded.catalog(), None, BIN)
     assert all(r.ok for r in res), [r.to_dict() for r in res if not r.ok]
+
+
+def test_unknown_version_is_a_static_error():
+    """ir_version の誤りは環境に依存しないので errors に出る（S2s・D-164 (f)）。"""
+    ir = {
+        "ir_version": 2,
+        "name": "wf",
+        "declared_scopes": [],
+        "nodes": [
+            {
+                "id": "s",
+                "type": "script.run",
+                "params": {"source": {"inline": "function main(i){ return i; }"}, "input": {}},
+            }
+        ],
+        "edges": [],
+    }
+    r = run_ir_lint([("v", ir)], BIN)[0]["v"]
+    assert "ir.unknown_version" in {e["code"] for e in r.errors}
+    assert "ir.unknown_version" not in {e["code"] for e in r.ignored_by_env}
+    assert "ir.unknown_version" not in recorded.catalog().ignored_by_env_codes
