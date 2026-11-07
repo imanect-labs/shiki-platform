@@ -11,4 +11,5 @@
 # 4: ir_lint が `ir.unknown_version` を ignored_by_env から errors に戻した（S2s に数える・D-164 (f)）。
 # 5: 出力の path の検査を ir_lint（`output_paths`・`ir_lint.output_path`）に移した（Python で判定しない・GAP-112）。
 # 6: 実行の日に決まる値を持つ課題で、設定の中の日付の文字（決め打ち）を S2s に数える（date_literal・BUG-247）。
-GRADER_VERSION = 6
+# 7: 日付の文字で、和暦や 2 桁の年に続く月日（「令和8年11月9日」の「11月9日」）も数える。
+GRADER_VERSION = 7
