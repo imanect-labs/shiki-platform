@@ -445,6 +445,7 @@ def _execute(
         stub=stub,
         stub_plumbing=not args.no_stub_plumbing,
         preflight=preflight,
+        budget_micros=args.budget_micros,
     )
     trials, errors = mode_b.run(ctx, plan.trials, by_id)
     stopped = next((e["detail"] for e in errors if e.get("kind") == "stopped"), None)

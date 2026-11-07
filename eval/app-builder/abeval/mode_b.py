@@ -41,7 +41,9 @@ stub_plumbing）。拒否と繋がらない要求は台帳に載らないので�
 なければ、その試行を採点もキャッシュもせず errors（kind: server）に入れ、残りを打ち切る。
 
 キャッシュのキーには採点器の版（GRADER_VERSION と ir_lint の sha）と課題の期待（expect・roles・run_cases）の
-sha も入れる（採点器か課題を直したら流し直す）。
+sha も入れる（採点器か課題を直したら流し直す）。会話と採点を左右する条件（課題の `clarifications`・`ask_terms`、
+承認の方針の `[mode_b] approve_tools` と副作用のあるツールの組、版のサーバーの 1 発話の予算、stub の配管を流すか、
+採点の後の hook）も入れる（どれかを変えて流し直したら、前の条件の結果を返さない・BUG-249）。
 
 予定の週（BUG-247）: モデルが見る「今日」は測った日になる（製品の `today_note` は run の作成時刻から作る）。測る日
 （日本時間）が、課題の `scheduled_at` の週とその先週（`grade.dates.scheduled_window`）に入る日は、その課題を流さずに
@@ -65,7 +67,13 @@ from zoneinfo import ZoneInfo
 import httpx
 
 from abeval import fixtures
-from abeval.approvals import ApprovalLog, ApprovalPolicy, handle_request, unapproved_side_effects
+from abeval.approvals import (
+    SIDE_EFFECT_TOOLS,
+    ApprovalLog,
+    ApprovalPolicy,
+    handle_request,
+    unapproved_side_effects,
+)
 from abeval.budget import trial_spend
 from abeval.cache import TrialCache, trial_key
 from abeval.config import Config, canonical_json, sha256_hex
@@ -145,6 +153,8 @@ class ModeBContext:
     prompt_fn: Callable[[Task, TrialSpec, FixtureRecord], str] | None = None
     # 版のサーバーの確かめ直し（違えば理由・`ServerIdentity.recheck`・stub のスタックでは None）。
     preflight: Callable[[], str | None] | None = None
+    # 版のサーバーの 1 発話の予算（マイクロ USD・`run --budget-micros`。版の環境と同じことは run の前に確かめる）。
+    budget_micros: int | None = None
 
 
 @dataclass
@@ -493,6 +503,19 @@ def key_prompt(task: Task, ts: TrialSpec) -> str:
     return prompt_text(task, ts.phrasing, placeholder_ids(task), with_reference=True)
 
 
+def key_conditions(ctx: ModeBContext, task: Task) -> dict:
+    """会話と採点を左右する条件のうち、試行の条件（effort・手数）と版の sha のほかのもの（BUG-249）。"""
+    return {
+        "clarifications": task.clarifications,
+        "ask_terms": list(ask_terms(task)),
+        "approve_tools": sorted(ctx.policy.approve_tools),
+        "side_effect_tools": sorted(SIDE_EFFECT_TOOLS),
+        "budget_micros": ctx.budget_micros,
+        "stub_plumbing": ctx.stub_plumbing,
+        "hooks": [getattr(h, "__qualname__", type(h).__name__) for h in ctx.hooks],
+    }
+
+
 def key_for(ctx: ModeBContext, task: Task, ts: TrialSpec, prompt: str | None = None) -> str:
     cond = {**ts.condition(), "stub": ctx.stub}
     return trial_key(
@@ -506,7 +529,11 @@ def key_for(ctx: ModeBContext, task: Task, ts: TrialSpec, prompt: str | None = N
         config_sha=ctx.config_sha,
         capture_sha=ctx.capture_sha,
         binary_sha=ctx.binary_sha,
-        extra={"grader": ctx.grader_sha, "task_expect": task_expect_sha(task)},
+        extra={
+            "grader": ctx.grader_sha,
+            "task_expect": task_expect_sha(task),
+            "conditions": key_conditions(ctx, task),
+        },
     )
 
 

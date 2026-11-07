@@ -17,6 +17,8 @@
    S2s・S2d が False と決まったときだけ真（stub の配管を流さないと None）。
 6. 生成はキャッシュ（`data/cache/trials/<key>.json`）に置き、同じ条件なら生成しない（台帳の行が増えない）。
    キーの依頼文は fixture の id を印にした文（実験のたびに id が変わってもキーが同じ）。記録の IR も印に戻す。
+   キーには送る model も入れる。生成の結果の分け方（聞き返しの判定は課題の `ask_terms` による）は採点の側なので、
+   キャッシュから読んだときも、キャッシュの応答から今の課題で分け直す（BUG-249 の見直し）。
 7. V1 の採点し直し（`generate=False`）: 生成はせず、キャッシュの生成をその版で採点し直す（取り込みの sha が
    同じことを呼び出し側が確かめる）。
 
@@ -150,7 +152,21 @@ def key_for(ctx: ModeAContext, task: Task, ts: TrialSpec) -> str:
         config_sha=ctx.config_sha,
         capture_sha=ctx.capture.sha,
         binary_sha=ctx.binary_sha,
+        extra={"model": MODEL},
     )
+
+
+def _reclassify(gen: dict, response: object, task: Task) -> dict:
+    """キャッシュの生成の分け方を、キャッシュの応答と今の課題（`ask_terms`）でやり直す。"""
+    if not isinstance(response, list):
+        return gen
+    res = MessageResult(
+        status=200,
+        content=[b for b in response if isinstance(b, dict)],
+        stop_reason=gen.get("stop_reason"),
+        complete=True,
+    )
+    return {**gen, "status": classify(res, ask_terms(task))}
 
 
 def generate(ctx: ModeAContext, task: Task, rec: FixtureRecord, ts: TrialSpec) -> dict:
@@ -158,7 +174,8 @@ def generate(ctx: ModeAContext, task: Task, rec: FixtureRecord, ts: TrialSpec) -
     key = key_for(ctx, task, ts)
     cached = ctx.cache.get(key)
     if cached and isinstance(cached.get("gen"), dict):
-        return {"key": key, "gen": cached["gen"], "from_cache": True}
+        gen = _reclassify(cached["gen"], cached.get("response"), task)
+        return {"key": key, "gen": gen, "from_cache": True}
     if not ctx.generate or ctx.anthropic is None:
         return {
             "key": key,

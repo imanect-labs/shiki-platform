@@ -305,9 +305,12 @@ uv run python -m abeval budget --reconcile [--yes]                         # 中
 - 生成と会話の全文（応答のブロック・メッセージ一覧・承認の入力）はキャッシュ（`data/cache/trials/`）にだけ置く。
   結果には保存された IR（fixture の id は印に戻したもの）と採点だけを入れる。
 - キャッシュのキーは、依頼文（参考情報の id は印のまま）・fixture・試行の番号・条件・llm-eval.toml の sha・
-  取り込みの sha・バイナリの sha。Mode B は採点した結果を置くので、採点器の版（GRADER_VERSION と ir_lint の
-  sha）と課題の期待（expect・roles・run_cases）の sha も入れる（採点器か課題を直したら流し直す。Mode A は生成
-  だけを置き、採点は毎回やり直す）。同じ条件で流し直すと生成も会話もしない（台帳に費用の行が増えない。取り込みの
+  取り込みの sha・バイナリの sha。Mode A は送る model も入れる。Mode B は採点した結果を置くので、採点器の版
+  （GRADER_VERSION と ir_lint の sha）と課題の期待（expect・roles・run_cases）の sha、会話と採点を左右する条件
+  （課題の `clarifications`・`ask_terms`、`[mode_b] approve_tools` と副作用のあるツールの組、`--budget-micros`
+  〔版のサーバーの 1 発話の予算〕、`--no-stub-plumbing`、採点の後の hook）も入れる（どれかを直したら流し直す・
+  BUG-249。Mode A は生成だけを置き、採点は毎回やり直す。生成の結果の分け方〔聞き返し〕も、キャッシュの応答から
+  今の課題の `ask_terms` で分け直す）。同じ条件で流し直すと生成も会話もしない（台帳に費用の行が増えない。取り込みの
   $0 の行だけが足される）。
 - 費用の割り当て: Mode A は会話 ID のヘッダーに試行の id を載せる。Mode B は会話 ID（thread_id）を試行に、
   run_case の llm.invoke（会話 ID が無い）は active を試行にする。突き合わせは `/org-admin/ai/usage` の前後の差
