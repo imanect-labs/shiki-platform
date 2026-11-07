@@ -18,7 +18,8 @@
      `stream_thread`・`store/stream.rs`）。`END_REPLAYS` 回読み直しても読めなければ終わりは「確かめられない」とし、
      最後の user の発話の後に assistant の返事（中身のある発話）が無ければ失敗の印として、採点もキャッシュもせず
      errors（kind: no_reply）に入れる。返事があれば採点し、`chat_end_unconfirmed` に数を残す。終わった後に読んだ
-     承認の要求には答えない（記録だけ残す）。
+     承認の要求には答えない（記録だけ残す）。返事があって採点した試行も、終わりを確かめられなかったものはキャッシュに
+     置かない（`not_cached`・次に流すときに測り直す）。
 5. run が終わって、まだ保存していない（workflow_ref も成功した emit_workflow も無い）うえで最後の文章が
    聞き返しなら、課題の `clarifications` を 1 回だけ送る（S8 の asked は「保存の前に聞き返した」。保存の後の
    「有効化しますか？」は聞き返しに数えない・Mode A が emit を asked より先に判定するのと同じ順）。
@@ -804,6 +805,11 @@ def run_trial(ctx: ModeBContext, task: Task, ts: TrialSpec) -> tuple[dict | None
         return None, errors
     if trial is not None:
         trial["cost"] = _costs(ctx, ts, usage0, day0)
+    if trial is not None and trial.get("chat_end_unconfirmed"):
+        # 終わりを確かめられなかった試行は採点するが、キャッシュには置かない（製品の中で失敗した run をモデルの
+        # 失敗として残し続けないよう、次に流すときに測り直す・BUG-248）。
+        trial["not_cached"] = "chat_end_unconfirmed"
+    elif trial is not None:
         ctx.cache.put(
             key,
             {

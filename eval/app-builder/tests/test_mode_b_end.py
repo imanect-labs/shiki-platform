@@ -70,14 +70,29 @@ def test_an_unconfirmed_end_without_a_reply_is_not_scored():
     assert fake.threads == {}  # 片付けた
 
 
-def test_an_unconfirmed_end_with_a_reply_is_scored_and_marked():
+def test_an_unconfirmed_end_with_a_reply_is_scored_and_marked_but_not_cached():
+    """返事があれば採点するが、終わりを確かめられなかった試行はキャッシュに置かない（製品の中で失敗した run を
+    モデルの失敗として残し続けず、次に流すときに測り直す）。"""
     fake = ChatFake(
         scripts=[RunScript(stream_empty=True, messages=[text_message("作れませんでした。")])]
     )
     ctx, trial, errors = _run(fake)
     assert errors == [] and trial is not None
-    assert trial["chat_end_unconfirmed"] == 1
+    assert trial["chat_end_unconfirmed"] == 1 and trial["not_cached"] == "chat_end_unconfirmed"
+    assert _not_cached(ctx)
+    # 次に流すと測り直す（キャッシュから返さない）。
+    fake2 = ChatFake(scripts=[RunScript(messages=[text_message("作れませんでした。")])])
+    trial2, errors2 = mode_b.run_trial(ctx_with(fake2, ctx), TASK, spec("basic-summary-file"))
+    assert errors2 == [] and not trial2.get("from_cache") and len(fake2.posted) == 1
+    assert trial2["chat_end_unconfirmed"] == 0 and "not_cached" not in trial2
     assert not _not_cached(ctx)
+
+
+def ctx_with(fake: ChatFake, like) -> mode_b.ModeBContext:
+    """同じキャッシュを使う別の会話の文脈。"""
+    ctx = make_ctx(fake)
+    ctx.cache = like.cache
+    return ctx
 
 
 def test_a_confirmed_end_needs_no_replay():
