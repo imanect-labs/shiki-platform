@@ -17,9 +17,9 @@ const ENV_PROXY_VARS: [&str; 6] = [
 
 /// 外への送信の中継を組む（パスワードのファイルを読む）。起動で 1 回だけ組み、組めなければ起動を止める。
 ///
-/// ワークフローの外部への送信・web.fetch・ミニアプリの関数の外部 HTTP が、この 1 つを共有する。環境のプロキシの変数は
-/// これらの送信には使わない（黙って拾わない・接続の固定を迂回させない）。変数があって中継を書いていなければ、
-/// 外へ届かない理由が分かるよう警告を残す（値は出さない）。
+/// ワークフローの外部への送信・web.fetch・回答の画像の取得・ミニアプリの関数の外部 HTTP が、この 1 つを共有する。
+/// 環境のプロキシの変数はこれらの送信には使わない（黙って拾わない・接続の固定を迂回させない）。変数があって中継を
+/// 書いていなければ、外へ届かない理由が分かるよう警告を残す（値は出さない）。
 pub(crate) fn wire_egress_proxy(config: &AppConfig) -> anyhow::Result<Option<EgressProxy>> {
     let proxy = config
         .egress
@@ -28,8 +28,8 @@ pub(crate) fn wire_egress_proxy(config: &AppConfig) -> anyhow::Result<Option<Egr
     if let Some(p) = &proxy {
         tracing::info!(
             proxy = %p.endpoint(),
-            "ワークフローの外部への送信・web.fetch・ミニアプリの関数の外部 HTTP は、設定した中継を通します\
-             （社内の送り先は直接つなぎます）"
+            "ワークフローの外部への送信・web.fetch・回答の画像の取得・ミニアプリの関数の外部 HTTP は、設定した中継を\
+             通します（社内の送り先は直接つなぎます）"
         );
         return Ok(proxy);
     }
@@ -40,8 +40,8 @@ pub(crate) fn wire_egress_proxy(config: &AppConfig) -> anyhow::Result<Option<Egr
     if !set.is_empty() {
         tracing::warn!(
             vars = ?set,
-            "環境のプロキシの変数がありますが、ワークフローの外部への送信・web.fetch・ミニアプリの関数の外部 \
-             HTTP には使いません。中継を通すなら egress.proxy_url に書いてください"
+            "環境のプロキシの変数がありますが、ワークフローの外部への送信・web.fetch・回答の画像の取得・ミニアプリの\
+             関数の外部 HTTP には使いません。中継を通すなら egress.proxy_url に書いてください"
         );
     }
     Ok(None)

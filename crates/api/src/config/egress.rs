@@ -1,8 +1,8 @@
 //! 外への送信の中継の設定（`SHIKI__EGRESS__*`・GAP-72）。
 //!
 //! 外へ出るのに中継（フォワードプロキシ）が要る環境で、ワークフローの外部への送信（「外部 API 呼び出し」・
-//! `Shiki.http.request`）・web.fetch・ミニアプリの関数の外部 HTTP を、ここに書いた中継に通す。宛先の確かめは弱めない
-//! （名前は Shiki が 1 回だけ引いて確かめ、中継には確かめた IP アドレスへの CONNECT を頼む・
+//! `Shiki.http.request`）・web.fetch・回答の画像の取得・ミニアプリの関数の外部 HTTP を、ここに書いた中継に通す。
+//! 宛先の確かめは弱めない（名前は Shiki が 1 回だけ引いて確かめ、中継には確かめた IP アドレスへの CONNECT を頼む・
 //! `sandbox_client::egress_proxy`）。環境の `HTTP_PROXY`・`HTTPS_PROXY` は、これらの送信には使わない（黙って拾わない）。
 //!
 //! 中継の認証のパスワードは、設定や環境変数に書かずにファイルで渡す（`proxy_password_file`）。中継の URL に利用者名や

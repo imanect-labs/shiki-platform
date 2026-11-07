@@ -502,6 +502,7 @@ fn state_with_store(config: AppConfig, store: Arc<dyn api::session::SessionStore
         llm: None,
         rag_admin,
         office: None,
+        egress_proxy: None,
         docx_composer: std::sync::Arc::new(office::DocxComposer::new(
             reqwest::Client::new(),
             "http://127.0.0.1:1",

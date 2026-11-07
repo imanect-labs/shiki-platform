@@ -1,5 +1,7 @@
 //! 回答の画像の代理取得（#1044）。宛先の安全確認は `web_fetch` と同じ関門（`public_fetch`）を通る。
 //!
+//! - 外へ出るのに中継が要る環境では、運用者が設定した中継（`egress.proxy_url`・GAP-72）を通す。client の組み立て
+//!   （検証済みの IP へのトンネルか、検証済みアドレスへの固定）は `web_fetch` と同じ `public_fetch::connect` を使う。
 //! - リダイレクトは [`MAX_REDIRECTS`] 回まで追い、**1 回ごとに URL 検証と解決後 IP の検証をやり直す**
 //!   （画像 CDN は 3xx を返すことが多いが、検証を迂回する誘導にもなる・PIT-36）。
 //! - 時間（[`FETCH_TIMEOUT`]）と大きさ（[`MAX_IMAGE_BYTES`]）に上限を掛ける。
@@ -13,7 +15,8 @@
 
 use std::time::Duration;
 
-use agent_core::tools::public_fetch::{self, AddrGuard, PinError};
+use agent_core::tools::public_fetch::{self, AddrGuard, ConnectError};
+use sandbox_client::egress_proxy::EgressProxy;
 use sandbox_client::net_guard::HostResolver;
 
 /// リダイレクトを追う上限。
@@ -60,21 +63,28 @@ impl ImageFetchError {
     }
 }
 
-/// `url` の画像を取得する。`guard` は解決後 IP の検証（本番は [`public_fetch::public_only`]）。
+/// `url` の画像を取得する。`guard` は解決後 IP の検証（本番は [`public_fetch::public_only`]）。`proxy` は運用者が
+/// 設定した外への送信の中継（無ければ検証済みのアドレスへ直接つなぐ）。
 pub(crate) async fn fetch_image(
     resolver: &dyn HostResolver,
     url: &str,
     guard: AddrGuard,
+    proxy: Option<&EgressProxy>,
 ) -> Result<FetchedImage, ImageFetchError> {
     let mut current = url.to_owned();
     for _ in 0..=MAX_REDIRECTS {
         let target = public_fetch::validate_url(&current).map_err(ImageFetchError::Rejected)?;
-        let client =
-            public_fetch::pinned_client(resolver, &target, guard, FETCH_TIMEOUT, USER_AGENT)
+        let addrs = public_fetch::resolve_verified(resolver, &target, guard)
+            .await
+            .map_err(|e| ImageFetchError::Rejected(format!("{e:?}")))?;
+        // トンネル（中継を通すとき）は本文を読み切るまで持つ。リダイレクトの先は、検証し直したアドレスで作り直す。
+        let (client, _tunnel) =
+            public_fetch::connect(&target, &addrs, proxy, FETCH_TIMEOUT, USER_AGENT)
                 .await
                 .map_err(|e| match e {
-                    PinError::Client(e) => ImageFetchError::Upstream(e),
-                    other => ImageFetchError::Rejected(format!("{other:?}")),
+                    // 中継の場所と資格情報は文言に含まれない（ログにだけ残る）。
+                    ConnectError::Proxy(e) => ImageFetchError::Upstream(e.message().to_owned()),
+                    ConnectError::Client(e) => ImageFetchError::Upstream(e),
                 })?;
         let response = client
             .get(target.url.clone())
@@ -242,7 +252,7 @@ mod tests {
         // 宣言が別の画像形式でも、許可した形式どうしなら通し、返す型は中身で決める。
         let (addr, _) = stub(vec![http("200 OK", "Content-Type: image/jpeg\r\n", PNG)]).await;
         let url = format!("http://img.example.com:{}/a.png", addr.port());
-        let img = fetch_image(&ToStub(addr), &url, allow_loopback)
+        let img = fetch_image(&ToStub(addr), &url, allow_loopback, None)
             .await
             .unwrap();
         assert_eq!(img.mime, "image/png", "宣言ではなく中身で決める");
@@ -258,7 +268,7 @@ mod tests {
             )])
             .await;
             let url = format!("http://img.example.com:{}/a.png", addr.port());
-            let err = fetch_image(&ToStub(addr), &url, allow_loopback)
+            let err = fetch_image(&ToStub(addr), &url, allow_loopback, None)
                 .await
                 .unwrap_err();
             assert!(matches!(err, ImageFetchError::NotImage), "{ct}: {err:?}");
@@ -289,7 +299,7 @@ mod tests {
         )])
         .await;
         let url = format!("http://img.example.com:{}/a.svg", addr.port());
-        let err = fetch_image(&ToStub(addr), &url, allow_loopback)
+        let err = fetch_image(&ToStub(addr), &url, allow_loopback, None)
             .await
             .unwrap_err();
         assert!(matches!(err, ImageFetchError::NotImage), "{err:?}");
@@ -304,7 +314,7 @@ mod tests {
         ])
         .await;
         let url = format!("http://img.example.com:{}/a.png", addr.port());
-        let img = fetch_image(&ToStub(addr), &url, allow_loopback)
+        let img = fetch_image(&ToStub(addr), &url, allow_loopback, None)
             .await
             .unwrap();
         assert_eq!(img.mime, "image/png");
@@ -320,7 +330,7 @@ mod tests {
             .collect();
         let (addr3, hits3) = stub(loops).await;
         let url = format!("http://img.example.com:{}/a.png", addr3.port());
-        let err = fetch_image(&ToStub(addr3), &url, allow_loopback)
+        let err = fetch_image(&ToStub(addr3), &url, allow_loopback, None)
             .await
             .unwrap_err();
         assert!(matches!(err, ImageFetchError::TooManyRedirects), "{err:?}");
@@ -337,7 +347,7 @@ mod tests {
         )])
         .await;
         let url = format!("http://img.example.com:{}/a.png", addr.port());
-        let err = fetch_image(&ToStub(addr), &url, allow_loopback)
+        let err = fetch_image(&ToStub(addr), &url, allow_loopback, None)
             .await
             .unwrap_err();
         assert!(
@@ -345,7 +355,7 @@ mod tests {
             "IP 直指定のリダイレクト先は拒否: {err:?}"
         );
 
-        let err = fetch_image(&ToStub(addr), &url, public_fetch::public_only)
+        let err = fetch_image(&ToStub(addr), &url, public_fetch::public_only, None)
             .await
             .unwrap_err();
         assert!(matches!(err, ImageFetchError::Rejected(_)), "{err:?}");
@@ -357,10 +367,159 @@ mod tests {
         body.resize(MAX_IMAGE_BYTES, 0);
         let (addr, _) = stub(vec![http("200 OK", "", &body)]).await;
         let url = format!("http://img.example.com:{}/exact.png", addr.port());
-        let img = fetch_image(&ToStub(addr), &url, allow_loopback)
+        let img = fetch_image(&ToStub(addr), &url, allow_loopback, None)
             .await
             .unwrap();
         assert_eq!(img.bytes.len(), MAX_IMAGE_BYTES);
+    }
+
+    /// 偽の中継（受けた CONNECT の要求の 1 行目を記録し、頼まれたアドレスではなく `origin` へつなぐ＝外の世界の代わり）。
+    async fn fake_proxy(origin: SocketAddr) -> (SocketAddr, Arc<std::sync::Mutex<Vec<String>>>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let seen: Arc<std::sync::Mutex<Vec<String>>> = Arc::default();
+        let log = Arc::clone(&seen);
+        tokio::spawn(async move {
+            while let Ok((mut sock, _)) = listener.accept().await {
+                let mut head = Vec::new();
+                let mut byte = [0u8; 1];
+                while !head.ends_with(b"\r\n\r\n") && sock.read(&mut byte).await.unwrap_or(0) == 1 {
+                    head.push(byte[0]);
+                }
+                let head = String::from_utf8_lossy(&head).into_owned();
+                log.lock()
+                    .unwrap()
+                    .push(head.lines().next().unwrap_or_default().to_string());
+                let mut upstream = tokio::net::TcpStream::connect(origin).await.unwrap();
+                sock.write_all(b"HTTP/1.1 200 Connection established\r\n\r\n")
+                    .await
+                    .unwrap();
+                let _ = tokio::io::copy_bidirectional(&mut sock, &mut upstream).await;
+            }
+        });
+        (addr, seen)
+    }
+
+    /// 公開の IP（本番の検証 `public_only` を通る）に解決されるとする。
+    const PUBLIC: &str = "93.184.216.34:80";
+
+    /// 中継を設定していれば、検証済みの公開 IP への CONNECT を中継に頼んで取得する（名前は渡さない・GAP-72）。
+    #[tokio::test]
+    async fn fetches_through_the_proxy_with_the_checked_address() {
+        let (origin, hits) = stub(vec![http("200 OK", "Content-Type: image/png\r\n", PNG)]).await;
+        let (proxy, connects) = fake_proxy(origin).await;
+        let proxy = EgressProxy::new(&format!("http://{proxy}"), None).unwrap();
+        let resolver = ToStub(PUBLIC.parse().unwrap());
+        let img = fetch_image(
+            &resolver,
+            "http://img.example.com/a.png",
+            public_fetch::public_only,
+            Some(&proxy),
+        )
+        .await
+        .unwrap();
+        assert_eq!(img.mime, "image/png");
+        assert_eq!(
+            *connects.lock().unwrap(),
+            [format!("CONNECT {PUBLIC} HTTP/1.1")]
+        );
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
+    }
+
+    /// 中継を通しても、リダイレクトの先は 1 回ごとに検証し直し、検証済みの IP へのトンネルを作り直す。IP 直指定の
+    /// リダイレクト先は中継へ頼まずに断る。
+    #[tokio::test]
+    async fn redirects_through_the_proxy_are_checked_again() {
+        let (origin, hits) = stub(vec![
+            http("302 Found", "Location: /b.png\r\n", b""),
+            http("200 OK", "", PNG),
+        ])
+        .await;
+        let (proxy, connects) = fake_proxy(origin).await;
+        let proxy = EgressProxy::new(&format!("http://{proxy}"), None).unwrap();
+        let resolver = ToStub(PUBLIC.parse().unwrap());
+        let img = fetch_image(
+            &resolver,
+            "http://img.example.com/a.png",
+            public_fetch::public_only,
+            Some(&proxy),
+        )
+        .await
+        .unwrap();
+        assert_eq!(img.mime, "image/png");
+        assert_eq!(hits.load(Ordering::SeqCst), 2);
+        assert_eq!(
+            *connects.lock().unwrap(),
+            [
+                format!("CONNECT {PUBLIC} HTTP/1.1"),
+                format!("CONNECT {PUBLIC} HTTP/1.1")
+            ],
+            "リダイレクトの先も検証済みの IP へのトンネルで取得し直す"
+        );
+
+        let (origin, _) = stub(vec![http(
+            "302 Found",
+            "Location: http://127.0.0.1/x.png\r\n",
+            b"",
+        )])
+        .await;
+        let (proxy, connects) = fake_proxy(origin).await;
+        let proxy = EgressProxy::new(&format!("http://{proxy}"), None).unwrap();
+        let err = fetch_image(
+            &resolver,
+            "http://img.example.com/a.png",
+            public_fetch::public_only,
+            Some(&proxy),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ImageFetchError::Rejected(_)), "{err:?}");
+        assert_eq!(
+            connects.lock().unwrap().len(),
+            1,
+            "拒否した先は中継へ頼まない"
+        );
+    }
+
+    /// 内部の IP に解決される名前は、中継を設定していても中継へ頼まずに断る（中継の向こうで内部へ届かせない）。
+    #[tokio::test]
+    async fn private_answers_are_refused_before_asking_the_proxy() {
+        let (origin, _) = stub(vec![http("200 OK", "", PNG)]).await;
+        let (proxy, connects) = fake_proxy(origin).await;
+        let proxy = EgressProxy::new(&format!("http://{proxy}"), None).unwrap();
+        let err = fetch_image(
+            &ToStub("10.0.0.5:80".parse().unwrap()),
+            "http://img.example.com/a.png",
+            public_fetch::public_only,
+            Some(&proxy),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, ImageFetchError::Rejected(_)), "{err:?}");
+        assert!(connects.lock().unwrap().is_empty());
+    }
+
+    /// 中継へつなげないときは取得先の失敗（502）として扱い、理由に中継の場所と資格情報を出さない。
+    #[tokio::test]
+    async fn an_unreachable_proxy_is_an_upstream_failure_without_details() {
+        let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = closed.local_addr().unwrap();
+        drop(closed);
+        let proxy = EgressProxy::new(&format!("http://{addr}"), Some(("shiki", "s3cret"))).unwrap();
+        let err = fetch_image(
+            &ToStub(PUBLIC.parse().unwrap()),
+            "http://img.example.com/a.png",
+            public_fetch::public_only,
+            Some(&proxy),
+        )
+        .await
+        .unwrap_err();
+        let port = addr.port().to_string();
+        assert!(
+            matches!(&err, ImageFetchError::Upstream(reason)
+                if !reason.contains(&port) && !reason.contains("s3cret")),
+            "{err:?}"
+        );
     }
 
     #[tokio::test]
@@ -371,7 +530,7 @@ mod tests {
         );
         let (addr, _) = stub(vec![head.into_bytes()]).await;
         let url = format!("http://img.example.com:{}/big.png", addr.port());
-        let err = fetch_image(&ToStub(addr), &url, allow_loopback)
+        let err = fetch_image(&ToStub(addr), &url, allow_loopback, None)
             .await
             .unwrap_err();
         assert!(matches!(err, ImageFetchError::TooLarge), "{err:?}");

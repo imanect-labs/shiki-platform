@@ -61,7 +61,8 @@ pub struct AppConfig {
     /// 組織の member と部署を Keycloak の所属グループと定期に照合して外す（D-136）。既定は有効・60 秒ごとに 500 人。
     #[serde(default)]
     pub membership_reconcile: crate::membership_reconcile::MembershipReconcileConfig,
-    /// 外への送信の中継（ワークフローの外部への送信・web.fetch・ミニアプリの関数・GAP-72）。既定は使わない。
+    /// 外への送信の中継（ワークフローの外部への送信・web.fetch・回答の画像の取得・ミニアプリの関数・GAP-72）。
+    /// 既定は使わない。
     #[serde(default)]
     pub egress: EgressConfig,
 }

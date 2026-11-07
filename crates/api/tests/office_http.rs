@@ -453,6 +453,7 @@ async fn build_state(with_office: bool) -> Option<(AppState, Arc<dyn SessionStor
         llm: None,
         rag_admin,
         office: office_runtime,
+        egress_proxy: None,
         docx_composer: Arc::new(office::DocxComposer::new(
             reqwest::Client::new(),
             "http://127.0.0.1:1",

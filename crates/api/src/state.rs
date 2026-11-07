@@ -113,6 +113,9 @@ pub struct AppState {
     /// Markdown → .docx 合成（POST /documents・#332）。ingestion-worker のみ必要で
     /// Collabora（office.enabled）に依存しないため常時配線する（markdown 省略時は worker も不要）。
     pub docx_composer: Arc<office::DocxComposer>,
+    /// 外への送信の中継（`egress.proxy_url`・GAP-72）。回答の画像の代理取得が通す（無ければ直接つなぐ）。
+    /// ワークフローの外部への送信・web.fetch・ミニアプリの関数と同じ 1 つを共有する。
+    pub egress_proxy: Option<sandbox_client::egress_proxy::EgressProxy>,
 }
 
 /// Office 統合の実行時依存（Task 11.5/11.6）。

@@ -412,6 +412,7 @@ async fn setup() -> Option<Env> {
         llm: None,
         rag_admin: Arc::new(rag::RagAdmin::new(pool.clone(), None, None)),
         office: None,
+        egress_proxy: None,
         docx_composer: std::sync::Arc::new(office::DocxComposer::new(
             reqwest::Client::new(),
             "http://127.0.0.1:1",

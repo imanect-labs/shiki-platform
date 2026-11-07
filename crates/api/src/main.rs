@@ -49,7 +49,7 @@ async fn run() -> anyhow::Result<()> {
     let _telemetry = telemetry::init(&config.telemetry).context("計装の初期化に失敗")?;
 
     tracing::info!(service = %config.telemetry.service_name, "shiki-server 起動中");
-    // 外への送信の中継（ワークフローの外部への送信・web.fetch・ミニアプリの関数が共有する・GAP-72）。
+    // 外への送信の中継（ワークフローの外部への送信・web.fetch・回答の画像の取得・ミニアプリの関数が共有する・GAP-72）。
     let egress_proxy = wiring_egress::wire_egress_proxy(&config)?;
     // script エンジン（ゲストの wasm のコンパイル・数秒〜十数秒）を先に別スレッドで始め、マイグレーション・
     // 配線と重ねる（ワークフローの実行とミニアプリの関数が共有する・起動の無音区間の短縮）。
@@ -398,6 +398,7 @@ async fn run() -> anyhow::Result<()> {
         rag_admin,
         office,
         docx_composer,
+        egress_proxy,
     };
 
     let listener = tokio::net::TcpListener::bind(&bind)

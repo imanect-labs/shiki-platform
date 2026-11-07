@@ -34,10 +34,10 @@ use std::time::Duration;
 
 use authz::AuthContext;
 use rag::DocumentParser;
-use sandbox_client::egress_proxy::{self, EgressProxy, ProxyTunnel};
+use sandbox_client::egress_proxy::{EgressProxy, ProxyTunnel};
 use sandbox_client::net_guard::{self, HostResolver, SystemResolver};
 
-use super::public_fetch::{self, read_capped, PinError};
+use super::public_fetch::{self, read_capped, ConnectError, PinError};
 
 use crate::tool::{Tool, ToolError, ToolOutcome};
 
@@ -163,31 +163,32 @@ impl WebFetchTool {
         target: &FetchTarget,
         addrs: &[SocketAddr],
     ) -> Result<Result<(reqwest::Client, Option<ProxyTunnel>), ToolOutcome>, ToolError> {
-        let tunnel = match &self.proxy {
-            Some(proxy) if egress_proxy::via_proxy(addrs) => match proxy.open(addrs).await {
-                Ok(tunnel) => Some(tunnel),
-                Err(e) => {
+        // 組み立て（中継のトンネル・アドレス固定・リダイレクト非追従・環境プロキシ非経由）は回答の画像の代理取得と
+        // 共有する（public_fetch::connect・#1044）。
+        match public_fetch::connect(
+            target,
+            addrs,
+            self.proxy.as_ref(),
+            FETCH_TIMEOUT,
+            USER_AGENT,
+        )
+        .await
+        {
+            Ok(connected) => Ok(Ok(connected)),
+            Err(ConnectError::Proxy(e)) => {
+                if let Some(proxy) = &self.proxy {
                     tracing::warn!(target: "web_fetch", proxy = %proxy.endpoint(), url = %target.url,
                         reason = ?e, "中継のトンネルを開けませんでした");
-                    return Ok(Err(ToolOutcome::error(format!(
-                        "取得に失敗しました: {}",
-                        e.message()
-                    ))));
                 }
-            },
-            _ => None,
-        };
-        // リダイレクト非追従・環境プロキシ非経由・期限は public_fetch の既定に揃える（#1044）。
-        let builder = public_fetch::client_builder(FETCH_TIMEOUT, USER_AGENT);
-        let builder = match &tunnel {
-            // トンネルの口にだけ接続する（中継には検証済みの IP への CONNECT を頼んである）。
-            Some(tunnel) => builder.unix_socket(tunnel.socket_path()),
-            None => builder.resolve_to_addrs(&target.host, addrs), // ← DNS を引き直させない
-        };
-        let client = builder
-            .build()
-            .map_err(|e| pin_error(PinError::Client(e.to_string())))?;
-        Ok(Ok((client, tunnel)))
+                Ok(Err(ToolOutcome::error(format!(
+                    "取得に失敗しました: {}",
+                    e.message()
+                ))))
+            }
+            Err(ConnectError::Client(e)) => {
+                Err(ToolError::Unavailable(format!("http client: {e}")))
+            }
+        }
     }
 
     /// 解決結果を検証する（**接続先を確定させる唯一の関門**）。
@@ -216,7 +217,6 @@ fn pin_error(e: PinError) -> ToolError {
         }
         PinError::Resolve(e) => ToolError::Invalid(format!("URL が不正です: {e}")),
         PinError::Rejected(e) => ToolError::Invalid(format!("取得先が拒否されました: {e}")),
-        PinError::Client(e) => ToolError::Unavailable(format!("http client: {e}")),
     }
 }
 

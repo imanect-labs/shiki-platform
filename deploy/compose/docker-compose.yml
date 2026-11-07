@@ -652,8 +652,8 @@ services:
       # 例: '["docs.example.com", "*.example.org"]'。未設定・空なら web ページを読む道具は提示しない
       # （SHIKI__WORKFLOW__HTTP_ALLOWLIST には戻さない・D-59。ノードの設定はこの部分集合に限る）。
       # SHIKI__WORKFLOW__AGENT__WEB_ALLOWLIST: '["docs.example.com"]'
-      # 外へ出るのに中継（フォワードプロキシ）が要る環境で、ワークフローの外部への送信・web.fetch・ミニアプリの関数の
-      # 外部 HTTP を通す中継（GAP-72）。環境の HTTP_PROXY / HTTPS_PROXY は、これらの送信には使わない。http:// の
+      # 外へ出るのに中継（フォワードプロキシ）が要る環境で、ワークフローの外部への送信・web.fetch・回答の画像の取得・
+      # ミニアプリの関数の外部 HTTP を通す中継（GAP-72）。環境の HTTP_PROXY / HTTPS_PROXY は、これらの送信には使わない。http:// の
       # ホストとポートだけを書き、認証のパスワードはファイルで渡す（URL に利用者名やパスワードを書くと起動しない）。
       # SHIKI__EGRESS__PROXY_URL: http://proxy.corp.example:8080
       # SHIKI__EGRESS__PROXY_USERNAME: shiki

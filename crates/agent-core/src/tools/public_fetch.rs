@@ -4,17 +4,18 @@
 //!
 //! - [`validate_url`] — アプリ層の一次防壁。http/https 以外・userinfo 付き・IP リテラル・
 //!   単一ラベル名・localhost/.local/.internal 等を拒否する。
-//! - [`pinned_client`] — 名前解決 → 解決後 IP の検証（[`net_guard::ensure_all_public`]）→
-//!   **その検証済みアドレスへ接続を固定した** client を作る。リダイレクトは追従しない
-//!   （PIT-36。追従したい呼び出し側は Location を [`validate_url`] から通し直す）。
-//!   環境プロキシは経由しない（アドレス固定を迂回させない）。資格情報は載せない。
-//! - [`resolve_verified`] と [`client_builder`] — `pinned_client` を組む 2 つの部品。運用者が設定した
-//!   中継（`egress.proxy_url`・GAP-72）を通す `web_fetch` は、検証済みのアドレスを受け取って、
-//!   その IP へのトンネルか固定のどちらかで client を組む（検証と既定の設定はここを共有する）。
+//! - [`resolve_verified`] — 名前解決 → 解決後 IP の検証（[`net_guard::ensure_all_public`]）。
+//!   **接続先を確定させる唯一の関門**。
+//! - [`connect`] — その検証済みアドレスにだけつなぐ client を作る。運用者が中継（`egress.proxy_url`・
+//!   GAP-72）を設定していれば、検証済みの IP へのトンネルを通し、無ければ検証済みアドレスへ接続を固定する。
+//!   リダイレクトは追従しない（PIT-36。追従したい呼び出し側は Location を [`validate_url`] から通し直す）。
+//!   環境プロキシは経由しない（アドレス固定を迂回させない）。資格情報は載せない。`web_fetch` と回答の画像の
+//!   代理取得が、この組み立てを共有する。
 
 use std::net::SocketAddr;
 use std::time::Duration;
 
+use sandbox_client::egress_proxy::{self, EgressProxy, ProxyError, ProxyTunnel};
 use sandbox_client::net_guard::{self, HostResolver};
 use url::{Host, Url};
 
@@ -73,8 +74,8 @@ pub fn validate_url(input: &str) -> Result<FetchTarget, String> {
     Ok(FetchTarget { url, host, port })
 }
 
-/// [`pinned_client`] の失敗。呼び出し側が自分の文言へ写す。
-#[derive(Debug)]
+/// [`resolve_verified`] の失敗（宛先を確定できない）。呼び出し側が自分の文言へ写す。
+#[derive(Debug, Clone, Copy)]
 pub enum PinError {
     /// 名前解決が期限内に終わらなかった。
     ResolveTimeout,
@@ -82,15 +83,13 @@ pub enum PinError {
     Resolve(&'static str),
     /// 解決先に公開でないアドレスが含まれた（SSRF の拒否）。
     Rejected(&'static str),
-    /// client を作れなかった。
-    Client(String),
 }
 
 /// 名前を解決し、解決後 IP を検証する（**接続先を確定させる唯一の関門**）。
 ///
 /// `guard` は解決結果の検証。本番は [`net_guard::ensure_all_public`] を渡す（[`public_only`]）。
 /// テストだけがループバックのスタブへ繋ぐために緩める。返したアドレス以外へは繋がない
-/// （呼び出し側は [`client_builder`] にこのアドレスを固定するか、このアドレスへのトンネルを渡す）。
+/// （呼び出し側は [`connect`] にこのアドレスを渡す）。
 ///
 /// # Errors
 /// 解決の失敗・期限切れ・公開でないアドレス。
@@ -119,22 +118,48 @@ pub fn client_builder(timeout: Duration, user_agent: &str) -> reqwest::ClientBui
         .user_agent(user_agent)
 }
 
-/// 解決後 IP を検証し、検証済みアドレスへ固定した client を作る（[`resolve_verified`] ＋ 固定）。
+/// [`connect`] の失敗。
+#[derive(Debug)]
+pub enum ConnectError {
+    /// 中継（`egress.proxy_url`）のトンネルを開けなかった。[`ProxyError::message`] は中継の場所と資格情報を含まない。
+    Proxy(ProxyError),
+    /// client を作れなかった。
+    Client(String),
+}
+
+/// 検証済みのアドレス（[`resolve_verified`] の結果）にだけつなぐ client を作る。
+///
+/// 運用者が中継（`egress.proxy_url`・GAP-72）を設定していて、アドレスがすべて公開の IP なら
+/// （[`egress_proxy::via_proxy`]）、そのアドレスへのトンネルを開き、client はトンネルの口にだけつなぐ（中継には
+/// 検証済みの IP への CONNECT を頼み、名前を渡さない。TLS はトンネルの中で URL の名前で結ぶ）。それ以外は、検証済みの
+/// アドレスへ接続を固定する（DNS を引き直させない）。トンネルは取得を終えるまで持つ（落とすと閉じる・最初の 1 本の
+/// 接続だけを受けるので、リダイレクトを追うときは宛先ごとに作り直す）。
 ///
 /// # Errors
-/// 解決の失敗・期限切れ・公開でないアドレス・client 構築の失敗。
-pub async fn pinned_client(
-    resolver: &dyn HostResolver,
+/// 中継のトンネルを開けない・client 構築の失敗。
+pub async fn connect(
     target: &FetchTarget,
-    guard: impl FnOnce(Vec<SocketAddr>) -> Result<Vec<SocketAddr>, &'static str>,
+    addrs: &[SocketAddr],
+    proxy: Option<&EgressProxy>,
     timeout: Duration,
     user_agent: &str,
-) -> Result<reqwest::Client, PinError> {
-    let addrs = resolve_verified(resolver, target, guard).await?;
-    client_builder(timeout, user_agent)
-        .resolve_to_addrs(&target.host, &addrs) // ← DNS を引き直させない
+) -> Result<(reqwest::Client, Option<ProxyTunnel>), ConnectError> {
+    let tunnel = match proxy {
+        Some(proxy) if egress_proxy::via_proxy(addrs) => {
+            Some(proxy.open(addrs).await.map_err(ConnectError::Proxy)?)
+        }
+        _ => None,
+    };
+    let builder = client_builder(timeout, user_agent);
+    let builder = match &tunnel {
+        // トンネルの口にだけ接続する（中継には検証済みの IP への CONNECT を頼んである）。
+        Some(tunnel) => builder.unix_socket(tunnel.socket_path()),
+        None => builder.resolve_to_addrs(&target.host, addrs), // ← DNS を引き直させない
+    };
+    let client = builder
         .build()
-        .map_err(|e| PinError::Client(e.to_string()))
+        .map_err(|e| ConnectError::Client(e.to_string()))?;
+    Ok((client, tunnel))
 }
 
 /// 解決後 IP の検証関数の型（本番は [`public_only`]・テストだけがループバックを許す）。
@@ -207,12 +232,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn pinned_client_rejects_private_resolution() {
+    async fn resolve_verified_rejects_private_resolution() {
         let target = validate_url("https://rebind.example.com/").unwrap();
         let resolver = Fixed(vec!["10.0.0.5:443".parse().unwrap()]);
-        let err = pinned_client(&resolver, &target, public_only, CONNECT_TIMEOUT, "t")
+        let err = resolve_verified(&resolver, &target, public_only)
             .await
             .unwrap_err();
         assert!(matches!(err, PinError::Rejected(_)), "{err:?}");
+    }
+
+    /// 中継を書いていても、内部のアドレス（管理者が許した社内の送り先）は中継を通さずに直接つなぐ。中継へは
+    /// つなぎに行かない（閉じたポートの中継でも失敗しない）。
+    #[tokio::test]
+    async fn internal_addresses_do_not_use_the_proxy() {
+        let closed = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let proxy_addr = closed.local_addr().unwrap();
+        drop(closed);
+        let proxy = EgressProxy::new(&format!("http://{proxy_addr}"), None).unwrap();
+        let target = validate_url("https://intra.example.com/").unwrap();
+        let addrs = ["10.0.0.5:443".parse().unwrap()];
+        let (_, tunnel) = connect(&target, &addrs, Some(&proxy), CONNECT_TIMEOUT, "t")
+            .await
+            .unwrap();
+        assert!(tunnel.is_none());
+        // 公開の IP なら中継へつなぎに行き、つなげなければ中継の失敗として返す。
+        let public = ["93.184.216.34:443".parse().unwrap()];
+        let err = connect(&target, &public, Some(&proxy), CONNECT_TIMEOUT, "t")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, ConnectError::Proxy(ProxyError::Unreachable)),
+            "{err:?}"
+        );
     }
 }
