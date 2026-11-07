@@ -188,7 +188,13 @@ function DraftCsvPageInner() {
             setNameTaken({ name: target.name, parentId: target.parentId, message: e.message, numbered: e.numbered });
             return;
           }
-          toast({ description: saveFailedMessage(e, target.parentId) });
+          // saveNewCsv は理由を添えた文言で投げる（保存先の権限・入力の誤りなど）。理由を出して、
+          // 直し方が分かるようにする。文言の無い失敗だけ、共通の文言（保存先の権限を言い分ける）にする。
+          toast({
+            variant: "destructive",
+            title: "保存できませんでした",
+            description: e instanceof Error && e.message ? e.message : saveFailedMessage(e, target.parentId),
+          });
         });
     },
     [activeName, cells, saving, threadId, router],
