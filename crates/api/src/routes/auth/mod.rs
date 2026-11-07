@@ -7,12 +7,14 @@
 pub mod action;
 pub mod backchannel_logout;
 pub mod callback;
+// テストだけのファイルは *_tests.rs にする（単一チョークポイントとテナント条件の字句ゲートが本番のコードと分けて見る）。
 #[cfg(test)]
+#[path = "gateway_fixture_tests.rs"]
 mod gateway_fixture;
 pub mod login;
 pub mod logout;
 #[cfg(test)]
-mod membership_reconcile_it;
+mod membership_reconcile_tests;
 pub(crate) mod org_member;
 #[cfg(test)]
 mod org_member_it;

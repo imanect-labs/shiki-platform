@@ -135,5 +135,5 @@ fn seal_shared(
 }
 
 #[cfg(test)]
-#[path = "artifact_list_it.rs"]
-mod artifact_list_it;
+#[path = "artifact_list_tests.rs"]
+mod artifact_list_tests;

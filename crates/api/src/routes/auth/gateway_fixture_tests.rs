@@ -1,5 +1,5 @@
 //! 実 Keycloak・実 OpenFGA・実 Postgres で、B1 のアプリを入れてゲートウェイを立てる試しの手助け
-//! （[`super::org_member_it`]・[`super::membership_reconcile_it`]）。
+//! （[`super::org_member_it`]・[`super::membership_reconcile_tests`]）。
 //!
 //! テナントは realm の試しの利用者に合わせて `a-corp`（multi）。OpenFGA のストアは試しごとに作り、作ったクライアント・
 //! 行・ストアは [`GatewayFixture::cleanup`] で消す。
@@ -123,8 +123,8 @@ impl GatewayFixture {
     pub(super) async fn new(label: &str) -> Option<(TestRealm, Self)> {
         let (Some(realm), Ok(db_url), Ok(fga_url)) = (
             TestRealm::from_env(),
-            std::env::var("STORAGE_TEST_DATABASE_URL"),
-            std::env::var("OPENFGA_TEST_URL"),
+            shiki_testenv::var("STORAGE_TEST_DATABASE_URL"),
+            shiki_testenv::var("OPENFGA_TEST_URL"),
         ) else {
             eprintln!(
                 "KEYCLOAK_TEST_URL・STORAGE_TEST_DATABASE_URL・OPENFGA_TEST_URL のどれかが無いためスキップ"

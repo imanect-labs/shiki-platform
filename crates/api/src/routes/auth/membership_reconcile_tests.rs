@@ -618,8 +618,8 @@ async fn mock_keycloak(token_ok: Arc<AtomicBool>) -> String {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn keycloak_failures_neither_revoke_nor_stall_the_sweep() {
     let (Ok(db_url), Ok(fga_url)) = (
-        std::env::var("STORAGE_TEST_DATABASE_URL"),
-        std::env::var("OPENFGA_TEST_URL"),
+        shiki_testenv::var("STORAGE_TEST_DATABASE_URL"),
+        shiki_testenv::var("OPENFGA_TEST_URL"),
     ) else {
         eprintln!("STORAGE_TEST_DATABASE_URL・OPENFGA_TEST_URL のどちらかが無いためスキップ");
         return;
