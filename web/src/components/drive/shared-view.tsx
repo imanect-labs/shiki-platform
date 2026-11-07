@@ -9,7 +9,7 @@ import { EmptyState } from "@/components/ui/empty-state";
 import { toast } from "@/components/ui/use-toast";
 import { useInfiniteList, useInfiniteSentinel } from "@/hooks/use-infinite-list";
 import { sharedWithMeUpTo, triggerDownload, type NodeResponse } from "@/lib/storage";
-import { formatBytes, formatDateTime } from "@/lib/format";
+import { formatBytes } from "@/lib/format";
 import { DateTime } from "@/components/ui/date-time";
 
 import { LoadingRow, NodeIcon, nodeKindLabel } from "./primitives";

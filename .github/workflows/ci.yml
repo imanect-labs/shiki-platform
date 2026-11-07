@@ -442,8 +442,9 @@ jobs:
       - name: pytest (fast)
         run: uv run pytest -m "not slow" -q
 
-  # 手順は eval-app-builder.yml にだけ置く（.claude/skills/pr/scripts/** だけの変更でも走らせるため、あちらは
-  # 自分の paths でも起きる・GAP-110）。ここは ci.yml の on のとおりに呼ぶ。
+  # 手順は eval-app-builder.yml にだけ置く（main への push の ci.yml は .claude/** を外すので、
+  # .claude/skills/pr/scripts/** だけの push でも走るよう、あちらは push の paths でも起きる・GAP-110）。
+  # ここは ci.yml の on のとおりに呼ぶ（PR とマージキューは paths で絞らないので、ここが拾う）。
   eval-app-builder:
     name: eval-app-builder
     uses: ./.github/workflows/eval-app-builder.yml
