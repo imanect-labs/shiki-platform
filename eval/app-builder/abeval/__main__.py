@@ -9,7 +9,7 @@
 | `grade --exp E` | 結果の IR を ir_lint で採点し直す（サーバー不要） |
 | `report [--exp E ...]` | results/summary.md を作る |
 | `budget [--json]`・`budget --reconcile [--yes]` | 費用の累計と残り・abeval.proxy が落ちた後に手元の中継の台帳との差を足す |
-| `serve --label L [--down\|--record-behavior]` | 版のサーバーを起動・停止する・振る舞いの指紋を残す（abeval.versions） |
+| `serve --label L [--down|--record-behavior]` | 版のサーバーを起動・停止する・振る舞いの指紋を残す（abeval.versions） |
 
 中継は `python -m abeval.proxy`。
 """
