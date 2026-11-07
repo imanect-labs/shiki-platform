@@ -295,19 +295,28 @@ def _node_type(t: Mapping, entry: Mapping) -> str:
     return "?"
 
 
+# 落ちた step を数える run_case の流し方（`stub`: stub の配管・`runs`: Mode B の実モデルの run_case）。
+STEP_PARTS = ("stub", "runs")
+
+
 def failure_breakdown(trials: Sequence[Mapping]) -> dict:
     """失敗の内訳（検証エラーのコード・静的・動的の検査・実行で落ちた step の誤り・生成の結果）。
 
-    `steps` は run_case の実行（stub の配管と Mode B の実行）で落ちた step の誤りを、製品の誤りのコードごとに数える
-    （起動できなかった run は `run_not_started`）。`steps_by_node` は「ノードの種類/コード」で数える（索引の無い列での
-    絞り込みのように、製品が同じコードで返す誤りを、どのノードで落ちたかで分けて読む・GAP-111）。
+    `steps_<流し方>` は run_case の実行で落ちた step の誤りを、製品の誤りのコードごとに数える（起動できなかった run は
+    `run_not_started`）。`steps_by_node_<流し方>` は「ノードの種類/コード」で数える（どのノードで落ちたかで分けて
+    読む・GAP-111）。流し方は stub の配管（`stub`）と Mode B の実モデルの run_case（`runs`）で分ける（Mode B は
+    1 試行で両方を流すので、同じ誤りを 1 つの欄に 2 回数えない）。
+
+    製品の step の誤りは、data の入力の誤りをどれも `invalid` にする（`data_port.rs` の `map_data` が data の
+    誤りのコードを残さない）。そのため `data.query/invalid` には、索引の無い列での絞り込みと、ほかの入力の誤り
+    （型・列・状態の進め方など）が混ざり、内訳からは分けられない（README の限界）。
     """
     validation: dict[str, int] = {}
     lint: dict[str, int] = {}
     task: dict[str, int] = {}
     dynamic: dict[str, int] = {}
-    steps: dict[str, int] = {}
-    steps_by_node: dict[str, int] = {}
+    steps: dict[str, dict[str, int]] = {p: {} for p in STEP_PARTS}
+    steps_by_node: dict[str, dict[str, int]] = {p: {} for p in STEP_PARTS}
     for t in trials:
         for v in (t.get("validation") or {}).values():
             for c in v.get("errors") or []:
@@ -326,7 +335,7 @@ def failure_breakdown(trials: Sequence[Mapping]) -> dict:
                 lint[c] = lint.get(c, 0) + 1
             for f in r.get("task") or []:
                 task[f["code"]] = task.get(f["code"], 0) + 1
-        for part in ("stub", "runs"):
+        for part in STEP_PARTS:
             for case in (t.get(part) or {}).get("cases") or []:
                 for f in (case.get("dynamic") or {}).get("findings") or []:
                     dynamic[f["code"]] = dynamic.get(f["code"], 0) + 1
@@ -334,10 +343,12 @@ def failure_breakdown(trials: Sequence[Mapping]) -> dict:
                     if not isinstance(e, Mapping):
                         continue
                     code = _step_code(e)
-                    steps[code] = steps.get(code, 0) + 1
+                    by_code = steps[part]
+                    by_code[code] = by_code.get(code, 0) + 1
                     if code != RUN_NOT_STARTED:
                         k = f"{_node_type(t, e)}/{code}"
-                        steps_by_node[k] = steps_by_node.get(k, 0) + 1
+                        by_node = steps_by_node[part]
+                        by_node[k] = by_node.get(k, 0) + 1
 
     def ranked(d: dict[str, int]) -> dict[str, int]:
         return dict(sorted(d.items(), key=lambda kv: (-kv[1], kv[0])))
@@ -347,6 +358,6 @@ def failure_breakdown(trials: Sequence[Mapping]) -> dict:
         "lint": ranked(lint),
         "task": ranked(task),
         "dynamic": ranked(dynamic),
-        "steps": ranked(steps),
-        "steps_by_node": ranked(steps_by_node),
+        **{f"steps_{p}": ranked(steps[p]) for p in STEP_PARTS},
+        **{f"steps_by_node_{p}": ranked(steps_by_node[p]) for p in STEP_PARTS},
     }

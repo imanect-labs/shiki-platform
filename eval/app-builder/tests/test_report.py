@@ -127,6 +127,9 @@ def test_summary_has_the_six_sections_and_no_transcript(tmp_path):
     ):
         assert h in text
     assert "v0/a/medium" in text and "v0/a/high" in text
+    # 落ちた step は stub の配管と実モデルの run_case で分けて出す（GAP-111）。
+    assert "- stub の配管で落ちた step の誤りのコード: なし" in text
+    assert "- 実モデルの run_case（Mode B）で落ちた step（ノードの種類/コード）: なし" in text
     assert "決着しない" in text or "差がある" in text
     assert "| a | 3/3 | 2/3 |" in text
     path = report.write_summary([d], path=tmp_path / "summary.md", iters=100)

@@ -394,8 +394,10 @@ def summary_md(
         ("lint", "ir_lint（S2s）"),
         ("task", "課題の検査"),
         ("dynamic", "動的な検査（S2d）"),
-        ("steps", "実行で落ちた step の誤りのコード"),
-        ("steps_by_node", "実行で落ちた step（ノードの種類/コード）"),
+        ("steps_stub", "stub の配管で落ちた step の誤りのコード"),
+        ("steps_by_node_stub", "stub の配管で落ちた step（ノードの種類/コード）"),
+        ("steps_runs", "実モデルの run_case（Mode B）で落ちた step の誤りのコード"),
+        ("steps_by_node_runs", "実モデルの run_case（Mode B）で落ちた step（ノードの種類/コード）"),
     ):
         items = ", ".join(f"`{k}` {v}" for k, v in list(fb[name].items())[:15]) or "なし"
         lines.append(f"- {title}: {items}")

@@ -157,7 +157,9 @@ def test_failure_breakdown_counts_codes():
     assert fb["validation"] == {"ir.unknown_port": 3}
     assert fb["lint"] == {"ir.bad_ref": 1} and fb["task"] == {"input_ref": 1}
     assert fb["dynamic"] == {"dead_edge": 1}
-    assert fb["steps"] == {} and fb["steps_by_node"] == {}
+    for part in ("stub", "runs"):
+        assert fb[f"steps_{part}"] == {} and fb[f"steps_by_node_{part}"] == {}
+    assert "steps" not in fb and "steps_by_node" not in fb
 
 
 def test_failure_breakdown_counts_failed_steps_by_product_code():
@@ -199,18 +201,28 @@ def test_failure_breakdown_counts_failed_steps_by_product_code():
         ]
     }
     fb = m.failure_breakdown([t, t2])
-    assert fb["steps"] == {
-        "invalid": 2,
-        "expr_resolve_error": 1,
-        "run_not_started": 1,
-        "unknown": 1,
-    }
-    assert fb["steps_by_node"] == {
-        "data.query/invalid": 2,
+    # stub の配管と実モデルの run_case は別の欄に数える（同じ試行の同じ誤りを 1 つの欄に 2 回数えない）。
+    assert fb["steps_stub"] == {"expr_resolve_error": 1, "invalid": 1, "run_not_started": 1}
+    assert fb["steps_by_node_stub"] == {
+        "data.query/invalid": 1,
         "data.record.create/expr_resolve_error": 1,
-        "?/unknown": 1,
     }
-    assert list(fb["steps"]) == ["invalid", "expr_resolve_error", "run_not_started", "unknown"]
+    assert fb["steps_runs"] == {"invalid": 1, "unknown": 1}
+    assert fb["steps_by_node_runs"] == {"data.query/invalid": 1, "?/unknown": 1}
+    assert list(fb["steps_stub"]) == ["expr_resolve_error", "invalid", "run_not_started"]
+
+
+def test_a_mode_b_trial_counts_the_same_failure_once_per_part():
+    """Mode B は 1 試行で stub の配管と実モデルの run_case の両方を流す。同じ誤りを同じ欄に 2 回数えない。"""
+    ir = {"nodes": [{"id": "find", "type": "data.query"}]}
+    failed = {"failed_steps": [{"step": "find", "node_id": "find", "error": {"code": "invalid"}}]}
+    t = trial("b", 0, mode="b")
+    t["irs"] = {"main": ir}
+    t["stub"] = {"cases": [failed]}
+    t["runs"] = {"cases": [failed]}
+    fb = m.failure_breakdown([t])
+    assert fb["steps_stub"] == {"invalid": 1} and fb["steps_runs"] == {"invalid": 1}
+    assert fb["steps_by_node_stub"] == fb["steps_by_node_runs"] == {"data.query/invalid": 1}
 
 
 def test_failed_steps_from_a_recorded_run_are_broken_down_by_node_type():
@@ -230,5 +242,5 @@ def test_failed_steps_from_a_recorded_run_are_broken_down_by_node_type():
     t["irs"] = irs
     t["stub"] = {"cases": [g]}
     fb = m.failure_breakdown([t])
-    assert fb["steps"] == {"expr_resolve_error": 1}
-    assert fb["steps_by_node"] == {"data.record.create/expr_resolve_error": 1}
+    assert fb["steps_stub"] == {"expr_resolve_error": 1} and fb["steps_runs"] == {}
+    assert fb["steps_by_node_stub"] == {"data.record.create/expr_resolve_error": 1}
