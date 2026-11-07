@@ -31,6 +31,8 @@ mod title;
 mod toolset;
 /// 記録済みスレッド → 剪定再生のステップ列（#532・`context-replay` CLI が使う）。
 pub mod trajectory;
+/// 図のボタンで起動した記録を、履歴に添える文にする（history から分けた）。
+mod ui_runs_history;
 /// ```ui ブロック（Yui）の図の書き方（#530）。
 mod yui;
 /// ```ui の種類の早見と、種類ごとの書き方を返す `ui_reference`（`@imanect/yui/guide` から生成）。
