@@ -93,6 +93,66 @@ fn a_blank_decide_question_blocks_run_and_enable() {
     assert_eq!(enable_blockers(&ir).len(), 2);
 }
 
+/// #1037: CSV を集計のつなぐ CSV（`tables` の各要素）の名前・ファイルが空（項目が無いのも空）なら、保存の警告に
+/// とどめ、実行と自動実行のオンの前に止める（要素ごとの位置を返す）。参照は実行時まで分からないので空でない。
+/// `tables` 自体を値式で書いたときは見ない。
+#[test]
+fn a_blank_joined_csv_blocks_run_and_enable() {
+    const FILE: &str = "00000000-0000-0000-0000-000000000001";
+    let sum = |id: &str, tables: Value| {
+        json!({ "id": id, "type": "csv.query",
+                "params": { "file": FILE, "sql": "SELECT * FROM data", "tables": tables } })
+    };
+    let ir = ir(
+        json!([{ "kind": "interactive" }]),
+        json!([
+            sum(
+                "join",
+                json!([
+                    { "name": "master", "file": FILE },
+                    { "name": "m2", "file": "" },
+                    { "name": "m3" },
+                    { "name": " ", "file": { "$from": "input", "path": "/f" } },
+                    { "name": { "$from": "input", "path": "/n" }, "file": FILE }
+                ])
+            ),
+            sum("dynamic", json!({ "$from": "input", "path": "/tables" }))
+        ]),
+    );
+    let w = required_text_empty(&ir);
+    assert_eq!(
+        codes(&w),
+        vec![
+            (
+                REQUIRED_TEXT_EMPTY,
+                Some("join"),
+                Some("/params/tables/1/file")
+            ),
+            (
+                REQUIRED_TEXT_EMPTY,
+                Some("join"),
+                Some("/params/tables/2/file")
+            ),
+            (
+                REQUIRED_TEXT_EMPTY,
+                Some("join"),
+                Some("/params/tables/3/name")
+            ),
+        ]
+    );
+    assert_eq!(
+        w[0].message,
+        "「2 つ目のつなぐ CSV」が空です。選ぶまで、実行も自動実行のオンもできません。"
+    );
+    assert_eq!(
+        w[2].message,
+        "「4 つ目の CSV の SQL での名前」が空です。入れるまで、実行も自動実行のオンもできません。"
+    );
+    assert_eq!(run_blockers(&ir).len(), 3);
+    assert_eq!(enable_blockers(&ir).len(), 3);
+    assert_eq!(unattended_run_blockers(&ir).len(), 3);
+}
+
 /// D-88: 出口を分ける判定のしきい値は既定を置かないので、空なら保存の警告にとどめ、実行と自動実行のオンの
 /// 前に止める（項目が無い・null のどちらも）。しきい値を書いた判定と、出口を分けない判定は止めない。
 #[test]

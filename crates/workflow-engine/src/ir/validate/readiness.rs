@@ -3,8 +3,9 @@
 //! - **必須の欄が空**（[`REQUIRED_FIELDS`] の表と、業務データ・ファイルを選ぶブロックの [`REQUIRED_VALUES`] の表（項目が
 //!   無いのも空・BUG-151）と、`control.branch` の条件の調べる値と、`ai.decide` の質問ごとの
 //!   「AI に尋ねること」（D-108）と、出口を分ける `ai.decide` のしきい値（既定を置かない・D-88）と、置いたばかりの
-//!   `human.approval` の件名・テーブル・承認者・判断の行き先（D-129）と、`workflow.reply` の返す値（BUG-168））: 書きかけでも保存は
-//!   できるように、保存時は path つきの警告（[`REQUIRED_TEXT_EMPTY`]）にとどめる。空のまま動かすと、空の依頼で
+//!   `human.approval` の件名・テーブル・承認者・判断の行き先（D-129）と、`csv.query` のつなぐ CSV の名前とファイル（#1037）と、
+//!   `workflow.reply` の返す値（BUG-168））: 書きかけでも保存はできるように、保存時は path つきの警告
+//!   （[`REQUIRED_TEXT_EMPTY`]）にとどめる。空のまま動かすと、空の依頼で
 //!   AI や検索を呼ぶ・いつも同じ出口へ進む・リストでない値を繰り返そうとして失敗する、などになるので、有効化
 //!   （[`enable_blockers`]）と対話の実行（[`run_blockers`]）と自動実行・子の実行の起動（[`unattended_run_blockers`]）の
 //!   前に止める。置いたばかりのブロックは、選ぶ欄も空の文字（`""`）で置く（エディタの既定・D-83）。
@@ -451,6 +452,36 @@ fn blank_assignees(node: &Node, out: &mut Vec<ValidationError>) {
     }
 }
 
+/// CSV を集計（`csv.query`）のつなぐ CSV（`tables` の各要素）の名前とファイルが空のもの（項目が無いのも空・#1037）。
+///
+/// 空のまま動かすと、実行は名前・ファイルを読めずに必ず失敗する（同意の提案は空のファイルを選ばせる扱いにするので、
+/// 有効化の前に止めないと、有効化だけが通る）。見出しはエディタの欄の見出し（「1 つ目の CSV の SQL での名前」・
+/// 「1 つ目のつなぐ CSV」）と同じ。`tables` 自体を値式で書いたときは見ない（中身は実行まで分からない・V4 と同意の提案と
+/// 同じ扱い）。名前とファイルが 1 つの項目の下に並ぶので、[`required_pick_fields`] には載せない（エディタは行ごとに
+/// 空の欄を言う）。
+fn csv_table_blanks(node: &Node, out: &mut Vec<ValidationError>) {
+    let tables = node.params.get("tables").and_then(Value::as_array);
+    for (i, t) in tables.into_iter().flatten().enumerate() {
+        let nth = i + 1;
+        if is_unset(t.get("name")) {
+            out.push(blank(
+                &node.id,
+                format!("/params/tables/{i}/name"),
+                &format!("{nth} つ目の CSV の SQL での名前"),
+                Fill::Text,
+            ));
+        }
+        if is_unset(t.get("file")) {
+            out.push(blank(
+                &node.id,
+                format!("/params/tables/{i}/file"),
+                &format!("{nth} つ目のつなぐ CSV"),
+                Fill::Pick,
+            ));
+        }
+    }
+}
+
 /// 条件の木（`{cmp}`・`{all}`・`{any}`・`{not}`）の中の、調べる値が空の比較の path。
 fn blank_lefts(cond: &Value, at: &str, out: &mut Vec<String>) {
     let Some(o) = cond.as_object() else { return };
@@ -536,6 +567,9 @@ fn blank_fields(ir: &WorkflowIr, with_reply: bool) -> Vec<ValidationError> {
             if is_unset(node.params.get(*key)) {
                 out.push(blank(&node.id, format!("/params/{key}"), label, *fill));
             }
+        }
+        if nt == NodeType::CsvQuery {
+            csv_table_blanks(node, &mut out);
         }
         // 判定の質問ごとの問いは、置いたばかりの空のままでも保存は通し、実行と自動実行のオンの前に止める（D-108）。
         if nt == NodeType::AiDecide {
