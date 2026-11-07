@@ -23,7 +23,10 @@
   ので、`--max-steps` を省いたときにサーバーは TOML の値で動き、記録の「製品の既定」と食い違う）。
 - 確かめたプロセス（pid・起動の時刻・実行ファイル）を `ServerIdentity` に控え、取り込みの前・Mode B の各試行の
   発話の前と結果を残す前・結果を書く前に、同じプロセスのままか（と LLM の行き先・条件）を確かめ直す（`recheck`）。
-  pid と起動の時刻が同じなら動いている実行ファイルは替わらないので、sha は最初の 1 回だけ数える。
+  pid と起動の時刻が同じなら動いている実行ファイルは替わらないので、sha は最初の 1 回だけ数える。同じプロセスかは
+  起動の時刻の生の値（/proc/<pid>/stat の starttime・clock tick）で比べる（エポック秒は /proc/stat の btime から
+  出すので、時計を跳ばす調整で動き、同じプロセスを「替わった」と誤って打ち切るため。エポック秒は設定のファイルの
+  mtime と比べるときだけに使う）。
 
 読めないもの（`ss` が無い・別の利用者のプロセス・/proc が読めない）は、確かめられないので NG にする。
 """
@@ -88,18 +91,31 @@ class Process:
     # /proc/<pid>/exe の行き先（消された実行ファイルは末尾に " (deleted)" が付く）。
     exe: str
     env: Mapping[str, str]
-    # 起動の時刻（エポック秒・読めなければ None）。
+    # 起動の時刻（エポック秒・読めなければ None）。設定のファイルの mtime と比べるときだけに使う（btime は時計の
+    # 調整で動くので、同じプロセスかの比べには使わない）。
     started_at: float | None
     # 作業の場所（SHIKI_CONFIG が相対のときに使う・読めなければ None）。
     cwd: str | None = None
+    # /proc/<pid>/stat の starttime（OS の起動からの clock tick の生の値・読めなければ None）。同じプロセスかの比べに
+    # 使う（時計を跳ばす調整〔timesyncd・chrony の step・うるう秒〕では変わらない）。
+    start_ticks: int | None = None
 
 
-def _started_at(pid: int, proc_root: Path) -> float | None:
-    """/proc/<pid>/stat の starttime（起動からの clock tick）と /proc/stat の btime から出す。"""
+def _start_ticks(pid: int, proc_root: Path) -> int | None:
+    """/proc/<pid>/stat の starttime（22 番目の項目・comm の括弧の後から数える）。"""
     try:
         stat = (proc_root / str(pid) / "stat").read_text()
         rest = stat[stat.rindex(")") + 2 :].split()
-        ticks = int(rest[19])  # 22 番目の項目（3 番目の state から数えて 20 個目）
+        return int(rest[19])  # 22 番目の項目（3 番目の state から数えて 20 個目）
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _started_at(ticks: int | None, proc_root: Path) -> float | None:
+    """starttime と /proc/stat の btime からエポック秒を出す（btime は時計の調整で動き得る）。"""
+    if ticks is None:
+        return None
+    try:
         btime = next(
             int(line.split()[1])
             for line in (proc_root / "stat").read_text().splitlines()
@@ -130,7 +146,8 @@ def read_process(pid: int, proc_root: Path | None = None) -> Process | str:
         cwd: str | None = os.readlink(base / "cwd")
     except OSError:
         cwd = None
-    return Process(pid, exe, env, _started_at(pid, proc_root), cwd)
+    ticks = _start_ticks(pid, proc_root)
+    return Process(pid, exe, env, _started_at(ticks, proc_root), cwd, ticks)
 
 
 def process_on_port(
@@ -460,7 +477,9 @@ class ServerIdentity:
         if isinstance(got, str):
             return f"版のサーバーを確かめ直せません: {got}"
         was = self.process
-        if (got.pid, got.started_at, got.exe) != (was.pid, was.started_at, was.exe):
+        if got.start_ticks is None:
+            return f"pid {got.pid} の起動の時刻を読めません（同じプロセスか確かめられない）"
+        if (got.pid, got.start_ticks, got.exe) != (was.pid, was.start_ticks, was.exe):
             return (
                 f":{self.port} のサーバーが確かめた後に替わりました（pid {was.pid} → {got.pid}）。"
                 "serve で版のサーバーを起動し直してから流し直す"

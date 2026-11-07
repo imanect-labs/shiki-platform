@@ -13,6 +13,7 @@ import sys
 import time
 from pathlib import Path
 
+import fake_proc
 import pytest
 from fake_proc import FakeProc
 
@@ -398,6 +399,24 @@ def test_recheck_sees_a_restarted_or_changed_server(world):
     assert "LLM の行き先" in ident.recheck()
     world.proc.listening = []
     assert "確かめ直せません" in ident.recheck()
+
+
+def test_a_clock_step_does_not_look_like_a_restart(world):
+    """時計の調整で /proc/stat の btime が動いても、同じプロセス（pid・starttime の生の値・実行ファイル）なら通す。"""
+    _, ident = world.guard(conditions=Conditions(None, 150_000))
+    assert ident is not None and ident.process.start_ticks is not None
+    stat = world.proc.root / "stat"
+    text = stat.read_text()
+    stat.write_text(text.replace(f"btime {fake_proc.BTIME}", f"btime {fake_proc.BTIME + 1}"))
+    assert world.process().started_at != ident.process.started_at  # エポック秒は 1 秒ずれた
+    assert ident.recheck() is None
+    # starttime が違えば（起動し直した）替わった。
+    world.start(started_at=world.started + 30)
+    assert "替わりました" in ident.recheck()
+    # starttime を読めなければ、同じプロセスか確かめられない。
+    world.start()
+    (world.proc.root / "4242" / "stat").write_text("garbage")
+    assert "起動の時刻を読めません" in ident.recheck()
 
 
 # --- 本物の /proc と ss ---
