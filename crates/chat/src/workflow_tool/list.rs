@@ -28,6 +28,14 @@ const DESCRIPTION_CHARS: usize = 160;
 const SHARED_OPEN: &str = "<shared_artifact>";
 const SHARED_CLOSE: &str = "</shared_artifact>";
 
+/// モデル向けの説明。図のボタンに書く名前を引く `search_workflows` と使い分けを名指しする（既定で返すものが違う）。
+const DESCRIPTION: &str = "ユーザーが見られる既存のワークフローを、名前・表示名・説明に含む語で探す。id・版・きっかけ・自動実行の状態・\
+         実行の入力の項目・編集できるかを返す。既存のワークフローを直す・中身を確かめるよう頼まれて id が分からない\
+         ときに使う。見つけたら read_workflow で今の IR と version を読み、直した IR を emit_workflow に workflow_id と\
+         expected_version を付けて渡すと、新しい版として保存される（新しく作らない）。ユーザーが持ち主のものだけを返す。\
+         見つからなければ include_shared: true で、ほかの人から共有されたものも探す。\
+         図のボタンに書く name と入力の項目を知りたいときは search_workflows を使う。";
+
 /// 本人に見えるワークフローを探すツール。
 pub struct ListWorkflowsTool {
     store: Arc<WorkflowStore>,
@@ -47,11 +55,7 @@ impl Tool for ListWorkflowsTool {
     }
 
     fn description(&self) -> &'static str {
-        "ユーザーが見られる既存のワークフローを、名前・表示名・説明に含む語で探す。id・版・きっかけ・自動実行の状態・\
-         実行の入力の項目・編集できるかを返す。既存のワークフローを直す・中身を確かめるよう頼まれて id が分からない\
-         ときに使う。見つけたら read_workflow で今の IR と version を読み、直した IR を emit_workflow に workflow_id と\
-         expected_version を付けて渡すと、新しい版として保存される（新しく作らない）。ユーザーが持ち主のものだけを返す。\
-         見つからなければ include_shared: true で、ほかの人から共有されたものも探す。"
+        DESCRIPTION
     }
 
     fn input_schema(&self) -> serde_json::Value {
@@ -393,6 +397,17 @@ mod tests {
         assert!(out.contains("include_shared: true"), "{out}");
         let out = render(&[], false, None, true);
         assert!(!out.contains("include_shared"), "{out}");
+    }
+
+    /// 図のボタンに書く名前と入力の項目は search_workflows で引くと名指しする（どちらも常に出て、探す語が重なる）。
+    #[test]
+    fn description_points_to_search_workflows_for_buttons() {
+        assert!(
+            DESCRIPTION.contains(
+                "図のボタンに書く name と入力の項目を知りたいときは search_workflows を使う"
+            ),
+            "{DESCRIPTION}"
+        );
     }
 
     #[test]
