@@ -130,6 +130,7 @@ fn catalog(s: &Value) -> Catalog {
                 fields,
                 unique: std::collections::BTreeSet::new(),
                 schema: None,
+                fsm_initial: None,
             };
             (table_id(t["ref"].as_str().unwrap()), table)
         })

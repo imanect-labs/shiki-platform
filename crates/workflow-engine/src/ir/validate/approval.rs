@@ -42,6 +42,9 @@ pub struct CatalogTable {
     /// 保存者の見え方の定義（読めない列を外したもの・`DataStore::get_table_for_viewer`）。データを検索の列を
     /// 実行時の束縛と同じ data の判定（`data::check_field_use`）で照らす（BUG-244）。`None` は照合しない。
     pub schema: Option<data::TableSchema>,
+    /// 状態の列と作成時の状態（FSM で管理し、状態の列を保存者が読めて、IR がこのテーブルにレコードを追加するときだけ・
+    /// `DataStore::fsm_initial`）。追加の値に書いた状態を、実行時の作成と同じ data の判定で照らす（BUG-251）。
+    pub fsm_initial: Option<data::FsmInitial>,
 }
 
 /// 承認ノードと、その params（契約に合わないものは V1b が報告するので飛ばす）。
@@ -297,6 +300,7 @@ mod tests {
                         .collect(),
                     unique: BTreeSet::new(),
                     schema: None,
+                    fsm_initial: None,
                 },
             )])),
             ..Catalog::default()

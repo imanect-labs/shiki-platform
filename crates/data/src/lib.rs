@@ -127,7 +127,7 @@ pub use derived::types::{
 };
 pub use formula::{FormulaCmpOp, FormulaExpr, SwitchCase, MAX_FORMULA_DEPTH};
 pub use fsm::{FsmBody, FsmRef, FsmTransition};
-pub use fsm_rules::{AllowedTransitions, ApprovalTargetView};
+pub use fsm_rules::{reject_status_write, AllowedTransitions, ApprovalTargetView, FsmInitial};
 pub use fsm_store::FsmStore;
 pub use fsm_table::{LockedRecords, PinnedFsm, SaveTableFsm, TableFsm, LOCK_COUNT_CAP};
 #[doc(hidden)]

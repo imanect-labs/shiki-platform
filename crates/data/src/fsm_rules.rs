@@ -56,14 +56,53 @@ pub struct ApprovalTargetView {
 }
 
 /// FSM 管理テーブルの状態の列と初期状態。
-pub(crate) struct FsmInitial {
+///
+/// 作成の検査（[`Self::apply`]）は、1 件の作成とワークフローの保存時の照合（`data.record.create`・
+/// `data.record.upsert` の値に書いた状態・BUG-251）が同じこの関数で行う。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FsmInitial {
+    /// 状態の列の参照名。
     pub status_field: String,
+    /// 作成時の状態（FSM の `states` の先頭）。
     pub initial: String,
+}
+
+/// FSM 管理テーブルの状態の列への**直接の書き込み**（更新の値に状態の列を書く）を断る（遷移 API を迂回させない）。
+///
+/// 1 件の更新・取込の更新行（[`DataStore::reject_fsm_status_write`]）と、ワークフローの保存時の照合
+/// （`data.record.update` の変更する値と足す数・`data.record.upsert` の書き換えの値・BUG-251）が同じこの関数で決める。
+/// 読む人の見え方の定義（状態の列が読めなければ `status_field` が無い・[`DataStore::get_table_for_viewer`]）を
+/// 渡すと、読めない状態の列は状態の列として扱わない。
+pub fn reject_status_write<'a>(
+    schema: &crate::model::TableSchema,
+    fields: impl Iterator<Item = &'a String>,
+) -> Result<(), DataError> {
+    let (Some(_), Some(status)) = (&schema.fsm_ref, &schema.status_field) else {
+        return Ok(());
+    };
+    for f in fields {
+        if f == status {
+            // 利用者向けの文言（列は書き手が名指ししたもの・表示名で示す・検証 2-C-P2-4）。
+            let label = schema
+                .field(status)
+                .map(|d| d.display_name.as_str())
+                .filter(|n| !n.trim().is_empty())
+                .unwrap_or(status);
+            return Err(DataError::input_detail(
+                InvalidCode::FsmInvalid,
+                Some(status),
+                format!(
+                    "「{label}」は状態の遷移でだけ変えられます（遷移できる先から選んでください）"
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 impl FsmInitial {
     /// 作成の値に初期状態を当てる（省略は初期状態を入れる・違う状態は 400）。
-    pub(crate) fn apply(&self, data: &mut Map<String, Value>) -> Result<(), DataError> {
+    pub fn apply(&self, data: &mut Map<String, Value>) -> Result<(), DataError> {
         match data.get(&self.status_field) {
             None | Some(Value::Null) => {
                 data.insert(
@@ -117,7 +156,10 @@ impl DataStore {
     }
 
     /// FSM 管理テーブルの初期状態（FSM の `states` の先頭・FSM が無ければ `None`）。
-    pub(crate) async fn fsm_initial(
+    ///
+    /// FSM の本文はテーブルにピンされた版をテーブル側の参照として読む（読む人の権限は `table` を開けたことで確かめて
+    /// あること）。読む人の見え方の定義（状態の列が読めなければ `status_field` が無い）を渡すと `None`。
+    pub async fn fsm_initial(
         &self,
         ctx: &AuthContext,
         table: &DataTable,

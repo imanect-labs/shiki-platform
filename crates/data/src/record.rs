@@ -519,31 +519,13 @@ impl DataStore {
         Ok(())
     }
 
-    /// FSM 管理テーブルの status フィールドへの**直接 update** を拒否する（遷移 API を迂回させない）。
+    /// FSM 管理テーブルの status フィールドへの**直接 update** を拒否する（遷移 API を迂回させない）。規則は
+    /// [`crate::fsm_rules::reject_status_write`]（ワークフローの保存時の照合も同じ関数を使う・BUG-251）。
     pub(crate) fn reject_fsm_status_write<'a>(
         table: &crate::model::DataTable,
         fields: impl Iterator<Item = &'a String>,
     ) -> Result<(), DataError> {
-        let (Some(_), Some(status)) = (&table.schema.fsm_ref, &table.schema.status_field) else {
-            return Ok(());
-        };
-        for f in fields {
-            if f == status {
-                // 利用者向けの文言（列は書き手が名指ししたもの・表示名で示す・検証 2-C-P2-4）。
-                let label = table
-                    .schema
-                    .field(status)
-                    .map(|d| d.display_name.as_str())
-                    .filter(|n| !n.trim().is_empty())
-                    .unwrap_or(status);
-                return Err(DataError::input_detail(
-                    crate::InvalidCode::FsmInvalid,
-                    Some(status),
-                    format!("「{label}」は状態の遷移でだけ変えられます（遷移できる先から選んでください）"),
-                ));
-            }
-        }
-        Ok(())
+        crate::fsm_rules::reject_status_write(&table.schema, fields)
     }
 
     /// record_ref 値の存在検証（参照先テーブル・同一テナント内）。

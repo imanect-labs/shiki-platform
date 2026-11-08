@@ -207,6 +207,12 @@ fn description_explains_the_notation_the_engine_implements() {
         "{d}"
     );
     assert!(d.contains("add（{\"<数の列>\": 足す数}"), "{d}");
+    // 状態の列は data.transition でだけ変えられ、追加したレコードは最初の状態になる（BUG-251）。
+    assert!(
+        d.contains("状態の列は、data.transition（状態を進める）でだけ変えられる")
+            && d.contains("data.record.create で追加したレコードは最初の状態になるので、状態の列は書かないか、最初の状態を書く"),
+        "{d}"
+    );
     // data.query に書ける列は data_schema の印で選ぶ（索引の無い列は保存で止まる・BUG-244）。
     assert!(
         d.contains("filter・sort・group_by・aggregate に書ける列は、data_schema で（索引あり）か（重複を許さない）と出る列とシステム列")

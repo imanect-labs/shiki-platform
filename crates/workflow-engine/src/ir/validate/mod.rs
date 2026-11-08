@@ -13,6 +13,8 @@ mod data_keys;
 pub use data_keys::{ADD_NOT_NUMBER, MATCH_NOT_UNIQUE};
 mod data_query;
 pub use data_query::{FIELD_NOT_INDEXED, FIELD_NOT_USABLE};
+mod status_writes;
+pub use status_writes::STATUS_NOT_WRITABLE;
 mod decide;
 pub use decide::{DECIDE_LOW_CONFIDENCE, DECIDE_MANY_PORTS, DECIDE_UNPINNED_MODEL};
 mod exists;
@@ -315,6 +317,8 @@ pub fn validate(
     data_keys::v4(&ir, catalog, &mut errors);
     // データを検索の絞り込み・並べ替え・まとめ・集計の列は、実行時に断られない列（BUG-244）。
     data_query::v4(&ir, catalog, &mut errors);
+    // 状態の列は状態を進めるでだけ変えられ、追加したレコードは最初の状態になる（BUG-251）。
+    status_writes::v4(&ir, catalog, &mut errors);
     // 業務データのブロック・データ変更のきっかけのテーブルと、フォルダー・ファイルの実在（GAP-35・GAP-91）。
     exists::v4(&ir, catalog, &mut errors);
     // V5: データフロー（$from 祖先性・default 要否・条件木型整合・regex）。

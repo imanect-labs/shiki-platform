@@ -504,6 +504,7 @@ fn format_schema(
     table: &data::DataTable,
     masked: &std::collections::HashSet<String>,
     ref_names: &std::collections::HashMap<Uuid, String>,
+    initial: Option<&str>,
 ) -> String {
     use std::fmt::Write as _;
     let mut out = format!(
@@ -520,9 +521,14 @@ fn format_schema(
         .as_ref()
         .filter(|k| !masked.contains(*k))
     {
+        // 追加したレコードは最初の状態になる（違う状態を書くと data が断る・BUG-251）。
+        let first = initial.map_or_else(
+            || "最初の状態".to_string(),
+            |s| format!("最初の状態「{s}」"),
+        );
         let _ = writeln!(
             out,
-            "状態の列: {status}（状態は承認フローの遷移でだけ変わり、data_record_write では書き換えられない）"
+            "状態の列: {status}（状態は承認フローの遷移でだけ変わり、data_record_write と、ワークフローの data.record.update・data.record.upsert では書き換えられない。ワークフローで状態を変えるときは data.transition を使う。追加したレコードは{first}になるので、追加するときは状態の列を書かないか、{first}を書く）"
         );
     }
     out.push_str("列（参照名: 型 — 表示名）:\n");
@@ -638,7 +644,20 @@ impl Tool for DataSchemaTool {
         match self.data.masked_field_keys(ctx, &table).await {
             Ok(masked) => {
                 let ref_names = self.ref_names(ctx, &table, &masked, trace_id).await;
-                Ok(ToolOutcome::ok(format_schema(&table, &masked, &ref_names)))
+                // 作成時の状態（状態の進め方のあるテーブルで、状態の列が読めるときだけ・引けなければ名前を出さない）。
+                let initial = self
+                    .data
+                    .fsm_initial(ctx, &table, trace_id)
+                    .await
+                    .ok()
+                    .flatten()
+                    .map(|fi| fi.initial);
+                Ok(ToolOutcome::ok(format_schema(
+                    &table,
+                    &masked,
+                    &ref_names,
+                    initial.as_deref(),
+                )))
             }
             Err(e) => Ok(denied(&e)),
         }

@@ -190,8 +190,8 @@ pub async fn build_catalog_from(
 }
 
 /// 承認（human.approval）・状態を進める（data.transition）・状態の変化のきっかけ・同じレコードを探す列と足す数
-/// （キーで追加か更新・まとめて登録の照合・レコードの更新の足す数・GAP-16）・データを検索の列（BUG-244）が束縛する
-/// テーブルを保存者の見え方で引いて、V4 の材料にする（GAP-08・BUG-105）。
+/// （キーで追加か更新・まとめて登録の照合・レコードの更新の足す数・GAP-16）・データを検索の列（BUG-244）・状態の列への
+/// 書き込み（レコードの更新と追加・BUG-251）が束縛するテーブルを保存者の見え方で引いて、V4 の材料にする（GAP-08・BUG-105）。
 ///
 /// IR にそのどれも無ければ `None`（照合しない）。見えないテーブルは入れない（V4 が「見つからないか状態の進め方が
 /// ない」と同じ文言で止める）。FSM の状態は状態の列の選択肢（FSM の保存時にこれと一致することを data が
@@ -201,7 +201,8 @@ pub async fn build_catalog_from(
 /// 保存者には読める列だけが入るので、読めない列は無い列と同じ誤り（`ir.unknown_field`）になり、種別
 /// （`ir.bad_assignee`）も返らない（無い列と読めない列を区別させない・data-platform §16.1）。状態の列が
 /// 読めなければ状態を入れない（`ir.unknown_table` で止め、「使える状態」の一覧も出さない）。状態の列の名前も
-/// 同じときだけ入れる（受信箱に出す列に状態の列を選ぶと止める・BUG-67）。
+/// 同じときだけ入れる（受信箱に出す列に状態の列を選ぶと止める・BUG-67）。レコードを追加するテーブルでは、作成時の状態も
+/// 実行時の作成と同じく、テーブルにピンされた状態の進め方から引く（状態の列が読めなければ引かない）。
 pub async fn fsm_tables(
     data: &data::DataStore,
     ctx: &authz::AuthContext,
@@ -241,10 +242,22 @@ pub async fn fsm_tables(
         };
         of_type(n, NodeType::DataRecordUpsert)
             || (of_type(n, NodeType::DataBulkUpsert) && has("/params/match_on"))
-            || (of_type(n, NodeType::DataRecordUpdate) && has("/params/add"))
+            // 更新の変更する値・足す数に書いた状態の列（BUG-251）。
+            || (of_type(n, NodeType::DataRecordUpdate)
+                && (has("/params/add") || has("/params/patch")))
+            // 追加の値に書いた状態（最初の状態だけ・BUG-251）。
+            || (of_type(n, NodeType::DataRecordCreate) && has("/params/data"))
             // データを検索の絞り込み・並べ替え・まとめ・集計の列（BUG-244）。
             || (of_type(n, NodeType::DataQuery) && has("/params/query"))
     };
+    // レコードを追加するブロックのテーブル（作成時の状態を引く・BUG-251）。
+    let adding: std::collections::BTreeSet<uuid::Uuid> = nodes()
+        .filter(|n| {
+            of_type(n, NodeType::DataRecordCreate) || of_type(n, NodeType::DataRecordUpsert)
+        })
+        .filter_map(|n| n.pointer("/params/table")?.as_str())
+        .filter_map(|t| uuid::Uuid::parse_str(t).ok())
+        .collect();
     let uses = nodes().any(|n| {
         of_type(n, NodeType::HumanApproval) || of_type(n, NodeType::DataTransition) || keyed(n)
     }) || !trigger_tables.is_empty();
@@ -298,6 +311,16 @@ pub async fn fsm_tables(
             .filter(|f| f.unique)
             .map(|f| f.key.clone())
             .collect();
+        // 作成時の状態（レコードを追加するテーブルで、状態の列を読めるときだけ・実行時の作成と同じ読み方・BUG-251）。
+        let fsm_initial = if status_field.is_some() && adding.contains(&id) {
+            match data.fsm_initial(ctx, &table, None).await {
+                Ok(fi) => fi,
+                Err(data::DataError::NotFound | data::DataError::Forbidden) => None,
+                Err(e) => return Err(format!("状態の進め方を使うテーブル: {e}")),
+            }
+        } else {
+            None
+        };
         out.insert(
             id.hyphenated().to_string(),
             workflow_engine::CatalogTable {
@@ -307,6 +330,7 @@ pub async fn fsm_tables(
                 unique,
                 // データを検索の列は、実行時の束縛と同じ data の判定で照らす（保存者の見え方の定義・BUG-244）。
                 schema: Some(table.schema),
+                fsm_initial,
             },
         );
     }

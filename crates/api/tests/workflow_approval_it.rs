@@ -4480,3 +4480,151 @@ async fn data_query_columns_are_checked_like_the_runner_on_save() {
     env.cleanup().await;
     env.delete_store().await;
 }
+
+/// BUG-251: 状態の進め方のある表で、状態の列を「データを更新」の変更する値に書く IR と、最初の状態でない状態で追加する
+/// IR は、保存時に `ir.status_not_writable` で止まる（検証 API・保存 API・emit_workflow のどれでも）。同じ書き込みは
+/// data の更新・作成でも `fsm_invalid` で断られる（同じ判定）。最初の状態を書く・書かない追加は通る。状態の列を読めない
+/// 保存者（bob）には、状態の列への書き込みを言わない（無い列を書いたときと同じ答え）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn status_writes_outside_a_transition_are_refused_on_save() {
+    let _serial = SERIAL.lock().await;
+    let Some(env) = setup().await else { return };
+    let expense = env.expense_table().await;
+    let masked = env.masked_fsm_table("status").await;
+    let tool = env.emit_tool();
+    let wf = |node_type: &str, params: Value| {
+        json!({
+            "ir_version": 1, "name": "status-writes",
+            "triggers": [{ "kind": "interactive" }],
+            "nodes": [{ "id": "write", "type": node_type, "params": params }],
+            "edges": []
+        })
+    };
+    let update = |table: Uuid, patch: Value| {
+        let record = json!({ "$from": "input", "path": "/id" });
+        let params = json!({ "table": table.to_string(), "record": record, "patch": patch });
+        wf("data.record.update", params)
+    };
+    let create = |table: Uuid, data: Value| {
+        let params = json!({ "table": table.to_string(), "data": data });
+        wf("data.record.create", params)
+    };
+    let refused = |path: &str| vec![("ir.status_not_writable".to_string(), path.to_string())];
+    let later = json!({ "title": "x", "status": "approved" });
+    assert_eq!(
+        env.v4_codes(&env.alice, &update(expense, later.clone()))
+            .await,
+        refused("/params/patch/status")
+    );
+    assert_eq!(
+        env.v4_codes(&env.alice, &create(expense, later.clone()))
+            .await,
+        refused("/params/data/status")
+    );
+    // 最初の状態（draft）を書く・書かない追加と、状態の列でない列の更新は通る。
+    for ok in [
+        create(expense, json!({ "title": "x", "status": "draft" })),
+        create(expense, json!({ "title": "x" })),
+        update(expense, json!({ "title": "x" })),
+    ] {
+        assert_eq!(env.v4_codes(&env.alice, &ok).await, vec![], "{ok}");
+    }
+    // 実行時の data も同じ書き込みを同じ理由で断る。
+    let e = env
+        .data
+        .create_record(&env.alice, expense, later.clone(), None)
+        .await
+        .unwrap_err();
+    assert_eq!(e.invalid_code(), Some(data::InvalidCode::FsmInvalid));
+    let row = env
+        .data
+        .create_record(&env.alice, expense, json!({ "title": "x" }), None)
+        .await
+        .unwrap();
+    let e = env
+        .data
+        .update_record(
+            &env.alice,
+            expense,
+            row.id,
+            json!({ "status": "submitted" }),
+            row.rev,
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(e.invalid_code(), Some(data::InvalidCode::FsmInvalid));
+    // 保存 API と emit_workflow も止め、直し方を言う。
+    let answers = env
+        .v4_answers(&tool, &env.alice, &update(expense, later.clone()), "")
+        .await;
+    assert!(
+        answers[0].contains("ir.status_not_writable")
+            && answers[0].contains("「状態を進める」のブロック"),
+        "{}",
+        answers[0]
+    );
+    assert!(
+        answers[1].starts_with("400 ") && answers[1].contains("ir.status_not_writable"),
+        "{}",
+        answers[1]
+    );
+    assert!(
+        answers[2].starts_with("true ") && answers[2].contains("ir.status_not_writable"),
+        "{}",
+        answers[2]
+    );
+    // 状態の列を読めない bob には言わない（無い列を書いたときと同じ・どちらも保存時には止まらない）。
+    assert_eq!(
+        env.v4_codes(&env.alice, &update(masked, later.clone()))
+            .await,
+        refused("/params/patch/status")
+    );
+    let (seen, ghost) = (
+        json!({ "status": "approved" }),
+        json!({ "zz_nope": "approved" }),
+    );
+    assert_eq!(
+        env.v4_codes(&env.bob, &update(masked, seen.clone())).await,
+        env.v4_codes(&env.bob, &update(masked, ghost.clone())).await,
+    );
+    assert_eq!(
+        env.v4_codes(&env.bob, &create(masked, seen)).await,
+        env.v4_codes(&env.bob, &create(masked, ghost)).await,
+    );
+    assert_eq!(env.v4_codes(&env.bob, &update(masked, later)).await, vec![]);
+    // チャットの data_schema は、状態の列は状態を進めるでだけ変えられることと、追加したときの状態を言う（BUG-251）。
+    // 状態の列を読めない bob には状態の列を出さない。
+    {
+        use agent_core::Tool;
+        for (who, table, shows) in [(&env.alice, expense, true), (&env.bob, masked, false)] {
+            let catalog = chat::data_tool::DataTableCatalog::load(&env.data, who)
+                .await
+                .unwrap();
+            let out = chat::data_tool::DataSchemaTool::new((*env.data).clone(), Arc::new(catalog))
+                .call(who, json!({ "table": table.to_string() }), None)
+                .await
+                .unwrap();
+            assert!(!out.is_error, "{}", out.content);
+            let first = if table == expense {
+                "draft"
+            } else {
+                "approved"
+            };
+            assert_eq!(
+                out.content.contains("状態の列: status（")
+                    && out
+                        .content
+                        .contains("ワークフローで状態を変えるときは data.transition を使う")
+                    && out
+                        .content
+                        .contains(&format!("追加したレコードは最初の状態「{first}」になる")),
+                shows,
+                "{}",
+                out.content
+            );
+        }
+    }
+    env.cleanup().await;
+    env.delete_store().await;
+}

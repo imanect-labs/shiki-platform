@@ -67,6 +67,10 @@ pub(super) fn v4(ir: &WorkflowIr, catalog: &Catalog, errors: &mut Vec<Validation
             continue;
         };
         for k in add.keys() {
+            // 状態の列は、状態を進めるでだけ変えられる誤りとして status_writes が言う（同じ欄に 2 つ出さない・BUG-251）。
+            if table.schema.is_some() && table.status_field.as_deref() == Some(k.as_str()) {
+                continue;
+            }
             if let Some(e) = check_add(table, k) {
                 errors.push(e.at_node(&node.id).at_path(format!("/params/add/{k}")));
             }
