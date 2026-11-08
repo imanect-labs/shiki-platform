@@ -592,8 +592,8 @@ fn format_schema(
         out.push('\n');
     }
     out.push_str(
-        "システム列: _created_at / _updated_at / _owner（絞り込み・並べ替えに使える）、_id（行の id・SELECT と JOIN の ON だけ）\n\
-         絞り込み・並べ替え・まとめ（group_by・aggregate）に使えるのは、（索引あり）か（重複を許さない）と出る列とシステム列だけ（ほかの列は data_query でもワークフローの data.query でも断られる）。部分一致（contains・ends_with）は（部分一致で探せる）と出る列だけ。\n",
+        "システム列: _created_at / _updated_at / _owner（絞り込み・並べ替えに使える。まとめる列には使えない）、_id（行の id・SELECT と JOIN の ON だけ）\n\
+         絞り込み・並べ替えに使えるのは、（索引あり）か（重複を許さない）と出る列とシステム列だけ（ほかの列は data_query でもワークフローの data.query でも断られる）。部分一致（contains・ends_with）は（部分一致で探せる）と出る列だけで、その列は索引が無くても使える。まとめる列（GROUP BY・group_by）に使えるのは、（索引あり）か（重複を許さない）と出る列のうち、型が created_by・record_ref・multi_select でない列だけ。合計・平均・最小・最大（SUM・AVG・MIN・MAX・aggregate の sum・avg・min・max）は、そのうち number の列だけ。\n",
     );
     // 読めない列の有無・件数は書かない（列の存在オラクルを作らない・検証 2-B-P2-1）。
     out

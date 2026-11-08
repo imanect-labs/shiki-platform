@@ -402,7 +402,10 @@ async fn data_query_returns_only_rows_and_columns_the_speaker_can_read() {
             && out.content.contains("- title: text — title\n")
             && out
                 .content
-                .contains("使えるのは、（索引あり）か（重複を許さない）と出る列とシステム列だけ"),
+                .contains("絞り込み・並べ替えに使えるのは、（索引あり）か（重複を許さない）と出る列とシステム列だけ")
+            && out
+                .content
+                .contains("型が created_by・record_ref・multi_select でない列だけ"),
         "{}",
         out.content
     );

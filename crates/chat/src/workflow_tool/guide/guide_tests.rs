@@ -213,10 +213,13 @@ fn description_explains_the_notation_the_engine_implements() {
             && d.contains("data.record.create で追加したレコードは最初の状態になるので、状態の列は書かないか、最初の状態を書く"),
         "{d}"
     );
-    // data.query に書ける列は data_schema の印で選ぶ（索引の無い列は保存で止まる・BUG-244）。
+    // data.query に書ける列は data_schema の印で選ぶ（索引の無い列は保存で止まる・BUG-244）。まとめる列と集計の列は
+    // さらに絞られる（束縛の group_key_fits・metric_fits と同じ）。
     assert!(
-        d.contains("filter・sort・group_by・aggregate に書ける列は、data_schema で（索引あり）か（重複を許さない）と出る列とシステム列")
-            && d.contains("contains・ends_with は（部分一致で探せる）と出る列だけ"),
+        d.contains("filter・sort に書ける列は、data_schema で（索引あり）か（重複を許さない）と出る列とシステム列")
+            && d.contains("contains・ends_with は（部分一致で探せる）と出る列だけで、その列は索引が無くても使える")
+            && d.contains("型が created_by・record_ref・multi_select でない列だけ（システム列も書けない）")
+            && d.contains("sum・avg・min・max の field は、（索引あり）か（重複を許さない）と出る number の列だけ"),
         "{d}"
     );
     // 入力の数を引く書き方と、足す数に組み立てを書けないこと（BUG-245・この書き方が保存と実行を通ることは
