@@ -28,7 +28,7 @@ mod transform;
 pub use ai::{AgentInvokeParams, LlmEffort, LlmInvokeParams, SkillInvokeParams};
 pub use control::{
     BranchParams, JoinMode, JoinParams, MapItemError, MapParams, SwitchCase, SwitchParams,
-    WaitKind, WaitParams, WaitTimeout,
+    WaitKind, WaitParams, WaitTimeout, MAX_MAP_ITEMS,
 };
 pub use data::{
     DataBulkUpsertParams, DataQueryParams, DataRecordCreateParams, DataRecordDeleteParams,

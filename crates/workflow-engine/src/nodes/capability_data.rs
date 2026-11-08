@@ -68,6 +68,12 @@ pub(crate) fn parse_bulk_rows(v: &Value) -> Result<Vec<BulkUpsertRow>, PortError
                 .keys()
                 .find(|k| !matches!(k.as_str(), "id" | "rev" | "key" | "data"))
             {
+                // data の無い平らな行（csv.query の items・{列: 値} の行をそのまま渡した）は、包み方まで言う（BUG-255）。
+                if !obj.contains_key("data") {
+                    return Err(PortError::invalid(format!(
+                        "data.bulk_upsert: {n} 行目に未知のキー '{k}' があります。行は 1 行ずつ {{\"data\": {{列の参照名: 値}}}} の形に包んで渡してください（行に書けるのは id / rev / key / data だけ）。"
+                    )));
+                }
                 return Err(PortError::invalid(format!(
                     "data.bulk_upsert: {n} 行目に未知のキー '{k}' があります（id / rev / key / data のみ）"
                 )));
@@ -528,7 +534,21 @@ mod tests {
         assert_eq!(rows[0].expected_rev, Some(3));
         assert_eq!(rows[1].record_id, None);
         assert_eq!(rows[1].key.as_deref(), Some("k2"));
-        assert!(parse_bulk_rows(&json!([{ "data": {}, "status": "x" }])).is_err());
+        let message = |rows: Value| parse_bulk_rows(&rows).unwrap_err().message;
+        // data のある行の未知のキーは、これまでどおり書けるキーを言う。
+        assert_eq!(
+            message(json!([{ "data": {}, "status": "x" }])),
+            "data.bulk_upsert: 1 行目に未知のキー 'status' があります（id / rev / key / data のみ）"
+        );
+        // data の無い平らな行（csv.query の items をそのまま渡した）は、包み方まで言う（BUG-255）。
+        assert_eq!(
+            message(json!([{ "data": { "sku": "A" } }, { "sku": "B", "stock": 3 }])),
+            "data.bulk_upsert: 2 行目に未知のキー 'sku' があります。行は 1 行ずつ {\"data\": {列の参照名: 値}} の形に包んで渡してください（行に書けるのは id / rev / key / data だけ）。"
+        );
+        assert_eq!(
+            message(json!([{ "id": id.to_string() }])),
+            "data.bulk_upsert: 1 行目に data がありません"
+        );
         assert!(parse_bulk_rows(&json!([{ "id": "nope", "data": {} }])).is_err());
         assert!(parse_bulk_rows(&json!({ "data": {} })).is_err());
         let too_many: Vec<Value> = (0..=MAX_WORKFLOW_BULK_ROWS)

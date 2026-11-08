@@ -389,10 +389,14 @@ impl CapabilityNodeExecutor {
         let Some(items) = items_val.as_array() else {
             return NodeResult::fail("bad_params", "map の items が配列ではありません", false);
         };
-        if items.len() > 1000 {
+        if items.len() > params::MAX_MAP_ITEMS {
             return NodeResult::fail(
                 "fanout_limit_exceeded",
-                format!("map の要素数 {} が上限 1000 を超過", items.len()),
+                format!(
+                    "map の要素数 {} が上限 {} を超過",
+                    items.len(),
+                    params::MAX_MAP_ITEMS
+                ),
                 false,
             );
         }

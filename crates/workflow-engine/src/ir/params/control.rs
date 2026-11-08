@@ -74,6 +74,9 @@ pub enum MapItemError {
     Collect,
 }
 
+/// `control.map` の要素の数の上限（超えると実行で `fanout_limit_exceeded`・emit_workflow の説明文もこれで言う）。
+pub const MAX_MAP_ITEMS: usize = 1_000;
+
 /// `control.map` — 配列要素ごとに領域を動的 fan-out する（engine.md §4.5）。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, TS)]
 #[serde(deny_unknown_fields)]

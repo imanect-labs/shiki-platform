@@ -253,6 +253,35 @@ fn description_explains_the_notation_the_engine_implements() {
         d.contains("Excel を読めるのは csv.query だけ") && d.contains("\"path\":\"/items\"}"),
         "{d}"
     );
+    // CSV の行をテーブルに書くのは map の中の 1 件の書き込みで、csv.query の items を一括の rows にそのまま渡させない
+    // （rows は {data: …} の行だけを受け、平らな行は実行で断られる・BUG-255。この書き方と script.run で包む書き方が
+    // 保存と実行を通ることと、上限は workflow-engine の csv_to_table_it が確かめる）。
+    assert!(
+        !d.contains("data.bulk_upsert の rows に渡す）"),
+        "csv.query の items を rows に渡すと教えない: {d}"
+    );
+    assert!(
+        d.contains("control.map の items に csv.query の items を書き")
+            && d.contains(
+                "{\"<列の参照名>\":{\"$from\":\"each\",\"path\":\"/item/<CSV の列の名前>\"}}"
+            )
+            && d.contains("data に {\"$from\":\"each\",\"path\":\"/item\"} とそのまま書ける")
+            && d.contains(&format!(
+                "map で書けるのは {} 行まで",
+                workflow_engine::ir::params::MAX_MAP_ITEMS
+            ))
+            && d.contains("csv.query の items は data.bulk_upsert の rows にそのまま渡せない")
+            && d.contains("rows は 1 行ずつ {\"data\":{列の参照名: 値}} の配列"),
+        "{d}"
+    );
+    assert!(
+        d.contains("function main(i) { return { rows: i.items.map((r) => ({ data: r })) }; }")
+            && d.contains(&format!(
+                "（{} 行まで。script.run の戻り値は 256 KB まで",
+                workflow_engine::ir::params::MAX_WORKFLOW_BULK_ROWS
+            )),
+        "{d}"
+    );
     // フォルダ・ファイルの id は drive.find、テーブルは data_schema で調べる（GAP-107）。
     assert!(
         d.contains(
