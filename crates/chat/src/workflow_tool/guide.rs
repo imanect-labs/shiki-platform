@@ -671,7 +671,7 @@ mod tests {
             )) && d.contains("file の CSV を data、tables の CSV を name の名前で読む"),
             "{d}"
         );
-        // name の決まりは tabular の判定と同じに言う（保存では確かめないので、言い漏らすと実行で初めて失敗する）。
+        // name の決まりは tabular の判定と同じに言う（保存で止まる決まりを先に教える・GAP-126）。
         assert!(
             d.contains(
                 "name は英小文字・数字・_ で、先頭は数字以外・63 文字まで・data 以外・重ねない"

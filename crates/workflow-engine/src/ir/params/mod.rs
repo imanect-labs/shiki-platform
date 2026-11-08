@@ -222,7 +222,7 @@ pub(crate) fn params_issues_with(
         }),
         NodeType::SkillInvoke => issues_of::<SkillInvokeParams>(raw),
         NodeType::WorkflowStart => issues_of::<WorkflowStartParams>(raw),
-        NodeType::CsvQuery => issues_of::<CsvQueryParams>(raw),
+        NodeType::CsvQuery => issues_as::<CsvQueryParams>(raw, |p| p.check_cross_fields()),
         NodeType::CsvPatch => issues_of::<CsvPatchParams>(raw),
         NodeType::CsvWrite => issues_of::<CsvWriteParams>(raw),
         NodeType::DataQuery => issues_as::<DataQueryParams>(raw, |p| p.check_cross_fields()),

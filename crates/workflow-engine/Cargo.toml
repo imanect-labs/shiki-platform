@@ -25,6 +25,8 @@ shiki-jobq.workspace = true
 # data ノードの params は data の `DataQuery` をそのまま使う（変換層・面ごとのフィルタ表現を作らない・
 # data-platform §11）。実行は NodePorts 越し（チョークポイント呼び出しは server 側）。
 shiki-data.workspace = true
+# csv.query の tables の名前と数の保存時の照合は、tabular（ランナーと共有する決まり）の判定をそのまま呼ぶ（GAP-126）。
+shiki-tabular-protocol.workspace = true
 
 serde.workspace = true
 serde_json.workspace = true
@@ -76,6 +78,7 @@ ignored = [
     "shiki-secrets",
     "shiki-jobq",
     "shiki-data",
+    "shiki-tabular-protocol",
     "shiki-cron5",
     "shiki-textenc",
 ]

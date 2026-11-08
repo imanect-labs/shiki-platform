@@ -33,6 +33,43 @@ pub fn is_valid_table_name(name: &str) -> bool {
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || *b == b'_')
 }
 
+/// 追加テーブルの数が上限（[`MAX_EXTRA_TABLES`]）を超えるか。
+#[must_use]
+pub fn too_many_tables(count: usize) -> bool {
+    count > MAX_EXTRA_TABLES
+}
+
+/// 追加テーブルの名前に使えない理由（[`table_name_issue`]）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TableNameIssue {
+    /// 形が決まりに合わない（[`is_valid_table_name`]）。
+    Shape,
+    /// 主ファイルの名前（[`PRIMARY_TABLE`]）。
+    Reserved,
+    /// 同じ指定の前に並ぶ名前と同じ。
+    Duplicate,
+}
+
+/// 追加テーブルの名前 `name` を、同じ指定で前に並ぶ名前 `earlier` の後に使えるか（使えなければ理由）。
+///
+/// 確かめる順は形 → 主ファイルの名前 → 重なり。api 側の `shiki-tabular` の `validate_tables` と、ワークフローの
+/// 保存時の照合（`csv.query` の `tables`）が同じこの関数で決める（決まりを写さない・GAP-126）。
+pub fn table_name_issue<'a>(
+    name: &str,
+    earlier: impl IntoIterator<Item = &'a str>,
+) -> Option<TableNameIssue> {
+    if !is_valid_table_name(name) {
+        return Some(TableNameIssue::Shape);
+    }
+    if name == PRIMARY_TABLE {
+        return Some(TableNameIssue::Reserved);
+    }
+    earlier
+        .into_iter()
+        .any(|e| e == name)
+        .then_some(TableNameIssue::Duplicate)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -68,5 +105,26 @@ mod tests {
         ] {
             assert!(!is_valid_table_name(n), "should reject: {n:?}");
         }
+    }
+
+    /// 名前の理由は形 → 主ファイルの名前 → 重なりの順。数の上限は主ファイルを含まない。
+    #[test]
+    fn table_name_issues_are_checked_in_order() {
+        assert_eq!(table_name_issue("orders", []), None);
+        assert_eq!(table_name_issue("Orders", []), Some(TableNameIssue::Shape));
+        assert_eq!(
+            table_name_issue(PRIMARY_TABLE, []),
+            Some(TableNameIssue::Reserved)
+        );
+        assert_eq!(
+            table_name_issue("data", ["data"]),
+            Some(TableNameIssue::Reserved)
+        );
+        assert_eq!(
+            table_name_issue("orders", ["items", "orders"]),
+            Some(TableNameIssue::Duplicate)
+        );
+        assert!(!too_many_tables(MAX_EXTRA_TABLES));
+        assert!(too_many_tables(MAX_EXTRA_TABLES + 1));
     }
 }

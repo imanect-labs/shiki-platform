@@ -5854,6 +5854,7 @@ dependencies = [
  "shiki-jobq",
  "shiki-script-runtime",
  "shiki-secrets",
+ "shiki-tabular-protocol",
  "shiki-testenv",
  "shiki-textenc",
  "sqlx",
