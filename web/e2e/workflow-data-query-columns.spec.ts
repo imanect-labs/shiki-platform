@@ -3,7 +3,8 @@ import { expect, test, type Locator, type Page } from "@playwright/test";
 import { cleanupAll, deleteTableApi, loginViaKeycloak, uniqueName } from "./helpers";
 
 /// 「データを検索」（data.query）の探す条件と並べ替えで選べる列の e2e（BUG-244）:
-/// - ワークフローの経路では索引を作らないので、選べるのは索引のある列・重複を許さない列・システムの列だけ。隠した列が
+/// - ワークフローの経路では索引を作らないので、選べるのは索引のある列・重複を許さない列・システムの列だけ。部分一致で
+///   検索できる列は、索引が無くても探す条件の「含む」「で終わる」だけに選べる（並べ替えには出さない）。隠した列が
 ///   あるときは欄の下で理由と直し方を言い、利用者の列が 1 つも使えないテーブルでは使える列の名前を挙げる。
 /// - 保存した後に列の索引を外した定義は、開いたときに保存時の誤りを欄の下と、その列の条件・並べ替えの行の下に出し、
 ///   行は選んだ列の名前のまま（空欄にしない）。使える列に選び直すと誤りが消えて保存できる。
@@ -41,7 +42,7 @@ test("データを検索: 索引のある列と重複を許さない列だけを
   let bareId = "";
   let id = "";
   try {
-    // 件名は索引あり、コードは重複を許さない、金額とメモは索引なし。
+    // 件名は索引あり、コードは重複を許さない、金額とメモは索引なし（メモは部分一致で検索できる）。
     const made = await page.request.post("/api/data/tables", {
       headers,
       data: {
@@ -51,7 +52,7 @@ test("データを検索: 索引のある列と重複を許さない列だけを
             { key: "title", display_name: "件名", type: "text", indexed: true },
             { key: "code", display_name: "コード", type: "text", unique: true },
             { key: "amount", display_name: "金額", type: "number" },
-            { key: "memo", display_name: "メモ", type: "text" },
+            { key: "memo", display_name: "メモ", type: "text", searchable: true },
           ],
         },
       },
@@ -104,11 +105,11 @@ test("データを検索: 索引のある列と重複を許さない列だけを
     // 隠した列（金額・メモ）があるので、理由と直し方を欄の下で言う。
     const note = panel.getByTestId("query-columns-note");
     await expect(note).toHaveText(
-      "絞り込み・並べ替えに使えるのは、索引のある列と重複を許さない列だけです。ほかの列を使うには、テーブルの「列の編集」でその列の索引をオンにしてください。",
+      "絞り込み・並べ替えに使えるのは、索引のある列と重複を許さない列だけです（部分一致で検索できる列は、索引が無くても「含む」「で終わる」の条件に使えます）。ほかの列を使うには、テーブルの「列の編集」でその列の索引をオンにしてください。",
     );
     await expect(panel.getByText(/索引の無い列なので/)).toHaveCount(0);
 
-    // 探す条件: 足した条件の列の候補は、索引のある列・重複を許さない列・システムの列だけ。
+    // 探す条件: 足した条件の列の候補は、索引のある列・重複を許さない列・システムの列と、部分一致で検索できる列。
     await panel.getByTestId("data-filter-button").click();
     const filterPop = page.getByRole("dialog").filter({ hasText: "すべての条件に合うレコード" });
     await expect(filterPop).toBeVisible();
@@ -117,10 +118,17 @@ test("データを検索: 索引のある列と重複を許さない列だけを
     expect(await columnOptions(page, filterPop.getByRole("combobox", { name: "条件 2 の列" }))).toEqual([
       "件名",
       "コード",
+      "メモ",
       "更新日時",
       "作成日時",
       "作成者",
     ]);
+    // 部分一致で検索できるだけの列（メモ）は、「含む」「で終わる」だけを選べる。
+    await filterPop.getByRole("combobox", { name: "条件 2 の列" }).click();
+    await page.getByRole("option", { name: "メモ", exact: true }).click();
+    const memoOp = filterPop.getByRole("combobox", { name: "条件 2 の比べ方" });
+    await expect(memoOp).toHaveText("が次を含む");
+    expect(await columnOptions(page, memoOp)).toEqual(["が次を含む", "が次で終わる"]);
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/query-columns-filter-pc.png` });
     await page.keyboard.press("Escape");
     await expect(filterPop).toBeHidden();
@@ -172,8 +180,9 @@ test("データを検索: 索引のある列と重複を許さない列だけを
     // 開いたときに、保存時の誤りが欄の下に出る（実行する前に分かる）。
     await page.goto(`/workflows/${id}`);
     await page.getByTestId("rf__node-q").click();
-    const filterError = "「title」は索引の無い列なので、絞り込みの条件に使えません。";
-    const sortError = "「title」は索引の無い列なので、並べ替えに使えません。";
+    // 誤りは列を表示名と参照名の両方で言う（画面は表示名、AI は参照名で直す）。
+    const filterError = "「件名」（title）は索引の無い列なので、絞り込みの条件に使えません。";
+    const sortError = "「件名」（title）は索引の無い列なので、並べ替えに使えません。";
     await expect(panel.getByText(filterError, { exact: false })).toBeVisible({ timeout: 20_000 });
     await expect(panel.getByText(sortError, { exact: false })).toBeVisible();
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/query-columns-unindexed-pc.png` });

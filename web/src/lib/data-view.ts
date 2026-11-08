@@ -159,6 +159,22 @@ export function isWorkflowQueryColumn(c: ColumnModel): boolean {
   return Boolean(f.indexed || f.unique);
 }
 
+/// 索引は無いが、ワークフローの「データを検索」の部分一致（「含む」「で終わる」）の条件には使える列か（「部分一致で
+/// 検索できる」文字・複数選択の列）。部分一致は検索の索引で引くので、値の索引が無くても通る（サーバーの束縛の
+/// `Need::Searchable`・保存時の照合の `check_field_use(Filter(Contains))` と同じ）。
+export function isWorkflowSearchOnlyColumn(c: ColumnModel): boolean {
+  if (c.system || isWorkflowQueryColumn(c)) return false;
+  const f = c.field!;
+  return Boolean(f.searchable) && (f.type === "text" || f.type === "multi_select");
+}
+
+/// ワークフローの「データを検索」の探す条件で、列 `c` を比べ方 `op` に使えるか（BUG-244）。索引のある列などはどの
+/// 比べ方にも使え（列の種類で決まる比べ方は画面が絞る）、部分一致で検索できるだけの列は「含む」「で終わる」だけに使える。
+export function isWorkflowFilterUse(c: ColumnModel, op: CondOp): boolean {
+  if (isWorkflowQueryColumn(c)) return true;
+  return (op === "contains" || op === "ends_with") && isWorkflowSearchOnlyColumn(c);
+}
+
 /// 絞り込みに使える列か（並べ替えできる列に加え、複数選択は要素ごとの索引で「含む」を引ける）。
 export function isFilterable(c: ColumnModel): boolean {
   if (isSortable(c)) return true;

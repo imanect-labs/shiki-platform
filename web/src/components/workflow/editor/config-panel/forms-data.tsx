@@ -18,7 +18,9 @@ import type { DataQuery, DataTable } from "@/lib/data-api";
 import {
   buildFilter,
   isFilterable,
+  isWorkflowFilterUse,
   isWorkflowQueryColumn,
+  isWorkflowSearchOnlyColumn,
   resolveColumns,
   splitFilter,
   type ColumnModel,
@@ -340,20 +342,24 @@ function queryErrors(check: ServerCheck): { filter: Map<string, string>; sort: M
 }
 
 /// 探す条件と並べ替えで選べない列の説明（BUG-244）。使える列は索引のある列と重複を許さない列（とシステムの列）だけなので、
-/// 隠した列があるときに言う。利用者の列が 1 つも使えないときは、使える列の名前を挙げる。
+/// 隠した列があるときに言う。利用者の列が 1 つも使えないときは、使える列の名前を挙げる。部分一致で検索できる列は、索引が
+/// 無くても「含む」「で終わる」の条件に使えるので、そういう列があればそれも言う（索引を付けなくてよい）。
 function hiddenColumnsNote(columns: ColumnModel[]): string | null {
   const hidden = columns.some((c) => isFilterable(c) && !isWorkflowQueryColumn(c));
   if (!hidden) return null;
   const how = "ほかの列を使うには、テーブルの「列の編集」でその列の索引をオンにしてください。";
+  const search = columns.some(isWorkflowSearchOnlyColumn)
+    ? "（部分一致で検索できる列は、索引が無くても「含む」「で終わる」の条件に使えます）"
+    : "";
   const userColumns = columns.filter((c) => !c.system && isWorkflowQueryColumn(c) && isFilterable(c));
   if (userColumns.length === 0) {
     const names = columns
       .filter((c) => isWorkflowQueryColumn(c) && isFilterable(c))
       .map((c) => `「${c.label}」`)
       .join("");
-    return `このテーブルの列には索引が無いので、絞り込み・並べ替えに使えるのは${names}だけです。${how}`;
+    return `このテーブルの列には索引が無いので、絞り込み・並べ替えに使えるのは${names}だけです${search}。${how}`;
   }
-  return `絞り込み・並べ替えに使えるのは、索引のある列と重複を許さない列だけです。${how}`;
+  return `絞り込み・並べ替えに使えるのは、索引のある列と重複を許さない列だけです${search}。${how}`;
 }
 
 export function DataQueryForm(props: FormProps) {
@@ -381,14 +387,15 @@ export function DataQueryForm(props: FormProps) {
         <div className="space-y-1.5">
           <span className="text-xs font-medium">探す条件と並べ替え（省略可）</span>
           <div className="flex flex-wrap gap-1 rounded-md border p-1">
-            {/* ワークフローの経路では索引を作らないので、索引のある列と重複を許さない列だけを選ばせる（BUG-244）。 */}
+            {/* ワークフローの経路では索引を作らないので、索引のある列と重複を許さない列（と、部分一致で検索できる列の
+                「含む」「で終わる」）だけを選ばせる（BUG-244）。 */}
             <FilterControl
               columns={columns}
               rows={f.rows}
               advanced={f.advanced !== null}
               texts={QUERY_FILTER_TEXTS}
               exprValue={exprValue}
-              usable={isWorkflowQueryColumn}
+              usable={isWorkflowFilterUse}
               columnError={(key) => errors.filter.get(key) ?? null}
               onClearAdvanced={() => setQuery({ ...query, filter: buildFilter(f.rows, null, columns) ?? undefined })}
               onChange={(rows) => setQuery({ ...query, filter: buildFilter(rows, f.advanced, columns) ?? undefined })}

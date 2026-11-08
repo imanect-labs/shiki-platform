@@ -388,13 +388,17 @@ export function FilterControl({
   texts?: Partial<FilterTexts>;
   /// 比べる値を式でも決められるようにする（省略で直接入力だけ）。
   exprValue?: FilterExprValue;
-  /// 選べる列をさらに絞る（ワークフローの探す条件は索引のある列だけ・BUG-244）。省略で絞り込める列すべて。
-  usable?: (c: ColumnModel) => boolean;
+  /// 列を比べ方に使えるかで、選べる列と比べ方をさらに絞る（ワークフローの探す条件は索引のある列と、部分一致で検索
+  /// できる列の「含む」「で終わる」だけ・BUG-244）。使える比べ方が 1 つも無い列は選ばせない。省略で絞り込める列すべて。
+  usable?: (c: ColumnModel, op: CondOp) => boolean;
   /// 列を断った保存時の誤り（列の参照名 → 文言）。その列の条件の下に出す。
   columnError?: (key: string) => string | null;
 }) {
   const t = { ...DATA_FILTER_TEXTS, ...texts };
-  const filterable = columns.filter((c) => isFilterable(c) && (usable?.(c) ?? true));
+  // 列に使える比べ方（`usable` で絞る）。
+  const opsOf = (c: ColumnModel | undefined): CondOp[] =>
+    c && usable ? opsFor(c).filter((op) => usable(c, op)) : opsFor(c);
+  const filterable = columns.filter((c) => isFilterable(c) && opsOf(c).length > 0);
   const [draft, setDraft] = React.useState<FilterRow[]>(rows);
   const [open, setOpen] = React.useState(false);
   React.useEffect(() => {
@@ -454,7 +458,9 @@ export function FilterControl({
           <ul className="space-y-2">
             {draft.map((r, i) => {
               const col = columns.find((c) => c.key === r.field);
-              const ops = opsFor(col);
+              // 使えない比べ方で保存した条件も、選んだ比べ方の名前のまま出す（空欄にしない）。
+              const allowed = opsOf(col);
+              const ops = allowed.includes(r.op) ? allowed : [...allowed, r.op];
               const err = errorOf(r);
               const fieldErr = r.field ? (columnError?.(r.field) ?? null) : null;
               return (
@@ -476,7 +482,7 @@ export function FilterControl({
                     onChange={(field) =>
                       set(i, {
                         field,
-                        op: opsFor(columns.find((c) => c.key === field))[0],
+                        op: opsOf(columns.find((c) => c.key === field))[0],
                         value: "",
                         expr: r.expr === undefined ? undefined : null,
                       })
@@ -488,7 +494,7 @@ export function FilterControl({
                     </SelectTrigger>
                     <SelectContent>
                       {ops.map((o) => (
-                        <SelectItem key={o} value={o}>
+                        <SelectItem key={o} value={o} className={allowed.includes(o) ? undefined : "text-muted-foreground"}>
                           {opLabel(col, o)}
                         </SelectItem>
                       ))}
@@ -560,7 +566,7 @@ export function FilterControl({
             className="h-8 text-xs"
             disabled={filterable.length === 0}
             onClick={() =>
-              setDraft((d) => [...d, { field: filterable[0]?.key ?? "", op: opsFor(filterable[0])[0], value: "" }])
+              setDraft((d) => [...d, { field: filterable[0]?.key ?? "", op: opsOf(filterable[0])[0], value: "" }])
             }
           >
             <Plus className="size-3.5" aria-hidden />
