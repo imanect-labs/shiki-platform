@@ -190,8 +190,8 @@ pub async fn build_catalog_from(
 }
 
 /// 承認（human.approval）・状態を進める（data.transition）・状態の変化のきっかけ・同じレコードを探す列と足す数
-/// （キーで追加か更新・まとめて登録の照合・レコードの更新の足す数・GAP-16）が束縛するテーブルを保存者の見え方で
-/// 引いて、V4 の材料にする（GAP-08・BUG-105）。
+/// （キーで追加か更新・まとめて登録の照合・レコードの更新の足す数・GAP-16）・データを検索の列（BUG-244）が束縛する
+/// テーブルを保存者の見え方で引いて、V4 の材料にする（GAP-08・BUG-105）。
 ///
 /// IR にそのどれも無ければ `None`（照合しない）。見えないテーブルは入れない（V4 が「見つからないか状態の進め方が
 /// ない」と同じ文言で止める）。FSM の状態は状態の列の選択肢（FSM の保存時にこれと一致することを data が
@@ -242,6 +242,8 @@ pub async fn fsm_tables(
         of_type(n, NodeType::DataRecordUpsert)
             || (of_type(n, NodeType::DataBulkUpsert) && has("/params/match_on"))
             || (of_type(n, NodeType::DataRecordUpdate) && has("/params/add"))
+            // データを検索の絞り込み・並べ替え・まとめ・集計の列（BUG-244）。
+            || (of_type(n, NodeType::DataQuery) && has("/params/query"))
     };
     let uses = nodes().any(|n| {
         of_type(n, NodeType::HumanApproval) || of_type(n, NodeType::DataTransition) || keyed(n)
@@ -303,6 +305,8 @@ pub async fn fsm_tables(
                 status_field,
                 fields,
                 unique,
+                // データを検索の列は、実行時の束縛と同じ data の判定で照らす（保存者の見え方の定義・BUG-244）。
+                schema: Some(table.schema),
             },
         );
     }

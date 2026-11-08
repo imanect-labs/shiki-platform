@@ -129,6 +129,7 @@ fn catalog(s: &Value) -> Catalog {
                 status_field,
                 fields,
                 unique: std::collections::BTreeSet::new(),
+                schema: None,
             };
             (table_id(t["ref"].as_str().unwrap()), table)
         })

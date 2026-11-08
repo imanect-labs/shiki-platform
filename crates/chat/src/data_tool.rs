@@ -546,6 +546,15 @@ fn format_schema(
         if f.unique {
             out.push_str("（重複を許さない）");
         }
+        // 絞り込み・並べ替え・まとめに使える列（重複を許さない列のほか）と、部分一致で探せる列。判定は実行時の束縛と
+        // 同じ data の関数（ワークフローの保存時の照合も同じ・BUG-244）。
+        let usable = |at| data::check_field_use(&table.schema, &f.key, at).is_ok();
+        if !f.unique && usable(data::FieldUse::Filter(data::CondOp::Eq)) {
+            out.push_str("（索引あり）");
+        }
+        if usable(data::FieldUse::Filter(data::CondOp::Contains)) {
+            out.push_str("（部分一致で探せる）");
+        }
         if let Some(to) = f.ref_table {
             match ref_names.get(&to) {
                 // 見えないリンク先は名前も書き方も出さない（その JOIN は必ず拒否される）。
@@ -577,7 +586,8 @@ fn format_schema(
         out.push('\n');
     }
     out.push_str(
-        "システム列: _created_at / _updated_at / _owner（絞り込み・並べ替えに使える）、_id（行の id・SELECT と JOIN の ON だけ）\n",
+        "システム列: _created_at / _updated_at / _owner（絞り込み・並べ替えに使える）、_id（行の id・SELECT と JOIN の ON だけ）\n\
+         絞り込み・並べ替え・まとめ（group_by・aggregate）に使えるのは、（索引あり）か（重複を許さない）と出る列とシステム列だけ（ほかの列は data_query でもワークフローの data.query でも断られる）。部分一致（contains・ends_with）は（部分一致で探せる）と出る列だけ。\n",
     );
     // 読めない列の有無・件数は書かない（列の存在オラクルを作らない・検証 2-B-P2-1）。
     out
@@ -589,7 +599,7 @@ impl Tool for DataSchemaTool {
         ToolName::DataSchema.as_str()
     }
     fn description(&self) -> &'static str {
-        "テーブルの列（参照名・型・表示名・選択肢・状態の列・リンク先）を調べる（読み取り専用）。data_query の \
+        "テーブルの列（参照名・型・表示名・選択肢・索引・状態の列・リンク先）を調べる（読み取り専用）。data_query の \
          SQL の列名（filter / sort / select も同じ）や data_record_write の値には、ここで得た参照名を使う。table は \
          data_query の一覧の名前か id。"
     }

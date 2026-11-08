@@ -4331,3 +4331,152 @@ async fn tables_and_folders_named_by_blocks_must_be_visible_on_save() {
     env.cleanup().await;
     env.delete_store().await;
 }
+
+impl Env {
+    /// 保存時の照合の答えを集める口（検証 API・保存 API・AI の emit_workflow）を組む（承認と同じ材料・保存者の見え方）。
+    fn emit_tool(&self) -> chat::EmitWorkflowTool {
+        let source = api::workflow_catalog::ApiWorkflowCatalogSource::new(
+            None,
+            None,
+            api::workflow_catalog::WorkflowModels::new(None, Vec::new()),
+        )
+        .with_data(Arc::clone(&self.data));
+        chat::EmitWorkflowTool::new(Arc::new(self.workflows.clone()), Arc::new(source))
+    }
+}
+
+/// BUG-244: データを検索（data.query）の絞り込み・並べ替え・まとめ・集計の列は、実行時の束縛と同じ data の判定で
+/// 保存時に照らす。索引の無い列（金額）は書いた位置を指して `ir.field_not_indexed` で止まり、同じクエリは data の
+/// 読取でも `field_not_indexed` で断られる。索引のある列（状態・承認者）とシステムの列は通る。読めない列（メモ・bob）は
+/// 無い列と同じ答えになる（検証 API・保存 API・emit_workflow のどれでも）。テーブルを参照で決めるノードは照らさない。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn data_query_columns_are_checked_like_the_runner_on_save() {
+    let _serial = SERIAL.lock().await;
+    let Some(env) = setup().await else { return };
+    let expense = env.expense_table().await;
+    let tool = env.emit_tool();
+    let wf = |table: Value, query: Value| {
+        json!({
+            "ir_version": 1, "name": "query-columns",
+            "triggers": [{ "kind": "interactive" }],
+            "nodes": [{ "id": "read", "type": "data.query",
+                        "params": { "table": table, "query": query } }],
+            "edges": []
+        })
+    };
+    let ir = |query: Value| wf(json!(expense.to_string()), query);
+    let filter =
+        |field: &str| json!({ "filter": { "cmp": { "field": field, "op": "eq", "value": "x" } } });
+    let codes = |v: &[(&str, &str)]| -> Vec<(String, String)> {
+        v.iter()
+            .map(|(c, p)| ((*c).to_string(), (*p).to_string()))
+            .collect()
+    };
+    // 索引のある列とシステムの列は通る。
+    for ok in [
+        json!({ "filter": { "all": [
+                    { "cmp": { "field": "status", "op": "eq", "value": "draft" } },
+                    { "cmp": { "field": "approver", "op": "exists" } } ] },
+                "sort": [{ "field": "_created_at", "descending": true }] }),
+        json!({ "group_by": ["status"], "aggregate": [{ "metric": "count" }] }),
+    ] {
+        assert_eq!(
+            env.v4_codes(&env.alice, &ir(ok.clone())).await,
+            vec![],
+            "{ok}"
+        );
+    }
+    // 索引の無い列は、書いた位置を指して止まる。
+    let not_indexed = [
+        (
+            json!({ "filter": { "not": { "cmp": { "field": "amount", "op": "gt", "value": 1000 } } } }),
+            "/params/query/filter/not/cmp/field",
+        ),
+        (
+            json!({ "sort": [{ "field": "amount" }] }),
+            "/params/query/sort/0/field",
+        ),
+        (
+            json!({ "group_by": ["title"], "aggregate": [{ "metric": "count" }] }),
+            "/params/query/group_by/0",
+        ),
+        (
+            json!({ "aggregate": [{ "metric": "sum", "field": "amount" }] }),
+            "/params/query/aggregate/0/field",
+        ),
+    ];
+    for (query, path) in not_indexed {
+        assert_eq!(
+            env.v4_codes(&env.alice, &ir(query.clone())).await,
+            codes(&[("ir.field_not_indexed", path)]),
+            "{query}"
+        );
+        // 実行時も同じ列を同じ理由で断る（data の読取の束縛・同じ判定）。
+        let q: data::DataQuery = serde_json::from_value(query.clone()).unwrap();
+        let e = env
+            .data
+            .run_query(&env.alice, expense, &q, None)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            e.invalid_code(),
+            Some(data::InvalidCode::FieldNotIndexed),
+            "{query}"
+        );
+    }
+    // 保存 API と emit_workflow も同じ照合で止める。
+    let refused = env
+        .v4_answers(
+            &tool,
+            &env.alice,
+            &ir(json!({ "sort": [{ "field": "amount" }] })),
+            "",
+        )
+        .await;
+    assert!(
+        refused[0].contains("ir.field_not_indexed"),
+        "{}",
+        refused[0]
+    );
+    assert!(
+        refused[1].starts_with("400 ") && refused[1].contains("ir.field_not_indexed"),
+        "{}",
+        refused[1]
+    );
+    assert!(
+        refused[2].starts_with("true ") && refused[2].contains("ir.field_not_indexed"),
+        "{}",
+        refused[2]
+    );
+    // メモは alice（owner）には読める索引の無い列、bob には読めない列で、無い列と同じ答え。
+    assert_eq!(
+        env.v4_codes(&env.alice, &ir(filter("memo"))).await,
+        codes(&[("ir.field_not_indexed", "/params/query/filter/cmp/field")])
+    );
+    let unreadable = env
+        .v4_answers(&tool, &env.bob, &ir(filter("memo")), "memo")
+        .await;
+    let missing = env
+        .v4_answers(&tool, &env.bob, &ir(filter("zz_nope")), "zz_nope")
+        .await;
+    assert_eq!(unreadable, missing, "読めない列と無い列で答えが違う");
+    assert!(
+        unreadable[0].contains("ir.unknown_field"),
+        "{}",
+        unreadable[0]
+    );
+    // テーブルを参照で決めるノードは実行まで照らさない。
+    assert_eq!(
+        env.v4_codes(
+            &env.alice,
+            &wf(
+                json!({ "$from": "input", "path": "/table" }),
+                filter("amount")
+            )
+        )
+        .await,
+        vec![]
+    );
+    env.cleanup().await;
+    env.delete_store().await;
+}

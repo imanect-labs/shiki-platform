@@ -39,6 +39,9 @@ pub struct CatalogTable {
     pub fields: BTreeMap<String, String>,
     /// 保存者に読める列のうち、重複を許さない列（unique）の参照名（同じレコードを探す列の照合・GAP-16）。
     pub unique: std::collections::BTreeSet<String>,
+    /// 保存者の見え方の定義（読めない列を外したもの・`DataStore::get_table_for_viewer`）。データを検索の列を
+    /// 実行時の束縛と同じ data の判定（`data::check_field_use`）で照らす（BUG-244）。`None` は照合しない。
+    pub schema: Option<data::TableSchema>,
 }
 
 /// 承認ノードと、その params（契約に合わないものは V1b が報告するので飛ばす）。
@@ -293,6 +296,7 @@ mod tests {
                         .map(|(k, t)| ((*k).to_string(), (*t).to_string()))
                         .collect(),
                     unique: BTreeSet::new(),
+                    schema: None,
                 },
             )])),
             ..Catalog::default()

@@ -396,6 +396,16 @@ async fn data_query_returns_only_rows_and_columns_the_speaker_can_read() {
         "{}",
         out.content
     );
+    // 索引のある列に印を付け、絞り込み・並べ替え・まとめに使える列の決まりを書く（索引の無い件名には付けない・BUG-244）。
+    assert!(
+        out.content.contains("- amount: number — 金額（索引あり）")
+            && out.content.contains("- title: text — title\n")
+            && out
+                .content
+                .contains("使えるのは、（索引あり）か（重複を許さない）と出る列とシステム列だけ"),
+        "{}",
+        out.content
+    );
     let out = DataSchemaTool::new(f.data.clone(), tools_for(&f, &carol).await)
         .call(&carol, json!({ "table": "経費" }), None)
         .await

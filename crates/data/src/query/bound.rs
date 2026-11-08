@@ -3,7 +3,8 @@
 //! 外部の参照名（key）を内部 ID（`field_id`）へ解決し、型ごとに値を正規化した式 [`Expr`] を作る。
 //! ここを通らない条件はコンパイラに届かない（未宣言・未索引・型不整合・マスク列は実行前に拒否）。
 //!
-//! - filter / sort / group_by / aggregate の対象は `indexed || unique` 宣言済みのみ（400）
+//! - filter / sort / group_by / aggregate の対象は `indexed || unique` 宣言済みのみ（400）。列を書く位置ごとの規則は
+//!   [`super::field_use`]（ワークフローの保存時の照合と同じ関数・BUG-244）
 //! - マスク列は filter / sort / group_by / aggregate / search のいずれにも出せない（**403**・PIT-19）。
 //!   存在しない列も**同じ** 403 `field_unavailable`（列の存在オラクルを作らない・data-platform §16.1）
 //! - `contains` / `ends_with` / 横断検索は `searchable` 宣言済みの text 列のみ（trigram GIN を要する）。
@@ -521,6 +522,16 @@ impl<'a> Binder<'a> {
         self.resolve(key, Need::Searchable)
     }
 
+    /// 比較の列を解決する（部分一致〔`contains` / `ends_with`〕は検索索引で、ほかは値索引で引く）。演算子が列に
+    /// 合うかは [`super::field_use::op_fits`]（[`compare`] が確かめる）。
+    pub(crate) fn cmp_field(&mut self, key: &str, op: CondOp) -> Result<BField, DataError> {
+        if matches!(op, CondOp::Contains | CondOp::EndsWith) {
+            self.searchable(key)
+        } else {
+            self.queryable(key)
+        }
+    }
+
     fn resolve(&mut self, key: &str, need: Need) -> Result<BField, DataError> {
         if self.masked.contains(key) {
             return Err(DataError::FieldUnavailable);
@@ -657,11 +668,7 @@ impl<'a> Binder<'a> {
                         format!("条件が多すぎます（最大 {MAX_CONDITION_LEAVES}）"),
                     ));
                 }
-                let f = if matches!(cmp.op, CondOp::Contains | CondOp::EndsWith) {
-                    self.searchable(&cmp.field)?
-                } else {
-                    self.queryable(&cmp.field)?
-                };
+                let f = self.cmp_field(&cmp.field, cmp.op)?;
                 compare(&f, cmp.op, cmp.value.as_ref())?
             }
         })
@@ -769,6 +776,8 @@ fn check_derived_text_operands(f: &BField, e: &Expr) -> Result<(), DataError> {
 }
 
 fn compare_inner(f: &BField, op: CondOp, value: Option<&Value>) -> Result<Expr, DataError> {
+    // 演算子が列に合うか（値に依らない誤り・保存時の照合と同じ規則・BUG-244）。
+    super::field_use::op_fits(f, op)?;
     let key = &f.key;
     let need = || {
         DataError::input_detail(
@@ -813,13 +822,6 @@ fn compare_inner(f: &BField, op: CondOp, value: Option<&Value>) -> Result<Expr, 
             leaf(Leaf::In(vals))
         }
         CondOp::Lt | CondOp::Lte | CondOp::Gt | CondOp::Gte => {
-            if f.multi() {
-                return Err(DataError::input_detail(
-                    crate::InvalidCode::FieldNotSortable,
-                    Some(key),
-                    format!("'{key}'（多値・リンク）に大小比較は使えません"),
-                ));
-            }
             let v = scalar(f, value.ok_or_else(need)?)?;
             let (lo, hi) = match op {
                 CondOp::Lt => (None, Some((v, false))),
@@ -830,13 +832,6 @@ fn compare_inner(f: &BField, op: CondOp, value: Option<&Value>) -> Result<Expr, 
             leaf(Leaf::Range { lo, hi })
         }
         CondOp::StartsWith | CondOp::Contains | CondOp::EndsWith => {
-            if !matches!(f.kind, FieldKind::Text | FieldKind::Multi) {
-                return Err(DataError::input_detail(
-                    crate::InvalidCode::ValueTypeMismatch,
-                    Some(key),
-                    format!("'{key}' は文字列の部分一致に使えません"),
-                ));
-            }
             let s = value.and_then(Value::as_str).ok_or_else(|| {
                 DataError::input_detail(
                     crate::InvalidCode::ValueTypeMismatch,
@@ -853,11 +848,6 @@ fn compare_inner(f: &BField, op: CondOp, value: Option<&Value>) -> Result<Expr, 
             }
             match op {
                 CondOp::StartsWith => leaf(Leaf::StartsWith(s.to_string())),
-                _ if !f.searchable => Err(DataError::input_detail(
-                    crate::InvalidCode::FieldNotIndexed,
-                    Some(key),
-                    format!("'{key}' は部分一致検索の対象ではありません"),
-                )),
                 CondOp::Contains => leaf(Leaf::Contains(s.to_string())),
                 _ => leaf(Leaf::EndsWith(s.to_string())),
             }

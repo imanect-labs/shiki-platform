@@ -105,6 +105,7 @@ mod tests {
                 status_field: Some("status".into()),
                 fields: BTreeMap::new(),
                 unique: std::collections::BTreeSet::new(),
+                schema: None,
             },
         );
         // 見えるが FSM で管理していない（状態の列を読めないテーブルも states が None）。

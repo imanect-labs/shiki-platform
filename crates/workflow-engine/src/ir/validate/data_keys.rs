@@ -23,7 +23,7 @@ pub const ADD_NOT_NUMBER: &str = "ir.add_not_number";
 const UNKNOWN_FIELD: &str = "ir.unknown_field";
 
 /// 材料のテーブル（リテラルの UUID で選び、保存者に見えるものだけ）。
-fn table_of<'a>(catalog: &'a Catalog, params: &Value) -> Option<&'a CatalogTable> {
+pub(super) fn table_of<'a>(catalog: &'a Catalog, params: &Value) -> Option<&'a CatalogTable> {
     let raw = params.get("table")?.as_str()?;
     let key = uuid::Uuid::parse_str(raw).ok()?.hyphenated().to_string();
     catalog.tables.as_ref()?.get(&key)
