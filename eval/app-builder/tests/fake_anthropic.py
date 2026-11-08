@@ -111,7 +111,7 @@ def _end(stop: str, out: int, details: dict | None = None) -> list[dict]:
     ]
 
 
-def events_emit(ir: dict, *, input_tokens: int = 1200, out: int = 800) -> list[dict]:
+def events_emit(ir: dict | str, *, input_tokens: int = 1200, out: int = 800) -> list[dict]:
     """思考 → 短い文 → emit_workflow の呼び出し（停止理由 tool_use）。"""
     return [
         _start(input_tokens),

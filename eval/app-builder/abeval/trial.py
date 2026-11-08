@@ -15,6 +15,7 @@
 
 from __future__ import annotations
 
+import json
 import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -284,12 +285,21 @@ def assign_roles(
     return out, [r.role for r in task.roles if r.role not in out]
 
 
+def input_ir(inp: Any) -> dict | None:
+    """emit_workflow の入力の `ir` を読む（読めなければ None）。オブジェクトのほか、JSON として読むとオブジェクトに
+    なる文字列も受ける（製品の `chat::workflow_tool::ir_of` と同じく 1 段だけ・GAP-119）。
+
+    製品が文字列を受けるのは 7m の版（vf）から。それより前の版は文字列を断るが、記録にある文字列の ir はどれも JSON
+    として読めない（2026-11-08 に数えた 143 件）ので、前の版の結果は変わらない。"""
+    ir = inp.get("ir") if isinstance(inp, Mapping) else None
+    if isinstance(ir, str):
+        try:
+            ir = json.loads(ir)
+        except ValueError:
+            return None
+    return dict(ir) if isinstance(ir, Mapping) else None
+
+
 def emitted_irs(tool_uses: Sequence[Mapping]) -> list[dict]:
-    """emit_workflow の呼び出しの入力から IR を取り出す（形の違うものは飛ばす）。"""
-    out = []
-    for tu in tool_uses:
-        inp = tu.get("input")
-        ir = inp.get("ir") if isinstance(inp, Mapping) else None
-        if isinstance(ir, Mapping):
-            out.append(dict(ir))
-    return out
+    """emit_workflow の呼び出しの入力から IR を取り出す（形の違うものは飛ばす・読み方は `input_ir`）。"""
+    return [ir for tu in tool_uses if (ir := input_ir(tu.get("input"))) is not None]

@@ -97,6 +97,10 @@ def test_request_shape():
     "events,status",
     [
         (events_emit({"ir_version": 1, "nodes": [], "edges": []}), "emit"),
+        # JSON の文字列の ir も、読むとオブジェクトになれば製品が受ける（GAP-119）。壊れた文字列は受けない。
+        (events_emit('{"ir_version": 1, "nodes": [], "edges": []}'), "emit"),
+        (events_emit('{"ir_version": 1, "nodes": []}}'), "no_emit"),
+        (events_emit('["not", "an", "object"]'), "no_emit"),
         (events_text(), "no_emit"),
         (events_ask(), "asked"),
         (events_max_tokens({"ir_version": 1, "nodes": []}), "truncated"),

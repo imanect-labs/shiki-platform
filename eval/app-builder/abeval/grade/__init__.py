@@ -17,4 +17,7 @@
 #    stub の配管が、同じ日付の名前のファイルに `name_taken` でぶつかって S2d を誤って真にしていた）。
 # 9: llm_dependent の run_case を stub で流して LLM の手前で打ち切るときは、「入力が届かない」を見ない（LLM の後で
 #    だけ入力を使う正しい形を誤って落としていた）。
-GRADER_VERSION = 9
+# 10: emit_workflow の `ir` が JSON の文字列でも、読むとオブジェクトになれば IR として数える（製品が 7m〔vf〕から
+#     受ける・GAP-119。Mode A の生成の分け方と Mode B の S6 の `abeval.no_ir`）。記録にある文字列の ir はどれも
+#     読めないので、前の結果の数は変わらない。
+GRADER_VERSION = 10

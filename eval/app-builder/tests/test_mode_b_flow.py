@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import copy
+import json
 
 from abeval import mode_b
 from fake_chat import ChatFake, RunScript, text_message
@@ -211,6 +212,32 @@ def test_validation_errors_are_counted_by_revalidating_emit_inputs():
     }
     assert s6["tool_search_used"] and s6["emit_loaded"] and s6["steps"] == 3
     assert trial["s8"]["claimed_without_save"]
+
+
+def test_a_json_string_ir_is_revalidated_and_a_broken_one_counts_as_no_ir():
+    """製品は JSON として読むとオブジェクトになる文字列の ir も受ける（GAP-119）。S6 もそれを読んで確かめ直し、
+    読めない文字列だけを `abeval.no_ir` に数える。"""
+    bad = {"ir_version": 1, "name": "x", "nodes": [], "edges": [], "bad": True}
+    fake = ChatFake(validator=lambda ir: [{"code": "ir.bad_ref"}] if ir.get("bad") else [])
+    msgs = [
+        {
+            "role": "assistant",
+            "content": [
+                tool_call("e1", "emit_workflow", {"ir": json.dumps(bad)}, step=1),
+                tool_result("e1", False, "検証に失敗しました"),
+                tool_call("e2", "emit_workflow", {"ir": json.dumps(bad) + "}"}, step=2),
+                tool_result("e2", False, "ir の文字列を JSON として読めませんでした"),
+                {"type": "text", "text": "直せませんでした。"},
+            ],
+        }
+    ]
+    fake.scripts.append(RunScript(messages=msgs))
+    trial, _ = mode_b.run_trial(
+        make_ctx(fake), TASKS["basic-summary-file"], spec("basic-summary-file")
+    )
+    s6 = trial["s6"]
+    assert s6["emit_count"] == 2 and s6["validation_errors"] == 2
+    assert s6["validation_codes"] == {"abeval.no_ir": 1, "ir.bad_ref": 1}
 
 
 def test_message_arguments_by_condition():

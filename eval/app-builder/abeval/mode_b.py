@@ -110,6 +110,7 @@ from abeval.trial import (
     assign_roles,
     canonical,
     concrete,
+    input_ir,
     is_question,
     placeholder_ids,
     prompt_text,
@@ -430,8 +431,8 @@ def round_trips(ctx: ModeBContext, t: Transcript, max_steps: int) -> dict:
     error_codes: Counter = Counter()
     errors = 0
     for c in emits:
-        ir = c.get("input", {}).get("ir") if isinstance(c.get("input"), Mapping) else None
-        if not isinstance(ir, Mapping):
+        ir = input_ir(c.get("input"))
+        if ir is None:
             error_codes["abeval.no_ir"] += 1
             errors += 1
             continue
