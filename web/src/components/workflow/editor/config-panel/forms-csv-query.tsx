@@ -24,6 +24,7 @@ import {
   type SchemaResponse,
   type TableResponse,
 } from "@/lib/tabular-api";
+import { nodeErrorView } from "../validation";
 import { BLANK_PICK_MESSAGE, BLANK_REQUIRED_MESSAGE, Field } from "./common";
 import type { FormProps } from "./forms-basic";
 import {
@@ -38,6 +39,7 @@ import {
 } from "./forms-files";
 import { paramsOf, patchParams } from "./params";
 import { ValueExprInput } from "./value-expr-input";
+import { valueAtParamsPath } from "./value-refs";
 
 /// 「CSV を集計」のファイルの選び方（CSV と Excel・D-17）。
 const CSV_QUERY_PICKER = {
@@ -452,10 +454,26 @@ function CsvTablesField(props: FormProps & { primaryExcel: boolean }) {
     items.some((_, i) => fieldErrors.has(`tables/${i}`))
       ? undefined
       : listError;
-  // 行のファイルの欄の誤り。空なら「選んでください」（ほかの選ぶ欄と同じ・保存時の注意を待たない）。
+  // 行のファイルの欄の誤り。保存時の誤りのうち名前を指すもの（`/params/tables/{i}/name`）は名前の欄の下に出すので、
+  // ファイルの欄へは渡さない（ファイルの下に名前の誤りを重ねない・GAP-126）。空なら「選んでください」（ほかの選ぶ欄と
+  // 同じ・保存時の注意を待たない）。
+  const nameAt = (i: number) => `/params/tables/${i}/name`;
+  const rowCheck = (i: number) => ({ ...serverCheck, errors: serverCheck.errors.filter((e) => e.path !== nameAt(i)) });
   const rowErrors = (i: number, t: TableItem) => {
-    if (fieldErrors.has(`tables/${i}`) || !fileBlank(t)) return fieldErrors;
-    return new Map(fieldErrors).set(`tables/${i}`, BLANK_PICK_MESSAGE);
+    const param = `tables/${i}`;
+    const map = new Map(fieldErrors);
+    map.delete(param);
+    const fileError = nodeErrorView(rowCheck(i).errors).fields.get(param);
+    if (fileError) map.set(param, fileError);
+    else if (fileBlank(t)) map.set(param, BLANK_PICK_MESSAGE);
+    return map;
+  };
+  // 名前の欄の保存時の誤り。手元の判定（`tableNameError`）が先で、手元で気づけない誤りだけを出す。確かめた時点の名前が
+  // いまの名前と違えば出さない（直した後に古い誤りを残さない）。
+  const serverNameError = (i: number, t: TableItem): string | null => {
+    if (valueAtParamsPath(serverCheck.node?.params, nameAt(i)) !== t.name) return null;
+    const at = serverCheck.errors.filter((e) => e.path === nameAt(i));
+    return nodeErrorView(at).fields.get(`tables/${i}`) ?? null;
   };
   const example = items.find((t) => typeof t.name === "string" && isValidTableName(t.name))?.name as string | undefined;
   const picker = (
@@ -496,7 +514,7 @@ function CsvTablesField(props: FormProps & { primaryExcel: boolean }) {
           </p>
           <ul ref={listRef} className="space-y-2">
             {items.map((t, i) => {
-              const nameError = tableNameError(items, i);
+              const nameError = tableNameError(items, i) ?? serverNameError(i, t);
               const nth = `${i + 1} つ目`;
               return (
                 <li key={rowKeys.keys[i]} className="min-w-0 space-y-1.5 rounded-md border p-2" data-testid="csv-table">
@@ -548,7 +566,7 @@ function CsvTablesField(props: FormProps & { primaryExcel: boolean }) {
                     refCandidates={refCandidates}
                     inMapRegion={inMapRegion}
                     fieldErrors={rowErrors(i, t)}
-                    serverCheck={serverCheck}
+                    serverCheck={rowCheck(i)}
                     param={`tables/${i}`}
                     path={`tables/${i}/file`}
                     label={`${nth}のつなぐ CSV`}

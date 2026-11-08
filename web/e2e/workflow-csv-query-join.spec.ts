@@ -128,8 +128,21 @@ test("CSV を集計: つなぐ CSV を足し、名前を付けて SQL でつな�
     await expect(row).toContainText("data は集計するファイルの名前です。ほかの名前にしてください。");
     await expect(panel.getByRole("button", { name: "試しに実行" })).toBeDisabled();
     await expect(panel.getByText("つなぐ CSV の名前とファイルを直すと試せます")).toBeVisible();
+    // 保存時の確かめも同じ名前を断るが、名前の欄の下に 1 回だけ言い、ファイルの欄の下には重ねない（GAP-126）。
+    const validated = page.waitForResponse(
+      (r) =>
+        r.url().endsWith("/api/workflows/validate") &&
+        r.request().method() === "POST" &&
+        (r.request().postData() ?? "").includes('"Master"'),
+    );
     await name.fill("Master");
     await expect(row).toContainText("英小文字・数字・_ で書き、先頭は数字以外にしてください。");
+    expect(JSON.stringify(await (await validated).json())).toContain("/params/tables/0/name");
+    // 応答が画面に当たるのを待ってから数える。
+    await page.waitForTimeout(1_000);
+    await expect(row.getByText(/先頭は数字以外/)).toHaveCount(1);
+    await expect(row.getByText(/SQL での名前「Master」は使えません/)).toHaveCount(0);
+    if (SHOTS) await panel.screenshot({ path: `${SHOTS}/csv-query-join-name-error-pc.png` });
     await name.fill("master");
     await expect(row).not.toContainText("先頭は数字以外");
     await expect(tables).toContainText("例: SELECT * FROM data JOIN master ON …");
