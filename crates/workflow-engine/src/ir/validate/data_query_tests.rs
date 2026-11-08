@@ -134,6 +134,52 @@ fn columns_without_an_index_are_refused_where_written() {
     );
 }
 
+/// 件数（count）は列を読まない（実行時の束縛は field を見ずに件数を返す・SQL の COUNT(列) もこの形）ので、count に
+/// 索引の無い列・数でない列・無い列を書いても止めない（aggregate・having・group_sort のどれでも）。合計などは止める。
+#[test]
+fn count_reads_no_column() {
+    let count = |field: &str| json!({ "metric": "count", "field": field });
+    let ir = ir(json!([
+        query_node(
+            "count",
+            json!(ITEMS),
+            json!({
+                "group_by": ["sku"],
+                "aggregate": [ count("memo"), count("name"), count("nope"), count("id") ],
+                "having": { "all": [ { "cmp": { "metric": count("memo"), "op": "gt", "value": 1 } } ] },
+                "group_sort": [ { "metric": count("memo"), "descending": true } ]
+            })
+        ),
+        query_node(
+            "sum",
+            json!(ITEMS),
+            json!({
+                "group_by": ["sku"],
+                "aggregate": [ { "metric": "count" } ],
+                "having": { "cmp": { "metric": { "metric": "sum", "field": "memo" }, "op": "gt", "value": 1 } },
+                "group_sort": [ { "metric": { "metric": "max", "field": "name" } } ]
+            })
+        )
+    ]));
+    let mut errors = Vec::new();
+    v4(&ir, &catalog(), &mut errors);
+    assert_eq!(
+        located(&errors),
+        vec![
+            (
+                FIELD_NOT_INDEXED,
+                "sum",
+                "/params/query/having/cmp/metric/field"
+            ),
+            (
+                FIELD_NOT_USABLE,
+                "sum",
+                "/params/query/group_sort/0/metric/field"
+            ),
+        ]
+    );
+}
+
 /// 無い列と読めない列は同じ `ir.unknown_field`（同じ文言）。部分一致は検索の対象の列だけ、逆向きのリンク・複数の値の
 /// 並べ替え・システムの列のまとめ・数でない列の集計は使えない。
 #[test]

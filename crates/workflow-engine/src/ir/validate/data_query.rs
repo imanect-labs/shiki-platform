@@ -8,11 +8,14 @@
 //!
 //! 材料は承認と同じ [`Catalog::tables`] の、保存者の見え方の定義（[`super::CatalogTable::schema`]・読めない列は
 //! 入らない）。読めない列は無い列と同じ `ir.unknown_field`（同じ文言・data-platform §16.1）。テーブルを参照で決める
-//! ノード・材料に無い（見えない）テーブル・定義の無い材料は照合しない。リンクの条件（`link`）と結合先の列
-//! （`別名.参照名`）は、つないだ先の定義が要るので照合しない。比べる値（`$from` を書ける）は実行時に確かめる。
+//! ノード・材料に無い（見えない）テーブル・定義の無い材料は照合しない。リンクの条件（`link`）と、まとめる列・集計の列の
+//! 結合先の列（`別名.参照名`）は、つないだ先の定義が要るので照合しない（並べ替えと絞り込みは結合先の列を使えないので、
+//! 実行と同じく止める）。件数（`count`）の指標の `field` は、実行で読まないので照合しない（実行時の束縛の
+//! `bind_metric` と同じ）。比べる値（`$from` を書ける）は実行時に確かめる。
 
 use data::{
-    CondOp, Condition, DataError, DataQuery, FieldUse, HavingCond, InvalidCode, TableSchema,
+    CondOp, Condition, DataError, DataQuery, FieldUse, HavingCond, InvalidCode, Metric, MetricSpec,
+    TableSchema,
 };
 use serde_json::Value;
 
@@ -87,7 +90,7 @@ fn uses(q: &DataQuery) -> Vec<Use> {
         );
     }
     for (i, m) in q.aggregate.iter().enumerate() {
-        if let Some(f) = &m.field {
+        if let Some(f) = metric_field(m) {
             let path = format!("/params/query/aggregate/{i}/field");
             push_base(&mut out, path, f, FieldUse::Metric);
         }
@@ -96,12 +99,21 @@ fn uses(q: &DataQuery) -> Vec<Use> {
         having_uses(h, "/params/query/having", &mut out);
     }
     for (i, k) in q.group_sort.iter().enumerate() {
-        if let Some(f) = k.metric.as_ref().and_then(|m| m.field.as_ref()) {
+        if let Some(f) = k.metric.as_ref().and_then(metric_field) {
             let path = format!("/params/query/group_sort/{i}/metric/field");
             push_base(&mut out, path, f, FieldUse::Metric);
         }
     }
     out
+}
+
+/// 指標が読む列。件数（`count`）は `field` を書いても読まない（実行時の束縛 `bind_metric` が `field` を見ずに返す。
+/// SQL の `COUNT(列)` もこの形になる）ので照らさない。
+fn metric_field(m: &MetricSpec) -> Option<&String> {
+    if m.metric == Metric::Count {
+        return None;
+    }
+    m.field.as_ref()
 }
 
 /// FROM の表の列だけを足す（結合先の `別名.参照名` は照合しない）。
@@ -153,7 +165,7 @@ fn having_uses(h: &HavingCond, at: &str, out: &mut Vec<Use>) {
         }
         HavingCond::Not(x) => having_uses(x, &format!("{at}/not"), out),
         HavingCond::Cmp(cmp) => {
-            if let Some(f) = &cmp.metric.field {
+            if let Some(f) = metric_field(&cmp.metric) {
                 push_base(out, format!("{at}/cmp/metric/field"), f, FieldUse::Metric);
             }
         }
