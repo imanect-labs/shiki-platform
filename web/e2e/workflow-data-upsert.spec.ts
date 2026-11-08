@@ -167,6 +167,18 @@ test("「レコードを追加か更新」は同じ品番で 2 回実行して�
   const add = panel.locator('[data-value-expr="足す数（省略可）"]');
   await expect(add.getByRole("group", { name: "在庫（stock）", exact: true })).toBeVisible();
   await expect(panel.getByText("入力してください", { exact: true })).toHaveCount(0);
+  // 足す数の値の入れ方に「文章に値を差し込む」は出さない（組み立てた値は文字になり、保存で止まる・BUG-245）。欄その
+  // ものも、列ごとの値の欄も同じ。
+  const modes = add.getByRole("combobox", { name: "値の入れ方" });
+  await expect(modes).toHaveCount(2);
+  for (const mode of [modes.first(), modes.last()]) {
+    await mode.click();
+    const list = page.getByRole("listbox");
+    await expect(list.getByRole("option", { name: "入力や結果から選ぶ" })).toBeVisible();
+    await expect(list.getByRole("option", { name: "文章に値を差し込む" })).toHaveCount(0);
+    await page.keyboard.press("Escape");
+    await expect(list).toHaveCount(0);
+  }
   await add.scrollIntoViewIfNeeded();
   if (SHOTS) await page.screenshot({ path: `${SHOTS}/upsert-panel-pc.png` });
 

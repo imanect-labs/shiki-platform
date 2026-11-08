@@ -199,6 +199,9 @@ type Props = {
   /// 固定値を文字か数だけで書く欄（日付・ずらす数など・GAP-15）。「JSON で入れる」を出さない（JSON の値が入って
   /// いて、オンで見せているときは出す）。
   noJson?: boolean;
+  /// 「文章に値を差し込む」を出さない（組み立てた値はいつも文字になるので、数だけを受ける欄では保存で止まる・足す数・
+  /// BUG-245）。組み立ての行の値の欄にも引き継ぐ。いまの値が差し込みなら、外せるように出す。
+  noTemplate?: boolean;
 };
 
 /// 比べる欄の数の注記（条件の比べる値・BUG-31）。
@@ -228,6 +231,7 @@ export function ValueExprInput({
   autoFocus,
   numericNote = COMPARE_NUMBER_NOTE,
   noJson,
+  noTemplate,
 }: Props) {
   const inputFields = React.useContext(InputFieldsContext);
   const triggerSources = React.useContext(TriggerSourcesContext);
@@ -429,6 +433,7 @@ export function ValueExprInput({
       actions={p.actions}
       autoFocus={p.autoFocus}
       keyOrder={order}
+      noTemplate={noTemplate}
     />
   );
   const renderSlot: RenderSlot = (p) => slot(p);
@@ -451,7 +456,7 @@ export function ValueExprInput({
               <SelectValue />
             </SelectTrigger>
             <SelectContent align="end" className="w-auto min-w-[10.5rem]">
-              {(["literal", "from", "template", ...allowed] as Mode[]).map((m) => (
+              {(["literal", "from", ...(noTemplate && mode !== "template" ? [] : ["template"]), ...allowed] as Mode[]).map((m) => (
                 <SelectItem
                   key={m}
                   value={m}

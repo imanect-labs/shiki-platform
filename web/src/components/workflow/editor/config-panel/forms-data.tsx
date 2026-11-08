@@ -248,6 +248,8 @@ function AddField(props: FormProps & { table: DataTable | null; creates?: boolea
         json="object"
         keys={numberKeys(table)}
         numericNote={null}
+        // 組み立てた値は文字になり足せないので、文章の組み立ては出さない（保存で止まる・BUG-245）。
+        noTemplate
         hint={
           creates
             ? "数の列に、この数を足して書きます。減らすときは負の数（-1 など）を入れます。追加するときは 0 に足します。"
