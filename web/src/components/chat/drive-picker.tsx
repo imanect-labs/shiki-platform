@@ -19,6 +19,10 @@ import {
 /// 一覧は next_cursor を消費する無限スクロール（100 件超のフォルダでも辿り着ける）。見えないものが多いドライブのトップ
 /// では、続きを数回たどっても見つからなければ「さらに読み込む」を出す（BUG-187）。
 /// `accept` を渡すと、それに合うファイルだけを並べる（フォルダは常に並べる）。
+///
+/// 閉じたら、開いたときにフォーカスがあった要素（開いたボタンなど）へフォーカスを戻す。開くボタンは Radix の Trigger
+/// ではないので、Radix に任せると、フォーカスがページの先頭（document.body）に落ちてキーボードで位置を見失う
+/// （Radix の Dialog は閉じたときに常に Trigger へ戻そうとし、Trigger が無いと何もしない・BUG-261）。
 export function DrivePicker({
   open,
   onOpenChange,
@@ -37,6 +41,8 @@ export function DrivePicker({
   /// 閉じたときのフォーカスの戻し方（既定は開いたときの要素へ戻す。`preventDefault` して別の要素へ移せる）。
   onCloseAutoFocus?: (event: Event) => void;
 }) {
+  // 開いたときにフォーカスがあった要素（閉じたときに戻す先）。
+  const opener = React.useRef<HTMLElement | null>(null);
   const [stack, setStack] = React.useState<(string | undefined)[]>([undefined]);
   const parentId = stack[stack.length - 1];
 
@@ -58,7 +64,23 @@ export function DrivePicker({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl" onCloseAutoFocus={onCloseAutoFocus}>
+      <DialogContent
+        className="max-w-2xl"
+        // ダイアログの中へフォーカスを移す前に呼ばれるので、まだ開いた元の要素にフォーカスがある。
+        onOpenAutoFocus={() => {
+          const el = document.activeElement;
+          opener.current = el instanceof HTMLElement && el !== document.body ? el : null;
+        }}
+        onCloseAutoFocus={(e) => {
+          onCloseAutoFocus?.(e);
+          const el = opener.current;
+          opener.current = null;
+          // 呼び出し側が別の要素へ移したとき・戻す先が消えたときは、何もしない。
+          if (e.defaultPrevented || !el?.isConnected) return;
+          e.preventDefault();
+          el.focus();
+        }}
+      >
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>{description}</DialogDescription>

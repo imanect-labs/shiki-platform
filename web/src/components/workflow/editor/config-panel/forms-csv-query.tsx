@@ -400,8 +400,9 @@ function useRowKeys(count: number): { keys: readonly number[]; remove: (i: numbe
 /// つなぐ CSV（`tables`・#1037）。足した CSV は、付けた名前の表として SQL で読める（集計するファイルは data）。
 ///
 /// 空のときは「つなぐ CSV を足す」のボタンだけを出す。ドライブから CSV を選ぶと 1 件足し、名前はファイル名から付ける
-/// （英字の無い名前は t1 のような番号）。足した後は足した行の「SQL での名前」へ、選ばずに閉じたら足すボタンへ
-/// フォーカスを戻す。空のときも足した後も同じ根の要素の中に、足すボタンとピッカーを同じ位置で置く（作り直さない）。
+/// （英字の無い名前は t1 のような番号）。足した後は足した行の「SQL での名前」へフォーカスを移し、選ばずに閉じたら
+/// 足すボタンへ戻す（DrivePicker の既定・BUG-261）。空のときも足した後も同じ根の要素の中に、足すボタンとピッカーを
+/// 同じ位置で置く（作り直さない・戻す先のボタンを消さない）。
 /// `tables` 全体を前の結果から指定しているときは、その値の欄を出す。
 function CsvTablesField(props: FormProps & { primaryExcel: boolean }) {
   const { node, dispatch, refCandidates, inMapRegion, fieldErrors, serverCheck, primaryExcel } = props;
@@ -410,7 +411,6 @@ function CsvTablesField(props: FormProps & { primaryExcel: boolean }) {
   const items = (Array.isArray(value) ? value : []).map(tableItem);
   const rowKeys = useRowKeys(items.length);
   const listRef = React.useRef<HTMLUListElement>(null);
-  const addButton = React.useRef<HTMLButtonElement>(null);
   /// ピッカーで CSV を選んで閉じたか（閉じた後、足した行へフォーカスを移す）。
   const added = React.useRef(false);
   if (value !== undefined && !Array.isArray(value)) {
@@ -472,13 +472,13 @@ function CsvTablesField(props: FormProps & { primaryExcel: boolean }) {
         write([...items, { name: deriveTableName(n.name, taken), file: n.id }]);
       }}
       onCloseAutoFocus={(e) => {
-        // ダイアログを開いたボタンは Radix の Trigger ではないので、何もしないとフォーカスがページの先頭へ落ちる。
-        // 足したら足した行の「SQL での名前」へ、選ばずに閉じたら「つなぐ CSV を足す」へ戻す。
+        // 足したら足した行の「SQL での名前」へ移す。選ばずに閉じたら何もしない（DrivePicker の既定で、開いた
+        // 「つなぐ CSV を足す」へ戻る）。
         const rows = added.current
           ? listRef.current?.querySelectorAll<HTMLElement>('[data-testid="csv-table"]')
           : undefined;
         added.current = false;
-        const target = rows?.[rows.length - 1]?.querySelector<HTMLElement>("input") ?? addButton.current;
+        const target = rows?.[rows.length - 1]?.querySelector<HTMLElement>("input");
         if (!target) return;
         e.preventDefault();
         target.focus();
@@ -567,7 +567,6 @@ function CsvTablesField(props: FormProps & { primaryExcel: boolean }) {
       {fieldError ? <p className="text-[11px] text-destructive">{fieldError}</p> : null}
       <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
         <Button
-          ref={addButton}
           variant="outline"
           size="sm"
           className="h-7 text-xs"
