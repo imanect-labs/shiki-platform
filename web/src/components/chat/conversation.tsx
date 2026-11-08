@@ -38,6 +38,7 @@ import {
   type Message as ChatMessageT,
   type PlanSubtask,
   type RunStatus,
+  type StopReason,
   type StreamHandlers,
   type UiActionRun,
 } from "@/lib/chat-api";
@@ -114,6 +115,7 @@ import { ThreadShareDialog } from "./share-dialog";
 import { ChatPageHeaderSlot } from "./chat-header-actions";
 import { ContextUsageDialog } from "./context-meter";
 import { ApprovalCard, BudgetBanner, PlanPanel } from "./agent-progress";
+import { StopReasonNote } from "./stop-reason-note";
 import { cn } from "@/lib/utils";
 import { answerImageProxy } from "@/lib/answer-images";
 import { useMarkThreadViewing } from "@/lib/thread-viewing";
@@ -339,12 +341,16 @@ export function Conversation({
   );
 
   // 蓄積中のストリームを確定メッセージへ移して閉じる（onDone / stop 共通）。
-  const flushStream = React.useCallback((provisional: "reloading" | "stopped") => {
-    const s = streamRef.current;
-    if (s) finalizeStream(s, setMessages, provisional);
-    streamRef.current = null;
-    setStream(null);
-  }, []);
+  // `stopReason` は done で届いた、回答が途中で止まった理由（回答の下に注記を出す・GAP-106）。
+  const flushStream = React.useCallback(
+    (provisional: "reloading" | "stopped", stopReason: StopReason | null = null) => {
+      const s = streamRef.current;
+      if (s) finalizeStream(s, setMessages, provisional, stopReason);
+      streamRef.current = null;
+      setStream(null);
+    },
+    [],
+  );
 
   // 送信/復元で共通の SSE ハンドラ。蓄積を stream state に反映し、端末で確定する。
   const makeHandlers = React.useCallback((): StreamHandlers => {
@@ -529,11 +535,11 @@ export function Conversation({
         // 中断した run の保留遷移は捨てる（次の run の完了時に横取りされないように）。
         if (status === "cancelled" || status === "failed") pendingOpenRef.current = null;
       },
-      onDone: () => {
+      onDone: (stopReason) => {
         // 本文の ```ui の図を含む応答はサーバ確定の message id が要る（ボタンの照合先・
         // 束縛はサーバーが回答の確定時に解決する・#604）ため、ローカル確定ではなく再読込で置き換える。
         const hadUi = hasYuiBlock(streamRef.current?.text ?? "");
-        flushStream("reloading");
+        flushStream("reloading", stopReason);
         cancelRef.current = null;
         notifyThreadsChanged();
         // 順番待ちがあるなら読み直す: サーバは次の run を「いま映すべき run」として返すので、
@@ -750,8 +756,12 @@ export function Conversation({
         if (!active) return;
         setContextUsage(usage);
         // 空の assistant は**生成先のプレースホルダ**（進行中・順番待ち・中断のいずれか）。
-        // 描画するものが無く、順番待ちがあると末尾以外にも現れるので一律に落とす。
-        const shown = msgs.filter((m) => !(m.role === "assistant" && isEmptyContent(m.content)));
+        // 描画するものが無く、順番待ちがあると末尾以外にも現れるので一律に落とす。ただし途中で
+        // 止まった理由のある回答（出力の上限で本文の前に切れた等・GAP-106）は注記を出すので残す
+        // （理由は確定のときにだけ付くので、プレースホルダには付かない）。
+        const shown = msgs.filter(
+          (m) => !(m.role === "assistant" && isEmptyContent(m.content) && !m.stopReason),
+        );
         // 順番待ちの発話はストリーム行の下へ回す（会話の並びとして「AI が答えている最中に
         // 積んだ次の発話」が後ろに来るのが自然）。
         const queuedRunOf = new Map(queuedRuns.map((q) => [q.userMessageId, q.runId]));
@@ -899,6 +909,7 @@ export function Conversation({
                       boundActions={m.boundActions}
                       uiRuns={m.uiRuns}
                       provisional={m.provisional}
+                      stopReason={m.stopReason}
                       onUiAction={reload}
                       onSaveAsApp={setSaveTarget}
                       latest={m.id === latestAssistantId}
@@ -1051,6 +1062,7 @@ function finalizeStream(
   s: StreamState,
   setMessages: React.Dispatch<React.SetStateAction<ChatMessageT[]>>,
   provisional: NonNullable<ChatMessageT["provisional"]>,
+  stopReason: StopReason | null,
 ) {
   const blocks: ContentBlock[] = [];
   // 本文・思考・ツールは起きた順に残す（サーバの projection と同じ並び）。生成中と同じ配置で
@@ -1086,7 +1098,8 @@ function finalizeStream(
   for (const draft of s.skillDrafts) blocks.push({ type: "skill_draft", draft });
   // AI が作成/編集した文書への参照カード（#381）。
   for (const document of s.documentRefs) blocks.push({ type: "document_ref", document });
-  if (blocks.length === 0) return;
+  // 本文が無くても、途中で止まった理由があれば注記だけの行を残す（黙って消えた回答にしない・GAP-106）。
+  if (blocks.length === 0 && !stopReason) return;
   setMessages((prev) => [
     ...prev,
     {
@@ -1094,6 +1107,7 @@ function finalizeStream(
       role: "assistant",
       content: blocks,
       provisional,
+      stopReason,
       createdAt: new Date().toISOString(),
       serverId: s.assistantMessageId ?? undefined,
     },
@@ -1277,6 +1291,7 @@ const AssistantRow = React.memo(function AssistantRow({
   boundActions,
   uiRuns,
   provisional,
+  stopReason = null,
   onUiAction,
   onSaveAsApp,
   latest = false,
@@ -1295,6 +1310,8 @@ const AssistantRow = React.memo(function AssistantRow({
   uiRuns?: readonly UiActionRun[];
   /// 生成直後の仮のメッセージ（読み直すまで図のボタンは押せない）。
   provisional?: ChatMessageT["provisional"];
+  /// 回答が途中で止まった理由（回答の下に注記を出す・GAP-106）。
+  stopReason?: StopReason | null;
   onUiAction: () => void;
   /// 図を「アプリとして保存」するダイアログを開く。
   onSaveAsApp: (target: SaveAsAppTarget) => void;
@@ -1414,6 +1431,8 @@ const AssistantRow = React.memo(function AssistantRow({
           <ArtifactFiles files={files} />
           <CitationSources />
           {evidenceOpen ? <EvidenceTable /> : null}
+          {/* 途中で止まった回答は、本文と成果物の後ろ・操作の前に理由と続け方を添える（GAP-106）。 */}
+          <StopReasonNote reason={stopReason} />
           {text ? (
             <MessageFooter text={text} pinned={latest}>
               <MessageExportMenu

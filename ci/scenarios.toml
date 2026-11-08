@@ -69,6 +69,7 @@ e2e = [
     "chat-mobile.spec.ts",
     "chat-modes.spec.ts",
     "chat-scroll-follow.spec.ts",
+    "chat-stop-reason.spec.ts",
     "chat.spec.ts",
     "composer-attach-same-name.spec.ts",
     "composer-create.spec.ts",

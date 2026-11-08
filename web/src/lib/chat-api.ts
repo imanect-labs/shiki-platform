@@ -113,6 +113,9 @@ export type Message = {
   boundActions?: string[];
   /// 本文の図のボタンで起動したワークフローの記録（押した順・メッセージごとに新しい 20 件まで）。
   uiRuns?: UiActionRun[];
+  /// 回答が途中で止まった理由（出力の上限・手数や費用の上限など・GAP-106）。自然に終わった回答は null。
+  /// 回答の下に注記を出す（生成の直後は done イベントの値、読み直したときはメッセージの値）。
+  stopReason?: StopReason | null;
   /// 生成直後に画面で確定した仮のメッセージ（id はサーバーのものではない）。読み直すまで図のボタンは押せない。
   /// `reloading` はすぐ読み直す（生成の完了）、`stopped` は読み直さない（生成の停止）。
   provisional?: "reloading" | "stopped";
@@ -124,6 +127,9 @@ export type Message = {
 
 /// 本文の図のボタンで起動したワークフロー 1 件（#604・codegen）。
 export type UiActionRun = components["schemas"]["UiActionRun"];
+
+/// 回答が途中で止まった理由（GAP-106・codegen。Rust の `chat::StopReason`）。
+export type StopReason = components["schemas"]["StopReason"];
 
 /// 本人が会話の図のボタンで起動した 1 件を、画面に返した結果つきで読む（古い行を開いたとき・GAP-09）。
 export async function getChatUiRun(threadId: string, runId: string): Promise<UiActionRun> {
@@ -460,6 +466,7 @@ export async function getThreadMessages(
       invokedActions: m.invoked_actions ?? [],
       boundActions: m.bound_actions ?? [],
       uiRuns: m.ui_runs ?? [],
+      stopReason: m.stop_reason ?? null,
       createdAt: m.created_at,
     })),
     activeRunId: data.active_run_id ?? null,
@@ -575,7 +582,9 @@ export type StreamHandlers = {
   /// 生成先の assistant メッセージ id（**まだ本文は保存されていない**・本文の図のボタンは
   /// run 完了後に読み直してから押せる）。
   onAssistantMessageId?: (messageId: string) => void;
-  onDone?: () => void;
+  /// 生成の終わり（done・取り消し・失敗）。`stopReason` は done で届く、回答が途中で止まった理由
+  /// （自然に終わった回答・取り消し・失敗では null・GAP-106）。
+  onDone?: (stopReason: StopReason | null) => void;
   onError?: (message: string) => void;
 };
 
@@ -714,7 +723,7 @@ function subscribe(threadId: string, handlers: StreamHandlers): () => void {
         handlers.onStatus?.(kind.status);
         // キャンセル/失敗は端末状態。途中までを確定させて閉じる。
         if (kind.status === "cancelled" || kind.status === "failed") {
-          handlers.onDone?.();
+          handlers.onDone?.(null);
           finish();
         }
         break;
@@ -723,7 +732,7 @@ function subscribe(threadId: string, handlers: StreamHandlers): () => void {
         finish();
         break;
       case "done":
-        handlers.onDone?.();
+        handlers.onDone?.(kind.stop_reason ?? null);
         finish();
         break;
       default:
