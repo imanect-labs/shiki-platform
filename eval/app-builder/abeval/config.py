@@ -200,6 +200,8 @@ class Config:
     # 取り込んだ system の「今日の日付」を置き換える固定の日付（課題の scheduled_at と違う週の日）。
     capture_date: dt.date = dt.date(2026, 11, 4)
     estimates: dict = field(default_factory=lambda: dict(DEFAULT_ESTIMATES))
+    # 版のラベルの古い順（`[report] version_order`・まとめで各版を直前の版と比べる・無ければ比べない）。
+    version_order: tuple[str, ...] = ()
 
 
 def _section(raw: dict, name: str) -> dict:
@@ -345,6 +347,7 @@ def load_config(path: Path | None = None, env: Mapping[str, str] | None = None) 
         mode_b=_mode_b(mode_b, tuple(approve)),
         capture_date=_capture_date(raw.get("capture") or {}),
         estimates=_estimates(raw.get("estimates") or {}),
+        version_order=_version_order(raw.get("report") or {}),
     )
 
 
@@ -375,6 +378,17 @@ def _capture_date(sec: dict) -> dt.date:
         return dt.date.fromisoformat(str(v))
     except ValueError as e:
         raise ConfigError(f"[capture] fixed_date は YYYY-MM-DD です: {v!r}") from e
+
+
+def _version_order(sec: dict) -> tuple[str, ...]:
+    """`[report] version_order`（版のラベルを古い順に・同じ版を 2 回書かない・無ければ空）。"""
+    if "version_order" not in sec:
+        return ()
+    order = _strings(sec, "version_order", "report")
+    twice = sorted({x for x in order if order.count(x) > 1})
+    if twice:
+        raise ConfigError(f"[report] version_order に同じ版が 2 回あります: {twice}")
+    return order
 
 
 def _estimates(sec: dict) -> dict:

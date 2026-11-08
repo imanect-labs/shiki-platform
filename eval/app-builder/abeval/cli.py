@@ -643,7 +643,7 @@ def cmd_report(args) -> int:
     docs = [d for d in (report.read_result(n) for n in names) if d]
     errors = [e for d in docs for e in report.read_errors(str(d["experiment"]))]
     b = budget_mod.summarize(cfg).to_dict()
-    path = report.write_summary(docs, budget=b, errors=errors)
+    path = report.write_summary(docs, budget=b, errors=errors, version_order=cfg.version_order)
     print(f"書きました: {path}（実験 {len(docs)}）")
     return 0
 

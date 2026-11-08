@@ -329,7 +329,7 @@ uv run python -m abeval budget --reconcile [--yes]                         # 中
 | `abeval/plan.py` | 試行の列（Mode A は言い方 × 試行、Mode B は言い方を試行で回す）と見積もり（`[estimates]`・Mode A は取り込みから組んだ予約の額と大きい方）。最悪が `run_cap_usd` を超えれば拒み、課題を分けた組を示す。評価の台帳＋最悪が `eval_cap_usd`、手元の中継の台帳＋最悪が `global_cap_usd` を超えても拒む。`--go` のときだけ abeval.proxy に登録する（上限は min(最悪 × 1.2, $10)） |
 | `abeval/budget.py` | 評価の台帳の累計・実験ごと・実行ごと（usage が無く予約で数えた行の数）・手元の中継の累計・残り（読むだけ） |
 | `abeval/metrics.py` | S1〜S9・課題ごと・pass@k の不偏推定・課題を単位にした対応のあるブートストラップ（10,000 回・種は固定）・失敗の内訳（検証エラー・ir_lint・課題の検査・動的な検査と、run_case の実行で落ちた step の誤りを製品のコードごと〔`steps_<流し方>`〕と「ノードの種類/コード」ごと〔`steps_by_node_<流し方>`〕に数える。流し方は stub の配管〔`stub`〕と Mode B の実モデルの run_case〔`runs`〕で分ける。Mode B は 1 試行で両方を流すので、同じ誤りを 1 つの欄に 2 回数えない・GAP-111） |
-| `abeval/report.py` | `results/<exp>.json`（同じ実験は試行をキーで置き換えて足す）・`errors-<exp>.jsonl`・`summary.md`（6 節。見出しの表には、条件ごとの課題の数と、外した課題〔版に無い機能の対象外と、`errors-<exp>.jsonl` の種類ごとの採点しなかった試行。`date_window` など。stub の配管の確かめと片付けの問題は数えない〕を出す。モードや条件で課題の集合が違うまま見出しを並べて読まないため）。書く前に、会話の全文と本文の項目・鍵の形の値・拒否リスト（G8）の語を検査し、見つかれば何も書かない |
+| `abeval/report.py` | `results/<exp>.json`（同じ実験は試行をキーで置き換えて足す）・`errors-<exp>.jsonl`・`summary.md`（6 節。見出しの表には、条件ごとの課題の数と、外した課題〔版に無い機能の対象外と、`errors-<exp>.jsonl` の種類ごとの採点しなかった試行。`date_window` など。stub の配管の確かめと片付けの問題は数えない〕を出す。モードや条件で課題の集合が違うまま見出しを並べて読まないため。比べ方の表には、同じモードの 1 つ目の条件〔名前の順〕との差と、版を `eval.toml` の `[report] version_order` の順に並べた直前の版〔同じモード・effort・手数で測った版のうち、いちばん近いもの〕との差〔「（直前の版）」の行・例: vm − vn〕を出し、同じ組は 1 行にする。版を足したら `version_order` の最後に足す。順は git の先祖の順ではなく直しを積んだ順で書き〔載せ直した v1 は vn の先祖ではない〕、版の記録の版がすべて載っていることと、先祖の順に逆らわないことは `tests/test_version_order.py` が確かめる）。書く前に、会話の全文と本文の項目・鍵の形の値・拒否リスト（G8）の語を検査し、見つかれば何も書かない |
 
 - 生成と会話の全文（応答のブロック・メッセージ一覧・承認の入力）はキャッシュ（`data/cache/trials/`）にだけ置く。
   結果には保存された IR（fixture の id は印に戻したもの）と採点だけを入れる。
@@ -363,6 +363,8 @@ Claude Haiku 5.5 だけ（abeval.proxy の許可リスト）。
    eval/app-builder/scripts/build-version.sh v1 71e9b79a       # Mode B だけ測る・Mode A は採点し直し
    eval/app-builder/scripts/build-version.sh vn <BUG-3 と GAP-29 が着地したきれいな commit>
    ```
+
+   新しい版は `eval.toml` の `[report] version_order` の最後に足す（まとめが直前の版と比べる）。
 
 2. 設定と中継を用意する。
 

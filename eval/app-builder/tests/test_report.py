@@ -323,3 +323,117 @@ def test_summary_leaves_out_experiments_graded_by_another_grader():
     # 費用は外した実験の分も出し、評価の台帳の累計は実験ごとに出す。
     assert "- e0a: 試行の分" in text and "評価の台帳の累計 $0.0100" in text
     assert "- e1a: 試行の分" in text and "評価の台帳の累計 $0.0200" in text
+
+
+def _versioned(label: str, heads: list[bool], *, mode="a", effort="medium") -> list[dict]:
+    """版 `label` の試行（課題 t0・t1… を 1 試行ずつ・headline は `heads` のとおり）。"""
+    s4 = True if mode == "b" else None
+    return [
+        keyed(
+            {**trial(f"t{i}", 0, s1=h, mode=mode, effort=effort, s4=s4), "label": label},
+            f"{label}{i}",
+        )
+        for i, h in enumerate(heads)
+    ]
+
+
+def _comparison_rows(text: str) -> dict[str, list[str]]:
+    lines = text.splitlines()
+    start = next(i for i, line in enumerate(lines) if line.startswith("| 比べたもの |"))
+    rows = {}
+    for line in lines[start + 2 :]:
+        if not line.startswith("|"):
+            break
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        rows[cells[0]] = cells[1:]
+    return rows
+
+
+def test_each_version_is_also_compared_with_the_version_before_it():
+    """1 つ目（名前の順の v0）との差に加えて、版の順で直前の版との差を出す（vm − vn）。同じ組は 1 行にする。"""
+    ts = [
+        *_versioned("v0", [False, False, False, False]),
+        *_versioned("vn", [True, True, False, False]),
+        *_versioned("vm", [True, True, True, True]),
+    ]
+    d = report.finalize(doc(ts), iters=10)
+    rows = _comparison_rows(report.summary_md([d], iters=200, version_order=("v0", "vn", "vm")))
+    assert list(rows) == [
+        "vm/a/medium − v0/a/medium",
+        "vn/a/medium − v0/a/medium",
+        "vm/a/medium − vn/a/medium（直前の版）",
+    ]
+    assert rows["vm/a/medium − vn/a/medium（直前の版）"][0] == "+50 pt"
+    assert rows["vm/a/medium − vn/a/medium（直前の版）"][2] == "4"
+    # 版の順を渡さなければ、前と同じく 1 つ目とだけ比べる。
+    assert list(_comparison_rows(report.summary_md([d], iters=10))) == [
+        "vm/a/medium − v0/a/medium",
+        "vn/a/medium − v0/a/medium",
+    ]
+
+
+def test_the_version_before_is_the_nearest_one_measured_with_the_same_condition():
+    """直前の版は、同じモード・effort・手数で測った版のうちいちばん近いもの（間の版が測っていなければ飛ばす）。"""
+    ts = [
+        *_versioned("v0", [False, False]),
+        *_versioned("v1", [True, False]),
+        *_versioned("vn", [True, True]),
+        *_versioned("v0", [False, False], mode="b", effort=None),
+        *_versioned("vn", [True, False], mode="b", effort=None),
+        # 違う effort の版は直前の版にしない（effort の差が混ざる）。
+        *_versioned("vm", [True, True], effort="high"),
+    ]
+    d = report.finalize(doc(ts), iters=10)
+    rows = _comparison_rows(
+        report.summary_md([d], iters=10, version_order=("v0", "v1", "vn", "vm"))
+    )
+    previous = [r for r in rows if r.endswith("（直前の版）")]
+    assert previous == ["vn/a/medium − v1/a/medium（直前の版）"]
+    # Mode B は v1 を測っていないので、vn の直前の版は v0（1 つ目と同じ組なので 1 行だけ）。
+    assert [r for r in rows if "/b/" in r] == ["vn/b/auto − v0/b/auto"]
+    assert not any(r.startswith("vm/a/high − v") and r.endswith("（直前の版）") for r in rows)
+
+
+def test_a_newer_first_condition_is_turned_around_instead_of_listed_twice():
+    """名前の順の 1 つ目が新しい版（vm < vn）なら、同じ組を符号を変えて 2 回出さず、新しい版 − 直前の版の向きにする。"""
+    ts = [*_versioned("vn", [False, False]), *_versioned("vm", [True, False])]
+    d = report.finalize(doc(ts), iters=10)
+    rows = _comparison_rows(report.summary_md([d], iters=10, version_order=("vn", "vm")))
+    assert list(rows) == ["vm/a/medium − vn/a/medium（直前の版）"]
+    assert rows["vm/a/medium − vn/a/medium（直前の版）"][0] == "+50 pt"
+
+
+def test_versions_left_out_of_the_order_are_named():
+    ts = [*_versioned("v0", [False]), *_versioned("vm", [True]), *_versioned("vf", [True])]
+    d = report.finalize(doc(ts), iters=10)
+    text = report.summary_md([d], iters=10, version_order=("v0", "vm"))
+    assert "直前の版と比べなかった版（`[report] version_order` に無い）: vf。" in text
+    assert "vf/a/medium − vm/a/medium（直前の版）" not in text
+    # 版を比べないモード（版が 1 つだけ）では言わない。
+    one = report.finalize(
+        doc(_versioned("vf", [True]) + _versioned("vf", [True], effort="high")), iters=10
+    )
+    assert "直前の版と比べなかった版" not in report.summary_md([one], iters=10)
+
+
+def test_report_compares_with_the_version_before_in_eval_toml():
+    """`abeval report` は eval.toml の `[report] version_order` で直前の版と比べる。"""
+    from abeval import cli
+    from abeval.config import load_config
+
+    assert load_config().version_order[-2:] == ("vn", "vm")
+    for label, heads in (("v0", [False, False]), ("vn", [True, False]), ("vm", [True, True])):
+        report.write_result(doc(_versioned(label, heads), exp=f"e1a-{label}"), [], iters=10)
+    assert cli.main([], command="report") == 0
+    text = (report.results_dir() / "summary.md").read_text(encoding="utf-8")
+    assert "vm/a/medium − vn/a/medium（直前の版）" in _comparison_rows(text)
+
+
+def test_a_tiny_negative_difference_is_not_written_as_minus_zero():
+    assert [report._pt(x) for x in (-0.003, 0.0, 0.004, -0.5, 0.71)] == [
+        "+0",
+        "+0",
+        "+0",
+        "-50",
+        "+71",
+    ]

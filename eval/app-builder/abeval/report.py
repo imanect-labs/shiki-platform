@@ -5,7 +5,8 @@
   同じ実験をもう一度流したら、試行はキーで置き換えて足す（キャッシュから採点し直した分も入る）。
 - `results/errors-<exp>.jsonl`: 基盤の失敗（採点しない）。
 - `results/summary.md`: 6 節（見出しの表・失敗の内訳・課題ごとの表・effort と手数・費用・限界）。見出しの表には
-  条件ごとの課題の数と、外した課題（対象外と、errors の種類ごとの採点しなかった試行）を出す。
+  条件ごとの課題の数と、外した課題（対象外と、errors の種類ごとの採点しなかった試行）を出す。比べ方の表には、
+  同じモードの 1 つ目の条件との差と、直前の版（`eval.toml` の `[report] version_order` の順）との差を出す。
 - 書く前に検査する（`check_publishable`）: 会話の全文と要求の本文の項目（transcript・messages・response・
   thinking など）・鍵の形の値（`sk-ant-`）・拒否リスト（G8・リポジトリの外）の語。見つかれば書かない。
   拒否リストの語そのものは理由に出さない（場所と語の長さだけ）。
@@ -17,7 +18,7 @@ import datetime as dt
 import json
 import os
 import unicodedata
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -265,6 +266,11 @@ def _ci(c: Mapping | None) -> str:
     return f"{c['mean'] * 100:.0f}%［{c['lo'] * 100:.0f}〜{c['hi'] * 100:.0f}］"
 
 
+def _pt(rate_diff: float) -> str:
+    """率の差をポイントの符号つきの整数で（-0.3 pt を「-0」と書かない）。"""
+    return f"{round(rate_diff * 100):+d}"
+
+
 def _usd(v: float | None) -> str:
     return "—" if v is None else f"${v:.4f}"
 
@@ -275,8 +281,41 @@ def _table(head: list[str], rows: list[list[str]]) -> list[str]:
     return out
 
 
-def _comparisons(trials: Sequence[Mapping], iters: int) -> list[list[str]]:
-    """同じモードで条件を 1 つ目と比べる（課題を単位にした対応のあるブートストラップ）。"""
+def previous_versions(conds: Iterable[tuple], order: Sequence[str]) -> list[tuple[tuple, tuple]]:
+    """(直前の版の条件, 条件) の組（条件の版の古い順）。
+
+    直前の版は、`order`（`eval.toml` の `[report] version_order`・版のラベルの古い順）で前にある版のうち、モード・
+    effort・手数・stub の印が同じ条件で測った、いちばん近い版。`order` に無い版は比べない（[`unordered_labels`]）。
+    """
+    pos = {label: i for i, label in enumerate(order)}
+    known = [c for c in set(conds) if c[0] in pos]
+    pairs = []
+    for c in sorted(known, key=lambda c: (pos[c[0]], tuple(str(x) for x in c[1:]))):
+        before = [p for p in known if p[1:] == c[1:] and pos[p[0]] < pos[c[0]]]
+        if before:
+            pairs.append((max(before, key=lambda p: pos[p[0]]), c))
+    return pairs
+
+
+def unordered_labels(conds: Iterable[tuple], order: Sequence[str]) -> list[str]:
+    """版を比べるモード（同じモードに 2 つ以上の版がある）の版のうち、`order` に無いもの（直前の版と比べない）。"""
+    by_mode: dict[Any, set] = {}
+    for c in conds:
+        by_mode.setdefault(c[1], set()).add(c[0])
+    labels = {label for ls in by_mode.values() if len(ls) > 1 for label in ls}
+    return sorted(str(label) for label in labels if label not in order)
+
+
+def _comparisons(
+    trials: Sequence[Mapping], iters: int, version_order: Sequence[str] = ()
+) -> list[list[str]]:
+    """同じモードで、条件を 1 つ目（名前の順）と比べ、版を直前の版（`version_order` の順）と比べる（課題を単位にした
+    対応のあるブートストラップ）。
+
+    同じ 2 つの条件の組は 1 行にする。直前の版が 1 つ目なら 1 つ目との行だけを出し、1 つ目の方が新しい版（名前の順と
+    版の順が逆）なら、その行を新しい版 − 直前の版の向きにして「（直前の版）」と書く（同じ差を符号を変えて 2 回
+    出さない）。
+    """
     by_cond: dict[tuple, list[Mapping]] = {}
     for t in trials:
         by_cond.setdefault(_cond(t), []).append(t)
@@ -285,16 +324,23 @@ def _comparisons(trials: Sequence[Mapping], iters: int) -> list[list[str]]:
         conds = sorted((c for c in by_cond if c[1] == mode), key=lambda c: tuple(str(x) for x in c))
         if len(conds) < 2:
             continue
-        base = task_means(by_cond[conds[0]])
-        for c in conds[1:]:
-            d = paired_bootstrap(base, task_means(by_cond[c]), iters=iters)
+        pairs = [(conds[0], c, "") for c in conds[1:]]
+        for a, b in previous_versions(conds, version_order):
+            if (a, b, "") in pairs:
+                continue
+            if (b, a, "") in pairs:
+                pairs[pairs.index((b, a, ""))] = (a, b, "（直前の版）")
+            else:
+                pairs.append((a, b, "（直前の版）"))
+        for a, b, note in pairs:
+            d = paired_bootstrap(task_means(by_cond[a]), task_means(by_cond[b]), iters=iters)
             if d["diff"] is None:
                 continue
             rows.append(
                 [
-                    f"{condition_name(c)} − {condition_name(conds[0])}",
-                    f"{d['diff'] * 100:+.0f} pt",
-                    f"［{d['lo'] * 100:+.0f}〜{d['hi'] * 100:+.0f}］",
+                    f"{condition_name(b)} − {condition_name(a)}{note}",
+                    f"{_pt(d['diff'])} pt",
+                    f"［{_pt(d['lo'])}〜{_pt(d['hi'])}］",
                     str(d["n_tasks"]),
                     "差がある" if d["significant"] else "決着しない（区間が 0 をまたぐ）",
                 ]
@@ -388,12 +434,14 @@ def summary_md(
     budget: Mapping | None = None,
     iters: int = 10_000,
     errors: Sequence[Mapping] = (),
+    version_order: Sequence[str] = (),
 ) -> str:
     """results/<exp>.json（finalize 済み）の列と、その errors の行から summary.md を作る。
 
     試行は実験をまたいでキーで重ね（同じ試行を二重に数えない）、stub の試行（`run --stub`）は除く。見出しの表には
     条件ごとの課題の数と、外した課題（版に無い機能の対象外と、errors の種類ごと・採点しなかった試行）を出す
-    （モードや条件で課題の集合が違うまま見出しを並べて読まないため）。
+    （モードや条件で課題の集合が違うまま見出しを並べて読まないため）。比べ方の表には、1 つ目の条件との差と、
+    直前の版（`version_order`・`eval.toml` の `[report] version_order`）との差を出す。
     """
     docs, left_out = same_grader(docs)
     trials = dedupe(t for d in docs for t in d.get("trials") or [])
@@ -436,10 +484,25 @@ def summary_md(
         "予定の週に流さない date_window・基盤の失敗で採点しなかった試行）。モードや条件の見出しを並べて読むときは、"
         "課題の数と外した課題を見る。下の比べ方は同じモードの中の共通の課題だけを使う。",
     ]
-    comp = _comparisons(trials, iters)
+    comp = _comparisons(trials, iters, version_order)
     if comp:
         lines += [""]
         lines += _table(["比べたもの", "差", "95% 区間", "課題", "判定"], comp)
+        lines += [
+            "",
+            "比べ方: 同じモードの中で、1 つ目の条件（名前の順）との差と、版を `eval.toml` の `[report] version_order` の"
+            "順に並べたときの直前の版（同じモード・effort・手数で測った版のうち、いちばん近いもの）との差"
+            "（「（直前の版）」の行）を出す。同じ 2 つの条件の組は 1 行にする（直前の版が 1 つ目なら、1 つ目との行"
+            "だけを出す）。",
+        ]
+        left = unordered_labels({_cond(t) for t in trials}, version_order)
+        if left:
+            lines += [
+                "",
+                "直前の版と比べなかった版（`[report] version_order` に無い）: "
+                + "・".join(left)
+                + "。",
+            ]
     fb = failure_breakdown(trials)
     lines += ["", "## 2. 失敗の内訳", ""]
     for name, title in (
@@ -562,9 +625,10 @@ def write_summary(
     denylist: Path | None = None,
     iters: int = 10_000,
     errors: Sequence[Mapping] = (),
+    version_order: Sequence[str] = (),
 ) -> Path:
     words, _ = load_denylist(denylist)
-    text = summary_md(docs, budget=budget, iters=iters, errors=errors)
+    text = summary_md(docs, budget=budget, iters=iters, errors=errors, version_order=version_order)
     _require_publishable(text, words)
     path = Path(path or results_dir() / "summary.md")
     _atomic_write(path, text)
