@@ -289,6 +289,7 @@ e2e = [
     "workflow-csv-query-join.spec.ts",
     "workflow-csv-query-xlsx.spec.ts",
     "workflow-csv-write-table.spec.ts",
+    "workflow-data-query-columns.spec.ts",
     "workflow-data-query-limit.spec.ts",
     "workflow-data-upsert.spec.ts",
     "workflow-date-calc.spec.ts",

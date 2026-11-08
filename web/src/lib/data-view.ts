@@ -139,6 +139,26 @@ export function isSortable(c: ColumnModel): boolean {
   return true;
 }
 
+/// ワークフローの「データを検索」（`data.query`）の絞り込み・並べ替えに使える列か（BUG-244）。
+///
+/// グリッドは索引の無い列で並べたり絞ったりすると索引を作る（自動昇格）ので `isSortable` はそれを前提にするが、
+/// ワークフローの経路では索引を作らない（docs/data-platform.md §10）。そのため、実行で通るのは索引のある列
+/// （`indexed`）と重複を許さない列（`unique`）だけ。判定はサーバーの束縛と同じにする（`crates/data/src/query/bound.rs`
+/// の `Binder::resolve`・保存時の照合は `crates/data/src/query/field_use.rs` の `check_field_use`）: システムの列
+/// （作成日時・更新日時・作成者）と作成者の列は常に使え、計算の列は索引のある `invariant` のものだけ、対称列
+/// （逆向きのリンク）は使えない。列の種類で決まる制約（複数選択・リンクは並べ替えられないなど）は、ここでは見ないので
+/// `isSortable`・`isFilterable` と合わせて使う。
+export function isWorkflowQueryColumn(c: ColumnModel): boolean {
+  if (c.system) return true;
+  const f = c.field!;
+  if (f.type === "created_by") return true;
+  if (f.type === "lookup" || f.type === "rollup" || f.type === "formula" || f.type === "computed") {
+    return f.materialization === "invariant" && Boolean(f.indexed);
+  }
+  if (f.link?.reverse) return false;
+  return Boolean(f.indexed || f.unique);
+}
+
 /// 絞り込みに使える列か（並べ替えできる列に加え、複数選択は要素ごとの索引で「含む」を引ける）。
 export function isFilterable(c: ColumnModel): boolean {
   if (isSortable(c)) return true;

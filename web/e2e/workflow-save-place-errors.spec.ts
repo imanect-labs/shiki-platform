@@ -83,11 +83,13 @@ test("消えたフォルダーをきっかけにした定義は、きっかけ�
   await expect(canvas.getByText("受け取る").first()).toBeVisible({ timeout: 20_000 });
   await canvas.getByText("ファイルが保存されたとき").first().click();
   const triggerPanel = page.getByRole("complementary", { name: "きっかけの設定" });
-  // 開いたばかりで保存の誤りがまだ無くても、欄は呼び名だけを言い、理由と直し方を欄の下で 1 回だけ言う（GAP-91）。
+  // 開いたばかりで保存の誤りがまだ無くても、開いたときの確かめで誤りを受けた後も、欄は呼び名だけを言い、理由と
+  // 直し方を欄の下で 1 回だけ言う（GAP-91・開いたときの誤りは BUG-244）。
   await expect(triggerPanel.getByPlaceholder("見つからないフォルダー", { exact: true })).toHaveValue("", {
     timeout: 15_000,
   });
-  await expect(triggerPanel.getByText(FOLDER_HINT, { exact: true })).toBeVisible();
+  await expect(triggerPanel.getByText(FOLDER_HINT, { exact: false })).toBeVisible();
+  await expect(triggerPanel.getByText(/選び直してください/)).toHaveCount(1);
   // 変更を入れて保存する（手動の実行のきっかけを足す）。
   await triggerPanel.getByRole("button", { name: "きっかけを追加" }).click();
   await page.getByRole("button", { name: "保存", exact: true }).click();

@@ -76,13 +76,18 @@ function FieldSelect({
   columns,
   label,
   className,
+  currentLabel,
 }: {
   value: string;
   onChange: (v: string) => void;
   columns: ColumnModel[];
   label: string;
   className?: string;
+  /// 選んである列が候補に無いとき（保存済みの条件の、いまは使えない列・テーブルに無い列）の名前。省略で参照名。
+  currentLabel?: string;
 }) {
+  // 候補に無い列でも、選んである値は名前を出す（空欄にしない・BUG-244）。
+  const unlisted = value !== "" && !columns.some((c) => c.key === value);
   return (
     <Select value={value} onValueChange={onChange}>
       <SelectTrigger aria-label={label} className={cn("h-8 text-[13px]", className)}>
@@ -94,6 +99,11 @@ function FieldSelect({
             {c.label}
           </SelectItem>
         ))}
+        {unlisted ? (
+          <SelectItem value={value} className="text-muted-foreground">
+            {currentLabel ?? value}
+          </SelectItem>
+        ) : null}
       </SelectContent>
     </Select>
   );
@@ -365,6 +375,8 @@ export function FilterControl({
   onClearAdvanced,
   texts,
   exprValue,
+  usable,
+  columnError,
 }: {
   columns: ColumnModel[];
   rows: FilterRow[];
@@ -376,9 +388,13 @@ export function FilterControl({
   texts?: Partial<FilterTexts>;
   /// 比べる値を式でも決められるようにする（省略で直接入力だけ）。
   exprValue?: FilterExprValue;
+  /// 選べる列をさらに絞る（ワークフローの探す条件は索引のある列だけ・BUG-244）。省略で絞り込める列すべて。
+  usable?: (c: ColumnModel) => boolean;
+  /// 列を断った保存時の誤り（列の参照名 → 文言）。その列の条件の下に出す。
+  columnError?: (key: string) => string | null;
 }) {
   const t = { ...DATA_FILTER_TEXTS, ...texts };
-  const filterable = columns.filter(isFilterable);
+  const filterable = columns.filter((c) => isFilterable(c) && (usable?.(c) ?? true));
   const [draft, setDraft] = React.useState<FilterRow[]>(rows);
   const [open, setOpen] = React.useState(false);
   React.useEffect(() => {
@@ -440,6 +456,7 @@ export function FilterControl({
               const col = columns.find((c) => c.key === r.field);
               const ops = opsFor(col);
               const err = errorOf(r);
+              const fieldErr = r.field ? (columnError?.(r.field) ?? null) : null;
               return (
                 <li
                   key={i}
@@ -453,6 +470,7 @@ export function FilterControl({
                     label={`条件 ${i + 1} の列`}
                     value={r.field}
                     columns={filterable}
+                    currentLabel={col?.label}
                     // 列を変えたら比べ方と値は列の型に合わせて作り直す（前の列の値を持ち越さない）。入れ方
                     // （入力や結果から選ぶ）は残し、選んだ値だけを外す。
                     onChange={(field) =>
@@ -524,6 +542,12 @@ export function FilterControl({
                   >
                     <X className="size-4" aria-hidden />
                   </Button>
+                  {/* 外すボタンの後に置く（グリッドの自動配置で、外すボタンが誤りの下の段へ回らない）。 */}
+                  {fieldErr ? (
+                    <p className="col-span-full text-[11px] text-destructive" data-testid="filter-column-error">
+                      {fieldErr}
+                    </p>
+                  ) : null}
                 </li>
               );
             })}
@@ -571,19 +595,28 @@ export function SortControl({
   sort,
   maxKeys,
   onChange,
+  usable,
+  columnError,
 }: {
   columns: ColumnModel[];
   sort: SortKey[];
   maxKeys: number;
   onChange: (sort: SortKey[]) => void;
+  /// 選べる列をさらに絞る（ワークフローの並べ替えは索引のある列だけ・BUG-244）。省略で並べ替えできる列すべて。
+  usable?: (c: ColumnModel) => boolean;
+  /// 列を断った保存時の誤り（列の参照名 → 文言）。その列の並べ替えの下に出す。
+  columnError?: (key: string) => string | null;
 }) {
-  const sortable = columns.filter(isSortable);
+  const sortable = columns.filter((c) => isSortable(c) && (usable?.(c) ?? true));
+  // 足せる列が残っていなければ「並べ替えを追加」を押せなくする（押しても何も起きないボタンにしない）。
+  const nextKey = sortable.find((c) => !sort.some((s) => s.field === c.key));
   return (
     <Popover>
       <PopoverTrigger asChild>
         <ToolbarButton icon={ArrowDownUp} label="並べ替え" count={sort.length} active={sort.length > 0} />
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-80 space-y-3">
+      {/* 画面の端に付けない（探す条件と同じ）。 */}
+      <PopoverContent align="start" collisionPadding={12} className="w-80 space-y-3">
         <h3 className="text-sm font-semibold">並べ替え</h3>
         {sort.length === 0 ? (
           <p className="text-xs text-muted-foreground">
@@ -591,46 +624,56 @@ export function SortControl({
           </p>
         ) : (
           <ol className="space-y-2">
-            {sort.map((k, i) => (
-              <li key={`${k.field}:${i}`} className="flex items-center gap-1.5">
-                <span className="w-4 text-center text-[11px] tabular-nums text-muted-foreground">{i + 1}</span>
-                <FieldSelect
-                  label={`並べ替え ${i + 1} の列`}
-                  value={k.field}
-                  columns={sortable.filter((c) => c.key === k.field || !sort.some((s) => s.field === c.key))}
-                  onChange={(field) => onChange(sort.map((s, j) => (j === i ? { ...s, field } : s)))}
-                  className="flex-1"
-                />
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-8 w-20 gap-1 px-2 text-xs"
-                  onClick={() => onChange(sort.map((s, j) => (j === i ? { ...s, descending: !s.descending } : s)))}
-                >
-                  {k.descending ? <ArrowDown className="size-3.5" aria-hidden /> : <ArrowUp className="size-3.5" aria-hidden />}
-                  {k.descending ? "降順" : "昇順"}
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="size-8"
-                  aria-label={`並べ替え ${i + 1} を外す`}
-                  onClick={() => onChange(sort.filter((_, j) => j !== i))}
-                >
-                  <X className="size-4" aria-hidden />
-                </Button>
-              </li>
-            ))}
+            {sort.map((k, i) => {
+              const fieldErr = columnError?.(k.field) ?? null;
+              return (
+                <li key={`${k.field}:${i}`} className="space-y-1">
+                  <div className="flex items-center gap-1.5">
+                    <span className="w-4 text-center text-[11px] tabular-nums text-muted-foreground">{i + 1}</span>
+                    <FieldSelect
+                      label={`並べ替え ${i + 1} の列`}
+                      value={k.field}
+                      columns={sortable.filter((c) => c.key === k.field || !sort.some((s) => s.field === c.key))}
+                      currentLabel={columns.find((c) => c.key === k.field)?.label}
+                      onChange={(field) => onChange(sort.map((s, j) => (j === i ? { ...s, field } : s)))}
+                      className="flex-1"
+                    />
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8 w-20 gap-1 px-2 text-xs"
+                      onClick={() => onChange(sort.map((s, j) => (j === i ? { ...s, descending: !s.descending } : s)))}
+                    >
+                      {k.descending ? <ArrowDown className="size-3.5" aria-hidden /> : <ArrowUp className="size-3.5" aria-hidden />}
+                      {k.descending ? "降順" : "昇順"}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="size-8"
+                      aria-label={`並べ替え ${i + 1} を外す`}
+                      onClick={() => onChange(sort.filter((_, j) => j !== i))}
+                    >
+                      <X className="size-4" aria-hidden />
+                    </Button>
+                  </div>
+                  {fieldErr ? (
+                    <p className="pl-5 text-[11px] text-destructive" data-testid="sort-column-error">
+                      {fieldErr}
+                    </p>
+                  ) : null}
+                </li>
+              );
+            })}
           </ol>
         )}
         <Button
           variant="ghost"
           size="sm"
           className="h-8 text-xs"
-          disabled={sort.length >= maxKeys}
+          disabled={sort.length >= maxKeys || !nextKey}
           onClick={() => {
-            const next = sortable.find((c) => !sort.some((s) => s.field === c.key));
-            if (next) onChange([...sort, { field: next.key, descending: false }]);
+            if (nextKey) onChange([...sort, { field: nextKey.key, descending: false }]);
           }}
         >
           <Plus className="size-3.5" aria-hidden />

@@ -107,6 +107,9 @@ export function WorkflowEditor({
   // C-P1-2）。宣言はエディタで書かせず、ブロックから決まるものとして見せるだけ。
   const [scopes, setScopes] = React.useState<string[]>(initialIr.declared_scopes ?? []);
 
+  // 開いてから、ライブ検証か保存で誤りを受けたか（受けた後に、開いた時点の検証の応答で上書きしない）。
+  const errorsSinceOpen = React.useRef(false);
+
   // ── ライブ検証（600ms debounce・保存しない）─────────────────────────────
   React.useEffect(() => {
     if (!state.dirty) return;
@@ -114,6 +117,7 @@ export function WorkflowEditor({
     const timer = setTimeout(() => {
       validateWorkflow(ir)
         .then(({ errors, warnings, declaredScopes, nodePorts }) => {
+          errorsSinceOpen.current = true;
           dispatch({ type: "set_errors", errors, ir });
           dispatch({ type: "set_warnings", warnings });
           // 判定のノードの出口（サーバの導出・H15）。設定を変えると、この応答でハンドルが変わる。
@@ -180,14 +184,17 @@ export function WorkflowEditor({
     }
   }, [restored]);
 
-  // ── 開いた時点の警告（保存済みの定義が意味論の切替で振る舞いを変え得るか）──────────
+  // ── 開いた時点の警告と誤り（保存済みの定義が意味論の切替で振る舞いを変え得るか・保存した後にテーブルの索引を外す
+  // などして、いまは保存できない定義になっていないか・BUG-244）──────────
   React.useEffect(() => {
     let active = true;
     // 下書きを復元したときは、その内容で受ける（保存済みの版の警告で上書きしない）。
     const openedIr = restored.draft?.irDirty ? restored.draft.ir : initialIr;
     validateWorkflow(openedIr)
-      .then(({ warnings, declaredScopes, nodePorts }) => {
+      .then(({ errors, warnings, declaredScopes, nodePorts }) => {
         if (!active) return;
+        // 誤りはその欄の下に出す（直さないと保存も実行もできない）。先に編集して新しい検証を受けていたら上書きしない。
+        if (!errorsSinceOpen.current) dispatch({ type: "set_errors", errors, ir: openedIr });
         dispatch({ type: "set_warnings", warnings });
         dispatch({ type: "set_ports", ports: nodePorts, ir: openedIr });
         if (declaredScopes) setScopes(declaredScopes);
@@ -258,6 +265,7 @@ export function WorkflowEditor({
       // 無いときだけ・reducer が判断する。あれば次の保存でまた補完される）。
       dispatch({ type: "saved", version: saved.version, savedIr: irToSave, declaredScopes: saved.declared_scopes });
       if (saved.declared_scopes) setScopes(saved.declared_scopes);
+      errorsSinceOpen.current = true;
       dispatch({ type: "set_errors", errors: [] });
       dispatch({ type: "set_warnings", warnings: saved.warnings });
       // 判定のノードの出口（node_ports）は保存の応答に無い。設定を変えてからライブ検証の前に保存すると、dirty が
@@ -290,6 +298,7 @@ export function WorkflowEditor({
       return true;
     } catch (e) {
       if (e instanceof WorkflowValidationError) {
+        errorsSinceOpen.current = true;
         dispatch({ type: "set_errors", errors: e.errors, ir: irToSave });
         // ブロックの外（きっかけ・入力項目・全体）の誤りは、ブロックの赤い印に出ないので場所を言う（GAP-35）。
         toast({

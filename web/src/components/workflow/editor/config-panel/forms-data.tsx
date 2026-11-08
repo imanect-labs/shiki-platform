@@ -15,8 +15,16 @@ import { Switch } from "@/components/ui/switch";
 import type { NodeParamsByType } from "@/generated/workflow-catalog";
 import type { ValueExpr } from "@/generated/workflow-ir";
 import type { DataQuery, DataTable } from "@/lib/data-api";
-import { buildFilter, resolveColumns, splitFilter } from "@/lib/data-view";
+import {
+  buildFilter,
+  isFilterable,
+  isWorkflowQueryColumn,
+  resolveColumns,
+  splitFilter,
+  type ColumnModel,
+} from "@/lib/data-view";
 import { cn } from "@/lib/utils";
+import { nodeErrorView } from "../validation";
 import {
   BLANK_PICK_MESSAGE,
   BLANK_REQUIRED_MESSAGE,
@@ -27,7 +35,7 @@ import {
   NumberInput,
 } from "./common";
 import { DataTableSelect, isFsmTable, NoFsmTableNote, useDataTables, type DataTables } from "./data-tables";
-import type { FormProps } from "./forms-basic";
+import type { FormProps, ServerCheck } from "./forms-basic";
 import { paramsOf, patchParams } from "./params";
 import { RefPicker } from "./ref-picker";
 import {
@@ -37,7 +45,7 @@ import {
   ValueExprInput,
   type ComposeKeys,
 } from "./value-expr-input";
-import { isFromRef, type RefContext } from "./value-refs";
+import { isFromRef, valueAtParamsPath, type RefContext } from "./value-refs";
 
 /// 対象テーブル（固定値の選択 ／ 前の結果から）。選んだテーブルを返す（列の候補に使う）。`eligible` は選べる
 /// テーブル（状態を進めるは状態の進め方のあるテーブルだけ・BUG-105）。
@@ -310,8 +318,46 @@ function useQueryExprValue(props: FormProps): FilterExprValue {
   );
 }
 
+/// 保存時の照合が断った探す条件・並べ替えの列（BUG-244）。`filter` と `sort` は列の参照名 → 文言（その列の行の下に
+/// 出す）、`all` は欄の下に出す文言（読む件数の上限の誤りは除く・重ねない）。どの列を指すかは、誤りの path の位置の
+/// 値を検証した時点の IR から引く（検証の後に条件を直しても、今の並びに当てて取り違えない）。
+function queryErrors(check: ServerCheck): { filter: Map<string, string>; sort: Map<string, string>; all: string[] } {
+  const filter = new Map<string, string>();
+  const sort = new Map<string, string>();
+  const all: string[] = [];
+  for (const e of check.errors) {
+    const view = nodeErrorView([e]).fields;
+    const message = view.get("query");
+    if (!message || view.get("query/limit") === message) continue;
+    if (!all.includes(message)) all.push(message);
+    const path = e.path ?? "";
+    const key = valueAtParamsPath(check.node?.params, path);
+    if (typeof key !== "string") continue;
+    if (/^\/params\/query\/filter(\/.*)?\/cmp\/field$/.test(path) && !filter.has(key)) filter.set(key, message);
+    if (/^\/params\/query\/sort\/\d+\/field$/.test(path) && !sort.has(key)) sort.set(key, message);
+  }
+  return { filter, sort, all };
+}
+
+/// 探す条件と並べ替えで選べない列の説明（BUG-244）。使える列は索引のある列と重複を許さない列（とシステムの列）だけなので、
+/// 隠した列があるときに言う。利用者の列が 1 つも使えないときは、使える列の名前を挙げる。
+function hiddenColumnsNote(columns: ColumnModel[]): string | null {
+  const hidden = columns.some((c) => isFilterable(c) && !isWorkflowQueryColumn(c));
+  if (!hidden) return null;
+  const how = "ほかの列を使うには、テーブルの「列の編集」でその列の索引をオンにしてください。";
+  const userColumns = columns.filter((c) => !c.system && isWorkflowQueryColumn(c) && isFilterable(c));
+  if (userColumns.length === 0) {
+    const names = columns
+      .filter((c) => isWorkflowQueryColumn(c) && isFilterable(c))
+      .map((c) => `「${c.label}」`)
+      .join("");
+    return `このテーブルの列には索引が無いので、絞り込み・並べ替えに使えるのは${names}だけです。${how}`;
+  }
+  return `絞り込み・並べ替えに使えるのは、索引のある列と重複を許さない列だけです。${how}`;
+}
+
 export function DataQueryForm(props: FormProps) {
-  const { node, dispatch, fieldErrors } = props;
+  const { node, dispatch, fieldErrors, serverCheck } = props;
   const { source, table } = useNodeTable(node);
   const p = paramsOf<NodeParamsByType["data.query"]>(node);
   const query: DataQuery = (p.query as DataQuery | undefined) ?? {};
@@ -321,7 +367,9 @@ export function DataQueryForm(props: FormProps) {
   const exprValue = useQueryExprValue(props);
   // 読む件数の上限の誤り（保存時の照合・`/params/query/limit`・BUG-108）は、その欄の下に出す（探す条件の下に重ねない）。
   const limitError = fieldErrors.get("query/limit") ?? null;
-  const queryError = fieldErrors.get("query") ?? null;
+  // 探す条件と並べ替えの誤りは、すべて欄の下に出し、列を断った誤りはその列の行の下にも出す（BUG-244）。
+  const errors = React.useMemo(() => queryErrors(serverCheck), [serverCheck]);
+  const note = hiddenColumnsNote(columns);
   const setQuery = (next: DataQuery) => {
     const cleaned = Object.fromEntries(Object.entries(next).filter(([, v]) => v !== undefined && v !== null));
     patchParams(dispatch, node, { query: Object.keys(cleaned).length ? cleaned : undefined });
@@ -333,12 +381,15 @@ export function DataQueryForm(props: FormProps) {
         <div className="space-y-1.5">
           <span className="text-xs font-medium">探す条件と並べ替え（省略可）</span>
           <div className="flex flex-wrap gap-1 rounded-md border p-1">
+            {/* ワークフローの経路では索引を作らないので、索引のある列と重複を許さない列だけを選ばせる（BUG-244）。 */}
             <FilterControl
               columns={columns}
               rows={f.rows}
               advanced={f.advanced !== null}
               texts={QUERY_FILTER_TEXTS}
               exprValue={exprValue}
+              usable={isWorkflowQueryColumn}
+              columnError={(key) => errors.filter.get(key) ?? null}
               onClearAdvanced={() => setQuery({ ...query, filter: buildFilter(f.rows, null, columns) ?? undefined })}
               onChange={(rows) => setQuery({ ...query, filter: buildFilter(rows, f.advanced, columns) ?? undefined })}
             />
@@ -346,12 +397,21 @@ export function DataQueryForm(props: FormProps) {
               columns={columns}
               sort={query.sort ?? []}
               maxKeys={4}
+              usable={isWorkflowQueryColumn}
+              columnError={(key) => errors.sort.get(key) ?? null}
               onChange={(sort) => setQuery({ ...query, sort: sort.length ? sort : undefined })}
             />
           </div>
-          {queryError && queryError !== limitError ? (
-            <p className="text-[11px] text-destructive">{queryError}</p>
+          {note ? (
+            <p className="text-[11px] leading-relaxed text-muted-foreground" data-testid="query-columns-note">
+              {note}
+            </p>
           ) : null}
+          {errors.all.map((message) => (
+            <p key={message} className="text-[11px] text-destructive">
+              {message}
+            </p>
+          ))}
         </div>
       ) : null}
       <Field
