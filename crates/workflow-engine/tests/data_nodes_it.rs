@@ -560,3 +560,90 @@ async fn bulk_upsert_rows_resolve_nested_refs() {
         DataWriteOp::Create { data } if data == &json!({ "title": "出張旅費 / 12000 円" })
     ));
 }
+
+/// DB 必要（effect_journal）: 入力の数を引く書き方（BUG-245・emit_workflow の説明文が教えるもの）。入力で受け取った
+/// 負の数と、script.run で負の数にした出力の参照は、足す数としてそのまま数で届く。文章の組み立て（`"-{q}"`）は文字に
+/// なるので、実行では必ず「数を入れてください」で失敗する（保存時の検証が止める理由）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn subtracting_an_input_number_runs_and_a_template_does_not() {
+    let Ok(db) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
+        eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+        return;
+    };
+    let pool = PgPoolOptions::new()
+        .max_connections(2)
+        .connect(&db)
+        .await
+        .expect("test DB 接続");
+    sqlx::migrate!("../../migrations")
+        .run(&pool)
+        .await
+        .expect("migrate");
+    let ports = Arc::new(DataPorts::default());
+    let engine = Arc::new(script_runtime::engine::ScriptEngine::new().expect("script engine"));
+    let exec = CapabilityNodeExecutor::new(
+        ports.clone(),
+        EffectJournal::new(pool),
+        Arc::new(CapturingAudit::default()),
+    )
+    .with_script_engine(engine, script_runtime::engine::Limits::default());
+    let key = |p: &str| format!("wf:sub:{p}:{}", Uuid::new_v4());
+    // 足す数で書いた最後の値（いまの値を読む空の更新の後に、足した値を書く）。
+    let last_patch = || {
+        let w = ports.writes.lock().unwrap();
+        match &w.last().unwrap().op {
+            DataWriteOp::Update { patch, .. } => patch.clone(),
+            other => panic!("更新が届く: {other:?}"),
+        }
+    };
+    let update =
+        |delta: Value| json!({ "table": TABLE, "record": TABLE, "add": { "stock": delta } });
+
+    // script.run で出庫数を負の数にしてから参照する。
+    let neg = exec
+        .execute(
+            "script.run",
+            &json!({ "source": { "inline": "function main(i) { return { delta: -i.qty }; }" },
+                     "input": { "qty": { "$from": "input", "path": "/qty" } } }),
+            &ctx(json!({ "qty": 3 }), &["data.write"], &key("neg")),
+        )
+        .await;
+    assert!(neg.ok, "{:?}", neg.error);
+    assert_eq!(neg.output, json!({ "delta": -3 }));
+    let mut c = ctx(json!({ "qty": 3 }), &["data.write"], &key("script"));
+    c.node_outputs = json!({ "neg": neg.output });
+    let res = exec
+        .execute(
+            "data.record.update",
+            &update(json!({ "$from": "nodes.neg.output", "path": "/delta" })),
+            &c,
+        )
+        .await;
+    assert!(res.ok, "{:?}", res.error);
+    assert_eq!(last_patch(), json!({ "stock": -3 }));
+
+    // 入力で負の数を受け取る。
+    let res = exec
+        .execute(
+            "data.record.update",
+            &update(json!({ "$from": "input", "path": "/delta" })),
+            &ctx(json!({ "delta": -2 }), &["data.write"], &key("input")),
+        )
+        .await;
+    assert!(res.ok, "{:?}", res.error);
+    assert_eq!(last_patch(), json!({ "stock": -2 }));
+
+    // 文章の組み立ては文字になり、足せない（何も書かない）。
+    let before = ports.writes.lock().unwrap().len();
+    let res = exec
+        .execute(
+            "data.record.update",
+            &update(json!({ "$template": "-{q}", "vars": { "q": { "$from": "input", "path": "/qty" } } })),
+            &ctx(json!({ "qty": 3 }), &["data.write"], &key("template")),
+        )
+        .await;
+    let err = res.error.unwrap();
+    assert_eq!(err.code, "invalid");
+    assert_eq!(err.message, "「足す数」の「stock」には数を入れてください。");
+    assert_eq!(ports.writes.lock().unwrap().len(), before);
+}

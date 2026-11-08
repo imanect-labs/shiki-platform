@@ -210,4 +210,62 @@ mod tests {
         v4(&ir, &Catalog::default(), &mut none);
         assert!(none.is_empty(), "材料が無い構成は照合しない");
     }
+
+    /// BUG-245: 入力の数を引く書き方（入力で負の数を受け取る・script.run で負の数にしてから参照する）は保存の検証を
+    /// 通る。文章の組み立てで負の数を作る書き方（`"-{q}"`）は文字になるので保存で止める（emit_workflow の説明文が
+    /// 教える書き方と同じ）。
+    #[test]
+    fn subtracting_an_input_number_saves_without_a_template() {
+        let wf = |input_schema: serde_json::Value,
+                  nodes: serde_json::Value,
+                  edges: serde_json::Value| {
+            let ir = json!({
+                "ir_version": 1, "name": "stock-out", "triggers": [{ "kind": "interactive" }],
+                "input_schema": input_schema, "nodes": nodes, "edges": edges
+            });
+            let (ir, _) = crate::ir::scopes::complete_declared_scopes(&ir);
+            super::super::validate(&ir, &catalog())
+        };
+        let number =
+            |k: &str| json!({ "type": "object", "properties": { k: { "type": "number" } } });
+        // 入力で負の数を受け取る（出庫なら -3 を入れる）。
+        let by_input = wf(
+            number("delta"),
+            json!([{ "id": "take", "type": "data.record.update", "params": {
+                "table": ITEMS, "record": { "$from": "input", "path": "/id" },
+                "add": { "stock": { "$from": "input", "path": "/delta" } } } }]),
+            json!([]),
+        );
+        assert!(by_input.is_ok(), "{by_input:?}");
+        // script.run で負の数にしてから参照する（出庫数 3 を -3 にする）。
+        let neg = json!({ "id": "neg", "type": "script.run", "params": {
+            "source": { "inline": "function main(i) { return { delta: -i.qty }; }" },
+            "input": { "qty": { "$from": "input", "path": "/qty" } } } });
+        let by_script = wf(
+            number("qty"),
+            json!([neg, { "id": "take", "type": "data.record.upsert", "params": {
+                "table": ITEMS, "match_on": "sku", "data": { "sku": "A" },
+                "add": { "stock": { "$from": "nodes.neg.output", "path": "/delta" } } } }]),
+            json!([{ "from": "neg", "to": "take" }]),
+        );
+        assert!(by_script.is_ok(), "{by_script:?}");
+        // 文章の組み立ては文字になるので止める。
+        let errs = wf(
+            number("qty"),
+            json!([{ "id": "take", "type": "data.record.update", "params": {
+                "table": ITEMS, "record": { "$from": "input", "path": "/id" },
+                "add": { "stock": { "$template": "-{q}",
+                                    "vars": { "q": { "$from": "input", "path": "/qty" } } } } } }]),
+            json!([]),
+        )
+        .unwrap_err();
+        assert_eq!(
+            located(&errs),
+            vec![(
+                "ir.schema_violation",
+                Some("take"),
+                Some("/params/add/stock")
+            )]
+        );
+    }
 }

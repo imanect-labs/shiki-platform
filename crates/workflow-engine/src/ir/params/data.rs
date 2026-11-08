@@ -156,14 +156,25 @@ impl DataRecordUpsertParams {
 }
 
 /// 「足す数」（`add`）の静的な照合（リテラルで書いた分だけ）: 数でない値・値の欄と同じ列・探す列を断る。
+///
+/// 文章の組み立て（`$template`）は、全体でも列ごとの値でも断る。組み立てた値はいつも文字になる
+/// （`control::eval::resolve_deep`）ので、実行で必ず「数を入れてください」で失敗する（BUG-245）。参照（`$from`）は
+/// 実行時に数か確かめる。
 fn check_add(
     add: Option<&ValueExpr>,
     values: Option<&ValueExpr>,
     values_label: &str,
     match_on: Option<&str>,
 ) -> Result<(), ParamsIssue> {
-    let Some(ValueExpr::Literal(add)) = add else {
-        return Ok(());
+    let add = match add {
+        Some(ValueExpr::Literal(add)) => add,
+        Some(ValueExpr::Template(_)) => {
+            return Err(ParamsIssue {
+                path: "/params/add".to_string(),
+                message: "「足す数」に文章の組み立ては使えません（組み立てた値は文字になります）。列ごとに数を並べてください。".to_string(),
+            });
+        }
+        _ => return Ok(()),
     };
     let Some(add) = add.as_object() else {
         if add.is_null() {
@@ -194,7 +205,19 @@ fn check_add(
                 ),
             });
         }
-        // 参照（$from / $template）は実行時に数か確かめる。
+        // 文章の組み立ては文字になるので足せない（実行で必ず失敗する・BUG-245）。
+        if matches!(
+            serde_json::from_value::<ValueExpr>(v.clone()),
+            Ok(ValueExpr::Template(_))
+        ) {
+            return Err(ParamsIssue {
+                path: at,
+                message: format!(
+                    "「足す数」の「{k}」に文章の組み立ては使えません（組み立てた値は文字になり、足せません）。数か、数を指す参照（入力・前のブロックの出力）にしてください。減らすときは負の数を参照します。"
+                ),
+            });
+        }
+        // 参照（$from）は実行時に数か確かめる（形の崩れた値式は V5 が言う）。
         let is_expr = v
             .as_object()
             .is_some_and(|o| o.contains_key("$from") || o.contains_key("$template"));
@@ -398,6 +421,45 @@ mod tests {
             &json!({ "table": table, "record": table, "add": { "stock": -1 } })
         )
         .is_ok());
+        // 文章の組み立ては文字になるので、足す数には書けない（列ごとでも全体でも・更新でも追加か更新でも・BUG-245）。
+        // 参照は実行時に数か確かめる。
+        let template =
+            json!({ "$template": "-{q}", "vars": { "q": { "$from": "input", "path": "/qty" } } });
+        for (nt, params) in [
+            (
+                NodeType::DataRecordUpdate,
+                json!({ "table": table, "record": table, "add": { "stock": template.clone() } }),
+            ),
+            (
+                NodeType::DataRecordUpsert,
+                json!({ "table": table, "match_on": "sku", "data": { "sku": "A" },
+                        "add": { "stock": template.clone() } }),
+            ),
+        ] {
+            let issue = check_params(nt, &params).unwrap_err();
+            assert_eq!(issue.path, "/params/add/stock", "{nt:?}");
+            assert!(
+                issue.message.contains("文章の組み立て") && issue.message.contains("負の数"),
+                "{}",
+                issue.message
+            );
+        }
+        let whole = check_params(
+            NodeType::DataRecordUpdate,
+            &json!({ "table": table, "record": table, "add": template }),
+        )
+        .unwrap_err();
+        assert_eq!(whole.path, "/params/add");
+        for delta in [
+            json!({ "$from": "input", "path": "/delta" }),
+            json!({ "$from": "nodes.neg.output", "path": "/delta" }),
+        ] {
+            assert!(check_params(
+                NodeType::DataRecordUpdate,
+                &json!({ "table": table, "record": table, "add": { "stock": delta } })
+            )
+            .is_ok());
+        }
         // まとめて登録の照合する列は、空白だけなら書いていないのと同じ。
         let p: super::DataBulkUpsertParams =
             serde_json::from_value(json!({ "table": table, "rows": [], "match_on": " " })).unwrap();

@@ -329,7 +329,7 @@ pub(super) fn emit_description(
          - 条件（control.branch の condition・トリガと control.wait の filter）: {{\"cmp\":{{\"left\":値,\"op\":CmpOp,\"right\":値}}}}・{{\"all\":[条件…]}}・{{\"any\":[条件…]}}・{{\"not\":条件}}。CmpOp = {ops}（exists・is_null は right を書かない）。例: {cond}\n\
          - data.query の filter は形が違う: {{\"cmp\":{{\"field\":\"<列の参照名>\",\"op\":CmpOp,\"value\":値}}}}（all / any / not は同じ）。query.limit は 1〜{max_limit}（省略は 50。範囲の外は保存できない）。集計は query の group_by と aggregate（[{{\"metric\":\"count\"}}] や {{\"metric\":\"sum\",\"field\":\"<数値の列>\"}}）で書け、結果は groups に入る（エディタの画面では作れない）。\n\
          - 同じものを 2 件にしない書き込み（同じ日・同じ ID の行を再実行や取り込み直しで増やさない）は、data.record.upsert（match_on に重複を許さない〔unique〕列の参照名、data にその列の値と書く値。あれば書き換え、なければ追加。出力の created で分かる）か、data.bulk_upsert の match_on（id の無い行をその列の値で探して更新）を使う。data.query で探してから data.record.create と data.record.update に分けて書かない（同時に動くと 2 件できる）。match_on に選べるのは、data_schema で（重複を許さない）と出る列だけ（ほかの列は保存できない。無ければ、そういう列を足すよう利用者に頼む）。\n\
-         - 在庫を減らす・合計に足すような数の書き換えは add（{{\"<数の列>\": 足す数}}・負の数で減らす）を使う（data.record.update と data.record.upsert）。読んだ値に足した値を patch に書くと、同時に動いたときに足し分が消える。足した結果が列の最小値・最大値を外れると書かずに失敗するので、在庫を 0 未満にしないなら列の最小値を 0 にしておく。\n\
+         - 在庫を減らす・合計に足すような数の書き換えは add（{{\"<数の列>\": 足す数}}・負の数で減らす）を使う（data.record.update と data.record.upsert）。読んだ値に足した値を patch に書くと、同時に動いたときに足し分が消える。足した結果が列の最小値・最大値を外れると書かずに失敗するので、在庫を 0 未満にしないなら列の最小値を 0 にしておく。入力の数を引く（出庫数で在庫を減らす）ときは、入力の項目で負の数を受け取って {{\"$from\":\"input\",\"path\":\"/delta\"}} を書くか、script.run で負の数にしてから（例: function main(i) {{ return {{ delta: -i.qty }}; }}）{{\"$from\":\"nodes.<id>.output\",\"path\":\"/delta\"}} を書く。足す数に $template は書けない（組み立てた値は文字になるので保存できない）。\n\
          - 前日・先週・先月・月末・週の初めなどの日付は transform.date で求める（script で計算しない）。base を省くと実行情報の scheduled_at（schedule では予定の時刻で、遅れて動いても変わらない）から数える。workflow.start で始めた実行の scheduled_at は、始めた実行に予定の日時（schedule の予定の時刻・手動の実行で指定した日時）があればそれを引き継ぐ（子の transform.date も同じ週・月を数えるので、予定の日時を入力で渡さない）。始めた実行に予定の日時が無いとき（日時を指定しない手動の実行・きっかけで動いた実行・ミニアプリから動いた実行）は、子の scheduled_at は子の実行が始まった日時（子の started_at と同じ）になる。そのような実行が承認や待ちの後で子を始め、子でも親と同じ日・週を数えるなら、親の transform.date の結果（start など）を子の入力で渡す。手動の実行では、実行のダイアログの「詳しい設定」で予定の日時を指定して試せる。shift でずらし（{{\"amount\":-1,\"unit\":\"week\"}} で先週）、period（day・week・month・year）を書くと、その日を含む期間の最初の日 start・最後の日 end（YYYY-MM-DD。テーブルの日付の列は start 以上・end 以下で絞る）と、始まりの日時 start_at・次の期間の始まりの日時 next_start_at（日時の列は start_at 以上・next_start_at より前で絞る）が出る。週の初めは week_starts_on（既定 monday）、時間帯は tz（既定 Asia/Tokyo）。月をずらした先にその日が無ければ月末になる。\n",
         max_limit = data::MAX_QUERY_LIMIT,
         max_tables = tabular::MAX_EXTRA_TABLES,
@@ -621,6 +621,14 @@ mod tests {
             "{d}"
         );
         assert!(d.contains("add（{\"<数の列>\": 足す数}"), "{d}");
+        // 入力の数を引く書き方と、足す数に組み立てを書けないこと（BUG-245・この書き方が保存と実行を通ることは
+        // workflow-engine のテストが確かめる）。
+        assert!(
+            d.contains("入力の項目で負の数を受け取って {\"$from\":\"input\",\"path\":\"/delta\"}")
+                && d.contains("function main(i) { return { delta: -i.qty }; }")
+                && d.contains("足す数に $template は書けない"),
+            "{d}"
+        );
         // 前日・先週・月末などは script ではなく日付を計算で求め、予定の日時から数える（GAP-15）。
         assert!(
             d.contains("transform.date で求める（script で計算しない）"),
