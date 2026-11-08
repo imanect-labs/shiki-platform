@@ -823,6 +823,14 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
   あると、どれも登録せずに `invalid`。照合は効果の予約の内側で行い（記録済みの step は探し直さない）、取込 ID は冪等キーから
   決まるので、やり直しても二重に取り込まない。結果に当てた行の数 `rows_matched` が加わる。一括取込なので editor が要り
   （追加だけの人は使えない）、データ変更トリガは発火しない（§6.2）。省略・空の文字は従来どおり（`id` の無い行はすべて追加）。
+- **まとめて登録の行の形**（BUG-255）: `rows` は 1 行ずつ `{ "id"?: uuid, "rev"?: 数, "key"?: 文字, "data": { 列の参照名: 値 } }` の
+  配列で、書く値は `data` の中に置く（5,000 行まで・`MAX_WORKFLOW_BULK_ROWS`）。`data` の無い平らな行（`csv.query` の `items` の
+  `{列の名前: 値}` をそのまま渡したもの）は実行で `invalid` になり、文言は 1 行ずつ `{"data": {列の参照名: 値}}` に包むよう言う
+  （`rows` は値式なので保存時には照らさない）。CSV の行をテーブルに書くときは、`control.map` の `items` に `csv.query` の `items` を
+  書き、領域の中の `data.record.upsert`（か `data.record.create`）の `data` に列ごとの `{"$from": "each", "path": "/item/<CSV の列の
+  名前>"}` を書く（SQL で列の名前を参照名にそろえたときは `/item` をそのまま書ける・要素は 1,000 件まで・§5.3）。それを超えるときは
+  `script.run` で 1 行ずつ `{data: 行}` に包んでから `rows` に渡す（`script.run` の戻り値は 256 KB まで・[script.md](./script.md)
+  §4.3）。AI の `emit_workflow` の説明文はこの順で教える。
 - **保存時の照合**（§8 V4）: `match_on` はテーブルで重複を許さない列（`unique`）であること（`ir.match_not_unique`。重複を許す列だと
   同時に動いた 2 つの実行が両方とも追加するため）。`add` の列は数の列であること（`ir.add_not_number`）。読めない列・無い列は
   `ir.unknown_field`（承認と同じ文言・区別しない）。材料は保存者の見え方（`Catalog::tables`）で、テーブルを `$from` で決める
