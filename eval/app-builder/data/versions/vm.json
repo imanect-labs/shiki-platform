@@ -1,0 +1,90 @@
+{
+  "behavior_check": {
+    "probes_sha": "9f2a91a209a5a3088f5ff16f9749dda92eddead71ea1814564133465ad2cc5e5",
+    "recorded_at": "2026-11-08T11:02:17+00:00",
+    "results": {
+      "port_next": {
+        "errors": [
+          "ir.unknown_port"
+        ],
+        "warnings": []
+      },
+      "template_var": {
+        "errors": [
+          "ir.bad_template"
+        ],
+        "warnings": []
+      },
+      "unknown_folder": {
+        "errors": [
+          "ir.unknown_folder"
+        ],
+        "warnings": []
+      }
+    }
+  },
+  "binary_sha256": "35a8858f1f30abd112a4a1bb48877aafd36ec5366aa3405ebfdf95e216be1936",
+  "built_at": "2026-11-08T11:01:34Z",
+  "commit": "4c34dee8ad4e616ebe08e2016f401b386cfcd620",
+  "feasible": {
+    "grader": 9,
+    "result": {
+      "app01-claim-submit": null,
+      "app01-posting-batch": null,
+      "app02-triage": null,
+      "app03-daily-submit": null,
+      "app03-pair": null,
+      "app03-weekly-summary": null,
+      "app05-screening-text": null,
+      "app06-reorder-check": null,
+      "app06-stock-move": null,
+      "app08-weekly-kpi": null,
+      "app09-minutes-tasks": null,
+      "app10-survey-csv": null,
+      "app11-checkout": null,
+      "app11-overdue": null,
+      "app11-return": null,
+      "app12-faq-table": null,
+      "basic-branch-amount": null,
+      "basic-map-rows": null,
+      "basic-summary-file": null,
+      "basic-switch-category": null
+    },
+    "tasks_sha": "2c0dc1582107c26acd90000d93f080fa4201dc82b6bd7fdeef9606942379dd99"
+  },
+  "label": "vm",
+  "node_types": [
+    "agent.invoke",
+    "ai.decide",
+    "control.branch",
+    "control.join",
+    "control.map",
+    "control.switch",
+    "control.wait",
+    "csv.patch",
+    "csv.query",
+    "csv.write",
+    "data.bulk_upsert",
+    "data.query",
+    "data.record.create",
+    "data.record.delete",
+    "data.record.update",
+    "data.record.upsert",
+    "data.transition",
+    "http.request",
+    "human.approval",
+    "llm.invoke",
+    "rag.search",
+    "script.run",
+    "skill.invoke",
+    "storage.list",
+    "storage.read",
+    "storage.write",
+    "transform.date",
+    "workflow.reply",
+    "workflow.start"
+  ],
+  "runner_sha256": "b3554af05f603d6193dc7b93c73af97b14357a7c535adcc111361eeb6d4c7c2e",
+  "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+  "tree_clean": true
+}
