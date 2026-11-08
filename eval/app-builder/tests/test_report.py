@@ -421,12 +421,15 @@ def test_report_compares_with_the_version_before_in_eval_toml():
     from abeval import cli
     from abeval.config import load_config
 
-    assert load_config().version_order[-2:] == ("vn", "vm")
-    for label, heads in (("v0", [False, False]), ("vn", [True, False]), ("vm", [True, True])):
+    # 版を足すたびに直さなくてよいよう、実際の eval.toml の最後の 2 つの版で確かめる。
+    order = load_config().version_order
+    assert len(order) >= 3 and order[0] == "v0"
+    prev, last = order[-2:]
+    for label, heads in (("v0", [False, False]), (prev, [True, False]), (last, [True, True])):
         report.write_result(doc(_versioned(label, heads), exp=f"e1a-{label}"), [], iters=10)
     assert cli.main([], command="report") == 0
     text = (report.results_dir() / "summary.md").read_text(encoding="utf-8")
-    assert "vm/a/medium − vn/a/medium（直前の版）" in _comparison_rows(text)
+    assert f"{last}/a/medium − {prev}/a/medium（直前の版）" in _comparison_rows(text)
 
 
 def test_a_tiny_negative_difference_is_not_written_as_minus_zero():

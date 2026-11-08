@@ -623,6 +623,10 @@ def cmd_grade(args) -> int:
         task = tasks.get(t.get("task"))
         if not irs or task is None:
             continue
+        # Mode A の採点（`mode_a.grade`）は emit でない試行（出力の上限で切れた・断った）を採点しないので、ここも
+        # 採点しない（切れた応答に読める IR が残っていても S2s・S5 は無いまま）。
+        if t.get("mode") != "b" and t.get("status") != "emit":
+            continue
         st = static_roles(task, irs, lint, catalog, str(t["key"])[:12])
         t["static"] = {k: v for k, v in st.items() if k != "node_ports"}
         t["s2s"], t["s2w"], t["s5"] = st["s2s"], st["s2w"], st["s5"]

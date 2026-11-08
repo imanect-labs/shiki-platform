@@ -335,6 +335,34 @@ def test_grade_and_report_work_from_the_results(env, tmp_path):
     assert THINKING_MARK not in text and TEXT_MARK not in text
 
 
+def test_regrade_skips_a_trial_the_run_did_not_grade(env, tmp_path):
+    """出力の上限で切れた試行は、読める IR が残っていても、採点し直しでも S2s・S5 を付けない（実行の採点と同じ）。"""
+    fake, _, up, llm = env
+    assert cli.main(argv(llm, "--go"), command="run") == 0
+    path = tmp_path / "results" / "e1a.json"
+    doc = json.loads(path.read_text())
+    cut = doc["trials"][0]
+    assert cut["irs"]
+    cut.update(
+        {
+            "status": "truncated",
+            "s1": False,
+            "s2s": None,
+            "s2w": None,
+            "s5": None,
+            "headline": False,
+        }
+    )
+    cut.pop("static", None)
+    path.write_text(json.dumps(doc, ensure_ascii=False))
+    assert cli.main(["--exp", "e1a"], command="grade") == 0
+    doc = json.loads(path.read_text())
+    [cut, *rest] = doc["trials"]
+    assert (cut["s2s"], cut["s2w"], cut["s5"], cut["headline"]) == (None, None, None, False)
+    assert "static" not in cut
+    assert rest and all(t["s2s"] is False for t in rest)
+
+
 def test_stub_plumbing_failure_is_an_error_not_a_saved_trial(monkeypatch):
     """stub の配管が基盤の失敗で流せなければ、採点せずに errors（stub_plumbing）に入れる（見出しを真にしない）。"""
     from abeval import grading
