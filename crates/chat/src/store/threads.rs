@@ -128,6 +128,8 @@ struct MessageRow {
     content: Json<Vec<ContentBlock>>,
     agent_mode: bool,
     parent_id: Option<Uuid>,
+    /// 回答が途中で止まった理由（GAP-106・check 制約で閉じた値）。
+    stop_reason: Option<String>,
     created_at: DateTime<Utc>,
 }
 
@@ -144,6 +146,10 @@ impl MessageRow {
             invoked_actions: Vec::new(),
             bound_actions: Vec::new(),
             ui_runs: Vec::new(),
+            stop_reason: self
+                .stop_reason
+                .as_deref()
+                .and_then(crate::model::StopReason::parse),
             created_at: self.created_at,
         })
     }
@@ -407,7 +413,7 @@ impl ChatStore {
         // 返すため両者の `created_at` は必ず同値になる。ここを id（ランダム UUID）で崩すと
         // 返信がユーザ発話より前に描画される（順序が実質ランダムになる）。返信は必ず親の後。
         let rows: Vec<MessageRow> = sqlx::query_as(
-            "SELECT id, role, content, agent_mode, parent_id, created_at FROM message \
+            "SELECT id, role, content, agent_mode, parent_id, stop_reason, created_at FROM message \
              WHERE thread_id = $1 AND tenant_id = $2 \
              ORDER BY created_at, (parent_id IS NOT NULL), id",
         )
@@ -471,7 +477,7 @@ impl ChatStore {
         )
         .await?;
         let row: Option<MessageRow> = sqlx::query_as(
-            "SELECT id, role, content, agent_mode, parent_id, created_at FROM message \
+            "SELECT id, role, content, agent_mode, parent_id, stop_reason, created_at FROM message \
              WHERE id = $1 AND thread_id = $2 AND tenant_id = $3",
         )
         .bind(message_id)

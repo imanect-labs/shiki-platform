@@ -464,7 +464,7 @@ impl ChatWorker {
         };
 
         match gen_result {
-            Ok(()) if cancelled => {
+            Ok(_) if cancelled => {
                 self.store
                     .finalize_run_with_ui(
                         run_id,
@@ -479,7 +479,8 @@ impl ChatWorker {
                     )
                     .await?;
             }
-            Ok(()) => {
+            // 途中で止まった理由（GAP-106）は done イベントに載せ、確定がメッセージにも同じ値を残す。
+            Ok(stop_reason) => {
                 self.store
                     .finalize_run_with_ui(
                         run_id,
@@ -489,6 +490,7 @@ impl ChatWorker {
                         None,
                         Some(&StreamEventKind::Done {
                             message_id: run.message_id,
+                            stop_reason,
                         }),
                         &ui_bindings,
                     )

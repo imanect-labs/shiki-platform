@@ -435,6 +435,7 @@ use utoipa::{
         chat::SelectionKind,
         chat::Role,
         chat::RunStatus,
+        chat::StopReason,
         chat::ThreadRole,
         chat::StreamEvent,
         chat::StreamEventKind,

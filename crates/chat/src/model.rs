@@ -374,6 +374,10 @@ pub struct Message {
     /// 本文の図のボタンで起動したワークフローの記録（押した順・#604）。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub ui_runs: Vec<UiActionRun>,
+    /// 回答が途中で止まった理由（GAP-106）。自然に終わった回答・利用者が止めた回答・利用者の発話には
+    /// 付かない。画面は回答の下に注記を出す。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_reason: Option<StopReason>,
     pub created_at: DateTime<Utc>,
 }
 
@@ -522,6 +526,9 @@ impl RunStatus {
 // SSE の生成イベント（ワイヤ形式）は `stream_event` へ切り出した（1 ファイル行数ゲート）。
 // 利用側の `chat::model::StreamEventKind` などのパスは変えない。
 pub use crate::stream_event::{PlanSubtask, StreamEvent, StreamEventKind};
+
+// 回答が途中で止まった理由（メッセージと SSE の done イベントに載る・GAP-106）。
+pub use crate::stop_reason::StopReason;
 
 /// 共有で付与できる役割（thread ReBAC・#37）。viewer/commenter/editor のみ許す
 /// （owner の横展開を防ぐ閉じた共有語彙）。

@@ -988,3 +988,141 @@ async fn ui_reference_is_offered_only_when_yui_is_enabled() {
         "yui が無効なら ui_reference は提示しない"
     );
 }
+
+/// 回答が途中で止まった理由（GAP-106）が、done イベントとメッセージに載り、読み直しても返る。
+///
+/// 出力の上限での打ち切りは stub の `truncate:`（本文を返して `MaxTokens` で終える）、手数の上限は
+/// `loop:`（毎ターン tools[0] を呼び続ける）で起こす。古典 RAG の経路（エージェントモードでない発話）の
+/// 打ち切りも同じに残す。自然に終わった回答・利用者の発話には付かない。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_reason_reaches_done_event_and_message() {
+    use chat::{Role, StopReason};
+
+    // 設定（手数の上限・提示するツール）が違うワーカーにジョブを拾わせない。
+    let Some(pool) = isolated_setup("chat_stop").await else {
+        return;
+    };
+    let store = ChatStore::connect(pool.clone(), Arc::new(AllowAll), None)
+        .await
+        .unwrap();
+    let worker = ChatWorker::new(
+        pool.clone(),
+        store.clone(),
+        test_deps(stub_gateway(pool.clone())),
+        WorkerConfig {
+            // `loop:` が呼ぶツールが要るので、図の書き方（ui_reference）を提示する。
+            system_prompt: chat::with_yui_guide("あなたはアシスタントです。"),
+            model: Some("m".into()),
+            lease_secs: 120,
+            max_steps: 2,
+            yui: true,
+            // エージェントモードでない発話は古典 RAG の経路で生成する。
+            classic_rag: true,
+            ..Default::default()
+        },
+    );
+    worker.spawn(1);
+
+    /// 1 発話を done まで流し、(回答の id, run の id, done の停止理由, 本文) を返す。
+    async fn ask(
+        store: &ChatStore,
+        c: &AuthContext,
+        thread_id: uuid::Uuid,
+        text: &str,
+        agent_mode: bool,
+    ) -> (uuid::Uuid, uuid::Uuid, Option<StopReason>, String) {
+        let res = store
+            .post_message(
+                c,
+                thread_id,
+                text,
+                &[],
+                None,
+                Some(agent_mode),
+                false,
+                &[],
+                None,
+            )
+            .await
+            .unwrap();
+        let mut rx = store.event_stream(c.tenant_id(), res.run_id, 0);
+        let mut body = String::new();
+        for _ in 0..500 {
+            let next = tokio::time::timeout(Duration::from_mins(1), rx.next())
+                .await
+                .expect("イベント待ちがタイムアウト（ワーカーが生成しない）");
+            let Some(ev) = next else { break };
+            match ev.event {
+                StreamEventKind::Token { text: t } => body.push_str(&t),
+                StreamEventKind::Done {
+                    message_id,
+                    stop_reason,
+                } => {
+                    assert_eq!(message_id, res.assistant_message_id);
+                    return (res.assistant_message_id, res.run_id, stop_reason, body);
+                }
+                StreamEventKind::Error { message } => panic!("生成失敗: {message}"),
+                _ => {}
+            }
+        }
+        panic!("done イベントが届かない: {text}");
+    }
+
+    let c = ctx(&format!("t-{}", uuid::Uuid::new_v4()));
+    let thread = store
+        .create_thread(&c, "t", true, None, None)
+        .await
+        .unwrap();
+
+    let (truncated, truncated_run, stop, body) =
+        ask(&store, &c, thread.id, "truncate:長い説明", true).await;
+    assert_eq!(stop, Some(StopReason::Truncated), "出力の上限で切れた");
+    assert!(body.contains("長い説明"), "切れるまでの本文は残る: {body}");
+
+    let (step_limited, _, stop, _) = ask(&store, &c, thread.id, "loop:", true).await;
+    assert_eq!(stop, Some(StopReason::StepLimit), "手数の上限で止まった");
+
+    let (classic, _, stop, _) = ask(&store, &c, thread.id, "truncate:古典の経路", false).await;
+    assert_eq!(
+        stop,
+        Some(StopReason::Truncated),
+        "古典の経路でも打ち切りを残す"
+    );
+
+    let (plain, _, stop, _) = ask(&store, &c, thread.id, "こんにちは", true).await;
+    assert_eq!(stop, None, "自然に終わった回答には付かない");
+
+    // 読み直し（メッセージの取得）でも同じ理由が返る。
+    let msgs = store.get_messages(&c, thread.id, None).await.unwrap();
+    let reason = |id: uuid::Uuid| msgs.iter().find(|m| m.id == id).unwrap().stop_reason;
+    assert_eq!(reason(truncated), Some(StopReason::Truncated));
+    assert_eq!(reason(step_limited), Some(StopReason::StepLimit));
+    assert_eq!(reason(classic), Some(StopReason::Truncated));
+    assert_eq!(reason(plain), None);
+    assert!(msgs
+        .iter()
+        .filter(|m| m.role == Role::User)
+        .all(|m| m.stop_reason.is_none()));
+    // API の形: 理由の無いメッセージには項目を出さない（今までどおりの JSON）。
+    let json = serde_json::to_value(msgs.iter().find(|m| m.id == plain).unwrap()).unwrap();
+    assert!(json.get("stop_reason").is_none(), "{json}");
+    let json = serde_json::to_value(msgs.iter().find(|m| m.id == truncated).unwrap()).unwrap();
+    assert_eq!(json["stop_reason"], "truncated");
+
+    // 生成の後から開いた画面（replay）にも、DB に残した done の理由が届く。
+    let replayed = store
+        .replay_events(c.tenant_id(), truncated_run, 0)
+        .await
+        .unwrap();
+    assert!(
+        matches!(
+            replayed.last().map(|e| &e.event),
+            Some(StreamEventKind::Done {
+                stop_reason: Some(StopReason::Truncated),
+                ..
+            })
+        ),
+        "{:?}",
+        replayed.last()
+    );
+}

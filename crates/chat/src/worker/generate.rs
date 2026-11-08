@@ -18,7 +18,7 @@ use super::history::{
 use super::opts::{autonomous_system_prompt, chat_opts, sanitize_for_prompt};
 use super::sink::WorkerSink;
 use super::ChatWorker;
-use crate::model::Role;
+use crate::model::{Role, StopReason};
 use crate::store::ClaimedRun;
 use crate::ChatError;
 
@@ -168,6 +168,9 @@ impl ChatWorker {
     }
 
     /// エージェントモード（agent-core ループ）。`run.autonomous` で Chat/Autonomous を切り替える。
+    ///
+    /// 戻り値は回答が途中で止まった理由（出力の上限・手数や費用の上限・ループの検知・GAP-106）。
+    /// 自然な終了と利用者の停止は `None`（停止は呼び出し側が cancel フラグで確定する）。
     pub(super) async fn run_agent_mode(
         &self,
         ctx: &AuthContext,
@@ -176,7 +179,7 @@ impl ChatWorker {
         cancel: Arc<AtomicBool>,
         sink: &mut WorkerSink,
         slot: &Arc<super::slot::RunSlot>,
-    ) -> Result<(), ChatError> {
+    ) -> Result<Option<StopReason>, ChatError> {
         let ThreadHistory {
             messages: history,
             attachments,
@@ -355,8 +358,13 @@ impl ChatWorker {
             agent_core::AgentError::Llm(msg) => ChatError::from_agent_llm(&msg),
             other => ChatError::Unavailable(format!("agent: {other}")),
         })?;
-        let _ = outcome; // Completed / Budget / LoopDetected / Cancelled は content ＋ status で処理
-        Ok(())
+        // 本文は sink の projection、停止（Cancelled）は cancel フラグで確定する。ここでは途中で
+        // 止まった理由だけを返し、done イベントとメッセージに残す（利用者に打ち切りを伝える）。
+        let stop = StopReason::from_agent(outcome.stop);
+        if let Some(stop) = stop {
+            tracing::info!(run_id = %run.run_id, stop_reason = stop.as_str(), "回答が途中で止まった");
+        }
+        Ok(stop)
     }
 
     /// skill を最後に適用する（system 追記・few-shot・モデル既定。ピン順・モデル既定は

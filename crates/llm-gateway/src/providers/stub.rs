@@ -26,6 +26,8 @@
 //!   「回答: 」を付けない）。
 //! - 構造化出力（形の指定があるとき）… スキーマに合う最小の値・`json:` / `jsonalways:` /
 //!   `refuse:` / `truncate:`（[`super::stub_structured`]）。
+//! - `truncate:<本文>`（形の指定が無いとき）… 「回答: <本文>」を流して出力の上限（`MaxTokens`）で終える
+//!   （チャットの「途中で打ち切りました」の注記の検証用・GAP-106）。
 
 use std::time::Duration;
 
@@ -35,7 +37,7 @@ use super::stub_deep_research::deep_research_call;
 use super::stub_fixtures::{long_reply, long_thinking, yui_reply};
 use super::stub_stream::{
     paced_chunks_stream, paced_thinking_then_text_stream, slow_text_stream, text_stream,
-    tool_call_stream, tool_calls_stream,
+    text_stream_ending, tool_call_stream, tool_calls_stream,
 };
 use super::stub_structured::structured_call;
 use super::stub_triggers::{
@@ -363,6 +365,14 @@ fn stub_stream(req: &GenerateRequest) -> DeltaStream {
     if let Some(s) = structured_call(req, &user_text, prompt_tokens) {
         return s;
     }
+    // --- 出力の上限での打ち切り `truncate:<本文>`（形の指定が無いとき・GAP-106）。 ---
+    if let Some(body) = user_text.strip_prefix("truncate:") {
+        return text_stream_ending(
+            &format!("回答: {}", body.trim()),
+            StopReason::MaxTokens,
+            prompt_tokens,
+        );
+    }
     // --- 自律駆動 `loop:`: 毎ターン tools[0] を空入力で呼び続ける（ループ/上限の決定的駆動）。 ---
     if !req.tools.is_empty() && user_text.starts_with("loop:") {
         return tool_call_stream(
@@ -527,6 +537,24 @@ mod tests {
             }
         }
         assert!(text.contains("```ui\nask "), "{text}");
+    }
+
+    /// 形の指定が無い `truncate:` は本文を返して出力の上限で終える（チャットの打ち切りの注記の検証用・GAP-106）。
+    #[tokio::test]
+    async fn stub_truncate_prefix_ends_at_max_tokens_without_schema() {
+        let req = GenerateRequest::new(vec![Message::text(Role::User, "truncate:長い説明")]);
+        let mut s = StubProvider::new().stream(&req).await.unwrap();
+        let mut text = String::new();
+        let mut stop = None;
+        while let Some(ev) = s.next().await {
+            match ev.unwrap() {
+                StreamDelta::TextDelta { text: t } => text.push_str(&t),
+                StreamDelta::Done { stop_reason, .. } => stop = Some(stop_reason),
+                _ => {}
+            }
+        }
+        assert_eq!(text, "回答: 長い説明");
+        assert_eq!(stop, Some(StopReason::MaxTokens));
     }
 
     #[tokio::test]

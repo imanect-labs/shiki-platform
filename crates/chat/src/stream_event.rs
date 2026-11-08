@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 use uuid::Uuid;
 
-use crate::model::{Citation, RunStatus};
+use crate::model::{Citation, RunStatus, StopReason};
 
 /// SSE で配信する構造化イベント（`generation_event.payload` と一致）。
 ///
@@ -110,7 +110,14 @@ pub enum StreamEventKind {
     /// エラー（生成失敗）。
     Error { message: String },
     /// 完了（確定した assistant message id）。
-    Done { message_id: Uuid },
+    ///
+    /// `stop_reason` は回答が途中で止まった理由（GAP-106）。自然に終わった回答には付かない
+    /// （付ける前の run の replay も `None`）。確定は同じ値を `message.stop_reason` にも書く。
+    Done {
+        message_id: Uuid,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        stop_reason: Option<StopReason>,
+    },
 }
 
 /// 計画のサブタスク 1 件（SSE `plan` イベント用・agent-core `Subtask` のミラー）。

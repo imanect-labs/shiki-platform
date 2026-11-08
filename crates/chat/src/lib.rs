@@ -53,6 +53,8 @@ pub(crate) mod skill_search_tool;
 pub(crate) mod skill_tool;
 pub mod slide_templates;
 pub mod slide_tool;
+/// 回答が途中で止まった理由（GAP-106）。`model` から再エクスポートしている。
+pub mod stop_reason;
 pub mod store;
 /// SSE の生成イベント（ワイヤ形式）。`model` から再エクスポートしている。
 pub mod stream_event;
@@ -73,7 +75,7 @@ pub use error::ChatError;
 pub use gui_actions::{ChatActionLedger, ChatSubmitHandler};
 pub use model::{
     Attachment, Citation, ContentBlock, LastModelChoice, Message, PendingApproval, PlanSubtask,
-    Role, RunModel, RunStatus, SelectionContext, SelectionKind, SkillPin, StreamEvent,
+    Role, RunModel, RunStatus, SelectionContext, SelectionKind, SkillPin, StopReason, StreamEvent,
     StreamEventKind, Thread, ThreadRole, UiActionRun, UiActionRunStatus, UiActionValue, WebSource,
 };
 pub use preferences::UserPreferences;

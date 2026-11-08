@@ -781,6 +781,7 @@ async fn event_stream_replays_appended_events() {
             fencing,
             &StreamEventKind::Done {
                 message_id: res.assistant_message_id,
+                stop_reason: None,
             },
         )
         .await
@@ -1278,6 +1279,7 @@ async fn viewer_event_stream_redacts_for_other_viewers() {
         StreamEventKind::Citation(web_cite(4)),
         StreamEventKind::Done {
             message_id: res.assistant_message_id,
+            stop_reason: None,
         },
     ] {
         store
@@ -1407,6 +1409,7 @@ async fn viewer_event_stream_checks_thread_and_drops_legacy_citations() {
         StreamEventKind::Citation(legacy),
         StreamEventKind::Done {
             message_id: res.assistant_message_id,
+            stop_reason: None,
         },
     ] {
         store
