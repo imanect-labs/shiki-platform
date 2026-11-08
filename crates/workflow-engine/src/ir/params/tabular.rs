@@ -69,7 +69,7 @@ impl CsvQueryParams {
                     "英小文字・数字・_ で、先頭は数字以外・63 文字までにしてください".to_string()
                 }
                 Some(TableNameIssue::Reserved) => {
-                    format!("{PRIMARY_TABLE} は最初の CSV の名前なので、ほかの名前にしてください")
+                    format!("{PRIMARY_TABLE} は集計するファイル（file）の名前なので、ほかの名前にしてください")
                 }
                 Some(TableNameIssue::Duplicate) => {
                     "前のつなぐ CSV と同じ名前なので、ほかの名前にしてください".to_string()
@@ -78,7 +78,7 @@ impl CsvQueryParams {
             return Err(ParamsIssue {
                 path: format!("/params/tables/{i}/name"),
                 message: format!(
-                    "{} つ目の CSV の SQL での名前「{name}」は使えません。{why}。",
+                    "{} つ目のつなぐ CSV（tables）の SQL での名前「{name}」は使えません。{why}。",
                     i + 1
                 ),
             });
@@ -176,7 +176,7 @@ mod tests {
             (
                 json!([t(json!("a")), t(json!("data"))]),
                 "/params/tables/1/name",
-                "最初の CSV",
+                "2 つ目のつなぐ CSV（tables）の SQL での名前「data」は使えません。data は集計するファイル（file）の名前なので",
             ),
             (
                 json!([t(json!("a")), t(json!("b")), t(json!("a"))]),
