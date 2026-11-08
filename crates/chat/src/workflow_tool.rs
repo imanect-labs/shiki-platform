@@ -144,6 +144,29 @@ fn create_name_taken(name: &str) -> String {
     )
 }
 
+/// ir をオブジェクトで渡さなかった（読めない文字列・配列などの JSON の文字列・オブジェクトでない値）ときの誤り（GAP-119）。
+const IR_NOT_OBJECT: &str = "ir は JSON の文字列にせず、オブジェクトのまま渡してください\
+     （ir_version・name・triggers・nodes・edges を持つオブジェクト）。保存していません。";
+
+/// 保存する IR を読む。オブジェクトのほか、JSON として読むとオブジェクトになる文字列も受ける（モデルは大きな IR を
+/// JSON の文字列にして送ることがある・GAP-119）。読んだ後は、オブジェクトで来たときと同じ検証（大きさの上限を含む）と
+/// 保存の道を通る。省いた・null は必須の誤り、ほかは直し方を言って断る。
+fn ir_of(input: &serde_json::Value) -> Result<serde_json::Value, ToolError> {
+    use serde_json::Value;
+    match input.get("ir") {
+        None | Some(Value::Null) => Err(ToolError::Invalid("ir（object）は必須です".into())),
+        Some(ir @ Value::Object(_)) => Ok(ir.clone()),
+        Some(Value::String(raw)) => match serde_json::from_str::<Value>(raw) {
+            Ok(ir @ Value::Object(_)) => Ok(ir),
+            Ok(_) => Err(ToolError::Invalid(IR_NOT_OBJECT.into())),
+            Err(e) => Err(ToolError::Invalid(format!(
+                "ir の文字列を JSON として読めませんでした（{e}）。{IR_NOT_OBJECT}"
+            ))),
+        },
+        Some(_) => Err(ToolError::Invalid(IR_NOT_OBJECT.into())),
+    }
+}
+
 /// 直す対象（workflow_id）を読む。省いた・null は新しく作る（`None`）。文字列の UUID だけを受け、ほかは断る
 /// （数や null を黙って「新しく作る」にしない・BUG-219）。
 fn target_of(input: &serde_json::Value) -> Result<Option<Uuid>, ToolError> {
@@ -256,7 +279,7 @@ impl Tool for EmitWorkflowTool {
             "properties": {
                 "ir": {
                     "type": "object",
-                    "description": "ワークフロー IR（JSON DAG）全体"
+                    "description": "ワークフロー IR（JSON DAG）全体。オブジェクトのまま渡す（JSON の文字列にしない）"
                 },
                 "workflow_id": {
                     "type": "string",
@@ -277,9 +300,7 @@ impl Tool for EmitWorkflowTool {
         input: serde_json::Value,
         trace_id: Option<&str>,
     ) -> Result<ToolOutcome, ToolError> {
-        let Some(ir_json) = input.get("ir").filter(|v| v.is_object()).cloned() else {
-            return Err(ToolError::Invalid("ir（object）は必須です".into()));
-        };
+        let ir_json = ir_of(&input)?;
         let target = target_of(&input)?;
         let catalog = self
             .catalog
@@ -554,6 +575,79 @@ mod tests {
             panic!("UUID でない文字列は断る");
         };
         assert!(msg.contains("UUID ではありません"), "{msg}");
+    }
+
+    /// ir はオブジェクトのほか、JSON として読むとオブジェクトになる文字列も受け、同じ値として読む。読めない文字列・
+    /// 配列などの文字列・オブジェクトでない値は、オブジェクトのまま渡すよう言って断る。省いた・null は必須の誤り（GAP-119）。
+    #[test]
+    fn ir_is_an_object_or_a_json_string_of_one() {
+        use serde_json::json;
+        let ir = json!({
+            "ir_version": 1, "name": "wf", "triggers": [{ "kind": "interactive" }],
+            "nodes": [{ "id": "say", "type": "llm.invoke", "params": { "prompt": "こんにちは" } }],
+            "edges": []
+        });
+        assert_eq!(ir_of(&json!({ "ir": ir })).unwrap(), ir);
+        assert_eq!(ir_of(&json!({ "ir": ir.to_string() })).unwrap(), ir);
+        let pretty = serde_json::to_string_pretty(&ir).unwrap();
+        assert_eq!(ir_of(&json!({ "ir": pretty })).unwrap(), ir);
+
+        let refused = |input: serde_json::Value| match ir_of(&input) {
+            Err(ToolError::Invalid(msg)) => msg,
+            other => panic!("{input} は断る: {other:?}"),
+        };
+        // 壊れた文字列（途中で切れた）は、どこで読めなくなったかと直し方を言う。
+        let broken = refused(json!({ "ir": r#"{"ir_version": 1, "name": "wf", "nodes": ["# }));
+        assert!(
+            broken.starts_with("ir の文字列を JSON として読めませんでした（")
+                && broken.contains("line 1 column")
+                && broken.ends_with(IR_NOT_OBJECT),
+            "{broken}"
+        );
+        assert!(IR_NOT_OBJECT
+            .starts_with("ir は JSON の文字列にせず、オブジェクトのまま渡してください"));
+        // 配列・文字列・数の JSON の文字列と、オブジェクトでない値。
+        for bad in [
+            json!(format!("[{ir}]")),
+            json!(json!(ir.to_string()).to_string()),
+            json!("12"),
+            json!([ir.clone()]),
+            json!(12),
+            json!(true),
+        ] {
+            assert_eq!(refused(json!({ "ir": bad })), IR_NOT_OBJECT, "{bad}");
+        }
+        for missing in [json!({}), json!({ "ir": null })] {
+            assert_eq!(refused(missing), "ir（object）は必須です");
+        }
+    }
+
+    /// 文字列で受けた IR も、オブジェクトで受けたときと同じ検証を通る（大きさの上限の誤りも同じに返る・GAP-119）。
+    #[test]
+    fn a_json_string_ir_is_validated_like_an_object() {
+        use serde_json::json;
+        let big = json!({
+            "ir_version": 1, "name": "wf", "triggers": [{ "kind": "interactive" }],
+            "nodes": [{ "id": "say", "type": "llm.invoke",
+                        "params": { "prompt": "あ".repeat(400_000) } }],
+            "edges": []
+        });
+        let errors = |input: serde_json::Value| {
+            let ir = ir_of(&input).unwrap();
+            workflow_engine::validate(&ir, &Catalog::default())
+                .unwrap_err()
+                .into_iter()
+                .map(|e| (e.code, e.message))
+                .collect::<Vec<_>>()
+        };
+        let as_object = errors(json!({ "ir": big }));
+        assert!(
+            as_object
+                .iter()
+                .any(|(code, _)| code == "ir.limit_exceeded"),
+            "{as_object:?}"
+        );
+        assert_eq!(errors(json!({ "ir": big.to_string() })), as_object);
     }
 
     /// 保存の失敗は、作るときと直すときで言い分ける。名前の重なりは作成の文（read_workflow で読んで直すか、別の名前に
