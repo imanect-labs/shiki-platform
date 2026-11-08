@@ -531,6 +531,14 @@ flowchart LR
   claim/takeover 時に resume へ渡す・端末確定でクリア・projection はイベント replay で再構築）③キャンセルは status=`cancelling`＋pub/sub 通知で
   ステップ境界・ストリーム読取ループが検知（サンドボックス実行中ツールへ kill 伝播）
   ④課金は attempt 単位で実消費を記録（表示は run 単位に集約）。
+- **途中で止まった理由（GAP-106）**: agent-core の停止理由のうち、自然な終了と利用者の停止以外
+  （`chat::StopReason`: 出力の上限での打ち切り `truncated`・手数／時間／トークン量／費用の上限
+  `step_limit` / `time_limit` / `token_limit` / `cost_limit`・失敗の繰り返しの検知 `loop_detected`）を、
+  run の確定と同じ Tx で `message.stop_reason` に書き、SSE の `done` イベントと `GET /threads/:id/messages` の
+  `Message` に `stop_reason` として載せる（自然に終わった回答では項目を出さない）。画面は回答の下に理由と
+  続け方の注記を出す（生成の直後も読み直したときも）。古典 RAG の経路はツールのループが無いので、
+  出力の上限での打ち切りだけを残す。プロバイダの拒否（`refusal`）は agent-core が自然な終了にまとめるため、
+  まだ区別しない。
 
 ### 4.5 llm-gateway（自作・in-process）
 
