@@ -136,9 +136,9 @@
   }
  },
  "grader": {
-  "grader": 9,
+  "grader": 10,
   "ir_lint_schema": 3,
-  "ir_lint_sha256": "3191e28461cbf717965486c670490f8c6ea434cb72d8e1484ae5c05e43141430"
+  "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
  },
  "conditions": [
   "vm/b/medium"

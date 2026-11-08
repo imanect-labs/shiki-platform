@@ -1,0 +1,84 @@
+{
+ "captured_at": "2026-11-08T19:11:25+00:00",
+ "changed_from_previous": [],
+ "date_note_found": true,
+ "exp": "e1b-vf",
+ "fingerprint": {
+  "capabilities": {
+   "custom_instructions": true,
+   "fsm": true,
+   "list_workflows": true,
+   "node_ports": true,
+   "scheduled_at": true,
+   "trigger": true
+  },
+  "custom_instructions": "empty",
+  "decision_models": [],
+  "fixtures": {
+   "csv": [],
+   "folders": [],
+   "tables": [
+    "通常の申請",
+    "高額の申請"
+   ]
+  },
+  "llm_config_sha": "17b0be22fe40b55fe1eed7bfa7a23487dfa031c88d79c3871a6114d8575971fb",
+  "system_sha": "c18d0653e579fb490a8b3627cb974787ac24ff3e1014d90a12167afff5c8f650",
+  "tools_sha": "5e6a4f4c78edbc402c8b1fcef858c71c64bfb88e725a40c1a557eec449b58e04",
+  "workflow_models": [
+   "claude-haiku-5-5",
+   "default"
+  ]
+ },
+ "fingerprint_sha": "990b90ee267cbc2507fc74c5d4189e4b0b8993c71f79de8fedc6ea74b6239c36",
+ "fixed_date": "2026-11-04",
+ "label": "vf",
+ "llm_config_key_like_items": [
+  "llm.providers[0].api_key"
+ ],
+ "max_tokens": 8192,
+ "model": "claude-haiku-5-5",
+ "original_dates": [
+  "2026-11-09"
+ ],
+ "other_uuids": 0,
+ "output_config": {
+  "effort": "medium"
+ },
+ "sha": {
+  "capture": "1d95414337309cccecb5c920eb86912c5c116dc55f67fc62d97cde12afb12840",
+  "system": "c18d0653e579fb490a8b3627cb974787ac24ff3e1014d90a12167afff5c8f650",
+  "tools": "5e6a4f4c78edbc402c8b1fcef858c71c64bfb88e725a40c1a557eec449b58e04"
+ },
+ "thinking": {
+  "type": "adaptive"
+ },
+ "tool_names": [
+  "code_interpreter",
+  "web_search",
+  "web_fetch",
+  "ui_reference",
+  "emit_workflow",
+  "read_workflow",
+  "list_workflows",
+  "search_workflows",
+  "save_note",
+  "save_slide",
+  "save_csv",
+  "save_skill",
+  "document_read",
+  "document_edit",
+  "document_embed",
+  "slide_read",
+  "slide_edit",
+  "drive_find",
+  "drive_move",
+  "csv_query",
+  "csv_patch",
+  "csv_write",
+  "data_query",
+  "data_schema",
+  "data_record_write",
+  "tool_search"
+ ]
+}
