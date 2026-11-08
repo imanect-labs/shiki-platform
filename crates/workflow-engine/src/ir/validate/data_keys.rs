@@ -29,6 +29,19 @@ pub(super) fn table_of<'a>(catalog: &'a Catalog, params: &Value) -> Option<&'a C
     catalog.tables.as_ref()?.get(&key)
 }
 
+/// 誤りの文言での列の言い方。表示名があれば「表示名」（参照名）、無ければ「参照名」（画面は表示名で列を見せ、AI は
+/// 参照名で IR を直すので両方を出す）。`schema` は保存者の見え方の定義で、読めない列・無い列・システムの列は参照名だけ。
+pub(super) fn column_name(schema: &data::TableSchema, key: &str) -> String {
+    match schema
+        .field(key)
+        .map(|f| f.display_name.trim())
+        .filter(|d| !d.is_empty() && *d != key)
+    {
+        Some(d) => format!("「{d}」（{key}）"),
+        None => format!("「{key}」"),
+    }
+}
+
 /// V4: 同じレコードを探す列と足す数の列（材料が無ければ照合しない）。
 pub(super) fn v4(ir: &WorkflowIr, catalog: &Catalog, errors: &mut Vec<ValidationError>) {
     if catalog.tables.is_none() {

@@ -17,7 +17,7 @@ fn schema() -> TableSchema {
     let mut s: TableSchema = serde_json::from_value(json!({ "fields": [
         { "key": "sku", "type": "text", "unique": true },
         { "key": "name", "type": "text", "indexed": true, "searchable": true },
-        { "key": "memo", "type": "text" },
+        { "key": "memo", "display_name": "メモ", "type": "text" },
         { "key": "stock", "type": "number", "indexed": true },
         { "key": "price", "type": "number" },
         { "key": "tags", "type": "multi_select", "indexed": true, "options": ["a"] },
@@ -126,10 +126,16 @@ fn columns_without_an_index_are_refused_where_written() {
             (FIELD_NOT_INDEXED, "sum", "/params/query/aggregate/1/field"),
         ]
     );
+    // 表示名のある列は「表示名」（参照名）で、無い列は参照名で言う（画面は表示名を、AI は参照名を読む）。
     let m = &errors[0].message;
     assert!(
-        m.contains("「memo」は索引の無い列なので、絞り込みの条件に使えません")
+        m.contains("「メモ」（memo）は索引の無い列なので、絞り込みの条件に使えません")
             && m.contains("索引のある列か重複を許さない列を使う"),
+        "{m}"
+    );
+    let m = &errors[1].message;
+    assert!(
+        m.starts_with("「price」は索引の無い列なので、並べ替えに使えません"),
         "{m}"
     );
 }

@@ -101,13 +101,14 @@ pub(super) fn v4(ir: &WorkflowIr, catalog: &Catalog, errors: &mut Vec<Validation
                     continue;
                 }
                 refused = true;
+                let col = super::data_keys::column_name(schema, key);
                 let message = if nt == NodeType::DataRecordUpsert && field == "data" {
                     format!(
-                        "「{key}」は状態の列なので、「{block}」の「{label}」に書けません（同じレコードがあって書き換えるときに必ず断られます）。「{label}」から外してください。追加したレコードは{first}になり、状態を変えるときは「{advance}」のブロックを使います。"
+                        "{col}は状態の列なので、「{block}」の「{label}」に書けません（同じレコードがあって書き換えるときに必ず断られます）。「{label}」から外してください。追加したレコードは{first}になり、状態を変えるときは「{advance}」のブロックを使います。"
                     )
                 } else {
                     format!(
-                        "「{key}」は状態の列なので、「{block}」の「{label}」に書けません。「{label}」から外し、状態を変えるときは「{advance}」のブロックを使ってください。"
+                        "{col}は状態の列なので、「{block}」の「{label}」に書けません。「{label}」から外し、状態を変えるときは「{advance}」のブロックを使ってください。"
                     )
                 };
                 refuse(format!("/params/{field}/{key}"), message);
@@ -126,10 +127,11 @@ pub(super) fn v4(ir: &WorkflowIr, catalog: &Catalog, errors: &mut Vec<Validation
         let mut only = Map::from_iter([(fi.status_field.clone(), v.clone())]);
         if fi.apply(&mut only).is_err() {
             let key = &fi.status_field;
+            let col = super::data_keys::column_name(schema, key);
             refuse(
                 format!("/params/data/{key}"),
                 format!(
-                    "追加したレコードの状態は{first}に決まります。「{key}」は書かないか「{}」にし、ほかの状態にするときは、追加した後に「{advance}」のブロックを使ってください。",
+                    "追加したレコードの状態は{first}に決まります。{col}は書かないか「{}」にし、ほかの状態にするときは、追加した後に「{advance}」のブロックを使ってください。",
                     fi.initial
                 ),
             );

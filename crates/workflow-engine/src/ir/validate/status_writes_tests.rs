@@ -19,7 +19,7 @@ fn schema(status: Option<&str>) -> data::TableSchema {
             { "key": "title", "type": "text" },
             { "key": "code", "type": "text", "unique": true },
             { "key": "qty", "type": "number" },
-            { "key": "status", "type": "select", "options": ["申請中", "承認済み", "却下"] }
+            { "key": "status", "display_name": "状態", "type": "select", "options": ["申請中", "承認済み", "却下"] }
         ],
         "status_field": status,
         "fsm_ref": { "artifact_id": "00000000-0000-0000-0000-0000000000ff", "version": 1 }
@@ -118,8 +118,9 @@ fn writing_the_status_column_outside_a_transition_is_refused() {
     );
     let m = &errors[0].message;
     assert!(
-        m.contains("「status」は状態の列なので、「データを更新」の「変更する値」に書けません")
-            && m.contains("「状態を進める」のブロックを使って"),
+        m.contains(
+            "「状態」（status）は状態の列なので、「データを更新」の「変更する値」に書けません"
+        ) && m.contains("「状態を進める」のブロックを使って"),
         "{m}"
     );
     let m = &errors[2].message;

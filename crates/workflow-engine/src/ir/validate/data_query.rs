@@ -12,6 +12,8 @@
 //! 結合先の列（`別名.参照名`）は、つないだ先の定義が要るので照合しない（並べ替えと絞り込みは結合先の列を使えないので、
 //! 実行と同じく止める）。件数（`count`）の指標の `field` は、実行で読まないので照合しない（実行時の束縛の
 //! `bind_metric` と同じ）。比べる値（`$from` を書ける）は実行時に確かめる。
+//!
+//! 誤りの文言は、列に表示名があれば「表示名」（参照名）で言う（画面は表示名で列を見せ、AI は参照名で IR を直す）。
 
 use data::{
     CondOp, Condition, DataError, DataQuery, FieldUse, HavingCond, InvalidCode, Metric, MetricSpec,
@@ -19,6 +21,7 @@ use data::{
 };
 use serde_json::Value;
 
+use super::data_keys::column_name;
 use super::{Catalog, ValidationError};
 use crate::ir::params::DataQueryParams;
 use crate::ir::WorkflowIr;
@@ -198,6 +201,7 @@ fn place(at: FieldUse) -> &'static str {
 /// 実行時の束縛が断る理由を、保存時の誤りにする（直し方まで言う）。
 fn refusal(e: &DataError, u: &Use, schema: &TableSchema) -> ValidationError {
     let key = &u.key;
+    let col = column_name(schema, key);
     let place = place(u.at);
     let partial = matches!(u.at, FieldUse::Filter(CondOp::Contains | CondOp::EndsWith));
     let text_op = matches!(
@@ -212,55 +216,56 @@ fn refusal(e: &DataError, u: &Use, schema: &TableSchema) -> ValidationError {
         (_, Some(InvalidCode::FieldNotIndexed)) if partial => (
             FIELD_NOT_INDEXED,
             format!(
-                "「{key}」は部分一致で検索できる列ではないので、「含む」「で終わる」の条件に使えません。「等しい」「で始まる」の条件にするか、テーブルの設定でこの列を検索の対象にしてください。"
+                "{col}は部分一致で検索できる列ではないので、「含む」「で終わる」の条件に使えません。「等しい」「で始まる」の条件にするか、テーブルの「列の編集」でこの列の「部分一致で検索できる」をオンにしてください。"
             ),
         ),
         (_, Some(InvalidCode::FieldNotIndexed)) => (
             FIELD_NOT_INDEXED,
             format!(
-                "「{key}」は索引の無い列なので、{place}に使えません。索引のある列か重複を許さない列を使うか、テーブルの設定でこの列に索引を付けてください。"
+                "{col}は索引の無い列なので、{place}に使えません。索引のある列か重複を許さない列を使うか、テーブルの「列の編集」でこの列の索引をオンにしてください。"
             ),
         ),
         (_, Some(InvalidCode::ValueTypeMismatch)) if text_op => (
             FIELD_NOT_USABLE,
-            format!("「{key}」は文字の列ではないので、「含む」「で始まる」「で終わる」の条件に使えません。「等しい」などの条件にしてください。"),
+            format!("{col}は文字の列ではないので、「含む」「で始まる」「で終わる」の条件に使えません。「等しい」などの条件にしてください。"),
         ),
         (_, Some(InvalidCode::ValueTypeMismatch)) if u.at == FieldUse::Metric => (
             FIELD_NOT_USABLE,
-            format!("「{key}」は数の列ではないので、合計・平均・最小・最大に使えません。数の列を選ぶか、件数（count）にしてください。"),
+            format!("{col}は数の列ではないので、合計・平均・最小・最大に使えません。数の列を選ぶか、件数（count）にしてください。"),
         ),
         (_, Some(InvalidCode::InvalidInput)) if matches!(u.at, FieldUse::Sort { .. }) => (
             FIELD_NOT_USABLE,
             format!("並べ替えには、このテーブルの列を使ってください（つないだ表の列「{key}」では並べ替えられません）。"),
         ),
-        _ => (FIELD_NOT_USABLE, not_usable(key, u.at, schema)),
+        _ => (FIELD_NOT_USABLE, not_usable(key, &col, u.at, schema)),
     };
     ValidationError::new(code, message)
 }
 
 /// その位置に使えない種類の列の文言（逆向きのリンク・計算の列・複数の値やリンクを持つ列・システムの列）。
-fn not_usable(key: &str, at: FieldUse, schema: &TableSchema) -> String {
+/// `col` は誤りの文言での列の言い方（[`column_name`]）。
+fn not_usable(key: &str, col: &str, at: FieldUse, schema: &TableSchema) -> String {
     let reverse = schema
         .field(key)
         .is_some_and(data::FieldDef::is_reverse_link);
     if reverse {
         return format!(
-            "「{key}」は逆向きのリンクの列なので、{}に使えません。リンク元のテーブルの列を使ってください。",
+            "{col}は逆向きのリンクの列なので、{}に使えません。リンク元のテーブルの列を使ってください。",
             place(at)
         );
     }
     match at {
         FieldUse::Filter(_) => format!(
-            "「{key}」は、この条件に使えない列です（複数の値やリンクを持つ列は大小を比べられず、計算で決まる列の一部は条件に使えません）。ほかの列か条件にしてください。"
+            "{col}は、この条件に使えない列です（複数の値やリンクを持つ列は大小を比べられず、計算で決まる列の一部は条件に使えません）。ほかの列か条件にしてください。"
         ),
         FieldUse::Sort { .. } => format!(
-            "「{key}」では並べ替えできません（複数の値やリンクを持つ列は使えず、計算で決まる列は並べ替えの列が 1 つのときだけ使えます）。ほかの列で並べ替えてください。"
+            "{col}では並べ替えできません（複数の値やリンクを持つ列は使えず、計算で決まる列は並べ替えの列が 1 つのときだけ使えます）。ほかの列で並べ替えてください。"
         ),
         FieldUse::GroupBy => format!(
-            "「{key}」はまとめる列に使えません（複数の値やリンクを持つ列、作成者・作成日時などのシステムの列は使えません）。ほかの列でまとめてください。"
+            "{col}はまとめる列に使えません（複数の値やリンクを持つ列、作成者・作成日時などのシステムの列は使えません）。ほかの列でまとめてください。"
         ),
         FieldUse::Metric => format!(
-            "「{key}」は集計に使えない列です（計算で決まる列の一部は使えません）。ほかの数の列を選んでください。"
+            "{col}は集計に使えない列です（計算で決まる列の一部は使えません）。ほかの数の列を選んでください。"
         ),
     }
 }
