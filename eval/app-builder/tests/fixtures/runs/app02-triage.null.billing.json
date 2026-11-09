@@ -5,7 +5,7 @@
  "irs": {
   "main": {
    "ir_version": 1,
-   "name": "abeval-rec-9a0c4f-null",
+   "name": "abeval-rec-cba333-null",
    "display_name": "スタブフロー",
    "declared_scopes": [],
    "triggers": [
@@ -37,7 +37,7 @@
  "record": {
   "runs": [
    {
-    "run_id": "d8d1535e-17d1-48e3-bbb7-d526b1e67a7f",
+    "run_id": "434ca843-175a-4b5a-bafe-a23ea22d8313",
     "status": "succeeded",
     "input": {
      "body": "先月分の請求書の金額が契約の金額と違っています。正しい金額で請求書を作り直してください。",
@@ -60,28 +60,28 @@
     "workflow": null,
     "scheduled_at": null,
     "fail_reason": null,
-    "started_at": "2026-11-07T01:15:47.742164+00:00"
+    "started_at": "2026-11-09T08:00:39.069429+00:00"
    }
   ],
   "rows": {
    "inquiries": [],
    "assign": [
     {
-     "id": "9ad60137-2430-4d66-963c-753ecdd408e5",
+     "id": "6e8a68ca-c8b9-4e38-9ef6-a4a92f40b6f9",
      "data": {
       "assignee": "石井",
       "category": "使い方"
      }
     },
     {
-     "id": "17c6a994-880a-4a6d-9be8-3f04f0868795",
+     "id": "e34ebaea-9709-4708-be72-3e8741349ce4",
      "data": {
       "assignee": "池田",
       "category": "不具合"
      }
     },
     {
-     "id": "f14f1e30-50c2-41aa-8051-4da7563ef0f9",
+     "id": "905ff353-5d5d-4958-a04d-c906f7acb9c3",
      "data": {
       "assignee": "森",
       "category": "請求"
@@ -93,21 +93,21 @@
    "inquiries": [],
    "assign": [
     {
-     "id": "9ad60137-2430-4d66-963c-753ecdd408e5",
+     "id": "6e8a68ca-c8b9-4e38-9ef6-a4a92f40b6f9",
      "data": {
       "assignee": "石井",
       "category": "使い方"
      }
     },
     {
-     "id": "17c6a994-880a-4a6d-9be8-3f04f0868795",
+     "id": "e34ebaea-9709-4708-be72-3e8741349ce4",
      "data": {
       "assignee": "池田",
       "category": "不具合"
      }
     },
     {
-     "id": "f14f1e30-50c2-41aa-8051-4da7563ef0f9",
+     "id": "905ff353-5d5d-4958-a04d-c906f7acb9c3",
      "data": {
       "assignee": "森",
       "category": "請求"
@@ -117,6 +117,6 @@
   },
   "files": [],
   "rows_rerun": null,
-  "now": "2026-11-07T01:15:43.116260+00:00"
+  "now": "2026-11-09T08:00:34.565620+00:00"
  }
 }

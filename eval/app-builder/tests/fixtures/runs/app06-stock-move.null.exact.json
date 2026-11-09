@@ -5,7 +5,7 @@
  "irs": {
   "main": {
    "ir_version": 1,
-   "name": "abeval-rec-e015b9-null",
+   "name": "abeval-rec-5f3c10-null",
    "display_name": "スタブフロー",
    "declared_scopes": [],
    "triggers": [
@@ -37,7 +37,7 @@
  "record": {
   "runs": [
    {
-    "run_id": "6882327a-9148-481c-b4ec-a0fb15db1a59",
+    "run_id": "5afffa0b-3056-4c82-bdbc-5cf613f3ce1a",
     "status": "succeeded",
     "input": {
      "code": "P-200",
@@ -60,13 +60,13 @@
     "workflow": null,
     "scheduled_at": null,
     "fail_reason": null,
-    "started_at": "2026-11-07T00:43:39.671420+00:00"
+    "started_at": "2026-11-09T08:00:56.031463+00:00"
    }
   ],
   "rows": {
    "stock": [
     {
-     "id": "d5929537-2a6e-4fcf-9988-e0bb8b1b1a9e",
+     "id": "50627997-c388-427f-88db-c7b22c25aa23",
      "data": {
       "code": "P-200",
       "name": "ボールペン（黒）",
@@ -76,7 +76,7 @@
      }
     },
     {
-     "id": "b178c726-ddcd-4e6c-b2e7-b3dac9d6c187",
+     "id": "496d168e-73ed-4699-874f-66206dc2c08e",
      "data": {
       "code": "P-100",
       "name": "コピー用紙 A4",
@@ -91,7 +91,7 @@
   "rows_before": {
    "stock": [
     {
-     "id": "d5929537-2a6e-4fcf-9988-e0bb8b1b1a9e",
+     "id": "50627997-c388-427f-88db-c7b22c25aa23",
      "data": {
       "code": "P-200",
       "name": "ボールペン（黒）",
@@ -101,7 +101,7 @@
      }
     },
     {
-     "id": "b178c726-ddcd-4e6c-b2e7-b3dac9d6c187",
+     "id": "496d168e-73ed-4699-874f-66206dc2c08e",
      "data": {
       "code": "P-100",
       "name": "コピー用紙 A4",
@@ -115,6 +115,6 @@
   },
   "files": [],
   "rows_rerun": null,
-  "now": "2026-11-07T00:43:34.102984+00:00"
+  "now": "2026-11-09T08:00:50.495030+00:00"
  }
 }

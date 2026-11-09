@@ -5,7 +5,7 @@
  "irs": {
   "main": {
    "ir_version": 1,
-   "name": "abeval-rec-9a0c4f-input-key",
+   "name": "abeval-rec-cba333-input-key",
    "display_name": "問い合わせを分類して担当を決める",
    "triggers": [
     {
@@ -37,7 +37,7 @@
      "type": "data.record.create",
      "label": "問い合わせを登録",
      "params": {
-      "table": "cdf78ef2-60e8-4cbd-a2ae-dfe2061f998a",
+      "table": "617a6b49-4d94-4c71-98cf-157bfa130fb7",
       "data": {
        "subject": {
         "$from": "input",
@@ -57,7 +57,7 @@
      "label": "分類を決める",
      "params": {
       "prompt": {
-       "$template": "次の問い合わせを読み、理由を 1 文で書いてから、分類を決めてください。\n件名: {subject}\n本文: {body}",
+       "$template": "次の問い合わせを読み、分類を「請求」「不具合」「使い方」のどれか 1 つに決めてください。答えには分類の語だけを書いてください。\n件名: {subject}\n本文: {body}",
        "vars": {
         "subject": {
          "$from": "input",
@@ -69,32 +69,20 @@
         }
        }
       },
-      "output_schema": {
-       "type": "object",
-       "required": [
-        "reason",
-        "category"
-       ],
-       "x-order": [
-        "reason",
-        "category"
-       ],
-       "properties": {
-        "reason": {
-         "type": "string",
-         "maxLength": 200
-        },
-        "category": {
-         "type": "string",
-         "enum": [
-          "請求",
-          "不具合",
-          "使い方"
-         ]
-        }
-       }
-      },
       "model": "default"
+     }
+    },
+    {
+     "id": "pick",
+     "type": "script.run",
+     "label": "分類の語を取り出す",
+     "params": {
+      "source": {
+       "inline": "function main(input) {\n  var text = String(input.text || \"\");\n  var found = null;\n  var at = -1;\n  [\"請求\", \"不具合\", \"使い方\"].forEach(function (c) {\n    var i = text.indexOf(c);\n    if (i >= 0 && (at < 0 || i < at)) {\n      found = c;\n      at = i;\n    }\n  });\n  if (found === null) {\n    throw new Error(\"分類を読み取れません: \" + text.slice(0, 100));\n  }\n  return { category: found };\n}"
+      },
+      "input": {
+       "$from": "nodes.classify.output"
+      }
      }
     },
     {
@@ -102,15 +90,15 @@
      "type": "data.query",
      "label": "担当者を引く",
      "params": {
-      "table": "811be132-0b38-4f8e-8cf3-21d828052c9a",
+      "table": "9f6960a7-fdf1-4265-b5bf-5527afd9bf0e",
       "query": {
        "filter": {
         "cmp": {
          "field": "category",
          "op": "eq",
          "value": {
-          "$from": "nodes.classify.output",
-          "path": "/data/category"
+          "$from": "nodes.pick.output",
+          "path": "/category"
          }
         }
        },
@@ -123,15 +111,15 @@
      "type": "data.record.update",
      "label": "分類と担当者を書く",
      "params": {
-      "table": "cdf78ef2-60e8-4cbd-a2ae-dfe2061f998a",
+      "table": "617a6b49-4d94-4c71-98cf-157bfa130fb7",
       "record": {
        "$from": "nodes.register.output",
        "path": "/id"
       },
       "patch": {
        "category": {
-        "$from": "nodes.classify.output",
-        "path": "/data/category"
+        "$from": "nodes.pick.output",
+        "path": "/category"
        },
        "assignee": {
         "$from": "nodes.find_assignee.output",
@@ -145,7 +133,7 @@
      "type": "data.transition",
      "label": "振り分け済にする",
      "params": {
-      "table": "cdf78ef2-60e8-4cbd-a2ae-dfe2061f998a",
+      "table": "617a6b49-4d94-4c71-98cf-157bfa130fb7",
       "record": {
        "$from": "nodes.register.output",
        "path": "/id"
@@ -161,6 +149,10 @@
     },
     {
      "from": "classify",
+     "to": "pick"
+    },
+    {
+     "from": "pick",
      "to": "find_assignee"
     },
     {
@@ -188,6 +180,9 @@
    "mark_triaged": [
     "out"
    ],
+   "pick": [
+    "out"
+   ],
    "register": [
     "out"
    ]
@@ -196,7 +191,7 @@
  "record": {
   "runs": [
    {
-    "run_id": "78310743-1622-4108-a44e-517c497a3935",
+    "run_id": "d06ecd22-fea6-45f0-86a3-1430650bcca0",
     "status": "failed",
     "input": {
      "body": "ログインした後に一覧のボタンを押すと、画面が真っ白になって何も表示されません。何度やっても同じです。",
@@ -220,6 +215,14 @@
      {
       "step_path": "classify",
       "node_id": "classify",
+      "status": "cancelled",
+      "taken_ports": [],
+      "output": null,
+      "error": null
+     },
+     {
+      "step_path": "pick",
+      "node_id": "pick",
       "status": "cancelled",
       "taken_ports": [],
       "output": null,
@@ -253,28 +256,28 @@
     "workflow": null,
     "scheduled_at": null,
     "fail_reason": null,
-    "started_at": "2026-11-07T01:15:56.565649+00:00"
+    "started_at": "2026-11-09T08:00:47.953664+00:00"
    }
   ],
   "rows": {
    "inquiries": [],
    "assign": [
     {
-     "id": "f9e42029-d375-4396-a24f-8688e6e3acd2",
+     "id": "47e37eae-c2e5-4303-8e2a-1e4f0401ab48",
      "data": {
       "assignee": "石井",
       "category": "使い方"
      }
     },
     {
-     "id": "8f226a6d-741f-481d-847e-e1a835aa4faf",
+     "id": "bf472ba9-4fdc-4642-b0d8-0d2d9dff23bc",
      "data": {
       "assignee": "池田",
       "category": "不具合"
      }
     },
     {
-     "id": "03c97d8f-45bb-43a1-913e-718890a60872",
+     "id": "57a4e633-c7c1-47ac-aa19-27f7adff4a3e",
      "data": {
       "assignee": "森",
       "category": "請求"
@@ -286,21 +289,21 @@
    "inquiries": [],
    "assign": [
     {
-     "id": "f9e42029-d375-4396-a24f-8688e6e3acd2",
+     "id": "47e37eae-c2e5-4303-8e2a-1e4f0401ab48",
      "data": {
       "assignee": "石井",
       "category": "使い方"
      }
     },
     {
-     "id": "8f226a6d-741f-481d-847e-e1a835aa4faf",
+     "id": "bf472ba9-4fdc-4642-b0d8-0d2d9dff23bc",
      "data": {
       "assignee": "池田",
       "category": "不具合"
      }
     },
     {
-     "id": "03c97d8f-45bb-43a1-913e-718890a60872",
+     "id": "57a4e633-c7c1-47ac-aa19-27f7adff4a3e",
      "data": {
       "assignee": "森",
       "category": "請求"
@@ -310,6 +313,6 @@
   },
   "files": [],
   "rows_rerun": null,
-  "now": "2026-11-07T01:15:43.116260+00:00"
+  "now": "2026-11-09T08:00:34.565620+00:00"
  }
 }

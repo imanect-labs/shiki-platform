@@ -1853,7 +1853,7 @@
        "label": "分類を決める",
        "params": {
         "prompt": {
-         "$template": "次の問い合わせを読み、理由を 1 文で書いてから、分類を決めてください。\n件名: {subject}\n本文: {body}",
+         "$template": "次の問い合わせを読み、分類を「請求」「不具合」「使い方」のどれか 1 つに決めてください。答えには分類の語だけを書いてください。\n件名: {subject}\n本文: {body}",
          "vars": {
           "subject": {
            "$from": "input",
@@ -1864,31 +1864,19 @@
            "path": "/body"
           }
          }
+        }
+       }
+      },
+      {
+       "id": "pick",
+       "type": "script.run",
+       "label": "分類の語を取り出す",
+       "params": {
+        "source": {
+         "inline": "function main(input) {\n  var text = String(input.text || \"\");\n  var found = null;\n  var at = -1;\n  [\"請求\", \"不具合\", \"使い方\"].forEach(function (c) {\n    var i = text.indexOf(c);\n    if (i >= 0 && (at < 0 || i < at)) {\n      found = c;\n      at = i;\n    }\n  });\n  if (found === null) {\n    throw new Error(\"分類を読み取れません: \" + text.slice(0, 100));\n  }\n  return { category: found };\n}"
         },
-        "output_schema": {
-         "type": "object",
-         "required": [
-          "reason",
-          "category"
-         ],
-         "x-order": [
-          "reason",
-          "category"
-         ],
-         "properties": {
-          "reason": {
-           "type": "string",
-           "maxLength": 200
-          },
-          "category": {
-           "type": "string",
-           "enum": [
-            "請求",
-            "不具合",
-            "使い方"
-           ]
-          }
-         }
+        "input": {
+         "$from": "nodes.classify.output"
         }
        }
       },
@@ -1904,8 +1892,8 @@
            "field": "category",
            "op": "eq",
            "value": {
-            "$from": "nodes.classify.output",
-            "path": "/data/category"
+            "$from": "nodes.pick.output",
+            "path": "/category"
            }
           }
          },
@@ -1925,8 +1913,8 @@
         },
         "patch": {
          "category": {
-          "$from": "nodes.classify.output",
-          "path": "/data/category"
+          "$from": "nodes.pick.output",
+          "path": "/category"
          },
          "assignee": {
           "$from": "nodes.find_assignee.output",
@@ -1956,6 +1944,10 @@
       },
       {
        "from": "classify",
+       "to": "pick"
+      },
+      {
+       "from": "pick",
        "to": "find_assignee"
       },
       {
@@ -3553,7 +3545,7 @@
        "label": "志望動機を評価",
        "params": {
         "prompt": {
-         "$template": "次の応募者の志望動機を、応募職種に合っているか・具体的かの観点で読み、理由を書いてから 1〜5 の評価点を付けてください。\n氏名: {name}\n応募職種: {position}\n志望動機: {motivation}",
+         "$template": "次の応募者の志望動機を、応募職種に合っているか・具体的かの観点で読んでください。\n氏名: {name}\n応募職種: {position}\n志望動機: {motivation}\n\n評価の理由を 1〜2 文で書き、最後の行には 1〜5 の評価点（整数）の数字だけを書いてください。",
          "vars": {
           "name": {
            "$from": "input",
@@ -3568,28 +3560,19 @@
            "path": "/motivation"
           }
          }
+        }
+       }
+      },
+      {
+       "id": "parse",
+       "type": "script.run",
+       "label": "評価点と理由を取り出す",
+       "params": {
+        "source": {
+         "inline": "function main(input) {\n  var lines = String(input.text || \"\")\n    .split(\"\\n\")\n    .map(function (l) { return l.trim(); })\n    .filter(function (l) { return l !== \"\"; });\n  var last = lines.length ? lines[lines.length - 1] : \"\";\n  var m = last.match(/[1-5]/);\n  if (!m) {\n    throw new Error(\"評価点を読み取れません: \" + last.slice(0, 100));\n  }\n  var reason = lines.slice(0, -1).join(\"\\n\");\n  return { score: Number(m[0]), reason: reason || last };\n}"
         },
-        "output_schema": {
-         "type": "object",
-         "required": [
-          "reason",
-          "score"
-         ],
-         "x-order": [
-          "reason",
-          "score"
-         ],
-         "properties": {
-          "reason": {
-           "type": "string",
-           "maxLength": 300
-          },
-          "score": {
-           "type": "integer",
-           "minimum": 1,
-           "maximum": 5
-          }
-         }
+        "input": {
+         "$from": "nodes.judge.output"
         }
        }
       },
@@ -3605,12 +3588,12 @@
         },
         "patch": {
          "score": {
-          "$from": "nodes.judge.output",
-          "path": "/data/score"
+          "$from": "nodes.parse.output",
+          "path": "/score"
          },
          "reason": {
-          "$from": "nodes.judge.output",
-          "path": "/data/reason"
+          "$from": "nodes.parse.output",
+          "path": "/reason"
          }
         }
        }
@@ -3623,8 +3606,8 @@
         "condition": {
          "cmp": {
           "left": {
-           "$from": "nodes.judge.output",
-           "path": "/data/score"
+           "$from": "nodes.parse.output",
+           "path": "/score"
           },
           "op": "gte",
           "right": 4
@@ -3653,6 +3636,10 @@
       },
       {
        "from": "judge",
+       "to": "parse"
+      },
+      {
+       "from": "parse",
        "to": "write_score"
       },
       {
@@ -3979,14 +3966,18 @@
        }
       },
       {
-       "id": "negate",
+       "id": "rest",
        "type": "script.run",
-       "label": "減らす数",
+       "label": "残りの数",
        "params": {
         "source": {
-         "inline": "function main(input) { return { delta: -Number(input.qty) }; }"
+         "inline": "function main(input) { return { rest: Number(input.stock) - Number(input.qty) }; }"
         },
         "input": {
+         "stock": {
+          "$from": "nodes.find.output",
+          "path": "/items/0/data/qty"
+         },
          "qty": {
           "$from": "input",
           "path": "/qty"
@@ -4004,10 +3995,10 @@
          "$from": "nodes.find.output",
          "path": "/items/0/id"
         },
-        "add": {
+        "patch": {
          "qty": {
-          "$from": "nodes.negate.output",
-          "path": "/delta"
+          "$from": "nodes.rest.output",
+          "path": "/rest"
          }
         }
        }
@@ -4038,11 +4029,11 @@
       },
       {
        "from": "enough",
-       "to": "negate",
+       "to": "rest",
        "from_port": "true"
       },
       {
-       "from": "negate",
+       "from": "rest",
        "to": "take"
       },
       {
@@ -6543,21 +6534,10 @@
        "label": "NPS を計算",
        "params": {
         "source": {
-         "inline": "function main(input) {\n  var n = Number(input.responses), p = Number(input.promoters), d = Number(input.detractors);\n  return { nps: n > 0 ? Math.round(((p - d) / n) * 100) : 0 };\n}"
+         "inline": "function main(input) {\n  var cols = input.columns || [];\n  var row = (input.rows || [])[0] || [];\n  var v = {};\n  cols.forEach(function (c, i) { v[c] = Number(row[i]); });\n  var n = v.responses, p = v.promoters, d = v.detractors;\n  return { responses: n, promoters: p, detractors: d, nps: n > 0 ? Math.round(((p - d) / n) * 100) : 0 };\n}"
         },
         "input": {
-         "responses": {
-          "$from": "nodes.count.output",
-          "path": "/items/0/responses"
-         },
-         "promoters": {
-          "$from": "nodes.count.output",
-          "path": "/items/0/promoters"
-         },
-         "detractors": {
-          "$from": "nodes.count.output",
-          "path": "/items/0/detractors"
-         }
+         "$from": "nodes.count.output"
         }
        }
       },
@@ -6569,16 +6549,16 @@
         "table": "@table:summary",
         "data": {
          "responses": {
-          "$from": "nodes.count.output",
-          "path": "/items/0/responses"
+          "$from": "nodes.calc.output",
+          "path": "/responses"
          },
          "promoters": {
-          "$from": "nodes.count.output",
-          "path": "/items/0/promoters"
+          "$from": "nodes.calc.output",
+          "path": "/promoters"
          },
          "detractors": {
-          "$from": "nodes.count.output",
-          "path": "/items/0/detractors"
+          "$from": "nodes.calc.output",
+          "path": "/detractors"
          },
          "nps": {
           "$from": "nodes.calc.output",

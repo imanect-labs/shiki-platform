@@ -270,6 +270,13 @@ docstring（§3.1 に `clarifications`・`run_cases[].llm_dependent`・`run_case
   `@table:<ref>`・`@folder:<ref>`・`@file:<ref>` で書き、保存の前に fixture の id に置き換える（GAP-35 の実在の
   検査を通すため）。オフラインの検査（ir_lint）では ref ごとに決まったダミーの UUID にする。正解は llm.invoke の
   model を書かない（組織の既定で動く）。stub で流すときだけ `default` にする（`run_cases.prepare_ir`）。
+- 正解は、課題が求める最小の機能で書く（GAP-120）。課題に要らない後の版の設定（「AI に聞く」の `output_schema`・
+  データを更新の `add`・CSV を集計の `items` など）を使うと、その設定の無い版で課題が成り立たなくなり、版の比べに
+  使える課題が減る（D-167）。LLM の答えから分類や点数を取り出すときは、文章で答えさせて script.run で取り出す。
+  V0（81a9899b）は script.run の input に書いた object の中の `$from` を展開しない（object のまま script に渡る・
+  V1 から展開する）ので、1 つのノードの出力だけを渡すときは `{"$from": "nodes.<id>.output"}` で渡す。課題の文が
+  求める設定（同じ名前のときに番号を付ける・BOM 付きの CSV・同じ品番を 2 行にしない）と、実行した日
+  （`$from run /date`・V0・V1 には無い）は残す。
 - 相対の日付は使わず、日付で結果が決まる課題（先週・今日）は run_case の `scheduled_at` で予定の日時を決める
   （GAP-88・`requires` に `cap:scheduled_at`）。
 - 実行の日に決まる値を持つ課題（run_case が `scheduled_at` か、期待の `$run_date`・`@run_date` を使う課題。課題の印

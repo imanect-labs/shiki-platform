@@ -5,7 +5,7 @@
  "irs": {
   "main": {
    "ir_version": 1,
-   "name": "abeval-rec-9a0c4f-null",
+   "name": "abeval-rec-cba333-null",
    "display_name": "スタブフロー",
    "declared_scopes": [],
    "triggers": [
@@ -37,7 +37,7 @@
  "record": {
   "runs": [
    {
-    "run_id": "c9d95bb8-171c-4445-ae50-599fef708556",
+    "run_id": "cd2dd4d5-f588-4db9-8282-e24c880a7ace",
     "status": "succeeded",
     "input": {
      "body": "ログインした後に一覧のボタンを押すと、画面が真っ白になって何も表示されません。何度やっても同じです。",
@@ -60,28 +60,28 @@
     "workflow": null,
     "scheduled_at": null,
     "fail_reason": null,
-    "started_at": "2026-11-07T01:15:48.970971+00:00"
+    "started_at": "2026-11-09T08:00:40.300139+00:00"
    }
   ],
   "rows": {
    "inquiries": [],
    "assign": [
     {
-     "id": "efd2b0e9-cb8b-40ff-92f7-c8934bcc2d63",
+     "id": "0f41020e-0664-4e43-a93d-e18a33ac6071",
      "data": {
       "assignee": "石井",
       "category": "使い方"
      }
     },
     {
-     "id": "d33e1361-28bb-4020-ae80-6a89ca9b9172",
+     "id": "32485795-e692-426f-8124-f9827c4e50a7",
      "data": {
       "assignee": "池田",
       "category": "不具合"
      }
     },
     {
-     "id": "dc985533-0915-4dbc-9bd6-e1383fea763e",
+     "id": "e3386156-a918-4a57-a230-5efa0443c951",
      "data": {
       "assignee": "森",
       "category": "請求"
@@ -93,21 +93,21 @@
    "inquiries": [],
    "assign": [
     {
-     "id": "efd2b0e9-cb8b-40ff-92f7-c8934bcc2d63",
+     "id": "0f41020e-0664-4e43-a93d-e18a33ac6071",
      "data": {
       "assignee": "石井",
       "category": "使い方"
      }
     },
     {
-     "id": "d33e1361-28bb-4020-ae80-6a89ca9b9172",
+     "id": "32485795-e692-426f-8124-f9827c4e50a7",
      "data": {
       "assignee": "池田",
       "category": "不具合"
      }
     },
     {
-     "id": "dc985533-0915-4dbc-9bd6-e1383fea763e",
+     "id": "e3386156-a918-4a57-a230-5efa0443c951",
      "data": {
       "assignee": "森",
       "category": "請求"
@@ -117,6 +117,6 @@
   },
   "files": [],
   "rows_rerun": null,
-  "now": "2026-11-07T01:15:43.116260+00:00"
+  "now": "2026-11-09T08:00:34.565620+00:00"
  }
 }

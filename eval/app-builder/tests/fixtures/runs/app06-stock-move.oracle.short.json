@@ -5,7 +5,7 @@
  "irs": {
   "main": {
    "ir_version": 1,
-   "name": "abeval-rec-e015b9-main",
+   "name": "abeval-rec-5f3c10-main",
    "display_name": "出庫で在庫を減らす",
    "triggers": [
     {
@@ -37,7 +37,7 @@
      "type": "data.query",
      "label": "品番で探す",
      "params": {
-      "table": "1b143439-0aec-4579-965e-aaf2a86abee1",
+      "table": "d48730cb-d3e0-4101-9e87-a44f6e7338bd",
       "query": {
        "filter": {
         "cmp": {
@@ -74,14 +74,18 @@
      }
     },
     {
-     "id": "negate",
+     "id": "rest",
      "type": "script.run",
-     "label": "減らす数",
+     "label": "残りの数",
      "params": {
       "source": {
-       "inline": "function main(input) { return { delta: -Number(input.qty) }; }"
+       "inline": "function main(input) { return { rest: Number(input.stock) - Number(input.qty) }; }"
       },
       "input": {
+       "stock": {
+        "$from": "nodes.find.output",
+        "path": "/items/0/data/qty"
+       },
        "qty": {
         "$from": "input",
         "path": "/qty"
@@ -94,15 +98,15 @@
      "type": "data.record.update",
      "label": "在庫数を減らす",
      "params": {
-      "table": "1b143439-0aec-4579-965e-aaf2a86abee1",
+      "table": "d48730cb-d3e0-4101-9e87-a44f6e7338bd",
       "record": {
        "$from": "nodes.find.output",
        "path": "/items/0/id"
       },
-      "add": {
+      "patch": {
        "qty": {
-        "$from": "nodes.negate.output",
-        "path": "/delta"
+        "$from": "nodes.rest.output",
+        "path": "/rest"
        }
       }
      }
@@ -112,7 +116,7 @@
      "type": "data.record.create",
      "label": "記録を残す",
      "params": {
-      "table": "e6c99b56-ea39-4b26-8e00-2b50aa53de13",
+      "table": "2d30b646-475b-471e-a139-1fe777ba0534",
       "data": {
        "code": {
         "$from": "input",
@@ -133,11 +137,11 @@
     },
     {
      "from": "enough",
-     "to": "negate",
+     "to": "rest",
      "from_port": "true"
     },
     {
-     "from": "negate",
+     "from": "rest",
      "to": "take"
     },
     {
@@ -159,7 +163,7 @@
    "log": [
     "out"
    ],
-   "negate": [
+   "rest": [
     "out"
    ],
    "take": [
@@ -170,7 +174,7 @@
  "record": {
   "runs": [
    {
-    "run_id": "cb77f4df-3576-4570-9b0b-ef379fcf8949",
+    "run_id": "544c01a6-c505-40bc-9dfc-9b69a06d3b4e",
     "status": "succeeded",
     "input": {
      "code": "P-200",
@@ -187,7 +191,7 @@
       "output": {
        "items": [
         {
-         "created_at": "2026-11-07T00:43:37.053518Z",
+         "created_at": "2026-11-09T08:00:53.481623Z",
          "data": {
           "code": "P-200",
           "name": "ボールペン（黒）",
@@ -195,11 +199,11 @@
           "reorder_point": 10,
           "reorder_qty": 50
          },
-         "id": "36931883-63ba-4c81-823e-c5022434505a",
+         "id": "62efeb54-4c64-4f77-8743-7f0b4e6fb794",
          "owner": "00000000-0000-0000-0000-000000000001",
          "rev": 1,
-         "table_id": "1b143439-0aec-4579-965e-aaf2a86abee1",
-         "updated_at": "2026-11-07T00:43:37.053518Z"
+         "table_id": "d48730cb-d3e0-4101-9e87-a44f6e7338bd",
+         "updated_at": "2026-11-09T08:00:53.481623Z"
         }
        ],
        "shares_truncated": false,
@@ -224,8 +228,8 @@
       "error": null
      },
      {
-      "step_path": "negate",
-      "node_id": "negate",
+      "step_path": "rest",
+      "node_id": "rest",
       "status": "skipped",
       "taken_ports": [],
       "output": null,
@@ -251,13 +255,13 @@
     "workflow": null,
     "scheduled_at": null,
     "fail_reason": null,
-    "started_at": "2026-11-07T00:43:37.178698+00:00"
+    "started_at": "2026-11-09T08:00:53.586380+00:00"
    }
   ],
   "rows": {
    "stock": [
     {
-     "id": "36931883-63ba-4c81-823e-c5022434505a",
+     "id": "62efeb54-4c64-4f77-8743-7f0b4e6fb794",
      "data": {
       "code": "P-200",
       "name": "ボールペン（黒）",
@@ -267,7 +271,7 @@
      }
     },
     {
-     "id": "81da6a7c-5995-4341-832f-6423e5702563",
+     "id": "eb4382eb-a4fa-4f71-a32d-48af8f92a248",
      "data": {
       "code": "P-100",
       "name": "コピー用紙 A4",
@@ -282,7 +286,7 @@
   "rows_before": {
    "stock": [
     {
-     "id": "36931883-63ba-4c81-823e-c5022434505a",
+     "id": "62efeb54-4c64-4f77-8743-7f0b4e6fb794",
      "data": {
       "code": "P-200",
       "name": "ボールペン（黒）",
@@ -292,7 +296,7 @@
      }
     },
     {
-     "id": "81da6a7c-5995-4341-832f-6423e5702563",
+     "id": "eb4382eb-a4fa-4f71-a32d-48af8f92a248",
      "data": {
       "code": "P-100",
       "name": "コピー用紙 A4",
@@ -306,6 +310,6 @@
   },
   "files": [],
   "rows_rerun": null,
-  "now": "2026-11-07T00:43:34.102984+00:00"
+  "now": "2026-11-09T08:00:50.495030+00:00"
  }
 }

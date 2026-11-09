@@ -5,7 +5,7 @@
  "irs": {
   "main": {
    "ir_version": 1,
-   "name": "abeval-rec-e015b9-input-key",
+   "name": "abeval-rec-5f3c10-input-key",
    "display_name": "出庫で在庫を減らす",
    "triggers": [
     {
@@ -37,7 +37,7 @@
      "type": "data.query",
      "label": "品番で探す",
      "params": {
-      "table": "1b143439-0aec-4579-965e-aaf2a86abee1",
+      "table": "d48730cb-d3e0-4101-9e87-a44f6e7338bd",
       "query": {
        "filter": {
         "cmp": {
@@ -74,14 +74,18 @@
      }
     },
     {
-     "id": "negate",
+     "id": "rest",
      "type": "script.run",
-     "label": "減らす数",
+     "label": "残りの数",
      "params": {
       "source": {
-       "inline": "function main(input) { return { delta: -Number(input.qty) }; }"
+       "inline": "function main(input) { return { rest: Number(input.stock) - Number(input.qty) }; }"
       },
       "input": {
+       "stock": {
+        "$from": "nodes.find.output",
+        "path": "/items/0/data/qty"
+       },
        "qty": {
         "$from": "input",
         "path": "/qty"
@@ -94,15 +98,15 @@
      "type": "data.record.update",
      "label": "在庫数を減らす",
      "params": {
-      "table": "1b143439-0aec-4579-965e-aaf2a86abee1",
+      "table": "d48730cb-d3e0-4101-9e87-a44f6e7338bd",
       "record": {
        "$from": "nodes.find.output",
        "path": "/items/0/id"
       },
-      "add": {
+      "patch": {
        "qty": {
-        "$from": "nodes.negate.output",
-        "path": "/delta"
+        "$from": "nodes.rest.output",
+        "path": "/rest"
        }
       }
      }
@@ -112,7 +116,7 @@
      "type": "data.record.create",
      "label": "記録を残す",
      "params": {
-      "table": "e6c99b56-ea39-4b26-8e00-2b50aa53de13",
+      "table": "2d30b646-475b-471e-a139-1fe777ba0534",
       "data": {
        "code": {
         "$from": "input",
@@ -133,11 +137,11 @@
     },
     {
      "from": "enough",
-     "to": "negate",
+     "to": "rest",
      "from_port": "true"
     },
     {
-     "from": "negate",
+     "from": "rest",
      "to": "take"
     },
     {
@@ -159,7 +163,7 @@
    "log": [
     "out"
    ],
-   "negate": [
+   "rest": [
     "out"
    ],
    "take": [
@@ -170,7 +174,7 @@
  "record": {
   "runs": [
    {
-    "run_id": "522188b5-aaaf-4a3d-9c9b-731228989c9f",
+    "run_id": "3ca1ad1d-00a6-416e-a8e4-0e60f6fae264",
     "status": "failed",
     "input": {
      "code": "P-200",
@@ -200,8 +204,8 @@
       "error": null
      },
      {
-      "step_path": "negate",
-      "node_id": "negate",
+      "step_path": "rest",
+      "node_id": "rest",
       "status": "cancelled",
       "taken_ports": [],
       "output": null,
@@ -227,13 +231,13 @@
     "workflow": null,
     "scheduled_at": null,
     "fail_reason": null,
-    "started_at": "2026-11-07T00:43:43.490629+00:00"
+    "started_at": "2026-11-09T08:00:59.748502+00:00"
    }
   ],
   "rows": {
    "stock": [
     {
-     "id": "efe92d15-0fd9-40be-986c-0e36d1572a49",
+     "id": "ae62dcf8-0c26-4885-946d-f4522779ff77",
      "data": {
       "code": "P-200",
       "name": "ボールペン（黒）",
@@ -243,7 +247,7 @@
      }
     },
     {
-     "id": "f83495a9-472c-46b7-8925-1b43a58248e8",
+     "id": "3724ef8b-c9d2-463c-a664-a0feff68c5e8",
      "data": {
       "code": "P-100",
       "name": "コピー用紙 A4",
@@ -258,7 +262,7 @@
   "rows_before": {
    "stock": [
     {
-     "id": "efe92d15-0fd9-40be-986c-0e36d1572a49",
+     "id": "ae62dcf8-0c26-4885-946d-f4522779ff77",
      "data": {
       "code": "P-200",
       "name": "ボールペン（黒）",
@@ -268,7 +272,7 @@
      }
     },
     {
-     "id": "f83495a9-472c-46b7-8925-1b43a58248e8",
+     "id": "3724ef8b-c9d2-463c-a664-a0feff68c5e8",
      "data": {
       "code": "P-100",
       "name": "コピー用紙 A4",
@@ -282,6 +286,6 @@
   },
   "files": [],
   "rows_rerun": null,
-  "now": "2026-11-07T00:43:34.102984+00:00"
+  "now": "2026-11-09T08:00:50.495030+00:00"
  }
 }
