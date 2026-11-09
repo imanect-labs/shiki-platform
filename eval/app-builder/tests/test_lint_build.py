@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from abeval import cli, report
-from abeval.grade import lint_build, static
+from abeval.grade import GRADER_VERSION, lint_build, static
 from abeval.grade.static import LintError, grader_identity
 
 pytestmark = [
@@ -147,7 +147,7 @@ def test_a_removed_source_or_a_missing_record_stops(tree):
         lint_build.check_fresh(exe, repo)
 
 
-def test_the_grader_version_carries_the_build_and_refuses_a_stale_binary(tree, monkeypatch):
+def test_the_grader_version_carries_the_build_and_refuses_a_stale_binary(tree, monkeypatch, capsys):
     repo, exe = tree
     monkeypatch.setattr(lint_build, "REPO", repo)
     g = static.grader_version(exe)
@@ -159,8 +159,10 @@ def test_the_grader_version_carries_the_build_and_refuses_a_stale_binary(tree, m
     with pytest.raises(LintError, match="作業ツリーより古い"):
         static.run_ir_lint([("a", {})], exe)
     # 採点の前（`abeval grade`）に止めて、作り直しの命令を出す（1 で終わる）。
-    report.write_result({"experiment": "stale", "trials": [], "grader": {}}, [], merge=False)
+    doc = {"experiment": "stale", "trials": [], "grader": {"grader": GRADER_VERSION}}
+    report.write_result(doc, [], merge=False)
     assert cli.main(["--exp", "stale", "--lint-bin", str(exe)], command="grade") == 1
+    assert "作業ツリーより古い" in capsys.readouterr().err
 
 
 def test_the_build_is_not_part_of_the_grader_identity():

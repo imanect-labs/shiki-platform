@@ -13,7 +13,9 @@
   - `--stub`（Mode B だけ）: stub のスタックで配管を確かめる（model `default`・費用 0・abeval.proxy を使わない）。
   - `--regrade-from <版>`（Mode A だけ）: 生成せず、その版の生成をこの版のサーバーで採点し直す（V1・費用 0）。
     取り込みの sha が同じことを条件にする。
-- `grade --exp E`: 結果の IR を ir_lint（HEAD）で採点し直す（サーバー不要・S2s・S2w・S5 だけ）。
+- `grade --exp E`: 結果の IR を ir_lint（HEAD）で採点し直す（サーバー不要・S2s・S2w・S5 だけ・採点の規則の版が
+  結果と同じときだけ）。`--stub-runs` を付けると、試行の版のサーバーで stub の配管を流し直して S2d も出し直す
+  （費用 0・Mode B の S3・S4 は前の値を残す・`abeval.regrade`）。
 - `report`: results/*.json から summary.md を作る。`budget`: 費用の累計と残り。
 """
 
@@ -28,7 +30,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from abeval import behavior, doctor, feasibility, fixtures, mode_a, mode_b, report
+from abeval import behavior, doctor, feasibility, fixtures, mode_a, mode_b, regrade, report
 from abeval import budget as budget_mod
 from abeval.anthropic_client import AnthropicClient
 from abeval.approvals import ApprovalPolicy
@@ -622,36 +624,73 @@ def cmd_capture(args) -> int:
 
 
 def cmd_grade(args) -> int:
-    """結果の IR を ir_lint で採点し直す（S2s・S2w・S5・見出しの S2s の部分）。"""
-    from abeval.grading import headline, headline_b, static_roles
-
+    """結果の IR を採点し直す（`abeval.regrade`。既定は静的な層、`--stub-runs` で S2d も版のサーバーで出し直す）。"""
     doc = report.read_result(args.exp)
     if doc is None:
         raise SystemExit(f"結果がありません: results/{args.exp}.json")
+    stub_runs = bool(getattr(args, "stub_runs", False))
+    try:
+        regrade.check_rules(doc, stub_runs=stub_runs)
+        label = regrade.stub_label(doc) if stub_runs else None
+    except regrade.RegradeError as e:
+        print(f"止めました: {e}", file=sys.stderr)
+        return 1
     tasks = {t.id: t for t in load_tasks()}
-    lint = _lint(Path(args.lint_bin) if args.lint_bin else None)
+    lint_bin = Path(args.lint_bin) if args.lint_bin else None
+    lint = _lint(lint_bin)
     catalog = load_catalog()
-    n = 0
-    for t in doc.get("trials") or []:
-        irs = t.get("irs") or {}
-        task = tasks.get(t.get("task"))
-        if not irs or task is None:
-            continue
-        # Mode A の採点（`mode_a.grade`）は emit でない試行（出力の上限で切れた・断った）を採点しないので、ここも
-        # 採点しない（切れた応答に読める IR が残っていても S2s・S5 は無いまま）。
-        if t.get("mode") != "b" and t.get("status") != "emit":
-            continue
-        st = static_roles(task, irs, lint, catalog, str(t["key"])[:12])
-        t["static"] = {k: v for k, v in st.items() if k != "node_ports"}
-        t["s2s"], t["s2w"], t["s5"] = st["s2s"], st["s2w"], st["s5"]
-        if t.get("mode") == "b":
-            t["headline"] = headline_b(t.get("s1"), t["s2s"], t.get("s2d"), t.get("s4"))
-        else:
-            t["headline"] = headline(t.get("s1"), t["s2s"], t.get("s2d"))
-        n += 1
-    doc["grader"] = grader_version(Path(args.lint_bin) if args.lint_bin else None)
+    if label is None:
+        out = regrade.regrade(doc, tasks, lint, catalog)
+        return _write_regrade(doc, out, None, lint_bin, ident=None)
+    cfg = load_config()
+    api = (args.api_url or os.environ.get("ABEVAL_API_URL") or cfg.api_url).rstrip("/")
+    args.label = label
+    # 版のサーバーの点検（既定のプロバイダが stub・anthropic は abeval.proxy・実行は登録しない＝費用 0）。
+    ident = guard_version(api, cfg, args, mode_b=False)
+    if ident is None:
+        return 1
+    with ShikiClient(api, "alice", timeout=60.0) as client:
+        if not guard_behavior(label, client):
+            return 1
+        if fixtures.find_sentinel(client) is None:
+            print(
+                f"番兵（{fixtures.SENTINEL_NAME}）がありません。python -m abeval.doctor --mode eval "
+                "--init-sentinel で作ってから流します"
+            )
+            return 1
+        print(
+            f"[採点し直し] {args.exp}: 版 {label} のサーバーで stub の配管を流し直します（費用 0）"
+        )
+        out = regrade.regrade(
+            doc,
+            tasks,
+            lint,
+            catalog,
+            client=client,
+            timeout=cfg.mode_b.run_case_timeout_secs,
+        )
+    return _write_regrade(doc, out, label, lint_bin, ident=ident)
+
+
+def _write_regrade(doc, out, label, lint_bin, *, ident) -> int:
+    for trial_id, before, after, codes in out.changed:
+        why = f"（新しく見つかった動的な検査: {', '.join(sorted(set(codes)))}）" if codes else ""
+        print(f"[見出し] {trial_id}: {before} → {after}{why}")
+    if out.errors:
+        for e in out.errors:
+            print(f"[基盤の失敗] {e}")
+        print(f"流せなかった試行が {len(out.errors)} 件あるので、結果を書きません")
+        return 1
+    if not recheck_server(ident, "結果を書く前"):
+        return 1
+    at = dt.datetime.now(dt.UTC)
+    doc.setdefault("regrades", []).append(regrade.regrade_note(doc, out, label=label, at=at))
+    doc["grader"] = grader_version(lint_bin)
     report.write_result(doc, [], merge=False)
-    print(f"採点し直しました: {n} 試行（results/{args.exp}.json）")
+    print(
+        f"採点し直しました: {out.trials} 試行（stub の配管 {out.stub_trials}・見出しが変わった "
+        f"{len(out.changed)}）（results/{doc['experiment']}.json）"
+    )
     return 0
 
 
@@ -723,6 +762,13 @@ def main(argv: list[str] | None = None, command: str | None = None) -> int:
     if command == "grade":
         ap.add_argument("--exp", required=True)
         ap.add_argument("--lint-bin")
+        ap.add_argument(
+            "--stub-runs",
+            action="store_true",
+            help="版のサーバー（serve --label <試行の版>）で stub の配管を流し直し、S2d も出し直す（費用 0）",
+        )
+        ap.add_argument("--api-url")
+        ap.add_argument("--llm-config", default=str(LLM_EVAL_CONFIG))
     if command == "report":
         ap.add_argument("--exp", action="append")
     args = ap.parse_args(argv)

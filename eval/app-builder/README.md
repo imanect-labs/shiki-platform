@@ -319,6 +319,7 @@ uv run python -m abeval run  --mode b --label vn --exp e1b-vn --trials 3 --go
 uv run python -m abeval run  --mode b --label stub --exp stub-b --stub --api-url http://localhost:8080  # stub の配管だけ
 uv run python -m abeval capture --label v0 --exp e1a                       # 取り込みだけ（$0）
 uv run python -m abeval grade  --exp e1a                                   # 結果の IR を ir_lint で採点し直す
+uv run python -m abeval grade  --exp e1a-vf --stub-runs                    # S2d も版のサーバーの stub の配管で出し直す（$0）
 uv run python -m abeval report                                             # results/summary.md
 uv run python -m abeval budget                                             # 評価の累計・実行ごと・総額の残り
 uv run python -m abeval budget --reconcile [--yes]                         # 中継が落ちた後の差を足す（BUG-250）
@@ -340,6 +341,19 @@ uv run python -m abeval budget --reconcile [--yes]                         # 中
 | `abeval/metrics.py` | S1〜S9・課題ごと・pass@k の不偏推定・課題を単位にした対応のあるブートストラップ（10,000 回・種は固定）・失敗の内訳（検証エラー・ir_lint・課題の検査・動的な検査と、run_case の実行で落ちた step の誤りを製品のコードごと〔`steps_<流し方>`〕と「ノードの種類/コード」ごと〔`steps_by_node_<流し方>`〕に数える。流し方は stub の配管〔`stub`〕と Mode B の実モデルの run_case〔`runs`〕で分ける。Mode B は 1 試行で両方を流すので、同じ誤りを 1 つの欄に 2 回数えない・GAP-111） |
 | `abeval/report.py` | `results/<exp>.json`（同じ実験は試行をキーで置き換えて足す）・`errors-<exp>.jsonl`・`summary.md`（6 節。見出しの表には、条件ごとの課題の数と、外した課題〔版に無い機能の対象外と、`errors-<exp>.jsonl` の種類ごとの採点しなかった試行。`date_window` など。stub の配管の確かめと片付けの問題は数えない〕を出す。モードや条件で課題の集合が違うまま見出しを並べて読まないため。比べ方の表には、同じモードの 1 つ目の条件〔名前の順〕との差と、版を `eval.toml` の `[report] version_order` の順に並べた直前の版〔同じモード・effort・手数で測った版のうち、いちばん近いもの〕との差〔「（直前の版）」の行・例: vm − vn〕を出し、同じ組は 1 行にする。版を足したら `version_order` の最後に足す。順は git の先祖の順ではなく直しを積んだ順で書き〔載せ直した v1 は vn の先祖ではない〕、版の記録の版がすべて載っていることと、先祖の順に逆らわないことは `tests/test_version_order.py` が確かめる）。書く前に、会話の全文と本文の項目・鍵の形の値・拒否リスト（G8）の語を検査し、見つかれば何も書かない |
 
+- 採点し直し（`abeval grade`・`abeval/regrade.py`）: 既定は静的な層（S2s・S2w・S5）だけを、結果の IR で採点し直す
+  （サーバー不要）。結果の採点の規則の版（`grader.grader`）が今の `GRADER_VERSION` と違えば止める（動的な検査の規則も
+  変わり得るので、S2d が前の規則のまま新しい版の印だけが付く）。`--stub-runs` を付けると、試行の版のサーバー
+  （`serve --label <版>`。実験の試行の版が 1 つのときだけ）で、結果の IR（保存された最後の IR・キャッシュの最後の IR と
+  同じもの）を stub の配管に流し直して S2d も出し直す。Mode A は S2d・S3 を出し直し、S1 は残す。Mode B は S2d を
+  「実モデルの run_case の S2d（残す）∨ stub の配管の S2d」にし、S3・S4 と実モデルの run_case の記録（`runs`）は会話を
+  流し直さないと出せないので前の値を残す。残したものは試行の `regraded`（`redone`・`kept`・`from_grader`）と結果の
+  `regrades` に書き、まとめ（summary.md）にも「採点し直した実験」として出す。流す前に版のサーバーの点検
+  （`doctor.version_guard`・振る舞いの指紋・番兵）を通す。abeval.proxy に実行を登録しないので、要求が届いても上流へは
+  送らない（止めていれば繋がらない）。基盤の失敗で流せなかった試行が 1 つでもあれば、何も書かない。見出しが変わった
+  試行は、新しく見つかった動的な検査のコードと一緒に表示する。
+  `run --go` の採点し直し（Mode A の生成のキャッシュ）と違い、取り込み（abeval.proxy の capture_only）も生成の
+  キャッシュも使わないので、結果をコミットした別の checkout でも流せる。
 - 生成と会話の全文（応答のブロック・メッセージ一覧・承認の入力）はキャッシュ（`data/cache/trials/`）にだけ置く。
   結果には保存された IR（fixture の id は印に戻したもの）と採点だけを入れる。
 - キャッシュのキーは、依頼文（参考情報の id は印のまま）・fixture・試行の番号・条件・llm-eval.toml の sha・

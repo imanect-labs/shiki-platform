@@ -23,6 +23,7 @@ from abeval.anthropic_client import AnthropicClient
 from abeval.cache import TrialCache
 from abeval.capture import Capture
 from abeval.config import ModeA, load_config
+from abeval.grade import GRADER_VERSION
 from abeval.grade.static import LintResult
 from abeval.ledger import Ledger
 from abeval.plan import RunSpec
@@ -175,7 +176,9 @@ def env(monkeypatch, tmp_path):
         # 課題が版で成り立つかの確かめ（D-167）は、偽の shiki では正解を流せないので、すべて成り立つとする
         # （確かめそのものは tests/test_feasibility.py と server の test_reference_it が見る）。
         monkeypatch.setattr(cli, "_infeasible", lambda *a, **k: {})
-        monkeypatch.setattr(cli, "grader_version", lambda *a: {"grader": 1, "ir_lint_sha256": None})
+        monkeypatch.setattr(
+            cli, "grader_version", lambda *a: {"grader": GRADER_VERSION, "ir_lint_sha256": None}
+        )
         llm = tmp_path / "llm-eval.toml"
         llm.write_text(
             '[[llm.providers]]\nid = "anthropic"\napi_key = "abeval-dummy"\n', encoding="utf-8"
@@ -361,6 +364,61 @@ def test_regrade_skips_a_trial_the_run_did_not_grade(env, tmp_path):
     assert (cut["s2s"], cut["s2w"], cut["s5"], cut["headline"]) == (None, None, None, False)
     assert "static" not in cut
     assert rest and all(t["s2s"] is False for t in rest)
+
+
+def test_static_regrade_refuses_results_of_other_rules(env, tmp_path, capsys):
+    """採点の規則の版が違う結果は、静的な層だけでは採点し直さない（S2d が前の規則のまま新しい版の印が付くため）。"""
+    fake, _, up, llm = env
+    assert cli.main(argv(llm, "--go"), command="run") == 0
+    path = tmp_path / "results" / "e1a.json"
+    doc = json.loads(path.read_text())
+    doc["grader"]["grader"] = GRADER_VERSION - 1
+    path.write_text(json.dumps(doc, ensure_ascii=False))
+    assert cli.main(["--exp", "e1a"], command="grade") == 1
+    assert "--stub-runs" in capsys.readouterr().err
+    assert json.loads(path.read_text())["grader"]["grader"] == GRADER_VERSION - 1
+
+
+def test_stub_runs_regrade_reruns_the_plumbing_without_calling_the_llm(env, tmp_path, capsys):
+    """`grade --stub-runs` は、結果の IR を版のサーバーの stub の配管に流し直して S2d を出し直す。上流（LLM）にも
+    abeval.proxy の台帳にも届かない（費用 0）。"""
+    fake, proxy, up, llm = env
+    cfg = load_config()
+    assert cli.main(argv(llm, "--go"), command="run") == 0
+    path = tmp_path / "results" / "e1a.json"
+    doc = json.loads(path.read_text())
+    # 偽の shiki の stub は入力を返さないので、stub の配管は「入力が届かない」で S2d を真にする。前の採点器
+    # （版 10）がそれを見逃した結果に見せ、出し直しで見つかることを見る。
+    doc["grader"]["grader"] = GRADER_VERSION - 1
+    first = doc["trials"][0]
+    assert first["s2d"] is True
+    first.update({"s2d": False, "headline": True})
+    first["stub"]["cases"][0]["dynamic"]["findings"] = []
+    path.write_text(json.dumps(doc, ensure_ascii=False))
+    sent, replies = len(up.received), len(fake.llm_replies)
+    lines = len(Ledger(cfg.paths.ledger).entries())
+    workflows_before = len(fake.workflows)
+    args = ["--exp", "e1a", "--stub-runs", "--api-url", "http://localhost:8080"]
+    assert cli.main([*args, "--llm-config", str(llm)], command="grade") == 0
+    assert len(up.received) == sent and len(fake.llm_replies) == replies
+    assert len(Ledger(cfg.paths.ledger).entries()) == lines
+    out = capsys.readouterr().out
+    assert (
+        "[見出し] basic-summary-file.flow.0.medium: True → False"
+        "（新しく見つかった動的な検査: not_delivered）" in out
+    )
+    doc = json.loads(path.read_text())
+    assert doc["grader"]["grader"] == GRADER_VERSION
+    [note] = doc["regrades"]
+    assert note["stub_runs"] is True and note["label"] == "v0" and note["stub_trials"] == 3
+    assert note["from_grader"]["grader"] == GRADER_VERSION - 1
+    assert note["changed_headlines"] == 1
+    for t in doc["trials"]:
+        assert t["s2d"] is True and t["headline"] is False
+        assert t["regraded"]["redone"] == ["s2s", "s2w", "s5", "stub", "s2d", "s3"]
+        assert t["regraded"]["kept"] == ["s1"]
+    # 流し直しの複製は消える（fixture も片付ける）。
+    assert len(fake.workflows) == workflows_before
 
 
 def test_stub_plumbing_failure_is_an_error_not_a_saved_trial(monkeypatch):

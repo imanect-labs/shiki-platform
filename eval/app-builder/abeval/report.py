@@ -430,6 +430,29 @@ def same_grader(docs: Sequence[Mapping]) -> tuple[list[Mapping], list[Mapping]]:
     return keep, [d for d in docs if ident(d) != ident(best)]
 
 
+def regrade_notes(docs: Sequence[Mapping]) -> list[str]:
+    """採点し直した実験の注記（`abeval grade` の `regrades`・Mode B は S3・S4 を前の採点の値のまま残す）。"""
+    out = []
+    for d in docs:
+        last = (d.get("regrades") or [None])[-1]
+        if not isinstance(last, Mapping):
+            continue
+        prev = (last.get("from_grader") or {}).get("grader")
+        how = (
+            f"版 {last.get('label')} のサーバーで stub の配管を流し直して S2d も出し直した"
+            if last.get("stub_runs")
+            else "静的な層（S2s・S2w・S5）だけを出し直した"
+        )
+        kept = (
+            f"。Mode B の S3・S4 と実モデルの run_case の S2d は、会話を流し直さないと出せないので、前の採点"
+            f"（採点器の版 {prev}）の値のまま"
+            if any(t.get("mode") == "b" for t in d.get("trials") or [])
+            else ""
+        )
+        out.append(f"{d['experiment']}（採点器の版 {prev} → {last.get('grader')}・{how}{kept}）")
+    return out
+
+
 def summary_md(
     docs: Sequence[Mapping],
     *,
@@ -454,13 +477,17 @@ def summary_md(
         + ", ".join(f"{d['experiment']}（{len(d.get('trials') or [])} 試行）" for d in docs)
         + f"。モデル {MODEL}。"
     )
+    regraded = regrade_notes(docs)
+    if regraded:
+        lines += ["", "採点し直した実験: " + "・".join(regraded) + "。"]
     if left_out:
         lines += [
             "",
             "採点器の版が違うので外した実験: "
             + "・".join(f"{d['experiment']}（{_grader_name(d)}）" for d in left_out)
             + f"。表は {_grader_name(docs[0])} で採点した実験だけ（違う規則で採点した試行を同じ表で数えない）。"
-            "同じ条件で流し直すか、`abeval grade` で採点し直す。",
+            "同じ条件で流し直すか、`abeval grade` で採点し直す（採点の規則の版が違う実験は、版のサーバーを"
+            "起動して `--stub-runs` を付ける）。",
         ]
     lines += ["", "## 1. 見出し", ""]
     lines += _table(
