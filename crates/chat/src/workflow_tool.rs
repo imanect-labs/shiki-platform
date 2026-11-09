@@ -159,6 +159,7 @@ fn create_name_taken(name: &str) -> String {
 const IR_ARG: ObjectArg = ObjectArg {
     key: "ir",
     shape: "ir_version・name・triggers・nodes・edges を持つオブジェクト",
+    sql_arg: None,
 };
 
 /// ir を断ったときに添える文（保存していないこと）。
