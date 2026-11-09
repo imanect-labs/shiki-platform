@@ -13,7 +13,8 @@
 //!   2 つ置く書き方を言う。その書き方は最後まで流れる（BUG-264）。
 //! - 集計の行（GAP-132）: data.query の groups（data の `AggregateGroup` をそのまま出す）を map で回し、領域の中で
 //!   `/item/key/<まとめた列>`・`/item/values/<i>`（`/item/value`）を読んで 1 行ずつ書く。`/item/<列>`・`/item/count` は
-//!   解決できない。
+//!   解決できない。結合先の列でまとめた行の key の名前は group_by に書いたとおりの `m.<参照名>` で、`/item/key/m.<参照名>`
+//!   で読む（`/item/key/<参照名>` は解決できない）。
 //!
 //! 保存の検証と上限は DB 不要。ワーカーで流すものは `STORAGE_TEST_DATABASE_URL` が要る。
 
@@ -50,6 +51,8 @@ const TABLE: &str = "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1";
 /// 売上（地域ごとに集計する）と、集計の行を書く週次 KPI のテーブル（GAP-132）。
 const SALES: &str = "5b0e2f3a-7c41-4d8e-9f60-1a2b3c4d5e6f";
 const KPI: &str = "6c1f3a4b-8d52-4e9f-a071-2b3c4d5e6f70";
+/// 売上の customer が指す顧客のテーブル（顧客の地域でまとめる・結合先の列の key の名前・GAP-132）。
+const CUSTOMERS: &str = "7d2a4b5c-9e63-4fa0-b182-3c4d5e6f7081";
 const FILE: &str = "3f1d2c4b-5a69-4e7f-8a1b-2c3d4e5f6a7b";
 
 /// 説明文の script.run の例（chat の guide.rs と同じ文・行を 1 行ずつ `{data: 行}` に包む）。
@@ -129,10 +132,11 @@ struct CsvTablePorts {
 }
 
 /// 地域ごとの件数と金額の合計（data の `run_query` が返す型をそのまま JSON にする・api の data のポートと同じ）。
-/// 北は件数が少なくて伏せた行（value と values が null）。
-fn region_groups() -> Value {
+/// 北は件数が少なくて伏せた行（value が null で、values は null の並び）。key の名前はまとめた列の group_by に書いた
+/// 名前（data の `col_key` と同じく、結合先の列は `別名.参照名`）。
+fn region_groups(key: &str) -> Value {
     let group = |region: &str, values: Vec<Value>| data::AggregateGroup {
-        key: serde_json::Map::from_iter([("region".to_string(), json!(region))]),
+        key: serde_json::Map::from_iter([(key.to_string(), json!(region))]),
         value: values[0].clone(),
         values,
     };
@@ -225,7 +229,7 @@ impl NodePorts for CsvTablePorts {
     ) -> Result<Value, PortError> {
         if !q.aggregate.is_empty() {
             self.queries.lock().unwrap().push(q.clone());
-            return Ok(region_groups());
+            return Ok(region_groups(&q.group_by[0]));
         }
         // 同じ値のレコードは無い（追加か更新は追加に、一括の同じレコードを探す列は当たらない）。
         Ok(json!({
@@ -270,22 +274,35 @@ fn catalog() -> Catalog {
             .map(|(k, t)| ((*k).to_string(), (*t).to_string()))
             .collect()
     };
-    let mut schema: data::TableSchema = serde_json::from_value(json!({ "fields": [
+    let schema_of = |v: Value| {
+        let mut schema: data::TableSchema = serde_json::from_value(v).unwrap();
+        for (i, f) in schema.fields.iter_mut().enumerate() {
+            f.id = 10 + u16::try_from(i).unwrap();
+        }
+        schema
+    };
+    let schema = schema_of(json!({ "fields": [
         { "key": "sold_on", "type": "date", "indexed": true },
         { "key": "region", "type": "select", "options": ["東", "西", "北"], "indexed": true },
-        { "key": "amount", "type": "number", "indexed": true }
-    ] }))
-    .unwrap();
-    for (i, f) in schema.fields.iter_mut().enumerate() {
-        f.id = 10 + u16::try_from(i).unwrap();
-    }
+        { "key": "amount", "type": "number", "indexed": true },
+        { "key": "customer", "type": "record_ref", "ref_table": CUSTOMERS }
+    ] }));
     let sales = CatalogTable {
         fields: fields(&[
             ("sold_on", "date"),
             ("region", "select"),
             ("amount", "number"),
+            ("customer", "record_ref"),
         ]),
         schema: Some(schema),
+        ..CatalogTable::default()
+    };
+    // 顧客は地域に索引がある（結合先の列でまとめる・GAP-132）。
+    let customers = CatalogTable {
+        fields: fields(&[("area", "select")]),
+        schema: Some(schema_of(json!({ "fields": [
+            { "key": "area", "type": "select", "options": ["東", "西", "北"], "indexed": true }
+        ] }))),
         ..CatalogTable::default()
     };
     let kpi = CatalogTable {
@@ -297,6 +314,7 @@ fn catalog() -> Catalog {
             (TABLE.to_string(), table),
             (SALES.to_string(), sales),
             (KPI.to_string(), kpi),
+            (CUSTOMERS.to_string(), customers),
         ])),
         ..Catalog::default()
     }
@@ -424,12 +442,21 @@ fn bulk_flat() -> Value {
 
 /// 集計の行を地域ごとに 1 行ずつ書く（`write` は領域の中の追加の data・GAP-132）。
 fn per_group(data: Value) -> Value {
+    per_group_of(
+        json!({
+            "group_by": ["region"],
+            "aggregate": [{ "metric": "count" }, { "metric": "sum", "field": "amount" }]
+        }),
+        data,
+    )
+}
+
+/// 集計の行を 1 行ずつ書く（`query` は data.query の query・`data` は領域の中の追加の data）。
+fn per_group_of(query: Value, data: Value) -> Value {
     workflow(
         json!([
             { "id": "sum_up", "type": "data.query", "label": "地域ごとに集計",
-              "params": { "table": SALES, "query": {
-                  "group_by": ["region"],
-                  "aggregate": [{ "metric": "count" }, { "metric": "sum", "field": "amount" }] } } },
+              "params": { "table": SALES, "query": query } },
             { "id": "per_region", "type": "control.map", "label": "地域ごと",
               "params": { "items": { "$from": "nodes.sum_up.output", "path": "/groups" } } },
             { "id": "save", "type": "data.record.create", "parent": "per_region", "label": "KPI を追加",
@@ -464,6 +491,21 @@ fn groups_by_flat_names() -> Value {
     }))
 }
 
+/// 顧客の地域（結合先の列）でまとめた行を書く。説明文のとおり、key の名前は group_by に書いた `m.area` のまま読む。
+fn groups_by_joined_key(path: &str) -> Value {
+    per_group_of(
+        json!({
+            "joins": [{ "alias": "m", "field": "customer" }],
+            "group_by": ["m.area"],
+            "aggregate": [{ "metric": "count" }]
+        }),
+        json!({
+            "region": { "$from": "each", "path": path },
+            "deals": { "$from": "each", "path": "/item/value" }
+        }),
+    )
+}
+
 /// 説明文の書き方は、保存の検証を通り、警告も実行の前に止める理由も無い。
 #[test]
 fn the_guided_ways_save_without_errors_or_warnings() {
@@ -479,6 +521,10 @@ fn the_guided_ways_save_without_errors_or_warnings() {
         ),
         ("集計の行の先頭を value で読む", groups_first_value()),
         ("集計の行を直下の名前で読む", groups_by_flat_names()),
+        (
+            "結合先の列でまとめた行を m.<参照名> で読む",
+            groups_by_joined_key("/item/key/m.area"),
+        ),
     ] {
         let parsed = validate(&ir, &catalog()).unwrap_or_else(|e| panic!("{name}: {e:?}"));
         assert!(
@@ -820,6 +866,50 @@ async fn aggregate_rows_are_read_by_key_and_values_in_a_map() {
     assert_eq!(deals, vec![json!(5), Value::Null]);
 
     let f = flow(&pool, &groups_by_flat_names(), false).await;
+    assert_eq!(f.status, Some(RunStatus::Failed));
+    assert!(
+        f.failures
+            .iter()
+            .any(|(path, code, _)| path.starts_with("per_region[") && code == "expr_resolve_error"),
+        "{:?}",
+        f.failures
+    );
+    assert!(f.ports.writes.lock().unwrap().is_empty(), "何も書かない");
+}
+
+/// 結合先の列（`m.area`）でまとめた行の key の名前は、group_by に書いたとおりの `m.area`。説明文のとおり
+/// `/item/key/m.area` で読むと最後まで流れ、参照名だけの `/item/key/area` は解決できない（GAP-132）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rows_grouped_by_a_joined_column_are_read_by_the_alias_key() {
+    let Some(pool) = setup().await else { return };
+    let f = flow(&pool, &groups_by_joined_key("/item/key/m.area"), false).await;
+    assert_eq!(f.status, Some(RunStatus::Succeeded), "{:?}", f.failures);
+    assert_eq!(
+        f.ports.queries.lock().unwrap()[0].group_by,
+        vec!["m.area".to_string()]
+    );
+    assert_eq!(
+        f.outputs["sum_up"]["groups"][0]["key"],
+        json!({ "m.area": "東" })
+    );
+    let mut rows: Vec<Value> = f
+        .ports
+        .writes
+        .lock()
+        .unwrap()
+        .iter()
+        .flat_map(written)
+        .collect();
+    rows.sort_by_key(|r| r["region"].as_str().unwrap().to_string());
+    assert_eq!(
+        rows,
+        vec![
+            json!({ "region": "北", "deals": null }),
+            json!({ "region": "東", "deals": 5 }),
+        ]
+    );
+
+    let f = flow(&pool, &groups_by_joined_key("/item/key/area"), false).await;
     assert_eq!(f.status, Some(RunStatus::Failed));
     assert!(
         f.failures

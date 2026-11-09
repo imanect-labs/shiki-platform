@@ -236,7 +236,8 @@ fn description_explains_the_notation_the_engine_implements() {
     // 結合先の列は group_by・aggregate に 別名.参照名 で書き、結合先の定義で同じ決まり（GAP-129。この書き方が保存と
     // 実行を通ることは api の workflow_approval_it が確かめる）。
     assert!(
-        d.contains("query の joins に [{\"alias\":\"m\",\"field\":\"<リンクの列>\"}] と書き、group_by と aggregate の field に \"m.<列の参照名>\" と書く（filter・sort には書けない。つないだテーブルで絞る条件は joins の filter に書く）"),
+        d.contains("query の joins に [{\"alias\":\"m\",\"field\":\"<リンクの列>\"}] と書き、group_by と aggregate の field に \"m.<列の参照名>\" と書く（")
+            && d.contains("filter・sort には書けない。つないだテーブルで絞る条件は joins の filter に書く）"),
         "{d}"
     );
     // キーワードで探す列は部分一致で探せる列だけ（保存時に照らす・GAP-129。この書き方が保存と実行を通ることは api の
@@ -351,7 +352,6 @@ fn description_explains_the_notation_the_engine_implements() {
     assert!(!d.contains("<祖先ノードid>"));
 }
 
-/// 画面に返す結果の書き方の指針が載る（副作用の最後・error の出口・固定の文言は全員に見える・GAP-09）。
 /// テーブルの行を読む・書く書き方（集計の行の指し方・CSV の行の書き方・一括で登録の行の形）。
 #[test]
 fn description_explains_how_to_read_and_write_table_rows() {
@@ -359,11 +359,20 @@ fn description_explains_how_to_read_and_write_table_rows() {
     // 集計の行（data の AggregateGroup）を map で回すときの指し方と、出力の形（カタログ）の行の形（GAP-132。この
     // 書き方が保存と実行を通ることは workflow-engine の csv_to_table_it が確かめる）。
     assert!(
-        d.contains("groups の 1 行は {key: {まとめた列の参照名: 値}, values: [aggregate と同じ順の値], value: values の先頭}")
-            && d.contains("{\"$from\":\"each\",\"path\":\"/item/key/<まとめた列の参照名>\"}")
+        d.contains("groups の 1 行は {key: {group_by に書いた列: 値}, values: [aggregate と同じ順の値], value: values の先頭}")
+            && d.contains("{\"$from\":\"each\",\"path\":\"/item/key/<group_by に書いた列>\"}")
             && d.contains("{\"$from\":\"each\",\"path\":\"/item/values/<aggregate の位置（0 から）>\"}")
             && d.contains("/item/<列の参照名>・/item/count のような書き方では読めない")
-            && d.contains("groups?: Array<{ key: { [まとめた列の参照名]: string | null }, value: number | null, values: Array<number | null> }>"),
+            && d.contains("groups?: Array<{ key: { [group_by に書いた列]: string | null }, value: number | null, values: Array<number | null> }>"),
+        "{d}"
+    );
+    // 伏せた行の values は配列のまま中の値だけが null（data の suppress）。結合先の列でまとめた行の key の名前は
+    // m.<参照名> のまま（data の col_key。この読み方が実行を通ることは csv_to_table_it が確かめる）。
+    assert!(
+        d.contains("件数が少なくて伏せた行は value が null で、values は aggregate と同じ数の null が並ぶ（values そのものは null にならない）")
+            && !d.contains("value と values が null")
+            && d.contains("groups の key の名前も \"m.<列の参照名>\" のままなので、map の中では /item/key/m.<列の参照名> で読む")
+            && d.contains("key の名前は group_by に書いたとおり（結合先の列は m.<参照名> のような 別名.参照名）"),
         "{d}"
     );
     // CSV の行をテーブルに書くのは map の中の 1 件の書き込みで、csv.query の items を一括の rows にそのまま渡させない
@@ -410,6 +419,7 @@ fn description_explains_how_to_read_and_write_table_rows() {
     );
 }
 
+/// 画面に返す結果の書き方の指針が載る（副作用の最後・error の出口・固定の文言は全員に見える・GAP-09）。
 #[test]
 fn description_explains_where_to_put_replies() {
     let d = emit_description(None, None);

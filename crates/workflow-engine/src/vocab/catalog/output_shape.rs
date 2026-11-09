@@ -360,11 +360,12 @@ pub(super) fn output_shape(nt: NodeType) -> Shape {
                 ),
                 // 集計の 1 行は data の `AggregateGroup` をそのまま出す（ノードで詰め替えない・GAP-132）。まとめた列の
                 // 値は文字（数の列も）、件数は整数。行の形を言わないと、AI が `/item/<列>`・`/item/count` と書いて
-                // 解決できない。
+                // 解決できない。key の名前は group_by に書いたとおりで、結合先の列は `別名.参照名`（data の `col_key`）。
+                // 伏せた行の values は配列のまま中の値だけが null（data の `suppress`）。
                 opt!(
                     "groups",
-                    "Array<{ key: { [まとめた列の参照名]: string | null }, value: number | null, values: Array<number | null> }>",
-                    "aggregate のとき。values は aggregate と同じ順の値・value は values の先頭。件数が少なくて伏せた行は value と values が null",
+                    "Array<{ key: { [group_by に書いた列]: string | null }, value: number | null, values: Array<number | null> }>",
+                    "aggregate のとき。key の名前は group_by に書いたとおり（結合先の列は m.<参照名> のような 別名.参照名）。values は aggregate と同じ順の値・value は values の先頭。件数が少なくて伏せた行は value が null で、values は aggregate と同じ数の null が並ぶ",
                     present_if = "/query/aggregate"
                 ),
                 opt!("next_cursor", "string"),
