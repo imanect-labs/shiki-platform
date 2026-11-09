@@ -314,8 +314,11 @@ docstring（§3.1 に `clarifications`・`run_cases[].llm_dependent`・`run_case
 | `grading.py` | 試行の採点の部品。基盤の失敗（保存できない・時間切れ・5xx など）で流せなかった run_case が 1 つでもあれば、S2d・S3・S4 を None にして試行を errors に回す（部分だけで採点しない）。見出しは S2s・S2d（Mode B は S4 も）が決まったときだけ真で、決まらなければ None（率の分母に入れない） |
 
 採点器の版は `grade.GRADER_VERSION` と ir_lint のバイナリの sha（`static.grader_version()`）で残す。`ir_lint_build` には、
-ir_lint を作った commit（確かめた時点の HEAD。バイナリが依存のソースより新しいので、その commit の中身から作ったと
-みなせる）・依存のソースに commit していない変更があったか（`dirty`）・バイナリの時刻を残す。結果を重ねる・まとめに
+ir_lint を作った commit（確かめた時点の HEAD。バイナリが依存のソースとビルドのファイルより新しいので、その commit の
+中身から作ったとみなせる）・それらに commit していない変更があったか（`dirty`）・バイナリの時刻を残す。ビルドのファイルは、
+cargo の依存の記録に載らない作業ツリーの根の Cargo.toml・Cargo.lock・ツールチェーンの指定と、依存のソースのクレートの
+Cargo.toml（依存の版・feature の変更で古くなる）。それらだけが新しいときは cargo が作り直さないことがあるので、example の
+ソースの時刻を進めてから作り直す命令を出す（`grade/lint_build.py`）。結果を重ねる・まとめに
 並べる・Mode B のキャッシュのキーに入れるときに比べるのは、同一性（`static.grader_identity`: 採点の規則の版・出力の形の
 版・ir_lint の sha）だけで、作った commit は比べない（中身の同じ ir_lint を関係の無い commit のたびに別の採点器と
 数えない）。
