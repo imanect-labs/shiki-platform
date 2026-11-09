@@ -13,7 +13,7 @@ use crate::derived::types::{LinkCardinality, LinkDef};
 use crate::model::{DataTable, FieldDef, FieldType, TableKeys};
 use crate::policy::material::PolicyMaterial;
 use crate::query::bound::{bind_query, bind_query_scoped, BindOpts};
-use crate::query::ir::{Condition, DataQuery, LinkCond, Metric, MetricSpec, SortKey};
+use crate::query::ir::{Condition, DataQuery, JoinSpec, LinkCond, Metric, MetricSpec, SortKey};
 use crate::query::scopes::{ScopeTable, ScopeTables};
 
 /// 索引あり・重複を許さない・どちらも無し・検索だけ・数・多値・作成者・リンク・対称列・読めない列の表。
@@ -272,6 +272,20 @@ fn bind_linked(
     bind_query_scoped(full, masked, q, &tables, BindOpts::default())
 }
 
+/// 結合先の列は束縛の文言で `別名.参照名` と書かれる（保存時の照合は別名を外した参照名で問う）ので、別名を外して比べる。
+fn unaliased(a: Option<String>) -> Option<String> {
+    a.map(|s| s.replace("'j.", "'"))
+}
+
+fn join(field: &str, filter: Option<Condition>) -> JoinSpec {
+    JoinSpec {
+        alias: "j".into(),
+        from: None,
+        field: field.into(),
+        filter,
+    }
+}
+
 /// 読む人の見え方の定義（`secret` を外したもの）と、照らす列（定義の列・システムの列・無い列）。
 fn viewer_and_keys() -> (TableSchema, HashSet<String>, TableSchema, Vec<String>) {
     let full = schema();
@@ -331,4 +345,61 @@ fn link_columns_answer_like_the_binder() {
         check_link_field(&viewer, "parent").unwrap(),
         Uuid::from_u128(7)
     );
+}
+
+/// 結合（`joins`）で辿る列と、その先の列（結合の条件・`別名.参照名` のまとめる列と集計の列）は、保存時の照合（辿る列は
+/// 結合元の定義・その先の列は結合先の定義で、別名を外した参照名で問う）と、実行時の束縛（結合先を読む人の権限で開いて
+/// 束縛する）で、どの列・どの位置でも同じ答え（通すか、同じ誤り）になる（GAP-129）。
+#[test]
+fn join_columns_answer_like_the_binder() {
+    let (full, masked, viewer, keys) = viewer_and_keys();
+    let mut refused = 0;
+    for key in &keys {
+        // 辿る列（リンクの列だけ・リンクの条件と同じ関数）。
+        let saved = check_link_field(&viewer, key).map(|_| ());
+        let joined = DataQuery {
+            joins: vec![join(key, None)],
+            ..DataQuery::default()
+        };
+        let runtime = bind_linked(&full, &masked, &joined);
+        assert_eq!(answer(&saved), answer(&runtime), "{key}");
+        refused += usize::from(saved.is_err());
+        // 結合の条件の列。
+        for op in LINKED_OPS {
+            let saved = check_field_use(&viewer, key, FieldUse::Filter(op));
+            let cmp = Condition::cmp(key.as_str(), op, value_for(&full, key, op));
+            let joined = DataQuery {
+                joins: vec![join("parent", Some(cmp))],
+                ..DataQuery::default()
+            };
+            let runtime = bind_linked(&full, &masked, &joined);
+            assert_eq!(answer(&saved), answer(&runtime), "{key} {op:?}");
+            refused += usize::from(saved.is_err());
+        }
+        // `別名.参照名` のまとめる列と集計の列。
+        let grouped = DataQuery {
+            joins: vec![join("parent", None)],
+            group_by: vec![format!("j.{key}")],
+            aggregate: vec![MetricSpec {
+                metric: Metric::Count,
+                field: None,
+            }],
+            ..DataQuery::default()
+        };
+        let summed = DataQuery {
+            joins: vec![join("parent", None)],
+            aggregate: vec![MetricSpec {
+                metric: Metric::Sum,
+                field: Some(format!("j.{key}")),
+            }],
+            ..DataQuery::default()
+        };
+        for (at, q) in [(FieldUse::GroupBy, grouped), (FieldUse::Metric, summed)] {
+            let saved = check_field_use(&viewer, key, at);
+            let runtime = bind_linked(&full, &masked, &q);
+            assert_eq!(answer(&saved), unaliased(answer(&runtime)), "{key} {at:?}");
+            refused += usize::from(saved.is_err());
+        }
+    }
+    assert!(refused > 0);
 }

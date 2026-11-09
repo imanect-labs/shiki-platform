@@ -4719,6 +4719,140 @@ async fn data_query_link_conditions_are_checked_like_the_runner_on_save() {
     env.delete_store().await;
 }
 
+/// GAP-129: データを検索の結合（`joins`）は、辿る列と、結合の条件・まとめる列と集計の列の `別名.参照名` を、結合先の
+/// 定義（保存者の見え方で引き足す）で実行時の束縛と同じ data の判定で照らす。別名が結合に無い `別名.参照名` も止める。
+/// 保存時の誤りのコードと、同じクエリを data の読取に通したときの誤りが対応する。結合先の読めない列（bob の secret）は
+/// 無い列と同じ答え。結合先の表が見えない人（dave）には結合先の列を照らさない（実行では問い合わせ全体が `forbidden`）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn data_query_joins_are_checked_like_the_runner_on_save() {
+    let _serial = SERIAL.lock().await;
+    let Some(env) = setup().await else { return };
+    let (items, _) = env.linked_tables().await;
+    let tool = env.emit_tool();
+    let join = |filter: Option<Value>| match filter {
+        Some(f) => json!([{ "alias": "m", "field": "maker", "filter": f }]),
+        None => json!([{ "alias": "m", "field": "maker" }]),
+    };
+    let grouped = |key: &str| json!({ "joins": join(None), "group_by": [key], "aggregate": [{ "metric": "count" }] });
+    let summed = |key: &str| json!({ "joins": join(None), "aggregate": [{ "metric": "sum", "field": key }] });
+    let cmp = |field: &str| json!({ "cmp": { "field": field, "op": "eq", "value": "x" } });
+    let cases = [
+        (grouped("m.code"), None, None),
+        (summed("m.score"), None, None),
+        (
+            json!({ "joins": join(Some(cmp("memo"))) }),
+            Some((
+                "ir.field_not_indexed",
+                "/params/query/joins/0/filter/cmp/field",
+            )),
+            Some("field_not_indexed"),
+        ),
+        (
+            json!({ "joins": [{ "alias": "m", "field": "title" }] }),
+            Some(("ir.field_not_usable", "/params/query/joins/0/field")),
+            Some("invalid_input"),
+        ),
+        (
+            grouped("m.memo"),
+            Some(("ir.field_not_indexed", "/params/query/group_by/0")),
+            Some("field_not_indexed"),
+        ),
+        (
+            summed("m.price"),
+            Some(("ir.field_not_indexed", "/params/query/aggregate/0/field")),
+            Some("field_not_indexed"),
+        ),
+        (
+            summed("m.code"),
+            Some(("ir.field_not_usable", "/params/query/aggregate/0/field")),
+            Some("value_type_mismatch"),
+        ),
+        (
+            grouped("q.code"),
+            Some(("ir.field_not_usable", "/params/query/group_by/0")),
+            Some("invalid_input"),
+        ),
+    ];
+    for (query, saved, run) in cases {
+        let want = saved.map_or_else(Vec::new, |(c, p)| code_at(c, p));
+        assert_eq!(
+            env.v4_codes(&env.alice, &query_ir(items, query.clone()))
+                .await,
+            want,
+            "{query}"
+        );
+        assert_eq!(
+            env.run_code(&env.alice, items, &query).await.as_deref(),
+            run,
+            "{query}"
+        );
+    }
+    // 保存 API と emit_workflow も、結合先を引き足して同じ照合で止める。
+    let answers = env
+        .v4_answers(&tool, &env.alice, &query_ir(items, grouped("m.memo")), "")
+        .await;
+    assert!(
+        answers[0].contains("ir.field_not_indexed") && answers[0].contains("（m.memo）"),
+        "{}",
+        answers[0]
+    );
+    assert!(
+        answers[1].starts_with("400 ") && answers[1].contains("ir.field_not_indexed"),
+        "{}",
+        answers[1]
+    );
+    assert!(
+        answers[2].starts_with("true ") && answers[2].contains("ir.field_not_indexed"),
+        "{}",
+        answers[2]
+    );
+    // bob には結合先の secret が読めない: 無い列と同じ答え（保存時も実行時も）。
+    let unreadable = env
+        .v4_answers(
+            &tool,
+            &env.bob,
+            &query_ir(items, grouped("m.secret")),
+            "secret",
+        )
+        .await;
+    let missing = env
+        .v4_answers(
+            &tool,
+            &env.bob,
+            &query_ir(items, grouped("m.zz_nope")),
+            "zz_nope",
+        )
+        .await;
+    assert_eq!(unreadable, missing, "読めない列と無い列で答えが違う");
+    assert!(
+        unreadable[0].contains("ir.unknown_field"),
+        "{}",
+        unreadable[0]
+    );
+    for key in ["m.secret", "m.zz_nope"] {
+        assert_eq!(
+            env.run_code(&env.bob, items, &grouped(key))
+                .await
+                .as_deref(),
+            Some("field_unavailable")
+        );
+    }
+    // メーカーの表が見えない dave には、結合先の列を照らさない（実行では問い合わせ全体が断られる）。
+    assert_eq!(
+        env.v4_codes(&env.dave, &query_ir(items, grouped("m.memo")))
+            .await,
+        vec![]
+    );
+    assert_eq!(
+        env.run_code(&env.dave, items, &grouped("m.memo"))
+            .await
+            .as_deref(),
+        Some("forbidden")
+    );
+    env.cleanup().await;
+    env.delete_store().await;
+}
+
 /// BUG-251: 状態の進め方のある表で、状態の列を「データを更新」の変更する値に書く IR と、最初の状態でない状態で追加する
 /// IR は、保存時に `ir.status_not_writable` で止まる（検証 API・保存 API・emit_workflow のどれでも）。同じ書き込みは
 /// data の更新・作成でも `fsm_invalid` で断られる（同じ判定）。最初の状態を書く・書かない追加は通る。状態の列を読めない

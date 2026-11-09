@@ -6,30 +6,31 @@
 //! 写さない）。主に、索引の無い列（`indexed` でも `unique` でもない列）で絞る・並べる・まとめる IR を止める
 //! （ワークフローの経路では索引を自動で作らない・data-platform §10）。
 //!
-//! リンクの条件（`filter` の `link`・入れ子も）は、辿る列がリンクの列であることを [`data::check_link_field`] で確かめ、
-//! 中の比較の列を、リンク先のテーブルの定義で同じ [`data::check_field_use`] に問う（GAP-129）。
+//! リンクの条件（`filter` の `link`・入れ子も）と結合（`joins`）は、辿る列（`link.field`・`joins[].field`）がリンクの列で
+//! あることを [`data::check_link_field`] で確かめ、その先の列（リンクの条件の中・結合の条件 `joins[].filter`・
+//! まとめる列と集計の列の `別名.参照名`）を、辿った先のテーブルの定義で同じ [`data::check_field_use`] に問う
+//! （GAP-129）。`別名.参照名` の別名が結合に無い IR も止める（実行では「別名は結合にありません」で断られる）。
 //!
 //! 材料は承認と同じ [`Catalog::tables`] の、保存者の見え方の定義（[`super::CatalogTable::schema`]・読めない列は
 //! 入らない）。読めない列は無い列と同じ `ir.unknown_field`（同じ文言・data-platform §16.1）。テーブルを参照で決める
-//! ノード・材料に無い（見えない）テーブル・定義の無い材料は照合しない。リンク先のテーブルも、API 層が
-//! [`query_link_tables`]（照合と同じ歩き方）で保存者の見え方で引き足したものだけを照らす（見えないリンク先の中は
-//! 照合しない。実行では、リンク先を開けなければ問い合わせ全体が断られる）。まとめる列・集計の列の結合先の列
-//! （`別名.参照名`）は、つないだ先の定義が要るので照合しない（並べ替えと絞り込みは結合先の列を使えないので、
-//! 実行と同じく止める）。件数（`count`）の指標の `field` は、実行で読まないので照合しない（実行時の束縛の
-//! `bind_metric` と同じ）。比べる値（`$from` を書ける）は実行時に確かめる。
+//! ノード・材料に無い（見えない）テーブル・定義の無い材料は照合しない。リンク先・結合先のテーブルも、API 層が
+//! [`query_link_tables`]（照合と同じ歩き方）で保存者の見え方で引き足したものだけを照らす（見えない表の中は
+//! 照合しない。実行では、辿る先を開けなければ問い合わせ全体が断られる）。並べ替えと絞り込みは結合先の列を
+//! 使えないので、`別名.参照名` を書けば実行と同じく止める。件数（`count`）の指標の `field` は、実行で読まないので
+//! 照合しない（実行時の束縛の `bind_metric` と同じ）。比べる値（`$from` を書ける）は実行時に確かめる。
 //!
 //! 誤りの文言は、列に表示名があれば「表示名」（参照名）で言う（画面は表示名で列を見せ、AI は参照名で IR を直す）。
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use data::{
-    CondOp, Condition, DataError, DataQuery, FieldUse, HavingCond, InvalidCode, LinkCond, Metric,
+    CondOp, Condition, DataError, DataQuery, FieldUse, HavingCond, InvalidCode, JoinSpec, Metric,
     MetricSpec, TableSchema,
 };
 use serde_json::Value;
 use uuid::Uuid;
 
-use super::data_keys::column_name;
+use super::data_keys::{column_name, column_name_as};
 use super::{Catalog, CatalogTable, ValidationError};
 use crate::ir::params::DataQueryParams;
 use crate::ir::WorkflowIr;
@@ -44,39 +45,73 @@ const UNKNOWN_FIELD: &str = "ir.unknown_field";
 
 /// 列を引く表（誤りの文言で表を言い分ける）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Within {
+enum Within<'q> {
     /// データを検索のテーブル（FROM の表）。
     Base,
     /// リンクの条件で辿った先のテーブル。
     Linked,
+    /// 結合した表（別名）。
+    Joined(&'q str),
 }
 
-impl Within {
+impl Within<'_> {
     /// 「…に無いか、読めない列です」の表の言い方。
-    fn table(self) -> &'static str {
+    fn table(self) -> String {
         match self {
-            Within::Base => "このテーブル",
-            Within::Linked => "リンク先のテーブル",
+            Within::Base => "このテーブル".to_string(),
+            Within::Linked => "リンク先のテーブル".to_string(),
+            Within::Joined(alias) => format!("つないだテーブル（{alias}）"),
         }
     }
 
     /// 「…の「列の編集」で」の表の言い方。
-    fn edit(self) -> &'static str {
+    fn edit(self) -> String {
         match self {
-            Within::Base => "テーブル",
-            Within::Linked => "リンク先のテーブル",
+            Within::Base => "テーブル".to_string(),
+            other => other.table(),
         }
     }
 }
 
-/// 照らす列（書いた位置の path・列を引く表の定義・列・位置）。
-struct Use<'s> {
+/// 照らす列（書いた位置の path・列を引く表の定義・列・IR に書いた名前・位置）。
+struct Use<'s, 'q> {
     path: String,
     schema: &'s TableSchema,
-    within: Within,
+    within: Within<'q>,
     key: String,
+    /// IR に書いた名前（結合先の列は `別名.参照名`・ほかは `key` と同じ）。
+    written: String,
     at: FieldUse,
 }
+
+impl<'s, 'q> Use<'s, 'q> {
+    fn new(
+        path: String,
+        schema: &'s TableSchema,
+        within: Within<'q>,
+        key: &str,
+        at: FieldUse,
+    ) -> Self {
+        Use {
+            path,
+            schema,
+            within,
+            key: key.to_string(),
+            written: key.to_string(),
+            at,
+        }
+    }
+}
+
+/// 辿る列（リンクの条件の `link.field` と結合の `joins[].field`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Through {
+    Link,
+    Join,
+}
+
+/// 結合（別名と、辿った先の定義。辿れない・材料に無い結合先は `None`）。
+type Joined<'c, 'q> = Vec<(&'q str, Option<&'c TableSchema>)>;
 
 /// V4: `data.query` の列（材料が無ければ照合しない）。
 pub(super) fn v4(ir: &WorkflowIr, catalog: &Catalog, errors: &mut Vec<ValidationError>) {
@@ -93,10 +128,10 @@ pub(super) fn v4(ir: &WorkflowIr, catalog: &Catalog, errors: &mut Vec<Validation
     }
 }
 
-/// データを検索（リテラルのテーブル・定義のある材料）のリンクの条件が辿る先のうち、`tables` に無いテーブル。API 層が
-/// 保存者の見え方で引き足し、その中の列を照らす（GAP-129）。照合（[`v4`]）と同じ歩き方で決めるので、照らす列のある
-/// リンク先だけが返る。引き足すと、その先のリンク先が分かる（入れ子のリンクは、深さの上限
-/// 〔[`data::MAX_JOIN_DEPTH`]〕まで引き足しを繰り返す）。
+/// データを検索（リテラルのテーブル・定義のある材料）のリンクの条件と結合が辿る先のうち、`tables` に無いテーブル。
+/// API 層が保存者の見え方で引き足し、その中の列を照らす（GAP-129）。照合（[`v4`]）と同じ歩き方で決めるので、中の条件の
+/// あるリンク先と、結合先（次の結合の結合元にもなる）だけが返る。引き足すと、その先が分かる（入れ子のリンクと結合の
+/// 連なりは、深さの上限〔[`data::MAX_JOIN_DEPTH`]〕まで引き足しを繰り返す）。
 #[must_use]
 pub fn query_link_tables(
     ir: &WorkflowIr,
@@ -156,24 +191,115 @@ impl<'c> Walk<'c> {
     }
 
     /// 列を 1 つ照らす（実行時の束縛と同じ data の判定）。
-    fn check(&mut self, u: &Use<'_>) {
+    fn check(&mut self, u: &Use<'_, '_>) {
         if let Err(e) = data::check_field_use(u.schema, &u.key, u.at) {
             self.refused.push((u.path.clone(), refusal(&e, u)));
         }
     }
 
-    /// クエリの全体（書いた順）。
-    fn query(&mut self, base: &'c TableSchema, q: &DataQuery) {
+    /// クエリの全体（実行時の束縛と同じ順: 絞り込み → 並べ替え → 結合 → まとめる列・集計）。
+    fn query<'q>(&mut self, base: &'c TableSchema, q: &'q DataQuery) {
         if let Some(c) = &q.filter {
             self.cond(base, Within::Base, c, "/params/query/filter");
         }
-        for u in uses(base, q) {
-            self.check(&u);
+        let keys = q.sort.len();
+        for (i, k) in q.sort.iter().enumerate() {
+            let path = format!("/params/query/sort/{i}/field");
+            self.check(&Use::new(
+                path,
+                base,
+                Within::Base,
+                &k.field,
+                FieldUse::Sort { keys },
+            ));
+        }
+        let joined = self.joins(base, &q.joins);
+        let mut col =
+            |path: String, name: &str, at: FieldUse| self.col(base, &joined, path, name, at);
+        for (i, g) in q.group_by.iter().enumerate() {
+            col(format!("/params/query/group_by/{i}"), g, FieldUse::GroupBy);
+        }
+        for (i, m) in q.aggregate.iter().enumerate() {
+            if let Some(f) = metric_field(m) {
+                col(
+                    format!("/params/query/aggregate/{i}/field"),
+                    f,
+                    FieldUse::Metric,
+                );
+            }
+        }
+        if let Some(h) = &q.having {
+            having_uses(h, "/params/query/having", &mut col);
+        }
+        for (i, k) in q.group_sort.iter().enumerate() {
+            if let Some(f) = k.metric.as_ref().and_then(metric_field) {
+                col(
+                    format!("/params/query/group_sort/{i}/metric/field"),
+                    f,
+                    FieldUse::Metric,
+                );
+            }
+        }
+    }
+
+    /// 結合: 結合元の表で辿る列（`joins[].field`）と、結合先の定義で結合の条件（`joins[].filter`）。結合元の別名
+    /// （`from`）が先の結合に無い結合と、その先は照らさない（実行では結合の誤りで断られる）。
+    fn joins<'q>(&mut self, base: &'c TableSchema, joins: &'q [JoinSpec]) -> Joined<'c, 'q> {
+        let mut out: Joined<'c, 'q> = Vec::with_capacity(joins.len());
+        for (i, j) in joins.iter().enumerate() {
+            let from = match &j.from {
+                None => Some((base, Within::Base)),
+                Some(a) => out
+                    .iter()
+                    .find(|(x, _)| x == a)
+                    .and_then(|(x, s)| s.map(|s| (s, Within::Joined(x)))),
+            };
+            let target = from.and_then(|(schema, within)| {
+                let at = format!("/params/query/joins/{i}/field");
+                self.through(schema, within, &j.field, Through::Join, at)
+            });
+            let target = target.and_then(|id| self.target(id));
+            if let (Some(t), Some(c)) = (target, &j.filter) {
+                let at = format!("/params/query/joins/{i}/filter");
+                self.cond(t, Within::Joined(&j.alias), c, &at);
+            }
+            out.push((j.alias.as_str(), target));
+        }
+        out
+    }
+
+    /// まとめる列・集計の列（`参照名` は FROM の表、`別名.参照名` は結合先の定義で照らす）。
+    fn col(
+        &mut self,
+        base: &'c TableSchema,
+        joined: &Joined<'c, '_>,
+        path: String,
+        name: &str,
+        at: FieldUse,
+    ) {
+        let Some((alias, key)) = name.split_once('.') else {
+            return self.check(&Use::new(path, base, Within::Base, name, at));
+        };
+        match joined.iter().find(|(a, _)| *a == alias) {
+            None => {
+                let message = format!(
+                    "{}の「{name}」の「{alias}」は、つないだ表の別名（joins の alias）にありません。joins に書いた別名を使ってください。",
+                    place(at, Within::Base)
+                );
+                self.refused
+                    .push((path, ValidationError::new(FIELD_NOT_USABLE, message)));
+            }
+            // 結合先を辿れない・見えない（材料に無い）ときは照らさない。
+            Some((_, None)) => {}
+            Some((a, Some(schema))) => self.check(&Use {
+                written: name.to_string(),
+                ..Use::new(path, schema, Within::Joined(a), key, at)
+            }),
         }
     }
 
     /// 条件の木の比較の列と、リンクの条件（辿る列と、リンク先の定義で中の条件）。
-    fn cond(&mut self, schema: &'c TableSchema, within: Within, c: &Condition, at: &str) {
+    fn cond(&mut self, schema: &'c TableSchema, within: Within<'_>, c: &Condition, at: &str) {
         match c {
             Condition::All(v) | Condition::Any(v) => {
                 let kind = if matches!(c, Condition::All(_)) {
@@ -186,88 +312,48 @@ impl<'c> Walk<'c> {
                 }
             }
             Condition::Not(x) => self.cond(schema, within, x, &format!("{at}/not")),
-            Condition::Cmp(cmp) => self.check(&Use {
-                path: format!("{at}/cmp/field"),
-                schema,
-                within,
-                key: cmp.field.clone(),
-                at: FieldUse::Filter(cmp.op),
-            }),
-            Condition::Link(lc) => self.link(schema, within, lc, at),
-        }
-    }
-
-    /// リンクの条件: 辿る列がリンクの列であること（[`data::check_link_field`]）と、リンク先の定義で中の条件。
-    fn link(&mut self, schema: &'c TableSchema, within: Within, lc: &LinkCond, at: &str) {
-        let target = match data::check_link_field(schema, &lc.field) {
-            Ok(id) => id,
-            Err(e) => {
-                let e = link_refusal(&e, schema, within, &lc.field);
-                self.refused.push((format!("{at}/link/field"), e));
-                return;
+            Condition::Cmp(cmp) => {
+                let path = format!("{at}/cmp/field");
+                self.check(&Use::new(
+                    path,
+                    schema,
+                    within,
+                    &cmp.field,
+                    FieldUse::Filter(cmp.op),
+                ));
             }
-        };
-        // 中の条件が無ければリンク先の定義は要らない（引き足さない）。
-        let Some(inner) = lc.filter.as_deref() else {
-            return;
-        };
-        if let Some(target) = self.target(target) {
-            self.cond(target, Within::Linked, inner, &format!("{at}/link/filter"));
+            Condition::Link(lc) => {
+                let path = format!("{at}/link/field");
+                let target = self.through(schema, within, &lc.field, Through::Link, path);
+                // 中の条件が無ければリンク先の定義は要らない（引き足さない）。
+                let (Some(target), Some(inner)) = (target, lc.filter.as_deref()) else {
+                    return;
+                };
+                if let Some(t) = self.target(target) {
+                    self.cond(t, Within::Linked, inner, &format!("{at}/link/filter"));
+                }
+            }
         }
     }
-}
 
-/// FROM の表の、絞り込み以外の位置の列（書いた順）。
-fn uses<'s>(schema: &'s TableSchema, q: &DataQuery) -> Vec<Use<'s>> {
-    let mut out = Vec::new();
-    let mut push = |path: String, key: &str, at: FieldUse| {
-        out.push(Use {
-            path,
-            schema,
-            within: Within::Base,
-            key: key.to_string(),
-            at,
-        });
-    };
-    let keys = q.sort.len();
-    for (i, k) in q.sort.iter().enumerate() {
-        push(
-            format!("/params/query/sort/{i}/field"),
-            &k.field,
-            FieldUse::Sort { keys },
-        );
-    }
-    // FROM の表の列だけ（結合先の `別名.参照名` は照合しない）。
-    let mut base = |path: String, key: &str, at: FieldUse| {
-        if !key.contains('.') {
-            push(path, key, at);
-        }
-    };
-    for (i, g) in q.group_by.iter().enumerate() {
-        base(format!("/params/query/group_by/{i}"), g, FieldUse::GroupBy);
-    }
-    for (i, m) in q.aggregate.iter().enumerate() {
-        if let Some(f) = metric_field(m) {
-            base(
-                format!("/params/query/aggregate/{i}/field"),
-                f,
-                FieldUse::Metric,
-            );
+    /// 辿る列がリンクの列であること（[`data::check_link_field`]・実行時の束縛と同じ関数）と、その参照先のテーブル。
+    fn through(
+        &mut self,
+        schema: &TableSchema,
+        within: Within<'_>,
+        key: &str,
+        by: Through,
+        path: String,
+    ) -> Option<Uuid> {
+        match data::check_link_field(schema, key) {
+            Ok(id) => Some(id),
+            Err(e) => {
+                self.refused
+                    .push((path, link_refusal(&e, schema, within, key, by)));
+                None
+            }
         }
     }
-    if let Some(h) = &q.having {
-        having_uses(h, "/params/query/having", &mut base);
-    }
-    for (i, k) in q.group_sort.iter().enumerate() {
-        if let Some(f) = k.metric.as_ref().and_then(metric_field) {
-            base(
-                format!("/params/query/group_sort/{i}/metric/field"),
-                f,
-                FieldUse::Metric,
-            );
-        }
-    }
-    out
 }
 
 /// 指標が読む列。件数（`count`）は `field` を書いても読まない（実行時の束縛 `bind_metric` が `field` を見ずに返す。
@@ -280,7 +366,7 @@ fn metric_field(m: &MetricSpec) -> Option<&String> {
 }
 
 /// 集計後の条件の指標の列。
-fn having_uses(h: &HavingCond, at: &str, push: &mut dyn FnMut(String, &str, FieldUse)) {
+fn having_uses(h: &HavingCond, at: &str, push: &mut impl FnMut(String, &str, FieldUse)) {
     match h {
         HavingCond::All(v) | HavingCond::Any(v) => {
             let kind = if matches!(h, HavingCond::All(_)) {
@@ -315,41 +401,56 @@ fn located(params: &Value, path: &str) -> String {
 }
 
 /// 位置の言い方。
-fn place(at: FieldUse, within: Within) -> &'static str {
+fn place(at: FieldUse, within: Within<'_>) -> &'static str {
     match (at, within) {
         (FieldUse::Filter(_), Within::Base) => "絞り込みの条件",
         (FieldUse::Filter(_), Within::Linked) => "リンク先の絞り込みの条件",
+        (FieldUse::Filter(_), Within::Joined(_)) => "表をつなぐ条件",
         (FieldUse::Sort { .. }, _) => "並べ替え",
         (FieldUse::GroupBy, _) => "まとめる列",
         (FieldUse::Metric, _) => "集計",
     }
 }
 
-/// リンクの条件の辿る列を、実行時の束縛が断る理由（無い・読めない列と、リンクの列でない列）。
-fn link_refusal(e: &DataError, schema: &TableSchema, within: Within, key: &str) -> ValidationError {
-    if matches!(e, DataError::FieldUnavailable) {
-        return ValidationError::new(
-            UNKNOWN_FIELD,
-            format!(
-                "リンクの条件の「{key}」は、{}に無いか、読めない列です。",
-                within.table()
-            ),
-        );
-    }
-    ValidationError::new(
-        FIELD_NOT_USABLE,
-        format!(
-            "{}はリンクの列ではないので、リンクの条件に使えません。ほかのテーブルを指すリンクの列を選ぶか、この列を比べる条件（cmp）にしてください。",
-            column_name(schema, key)
+/// 辿る列を、実行時の束縛が断る理由（無い・読めない列と、リンクの列でない列）。
+fn link_refusal(
+    e: &DataError,
+    schema: &TableSchema,
+    within: Within<'_>,
+    key: &str,
+    by: Through,
+) -> ValidationError {
+    let table = within.table();
+    let col = column_name(schema, key);
+    let message = match (e, by) {
+        (DataError::FieldUnavailable, Through::Link) => {
+            return ValidationError::new(
+                UNKNOWN_FIELD,
+                format!("リンクの条件の「{key}」は、{table}に無いか、読めない列です。"),
+            )
+        }
+        (DataError::FieldUnavailable, Through::Join) => {
+            return ValidationError::new(
+                UNKNOWN_FIELD,
+                format!("表をつなぐ列の「{key}」は、{table}に無いか、読めない列です。"),
+            )
+        }
+        (_, Through::Link) => format!(
+            "{col}はリンクの列ではないので、リンクの条件に使えません。ほかのテーブルを指すリンクの列を選ぶか、この列を比べる条件（cmp）にしてください。"
         ),
-    )
+        (_, Through::Join) => format!(
+            "{col}はリンクの列ではないので、表をつなぐのに使えません。ほかのテーブルを指すリンクの列を選んでください。"
+        ),
+    };
+    ValidationError::new(FIELD_NOT_USABLE, message)
 }
 
 /// 実行時の束縛が断る理由を、保存時の誤りにする（直し方まで言う）。
-fn refusal(e: &DataError, u: &Use<'_>) -> ValidationError {
+fn refusal(e: &DataError, u: &Use<'_, '_>) -> ValidationError {
     let key = &u.key;
+    let written = &u.written;
     let schema = u.schema;
-    let col = column_name(schema, key);
+    let col = column_name_as(schema, key, written);
     let place = place(u.at, u.within);
     let (table, edit) = (u.within.table(), u.within.edit());
     let partial = matches!(u.at, FieldUse::Filter(CondOp::Contains | CondOp::EndsWith));
@@ -358,9 +459,14 @@ fn refusal(e: &DataError, u: &Use<'_>) -> ValidationError {
         FieldUse::Filter(CondOp::StartsWith | CondOp::Contains | CondOp::EndsWith)
     );
     let (code, message) = match (e, e.invalid_code()) {
+        // `別名.参照名` は利用者の列の参照名になれない（列の手がかりにならない）ので、書き方の誤りとして言う。
+        (DataError::FieldUnavailable, _) if key.contains('.') && matches!(u.at, FieldUse::Filter(_)) => (
+            UNKNOWN_FIELD,
+            format!("{place}には「{key}」のような、つないだ表の列は書けません。つないだ表の列で絞るときは、その表をつなぐ設定（joins）の filter に、その表の参照名で書いてください。"),
+        ),
         (DataError::FieldUnavailable, _) => (
             UNKNOWN_FIELD,
-            format!("{place}の「{key}」は、{table}に無いか、読めない列です。"),
+            format!("{place}の「{written}」は、{table}に無いか、読めない列です。"),
         ),
         (_, Some(InvalidCode::FieldNotIndexed)) if partial => (
             FIELD_NOT_INDEXED,
@@ -393,7 +499,7 @@ fn refusal(e: &DataError, u: &Use<'_>) -> ValidationError {
 
 /// その位置に使えない種類の列の文言（逆向きのリンク・計算の列・複数の値やリンクを持つ列・システムの列）。
 /// `col` は誤りの文言での列の言い方（[`column_name`]）。
-fn not_usable(u: &Use<'_>, col: &str) -> String {
+fn not_usable(u: &Use<'_, '_>, col: &str) -> String {
     let reverse = u
         .schema
         .field(&u.key)

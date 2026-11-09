@@ -44,6 +44,7 @@ fn makers() -> TableSchema {
     let mut s: TableSchema = serde_json::from_value(json!({ "fields": [
         { "key": "code", "type": "text", "unique": true },
         { "key": "memo", "display_name": "備考", "type": "text" },
+        { "key": "score", "type": "number", "indexed": true },
         { "key": "country", "type": "record_ref", "ref_table": COUNTRIES }
     ] }))
     .unwrap();
@@ -133,7 +134,9 @@ fn columns_without_an_index_are_refused_where_written() {
         query_node(
             "sum",
             json!(ITEMS),
+            // 結合先（注文）は材料に無いので、結合先の列（j.name）は照らさない。
             json!({
+                "joins": [ { "alias": "j", "field": "orders" } ],
                 "group_by": ["memo", "j.name"],
                 "aggregate": [ { "metric": "count" }, { "metric": "sum", "field": "price" } ]
             })
@@ -481,4 +484,140 @@ fn link_tables_to_load_follow_the_walk() {
     assert_eq!(query_link_tables(&ir, &tables), ids(&[MAKERS]));
     // 中の条件の無いリンク（orders）は、リンク先が材料に無くても引かない。
     assert!(!query_link_tables(&ir, &tables).contains(&Uuid::parse_str(ORDERS).unwrap()));
+}
+
+/// 結合（`joins`）は、辿る列（`joins[].field`）がリンクの列であることと、結合の条件（`joins[].filter`）とまとめる列・
+/// 集計の列の `別名.参照名` を、結合先の定義で照らす（GAP-129）。別名が結合に無い `別名.参照名` も止める。結合元
+/// （`from`）が先の結合の別名なら、その結合先の定義で辿る列を照らす。結合先を辿れない・材料に無い（見えない）ときは
+/// その先を照らさない。絞り込みと並べ替えには結合先の列を書けない（実行と同じく止める）。
+#[test]
+fn join_columns_are_checked_in_the_joined_table() {
+    let metric = |m: &str, f: &str| json!({ "metric": m, "field": f });
+    let ir = ir(json!([
+        query_node(
+            "ok",
+            json!(ITEMS),
+            json!({
+                "joins": [ { "alias": "m", "field": "maker", "filter": cmp("code", "eq") } ],
+                "group_by": ["m.code", "sku"],
+                "aggregate": [ { "metric": "count" }, metric("sum", "m.score") ]
+            })
+        ),
+        query_node(
+            "bad",
+            json!(ITEMS),
+            json!({
+                "joins": [
+                    { "alias": "m", "field": "maker", "filter": { "all": [
+                        cmp("memo", "eq"),
+                        link("country", Some(cmp("anything", "eq")))
+                    ] } },
+                    { "alias": "x", "field": "name" },
+                    { "alias": "y", "field": "nope" },
+                    { "alias": "z", "from": "m", "field": "memo" }
+                ],
+                "group_by": ["m.memo", "q.code", "x.title"],
+                "aggregate": [ metric("sum", "m.code"), metric("avg", "m.memo") ],
+                "having": { "cmp": { "metric": metric("max", "m.memo"), "op": "gt", "value": 1 } },
+                "group_sort": [ { "metric": metric("min", "m.code") } ]
+            })
+        ),
+        query_node(
+            "base",
+            json!(ITEMS),
+            json!({
+                "joins": [ { "alias": "m", "field": "maker" } ],
+                "filter": cmp("m.code", "eq"),
+                "sort": [ { "field": "m.code" } ]
+            })
+        )
+    ]));
+    let mut errors = Vec::new();
+    v4(&ir, &catalog(), &mut errors);
+    let q = "/params/query";
+    let at = |p: &str| format!("{q}/{p}");
+    let want = [
+        (
+            FIELD_NOT_INDEXED,
+            "bad",
+            at("joins/0/filter/all/0/cmp/field"),
+        ),
+        (FIELD_NOT_USABLE, "bad", at("joins/1/field")),
+        (UNKNOWN_FIELD, "bad", at("joins/2/field")),
+        (FIELD_NOT_USABLE, "bad", at("joins/3/field")),
+        (FIELD_NOT_INDEXED, "bad", at("group_by/0")),
+        (FIELD_NOT_USABLE, "bad", at("group_by/1")),
+        (FIELD_NOT_USABLE, "bad", at("aggregate/0/field")),
+        (FIELD_NOT_INDEXED, "bad", at("aggregate/1/field")),
+        (FIELD_NOT_INDEXED, "bad", at("having/cmp/metric/field")),
+        (FIELD_NOT_USABLE, "bad", at("group_sort/0/metric/field")),
+        (UNKNOWN_FIELD, "base", at("filter/cmp/field")),
+        (FIELD_NOT_USABLE, "base", at("sort/0/field")),
+    ];
+    let want: Vec<(&str, &str, &str)> = want.iter().map(|(c, n, p)| (*c, *n, p.as_str())).collect();
+    assert_eq!(located(&errors), want);
+    let m = |i: usize| errors[i].message.as_str();
+    assert!(
+        m(0).starts_with("「備考」（memo）は索引の無い列なので、表をつなぐ条件に使えません")
+            && m(0).contains("つないだテーブル（m）の「列の編集」でこの列の索引をオンに"),
+        "{}",
+        m(0)
+    );
+    assert!(
+        m(1).starts_with("「name」はリンクの列ではないので、表をつなぐのに使えません"),
+        "{}",
+        m(1)
+    );
+    assert_eq!(
+        m(2),
+        "表をつなぐ列の「nope」は、このテーブルに無いか、読めない列です。"
+    );
+    assert!(
+        m(3).starts_with("「備考」（memo）はリンクの列ではない"),
+        "{}",
+        m(3)
+    );
+    assert!(
+        m(4).starts_with("「備考」（m.memo）は索引の無い列なので、まとめる列に使えません"),
+        "{}",
+        m(4)
+    );
+    assert!(
+        m(5).contains("「q.code」の「q」は、つないだ表の別名（joins の alias）にありません"),
+        "{}",
+        m(5)
+    );
+    assert!(
+        m(6).starts_with("「m.code」は数の列ではないので"),
+        "{}",
+        m(6)
+    );
+    assert!(
+        m(10).contains("「m.code」のような、つないだ表の列は書けません")
+            && m(10).contains("その表をつなぐ設定（joins）の filter に"),
+        "{}",
+        m(10)
+    );
+}
+
+/// 結合先は、結合ごとに引き足す（次の結合の結合元にもなるので、条件や列の参照が無くても引く）。結合元の別名が
+/// 引けていない結合の先は、引けてから分かる。
+#[test]
+fn join_tables_to_load_follow_the_walk() {
+    let ir = ir(json!([query_node(
+        "q",
+        json!(ITEMS),
+        json!({ "joins": [
+            { "alias": "o", "field": "orders" },
+            { "alias": "c", "from": "o", "field": "customer" },
+            { "alias": "m", "field": "maker" },
+            { "alias": "k", "from": "m", "field": "country" }
+        ] })
+    )]));
+    let ids =
+        |v: &[&str]| -> BTreeSet<Uuid> { v.iter().map(|s| Uuid::parse_str(s).unwrap()).collect() };
+    let mut tables = catalog().tables.unwrap();
+    assert_eq!(query_link_tables(&ir, &tables), ids(&[ORDERS, COUNTRIES]));
+    tables.remove(MAKERS);
+    assert_eq!(query_link_tables(&ir, &tables), ids(&[ORDERS, MAKERS]));
 }

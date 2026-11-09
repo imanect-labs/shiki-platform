@@ -228,6 +228,12 @@ fn description_explains_the_notation_the_engine_implements() {
         d.contains("filter に {\"link\":{\"field\":\"<リンクの列>\",\"filter\":条件}} と書き、中の条件の列は、リンク先のテーブルの data_schema の印で同じ決まりに従う"),
         "{d}"
     );
+    // 結合先の列は group_by・aggregate に 別名.参照名 で書き、結合先の定義で同じ決まり（GAP-129。この書き方が保存と
+    // 実行を通ることは api の workflow_approval_it が確かめる）。
+    assert!(
+        d.contains("query の joins に [{\"alias\":\"m\",\"field\":\"<リンクの列>\"}] と書き、group_by と aggregate の field に \"m.<列の参照名>\" と書く（filter・sort には書けない。つないだテーブルで絞る条件は joins の filter に書く）"),
+        "{d}"
+    );
     // 入力の数を引く書き方と、足す数に組み立てを書けないこと（BUG-245・この書き方が保存と実行を通ることは
     // workflow-engine のテストが確かめる）。
     assert!(

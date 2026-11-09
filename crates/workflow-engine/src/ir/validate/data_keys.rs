@@ -32,13 +32,19 @@ pub(super) fn table_of<'a>(catalog: &'a Catalog, params: &Value) -> Option<&'a C
 /// 誤りの文言での列の言い方。表示名があれば「表示名」（参照名）、無ければ「参照名」（画面は表示名で列を見せ、AI は
 /// 参照名で IR を直すので両方を出す）。`schema` は保存者の見え方の定義で、読めない列・無い列・システムの列は参照名だけ。
 pub(super) fn column_name(schema: &data::TableSchema, key: &str) -> String {
+    column_name_as(schema, key, key)
+}
+
+/// [`column_name`] の、IR に書いた名前（`written`・結合先の列なら `別名.参照名`）で言う版。表示名は `schema` の列
+/// `key` から引く。
+pub(super) fn column_name_as(schema: &data::TableSchema, key: &str, written: &str) -> String {
     match schema
         .field(key)
         .map(|f| f.display_name.trim())
         .filter(|d| !d.is_empty() && *d != key)
     {
-        Some(d) => format!("「{d}」（{key}）"),
-        None => format!("「{key}」"),
+        Some(d) => format!("「{d}」（{written}）"),
+        None => format!("「{written}」"),
     }
 }
 
