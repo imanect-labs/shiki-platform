@@ -13,7 +13,8 @@ import {
 /// 「CSV を集計」でほかの CSV をつなぐ e2e（つなぐ CSV の欄・#1037）:
 /// - つなぐ CSV が無いときは「つなぐ CSV を足す」のボタンだけを出す（欄が邪魔にならない）。
 /// - ボタンからドライブの CSV を選ぶと 1 件足し、名前はファイル名から付ける（英字の無い名前は t1）。名前は SQL で読む
-///   名前として直せ、使えない名前（data・大文字など）はその場で言う。直すまで試しに実行できない。
+///   名前として直せ、使えない名前（data・大文字など）はその場で言う。直すまで試しに実行できない。使えない名前は、下の
+///   説明（テーブル名の案内）に出さない（BUG-266）。
 /// - 試しに実行・ワークフローの実行の両方で、つないだ集計の結果が出る。保存した定義の tables は選んだとおり。
 /// - 足した後は、足した行の「SQL での名前」へフォーカスが移る。前の行を外しても、後の行の欄の状態（ファイルの選び方の
 ///   切り替え）は移らない。
@@ -126,6 +127,10 @@ test("CSV を集計: つなぐ CSV を足し、名前を付けて SQL でつな�
     // 使えない名前はその場で言い、直すまで試しに実行できない。
     await name.fill("data");
     await expect(row).toContainText("data は集計するファイルの名前です。ほかの名前にしてください。");
+    // 下の説明は、使えない名前をつなぐ CSV の名前として案内しない（BUG-266）。
+    const columns = panel.getByTestId("csv-columns");
+    await expect(columns).toContainText("テーブル名は data です。");
+    await expect(columns).not.toContainText("つなぐ CSV は");
     await expect(panel.getByRole("button", { name: "試しに実行" })).toBeDisabled();
     await expect(panel.getByText("つなぐ CSV の名前とファイルを直すと試せます")).toBeVisible();
     // 保存時の確かめも同じ名前を断るが、名前の欄の下に 1 回だけ言い、ファイルの欄の下には重ねない（GAP-126）。
@@ -142,11 +147,13 @@ test("CSV を集計: つなぐ CSV を足し、名前を付けて SQL でつな�
     await page.waitForTimeout(1_000);
     await expect(row.getByText(/先頭は数字以外/)).toHaveCount(1);
     await expect(row.getByText(/SQL での名前「Master」は使えません/)).toHaveCount(0);
+    await expect(columns).not.toContainText("Master");
+    await expect(columns).toContainText("テーブル名は data です。");
     if (SHOTS) await panel.screenshot({ path: `${SHOTS}/csv-query-join-name-error-pc.png` });
     await name.fill("master");
     await expect(row).not.toContainText("先頭は数字以外");
     await expect(tables).toContainText("例: SELECT * FROM data JOIN master ON …");
-    await expect(panel.getByTestId("csv-columns")).toContainText("テーブル名は data です（つなぐ CSV は master）。");
+    await expect(columns).toContainText("テーブル名は data です（つなぐ CSV は master）。");
 
     // 試しに実行すると、つないだ集計の結果が出る。
     await panel.getByRole("button", { name: "試しに実行" }).click();

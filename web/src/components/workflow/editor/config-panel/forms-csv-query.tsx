@@ -65,7 +65,7 @@ const RESULT_VALUES_HINT =
   "結果の行（rows）は、値をすべてテキストで渡します。数値やはい／いいえを種類のまま使うときは、行の値（items）を選び、列の名前で引きます。";
 
 /// CSV の列（本人の権限でスキーマを読む）とテーブル名の案内。読めないときはサーバーの理由（直し方つき）を出す。
-/// `tableNames` はつなぐ CSV の名前（SQL で読む名前・固定値で書いたものだけ）。
+/// `tableNames` はつなぐ CSV の名前（SQL で読む名前・固定値で書いた使える名前だけ）。
 function CsvColumnsHint({ fileId, tableNames }: { fileId: string | null; tableNames: string[] }) {
   const [state, setState] = React.useState<{ id: string; schema: SchemaResponse | null; reason: string | null } | null>(
     null,
@@ -319,7 +319,10 @@ export function CsvQueryForm(props: FormProps) {
       )}
       <CsvColumnsHint
         fileId={fileId}
-        tableNames={items.flatMap((t) => (typeof t.name === "string" && t.name !== "" ? [t.name] : []))}
+        // 名前の欄の下で誤りと言う名前（空・data・形・重なり）は出さない（使える名前のように案内しない・BUG-266）。
+        tableNames={items.flatMap((t, i) =>
+          typeof t.name === "string" && tableNameError(items, i) === null ? [t.name] : [],
+        )}
       />
       {sql !== null ? (
         <CsvPreview
