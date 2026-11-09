@@ -370,3 +370,8 @@ def test_windowed_tasks_are_kept_as_date_window_errors_per_trial():
     assert {e["task"] for e in errs} == {"app03-weekly-summary"}
     assert sorted({e["effort"] for e in errs}) == ["high", "medium"]
     assert cli.date_window_errors(args, [], {}) == []
+    # 結果を書いたときの表示は、外した試行を基盤の失敗に数えない（BUG-272）。
+    assert (
+        cli.error_counts([*errs, {"kind": "timeout"}]) == "基盤の失敗 1 件・測る日で外した試行 4 件"
+    )
+    assert cli.error_counts([]) == "基盤の失敗 0 件"

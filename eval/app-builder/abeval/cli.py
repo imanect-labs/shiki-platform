@@ -188,6 +188,13 @@ def split_date_window(tasks: list[Task], now: dt.datetime) -> tuple[list[Task], 
     return kept, reasons
 
 
+def error_counts(errors: list[dict]) -> str:
+    """結果を書いたときの errors の内訳（計画の前に外した測る日の試行は、基盤の失敗に数えない）。"""
+    windowed = sum(1 for e in errors if e.get("kind") == "date_window")
+    text = f"基盤の失敗 {len(errors) - windowed} 件"
+    return f"{text}・測る日で外した試行 {windowed} 件" if windowed else text
+
+
 def date_window_errors(args, windowed: list[Task], reasons: Mapping[str, str]) -> list[dict]:
     """計画から外した課題の試行ごとの errors（kind: date_window・レポートで条件ごとに外した課題を数える）。"""
     if not windowed:
@@ -477,9 +484,7 @@ def cmd_run(args) -> int:
             out_of_scope=[{**o, "label": args.label} for o in out_of_scope],
         )
         paths = report.write_result(doc, errors)
-        print(
-            f"書きました: {paths[0]}（{len(trials)} 試行）・{paths[1]}（基盤の失敗 {len(errors)} 件）"
-        )
+        print(f"書きました: {paths[0]}（{len(trials)} 試行）・{paths[1]}（{error_counts(errors)}）")
         return 0
     finally:
         client.close()
