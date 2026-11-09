@@ -20,12 +20,18 @@ use crate::frames::{FrameError, FrameValidator};
 use crate::host::{HostCall, HostResponse};
 use crate::runtime_io::{
     classify_trap, guest_alloc, guest_dealloc, read_mem, read_mem_caller, unpack, write_mem,
-    write_response,
+    write_response, ResultTooLarge,
 };
 use crate::uncaught::{HostError, HOST_RETURNED_EMPTY};
 
 /// 埋め込みゲスト wasm（scripts/build-qjs-guest.sh で再現ビルドし vendor したもの）。
 pub const GUEST_WASM: &[u8] = include_bytes!("../assets/shiki_qjs_guest.wasm");
+
+/// `main` の戻り値の大きさの上限（バイト・step の出力の上限と同じ・script.md §4.3）。
+///
+/// ゲストが返した結果（`{"ok":true,"value":…}` の封筒）がこれを超えたら読まずに捨て、作成者が直す誤り（`invalid`）で
+/// 失敗にする（[`Termination::ResultTooLarge`]・BUG-264）。文言とワークフローの AI 向けの説明はこの値から作る。
+pub const MAX_RESULT_BYTES: u32 = 256 * 1024;
 
 /// 実行リソース上限（ノード設定は縮小のみ・script.md §4.3）。
 #[derive(Debug, Clone, Copy)]
@@ -66,6 +72,8 @@ pub enum Termination {
     Epoch,
     /// フレーム違反（敵対的フレーム・INV-4）。
     FrameViolation(String),
+    /// 戻り値が上限（[`MAX_RESULT_BYTES`]）を超えた（ゲストが返した結果の大きさ・バイト）。作成者が直す誤り。
+    ResultTooLarge(u32),
     /// ホスト側キャンセル。
     Cancelled,
     /// 内部エラー（トラップ等）。
@@ -337,13 +345,10 @@ impl ScriptEngine {
         )?;
         let (ptr, len) = unpack(packed);
         // 結果サイズ上限（256KB・step-output cap）。ゲストが報告した len をそのまま read すると
-        // wasm メモリ上限内でも数 MB を host へ確保させられる。上限超過は読まずに trap する。
-        const MAX_RESULT_BYTES: u32 = 256 * 1024;
+        // wasm メモリ上限内でも数 MB を host へ確保させられる。上限超過は読まずに失敗にする（作成者の誤り・BUG-264）。
         if len > MAX_RESULT_BYTES {
             let _ = guest_dealloc(store, instance, ptr, len);
-            return Err(wasmtime::Error::msg(format!(
-                "result too large: {len} bytes > {MAX_RESULT_BYTES}"
-            )));
+            return Err(wasmtime::Error::new(ResultTooLarge(len)));
         }
         let bytes = read_mem(store, &memory, ptr, len)?;
         // 結果領域を解放（ゲスト側 alloc で確保されている）。

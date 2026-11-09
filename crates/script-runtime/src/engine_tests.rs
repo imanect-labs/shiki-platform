@@ -25,8 +25,9 @@ fn epoch_helpers_are_usable() {
 }
 
 #[test]
-fn oversized_result_is_trapped_not_read() {
-    // 256KB を超える戻り値は read せず trap にする（step-output cap・ホスト RAM 保護）。
+fn oversized_result_is_refused_not_read() {
+    // 256KB を超える戻り値は read せずに失敗にする（step-output cap・ホスト RAM 保護）。作成者が直す誤り（invalid）で、
+    // 大きさと上限と直し方を言う（BUG-264。以前は internal・英語の「result too large」）。
     let out = run(
         "function main() { return 'x'.repeat(300000); }",
         "null",
@@ -34,9 +35,27 @@ fn oversized_result_is_trapped_not_read() {
         noop_host(),
     );
     assert!(!out.ok, "{out:?}");
-    assert!(matches!(out.termination, Termination::Trap(_)));
-    let (msg, _code, _r) = out.error.expect("error tuple");
-    assert!(msg.contains("result too large"), "{msg}");
+    // 封筒（{"ok":true,"value":"…"}）の大きさは 300,000 バイトと少し。
+    assert!(
+        matches!(out.termination, Termination::ResultTooLarge(bytes) if bytes > 300_000 && bytes < 300_100),
+        "{out:?}"
+    );
+    let (msg, code, retryable) = out.error.expect("error tuple");
+    assert_eq!(code, "invalid");
+    assert!(!retryable);
+    assert_eq!(
+        msg,
+        "スクリプトの戻り値が大きすぎます（293 KB。256 KB まで）。返す項目を必要なものだけにするか、行を分けて返してください。"
+    );
+    assert_eq!(super::MAX_RESULT_BYTES, 256 * 1024);
+    // 上限ちょうどまでは返せる（封筒の分を引いた大きさの文字列）。
+    let fits = run(
+        "function main() { return 'x'.repeat(262000); }",
+        "null",
+        Limits::default(),
+        noop_host(),
+    );
+    assert!(fits.ok, "{fits:?}");
 }
 
 #[test]

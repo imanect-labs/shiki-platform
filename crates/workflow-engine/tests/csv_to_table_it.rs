@@ -9,7 +9,8 @@
 //! - map の上限（[`MAX_MAP_ITEMS`]）を超えるとき: script.run で 1 行ずつ `{data: 行}` に包み、data.bulk_upsert の rows へ。
 //! - csv.query の items（平らな行）を rows にそのまま渡すと、実行で包み方を言って断る（説明文の前の誤り）。
 //! - 上限: map の要素の数と script.run の戻り値（256 KB）はここで、bulk の行数（5,000 行）は capability_data の単体
-//!   テストで確かめる。
+//!   テストで確かめる。包んだ行が戻り値の上限を超えると script.run は invalid で失敗し、行を分けて包む script.run を
+//!   2 つ置く書き方を言う。その書き方は最後まで流れる（BUG-264）。
 //! - 集計の行（GAP-132）: data.query の groups（data の `AggregateGroup` をそのまま出す）を map で回し、領域の中で
 //!   `/item/key/<まとめた列>`・`/item/values/<i>`（`/item/value`）を読んで 1 行ずつ書く。`/item/<列>`・`/item/count` は
 //!   解決できない。
@@ -58,8 +59,29 @@ const WRAP_ROWS: &str = "function main(i) { return { rows: i.items.map((r) => ({
 const SQL_AS_IS: &str = "SELECT 品番, 品名, 在庫 FROM data";
 const SQL_ALIASED: &str = "SELECT 品番 AS sku, 品名 AS name, 在庫 AS stock FROM data";
 
+/// 包んだ行が script.run の戻り値の上限を超える CSV（[`MANY_ROWS`] 行・1 行 100 バイトほど・BUG-264）。
+const SQL_MANY: &str = "SELECT 品番 AS sku, 品名 AS name, 在庫 AS stock FROM data WHERE 在庫 >= 0";
+const MANY_ROWS: usize = 3_000;
+
+/// 説明文と誤りの文言が勧める分け方（行を分けて包む script.run を 2 つ置く）。
+const WRAP_FIRST: &str =
+    "function main(i) { return { rows: i.items.slice(0, 2000).map((r) => ({ data: r })) }; }";
+const WRAP_REST: &str =
+    "function main(i) { return { rows: i.items.slice(2000).map((r) => ({ data: r })) }; }";
+
 /// csv.query の結果（tabular の形・rows は文字、items は種類のまま）。SQL で列の名前をそろえたら items のキーも変わる。
 fn csv_result(sql: &str) -> Value {
+    if sql == SQL_MANY {
+        let items: Vec<Value> = (0..MANY_ROWS)
+            .map(|i| json!({ "sku": format!("A-{i:04}"), "name": "x".repeat(60), "stock": i }))
+            .collect();
+        return json!({
+            "columns": ["sku", "name", "stock"], "items": items,
+            "rows": items.iter().map(|r| json!([r["sku"], r["name"], r["stock"].to_string()])).collect::<Vec<_>>(),
+            "column_types": ["VARCHAR", "VARCHAR", "BIGINT"],
+            "total_rows": MANY_ROWS, "truncated": false, "version": 1
+        });
+    }
     let columns: [&str; 3] = if sql.contains(" AS sku") {
         ["sku", "name", "stock"]
     } else {
@@ -344,6 +366,49 @@ fn bulk_wrapped() -> Value {
     )
 }
 
+/// 包んだ行が戻り値の上限を超える（3,000 行を 1 つの script.run で包む）。
+fn bulk_wrapped_many() -> Value {
+    workflow(
+        json!([
+            read_csv(SQL_MANY),
+            { "id": "wrap", "type": "script.run", "label": "行を包む",
+              "params": { "source": { "inline": WRAP_ROWS },
+                          "input": { "items": { "$from": "nodes.read.output", "path": "/items" } } } },
+            { "id": "save", "type": "data.bulk_upsert", "label": "まとめて登録",
+              "params": { "table": TABLE, "match_on": "sku",
+                          "rows": { "$from": "nodes.wrap.output", "path": "/rows" } } }
+        ]),
+        json!([{ "from": "read", "to": "wrap" }, { "from": "wrap", "to": "save" }]),
+    )
+}
+
+/// 誤りの文言と説明文の分け方: 行を分けて包む script.run を 2 つ置き、それぞれの結果を一括で登録に渡す。
+fn bulk_split() -> Value {
+    let wrap = |id: &str, source: &str| {
+        json!({ "id": id, "type": "script.run", "label": "行を分けて包む",
+                "params": { "source": { "inline": source },
+                            "input": { "items": { "$from": "nodes.read.output", "path": "/items" } } } })
+    };
+    let save = |id: &str, from: &str| {
+        json!({ "id": id, "type": "data.bulk_upsert", "label": "まとめて登録",
+                "params": { "table": TABLE, "match_on": "sku",
+                            "rows": { "$from": format!("nodes.{from}.output"), "path": "/rows" } } })
+    };
+    workflow(
+        json!([
+            read_csv(SQL_MANY),
+            wrap("wrap_first", WRAP_FIRST),
+            wrap("wrap_rest", WRAP_REST),
+            save("save_first", "wrap_first"),
+            save("save_rest", "wrap_rest")
+        ]),
+        json!([
+            { "from": "read", "to": "wrap_first" }, { "from": "read", "to": "wrap_rest" },
+            { "from": "wrap_first", "to": "save_first" }, { "from": "wrap_rest", "to": "save_rest" }
+        ]),
+    )
+}
+
 /// 説明文の前の誤り: csv.query の items（平らな行）を rows にそのまま渡す（保存は通り、実行で断られる）。
 fn bulk_flat() -> Value {
     workflow(
@@ -407,6 +472,7 @@ fn the_guided_ways_save_without_errors_or_warnings() {
         ("そろえた列の追加", create_aliased()),
         ("包んでから一括", bulk_wrapped()),
         ("平らな行の一括", bulk_flat()),
+        ("分けて包んでから一括", bulk_split()),
         (
             "集計の行を key と values で読む",
             groups_by_key_and_values(),
@@ -491,12 +557,30 @@ async fn the_map_and_script_limits_in_the_guide_hold() {
         .execute("script.run", &rows(3_000), &node_ctx(&[]))
         .await;
     let err = too_big.error.expect("256 KB を超える戻り値は失敗する");
-    assert!(
-        err.message.contains(&format!("> {}", 256 * 1024)),
-        "{err:?}"
-    );
+    assert_too_large(&err.code, &err.message);
     // 一括の行数の上限は 5,000 行（rows の形と上限は capability_data の単体テスト）。
     assert_eq!(MAX_WORKFLOW_BULK_ROWS, 5_000);
+}
+
+/// 戻り値が大きすぎる script.run の誤り: 作成者が直す誤り（invalid）で、大きさ・上限と、行を分けて包む書き方を言う
+/// （BUG-264。以前は internal・英語の「result too large: … > 262144」）。
+fn assert_too_large(code: &str, message: &str) {
+    assert_eq!(code, "invalid", "{message}");
+    let kb: u32 = message
+        .strip_prefix("スクリプトの戻り値が大きすぎます（")
+        .and_then(|m| m.split_once(" KB。"))
+        .and_then(|(kb, _)| kb.parse().ok())
+        .unwrap_or_else(|| panic!("{message}"));
+    assert!(kb > 256, "{message}");
+    assert!(
+        message.ends_with(&format!(
+            " KB。{} KB まで）。返す項目を必要なものだけにするか、行を分けて返してください。\
+             テーブルに書く行を包んで返しているときは、i.items.slice(0, 2000) と i.items.slice(2000) のように行を分けて包む \
+             script.run を 2 つ置き、それぞれの結果を data.bulk_upsert に渡してください。",
+            workflow_engine::nodes::script::MAX_RESULT_BYTES / 1024
+        )),
+        "{message}"
+    );
 }
 
 async fn setup() -> Option<PgPool> {
@@ -745,4 +829,32 @@ async fn aggregate_rows_are_read_by_key_and_values_in_a_map() {
         f.failures
     );
     assert!(f.ports.writes.lock().unwrap().is_empty(), "何も書かない");
+}
+
+/// 包んだ行が script.run の戻り値の上限を超えると、包む step が invalid で失敗し、分け方を言って何も書かない。言われた
+/// とおり行を分けて包む script.run を 2 つ置くと、最後まで流れて全部の行が書かれる（BUG-264）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wrapped_rows_over_the_script_limit_are_split_in_two() {
+    let Some(pool) = setup().await else { return };
+    let f = flow(&pool, &bulk_wrapped_many(), true).await;
+    assert_eq!(f.status, Some(RunStatus::Failed));
+    let [(path, code, message)] = f.failures.as_slice() else {
+        panic!("包む step だけが失敗する: {:?}", f.failures);
+    };
+    assert_eq!(path, "wrap");
+    assert_too_large(code, message);
+    assert!(f.ports.writes.lock().unwrap().is_empty(), "何も書かない");
+
+    let f = flow(&pool, &bulk_split(), true).await;
+    assert_eq!(f.status, Some(RunStatus::Succeeded), "{:?}", f.failures);
+    let writes = f.ports.writes.lock().unwrap();
+    let mut sizes: Vec<usize> = writes.iter().map(|w| written(w).len()).collect();
+    sizes.sort_unstable();
+    assert_eq!(sizes, vec![1_000, 2_000]);
+    let skus: BTreeSet<String> = writes
+        .iter()
+        .flat_map(written)
+        .map(|r| r["sku"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(skus.len(), MANY_ROWS, "重ならずに全部の行");
 }

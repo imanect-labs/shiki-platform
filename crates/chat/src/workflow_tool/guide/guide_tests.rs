@@ -369,11 +369,19 @@ fn description_explains_how_to_read_and_write_table_rows() {
         d.contains("rows の値 = Array<{ id?: string, rev?: number, key?: string, data: { [列の参照名]: unknown } }>"),
         "{d}"
     );
+    // script.run の戻り値の上限は script-runtime の単一定義から言い、包んだ行で当たるときの分け方を言う（BUG-264。
+    // 分けた書き方が保存と実行を通ることは workflow-engine の csv_to_table_it が確かめる）。
+    let script_kb = workflow_engine::nodes::script::MAX_RESULT_BYTES / 1024;
+    assert_eq!(script_kb, 256);
     assert!(
         d.contains("function main(i) { return { rows: i.items.map((r) => ({ data: r })) }; }")
             && d.contains(&format!(
-                "（{} 行まで。script.run の戻り値は 256 KB まで",
+                "（{} 行まで。script.run の戻り値は {script_kb} KB まで",
                 workflow_engine::ir::params::MAX_WORKFLOW_BULK_ROWS
+            ))
+            && d.contains("i.items.slice(0, 2000) と i.items.slice(2000) のように行を分けて包む script.run を 2 つ置き、それぞれの結果を data.bulk_upsert に渡す")
+            && d.contains(&format!(
+                "script.run の戻り値（出力）は {script_kb} KB まで（JSON にした大きさ）。超えると invalid で失敗する"
             )),
         "{d}"
     );

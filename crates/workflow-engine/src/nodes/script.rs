@@ -11,7 +11,9 @@
 use std::collections::BTreeSet;
 use std::sync::Arc;
 
-use script_runtime::engine::HostFn;
+/// script.run の戻り値の大きさの上限（バイト・script-runtime の単一定義・AI 向けの説明が読む・BUG-264）。
+pub use script_runtime::engine::MAX_RESULT_BYTES;
+use script_runtime::engine::{HostFn, Termination};
 use script_runtime::host::{HostCall, HostResponse};
 use serde_json::{json, Value};
 
@@ -174,13 +176,20 @@ impl CapabilityNodeExecutor {
             Ok(outcome.value.unwrap_or(Value::Null))
         } else {
             // 捕まえていないホスト呼び出しの誤りは元の code、作成者が投げた誤りは script_error で返る（D-121）。
-            let (message, code, retryable) = outcome.error.unwrap_or_else(|| {
+            let (mut message, code, retryable) = outcome.error.unwrap_or_else(|| {
                 (
                     "script 実行に失敗".to_string(),
                     script_runtime::SCRIPT_ERROR.to_string(),
                     false,
                 )
             });
+            // 戻り値が大きすぎる: テーブルに書く行を包んで一括で登録に渡す書き方（説明文の CSV の段）で当たるので、
+            // 分け方を言う（BUG-264）。
+            if audit_api == "script.run"
+                && matches!(outcome.termination, Termination::ResultTooLarge(_))
+            {
+                message.push_str(SPLIT_WRAPPED_ROWS);
+            }
             Err(PortError::new(&code, message, retryable))
         }
     }
@@ -209,6 +218,9 @@ struct HostBridge {
     /// script が終わったら step をこの誤りで失敗にする（`retry::wait_policy` が待つ）。
     halted: Arc<std::sync::OnceLock<PortError>>,
 }
+
+/// 包んだ行で戻り値の上限に当たったときの分け方（説明文の CSV の段と同じ書き方・csv_to_table_it が保存と実行を確かめる）。
+const SPLIT_WRAPPED_ROWS: &str = "テーブルに書く行を包んで返しているときは、i.items.slice(0, 2000) と i.items.slice(2000) のように行を分けて包む script.run を 2 つ置き、それぞれの結果を data.bulk_upsert に渡してください。";
 
 /// step の時間の上限の期限に足す余白（ワーカーの打ち切りを script の epoch より先にする）。
 const SCRIPT_DEADLINE_MARGIN: std::time::Duration = std::time::Duration::from_secs(1);
