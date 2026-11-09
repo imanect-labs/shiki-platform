@@ -1,0 +1,8 @@
+# Explicit opt-in: the user approved Docker socket access for this experiment.
+services:
+  floci-gcp:
+    environment:
+      FLOCI_GCP_SERVICES_GKE_MOCK: "false"
+      FLOCI_GCP_DOCKER_RESOURCE_NAMESPACE: shiki-floci
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock

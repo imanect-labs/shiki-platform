@@ -1,0 +1,10 @@
+name: shiki-floci
+services:
+  floci-gcp:
+    image: floci/floci-gcp@sha256:d02e70407d6b37c3e24e31b5ccf100606735cba4f84fd476708b35afd052abb3
+    ports:
+      - "127.0.0.1:4588:4588"
+    environment:
+      FLOCI_GCP_SERVICES_GKE_MOCK: "true"
+    # Memory mode: pair container recreation with a fresh local Terraform state.
+    # No Docker socket: GKE management API only, no Kubernetes API or pods.
