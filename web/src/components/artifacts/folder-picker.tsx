@@ -8,12 +8,16 @@
 ///   選ぶか、現在地に「ここに新規作成」（new_under）できる。
 /// - `purpose="destination"`（下書きの保存先）: 選び方は scope と同じで、説明文だけ保存先向けにする。
 /// - `purpose="search"`（ホームの社内検索で探すフォルダ・#965）: 選び方は scope と同じで、説明文だけ検索向けにする。
+///
+/// 閉じたら、開いたときにフォーカスがあった要素（開いたボタンなど）へフォーカスを戻す（開くボタンは Radix の Trigger
+/// ではないので、Radix に任せるとページの先頭に落ちる・`useRestoreFocus`・BUG-263）。
 
 import * as React from "react";
 import { ChevronLeft, FolderPlus } from "lucide-react";
 
 import { listChildrenUpTo, type NodeResponse } from "@/lib/storage";
 import { useInfiniteList, useInfiniteSentinel } from "@/hooks/use-infinite-list";
+import { useRestoreFocus } from "@/hooks/use-restore-focus";
 import { MoreRows, sentinelEnabled } from "@/components/drive/more-rows";
 import { NodeIcon, LoadingRow } from "@/components/drive/primitives";
 import { Button } from "@/components/ui/button";
@@ -38,6 +42,7 @@ export function FolderPicker({
   onSelect: (folder: FolderChoice) => void;
   purpose?: "scope" | "workspace" | "destination" | "search";
 }) {
+  const focus = useRestoreFocus();
   // (id, name) のスタック。先頭はルート（マイドライブ）。
   const [stack, setStack] = React.useState<{ id?: string; name: string }[]>([
     { name: "マイドライブ" },
@@ -75,7 +80,7 @@ export function FolderPicker({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="max-w-2xl" {...focus}>
         <DialogHeader>
           <DialogTitle>フォルダを選択</DialogTitle>
           <DialogDescription>
