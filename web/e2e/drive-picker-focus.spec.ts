@@ -18,6 +18,7 @@ import {
 /// - CSV の SQL の画面（「JOIN する CSV を追加」）
 /// - ワークフローのフォルダーの欄（「一覧するフォルダ」の「変更」）
 /// - ホームの社内検索の「探すフォルダ」
+/// ワークフローの欄で同じファイル・フォルダーを選び直しても、定義は変わらないので未保存にならない（BUG-265）。
 
 const SHOTS = process.env.E2E_SHOTS_DIR;
 
@@ -33,6 +34,12 @@ async function createCsv(page: Page, name: string): Promise<string> {
   });
   expect(res.ok(), await res.text()).toBeTruthy();
   return ((await res.json()) as { node_id: string }).node_id;
+}
+
+/// エディタの保存の状態が「v1・保存済み」のままで、「未保存」になっていない。
+async function expectStillSaved(page: Page): Promise<void> {
+  await expect(page.getByText(/v1・保存済み/).first()).toBeVisible();
+  await expect(page.getByText(/v\d+・未保存/)).toHaveCount(0);
 }
 
 test("ドライブから選ぶ: ワークフローのファイルの欄は、Esc で閉じても選んで閉じても「変更」へフォーカスが戻る（BUG-261）", async ({
@@ -87,6 +94,8 @@ test("ドライブから選ぶ: ワークフローのファイルの欄は、Esc
     await page.keyboard.press("Enter");
     await expect(picker).toHaveCount(0);
     await expect(change).toBeFocused();
+    // 同じファイルを選び直しただけなので、定義は変わらず、未保存にならない（BUG-265）。
+    await expectStillSaved(page);
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/drive-picker-focus-closed-pc.png` });
   } finally {
     await cleanupAll(
@@ -205,6 +214,8 @@ test("フォルダーを選ぶ: ワークフローのフォルダーの欄は、
     await page.keyboard.press("Enter");
     await expect(picker).toHaveCount(0);
     await expect(change).toBeFocused();
+    // 同じフォルダーを選び直しただけなので、未保存にならない（BUG-265）。
+    await expectStillSaved(page);
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/folder-picker-focus-closed-pc.png` });
   } finally {
     await cleanupAll(

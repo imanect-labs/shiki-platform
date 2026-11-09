@@ -386,6 +386,24 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return v !== null && typeof v === "object" && !Array.isArray(v);
 }
 
+/// IR の 2 つの値が同じか（オブジェクトのキーの順は見ない・値が undefined のキーは無いのと同じ・保存すると同じ定義に
+/// なるか）。
+function sameJson(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((v, i) => sameJson(v, b[i]));
+  }
+  if (!isRecord(a) || !isRecord(b)) return false;
+  return [...new Set([...Object.keys(a), ...Object.keys(b)])].every((k) => sameJson(a[k], b[k]));
+}
+
+/// `patch` を当てても `current` の項目が変わらないか。変わらない編集（同じファイル・フォルダー・テーブルを選び直した
+/// など）は何もしない（未保存にせず、取り消しの段も積まない・BUG-265）。
+function unchangedBy(current: object, patch: object): boolean {
+  const before = current as Record<string, unknown>;
+  return Object.entries(patch).every(([k, v]) => sameJson(before[k], v));
+}
+
 export function editorReducer(state: EditorState, action: EditorAction): EditorState {
   switch (action.type) {
     case "add_node": {
@@ -525,14 +543,12 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
     }
     case "update_node": {
       const prev = state.ir.nodes.find((n) => n.id === action.id);
-      const updated = prev ? ({ ...prev, ...action.patch } as Node) : undefined;
-      const edges =
-        prev && updated
-          ? dropVanishedPortEdges(state.ir.edges, prev, updated, state.serverPorts[prev.id])
-          : state.ir.edges;
+      if (!prev || unchangedBy(prev, action.patch)) return state;
+      const updated = { ...prev, ...action.patch } as Node;
+      const edges = dropVanishedPortEdges(state.ir.edges, prev, updated, state.serverPorts[prev.id]);
       const ir = {
         ...state.ir,
-        nodes: state.ir.nodes.map((n) => (n.id === action.id && updated ? updated : n)),
+        nodes: state.ir.nodes.map((n) => (n.id === action.id ? updated : n)),
         edges,
       };
       const selection = keepSelection(state.selection, edges);
@@ -626,6 +642,7 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
     }
     case "update_meta": {
       const renames = action.inputRenames ?? {};
+      if (Object.keys(renames).length === 0 && unchangedBy(state.ir, action.patch)) return state;
       const ir = { ...state.ir, ...action.patch } as WorkflowIr;
       if (Object.keys(renames).length > 0) {
         ir.nodes = state.ir.nodes.map((n) => {
@@ -652,6 +669,7 @@ export function editorReducer(state: EditorState, action: EditorAction): EditorS
       };
     }
     case "set_triggers": {
+      if (sameJson(state.ir.triggers, action.triggers)) return state;
       const next = withIr(state, { ...state.ir, triggers: action.triggers });
       // きっかけの座標キーは内容から決まるので、編集で変わったキーへ座標を写す（BUG-25）。
       // 写すものが無くても保存し直す: 旧形式（添字のキー）の layout が残っていると、きっかけを消した後に
