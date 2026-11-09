@@ -148,7 +148,10 @@ uv run python -m abeval serve --label v0 --down
   止める。版の比べは、版の間で共通の課題だけで行う。V0（81a9899b）で成り立つのは、2026-11-07 の時点で 20 課題の
   うち一部だけ（版の記録を見る）。
 - 古い版で正解の結合テストを流すとき（fixture と正解がその版で通るかを確かめる）は、`ABEVAL_DROP_X_ORDER=1` を
-  付けて、正解から `x-order` を外す。
+  付けて、正解から `x-order` を外す。テストは、版に無い機能の要る課題（`requires`・`run` が対象外にするもの）を理由を
+  出して飛ばし、V0 の検証が返さない出口（`node_ports`）を記録した ir_lint の出口で補う（`run` の stub の配管と同じ。
+  補わないと、どの線も dead edge に数える）。版で成り立たない課題（版の記録の `feasible`）は飛ばさずに落ちる（どこで
+  落ちるかを見るため）。
 - 呼び出し側のシェルに残った `SHIKI__*`・`SHIKI_CONFIG` は渡さない。条件は手数の上限（`--max-steps` →
   `SHIKI__CHAT__MAX_STEPS`・省けば製品の値）と 1 発話の予算（`--budget-micros` →
   `SHIKI__CHAT__BUDGET_MAX_COST_USD_MICROS`・既定 $0.15）だけをここで決める。Mode B の `run` は、同じ値を

@@ -13,6 +13,10 @@
 5. 片付けて、テーブル・ルート直下のノード・ワークフローの一覧が前と同じに戻り、状態の進め方の定義も消えたことを
    確かめる。
 
+古い版でも流せる（README の「版を測る前に」）。版に無い機能の要る課題（`requires`・`run` が対象外にするもの）は理由を
+出して飛ばす。V0（81a9899b）の検証は出口（`node_ports`）を返さないので、記録した ir_lint の出口で補う（`run` の
+stub の配管と同じ。補わないと、どの線も dead edge に数える）。
+
 実 LLM は呼ばない（`ShikiClient(stub_only=True)` が実モデルを指す IR を送る前に止める）。
 """
 
@@ -27,12 +31,15 @@ from urllib.parse import urlsplit
 
 import pytest
 
+import recorded
 from abeval import fixtures
+from abeval.cli import in_scope
 from abeval.grade.mutate import null_ir
 from abeval.grading import stub_plumbing
 from abeval.run_cases import Saved, execute_case, grade_case, save_workflows
 from abeval.shiki import ShikiClient, ShikiError
 from abeval.tasks import load_tasks, stub_cases
+from abeval.versions import probe_node_types
 
 API = os.environ.get("ABEVAL_API_URL", "").rstrip("/")
 TASKS = load_tasks()
@@ -85,6 +92,29 @@ def alice():
     c.close()
 
 
+@pytest.fixture(scope="module")
+def out_of_scope(alice) -> dict[str, list[str]]:
+    """版に無い機能の要る課題 → 足りないもの（`run` と同じ判定。ノードの種類は版のサーバーの検証で確かめる）。"""
+    catalog = recorded.catalog()
+    node_types = probe_node_types(alice, sorted(catalog.nodes))
+    _, out = in_scope(TASKS, catalog, alice.capabilities(), node_types)
+    return {o["task"]: o["missing"] for o in out}
+
+
+def _skip_if_out_of_scope(task, out_of_scope) -> None:
+    if task.id in out_of_scope:
+        pytest.skip(f"この版に無い機能が要る（対象外）: {out_of_scope[task.id]}")
+
+
+def _ports(task, wfs: dict[str, Saved]) -> dict[str, dict]:
+    """役割ごとの出口（版の検証が返さなければ、記録した ir_lint の出口で補う）。"""
+    lint = recorded.lint()
+    return {
+        r: w.node_ports or {k: list(v) for k, v in lint[f"{task.id}/{r}"].node_ports.items()}
+        for r, w in wfs.items()
+    }
+
+
 def _snapshot(c: ShikiClient) -> dict:
     return {
         "tables": sorted(t["id"] for t in c.tables()),
@@ -105,7 +135,8 @@ def _save_null(c: ShikiClient, task, rec, tag: str) -> dict[str, Saved]:
 
 
 @pytest.mark.parametrize("task", TASKS, ids=[t.id for t in TASKS])
-def test_reference_passes_and_null_fails(alice, task):
+def test_reference_passes_and_null_fails(alice, out_of_scope, task):
+    _skip_if_out_of_scope(task, out_of_scope)
     before = _snapshot(alice)
     now = fixtures.now_utc()
     rec = fixtures.create_fixtures(alice, task.fixtures, now=now)
@@ -114,7 +145,7 @@ def test_reference_passes_and_null_fails(alice, task):
         tag = f"ref-{uuid.uuid4().hex[:6]}"
         wfs = save_workflows(alice, task, reference_irs(task), rec, tag=tag, stub=True)
         irs = {r: w.ir for r, w in wfs.items()}
-        ports = {r: w.node_ports for r, w in wfs.items()}
+        ports = _ports(task, wfs)
         cases = stub_cases(task)
         assert cases, f"{task.id}: stub_ok の run_case がありません"
         for case in cases:
@@ -174,10 +205,11 @@ def _fail_on_name_taken(irs: dict) -> dict:
 
 
 @pytest.mark.parametrize("task", FILE_TASKS, ids=[t.id for t in FILE_TASKS])
-def test_stub_plumbing_after_the_run_cases_starts_from_the_fixture_files(alice, task):
+def test_stub_plumbing_after_the_run_cases_starts_from_the_fixture_files(alice, out_of_scope, task):
     """Mode B と同じ順（同じ fixture で run_case を流してから stub の配管）でも、前の run のファイルに
     `name_taken` でぶつからない（GRADER_VERSION 8）。正解の IR は「番号を付けて保存」を書いているので、
     モデルがよく書く既定（失敗にする）に戻してから流す。"""
+    _skip_if_out_of_scope(task, out_of_scope)
     before = _snapshot(alice)
     now = fixtures.now_utc()
     rec = fixtures.create_fixtures(alice, task.fixtures, now=now)
@@ -185,7 +217,7 @@ def test_stub_plumbing_after_the_run_cases_starts_from_the_fixture_files(alice, 
     try:
         tag = f"rerun-{uuid.uuid4().hex[:6]}"
         wfs = save_workflows(alice, task, irs, rec, tag=tag, stub=True)
-        ports = {r: w.node_ports for r, w in wfs.items()}
+        ports = _ports(task, wfs)
         for case in stub_cases(task):
             execute_case(alice, task, case, wfs, rec, now=now)
         out = stub_plumbing(
