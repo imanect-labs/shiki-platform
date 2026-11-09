@@ -431,6 +431,10 @@ Shiki.fail(message: string, opts?: { permanent?: boolean }): never;
 
 - **入力**: `params.input` を解決した JSON（`$from` 解決済み・[ir.md](./ir.md) §3）が `main(input)` に渡る。
 - **出力**: `main` の戻り値（JSON 化可能・≤256KB＝初期値）が step output になる。JSON 化不能・上限超過は step 失敗。
+  上限超過は作成者が直す誤り（code `invalid`・やり直さない）で、文言は戻り値の大きさと上限（`MAX_RESULT_BYTES` から作る）と
+  直し方（返す項目を絞る・行を分けて返す）を言う。ワークフローの `script.run` では、テーブルに書く行を包んで返す書き方で当たるので、
+  行を分けて包む `script.run` を 2 つ置き、それぞれの結果を `data.bulk_upsert` に渡す書き方も言う（BUG-264。以前は `internal`・
+  英語の「result too large」）。
 - **タイムアウト・リトライ**: ノードの `retry` / `timeout_sec` 設定に従う（[ir.md](./ir.md) §4・A7 で `script.run` は timeout 既定 30s／最大 360s＝初期値）。
 - **at-least-once**: script は**再実行され得る**（リース失効・クラッシュ再実行）。冪等にしたい副作用は次の 2 系統で守る:
   - 内部能力（data / storage / notify / workflow.start）は **host 側 dedupe が既定で効く**（effect_journal・[engine.md](./engine.md) §7）。1 実行内で複数の内部副作用を呼ぶ場合、dedupe キーは「step 冪等キー＋実行内の効果的呼び出し連番」で呼び出しごとに独立し、リトライ間で同じ連番に**別の操作**が来た場合（操作 digest 不一致）は黙って記録済み結果を返さず permanent エラーになる。**副作用を呼ぶ順序・内容は `input` にのみ依存させること**（`Date.now()` / `Math.random()` で副作用の分岐を変えない）。
