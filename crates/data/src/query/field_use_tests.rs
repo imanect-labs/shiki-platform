@@ -1,5 +1,5 @@
-//! 列を書く位置ごとの規則（[`super::check_field_use`]・[`super::check_link_field`]）が、実行時の束縛（`bind_query`）と
-//! 同じ答えになることの単体テスト（BUG-244・GAP-129）。
+//! 列を書く位置ごとの規則（[`super::check_field_use`]・[`super::check_link_field`]・[`super::check_search`]）が、実行時の
+//! 束縛（`bind_query`）と同じ答えになることの単体テスト（BUG-244・GAP-129）。
 #![allow(clippy::unwrap_used, clippy::panic)]
 
 use std::collections::HashSet;
@@ -402,4 +402,66 @@ fn join_columns_answer_like_the_binder() {
         }
     }
     assert!(refused > 0);
+}
+
+/// 部分一致で探す列（`search_fields`）は、保存時の照合と実行時の束縛で、どの列でも同じ答えになる。省略（読める
+/// `searchable` の列すべて）・空の指定・検索できる列が読めないときも同じ（GAP-129）。
+#[test]
+fn search_columns_answer_like_the_binder() {
+    let full = schema();
+    let search = |only: Option<Vec<String>>| DataQuery {
+        search: Some("a".into()),
+        search_fields: only,
+        ..DataQuery::default()
+    };
+    // 検索できる列（name・note）を読めない人も含める。
+    for hidden in [vec!["secret"], vec!["secret", "name", "note"]] {
+        let masked: HashSet<String> = hidden.iter().map(ToString::to_string).collect();
+        let mut viewer = full.clone();
+        viewer.fields.retain(|f| !masked.contains(&f.key));
+        let keys: Vec<&str> = full
+            .fields
+            .iter()
+            .map(|f| f.key.as_str())
+            .chain(["_owner", "_created_at", "_id", "nope", "j.name"])
+            .collect();
+        let mut refused = 0;
+        for key in keys {
+            let saved = check_search(&viewer, Some(&[key.to_string()]));
+            let runtime = bind_query(&full, &masked, &search(Some(vec![key.into()])));
+            assert_eq!(answer(&saved), answer(&runtime), "{key} {hidden:?}");
+            refused += usize::from(saved.is_err());
+        }
+        assert!(refused > 0);
+        for only in [None, Some(Vec::new())] {
+            let saved = check_search(&viewer, only.as_deref());
+            let runtime = bind_query(&full, &masked, &search(only.clone()));
+            assert_eq!(answer(&saved), answer(&runtime), "{only:?} {hidden:?}");
+        }
+    }
+    // 検索できる列が読めないと、省略しても対象の列が無い（invalid_input）。
+    let mut blind = full.clone();
+    blind
+        .fields
+        .retain(|f| !["name", "note"].contains(&f.key.as_str()));
+    assert_eq!(
+        check_search(&blind, None).unwrap_err().invalid_code(),
+        Some(InvalidCode::InvalidInput)
+    );
+    // 代表の答え: 検索の索引のある文字の列は通り、索引だけの列・システムの列は field_not_indexed。
+    let s = schema();
+    let one = |k: &str| check_search(&s, Some(&[k.to_string()]));
+    assert!(one("name").is_ok() && one("note").is_ok());
+    for k in ["code", "memo", "_owner"] {
+        assert_eq!(
+            one(k).unwrap_err().invalid_code(),
+            Some(InvalidCode::FieldNotIndexed),
+            "{k}"
+        );
+    }
+    assert!(matches!(one("nope"), Err(DataError::FieldUnavailable)));
+    assert_eq!(
+        check_search(&s, Some(&[])).unwrap_err().invalid_code(),
+        Some(InvalidCode::InvalidInput)
+    );
 }

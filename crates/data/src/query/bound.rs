@@ -683,7 +683,8 @@ impl<'a> Binder<'a> {
         })
     }
 
-    /// 横断部分一致（`searchable` 列の `contains` の OR）。
+    /// 横断部分一致（`searchable` 列の `contains` の OR）。ワークフローの保存時の照合
+    /// （[`super::field_use::check_search`]）も、この関数で断る（GAP-129）。
     pub(crate) fn search(
         &mut self,
         text: &str,

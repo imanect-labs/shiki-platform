@@ -621,3 +621,86 @@ fn join_tables_to_load_follow_the_walk() {
     tables.remove(MAKERS);
     assert_eq!(query_link_tables(&ir, &tables), ids(&[ORDERS, MAKERS]));
 }
+
+/// キーワード（`search`）で探す列（`search_fields`）は、実行時の束縛と同じ判定で照らす（GAP-129）。書いた列は 1 つずつ
+/// 照らして位置を指す（部分一致で検索できない列・無い列と読めない列〔同じ文言〕・逆向きのリンク・つないだ表の列・
+/// システムの列）。空の指定と、省略して探せる列が無いテーブルは欄を指す。キーワードが空なら照らさない。
+#[test]
+fn search_fields_are_checked_like_the_binder() {
+    let search = |text: &str, fields: Option<serde_json::Value>| match fields {
+        Some(f) => json!({ "search": text, "search_fields": f }),
+        None => json!({ "search": text }),
+    };
+    let ir = ir(json!([
+        query_node("ok", json!(ITEMS), search("ねじ", None)),
+        query_node(
+            "listed",
+            json!(ITEMS),
+            search("ねじ", Some(json!(["name"])))
+        ),
+        query_node("blank", json!(ITEMS), search("", Some(json!(["memo"])))),
+        query_node(
+            "bad",
+            json!(ITEMS),
+            search(
+                "ねじ",
+                Some(json!([
+                    "name", "memo", "nope", "secret", "orders", "j.name", "_owner"
+                ]))
+            )
+        ),
+        query_node("empty", json!(ITEMS), search("ねじ", Some(json!([])))),
+        query_node("unsearchable", json!(MAKERS), search("ねじ", None))
+    ]));
+    let mut errors = Vec::new();
+    v4(&ir, &catalog(), &mut errors);
+    let at = |i: usize| format!("/params/query/search_fields/{i}");
+    let want = [
+        (FIELD_NOT_INDEXED, "bad", at(1)),
+        (UNKNOWN_FIELD, "bad", at(2)),
+        (UNKNOWN_FIELD, "bad", at(3)),
+        (FIELD_NOT_USABLE, "bad", at(4)),
+        (UNKNOWN_FIELD, "bad", at(5)),
+        (FIELD_NOT_INDEXED, "bad", at(6)),
+        (
+            FIELD_NOT_USABLE,
+            "empty",
+            "/params/query/search_fields".to_string(),
+        ),
+        (
+            FIELD_NOT_USABLE,
+            "unsearchable",
+            "/params/query/search".to_string(),
+        ),
+    ];
+    let want: Vec<(&str, &str, &str)> = want.iter().map(|(c, n, p)| (*c, *n, p.as_str())).collect();
+    assert_eq!(located(&errors), want);
+    let m = |i: usize| errors[i].message.as_str();
+    assert!(
+        m(0).starts_with(
+            "「メモ」（memo）は部分一致で検索できる列ではないので、キーワードで探す列に使えません"
+        ) && m(0).contains("「部分一致で検索できる」をオンに"),
+        "{}",
+        m(0)
+    );
+    assert_eq!(
+        m(1).replace("nope", "<K>"),
+        m(2).replace("secret", "<K>"),
+        "無い列と読めない列を言い分けない"
+    );
+    assert!(
+        m(4).contains("つないだ表の列「j.name」では探せません"),
+        "{}",
+        m(4)
+    );
+    assert!(
+        m(6).starts_with("キーワードで探す列（search_fields）が空です"),
+        "{}",
+        m(6)
+    );
+    assert!(
+        m(7).contains("部分一致で検索できる列が無いので"),
+        "{}",
+        m(7)
+    );
+}

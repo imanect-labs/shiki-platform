@@ -12,6 +12,7 @@
 //! - リンクの条件（`filter` の `link`）と結合（`joins`）で辿る列は、リンクの列（`record_ref`・対称列も可）だけ
 //!   （[`check_link_field`]）。その先の列（リンクの条件の中・結合の条件・`別名.参照名` のまとめる列と集計の列）は、
 //!   参照先のテーブルの定義で [`check_field_use`] に問う（束縛も参照先の定義で同じ規則を当てる・GAP-129）。
+//! - 横断の部分一致（`search`）の対象の列（`search_fields`）は、検索の索引のある文字の列だけ（[`check_search`]）。
 //!
 //! 値（比較の右辺）に依る誤り（型の不一致・長さ）は、ここでは扱わない（値は実行の直前まで決まらないことがある）。
 
@@ -67,6 +68,18 @@ pub fn check_link_field(schema: &TableSchema, key: &str) -> Result<Uuid, DataErr
     Binder::new(schema, &masked)
         .link_field(key)
         .map(|(_, rt)| rt)
+}
+
+/// 横断の部分一致（`search`）の対象の列 `only`（`search_fields`・`None` は読める `searchable` の列すべて）を束縛が
+/// 断るなら、束縛（`Binder::search`・同じ関数）と同じ誤りを返す。
+///
+/// 書いた列は、検索の索引のある文字の列であること（無い列と読めない列は [`DataError::FieldUnavailable`]・索引の無い列や
+/// システムの列は 400 `field_not_indexed`・対称列などは `field_not_sortable`）。対象の列が 1 つも無い（空の
+/// `search_fields`・省略して検索できる列が無い）と 400 `invalid_input`。束縛は `search` が空でないときだけこれを問う。
+/// `schema` は読む人の見え方の定義（読めない列は省略時の対象にも入らない）。
+pub fn check_search(schema: &TableSchema, only: Option<&[String]>) -> Result<(), DataError> {
+    let masked = HashSet::new();
+    Binder::new(schema, &masked).search("x", only).map(|_| ())
 }
 
 /// 比較の演算子を列に使えるか（値に依らない誤り）。大小比較は単値の列だけ、前方一致・部分一致は文字の列だけ、

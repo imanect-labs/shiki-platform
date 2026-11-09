@@ -4853,6 +4853,115 @@ async fn data_query_joins_are_checked_like_the_runner_on_save() {
     env.delete_store().await;
 }
 
+/// GAP-129: データを検索のキーワード（`search`）で探す列（`search_fields`）は、実行時の束縛と同じ data の判定で保存時に
+/// 照らす。部分一致で検索できない列は `ir.field_not_indexed`、空の指定と、探せる列の無いテーブルでの省略は
+/// `ir.field_not_usable` で、同じクエリは data の読取でも対応する誤りで断られる。読めない列（bob の secret）は無い列と
+/// 同じ答え（検証 API・保存 API・emit_workflow のどれでも）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn data_query_search_fields_are_checked_like_the_runner_on_save() {
+    let _serial = SERIAL.lock().await;
+    let Some(env) = setup().await else { return };
+    let (items, makers) = env.linked_tables().await;
+    let tool = env.emit_tool();
+    let search = |fields: Option<Value>| match fields {
+        Some(f) => json!({ "search": "ねじ", "search_fields": f }),
+        None => json!({ "search": "ねじ" }),
+    };
+    let cases = [
+        (items, search(None), None, None),
+        (items, search(Some(json!(["title"]))), None, None),
+        (
+            items,
+            search(Some(json!(["title", "note"]))),
+            Some(("ir.field_not_indexed", "/params/query/search_fields/1")),
+            Some("field_not_indexed"),
+        ),
+        (
+            items,
+            search(Some(json!([]))),
+            Some(("ir.field_not_usable", "/params/query/search_fields")),
+            Some("invalid_input"),
+        ),
+        (
+            makers,
+            search(None),
+            Some(("ir.field_not_usable", "/params/query/search")),
+            Some("invalid_input"),
+        ),
+    ];
+    for (table, query, saved, run) in cases {
+        let want = saved.map_or_else(Vec::new, |(c, p)| code_at(c, p));
+        assert_eq!(
+            env.v4_codes(&env.alice, &query_ir(table, query.clone()))
+                .await,
+            want,
+            "{query}"
+        );
+        assert_eq!(
+            env.run_code(&env.alice, table, &query).await.as_deref(),
+            run,
+            "{query}"
+        );
+    }
+    let answers = env
+        .v4_answers(
+            &tool,
+            &env.alice,
+            &query_ir(items, search(Some(json!(["note"])))),
+            "",
+        )
+        .await;
+    assert!(
+        answers[0].contains("ir.field_not_indexed")
+            && answers[0].contains("キーワードで探す列に使えません"),
+        "{}",
+        answers[0]
+    );
+    assert!(
+        answers[1].starts_with("400 ") && answers[1].contains("ir.field_not_indexed"),
+        "{}",
+        answers[1]
+    );
+    assert!(
+        answers[2].starts_with("true ") && answers[2].contains("ir.field_not_indexed"),
+        "{}",
+        answers[2]
+    );
+    // bob にはメーカーの secret が読めない: 無い列と同じ答え（保存時も実行時も）。
+    let unreadable = env
+        .v4_answers(
+            &tool,
+            &env.bob,
+            &query_ir(makers, search(Some(json!(["secret"])))),
+            "secret",
+        )
+        .await;
+    let missing = env
+        .v4_answers(
+            &tool,
+            &env.bob,
+            &query_ir(makers, search(Some(json!(["zz_nope"])))),
+            "zz_nope",
+        )
+        .await;
+    assert_eq!(unreadable, missing, "読めない列と無い列で答えが違う");
+    assert!(
+        unreadable[0].contains("ir.unknown_field"),
+        "{}",
+        unreadable[0]
+    );
+    for key in ["secret", "zz_nope"] {
+        assert_eq!(
+            env.run_code(&env.bob, makers, &search(Some(json!([key]))))
+                .await
+                .as_deref(),
+            Some("field_unavailable")
+        );
+    }
+    env.cleanup().await;
+    env.delete_store().await;
+}
+
 /// BUG-251: 状態の進め方のある表で、状態の列を「データを更新」の変更する値に書く IR と、最初の状態でない状態で追加する
 /// IR は、保存時に `ir.status_not_writable` で止まる（検証 API・保存 API・emit_workflow のどれでも）。同じ書き込みは
 /// data の更新・作成でも `fsm_invalid` で断られる（同じ判定）。最初の状態を書く・書かない追加は通る。状態の列を読めない

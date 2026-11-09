@@ -11,6 +11,9 @@
 //! まとめる列と集計の列の `別名.参照名`）を、辿った先のテーブルの定義で同じ [`data::check_field_use`] に問う
 //! （GAP-129）。`別名.参照名` の別名が結合に無い IR も止める（実行では「別名は結合にありません」で断られる）。
 //!
+//! キーワードの部分一致（`search` が空でないとき）は、対象の列（`search_fields`・省略は部分一致で検索できる列すべて）を
+//! 実行時の束縛と同じ [`data::check_search`] で照らす（GAP-129）。書いた列は 1 つずつ照らして、その位置を指す。
+//!
 //! 材料は承認と同じ [`Catalog::tables`] の、保存者の見え方の定義（[`super::CatalogTable::schema`]・読めない列は
 //! 入らない）。読めない列は無い列と同じ `ir.unknown_field`（同じ文言・data-platform §16.1）。テーブルを参照で決める
 //! ノード・材料に無い（見えない）テーブル・定義の無い材料は照合しない。リンク先・結合先のテーブルも、API 層が
@@ -197,10 +200,14 @@ impl<'c> Walk<'c> {
         }
     }
 
-    /// クエリの全体（実行時の束縛と同じ順: 絞り込み → 並べ替え → 結合 → まとめる列・集計）。
+    /// クエリの全体（実行時の束縛と同じ順: 絞り込み → キーワード → 並べ替え → 結合 → まとめる列・集計）。
     fn query<'q>(&mut self, base: &'c TableSchema, q: &'q DataQuery) {
         if let Some(c) = &q.filter {
             self.cond(base, Within::Base, c, "/params/query/filter");
+        }
+        // 束縛は空のキーワードを読まない（対象の列も問わない）。
+        if q.search.as_deref().is_some_and(|s| !s.is_empty()) {
+            self.search(base, q.search_fields.as_deref());
         }
         let keys = q.sort.len();
         for (i, k) in q.sort.iter().enumerate() {
@@ -238,6 +245,33 @@ impl<'c> Walk<'c> {
                     f,
                     FieldUse::Metric,
                 );
+            }
+        }
+    }
+
+    /// キーワードで探す列（[`data::check_search`]・実行時の束縛と同じ関数）。書いた列は 1 つずつ照らし、空の指定と、
+    /// 省略して探せる列が無いときは欄を指す。
+    fn search(&mut self, base: &TableSchema, only: Option<&[String]>) {
+        match only {
+            Some(keys) if !keys.is_empty() => {
+                for (i, k) in keys.iter().enumerate() {
+                    if let Err(e) = data::check_search(base, Some(std::slice::from_ref(k))) {
+                        let path = format!("/params/query/search_fields/{i}");
+                        self.refused.push((path, search_refusal(&e, base, k)));
+                    }
+                }
+            }
+            // 対象の列が 1 つも無い（空の指定・省略して探せる列が無い。読めない列は数えない）。
+            _ => {
+                if data::check_search(base, only).is_err() {
+                    let (path, message) = if only.is_some() {
+                        ("/params/query/search_fields", "キーワードで探す列（search_fields）が空です。部分一致で検索できる列を 1 つ以上書くか、search_fields を外してください（外すと、部分一致で検索できる列すべてで探します）。")
+                    } else {
+                        ("/params/query/search", "このテーブルの読める列に、部分一致で検索できる列が無いので、キーワード（search）で探せません。テーブルの「列の編集」で文字の列の「部分一致で検索できる」をオンにするか、キーワードを外して絞り込みの条件で探してください。")
+                    };
+                    let e = ValidationError::new(FIELD_NOT_USABLE, message);
+                    self.refused.push((path.to_string(), e));
+                }
             }
         }
     }
@@ -443,6 +477,30 @@ fn link_refusal(
         ),
     };
     ValidationError::new(FIELD_NOT_USABLE, message)
+}
+
+/// キーワードで探す列（書いた列 `key`）を、実行時の束縛が断る理由。
+fn search_refusal(e: &DataError, schema: &TableSchema, key: &str) -> ValidationError {
+    let col = column_name(schema, key);
+    let (code, message) = match (e, e.invalid_code()) {
+        (DataError::FieldUnavailable, _) if key.contains('.') => (
+            UNKNOWN_FIELD,
+            format!("キーワードで探す列には、このテーブルの列を書いてください（つないだ表の列「{key}」では探せません）。"),
+        ),
+        (DataError::FieldUnavailable, _) => (
+            UNKNOWN_FIELD,
+            format!("キーワードで探す列の「{key}」は、このテーブルに無いか、読めない列です。"),
+        ),
+        (_, Some(InvalidCode::FieldNotIndexed)) => (
+            FIELD_NOT_INDEXED,
+            format!("{col}は部分一致で検索できる列ではないので、キーワードで探す列に使えません。部分一致で検索できる文字の列を選ぶか、テーブルの「列の編集」でこの列の「部分一致で検索できる」をオンにしてください。"),
+        ),
+        _ => (
+            FIELD_NOT_USABLE,
+            format!("{col}はキーワードで探す列に使えません（逆向きのリンクの列や、計算で決まる列の一部は使えません）。部分一致で検索できる文字の列を選んでください。"),
+        ),
+    };
+    ValidationError::new(code, message)
 }
 
 /// 実行時の束縛が断る理由を、保存時の誤りにする（直し方まで言う）。

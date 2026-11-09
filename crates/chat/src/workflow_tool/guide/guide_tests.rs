@@ -234,6 +234,12 @@ fn description_explains_the_notation_the_engine_implements() {
         d.contains("query の joins に [{\"alias\":\"m\",\"field\":\"<リンクの列>\"}] と書き、group_by と aggregate の field に \"m.<列の参照名>\" と書く（filter・sort には書けない。つないだテーブルで絞る条件は joins の filter に書く）"),
         "{d}"
     );
+    // キーワードで探す列は部分一致で探せる列だけ（保存時に照らす・GAP-129。この書き方が保存と実行を通ることは api の
+    // workflow_approval_it が確かめる）。
+    assert!(
+        d.contains("探す列を search_fields で絞るなら（部分一致で探せる）と出る列だけを書く（省略はそういう列すべて。そういう列の無いテーブルでは search を使えない）"),
+        "{d}"
+    );
     // 入力の数を引く書き方と、足す数に組み立てを書けないこと（BUG-245・この書き方が保存と実行を通ることは
     // workflow-engine のテストが確かめる）。
     assert!(

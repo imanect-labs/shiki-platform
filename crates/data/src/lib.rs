@@ -152,7 +152,7 @@ pub use model::{
 pub use numeric::{add_numbers, number_key};
 pub use policy::{CmpOp, PolicyExpr, PolicyOperand, RowPolicy, TableReach};
 pub use query::admission::{QuerySuggestion, DEFAULT_READ_BUDGET_MS, DEFAULT_TENANT_READ_TOKENS};
-pub use query::field_use::{check_field_use, check_link_field, FieldUse};
+pub use query::field_use::{check_field_use, check_link_field, check_search, FieldUse};
 pub use query::ir::{
     AggregateGroup, CondCmp, CondOp, Condition, CountResult, DataQuery, GroupSortKey, HavingCmp,
     HavingCond, JoinSpec, LinkCond, Metric, MetricSpec, QueryParseError, QueryResult, SortKey,
