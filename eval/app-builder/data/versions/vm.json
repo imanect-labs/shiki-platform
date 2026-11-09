@@ -1,7 +1,7 @@
 {
   "behavior_check": {
     "probes_sha": "9f2a91a209a5a3088f5ff16f9749dda92eddead71ea1814564133465ad2cc5e5",
-    "recorded_at": "2026-11-08T11:02:17+00:00",
+    "recorded_at": "2026-11-09T07:52:06+00:00",
     "results": {
       "port_next": {
         "errors": [
@@ -27,7 +27,7 @@
   "built_at": "2026-11-08T11:01:34Z",
   "commit": "4c34dee8ad4e616ebe08e2016f401b386cfcd620",
   "feasible": {
-    "grader": 9,
+    "grader": 11,
     "result": {
       "app01-claim-submit": null,
       "app01-posting-batch": null,
@@ -50,7 +50,7 @@
       "basic-summary-file": null,
       "basic-switch-category": null
     },
-    "tasks_sha": "2c0dc1582107c26acd90000d93f080fa4201dc82b6bd7fdeef9606942379dd99"
+    "tasks_sha": "2f89229aa999108a3faf7d145ce5b069fa4549dda12cbebaa4d9fc360237f777"
   },
   "label": "vm",
   "node_types": [
