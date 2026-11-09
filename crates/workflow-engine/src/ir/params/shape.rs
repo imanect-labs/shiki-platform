@@ -7,12 +7,15 @@
 //!
 //! 型の表記は TS: `key?:` は省略可。ただし ts-rs は serde の `default` を知らないので、既定値のある
 //! 非 Option の項目（`control.map` の `on_item_error` など）は必須に見える（書いても誤りにはならない）。
+//!
+//! 値式（`ValueExpr`）の欄のうち、実行が決まった形の値として読む欄は、その形を読む型の宣言から
+//! `rows の値 = …` と添える（[`value_shapes`]・`ValueExpr` とだけ言うと、AI が値の形を推し量って誤る・GAP-131）。
 
 use ts_rs::{TypeVisitor, TS};
 
 use super::{
     AgentInvokeParams, AiDecideParams, BranchParams, CsvPatchParams, CsvQueryParams,
-    CsvWriteParams, DataBulkUpsertParams, DataQueryParams, DataRecordCreateParams,
+    CsvWriteParams, DataBulkRow, DataBulkUpsertParams, DataQueryParams, DataRecordCreateParams,
     DataRecordDeleteParams, DataRecordUpdateParams, DataRecordUpsertParams, DataTransitionParams,
     HttpRequestParams, HumanApprovalParams, JoinParams, LlmInvokeParams, MapParams,
     RagSearchParams, ScriptRunParams, SkillInvokeParams, StorageListParams, StorageReadParams,
@@ -41,22 +44,28 @@ pub struct ParamsShape {
     pub body: String,
     /// 本体が参照する型（[`COMMON_TYPES`] 以外）の `(名前, 本体)`。依存を辿って集め、名前順に並べる。
     pub refs: Vec<(String, String)>,
+    /// 値式の欄に書く値の形の `(欄, 形)`（[`value_shapes`]・本体の欄の順）。
+    pub values: Vec<(String, String)>,
 }
 
 impl ParamsShape {
-    /// 本体と参照する型を `本体（Name = …、…）` の 1 行にする。
+    /// 本体と値の形と参照する型を `本体（欄 の値 = …、Name = …、…）` の 1 行にする。
     #[must_use]
     pub fn render(&self) -> String {
-        if self.refs.is_empty() {
+        let notes: Vec<String> = self
+            .values
+            .iter()
+            .map(|(field, shape)| format!("{field} の値 = {shape}"))
+            .chain(
+                self.refs
+                    .iter()
+                    .map(|(name, body)| format!("{name} = {body}")),
+            )
+            .collect();
+        if notes.is_empty() {
             return self.body.clone();
         }
-        let refs = self
-            .refs
-            .iter()
-            .map(|(name, body)| format!("{name} = {body}"))
-            .collect::<Vec<_>>()
-            .join("、");
-        format!("{}（{refs}）", self.body)
+        format!("{}（{}）", self.body, notes.join("、"))
     }
 }
 
@@ -72,7 +81,23 @@ pub fn params_shape(nt: NodeType) -> Option<ParamsShape> {
             shape_of::<T>()
         }
     }
-    visit_params_type(nt, Shape)
+    let mut shape = visit_params_type(nt, Shape)?;
+    shape.values = value_shapes(nt);
+    Some(shape)
+}
+
+/// 値式の欄のうち、実行が決まった形の値として読む欄と、その形（実行が値を読む型の宣言から作る・GAP-131）。
+///
+/// 欄の名前はその params の型の欄（単体テストで本体に `<欄>: ValueExpr` があることを確かめる）。
+fn value_shapes(nt: NodeType) -> Vec<(String, String)> {
+    match nt {
+        // 1 行ずつ `{ id?, rev?, key?, data }`（実行は `DataBulkRow` で読み、ほかのキーを断る）。
+        NodeType::DataBulkUpsert => vec![(
+            "rows".to_string(),
+            format!("Array<{}>", compact_ts::<DataBulkRow>()),
+        )],
+        _ => Vec::new(),
+    }
 }
 
 /// ノード種の params 型の TS 名（`bin/export-ts.rs` の `NodeParamsByType` が使う）。
@@ -183,6 +208,7 @@ fn shape_of<T: TS + 'static>() -> ParamsShape {
         type_name: T::name(),
         body,
         refs,
+        values: Vec::new(),
     }
 }
 
@@ -382,6 +408,30 @@ mod tests {
             assert!(q.contains(key), "{key} が無い: {q}");
         }
         assert!(!q.contains("offset"), "廃止した項目は案内しない: {q}");
+    }
+
+    /// GAP-131: 一括で登録の rows は、実行が行を読む型（`DataBulkRow`）の宣言から行の形を言う。値の形を添える欄は、
+    /// その params の値式の欄。
+    #[test]
+    fn bulk_rows_say_the_row_shape_the_runner_reads() {
+        let s = params_shape(NodeType::DataBulkUpsert).unwrap();
+        assert_eq!(
+            s.render(),
+            "{ table: ValueExpr, rows: ValueExpr, abort_on_invalid?: boolean, match_on?: string }\
+             （rows の値 = Array<{ id?: string, rev?: number, key?: string, data: { [列の参照名]: unknown } }>）"
+        );
+        for nt in NodeType::ALL {
+            for (field, _) in value_shapes(*nt) {
+                let body = params_shape(*nt).unwrap().body;
+                assert!(body.contains(&format!(" {field}: ValueExpr")), "{body}");
+            }
+        }
+        // 実行はこの 4 つのキーだけを読み、ほかは書けないキーとして集める。
+        let row: DataBulkRow = serde_json::from_value(serde_json::json!({
+            "id": "x", "rev": 1, "key": "k", "data": {}, "sku": "A"
+        }))
+        .unwrap();
+        assert_eq!(row.unknown.keys().collect::<Vec<_>>(), ["sku"]);
     }
 
     #[test]

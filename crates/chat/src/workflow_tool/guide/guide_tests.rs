@@ -222,16 +222,6 @@ fn description_explains_the_notation_the_engine_implements() {
             && d.contains("sum・avg・min・max の field は、（索引あり）か（重複を許さない）と出る number の列だけ"),
         "{d}"
     );
-    // 集計の行（data の AggregateGroup）を map で回すときの指し方と、出力の形（カタログ）の行の形（GAP-132。この
-    // 書き方が保存と実行を通ることは workflow-engine の csv_to_table_it が確かめる）。
-    assert!(
-        d.contains("groups の 1 行は {key: {まとめた列の参照名: 値}, values: [aggregate と同じ順の値], value: values の先頭}")
-            && d.contains("{\"$from\":\"each\",\"path\":\"/item/key/<まとめた列の参照名>\"}")
-            && d.contains("{\"$from\":\"each\",\"path\":\"/item/values/<aggregate の位置（0 から）>\"}")
-            && d.contains("/item/<列の参照名>・/item/count のような書き方では読めない")
-            && d.contains("groups?: Array<{ key: { [まとめた列の参照名]: string | null }, value: number | null, values: Array<number | null> }>"),
-        "{d}"
-    );
     // 入力の数を引く書き方と、足す数に組み立てを書けないこと（BUG-245・この書き方が保存と実行を通ることは
     // workflow-engine のテストが確かめる）。
     assert!(
@@ -264,35 +254,6 @@ fn description_explains_the_notation_the_engine_implements() {
     // CSV を集計は Excel も読み、数・真偽を種類のまま使うなら items を使う（GAP-40・D-17）。
     assert!(
         d.contains("Excel を読めるのは csv.query だけ") && d.contains("\"path\":\"/items\"}"),
-        "{d}"
-    );
-    // CSV の行をテーブルに書くのは map の中の 1 件の書き込みで、csv.query の items を一括の rows にそのまま渡させない
-    // （rows は {data: …} の行だけを受け、平らな行は実行で断られる・BUG-255。この書き方と script.run で包む書き方が
-    // 保存と実行を通ることと、上限は workflow-engine の csv_to_table_it が確かめる）。
-    assert!(
-        !d.contains("data.bulk_upsert の rows に渡す）"),
-        "csv.query の items を rows に渡すと教えない: {d}"
-    );
-    assert!(
-        d.contains("control.map の items に csv.query の items を書き")
-            && d.contains(
-                "{\"<列の参照名>\":{\"$from\":\"each\",\"path\":\"/item/<CSV の列の名前>\"}}"
-            )
-            && d.contains("data に {\"$from\":\"each\",\"path\":\"/item\"} とそのまま書ける")
-            && d.contains(&format!(
-                "map で書けるのは {} 行まで",
-                workflow_engine::ir::params::MAX_MAP_ITEMS
-            ))
-            && d.contains("csv.query の items は data.bulk_upsert の rows にそのまま渡せない")
-            && d.contains("rows は 1 行ずつ {\"data\":{列の参照名: 値}} の配列"),
-        "{d}"
-    );
-    assert!(
-        d.contains("function main(i) { return { rows: i.items.map((r) => ({ data: r })) }; }")
-            && d.contains(&format!(
-                "（{} 行まで。script.run の戻り値は 256 KB まで",
-                workflow_engine::ir::params::MAX_WORKFLOW_BULK_ROWS
-            )),
         "{d}"
     );
     // フォルダ・ファイルの id は drive.find、テーブルは data_schema で調べる（GAP-107）。
@@ -368,6 +329,56 @@ fn description_explains_the_notation_the_engine_implements() {
 }
 
 /// 画面に返す結果の書き方の指針が載る（副作用の最後・error の出口・固定の文言は全員に見える・GAP-09）。
+/// テーブルの行を読む・書く書き方（集計の行の指し方・CSV の行の書き方・一括で登録の行の形）。
+#[test]
+fn description_explains_how_to_read_and_write_table_rows() {
+    let d = emit_description(None, None);
+    // 集計の行（data の AggregateGroup）を map で回すときの指し方と、出力の形（カタログ）の行の形（GAP-132。この
+    // 書き方が保存と実行を通ることは workflow-engine の csv_to_table_it が確かめる）。
+    assert!(
+        d.contains("groups の 1 行は {key: {まとめた列の参照名: 値}, values: [aggregate と同じ順の値], value: values の先頭}")
+            && d.contains("{\"$from\":\"each\",\"path\":\"/item/key/<まとめた列の参照名>\"}")
+            && d.contains("{\"$from\":\"each\",\"path\":\"/item/values/<aggregate の位置（0 から）>\"}")
+            && d.contains("/item/<列の参照名>・/item/count のような書き方では読めない")
+            && d.contains("groups?: Array<{ key: { [まとめた列の参照名]: string | null }, value: number | null, values: Array<number | null> }>"),
+        "{d}"
+    );
+    // CSV の行をテーブルに書くのは map の中の 1 件の書き込みで、csv.query の items を一括の rows にそのまま渡させない
+    // （rows は {data: …} の行だけを受け、平らな行は実行で断られる・BUG-255。この書き方と script.run で包む書き方が
+    // 保存と実行を通ることと、上限は workflow-engine の csv_to_table_it が確かめる）。
+    assert!(
+        !d.contains("data.bulk_upsert の rows に渡す）"),
+        "csv.query の items を rows に渡すと教えない: {d}"
+    );
+    assert!(
+        d.contains("control.map の items に csv.query の items を書き")
+            && d.contains(
+                "{\"<列の参照名>\":{\"$from\":\"each\",\"path\":\"/item/<CSV の列の名前>\"}}"
+            )
+            && d.contains("data に {\"$from\":\"each\",\"path\":\"/item\"} とそのまま書ける")
+            && d.contains(&format!(
+                "map で書けるのは {} 行まで",
+                workflow_engine::ir::params::MAX_MAP_ITEMS
+            ))
+            && d.contains("csv.query の items は data.bulk_upsert の rows にそのまま渡せない")
+            && d.contains("rows は 1 行ずつ {\"data\":{列の参照名: 値}} の配列"),
+        "{d}"
+    );
+    // 一括で登録の params の形は、rows に書く行の形を、実行が行を読む型から言う（GAP-131）。
+    assert!(
+        d.contains("rows の値 = Array<{ id?: string, rev?: number, key?: string, data: { [列の参照名]: unknown } }>"),
+        "{d}"
+    );
+    assert!(
+        d.contains("function main(i) { return { rows: i.items.map((r) => ({ data: r })) }; }")
+            && d.contains(&format!(
+                "（{} 行まで。script.run の戻り値は 256 KB まで",
+                workflow_engine::ir::params::MAX_WORKFLOW_BULK_ROWS
+            )),
+        "{d}"
+    );
+}
+
 #[test]
 fn description_explains_where_to_put_replies() {
     let d = emit_description(None, None);

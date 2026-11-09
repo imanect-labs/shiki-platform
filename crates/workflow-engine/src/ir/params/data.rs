@@ -300,6 +300,41 @@ pub struct DataBulkUpsertParams {
     pub match_on: Option<String>,
 }
 
+/// `data.bulk_upsert` の `rows` の 1 行（GAP-131）。
+///
+/// 実行（`nodes::capability_data::parse_bulk_rows`）はこの型で行を読み、AI が読む params の形（[`super::params_shape`]）は
+/// この型の宣言から `rows` に書く値の形を言う（形を説明文に写し書きしない）。値の種類（`id` は UUID・`rev` は整数）は
+/// 読む側が確かめ、何行目が駄目かを言う。ここに無いキーは [`Self::unknown`] に集まり、実行で断る。TS には書き出さない
+/// （`data` の型の表記は AI 向けの書き方）。
+#[derive(Debug, Clone, Default, PartialEq, Deserialize, TS)]
+pub struct DataBulkRow {
+    /// 更新するレコードの id（無ければ追加）。null は書いていないのと同じ。
+    #[serde(default)]
+    #[ts(optional, type = "string")]
+    pub id: Option<Value>,
+    /// 更新の楽観ロックの rev（書いたときだけ照らす）。null は書いていないのと同じ。
+    #[serde(default)]
+    #[ts(optional, type = "number")]
+    pub rev: Option<Value>,
+    /// 行の印（誤りの報告に出る・取込の中で重ねない）。
+    #[serde(default)]
+    #[ts(optional, type = "string")]
+    pub key: Option<Value>,
+    /// 書く値（列の参照名 → 値。更新の行では書いた列だけを変える）。書いてあれば null も値として渡す。
+    #[serde(default, deserialize_with = "written")]
+    #[ts(type = "{ [列の参照名]: unknown }")]
+    pub data: Option<Value>,
+    /// 行に書けないキー（実行で断る）。
+    #[serde(flatten)]
+    #[ts(skip)]
+    pub unknown: serde_json::Map<String, Value>,
+}
+
+/// 書いてある項目は null も値として受ける（`Option` の既定では null が「書いていない」になる）。
+fn written<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Value>, D::Error> {
+    Value::deserialize(d).map(Some)
+}
+
 impl DataBulkUpsertParams {
     /// 照合に使う列（空白だけは書いていないのと同じ）。
     #[must_use]

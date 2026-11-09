@@ -31,8 +31,9 @@ pub use control::{
     WaitKind, WaitParams, WaitTimeout, MAX_MAP_ITEMS,
 };
 pub use data::{
-    DataBulkUpsertParams, DataQueryParams, DataRecordCreateParams, DataRecordDeleteParams,
-    DataRecordUpdateParams, DataRecordUpsertParams, DataTransitionParams, MAX_WORKFLOW_BULK_ROWS,
+    DataBulkRow, DataBulkUpsertParams, DataQueryParams, DataRecordCreateParams,
+    DataRecordDeleteParams, DataRecordUpdateParams, DataRecordUpsertParams, DataTransitionParams,
+    MAX_WORKFLOW_BULK_ROWS,
 };
 pub use decide::{
     AiDecideParams, DecideOption, DecideQuestion, DecideQuestionType, DecideRoute, DecideRouteBy,

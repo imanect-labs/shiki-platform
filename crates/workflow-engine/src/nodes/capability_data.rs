@@ -17,8 +17,8 @@ use crate::capability::{op_digest, CapabilityAudit, EffectJournal};
 use crate::control::eval::{resolve_deep_json, ValueResolver};
 use crate::ir::expr::ValueExpr;
 use crate::ir::params::{
-    DataBulkUpsertParams, DataQueryParams, DataRecordCreateParams, DataRecordDeleteParams,
-    DataRecordUpdateParams, DataTransitionParams, MAX_WORKFLOW_BULK_ROWS,
+    DataBulkRow, DataBulkUpsertParams, DataQueryParams, DataRecordCreateParams,
+    DataRecordDeleteParams, DataRecordUpdateParams, DataTransitionParams, MAX_WORKFLOW_BULK_ROWS,
 };
 use crate::run::NodeContext;
 
@@ -45,7 +45,9 @@ fn resolve_rev(
         .transpose()
 }
 
-/// 一括 upsert の行（`{ id?, rev?, key?, data }`）を data の型へ。形の誤りは全体を拒否する。
+/// 一括 upsert の行（[`DataBulkRow`]・`{ id?, rev?, key?, data }`）を data の型へ。形の誤りは全体を拒否する。
+///
+/// 行の形は params の [`DataBulkRow`] の 1 か所で決める（AI が読む params の形も同じ型から作る・GAP-131）。
 pub(crate) fn parse_bulk_rows(v: &Value) -> Result<Vec<BulkUpsertRow>, PortError> {
     let items = v
         .as_array()
@@ -61,15 +63,15 @@ pub(crate) fn parse_bulk_rows(v: &Value) -> Result<Vec<BulkUpsertRow>, PortError
         .enumerate()
         .map(|(i, row)| {
             let n = i + 1;
-            let obj = row.as_object().ok_or_else(|| {
-                PortError::invalid(format!("data.bulk_upsert: {n} 行目がオブジェクトではありません"))
-            })?;
-            if let Some(k) = obj
-                .keys()
-                .find(|k| !matches!(k.as_str(), "id" | "rev" | "key" | "data"))
-            {
+            let not_object =
+                || PortError::invalid(format!("data.bulk_upsert: {n} 行目がオブジェクトではありません"));
+            if !row.is_object() {
+                return Err(not_object());
+            }
+            let row: DataBulkRow = serde_json::from_value(row.clone()).map_err(|_| not_object())?;
+            if let Some(k) = row.unknown.keys().next() {
                 // data の無い平らな行（csv.query の items・{列: 値} の行をそのまま渡した）は、包み方まで言う（BUG-255）。
-                if !obj.contains_key("data") {
+                if row.data.is_none() {
                     return Err(PortError::invalid(format!(
                         "data.bulk_upsert: {n} 行目に未知のキー '{k}' があります。行は 1 行ずつ {{\"data\": {{列の参照名: 値}}}} の形に包んで渡してください（行に書けるのは id / rev / key / data だけ）。"
                     )));
@@ -78,20 +80,20 @@ pub(crate) fn parse_bulk_rows(v: &Value) -> Result<Vec<BulkUpsertRow>, PortError
                     "data.bulk_upsert: {n} 行目に未知のキー '{k}' があります（id / rev / key / data のみ）"
                 )));
             }
-            let record_id = match obj.get("id") {
-                None | Some(Value::Null) => None,
-                Some(v) => Some(as_uuid(v).ok_or_else(|| {
+            let record_id = match row.id {
+                None => None,
+                Some(v) => Some(as_uuid(&v).ok_or_else(|| {
                     PortError::invalid(format!("data.bulk_upsert: {n} 行目の id が UUID ではありません"))
                 })?),
             };
-            let expected_rev = match obj.get("rev") {
-                None | Some(Value::Null) => None,
+            let expected_rev = match row.rev {
+                None => None,
                 Some(v) => Some(v.as_i64().ok_or_else(|| {
                     PortError::invalid(format!("data.bulk_upsert: {n} 行目の rev が整数ではありません"))
                 })?),
             };
-            let key = obj.get("key").and_then(Value::as_str).map(str::to_string);
-            let data = obj.get("data").cloned().ok_or_else(|| {
+            let key = row.key.as_ref().and_then(Value::as_str).map(str::to_string);
+            let data = row.data.ok_or_else(|| {
                 PortError::invalid(format!("data.bulk_upsert: {n} 行目に data がありません"))
             })?;
             Ok(BulkUpsertRow {
@@ -548,6 +550,16 @@ mod tests {
         assert_eq!(
             message(json!([{ "id": id.to_string() }])),
             "data.bulk_upsert: 1 行目に data がありません"
+        );
+        // null の id・rev は書いていないのと同じ。書いてある data は null も値として渡す（data が断る）。
+        let rows = parse_bulk_rows(&json!([{ "id": null, "rev": null, "data": null }])).unwrap();
+        assert_eq!(
+            (rows[0].record_id, rows[0].expected_rev, &rows[0].data),
+            (None, None, &Value::Null)
+        );
+        assert_eq!(
+            message(json!([{ "data": {} }, "x"])),
+            "data.bulk_upsert: 2 行目がオブジェクトではありません"
         );
         assert!(parse_bulk_rows(&json!([{ "id": "nope", "data": {} }])).is_err());
         assert!(parse_bulk_rows(&json!({ "data": {} })).is_err());
