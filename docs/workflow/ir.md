@@ -838,7 +838,9 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
   書き、領域の中の `data.record.upsert`（か `data.record.create`）の `data` に列ごとの `{"$from": "each", "path": "/item/<CSV の列の
   名前>"}` を書く（SQL で列の名前を参照名にそろえたときは `/item` をそのまま書ける・要素は 1,000 件まで・§5.3）。それを超えるときは
   `script.run` で 1 行ずつ `{data: 行}` に包んでから `rows` に渡す（`script.run` の戻り値は 256 KB まで・[script.md](./script.md)
-  §4.3）。AI の `emit_workflow` の説明文はこの順で教える。
+  §4.3）。AI の `emit_workflow` の説明文はこの順で教える。行の形の正は params の型 `DataBulkRow` で、実行はこの型で行を読み、
+  `emit_workflow` の説明文の params の形は、この型の宣言から `rows` に書く値の形（`rows の値 = Array<{ id?, rev?, key?, data }>`）を
+  添える（`rows` は `ValueExpr` とだけ言うと行の形が伝わらない・GAP-131）。
 - **保存時の照合**（§8 V4）: `match_on` はテーブルで重複を許さない列（`unique`）であること（`ir.match_not_unique`。重複を許す列だと
   同時に動いた 2 つの実行が両方とも追加するため）。`add` の列は数の列であること（`ir.add_not_number`）。読めない列・無い列は
   `ir.unknown_field`（承認と同じ文言・区別しない）。材料は保存者の見え方（`Catalog::tables`）で、テーブルを `$from` で決める
