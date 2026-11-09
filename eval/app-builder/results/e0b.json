@@ -120,9 +120,14 @@
   }
  },
  "grader": {
-  "grader": 7,
+  "grader": 11,
   "ir_lint_schema": 3,
-  "ir_lint_sha256": "2d821bff376849e7617117161990404080e84693efc384505f15e989927c101f"
+  "ir_lint_sha256": "4b66092e29ab4f1999b0b8e6337542ffa993ef0116de4eb5bb2d811f02d39e36",
+  "ir_lint_build": {
+   "commit": "d5a215b672d7049dc6eba743833c2cce41c00b67",
+   "dirty": false,
+   "built_at": "2026-11-09T11:54:12+00:00"
+  }
  },
  "conditions": [
   "vn/b/medium"
@@ -387,12 +392,12 @@
        {
         "kind": "files:count",
         "ok": true,
-        "detail": "out/^要約-(?:2026\\-11\\-07)( \\(\\d+\\))?\\.md$: 1 件（期待 1・増えたもの ['要約-2026-11-07 (2).md']）"
+        "detail": "out/^要約-(?:2026\\-11\\-09)( \\(\\d+\\))?\\.md$: 1 件（期待 1・増えたもの ['要約-2026-11-09.md']）"
        },
        {
         "kind": "files:contains",
         "ok": true,
-        "detail": "out/^要約-(?:2026\\-11\\-07)( \\(\\d+\\))?\\.md$ に '会議室の予約方法' がある"
+        "detail": "out/^要約-(?:2026\\-11\\-09)( \\(\\d+\\))?\\.md$ に '会議室の予約方法' がある"
        }
       ],
       "failed_steps": []
@@ -418,6 +423,28 @@
      "diff_micros": 5,
      "ok": true
     }
+   },
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 7,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "2d821bff376849e7617117161990404080e84693efc384505f15e989927c101f"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d"
+    ],
+    "kept": [
+     "s1",
+     "s3",
+     "s4",
+     "runs"
+    ],
+    "note": "S3・S4 と実モデルの run_case の記録（runs・その S2d）は、会話を流し直さないと出せないので、前の採点の値を残した"
    }
   },
   {
@@ -679,12 +706,12 @@
        {
         "kind": "files:count",
         "ok": true,
-        "detail": "out/^要約-(?:2026\\-11\\-07)( \\(\\d+\\))?\\.md$: 1 件（期待 1・増えたもの ['要約-2026-11-07 (2).md']）"
+        "detail": "out/^要約-(?:2026\\-11\\-09)( \\(\\d+\\))?\\.md$: 1 件（期待 1・増えたもの ['要約-2026-11-09.md']）"
        },
        {
         "kind": "files:contains",
         "ok": true,
-        "detail": "out/^要約-(?:2026\\-11\\-07)( \\(\\d+\\))?\\.md$ に '会議室の予約方法' がある"
+        "detail": "out/^要約-(?:2026\\-11\\-09)( \\(\\d+\\))?\\.md$ に '会議室の予約方法' がある"
        }
       ],
       "failed_steps": []
@@ -710,6 +737,28 @@
      "diff_micros": 5,
      "ok": true
     }
+   },
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 7,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "2d821bff376849e7617117161990404080e84693efc384505f15e989927c101f"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d"
+    ],
+    "kept": [
+     "s1",
+     "s3",
+     "s4",
+     "runs"
+    ],
+    "note": "S3・S4 と実モデルの run_case の記録（runs・その S2d）は、会話を流し直さないと出せないので、前の採点の値を残した"
    }
   },
   {
@@ -971,12 +1020,12 @@
        {
         "kind": "files:count",
         "ok": true,
-        "detail": "out/^要約-(?:2026\\-11\\-07)( \\(\\d+\\))?\\.md$: 1 件（期待 1・増えたもの ['要約-2026-11-07 (2).md']）"
+        "detail": "out/^要約-(?:2026\\-11\\-09)( \\(\\d+\\))?\\.md$: 1 件（期待 1・増えたもの ['要約-2026-11-09.md']）"
        },
        {
         "kind": "files:contains",
         "ok": true,
-        "detail": "out/^要約-(?:2026\\-11\\-07)( \\(\\d+\\))?\\.md$ に '会議室の予約方法' がある"
+        "detail": "out/^要約-(?:2026\\-11\\-09)( \\(\\d+\\))?\\.md$ に '会議室の予約方法' がある"
        }
       ],
       "failed_steps": []
@@ -1002,6 +1051,28 @@
      "diff_micros": 4,
      "ok": true
     }
+   },
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 7,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "2d821bff376849e7617117161990404080e84693efc384505f15e989927c101f"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d"
+    ],
+    "kept": [
+     "s1",
+     "s3",
+     "s4",
+     "runs"
+    ],
+    "note": "S3・S4 と実モデルの run_case の記録（runs・その S2d）は、会話を流し直さないと出せないので、前の採点の値を残した"
    }
   },
   {
@@ -1560,6 +1631,28 @@
      "diff_micros": 4,
      "ok": true
     }
+   },
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 7,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "2d821bff376849e7617117161990404080e84693efc384505f15e989927c101f"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d"
+    ],
+    "kept": [
+     "s1",
+     "s3",
+     "s4",
+     "runs"
+    ],
+    "note": "S3・S4 と実モデルの run_case の記録（runs・その S2d）は、会話を流し直さないと出せないので、前の採点の値を残した"
    }
   },
   {
@@ -2121,6 +2214,28 @@
      "diff_micros": 5,
      "ok": true
     }
+   },
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 7,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "2d821bff376849e7617117161990404080e84693efc384505f15e989927c101f"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d"
+    ],
+    "kept": [
+     "s1",
+     "s3",
+     "s4",
+     "runs"
+    ],
+    "note": "S3・S4 と実モデルの run_case の記録（runs・その S2d）は、会話を流し直さないと出せないので、前の採点の値を残した"
    }
   },
   {
@@ -2689,6 +2804,28 @@
      "diff_micros": 4,
      "ok": true
     }
+   },
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 7,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "2d821bff376849e7617117161990404080e84693efc384505f15e989927c101f"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d"
+    ],
+    "kept": [
+     "s1",
+     "s3",
+     "s4",
+     "runs"
+    ],
+    "note": "S3・S4 と実モデルの run_case の記録（runs・その S2d）は、会話を流し直さないと出せないので、前の採点の値を残した"
    }
   },
   {
@@ -3158,6 +3295,28 @@
      "diff_micros": 5,
      "ok": true
     }
+   },
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 7,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "2d821bff376849e7617117161990404080e84693efc384505f15e989927c101f"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d"
+    ],
+    "kept": [
+     "s1",
+     "s3",
+     "s4",
+     "runs"
+    ],
+    "note": "S3・S4 と実モデルの run_case の記録（runs・その S2d）は、会話を流し直さないと出せないので、前の採点の値を残した"
    }
   },
   {
@@ -3596,6 +3755,28 @@
      "diff_micros": 6,
      "ok": true
     }
+   },
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 7,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "2d821bff376849e7617117161990404080e84693efc384505f15e989927c101f"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d"
+    ],
+    "kept": [
+     "s1",
+     "s3",
+     "s4",
+     "runs"
+    ],
+    "note": "S3・S4 と実モデルの run_case の記録（runs・その S2d）は、会話を流し直さないと出せないので、前の採点の値を残した"
    }
   },
   {
@@ -4057,6 +4238,28 @@
      "diff_micros": 4,
      "ok": true
     }
+   },
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 7,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "2d821bff376849e7617117161990404080e84693efc384505f15e989927c101f"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d"
+    ],
+    "kept": [
+     "s1",
+     "s3",
+     "s4",
+     "runs"
+    ],
+    "note": "S3・S4 と実モデルの run_case の記録（runs・その S2d）は、会話を流し直さないと出せないので、前の採点の値を残した"
    }
   },
   {
@@ -4546,7 +4749,7 @@
        {
         "kind": "rows:match",
         "ok": true,
-        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'loaned_on': {'$one_of': ['2026-11-07']}} に合う行がある（[{'borrower': '松本', 'code': 'E-01', 'loaned_on': '2026-11-07'}]）"
+        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'loaned_on': {'$one_of': ['2026-11-09']}} に合う行がある（[{'borrower': '松本', 'code': 'E-01', 'loaned_on': '2026-11-09'}]）"
        }
       ],
       "failed_steps": []
@@ -4605,6 +4808,28 @@
      "diff_micros": 4,
      "ok": true
     }
+   },
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 7,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "2d821bff376849e7617117161990404080e84693efc384505f15e989927c101f"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d"
+    ],
+    "kept": [
+     "s1",
+     "s3",
+     "s4",
+     "runs"
+    ],
+    "note": "S3・S4 と実モデルの run_case の記録（runs・その S2d）は、会話を流し直さないと出せないので、前の採点の値を残した"
    }
   },
   {
@@ -4908,7 +5133,7 @@
        {
         "kind": "rows:match",
         "ok": false,
-        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'loaned_on': {'$one_of': ['2026-11-07']}} に合う行が無い（[]）"
+        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'loaned_on': {'$one_of': ['2026-11-09']}} に合う行が無い（[]）"
        }
       ],
       "failed_steps": []
@@ -4967,6 +5192,28 @@
      "diff_micros": 5,
      "ok": true
     }
+   },
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 7,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "2d821bff376849e7617117161990404080e84693efc384505f15e989927c101f"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d"
+    ],
+    "kept": [
+     "s1",
+     "s3",
+     "s4",
+     "runs"
+    ],
+    "note": "S3・S4 と実モデルの run_case の記録（runs・その S2d）は、会話を流し直さないと出せないので、前の採点の値を残した"
    }
   },
   {
@@ -5452,7 +5699,7 @@
        {
         "kind": "rows:match",
         "ok": true,
-        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'loaned_on': {'$one_of': ['2026-11-07']}} に合う行がある（[{'borrower': '松本', 'code': 'E-01', 'loaned_on': '2026-11-07'}]）"
+        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'loaned_on': {'$one_of': ['2026-11-09']}} に合う行がある（[{'borrower': '松本', 'code': 'E-01', 'loaned_on': '2026-11-09'}]）"
        }
       ],
       "failed_steps": []
@@ -5511,6 +5758,28 @@
      "diff_micros": 4,
      "ok": true
     }
+   },
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 7,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "2d821bff376849e7617117161990404080e84693efc384505f15e989927c101f"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d"
+    ],
+    "kept": [
+     "s1",
+     "s3",
+     "s4",
+     "runs"
+    ],
+    "note": "S3・S4 と実モデルの run_case の記録（runs・その S2d）は、会話を流し直さないと出せないので、前の採点の値を残した"
    }
   }
  ],
@@ -5637,5 +5906,21 @@
   "steps_by_node_runs": {
    "data.bulk_upsert/invalid": 3
   }
- }
+ },
+ "regrades": [
+  {
+   "at": "2026-11-09T12:34:08+00:00",
+   "grader": 11,
+   "from_grader": {
+    "grader": 7,
+    "ir_lint_schema": 3,
+    "ir_lint_sha256": "2d821bff376849e7617117161990404080e84693efc384505f15e989927c101f"
+   },
+   "stub_runs": true,
+   "label": "vn",
+   "trials": 12,
+   "stub_trials": 12,
+   "changed_headlines": 0
+  }
+ ]
 }

@@ -1,7 +1,7 @@
 {
   "behavior_check": {
     "probes_sha": "9f2a91a209a5a3088f5ff16f9749dda92eddead71ea1814564133465ad2cc5e5",
-    "recorded_at": "2026-11-09T07:52:06+00:00",
+    "recorded_at": "2026-11-09T12:34:28+00:00",
     "results": {
       "port_next": {
         "errors": [

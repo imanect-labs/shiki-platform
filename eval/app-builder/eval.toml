@@ -98,4 +98,4 @@ high = 0.07
 # 最後に足す。git の先祖の順ではなく、直しを積んだ順に書く（v1〔71e9b79a〕は後で載せ直したので vn の先祖ではない
 # が、vn はその直しを含む）。版の記録（data/versions/）の版がすべて載っていることと、先祖の順に逆らわないことは
 # tests/test_version_order.py が確かめる。
-version_order = ["v0", "v1", "vn", "vm", "vf"]
+version_order = ["v0", "v1", "vn", "vm", "vf", "vg"]

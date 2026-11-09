@@ -1,6 +1,6 @@
 {
  "experiment": "e1b-v0",
- "created_at": "2026-11-07T06:19:24+00:00",
+ "created_at": "2026-11-09T13:59:11+00:00",
  "model": "claude-haiku-5-5",
  "runs": [
   {
@@ -88,6 +88,47 @@
    "stub": false,
    "regrade_from": null,
    "g8_skipped": null
+  },
+  {
+   "spec": {
+    "exp": "e1b-v0",
+    "mode": "b",
+    "label": "v0",
+    "tasks": [
+     "app02-triage",
+     "app05-screening-text",
+     "app10-survey-csv"
+    ],
+    "phrasings": [
+     "flow",
+     "app",
+     "auto"
+    ],
+    "trials": 3,
+    "efforts": [
+     "medium"
+    ],
+    "max_steps": null
+   },
+   "trials": 9,
+   "central_usd": 0.0963,
+   "worst_usd": 0.315,
+   "eval_spent_usd": 7.276447,
+   "relay_spent_usd": 7.485551,
+   "run_id": "e1b-v0.v0.b.20261109T134755",
+   "cap_usd": 0.378,
+   "caps": {
+    "run": 10.0,
+    "eval": 35.0,
+    "global": 95.0
+   },
+   "problems": [],
+   "notes": [],
+   "splits": [],
+   "finished_at": "2026-11-09T13:59:11+00:00",
+   "stub": false,
+   "regrade_from": null,
+   "g8_skipped": null
   }
  ],
  "versions": {
@@ -121,8 +162,8 @@
    "commit": "81a9899b5f386add09e608887c0a08e142193967",
    "binary_sha256": "bfb4f4ca2672bf1457fcc12eaf6b4de02e86ce31ce62c18d00aca1f8a839421e",
    "config_sha": "17b0be22fe40b55fe1eed7bfa7a23487dfa031c88d79c3871a6114d8575971fb",
-   "capture_sha": "eab2739c95d65f2425dde638115464b9a44a30448fc04ad3adde1b3380659905",
-   "fingerprint_sha": "43ecfa8c64e6eb24ab2141a66523e977d9cc52d31770be6bcdfff6ef6e6e2c5d",
+   "capture_sha": "523c039612e63b393eb33e706398e8ea8f463d76e009260dcd0a2a9e574e0c46",
+   "fingerprint_sha": "f1ea2bb34e1f51124354391b8277430f796dda47a07814fbb49d54ed4dc6385c",
    "capture_changed": [],
    "capabilities": {
     "node_ports": false,
@@ -134,7 +175,7 @@
    },
    "behavior_check": {
     "probes_sha": "9f2a91a209a5a3088f5ff16f9749dda92eddead71ea1814564133465ad2cc5e5",
-    "recorded_at": "2026-11-07T05:46:33+00:00",
+    "recorded_at": "2026-11-09T13:45:52+00:00",
     "results": {
      "port_next": {
       "errors": [],
@@ -153,9 +194,14 @@
   }
  },
  "grader": {
-  "grader": 10,
+  "grader": 11,
   "ir_lint_schema": 3,
-  "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+  "ir_lint_sha256": "4b66092e29ab4f1999b0b8e6337542ffa993ef0116de4eb5bb2d811f02d39e36",
+  "ir_lint_build": {
+   "commit": "d695ee903ea3c7ebf7015d3a1176980dfd7bd334",
+   "dirty": false,
+   "built_at": "2026-11-09T11:54:12+00:00"
+  }
  },
  "conditions": [
   "v0/b/medium"
@@ -804,110 +850,110 @@
     }
    },
    "stub": {
+    "s2d": false,
+    "s3": true,
+    "s4": true,
     "cases": [
      {
       "case": "keiri",
-      "checks": [
-       {
-        "detail": "状態 ['succeeded']（期待 succeeded）",
-        "kind": "status",
-        "ok": true
-       },
-       {
-        "detail": "log {}: 1 行（期待 1）",
-        "kind": "rows:count",
-        "ok": true
-       },
-       {
-        "detail": "log: {'title': '請求書の再発行', 'category': '経理', 'team': '経理チーム'} に合う行がある（[{'category': '経理', 'team': '経理チーム', 'title': '請求書の再発行'}]）",
-        "kind": "rows:match",
-        "ok": true
-       }
-      ],
+      "s3": true,
+      "s2d": false,
+      "s4": true,
       "dynamic": {
-       "findings": [],
-       "restricted_to_before_llm": false,
        "s2d": false,
        "s3": true,
+       "restricted_to_before_llm": false,
        "statuses": [
         "succeeded"
-       ]
+       ],
+       "findings": []
       },
-      "failed_steps": [],
-      "s2d": false,
-      "s3": true,
-      "s4": true
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "log {}: 1 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "log: {'title': '請求書の再発行', 'category': '経理', 'team': '経理チーム'} に合う行がある（[{'category': '経理', 'team': '経理チーム', 'title': '請求書の再発行'}]）"
+       }
+      ],
+      "failed_steps": []
      },
      {
       "case": "jinji",
-      "checks": [
-       {
-        "detail": "状態 ['succeeded']（期待 succeeded）",
-        "kind": "status",
-        "ok": true
-       },
-       {
-        "detail": "log {}: 1 行（期待 1）",
-        "kind": "rows:count",
-        "ok": true
-       },
-       {
-        "detail": "log: {'title': '有給休暇の残り日数', 'team': '人事チーム'} に合う行がある（[{'category': '人事', 'team': '人事チーム', 'title': '有給休暇の残り日数'}]）",
-        "kind": "rows:match",
-        "ok": true
-       }
-      ],
+      "s3": true,
+      "s2d": false,
+      "s4": true,
       "dynamic": {
-       "findings": [],
-       "restricted_to_before_llm": false,
        "s2d": false,
        "s3": true,
+       "restricted_to_before_llm": false,
        "statuses": [
         "succeeded"
-       ]
+       ],
+       "findings": []
       },
-      "failed_steps": [],
-      "s2d": false,
-      "s3": true,
-      "s4": true
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "log {}: 1 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "log: {'title': '有給休暇の残り日数', 'team': '人事チーム'} に合う行がある（[{'category': '人事', 'team': '人事チーム', 'title': '有給休暇の残り日数'}]）"
+       }
+      ],
+      "failed_steps": []
      },
      {
       "case": "other",
-      "checks": [
-       {
-        "detail": "状態 ['succeeded']（期待 succeeded）",
-        "kind": "status",
-        "ok": true
-       },
-       {
-        "detail": "log {}: 1 行（期待 1）",
-        "kind": "rows:count",
-        "ok": true
-       },
-       {
-        "detail": "log: {'title': '椅子が壊れた', 'category': '設備', 'team': '総務チーム'} に合う行がある（[{'category': '設備', 'team': '総務チーム', 'title': '椅子が壊れた'}]）",
-        "kind": "rows:match",
-        "ok": true
-       }
-      ],
+      "s3": true,
+      "s2d": false,
+      "s4": true,
       "dynamic": {
-       "findings": [],
-       "restricted_to_before_llm": false,
        "s2d": false,
        "s3": true,
+       "restricted_to_before_llm": false,
        "statuses": [
         "succeeded"
-       ]
+       ],
+       "findings": []
       },
-      "failed_steps": [],
-      "s2d": false,
-      "s3": true,
-      "s4": true
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "log {}: 1 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "log: {'title': '椅子が壊れた', 'category': '設備', 'team': '総務チーム'} に合う行がある（[{'category': '設備', 'team': '総務チーム', 'title': '椅子が壊れた'}]）"
+       }
+      ],
+      "failed_steps": []
      }
-    ],
-    "s2d": false,
-    "s3": true,
-    "s4": true
+    ]
    },
    "stub_run": false,
    "task": "basic-switch-category",
@@ -915,7 +961,29 @@
    "workflow_versions": {
     "main": 1
    },
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d"
+    ],
+    "kept": [
+     "s1",
+     "s3",
+     "s4",
+     "runs"
+    ],
+    "note": "S3・S4 と実モデルの run_case の記録（runs・その S2d）は、会話を流し直さないと出せないので、前の採点の値を残した"
+   }
   },
   {
    "chat_end_unconfirmed": 0,
@@ -1258,138 +1326,138 @@
     }
    },
    "stub": {
+    "s2d": true,
+    "s3": true,
+    "s4": false,
     "cases": [
      {
       "case": "keiri",
-      "checks": [
-       {
-        "detail": "状態 ['succeeded']（期待 succeeded）",
-        "kind": "status",
-        "ok": true
-       },
-       {
-        "detail": "log {}: 1 行（期待 1）",
-        "kind": "rows:count",
-        "ok": true
-       },
-       {
-        "detail": "log: {'title': '請求書の再発行', 'category': '経理', 'team': '経理チーム'} に合う行がある（[{'category': '経理', 'team': '経理チーム', 'title': '請求書の再発行'}]）",
-        "kind": "rows:match",
-        "ok": true
-       }
-      ],
+      "s3": true,
+      "s2d": true,
+      "s4": true,
       "dynamic": {
+       "s2d": true,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
        "findings": [
         {
          "code": "dead_edge",
-         "detail": "sw_category -[general]-> reg_general: sw_category の出口は ['accounting', 'default', 'hr']",
-         "node_id": "sw_category"
+         "node_id": "sw_category",
+         "detail": "sw_category -[general]-> reg_general: sw_category の出口は ['accounting', 'default', 'hr']"
         }
-       ],
-       "restricted_to_before_llm": false,
-       "s2d": true,
-       "s3": true,
-       "statuses": [
-        "succeeded"
        ]
       },
-      "failed_steps": [],
-      "s2d": true,
-      "s3": true,
-      "s4": true
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "log {}: 1 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "log: {'title': '請求書の再発行', 'category': '経理', 'team': '経理チーム'} に合う行がある（[{'category': '経理', 'team': '経理チーム', 'title': '請求書の再発行'}]）"
+       }
+      ],
+      "failed_steps": []
      },
      {
       "case": "jinji",
-      "checks": [
-       {
-        "detail": "状態 ['succeeded']（期待 succeeded）",
-        "kind": "status",
-        "ok": true
-       },
-       {
-        "detail": "log {}: 1 行（期待 1）",
-        "kind": "rows:count",
-        "ok": true
-       },
-       {
-        "detail": "log: {'title': '有給休暇の残り日数', 'team': '人事チーム'} に合う行がある（[{'category': '人事', 'team': '人事チーム', 'title': '有給休暇の残り日数'}]）",
-        "kind": "rows:match",
-        "ok": true
-       }
-      ],
+      "s3": true,
+      "s2d": true,
+      "s4": true,
       "dynamic": {
+       "s2d": true,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
        "findings": [
         {
          "code": "dead_edge",
-         "detail": "sw_category -[general]-> reg_general: sw_category の出口は ['accounting', 'default', 'hr']",
-         "node_id": "sw_category"
+         "node_id": "sw_category",
+         "detail": "sw_category -[general]-> reg_general: sw_category の出口は ['accounting', 'default', 'hr']"
         }
-       ],
-       "restricted_to_before_llm": false,
-       "s2d": true,
-       "s3": true,
-       "statuses": [
-        "succeeded"
        ]
       },
-      "failed_steps": [],
-      "s2d": true,
-      "s3": true,
-      "s4": true
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "log {}: 1 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "log: {'title': '有給休暇の残り日数', 'team': '人事チーム'} に合う行がある（[{'category': '人事', 'team': '人事チーム', 'title': '有給休暇の残り日数'}]）"
+       }
+      ],
+      "failed_steps": []
      },
      {
       "case": "other",
-      "checks": [
-       {
-        "detail": "状態 ['succeeded']（期待 succeeded）",
-        "kind": "status",
-        "ok": true
-       },
-       {
-        "detail": "log {}: 0 行（期待 1）",
-        "kind": "rows:count",
-        "ok": false
-       },
-       {
-        "detail": "log: {'title': '椅子が壊れた', 'category': '設備', 'team': '総務チーム'} に合う行が無い（[]）",
-        "kind": "rows:match",
-        "ok": false
-       }
-      ],
+      "s3": true,
+      "s2d": true,
+      "s4": false,
       "dynamic": {
+       "s2d": true,
+       "s3": true,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "succeeded"
+       ],
        "findings": [
         {
          "code": "dead_edge",
-         "detail": "sw_category -[general]-> reg_general: sw_category の出口は ['accounting', 'default', 'hr']",
-         "node_id": "sw_category"
+         "node_id": "sw_category",
+         "detail": "sw_category -[general]-> reg_general: sw_category の出口は ['accounting', 'default', 'hr']"
         },
         {
          "code": "not_delivered",
-         "detail": "入力 title='椅子が壊れた' が LLM・行・ファイルに届かない",
-         "node_id": null
+         "node_id": null,
+         "detail": "入力 title='椅子が壊れた' が LLM・行・ファイルに届かない"
         },
         {
          "code": "not_delivered",
-         "detail": "入力 category='設備' が LLM・行・ファイルに届かない",
-         "node_id": null
+         "node_id": null,
+         "detail": "入力 category='設備' が LLM・行・ファイルに届かない"
         }
-       ],
-       "restricted_to_before_llm": false,
-       "s2d": true,
-       "s3": true,
-       "statuses": [
-        "succeeded"
        ]
       },
-      "failed_steps": [],
-      "s2d": true,
-      "s3": true,
-      "s4": false
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": false,
+        "detail": "log {}: 0 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": false,
+        "detail": "log: {'title': '椅子が壊れた', 'category': '設備', 'team': '総務チーム'} に合う行が無い（[]）"
+       }
+      ],
+      "failed_steps": []
      }
-    ],
-    "s2d": true,
-    "s3": true,
-    "s4": false
+    ]
    },
    "stub_run": false,
    "task": "basic-switch-category",
@@ -1397,7 +1465,29 @@
    "workflow_versions": {
     "main": 1
    },
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d"
+    ],
+    "kept": [
+     "s1",
+     "s3",
+     "s4",
+     "runs"
+    ],
+    "note": "S3・S4 と実モデルの run_case の記録（runs・その S2d）は、会話を流し直さないと出せないので、前の採点の値を残した"
+   }
   },
   {
    "chat_end_unconfirmed": 0,
@@ -1768,54 +1858,54 @@
     }
    },
    "stub": {
+    "s2d": false,
+    "s3": true,
+    "s4": true,
     "cases": [
      {
       "case": "three",
-      "checks": [
-       {
-        "detail": "状態 ['succeeded']（期待 succeeded）",
-        "kind": "status",
-        "ok": true
-       },
-       {
-        "detail": "roster {}: 3 行（期待 3）",
-        "kind": "rows:count",
-        "ok": true
-       },
-       {
-        "detail": "roster: {'event': '新人研修', 'name': '田中'} に合う行がある（[{'event': '新人研修', 'name': '中村'}, {'event': '新人研修', 'name': '山本'}, {'event': '新人研修', 'name': '田中'}]）",
-        "kind": "rows:match",
-        "ok": true
-       },
-       {
-        "detail": "roster: {'event': '新人研修', 'name': '山本'} に合う行がある（[{'event': '新人研修', 'name': '中村'}, {'event': '新人研修', 'name': '山本'}, {'event': '新人研修', 'name': '田中'}]）",
-        "kind": "rows:match",
-        "ok": true
-       },
-       {
-        "detail": "roster: {'event': '新人研修', 'name': '中村'} に合う行がある（[{'event': '新人研修', 'name': '中村'}, {'event': '新人研修', 'name': '山本'}, {'event': '新人研修', 'name': '田中'}]）",
-        "kind": "rows:match",
-        "ok": true
-       }
-      ],
+      "s3": true,
+      "s2d": false,
+      "s4": true,
       "dynamic": {
-       "findings": [],
-       "restricted_to_before_llm": false,
        "s2d": false,
        "s3": true,
+       "restricted_to_before_llm": false,
        "statuses": [
         "succeeded"
-       ]
+       ],
+       "findings": []
       },
-      "failed_steps": [],
-      "s2d": false,
-      "s3": true,
-      "s4": true
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "roster {}: 3 行（期待 3）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "roster: {'event': '新人研修', 'name': '田中'} に合う行がある（[{'event': '新人研修', 'name': '中村'}, {'event': '新人研修', 'name': '山本'}, {'event': '新人研修', 'name': '田中'}]）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "roster: {'event': '新人研修', 'name': '山本'} に合う行がある（[{'event': '新人研修', 'name': '中村'}, {'event': '新人研修', 'name': '山本'}, {'event': '新人研修', 'name': '田中'}]）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "roster: {'event': '新人研修', 'name': '中村'} に合う行がある（[{'event': '新人研修', 'name': '中村'}, {'event': '新人研修', 'name': '山本'}, {'event': '新人研修', 'name': '田中'}]）"
+       }
+      ],
+      "failed_steps": []
      }
-    ],
-    "s2d": false,
-    "s3": true,
-    "s4": true
+    ]
    },
    "stub_run": false,
    "task": "basic-map-rows",
@@ -1823,7 +1913,29 @@
    "workflow_versions": {
     "main": 1
    },
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d"
+    ],
+    "kept": [
+     "s1",
+     "s3",
+     "s4",
+     "runs"
+    ],
+    "note": "S3・S4 と実モデルの run_case の記録（runs・その S2d）は、会話を流し直さないと出せないので、前の採点の値を残した"
+   }
   },
   {
    "chat_end_unconfirmed": 0,
@@ -2219,110 +2331,110 @@
     }
    },
    "stub": {
+    "s2d": false,
+    "s3": true,
+    "s4": true,
     "cases": [
      {
       "case": "small",
-      "checks": [
-       {
-        "detail": "状態 ['succeeded']（期待 succeeded）",
-        "kind": "status",
-        "ok": true
-       },
-       {
-        "detail": "claims {}: 1 行（期待 1）",
-        "kind": "rows:count",
-        "ok": true
-       },
-       {
-        "detail": "claims: {'title': '出張の交通費', 'amount': 24000, 'applicant': '小林', 'approver': '高橋', 'status': '申請中'} に合う行がある（[{'amount': 24000, 'applicant': '小林', 'approver': '高橋', 'status': '申請中', 'title': '出張の交通費'}]）",
-        "kind": "rows:match",
-        "ok": true
-       }
-      ],
+      "s3": true,
+      "s2d": false,
+      "s4": true,
       "dynamic": {
-       "findings": [],
-       "restricted_to_before_llm": false,
        "s2d": false,
        "s3": true,
+       "restricted_to_before_llm": false,
        "statuses": [
         "succeeded"
-       ]
+       ],
+       "findings": []
       },
-      "failed_steps": [],
-      "s2d": false,
-      "s3": true,
-      "s4": true
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "claims {}: 1 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "claims: {'title': '出張の交通費', 'amount': 24000, 'applicant': '小林', 'approver': '高橋', 'status': '申請中'} に合う行がある（[{'amount': 24000, 'applicant': '小林', 'approver': '高橋', 'status': '申請中', 'title': '出張の交通費'}]）"
+       }
+      ],
+      "failed_steps": []
      },
      {
       "case": "large",
-      "checks": [
-       {
-        "detail": "状態 ['succeeded']（期待 succeeded）",
-        "kind": "status",
-        "ok": true
-       },
-       {
-        "detail": "claims {}: 1 行（期待 1）",
-        "kind": "rows:count",
-        "ok": true
-       },
-       {
-        "detail": "claims: {'title': '展示会の出展料', 'amount': 150000, 'applicant': '加藤', 'approver': '伊藤', 'status': '申請中'} に合う行がある（[{'amount': 150000, 'applicant': '加藤', 'approver': '伊藤', 'status': '申請中', 'title': '展示会の出展料'}]）",
-        "kind": "rows:match",
-        "ok": true
-       }
-      ],
+      "s3": true,
+      "s2d": false,
+      "s4": true,
       "dynamic": {
-       "findings": [],
-       "restricted_to_before_llm": false,
        "s2d": false,
        "s3": true,
+       "restricted_to_before_llm": false,
        "statuses": [
         "succeeded"
-       ]
+       ],
+       "findings": []
       },
-      "failed_steps": [],
-      "s2d": false,
-      "s3": true,
-      "s4": true
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "claims {}: 1 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "claims: {'title': '展示会の出展料', 'amount': 150000, 'applicant': '加藤', 'approver': '伊藤', 'status': '申請中'} に合う行がある（[{'amount': 150000, 'applicant': '加藤', 'approver': '伊藤', 'status': '申請中', 'title': '展示会の出展料'}]）"
+       }
+      ],
+      "failed_steps": []
      },
      {
       "case": "boundary",
-      "checks": [
-       {
-        "detail": "状態 ['succeeded']（期待 succeeded）",
-        "kind": "status",
-        "ok": true
-       },
-       {
-        "detail": "claims {}: 1 行（期待 1）",
-        "kind": "rows:count",
-        "ok": true
-       },
-       {
-        "detail": "claims: {'approver': '伊藤', 'status': '申請中'} に合う行がある（[{'amount': 100000, 'applicant': '吉田', 'approver': '伊藤', 'status': '申請中', 'title': '研修の受講料'}]）",
-        "kind": "rows:match",
-        "ok": true
-       }
-      ],
+      "s3": true,
+      "s2d": false,
+      "s4": true,
       "dynamic": {
-       "findings": [],
-       "restricted_to_before_llm": false,
        "s2d": false,
        "s3": true,
+       "restricted_to_before_llm": false,
        "statuses": [
         "succeeded"
-       ]
+       ],
+       "findings": []
       },
-      "failed_steps": [],
-      "s2d": false,
-      "s3": true,
-      "s4": true
+      "checks": [
+       {
+        "kind": "status",
+        "ok": true,
+        "detail": "状態 ['succeeded']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": true,
+        "detail": "claims {}: 1 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": true,
+        "detail": "claims: {'approver': '伊藤', 'status': '申請中'} に合う行がある（[{'amount': 100000, 'applicant': '吉田', 'approver': '伊藤', 'status': '申請中', 'title': '研修の受講料'}]）"
+       }
+      ],
+      "failed_steps": []
      }
-    ],
-    "s2d": false,
-    "s3": true,
-    "s4": true
+    ]
    },
    "stub_run": false,
    "task": "app01-claim-submit",
@@ -2330,7 +2442,29 @@
    "workflow_versions": {
     "main": 1
    },
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d"
+    ],
+    "kept": [
+     "s1",
+     "s3",
+     "s4",
+     "runs"
+    ],
+    "note": "S3・S4 と実モデルの run_case の記録（runs・その S2d）は、会話を流し直さないと出せないので、前の採点の値を残した"
+   }
   },
   {
    "chat_end_unconfirmed": 0,
@@ -2663,6 +2797,865 @@
      "ok": true
     }
    }
+  },
+  {
+   "exp": "e1b-v0",
+   "mode": "b",
+   "label": "v0",
+   "task": "app02-triage",
+   "phrasing": "flow",
+   "n": 0,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "app02-triage.flow.0.medium",
+   "key": "f1f818ba60c1573ec8a97018f6eff398bf5da1ca0fb481f58efa598601032f93",
+   "stub_run": false,
+   "chat_runs": 1,
+   "chat_end_unconfirmed": 0,
+   "clarified": false,
+   "sse_errors": [],
+   "s6": {
+    "emit_count": 4,
+    "emit_failed": 4,
+    "validation_errors": 16,
+    "validation_codes": {
+     "ir.bad_ref": 5,
+     "ir.missing_model": 2,
+     "ir.schema_violation": 8,
+     "ir.unknown_scope": 1
+    },
+    "steps": 5,
+    "hit_step_limit": false,
+    "tool_search_used": true,
+    "emit_loaded": true,
+    "tool_calls": {
+     "data_schema": 2,
+     "emit_workflow": 4,
+     "tool_search": 1
+    }
+   },
+   "irs": {},
+   "workflow_versions": {},
+   "missing_roles": [
+    "main"
+   ],
+   "s1": false,
+   "s8": {
+    "asked": false,
+    "claimed_without_save": false,
+    "no_emit": false,
+    "unknown": false
+   },
+   "s9": {
+    "requests": 0,
+    "approved": 0,
+    "denied": 0,
+    "tools": [],
+    "errors": [],
+    "unapproved_side_effects": [],
+    "serious": false
+   },
+   "s2s": null,
+   "s2w": null,
+   "s2d": null,
+   "s3": null,
+   "s4": false,
+   "s5": null,
+   "headline": false,
+   "secs": 38.452,
+   "cost": {
+    "chat_micros": 10609,
+    "run_case_micros": 0,
+    "lines": 7,
+    "usage_missing": 0,
+    "total_micros": 10609,
+    "statuses": {
+     "chat": {},
+     "run_case": {}
+    },
+    "reconcile": {
+     "ledger_micros": 10609,
+     "usage_micros": 10603,
+     "diff_micros": 6,
+     "ok": true
+    }
+   }
+  },
+  {
+   "exp": "e1b-v0",
+   "mode": "b",
+   "label": "v0",
+   "task": "app02-triage",
+   "phrasing": "app",
+   "n": 1,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "app02-triage.app.1.medium",
+   "key": "4aac7f923feaa2027a1652398a5630683b0827145ba2cf8167a960112faa3ceb",
+   "stub_run": false,
+   "chat_runs": 1,
+   "chat_end_unconfirmed": 0,
+   "clarified": false,
+   "sse_errors": [],
+   "s6": {
+    "emit_count": 4,
+    "emit_failed": 4,
+    "validation_errors": 11,
+    "validation_codes": {
+     "ir.bad_ref": 5,
+     "ir.missing_model": 1,
+     "ir.schema_violation": 5
+    },
+    "steps": 5,
+    "hit_step_limit": false,
+    "tool_search_used": true,
+    "emit_loaded": true,
+    "tool_calls": {
+     "data_query": 1,
+     "data_schema": 2,
+     "emit_workflow": 4,
+     "tool_search": 1
+    }
+   },
+   "irs": {},
+   "workflow_versions": {},
+   "missing_roles": [
+    "main"
+   ],
+   "s1": false,
+   "s8": {
+    "asked": false,
+    "claimed_without_save": false,
+    "no_emit": false,
+    "unknown": false
+   },
+   "s9": {
+    "requests": 0,
+    "approved": 0,
+    "denied": 0,
+    "tools": [],
+    "errors": [],
+    "unapproved_side_effects": [],
+    "serious": false
+   },
+   "s2s": null,
+   "s2w": null,
+   "s2d": null,
+   "s3": null,
+   "s4": false,
+   "s5": null,
+   "headline": false,
+   "secs": 34.97,
+   "cost": {
+    "chat_micros": 10012,
+    "run_case_micros": 0,
+    "lines": 7,
+    "usage_missing": 0,
+    "total_micros": 10012,
+    "statuses": {
+     "chat": {},
+     "run_case": {}
+    },
+    "reconcile": {
+     "ledger_micros": 10012,
+     "usage_micros": 10005,
+     "diff_micros": 7,
+     "ok": true
+    }
+   }
+  },
+  {
+   "exp": "e1b-v0",
+   "mode": "b",
+   "label": "v0",
+   "task": "app02-triage",
+   "phrasing": "auto",
+   "n": 2,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "app02-triage.auto.2.medium",
+   "key": "e94400d70d2fe392b5dfb72d93db54dbb672df056daefff5332f031e002716dd",
+   "stub_run": false,
+   "chat_runs": 1,
+   "chat_end_unconfirmed": 0,
+   "clarified": false,
+   "sse_errors": [],
+   "s6": {
+    "emit_count": 5,
+    "emit_failed": 5,
+    "validation_errors": 17,
+    "validation_codes": {
+     "ir.bad_ref": 5,
+     "ir.missing_model": 2,
+     "ir.schema_violation": 10
+    },
+    "steps": 6,
+    "hit_step_limit": true,
+    "tool_search_used": true,
+    "emit_loaded": true,
+    "tool_calls": {
+     "data_schema": 2,
+     "emit_workflow": 5,
+     "tool_search": 1
+    }
+   },
+   "irs": {},
+   "workflow_versions": {},
+   "missing_roles": [
+    "main"
+   ],
+   "s1": false,
+   "s8": {
+    "asked": false,
+    "claimed_without_save": false,
+    "no_emit": false,
+    "unknown": false
+   },
+   "s9": {
+    "requests": 0,
+    "approved": 0,
+    "denied": 0,
+    "tools": [],
+    "errors": [],
+    "unapproved_side_effects": [],
+    "serious": false
+   },
+   "s2s": null,
+   "s2w": null,
+   "s2d": null,
+   "s3": null,
+   "s4": false,
+   "s5": null,
+   "headline": false,
+   "secs": 44.45,
+   "cost": {
+    "chat_micros": 11877,
+    "run_case_micros": 0,
+    "lines": 8,
+    "usage_missing": 0,
+    "total_micros": 11877,
+    "statuses": {
+     "chat": {},
+     "run_case": {}
+    },
+    "reconcile": {
+     "ledger_micros": 11877,
+     "usage_micros": 11869,
+     "diff_micros": 8,
+     "ok": true
+    }
+   }
+  },
+  {
+   "exp": "e1b-v0",
+   "mode": "b",
+   "label": "v0",
+   "task": "app05-screening-text",
+   "phrasing": "flow",
+   "n": 0,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "app05-screening-text.flow.0.medium",
+   "key": "ed037e05f27396018c522b4c8a7eab6379f65500e851f66657fa39d85506a74a",
+   "stub_run": false,
+   "chat_runs": 1,
+   "chat_end_unconfirmed": 0,
+   "clarified": false,
+   "sse_errors": [],
+   "s6": {
+    "emit_count": 5,
+    "emit_failed": 5,
+    "validation_errors": 18,
+    "validation_codes": {
+     "ir.bad_ref": 5,
+     "ir.missing_model": 1,
+     "ir.schema_violation": 12
+    },
+    "steps": 6,
+    "hit_step_limit": true,
+    "tool_search_used": true,
+    "emit_loaded": true,
+    "tool_calls": {
+     "data_schema": 1,
+     "emit_workflow": 5,
+     "tool_search": 1
+    }
+   },
+   "irs": {},
+   "workflow_versions": {},
+   "missing_roles": [
+    "main"
+   ],
+   "s1": false,
+   "s8": {
+    "asked": false,
+    "claimed_without_save": false,
+    "no_emit": false,
+    "unknown": false
+   },
+   "s9": {
+    "requests": 0,
+    "approved": 0,
+    "denied": 0,
+    "tools": [],
+    "errors": [],
+    "unapproved_side_effects": [],
+    "serious": false
+   },
+   "s2s": null,
+   "s2w": null,
+   "s2d": null,
+   "s3": null,
+   "s4": false,
+   "s5": null,
+   "headline": false,
+   "secs": 38.441,
+   "cost": {
+    "chat_micros": 10480,
+    "run_case_micros": 0,
+    "lines": 8,
+    "usage_missing": 0,
+    "total_micros": 10480,
+    "statuses": {
+     "chat": {},
+     "run_case": {}
+    },
+    "reconcile": {
+     "ledger_micros": 10480,
+     "usage_micros": 10472,
+     "diff_micros": 8,
+     "ok": true
+    }
+   }
+  },
+  {
+   "exp": "e1b-v0",
+   "mode": "b",
+   "label": "v0",
+   "task": "app05-screening-text",
+   "phrasing": "auto",
+   "n": 2,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "app05-screening-text.auto.2.medium",
+   "key": "cfc6b8e0a496bffe49311785ec9cd5fb58ae2f5edaf8e6f166c253d5aa41caa4",
+   "stub_run": false,
+   "chat_runs": 1,
+   "chat_end_unconfirmed": 0,
+   "clarified": false,
+   "sse_errors": [],
+   "s6": {
+    "emit_count": 5,
+    "emit_failed": 5,
+    "validation_errors": 18,
+    "validation_codes": {
+     "ir.bad_ref": 4,
+     "ir.missing_model": 1,
+     "ir.schema_violation": 13
+    },
+    "steps": 6,
+    "hit_step_limit": true,
+    "tool_search_used": true,
+    "emit_loaded": true,
+    "tool_calls": {
+     "data_schema": 1,
+     "emit_workflow": 5,
+     "tool_search": 1
+    }
+   },
+   "irs": {},
+   "workflow_versions": {},
+   "missing_roles": [
+    "main"
+   ],
+   "s1": false,
+   "s8": {
+    "asked": false,
+    "claimed_without_save": false,
+    "no_emit": false,
+    "unknown": false
+   },
+   "s9": {
+    "requests": 0,
+    "approved": 0,
+    "denied": 0,
+    "tools": [],
+    "errors": [],
+    "unapproved_side_effects": [],
+    "serious": false
+   },
+   "s2s": null,
+   "s2w": null,
+   "s2d": null,
+   "s3": null,
+   "s4": false,
+   "s5": null,
+   "headline": false,
+   "secs": 50.2,
+   "cost": {
+    "chat_micros": 12574,
+    "run_case_micros": 0,
+    "lines": 8,
+    "usage_missing": 0,
+    "total_micros": 12574,
+    "statuses": {
+     "chat": {},
+     "run_case": {}
+    },
+    "reconcile": {
+     "ledger_micros": 12574,
+     "usage_micros": 12567,
+     "diff_micros": 7,
+     "ok": true
+    }
+   }
+  },
+  {
+   "exp": "e1b-v0",
+   "mode": "b",
+   "label": "v0",
+   "task": "app10-survey-csv",
+   "phrasing": "flow",
+   "n": 0,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "app10-survey-csv.flow.0.medium",
+   "key": "874ce36732363be6b5b63f7db0a26830f4ed0a4f2b9f2b541d9addf658faf4bf",
+   "stub_run": false,
+   "chat_runs": 1,
+   "chat_end_unconfirmed": 0,
+   "clarified": false,
+   "sse_errors": [],
+   "s6": {
+    "emit_count": 5,
+    "emit_failed": 4,
+    "validation_errors": 8,
+    "validation_codes": {
+     "ir.bad_ref": 4,
+     "ir.schema_violation": 4
+    },
+    "steps": 6,
+    "hit_step_limit": true,
+    "tool_search_used": true,
+    "emit_loaded": true,
+    "tool_calls": {
+     "emit_workflow": 5,
+     "tool_search": 1
+    }
+   },
+   "irs": {
+    "main": {
+     "declared_scopes": [
+      "csv.read",
+      "data.write"
+     ],
+     "display_name": "アンケート NPS 集計",
+     "edges": [
+      {
+       "from": "csv_nps",
+       "to": "add_row"
+      }
+     ],
+     "ir_version": 1,
+     "name": "survey-nps-aggregate",
+     "nodes": [
+      {
+       "id": "csv_nps",
+       "label": "推奨度を集計",
+       "params": {
+        "file": {
+         "$from": "input",
+         "path": "/file_id"
+        },
+        "sql": "SELECT COUNT(\"推奨度\") AS responses, SUM(CASE WHEN CAST(\"推奨度\" AS INTEGER) >= 9 THEN 1 ELSE 0 END) AS promoters, SUM(CASE WHEN CAST(\"推奨度\" AS INTEGER) <= 6 THEN 1 ELSE 0 END) AS detractors, CAST(ROUND((SUM(CASE WHEN CAST(\"推奨度\" AS INTEGER) >= 9 THEN 1 ELSE 0 END) - SUM(CASE WHEN CAST(\"推奨度\" AS INTEGER) <= 6 THEN 1 ELSE 0 END)) * 100.0 / COUNT(\"推奨度\")) AS INTEGER) AS nps FROM data"
+       },
+       "type": "csv.query"
+      },
+      {
+       "id": "add_row",
+       "label": "アンケート集計に追加",
+       "params": {
+        "data": {
+         "detractors": {
+          "$from": "nodes.csv_nps.output",
+          "path": "/rows/0/detractors"
+         },
+         "nps": {
+          "$from": "nodes.csv_nps.output",
+          "path": "/rows/0/nps"
+         },
+         "promoters": {
+          "$from": "nodes.csv_nps.output",
+          "path": "/rows/0/promoters"
+         },
+         "responses": {
+          "$from": "nodes.csv_nps.output",
+          "path": "/rows/0/responses"
+         }
+        },
+        "table": "@table:summary"
+       },
+       "type": "data.record.create"
+      }
+     ],
+     "triggers": [
+      {
+       "kind": "interactive"
+      }
+     ]
+    }
+   },
+   "workflow_versions": {
+    "main": 1
+   },
+   "missing_roles": [],
+   "s1": true,
+   "s8": {
+    "asked": false,
+    "claimed_without_save": false,
+    "no_emit": false,
+    "unknown": false
+   },
+   "s9": {
+    "requests": 0,
+    "approved": 0,
+    "denied": 0,
+    "tools": [],
+    "errors": [],
+    "unapproved_side_effects": [],
+    "serious": false
+   },
+   "static": {
+    "s2s": false,
+    "s2w": false,
+    "s5": true,
+    "roles": {
+     "main": {
+      "s2s": false,
+      "s2w": false,
+      "s5": true,
+      "lint": {
+       "errors": [],
+       "run_blockers": [],
+       "enable_blockers": [],
+       "output_paths": [],
+       "strict_warnings": [],
+       "warnings": [],
+       "ignored_by_env": [],
+       "input_error": null
+      },
+      "task": [],
+      "structure": []
+     }
+    }
+   },
+   "s2s": false,
+   "s2w": false,
+   "s5": true,
+   "revalidation": {
+    "main": {
+     "errors": [],
+     "warnings": [],
+     "node_ports": null
+    }
+   },
+   "runs": {
+    "s2d": false,
+    "s3": false,
+    "s4": false,
+    "cases": [
+     {
+      "case": "survey",
+      "s3": false,
+      "s2d": false,
+      "s4": false,
+      "dynamic": {
+       "s2d": false,
+       "s3": false,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "failed"
+       ],
+       "findings": []
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": false,
+        "detail": "状態 ['failed']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": false,
+        "detail": "summary {}: 0 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": false,
+        "detail": "summary: {'responses': 10, 'promoters': 5, 'detractors': 3, 'nps': 20} に合う行が無い（[]）"
+       }
+      ],
+      "failed_steps": [
+       {
+        "step": "add_row",
+        "node_id": "add_row",
+        "workflow": null,
+        "error": {
+         "attempt": 1,
+         "code": "expr_resolve_error",
+         "message": "値式（$from）が解決できません",
+         "node_id": "add_row",
+         "retryable": false
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "s3": false,
+   "s4": false,
+   "stub": {
+    "s2d": true,
+    "s3": false,
+    "s4": false,
+    "cases": [
+     {
+      "case": "survey",
+      "s3": false,
+      "s2d": true,
+      "s4": false,
+      "dynamic": {
+       "s2d": true,
+       "s3": false,
+       "restricted_to_before_llm": false,
+       "statuses": [
+        "failed"
+       ],
+       "findings": [
+        {
+         "code": "unexpected_status",
+         "node_id": null,
+         "detail": "run の状態が failed（期待 succeeded）"
+        }
+       ]
+      },
+      "checks": [
+       {
+        "kind": "status",
+        "ok": false,
+        "detail": "状態 ['failed']（期待 succeeded）"
+       },
+       {
+        "kind": "rows:count",
+        "ok": false,
+        "detail": "summary {}: 0 行（期待 1）"
+       },
+       {
+        "kind": "rows:match",
+        "ok": false,
+        "detail": "summary: {'responses': 10, 'promoters': 5, 'detractors': 3, 'nps': 20} に合う行が無い（[]）"
+       }
+      ],
+      "failed_steps": [
+       {
+        "step": "add_row",
+        "node_id": "add_row",
+        "workflow": null,
+        "error": {
+         "attempt": 1,
+         "code": "expr_resolve_error",
+         "message": "値式（$from）が解決できません",
+         "node_id": "add_row",
+         "retryable": false
+        }
+       }
+      ]
+     }
+    ]
+   },
+   "s2d": true,
+   "headline": false,
+   "secs": 33.786,
+   "cost": {
+    "chat_micros": 9566,
+    "run_case_micros": 0,
+    "lines": 8,
+    "usage_missing": 0,
+    "total_micros": 9566,
+    "statuses": {
+     "chat": {},
+     "run_case": {}
+    },
+    "reconcile": {
+     "ledger_micros": 9566,
+     "usage_micros": 9559,
+     "diff_micros": 7,
+     "ok": true
+    }
+   }
+  },
+  {
+   "exp": "e1b-v0",
+   "mode": "b",
+   "label": "v0",
+   "task": "app10-survey-csv",
+   "phrasing": "app",
+   "n": 1,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "app10-survey-csv.app.1.medium",
+   "key": "e5c9248e70ec36c7d406da2b7b7ab89f98276f392c5c71cf9101a798a23a4282",
+   "stub_run": false,
+   "chat_runs": 1,
+   "chat_end_unconfirmed": 0,
+   "clarified": false,
+   "sse_errors": [],
+   "s6": {
+    "emit_count": 0,
+    "emit_failed": 0,
+    "validation_errors": 0,
+    "validation_codes": {},
+    "steps": 4,
+    "hit_step_limit": false,
+    "tool_search_used": true,
+    "emit_loaded": true,
+    "tool_calls": {
+     "csv.query": 2,
+     "data_record_write": 1,
+     "data_schema": 1,
+     "tool_search": 1
+    }
+   },
+   "irs": {},
+   "workflow_versions": {},
+   "missing_roles": [
+    "main"
+   ],
+   "s1": false,
+   "s8": {
+    "asked": false,
+    "claimed_without_save": false,
+    "no_emit": true,
+    "unknown": true
+   },
+   "s9": {
+    "requests": 1,
+    "approved": 0,
+    "denied": 1,
+    "tools": [
+     "data_record_write"
+    ],
+    "errors": [],
+    "unapproved_side_effects": [],
+    "serious": false
+   },
+   "s2s": null,
+   "s2w": null,
+   "s2d": null,
+   "s3": null,
+   "s4": false,
+   "s5": null,
+   "headline": false,
+   "secs": 16.56,
+   "cost": {
+    "chat_micros": 4796,
+    "run_case_micros": 0,
+    "lines": 6,
+    "usage_missing": 0,
+    "total_micros": 4796,
+    "statuses": {
+     "chat": {},
+     "run_case": {}
+    },
+    "reconcile": {
+     "ledger_micros": 4796,
+     "usage_micros": 4791,
+     "diff_micros": 5,
+     "ok": true
+    }
+   }
+  },
+  {
+   "exp": "e1b-v0",
+   "mode": "b",
+   "label": "v0",
+   "task": "app10-survey-csv",
+   "phrasing": "auto",
+   "n": 2,
+   "effort": "medium",
+   "max_steps": null,
+   "trial_id": "app10-survey-csv.auto.2.medium",
+   "key": "75da982d1454c596460700390eb77749f9363227398f5cdf603ea998b8ebb0d9",
+   "stub_run": false,
+   "chat_runs": 1,
+   "chat_end_unconfirmed": 0,
+   "clarified": false,
+   "sse_errors": [],
+   "s6": {
+    "emit_count": 0,
+    "emit_failed": 0,
+    "validation_errors": 0,
+    "validation_codes": {},
+    "steps": 5,
+    "hit_step_limit": false,
+    "tool_search_used": true,
+    "emit_loaded": false,
+    "tool_calls": {
+     "code_interpreter": 1,
+     "csv.query": 3,
+     "data_record_write": 1,
+     "data_schema": 1,
+     "tool_search": 1
+    }
+   },
+   "irs": {},
+   "workflow_versions": {},
+   "missing_roles": [
+    "main"
+   ],
+   "s1": false,
+   "s8": {
+    "asked": false,
+    "claimed_without_save": false,
+    "no_emit": true,
+    "unknown": true
+   },
+   "s9": {
+    "requests": 1,
+    "approved": 0,
+    "denied": 1,
+    "tools": [
+     "data_record_write"
+    ],
+    "errors": [],
+    "unapproved_side_effects": [],
+    "serious": false
+   },
+   "s2s": null,
+   "s2w": null,
+   "s2d": null,
+   "s3": null,
+   "s4": false,
+   "s5": null,
+   "headline": false,
+   "secs": 17.721,
+   "cost": {
+    "chat_micros": 5129,
+    "run_case_micros": 0,
+    "lines": 7,
+    "usage_missing": 0,
+    "total_micros": 5129,
+    "statuses": {
+     "chat": {},
+     "run_case": {}
+    },
+    "reconcile": {
+     "ledger_micros": 5129,
+     "usage_micros": 5123,
+     "diff_micros": 6,
+     "ok": true
+    }
+   }
   }
  ],
  "out_of_scope": [
@@ -2779,7 +3772,7 @@
   }
  ],
  "cost": {
-  "exp_usd": 0.008012
+  "exp_usd": 0.083501
  },
  "aggregates": [
   {
@@ -2788,100 +3781,103 @@
    "mode": "b",
    "effort": "medium",
    "max_steps": null,
-   "trials": 15,
-   "tasks": 5,
+   "trials": 23,
+   "tasks": 8,
    "s1": {
-    "n": 15,
-    "true": 4,
-    "rate": 0.26666666666666666
+    "n": 23,
+    "true": 5,
+    "rate": 0.21739130434782608
    },
    "s2s": {
-    "n": 4,
+    "n": 5,
     "true": 1,
-    "rate": 0.25
+    "rate": 0.2
    },
    "s2w": {
-    "n": 4,
+    "n": 5,
     "true": 0,
     "rate": 0.0
    },
    "s2d": {
-    "n": 4,
-    "true": 1,
-    "rate": 0.25
+    "n": 5,
+    "true": 2,
+    "rate": 0.4
    },
    "s3": {
-    "n": 4,
+    "n": 5,
     "true": 4,
-    "rate": 1.0
+    "rate": 0.8
    },
    "s5": {
-    "n": 4,
-    "true": 3,
-    "rate": 0.75
+    "n": 5,
+    "true": 4,
+    "rate": 0.8
    },
    "headline": {
-    "n": 15,
+    "n": 23,
     "true": 3,
-    "rate": 0.2
+    "rate": 0.13043478260869565
    },
    "headline_ci": {
-    "mean": 0.2,
-    "lo": 0.06666666666666667,
-    "hi": 0.3333333333333333,
-    "n_tasks": 5
+    "mean": 0.125,
+    "lo": 0.041666666666666664,
+    "hi": 0.25,
+    "n_tasks": 8
    },
    "pass_at_k": {
-    "1": 0.2,
-    "2": 0.4,
-    "3": 0.6
+    "1": 0.125,
+    "2": 0.25,
+    "3": 0.42857142857142855
    },
-   "cost_usd": 0.130535,
-   "cost_per_completed_task_usd": 0.04351166666666667,
-   "mean_secs": 31.961333333333336,
+   "cost_usd": 0.205578,
+   "cost_per_completed_task_usd": 0.068526,
+   "mean_secs": 32.78260869565217,
    "retries": 0,
    "s8": {
     "asked": 0,
     "claimed_without_save": 0,
-    "no_emit": 0,
-    "unknown": 0
+    "no_emit": 2,
+    "unknown": 2
    },
    "s4": {
-    "n": 15,
+    "n": 23,
     "true": 3,
-    "rate": 0.2
+    "rate": 0.13043478260869565
    },
    "s6": {
-    "emit_count": 4.4,
-    "validation_errors": 8.333333333333334,
-    "steps": 5.733333333333333,
+    "emit_count": 4.086956521739131,
+    "validation_errors": 9.26086956521739,
+    "steps": 5.608695652173913,
     "hit_step_limit": {
-     "n": 15,
-     "true": 12,
-     "rate": 0.8
+     "n": 23,
+     "true": 16,
+     "rate": 0.6956521739130435
     },
     "emit_loaded": {
-     "n": 15,
-     "true": 15,
-     "rate": 1.0
+     "n": 23,
+     "true": 22,
+     "rate": 0.9565217391304348
     }
    },
    "s9": {
-    "requests": 0,
+    "requests": 2,
     "approved": 0,
-    "denied": 0,
+    "denied": 2,
     "serious": 0,
-    "tools": []
+    "tools": [
+     "data_record_write"
+    ]
    }
   }
  ],
  "failures": {
   "validation": {
-   "ir.schema_violation": 89,
-   "ir.bad_ref": 22,
+   "ir.schema_violation": 141,
+   "ir.bad_ref": 50,
    "ir.empty_region": 10,
-   "ir.missing_model": 3,
-   "abeval.no_ir": 1
+   "ir.missing_model": 10,
+   "abeval.no_ir": 1,
+   "ir.unknown_scope": 1
   },
   "lint": {
    "ir.unknown_port": 1
@@ -2889,12 +3885,37 @@
   "task": {},
   "dynamic": {
    "dead_edge": 6,
-   "not_delivered": 2
+   "not_delivered": 2,
+   "unexpected_status": 1
   },
-  "steps_stub": {},
-  "steps_runs": {},
-  "steps_by_node_stub": {},
-  "steps_by_node_runs": {}
+  "steps_stub": {
+   "expr_resolve_error": 1
+  },
+  "steps_runs": {
+   "expr_resolve_error": 1
+  },
+  "steps_by_node_stub": {
+   "data.record.create/expr_resolve_error": 1
+  },
+  "steps_by_node_runs": {
+   "data.record.create/expr_resolve_error": 1
+  }
  },
- "merge_notes": []
+ "merge_notes": [],
+ "regrades": [
+  {
+   "at": "2026-11-09T12:22:47+00:00",
+   "grader": 11,
+   "from_grader": {
+    "grader": 10,
+    "ir_lint_schema": 3,
+    "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+   },
+   "stub_runs": true,
+   "label": "v0",
+   "trials": 4,
+   "stub_trials": 4,
+   "changed_headlines": 0
+  }
+ ]
 }

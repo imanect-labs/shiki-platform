@@ -120,9 +120,14 @@
   }
  },
  "grader": {
-  "grader": 7,
+  "grader": 11,
   "ir_lint_schema": 3,
-  "ir_lint_sha256": "2d821bff376849e7617117161990404080e84693efc384505f15e989927c101f"
+  "ir_lint_sha256": "4b66092e29ab4f1999b0b8e6337542ffa993ef0116de4eb5bb2d811f02d39e36",
+  "ir_lint_build": {
+   "commit": "d5a215b672d7049dc6eba743833c2cce41c00b67",
+   "dirty": false,
+   "built_at": "2026-11-09T11:54:12+00:00"
+  }
  },
  "conditions": [
   "vn/a/medium"
@@ -339,12 +344,12 @@
        {
         "kind": "files:count",
         "ok": true,
-        "detail": "out/^要約-(?:2026\\-11\\-07)( \\(\\d+\\))?\\.md$: 1 件（期待 1・増えたもの ['要約-2026-11-07.md']）"
+        "detail": "out/^要約-(?:2026\\-11\\-09)( \\(\\d+\\))?\\.md$: 1 件（期待 1・増えたもの ['要約-2026-11-09.md']）"
        },
        {
         "kind": "files:contains",
         "ok": true,
-        "detail": "out/^要約-(?:2026\\-11\\-07)( \\(\\d+\\))?\\.md$ に '会議室の予約方法' がある"
+        "detail": "out/^要約-(?:2026\\-11\\-09)( \\(\\d+\\))?\\.md$ に '会議室の予約方法' がある"
        }
       ],
       "failed_steps": []
@@ -352,7 +357,26 @@
     ]
    },
    "headline": true,
-   "from_cache": false
+   "from_cache": false,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 7,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "2d821bff376849e7617117161990404080e84693efc384505f15e989927c101f"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e0a",
@@ -590,12 +614,12 @@
        {
         "kind": "files:count",
         "ok": true,
-        "detail": "out/^要約-(?:2026\\-11\\-07)( \\(\\d+\\))?\\.md$: 1 件（期待 1・増えたもの ['要約-2026-11-07 (2).md']）"
+        "detail": "out/^要約-(?:2026\\-11\\-09)( \\(\\d+\\))?\\.md$: 1 件（期待 1・増えたもの ['要約-2026-11-09.md']）"
        },
        {
         "kind": "files:contains",
         "ok": true,
-        "detail": "out/^要約-(?:2026\\-11\\-07)( \\(\\d+\\))?\\.md$ に '会議室の予約方法' がある"
+        "detail": "out/^要約-(?:2026\\-11\\-09)( \\(\\d+\\))?\\.md$ に '会議室の予約方法' がある"
        }
       ],
       "failed_steps": []
@@ -603,7 +627,26 @@
     ]
    },
    "headline": true,
-   "from_cache": false
+   "from_cache": false,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 7,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "2d821bff376849e7617117161990404080e84693efc384505f15e989927c101f"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e0a",
@@ -840,12 +883,12 @@
        {
         "kind": "files:count",
         "ok": true,
-        "detail": "out/^要約-(?:2026\\-11\\-07)( \\(\\d+\\))?\\.md$: 1 件（期待 1・増えたもの ['要約-2026-11-07 (3).md']）"
+        "detail": "out/^要約-(?:2026\\-11\\-09)( \\(\\d+\\))?\\.md$: 1 件（期待 1・増えたもの ['要約-2026-11-09.md']）"
        },
        {
         "kind": "files:contains",
         "ok": true,
-        "detail": "out/^要約-(?:2026\\-11\\-07)( \\(\\d+\\))?\\.md$ に '会議室の予約方法' がある"
+        "detail": "out/^要約-(?:2026\\-11\\-09)( \\(\\d+\\))?\\.md$ に '会議室の予約方法' がある"
        }
       ],
       "failed_steps": []
@@ -853,7 +896,26 @@
     ]
    },
    "headline": true,
-   "from_cache": false
+   "from_cache": false,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 7,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "2d821bff376849e7617117161990404080e84693efc384505f15e989927c101f"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e0a",
@@ -1194,7 +1256,26 @@
     ]
    },
    "headline": true,
-   "from_cache": false
+   "from_cache": false,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 7,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "2d821bff376849e7617117161990404080e84693efc384505f15e989927c101f"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e0a",
@@ -1620,7 +1701,26 @@
     ]
    },
    "headline": true,
-   "from_cache": false
+   "from_cache": false,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 7,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "2d821bff376849e7617117161990404080e84693efc384505f15e989927c101f"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e0a",
@@ -1859,7 +1959,24 @@
    "s2d": null,
    "s3": null,
    "headline": false,
-   "from_cache": false
+   "from_cache": false,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 7,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "2d821bff376849e7617117161990404080e84693efc384505f15e989927c101f"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5"
+    ],
+    "kept": [
+     "s1"
+    ],
+    "note_s2d": "S2d は前の採点のまま（stub の配管を流し直していない）"
+   }
   },
   {
    "exp": "e0a",
@@ -2201,7 +2318,26 @@
     ]
    },
    "headline": false,
-   "from_cache": false
+   "from_cache": false,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 7,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "2d821bff376849e7617117161990404080e84693efc384505f15e989927c101f"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e0a",
@@ -2482,7 +2618,24 @@
    "s2d": null,
    "s3": null,
    "headline": false,
-   "from_cache": false
+   "from_cache": false,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 7,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "2d821bff376849e7617117161990404080e84693efc384505f15e989927c101f"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5"
+    ],
+    "kept": [
+     "s1"
+    ],
+    "note_s2d": "S2d は前の採点のまま（stub の配管を流し直していない）"
+   }
   },
   {
    "exp": "e0a",
@@ -2879,7 +3032,7 @@
        {
         "kind": "rows:match",
         "ok": true,
-        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'loaned_on': {'$one_of': ['2026-11-07']}} に合う行がある（[{'borrower': '松本', 'code': 'E-01', 'loaned_on': '2026-11-07'}]）"
+        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'loaned_on': {'$one_of': ['2026-11-09']}} に合う行がある（[{'borrower': '松本', 'code': 'E-01', 'loaned_on': '2026-11-09'}]）"
        }
       ],
       "failed_steps": []
@@ -2920,7 +3073,26 @@
     ]
    },
    "headline": true,
-   "from_cache": false
+   "from_cache": false,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 7,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "2d821bff376849e7617117161990404080e84693efc384505f15e989927c101f"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e0a",
@@ -3238,7 +3410,7 @@
        {
         "kind": "rows:match",
         "ok": true,
-        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'loaned_on': {'$one_of': ['2026-11-07']}} に合う行がある（[{'borrower': '松本', 'code': 'E-01', 'loaned_on': '2026-11-07'}]）"
+        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'loaned_on': {'$one_of': ['2026-11-09']}} に合う行がある（[{'borrower': '松本', 'code': 'E-01', 'loaned_on': '2026-11-09'}]）"
        }
       ],
       "failed_steps": []
@@ -3279,7 +3451,26 @@
     ]
    },
    "headline": true,
-   "from_cache": false
+   "from_cache": false,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 7,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "2d821bff376849e7617117161990404080e84693efc384505f15e989927c101f"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e0a",
@@ -3633,7 +3824,7 @@
        {
         "kind": "rows:match",
         "ok": false,
-        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'loaned_on': {'$one_of': ['2026-11-07']}} に合う行が無い（[]）"
+        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'loaned_on': {'$one_of': ['2026-11-09']}} に合う行が無い（[]）"
        }
       ],
       "failed_steps": [
@@ -3687,7 +3878,26 @@
     ]
    },
    "headline": false,
-   "from_cache": false
+   "from_cache": false,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 7,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "2d821bff376849e7617117161990404080e84693efc384505f15e989927c101f"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   }
  ],
  "out_of_scope": [],
@@ -3785,5 +3995,21 @@
    "data.record.update/invalid": 1
   },
   "steps_by_node_runs": {}
- }
+ },
+ "regrades": [
+  {
+   "at": "2026-11-09T12:33:30+00:00",
+   "grader": 11,
+   "from_grader": {
+    "grader": 7,
+    "ir_lint_schema": 3,
+    "ir_lint_sha256": "2d821bff376849e7617117161990404080e84693efc384505f15e989927c101f"
+   },
+   "stub_runs": true,
+   "label": "vn",
+   "trials": 11,
+   "stub_trials": 9,
+   "changed_headlines": 0
+  }
+ ]
 }

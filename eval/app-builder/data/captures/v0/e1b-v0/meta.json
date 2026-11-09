@@ -1,5 +1,5 @@
 {
- "captured_at": "2026-11-07T06:18:56+00:00",
+ "captured_at": "2026-11-09T13:47:58+00:00",
  "changed_from_previous": [],
  "date_note_found": true,
  "exp": "e1b-v0",
@@ -21,19 +21,19 @@
    "csv": [],
    "folders": [],
    "tables": [
-    "通常の申請",
-    "高額の申請"
+    "問い合わせ",
+    "担当割り当て"
    ]
   },
   "llm_config_sha": "17b0be22fe40b55fe1eed7bfa7a23487dfa031c88d79c3871a6114d8575971fb",
   "system_sha": "4877a5dd2488894701495900954c85292eb3adca4b2916ebfa0560c604fb05bc",
-  "tools_sha": "a6e12cd5c02acbfb20507d8b6139b1ae9552e275815dc133c50d2afdd0ac5243",
+  "tools_sha": "717f4835f86de728d4a3a4fb055dfd7f3d967092a336e572b8728576f301f9ff",
   "workflow_models": [
    "claude-haiku-5-5",
    "default"
   ]
  },
- "fingerprint_sha": "43ecfa8c64e6eb24ab2141a66523e977d9cc52d31770be6bcdfff6ef6e6e2c5d",
+ "fingerprint_sha": "f1ea2bb34e1f51124354391b8277430f796dda47a07814fbb49d54ed4dc6385c",
  "fixed_date": "2026-11-04",
  "label": "v0",
  "llm_config_key_like_items": [
@@ -42,16 +42,16 @@
  "max_tokens": 8192,
  "model": "claude-haiku-5-5",
  "original_dates": [
-  "2026-11-07"
+  "2026-11-09"
  ],
  "other_uuids": 0,
  "output_config": {
   "effort": "medium"
  },
  "sha": {
-  "capture": "eab2739c95d65f2425dde638115464b9a44a30448fc04ad3adde1b3380659905",
+  "capture": "523c039612e63b393eb33e706398e8ea8f463d76e009260dcd0a2a9e574e0c46",
   "system": "4877a5dd2488894701495900954c85292eb3adca4b2916ebfa0560c604fb05bc",
-  "tools": "a6e12cd5c02acbfb20507d8b6139b1ae9552e275815dc133c50d2afdd0ac5243"
+  "tools": "717f4835f86de728d4a3a4fb055dfd7f3d967092a336e572b8728576f301f9ff"
  },
  "thinking": {
   "type": "adaptive"

@@ -252,9 +252,14 @@
   }
  },
  "grader": {
-  "grader": 10,
+  "grader": 11,
   "ir_lint_schema": 3,
-  "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+  "ir_lint_sha256": "4b66092e29ab4f1999b0b8e6337542ffa993ef0116de4eb5bb2d811f02d39e36",
+  "ir_lint_build": {
+   "commit": "d5a215b672d7049dc6eba743833c2cce41c00b67",
+   "dirty": false,
+   "built_at": "2026-11-09T11:54:12+00:00"
+  }
  },
  "conditions": [
   "vn/a/medium"
@@ -471,12 +476,12 @@
        {
         "kind": "files:count",
         "ok": true,
-        "detail": "out/^要約-(?:2026\\-11\\-07)( \\(\\d+\\))?\\.md$: 1 件（期待 1・増えたもの ['要約-2026-11-07.md']）"
+        "detail": "out/^要約-(?:2026\\-11\\-09)( \\(\\d+\\))?\\.md$: 1 件（期待 1・増えたもの ['要約-2026-11-09.md']）"
        },
        {
         "kind": "files:contains",
         "ok": true,
-        "detail": "out/^要約-(?:2026\\-11\\-07)( \\(\\d+\\))?\\.md$ に '会議室の予約方法' がある"
+        "detail": "out/^要約-(?:2026\\-11\\-09)( \\(\\d+\\))?\\.md$ に '会議室の予約方法' がある"
        }
       ],
       "failed_steps": []
@@ -484,7 +489,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -697,12 +721,12 @@
        {
         "kind": "files:count",
         "ok": true,
-        "detail": "out/^要約-(?:2026\\-11\\-07)( \\(\\d+\\))?\\.md$: 1 件（期待 1・増えたもの ['要約-2026-11-07.md']）"
+        "detail": "out/^要約-(?:2026\\-11\\-09)( \\(\\d+\\))?\\.md$: 1 件（期待 1・増えたもの ['要約-2026-11-09.md']）"
        },
        {
         "kind": "files:contains",
         "ok": true,
-        "detail": "out/^要約-(?:2026\\-11\\-07)( \\(\\d+\\))?\\.md$ に '会議室の予約方法' がある"
+        "detail": "out/^要約-(?:2026\\-11\\-09)( \\(\\d+\\))?\\.md$ に '会議室の予約方法' がある"
        }
       ],
       "failed_steps": []
@@ -710,7 +734,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -923,12 +966,12 @@
        {
         "kind": "files:count",
         "ok": true,
-        "detail": "out/^要約-(?:2026\\-11\\-07)( \\(\\d+\\))?\\.md$: 1 件（期待 1・増えたもの ['要約-2026-11-07.md']）"
+        "detail": "out/^要約-(?:2026\\-11\\-09)( \\(\\d+\\))?\\.md$: 1 件（期待 1・増えたもの ['要約-2026-11-09.md']）"
        },
        {
         "kind": "files:contains",
         "ok": true,
-        "detail": "out/^要約-(?:2026\\-11\\-07)( \\(\\d+\\))?\\.md$ に '会議室の予約方法' がある"
+        "detail": "out/^要約-(?:2026\\-11\\-09)( \\(\\d+\\))?\\.md$ に '会議室の予約方法' がある"
        }
       ],
       "failed_steps": []
@@ -936,7 +979,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -1173,12 +1235,12 @@
        {
         "kind": "files:count",
         "ok": true,
-        "detail": "out/^要約-(?:2026\\-11\\-07)( \\(\\d+\\))?\\.md$: 1 件（期待 1・増えたもの ['要約-2026-11-07.md']）"
+        "detail": "out/^要約-(?:2026\\-11\\-09)( \\(\\d+\\))?\\.md$: 1 件（期待 1・増えたもの ['要約-2026-11-09.md']）"
        },
        {
         "kind": "files:contains",
         "ok": true,
-        "detail": "out/^要約-(?:2026\\-11\\-07)( \\(\\d+\\))?\\.md$ に '会議室の予約方法' がある"
+        "detail": "out/^要約-(?:2026\\-11\\-09)( \\(\\d+\\))?\\.md$ に '会議室の予約方法' がある"
        }
       ],
       "failed_steps": []
@@ -1186,7 +1248,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -1399,12 +1480,12 @@
        {
         "kind": "files:count",
         "ok": true,
-        "detail": "out/^要約-(?:2026\\-11\\-07)( \\(\\d+\\))?\\.md$: 1 件（期待 1・増えたもの ['要約-2026-11-07.md']）"
+        "detail": "out/^要約-(?:2026\\-11\\-09)( \\(\\d+\\))?\\.md$: 1 件（期待 1・増えたもの ['要約-2026-11-09.md']）"
        },
        {
         "kind": "files:contains",
         "ok": true,
-        "detail": "out/^要約-(?:2026\\-11\\-07)( \\(\\d+\\))?\\.md$ に '会議室の予約方法' がある"
+        "detail": "out/^要約-(?:2026\\-11\\-09)( \\(\\d+\\))?\\.md$ に '会議室の予約方法' がある"
        }
       ],
       "failed_steps": []
@@ -1412,7 +1493,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -1649,12 +1749,12 @@
        {
         "kind": "files:count",
         "ok": true,
-        "detail": "out/^要約-(?:2026\\-11\\-07)( \\(\\d+\\))?\\.md$: 1 件（期待 1・増えたもの ['要約-2026-11-07.md']）"
+        "detail": "out/^要約-(?:2026\\-11\\-09)( \\(\\d+\\))?\\.md$: 1 件（期待 1・増えたもの ['要約-2026-11-09.md']）"
        },
        {
         "kind": "files:contains",
         "ok": true,
-        "detail": "out/^要約-(?:2026\\-11\\-07)( \\(\\d+\\))?\\.md$ に '会議室の予約方法' がある"
+        "detail": "out/^要約-(?:2026\\-11\\-09)( \\(\\d+\\))?\\.md$ に '会議室の予約方法' がある"
        }
       ],
       "failed_steps": []
@@ -1662,7 +1762,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -1901,12 +2020,12 @@
        {
         "kind": "files:count",
         "ok": true,
-        "detail": "out/^要約-(?:2026\\-11\\-07)( \\(\\d+\\))?\\.md$: 1 件（期待 1・増えたもの ['要約-2026-11-07.md']）"
+        "detail": "out/^要約-(?:2026\\-11\\-09)( \\(\\d+\\))?\\.md$: 1 件（期待 1・増えたもの ['要約-2026-11-09.md']）"
        },
        {
         "kind": "files:contains",
         "ok": true,
-        "detail": "out/^要約-(?:2026\\-11\\-07)( \\(\\d+\\))?\\.md$ に '会議室の予約方法' がある"
+        "detail": "out/^要約-(?:2026\\-11\\-09)( \\(\\d+\\))?\\.md$ に '会議室の予約方法' がある"
        }
       ],
       "failed_steps": []
@@ -1914,7 +2033,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -2151,12 +2289,12 @@
        {
         "kind": "files:count",
         "ok": true,
-        "detail": "out/^要約-(?:2026\\-11\\-07)( \\(\\d+\\))?\\.md$: 1 件（期待 1・増えたもの ['要約-2026-11-07.md']）"
+        "detail": "out/^要約-(?:2026\\-11\\-09)( \\(\\d+\\))?\\.md$: 1 件（期待 1・増えたもの ['要約-2026-11-09.md']）"
        },
        {
         "kind": "files:contains",
         "ok": true,
-        "detail": "out/^要約-(?:2026\\-11\\-07)( \\(\\d+\\))?\\.md$ に '会議室の予約方法' がある"
+        "detail": "out/^要約-(?:2026\\-11\\-09)( \\(\\d+\\))?\\.md$ に '会議室の予約方法' がある"
        }
       ],
       "failed_steps": []
@@ -2164,7 +2302,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -2377,12 +2534,12 @@
        {
         "kind": "files:count",
         "ok": true,
-        "detail": "out/^要約-(?:2026\\-11\\-07)( \\(\\d+\\))?\\.md$: 1 件（期待 1・増えたもの ['要約-2026-11-07.md']）"
+        "detail": "out/^要約-(?:2026\\-11\\-09)( \\(\\d+\\))?\\.md$: 1 件（期待 1・増えたもの ['要約-2026-11-09.md']）"
        },
        {
         "kind": "files:contains",
         "ok": true,
-        "detail": "out/^要約-(?:2026\\-11\\-07)( \\(\\d+\\))?\\.md$ に '会議室の予約方法' がある"
+        "detail": "out/^要約-(?:2026\\-11\\-09)( \\(\\d+\\))?\\.md$ に '会議室の予約方法' がある"
        }
       ],
       "failed_steps": []
@@ -2390,7 +2547,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -2706,7 +2882,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -3022,7 +3217,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -3338,7 +3552,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -3712,7 +3945,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -4086,7 +4338,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -4460,7 +4731,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -4834,7 +5124,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -5184,7 +5493,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -5500,7 +5828,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -5830,7 +6177,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -6165,7 +6531,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -6471,7 +6856,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -6780,7 +7184,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -7211,7 +7634,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -7487,7 +7929,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -7658,7 +8119,24 @@
    "s2d": null,
    "s3": null,
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5"
+    ],
+    "kept": [
+     "s1"
+    ],
+    "note_s2d": "S2d は前の採点のまま（stub の配管を流し直していない）"
+   }
   },
   {
    "exp": "e1a-vn",
@@ -7993,7 +8471,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -8223,7 +8720,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -8434,7 +8950,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -8663,7 +9198,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -8907,7 +9461,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -9133,17 +9706,17 @@
        {
         "kind": "rows:match",
         "ok": true,
-        "detail": "roster: {'event': '新人研修', 'name': '田中'} に合う行がある（[{'event': '新人研修', 'name': '山本'}, {'event': '新人研修', 'name': '田中'}, {'event': '新人研修', 'name': '中村'}]）"
+        "detail": "roster: {'event': '新人研修', 'name': '田中'} に合う行がある（[{'event': '新人研修', 'name': '中村'}, {'event': '新人研修', 'name': '山本'}, {'event': '新人研修', 'name': '田中'}]）"
        },
        {
         "kind": "rows:match",
         "ok": true,
-        "detail": "roster: {'event': '新人研修', 'name': '山本'} に合う行がある（[{'event': '新人研修', 'name': '山本'}, {'event': '新人研修', 'name': '田中'}, {'event': '新人研修', 'name': '中村'}]）"
+        "detail": "roster: {'event': '新人研修', 'name': '山本'} に合う行がある（[{'event': '新人研修', 'name': '中村'}, {'event': '新人研修', 'name': '山本'}, {'event': '新人研修', 'name': '田中'}]）"
        },
        {
         "kind": "rows:match",
         "ok": true,
-        "detail": "roster: {'event': '新人研修', 'name': '中村'} に合う行がある（[{'event': '新人研修', 'name': '山本'}, {'event': '新人研修', 'name': '田中'}, {'event': '新人研修', 'name': '中村'}]）"
+        "detail": "roster: {'event': '新人研修', 'name': '中村'} に合う行がある（[{'event': '新人研修', 'name': '中村'}, {'event': '新人研修', 'name': '山本'}, {'event': '新人研修', 'name': '田中'}]）"
        }
       ],
       "failed_steps": []
@@ -9151,7 +9724,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -9394,7 +9986,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -9605,7 +10216,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -9842,7 +10472,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -10053,7 +10702,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -10394,7 +11062,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -10719,7 +11406,24 @@
    "s2d": null,
    "s3": null,
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5"
+    ],
+    "kept": [
+     "s1"
+    ],
+    "note_s2d": "S2d は前の採点のまま（stub の配管を流し直していない）"
+   }
   },
   {
    "exp": "e1a-vn",
@@ -11095,7 +11799,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -11339,7 +12062,24 @@
    "s2d": null,
    "s3": null,
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5"
+    ],
+    "kept": [
+     "s1"
+    ],
+    "note_s2d": "S2d は前の採点のまま（stub の配管を流し直していない）"
+   }
   },
   {
    "exp": "e1a-vn",
@@ -11765,7 +12505,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -12122,7 +12881,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -12549,7 +13327,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -12862,7 +13659,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -13238,7 +14054,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -13464,12 +14299,12 @@
        {
         "kind": "rows:match",
         "ok": true,
-        "detail": "journal: {'summary': '会議の弁当代', 'amount': 8000} に合う行がある（[{'amount': 8000, 'claim_id': 'd153468b-a5a4-4f50-83c3-bb4ba9165cb8', 'summary': '会議の弁当代'}, {'amount': 45000, 'claim_id': 'bce4a697-0e47-4700-88af-ea2548a078e1', 'summary': '出張の宿泊費'}]）"
+        "detail": "journal: {'summary': '会議の弁当代', 'amount': 8000} に合う行がある（[{'amount': 8000, 'claim_id': 'a4bf0f7e-b51f-42e8-a451-294f390f50d1', 'summary': '会議の弁当代'}, {'amount': 45000, 'claim_id': '1f357991-4b79-45c1-8079-ae859d376b3d', 'summary': '出張の宿泊費'}]）"
        },
        {
         "kind": "rows:match",
         "ok": true,
-        "detail": "journal: {'summary': '出張の宿泊費', 'amount': 45000} に合う行がある（[{'amount': 8000, 'claim_id': 'd153468b-a5a4-4f50-83c3-bb4ba9165cb8', 'summary': '会議の弁当代'}, {'amount': 45000, 'claim_id': 'bce4a697-0e47-4700-88af-ea2548a078e1', 'summary': '出張の宿泊費'}]）"
+        "detail": "journal: {'summary': '出張の宿泊費', 'amount': 45000} に合う行がある（[{'amount': 8000, 'claim_id': 'a4bf0f7e-b51f-42e8-a451-294f390f50d1', 'summary': '会議の弁当代'}, {'amount': 45000, 'claim_id': '1f357991-4b79-45c1-8079-ae859d376b3d', 'summary': '出張の宿泊費'}]）"
        },
        {
         "kind": "rows:count",
@@ -13502,7 +14337,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -13726,12 +14580,12 @@
        {
         "kind": "rows:match",
         "ok": true,
-        "detail": "journal: {'summary': '会議の弁当代', 'amount': 8000} に合う行がある（[{'amount': 8000, 'claim_id': '910dc74d-131a-4b60-89f7-d3daf00f648b', 'summary': '会議の弁当代'}, {'amount': 45000, 'claim_id': '86101490-c0f4-45c7-9b18-ec131a9ab3b9', 'summary': '出張の宿泊費'}]）"
+        "detail": "journal: {'summary': '会議の弁当代', 'amount': 8000} に合う行がある（[{'amount': 8000, 'claim_id': '7bbf9e6b-8685-41cb-bcbd-a85f4f635ae8', 'summary': '会議の弁当代'}, {'amount': 45000, 'claim_id': '51443e54-0d39-4d4c-82df-c0c85b8d6056', 'summary': '出張の宿泊費'}]）"
        },
        {
         "kind": "rows:match",
         "ok": true,
-        "detail": "journal: {'summary': '出張の宿泊費', 'amount': 45000} に合う行がある（[{'amount': 8000, 'claim_id': '910dc74d-131a-4b60-89f7-d3daf00f648b', 'summary': '会議の弁当代'}, {'amount': 45000, 'claim_id': '86101490-c0f4-45c7-9b18-ec131a9ab3b9', 'summary': '出張の宿泊費'}]）"
+        "detail": "journal: {'summary': '出張の宿泊費', 'amount': 45000} に合う行がある（[{'amount': 8000, 'claim_id': '7bbf9e6b-8685-41cb-bcbd-a85f4f635ae8', 'summary': '会議の弁当代'}, {'amount': 45000, 'claim_id': '51443e54-0d39-4d4c-82df-c0c85b8d6056', 'summary': '出張の宿泊費'}]）"
        },
        {
         "kind": "rows:count",
@@ -13764,7 +14618,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -13988,12 +14861,12 @@
        {
         "kind": "rows:match",
         "ok": true,
-        "detail": "journal: {'summary': '会議の弁当代', 'amount': 8000} に合う行がある（[{'amount': 8000, 'claim_id': 'f202179d-39c3-4456-b27d-097910098773', 'summary': '会議の弁当代'}, {'amount': 45000, 'claim_id': 'd4fb7a0d-b235-4f71-96ab-16fa61639683', 'summary': '出張の宿泊費'}]）"
+        "detail": "journal: {'summary': '会議の弁当代', 'amount': 8000} に合う行がある（[{'amount': 8000, 'claim_id': 'b72a3194-061b-4f0f-8c0b-06c5b5111d38', 'summary': '会議の弁当代'}, {'amount': 45000, 'claim_id': '7e09e4b9-5a19-4cc9-bf63-fea42c5d91ce', 'summary': '出張の宿泊費'}]）"
        },
        {
         "kind": "rows:match",
         "ok": true,
-        "detail": "journal: {'summary': '出張の宿泊費', 'amount': 45000} に合う行がある（[{'amount': 8000, 'claim_id': 'f202179d-39c3-4456-b27d-097910098773', 'summary': '会議の弁当代'}, {'amount': 45000, 'claim_id': 'd4fb7a0d-b235-4f71-96ab-16fa61639683', 'summary': '出張の宿泊費'}]）"
+        "detail": "journal: {'summary': '出張の宿泊費', 'amount': 45000} に合う行がある（[{'amount': 8000, 'claim_id': 'b72a3194-061b-4f0f-8c0b-06c5b5111d38', 'summary': '会議の弁当代'}, {'amount': 45000, 'claim_id': '7e09e4b9-5a19-4cc9-bf63-fea42c5d91ce', 'summary': '出張の宿泊費'}]）"
        },
        {
         "kind": "rows:count",
@@ -14026,7 +14899,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -14250,12 +15142,12 @@
        {
         "kind": "rows:match",
         "ok": true,
-        "detail": "journal: {'summary': '会議の弁当代', 'amount': 8000} に合う行がある（[{'amount': 8000, 'claim_id': '3fc24ce9-0824-43a5-9a35-e0d9a203a7f8', 'summary': '会議の弁当代'}, {'amount': 45000, 'claim_id': '31477ce3-1a1c-4373-b368-88a5fabe5da4', 'summary': '出張の宿泊費'}]）"
+        "detail": "journal: {'summary': '会議の弁当代', 'amount': 8000} に合う行がある（[{'amount': 8000, 'claim_id': '0beb8fc0-4f86-45f9-8372-d8d0ec24a0ac', 'summary': '会議の弁当代'}, {'amount': 45000, 'claim_id': '517613a8-35bd-4ee0-82a2-8f045360488e', 'summary': '出張の宿泊費'}]）"
        },
        {
         "kind": "rows:match",
         "ok": true,
-        "detail": "journal: {'summary': '出張の宿泊費', 'amount': 45000} に合う行がある（[{'amount': 8000, 'claim_id': '3fc24ce9-0824-43a5-9a35-e0d9a203a7f8', 'summary': '会議の弁当代'}, {'amount': 45000, 'claim_id': '31477ce3-1a1c-4373-b368-88a5fabe5da4', 'summary': '出張の宿泊費'}]）"
+        "detail": "journal: {'summary': '出張の宿泊費', 'amount': 45000} に合う行がある（[{'amount': 8000, 'claim_id': '0beb8fc0-4f86-45f9-8372-d8d0ec24a0ac', 'summary': '会議の弁当代'}, {'amount': 45000, 'claim_id': '517613a8-35bd-4ee0-82a2-8f045360488e', 'summary': '出張の宿泊費'}]）"
        },
        {
         "kind": "rows:count",
@@ -14288,7 +15180,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -14637,7 +15548,26 @@
     ]
    },
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -14861,12 +15791,12 @@
        {
         "kind": "rows:match",
         "ok": true,
-        "detail": "journal: {'summary': '会議の弁当代', 'amount': 8000} に合う行がある（[{'amount': 45000, 'claim_id': '58ac8d06-09b2-47c7-a532-509419ad6e10', 'summary': '出張の宿泊費'}, {'amount': 8000, 'claim_id': '34d7c9dc-ba16-4489-b7da-2cc76ba4903c', 'summary': '会議の弁当代'}]）"
+        "detail": "journal: {'summary': '会議の弁当代', 'amount': 8000} に合う行がある（[{'amount': 8000, 'claim_id': 'f2373eda-6364-42bb-97ae-f04945329f35', 'summary': '会議の弁当代'}, {'amount': 45000, 'claim_id': '7983757f-6151-4942-b1af-f58972fe3aad', 'summary': '出張の宿泊費'}]）"
        },
        {
         "kind": "rows:match",
         "ok": true,
-        "detail": "journal: {'summary': '出張の宿泊費', 'amount': 45000} に合う行がある（[{'amount': 45000, 'claim_id': '58ac8d06-09b2-47c7-a532-509419ad6e10', 'summary': '出張の宿泊費'}, {'amount': 8000, 'claim_id': '34d7c9dc-ba16-4489-b7da-2cc76ba4903c', 'summary': '会議の弁当代'}]）"
+        "detail": "journal: {'summary': '出張の宿泊費', 'amount': 45000} に合う行がある（[{'amount': 8000, 'claim_id': 'f2373eda-6364-42bb-97ae-f04945329f35', 'summary': '会議の弁当代'}, {'amount': 45000, 'claim_id': '7983757f-6151-4942-b1af-f58972fe3aad', 'summary': '出張の宿泊費'}]）"
        },
        {
         "kind": "rows:count",
@@ -14876,17 +15806,17 @@
        {
         "kind": "rows:match",
         "ok": true,
-        "detail": "claims: {'title': '会議の弁当代', 'status': '計上済'} に合う行がある（[{'amount': 45000, 'applicant': '加藤', 'approver': '高橋', 'status': '計上済', 'title': '出張の宿泊費'}, {'amount': 8000, 'applicant': '小林', 'approver': '高橋', 'status': '計上済', 'title': '会議の弁当代'}, {'amount': 3200, 'applicant': '吉田', 'approver': '高橋', 'status': '申請中', 'title': '書籍の購入'}]）"
+        "detail": "claims: {'title': '会議の弁当代', 'status': '計上済'} に合う行がある（[{'amount': 8000, 'applicant': '小林', 'approver': '高橋', 'status': '計上済', 'title': '会議の弁当代'}, {'amount': 45000, 'applicant': '加藤', 'approver': '高橋', 'status': '計上済', 'title': '出張の宿泊費'}, {'amount': 3200, 'applicant': '吉田', 'approver': '高橋', 'status': '申請中', 'title': '書籍の購入'}]）"
        },
        {
         "kind": "rows:match",
         "ok": true,
-        "detail": "claims: {'title': '出張の宿泊費', 'status': '計上済'} に合う行がある（[{'amount': 45000, 'applicant': '加藤', 'approver': '高橋', 'status': '計上済', 'title': '出張の宿泊費'}, {'amount': 8000, 'applicant': '小林', 'approver': '高橋', 'status': '計上済', 'title': '会議の弁当代'}, {'amount': 3200, 'applicant': '吉田', 'approver': '高橋', 'status': '申請中', 'title': '書籍の購入'}]）"
+        "detail": "claims: {'title': '出張の宿泊費', 'status': '計上済'} に合う行がある（[{'amount': 8000, 'applicant': '小林', 'approver': '高橋', 'status': '計上済', 'title': '会議の弁当代'}, {'amount': 45000, 'applicant': '加藤', 'approver': '高橋', 'status': '計上済', 'title': '出張の宿泊費'}, {'amount': 3200, 'applicant': '吉田', 'approver': '高橋', 'status': '申請中', 'title': '書籍の購入'}]）"
        },
        {
         "kind": "rows:match",
         "ok": true,
-        "detail": "claims: {'title': '書籍の購入', 'status': '申請中'} に合う行がある（[{'amount': 45000, 'applicant': '加藤', 'approver': '高橋', 'status': '計上済', 'title': '出張の宿泊費'}, {'amount': 8000, 'applicant': '小林', 'approver': '高橋', 'status': '計上済', 'title': '会議の弁当代'}, {'amount': 3200, 'applicant': '吉田', 'approver': '高橋', 'status': '申請中', 'title': '書籍の購入'}]）"
+        "detail": "claims: {'title': '書籍の購入', 'status': '申請中'} に合う行がある（[{'amount': 8000, 'applicant': '小林', 'approver': '高橋', 'status': '計上済', 'title': '会議の弁当代'}, {'amount': 45000, 'applicant': '加藤', 'approver': '高橋', 'status': '計上済', 'title': '出張の宿泊費'}, {'amount': 3200, 'applicant': '吉田', 'approver': '高橋', 'status': '申請中', 'title': '書籍の購入'}]）"
        },
        {
         "kind": "no_new_rows",
@@ -14899,7 +15829,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -15127,12 +16076,12 @@
        {
         "kind": "rows:match",
         "ok": true,
-        "detail": "journal: {'summary': '会議の弁当代', 'amount': 8000} に合う行がある（[{'amount': 8000, 'claim_id': '875b3260-75d3-49de-a55c-861b39ed74f7', 'summary': '会議の弁当代'}, {'amount': 45000, 'claim_id': '2ce77642-a469-43d4-8c25-f7ea866ad879', 'summary': '出張の宿泊費'}]）"
+        "detail": "journal: {'summary': '会議の弁当代', 'amount': 8000} に合う行がある（[{'amount': 45000, 'claim_id': '40b7b0f0-dff8-4a85-96fc-f8a2ac5db462', 'summary': '出張の宿泊費'}, {'amount': 8000, 'claim_id': 'f16e9ae3-21c1-46a5-9dc2-c2fd6c003159', 'summary': '会議の弁当代'}]）"
        },
        {
         "kind": "rows:match",
         "ok": true,
-        "detail": "journal: {'summary': '出張の宿泊費', 'amount': 45000} に合う行がある（[{'amount': 8000, 'claim_id': '875b3260-75d3-49de-a55c-861b39ed74f7', 'summary': '会議の弁当代'}, {'amount': 45000, 'claim_id': '2ce77642-a469-43d4-8c25-f7ea866ad879', 'summary': '出張の宿泊費'}]）"
+        "detail": "journal: {'summary': '出張の宿泊費', 'amount': 45000} に合う行がある（[{'amount': 45000, 'claim_id': '40b7b0f0-dff8-4a85-96fc-f8a2ac5db462', 'summary': '出張の宿泊費'}, {'amount': 8000, 'claim_id': 'f16e9ae3-21c1-46a5-9dc2-c2fd6c003159', 'summary': '会議の弁当代'}]）"
        },
        {
         "kind": "rows:count",
@@ -15142,17 +16091,17 @@
        {
         "kind": "rows:match",
         "ok": true,
-        "detail": "claims: {'title': '会議の弁当代', 'status': '計上済'} に合う行がある（[{'amount': 8000, 'applicant': '小林', 'approver': '高橋', 'status': '計上済', 'title': '会議の弁当代'}, {'amount': 45000, 'applicant': '加藤', 'approver': '高橋', 'status': '計上済', 'title': '出張の宿泊費'}, {'amount': 3200, 'applicant': '吉田', 'approver': '高橋', 'status': '申請中', 'title': '書籍の購入'}]）"
+        "detail": "claims: {'title': '会議の弁当代', 'status': '計上済'} に合う行がある（[{'amount': 45000, 'applicant': '加藤', 'approver': '高橋', 'status': '計上済', 'title': '出張の宿泊費'}, {'amount': 8000, 'applicant': '小林', 'approver': '高橋', 'status': '計上済', 'title': '会議の弁当代'}, {'amount': 3200, 'applicant': '吉田', 'approver': '高橋', 'status': '申請中', 'title': '書籍の購入'}]）"
        },
        {
         "kind": "rows:match",
         "ok": true,
-        "detail": "claims: {'title': '出張の宿泊費', 'status': '計上済'} に合う行がある（[{'amount': 8000, 'applicant': '小林', 'approver': '高橋', 'status': '計上済', 'title': '会議の弁当代'}, {'amount': 45000, 'applicant': '加藤', 'approver': '高橋', 'status': '計上済', 'title': '出張の宿泊費'}, {'amount': 3200, 'applicant': '吉田', 'approver': '高橋', 'status': '申請中', 'title': '書籍の購入'}]）"
+        "detail": "claims: {'title': '出張の宿泊費', 'status': '計上済'} に合う行がある（[{'amount': 45000, 'applicant': '加藤', 'approver': '高橋', 'status': '計上済', 'title': '出張の宿泊費'}, {'amount': 8000, 'applicant': '小林', 'approver': '高橋', 'status': '計上済', 'title': '会議の弁当代'}, {'amount': 3200, 'applicant': '吉田', 'approver': '高橋', 'status': '申請中', 'title': '書籍の購入'}]）"
        },
        {
         "kind": "rows:match",
         "ok": true,
-        "detail": "claims: {'title': '書籍の購入', 'status': '申請中'} に合う行がある（[{'amount': 8000, 'applicant': '小林', 'approver': '高橋', 'status': '計上済', 'title': '会議の弁当代'}, {'amount': 45000, 'applicant': '加藤', 'approver': '高橋', 'status': '計上済', 'title': '出張の宿泊費'}, {'amount': 3200, 'applicant': '吉田', 'approver': '高橋', 'status': '申請中', 'title': '書籍の購入'}]）"
+        "detail": "claims: {'title': '書籍の購入', 'status': '申請中'} に合う行がある（[{'amount': 45000, 'applicant': '加藤', 'approver': '高橋', 'status': '計上済', 'title': '出張の宿泊費'}, {'amount': 8000, 'applicant': '小林', 'approver': '高橋', 'status': '計上済', 'title': '会議の弁当代'}, {'amount': 3200, 'applicant': '吉田', 'approver': '高橋', 'status': '申請中', 'title': '書籍の購入'}]）"
        },
        {
         "kind": "no_new_rows",
@@ -15165,7 +16114,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -15389,12 +16357,12 @@
        {
         "kind": "rows:match",
         "ok": true,
-        "detail": "journal: {'summary': '会議の弁当代', 'amount': 8000} に合う行がある（[{'amount': 8000, 'claim_id': '751bfdc4-f661-496f-a649-4a1e0f22f17a', 'summary': '会議の弁当代'}, {'amount': 45000, 'claim_id': '5962b186-d1d9-4d66-8d89-4a3895632c92', 'summary': '出張の宿泊費'}]）"
+        "detail": "journal: {'summary': '会議の弁当代', 'amount': 8000} に合う行がある（[{'amount': 8000, 'claim_id': '78e2e334-c47e-40a6-b525-07a018f313c8', 'summary': '会議の弁当代'}, {'amount': 45000, 'claim_id': '4c7899c8-7f6e-45ad-aa90-d071acaa1d60', 'summary': '出張の宿泊費'}]）"
        },
        {
         "kind": "rows:match",
         "ok": true,
-        "detail": "journal: {'summary': '出張の宿泊費', 'amount': 45000} に合う行がある（[{'amount': 8000, 'claim_id': '751bfdc4-f661-496f-a649-4a1e0f22f17a', 'summary': '会議の弁当代'}, {'amount': 45000, 'claim_id': '5962b186-d1d9-4d66-8d89-4a3895632c92', 'summary': '出張の宿泊費'}]）"
+        "detail": "journal: {'summary': '出張の宿泊費', 'amount': 45000} に合う行がある（[{'amount': 8000, 'claim_id': '78e2e334-c47e-40a6-b525-07a018f313c8', 'summary': '会議の弁当代'}, {'amount': 45000, 'claim_id': '4c7899c8-7f6e-45ad-aa90-d071acaa1d60', 'summary': '出張の宿泊費'}]）"
        },
        {
         "kind": "rows:count",
@@ -15427,7 +16395,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -15784,7 +16771,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -16114,7 +17120,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -16465,7 +17490,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -16823,7 +17867,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -17176,7 +18239,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -17637,7 +18719,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -18044,7 +19145,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -18442,7 +19562,26 @@
     ]
    },
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -18749,7 +19888,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -19068,7 +20226,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -19379,7 +20556,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -19690,7 +20886,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -20002,7 +21217,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -20314,7 +21548,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -20625,7 +21878,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -20993,7 +22265,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -21309,7 +22600,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -21598,7 +22908,24 @@
    "s2d": null,
    "s3": null,
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5"
+    ],
+    "kept": [
+     "s1"
+    ],
+    "note_s2d": "S2d は前の採点のまま（stub の配管を流し直していない）"
+   }
   },
   {
    "exp": "e1a-vn",
@@ -22323,7 +23650,26 @@
     ]
    },
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -22819,7 +24165,26 @@
     ]
    },
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -23037,7 +24402,24 @@
    "s2d": null,
    "s3": null,
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5"
+    ],
+    "kept": [
+     "s1"
+    ],
+    "note_s2d": "S2d は前の採点のまま（stub の配管を流し直していない）"
+   }
   },
   {
    "exp": "e1a-vn",
@@ -23550,7 +24932,26 @@
     ]
    },
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -24085,7 +25486,24 @@
    "s2d": null,
    "s3": null,
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5"
+    ],
+    "kept": [
+     "s1"
+    ],
+    "note_s2d": "S2d は前の採点のまま（stub の配管を流し直していない）"
+   }
   },
   {
    "exp": "e1a-vn",
@@ -24549,7 +25967,24 @@
    "s2d": null,
    "s3": null,
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5"
+    ],
+    "kept": [
+     "s1"
+    ],
+    "note_s2d": "S2d は前の採点のまま（stub の配管を流し直していない）"
+   }
   },
   {
    "exp": "e1a-vn",
@@ -24767,7 +26202,24 @@
    "s2d": null,
    "s3": null,
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5"
+    ],
+    "kept": [
+     "s1"
+    ],
+    "note_s2d": "S2d は前の採点のまま（stub の配管を流し直していない）"
+   }
   },
   {
    "exp": "e1a-vn",
@@ -25280,7 +26732,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -25663,7 +27134,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -26054,7 +27544,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -26378,7 +27887,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -26734,7 +28262,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -27117,7 +28664,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -27518,7 +29084,24 @@
    "s2d": null,
    "s3": null,
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5"
+    ],
+    "kept": [
+     "s1"
+    ],
+    "note_s2d": "S2d は前の採点のまま（stub の配管を流し直していない）"
+   }
   },
   {
    "exp": "e1a-vn",
@@ -27845,7 +29428,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -28237,7 +29839,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -28728,7 +30349,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -29174,7 +30814,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -29598,7 +31257,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -30120,7 +31798,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -30592,7 +32289,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -31090,7 +32806,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -31527,7 +33262,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -31847,7 +33601,24 @@
    "s2d": null,
    "s3": null,
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5"
+    ],
+    "kept": [
+     "s1"
+    ],
+    "note_s2d": "S2d は前の採点のまま（stub の配管を流し直していない）"
+   }
   },
   {
    "exp": "e1a-vn",
@@ -32122,7 +33893,7 @@
        {
         "kind": "files:count",
         "ok": true,
-        "detail": "orders/^発注候補-.*\\.csv$: 1 件（期待 1・増えたもの ['発注候補-2026-11-07.csv']）"
+        "detail": "orders/^発注候補-.*\\.csv$: 1 件（期待 1・増えたもの ['発注候補-2026-11-09.csv']）"
        },
        {
         "kind": "files:contains",
@@ -32168,7 +33939,26 @@
     ]
    },
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -32465,7 +34255,26 @@
     ]
    },
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -32787,7 +34596,26 @@
     ]
    },
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -33012,7 +34840,24 @@
    "s2d": null,
    "s3": null,
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5"
+    ],
+    "kept": [
+     "s1"
+    ],
+    "note_s2d": "S2d は前の採点のまま（stub の配管を流し直していない）"
+   }
   },
   {
    "exp": "e1a-vn",
@@ -33334,7 +35179,26 @@
     ]
    },
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -33610,18 +35474,18 @@
        },
        {
         "kind": "files:count",
-        "ok": false,
-        "detail": "orders/^発注候補-.*\\.csv$: 0 件（期待 1・増えたもの []）"
+        "ok": true,
+        "detail": "orders/^発注候補-.*\\.csv$: 1 件（期待 1・増えたもの ['発注候補-2026-11-09.csv']）"
        },
        {
         "kind": "files:contains",
-        "ok": false,
-        "detail": "orders/^発注候補-.*\\.csv$ に 'P-200' が無い"
+        "ok": true,
+        "detail": "orders/^発注候補-.*\\.csv$ に 'P-200' がある"
        },
        {
         "kind": "files:contains",
-        "ok": false,
-        "detail": "orders/^発注候補-.*\\.csv$ に 'P-300' が無い"
+        "ok": true,
+        "detail": "orders/^発注候補-.*\\.csv$ に 'P-300' がある"
        },
        {
         "kind": "files:not_contains",
@@ -33657,7 +35521,26 @@
     ]
    },
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -33979,7 +35862,26 @@
     ]
    },
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -34201,7 +36103,24 @@
    "s2d": null,
    "s3": null,
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5"
+    ],
+    "kept": [
+     "s1"
+    ],
+    "note_s2d": "S2d は前の採点のまま（stub の配管を流し直していない）"
+   }
   },
   {
    "exp": "e1a-vn",
@@ -34526,7 +36445,26 @@
     ]
    },
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -34855,7 +36793,24 @@
    "s2d": null,
    "s3": null,
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5"
+    ],
+    "kept": [
+     "s1"
+    ],
+    "note_s2d": "S2d は前の採点のまま（stub の配管を流し直していない）"
+   }
   },
   {
    "exp": "e1a-vn",
@@ -35227,7 +37182,26 @@
     ]
    },
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -35628,7 +37602,26 @@
     ]
    },
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -36000,7 +37993,26 @@
     ]
    },
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -36386,7 +38398,26 @@
     ]
    },
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -36783,7 +38814,26 @@
     ]
    },
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -37119,7 +39169,24 @@
    "s2d": null,
    "s3": null,
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5"
+    ],
+    "kept": [
+     "s1"
+    ],
+    "note_s2d": "S2d は前の採点のまま（stub の配管を流し直していない）"
+   }
   },
   {
    "exp": "e1a-vn",
@@ -37477,7 +39544,26 @@
     ]
    },
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -37796,7 +39882,7 @@
        {
         "kind": "rows:match",
         "ok": true,
-        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'loaned_on': {'$one_of': ['2026-11-07']}} に合う行がある（[{'borrower': '松本', 'code': 'E-01', 'loaned_on': '2026-11-07'}]）"
+        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'loaned_on': {'$one_of': ['2026-11-09']}} に合う行がある（[{'borrower': '松本', 'code': 'E-01', 'loaned_on': '2026-11-09'}]）"
        }
       ],
       "failed_steps": []
@@ -37837,7 +39923,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -38125,7 +40230,7 @@
        {
         "kind": "rows:match",
         "ok": true,
-        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'loaned_on': {'$one_of': ['2026-11-07']}} に合う行がある（[{'borrower': '松本', 'code': 'E-01', 'loaned_on': '2026-11-07'}]）"
+        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'loaned_on': {'$one_of': ['2026-11-09']}} に合う行がある（[{'borrower': '松本', 'code': 'E-01', 'loaned_on': '2026-11-09'}]）"
        }
       ],
       "failed_steps": []
@@ -38166,7 +40271,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -38458,7 +40582,7 @@
        {
         "kind": "rows:match",
         "ok": true,
-        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'loaned_on': {'$one_of': ['2026-11-07']}} に合う行がある（[{'borrower': '松本', 'code': 'E-01', 'loaned_on': '2026-11-07'}]）"
+        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'loaned_on': {'$one_of': ['2026-11-09']}} に合う行がある（[{'borrower': '松本', 'code': 'E-01', 'loaned_on': '2026-11-09'}]）"
        }
       ],
       "failed_steps": []
@@ -38499,7 +40623,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -38834,7 +40977,7 @@
        {
         "kind": "rows:match",
         "ok": true,
-        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'loaned_on': {'$one_of': ['2026-11-07']}} に合う行がある（[{'borrower': '松本', 'code': 'E-01', 'loaned_on': '2026-11-07'}]）"
+        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'loaned_on': {'$one_of': ['2026-11-09']}} に合う行がある（[{'borrower': '松本', 'code': 'E-01', 'loaned_on': '2026-11-09'}]）"
        }
       ],
       "failed_steps": []
@@ -38875,7 +41018,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -39160,7 +41322,7 @@
        {
         "kind": "rows:match",
         "ok": true,
-        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'loaned_on': {'$one_of': ['2026-11-07']}} に合う行がある（[{'borrower': '松本', 'code': 'E-01', 'loaned_on': '2026-11-07'}]）"
+        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'loaned_on': {'$one_of': ['2026-11-09']}} に合う行がある（[{'borrower': '松本', 'code': 'E-01', 'loaned_on': '2026-11-09'}]）"
        }
       ],
       "failed_steps": []
@@ -39201,7 +41363,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -39490,7 +41671,7 @@
        {
         "kind": "rows:match",
         "ok": true,
-        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'loaned_on': {'$one_of': ['2026-11-07']}} に合う行がある（[{'borrower': '松本', 'code': 'E-01', 'loaned_on': '2026-11-07'}]）"
+        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'loaned_on': {'$one_of': ['2026-11-09']}} に合う行がある（[{'borrower': '松本', 'code': 'E-01', 'loaned_on': '2026-11-09'}]）"
        }
       ],
       "failed_steps": []
@@ -39531,7 +41712,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -39881,7 +42081,7 @@
        {
         "kind": "rows:match",
         "ok": false,
-        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'loaned_on': {'$one_of': ['2026-11-07']}} に合う行が無い（[]）"
+        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'loaned_on': {'$one_of': ['2026-11-09']}} に合う行が無い（[]）"
        }
       ],
       "failed_steps": [
@@ -39935,7 +42135,26 @@
     ]
    },
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -40283,7 +42502,7 @@
        {
         "kind": "rows:match",
         "ok": true,
-        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'loaned_on': {'$one_of': ['2026-11-07']}} に合う行がある（[{'borrower': '松本', 'code': 'E-01', 'loaned_on': '2026-11-07'}]）"
+        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'loaned_on': {'$one_of': ['2026-11-09']}} に合う行がある（[{'borrower': '松本', 'code': 'E-01', 'loaned_on': '2026-11-09'}]）"
        }
       ],
       "failed_steps": []
@@ -40324,7 +42543,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -40675,7 +42913,7 @@
        {
         "kind": "rows:match",
         "ok": true,
-        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'loaned_on': {'$one_of': ['2026-11-07']}} に合う行がある（[{'borrower': '松本', 'code': 'E-01', 'loaned_on': '2026-11-07'}]）"
+        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'loaned_on': {'$one_of': ['2026-11-09']}} に合う行がある（[{'borrower': '松本', 'code': 'E-01', 'loaned_on': '2026-11-09'}]）"
        }
       ],
       "failed_steps": []
@@ -40716,7 +42954,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -41043,7 +43300,7 @@
        {
         "kind": "rows:match",
         "ok": false,
-        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'returned_on': {'$one_of': ['2026-11-07']}} に合う行が無い（[{'borrower': '西村', 'code': 'E-03', 'due_on': '2026-11-09', 'loaned_on': '2026-11-02'}, {'borrower': '松本', 'code': 'E-01', 'due_on': '2026-11-08', 'loaned_on': '2026-11-01'}, {'borrower': '木村', 'code': 'E-01', 'due_on': '2026-10-08', 'loaned_on': '2026-10-01', 'returned_on': '2026-10-05'}]）"
+        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'returned_on': {'$one_of': ['2026-11-09']}} に合う行が無い（[{'borrower': '西村', 'code': 'E-03', 'due_on': '2026-11-09', 'loaned_on': '2026-11-02'}, {'borrower': '松本', 'code': 'E-01', 'due_on': '2026-11-08', 'loaned_on': '2026-11-01'}, {'borrower': '木村', 'code': 'E-01', 'due_on': '2026-10-08', 'loaned_on': '2026-10-01', 'returned_on': '2026-10-05'}]）"
        },
        {
         "kind": "rows:match",
@@ -41074,7 +43331,26 @@
     ]
    },
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -41366,7 +43642,24 @@
    "s2d": null,
    "s3": null,
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5"
+    ],
+    "kept": [
+     "s1"
+    ],
+    "note_s2d": "S2d は前の採点のまま（stub の配管を流し直していない）"
+   }
   },
   {
    "exp": "e1a-vn",
@@ -41750,17 +44043,17 @@
        {
         "kind": "rows:match",
         "ok": true,
-        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'returned_on': {'$one_of': ['2026-11-07']}} に合う行がある（[{'borrower': '松本', 'code': 'E-01', 'due_on': '2026-11-08', 'loaned_on': '2026-11-01', 'returned_on': '2026-11-07'}, {'borrower': '西村', 'code': 'E-03', 'due_on': '2026-11-09', 'loaned_on': '2026-11-02'}, {'borrower': '木村', 'code': 'E-01', 'due_on': '2026-10-08', 'loaned_on': '2026-10-01', 'returned_on': '2026-10-05'}]）"
+        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'returned_on': {'$one_of': ['2026-11-09']}} に合う行がある（[{'borrower': '松本', 'code': 'E-01', 'due_on': '2026-11-08', 'loaned_on': '2026-11-01', 'returned_on': '2026-11-09'}, {'borrower': '西村', 'code': 'E-03', 'due_on': '2026-11-09', 'loaned_on': '2026-11-02'}, {'borrower': '木村', 'code': 'E-01', 'due_on': '2026-10-08', 'loaned_on': '2026-10-01', 'returned_on': '2026-10-05'}]）"
        },
        {
         "kind": "rows:match",
         "ok": true,
-        "detail": "loans: {'code': 'E-01', 'borrower': '木村', 'returned_on': '2026-10-05'} に合う行がある（[{'borrower': '松本', 'code': 'E-01', 'due_on': '2026-11-08', 'loaned_on': '2026-11-01', 'returned_on': '2026-11-07'}, {'borrower': '西村', 'code': 'E-03', 'due_on': '2026-11-09', 'loaned_on': '2026-11-02'}, {'borrower': '木村', 'code': 'E-01', 'due_on': '2026-10-08', 'loaned_on': '2026-10-01', 'returned_on': '2026-10-05'}]）"
+        "detail": "loans: {'code': 'E-01', 'borrower': '木村', 'returned_on': '2026-10-05'} に合う行がある（[{'borrower': '松本', 'code': 'E-01', 'due_on': '2026-11-08', 'loaned_on': '2026-11-01', 'returned_on': '2026-11-09'}, {'borrower': '西村', 'code': 'E-03', 'due_on': '2026-11-09', 'loaned_on': '2026-11-02'}, {'borrower': '木村', 'code': 'E-01', 'due_on': '2026-10-08', 'loaned_on': '2026-10-01', 'returned_on': '2026-10-05'}]）"
        },
        {
         "kind": "rows:match",
         "ok": true,
-        "detail": "loans: {'code': 'E-03', 'borrower': '西村', 'returned_on': {'$absent': True}} に合う行がある（[{'borrower': '松本', 'code': 'E-01', 'due_on': '2026-11-08', 'loaned_on': '2026-11-01', 'returned_on': '2026-11-07'}, {'borrower': '西村', 'code': 'E-03', 'due_on': '2026-11-09', 'loaned_on': '2026-11-02'}, {'borrower': '木村', 'code': 'E-01', 'due_on': '2026-10-08', 'loaned_on': '2026-10-01', 'returned_on': '2026-10-05'}]）"
+        "detail": "loans: {'code': 'E-03', 'borrower': '西村', 'returned_on': {'$absent': True}} に合う行がある（[{'borrower': '松本', 'code': 'E-01', 'due_on': '2026-11-08', 'loaned_on': '2026-11-01', 'returned_on': '2026-11-09'}, {'borrower': '西村', 'code': 'E-03', 'due_on': '2026-11-09', 'loaned_on': '2026-11-02'}, {'borrower': '木村', 'code': 'E-01', 'due_on': '2026-10-08', 'loaned_on': '2026-10-01', 'returned_on': '2026-10-05'}]）"
        }
       ],
       "failed_steps": []
@@ -41768,7 +44061,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -42152,17 +44464,17 @@
        {
         "kind": "rows:match",
         "ok": true,
-        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'returned_on': {'$one_of': ['2026-11-07']}} に合う行がある（[{'borrower': '松本', 'code': 'E-01', 'due_on': '2026-11-08', 'loaned_on': '2026-11-01', 'returned_on': '2026-11-07'}, {'borrower': '西村', 'code': 'E-03', 'due_on': '2026-11-09', 'loaned_on': '2026-11-02'}, {'borrower': '木村', 'code': 'E-01', 'due_on': '2026-10-08', 'loaned_on': '2026-10-01', 'returned_on': '2026-10-05'}]）"
+        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'returned_on': {'$one_of': ['2026-11-09']}} に合う行がある（[{'borrower': '松本', 'code': 'E-01', 'due_on': '2026-11-08', 'loaned_on': '2026-11-01', 'returned_on': '2026-11-09'}, {'borrower': '西村', 'code': 'E-03', 'due_on': '2026-11-09', 'loaned_on': '2026-11-02'}, {'borrower': '木村', 'code': 'E-01', 'due_on': '2026-10-08', 'loaned_on': '2026-10-01', 'returned_on': '2026-10-05'}]）"
        },
        {
         "kind": "rows:match",
         "ok": true,
-        "detail": "loans: {'code': 'E-01', 'borrower': '木村', 'returned_on': '2026-10-05'} に合う行がある（[{'borrower': '松本', 'code': 'E-01', 'due_on': '2026-11-08', 'loaned_on': '2026-11-01', 'returned_on': '2026-11-07'}, {'borrower': '西村', 'code': 'E-03', 'due_on': '2026-11-09', 'loaned_on': '2026-11-02'}, {'borrower': '木村', 'code': 'E-01', 'due_on': '2026-10-08', 'loaned_on': '2026-10-01', 'returned_on': '2026-10-05'}]）"
+        "detail": "loans: {'code': 'E-01', 'borrower': '木村', 'returned_on': '2026-10-05'} に合う行がある（[{'borrower': '松本', 'code': 'E-01', 'due_on': '2026-11-08', 'loaned_on': '2026-11-01', 'returned_on': '2026-11-09'}, {'borrower': '西村', 'code': 'E-03', 'due_on': '2026-11-09', 'loaned_on': '2026-11-02'}, {'borrower': '木村', 'code': 'E-01', 'due_on': '2026-10-08', 'loaned_on': '2026-10-01', 'returned_on': '2026-10-05'}]）"
        },
        {
         "kind": "rows:match",
         "ok": true,
-        "detail": "loans: {'code': 'E-03', 'borrower': '西村', 'returned_on': {'$absent': True}} に合う行がある（[{'borrower': '松本', 'code': 'E-01', 'due_on': '2026-11-08', 'loaned_on': '2026-11-01', 'returned_on': '2026-11-07'}, {'borrower': '西村', 'code': 'E-03', 'due_on': '2026-11-09', 'loaned_on': '2026-11-02'}, {'borrower': '木村', 'code': 'E-01', 'due_on': '2026-10-08', 'loaned_on': '2026-10-01', 'returned_on': '2026-10-05'}]）"
+        "detail": "loans: {'code': 'E-03', 'borrower': '西村', 'returned_on': {'$absent': True}} に合う行がある（[{'borrower': '松本', 'code': 'E-01', 'due_on': '2026-11-08', 'loaned_on': '2026-11-01', 'returned_on': '2026-11-09'}, {'borrower': '西村', 'code': 'E-03', 'due_on': '2026-11-09', 'loaned_on': '2026-11-02'}, {'borrower': '木村', 'code': 'E-01', 'due_on': '2026-10-08', 'loaned_on': '2026-10-01', 'returned_on': '2026-10-05'}]）"
        }
       ],
       "failed_steps": []
@@ -42170,7 +44482,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -42548,7 +44879,7 @@
        {
         "kind": "rows:match",
         "ok": false,
-        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'returned_on': {'$one_of': ['2026-11-07']}} に合う行が無い（[{'borrower': '西村', 'code': 'E-03', 'due_on': '2026-11-09', 'loaned_on': '2026-11-02'}, {'borrower': '松本', 'code': 'E-01', 'due_on': '2026-11-08', 'loaned_on': '2026-11-01'}, {'borrower': '木村', 'code': 'E-01', 'due_on': '2026-10-08', 'loaned_on': '2026-10-01', 'returned_on': '2026-10-05'}]）"
+        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'returned_on': {'$one_of': ['2026-11-09']}} に合う行が無い（[{'borrower': '西村', 'code': 'E-03', 'due_on': '2026-11-09', 'loaned_on': '2026-11-02'}, {'borrower': '松本', 'code': 'E-01', 'due_on': '2026-11-08', 'loaned_on': '2026-11-01'}, {'borrower': '木村', 'code': 'E-01', 'due_on': '2026-10-08', 'loaned_on': '2026-10-01', 'returned_on': '2026-10-05'}]）"
        },
        {
         "kind": "rows:match",
@@ -42579,7 +44910,26 @@
     ]
    },
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -42933,7 +45283,24 @@
    "s2d": null,
    "s3": null,
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5"
+    ],
+    "kept": [
+     "s1"
+    ],
+    "note_s2d": "S2d は前の採点のまま（stub の配管を流し直していない）"
+   }
   },
   {
    "exp": "e1a-vn",
@@ -43235,7 +45602,7 @@
        {
         "kind": "rows:match",
         "ok": false,
-        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'returned_on': {'$one_of': ['2026-11-07']}} に合う行が無い（[{'borrower': '西村', 'code': 'E-03', 'due_on': '2026-11-09', 'loaned_on': '2026-11-02'}, {'borrower': '松本', 'code': 'E-01', 'due_on': '2026-11-08', 'loaned_on': '2026-11-01'}, {'borrower': '木村', 'code': 'E-01', 'due_on': '2026-10-08', 'loaned_on': '2026-10-01', 'returned_on': '2026-10-05'}]）"
+        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'returned_on': {'$one_of': ['2026-11-09']}} に合う行が無い（[{'borrower': '西村', 'code': 'E-03', 'due_on': '2026-11-09', 'loaned_on': '2026-11-02'}, {'borrower': '松本', 'code': 'E-01', 'due_on': '2026-11-08', 'loaned_on': '2026-11-01'}, {'borrower': '木村', 'code': 'E-01', 'due_on': '2026-10-08', 'loaned_on': '2026-10-01', 'returned_on': '2026-10-05'}]）"
        },
        {
         "kind": "rows:match",
@@ -43266,7 +45633,26 @@
     ]
    },
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -43597,7 +45983,7 @@
        {
         "kind": "rows:match",
         "ok": false,
-        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'returned_on': {'$one_of': ['2026-11-07']}} に合う行が無い（[{'borrower': '西村', 'code': 'E-03', 'due_on': '2026-11-09', 'loaned_on': '2026-11-02'}, {'borrower': '松本', 'code': 'E-01', 'due_on': '2026-11-08', 'loaned_on': '2026-11-01'}, {'borrower': '木村', 'code': 'E-01', 'due_on': '2026-10-08', 'loaned_on': '2026-10-01', 'returned_on': '2026-10-05'}]）"
+        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'returned_on': {'$one_of': ['2026-11-09']}} に合う行が無い（[{'borrower': '西村', 'code': 'E-03', 'due_on': '2026-11-09', 'loaned_on': '2026-11-02'}, {'borrower': '松本', 'code': 'E-01', 'due_on': '2026-11-08', 'loaned_on': '2026-11-01'}, {'borrower': '木村', 'code': 'E-01', 'due_on': '2026-10-08', 'loaned_on': '2026-10-01', 'returned_on': '2026-10-05'}]）"
        },
        {
         "kind": "rows:match",
@@ -43628,7 +46014,26 @@
     ]
    },
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -43975,7 +46380,7 @@
        {
         "kind": "rows:match",
         "ok": false,
-        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'returned_on': {'$one_of': ['2026-11-07']}} に合う行が無い（[{'borrower': '西村', 'code': 'E-03', 'due_on': '2026-11-09', 'loaned_on': '2026-11-02'}, {'borrower': '松本', 'code': 'E-01', 'due_on': '2026-11-08', 'loaned_on': '2026-11-01'}, {'borrower': '木村', 'code': 'E-01', 'due_on': '2026-10-08', 'loaned_on': '2026-10-01', 'returned_on': '2026-10-05'}]）"
+        "detail": "loans: {'code': 'E-01', 'borrower': '松本', 'returned_on': {'$one_of': ['2026-11-09']}} に合う行が無い（[{'borrower': '西村', 'code': 'E-03', 'due_on': '2026-11-09', 'loaned_on': '2026-11-02'}, {'borrower': '松本', 'code': 'E-01', 'due_on': '2026-11-08', 'loaned_on': '2026-11-01'}, {'borrower': '木村', 'code': 'E-01', 'due_on': '2026-10-08', 'loaned_on': '2026-10-01', 'returned_on': '2026-10-05'}]）"
        },
        {
         "kind": "rows:match",
@@ -44017,7 +46422,26 @@
     ]
    },
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -44216,13 +46640,13 @@
    "stub": {
     "s2d": false,
     "s3": true,
-    "s4": false,
+    "s4": true,
     "cases": [
      {
       "case": "morning",
       "s3": true,
       "s2d": false,
-      "s4": false,
+      "s4": true,
       "dynamic": {
        "s2d": false,
        "s3": true,
@@ -44241,7 +46665,7 @@
        {
         "kind": "files:count",
         "ok": true,
-        "detail": "overdue/^延滞一覧-.*\\.md$: 1 件（期待 1・増えたもの ['延滞一覧-2026-11-07.md']）"
+        "detail": "overdue/^延滞一覧-.*\\.md$: 1 件（期待 1・増えたもの ['延滞一覧-2026-11-09.md']）"
        },
        {
         "kind": "files:contains",
@@ -44255,13 +46679,13 @@
        },
        {
         "kind": "files:contains",
-        "ok": false,
-        "detail": "overdue/^延滞一覧-.*\\.md$ に 'E-04' が無い"
+        "ok": true,
+        "detail": "overdue/^延滞一覧-.*\\.md$ に 'E-04' がある"
        },
        {
         "kind": "files:contains",
-        "ok": false,
-        "detail": "overdue/^延滞一覧-.*\\.md$ に '佐々木' が無い"
+        "ok": true,
+        "detail": "overdue/^延滞一覧-.*\\.md$ に '佐々木' がある"
        },
        {
         "kind": "files:not_contains",
@@ -44299,7 +46723,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -44503,13 +46946,13 @@
    "stub": {
     "s2d": false,
     "s3": true,
-    "s4": false,
+    "s4": true,
     "cases": [
      {
       "case": "morning",
       "s3": true,
       "s2d": false,
-      "s4": false,
+      "s4": true,
       "dynamic": {
        "s2d": false,
        "s3": true,
@@ -44528,7 +46971,7 @@
        {
         "kind": "files:count",
         "ok": true,
-        "detail": "overdue/^延滞一覧-.*\\.md$: 1 件（期待 1・増えたもの ['延滞一覧-2026-11-07.md']）"
+        "detail": "overdue/^延滞一覧-.*\\.md$: 1 件（期待 1・増えたもの ['延滞一覧-2026-11-09.md']）"
        },
        {
         "kind": "files:contains",
@@ -44542,13 +46985,13 @@
        },
        {
         "kind": "files:contains",
-        "ok": false,
-        "detail": "overdue/^延滞一覧-.*\\.md$ に 'E-04' が無い"
+        "ok": true,
+        "detail": "overdue/^延滞一覧-.*\\.md$ に 'E-04' がある"
        },
        {
         "kind": "files:contains",
-        "ok": false,
-        "detail": "overdue/^延滞一覧-.*\\.md$ に '佐々木' が無い"
+        "ok": true,
+        "detail": "overdue/^延滞一覧-.*\\.md$ に '佐々木' がある"
        },
        {
         "kind": "files:not_contains",
@@ -44586,7 +47029,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -44887,7 +47349,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -45086,13 +47567,13 @@
    "stub": {
     "s2d": false,
     "s3": true,
-    "s4": false,
+    "s4": true,
     "cases": [
      {
       "case": "morning",
       "s3": true,
       "s2d": false,
-      "s4": false,
+      "s4": true,
       "dynamic": {
        "s2d": false,
        "s3": true,
@@ -45111,7 +47592,7 @@
        {
         "kind": "files:count",
         "ok": true,
-        "detail": "overdue/^延滞一覧-.*\\.md$: 1 件（期待 1・増えたもの ['延滞一覧-2026-11-07.md']）"
+        "detail": "overdue/^延滞一覧-.*\\.md$: 1 件（期待 1・増えたもの ['延滞一覧-2026-11-09.md']）"
        },
        {
         "kind": "files:contains",
@@ -45125,13 +47606,13 @@
        },
        {
         "kind": "files:contains",
-        "ok": false,
-        "detail": "overdue/^延滞一覧-.*\\.md$ に 'E-04' が無い"
+        "ok": true,
+        "detail": "overdue/^延滞一覧-.*\\.md$ に 'E-04' がある"
        },
        {
         "kind": "files:contains",
-        "ok": false,
-        "detail": "overdue/^延滞一覧-.*\\.md$ に '佐々木' が無い"
+        "ok": true,
+        "detail": "overdue/^延滞一覧-.*\\.md$ に '佐々木' がある"
        },
        {
         "kind": "files:not_contains",
@@ -45169,7 +47650,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -45369,7 +47869,24 @@
    "s2d": null,
    "s3": null,
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5"
+    ],
+    "kept": [
+     "s1"
+    ],
+    "note_s2d": "S2d は前の採点のまま（stub の配管を流し直していない）"
+   }
   },
   {
    "exp": "e1a-vn",
@@ -45565,13 +48082,13 @@
    "stub": {
     "s2d": false,
     "s3": true,
-    "s4": false,
+    "s4": true,
     "cases": [
      {
       "case": "morning",
       "s3": true,
       "s2d": false,
-      "s4": false,
+      "s4": true,
       "dynamic": {
        "s2d": false,
        "s3": true,
@@ -45590,7 +48107,7 @@
        {
         "kind": "files:count",
         "ok": true,
-        "detail": "overdue/^延滞一覧-.*\\.md$: 1 件（期待 1・増えたもの ['延滞一覧-2026-11-07.md']）"
+        "detail": "overdue/^延滞一覧-.*\\.md$: 1 件（期待 1・増えたもの ['延滞一覧-2026-11-09.md']）"
        },
        {
         "kind": "files:contains",
@@ -45604,13 +48121,13 @@
        },
        {
         "kind": "files:contains",
-        "ok": false,
-        "detail": "overdue/^延滞一覧-.*\\.md$ に 'E-04' が無い"
+        "ok": true,
+        "detail": "overdue/^延滞一覧-.*\\.md$ に 'E-04' がある"
        },
        {
         "kind": "files:contains",
-        "ok": false,
-        "detail": "overdue/^延滞一覧-.*\\.md$ に '佐々木' が無い"
+        "ok": true,
+        "detail": "overdue/^延滞一覧-.*\\.md$ に '佐々木' がある"
        },
        {
         "kind": "files:not_contains",
@@ -45648,7 +48165,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -45852,13 +48388,13 @@
    "stub": {
     "s2d": false,
     "s3": true,
-    "s4": false,
+    "s4": true,
     "cases": [
      {
       "case": "morning",
       "s3": true,
       "s2d": false,
-      "s4": false,
+      "s4": true,
       "dynamic": {
        "s2d": false,
        "s3": true,
@@ -45877,7 +48413,7 @@
        {
         "kind": "files:count",
         "ok": true,
-        "detail": "overdue/^延滞一覧-.*\\.md$: 1 件（期待 1・増えたもの ['延滞一覧-2026-11-07.md']）"
+        "detail": "overdue/^延滞一覧-.*\\.md$: 1 件（期待 1・増えたもの ['延滞一覧-2026-11-09.md']）"
        },
        {
         "kind": "files:contains",
@@ -45891,13 +48427,13 @@
        },
        {
         "kind": "files:contains",
-        "ok": false,
-        "detail": "overdue/^延滞一覧-.*\\.md$ に 'E-04' が無い"
+        "ok": true,
+        "detail": "overdue/^延滞一覧-.*\\.md$ に 'E-04' がある"
        },
        {
         "kind": "files:contains",
-        "ok": false,
-        "detail": "overdue/^延滞一覧-.*\\.md$ に '佐々木' が無い"
+        "ok": true,
+        "detail": "overdue/^延滞一覧-.*\\.md$ に '佐々木' がある"
        },
        {
         "kind": "files:not_contains",
@@ -45935,7 +48471,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -46187,13 +48742,13 @@
    "stub": {
     "s2d": false,
     "s3": true,
-    "s4": false,
+    "s4": true,
     "cases": [
      {
       "case": "morning",
       "s3": true,
       "s2d": false,
-      "s4": false,
+      "s4": true,
       "dynamic": {
        "s2d": false,
        "s3": true,
@@ -46212,7 +48767,7 @@
        {
         "kind": "files:count",
         "ok": true,
-        "detail": "overdue/^延滞一覧-.*\\.md$: 1 件（期待 1・増えたもの ['延滞一覧-2026-11-07.md']）"
+        "detail": "overdue/^延滞一覧-.*\\.md$: 1 件（期待 1・増えたもの ['延滞一覧-2026-11-09.md']）"
        },
        {
         "kind": "files:contains",
@@ -46226,13 +48781,13 @@
        },
        {
         "kind": "files:contains",
-        "ok": false,
-        "detail": "overdue/^延滞一覧-.*\\.md$ に 'E-04' が無い"
+        "ok": true,
+        "detail": "overdue/^延滞一覧-.*\\.md$ に 'E-04' がある"
        },
        {
         "kind": "files:contains",
-        "ok": false,
-        "detail": "overdue/^延滞一覧-.*\\.md$ に '佐々木' が無い"
+        "ok": true,
+        "detail": "overdue/^延滞一覧-.*\\.md$ に '佐々木' がある"
        },
        {
         "kind": "files:not_contains",
@@ -46270,7 +48825,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -46539,7 +49113,24 @@
    "s2d": null,
    "s3": null,
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5"
+    ],
+    "kept": [
+     "s1"
+    ],
+    "note_s2d": "S2d は前の採点のまま（stub の配管を流し直していない）"
+   }
   },
   {
    "exp": "e1a-vn",
@@ -46851,7 +49442,24 @@
    "s2d": null,
    "s3": null,
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5"
+    ],
+    "kept": [
+     "s1"
+    ],
+    "note_s2d": "S2d は前の採点のまま（stub の配管を流し直していない）"
+   }
   },
   {
    "exp": "e1a-vn",
@@ -47195,7 +49803,24 @@
    "s2d": null,
    "s3": null,
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5"
+    ],
+    "kept": [
+     "s1"
+    ],
+    "note_s2d": "S2d は前の採点のまま（stub の配管を流し直していない）"
+   }
   },
   {
    "exp": "e1a-vn",
@@ -47495,7 +50120,24 @@
    "s2d": null,
    "s3": null,
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5"
+    ],
+    "kept": [
+     "s1"
+    ],
+    "note_s2d": "S2d は前の採点のまま（stub の配管を流し直していない）"
+   }
   },
   {
    "exp": "e1a-vn",
@@ -47905,7 +50547,24 @@
    "s2d": null,
    "s3": null,
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5"
+    ],
+    "kept": [
+     "s1"
+    ],
+    "note_s2d": "S2d は前の採点のまま（stub の配管を流し直していない）"
+   }
   },
   {
    "exp": "e1a-vn",
@@ -48210,7 +50869,24 @@
    "s2d": null,
    "s3": null,
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5"
+    ],
+    "kept": [
+     "s1"
+    ],
+    "note_s2d": "S2d は前の採点のまま（stub の配管を流し直していない）"
+   }
   },
   {
    "exp": "e1a-vn",
@@ -48418,12 +51094,12 @@
        {
         "kind": "rows:match",
         "ok": true,
-        "detail": "todo: {'assignee': '佐藤', 'task': '見積書を作る', 'due_on': '2026-11-12'} に合う行がある（[{'assignee': '佐藤', 'due_on': '2026-11-12', 'task': '見積書を作る'}, {'assignee': '鈴木', 'due_on': '2026-11-10', 'task': '会場を予約する'}]）"
+        "detail": "todo: {'assignee': '佐藤', 'task': '見積書を作る', 'due_on': '2026-11-12'} に合う行がある（[{'assignee': '鈴木', 'due_on': '2026-11-10', 'task': '会場を予約する'}, {'assignee': '佐藤', 'due_on': '2026-11-12', 'task': '見積書を作る'}]）"
        },
        {
         "kind": "rows:match",
         "ok": true,
-        "detail": "todo: {'assignee': '鈴木', 'task': '会場を予約する', 'due_on': '2026-11-10'} に合う行がある（[{'assignee': '佐藤', 'due_on': '2026-11-12', 'task': '見積書を作る'}, {'assignee': '鈴木', 'due_on': '2026-11-10', 'task': '会場を予約する'}]）"
+        "detail": "todo: {'assignee': '鈴木', 'task': '会場を予約する', 'due_on': '2026-11-10'} に合う行がある（[{'assignee': '鈴木', 'due_on': '2026-11-10', 'task': '会場を予約する'}, {'assignee': '佐藤', 'due_on': '2026-11-12', 'task': '見積書を作る'}]）"
        }
       ],
       "failed_steps": []
@@ -48431,7 +51107,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -48653,7 +51348,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -48874,7 +51588,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -49097,7 +51830,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -49319,7 +52071,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -49522,7 +52293,24 @@
    "s2d": null,
    "s3": null,
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5"
+    ],
+    "kept": [
+     "s1"
+    ],
+    "note_s2d": "S2d は前の採点のまま（stub の配管を流し直していない）"
+   }
   },
   {
    "exp": "e1a-vn",
@@ -49744,7 +52532,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -49965,7 +52772,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -50181,7 +53007,26 @@
     ]
    },
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -50454,7 +53299,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -50746,7 +53610,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -50967,7 +53850,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -51274,7 +54176,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -51571,7 +54492,26 @@
     ]
    },
    "headline": true,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5",
+     "stub",
+     "s2d",
+     "s3"
+    ],
+    "kept": [
+     "s1"
+    ]
+   }
   },
   {
    "exp": "e1a-vn",
@@ -51823,7 +54763,24 @@
    "s2d": null,
    "s3": null,
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5"
+    ],
+    "kept": [
+     "s1"
+    ],
+    "note_s2d": "S2d は前の採点のまま（stub の配管を流し直していない）"
+   }
   },
   {
    "exp": "e1a-vn",
@@ -52015,7 +54972,24 @@
    "s2d": null,
    "s3": null,
    "headline": false,
-   "from_cache": true
+   "from_cache": true,
+   "regraded": {
+    "grader": 11,
+    "from_grader": {
+     "grader": 10,
+     "ir_lint_schema": 3,
+     "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+    },
+    "redone": [
+     "s2s",
+     "s2w",
+     "s5"
+    ],
+    "kept": [
+     "s1"
+    ],
+    "note_s2d": "S2d は前の採点のまま（stub の配管を流し直していない）"
+   }
   }
  ],
  "out_of_scope": [],
@@ -52155,6 +55129,22 @@
     "ir_lint_schema": 3,
     "ir_lint_sha256": "2d821bff376849e7617117161990404080e84693efc384505f15e989927c101f"
    }
+  }
+ ],
+ "regrades": [
+  {
+   "at": "2026-11-09T12:30:22+00:00",
+   "grader": 11,
+   "from_grader": {
+    "grader": 10,
+    "ir_lint_schema": 3,
+    "ir_lint_sha256": "7a1f57d0493bd001b92289e330d5eefc5dd23a2c4b2ec1a2b2eed7f468d41560"
+   },
+   "stub_runs": true,
+   "label": "vn",
+   "trials": 159,
+   "stub_trials": 133,
+   "changed_headlines": 0
   }
  ]
 }
