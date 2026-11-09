@@ -9,6 +9,8 @@
 //! - 保存 API（`build_catalog_from`）と AI 編集（emit_workflow のカタログ源）は、同じ人に同じ結果を返す。
 //! - 制限の無い人が保存したワークフローは、制限された人も読める（開くだけでは壊れない）。制限された人が同じ IR で
 //!   保存し直すと断られ、使えるモデルに直せば保存できる。
+//! - instructions だけのスキルを呼ぶ skill.invoke も組織の既定のモデルで動くので、既定が使えなければ断る。shiki script で
+//!   動くスキル（LLM を呼ばない）は断らない。
 
 #![allow(
     clippy::unwrap_used,
@@ -151,6 +153,8 @@ async fn cleanup(pool: &PgPool, tenant: &str) {
     for table in [
         "tenant_llm_model",
         "tenant_llm_settings",
+        "skill_installation",
+        "registry_entry",
         "artifact_version",
         "artifact",
         "audit_log",
@@ -350,6 +354,123 @@ async fn a_restricted_model_of_the_other_kind_is_told_as_a_kind_mismatch() {
             .unwrap(),
         None
     );
+    cleanup(&pool, &tenant).await;
+}
+
+/// skill の誤り（ノード id・コード・文）。
+fn skill_errors(ir: &serde_json::Value, catalog: &Catalog) -> Vec<(String, String, String)> {
+    workflow_engine::validate(ir, catalog)
+        .err()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|e| e.path.as_deref() == Some("/params/skill"))
+        .map(|e| (e.node_id.unwrap_or_default(), e.code, e.message))
+        .collect()
+}
+
+/// instructions だけのスキルは組織の既定のモデル（実行時の解決）で動くので、既定が保存する人に使えなければ、
+/// skill.invoke もモデルを省いた llm.invoke と同じく断る（schedule・event の実行で制限を回り込ませない・D-185）。
+/// shiki script で動くスキルは LLM を呼ばないので断らない。既定が使えるモデルに変われば通る。AI 編集のカタログ源も
+/// 同じ結果。
+#[tokio::test]
+async fn skills_on_an_unavailable_default_model_are_refused() {
+    let Some(pool) = pool().await else { return };
+    let tenant = format!("wfrestrict-{}", uuid::Uuid::new_v4().simple());
+    let gw = gateway(pool.clone(), &tenant);
+    let models = WorkflowModels::new(Some(gw.clone()), Vec::new());
+    let restricted = user(&tenant, "restricted");
+    let artifacts = Arc::new(artifact::ArtifactStore::new(
+        pool.clone(),
+        Arc::new(AllowAll),
+    ));
+    let skills = gui::SkillStore::new(Arc::clone(&artifacts));
+    let installs = Arc::new(app_platform::SkillInstallService::new(
+        pool.clone(),
+        app_platform::Registry::new(pool.clone()),
+        app_platform::TrustedKeyStore::new(pool.clone()),
+        Arc::clone(&artifacts),
+        Arc::new(AllowAll),
+    ));
+    // 保存する人が作って公開し、インストールしたスキル（instructions だけのものと、shiki script を持つもの）。
+    for (name, body) in [
+        (
+            "memo",
+            json!({ "description": "メモを整える", "instructions": "箇条書きに整えてください。" }),
+        ),
+        (
+            "tidy",
+            json!({ "description": "空白を詰める", "instructions": "空白を詰める。",
+                    "scripts": [{ "path": "scripts/tidy.shiki", "kind": "shiki",
+                                  "source": "function main(i) { return i; }" }] }),
+        ),
+    ] {
+        let (id, _) = skills.create(&restricted, name, &body, None).await.unwrap();
+        installs
+            .publish(&restricted, id, Some("1.0.0"), "in_house", None, None)
+            .await
+            .unwrap();
+        installs
+            .install(&restricted, name, Some("1.0.0"), None)
+            .await
+            .unwrap();
+    }
+    let ir = json!({
+        "ir_version": 1, "name": "restricted-skills", "triggers": [{ "kind": "interactive" }],
+        "nodes": [
+            { "id": "memo", "type": "skill.invoke", "params": { "skill": "skill:memo@1.0.0" } },
+            { "id": "tidy", "type": "skill.invoke", "params": { "skill": "skill:tidy@1.0.0" } }
+        ],
+        "edges": [{ "from": "memo", "to": "tidy" }]
+    });
+    let (ir, _) = workflow_engine::complete_declared_scopes(&ir);
+
+    let catalog = build_catalog_from(None, Some(&installs), &models, &restricted)
+        .await
+        .unwrap();
+    assert_eq!(
+        catalog.script_skills,
+        std::collections::BTreeSet::from(["tidy@1.0.0".to_string()])
+    );
+    let errs = skill_errors(&ir, &catalog);
+    assert_eq!(errs.len(), 1, "{errs:#?}");
+    let (node, code, message) = &errs[0];
+    assert_eq!(
+        (node.as_str(), code.as_str()),
+        ("memo", MODEL_UNAVAILABLE_FOR_USER)
+    );
+    assert!(
+        message.starts_with(
+            "このスキルは組織の既定のモデル（hidden）で動きますが、このモデルはあなたのアカウントでは使えません。"
+        ),
+        "{message}"
+    );
+    // AI 編集（emit_workflow のカタログ源）も同じ結果。
+    let source = ApiWorkflowCatalogSource::new(
+        None,
+        Some(Arc::clone(&installs)),
+        WorkflowModels::new(Some(gw.clone()), Vec::new()),
+    );
+    let emitted = chat::WorkflowCatalogSource::catalog_for(&source, &restricted, &ir)
+        .await
+        .unwrap();
+    assert_eq!(skill_errors(&ir, &emitted), errs);
+
+    // 組織の既定を使えるモデル（visible）にすると、instructions だけのスキルも保存できる。
+    gw.update_tenant_settings(
+        &user(&tenant, "other"),
+        &SettingsPatch {
+            default_model: Some("visible".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    let catalog = build_catalog_from(None, Some(&installs), &models, &restricted)
+        .await
+        .unwrap();
+    assert!(catalog.script_skills.is_empty(), "既定が使えれば引かない");
+    assert!(skill_errors(&ir, &catalog).is_empty());
     cleanup(&pool, &tenant).await;
 }
 

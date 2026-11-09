@@ -1,6 +1,6 @@
 //! IR 検証の補助チェック（V4 参照・スコープ天井整合・名前形式・V6 script）。行数ゲート対応で分離。
 
-use super::{Catalog, ValidationError};
+use super::{Catalog, ValidationError, MODEL_UNAVAILABLE_FOR_USER};
 use crate::ir::WorkflowIr;
 use crate::vocab::NodeType;
 
@@ -32,6 +32,28 @@ pub(crate) fn parse_skill_ref(s: &str) -> Option<(&str, &str)> {
         return None;
     }
     Some((name, version))
+}
+
+/// instructions だけのスキル（[`Catalog::script_skills`] に無いもの）を呼ぶ skill.invoke は組織の既定のモデル（`model`）で
+/// 動くが、そのモデルが保存する人のアカウントでは使えないときの誤り（D-185）。スキルにはモデルを選ぶ欄が無いので、
+/// 管理者に相談するか、「AI に聞く」で使えるモデルを選んで同じ指示を書くよう言う（選べなければ管理者に相談だけ）。
+fn skill_default_unavailable(model: &str, catalog: &Catalog) -> ValidationError {
+    let models = catalog.models.as_deref().unwrap_or_default();
+    let fix = if catalog.model_lock.is_some() || models.is_empty() {
+        "スキルにはモデルを選ぶ欄がないため、管理者に相談してください".to_string()
+    } else {
+        format!(
+            "スキルにはモデルを選ぶ欄がないため、管理者に相談するか、「AI に聞く」（llm.invoke）で使えるモデルを選び、\
+             スキルと同じ指示を書いてください（{}）",
+            super::v3_vocab::model_candidates(models)
+        )
+    };
+    ValidationError::new(
+        MODEL_UNAVAILABLE_FOR_USER,
+        format!(
+            "このスキルは組織の既定のモデル（{model}）で動きますが、このモデルはあなたのアカウントでは使えません。{fix}"
+        ),
+    )
 }
 
 /// workflow.start の相手が見つからない（無い・見えない・BUG-107）。
@@ -99,6 +121,16 @@ pub(super) fn v4_refs(ir: &WorkflowIr, catalog: &Catalog, errors: &mut Vec<Valid
                             .at_node(&node.id)
                             .at_path("/params/skill"),
                         );
+                    } else if let Some(model) = catalog.default_model_unavailable.as_deref() {
+                        // shiki script の無いスキルは組織の既定のモデルで動く（実行の主体は制限しないので、保存で閉じる・
+                        // D-185）。
+                        if !catalog.script_skills.contains(&format!("{name}@{version}")) {
+                            errors.push(
+                                skill_default_unavailable(model, catalog)
+                                    .at_node(&node.id)
+                                    .at_path("/params/skill"),
+                            );
+                        }
                     }
                 }
             }
@@ -225,6 +257,68 @@ mod tests {
         let mut errors = Vec::new();
         v4_refs(&ir, &catalog, &mut errors);
         errors
+    }
+
+    fn skill_errors(catalog: &Catalog) -> Vec<ValidationError> {
+        let ir = WorkflowIr::from_json(&json!({
+            "ir_version": 1, "name": "wf",
+            "nodes": [{ "id": "s", "type": "skill.invoke", "params": { "skill": "skill:memo@1.0.0" } }],
+            "edges": []
+        }))
+        .unwrap();
+        let mut errors = Vec::new();
+        v4_refs(&ir, catalog, &mut errors);
+        errors
+    }
+
+    /// instructions だけのスキルは組織の既定のモデルで動くので、既定が保存する人に使えなければ止める（D-185）。
+    /// shiki script で動くスキル・既定が使える人・インストールしていないスキル（別の誤り）には足さない。
+    #[test]
+    fn a_skill_on_an_unavailable_default_model_is_refused() {
+        let installed = Catalog {
+            skills: [("memo".to_string(), ["1.0.0".to_string()].into())].into(),
+            models: Some(vec!["visible".into()]),
+            ..Catalog::default()
+        };
+        assert!(skill_errors(&installed).is_empty());
+        let restricted = Catalog {
+            default_model_unavailable: Some("hidden".into()),
+            ..installed
+        };
+        let errs = skill_errors(&restricted);
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        assert_eq!(errs[0].code, MODEL_UNAVAILABLE_FOR_USER);
+        assert_eq!(errs[0].path.as_deref(), Some("/params/skill"));
+        assert_eq!(
+            errs[0].message,
+            "このスキルは組織の既定のモデル（hidden）で動きますが、このモデルはあなたのアカウントでは使えません。\
+             スキルにはモデルを選ぶ欄がないため、管理者に相談するか、「AI に聞く」（llm.invoke）で使えるモデルを選び、\
+             スキルと同じ指示を書いてください（使えるモデル: visible）"
+        );
+        let locked = Catalog {
+            model_lock: Some("hidden".into()),
+            ..Catalog {
+                skills: restricted.skills.clone(),
+                models: restricted.models.clone(),
+                default_model_unavailable: restricted.default_model_unavailable.clone(),
+                ..Catalog::default()
+            }
+        };
+        assert!(skill_errors(&locked)[0]
+            .message
+            .ends_with("スキルにはモデルを選ぶ欄がないため、管理者に相談してください"));
+        let script = Catalog {
+            script_skills: ["memo@1.0.0".to_string()].into(),
+            ..restricted
+        };
+        assert!(skill_errors(&script).is_empty());
+        let missing = Catalog {
+            default_model_unavailable: Some("hidden".into()),
+            ..Catalog::default()
+        };
+        let errs = skill_errors(&missing);
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        assert_eq!(errs[0].code, "ir.unknown_skill");
     }
 
     /// 自分を呼ぶ新しいワークフロー（まだ保存者に見える一覧に無い）も、最初の保存で止めない。ほかの無い名前は止める。

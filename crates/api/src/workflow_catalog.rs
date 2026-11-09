@@ -220,6 +220,16 @@ pub async fn build_catalog_from(
     catalog.user_restricted_models = check.restricted;
     catalog.user_restricted_decision_models = check.restricted_decision;
     catalog.default_model_unavailable = check.default_unavailable;
+    // 既定が使えない人には、shiki script で動く（LLM を呼ばない）スキルを分けて渡す。ほかのスキルの skill.invoke は
+    // 組織の既定のモデルで動くので保存で止める（引けなければ全部止める・D-185）。
+    if catalog.default_model_unavailable.is_some() {
+        if let Some(installs) = skill_installs {
+            catalog.script_skills = installs
+                .installed_script_skills(ctx)
+                .await
+                .map_err(|e| format!("skill インストール一覧: {e}"))?;
+        }
+    }
     Ok(catalog)
 }
 

@@ -10,7 +10,7 @@ const MODEL_PATH: &str = "/params/model";
 pub(super) const MAX_MODEL_CANDIDATES: usize = 10;
 
 /// 使えるモデルの一覧（上限まで・超えた分は件数だけ）。
-fn model_candidates(models: &[String]) -> String {
+pub(super) fn model_candidates(models: &[String]) -> String {
     let shown = models
         .iter()
         .take(MAX_MODEL_CANDIDATES)

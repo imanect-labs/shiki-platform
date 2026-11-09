@@ -158,11 +158,18 @@ pub struct Catalog {
     /// API 層が保存する人の制限で詰める（[`Self::decision_models`] からは除いてある）。ai.decide に書くと
     /// [`MODEL_UNAVAILABLE_FOR_USER`]、llm.invoke・agent.invoke に書くと `ir.model_modality_mismatch`。空なら制限なし。
     pub user_restricted_decision_models: Vec<String>,
-    /// モデルを省いた llm.invoke・agent.invoke が実行時に動くモデル（組織の既定か Auto の振り先）が、保存する人の
-    /// アカウントでは使えないとき、そのモデル（D-185）。`Some` なら、モデルを省いたノードを
+    /// モデルを省いた llm.invoke・agent.invoke と、instructions だけのスキルを呼ぶ skill.invoke が実行時に動くモデル
+    /// （組織の既定か Auto の振り先）が、保存する人のアカウントでは使えないとき、そのモデル（D-185）。`Some` なら、
+    /// モデルを省いたノードとそのスキルを呼ぶノード（[`Self::script_skills`]）を
     /// [`MODEL_UNAVAILABLE_FOR_USER`] で止める（実行の主体は制限しないので、省いたまま保存すると自動実行が制限された
     /// モデルで動く）。
     pub default_model_unavailable: Option<String>,
+    /// 保存ユーザーのインストール済み skill のうち、shiki script で動くもの（`name@version`・LLM を呼ばない・D-185）。
+    ///
+    /// API 層は [`Self::default_model_unavailable`] が `Some` のときだけ詰める。ここに無いインストール済みの skill
+    /// （instructions だけ・shell script だけ）を呼ぶ skill.invoke は、実行時に組織の既定のモデルで動くので、既定が保存する
+    /// 人のアカウントで使えなければ [`MODEL_UNAVAILABLE_FOR_USER`] で止める（中身を引けなかった skill も止める）。
+    pub script_skills: std::collections::BTreeSet<String>,
     /// 保存ユーザーのインストール済み skill（name → レジストリ version 集合・V4 skill 照合・
     /// #344 Task 10.1b）。インストールはユーザー単位のため保存者基準で照合し、実行時は
     /// 実行主体の ReBAC で再検証する（fail-closed が最終防衛線・ir.md §8）。
