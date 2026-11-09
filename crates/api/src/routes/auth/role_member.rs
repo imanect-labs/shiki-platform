@@ -5,7 +5,7 @@
 //! 定期の照合（[`crate::membership_reconcile`]・D-136・D-140）が同じ手順と同じ決め方を使う（写しを作らない）。
 //! どれを外すかの候補は呼ぶ側が決める（ログインの同期は今の直接タプルのすべて、照合はログインの同期が記録したもの）。
 
-use authz::{AuthzClient, GroupLayout, Namespace, ObjectType, Relation, Subject};
+use authz::{AuthContext, AuthzClient, GroupLayout, Namespace, ObjectType, Relation, Subject};
 
 use crate::extract::org_of_groups;
 
@@ -117,4 +117,92 @@ pub(crate) async fn revoke_roles(
         }
     }
     revoked
+}
+
+/// ロールの直接タプルと台帳（`directory_role`）を、あるべき集合（`desired`・claims 由来）にそろえる（ログインと
+/// セッションの更新の同期の本体・[`super::callback::provision_roles`]）。タプルを変えたかを返す。
+///
+/// 現在の直接タプル（自テナント名前空間のみ・継承展開なし）が読めない時は**剥奪をスキップ**し付与のみ行う（誤剥奪を
+/// 避ける fail-safe）。
+///
+/// 剥奪は 現在 − あるべき。**claims を正本とする**（callback.rs 冒頭の設計）ため、claims が空＝ロール無しと解釈し
+/// stale タプルを剥奪する。IdP でユーザーの最後の role/group が外れたケース（desired 空）で過剰権限を残さないため
+/// （剥奪漏れ＝fail-open を避ける・#91 P1 レビュー対応）。過剰剥奪は fail-safe（アクセス減・次回の正しいログインで
+/// 再付与）で自己回復する。一過性の IdP 不調そのものは、現在集合の READ が失敗した時のみ剥奪をスキップする上の
+/// ガード（unknown state に対して破壊的操作をしない）で扱い、READ 成功時の空 claims は正当な「ロール無し」として扱う。
+pub(crate) async fn sync_roles(
+    authz: &dyn AuthzClient,
+    directory: &storage::DirectoryStore,
+    ctx: &AuthContext,
+    desired: &[String],
+) -> bool {
+    let (subject, ns) = (ctx.subject(), ctx.ns());
+    let current: Vec<String> = current_roles(authz, &subject, &ns)
+        .await
+        .unwrap_or_default();
+    let stale: Vec<String> = current
+        .iter()
+        .filter(|c| !desired.contains(*c))
+        .cloned()
+        .collect();
+    let revoked = !revoke_roles(authz, &subject, &ns, &stale).await.is_empty();
+    let granted = grant_roles(authz, directory, ctx, desired, &current).await;
+    revoked || granted
+}
+
+/// あるべきロールの member を付け、台帳（`directory_role`）をそろえる。タプルを足したかを返す（付与は あるべき − 現在。
+/// 冪等 write なので差分に限らず流しても安全だが、無駄打ちを避ける）。
+///
+/// - 今タプルがある（`current` にある）ロールも、台帳の行が欠けていれば戻す（BUG-270）。台帳は共有の相手検索・ロール
+///   の列の参照の照合・テナント撤去の列挙（`purge_tenant`）が読むので、タプルだけが残ると、ロールを書けず撤去からも
+///   漏れる。行があれば何も変えない（表示名・作成日時を保つ）。
+/// - 今タプルが無いロールは、台帳を先に書いてからタプルを足す（#91 M-4）。タプルを先に書くと、台帳の書き込みに
+///   失敗したとき「タプルはあるが台帳に無いロール」ができ、撤去の列挙から漏れる。台帳を書けなければタプルを
+///   足さない（次の同期で試し直す）。
+async fn grant_roles(
+    authz: &dyn AuthzClient,
+    directory: &storage::DirectoryStore,
+    ctx: &AuthContext,
+    desired: &[String],
+    current: &[String],
+) -> bool {
+    let (tenant_id, org) = (ctx.tenant_id(), ctx.org());
+    let held: Vec<String> = desired
+        .iter()
+        .filter(|d| current.contains(*d))
+        .cloned()
+        .collect();
+    match directory.ensure_roles(tenant_id, org, &held).await {
+        Ok(0) => {}
+        Ok(restored) => {
+            tracing::info!(
+                restored,
+                "directory_role に欠けていたロールの行を戻した（タプルはあった）"
+            );
+        }
+        Err(e) => {
+            tracing::warn!(error = %e, "directory_role の欠けを戻せません（次回同期で再試行）");
+        }
+    }
+    let (subject, ns) = (ctx.subject(), ctx.ns());
+    let mut granted = false;
+    for role_id in desired.iter().filter(|d| !current.contains(*d)) {
+        if let Err(e) = directory
+            .upsert_role(role_id, tenant_id, org, role_id)
+            .await
+        {
+            tracing::warn!(role = %role_id, error = %e, "directory_role の upsert に失敗（タプル付与を保留・次回同期で再試行）");
+            continue;
+        }
+        match authz
+            .write_tuple(&subject, Relation::Member, &ns.role(role_id))
+            .await
+        {
+            Ok(_) => granted = true,
+            Err(e) => {
+                tracing::warn!(role = %role_id, error = %e, "role 付与に失敗（best-effort・login は継続）");
+            }
+        }
+    }
+    granted
 }

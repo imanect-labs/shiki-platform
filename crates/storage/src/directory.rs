@@ -303,6 +303,33 @@ impl DirectoryStore {
         Ok(())
     }
 
+    /// role/部署の台帳の行が無ければ足す（あれば何も変えない・表示名と作成日時を保つ）。足した行の数を返す。
+    ///
+    /// ログイン時の claim 同期が、メンバーのタプルが既にあるロールの欠けた行を戻すのに使う（BUG-270）。表示名は
+    /// [`Self::upsert_role`] と同じくロール ID にする。1 回の文でまとめて足す（ロールの数だけ往復しない）。
+    pub async fn ensure_roles(
+        &self,
+        tenant_id: &str,
+        org: &str,
+        role_ids: &[String],
+    ) -> Result<u64, StorageError> {
+        if role_ids.is_empty() {
+            return Ok(0);
+        }
+        let done = sqlx::query(
+            "INSERT INTO directory_role (role_id, tenant_id, org, display_name) \
+             SELECT r, $2, $3, r FROM unnest($1::text[]) AS r \
+             ON CONFLICT (tenant_id, role_id) DO NOTHING",
+        )
+        .bind(role_ids)
+        .bind(tenant_id)
+        .bind(org)
+        .execute(&self.db)
+        .await
+        .map_err(StorageError::Db)?;
+        Ok(done.rows_affected())
+    }
+
     /// 利用者の部署（ロール）の写しを、claims から作ったあるべき集合で置き換える（#751）。
     ///
     /// 正本は IdP claims → OpenFGA の role タプル（ログイン時の同期）。AI 活用分析の集計が

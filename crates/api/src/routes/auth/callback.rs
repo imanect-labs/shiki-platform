@@ -9,7 +9,7 @@ use axum::{
 use axum_extra::extract::cookie::CookieJar;
 use serde::Deserialize;
 
-use authz::{AuthContext, Principal, Relation};
+use authz::{AuthContext, Principal};
 
 use super::{
     action::{normalize_action_status, AccountAction},
@@ -261,7 +261,7 @@ pub(crate) async fn sync_memberships(
 ///   （org は organization タプルの責務で、role 化するとノイズになる）。
 /// - **テナント内に閉じる**: 現在集合は自テナント名前空間の直接タプルのみ抽出。他テナントの
 ///   タプルには読み書きとも触れない。
-/// - **表示用**: 共有ダイアログ用に `directory_role` も upsert する。
+/// - **表示用**: 共有ダイアログ用に `directory_role` も upsert する（タプルが既にあるロールの欠けた行も戻す・BUG-270）。
 /// - **best-effort**: 失敗しても login を止めない。付与失敗は access が減る方向（fail-safe）、
 ///   剥奪失敗は次回ログインで再収束。
 // groups claim からの role 収束は「抽出→現在集合との差分→付与/剥奪→表示用 upsert」の
@@ -276,8 +276,6 @@ pub(crate) async fn provision_roles(
     // あるべき集合（claims 由来・正規化済み）。
     let (org, sourced) = desired_from_claims(&principal, &tenant_id, &state.config.auth);
     let ctx = AuthContext::new(principal, org.clone(), tenant_id.clone());
-    let subject = ctx.subject();
-    let ns = ctx.ns();
     let desired: Vec<String> = sourced.iter().map(|(id, _)| id.clone()).collect();
 
     // ディレクトリへの登録（共有の相手検索・AI 活用分析の在籍者）。人だけ（workflow 主体は除く）。
@@ -312,56 +310,8 @@ pub(crate) async fn provision_roles(
         tracing::warn!(error = %e, "directory_user_role の更新に失敗（分析の部署集計のみに影響）");
     }
 
-    // 現在の直接 role タプル（自テナント名前空間のみ・継承展開なし）。現状が読めない時は**剥奪をスキップ**し
-    // 付与のみ行う（誤剥奪を避ける fail-safe）。読む・外す手順は定期の照合（D-136）と共用する（role_member）。
-    let current: Vec<String> = role_member::current_roles(&*state.authz, &subject, &ns)
-        .await
-        .unwrap_or_default();
-
-    // 剥奪: 現在 − あるべき（自テナント分のみ）。
-    // **claims を正本とする**（callback.rs 冒頭の設計）ため、claims が空＝ロール無しと解釈し
-    // stale タプルを剥奪する。IdP でユーザーの最後の role/group が外れたケース（desired 空）で
-    // 過剰権限を残さないため（剥奪漏れ＝fail-open を避ける・#91 P1 レビュー対応）。
-    // 過剰剥奪は fail-safe（アクセス減・次回の正しいログインで再付与）で自己回復する。
-    // 一過性の IdP 不調そのものは、**現在集合の READ が失敗した時のみ**剥奪をスキップする
-    // 上のガード（unknown state に対して破壊的操作をしない）で扱い、READ 成功時の空 claims は
-    // 正当な「ロール無し」として扱う。
-    let removed_from_claims: Vec<String> = current
-        .iter()
-        .filter(|c| !desired.contains(*c))
-        .cloned()
-        .collect();
-    let mut changed =
-        !role_member::revoke_roles(&*state.authz, &subject, &ns, &removed_from_claims)
-            .await
-            .is_empty();
-
-    // 付与: あるべき − 現在（冪等 write なので差分に限らず流しても安全だが、無駄打ちを避ける）。
-    for role_id in desired.iter().filter(|d| !current.contains(*d)) {
-        // 台帳（directory_role）を FGA タプルより**先に** upsert する（#91 M-4）。
-        // FGA 先行だと upsert 失敗時に「タプルはあるが台帳に無い role」が生まれ、
-        // `purge_tenant` の台帳ベース列挙（1b）から漏れてメンバータプルが共有ストアに
-        // 残留する。台帳先行なら失敗時は「台帳行のみ」で、タプルを持たない台帳行は
-        // purge が空剥奪するだけで無害（次回同期でタプルも付与される）。
-        if let Err(e) = state
-            .directory
-            .upsert_role(role_id, &tenant_id, &org, role_id)
-            .await
-        {
-            tracing::warn!(role = %role_id, error = %e, "directory_role の upsert に失敗（タプル付与を保留・次回同期で再試行）");
-            continue;
-        }
-        match state
-            .authz
-            .write_tuple(&subject, Relation::Member, &ns.role(role_id))
-            .await
-        {
-            Ok(_) => changed = true,
-            Err(e) => {
-                tracing::warn!(role = %role_id, error = %e, "role 付与に失敗（best-effort・login は継続）");
-            }
-        }
-    }
+    // ロールの直接タプルと台帳をあるべき集合にそろえる（剥奪・付与・台帳の欠けの復元・BUG-270）。
+    let changed = role_member::sync_roles(&*state.authz, &state.directory, &ctx, &desired).await;
     // ロールが変わったら構造化データの SSE 購読へ知らせる（TTL を待たずに材料を引き直す・PIT-70 ③）。
     if changed {
         if let Err(e) = state.data.notify_authz_changed(&ctx, None).await {

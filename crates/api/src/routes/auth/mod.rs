@@ -18,6 +18,8 @@ mod membership_reconcile_tests;
 pub(crate) mod org_member;
 #[cfg(test)]
 mod org_member_it;
+#[cfg(test)]
+mod role_ledger_tests;
 pub(crate) mod role_member;
 pub mod session;
 
