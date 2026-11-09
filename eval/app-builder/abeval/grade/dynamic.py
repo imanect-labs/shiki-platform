@@ -23,7 +23,9 @@
   ない run_case では見ない）。
 - **llm_dependent** の run_case を stub で流したときは、検査を最初の LLM のノード（llm.invoke・ai.decide・
   agent.invoke）まで（そのノードを含む）に限る。LLM の後ろの動きは stub の出力で決まるので見ない。行とファイルも
-  見ない（どのノードが書いたかを決められないため）。
+  見ない（どのノードが書いたかを決められないため）。「入力が届かない」は、打ち切った run では見えない入力
+  （`unobservable_inputs`・LLM の後ろか出力の形を決めた LLM でだけ使い、手前で動いた出力の形の無い LLM・書き込みの
+  設定では使わない入力）を外して見る。
 """
 
 from __future__ import annotations
@@ -336,12 +338,27 @@ def _input_keys(value: Any) -> Iterator[str]:
             yield from _input_keys(v)
 
 
-def unobservable_inputs(ir: Mapping, allowed: set[str]) -> frozenset[str]:
-    """LLM の手前で打ち切った run では見えない入力の項目。
+def _shows_params(n: Mapping) -> bool:
+    """出力に設定の値がそのまま出るノード（届いた先として見るもの）: 出力の形の無い LLM（stub は「回答: <指示>」を
+    返す）と、データの書き込み（書いた値を返す）。script.run・data.query・分岐などは、設定に入力を使っても出力に
+    その値が出るとは限らないので数えない。"""
+    t = str(n.get("type", ""))
+    if t in LLM_NODE_TYPES:
+        return not (n.get("params") or {}).get("output_schema")
+    return t.startswith(_WRITE_TYPES)
 
-    LLM の後ろのノード（`allowed` の外）でしか使わない入力と、出力の形（`output_schema`）を決めた LLM の指示で
-    しか使わない入力（stub は指示を返さず、決まった形のダミーを返す）。どちらも、正しい IR でも打ち切った run では
-    どこにも現れない。入力を使っているかは静的な検査（flow_through）が見る。
+
+def unobservable_inputs(
+    ir: Mapping, allowed: set[str], skipped: set[str] = frozenset()
+) -> frozenset[str]:
+    """LLM の手前で打ち切った run では見えない入力の項目（`skipped` はその run で飛ばされただけのノード）。
+
+    LLM の後ろのノード（`allowed` の外）か、出力の形（`output_schema`）を決めた LLM の指示（stub は指示を返さず、
+    決まった形のダミーを返す）で使う入力のうち、手前の「届いた先として見るノード」（[`_shows_params`]）の設定では
+    使わないもの。正しい IR でも、打ち切った run ではどこにも現れない。手前の script.run・data.query・分岐で使っても、
+    その出力は届いた先として見ないので見えるに数えない。その run で飛ばされた（通らなかった分岐の）書き込みも
+    数えない（BUG-268）。失敗した・届かなかったノードは数える（正しい IR なら値が見えたはずなので、今までどおり
+    届かないと数える）。どこでも使わない入力も外さない。入力を使っているかは静的な検査（flow_through）が見る。
     """
     seen: set[str] = set()
     hidden: set[str] = set()
@@ -352,9 +369,15 @@ def unobservable_inputs(ir: Mapping, allowed: set[str]) -> frozenset[str]:
         )
         if nid not in allowed or structured_llm:
             hidden |= keys
-        else:
+        elif nid not in skipped and _shows_params(n):
             seen |= keys
     return frozenset(hidden - seen)
+
+
+def passed_by(run: RunRecord) -> set[str]:
+    """その run で飛ばされただけのノード（step がすべて skipped・map の要素のどれかで動いたものは除く）。"""
+    skipped = {s.node_id for s in run.steps if s.status == "skipped"}
+    return skipped - {s.node_id for s in run.steps if s.status != "skipped"}
 
 
 def not_delivered(
@@ -557,7 +580,11 @@ def grade_dynamic(
             allowed_any |= allowed
         findings += dead_edges(ir, ports, run, allowed)
         if delivery:
-            hidden = unobservable_inputs(ir, allowed) if allowed is not None else frozenset()
+            hidden = (
+                unobservable_inputs(ir, allowed, passed_by(run))
+                if allowed is not None
+                else frozenset()
+            )
             findings += not_delivered(ir, expects[role], rec, run, allowed, skip=hidden)
         if expect_status is not None:
             findings += unexpected_status(run, expect_status, last=i == len(rec.runs) - 1)

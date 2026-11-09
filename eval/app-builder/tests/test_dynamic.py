@@ -16,6 +16,7 @@ from abeval.grade.dynamic import (
     grade_dynamic,
     leftovers,
     not_delivered,
+    passed_by,
     unobservable_inputs,
 )
 from abeval.tasks import Expect, InputSpec
@@ -271,7 +272,7 @@ def test_restricted_runs_skip_only_the_inputs_they_cannot_observe():
         [_step("score", output={"data": {"score": 1, "reason": "stub"}})],
     )
     exp = {"main": _expect(["name", "motivation", "note"])}
-    restricted = grade_dynamic({"main": ir}, {}, exp, _rec([run]), restrict=True)
+    restricted = grade_dynamic({"main": ir}, {"main": FAQ_PORTS}, exp, _rec([run]), restrict=True)
     # どこでも使わない入力（note）は、打ち切った run でも今までどおり届かないと数える。
     assert [f.detail.split("=")[0] for f in restricted.findings if f.code == "not_delivered"] == [
         "入力 note"
@@ -285,3 +286,119 @@ def test_restricted_runs_skip_only_the_inputs_they_cannot_observe():
         ],
     }
     assert unobservable_inputs(plain, before_llm(plain)) == {"name"}
+    # 指示を返す LLM がその run で飛ばされても、ほかに見えない使い道の無い入力（志望動機）は外さない。
+    assert unobservable_inputs(plain, before_llm(plain), {"score"}) == {"name"}
+
+
+def _faq_ir() -> dict:
+    """E1（vf）の Mode B の app12-faq-table で、stub が届かないと誤って言った IR の最小の形（BUG-268）。
+
+    質問は、LLM の手前では script.run（照合）でだけ使い、見つかった道では出力の形を決めた LLM と LLM の後ろの
+    書き込みに、見つからない道では書き込みに届く。
+    """
+    q = {"$from": "input", "path": "/question"}
+    return {
+        "nodes": [
+            {"id": "find", "type": "data.query", "params": {"table": "t", "query": {"limit": 200}}},
+            {"id": "match", "type": "script.run", "params": {"input": {"question": q}}},
+            {"id": "has_hit", "type": "control.branch", "params": {}},
+            {
+                "id": "answer",
+                "type": "llm.invoke",
+                "params": {
+                    "prompt": {"$template": "質問: {q}", "vars": {"q": q}},
+                    "output_schema": {"type": "object"},
+                },
+            },
+            {"id": "save_auto", "type": "data.record.create", "params": {"data": {"question": q}}},
+            {"id": "save_esc", "type": "data.record.create", "params": {"data": {"question": q}}},
+        ],
+        "edges": [
+            {"from": "find", "to": "match"},
+            {"from": "match", "to": "has_hit"},
+            {"from": "has_hit", "from_port": "true", "to": "answer"},
+            {"from": "has_hit", "from_port": "false", "to": "save_esc"},
+            {"from": "answer", "to": "save_auto"},
+        ],
+    }
+
+
+FAQ_PORTS = {
+    "find": ["out"],
+    "match": ["out"],
+    "has_hit": ["true", "false"],
+    "answer": ["out"],
+    "save_auto": ["out"],
+    "save_esc": ["out"],
+}
+
+
+def _faq_run(hit: bool, saved: dict | None = None) -> RunRecord:
+    q = "会議室の予約"
+    steps = [
+        _step("find", output={"items": []}),
+        _step("match", output={"found": hit, "faqs": "[番号 3] 質問: 会議室を予約したい"}),
+        _step("has_hit", ports=["true" if hit else "false"]),
+    ]
+    if hit:
+        steps += [
+            _step("answer", output={"data": {"answer": "", "faq_no": ""}}),
+            _step("save_esc", status="skipped", ports=[]),
+        ]
+    else:
+        steps += [
+            _step("answer", status="skipped", ports=[]),
+            _step("save_esc", output=saved if saved is not None else {"data": {"question": q}}),
+        ]
+    return RunRecord("r", "succeeded", {"question": q}, steps)
+
+
+def test_restricted_runs_do_not_count_inputs_used_only_by_unshown_nodes_as_visible():
+    """手前の script.run・data.query・分岐と、通らなかった分岐の書き込みで使っても、見えるに数えない（BUG-268）。"""
+    ir = _faq_ir()
+    exp = {"main": _expect(["question"])}
+    hit = _faq_run(hit=True)
+    assert passed_by(hit) == {"save_esc"}
+    assert unobservable_inputs(ir, before_llm(ir), passed_by(hit)) == {"question"}
+    g = grade_dynamic({"main": ir}, {"main": FAQ_PORTS}, exp, _rec([hit]), restrict=True)
+    assert "dyn:not_delivered" not in g.detectors(), g.to_dict()
+    # 見つからない道では、質問を書き込みに入れたので見える（届いていれば数えない）。
+    miss = _faq_run(hit=False)
+    assert passed_by(miss) == {"answer"}
+    assert unobservable_inputs(ir, before_llm(ir), passed_by(miss)) == set()
+    assert (
+        grade_dynamic({"main": ir}, {"main": FAQ_PORTS}, exp, _rec([miss]), restrict=True).findings
+        == []
+    )
+    # 書き込みに届かなければ、打ち切った run でも今までどおり届かないと数える。
+    lost = _faq_run(hit=False, saved={"data": {"question": ""}})
+    g = grade_dynamic({"main": ir}, {"main": FAQ_PORTS}, exp, _rec([lost]), restrict=True)
+    assert [f.code for f in g.findings] == ["not_delivered"]
+    # 書き込みが失敗した（飛ばされたのではない）ときも、正しければ見えたはずなので届かないと数える。
+    failed = _faq_run(hit=False)
+    failed.steps[-1] = _step("save_esc", status="failed", ports=[])
+    failed.status = "failed"
+    g = grade_dynamic({"main": ir}, {"main": FAQ_PORTS}, exp, _rec([failed]), restrict=True)
+    assert [f.code for f in g.findings] == ["not_delivered"]
+
+
+def test_restricted_runs_still_catch_inputs_that_reach_nothing():
+    """LLM と LLM の後ろの書き込みが入力を読まない IR（参照の key を誤った）は、手前の script.run で使っていても
+    届かないと数える。"""
+    ir = _faq_ir()
+    wrong = {"$from": "input", "path": "/q"}
+    for n in ir["nodes"]:
+        if n["id"] == "answer":
+            n["params"]["prompt"]["vars"]["q"] = wrong
+        if n["id"] in ("save_auto", "save_esc"):
+            n["params"]["data"]["question"] = wrong
+    hit = _faq_run(hit=True)
+    assert unobservable_inputs(ir, before_llm(ir), passed_by(hit)) == {"q"}
+    g = grade_dynamic(
+        {"main": ir},
+        {"main": FAQ_PORTS},
+        {"main": _expect(["question"])},
+        _rec([hit]),
+        restrict=True,
+    )
+    assert [f.code for f in g.findings] == ["not_delivered"]

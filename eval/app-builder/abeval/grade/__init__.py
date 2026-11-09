@@ -22,5 +22,8 @@
 #     読めないので、前の結果の数は変わらない。
 # 11: stub で流した、期待が succeeded の run_case で、run は成功したのに失敗した step（map の
 #     `on_item_error: collect` の項目・`on_error: continue`）を S2d に数える（`failed_in_success`・BUG-267。Mode A は
-#     書くはずの行を 1 行も書かない IR を見出しで通していた）。
+#     書くはずの行を 1 行も書かない IR を見出しで通していた）。LLM の手前で打ち切る run の「入力が届かない」で、
+#     見えるに数える使い道を、その run で飛ばされなかった「届いた先として見るノード」（出力の形の無い LLM・書き込み）
+#     の設定に限る（手前の script.run・data.query・分岐や、通らなかった分岐の書き込みで使っても見えるに数えない・
+#     BUG-268。届く先が出力の形を決めた LLM と LLM の後ろの書き込みだけの正しい IR を誤って落としていた）。
 GRADER_VERSION = 11
