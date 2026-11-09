@@ -206,6 +206,7 @@ pub async fn build_catalog_from(
 /// 承認（human.approval）・状態を進める（data.transition）・状態の変化のきっかけ・同じレコードを探す列と足す数
 /// （キーで追加か更新・まとめて登録の照合・レコードの更新の足す数・GAP-16）・データを検索の列（BUG-244）・状態の列への
 /// 書き込み（レコードの更新と追加・BUG-251）が束縛するテーブルを保存者の見え方で引いて、V4 の材料にする（GAP-08・BUG-105）。
+/// データを検索のリンクの条件が辿るリンク先も、同じ見え方で引き足す（GAP-129）。
 ///
 /// IR にそのどれも無ければ `None`（照合しない）。見えないテーブルは入れない（V4 が「見つからないか状態の進め方が
 /// ない」と同じ文言で止める）。FSM の状態は状態の列の選択肢（FSM の保存時にこれと一致することを data が
@@ -293,40 +294,11 @@ pub async fn fsm_tables(
         .collect();
     let mut out = std::collections::BTreeMap::new();
     for id in ids {
-        let table = match data.get_table_for_viewer(ctx, id, None).await {
-            Ok(t) => t,
-            Err(data::DataError::NotFound | data::DataError::Forbidden) => continue,
-            Err(e) => return Err(format!("状態の進め方を使うテーブル: {e}")),
+        let Some(table) = viewer_table(data, ctx, id).await? else {
+            continue;
         };
-        let schema = &table.schema;
-        // 状態の列（FSM で管理し、保存者が読めるときだけ・読めなければ定義の絞り込みが列ごと落とす）。
-        let status_def = schema
-            .fsm_ref
-            .as_ref()
-            .and(schema.status_field.as_deref())
-            .and_then(|k| schema.field(k));
-        let states = status_def.map(|f| f.options.clone());
-        let status_field = status_def.map(|f| f.key.clone());
-        let fields = schema
-            .fields
-            .iter()
-            .map(|f| {
-                let ty = serde_json::to_value(f.field_type)
-                    .ok()
-                    .and_then(|v| v.as_str().map(str::to_string))
-                    .unwrap_or_default();
-                (f.key.clone(), ty)
-            })
-            .collect();
-        // 重複を許さない列（読める列だけ・同じレコードを探す列の照合・GAP-16）。
-        let unique = schema
-            .fields
-            .iter()
-            .filter(|f| f.unique)
-            .map(|f| f.key.clone())
-            .collect();
         // 作成時の状態（レコードを追加するテーブルで、状態の列を読めるときだけ・実行時の作成と同じ読み方・BUG-251）。
-        let fsm_initial = if status_field.is_some() && adding.contains(&id) {
+        let fsm_initial = if status_def(&table.schema).is_some() && adding.contains(&id) {
             match data.fsm_initial(ctx, &table, None).await {
                 Ok(fi) => fi,
                 Err(data::DataError::NotFound | data::DataError::Forbidden) => None,
@@ -337,18 +309,89 @@ pub async fn fsm_tables(
         };
         out.insert(
             id.hyphenated().to_string(),
-            workflow_engine::CatalogTable {
-                states,
-                status_field,
-                fields,
-                unique,
-                // データを検索の列は、実行時の束縛と同じ data の判定で照らす（保存者の見え方の定義・BUG-244）。
-                schema: Some(table.schema),
-                fsm_initial,
-            },
+            catalog_table(table, fsm_initial),
         );
     }
+    // データを検索のリンクの条件が辿るリンク先（中の列を照らす・GAP-129）。照合と同じ歩き方で、材料に無いものだけを
+    // テーブルごとに 1 回引く。引き足すと、その先のリンク先が分かる（入れ子の深さの上限まで）。
+    if let Ok(parsed) = workflow_engine::WorkflowIr::from_json(ir) {
+        let mut tried = std::collections::BTreeSet::new();
+        for _ in 0..data::MAX_JOIN_DEPTH {
+            let need: Vec<uuid::Uuid> = workflow_engine::query_link_tables(&parsed, &out)
+                .into_iter()
+                .filter(|id| tried.insert(*id))
+                .collect();
+            if need.is_empty() {
+                break;
+            }
+            for id in need {
+                if let Some(table) = viewer_table(data, ctx, id).await? {
+                    out.insert(id.hyphenated().to_string(), catalog_table(table, None));
+                }
+            }
+        }
+    }
     Ok(Some(out))
+}
+
+/// 保存者の見え方のテーブル（[`data::DataStore::get_table_for_viewer`]・見えない・無いテーブルは `None`）。
+async fn viewer_table(
+    data: &data::DataStore,
+    ctx: &authz::AuthContext,
+    id: uuid::Uuid,
+) -> Result<Option<data::DataTable>, String> {
+    match data.get_table_for_viewer(ctx, id, None).await {
+        Ok(t) => Ok(Some(t)),
+        Err(data::DataError::NotFound | data::DataError::Forbidden) => Ok(None),
+        Err(e) => Err(format!("状態の進め方を使うテーブル: {e}")),
+    }
+}
+
+/// 状態の列（FSM で管理し、保存者が読めるときだけ・読めなければ定義の絞り込みが列ごと落とす）。
+fn status_def(schema: &data::TableSchema) -> Option<&data::FieldDef> {
+    schema
+        .fsm_ref
+        .as_ref()
+        .and(schema.status_field.as_deref())
+        .and_then(|k| schema.field(k))
+}
+
+/// 保存者の見え方の定義から、V4 の材料のテーブルを作る。
+fn catalog_table(
+    table: data::DataTable,
+    fsm_initial: Option<data::FsmInitial>,
+) -> workflow_engine::CatalogTable {
+    let schema = &table.schema;
+    let status_col = status_def(schema);
+    let states = status_col.map(|f| f.options.clone());
+    let status_field = status_col.map(|f| f.key.clone());
+    let fields = schema
+        .fields
+        .iter()
+        .map(|f| {
+            let ty = serde_json::to_value(f.field_type)
+                .ok()
+                .and_then(|v| v.as_str().map(str::to_string))
+                .unwrap_or_default();
+            (f.key.clone(), ty)
+        })
+        .collect();
+    // 重複を許さない列（読める列だけ・同じレコードを探す列の照合・GAP-16）。
+    let unique = schema
+        .fields
+        .iter()
+        .filter(|f| f.unique)
+        .map(|f| f.key.clone())
+        .collect();
+    workflow_engine::CatalogTable {
+        states,
+        status_field,
+        fields,
+        unique,
+        // データを検索の列は、実行時の束縛と同じ data の判定で照らす（保存者の見え方の定義・BUG-244）。
+        schema: Some(table.schema),
+        fsm_initial,
+    }
 }
 
 /// IR が名指しするテーブル・フォルダー・ファイルのうち、保存者に見えるものを引いて V4 の材料にする（GAP-35・GAP-91）。

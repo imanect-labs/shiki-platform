@@ -11,6 +11,12 @@ use crate::ir::validate::CatalogTable;
 const ITEMS: &str = "00000000-0000-0000-0000-0000000000c4";
 const HIDDEN: &str = "00000000-0000-0000-0000-0000000000b3";
 const BARE: &str = "00000000-0000-0000-0000-0000000000d5";
+/// 品目の `maker` が指すテーブル（材料にある）。
+const MAKERS: &str = "00000000-0000-0000-0000-0000000000a7";
+/// メーカーの `country` が指すテーブル（材料に無い）。
+const COUNTRIES: &str = "00000000-0000-0000-0000-0000000000f8";
+/// 品目の `orders` が指すテーブル（材料に無い）。
+const ORDERS: &str = "00000000-0000-0000-0000-0000000000e6";
 
 /// 保存者の見え方の定義（`secret` は読めないので入っていない）。
 fn schema() -> TableSchema {
@@ -23,7 +29,22 @@ fn schema() -> TableSchema {
         { "key": "tags", "type": "multi_select", "indexed": true, "options": ["a"] },
         { "key": "orders", "type": "record_ref", "indexed": true,
           "ref_table": "00000000-0000-0000-0000-0000000000e6",
-          "link": { "cardinality": "one_to_many", "reverse": true } }
+          "link": { "cardinality": "one_to_many", "reverse": true } },
+        { "key": "maker", "type": "record_ref", "ref_table": MAKERS }
+    ] }))
+    .unwrap();
+    for (i, f) in s.fields.iter_mut().enumerate() {
+        f.id = 10 + u16::try_from(i).unwrap();
+    }
+    s
+}
+
+/// リンク先（メーカー）の、保存者の見え方の定義（`secret` は読めないので入っていない）。
+fn makers() -> TableSchema {
+    let mut s: TableSchema = serde_json::from_value(json!({ "fields": [
+        { "key": "code", "type": "text", "unique": true },
+        { "key": "memo", "display_name": "備考", "type": "text" },
+        { "key": "country", "type": "record_ref", "ref_table": COUNTRIES }
     ] }))
     .unwrap();
     for (i, f) in s.fields.iter_mut().enumerate() {
@@ -44,6 +65,13 @@ fn catalog() -> Catalog {
             ),
             // 定義の無い材料（承認の照合だけに引いたもの）は照合しない。
             (BARE.to_string(), CatalogTable::default()),
+            (
+                MAKERS.to_string(),
+                CatalogTable {
+                    schema: Some(makers()),
+                    ..CatalogTable::default()
+                },
+            ),
         ])),
         ..Catalog::default()
     }
@@ -303,4 +331,154 @@ fn validate_refuses_queries_on_columns_without_an_index() {
         located(&errs),
         vec![(FIELD_NOT_INDEXED, "q", "/params/query/sort/0/field")]
     );
+}
+
+fn link(field: &str, filter: Option<serde_json::Value>) -> serde_json::Value {
+    match filter {
+        Some(f) => json!({ "link": { "field": field, "filter": f } }),
+        None => json!({ "link": { "field": field } }),
+    }
+}
+
+fn cmp(field: &str, op: &str) -> serde_json::Value {
+    json!({ "cmp": { "field": field, "op": op, "value": "x" } })
+}
+
+/// リンクの条件（`link`・入れ子も）は、辿る列がリンクの列であることと、中の比較の列をリンク先の定義で照らす（GAP-129）。
+/// 中の列は、リンク先の表を言い、リンク先の表の「列の編集」を言う。リンク先が材料に無い（見えない）ときは中を照らさない。
+#[test]
+fn link_conditions_are_checked_in_the_linked_table() {
+    let ir = ir(json!([
+        query_node(
+            "ok",
+            json!(ITEMS),
+            json!({ "filter": { "all": [
+                link("maker", Some(cmp("code", "eq"))),
+                link("maker", None),
+                // 逆向きのリンクも辿れる（リンク先は材料に無いので中は照らさない）。
+                link("orders", Some(cmp("anything", "eq")))
+            ] } })
+        ),
+        query_node(
+            "inner",
+            json!(ITEMS),
+            json!({ "filter": { "not": link("maker", Some(json!({ "any": [
+                cmp("memo", "eq"),
+                cmp("code", "contains"),
+                cmp("secret", "eq"),
+                link("country", Some(cmp("anything", "eq")))
+            ] }))) } })
+        ),
+        query_node(
+            "field",
+            json!(ITEMS),
+            json!({ "filter": { "all": [
+                link("name", Some(cmp("code", "eq"))),
+                link("secret", None),
+                link("nope", None),
+                link("maker", Some(link("memo", None)))
+            ] } })
+        )
+    ]));
+    let mut errors = Vec::new();
+    v4(&ir, &catalog(), &mut errors);
+    let inner = "/params/query/filter/not/link/filter/any";
+    assert_eq!(
+        located(&errors),
+        vec![
+            (
+                FIELD_NOT_INDEXED,
+                "inner",
+                format!("{inner}/0/cmp/field").as_str()
+            ),
+            (
+                FIELD_NOT_INDEXED,
+                "inner",
+                format!("{inner}/1/cmp/field").as_str()
+            ),
+            (
+                UNKNOWN_FIELD,
+                "inner",
+                format!("{inner}/2/cmp/field").as_str()
+            ),
+            (
+                FIELD_NOT_USABLE,
+                "field",
+                "/params/query/filter/all/0/link/field"
+            ),
+            (
+                UNKNOWN_FIELD,
+                "field",
+                "/params/query/filter/all/1/link/field"
+            ),
+            (
+                UNKNOWN_FIELD,
+                "field",
+                "/params/query/filter/all/2/link/field"
+            ),
+            (
+                FIELD_NOT_USABLE,
+                "field",
+                "/params/query/filter/all/3/link/filter/link/field"
+            ),
+        ]
+    );
+    let m = &errors[0].message;
+    assert!(
+        m.starts_with("「備考」（memo）は索引の無い列なので、リンク先の絞り込みの条件に使えません")
+            && m.contains("リンク先のテーブルの「列の編集」でこの列の索引をオンに"),
+        "{m}"
+    );
+    let m = &errors[2].message;
+    assert_eq!(
+        m,
+        "リンク先の絞り込みの条件の「secret」は、リンク先のテーブルに無いか、読めない列です。"
+    );
+    let m = &errors[3].message;
+    assert!(
+        m.starts_with("「name」はリンクの列ではないので、リンクの条件に使えません。"),
+        "{m}"
+    );
+    assert_eq!(
+        errors[4].message.replace("secret", "<K>"),
+        errors[5].message.replace("nope", "<K>"),
+        "無い列と読めない列を言い分けない"
+    );
+    assert!(
+        errors[6]
+            .message
+            .starts_with("「備考」（memo）はリンクの列ではない"),
+        "{}",
+        errors[6].message
+    );
+}
+
+/// API 層が引き足すリンク先は、照合と同じ歩き方で決まる: 中の条件のあるリンクの、材料に無いリンク先だけ。引き足すと、その
+/// 先のリンク先が分かる。リンクの列でない列・中の条件の無いリンク・テーブルを参照で決めるノードは引かない。
+#[test]
+fn link_tables_to_load_follow_the_walk() {
+    let ir = ir(json!([
+        query_node(
+            "q",
+            json!(ITEMS),
+            json!({ "filter": { "all": [
+                link("orders", None),
+                link("name", Some(cmp("code", "eq"))),
+                link("maker", Some(link("country", Some(cmp("code", "eq")))))
+            ] } })
+        ),
+        query_node(
+            "dynamic",
+            json!({ "$from": "input", "path": "/t" }),
+            json!({ "filter": link("maker", Some(cmp("code", "eq"))) })
+        )
+    ]));
+    let ids =
+        |v: &[&str]| -> BTreeSet<Uuid> { v.iter().map(|s| Uuid::parse_str(s).unwrap()).collect() };
+    let mut tables = catalog().tables.unwrap();
+    assert_eq!(query_link_tables(&ir, &tables), ids(&[COUNTRIES]));
+    tables.remove(MAKERS);
+    assert_eq!(query_link_tables(&ir, &tables), ids(&[MAKERS]));
+    // 中の条件の無いリンク（orders）は、リンク先が材料に無くても引かない。
+    assert!(!query_link_tables(&ir, &tables).contains(&Uuid::parse_str(ORDERS).unwrap()));
 }

@@ -12,7 +12,7 @@ pub use cache::CACHE_UNSUPPORTED;
 mod data_keys;
 pub use data_keys::{ADD_NOT_NUMBER, MATCH_NOT_UNIQUE};
 mod data_query;
-pub use data_query::{FIELD_NOT_INDEXED, FIELD_NOT_USABLE};
+pub use data_query::{query_link_tables, FIELD_NOT_INDEXED, FIELD_NOT_USABLE};
 mod status_writes;
 pub use status_writes::STATUS_NOT_WRITABLE;
 mod decide;

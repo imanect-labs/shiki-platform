@@ -4481,6 +4481,244 @@ async fn data_query_columns_are_checked_like_the_runner_on_save() {
     env.delete_store().await;
 }
 
+impl Env {
+    /// 品目の表と、その `maker` が指すメーカーの表（どちらも alice が持つ）。メーカーの `secret` は経理（carol）だけが
+    /// 読める。bob は両方の閲覧者、dave は品目だけの閲覧者（メーカーの表は見えない）。
+    async fn linked_tables(&self) -> (Uuid, Uuid) {
+        let field = |key: &str, ty: FieldType, set: &dyn Fn(&mut FieldDef)| {
+            let mut f = FieldDef::new(key, ty);
+            set(&mut f);
+            f
+        };
+        let schema = |fields: Vec<FieldDef>, field_policy: Vec<FieldPolicy>| TableSchema {
+            fields,
+            status_field: None,
+            row_policy: None,
+            field_policy,
+            aggregate_min_rows: None,
+            fsm_ref: None,
+            rag: None,
+        };
+        let create = |name: &'static str, schema: TableSchema| {
+            let env = self;
+            async move {
+                env.data
+                    .create_table(
+                        &env.alice,
+                        NewDataTable {
+                            name: format!("{name}-{}", Uuid::new_v4().simple()),
+                            schema,
+                        },
+                        None,
+                    )
+                    .await
+                    .unwrap()
+                    .id
+            }
+        };
+        let makers = create(
+            "makers",
+            schema(
+                vec![
+                    field("code", FieldType::Text, &|f| f.unique = true),
+                    field("name", FieldType::Text, &|f| {
+                        f.indexed = true;
+                        f.display_name = "メーカー名".into();
+                    }),
+                    field("memo", FieldType::Text, &|f| f.display_name = "備考".into()),
+                    field("score", FieldType::Number, &|f| f.indexed = true),
+                    field("price", FieldType::Number, &|_| {}),
+                    field("secret", FieldType::Text, &|f| f.indexed = true),
+                ],
+                vec![FieldPolicy {
+                    field: "secret".into(),
+                    readable_by: PolicyExpr::HasRole {
+                        role: self.keiri.clone(),
+                        subtree: true,
+                    },
+                }],
+            ),
+        )
+        .await;
+        let items = create(
+            "items",
+            schema(
+                vec![
+                    field("title", FieldType::Text, &|f| {
+                        f.indexed = true;
+                        f.searchable = true;
+                    }),
+                    field("note", FieldType::Text, &|f| f.display_name = "メモ".into()),
+                    field("maker", FieldType::RecordRef, &|f| {
+                        f.ref_table = Some(makers);
+                        f.link = Some(data::LinkDef {
+                            cardinality: data::LinkCardinality::ManyToOne,
+                            symmetric_field: None,
+                            symmetric_key: None,
+                            symmetric_display_name: None,
+                            reverse: false,
+                        });
+                    }),
+                ],
+                Vec::new(),
+            ),
+        )
+        .await;
+        for (u, tables) in [(&self.bob, vec![items, makers]), (&self.dave, vec![items])] {
+            for t in tables {
+                let object = self.alice.ns().data_table(&t.to_string());
+                self.fga
+                    .write_tuple(&u.subject(), Relation::Viewer, &object)
+                    .await
+                    .unwrap();
+            }
+        }
+        (items, makers)
+    }
+
+    /// data の読取の誤り（コード。読めない列は `field_unavailable`・開けないリンク先は `forbidden`）。
+    async fn run_code(&self, who: &AuthContext, table: Uuid, query: &Value) -> Option<String> {
+        let q: data::DataQuery = serde_json::from_value(query.clone()).unwrap();
+        match self.data.run_query(who, table, &q, None).await {
+            Ok(_) => None,
+            Err(data::DataError::FieldUnavailable) => Some("field_unavailable".into()),
+            Err(data::DataError::Forbidden) => Some("forbidden".into()),
+            Err(e) => Some(
+                e.invalid_code()
+                    .map_or_else(|| format!("{e:?}"), |c| c.as_str().to_string()),
+            ),
+        }
+    }
+}
+
+/// データを検索（リテラルのテーブル）の 1 ノードの IR。
+fn query_ir(table: Uuid, query: Value) -> Value {
+    json!({
+        "ir_version": 1, "name": "query-links",
+        "triggers": [{ "kind": "interactive" }],
+        "nodes": [{ "id": "read", "type": "data.query",
+                    "params": { "table": table.to_string(), "query": query } }],
+        "edges": []
+    })
+}
+
+fn code_at(code: &str, path: &str) -> Vec<(String, String)> {
+    vec![(code.to_string(), path.to_string())]
+}
+
+/// GAP-129: データを検索のリンクの条件（`link`）は、辿る列と、中の比較の列（リンク先の列）を、実行時の束縛と同じ data の
+/// 判定で保存時に照らす。リンク先の定義は保存者の見え方で引き足す（検証 API・保存 API・emit_workflow のどれでも）。
+/// 保存時の誤りのコードと、同じクエリを data の読取に通したときの誤りが対応する（索引の無い列は `field_not_indexed`、
+/// リンクの列でない列は `invalid_input`）。リンク先の読めない列（bob の secret）は無い列と同じ答え。リンク先の表が
+/// 見えない人（dave）には中を照らさない（実行では問い合わせ全体が `forbidden`）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn data_query_link_conditions_are_checked_like_the_runner_on_save() {
+    let _serial = SERIAL.lock().await;
+    let Some(env) = setup().await else { return };
+    let (items, _) = env.linked_tables().await;
+    let tool = env.emit_tool();
+    let link = |field: &str, inner: Value| json!({ "filter": { "link": { "field": field, "filter": inner } } });
+    let cmp = |field: &str| json!({ "cmp": { "field": field, "op": "eq", "value": "x" } });
+    let inner = "/params/query/filter/link/filter/cmp/field";
+    let cases = [
+        (link("maker", cmp("code")), None, None),
+        (
+            link("maker", cmp("memo")),
+            Some(("ir.field_not_indexed", inner)),
+            Some("field_not_indexed"),
+        ),
+        (
+            link("title", cmp("code")),
+            Some(("ir.field_not_usable", "/params/query/filter/link/field")),
+            Some("invalid_input"),
+        ),
+    ];
+    for (query, saved, run) in cases {
+        let want = saved.map_or_else(Vec::new, |(c, p)| code_at(c, p));
+        assert_eq!(
+            env.v4_codes(&env.alice, &query_ir(items, query.clone()))
+                .await,
+            want,
+            "{query}"
+        );
+        assert_eq!(
+            env.run_code(&env.alice, items, &query).await.as_deref(),
+            run,
+            "{query}"
+        );
+    }
+    // 保存 API と emit_workflow も、リンク先を引き足して同じ照合で止める。
+    let answers = env
+        .v4_answers(
+            &tool,
+            &env.alice,
+            &query_ir(items, link("maker", cmp("memo"))),
+            "",
+        )
+        .await;
+    assert!(
+        answers[0].contains("ir.field_not_indexed")
+            && answers[0].contains("リンク先の絞り込みの条件に使えません"),
+        "{}",
+        answers[0]
+    );
+    assert!(
+        answers[1].starts_with("400 ") && answers[1].contains("ir.field_not_indexed"),
+        "{}",
+        answers[1]
+    );
+    assert!(
+        answers[2].starts_with("true ") && answers[2].contains("ir.field_not_indexed"),
+        "{}",
+        answers[2]
+    );
+    // bob にはリンク先の secret が読めない: 無い列と同じ答え（保存時も実行時も）。
+    let unreadable = env
+        .v4_answers(
+            &tool,
+            &env.bob,
+            &query_ir(items, link("maker", cmp("secret"))),
+            "secret",
+        )
+        .await;
+    let missing = env
+        .v4_answers(
+            &tool,
+            &env.bob,
+            &query_ir(items, link("maker", cmp("zz_nope"))),
+            "zz_nope",
+        )
+        .await;
+    assert_eq!(unreadable, missing, "読めない列と無い列で答えが違う");
+    assert!(
+        unreadable[0].contains("ir.unknown_field"),
+        "{}",
+        unreadable[0]
+    );
+    for key in ["secret", "zz_nope"] {
+        assert_eq!(
+            env.run_code(&env.bob, items, &link("maker", cmp(key)))
+                .await
+                .as_deref(),
+            Some("field_unavailable")
+        );
+    }
+    // メーカーの表が見えない dave には、リンク先の中を照らさない（実行では問い合わせ全体が断られる）。
+    assert_eq!(
+        env.v4_codes(&env.dave, &query_ir(items, link("maker", cmp("memo"))))
+            .await,
+        vec![]
+    );
+    assert_eq!(
+        env.run_code(&env.dave, items, &link("maker", cmp("memo")))
+            .await
+            .as_deref(),
+        Some("forbidden")
+    );
+    env.cleanup().await;
+    env.delete_store().await;
+}
+
 /// BUG-251: 状態の進め方のある表で、状態の列を「データを更新」の変更する値に書く IR と、最初の状態でない状態で追加する
 /// IR は、保存時に `ir.status_not_writable` で止まる（検証 API・保存 API・emit_workflow のどれでも）。同じ書き込みは
 /// data の更新・作成でも `fsm_invalid` で断られる（同じ判定）。最初の状態を書く・書かない追加は通る。状態の列を読めない

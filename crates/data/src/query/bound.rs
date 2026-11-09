@@ -433,12 +433,12 @@ impl<'a> Binder<'a> {
         }
     }
 
-    /// 束縛器の表のリンク列とその参照先（マスク・未宣言は同じ 403 `field_unavailable` → リンク列でない
-    /// 400 → 参照先が読めない 403 の順）。
-    pub(crate) fn link_target(
+    /// 束縛器の表のリンク列と、その参照先のテーブルの ID（マスク・未宣言は同じ 403 `field_unavailable` → リンク列でない
+    /// 400 の順）。ワークフローの保存時の照合（[`super::field_use::check_link_field`]）も、この関数で断る（GAP-129）。
+    pub(crate) fn link_field(
         &self,
         key: &str,
-    ) -> Result<(&'a crate::model::FieldDef, &'a super::scopes::ScopeTable), DataError> {
+    ) -> Result<(&'a crate::model::FieldDef, Uuid), DataError> {
         let f = self.user_field(key)?;
         let (FieldType::RecordRef, Some(rt)) = (f.field_type, f.ref_table) else {
             return Err(DataError::input_detail(
@@ -447,6 +447,15 @@ impl<'a> Binder<'a> {
                 format!("フィールド '{key}' はリンク列（record_ref）ではありません"),
             ));
         };
+        Ok((f, rt))
+    }
+
+    /// 束縛器の表のリンク列とその参照先（[`Self::link_field`] の誤り → 参照先が読めない 403 の順）。
+    pub(crate) fn link_target(
+        &self,
+        key: &str,
+    ) -> Result<(&'a crate::model::FieldDef, &'a super::scopes::ScopeTable), DataError> {
+        let (f, rt) = self.link_field(key)?;
         let ctx = self.ctx.ok_or_else(|| {
             DataError::input_detail(
                 crate::InvalidCode::InvalidInput,

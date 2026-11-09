@@ -9,10 +9,15 @@
 //! - 部分一致（`contains`・`ends_with`）は検索の索引（`searchable`）のある文字の列だけ。
 //! - 大小比較・並べ替え・まとめる列に、多値の列とリンクの列は使えない。まとめる列にシステムの擬似列は使えない。
 //!   集計の列は数（派生列は数の結果のもの）だけ。派生列は複数のキーの並べ替えに使えない。
+//! - リンクの条件（`filter` の `link`）と結合（`joins`）で辿る列は、リンクの列（`record_ref`・対称列も可）だけ
+//!   （[`check_link_field`]）。その先の列（リンクの条件の中・結合の条件・`別名.参照名` のまとめる列と集計の列）は、
+//!   参照先のテーブルの定義で [`check_field_use`] に問う（束縛も参照先の定義で同じ規則を当てる・GAP-129）。
 //!
 //! 値（比較の右辺）に依る誤り（型の不一致・長さ）は、ここでは扱わない（値は実行の直前まで決まらないことがある）。
 
 use std::collections::HashSet;
+
+use uuid::Uuid;
 
 use super::bound::{BField, Binder, FieldKind};
 use super::ir::CondOp;
@@ -35,8 +40,9 @@ pub enum FieldUse {
 /// 列 `key` を `at` に書いたクエリを束縛が列のために断るなら、束縛と同じ誤りを返す。
 ///
 /// `schema` は読む人の見え方の定義（読めない列を外したもの・[`crate::DataStore::get_table_for_viewer`]）。読めない列と
-/// 無い列は同じ [`DataError::FieldUnavailable`] になる（区別させない・data-platform §16.1）。`key` は FROM の表の列の
-/// 参照名（結合先の `別名.参照名` は結合先の定義が要るので渡さない）。
+/// 無い列は同じ [`DataError::FieldUnavailable`] になる（区別させない・data-platform §16.1）。`key` は `schema` の表の
+/// 列の参照名。結合先の列（`別名.参照名`）とリンクの条件の中の列は、参照先のテーブルの定義と別名を外した参照名で問う
+/// （束縛も結合先・参照先の束縛器で同じ関数を当てる）。
 pub fn check_field_use(schema: &TableSchema, key: &str, at: FieldUse) -> Result<(), DataError> {
     let masked = HashSet::new();
     let mut b = Binder::new(schema, &masked);
@@ -49,6 +55,18 @@ pub fn check_field_use(schema: &TableSchema, key: &str, at: FieldUse) -> Result<
         FieldUse::GroupBy => group_key_fits(&b.queryable(key)?, key),
         FieldUse::Metric => metric_fits(&b.queryable(key)?, key),
     }
+}
+
+/// リンクの条件（`filter` の `link`）と結合（`joins` の `field`）で辿る列 `key` の参照先のテーブル。束縛
+/// （`Binder::link_field`）と同じ関数で断る: 無い列と読めない列は [`DataError::FieldUnavailable`]、リンクの列
+/// （`record_ref`・対称列も可）でなければ 400 `invalid_input`。
+///
+/// `schema` は読む人の見え方の定義。参照先を読む人が開けるか（開けなければ実行では 403）は、ここでは問わない。
+pub fn check_link_field(schema: &TableSchema, key: &str) -> Result<Uuid, DataError> {
+    let masked = HashSet::new();
+    Binder::new(schema, &masked)
+        .link_field(key)
+        .map(|(_, rt)| rt)
 }
 
 /// 比較の演算子を列に使えるか（値に依らない誤り）。大小比較は単値の列だけ、前方一致・部分一致は文字の列だけ、

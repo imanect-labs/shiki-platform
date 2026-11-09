@@ -222,6 +222,12 @@ fn description_explains_the_notation_the_engine_implements() {
             && d.contains("sum・avg・min・max の field は、（索引あり）か（重複を許さない）と出る number の列だけ"),
         "{d}"
     );
+    // リンクの条件の中の列は、リンク先の定義で同じ決まり（保存時にリンク先の定義で照らす・GAP-129。この書き方が保存と
+    // 実行を通ることは api の workflow_approval_it が確かめる）。
+    assert!(
+        d.contains("filter に {\"link\":{\"field\":\"<リンクの列>\",\"filter\":条件}} と書き、中の条件の列は、リンク先のテーブルの data_schema の印で同じ決まりに従う"),
+        "{d}"
+    );
     // 入力の数を引く書き方と、足す数に組み立てを書けないこと（BUG-245・この書き方が保存と実行を通ることは
     // workflow-engine のテストが確かめる）。
     assert!(
