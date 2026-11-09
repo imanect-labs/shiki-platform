@@ -49,7 +49,7 @@ mod v1_schema;
 mod v2_graph;
 pub use v2_graph::UNCONNECTED_NODE;
 mod v3_vocab;
-pub use v3_vocab::{OVERLAPPING_DATA_TRIGGERS, WAIT_FILTER_ALIAS};
+pub use v3_vocab::{MODEL_UNAVAILABLE_FOR_USER, OVERLAPPING_DATA_TRIGGERS, WAIT_FILTER_ALIAS};
 mod v5_dataflow;
 mod warning_codes;
 pub use warning_codes::SAVE_WARNING_CODES;
@@ -126,10 +126,11 @@ impl ValidationError {
 pub struct Catalog {
     /// 登録済み secret の参照名 → 許可ホスト（V4 secret 照合・宛先束縛の事前チェック）。
     pub secrets: BTreeMap<String, Vec<String>>,
-    /// llm.invoke に書けるモデル（組織が許可したモデル・本人専用を除く）。
+    /// llm.invoke に書けるモデル（組織が許可したモデル・本人専用と、保存する人のアカウントで使えないものを除く・D-169）。
     ///
     /// `None` は照合しない（LLM が未構成）。`Some` は空でも照合する（組織が許可したモデルが 0 件なら
-    /// 明示したモデルはすべて拒否する・BUG-37）。model の省略はどちらでも通る（組織の既定・BUG-12）。
+    /// 明示したモデルはすべて拒否する・BUG-37）。model の省略はどちらでも通る（組織の既定・BUG-12）。ただし、実行時に
+    /// 動く既定のモデルが保存する人のアカウントで使えなければ [`Self::default_model_unavailable`] が止める（D-185）。
     pub models: Option<Vec<String>>,
     /// 組織がモデルの選択を禁じているときの既定（`auto` かモデル ID）。`Some` なら、これと違う
     /// model を拒否する（ワークフローでもモデルを選ばせない・D-30）。判定のモデルには掛けない（判定には
@@ -144,6 +145,17 @@ pub struct Catalog {
     /// モデルが 0 件なら ai.decide はすべて拒否する）。llm.invoke・agent.invoke にここのモデルを書くと
     /// `ir.model_modality_mismatch`。
     pub decision_models: Option<Vec<String>>,
+    /// 組織では使えるが、保存する人のアカウントでは使えないモデル（利用者ごとのプロバイダの制限・D-169）。
+    ///
+    /// API 層が保存する人の制限で詰める（[`Self::models`]・[`Self::decision_models`] からは除いてある）。llm.invoke・
+    /// agent.invoke・ai.decide に書くと [`MODEL_UNAVAILABLE_FOR_USER`]（組織で使えないモデルの `ir.unknown_model` と
+    /// 言い分け、一覧から選び直すよう言う）。空なら制限なし。
+    pub user_restricted_models: Vec<String>,
+    /// モデルを省いた llm.invoke・agent.invoke が実行時に動くモデル（組織の既定か Auto の振り先）が、保存する人の
+    /// アカウントでは使えないとき、そのモデル（D-185）。`Some` なら、モデルを省いたノードを
+    /// [`MODEL_UNAVAILABLE_FOR_USER`] で止める（実行の主体は制限しないので、省いたまま保存すると自動実行が制限された
+    /// モデルで動く）。
+    pub default_model_unavailable: Option<String>,
     /// 保存ユーザーのインストール済み skill（name → レジストリ version 集合・V4 skill 照合・
     /// #344 Task 10.1b）。インストールはユーザー単位のため保存者基準で照合し、実行時は
     /// 実行主体の ReBAC で再検証する（fail-closed が最終防衛線・ir.md §8）。

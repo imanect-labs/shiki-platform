@@ -5,7 +5,8 @@
 //!
 //! `?purpose=workflow` はワークフローの `llm.invoke` のモデル欄向けで、保存時の照合・実行時の解決と同じ
 //! 見え方（本人専用のモデルを呼び出し主体によらず除く）で返す（BUG-33・D-46）。既定・Auto の振り先も
-//! その見え方で計算するので、モデル欄の「組織の既定に従う（現在: …）」が実際の解決と一致する。
+//! その見え方で計算するので、モデル欄の「組織の既定に従う（現在: …）」が実際の解決と一致する。並べるモデルは、
+//! 保存時の照合と同じく編集する人の利用者ごとのプロバイダの制限を通す（D-169）。
 //!
 //! 返すのは既定で chat モデルだけ（判定用のモデルはチャット・`llm.invoke` で使えない・FEAT-1）。
 //! `?modality=decision` は判定ノード（`ai.decide`）のモデル欄向けで、組織で使える判定用のモデルを返す。
@@ -72,7 +73,8 @@ pub enum ModelPurpose {
     /// チャット。呼び出した本人から見た一覧（本人専用のモデルは連携した本人にだけ出る）。
     #[default]
     Chat,
-    /// ワークフローの `llm.invoke`。保存時の照合・実行時の解決と同じ一覧（本人専用のモデルは本人にも出さない）。
+    /// ワークフローの `llm.invoke`。保存時の照合と同じ一覧（本人専用のモデルは本人にも出さず、編集する人の利用者ごとの
+    /// プロバイダの制限を通す・D-169）。既定・Auto の振り先は実行時の解決と同じ。
     Workflow,
 }
 
@@ -190,17 +192,32 @@ pub(crate) async fn models_for(
     purpose: ModelPurpose,
     modality: ModelModality,
 ) -> Result<LlmModelsResponse, ApiError> {
-    let settings = match purpose {
-        // 呼び出した本人から見た設定（使えない本人専用のモデルを除き、既定・Auto もそれに従う・#854）。
-        ModelPurpose::Chat => gw.settings_for(ctx).await,
-        // ワークフローの照合・解決と同じ設定（本人専用のモデルは本人にも出さない・BUG-33）。
-        ModelPurpose::Workflow => gw.settings_without_personal(ctx).await,
-    }
-    .map_err(|e| ApiError::Internal(format!("tenant llm settings: {e}")))?;
+    let internal = |e: sqlx::Error| ApiError::Internal(format!("tenant llm settings: {e}"));
     let catalog = gw.catalog();
-    let enabled = match modality {
-        ModelModality::Chat => settings.enabled_chat_models(catalog),
-        ModelModality::Decision => settings.enabled_decision_models(catalog),
+    let (settings, enabled) = match purpose {
+        // 呼び出した本人から見た設定（使えない本人専用のモデルを除き、既定・Auto もそれに従う・#854）。
+        ModelPurpose::Chat => {
+            let settings = gw.settings_for(ctx).await.map_err(internal)?;
+            let enabled = match modality {
+                ModelModality::Chat => settings.enabled_chat_models(catalog),
+                ModelModality::Decision => settings.enabled_decision_models(catalog),
+            };
+            (settings, enabled)
+        }
+        // ワークフローの照合と同じ見え方（本人専用のモデルは本人にも出さない・BUG-33）。並べるのは編集する人が書ける
+        // モデルだけ（利用者ごとのプロバイダの制限を通す・D-169）。既定・Auto の振り先は実行時の解決と同じ設定で返す
+        // （「組織の既定に従う（現在: …）」を実際に動くモデルと一致させる）。
+        ModelPurpose::Workflow => {
+            let view = gw
+                .settings_for_workflow_editor(ctx)
+                .await
+                .map_err(internal)?;
+            let enabled = match modality {
+                ModelModality::Chat => view.chat_models(catalog),
+                ModelModality::Decision => view.decision_models(catalog),
+            };
+            (view.runtime().clone(), enabled)
+        }
     };
     let models = enabled
         .into_iter()
@@ -396,6 +413,119 @@ mod tests {
                 .unwrap();
         }
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// `purpose=workflow` は編集する人の利用者ごとのプロバイダの制限を通し（使えないモデルを並べない）、保存時の照合
+    /// （`WorkflowModels::ids`）と同じ集合を返す。既定・Auto の振り先は実行時の解決のまま（D-169）。
+    /// 実 DB の組織の設定を読むので `STORAGE_TEST_DATABASE_URL` が無ければスキップ。
+    #[tokio::test]
+    #[allow(clippy::print_stderr)]
+    async fn workflow_purpose_follows_the_editors_provider_restriction() {
+        let Ok(url) = shiki_testenv::var("STORAGE_TEST_DATABASE_URL") else {
+            eprintln!("STORAGE_TEST_DATABASE_URL 未設定のためスキップ");
+            return;
+        };
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .max_connections(2)
+            .connect(&url)
+            .await
+            .unwrap();
+        sqlx::migrate!("../../migrations").run(&pool).await.unwrap();
+        let tenant = format!("llmr-{}", uuid::Uuid::new_v4().simple());
+        let user = |id: &str| {
+            authz::AuthContext::new(
+                authz::Principal {
+                    kind: authz::PrincipalKind::User,
+                    id: id.into(),
+                    email: None,
+                    groups: vec![],
+                    roles: vec![],
+                    tenant_id: Some(tenant.clone()),
+                },
+                "acme".into(),
+                authz::TenantId::parse(&tenant).unwrap(),
+            )
+        };
+        let decision = |id: &str, provider: Option<&str>, via: &str| ModelEntry {
+            id: id.into(),
+            provider: provider.map(str::to_string),
+            modality: llm_gateway::Modality::Decision,
+            decision_via: Some(via.into()),
+            ..Default::default()
+        };
+        let gw = LlmGateway::build(
+            pool,
+            reqwest::Client::new(),
+            GatewayConfig {
+                extra_providers: vec![ProviderConfig {
+                    id: "allowed".into(),
+                    ..Default::default()
+                }],
+                user_provider_rules: vec![llm_gateway::config::UserProviderRule {
+                    tenant_id: tenant.clone(),
+                    user_sub: "restricted".into(),
+                    providers: vec!["allowed".into()],
+                }],
+                catalog: ModelCatalog {
+                    default_model: "hidden".into(),
+                    models: vec![
+                        ModelEntry {
+                            id: "hidden".into(),
+                            ..Default::default()
+                        },
+                        ModelEntry {
+                            id: "visible".into(),
+                            provider: Some("allowed".into()),
+                            ..Default::default()
+                        },
+                        decision("judge", None, "hidden"),
+                        decision("decide", Some("allowed"), "visible"),
+                    ],
+                },
+                auto: AutoConfig {
+                    model: "hidden".into(),
+                    ..AutoConfig::default()
+                },
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let check = crate::workflow_catalog::WorkflowModels::new(Some(gw.clone()), Vec::new());
+        let (restricted, other) = (user("restricted"), user("other"));
+        let wf = models_for(
+            &gw,
+            &restricted,
+            ModelPurpose::Workflow,
+            ModelModality::Chat,
+        )
+        .await
+        .unwrap();
+        assert_eq!(ids(&wf), ["visible"]);
+        assert_eq!(check.ids(&restricted).await.unwrap(), ids(&wf));
+        // 既定・Auto の振り先は実行時の解決のまま（モデルを省くと hidden で動く。保存ではそれを断る）。
+        assert_eq!(wf.default_model, "auto");
+        assert_eq!(wf.auto.as_ref().unwrap().model, "hidden");
+        let decide = models_for(
+            &gw,
+            &restricted,
+            ModelPurpose::Workflow,
+            ModelModality::Decision,
+        )
+        .await
+        .unwrap();
+        assert_eq!(ids(&decide), ["decide"]);
+        // チャットは今までどおり（既定・Auto もこの人が使えるモデルへ寄せる）。
+        let chat = models_for(&gw, &restricted, ModelPurpose::Chat, ModelModality::Chat)
+            .await
+            .unwrap();
+        assert_eq!(ids(&chat), ["visible"]);
+        assert_eq!(chat.auto.as_ref().unwrap().model, "visible");
+        // 制限の無い人には全部。
+        let wf = models_for(&gw, &other, ModelPurpose::Workflow, ModelModality::Chat)
+            .await
+            .unwrap();
+        assert_eq!(ids(&wf), ["hidden", "visible"]);
+        assert_eq!(check.ids(&other).await.unwrap(), ids(&wf));
     }
 
     #[test]

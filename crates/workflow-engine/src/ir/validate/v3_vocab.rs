@@ -23,22 +23,68 @@ fn model_candidates(models: &[String]) -> String {
     }
 }
 
+/// 誤りのコード: 組織では使えるが、保存する人のアカウントでは使えないモデル（利用者ごとのプロバイダの制限・D-169）。
+/// モデルを省いて、実行時に動く組織の既定のモデルが使えないときも同じ（D-185）。
+pub const MODEL_UNAVAILABLE_FOR_USER: &str = "ir.model_unavailable_for_user";
+
+/// 保存する人のアカウントでは使えないモデルの誤り（[`MODEL_UNAVAILABLE_FOR_USER`]）。`written` は `model` を書いたか
+/// （`false` はモデルを省いて、組織の既定のモデル `model` で動くとき）。`models` は保存する人が書けるモデル、`locked` は
+/// 組織がモデルの選択を禁じているか（ほかのモデルを選べないので管理者に相談するよう言う）。
+pub(super) fn unavailable_for_user(
+    written: bool,
+    model: &str,
+    models: &[String],
+    locked: bool,
+) -> ValidationError {
+    let what = if written {
+        format!("このモデルはあなたのアカウントでは使えません: {model}。")
+    } else {
+        format!(
+            "モデルを省くと組織の既定のモデル（{model}）で動きますが、このモデルはあなたのアカウントでは使えません。"
+        )
+    };
+    let fix = if locked {
+        "この組織ではほかのモデルを選べないため、管理者に相談してください".to_string()
+    } else if models.is_empty() {
+        "あなたのアカウントで使えるモデルがないため、管理者に相談してください".to_string()
+    } else {
+        format!(
+            "一覧からモデルを選び直してください（{}）",
+            model_candidates(models)
+        )
+    };
+    ValidationError::new(MODEL_UNAVAILABLE_FOR_USER, format!("{what}{fix}"))
+}
+
 /// llm.invoke の model を組織の設定へ照合する（エラーはモデル欄に写るよう呼び出し側が path を付ける）。
 ///
-/// - 省略・空文字は照合しない（実行のたびに組織の既定で解決する・BUG-12）。
+/// - 省略・空文字は書いたモデルとしては照合しない（実行のたびに組織の既定で解決する・BUG-12）。ただし、実行時に
+///   動く組織の既定のモデルが保存する人のアカウントでは使えなければ止める（[`Catalog::default_model_unavailable`]・
+///   D-185）。
 /// - 組織が選択を禁じていれば、既定と違うモデルを拒否する（実行時の解決と同じ規則・D-30）。
 /// - 組織が許可したモデルに無ければ拒否し、使えるモデルを添える（利用者も AI も候補から選び直せる）。
 ///   許可が 0 件の組織では、明示したモデルはすべて拒否する（照合を飛ばさない・BUG-37）。
 /// - 判定用のモデル（[`Catalog::decision_models`]）は文章を生成できないので `ir.model_modality_mismatch`
 ///   （判定は ai.decide に書く・FEAT-1）。
+/// - 組織では使えるが保存する人のアカウントでは使えないモデル（[`Catalog::user_restricted_models`]）は
+///   [`MODEL_UNAVAILABLE_FOR_USER`]（D-169）。
 pub(super) fn check_model(
     params: &serde_json::Value,
     catalog: &Catalog,
 ) -> Option<ValidationError> {
-    let model = params
+    let Some(model) = params
         .get("model")
         .and_then(serde_json::Value::as_str)
-        .filter(|m| !m.is_empty())?;
+        .filter(|m| !m.is_empty())
+    else {
+        let target = catalog.default_model_unavailable.as_deref()?;
+        return Some(unavailable_for_user(
+            false,
+            target,
+            catalog.models.as_deref().unwrap_or_default(),
+            catalog.model_lock.is_some(),
+        ));
+    };
     if catalog
         .model_lock
         .as_deref()
@@ -66,6 +112,14 @@ pub(super) fn check_model(
                 "{model} は判定用のモデルで、文章を生成できません。判定は「AI で判定」（ai.decide）に書くか、このノードには文章を生成するモデルを選んでください（{}）",
                 model_candidates(models)
             ),
+        ));
+    }
+    if catalog.user_restricted_models.iter().any(|m| m == model) {
+        return Some(unavailable_for_user(
+            true,
+            model,
+            models,
+            catalog.model_lock.is_some(),
         ));
     }
     let candidates = if models.is_empty() {
@@ -557,6 +611,77 @@ mod tests {
         // Auto の文字列はモデルではない（実行時の解決と同じ）。
         let errs = model_errors(&json!({ "model": "auto", "prompt": "hi" }), &locked("auto"));
         assert_eq!(errs[0].code, "ir.unknown_model");
+    }
+
+    /// 組織では使えるが保存する人のアカウントでは使えないモデル（D-169）は、組織で使えないモデルと言い分け、一覧から
+    /// 選び直すよう言う。モデルを省いても、実行時に動く既定のモデルが使えなければ止める（D-185）。制限の無い人
+    /// （材料が空）は今までどおり。
+    #[test]
+    fn models_restricted_for_the_saver_are_refused_with_how_to_fix() {
+        let restricted = Catalog {
+            user_restricted_models: vec!["closed".into()],
+            default_model_unavailable: Some("closed".into()),
+            ..models(&["open"])
+        };
+        let errs = model_errors(&json!({ "model": "closed", "prompt": "hi" }), &restricted);
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        assert_eq!(errs[0].code, super::MODEL_UNAVAILABLE_FOR_USER);
+        assert_eq!(errs[0].path.as_deref(), Some("/params/model"));
+        assert_eq!(
+            errs[0].message,
+            "このモデルはあなたのアカウントでは使えません: closed。一覧からモデルを選び直してください（使えるモデル: open）"
+        );
+        for omitted in [
+            json!({ "prompt": "hi" }),
+            json!({ "model": "", "prompt": "hi" }),
+        ] {
+            let errs = model_errors(&omitted, &restricted);
+            assert_eq!(errs.len(), 1, "{errs:?}");
+            assert_eq!(errs[0].code, super::MODEL_UNAVAILABLE_FOR_USER);
+            assert_eq!(errs[0].path.as_deref(), Some("/params/model"));
+            assert_eq!(
+                errs[0].message,
+                "モデルを省くと組織の既定のモデル（closed）で動きますが、このモデルはあなたのアカウントでは使えません。\
+                 一覧からモデルを選び直してください（使えるモデル: open）"
+            );
+        }
+        assert!(model_errors(&json!({ "model": "open", "prompt": "hi" }), &restricted).is_empty());
+        // 組織に無いモデルは今までどおり。
+        let errs = model_errors(&json!({ "model": "ghost", "prompt": "hi" }), &restricted);
+        assert_eq!(errs[0].code, "ir.unknown_model");
+        // 選択を禁じた組織の既定が使えない: ほかを選べないので管理者に相談するよう言う。
+        let locked = Catalog {
+            model_lock: Some("closed".into()),
+            ..restricted
+        };
+        for params in [
+            json!({ "prompt": "hi" }),
+            json!({ "model": "closed", "prompt": "hi" }),
+        ] {
+            let errs = model_errors(&params, &locked);
+            assert_eq!(errs[0].code, super::MODEL_UNAVAILABLE_FOR_USER, "{params}");
+            assert!(
+                errs[0]
+                    .message
+                    .ends_with("この組織ではほかのモデルを選べないため、管理者に相談してください"),
+                "{}",
+                errs[0].message
+            );
+        }
+        // 書けるモデルが 0 件。
+        let none = Catalog {
+            user_restricted_models: vec!["closed".into()],
+            default_model_unavailable: Some("closed".into()),
+            ..models(&[])
+        };
+        let errs = model_errors(&json!({ "prompt": "hi" }), &none);
+        assert!(
+            errs[0]
+                .message
+                .ends_with("あなたのアカウントで使えるモデルがないため、管理者に相談してください"),
+            "{}",
+            errs[0].message
+        );
     }
 
     const TABLE: &str = "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1";

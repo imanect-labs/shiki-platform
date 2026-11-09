@@ -41,6 +41,10 @@ mod decide;
 mod node_choice;
 /// 利用者ごとのプロバイダの許可（同上・#1014）。
 mod user_provider_gate;
+/// ワークフローを編集する人から見たモデルの設定（同上・D-169）。
+mod workflow_editor;
+
+pub use workflow_editor::WorkflowEditorSettings;
 
 /// 会計の「利用元」（管理画面の利用元別集計・`llm_usage.source`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

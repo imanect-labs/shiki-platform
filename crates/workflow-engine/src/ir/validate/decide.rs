@@ -1,7 +1,8 @@
 //! 判定のノード（`ai.decide`・FEAT-1）の保存時検証 V3（モデルの照合）と、保存を止めない警告。
 //!
 //! - V3: `model` を組織が許可した判定用のモデル（[`Catalog::decision_models`]）へ照合する。文章を生成する
-//!   モデルを書いたら `ir.model_modality_mismatch`、どちらでもなければ `ir.unknown_model`（使える判定用の
+//!   モデルを書いたら `ir.model_modality_mismatch`、組織では使えるが保存する人のアカウントでは使えないモデルは
+//!   `ir.model_unavailable_for_user`（D-169）、どれでもなければ `ir.unknown_model`（使える判定用の
 //!   モデルを添える）。逆に llm.invoke・agent.invoke に判定用のモデルを書いたものは `v3_vocab::check_model`
 //!   が `ir.model_modality_mismatch` にする。照合の材料が無い構成（`None`）は照合しない（実行時に
 //!   gateway が fail-closed で拒否する）。
@@ -81,6 +82,18 @@ pub(super) fn v3(ir: &WorkflowIr, catalog: &Catalog, errors: &mut Vec<Validation
                     "{model} は文章を生成するモデルです。判定（ai.decide）には判定用のモデルを選んでください（{}）",
                     candidates(allowed)
                 ),
+            )
+        } else if catalog.user_restricted_models.iter().any(|m| m == model) {
+            // 組織では使えるが、保存する人のアカウントでは使えない（D-169）。判定には組織の選択の禁止を掛けない。
+            let fix = if allowed.is_empty() {
+                "あなたのアカウントで使える判定用のモデルがないため、管理者に相談してください"
+                    .to_string()
+            } else {
+                format!("一覧から選び直してください（{}）", candidates(allowed))
+            };
+            ValidationError::new(
+                super::v3_vocab::MODEL_UNAVAILABLE_FOR_USER,
+                format!("この判定用のモデルはあなたのアカウントでは使えません: {model}。{fix}"),
             )
         } else {
             ValidationError::new(

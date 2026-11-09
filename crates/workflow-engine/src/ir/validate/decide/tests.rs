@@ -145,3 +145,39 @@ fn warnings_flag_low_thresholds_many_ports_and_unpinned_models() {
     // 確からしさで分けるなら出口は 2 つなので警告しない。
     assert!(codes(ir(json!([many("confidence", 30)]))).is_empty());
 }
+
+/// 組織では使えるが保存する人のアカウントでは使えない判定用のモデル（D-169）は、組織で使えないモデルと言い分け、
+/// 一覧から選び直すよう言う。判定には組織の既定が無いので、省いた既定の照合（D-185）は掛からない。
+#[test]
+fn a_decision_model_restricted_for_the_saver_is_told_apart() {
+    let cat = Catalog {
+        user_restricted_models: vec!["decide-closed".into()],
+        default_model_unavailable: Some("closed".into()),
+        ..catalog(&["haiku"], &["decide-haiku"])
+    };
+    let errs = errors(&ir(json!([decide_node("decide-closed")])), &cat);
+    assert_eq!(errs.len(), 1, "{errs:?}");
+    assert_eq!(
+        errs[0].code,
+        crate::ir::validate::MODEL_UNAVAILABLE_FOR_USER
+    );
+    assert_eq!(errs[0].path.as_deref(), Some("/params/model"));
+    assert_eq!(
+        errs[0].message,
+        "この判定用のモデルはあなたのアカウントでは使えません: decide-closed。\
+         一覧から選び直してください（使える判定用のモデル: decide-haiku）"
+    );
+    assert!(errors(&ir(json!([decide_node("decide-haiku")])), &cat).is_empty());
+    let none = Catalog {
+        user_restricted_models: vec!["decide-closed".into()],
+        ..catalog(&["haiku"], &[])
+    };
+    let errs = errors(&ir(json!([decide_node("decide-closed")])), &none);
+    assert!(
+        errs[0].message.ends_with(
+            "あなたのアカウントで使える判定用のモデルがないため、管理者に相談してください"
+        ),
+        "{}",
+        errs[0].message
+    );
+}

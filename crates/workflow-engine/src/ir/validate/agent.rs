@@ -468,5 +468,30 @@ mod tests {
                 && e.path.as_deref() == Some("/params/model")),
             "{errs:#?}"
         );
+        // 保存する人のアカウントで使えないモデルと、省いたときに動く既定が使えないことも同じ照合（D-169・D-185）。
+        let restricted = Catalog {
+            user_restricted_models: vec!["m2".into()],
+            default_model_unavailable: Some("m2".into()),
+            ..catalog
+        };
+        for params in [
+            json!({ "instruction": "x", "model": "m2" }),
+            json!({ "instruction": "x" }),
+        ] {
+            let errs = errors(&params, &[], &restricted);
+            assert!(
+                errs.iter()
+                    .any(|e| e.code == super::super::MODEL_UNAVAILABLE_FOR_USER
+                        && e.path.as_deref() == Some("/params/model")),
+                "{params}: {errs:#?}"
+            );
+        }
+        assert!(errors(
+            &json!({ "instruction": "x", "model": "m1" }),
+            &[],
+            &restricted
+        )
+        .iter()
+        .all(|e| !e.code.contains("model")));
     }
 }

@@ -52,7 +52,9 @@ pub use decision::{
     decide_error_kind, Answer, ChoiceOption, DecideCall, DecideErrorKind, DecideFailure,
     DecideRequest, DecideResponse, DecisionMethod, DecisionProvider, Question, QuestionKind,
 };
-pub use gateway::{GenerationRecord, LlmGateway, ProviderInfo, UsageSource};
+pub use gateway::{
+    GenerationRecord, LlmGateway, ProviderInfo, UsageSource, WorkflowEditorSettings,
+};
 pub use model::{
     Block, Effort, GenerateRequest, Message, ResponseFormat, Role, StopReason, StreamDelta,
     ToolDef, Usage,

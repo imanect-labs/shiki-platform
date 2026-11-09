@@ -14,6 +14,10 @@ use workflow_engine::Catalog;
 /// 実行時は gateway が同じ設定（[`llm_gateway::LlmGateway::settings_without_personal`]）でモデルを
 /// 解決するので、保存時もそこへ揃える（管理者が無効にしたモデル・opt-in 前のモデルを保存で弾く）。
 /// ChatGPT プランのモデルは連携した本人の枠で、ワークフローは誰が起動しても使わないため、本人であっても除く。
+/// さらに**保存する人の利用者ごとのプロバイダの制限**を通す（D-169・[`llm_gateway::LlmGateway::settings_for_workflow_editor`]）。
+/// 実行の主体（schedule・event ではワークフロー）は制限しないので、使えないプロバイダのモデルは保存で断り、モデルを
+/// 省いたノードも実行時に動く既定のモデルが使えなければ断る（D-185）。既定・Auto の振り先・選択の禁止は実行時の設定の
+/// まま読む。
 /// gateway が無い構成（LLM 未構成）では従来どおりデプロイ設定のモデル id を使う（空なら照合しない）。
 ///
 /// ai.decide のモデルも同じ材料から、判定用のモデル（`modality = "decision"`）だけを照合する（FEAT-1）。種類の
@@ -39,6 +43,11 @@ pub struct WorkflowModelCheck {
     /// （LLM 未構成）。gateway があれば、組織が許可し、元にする chat モデルも許可されているものだけ
     /// （`/llm/models?purpose=workflow&modality=decision` と同じ集合）。
     pub decision_ids: Option<Vec<String>>,
+    /// 組織では使えるが、保存する人のアカウントでは使えないモデル（[`Catalog::user_restricted_models`]・D-169）。
+    pub restricted: Vec<String>,
+    /// モデルを省いたノードが実行時に動くモデルが、保存する人のアカウントでは使えないとき、そのモデル
+    /// （[`Catalog::default_model_unavailable`]・D-185）。
+    pub default_unavailable: Option<String>,
 }
 
 /// 組織がモデルの選択を禁じているときの既定（[`Catalog::model_lock`]・規則はチャットとミニアプリの AI と同じ
@@ -65,7 +74,7 @@ impl WorkflowModels {
         }
     }
 
-    /// 保存時の照合の材料（呼び出し主体の組織の設定・本人専用を除く）。
+    /// 保存時の照合の材料（呼び出し主体の組織の設定・本人専用を除き、呼び出し主体＝保存する人の制限を通す）。
     pub async fn check(&self, ctx: &authz::AuthContext) -> Result<WorkflowModelCheck, String> {
         match self {
             WorkflowModels::Configured(models) => {
@@ -83,33 +92,28 @@ impl WorkflowModels {
                     lock: None,
                     default_is_auto: false,
                     decision_ids: configured.then(|| of(llm_gateway::Modality::Decision)),
+                    restricted: Vec::new(),
+                    default_unavailable: None,
                 })
             }
             WorkflowModels::Gateway(gw) => {
-                let settings = gw
-                    .settings_without_personal(ctx)
-                    .await
-                    .map_err(|e| format!("組織の AI 設定: {e}"))?;
+                let view = editor_view(gw, ctx).await?;
+                let settings = view.runtime();
+                let ids = |models: Vec<&llm_gateway::ModelEntry>| {
+                    models.into_iter().map(|m| m.id.clone()).collect()
+                };
                 Ok(WorkflowModelCheck {
-                    // llm.invoke に書けるのは chat モデルだけ（判定用のモデルは生成に使えない・FEAT-1）。
-                    ids: Some(
-                        settings
-                            .enabled_chat_models(gw.catalog())
-                            .into_iter()
-                            .map(|m| m.id.clone())
-                            .collect(),
-                    ),
-                    lock: model_lock(&settings),
+                    // llm.invoke に書けるのは chat モデルだけ（判定用のモデルは生成に使えない・FEAT-1）。保存する人の
+                    // 制限で使えないものは除く（D-169）。
+                    ids: Some(ids(view.chat_models(gw.catalog()))),
+                    lock: model_lock(settings),
                     // 実行時の解決（`resolve_workflow_choice`）と同じ設定で、省略したモデルが Auto で動くか。
-                    default_is_auto: default_is_auto(&settings),
-                    // ai.decide に書けるのは判定用のモデルだけ（元の chat モデルが無効なものは除く・FEAT-1）。
-                    decision_ids: Some(
-                        settings
-                            .enabled_decision_models(gw.catalog())
-                            .into_iter()
-                            .map(|m| m.id.clone())
-                            .collect(),
-                    ),
+                    default_is_auto: default_is_auto(settings),
+                    // ai.decide に書けるのは判定用のモデルだけ（元の chat モデルが無効なもの・保存する人の制限で
+                    // 使えないものは除く・FEAT-1・D-169）。
+                    decision_ids: Some(ids(view.decision_models(gw.catalog()))),
+                    restricted: view.restricted().to_vec(),
+                    default_unavailable: view.default_restricted().map(str::to_string),
                 })
             }
         }
@@ -138,12 +142,9 @@ impl WorkflowModels {
                 .map(|id| chat::DecisionModel { id, label: None })
                 .collect()),
             WorkflowModels::Gateway(gw) => {
-                let settings = gw
-                    .settings_without_personal(ctx)
-                    .await
-                    .map_err(|e| format!("組織の AI 設定: {e}"))?;
-                Ok(settings
-                    .enabled_decision_models(gw.catalog())
+                let view = editor_view(gw, ctx).await?;
+                Ok(view
+                    .decision_models(gw.catalog())
                     .into_iter()
                     .map(|m| chat::DecisionModel {
                         id: m.id.clone(),
@@ -153,6 +154,16 @@ impl WorkflowModels {
             }
         }
     }
+}
+
+/// 保存する人（`ctx`）から見たモデルの設定（[`llm_gateway::LlmGateway::settings_for_workflow_editor`]・D-169）。
+async fn editor_view(
+    gw: &llm_gateway::LlmGateway,
+    ctx: &authz::AuthContext,
+) -> Result<llm_gateway::WorkflowEditorSettings, String> {
+    gw.settings_for_workflow_editor(ctx)
+        .await
+        .map_err(|e| format!("組織の AI 設定: {e}"))
 }
 
 /// カタログを組む（secrets 未配線ならモデルのみ・skill_installs 未配線なら skill 照合は空集合）。
@@ -186,6 +197,9 @@ pub async fn build_catalog_from(
     catalog.model_lock = check.lock;
     catalog.default_is_auto = check.default_is_auto;
     catalog.decision_models = check.decision_ids;
+    // 保存する人のアカウントでは使えないモデルと、省いたモデルが動く既定が使えないこと（D-169・D-185）。
+    catalog.user_restricted_models = check.restricted;
+    catalog.default_model_unavailable = check.default_unavailable;
     Ok(catalog)
 }
 
@@ -542,7 +556,7 @@ impl chat::WorkflowCatalogSource for ApiWorkflowCatalogSource {
         self.models.ids(ctx).await
     }
 
-    /// 説明文用の判定用のモデルの一覧（id と表示名・照合と同じ集合・D-79）。
+    /// 説明文用の判定用のモデルの一覧（id と表示名・照合と同じ集合・保存する人の制限を通す・D-79・D-169）。
     async fn decision_models(
         &self,
         ctx: &authz::AuthContext,
