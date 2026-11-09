@@ -358,10 +358,13 @@ pub(super) fn output_shape(nt: NodeType) -> Shape {
                     "items",
                     "Array<{ id: string, data: { [列の参照名]: unknown }, rev: number, … }>"
                 ),
+                // 集計の 1 行は data の `AggregateGroup` をそのまま出す（ノードで詰め替えない・GAP-132）。まとめた列の
+                // 値は文字（数の列も）、件数は整数。行の形を言わないと、AI が `/item/<列>`・`/item/count` と書いて
+                // 解決できない。
                 opt!(
                     "groups",
-                    "Array<集計の行>",
-                    "aggregate のとき",
+                    "Array<{ key: { [まとめた列の参照名]: string | null }, value: number | null, values: Array<number | null> }>",
+                    "aggregate のとき。values は aggregate と同じ順の値・value は values の先頭。件数が少なくて伏せた行は value と values が null",
                     present_if = "/query/aggregate"
                 ),
                 opt!("next_cursor", "string"),

@@ -10,6 +10,9 @@
 //! - csv.query の items（平らな行）を rows にそのまま渡すと、実行で包み方を言って断る（説明文の前の誤り）。
 //! - 上限: map の要素の数と script.run の戻り値（256 KB）はここで、bulk の行数（5,000 行）は capability_data の単体
 //!   テストで確かめる。
+//! - 集計の行（GAP-132）: data.query の groups（data の `AggregateGroup` をそのまま出す）を map で回し、領域の中で
+//!   `/item/key/<まとめた列>`・`/item/values/<i>`（`/item/value`）を読んで 1 行ずつ書く。`/item/<列>`・`/item/count` は
+//!   解決できない。
 //!
 //! 保存の検証と上限は DB 不要。ワーカーで流すものは `STORAGE_TEST_DATABASE_URL` が要る。
 
@@ -43,6 +46,9 @@ use workflow_engine::{
 };
 
 const TABLE: &str = "8c8a6f6e-2ab7-4a44-a815-9a2b53c4e9a1";
+/// 売上（地域ごとに集計する）と、集計の行を書く週次 KPI のテーブル（GAP-132）。
+const SALES: &str = "5b0e2f3a-7c41-4d8e-9f60-1a2b3c4d5e6f";
+const KPI: &str = "6c1f3a4b-8d52-4e9f-a071-2b3c4d5e6f70";
 const FILE: &str = "3f1d2c4b-5a69-4e7f-8a1b-2c3d4e5f6a7b";
 
 /// 説明文の script.run の例（chat の guide.rs と同じ文・行を 1 行ずつ `{data: 行}` に包む）。
@@ -95,7 +101,34 @@ fn written(req: &DataWriteReq) -> Vec<Value> {
 #[derive(Default)]
 struct CsvTablePorts {
     sql: Mutex<Vec<String>>,
+    /// 集計のクエリ（data.query の aggregate のあるもの）。
+    queries: Mutex<Vec<data::DataQuery>>,
     writes: Mutex<Vec<DataWriteReq>>,
+}
+
+/// 地域ごとの件数と金額の合計（data の `run_query` が返す型をそのまま JSON にする・api の data のポートと同じ）。
+/// 北は件数が少なくて伏せた行（value と values が null）。
+fn region_groups() -> Value {
+    let group = |region: &str, values: Vec<Value>| data::AggregateGroup {
+        key: serde_json::Map::from_iter([("region".to_string(), json!(region))]),
+        value: values[0].clone(),
+        values,
+    };
+    serde_json::to_value(data::QueryResult {
+        items: None,
+        groups: Some(vec![
+            group("東", vec![json!(5), json!(350_000.0)]),
+            group("北", vec![Value::Null, Value::Null]),
+        ]),
+        next_cursor: None,
+        count: None,
+        sort_precision: data::SortPrecision::Exact,
+        sort_degraded: false,
+        shares_truncated: false,
+        suppressed: true,
+        snapshot_seq: None,
+    })
+    .unwrap()
 }
 
 fn unused() -> PortError {
@@ -166,8 +199,12 @@ impl NodePorts for CsvTablePorts {
         &self,
         _: &ExecCtx,
         _: Uuid,
-        _: &data::DataQuery,
+        q: &data::DataQuery,
     ) -> Result<Value, PortError> {
+        if !q.aggregate.is_empty() {
+            self.queries.lock().unwrap().push(q.clone());
+            return Ok(region_groups());
+        }
         // 同じ値のレコードは無い（追加か更新は追加に、一括の同じレコードを探す列は当たらない）。
         Ok(json!({
             "items": [], "sort_precision": "exact", "sort_degraded": false,
@@ -204,8 +241,41 @@ fn catalog() -> Catalog {
         unique: BTreeSet::from(["sku".to_string()]),
         ..CatalogTable::default()
     };
+    // 売上は地域と金額に索引がある（まとめる列・集計の列は保存で照らす）。
+    let fields = |kinds: &[(&str, &str)]| {
+        kinds
+            .iter()
+            .map(|(k, t)| ((*k).to_string(), (*t).to_string()))
+            .collect()
+    };
+    let mut schema: data::TableSchema = serde_json::from_value(json!({ "fields": [
+        { "key": "sold_on", "type": "date", "indexed": true },
+        { "key": "region", "type": "select", "options": ["東", "西", "北"], "indexed": true },
+        { "key": "amount", "type": "number", "indexed": true }
+    ] }))
+    .unwrap();
+    for (i, f) in schema.fields.iter_mut().enumerate() {
+        f.id = 10 + u16::try_from(i).unwrap();
+    }
+    let sales = CatalogTable {
+        fields: fields(&[
+            ("sold_on", "date"),
+            ("region", "select"),
+            ("amount", "number"),
+        ]),
+        schema: Some(schema),
+        ..CatalogTable::default()
+    };
+    let kpi = CatalogTable {
+        fields: fields(&[("region", "text"), ("deals", "number"), ("total", "number")]),
+        ..CatalogTable::default()
+    };
     Catalog {
-        tables: Some(BTreeMap::from([(TABLE.to_string(), table)])),
+        tables: Some(BTreeMap::from([
+            (TABLE.to_string(), table),
+            (SALES.to_string(), sales),
+            (KPI.to_string(), kpi),
+        ])),
         ..Catalog::default()
     }
 }
@@ -287,6 +357,48 @@ fn bulk_flat() -> Value {
     )
 }
 
+/// 集計の行を地域ごとに 1 行ずつ書く（`write` は領域の中の追加の data・GAP-132）。
+fn per_group(data: Value) -> Value {
+    workflow(
+        json!([
+            { "id": "sum_up", "type": "data.query", "label": "地域ごとに集計",
+              "params": { "table": SALES, "query": {
+                  "group_by": ["region"],
+                  "aggregate": [{ "metric": "count" }, { "metric": "sum", "field": "amount" }] } } },
+            { "id": "per_region", "type": "control.map", "label": "地域ごと",
+              "params": { "items": { "$from": "nodes.sum_up.output", "path": "/groups" } } },
+            { "id": "save", "type": "data.record.create", "parent": "per_region", "label": "KPI を追加",
+              "params": { "table": KPI, "data": data } }
+        ]),
+        json!([{ "from": "sum_up", "to": "per_region" }]),
+    )
+}
+
+/// 説明文の指し方: まとめた列は `/item/key/<参照名>`、指標は `/item/values/<aggregate の位置>`（先頭は `/item/value`）。
+fn groups_by_key_and_values() -> Value {
+    per_group(json!({
+        "region": { "$from": "each", "path": "/item/key/region" },
+        "deals": { "$from": "each", "path": "/item/values/0" },
+        "total": { "$from": "each", "path": "/item/values/1" }
+    }))
+}
+
+fn groups_first_value() -> Value {
+    per_group(json!({
+        "region": { "$from": "each", "path": "/item/key/region" },
+        "deals": { "$from": "each", "path": "/item/value" }
+    }))
+}
+
+/// E1 の app08 の誤り: まとめた列と指標を行の直下の名前で読む（保存は通り、実行で解決できない）。
+fn groups_by_flat_names() -> Value {
+    per_group(json!({
+        "region": { "$from": "each", "path": "/item/region" },
+        "deals": { "$from": "each", "path": "/item/count" },
+        "total": { "$from": "each", "path": "/item/sum_amount" }
+    }))
+}
+
 /// 説明文の書き方は、保存の検証を通り、警告も実行の前に止める理由も無い。
 #[test]
 fn the_guided_ways_save_without_errors_or_warnings() {
@@ -295,6 +407,12 @@ fn the_guided_ways_save_without_errors_or_warnings() {
         ("そろえた列の追加", create_aliased()),
         ("包んでから一括", bulk_wrapped()),
         ("平らな行の一括", bulk_flat()),
+        (
+            "集計の行を key と values で読む",
+            groups_by_key_and_values(),
+        ),
+        ("集計の行の先頭を value で読む", groups_first_value()),
+        ("集計の行を直下の名前で読む", groups_by_flat_names()),
     ] {
         let parsed = validate(&ir, &catalog()).unwrap_or_else(|e| panic!("{name}: {e:?}"));
         assert!(
@@ -404,6 +522,8 @@ struct Flow {
     status: Option<RunStatus>,
     /// 失敗した step の（step の位置, code, 文言）。
     failures: Vec<(String, String, String)>,
+    /// 成功した step の出力（step の位置 → step に残った JSON）。
+    outputs: BTreeMap<String, Value>,
     ports: Arc<CsvTablePorts>,
 }
 
@@ -455,6 +575,15 @@ async fn flow(pool: &PgPool, ir: &Value, script: bool) -> Flow {
     .fetch_all(pool)
     .await
     .unwrap();
+    let outputs: Vec<(String, sqlx::types::Json<Value>)> = sqlx::query_as(
+        "SELECT step_path, output FROM step_execution \
+         WHERE tenant_id = $1 AND run_id = $2 AND output IS NOT NULL",
+    )
+    .bind(&tenant)
+    .bind(run_id)
+    .fetch_all(pool)
+    .await
+    .unwrap();
     for sql in [
         "DELETE FROM effect_journal WHERE tenant_id = $1",
         "DELETE FROM workflow_run WHERE tenant_id = $1",
@@ -464,6 +593,7 @@ async fn flow(pool: &PgPool, ir: &Value, script: bool) -> Flow {
     Flow {
         status,
         failures,
+        outputs: outputs.into_iter().map(|(p, o)| (p, o.0)).collect(),
         ports,
     }
 }
@@ -544,6 +674,75 @@ async fn bulk_rows_must_be_wrapped_in_data() {
     assert!(
         ["sku", "name", "stock"].iter().any(|k| *message == wrap(k)),
         "{message}"
+    );
+    assert!(f.ports.writes.lock().unwrap().is_empty(), "何も書かない");
+}
+
+/// 集計の行（data の `AggregateGroup` をそのまま出した groups）を map で回し、`/item/key/<列>`・`/item/values/<i>`・
+/// `/item/value` で読むと最後まで流れる。step に残る data.query の出力は data の型の JSON のまま（ノードで詰め替え
+/// ない）。行の直下の名前（`/item/region`・`/item/count`）は解決できない（GAP-132）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn aggregate_rows_are_read_by_key_and_values_in_a_map() {
+    let Some(pool) = setup().await else { return };
+    let f = flow(&pool, &groups_by_key_and_values(), false).await;
+    assert_eq!(f.status, Some(RunStatus::Succeeded), "{:?}", f.failures);
+    let q = f.ports.queries.lock().unwrap()[0].clone();
+    assert_eq!(q.group_by, vec!["region".to_string()]);
+    assert_eq!(q.aggregate.len(), 2);
+    let mut rows: Vec<Value> = f
+        .ports
+        .writes
+        .lock()
+        .unwrap()
+        .iter()
+        .flat_map(written)
+        .collect();
+    rows.sort_by_key(|r| r["region"].as_str().unwrap().to_string());
+    assert_eq!(
+        rows,
+        vec![
+            // 件数は整数、合計は数。伏せた行は null のまま書く。
+            json!({ "region": "北", "deals": null, "total": null }),
+            json!({ "region": "東", "deals": 5, "total": 350_000.0 }),
+        ]
+    );
+    // step に残る出力は data の型の JSON（key・value・values）。
+    let groups = &f.outputs["sum_up"]["groups"];
+    assert_eq!(
+        groups[0],
+        json!({ "key": { "region": "東" }, "value": 5, "values": [5, 350_000.0] })
+    );
+    assert_eq!(
+        groups[1],
+        json!({ "key": { "region": "北" }, "value": null, "values": [null, null] })
+    );
+    assert!(
+        f.outputs["sum_up"].get("items").is_none(),
+        "集計では items は無い"
+    );
+
+    let f = flow(&pool, &groups_first_value(), false).await;
+    assert_eq!(f.status, Some(RunStatus::Succeeded), "{:?}", f.failures);
+    let mut deals: Vec<Value> = f
+        .ports
+        .writes
+        .lock()
+        .unwrap()
+        .iter()
+        .flat_map(written)
+        .map(|r| r["deals"].clone())
+        .collect();
+    deals.sort_by_key(Value::to_string);
+    assert_eq!(deals, vec![json!(5), Value::Null]);
+
+    let f = flow(&pool, &groups_by_flat_names(), false).await;
+    assert_eq!(f.status, Some(RunStatus::Failed));
+    assert!(
+        f.failures
+            .iter()
+            .any(|(path, code, _)| path.starts_with("per_region[") && code == "expr_resolve_error"),
+        "{:?}",
+        f.failures
     );
     assert!(f.ports.writes.lock().unwrap().is_empty(), "何も書かない");
 }

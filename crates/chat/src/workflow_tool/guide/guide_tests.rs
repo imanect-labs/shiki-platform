@@ -222,6 +222,16 @@ fn description_explains_the_notation_the_engine_implements() {
             && d.contains("sum・avg・min・max の field は、（索引あり）か（重複を許さない）と出る number の列だけ"),
         "{d}"
     );
+    // 集計の行（data の AggregateGroup）を map で回すときの指し方と、出力の形（カタログ）の行の形（GAP-132。この
+    // 書き方が保存と実行を通ることは workflow-engine の csv_to_table_it が確かめる）。
+    assert!(
+        d.contains("groups の 1 行は {key: {まとめた列の参照名: 値}, values: [aggregate と同じ順の値], value: values の先頭}")
+            && d.contains("{\"$from\":\"each\",\"path\":\"/item/key/<まとめた列の参照名>\"}")
+            && d.contains("{\"$from\":\"each\",\"path\":\"/item/values/<aggregate の位置（0 から）>\"}")
+            && d.contains("/item/<列の参照名>・/item/count のような書き方では読めない")
+            && d.contains("groups?: Array<{ key: { [まとめた列の参照名]: string | null }, value: number | null, values: Array<number | null> }>"),
+        "{d}"
+    );
     // 入力の数を引く書き方と、足す数に組み立てを書けないこと（BUG-245・この書き方が保存と実行を通ることは
     // workflow-engine のテストが確かめる）。
     assert!(

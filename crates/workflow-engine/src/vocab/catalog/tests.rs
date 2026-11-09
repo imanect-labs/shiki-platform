@@ -245,3 +245,36 @@ fn fields_that_depend_on_params_say_where() {
     let q = q.query.unwrap();
     assert!(q.with_count && !q.aggregate.is_empty());
 }
+
+/// GAP-132: data.query の集計の行の形は、data の `AggregateGroup` の項目をすべて名指しする（ノードは data の型を
+/// そのまま出す。項目を足したり名前を変えたりしたら、AI が読む形も直す）。
+#[test]
+fn data_query_groups_name_every_field_of_the_aggregate_row() {
+    let catalog = node_catalog();
+    let groups = catalog
+        .iter()
+        .find(|e| e.node_type == NodeType::DataQuery)
+        .and_then(|e| e.output_fields.iter().find(|f| f.name == "groups"))
+        .unwrap();
+    let row = serde_json::to_value(data::AggregateGroup {
+        key: serde_json::Map::new(),
+        value: serde_json::Value::Null,
+        values: Vec::new(),
+    })
+    .unwrap();
+    let keys: Vec<&String> = row.as_object().unwrap().keys().collect();
+    assert_eq!(keys, ["key", "value", "values"]);
+    for k in keys {
+        assert!(groups.ty.contains(&format!(" {k}: ")), "{k}: {}", groups.ty);
+    }
+    // 説明文（output_shape）にも同じ形が出る。
+    let shape = &catalog
+        .iter()
+        .find(|e| e.node_type == NodeType::DataQuery)
+        .unwrap()
+        .output_shape;
+    assert!(
+        shape.contains(groups.ty) && shape.contains("values は aggregate と同じ順"),
+        "{shape}"
+    );
+}
