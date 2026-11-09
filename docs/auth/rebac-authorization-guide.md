@@ -841,6 +841,9 @@ flowchart TB
 - **current**（`read_subject_objects`, `callback.rs:180`）: **直接タプルのみ**（継承展開しない）を自テナント名前空間で抽出。
   剥奪対象は「直接付与されたもの」が正なので `list_objects` ではなく `read_subject_objects` を使う。
 - **剥奪 → 付与**の順。付与時は台帳 `directory_role` を FGA タプルより先に upsert（purge 漏れ防止・#91）。
+- タプルが既にあるロール（desired ∩ current）も、台帳の行が欠けていれば足す（あれば表示名・作成日時を変えない・
+  `ON CONFLICT DO NOTHING`）。DB だけを戻したときなどに、タプルだけが残って共有の相手検索・ロールの列の照合・
+  テナント撤去の列挙から漏れるのを、次のログインかセッションの更新で直す（`role_member::sync_roles`・BUG-270）。
 - **fail-safe**: READ 失敗時は剥奪をスキップして付与のみ（誤って全ロールを剥がさない）。claims が空＝ロール無しは
   正当に解釈して stale タプルを剥奪する（fail-open を避ける）。
 
