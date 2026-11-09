@@ -408,10 +408,11 @@ fn description_explains_how_to_read_and_write_table_rows() {
     assert!(
         d.contains("function main(i) { return { rows: i.items.map((r) => ({ data: r })) }; }")
             && d.contains(&format!(
-                "（{} 行まで。script.run の戻り値は {script_kb} KB まで",
+                "（1 つの data.bulk_upsert は {} 行まで。script.run の戻り値は {script_kb} KB まで",
                 workflow_engine::ir::params::MAX_WORKFLOW_BULK_ROWS
             ))
-            && d.contains("i.items.slice(0, 2000) と i.items.slice(2000) のように行を分けて包む script.run を 2 つ置き、それぞれの結果を data.bulk_upsert に渡す")
+            && d.contains("超えると script.run が invalid で失敗していくつに分けるかを言うので、SQL で書く列だけを選ぶか、行を言われた数 N に分けて包む script.run を N 個置き（k 個目の source は function main(i) { const n = Math.ceil(i.items.length / N); return { rows: i.items.slice(k * n, (k + 1) * n).map((r) => ({ data: r })) }; } で、N と k〔0 から N - 1〕に数を書く）、それぞれの結果を別の data.bulk_upsert に渡す")
+            && !d.contains("script.run を 2 つ置き")
             && d.contains(&format!(
                 "script.run の戻り値（出力）は {script_kb} KB まで（JSON にした大きさ）。超えると invalid で失敗する"
             )),

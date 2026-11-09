@@ -185,10 +185,10 @@ impl CapabilityNodeExecutor {
             });
             // 戻り値が大きすぎる: テーブルに書く行を包んで一括で登録に渡す書き方（説明文の CSV の段）で当たるので、
             // 分け方を言う（BUG-264）。
-            if audit_api == "script.run"
-                && matches!(outcome.termination, Termination::ResultTooLarge(_))
+            if let (Termination::ResultTooLarge(bytes), "script.run") =
+                (&outcome.termination, audit_api)
             {
-                message.push_str(SPLIT_WRAPPED_ROWS);
+                message.push_str(&split_wrapped_rows(*bytes));
             }
             Err(PortError::new(&code, message, retryable))
         }
@@ -219,8 +219,26 @@ struct HostBridge {
     halted: Arc<std::sync::OnceLock<PortError>>,
 }
 
-/// 包んだ行で戻り値の上限に当たったときの分け方（説明文の CSV の段と同じ書き方・csv_to_table_it が保存と実行を確かめる）。
-const SPLIT_WRAPPED_ROWS: &str = "テーブルに書く行を包んで返しているときは、i.items.slice(0, 2000) と i.items.slice(2000) のように行を分けて包む script.run を 2 つ置き、それぞれの結果を data.bulk_upsert に渡してください。";
+/// 包んだ行で戻り値（`bytes`）の上限に当たったときの分け方（説明文の CSV の段と同じ書き方・csv_to_table_it が保存と実行を
+/// 確かめる・BUG-264）。
+///
+/// 分ける数は、それぞれの戻り値が上限に収まる数（行の大きさのばらつきと包む分に 5% の余白をみる・2 つ以上）。行の数は
+/// 分からないので、それぞれの script.run が全体の行の数からその回の範囲を計算する書き方を言う（上限の 2 倍を超えても、
+/// 同じ直し方を繰り返させない）。1 つの data.bulk_upsert に渡せる行の数の上限も添える。
+fn split_wrapped_rows(bytes: u32) -> String {
+    let parts = bytes
+        .saturating_add(bytes / 20)
+        .div_ceil(MAX_RESULT_BYTES)
+        .max(2);
+    format!(
+        "テーブルに書く行を包んで返しているときは、行を {parts} つに分けて包む script.run を {parts} 個置き\
+         （k 個目の source は function main(i) {{ const n = Math.ceil(i.items.length / {parts}); \
+         return {{ rows: i.items.slice(k * n, (k + 1) * n).map((r) => ({{ data: r }})) }}; }} で、k に 0 から {} を書く）、\
+         それぞれの結果を別の data.bulk_upsert に渡してください（1 つの data.bulk_upsert には {} 行まで）。",
+        parts - 1,
+        crate::ir::params::MAX_WORKFLOW_BULK_ROWS
+    )
+}
 
 /// step の時間の上限の期限に足す余白（ワーカーの打ち切りを script の epoch より先にする）。
 const SCRIPT_DEADLINE_MARGIN: std::time::Duration = std::time::Duration::from_secs(1);
