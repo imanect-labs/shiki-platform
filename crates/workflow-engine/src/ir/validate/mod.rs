@@ -145,12 +145,19 @@ pub struct Catalog {
     /// モデルが 0 件なら ai.decide はすべて拒否する）。llm.invoke・agent.invoke にここのモデルを書くと
     /// `ir.model_modality_mismatch`。
     pub decision_models: Option<Vec<String>>,
-    /// 組織では使えるが、保存する人のアカウントでは使えないモデル（利用者ごとのプロバイダの制限・D-169）。
+    /// 組織では使えるが、保存する人のアカウントでは使えない chat モデル（文章を生成するモデル・利用者ごとのプロバイダの
+    /// 制限・D-169）。
     ///
-    /// API 層が保存する人の制限で詰める（[`Self::models`]・[`Self::decision_models`] からは除いてある）。llm.invoke・
-    /// agent.invoke・ai.decide に書くと [`MODEL_UNAVAILABLE_FOR_USER`]（組織で使えないモデルの `ir.unknown_model` と
-    /// 言い分け、一覧から選び直すよう言う）。空なら制限なし。
+    /// API 層が保存する人の制限で詰める（[`Self::models`] からは除いてある）。llm.invoke・agent.invoke に書くと
+    /// [`MODEL_UNAVAILABLE_FOR_USER`]（組織で使えないモデルの `ir.unknown_model` と言い分け、一覧から選び直すよう言う）。
+    /// ai.decide に書くと、制限の無い人と同じく `ir.model_modality_mismatch`（種類の違いを先に言う）。空なら制限なし。
     pub user_restricted_models: Vec<String>,
+    /// 組織では使えるが、保存する人のアカウントでは使えない判定用のモデル（元にする chat モデルが使えないものも・
+    /// D-169）。
+    ///
+    /// API 層が保存する人の制限で詰める（[`Self::decision_models`] からは除いてある）。ai.decide に書くと
+    /// [`MODEL_UNAVAILABLE_FOR_USER`]、llm.invoke・agent.invoke に書くと `ir.model_modality_mismatch`。空なら制限なし。
+    pub user_restricted_decision_models: Vec<String>,
     /// モデルを省いた llm.invoke・agent.invoke が実行時に動くモデル（組織の既定か Auto の振り先）が、保存する人の
     /// アカウントでは使えないとき、そのモデル（D-185）。`Some` なら、モデルを省いたノードを
     /// [`MODEL_UNAVAILABLE_FOR_USER`] で止める（実行の主体は制限しないので、省いたまま保存すると自動実行が制限された

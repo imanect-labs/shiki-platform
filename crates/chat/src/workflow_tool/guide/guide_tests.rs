@@ -602,15 +602,40 @@ fn description_explains_output_schema_and_effort() {
 fn description_lists_the_models_of_the_user() {
     let ids: Vec<String> = vec!["fast-model".into(), "smart-model".into()];
     let d = emit_description(Some(&ids), None);
-    assert!(d.contains(
-        "次の id のどれかを書く（このユーザーの組織で使えるもの）: fast-model, smart-model。"
-    ));
+    assert!(
+        d.contains("次の id のどれかを書く（このユーザーが使えるもの）: fast-model, smart-model。")
+    );
     let many: Vec<String> = (0..35).map(|i| format!("m{i}")).collect();
     let d = emit_description(Some(&many), None);
     assert!(d.contains("m29（ほか 5 件）"), "件数の上限");
     assert!(!d.contains("m30"));
     let d = emit_description(Some(&[]), None);
     assert!(d.contains("model は書かない"), "指定できるモデルが無い構成");
+}
+
+/// 省いたときに動く組織の既定のモデルがこのユーザーのアカウントでは使えないとき（D-185）は、省略を勧めずに model を
+/// 必ず書かせ、使えるモデルを並べる。使えるモデルも無ければ、モデルを使うノードは保存できないと言う（どちらも保存時の
+/// 照合と同じ結果になることは、api の workflow_model_restriction_it が確かめる）。
+#[test]
+fn description_asks_for_a_model_when_the_default_is_unavailable() {
+    let ids: Vec<String> = vec!["visible".into()];
+    let d = emit_description_for(Some(&ids), None, Some("hidden"));
+    assert!(
+        d.contains("【llm.invoke のモデル】model は必ず書く（省略すると組織の既定のモデル（hidden）で動くが、このモデルはこのユーザーのアカウントでは使えないので、省略すると保存できない。instructions だけのスキルを呼ぶ skill.invoke もこの既定で動くので保存できない）。次の id のどれかを書く（このユーザーが使えるもの）: visible。"),
+        "{d}"
+    );
+    assert!(!d.contains("model はふつう省略する"), "{d}");
+    let d = emit_description_for(Some(&[]), None, Some("hidden"));
+    assert!(
+        d.contains("このユーザーが使えるモデルは無い（省略すると組織の既定のモデル（hidden）で動くが、このモデルはこのユーザーのアカウントでは使えない）ので、llm.invoke・agent.invoke と、instructions だけのスキルを呼ぶ skill.invoke（組織の既定のモデルで動く）は保存できない。")
+            && !d.contains("model は書かない"),
+        "{d}"
+    );
+    // 既定が使える人には今までどおり省略を勧める。
+    assert_eq!(
+        emit_description_for(Some(&ids), None, None),
+        emit_description(Some(&ids), None)
+    );
 }
 
 /// model は省略が正しい書き方（組織の既定で動く）。必須・デプロイの既定とは書かず、例にも model を書かない

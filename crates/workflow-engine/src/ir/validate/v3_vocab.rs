@@ -23,6 +23,18 @@ fn model_candidates(models: &[String]) -> String {
     }
 }
 
+/// llm.invoke・agent.invoke に書けるモデルの一覧か、0 件のときの文。保存する人の制限で 0 件になったときは、組織ではなく
+/// その人のアカウントで使えないと言う（組織には使えるモデルがある・D-169）。
+fn chat_candidates(catalog: &Catalog, models: &[String]) -> String {
+    if !models.is_empty() {
+        model_candidates(models)
+    } else if catalog.user_restricted_models.is_empty() {
+        "組織で使えるモデルがありません".to_string()
+    } else {
+        "あなたのアカウントで使えるモデルがありません。管理者に相談してください".to_string()
+    }
+}
+
 /// 誤りのコード: 組織では使えるが、保存する人のアカウントでは使えないモデル（利用者ごとのプロバイダの制限・D-169）。
 /// モデルを省いて、実行時に動く組織の既定のモデルが使えないときも同じ（D-185）。
 pub const MODEL_UNAVAILABLE_FOR_USER: &str = "ir.model_unavailable_for_user";
@@ -64,9 +76,10 @@ pub(super) fn unavailable_for_user(
 /// - 組織が選択を禁じていれば、既定と違うモデルを拒否する（実行時の解決と同じ規則・D-30）。
 /// - 組織が許可したモデルに無ければ拒否し、使えるモデルを添える（利用者も AI も候補から選び直せる）。
 ///   許可が 0 件の組織では、明示したモデルはすべて拒否する（照合を飛ばさない・BUG-37）。
-/// - 判定用のモデル（[`Catalog::decision_models`]）は文章を生成できないので `ir.model_modality_mismatch`
-///   （判定は ai.decide に書く・FEAT-1）。
-/// - 組織では使えるが保存する人のアカウントでは使えないモデル（[`Catalog::user_restricted_models`]）は
+/// - 判定用のモデル（[`Catalog::decision_models`]。保存する人のアカウントでは使えないもの
+///   [`Catalog::user_restricted_decision_models`] も）は文章を生成できないので `ir.model_modality_mismatch`
+///   （判定は ai.decide に書く・FEAT-1）。種類の違いは制限より先に言う（制限の無い人と同じ直し方になる）。
+/// - 組織では使えるが保存する人のアカウントでは使えない chat モデル（[`Catalog::user_restricted_models`]）は
 ///   [`MODEL_UNAVAILABLE_FOR_USER`]（D-169）。
 pub(super) fn check_model(
     params: &serde_json::Value,
@@ -98,23 +111,23 @@ pub(super) fn check_model(
         ));
     }
     let models = catalog.models.as_ref()?;
-    if models.iter().any(|m| m == model) {
+    let listed = |list: &[String]| list.iter().any(|m| m == model);
+    if listed(models) {
         return None;
     }
-    if catalog
-        .decision_models
-        .as_ref()
-        .is_some_and(|d| d.iter().any(|m| m == model))
+    // 判定用のモデルは、保存する人に使えるかに関わらず種類の違いを言う（組織で使える判定用のモデル全体で見る）。
+    if catalog.decision_models.as_deref().is_some_and(listed)
+        || listed(&catalog.user_restricted_decision_models)
     {
         return Some(ValidationError::new(
             "ir.model_modality_mismatch",
             format!(
                 "{model} は判定用のモデルで、文章を生成できません。判定は「AI で判定」（ai.decide）に書くか、このノードには文章を生成するモデルを選んでください（{}）",
-                model_candidates(models)
+                chat_candidates(catalog, models)
             ),
         ));
     }
-    if catalog.user_restricted_models.iter().any(|m| m == model) {
+    if listed(&catalog.user_restricted_models) {
         return Some(unavailable_for_user(
             true,
             model,
@@ -122,14 +135,12 @@ pub(super) fn check_model(
             catalog.model_lock.is_some(),
         ));
     }
-    let candidates = if models.is_empty() {
-        "組織で使えるモデルがありません".to_string()
-    } else {
-        model_candidates(models)
-    };
     Some(ValidationError::new(
         "ir.unknown_model",
-        format!("このモデルは使えません: {model}（{candidates}）"),
+        format!(
+            "このモデルは使えません: {model}（{}）",
+            chat_candidates(catalog, models)
+        ),
     ))
 }
 
@@ -649,6 +660,21 @@ mod tests {
         // 組織に無いモデルは今までどおり。
         let errs = model_errors(&json!({ "model": "ghost", "prompt": "hi" }), &restricted);
         assert_eq!(errs[0].code, "ir.unknown_model");
+        // 保存する人に使えない判定用のモデルは、制限の無い人と同じく種類の違い（D-169）。
+        let judge = Catalog {
+            user_restricted_decision_models: vec!["judge".into()],
+            ..models(&["open"])
+        };
+        let errs = model_errors(&json!({ "model": "judge", "prompt": "hi" }), &judge);
+        assert_eq!(errs.len(), 1, "{errs:?}");
+        assert_eq!(errs[0].code, "ir.model_modality_mismatch");
+        assert!(
+            errs[0]
+                .message
+                .starts_with("judge は判定用のモデルで、文章を生成できません。"),
+            "{}",
+            errs[0].message
+        );
         // 選択を禁じた組織の既定が使えない: ほかを選べないので管理者に相談するよう言う。
         let locked = Catalog {
             model_lock: Some("closed".into()),
@@ -681,6 +707,18 @@ mod tests {
                 .ends_with("あなたのアカウントで使えるモデルがないため、管理者に相談してください"),
             "{}",
             errs[0].message
+        );
+        // 書けるモデルが制限で 0 件: 組織にはモデルがあるので「組織で使えるモデルがありません」と言わない。制限の無い
+        // 組織の 0 件は今までどおり。
+        let errs = model_errors(&json!({ "model": "ghost", "prompt": "hi" }), &none);
+        assert_eq!(
+            errs[0].message,
+            "このモデルは使えません: ghost（あなたのアカウントで使えるモデルがありません。管理者に相談してください）"
+        );
+        let errs = model_errors(&json!({ "model": "ghost", "prompt": "hi" }), &models(&[]));
+        assert_eq!(
+            errs[0].message,
+            "このモデルは使えません: ghost（組織で使えるモデルがありません）"
         );
     }
 

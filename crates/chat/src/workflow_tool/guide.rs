@@ -146,32 +146,55 @@ pub(super) fn example_json(raw: &str) -> String {
     minify(raw)
 }
 
-/// llm.invoke のモデルの案内（`None` はモデルの一覧を引けなかった）。
+/// 説明文に載せるモデルの id の並び（上限まで・超えた分は件数だけ）。
+fn listed_ids(ids: &[String]) -> String {
+    let shown = ids
+        .iter()
+        .take(MAX_LISTED_MODELS)
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    match ids.len().saturating_sub(MAX_LISTED_MODELS) {
+        0 => shown,
+        rest => format!("{shown}（ほか {rest} 件）"),
+    }
+}
+
+/// llm.invoke・agent.invoke のモデルの案内（`models` はこのユーザーが書けるモデル・`None` は一覧を引けなかった。
+/// `default_unavailable` は、モデルを省いたときに動く組織の既定のモデルがこのユーザーのアカウントでは使えないときの
+/// そのモデル・D-185）。
 ///
 /// model はふつう省略させる（組織の既定で動き、管理者が既定を変えれば追随する）。指定できるモデルが
-/// 無い構成（LLM 未構成・組織の許可が 0 件）では書かせない（書くと検証で拒否される・BUG-37）。
-fn models_section(models: Option<&[String]>) -> String {
+/// 無い構成（LLM 未構成・組織の許可が 0 件）では書かせない（書くと検証で拒否される・BUG-37）。省いたときに動く既定が
+/// このユーザーに使えなければ、省略は保存で断られるので必ず書かせる（書けるモデルも無ければ、保存できないと言う）。
+fn models_section(models: Option<&[String]>, default_unavailable: Option<&str>) -> String {
     const OMIT: &str = "model はふつう省略する（省略すると組織の既定のモデルで動く）。";
+    if let Some(default) = default_unavailable {
+        let why = format!(
+            "省略すると組織の既定のモデル（{default}）で動くが、このモデルはこのユーザーのアカウントでは使えない"
+        );
+        return match models {
+            Some([]) => format!(
+                "このユーザーが使えるモデルは無い（{why}）ので、llm.invoke・agent.invoke と、instructions だけのスキルを呼ぶ skill.invoke（組織の既定のモデルで動く）は保存できない。これらが要るなら、管理者に相談するようユーザーに伝える。"
+            ),
+            Some(ids) => format!(
+                "model は必ず書く（{why}ので、省略すると保存できない。instructions だけのスキルを呼ぶ skill.invoke もこの既定で動くので保存できない）。次の id のどれかを書く（このユーザーが使えるもの）: {}。",
+                listed_ids(ids)
+            ),
+            None => format!(
+                "model は必ず書く（{why}ので、省略すると保存できない）。使えるモデルは検証エラーの候補に出る。"
+            ),
+        };
+    }
     match models {
         Some([]) => {
-            "model は書かない（省略すると組織の既定のモデルで動く。この組織で指定できるモデルは無い）。"
+            "model は書かない（省略すると組織の既定のモデルで動く。このユーザーが指定できるモデルは無い）。"
                 .to_string()
         }
-        Some(ids) => {
-            let shown = ids
-                .iter()
-                .take(MAX_LISTED_MODELS)
-                .map(String::as_str)
-                .collect::<Vec<_>>()
-                .join(", ");
-            let rest = ids.len().saturating_sub(MAX_LISTED_MODELS);
-            let more = if rest > 0 {
-                format!("（ほか {rest} 件）")
-            } else {
-                String::new()
-            };
-            format!("{OMIT}指定するときは次の id のどれかを書く（このユーザーの組織で使えるもの）: {shown}{more}。")
-        }
+        Some(ids) => format!(
+            "{OMIT}指定するときは次の id のどれかを書く（このユーザーが使えるもの）: {}。",
+            listed_ids(ids)
+        ),
         None => format!(
             "{OMIT}指定すると組織で使えるモデルと照合され、使えなければ検証エラーに使えるモデルが出る。"
         ),
@@ -286,11 +309,21 @@ fn reserved_headers() -> String {
         .join("・")
 }
 
-/// emit_workflow の説明文（`models` は発話ユーザーの組織で使える llm.invoke のモデル・`decision_models` は ai.decide の
+/// emit_workflow の説明文（`models` は発話ユーザーが使える llm.invoke のモデル・`decision_models` は ai.decide の
 /// 判定用のモデル。どちらも `None` は載せない）。
 pub(super) fn emit_description(
     models: Option<&[String]>,
     decision_models: Option<&[super::DecisionModel]>,
+) -> String {
+    emit_description_for(models, decision_models, None)
+}
+
+/// emit_workflow の説明文（[`emit_description`] に加え、`default_unavailable` はモデルを省いたときに動く組織の既定の
+/// モデルが発話ユーザーのアカウントでは使えないときのそのモデル・D-185）。
+pub(super) fn emit_description_for(
+    models: Option<&[String]>,
+    decision_models: Option<&[super::DecisionModel]>,
+    default_unavailable: Option<&str>,
 ) -> String {
     let mut d = String::from(
         "ワークフロー（自動化フロー）を JSON IR として保存する。新規作成は ir だけを渡し、既存の編集は workflow_id と、read_workflow が返した version を expected_version に必ず渡す（無いと保存しない。編集の前に必ず read_workflow で今の IR を読む。id が分からなければ list_workflows で探す）。保存しただけでは実行されない。検証に失敗するとエラーが全件返るので、全部直して再実行する。成功するとユーザーにカードが表示され、エディタで開ける。\n",
@@ -356,7 +389,7 @@ pub(super) fn emit_description(
          【llm.invoke のモデル】{models}\n",
         ex1 = example_json(EXAMPLE_SUMMARIZE),
         ex2 = example_json(EXAMPLE_REVIEW),
-        models = models_section(models),
+        models = models_section(models, default_unavailable),
     );
     d.push_str(&structured_guide());
     d.push_str(&decide::guide(decision_models));

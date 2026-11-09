@@ -67,6 +67,15 @@ pub trait WorkflowCatalogSource: Send + Sync {
         })
     }
 
+    /// モデルを省いた llm.invoke・agent.invoke が実行時に動く組織の既定のモデルが、このユーザーのアカウントでは
+    /// 使えないとき、そのモデル（[`Catalog::default_model_unavailable`] と同じ・D-185）。
+    ///
+    /// emit_workflow の説明文に run ごとに載せ、省略を勧めずに model を書かせる（省略は保存で断られる）。既定は
+    /// カタログ全体を組んで取り出す（安く引ける実装は上書きする）。
+    async fn default_model_unavailable(&self, ctx: &AuthContext) -> Result<Option<String>, String> {
+        self.catalog(ctx).await.map(|c| c.default_model_unavailable)
+    }
+
     /// 保存しようとしている IR に合わせたカタログ（IR が参照するものだけを引いて足す・承認のテーブルなど）。
     ///
     /// 保存 API は IR を見て承認（human.approval）が束縛するテーブルを [`Catalog::tables`] に詰め、V4 で FSM・
@@ -226,6 +235,8 @@ pub struct EmitWorkflowTool {
     models: Option<Vec<String>>,
     /// 説明文に載せる ai.decide の判定用のモデル（`None` は載せない）。
     decision_models: Option<Vec<DecisionModel>>,
+    /// モデルを省いたときに動く組織の既定のモデルが、発話ユーザーのアカウントでは使えないとき、そのモデル（D-185）。
+    default_unavailable: Option<String>,
     description: String,
 }
 
@@ -237,11 +248,12 @@ impl EmitWorkflowTool {
             catalog,
             models: None,
             decision_models: None,
+            default_unavailable: None,
             description: guide::emit_description(None, None),
         }
     }
 
-    /// 発話ユーザーの組織で使えるモデルを説明文に載せる（run ごとに組む・空なら model を書かない旨を書く）。
+    /// 発話ユーザーが使えるモデルを説明文に載せる（run ごとに組む・空なら model を書かない旨を書く）。
     #[must_use]
     pub fn with_models(mut self, models: &[String]) -> Self {
         self.models = Some(models.to_vec());
@@ -249,7 +261,7 @@ impl EmitWorkflowTool {
         self
     }
 
-    /// 発話ユーザーの組織で使える判定用のモデル（id と表示名）を説明文に載せる（run ごとに組む・D-79）。
+    /// 発話ユーザーが使える判定用のモデル（id と表示名）を説明文に載せる（run ごとに組む・D-79）。
     #[must_use]
     pub fn with_decision_models(mut self, models: &[DecisionModel]) -> Self {
         self.decision_models = Some(models.to_vec());
@@ -257,9 +269,21 @@ impl EmitWorkflowTool {
         self
     }
 
+    /// モデルを省いたときに動く組織の既定のモデルが、発話ユーザーのアカウントでは使えないことを説明文に載せる
+    /// （省略を勧めずに model を書かせる・D-185）。
+    #[must_use]
+    pub fn with_default_model_unavailable(mut self, model: Option<String>) -> Self {
+        self.default_unavailable = model;
+        self.rebuild_description();
+        self
+    }
+
     fn rebuild_description(&mut self) {
-        self.description =
-            guide::emit_description(self.models.as_deref(), self.decision_models.as_deref());
+        self.description = guide::emit_description_for(
+            self.models.as_deref(),
+            self.decision_models.as_deref(),
+            self.default_unavailable.as_deref(),
+        );
     }
 }
 
@@ -534,7 +558,7 @@ mod tests {
             "{both}"
         );
         assert!(
-            both.contains("のどれかを書く（このユーザーの組織で使えるもの）: fast。"),
+            both.contains("のどれかを書く（このユーザーが使えるもの）: fast。"),
             "{both}"
         );
         // 判定用のモデルを載せないときは、従来どおり検証エラーの候補に任せる。

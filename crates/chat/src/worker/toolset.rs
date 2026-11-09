@@ -133,6 +133,13 @@ impl ChatWorker {
                     tracing::warn!(error = %e, "モデル一覧の取得に失敗（emit_workflow の説明文に載せない）");
                 }
             }
+            // 省いたときに動く既定がこのユーザーに使えなければ、省略を勧めずに model を書かせる（D-185）。
+            match catalog.default_model_unavailable(ctx).await {
+                Ok(model) => emit = emit.with_default_model_unavailable(model),
+                Err(e) => {
+                    tracing::warn!(error = %e, "組織の既定のモデルの確かめに失敗（emit_workflow の説明文に載せない）");
+                }
+            }
             // 判定用のモデル（ai.decide）も id と表示名を載せる（保存時の誤りの候補で知る往復を減らす・D-79）。
             match catalog.decision_models(ctx).await {
                 Ok(models) => emit = emit.with_decision_models(&models),

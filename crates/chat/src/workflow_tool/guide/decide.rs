@@ -15,7 +15,7 @@ use crate::workflow_tool::DecisionModel;
 /// 説明文に載せる表示名の上限（文字数・管理者が付けた名前で説明文を膨らませない）。
 const MAX_LABEL_CHARS: usize = 60;
 
-/// model の書き方の 1 行（`models` は発話ユーザーの組織で使える判定用のモデル・`None` は載せない・D-79）。
+/// model の書き方の 1 行（`models` は発話ユーザーが使える判定用のモデル・`None` は載せない・D-79・D-169）。
 ///
 /// 一覧は保存時の照合（[`workflow_engine::Catalog::decision_models`]）と同じ集合で、id の後ろに表示名を添える
 /// （利用者が画面の名前で頼んでも id を選べる）。表示名は改行などの制御文字を空白にし、長ければ切る。
@@ -25,7 +25,7 @@ fn model_line(models: Option<&[DecisionModel]>) -> String {
     match models {
         None => format!("{BASE}。使えるものは検証エラーの候補に出る）。"),
         Some([]) => format!(
-            "{BASE}）。このユーザーの組織で使える判定用のモデルは無いので、ai.decide は保存できない（分類は llm.invoke の output_schema の enum で書く）。"
+            "{BASE}）。このユーザーが使える判定用のモデルは無いので、ai.decide は保存できない（分類は llm.invoke の output_schema の enum で書く）。"
         ),
         Some(list) => {
             let shown = list
@@ -45,7 +45,7 @@ fn model_line(models: Option<&[DecisionModel]>) -> String {
             } else {
                 String::new()
             };
-            format!("{BASE}）。このユーザーの組織で使えるもの（id（表示名））: {shown}{more}。")
+            format!("{BASE}）。このユーザーが使えるもの（id（表示名））: {shown}{more}。")
         }
     }
 }
@@ -183,7 +183,7 @@ mod tests {
         let g = guide(Some(&models));
         assert!(
             g.contains(
-                "このユーザーの組織で使えるもの（id（表示名））: decide-haiku（Haiku 5.5 で判定 （自己申告））, decide-stub, decide-same。"
+                "このユーザーが使えるもの（id（表示名））: decide-haiku（Haiku 5.5 で判定 （自己申告））, decide-stub, decide-same。"
             ),
             "{g}"
         );

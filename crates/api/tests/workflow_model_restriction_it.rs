@@ -185,7 +185,7 @@ async fn saving_follows_the_savers_provider_restriction() {
         check.decision_ids.as_deref(),
         Some(&["decide".to_string()][..])
     );
-    assert_eq!(check.restricted, ["hidden", "judge"]);
+    assert_eq!(check.restricted, ["hidden"]);
     assert_eq!(check.default_unavailable.as_deref(), Some("hidden"));
     assert!(check.default_is_auto, "既定・Auto は実行時の設定のまま");
 
@@ -308,6 +308,48 @@ async fn saving_follows_the_savers_provider_restriction() {
             "{message}"
         );
     }
+    cleanup(&pool, &tenant).await;
+}
+
+/// 使えないモデルを種類の違うノードに書いたときは、制限の無い人と同じく種類の違いを言う（判定用のモデルを文章の
+/// モデルと呼ばない・その逆も）。AI 編集の説明文が省略を勧めずに model を書かせる材料（省いたときに動く既定が使えない
+/// こと）も、照合と同じ材料から出る（D-185）。
+#[tokio::test]
+async fn a_restricted_model_of_the_other_kind_is_told_as_a_kind_mismatch() {
+    let Some(pool) = pool().await else { return };
+    let tenant = format!("wfrestrict-{}", uuid::Uuid::new_v4().simple());
+    let gw = gateway(pool.clone(), &tenant);
+    let models = WorkflowModels::new(Some(gw.clone()), Vec::new());
+    let restricted = user(&tenant, "restricted");
+    let other = user(&tenant, "other");
+    let check = models.check(&restricted).await.unwrap();
+    assert_eq!(check.restricted, ["hidden"]);
+    assert_eq!(check.restricted_decision, ["judge"]);
+    for ctx in [&restricted, &other] {
+        let catalog = build_catalog_from(None, None, &models, ctx).await.unwrap();
+        let errs = model_errors(&ir(Some("judge"), Some("visible"), "hidden"), &catalog);
+        assert_eq!(errs.len(), 2, "{errs:#?}");
+        assert!(
+            errs.iter()
+                .all(|(_, code, _)| code == "ir.model_modality_mismatch"),
+            "{errs:#?}"
+        );
+    }
+    let source =
+        ApiWorkflowCatalogSource::new(None, None, WorkflowModels::new(Some(gw), Vec::new()));
+    assert_eq!(
+        chat::WorkflowCatalogSource::default_model_unavailable(&source, &restricted)
+            .await
+            .unwrap()
+            .as_deref(),
+        Some("hidden")
+    );
+    assert_eq!(
+        chat::WorkflowCatalogSource::default_model_unavailable(&source, &other)
+            .await
+            .unwrap(),
+        None
+    );
     cleanup(&pool, &tenant).await;
 }
 

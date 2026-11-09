@@ -151,7 +151,8 @@ fn warnings_flag_low_thresholds_many_ports_and_unpinned_models() {
 #[test]
 fn a_decision_model_restricted_for_the_saver_is_told_apart() {
     let cat = Catalog {
-        user_restricted_models: vec!["decide-closed".into()],
+        user_restricted_models: vec!["closed".into()],
+        user_restricted_decision_models: vec!["decide-closed".into()],
         default_model_unavailable: Some("closed".into()),
         ..catalog(&["haiku"], &["decide-haiku"])
     };
@@ -168,8 +169,16 @@ fn a_decision_model_restricted_for_the_saver_is_told_apart() {
          一覧から選び直してください（使える判定用のモデル: decide-haiku）"
     );
     assert!(errors(&ir(json!([decide_node("decide-haiku")])), &cat).is_empty());
+    // 保存する人に使えない文章を生成するモデルは、制限の無い人と同じく種類の違い（判定用のモデルと呼ばない・D-169）。
+    let errs = errors(&ir(json!([decide_node("closed")])), &cat);
+    assert_eq!(errs.len(), 1, "{errs:?}");
+    assert_eq!(errs[0].code, "ir.model_modality_mismatch");
+    assert_eq!(
+        errs[0].message,
+        "closed は文章を生成するモデルです。判定（ai.decide）には判定用のモデルを選んでください（使える判定用のモデル: decide-haiku）"
+    );
     let none = Catalog {
-        user_restricted_models: vec!["decide-closed".into()],
+        user_restricted_decision_models: vec!["decide-closed".into()],
         ..catalog(&["haiku"], &[])
     };
     let errs = errors(&ir(json!([decide_node("decide-closed")])), &none);
@@ -180,4 +189,15 @@ fn a_decision_model_restricted_for_the_saver_is_told_apart() {
         "{}",
         errs[0].message
     );
+    // 書ける判定用のモデルが制限で 0 件: 組織には判定用のモデルがあるので「組織で使える…がありません」と言わない。
+    for model in ["haiku", "nope"] {
+        let errs = errors(&ir(json!([decide_node(model)])), &none);
+        assert!(
+            errs[0].message.ends_with(
+                "（あなたのアカウントで使える判定用のモデルがありません。管理者に相談してください）"
+            ),
+            "{model}: {}",
+            errs[0].message
+        );
+    }
 }
