@@ -14,7 +14,8 @@
     流す前に、版のサーバーの点検（`doctor.version_guard`。既定のプロバイダが stub で、anthropic が abeval.proxy を
     指し鍵がダミー）と振る舞いの指紋を確かめる。abeval.proxy に実行を登録しないので、もし要求が届いても上流へは
     送らずに断る（止めていれば繋がらない）。
-  - 版のサーバーは試行の版（`label`）と同じものだけ。実験に版が 2 つ以上あれば止める。
+  - 版のサーバーは試行の版（`label`）と同じものだけ。実験に版が 2 つ以上あれば止める。流し直す試行が無い実験
+    （どの試行も保存を通らなかった）は、静的な層だけを採点し直す。
   - 基盤の失敗（保存・実行・時間切れ・fixture）で流せなかった試行が 1 つでもあれば、何も書かずに止める（部分だけ
     新しい採点器で採点した結果を残さない）。
 
@@ -86,14 +87,18 @@ def check_rules(doc: Mapping, *, stub_runs: bool) -> None:
         )
 
 
-def stub_label(doc: Mapping) -> str:
-    """stub の配管を流し直す試行の版（1 つでなければ止める）。"""
+def stub_label(doc: Mapping) -> str | None:
+    """stub の配管を流し直す試行の版（2 つ以上なら止める）。
+
+    流し直す試行が無ければ None（どの試行も保存を通らなかった実験。V0・V1 の Mode A）。動的な検査は保存できた試行に
+    しか掛からないので、静的な層だけを採点し直せば足りる。
+    """
     labels = sorted({str(t.get("label")) for t in doc.get("trials") or [] if _stub_target(t)})
-    if len(labels) != 1:
+    if len(labels) > 1:
         raise RegradeError(
             f"stub の配管を流し直す試行の版が 1 つではありません: {labels}（実験を版ごとに分けて流します）"
         )
-    return labels[0]
+    return labels[0] if labels else None
 
 
 def _stub_target(t: Mapping) -> bool:

@@ -635,6 +635,10 @@ def cmd_grade(args) -> int:
     except regrade.RegradeError as e:
         print(f"止めました: {e}", file=sys.stderr)
         return 1
+    if stub_runs and label is None:
+        print(
+            f"[採点し直し] {args.exp}: stub の配管を流し直す試行がないので、静的な層だけを採点し直します"
+        )
     tasks = {t.id: t for t in load_tasks()}
     lint_bin = Path(args.lint_bin) if args.lint_bin else None
     lint = _lint(lint_bin)

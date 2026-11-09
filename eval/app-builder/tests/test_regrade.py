@@ -184,6 +184,9 @@ def test_static_only_needs_the_same_rules_and_stub_runs_need_one_version():
     doc["trials"].append(_trial("a", "app08-weekly-kpi", 1, label="vm"))
     with pytest.raises(regrade.RegradeError, match="1 つではありません"):
         regrade.stub_label(doc)
+    # どの試行も保存を通らなかった実験（V0・V1 の Mode A）は、静的な層だけを採点し直す。
+    unsaved = {"trials": [_trial("a", "app08-weekly-kpi", 0, s1=False, stub=None)]}
+    assert regrade.stub_label(unsaved) is None
 
 
 def test_the_summary_says_which_experiments_were_regraded_and_what_was_kept():
