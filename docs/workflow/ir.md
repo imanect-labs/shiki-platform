@@ -438,6 +438,13 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
   - script の `Shiki.storage.read` は文章のファイルだけを読む（いまのまま）。文章でない種類は `not_text_file` で断り、前に
     「ファイルを読む」ブロックを置いてその結果を script の入力に渡す組み方を、script の作者向けに言う（BUG-158）。
 - **ファイルの ID の項目名は `file_id` にそろえる**（D-96）: `storage.read`・`storage.write`・`csv.write`・`csv.patch` の結果は `file_id` を載せ、古い名前（`storage.*` の `id`・`csv.*` の `node_id`）も同じ値で残す（保存済みの定義の `$from` を壊さない）。`rag.search` の結果・ファイル保存のトリガのペイロードはもとから `file_id`。出力の形の正はカタログの `output_fields`。
+- **集計の行の形**（`data.query`・GAP-132）: `query` に `aggregate` を書くと、結果は `groups` に入る（`items` は無い）。1 行は
+  data の `AggregateGroup` をそのまま出した `{ key: { まとめた列の参照名: 値 }, value: 先頭の指標の値, values: [指標の値（aggregate
+  と同じ順）] }` で、ノードで詰め替えない。まとめた列の値は列の型によらず文字（値の無いものは null）、件数（`count`）は整数、ほかの
+  指標は数。件数が少なくて伏せた行（PIT-17）は `value` と `values` の値が null。結合先の列でまとめたときの `key` の名前は
+  `別名.参照名`。`control.map` で回すときは、領域の中で、まとめた列を `{"$from": "each", "path": "/item/key/<参照名>"}`、指標を
+  `/item/values/<aggregate の位置（0 から）>`（先頭は `/item/value`）で読む（`/item/<参照名>`・`/item/count` は解決できず
+  `expr_resolve_error`）。AI の `emit_workflow` の説明文はこの指し方を教える。
 
 **出力の形の正はノードカタログ**（`crates/workflow-engine/src/vocab/catalog.rs`）の `output_fields`（最上位の項目の名前・型・省略されうるか・補足）である。AI の説明文に載せる TS 風の表記（`output_shape`）はそこから作り、エディタの参照の候補も `output_fields` を読む（表記を字句解析しない・D-42）。設定で決まる項目は、その設定の場所（params の JSON Pointer・`present_if`）を持つ（`llm.invoke` の `data` は `/output_schema`、`data.query` の `count` は `/query/with_count`、`groups` は `/query/aggregate`）。エディタは、その場所に値があるときだけ参照の候補に出す（値の入らない候補を選ばせない・BUG-108）。項目の組でない出力（入力をそのまま通す・script の戻り値など）は文で書き、項目は空にする。
 
