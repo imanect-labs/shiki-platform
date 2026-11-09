@@ -4,6 +4,8 @@
 `enable_blockers` と、出力の path の検査 `output_paths`）。標準入力の JSONL を渡し、1 行ずつの結果を読む
 （`crates/workflow-engine/examples/ir_lint.rs`）。版の行の出力の形の版（`schema`）が [`LINT_SCHEMA`] でなければ
 止める（作り直していない古い ir_lint の無い欄を空として読み、S2s を黙って甘くしないため）。採点器の版にも入れる。
+形の版が同じでも、バイナリが作業ツリーのソース（cargo の依存の記録 `<バイナリ>.d` に載るもの）より古ければ止める
+（検証の規則だけが変わった後の古い ir_lint で S2s を数えない・`lint_build`・BUG-254）。
 
 - `errors`（環境に依存するコード `ignored_by_env` を除いたもの）と `run_blockers`（対話の実行の前に止める理由）は
   S2s（保存できても静的に誤り）に入れる。
@@ -48,7 +50,7 @@ from pathlib import Path
 from typing import Any
 
 from abeval.config import ROOT
-from abeval.grade import GRADER_VERSION
+from abeval.grade import GRADER_VERSION, lint_build
 from abeval.grade.dates import ir_date_literals
 from abeval.tasks import Expect
 
@@ -98,6 +100,16 @@ def _require_bin(bin_path: Path | None) -> Path:
     return p
 
 
+def check_lint_fresh(bin_path: Path | None = None) -> Path:
+    """ir_lint があり、作業ツリーのソースより古くないか（古ければ作り直しの命令を添えて LintError・BUG-254）。"""
+    p = _require_bin(bin_path)
+    try:
+        lint_build.check_fresh(p)
+    except lint_build.StaleLint as e:
+        raise LintError(str(e)) from e
+    return p
+
+
 def file_sha256(path: Path) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as f:
@@ -106,14 +118,37 @@ def file_sha256(path: Path) -> str:
     return h.hexdigest()
 
 
+# 採点器の記録のうち、作った commit などの素性（同一性には入れない・`grader_identity`）。
+BUILD_KEY = "ir_lint_build"
+
+
 def grader_version(bin_path: Path | None = None) -> dict:
-    """結果に残す採点器の版（ir_lint の crate_version は 0.0.0 なのでバイナリの sha で区別する・出力の形の版も）。"""
+    """結果に残す採点器の版（ir_lint の crate_version は 0.0.0 なのでバイナリの sha で区別する・出力の形の版も）。
+
+    `ir_lint_build` は ir_lint を作った commit と、作業ツリーが汚れていたか（`lint_build.build_info`・BUG-254）。
+    ir_lint が作業ツリーより古ければ LintError（古い規則で採点した記録を残さない）。
+    """
     p = bin_path or find_lint_bin()
-    return {
+    out = {
         "grader": GRADER_VERSION,
         "ir_lint_schema": LINT_SCHEMA,
         "ir_lint_sha256": file_sha256(p) if p else None,
     }
+    if p:
+        try:
+            out[BUILD_KEY] = lint_build.build_info(p)
+        except lint_build.StaleLint as e:
+            raise LintError(str(e)) from e
+    return out
+
+
+def grader_identity(grader: Mapping | None) -> dict:
+    """採点器の同一性（採点の規則の版・出力の形の版・ir_lint の sha）。作った commit などの素性は比べない。
+
+    結果を重ねる・まとめの表に並べる・Mode B のキャッシュのキーに入れるときは、これで比べる（中身の同じ ir_lint を
+    関係の無い commit のたびに別の採点器と数えない）。
+    """
+    return {k: v for k, v in (grader or {}).items() if k != BUILD_KEY}
 
 
 # --- 1 層目: ir_lint ---
@@ -151,8 +186,8 @@ class LintResult:
 def run_ir_lint(
     items: Iterable[tuple[str, Mapping]], bin_path: Path | None = None, timeout: float = 120.0
 ) -> tuple[dict[str, LintResult], dict]:
-    """IR を ir_lint に掛ける。(id → 結果, 版の行)。id は重ねない。"""
-    p = _require_bin(bin_path)
+    """IR を ir_lint に掛ける。(id → 結果, 版の行)。id は重ねない。作業ツリーより古い ir_lint では止める。"""
+    p = check_lint_fresh(bin_path)
     items = list(items)
     ids = [i for i, _ in items]
     if len(set(ids)) != len(ids):
@@ -235,7 +270,7 @@ class LintCatalog:
 
 
 def catalog_from_bin(bin_path: Path | None = None) -> dict:
-    p = _require_bin(bin_path)
+    p = check_lint_fresh(bin_path)
     done = subprocess.run(
         [str(p), "--catalog"], capture_output=True, text=True, timeout=60, check=False
     )

@@ -36,7 +36,15 @@ from abeval.cache import TrialCache
 from abeval.capture import Capture, CaptureError, capture, captures_dir
 from abeval.config import Config, canonical_json, load_config, sha256_hex
 from abeval.gen_checks import g9_supported, load_denylist, version_features
-from abeval.grade.static import LintCatalog, grader_version, load_catalog, run_ir_lint
+from abeval.grade.static import (
+    LintCatalog,
+    LintError,
+    check_lint_fresh,
+    grader_identity,
+    grader_version,
+    load_catalog,
+    run_ir_lint,
+)
 from abeval.ledger import Ledger
 from abeval.plan import RunSpec, format_plan, make_plan, mode_a_reserve_usd, register, spent
 from abeval.pricing import micros_to_usd
@@ -58,6 +66,10 @@ STUB_URL = "http://localhost:8080"
 
 
 def _lint(bin_path: Path | None = None):
+    """採点の 1 層目（ir_lint）。作る時点で、ir_lint が作業ツリーより古くないかを確かめる（古ければ費用を使う前に
+    作り直しの命令を出して止める・BUG-254。掛けるたびにも確かめる）。"""
+    check_lint_fresh(bin_path)
+
     def lint(items):
         return run_ir_lint(items, bin_path)[0]
 
@@ -523,7 +535,9 @@ def _execute(
         or "stub",
         capture_sha=cap.sha if cap else "stub",
         grader_sha=sha256_hex(
-            canonical_json(grader_version(Path(args.lint_bin) if args.lint_bin else None))
+            canonical_json(
+                grader_identity(grader_version(Path(args.lint_bin) if args.lint_bin else None))
+            )
         ),
         ctrl=None if stub else ctrl,
         run_id=None if stub else plan.run_id,
@@ -723,7 +737,7 @@ def main(argv: list[str] | None = None, command: str | None = None) -> int:
             return cmd_grade(args)
         if command == "report":
             return cmd_report(args)
-    except (VersionError, CaptureError, report.Unpublishable) as e:
+    except (VersionError, CaptureError, report.Unpublishable, LintError) as e:
         print(f"止めました: {e}", file=sys.stderr)
         return 1
     raise SystemExit(f"知らないコマンド: {command}")

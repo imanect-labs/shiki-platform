@@ -13,7 +13,11 @@ AI（チャットの `emit_workflow`）が作るワークフロー（アプリ�
 - 実 LLM を使うときは、手元の中継（`~/.config/shiki-dev/anthropic-relay.py`・`127.0.0.1:8787`・台帳 §9.2）が
   動いていること。**本物の鍵を読むのは手元の中継だけ**で、ここ（`abeval`）は鍵を読まない・持たない・設定に
   置かせない（`eval.toml` に鍵の形の項目があると読み込みで止まる）。
-- ir_lint: `cargo build -p shiki-workflow-engine --example ir_lint`（`target/debug/examples/ir_lint`）。
+- ir_lint: `cargo build -p shiki-workflow-engine --example ir_lint`（`target/debug/examples/ir_lint`）。採点は、
+  バイナリが作業ツリーのソース（cargo がバイナリの隣に書く依存の記録 `ir_lint.d` に載るもの。workflow-engine と、
+  検証が使う data・script-runtime などのクレート。`target/` の生成物は除く）より古ければ、止めて作り直しの命令を出す
+  （出力の形の版が同じでも、検証の規則だけが変わった古い ir_lint で S2s を数えない・BUG-254）。cargo が読まない
+  ファイル（テストだけの `*_tests.rs`・docs）の変更では止めない。
 
 ## 手順
 
@@ -297,7 +301,12 @@ docstring（§3.1 に `clarifications`・`run_cases[].llm_dependent`・`run_case
 | `run_cases.py` | run_case をサーバーで流して記録を集める（fixture の行の入れ直し・起動の列・成功した step の出力・行・増えたファイル・再実行）。正解の結合テストと、後の段の Mode A・B が使う |
 | `grading.py` | 試行の採点の部品。基盤の失敗（保存できない・時間切れ・5xx など）で流せなかった run_case が 1 つでもあれば、S2d・S3・S4 を None にして試行を errors に回す（部分だけで採点しない）。見出しは S2s・S2d（Mode B は S4 も）が決まったときだけ真で、決まらなければ None（率の分母に入れない） |
 
-採点器の版は `grade.GRADER_VERSION` と ir_lint のバイナリの sha（`static.grader_version()`）で残す。
+採点器の版は `grade.GRADER_VERSION` と ir_lint のバイナリの sha（`static.grader_version()`）で残す。`ir_lint_build` には、
+ir_lint を作った commit（確かめた時点の HEAD。バイナリが依存のソースより新しいので、その commit の中身から作ったと
+みなせる）・依存のソースに commit していない変更があったか（`dirty`）・バイナリの時刻を残す。結果を重ねる・まとめに
+並べる・Mode B のキャッシュのキーに入れるときに比べるのは、同一性（`static.grader_identity`: 採点の規則の版・出力の形の
+版・ir_lint の sha）だけで、作った commit は比べない（中身の同じ ir_lint を関係の無い commit のたびに別の採点器と
+数えない）。
 
 ## 取り込み・Mode A・Mode B・計画・レポート（§4.5〜§4.7・§6・§8）
 

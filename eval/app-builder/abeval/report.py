@@ -24,6 +24,7 @@ from typing import Any
 
 from abeval.config import ROOT
 from abeval.gen_checks import load_denylist
+from abeval.grade.static import grader_identity
 from abeval.metrics import (
     aggregate,
     condition_name,
@@ -151,7 +152,8 @@ def read_errors(exp: str, where: Path | None = None) -> list[dict]:
 def merge_result(prev: Mapping | None, new: Mapping) -> dict:
     """同じ実験の前の結果に足す（試行は試行の名前で置き換える・実行と版は足す）。
 
-    採点器の版（`grader`）が前と違うときは、前の試行を捨てて `merge_notes` に残す。違う規則で採点した試行を
+    採点器の版（`grader` の同一性・`grader_identity`。ir_lint を作った commit は比べない）が前と違うときは、前の試行を
+    捨てて `merge_notes` に残す。違う規則で採点した試行を
     同じ表で数えないため（BUG-254）。捨てた試行は、同じ条件で流し直す（Mode A は生成をキャッシュから読み直して
     採点し直す・Mode B は採点器の版がキャッシュのキーに入るので会話から流し直す）。
     """
@@ -159,7 +161,7 @@ def merge_result(prev: Mapping | None, new: Mapping) -> dict:
         return dict(new)
     prev_trials = list(prev.get("trials") or [])
     notes = list(prev.get("merge_notes") or [])
-    if prev_trials and prev.get("grader") != new.get("grader"):
+    if prev_trials and grader_identity(prev.get("grader")) != grader_identity(new.get("grader")):
         notes.append(
             {
                 "dropped_trials": len(prev_trials),
@@ -416,7 +418,7 @@ def same_grader(docs: Sequence[Mapping]) -> tuple[list[Mapping], list[Mapping]]:
         return [], []
 
     def ident(d: Mapping) -> str:
-        return json.dumps(d.get("grader") or {}, sort_keys=True)
+        return json.dumps(grader_identity(d.get("grader")), sort_keys=True)
 
     def number(d: Mapping) -> int:
         g = d.get("grader") or {}

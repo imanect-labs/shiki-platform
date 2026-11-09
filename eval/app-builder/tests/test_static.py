@@ -250,9 +250,12 @@ def test_the_grader_version_carries_the_lint_schema(tmp_path, monkeypatch):
 
 
 def _fake_bin(tmp_path, body: str):
+    """偽の ir_lint（作業ツリーの workflow-engine のソースから作ったと読める依存の記録を隣に置く・BUG-254）。"""
     p = tmp_path / "fake_ir_lint"
     p.write_text("#!/bin/sh\n" + body, encoding="utf-8")
     p.chmod(p.stat().st_mode | stat.S_IXUSR)
+    src = static.REPO / "crates" / "workflow-engine" / "src" / "lib.rs"
+    p.with_name(p.name + ".d").write_text(f"{p}: {src}\n", encoding="utf-8")
     return p
 
 
