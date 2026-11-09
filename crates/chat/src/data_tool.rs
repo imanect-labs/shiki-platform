@@ -23,6 +23,7 @@ use authz::AuthContext;
 use data::{DataError, DataQuery, DataRecord, DataStore, QueryResult};
 
 use crate::data_tool_sql::{format_sql_result, rejection_message, QueryForm};
+use crate::tool_args::{accept_object_args, DATA_QUERY, DATA_RECORD};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use uuid::Uuid;
@@ -386,9 +387,11 @@ impl Tool for DataQueryTool {
     async fn call(
         &self,
         ctx: &AuthContext,
-        input: Value,
+        mut input: Value,
         trace_id: Option<&str>,
     ) -> Result<ToolOutcome, ToolError> {
+        // JSON の文字列で来た query は 1 段だけ読み、object と同じ検証を通す（道具で共通・GAP-130）。
+        accept_object_args(&mut input, &[DATA_QUERY]).map_err(ToolError::Invalid)?;
         // クエリの最上位の未知のキー（limitt 等）は黙って無視せず、モデルが自己修正できるよう返す。
         if let Some(q) = input.get("query").filter(|q| !q.is_null()) {
             if let Err(e) = DataQuery::from_request(q.clone()) {
@@ -766,9 +769,11 @@ impl Tool for DataRecordWriteTool {
     async fn call(
         &self,
         ctx: &AuthContext,
-        input: Value,
+        mut input: Value,
         trace_id: Option<&str>,
     ) -> Result<ToolOutcome, ToolError> {
+        // JSON の文字列で来た data は 1 段だけ読み、object と同じ検証を通す（道具で共通・GAP-130）。
+        accept_object_args(&mut input, &[DATA_RECORD]).map_err(ToolError::Invalid)?;
         let input: DataRecordWriteInput = serde_json::from_value(input).map_err(|e| invalid(&e))?;
         if !input.data.is_object() {
             return Err(ToolError::Invalid(

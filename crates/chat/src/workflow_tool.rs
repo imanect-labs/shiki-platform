@@ -16,6 +16,8 @@ use authz::AuthContext;
 use uuid::Uuid;
 use workflow_engine::{Catalog, ValidationError, WorkflowStore, WorkflowStoreError};
 
+use crate::tool_args::ObjectArg;
+
 mod guide;
 mod list;
 
@@ -144,26 +146,28 @@ fn create_name_taken(name: &str) -> String {
     )
 }
 
-/// ir をオブジェクトで渡さなかった（読めない文字列・配列などの JSON の文字列・オブジェクトでない値）ときの誤り（GAP-119）。
-const IR_NOT_OBJECT: &str = "ir は JSON の文字列にせず、オブジェクトのまま渡してください\
-     （ir_version・name・triggers・nodes・edges を持つオブジェクト）。保存していません。";
+/// 保存する IR の引数（object の引数の受け口は道具で共通・GAP-119・GAP-130）。
+const IR_ARG: ObjectArg = ObjectArg {
+    key: "ir",
+    shape: "ir_version・name・triggers・nodes・edges を持つオブジェクト",
+};
+
+/// ir を断ったときに添える文（保存していないこと）。
+const IR_NOT_SAVED: &str = "保存していません。";
 
 /// 保存する IR を読む。オブジェクトのほか、JSON として読むとオブジェクトになる文字列も受ける（モデルは大きな IR を
-/// JSON の文字列にして送ることがある・GAP-119）。読んだ後は、オブジェクトで来たときと同じ検証（大きさの上限を含む）と
-/// 保存の道を通る。省いた・null は必須の誤り、ほかは直し方を言って断る。
+/// JSON の文字列にして送ることがある・GAP-119）。読み方はほかの道具の object の引数と同じ
+/// （[`crate::tool_args`]・GAP-130）。読んだ後は、オブジェクトで来たときと同じ検証（大きさの上限を含む）と保存の道を
+/// 通る。省いた・null は必須の誤り、ほかは直し方を言って断る。
 fn ir_of(input: &serde_json::Value) -> Result<serde_json::Value, ToolError> {
     use serde_json::Value;
     match input.get("ir") {
         None | Some(Value::Null) => Err(ToolError::Invalid("ir（object）は必須です".into())),
-        Some(ir @ Value::Object(_)) => Ok(ir.clone()),
-        Some(Value::String(raw)) => match serde_json::from_str::<Value>(raw) {
-            Ok(ir @ Value::Object(_)) => Ok(ir),
-            Ok(_) => Err(ToolError::Invalid(IR_NOT_OBJECT.into())),
-            Err(e) => Err(ToolError::Invalid(format!(
-                "ir の文字列を JSON として読めませんでした（{e}）。{IR_NOT_OBJECT}"
-            ))),
+        Some(ir) => match IR_ARG.read(ir) {
+            Ok(None) => Ok(ir.clone()),
+            Ok(Some(parsed)) => Ok(parsed),
+            Err(msg) => Err(ToolError::Invalid(format!("{msg}{IR_NOT_SAVED}"))),
         },
-        Some(_) => Err(ToolError::Invalid(IR_NOT_OBJECT.into())),
     }
 }
 
@@ -597,15 +601,19 @@ mod tests {
             other => panic!("{input} は断る: {other:?}"),
         };
         // 壊れた文字列（途中で切れた）は、どこで読めなくなったかと直し方を言う。
+        let not_object = format!("{}{IR_NOT_SAVED}", IR_ARG.not_object());
         let broken = refused(json!({ "ir": r#"{"ir_version": 1, "name": "wf", "nodes": ["# }));
         assert!(
             broken.starts_with("ir の文字列を JSON として読めませんでした（")
                 && broken.contains("line 1 column")
-                && broken.ends_with(IR_NOT_OBJECT),
+                && broken.ends_with(&not_object),
             "{broken}"
         );
-        assert!(IR_NOT_OBJECT
-            .starts_with("ir は JSON の文字列にせず、オブジェクトのまま渡してください"));
+        assert_eq!(
+            not_object,
+            "ir は JSON の文字列にせず、オブジェクトのまま渡してください\
+             （ir_version・name・triggers・nodes・edges を持つオブジェクト）。保存していません。"
+        );
         // 配列・文字列・数の JSON の文字列と、オブジェクトでない値。
         for bad in [
             json!(format!("[{ir}]")),
@@ -615,7 +623,7 @@ mod tests {
             json!(12),
             json!(true),
         ] {
-            assert_eq!(refused(json!({ "ir": bad })), IR_NOT_OBJECT, "{bad}");
+            assert_eq!(refused(json!({ "ir": bad })), not_object, "{bad}");
         }
         for missing in [json!({}), json!({ "ir": null })] {
             assert_eq!(refused(missing), "ir（object）は必須です");

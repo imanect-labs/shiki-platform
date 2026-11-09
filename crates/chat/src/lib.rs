@@ -58,6 +58,8 @@ pub mod stop_reason;
 pub mod store;
 /// SSE の生成イベント（ワイヤ形式）。`model` から再エクスポートしている。
 pub mod stream_event;
+/// 道具の object の引数の受け口（JSON の文字列で来たものを 1 段だけ読む・GAP-130）。
+pub(crate) mod tool_args;
 pub mod worker;
 pub mod workflow_search_tool;
 pub mod workflow_tool;

@@ -1045,3 +1045,111 @@ async fn chat_run_answers_pending_expenses_by_amount_within_speaker_permissions(
         "見えるテーブルが無い人に data_query は提示されない"
     );
 }
+
+/// data_query の query と data_record_write の data は、object でも JSON の文字列でも同じに動く（文字列は 1 段だけ
+/// 読み、object と同じ検証を通る）。壊れた文字列・配列の文字列は、object のまま渡すよう言って断る（書き込まない・
+/// 道具で共通の受け口・GAP-130・D-186）。
+#[tokio::test]
+async fn object_args_may_come_as_json_strings() {
+    let Some((pool, fga, base_url, store_id)) = setup_with_store().await else {
+        return;
+    };
+    let f = fixture(pool, fga).await;
+    let carol = ctx(&f.tenant, "carol");
+    let alice = ctx(&f.tenant, "alice");
+    let query = DataQueryTool::new(f.data.clone(), tools_for(&f, &carol).await);
+    let write = DataRecordWriteTool::new(f.data.clone(), tools_for(&f, &alice).await);
+    let with_query = |q: Value| json!({ "table": "経費", "query": q });
+    let q = llm_input()["query"].clone();
+    let by_object = query.call(&carol, with_query(q.clone()), None).await;
+    let by_string = query
+        .call(&carol, with_query(json!(q.to_string())), None)
+        .await;
+    let query_broken = query
+        .call(&carol, with_query(json!(r#"{"filter": {"cmp": "#)), None)
+        .await;
+    let query_array = query
+        .call(&carol, with_query(json!(format!("[{q}]"))), None)
+        .await;
+    // 文字列で読んだ query も、object と同じ検証（未知のキー）を通る。
+    let query_unknown = query
+        .call(&carol, with_query(json!(r#"{"limitt": 5}"#)), None)
+        .await;
+    let create = |data: Value| json!({ "table": "経費", "op": "create", "data": data });
+    let row = json!({ "applicant": "alice", "amount": 77, "status": "承認待ち", "title": "文字列の申請" });
+    let created_by_object = write.call(&alice, create(row.clone()), None).await;
+    let created_by_string = write
+        .call(&alice, create(json!(row.to_string())), None)
+        .await;
+    let write_broken = write
+        .call(&alice, create(json!(r#"{"amount": "#)), None)
+        .await;
+    let write_array = write
+        .call(&alice, create(json!(format!("[{row}]"))), None)
+        .await;
+    let stored = f
+        .data
+        .list_records(
+            &alice,
+            f.table_id,
+            &data::ListRecordsOptions::default(),
+            None,
+        )
+        .await
+        .map(|p| {
+            p.items
+                .iter()
+                .filter(|r| r.data["title"] == "文字列の申請")
+                .count()
+        });
+    f.data.purge_tenant(&f.tenant).await.expect("purge");
+    let r = reqwest::Client::new()
+        .delete(format!("{base_url}/stores/{store_id}"))
+        .send()
+        .await
+        .expect("OpenFGA delete store");
+    assert!(r.status().is_success(), "delete store: {}", r.status());
+
+    let by_object = by_object.expect("object");
+    let by_string = by_string.expect("string");
+    assert!(!by_object.is_error, "{}", by_object.content);
+    assert_eq!(by_string.content, by_object.content);
+    let invalid = |r: Result<agent_core::ToolOutcome, agent_core::ToolError>| match r {
+        Err(agent_core::ToolError::Invalid(msg)) => msg,
+        other => panic!("断る: {other:?}"),
+    };
+    let query_not_object = "query は JSON の文字列にせず、オブジェクトのまま渡してください\
+         （filter・sort・select・limit などを持つオブジェクト）。";
+    let broken = invalid(query_broken);
+    assert!(
+        broken.starts_with("query の文字列を JSON として読めませんでした（")
+            && broken.ends_with(query_not_object),
+        "{broken}"
+    );
+    assert_eq!(invalid(query_array), query_not_object);
+    let unknown = query_unknown.expect("unknown key");
+    assert!(
+        unknown.is_error && unknown.content.contains("limitt"),
+        "{}",
+        unknown.content
+    );
+
+    for created in [created_by_object, created_by_string] {
+        let created = created.expect("create");
+        assert!(
+            !created.is_error && created.content.starts_with("レコードを作成しました"),
+            "{}",
+            created.content
+        );
+    }
+    let data_not_object =
+        "data は JSON の文字列にせず、オブジェクトのまま渡してください（列の参照名 → 値）。";
+    let broken = invalid(write_broken);
+    assert!(
+        broken.starts_with("data の文字列を JSON として読めませんでした（")
+            && broken.ends_with(data_not_object),
+        "{broken}"
+    );
+    assert_eq!(invalid(write_array), data_not_object);
+    assert_eq!(stored.expect("list"), 2, "断ったものは書き込まない");
+}
