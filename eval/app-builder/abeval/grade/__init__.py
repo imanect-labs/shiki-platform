@@ -20,4 +20,7 @@
 # 10: emit_workflow の `ir` が JSON の文字列でも、読むとオブジェクトになれば IR として数える（製品が 7m〔vf〕から
 #     受ける・GAP-119。Mode A の生成の分け方と Mode B の S6 の `abeval.no_ir`）。記録にある文字列の ir はどれも
 #     読めないので、前の結果の数は変わらない。
-GRADER_VERSION = 10
+# 11: stub で流した、期待が succeeded の run_case で、run は成功したのに失敗した step（map の
+#     `on_item_error: collect` の項目・`on_error: continue`）を S2d に数える（`failed_in_success`・BUG-267。Mode A は
+#     書くはずの行を 1 行も書かない IR を見出しで通していた）。
+GRADER_VERSION = 11

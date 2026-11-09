@@ -15,6 +15,12 @@
 - **想定外の skipped**（`unexpected_skip`）: 成功した run の中で、分岐（出口が 2 つ以上のノード）でも error・timeout の
   出口でもない線の先が飛ばされた step（分岐でない上流が `out` を取らなかった・`on_error: continue` で失敗した）。
   飛ばされた上流から続けて飛ばされたものは、元の 1 つだけを数える。期待が succeeded の run_case だけで見る。
+- **成功した run の中の失敗**（`failed_in_success`）: stub で流した、期待が succeeded の run_case で、run は成功した
+  のに失敗した step がある（map の `on_item_error: collect` で項目が失敗した・`on_error: continue` で失敗した）。
+  製品はこれらを処理済みの失敗として run を成功にするが、正解の IR はどの run_case でも step を失敗させないので、
+  書くはずの行を書かなかった IR を見出しで通さない（Mode A には照合〔S4〕が無い・BUG-267）。ノードごとに 1 つ
+  数える（map の項目がいくつ失敗しても 1 つ）。項目の失敗を期待する run_case は課題集に無い（期待が succeeded で
+  ない run_case では見ない）。
 - **llm_dependent** の run_case を stub で流したときは、検査を最初の LLM のノード（llm.invoke・ai.decide・
   agent.invoke）まで（そのノードを含む）に限る。LLM の後ろの動きは stub の出力で決まるので見ない。行とファイルも
   見ない（どのノードが書いたかを決められないため）。
@@ -461,6 +467,36 @@ def unexpected_status(run: RunRecord, expected: str, last: bool) -> list[Finding
     ]
 
 
+def _error_code(error: Any) -> str:
+    code = error.get("code") if isinstance(error, Mapping) else None
+    return code if isinstance(code, str) and code else "unknown"
+
+
+def failed_in_success(run: RunRecord, allowed: set[str] | None = None) -> list[Finding]:
+    """成功した run の中で失敗した step（ノードごとに 1 つ・map の項目の失敗はまとめて数える）。
+
+    LLM の手前に限るとき（`allowed`）は、手前のノードの失敗だけを数える（後ろは stub の出力で決まる）。
+    """
+    if run.status != "succeeded":
+        return []
+    by_node: dict[str, list[StepRecord]] = {}
+    for s in run.steps:
+        if s.status == "failed" and (allowed is None or s.node_id in allowed):
+            by_node.setdefault(s.node_id, []).append(s)
+    out = []
+    for node, steps in by_node.items():
+        codes = "・".join(sorted({_error_code(s.error) for s in steps}))
+        where = steps[0].step_path + (f" ほか {len(steps) - 1} 件" if len(steps) > 1 else "")
+        out.append(
+            Finding(
+                "failed_in_success",
+                node,
+                f"run は成功したが {node} が失敗した（{where}・{codes}）",
+            )
+        )
+    return out
+
+
 @dataclass
 class DynamicGrade:
     findings: list[Finding]
@@ -498,6 +534,7 @@ def grade_dynamic(
     delivery: bool = True,
     expect_status: str | None = None,
     skips: bool = False,
+    failures: bool = False,
 ) -> DynamicGrade:
     """run_case の記録から dead edge・差し込みの残り・入力が届かない・想定外の状態と skipped を見つける。
 
@@ -506,6 +543,7 @@ def grade_dynamic(
     のときは、打ち切りで見えない入力（`unobservable_inputs`）を外して見る。
     `expect_status` は run の状態の期待（None は見ない・stub で流した llm_dependent でない run_case に渡す）。
     `skips` は想定外の skipped を見るか（期待が succeeded の run_case）。
+    `failures` は成功した run の中の失敗を見るか（stub で流した、期待が succeeded の run_case）。
     役割（`RunRecord.workflow`・無ければ main）ごとに IR・出口・期待を引く。
     """
     findings: list[Finding] = []
@@ -525,5 +563,7 @@ def grade_dynamic(
             findings += unexpected_status(run, expect_status, last=i == len(rec.runs) - 1)
         if skips:
             findings += unexpected_skips(ir, ports, run, allowed)
+        if failures:
+            findings += failed_in_success(run, allowed)
     findings += leftovers(rec, allowed_any)
     return DynamicGrade(findings, [r.status for r in rec.runs], restrict)

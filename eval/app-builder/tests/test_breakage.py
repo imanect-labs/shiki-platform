@@ -3,12 +3,15 @@
 - 「入力が届かない」は stub の run だけで見る（実モデルの出力は入力の全文を含まない）。
 - stub で流した llm_dependent でない run_case の状態が期待と違えば S2d（想定外の状態）。
 - 成功した run の中で、分岐でも error の出口でもない線の先が飛ばされたら S2d（想定外の skipped）。
+- stub で流した、期待が succeeded の run_case で、成功した run の中に失敗した step があれば S2d（成功した run の
+  中の失敗・map の `on_item_error: collect`・BUG-267）。
 - 基盤の失敗で流せなかった run_case があれば、S2d・S3・S4 と見出しを決めない（None）。
 """
 
 from __future__ import annotations
 
 import copy
+import dataclasses
 import datetime as dt
 
 import pytest
@@ -17,7 +20,9 @@ import recorded
 from abeval import grading
 from abeval.grade import dynamic
 from abeval.grade.dynamic import CaseRecord, RunRecord, StepRecord, unexpected_skips
+from abeval.metrics import failure_breakdown
 from abeval.run_cases import grade_case
+from abeval.tasks import offline_irs
 
 SUMMARY = "・新しい予約表で受け付ける\n・前日の 17 時までに入れる\n・取り消しも予約表で行う"
 
@@ -210,7 +215,104 @@ def test_v0_from_port_next_is_also_an_unexpected_skip():
     assert {"dead_edge", "unexpected_skip"} <= codes
 
 
-@pytest.mark.parametrize("name", ["unexpected_status", "unexpected_skips"])
+# --- 成功した run の中の失敗（BUG-267） ---
+
+MAP_ERROR = {"attempt": 1, "code": "expr_resolve_error", "retryable": False}
+
+
+def _kpi_collect():
+    """APP-08 の正解の map を `on_item_error: collect` にし、項目の参照を壊した IR（E1 の vf で当たった形）。"""
+    task, case = _case("app08-weekly-kpi", "last_week")
+    ir = copy.deepcopy(offline_irs(task)["main"])
+    for n in ir["nodes"]:
+        if n["id"] == "per_region":
+            n["params"]["on_item_error"] = "collect"
+        if n["id"] == "save_kpi":
+            n["params"]["data"]["deals"] = {"$from": "each", "path": "/item/count"}
+    ports = recorded.lint()["app08-weekly-kpi/main"].node_ports
+    return task, case, {"main": ir}, {"main": {k: list(v) for k, v in ports.items()}}
+
+
+def _kpi_run(items_fail: bool, status: str = "succeeded") -> CaseRecord:
+    steps = [StepRecord("last_week", "last_week", "succeeded", ["out"], {"start": "2026-11-02"})]
+    steps.append(StepRecord("by_region", "by_region", "succeeded", ["out"], {"groups": []}))
+    for i in range(3):
+        if items_fail:
+            steps.append(
+                StepRecord(f"per_region[{i}].save_kpi", "save_kpi", "failed", [], None, MAP_ERROR)
+            )
+        else:
+            steps.append(
+                StepRecord(f"per_region[{i}].save_kpi", "save_kpi", "succeeded", ["out"], {})
+            )
+    steps += [
+        StepRecord("per_region", "per_region", "succeeded", ["out"], {"items": [], "errors": []}),
+        StepRecord("summarize", "summarize", "succeeded", ["out"], {"text": "回答: 報告"}),
+        StepRecord(
+            "save_report", "save_report", "succeeded", ["out"], {"name": "KPI-2026-11-02.md"}
+        ),
+    ]
+    run = RunRecord("r", status, {}, steps, None, "2026-11-09T09:00:00+09:00")
+    return CaseRecord([run], {}, {}, [], None, "2026-11-09T00:00:00+00:00")
+
+
+def test_failed_map_items_in_a_succeeded_run_are_s2d():
+    task, case, irs, ports = _kpi_collect()
+    rec = _kpi_run(items_fail=True)
+    g = grade_case(task, case, rec, irs, ports, stub=True, now=_now(rec))
+    found = g["dynamic"]["findings"]
+    # 項目がいくつ失敗してもノードごとに 1 つ（失敗の内訳を項目の数で膨らませない）。
+    assert [(f["code"], f["node_id"]) for f in found] == [("failed_in_success", "save_kpi")]
+    assert "per_region[0].save_kpi ほか 2 件" in found[0]["detail"]
+    assert "expr_resolve_error" in found[0]["detail"]
+    assert g["s3"] is True and g["s2d"] is True
+    assert grading.headline(True, False, g["s2d"]) is False
+    # 失敗の内訳の動的な検査にも出る。
+    assert failure_breakdown([{"stub": {"cases": [g]}}])["dynamic"] == {"failed_in_success": 1}
+
+
+def test_a_run_without_failed_steps_is_not_s2d():
+    task, case, irs, ports = _kpi_collect()
+    rec = _kpi_run(items_fail=False)
+    g = grade_case(task, case, rec, irs, ports, stub=True, now=_now(rec))
+    assert g["dynamic"]["findings"] == [] and g["s2d"] is False
+
+
+def test_failures_are_not_counted_where_they_are_expected_or_unobservable():
+    task, case, irs, ports = _kpi_collect()
+    rec = _kpi_run(items_fail=True)
+    # 実モデルの run_case（Mode B）では見ない（書いた行は照合子の S4 が見る）。
+    g = grade_case(task, case, rec, irs, ports, stub=False, now=_now(rec))
+    assert "failed_in_success" not in {f["code"] for f in g["dynamic"]["findings"]}
+    # 失敗を期待する（状態を見ない）run_case では見ない。
+    any_case = dataclasses.replace(case, expect={**case.expect, "status": "any"})
+    g = grade_case(task, any_case, rec, irs, ports, stub=True, now=_now(rec))
+    assert g["dynamic"]["findings"] == []
+    # 失敗した run は想定外の状態で数える（成功した run の中の失敗とは重ねない）。
+    rec_failed = _kpi_run(items_fail=True, status="failed")
+    g = grade_case(task, case, rec_failed, irs, ports, stub=True, now=_now(rec))
+    assert [f["code"] for f in g["dynamic"]["findings"]] == ["unexpected_status"]
+    # LLM の手前に限るときは、手前のノードの失敗だけを数える（後ろは stub の出力で決まる）。
+    run = rec.runs[0]
+    assert dynamic.failed_in_success(run, allowed={"last_week", "by_region"}) == []
+    assert [f.node_id for f in dynamic.failed_in_success(run, allowed={"save_kpi"})] == ["save_kpi"]
+
+
+def test_a_continued_failure_is_counted_with_its_skip():
+    """`on_error: continue` で失敗して後ろが飛ばされた run は、失敗と飛ばされた先の両方で数える。"""
+    run = _run(
+        {
+            "a": ("failed", ["error"]),
+            "h": ("succeeded", ["out"]),
+            "b": ("skipped", []),
+            "c": ("skipped", []),
+        }
+    )
+    assert [f.node_id for f in dynamic.failed_in_success(run)] == ["a"]
+    assert [f.node_id for f in unexpected_skips(IR, PORTS, run)] == ["b"]
+
+
+@pytest.mark.parametrize("name", ["unexpected_status", "unexpected_skips", "failed_in_success"])
 def test_disabling_the_runtime_detectors_lets_breakage_through(monkeypatch, name):
     task, case = _case("app03-weekly-summary", "last_week")
     irs, ports, rec = recorded.run("app03-weekly-summary", "oracle", "last_week")
@@ -224,9 +326,17 @@ def test_disabling_the_runtime_detectors_lets_breakage_through(monkeypatch, name
             for n in irs["main"]["nodes"][1:]
             if not n.get("parent")
         ]
+    if name == "failed_in_success":
+        task, case, irs, ports = _kpi_collect()
+        broken = rec = _kpi_run(items_fail=True)
     g = grade_case(task, case, broken, irs, ports, stub=True, now=_now(rec))
     assert g["s2d"] is True
     monkeypatch.setattr(dynamic, name, lambda *a, **k: [])
+    if name == "unexpected_skips":
+        # 失敗した最初のノードは「成功した run の中の失敗」でも捕まる（飛ばされた先は想定外の skipped だけ）。
+        g = grade_case(task, case, broken, irs, ports, stub=True, now=_now(rec))
+        assert [f["code"] for f in g["dynamic"]["findings"]] == ["failed_in_success"]
+        monkeypatch.setattr(dynamic, "failed_in_success", lambda *a, **k: [])
     g = grade_case(task, case, broken, irs, ports, stub=True, now=_now(rec))
     assert g["s2d"] is False, "検査を止めると壊れた実行が見逃される（検査が効いている）"
 

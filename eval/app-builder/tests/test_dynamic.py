@@ -194,6 +194,7 @@ def _grade(task_id: str, variant: str, case_id: str):
         rec,
         restrict=case.llm_dependent,
         delivery=case.expect.get("flow_through", True),
+        failures=case.status == "succeeded",
     )
 
 
