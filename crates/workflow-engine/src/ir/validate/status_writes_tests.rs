@@ -202,3 +202,76 @@ fn validate_names_the_status_column_once() {
         vec![(STATUS_NOT_WRITABLE, "add", "/params/add/status")]
     );
 }
+
+/// まとめて登録の行（GAP-129）: id のある行と、同じレコードを探す列のある行の data に状態の列を書くと、値によらず止める
+/// （書き換えるときに必ず断られる）。追加の行は、最初の状態でない状態を書くと止める（最初の状態・書かない・参照の値は
+/// 通す）。
+/// id が null の行は追加の行。行の全体・行の data・行の配列を参照で決めるもの、状態の列が読めない表・状態の進め方の
+/// 無い表は照らさない。
+#[test]
+fn bulk_rows_follow_the_upsert_rule() {
+    let id = "00000000-0000-0000-0000-00000000aaaa";
+    let from = json!({ "$from": "input", "path": "/x" });
+    let rows = json!([
+        { "data": { "title": "a" } },
+        { "data": { "title": "b", "status": "申請中" } },
+        { "data": { "status": "承認済み" } },
+        { "id": id, "data": { "status": "申請中" } },
+        { "id": null, "data": { "status": "申請中" } },
+        { "id": from, "data": { "title": "c", "status": "申請中" } },
+        { "data": { "status": from } },
+        from,
+        { "data": from }
+    ]);
+    let bulk = |id: &str, table: &str, extra: serde_json::Value| {
+        let mut params = json!({ "table": table, "rows": rows.clone() });
+        if let (Some(p), Some(e)) = (params.as_object_mut(), extra.as_object()) {
+            p.extend(e.clone());
+        }
+        json!({ "id": id, "type": "data.bulk_upsert", "params": params })
+    };
+    let errors = run(json!([
+        bulk("plain_rows", FLOW, json!({})),
+        bulk("keyed", FLOW, json!({ "match_on": "code" })),
+        { "id": "dynamic", "type": "data.bulk_upsert", "params": { "table": FLOW, "rows": from } },
+        bulk("masked", MASKED, json!({})),
+        bulk("plain", PLAIN, json!({}))
+    ]));
+    let at = |i: usize| format!("/params/rows/{i}/data/status");
+    let want = [
+        ("plain_rows", at(2)),
+        ("plain_rows", at(3)),
+        ("plain_rows", at(5)),
+        ("keyed", at(1)),
+        ("keyed", at(2)),
+        ("keyed", at(3)),
+        ("keyed", at(4)),
+        ("keyed", at(5)),
+        // 書き換えでは値によらず状態の列が断られる（値を参照で決めても止める）。
+        ("keyed", at(6)),
+    ];
+    let want: Vec<(&str, &str, &str)> = want
+        .iter()
+        .map(|(n, p)| (STATUS_NOT_WRITABLE, *n, p.as_str()))
+        .collect();
+    assert_eq!(located(&errors), want);
+    let m = |i: usize| errors[i].message.as_str();
+    assert!(
+        m(0).starts_with("「データをまとめて登録」の 3 行目で追加するレコードの状態は最初の状態「申請中」に決まります。")
+            && m(0).contains("「状態」（status）は書かないか「申請中」にし"),
+        "{}",
+        m(0)
+    );
+    assert!(
+        m(1).starts_with("「状態」（status）は状態の列なので、「データをまとめて登録」の 4 行目（id のある行）の data に書けません")
+            && m(1).contains("「状態を進める」のブロックを使ってください"),
+        "{}",
+        m(1)
+    );
+    assert!(
+        m(3).contains("2 行目の data に書けません（「同じレコードを探す列」で見つかったレコードを書き換えるときに必ず断られます）")
+            && m(3).contains("追加したレコードは最初の状態「申請中」になり"),
+        "{}",
+        m(3)
+    );
+}

@@ -213,6 +213,11 @@ fn description_explains_the_notation_the_engine_implements() {
             && d.contains("data.record.create で追加したレコードは最初の状態になるので、状態の列は書かないか、最初の状態を書く"),
         "{d}"
     );
+    // まとめて登録の行も同じ決まり（保存時に止める・GAP-129）。
+    assert!(
+        d.contains("data.bulk_upsert の rows の行の data も同じで、id のある行と、match_on を書いたときの行には状態の列を書かず"),
+        "{d}"
+    );
     // data.query に書ける列は data_schema の印で選ぶ（索引の無い列は保存で止まる・BUG-244）。まとめる列と集計の列は
     // さらに絞られる（束縛の group_key_fits・metric_fits と同じ）。
     assert!(

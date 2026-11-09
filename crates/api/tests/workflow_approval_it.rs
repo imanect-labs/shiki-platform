@@ -5109,3 +5109,121 @@ async fn status_writes_outside_a_transition_are_refused_on_save() {
     env.cleanup().await;
     env.delete_store().await;
 }
+
+/// GAP-129: まとめて登録（data.bulk_upsert）の rows にリテラルで書いた行の状態の列は、BUG-251 の追加と更新と同じ決まりで
+/// 保存時に `ir.status_not_writable` で止める（検証 API・保存 API・emit_workflow のどれでも）。最初の状態でない状態で
+/// 追加する行と、id のある（書き換える）行に状態を書いた行は、data の取込でも同じ理由で断られる（作成時の状態の決まりと、
+/// 状態は遷移でだけ変えられる決まり）。最初の状態を書く・書かない追加の行は通る。状態の列を読めない保存者（bob）には
+/// 言わない（無い列を書いたときと同じ答え）。
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bulk_rows_writing_the_status_are_refused_on_save() {
+    let _serial = SERIAL.lock().await;
+    let Some(env) = setup().await else { return };
+    let expense = env.expense_table().await;
+    let masked = env.masked_fsm_table("status").await;
+    let tool = env.emit_tool();
+    let existing = env
+        .data
+        .create_record(&env.alice, expense, json!({ "title": "x" }), None)
+        .await
+        .unwrap();
+    let wf = |table: Uuid, rows: Value| {
+        json!({
+            "ir_version": 1, "name": "bulk-status",
+            "triggers": [{ "kind": "interactive" }],
+            "nodes": [{ "id": "load", "type": "data.bulk_upsert",
+                        "params": { "table": table.to_string(), "rows": rows } }],
+            "edges": []
+        })
+    };
+    let rows = json!([
+        { "data": { "title": "a", "status": "approved" } },
+        { "id": existing.id.to_string(), "data": { "status": "draft" } },
+        { "data": { "title": "b", "status": "draft" } },
+        { "data": { "title": "c" } }
+    ]);
+    let refused = |paths: &[&str]| -> Vec<(String, String)> {
+        paths
+            .iter()
+            .map(|p| ("ir.status_not_writable".to_string(), (*p).to_string()))
+            .collect()
+    };
+    assert_eq!(
+        env.v4_codes(&env.alice, &wf(expense, rows.clone())).await,
+        refused(&["/params/rows/0/data/status", "/params/rows/1/data/status"])
+    );
+    // data の取込も、同じ 2 行を同じ理由で断る（ほかの 2 行は入る）。
+    let bulk: Vec<data::BulkUpsertRow> = rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| data::BulkUpsertRow {
+            key: None,
+            record_id: r["id"].as_str().map(|s| Uuid::parse_str(s).unwrap()),
+            expected_rev: None,
+            data: r["data"].clone(),
+        })
+        .collect();
+    let import = env
+        .data
+        .start_bulk_upsert(
+            &env.alice,
+            expense,
+            bulk,
+            data::BulkImportOptions::default(),
+            None,
+        )
+        .await
+        .unwrap();
+    env.data
+        .run_bulk_import(&env.tenant, expense, import)
+        .await
+        .unwrap();
+    let errors = env
+        .data
+        .bulk_import_errors(&env.alice, expense, import, 0, 100)
+        .await
+        .unwrap();
+    let messages: Vec<&str> = errors.iter().map(|e| e.message.as_str()).collect();
+    assert_eq!(messages.len(), 2, "{messages:?}");
+    assert!(
+        messages
+            .iter()
+            .any(|m| m.contains("作成時の状態は「draft」だけです"))
+            && messages
+                .iter()
+                .any(|m| m.contains("は状態の遷移でだけ変えられます")),
+        "{messages:?}"
+    );
+    // 保存 API と emit_workflow も止め、直し方を言う。
+    let answers = env
+        .v4_answers(&tool, &env.alice, &wf(expense, rows), "")
+        .await;
+    assert!(
+        answers[0].contains("ir.status_not_writable")
+            && answers[0].contains("最初の状態「draft」に決まります")
+            && answers[0].contains("2 行目（id のある行）"),
+        "{}",
+        answers[0]
+    );
+    assert!(
+        answers[1].starts_with("400 ") && answers[1].contains("ir.status_not_writable"),
+        "{}",
+        answers[1]
+    );
+    assert!(
+        answers[2].starts_with("true ") && answers[2].contains("ir.status_not_writable"),
+        "{}",
+        answers[2]
+    );
+    // 状態の列を読めない bob には言わない（無い列を書いたときと同じ・どちらも保存時には止まらない）。
+    let seen = json!([{ "data": { "status": "approved" } }]);
+    let ghost = json!([{ "data": { "zz_nope": "approved" } }]);
+    assert_eq!(
+        env.v4_codes(&env.bob, &wf(masked, seen.clone())).await,
+        env.v4_codes(&env.bob, &wf(masked, ghost)).await,
+    );
+    assert_eq!(env.v4_codes(&env.bob, &wf(masked, seen)).await, vec![]);
+    env.cleanup().await;
+    env.delete_store().await;
+}

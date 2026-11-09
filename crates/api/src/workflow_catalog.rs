@@ -205,7 +205,8 @@ pub async fn build_catalog_from(
 
 /// 承認（human.approval）・状態を進める（data.transition）・状態の変化のきっかけ・同じレコードを探す列と足す数
 /// （キーで追加か更新・まとめて登録の照合・レコードの更新の足す数・GAP-16）・データを検索の列（BUG-244）・状態の列への
-/// 書き込み（レコードの更新と追加・BUG-251）が束縛するテーブルを保存者の見え方で引いて、V4 の材料にする（GAP-08・BUG-105）。
+/// 書き込み（レコードの更新と追加・BUG-251、まとめて登録の行・GAP-129）が束縛するテーブルを保存者の見え方で引いて、V4 の
+/// 材料にする（GAP-08・BUG-105）。
 /// データを検索のリンクの条件と結合が辿る先も、同じ見え方で引き足す（GAP-129）。
 ///
 /// IR にそのどれも無ければ `None`（照合しない）。見えないテーブルは入れない（V4 が「見つからないか状態の進め方が
@@ -246,6 +247,12 @@ pub async fn fsm_tables(
         })
         .filter_map(|t| t.pointer("/scope/table")?.as_str())
         .collect();
+    // まとめて登録の、リテラルで書いた行（行に書いた状態の列を照らす・GAP-129）。
+    fn literal_rows(n: &serde_json::Value) -> Option<&Vec<serde_json::Value>> {
+        n.pointer("/params/rows")
+            .and_then(serde_json::Value::as_array)
+            .filter(|rows| !rows.is_empty())
+    }
     // 同じレコードを探す列（重複を許さない列）と足す数（数の列）を照らすブロック（GAP-16）。
     let keyed = |n: &serde_json::Value| {
         let has = |at: &str| {
@@ -256,7 +263,8 @@ pub async fn fsm_tables(
             })
         };
         of_type(n, NodeType::DataRecordUpsert)
-            || (of_type(n, NodeType::DataBulkUpsert) && has("/params/match_on"))
+            || (of_type(n, NodeType::DataBulkUpsert)
+                && (has("/params/match_on") || literal_rows(n).is_some()))
             // 更新の変更する値・足す数に書いた状態の列（BUG-251）。
             || (of_type(n, NodeType::DataRecordUpdate)
                 && (has("/params/add") || has("/params/patch")))
@@ -265,10 +273,17 @@ pub async fn fsm_tables(
             // データを検索の絞り込み・並べ替え・まとめ・集計の列（BUG-244）。
             || (of_type(n, NodeType::DataQuery) && has("/params/query"))
     };
-    // レコードを追加するブロックのテーブル（作成時の状態を引く・BUG-251）。
+    // レコードを追加するブロックのテーブル（作成時の状態を引く・BUG-251）。まとめて登録は、id の無い（追加するかも
+    // しれない）行をリテラルで書いたときだけ（GAP-129）。
     let adding: std::collections::BTreeSet<uuid::Uuid> = nodes()
         .filter(|n| {
-            of_type(n, NodeType::DataRecordCreate) || of_type(n, NodeType::DataRecordUpsert)
+            of_type(n, NodeType::DataRecordCreate)
+                || of_type(n, NodeType::DataRecordUpsert)
+                || (of_type(n, NodeType::DataBulkUpsert)
+                    && literal_rows(n).is_some_and(|rows| {
+                        rows.iter()
+                            .any(|r| r.get("id").is_none_or(serde_json::Value::is_null))
+                    }))
         })
         .filter_map(|n| n.pointer("/params/table")?.as_str())
         .filter_map(|t| uuid::Uuid::parse_str(t).ok())
