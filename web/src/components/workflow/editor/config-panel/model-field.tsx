@@ -13,6 +13,9 @@
 ///   保存済みのモデルが既定と違えば赤字で知らせ、「組織の既定に戻す」を出す
 /// - 読み込み中: Skeleton
 /// - 一覧を取れない: 自由入力に戻し、注意書きを出す（空欄で組織の既定・保存時の照合はサーバが行う）
+/// - 使えるモデルが 0 件: 管理者に相談するよう言う（一覧は編集する人のプロバイダの制限を通すので、組織が公開して
+///   いても 0 件になる。どちらの理由でも当たる言い方にする・D-169）。判定用のモデルの欄が空なら「選んでください」の
+///   代わりにこの文を誤りとして出す（選べるものが無い）
 /// - 保存済みのモデルが一覧に無い: 「このモデルは使えません: X」を赤字で出す（値は消さない）
 ///
 /// 「AI で判定」（ai.decide）は `modality="decision"` で使う。一覧は判定用のモデルだけ
@@ -93,18 +96,21 @@ export function ModelField({
     const hint = decision
       ? state.status === "error"
         ? "判定用のモデルの一覧を読み込めませんでした。管理者が登録した判定用のモデルの ID をそのまま書いてください"
-        : "使える判定用のモデルがありません。管理者に、AI の設定で判定用のモデルを公開してもらってください"
+        : "使える判定用のモデルがありません。管理者に相談してください"
       : state.status === "error"
         ? "モデルの一覧を読み込めませんでした。空欄なら組織の既定で動きます。指定するときは管理者が登録したモデル ID をそのまま書いてください"
-        : "使えるモデルがありません。管理者に AI の設定を確かめてもらってください";
+        : "使えるモデルがありません。管理者に相談してください";
+    // 判定用のモデルの欄が空のとき、選べるモデルが 0 件なのに「選んでください」と言っても直せないので、0 件の文を
+    // 誤りとして出す（判定はモデルが無いと動かない・D-169）。
+    const shown = decision && !value && state.status !== "error" ? hint : error;
     return (
-      <Field label={label} error={error} hint={hint}>
+      <Field label={label} error={shown} hint={hint}>
         <Input
           value={value ?? ""}
           onChange={(e) => onChange(e.target.value || undefined)}
           placeholder={decision ? "判定用のモデルの ID" : "空欄で組織の既定"}
           aria-label="モデル ID"
-          aria-invalid={error ? true : undefined}
+          aria-invalid={shown ? true : undefined}
           className="h-8 font-mono text-xs max-md:text-base"
         />
       </Field>

@@ -4,6 +4,7 @@ import { cleanupQueue, loginViaKeycloak, pinStubOrgDefault, removeWorkflowApi, u
 
 /// テストで作ったもの（ワークフロー）を、テストの後に片付ける（失敗したテストでも走る・BUG-126）。
 const cleanup = cleanupQueue();
+const SHOTS = process.env.E2E_SHOTS_DIR;
 test.afterEach(() => cleanup.run());
 
 
@@ -13,6 +14,8 @@ test.afterEach(() => cleanup.run());
 /// - 先頭の「組織の既定に従う（現在: …）」を選ぶと、保存した IR から model が消える。
 /// - 省略したブロックを実行すると、step の出力の model が組織の既定（Auto なら振り先）になる。
 /// - 組織がモデルの選択を禁じていれば、モデルの行は選べず、既定と違うモデルは外すよう促す。
+/// - 使えるモデルが 0 件なら（組織が公開していない・編集する人のプロバイダの制限で外れた）、どちらでも当たる言い方で
+///   管理者に相談するよう言う（判定用のモデルの欄も・D-169）。
 /// 前提: compose の shiki-server が SHIKI__WORKFLOW__ENABLED=true・LLM は stub。
 
 type LlmModel = { id: string; label: string };
@@ -243,6 +246,85 @@ test("モデル: 組織がモデルの選択を禁じていると、モデルの
 
   await saveFlow(page);
   expect(await savedParams(page, id)).not.toHaveProperty("model");
+});
+
+/// 「AI に聞く」と「AI で判定」を 1 つずつ持つワークフロー（判定のモデルは空のまま・置いたばかりと同じ・D-83）。
+async function createLlmAndDecideFlow(page: Page): Promise<string> {
+  const name = uniqueName("wf-model-none");
+  const res = await page.request.post("/api/workflows", {
+    headers: await csrfHeader(page),
+    data: {
+      ir: {
+        ir_version: 1,
+        name,
+        display_name: name,
+        triggers: [{ kind: "interactive" }],
+        nodes: [
+          { id: "ask", type: "llm.invoke", label: "要約する", params: { prompt: "今日の予定をまとめてください" } },
+          {
+            id: "triage",
+            type: "ai.decide",
+            label: "問い合わせを判定",
+            params: {
+              model: "",
+              state: { $from: "input" },
+              questions: [{ key: "urgent", type: "boolean", instructions: "急ぎの問い合わせか" }],
+            },
+          },
+        ],
+        edges: [{ from: "ask", to: "triage" }],
+      },
+    },
+  });
+  expect(res.ok(), await res.text()).toBeTruthy();
+  const id = ((await res.json()) as { id: string }).id;
+  cleanup.add(() => removeWorkflowApi(page, id));
+  return id;
+}
+
+/// 使えるモデルが 0 件の一覧（応答だけを差し替える。組織が公開していないときも、編集する人のプロバイダの制限で
+/// 外れたときも同じ応答になる）。
+function noModels(models: LlmModels): LlmModels {
+  return { ...models, auto: null, models: [] };
+}
+
+test("モデル: 使えるモデルが無いときは、モデルの欄も判定用のモデルの欄も管理者に相談するよう言う", async ({ page }) => {
+  test.setTimeout(120_000);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await loginViaKeycloak(page);
+  const models = await workflowModels(page);
+  test.skip(!models, "LLM が構成されていない環境");
+  const id = await createLlmAndDecideFlow(page);
+  await page.route(isWorkflowModels, (route) => route.fulfill({ json: noModels(models!) }));
+  const panel = await openBlock(page, id);
+  await expect(panel.getByText("使えるモデルがありません。管理者に相談してください")).toBeVisible();
+  await expect(panel.getByLabel("モデル ID")).toHaveAttribute("placeholder", "空欄で組織の既定");
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/workflow-model-none-pc.png` });
+
+  const canvas = page.locator(".react-flow");
+  await canvas.getByText("問い合わせを判定").first().click();
+  await expect(panel.getByText("使える判定用のモデルがありません。管理者に相談してください")).toBeVisible();
+  // 組織が公開していないとは言わない（制限で外れた人にも当たる言い方）。
+  await expect(panel.getByText(/公開してもらって/)).toHaveCount(0);
+  if (SHOTS) await page.screenshot({ path: `${SHOTS}/workflow-decide-model-none-pc.png` });
+});
+
+test("スマホ: 使える判定用のモデルが無いときも、設定のシートで管理者に相談するよう言う", async ({ browser, page }) => {
+  test.setTimeout(180_000);
+  const phone = await phonePage(browser, page);
+  const models = await workflowModels(page);
+  test.skip(!models, "LLM が構成されていない環境");
+  const id = await createLlmAndDecideFlow(page);
+  await phone.route(isWorkflowModels, (route) => route.fulfill({ json: noModels(models!) }));
+  await phone.goto(`/workflows/${id}`);
+  const flow = phone.getByTestId("workflow-mobile-flow");
+  await expect(flow).toBeVisible({ timeout: 20_000 });
+  await flow.getByRole("button", { name: /問い合わせを判定/ }).filter({ hasText: "問い合わせを判定" }).click();
+  const sheet = phone.getByRole("dialog");
+  await expect(sheet.getByText("使える判定用のモデルがありません。管理者に相談してください")).toBeVisible();
+  expect(await sheet.evaluate((el) => el.scrollWidth <= el.clientWidth + 1)).toBe(true);
+  if (SHOTS) await phone.screenshot({ path: `${SHOTS}/workflow-decide-model-none-phone.png` });
+  await phone.context().close();
 });
 
 /// スマホ幅（設定は下からのシート）: シートの中に広げた一覧でも既定に従う行を選べ、横にはみ出さない。
