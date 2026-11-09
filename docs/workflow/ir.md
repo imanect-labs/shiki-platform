@@ -838,7 +838,7 @@ skip 伝播の**実行アルゴリズム**（どの TX でどう dead を伝播�
   書き、領域の中の `data.record.upsert`（か `data.record.create`）の `data` に列ごとの `{"$from": "each", "path": "/item/<CSV の列の
   名前>"}` を書く（SQL で列の名前を参照名にそろえたときは `/item` をそのまま書ける・要素は 1,000 件まで・§5.3）。それを超えるときは
   `script.run` で 1 行ずつ `{data: 行}` に包んでから `rows` に渡す（`script.run` の戻り値は 256 KB まで・[script.md](./script.md)
-  §4.3。包んだ行が超えるときは、行を分けて包む `script.run` を 2 つ置き、それぞれの結果を `data.bulk_upsert` に渡す・BUG-264）。AI の `emit_workflow` の説明文はこの順で教える。行の形の正は params の型 `DataBulkRow` で、実行はこの型で行を読み、
+  §4.3。包んだ行が超えるときは、戻り値の大きさから決めた数 N〔文言が言う〕に行を分けて包む `script.run` を N 個置き〔k 個目は全体の行の数から自分の範囲を計算する〕、それぞれの結果を別の `data.bulk_upsert` に渡す・BUG-264）。AI の `emit_workflow` の説明文はこの順で教える。行の形の正は params の型 `DataBulkRow` で、実行はこの型で行を読み、
   `emit_workflow` の説明文の params の形は、この型の宣言から `rows` に書く値の形（`rows の値 = Array<{ id?, rev?, key?, data }>`）を
   添える（`rows` は `ValueExpr` とだけ言うと行の形が伝わらない・GAP-131）。
 - **保存時の照合**（§8 V4）: `match_on` はテーブルで重複を許さない列（`unique`）であること（`ir.match_not_unique`。重複を許す列だと
