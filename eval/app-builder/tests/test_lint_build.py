@@ -27,6 +27,16 @@ SOURCES = (
     "crates/workflow-engine/examples/ir_lint.rs",
     "crates/data/src/query/field_use.rs",
 )
+# dep-info に載らないビルドのファイル（根の Cargo.toml・Cargo.lock・ツールチェーンと、一覧のソースのクレートの
+# Cargo.toml）と、一覧に無いクレートの Cargo.toml。
+MANIFESTS = (
+    "Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+    "crates/workflow-engine/Cargo.toml",
+    "crates/data/Cargo.toml",
+)
+UNRELATED_MANIFEST = "crates/api/Cargo.toml"
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -59,7 +69,13 @@ def _set_time(path: Path, t: float) -> None:
 def tree(tmp_path):
     """(作業ツリー, バイナリ)。ソースは時刻 1,000,000、バイナリはそれより新しい 2,000,000。"""
     repo = tmp_path / "repo"
-    for rel in (*SOURCES, "crates/workflow-engine/src/x_tests.rs", "docs/a.md"):
+    for rel in (
+        *SOURCES,
+        *MANIFESTS,
+        UNRELATED_MANIFEST,
+        "crates/workflow-engine/src/x_tests.rs",
+        "docs/a.md",
+    ):
         p = repo / rel
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(f"// {rel}\n", encoding="utf-8")
@@ -119,6 +135,43 @@ def test_a_source_newer_than_the_binary_stops_with_the_rebuild_command(tree):
     assert lint_build.REBUILD in str(e.value)
     with pytest.raises(lint_build.StaleLint):
         lint_build.build_info(exe, repo)
+
+
+def test_build_files_newer_than_the_binary_stop_with_a_forced_rebuild(tree):
+    """依存の版（Cargo.lock）・クレートの Cargo.toml・ツールチェーンの変更は .rs の時刻を変えないが、古いバイナリで
+    採点しない。cargo が作り直さないことがあるので、example のソースの時刻を進めて作り直す命令を出す。一覧のソースの
+    無いクレートの Cargo.toml は見ない。"""
+    repo, exe = tree
+    assert [
+        str(p) for p in lint_build.build_files(lint_build._dep_sources(exe, repo), repo)
+    ] == sorted(MANIFESTS)
+    _set_time(repo / UNRELATED_MANIFEST, 2_500_000)
+    assert lint_build.stale_sources(exe, repo) == []
+    for rel in MANIFESTS:
+        _set_time(repo / rel, 2_500_000)
+        assert lint_build.stale_sources(exe, repo) == [rel], rel
+        with pytest.raises(lint_build.StaleLint) as e:
+            lint_build.check_fresh(exe, repo)
+        assert lint_build.REBUILD_FORCED in str(e.value), rel
+        _set_time(repo / rel, 1_000_000)
+    # ソースも新しければ、ふつうの作り直し（cargo は必ず作り直す）。
+    _set_time(repo / "Cargo.lock", 2_500_000)
+    _set_time(repo / "crates/data/src/query/field_use.rs", 2_500_000)
+    with pytest.raises(lint_build.StaleLint) as e:
+        lint_build.check_fresh(exe, repo)
+    assert "touch" not in str(e.value) and lint_build.REBUILD in str(e.value)
+
+
+def test_uncommitted_build_files_make_the_build_dirty(tree):
+    """commit していない Cargo.lock の変更は、作った commit の記録で汚れとして数える（同じ commit と言わない）。"""
+    repo, exe = tree
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-q", "-m", "second")
+    _set_time(exe, 3_000_000)
+    assert lint_build.build_info(exe, repo)["dirty"] is False
+    (repo / "Cargo.lock").write_text("# 版を上げた\n", encoding="utf-8")
+    _set_time(repo / "Cargo.lock", 2_000_000)
+    assert lint_build.build_info(exe, repo)["dirty"] is True
 
 
 def test_files_cargo_does_not_read_do_not_stop_grading(tree):

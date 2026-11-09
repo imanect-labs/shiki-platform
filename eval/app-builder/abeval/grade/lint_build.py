@@ -8,9 +8,15 @@ cargo は example を作るたびに、使ったソースの一覧（dep-info・
 一覧は cargo が実際に読んだファイルなので、cargo が作り直さないファイル（テストだけの `*_tests.rs`・docs など）の
 変更では止めない（作り直しても時刻が変わらず、止まり続けることがない）。
 
-採点器の記録（`grader_version()` の `ir_lint_build`）には、確かめた時点の HEAD の commit と、一覧のファイルに
-commit していない変更があったか（`dirty`）を残す。バイナリが一覧のどれよりも新しいので、そのバイナリは「その
-commit の一覧のファイル（`dirty` なら作業ツリーの中身）」から作ったものとみなせる。結果を比べるときの採点器の同一性は
+cargo は一覧に Cargo.toml・Cargo.lock を載せず、レジストリのクレートも外す。依存の版の上げ下げ（Cargo.lock）・feature の
+切り替え（クレートの Cargo.toml）・ツールチェーンの指定の変更は .rs の時刻を変えないので、一覧のソースのクレートの
+Cargo.toml と、作業ツリーの根の Cargo.toml・Cargo.lock・ツールチェーンの指定（[`BUILD_FILES`]）も比べる。これらは
+変わっても cargo が作り直さないことがある（ir_lint の依存に関わらない版の変更など）ので、新しいときは example の
+ソースの時刻を進めてから作り直す命令（[`REBUILD_FORCED`]）を出す（必ず作り直されて時刻が進み、止まり続けない）。
+
+採点器の記録（`grader_version()` の `ir_lint_build`）には、確かめた時点の HEAD の commit と、一覧のファイルと
+比べたビルドのファイルに commit していない変更があったか（`dirty`）を残す。バイナリがそのどれよりも新しいので、その
+バイナリは「その commit のそれらのファイル（`dirty` なら作業ツリーの中身）」から作ったものとみなせる。結果を比べるときの採点器の同一性は
 `static.grader_identity`（GRADER_VERSION・出力の形の版・バイナリの sha）で見て、作った commit は比べない（中身の
 同じバイナリを、関係の無い commit のたびに別の採点器と数えない）。
 
@@ -29,6 +35,16 @@ from abeval.config import ROOT
 REPO = ROOT.parent.parent
 REBUILD = "cargo build -p shiki-workflow-engine --example ir_lint"
 ENGINE = Path("crates") / "workflow-engine"
+# ビルドのファイルだけが新しいときの作り直し（cargo が作り直さないと時刻が進まないので、example のソースの時刻を進める）。
+REBUILD_FORCED = f"touch {ENGINE / 'examples' / 'ir_lint.rs'} && {REBUILD}"
+# dep-info に載らないが、ビルドの中身を変える作業ツリーの根のファイル（無いものは数えない）。
+BUILD_FILES = (
+    "Cargo.toml",
+    "Cargo.lock",
+    "rust-toolchain.toml",
+    "rust-toolchain",
+    ".cargo/config.toml",
+)
 _UNESCAPED_SPACE = re.compile(r"(?<!\\) ")
 
 
@@ -64,9 +80,25 @@ def repo_sources(deps: list[Path], repo: Path | None = None) -> list[Path]:
     return out
 
 
-def stale_sources(bin_path: Path, repo: Path | None = None) -> list[str]:
-    """バイナリより新しい（か、消えた）作業ツリーのソース。確かめられなければ StaleLint。"""
-    repo = repo or REPO
+def build_files(sources: list[Path], repo: Path | None = None) -> list[Path]:
+    """dep-info に載らないが、バイナリの中身を変えるファイル（作業ツリーからの相対・あるものだけ）。
+
+    作業ツリーの根の [`BUILD_FILES`] と、一覧のソースのクレートの Cargo.toml（ソースから上へ辿って最初の Cargo.toml）。
+    """
+    root = repo or REPO
+    out = {Path(f) for f in BUILD_FILES if (root / f).is_file()}
+    for s in sources:
+        for parent in s.parents:
+            if parent == Path("."):
+                break
+            if (root / parent / "Cargo.toml").is_file():
+                out.add(parent / "Cargo.toml")
+                break
+    return sorted(out)
+
+
+def _dep_sources(bin_path: Path, repo: Path) -> list[Path]:
+    """一覧の作業ツリーの中のソース（記録が無い・workflow-engine のファイルが無ければ StaleLint）。"""
     d = dep_info_path(bin_path)
     if not d.is_file():
         raise StaleLint(
@@ -79,9 +111,16 @@ def stale_sources(bin_path: Path, repo: Path | None = None) -> list[str]:
             f"ir_lint の依存の記録（{d.name}）に {ENGINE} のファイルがありません（この作業ツリーで作った"
             f"バイナリではない）。{REBUILD} で作り直します"
         )
+    return sources
+
+
+def stale_sources(bin_path: Path, repo: Path | None = None) -> list[str]:
+    """バイナリより新しい（か、消えた）作業ツリーのソースとビルドのファイル。確かめられなければ StaleLint。"""
+    repo = repo or REPO
+    sources = _dep_sources(bin_path, repo)
     built = bin_path.stat().st_mtime_ns
     out = []
-    for rel in sources:
+    for rel in [*sources, *build_files(sources, repo)]:
         try:
             if (repo / rel).stat().st_mtime_ns > built:
                 out.append(str(rel))
@@ -95,9 +134,12 @@ def check_fresh(bin_path: Path, repo: Path | None = None) -> None:
     stale = stale_sources(bin_path, repo)
     if stale:
         more = f" ほか {len(stale) - 3} 件" if len(stale) > 3 else ""
+        # ソースが新しければ cargo は必ず作り直す。ビルドのファイルだけなら作り直さないことがあるので、時刻を進める。
+        manifests_only = all(Path(s).name in {Path(f).name for f in BUILD_FILES} for s in stale)
+        rebuild = REBUILD_FORCED if manifests_only else REBUILD
         raise StaleLint(
             f"ir_lint（{bin_path}）が作業ツリーより古いです（新しいファイル: {'・'.join(stale[:3])}{more}）。"
-            f"古い検証の規則で採点しないよう止めます。{REBUILD} で作り直してから流し直します"
+            f"古い検証の規則で採点しないよう止めます。{rebuild} で作り直してから流し直します"
         )
 
 
@@ -118,14 +160,15 @@ def _git(repo: Path, *args: str) -> str | None:
 def build_info(bin_path: Path, repo: Path | None = None) -> dict:
     """採点器の記録に残す、ir_lint を作った commit（古ければ StaleLint）。
 
-    `commit` は確かめた時点の HEAD、`dirty` は一覧のファイルに commit していない変更があったか（git で読めなければ
-    どちらも None）、`built_at` はバイナリの時刻（UTC）。
+    `commit` は確かめた時点の HEAD、`dirty` は一覧のファイルとビルドのファイル（[`build_files`]）に commit していない
+    変更があったか（git で読めなければどちらも None）、`built_at` はバイナリの時刻（UTC）。
     """
     repo = repo or REPO
     check_fresh(bin_path, repo)
-    sources = [str(s) for s in repo_sources(read_dep_info(dep_info_path(bin_path)), repo)]
+    sources = _dep_sources(bin_path, repo)
+    files = [str(s) for s in [*sources, *build_files(sources, repo)]]
     head = _git(repo, "rev-parse", "HEAD")
-    status = _git(repo, "status", "--porcelain", "--", *sources) if head is not None else None
+    status = _git(repo, "status", "--porcelain", "--", *files) if head is not None else None
     built = dt.datetime.fromtimestamp(bin_path.stat().st_mtime, dt.UTC)
     return {
         "commit": head.strip() if head else None,
