@@ -9,6 +9,7 @@ const LABEL: Record<GhStatus, string> = {
   draft: '📝 Draft',
   merged: '🟣 Merged',
   closed: '🔴 Closed',
+  unavailable: '❔ 取得できず',
 }
 
 const REL: Record<GhRelation, string> = { closes: 'closes', refs: 'refs' }
@@ -27,33 +28,45 @@ function status(meta: GhMeta | undefined): string {
   return meta ? LABEL[meta.status] : '… 取得中'
 }
 
-type Rel = { number: number; rel: GhRelation; meta: GhMeta | undefined }
+type Rel = { repo: string; number: number; rel: GhRelation; meta: GhMeta | undefined }
 
-/** PR が言及する Issue（PR 自身や PR 同士の言及は除く） */
+/** PR が言及する Issue（PR 同士の言及と、取得できなかった単なる言及は除く） */
 function issuesOfPr(pr: GhEntry, meta: GhMetaMap): Rel[] {
   if (pr.number === null) return []
   const m = meta[key(pr.repo, pr.number)]
   if (!m) return []
   return m.links
-    .map(l => ({ ...l, meta: meta[key(pr.repo, l.number)] }))
+    .map(l => ({ ...l, meta: meta[key(l.repo, l.number)] }))
     .filter(l => l.meta?.kind !== 'pr')
+    .filter(l => !(l.rel === 'refs' && l.meta?.status === 'unavailable'))
 }
 
 /** Issue に紐づく PR: セッションで作った PR の言及 ＋ GitHub 上のクローズ予定 PR */
 function prsOfIssue(issue: GhEntry, data: SessionLog, meta: GhMetaMap): Rel[] {
   if (issue.number === null) return []
-  const out = new Map<number, Rel>()
+  const out = new Map<string, Rel>()
   for (const pr of data.prs) {
-    if (pr.number === null || pr.repo !== issue.repo) continue
-    const link = meta[key(pr.repo, pr.number)]?.links.find(l => l.number === issue.number)
-    if (link) out.set(pr.number, { number: pr.number, rel: link.rel, meta: meta[key(pr.repo, pr.number)] })
+    if (pr.number === null) continue
+    const link = meta[key(pr.repo, pr.number)]?.links.find(
+      l => l.repo === issue.repo && l.number === issue.number,
+    )
+    if (link) {
+      out.set(key(pr.repo, pr.number), {
+        repo: pr.repo,
+        number: pr.number,
+        rel: link.rel,
+        meta: meta[key(pr.repo, pr.number)],
+      })
+    }
   }
   for (const l of meta[key(issue.repo, issue.number)]?.links ?? []) {
-    const prev = out.get(l.number)
-    out.set(l.number, {
+    const k = key(l.repo, l.number)
+    const prev = out.get(k)
+    out.set(k, {
+      repo: l.repo,
       number: l.number,
       rel: prev?.rel === 'closes' || l.rel === 'closes' ? 'closes' : 'refs',
-      meta: meta[key(issue.repo, l.number)],
+      meta: meta[k],
     })
   }
   return [...out.values()]
@@ -64,7 +77,7 @@ export function linkedTargets(data: SessionLog, meta: GhMetaMap): { repo: string
   const out: { repo: string; number: number }[] = []
   for (const g of [...data.prs, ...data.issues]) {
     if (g.number === null) continue
-    for (const l of meta[key(g.repo, g.number)]?.links ?? []) out.push({ repo: g.repo, number: l.number })
+    for (const l of meta[key(g.repo, g.number)]?.links ?? []) out.push({ repo: l.repo, number: l.number })
   }
   return out
 }
@@ -75,9 +88,10 @@ function ghLine(g: GhEntry, meta: GhMetaMap): string {
   return `- ${status(m)} **${num}** ${clip(m?.title || g.title, 80)}`
 }
 
-function relLine(r: Rel, repo: string, arrow: string): string {
-  const title = r.meta ? ` ${clip(r.meta.title, 60)}` : ''
-  return `  - ${arrow} ${REL[r.rel]} ${ref(repo, r.number, r.meta)}${title}（${status(r.meta)}）`
+function relLine(r: Rel, from: string, arrow: string): string {
+  const title = r.meta?.title ? ` ${clip(r.meta.title, 60)}` : ''
+  const label = r.repo === from ? ref(r.repo, r.number, r.meta) : `${r.repo}${ref(r.repo, r.number, r.meta)}`
+  return `  - ${arrow} ${REL[r.rel]} ${label}${title}（${status(r.meta)}）`
 }
 
 export function toMarkdown(data: SessionLog, meta: GhMetaMap): string {

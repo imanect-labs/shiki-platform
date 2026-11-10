@@ -3,25 +3,29 @@ import type { EngineInterface } from 'claude-code'
 import type { GhLink, GhMeta, GhStatus } from '../types'
 
 // 「Closes #12」「fixes: #3」「Resolves owner/repo#4」など、GitHub が自動クローズに使う書き方。
-const CLOSES = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b\s*:?\s*(?:[\w.-]+\/[\w.-]+)?#(\d+)/gi
-// それ以外の「#12」の言及（参照扱い）。
-const MENTION = /(?:^|[^\w/&])#(\d+)\b/g
+const CLOSES =
+  /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\b\s*:?\s*(?:([\w.-]+\/[\w.-]+))?#(\d+)/gi
+// それ以外の「#12」「owner/repo#12」の言及（参照扱い）。
+const MENTION = /(?:^|[^\w/&.-])(?:([\w.-]+\/[\w.-]+))?#(\d+)\b/g
 
 export function key(repo: string, number: number): string {
   return `${repo}#${number}`
 }
 
-/** PR 本文から Issue への関係を拾う（自身の番号は除く）。 */
-export function linksFromBody(body: string, self: number): GhLink[] {
-  const out = new Map<number, GhLink>()
-  for (const m of body.matchAll(CLOSES)) {
-    const n = Number(m[1])
-    if (n !== self) out.set(n, { number: n, rel: 'closes' })
+/** PR 本文から他の Issue・PR への関係を拾う（自身は除く。別リポジトリはそのリポジトリの番号として扱う）。 */
+export function linksFromBody(body: string, repo: string, self: number): GhLink[] {
+  const out = new Map<string, GhLink>()
+  const put = (r: string | undefined, n: string | undefined, rel: GhLink['rel']) => {
+    const target = r ?? repo
+    const number = Number(n)
+    if (!Number.isFinite(number) || number <= 0) return
+    if (target === repo && number === self) return
+    const k = key(target, number)
+    if (rel === 'refs' && out.has(k)) return
+    out.set(k, { repo: target, number, rel })
   }
-  for (const m of body.matchAll(MENTION)) {
-    const n = Number(m[1])
-    if (n !== self && !out.has(n)) out.set(n, { number: n, rel: 'refs' })
-  }
+  for (const m of body.matchAll(CLOSES)) put(m[1], m[2], 'closes')
+  for (const m of body.matchAll(MENTION)) put(m[1], m[2], 'refs')
   return [...out.values()]
 }
 
@@ -60,18 +64,47 @@ function prStatus(j: Record<string, unknown>): GhStatus {
   return j.draft === true ? 'draft' : 'open'
 }
 
+function closedByLinks(j: Record<string, unknown>, repo: string): GhLink[] {
+  const refs = obj(j.closed_by_pull_requests).references
+  if (!Array.isArray(refs)) return []
+  return refs.flatMap(r => {
+    const o = obj(r)
+    const number = Number(o.number)
+    if (!Number.isFinite(number) || number <= 0) return []
+    const rr = o.repository
+    const named = typeof rr === 'string' ? rr : str(obj(rr).full_name) || str(obj(rr).nameWithOwner)
+    return [{ repo: named || repo, number, rel: 'closes' as const }]
+  })
+}
+
+/** 取得に失敗した参照先。同じ間隔で再試行され、表示では「取得できず」になる。 */
+export function unavailable(repo: string, number: number, kind: 'issue' | 'pr'): GhMeta {
+  return {
+    kind,
+    repo,
+    number,
+    title: '',
+    url: `https://github.com/${repo}/issues/${number}`,
+    status: 'unavailable',
+    links: [],
+    fetchedAt: Date.now(),
+  }
+}
+
 /**
  * Issue と PR はどちらの番号でも issue_read で読める（PR も Issue の一種）。
- * kind が分からない参照先は issue_read の `pull_request` 有無で判定する。
+ * 種類が分からない参照先は issue_read で判定し、PR だったときだけ pull_request_read を足す
+ * （merged / draft は pull_request_read にしか無い）。
  */
 export async function fetchMeta(
   $: EngineInterface,
   repo: string,
   number: number,
   kind: 'issue' | 'pr' | 'unknown',
-): Promise<GhMeta | null> {
+): Promise<GhMeta> {
   const [owner, name] = repo.split('/')
-  if (!owner || !name) return null
+  const fallback = unavailable(repo, number, kind === 'pr' ? 'pr' : 'issue')
+  if (!owner || !name) return fallback
 
   if (kind !== 'pr') {
     const j = await callJson($, 'issue_read', {
@@ -80,16 +113,9 @@ export async function fetchMeta(
       repo: name,
       issue_number: number,
     })
-    if (j === null) return null
+    if (j === null) return fallback
     const isPr = j.pull_request !== undefined || /\/pull\/\d+/.test(str(j.html_url))
     if (!isPr) {
-      const closedBy = obj(j.closed_by_pull_requests).references
-      const links: GhLink[] = Array.isArray(closedBy)
-        ? closedBy
-            .map(r => Number(obj(r).number))
-            .filter(n => Number.isFinite(n) && n > 0)
-            .map(n => ({ number: n, rel: 'closes' as const }))
-        : []
       return {
         kind: 'issue',
         repo,
@@ -97,7 +123,7 @@ export async function fetchMeta(
         title: str(j.title),
         url: str(j.html_url),
         status: issueStatus(j),
-        links,
+        links: closedByLinks(j, repo),
         fetchedAt: Date.now(),
       }
     }
@@ -109,8 +135,7 @@ export async function fetchMeta(
     repo: name,
     pullNumber: number,
   })
-  if (j === null) return null
-  const text = `${str(j.title)}\n${str(j.body)}`
+  if (j === null) return { ...fallback, kind: 'pr' }
   return {
     kind: 'pr',
     repo,
@@ -118,7 +143,7 @@ export async function fetchMeta(
     title: str(j.title),
     url: str(j.html_url),
     status: prStatus(j),
-    links: linksFromBody(text, number),
+    links: linksFromBody(`${str(j.title)}\n${str(j.body)}`, repo, number),
     fetchedAt: Date.now(),
   }
 }
