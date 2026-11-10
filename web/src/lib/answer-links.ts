@@ -37,14 +37,23 @@ function urlKey(raw: string): string | null {
   }
 }
 
-/// Web 検索の結果に 1 行の URL として現れたもの。
+/// Web 検索の結果の見出し行（`web 検索結果 N 件:`）。
+const SEARCH_HEADER = /^web 検索結果 \d+ 件:$/;
+
+/// Web 検索の結果の **URL の欄**に現れたもの。
+///
+/// 結果は 1 件ずつ空行で区切られた「タイトル／URL／スニペット」の 3 行（サーバがタイトルとスニペットを
+/// 1 行に潰す・`web_search.rs` の `outcome`）。スニペットやタイトルに書かれた URL を拾うと、検索結果に
+/// 無いホストまで信頼してしまう（レビュー指摘）ので、各件の 2 行目だけを見る。
 function searchResultUrls(tools: Iterable<{ name: string; result?: string }>): Set<string> {
   const out = new Set<string>();
   for (const t of tools) {
     if (t.name !== WEB_SEARCH_TOOL || !t.result) continue;
-    for (const line of t.result.split("\n")) {
-      if (!/^https?:\/\//i.test(line.trim())) continue;
-      const key = urlKey(line);
+    for (const block of t.result.split(/\n{2,}/)) {
+      const lines = block.split("\n").filter((l) => !SEARCH_HEADER.test(l.trim()));
+      const urlLine = lines[1]?.trim();
+      if (!urlLine || !/^https?:\/\//i.test(urlLine)) continue;
+      const key = urlKey(urlLine);
       if (key) out.add(key);
     }
   }

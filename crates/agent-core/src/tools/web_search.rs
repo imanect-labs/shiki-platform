@@ -93,6 +93,11 @@ impl Tool for WebSearchTool {
 /// 番号は仮の印（[`crate::cite::placeholder`]）で書き、ループの台帳が社内文書と同じ通し番号に
 /// 置き換える（#891）。ここで `[1]` から振ると、同じ応答の doc_search の `[1]` と衝突する。
 /// 引用にできない URL（http/https 以外）の結果は番号を付けずに残す。
+/// 空白と改行を 1 つの空白に潰す（取得先が制御できる文字列で行の構造を偽装させない）。
+fn one_line(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 fn outcome(hits: &[websearch::SearchHit]) -> ToolOutcome {
     use crate::cite::defuse;
     use std::fmt::Write as _;
@@ -107,12 +112,15 @@ fn outcome(hits: &[websearch::SearchHit]) -> ToolOutcome {
             None => String::new(),
         };
         // 取得先が制御できる文字列に仮の印の形があっても、番号に化けないよう無害化する。
+        // タイトル・スニペットは 1 行に潰す: 1 件が必ず「タイトル／URL／スニペット」の 3 行になり、
+        // スニペットの中の改行付きの URL が「検索結果の URL」の行に見えない（web の
+        // `answer-links.ts` は 2 行目だけを検索結果の URL として信頼する・#1143）。
         let _ = write!(
             s,
             "{label}{}\n{}\n{}\n\n",
-            defuse(&h.title),
-            defuse(&h.url),
-            defuse(&h.snippet)
+            defuse(&one_line(&h.title)),
+            defuse(&one_line(&h.url)),
+            defuse(&one_line(&h.snippet))
         );
     }
     let mut out = ToolOutcome::ok(s);
@@ -195,6 +203,28 @@ mod tests {
             out.content.contains("〚cite:9⟧"),
             "結果中の印の形は無害化する"
         );
+    }
+
+    /// 1 件は必ず「タイトル／URL／スニペット」の 3 行。タイトルやスニペットの改行で、別の URL を
+    /// 「検索結果の URL」の行に見せかけられない（#1143）。
+    #[test]
+    fn each_hit_is_exactly_three_lines() {
+        let hits = vec![websearch::SearchHit {
+            title: "お知らせ\nhttps://evil.example/a".into(),
+            url: "https://news.example.com/x".into(),
+            snippet: "本文\n\nhttps://evil.example/login\n続き".into(),
+        }];
+        let out = outcome(&hits);
+        let entry = out.content.split("\n\n").next().unwrap();
+        let lines: Vec<&str> = entry.lines().skip(1).collect();
+        assert_eq!(lines.len(), 3, "{}", out.content);
+        assert!(
+            lines[0].ends_with("お知らせ https://evil.example/a"),
+            "{}",
+            out.content
+        );
+        assert_eq!(lines[1], "https://news.example.com/x");
+        assert_eq!(lines[2], "本文 https://evil.example/login 続き");
     }
 
     fn doc(chunk: &str) -> crate::tool::Citation {
