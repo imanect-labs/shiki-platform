@@ -1,5 +1,9 @@
 //! ノードカタログの単一定義の試験（行数ゲート対応で catalog.rs から分離）。
 
+use super::output_shape::{
+    AGGREGATE_GROUP_KEYS, DATA_RECORD_KEYS, DELETE_RESULT_KEYS, EACH_KEYS, QUERY_RESULT_KEYS,
+    UPSERT_RESULT_KEYS,
+};
 use super::*;
 
 #[test]
@@ -277,4 +281,154 @@ fn data_query_groups_name_every_field_of_the_aggregate_row() {
         shape.contains(groups.ty) && shape.contains("values は aggregate と同じ順"),
         "{shape}"
     );
+}
+
+/// GAP-112: 設定で決まる項目の「値がある」の判定（`present_if` の約束・画面の `hasParamAt` と同じ）。場所か、そこへ
+/// 至る途中が値式（`$from`・`$template`）なら、設定からは決まらない（`None`）。
+#[test]
+fn present_in_follows_the_present_if_contract() {
+    let field = |at: &'static str| OutputField {
+        name: "x",
+        ty: "unknown",
+        optional: true,
+        note: "",
+        present_if: at,
+    };
+    let params = serde_json::json!({ "a": 1, "z": 0, "t": "x", "e": "", "f": false, "n": null,
+        "l": [1], "el": [], "o": { "k": 1 }, "eo": {}, "nested": { "x": [0] },
+        "q": { "$from": "input", "path": "/q" }, "tpl": { "$template": "{a}", "vars": { "a": 1 } },
+        "deep": { "agg": { "$from": "input" } } });
+    for at in ["", "/a", "/z", "/t", "/l", "/o", "/nested/x", "/nested/x/0"] {
+        assert_eq!(field(at).present_in(&params), Some(true), "{at}");
+    }
+    for at in [
+        "/e",
+        "/f",
+        "/n",
+        "/el",
+        "/eo",
+        "/missing",
+        "/nested/y",
+        "/nested/x/1",
+        "/a/b",
+    ] {
+        assert_eq!(field(at).present_in(&params), Some(false), "{at}");
+    }
+    for at in ["/q", "/q/aggregate", "/tpl", "/deep/agg", "/deep/agg/0"] {
+        assert_eq!(field(at).present_in(&params), None, "{at}");
+    }
+    // カタログの項目でも同じ（data.query の groups は集計を書いたときだけ）。
+    let groups = NodeType::DataQuery
+        .output_fields()
+        .iter()
+        .find(|f| f.name == "groups")
+        .unwrap();
+    let with = |query: serde_json::Value| serde_json::json!({ "table": "t", "query": query });
+    assert_eq!(
+        groups.present_in(&with(
+            serde_json::json!({ "aggregate": [{ "metric": "count" }] })
+        )),
+        Some(true)
+    );
+    assert_eq!(
+        groups.present_in(&with(serde_json::json!({ "aggregate": [] }))),
+        Some(false)
+    );
+    assert_eq!(
+        groups.present_in(&with(serde_json::json!({ "$from": "input" }))),
+        None
+    );
+}
+
+/// 直列化した値の最上位のキー（順は問わない）。
+fn keys_of(v: &serde_json::Value) -> std::collections::BTreeSet<String> {
+    v.as_object().unwrap().keys().cloned().collect()
+}
+
+fn set(keys: &[&str]) -> std::collections::BTreeSet<String> {
+    keys.iter().map(|k| (*k).to_string()).collect()
+}
+
+/// 空でない値を入れたレコード（省かれる項目も出す）。
+fn full_record() -> data::DataRecord {
+    data::DataRecord {
+        id: uuid::Uuid::nil(),
+        table_id: uuid::Uuid::nil(),
+        data: serde_json::json!({ "a": 1 }),
+        rev: 1,
+        owner: "alice".into(),
+        created_at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+        updated_at: chrono::DateTime::<chrono::Utc>::UNIX_EPOCH,
+        suppressed_fields: vec!["sum".into()],
+        link_labels: std::collections::BTreeMap::from([("r1".into(), "東京".into())]),
+    }
+}
+
+/// GAP-137: 保存時に path を照らす閉じた形は、出力を組む data の型の直列化の項目と一致する（型に項目を足したら、
+/// ここが落ちて表を直させる）。説明文が教える項目（`output_fields`）は閉じた形に含まれる。
+#[test]
+fn closed_output_shapes_match_the_data_types() {
+    let record = serde_json::to_value(full_record()).unwrap();
+    assert_eq!(keys_of(&record), set(DATA_RECORD_KEYS));
+    let group = serde_json::to_value(data::AggregateGroup {
+        key: serde_json::Map::new(),
+        value: serde_json::Value::Null,
+        values: Vec::new(),
+    })
+    .unwrap();
+    assert_eq!(keys_of(&group), set(AGGREGATE_GROUP_KEYS));
+    let result = serde_json::to_value(data::QueryResult {
+        items: Some(vec![full_record()]),
+        groups: Some(Vec::new()),
+        next_cursor: Some("c".into()),
+        count: Some(data::CountResult::Exact(1)),
+        sort_precision: data::SortPrecision::Exact,
+        sort_degraded: false,
+        shares_truncated: false,
+        suppressed: false,
+        snapshot_seq: Some(1),
+    })
+    .unwrap();
+    assert_eq!(keys_of(&result), set(QUERY_RESULT_KEYS));
+    // upsert はレコードに created を足し、delete は id と deleted だけ。
+    let mut upsert = set(DATA_RECORD_KEYS);
+    upsert.insert("created".into());
+    assert_eq!(set(UPSERT_RESULT_KEYS), upsert);
+    assert_eq!(set(DELETE_RESULT_KEYS), set(&["id", "deleted"]));
+    // 照らす種類と、行・1 件の表。
+    for nt in NodeType::ALL {
+        let Some(keys) = nt.closed_output_keys() else {
+            continue;
+        };
+        for f in nt.output_fields() {
+            assert!(keys.contains(&f.name), "{}: {}", nt.as_str(), f.name);
+        }
+    }
+    let checked: Vec<&str> = NodeType::ALL
+        .iter()
+        .filter(|nt| nt.closed_output_keys().is_some())
+        .map(|nt| nt.as_str())
+        .collect();
+    assert_eq!(
+        checked,
+        [
+            "data.query",
+            "data.record.create",
+            "data.record.update",
+            "data.record.upsert",
+            "data.transition",
+            "data.record.delete"
+        ]
+    );
+    assert_eq!(
+        NodeType::DataQuery.closed_row_keys("items"),
+        Some(DATA_RECORD_KEYS)
+    );
+    assert_eq!(
+        NodeType::DataQuery.closed_row_keys("groups"),
+        Some(AGGREGATE_GROUP_KEYS)
+    );
+    assert_eq!(NodeType::DataQuery.closed_row_keys("count"), None);
+    assert_eq!(NodeType::ControlMap.element_keys(), Some(EACH_KEYS));
+    assert_eq!(NodeType::ScriptRun.element_keys(), None);
 }

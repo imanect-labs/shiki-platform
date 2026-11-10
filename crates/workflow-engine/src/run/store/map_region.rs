@@ -149,7 +149,7 @@ pub(super) async fn insert_fanout(
 
     let region_nodes = graph.region_nodes(map_id);
     for (index, item) in fanout.items.iter().enumerate() {
-        let each = json!({ "each": { "item": item, "index": index } });
+        let each = element_input(item, index);
         for node in &region_nodes {
             let step_path = format!("{map_step_path}[{index}].{node}");
             let status = if graph.in_edges(node).is_empty() {
@@ -176,6 +176,12 @@ pub(super) async fn insert_fanout(
         }
     }
     Ok(count)
+}
+
+/// 要素ごとの領域のステップの入力（繰り返し中の 1 件 `each`）。項目は保存時に `$from: each` の path を照らす閉じた組
+/// （`NodeType::element_keys`・GAP-137）と同じ（下の試験が照らす）。
+fn element_input(item: &Value, index: usize) -> Value {
+    json!({ "each": { "item": item, "index": index } })
 }
 
 /// 要素ステップ 1 行（集約の材料）。
@@ -400,6 +406,23 @@ mod tests {
     use crate::run::readiness::Readiness;
     use crate::WorkflowIr;
     use std::collections::HashMap;
+
+    /// 繰り返し中の 1 件の項目は、保存時に照らす閉じた組と同じ（GAP-137）。
+    #[test]
+    fn element_input_has_the_closed_each_keys() {
+        let input = element_input(&serde_json::json!({ "a": 1 }), 3);
+        let mut keys: Vec<&str> = input["each"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        let mut want = NodeType::ControlMap.element_keys().unwrap().to_vec();
+        want.sort_unstable();
+        assert_eq!(keys, want);
+        assert_eq!(input["each"]["index"], 3);
+    }
 
     #[test]
     fn split_static_and_element_and_nested() {

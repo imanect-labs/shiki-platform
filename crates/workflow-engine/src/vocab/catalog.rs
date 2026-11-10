@@ -186,6 +186,46 @@ pub struct OutputField {
     pub present_if: &'static str,
 }
 
+impl OutputField {
+    /// この項目が、ブロックの設定（`params`）のもとで出力に入るか（[`Self::present_if`] の約束・GAP-112）。
+    ///
+    /// `Some(true)` は入る（`present_if` が空なら設定にかかわらず入る）、`Some(false)` は入らない（場所に値が無い・
+    /// `null`・`false`・空の文字・空のリスト・空のオブジェクト）。`None` は設定からは決まらない（場所か、そこへ至る
+    /// 途中に `$from`・`$template` の値式があり、実行の値で決まる）。画面の値の候補（web の `value-refs.ts` の
+    /// `hasParamAt`）と同じ約束で、保存時の照合（`ir.unknown_output_path`）と評価の ir_lint が使う。
+    #[must_use]
+    pub fn present_in(&self, params: &serde_json::Value) -> Option<bool> {
+        use serde_json::Value;
+        let at = self.present_if;
+        if at.is_empty() {
+            return Some(true);
+        }
+        let is_expr = |v: &Value| {
+            v.as_object()
+                .is_some_and(|m| m.contains_key("$from") || m.contains_key("$template"))
+        };
+        // 根から場所まで、JSON Pointer の接頭辞ごとの値（途中が値式なら、その先は実行の値で決まる）。
+        let prefixes = std::iter::once("")
+            .chain(at.match_indices('/').skip(1).map(|(i, _)| &at[..i]))
+            .chain(std::iter::once(at));
+        let mut last = params;
+        for p in prefixes {
+            match params.pointer(p) {
+                None => return Some(false),
+                Some(v) if is_expr(v) => return None,
+                Some(v) => last = v,
+            }
+        }
+        Some(match last {
+            Value::Null | Value::Bool(false) => false,
+            Value::String(s) => !s.is_empty(),
+            Value::Array(a) => !a.is_empty(),
+            Value::Object(m) => !m.is_empty(),
+            Value::Bool(true) | Value::Number(_) => true,
+        })
+    }
+}
+
 /// カタログ全量（NodeType::ALL と同順・exhaustive match で漏れを構造的に防ぐ）。
 #[must_use]
 pub fn node_catalog() -> Vec<NodeCatalogEntry> {

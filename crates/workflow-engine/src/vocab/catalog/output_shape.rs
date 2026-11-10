@@ -1,6 +1,7 @@
 //! ノードの出力の形の単一定義（行数ゲート対応で catalog.rs から分離）。
 //!
 //! AI の説明文と右パネルの「前のノードの出力」が読む（[`super::NodeCatalogEntry::output_shape`]・`output_fields`）。
+//! 保存時に `$from` の path を照らす閉じた形（[`NodeType::closed_output_keys`] など・GAP-137）も、ここに別の表として置く。
 
 use super::{NodeType, OutputField};
 
@@ -502,5 +503,108 @@ pub(super) fn output_shape(nt: NodeType) -> Shape {
         | N::AiSpeech
         | N::GraphqlQuery
         | N::SandboxExec => Prose(""),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// 出力の閉じた形（保存時の照合 `ir.unknown_output_path` が読む・GAP-137）
+// ---------------------------------------------------------------------------
+//
+// 上の `output_shape` は人と AI に教える形（説明文と右パネルの候補）で、教えない項目（sort_precision など）は
+// 書かない。ここは「どの実行でも、出力にはこの中の項目しか無い」と言える閉じた組で、保存時に `$from` の path を
+// 照らす。教える形に混ぜない（混ぜると説明文と候補が変わる）。出力を組む型を変えたら、ここも直す
+// （`super::tests` が data の型の直列化と照らす）。
+
+/// data.query の結果（data の `QueryResult` の直列化）の最上位の項目すべて。値が無いと省く項目（items・groups・
+/// next_cursor・count・snapshot_seq）も含む。
+pub(super) const QUERY_RESULT_KEYS: &[&str] = &[
+    "items",
+    "groups",
+    "next_cursor",
+    "count",
+    "sort_precision",
+    "sort_degraded",
+    "shares_truncated",
+    "suppressed",
+    "snapshot_seq",
+];
+
+/// レコード（data の `DataRecord` の直列化）の項目すべて。suppressed_fields と link_labels は空なら省かれる。
+pub(super) const DATA_RECORD_KEYS: &[&str] = &[
+    "id",
+    "table_id",
+    "data",
+    "rev",
+    "owner",
+    "created_at",
+    "updated_at",
+    "suppressed_fields",
+    "link_labels",
+];
+
+/// data.record.upsert の結果（書いたレコードに、追加したかの `created` を添えたもの）。
+pub(super) const UPSERT_RESULT_KEYS: &[&str] = &[
+    "id",
+    "table_id",
+    "data",
+    "rev",
+    "owner",
+    "created_at",
+    "updated_at",
+    "suppressed_fields",
+    "link_labels",
+    "created",
+];
+
+/// data.record.delete の結果（消したレコードの ID と、消したことの印）。
+pub(super) const DELETE_RESULT_KEYS: &[&str] = &["id", "deleted"];
+
+/// 集計の 1 行（data の `AggregateGroup` の直列化）。
+pub(super) const AGGREGATE_GROUP_KEYS: &[&str] = &["key", "value", "values"];
+
+/// 繰り返しの中の 1 件（`$from: each`）。要素ごとに `run::store::map_region` が組む。
+pub(super) const EACH_KEYS: &[&str] = &["item", "index"];
+
+impl NodeType {
+    /// 出力の最上位の項目の閉じた組（どの実行でも、成功した出力の最上位にはこの中の項目しか無い）。照らせる種類
+    /// （data.query・data.record.create・update・upsert・delete・data.transition）だけ `Some`。
+    ///
+    /// カタログの `output_fields`（説明文と右パネルの候補）とは別の表で、AI に教えない項目も入る。
+    /// `on_error: continue` の失敗の出力 `{ error }` は含まない（どの種類でも同じ形・呼ぶ側が足す）。保存時の照合
+    /// `ir.unknown_output_path` はこれが `Some` の種類だけを照らす（評価の ir_lint は、それ以外の種類を照らす）。
+    #[must_use]
+    pub fn closed_output_keys(self) -> Option<&'static [&'static str]> {
+        match self {
+            NodeType::DataQuery => Some(QUERY_RESULT_KEYS),
+            NodeType::DataRecordCreate | NodeType::DataRecordUpdate | NodeType::DataTransition => {
+                Some(DATA_RECORD_KEYS)
+            }
+            NodeType::DataRecordUpsert => Some(UPSERT_RESULT_KEYS),
+            NodeType::DataRecordDelete => Some(DELETE_RESULT_KEYS),
+            _ => None,
+        }
+    }
+
+    /// 出力の最上位の項目 `list` が行の並びのとき、その 1 行の項目の閉じた組（data.query の `items` はレコード・
+    /// `groups` は集計の行）。
+    #[must_use]
+    pub(crate) fn closed_row_keys(self, list: &str) -> Option<&'static [&'static str]> {
+        match (self, list) {
+            (NodeType::DataQuery, "items") => Some(DATA_RECORD_KEYS),
+            (NodeType::DataQuery, "groups") => Some(AGGREGATE_GROUP_KEYS),
+            _ => None,
+        }
+    }
+
+    /// 繰り返しの中の 1 件（`$from: each`）の項目の閉じた組。繰り返し（control.map）だけ `Some`。
+    #[must_use]
+    pub(crate) fn element_keys(self) -> Option<&'static [&'static str]> {
+        (self == NodeType::ControlMap).then_some(EACH_KEYS)
+    }
+
+    /// 出力の最上位の項目（カタログの `output_fields` と同じ・説明文と右パネルの候補・誤りの文が教える項目）。
+    #[must_use]
+    pub(crate) fn output_fields(self) -> &'static [OutputField] {
+        output_shape(self).fields()
     }
 }
