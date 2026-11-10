@@ -270,7 +270,9 @@ RLS の付いた表では、leakproof でない演算子（jsonb の `->>`・`?`
 | `storage_event_outbox` | `payload_event_type`・`payload_table_id` | `payload ->> 'event_type'` / `'table_id'` |
 
 - **行数の多い環境ではデプロイ前に手で済ませておく。** 0115 は既存行を `UPDATE` / `INSERT` で埋め、索引を通常の
-  `CREATE INDEX` で作る。その間は 2 表への書込が止まる（目安: 各 20 万行で合計 15 秒ほど）。先に済ませておけば、
+  `CREATE INDEX` で作る。列の追加で取る ACCESS EXCLUSIVE をコミットまで持つので、その間は 2 表の読み書きが
+  止まる（目安: 各 20 万行で合計 15 秒ほど。監査画面の閲覧も待つ）。ロックは `audit_log` → `storage_event_outbox`
+  の順に取り、`lock_timeout`（5 秒）を超えると migration が失敗して起動をやり直す。先に済ませておけば、
   0115 の該当部分は条件付きの `UPDATE`・`IF NOT EXISTS` なのでほぼ何もしない。手順は次のとおり
   （**単独セッションで 1 文ずつ**。列とトリガは 0115 と同じ定義を先に入れる）:
   ```sql
@@ -287,6 +289,7 @@ RLS の付いた表では、leakproof でない演算子（jsonb の `->>`・`?`
     FROM audit_log a, jsonb_array_elements_text(a.metadata -> 'cited_chunk_ids') AS c
    WHERE a.id BETWEEN :lo AND :hi
      AND a.action = 'rag.search' AND jsonb_typeof(a.metadata -> 'cited_chunk_ids') = 'array'
+     AND c IS NOT NULL
   ON CONFLICT DO NOTHING;
   UPDATE storage_event_outbox
      SET payload_event_type = payload ->> 'event_type', payload_table_id = payload ->> 'table_id'
@@ -303,8 +306,8 @@ RLS の付いた表では、leakproof でない演算子（jsonb の `->>`・`?`
   CREATE INDEX CONCURRENTLY IF NOT EXISTS audit_cited_chunk_lookup_idx
       ON audit_cited_chunk (tenant_id, org, chunk_id, created_at DESC, audit_id DESC);
   CREATE INDEX CONCURRENTLY IF NOT EXISTS storage_event_outbox_table_change_idx
-      ON storage_event_outbox (tenant_id, payload_table_id, id)
-      WHERE payload_event_type = 'data.record.changed';
+      ON storage_event_outbox (tenant_id, payload_table_id, payload_event_type, id)
+      WHERE payload_table_id IS NOT NULL;
   ```
   旧索引（`audit_log_tenant_thread_idx`・`audit_log_tenant_message_idx`・`audit_log_cited_chunks_idx`・
   `storage_event_outbox_data_change_idx`）は 0115 が落とす。落とす前に新しいコードが動いている必要があるので、

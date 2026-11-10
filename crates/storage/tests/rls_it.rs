@@ -464,7 +464,7 @@ async fn audit_and_outbox_side_columns_follow_their_rows_under_rls() {
     let audit_id: i64 = sqlx::query_scalar(
         "INSERT INTO audit_log (tenant_id, org, actor, action, object_type, object_id, decision, metadata) \
          VALUES ($1, 'o1', 'u', 'rag.search', 'query', 'q', 'allow', \
-                 '{\"thread_id\":\"th-9\",\"message_id\":\"m-9\",\"cited_chunk_ids\":[\"c-1\",\"c-2\",\"c-1\"]}') \
+                 '{\"thread_id\":\"th-9\",\"message_id\":\"m-9\",\"cited_chunk_ids\":[\"c-1\",\"c-2\",\"c-1\",null]}') \
          RETURNING id",
     )
     .bind(env.a.as_str())
@@ -486,7 +486,11 @@ async fn audit_and_outbox_side_columns_follow_their_rows_under_rls() {
     .fetch_all(&mut *tx)
     .await
     .unwrap();
-    assert_eq!(cited, vec!["c-1", "c-2"], "重複は 1 行にまとまる");
+    assert_eq!(
+        cited,
+        vec!["c-1", "c-2"],
+        "重複は 1 行にまとまり、null の要素は写さない"
+    );
 
     let event_id: i64 = sqlx::query_scalar(
         "INSERT INTO storage_event_outbox (org, tenant_id, node_id, version, op, actor, payload) \

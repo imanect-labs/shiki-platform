@@ -65,6 +65,7 @@ DROP INDEX IF EXISTS audit_log_tenant_message_idx;
 -- 2. 引用チャンク（rag.search の `metadata.cited_chunk_ids`）
 -- ---------------------------------------------------------------------------------------------
 -- audit_log の行に従属する索引用の表。監査の保持期間で親を消すと一緒に消える（ON DELETE CASCADE）。
+-- 配列の null 要素は写さない（旧来の `? <id>` でも一致しなかった）。
 CREATE TABLE IF NOT EXISTS audit_cited_chunk (
     audit_id   bigint      NOT NULL REFERENCES audit_log (id) ON DELETE CASCADE,
     chunk_id   text        NOT NULL,
@@ -85,6 +86,7 @@ BEGIN
         INSERT INTO audit_cited_chunk (audit_id, chunk_id, tenant_id, org, created_at)
         SELECT NEW.id, c, NEW.tenant_id, NEW.org, NEW.created_at
           FROM jsonb_array_elements_text(NEW.metadata -> 'cited_chunk_ids') AS c
+         WHERE c IS NOT NULL
         ON CONFLICT DO NOTHING;
     END IF;
     RETURN NULL;
@@ -100,6 +102,7 @@ INSERT INTO audit_cited_chunk (audit_id, chunk_id, tenant_id, org, created_at)
 SELECT a.id, c, a.tenant_id, a.org, a.created_at
   FROM audit_log a, jsonb_array_elements_text(a.metadata -> 'cited_chunk_ids') AS c
  WHERE a.action = 'rag.search' AND jsonb_typeof(a.metadata -> 'cited_chunk_ids') = 'array'
+   AND c IS NOT NULL
 ON CONFLICT DO NOTHING;
 
 DROP INDEX IF EXISTS audit_log_cited_chunks_idx;
@@ -132,9 +135,11 @@ UPDATE storage_event_outbox
  WHERE (payload ? 'event_type' AND payload_event_type IS NULL)
     OR (payload ? 'table_id' AND payload_table_id IS NULL);
 
+-- event_type はバインド変数で渡るため、`payload_event_type = 'data.record.changed'` の部分索引は
+-- 汎用プランで使えない。キー列に入れ、述語は `=` から導ける `IS NOT NULL` にする。
 CREATE INDEX IF NOT EXISTS storage_event_outbox_table_change_idx
-    ON storage_event_outbox (tenant_id, payload_table_id, id)
-    WHERE payload_event_type = 'data.record.changed';
+    ON storage_event_outbox (tenant_id, payload_table_id, payload_event_type, id)
+    WHERE payload_table_id IS NOT NULL;
 DROP INDEX IF EXISTS storage_event_outbox_data_change_idx;
 
 -- ---------------------------------------------------------------------------------------------
