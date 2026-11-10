@@ -1,4 +1,4 @@
-//! 道具の object の引数の受け口（GAP-119・GAP-130・D-179・D-186）。
+//! 道具の object の引数の受け口（GAP-119・GAP-130・GAP-136・D-179・D-186・D-193）。
 //!
 //! モデルは object の引数を JSON の文字列にして送ることがある。どの道具でも同じ規則で受ける（写しを作らない）:
 //! - object はそのまま。省いた・null は道具の扱い（必須か省略できるか）に任せる。
@@ -6,11 +6,108 @@
 //!   後の検証と上限は object で来たときと同じものを通る（受ける形を広げても権限や検証は変わらない）。
 //! - 読めない文字列・object にならない文字列（配列・数・文字列の JSON）・object でない値は、直し方を言って断る。
 //!   同じ道具が SQL の文を別の引数で受けるとき（data_query の `sql`）、SQL の文が来たらそちらに書くよう言う。
+//! - 読めない文字列は、読めなくなった所の前後を印を入れて見せ、壊れ方の種類（括弧の数の食い違いが多い・途中で
+//!   終わっている）を言う。モデルは長い 1 行の中で serde の列の番号を数えられないため（GAP-136）。壊れた所を
+//!   推測で直して受けることはしない（D-193）。前後に出すのはモデルが今書いた道具の引数で、他人の文章ではないので
+//!   封筒には包まない。
 //!
-//! 使う道具: emit_workflow の `ir`・data_query の `query`・data_record_write の `data`・save_skill の
-//! `knowledge_scope` と `model`（input_schema で `type: object` の引数を持つ道具のすべて）。
+//! input_schema で `type: object` の引数を持つ道具は、すべてここの [`ObjectArg`] を通す（道具ごとの定数で分かる）。
 
+use std::fmt::Write as _;
+
+use serde_json::error::Category;
 use serde_json::Value;
+
+/// 断る文に添える、読めなくなった所の前の字数（`chars` で数える）。
+const BEFORE: usize = 60;
+/// 断る文に添える、読めなくなった所の後の字数（`chars` で数える）。
+const AFTER: usize = 20;
+/// 読めなくなった所の印。JSON に出てこない記号なので、モデルが本文と取り違えない。
+const MARK: &str = "⟪ここ⟫";
+
+/// serde_json の位置（行は 1 から。列は行の始めからの UTF-8 のバイトで 1 から数え、読めなくなったバイトを指す）を、
+/// 文字列のバイトの位置に写す。行が無ければ終わり、長さを超えれば長さに丸め、字の途中なら字の始めまで戻す。
+fn byte_at(raw: &str, line: usize, column: usize) -> usize {
+    let start = match line.checked_sub(2) {
+        None => 0,
+        Some(newlines) => raw
+            .match_indices('\n')
+            .nth(newlines)
+            .map_or(raw.len(), |(at, _)| at + 1),
+    };
+    let mut at = start
+        .saturating_add(column.saturating_sub(1))
+        .min(raw.len());
+    while !raw.is_char_boundary(at) {
+        at -= 1;
+    }
+    at
+}
+
+/// 断る文の中で見えるようにする。改行・復帰・タブは `\n`・`\r`・`\t` の 2 文字、ほかの制御文字は `\u{XXXX}` にする
+/// （断る文に制御文字を残さない）。引用符はそのまま。
+fn visible(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => {
+                let _ = write!(out, "\\u{{{:04X}}}", u32::from(c));
+            }
+            c => out.push(c),
+        }
+    }
+    out
+}
+
+/// 読めなくなった所の前 [`BEFORE`] 字と後 [`AFTER`] 字を、間に [`MARK`] を入れて切り出す。切ったほうにだけ `…` を
+/// 付ける。途中で終わっている（Eof）ときは文字列の終わりに印を入れる。
+fn broken_at(raw: &str, e: &serde_json::Error) -> String {
+    let at = if e.is_eof() {
+        raw.len()
+    } else {
+        byte_at(raw, e.line(), e.column())
+    };
+    let (head, tail) = raw.split_at(at);
+    let from = head
+        .char_indices()
+        .rev()
+        .nth(BEFORE - 1)
+        .map_or(0, |(i, _)| i);
+    let to = tail
+        .char_indices()
+        .nth(AFTER)
+        .map_or(tail.len(), |(i, _)| i);
+    format!(
+        "{}{}{MARK}{}{}",
+        if from > 0 { "…" } else { "" },
+        visible(&head[from..]),
+        visible(&tail[..to]),
+        if to < tail.len() { "…" } else { "" }
+    )
+}
+
+/// 読めない文字列の壊れ方の説明（断る文の serde の位置の後、直し方の前に入れる）。
+fn how_broken(raw: &str, e: &serde_json::Error) -> String {
+    match e.classify() {
+        Category::Syntax => format!(
+            "読めなくなったのは {MARK} の所です: {}。多いのは括弧の数の食い違いで、閉じ括弧（}} か ]）が 1 つ多いか、\
+             足りません。この所までの {{ と }}、[ と ] の数を数えて直してください。",
+            broken_at(raw, e)
+        ),
+        Category::Eof => format!(
+            "文字列が途中で終わっています（閉じ括弧が足りないか、途中で切れています）。終わりの所: {}。",
+            broken_at(raw, e)
+        ),
+        // 位置の無い誤り（行が 0）には前後を添えない。
+        Category::Data | Category::Io if e.line() == 0 => String::new(),
+        Category::Data | Category::Io => {
+            format!("読めなくなったのは {MARK} の所です: {}。", broken_at(raw, e))
+        }
+    }
+}
 
 /// object の引数（名前と、断る文に添える中身の説明）。
 #[derive(Debug, Clone, Copy)]
@@ -32,7 +129,7 @@ fn looks_like_sql(raw: &str) -> bool {
 }
 
 impl ObjectArg {
-    /// object で渡すよう言う文（読めない文字列のときは前に読めなかった位置を足す）。
+    /// object で渡すよう言う文（読めない文字列のときは前に読めなかった位置と壊れ方を足す）。
     pub(crate) fn not_object(&self) -> String {
         format!(
             "{} は JSON の文字列にせず、オブジェクトのまま渡してください（{}）。",
@@ -55,8 +152,9 @@ impl ObjectArg {
                     shape = self.shape
                 )),
                 Err(e) => Err(format!(
-                    "{} の文字列を JSON として読めませんでした（{e}）。{}",
+                    "{} の文字列を JSON として読めませんでした（{e}）。{}{}",
                     self.key,
+                    how_broken(raw, &e),
                     self.not_object()
                 )),
             },
@@ -227,5 +325,149 @@ mod tests {
         assert!(accept_object_args(&mut bad, &[ARG, other])
             .unwrap_err()
             .starts_with("data は"));
+    }
+
+    /// 断る文（key は ir）。
+    fn refused_ir(raw: &str) -> String {
+        const IR: ObjectArg = ObjectArg {
+            key: "ir",
+            shape: "ir_version・name・triggers・nodes・edges を持つオブジェクト",
+            sql_arg: None,
+        };
+        let mut input = json!({ "ir": raw });
+        let msg = accept_object_args(&mut input, &[IR]).unwrap_err();
+        assert!(
+            msg.starts_with("ir の文字列を JSON として読めませんでした（")
+                && msg.ends_with(&IR.not_object()),
+            "{msg}"
+        );
+        msg
+    }
+
+    /// ノードの並びの終わりの } が 1 つ多い 1 行の IR（E1 の vg の Mode B の app12-faq-table と同じ形・GAP-136）は、
+    /// 読めなくなった所の前 60 字と後 20 字を印を入れて見せ、括弧の数を数えるよう言う。
+    #[test]
+    fn an_extra_closing_brace_is_shown_with_its_surroundings() {
+        let raw = r#"{"ir_version":1,"name":"faq-auto-answer","display_name":"社内の質問に答える","triggers":[{"kind":"interactive"}],"nodes":[{"id":"record_auto","type":"data.record.create","label":"問い合わせ記録（自動回答）","params":{"table":"問い合わせ","data":{"question":{"$from":"input","path":"/question"},"status":"自動回答"}}}},{"id":"reply_auto","type":"workflow.reply","label":"回答を表示","params":{"format":"text","value":"受け付けました"}}],"edges":[]}"#;
+        assert_eq!(
+            refused_ir(raw),
+            "ir の文字列を JSON として読めませんでした（expected `,` or `]` at line 1 column 348）。\
+             読めなくなったのは ⟪ここ⟫ の所です: \
+             …ion\":{\"$from\":\"input\",\"path\":\"/question\"},\"status\":\"自動回答\"}}}⟪ここ⟫},{\"id\":\"reply_auto\"…。\
+             多いのは括弧の数の食い違いで、閉じ括弧（} か ]）が 1 つ多いか、足りません。\
+             この所までの { と }、[ と ] の数を数えて直してください。\
+             ir は JSON の文字列にせず、オブジェクトのまま渡してください\
+             （ir_version・name・triggers・nodes・edges を持つオブジェクト）。"
+        );
+        // ほかの道具の引数（data_query の query）も同じ規則で言う。
+        let mut input = json!({ "query": r#"{"limit": }"# });
+        let query = accept_object_args(&mut input, &[DATA_QUERY]).unwrap_err();
+        assert!(
+            query.contains("読めなくなったのは ⟪ここ⟫ の所です: {\"limit\": ⟪ここ⟫}。")
+                && query.contains("括弧の数の食い違い"),
+            "{query}"
+        );
+    }
+
+    /// 2,000 字を超える 1 行の文字列でも、前後は字の境界で切る（多バイトの字の途中で切らない）。
+    #[test]
+    fn a_long_line_is_cut_at_char_boundaries() {
+        let raw = format!(
+            r#"{{"nodes":[{{"id":"{}"}}}},{{"id":"{}"}}]}}"#,
+            "あ".repeat(1000),
+            "い".repeat(1000)
+        );
+        assert!(raw.chars().count() > 2000);
+        let expected = format!(
+            "…{}\"}}⟪ここ⟫}},{{\"id\":\"{}…",
+            "あ".repeat(58),
+            "い".repeat(11)
+        );
+        let msg = refused_ir(&raw);
+        assert!(msg.contains(&format!("の所です: {expected}。")), "{msg}");
+    }
+
+    /// 整形した複数行の IR でも、3 行目より後の位置を正しく写す。前後の改行は `\n` として見せる。
+    #[test]
+    fn a_pretty_ir_maps_lines_and_shows_newlines() {
+        let raw = "{\n  \"name\": \"wf\",\n  \"nodes\": [\n    {\n      \"id\": \"say\",\n      \
+                   \"type\": \"llm.invoke\"\n    }\n    },\n    {\n      \"id\": \"end\"\n    }\n  ]\n}";
+        let msg = refused_ir(raw);
+        assert!(
+            msg.contains("at line 8 column 5）")
+                && msg.contains(
+                    "の所です: …  {\\n      \"id\": \"say\",\\n      \"type\": \"llm.invoke\"\\n    }\\n    \
+                     ⟪ここ⟫},\\n    {\\n      \"id\":…。"
+                ),
+            "{msg}"
+        );
+    }
+
+    /// 途中で切れた文字列は、途中で終わっていると言い、終わりに印を入れて見せる。
+    #[test]
+    fn a_truncated_string_says_it_ends_midway() {
+        let msg = refused_ir(r#"{"ir_version": 1, "name": "wf", "nodes": ["#);
+        assert!(
+            msg.contains(
+                "。文字列が途中で終わっています（閉じ括弧が足りないか、途中で切れています）。\
+                 終わりの所: {\"ir_version\": 1, \"name\": \"wf\", \"nodes\": [⟪ここ⟫。ir は"
+            ),
+            "{msg}"
+        );
+        let long = format!(r#"{{"prompt": "{}"#, "あ".repeat(100));
+        let msg = refused_ir(&long);
+        assert!(
+            msg.contains(&format!("終わりの所: …{}⟪ここ⟫。", "あ".repeat(60))),
+            "{msg}"
+        );
+    }
+
+    /// 生のタブ・改行・制御文字は見える並びにして、断る文に制御文字を 1 つも残さない。
+    #[test]
+    fn control_characters_are_made_visible() {
+        let raw = "{\"a\":\t1,\r\n\"b\":\u{1}\"x\u{7f}\u{85}\"}";
+        let msg = refused_ir(raw);
+        assert!(
+            msg.contains(
+                "の所です: {\"a\":\\t1,\\r\\n\"b\":⟪ここ⟫\\u{0001}\"x\\u{007F}\\u{0085}\"}。"
+            ),
+            "{msg}"
+        );
+        assert!(!msg.chars().any(char::is_control), "{msg:?}");
+        let in_string = refused_ir("{\"a\": \"x\ty\u{0}z\"}");
+        assert!(
+            in_string.contains("\\t") && !in_string.chars().any(char::is_control),
+            "{in_string:?}"
+        );
+    }
+
+    /// serde の位置をバイトの位置に写すとき、列の 0・長さを超える列・字の途中を指す列・無い行を丸める。
+    #[test]
+    fn byte_at_rounds_to_the_string() {
+        let raw = "あい\nうえ";
+        assert_eq!(byte_at(raw, 1, 0), 0);
+        assert_eq!(byte_at(raw, 0, 0), 0);
+        assert_eq!(byte_at(raw, 1, 4), 3);
+        assert_eq!(byte_at(raw, 1, 2), 0, "あ の途中は あ の始めに戻す");
+        assert_eq!(byte_at(raw, 2, 1), 7);
+        assert_eq!(byte_at(raw, 2, 3), 7, "う の途中は う の始めに戻す");
+        assert_eq!(byte_at(raw, 2, 100), raw.len());
+        assert_eq!(byte_at(raw, 9, 1), raw.len());
+        assert_eq!(byte_at(raw, usize::MAX, usize::MAX), raw.len());
+    }
+
+    /// 型の誤り（Data）は前後だけを添え、位置の無い誤りには何も添えない。
+    #[test]
+    fn data_errors_get_only_the_surroundings() {
+        let raw = r#""x""#;
+        let typed = serde_json::from_str::<u8>(raw).unwrap_err();
+        assert_eq!(typed.classify(), Category::Data);
+        assert_eq!(
+            how_broken(raw, &typed),
+            "読めなくなったのは ⟪ここ⟫ の所です: \"x⟪ここ⟫\"。"
+        );
+        let positionless = serde_json::from_value::<u8>(json!("x")).unwrap_err();
+        assert_eq!(positionless.line(), 0);
+        assert_eq!(how_broken(raw, &positionless), "");
     }
 }
