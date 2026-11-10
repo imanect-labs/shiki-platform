@@ -20,6 +20,7 @@ use rag::parser::{DocumentParser, ParseRequest, ParseSource};
 use rag::rerank::{RerankPassage, Reranker};
 use rag::types::BlockType;
 use rag::{EmbedInput, HttpDocumentParser, HttpEmbeddingProvider, HttpReranker, RagError};
+use std::time::Duration;
 
 fn ctx() -> AuthContext {
     AuthContext::new(
@@ -187,6 +188,39 @@ async fn embedding_batches_and_checks_model_version() {
     }
     assert_eq!(resp.dimension, 2);
     assert_eq!(provider.model_version(), "cl-nagoya/ruri-v3-30m");
+}
+
+#[tokio::test]
+/// 索引作成は検索用Clientの短い期限を超えて完了でき、検索は元の期限を守る。
+async fn document_embedding_uses_separate_timeout_from_queries() {
+    let router = Router::new().route(
+        "/embed",
+        post(|| async {
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            Json(serde_json::json!({
+                "vectors": [[0.6, 0.8]],
+                "model_version": "cl-nagoya/ruri-v3-30m",
+                "dimension": 2
+            }))
+        }),
+    );
+    let base = serve(router).await;
+    let http = reqwest::Client::builder()
+        .timeout(Duration::from_millis(20))
+        .build()
+        .unwrap();
+    let provider = HttpEmbeddingProvider::new(http, &base, "cl-nagoya/ruri-v3-30m");
+    let texts = vec!["文書".to_string()];
+    let document = provider
+        .embed(&ctx(), EmbedInput::Document, &texts)
+        .await
+        .unwrap();
+    assert_eq!(document.vectors, vec![vec![0.6, 0.8]]);
+    let query = provider
+        .embed(&ctx(), EmbedInput::Query, &texts)
+        .await
+        .unwrap_err();
+    assert!(matches!(query, RagError::Http(error) if error.is_timeout()));
 }
 
 #[tokio::test]
