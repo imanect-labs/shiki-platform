@@ -103,7 +103,7 @@ export function ApprovalBanner({ request, onReveal }: { request: ApprovalRequest
   return (
     <div
       data-testid="approval-banner"
-      className="flex max-w-[calc(100vw-2rem)] items-center gap-2 rounded-full border border-primary/40 bg-background/95 py-1 pl-3 pr-1 text-[13px] shadow-md backdrop-blur"
+      className="flex items-center gap-2 rounded-full border border-primary/40 bg-background/95 py-1 pl-3 pr-1 text-[13px] shadow-md backdrop-blur"
     >
       <ShieldAlert className="size-4 shrink-0 text-primary" aria-hidden />
       <span className="min-w-0 truncate">

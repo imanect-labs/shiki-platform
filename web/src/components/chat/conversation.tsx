@@ -973,7 +973,8 @@ export function Conversation({
             {approval && approvalOffscreen ? (
               <div
                 style={{ bottom: composerHeight + 12 }}
-                className="absolute left-1/2 z-10 -translate-x-1/2"
+                // left-1/2 の絶対配置は幅が親の半分に縮むので、中身の幅で取る（狭幅で文言を切らない）。
+                className="absolute left-1/2 z-10 w-max max-w-[calc(100%-2rem)] -translate-x-1/2"
               >
                 <ApprovalBanner request={approval} onReveal={revealApproval} />
               </div>
