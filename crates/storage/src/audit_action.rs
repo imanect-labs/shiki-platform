@@ -329,6 +329,7 @@ audit_actions! {
     WorkflowDisable = "workflow.disable", "ワークフローを無効化", Workflow;
     WorkflowEnable = "workflow.enable", "ワークフローを有効化", Workflow;
     WorkflowTriggerSuppressed = "workflow.trigger.suppressed", "イベントトリガの発火を抑止", Workflow;
+    WorkflowTryRun = "workflow.try_run", "AI がワークフローを試運転", Workflow;
     WorkspaceSelect = "workspace.select", "作業フォルダを選択", Folder;
 }
 
