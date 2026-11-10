@@ -114,6 +114,7 @@ import { ChatPageHeaderSlot } from "./chat-header-actions";
 import { ThreadExportDialog } from "./thread-export-dialog";
 import { ContextUsageDialog } from "./context-meter";
 import { ApprovalCard, BudgetBanner, PlanPanel } from "./agent-progress";
+import { ApprovalBanner, revealApprovalCard, useApprovalTitle, useOffscreen } from "./approval-notice";
 import { cn } from "@/lib/utils";
 import { answerImageProxy } from "@/lib/answer-images";
 import { useMarkThreadViewing } from "@/lib/thread-viewing";
@@ -319,6 +320,15 @@ export function Conversation({
     ro.observe(composerBox);
     return () => ro.disconnect();
   }, [composerBox]);
+  // 承認待ち: 読んでいる位置は動かさず、承認カードが画面外にある間だけ入力欄の上に帯を出す。
+  // タブのタイトルにも印を付ける（別のタブで待っていても気付けるように）。
+  const [approvalCard, setApprovalCard] = React.useState<HTMLDivElement | null>(null);
+  const approval = stream?.approval ?? null;
+  const approvalOffscreen = useOffscreen(scroller, approval ? approvalCard : null, composerHeight);
+  useApprovalTitle(approval !== null);
+  const revealApproval = React.useCallback(() => {
+    if (scroller && approvalCard) revealApprovalCard(scroller, approvalCard, composerHeight);
+  }, [scroller, approvalCard, composerHeight]);
   // 順番待ちの発話（サーバ受理済み・生成未開始）。ストリーム行の下に並べる。
   const [queued, setQueued] = React.useState<QueuedMessage[]>([]);
   // onDone は makeHandlers の中で閉じ込められるため、最新の件数を ref で見る。
@@ -925,6 +935,7 @@ export function Conversation({
                     <StreamingRow
                       stream={stream}
                       onApproval={decideApproval}
+                      approvalRef={setApprovalCard}
                       threadId={threadId}
                     />
                   </div>
@@ -957,7 +968,15 @@ export function Conversation({
             {/* 読み返し中は、コンポーザの上中央に「最新へ」を浮かせ、PC ではその左右に「一つ前／一つ後の
                 自分の発話へ」を添える（長い回答を挟んだ往復を発話単位で辿る）。スマホは本文を隠すので
                 「最新へ」だけにする。 */}
-            {showJump ? (
+            {/* 承認待ちの帯は「一つ前・最新へ・一つ後」より優先する（同じ位置に出す）。 */}
+            {approval && approvalOffscreen ? (
+              <div
+                style={{ bottom: composerHeight + 12 }}
+                className="absolute left-1/2 z-10 -translate-x-1/2"
+              >
+                <ApprovalBanner request={approval} onReveal={revealApproval} />
+              </div>
+            ) : showJump ? (
               <div
                 style={{ bottom: composerHeight + 12 }}
                 className="absolute left-1/2 z-10 flex -translate-x-1/2 items-center gap-2"
@@ -1476,10 +1495,12 @@ function ArtifactFiles({ files }: { files: { node_id: string; name: string }[] }
 function StreamingRow({
   stream,
   onApproval,
+  approvalRef,
   threadId,
 }: {
   stream: StreamState;
   onApproval: (approved: boolean) => void;
+  approvalRef: (el: HTMLDivElement | null) => void;
   threadId: string;
 }) {
   const showLoader =
@@ -1529,6 +1550,7 @@ function StreamingRow({
               request={stream.approval}
               pending={stream.approvalPending}
               onDecision={onApproval}
+              cardRef={approvalRef}
             />
           ) : null}
           {stream.workflowRefs.map((workflow, i) => (
