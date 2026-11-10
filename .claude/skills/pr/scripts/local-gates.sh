@@ -141,11 +141,12 @@ if [ "$FAST" = 0 ] && touches '^crates/tabular/'; then
 fi
 
 # ---------- Web ----------
-# CI の web ジョブは paths-ignore（docs/** ・ **.md ・ .claude/**）に当たらない PR なら
-# **無条件に** gen:api → lint → build を回す。ここも同じ述語にする。
+# CI の web ジョブは docs（docs/** ・ **.md ・ .claude/**）以外の変更を含む PR なら、changes ジョブの選択で
+# ほぼ**無条件に** gen:api → lint → build を回す（Rust・deploy・scripts の変更でも回る）。ここも同じ述語にする。
 # `web/` だけを条件にすると Rust 側の OpenAPI/route/DTO 変更で型崩れを見逃し、
 # `web/|crates/` に広げても deploy/ や scripts/ だけの PR で CI と食い違う。
-non_docs_change() { grep -qvE '^(docs/|\.claude/)|\.md$' <<<"$CHANGED"; }
+# docs の判定は scripts/ci-select.py の is_ignored と同じ（.md は最上位だけ。web/README.md 等は web の変更）。
+non_docs_change() { grep -qvE '^(docs/|\.claude/)|^[^/]+\.md$' <<<"$CHANGED"; }
 if non_docs_change; then
   run_gate "pnpm install" sh_c 'cd web && pnpm install --frozen-lockfile'
   run_gate "pnpm gen:api (codegen が正)" sh_c 'cd web && pnpm gen:api'

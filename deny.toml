@@ -73,8 +73,17 @@ multiple-versions = "warn"
 # 実質 "*" 扱いになるため、これらは例外として許可する。
 wildcards = "deny"
 allow-wildcard-paths = true
-# 明確に禁止したい crate があればここに追加する（例: openssl 系を rustls に寄せる等）。
-deny = []
+# 単一チョークポイント（AGENTS.md の不変条件・docs/design.md §1）を依存グラフで固定する。
+# `wrappers` に挙げたクレートだけが直接依存してよい。それ以外のクレートが直接依存すると落ちる。
+# 足すときは「なぜそのクレートがチョークポイントの内側なのか」をコメントに書くこと。
+deny = [
+    # オブジェクトストアは StorageService（ObjectStore トレイトの裏）だけが触る。
+    # 他クレートが直接 S3 を叩くと、認可・監査・テナント境界（キーの名前空間）を素通りする。
+    { crate = "aws-sdk-s3", wrappers = ["shiki-storage"], reason = "オブジェクトストアは StorageService 経由のみ" },
+    # 全文索引は RAG の二段 authz（pre-filter ＋ post-filter）の内側にだけ置く。
+    # lindera-tantivy は形態素解析のトークナイザ（tantivy の拡張）で、索引を読み書きしない。
+    { crate = "tantivy", wrappers = ["shiki-rag", "lindera-tantivy"], reason = "全文索引は RAG の二段 authz の内側のみ" },
+]
 
 [sources]
 # crates.io 以外の未知レジストリ / 未知 git 出所を禁止する（供給元の固定）。

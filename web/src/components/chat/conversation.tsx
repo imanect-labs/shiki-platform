@@ -111,6 +111,7 @@ import {
 } from "@/lib/skills/skill-draft";
 import { ThreadShareDialog } from "./share-dialog";
 import { ChatPageHeaderSlot } from "./chat-header-actions";
+import { ThreadExportDialog } from "./thread-export-dialog";
 import { ContextUsageDialog } from "./context-meter";
 import { ApprovalCard, BudgetBanner, PlanPanel } from "./agent-progress";
 import { cn } from "@/lib/utils";
@@ -279,6 +280,10 @@ export function Conversation({
   // コンテキストの使用量（⋯ メニューから開く）。
   const [contextOpen, setContextOpen] = React.useState(false);
   const openContext = React.useCallback(() => setContextOpen(true), []);
+  // 会話全体の書き出し（右上の ⋯）。書き出せる回答（本文のある回答）が 1 件でもあるときだけ出す。
+  const [exportOpen, setExportOpen] = React.useState(false);
+  const openExport = React.useCallback(() => setExportOpen(true), []);
+  const canExport = messages.some((m) => m.role === "assistant" && m.content.some((b) => b.type === "text" && b.text.trim()));
   // UI アクション（chat.submit 等）成功後に会話を再読込するためのキー。
   const [reloadKey, setReloadKey] = React.useState(0);
   // 確定行（memo）へ渡すので安定した参照にする（トークンごとに過去の行を描き直さない）。
@@ -854,10 +859,18 @@ export function Conversation({
               onShare={openShare}
               contextUsage={contextUsage}
               onOpenContext={openContext}
+              onExport={canExport ? openExport : undefined}
             />
           ) : null}
           <ThreadShareDialog open={shareOpen} onOpenChange={setShareOpen} threadId={threadId} />
           <ContextUsageDialog usage={contextUsage} open={contextOpen} onOpenChange={setContextOpen} />
+          <ThreadExportDialog
+            open={exportOpen}
+            onOpenChange={setExportOpen}
+            threadId={threadId}
+            title={threadTitle}
+            messages={messages}
+          />
           <SaveAsAppDialog
             open={saveTarget != null}
             onOpenChange={(open) => !open && setSaveTarget(null)}
@@ -1428,7 +1441,7 @@ const AssistantRow = React.memo(function AssistantRow({
           {latest ? (
             <p className="mt-3 text-center text-[11.5px] leading-relaxed text-muted-foreground" data-testid="chat-disclaimer">
               {compactDisclaimer ? null : (
-                <span className="hidden sm:inline">Shiki は社内文書を参照して回答します。</span>
+                <span className="hidden sm:inline">Shiki は必要に応じて社内文書を参照して回答します。</span>
               )}
               誤りが含まれる場合があります。
             </p>
