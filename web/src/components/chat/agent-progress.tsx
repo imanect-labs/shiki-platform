@@ -107,13 +107,23 @@ export function ApprovalCard({
   request,
   pending,
   onDecision,
+  cardRef,
 }: {
   request: ApprovalRequest;
   pending: boolean;
   onDecision: (approved: boolean) => void;
+  /// 画面外にあるかの判定と「確認する」での移動先（承認待ちの帯・approval-notice.tsx）。
+  cardRef?: React.Ref<HTMLDivElement>;
 }) {
   return (
-    <div className="rounded-xl border border-primary/40 bg-primary/5 p-3">
+    <div
+      ref={cardRef}
+      role="group"
+      tabIndex={-1}
+      aria-label="承認が必要です"
+      data-testid="approval-card"
+      className="rounded-xl border border-primary/40 bg-primary/5 p-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+    >
       <div className="mb-1 flex items-center gap-2">
         <span className="inline-flex size-5 items-center justify-center rounded-full bg-primary/15 text-primary">
           <svg viewBox="0 0 24 24" className="size-3.5" fill="none" stroke="currentColor" strokeWidth="2">
