@@ -2,11 +2,15 @@
 //! regex コンパイル・ir.md §8）。
 //!
 //! 値の位置は実行時の解決（`control::eval::resolve_deep`）と同じ範囲を見る: リテラルの object / array の中・
-//! `$template` の vars の中・条件の値（`in` の候補の配列など）の中の `$from` も検証する。
+//! `$template` の vars の中・条件の値（`in` の候補の配列など）の中の `$from` も検証する。`nodes.<id>.output` と
+//! `each` の path は、出力の形から決まる範囲で照らす（[`output_refs`]・GAP-137）。
 
 use std::collections::{HashMap, HashSet};
 
 use serde_json::Value;
+
+mod output_refs;
+use output_refs::{OutputShapes, Place, UNKNOWN_OUTPUT_PATH};
 
 use super::template::{child, missing_placeholders};
 use super::ValidationError;
@@ -18,11 +22,13 @@ use crate::ir::{Node, WorkflowIr};
 /// V5 検証を実行する。
 pub(super) fn check(ir: &WorkflowIr, errors: &mut Vec<ValidationError>) {
     let ancestors = compute_ancestors(ir);
+    let shapes = OutputShapes::new(ir);
     for node in &ir.nodes {
         let ctx = NodeCtx {
             node,
             ancestors: ancestors.get(node.id.as_str()),
             event_refs: false,
+            shapes: &shapes,
         };
         // wait(event) の filter は、到来したイベント（event・互換の別名 trigger / payload）と、停止時に
         // リテラルへ束縛する参照（input・nodes.*・run・each）を書ける（GAP-07 の T3）。
@@ -60,6 +66,8 @@ struct NodeCtx<'a> {
     ancestors: Option<&'a HashSet<String>>,
     /// wait(event) の filter の中か（到来したイベント `event` を参照できる）。
     event_refs: bool,
+    /// `$from` の path を照らす出力の形（GAP-137）。
+    shapes: &'a OutputShapes<'a>,
 }
 
 /// 位置つきのエラー（ノードの params ならノード id も付ける・イベント filter は位置だけ）。
@@ -90,7 +98,7 @@ fn check_value(
             // `$from` オブジェクト。
             if map.contains_key("$from") {
                 match serde_json::from_value::<FromRef>(value.clone()) {
-                    Ok(from) => check_from(&from, path, ctx, errors),
+                    Ok(from) => check_from(&from, path, ctx, Place::Value, errors),
                     // params は生 JSON で V1 の deny-unknown が効かないため、型崩れ（path 型違い・
                     // 余分フィールド等）はここで弾く（実行時にリテラル誤解釈されるのを防ぐ）。
                     Err(e) => errors.push(err(
@@ -182,11 +190,15 @@ fn check_template(
     }
 }
 
-/// `$from` の source を検証する（祖先性・default 要否・path の形）。
+/// `$from` の source を検証する（祖先性・default 要否・path の形・出力の形から決まる path の有無）。
+///
+/// `place` は参照の置き場所（分岐の条件の比較の値そのものか・ほかの値の位置か）で、出力に無い所を指す誤りの文が
+/// 実行の振る舞いを言い分けるのに使う。
 fn check_from(
     from: &FromRef,
     path: &str,
     ctx: Option<&NodeCtx<'_>>,
+    place: Place,
     errors: &mut Vec<ValidationError>,
 ) {
     // path は JSON Pointer（空なら source 全体）。`title` のように / が無いと実行時に必ず解決できない。
@@ -236,6 +248,8 @@ fn check_from(
                     path,
                     Some(ctx),
                 ));
+            } else {
+                check_output_path(from, path, ctx, place, errors);
             }
         }
         s if s.starts_with("nodes.") && s.ends_with(".output") => {
@@ -249,6 +263,8 @@ fn check_from(
                     path,
                     Some(ctx),
                 ));
+            } else {
+                check_output_path(from, path, ctx, place, errors);
             }
         }
         _ => errors.push(err(
@@ -259,6 +275,21 @@ fn check_from(
             path,
             Some(ctx),
         )),
+    }
+}
+
+/// 参照の path が、出力の形から決まる範囲で出力に無い所を指していれば `ir.unknown_output_path`（GAP-137）。
+///
+/// 参照そのものの誤り（祖先でない・map の外の each）を言ったときは呼ばない（1 つの参照に誤りを重ねない）。
+fn check_output_path(
+    from: &FromRef,
+    path: &str,
+    ctx: &NodeCtx<'_>,
+    place: Place,
+    errors: &mut Vec<ValidationError>,
+) {
+    if let Some(msg) = ctx.shapes.check(ctx.node, from, place) {
+        errors.push(err(UNKNOWN_OUTPUT_PATH, msg, path, Some(ctx)));
     }
 }
 
@@ -293,11 +324,20 @@ fn check_cmp(
     ctx: Option<&NodeCtx<'_>>,
     errors: &mut Vec<ValidationError>,
 ) {
-    // 値式は直列化して生 JSON と同じ走査に掛ける（形の崩れた値式はリテラルのまま元の JSON に戻る）。
-    let operand = |e: &ValueExpr| serde_json::to_value(e).unwrap_or(Value::Null);
-    check_value(&operand(&cmp.left), &format!("{path}/left"), ctx, errors);
+    // 比較の値そのものの参照は、解決しなければ値が無いものとして比べる（`control::eval` の `resolve_operand`）。
+    // ほかの値式は直列化して生 JSON と同じ走査に掛ける（形の崩れた値式はリテラルのまま元の JSON に戻る）。
+    let operand = |e: &ValueExpr, at: &str, errors: &mut Vec<ValidationError>| match e {
+        ValueExpr::From(f) => check_from(f, at, ctx, Place::Condition, errors),
+        other => check_value(
+            &serde_json::to_value(other).unwrap_or(Value::Null),
+            at,
+            ctx,
+            errors,
+        ),
+    };
+    operand(&cmp.left, &format!("{path}/left"), errors);
     if let Some(right) = &cmp.right {
-        check_value(&operand(right), &format!("{path}/right"), ctx, errors);
+        operand(right, &format!("{path}/right"), errors);
     }
     // exists/is_null は right 不要、それ以外は right 必須。
     let needs_right = !matches!(cmp.op, CmpOp::Exists | CmpOp::IsNull);
