@@ -35,8 +35,8 @@ const APP_ROLE: &str = "shiki_rls_it";
 const PERMISSION_DENIED: &str = "42501";
 
 /// RLS の対象外にしているテナント表（migration 0114 の明示リストと一致させる）。`data_*` は別の段で扱う。
-/// audit_log・storage_event_outbox は jsonb の式インデックスを生成列＋btree に置き換えてから入れる（#1074）。
-const EXCLUDED: &[&str] = &["outbox_delivery_seq", "audit_log", "storage_event_outbox"];
+/// audit_log・storage_event_outbox は 0115 で対象に入れた（#1074）。
+const EXCLUDED: &[&str] = &["outbox_delivery_seq"];
 
 struct Env {
     /// 所有者（superuser）の接続。RLS を迂回するので、行の準備と後片付けに使う。
@@ -453,5 +453,97 @@ async fn only_the_cross_tenant_tx_bypasses_rls() {
             .unwrap();
     assert!(!bypass);
     drop(conn);
+    env.cleanup().await;
+}
+
+#[tokio::test]
+async fn audit_and_outbox_side_columns_follow_their_rows_under_rls() {
+    let Some(env) = setup().await else { return };
+    // 実行時ロールのテナント文脈の下で書く（0115 のトリガは呼び出し側の権限で動く）。
+    let mut tx = begin_tenant_tx(&env.app, &env.a).await.unwrap();
+    let audit_id: i64 = sqlx::query_scalar(
+        "INSERT INTO audit_log (tenant_id, org, actor, action, object_type, object_id, decision, metadata) \
+         VALUES ($1, 'o1', 'u', 'rag.search', 'query', 'q', 'allow', \
+                 '{\"thread_id\":\"th-9\",\"message_id\":\"m-9\",\"cited_chunk_ids\":[\"c-1\",\"c-2\",\"c-1\",null]}') \
+         RETURNING id",
+    )
+    .bind(env.a.as_str())
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    let (thread, message): (Option<String>, Option<String>) =
+        sqlx::query_as("SELECT meta_thread_id, meta_message_id FROM audit_log WHERE id = $1")
+            .bind(audit_id)
+            .fetch_one(&mut *tx)
+            .await
+            .unwrap();
+    assert_eq!(thread.as_deref(), Some("th-9"));
+    assert_eq!(message.as_deref(), Some("m-9"));
+    let cited: Vec<String> = sqlx::query_scalar(
+        "SELECT chunk_id FROM audit_cited_chunk WHERE audit_id = $1 ORDER BY chunk_id",
+    )
+    .bind(audit_id)
+    .fetch_all(&mut *tx)
+    .await
+    .unwrap();
+    assert_eq!(
+        cited,
+        vec!["c-1", "c-2"],
+        "重複は 1 行にまとまり、null の要素は写さない"
+    );
+
+    let event_id: i64 = sqlx::query_scalar(
+        "INSERT INTO storage_event_outbox (org, tenant_id, node_id, version, op, actor, payload) \
+         VALUES ('o1', $1, gen_random_uuid(), 1, 'update', 'u', \
+                 '{\"event_type\":\"data.record.changed\",\"table_id\":\"tb-1\"}') RETURNING id",
+    )
+    .bind(env.a.as_str())
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    let (event_type, table_id): (Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT payload_event_type, payload_table_id FROM storage_event_outbox WHERE id = $1",
+    )
+    .bind(event_id)
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    assert_eq!(event_type.as_deref(), Some("data.record.changed"));
+    assert_eq!(table_id.as_deref(), Some("tb-1"));
+    tx.commit().await.unwrap();
+
+    // 他テナントの文脈からは、監査ログも引用チャンクも見えない。
+    let mut tx = begin_tenant_tx(&env.app, &env.b).await.unwrap();
+    let seen: i64 = sqlx::query_scalar(
+        "SELECT (SELECT count(*) FROM audit_log WHERE id = $1) \
+              + (SELECT count(*) FROM audit_cited_chunk WHERE audit_id = $1)",
+    )
+    .bind(audit_id)
+    .fetch_one(&mut *tx)
+    .await
+    .unwrap();
+    assert_eq!(seen, 0);
+    tx.rollback().await.unwrap();
+
+    // 保持期間の削除と同じく親を消すと、引用チャンクも消える（ON DELETE CASCADE）。
+    let mut tx = begin_tenant_tx(&env.app, &env.a).await.unwrap();
+    sqlx::query("DELETE FROM audit_log WHERE id = $1")
+        .bind(audit_id)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM storage_event_outbox WHERE id = $1")
+        .bind(event_id)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    tx.commit().await.unwrap();
+    let left: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM audit_cited_chunk WHERE audit_id = $1")
+            .bind(audit_id)
+            .fetch_one(&env.owner)
+            .await
+            .unwrap();
+    assert_eq!(left, 0);
     env.cleanup().await;
 }
