@@ -284,9 +284,11 @@ impl LlmProvider for AnthropicProvider {
             .header("anthropic-version", ANTHROPIC_VERSION);
         let builder = with_json_body(builder, &body, req, &ANTHROPIC_SCHEMA_AT);
         let clock = RequestClock::start(self.timeouts, "anthropic");
-        let resp = clock
-            .send(self.identity.apply(builder, req.session_id.as_deref()))
-            .await?;
+        let resp = send_waiting_out_rate_limit(
+            &clock,
+            self.identity.apply(builder, req.session_id.as_deref()),
+        )
+        .await?;
         let status = resp.status();
         if !status.is_success() {
             let text = clock.error_text(resp).await?;
@@ -351,9 +353,111 @@ impl LlmProvider for AnthropicProvider {
     }
 }
 
+/// 429 の `retry-after` がこの長さ以下なら、その分だけ待って送り直す（これより長い待ちは、利用者へ
+/// 「上限に達した」と返す）。
+const MAX_RATE_LIMIT_WAIT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// 429 を待って送り直す回数の上限（最初の送信を除く）。
+const RATE_LIMIT_RETRIES: usize = 2;
+
+/// 送信して応答ヘッダを待つ。429 が短い待ち（`retry-after` の秒数が [`MAX_RATE_LIMIT_WAIT`] 以下）を示すときは、
+/// その分だけ待って [`RATE_LIMIT_RETRIES`] 回まで送り直す。
+///
+/// Anthropic の 429 は 1 分あたりのトークン・要求の枠で、数秒待てば通ることが多い。すぐ失敗にすると会話全体の
+/// やり直しになる（やり直しは適用済みのツールを二重に実行しうる・#889）。送り直さないとき（待ちの指示が無い・
+/// 長すぎる・生成全体の締め切りを越える・回数を使い切った）は 429 の応答をそのまま返し、呼び出し側が
+/// いつもどおり [`LlmError::RateLimited`] にする。ゲートウェイの利用上限はプロバイダへ送る前に断るので、
+/// ここは通らない（送り直されない）。
+async fn send_waiting_out_rate_limit(
+    clock: &RequestClock,
+    builder: reqwest::RequestBuilder,
+) -> Result<reqwest::Response, LlmError> {
+    let mut builder = builder;
+    let mut retries = 0;
+    loop {
+        let again = builder.try_clone();
+        let resp = clock.send(builder).await?;
+        if resp.status() != reqwest::StatusCode::TOO_MANY_REQUESTS || retries == RATE_LIMIT_RETRIES
+        {
+            return Ok(resp);
+        }
+        let wait = rate_limit_wait(resp.headers(), clock.remaining());
+        let (Some(wait), Some(again)) = (wait, again) else {
+            return Ok(resp);
+        };
+        let body = clock.error_text(resp).await?;
+        retries += 1;
+        tracing::warn!(?wait, retries, body = %body, "anthropic が 429 で待ちを指示した（待って送り直す）");
+        tokio::time::sleep(wait).await;
+        builder = again;
+    }
+}
+
+/// 429 の応答ヘッダから、送り直す前に待つ長さを決める（送り直さないなら `None`）。
+///
+/// `retry-after` の秒数（整数）だけを読む。HTTP-date の形・読めない値・指示の無いものは送り直さない（待ちを推測で
+/// 決めない）。[`MAX_RATE_LIMIT_WAIT`] を超える待ちと、生成全体の締め切りまでの残り（`remaining`）以上の待ちもしない
+/// （暴走止めの上限を待ちで延ばさない）。
+fn rate_limit_wait(
+    headers: &reqwest::header::HeaderMap,
+    remaining: std::time::Duration,
+) -> Option<std::time::Duration> {
+    let secs = headers
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()?;
+    let wait = std::time::Duration::from_secs(secs);
+    (wait <= MAX_RATE_LIMIT_WAIT && wait < remaining).then_some(wait)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 429 の `retry-after` は 20 秒まで待つ。長い待ち・HTTP-date・読めない値・指示の無いもの・締め切りを越える待ちは
+    /// 送り直さない。
+    #[test]
+    fn rate_limit_wait_honors_only_short_retry_after_seconds() {
+        use std::time::Duration;
+        let at = |v: &str| {
+            let mut h = reqwest::header::HeaderMap::new();
+            h.insert(reqwest::header::RETRY_AFTER, v.parse().unwrap());
+            h
+        };
+        let plenty = Duration::from_secs(600);
+        assert_eq!(rate_limit_wait(&at("0"), plenty), Some(Duration::ZERO));
+        assert_eq!(
+            rate_limit_wait(&at(" 3 "), plenty),
+            Some(Duration::from_secs(3))
+        );
+        assert_eq!(
+            rate_limit_wait(&at("20"), plenty),
+            Some(Duration::from_secs(20))
+        );
+        for no in [
+            "21",
+            "86400",
+            "-1",
+            "1.5",
+            "soon",
+            "Wed, 21 Oct 2026 07:28:00 GMT",
+        ] {
+            assert_eq!(rate_limit_wait(&at(no), plenty), None, "{no}");
+        }
+        assert_eq!(
+            rate_limit_wait(&reqwest::header::HeaderMap::new(), plenty),
+            None
+        );
+        // 締め切りまでの残りより長い（等しい）待ちはしない。
+        assert_eq!(rate_limit_wait(&at("5"), Duration::from_secs(5)), None);
+        assert_eq!(
+            rate_limit_wait(&at("4"), Duration::from_secs(5)),
+            Some(Duration::from_secs(4))
+        );
+    }
 
     #[test]
     fn tool_result_maps_to_user_tool_result_block() {
