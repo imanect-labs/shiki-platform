@@ -15,13 +15,14 @@ import { createPortal } from "react-dom";
 
 import { Markdown } from "@/components/prompt-kit/markdown";
 import { sourcesMarkdown } from "@/lib/answer-export";
-import type { ImageSources } from "@/lib/answer-images";
+import type { ImageProxy, ImageSources } from "@/lib/answer-images";
 import type { LinkSources } from "@/lib/answer-links";
 import type { Citation } from "@/lib/chat-api";
 import { linkifyCitations } from "@/lib/citation";
 import { formatDateTime } from "@/lib/format";
 import { usePreferences } from "@/lib/preferences";
 import { MessageCitationsProvider, useMessageCitations } from "./citations/citation-context";
+import { TranslationBlock } from "./translation-block";
 
 /// 画像の読み込みを待つ上限（届かない画像があっても印刷は出す）。
 const IMAGE_WAIT_MS = 3000;
@@ -36,6 +37,10 @@ export type PrintItem = {
   imageSources: ImageSources;
   /// 回答の出典のホスト（#1143）。出典に無い外部リンクはリンクにせず、行き先を添えた文字にする。
   linkSources: LinkSources;
+  /// 回答に付いた Web ページの訳文（translation ブロックの生の値）。会話と同じ `page` モードで描く。
+  translations?: readonly unknown[];
+  /// 訳文の画像を読む経路（保存前の回答は null・読まない）。
+  imageProxy?: ImageProxy | null;
 };
 
 export function ExportPrint({
@@ -134,7 +139,12 @@ function PrintTurn({ item }: { item: PrintItem }) {
           )}
         </div>
       ) : null}
-      <Markdown imageSources={item.imageSources} linkSources={item.linkSources}>{linkifyCitations(item.text, item.citations)}</Markdown>
+      {item.text.trim() ? (
+        <Markdown imageSources={item.imageSources} linkSources={item.linkSources}>{linkifyCitations(item.text, item.citations)}</Markdown>
+      ) : null}
+      {(item.translations ?? []).map((raw, i) => (
+        <TranslationBlock key={i} raw={raw} imageProxy={item.imageProxy ?? null} print />
+      ))}
       {sources ? (
         <div className="mt-6 border-t pt-4 text-sm" data-testid="answer-print-sources">
           <Markdown className="text-sm">{sources}</Markdown>

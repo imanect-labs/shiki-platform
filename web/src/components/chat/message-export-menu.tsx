@@ -20,7 +20,9 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { answerFileName, answerMarkdown, hasDocumentSources } from "@/lib/answer-export";
+import type { ImageProxy } from "@/lib/answer-images";
 import type { Citation } from "@/lib/chat-api";
+import { translationsOf, translationTitle } from "@/lib/translation";
 import { ExportPrint } from "./answer-print";
 import { useMessageCitations } from "./citations/citation-context";
 import { useExportActions } from "./export-actions";
@@ -33,6 +35,8 @@ export function MessageExportMenu({
   segments,
   text,
   citations,
+  translations: rawTranslations = [],
+  imageProxy = null,
 }: {
   threadId: string;
   threadTitle: string | null;
@@ -40,15 +44,25 @@ export function MessageExportMenu({
   segments: TimelineSegment[];
   text: string;
   citations: Citation[];
+  /// 回答に付いた Web ページの訳文（translation ブロックの生の値）。本文の後・出典の前に書き出す。
+  translations?: readonly unknown[];
+  /// 訳文の画像を読む経路（印刷で使う・保存前の回答は null）。
+  imageProxy?: ImageProxy | null;
 }) {
   const cited = useMessageCitations();
+  const translations = React.useMemo(
+    () => translationsOf(rawTranslations.map((translation) => ({ type: "translation", translation }))),
+    [rawTranslations],
+  );
+  // 回答の本文に見出しが無ければ、訳したページの題名をファイル名にする（会話の題名より具体的）。
+  const firstTitle = translations.map(translationTitle).find((t): t is string => !!t) ?? null;
   const actions = useExportActions({
     threadId,
     what: "回答",
     // ファイル名・Markdown は押したときだけ求める（会話の全回答を描くたびに本文を解析しない）。
-    fileName: () => answerFileName(text, threadTitle),
+    fileName: () => answerFileName(text, firstTitle ?? threadTitle),
     // 出典の名前は、押した時点で解決できているものを使う（一覧の表示と同じ）。
-    markdown: () => answerMarkdown(text, citations, cited?.nameOf ?? (() => "出典")),
+    markdown: () => answerMarkdown(text, citations, cited?.nameOf ?? (() => "出典"), translations),
     hasDocSources: hasDocumentSources(citations),
   });
 
@@ -57,9 +71,20 @@ export function MessageExportMenu({
   const printItems = React.useMemo(
     () =>
       printing
-        ? [{ key: "answer", question: null, text, citations, imageSources: answerImageSources(segments, citations), linkSources: answerLinkSourcesOf(segments, citations) }]
+        ? [
+            {
+              key: "answer",
+              question: null,
+              text,
+              citations,
+              imageSources: answerImageSources(segments, citations),
+              linkSources: answerLinkSourcesOf(segments, citations),
+              translations: rawTranslations,
+              imageProxy,
+            },
+          ]
         : null,
-    [printing, segments, text, citations],
+    [printing, segments, text, citations, rawTranslations, imageProxy],
   );
 
   return (
