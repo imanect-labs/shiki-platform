@@ -386,7 +386,11 @@ export function Conversation({
   );
 
   // 蓄積中のストリームを確定メッセージへ移して閉じる（onDone / stop 共通）。
+  // 戻った直後の送り直しを待つ間にストリームが終わったら（完了・停止・エラー）、待ちを先に終える
+  // （畳みと位置の復元をタイマーまで遅らせない）。関数は下で定義するので写しで呼ぶ。
+  const finishRestoreRef = React.useRef<() => void>(() => {});
   const flushStream = React.useCallback((provisional: "reloading" | "stopped") => {
+    finishRestoreRef.current();
     const s = streamRef.current;
     if (s) finalizeStream(s, setMessages, provisional);
     streamRef.current = null;
@@ -419,6 +423,7 @@ export function Conversation({
         : s,
     );
   }, [updateStream]);
+  finishRestoreRef.current = finishRestore;
   React.useEffect(() => () => clearTimeout(restoreTimer.current), []);
 
   // 送信/復元で共通の SSE ハンドラ。蓄積を stream state に反映し、端末で確定する。
@@ -640,6 +645,7 @@ export function Conversation({
         setError(msg);
         // 失敗した run の途中成果物へ勝手に飛ばさない（会話に留めてユーザーに判断させる）。
         pendingOpenRef.current = null;
+        finishRestore();
         streamRef.current = null;
         setStream(null);
         cancelRef.current = null;
