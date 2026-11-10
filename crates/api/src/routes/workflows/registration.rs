@@ -102,7 +102,8 @@ pub struct ConsentPlanResponse {
     /// 宣言スコープ（権限の天井・同意対象）。
     pub declared_scopes: Vec<String>,
     pub grants: Vec<SuggestedGrantItem>,
-    /// 有効化できない理由（必須の文字の欄が空・schedule / event で保存先フォルダを省略・D-40・D-43）。
+    /// 有効化できない理由（必須の文字の欄が空・schedule / event で保存先フォルダを省略・D-40・D-43、schedule / event で
+    /// 動く IR の、有効化する人のアカウントで使えないモデル・D-196）。
     /// 空なら有効化できる。enable は同じ理由を 409 `not_ready` で返す。
     pub blockers: Vec<workflow_engine::ValidationError>,
 }
@@ -339,11 +340,35 @@ pub async fn consent_plan(
             g.needs_user_pick = g.object_id.is_none();
         }
     }
+    let blockers = enable_blockers_for(&state, &ctx, &ir).await?;
     Ok(Json(ConsentPlanResponse {
         declared_scopes: ir.declared_scopes.clone(),
         grants,
-        blockers: workflow_engine::enable_blockers(&ir),
+        blockers,
     }))
+}
+
+/// 有効化を止める理由（同意計画と有効化が同じものを返す）。動かせない設定（[`workflow_engine::enable_blockers`]）と、
+/// 有効化する人（`ctx`）のアカウントでは使えないモデルで自動実行されるもの
+/// （[`crate::workflow_catalog::enable_model_blockers`]・保存のときと同じ材料・D-196）。
+async fn enable_blockers_for(
+    state: &AppState,
+    ctx: &authz::AuthContext,
+    ir: &WorkflowIr,
+) -> Result<Vec<workflow_engine::ValidationError>, ApiError> {
+    let mut blockers = workflow_engine::enable_blockers(ir);
+    let models = super::save::workflow_models(state);
+    blockers.extend(
+        crate::workflow_catalog::enable_model_blockers(
+            &models,
+            Some(&state.skill_installs),
+            ctx,
+            ir,
+        )
+        .await
+        .map_err(ApiError::Internal)?,
+    );
+    Ok(blockers)
 }
 
 /// 有効化（明示委譲・単一論理操作・fail-closed）。
@@ -370,6 +395,12 @@ pub async fn enable_workflow(
 ) -> Result<Json<EnableResponse>, ApiError> {
     require_editor(&state, &ctx, id).await?;
     let ir = fetch_ir(&state, &ctx, id, req.version, trace.as_deref()).await?;
+    // 動かせない設定と、有効化する人のアカウントでは使えないモデル（D-196）は、委譲のタプルに触る前に止める。
+    // 同意し直しも軽量切替（`consent: false` を API から直接呼んだとき）も同じ。
+    let blockers = enable_blockers_for(&state, &ctx, &ir).await?;
+    if !blockers.is_empty() {
+        return Err(map_enable_err(EnableError::NotReady(blockers)));
+    }
     let grants = req
         .grants
         .iter()

@@ -11,6 +11,9 @@
 //!   保存し直すと断られ、使えるモデルに直せば保存できる。
 //! - instructions だけのスキルを呼ぶ skill.invoke も組織の既定のモデルで動くので、既定が使えなければ断る。shiki script で
 //!   動くスキル（LLM を呼ばない）は断らない。
+//! - 有効化のときにも、有効化する人の制限で同じ照合をかける（D-196・`enable_model_blockers`）。制限の無い人が保存した
+//!   schedule の版を制限された人が有効化しようとすると止まる。対話だけの版と、制限の無い人の有効化は止めない。
+//!   有効化する人が入れていない instructions だけのスキルも止める。
 
 #![allow(
     clippy::unwrap_used,
@@ -21,7 +24,9 @@
 
 use std::sync::Arc;
 
-use api::workflow_catalog::{build_catalog_from, ApiWorkflowCatalogSource, WorkflowModels};
+use api::workflow_catalog::{
+    build_catalog_from, enable_model_blockers, ApiWorkflowCatalogSource, WorkflowModels,
+};
 use async_trait::async_trait;
 use authz::{
     AuthContext, AuthzClient, AuthzError, Consistency, FgaObject, ObjectType, Principal,
@@ -136,6 +141,32 @@ fn ir(llm: Option<&str>, agent: Option<&str>, decide: &str) -> serde_json::Value
         "edges": [{ "from": "ask", "to": "work" }, { "from": "work", "to": "judge" }]
     })
 }
+
+/// 同じ IR を schedule のきっかけで動くものにする（名前も変える・同じ組織に並べて保存できるように）。有効化の照合は
+/// schedule・event のきっかけを持つ IR だけを照らす（D-196）。
+fn scheduled(mut ir: serde_json::Value) -> serde_json::Value {
+    ir["triggers"] = json!([{ "kind": "schedule", "cron": "0 9 * * *", "tz": "Asia/Tokyo" }]);
+    let name = format!("{}-scheduled", ir["name"].as_str().unwrap());
+    ir["name"] = json!(name);
+    ir
+}
+
+/// 有効化の照合の誤り（ノード id・コード・位置）。
+fn enable_errors(errors: &[workflow_engine::ValidationError]) -> Vec<(String, String, String)> {
+    errors
+        .iter()
+        .map(|e| {
+            (
+                e.node_id.clone().unwrap_or_default(),
+                e.code.clone(),
+                e.path.clone().unwrap_or_default(),
+            )
+        })
+        .collect()
+}
+
+/// 有効化の文脈で添える 1 文（D-196）。
+const ENABLE_HINT: &str = "自動実行は、このモデルを使える人にオンにしてもらうこともできます";
 
 /// モデルの誤り（ノード id・コード・文）。
 fn model_errors(ir: &serde_json::Value, catalog: &Catalog) -> Vec<(String, String, String)> {
@@ -587,5 +618,176 @@ async fn a_saved_workflow_opens_but_resaving_needs_a_usable_model() {
         .await
         .expect("直した IR は保存できる");
     assert_eq!(version, 2);
+    cleanup(&pool, &tenant).await;
+}
+
+/// 有効化のときにも、有効化する人の制限で保存のときと同じ照合をかける（D-196）。制限の無い人が使えないプロバイダの
+/// モデルで保存した schedule の版を、制限された人が有効化しようとすると、保存のときと同じ 3 件（ノード・コード・位置）で
+/// 止まる（文には有効化の文脈の 1 文を添える）。同じ IR の対話だけの版と、制限の無い人の有効化と、使えるモデルに
+/// 直した版は止めない。
+#[tokio::test]
+async fn enabling_follows_the_enablers_provider_restriction() {
+    let Some(pool) = pool().await else { return };
+    let tenant = format!("wfrestrict-{}", uuid::Uuid::new_v4().simple());
+    let gw = gateway(pool.clone(), &tenant);
+    let models = WorkflowModels::new(Some(gw), Vec::new());
+    let restricted = user(&tenant, "restricted");
+    let other = user(&tenant, "other");
+    let artifacts = Arc::new(artifact::ArtifactStore::new(
+        pool.clone(),
+        Arc::new(AllowAll),
+    ));
+    let store = WorkflowStore::new(artifacts);
+    let other_catalog = build_catalog_from(None, None, &models, &other)
+        .await
+        .unwrap();
+    // 制限の無い人が保存した、同じ IR の対話だけの版と schedule の版（制限された人も開ける）。
+    let manual_ir = ir(Some("hidden"), None, "judge");
+    let auto_ir = scheduled(manual_ir.clone());
+    let mut opened = Vec::new();
+    for saved in [&manual_ir, &auto_ir] {
+        let (id, _) = store
+            .create(&other, saved, &other_catalog, None)
+            .await
+            .expect("制限の無い人は保存できる");
+        opened.push(store.get_latest(&restricted, id, None).await.unwrap().1);
+    }
+    let (manual, auto) = (&opened[0], &opened[1]);
+
+    // 対話だけの版は止めない（対話の実行は起動した本人の文脈で動く）。
+    assert!(enable_model_blockers(&models, None, &restricted, manual)
+        .await
+        .unwrap()
+        .is_empty());
+    // schedule の版は、保存のときと同じノード・コード・位置で止まる（ブロックの順）。
+    let errs = enable_model_blockers(&models, None, &restricted, auto)
+        .await
+        .unwrap();
+    let at = |node: &str| {
+        (
+            node.to_string(),
+            MODEL_UNAVAILABLE_FOR_USER.to_string(),
+            "/params/model".to_string(),
+        )
+    };
+    assert_eq!(enable_errors(&errs), [at("ask"), at("work"), at("judge")]);
+    let restricted_catalog = build_catalog_from(None, None, &models, &restricted)
+        .await
+        .unwrap();
+    let saving = model_errors(&auto_ir, &restricted_catalog);
+    assert_eq!(saving.len(), 3, "{saving:#?}");
+    // 文は、制限された人が同じ版を保存したときの文に、有効化の文脈の 1 文を添えたもの（保存の誤りは段の順に並ぶ）。
+    for e in &errs {
+        let node = e.node_id.as_deref().unwrap();
+        let (_, code, message) = saving
+            .iter()
+            .find(|(n, _, _)| n == node)
+            .unwrap_or_else(|| panic!("{node}: {saving:#?}"));
+        assert_eq!(code, &e.code, "{node}");
+        assert_eq!(e.message, format!("{message}。{ENABLE_HINT}"), "{node}");
+    }
+    // 制限の無い人の有効化は止めない。
+    assert!(enable_model_blockers(&models, None, &other, auto)
+        .await
+        .unwrap()
+        .is_empty());
+    // 使えるモデルに直した版は、制限された人も有効化できる。
+    let fixed = workflow_engine::WorkflowIr::from_json(&scheduled(ir(
+        Some("visible"),
+        Some("visible"),
+        "decide",
+    )))
+    .unwrap();
+    assert!(enable_model_blockers(&models, None, &restricted, &fixed)
+        .await
+        .unwrap()
+        .is_empty());
+    cleanup(&pool, &tenant).await;
+}
+
+/// 制限の無い人が入れた instructions だけのスキルを呼ぶ schedule の版を、制限された人が有効化しようとすると止まる
+/// （D-196）。有効化する人が入れていないスキルは中身を確かめられないので止め、入れても instructions だけなら保存のときと
+/// 同じ文で止める。制限の無い人の有効化は止めない。
+#[tokio::test]
+async fn enabling_a_skill_on_the_enablers_unavailable_default_is_refused() {
+    let Some(pool) = pool().await else { return };
+    let tenant = format!("wfrestrict-{}", uuid::Uuid::new_v4().simple());
+    let gw = gateway(pool.clone(), &tenant);
+    let models = WorkflowModels::new(Some(gw), Vec::new());
+    let restricted = user(&tenant, "restricted");
+    let other = user(&tenant, "other");
+    let artifacts = Arc::new(artifact::ArtifactStore::new(
+        pool.clone(),
+        Arc::new(AllowAll),
+    ));
+    let skills = gui::SkillStore::new(Arc::clone(&artifacts));
+    let installs = app_platform::SkillInstallService::new(
+        pool.clone(),
+        app_platform::Registry::new(pool.clone()),
+        app_platform::TrustedKeyStore::new(pool.clone()),
+        Arc::clone(&artifacts),
+        Arc::new(AllowAll),
+    );
+    let body =
+        json!({ "description": "メモを整える", "instructions": "箇条書きに整えてください。" });
+    let (skill, _) = skills.create(&other, "memo", &body, None).await.unwrap();
+    installs
+        .publish(&other, skill, Some("1.0.0"), "in_house", None, None)
+        .await
+        .unwrap();
+    installs
+        .install(&other, "memo", Some("1.0.0"), None)
+        .await
+        .unwrap();
+    let store = WorkflowStore::new(artifacts);
+    let saved = scheduled(json!({
+        "ir_version": 1, "name": "restricted-skills", "triggers": [{ "kind": "interactive" }],
+        "nodes": [{ "id": "memo", "type": "skill.invoke", "params": { "skill": "skill:memo@1.0.0" } }],
+        "edges": []
+    }));
+    let other_catalog = build_catalog_from(None, Some(&installs), &models, &other)
+        .await
+        .unwrap();
+    let (id, _) = store
+        .create(&other, &saved, &other_catalog, None)
+        .await
+        .expect("制限の無い人は保存できる");
+    let (_, ir) = store.get_latest(&restricted, id, None).await.unwrap();
+
+    assert!(enable_model_blockers(&models, Some(&installs), &other, &ir)
+        .await
+        .unwrap()
+        .is_empty());
+    // 入れていない: 中身を確かめられないので止める。
+    let errs = enable_model_blockers(&models, Some(&installs), &restricted, &ir)
+        .await
+        .unwrap();
+    let at = (
+        "memo".to_string(),
+        MODEL_UNAVAILABLE_FOR_USER.to_string(),
+        "/params/skill".to_string(),
+    );
+    assert_eq!(enable_errors(&errs), std::slice::from_ref(&at));
+    assert!(
+        errs[0]
+            .message
+            .starts_with("このスキル（memo@1.0.0）はあなたがインストールしていないため"),
+        "{errs:#?}"
+    );
+    // 入れても instructions だけのスキルは、保存のときと同じ文で止める。
+    installs
+        .install(&restricted, "memo", Some("1.0.0"), None)
+        .await
+        .unwrap();
+    let errs = enable_model_blockers(&models, Some(&installs), &restricted, &ir)
+        .await
+        .unwrap();
+    assert_eq!(enable_errors(&errs), [at]);
+    assert!(
+        errs[0].message.starts_with(
+            "このスキルは組織の既定のモデル（hidden）で動きますが、このモデルはあなたのアカウントでは使えません。"
+        ) && errs[0].message.ends_with(ENABLE_HINT),
+        "{errs:#?}"
+    );
     cleanup(&pool, &tenant).await;
 }

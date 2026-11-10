@@ -105,11 +105,9 @@ pub(crate) async fn build_catalog_for(
     Ok(catalog)
 }
 
-async fn build_catalog_base(
-    state: &AppState,
-    ctx: &authz::AuthContext,
-) -> Result<Catalog, ApiError> {
-    let models = crate::workflow_catalog::WorkflowModels::new(
+/// モデルの照合の材料（gateway があればそれ、無ければデプロイ設定のモデル）。保存と有効化（D-196）が共有する。
+pub(crate) fn workflow_models(state: &AppState) -> crate::workflow_catalog::WorkflowModels {
+    crate::workflow_catalog::WorkflowModels::new(
         state.llm.as_deref().cloned(),
         state
             .config
@@ -118,7 +116,14 @@ async fn build_catalog_base(
             .iter()
             .map(|m| (m.id.clone(), m.modality))
             .collect(),
-    );
+    )
+}
+
+async fn build_catalog_base(
+    state: &AppState,
+    ctx: &authz::AuthContext,
+) -> Result<Catalog, ApiError> {
+    let models = workflow_models(state);
     let mut catalog = crate::workflow_catalog::build_catalog_from(
         state.secrets.as_deref(),
         Some(&state.skill_installs),

@@ -233,6 +233,32 @@ pub async fn build_catalog_from(
     Ok(catalog)
 }
 
+/// 有効化する人（`ctx`）のアカウントでは使えないモデルで自動実行される IR の、有効化を止める理由（D-196）。
+///
+/// 保存のときと同じ材料（[`build_catalog_from`]・中で [`WorkflowModels::check`] が有効化する人の制限を通す）を
+/// 有効化する人で組み、[`workflow_engine::user_model_blockers`] で照らす。制限の無い人が保存した版や、保存の照合より
+/// 前に保存した版を、制限された人が有効化して自動実行させる道を閉じる（schedule・event の実行の主体には制限が
+/// かからない）。照合は有効化した時点のもの（後から規則や既定が変わっても、すでに有効なものは止めない）。
+///
+/// きっかけが対話だけの IR は照らさない（材料を引かずに空を返す。どれを照らすかの決まりは engine 側にあり、ほかの
+/// きっかけを持つ IR は engine に任せる）。
+pub async fn enable_model_blockers(
+    models: &WorkflowModels,
+    installs: Option<&app_platform::SkillInstallService>,
+    ctx: &authz::AuthContext,
+    ir: &workflow_engine::WorkflowIr,
+) -> Result<Vec<workflow_engine::ValidationError>, String> {
+    if ir
+        .triggers
+        .iter()
+        .all(|t| matches!(t, workflow_engine::ir::Trigger::Interactive(_)))
+    {
+        return Ok(Vec::new());
+    }
+    let catalog = build_catalog_from(None, installs, models, ctx).await?;
+    Ok(workflow_engine::user_model_blockers(ir, &catalog))
+}
+
 /// 承認（human.approval）・状態を進める（data.transition）・状態の変化のきっかけ・同じレコードを探す列と足す数
 /// （キーで追加か更新・まとめて登録の照合・レコードの更新の足す数・GAP-16）・データを検索の列（BUG-244）・状態の列への
 /// 書き込み（レコードの更新と追加・BUG-251、まとめて登録の行・GAP-129）が束縛するテーブルを保存者の見え方で引いて、V4 の
