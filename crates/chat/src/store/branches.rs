@@ -18,7 +18,6 @@ use std::collections::HashMap;
 use authz::{AuthContext, Relation};
 use chrono::{DateTime, Utc};
 use serde_json::json;
-use sqlx::types::Json;
 use storage::audit::{AuditAction, AuditEntry, Decision};
 use uuid::Uuid;
 
@@ -26,7 +25,7 @@ use super::threads::{map_db, map_storage};
 use crate::model::{Message, Role, Thread};
 
 /// 木の 1 ノード（本文は持たない）。
-#[derive(Debug, Clone, sqlx::FromRow)]
+#[derive(Debug, Clone)]
 pub(super) struct Node {
     pub id: Uuid,
     pub parent_id: Option<Uuid>,
@@ -137,29 +136,68 @@ impl Tree {
     }
 }
 
-/// スレッドの木を引く（認可は呼び出し側が済ませる）。
+/// スレッドの木と表示中の葉の指定を 1 往復で引く（認可は呼び出し側が済ませる）。
+///
+/// スレッドが無ければ空の木と `None`。メッセージが無いスレッドも 1 行（メッセージ側が NULL）返る。
 pub(super) async fn load_tree(
     conn: &mut sqlx::PgConnection,
     thread_id: Uuid,
     tenant_id: &str,
 ) -> Result<(Tree, Option<Uuid>), ChatError> {
-    let rows: Vec<Node> = sqlx::query_as(
-        "SELECT id, parent_id, created_at FROM message \
-         WHERE thread_id = $1 AND tenant_id = $2",
+    type Row = (
+        Option<Uuid>,
+        Option<Uuid>,
+        Option<DateTime<Utc>>,
+        Option<Uuid>,
+    );
+    let rows: Vec<Row> = sqlx::query_as(
+        "SELECT m.id, m.parent_id, m.created_at, t.active_message_id FROM thread t \
+         LEFT JOIN message m ON m.thread_id = t.id AND m.tenant_id = t.tenant_id \
+         WHERE t.id = $1 AND t.tenant_id = $2",
     )
     .bind(thread_id)
     .bind(tenant_id)
     .fetch_all(&mut *conn)
     .await
     .map_err(map_db)?;
-    let active: Option<Option<Uuid>> =
-        sqlx::query_scalar("SELECT active_message_id FROM thread WHERE id = $1 AND tenant_id = $2")
-            .bind(thread_id)
-            .bind(tenant_id)
-            .fetch_optional(&mut *conn)
-            .await
-            .map_err(map_db)?;
-    Ok((Tree::new(rows), active.flatten()))
+    let active = rows.first().and_then(|r| r.3);
+    let nodes = rows
+        .into_iter()
+        .filter_map(|(id, parent_id, created_at, _)| {
+            Some(Node {
+                id: id?,
+                parent_id,
+                created_at: created_at?,
+            })
+        })
+        .collect();
+    Ok((Tree::new(nodes), active))
+}
+
+/// 未完了（順番待ち・生成中・承認待ち）の run があるか。
+///
+/// ある間は表示中の枝を動かさない（枝の切り替え・発話の編集を受けない）。生成先と画面の枝が
+/// ずれると、生成中の回答や順番待ちが見えていない枝の下に描かれる。
+pub(super) async fn has_unfinished_run(
+    conn: &mut sqlx::PgConnection,
+    thread_id: Uuid,
+    tenant_id: &str,
+) -> Result<bool, ChatError> {
+    sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM generation_run \
+         WHERE thread_id = $1 AND tenant_id = $2 \
+           AND status IN ('queued', 'running', 'waiting_approval'))",
+    )
+    .bind(thread_id)
+    .bind(tenant_id)
+    .fetch_one(conn)
+    .await
+    .map_err(map_db)
+}
+
+/// 生成中は枝を動かせないことを伝えるエラー（400・画面へそのまま出す）。
+pub(super) fn busy_error() -> ChatError {
+    ChatError::Invalid("回答の生成中は、発話の編集や版の切り替えはできません".into())
 }
 
 /// 表示中の枝の葉を書く。
@@ -225,6 +263,9 @@ impl ChatStore {
         if locked.is_none() {
             return Err(ChatError::NotFound);
         }
+        if has_unfinished_run(&mut tx, thread_id, ctx.tenant_id()).await? {
+            return Err(busy_error());
+        }
         let (tree, _) = load_tree(&mut tx, thread_id, ctx.tenant_id()).await?;
         if !tree.contains(message_id) {
             return Err(ChatError::NotFound);
@@ -250,10 +291,12 @@ impl ChatStore {
 
     /// その回答までの会話を新しいスレッドへ複製する（「新しいチャットに分岐」）。
     ///
-    /// 元のスレッドは viewer で足りる（読めるものを自分の会話として続けるだけ）。複製するのは
-    /// **呼び出し者が見えるとおりの内容**（読めない引用は番号だけ・他人のツール結果は伏せ字）で、
-    /// 新しいスレッドの owner は呼び出し者。生成待ちの空の応答は複製しない。図のボタンの束縛・
-    /// 実行の記録・評価は複製しない（新しいメッセージでは押せない＝元の会話の操作を持ち越さない）。
+    /// 元のスレッドの **editor** を要求する（閲覧だけの共有先が内容を自分の会話として持ち出し、
+    /// 元の owner が共有していない相手へ再共有できないようにする）。複製するのは**呼び出し者が
+    /// 見えるとおりの内容**（読めない引用は番号だけ・他人のツール結果は伏せ字）で、新しい
+    /// スレッドの owner は呼び出し者。分岐できるのは確定した（本文のある）回答からだけ。
+    /// 途中の生成待ちの空の応答は複製しない。図のボタンの束縛・実行の記録・評価は複製しない
+    /// （新しいメッセージでは押せない＝元の会話の操作を持ち越さない）。
     pub async fn fork_thread(
         &self,
         ctx: &AuthContext,
@@ -261,11 +304,17 @@ impl ChatStore {
         message_id: Uuid,
         trace_id: Option<&str>,
     ) -> Result<Thread, ChatError> {
-        let source = self.get_thread(ctx, source_thread_id, trace_id).await?;
-        let path = self
-            .get_message_path(ctx, source_thread_id, message_id, trace_id)
+        let action = AuditAction::ThreadFork;
+        self.require_thread(ctx, source_thread_id, Relation::Editor, action, trace_id)
             .await?;
-        if path.is_empty() {
+        let (source, path) = tokio::try_join!(
+            self.get_thread(ctx, source_thread_id, trace_id),
+            self.get_message_path(ctx, source_thread_id, message_id, trace_id),
+        )?;
+        let forkable = path
+            .last()
+            .is_some_and(|m| m.role == Role::Assistant && !m.content.is_empty());
+        if !forkable {
             return Err(ChatError::NotFound);
         }
         let thread = self
@@ -278,19 +327,14 @@ impl ChatStore {
             )
             .await?;
         if let Err(e) = self.copy_path(ctx, thread.id, &path).await {
-            // 空の会話を残さない（owner タプルは残るが、行が無ければ以後の操作は NotFound）。
-            let _ = sqlx::query("DELETE FROM thread WHERE id = $1 AND tenant_id = $2")
-                .bind(thread.id)
-                .bind(ctx.tenant_id())
-                .execute(&self.db)
-                .await;
+            self.discard_forked(ctx, thread.id).await;
             return Err(e);
         }
         self.audit
             .record(
                 ctx,
                 AuditEntry {
-                    action: AuditAction::ThreadFork,
+                    action,
                     object_type: "thread",
                     object_id: &thread.id.to_string(),
                     decision: Decision::Allow,
@@ -304,39 +348,69 @@ impl ChatStore {
             )
             .await
             .map_err(map_storage)?;
-        self.get_thread(ctx, thread.id, trace_id).await
+        Ok(thread)
     }
 
-    /// 経路を新しいスレッドへ書く（親は直前に書いたもの・作成時刻は元のまま）。
+    /// 複製に失敗した会話を消す（行と owner タプル）。失敗は記録だけして元のエラーを返す
+    /// （行が無ければ残ったタプルからは何も見えない＝以後の操作は NotFound）。
+    async fn discard_forked(&self, ctx: &AuthContext, thread_id: Uuid) {
+        if let Err(e) = sqlx::query("DELETE FROM thread WHERE id = $1 AND tenant_id = $2")
+            .bind(thread_id)
+            .bind(ctx.tenant_id())
+            .execute(&self.db)
+            .await
+        {
+            tracing::warn!(%thread_id, error = %e, "分岐に失敗した会話を消せなかった");
+        }
+        let obj = ctx.ns().thread(&thread_id.to_string());
+        if let Err(e) = self.authz.delete_object_tuples(&obj).await {
+            tracing::warn!(%thread_id, error = %e, "分岐に失敗した会話のタプルを消せなかった");
+        }
+    }
+
+    /// 経路を新しいスレッドへ 1 文で書く（親は直前のもの・作成時刻は元のまま）。
     async fn copy_path(
         &self,
         ctx: &AuthContext,
         thread_id: Uuid,
         path: &[Message],
     ) -> Result<(), ChatError> {
+        let kept: Vec<&Message> = path
+            .iter()
+            .filter(|m| !(m.role == Role::Assistant && m.content.is_empty()))
+            .collect();
+        let ids: Vec<Uuid> = kept.iter().map(|_| Uuid::new_v4()).collect();
+        let parents: Vec<Option<Uuid>> = std::iter::once(None)
+            .chain(ids.iter().copied().map(Some))
+            .take(ids.len())
+            .collect();
+        let roles: Vec<&str> = kept.iter().map(|m| m.role.as_str()).collect();
+        let contents: Vec<serde_json::Value> = kept
+            .iter()
+            .map(|m| serde_json::to_value(&m.content))
+            .collect::<Result<_, _>>()
+            .map_err(|e| ChatError::Internal(format!("content: {e}")))?;
+        let agent_modes: Vec<bool> = kept.iter().map(|m| m.agent_mode).collect();
+        let created: Vec<DateTime<Utc>> = kept.iter().map(|m| m.created_at).collect();
         let mut tx = self.db.begin().await.map_err(map_db)?;
-        let mut parent: Option<Uuid> = None;
-        for m in path {
-            if m.role == Role::Assistant && m.content.is_empty() {
-                continue;
-            }
-            let id: Uuid = sqlx::query_scalar(
-                "INSERT INTO message (thread_id, org, tenant_id, role, content, agent_mode, parent_id, created_at) \
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id",
-            )
-            .bind(thread_id)
-            .bind(ctx.org())
-            .bind(ctx.tenant_id())
-            .bind(m.role.as_str())
-            .bind(Json(&m.content))
-            .bind(m.agent_mode)
-            .bind(parent)
-            .bind(m.created_at)
-            .fetch_one(&mut *tx)
-            .await
-            .map_err(map_db)?;
-            parent = Some(id);
-        }
+        sqlx::query(
+            "INSERT INTO message (id, thread_id, org, tenant_id, role, content, agent_mode, parent_id, created_at) \
+             SELECT u.id, $1, $2, $3, u.role, u.content, u.agent_mode, u.parent_id, u.created_at \
+             FROM UNNEST($4::uuid[], $5::text[], $6::jsonb[], $7::bool[], $8::uuid[], $9::timestamptz[]) \
+                  AS u(id, role, content, agent_mode, parent_id, created_at)",
+        )
+        .bind(thread_id)
+        .bind(ctx.org())
+        .bind(ctx.tenant_id())
+        .bind(&ids)
+        .bind(&roles)
+        .bind(&contents)
+        .bind(&agent_modes)
+        .bind(&parents)
+        .bind(&created)
+        .execute(&mut *tx)
+        .await
+        .map_err(map_db)?;
         // 題名は複製元のものを使う（最初の生成で要約し直さない）。
         sqlx::query(
             "UPDATE thread SET active_message_id = $3, title_pending = false \
@@ -344,7 +418,7 @@ impl ChatStore {
         )
         .bind(thread_id)
         .bind(ctx.tenant_id())
-        .bind(parent)
+        .bind(ids.last())
         .execute(&mut *tx)
         .await
         .map_err(map_db)?;

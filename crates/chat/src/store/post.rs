@@ -85,7 +85,7 @@ impl ChatStore {
             once_skills,
             model,
             requested_tools,
-            None,
+            BranchTarget::default(),
             trace_id,
         )
         .await
@@ -117,8 +117,8 @@ impl ChatStore {
         // 語彙照合・重複除去・件数上限は API 層で済んでいる。run にスナップショットするだけで、
         // 提示ツール・承認・認可は変えない（ワーカーが誘導＝常時ロード＋注記に使う）。
         requested_tools: &[agent_core::ToolName],
-        // 編集元の user 発話（このスレッドの user 発話でなければ NotFound）。
-        edit_of: Option<Uuid>,
+        // 親の指定（#1166）: 編集元の user 発話、または続ける先（画面で表示している枝の末尾）。
+        branch: BranchTarget,
         trace_id: Option<&str>,
     ) -> Result<PostResult, ChatError> {
         let post = AuditAction::ThreadPost;
@@ -188,9 +188,9 @@ impl ChatStore {
         }
 
         let mut tx = self.db.begin().await.map_err(map_db)?;
-        touch_live_thread(&mut tx, thread_id, ctx.tenant_id()).await?;
+        let active = touch_live_thread(&mut tx, thread_id, ctx.tenant_id()).await?;
         // 親を決める（スレッドの行ロックの後＝並行する投稿・枝の切り替えと直列）。
-        let parent = parent_for_post(&mut tx, thread_id, ctx.tenant_id(), edit_of).await?;
+        let parent = parent_for_post(&mut tx, thread_id, ctx.tenant_id(), active, branch).await?;
         let user_id: Uuid = sqlx::query_scalar(
             "INSERT INTO message (thread_id, org, tenant_id, role, content, agent_mode, parent_id) \
              VALUES ($1, $2, $3, 'user', $4, $5, $6) RETURNING id",
@@ -273,14 +273,30 @@ impl ChatStore {
     }
 }
 
-/// 新しい user 発話の親（編集なら編集元の親、それ以外は表示中の枝の葉）。
+/// 新しい発話をどこに置くか（#1166）。既定は表示中の枝の続き。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BranchTarget {
+    /// 編集して送り直す元の user 発話（同じ親に新しい版を置く）。
+    pub edit_of: Option<Uuid>,
+    /// 続ける先のメッセージ（送った人の画面に出ていた枝の末尾）。別のタブ・共同編集者が
+    /// 枝を切り替えていても、送った人が見ていた会話に続ける。生成中は無視して順番待ちにする。
+    pub after: Option<Uuid>,
+}
+
+/// 新しい user 発話の親（編集なら編集元の親、続ける先の指定があればそこ、無ければ表示中の枝の葉）。
 async fn parent_for_post(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     thread_id: Uuid,
     tenant_id: &str,
-    edit_of: Option<Uuid>,
+    active: Option<Uuid>,
+    branch: BranchTarget,
 ) -> Result<Option<Uuid>, ChatError> {
-    if let Some(edit_of) = edit_of {
+    use super::branches::{busy_error, has_unfinished_run, load_tree};
+    let busy = has_unfinished_run(tx, thread_id, tenant_id).await?;
+    if let Some(edit_of) = branch.edit_of {
+        if busy {
+            return Err(busy_error());
+        }
         // 編集できるのは同じスレッドの user 発話だけ（応答や他スレッドの id は存在秘匿で 404）。
         let row: Option<Option<Uuid>> = sqlx::query_scalar(
             "SELECT parent_id FROM message \
@@ -294,7 +310,33 @@ async fn parent_for_post(
         .map_err(map_db)?;
         return row.ok_or(ChatError::NotFound);
     }
-    let (tree, active) = super::branches::load_tree(tx, thread_id, tenant_id).await?;
+    // 続ける先（生成中は表示中の枝の後ろへ順番待ちにするので使わない）。
+    let after = branch.after.filter(|_| !busy);
+    // 多くの投稿は「指定（または表示中）の葉に子が無い」ので、木を引かずに 1 問で確かめる。
+    if let Some(leaf) = after.or(active) {
+        let (exists, has_child): (bool, bool) = sqlx::query_as(
+            "SELECT EXISTS (SELECT 1 FROM message WHERE id = $1 AND thread_id = $2 AND tenant_id = $3), \
+                    EXISTS (SELECT 1 FROM message WHERE thread_id = $2 AND parent_id = $1 AND tenant_id = $3)",
+        )
+        .bind(leaf)
+        .bind(thread_id)
+        .bind(tenant_id)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(map_db)?;
+        if after.is_some() {
+            // 続ける先はそのまま親にする（子があれば新しい枝になる）。無ければ 404。
+            return if exists {
+                Ok(after)
+            } else {
+                Err(ChatError::NotFound)
+            };
+        }
+        if exists && !has_child {
+            return Ok(Some(leaf));
+        }
+    }
+    let (tree, active) = load_tree(tx, thread_id, tenant_id).await?;
     Ok(tree.active_leaf(active))
 }
 
@@ -302,22 +344,22 @@ async fn parent_for_post(
 ///
 /// 削除が先に確定していれば 0 行で NotFound。こちらが先なら削除は commit を待ってから、
 /// ここで積む run も停止要求の対象にする（[`ChatStore::delete_thread`]）。
+///
+/// 返り値は表示中の枝の葉の指定（`thread.active_message_id`・#1166）。
 async fn touch_live_thread(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     thread_id: Uuid,
     tenant_id: &str,
-) -> Result<(), ChatError> {
-    let touched = sqlx::query(
+) -> Result<Option<Uuid>, ChatError> {
+    let touched: Option<Option<Uuid>> = sqlx::query_scalar(
         "UPDATE thread SET updated_at = now() \
-         WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL",
+         WHERE id = $1 AND tenant_id = $2 AND deleted_at IS NULL \
+         RETURNING active_message_id",
     )
     .bind(thread_id)
     .bind(tenant_id)
-    .execute(&mut **tx)
+    .fetch_optional(&mut **tx)
     .await
     .map_err(map_db)?;
-    if touched.rows_affected() == 0 {
-        return Err(ChatError::NotFound);
-    }
-    Ok(())
+    touched.ok_or(ChatError::NotFound)
 }

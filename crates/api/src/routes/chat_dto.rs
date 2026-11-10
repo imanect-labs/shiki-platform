@@ -159,6 +159,11 @@ pub struct PostMessageRequest {
     /// （`GET /threads/{id}/messages` の `sibling_ids` で切り替えられる）。省略は表示中の枝の続き。
     #[serde(default)]
     pub edit_of: Option<Uuid>,
+    /// 続ける先のメッセージ（画面に出ている枝の末尾・#1166）。別のタブや共同編集者が枝を
+    /// 切り替えていても、送った人が見ていた会話に続ける。省略は表示中の枝の続き。
+    /// 生成中（順番待ちになる発話）は無視する。
+    #[serde(default)]
+    pub after: Option<Uuid>,
 }
 
 /// `PostMessageRequest.tools` の schema（[`agent_core::USER_SELECTABLE_TOOLS`] の名前の閉集合）。

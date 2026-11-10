@@ -33,6 +33,7 @@ pub struct BranchRequest {
     params(("id" = Uuid, Path, description = "スレッド ID")),
     responses(
         (status = 204, description = "切り替えた"),
+        (status = 400, description = "回答の生成中（切り替えられない）"),
         (status = 403, description = "投稿権限なし"),
         (status = 404, description = "スレッド・メッセージが存在しない"),
         (status = 503, description = "chat 無効"),
@@ -52,14 +53,14 @@ pub async fn select_branch(
     Ok(StatusCode::NO_CONTENT)
 }
 
-/// その回答までの会話を新しいスレッドへ複製する（viewer・新しいスレッドの owner は呼び出し者）。
+/// その回答までの会話を新しいスレッドへ複製する（元の editor・新しいスレッドの owner は呼び出し者）。
 #[utoipa::path(
     post, path = "/threads/{id}/fork", request_body = BranchRequest,
     params(("id" = Uuid, Path, description = "分岐元のスレッド ID")),
     responses(
         (status = 201, description = "作成したスレッド", body = Thread),
-        (status = 403, description = "閲覧権限なし"),
-        (status = 404, description = "スレッド・メッセージが存在しない"),
+        (status = 403, description = "元のスレッドの editor ではない"),
+        (status = 404, description = "スレッドが存在しない・確定した回答ではない"),
         (status = 503, description = "chat 無効"),
     ),
     security(("session" = [])),

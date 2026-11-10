@@ -255,6 +255,9 @@ export function Conversation({
   const wide = useMediaQuery("(min-width: 1200px)");
   const sourceAside = !isPanel && wide;
   const [messages, setMessages] = React.useState<ChatMessageT[]>([]);
+  // 送信時に「画面に出ている枝の末尾」を引くための写し（send を messages ごとに作り直さない）。
+  const messagesRef = React.useRef<ChatMessageT[]>([]);
+  messagesRef.current = messages;
   const [stream, setStream] = React.useState<StreamState | null>(null);
   const [notFound, setNotFound] = React.useState(false);
   // 作成した文書の遷移先。**run 完了後**に遷移する（#381）: document_ref はツール結果直後に
@@ -733,6 +736,10 @@ export function Conversation({
         return;
       }
       const localId = newId();
+      // 続ける先＝画面に出ている枝の末尾（保存済みのもの）。別のタブで版を切り替えられても、
+      // サーバはこの会話に続ける（編集のときは編集元の位置が決めるので送らない）。
+      const shownLast = [...messagesRef.current].reverse().find((m) => !m.local);
+      const after = editOf || !shownLast ? undefined : (savedMessageId(shownLast) ?? undefined);
       setMessages((prev) => {
         // 編集: 元の発話から後ろは別の版になる（「< 2/2 >」で戻れる）。
         const cut = editOf ? prev.findIndex((m) => m.id === editOf.messageId) : -1;
@@ -763,6 +770,11 @@ export function Conversation({
             settleToolChoice(threadId, tools);
             handlers.onRunId?.(runId);
           },
+          // 編集が受理されなかったら、画面から外した続きを読み直して戻す。
+          onError: (msg) => {
+            handlers.onError?.(msg);
+            if (editOf) setReloadKey((k) => k + 1);
+          },
           // 受理された: 仮の発話をサーバの ID に置き換える（読み直さずに編集・版の切り替えができる）。
           onUserMessageId: (userMessageId) =>
             setMessages((prev) =>
@@ -784,7 +796,7 @@ export function Conversation({
         onceSkills,
         model,
         tools,
-        editOf?.messageId,
+        { editOf: editOf?.messageId, after },
       );
     },
     [threadId, makeHandlers, autonomous, scrollToBottom],
@@ -815,18 +827,19 @@ export function Conversation({
     (messageId: string) => {
       setSwitchingBranch(true);
       setError(null);
+      // 押せない状態は読み直しが画面に反映されるまで続ける（古い版の一覧から 2 度押させない）。
       selectBranch(threadId, messageId)
         .then(() => reload())
-        .catch((e) =>
+        .catch((e) => {
+          setSwitchingBranch(false);
           setError(
             e instanceof Error && e.message.includes("(403)")
               ? "この会話の版を切り替える権限がありません"
               : e instanceof Error
                 ? e.message
                 : "枝の切り替えに失敗しました",
-          ),
-        )
-        .finally(() => setSwitchingBranch(false));
+          );
+        });
     },
     [threadId, reload],
   );
@@ -951,6 +964,7 @@ export function Conversation({
             })),
         );
         setMessages(shown.filter((m) => !queuedRunOf.has(m.id)));
+        setSwitchingBranch(false);
         const resuming = activeRunId !== null;
         // 初回の読み込みでだけ（その後の読み直しで、手で直した内容を上書きしない）。
         if (adoptSkillDraftOnLoad && onSkillDraftOpened && !resuming && !adoptedDraftRef.current) {
@@ -1023,6 +1037,7 @@ export function Conversation({
       })
       .catch((e) => {
         if (!active) return;
+        setSwitchingBranch(false);
         if (e instanceof ThreadNotFound) setNotFound(true);
         else setError(e instanceof Error ? e.message : "読み込みに失敗しました");
       });

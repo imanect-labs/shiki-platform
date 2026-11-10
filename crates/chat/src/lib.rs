@@ -84,8 +84,8 @@ pub use skill_catalog::{
 pub use skill_draft_tool::SaveSkillTool;
 pub use slide_tool::{SaveSlideTool, SlideEditTool, SlideReadTool};
 pub use store::{
-    ChatStore, ClaimedRun, CurrentRun, MessageFeedback, PostResult, RunContext, ThreadOrigin,
-    YuiActionRequest, YuiAppDraft, CHAT_GENERATION_QUEUE, FEEDBACK_CATEGORIES,
+    BranchTarget, ChatStore, ClaimedRun, CurrentRun, MessageFeedback, PostResult, RunContext,
+    ThreadOrigin, YuiActionRequest, YuiAppDraft, CHAT_GENERATION_QUEUE, FEEDBACK_CATEGORIES,
 };
 pub use worker::{parse_timezone, with_yui_guide, ChatWorker, WorkerConfig, WorkerDeps};
 pub use workflow_search_tool::{SearchWorkflowsTool, WorkflowDirectory};

@@ -775,8 +775,9 @@ export function streamMessage(
   model?: ModelChoice,
   /// **この発話にだけ**優先して使うツール（#734）。空・省略は指定なし。
   tools?: UserSelectableTool[],
-  /// 編集して送り直す元の発話（#1166）。元の発話とその続きは別の枝として残る。
-  editOf?: string,
+  /// 発話を置く位置（#1166）。`editOf`＝編集して送り直す元の発話（元とその続きは別の版として
+  /// 残る）、`after`＝続ける先（画面に出ている枝の末尾）。
+  branch?: BranchTarget,
 ): (opts?: { cancelServer?: boolean }) => void {
   let unsub: (() => void) | null = null;
   let runId: string | null = null;
@@ -789,7 +790,8 @@ export function streamMessage(
     skills,
     model,
     tools,
-    editOf,
+    editOf: branch?.editOf,
+    after: branch?.after,
   })
     .then((posted) => {
       runId = posted.runId;
@@ -829,6 +831,8 @@ export async function postMessage(
     tools?: UserSelectableTool[];
     /// 編集して送り直す元の発話（#1166）。
     editOf?: string;
+    /// 続ける先（画面に出ている枝の末尾・#1166）。別のタブで版を切り替えられても、見ていた会話に続ける。
+    after?: string;
   } = {},
 ): Promise<{ runId: string; userMessageId: string; assistantMessageId: string }> {
   const res = await apiFetch(`/threads/${threadId}/messages`, {
@@ -848,6 +852,7 @@ export async function postMessage(
       effort: opts.model?.effort,
       tools: opts.tools && opts.tools.length > 0 ? opts.tools : undefined,
       edit_of: opts.editOf,
+      after: opts.after,
     }),
   });
   if (!res.ok) {
@@ -875,6 +880,18 @@ export async function postMessage(
   };
 }
 
+/// 失敗応答の理由（`{detail}`）。本文が無ければ `fallback`。
+async function errorDetail(res: Response, fallback: string): Promise<string> {
+  try {
+    return ((await res.json()) as { detail?: string }).detail || fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+/// 発話を置く位置（#1166）。
+export type BranchTarget = { editOf?: string; after?: string };
+
 /// 表示する枝を切り替える（そのメッセージを含む枝の、最も新しい続きを表示中にする・#1166）。
 export async function selectBranch(threadId: string, messageId: string): Promise<void> {
   const res = await apiFetch(`/threads/${threadId}/branch`, {
@@ -882,7 +899,7 @@ export async function selectBranch(threadId: string, messageId: string): Promise
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ message_id: messageId }),
   });
-  if (!res.ok) throw new Error(`枝の切り替えに失敗しました (${res.status})`);
+  if (!res.ok) throw new Error(await errorDetail(res, `枝の切り替えに失敗しました (${res.status})`));
 }
 
 /// その回答までの会話を新しいチャットへ複製する（「新しいチャットに分岐」・#1166）。

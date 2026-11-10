@@ -397,7 +397,10 @@ pub async fn post_message(
             &once_skills,
             model.as_ref(),
             &requested_tools,
-            req.edit_of,
+            chat::BranchTarget {
+                edit_of: req.edit_of,
+                after: req.after,
+            },
             trace.as_deref(),
         )
         .await?;

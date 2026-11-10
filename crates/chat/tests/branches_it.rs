@@ -164,9 +164,18 @@ async fn turn(
             &[],
             None,
             &[],
-            edit_of,
+            chat::BranchTarget {
+                edit_of,
+                after: None,
+            },
             None,
         )
+        .await
+        .unwrap();
+    // 生成を終えた状態にする（未完了の run がある間は編集・切り替えを受けない）。
+    sqlx::query("UPDATE generation_run SET status = 'done' WHERE run_id = $1")
+        .bind(r.run_id)
+        .execute(pool)
         .await
         .unwrap();
     let answer = serde_json::json!([{ "type": "text", "text": format!("{text}への回答") }]);
@@ -293,7 +302,10 @@ async fn edit_of_must_be_user_message_of_thread() {
                 &[],
                 None,
                 &[],
-                Some(bad),
+                chat::BranchTarget {
+                    edit_of: Some(bad),
+                    after: None,
+                },
                 None,
             )
             .await;
@@ -388,5 +400,130 @@ async fn branch_ops_require_relation() {
     assert!(matches!(
         store.fork_thread(&c, thread.id, a1, None).await,
         Err(ChatError::Forbidden)
+    ));
+}
+
+/// 続ける先（`after`）: 別のタブが枝を切り替えていても、送った人が見ていた枝に続ける。
+/// 生成中は編集・切り替えを受けず、`after` は無視して表示中の枝の後ろへ積む。
+#[tokio::test]
+async fn after_continues_seen_branch_and_busy_blocks_branch_ops() {
+    let Some(pool) = setup().await else { return };
+    let tenant = format!("t-{}", uuid::Uuid::new_v4());
+    let store = store(&pool).await;
+    let c = ctx(&tenant);
+    let thread = store
+        .create_thread(&c, "会話", false, None, None)
+        .await
+        .unwrap();
+    let (u1, a1) = turn(&pool, &store, &c, thread.id, "Q1", None).await;
+    let (_u1b, a1b) = turn(&pool, &store, &c, thread.id, "Q1'", Some(u1)).await;
+    // 表示中は Q1'。古いタブは Q1 の枝（a1）を見たまま送る → Q1 の枝の続きになる。
+    let r = store
+        .post_message_on_branch(
+            &c,
+            thread.id,
+            "Q2",
+            &[],
+            None,
+            Some(false),
+            false,
+            &[],
+            None,
+            &[],
+            chat::BranchTarget {
+                edit_of: None,
+                after: Some(a1),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let msgs = store.get_messages(&c, thread.id, None).await.unwrap();
+    assert_eq!(msgs[0].id, u1);
+    assert_eq!(msgs[2].id, r.user_message_id);
+    assert_eq!(msgs[2].parent_id, Some(a1));
+
+    // 生成中（この run は未完了）は編集・切り替えを受けない。
+    assert!(matches!(
+        store.select_branch(&c, thread.id, a1b, None).await,
+        Err(ChatError::Invalid(_))
+    ));
+    let edit = store
+        .post_message_on_branch(
+            &c,
+            thread.id,
+            "Q1''",
+            &[],
+            None,
+            None,
+            false,
+            &[],
+            None,
+            &[],
+            chat::BranchTarget {
+                edit_of: Some(u1),
+                after: None,
+            },
+            None,
+        )
+        .await;
+    assert!(matches!(edit, Err(ChatError::Invalid(_))), "{edit:?}");
+    // 生成中の `after` は無視して表示中の枝（生成中の回答）の後ろへ積む。
+    let queued = store
+        .post_message_on_branch(
+            &c,
+            thread.id,
+            "Q3",
+            &[],
+            None,
+            None,
+            false,
+            &[],
+            None,
+            &[],
+            chat::BranchTarget {
+                edit_of: None,
+                after: Some(a1b),
+            },
+            None,
+        )
+        .await
+        .unwrap();
+    let path = store
+        .get_message_path(&c, thread.id, queued.user_message_id, None)
+        .await
+        .unwrap();
+    assert_eq!(path[path.len() - 2].id, r.assistant_message_id);
+
+    // 存在しない続ける先は 404（生成が終わってから）。
+    sqlx::query("UPDATE generation_run SET status = 'done' WHERE thread_id = $1")
+        .bind(thread.id)
+        .execute(&pool)
+        .await
+        .unwrap();
+    let missing = store
+        .post_message_on_branch(
+            &c,
+            thread.id,
+            "Q4",
+            &[],
+            None,
+            None,
+            false,
+            &[],
+            None,
+            &[],
+            chat::BranchTarget {
+                edit_of: None,
+                after: Some(uuid::Uuid::new_v4()),
+            },
+            None,
+        )
+        .await;
+    assert!(matches!(missing, Err(ChatError::NotFound)), "{missing:?}");
+    // 発話（回答でないもの）からは分岐できない。
+    assert!(matches!(
+        store.fork_thread(&c, thread.id, u1, None).await,
+        Err(ChatError::NotFound)
     ));
 }
