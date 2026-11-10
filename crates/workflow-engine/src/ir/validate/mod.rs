@@ -45,6 +45,8 @@ pub use semantics::{semantics_warnings, SEMANTICS_CHANGED};
 mod template;
 pub use template::{TEMPLATE_ESCAPED_VAR, TEMPLATE_UNCLOSED_BRACE};
 mod timeout;
+mod user_models;
+pub use user_models::user_model_blockers;
 mod v1_schema;
 mod v2_graph;
 pub use v2_graph::UNCONNECTED_NODE;

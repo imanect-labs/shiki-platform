@@ -166,6 +166,11 @@ impl DelegationStore {
     ///
     /// 手順: ①各 grant について有効化者が当該 relation を**現に持つか**を check（1 つでも欠ければ
     /// 全体拒否）→ ②workflow プリンシパルへ FGA タプル書込＋delegation 行記録＋registration 更新。
+    ///
+    /// [`crate::enable_blockers`] と、有効化する人のアカウントの制限でのモデルの照合（[`crate::user_model_blockers`]・
+    /// D-196）を通らない。本番の入口（`POST /workflows/{id}/enable` → [`RegistrationService`](crate::RegistrationService)
+    /// の `enable_with`）からは呼ばず、テスト（`api/tests/workflow_http_it.rs`・`workflow-engine/tests/delegation_it.rs`
+    /// など）だけが使う。結合テストが外のクレートから呼ぶため `pub` のままにする。
     pub async fn enable(
         &self,
         enabler: &AuthContext,

@@ -631,8 +631,9 @@ fn not_ready(ir: &WorkflowIr, with_reply: bool) -> Vec<ValidationError> {
     out
 }
 
-/// schedule / event のきっかけを持つか（ワークフロー主体で動く run があるか）。
-fn runs_unattended(ir: &WorkflowIr) -> bool {
+/// schedule / event のきっかけを持つか（ワークフロー主体で動く run があるか）。有効化する人の制限でモデルを照らす
+/// 範囲（[`super::user_model_blockers`]・D-196）にも使う。
+pub(super) fn runs_unattended(ir: &WorkflowIr) -> bool {
     ir.triggers
         .iter()
         .any(|t| matches!(t, Trigger::Schedule(_) | Trigger::Event(_)))

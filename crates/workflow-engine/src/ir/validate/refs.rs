@@ -37,7 +37,8 @@ pub(crate) fn parse_skill_ref(s: &str) -> Option<(&str, &str)> {
 /// instructions だけのスキル（[`Catalog::script_skills`] に無いもの）を呼ぶ skill.invoke は組織の既定のモデル（`model`）で
 /// 動くが、そのモデルが保存する人のアカウントでは使えないときの誤り（D-185）。スキルにはモデルを選ぶ欄が無いので、
 /// 管理者に相談するか、「AI に聞く」で使えるモデルを選んで同じ指示を書くよう言う（選べなければ管理者に相談だけ）。
-fn skill_default_unavailable(model: &str, catalog: &Catalog) -> ValidationError {
+/// 有効化する人の制限での照合（[`super::user_model_blockers`]・D-196）も同じ文を使う。
+pub(super) fn skill_default_unavailable(model: &str, catalog: &Catalog) -> ValidationError {
     let models = catalog.models.as_deref().unwrap_or_default();
     let fix = if catalog.model_lock.is_some() || models.is_empty() {
         "スキルにはモデルを選ぶ欄がないため、管理者に相談してください".to_string()
@@ -52,6 +53,20 @@ fn skill_default_unavailable(model: &str, catalog: &Catalog) -> ValidationError 
         MODEL_UNAVAILABLE_FOR_USER,
         format!(
             "このスキルは組織の既定のモデル（{model}）で動きますが、このモデルはあなたのアカウントでは使えません。{fix}"
+        ),
+    )
+}
+
+/// 有効化する人がインストールしていないスキル（`name@version`）を呼ぶ skill.invoke の誤り（D-196）。組織の既定の
+/// モデル（`model`）が有効化する人のアカウントでは使えないとき、そのスキルが shiki script で動く（LLM を呼ばない）かを
+/// 確かめられないので止める（fail-closed。実行はレジストリから引くので、入れていない人が有効化しても動く）。
+pub(super) fn skill_default_unchecked(name: &str, version: &str, model: &str) -> ValidationError {
+    ValidationError::new(
+        MODEL_UNAVAILABLE_FOR_USER,
+        format!(
+            "このスキル（{name}@{version}）はあなたがインストールしていないため、組織の既定のモデル（{model}）で動くかを\
+             確かめられません。このモデルはあなたのアカウントでは使えないため、自動実行をオンにできません。\
+             スキルをインストールするか、管理者に相談してください"
         ),
     )
 }
