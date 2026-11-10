@@ -142,6 +142,7 @@ async fn parser_maps_5xx_to_transient_worker_error() {
 }
 
 #[tokio::test]
+/// 分割した要求の件数上限と、端数を含む全応答の順序・モデル版を検証する。
 async fn embedding_batches_and_checks_model_version() {
     let router = Router::new().route(
         "/embed",

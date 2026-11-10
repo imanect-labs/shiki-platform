@@ -62,6 +62,7 @@ pub struct HttpEmbeddingProvider {
 }
 
 impl HttpEmbeddingProvider {
+    /// CPU ワーカー向けに送信量を制限する HTTP 埋め込みプロバイダーを作る。
     pub fn new(http: reqwest::Client, base_url: &str, expected_model_version: &str) -> Self {
         HttpEmbeddingProvider {
             http,
