@@ -262,8 +262,10 @@ async fn every_tenant_table_has_forced_rls_with_the_isolation_policy() {
 /// 使えない。そのため、次のどれかに当たる索引を挙げる:
 ///
 /// - 式の索引で、式（`indexprs`）に leakproof でない関数（`:funcid`）か、関数が leakproof でない演算子（`:opno`）を
-///   含むもの（jsonb の `->`・`->>` など）。型の変換（入出力を通す変換など）を含む式も、関数の印を読めないので挙げる。
-///   組み込みの関数は `pg_depend` に依存が残らないので、式の木から読む。
+///   含むもの（jsonb の `->`・`->>` など）。組み込みの関数は `pg_depend` に依存が残らないので、式の木から読む。
+/// - 式の索引で、式の木に planner が安全と見なすノード（`contain_leaked_vars` が通すもの）の外の形を含むもの。
+///   型の変換・`coalesce`・`greatest`／`least`・行の比較・ドメインへの変換・JSON の述語などは関数の OID を持たないか、
+///   持っても形が違うので、許す一覧に倒して落とす。
 /// - 演算子クラスの探索の演算子が leakproof でないもの（jsonb の GIN 等。文脈が未設定でも効かなくなる）。
 ///
 /// 式が leakproof なものだけでできた索引（`kind <> 'folder'` の並びなど）は、RLS の下でも索引の条件に使える
@@ -277,7 +279,12 @@ async fn indexes_rls_would_disable(pool: &PgPool, policy: &str) -> Vec<String> {
              JOIN pg_class c ON c.oid = i.indexrelid) \
          SELECT x.index_name::text FROM idx x \
           WHERE (x.exprs IS NOT NULL AND ( \
-                  x.exprs ~ '\\{(COERCEVIAIO|ARRAYCOERCEEXPR|CONVERTROWTYPEEXPR|SUBLINK) ' \
+                  EXISTS ( \
+                    SELECT FROM regexp_matches(x.exprs, '\\{([A-Z_]+)', 'g') AS t(m) \
+                     WHERE t.m[1] NOT IN ('VAR', 'CONST', 'PARAM', 'FUNCEXPR', 'OPEXPR', 'DISTINCTEXPR', \
+                                          'NULLIFEXPR', 'SCALARARRAYOPEXPR', 'BOOLEXPR', 'RELABELTYPE', \
+                                          'COLLATEEXPR', 'CASEEXPR', 'CASEWHEN', 'CASETESTEXPR', 'ARRAYEXPR', \
+                                          'ROWEXPR', 'FIELDSELECT', 'NAMEDARGEXPR', 'NULLTEST', 'BOOLEANTEST')) \
                   OR EXISTS ( \
                     SELECT FROM regexp_matches(x.exprs, ':funcid ([0-9]+)', 'g') AS f(m) \
                       JOIN pg_proc p ON p.oid = f.m[1]::oid WHERE NOT p.proleakproof) \
@@ -314,7 +321,7 @@ async fn rls_tables_have_no_index_that_rls_would_disable() {
     env.cleanup().await;
 }
 
-/// 上の検査が空回りしていない: jsonb の取り出し・型の変換・GIN の索引は挙げ、leakproof な式の索引と普通の列の
+/// 上の検査が空回りしていない: jsonb の取り出し・型の変換・`coalesce`・GIN の索引は挙げ、leakproof な式の索引と普通の列の
 /// 索引は挙げない。並行して走る上の検査に拾われないよう、ポリシーの名前を分ける。
 #[tokio::test]
 async fn index_check_flags_only_what_rls_would_disable() {
@@ -327,6 +334,7 @@ async fn index_check_flags_only_what_rls_would_disable() {
         format!("CREATE POLICY {probe} ON {table} USING (true)"),
         format!("CREATE INDEX {table}_spec ON {table} (tenant_id, (spec->'scope'->>'table'))"),
         format!("CREATE INDEX {table}_cast ON {table} (tenant_id, ((spec->>'id')::uuid))"),
+        format!("CREATE INDEX {table}_coalesce ON {table} (tenant_id, coalesce(name, ''))"),
         format!("CREATE INDEX {table}_gin ON {table} USING gin (spec)"),
         format!("CREATE INDEX {table}_rank ON {table} (tenant_id, (kind <> 'folder'), name)"),
         format!("CREATE INDEX {table}_plain ON {table} (tenant_id, name)"),
@@ -342,6 +350,7 @@ async fn index_check_flags_only_what_rls_would_disable() {
         flagged,
         vec![
             format!("{table}_cast"),
+            format!("{table}_coalesce"),
             format!("{table}_gin"),
             format!("{table}_spec"),
         ]
