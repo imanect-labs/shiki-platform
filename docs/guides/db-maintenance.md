@@ -279,8 +279,9 @@ migration 0114 は、`tenant_id` を持つテナント表に RLS を付ける（
   `query would be affected by row-level security policy` で失敗する。`--enable-row-security` を付ける
   （移行モードでは文脈が未設定なので全行が出る）か、BYPASSRLS のロールでダンプする。
 - **新しいテナント表を足す migration** は、同じ `ENABLE` / `FORCE` / `CREATE POLICY shiki_tenant_isolation` を
-  付ける（式は 0114 と同じ）。付け忘れは `crates/storage/tests/rls_it.rs` が落とす。RLS の付いた表に式インデックスや
-  GIN（leakproof でない演算子でしか引けないインデックス）を足したときも同じテストが落ちる。
+  付ける（式は 0114 と同じ）。付け忘れは `crates/storage/tests/rls_it.rs` が落とす。RLS の付いた表に、leakproof で
+  ない関数・演算子を含む式インデックス（jsonb の `->>` など）や GIN（leakproof でない演算子でしか引けないインデックス）を
+  足したときも同じテストが落ちる。leakproof なものだけの式（`kind <> 'folder'` など）なら索引の条件に使える。
 - psql で調べるとき、superuser は RLS を迂回する。アプリと同じ見え方を確かめるには `SET ROLE shiki_app` してから
   `SELECT set_config('app.tenant_id', '<tenant>', false)` する。
 
