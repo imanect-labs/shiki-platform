@@ -256,21 +256,36 @@ async fn every_tenant_table_has_forced_rls_with_the_isolation_policy() {
     env.cleanup().await;
 }
 
-#[tokio::test]
-async fn rls_tables_have_no_index_that_rls_would_disable() {
-    let Some(env) = setup().await else { return };
-    // RLS の付いた表では、leakproof でない演算子・関数を含む条件はインデックス条件に使えない
-    // （ポリシーより先に評価できないため）。式インデックスと、leakproof でない演算子でしか引けない
-    // インデックス（jsonb の GIN 等）は、文脈が未設定でも効かなくなる。そういうインデックスを RLS の
-    // 付いた表に足したら落とす（生成列＋btree にするか、表を対象外にする判断を促す）。
-    let bad: Vec<String> = sqlx::query_scalar(
-        "WITH scoped AS (SELECT polrelid AS rel FROM pg_policy WHERE polname = 'shiki_tenant_isolation'), \
+/// ポリシー `policy` の付いた表の索引のうち、RLS の下で索引の条件に使えなくなるもの。
+///
+/// RLS の付いた表では、leakproof でない演算子・関数を含む条件は、ポリシーより先に評価できないので索引の条件に
+/// 使えない。そのため、次のどれかに当たる索引を挙げる:
+///
+/// - 式の索引で、式（`indexprs`）に leakproof でない関数（`:funcid`）か、関数が leakproof でない演算子（`:opno`）を
+///   含むもの（jsonb の `->`・`->>` など）。型の変換（入出力を通す変換など）を含む式も、関数の印を読めないので挙げる。
+///   組み込みの関数は `pg_depend` に依存が残らないので、式の木から読む。
+/// - 演算子クラスの探索の演算子が leakproof でないもの（jsonb の GIN 等。文脈が未設定でも効かなくなる）。
+///
+/// 式が leakproof なものだけでできた索引（`kind <> 'folder'` の並びなど）は、RLS の下でも索引の条件に使える
+/// （非 superuser の FORCE の下で、文脈の有無どちらでも確かめた）。
+async fn indexes_rls_would_disable(pool: &PgPool, policy: &str) -> Vec<String> {
+    sqlx::query_scalar(
+        "WITH scoped AS (SELECT polrelid AS rel FROM pg_policy WHERE polname = $1), \
          idx AS ( \
-           SELECT i.indexrelid, c.relname AS index_name, i.indexprs IS NOT NULL AS has_expr, i.indclass \
+           SELECT i.indexrelid, c.relname AS index_name, i.indexprs::text AS exprs, i.indclass \
              FROM pg_index i JOIN scoped s ON s.rel = i.indrelid \
              JOIN pg_class c ON c.oid = i.indexrelid) \
          SELECT x.index_name::text FROM idx x \
-          WHERE x.has_expr OR EXISTS ( \
+          WHERE (x.exprs IS NOT NULL AND ( \
+                  x.exprs ~ '\\{(COERCEVIAIO|ARRAYCOERCEEXPR|CONVERTROWTYPEEXPR|SUBLINK) ' \
+                  OR EXISTS ( \
+                    SELECT FROM regexp_matches(x.exprs, ':funcid ([0-9]+)', 'g') AS f(m) \
+                      JOIN pg_proc p ON p.oid = f.m[1]::oid WHERE NOT p.proleakproof) \
+                  OR EXISTS ( \
+                    SELECT FROM regexp_matches(x.exprs, ':opno ([0-9]+)', 'g') AS o(m) \
+                      JOIN pg_operator op ON op.oid = o.m[1]::oid \
+                      JOIN pg_proc p ON p.oid = op.oprcode WHERE NOT p.proleakproof))) \
+             OR EXISTS ( \
             SELECT FROM unnest(x.indclass::oid[]) AS oc(opc) \
               JOIN pg_opclass opc ON opc.oid = oc.opc \
               JOIN pg_amop ao ON ao.amopfamily = opc.opcfamily AND ao.amoppurpose = 's' \
@@ -280,12 +295,56 @@ async fn rls_tables_have_no_index_that_rls_would_disable() {
              WHERE NOT p.proleakproof) \
           ORDER BY 1",
     )
-    .fetch_all(&env.owner)
+    .bind(policy)
+    .fetch_all(pool)
     .await
-    .unwrap();
+    .unwrap()
+}
+
+#[tokio::test]
+async fn rls_tables_have_no_index_that_rls_would_disable() {
+    let Some(env) = setup().await else { return };
+    // RLS の付いた表に、RLS 下で使えなくなるインデックスを足したら落とす（生成列＋btree にするか、
+    // 表を対象外にする判断を促す）。
+    let bad = indexes_rls_would_disable(&env.owner, "shiki_tenant_isolation").await;
     assert!(
         bad.is_empty(),
         "RLS の付いた表に、RLS 下で使えなくなるインデックスがある: {bad:?}"
+    );
+    env.cleanup().await;
+}
+
+/// 上の検査が空回りしていない: jsonb の取り出し・型の変換・GIN の索引は挙げ、leakproof な式の索引と普通の列の
+/// 索引は挙げない。並行して走る上の検査に拾われないよう、ポリシーの名前を分ける。
+#[tokio::test]
+async fn index_check_flags_only_what_rls_would_disable() {
+    let Some(env) = setup().await else { return };
+    let table = format!("rls_it_probe_{}", uuid::Uuid::new_v4().simple());
+    let probe = "rls_it_probe";
+    for sql in [
+        format!("CREATE TABLE {table} (tenant_id text NOT NULL, kind text NOT NULL, name text NOT NULL, spec jsonb)"),
+        format!("ALTER TABLE {table} ENABLE ROW LEVEL SECURITY"),
+        format!("CREATE POLICY {probe} ON {table} USING (true)"),
+        format!("CREATE INDEX {table}_spec ON {table} (tenant_id, (spec->'scope'->>'table'))"),
+        format!("CREATE INDEX {table}_cast ON {table} (tenant_id, ((spec->>'id')::uuid))"),
+        format!("CREATE INDEX {table}_gin ON {table} USING gin (spec)"),
+        format!("CREATE INDEX {table}_rank ON {table} (tenant_id, (kind <> 'folder'), name)"),
+        format!("CREATE INDEX {table}_plain ON {table} (tenant_id, name)"),
+    ] {
+        sqlx::query(&sql).execute(&env.owner).await.expect(&sql);
+    }
+    let flagged = indexes_rls_would_disable(&env.owner, probe).await;
+    sqlx::query(&format!("DROP TABLE {table}"))
+        .execute(&env.owner)
+        .await
+        .unwrap();
+    assert_eq!(
+        flagged,
+        vec![
+            format!("{table}_cast"),
+            format!("{table}_gin"),
+            format!("{table}_spec"),
+        ]
     );
     env.cleanup().await;
 }
