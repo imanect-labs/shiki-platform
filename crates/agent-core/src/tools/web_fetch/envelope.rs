@@ -96,15 +96,8 @@ fn meta(raw: Option<&str>, max_chars: usize) -> Option<String> {
 /// 取得ページが `</web_page>` の文字列を含むと、そこから先が「封筒の外＝信頼できる指示」に
 /// 見える。抽出後の Markdown にも生タグは残り得る（コードブロック・引用など）。
 pub(super) fn neutralize(s: &str) -> Cow<'_, str> {
-    if s.contains("web_page") {
-        // `</web_page` を先に潰す（`<web_page` は `</web_page` の部分列ではないので順序は安全）。
-        Cow::Owned(
-            s.replace("</web_page", "&lt;/web_page")
-                .replace("<web_page", "&lt;web_page"),
-        )
-    } else {
-        Cow::Borrowed(s)
-    }
+    // 大文字小文字・空白・全角の変種も潰す（`</Web_Page>` 等で封筒を抜けさせない・#1065）。
+    crate::tools::document_envelope::neutralize_tag(s, "web_page")
 }
 
 /// 節見出しを `/` 区切りで並べる（本文の地図。fold 後に「何が書いてあったか」を残す）。
