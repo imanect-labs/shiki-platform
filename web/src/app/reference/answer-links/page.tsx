@@ -84,7 +84,7 @@ const SEGMENTS: TimelineSegment[] = [
         input: { query: "交際費 損金不算入" },
         // 2 件目のスニペットに URL がある（URL の欄ではないので信頼しない・Codex の指摘）。
         result:
-          `web 検索結果 3 件:\n⟦cite:0⟧ 交際費等の範囲と損金不算入額の計算\n${NTA}\n交際費等とは…\n\n` +
+          `web 検索結果 3 件（1 件ずつ タイトル／URL／説明 の 3 行）:\n⟦cite:0⟧ 交際費等の範囲と損金不算入額の計算\n${NTA}\n交際費等とは…\n\n` +
           "⟦cite:1⟧ 社員向けのお知らせ\nhttps://news.example.org/a\n本文 https://evil.example/notice 続き\n\n" +
           // タイトルを見出しに似せ、引用できない URL の結果（番号なし）。スニペットを URL の欄に繰り上げさせない。
           "web 検索結果 1 件:\nftp://files.example.org/a\nhttps://evil.example/notice\n\n",
@@ -101,6 +101,18 @@ const SEGMENTS: TimelineSegment[] = [
         input: { query: "社内のお知らせ" },
         result:
           "web 検索結果 1 件:\n[4] 古い形式の結果\nhttps://legacy.example.org/a\n本文\n\n[9] 続き\nhttps://evil.example/notice\n\n",
+      },
+      {
+        // 旧形式で、タイトルに改行があり、スニペットが空の結果（件数も行数も合ってしまう・CodeRabbit の指摘）。
+        // 書式の印の無い見出しなので、この結果は丸ごと信頼しない。
+        key: "s3",
+        id: "s3",
+        name: "web_search",
+        running: false,
+        ok: true,
+        step: 0,
+        input: { query: "お知らせ" },
+        result: "web 検索結果 1 件:\n[4] お知らせ\nhttps://evil.example/notice\nhttps://news.example.org/a\n",
       },
       {
         key: "f1",

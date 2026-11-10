@@ -88,6 +88,10 @@ impl Tool for WebSearchTool {
     }
 }
 
+/// 見出しの件数の後ろに付ける書式の印（web の `answer-links.ts` の `SEARCH_HEADER` と対）。
+/// この印の無い結果（1 行に潰す前に保存されたもの）は、web 側で出典として信頼しない。
+const SEARCH_HEADER_SUFFIX: &str = "（1 件ずつ タイトル／URL／説明 の 3 行）";
+
 /// 空白と改行を 1 つの空白に潰す（取得先が制御できる文字列で行の構造を偽装させない）。
 /// 空なら `empty` を返す（空行を作ると 1 件が 3 行にならず、web 側が結果全体を信頼しなくなる）。
 fn one_line(s: &str, empty: &str) -> String {
@@ -105,12 +109,14 @@ fn one_line(s: &str, empty: &str) -> String {
 /// 置き換える（#891）。ここで `[1]` から振ると、同じ応答の doc_search の `[1]` と衝突する。
 /// 引用にできない URL（http/https 以外）の結果は番号を付けずに残す。
 ///
-/// 書式は「`web 検索結果 N 件:`」の見出しのあと、空行で区切った N 件の「タイトル／URL／スニペット」
-/// の 3 行。web の `answer-links.ts` はこの書式どおりの結果だけを出典として信頼する（#1143）。
+/// 書式は [`SEARCH_HEADER_SUFFIX`] 付きの見出しのあと、空行で区切った N 件の「タイトル／URL／スニペット」
+/// の 3 行。web の `answer-links.ts` はこの見出しの結果だけを出典として信頼する（#1143）。
+/// 見出しで新旧を区別するのは、1 行に潰す前に保存された結果（タイトルに改行・スニペットが空）が
+/// 件数と行数の検査をすり抜けうるため（CodeRabbit の指摘）。
 fn outcome(hits: &[websearch::SearchHit]) -> ToolOutcome {
     use crate::cite::defuse;
     use std::fmt::Write as _;
-    let mut s = format!("web 検索結果 {} 件:\n", hits.len());
+    let mut s = format!("web 検索結果 {} 件{SEARCH_HEADER_SUFFIX}:\n", hits.len());
     let mut citations = Vec::new();
     for h in hits {
         let label = match crate::tool::Citation::web(&h.url, &h.title, &h.snippet) {
@@ -253,7 +259,10 @@ mod tests {
             },
         ];
         let out = outcome(&hits);
-        let body = out.content.strip_prefix("web 検索結果 2 件:\n").unwrap();
+        let body = out
+            .content
+            .strip_prefix(&format!("web 検索結果 2 件{SEARCH_HEADER_SUFFIX}:\n"))
+            .unwrap();
         let blocks: Vec<&str> = body.split("\n\n").filter(|b| !b.is_empty()).collect();
         assert_eq!(blocks.len(), 2, "{}", out.content);
         for b in blocks {

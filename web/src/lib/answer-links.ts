@@ -37,8 +37,11 @@ function urlKey(raw: string): string | null {
   }
 }
 
-/// Web 検索の結果の見出し行（`web 検索結果 N 件:`）。N は件数。
-const SEARCH_HEADER = /^web 検索結果 (\d+) 件:$/;
+/// Web 検索の結果の見出し行。N は件数。書式の印（`（1 件ずつ タイトル／URL／説明 の 3 行）`）は、タイトルと
+/// スニペットを 1 行に潰した新しい書式の結果にだけ付く（`web_search.rs` の `SEARCH_HEADER_SUFFIX` と対）。
+/// 印の無い旧形式の結果は、タイトルの改行と空のスニペットで件数・行数の検査をすり抜けうる
+/// （CodeRabbit の指摘）ので、出典として信頼しない。
+const SEARCH_HEADER = /^web 検索結果 (\d+) 件（1 件ずつ タイトル／URL／説明 の 3 行）:$/;
 /// 引用番号付きの件の先頭行（台帳で振り直した `[n] ` か、振り直す前の仮の印 `⟦cite:n⟧ `）。
 const CITED_ENTRY = /^(?:\[\d+\]|⟦cite:\d+⟧) /;
 
