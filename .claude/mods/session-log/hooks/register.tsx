@@ -1,7 +1,10 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register, SessionMessage } from 'claude-code'
 
-import type { GhEntry, PromptEntry, SessionLog } from '../types'
+import type { GhEntry, GhMetaMap, PromptEntry, SessionLog } from '../types'
+
+import { fetchMeta, key } from './github'
+import { linkedTargets, toMarkdown } from './view'
 
 const PANE = 'session-log'
 const TITLE = 'セッション履歴'
@@ -9,6 +12,11 @@ const EMPTY: SessionLog = { prompts: [], issues: [], prs: [] }
 const log = atom({ plugin: 'session-log', key: 'log' } as const, EMPTY, {
   shape: 'log-1',
 })
+const meta = atom({ plugin: 'session-log', key: 'meta' } as const, {} as GhMetaMap, {
+  shape: 'meta-1',
+})
+// GitHub の状態を取り直す間隔（turn ごとに毎回叩かない）
+const STALE_MS = 60_000
 
 const GH_URL = /https:\/\/github\.com\/([\w.-]+\/[\w.-]+)\/(issues|pull)\/(\d+)/
 const GH_CLI_CREATE = /\bgh\s+(issue|pr)\s+create\b/
@@ -102,31 +110,44 @@ async function refresh($: EngineInterface): Promise<void> {
   }
 }
 
-function ghMarkdown(list: GhEntry[]): string {
-  if (list.length === 0) return '_まだ作成していません_'
-  return list
-    .map(g => `- **#${g.number ?? '?'}** ${g.title}${g.url ? ` — [${g.repo}](${g.url})` : ''}`)
-    .join('\n')
+// セッションの Issue・PR と、その参照先の状態を GitHub から取り直す。
+async function syncGithub($: EngineInterface, force: boolean): Promise<void> {
+  try {
+    const data = await read($, log)
+    const known = await read($, meta)
+    const now = Date.now()
+    const fresh: GhMetaMap = {}
+    const want = new Map<string, { repo: string; number: number; kind: 'issue' | 'pr' | 'unknown' }>()
+    const add = (repo: string, number: number, kind: 'issue' | 'pr' | 'unknown') => {
+      const k = key(repo, number)
+      const cur = known[k]
+      if (!force && cur && now - cur.fetchedAt < STALE_MS) return
+      if (!want.has(k)) want.set(k, { repo, number, kind })
+    }
+    for (const g of [...data.prs, ...data.issues]) {
+      if (g.number !== null && g.repo !== '') add(g.repo, g.number, g.kind)
+    }
+    const fetchAll = async () => {
+      await Promise.all(
+        [...want.entries()].map(async ([k, t]) => {
+          const m = await fetchMeta($, t.repo, t.number, t.kind).catch(() => null)
+          if (m) fresh[k] = m
+        }),
+      )
+      want.clear()
+    }
+    await fetchAll()
+    // 1 段だけ参照先（PR が言及する Issue・Issue のクローズ予定 PR）も取る。上限 20 件。
+    for (const t of linkedTargets(data, { ...known, ...fresh }).slice(0, 20)) add(t.repo, t.number, 'unknown')
+    await fetchAll()
+    if (Object.keys(fresh).length > 0) await update($, meta, cur => ({ ...cur, ...fresh }))
+  } catch {
+    // GitHub に届かなくても一覧自体は出す
+  }
 }
 
-function toMarkdown(data: SessionLog): string {
-  const prompts =
-    data.prompts.length === 0
-      ? '_まだありません_'
-      : data.prompts
-          .map(p => {
-            const one = p.text.replace(/\s+/g, ' ')
-            return `${p.index}. ${one.length > 200 ? `${one.slice(0, 199)}…` : one}`
-          })
-          .join('\n')
-  return [
-    `### Pull Request（${data.prs.length}）`,
-    ghMarkdown(data.prs),
-    `### Issue（${data.issues.length}）`,
-    ghMarkdown(data.issues),
-    `### プロンプト（${data.prompts.length}）`,
-    prompts,
-  ].join('\n\n')
+async function markdown($: EngineInterface): Promise<string> {
+  return toMarkdown(await read($, log), await read($, meta))
 }
 
 export const register: Register = on => {
@@ -137,6 +158,7 @@ export const register: Register = on => {
       description: 'このセッションのプロンプト・Issue・PR 一覧を表示する',
     })
     await refresh($)
+    void syncGithub($, false)
     void $.ui.open({ id: PANE, title: TITLE })
     return ran
   })
@@ -144,8 +166,9 @@ export const register: Register = on => {
   // ペインを置けない画面（スマホ版など）でも見られるよう、一覧を Markdown で返す。
   on('command.run', { command: 'session-log' }, async $ => {
     await refresh($)
+    await syncGithub($, true)
     void $.ui.open({ id: PANE, title: TITLE })
-    return { text: toMarkdown(await read($, log)) }
+    return { text: await markdown($) }
   })
 
   on('prompt.submit', async ($, e, next) => {
@@ -162,6 +185,7 @@ export const register: Register = on => {
       e.tool === 'Bash'
     ) {
       await refresh($)
+      if (e.tool !== 'Bash') void syncGithub($, false)
     }
     return ran
   }).catch(($, e, next) => next(e))
@@ -169,64 +193,16 @@ export const register: Register = on => {
   on('turn.complete', async ($, e, next) => {
     const ran = await next(e)
     await refresh($)
+    void syncGithub($, false)
     return ran
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text, Link } = $.ui.resolve(e)
-    const data = await read($, log)
-    const cols = Math.max(20, (e.props.bodyColumns ?? 60) - 2)
-    const clip = (s: string, n: number) =>
-      s.length > n ? `${s.slice(0, Math.max(1, n - 1))}…` : s
-
-    const ghRows = (list: GhEntry[], empty: string) =>
-      list.length === 0 ? (
-        <Text dimColor>{empty}</Text>
-      ) : (
-        list.map(g => (
-          <Box key={g.id} flexDirection="column" marginBottom={1}>
-            <Text>
-              <Text bold>#{g.number ?? '?'}</Text> {clip(g.title, cols - 8)}
-            </Text>
-            {g.url !== null ? (
-              <Link href={g.url} label={`${g.repo} ↗`} />
-            ) : (
-              <Text dimColor>{g.repo}</Text>
-            )}
-          </Box>
-        ))
-      )
-
+    const { Box, Markdown } = $.ui.resolve(e)
+    const text = toMarkdown(await read($, log), await read($, meta))
     return (
       <Box flexDirection="column" paddingX={1}>
-        <Text bold size="heading">
-          Pull Request（{data.prs.length}）
-        </Text>
-        <Box flexDirection="column" marginBottom={1}>
-          {ghRows(data.prs, 'まだ作成していません')}
-        </Box>
-
-        <Text bold size="heading">
-          Issue（{data.issues.length}）
-        </Text>
-        <Box flexDirection="column" marginBottom={1}>
-          {ghRows(data.issues, 'まだ作成していません')}
-        </Box>
-
-        <Text bold size="heading">
-          プロンプト（{data.prompts.length}）
-        </Text>
-        {data.prompts.length === 0 && <Text dimColor>まだありません</Text>}
-        {data.prompts.map(p => (
-          <Box key={`p${p.index}`} flexDirection="row" marginBottom={1}>
-            <Text dimColor mono>
-              {String(p.index).padStart(2, ' ')}.{' '}
-            </Text>
-            <Box flexDirection="column" flexShrink={1}>
-              <Text>{clip(p.text.replace(/\s+/g, ' '), cols * 3)}</Text>
-            </Box>
-          </Box>
-        ))}
+        <Markdown text={text} />
       </Box>
     )
   })

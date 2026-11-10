@@ -18,6 +18,16 @@ Claude Code のセッション中に送ったプロンプト、作成した Issu
 
 結果に GitHub の URL が含まれない（失敗・実行中）の作成は載せない。
 
+### ステータスと関係
+
+Issue・PR は GitHub MCP（`issue_read` / `pull_request_read`）で現在の状態を取得して並べる。
+`/session-log` の実行時は必ず、ターン終了時は 60 秒以上経ったものだけ取り直す。
+
+- 状態: Issue は 🟢 Open／✅ Closed／⚪ Not planned、PR は 📝 Draft／🟢 Open／🟣 Merged／🔴 Closed。
+- 関係: PR の本文・タイトルの `Closes #N`（fix・resolve 系も）を **closes**、それ以外の `#N` を **refs** とする。
+  Issue 側には、セッションの PR からの言及と、GitHub 上でその Issue をクローズ予定の PR を出す。
+  参照先がセッション外の Issue・PR でも、1 段だけ状態を取りに行く（最大 20 件）。
+
 ## 読み込ませ方
 
 リポジトリ内の `.claude/skills/` やプロジェクト設定の `enabledPlugins` からは、hooks モジュールの mod は自動では読み込まれない。
@@ -37,4 +47,5 @@ Claude Code のセッション中に送ったプロンプト、作成した Issu
 
 ```bash
 claude plugin validate .claude/mods/session-log
+claude plugin test .claude/mods/session-log
 ```
