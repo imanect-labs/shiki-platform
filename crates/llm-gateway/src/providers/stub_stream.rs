@@ -9,6 +9,16 @@ use futures::stream::{self, StreamExt};
 use crate::model::{StopReason, StreamDelta, Usage};
 use crate::provider::{DeltaStream, LlmError};
 
+/// stub のツール呼び出しの id（`stubtool_<並びの番号>_<乱数>`）。
+///
+/// 実プロバイダ（Anthropic の `toolu_*`・OpenAI の `call_*`）と同じく**呼び出しごとに一意**にする。
+/// 承認は (run, tool_call_id) を鍵にする（`chat` の `run_approval`）ので、手の番号だけの固定の id では、
+/// job の再試行や同じ run の 2 枚目の承認が前の決定に当たり、承認のカード無しに素通りする
+/// （stub で回すテストが偽の緑になる）。`n` は 1 ステップの中の並び（1 始まり）で、読みやすさのために残す。
+pub(super) fn stub_tool_call_id(n: usize) -> String {
+    format!("stubtool_{n}_{}", uuid::Uuid::new_v4().simple())
+}
+
 /// 単一ツール呼び出し（ToolUse で停止）のストリームを組む決定的ヘルパ。
 pub(super) fn tool_call_stream(
     name: String,
@@ -28,7 +38,7 @@ pub(super) fn tool_calls_stream(
 ) -> DeltaStream {
     let mut events = Vec::with_capacity(calls.len() * 2 + 1);
     for (i, (name, input)) in calls.into_iter().enumerate() {
-        let id = format!("stubtool_{}", i + 1);
+        let id = stub_tool_call_id(i + 1);
         events.push(Ok(StreamDelta::ToolUseStart {
             id: id.clone(),
             name,
@@ -148,4 +158,44 @@ pub(super) fn slow_text_stream(reply: &str, prompt_tokens: u64, hold: Duration) 
             })
         }))
         .boxed()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// ストリームの ToolUseStart と ToolUseStop の id を出た順に集める。
+    async fn tool_ids(mut s: DeltaStream) -> (Vec<String>, Vec<String>) {
+        let (mut starts, mut stops) = (Vec::new(), Vec::new());
+        while let Some(ev) = s.next().await {
+            match ev.unwrap() {
+                StreamDelta::ToolUseStart { id, .. } => starts.push(id),
+                StreamDelta::ToolUseStop { id, .. } => stops.push(id),
+                _ => {}
+            }
+        }
+        (starts, stops)
+    }
+
+    /// 1 ステップの複数の呼び出しの id は互いに違い、同じ呼び出しを流し直しても前の id と重ならない
+    /// （承認の鍵 (run, tool_call_id) が前の決定に当たらない）。開始と終了は同じ id を持つ。
+    #[tokio::test]
+    async fn tool_call_ids_are_unique_per_call_and_per_stream() {
+        let calls = || {
+            vec![
+                ("web_search".to_string(), serde_json::json!({"query": "a"})),
+                ("web_fetch".to_string(), serde_json::json!({"url": "b"})),
+            ]
+        };
+        let (first, first_stops) = tool_ids(tool_calls_stream(calls(), 1)).await;
+        let (again, _) = tool_ids(tool_calls_stream(calls(), 1)).await;
+        assert_eq!(first.len(), 2);
+        assert_eq!(first, first_stops, "開始と終了は同じ id");
+        assert_ne!(first[0], first[1], "1 ステップの中で重ならない");
+        for id in &again {
+            assert!(!first.contains(id), "流し直しで同じ id が出た: {id}");
+        }
+        assert!(first[0].starts_with("stubtool_1_"), "{}", first[0]);
+        assert!(first[1].starts_with("stubtool_2_"), "{}", first[1]);
+    }
 }

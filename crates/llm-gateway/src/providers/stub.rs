@@ -28,6 +28,9 @@
 //!   `refuse:` / `truncate:`（[`super::stub_structured`]）。
 //! - `truncate:<本文>`（形の指定が無いとき）… 「回答: <本文>」を流して出力の上限（`MaxTokens`）で終える
 //!   （チャットの「途中で打ち切りました」の注記の検証用・GAP-106）。
+//!
+//! 決定的なのは応答の中身だけで、ツール呼び出しの id は実プロバイダと同じく呼び出しごとに一意
+//! （[`super::stub_stream::stub_tool_call_id`]・承認の鍵が前の決定に当たらないように）。
 
 use std::time::Duration;
 
@@ -36,8 +39,8 @@ use futures::stream::{self, StreamExt};
 use super::stub_deep_research::deep_research_call;
 use super::stub_fixtures::{long_reply, long_thinking, yui_reply};
 use super::stub_stream::{
-    paced_chunks_stream, paced_thinking_then_text_stream, slow_text_stream, text_stream,
-    text_stream_ending, tool_call_stream, tool_calls_stream,
+    paced_chunks_stream, paced_thinking_then_text_stream, slow_text_stream, stub_tool_call_id,
+    text_stream, text_stream_ending, tool_call_stream, tool_calls_stream,
 };
 use super::stub_structured::structured_call;
 use super::stub_triggers::{
@@ -471,7 +474,7 @@ fn stub_stream(req: &GenerateRequest) -> DeltaStream {
                 .iter()
                 .find(|t| t.name == tool_name)
                 .map_or_else(|| req.tools[0].name.clone(), |t| t.name.clone());
-            let id = "stubtool_1".to_string();
+            let id = stub_tool_call_id(1);
             let input = serde_json::json!({ key: value });
             let events = vec![
                 Ok(StreamDelta::ToolUseStart {
@@ -677,6 +680,33 @@ mod tests {
         }
         assert_eq!(tool_name.as_deref(), Some("code_interpreter"));
         assert_eq!(input.unwrap()["code"], "print(1)");
+    }
+
+    /// 同じ要求を 2 回流しても、ツール呼び出しの id は違う（job の再試行で前の承認に当たらない）。
+    #[tokio::test]
+    async fn stub_tool_call_id_differs_between_identical_requests() {
+        let mut req = GenerateRequest::new(vec![Message::text(Role::User, "search: 経費規程")]);
+        req.tools.push(crate::model::ToolDef::new(
+            "doc_search",
+            "d",
+            serde_json::json!({}),
+        ));
+        let mut ids = Vec::new();
+        for _ in 0..2 {
+            let mut s = StubProvider::new().stream(&req).await.unwrap();
+            let (mut start, mut stop) = (None, None);
+            while let Some(ev) = s.next().await {
+                match ev.unwrap() {
+                    StreamDelta::ToolUseStart { id, .. } => start = Some(id),
+                    StreamDelta::ToolUseStop { id, .. } => stop = Some(id),
+                    _ => {}
+                }
+            }
+            assert_eq!(start, stop, "開始と終了は同じ id");
+            ids.push(start.unwrap());
+        }
+        assert_ne!(ids[0], ids[1]);
+        assert!(ids[0].starts_with("stubtool_1_"), "{}", ids[0]);
     }
 
     #[tokio::test]
