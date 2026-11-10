@@ -47,12 +47,34 @@ fn emit(resp: &RunnerResponse) {
 
 fn execute(req: &RunnerRequest) -> Result<RunnerResponse, String> {
     let conn = Connection::open_in_memory().map_err(|e| e.to_string())?;
+    if matches!(req.op, RunnerOp::ReservedWords) {
+        // ファイルは一切読まない（csv_path は無視）。それでも外部アクセスは封じてから引く。
+        lockdown(&conn)?;
+        return reserved_words(&conn);
+    }
     lockdown_load(&conn, req)?;
     match &req.op {
         RunnerOp::Schema => schema(&conn),
         RunnerOp::Rows { offset } => rows(&conn, *offset, req.max_rows),
         RunnerOp::Query { sql } => query(&conn, sql, req.max_rows),
+        RunnerOp::ReservedWords => Err("unreachable".into()),
     }
+}
+
+/// SQL の予約語（引用符なしの識別子に使えない語）を DuckDB 自身から引く（#1061）。
+/// 追加テーブル名の予約語判定（[`lockdown_load`]）と同じ条件。
+fn reserved_words(conn: &Connection) -> Result<RunnerResponse, String> {
+    // 予約語は百語程度。上限に当たったら欠けた一覧を返さず失敗にする（欠けると補完が予約語を出す）。
+    let resp = select(
+        conn,
+        "SELECT keyword_name AS keyword FROM duckdb_keywords() \
+         WHERE keyword_category = 'reserved' ORDER BY keyword_name",
+        10_000,
+    )?;
+    if resp.truncated {
+        return Err("予約語の一覧が多すぎます".into());
+    }
+    Ok(resp)
 }
 
 /// CSV をロードしてから外部アクセスを封鎖する（順序が要）。
@@ -122,8 +144,12 @@ fn lockdown_load(conn: &Connection, req: &RunnerRequest) -> Result<(), String> {
         }
     }
 
-    // 以降、SQL からの外部到達を封じる（PIT-39 の核）。lock_configuration で
-    // enable_external_access を戻せないようにする。
+    lockdown(conn)
+}
+
+/// 以降、SQL からの外部到達を封じる（PIT-39 の核）。lock_configuration で
+/// enable_external_access を戻せないようにする。
+fn lockdown(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         "SET autoinstall_known_extensions=false; \
          SET autoload_known_extensions=false; \

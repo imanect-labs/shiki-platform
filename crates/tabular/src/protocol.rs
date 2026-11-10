@@ -44,6 +44,9 @@ pub enum RunnerOp {
     /// 読み取り専用 SQL（**検証済み**・単一 SELECT/WITH）。主ファイルのテーブル名は `data`、
     /// 追加ファイルは [`RunnerRequest::extra_tables`] の名前。
     Query { sql: String },
+    /// SQL の予約語の一覧（DuckDB 自身の `duckdb_keywords()` の `reserved`・#1061）。CSV は読まない
+    /// （`csv_path` は無視）。結果は 1 列（`keyword`）の行として返す。
+    ReservedWords,
 }
 
 /// ランナーの応答。
