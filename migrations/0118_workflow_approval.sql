@@ -88,3 +88,20 @@ create table workflow_approval_comment (
     foreign key (tenant_id, approval_id) references workflow_approval (tenant_id, approval_id)
         on delete cascade
 );
+
+-- RLS（0114 と同じポリシー・移行モード）。新しいテナント表は、作る migration で付ける（docs/guides/db-maintenance.md §5）。
+alter table workflow_approval enable row level security;
+alter table workflow_approval force row level security;
+create policy shiki_tenant_isolation on workflow_approval
+    using ((select shiki_rls_tenant()) is null or tenant_id = (select shiki_rls_tenant()))
+    with check ((select shiki_rls_tenant()) is null or tenant_id = (select shiki_rls_tenant()));
+alter table workflow_approval_assignee enable row level security;
+alter table workflow_approval_assignee force row level security;
+create policy shiki_tenant_isolation on workflow_approval_assignee
+    using ((select shiki_rls_tenant()) is null or tenant_id = (select shiki_rls_tenant()))
+    with check ((select shiki_rls_tenant()) is null or tenant_id = (select shiki_rls_tenant()));
+alter table workflow_approval_comment enable row level security;
+alter table workflow_approval_comment force row level security;
+create policy shiki_tenant_isolation on workflow_approval_comment
+    using ((select shiki_rls_tenant()) is null or tenant_id = (select shiki_rls_tenant()))
+    with check ((select shiki_rls_tenant()) is null or tenant_id = (select shiki_rls_tenant()));

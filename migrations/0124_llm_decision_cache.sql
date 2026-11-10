@@ -26,3 +26,10 @@ create table llm_decision_cache (
 
 -- 期限切れの掃除（テナントの中で古い順に少しずつ消す）。
 create index llm_decision_cache_expiry_idx on llm_decision_cache (tenant_id, expires_at);
+
+-- RLS（0114 と同じポリシー・移行モード）。新しいテナント表は、作る migration で付ける（docs/guides/db-maintenance.md §5）。
+alter table llm_decision_cache enable row level security;
+alter table llm_decision_cache force row level security;
+create policy shiki_tenant_isolation on llm_decision_cache
+    using ((select shiki_rls_tenant()) is null or tenant_id = (select shiki_rls_tenant()))
+    with check ((select shiki_rls_tenant()) is null or tenant_id = (select shiki_rls_tenant()));

@@ -37,12 +37,21 @@ create unique index workflow_run_trigger_event_uq
 
 -- queued の上限の判定（1 ワークフローの queued 件数）は既存の workflow_run_queued_idx（0032）を使う。
 
+-- データ変更のトリガと wait(event) の束縛（spec の scope の table・record）を、生成列に写して btree で引く。2 表は RLS
+-- の対象（0114）で、RLS の付いた表では jsonb の取り出し（`->`・`->>`）が leakproof でないため、式の索引は索引の条件に
+-- 使えない（docs/guides/db-maintenance.md §6）。生成列なら普通の列の比較になる。
+alter table workflow_trigger
+    add column scope_table text generated always as (spec->'scope'->>'table') stored;
+alter table wait_subscription
+    add column scope_table text generated always as (spec->'scope'->>'table') stored,
+    add column scope_record text generated always as (spec->'scope'->>'record') stored;
+
 -- データ変更トリガの候補（テーブル束縛）。
 create index workflow_trigger_table_idx
-    on workflow_trigger (tenant_id, source, (spec->'scope'->>'table'))
+    on workflow_trigger (tenant_id, source, scope_table)
     where enabled and kind = 'event';
 
 -- データ変更の wait(event) の候補（テーブル・行の束縛）。
 create index wait_subscription_record_idx
-    on wait_subscription (tenant_id, source, (spec->'scope'->>'table'), (spec->'scope'->>'record'))
+    on wait_subscription (tenant_id, source, scope_table, scope_record)
     where kind = 'event' and not fired;

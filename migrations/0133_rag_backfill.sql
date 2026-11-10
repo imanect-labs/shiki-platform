@@ -34,3 +34,10 @@ create index rag_backfill_due_idx on rag_backfill (updated_at, id) where status 
 -- 分母の数え上げもこの索引だけで済む。
 create index node_file_scan_idx on node (tenant_id, org, id)
     where kind = 'file' and deleted_at is null and system = false;
+
+-- RLS（0114 と同じポリシー・移行モード）。新しいテナント表は、作る migration で付ける（docs/guides/db-maintenance.md §5）。
+alter table rag_backfill enable row level security;
+alter table rag_backfill force row level security;
+create policy shiki_tenant_isolation on rag_backfill
+    using ((select shiki_rls_tenant()) is null or tenant_id = (select shiki_rls_tenant()))
+    with check ((select shiki_rls_tenant()) is null or tenant_id = (select shiki_rls_tenant()));

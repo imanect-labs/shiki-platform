@@ -155,7 +155,7 @@ impl RunStore {
              JOIN workflow_run r ON r.tenant_id = w.tenant_id AND r.run_id = w.run_id \
              WHERE w.tenant_id = $1 AND w.kind = 'event' AND NOT w.fired \
                AND w.source = ANY($2) AND r.status = 'running' \
-               AND (w.spec->'scope'->>'table') = ANY($3)",
+               AND w.scope_table = ANY($3)",
         )
         .bind(tenant_id)
         .bind(&sources)

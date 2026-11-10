@@ -24,3 +24,10 @@ create table app_function_failure (
     failures        integer     not null default 1,
     primary key (tenant_id, app_id, function)
 );
+
+-- RLS（0114 と同じポリシー・移行モード）。新しいテナント表は、作る migration で付ける（docs/guides/db-maintenance.md §5）。
+alter table app_function_failure enable row level security;
+alter table app_function_failure force row level security;
+create policy shiki_tenant_isolation on app_function_failure
+    using ((select shiki_rls_tenant()) is null or tenant_id = (select shiki_rls_tenant()))
+    with check ((select shiki_rls_tenant()) is null or tenant_id = (select shiki_rls_tenant()));

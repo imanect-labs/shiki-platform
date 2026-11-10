@@ -414,7 +414,7 @@ impl SchedulerStore {
                ON r.tenant_id = t.tenant_id AND r.workflow_id = t.workflow_id \
              WHERE t.tenant_id = $1 AND t.kind = 'event' AND t.source = ANY($2) \
                AND t.enabled AND r.status = 'enabled' AND t.version = r.enabled_version \
-               AND (t.spec->'scope'->>'table') = ANY($3)",
+               AND t.scope_table = ANY($3)",
         )
         .bind(tenant_id)
         .bind(&sources)
