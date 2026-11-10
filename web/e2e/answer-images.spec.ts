@@ -98,12 +98,14 @@ for (const theme of ["light", "dark"] as const) {
     await expect(blocked).toHaveCount(5);
     await expect(blocked.nth(0)).toContainText("外部の画像「補足の図」");
     await expect(blocked.nth(1)).toHaveText(/^外部の画像\s*collector\.attacker\.test$/);
-    await expect(blocked.nth(1)).toHaveAttribute("href", "https://collector.attacker.test/p?d=Q3%20revenue%2012.4B");
+    // 出典に無い行き先は本物の href を持たず、押すと確認してから開く（#1143）。行き先は title に出す。
+    await expect(blocked.nth(1)).not.toHaveAttribute("href", /.*/);
+    await expect(blocked.nth(1)).toHaveAttribute("title", /確認してから.*https:\/\/collector\.attacker\.test\/p\?d=Q3%20revenue%2012\.4B$/);
     await expect(blocked.nth(2)).toHaveText(/^外部の画像「内訳グラフ」\s*charts\.example\.test$/);
     await expect(blocked.nth(2)).toHaveAttribute("title", /読み込めませんでした/);
     // モデル自身が書いた文字列（シェルの出力・封筒の外の案内）にだけ現れる URL は出所に数えない。
     await expect(blocked.nth(3)).toHaveText(/^外部の画像\s*collector\.attacker\.test$/);
-    await expect(blocked.nth(3)).toHaveAttribute("href", "https://collector.attacker.test/e?d=Q3%20margin%2018%25");
+    await expect(blocked.nth(3)).toHaveAttribute("title", /https:\/\/collector\.attacker\.test\/e\?d=Q3%20margin%2018%25$/);
     // リンクの中の画像は、外側のリンクを残してラベルだけにする（<a> を入れ子にしない）。
     await expect(blocked.nth(4)).toHaveText(/^外部の画像「build」\s*badge\.example\.test$/);
     await expect(timeline.locator("a a")).toHaveCount(0);

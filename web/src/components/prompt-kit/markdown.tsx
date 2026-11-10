@@ -14,7 +14,7 @@ import { EyeOff } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { citeNumberFromHref } from "@/lib/citation";
 import { decideAnswerImage, type ImageProxy, type ImageSources } from "@/lib/answer-images";
-import { decideAnswerLink, type LinkSources } from "@/lib/answer-links";
+import { decideAnswerLink, isAppPath, type LinkSources } from "@/lib/answer-links";
 import { CitationMarker } from "@/components/chat/citations/citation-marker";
 import { resolveKind } from "@imanect/yui";
 import { isYuiLanguage } from "@imanect/yui/react";
@@ -360,14 +360,15 @@ function BlockedImage({
   return (
     <>
     <a
-      href={href}
+      // 確認付きのときは本物の href を持たせない（右クリック・長押し・ドラッグで素通りさせない・#1143）。
+      href={guarded ? undefined : href}
       target={guarded ? undefined : "_blank"}
       rel="noopener noreferrer nofollow"
       referrerPolicy="no-referrer"
       title={`${label}。押すと${guarded ? "確認してから" : ""}新しいタブで開きます: ${href}`}
       aria-label={`${alt || "画像"}: ${label}。押すと${guarded ? "確認してから" : ""}新しいタブで開きます`}
       data-testid="answer-image-blocked"
-      {...(guarded ? guard.handlers : {})}
+      {...(guarded ? guard.props : {})}
       className={cn(
         // 本文の行の高さを変えない（上下の余白を持たせない）。枠は付けず、押せることは下線と hover で見せる。
         "inline rounded-[5px] bg-muted/60 px-1 text-[0.9em] text-foreground/80 underline decoration-border",
@@ -461,7 +462,8 @@ function MarkdownLink({ href, children }: { href?: string; children: React.React
   const cite = citeNumberFromHref(url);
   if (cite != null) return <CitationMarker n={cite}>{children}</CitationMarker>;
   // その他の内部リンクはクライアント遷移。
-  if (url.startsWith("/")) {
+  // `//host` や `/\host` は別オリジンへ出るので、アプリ内リンクに含めない（#1143）。
+  if (isAppPath(url)) {
     return (
       <Link
         href={url}

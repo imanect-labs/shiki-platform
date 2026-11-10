@@ -26,12 +26,23 @@ for (const theme of ["light", "dark"] as const) {
     await expect(trusted).toHaveAttribute("target", "_blank");
     await expect(trusted).not.toHaveAttribute("data-testid", "answer-link-unverified");
 
-    // 出典に無いリンクは 3 つ（仕込まれた URL・表示を偽ったリンク・メール）。行き先が見える。
+    // 出典に無いリンクは 5 つ。行き先が見える。
+    // - 仕込まれた URL・表示を偽ったリンク・メール
+    // - web_fetch させただけのページ（引用 3）と同じホスト（Web 検索の結果に出ていないので信頼しない）
+    // - 不正なパーセントエンコードのメール（描画ごと落とさない）
     const unverified = timeline.getByTestId("answer-link-unverified");
-    await expect(unverified).toHaveCount(3);
+    await expect(unverified).toHaveCount(5);
     await expect(unverified.nth(0)).toContainText("evil.example");
     await expect(unverified.nth(1)).toContainText("nta-go-jp.example.net");
     await expect(unverified.nth(2)).toContainText("mailto:keiri@corp.example");
+    await expect(unverified.nth(3)).toContainText("evil.example");
+    await expect(unverified.nth(4)).toContainText("mailto:help%ZZ@corp.example");
+    // 本物の href を持たない（右クリック・長押し・ドラッグ・PDF で素通りさせない）。
+    for (let i = 0; i < 5; i++) await expect(unverified.nth(i)).not.toHaveAttribute("href", /.*/);
+    // プロトコル相対の URL（`//evil.example/apply`）はアプリ内リンクとして扱わず、リンクにもしない。
+    await expect(timeline.getByText("手続きは 申請ページ から。")).toBeVisible();
+    await expect(timeline.getByRole("link", { name: "申請ページ", exact: true })).toHaveCount(0);
+    await expect(timeline.locator('a[href^="//"]')).toHaveCount(0);
 
     if (SHOTS) await page.screenshot({ path: `${SHOTS}/answer-links-${theme}.png`, fullPage: true });
 
@@ -48,9 +59,13 @@ for (const theme of ["light", "dark"] as const) {
     await page.keyboard.press("Enter");
     await expect(dialog).toBeHidden();
 
-    // 中クリックでも素通りしない。
+    // 中クリックでは何も開かない（href が無い）。
     await unverified.nth(1).click({ button: "middle" });
+    // キーボードでもリンクとして操作でき、確認ダイアログが出る。
+    await unverified.nth(3).focus();
+    await page.keyboard.press(" ");
     await expect(dialog).toBeVisible();
+    await expect(dialog.getByTestId("unverified-link-url")).toHaveText("https://evil.example/notice");
     await page.keyboard.press("Escape");
     await expect(dialog).toBeHidden();
     await page.waitForTimeout(300);

@@ -16,6 +16,7 @@ import { createPortal } from "react-dom";
 import { Markdown } from "@/components/prompt-kit/markdown";
 import { sourcesMarkdown } from "@/lib/answer-export";
 import type { ImageSources } from "@/lib/answer-images";
+import type { LinkSources } from "@/lib/answer-links";
 import type { Citation } from "@/lib/chat-api";
 import { linkifyCitations } from "@/lib/citation";
 import { formatDateTime } from "@/lib/format";
@@ -33,6 +34,8 @@ export type PrintItem = {
   text: string;
   citations: readonly Citation[];
   imageSources: ImageSources;
+  /// 回答の出典のホスト（#1143）。出典に無い外部リンクはリンクにせず、行き先を添えた文字にする。
+  linkSources: LinkSources;
 };
 
 export function ExportPrint({
@@ -131,7 +134,7 @@ function PrintTurn({ item }: { item: PrintItem }) {
           )}
         </div>
       ) : null}
-      <Markdown imageSources={item.imageSources}>{linkifyCitations(item.text, item.citations)}</Markdown>
+      <Markdown imageSources={item.imageSources} linkSources={item.linkSources}>{linkifyCitations(item.text, item.citations)}</Markdown>
       {sources ? (
         <div className="mt-6 border-t pt-4 text-sm" data-testid="answer-print-sources">
           <Markdown className="text-sm">{sources}</Markdown>

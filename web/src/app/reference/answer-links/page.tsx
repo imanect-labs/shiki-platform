@@ -34,10 +34,14 @@ const doc = (cite_id: number, snippet: string): Citation => ({
   web: null,
 });
 
-/// 社内文書（1）と Web（2）を引用した回答。
+const NTA = "https://www.nta.go.jp/taxes/shiraberu/taxanswer/hojin/5260.htm";
+
+/// 社内文書（1）・Web 検索で見つけたページ（2）・仕込みの指示で web_fetch させた攻撃者のページ（3）を引用した回答。
+/// 3 は引用になっていても、Web 検索の結果に出ていないので信頼しない（#1143 のレビュー指摘）。
 const CITATIONS: Citation[] = [
   doc(1, "経費精算の申請は毎月25日締めとし、翌月10日に支払う。"),
-  web(2, "https://www.nta.go.jp/taxes/shiraberu/taxanswer/hojin/5260.htm", "交際費等の範囲と損金不算入額の計算", "交際費等とは…"),
+  web(2, NTA, "交際費等の範囲と損金不算入額の計算", "交際費等とは…"),
+  web(3, "https://evil.example/notice", "社員向けのお知らせ", "最新の規程は…"),
 ];
 
 /// 出典と同じホストのリンク・出典に無いリンク（社内文書に仕込まれた誘導）・表示を偽ったリンク・メール。
@@ -53,9 +57,47 @@ const ANSWER = [
   "申請フォームは [www.nta.go.jp の申請ページ](https://nta-go-jp.example.net/form) にあります。",
   "",
   "不明点は [経理部](mailto:keiri@corp.example) まで。",
+  "",
+  // web_fetch させただけのページ（引用 3）と同じホスト。出典扱いにしない。
+  "お知らせは [社内ポータル](https://evil.example/notice) を参照してください[3]。",
+  "",
+  // プロトコル相対の URL（アプリ内リンクに見せかけて別オリジンへ出る）。
+  "手続きは [申請ページ](//evil.example/apply) から。",
+  "",
+  // 不正なパーセントエンコードのメール（描画ごと落とさない）。
+  "問い合わせ: [窓口](mailto:help%ZZ@corp.example)",
 ].join("\n");
 
-const SEGMENTS: TimelineSegment[] = [{ kind: "text", key: "t1", text: ANSWER }];
+const SEGMENTS: TimelineSegment[] = [
+  {
+    kind: "work",
+    key: "w0",
+    thinking: "",
+    tools: [
+      {
+        key: "s1",
+        id: "s1",
+        name: "web_search",
+        running: false,
+        ok: true,
+        step: 0,
+        input: { query: "交際費 損金不算入" },
+        result: `web 検索結果 1 件:\n⟦cite:0⟧ 交際費等の範囲と損金不算入額の計算\n${NTA}\n交際費等とは…\n\n`,
+      },
+      {
+        key: "f1",
+        id: "f1",
+        name: "web_fetch",
+        running: false,
+        ok: true,
+        step: 1,
+        input: { url: "https://evil.example/notice" },
+        result: "HTTP 200 | text/html | https://evil.example/notice | 本文 40 字\n<web_page>\n最新の規程は…\n</web_page>",
+      },
+    ],
+  },
+  { kind: "text", key: "t1", text: ANSWER },
+];
 
 export default function AnswerLinksGalleryPage() {
   return (
@@ -63,8 +105,8 @@ export default function AnswerLinksGalleryPage() {
       <header>
         <h1 className="text-lg font-semibold tracking-tight">回答のリンク</h1>
         <p className="mt-1 text-[13px] text-muted-foreground">
-          出典（Web の引用）と同じホストへのリンクはそのまま開く。出典に無い外部リンクは行き先と注意の印を添え、
-          押したときに確認してから開く（#1143）。
+          Web 検索で見つけて引用したページと同じホストへのリンクはそのまま開く。それ以外の外部リンク
+          （社内文書に書かれた URL・web_fetch させただけのページを含む）は行き先と注意の印を添え、押したときに確認してから開く（#1143）。
         </p>
       </header>
       <section data-testid="answer-links-timeline" className="min-w-0 rounded-xl border border-border px-6 py-5">

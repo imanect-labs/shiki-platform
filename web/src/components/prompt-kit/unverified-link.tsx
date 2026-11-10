@@ -65,10 +65,15 @@ export function UnverifiedLinkDialog({
   );
 }
 
-/// 押す・中クリック・Enter のどれでも、開く前に確認ダイアログを出すためのハンドラ。
+/// 開く前に確認ダイアログを出す要素の属性。
+///
+/// **本物の `href` を持たせない**: `href` があると、右クリックの「新しいタブで開く」・スマホの長押し
+/// メニューやリンクのプレビュー・タブバーへのドラッグ・書き出した PDF の中のリンクで、確認を通らずに
+/// 開けてしまう（レビュー指摘）。リンクとして読み上げ・フォーカスできるよう role と tabIndex を付け、
+/// 押す・Enter・Space で確認ダイアログを出す。行き先の URL はダイアログで見せる（コピーもそこでできる）。
 export function useUnverifiedOpen() {
   const [open, setOpen] = React.useState(false);
-  const stop = (e: React.MouseEvent) => {
+  const show = (e: React.SyntheticEvent) => {
     e.preventDefault();
     e.stopPropagation();
     setOpen(true);
@@ -76,11 +81,12 @@ export function useUnverifiedOpen() {
   return {
     open,
     setOpen,
-    handlers: {
-      onClick: stop,
-      // 中クリック（新しいタブ）も止める。右クリックのメニューは止めない（URL のコピーは許す）。
-      onAuxClick: (e: React.MouseEvent) => {
-        if (e.button === 1) stop(e);
+    props: {
+      role: "link" as const,
+      tabIndex: 0,
+      onClick: show,
+      onKeyDown: (e: React.KeyboardEvent) => {
+        if (e.key === "Enter" || e.key === " ") show(e);
       },
     },
   };
@@ -98,17 +104,14 @@ export function UnverifiedLink({
   className?: string;
   children: React.ReactNode;
 }) {
-  const { open, setOpen, handlers } = useUnverifiedOpen();
+  const { open, setOpen, props } = useUnverifiedOpen();
   return (
     <>
       <a
-        href={href}
-        rel="noopener noreferrer nofollow"
-        referrerPolicy="no-referrer"
         title={`出典に無いリンク。押すと確認してから開きます: ${href}`}
         data-testid="answer-link-unverified"
-        className={className}
-        {...handlers}
+        className={cn("cursor-pointer", className)}
+        {...props}
       >
         {children}
         {/* inline-block: リンクの下線を行き先の表示に引き継がない（本文のリンクと見分けやすくする） */}
