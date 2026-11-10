@@ -62,12 +62,15 @@ pub struct HttpEmbeddingProvider {
 }
 
 impl HttpEmbeddingProvider {
+    /// CPU ワーカー向けに送信量を制限する HTTP 埋め込みプロバイダーを作る。
     pub fn new(http: reqwest::Client, base_url: &str, expected_model_version: &str) -> Self {
         HttpEmbeddingProvider {
             http,
             base_url: base_url.trim_end_matches('/').to_string(),
             expected_model_version: expected_model_version.to_string(),
-            batch_size: 64,
+            // CPU 上の長い表は少数件でも推論が重い。worker の DTO 件数上限とは
+            // 別に送信量を絞り、1 リクエストの60秒 timeout 内で処理を進める。
+            batch_size: 8,
         }
     }
 }
