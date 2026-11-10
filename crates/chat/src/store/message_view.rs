@@ -9,15 +9,18 @@
 use super::*;
 use storage::audit::AuditAction;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 
-use authz::{AuthContext, Consistency, Relation};
+use authz::{AuthContext, CheckTuple, Consistency, Relation};
 use futures::stream::{BoxStream, StreamExt};
 use uuid::Uuid;
 
 use crate::model::{Citation, ContentBlock, Message, StreamEvent, StreamEventKind};
 
 use super::threads::map_db;
+
+/// 1 回にまとめて見直すイベントの上限（再訪で数千件届いても、最初の表示を待たせすぎない）。
+const MAX_REDACT_BATCH: usize = 1000;
 
 impl ChatStore {
     /// 各メッセージの citation ブロックを閲覧者の viewer 権限で再評価し、読めない引用を落とす。
@@ -32,19 +35,19 @@ impl ChatStore {
         ctx: &AuthContext,
         messages: &mut [Message],
     ) -> Result<(), ChatError> {
-        // 引用対象ファイルの重複を除いて一括判定（同一ファイルの複数引用を一度に）。
-        let mut decisions: HashMap<String, bool> = HashMap::new();
-        for m in messages.iter() {
-            for b in &m.content {
-                if let ContentBlock::Citation(c) = b {
-                    // Web の出典は公開情報（ファイルの権限で見直す対象ではない・#891）。
-                    if !c.is_web() && !decisions.contains_key(&c.node_id) {
-                        let allowed = self.can_view_file(ctx, &c.node_id).await;
-                        decisions.insert(c.node_id.clone(), allowed);
-                    }
-                }
-            }
-        }
+        // 引用対象ファイルの重複を除いて一括判定（同一ファイルの複数引用を一度に・1 往復にまとめる）。
+        // Web の出典は公開情報（ファイルの権限で見直す対象ではない・#891）。
+        let node_ids: Vec<String> = messages
+            .iter()
+            .flat_map(|m| m.content.iter())
+            .filter_map(|b| match b {
+                ContentBlock::Citation(c) if !c.is_web() => Some(c.node_id.clone()),
+                _ => None,
+            })
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        let decisions = self.can_view_files(ctx, &node_ids).await;
         if decisions.values().all(|v| *v) {
             return Ok(()); // 全て閲覧可（所有者/十分な権限）なら何もしない
         }
@@ -180,70 +183,122 @@ impl ChatStore {
             self.clone(),
             ctx.clone(),
             HashSet::<String>::new(),
+            VecDeque::<Option<StreamEvent>>::new(),
         );
-        // 順序を保って 1 件ずつ見直す（引用の判定は非同期なので then ではなく unfold で状態を持ち回す）。
-        let stream =
-            futures::stream::unfold(state, move |(mut rx, store, ctx, mut denied)| async move {
-                let ev = rx.next().await?;
-                let ev = store
-                    .redact_event_for_viewer(&ctx, is_actor, &mut denied, ev)
-                    .await;
-                Some((ev, (rx, store, ctx, denied)))
-            })
-            .filter_map(futures::future::ready);
+        // 順序を保って見直す（引用の判定は非同期なので then ではなく unfold で状態を持ち回す）。
+        //
+        // **届いている分はまとめて見直す。** 再訪・再接続では run の最初からのイベントが一度に届く。
+        // 引用を 1 件ずつ OpenFGA に問うと、その往復のたびに後続（ツール行・本文）が止まり、画面が
+        // 最後の操作までリプレイのように少しずつ進む（#1152）。溜まっている分を一度に取り出し、含まれる
+        // 引用の可否を 1 回の BatchCheck で判定してから順に流す。ライブで 1 件ずつ届く間は従来どおり
+        // 都度確かめる（剥奪を直後の引用から反映する性質は変わらない）。
+        let stream = futures::stream::unfold(
+            state,
+            move |(mut rx, store, ctx, mut denied, mut pending)| async move {
+                if pending.is_empty() {
+                    let mut batch = vec![rx.next().await?];
+                    while batch.len() < MAX_REDACT_BATCH {
+                        match rx.try_recv() {
+                            Ok(ev) => batch.push(ev),
+                            Err(_) => break, // 空（ライブの合間）か、送り手が閉じた
+                        }
+                    }
+                    pending = store
+                        .redact_events_for_viewer(&ctx, is_actor, &mut denied, batch)
+                        .await
+                        .into();
+                }
+                let ev = pending.pop_front()?;
+                Some((ev, (rx, store, ctx, denied, pending)))
+            },
+        )
+        .filter_map(futures::future::ready);
         Ok(stream.boxed())
     }
 
-    /// 1 件のイベントを閲覧者の権限で見直す（落とす場合は `None`）。
+    /// 届いたイベントをまとめて閲覧者の権限で見直す（落とすものは `None`・順序は保つ）。
     ///
-    /// **許可は使い回さない。** 引用のたびに HigherConsistency で確かめ直す（長い run を開いたままの間に
-    /// 閲覧権限が外れたら、直後の引用から反映させる。保存済みの経路と同じく剥奪を優先する）。
-    /// 使い回すのは拒否だけ（拒否を覚えていても漏れる方向には倒れない）。
-    async fn redact_event_for_viewer(
+    /// **許可は使い回さない。** まとめて届いた分の引用は 1 回の BatchCheck（HigherConsistency）で
+    /// 確かめ、次に届く分ではまた確かめ直す（長い run を開いたままの間に閲覧権限が外れたら、次に届く
+    /// 引用から反映させる。保存済みの経路と同じく剥奪を優先する）。使い回すのは拒否だけ
+    /// （拒否を覚えていても漏れる方向には倒れない）。
+    async fn redact_events_for_viewer(
         &self,
         ctx: &AuthContext,
         is_actor: bool,
         denied: &mut HashSet<String>,
-        mut ev: StreamEvent,
-    ) -> Option<StreamEvent> {
-        match &mut ev.event {
-            // Web の出典は公開情報（保存済みの経路と同じくそのまま流す・#891）。
-            StreamEventKind::Citation(c) if c.is_web() => {}
-            StreamEventKind::Citation(c) => {
-                let allowed =
-                    !denied.contains(&c.node_id) && self.can_view_file(ctx, &c.node_id).await;
-                if !allowed {
-                    denied.insert(c.node_id.clone());
+        events: Vec<StreamEvent>,
+    ) -> Vec<Option<StreamEvent>> {
+        // Web の出典は公開情報（保存済みの経路と同じくそのまま流す・#891）。拒否済みは問い直さない。
+        let node_ids: Vec<String> = events
+            .iter()
+            .filter_map(|e| match &e.event {
+                StreamEventKind::Citation(c) if !c.is_web() && !denied.contains(&c.node_id) => {
+                    Some(c.node_id.clone())
                 }
-                if !allowed {
-                    // 番号を持たない旧形式は保存済みの経路と同じく落とす。
-                    if c.cite_id == 0 {
-                        return None;
+                _ => None,
+            })
+            .collect::<HashSet<_>>()
+            .into_iter()
+            .collect();
+        let decisions = self.can_view_files(ctx, &node_ids).await;
+        events
+            .into_iter()
+            .map(|mut ev| {
+                match &mut ev.event {
+                    StreamEventKind::Citation(c) if c.is_web() => {}
+                    StreamEventKind::Citation(c) => {
+                        let allowed = !denied.contains(&c.node_id)
+                            && decisions.get(&c.node_id).copied().unwrap_or(false);
+                        if !allowed {
+                            denied.insert(c.node_id.clone());
+                            // 番号を持たない旧形式は保存済みの経路と同じく落とす。
+                            if c.cite_id == 0 {
+                                return None;
+                            }
+                            *c = Citation::withheld(c.cite_id);
+                        }
                     }
-                    *c = Citation::withheld(c.cite_id);
+                    StreamEventKind::ToolResult { content, .. } if !is_actor => content.clear(),
+                    _ => {}
                 }
-            }
-            StreamEventKind::ToolResult { content, .. } if !is_actor => content.clear(),
-            _ => {}
-        }
-        Some(ev)
+                Some(ev)
+            })
+            .collect()
     }
 
-    /// 閲覧者が該当ファイルを閲覧できるか（citation 再評価用・失敗時は保守的に false）。
+    /// 閲覧者が各ファイルを閲覧できるか（citation 再評価用）。BatchCheck で 1 往復にまとめる
+    /// （OpenFGA 実装は 50 問ごとに 1 往復）。判定に失敗したら全件 false（fail-closed）。
     ///
     /// 引用は**文書の本文**（抜粋）を含むので、共有解除の反映が遅れると読めないはずの中身が
     /// 見えたままになる。thread の認可（`require_thread`）と同じ理由で HigherConsistency を使う
     /// （剥奪の即時反映を、キャッシュ由来の古い許可より優先する）。
-    async fn can_view_file(&self, ctx: &AuthContext, node_id: &str) -> bool {
-        let obj = ctx.ns().file(node_id);
-        self.authz
-            .check(
-                &ctx.subject(),
-                Relation::Viewer,
-                &obj,
-                Consistency::HigherConsistency,
-            )
+    async fn can_view_files(
+        &self,
+        ctx: &AuthContext,
+        node_ids: &[String],
+    ) -> HashMap<String, bool> {
+        if node_ids.is_empty() {
+            return HashMap::new();
+        }
+        let subject = ctx.subject();
+        let items: Vec<CheckTuple> = node_ids
+            .iter()
+            .map(|id| CheckTuple {
+                subject: subject.clone(),
+                relation: Relation::Viewer,
+                object: ctx.ns().file(id),
+            })
+            .collect();
+        let allowed = self
+            .authz
+            .batch_check(&items, Consistency::HigherConsistency)
             .await
-            .unwrap_or(false)
+            .unwrap_or_else(|_| vec![false; items.len()]);
+        node_ids
+            .iter()
+            .cloned()
+            .zip(allowed.into_iter().chain(std::iter::repeat(false)))
+            .collect()
     }
 }

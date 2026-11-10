@@ -26,6 +26,7 @@ const UP_KEYS = new Set(["ArrowUp", "PageUp", "Home"]);
 ///   生成中は戻さない）。
 /// - 送信したときは `scrollToBottom()`（自分の発話を見せ、次の回答の先頭まで追う）。「最新へ」は
 ///   `jumpToLatest()`（下端へ一度動かすだけで、生成中は追わない）。
+/// - 実行中の会話へ戻ったときは `followLatest()`（回答の先頭では止めず、最新の位置を追い続ける）。
 ///
 /// 「上へ動かした」はスクロール位置の変化だけで判断しない。トラックパッドや指のゆっくりした操作は
 /// 1 回の動きが 1〜2px で、位置だけ見ると下端と区別できず、生成中は次のトークンで引き戻していた。
@@ -49,6 +50,9 @@ export function useStickToBottom() {
   const [stopAt, setStopAt] = React.useState<HTMLElement | null>(null);
   const stopAtEl = React.useRef<HTMLElement | null>(null);
   const stopped = React.useRef(false);
+  // 止まり位置を使わず、下端（最新）を追い続ける（実行中の会話へ戻ったとき・`followLatest`）。
+  // 次に送信するまで続く（送信した回答は、従来どおり先頭で止まって上から読める）。
+  const followAll = React.useRef(false);
 
   const distance = (el: HTMLElement) => el.scrollHeight - el.scrollTop - el.clientHeight;
 
@@ -56,7 +60,7 @@ export function useStickToBottom() {
   const stopTop = React.useCallback(
     (el: HTMLElement) => {
       const target = stopAtEl.current;
-      if (!target || !content) return null;
+      if (!target || !content || followAll.current) return null;
       const inset = parseFloat(getComputedStyle(content).paddingTop) || 0;
       return (
         target.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop - inset
@@ -215,16 +219,29 @@ export function useStickToBottom() {
 
   // 送信した: 自分の発話を見せ、次の回答の先頭まで追う。
   const scrollToBottom = React.useCallback(() => {
+    followAll.current = false;
     stick.current = true;
     stopped.current = false;
     leaving.current = false;
     if (scroller) pin(scroller);
   }, [scroller, pin]);
 
+  // 実行中の会話へ戻った: 生成済みの分はもう読み終えた前提なので、回答の先頭では止めず、
+  // 最新の位置（いま行っている操作・書いている途中）へ移って追い続ける（#1152）。
+  // 上へスクロールすれば、従来どおり追従をやめる。
+  const followLatest = React.useCallback(() => {
+    followAll.current = true;
+    stopped.current = false;
+    leaving.current = false;
+    stick.current = true;
+    if (scroller) pin(scroller);
+  }, [scroller, pin]);
+
   // 「最新へ」: 下端へ一度動かす。生成中は追わない（止まり位置を過ぎたものとして扱う）。
+  // 実行中の会話へ戻って追っている間（`followLatest`）は、追従へ戻す。
   const jumpToLatest = React.useCallback(() => {
     leaving.current = false;
-    if (stopAtEl.current) {
+    if (stopAtEl.current && !followAll.current) {
       stick.current = false;
       stopped.current = true;
     } else {
@@ -261,6 +278,7 @@ export function useStickToBottom() {
     content,
     showJump,
     scrollToBottom,
+    followLatest,
     jumpToLatest,
   };
 }

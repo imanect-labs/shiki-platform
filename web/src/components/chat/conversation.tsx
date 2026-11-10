@@ -311,8 +311,12 @@ export function Conversation({
     content,
     showJump,
     scrollToBottom,
+    followLatest,
     jumpToLatest,
   } = useStickToBottom();
+  // 読み込みの effect（スレッドが変わったときだけ走る）から最新の関数を呼ぶための写し。
+  const followLatestRef = React.useRef(followLatest);
+  followLatestRef.current = followLatest;
   // 読み返し中の「一つ前／一つ後の自分の発話へ」。
   const turnJump = useTurnJump(scroller, content);
   // 入力欄は本文の上に重ねる（背後を透かす）。その高さだけ本文の末尾と「最新へ」を持ち上げる。
@@ -815,6 +819,8 @@ export function Conversation({
           };
           setStream(streamRef.current);
           cancelRef.current = resumeMessage(threadId, makeHandlers());
+          // 実行中の会話へ戻った: 回答の先頭で止めず、最新の位置（いまの操作）を追う（#1152）。
+          followLatestRef.current();
           return;
         }
         // 末尾が user で未応答なら（=新規スレッド直後）ホームからの pending を送る。
