@@ -85,7 +85,9 @@ const SEGMENTS: TimelineSegment[] = [
         // 2 件目のスニペットに URL がある（URL の欄ではないので信頼しない・Codex の指摘）。
         result:
           `web 検索結果 2 件:\n⟦cite:0⟧ 交際費等の範囲と損金不算入額の計算\n${NTA}\n交際費等とは…\n\n` +
-          "⟦cite:1⟧ 社員向けのお知らせ\nhttps://news.example.org/a\n本文 https://evil.example/notice 続き\n\n",
+          "⟦cite:1⟧ 社員向けのお知らせ\nhttps://news.example.org/a\n本文 https://evil.example/notice 続き\n\n" +
+          // タイトルを見出しに似せ、引用できない URL の結果（番号なし）。スニペットを URL の欄に繰り上げさせない。
+          "web 検索結果 1 件:\nftp://files.example.org/a\nhttps://evil.example/notice\n\n",
       },
       {
         key: "f1",
